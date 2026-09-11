@@ -57,20 +57,20 @@ fun [tail] lastIndexLoop(s: String, at: Int, best: Int, c: Int32): Int
 # Every prefix of a name at its `@` boundaries — the index keys, so a
 # prefix-match lookup is a plain hit rather than a scan.
 fun namePrefixes(name: String): List<String>
-  ret prefixLoop(chain(split(name, "@")), "", List<String>())
+  ret prefixLoop(chain(split(name, "@")), "", List())
 
 fun prefixLoop(ps: Chain<String>, acc: String,
                       out: List<String>): List<String>
-  ret build<String >(prefixLoopB(ps, acc, builderFrom<String>(out)))
+  ret build(prefixLoopB(ps, acc, builderFrom(out)))
 
 fun [tail] prefixLoopB(ps: Chain<String>, acc: String,
-                      [terminal] out: ListBuilder<String >): ListBuilder<String >
+                      [terminal] out: ListBuilder<String>): ListBuilder<String>
   ret match(ps)
     (nil: ChainEnd) => out
     (l: ChainLink)  => acc == ""
-      ? prefixLoopB(l.next, l.value, push<String >(out, l.value))
+      ? prefixLoopB(l.next, l.value, push(out, l.value))
       : prefixLoopB(l.next, acc + "@" + l.value,
-                   push<String >(out, acc + "@" + l.value))
+                   push(out, acc + "@" + l.value))
 
 # ── bags ────────────────────────────────────────────────────────────────────
 
@@ -95,11 +95,11 @@ class [final] Found(fName: String, fStmt: PStmt, fScope: RScope,
 class [final] Findings(bItems: List<Found>, bComplete: Bool)
 
 fun emptyFindings(): Findings
-  ret Findings(List<Found>(), true)
+  ret Findings(List(), true)
 
 # Nothing found YET: the search was blocked, so absence proves nothing.
 fun incompleteFindings(): Findings
-  ret Findings(List<Found>(), false)
+  ret Findings(List(), false)
 
 fun addFindings(a: Findings, b: Findings): Findings
   ret Findings(concat(a.bItems, b.bItems), a.bComplete && b.bComplete)
@@ -136,70 +136,70 @@ class [final] AmbEntry(amNs: List<String>, amSpec: Spec, amOwn: List<String>)
 # base.py). Keys follow namePrefixes, so nameMatches semantics are a bucket
 # hit, exactly like the global index.
 class [final] MemberIdx(miClass: PsClass,
-                        miByKey: Dict<String, List<PStmt> >)
+                        miByKey: Dict<String, List<PStmt>>)
 
 class [final] Statements(stOrdered: List<PStmt>,
-                         stIndex: Dict<String, List<PStmt> >,
+                         stIndex: Dict<String, List<PStmt>>,
                          stTraits: List<PStmt>,
                          stInstances: List<PStmt>,
                          stAmbient: List<AmbEntry>,
                          stAmbientBlocked: Bool,
-                         stTypesIdx: Dict<String, Findings >,
-                         stDataIdx: Dict<String, Findings >,
-                         stBareTypes: Dict<String, Dict<String, Findings> >,
-                         stBareData: Dict<String, Dict<String, Findings> >,
-                         stMembers: Dict<String, MemberIdx >)
+                         stTypesIdx: Dict<String, Findings>,
+                         stDataIdx: Dict<String, Findings>,
+                         stBareTypes: Dict<String, Dict<String, Findings>>,
+                         stBareData: Dict<String, Dict<String, Findings>>,
+                         stMembers: Dict<String, MemberIdx>)
 
 fun buildStatements(stmts: List<PStmt>): Statements
   ret withKindIndexes(withAmbient(indexLoop(chain(stmts),
-                            Statements(stmts, Dict<String, List<PStmt> >(),
-                                       List<PStmt>(), List<PStmt>(),
-                                       List<AmbEntry>(), false,
-                                       Dict<String, Findings >(),
-                                       Dict<String, Findings >(),
-                                       Dict<String, Dict<String, Findings> >(),
-                                       Dict<String, Dict<String, Findings> >(),
-                                       Dict<String, MemberIdx >()))))
+                            Statements(stmts, Dict(),
+                                       List(), List(),
+                                       List(), false,
+                                       Dict(),
+                                       Dict(),
+                                       Dict(),
+                                       Dict(),
+                                       Dict()))))
 
 fun withKindIndexes(base: Statements): Statements
   # keys() answers a Set; sorted once into a walkable list (the walk order is
   # unobservable — the kind dicts are only ever queried by key).
   let ks = sort(keys(base.stIndex))
-  let types2 = kindLoop(chain(ks), base.stIndex, true, Dict<String, Findings >())
-  let data2 = kindLoop(chain(ks), base.stIndex, false, Dict<String, Findings >())
+  let types2 = kindLoop(chain(ks), base.stIndex, true, Dict())
+  let data2 = kindLoop(chain(ks), base.stIndex, false, Dict())
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
                  base.stInstances, base.stAmbient, base.stAmbientBlocked,
                  types2, data2,
                  bareView(chain(ks), types2,
-                          Dict<String, Dict<String, Findings> >()),
+                          Dict()),
                  bareView(chain(ks), data2,
-                          Dict<String, Dict<String, Findings> >()),
-                 memberIndex(chain(base.stOrdered), Dict<String, MemberIdx >()))
+                          Dict()),
+                 memberIndex(chain(base.stOrdered), Dict()))
 
-fun [tail] bareView(ks: Chain<String>, kind: Dict<String, Findings >,
-                    acc: Dict<String, Dict<String, Findings> >): Dict<String, Dict<String, Findings> >
+fun [tail] bareView(ks: Chain<String>, kind: Dict<String, Findings>,
+                    acc: Dict<String, Dict<String, Findings>>): Dict<String, Dict<String, Findings>>
   ret match(ks)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains(l.value, "@")
       ? bareView(l.next, kind, acc)
       : bareView(l.next, kind, bareViewAdd(acc, kind, l.value))
 
-fun bareViewAdd(acc: Dict<String, Dict<String, Findings> >,
-                kind: Dict<String, Findings >,
-                key: String): Dict<String, Dict<String, Findings> >
+fun bareViewAdd(acc: Dict<String, Dict<String, Findings>>,
+                kind: Dict<String, Findings>,
+                key: String): Dict<String, Dict<String, Findings>>
   ret match(get(kind, key))
     (f: Findings) => bareViewPut(acc, bareOfUnique(key), namespacePart(key), f)
     ()            => acc
 
-fun bareViewPut(acc: Dict<String, Dict<String, Findings> >, bare: String,
-                ns: String, f: Findings): Dict<String, Dict<String, Findings> >
+fun bareViewPut(acc: Dict<String, Dict<String, Findings>>, bare: String,
+                ns: String, f: Findings): Dict<String, Dict<String, Findings>>
   ret match(get(acc, bare))
     (inner: Dict<String, Findings>) => put(acc, bare, put(inner, ns, f))
     ()                               => put(acc, bare,
-                                            put(Dict<String, Findings >(), ns, f))
+                                            put(Dict(), ns, f))
 
 fun [tail] memberIndex(ss: Chain<PStmt>,
-                       acc: Dict<String, MemberIdx >): Dict<String, MemberIdx >
+                       acc: Dict<String, MemberIdx>): Dict<String, MemberIdx>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
@@ -207,14 +207,14 @@ fun [tail] memberIndex(ss: Chain<PStmt>,
           put(acc, cs.cName,
               MemberIdx(cs, memberKeys(chain(concat(flattenParams(cs.cParams),
                                                     cs.cMembers)),
-                                       Dict<String, List<PStmt> >()))))
+                                       Dict()))))
       (o: PStmt)    => memberIndex(l.next, acc)
 
 # member_index: ctor params (flattened to leaf lets) PLUS body statements, in
 # declaration order — the order memberMatchesB walked. addKeys is the same
 # helper the global index uses, so bucket semantics match nameMatches.
 fun [tail] memberKeys(ms: Chain<PStmt>,
-                      acc: Dict<String, List<PStmt> >): Dict<String, List<PStmt> >
+                      acc: Dict<String, List<PStmt>>): Dict<String, List<PStmt>>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => stmtName(l.value) == ""
@@ -237,28 +237,28 @@ fun [tail] memberIdxHook(r: Resolver, className: String): MemberIdx|None
 
 # Per key, the kind walk REUSES globalLoop — the exact per-query filter — so
 # the prebuilt answers cannot diverge from what the query path produced.
-fun [tail] kindLoop(ks: Chain<String>, index: Dict<String, List<PStmt> >,
+fun [tail] kindLoop(ks: Chain<String>, index: Dict<String, List<PStmt>>,
                     wantType: Bool,
-                    acc: Dict<String, Findings >): Dict<String, Findings >
+                    acc: Dict<String, Findings>): Dict<String, Findings>
   ret match(ks)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => kindLoop(l.next, index, wantType,
                                 kindPut(acc, l.value, get(index, l.value),
                                         wantType))
 
-fun kindPut(acc: Dict<String, Findings >, key: String,
-            bucket: List<PStmt>|None, wantType: Bool): Dict<String, Findings >
+fun kindPut(acc: Dict<String, Findings>, key: String,
+            bucket: List<PStmt>|None, wantType: Bool): Dict<String, Findings>
   let found = match(bucket)
-    (b: List<PStmt>) => globalLoop(chain(b), wantType, List<Found>())
-    ()               => List<Found>()
+    (b: List<PStmt>) => globalLoop(chain(b), wantType, List())
+    ()               => List()
   ret isEmpty(found) ? acc : put(acc, key, Findings(found, true))
 
 fun withAmbient(base: Statements): Statements
   let amb = buildAmbient(chain(base.stInstances),
-                         builder<AmbEntry>(), false)
+                         builder(), false)
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
                  base.stInstances,
-                 dedupeAmb(chain(amb.abEntries), List<AmbEntry>()),
+                 dedupeAmb(chain(amb.abEntries), List()),
                  amb.abBlocked, base.stTypesIdx, base.stDataIdx,
                  base.stBareTypes, base.stBareData, base.stMembers)
 
@@ -270,26 +270,26 @@ fun [tail] dedupeAmb(es: Chain<AmbEntry>, acc: List<AmbEntry>): List<AmbEntry>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => dedupeAmb(l.next, mergeAmb(chain(acc), l.value,
-                                                 builder<AmbEntry >(), false))
+                                                 builder(), false))
 
 # Entries keep their order: it is the order the "Candidates:" message lists
 # them in. An unmerged entry goes on the end.
 fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry,
-                    [terminal] out: ListBuilder<AmbEntry >,
+                    [terminal] out: ListBuilder<AmbEntry>,
                     merged: Bool): List<AmbEntry>
   ret match(es)
-    (nil: ChainEnd) => build<AmbEntry >(merged
+    (nil: ChainEnd) => build(merged
       ? out
-      : push<AmbEntry >(out, x))
+      : push(out, x))
     (l: ChainLink)  => eqSpec(l.value.amSpec, x.amSpec)
                        && eqNameList(l.value.amOwn, x.amOwn)
       ? mergeAmb(l.next, x,
-                 push<AmbEntry >(out, AmbEntry(mergeNames(l.value.amNs,
-                                                          chain(x.amNs)),
-                                               l.value.amSpec,
-                                               l.value.amOwn)),
+                 push(out, AmbEntry(mergeNames(l.value.amNs,
+                                               chain(x.amNs)),
+                                    l.value.amSpec,
+                                    l.value.amOwn)),
                  true)
-      : mergeAmb(l.next, x, push<AmbEntry >(out, l.value), merged)
+      : mergeAmb(l.next, x, push(out, l.value), merged)
 
 class [final] AmbBuilt(abEntries: List<AmbEntry>, abBlocked: Bool)
 
@@ -313,10 +313,10 @@ fun buildAmbientOne(ti: PsTraitInstance, rest: Chain<PStmt>,
       ? buildAmbient(rest, acc, true)
       : buildAmbient(rest,
                      push(acc, AmbEntry(prepend(namespacePart(ti.tiName),
-                                                List<String>()),
+                                                List()),
                                         ti.tiPattern,
                                         genNames(chain(ti.tiGens),
-                                                 builder<String>()))),
+                                                 builder()))),
                      blocked)
     (o: Spec)   => buildAmbient(rest, acc, blocked)
 
@@ -339,19 +339,19 @@ fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
                  acc.stAmbientBlocked, acc.stTypesIdx, acc.stDataIdx,
                  acc.stBareTypes, acc.stBareData, acc.stMembers)
 
-fun [tail] addKeys(d: Dict<String, List<PStmt> >, ks: Chain<String>,
-                   st: PStmt): Dict<String, List<PStmt> >
+fun [tail] addKeys(d: Dict<String, List<PStmt>>, ks: Chain<String>,
+                   st: PStmt): Dict<String, List<PStmt>>
   ret match(ks)
     (nil: ChainEnd) => d
     (l: ChainLink)  => addKeys(putUnder(d, l.value, st), l.next, st)
 
-fun putUnder(d: Dict<String, List<PStmt> >, key: String,
-             st: PStmt): Dict<String, List<PStmt> >
+fun putUnder(d: Dict<String, List<PStmt>>, key: String,
+             st: PStmt): Dict<String, List<PStmt>>
   ret match(get(d, key))
     # Declaration order within a bucket: it is the candidate order overload
     # resolution and the "Candidates:" message both see.
-    (prev: List<PStmt>) => put(d, key, build<PStmt >(push<PStmt >(builderFrom<PStmt>(prev), st)))
-    ()                  => put(d, key, prepend(st, List<PStmt>()))
+    (prev: List<PStmt>) => put(d, key, build(push(builderFrom(prev), st)))
+    ()                  => put(d, key, prepend(st, List()))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
 # iteration; `[trait]` lets are precomputed.
@@ -360,14 +360,14 @@ fun classify(acc: Statements, st: PStmt, name: String): Statements
     (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
     (l: PsLet)  => hasAttr(l.lAttrs, "trait")
       ? Statements(acc.stOrdered, acc.stIndex,
-                   build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stTraits)), st)),
+                   build(push(builderFrom(acc.stTraits), st)),
                    acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
                    acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData,
                    acc.stMembers)
       : acc
     (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
                                         acc.stTraits,
-                                        build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(acc.stInstances)), st)),
+                                        build(push(builderFrom(acc.stInstances), st)),
                                         acc.stAmbient, acc.stAmbientBlocked,
                                         acc.stTypesIdx, acc.stDataIdx,
                                         acc.stBareTypes, acc.stBareData,
@@ -395,7 +395,7 @@ fun [tail] attrLoop(as2: Chain<PAttr>, name: String): Bool
 fun lookup(idx: Statements, query: String): List<PStmt>
   ret match(get(idx.stIndex, query))
     (found: List<PStmt>) => found
-    ()                   => List<PStmt>()
+    ()                   => List()
 
 # ── the resolver chain ──────────────────────────────────────────────────────
 # Each layer answers what it knows and delegates outward. The root holds the
@@ -423,7 +423,7 @@ enum Resolver
   enum RRoot(rrComplex: (:String): Bool,
              rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
-             rrEnumFields: Dict<String, List<SField> >|None = None,
+             rrEnumFields: Dict<String, List<SField>>|None = None,
              rrBoxedLeaves: Dict<String, Bool>|None = None,
              rrMerged: Dict<String, MergedOut>|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
@@ -538,14 +538,14 @@ fun [tail] isBoxedLeaf(r: Resolver, root2: String, leaf: String): Bool
     (rg: RGen)    => isBoxedLeaf(rg.rgParent, root2, leaf)
 
 fun ambientEntries(r: Resolver): AmbEntries
-  ret ambEntryWalk(r, List<String>())
+  ret ambEntryWalk(r, List())
 
 fun [tail] ambEntryWalk(r: Resolver, scopes: List<String>): AmbEntries
   ret match(r)
     (root: RRoot) => isEmpty(scopes)
-      ? AmbEntries(List<TraitEntry>(), false)
+      ? AmbEntries(List(), false)
       : AmbEntries(ambFilter(chain(root.rrStmts.stAmbient), scopes,
-                             builder<TraitEntry>()),
+                             builder()),
                    root.rrStmts.stAmbientBlocked)
     (sc: RScopes)    => ambEntryWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
     (d: RData)       => ambEntryWalk(d.rdParent, scopes)
@@ -597,7 +597,7 @@ fun [tail] paramSuggestion(r: Resolver, name: String): Spec|None
 fun [tail] enumFieldsHook(r: Resolver, root: String): List<SField>|None
   ret match(r)
     (rt2: RRoot)     => match(rt2.rrEnumFields)
-      (d: Dict<String, List<SField> >) => enumFieldsAt(d, root)
+      (d: Dict<String, List<SField>>) => enumFieldsAt(d, root)
       ()                                => None
     (sc: RScopes)    => enumFieldsHook(sc.rsParent, root)
     (d: RData)       => enumFieldsHook(d.rdParent, root)
@@ -606,10 +606,10 @@ fun [tail] enumFieldsHook(r: Resolver, root: String): List<SField>|None
     (cb: RClassBody) => enumFieldsHook(cb.rcbParent, root)
     (rg: RGen)       => enumFieldsHook(rg.rgParent, root)
 
-fun enumFieldsAt(d: Dict<String, List<SField> >, root: String): List<SField>
+fun enumFieldsAt(d: Dict<String, List<SField>>, root: String): List<SField>
   ret match(get(d, root))
     (fs: List<SField>) => fs
-    ()                 => List<SField>()   # pruned root: no fields to resolve against
+    ()                 => List()   # pruned root: no fields to resolve against
 
 # get_traits: every `[trait]` let in the statement set (precomputed by the
 # index) — no scope filter, exactly like Python's root.
@@ -628,18 +628,18 @@ fun [tail] traitLets(r: Resolver): List<PStmt>
 # keeps the order the Set cannot. Reading a half-built list was the only
 # reason this loop could not simply push.
 fun mergeNames(acc: List<String>, ns: Chain<String>): List<String>
-  ret build<String >(mergeNamesB(builderFrom<String>(acc),
-                                 _chainToSet<String >(chain<String >(acc),
-                                                      Set<String >()),
-                                 ns))
+  ret build(mergeNamesB(builderFrom(acc),
+                        _chainToSet(chain(acc),
+                                    Set()),
+                        ns))
 
-fun [tail] mergeNamesB([terminal] out: ListBuilder<String >, seen: Set<String >,
-                       ns: Chain<String>): ListBuilder<String >
+fun [tail] mergeNamesB([terminal] out: ListBuilder<String>, seen: Set<String>,
+                       ns: Chain<String>): ListBuilder<String>
   ret match(ns)
     (nil: ChainEnd) => out
-    (l: ChainLink)  => contains<String >(seen, l.value)
+    (l: ChainLink)  => contains(seen, l.value)
       ? mergeNamesB(out, seen, l.next)
-      : mergeNamesB(push<String >(out, l.value), add<String >(seen, l.value),
+      : mergeNamesB(push(out, l.value), add(seen, l.value),
                     l.next)
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
@@ -685,7 +685,7 @@ fun bareAtRoot(root: RRoot, bare: String, wantType: Bool,
 
 # Sum the per-namespace bags in scope order; the single-hit case returns the
 # shared bag (Python resolver._under).
-fun [tail] underScopes(ns: Chain<String>, inner: Dict<String, Findings >,
+fun [tail] underScopes(ns: Chain<String>, inner: Dict<String, Findings>,
                        acc: Findings): Findings
   ret match(ns)
     (nil: ChainEnd) => acc
@@ -699,7 +699,7 @@ fun underAdd(acc: Findings, hit: Findings|None): Findings
 
 # The shared miss answer (Python's module-level EMPTY): the query path must
 # not allocate.
-let emptyFindingsGlobal: Findings = Findings(List<Found>(), true)
+let emptyFindingsGlobal = Findings(List(), true)
 
 # The root's answer: every indexed statement under the query, split by whether
 # it declares a TYPE (class/interface/enum/typealias) or DATA (fun/let) —
@@ -712,16 +712,16 @@ fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
 
 fun globalLoop(ss: Chain<PStmt>, wantType: Bool,
                       acc: List<Found>): List<Found>
-  ret build<Found >(globalLoopB(ss, wantType, builderFrom<Found>(acc)))
+  ret build(globalLoopB(ss, wantType, builderFrom(acc)))
 
 fun [tail] globalLoopB(ss: Chain<PStmt>, wantType: Bool,
-                      [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
+                      [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => !isNeitherStmt(l.value)
                        && wantsThis(isTypeStmt(l.value), wantType)
       ? globalLoopB(l.next, wantType,
-                   push<Found >(acc, Found(stmtName(l.value), l.value, ScGlobal())))
+                   push(acc, Found(stmtName(l.value), l.value, ScGlobal())))
       : globalLoopB(l.next, wantType, acc)
 
 fun wantsThis(isType: Bool, wantType: Bool): Bool
@@ -755,18 +755,18 @@ fun classBodyFindings(cb: RClassBody, query: String): Findings
   ret isEmpty(own) ? findData(cb.rcbParent, query) : Findings(own, true)
 
 fun matchingFound(names: List<Found>, query: String): Findings
-  ret Findings(matchLoop(chain(names), query, List<Found>()), true)
+  ret Findings(matchLoop(chain(names), query, List()), true)
 
 fun matchLoop(fs: Chain<Found>, query: String,
                      acc: List<Found>): List<Found>
-  ret build<Found >(matchLoopB(fs, query, builderFrom<Found>(acc)))
+  ret build(matchLoopB(fs, query, builderFrom(acc)))
 
 fun [tail] matchLoopB(fs: Chain<Found>, query: String,
-                     [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
+                     [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameMatches(l.value.fName, query)
-      ? matchLoopB(l.next, query, push<Found >(acc, l.value))
+      ? matchLoopB(l.next, query, push(acc, l.value))
       : matchLoopB(l.next, query, acc)
 
 fun stmtName(st: PStmt): String
@@ -803,9 +803,9 @@ enum MergedOut
   enum MMissing()
 
 fun mergedMembersTable(st: Statements): Dict<String, MergedOut>
-  ret fold(sort(keys(st.stMembers)), Dict<String, MergedOut>(),
-           (acc: Dict<String, MergedOut>, name: String) =>
-             mmEnsure(name, st, List<String>(), acc))
+  ret fold(sort(keys(st.stMembers)), Dict(),
+           (acc, name) =>
+             mmEnsure(name, st, List(), acc))
 
 fun mmEnsure(name: String, st: Statements, visiting: List<String>,
              acc: Dict<String, MergedOut>): Dict<String, MergedOut>
@@ -826,11 +826,11 @@ class [final] MMState(mmRows: Dict<String, MergedRow>, mmAbsent: Bool,
 
 fun mmBuildClass(name: String, mi: MemberIdx, st: Statements,
                  visiting: List<String>, acc: Dict<String, MergedOut>): Dict<String, MergedOut>
-  let ownRows = mmOwnRows(sort(keys(mi.miByKey)), mi, Dict<String, MergedRow>())
+  let ownRows = mmOwnRows(sort(keys(mi.miByKey)), mi, Dict())
   let stt = fold(mi.miClass.cImplements,
                  MMState(ownRows, false, false, acc),
-                 (s2: MMState, parent: Spec) =>
-                   mmParent(s2, parent, mi, st, prepend<String>(name, visiting)))
+                 (s2, parent) =>
+                   mmParent(s2, parent, mi, st, prepend(name, visiting)))
   let rows = stt.mmBroken ? mmMarkNonOwn(stt.mmRows, mi) : stt.mmRows
   ret put(stt.mmAcc, name,
           MTable(MergedTable(rows, stt.mmAbsent || stt.mmBroken,
@@ -841,15 +841,15 @@ fun [tail] mmOwnRows(ks: List<String>, mi: MemberIdx,
   ret match(head(ks))
     (k: String) => mmOwnRows(tail(ks), mi,
         put(acc, k, MergedRow(map(memberBucket(mi, k),
-                                  (m: PStmt) => MergedEntry(m, mi.miClass, None)),
+                                  (m) => MergedEntry(m, mi.miClass, None)),
                               true)))
     ()           => acc
 
 # A broken parent means every non-own answer may be missing candidates.
 fun mmMarkNonOwn(rows: Dict<String, MergedRow>, mi: MemberIdx): Dict<String, MergedRow>
   ret fold(sort(keys(rows)), rows,
-           (acc: Dict<String, MergedRow>, k: String) =>
-             contains<String, List<PStmt>>(mi.miByKey, k)
+           (acc, k) =>
+             contains(mi.miByKey, k)
                ? acc
                : mmMarkOne(acc, k))
 
@@ -883,8 +883,8 @@ fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
                   mi: MemberIdx): MMState
   let mapping = paramMapping(sub.mtGens, parent.scParams)
   let rows = fold(sort(keys(sub.mtRows)), s2.mmRows,
-                  (acc: Dict<String, MergedRow>, k: String) =>
-                    contains<String, List<PStmt>>(mi.miByKey, k)
+                  (acc, k) =>
+                    contains(mi.miByKey, k)
                       ? acc   # own hit shadows this path
                       : mmMergeRow(acc, k, sub, parent, mapping))
   ret MMState(rows, s2.mmAbsent || sub.mtAbsentInc, s2.mmBroken, s2.mmAcc)
@@ -893,7 +893,7 @@ fun mmMergeRow(acc: Dict<String, MergedRow>, k: String, sub: MergedTable,
                parent: SClass, mapping: List<Binding>): Dict<String, MergedRow>
   ret match(get(sub.mtRows, k))
     (row: MergedRow) => mmAppendRow(acc, k,
-        map(row.mrEntries, (e: MergedEntry) =>
+        map(row.mrEntries, (e) =>
           MergedEntry(e.meStmt, e.meOwner, mmCompose(e.mePattern, parent, mapping))),
         row.mrComplete)
     ()                => acc   # unreachable: k came from sub's keys

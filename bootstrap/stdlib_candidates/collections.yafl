@@ -34,23 +34,23 @@ fun list3<T>(a: T, b: T, c: T): List<T>
 # Phi's sources. The set-shaped accumulators that used to pair this with a
 # `strListAdd` are Set<String> now and use `contains`.
 fun strListMember(l: List<String>, x: String): Bool
-  ret any<String>(l, (y: String) => y == x)
+  ret any(l, (y) => y == x)
 
 
 fun dedent4(s: String): String
   ret length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
 
 fun [tail] memberInt(l: List<Int>, x: Int): Bool
-  ret match(head<Int>(l))
-    (h: Int) => h == x ? true : memberInt(tail<Int>(l), x)
+  ret match(head(l))
+    (h: Int) => h == x ? true : memberInt(tail(l), x)
     ()       => false
 
 fun disjointInt(a: List<Int>, b: List<Int>): Bool
-  ret !any<Int>(a, (x: Int) => memberInt(b, x))
+  ret !any(a, (x) => memberInt(b, x))
 
 fun unionInt(a: List<Int>, b: List<Int>): List<Int>
   # A set union — every reader asks membership or disjointness.
-  ret fold(b, a, (acc: List<Int>, x: Int) => memberInt(acc, x)
+  ret fold(b, a, (acc, x) => memberInt(acc, x)
                    ? acc
                    : prepend(x, acc))
 

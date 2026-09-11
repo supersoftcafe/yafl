@@ -39,7 +39,7 @@ enum TomlResult
 
 
 fun parseToml(text: String): TomlResult
-  ret tomlLines(chain(splitLines(text)), 1, List<String>(), builder<TomlEntry>())
+  ret tomlLines(chain(splitLines(text)), 1, List(), builder())
 
 # One line's outcome, so the loop below can stay DIRECTLY self-recursive. The
 # per-line work needs a statement body (lets and early returns) and match arms
@@ -64,7 +64,7 @@ fun [tail] tomlLines(ls: Chain<String>, n: Int, seen: List<String>,
       (s: LineSkip)   => tomlLines(l.next, n + 1, seen, acc)
       (e: LineErr)    => discardOn(acc, TomlErr(e.loWhy, n))
       (en: LineEntry) => tomlLines(en.loRest, n + en.loCount,
-                                   concat(seen, list1<String>(en.loEntry.key)),
+                                   concat(seen, list1(en.loEntry.key)),
                                    push(acc, en.loEntry))
 
 fun tomlLine(line: String, rest: Chain<String>, seen: List<String>): LineOut
@@ -124,7 +124,7 @@ fun [tail] bracketDepth(s: String, at: Int, depth: Int, inStr: Bool): Int
 
 # The builder is [linear] and must be consumed on the error path too.
 fun discardOn([terminal] acc: ListBuilder<TomlEntry>, e: TomlResult): TomlResult
-  ret build(acc) |> (l: List<TomlEntry>) => e
+  ret build(acc) |> (l) => e
 
 
 # A `#` inside a quoted string is DATA, not a comment. Scanning with a quote
@@ -159,12 +159,12 @@ fun tomlValue(rhs: String): TomlValue
 fun tomlScalar(rhs: String): TomlValue
   ret match(quotedAt(rhs, 0))
     (q: QuoteOk) => trimStart(slice(rhs, q.qEnd, length(rhs))) == ""
-      ? TomlGood(prepend(q.qText, List<String>()), false)
+      ? TomlGood(prepend(q.qText, List()), false)
       : TomlBad("trailing text after value")
     (b: QuoteBad) => TomlBad(b.qWhy)
 
 fun tomlArray(rhs: String): TomlValue
-  ret arrayItems(rhs, 1, false, builder<String>())
+  ret arrayItems(rhs, 1, false, builder())
 
 # `needSep` is what makes `["a" "b"]` an error. Without it a missing comma was
 # simply not noticed and the array parsed as two values, so the port ACCEPTED
@@ -191,7 +191,7 @@ fun [tail] arrayItems(s: String, at: Int, needSep: Bool,
     (e: QuoteBad) => discardStrs(b, TomlBad(e.qWhy))
 
 fun discardStrs([terminal] b: ListBuilder<String>, v: TomlValue): TomlValue
-  ret build(b) |> (l: List<String>) => v
+  ret build(b) |> (l) => v
 
 fun [tail] skipBlanks(s: String, at: Int): Int
   ret at < length(s) && (byteAt(s, at) == ' ' || byteAt(s, at) == '\t')
@@ -251,7 +251,7 @@ fun [tail] tomlFind(es: Chain<TomlEntry>, key: String): TomlEntry|None
 fun tomlStrings(entries: List<TomlEntry>, key: String): List<String>
   ret match(tomlGet(entries, key))
     (e: TomlEntry) => e.values
-    ()             => List<String>()
+    ()             => List()
 
 fun tomlString(entries: List<TomlEntry>, key: String, fallback: String): String
   ret match(tomlGet(entries, key))

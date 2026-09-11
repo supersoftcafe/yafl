@@ -39,7 +39,7 @@ fun resolvePinnableReads(a: CgApp): CgApp
   ret isEmpty(names.setIx)
     ? a
     : appWithFunctions(a, map(appFunctions(a),
-                              (f: CgFunction) => prFunction(f, names)))
+                              (f) => prFunction(f, names)))
 
 fun [tail] prNames(os: Chain<CgObject>, acc: StrSet): StrSet
   ret match(os)
@@ -50,7 +50,7 @@ fun [tail] prNames(os: Chain<CgObject>, acc: StrSet): StrSet
 
 fun prFunction(f: CgFunction, names: StrSet): CgFunction
   let ops = map(f.fnOps,
-                (op: Op) => opReplaceParams(op, (p: RParam) => prRewrite(p, names)))
+                (op) => opReplaceParams(op, (p) => prRewrite(p, names)))
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars,
                  ops, f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
@@ -70,7 +70,7 @@ fun prRewriteElement(x: RpArrayElement, names: StrSet): RParam
     ? x
     : RpArrayElement(x.elementType,
                      RpRuntimeInvoke("object_resolve",
-                                     RpNewStruct(list1<RpNamedValue>(
+                                     RpNewStruct(list1(
                                          RpNamedValue("o", x.pointer))),
                                      CgDataPointer()),
                      x.objectName, x.field, x.lengthField, x.index,
@@ -84,7 +84,7 @@ fun prRewriteField(x: RpObjectField, names: StrSet): RParam
     ? x
     : RpObjectField(x.fieldType,
                     RpRuntimeInvoke("object_resolve",
-                                    RpNewStruct(list1<RpNamedValue>(
+                                    RpNewStruct(list1(
                                         RpNamedValue("o", x.pointer))),
                                     CgDataPointer()),
                     x.objectName, x.field, x.index, x.fresh)

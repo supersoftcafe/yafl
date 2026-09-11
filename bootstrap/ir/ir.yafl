@@ -59,7 +59,7 @@ class [final] CgGlobal(globalName: String, globalType: CgType, globalInit: RPara
 fun forceOp(x: Op|None): Op
   ret match(x)
     (o: Op) => o
-    ()      => OpAbort("", List<RParam>())   # unreachable: only used at in-bounds indices
+    ()      => OpAbort("", List())   # unreachable: only used at in-bounds indices
 
 fun pyStrOpt(o: String|None): String
   # Mirrors Python's f"{value}" on a str|None: None interpolates as "None".
@@ -70,31 +70,31 @@ fun pyStrOpt(o: String|None): String
 class [final] StrCount(scName: String, scCount: Int)
 
 fun [tail] strCountGet(l: List<StrCount>, name: String): Int
-  ret match(head<StrCount>(l))
-    (e: StrCount) => e.scName == name ? e.scCount : strCountGet(tail<StrCount>(l), name)
+  ret match(head(l))
+    (e: StrCount) => e.scName == name ? e.scCount : strCountGet(tail(l), name)
     ()             => 0
 
 # A bump REBUILDS the whole table, so the rebuild goes into a builder; a name
 # not already present is appended at the end.
 fun strCountIncr(l: List<StrCount>, name: String): List<StrCount>
-  ret build<StrCount >(strCountIncrLoop(l, name, false, builder<StrCount >()))
+  ret build(strCountIncrLoop(l, name, false, builder()))
 
 fun [tail] strCountIncrLoop(l: List<StrCount>, name: String, found: Bool,
-                            [terminal] acc: ListBuilder<StrCount >): ListBuilder<StrCount >
-  ret match(head<StrCount>(l))
-    (e: StrCount) => strCountIncrLoop(tail<StrCount>(l), name,
+                            [terminal] acc: ListBuilder<StrCount>): ListBuilder<StrCount>
+  ret match(head(l))
+    (e: StrCount) => strCountIncrLoop(tail(l), name,
                         found || e.scName == name,
-                        push<StrCount >(acc, e.scName == name
+                        push(acc, e.scName == name
                             ? StrCount(e.scName, e.scCount + 1)
                             : e))
-    ()             => found ? acc : push<StrCount >(acc, StrCount(name, 1))
+    ()             => found ? acc : push(acc, StrCount(name, 1))
 
 # ══════════════════════════════════════════════════════════════════════════
 # Function
 # ══════════════════════════════════════════════════════════════════════════
 
 fun cgDeclareVars(cache0: List<CgCacheEntry>, sep: String, fields: List<CgField>, end: String): (text: String, cache: List<CgCacheEntry>)
-  let result = fold(fields, ("", cache0, true), (acc: (text: String, cache: List<CgCacheEntry>, first: Bool), f: CgField) => cgDeclareVarsStep(acc, f, sep, end))
+  let result = fold(fields, ("", cache0, true), (acc, f) => cgDeclareVarsStep(acc, f, sep, end))
   ret (result.text, result.cache)
 
 fun cgDeclareVarsStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), f: CgField, sep: String, end: String): (text: String, cache: List<CgCacheEntry>, first: Bool)
@@ -127,7 +127,7 @@ fun cgFunctionToCImplement(f: CgFunction, cache0: List<CgCacheEntry>): (text: St
   ret (cgFunctionCommentLine(f) + proto.text + "\n{\n" + varsSection + opsC.text + "}\n", opsC.cache)
 
 fun cgOpsToC(ops: Segment<Op>|None, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret fold(ops, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), op: Op) => cgOpsToCStep(acc, op))
+  ret fold(ops, ("", cache0), (acc, op) => cgOpsToCStep(acc, op))
 
 fun cgOpsToCStep(acc: (text: String, cache: List<CgCacheEntry>), op: Op): (text: String, cache: List<CgCacheEntry>)
   let sub = opToC(op, acc.cache)
@@ -137,19 +137,19 @@ fun cgOpsToCStep(acc: (text: String, cache: List<CgCacheEntry>), op: Op): (text:
 # container boundary between transient assembly (GBundle) and the
 # per-function IR that lives until C emission — the census-dominant lists.
 fun cgOpsOf(ops: List<Op>): Segment<Op>|None
-  ret build<Op >(_pushChain<Op >(seqBuilder<Op >(), chain<Op>(ops)))
+  ret build(pushAll(seqBuilder(), ops))
 
 # The inverse boundary, for the one pass (async liveness) whose tuned
 # Dict-indexed fixpoint keeps List internals: copy out, iterate, copy back.
 fun cgOpsToList(s: Segment<Op>|None): List<Op>
-  ret build<Op >(cgOtlLoop(s, 0i32, builder<Op >()))
+  ret build(cgOtlLoop(s, 0i32, builder()))
 
 fun [tail] cgOtlLoop(s: Segment<Op>|None, i: Int32,
-                     [terminal] acc: ListBuilder<Op >): ListBuilder<Op >
+                     [terminal] acc: ListBuilder<Op>): ListBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => i < seg.length
-      ? cgOtlLoop(s, i + 1i32, push<Op >(acc, seg.array(i)))
+      ? cgOtlLoop(s, i + 1i32, push(acc, seg.array(i)))
       : cgOtlLoop(seg.next, 0i32, acc)
 
 fun cgFunctionWith(f: CgFunction, ops: Segment<Op>|None, stackVars: CgType): CgFunction
@@ -165,20 +165,20 @@ fun cgFunctionWith(f: CgFunction, ops: Segment<Op>|None, stackVars: CgType): CgF
 # atexit dump, so there is nothing to keep balanced.
 
 fun cgFunctionInstrumentProfile(f: CgFunction, fnId: Int): CgFunction
-  let ops = build<Op >(cgInstrumentOps(f.fnOps, 0i32,
-              push<Op >(seqBuilder<Op >(), OpProfEnter(fnId, List<RParam>()))))
+  let ops = build(cgInstrumentOps(f.fnOps, 0i32,
+              push(seqBuilder(), OpProfEnter(fnId, List()))))
   ret cgFunctionWith(f, ops, f.fnStackVars)
 
 fun [tail] cgInstrumentOps(s: Segment<Op>|None, i: Int32,
-                           [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+                           [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => i < seg.length
       ? cgInstrumentOps(s, i + 1i32,
-          push<Op >(cgIsProfExit(seg.array(i))
-                      ? push<Op >(acc, OpProfLeave(List<RParam>()))
-                      : acc,
-                    seg.array(i)))
+          push(cgIsProfExit(seg.array(i))
+                 ? push(acc, OpProfLeave(List()))
+                 : acc,
+               seg.array(i)))
       : cgInstrumentOps(seg.next, 0i32, acc)
 
 fun cgIsProfExit(op: Op): Bool
@@ -189,25 +189,25 @@ fun cgIsProfExit(op: Op): Bool
     (o: Op)           => false
 
 fun cgFunctionReplaceParams(f: CgFunction, replacer: (:RParam): RParam): CgFunction
-  ret cgFunctionWith(f, map<Op, Op>(f.fnOps, (op: Op) => opReplaceParams(op, replacer)), f.fnStackVars)
+  ret cgFunctionWith(f, map(f.fnOps, (op) => opReplaceParams(op, replacer)), f.fnStackVars)
 
 # ── lower_phis ───────────────────────────────────────────────────────────────
 
 class [final] PhiAtEntry(atLabel: String, phiOp: Op)
 
 fun cgCollectPhis(ops: Segment<Op>|None): List<PhiAtEntry>
-  let result = fold(ops, ("", List<PhiAtEntry>()), (acc: (curLabel: String, phis: List<PhiAtEntry>), op: Op) => cgCollectPhisStep(acc, op))
+  let result = fold(ops, ("", List()), (acc, op) => cgCollectPhisStep(acc, op))
   ret result.phis
 
 fun cgCollectPhisStep(acc: (curLabel: String, phis: List<PhiAtEntry>), op: Op): (curLabel: String, phis: List<PhiAtEntry>)
   ret match(op)
     (l: OpLabel) => (l.labelName, acc.phis)
     (p: OpPhi) => (acc.curLabel,
-                   build<PhiAtEntry >(push<PhiAtEntry >(_pushChain<PhiAtEntry >(builder<PhiAtEntry >(), chain<PhiAtEntry>(acc.phis)), PhiAtEntry(acc.curLabel, op))))
+                   build(push(builderFrom(acc.phis), PhiAtEntry(acc.curLabel, op))))
     (o: Op) => (acc.curLabel, acc.phis)
 
 fun phisAtLabel(phis: List<PhiAtEntry>, label: String): List<Op>
-  ret map(filter<PhiAtEntry>(phis, (e: PhiAtEntry) => e.atLabel == label), (e: PhiAtEntry) => e.phiOp)
+  ret map(filter(phis, (e) => e.atLabel == label), (e) => e.phiOp)
 
 fun phiSourceFor(phi: Op, predLabel: String): RParam
   ret match(phi)
@@ -215,13 +215,13 @@ fun phiSourceFor(phi: Op, predLabel: String): RParam
     (o: Op)    => RpNullPointer()   # unreachable
 
 fun [tail] phiSourceForSources(sources: List<OpPhiSource>, predLabel: String): RParam
-  ret match(head<OpPhiSource>(sources))
-    (s: OpPhiSource) => s.sourceLabel == predLabel ? s.sourceValue : phiSourceForSources(tail<OpPhiSource>(sources), predLabel)
+  ret match(head(sources))
+    (s: OpPhiSource) => s.sourceLabel == predLabel ? s.sourceValue : phiSourceForSources(tail(sources), predLabel)
     ()                => RpNullPointer()   # unreachable (Python raises AssertionError)
 
 fun cgPhiToMove(phi: Op, predLabel: String): Op
   ret match(phi)
-    (p: OpPhi) => OpMove(p.phiTarget, phiSourceFor(phi, predLabel), false, List<RParam>())
+    (p: OpPhi) => OpMove(p.phiTarget, phiSourceFor(phi, predLabel), false, List())
     (o: Op)    => o   # unreachable
 
 fun cgIsTerminatorForPhi(op: Op): Bool
@@ -237,32 +237,32 @@ fun cgIsTerminatorForPhi(op: Op): Bool
 # through into the next. `paFall` is MAINTAINED as ops are pushed — deriving it
 # meant asking last(out), which walks the entire emitted stream, once per op of
 # the function.
-class [linear, final] PhiAcc(paCur: String, paOut: SeqBuilder<Op >,
+class [linear, final] PhiAcc(paCur: String, paOut: SeqBuilder<Op>,
                              paFall: Bool)
 
 fun [tail] cgPhiMoves(ps: Chain<Op>, predLabel: String,
-                      [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+                      [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => cgPhiMoves(l.next, predLabel,
-                          push<Op >(acc, cgPhiToMove(l.value, predLabel)))
+                          push(acc, cgPhiToMove(l.value, predLabel)))
 
 fun cgLowerPhisJump([terminal] acc: PhiAcc, j: OpJump,
                     phis: List<PhiAtEntry>): PhiAcc
   ret PhiAcc(acc.paCur,
-             push<Op >(cgPhiMoves(chain(phisAtLabel(phis, j.jumpName)),
-                                  acc.paCur, acc.paOut),
-                       OpJump(j.jumpName, j.jumpSavedVars)),
+             push(cgPhiMoves(chain(phisAtLabel(phis, j.jumpName)),
+                             acc.paCur, acc.paOut),
+                  OpJump(j.jumpName, j.jumpSavedVars)),
              false)
 
 fun cgLowerPhisLabel([terminal] acc: PhiAcc, l: OpLabel,
                      phis: List<PhiAtEntry>): PhiAcc
   let group = phisAtLabel(phis, l.labelName)
   ret PhiAcc(l.labelName,
-             push<Op >(!isEmpty<Op>(group) && acc.paFall
-                         ? cgPhiMoves(chain(group), acc.paCur, acc.paOut)
-                         : acc.paOut,
-                       l),
+             push(!isEmpty(group) && acc.paFall
+                    ? cgPhiMoves(chain(group), acc.paCur, acc.paOut)
+                    : acc.paOut,
+                  l),
              true)
 
 fun cgLowerPhisStep([terminal] acc: PhiAcc, op: Op,
@@ -271,14 +271,14 @@ fun cgLowerPhisStep([terminal] acc: PhiAcc, op: Op,
     (p: OpPhi)     => acc   # already lowered into Moves on predecessor edges
     (j: OpJump)    => cgLowerPhisJump(acc, j, phis)
     # (Python asserts the label is not in phis_at; unenforced here too)
-    (ji: OpJumpIf) => PhiAcc(acc.paCur, push<Op >(acc.paOut, op), true)
+    (ji: OpJumpIf) => PhiAcc(acc.paCur, push(acc.paOut, op), true)
     (l: OpLabel)   => cgLowerPhisLabel(acc, l, phis)
-    (o: Op)        => PhiAcc(acc.paCur, push<Op >(acc.paOut, op),
+    (o: Op)        => PhiAcc(acc.paCur, push(acc.paOut, op),
                              !cgIsTerminatorForPhi(op))
 
 fun cgLowerPhisPass2(ops: Segment<Op>|None, phis: List<PhiAtEntry>): Segment<Op>|None
-  ret build<Op >(cgLowerPhisLoop(ops, 0i32, phis,
-                     PhiAcc("", seqBuilder<Op >(), false)).paOut)
+  ret build(cgLowerPhisLoop(ops, 0i32, phis,
+                PhiAcc("", seqBuilder(), false)).paOut)
 
 fun [tail] cgLowerPhisLoop(s: Segment<Op>|None, i: Int32, phis: List<PhiAtEntry>,
                            [terminal] acc: PhiAcc): PhiAcc
@@ -291,7 +291,7 @@ fun [tail] cgLowerPhisLoop(s: Segment<Op>|None, i: Int32, phis: List<PhiAtEntry>
 
 fun cgLowerPhisForEmission(f: CgFunction): Segment<Op>|None
   let phis = cgCollectPhis(f.fnOps)
-  ret isEmpty<PhiAtEntry>(phis) ? f.fnOps : cgLowerPhisPass2(f.fnOps, phis)
+  ret isEmpty(phis) ? f.fnOps : cgLowerPhisPass2(f.fnOps, phis)
 
 fun cgFunctionLowerPhis(f: CgFunction): CgFunction
   ret cgFunctionWith(f, cgLowerPhisForEmission(f), f.fnStackVars)
@@ -357,7 +357,7 @@ fun cgInvertJumpIfWithOp(ji: OpJumpIf, n: Op): Op
 # every op-stream walk that carries a lookahead window (simplify, tail-call
 # discovery, block partition, ...).
 fun [inline(always)] cgPullOp(st: SeqStream<Op>): (stream: SeqStream<Op>, op: Op|None)
-  let r = streamNext<SeqStream<Op>, Op, Never>(st)
+  let r = streamNext(st)
   ret match(r.value)
     (ok: Ok<Op | None, Never>)    => (r.stream, ok.value)
     (er: Error<Op | None, Never>) => (r.stream, None)   # unreachable: Never
@@ -367,10 +367,10 @@ fun [inline(always)] cgPullOp(st: SeqStream<Op>): (stream: SeqStream<Op>, op: Op
 # refills are pulled up front to keep every recursion direct; the one-shift
 # arms simply discard the second.
 fun [tail] cgSimplifyLoop(cur: Op|None, n1: Op|None, n2: Op|None, st: SeqStream<Op>,
-                          [terminal] acc: SeqBuilder<Op >,
+                          [terminal] acc: SeqBuilder<Op>,
                           changed: Bool): (ops: Segment<Op>|None, changed: Bool)
   if cur is None
-    ret (build<Op >(acc), changed)
+    ret (build(acc), changed)
   let op = forceOp(cur)
   let pA = cgPullOp(st)
   let pB = cgPullOp(pA.stream)
@@ -378,14 +378,14 @@ fun [tail] cgSimplifyLoop(cur: Op|None, n1: Op|None, n2: Op|None, st: SeqStream<
     ? cgSimplifyLoop(n1, n2, pA.op, pA.stream, acc, true)
     : isInvertibleJumpIfJumpLabel(op, n1, n2)
       ? cgSimplifyLoop(n2, pA.op, pB.op, pB.stream,
-                       push<Op >(acc, cgInvertJumpIf(op, n1)), true)
-      : cgSimplifyLoop(n1, n2, pA.op, pA.stream, push<Op >(acc, op), changed)
+                       push(acc, cgInvertJumpIf(op, n1)), true)
+      : cgSimplifyLoop(n1, n2, pA.op, pA.stream, push(acc, op), changed)
 
 fun [tail] cgSimplifyControlFlowFixpoint(ops: Segment<Op>|None): Segment<Op>|None
-  let p0 = cgPullOp(seqStream<Op>(ops))
+  let p0 = cgPullOp(seqStream(ops))
   let p1 = cgPullOp(p0.stream)
   let p2 = cgPullOp(p1.stream)
-  let pass2 = cgSimplifyLoop(p0.op, p1.op, p2.op, p2.stream, seqBuilder<Op >(), false)
+  let pass2 = cgSimplifyLoop(p0.op, p1.op, p2.op, p2.stream, seqBuilder(), false)
   ret pass2.changed ? cgSimplifyControlFlowFixpoint(pass2.ops) : pass2.ops
 
 fun cgCollectReferencedLabelsStep(acc: StrSet, op: Op): StrSet
@@ -393,11 +393,11 @@ fun cgCollectReferencedLabelsStep(acc: StrSet, op: Op): StrSet
     (j: OpJump) => setAdd(acc, j.jumpName)
     (ji: OpJumpIf) => setAdd(acc, ji.jumpIfLabel)
     (it: OpIfTask) => setAdd(acc, it.taskTarget)
-    (sj: OpSwitchJump) => fold(sj.switchCases, acc, (acc2: StrSet, c: OpCase) => setAdd(acc2, c.caseLabel))
+    (sj: OpSwitchJump) => fold(sj.switchCases, acc, (acc2, c) => setAdd(acc2, c.caseLabel))
     (o: Op) => acc
 
 fun cgCollectReferencedLabels(ops: Segment<Op>|None): StrSet
-  ret fold(ops, setEmpty(), (acc: StrSet, op: Op) => cgCollectReferencedLabelsStep(acc, op))
+  ret fold(ops, setEmpty(), (acc, op) => cgCollectReferencedLabelsStep(acc, op))
 
 fun cgIsUnreferencedLabel(op: Op, referenced: StrSet): Bool
   ret match(op)
@@ -405,7 +405,7 @@ fun cgIsUnreferencedLabel(op: Op, referenced: StrSet): Bool
     (o: Op)       => false
 
 fun cgRemoveUnreferencedLabels(ops: Segment<Op>|None, referenced: StrSet): Segment<Op>|None
-  ret filter<Op>(ops, (op: Op) => !cgIsUnreferencedLabel(op, referenced))
+  ret filter(ops, (op) => !cgIsUnreferencedLabel(op, referenced))
 
 fun cgFunctionSimplifyControlFlow(f: CgFunction): CgFunction
   let ops1 = cgSimplifyControlFlowFixpoint(f.fnOps)
@@ -425,8 +425,8 @@ class [final] StripIx(sxOps: Dict<Int, Op>, sxN: Int,
                       sxLabels: Dict<String, Int>)
 
 fun cgStripIndex(ops: Segment<Op>|None): StripIx
-  let built = fold(ops, (Dict<Int, Op>(), 0, Dict<String, Int>()),
-        (acc: (byIx: Dict<Int, Op>, i: Int, labels: Dict<String, Int>), op: Op) =>
+  let built = fold(ops, (Dict(), 0, Dict()),
+        (acc: (byIx: Dict<Int, Op>, i: Int, labels: Dict<String, Int>), op) =>
           (put(acc.byIx, acc.i, op), acc.i + 1, cgStripLabelPut(acc.labels, op, acc.i)))
   ret StripIx(built.byIx, built.i, built.labels)
 
@@ -438,7 +438,7 @@ fun cgStripLabelPut(labels: Dict<String, Int>, op: Op, i: Int): Dict<String, Int
 fun sxOpAt(ix: StripIx, i: Int): Op
   ret match(get(ix.sxOps, i))
     (op: Op) => op
-    ()        => OpReturnVoid(List<RParam>())   # unreachable: 0 <= i < sxN
+    ()        => OpReturnVoid(List())   # unreachable: 0 <= i < sxN
 
 fun labelIndexLookup(ix: StripIx, name: String): Int
   ret match(get(ix.sxLabels, name))
@@ -448,19 +448,19 @@ fun labelIndexLookup(ix: StripIx, name: String): Int
 fun cgSuccessors(ix: StripIx, index: Int): List<Int>
   let op = sxOpAt(ix, index)
   let fallthrough = index + 1 < ix.sxN
-    ? prepend<Int>(index + 1, List<Int>())
-    : List<Int>()
+    ? prepend(index + 1, List())
+    : List()
   ret cgSuccessorsOf(op, ix, fallthrough)
 
 fun cgSuccessorsOf(op: Op, ix: StripIx, fallthrough: List<Int>): List<Int>
   ret match(op)
-    (r: OpReturn) => List<Int>()
-    (rv: OpReturnVoid) => List<Int>()
-    (c: OpCall) => c.callMusttail ? List<Int>() : fallthrough
-    (j: OpJump) => prepend<Int>(labelIndexLookup(ix, j.jumpName), List<Int>())
-    (ji: OpJumpIf) => prepend<Int>(labelIndexLookup(ix, ji.jumpIfLabel), fallthrough)
-    (it: OpIfTask) => prepend<Int>(labelIndexLookup(ix, it.taskTarget), fallthrough)
-    (sj: OpSwitchJump) => map(sj.switchCases, (c: OpCase) => labelIndexLookup(ix, c.caseLabel))
+    (r: OpReturn) => List()
+    (rv: OpReturnVoid) => List()
+    (c: OpCall) => c.callMusttail ? List() : fallthrough
+    (j: OpJump) => prepend(labelIndexLookup(ix, j.jumpName), List())
+    (ji: OpJumpIf) => prepend(labelIndexLookup(ix, ji.jumpIfLabel), fallthrough)
+    (it: OpIfTask) => prepend(labelIndexLookup(ix, it.taskTarget), fallthrough)
+    (sj: OpSwitchJump) => map(sj.switchCases, (c) => labelIndexLookup(ix, c.caseLabel))
     (o: Op) => fallthrough
 
 fun cgAddOneSuccessor(acc: (seen: Dict<Int, Bool>, worklist: Chain<Int>),
@@ -470,7 +470,7 @@ fun cgAddOneSuccessor(acc: (seen: Dict<Int, Bool>, worklist: Chain<Int>),
     : (put(acc.seen, s, true), chainPrependInt(s, acc.worklist))
 
 fun chainPrependInt(s: Int, c: Chain<Int>): Chain<Int>
-  ret ChainLink<Int>(s, c)
+  ret ChainLink(s, c)
 
 fun chainHeadIntOr(c: Chain<Int>, dflt: Int): Int
   ret match(c)
@@ -488,35 +488,35 @@ fun [tail] cgReachableLoop(ix: StripIx, worklist: Chain<Int>,
     ret seen
   let idx = chainHeadIntOr(worklist, 0)
   let added = fold(cgSuccessors(ix, idx), (seen, chainTailInt(worklist)),
-        (acc: (seen: Dict<Int, Bool>, worklist: Chain<Int>), s: Int) =>
+        (acc, s) =>
           cgAddOneSuccessor(acc, s))
   ret cgReachableLoop(ix, added.worklist, added.seen)
 
 fun cgReachable(ix: StripIx): Dict<Int, Bool>
-  ret cgReachableLoop(ix, chainPrependInt(0, chain(List<Int>())),
-                      put(Dict<Int, Bool>(), 0, true))
+  ret cgReachableLoop(ix, chainPrependInt(0, chain(List())),
+                      put(Dict(), 0, true))
 
 fun [tail] cgKeepSeenIndices(s: Segment<Op>|None, iSeg: Int32, i: Int, seen: Dict<Int, Bool>,
-                             [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+                             [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
       ? cgKeepSeenIndices(s, iSeg + 1i32, i + 1, seen,
-          get(seen, i) is Bool ? push<Op >(acc, seg.array(iSeg)) : acc)
+          get(seen, i) is Bool ? push(acc, seg.array(iSeg)) : acc)
       : cgKeepSeenIndices(seg.next, 0i32, i, seen, acc)
 
 fun cgFunctionStripUnusedOperations(f: CgFunction): CgFunction
   let ix = cgStripIndex(f.fnOps)
   let seen = cgReachable(ix)
-  let newOps = build<Op >(cgKeepSeenIndices(f.fnOps, 0i32, 0, seen,
-                                           seqBuilder<Op >()))
+  let newOps = build(cgKeepSeenIndices(f.fnOps, 0i32, 0, seen,
+                                      seqBuilder()))
   ret cgFunctionWith(f, newOps, f.fnStackVars)
 
 # ── fold_struct_fields ───────────────────────────────────────────────────────
 
 fun [tail] rpFoldStructFieldLookup(values: List<RpNamedValue>, field: String, fallback: RParam): RParam
-  ret match(head<RpNamedValue>(values))
-    (v: RpNamedValue) => v.name == field ? v.value : rpFoldStructFieldLookup(tail<RpNamedValue>(values), field, fallback)
+  ret match(head(values))
+    (v: RpNamedValue) => v.name == field ? v.value : rpFoldStructFieldLookup(tail(values), field, fallback)
     ()                  => fallback
 
 fun rpFoldStructFieldStruct(sf: RpStructField, whole: RParam): RParam
@@ -538,12 +538,12 @@ fun cgFunctionFoldStructFields(f: CgFunction): CgFunction
 # The parameter names are only ever asked "is this one of them", by the
 # alias check — so a Set, and the field walk drops its order on the way in.
 fun cgParamNames(f: CgFunction): Set<String>
-  ret fold(cgFieldsOfOrEmpty(f.fnParams), Set<String>(),
-           (acc: Set<String>, fld: CgField) => add<String>(acc, fld.fieldName))
+  ret fold(cgFieldsOfOrEmpty(f.fnParams), Set(),
+           (acc, fld) => add(acc, fld.fieldName))
 
 fun cgCPWriteCountsMoveTarget(acc: (writes: List<StrCount>, zeroInit: Set<String>), sv: RpStackVar, source: RParam): (writes: List<StrCount>, zeroInit: Set<String>)
   ret match(source)
-    (z: RpZeroOf) => (acc.writes, add<String>(acc.zeroInit, sv.name))
+    (z: RpZeroOf) => (acc.writes, add(acc.zeroInit, sv.name))
     (o: RParam)   => (strCountIncr(acc.writes, sv.name), acc.zeroInit)
 
 fun cgCPWriteCountsMove(acc: (writes: List<StrCount>, zeroInit: Set<String>), m: OpMove): (writes: List<StrCount>, zeroInit: Set<String>)
@@ -569,7 +569,7 @@ fun cgCPWriteCountsStep(acc: (writes: List<StrCount>, zeroInit: Set<String>), op
     (o: Op) => acc
 
 fun cgCollectWrites(ops: Segment<Op>|None): (writes: List<StrCount>, zeroInit: Set<String>)
-  ret fold(ops, (List<StrCount>(), Set<String>()), (acc: (writes: List<StrCount>, zeroInit: Set<String>), op: Op) => cgCPWriteCountsStep(acc, op))
+  ret fold(ops, (List(), Set()), (acc, op) => cgCPWriteCountsStep(acc, op))
 
 class [final] AliasEntry(aeVarName: String, aeAliasOf: RParam)
 
@@ -578,10 +578,10 @@ fun cgBuildAliasesCheck(acc: List<AliasEntry>, ta: RpStackVar, sb: RpStackVar, w
     ? acc
     : (strCountGet(writes, sb.name) > 1
       ? acc
-      : ((contains<String>(zeroInit, ta.name) && !contains<String>(gcSafe, sb.name) && !contains<String>(paramNames, sb.name))
+      : ((contains(zeroInit, ta.name) && !contains(gcSafe, sb.name) && !contains(paramNames, sb.name))
         ? acc
         # Looked up by target name — the table's order is not observed.
-        : prepend<AliasEntry>(AliasEntry(ta.name, sb), acc)))
+        : prepend(AliasEntry(ta.name, sb), acc)))
 
 fun cgBuildAliasesMove(acc: List<AliasEntry>, m: OpMove, writes: List<StrCount>, zeroInit: Set<String>, gcSafe: Set<String>, paramNames: Set<String>): List<AliasEntry>
   ret match(m.moveTarget)
@@ -599,11 +599,11 @@ fun cgBuildAliasesStep(acc: List<AliasEntry>, op: Op, writes: List<StrCount>, ze
     (o: Op)      => acc
 
 fun cgBuildAliases(ops: Segment<Op>|None, writes: List<StrCount>, zeroInit: Set<String>, gcSafe: Set<String>, paramNames: Set<String>): List<AliasEntry>
-  ret fold(ops, List<AliasEntry>(), (acc: List<AliasEntry>, op: Op) => cgBuildAliasesStep(acc, op, writes, zeroInit, gcSafe, paramNames))
+  ret fold(ops, List(), (acc, op) => cgBuildAliasesStep(acc, op, writes, zeroInit, gcSafe, paramNames))
 
 fun [tail] aliasLookup(aliases: List<AliasEntry>, name: String): RParam|None
-  ret match(head<AliasEntry>(aliases))
-    (e: AliasEntry) => e.aeVarName == name ? e.aeAliasOf : aliasLookup(tail<AliasEntry>(aliases), name)
+  ret match(head(aliases))
+    (e: AliasEntry) => e.aeVarName == name ? e.aeAliasOf : aliasLookup(tail(aliases), name)
     ()               => None
 
 fun resolveAliasStackVar(aliases: List<AliasEntry>, s: RpStackVar, seen: List<String>): RParam
@@ -611,7 +611,7 @@ fun resolveAliasStackVar(aliases: List<AliasEntry>, s: RpStackVar, seen: List<St
 
 fun resolveAliasStackVarNext(aliases: List<AliasEntry>, s: RpStackVar, seen: List<String>): RParam
   ret match(aliasLookup(aliases, s.name))
-    (next: RParam) => resolveAlias(aliases, next, prepend<String>(s.name, seen))
+    (next: RParam) => resolveAlias(aliases, next, prepend(s.name, seen))
     ()              => s
 
 fun resolveAlias(aliases: List<AliasEntry>, sv: RParam, seen: List<String>): RParam
@@ -620,7 +620,7 @@ fun resolveAlias(aliases: List<AliasEntry>, sv: RParam, seen: List<String>): RPa
     (o: RParam)      => sv
 
 fun cgResolvedAliases(aliases: List<AliasEntry>): List<AliasEntry>
-  ret map(aliases, (e: AliasEntry) => AliasEntry(e.aeVarName, resolveAlias(aliases, e.aeAliasOf, List<String>())))
+  ret map(aliases, (e) => AliasEntry(e.aeVarName, resolveAlias(aliases, e.aeAliasOf, List())))
 
 fun rpParamName(r: RParam): String
   ret match(r)
@@ -628,10 +628,10 @@ fun rpParamName(r: RParam): String
     (o: RParam)       => ""   # unreachable: resolveAlias always returns a StackVar
 
 fun cgAliasesToRenames(resolved: List<AliasEntry>): List<RpRename>
-  ret map(resolved, (e: AliasEntry) => RpRename(e.aeVarName, rpParamName(e.aeAliasOf)))
+  ret map(resolved, (e) => RpRename(e.aeVarName, rpParamName(e.aeAliasOf)))
 
 fun cgEliminatedNames(aliases: List<AliasEntry>): List<String>
-  ret map(aliases, (e: AliasEntry) => e.aeVarName)
+  ret map(aliases, (e) => e.aeVarName)
 
 fun cgIsEliminatedMove(op: Op, eliminated: List<String>): Bool
   ret match(op)
@@ -645,31 +645,31 @@ fun cgIsEliminatedMoveTarget(target: RParam, eliminated: List<String>): Bool
 
 fun [tail] cgCopyPropagateFilterOps(s: Segment<Op>|None, i: Int32, eliminated: List<String>,
                                     renames: List<RpRename>,
-                                    [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+                                    [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => i < seg.length
       ? cgCopyPropagateFilterOps(s, i + 1i32, eliminated, renames,
           cgIsEliminatedMove(seg.array(i), eliminated)
             ? acc
-            : push<Op >(acc, opRenameVars(seg.array(i), renames)))
+            : push(acc, opRenameVars(seg.array(i), renames)))
       : cgCopyPropagateFilterOps(seg.next, 0i32, eliminated, renames, acc)
 
 fun cgFunctionCopyPropagateApply(f: CgFunction, aliases: List<AliasEntry>): CgFunction
   let resolved = cgResolvedAliases(aliases)
   let renames = cgAliasesToRenames(resolved)
   let eliminated = cgEliminatedNames(aliases)
-  let newOps = build<Op >(cgCopyPropagateFilterOps(f.fnOps, 0i32, eliminated, renames,
-                                                   seqBuilder<Op >()))
-  let newStackVars = filter<CgField>(cgFieldsOfOrEmpty(f.fnStackVars), (fld: CgField) => !strListMember(eliminated, fld.fieldName))
+  let newOps = build(cgCopyPropagateFilterOps(f.fnOps, 0i32, eliminated, renames,
+                                              seqBuilder()))
+  let newStackVars = filter(cgFieldsOfOrEmpty(f.fnStackVars), (fld) => !strListMember(eliminated, fld.fieldName))
   ret cgFunctionWith(f, newOps, CgStruct(newStackVars))
 
 fun cgFunctionCopyPropagate(f: CgFunction): CgFunction
   let paramNames = cgParamNames(f)
   let collected = cgCollectWrites(f.fnOps)
-  let gcSafe = union<String>(paramNames, collected.zeroInit)
+  let gcSafe = union(paramNames, collected.zeroInit)
   let aliases = cgBuildAliases(f.fnOps, collected.writes, collected.zeroInit, gcSafe, paramNames)
-  ret isEmpty<AliasEntry>(aliases) ? f : cgFunctionCopyPropagateApply(f, aliases)
+  ret isEmpty(aliases) ? f : cgFunctionCopyPropagateApply(f, aliases)
 
 # ── eliminate_common_subexpressions ─────────────────────────────────────────
 
@@ -691,7 +691,7 @@ fun cgCSEWriteCountsStep(acc: List<StrCount>, op: Op): List<StrCount>
     (o: Op) => acc
 
 fun cgCSEWriteCounts(ops: Segment<Op>|None): List<StrCount>
-  ret fold(ops, List<StrCount>(), (acc: List<StrCount>, op: Op) => cgCSEWriteCountsStep(acc, op))
+  ret fold(ops, List(), (acc, op) => cgCSEWriteCountsStep(acc, op))
 
 fun cseIsMultiWriteStackVar(x: RParam, multiWrite: List<String>): Bool
   ret match(x)
@@ -703,13 +703,13 @@ fun cseIsEligible(rparam: RParam, multiWrite: List<String>): Bool
     (sv: RpStackVar) => false
     (gv: RpGlobalVar) => false
     (gf: RpGlobalFunction) => false
-    (o: RParam) => !rpTest(rparam, (x: RParam) => cseIsMultiWriteStackVar(x, multiWrite))
+    (o: RParam) => !rpTest(rparam, (x) => cseIsMultiWriteStackVar(x, multiWrite))
 
 class [final] AvailEntry(cseExpr: RParam, cseTarget: RParam)
 
 fun [tail] availableGet(available: List<AvailEntry>, key: RParam): RParam|None
-  ret match(head<AvailEntry>(available))
-    (e: AvailEntry) => eqRParam(e.cseExpr, key) ? e.cseTarget : availableGet(tail<AvailEntry>(available), key)
+  ret match(head(available))
+    (e: AvailEntry) => eqRParam(e.cseExpr, key) ? e.cseTarget : availableGet(tail(available), key)
     ()               => None
 
 fun cseIsHeapRead(x: RParam): Bool
@@ -727,10 +727,10 @@ fun cseIsHeapRead(x: RParam): Bool
 class [linear, final] CseAcc(csRenames: List<RpRename>,
                              csAvailable: List<AvailEntry>,
                              csEliminated: List<String>,
-                             csNewOps: SeqBuilder<Op >)
+                             csNewOps: SeqBuilder<Op>)
 
 fun cgCSEInvalidate(available: List<AvailEntry>): List<AvailEntry>
-  ret filter<AvailEntry>(available, (e: AvailEntry) => !rpTest(e.cseExpr, cseIsHeapRead))
+  ret filter(available, (e) => !rpTest(e.cseExpr, cseIsHeapRead))
 
 fun cgCSEEliminate([terminal] acc: CseAcc, targetVarName: String, aliasTo: RParam): CseAcc
   ret CseAcc(prepend(RpRename(targetVarName, rpParamName(aliasTo)),
@@ -743,7 +743,7 @@ fun cgCSENoEliminate([terminal] acc: CseAcc, m: OpMove, op: Op, eligible: Bool, 
     ? prepend(AvailEntry(m.moveSource, m.moveTarget), acc.csAvailable)
     : acc.csAvailable
   ret CseAcc(acc.csRenames, newAvailable, acc.csEliminated,
-             push<Op >(acc.csNewOps, op))
+             push(acc.csNewOps, op))
 
 fun cgCSEStepMoveStackVar([terminal] acc: CseAcc, m: OpMove, sv: RpStackVar, op: Op, multiWrite: List<String>): CseAcc
   let eligible = cseIsEligible(m.moveSource, multiWrite)
@@ -759,28 +759,28 @@ fun cgCSEStepMove([terminal] acc: CseAcc, m: OpMove, op: Op, multiWrite: List<St
   ret match(m.moveTarget)
     (sv: RpStackVar) => cgCSEStepMoveStackVar(acc, m, sv, op, multiWrite)
     (ofield: RpObjectField) => CseAcc(acc.csRenames, cgCSEInvalidate(acc.csAvailable), acc.csEliminated,
-                               push<Op >(acc.csNewOps, op))
+                               push(acc.csNewOps, op))
     (o: RParam) => CseAcc(acc.csRenames, acc.csAvailable, acc.csEliminated,
-                   push<Op >(acc.csNewOps, op))
+                   push(acc.csNewOps, op))
 
 fun cgCSEStep([terminal] acc: CseAcc, op0: Op, multiWrite: List<String>): CseAcc
   let op = opRenameVars(op0, acc.csRenames)
   ret match(op)
-    (l: OpLabel) => CseAcc(acc.csRenames, List<AvailEntry>(), acc.csEliminated,
-                    push<Op >(acc.csNewOps, op))
+    (l: OpLabel) => CseAcc(acc.csRenames, List(), acc.csEliminated,
+                    push(acc.csNewOps, op))
     (m: OpMove) => cgCSEStepMove(acc, m, op, multiWrite)
     (c: OpCall) => CseAcc(acc.csRenames, cgCSEInvalidate(acc.csAvailable), acc.csEliminated,
-                   push<Op >(acc.csNewOps, op))
+                   push(acc.csNewOps, op))
     (n: OpNewObject) => CseAcc(acc.csRenames, cgCSEInvalidate(acc.csAvailable), acc.csEliminated,
-                        push<Op >(acc.csNewOps, op))
+                        push(acc.csNewOps, op))
     (o: Op) => CseAcc(acc.csRenames, acc.csAvailable, acc.csEliminated,
-               push<Op >(acc.csNewOps, op))
+               push(acc.csNewOps, op))
 
 # An explicit walk, not a fold: the accumulator is linear.
 fun cgCSEFold(ops: Segment<Op>|None, multiWrite: List<String>): CseOut
   ret cseBuild(cgCSELoop(ops, 0i32, multiWrite,
-                         CseAcc(List<RpRename>(), List<AvailEntry>(),
-                                List<String>(), seqBuilder<Op >())))
+                         CseAcc(List(), List(),
+                                List(), seqBuilder())))
 
 fun [tail] cgCSELoop(s: Segment<Op>|None, i: Int32, multiWrite: List<String>,
                      [terminal] acc: CseAcc): CseAcc
@@ -794,19 +794,19 @@ fun [tail] cgCSELoop(s: Segment<Op>|None, i: Int32, multiWrite: List<String>,
 class [final] CseOut(coEliminated: List<String>, coNewOps: Segment<Op>|None)
 
 fun cseBuild(acc: CseAcc): CseOut
-  ret CseOut(acc.csEliminated, build<Op >(acc.csNewOps))
+  ret CseOut(acc.csEliminated, build(acc.csNewOps))
 
 fun cgFunctionEliminateCSEApply(f: CgFunction, result: CseOut): CgFunction
-  let newStackVars = filter<CgField>(cgFieldsOfOrEmpty(f.fnStackVars),
-                         (fld: CgField) => !strListMember(result.coEliminated,
-                                                          fld.fieldName))
+  let newStackVars = filter(cgFieldsOfOrEmpty(f.fnStackVars),
+                         (fld) => !strListMember(result.coEliminated,
+                                                 fld.fieldName))
   ret cgFunctionWith(f, result.coNewOps, CgStruct(newStackVars))
 
 fun cgFunctionEliminateCSE(f: CgFunction): CgFunction
   let writeCounts = cgCSEWriteCounts(f.fnOps)
-  let multiWrite = map(filter<StrCount>(writeCounts, (e: StrCount) => e.scCount > 1), (e: StrCount) => e.scName)
+  let multiWrite = map(filter(writeCounts, (e) => e.scCount > 1), (e) => e.scName)
   let result = cgCSEFold(f.fnOps, multiWrite)
-  ret isEmpty<String>(result.coEliminated)
+  ret isEmpty(result.coEliminated)
     ? f
     : cgFunctionEliminateCSEApply(f, result)
 
@@ -815,7 +815,7 @@ fun cgFunctionEliminateCSE(f: CgFunction): CgFunction
 # ══════════════════════════════════════════════════════════════════════════
 
 fun cgObjectArrayType(o: CgObject): CgType|None
-  ret match(last<CgField>(cgFieldsOfOrEmpty(o.objFields)))
+  ret match(last(cgFieldsOfOrEmpty(o.objFields)))
     (f: CgField) => cgObjectArrayTypeField(f.fieldType)
     ()            => None
 
@@ -829,9 +829,9 @@ fun cgObjectCommentLine(o: CgObject): String
 
 fun cgObjectMaskFields(o: CgObject): CgType
   let allFields = cgFieldsOfOrEmpty(o.objFields)
-  let withoutFirst = tail<CgField>(allFields)
+  let withoutFirst = tail(allFields)
   ret match(cgObjectArrayType(o))
-    (a: CgType) => CgStruct(initOf<CgField>(withoutFirst))
+    (a: CgType) => CgStruct(initOf(withoutFirst))
     ()           => CgStruct(withoutFirst)
 
 fun cgObjectGetPointerMask(o: CgObject): String
@@ -853,7 +853,7 @@ fun cgObjectGetArrayPointerMask(o: CgObject, cache0: List<CgCacheEntry>): (text:
     ()           => ("0", cache0)
 
 fun cgLastFieldName(o: CgObject): String
-  ret match(last<CgField>(cgFieldsOfOrEmpty(o.objFields)))
+  ret match(last(cgFieldsOfOrEmpty(o.objFields)))
     (f: CgField) => f.fieldName
     ()            => ""
 
@@ -893,7 +893,7 @@ fun cgGlobalPrototypeInitArrayField(acc: (text: String, cache: List<CgCacheEntry
   ret (acc.text + "    " + declared.text + " " + v.name + ";\n", declared.cache)
 
 fun cgGlobalPrototypeInitArrayForm(g: CgGlobal, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let result = fold(values, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => cgGlobalPrototypeInitArrayField(acc, v))
+  let result = fold(values, ("", cache0), (acc, v) => cgGlobalPrototypeInitArrayField(acc, v))
   ret ("static struct {\n" + result.text + "}[1] " + cgGlobalToCName(g), result.cache)
 
 fun cgGlobalPrototypeDataForm(g: CgGlobal, objName: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
@@ -911,7 +911,7 @@ fun cgGlobalPrototypeNewStructLastIsInitArray(lastVal: RpNamedValue): Bool
   ret false
 
 fun cgGlobalPrototypeNewStruct(g: CgGlobal, objName: String, ns: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret match(last<RpNamedValue>(ns.values))
+  ret match(last(ns.values))
     (lastVal: RpNamedValue) if cgGlobalPrototypeNewStructLastIsInitArray(lastVal) =>
         cgGlobalPrototypeInitArrayForm(g, ns.values, cache0)
     ()                        => cgGlobalPrototypeDataForm(g, objName, cache0)
@@ -946,17 +946,17 @@ fun cgGlobalImplementValueLine(acc: (text: String, cache: List<CgCacheEntry>), v
 
 fun cgGlobalToCImplementInitArrayForm(g: CgGlobal, objName: String, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let proto = cgGlobalPrototype(g, cache0)
-  let result = fold(values, ("", proto.cache), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => cgGlobalImplementValueLine(acc, v.value))
+  let result = fold(values, ("", proto.cache), (acc, v) => cgGlobalImplementValueLine(acc, v.value))
   ret (proto.text + " = {\n    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n" + result.text + "};\n", result.cache)
 
 fun cgGlobalToCImplementDataForm(g: CgGlobal, objName: String, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let dataName = cgGlobalToCName(g) + "_data"
-  let result = fold(values, ("    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => cgGlobalImplementValueLine(acc, v.value))
+  let result = fold(values, ("    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n", cache0), (acc, v) => cgGlobalImplementValueLine(acc, v.value))
   ret ("static " + mangleName(objName) + "_t " + dataName + " = {\n" + result.text + "};\n"
        + "static object_t* " + cgGlobalToCName(g) + " = (object_t*)&" + dataName + ";\n", result.cache)
 
 fun cgGlobalToCImplementNewStruct(g: CgGlobal, objName: String, ns: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret match(last<RpNamedValue>(ns.values))
+  ret match(last(ns.values))
     (lastVal: RpNamedValue) if cgGlobalPrototypeNewStructLastIsInitArray(lastVal) =>
         cgGlobalToCImplementInitArrayForm(g, objName, ns.values, cache0)
     ()                        => cgGlobalToCImplementDataForm(g, objName, ns.values, cache0)

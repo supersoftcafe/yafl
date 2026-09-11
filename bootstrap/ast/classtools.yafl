@@ -47,8 +47,8 @@ fun capturedFieldName(name: String, lr: PLine): String
 
 fun occupiesSlot(cs: PsClass, memberName: String): Bool
   ret match(cs.cAllSlots)
-    (slots: List<Slot>) => any<Slot>(slots,
-                               (s2: Slot) => s2.slotName == memberName)
+    (slots: List<Slot>) => any(slots,
+                               (s2) => s2.slotName == memberName)
     ()                  => true
 
 
@@ -57,23 +57,23 @@ fun occupiesSlot(cs: PsClass, memberName: String): Bool
 
 fun flattenParams(params: PStmt): List<PStmt>
   ret match(params)
-    (d: PsDestructure) => build<PStmt >(flattenTargets(chain(d.dTargets),
-                                                      builder<PStmt >()))
-    (l: PsLet)         => prepend(params, List<PStmt>())
-    (o: PStmt)         => List<PStmt>()
+    (d: PsDestructure) => build(flattenTargets(chain(d.dTargets),
+                                              builder()))
+    (l: PsLet)         => prepend(params, List())
+    (o: PStmt)         => List()
 
 # Parameter order: a nested destructure contributes its own targets in place.
 # (Not [tail]: the nested-destructure arm recurses into the inner targets
 # before it can step on, so that self-call is not in tail position.)
 fun flattenTargets(ts: Chain<PStmt>,
-                          [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                          [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (d: PsDestructure) => flattenTargets(l.next,
                                 flattenTargets(chain(d.dTargets), acc))
       (o: PStmt)         => flattenTargets(l.next,
-                                           push<PStmt >(acc, l.value))
+                                           push(acc, l.value))
 
 # ── find_classes_or_error ────────────────────────────────────────────────────
 # Resolve each inherited type to (resolved spec, class statement). A spec that
@@ -86,18 +86,18 @@ fun flattenTargets(ts: Chain<PStmt>,
 class [final] FoundClass(fcSpec: Spec, fcClass: PsClass|None)
 
 fun findClassesOrError(types: List<Spec>, r: Resolver): List<FoundClass>
-  ret fceLoop(chain(types), r, List<FoundClass>())
+  ret fceLoop(chain(types), r, List())
 
 fun fceLoop(ts: Chain<Spec>, r: Resolver,
                    acc: List<FoundClass>): List<FoundClass>
-  ret build<FoundClass >(fceLoopB(ts, r, builderFrom<FoundClass>(acc)))
+  ret build(fceLoopB(ts, r, builderFrom(acc)))
 
 fun [tail] fceLoopB(ts: Chain<Spec>, r: Resolver,
-                   [terminal] acc: ListBuilder<FoundClass >): ListBuilder<FoundClass >
+                   [terminal] acc: ListBuilder<FoundClass>): ListBuilder<FoundClass>
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fceLoopB(l.next, r,
-                               push<FoundClass >(acc, findClassOrError(l.value, r)))
+                               push(acc, findClassOrError(l.value, r)))
 
 fun findClassOrError(xtype: Spec, r: Resolver): FoundClass
   ret match(xtype)
@@ -118,16 +118,16 @@ fun resolveClassSpec(xtype: Spec, name: String, params: List<Spec>,
 # The type params compile through (an alias resolves); their globals are
 # discarded exactly as Python's `rp.compile(resolver)[0]` discards them.
 fun compileSpecsPlain(ps: List<Spec>, r: Resolver): List<Spec>
-  ret cspLoop(chain(ps), r, List<Spec>())
+  ret cspLoop(chain(ps), r, List())
 
 fun cspLoop(ps: Chain<Spec>, r: Resolver, acc: List<Spec>): List<Spec>
-  ret build<Spec >(cspLoopB(ps, r, builderFrom<Spec>(acc)))
+  ret build(cspLoopB(ps, r, builderFrom(acc)))
 
-fun [tail] cspLoopB(ps: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
+fun [tail] cspLoopB(ps: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec>): ListBuilder<Spec>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => cspLoopB(l.next, r,
-                               push<Spec >(acc, compileSpec(l.value, r).soSpec))
+                               push(acc, compileSpec(l.value, r).soSpec))
 
 # ── create_slots_from_members ────────────────────────────────────────────────
 # One slot per CALLABLE member (constructor params + body statements). A slot
@@ -136,16 +136,16 @@ fun [tail] cspLoopB(ps: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Sp
 
 fun createSlotsFromMembers(cs: PsClass): List<Slot>
   ret slotLoop(chain(concat(flattenParams(cs.cParams), cs.cMembers)),
-               List<Slot>())
+               List())
 
 fun slotLoop(ms: Chain<PStmt>, acc: List<Slot>): List<Slot>
-  ret build<Slot >(slotLoopB(ms, builderFrom<Slot>(acc)))
+  ret build(slotLoopB(ms, builderFrom(acc)))
 
-fun [tail] slotLoopB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
+fun [tail] slotLoopB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<Slot>): ListBuilder<Slot>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isCallableMember(l.value)
-      ? slotLoopB(l.next, push<Slot >(acc, toSlot(l.value)))
+      ? slotLoopB(l.next, push(acc, toSlot(l.value)))
       : slotLoopB(l.next, acc)
 
 fun isCallableMember(st: PStmt): Bool
@@ -160,11 +160,11 @@ fun toSlot(st: PStmt): Slot
 
 fun providesOwn(st: PStmt): List<String>
   ret match(st)
-    (l: PsLet) => prepend(l.lName, List<String>())
+    (l: PsLet) => prepend(l.lName, List())
     (f: PsFun) => match(f.fBody)
-      (b: PExpr) => prepend(f.fName, List<String>())
-      ()         => List<String>()
-    (o: PStmt) => List<String>()
+      (b: PExpr) => prepend(f.fName, List())
+      ()         => List()
+    (o: PStmt) => List()
 
 # ── override_inherited_slots ─────────────────────────────────────────────────
 # Each own slot ABSORBS every parent slot it overrides (same simple name AND
@@ -174,21 +174,21 @@ fun providesOwn(st: PStmt): List<String>
 
 fun overrideInheritedSlots(r: Resolver, base: List<Slot>,
                            parents: List<Slot>): List<Slot>
-  let enhanced = enhanceLoop(chain(base), r, parents, List<Slot>())
-  let exclusion = allProvides(chain(enhanced), List<String>())
-  ret concat(enhanced, keepUnabsorbed(chain(parents), exclusion, List<Slot>()))
+  let enhanced = enhanceLoop(chain(base), r, parents, List())
+  let exclusion = allProvides(chain(enhanced), List())
+  ret concat(enhanced, keepUnabsorbed(chain(parents), exclusion, List()))
 
 fun enhanceLoop(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
                        acc: List<Slot>): List<Slot>
-  ret build<Slot >(enhanceLoopB(bs, r, parents, builderFrom<Slot>(acc)))
+  ret build(enhanceLoopB(bs, r, parents, builderFrom(acc)))
 
 fun [tail] enhanceLoopB(bs: Chain<Slot>, r: Resolver, parents: List<Slot>,
-                       [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
+                       [terminal] acc: ListBuilder<Slot>): ListBuilder<Slot>
   ret match(bs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => enhanceLoopB(l.next, r, parents,
-                                   push<Slot >(acc, absorbMatches(l.value, r,
-                                                             parents)))
+                                   push(acc, absorbMatches(l.value, r,
+                                                      parents)))
 
 fun absorbMatches(slot: Slot, r: Resolver, parents: List<Slot>): Slot
   ret Slot(slot.slotName, slot.slotType,
@@ -216,15 +216,15 @@ fun [tail] allProvides(ss: Chain<Slot>, acc: List<String>): List<String>
 
 fun keepUnabsorbed(ps: Chain<Slot>, exclusion: List<String>,
                           acc: List<Slot>): List<Slot>
-  ret build<Slot >(keepUnabsorbedB(ps, exclusion, builderFrom<Slot>(acc)))
+  ret build(keepUnabsorbedB(ps, exclusion, builderFrom(acc)))
 
 fun [tail] keepUnabsorbedB(ps: Chain<Slot>, exclusion: List<String>,
-                          [terminal] acc: ListBuilder<Slot >): ListBuilder<Slot >
+                          [terminal] acc: ListBuilder<Slot>): ListBuilder<Slot>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains2(exclusion, l.value.slotName)
       ? keepUnabsorbedB(l.next, exclusion, acc)
-      : keepUnabsorbedB(l.next, exclusion, push<Slot >(acc, l.value))
+      : keepUnabsorbedB(l.next, exclusion, push(acc, l.value))
 
 # ── set helpers (List with set semantics) ────────────────────────────────────
 
@@ -232,7 +232,7 @@ fun [tail] keepUnabsorbedB(ps: Chain<Slot>, exclusion: List<String>,
 # orders that reach generated code. `acc` is read by the dedup just above, so
 # it cannot be a builder — this is the copy the old append did, written out.
 fun addNameOnce(acc: List<String>, n: String): List<String>
-  ret contains2(acc, n) ? acc : build<String >(push<String >(builderFrom<String>(acc), n))
+  ret contains2(acc, n) ? acc : build(push(builderFrom(acc), n))
 
 fun [tail] addNamesOnce(acc: List<String>, ns: Chain<String>): List<String>
   ret match(ns)
@@ -240,7 +240,7 @@ fun [tail] addNamesOnce(acc: List<String>, ns: Chain<String>): List<String>
     (l: ChainLink)  => addNamesOnce(addNameOnce(acc, l.value), l.next)
 
 fun addSpecOnce(acc: List<Spec>, sp: Spec): List<Spec>
-  ret containsSpec(acc, sp) ? acc : build<Spec >(push<Spec >(builderFrom<Spec>(acc), sp))
+  ret containsSpec(acc, sp) ? acc : build(push(builderFrom(acc), sp))
 
 fun [tail] addSpecsOnce(acc: List<Spec>, ss: Chain<Spec>): List<Spec>
   ret match(ss)
@@ -256,24 +256,24 @@ fun [tail] addSpecsOnce(acc: List<Spec>, ss: Chain<Spec>): List<Spec>
 
 fun classFindData(cs: PsClass, r: Resolver, query: String): List<Found>
   let own = memberFinds(chain(concat(nonArrayFields(cs), cs.cMembers)), query,
-                        List<Found>())
+                        List())
   ret isEmpty(own)
     ? parentFinds(chain(findClassesOrError(cs.cImplements, r)), r, query,
-                  List<Found>())
+                  List())
     : own
 
 fun nonArrayFields(cs: PsClass): List<PStmt>
-  ret dropArrayField(chain(flattenParams(cs.cParams)), List<PStmt>())
+  ret dropArrayField(chain(flattenParams(cs.cParams)), List())
 
 fun dropArrayField(ls: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(dropArrayFieldB(ls, builderFrom<PStmt>(acc)))
+  ret build(dropArrayFieldB(ls, builderFrom(acc)))
 
-fun [tail] dropArrayFieldB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+fun [tail] dropArrayFieldB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isArrayStorage(l.value)
       ? dropArrayFieldB(l.next, acc)
-      : dropArrayFieldB(l.next, push<PStmt >(acc, l.value))
+      : dropArrayFieldB(l.next, push(acc, l.value))
 
 fun isArrayStorage(st: PStmt): Bool
   ret match(st)
@@ -284,14 +284,14 @@ fun isArrayStorage(st: PStmt): Bool
 
 fun memberFinds(ms: Chain<PStmt>, query: String,
                        acc: List<Found>): List<Found>
-  ret build<Found >(memberFindsB(ms, query, builderFrom<Found>(acc)))
+  ret build(memberFindsB(ms, query, builderFrom(acc)))
 
 fun [tail] memberFindsB(ms: Chain<PStmt>, query: String,
-                       [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
+                       [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameMatches(stmtName(l.value), query)
-      ? memberFindsB(l.next, query, push<Found >(acc, Found(stmtName(l.value),
+      ? memberFindsB(l.next, query, push(acc, Found(stmtName(l.value),
                                                      l.value, ScMember())))
       : memberFindsB(l.next, query, acc)
 
@@ -308,17 +308,17 @@ fun [tail] parentFinds(fs: Chain<FoundClass>, r: Resolver, query: String,
 # ClassSpec would fail the declared-arity check later.
 fun thisFound(cs: PsClass, query: String): List<Found>
   ret query == "this"
-    ? prepend(Found("this", thisLet(cs), ScLocal()), List<Found>())
-    : List<Found>()
+    ? prepend(Found("this", thisLet(cs), ScLocal()), List())
+    : List()
 
 fun thisLet(cs: PsClass): PStmt
-  ret PsLet("this", List<PAttr>(), List<PGen>(), thisType(cs), None, "",
-            List<Spec>(), cs.pscLine)
+  ret PsLet("this", List(), List(), thisType(cs), None, "",
+            List(), cs.pscLine)
 
 fun thisType(cs: PsClass): Spec
   ret SClass(cs.cName,
-             map(cs.cGens, (g2: PGen) => SGeneric(g2.genName, isLinearGen(g2),
-                                                  g2.pgLine)),
+             map(cs.cGens, (g2) => SGeneric(g2.genName, isLinearGen(g2),
+                                            g2.pgLine)),
              cs.pscLine)
 
 

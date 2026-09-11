@@ -22,16 +22,16 @@ class [final] DfoNewObj(dfoVar: String, dfoClass: String)
 
 fun resolveKnownDiscriminators(a: CgApp): CgApp
   ret appWithFunctions(a, map(appFunctions(a),
-                              (f: CgFunction) => dfoFunction(f, a)))
+                              (f) => dfoFunction(f, a)))
 
 fun dfoFunction(f: CgFunction, a: CgApp): CgFunction
-  let newobjs = fold(f.fnOps, List<DfoNewObj>(), dfoCollect)
+  let newobjs = fold(f.fnOps, List(), dfoCollect)
   if isEmpty(newobjs)
     ret f
   let defs = singleDefs(f)
   ret cgFunctionWith(f, map(f.fnOps,
-                            (op: Op) => opReplaceParams(op,
-                              (p: RParam) => dfoReplace(p, newobjs, defs, a))),
+                            (op) => opReplaceParams(op,
+                              (p) => dfoReplace(p, newobjs, defs, a))),
                      f.fnStackVars)
 
 fun dfoCollect(acc: List<DfoNewObj>, op: Op): List<DfoNewObj>

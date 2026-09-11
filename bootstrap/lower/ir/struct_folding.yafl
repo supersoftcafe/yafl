@@ -21,8 +21,8 @@ fun foldStructReads(a: CgApp): CgApp
 fun sfoFunction(f: CgFunction): CgFunction
   let defs = singleDefs(f)
   ret cgFunctionWith(f, map(f.fnOps,
-                            (op: Op) => opReplaceParams(op,
-                              (p: RParam) => sfoReplace(p, defs))),
+                            (op) => opReplaceParams(op,
+                              (p) => sfoReplace(p, defs))),
                      f.fnStackVars)
 
 fun sfoReplace(p: RParam, defs: SsaDefs): RParam

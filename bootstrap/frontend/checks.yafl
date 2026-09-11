@@ -47,12 +47,12 @@ fun collectDiagnostics2(statements: List<PStmt>, r: Resolver,
     ret Diag(future, noErrs())
   let checks = stmtChecks(chain(statements), r, noErrs())
   let diagnostics = requireMain ? withMainCount(statements, checks) : checks
-  let warnings = filter<PErr>(diagnostics, (e2: PErr) => e2.errWarn)
+  let warnings = filter(diagnostics, (e2) => e2.errWarn)
   # "not every diagnostic is a warning" — i.e. at least one real error. This
   # used to build the warning subset and compare LENGTHS, which needed a walk
   # of an unordered collection; asking the question directly says what it
   # means and stops at the first counter-example.
-  if !all<PErr>(diagnostics, (e2: PErr) => e2.errWarn)
+  if !all(diagnostics, (e2) => e2.errWarn)
     ret Diag(diagnostics, warnings)          # some real error: fail with all
   let named = namedSpecErrors(statements)
   ret isEmpty(named) ? Diag(noErrs(), warnings) : Diag(named, warnings)
@@ -119,7 +119,7 @@ fun [tail] anyUntypedTarget(ts: Chain<PStmt>): Bool
         ()         => true
       (o: PStmt)    => anyUntypedTarget(l.next)
 
-fun [tail] untypedLoop(ss: Chain<PStmt>, detail: Dict<String, List<List<String> > >,
+fun [tail] untypedLoop(ss: Chain<PStmt>, detail: Dict<String, List<List<String>>>,
                        acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
@@ -131,7 +131,7 @@ fun [tail] untypedLoop(ss: Chain<PStmt>, detail: Dict<String, List<List<String> 
 
 
 fun [tail] funUntyped(f: PsFun, ts: Chain<PStmt>, idx: Int,
-                      detail: Dict<String, List<List<String> > >,
+                      detail: Dict<String, List<List<String>>>,
                       acc: Set<PErr>): Set<PErr>
   ret match(ts)
     (nil: ChainEnd) => acc
@@ -143,20 +143,20 @@ fun [tail] funUntyped(f: PsFun, ts: Chain<PStmt>, idx: Int,
       (o: PStmt)    => funUntyped(f, l.next, idx + 1, detail, acc)
 
 fun untypedError(f: PsFun, tgt: PsLet, idx: Int,
-                 detail: Dict<String, List<List<String> > >): PErr
+                 detail: Dict<String, List<List<String>>>): PErr
   ret PErr(tgt.pslLine,
            "Parameter '" + simpleName(tgt.lName) + "' of '"
            + simpleName(f.fName)
            + "' has no type and could not be inferred — "
            + clueFor(detailSlot(detail, f.fName, idx)))
 
-fun detailSlot(detail: Dict<String, List<List<String> > >, name: String,
+fun detailSlot(detail: Dict<String, List<List<String>>>, name: String,
                idx: Int): List<String>
   ret match(get(detail, name))
-    (slots: List<List<String> >) => match(nthOf(slots, idx))
+    (slots: List<List<String>>) => match(nthOf(slots, idx))
       (seen: List<String>) => seen
-      ()                   => List<String>()
-    ()                           => List<String>()
+      ()                   => List()
+    ()                           => List()
 
 fun clueFor(seen: List<String>): String
   if atLeast(chain(seen), 2)
@@ -247,7 +247,7 @@ fun nsExpr(x: PExpr, acc: Set<PErr>): Set<PErr>
     (qq: PeCoalesce) => nsExpr(qq.qqFallback, nsExpr(qq.qqSubject, acc))
     (wx: PeWith)   => nsExpr(wx.withRepls, nsExpr(wx.withSubject, acc))
     (ne: PeNewEnum) => nsSpecs(chain(ne.neTypeParams),
-                                fold(ne.fieldArgs, acc, (a2: Set<PErr>, fa: PFieldArg) =>
+                                fold(ne.fieldArgs, acc, (a2, fa) =>
                                   nsExpr(fa.faValue, a2)))
     (o: PeLiteral) => acc
     (o: PeLowered) => acc
@@ -317,7 +317,7 @@ fun nsSpecsOpt(ss: List<Spec>|None, acc: Set<PErr>): Set<PErr>
 # `sorted(set(errors))` does. errLess matches Python's dataclass field order
 # (file, line, col, message, severity).
 fun printedDiagnostics(es: Set<PErr>): String
-  ret printLoop(chain(sortBy<PErr>(es, errLess)), "")
+  ret printLoop(chain(sortBy(es, errLess)), "")
 
 fun [tail] printLoop(es: Chain<PErr>, acc: String): String
   ret match(es)

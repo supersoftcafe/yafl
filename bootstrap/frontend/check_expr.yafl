@@ -37,7 +37,7 @@ fun checkExpr(x: PExpr, r: Resolver, expected: Spec|None): Set<PErr>
     (mt: PeMatch)   => checkMatch(mt, r, expected)
     (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
     (nw: PeNew)     => checkNew(nw, r)
-    (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2: Set<PErr>, fa: PFieldArg) =>
+    (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2, fa) =>
                             union(a2, checkExpr(fa.faValue, r, None)))
     (ar: PeArrayRead) => union(checkExpr(ar.arrObj, r, None),
                                 checkExpr(ar.arrIndex, r, None))
@@ -62,7 +62,7 @@ fun checkName(nm: PeName, r: Resolver): Set<PErr>
                             nm.penTrait)
   if isEmpty(datas)
     ret union(oneErr(nm.penLine, "Failed to resolve " + nm.refName), tpErrs)
-  ret match(soleOf(Bag<Found>(datas)))
+  ret match(soleOf(Bag(datas)))
     # A generic AMBIENT instance member that never committed a solved scope:
     # the use site could not bind the instance's placeholders — ambience
     # applies to concrete types only, so a name-match alone is NOT a
@@ -80,7 +80,7 @@ fun checkName(nm: PeName, r: Resolver): Set<PErr>
                     "Ambiguous reference '" + nm.refName
                     + "' — qualify it. Candidates: "
                     + join(sort(dedupeStrs(foundNames(chain(datas),
-                                                      List<String>()))),
+                                                      List()))),
                            ", ")),
              tpErrs)
 
@@ -92,15 +92,15 @@ fun unresolvedAmbient(nm: PeName, f: Found): Bool
     ()                  => false
 
 fun foundNames(ds: Chain<Found>, acc: List<String>): List<String>
-  ret build<String >(foundNamesB(ds, builderFrom<String>(acc)))
+  ret build(foundNamesB(ds, builderFrom(acc)))
 
-fun [tail] foundNamesB(ds: Chain<Found>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] foundNamesB(ds: Chain<Found>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(ds)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => foundNamesB(l.next, push<String >(acc, l.value.fName))
+    (l: ChainLink)  => foundNamesB(l.next, push(acc, l.value.fName))
 
 fun dedupeStrs(ss: List<String>): List<String>
-  ret ddsLoop(chain(ss), List<String>())
+  ret ddsLoop(chain(ss), List())
 
 fun [tail] ddsLoop(ss: Chain<String>, acc: List<String>): List<String>
   ret match(ss)
@@ -109,20 +109,20 @@ fun [tail] ddsLoop(ss: Chain<String>, acc: List<String>): List<String>
 
 # _distinct_resolutions: several ROUTES to one statement are one candidate.
 fun distinctFinds(ds: List<Found>): List<Found>
-  ret dfLoop(chain(ds), List<Found>(), List<String>())
+  ret dfLoop(chain(ds), List(), List())
 
 fun dfLoop(ds: Chain<Found>, acc: List<Found>,
                   seen: List<String>): List<Found>
-  ret build<Found >(dfLoopB(ds, builderFrom<Found>(acc), seen))
+  ret build(dfLoopB(ds, builderFrom(acc), seen))
 
-fun [tail] dfLoopB(ds: Chain<Found>, [terminal] acc: ListBuilder<Found >,
-                  seen: List<String>): ListBuilder<Found >
+fun [tail] dfLoopB(ds: Chain<Found>, [terminal] acc: ListBuilder<Found>,
+                  seen: List<String>): ListBuilder<Found>
   ret match(ds)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains2(seen, l.value.fName)
       ? dfLoopB(l.next, acc, seen)
       # `seen` is a dedup set — order not observed.
-      : dfLoopB(l.next, push<Found >(acc, l.value),
+      : dfLoopB(l.next, push(acc, l.value),
                 prepend(l.value.fName, seen))
 
 # ── DotExpression ───────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ fun callShapeErrs(c: PeCall, ptype: STuple, r: Resolver): Set<PErr>
 fun calleeCandidates(c: PeCall, r: Resolver): List<Found>
   ret match(c.function)
     (nm: PeName) => findData(r, nm.refName).bItems
-    (o: PExpr)   => List<Found>()
+    (o: PExpr)   => List()
 
 fun paramShapeMissing(sp: Spec|None): Bool
   ret match(sp)
@@ -259,7 +259,7 @@ fun namedCallError(c: PeCall, nm: PeName, ptype: STuple, r: Resolver): PErr
   let cands = findData(r, nm.refName).bItems
   if isEmpty(cands)
     ret PErr(c.pecLine, "no function named " + name + " is in scope")
-  let sigs = candidateSigs(chain(cands), List<String>())
+  let sigs = candidateSigs(chain(cands), List())
   if isEmpty(sigs)
     ret match(firstNonCallable(chain(cands)))
       (t2: Spec) => PErr(c.pecLine, name + " is not a function — it is a "
@@ -275,14 +275,14 @@ fun backTicked(raw: String): String
   ret startsWith(raw, "`") ? raw : "`" + raw + "`"
 
 fun candidateSigs(cs: Chain<Found>, acc: List<String>): List<String>
-  ret build<String >(candidateSigsB(cs, builderFrom<String>(acc)))
+  ret build(candidateSigsB(cs, builderFrom(acc)))
 
-fun [tail] candidateSigsB(cs: Chain<Found>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] candidateSigsB(cs: Chain<Found>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(cs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(stmtType(l.value.fStmt))
       (ty: Spec) => match(ty)
-        (cl: SCallable) => candidateSigsB(l.next, push<String >(acc, typeStr(ty)))
+        (cl: SCallable) => candidateSigsB(l.next, push(acc, typeStr(ty)))
         (o: Spec)       => candidateSigsB(l.next, acc)
       ()         => candidateSigsB(l.next, acc)
 
@@ -457,25 +457,25 @@ fun blockTypeErr(bk: PeBlock, r: Resolver, expected: Spec|None,
 # No value vanishes silently: a block-local binding never read discards its
 # value. A `_`-prefixed name is the explicit opt-out.
 fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
-  let declared = build<PStmt >(bindingLets(chain(bk.blockStmts),
-                                           builder<PStmt >()))
+  let declared = build(bindingLets(chain(bk.blockStmts),
+                                   builder()))
   if isEmpty(declared)
     ret noErrs()
   let referenced = referencedInStmts(chain(bk.blockStmts),
                                      referencedNames(bk.blockValue,
-                                                     List<String>()))
+                                                     List()))
   ret unusedWarns(chain(declared), referenced, noErrs())
 
 # Declaration order, which is the order the shadowing check reports in.
 fun [tail] bindingLets(ss: Chain<PStmt>,
-                       [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                       [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (d: PsDestructure) => bindingLets(l.next,
-                                _pushChain<PStmt >(acc,
-                                    chain<PStmt>(flattenParams(l.value))))
-      (let2: PsLet)      => bindingLets(l.next, push<PStmt >(acc, l.value))
+                                pushAll(acc,
+                                    flattenParams(l.value)))
+      (let2: PsLet)      => bindingLets(l.next, push(acc, l.value))
       (o: PStmt)         => bindingLets(l.next, acc)
 
 
@@ -537,7 +537,7 @@ fun multiSubjectErrs(mt: PeMatch): Set<PErr>
   ret arityErrs(chain(mt.arms), 1 + countOf(mt.matchExtra), noErrs())
 
 fun countOf(es: List<PExpr>): Int
-  ret fold(es, 0, (n: Int, e2: PExpr) => n + 1)
+  ret fold(es, 0, (n, e2) => n + 1)
 
 # Accumulator-threaded so the self-call stays in TAIL position — wrapping it
 # in `union(...)` would not be one.
@@ -556,7 +556,7 @@ fun armArityErr(a: PArm, want: Int): Set<PErr>
              + " subject" + (want == 1 ? "" : "s"))
 
 fun countPos(ps: List<PPos>): Int
-  ret fold(ps, 0, (n: Int, p: PPos) => n + 1)
+  ret fold(ps, 0, (n, p) => n + 1)
 
 fun isElseArmC(a: PArm): Bool
   ret isNoneSpec3(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
@@ -642,7 +642,7 @@ fun armHasNoType(a: PArm): Bool
 fun mixedKindErr(a: PArm): Set<PErr>
   if atMost(chain(a.armLiterals), 1)
     ret noErrs()
-  let kinds = litKinds(chain(a.armLiterals), List<String>())
+  let kinds = litKinds(chain(a.armLiterals), List())
   ret atLeast(chain(kinds), 2)
     ? oneErr(a.parmLine,
              "all literals in one arm must be the same kind (integers, floats or strings)")
@@ -704,7 +704,7 @@ fun referencedNames(x: PExpr, acc: List<String>): List<String>
     # A NewEnum's references live in its field-arg VALUE expressions.
     (wx: PeWith)   => referencedNames(wx.withRepls,
                                       referencedNames(wx.withSubject, acc))
-    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: List<String>, fa: PFieldArg) =>
+    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
                             referencedNames(fa.faValue, a2))
     (pl: PeParallel) => referencedNames(pl.parParams, acc)
     (o: PeLiteral) => acc
@@ -761,21 +761,21 @@ fun checkWith(wx: PeWith, r: Resolver): Set<PErr>
     ret reps
   let shape = withShapeError(wx)
   if shape != ""
-    ret add(Set<PErr>(),PErr(wx.pewLine, shape))
+    ret add(Set(),PErr(wx.pewLine, shape))
   ret match(exprType(wx.withSubject, r))
     (sp: Spec) => match(sp)
       (c: SClass) => checkWithFields(wx, r)
       (e2: SEnum) => checkWithFields(wx, r)
-      (o: Spec)   => add(Set<PErr>(),PErr(wx.pewLine,
+      (o: Spec)   => add(Set(),PErr(wx.pewLine,
         "the subject of `with` must be a class- or enum-typed expression"))
-    ()         => add(Set<PErr>(),PErr(wx.pewLine,
+    ()         => add(Set(),PErr(wx.pewLine,
       "the subject type of `with` did not resolve"))
 
 fun withShapeError(wx: PeWith): String
   ret match(wx.withRepls)
     (tp: PeTuple) => isEmpty(tp.exprs)
       ? "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
-      : withEntriesError(chain(tp.exprs), List<String>())
+      : withEntriesError(chain(tp.exprs), List())
     (o: PExpr)    => "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
 
 fun [tail] withEntriesError(es: Chain<PTupEnt>, seen: List<String>): String
@@ -793,15 +793,15 @@ fun checkWithFields(wx: PeWith, r: Resolver): Set<PErr>
   let visible = withVisibleFields(wx, r)
   ret match(wx.withRepls)
     (tp: PeTuple) => withNamesKnown(chain(tp.exprs), visible, wx.pewLine)
-    (o: PExpr)    => Set<PErr>()
+    (o: PExpr)    => Set()
 
 fun [tail] withNamesKnown(es: Chain<PTupEnt>, visible: List<String>,
                           lr: PLine): Set<PErr>
   ret match(es)
-    (nil: ChainEnd) => Set<PErr>()
+    (nil: ChainEnd) => Set()
     (l: ChainLink)  => contains2(visible, l.value.tupName)
       ? withNamesKnown(l.next, visible, lr)
-      : add(Set<PErr>(),PErr(lr,
+      : add(Set(),PErr(lr,
           "`" + l.value.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
 
 fun withVisibleFields(wx: PeWith, r: Resolver): List<String>
@@ -810,32 +810,32 @@ fun withVisibleFields(wx: PeWith, r: Resolver): List<String>
       (c: SClass) => match(soleItem(findType(r, c.scName)))
         (f: Found) => match(f.fStmt)
           (cls: PsClass) => withBareNames(chain(flattenParams(cls.cParams)),
-                                          List<String>())
-          (o: PStmt)     => List<String>()
-        ()         => List<String>()
+                                          List())
+          (o: PStmt)     => List()
+        ()         => List()
       (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
         (f: Found) => match(f.fStmt)
           (en: PsEnum) => withCoverBares(chain(coveringFields(en, e2.seValidLeaves)),
-                                         List<String>())
-          (o: PStmt)   => List<String>()
-        ()         => List<String>()
-      (o2: Spec)  => List<String>()
-    ()         => List<String>()
+                                         List())
+          (o: PStmt)   => List()
+        ()         => List()
+      (o2: Spec)  => List()
+    ()         => List()
 
 fun withBareNames(fs: Chain<PStmt>, acc: List<String>): List<String>
-  ret build<String >(withBareNamesB(fs, builderFrom<String>(acc)))
+  ret build(withBareNamesB(fs, builderFrom(acc)))
 
-fun [tail] withBareNamesB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] withBareNamesB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (p: PsLet) => withBareNamesB(l.next, push<String >(acc, bareName(p.lName)))
+      (p: PsLet) => withBareNamesB(l.next, push(acc, bareName(p.lName)))
       (o: PStmt) => withBareNamesB(l.next, acc)
 
 fun withCoverBares(fs: Chain<SField>, acc: List<String>): List<String>
-  ret build<String >(withCoverBaresB(fs, builderFrom<String>(acc)))
+  ret build(withCoverBaresB(fs, builderFrom(acc)))
 
-fun [tail] withCoverBaresB(fs: Chain<SField>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] withCoverBaresB(fs: Chain<SField>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => withCoverBaresB(l.next, push<String >(acc, bareName(l.value.sfName)))
+    (l: ChainLink)  => withCoverBaresB(l.next, push(acc, bareName(l.value.sfName)))

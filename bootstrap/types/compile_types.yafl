@@ -31,9 +31,9 @@ class [final] SpecOut(soSpec: Spec, soGlobals: List<PStmt>)
 
 fun compileSpec(sp: Spec, r: Resolver): SpecOut
   ret match(sp)
-    (b: SBuiltin)      => SpecOut(sp, List<PStmt>())
-    (g: SGeneric)      => SpecOut(sp, List<PStmt>())
-    (ls: SLazyStub)    => SpecOut(sp, List<PStmt>())
+    (b: SBuiltin)      => SpecOut(sp, List())
+    (g: SGeneric)      => SpecOut(sp, List())
+    (ls: SLazyStub)    => SpecOut(sp, List())
     (n: SNamed)        => compileNamed(n, r)
     (c: SClass)        => compileClass(c, r)
     (e: SEnum)         => compileEnum(e, r)
@@ -55,31 +55,31 @@ fun compileNamed(n: SNamed, r: Resolver): SpecOut
   let bag = findType(r, n.snName)
   ret match(soleItem(bag))
     (f: Found) => resolveNamedTo(n, f.fStmt, r)
-    ()         => SpecOut(n, List<PStmt>())      # 0 = not yet, >1 = ambiguous
+    ()         => SpecOut(n, List())      # 0 = not yet, >1 = ambiguous
 
 fun resolveNamedTo(n: SNamed, st: PStmt, r: Resolver): SpecOut
   ret match(st)
     # An alias forwards only once its target is itself concrete; otherwise the
     # alias is still in flight and this name waits another pass.
     (ta: PsTypealias) => isConcrete(ta.taType)
-      ? SpecOut(ta.taType, List<PStmt>())
-      : SpecOut(n, List<PStmt>())
+      ? SpecOut(ta.taType, List())
+      : SpecOut(n, List())
     (c: PsClass) => compileParams(n.snParams, r)
       |> (ps) => SpecOut(SClass(c.cName, ps.psSpecs, n.snLine), ps.psGlobals)
     # The enum's canonical spec lives on the declaration. Type arguments
     # (Dict<Int,Str>) are carried into it so the generics pass can later
     # redirect the concrete instantiation.
     (e: PsEnum) => enumSpecOf(n, e, r)
-    (o: PStmt)  => SpecOut(n, List<PStmt>())
+    (o: PStmt)  => SpecOut(n, List())
 
 fun enumSpecOf(n: SNamed, e: PsEnum, r: Resolver): SpecOut
   ret match(e.eSpec)
     (canon: Spec) => withTypeArgs(canon, n, r)
-    ()            => SpecOut(n, List<PStmt>())   # variants not laid out yet
+    ()            => SpecOut(n, List())   # variants not laid out yet
 
 fun withTypeArgs(canon: Spec, n: SNamed, r: Resolver): SpecOut
   if isEmpty(n.snParams)
-    ret SpecOut(canon, List<PStmt>())
+    ret SpecOut(canon, List())
   let ps = compileParams(n.snParams, r)
   ret match(canon)
     (ce: SEnum) => SpecOut(SEnum(ce.seRoot, ce.seValidLeaves, ce.seAllLeaves,
@@ -96,28 +96,28 @@ fun compileClass(c: SClass, r: Resolver): SpecOut
   ret match(soleItem(bag))
     (f: Found) => compileParams(c.scParams, r)
       |> (ps) => SpecOut(SClass(f.fName, ps.psSpecs, c.scLine), ps.psGlobals)
-    ()         => SpecOut(c, List<PStmt>())
+    ()         => SpecOut(c, List())
 
 # An enum re-reads its fields from the declaration each pass — the instance in
 # hand may predate the layout that filled them in.
 fun compileEnum(e: SEnum, r: Resolver): SpecOut
   ret match(soleItem(findType(r, e.seRoot)))
     (f: Found) => canonicalEnum(e, f.fStmt)
-    ()         => SpecOut(e, List<PStmt>())
+    ()         => SpecOut(e, List())
 
 fun canonicalEnum(e: SEnum, st: PStmt): SpecOut
   ret match(st)
     (en: PsEnum) => match(en.eSpec)
       (canon: Spec) => refreshedEnum(e, canon)
-      ()            => SpecOut(e, List<PStmt>())
-    (o: PStmt)   => SpecOut(e, List<PStmt>())
+      ()            => SpecOut(e, List())
+    (o: PStmt)   => SpecOut(e, List())
 
 fun refreshedEnum(e: SEnum, canon: Spec): SpecOut
   ret match(canon)
     (ce: SEnum) => SpecOut(SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
                                  e.seParams, e.seLine),
-                           List<PStmt>())
-    (o: Spec)   => SpecOut(e, List<PStmt>())
+                           List())
+    (o: Spec)   => SpecOut(e, List())
 
 # ── the structural types ────────────────────────────────────────────────────
 
@@ -140,17 +140,17 @@ fun compileArray(af: SArrayField, r: Resolver): SpecOut
   ret SpecOut(SArrayField(el.soSpec, af.safLenField, af.safLine), el.soGlobals)
 
 fun compileTuple(t2: STuple, r: Resolver): SpecOut
-  let es = compileEntries(chain(t2.stEntries), r, builder<SEntry >(), List<PStmt>())
+  let es = compileEntries(chain(t2.stEntries), r, builder(), List())
   ret SpecOut(STuple(es.esEntries, t2.stLine), es.esGlobals)
 
 class [final] EntriesOut(esEntries: List<SEntry>, esGlobals: List<PStmt>)
 
-fun [tail] compileEntries(es: Chain<SEntry>, r: Resolver, [terminal] acc: ListBuilder<SEntry >,
+fun [tail] compileEntries(es: Chain<SEntry>, r: Resolver, [terminal] acc: ListBuilder<SEntry>,
                           glb: List<PStmt>): EntriesOut
   ret match(es)
-    (nil: ChainEnd) => EntriesOut(build<SEntry >(acc), glb)
+    (nil: ChainEnd) => EntriesOut(build(acc), glb)
     (l: ChainLink)  => compileEntry(l.value, r)
-      |> (one) => compileEntries(l.next, r, push<SEntry >(acc, one.eoEntry),
+      |> (one) => compileEntries(l.next, r, push(acc, one.eoEntry),
                                  concat(glb, one.eoGlobals))
 
 class [final] EntryOut(eoEntry: SEntry, eoGlobals: List<PStmt>)
@@ -167,19 +167,19 @@ fun compileEntry(en: SEntry, r: Resolver): EntryOut
     (t2: SpecOut) => EntryOut(SEntry(en.seName, t2.soSpec, en.seDefault),
                               t2.soGlobals)
     ()            => EntryOut(SEntry(en.seName, None, en.seDefault),
-                              List<PStmt>())
+                              List())
 
 # ── lists of types ──────────────────────────────────────────────────────────
 
 class [final] ParamsOut(psSpecs: List<Spec>, psGlobals: List<PStmt>)
 
 fun compileParams(ts: List<Spec>, r: Resolver): ParamsOut
-  ret compileParamLoop(chain(ts), r, builder<Spec >(), List<PStmt>())
+  ret compileParamLoop(chain(ts), r, builder(), List())
 
-fun [tail] compileParamLoop(ts: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec >,
+fun [tail] compileParamLoop(ts: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec>,
                             glb: List<PStmt>): ParamsOut
   ret match(ts)
-    (nil: ChainEnd) => ParamsOut(build<Spec >(acc), glb)
+    (nil: ChainEnd) => ParamsOut(build(acc), glb)
     (l: ChainLink)  => compileSpec(l.value, r)
-      |> (one) => compileParamLoop(l.next, r, push<Spec >(acc, one.soSpec),
+      |> (one) => compileParamLoop(l.next, r, push(acc, one.soSpec),
                                    concat(glb, one.soGlobals))

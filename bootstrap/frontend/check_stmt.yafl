@@ -259,7 +259,7 @@ fun [tail] paramDefaultErrs(ls: Chain<PStmt>, r: Resolver,
 fun unusedParamWarns(f: PsFun): Set<PErr>
   ret match(f.fBody)
     (b: PExpr) => unusedParamLoop(chain(flattenParams(f.fParams)),
-                                  referencedNames(b, List<String>()), noErrs())
+                                  referencedNames(b, List()), noErrs())
     ()         => noErrs()
 
 
@@ -463,7 +463,7 @@ fun classChecks(c: PsClass, r0: Resolver): Set<PErr>
 # field an Int32 sibling.
 fun arrayFieldErrs(c: PsClass, r: Resolver): Set<PErr>
   let fields = classFields(c)
-  let arrays = arrayFieldsOf(chain(fields), List<PStmt>())
+  let arrays = arrayFieldsOf(chain(fields), List())
   if isEmpty(arrays)
     ret noErrs()
   let countErr = atLeast(chain(arrays), 2)
@@ -477,26 +477,26 @@ fun arrayFieldErrs(c: PsClass, r: Resolver): Set<PErr>
 
 fun classFields(c: PsClass): List<PStmt>
   ret concat(flattenParams(c.cParams), letMembers(chain(c.cMembers),
-                                                  List<PStmt>()))
+                                                  List()))
 
 fun letMembers(ms: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(letMembersB(ms, builderFrom<PStmt>(acc)))
+  ret build(letMembersB(ms, builderFrom(acc)))
 
-fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => letMembersB(l.next, push<PStmt >(acc, l.value))
+      (let2: PsLet) => letMembersB(l.next, push(acc, l.value))
       (o: PStmt)    => letMembersB(l.next, acc)
 
 fun arrayFieldsOf(fs: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(arrayFieldsOfB(fs, builderFrom<PStmt>(acc)))
+  ret build(arrayFieldsOfB(fs, builderFrom(acc)))
 
-fun [tail] arrayFieldsOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+fun [tail] arrayFieldsOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isArrayStorage(l.value)
-      ? arrayFieldsOfB(l.next, push<PStmt >(acc, l.value))
+      ? arrayFieldsOfB(l.next, push(acc, l.value))
       : arrayFieldsOfB(l.next, acc)
 
 fun [tail] lenFieldErrs(as2: Chain<PStmt>, fields: List<PStmt>,
@@ -612,7 +612,7 @@ fun [tail] fbParents(slot: Slot, fs: Chain<FoundClass>, c: PsClass,
 fun fbOne(slot: Slot, p: PsClass, c: PsClass, r: Resolver,
           acc: Set<PErr>): Set<PErr>
   let nCaptured = capturedCount(chain(createSlotsFromMembers(p)), slot, r,
-                                List<String>(), 0)
+                                List(), 0)
   ret nCaptured > 1
     ? add(acc, PErr(c.pscLine,
                        "`" + bareOfUnique(slot.slotName) + "` overrides "

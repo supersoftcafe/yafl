@@ -20,7 +20,7 @@ import Bootstrap::StdlibCandidates
 
 fun splitProjectedAggregates(a: CgApp): CgApp
   ret appWithFunctions(a, map(appFunctions(a),
-        (f: CgFunction) => sroaFix(f, List<String>(), 8)))
+        (f) => sroaFix(f, List(), 8)))
 
 fun [tail] sroaFix(f: CgFunction, done: List<String>, left: Int): CgFunction
   if left == 0
@@ -28,7 +28,7 @@ fun [tail] sroaFix(f: CgFunction, done: List<String>, left: Int): CgFunction
   let sp = sroaFindSplittable(f, done)
   ret isEmpty(sp)
     ? f
-    : sroaFix(sroaApply(f, sp), concat(done, map(sp, (s2: Sroa) => s2.srName)), left - 1)
+    : sroaFix(sroaApply(f, sp), concat(done, map(sp, (s2) => s2.srName)), left - 1)
 
 class [final] Sroa(srName: String, srVar: RParam, srDefIndex: Int,
                    srFields: List<SroaField>)
@@ -42,15 +42,15 @@ fun sroaFindSplittable(f: CgFunction, done: List<String>): List<Sroa>
   let svReads = sroaSvReads(f.fnOps)
   let projReads = sroaProjReads(f.fnOps)
   let defs = sroaDefs(f.fnOps)
-  ret build<Sroa >(sroaConsiderAll(
-      chain(sort<String>(map(defs.sdEntries, (e2: SroaDef) => e2.sdName))),
-      done, svReads, projReads, defs, builder<Sroa >()))
+  ret build(sroaConsiderAll(
+      chain(sort(map(defs.sdEntries, (e2) => e2.sdName))),
+      done, svReads, projReads, defs, builder()))
 
 # Candidates come out in the sorted name order they are considered in.
 fun [tail] sroaConsiderAll(ns: Chain<String>, done: List<String>,
                            svReads: List<StrCount>,
                            projReads: List<ProjCount>, defs: SroaDefs,
-                           [terminal] acc: ListBuilder<Sroa >): ListBuilder<Sroa >
+                           [terminal] acc: ListBuilder<Sroa>): ListBuilder<Sroa>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => sroaConsiderAll(l.next, done, svReads, projReads, defs,
@@ -61,8 +61,8 @@ fun [tail] sroaConsiderAll(ns: Chain<String>, done: List<String>,
 # nodes, so a var whose every read is a projection has sv_reads == proj_total;
 # any whole use is a bare StackVar with no enclosing StructField.
 fun sroaSvReads(ops: Segment<Op>|None): List<StrCount>
-  ret fold(ops, List<StrCount>(),
-           (acc: List<StrCount>, op: Op) => fold(opAllParams(op), acc, sroaSvRead1))
+  ret fold(ops, List(),
+           (acc, op) => fold(opAllParams(op), acc, sroaSvRead1))
 
 fun sroaSvRead1(acc: List<StrCount>, p: RParam): List<StrCount>
   ret match(p)
@@ -70,8 +70,8 @@ fun sroaSvRead1(acc: List<StrCount>, p: RParam): List<StrCount>
     (o: RParam)       => acc
 
 fun sroaProjReads(ops: Segment<Op>|None): List<ProjCount>
-  ret fold(ops, List<ProjCount>(),
-           (acc: List<ProjCount>, op: Op) => fold(opAllParams(op), acc, sroaProj1))
+  ret fold(ops, List(),
+           (acc, op) => fold(opAllParams(op), acc, sroaProj1))
 
 fun sroaProj1(acc: List<ProjCount>, p: RParam): List<ProjCount>
   ret match(p)
@@ -81,8 +81,8 @@ fun sroaProj1(acc: List<ProjCount>, p: RParam): List<ProjCount>
     (o2: RParam)         => acc
 
 fun pjIncr(acc: List<ProjCount>, v: String, f: String): List<ProjCount>
-  ret any(acc, (e2: ProjCount) => e2.pjVar == v && e2.pjField == f)
-    ? map(acc, (e2: ProjCount) => e2.pjVar == v && e2.pjField == f
+  ret any(acc, (e2) => e2.pjVar == v && e2.pjField == f)
+    ? map(acc, (e2) => e2.pjVar == v && e2.pjField == f
                  ? ProjCount(v, f, e2.pjCount + 1) : e2)
     # A counter table keyed by (var, field): every reader sums or filters it,
     # so its order is not observable and a new key goes on the front.
@@ -95,7 +95,7 @@ class [final] SroaDef(sdName: String, sdVar: RParam, sdIndex: Int, sdOp: Op)
 class [final] SroaDefs(sdEntries: List<SroaDef>, sdMulti: Set<String>)
 
 fun sroaDefs(ops: Segment<Op>|None): SroaDefs
-  ret sroaDefsLoop(ops, 0i32, 0, SroaDefs(List<SroaDef>(), Set<String>()))
+  ret sroaDefsLoop(ops, 0i32, 0, SroaDefs(List(), Set()))
 
 fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, acc: SroaDefs): SroaDefs
   ret match(s)
@@ -103,14 +103,14 @@ fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, acc: SroaDefs)
     (seg: Segment<Op>) => iSeg < seg.length
       ? sroaDefsLoop(s, iSeg + 1i32, i + 1,
           fold(ssavOpWrites(seg.array(iSeg)), acc,
-               (a: SroaDefs, w: RParam) => sroaDef1(a, w, i, seg.array(iSeg))))
+               (a, w) => sroaDef1(a, w, i, seg.array(iSeg))))
       : sroaDefsLoop(seg.next, 0i32, i, acc)
 
 fun sroaDef1(acc: SroaDefs, w: RParam, i: Int, op: Op): SroaDefs
   ret match(w)
-    (sv: RpStackVar) => any(acc.sdEntries, (e2: SroaDef) => e2.sdName == sv.name)
-      ? SroaDefs(map(acc.sdEntries, (e2: SroaDef) => e2.sdName == sv.name ? SroaDef(sv.name, w, i, op) : e2),
-                 add<String>(acc.sdMulti, sv.name))
+    (sv: RpStackVar) => any(acc.sdEntries, (e2) => e2.sdName == sv.name)
+      ? SroaDefs(map(acc.sdEntries, (e2) => e2.sdName == sv.name ? SroaDef(sv.name, w, i, op) : e2),
+                 add(acc.sdMulti, sv.name))
       # A name appears at most once here — a repeat takes the branch above,
       # which replaces in place — so the entry list is a lookup with no
       # observable order and a new entry goes on the front.
@@ -118,23 +118,23 @@ fun sroaDef1(acc: SroaDefs, w: RParam, i: Int, op: Op): SroaDefs
                  acc.sdMulti)
     (o: RParam)       => acc
 
-fun sroaConsider([terminal] acc: ListBuilder<Sroa >, name: String,
+fun sroaConsider([terminal] acc: ListBuilder<Sroa>, name: String,
                  done: List<String>, svReads: List<StrCount>,
-                 projReads: List<ProjCount>, defs: SroaDefs): ListBuilder<Sroa >
-  if contains<String>(defs.sdMulti, name) || strListMember(done, name)
+                 projReads: List<ProjCount>, defs: SroaDefs): ListBuilder<Sroa>
+  if contains(defs.sdMulti, name) || strListMember(done, name)
     ret acc
-  ret match(head(filter(defs.sdEntries, (e2: SroaDef) => e2.sdName == name)))
+  ret match(head(filter(defs.sdEntries, (e2) => e2.sdName == name)))
     (d: SroaDef) => sroaConsiderDef(acc, name, d, svReads, projReads)
     ()            => acc
 
-fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa >, name: String,
+fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name: String,
                     d: SroaDef, svReads: List<StrCount>,
-                    projReads: List<ProjCount>): ListBuilder<Sroa >
+                    projReads: List<ProjCount>): ListBuilder<Sroa>
   # Only plain non-empty structs — never the async TaskWrapper ABI.
   let fields = sroaStructFields(rpGetType(d.sdVar))
   if isEmpty(fields)
     ret acc
-  let projTotal = fold(projReads, 0, (n: Int, e2: ProjCount) => e2.pjVar == name ? n + e2.pjCount : n)
+  let projTotal = fold(projReads, 0, (n, e2) => e2.pjVar == name ? n + e2.pjCount : n)
   let reads = strCountGet(svReads, name)
   if reads == 0 || reads != projTotal
     ret acc
@@ -143,17 +143,17 @@ fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa >, name: String,
   # Sorted before use, so the set the fields are gathered into needs no order
   # of its own — and the gather is a dedupe, since a var's field is projected
   # once per read.
-  let used = sort<String>(fold(projReads, Set<String>(),
-               (u: Set<String>, e2: ProjCount) => e2.pjVar == name ? add<String>(u, e2.pjField) : u))
-  ret push<Sroa >(acc, Sroa(name, d.sdVar, d.sdIndex,
-                       map(used, (fld: String) => SroaField(fld,
-                             RpStackVar(rpStructFieldLookup(fields, fld), name + "$" + fld)))))
+  let used = sort(fold(projReads, Set(),
+               (u, e2) => e2.pjVar == name ? add(u, e2.pjField) : u))
+  ret push(acc, Sroa(name, d.sdVar, d.sdIndex,
+                map(used, (fld) => SroaField(fld,
+                      RpStackVar(rpStructFieldLookup(fields, fld), name + "$" + fld)))))
 
 fun sroaStructFields(t2: CgType): List<CgField>
   ret match(t2)
     (s2: CgStruct)          => s2.fields
     (im: CgImmediateStruct) => im.fields
-    (o: CgType)             => List<CgField>()
+    (o: CgType)             => List()
 
 # Project after an ordinary single-result definition only; a Phi join and
 # side-effect-anchoring keep-Moves stay whole.
@@ -166,11 +166,11 @@ fun sroaDefOpOk(op: Op): Bool
 # ── the rewrite ──────────────────────────────────────────────────────────────
 
 fun sroaApply(f: CgFunction, sp: List<Sroa>): CgFunction
-  let newOps = build<Op >(sroaApplyLoop(f.fnOps, 0i32, sp, 0,
-                                        seqBuilder<Op >()))
-  let newFields = fold(sp, List<CgField>(),
-        (acc: List<CgField>, s2: Sroa) => concat(acc,
-          map(s2.srFields, (fl: SroaField) => CgField(stackVarName(fl.sfLocal), rpGetType(fl.sfLocal)))))
+  let newOps = build(sroaApplyLoop(f.fnOps, 0i32, sp, 0,
+                                   seqBuilder()))
+  let newFields = fold(sp, List(),
+        (acc, s2) => concat(acc,
+          map(s2.srFields, (fl) => CgField(stackVarName(fl.sfLocal), rpGetType(fl.sfLocal)))))
   ret cgFunctionWith(f, newOps,
         CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), newFields)))
 
@@ -178,15 +178,15 @@ fun sroaApply(f: CgFunction, sp: List<Sroa>): CgFunction
 # NOT routed through the replacer, so they read the original v exactly once,
 # right after its definition — before any suspension can intervene.
 fun [tail] sroaApplyLoop(s: Segment<Op>|None, iSeg: Int32, sp: List<Sroa>, i: Int,
-                         [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+                         [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
       ? sroaApplyLoop(s, iSeg + 1i32, sp, i + 1,
-          _pushChain<Op >(
-              push<Op >(acc, opReplaceParams(seg.array(iSeg),
-                                 (p: RParam) => sroaReplacer(p, sp))),
-              chain<Op>(sroaSeedMoves(sp, i))))
+          pushAll(
+              push(acc, opReplaceParams(seg.array(iSeg),
+                            (p) => sroaReplacer(p, sp))),
+              sroaSeedMoves(sp, i)))
       : sroaApplyLoop(seg.next, 0i32, sp, i, acc)
 
 fun sroaReplacer(p: RParam, sp: List<Sroa>): RParam
@@ -197,14 +197,14 @@ fun sroaReplacer(p: RParam, sp: List<Sroa>): RParam
     (o2: RParam)         => p
 
 fun sroaFieldLocal(sp: List<Sroa>, v: String, f: String, orig: RParam): RParam
-  ret match(head(filter(sp, (s2: Sroa) => s2.srName == v)))
-    (s2: Sroa) => match(head(filter(s2.srFields, (fl: SroaField) => fl.sfField == f)))
+  ret match(head(filter(sp, (s2) => s2.srName == v)))
+    (s2: Sroa) => match(head(filter(s2.srFields, (fl) => fl.sfField == f)))
       (fl: SroaField) => fl.sfLocal
       ()               => orig
     ()          => orig
 
 fun sroaSeedMoves(sp: List<Sroa>, i: Int): List<Op>
-  ret fold(sp, List<Op>(), (acc: List<Op>, s2: Sroa) => s2.srDefIndex == i
-             ? concat(acc, map(s2.srFields, (fl: SroaField) =>
-                 OpMove(fl.sfLocal, RpStructField(s2.srVar, fl.sfField), false, List<RParam>())))
+  ret fold(sp, List(), (acc, s2) => s2.srDefIndex == i
+             ? concat(acc, map(s2.srFields, (fl) =>
+                 OpMove(fl.sfLocal, RpStructField(s2.srVar, fl.sfField), false, List())))
              : acc)

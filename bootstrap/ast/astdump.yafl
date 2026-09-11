@@ -85,13 +85,13 @@ fun tyOf(ty: Spec): String
     (ls: SLazyStub)   => "LazyStubSpec"
 
 fun tyList(ts: List<Spec>): String
-  ret join(map(ts, (t2: Spec) => tyOf(t2)), ",")
+  ret join(map(ts, (t2) => tyOf(t2)), ",")
 
 fun joinBar(ts: List<Spec>): String
-  ret join(map(ts, (t2: Spec) => tyOf(t2)), "|")
+  ret join(map(ts, (t2) => tyOf(t2)), "|")
 
 fun tyEnts(es: List<SEntry>): String
-  ret join(map(es, (en: SEntry) => tyEnt(en)), ",")
+  ret join(map(es, (en) => tyEnt(en)), ",")
 
 fun tyEnt(en: SEntry): String
   let d = match(en.seDefault)
@@ -102,7 +102,7 @@ fun tyEnt(en: SEntry): String
 fun attrsStr(attrs: List<PAttr>): String
   if isEmpty(attrs)
     ret "-"
-  ret join(map(attrs, (a: PAttr) => attrStr(a)), ",")
+  ret join(map(attrs, (a) => attrStr(a)), ",")
 
 fun attrStr(a: PAttr): String
   ret match(a.attrValue)
@@ -110,10 +110,10 @@ fun attrStr(a: PAttr): String
     ()         => a.attrName
 
 fun gensStr(gs: List<PGen>): String
-  ret join(map(gs, (g2: PGen) => g2.genName), ",")
+  ret join(map(gs, (g2) => g2.genName), ",")
 
 fun wheresStr(ws: List<Spec>): String
-  ret join(map(ws, (w: Spec) => tyOf(w)), ",")
+  ret join(map(ws, (w) => tyOf(w)), ",")
 
 # ── expression walk ──────────────────────────────────────────────────────────
 
@@ -166,8 +166,8 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
     # (Python's astdump prints the dict keys; keep the bytes identical).
     (ne: PeNewEnum)   => dLine(sb, depth, "NewEnum", ne.penewLine,
                                ne.rootName + "|" + ne.leafName + "|"
-                               + join(sort<String>(map(ne.fieldArgs,
-                                       (fa: PFieldArg) => fa.faName)), ","))
+                               + join(sort(map(ne.fieldArgs,
+                                       (fa) => fa.faName)), ","))
     (nw: PeNew)       => dLine(sb, depth, "New", nw.penwLine, tyOf(nw.newType))
       |> (s1) => dumpExpr(nw.newParam, depth + 1, s1)
     (ar: PeArrayRead) => dLine(sb, depth, "ArrayRead", ar.pearLine, "")
@@ -186,7 +186,7 @@ fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
     # tail_loop lowering only — exercised by the tail-stage contract.
     (lp: PeLoop)      => dLine(sb, depth, "Loop", lp.pelpLine,
                                join(loopParamNames(chain(lp.loopParams),
-                                                   List<String>()),
+                                                   List()),
                                     ","))
       |> (s1) => dumpExpr(lp.loopBody, depth + 1, s1)
     (rc: PeRecur)     => dumpExprs(rc.recArgs, depth + 1,
@@ -204,13 +204,13 @@ fun lazyCapMark(c: String|None): String
     ()          => ""
 
 fun loopParamNames(ps: Chain<PExpr>, acc: List<String>): List<String>
-  ret build<String >(loopParamNamesB(ps, builderFrom<String>(acc)))
+  ret build(loopParamNamesB(ps, builderFrom(acc)))
 
-fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (nm: PeName) => loopParamNamesB(l.next, push<String >(acc, nm.refName))
+      (nm: PeName) => loopParamNamesB(l.next, push(acc, nm.refName))
       (o: PExpr)   => loopParamNamesB(l.next, acc)
 
 fun [tail] dumpExprs(es: List<PExpr>, depth: Int,

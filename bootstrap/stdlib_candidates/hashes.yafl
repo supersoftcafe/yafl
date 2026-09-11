@@ -11,12 +11,12 @@ namespace Bootstrap::StdlibCandidates
 
 import System
 
-let mask32: Int = 4294967295
+let mask32 = 4294967295
 
 # ── tables ───────────────────────────────────────────────────────────────────
 
 # K[i] = floor(abs(sin(i+1)) * 2^32), packed as 64 x 8 hex chars.
-let md5K: String =
+let md5K =
   "d76aa478e8c7b756242070dbc1bdceeef57c0faf4787c62aa8304613fd469501"
   + "698098d88b44f7afffff5bb1895cd7be6b901122fd987193a679438e49b40821"
   + "f61e2562c040b340265e5a51e9b6c7aad62f105d02441453d8a1e681e7d3fbc8"
@@ -28,7 +28,7 @@ let md5K: String =
 
 
 # Per-round left-rotate amounts, packed as 64 x 2 decimal digits.
-let md5S: String =
+let md5S =
   "07121722071217220712172207121722"
   + "05091420050914200509142005091420"
   + "04111623041116230411162304111623"
@@ -135,7 +135,7 @@ fun md5(msg: String): Md5State
 
 # ── base64 of the 16-byte digest (24 chars, standard alphabet + padding) ─────
 
-let b64Alphabet: String =
+let b64Alphabet =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 fun b64Char(v: Int): String
@@ -211,7 +211,7 @@ fun [tail] sha1Schedule(msg: String, len: Int, base: Int, t: Int,
     ? sha1WordOf(msg, len, base, t)
     : rotl32(tapAt(recent, 2) ^ tapAt(recent, 7)
              ^ tapAt(recent, 13) ^ tapAt(recent, 15), 1)
-  ret sha1Schedule(msg, len, base, t + 1, ChainLink<Int>(w, recent),
+  ret sha1Schedule(msg, len, base, t + 1, ChainLink(w, recent),
                    push(acc, w))
 
 fun [tail] tapAt(c: Chain<Int>, k: Int): Int
@@ -242,8 +242,8 @@ fun [tail] sha1Rounds(ws: Chain<Int>, i: Int, a: Int, b: Int, c: Int, d: Int, e:
 fun [tail] sha1Chunks(msg: String, len: Int, base: Int, total: Int, st: Sha1State): Sha1State
   if base >= total
     ret st
-  let r = sha1Rounds(chain(sha1Schedule(msg, len, base, 0, ChainEnd<Int>(),
-                                        builder<Int>())),
+  let r = sha1Rounds(chain(sha1Schedule(msg, len, base, 0, ChainEnd(),
+                                        builder())),
                      0, st.h0, st.h1, st.h2, st.h3, st.h4)
   ret sha1Chunks(msg, len, base + 64, total,
                  Sha1State(add32(st.h0, r.h0), add32(st.h1, r.h1), add32(st.h2, r.h2),
@@ -255,7 +255,7 @@ fun sha1(msg: String): Sha1State
                  Sha1State(1732584193, 4023233417, 2562383102, 271733878, 3285377520))
 
 # hexdigest: 5 words big-endian, two lowercase hex chars per byte (40 chars).
-let hexAlphabet: String = "0123456789abcdef"
+let hexAlphabet = "0123456789abcdef"
 
 fun sha1HexByte(v: Int): String
   ret slice(hexAlphabet, v >> 4, (v >> 4) + 1) + slice(hexAlphabet, v & 15, (v & 15) + 1)
@@ -286,7 +286,7 @@ fun sha1Hex(msg: String): String
 
 # K[i] = first 32 bits of the fractional part of the cube root of the i'th
 # prime, packed as 64 x 8 hex chars (the md5K layout, read by the same hex8).
-let sha256K: String =
+let sha256K =
   "428a2f9871374491b5c0fbcfe9b5dba53956c25b59f111f1923f82a4ab1c5ed5"
   + "d807aa9812835b01243185be550c7dc372be5d7480deb1fe9bdc06a7c19bf174"
   + "e49b69c1efbe47860fc19dc6240ca1cc2de92c6f4a7484aa5cb0a9dc76f988da"
@@ -321,7 +321,7 @@ fun [tail] sha256Schedule(msg: String, len: Int, base: Int, t: Int,
   let w = t < 16
     ? sha1WordOf(msg, len, base, t)
     : add32(add32(tapAt(recent, 15), s0), add32(tapAt(recent, 6), s1))
-  ret sha256Schedule(msg, len, base, t + 1, ChainLink<Int>(w, recent),
+  ret sha256Schedule(msg, len, base, t + 1, ChainLink(w, recent),
                      push(acc, w))
 
 # The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
@@ -348,8 +348,8 @@ fun [tail] sha256Chunks(msg: String, len: Int, base: Int, total: Int,
                         st: Sha256State): Sha256State
   if base >= total
     ret st
-  let r = sha256Rounds(chain(sha256Schedule(msg, len, base, 0, ChainEnd<Int>(),
-                                            builder<Int>())),
+  let r = sha256Rounds(chain(sha256Schedule(msg, len, base, 0, ChainEnd(),
+                                            builder())),
                        0, st.t0, st.t1, st.t2, st.t3, st.t4, st.t5, st.t6, st.t7)
   ret sha256Chunks(msg, len, base + 64, total,
                    Sha256State(add32(st.t0, r.t0), add32(st.t1, r.t1),

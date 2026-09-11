@@ -28,12 +28,12 @@ import Bootstrap::Ast
 
 
 fun qualifiedRefs(stmts: List<PStmt>): List<String>
-  ret sort(refsStmts(chain(stmts), Set<String>()))
+  ret sort(refsStmts(chain(stmts), Set()))
 
 # A name is a candidate only when it is qualified; `prefixesOf` splits it and
 # strips the `@unique` tags later.
 fun noteName(name: String, acc: Set<String>): Set<String>
-  ret contains(name, "::") ? add<String>(acc, name) : acc
+  ret contains(name, "::") ? add(acc, name) : acc
 
 
 # ── statements ──────────────────────────────────────────────────────────────

@@ -22,13 +22,13 @@ import Bootstrap::StdlibCandidates
 class [final] StrSet(setIx: Dict<String, Bool>)
 
 fun setNames(s2: StrSet): List<String>
-  ret sort<String>(keys<String, Bool>(s2.setIx))
+  ret sort(keys(s2.setIx))
 
 fun setEmpty(): StrSet
-  ret StrSet(Dict<String, Bool>())
+  ret StrSet(Dict())
 
 fun set1(name: String): StrSet
-  ret StrSet(put(Dict<String, Bool>(), name, true))
+  ret StrSet(put(Dict(), name, true))
 
 fun setHas(s2: StrSet, name: String): Bool
   ret !(get(s2.setIx, name) is None)
@@ -45,7 +45,7 @@ fun setUnion(a: StrSet, b: StrSet): StrSet
   ret fold(setNames(b), a, setAdd)
 
 fun setSub(a: StrSet, b: StrSet): StrSet
-  ret setOfList(filter(setNames(a), (x: String) => !setHas(b, x)))
+  ret setOfList(filter(setNames(a), (x) => !setHas(b, x)))
 
 fun setIsEmpty(s2: StrSet): Bool
   ret isEmpty(s2.setIx)
@@ -84,8 +84,8 @@ fun ssSub(a: ScanSets, b: ScanSets): ScanSets
 
 fun scanRParam(p: RParam): ScanSets
   ret match(p)
-    (ia: RpInitArray)      => fold(ia.values, ssEmpty(), (a: ScanSets, x: RParam) => ssUnion(a, scanRParam(x)))
-    (ns: RpNewStruct)      => fold(ns.values, ssEmpty(), (a: ScanSets, x: RpNamedValue) => ssUnion(a, scanRParam(x.value)))
+    (ia: RpInitArray)      => fold(ia.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x)))
+    (ns: RpNewStruct)      => fold(ns.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x.value)))
     (ri: RpRuntimeInvoke)  => scanRParam(ri.parameters)
     (pt: RpPointerTo)      => scanRParam(pt.value)
     (sf: RpStructField)    => scanRParam(sf.structVal)
@@ -104,7 +104,7 @@ fun scanRParam(p: RParam): ScanSets
     (vd: RpVtableDiscriminator) => scanRParam(vd.value)
     # Keep the referenced class's vtable alive when dispatching on it.
     (ov: RpObjVtableEq)    => ssUnion(scanRParam(ov.value), scanOptObject(ov.className))
-    (nt: RpNewStructTyped) => fold(nt.values, ssEmpty(), (a: ScanSets, x: RpNamedValue) => ssUnion(a, scanRParam(x.value)))
+    (nt: RpNewStructTyped) => fold(nt.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x.value)))
     (tt: RpTagTask)        => scanRParam(tt.task)
     (sw: RpSyncWrap)       => scanRParam(sw.value)
     (ff: RpFunField)       => scanRParam(ff.ffFun)
@@ -132,9 +132,9 @@ fun scanOp(op: Op): ScanSets
                                    scanOptRParam(n.newObjSize))
     (t2: OpIfTask)      => ssUnion(scanRParam(t2.taskCondition), scanRParam(t2.taskSource))
     (sw: OpSwitchJump)  => scanRParam(sw.switchCondition)
-    (pc: OpParallelCall) => fold(pc.parCalls, ssEmpty(), (a: ScanSets, x: RParam) => ssUnion(a, scanRParam(x)))
+    (pc: OpParallelCall) => fold(pc.parCalls, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x)))
     (ph: OpPhi)         => fold(ph.phiSources, scanRParam(ph.phiTarget),
-                                (a: ScanSets, s2: OpPhiSource) => ssUnion(a, scanRParam(s2.sourceValue)))
+                                (a, s2) => ssUnion(a, scanRParam(s2.sourceValue)))
     (o: Op)             => ssEmpty()   # Label/Jump/ReturnVoid/Abort
 
 fun scanGlobal(g2: CgGlobal): ScanSets
@@ -154,10 +154,10 @@ fun scanOptGlobal(name: String|None): ScanSets
 fun scanObject(o: CgObject): ScanSets
   ret ScanSets(setEmpty(), setOfList(o.objExtends),
                setOfList(map(o.objFunctions,
-                             (s2: CgFuncSlot) => s2.slotGlobalName)))
+                             (s2) => s2.slotGlobalName)))
 
 fun scanFunction(f: CgFunction): ScanSets
-  ret fold(f.fnOps, ssEmpty(), (a: ScanSets, op: Op) => ssUnion(a, scanOp(op)))
+  ret fold(f.fnOps, ssEmpty(), (a, op) => ssUnion(a, scanOp(op)))
 
 # ── the worklist fixpoint ────────────────────────────────────────────────────
 
@@ -166,11 +166,11 @@ fun removedUnusedStuff(a: CgApp): CgApp
 
 fun [tail] trimLoop(a: CgApp, scanSets: ScanSets, toApp: ScanSets): CgApp
   let fromGlobals = fold(setNames(scanSets.ssGlobals), ssEmpty(),
-                         (acc: ScanSets, n: String) => ssUnion(acc, scanAppGlobal(a, n)))
+                         (acc, n) => ssUnion(acc, scanAppGlobal(a, n)))
   let fromObjects = fold(setNames(scanSets.ssObjects), fromGlobals,
-                         (acc: ScanSets, n: String) => ssUnion(acc, scanAppObject(a, n)))
+                         (acc, n) => ssUnion(acc, scanAppObject(a, n)))
   let seenSets = ssUnion(scanSets, fold(setNames(scanSets.ssFunctions), fromObjects,
-                         (acc: ScanSets, n: String) => ssUnion(acc, scanAppFunction(a, n))))
+                         (acc, n) => ssUnion(acc, scanAppFunction(a, n))))
   let newScanSets = ssSub(seenSets, toApp)
   ret ssIsEmpty(newScanSets)
     ? trimRebuild(a, toApp)
@@ -195,43 +195,43 @@ fun scanAppFunction(a: CgApp, name: String): ScanSets
 # deterministic emission order the C contract pins.
 fun trimRebuild(a: CgApp, toApp: ScanSets): CgApp
   ret appOf(
-    trimPick(setNames(toApp.ssFunctions), (n: String) => appFunction(a, n)),
+    trimPick(setNames(toApp.ssFunctions), (n) => appFunction(a, n)),
     trimPickObjects(setNames(toApp.ssObjects), a),
     trimPickGlobals(setNames(toApp.ssGlobals), a))
 
 # The picked entities keep the (sorted) name order they were asked for — it
 # becomes their emission order.
 fun trimPick(names: List<String>, get: (:String): CgFunction|None): List<CgFunction>
-  ret build<CgFunction >(trimPickLoop(chain(names), get,
-                                      builder<CgFunction >()))
+  ret build(trimPickLoop(chain(names), get,
+                         builder()))
 
 fun [tail] trimPickLoop(ns: Chain<String>, get: (:String): CgFunction|None,
-                        [terminal] acc: ListBuilder<CgFunction >): ListBuilder<CgFunction >
+                        [terminal] acc: ListBuilder<CgFunction>): ListBuilder<CgFunction>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(get(l.value))
       (f2: CgFunction) => trimPickLoop(l.next, get,
-                                       push<CgFunction >(acc, f2))
+                                       push(acc, f2))
       ()                => trimPickLoop(l.next, get, acc)
 
 fun trimPickObjects(names: List<String>, a: CgApp): List<CgObject>
-  ret build<CgObject >(trimPickObjLoop(chain(names), a, builder<CgObject >()))
+  ret build(trimPickObjLoop(chain(names), a, builder()))
 
 fun [tail] trimPickObjLoop(ns: Chain<String>, a: CgApp,
-                           [terminal] acc: ListBuilder<CgObject >): ListBuilder<CgObject >
+                           [terminal] acc: ListBuilder<CgObject>): ListBuilder<CgObject>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(appObject(a, l.value))
-      (o2: CgObject) => trimPickObjLoop(l.next, a, push<CgObject >(acc, o2))
+      (o2: CgObject) => trimPickObjLoop(l.next, a, push(acc, o2))
       ()              => trimPickObjLoop(l.next, a, acc)
 
 fun trimPickGlobals(names: List<String>, a: CgApp): List<CgGlobal>
-  ret build<CgGlobal >(trimPickGlbLoop(chain(names), a, builder<CgGlobal >()))
+  ret build(trimPickGlbLoop(chain(names), a, builder()))
 
 fun [tail] trimPickGlbLoop(ns: Chain<String>, a: CgApp,
-                           [terminal] acc: ListBuilder<CgGlobal >): ListBuilder<CgGlobal >
+                           [terminal] acc: ListBuilder<CgGlobal>): ListBuilder<CgGlobal>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(appGlobal(a, l.value))
-      (g3: CgGlobal) => trimPickGlbLoop(l.next, a, push<CgGlobal >(acc, g3))
+      (g3: CgGlobal) => trimPickGlbLoop(l.next, a, push(acc, g3))
       ()              => trimPickGlbLoop(l.next, a, acc)

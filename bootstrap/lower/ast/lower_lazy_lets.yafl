@@ -61,26 +61,26 @@ fun sgOptNamed(sp: Spec|None): Bool
 # ── auto-promotion ───────────────────────────────────────────────────────────
 
 fun promoteNonTrivialGlobals(statements: List<PStmt>, r: Resolver): List<PStmt>
-  ret pngLoop(chain(statements), r, List<PStmt>())
+  ret pngLoop(chain(statements), r, List())
 
 fun pngLoop(ss: Chain<PStmt>, r: Resolver,
                    acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(pngLoopB(ss, r, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(pngLoopB(ss, r, builderFrom(acc)))
 
 fun [tail] pngLoopB(ss: Chain<PStmt>, r: Resolver,
-                   [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                   [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => pngLoopB(l.next, r, push<PStmt >(acc, pngOne(let2, r)))
-      (o: PStmt)    => pngLoopB(l.next, r, push<PStmt >(acc, l.value))
+      (let2: PsLet) => pngLoopB(l.next, r, push(acc, pngOne(let2, r)))
+      (o: PStmt)    => pngLoopB(l.next, r, push(acc, l.value))
 
 fun pngOne(let2: PsLet, r: Resolver): PStmt
   if isDeferredInit(let2)
     ret let2
   let promotable = match(let2.lDefault)
     (dv: PExpr) => match(let2.lType)
-      (t2: Spec) => !hasStaticGlobalPlan(let2, r, List<String>())
+      (t2: Spec) => !hasStaticGlobalPlan(let2, r, List())
       ()         => false
     ()          => false
   if !promotable
@@ -96,7 +96,7 @@ fun pngOne(let2: PsLet, r: Resolver): PStmt
 # block walk, but the driver prints sorted(set(errors)).
 
 fun checkLazyForwardRefs(statements: List<PStmt>): Set<PErr>
-  ret foldStmts<Set<PErr>>(statements, clfIdStmt, clfBlockCb, Set<PErr>())
+  ret foldStmts(statements, clfIdStmt, clfBlockCb, Set())
 
 fun clfIdStmt(acc: Set<PErr>, st: PStmt): Set<PErr>
   ret acc
@@ -114,7 +114,7 @@ class [final] ClfDecls(cdMap: Dict<String, ClfDecl>)
 
 fun clfBlock(stmts: List<PStmt>, acc: Set<PErr>): Set<PErr>
   let decls = clfDecls(chain(stmts), 0,
-                       ClfDecls(Dict<String, ClfDecl>()))
+                       ClfDecls(Dict()))
   ret clfScan(chain(stmts), 0, decls, acc)
 
 fun [tail] clfDecls(ss: Chain<PStmt>, i: Int, acc: ClfDecls): ClfDecls
@@ -148,8 +148,8 @@ fun [tail] clfScan(ss: Chain<PStmt>, i: Int, decls: ClfDecls,
 fun clfLet(let2: PsLet, i: Int, decls: ClfDecls,
            acc: Set<PErr>): Set<PErr>
   ret match(let2.lDefault)
-    (dv: PExpr) => foldExpr<Set<PErr>>(dv, clfIdStmt,
-                     (a: Set<PErr>, x: PExpr) =>
+    (dv: PExpr) => foldExpr(dv, clfIdStmt,
+                     (a, x) =>
                        clfRef(a, x, let2, i, decls),
                      acc)
     ()          => acc
@@ -172,12 +172,12 @@ fun clfRef(acc: Set<PErr>, x: PExpr, let2: PsLet, i: Int,
 
 # FIRST declaration of a name wins, as the head-first chain walk did.
 fun clfDeclAdd(acc: ClfDecls, name: String, i: Int, lazy: Bool): ClfDecls
-  ret contains<String, ClfDecl>(acc.cdMap, name)
+  ret contains(acc.cdMap, name)
     ? acc
-    : ClfDecls(put<String, ClfDecl>(acc.cdMap, name, ClfDecl(i, lazy)))
+    : ClfDecls(put(acc.cdMap, name, ClfDecl(i, lazy)))
 
 fun clfBad(name: String, i: Int, decls: ClfDecls): Bool
-  ret match(get<String, ClfDecl>(decls.cdMap, name))
+  ret match(get(decls.cdMap, name))
     (d: ClfDecl) => d.cdIdx > i && !d.cdLazy
     ()           => false
 
@@ -191,11 +191,11 @@ fun containsSub(s: String, needle: String): Bool
 fun lowerLazyLets(statements: List<PStmt>): List<PStmt>
   let r = rootResolver(statements)
   let promoted = promoteNonTrivialGlobals(statements, r)
-  let lazies = foldStmts<OuterTypes>(promoted, lllCollect, lllIdExpr,
-                                     OuterTypes(Dict<String, Spec>()))
+  let lazies = foldStmts(promoted, lllCollect, lllIdExpr,
+                         OuterTypes(Dict()))
   if isEmpty(lazies.otMap)
     ret promoted
-  ret rwStmts(promoted, Rw((x: PExpr) => lllRefCb(x, lazies), rwNoSpec,
+  ret rwStmts(promoted, Rw((x) => lllRefCb(x, lazies), rwNoSpec,
                            lllWrapCb))
 
 fun lllIdExpr(acc: OuterTypes, x: PExpr): OuterTypes
@@ -212,14 +212,14 @@ fun lllCollect(acc: OuterTypes, st: PStmt): OuterTypes
 # one's references.
 fun lllAdd(acc: OuterTypes, let2: PsLet): OuterTypes
   ret match(let2.lType)
-    (t2: Spec) => contains<String, Spec>(acc.otMap, let2.lName)
+    (t2: Spec) => contains(acc.otMap, let2.lName)
       ? acc
-      : OuterTypes(put<String, Spec>(acc.otMap, let2.lName, t2))
+      : OuterTypes(put(acc.otMap, let2.lName, t2))
     ()         => acc
 
 fun lllRefCb(x: PExpr, lazies: OuterTypes): PExpr|None
   ret match(x)
-    (nm: PeName) => match(get<String, Spec>(lazies.otMap, nm.refName))
+    (nm: PeName) => match(get(lazies.otMap, nm.refName))
       (t2: Spec) => PeLazy(nm.refName, t2, None, false, nm.penLine)
       ()         => None
     (o: PExpr)   => None
@@ -237,7 +237,7 @@ fun lllWrapLet(let2: PsLet): PStmt|None
       (t2: Spec) => PsLet(let2.lName, let2.lAttrs, let2.lGens, let2.lType,
                           PeLambda(lllEmptyParams(let2.pslLine), dv,
                                    let2.pslLine,
-                                   SCallable(STuple(List<SEntry>(),
+                                   SCallable(STuple(List(),
                                                     let2.pslLine),
                                              t2, let2.pslLine)),
                           let2.lArrayLen, let2.lWheres, let2.pslLine,
@@ -246,6 +246,6 @@ fun lllWrapLet(let2: PsLet): PStmt|None
     ()          => None
 
 fun lllEmptyParams(lr: PLine): PStmt
-  ret PsDestructure("_", List<PAttr>(),
-                    STuple(List<SEntry>(), lr), List<PStmt>(), None, lr,
+  ret PsDestructure("_", List(),
+                    STuple(List(), lr), List(), None, lr,
                     false)

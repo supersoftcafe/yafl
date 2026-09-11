@@ -19,10 +19,10 @@ import Bootstrap::Resolve
 enum PErr(errLine: PLine, errMsg: String, errWarn: Bool = false)
 
 fun noErrs(): Set<PErr>
-  ret Set<PErr>()
+  ret Set()
 
 fun oneErr(lr: PLine, msg: String): Set<PErr>
-  ret add(Set<PErr>(), PErr(lr, msg))
+  ret add(Set(), PErr(lr, msg))
 
 # ── TypeSpec.check ──────────────────────────────────────────────────────────
 
@@ -178,7 +178,7 @@ fun stmtAttrs(st: PStmt): List<PAttr>
     (d: PsDestructure) => d.dAttrs
     (c: PsClass)      => c.cAttrs
     (ta: PsTypealias) => ta.taAttrs
-    (o: PStmt)        => List<PAttr>()
+    (o: PStmt)        => List()
 
 # ── check_caller_type_params (NamedStatement) ───────────────────────────────
 # Arity first; then each `where` constraint, compiled with the caller's type
@@ -202,26 +202,26 @@ fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
     ret oneErr(lr, "Not enough type parameters")
   ret checkWheres(chain(stmtWheres(st)),
                   RTypes(callerGenFounds(chain(gens), chain(callerParams),
-                                         List<Found>()),
+                                         List()),
                          r),
                   lr, noErrs())
 
 fun callerGenFounds(gs: Chain<PGen>, cs: Chain<Spec>,
                            acc: List<Found>): List<Found>
-  ret build<Found >(callerGenFoundsB(gs, cs, builderFrom<Found>(acc)))
+  ret build(callerGenFoundsB(gs, cs, builderFrom(acc)))
 
 fun [tail] callerGenFoundsB(gs: Chain<PGen>, cs: Chain<Spec>,
-                           [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
+                           [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
   ret match(gs)
     (nil: ChainEnd) => acc
     (g2: ChainLink) => match(cs)
       (nil2: ChainEnd) => acc
       (c: ChainLink)   => callerGenFoundsB(g2.next, c.next,
-          push<Found >(acc, Found(g2.value.genName,
-                            PsTypealias(g2.value.genName, List<PAttr>(),
-                                        List<PGen>(), c.value, List<Spec>(),
-                                        g2.value.pgLine),
-                            ScLocal())))
+          push(acc, Found(g2.value.genName,
+                    PsTypealias(g2.value.genName, List(),
+                                List(), c.value, List(),
+                                g2.value.pgLine),
+                    ScLocal())))
 
 fun [tail] checkWheres(ws: Chain<Spec>, r: Resolver, lr: PLine,
                        acc: Set<PErr>): Set<PErr>
@@ -286,8 +286,8 @@ fun instancePatternMatches(ti: PsTraitInstance, compiled: Spec,
 # rigid.
 fun unifiesWithInstance(pat: SClass, cmp: SClass, ti: PsTraitInstance): Bool
   ret match(unifyGeneric(pat, cmp,
-                         genNames(chain(ti.tiGens), builder<String>()),
-                         List<Binding>()))
+                         genNames(chain(ti.tiGens), builder()),
+                         List()))
     (m: UMap)   => true
     (f2: UFail) => false
 

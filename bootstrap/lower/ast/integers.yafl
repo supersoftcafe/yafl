@@ -12,14 +12,14 @@ import Bootstrap::Ast
 
 
 fun fixGlobalIntegers(statements: List<PStmt>): List<PStmt>
-  let values = sort<Int>(foldStmts<Set<Int> >(statements, giIdInts, giCollect,
-                                              Set<Int>()))
+  let values = sort(foldStmts(statements, giIdInts, giCollect,
+                              Set()))
   if isEmpty(values)
     ret statements
-  let globals2 = giGlobals(chain(values), 0, List<PStmt>())
+  let globals2 = giGlobals(chain(values), 0, List())
   ret concat(globals2,
-             rwStmts(statements, rwOnExpr((x: PExpr) => giReplace(x,
-                                                                  values))))
+             rwStmts(statements, rwOnExpr((x) => giReplace(x,
+                                                           values))))
 
 fun giIdInts(acc: Set<Int>, st: PStmt): Set<Int>
   ret acc
@@ -30,7 +30,7 @@ fun giIdInts(acc: Set<Int>, st: PStmt): Set<Int>
 # Set does the dedup, and the stdlib sort does the ordering.
 fun giCollect(acc: Set<Int>, x: PExpr): Set<Int>
   ret match(x)
-    (i: PeInt) => i.precision == 0 ? add<Int>(acc, i.value) : acc
+    (i: PeInt) => i.precision == 0 ? add(acc, i.value) : acc
     (o: PExpr) => acc
 
 fun giName(v: Int): String
@@ -39,26 +39,26 @@ fun giName(v: Int): String
 
 fun giGlobals(vs: Chain<Int>, index: Int,
                      acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(giGlobalsB(vs, index, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(giGlobalsB(vs, index, builderFrom(acc)))
 
 fun [tail] giGlobalsB(vs: Chain<Int>, index: Int,
-                     [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                     [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => giGlobalsB(l.next, index + 1,
-        push<PStmt >(acc, PsLet(giName(l.value), List<PAttr>(), List<PGen>(),
-                          SBuiltin("bigint",
-                                   PLine("$integers", index + 1, 1)),
-                          PeInt(l.value, 0,
-                                PLine("$integers", index + 1, 1)),
-                          "", List<Spec>(),
-                          PLine("$integers", index + 1, 1), false,
-                          List<PStmt>())))
+        push(acc, PsLet(giName(l.value), List(), List(),
+                  SBuiltin("bigint",
+                           PLine("$integers", index + 1, 1)),
+                  PeInt(l.value, 0,
+                        PLine("$integers", index + 1, 1)),
+                  "", List(),
+                  PLine("$integers", index + 1, 1), false,
+                  List<PStmt>())))
 
 fun giReplace(x: PExpr, values: List<Int>): PExpr|None
   ret match(x)
     (i: PeInt) => i.precision == 0
-      ? PeName(giName(i.value), List<Spec>(),
+      ? PeName(giName(i.value), List(),
                PLine("$integers", giIndexOf(chain(values), i.value, 0) + 1,
                      1),
                None)

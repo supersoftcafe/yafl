@@ -22,7 +22,7 @@ import Bootstrap::Types
 
 
 fun checkApplication(a: CgApp): List<String>
-  ret fold(appFunctions(a), List<String>(), ucCheckOne)
+  ret fold(appFunctions(a), List(), ucCheckOne)
 
 fun ucCheckOne(acc: List<String>, f: CgFunction): List<String>
   ret isNoneStr(f.fnForeignSymbol) ? concat(acc, ucCheckFunction(f)) : acc
@@ -39,7 +39,7 @@ enum InitSet
 class [final] UcIx(uiOps: Dict<Int, Op>, uiN: Int)
 
 fun ucIndexOps(ops: Segment<Op>|None): UcIx
-  let built = ucIxLoop(ops, 0i32, 0, Dict<Int, Op>())
+  let built = ucIxLoop(ops, 0i32, 0, Dict())
   ret UcIx(built.d, built.n)
 
 # The op count rides the indexing walk (no-length ruling).
@@ -53,7 +53,7 @@ fun [tail] ucIxLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, acc: Dict<Int, Op>
 fun ucIxOp(ix: UcIx, i: Int): Op
   ret match(get(ix.uiOps, i))
     (op: Op) => op
-    ()       => OpReturnVoid(List<RParam>())   # unreachable: 0 <= i < uiN
+    ()       => OpReturnVoid(List())   # unreachable: 0 <= i < uiN
 
 fun ucEntryAt(entry: Dict<Int, InitSet>, i: Int): InitSet
   ret match(get(entry, i))
@@ -67,13 +67,13 @@ fun ucComputeEntrySets(f: CgFunction): Dict<Int, InitSet>
   let labels = ucLabelIndex(f.fnOps)
   let params = map(cgFieldsOfOrEmpty(f.fnParams), ucKeyField)
   let ix = ucIndexOps(f.fnOps)
-  let entry0 = put(Dict<Int, InitSet>(), 0,
-                   IsSet(fold(params, Set<String>(), ucAddName)))
+  let entry0 = put(Dict(), 0,
+                   IsSet(fold(params, Set(), ucAddName)))
   ret ucFixpoint(ix, labels, entry0, list1(0))
 
 fun ucCheckFunction(f: CgFunction): List<String>
   if isEmpty(f.fnOps)
-    ret List<String>()
+    ret List()
   let labels = ucLabelIndex(f.fnOps)
   let entry = ucComputeEntrySets(f)
   ret concat(ucVerify(f, entry), ucCheckPhiSources(f, labels, entry))
@@ -84,7 +84,7 @@ fun ucCheckFunction(f: CgFunction): List<String>
 # mapping as a dict (async_lower.py `labels`), and — like a dict — a repeated
 # label name keeps the LAST index.
 fun ucLabelIndex(ops: Segment<Op>|None): Dict<String, Int>
-  ret ucLabelLoop(ops, 0i32, 0, Dict<String, Int>())
+  ret ucLabelLoop(ops, 0i32, 0, Dict())
 
 fun [tail] ucLabelLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, acc: Dict<String, Int>): Dict<String, Int>
   ret match(s)
@@ -106,25 +106,25 @@ fun ucLabelAt(labels: Dict<String, Int>, name: String): Int|None
 fun ucSuccessors(ix: UcIx, labels: Dict<String, Int>, i: Int): List<Int>
   let n = ix.uiN
   ret match(ucIxOp(ix, i))
-    (r: OpReturn)      => List<Int>()
-    (rv: OpReturnVoid) => List<Int>()
-    (a: OpAbort)       => List<Int>()
-    (c: OpCall)        => c.callMusttail ? List<Int>() : ucFall(i, n)
+    (r: OpReturn)      => List()
+    (rv: OpReturnVoid) => List()
+    (a: OpAbort)       => List()
+    (c: OpCall)        => c.callMusttail ? List() : ucFall(i, n)
     (j: OpJump)        => ucLabelOnly(labels, j.jumpName)
     (ji: OpJumpIf)     => concat(ucLabelOnly(labels, ji.jumpIfLabel), ucFall(i, n))
     (t2: OpIfTask)     => concat(ucLabelOnly(labels, t2.taskTarget), ucFall(i, n))
     # Codegen emits `default: abort()`: successors are exactly the cases.
-    (sw: OpSwitchJump) => fold(sw.switchCases, List<Int>(),
-                               (acc: List<Int>, cs: OpCase) => concat(acc, ucLabelOnly(labels, cs.caseLabel)))
+    (sw: OpSwitchJump) => fold(sw.switchCases, List(),
+                               (acc, cs) => concat(acc, ucLabelOnly(labels, cs.caseLabel)))
     (o: Op)            => ucFall(i, n)
 
 fun ucFall(i: Int, n: Int): List<Int>
-  ret i + 1 < n ? list1(i + 1) : List<Int>()
+  ret i + 1 < n ? list1(i + 1) : List()
 
 fun ucLabelOnly(labels: Dict<String, Int>, name: String): List<Int>
   ret match(ucLabelAt(labels, name))
     (x: Int) => list1(x)
-    ()        => List<Int>()
+    ()        => List()
 
 # ── per-op reads/writes for the dataflow ─────────────────────────────────────
 
@@ -150,16 +150,16 @@ fun ucTakeKey(acc: List<String>, sv: RParam): List<String>
 
 fun ucReads(op: Op): List<String>
   ret match(op)
-    (ph: OpPhi) => List<String>()
-    (o: Op)     => fold(opReadStackVars(op), List<String>(), ucTakeKey)
+    (ph: OpPhi) => List()
+    (o: Op)     => fold(opReadStackVars(op), List(), ucTakeKey)
 
 fun ucWrites(op: Op): List<String>
-  ret fold(ssavOpWrites(op), List<String>(), ucTakeKey)
+  ret fold(ssavOpWrites(op), List(), ucTakeKey)
 
 fun ucBranchOnlyWrites(op: Op): List<String>
   ret match(op)
-    (t2: OpIfTask) => fold(list2(t2.taskLhs, t2.callIdLhs), List<String>(), ucTakeKey)
-    (o: Op)        => List<String>()
+    (t2: OpIfTask) => fold(list2(t2.taskLhs, t2.callIdLhs), List(), ucTakeKey)
+    (o: Op)        => List()
 
 # ── the fixpoint ─────────────────────────────────────────────────────────────
 
@@ -181,11 +181,11 @@ fun [tail] ucFixpoint(ix: UcIx, labels: Dict<String, Int>,
   let writes = ucWrites(op)
   let branchOnly = ucBranchOnlyWrites(op)
   let exitFall = fold(filter(writes,
-                             (w: String) => !strListMember(branchOnly, w)),
+                             (w) => !strListMember(branchOnly, w)),
                       e2, ucAddName)
   let exitBranch = fold(writes, e2, ucAddName)
   let out = fold(ucSuccessors(ix, labels, i), (entry, rest),
-                 (acc: (e: Dict<Int, InitSet>, w: List<Int>), succ: Int) =>
+                 (acc, succ) =>
                    ucJoinInto(acc.e, acc.w, succ,
                               ucIsBranchTarget(op, labels, succ) ? exitBranch : exitFall))
   ret ucFixpoint(ix, labels, out.e, out.w)
@@ -198,18 +198,18 @@ fun headIntOr(l: List<Int>, dflt: Int): Int
 # An initialised-name set: every reader asks whether ONE name is in it, and
 # the fixpoint's join is an intersection. Nothing walks it in order.
 fun ucAddName(acc: Set<String>, n: String): Set<String>
-  ret add<String>(acc, n)
+  ret add(acc, n)
 
 fun ucNamesOf(s2: InitSet): Set<String>
   ret match(s2)
     (i: IsSet)       => i.isNames
-    (u: IsUnreached) => Set<String>()   # unreachable: caller tested
+    (u: IsUnreached) => Set()   # unreachable: caller tested
 
 fun ucIsBranchTarget(op: Op, labels: Dict<String, Int>, succ: Int): Bool
   ret match(op)
     (ji: OpJumpIf)     => ucLabelIs(labels, ji.jumpIfLabel, succ)
     (t2: OpIfTask)     => ucLabelIs(labels, t2.taskTarget, succ)
-    (sw: OpSwitchJump) => any(sw.switchCases, (cs: OpCase) => ucLabelIs(labels, cs.caseLabel, succ))
+    (sw: OpSwitchJump) => any(sw.switchCases, (cs) => ucLabelIs(labels, cs.caseLabel, succ))
     (o: Op)            => false
 
 fun ucLabelIs(labels: Dict<String, Int>, name: String, succ: Int): Bool
@@ -231,15 +231,15 @@ fun ucJoinInto(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
 
 fun ucJoinExisting(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
                    old: Set<String>, incoming: Set<String>): (e: Dict<Int, InitSet>, w: List<Int>)
-  let met = filter<String>(old, (n: String) => contains<String>(incoming, n))
-  ret size<String>(met) == size<String>(old)
+  let met = filter(old, (n) => contains(incoming, n))
+  ret size(met) == size(old)
     ? (entry, worklist)
     : (put(entry, succ, IsSet(met)), prepend(succ, worklist))
 
 # ── verification ─────────────────────────────────────────────────────────────
 
 fun ucVerify(f: CgFunction, entry: Dict<Int, InitSet>): List<String>
-  ret ucVerifyLoop(f, f.fnOps, 0i32, entry, 0, List<String>())
+  ret ucVerifyLoop(f, f.fnOps, 0i32, entry, 0, List())
 
 fun [tail] ucVerifyLoop(f: CgFunction, s: Segment<Op>|None, iSeg: Int32,
                         entry: Dict<Int, InitSet>,
@@ -254,11 +254,11 @@ fun [tail] ucVerifyLoop(f: CgFunction, s: Segment<Op>|None, iSeg: Int32,
                                 concat(acc, ucVerifyOp(f, seg.array(iSeg), i, e2.isNames)))
 
 fun ucVerifyOp(f: CgFunction, op: Op, i: Int, e2: Set<String>): List<String>
-  let missing = filter(ucReads(op), (n: String) => !contains<String>(e2, n))
+  let missing = filter(ucReads(op), (n) => !contains(e2, n))
   ret isEmpty(missing)
-    ? List<String>()
+    ? List()
     : list1(f.fnName + ": uninitialised StackVar read at op #" + String(i)
-            + "; missing: [" + join(sort<String>(missing), ", ")
+            + "; missing: [" + join(sort(missing), ", ")
             + "] — codegen bug: read-before-write, or the variable should be in the task-heap state object")
 
 # ── per-edge Phi verification ────────────────────────────────────────────────
@@ -268,16 +268,16 @@ class [final] PhiEdge(pheFrom: String, pheTo: String, pheExit: Set<String>)
 fun ucCheckPhiSources(f: CgFunction, labels: Dict<String, Int>, entry: Dict<Int, InitSet>): List<String>
   let phiBlocks = ucPhiBlocks(f.fnOps)
   if isEmpty(phiBlocks)
-    ret List<String>()
+    ret List()
   let edges = ucPhiEdges(f.fnOps, entry, phiBlocks)
-  ret fold(edges, List<String>(), (acc: List<String>, ed: PhiEdge) =>
+  ret fold(edges, List(), (acc, ed) =>
         concat(acc, ucCheckEdge(f, phiBlocks, ed)))
 
 # Phi ops indexed by their enclosing block label.
 class [final] PhiBlock(phbLabel: String, phbPhis: List<Op>)
 
 fun ucPhiBlocks(ops: Segment<Op>|None): List<PhiBlock>
-  ret ucPhiBlocksLoop(ops, 0i32, "", List<PhiBlock>())
+  ret ucPhiBlocksLoop(ops, 0i32, "", List())
 
 fun [tail] ucPhiBlocksLoop(s: Segment<Op>|None, i: Int32, current: String, acc: List<PhiBlock>): List<PhiBlock>
   ret match(s)
@@ -295,19 +295,19 @@ fun [tail] ucPhiBlocksLoop(s: Segment<Op>|None, i: Int32, current: String, acc: 
 # phis WITHIN a block keep theirs, because the errors they raise are reported
 # in that order.
 fun ucPhiBlockAdd(acc: List<PhiBlock>, label: String, ph: Op): List<PhiBlock>
-  ret any(acc, (b: PhiBlock) => b.phbLabel == label)
-    ? map(acc, (b: PhiBlock) => b.phbLabel == label
-            ? PhiBlock(label, build<Op >(push<Op >(_pushChain<Op >(builder<Op >(), chain<Op>(b.phbPhis)), ph)))
+  ret any(acc, (b) => b.phbLabel == label)
+    ? map(acc, (b) => b.phbLabel == label
+            ? PhiBlock(label, build(push(builderFrom(b.phbPhis), ph)))
             : b)
     : prepend(PhiBlock(label, list1(ph)), acc)
 
 fun ucIsPhiBlock(phiBlocks: List<PhiBlock>, name: String): Bool
-  ret any(phiBlocks, (b: PhiBlock) => b.phbLabel == name)
+  ret any(phiBlocks, (b) => b.phbLabel == name)
 
 # Every edge from a labelled block into a Phi block, with the exit set at the
 # transfer point (fall-through edges use the PREVIOUS op's entry|writes).
 fun ucPhiEdges(ops: Segment<Op>|None, entry: Dict<Int, InitSet>, phiBlocks: List<PhiBlock>): List<PhiEdge>
-  ret ucPhiEdgesLoop(ops, 0i32, entry, phiBlocks, 0, "", None, List<PhiEdge>())
+  ret ucPhiEdgesLoop(ops, 0i32, entry, phiBlocks, 0, "", None, List())
 
 fun [tail] ucPhiEdgesLoop(s: Segment<Op>|None, iSeg: Int32, entry: Dict<Int, InitSet>,
                           phiBlocks: List<PhiBlock>,
@@ -343,7 +343,7 @@ fun ucFallEdgeOn(entry: Dict<Int, InitSet>, i: Int, current: String,
   ret match(ucEntryAt(entry, i - 1))
     (u: IsUnreached) => acc
     # Edge order is message order.
-    (pe: IsSet)      => build<PhiEdge >(push<PhiEdge >(_pushChain<PhiEdge >(builder<PhiEdge >(), chain<PhiEdge>(acc)), PhiEdge(current, lb.labelName,
+    (pe: IsSet)      => build(push(builderFrom(acc), PhiEdge(current, lb.labelName,
                             fold(ucWrites(prev), pe.isNames, ucAddName))))
 
 fun ucPrevFallsIntoLabel(prev: Op): Bool
@@ -371,34 +371,34 @@ fun ucJumpEdgesOn(op: Op, phiBlocks: List<PhiBlock>, current: String,
     (ji: OpJumpIf)     => ucAddEdgeIf(acc, phiBlocks, current, ji.jumpIfLabel, exitHere)
     (t2: OpIfTask)     => ucAddEdgeIf(acc, phiBlocks, current, t2.taskTarget, exitHere)
     (sw: OpSwitchJump) => fold(sw.switchCases, acc,
-                               (a: List<PhiEdge>, cs: OpCase) => ucAddEdgeIf(a, phiBlocks, current, cs.caseLabel, exitHere))
+                               (a, cs) => ucAddEdgeIf(a, phiBlocks, current, cs.caseLabel, exitHere))
     (o: Op)            => acc
 
 fun ucAddEdgeIf(acc: List<PhiEdge>, phiBlocks: List<PhiBlock>, current: String,
                 target: String, exitHere: Set<String>): List<PhiEdge>
   ret ucIsPhiBlock(phiBlocks, target)
-    ? build<PhiEdge >(push<PhiEdge >(_pushChain<PhiEdge >(builder<PhiEdge >(), chain<PhiEdge>(acc)), PhiEdge(current, target, exitHere)))
+    ? build(push(builderFrom(acc), PhiEdge(current, target, exitHere)))
     : acc
 
 fun ucCheckEdge(f: CgFunction, phiBlocks: List<PhiBlock>, ed: PhiEdge): List<String>
-  ret match(head(filter(phiBlocks, (b: PhiBlock) => b.phbLabel == ed.pheTo)))
-    (b: PhiBlock) => fold(b.phbPhis, List<String>(), (acc: List<String>, ph: Op) =>
+  ret match(head(filter(phiBlocks, (b) => b.phbLabel == ed.pheTo)))
+    (b: PhiBlock) => fold(b.phbPhis, List(), (acc, ph) =>
                        concat(acc, ucCheckPhiEdge(f, ph, ed)))
-    ()             => List<String>()
+    ()             => List()
 
 fun ucCheckPhiEdge(f: CgFunction, ph: Op, ed: PhiEdge): List<String>
   ret match(ph)
-    (p: OpPhi) => fold(p.phiSources, List<String>(), (acc: List<String>, s2: OpPhiSource) =>
+    (p: OpPhi) => fold(p.phiSources, List(), (acc, s2) =>
                     s2.sourceLabel == ed.pheFrom
                       ? concat(acc, ucCheckSource(f, ed, s2))
                       : acc)
-    (o: Op)     => List<String>()
+    (o: Op)     => List()
 
 fun ucCheckSource(f: CgFunction, ed: PhiEdge, s2: OpPhiSource): List<String>
-  let missing = filter(fold(rpReadStackVars(s2.sourceValue), List<String>(), ucTakeKey),
-                       (n: String) => !contains<String>(ed.pheExit, n))
+  let missing = filter(fold(rpReadStackVars(s2.sourceValue), List(), ucTakeKey),
+                       (n) => !contains(ed.pheExit, n))
   ret isEmpty(missing)
-    ? List<String>()
+    ? List()
     : list1(f.fnName + ": Phi at block " + ed.pheTo + ", source from predecessor "
             + ed.pheFrom + " reads uninitialised: ["
-            + join(sort<String>(missing), ", ") + "]")
+            + join(sort(missing), ", ") + "]")

@@ -137,7 +137,7 @@ fun closeAngle(ps: Ps): (ok: System::Bool, rest: Ps)
     ret (true, bump(ps))
   let remainder = Token(KSymbol(), System::slice(t.text, 1, System::length(t.text)),
                         t.indent, t.line, t.col + 1)
-  ret (true, Ps(ChainLink<Token>(remainder, bump(ps).ts), ps.fline, ps.findent, ps.srcFile))
+  ret (true, Ps(ChainLink(remainder, bump(ps).ts), ps.fline, ps.findent, ps.srcFile))
 
 fun lineAt(ps: Ps): PLine
   let t = peek(ps)
@@ -151,7 +151,7 @@ fun parseType(ps: Ps): (v: Spec|PFail, rest: Ps)
   let a = parseTypeOne(ps)
   ret match(a.v)
     (f: PFail) => a
-    (t1: Spec)   => typeUnionLoop(t1, push(builder<Spec>(), t1), lr, a.rest)
+    (t1: Spec)   => typeUnionLoop(t1, push(builder(), t1), lr, a.rest)
 
 
 # ── ListBuilder failure-path helpers ─────────────────────────────────────────
@@ -258,7 +258,7 @@ fun parseTypeParen(ps: Ps): (v: Spec|PFail, rest: Ps)
     (ty: Spec)   => t
 
 fun parseTypeTupleTail(ps: Ps): (v: Spec|PFail, rest: Ps)
-  ret parseTypeEntries(ps, builder<SEntry>())
+  ret parseTypeEntries(ps, builder())
     ?> (list: List<SEntry>, rest: Ps) => !atSym(rest, ")")
          ? (softFail("expected ')'", rest), rest)
          : typeTupleOrFun(list, lineAt(ps), bump(rest))
@@ -317,10 +317,10 @@ fun [tail] typeNamedPath(path: System::String, lr: PLine, ps: Ps): (v: Spec|PFai
   if atSym(ps, "::") && isIdentTok(peek(bump(ps)))
     ret typeNamedPath(path + "::" + peek(bump(ps)).text, lr, bump(bump(ps)))
   if !atSym(ps, "<")
-    ret (SNamed(path, List<Spec>(), lr), ps)
-  let args = parseTypeArgs(bump(ps), builder<Spec>())
+    ret (SNamed(path, List(), lr), ps)
+  let args = parseTypeArgs(bump(ps), builder())
   ret match(args.v)
-    (f: PFail)        => f.hard ? (f, args.rest) : (SNamed(path, List<Spec>(), lr), ps)
+    (f: PFail)        => f.hard ? (f, args.rest) : (SNamed(path, List(), lr), ps)
     (list: List<Spec>) => (SNamed(path, list, lr), args.rest)
 
 # "<" already consumed: type ("," type)* close-angle. A failure before the
@@ -351,7 +351,7 @@ fun parseMaybeColonType(ps: Ps): (v: Spec|System::None|PFail, rest: Ps)
 fun parseMaybeAttributes(ps: Ps): (v: List<PAttr>|PFail, rest: Ps)
   if !atSym(ps, "[")
     ret (List<PAttr>(), ps)
-  ret parseAttrList(bump(ps), builder<PAttr>())
+  ret parseAttrList(bump(ps), builder())
 
 fun attrNameText(t: Token): System::String
   if isIdentTok(t)
@@ -414,9 +414,9 @@ fun parseTargetNamed(attrs: List<PAttr>, lr: PLine,
                      ps: Ps): (v: PStmt|PFail, rest: Ps)
   let t = peek(ps)
   if isIdentTok(t)
-    ret parseTargetTail(attrs, t.text, List<PStmt>(), lr, bump(ps))
+    ret parseTargetTail(attrs, t.text, List(), lr, bump(ps))
   if isSymTok(t, "(")
-    ret parseTargetList(bump(ps), builder<PStmt>())
+    ret parseTargetList(bump(ps), builder())
       ?> (sl: List<PStmt>, rest: Ps) => parseTargetTail(attrs, "", sl, lr, rest)
   ret (softFail("expected binding name", ps), ps)
 
@@ -453,8 +453,8 @@ fun targetStmt(attrs: List<PAttr>, name: System::String, subs: List<PStmt>,
                dflt: PExpr|System::None, lr: PLine): PStmt
   if name == "" && !isEmpty(subs)
     ret PsDestructure("_", attrs, ty, subs, None, lr)
-  ret PsLet(hashName(name, lr), attrs, List<PGen>(), arrayTy(ty, mark, lr), dflt,
-            mark, List<Spec>(), lr)
+  ret PsLet(hashName(name, lr), attrs, List(), arrayTy(ty, mark, lr), dflt,
+            mark, List(), lr)
 
 # `name: Elem[lenField]` — the declared type is the trailing-array field type.
 fun arrayTy(ty: Spec|System::None, mark: System::String, lr: PLine): Spec|System::None
@@ -468,13 +468,13 @@ fun arrayTy(ty: Spec|System::None, mark: System::String, lr: PLine): Spec|System
 fun parseParams(ps: Ps): (v: List<PStmt>|PFail, rest: Ps)
   if !atSym(ps, "(")
     ret (softFail("expected '('", ps), ps)
-  ret parseTargetList(bump(ps), builder<PStmt>())
+  ret parseTargetList(bump(ps), builder())
 
 # "<" [attrs] ident ("," …)* ">"
 fun parseMaybeGenerics(ps: Ps): (v: List<PGen>|PFail, rest: Ps)
   if !atSym(ps, "<")
     ret (List<PGen>(), ps)
-  ret parseGenericList(bump(ps), builder<PGen>())
+  ret parseGenericList(bump(ps), builder())
 
 fun parseGenericList(ps: Ps, acc: ListBuilder<PGen>): (v: List<PGen>|PFail, rest: Ps)
   let lr = lineAt(ps)
@@ -508,7 +508,7 @@ fun parseMaybeWhere(ps: Ps): (v: List<Spec>|PFail, rest: Ps)
 fun whereList(ty: Spec): List<Spec>
   ret match(ty)
     (u: SCombination) => u.scTypes
-    (other)      => prepend(ty, List<Spec>())
+    (other)      => prepend(ty, List())
 
 # ══ Expressions ══════════════════════════════════════════════════════════════
 # The ladder, tightest first, mirroring parser.py's node construction:
@@ -627,7 +627,7 @@ fun parseWith(lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
 fun withReinterpret(a: PExpr, lr: PLine): PExpr
   ret match(a)
     (c: PeCall) => PeWith(c.function, c.parameter, lr)
-    (o: PExpr)  => PeWith(a, PeTuple(List<PTupEnt>(), lr), lr)
+    (o: PExpr)  => PeWith(a, PeTuple(List(), lr), lr)
 
 fun parseIsTail(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
   let neg = atSym(ps, "!")
@@ -641,11 +641,11 @@ fun parseIsTail(lhs: PExpr, ps: Ps): (v: PExpr|PFail, rest: Ps)
 fun isDesugar(lhs: PExpr, neg: Bool, ty: Spec): PExpr
   let lr = exprLine(lhs)
   # Two arms: the typed one, then the catch-all — match order is semantics.
-  let arms = prepend(PArm("", ty, PeBool(!neg, lr), List<PLit>(), None, lr, List<PPos>()),
-                     prepend(PArm("", None, PeBool(neg, lr), List<PLit>(),
-                                  None, lr, List<PPos>()),
-                             List<PArm>()))
-  ret PeMatch(lhs, arms, lr, List<PExpr>())
+  let arms = prepend(PArm("", ty, PeBool(!neg, lr), List(), None, lr, List()),
+                     prepend(PArm("", None, PeBool(neg, lr), List(),
+                                  None, lr, List()),
+                             List()))
+  ret PeMatch(lhs, arms, lr, List())
 
 # One left-associative binary level over an op set: builds the `` `op` ``
 # call (with the andNot fold) via builders.foldBinary.
@@ -821,10 +821,10 @@ fun [tail] namedPath(path: String, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps
   if atSym(ps, "::") && isIdentTok(peek(bump(ps)))
     ret namedPath(path + "::" + peek(bump(ps)).text, lr, bump(bump(ps)))
   if !atSym(ps, "<")
-    ret (PeName(path, List<Spec>(), lr), ps)
-  let args = parseTypeArgs(bump(ps), builder<Spec>())
+    ret (PeName(path, List(), lr), ps)
+  let args = parseTypeArgs(bump(ps), builder())
   ret match(args.v)
-    (f: PFail)        => f.hard ? (f, args.rest) : (PeName(path, List<Spec>(), lr), ps)
+    (f: PFail)        => f.hard ? (f, args.rest) : (PeName(path, List(), lr), ps)
     (list: List<Spec>) => (PeName(path, list, lr), args.rest)
 
 # `(` … — a lambda when `(targets) =>` parses, else a tuple expression.
@@ -859,14 +859,14 @@ fun parseLambdaBody(pars: List<PStmt>, lr: PLine, inner: PLine,
                     ps: Ps): (v: PExpr|PFail, rest: Ps)
   ret hardened(parseExpr(ps), "missing lambda body")
     ?> (a: PExpr, rest: Ps) =>
-         (PeLambda(PsDestructure("_", List<PAttr>(), None, pars, None, inner), a, lr),
+         (PeLambda(PsDestructure("_", List(), None, pars, None, inner), a, lr),
           rest)
 
 fun parseTupleTerm(ps: Ps): (v: PExpr|PFail, rest: Ps)
   if !atSym(ps, "(")
     ret (softFail("expected '('", ps), ps)
   let lr = lineAt(bump(ps))
-  ret parseArgList(bump(ps), builder<PTupEnt>())
+  ret parseArgList(bump(ps), builder())
     ?> (list: List<PTupEnt>, rest: Ps) => (PeTuple(list, lr), rest)
 
 # "(" already consumed: [name =] expr / *expr, comma separated, to ")".
@@ -957,7 +957,7 @@ fun parseMatch(kwLr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
   if !atSym(ps, "(")
     ret (hardFail("invalid match subject", ps), ps)
   let lr = lineAt(bump(ps))
-  ret hardened(parseSubjects(bump(ps), builder<PExpr>()), "invalid match subject")
+  ret hardened(parseSubjects(bump(ps), builder()), "invalid match subject")
     ?> (subs: List<PExpr>, rest: Ps) => !atSym(rest, ")")
          ? (hardFail("expected ')' after match subject", rest), rest)
          : matchWithSubjects(subs, lr, bump(rest))
@@ -984,7 +984,7 @@ fun subjectsFail(b: ListBuilder<PExpr>, f: PFail,
 
 fun matchWithSubjects(subs: List<PExpr>, lr: PLine, ps: Ps): (v: PExpr|PFail, rest: Ps)
   ret match(head(subs))
-    (s0: PExpr) => parseArms(s0, tail(subs), lr, ps, builder<PArm>())
+    (s0: PExpr) => parseArms(s0, tail(subs), lr, ps, builder())
     ()          => (hardFail("invalid match subject", ps), ps)
 
 fun [tail] parseArms(subj: PExpr, extra: List<PExpr>, lr: PLine, ps: Ps,
@@ -1006,12 +1006,12 @@ fun parseArm(ps: Ps): (v: PArm|PFail, rest: Ps)
     (f: PFail)         => f.hard ? (f, lits.rest) : parseDestructureArm(lr, ps)
     (list: List<PLit>) => isEmpty(list)
       ? parseDestructureArm(lr, ps)
-      : parseArmTail("", None, list, lr, lits.rest, List<PPos>())
+      : parseArmTail("", None, list, lr, lits.rest, List())
 
 fun parseLiteralArmHead(ps: Ps): (v: List<PLit>|PFail, rest: Ps)
   if atSym(ps, ")")
     ret (List<PLit>(), bump(ps))
-  ret parseLiteralList(ps, builder<PLit>())
+  ret parseLiteralList(ps, builder())
 
 fun [tail] parseLiteralList(ps: Ps, acc: ListBuilder<PLit>): (v: List<PLit>|PFail, rest: Ps)
   let l = parseMatchLiteral(ps)
@@ -1075,9 +1075,9 @@ fun parseDestructureArm(lr: PLine, ps: Ps): (v: PArm|PFail, rest: Ps)
 # grammar cannot know it here.
 fun armFromTargets(pl: List<PStmt>, lr: PLine, ps: Ps): (v: PArm|PFail, rest: Ps)
   ret match(head(pl))
-    (only: PStmt) => armFromBinder(only, posOf(chain(tail(pl)), lr, List<PPos>()),
+    (only: PStmt) => armFromBinder(only, posOf(chain(tail(pl)), lr, List()),
                                    lr, ps)
-    ()            => parseArmTail("", None, List<PLit>(), lr, ps, List<PPos>())
+    ()            => parseArmTail("", None, List(), lr, ps, List())
 
 fun [tail] posOf(bs: Chain<PStmt>, lr: PLine, acc: List<PPos>): List<PPos>
   ret match(bs)
@@ -1090,7 +1090,7 @@ fun [tail] posOf(bs: Chain<PStmt>, lr: PLine, acc: List<PPos>): List<PPos>
 # two compilers would emit different C identifiers for the same program.
 fun appendPos(acc: List<PPos>, binder: PStmt, lr: PLine): List<PPos>
   ret match(binder)
-    (l: PsLet) => build<PPos >(push<PPos >(builderFrom<PPos>(acc),
+    (l: PsLet) => build(push(builderFrom(acc),
                     PPos(bareOf(l.lName) == "_" ? "" : bareOf(l.lName),
                          l.lType, lr)))
     (other)    => acc
@@ -1099,7 +1099,7 @@ fun armFromBinder(binder: PStmt, extra: List<PPos>, lr: PLine,
                   ps: Ps): (v: PArm|PFail, rest: Ps)
   ret match(binder)
     (l: PsLet) => parseArmTail(bareOf(l.lName) == "_" ? "" : bareOf(l.lName),
-                               l.lType, List<PLit>(), lr, ps, extra)
+                               l.lType, List(), lr, ps, extra)
     (other)    => (hardFail("invalid match arm", ps), ps)
 
 fun bareOf(name: String): String
@@ -1211,13 +1211,13 @@ fun parseIf(lr: PLine, ps: Ps, kindSel: Int): (v: PStmt|PFail, rest: Ps)
 
 fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine,
                 ps: Ps): (v: PStmt|PFail, rest: Ps)
-  ret parseStmts(ps, builder<PStmt>())
+  ret parseStmts(ps, builder())
     ?> (body: List<PStmt>, rest: Ps) => kindSel == 0
-         ? (PsIf(cond, body, List<PStmt>(), lr), rest)
+         ? (PsIf(cond, body, List(), lr), rest)
          : (PsElseIf(cond, body, lr), rest)
 
 fun parseElse(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
-  ret parseStmts(ps, builder<PStmt>())
+  ret parseStmts(ps, builder())
     ?> (body: List<PStmt>, rest: Ps) => (PsElse(body, lr), rest)
 
 fun parsePath(lr: PLine, ps: Ps, isNamespace: Bool): (v: PStmt|PFail, rest: Ps)
@@ -1253,7 +1253,7 @@ fun parseTypealiasTy(attrs: List<PAttr>, name: String, gen: List<PGen>,
     ret (hardFail("expected ':' in typealias", ps), ps)
   ret hardened(parseType(bump(ps)), "invalid typealias statement")
     ?> (t2: Spec, rest: Ps) =>
-         (PsTypealias(hashName(name, lr), attrs, gen, t2, List<Spec>(), lr), rest)
+         (PsTypealias(hashName(name, lr), attrs, gen, t2, List(), lr), rest)
 
 fun parseLet(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   ret parseMaybeAttributes(ps)
@@ -1268,7 +1268,7 @@ fun parseLetNamed(attrs: List<PAttr>, lr: PLine,
       (f: PFail)       => (f, gen.rest)
       (gl: List<PGen>) => parseLetTail(attrs, t.text, gl, lr, gen.rest)
   if isSymTok(t, "(")
-    let subs = parseTargetList(bump(ps), builder<PStmt>())
+    let subs = parseTargetList(bump(ps), builder())
     ret match(subs.v)
       (f: PFail)        => (harden(f, "invalid let statement"), subs.rest)
       (sl: List<PStmt>) => parseDestructureLet(attrs, sl, lr, subs.rest)
@@ -1295,7 +1295,7 @@ fun destructureWith(attrs: List<PAttr>, subs: List<PStmt>, ty: Spec|None,
 
 fun parseLetTail(attrs: List<PAttr>, name: String, gen: List<PGen>,
                  lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
-  ret hardened(parseTargetTail(attrs, name, List<PStmt>(), lr, ps), "invalid let statement")
+  ret hardened(parseTargetTail(attrs, name, List(), lr, ps), "invalid let statement")
     ?> (pr: PStmt, rest: Ps) => parseLetWhere(gen, pr, lr, rest)
 
 fun parseLetWhere(gen: List<PGen>, target: PStmt, lr: PLine,
@@ -1338,7 +1338,7 @@ fun parseFunWhere(attrs: List<PAttr>, name: String, gen: List<PGen>,
     ?> (wl: List<Spec>, rest: Ps) => parseFunBody(attrs, name, gen, pars, retTy, wl, lr, rest)
 
 fun funParamsStmt(pars: List<PStmt>, lr: PLine): PStmt
-  ret PsDestructure("_", List<PAttr>(), None, pars, None, lr)
+  ret PsDestructure("_", List(), None, pars, None, lr)
 
 fun parseFunBody(attrs: List<PAttr>, name: String, gen: List<PGen>,
                  pars: List<PStmt>, retTy: Spec|None, wl: List<Spec>,
@@ -1348,8 +1348,8 @@ fun parseFunBody(attrs: List<PAttr>, name: String, gen: List<PGen>,
     ret match(e.v)
       (f: PFail) => (harden(f, "invalid function statement"), e.rest)
       (a: PExpr) => (PsFun(hashName(name, lr), attrs, gen, funParamsStmt(pars, lr),
-                           PeBlock(List<PStmt>(), a, "", lr), retTy, wl, lr), e.rest)
-  let b = parseStmts(ps, builder<PStmt>())
+                           PeBlock(List(), a, "", lr), retTy, wl, lr), e.rest)
+  let b = parseStmts(ps, builder())
   ret match(b.v)
     (f: PFail)          => (f, b.rest)
     (body: List<PStmt>) => (PsFun(hashName(name, lr), attrs, gen,
@@ -1395,7 +1395,7 @@ fun parseInstanceWhere(attrs: List<PAttr>, gen: List<PGen>, pattern: Spec,
 fun parseInstanceBody(attrs: List<PAttr>, gen: List<PGen>, pattern: Spec,
                       wl: List<Spec>, lr: PLine,
                       ps: Ps): (v: PStmt|PFail, rest: Ps)
-  ret parseStmts(ps, builder<PStmt>())
+  ret parseStmts(ps, builder())
     ?> (body: List<PStmt>, rest: Ps) =>
          (PsTraitInstance("instance$" + hash6(lr.plFile, lr.plLine, lr.plCol),
                           attrs, hasAttr(attrs, "ambient"), gen, pattern, wl,
@@ -1418,7 +1418,7 @@ fun parseClassParams(attrs: List<PAttr>, name: String, gen: List<PGen>,
                      isInterface: Bool, lr: PLine,
                      ps: Ps): (v: PStmt|PFail, rest: Ps)
   if isInterface || !atSym(ps, "(")
-    ret parseClassParents(attrs, name, gen, List<PStmt>(), isInterface, lr, ps)
+    ret parseClassParents(attrs, name, gen, List(), isInterface, lr, ps)
   ret parseParams(ps)
     ?> (pl: List<PStmt>, rest: Ps) => parseClassParents(attrs, name, gen, pl, isInterface, lr, rest)
 
@@ -1432,7 +1432,7 @@ fun parseClassParents(attrs: List<PAttr>, name: String, gen: List<PGen>,
 fun parentList(opt: Spec|None): List<Spec>
   ret match(opt)
     (t2: Spec) => whereList(t2)
-    ()        => List<Spec>()
+    ()        => List()
 
 fun parseClassWhere(attrs: List<PAttr>, name: String, gen: List<PGen>,
                     pars: List<PStmt>, parents: List<Spec>, isInterface: Bool,
@@ -1445,7 +1445,7 @@ fun parseClassBody(attrs: List<PAttr>, name: String, gen: List<PGen>,
                    pars: List<PStmt>, parents: List<Spec>, wl: List<Spec>,
                    isInterface: Bool, lr: PLine,
                    ps: Ps): (v: PStmt|PFail, rest: Ps)
-  ret parseStmts(ps, builder<PStmt>())
+  ret parseStmts(ps, builder())
     ?> (body: List<PStmt>, rest: Ps) =>
          (PsClass(hashName(name, lr), attrs, gen, funParamsStmt(pars, lr),
                   parents, wl, body, isInterface, lr),
@@ -1469,7 +1469,7 @@ fun parseEnumNamed(attrs: List<PAttr>, lr: PLine,
 fun parseEnumParams(attrs: List<PAttr>, name: String, gen: List<PGen>,
                     lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   if !atSym(ps, "(")
-    ret parseEnumVariants(attrs, name, gen, false, List<PStmt>(), lr, ps)
+    ret parseEnumVariants(attrs, name, gen, false, List(), lr, ps)
   ret parseParams(ps)
     ?> (pl: List<PStmt>, rest: Ps) =>
          parseEnumVariants(attrs, name, gen, true, pl, lr, rest)
@@ -1477,7 +1477,7 @@ fun parseEnumParams(attrs: List<PAttr>, name: String, gen: List<PGen>,
 fun parseEnumVariants(attrs: List<PAttr>, name: String, gen: List<PGen>,
                       hasParams: Bool, pars: List<PStmt>, lr: PLine,
                       ps: Ps): (v: PStmt|PFail, rest: Ps)
-  ret parseVariantList(ps, builder<PStmt>())
+  ret parseVariantList(ps, builder())
     ?> (vl: List<PStmt>, rest: Ps) =>
          (PsEnum(hashName(name, lr), attrs, gen, funParamsStmt(pars, lr),
                  vl, hasParams, lr),
@@ -1499,7 +1499,7 @@ fun [tail] parseVariantList(ps: Ps, acc: ListBuilder<PStmt>): (v: List<PStmt>|PF
 
 fun parseProgram(src: String, filename: String): List<PStmt>|PFail
   let toks = tokenize(src)
-  let r = parseStmts(Ps(chain(toks), 0, -1, filename), builder<PStmt>())
+  let r = parseStmts(Ps(chain(toks), 0, -1, filename), builder())
   ret match(r.v)
     (f: PFail)           => f
     (stmts: List<PStmt>) => match(memberSignatureViolation(chain(stmts)))

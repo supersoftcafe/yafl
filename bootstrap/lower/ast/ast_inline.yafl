@@ -25,13 +25,13 @@ import Bootstrap::Types
 # A Set of names, not a list: the two consumers are set operations —
 # coAddCaps sorts it before use, hoIntersect intersects it — so the order the
 # walk happened to meet them in is not observable.
-fun freeRefs(f: PsFun, alsoExclude: List<String>): Set<String >
+fun freeRefs(f: PsFun, alsoExclude: List<String>): Set<String>
   let own = frOwnNames(f, alsoExclude)
   ret match(f.fBody)
     (b: PExpr) => match(b)
-      (bk: PeBlock) => frExpr(b, own, Set<String >())
-      (o: PExpr)    => Set<String >()
-    ()         => Set<String >()
+      (bk: PeBlock) => frExpr(b, own, Set())
+      (o: PExpr)    => Set()
+    ()         => Set()
 
 fun frOwnNames(f: PsFun, alsoExclude: List<String>): List<String>
   let params = allStmtNames(chain(flattenParams(f.fParams)), alsoExclude)
@@ -42,24 +42,24 @@ fun frOwnNames(f: PsFun, alsoExclude: List<String>): List<String>
     ()         => params
 
 fun frBlockNames(ss: Chain<PStmt>, acc: List<String>): List<String>
-  ret build<String >(frBlockNamesB(ss, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build(frBlockNamesB(ss, builderFrom(acc)))
 
-fun [tail] frBlockNamesB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] frBlockNamesB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => frBlockNamesB(l.next, push<String >(acc, let2.lName))
-      (f: PsFun)    => frBlockNamesB(l.next, push<String >(acc, f.fName))
+      (let2: PsLet) => frBlockNamesB(l.next, push(acc, let2.lName))
+      (f: PsFun)    => frBlockNamesB(l.next, push(acc, f.fName))
       (o: PStmt)    => frBlockNamesB(l.next, acc)
 
 # The free-reference accumulator is a SET: both consumers of freeRefs are set
 # operations (coAddCaps sorts it, hoIntersect intersects it), so there is no
 # order to keep. `add` is idempotent, so the "already present" test goes with
 # it — the O(n) scan per name becomes one O(log n) insert.
-fun frAdd(acc: Set<String >, exclude: List<String>, name: String): Set<String >
-  ret contains2(exclude, name) ? acc : add<String >(acc, name)
+fun frAdd(acc: Set<String>, exclude: List<String>, name: String): Set<String>
+  ret contains2(exclude, name) ? acc : add(acc, name)
 
-fun frExpr(x: PExpr, exclude: List<String>, acc: Set<String >): Set<String >
+fun frExpr(x: PExpr, exclude: List<String>, acc: Set<String>): Set<String>
   ret match(x)
     (nm: PeName)   => frAdd(acc, exclude, nm.refName)
     (d: PeDot)     => frExpr(d.base, exclude, acc)
@@ -88,27 +88,27 @@ fun frExpr(x: PExpr, exclude: List<String>, acc: Set<String >): Set<String >
     (lp: PeLoop)   => frExpr(lp.loopBody, exclude,
                              frExprs(chain(lp.loopParams), exclude, acc))
     (rc: PeRecur)  => frExprs(chain(rc.recArgs), exclude, acc)
-    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2: Set<String >, fa: PFieldArg) =>
+    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
                             frExpr(fa.faValue, exclude, a2))
     (o: PeLiteral) => acc
     (o: PeLazy) => acc
 
 fun [tail] frExprs(es: Chain<PExpr>, exclude: List<String>,
-                   acc: Set<String >): Set<String >
+                   acc: Set<String>): Set<String>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frExprs(l.next, exclude,
                                frExpr(l.value, exclude, acc))
 
 fun [tail] frEnts(es: Chain<PTupEnt>, exclude: List<String>,
-                  acc: Set<String >): Set<String >
+                  acc: Set<String>): Set<String>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frEnts(l.next, exclude,
                               frExpr(l.value.tupValue, exclude, acc))
 
 fun [tail] frArms(as2: Chain<PArm>, exclude: List<String>,
-                  acc: Set<String >): Set<String >
+                  acc: Set<String>): Set<String>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frArms(l.next, exclude,
@@ -116,19 +116,19 @@ fun [tail] frArms(as2: Chain<PArm>, exclude: List<String>,
               frExpr(l.value.armBody, exclude, acc)))
 
 fun frOpt(x: PExpr|None, exclude: List<String>,
-          acc: Set<String >): Set<String >
+          acc: Set<String>): Set<String>
   ret match(x)
     (e2: PExpr) => frExpr(e2, exclude, acc)
     ()          => acc
 
 fun [tail] frStmts(ss: Chain<PStmt>, exclude: List<String>,
-                   acc: Set<String >): Set<String >
+                   acc: Set<String>): Set<String>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => frStmts(l.next, exclude,
                                frStmt(l.value, exclude, acc))
 
-fun frStmt(st: PStmt, exclude: List<String>, acc: Set<String >): Set<String >
+fun frStmt(st: PStmt, exclude: List<String>, acc: Set<String>): Set<String>
   ret match(st)
     (f: PsFun)   => frOpt(f.fBody, exclude, frStmt(f.fParams, exclude, acc))
     (l: PsLet)   => frOpt(l.lDefault, exclude, acc)
@@ -149,15 +149,15 @@ fun frStmt(st: PStmt, exclude: List<String>, acc: Set<String >): Set<String >
 
 fun aiSccs(nodes: List<String>, work: EEdges): List<List<String>>
   ret tjRoots(chain(nodes), work,
-              Tj(Dict<String, Int>(), Dict<String, Int>(), List<String>(),
-                 Set<String >(), List<List<String>>(), 0)).tjSccs
+              Tj(Dict(), Dict(), List(),
+                 Set(), List(), 0)).tjSccs
 
 # The '$generic$…' tail of a specialised parent's name, or "".
 fun specializationSuffix(name: String): String
   ret match(chain(split(name, "$generic$")))
     (l: ChainLink)  => match(l.next)
       (nil: ChainEnd) => ""
-      (m: ChainLink)  => "$generic$" + join(List<String>(m), "$generic$")
+      (m: ChainLink)  => "$generic$" + join(List(m), "$generic$")
     (nil2: ChainEnd) => ""
 
 # ── nested-fn → let(lambda) ──────────────────────────────────────────────────
@@ -166,9 +166,9 @@ fun specializationSuffix(name: String): String
 fun toLetLambda(f: PsFun): PStmt
   let callableType = funType(f)
   ret match(f.fBody)
-    (b: PExpr) => PsLet(f.fName, List<PAttr>(), List<PGen>(), callableType,
+    (b: PExpr) => PsLet(f.fName, List(), List(), callableType,
                         PeLambda(f.fParams, b, f.psfLine, callableType),
-                        "", List<Spec>(), f.psfLine, false, f.fImports)
+                        "", List(), f.psfLine, false, f.fImports)
     ()         => f
 
 # ── outer var types ──────────────────────────────────────────────────────────
@@ -188,8 +188,8 @@ class [final] OuterTypes(otMap: Dict<String, Spec>)
 # binding wins) treats it exactly as it treats a parameter.
 fun gatherOuterVarTypes(f: PsFun, thisType: Spec|None): OuterTypes
   let seed = match(thisType)
-    (sp: Spec) => OuterTypes(put<String, Spec>(Dict<String, Spec>(), "this", sp))
-    ()         => OuterTypes(Dict<String, Spec>())
+    (sp: Spec) => OuterTypes(put(Dict(), "this", sp))
+    ()         => OuterTypes(Dict())
   let fromParams = otAdd(chain(flattenParams(f.fParams)), seed)
   ret match(f.fBody)
     (b: PExpr) => match(b)
@@ -207,10 +207,10 @@ fun [tail] otAdd(ss: Chain<PStmt>, acc: OuterTypes): OuterTypes
         # the lookup; parameters are gathered before body lets, so a body let
         # that shadows a parameter must NOT displace it. A plain `put` would
         # silently reverse that.
-        (sp: Spec) => otAdd(l.next, contains<String, Spec>(acc.otMap, let2.lName)
+        (sp: Spec) => otAdd(l.next, contains(acc.otMap, let2.lName)
                             ? acc
-                            : OuterTypes(put<String, Spec>(acc.otMap,
-                                                           let2.lName, sp)))
+                            : OuterTypes(put(acc.otMap,
+                                             let2.lName, sp)))
         ()         => otAdd(l.next, acc)
       (o: PStmt)    => otAdd(l.next, acc)
 
@@ -226,19 +226,19 @@ fun [tail] otAdd(ss: Chain<PStmt>, acc: OuterTypes): OuterTypes
 class [final] ThisMap(tmMap: Dict<String, String>)
 
 fun tmLookup(m: ThisMap, name: String): String|None
-  ret get<String, String>(m.tmMap, name)
+  ret get(m.tmMap, name)
 
 fun rcmExpr(x: PExpr, m: ThisMap): PExpr
   ret match(x)
     (nm: PeName)   => match(tmLookup(m, nm.refName))
-      (target: String) => PeDot(PeName("this", List<Spec>(), nm.penLine,
+      (target: String) => PeDot(PeName("this", List(), nm.penLine,
                                        None),
                                 target, nm.penLine)
       ()               => x
     (d: PeDot)     => PeDot(rcmExpr(d.base, m), d.member, d.pedLine)
     (c: PeCall)    => PeCall(rcmExpr(c.function, m), rcmExpr(c.parameter, m),
                              c.pecLine)
-    (tp: PeTuple)  => PeTuple(rcmEnts(chain(tp.exprs), m, List<PTupEnt>()),
+    (tp: PeTuple)  => PeTuple(rcmEnts(chain(tp.exprs), m, List()),
                               tp.petLine)
     (te: PeTernary) => PeTernary(rcmExpr(te.condition, m),
                                  rcmExpr(te.trueResult, m),
@@ -246,11 +246,11 @@ fun rcmExpr(x: PExpr, m: ThisMap): PExpr
     (lm: PeLambda) => PeLambda(rcmStmt(lm.lamParams, m),
                                rcmExpr(lm.lamBody, m), lm.pelLine, lm.lamRet)
     (bk: PeBlock)  => PeBlock(rcmStmts(chain(bk.blockStmts), m,
-                                       List<PStmt>()),
+                                       List()),
                               rcmExpr(bk.blockValue, m), bk.blockTag,
                               bk.pebkLine)
     (mt: PeMatch) => with mt(subject = rcmExpr(mt.subject, m),
-                      arms    = rcmArms(chain(mt.arms), m, List<PArm>()))
+                      arms    = rcmArms(chain(mt.arms), m, List()))
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      rcmExpr(op.opParams, m), op.peboLine)
     (nw: PeNew)    => PeNew(nw.newType, rcmExpr(nw.newParam, m), nw.penwLine)
@@ -265,12 +265,12 @@ fun rcmExpr(x: PExpr, m: ThisMap): PExpr
     (pl: PeParallel) => PeParallel(rcmExpr(pl.parParams, m), pl.pepLine)
     (lp: PeLoop)   => PeLoop(rcmExpr(lp.loopBody, m),
                              rcmExprs(chain(lp.loopParams), m,
-                                      List<PExpr>()),
+                                      List()),
                              lp.pelpLine)
-    (rc: PeRecur)  => PeRecur(rcmExprs(chain(rc.recArgs), m, List<PExpr>()),
+    (rc: PeRecur)  => PeRecur(rcmExprs(chain(rc.recArgs), m, List()),
                               rc.recIndex, rc.percLine)
     (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                 map(ne.fieldArgs, (fa) =>
                                    PFieldArg(fa.faName, rcmExpr(fa.faValue, m))),
                                  ne.neTypeParams, ne.penewLine)
     (o: PeLiteral) => x
@@ -278,34 +278,34 @@ fun rcmExpr(x: PExpr, m: ThisMap): PExpr
 
 fun rcmExprs(es: Chain<PExpr>, m: ThisMap,
                     acc: List<PExpr>): List<PExpr>
-  ret build<PExpr >(rcmExprsB(es, m, _pushChain<PExpr >(builder<PExpr >(), chain<PExpr >(acc))))
+  ret build(rcmExprsB(es, m, builderFrom(acc)))
 
 fun [tail] rcmExprsB(es: Chain<PExpr>, m: ThisMap,
-                    [terminal] acc: ListBuilder<PExpr >): ListBuilder<PExpr >
+                    [terminal] acc: ListBuilder<PExpr>): ListBuilder<PExpr>
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => rcmExprsB(l.next, m, push<PExpr >(acc, rcmExpr(l.value, m)))
+    (l: ChainLink)  => rcmExprsB(l.next, m, push(acc, rcmExpr(l.value, m)))
 
 fun rcmEnts(es: Chain<PTupEnt>, m: ThisMap,
                    acc: List<PTupEnt>): List<PTupEnt>
-  ret build<PTupEnt >(rcmEntsB(es, m, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+  ret build(rcmEntsB(es, m, builderFrom(acc)))
 
 fun [tail] rcmEntsB(es: Chain<PTupEnt>, m: ThisMap,
-                   [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
+                   [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rcmEntsB(l.next, m,
-        push<PTupEnt >(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
-                            rcmExpr(l.value.tupValue, m))))
+        push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
+                  rcmExpr(l.value.tupValue, m))))
 
 fun rcmArms(as2: Chain<PArm>, m: ThisMap, acc: List<PArm>): List<PArm>
-  ret build<PArm >(rcmArmsB(as2, m, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+  ret build(rcmArmsB(as2, m, builderFrom(acc)))
 
-fun [tail] rcmArmsB(as2: Chain<PArm>, m: ThisMap, [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
+fun [tail] rcmArmsB(as2: Chain<PArm>, m: ThisMap, [terminal] acc: ListBuilder<PArm>): ListBuilder<PArm>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rcmArmsB(l.next, m,
-        push<PArm >(acc, with l.value(armBody = rcmExpr(l.value.armBody, m), armGuard = rcmOpt(l.value.armGuard, m))))
+        push(acc, with l.value(armBody = rcmExpr(l.value.armBody, m), armGuard = rcmOpt(l.value.armGuard, m))))
 
 fun rcmOpt(x: PExpr|None, m: ThisMap): PExpr|None
   ret match(x)
@@ -314,13 +314,13 @@ fun rcmOpt(x: PExpr|None, m: ThisMap): PExpr|None
 
 fun rcmStmts(ss: Chain<PStmt>, m: ThisMap,
                     acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(rcmStmtsB(ss, m, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(rcmStmtsB(ss, m, builderFrom(acc)))
 
 fun [tail] rcmStmtsB(ss: Chain<PStmt>, m: ThisMap,
-                    [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => rcmStmtsB(l.next, m, push<PStmt >(acc, rcmStmt(l.value, m)))
+    (l: ChainLink)  => rcmStmtsB(l.next, m, push(acc, rcmStmt(l.value, m)))
 
 fun rcmStmt(st: PStmt, m: ThisMap): PStmt
   ret match(st)
@@ -332,14 +332,14 @@ fun rcmStmt(st: PStmt, m: ThisMap): PStmt
                          l.pslLine, l.lTypeInferred, l.lImports)
     (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
                                         rcmStmts(chain(d.dTargets), m,
-                                                 List<PStmt>()),
+                                                 List()),
                                         rcmOpt(d.dDefault, m), d.psdLine,
                                         d.dTypeInferred)
     (rt: PsRet)  => PsRet(rcmExpr(rt.retValue, m), rt.psrLine)
     (a: PsAction) => PsAction(rcmExpr(a.action, m), a.psaLine)
     (i: PsIf)    => PsIf(rcmExpr(i.ifCond, m),
-                         rcmStmts(chain(i.ifTrue), m, List<PStmt>()),
-                         rcmStmts(chain(i.ifFalse), m, List<PStmt>()),
+                         rcmStmts(chain(i.ifTrue), m, List()),
+                         rcmStmts(chain(i.ifFalse), m, List()),
                          i.psifLine)
     (o: PStmt)   => st
 
@@ -352,41 +352,41 @@ fun coalesceMutualScc(sccFns: List<PsFun>, outer: OuterTypes,
                       specSuffix: String): Coalesced
   let lr = coFirstLine(sccFns)
   let caps = coUnionCaptures(chain(sccFns), outer, siblingNames,
-                             OuterTypes(Dict<String, Spec>()))
+                             OuterTypes(Dict()))
   # Sorted once and shared by the three walks below: the class fields, the
   # constructor arguments, and the this-map's identity entries all have to
   # agree, and they agree because they are the same list.
   let capNames = coCapNames(caps)
   let renames = coRenames(chain(sccFns), lr, specSuffix,
-                          ThisMap(Dict<String, String>()))
+                          ThisMap(Dict()))
   # Captured names redirect to their field (themselves, bar a captured `this`);
   # method names redirect to their class-unique targets. The capture entries are
   # put in LAST so that they win a collision, which is what the old shape did by
   # placing them first in a chain searched from the head.
-  let thisMap = ThisMap(fold<String, Dict<String, String> >(capNames,
+  let thisMap = ThisMap(fold(capNames,
                             renames.tmMap,
-                            (d: Dict<String, String>, n: String) =>
-                              put<String, String>(d, n, capturedFieldName(n, lr))))
-  let methods = coMethods(chain(sccFns), renames, thisMap, List<PStmt>())
+                            (d, n) =>
+                              put(d, n, capturedFieldName(n, lr))))
+  let methods = coMethods(chain(sccFns), renames, thisMap, List())
   let clsName = "$mutual::class@" + hash6(lr.plFile, lr.plLine, lr.plCol)
                 + specSuffix
   let cls = PsClass(clsName, prepend(PAttr("final", PeInt(1, 32, lr)),
-                                     List<PAttr>()),
-                    List<PGen>(), coClassParam(caps, lr), List<Spec>(),
-                    List<Spec>(), methods, false, lr, List<Spec>(),
+                                     List()),
+                    List(), coClassParam(caps, lr), List(),
+                    List(), methods, false, lr, List<Spec>(),
                     List<Slot>(), List<PStmt>())
   let sharedName = "$mutual::shared@" + hash6(lr.plFile, lr.plLine, lr.plCol)
                    + specSuffix
-  let clsType = SClass(clsName, List<Spec>(), lr)
-  let sharedLet = PsLet(sharedName, List<PAttr>(), List<PGen>(), clsType,
+  let clsType = SClass(clsName, List(), lr)
+  let sharedLet = PsLet(sharedName, List(), List(), clsType,
                         PeNew(clsType,
                               PeTuple(coCaptureArgs(chain(capNames), lr,
-                                                    List<PTupEnt>()),
+                                                    List()),
                                       lr),
                               lr),
-                        "", List<Spec>(), lr, false, List<PStmt>())
+                        "", List(), lr, false, List<PStmt>())
   ret Coalesced(cls, coMethodLets(chain(sccFns), renames, sharedName, lr,
-                                  prepend(sharedLet, List<PStmt>())))
+                                  prepend(sharedLet, List())))
 
 fun coFirstLine(sccFns: List<PsFun>): PLine
   ret match(chain(sccFns))
@@ -417,23 +417,23 @@ fun [tail] coUnionCaptures(fs: Chain<PsFun>, outer: OuterTypes,
 # capturing one name contribute an identical entry and the order in which they
 # arrive cannot change the result. The "already captured" test that guarded the
 # old append is gone with it — `put` of an equal entry is idempotent.
-fun coAddCaps(ns: Set<String >, outer: OuterTypes, acc: OuterTypes): OuterTypes
-  ret fold<String, OuterTypes>(ns, acc,
-          (a: OuterTypes, n: String) => coAddCap(a, n, outer))
+fun coAddCaps(ns: Set<String>, outer: OuterTypes, acc: OuterTypes): OuterTypes
+  ret fold(ns, acc,
+          (a, n) => coAddCap(a, n, outer))
 
 # A name that resolves to no outer type is not a capture — it is a reference to
 # something that is not in scope out here, and it is dropped, exactly as the
 # old lookup-then-append did by never appending.
 fun coAddCap(acc: OuterTypes, n: String, outer: OuterTypes): OuterTypes
-  ret match(get<String, Spec>(outer.otMap, n))
-    (sp: Spec) => OuterTypes(put<String, Spec>(acc.otMap, n, sp))
+  ret match(get(outer.otMap, n))
+    (sp: Spec) => OuterTypes(put(acc.otMap, n, sp))
     ()         => acc
 
 # The captured names in their canonical order. Every consumer that walks the
 # captures — class fields, constructor arguments, parameter lets — goes through
 # this, so they cannot disagree.
 fun coCapNames(caps: OuterTypes): List<String>
-  ret sort<String>(keys<String, Spec>(caps.otMap))
+  ret sort(keys(caps.otMap))
 
 # Only the FIELD is renamed here — the constructor argument still reads the
 # outer binding under its own name.
@@ -446,21 +446,21 @@ fun [tail] coRenames(fs: Chain<PsFun>, lr: PLine, specSuffix: String,
     # entry, where the chain lookup would have kept the first — same answer
     # either way, because the target is a pure function of the name.
     (l: ChainLink)  => coRenames(l.next, lr, specSuffix,
-        ThisMap(put<String, String>(acc.tmMap, l.value.fName,
+        ThisMap(put(acc.tmMap, l.value.fName,
                     "$mut::" + l.value.fName + "@"
                     + hash6(lr.plFile, lr.plLine, lr.plCol) + specSuffix)))
 
 fun coMethods(fs: Chain<PsFun>, renames: ThisMap, thisMap: ThisMap,
                      acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(coMethodsB(fs, renames, thisMap, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(coMethodsB(fs, renames, thisMap, builderFrom(acc)))
 
 fun [tail] coMethodsB(fs: Chain<PsFun>, renames: ThisMap, thisMap: ThisMap,
-                     [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                     [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => coMethodsB(l.next, renames, thisMap,
-                                 push<PStmt >(acc, coMethod(l.value, renames,
-                                                      thisMap)))
+                                 push(acc, coMethod(l.value, renames,
+                                              thisMap)))
 
 fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap): PStmt
   let newName = match(tmLookup(renames, f.fName))
@@ -472,9 +472,9 @@ fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap): PStmt
 
 fun coClassParam(caps: OuterTypes, lr: PLine): PStmt
   let ns = coCapNames(caps)
-  ret PsDestructure("_", List<PAttr>(),
-                    STuple(coEntries(chain(ns), caps, lr, List<SEntry>()), lr),
-                    coParamLets(chain(ns), caps, lr, List<PStmt>()),
+  ret PsDestructure("_", List(),
+                    STuple(coEntries(chain(ns), caps, lr, List()), lr),
+                    coParamLets(chain(ns), caps, lr, List()),
                     None, lr, false)
 
 # The name chain drives the walk and the type comes from the map, so the two
@@ -483,66 +483,66 @@ fun coClassParam(caps: OuterTypes, lr: PLine): PStmt
 # own keys, so the None arm is unreachable; it is there to make the match total.
 fun coEntries(ns: Chain<String>, caps: OuterTypes, lr: PLine,
                      acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(coEntriesB(ns, caps, lr, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build(coEntriesB(ns, caps, lr, builderFrom(acc)))
 
 fun [tail] coEntriesB(ns: Chain<String>, caps: OuterTypes, lr: PLine,
-                     [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
+                     [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(get<String, Spec>(caps.otMap, n.value))
+    (n: ChainLink)  => match(get(caps.otMap, n.value))
       (sp: Spec) => coEntriesB(n.next, caps, lr,
-                               push<SEntry >(acc, SEntry(capturedFieldName(n.value, lr),
-                                                         sp, None)))
+                               push(acc, SEntry(capturedFieldName(n.value, lr),
+                                                sp, None)))
       ()         => coEntriesB(n.next, caps, lr, acc)
 
 fun coParamLets(ns: Chain<String>, caps: OuterTypes, lr: PLine,
                        acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(coParamLetsB(ns, caps, lr, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(coParamLetsB(ns, caps, lr, builderFrom(acc)))
 
 fun [tail] coParamLetsB(ns: Chain<String>, caps: OuterTypes, lr: PLine,
-                       [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                       [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(get<String, Spec>(caps.otMap, n.value))
+    (n: ChainLink)  => match(get(caps.otMap, n.value))
       (sp: Spec) => coParamLetsB(n.next, caps, lr,
-          push<PStmt >(acc, PsLet(capturedFieldName(n.value, lr), List<PAttr>(),
-                            List<PGen>(), sp,
-                            None, "", List<Spec>(), lr, false,
-                            List<PStmt>())))
+          push(acc, PsLet(capturedFieldName(n.value, lr), List(),
+                    List(), sp,
+                    None, "", List(), lr, false,
+                    List<PStmt>())))
       ()         => coParamLetsB(n.next, caps, lr, acc)
 
 fun coCaptureArgs(ns: Chain<String>, lr: PLine,
                          acc: List<PTupEnt>): List<PTupEnt>
-  ret build<PTupEnt >(coCaptureArgsB(ns, lr, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+  ret build(coCaptureArgsB(ns, lr, builderFrom(acc)))
 
 fun [tail] coCaptureArgsB(ns: Chain<String>, lr: PLine,
-                         [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
+                         [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
   ret match(ns)
     (nil: ChainEnd) => acc
     # The entry NAME is the closure field; the value still reads the outer
     # binding under the name it has here.
     (l: ChainLink)  => coCaptureArgsB(l.next, lr,
-        push<PTupEnt >(acc, PTupEnt(capturedFieldName(l.value, lr), false,
-                            PeName(l.value, List<Spec>(), lr, None))))
+        push(acc, PTupEnt(capturedFieldName(l.value, lr), false,
+                  PeName(l.value, List(), lr, None))))
 
 # One shared instance, then one let per method exposing it under the
 # original nested-fn name.
 fun coMethodLets(fs: Chain<PsFun>, renames: ThisMap,
                         sharedName: String, lr: PLine,
                         acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(coMethodLetsB(fs, renames, sharedName, lr, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(coMethodLetsB(fs, renames, sharedName, lr, builderFrom(acc)))
 
 fun [tail] coMethodLetsB(fs: Chain<PsFun>, renames: ThisMap,
                         sharedName: String, lr: PLine,
-                        [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                        [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => coMethodLetsB(l.next, renames, sharedName, lr,
-        push<PStmt >(acc, PsLet(l.value.fName, List<PAttr>(), List<PGen>(),
-                          funType(l.value),
-                          PeDot(PeName(sharedName, List<Spec>(), lr, None),
-                                coRenameOf(renames, l.value.fName), lr),
-                          "", List<Spec>(), lr, false, List<PStmt>())))
+        push(acc, PsLet(l.value.fName, List(), List(),
+                  funType(l.value),
+                  PeDot(PeName(sharedName, List(), lr, None),
+                        coRenameOf(renames, l.value.fName), lr),
+                  "", List(), lr, false, List<PStmt>())))
 
 fun coRenameOf(renames: ThisMap, name: String): String
   ret match(tmLookup(renames, name))
@@ -562,8 +562,8 @@ class [final] Hoisted(hoBody: List<PStmt>, hoRenames: ThisMap,
                       hoToMember: ThisMap)
 
 fun emptyHoisted(): Hoisted
-  ret Hoisted(List<PStmt>(), ThisMap(Dict<String, String>()), List<PStmt>(),
-              List<PStmt>(), ThisMap(Dict<String, String>()))
+  ret Hoisted(List(), ThisMap(Dict()), List(),
+              List(), ThisMap(Dict()))
 
 fun hoistFromBody(f: PsFun, thisType: Spec|None): Hoisted
   ret match(f.fBody)
@@ -575,19 +575,19 @@ fun hoistFromBody(f: PsFun, thisType: Spec|None): Hoisted
 fun hoistFromBlock(f: PsFun, bk: PeBlock, thisType: Spec|None): Hoisted
   let outerVars = frBlockNames(chain(bk.blockStmts),
                                allStmtNames(chain(flattenParams(f.fParams)),
-                                            List<String>()))
-  let nested = hoNestedFns(chain(bk.blockStmts), List<PsFun>())
+                                            List()))
+  let nested = hoNestedFns(chain(bk.blockStmts), List())
   if isEmpty(nested)
-    ret Hoisted(bk.blockStmts, ThisMap(Dict<String, String>()),
-                List<PStmt>(), List<PStmt>(),
-                ThisMap(Dict<String, String>()))
-  let siblingNames = hoFnNames(chain(nested), List<String>())
+    ret Hoisted(bk.blockStmts, ThisMap(Dict()),
+                List(), List(),
+                ThisMap(Dict()))
+  let siblingNames = hoFnNames(chain(nested), List())
   let specSuffix = specializationSuffix(f.fName)
   let callEdges = hoCallEdges(chain(nested), siblingNames,
-                              EEdges(Dict<String, List<String>>()))
+                              EEdges(Dict()))
   let directCaptures = hoDirectCaptures(chain(nested), siblingNames,
                                         hoOuterOnly(outerVars, siblingNames),
-                                        List<String>())
+                                        List())
   # Inside a class member, a helper that needs no closure goes to CLASS scope —
   # all of them, not just those naming `this`. A member has the class's TYPE
   # PARAMETERS in scope as well as its receiver, and a helper using one would
@@ -597,15 +597,15 @@ fun hoistFromBlock(f: PsFun, bk: PeBlock, thisType: Spec|None): Hoisted
   # receiver by the class.
   let directThis = match(thisType)
     (sp: Spec) => siblingNames
-    ()         => List<String>()
+    ()         => List()
   let sccs = aiSccs(siblingNames, callEdges)
   let needsClosure = hoNeedsClosure(chain(sccs), sccs, callEdges,
-                                    directCaptures, Set<String >())
+                                    directCaptures, Set())
   # Propagates over the same edges and in the same one reverse-topo pass: a
   # caller of a sibling member must itself be a sibling member, or the call has
   # no receiver to make.
   let needsThis = hoNeedsClosure(chain(sccs), sccs, callEdges,
-                                 directThis, Set<String >())
+                                 directThis, Set())
   let outerTypes = gatherOuterVarTypes(f, thisType)
   # Settled BEFORE anything is built, because the redirect changes the bodies
   # the other two strategies are handed: a closure-bound helper that calls a
@@ -613,22 +613,22 @@ fun hoistFromBlock(f: PsFun, bk: PeBlock, thisType: Spec|None): Hoisted
   # only exists if the `this` reference is already in its body when the capture
   # set is computed.
   let toMember = hoToMemberMap(chain(sccs), needsClosure, needsThis, specSuffix,
-                               ThisMap(Dict<String, String>()))
+                               ThisMap(Dict()))
   let stmts = isEmpty(toMember.tmMap)
     ? bk.blockStmts
-    : rcmStmts(chain(bk.blockStmts), toMember, List<PStmt>())
+    : rcmStmts(chain(bk.blockStmts), toMember, List())
   let nested2 = isEmpty(toMember.tmMap)
     ? nested
-    : hoNestedFns(chain(stmts), List<PsFun>())
+    : hoNestedFns(chain(stmts), List())
   ret hoBuild(hoWalkBody(chain(stmts), f, sccs, needsClosure, needsThis,
                          callEdges, nested2, outerTypes, siblingNames,
-                         specSuffix, Set<String >(),
-                         HoAcc(builder<PStmt >(), ThisMap(Dict<String, String>()),
-                               builder<PStmt >(), builder<PStmt >(), toMember)))
+                         specSuffix, Set(),
+                         HoAcc(builder(), ThisMap(Dict()),
+                               builder(), builder(), toMember)))
 
 # The class-scope SCCs and their post-suffix names, ahead of the walk.
-fun [tail] hoToMemberMap(ss: Chain<List<String>>, needy: Set<String >,
-                         needyThis: Set<String >, specSuffix: String,
+fun [tail] hoToMemberMap(ss: Chain<List<String>>, needy: Set<String>,
+                         needyThis: Set<String>, specSuffix: String,
                          acc: ThisMap): ThisMap
   ret match(ss)
     (nil: ChainEnd) => acc
@@ -643,7 +643,7 @@ fun [tail] hoToMemberNames(ns: Chain<String>, specSuffix: String,
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => hoToMemberNames(l.next, specSuffix,
-        ThisMap(put<String, String>(acc.tmMap, l.value,
+        ThisMap(put(acc.tmMap, l.value,
             specSuffix != "" && !endsWith(l.value, specSuffix)
               ? l.value + specSuffix
               : l.value)))
@@ -651,17 +651,17 @@ fun [tail] hoToMemberNames(ns: Chain<String>, specSuffix: String,
 # `outer_var_names` excludes nothing in Python (params | lets, funs separate);
 # the frBlockNames above also collected nested FN names — drop those.
 fun hoOuterOnly(names: List<String>, siblingNames: List<String>): List<String>
-  ret tjRemoveAll(chain(names), siblingNames, List<String>())
+  ret tjRemoveAll(chain(names), siblingNames, List())
 
 fun hoNestedFns(ss: Chain<PStmt>, acc: List<PsFun>): List<PsFun>
-  ret build<PsFun >(hoNestedFnsB(ss, _pushChain<PsFun >(builder<PsFun >(), chain<PsFun >(acc))))
+  ret build(hoNestedFnsB(ss, builderFrom(acc)))
 
-fun [tail] hoNestedFnsB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PsFun >): ListBuilder<PsFun >
+fun [tail] hoNestedFnsB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PsFun>): ListBuilder<PsFun>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => hoHasBlockBody(f)
-        ? hoNestedFnsB(l.next, push<PsFun >(acc, f))
+        ? hoNestedFnsB(l.next, push(acc, f))
         : hoNestedFnsB(l.next, acc)
       (o: PStmt) => hoNestedFnsB(l.next, acc)
 
@@ -673,52 +673,52 @@ fun hoHasBlockBody(f: PsFun): Bool
     ()         => false
 
 fun hoFnNames(fs: Chain<PsFun>, acc: List<String>): List<String>
-  ret build<String >(hoFnNamesB(fs, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build(hoFnNamesB(fs, builderFrom(acc)))
 
-fun [tail] hoFnNamesB(fs: Chain<PsFun>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] hoFnNamesB(fs: Chain<PsFun>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => hoFnNamesB(l.next, push<String >(acc, l.value.fName))
+    (l: ChainLink)  => hoFnNamesB(l.next, push(acc, l.value.fName))
 
 fun [tail] hoCallEdges(fs: Chain<PsFun>, siblingNames: List<String>,
                        acc: EEdges): EEdges
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => hoCallEdges(l.next, siblingNames,
-        EEdges(put<String, List<String>>(acc.eeMap, l.value.fName,
-                   hoIntersect(chain(sort<String>(freeRefs(l.value,
-                                                           List<String>()))),
-                               siblingNames, List<String>()))))
+        EEdges(put(acc.eeMap, l.value.fName,
+                   hoIntersect(chain(sort(freeRefs(l.value,
+                                                   List()))),
+                               siblingNames, List()))))
 
 fun hoIntersect(ns: Chain<String>, keep: List<String>,
                        acc: List<String>): List<String>
-  ret build<String >(hoIntersectB(ns, keep, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build(hoIntersectB(ns, keep, builderFrom(acc)))
 
 fun [tail] hoIntersectB(ns: Chain<String>, keep: List<String>,
-                       [terminal] acc: ListBuilder<String >): ListBuilder<String >
+                       [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains2(keep, l.value)
-      ? hoIntersectB(l.next, keep, push<String >(acc, l.value))
+      ? hoIntersectB(l.next, keep, push(acc, l.value))
       : hoIntersectB(l.next, keep, acc)
 
 fun hoDirectCaptures(fs: Chain<PsFun>, siblingNames: List<String>,
                             outerVars: List<String>,
                             acc: List<String>): List<String>
-  ret build<String >(hoDirectCapturesB(fs, siblingNames, outerVars, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build(hoDirectCapturesB(fs, siblingNames, outerVars, builderFrom(acc)))
 
 fun [tail] hoDirectCapturesB(fs: Chain<PsFun>, siblingNames: List<String>,
                             outerVars: List<String>,
-                            [terminal] acc: ListBuilder<String >): ListBuilder<String >
+                            [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(fs)
     (nil: ChainEnd) => acc
     # Does this function reference ANY outer var? That is a question about
     # membership, not about order — so it is asked of the set directly rather
     # than by materialising the intersection and measuring it.
-    (l: ChainLink)  => any<String>(freeRefs(l.value, siblingNames),
-                                   (n: String) => contains2(outerVars, n))
+    (l: ChainLink)  => any(freeRefs(l.value, siblingNames),
+                           (n) => contains2(outerVars, n))
       ? hoDirectCapturesB(l.next, siblingNames, outerVars,
-                          push<String >(acc, l.value.fName))
+                          push(acc, l.value.fName))
       : hoDirectCapturesB(l.next, siblingNames, outerVars, acc)
 
 # Reverse-topo order (callees first): one pass settles closure-need
@@ -732,19 +732,19 @@ fun [tail] hoDirectCapturesB(fs: Chain<PsFun>, siblingNames: List<String>,
 # back, so it is not stored.
 fun [tail] hoNeedsClosure(ss: Chain<List<String>>, all: List<List<String>>,
                           edges: EEdges, directCaptures: List<String>,
-                          done: Set<String >): Set<String >
+                          done: Set<String>): Set<String>
   ret match(ss)
     (nil: ChainEnd) => done
     (l: ChainLink)  => hoSccNeeds(l.value, edges, directCaptures, done)
       ? hoNeedsClosure(l.next, all, edges, directCaptures,
-                       fold<String, Set<String > >(l.value, done,
-                           (s: Set<String >, n: String) => add<String >(s, n)))
+                       fold(l.value, done,
+                           (s, n) => add(s, n)))
       : hoNeedsClosure(l.next, all, edges, directCaptures, done)
 
 # done = the names of the closure-needing SCCs settled so far (callees precede
 # callers).
 fun hoSccNeeds(scc: List<String>, edges: EEdges, directCaptures: List<String>,
-               done: Set<String >): Bool
+               done: Set<String>): Bool
   if hoAnyIn(chain(scc), directCaptures)
     ret true
   ret hoCallsInto(chain(scc), scc, edges, done)
@@ -757,7 +757,7 @@ fun [tail] hoAnyIn(ns: Chain<String>, set2: List<String>): Bool
       : hoAnyIn(l.next, set2)
 
 fun [tail] hoCallsInto(ns: Chain<String>, own: List<String>, edges: EEdges,
-                       done: Set<String >): Bool
+                       done: Set<String>): Bool
   ret match(ns)
     (nil: ChainEnd) => false
     (l: ChainLink)  => hoCalleeNeedy(chain(ceChildrenOf(edges, l.value)),
@@ -766,17 +766,17 @@ fun [tail] hoCallsInto(ns: Chain<String>, own: List<String>, edges: EEdges,
       : hoCallsInto(l.next, own, edges, done)
 
 fun [tail] hoCalleeNeedy(cs: Chain<String>, own: List<String>,
-                         done: Set<String >): Bool
+                         done: Set<String>): Bool
   ret match(cs)
     (nil: ChainEnd) => false
     (l: ChainLink)  => !contains2(own, l.value)
-                       && contains<String >(done, l.value)
+                       && contains(done, l.value)
       ? true
       : hoCalleeNeedy(l.next, own, done)
 
 fun [tail] hoSccOf(ss: Chain<List<String>>, name: String): List<String>
   ret match(ss)
-    (nil: ChainEnd) => List<String>()
+    (nil: ChainEnd) => List()
     (l: ChainLink)  => contains2(l.value, name)
       ? l.value
       : hoSccOf(l.next, name)
@@ -795,26 +795,26 @@ fun [tail] hoSccOf(ss: Chain<List<String>>, name: String): List<String>
 # path. There is no longer a `keep` value prepared before the branch and
 # discarded by the branches that do not want it — hoKeep builds it where it is
 # used instead.
-class [linear, final] HoAcc(haBody: ListBuilder<PStmt >, haRenames: ThisMap,
-                            haOut: ListBuilder<PStmt >,
-                            haClass: ListBuilder<PStmt >,
+class [linear, final] HoAcc(haBody: ListBuilder<PStmt>, haRenames: ThisMap,
+                            haOut: ListBuilder<PStmt>,
+                            haClass: ListBuilder<PStmt>,
                             haToMember: ThisMap)
 
 # Out of the builders and into the plain result, once the walk is over. The
 # result is read many times by the caller, which a linear value could not be.
 fun hoBuild(acc: HoAcc): Hoisted
-  ret Hoisted(build<PStmt >(acc.haBody), acc.haRenames,
-              build<PStmt >(acc.haOut), build<PStmt >(acc.haClass),
+  ret Hoisted(build(acc.haBody), acc.haRenames,
+              build(acc.haOut), build(acc.haClass),
               acc.haToMember)
 
-class [linear, final] HoStep(wsProcessed: Set<String >, wsAcc: HoAcc)
+class [linear, final] HoStep(wsProcessed: Set<String>, wsAcc: HoAcc)
 
 fun [tail] hoWalkBody(ss: Chain<PStmt>, f: PsFun, sccs: List<List<String>>,
-                      needy: Set<String >, needyThis: Set<String >,
+                      needy: Set<String>, needyThis: Set<String>,
                       edges: EEdges,
                       nested: List<PsFun>, outerTypes: OuterTypes,
                       siblingNames: List<String>, specSuffix: String,
-                      processed: Set<String >,
+                      processed: Set<String>,
                       [terminal] acc: HoAcc): HoAcc
   ret match(ss)
     (nil: ChainEnd) => acc
@@ -826,9 +826,9 @@ fun [tail] hoWalkBody(ss: Chain<PStmt>, f: PsFun, sccs: List<List<String>>,
                              st2.wsProcessed, st2.wsAcc)
 
 fun hoStep(st: PStmt, f: PsFun, sccs: List<List<String>>,
-           needy: Set<String >, needyThis: Set<String >, nested: List<PsFun>,
+           needy: Set<String>, needyThis: Set<String>, nested: List<PsFun>,
            outerTypes: OuterTypes, siblingNames: List<String>,
-           specSuffix: String, processed: Set<String >,
+           specSuffix: String, processed: Set<String>,
            acc: HoAcc): HoStep
   ret match(st)
     (fn: PsFun) => hoStepFn(fn, f, sccs, needy, needyThis, nested, outerTypes,
@@ -836,15 +836,15 @@ fun hoStep(st: PStmt, f: PsFun, sccs: List<List<String>>,
     (o: PStmt)  => hoKeep(st, processed, acc)
 
 # This statement stays where it is: push it to the body and move on.
-fun hoKeep(st: PStmt, processed: Set<String >, acc: HoAcc): HoStep
+fun hoKeep(st: PStmt, processed: Set<String>, acc: HoAcc): HoStep
   ret HoStep(processed,
-             HoAcc(push<PStmt >(acc.haBody, st), acc.haRenames, acc.haOut,
+             HoAcc(push(acc.haBody, st), acc.haRenames, acc.haOut,
                    acc.haClass, acc.haToMember))
 
 fun hoStepFn(fn: PsFun, f: PsFun, sccs: List<List<String>>,
-             needy: Set<String >, needyThis: Set<String >, nested: List<PsFun>,
+             needy: Set<String>, needyThis: Set<String>, nested: List<PsFun>,
              outerTypes: OuterTypes, siblingNames: List<String>,
-             specSuffix: String, processed: Set<String >,
+             specSuffix: String, processed: Set<String>,
              acc: HoAcc): HoStep
   if !hoHasBlockBody(fn) || !contains2(siblingNames, fn.fName)
     ret hoKeep(fn, processed, acc)
@@ -852,27 +852,27 @@ fun hoStepFn(fn: PsFun, f: PsFun, sccs: List<List<String>>,
   # earlier member's position — so it is a set of names, and the SCC's members
   # are folded into it rather than concatenated onto a list that is then
   # scanned linearly on every subsequent statement.
-  if contains<String >(processed, fn.fName)
+  if contains(processed, fn.fName)
     ret HoStep(processed, acc)
   let scc = hoSccOf(chain(sccs), fn.fName)
-  ret HoStep(fold<String, Set<String > >(scc, processed,
-                 (s: Set<String >, n: String) => add<String >(s, n)),
+  ret HoStep(fold(scc, processed,
+                 (s, n) => add(s, n)),
              hoScc(scc, f, needy, needyThis, nested, outerTypes, siblingNames,
                    specSuffix, acc))
 
-fun hoScc(scc: List<String>, f: PsFun, needy: Set<String >,
-          needyThis: Set<String >,
+fun hoScc(scc: List<String>, f: PsFun, needy: Set<String>,
+          needyThis: Set<String>,
           nested: List<PsFun>, outerTypes: OuterTypes,
           siblingNames: List<String>, specSuffix: String,
           acc: HoAcc): HoAcc
-  let members = hoMembersOf(chain(scc), nested, List<PsFun>())
+  let members = hoMembersOf(chain(scc), nested, List())
   if !hoSccIsNeedy(scc, needy)
     ret hoSccIsNeedy(scc, needyThis)
       ? hoClassMembers(chain(members), acc)
       : hoGlobals(chain(members), f, specSuffix, acc)
   ret match(chain(members))
     (l: ChainLink) => match(l.next)
-      (nil: ChainEnd) => HoAcc(push<PStmt >(acc.haBody, toLetLambda(l.value)),
+      (nil: ChainEnd) => HoAcc(push(acc.haBody, toLetLambda(l.value)),
                                acc.haRenames, acc.haOut, acc.haClass,
                                acc.haToMember)
       (m: ChainLink)  => hoCoalesce(members, outerTypes, siblingNames,
@@ -886,27 +886,27 @@ fun hoCoalesce(members: List<PsFun>, outerTypes: OuterTypes,
                siblingNames: List<String>, specSuffix: String,
                acc: HoAcc): HoAcc
   let co = coalesceMutualScc(members, outerTypes, siblingNames, specSuffix)
-  ret HoAcc(_pushChain<PStmt >(acc.haBody, chain<PStmt >(co.coLets)),
+  ret HoAcc(pushAll(acc.haBody, co.coLets),
             acc.haRenames,
-            push<PStmt >(acc.haOut, co.coClass),
+            push(acc.haOut, co.coClass),
             acc.haClass, acc.haToMember)
 
 # Every member of an SCC shares its neediness, so one member answers for all.
-fun hoSccIsNeedy(scc: List<String>, needy: Set<String >): Bool
+fun hoSccIsNeedy(scc: List<String>, needy: Set<String>): Bool
   ret match(chain(scc))
-    (l: ChainLink)  => contains<String >(needy, l.value)
+    (l: ChainLink)  => contains(needy, l.value)
     (nil: ChainEnd) => false
 
 fun hoMembersOf(ns: Chain<String>, nested: List<PsFun>,
                        acc: List<PsFun>): List<PsFun>
-  ret build<PsFun >(hoMembersOfB(ns, nested, _pushChain<PsFun >(builder<PsFun >(), chain<PsFun >(acc))))
+  ret build(hoMembersOfB(ns, nested, builderFrom(acc)))
 
 fun [tail] hoMembersOfB(ns: Chain<String>, nested: List<PsFun>,
-                       [terminal] acc: ListBuilder<PsFun >): ListBuilder<PsFun >
+                       [terminal] acc: ListBuilder<PsFun>): ListBuilder<PsFun>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(hoFnByName(chain(nested), l.value))
-      (f: PsFun) => hoMembersOfB(l.next, nested, push<PsFun >(acc, f))
+      (f: PsFun) => hoMembersOfB(l.next, nested, push(acc, f))
       ()         => hoMembersOfB(l.next, nested, acc)
 
 fun [tail] hoFnByName(fs: Chain<PsFun>, name: String): PsFun|None
@@ -931,11 +931,11 @@ fun [tail] hoClassMembers(fs: Chain<PsFun>, [terminal] acc: HoAcc): HoAcc
 
 fun hoClassMemberOne(member0: PsFun, acc: HoAcc): HoAcc
   ret HoAcc(acc.haBody, acc.haRenames, acc.haOut,
-            push<PStmt >(acc.haClass,
+            push(acc.haClass,
                    PsFun(hoMemberName(acc.haToMember, member0.fName),
                          member0.fAttrs, member0.fGens,
                          member0.fParams, member0.fBody, member0.fRet,
-                         List<Spec>(), member0.psfLine,
+                         List(), member0.psfLine,
                          member0.fRetInferred, false, member0.fImports)),
             acc.haToMember)
 
@@ -960,9 +960,9 @@ fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix: String,
                 acc: HoAcc): HoAcc
   if specSuffix != "" && !endsWith(member0.fName, specSuffix)
     ret HoAcc(acc.haBody,
-              ThisMap(put<String, String>(acc.haRenames.tmMap, member0.fName,
-                                          member0.fName + specSuffix)),
-              push<PStmt >(acc.haOut,
+              ThisMap(put(acc.haRenames.tmMap, member0.fName,
+                          member0.fName + specSuffix)),
+              push(acc.haOut,
                      PsFun(member0.fName + specSuffix, member0.fAttrs,
                            member0.fGens, member0.fParams, member0.fBody,
                            member0.fRet, f.fWheres, member0.psfLine,
@@ -970,7 +970,7 @@ fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix: String,
                            member0.fImports)),
               acc.haClass, acc.haToMember)
   ret HoAcc(acc.haBody, acc.haRenames,
-            push<PStmt >(acc.haOut,
+            push(acc.haOut,
                    PsFun(member0.fName, member0.fAttrs, member0.fGens,
                          member0.fParams, member0.fBody, member0.fRet,
                          f.fWheres, member0.psfLine,
@@ -982,7 +982,7 @@ fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix: String,
 # Applied recursively so nested-inside-nested functions are hoisted too.
 
 fun hoistNestedFnsToLambdas(statements: List<PStmt>): List<PStmt>
-  let out = hoDrive(chain(statements), List<PStmt>(), List<PStmt>())
+  let out = hoDrive(chain(statements), List(), List())
   ret out
 
 # `acc` is the rewritten statement list in program order, so it is built at the
@@ -990,16 +990,15 @@ fun hoistNestedFnsToLambdas(statements: List<PStmt>): List<PStmt>
 # a builder cannot be read — only pushed to and, once, built.
 fun hoDrive(ss: Chain<PStmt>, acc: List<PStmt>,
             extra: List<PStmt>): List<PStmt>
-  ret build<PStmt >(hoDriveB(ss, _pushChain<PStmt >(builder<PStmt >(),
-                                                    chain<PStmt >(acc)),
-                             extra))
+  ret build(hoDriveB(ss, builderFrom(acc),
+                     extra))
 
-fun [tail] hoDriveB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >,
-                    extra: List<PStmt>): ListBuilder<PStmt >
+fun [tail] hoDriveB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>,
+                    extra: List<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => isEmpty(extra)
       ? acc
-      : _pushChain<PStmt >(acc, chain<PStmt >(hoistNestedFnsToLambdas(extra)))
+      : pushAll(acc, hoistNestedFnsToLambdas(extra))
     # The per-fn step returns a VALUE and the loop stays [tail] (the pipe
     # beta-reduces before tail_loop, so the self-call is direct) — the old
     # hoDriveFn mutual hop left TWO C frames per function statement on the
@@ -1008,12 +1007,12 @@ fun [tail] hoDriveB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >,
       (f: PsFun) => hoHasBlockBody(f)
         # A free function has no receiver, so nothing can be class-hoisted out
         # of it and hoClass comes back empty.
-        ? hoDriveFnStep(f, None) |> (st: PStmt, outs: List<PStmt>, sibs: List<PStmt>) =>
-            hoDriveB(l.next, push<PStmt >(acc, st), concat(extra, outs))
-        : hoDriveB(l.next, push<PStmt >(acc, l.value), extra)
-      (c: PsClass) => hoInClass(c) |> (cls: PStmt, outs: List<PStmt>) =>
-          hoDriveB(l.next, push<PStmt >(acc, cls), concat(extra, outs))
-      (o: PStmt) => hoDriveB(l.next, push<PStmt >(acc, l.value), extra)
+        ? hoDriveFnStep(f, None) |> (st, outs, sibs) =>
+            hoDriveB(l.next, push(acc, st), concat(extra, outs))
+        : hoDriveB(l.next, push(acc, l.value), extra)
+      (c: PsClass) => hoInClass(c) |> (cls, outs) =>
+          hoDriveB(l.next, push(acc, cls), concat(extra, outs))
+      (o: PStmt) => hoDriveB(l.next, push(acc, l.value), extra)
 
 # Hoist out of every member body of one class.
 #
@@ -1024,9 +1023,9 @@ fun [tail] hoDriveB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >,
 # shallower than the bodies they came out of.
 fun hoInClass(c: PsClass): (cls: PStmt, outs: List<PStmt>)
   if !hoClassDeclaresNested(c)
-    ret (c, List<PStmt>())
-  let r = hoClassRounds(chain(c.cMembers), thisType(c), List<PStmt>(),
-                        List<PStmt>())
+    ret (c, List())
+  let r = hoClassRounds(chain(c.cMembers), thisType(c), List(),
+                        List())
   ret (with c(cMembers = r.hcMembers), r.hcOut)
 
 # Does any member of this class hold a nested function declaration? A class with
@@ -1034,13 +1033,13 @@ fun hoInClass(c: PsClass): (cls: PStmt, outs: List<PStmt>)
 # top level of a member's body needs looking at: a deeper nested function can
 # only live inside a top-level one.
 fun hoClassDeclaresNested(c: PsClass): Bool
-  ret any<PStmt>(c.cMembers, (m: PStmt) => hoMemberDeclaresNested(m))
+  ret any(c.cMembers, (m) => hoMemberDeclaresNested(m))
 
 fun hoMemberDeclaresNested(m: PStmt): Bool
   ret match(m)
     (f: PsFun) => match(f.fBody)
       (b: PExpr) => match(b)
-        (bk: PeBlock) => any<PStmt>(bk.blockStmts, (st: PStmt) => hoStmtIsFun(st))
+        (bk: PeBlock) => any(bk.blockStmts, (st) => hoStmtIsFun(st))
         (o: PExpr)    => false
       ()         => false
     (o: PStmt) => false
@@ -1055,23 +1054,23 @@ class [final] HoClass(hcMembers: List<PStmt>, hcOut: List<PStmt>,
 
 # The three lists are all ordered and all built at the tail, so each round runs
 # on builders and materialises once — the HoAcc shape, for the same reason.
-class [linear, final] HcAcc(hcMembers: ListBuilder<PStmt >,
-                            hcOut: ListBuilder<PStmt >,
-                            hcPending: ListBuilder<PStmt >)
+class [linear, final] HcAcc(hcMembers: ListBuilder<PStmt>,
+                            hcOut: ListBuilder<PStmt>,
+                            hcPending: ListBuilder<PStmt>)
 
 fun hoClassRounds(pending: Chain<PStmt>, ths: Spec, members: List<PStmt>,
                   outs: List<PStmt>): HoClass
   let r = hoClassBuild(hoClassRound(pending, ths,
-              HcAcc(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(members)),
-                    _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(outs)),
-                    builder<PStmt >())))
+              HcAcc(builderFrom(members),
+                    builderFrom(outs),
+                    builder())))
   ret isEmpty(r.hcPending)
     ? r
     : hoClassRounds(chain(r.hcPending), ths, r.hcMembers, r.hcOut)
 
 fun hoClassBuild(acc: HcAcc): HoClass
-  ret HoClass(build<PStmt >(acc.hcMembers), build<PStmt >(acc.hcOut),
-              build<PStmt >(acc.hcPending))
+  ret HoClass(build(acc.hcMembers), build(acc.hcOut),
+              build(acc.hcPending))
 
 fun [tail] hoClassRound(ss: Chain<PStmt>, ths: Spec,
                         [terminal] acc: HcAcc): HcAcc
@@ -1084,13 +1083,13 @@ fun [tail] hoClassRound(ss: Chain<PStmt>, ths: Spec,
       (o: PStmt) => hoClassRound(l.next, ths, hoClassKeep(l.value, acc))
 
 fun hoClassKeep(st: PStmt, acc: HcAcc): HcAcc
-  ret HcAcc(push<PStmt >(acc.hcMembers, st), acc.hcOut, acc.hcPending)
+  ret HcAcc(push(acc.hcMembers, st), acc.hcOut, acc.hcPending)
 
 fun hoClassMemberStep(f: PsFun, ths: Spec, acc: HcAcc): HcAcc
-  ret hoDriveFnStep(f, ths) |> (st: PStmt, outs: List<PStmt>, sibs: List<PStmt>) =>
-    HcAcc(push<PStmt >(acc.hcMembers, st),
-          _pushChain<PStmt >(acc.hcOut, chain<PStmt >(outs)),
-          _pushChain<PStmt >(acc.hcPending, chain<PStmt >(sibs)))
+  ret hoDriveFnStep(f, ths) |> (st, outs, sibs) =>
+    HcAcc(push(acc.hcMembers, st),
+          pushAll(acc.hcOut, outs),
+          pushAll(acc.hcPending, sibs))
 
 fun hoDriveFnStep(f: PsFun, ths: Spec|None): (stmt: PStmt, outs: List<PStmt>,
                                               sibs: List<PStmt>)
@@ -1104,10 +1103,10 @@ fun hoDriveFnStep(f: PsFun, ths: Spec|None): (stmt: PStmt, outs: List<PStmt>,
   # Then one rename over all four, exactly as Python applies it.
   ret isEmpty(ho.hoRenames.tmMap)
     ? hoFnStep(f, ho.hoBody, value, ho.hoOut, ho.hoClass)
-    : hoFnStep(f, rnmStmts(chain(ho.hoBody), ho.hoRenames, List<PStmt>()),
+    : hoFnStep(f, rnmStmts(chain(ho.hoBody), ho.hoRenames, List()),
                rnmExpr(value, ho.hoRenames),
-               rnmStmts(chain(ho.hoOut), ho.hoRenames, List<PStmt>()),
-               rnmStmts(chain(ho.hoClass), ho.hoRenames, List<PStmt>()))
+               rnmStmts(chain(ho.hoOut), ho.hoRenames, List()),
+               rnmStmts(chain(ho.hoClass), ho.hoRenames, List()))
 
 fun hoFnStep(f: PsFun, body: List<PStmt>, value: PExpr, outs: List<PStmt>,
              sibs: List<PStmt>): (stmt: PStmt, outs: List<PStmt>,
@@ -1139,13 +1138,13 @@ fun hoWithBody(f: PsFun, body: PExpr): PStmt
 
 fun rnmStmts(ss: Chain<PStmt>, m: ThisMap,
                     acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(rnmStmtsB(ss, m, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(rnmStmtsB(ss, m, builderFrom(acc)))
 
 fun [tail] rnmStmtsB(ss: Chain<PStmt>, m: ThisMap,
-                    [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => rnmStmtsB(l.next, m, push<PStmt >(acc, rnmStmt(l.value, m)))
+    (l: ChainLink)  => rnmStmtsB(l.next, m, push(acc, rnmStmt(l.value, m)))
 
 fun rnmStmt(st: PStmt, m: ThisMap): PStmt
   ret match(st)
@@ -1157,14 +1156,14 @@ fun rnmStmt(st: PStmt, m: ThisMap): PStmt
                          l.pslLine, l.lTypeInferred, l.lImports)
     (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
                                         rnmStmts(chain(d.dTargets), m,
-                                                 List<PStmt>()),
+                                                 List()),
                                         rnmOpt(d.dDefault, m), d.psdLine,
                                         d.dTypeInferred)
     (rt: PsRet)  => PsRet(rnmExpr(rt.retValue, m), rt.psrLine)
     (a: PsAction) => PsAction(rnmExpr(a.action, m), a.psaLine)
     (i: PsIf)    => PsIf(rnmExpr(i.ifCond, m),
-                         rnmStmts(chain(i.ifTrue), m, List<PStmt>()),
-                         rnmStmts(chain(i.ifFalse), m, List<PStmt>()),
+                         rnmStmts(chain(i.ifTrue), m, List()),
+                         rnmStmts(chain(i.ifFalse), m, List()),
                          i.psifLine)
     (o: PStmt)   => st
 
@@ -1182,7 +1181,7 @@ fun rnmExpr(x: PExpr, m: ThisMap): PExpr
     (d: PeDot)     => PeDot(rnmExpr(d.base, m), d.member, d.pedLine)
     (c: PeCall)    => PeCall(rnmExpr(c.function, m), rnmExpr(c.parameter, m),
                              c.pecLine)
-    (tp: PeTuple)  => PeTuple(rnmEnts(chain(tp.exprs), m, List<PTupEnt>()),
+    (tp: PeTuple)  => PeTuple(rnmEnts(chain(tp.exprs), m, List()),
                               tp.petLine)
     (te: PeTernary) => PeTernary(rnmExpr(te.condition, m),
                                  rnmExpr(te.trueResult, m),
@@ -1190,11 +1189,11 @@ fun rnmExpr(x: PExpr, m: ThisMap): PExpr
     (lm: PeLambda) => PeLambda(rnmStmt(lm.lamParams, m),
                                rnmExpr(lm.lamBody, m), lm.pelLine, lm.lamRet)
     (bk: PeBlock)  => PeBlock(rnmStmts(chain(bk.blockStmts), m,
-                                       List<PStmt>()),
+                                       List()),
                               rnmExpr(bk.blockValue, m), bk.blockTag,
                               bk.pebkLine)
     (mt: PeMatch) => with mt(subject = rnmExpr(mt.subject, m),
-                      arms    = rnmArms(chain(mt.arms), m, List<PArm>()))
+                      arms    = rnmArms(chain(mt.arms), m, List()))
     (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                      rnmExpr(op.opParams, m), op.peboLine)
     (nw: PeNew)    => PeNew(nw.newType, rnmExpr(nw.newParam, m), nw.penwLine)
@@ -1209,12 +1208,12 @@ fun rnmExpr(x: PExpr, m: ThisMap): PExpr
     (pl: PeParallel) => PeParallel(rnmExpr(pl.parParams, m), pl.pepLine)
     (lp: PeLoop)   => PeLoop(rnmExpr(lp.loopBody, m),
                              rnmExprs(chain(lp.loopParams), m,
-                                      List<PExpr>()),
+                                      List()),
                              lp.pelpLine)
-    (rc: PeRecur)  => PeRecur(rnmExprs(chain(rc.recArgs), m, List<PExpr>()),
+    (rc: PeRecur)  => PeRecur(rnmExprs(chain(rc.recArgs), m, List()),
                               rc.recIndex, rc.percLine)
     (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                                 map(ne.fieldArgs, (fa: PFieldArg) =>
+                                 map(ne.fieldArgs, (fa) =>
                                    PFieldArg(fa.faName, rnmExpr(fa.faValue, m))),
                                  ne.neTypeParams, ne.penewLine)
     (o: PeLiteral) => x
@@ -1222,34 +1221,34 @@ fun rnmExpr(x: PExpr, m: ThisMap): PExpr
 
 fun rnmExprs(es: Chain<PExpr>, m: ThisMap,
                     acc: List<PExpr>): List<PExpr>
-  ret build<PExpr >(rnmExprsB(es, m, _pushChain<PExpr >(builder<PExpr >(), chain<PExpr >(acc))))
+  ret build(rnmExprsB(es, m, builderFrom(acc)))
 
 fun [tail] rnmExprsB(es: Chain<PExpr>, m: ThisMap,
-                    [terminal] acc: ListBuilder<PExpr >): ListBuilder<PExpr >
+                    [terminal] acc: ListBuilder<PExpr>): ListBuilder<PExpr>
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => rnmExprsB(l.next, m, push<PExpr >(acc, rnmExpr(l.value, m)))
+    (l: ChainLink)  => rnmExprsB(l.next, m, push(acc, rnmExpr(l.value, m)))
 
 fun rnmEnts(es: Chain<PTupEnt>, m: ThisMap,
                    acc: List<PTupEnt>): List<PTupEnt>
-  ret build<PTupEnt >(rnmEntsB(es, m, _pushChain<PTupEnt >(builder<PTupEnt >(), chain<PTupEnt >(acc))))
+  ret build(rnmEntsB(es, m, builderFrom(acc)))
 
 fun [tail] rnmEntsB(es: Chain<PTupEnt>, m: ThisMap,
-                   [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
+                   [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rnmEntsB(l.next, m,
-        push<PTupEnt >(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
-                            rnmExpr(l.value.tupValue, m))))
+        push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
+                  rnmExpr(l.value.tupValue, m))))
 
 fun rnmArms(as2: Chain<PArm>, m: ThisMap, acc: List<PArm>): List<PArm>
-  ret build<PArm >(rnmArmsB(as2, m, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+  ret build(rnmArmsB(as2, m, builderFrom(acc)))
 
-fun [tail] rnmArmsB(as2: Chain<PArm>, m: ThisMap, [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
+fun [tail] rnmArmsB(as2: Chain<PArm>, m: ThisMap, [terminal] acc: ListBuilder<PArm>): ListBuilder<PArm>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rnmArmsB(l.next, m,
-        push<PArm >(acc, with l.value(armBody = rnmExpr(l.value.armBody, m), armGuard = rnmOpt(l.value.armGuard, m))))
+        push(acc, with l.value(armBody = rnmExpr(l.value.armBody, m), armGuard = rnmOpt(l.value.armGuard, m))))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # The INLINER half (ast_inline.py:55-663): function inlining at statement
@@ -1270,32 +1269,32 @@ fun aiCountExpr(n: Int, x: PExpr): Int
   ret n + 1
 
 fun aiNodeCount(x: PExpr): Int
-  ret foldExpr<Int>(x, aiCountStmt, aiCountExpr, 0)
+  ret foldExpr(x, aiCountStmt, aiCountExpr, 0)
 
 # The names of the functions called anywhere in these statements. A SET: its
 # one consumer intersects it against the candidate names to build call-graph
 # edges, and the graph is walked in sorted order. The "have I seen this name"
 # test that used to guard the append is gone — `add` is idempotent.
-fun aiCalledNames(stmts: List<PStmt>): Set<String >
-  ret foldStmts<Set<String > >(stmts, aiIdCalledName, aiCalledCb,
-                               Set<String >())
+fun aiCalledNames(stmts: List<PStmt>): Set<String>
+  ret foldStmts(stmts, aiIdCalledName, aiCalledCb,
+                Set())
 
-fun aiIdCalledName(acc: Set<String >, st: PStmt): Set<String >
+fun aiIdCalledName(acc: Set<String>, st: PStmt): Set<String>
   ret acc
 
 fun aiIdStmtNames(acc: List<String>, st: PStmt): List<String>
   ret acc
 
-fun aiCalledCb(acc: Set<String >, x: PExpr): Set<String >
+fun aiCalledCb(acc: Set<String>, x: PExpr): Set<String>
   ret match(x)
     (c: PeCall) => match(c.function)
-      (nm: PeName) => add<String >(acc, nm.refName)
+      (nm: PeName) => add(acc, nm.refName)
       (o: PExpr)   => acc
     (o2: PExpr) => acc
 
 fun aiRefCountStmt(st: PStmt, name: String): Int
-  ret foldStmt<Int>(st, aiCountNone, (n: Int, x: PExpr) =>
-                      aiRefCb(n, x, name), 0)
+  ret foldStmt(st, aiCountNone, (n, x) =>
+                 aiRefCb(n, x, name), 0)
 
 fun aiCountNone(n: Int, st: PStmt): Int
   ret n
@@ -1314,13 +1313,13 @@ fun aiRefCb(n: Int, x: PExpr, name: String): Int
 class [final] SubMap(smMap: Dict<String, PExpr>)
 
 fun aiSubLookup(m: SubMap, name: String): PExpr|None
-  ret get<String, PExpr>(m.smMap, name)
+  ret get(m.smMap, name)
 
 fun aiSubstituteStmts(ss: List<PStmt>, m: SubMap): List<PStmt>
-  ret rwStmts(ss, rwOnExpr((x: PExpr) => aiSubCb(x, m)))
+  ret rwStmts(ss, rwOnExpr((x) => aiSubCb(x, m)))
 
 fun aiSubstituteExpr(x: PExpr, m: SubMap): PExpr
-  ret rwExpr(x, rwOnExpr((x2: PExpr) => aiSubCb(x2, m)))
+  ret rwExpr(x, rwOnExpr((x2) => aiSubCb(x2, m)))
 
 fun aiSubCb(x: PExpr, m: SubMap): PExpr|None
   ret match(x)
@@ -1331,11 +1330,11 @@ fun aiSubCb(x: PExpr, m: SubMap): PExpr|None
 # name is never captured across inline sites. Port arm-name note: '_' parses
 # to "" — both mean "no binder".
 fun aiArmNamesStmts(ss: List<PStmt>): List<String>
-  ret foldStmts<List<String>>(ss, aiIdStmtNames, aiArmNameCb,
-                              List<String>())
+  ret foldStmts(ss, aiIdStmtNames, aiArmNameCb,
+                List())
 
 fun aiArmNamesExpr(x: PExpr): List<String>
-  ret foldExpr<List<String>>(x, aiIdStmtNames, aiArmNameCb, List<String>())
+  ret foldExpr(x, aiIdStmtNames, aiArmNameCb, List())
 
 fun aiArmNameCb(acc: List<String>, x: PExpr): List<String>
   ret match(x)
@@ -1345,17 +1344,16 @@ fun aiArmNameCb(acc: List<String>, x: PExpr): List<String>
 # Set answers "seen this name" in O(log n) where scanning the accumulator was
 # O(n) per element; the builder keeps the order the Set does not.
 fun aiArmNameLoop(as2: Chain<PArm>, acc: List<String>): List<String>
-  ret build<String >(aiArmNameLoopB(as2,
-                                    _pushChain<String >(builder<String >(),
-                                                        chain<String >(acc)),
-                                    _chainToSet<String >(chain<String >(acc),
-                                                         Set<String >())))
+  ret build(aiArmNameLoopB(as2,
+                           builderFrom(acc),
+                           _chainToSet(chain(acc),
+                                       Set())))
 
 # Every POSITION binds — position 0 on the arm, the rest on its PPos entries.
 # Miss the extras and each inlined copy redefines the same stack var, which is
 # an SSA single-definition violation.
-fun [tail] aiArmNameLoopB(as2: Chain<PArm>, [terminal] out: ListBuilder<String >,
-                          seen: Set<String >): ListBuilder<String >
+fun [tail] aiArmNameLoopB(as2: Chain<PArm>, [terminal] out: ListBuilder<String>,
+                          seen: Set<String>): ListBuilder<String>
   ret match(as2)
     (nil: ChainEnd) => out
     (l: ChainLink)  => aiOneName(l.value.armName, out, seen)
@@ -1364,16 +1362,16 @@ fun [tail] aiArmNameLoopB(as2: Chain<PArm>, [terminal] out: ListBuilder<String >
 
 # Carries the builder THROUGH: it is linear, so the class holding it is
 # [linear] too, and each step consumes exactly one and yields the next.
-class [linear, final] AiNames(anOut: ListBuilder<String >, anSeen: Set<String >)
+class [linear, final] AiNames(anOut: ListBuilder<String>, anSeen: Set<String>)
 
-fun aiOneName(n: String, [terminal] out: ListBuilder<String >,
-              seen: Set<String >): AiNames
-  ret n != "" && n != "_" && !contains<String >(seen, n)
-    ? AiNames(push<String >(out, n), add<String >(seen, n))
+fun aiOneName(n: String, [terminal] out: ListBuilder<String>,
+              seen: Set<String>): AiNames
+  ret n != "" && n != "_" && !contains(seen, n)
+    ? AiNames(push(out, n), add(seen, n))
     : AiNames(out, seen)
 
-fun [tail] aiPosNames(ps: Chain<PPos>, [terminal] out: ListBuilder<String >,
-                      seen: Set<String >): AiNames
+fun [tail] aiPosNames(ps: Chain<PPos>, [terminal] out: ListBuilder<String>,
+                      seen: Set<String>): AiNames
   ret match(ps)
     (nil: ChainEnd) => AiNames(out, seen)
     (l: ChainLink)  => aiOneName(l.value.posName, out, seen)
@@ -1383,13 +1381,13 @@ fun aiRenameArmsStmts(ss: List<PStmt>, suffix: String): List<PStmt>
   let bound = aiArmNamesStmts(ss)
   if isEmpty(bound)
     ret ss
-  ret rwStmts(ss, rwOnExpr((x: PExpr) => aiArmRenCb(x, bound, suffix)))
+  ret rwStmts(ss, rwOnExpr((x) => aiArmRenCb(x, bound, suffix)))
 
 fun aiRenameArmsExpr(x: PExpr, suffix: String): PExpr
   let bound = aiArmNamesExpr(x)
   if isEmpty(bound)
     ret x
-  ret rwExpr(x, rwOnExpr((x2: PExpr) => aiArmRenCb(x2, bound, suffix)))
+  ret rwExpr(x, rwOnExpr((x2) => aiArmRenCb(x2, bound, suffix)))
 
 fun aiArmRenCb(x: PExpr, bound: List<String>, suffix: String): PExpr|None
   ret match(x)
@@ -1399,32 +1397,32 @@ fun aiArmRenCb(x: PExpr, bound: List<String>, suffix: String): PExpr|None
       : None
     (mt: PeMatch) => with mt(subject = mt.subject,
                       arms    = aiArmRenLoop(chain(mt.arms), bound, suffix,
-                                          List<PArm>()))
+                                          List()))
     (o: PExpr)    => None
 
 fun aiArmRenLoop(as2: Chain<PArm>, bound: List<String>,
                         suffix: String, acc: List<PArm>): List<PArm>
-  ret build<PArm >(aiArmRenLoopB(as2, bound, suffix, _pushChain<PArm >(builder<PArm >(), chain<PArm >(acc))))
+  ret build(aiArmRenLoopB(as2, bound, suffix, builderFrom(acc)))
 
 fun [tail] aiArmRenLoopB(as2: Chain<PArm>, bound: List<String>,
-                        suffix: String, [terminal] acc: ListBuilder<PArm >): ListBuilder<PArm >
+                        suffix: String, [terminal] acc: ListBuilder<PArm>): ListBuilder<PArm>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => aiArmRenLoopB(l.next, bound, suffix,
-        push<PArm >(acc,
+        push(acc,
           with l.value(armName  = contains2(bound, l.value.armName)
                                     ? l.value.armName + suffix
                                     : l.value.armName,
                        armExtra = aiRenamePositions(chain(l.value.armExtra),
                                                     bound, suffix,
-                                                    List<PPos>()))))
+                                                    List()))))
 
 fun [tail] aiRenamePositions(ps: Chain<PPos>, bound: List<String>,
                              suffix: String, acc: List<PPos>): List<PPos>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => aiRenamePositions(l.next, bound, suffix,
-        build<PPos >(push<PPos >(builderFrom<PPos>(acc),
+        build(push(builderFrom(acc),
           contains2(bound, l.value.posName)
             ? with l.value(posName = l.value.posName + suffix)
             : l.value)))
@@ -1434,11 +1432,11 @@ fun [tail] aiRenamePositions(ps: Chain<PPos>, bound: List<String>,
 class [final] Renamed(rnStmts: List<PStmt>, rnMap: ThisMap)
 
 fun aiRenameLetVars(ss: List<PStmt>, suffix: String): Renamed
-  let m = aiTopLets(chain(ss), suffix, ThisMap(Dict<String, String>()))
+  let m = aiTopLets(chain(ss), suffix, ThisMap(Dict()))
   if isEmpty(m.tmMap)
     ret Renamed(ss, m)
-  ret Renamed(rwStmts(ss, Rw((x: PExpr) => aiLetRenExpr(x, m), rwNoSpec,
-                             (st: PStmt) => aiLetRenStmt(st, m))),
+  ret Renamed(rwStmts(ss, Rw((x) => aiLetRenExpr(x, m), rwNoSpec,
+                             (st) => aiLetRenStmt(st, m))),
               m)
 
 fun [tail] aiTopLets(ss: Chain<PStmt>, suffix: String, acc: ThisMap): ThisMap
@@ -1446,7 +1444,7 @@ fun [tail] aiTopLets(ss: Chain<PStmt>, suffix: String, acc: ThisMap): ThisMap
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => aiTopLets(l.next, suffix,
-                                 ThisMap(put<String, String>(acc.tmMap,
+                                 ThisMap(put(acc.tmMap,
                                              let2.lName,
                                              let2.lName + suffix)))
       (o: PStmt)    => aiTopLets(l.next, suffix, acc)
@@ -1508,7 +1506,7 @@ fun aiBodyCount(f: PsFun): Int
     ()         => 0
 
 fun aiClassMemberNames(statements: List<PStmt>): List<String>
-  ret aiCmnLoop(chain(statements), List<String>())
+  ret aiCmnLoop(chain(statements), List())
 
 fun [tail] aiCmnLoop(ss: Chain<PStmt>, acc: List<String>): List<String>
   ret match(ss)
@@ -1518,13 +1516,13 @@ fun [tail] aiCmnLoop(ss: Chain<PStmt>, acc: List<String>): List<String>
       (o: PStmt)   => aiCmnLoop(l.next, acc)
 
 fun hoFnNames2(ss: Chain<PStmt>, acc: List<String>): List<String>
-  ret build<String >(hoFnNames2B(ss, _pushChain<String >(builder<String >(), chain<String >(acc))))
+  ret build(hoFnNames2B(ss, builderFrom(acc)))
 
-fun [tail] hoFnNames2B(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] hoFnNames2B(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => hoFnNames2B(l.next, push<String >(acc, f.fName))
+      (f: PsFun) => hoFnNames2B(l.next, push(acc, f.fName))
       (o: PStmt) => hoFnNames2B(l.next, acc)
 
 # Map of inlinable name → PsFun; functions on a call-graph cycle (incl.
@@ -1540,7 +1538,7 @@ fun [tail] hoFnNames2B(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String >): 
 class [final] Catalog(caMap: Dict<String, PsFun>)
 
 fun caNames(c: Catalog): List<String>
-  ret sort<String>(keys<String, PsFun>(c.caMap))
+  ret sort(keys(c.caMap))
 
 # The callees of one catalogue entry that are themselves catalogue entries —
 # the call-graph edges out of it. A name that is not in the map has no edges;
@@ -1548,22 +1546,22 @@ fun caNames(c: Catalog): List<String>
 # saying so costs nothing and beats inventing a placeholder function.
 fun aiCatCallees(cat: Catalog, name: String,
                  candNames: List<String>): List<String>
-  ret match(get<String, PsFun>(cat.caMap, name))
-    (f: PsFun) => sort<String>(filter<String>(aiCalledNames(aiBodyStmts(f)),
-                                   (n: String) => contains2(candNames, n)))
-    ()         => List<String>()
+  ret match(get(cat.caMap, name))
+    (f: PsFun) => sort(filter(aiCalledNames(aiBodyStmts(f)),
+                           (n) => contains2(candNames, n)))
+    ()         => List()
 
 fun aiCatKeep(acc: Catalog, cat: Catalog, name: String): Catalog
-  ret match(get<String, PsFun>(cat.caMap, name))
-    (f: PsFun) => Catalog(put<String, PsFun>(acc.caMap, name, f))
+  ret match(get(cat.caMap, name))
+    (f: PsFun) => Catalog(put(acc.caMap, name, f))
     ()         => acc
 
 fun aiBuildCatalog(statements: List<PStmt>): Catalog
   let classMembers = aiClassMemberNames(statements)
-  let cands = aiCandidates(chain(statements), classMembers, Catalog(Dict<String, PsFun>()))
+  let cands = aiCandidates(chain(statements), classMembers, Catalog(Dict()))
   let names = caNames(cands)
-  let edges = aiCatEdges(chain(names), cands, names, EEdges(Dict<String, List<String>>()))
-  ret aiPruneCycles(chain(names), cands, edges, Catalog(Dict<String, PsFun>()))
+  let edges = aiCatEdges(chain(names), cands, names, EEdges(Dict()))
+  ret aiPruneCycles(chain(names), cands, edges, Catalog(Dict()))
 
 fun [tail] aiCandidates(ss: Chain<PStmt>, classMembers: List<String>,
                         acc: Catalog): Catalog
@@ -1572,7 +1570,7 @@ fun [tail] aiCandidates(ss: Chain<PStmt>, classMembers: List<String>,
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => aiIsInlinable(f, classMembers)
         ? aiCandidates(l.next, classMembers,
-                       Catalog(put<String, PsFun>(acc.caMap, f.fName, f)))
+                       Catalog(put(acc.caMap, f.fName, f)))
         : aiCandidates(l.next, classMembers, acc)
       (o: PStmt) => aiCandidates(l.next, classMembers, acc)
 
@@ -1581,15 +1579,15 @@ fun [tail] aiCatEdges(ns: Chain<String>, cat: Catalog,
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => aiCatEdges(l.next, cat, candNames,
-        EEdges(put<String, List<String>>(acc.eeMap, l.value,
+        EEdges(put(acc.eeMap, l.value,
                    aiCatCallees(cat, l.value, candNames))))
 
 fun aiBodyStmts(f: PsFun): List<PStmt>
   ret match(f.fBody)
     (b: PExpr) => match(b)
       (bk: PeBlock) => bk.blockStmts
-      (o: PExpr)    => List<PStmt>()
-    ()         => List<PStmt>()
+      (o: PExpr)    => List()
+    ()         => List()
 
 fun [tail] aiPruneCycles(ns: Chain<String>, cat: Catalog, edges: EEdges,
                          acc: Catalog): Catalog
@@ -1600,7 +1598,7 @@ fun [tail] aiPruneCycles(ns: Chain<String>, cat: Catalog, edges: EEdges,
       : aiPruneCycles(n.next, cat, edges, aiCatKeep(acc, cat, n.value))
 
 fun aiReachesSelf(start: String, edges: EEdges): Bool
-  ret aiDfs(ceChildrenOf(edges, start), start, edges, List<String>())
+  ret aiDfs(ceChildrenOf(edges, start), start, edges, List())
 
 # The stack's top is its FRONT. Python pops from the END (`stack.pop()`), and
 # mirroring that literally cost two O(n) reversals per step — one to reach the
@@ -1616,13 +1614,13 @@ fun [tail] aiDfs(stack: List<String>, start: String, edges: EEdges,
     (l: ChainLink)  => l.value == start
       ? true
       : contains2(seen, l.value)
-        ? aiDfs(List<String>(l.next), start, edges, seen)
+        ? aiDfs(List(l.next), start, edges, seen)
         : aiDfs(concat(ceChildrenOf(edges, l.value),
-                       List<String>(l.next)),
+                       List(l.next)),
                 start, edges, prepend(l.value, seen))
 
 fun aiCatLookup(c: Catalog, name: String): PsFun|None
-  ret get<String, PsFun>(c.caMap, name)
+  ret get(c.caMap, name)
 
 # ── fresh suffixes ───────────────────────────────────────────────────────────
 # Python's module counter, reset by inline_ast: $inl1, $inl2, ... minted in
@@ -1650,7 +1648,7 @@ fun aiInlineFunctionCall(c: PeCall, target: PsFun, lineRef: PLine,
 fun aiInlineCall2(tp: PeTuple, target: PsFun, bk: PeBlock, lineRef: PLine,
                   n: Int): InlOut|None
   let params = flattenParams(target.fParams)
-  let args = tlEntValues(chain(tp.exprs), List<PExpr>())
+  let args = tlEntValues(chain(tp.exprs), List())
   if !sameLen(chain(args), chain(params))
     ret None
   let fresh = aiFresh(n)
@@ -1665,9 +1663,9 @@ fun aiInlineCall2(tp: PeTuple, target: PsFun, bk: PeBlock, lineRef: PLine,
   let bodyValue0 = aiRenameArmsExpr(subbedValue, fresh.frSuffix)
   # Param → argument prologue + substitution map.
   let prologue = aiParamPrologue(chain(params), chain(args), lineRef,
-                                 fresh.frSuffix, List<PStmt>())
+                                 fresh.frSuffix, List())
   let paramSubst = aiParamSubst(chain(params), lineRef, fresh.frSuffix,
-                                SubMap(Dict<String, PExpr>()))
+                                SubMap(Dict()))
   ret InlOut(fresh.frN,
              concat(prologue, aiSubstituteStmts(bodyStmts0, paramSubst)),
              aiSubstituteExpr(bodyValue0, paramSubst))
@@ -1677,11 +1675,11 @@ fun aiInlineCall2(tp: PeTuple, target: PsFun, bk: PeBlock, lineRef: PLine,
 # the result is itself keyed by those names, so no order of insertion can
 # change it.
 fun aiRenameAsSubst(m: ThisMap, lineRef: PLine): SubMap
-  ret SubMap(fold<String, Dict<String, PExpr> >(keys<String, String>(m.tmMap),
-                 Dict<String, PExpr>(),
-                 (d: Dict<String, PExpr>, n: String) =>
-                   put<String, PExpr>(d, n,
-                       PeName(aiRasTarget(m, n), List<Spec>(), lineRef, None))))
+  ret SubMap(fold(keys(m.tmMap),
+                 Dict(),
+                 (d, n) =>
+                   put(d, n,
+                       PeName(aiRasTarget(m, n), List(), lineRef, None))))
 
 fun aiRasTarget(m: ThisMap, n: String): String
   ret match(tmLookup(m, n))
@@ -1691,20 +1689,20 @@ fun aiRasTarget(m: ThisMap, n: String): String
 fun aiParamPrologue(ps: Chain<PStmt>, as2: Chain<PExpr>,
                            lineRef: PLine, suffix: String,
                            acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(aiParamPrologueB(ps, as2, lineRef, suffix, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(aiParamPrologueB(ps, as2, lineRef, suffix, builderFrom(acc)))
 
 fun [tail] aiParamPrologueB(ps: Chain<PStmt>, as2: Chain<PExpr>,
                            lineRef: PLine, suffix: String,
-                           [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                           [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ps)
     (nil: ChainEnd) => acc
     (p: ChainLink)  => match(as2)
       (nil2: ChainEnd) => acc
       (a: ChainLink)   => aiParamPrologueB(p.next, a.next, lineRef, suffix,
-          push<PStmt >(acc, PsLet(stmtName(p.value) + suffix, List<PAttr>(),
-                            List<PGen>(), aiLetTypeOf(p.value), a.value,
-                            "", List<Spec>(), lineRef, false,
-                            List<PStmt>())))
+          push(acc, PsLet(stmtName(p.value) + suffix, List(),
+                    List(), aiLetTypeOf(p.value), a.value,
+                    "", List(), lineRef, false,
+                    List<PStmt>())))
 
 fun aiLetTypeOf(st: PStmt): Spec|None
   ret match(st)
@@ -1719,8 +1717,8 @@ fun [tail] aiParamSubst(ps: Chain<PStmt>, lineRef: PLine, suffix: String,
     # where the chain lookup kept the first — the substitution target is a
     # pure function of the name, so both give the same answer.
     (p: ChainLink)  => aiParamSubst(p.next, lineRef, suffix,
-        SubMap(put<String, PExpr>(acc.smMap, stmtName(p.value),
-                   PeName(stmtName(p.value) + suffix, List<Spec>(), lineRef,
+        SubMap(put(acc.smMap, stmtName(p.value),
+                   PeName(stmtName(p.value) + suffix, List(), lineRef,
                           None))))
 
 # Inline when stmt's top-level expression is a direct call to a catalog
@@ -1768,7 +1766,7 @@ fun aiTis3(c: PeCall, targetName: String, st: PStmt, catalog: Catalog,
                                               : PeBlock(io.ioStmts,
                                                         io.ioValue, "",
                                                         stmtLine(st))),
-                                     List<PStmt>()))
+                                     List()))
       ()           => None
     ()              => None
 
@@ -1795,38 +1793,38 @@ fun aiInlineLetBound(body: PExpr, params: List<PStmt>, args: List<PExpr>,
   # The names bound inside this body — a SET: both readers ask only whether a
   # name is in it, and the "already collected" test that guarded the append
   # goes with it, since add is idempotent.
-  let bound = foldExpr<Set<String > >(body, aiBoundCb, aiIdExprNames,
-                                      Set<String >(allStmtNames(chain(params),
-                                                       List<String>())))
-  let renamed0 = rwExpr(body, Rw((x: PExpr) => aiBoundRenExpr(x, bound,
-                                                              fresh.frSuffix),
+  let bound = foldExpr(body, aiBoundCb, aiIdExprNames,
+                       Set(allStmtNames(chain(params),
+                               List())))
+  let renamed0 = rwExpr(body, Rw((x) => aiBoundRenExpr(x, bound,
+                                                       fresh.frSuffix),
                                  rwNoSpec,
-                                 (st: PStmt) => aiBoundRenStmt(st, bound,
-                                                               fresh.frSuffix)))
+                                 (st) => aiBoundRenStmt(st, bound,
+                                                        fresh.frSuffix)))
   let renamed = aiRenameArmsExpr(renamed0, fresh.frSuffix)
   ret aiIlb2(renamed, params, args, returnType, r, fresh)
 
-fun aiIdExprNames(acc: Set<String >, x: PExpr): Set<String >
+fun aiIdExprNames(acc: Set<String>, x: PExpr): Set<String>
   ret acc
 
-fun aiBoundCb(acc: Set<String >, st: PStmt): Set<String >
+fun aiBoundCb(acc: Set<String>, st: PStmt): Set<String>
   ret match(st)
-    (l: PsLet) => add<String >(acc, l.lName)
+    (l: PsLet) => add(acc, l.lName)
     (o: PStmt) => acc
 
-fun aiBoundRenExpr(x: PExpr, bound: Set<String >,
+fun aiBoundRenExpr(x: PExpr, bound: Set<String>,
                    suffix: String): PExpr|None
   ret match(x)
-    (nm: PeName) => contains<String >(bound, nm.refName)
+    (nm: PeName) => contains(bound, nm.refName)
       ? PeName(nm.refName + suffix, nm.refTypeParams, nm.penLine,
                nm.penTrait)
       : None
     (o: PExpr)   => None
 
-fun aiBoundRenStmt(st: PStmt, bound: Set<String >,
+fun aiBoundRenStmt(st: PStmt, bound: Set<String>,
                    suffix: String): PStmt|None
   ret match(st)
-    (l: PsLet) => contains<String >(bound, l.lName)
+    (l: PsLet) => contains(bound, l.lName)
       ? PsLet(l.lName + suffix, l.lAttrs, l.lGens, l.lType, l.lDefault,
               l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
               l.lImports)
@@ -1837,7 +1835,7 @@ fun aiIlb2(renamed: PExpr, params: List<PStmt>, args: List<PExpr>,
            returnType: Spec|None, r: Resolver|None,
            fresh: Fresh): IlbOut|None
   let prologue = aiIlbPrologue(chain(params), chain(args), r,
-                               fresh.frSuffix, List<PStmt>())
+                               fresh.frSuffix, List())
   ret match(prologue)
     (pl: List<PStmt>) => aiIlb3(renamed, pl, returnType, fresh)
     ()                => None
@@ -1870,24 +1868,23 @@ fun aiIlbPrologue(ps: Chain<PStmt>, as2: Chain<PExpr>,
                   r: Resolver|None, suffix: String,
                   acc: List<PStmt>): List<PStmt>|None
   ret match(aiIlbPrologueB(ps, as2, r, suffix,
-                           _pushChain<PStmt >(builder<PStmt >(),
-                                              chain<PStmt >(acc))))
-    (b: ListBuilder<PStmt >) => build<PStmt >(b)
+                           builderFrom(acc)))
+    (b: ListBuilder<PStmt>) => build(b)
     ()                       => None
 
 fun [tail] aiIlbPrologueB(ps: Chain<PStmt>, as2: Chain<PExpr>,
                           r: Resolver|None, suffix: String,
-                          [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >|None
+                          [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>|None
   ret match(ps)
     (nil: ChainEnd) => acc
     (p: ChainLink)  => match(as2)
       (nil2: ChainEnd) => acc
       (a: ChainLink)   => match(aiBindType(p.value, a.value, r))
         (bt: Spec) => aiIlbPrologueB(p.next, a.next, r, suffix,
-            push<PStmt >(acc, PsLet(stmtName(p.value) + suffix, List<PAttr>(),
-                                    List<PGen>(), bt, a.value, "",
-                                    List<Spec>(), exprLine(a.value), false,
-                                    None)))
+            push(acc, PsLet(stmtName(p.value) + suffix, List(),
+                            List(), bt, a.value, "",
+                            List(), exprLine(a.value), false,
+                            None)))
         ()         => None
 
 fun aiBindType(param: PStmt, arg: PExpr, r: Resolver|None): Spec|None
@@ -1960,8 +1957,8 @@ class [final] Singles(sgMap: Dict<String, PExpr>)
 
 fun aiBetaReduceExpressions(stmts: List<PStmt>, catalog: Catalog,
                             r: Resolver|None, n: Int): RwNSs
-  let singles = aiSingles(chain(stmts), stmts, 0, Singles(Dict<String, PExpr>()))
-  let out = rwnStmts(stmts, RwN((n2: Int, x: PExpr) =>
+  let singles = aiSingles(chain(stmts), stmts, 0, Singles(Dict()))
+  let out = rwnStmts(stmts, RwN((n2, x) =>
                                   aiBetaCb(n2, x, singles, catalog, r),
                                 rwnNoStmt),
                      n)
@@ -1981,7 +1978,7 @@ fun aiSingleAdd(st: PStmt, all: List<PStmt>, i: Int, acc: Singles): Singles
       (dv: PExpr) => match(dv)
         (lam: PeLambda) => aiUsesAfter(chain(drop(all, i + 1)), let2.lName,
                                        0) == 1
-          ? Singles(put<String, PExpr>(acc.sgMap, let2.lName, dv))
+          ? Singles(put(acc.sgMap, let2.lName, dv))
           : acc
         (o: PExpr)      => acc
       ()          => acc
@@ -1994,7 +1991,7 @@ fun [tail] aiUsesAfter(ss: Chain<PStmt>, name: String, n: Int): Int
                                    n + aiRefCountStmt(l.value, name))
 
 fun aiSingleLam(singles: Singles, name: String): PeLambda|None
-  ret match(get<String, PExpr>(singles.sgMap, name))
+  ret match(get(singles.sgMap, name))
     (x: PExpr) => match(x)
       (lam: PeLambda) => lam
       (o: PExpr)      => None
@@ -2023,8 +2020,8 @@ fun aiBetaCb(n: Int, x: PExpr, singles: Singles, catalog: Catalog,
 # whole body can be walked as a statement list and the value read back off the
 # end afterwards. Both of the passes that rewrite bodies start here.
 fun aiBlockAsStmts(bk: PeBlock): List<PStmt>
-  ret build<PStmt >(push<PStmt >(
-          _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(bk.blockStmts)),
+  ret build(push(
+          builderFrom(bk.blockStmts),
           PsRet(bk.blockValue, exprLine(bk.blockValue))))
 
 fun aiBetaBlock(bk: PeBlock, catalog: Catalog, r: Resolver|None,
@@ -2045,14 +2042,14 @@ fun aiBetaCall(c: PeCall, singles: Singles, catalog: Catalog,
     (lam: PeLambda) => match(c.parameter)
       (tp: PeTuple) => aiBetaApply(aiBetaReduceLambda(lam,
                                      tlEntValues(chain(tp.exprs),
-                                                 List<PExpr>()),
+                                                 List()),
                                      n),
                                    n)
       (o: PExpr)    => aiNoRep(n)
     (nm: PeName)    => match(c.parameter)
       (tp: PeTuple) => aiBetaNamed(nm.refName,
                                    tlEntValues(chain(tp.exprs),
-                                               List<PExpr>()),
+                                               List()),
                                    singles, catalog, r, n)
       (o2: PExpr)   => aiNoRep(n)
     (o3: PExpr)     => aiNoRep(n)
@@ -2079,23 +2076,23 @@ fun aiBetaNamed(name: String, args: List<PExpr>, singles: Singles,
 # Drop lambda lets whose single use was inlined away (no remaining refs in
 # any OTHER statement of the sequence).
 fun aiDropDeadLams(ss: List<PStmt>, singles: Singles): List<PStmt>
-  ret aiDdlLoop(chain(ss), ss, 0, singles, List<PStmt>())
+  ret aiDdlLoop(chain(ss), ss, 0, singles, List())
 
 fun aiDdlLoop(cs: Chain<PStmt>, all: List<PStmt>, i: Int,
                      singles: Singles, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(aiDdlLoopB(cs, all, i, singles, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(aiDdlLoopB(cs, all, i, singles, builderFrom(acc)))
 
 fun [tail] aiDdlLoopB(cs: Chain<PStmt>, all: List<PStmt>, i: Int,
-                     singles: Singles, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                     singles: Singles, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(cs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => aiDdlDead(l.value, all, i, singles)
       ? aiDdlLoopB(l.next, all, i + 1, singles, acc)
-      : aiDdlLoopB(l.next, all, i + 1, singles, push<PStmt >(acc, l.value))
+      : aiDdlLoopB(l.next, all, i + 1, singles, push(acc, l.value))
 
 fun aiDdlDead(st: PStmt, all: List<PStmt>, i: Int, singles: Singles): Bool
   ret match(st)
-    (let2: PsLet) => contains<String, PExpr>(singles.sgMap, let2.lName)
+    (let2: PsLet) => contains(singles.sgMap, let2.lName)
                      && aiRefsExceptAt(chain(all), let2.lName, i, 0, 0) == 0
     (o: PStmt)    => false
 
@@ -2154,7 +2151,7 @@ fun aiRwf2(f: PsFun, bk: PeBlock, catalog: Catalog, r: Resolver|None,
            n: Int): RfOut
   let stmts0 = aiBlockAsStmts(bk)
   # Pass 1: statement-level function inlining.
-  let p1 = aiPass1b(chain(stmts0), catalog, f.fName, n, List<PStmt>(), 0)
+  let p1 = aiPass1b(chain(stmts0), catalog, f.fName, n, List(), 0)
   # Pass 2: beta-reduction + expression-position inlining.
   let p2 = aiBetaReduceExpressions(p1.tiStmts, catalog, r, p1.tiN)
   let changed = aiPass1Changed(p1) || !eqStmts(p2.rnssStmts, p1.tiStmts)
@@ -2186,24 +2183,24 @@ fun aiPass1Changed(p: P1Out): Bool
 fun aiPass1b(ss: Chain<PStmt>, catalog: Catalog, selfName: String,
              n: Int, acc: List<PStmt>, hits: Int): P1Out
   ret aiPass1c(ss, catalog, selfName, n,
-               _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc)), hits)
-    |> (out) => P1Out(out.tiN, build<PStmt >(out.tiStmts), out.tiHits)
+               builderFrom(acc), hits)
+    |> (out) => P1Out(out.tiN, build(out.tiStmts), out.tiHits)
 
-class [linear, final] P1Acc(tiN: Int, tiStmts: ListBuilder<PStmt >,
+class [linear, final] P1Acc(tiN: Int, tiStmts: ListBuilder<PStmt>,
                             tiHits: Int)
 
 fun [tail] aiPass1c(ss: Chain<PStmt>, catalog: Catalog, selfName: String,
-                    n: Int, [terminal] acc: ListBuilder<PStmt >,
+                    n: Int, [terminal] acc: ListBuilder<PStmt>,
                     hits: Int): P1Acc
   ret match(ss)
     (nil: ChainEnd) => P1Acc(n, acc, hits)
     (l: ChainLink)  => match(aiTryInlineAtStmt(l.value, catalog, selfName,
                                                n))
       (t2: TisOut) => aiPass1c(l.next, catalog, selfName, t2.tiN,
-                               _pushChain<PStmt >(acc, chain<PStmt >(t2.tiStmts)),
+                               pushAll(acc, t2.tiStmts),
                                hits + 1)
       ()           => aiPass1c(l.next, catalog, selfName, n,
-                               push<PStmt >(acc, l.value), hits)
+                               push(acc, l.value), hits)
 
 # The fixpoint: counter reset per entry; catalog rebuilt per round; stop when
 # nothing is inlinable or a round changes nothing; then flatten.
@@ -2217,14 +2214,14 @@ fun [tail] aiRounds(current: List<PStmt>, round2: Int, n: Int): List<PStmt>
   if isEmpty(catalog.caMap)
     ret aiFlattenBlockValues(current)
   let r = rootResolver(current)
-  let out = aiRound(chain(current), catalog, r, n, List<PStmt>(), false)
+  let out = aiRound(chain(current), catalog, r, n, List(), false)
   if !out.arChanged
     ret aiFlattenBlockValues(out.arStmts)
   ret aiRounds(out.arStmts, round2 + 1, out.arN)
 
 class [final] ArOut(arN: Int, arStmts: List<PStmt>, arChanged: Bool)
 
-class [linear, final] ArAcc(araN: Int, araStmts: ListBuilder<PStmt >,
+class [linear, final] ArAcc(araN: Int, araStmts: ListBuilder<PStmt>,
                             araChanged: Bool)
 
 # One round over the whole program: every statement comes out, in order, either
@@ -2232,19 +2229,19 @@ class [linear, final] ArAcc(araN: Int, araStmts: ListBuilder<PStmt >,
 fun aiRound(ss: Chain<PStmt>, catalog: Catalog, r: Resolver, n: Int,
             acc: List<PStmt>, changed: Bool): ArOut
   ret aiRoundB(ss, catalog, r, n,
-               _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc)),
+               builderFrom(acc),
                changed)
-    |> (out) => ArOut(out.araN, build<PStmt >(out.araStmts), out.araChanged)
+    |> (out) => ArOut(out.araN, build(out.araStmts), out.araChanged)
 
 fun [tail] aiRoundB(ss: Chain<PStmt>, catalog: Catalog, r: Resolver, n: Int,
-                    [terminal] acc: ListBuilder<PStmt >,
+                    [terminal] acc: ListBuilder<PStmt>,
                     changed: Bool): ArAcc
   ret match(ss)
     (nil: ChainEnd) => ArAcc(n, acc, changed)
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => aiRewriteFunction(f, catalog, r, n)
         |> (out) => aiRoundB(l.next, catalog, r, out.rfN,
-                             push<PStmt >(acc, out.rfStmt),
+                             push(acc, out.rfStmt),
                              changed || out.rfChanged)
-      (o: PStmt) => aiRoundB(l.next, catalog, r, n, push<PStmt >(acc, l.value),
+      (o: PStmt) => aiRoundB(l.next, catalog, r, n, push(acc, l.value),
                              changed)

@@ -27,23 +27,23 @@ import Bootstrap::Types
 class [final] LinCnt(lcCounts: Dict<String, Int>)
 
 fun lcKeys(c: LinCnt): List<String>
-  ret sort<String>(keys<String, Int>(c.lcCounts))
+  ret sort(keys(c.lcCounts))
 class [final] LinOut(loCnt: LinCnt, loErrs: Set<PErr>)
 # The env likewise: binding names (insertion order — discharge order matches
 # Python's dict iteration) plus their types.
 class [final] LinEnv(leTypes: Dict<String, Spec>)
 
 fun leNames(env: LinEnv): List<String>
-  ret sort<String>(keys<String, Spec>(env.leTypes))
+  ret sort(keys(env.leTypes))
 
 fun emptyCnt(): LinCnt
-  ret LinCnt(Dict<String, Int>())
+  ret LinCnt(Dict())
 
 fun linZero(errs: Set<PErr>): LinOut
   ret LinOut(emptyCnt(), errs)
 
 fun emptyEnv(): LinEnv
-  ret LinEnv(Dict<String, Spec>())
+  ret LinEnv(Dict())
 
 fun envPut(env: LinEnv, name: String, ty: Spec): LinEnv
   ret LinEnv(put(env.leTypes, name, ty))
@@ -133,41 +133,41 @@ fun linToplevel(st: PStmt, r: Resolver, acc: Set<PErr>): Set<PErr>
 
 fun linLeaves(sp: Spec|None, r: Resolver): List<String>
   ret match(sp)
-    (s2: Spec) => leavesOf(s2, r, List<String>())
-    ()         => List<String>()
+    (s2: Spec) => leavesOf(s2, r, List())
+    ()         => List()
 
 fun leavesOf(sp: Spec, r: Resolver, seen: List<String>): List<String>
   ret match(sp)
     (g2: SGeneric)     => g2.sgLinear
-      ? prepend("", List<String>())
-      : List<String>()
+      ? prepend("", List())
+      : List()
     (c: SClass)        => classLeaves(c, r, seen)
     (t2: STuple)       => tupleLeaves(chain(t2.stEntries), r, seen,
-                                      List<String>())
+                                      List())
     (cm: SCombination) => anyMemberLinear(chain(cm.scTypes), r, seen)
-      ? prepend("", List<String>())
-      : List<String>()
-    (o: Spec)          => List<String>()
+      ? prepend("", List())
+      : List()
+    (o: Spec)          => List()
 
 fun classLeaves(c: SClass, r: Resolver, seen: List<String>): List<String>
   if !isLinearClassSpec(c, r)
-    ret List<String>()
+    ret List()
   if contains2(seen, c.scName)
-    ret prepend("", List<String>())          # recursive linear type: one leaf
+    ret prepend("", List())          # recursive linear type: one leaf
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
       # `seen` is the recursion guard — a membership set.
       (cs: PsClass) => classFieldLeaves(cs, c, r, prepend(c.scName, seen))
-      (o: PStmt)    => prepend("", List<String>())
-    ()         => prepend("", List<String>())
+      (o: PStmt)    => prepend("", List())
+    ()         => prepend("", List())
 
 fun classFieldLeaves(cs: PsClass, c: SClass, r: Resolver,
                      seen: List<String>): List<String>
   let mapping = paramMapping(cs.cGens, c.scParams)
   let out = fieldLeaves(chain(classFields(cs)), mapping, r, seen,
-                        List<String>())
+                        List())
   # A linear class with no linear fields is itself the leaf.
-  ret isEmpty(out) ? prepend("", List<String>()) : out
+  ret isEmpty(out) ? prepend("", List()) : out
 
 fun [tail] fieldLeaves(fs: Chain<PStmt>, mapping: List<Binding>, r: Resolver,
                        seen: List<String>, acc: List<String>): List<String>
@@ -555,7 +555,7 @@ fun armBindsLinear(a: PArm, r: Resolver): Bool
 fun armTypeOf(a: PArm): Spec
   ret match(a.armType)
     (t2: Spec) => t2
-    ()         => STuple(List<SEntry>(), a.parmLine)   # unreachable when bound
+    ()         => STuple(List(), a.parmLine)   # unreachable when bound
 
 fun [tail] popObligations(ls: Chain<String>, name: String,
                           c: LinCnt): LinCnt
@@ -579,7 +579,7 @@ fun countBlock(bk: PeBlock, env: LinEnv, r0: Resolver,
 
 fun countStmtList(stmts: List<PStmt>, trailing: PExpr|None, env: LinEnv,
                   r: Resolver, r0: Resolver, acc: Set<PErr>): LinOut
-  let out = countSuffix(stmts, 0, env, r, r0, trailing, List<PStmt>(), acc)
+  let out = countSuffix(stmts, 0, env, r, r0, trailing, List(), acc)
   ret dischargeLocals(chain(out.soBindings), r0,
                       LinOut(out.soCnt, out.soErrs))
 
@@ -669,7 +669,7 @@ fun [tail] growEnv(ts: Chain<PStmt>, r: Resolver, env: LinEnv,
         # Bindings keep declaration order: the drops they own are emitted in
         # it at scope exit.
         ? growEnv(l.next, r, putEnv(env, let2),
-                  build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(bindings)), l.value)))
+                  build(push(builderFrom(bindings), l.value)))
         : growEnv(l.next, r, env, bindings)
       (o: PStmt)    => growEnv(l.next, r, env, bindings)
 
@@ -683,7 +683,7 @@ fun suffixLet(let2: PsLet, stmts: List<PStmt>, i: Int, env: LinEnv,
   let isLin = carriesLinearity(let2.lType, r0)
   ret countSuffix(stmts, i + 1, isLin ? putEnv(env, let2) : env, r, r0,
                   trailing,
-                  isLin ? build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(bindings)), narrowLet(let2)))
+                  isLin ? build(push(builderFrom(bindings), narrowLet(let2)))
                         : bindings,
                   o.loErrs)
     |> (rest) => ScopeOut(cntAdd(o.loCnt, rest.soCnt), rest.soErrs,
@@ -755,7 +755,7 @@ fun suffixIf(i2: PsIf, stmts: List<PStmt>, i: Int, env: LinEnv, r: Resolver,
 # A path-expr moves every leaf that has the path as a prefix; a path running
 # past a leaf into a non-linear field moves nothing.
 fun countPath(x: PExpr, env: LinEnv, r: Resolver): LinCnt
-  ret match(resolvePathRoot(x, List<String>()))
+  ret match(resolvePathRoot(x, List()))
     (rp: RootPath) => envHas(env, rp.rpRoot)
       ? pathCounts(chain(linLeaves(envType(env, rp.rpRoot), r)), rp,
                    emptyCnt())
@@ -806,8 +806,8 @@ fun checkCapture(b: PExpr, env: LinEnv, lr: PLine, r: Resolver,
   ret captureErrs(chain(sort(capturedIn(b, env))), lr, acc)
 
 fun capturedIn(b: PExpr, env: LinEnv): List<String>
-  ret capturedLoop(chain(referencedNames(b, List<String>())), env,
-                   List<String>())
+  ret capturedLoop(chain(referencedNames(b, List())), env,
+                   List())
 
 fun [tail] capturedLoop(ns: Chain<String>, env: LinEnv,
                         acc: List<String>): List<String>

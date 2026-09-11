@@ -35,9 +35,9 @@ fun appOf(fns: List<CgFunction>, objs: List<CgObject>,
   ret fold(globals,
         fold(objs,
           fold(fns, emptyApp(),
-               (a: CgApp, f: CgFunction) => appPutFunction(a, f)),
-          (a: CgApp, o: CgObject) => appPutObject(a, o)),
-        (a: CgApp, g2: CgGlobal) => appPutGlobal(a, g2))
+               (a, f) => appPutFunction(a, f)),
+          (a, o) => appPutObject(a, o)),
+        (a, g2) => appPutGlobal(a, g2))
 
 # ── ordered views: the sequence numbers, sorted ──────────────────────────────
 
@@ -47,25 +47,25 @@ fun _ordOf(d: Dict<String, Int>, n: String): Int
     ()       => 0
 
 fun appFunctions(a: CgApp): List<CgFunction>
-  ret map<String, CgFunction>(
-        sortBy<String>(keys(a.appFnIx),
-                       (x: String, y: String) =>
-                         _ordOf(a.appFnOrd, x) < _ordOf(a.appFnOrd, y)),
-        (n: String) => forceFn(get(a.appFnIx, n)))
+  ret map(
+        sortBy(keys(a.appFnIx),
+               (x, y) =>
+                 _ordOf(a.appFnOrd, x) < _ordOf(a.appFnOrd, y)),
+        (n) => forceFn(get(a.appFnIx, n)))
 
 fun appObjects(a: CgApp): List<CgObject>
-  ret map<String, CgObject>(
-        sortBy<String>(keys(a.appObjIx),
-                       (x: String, y: String) =>
-                         _ordOf(a.appObjOrd, x) < _ordOf(a.appObjOrd, y)),
-        (n: String) => forceObj(get(a.appObjIx, n)))
+  ret map(
+        sortBy(keys(a.appObjIx),
+               (x, y) =>
+                 _ordOf(a.appObjOrd, x) < _ordOf(a.appObjOrd, y)),
+        (n) => forceObj(get(a.appObjIx, n)))
 
 fun appGlobals(a: CgApp): List<CgGlobal>
-  ret map<String, CgGlobal>(
-        sortBy<String>(keys(a.appGlbIx),
-                       (x: String, y: String) =>
-                         _ordOf(a.appGlbOrd, x) < _ordOf(a.appGlbOrd, y)),
-        (n: String) => forceGlb(get(a.appGlbIx, n)))
+  ret map(
+        sortBy(keys(a.appGlbIx),
+               (x, y) =>
+                 _ordOf(a.appGlbOrd, x) < _ordOf(a.appGlbOrd, y)),
+        (n) => forceGlb(get(a.appGlbIx, n)))
 
 # Strict: the name came from keys() of the same Dict, so a miss is a bug here,
 # not a runtime condition.
@@ -78,7 +78,7 @@ fun forceFn(x: CgFunction|None): CgFunction
 fun forceObj(x: CgObject|None): CgObject
   ret match(x)
     (o: CgObject) => o
-    ()            => CgObject("", List<String>(), List<CgFuncSlot>(), CgVoid(),
+    ()            => CgObject("", List(), List(), CgVoid(),
                               None, "", false, false, 0, false)
 
 fun forceGlb(x: CgGlobal|None): CgGlobal
@@ -87,9 +87,9 @@ fun forceGlb(x: CgGlobal|None): CgGlobal
     ()             => CgGlobal("", CgVoid(), None, None, None, None)
 
 fun emptyApp(): CgApp
-  ret CgApp(Dict<String, CgFunction>(), Dict<String, CgObject>(),
-            Dict<String, CgGlobal>(), Dict<String, Int>(),
-            Dict<String, Int>(), Dict<String, Int>(), 0)
+  ret CgApp(Dict(), Dict(),
+            Dict(), Dict(),
+            Dict(), Dict(), 0)
 
 # ── insertion ────────────────────────────────────────────────────────────────
 # A name keeps the sequence number it was FIRST given: replacing an entry
@@ -141,16 +141,16 @@ fun appHasFunction(a: CgApp, name: String): Bool
 # Wholesale replacement: the new list's order becomes the emission order, so
 # the sequence numbers are reassigned from it.
 fun appWithFunctions(a: CgApp, fns: List<CgFunction>): CgApp
-  ret fold(fns, CgApp(Dict<String, CgFunction>(), a.appObjIx, a.appGlbIx,
-                      Dict<String, Int>(), a.appObjOrd, a.appGlbOrd, a.appNext),
-           (acc: CgApp, f: CgFunction) => appPutFunction(acc, f))
+  ret fold(fns, CgApp(Dict(), a.appObjIx, a.appGlbIx,
+                      Dict(), a.appObjOrd, a.appGlbOrd, a.appNext),
+           (acc, f) => appPutFunction(acc, f))
 
 fun appWithObjects(a: CgApp, objs: List<CgObject>): CgApp
-  ret fold(objs, CgApp(a.appFnIx, Dict<String, CgObject>(), a.appGlbIx,
-                       a.appFnOrd, Dict<String, Int>(), a.appGlbOrd, a.appNext),
-           (acc: CgApp, o: CgObject) => appPutObject(acc, o))
+  ret fold(objs, CgApp(a.appFnIx, Dict(), a.appGlbIx,
+                       a.appFnOrd, Dict(), a.appGlbOrd, a.appNext),
+           (acc, o) => appPutObject(acc, o))
 
 fun appWithGlobals(a: CgApp, globals: List<CgGlobal>): CgApp
-  ret fold(globals, CgApp(a.appFnIx, a.appObjIx, Dict<String, CgGlobal>(),
-                          a.appFnOrd, a.appObjOrd, Dict<String, Int>(), a.appNext),
-           (acc: CgApp, g2: CgGlobal) => appPutGlobal(acc, g2))
+  ret fold(globals, CgApp(a.appFnIx, a.appObjIx, Dict(),
+                          a.appFnOrd, a.appObjOrd, Dict(), a.appNext),
+           (acc, g2) => appPutGlobal(acc, g2))

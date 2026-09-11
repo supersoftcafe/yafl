@@ -61,13 +61,13 @@ fun mangleChar(c: Int32): String
     ()             => "X" + hexMin2(c)
 
 fun mangleName(symbol: String): String
-  ret fold(codepoints(joinDoubleColon(symbol)), "", (acc: String, c: Int32) => acc + mangleChar(c))
+  ret fold(codepoints(joinDoubleColon(symbol)), "", (acc, c) => acc + mangleChar(c))
 
 fun toPointerMask(fieldType: CgType, typeStr: String): String
-  ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path: String) => "|maskof(" + typeStr + ", " + path + ")"), "") + ")"
+  ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path) => "|maskof(" + typeStr + ", " + path + ")"), "") + ")"
 
 # One 64-slot window of a wide object's pointer map. maskof_w is 0 for a field
 # outside the window (modulo keeps the shift defined), so every field appears
 # in every window's expression and C folds each to its constant.
 fun toPointerMaskWindow(fieldType: CgType, typeStr: String, window: Int): String
-  ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path: String) => "|maskof_w(" + typeStr + ", " + path + ", " + String(window) + ")"), "") + ")"
+  ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path) => "|maskof_w(" + typeStr + ", " + path + ", " + String(window) + ")"), "") + ")"

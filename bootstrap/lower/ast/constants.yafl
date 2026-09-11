@@ -27,11 +27,11 @@ class [final] IcConsts(icMap: Dict<String, PExpr>)
 
 fun inlineConstants(statements: List<PStmt>): List<PStmt>
   let consts = icCollect(chain(statements),
-                         IcConsts(Dict<String, PExpr>()))
+                         IcConsts(Dict()))
   if isEmpty(consts.icMap)
     ret statements
-  ret rwStmts(icDropDecls(chain(statements), consts, List<PStmt>()),
-              Rw((x: PExpr) => icReplace(x, consts), rwNoSpec, rwNoStmt))
+  ret rwStmts(icDropDecls(chain(statements), consts, List()),
+              Rw((x) => icReplace(x, consts), rwNoSpec, rwNoStmt))
 
 fun [tail] icCollect(ss: Chain<PStmt>, acc: IcConsts): IcConsts
   ret match(ss)
@@ -47,9 +47,9 @@ fun icCollectLet(let2: PsLet, acc: IcConsts): IcConsts
   ret match(let2.lDefault)
     (v: PExpr) => icIsLiteral(v)
       # FIRST declaration of a name wins, as the head-first walk did.
-      ? (contains<String, PExpr>(acc.icMap, let2.lName)
+      ? (contains(acc.icMap, let2.lName)
            ? acc
-           : IcConsts(put<String, PExpr>(acc.icMap, let2.lName, v)))
+           : IcConsts(put(acc.icMap, let2.lName, v)))
       : acc
     ()         => acc
 
@@ -73,22 +73,22 @@ fun icRestamp(v: PExpr, line: PLine): PExpr
 # Top level: const declarations are DROPPED — they live only as inlined uses.
 fun icDropDecls(ss: Chain<PStmt>, c: IcConsts,
                        acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(icDropDeclsB(ss, c, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(icDropDeclsB(ss, c, builderFrom(acc)))
 
 fun [tail] icDropDeclsB(ss: Chain<PStmt>, c: IcConsts,
-                       [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                       [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => contains<String, PExpr>(c.icMap, let2.lName)
+      (let2: PsLet) => contains(c.icMap, let2.lName)
         ? icDropDeclsB(l.next, c, acc)
-        : icDropDeclsB(l.next, c, push<PStmt >(acc, l.value))
-      (o: PStmt)    => icDropDeclsB(l.next, c, push<PStmt >(acc, l.value))
+        : icDropDeclsB(l.next, c, push(acc, l.value))
+      (o: PStmt)    => icDropDeclsB(l.next, c, push(acc, l.value))
 
 # The walker callback: a bare name that aliases a const becomes the literal.
 fun icReplace(x: PExpr, c: IcConsts): PExpr|None
   ret match(x)
-    (nm: PeName) => match(get<String, PExpr>(c.icMap, nm.refName))
+    (nm: PeName) => match(get(c.icMap, nm.refName))
       (v: PExpr) => icRestamp(v, nm.penLine)
       ()         => None
     (o: PExpr)   => None

@@ -47,8 +47,8 @@ fun spellingOf(sp: Spec): TypeId
     (n: SNamed)        => TiNamed(n.snName, spellList(n.snParams))
     (c: SClass)        => TiClass(c.scName, spellList(c.scParams))
     (e2: SEnum)        => TiEnum(e2.seRoot, spellList(e2.seParams))
-    (t2: STuple)       => TiTuple(map<SEntry, (tteName: String, tteId: TypeId)>(
-                            t2.stEntries, (en: SEntry) =>
+    (t2: STuple)       => TiTuple(map(
+                            t2.stEntries, (en) =>
                               (en.seName, spellingOfOpt(en.seType))))
     (cl: SCallable)    => TiCallable(spellingOf(cl.scParams2),
                                      spellingOfOpt(cl.scResult))
@@ -71,8 +71,8 @@ fun spellList(ps: List<Spec>): List<TypeId>
 fun tiSortBySpelling(ids: List<TypeId>): List<TypeId>
   # By serialised form. This was an INSERTION SORT — every id walking the
   # sorted prefix and rebuilding it as it went.
-  ret sortBy<TypeId>(ids,
-          (a: TypeId, b: TypeId) => tiSerialise(a) < tiSerialise(b))
+  ret sortBy(ids,
+          (a, b) => tiSerialise(a) < tiSerialise(b))
 
 
 # ── the canonical spelling ───────────────────────────────────────────────────
@@ -85,7 +85,7 @@ fun tiSerialise(t2: TypeId): String
     (c: TiClass)       => "C(" + c.ticName + ";" + tiJoin(c.ticArgs) + ")"
     (e2: TiEnum)       => "E(" + e2.tieRoot + ";" + tiJoin(e2.tieArgs) + ")"
     (tp: TiTuple)      => "T(" + join(map(tp.titEntries,
-                            (en: (tteName: String, tteId: TypeId)) =>
+                            (en) =>
                               en.tteName + ":" + tiSerialise(en.tteId)), ",") + ")"
     (cb: TiCallable)   => "F(" + tiSerialise(cb.tcbParams) + ";"
                           + tiSerialise(cb.tcbResult) + ")"
@@ -137,7 +137,7 @@ fun eqTypeId(a: TypeId, b: TypeId): Bool
       (o: TypeId)    => false
 
 fun eqTypeIds(a: List<TypeId>, b: List<TypeId>): Bool
-  ret eqBy<TypeId>(a, b, (x: TypeId, y: TypeId) => eqTypeId(x, y))
+  ret eqBy(a, b, (x, y) => eqTypeId(x, y))
 
 fun [tail] eqTiEntries(a: Chain<(tteName: String, tteId: TypeId)>,
                        b: Chain<(tteName: String, tteId: TypeId)>): Bool

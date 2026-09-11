@@ -26,19 +26,19 @@ import Bootstrap::StdlibCandidates
 # save.
 fun computeSyncNames(a: CgApp): Set<String>
   let virtualImpls = gfSlotFuncs(a)   # slot → implementing functions (all objects, foreign incl.)
-  let seed = fold(appFunctions(a), Set<String>(),
-                  (acc: Set<String>, f: CgFunction) => siSeedable(f) ? add<String>(acc, f.fnName) : acc)
+  let seed = fold(appFunctions(a), Set(),
+                  (acc, f) => siSeedable(f) ? add(acc, f.fnName) : acc)
   ret siFixpoint(a, virtualImpls, seed)
 
 fun inferSync(a: CgApp): CgApp
   let syncSet = computeSyncNames(a)
   ret appWithFunctions(a, map(appFunctions(a),
-        (f: CgFunction) => siMaterialise(f, syncSet)))
+        (f) => siMaterialise(f, syncSet)))
 
 fun siMaterialise(f: CgFunction, syncSet: Set<String>): CgFunction
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars, f.fnOps,
                  f.fnComment, f.fnForeignSymbol,
-                 contains<String>(syncSet, f.fnName),
+                 contains(syncSet, f.fnName),
                  f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
                  f.fnSourceFile, f.fnSourceLine)
 
@@ -81,20 +81,20 @@ fun isNoneStr(s2: String|None): Bool
 # size rather than a co-walk over two chains.
 fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: Set<String>): Set<String>
   let grown = fold(appFunctions(a), syncSet,
-                   (acc: Set<String>, f: CgFunction) => siTryAdd(acc, f, impls))
-  ret size<String>(grown) == size<String>(syncSet) ? grown : siFixpoint(a, impls, grown)
+                   (acc, f) => siTryAdd(acc, f, impls))
+  ret size(grown) == size(syncSet) ? grown : siFixpoint(a, impls, grown)
 
 # Foreign functions have empty bodies (all([]) would falsely qualify) — their
 # sync-ness comes only from the programmer seed.
 fun siTryAdd(acc: Set<String>, f: CgFunction, impls: List<SlotFuncs>): Set<String>
-  if contains<String>(acc, f.fnName)
+  if contains(acc, f.fnName)
     ret acc
   if !isNoneStr(f.fnForeignSymbol) || siReturnsTaggedTask(f)
     ret acc
-  ret siBodyIsSync(f, acc, impls) ? add<String>(acc, f.fnName) : acc
+  ret siBodyIsSync(f, acc, impls) ? add(acc, f.fnName) : acc
 
 fun siBodyIsSync(f: CgFunction, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
-  ret !any(f.fnOps, (op: Op) => siOpBlocksSync(op, syncSet, impls))
+  ret !any(f.fnOps, (op) => siOpBlocksSync(op, syncSet, impls))
 
 fun siOpBlocksSync(op: Op, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
   ret match(op)
@@ -104,10 +104,10 @@ fun siOpBlocksSync(op: Op, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
 
 fun siCallIsSync(c: OpCall, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
   ret match(c.callFunction)
-    (gf: RpGlobalFunction)  => contains<String>(syncSet, gf.name)
+    (gf: RpGlobalFunction)  => contains(syncSet, gf.name)
     (vf: RpVirtualFunction) => siVirtualIsSync(vf.name, syncSet, impls)
     (o: RParam)             => false
 
 fun siVirtualIsSync(name: String, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
   let names = gfSlotLookup(impls, name)
-  ret !isEmpty(names) && !any(names, (n: String) => !contains<String>(syncSet, n))
+  ret !isEmpty(names) && !any(names, (n) => !contains(syncSet, n))

@@ -28,9 +28,9 @@ class [final] DiscAcc(daIds: Dict<String, Int>, daN: Int)
 
 fun collectDiscriminatorIds(statements: List<PStmt>): Dict<String, Int>
   let breakers = computeBreakers(statements)
-  let leaves = fold(statements, DiscAcc(Dict<String, Int>(), 0),
-                    (a: DiscAcc, st: PStmt) => discEnumLeaves(a, st, breakers))
-  ret foldAllSpecs<DiscAcc>(statements, discSpec, leaves).daIds
+  let leaves = fold(statements, DiscAcc(Dict(), 0),
+                    (a, st) => discEnumLeaves(a, st, breakers))
+  ret foldAllSpecs(statements, discSpec, leaves).daIds
 
 fun discAssign(acc: DiscAcc, uid2: String): DiscAcc
   if length(uid2) == 0
@@ -51,12 +51,12 @@ fun discEnumRoot(acc: DiscAcc, e2: PsEnum,
     ret acc
   ret match(asEnumVariant(e2.eSpec))
     (sp: SEnum) if contains2(breakers, sp.seRoot) =>
-        fold(sp.seAllLeaves, acc, (a: DiscAcc, leaf: String) => discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
+        fold(sp.seAllLeaves, acc, (a, leaf) => discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
     ()           => acc
 
 fun discSpec(acc: DiscAcc, sp: Spec): DiscAcc
   ret match(sp)
-    (cm: SCombination) => fold(cm.scTypes, acc, (a: DiscAcc, v: Spec) => discAssign(a, uid(v)))
+    (cm: SCombination) => fold(cm.scTypes, acc, (a, v) => discAssign(a, uid(v)))
     (o: Spec)          => acc
 
 # ── the entry point (__create_entry_point) ───────────────────────────────────
@@ -77,16 +77,16 @@ fun createEntryPoint(mainName: String): CgFunction
                                    CgDataPointer())
   let ops = concat(list5(
       OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
-             RpNewStruct(List<RpNamedValue>()), svResult, false, false, None, List<RParam>()),
-      OpJumpIf("$async_entry", unlikelyChk, false, List<RParam>()),
+             RpNewStruct(List()), svResult, false, false, None, List()),
+      OpJumpIf("$async_entry", unlikelyChk, false, List()),
       # Sync path: invoke the completion callback with main's result.
       OpCall(continuation, RpNewStruct(list1(RpNamedValue("result", svResult))),
-             None, false, false, None, List<RParam>()),
-      OpReturnVoid(List<RParam>()),
+             None, false, false, None, List()),
+      OpReturnVoid(List()),
       # Async path: register the continuation as task callback.
-      OpLabel("$async_entry", List<RParam>())),
-    list2(OpMove(svDiscard, onComplete, true, List<RParam>()),
-          OpReturnVoid(List<RParam>())))
+      OpLabel("$async_entry", List())),
+    list2(OpMove(svDiscard, onComplete, true, List()),
+          OpReturnVoid(List())))
   ret CgFunction("__entrypoint__",
                  CgStruct(list2(CgField("this", CgDataPointer()),
                                 CgField("$continuation", CgFuncPointer()))),
@@ -101,9 +101,9 @@ fun createEntryPoint(mainName: String): CgFunction
 # the (type) set directly from the deferred-init lets (top-level and in
 # bodies), where the type is known — same machinery, pure plumbing.
 fun collectLazyTypes(statements: List<PStmt>, r: Resolver): List<CgType>
-  let out = foldStmts<LazyTypes>(statements,
-                                 (acc: LazyTypes, st: PStmt) => lazyTypeOf(acc, st, r),
-                                 foldNoExprLT, LazyTypes(List<CgType>(), Dict<String, Bool>()))
+  let out = foldStmts(statements,
+                      (acc, st) => lazyTypeOf(acc, st, r),
+                      foldNoExprLT, LazyTypes(List(), Dict()))
   ret out.ltList
 
 # First-seen-order distinct types + the mangled names already seen: the
@@ -130,9 +130,9 @@ fun isNoneSpec2(sp: Spec|None): Bool
 
 fun lazyTypeAdd(acc: LazyTypes, t2: CgType): LazyTypes
   let m2 = irMangle(t2)
-  ret contains<String, Bool>(acc.ltSeen, m2)
+  ret contains(acc.ltSeen, m2)
     ? acc
-    : LazyTypes(build<CgType >(push<CgType >(_pushChain<CgType >(builder<CgType >(), chain<CgType>(acc.ltList)), t2)),
+    : LazyTypes(build(push(builderFrom(acc.ltList), t2)),
                 put(acc.ltSeen, m2, true))
 
 fun ensureLazyMachinery(a: CgApp, types2: List<CgType>): CgApp
@@ -146,7 +146,7 @@ fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
     ret a
   let m = lazyMachinery(t2)
   let withObjs = fold(m.lmObjects, a, alPutIfAbsent)
-  ret fold(m.lmFunctions, withObjs, (a2: CgApp, f: CgFunction) =>
+  ret fold(m.lmFunctions, withObjs, (a2, f) =>
         appHasFunction(a2, f.fnName) ? a2 : appPutFunction(a2, f))
 
 # ── the driver ───────────────────────────────────────────────────────────────
@@ -158,10 +158,10 @@ fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
 # instead — mirroring MatchExpression.check on the Python side.
 
 fun multiSubjectPositionErrs(statements: List<PStmt>, r: Resolver): List<String>
-  ret foldStmts<List<String>>(statements,
-        (acc: List<String>, st: PStmt) => acc,
-        (acc: List<String>, x: PExpr) => msPosExpr(acc, x, r),
-        List<String>())
+  ret foldStmts(statements,
+        (acc, st) => acc,
+        (acc, x) => msPosExpr(acc, x, r),
+        List())
 
 fun msPosExpr(acc: List<String>, x: PExpr, r: Resolver): List<String>
   ret match(x)
@@ -177,7 +177,7 @@ fun [tail] msPosArms(acc: List<String>, as2: Chain<PArm>, subs: List<PExpr>,
     (l: ChainLink)  => msPosArms(
         msPosOne(acc,
                  chain(prepend(l.value.armType,
-                               map(l.value.armExtra, (p: PPos) => p.posType))),
+                               map(l.value.armExtra, (p) => p.posType))),
                  chain(subs), r),
         l.next, subs, r)
 
@@ -204,7 +204,7 @@ fun msSupported(acc: List<String>, rep: GRepr, pat: Spec,
                 r: Resolver): List<String>
   ret match(reprPositionGuards(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
     (g: List<RParam>) => acc
-    ()                => build<String >(push<String >(builderFrom<String>(acc),
+    ()                => build(push(builderFrom(acc),
                            "this pattern cannot serve a position of a "
                            + "multi-subject match"))
 
@@ -235,11 +235,11 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   # isBoxedLeaf (mirrors Python ResolverRoot's lazy is_boxed_leaf).
   let boxedLeaves = computeBoxedLeaves(statements, breakers)
   let st = buildStatements(statements)
-  let r = RRoot((root: String) => contains2(breakers, root),
+  let r = RRoot((root) => contains2(breakers, root),
                 st, None, discs, optLevel,
                 None, boxedLeaves, mergedMembersTable(st))
   let spIr = spanBegin("codegen", "ir_build")
-  let a0 = fold(statements, emptyApp(), (a: CgApp, st: PStmt) => ccStmt(a, st, r))
+  let a0 = fold(statements, emptyApp(), (a, st) => ccStmt(a, st, r))
   let a1 = appPutFunction(a0, createEntryPoint(mainName))
   let a2 = ensureLazyMachinery(a1, collectLazyTypes(statements, r))
   # SSA + control-flow + Phi validation right after AST lowering.
@@ -254,12 +254,12 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   # where Python errors is the divergence the contracts exist to catch.
   let posErrs = multiSubjectPositionErrs(statements, r)
   if !isEmpty(posErrs)
-    ret CreateCOut(List<String>(), posErrs)
+    ret CreateCOut(List(), posErrs)
   let spV1 = spanBegin("codegen", "ssa_validate.1")
   let v1 = ssaValidate(appFunctions(a2), true)
   let _v1 = spanEnd(spV1)
   if !isEmpty(v1)
-    ret CreateCOut(List<String>(), v1)
+    ret CreateCOut(List(), v1)
   let spTrim = spanBegin("codegen", "trim+devirt")
   let a3 = discoverGlobalFunctionCalls(removedUnusedStuff(a2))
   let _trim = spanEnd(spTrim)
@@ -309,19 +309,19 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   let v2 = checkApplication(a9)
   let _chk = spanEnd(spCheck)
   if !isEmpty(v2)
-    ret CreateCOut(List<String>(), v2)
+    ret CreateCOut(List(), v2)
   let spV3 = spanBegin("codegen", "ssa_validate.2")
   let v3 = ssaValidate(appFunctions(a9), false)
   let _v3 = spanEnd(spV3)
   if !isEmpty(v3)
-    ret CreateCOut(List<String>(), v3)
+    ret CreateCOut(List(), v3)
   let v4 = ccValidateEntrypoint(a9)
   if !isEmpty(v4)
-    ret CreateCOut(List<String>(), v4)
+    ret CreateCOut(List(), v4)
   let spGen = spanBegin("codegen", "gen_application")
   let parts = genApplication(a9, headers, profile)
   let _gen = spanEnd(spGen)
-  ret CreateCOut(parts, List<String>())
+  ret CreateCOut(parts, List())
 
 # ── the -O2/-O3 inline fixpoints ─────────────────────────────────────────────
 # Python compiler.py: `if optimization_level >= 2` — resolve indirect fun_t
@@ -415,18 +415,18 @@ fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects: Bool): Bool
     ()         => false
 
 fun ccFnsSame(a: List<CgFunction>, b: List<CgFunction>): Bool
-  ret eqBy<CgFunction>(a, b, (x: CgFunction, y: CgFunction) =>
+  ret eqBy(a, b, (x, y) =>
         x.fnName == y.fnName && sameLen(x.fnOps, y.fnOps))
 
 fun ccObjsSame(a: List<CgObject>, b: List<CgObject>): Bool
-  ret eqBy<CgObject>(a, b, (x: CgObject, y: CgObject) =>
+  ret eqBy(a, b, (x, y) =>
         x.objName == y.objName
         && sameLen(chain(x.objFunctions), chain(y.objFunctions)))
 
 fun ccSortObjs(os: List<CgObject>): List<CgObject>
   # By name. This was an INSERTION SORT — each object walking the sorted
   # prefix and rebuilding it as it went.
-  ret sortBy<CgObject>(os, (a: CgObject, b: CgObject) => a.objName < b.objName)
+  ret sortBy(os, (a, b) => a.objName < b.objName)
 
 fun ccStmt(a: CgApp, st: PStmt, r: Resolver): CgApp
   let r2 = scopeResolver(st, r)
@@ -464,5 +464,5 @@ fun ccEntryShape(f: CgFunction): List<String>
                                          CgField("$continuation", CgFuncPointer()))))
   let resultOk = alIsVoid(f.fnResult)
   ret paramsOk && resultOk
-    ? List<String>()
+    ? List()
     : list1("__entrypoint__ has the wrong shape")

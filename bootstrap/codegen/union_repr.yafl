@@ -41,20 +41,20 @@ import Bootstrap::Types
 # (a field declared on a parent enum node is inherited by every descendant
 # leaf).
 fun collectLeafFieldSets(st: PsEnum, inherited: List<PStmt>): List<List<PStmt>>
-  let own = filterDeclaredFields(chain(flattenParams(st.eParams)), List<PStmt>())
+  let own = filterDeclaredFields(chain(flattenParams(st.eParams)), List())
   let combined = concat(inherited, own)
   ret isEmpty(st.eVariants)
-    ? (st.eHasParams ? list1(combined) : List<List<PStmt>>())
-    : collectLeafFieldSetsVariants(chain(st.eVariants), combined, List<List<PStmt>>())
+    ? (st.eHasParams ? list1(combined) : List())
+    : collectLeafFieldSetsVariants(chain(st.eVariants), combined, List())
 
 fun filterDeclaredFields(ps: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(filterDeclaredFieldsB(ps, builderFrom<PStmt>(acc)))
+  ret build(filterDeclaredFieldsB(ps, builderFrom(acc)))
 
-fun [tail] filterDeclaredFieldsB(ps: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+fun [tail] filterDeclaredFieldsB(ps: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => isSome(let2.lType) ? filterDeclaredFieldsB(l.next, push<PStmt >(acc, l.value)) : filterDeclaredFieldsB(l.next, acc)
+      (let2: PsLet) => isSome(let2.lType) ? filterDeclaredFieldsB(l.next, push(acc, l.value)) : filterDeclaredFieldsB(l.next, acc)
       (o: PStmt)    => filterDeclaredFieldsB(l.next, acc)
 
 fun [tail] collectLeafFieldSetsVariants(vs: Chain<PStmt>, combined: List<PStmt>, acc: List<List<PStmt>>): List<List<PStmt>>
@@ -71,10 +71,10 @@ fun [tail] collectLeafFieldSetsVariants(vs: Chain<PStmt>, combined: List<PStmt>,
 fun enumVariantTypes(st: PsEnum, r: Resolver): List<CgType>
   ret match(asEnumVariant(st.eSpec))
     (sp: SEnum) => evtLoop(chain(sp.seAllLeaves),
-                           chain(collectLeafFieldSets(st, List<PStmt>())),
-                           st.eName, r, List<CgType>())
-    ()           => map(collectLeafFieldSets(st, List<PStmt>()),
-                        (fields: List<PStmt>) => CgStruct(letFieldsToCgFields(fields, r)))
+                           chain(collectLeafFieldSets(st, List())),
+                           st.eName, r, List())
+    ()           => map(collectLeafFieldSets(st, List()),
+                        (fields) => CgStruct(letFieldsToCgFields(fields, r)))
 
 fun [tail] evtLoop(names: Chain<String>, sets: Chain<List<PStmt>>,
                    rootName: String, r: Resolver, acc: List<CgType>): List<CgType>
@@ -83,12 +83,12 @@ fun [tail] evtLoop(names: Chain<String>, sets: Chain<List<PStmt>>,
     (l: ChainLink)  => match(sets)
       (nil2: ChainEnd) => acc   # unreachable: leaf names and field sets zip 1:1
       (s2: ChainLink)  => evtLoop(l.next, s2.next, rootName, r,
-          concat(acc, list1<CgType>(isBoxedLeaf(r, rootName, l.value)
-                                      ? CgDataPointer()
-                                      : CgStruct(letFieldsToCgFields(s2.value, r)))))
+          concat(acc, list1(isBoxedLeaf(r, rootName, l.value)
+                              ? CgDataPointer()
+                              : CgStruct(letFieldsToCgFields(s2.value, r)))))
 
 fun letFieldsToCgFields(fields: List<PStmt>, r: Resolver): List<CgField>
-  ret map(fields, (st: PStmt) => letFieldToCgField(st, r))
+  ret map(fields, (st) => letFieldToCgField(st, r))
 
 fun letFieldToCgField(st: PStmt, r: Resolver): CgField
   ret match(st)
@@ -103,10 +103,10 @@ fun enumLeafObjectName(rootName: String, leafName: String): String
     : leafName + "$generic$" + suffixAfter(rootName, "$generic$")
 
 fun suffixAfter(s: String, sep: String): String
-  ret join(tail<String>(split(s, sep)), sep)
+  ret join(tail(split(s, sep)), sep)
 
 fun baseName(name: String): String
-  ret match(head<String>(split(name, "$generic$")))
+  ret match(head(split(name, "$generic$")))
     (first: String) => first
     ()               => name
 
@@ -120,7 +120,7 @@ fun baseName(name: String): String
 fun forceFields(t: CgType): List<CgField>
   ret match(cgFieldsOf(t))
     (fields: List<CgField>) => fields
-    ()                       => List<CgField>()   # unreachable: a TaggedRepr container is always a Struct
+    ()                       => List()   # unreachable: a TaggedRepr container is always a Struct
 
 fun getOr0(d: Dict<String, Int>, key: String): Int
   ret match(get(d, key))
@@ -147,7 +147,7 @@ fun [tail] variantIndexLoop(ms: Chain<Spec>, u: String, i: Int): Int|None
     (l: ChainLink)  => uid(l.value) == u ? i : variantIndexLoop(l.next, u, i + 1)
 
 fun setNamedValueAt(vs: List<RpNamedValue>, name: String, v: RParam): List<RpNamedValue>
-  ret map(vs, (nv: RpNamedValue) => nv.name == name ? RpNamedValue(name, v) : nv)
+  ret map(vs, (nv) => nv.name == name ? RpNamedValue(name, v) : nv)
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 2: literal_eq_test / literal_range_test / literal_alternative_tests
@@ -212,7 +212,7 @@ fun [tail] anyFoundIsForeignClass(fs: Chain<Found>): Bool
       (o: PStmt)    => anyFoundIsForeignClass(l.next)
 
 fun pointerWordKind(member: Spec, r: Resolver): PtrKind|None
-  ret eqCgType(specGenerate(member, r), CgStruct(List<CgField>()))
+  ret eqCgType(specGenerate(member, r), CgStruct(List()))
     ? PkUnit()
     : pointerWordKindNonUnit(member, r)
 
@@ -236,8 +236,8 @@ fun pointerWordKindBuiltin(b: SBuiltin): PtrKind|None
   ret b.sbName == "bigint" ? PkInt() : (b.sbName == "str" ? PkStr() : None)
 
 fun unionCollapsesToPointer(members: List<Spec>, r: Resolver): Bool
-  let kinds = map(members, (m: Spec) => pointerWordKind(m, r))
-  ret any(kinds, (k: PtrKind|None) => isNoneKind(k)) ? false : unionCollapsesToPointerOn(map(kinds, forceKindId))
+  let kinds = map(members, (m) => pointerWordKind(m, r))
+  ret any(kinds, (k) => isNoneKind(k)) ? false : unionCollapsesToPointerOn(map(kinds, forceKindId))
 
 fun isNoneKind(k: PtrKind|None): Bool
   ret match(k)
@@ -250,24 +250,24 @@ fun forceKindId(k: PtrKind|None): PtrKind
     ()             => PkUnit()   # unreachable: caller already excluded None
 
 fun unionCollapsesToPointerOn(ks: List<PtrKind>): Bool
-  ret !any(ks, (k: PtrKind) => !isUnitKind(k))
+  ret !any(ks, (k) => !isUnitKind(k))
     ? false
     : (countKind(ks, isUnitKind) > 1 || countKind(ks, isForeignKind) > 1 ? false : allDistinctKinds(filterKinds(ks)))
 
 fun countKind(ks: List<PtrKind>, pred: (:PtrKind): Bool): Int
-  ret fold(ks, 0, (acc: Int, k: PtrKind) => pred(k) ? acc + 1 : acc)
+  ret fold(ks, 0, (acc, k) => pred(k) ? acc + 1 : acc)
 
 fun filterKinds(ks: List<PtrKind>): List<PtrKind>
-  ret filter(ks, (k: PtrKind) => !(isUnitKind(k) || isForeignKind(k)))
+  ret filter(ks, (k) => !(isUnitKind(k) || isForeignKind(k)))
 
 fun allDistinctKinds(ks: List<PtrKind>): Bool
-  ret allDistinctKindsLoop(chain(ks), List<PtrKind>())
+  ret allDistinctKindsLoop(chain(ks), List())
 
 # `seen` answers membership only, so a kind goes on the front.
 fun [tail] allDistinctKindsLoop(ks: Chain<PtrKind>, seen: List<PtrKind>): Bool
   ret match(ks)
     (nil: ChainEnd) => true
-    (l: ChainLink)  => any(seen, (s2: PtrKind) => eqPtrKind(s2, l.value))
+    (l: ChainLink)  => any(seen, (s2) => eqPtrKind(s2, l.value))
       ? false
       : allDistinctKindsLoop(l.next, prepend(l.value, seen))
 
@@ -286,7 +286,7 @@ fun soleField(fields: List<CgField>): CgField|None
 class [final] SlotValuePair(svpName: String, svpValue: RParam)
 
 fun variantSlots(value: RParam, innerCtype: CgType, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>): List<SlotValuePair>
-  ret isEmpty(cgFlattenPrimitives(innerCtype)) ? List<SlotValuePair>() : collectVariantSlots(value, innerCtype, slotAssignments, slotFields, 0).cvValues
+  ret isEmpty(cgFlattenPrimitives(innerCtype)) ? List() : collectVariantSlots(value, innerCtype, slotAssignments, slotFields, 0).cvValues
 
 class [final] CollectOut(cvValues: List<SlotValuePair>, cvOffset: Int)
 
@@ -294,7 +294,7 @@ fun collectVariantSlots(param: RParam, ctype: CgType, slotAssignments: List<CgSl
   ret match(ctype)
     (fp: CgFuncPointer) => collectVariantSlotsFun(param, slotAssignments, slotFields, offset)
     (o: CgType)          => match(cgFieldsOf(ctype))
-      (fields: List<CgField>) => collectVariantSlotsFields(chain(fields), param, slotAssignments, slotFields, offset, List<SlotValuePair>())
+      (fields: List<CgField>) => collectVariantSlotsFields(chain(fields), param, slotAssignments, slotFields, offset, List())
       ()                       => collectVariantSlotsLeaf(param, slotAssignments, slotFields, offset)
 
 # A closure IS a struct (the enum-encoding principle): deconstructed into the
@@ -302,21 +302,21 @@ fun collectVariantSlots(param: RParam, ctype: CgType, slotAssignments: List<CgSl
 # environment pointer (GC). union_repr.py _variant_slots is the mirror.
 fun collectVariantSlotsFun(param: RParam, slotAssignments: List<CgSlotEntry>,
                            slotFields: List<CgField>, offset: Int): CollectOut
-  ret match(listAt<CgSlotEntry>(slotAssignments, offset))
-    (ef: CgSlotEntry) => match(listAt<CgSlotEntry>(slotAssignments, offset + 1))
+  ret match(listAt(slotAssignments, offset))
+    (ef: CgSlotEntry) => match(listAt(slotAssignments, offset + 1))
       (eo: CgSlotEntry) => CollectOut(
           list2(SlotValuePair(fieldNameAt(slotFields, ef.slotIndex),
                               RpFunField(param, "f")),
                 SlotValuePair(fieldNameAt(slotFields, eo.slotIndex),
                               RpFunField(param, "o"))),
           offset + 2)
-      ()                 => CollectOut(List<SlotValuePair>(), offset + 2)   # unreachable
-    ()                 => CollectOut(List<SlotValuePair>(), offset + 2)   # unreachable
+      ()                 => CollectOut(List(), offset + 2)   # unreachable
+    ()                 => CollectOut(List(), offset + 2)   # unreachable
 
 fun collectVariantSlotsLeaf(param: RParam, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, offset: Int): CollectOut
-  ret match(listAt<CgSlotEntry>(slotAssignments, offset))
+  ret match(listAt(slotAssignments, offset))
     (e2: CgSlotEntry) => CollectOut(list1(SlotValuePair(fieldNameAt(slotFields, e2.slotIndex), param)), offset + 1)
-    ()                 => CollectOut(List<SlotValuePair>(), offset + 1)   # unreachable
+    ()                 => CollectOut(List(), offset + 1)   # unreachable
 
 fun collectVariantSlotsFields(fs: Chain<CgField>, param: RParam, slotAssignments: List<CgSlotEntry>,
                                     slotFields: List<CgField>, offset: Int, acc: List<SlotValuePair>): CollectOut
@@ -365,15 +365,15 @@ fun classifyFlatEnumStmt(e2: SEnum, stmt: PsEnum, r: Resolver): GRepr
 
 fun classifyFlatEnumFallback(e2: SEnum, r: Resolver): GRepr
   ret GTagged(e2, CgStruct(map(enumFieldsVia(r, e2.seRoot),
-                               (f: SField) => CgField(f.sfName, specGenerate(f.sfType, r)))),
-              List<List<CgSlotEntry>>())
+                               (f) => CgField(f.sfName, specGenerate(f.sfType, r)))),
+              List())
 
 fun classifyCombination(cm: SCombination, r: Resolver): GRepr
   let members = reprMembersOf(cm.scTypes)
   ret unionCollapsesToPointer(members, r) ? GPointer(cm) : classifyCombinationTagged(cm, members, r)
 
 fun classifyCombinationTagged(cm: SCombination, members: List<Spec>, r: Resolver): GRepr
-  let layout = computeUnionSlots(map(members, (v: Spec) => specGenerate(v, r)), globalMaxTag(r))
+  let layout = computeUnionSlots(map(members, (v) => specGenerate(v, r)), globalMaxTag(r))
   ret GTagged(cm, layout.fieldsStruct, layout.variantMap)
 
 fun reprCtype(rep: GRepr): CgType
@@ -415,7 +415,7 @@ fun flatEnumPositionGuards(sv: RParam, armType: Spec,
                            allLeafNames: List<String>): List<RParam>|None
   ret match(asEnumVariant(armType))
     (at: SEnum) => map(sortLeavesByGuardOrder(at.seValidLeaves, allLeafNames),
-                       (leaf: String) =>
+                       (leaf) =>
                          RpIntEqConst(RpStructField(sv, "$tag"),
                                       leafId(allLeafNames, leaf)))
     ()          => None
@@ -426,7 +426,7 @@ fun complexPositionGuards(gc: GComplexEnum, sv: RParam, armType: Spec,
     (subj: SEnum) => match(asEnumVariant(armType))
       (at: SEnum) => map(sortLeavesByComplexId(at.seValidLeaves, subj.seRoot,
                                                getDiscriminators(r)),
-                         (leaf: String) =>
+                         (leaf) =>
                            RpIntEqConst(RpVtableDiscriminator(sv),
                                         complexLeafId(subj.seRoot, leaf,
                                                       getDiscriminators(r))))
@@ -438,7 +438,7 @@ fun complexPositionGuards(gc: GComplexEnum, sv: RParam, armType: Spec,
 # implicit fallback, but a POSITION has no fallback to be.
 fun pointerPositionGuards(sv: RParam, armType: Spec,
                           r: Resolver): List<RParam>|None
-  ret pointerGuardLoop(chain(unionMembers(armType)), sv, r, List<RParam>())
+  ret pointerGuardLoop(chain(unionMembers(armType)), sv, r, List())
 
 fun [tail] pointerGuardLoop(ms: Chain<Spec>, sv: RParam, r: Resolver,
                             acc: List<RParam>): List<RParam>|None
@@ -452,7 +452,7 @@ fun [tail] pointerGuardLoop(ms: Chain<Spec>, sv: RParam, r: Resolver,
         ()          => None          # FOREIGN: untestable in a position
 
 fun appendGuard(acc: List<RParam>, g: RParam): List<RParam>
-  ret build<RParam >(push<RParam >(builderFrom<RParam>(acc), g))
+  ret build(push(builderFrom(acc), g))
 
 # One tag comparison per position. `.get(uid, 0)` is deliberate: a BUILTIN
 # member such as the `int32` of `Int32|None` carries no registry
@@ -463,7 +463,7 @@ fun combinationPositionGuards(gt: GTagged, sv: RParam, armType: Spec,
     # The member must actually BE a member of this subject union. Without the
     # check a pattern naming something else emits a tag test against 0 and
     # silently matches the wrong variant; Python refuses it (vi is None).
-    (m: Spec) => contains2(map(unionMembers(gt.grtType), (v: Spec) => uid(v)),
+    (m: Spec) => contains2(map(unionMembers(gt.grtType), (v) => uid(v)),
                            uid(m))
       ? list1(RpIntEqConst(RpStructField(sv, "$tag"),
                            discOf(getDiscriminators(r), uid(m))))
@@ -503,14 +503,14 @@ fun [tail] leafIdLoop(ns: Chain<String>, target: String, i: Int): Int
     (l: ChainLink)  => baseName(l.value) == target ? i : leafIdLoop(l.next, target, i + 1)
 
 fun sortLeavesByGuardOrder(leaves: List<String>, allLeafNames: List<String>): List<String>
-  ret fold(leaves, List<String>(), (acc: List<String>, lf: String) => insertByLeafId(acc, lf, allLeafNames))
+  ret fold(leaves, List(), (acc, lf) => insertByLeafId(acc, lf, allLeafNames))
 
 fun insertByLeafId(sorted: List<String>, lf: String, allLeafNames: List<String>): List<String>
-  ret match(head<String>(sorted))
+  ret match(head(sorted))
     (h: String) => leafId(allLeafNames, lf) < leafId(allLeafNames, h)
-      ? prepend<String>(lf, sorted)
-      : prepend<String>(h, insertByLeafId(tail<String>(sorted), lf, allLeafNames))
-    ()           => prepend(lf, List<String>())
+      ? prepend(lf, sorted)
+      : prepend(h, insertByLeafId(tail(sorted), lf, allLeafNames))
+    ()           => prepend(lf, List())
 
 # ── flat enum ────────────────────────────────────────────────────────────
 
@@ -541,8 +541,8 @@ fun flatEnumArm(em: GEmit, arm: PArm, sv: RParam, tag: RParam, subjType: Spec, a
 fun flatEnumArmOn(em: GEmit, arm: PArm, tag: RParam, subjType: Spec, allLeafNames: List<String>,
                   armType: SEnum, sv: RParam, resultType: Spec|None, r: Resolver): GEmit
   let ordered = sortLeavesByGuardOrder(armType.seValidLeaves, allLeafNames)
-  let guards = map(ordered, (leaf: String) => RpIntEqConst(tag, leafId(allLeafNames, leaf)))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List<GBundle>())
+  let guards = map(ordered, (leaf) => RpIntEqConst(tag, leafId(allLeafNames, leaf)))
+  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List())
 
 # ── tagged combination ──────────────────────────────────────────────────
 
@@ -552,7 +552,7 @@ fun generateCombinationMatch(em0: GEmit, resultType: Spec|None, subjBundle: GBun
   let sv = mustResult(subjBundle)
   let tag = RpStructField(sv, "$tag")
   let members = reprMembersOf(unionMembers(subjType))
-  let variantTypes = map(members, (v: Spec) => specGenerate(v, r))
+  let variantTypes = map(members, (v) => specGenerate(v, r))
   let slotFields = forceFields(container)
   let discs = getDiscriminators(r)
   let em1 = combinationArms(em0, chain(arms), sv, tag, members, variantTypes, variantMap, slotFields, discs, resultType, r)
@@ -646,20 +646,20 @@ fun combinationUnionArm(em: GEmit, arm: PArm, cm: SCombination, sv: RParam, tag:
   let narrowMembers = reprMembersOf(unionMembers(cm))
   let hasNarrowMap = isStructLike(narrowCtype)
   let narrowMap = hasNarrowMap
-    ? computeUnionSlots(map(narrowMembers, (m: Spec) => specGenerate(m, r)), None).variantMap
-    : List<List<CgSlotEntry>>()
+    ? computeUnionSlots(map(narrowMembers, (m) => specGenerate(m, r)), None).variantMap
+    : List()
   let entries = combinationUnionEntries(chain(narrowMembers), 0, members, variantMap, slotFields, discs, tag, sv,
                                         narrowCtype, narrowMap, hasNarrowMap, r,
-                                        builder<GEntry >())
+                                        builder())
   ret emMultiEntryArm(em, r, resultType, arm, entries, narrowCtype)
 
 fun combinationUnionEntries(narrowMembers: Chain<Spec>, k: Int, members: List<Spec>,
                                    variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                                    discs: Dict<String, Int>, tag: RParam, sv: RParam, narrowCtype: CgType,
                                    narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver,
-                                   [terminal] acc: ListBuilder<GEntry >): List<GEntry>
+                                   [terminal] acc: ListBuilder<GEntry>): List<GEntry>
   ret match(narrowMembers)
-    (nil: ChainEnd) => build<GEntry >(acc)
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => combinationUnionEntriesStep(l, k, members, variantMap, slotFields, discs, tag, sv,
                                                    narrowCtype, narrowMap, hasNarrowMap, r, acc)
 
@@ -667,7 +667,7 @@ fun combinationUnionEntriesStep(l: ChainLink<Spec>, k: Int, members: List<Spec>,
                                variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                                discs: Dict<String, Int>, tag: RParam, sv: RParam, narrowCtype: CgType,
                                narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver,
-                               [terminal] acc: ListBuilder<GEntry >): List<GEntry>
+                               [terminal] acc: ListBuilder<GEntry>): List<GEntry>
   let u = uid(l.value)
   ret combinationUnionEntries(l.next, k + 1, members, variantMap, slotFields, discs, tag, sv, narrowCtype, narrowMap, hasNarrowMap, r,
         combinationUnionEntryFor(variantIndexOf(members, u), l.value, u, discs, k, variantMap, slotFields, tag, sv, narrowCtype, narrowMap, hasNarrowMap, r, acc))
@@ -675,12 +675,12 @@ fun combinationUnionEntriesStep(l: ChainLink<Spec>, k: Int, members: List<Spec>,
 fun combinationUnionEntryFor(vi: Int|None, member: Spec, u: String, discs: Dict<String, Int>, k: Int,
                              variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>, tag: RParam, sv: RParam,
                              narrowCtype: CgType, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap: Bool, r: Resolver,
-                             [terminal] acc: ListBuilder<GEntry >): ListBuilder<GEntry >
+                             [terminal] acc: ListBuilder<GEntry>): ListBuilder<GEntry>
   ret match(vi)
     (viv: Int) if contains(discs, u) =>
-        push<GEntry >(acc, combinationUnionEntry(viv, member, u, discs, variantMap,
-                                                 slotFields, tag, sv, k, narrowCtype,
-                                                 narrowMap, hasNarrowMap, r))
+        push(acc, combinationUnionEntry(viv, member, u, discs, variantMap,
+                                        slotFields, tag, sv, k, narrowCtype,
+                                        narrowMap, hasNarrowMap, r))
     ()          => acc
 
 fun combinationUnionEntry(vi: Int, member: Spec, u: String, discs: Dict<String, Int>, variantMap: List<List<CgSlotEntry>>,
@@ -698,7 +698,7 @@ fun combinationUnionEntry(vi: Int, member: Spec, u: String, discs: Dict<String, 
 # which on this path is a DataPointer and never the empty struct.
 fun combinationUnionValuePointer(memberCtype: CgType, vi: Int, variantMap: List<List<CgSlotEntry>>,
                                  slotFields: List<CgField>, sv: RParam): RParam
-  ret eqCgType(memberCtype, CgStruct(List<CgField>()))
+  ret eqCgType(memberCtype, CgStruct(List()))
     ? RpNullPointer()
     : RpStructField(sv, fieldNameAt(slotFields, forceSlotIndex(forceNth(variantMap, vi))))
 
@@ -706,8 +706,8 @@ fun combinationUnionValuePointer(memberCtype: CgType, vi: Int, variantMap: List<
 # position IS its position in the union struct, so this names the layout rule
 # rather than the list operation that implements it.
 fun withTagField(values: List<RpNamedValue>, tag: Int): List<RpNamedValue>
-  ret build<RpNamedValue >(push<RpNamedValue >(
-          builderFrom<RpNamedValue>(values),
+  ret build(push(
+          builderFrom(values),
           RpNamedValue("$tag", RpInteger(tag, 32))))
 
 fun combinationUnionValueTagged(narrowCtype: CgType, narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>,
@@ -719,21 +719,21 @@ fun combinationUnionValueTagged(narrowCtype: CgType, narrowSlots: List<CgSlotEnt
 
 fun zipSlotFields(narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>, narrowFields: List<CgField>,
                   wideSlotFields: List<CgField>, sv: RParam): List<RpNamedValue>
-  ret zipSlotFieldsLoop(chain(narrowSlots), chain(wideSlots), narrowFields, wideSlotFields, sv, List<RpNamedValue>())
+  ret zipSlotFieldsLoop(chain(narrowSlots), chain(wideSlots), narrowFields, wideSlotFields, sv, List())
 
 fun zipSlotFieldsLoop(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, narrowFields: List<CgField>,
                              wideSlotFields: List<CgField>, sv: RParam, acc: List<RpNamedValue>): List<RpNamedValue>
-  ret build<RpNamedValue >(zipSlotFieldsLoopB(ns, ws, narrowFields, wideSlotFields, sv, builderFrom<RpNamedValue>(acc)))
+  ret build(zipSlotFieldsLoopB(ns, ws, narrowFields, wideSlotFields, sv, builderFrom(acc)))
 
 fun [tail] zipSlotFieldsLoopB(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, narrowFields: List<CgField>,
-                             wideSlotFields: List<CgField>, sv: RParam, [terminal] acc: ListBuilder<RpNamedValue >): ListBuilder<RpNamedValue >
+                             wideSlotFields: List<CgField>, sv: RParam, [terminal] acc: ListBuilder<RpNamedValue>): ListBuilder<RpNamedValue>
   ret match(ns)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(ws)
       (nil2: ChainEnd) => acc
       (w: ChainLink)   => zipSlotFieldsLoopB(l.next, w.next, narrowFields, wideSlotFields, sv,
-                            push<RpNamedValue >(acc, RpNamedValue(fieldNameAt(narrowFields, l.value.slotIndex),
-                                                     RpStructField(sv, fieldNameAt(wideSlotFields, w.value.slotIndex)))))
+                            push(acc, RpNamedValue(fieldNameAt(narrowFields, l.value.slotIndex),
+                                      RpStructField(sv, fieldNameAt(wideSlotFields, w.value.slotIndex)))))
 
 fun [tail] indexWhereCgType(types2: List<CgType>, target: CgType, i: Int): Int|None
   ret match(head(types2))
@@ -748,7 +748,7 @@ fun combinationPlainArm(em: GEmit, arm: PArm, armType: Spec, sv: RParam, tag: RP
   let bind = match(indexWhereCgType(variantTypes, armCtype, 0))
     (viv: Int) => bindFromSlots(r, arm, armCtype, forceNth(variantMap, viv), slotFields, sv)
     ()          => None
-  ret emArm(em, r, resultType, arm, list1(list1(RpIntEqConst(tag, tagValue))), bind, List<GBundle>())
+  ret emArm(em, r, resultType, arm, list1(list1(RpIntEqConst(tag, tagValue))), bind, List())
 
 # ── pointer union ────────────────────────────────────────────────────────
 
@@ -756,40 +756,40 @@ class [final] MemberClassification(mcNullArm: PArm|None, mcForeignFallback: PArm
                                    mcGuarded: List<PArm>, mcUnionArmCoversNone: Bool)
 
 fun classifyPointerArms(arms: List<PArm>, r: Resolver): MemberClassification
-  ret classifyPointerArmsLoop(chain(arms), r, None, None, builder<PArm >(),
+  ret classifyPointerArmsLoop(chain(arms), r, None, None, builder(),
                               false)
 
 # The guarded arms keep their source order — match arms are tested in order,
 # so this order is the semantics, not a convenience.
 fun [tail] classifyPointerArmsLoop(arms: Chain<PArm>, r: Resolver, nullArm: PArm|None, foreignFallback: PArm|None,
-                                   [terminal] guarded: ListBuilder<PArm >, unionCoversNone: Bool): MemberClassification
+                                   [terminal] guarded: ListBuilder<PArm>, unionCoversNone: Bool): MemberClassification
   ret match(arms)
-    (nil: ChainEnd) => MemberClassification(nullArm, foreignFallback, build<PArm >(guarded), unionCoversNone)
+    (nil: ChainEnd) => MemberClassification(nullArm, foreignFallback, build(guarded), unionCoversNone)
     (l: ChainLink)  => !isEmpty(l.value.armLiterals)
-      ? classifyPointerArmsLoop(l.next, r, nullArm, foreignFallback, push<PArm >(guarded, l.value), unionCoversNone)
+      ? classifyPointerArmsLoop(l.next, r, nullArm, foreignFallback, push(guarded, l.value), unionCoversNone)
       : classifyPointerArmsStep(l.value, l.next, r, nullArm, foreignFallback, guarded, unionCoversNone)
 
 fun classifyPointerArmsStep(arm: PArm, rest: Chain<PArm>, r: Resolver, nullArm: PArm|None, foreignFallback: PArm|None,
-                            [terminal] guarded: ListBuilder<PArm >, unionCoversNone: Bool): MemberClassification
+                            [terminal] guarded: ListBuilder<PArm>, unionCoversNone: Bool): MemberClassification
   ret match(arm.armType)
-    (t2: Spec) => eqCgType(specGenerate(t2, r), CgStruct(List<CgField>()))
+    (t2: Spec) => eqCgType(specGenerate(t2, r), CgStruct(List()))
       ? classifyPointerArmsLoop(rest, r, arm, foreignFallback, guarded, unionCoversNone)
       : classifyPointerArmsStepNonNull(arm, t2, rest, r, nullArm, foreignFallback, guarded, unionCoversNone)
     ()          => classifyPointerArmsLoop(rest, r, nullArm, foreignFallback, guarded, unionCoversNone)
 
 fun classifyPointerArmsStepNonNull(arm: PArm, t2: Spec, rest: Chain<PArm>, r: Resolver, nullArm: PArm|None,
-                                   foreignFallback: PArm|None, [terminal] guarded: ListBuilder<PArm >,
+                                   foreignFallback: PArm|None, [terminal] guarded: ListBuilder<PArm>,
                                    unionCoversNone: Bool): MemberClassification
   ret match(t2)
     (c: SClass) => classSpecIsForeign(c, r)
       ? classifyPointerArmsLoop(rest, r, nullArm, arm, guarded, unionCoversNone)
-      : classifyPointerArmsLoop(rest, r, nullArm, foreignFallback, push<PArm >(guarded, arm), unionCoversNone)
-    (cm: SCombination) => classifyPointerArmsLoop(rest, r, nullArm, foreignFallback, push<PArm >(guarded, arm),
+      : classifyPointerArmsLoop(rest, r, nullArm, foreignFallback, push(guarded, arm), unionCoversNone)
+    (cm: SCombination) => classifyPointerArmsLoop(rest, r, nullArm, foreignFallback, push(guarded, arm),
                                                  unionCoversNone || combinationCoversNone(cm, r))
-    (o: Spec)          => classifyPointerArmsLoop(rest, r, nullArm, foreignFallback, push<PArm >(guarded, arm), unionCoversNone)
+    (o: Spec)          => classifyPointerArmsLoop(rest, r, nullArm, foreignFallback, push(guarded, arm), unionCoversNone)
 
 fun combinationCoversNone(cm: SCombination, r: Resolver): Bool
-  ret any(reprMembersOf(unionMembers(cm)), (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List<CgField>())))
+  ret any(reprMembersOf(unionMembers(cm)), (m) => eqCgType(specGenerate(m, r), CgStruct(List())))
 
 fun isNoneArm(a: PArm|None): Bool
   ret match(a)
@@ -818,10 +818,10 @@ fun memberGuardOf(k: PtrKind, sv: RParam): RParam|None
 fun generatePointerMatch(em0: GEmit, resultType: Spec|None, subjBundle: GBundle, subjType: Spec,
                         arms: List<PArm>, elseArm: PArm|None, r: Resolver): GEmit
   let sv = mustResult(subjBundle)
-  let subjHasNone = any(reprMembersOf(unionMembers(subjType)), (v: Spec) => eqCgType(specGenerate(v, r), CgStruct(List<CgField>())))
+  let subjHasNone = any(reprMembersOf(unionMembers(subjType)), (v) => eqCgType(specGenerate(v, r), CgStruct(List())))
   let cls = classifyPointerArms(arms, r)
   let em1 = genPointerNullRouting(em0, r, resultType, subjType, sv, cls, elseArm, subjHasNone)
-  let em2 = fold(cls.mcGuarded, em1, (acc: GEmit, arm: PArm) => genPointerGuardedArm(acc, r, resultType, arm, sv))
+  let em2 = fold(cls.mcGuarded, em1, (acc, arm) => genPointerGuardedArm(acc, r, resultType, arm, sv))
   let finalFallback = match(cls.mcForeignFallback)
     (ff: PArm) => cls.mcForeignFallback
     ()          => elseArm
@@ -834,7 +834,7 @@ fun genPointerNullRouting(em: GEmit, r: Resolver, resultType: Spec|None, subjTyp
                           cls: MemberClassification, elseArm: PArm|None, subjHasNone: Bool): GEmit
   ret match(cls.mcNullArm)
     (na: PArm) => emArm(em, r, resultType, na, list1(list1(RpIntEqConst(sv, 0))),
-                        bindSubject(r, na, armTypeOr(na, subjType), sv), List<GBundle>())
+                        bindSubject(r, na, armTypeOr(na, subjType), sv), List())
     ()          => (subjHasNone && !cls.mcUnionArmCoversNone)
       ? genPointerNullRoutingToElse(em, r, resultType, subjType, sv, cls, elseArm)
       : em
@@ -844,7 +844,7 @@ fun genPointerNullRoutingToElse(em: GEmit, r: Resolver, resultType: Spec|None, s
   ret match(elseArm)
     (ea: PArm) => isNoneArm(cls.mcForeignFallback)
       ? emGuardToFallback(em, RpIntEqConst(sv, 0))
-      : emArm(em, r, resultType, ea, list1(list1(RpIntEqConst(sv, 0))), bindSubject(r, ea, subjType, sv), List<GBundle>())
+      : emArm(em, r, resultType, ea, list1(list1(RpIntEqConst(sv, 0))), bindSubject(r, ea, subjType, sv), List())
     ()          => em
 
 fun genPointerGuardedArm(em: GEmit, r: Resolver, resultType: Spec|None, arm: PArm, sv: RParam): GEmit
@@ -860,29 +860,29 @@ fun genPointerGuardedTypedArm(em: GEmit, r: Resolver, resultType: Spec|None, arm
     ()             => em   # unreachable: an else arm never ends up in `guarded`
 
 fun genPointerUnionArm(em: GEmit, r: Resolver, resultType: Spec|None, arm: PArm, cm: SCombination, sv: RParam): GEmit
-  let guards = build<RParam >(pointerUnionGuards(
-      chain(reprMembersOf(unionMembers(cm))), sv, r, builder<RParam >()))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, cm, sv), List<GBundle>())
+  let guards = build(pointerUnionGuards(
+      chain(reprMembersOf(unionMembers(cm))), sv, r, builder()))
+  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, cm, sv), List())
 
 # One guard per union member, in member order — the tests are emitted in this
 # order, so it is the order of the generated condition chain.
 fun [tail] pointerUnionGuards(members: Chain<Spec>, sv: RParam, r: Resolver,
-                              [terminal] acc: ListBuilder<RParam >): ListBuilder<RParam >
+                              [terminal] acc: ListBuilder<RParam>): ListBuilder<RParam>
   ret match(members)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => eqCgType(specGenerate(l.value, r), CgStruct(List<CgField>()))
-      ? pointerUnionGuards(l.next, sv, r, push<RParam >(acc, RpIntEqConst(sv, 0)))
+    (l: ChainLink)  => eqCgType(specGenerate(l.value, r), CgStruct(List()))
+      ? pointerUnionGuards(l.next, sv, r, push(acc, RpIntEqConst(sv, 0)))
       : pointerUnionGuards(l.next, sv, r, pushMemberGuard(acc, memberGuard(l.value, sv, r)))
 
-fun pushMemberGuard([terminal] acc: ListBuilder<RParam >,
-                    g2: RParam|None): ListBuilder<RParam >
+fun pushMemberGuard([terminal] acc: ListBuilder<RParam>,
+                    g2: RParam|None): ListBuilder<RParam>
   ret match(g2)
-    (gg: RParam) => push<RParam >(acc, gg)
+    (gg: RParam) => push(acc, gg)
     ()            => acc
 
 fun genPointerPlainArm(em: GEmit, r: Resolver, resultType: Spec|None, arm: PArm, t2: Spec, sv: RParam): GEmit
   ret match(memberGuard(t2, sv, r))
-    (g2: RParam) => emArm(em, r, resultType, arm, list1(list1(g2)), bindSubject(r, arm, t2, sv), List<GBundle>())
+    (g2: RParam) => emArm(em, r, resultType, arm, list1(list1(g2)), bindSubject(r, arm, t2, sv), List())
     ()            => em
 
 fun genPointerLiteralArm(em: GEmit, arm: PArm, sv: RParam, r: Resolver, resultType: Spec|None): GEmit
@@ -910,14 +910,14 @@ fun complexLeafId(rootName: String, leaf: String, discs: Dict<String, Int>): Int
   ret getOr0(discs, "enumleaf(" + enumLeafObjectName(rootName, leaf) + ")")
 
 fun sortLeavesByComplexId(leaves: List<String>, rootName: String, discs: Dict<String, Int>): List<String>
-  ret fold(leaves, List<String>(), (acc: List<String>, lf: String) => insertByComplexId(acc, lf, rootName, discs))
+  ret fold(leaves, List(), (acc, lf) => insertByComplexId(acc, lf, rootName, discs))
 
 fun insertByComplexId(sorted: List<String>, lf: String, rootName: String, discs: Dict<String, Int>): List<String>
-  ret match(head<String>(sorted))
+  ret match(head(sorted))
     (h: String) => complexLeafId(rootName, lf, discs) < complexLeafId(rootName, h, discs)
-      ? prepend<String>(lf, sorted)
-      : prepend<String>(h, insertByComplexId(tail<String>(sorted), lf, rootName, discs))
-    ()           => prepend(lf, List<String>())
+      ? prepend(lf, sorted)
+      : prepend(h, insertByComplexId(tail(sorted), lf, rootName, discs))
+    ()           => prepend(lf, List())
 
 fun generateComplexEnumMatch(em0: GEmit, resultType: Spec|None, subjBundle: GBundle, subjType: Spec,
                              arms: List<PArm>, elseArm: PArm|None, r: Resolver): GEmit
@@ -948,8 +948,8 @@ fun complexEnumArm(em: GEmit, arm: PArm, sv: RParam, tag: RParam, subjType: Spec
 fun complexEnumArmOn(em: GEmit, arm: PArm, tag: RParam, subjType: Spec, rootName: String, discs: Dict<String, Int>,
                      armType: SEnum, sv: RParam, resultType: Spec|None, r: Resolver): GEmit
   let ordered = sortLeavesByComplexId(armType.seValidLeaves, rootName, discs)
-  let guards = map(ordered, (leaf: String) => RpIntEqConst(tag, complexLeafId(rootName, leaf, discs)))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List<GBundle>())
+  let guards = map(ordered, (leaf) => RpIntEqConst(tag, complexLeafId(rootName, leaf, discs)))
+  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List())
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 6: box_value (CombinationSpec targets only).
@@ -976,13 +976,13 @@ fun taggedBoxValueAt(gt: GTagged, value: RParam, innerCtype: CgType, su: String,
   let slotFields = forceFields(gt.grtContainer)
   let slotValues = variantSlots(value, innerCtype, forceNth(gt.grtVariantMap, vi), slotFields)
   let namedValues = withTagField(
-      map(slotValues, (p: SlotValuePair) => RpNamedValue(p.svpName, p.svpValue)),
+      map(slotValues, (p) => RpNamedValue(p.svpName, p.svpValue)),
       tagValue)
   ret bundleValue(unionStruct(gt.grtContainer, namedValues))
 
 fun pointerBoxValue(value: RParam, sourceType: Spec, r: Resolver): GBundle
   let innerCtype = specGenerate(sourceType, r)
-  ret eqCgType(innerCtype, CgStruct(List<CgField>())) ? bundleValue(RpNullPointer()) : bundleValue(unwrapToPointerWord(value, innerCtype))
+  ret eqCgType(innerCtype, CgStruct(List())) ? bundleValue(RpNullPointer()) : bundleValue(unwrapToPointerWord(value, innerCtype))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 7: widen_from (CombinationSpec targets only).
@@ -1007,22 +1007,22 @@ fun taggedWidenFrom(gt: GTagged, srcRep: GRepr, value: RParam, r: Resolver): GBu
     (gp: GPointer) => widenFromPointer(value, gp.grpType, gt, endLabel, r)
     (o: GRepr)      => widenFromTagged(value, forceTagged(srcRep), gt, endLabel, r)
   let resultVar = RpStackVar(gt.grtContainer, "wide_result")
-  let joinBundle = GBundle(list1(resultVar), list2<Op>(OpLabel(endLabel, List<RParam>()), OpPhi(resultVar, wo.woSources, List<RParam>())), resultVar, List<RecurSource>(), List<ExitSource>())
+  let joinBundle = GBundle(list1(resultVar), list2(OpLabel(endLabel, List()), OpPhi(resultVar, wo.woSources, List())), resultVar, List(), List())
   ret bundleJoin(bundleJoinAll(wo.woBundles), joinBundle)
 
 fun forceTagged(rep: GRepr): GTagged
   ret match(rep)
     (gt: GTagged) => gt
-    (o: GRepr)    => GTagged(SBuiltin("bool", noLine()), CgVoid(), List<List<CgSlotEntry>>())   # unreachable
+    (o: GRepr)    => GTagged(SBuiltin("bool", noLine()), CgVoid(), List())   # unreachable
 
 fun [tail] findPointerVariant(members: List<Spec>, r: Resolver): Spec|None
   ret match(head(members))
-    (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List<CgField>())) ? findPointerVariant(tail(members), r) : m
+    (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List())) ? findPointerVariant(tail(members), r) : m
     ()         => None
 
 fun [tail] findUnitVariant(members: List<Spec>, r: Resolver): Spec|None
   ret match(head(members))
-    (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List<CgField>())) ? m : findUnitVariant(tail(members), r)
+    (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List())) ? m : findUnitVariant(tail(members), r)
     ()         => None
 
 fun widenFromPointer(sv: RParam, source: Spec, gt: GTagged, endLabel: String, r: Resolver): WidenOut
@@ -1032,7 +1032,7 @@ fun widenFromPointer(sv: RParam, source: Spec, gt: GTagged, endLabel: String, r:
 fun widenFromPointerOn(sv: RParam, ptrVariant: Spec|None, unitVariant: Spec|None, gt: GTagged, endLabel: String, r: Resolver): WidenOut
   ret match(ptrVariant)
     (pv: Spec) => widenFromPointerWithVariant(sv, pv, unitVariant, gt, endLabel, r)
-    ()          => WidenOut(List<GBundle>(), List<OpPhiSource>())   # unreachable: a DataPointer union always has one
+    ()          => WidenOut(List(), List())   # unreachable: a DataPointer union always has one
 
 fun widenFromPointerWithVariant(sv: RParam, ptrVariant: Spec, unitVariant: Spec|None, gt: GTagged, endLabel: String, r: Resolver): WidenOut
   let nullLabel = "wide_null"
@@ -1044,8 +1044,8 @@ fun widenFromPointerWithVariant(sv: RParam, ptrVariant: Spec, unitVariant: Spec|
   let slotValues = match(variantIndexOf(targetMembers, ptrUid))
     (tpi: Int) => withTagField(
         map(forceNth(gt.grtVariantMap, tpi),
-            (e2: CgSlotEntry) => RpNamedValue(fieldNameAt(slotFields,
-                                                          e2.slotIndex), sv)),
+            (e2) => RpNamedValue(fieldNameAt(slotFields,
+                                             e2.slotIndex), sv)),
         ptrTag)
     ()          => list1(RpNamedValue("$tag", RpInteger(ptrTag, 32)))
   let unitTag = match(unitVariant)
@@ -1054,9 +1054,9 @@ fun widenFromPointerWithVariant(sv: RParam, ptrVariant: Spec, unitVariant: Spec|
   let sources = list2(OpPhiSource("ptr_exit", unionStruct(gt.grtContainer, slotValues)),
                       OpPhiSource("null_exit", unionStruct(gt.grtContainer, list1(RpNamedValue("$tag", RpInteger(unitTag, 32))))))
   let bodies = list3(
-    bundleOps(list1<Op>(OpJumpIf(nullLabel, RpIntEqConst(sv, 0), false, List<RParam>()))),
-    bundleOps(list3<Op>(OpLabel("ptr_exit", List<RParam>()), OpJump(endLabel, List<RParam>()), OpLabel(nullLabel, List<RParam>()))),
-    bundleOps(list1<Op>(OpLabel("null_exit", List<RParam>()))))
+    bundleOps(list1(OpJumpIf(nullLabel, RpIntEqConst(sv, 0), false, List()))),
+    bundleOps(list3(OpLabel("ptr_exit", List()), OpJump(endLabel, List()), OpLabel(nullLabel, List()))),
+    bundleOps(list1(OpLabel("null_exit", List()))))
   ret WidenOut(bodies, sources)
 
 class [final] OneWidenOut(owBundles: List<GBundle>, owSource: OpPhiSource)
@@ -1069,15 +1069,15 @@ fun widenFromTagged(sv: RParam, srcRep: GTagged, gt: GTagged, endLabel: String, 
   # The abort is the LAST bundle: it is where control lands when no source
   # variant matched, so it is pushed after the per-variant walk.
   let step = widenFromTaggedLoop(chain(sourceMembers), 0, sv, srcRep, gt, targetMembers, srcTagField, discs, endLabel, r,
-                                WidenAcc(builder<GBundle >(),
-                                         builder<OpPhiSource >()))
-  ret WidenOut(build<GBundle >(push<GBundle >(step.waBundles,
-                   bundleOp1(OpAbort("container-widening fell through all source variants", List<RParam>())))),
-               build<OpPhiSource >(step.waSources))
+                                WidenAcc(builder(),
+                                         builder()))
+  ret WidenOut(build(push(step.waBundles,
+                   bundleOp1(OpAbort("container-widening fell through all source variants", List())))),
+               build(step.waSources))
 
 # One bundle group and one phi source per source variant, in variant order.
-class [linear, final] WidenAcc(waBundles: ListBuilder<GBundle >,
-                               waSources: ListBuilder<OpPhiSource >)
+class [linear, final] WidenAcc(waBundles: ListBuilder<GBundle>,
+                               waSources: ListBuilder<OpPhiSource>)
 
 fun widenFromTaggedLoop(members: Chain<Spec>, i: Int, sv: RParam, srcRep: GTagged, gt: GTagged,
                                targetMembers: List<Spec>, srcTagField: RParam, discs: Dict<String, Int>,
@@ -1093,10 +1093,10 @@ fun widenFromTaggedLoopStep(l: ChainLink<Spec>, i: Int, sv: RParam, srcRep: GTag
                             [terminal] acc: WidenAcc): WidenAcc
   let step = widenFromTaggedOne(l.value, i, sv, srcRep, gt, targetMembers, srcTagField, discs, endLabel, r)
   ret widenFromTaggedLoop(l.next, i + 1, sv, srcRep, gt, targetMembers, srcTagField, discs, endLabel, r,
-                         WidenAcc(_pushChain<GBundle >(acc.waBundles,
-                                      chain<GBundle>(step.owBundles)),
-                                  push<OpPhiSource >(acc.waSources,
-                                                     step.owSource)))
+                         WidenAcc(pushAll(acc.waBundles,
+                                      step.owBundles),
+                                  push(acc.waSources,
+                                       step.owSource)))
 
 fun widenFromTaggedOne(srcVar: Spec, i: Int, sv: RParam, srcRep: GTagged, gt: GTagged, targetMembers: List<Spec>,
                        srcTagField: RParam, discs: Dict<String, Int>, endLabel: String, r: Resolver): OneWidenOut
@@ -1115,9 +1115,9 @@ fun widenFromTaggedOne(srcVar: Spec, i: Int, sv: RParam, srcRep: GTagged, gt: GT
         varTag)
     ()          => list1(RpNamedValue("$tag", RpInteger(varTag, 32)))
   let bundles = list3(
-    bundleOps(list3<Op>(OpJumpIf(armLabel, RpIntEqConst(srcTagField, varTag), false, List<RParam>()), OpJump(nextLabel, List<RParam>()), OpLabel(armLabel, List<RParam>()))),
-    bundleOps(list2<Op>(OpLabel(exitLabel, List<RParam>()), OpJump(endLabel, List<RParam>()))),
-    bundleOps(list1<Op>(OpLabel(nextLabel, List<RParam>()))))
+    bundleOps(list3(OpJumpIf(armLabel, RpIntEqConst(srcTagField, varTag), false, List()), OpJump(nextLabel, List()), OpLabel(armLabel, List()))),
+    bundleOps(list2(OpLabel(exitLabel, List()), OpJump(endLabel, List()))),
+    bundleOps(list1(OpLabel(nextLabel, List()))))
   ret OneWidenOut(bundles, OpPhiSource(exitLabel, unionStruct(gt.grtContainer, slotValues)))
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1140,7 +1140,7 @@ fun taggedReadField(gt: GTagged, baseValue: RParam, fieldName: String, r: Resolv
     (o: Spec)   => RpNullPointer()   # unreachable: only ever classified from an SEnum
 
 fun taggedReadFieldOn(gt: GTagged, e2: SEnum, root: PsEnum, baseValue: RParam, fieldName: String, r: Resolver): RParam
-  let leafFieldSets = collectLeafFieldSets(root, List<PStmt>())
+  let leafFieldSets = collectLeafFieldSets(root, List())
   let slotFields = forceFields(gt.grtContainer)
   ret taggedReadFieldLeaves(chain(e2.seAllLeaves), chain(leafFieldSets), 0, e2.seRoot,
                             gt.grtVariantMap, slotFields, baseValue, fieldName, r)
@@ -1164,7 +1164,7 @@ fun [tail] taggedReadFieldLeaves(names: Chain<String>, leaves: Chain<List<PStmt>
 fun taggedReadFieldBoxed(fields: List<PStmt>, leafName: String, rootName: String,
                          leafSlots: List<CgSlotEntry>, slotFields: List<CgField>,
                          baseValue: RParam, fieldName: String, r: Resolver): RParam|None
-  ret match(listAt<CgSlotEntry>(leafSlots, 0))
+  ret match(listAt(leafSlots, 0))
     (e2: CgSlotEntry) => complexReadFieldInLeaf(chain(fields), leafName, rootName,
                              RpStructField(baseValue, fieldNameAt(slotFields, e2.slotIndex)),
                              fieldName, r)
@@ -1191,7 +1191,7 @@ fun taggedReadFieldLet(l: PsLet, rest: Chain<PStmt>, offset: Int, leafSlots: Lis
   let fieldType = specGenerateOpt(l.lType, r)
   let nPrims = cgFlattenPrimitivesN(fieldType).n
   ret l.lName == fieldName
-    ? reconstructFromSlots(fieldType, sliceList<CgSlotEntry>(leafSlots, offset, nPrims), slotFields, baseValue, 0).rfValue
+    ? reconstructFromSlots(fieldType, sliceList(leafSlots, offset, nPrims), slotFields, baseValue, 0).rfValue
     : taggedReadFieldInLeafLoop(rest, offset + nPrims, leafSlots, slotFields, baseValue, fieldName, r)
 
 fun complexReadField(gc: GComplexEnum, baseValue: RParam, fieldName: String, r: Resolver): RParam
@@ -1207,7 +1207,7 @@ fun complexReadFieldSpec(e2: SEnum, baseValue: RParam, fieldName: String, r: Res
     ()               => RpNullPointer()   # unreachable
 
 fun complexReadFieldOn(e2: SEnum, root: PsEnum, baseValue: RParam, fieldName: String, r: Resolver): RParam
-  let leafFieldSets = collectLeafFieldSets(root, List<PStmt>())
+  let leafFieldSets = collectLeafFieldSets(root, List())
   ret complexReadFieldLeaves(chain(e2.seAllLeaves), chain(leafFieldSets), e2.seRoot, baseValue, fieldName, r)
 
 fun [tail] complexReadFieldLeaves(leafNames: Chain<String>, leafFieldSets: Chain<List<PStmt>>, rootName: String,
@@ -1258,14 +1258,14 @@ fun tagPrecision(t: CgType): Int
 class [final] PrimStart(psName: String, psOffset: Int)
 
 fun primStartsOf(fields: Chain<PStmt>, offset: Int, r: Resolver, acc: List<PrimStart>): List<PrimStart>
-  ret build<PrimStart >(primStartsOfB(fields, offset, r, builderFrom<PrimStart>(acc)))
+  ret build(primStartsOfB(fields, offset, r, builderFrom(acc)))
 
-fun [tail] primStartsOfB(fields: Chain<PStmt>, offset: Int, r: Resolver, [terminal] acc: ListBuilder<PrimStart >): ListBuilder<PrimStart >
+fun [tail] primStartsOfB(fields: Chain<PStmt>, offset: Int, r: Resolver, [terminal] acc: ListBuilder<PrimStart>): ListBuilder<PrimStart>
   ret match(fields)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => primStartsOfB(l.next, offset + cgFlattenPrimitivesN(specGenerateOpt(let2.lType, r)).n, r,
-                                    push<PrimStart >(acc, PrimStart(let2.lName, offset)))
+                                    push(acc, PrimStart(let2.lName, offset)))
       (o: PStmt)    => primStartsOfB(l.next, offset, r, acc)
 
 fun [tail] primStartFor(starts: List<PrimStart>, name: String): Int
@@ -1297,8 +1297,8 @@ fun emitFlat(param: RParam, ftype: CgType, variantSlots2: List<CgSlotEntry>, slo
 # enum-encoding principle; union_repr.py construct_enum_value.emit_flat).
 fun emitFlatFun(param: RParam, variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
                 offset: Int, slots: List<RpNamedValue>): EmitFlatOut
-  ret match(listAt<CgSlotEntry>(variantSlots2, offset))
-    (ef: CgSlotEntry) => match(listAt<CgSlotEntry>(variantSlots2, offset + 1))
+  ret match(listAt(variantSlots2, offset))
+    (ef: CgSlotEntry) => match(listAt(variantSlots2, offset + 1))
       (eo: CgSlotEntry) => EmitFlatOut(
           setNamedValueAt(setNamedValueAt(slots,
                               fieldNameAt(slotFields, ef.slotIndex),
@@ -1311,7 +1311,7 @@ fun emitFlatFun(param: RParam, variantSlots2: List<CgSlotEntry>, slotFields: Lis
 
 fun emitFlatLeaf(param: RParam, variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
                  offset: Int, slots: List<RpNamedValue>): EmitFlatOut
-  ret match(listAt<CgSlotEntry>(variantSlots2, offset))
+  ret match(listAt(variantSlots2, offset))
     (e2: CgSlotEntry) => EmitFlatOut(setNamedValueAt(slots, fieldNameAt(slotFields, e2.slotIndex), param), offset + 1)
     ()                 => EmitFlatOut(slots, offset + 1)   # unreachable
 
@@ -1340,20 +1340,20 @@ fun taggedConstructEnumValueOn(gt: GTagged, e2: SEnum, leafName: String, fieldAr
 
 fun taggedConstructEnumValueRoot(gt: GTagged, e2: SEnum, root: PsEnum, leafName: String, fieldArgs: List<PunArg>, r: Resolver): GBundle
   let leafIdx = indexOfString(e2.seAllLeaves, leafName, 0)
-  let leafFields = forceNth(collectLeafFieldSets(root, List<PStmt>()), leafIdx)
+  let leafFields = forceNth(collectLeafFieldSets(root, List()), leafIdx)
   let container = gt.grtContainer
   let slotFields = forceFields(container)
   let tagConst = RpInteger(leafIdx, tagPrecision(fieldTypeNamed(slotFields, "$tag")))
-  let zeroSlots = map(slotFields, (f: CgField) => RpNamedValue(f.fieldName, RpZeroOf(f.fieldType)))
+  let zeroSlots = map(slotFields, (f) => RpNamedValue(f.fieldName, RpZeroOf(f.fieldType)))
   let taggedSlots = setNamedValueAt(zeroSlots, "$tag", tagConst)
   if isBoxedLeaf(r, e2.seRoot, leafName)
     ret taggedConstructBoxed(e2, leafFields, leafName, fieldArgs,
                              forceNth(gt.grtVariantMap, leafIdx),
                              slotFields, taggedSlots, container, r)
-  let primStarts = primStartsOf(chain(leafFields), 0, r, List<PrimStart>())
+  let primStarts = primStartsOf(chain(leafFields), 0, r, List())
   let step = taggedConstructFields(chain(fieldArgs), leafFields, primStarts, forceNth(gt.grtVariantMap, leafIdx),
                                   slotFields, taggedSlots, r,
-                                  builder<GBundle >())
+                                  builder())
   ret bundleJoin(bundleJoinAll(step.tcBundles), bundleValue(unionStruct(container, step.tcSlots)))
 
 # Boxed leaf (payload over the value-struct threshold): allocate the
@@ -1369,10 +1369,10 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName: String,
   let objName = enumLeafObjectName(e2.seRoot, leafName)
   let objVar = RpStackVar(CgDataPointer(), "boxed")
   let step = bxConstructFields(chain(leafFields), objName, objVar, fieldArgs, r,
-                               CcAcc(builder<Op >(), builder<GBundle >()))
-  let ops = concat(list1<Op>(OpNewObject(objName, objVar, None, List<RParam>())), step.ccOps)
-  let allocBundle = GBundle(list1(objVar), ops, objVar, List<RecurSource>(), List<ExitSource>())
-  ret match(listAt<CgSlotEntry>(variantSlots2, 0))
+                               CcAcc(builder(), builder()))
+  let ops = concat(list1(OpNewObject(objName, objVar, None, List())), step.ccOps)
+  let allocBundle = GBundle(list1(objVar), ops, objVar, List(), List())
+  ret match(listAt(variantSlots2, 0))
     (se: CgSlotEntry) => bundleJoin(bundleJoinAll(step.ccBundles),
                              bundleJoin(allocBundle,
                                  bundleValue(unionStruct(container,
@@ -1387,8 +1387,8 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName: String,
 fun [tail] bxConstructFields(fields: Chain<PStmt>, objName: String, resultVar: RParam,
                              fieldArgs: List<PunArg>, r: Resolver, [terminal] acc: CcAcc): ComplexConstructOut
   ret match(fields)
-    (nil: ChainEnd) => ComplexConstructOut(build<Op >(acc.caOps),
-                                           build<GBundle >(acc.caBundles))
+    (nil: ChainEnd) => ComplexConstructOut(build(acc.caOps),
+                                           build(acc.caBundles))
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => bxConstructField(let2, l.next, objName, resultVar,
                                         fieldArgs, r, acc)
@@ -1402,34 +1402,34 @@ fun bxConstructField(let2: PsLet, rest: Chain<PStmt>, objName: String, resultVar
     (pa: PunArg) => bxConstructFieldArg(pa, let2, fieldType, rest, objName,
                                         resultVar, fieldArgs, r, acc)
     ()            => bxConstructFields(rest, objName, resultVar, fieldArgs, r,
-                       CcAcc(push<Op >(acc.caOps,
+                       CcAcc(push(acc.caOps,
                                  OpMove(RpObjectField(fieldType, resultVar,
                                             objName, let2.lName, None, true),
                                         RpZeroOf(fieldType), false,
-                                        List<RParam>())),
+                                        List())),
                              acc.caBundles))
 
 fun bxConstructFieldArg(pa: PunArg, let2: PsLet, fieldType: CgType, rest: Chain<PStmt>, objName: String,
                         resultVar: RParam, fieldArgs: List<PunArg>, r: Resolver, [terminal] acc: CcAcc): ComplexConstructOut
   let argBundle = withPrefix(genExprTo(pa.paExpr, r, let2.lType), "arg_" + bareName(let2.lName))
   ret bxConstructFields(rest, objName, resultVar, fieldArgs, r,
-          CcAcc(push<Op >(acc.caOps,
+          CcAcc(push(acc.caOps,
                     OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true),
-                           mustResult(argBundle), false, List<RParam>())),
-                push<GBundle >(acc.caBundles, argBundle)))
+                           mustResult(argBundle), false, List())),
+                push(acc.caBundles, argBundle)))
 
 class [final] TaggedConstructOut(tcBundles: List<GBundle>, tcSlots: List<RpNamedValue>)
 
 fun taggedConstructFields(args: Chain<PunArg>, leafFields: List<PStmt>, primStarts: List<PrimStart>,
                                  variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
-                                 slots: List<RpNamedValue>, r: Resolver, [terminal] bundles: ListBuilder<GBundle >): TaggedConstructOut
+                                 slots: List<RpNamedValue>, r: Resolver, [terminal] bundles: ListBuilder<GBundle>): TaggedConstructOut
   ret match(args)
-    (nil: ChainEnd) => TaggedConstructOut(build<GBundle >(bundles), slots)
+    (nil: ChainEnd) => TaggedConstructOut(build(bundles), slots)
     (l: ChainLink)  => taggedConstructFieldsStep(l, leafFields, primStarts, variantSlots2, slotFields, slots, r, bundles)
 
 fun taggedConstructFieldsStep(l: ChainLink<PunArg>, leafFields: List<PStmt>, primStarts: List<PrimStart>,
                               variantSlots2: List<CgSlotEntry>, slotFields: List<CgField>,
-                              slots: List<RpNamedValue>, r: Resolver, [terminal] bundles: ListBuilder<GBundle >): TaggedConstructOut
+                              slots: List<RpNamedValue>, r: Resolver, [terminal] bundles: ListBuilder<GBundle>): TaggedConstructOut
   let fieldName = l.value.paName
   let fieldType = letTypeOf(letNamed(leafFields, fieldName))
   let argBundle = withPrefix(genExprTo(l.value.paExpr, r, fieldType), "arg_" + bareName(fieldName))
@@ -1437,7 +1437,7 @@ fun taggedConstructFieldsStep(l: ChainLink<PunArg>, leafFields: List<PStmt>, pri
   let ef = emitFlat(mustResult(argBundle), specGenerateOpt(fieldType, r), variantSlots2, slotFields, pi, slots)
   ret taggedConstructFields(l.next, leafFields, primStarts, variantSlots2,
                             slotFields, ef.efSlots, r,
-                            push<GBundle >(bundles, argBundle))
+                            push(bundles, argBundle))
 
 fun complexConstructEnumValue(gc: GComplexEnum, leafName: String, fieldArgs: List<PunArg>, r: Resolver): GBundle
   ret match(gc.grcType)
@@ -1453,28 +1453,28 @@ fun complexConstructEnumValueOn(e2: SEnum, leafName: String, fieldArgs: List<Pun
 
 fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName: String, fieldArgs: List<PunArg>, r: Resolver): GBundle
   let leafIdx = indexOfString(e2.seAllLeaves, leafName, 0)
-  let leafFields = forceNth(collectLeafFieldSets(root, List<PStmt>()), leafIdx)
+  let leafFields = forceNth(collectLeafFieldSets(root, List()), leafIdx)
   let objName = enumLeafObjectName(e2.seRoot, leafName)
   let resultVar = RpStackVar(CgDataPointer(), "result")
   let step = complexConstructFields(chain(leafFields), objName, resultVar,
                                     fieldArgs, r,
-                                    CcAcc(builder<Op >(), builder<GBundle >()))
-  let ops = concat(list1<Op>(OpNewObject(objName, resultVar, None, List<RParam>())), step.ccOps)
-  let ctorBundle = GBundle(list1(resultVar), ops, resultVar, List<RecurSource>(), List<ExitSource>())
+                                    CcAcc(builder(), builder()))
+  let ops = concat(list1(OpNewObject(objName, resultVar, None, List())), step.ccOps)
+  let ctorBundle = GBundle(list1(resultVar), ops, resultVar, List(), List())
   ret bundleJoin(bundleJoinAll(step.ccBundles), ctorBundle)
 
 class [final] ComplexConstructOut(ccOps: List<Op>, ccBundles: List<GBundle>)
 
 # Both lists while they are being built: the field stores in program order and
 # the argument bundles in the order they are emitted.
-class [linear, final] CcAcc(caOps: ListBuilder<Op >,
-                            caBundles: ListBuilder<GBundle >)
+class [linear, final] CcAcc(caOps: ListBuilder<Op>,
+                            caBundles: ListBuilder<GBundle>)
 
 fun [tail] complexConstructFields(fields: Chain<PStmt>, objName: String, resultVar: RParam, fieldArgs: List<PunArg>,
                                   r: Resolver, [terminal] acc: CcAcc): ComplexConstructOut
   ret match(fields)
-    (nil: ChainEnd) => ComplexConstructOut(build<Op >(acc.caOps),
-                                           build<GBundle >(acc.caBundles))
+    (nil: ChainEnd) => ComplexConstructOut(build(acc.caOps),
+                                           build(acc.caBundles))
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => complexConstructField(let2, l.next, objName, resultVar,
                                             fieldArgs, r, acc)
@@ -1489,21 +1489,21 @@ fun complexConstructField(let2: PsLet, rest: Chain<PStmt>, objName: String, resu
                         objName, resultVar, fieldArgs, r, acc)
     # No argument for this field: it is zero-filled in place.
     ()            => complexConstructFields(rest, objName, resultVar, fieldArgs, r,
-                       CcAcc(push<Op >(acc.caOps,
+                       CcAcc(push(acc.caOps,
                                  OpMove(RpObjectField(fieldType, resultVar,
                                             objName, let2.lName, None, true),
                                         RpZeroOf(fieldType), false,
-                                        List<RParam>())),
+                                        List())),
                              acc.caBundles))
 
 fun complexConstructFieldWithArg(pa: PunArg, let2: PsLet, fieldType: CgType, rest: Chain<PStmt>, objName: String,
                                  resultVar: RParam, fieldArgs: List<PunArg>, r: Resolver, [terminal] acc: CcAcc): ComplexConstructOut
   let argBundle = withPrefix(genExpr(pa.paExpr, r), "arg_" + bareName(let2.lName))
   ret complexConstructFields(rest, objName, resultVar, fieldArgs, r,
-          CcAcc(push<Op >(acc.caOps,
+          CcAcc(push(acc.caOps,
                     OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true),
-                           mustResult(argBundle), false, List<RParam>())),
-                push<GBundle >(acc.caBundles, argBundle)))
+                           mustResult(argBundle), false, List())),
+                push(acc.caBundles, argBundle)))
 
 fun [tail] punArgNamed(args: List<PunArg>, name: String): PunArg|None
   ret match(head(args))

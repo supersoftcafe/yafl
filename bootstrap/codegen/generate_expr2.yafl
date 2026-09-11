@@ -48,7 +48,7 @@ class [final] GEmit(geBundle: GBundle, geArmResults: List<ArmResult>,
                     geCounter: Int, geFallbackLabel: String|None)
 
 fun emEmpty(): GEmit
-  ret GEmit(emptyBundle(), List<ArmResult>(), 0, None)
+  ret GEmit(emptyBundle(), List(), 0, None)
 
 fun matchEndLabel(): String => "match_end"
 
@@ -62,7 +62,7 @@ fun emOp1(st: GEmit, op: Op): GEmit
   ret emOps(st, list1(op))
 
 fun emStackVar(st: GEmit, sv: RParam): GEmit
-  ret emAdd(st, bundleFull(list1(sv), List<Op>(), None))
+  ret emAdd(st, bundleFull(list1(sv), List(), None))
 
 class [final] NextIndexOut(niIdx: Int, niState: GEmit)
 
@@ -80,7 +80,7 @@ fun emArm(st0: GEmit, resolver: Resolver, resultType: Spec|None, arm: PArm,
   let idx = ni.niIdx
   let armLabel = "match_arm_" + String(idx)
   let nextLabel = "match_next_" + String(idx)
-  let st1 = fold(pre, ni.niState, (acc: GEmit, b: GBundle) => emAdd(acc, b))
+  let st1 = fold(pre, ni.niState, (acc, b) => emAdd(acc, b))
   let st2 = emStages(st1, chain(stages), 0, idx, armLabel, nextLabel)
   let prefix = "arm" + String(idx)
   let armResolver = match(bind)
@@ -93,7 +93,7 @@ fun emArm(st0: GEmit, resolver: Resolver, resultType: Spec|None, arm: PArm,
   # through to the next arm exactly like a failed stage.
   let st4 = emGuard(st3, armResolver, arm, idx, nextLabel)
   let st5 = emBody(st4, armResolver, resultType, arm, None, prefix)
-  ret emOp1(st5, OpLabel(nextLabel, List<RParam>()))
+  ret emOp1(st5, OpLabel(nextLabel, List()))
 
 fun emStages(st: GEmit, stages: Chain<List<RParam>>, stageNo: Int,
                     idx: Int, armLabel: String, nextLabel: String): GEmit
@@ -104,9 +104,9 @@ fun emStages(st: GEmit, stages: Chain<List<RParam>>, stageNo: Int,
 fun emStagesStep(st: GEmit, l: ChainLink<List<RParam>>, stageNo: Int,
                 idx: Int, armLabel: String, nextLabel: String): GEmit
   let passLabel = l.next is ChainEnd ? armLabel : "match_stage_" + String(idx) + "_" + String(stageNo)
-  let withGuards = fold(l.value, st, (acc: GEmit, guard: RParam) => emOp1(acc, OpJumpIf(passLabel, guard, false, List<RParam>())))
-  let withJump = emOp1(withGuards, OpJump(nextLabel, List<RParam>()))
-  let withLabel = emOp1(withJump, OpLabel(passLabel, List<RParam>()))
+  let withGuards = fold(l.value, st, (acc, guard) => emOp1(acc, OpJumpIf(passLabel, guard, false, List())))
+  let withJump = emOp1(withGuards, OpJump(nextLabel, List()))
+  let withLabel = emOp1(withJump, OpLabel(passLabel, List()))
   ret emStages(withLabel, l.next, stageNo + 1, idx, armLabel, nextLabel)
 
 # ── multi_entry_arm(arm, entries, bound_ctype) ──────────────────────────────
@@ -121,15 +121,15 @@ fun emMultiEntryArm(st0: GEmit, resolver: Resolver, resultType: Spec|None,
   let nextLabel = "match_next_" + String(idx)
   let bodyLabel = "match_armbody_" + String(idx)
   let st1 = emEntryGuards(ni.niState, chain(entries), idx, 0)
-  let st2 = emOp1(st1, OpJump(nextLabel, List<RParam>()))
+  let st2 = emOp1(st1, OpJump(nextLabel, List()))
   let st3 = emEntryLabelJumps(st2, chain(entries), idx, 0, bodyLabel)
   let armSv = RpStackVar(boundCtype, armUniqueName(arm))
-  let st4 = emOp1(emStackVar(st3, armSv), OpLabel(bodyLabel, List<RParam>()))
-  let st5 = emOp1(st4, OpPhi(armSv, phiSourcesOf(entries, idx), List<RParam>()))
+  let st4 = emOp1(emStackVar(st3, armSv), OpLabel(bodyLabel, List()))
+  let st5 = emOp1(st4, OpPhi(armSv, phiSourcesOf(entries, idx), List()))
   let armResolver = bindingScope(arm, arm.armType, resolver)
   let st6 = emGuard(st5, armResolver, arm, idx, nextLabel)
   let st7 = emBody(st6, armResolver, resultType, arm, None, "arm" + String(idx))
-  ret emOp1(st7, OpLabel(nextLabel, List<RParam>()))
+  ret emOp1(st7, OpLabel(nextLabel, List()))
 
 fun entryLabel(idx: Int, k: Int): String
   ret "match_arm_" + String(idx) + "_m" + String(k)
@@ -137,25 +137,25 @@ fun entryLabel(idx: Int, k: Int): String
 fun [tail] emEntryGuards(st: GEmit, es: Chain<GEntry>, idx: Int, k: Int): GEmit
   ret match(es)
     (nil: ChainEnd) => st
-    (l: ChainLink)  => emEntryGuards(emOp1(st, OpJumpIf(entryLabel(idx, k), l.value.geGuard, false, List<RParam>())), l.next, idx, k + 1)
+    (l: ChainLink)  => emEntryGuards(emOp1(st, OpJumpIf(entryLabel(idx, k), l.value.geGuard, false, List())), l.next, idx, k + 1)
 
 fun [tail] emEntryLabelJumps(st: GEmit, es: Chain<GEntry>, idx: Int, k: Int, bodyLabel: String): GEmit
   ret match(es)
     (nil: ChainEnd) => st
     (l: ChainLink)  => emEntryLabelJumps(
-        emOp1(emOp1(st, OpLabel(entryLabel(idx, k), List<RParam>())), OpJump(bodyLabel, List<RParam>())),
+        emOp1(emOp1(st, OpLabel(entryLabel(idx, k), List())), OpJump(bodyLabel, List())),
         l.next, idx, k + 1, bodyLabel)
 
 fun phiSourcesOf(es: List<GEntry>, idx: Int): List<OpPhiSource>
-  ret phiSourcesLoop(chain(es), idx, 0, List<OpPhiSource>())
+  ret phiSourcesLoop(chain(es), idx, 0, List())
 
 fun phiSourcesLoop(es: Chain<GEntry>, idx: Int, k: Int, acc: List<OpPhiSource>): List<OpPhiSource>
-  ret build<OpPhiSource >(phiSourcesLoopB(es, idx, k, builderFrom<OpPhiSource>(acc)))
+  ret build(phiSourcesLoopB(es, idx, k, builderFrom(acc)))
 
-fun [tail] phiSourcesLoopB(es: Chain<GEntry>, idx: Int, k: Int, [terminal] acc: ListBuilder<OpPhiSource >): ListBuilder<OpPhiSource >
+fun [tail] phiSourcesLoopB(es: Chain<GEntry>, idx: Int, k: Int, [terminal] acc: ListBuilder<OpPhiSource>): ListBuilder<OpPhiSource>
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => phiSourcesLoopB(l.next, idx, k + 1, push<OpPhiSource >(acc, OpPhiSource(entryLabel(idx, k), l.value.geValue)))
+    (l: ChainLink)  => phiSourcesLoopB(l.next, idx, k + 1, push(acc, OpPhiSource(entryLabel(idx, k), l.value.geValue)))
 
 # ── the arm's own `if` guard (private in Python: `__guard`) ─────────────────
 # Evaluated after the binding: a False guard falls through to the next arm.
@@ -170,9 +170,9 @@ fun emGuardOn(st: GEmit, armResolver: Resolver, guard: PExpr, idx: Int, nextLabe
   let gb = withPrefix(genExpr(guard, armResolver), "arm" + String(idx) + "guard")
   let withG = emAdd(st, gb)
   let passLabel = "match_guardpass_" + String(idx)
-  let withJ = emOp1(withG, OpJumpIf(passLabel, mustResult(gb), false, List<RParam>()))
-  let withN = emOp1(withJ, OpJump(nextLabel, List<RParam>()))
-  ret emOp1(withN, OpLabel(passLabel, List<RParam>()))
+  let withJ = emOp1(withG, OpJumpIf(passLabel, mustResult(gb), false, List()))
+  let withN = emOp1(withJ, OpJump(nextLabel, List()))
+  ret emOp1(withN, OpLabel(passLabel, List()))
 
 # `guard_to_fallback`: route a passing guard straight to the fallback body —
 # used when one arm handles both an early dispatch case (NULL) and the
@@ -185,7 +185,7 @@ fun emGuardToFallback(st: GEmit, guard: RParam): GEmit
   let fl = match(st1.geFallbackLabel)
     (fl2: String) => fl2
     ()             => ""   # unreachable: emAssignFallbackLabel always sets one
-  ret emOp1(st1, OpJumpIf(fl, guard, false, List<RParam>()))
+  ret emOp1(st1, OpJumpIf(fl, guard, false, List()))
 
 fun emAssignFallbackLabel(st: GEmit): GEmit
   let ni = emNextIndex(st)
@@ -198,11 +198,11 @@ fun emAssignFallbackLabel(st: GEmit): GEmit
 fun emFallback(st0: GEmit, resolver: Resolver, resultType: Spec|None,
               arm: PArm|None, bind: GBind|None, abortReason: String): GEmit
   let st1 = match(st0.geFallbackLabel)
-    (fl: String) => emOp1(st0, OpLabel(fl, List<RParam>()))
+    (fl: String) => emOp1(st0, OpLabel(fl, List()))
     ()            => st0
   ret match(arm)
     (a: PArm) => emBody(st1, resolver, resultType, a, bind, "else")
-    ()         => emOp1(st1, OpAbort(abortReason, List<RParam>()))
+    ()         => emOp1(st1, OpAbort(abortReason, List()))
 
 # ── internals: __body ───────────────────────────────────────────────────────
 # Binding bundle (if any), the arm body generated TO the shared slot type (so
@@ -223,14 +223,14 @@ fun emBody(st0: GEmit, resolver: Resolver, resultType: Spec|None, arm: PArm,
   let st3 = match(bodyBundle.gbResult)
     (rv: RParam) => emArmResult(st2, prefix, rv)
     ()            => st2
-  ret bundleBottom(bodyBundle) ? st3 : emOp1(st3, OpJump(matchEndLabel(), List<RParam>()))
+  ret bundleBottom(bodyBundle) ? st3 : emOp1(st3, OpJump(matchEndLabel(), List()))
 
 fun emArmResult(st: GEmit, prefix: String, rv: RParam): GEmit
   let exitLabel = prefix + "_exit"
-  let withLabel = emOp1(st, OpLabel(exitLabel, List<RParam>()))
+  let withLabel = emOp1(st, OpLabel(exitLabel, List()))
   # Arm order: these become the join Phi's sources, one per arm.
   ret GEmit(withLabel.geBundle,
-            build<ArmResult >(push<ArmResult >(_pushChain<ArmResult >(builder<ArmResult >(), chain<ArmResult>(withLabel.geArmResults)), ArmResult(exitLabel, rv))),
+            build(push(builderFrom(withLabel.geArmResults), ArmResult(exitLabel, rv))),
             withLabel.geCounter, withLabel.geFallbackLabel)
 
 # ── binding constructors (used by union_repr's generate_match implementations) ──
@@ -246,7 +246,7 @@ fun bindSubjectOn(resolver: Resolver, arm: PArm, boundType: Spec, value: RParam)
   let armCtype = specGenerate(boundType, resolver)
   let value2 = adjustBoundValue(armCtype, value)
   let armSv = RpStackVar(armCtype, armUniqueName(arm))
-  let bundle = GBundle(list1(armSv), list1(OpMove(armSv, value2, false, List<RParam>())), None, List<RecurSource>(), List<ExitSource>())
+  let bundle = GBundle(list1(armSv), list1(OpMove(armSv, value2, false, List())), None, List(), List())
   ret GBind(bundle, bindingScope(arm, boundType, resolver))
 
 # A unit-typed arm in a pointer union (the `None` of `Box|None`) carries no
@@ -296,7 +296,7 @@ fun bindFromSlotsOn(resolver: Resolver, arm: PArm, armCtype: CgType,
                     slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, sv: RParam): GBind|None
   let armValue = reconstructFromSlots(armCtype, slotAssignments, slotFields, sv, 0).rfValue
   let armSv = RpStackVar(armCtype, armUniqueName(arm))
-  let bundle = GBundle(list1(armSv), list1(OpMove(armSv, armValue, false, List<RParam>())), None, List<RecurSource>(), List<ExitSource>())
+  let bundle = GBundle(list1(armSv), list1(OpMove(armSv, armValue, false, List())), None, List(), List())
   ret match(arm.armType)
     (ty: Spec) => GBind(bundle, bindingScope(arm, ty, resolver))
     ()          => GBind(bundle, resolver)   # unreachable: a typed arm always carries armType
@@ -315,8 +315,8 @@ fun reconstructFromSlots(ctype: CgType, slotAssignments: List<CgSlotEntry>,
 # both the match arm bind and read_field — match.py / union_repr.py mirrors).
 fun reconstructFun(slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>,
                    sv: RParam, offset: Int): ReconstructOut
-  ret match(listAt<CgSlotEntry>(slotAssignments, offset))
-    (ef: CgSlotEntry) => match(listAt<CgSlotEntry>(slotAssignments, offset + 1))
+  ret match(listAt(slotAssignments, offset))
+    (ef: CgSlotEntry) => match(listAt(slotAssignments, offset + 1))
       (eo: CgSlotEntry) => ReconstructOut(
           RpMakeFun(RpStructField(sv, fieldNameAt(slotFields, ef.slotIndex)),
                     RpStructField(sv, fieldNameAt(slotFields, eo.slotIndex))),
@@ -325,35 +325,35 @@ fun reconstructFun(slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>
     ()                 => ReconstructOut(RpNullPointer(), offset + 2)   # unreachable
 
 fun reconstructLeaf(slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, sv: RParam, offset: Int): ReconstructOut
-  ret match(listAt<CgSlotEntry>(slotAssignments, offset))
+  ret match(listAt(slotAssignments, offset))
     (e2: CgSlotEntry) => ReconstructOut(RpStructField(sv, fieldNameAt(slotFields, e2.slotIndex)), offset + 1)
     ()                 => ReconstructOut(RpNullPointer(), offset + 1)   # unreachable
 
 fun fieldNameAt(fields: List<CgField>, idx: Int): String
-  ret match(listAt<CgField>(fields, idx))
+  ret match(listAt(fields, idx))
     (f: CgField) => f.fieldName
     ()            => ""   # unreachable
 
 fun reconstructStruct(ctype: CgType, fields: List<CgField>, slotAssignments: List<CgSlotEntry>,
                       slotFields: List<CgField>, sv: RParam, offset0: Int): ReconstructOut
   let r = reconstructFields(chain(fields), slotAssignments, slotFields, sv,
-                            offset0, builder<RpNamedValue >())
+                            offset0, builder())
   ret ReconstructOut(unionStruct(ctype, r.rfsValues), r.rfsOffset)
 
 class [final] ReconstructFieldsOut(rfsValues: List<RpNamedValue>, rfsOffset: Int)
 
 fun reconstructFields(fs: Chain<CgField>, slotAssignments: List<CgSlotEntry>,
                              slotFields: List<CgField>, sv: RParam, offset: Int,
-                             [terminal] acc: ListBuilder<RpNamedValue >): ReconstructFieldsOut
+                             [terminal] acc: ListBuilder<RpNamedValue>): ReconstructFieldsOut
   ret match(fs)
-    (nil: ChainEnd) => ReconstructFieldsOut(build<RpNamedValue >(acc), offset)
+    (nil: ChainEnd) => ReconstructFieldsOut(build(acc), offset)
     (l: ChainLink)  => reconstructFieldsStep(l, slotAssignments, slotFields, sv, offset, acc)
 
 fun reconstructFieldsStep(l: ChainLink<CgField>, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>,
-                          sv: RParam, offset: Int, [terminal] acc: ListBuilder<RpNamedValue >): ReconstructFieldsOut
+                          sv: RParam, offset: Int, [terminal] acc: ListBuilder<RpNamedValue>): ReconstructFieldsOut
   let sub = reconstructFromSlots(l.value.fieldType, slotAssignments, slotFields, sv, offset)
   ret reconstructFields(l.next, slotAssignments, slotFields, sv, sub.rfOffset,
-          push<RpNamedValue >(acc,
+          push(acc,
               RpNamedValue(l.value.fieldName, sub.rfValue)))
 
 # `finish(result_var)`: the join — a Phi collecting one source per arm, or a
@@ -363,16 +363,16 @@ fun reconstructFieldsStep(l: ChainLink<CgField>, slotAssignments: List<CgSlotEnt
 fun emFinish(st: GEmit, resultVar: RParam|None): GBundle
   ret match(resultVar)
     (rv: RParam) => isEmpty(st.geArmResults)
-      ? bundleJoin(st.geBundle, bundleOps(list2(OpLabel(matchEndLabel(), List<RParam>()),
-                                                OpAbort("unreachable match join: every arm transferred control", List<RParam>()))))
+      ? bundleJoin(st.geBundle, bundleOps(list2(OpLabel(matchEndLabel(), List()),
+                                                OpAbort("unreachable match join: every arm transferred control", List()))))
       : bundleJoin(st.geBundle, GBundle(list1(rv),
-                                       list2(OpLabel(matchEndLabel(), List<RParam>()),
-                                            OpPhi(rv, armResultsToPhi(st.geArmResults), List<RParam>())),
-                                       rv, List<RecurSource>(), List<ExitSource>()))
-    ()          => bundleJoin(st.geBundle, bundleOp1(OpLabel(matchEndLabel(), List<RParam>())))
+                                       list2(OpLabel(matchEndLabel(), List()),
+                                            OpPhi(rv, armResultsToPhi(st.geArmResults), List())),
+                                       rv, List(), List()))
+    ()          => bundleJoin(st.geBundle, bundleOp1(OpLabel(matchEndLabel(), List())))
 
 fun armResultsToPhi(ars: List<ArmResult>): List<OpPhiSource>
-  ret map(ars, (a: ArmResult) => OpPhiSource(a.arLabel, a.arValue))
+  ret map(ars, (a) => OpPhiSource(a.arLabel, a.arValue))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 1: literal-arm alternative tests (union_repr.literal_eq_test /
@@ -413,33 +413,33 @@ class [final] LitTestsOut(ltoBundles: List<GBundle>, ltoTests: List<RParam>)
 # `armLiterals: List<PLit>`.
 fun literalAlternativeTests(items: List<PLit>, typeName: String, value: RParam, r: Resolver, prefix: String): LitTestsOut
   ret litAltLoop(chain(items), typeName, value, r, prefix, 0,
-                 builder<GBundle >(), builder<RParam >())
+                 builder(), builder())
 
 fun litAltLoop(items: Chain<PLit>, typeName: String, value: RParam, r: Resolver, prefix: String,
-                      k: Int, [terminal] bundles: ListBuilder<GBundle >, tests: ListBuilder<RParam >): LitTestsOut
+                      k: Int, [terminal] bundles: ListBuilder<GBundle>, tests: ListBuilder<RParam>): LitTestsOut
   ret match(items)
-    (nil: ChainEnd) => LitTestsOut(build<GBundle >(bundles),
-                                   build<RParam >(tests))
+    (nil: ChainEnd) => LitTestsOut(build(bundles),
+                                   build(tests))
     (l: ChainLink)  => match(l.value)
       (rg: PlRange) => litAltRange(items, l, rg, typeName, value, r, prefix, k, bundles, tests)
       (le2: PlExpr) => litAltLit(items, l, le2, typeName, value, r, prefix, k, bundles, tests)
 
 fun litAltRange(items: Chain<PLit>, l: ChainLink<PLit>, rg: PlRange, typeName: String, value: RParam,
-               r: Resolver, prefix: String, k: Int, [terminal] bundles: ListBuilder<GBundle >, tests: ListBuilder<RParam >): LitTestsOut
+               r: Resolver, prefix: String, k: Int, [terminal] bundles: ListBuilder<GBundle>, tests: ListBuilder<RParam>): LitTestsOut
   let loB = withPrefix(genExpr(rg.rangeLo, r), prefix + "_" + String(k) + "lo")
   let hiB = withPrefix(genExpr(rg.rangeHi, r), prefix + "_" + String(k) + "hi")
   ret litAltLoop(l.next, typeName, value, r, prefix, k + 1,
-          _pushChain<GBundle >(bundles, chain<GBundle>(list2(loB, hiB))),
-          push<RParam >(tests,
+          pushAll(bundles, list2(loB, hiB)),
+          push(tests,
               literalRangeTest(typeName, value, mustResult(loB),
                                mustResult(hiB))))
 
 fun litAltLit(items: Chain<PLit>, l: ChainLink<PLit>, le2: PlExpr, typeName: String, value: RParam,
-             r: Resolver, prefix: String, k: Int, [terminal] bundles: ListBuilder<GBundle >, tests: ListBuilder<RParam >): LitTestsOut
+             r: Resolver, prefix: String, k: Int, [terminal] bundles: ListBuilder<GBundle>, tests: ListBuilder<RParam>): LitTestsOut
   let b = withPrefix(genExpr(le2.litExpr, r), prefix + "_" + String(k))
   ret litAltLoop(l.next, typeName, value, r, prefix, k + 1,
-          push<GBundle >(bundles, b),
-          push<RParam >(tests,
+          push(bundles, b),
+          push(tests,
               literalEqTest(typeName, value, mustResult(b))))
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -461,7 +461,7 @@ fun genMatch(mt: PeMatch, r: Resolver, expected: Spec|None): GBundle
 # — first-match-wins across positions, no decision tree, no duplicated body.
 fun genMatchMulti(mt: PeMatch, r: Resolver, expected: Spec|None): GBundle
   let subs = prepend(mt.subject, mt.matchExtra)
-  let gens = genSubjects(chain(subs), r, 0, List<GBundle>())
+  let gens = genSubjects(chain(subs), r, 0, List())
   let resultType = match(expected)
     (e2: Spec) => expected
     ()          => matchType(mt, r)
@@ -481,7 +481,7 @@ fun [tail] genSubjects(ss: Chain<PExpr>, r: Resolver, i: Int,
                                                       "subj" + String(i))))
 
 fun appendBundle(acc: List<GBundle>, b: GBundle): List<GBundle>
-  ret build<GBundle >(push<GBundle >(builderFrom<GBundle>(acc), b))
+  ret build(push(builderFrom(acc), b))
 
 fun [tail] addAll(em: GEmit, bs: Chain<GBundle>): GEmit
   ret match(bs)
@@ -512,11 +512,11 @@ fun isElseArm(a: PArm): Bool
 # binds contribute their bundles and the scope comes from position 0's.
 fun multiArm(em: GEmit, a: PArm, subs: List<PExpr>, gens: List<GBundle>,
              resultType: Spec|None, r: Resolver): GEmit
-  let pats = prepend(a.armType, map(a.armExtra, (p: PPos) => p.posType))
+  let pats = prepend(a.armType, map(a.armExtra, (p) => p.posType))
   let stages = positionStages(chain(pats), chain(subs), chain(gens), r,
-                              List<List<RParam>>())
+                              List())
   let bind = positionBinds(a, chain(subs), chain(gens), r)
-  ret emArm(em, r, resultType, a, stages, bind, List<GBundle>())
+  ret emArm(em, r, resultType, a, stages, bind, List())
 
 fun [tail] positionStages(pats: Chain<Spec|None>, subs: Chain<PExpr>,
                           gens: Chain<GBundle>, r: Resolver,
@@ -550,8 +550,8 @@ fun stageFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
 # divergence the contracts exist to catch.
 fun appendStage(acc: List<List<RParam>>,
                 st: List<RParam>|None): List<List<RParam>>
-  ret build<List<RParam> >(push<List<RParam> >(
-        builderFrom<List<RParam> >(acc), stageOrNever(st)))
+  ret build(push(
+        builderFrom(acc), stageOrNever(st)))
 
 fun stageOrNever(st: List<RParam>|None): List<RParam>
   ret match(st)
@@ -624,8 +624,8 @@ fun bindPosition(p: PPos, sub: PExpr|None, g: GBundle|None,
     (e2: PExpr) => match(g)
       (b: GBundle) => match(posBindSpec(p, exprType(e2, r)))
         (bt: Spec) => bindSubject(r, PArm(p.posName, p.posType, PeNothing(p.pposLine),
-                                          List<PLit>(), None, p.pposLine,
-                                          List<PPos>()),
+                                          List(), None, p.pposLine,
+                                          List()),
                                   bt, mustResult(b))
         ()         => None
       ()           => None

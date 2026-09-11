@@ -25,7 +25,7 @@ fun sdMaxChase(): Int
   ret 8   # def-chain depth bound (copies of copies of packs)
 
 fun singleDefs(f: CgFunction): SsaDefs
-  ret fold(f.fnOps, SsaDefs(Dict<String, SdEntry>()), sdCollectOp)
+  ret fold(f.fnOps, SsaDefs(Dict()), sdCollectOp)
 
 fun sdCollectOp(acc: SsaDefs, op: Op): SsaDefs
   ret match(op)
@@ -60,7 +60,7 @@ fun sdGet(defs: SsaDefs, name: String): RParam|None
 # machine) that get_live_vars cannot see; deadstores applies the same rule,
 # and dropping such a def segfaults at resumption.
 fun sdReadCounts(f: CgFunction): Dict<String, Int>
-  ret fold(f.fnOps, Dict<String, Int>(), sdCountOp)
+  ret fold(f.fnOps, Dict(), sdCountOp)
 
 fun sdCountOp(acc: Dict<String, Int>, op: Op): Dict<String, Int>
   ret fold(opSavedVars(op),

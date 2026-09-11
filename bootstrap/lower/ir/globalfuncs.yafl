@@ -20,29 +20,29 @@ import Bootstrap::StdlibCandidates
 fun discoverGlobalFunctionCalls(a: CgApp): CgApp
   let slots = gfSlotFuncs(a)
   ret appWithFunctions(a, map(appFunctions(a),
-        (f: CgFunction) => gfOptimizeFunctionCalls(f, slots)))
+        (f) => gfOptimizeFunctionCalls(f, slots)))
 
 # slot name → implementing function names, across every object.
 class [final] SlotFuncs(sfSlot: String, sfFuncs: List<String>)
 
 fun gfSlotFuncs(a: CgApp): List<SlotFuncs>
-  ret fold(appObjects(a), List<SlotFuncs>(),
-           (acc: List<SlotFuncs>, o: CgObject) => fold(o.objFunctions, acc, gfSlotAdd))
+  ret fold(appObjects(a), List(),
+           (acc, o) => fold(o.objFunctions, acc, gfSlotAdd))
 
 fun gfSlotAdd(acc: List<SlotFuncs>, s2: CgFuncSlot): List<SlotFuncs>
-  ret any(acc, (e2: SlotFuncs) => e2.sfSlot == s2.slotVirtualName)
-    ? map(acc, (e2: SlotFuncs) => e2.sfSlot == s2.slotVirtualName
+  ret any(acc, (e2) => e2.sfSlot == s2.slotVirtualName)
+    ? map(acc, (e2) => e2.sfSlot == s2.slotVirtualName
                  ? SlotFuncs(e2.sfSlot,
-                             build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(e2.sfFuncs)), s2.slotGlobalName)))
+                             build(push(builderFrom(e2.sfFuncs), s2.slotGlobalName)))
                  : e2)
     # A slot -> functions map, looked up by slot name: the entry order is not
     # observed, but the functions WITHIN a slot keep theirs.
     : prepend(SlotFuncs(s2.slotVirtualName, list1(s2.slotGlobalName)), acc)
 
 fun gfSlotLookup(slots: List<SlotFuncs>, name: String): List<String>
-  ret match(head(filter(slots, (e2: SlotFuncs) => e2.sfSlot == name)))
+  ret match(head(filter(slots, (e2) => e2.sfSlot == name)))
     (e2: SlotFuncs) => e2.sfFuncs
-    ()               => List<String>()
+    ()               => List()
 
 # ── the single-assignment fun_t value map ────────────────────────────────────
 
@@ -56,7 +56,7 @@ class [final] FunValue(fvName: String, fvValue: RParam, fvCount: Int)
 class [final] FunValues(fvMap: Dict<String, FunValue>)
 
 fun gfFunValueMap(f: CgFunction): FunValues
-  ret fold(f.fnOps, FunValues(Dict<String, FunValue>()), gfFvStep)
+  ret fold(f.fnOps, FunValues(Dict()), gfFvStep)
 
 fun gfFvStep(acc: FunValues, op: Op): FunValues
   ret match(op)
@@ -108,7 +108,7 @@ fun gfFieldValue(sf: RpStructField, vmap: FunValues): RParam|None
     ()           => None
 
 fun gfNamedValue(vs: List<RpNamedValue>, field: String): RParam|None
-  ret match(head(filter(vs, (nv: RpNamedValue) => nv.name == field)))
+  ret match(head(filter(vs, (nv) => nv.name == field)))
     (nv: RpNamedValue) => nv.value
     ()                  => None
 
@@ -116,7 +116,7 @@ fun gfNamedValue(vs: List<RpNamedValue>, field: String): RParam|None
 
 fun gfOptimizeFunctionCalls(f: CgFunction, slots: List<SlotFuncs>): CgFunction
   let vmap = gfFunValueMap(f)
-  ret cgFunctionWith(f, map(f.fnOps, (op: Op) => gfOptimizeOp(op, slots, vmap)), f.fnStackVars)
+  ret cgFunctionWith(f, map(f.fnOps, (op) => gfOptimizeOp(op, slots, vmap)), f.fnStackVars)
 
 fun gfOptimizeOp(op: Op, slots: List<SlotFuncs>, vmap: FunValues): Op
   ret match(op)

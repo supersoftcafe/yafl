@@ -96,7 +96,7 @@ fun opTestParamsCallRegister(register: RParam|None, pred: (:RParam): Bool): Bool
 
 fun opAllParams(op: Op): List<RParam>
   ret match(op)
-    (x: OpMove) => concat<RParam>(rpFlatten(x.moveTarget, false), rpFlatten(x.moveSource, true))
+    (x: OpMove) => concat(rpFlatten(x.moveTarget, false), rpFlatten(x.moveSource, true))
     (x: OpJumpIf) => rpFlatten(x.jumpIfCondition, true)
     (x: OpIfTask) => opAllParamsIfTask(x)
     (x: OpSwitchJump) => rpFlatten(x.switchCondition, true)
@@ -105,32 +105,32 @@ fun opAllParams(op: Op): List<RParam>
     (x: OpReturn) => rpFlatten(x.returnValue, true)
     (x: OpParallelCall) => opAllParamsParallel(x)
     (x: OpPhi) => opAllParamsPhi(x)
-    (o: Op) => List<RParam>()   # base default: [] (Label/Jump/ReturnVoid/Abort don't override)
+    (o: Op) => List()   # base default: [] (Label/Jump/ReturnVoid/Abort don't override)
 
 fun opAllParamsIfTask(x: OpIfTask): List<RParam>
-  ret concat<RParam>(concat<RParam>(rpFlatten(x.taskCondition, true), rpFlatten(x.taskSource, true)),
-                      concat<RParam>(rpFlatten(x.taskLhs, false), rpFlatten(x.callIdLhs, false)))
+  ret concat(concat(rpFlatten(x.taskCondition, true), rpFlatten(x.taskSource, true)),
+              concat(rpFlatten(x.taskLhs, false), rpFlatten(x.callIdLhs, false)))
 
 fun opAllParamsNewObject(x: OpNewObject): List<RParam>
-  ret concat<RParam>(rpFlatten(x.newObjRegister, false), rpFlattenOpt(x.newObjSize, true))
+  ret concat(rpFlatten(x.newObjRegister, false), rpFlattenOpt(x.newObjSize, true))
 
 fun opAllParamsCall(x: OpCall): List<RParam>
-  ret concat<RParam>(concat<RParam>(rpFlatten(x.callFunction, true), rpFlatten(x.callParameters, true)),
-                      opAllParamsCallRegister(x.callRegister))
+  ret concat(concat(rpFlatten(x.callFunction, true), rpFlatten(x.callParameters, true)),
+              opAllParamsCallRegister(x.callRegister))
 
 fun opAllParamsCallRegister(register: RParam|None): List<RParam>
   ret match(register)
     (r: RParam) => rpFlatten(r, false)
-    ()          => List<RParam>()
+    ()          => List()
 
 fun opAllParamsParallel(x: OpParallelCall): List<RParam>
-  let reads = fold(x.parCalls, List<RParam>(), (acc: List<RParam>, c: RParam) => concat<RParam>(acc, rpFlatten(c, true)))
-  let writes = fold(x.parResults, List<RParam>(), (acc: List<RParam>, r: RParam) => concat<RParam>(acc, rpFlatten(r, false)))
-  ret concat<RParam>(reads, concat<RParam>(writes, opAllParamsCallRegister(x.parRegister)))
+  let reads = fold(x.parCalls, List(), (acc, c) => concat(acc, rpFlatten(c, true)))
+  let writes = fold(x.parResults, List(), (acc, r) => concat(acc, rpFlatten(r, false)))
+  ret concat(reads, concat(writes, opAllParamsCallRegister(x.parRegister)))
 
 fun opAllParamsPhi(x: OpPhi): List<RParam>
-  let sourceParams = fold(x.phiSources, List<RParam>(), (acc: List<RParam>, s: OpPhiSource) => concat<RParam>(acc, rpFlatten(s.sourceValue, true)))
-  ret concat<RParam>(sourceParams, rpFlatten(x.phiTarget, false))
+  let sourceParams = fold(x.phiSources, List(), (acc, s) => concat(acc, rpFlatten(s.sourceValue, true)))
+  ret concat(sourceParams, rpFlatten(x.phiTarget, false))
 
 # ── rename_vars(renames) ─────────────────────────────────────────────────────
 
@@ -144,17 +144,17 @@ fun opRenameVars(op: Op, renames: List<RpRename>): Op
                               rpRenameVars(x.taskLhs, renames), rpRenameVars(x.callIdLhs, renames), x.callId,
                               renameLookup(renames, x.taskTarget), x.taskSavedVars)
     (x: OpSwitchJump) => OpSwitchJump(rpRenameVars(x.switchCondition, renames),
-                                      map(x.switchCases, (c: OpCase) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
+                                      map(x.switchCases, (c) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
                                       x.switchSavedVars)
     (x: OpNewObject) => OpNewObject(x.newObjName, rpRenameVars(x.newObjRegister, renames), rpRenameVarsOpt(x.newObjSize, renames), x.newObjSavedVars)
     (x: OpCall) => OpCall(rpRenameVars(x.callFunction, renames), rpRenameVars(x.callParameters, renames),
                           opRenameVarsOpt(x.callRegister, renames), x.callMusttail, x.callImpure, x.callResultType, x.callSavedVars)
     (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
-    (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c: RParam) => rpRenameVars(c, renames)),
-                                          map(x.parResults, (r: RParam) => rpRenameVars(r, renames)),
+    (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c) => rpRenameVars(c, renames)),
+                                          map(x.parResults, (r) => rpRenameVars(r, renames)),
                                           opRenameVarsOpt(x.parRegister, renames), x.parSavedVars)
     (x: OpPhi) => OpPhi(rpRenameVars(x.phiTarget, renames),
-                        map(x.phiSources, (s: OpPhiSource) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
+                        map(x.phiSources, (s) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
                         x.phiSavedVars)
     (o: Op) => op   # base default: self (ReturnVoid/Abort don't override)
 
@@ -181,12 +181,12 @@ fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op
                           callParameters = rpReplaceParams(x.callParameters, replacer),
                           callRegister   = opReplaceParamsOpt(x.callRegister, replacer))
     (x: OpReturn) => with x(returnValue = rpReplaceParams(x.returnValue, replacer))
-    (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c: RParam) => replacer(c)),
-                                  parResults = map(x.parResults, (r: RParam) => replacer(r)),
+    (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c) => replacer(c)),
+                                  parResults = map(x.parResults, (r) => replacer(r)),
                                   parRegister = opReplaceParamsRegisterDirect(x.parRegister, replacer))
     (x: OpPhi) => with x(phiTarget = replacer(x.phiTarget),
                          phiSources = map(x.phiSources,
-                                          (s: OpPhiSource) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
+                                          (s) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
     (o: Op) => op   # base default: self (Label/Jump/ReturnVoid/Abort don't override)
 
 fun opReplaceParamsOpt(o: RParam|None, replacer: (:RParam): RParam): RParam|None
@@ -206,52 +206,52 @@ fun opReplaceParamsRegisterDirect(o: RParam|None, replacer: (:RParam): RParam): 
 fun opGetLiveVars(op: Op): (reads: List<RParam>, writes: List<RParam>)
   ret match(op)
     (x: OpMove) => opGetLiveVarsMove(x)
-    (x: OpJumpIf) => (rpGetLiveVars(x.jumpIfCondition), List<RParam>())
-    (x: OpIfTask) => (rpStackVarUnion(rpGetLiveVars(x.taskCondition), rpGetLiveVars(x.taskSource)), List<RParam>())
-    (x: OpSwitchJump) => (rpGetLiveVars(x.switchCondition), List<RParam>())
+    (x: OpJumpIf) => (rpGetLiveVars(x.jumpIfCondition), List())
+    (x: OpIfTask) => (rpStackVarUnion(rpGetLiveVars(x.taskCondition), rpGetLiveVars(x.taskSource)), List())
+    (x: OpSwitchJump) => (rpGetLiveVars(x.switchCondition), List())
     (x: OpNewObject) => opGetLiveVarsNewObject(x)
     (x: OpCall) => opGetLiveVarsCall(x)
-    (x: OpReturn) => (rpGetLiveVars(x.returnValue), List<RParam>())
+    (x: OpReturn) => (rpGetLiveVars(x.returnValue), List())
     (x: OpParallelCall) => opGetLiveVarsParallel(x)
     (x: OpPhi) => opGetLiveVarsPhi(x)
-    (o: Op) => (List<RParam>(), List<RParam>())   # base default: (set(), set()) (Label/Jump/ReturnVoid/Abort don't override)
+    (o: Op) => (List(), List())   # base default: (set(), set()) (Label/Jump/ReturnVoid/Abort don't override)
 
 fun opGetLiveVarsMove(x: OpMove): (reads: List<RParam>, writes: List<RParam>)
   let live = rpGetLiveVars(x.moveSource)
   ret match(x.moveTarget)
     (sv: RpStackVar) => (live, list1(x.moveTarget))
-    (o: RParam)      => (rpStackVarUnion(live, rpGetLiveVars(x.moveTarget)), List<RParam>())
+    (o: RParam)      => (rpStackVarUnion(live, rpGetLiveVars(x.moveTarget)), List())
 
 fun opGetLiveVarsNewObject(x: OpNewObject): (reads: List<RParam>, writes: List<RParam>)
   let live = rpGetLiveVarsOpt(x.newObjSize)
   ret match(x.newObjRegister)
     (sv: RpStackVar) => (live, list1(x.newObjRegister))
-    (o: RParam)      => (rpStackVarUnion(live, rpGetLiveVars(x.newObjRegister)), List<RParam>())
+    (o: RParam)      => (rpStackVarUnion(live, rpGetLiveVars(x.newObjRegister)), List())
 
 fun opGetLiveVarsCall(x: OpCall): (reads: List<RParam>, writes: List<RParam>)
   let live = rpStackVarUnion(rpGetLiveVars(x.callFunction), rpGetLiveVars(x.callParameters))
   ret match(x.callRegister)
     (r: RParam) => opGetLiveVarsCallRegister(live, r)
-    ()           => (live, List<RParam>())
+    ()           => (live, List())
 
 fun opGetLiveVarsCallRegister(live: List<RParam>, r: RParam): (reads: List<RParam>, writes: List<RParam>)
   let dead = rpGetLiveVars(r)
   ret match(r)
     (sv: RpStackVar) => (live, dead)
-    (o: RParam)       => (rpStackVarUnion(live, dead), List<RParam>())
+    (o: RParam)       => (rpStackVarUnion(live, dead), List())
 
 fun opGetLiveVarsParallel(x: OpParallelCall): (reads: List<RParam>, writes: List<RParam>)
-  let reads = fold(x.parCalls, List<RParam>(), (acc: List<RParam>, c: RParam) => rpStackVarUnion(acc, rpGetLiveVars(c)))
-  let writes = fold(x.parResults, List<RParam>(), (acc: List<RParam>, r: RParam) => rpStackVarUnion(acc, list1(r)))
+  let reads = fold(x.parCalls, List(), (acc, c) => rpStackVarUnion(acc, rpGetLiveVars(c)))
+  let writes = fold(x.parResults, List(), (acc, r) => rpStackVarUnion(acc, list1(r)))
   ret match(x.parRegister)
     (r: RParam) => (reads, rpStackVarUnion(writes, list1(r)))
     ()           => (reads, writes)
 
 fun opGetLiveVarsPhi(x: OpPhi): (reads: List<RParam>, writes: List<RParam>)
-  let reads = fold(x.phiSources, List<RParam>(), (acc: List<RParam>, s: OpPhiSource) => rpStackVarUnion(acc, rpGetLiveVars(s.sourceValue)))
+  let reads = fold(x.phiSources, List(), (acc, s) => rpStackVarUnion(acc, rpGetLiveVars(s.sourceValue)))
   ret match(x.phiTarget)
     (sv: RpStackVar) => (reads, list1(x.phiTarget))
-    (o: RParam)      => (rpStackVarUnion(reads, rpGetLiveVars(x.phiTarget)), List<RParam>())
+    (o: RParam)      => (rpStackVarUnion(reads, rpGetLiveVars(x.phiTarget)), List())
 
 # ── is_direct_call() (Call only) ────────────────────────────────────────────
 
@@ -304,7 +304,7 @@ fun opToCIfTask(x: OpIfTask, cache0: List<CgCacheEntry>): (text: String, cache: 
 
 fun opToCSwitchJump(x: OpSwitchJump, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let condC = rpToC(x.switchCondition, cache0)
-  let cases = join(map(x.switchCases, (c: OpCase) => "        case " + String(c.caseValue) + ": goto " + mangleName(c.caseLabel) + ";"), "\n")
+  let cases = join(map(x.switchCases, (c) => "        case " + String(c.caseValue) + ": goto " + mangleName(c.caseLabel) + ";"), "\n")
   ret ("    switch (" + condC.text + ") {\n" + cases + "\n        default: abort();\n    }\n", condC.cache)
 
 fun opToCNewObject(x: OpNewObject, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
@@ -354,7 +354,7 @@ fun opToCCallBody(x: OpCall, returnType: String, tailreturn: String, ptype: CgTy
     (prms: RParam)        => opToCCallGenericParams(x, returnType, tailreturn, ptype, fields, prms, cache0)
 
 fun opToCCallPrefixJoin(list: List<String>): String
-  ret fold(list, "", (acc: String, s: String) => acc + ", " + s)
+  ret fold(list, "", (acc, s) => acc + ", " + s)
 
 # The three accumulators below built a List<String> whose ONLY consumer was
 # opToCCallPrefixJoin. Since the join prefixes every element with ", " and never
@@ -363,14 +363,14 @@ fun opToCCallPrefixJoin(list: List<String>): String
 # very much observed: these are C call arguments.
 
 fun opToCCallTypesFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret fold(values, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => opToCCallTypesStep(acc, v))
+  ret fold(values, ("", cache0), (acc, v) => opToCCallTypesStep(acc, v))
 
 fun opToCCallTypesStep(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
   let sub = cgDeclare(rpGetType(v.value), acc.cache)
   ret (acc.text + ", " + sub.text, sub.cache)
 
 fun opToCCallParamsFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret fold(values, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue) => opToCCallParamsStep(acc, v))
+  ret fold(values, ("", cache0), (acc, v) => opToCCallParamsStep(acc, v))
 
 fun opToCCallParamsStep(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(v.value, acc.cache)
@@ -382,7 +382,7 @@ fun opToCCallNewStruct(x: OpCall, returnType: String, tailreturn: String, prms: 
   ret opToCCallFinish(x, returnType, tailreturn, typesR.text, paramsR.text, "", paramsR.cache)
 
 fun opToCCallTypesFromFields(fields: List<CgField>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret fold(fields, ("", cache0), (acc: (text: String, cache: List<CgCacheEntry>), f: CgField) => opToCCallTypesFieldStep(acc, f))
+  ret fold(fields, ("", cache0), (acc, f) => opToCCallTypesFieldStep(acc, f))
 
 fun opToCCallTypesFieldStep(acc: (text: String, cache: List<CgCacheEntry>), f: CgField): (text: String, cache: List<CgCacheEntry>)
   let sub = cgDeclare(f.fieldType, acc.cache)
@@ -395,8 +395,8 @@ fun opToCCallTypesFieldStep(acc: (text: String, cache: List<CgCacheEntry>), f: C
 fun opToCCallGenericParams(x: OpCall, returnType: String, tailreturn: String, ptype: CgType, fields: List<CgField>, prms: RParam, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let typesR = opToCCallTypesFromFields(fields, cache0)
   let typesStr = typesR.text
-  let paramsStr = opToCCallPrefixJoin(map(fields, (f: CgField) => "prm." + f.fieldName))
-  ret isEmpty<CgField>(fields)
+  let paramsStr = opToCCallPrefixJoin(map(fields, (f) => "prm." + f.fieldName))
+  ret isEmpty(fields)
     ? opToCCallFinish(x, returnType, tailreturn, typesStr, paramsStr, "", typesR.cache)
     : opToCCallGenericWithUnpack(x, returnType, tailreturn, ptype, typesStr, paramsStr, prms, typesR.cache)
 
@@ -444,7 +444,7 @@ fun opToCCallIndirectFinish(funDecl: String, unpack: String, assignR: (text: Str
 # ObjectField store) contributes its inner reads (the pointer) as reads.
 
 fun rpReadVarNames(r: RParam): List<String>
-  ret fold(rpFlatten(r, true), List<String>(), rpTakeStackVarName)
+  ret fold(rpFlatten(r, true), List(), rpTakeStackVarName)
 
 # The stack-var names a param reads. Every consumer treats these as a set —
 # liveness unions and membership tests — so the order is not observed.
@@ -455,13 +455,13 @@ fun rpTakeStackVarName(acc: List<String>, x: RParam): List<String>
 
 fun rpTargetReadNames(target: RParam): List<String>
   ret match(target)
-    (sv: RpStackVar) => List<String>()
+    (sv: RpStackVar) => List()
     (o: RParam)       => rpReadVarNames(target)
 
 fun rpOptReadNames(r: RParam|None): List<String>
   ret match(r)
     (x: RParam) => rpReadVarNames(x)
-    ()           => List<String>()
+    ()           => List()
 
 fun opReadVarNames(op: Op): List<String>
   ret match(op)
@@ -473,14 +473,14 @@ fun opReadVarNames(op: Op): List<String>
     (c: OpCall)          => concat(concat(rpReadVarNames(c.callFunction), rpReadVarNames(c.callParameters)),
                                    rpOptTargetReadNames(c.callRegister))
     (r: OpReturn)        => rpReadVarNames(r.returnValue)
-    (pc: OpParallelCall) => fold(pc.parCalls, List<String>(), (acc: List<String>, x: RParam) => concat(acc, rpReadVarNames(x)))
-    (ph: OpPhi)          => fold(ph.phiSources, List<String>(), (acc: List<String>, s2: OpPhiSource) => concat(acc, rpReadVarNames(s2.sourceValue)))
-    (o: Op)              => List<String>()
+    (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadVarNames(x)))
+    (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadVarNames(s2.sourceValue)))
+    (o: Op)              => List()
 
 fun rpOptTargetReadNames(r: RParam|None): List<String>
   ret match(r)
     (x: RParam) => rpTargetReadNames(x)
-    ()           => List<String>()
+    ()           => List()
 
 # ── saved_vars setter (async_lower's liveness fixpoint rewrites them) ────────
 
@@ -505,7 +505,7 @@ fun opWithSavedVars(op: Op, sv: List<RParam>): Op
 # Reads as StackVar RPARAMS (types intact — the liveness sets feed state-field
 # layout); the names-only twin is opReadVarNames above.
 fun rpReadStackVars(r: RParam): List<RParam>
-  ret fold(rpFlatten(r, true), List<RParam>(), rpTakeStackVar)
+  ret fold(rpFlatten(r, true), List(), rpTakeStackVar)
 
 fun rpTakeStackVar(acc: List<RParam>, x: RParam): List<RParam>
   ret match(x)
@@ -514,18 +514,18 @@ fun rpTakeStackVar(acc: List<RParam>, x: RParam): List<RParam>
 
 fun rpTargetReadStackVars(target: RParam): List<RParam>
   ret match(target)
-    (sv: RpStackVar) => List<RParam>()
+    (sv: RpStackVar) => List()
     (o: RParam)       => rpReadStackVars(target)
 
 fun rpOptReadStackVars(r: RParam|None): List<RParam>
   ret match(r)
     (x: RParam) => rpReadStackVars(x)
-    ()           => List<RParam>()
+    ()           => List()
 
 fun rpOptTargetReadStackVars(r: RParam|None): List<RParam>
   ret match(r)
     (x: RParam) => rpTargetReadStackVars(x)
-    ()           => List<RParam>()
+    ()           => List()
 
 fun opReadStackVars(op: Op): List<RParam>
   ret match(op)
@@ -537,6 +537,6 @@ fun opReadStackVars(op: Op): List<RParam>
     (c: OpCall)          => concat(concat(rpReadStackVars(c.callFunction), rpReadStackVars(c.callParameters)),
                                    rpOptTargetReadStackVars(c.callRegister))
     (r: OpReturn)        => rpReadStackVars(r.returnValue)
-    (pc: OpParallelCall) => fold(pc.parCalls, List<RParam>(), (acc: List<RParam>, x: RParam) => concat(acc, rpReadStackVars(x)))
-    (ph: OpPhi)          => fold(ph.phiSources, List<RParam>(), (acc: List<RParam>, s2: OpPhiSource) => concat(acc, rpReadStackVars(s2.sourceValue)))
-    (o: Op)              => List<RParam>()
+    (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadStackVars(x)))
+    (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadStackVars(s2.sourceValue)))
+    (o: Op)              => List()

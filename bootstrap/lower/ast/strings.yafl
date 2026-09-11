@@ -11,16 +11,16 @@ import Bootstrap::StdlibCandidates
 
 
 fun fixGlobalStrings(statements: List<PStmt>): List<PStmt>
-  let values = sort<String>(foldStmts<List<String>>(statements,
-                                                          gsIdNames,
-                                                          gsCollect,
-                                                          List<String>()))
+  let values = sort(foldStmts(statements,
+                                    gsIdNames,
+                                    gsCollect,
+                                    List()))
   if isEmpty(values)
     ret statements
-  let globals2 = gsGlobals(chain(values), 0, List<PStmt>())
+  let globals2 = gsGlobals(chain(values), 0, List())
   ret concat(globals2,
-             rwStmts(statements, rwOnExpr((x: PExpr) => gsReplace(x,
-                                                                  values))))
+             rwStmts(statements, rwOnExpr((x) => gsReplace(x,
+                                                           values))))
 
 fun gsIdNames(acc: List<String>, st: PStmt): List<String>
   ret acc
@@ -31,31 +31,31 @@ fun gsCollect(acc: List<String>, x: PExpr): List<String>
     # part of the generated global names. `acc` is read by the dedup.
     (s2: PeStr) => contains2(acc, s2.strValue)
       ? acc
-      : build<String >(push<String >(_pushChain<String >(builder<String >(), chain<String>(acc)), s2.strValue))
+      : build(push(builderFrom(acc), s2.strValue))
     (o: PExpr)  => acc
 
 fun gsGlobals(vs: Chain<String>, index: Int,
                      acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(gsGlobalsB(vs, index, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+  ret build(gsGlobalsB(vs, index, builderFrom(acc)))
 
 fun [tail] gsGlobalsB(vs: Chain<String>, index: Int,
-                     [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                     [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => gsGlobalsB(l.next, index + 1,
-        push<PStmt >(acc, PsLet("$strings::string@" + String(index),
-                          List<PAttr>(), List<PGen>(),
-                          SBuiltin("str", PLine("$strings", index + 1, 1)),
-                          PeStr(l.value, PLine("$strings", index + 1, 1)),
-                          "", List<Spec>(), PLine("$strings", index + 1, 1),
-                          false, List<PStmt>())))
+        push(acc, PsLet("$strings::string@" + String(index),
+                  List(), List(),
+                  SBuiltin("str", PLine("$strings", index + 1, 1)),
+                  PeStr(l.value, PLine("$strings", index + 1, 1)),
+                  "", List(), PLine("$strings", index + 1, 1),
+                  false, List<PStmt>())))
 
 fun gsReplace(x: PExpr, values: List<String>): PExpr|None
   ret match(x)
     (s2: PeStr) => PeName("$strings::string@"
                             + String(gsIndexOf(chain(values), s2.strValue,
                                                0)),
-                          List<Spec>(),
+                          List(),
                           PLine("$strings",
                                 gsIndexOf(chain(values), s2.strValue, 0) + 1,
                                 1),

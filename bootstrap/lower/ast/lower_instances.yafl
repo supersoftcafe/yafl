@@ -17,7 +17,7 @@ import Bootstrap::StdlibCandidates
 class [final] LiOut(liStmts: List<PStmt>, liChanged: Bool)
 
 fun lowerTraitInstances(statements: List<PStmt>): LiOut
-  ret liLoop(chain(statements), builder<PStmt>(), false)
+  ret liLoop(chain(statements), builder(), false)
 
 fun [tail] liLoop(ss: Chain<PStmt>, acc: ListBuilder<PStmt>,
                   changed: Bool): LiOut
@@ -33,22 +33,22 @@ fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   let ns = namespacePart(ti.tiName)
   let prefix = ns == "" ? "" : ns + "::"
   let wbare = "_Instance$" + tag
-  let witness = PsClass(prefix + wbare + "@" + tag, List<PAttr>(), ti.tiGens,
-                        funParamsStmt(List<PStmt>(), lr),
-                        prepend(ti.tiPattern, List<Spec>()), ti.tiWheres,
+  let witness = PsClass(prefix + wbare + "@" + tag, List(), ti.tiGens,
+                        funParamsStmt(List(), lr),
+                        prepend(ti.tiPattern, List()), ti.tiWheres,
                         ti.tiMembers, false, lr, None, None, ti.tiImports)
-  let ownArgs = liOwnArgs(chain(ti.tiGens), lr, builder<Spec>())
+  let ownArgs = liOwnArgs(chain(ti.tiGens), lr, builder())
   let value = PeCall(PeName(wbare, ownArgs, lr),
-                     PeTuple(List<PTupEnt>(), lr), lr)
+                     PeTuple(List(), lr), lr)
   let attrs = ti.tiAmbient
-    ? build<PAttr>(push<PAttr>(push<PAttr>(builder<PAttr>(), PAttr("trait", None)), PAttr("ambient", None)))
-    : prepend(PAttr("trait", None), List<PAttr>())
+    ? build(push(push(builder(), PAttr("trait", None)), PAttr("ambient", None)))
+    : prepend(PAttr("trait", None), List())
   let record = PsLet(prefix + "_instance$" + tag + "@" + tag, attrs,
                      ti.tiGens, SNamed(wbare, ownArgs, lr), value, "",
                      ti.tiWheres, lr, false, ti.tiImports)
-  ret push<PStmt>(push<PStmt>(push<PStmt>(acc, witness),
-                              classConstructorOf(witness)),
-                  record)
+  ret push(push(push(acc, witness),
+                classConstructorOf(witness)),
+           record)
 
 fun [tail] liOwnArgs(gs: Chain<PGen>, lr: PLine,
                      acc: ListBuilder<Spec>): List<Spec>
@@ -56,4 +56,4 @@ fun [tail] liOwnArgs(gs: Chain<PGen>, lr: PLine,
     (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => liOwnArgs(l.next, lr,
                                  push(acc, SNamed(bareOfUnique(l.value.genName),
-                                                  List<Spec>(), lr)))
+                                                  List(), lr)))

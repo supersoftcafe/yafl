@@ -313,15 +313,15 @@ fun tupleFromTuple(r: Resolver, left: STuple, right: STuple): Tri
     ()             => false                       # does not bind at all
 
 fun entryNames(es: List<SEntry>): List<String>
-  ret nameLoop(chain(es), List<String>())
+  ret nameLoop(chain(es), List())
 
 fun nameLoop(es: Chain<SEntry>, acc: List<String>): List<String>
-  ret build<String >(nameLoopB(es, builderFrom<String>(acc)))
+  ret build(nameLoopB(es, builderFrom(acc)))
 
-fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(es)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => nameLoopB(l.next, push<String >(acc, l.value.seName))
+    (l: ChainLink)  => nameLoopB(l.next, push(acc, l.value.seName))
 
 # The subtlety, transcribed rather than paraphrased: a false from a
 # PLACEHOLDER left is not structural — it may fit once bound — so it is
@@ -342,19 +342,19 @@ fun comparePairs(r: Resolver, left: STuple, right: STuple,
 class [final] Pair(prLeft: SEntry, prSlot: Int)
 
 fun zipBinding(es: List<SEntry>, binding: List<Int>): List<Pair>
-  ret zipLoop(chain(es), chain(binding), builder<Pair>())
+  ret zipLoop(chain(es), chain(binding), builder())
 
 # Pairs an entry with the binding index it fills. Positional data — the pair
 # order mirrors the tuple's — so a threaded builder, O(1) per pair.
 fun [tail] zipLoop(es: Chain<SEntry>, bs: Chain<Int>,
                    [terminal] acc: ListBuilder<Pair>): List<Pair>
   ret match(es)
-    (nil: ChainEnd) => build<Pair>(acc)
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => match(bs)
-      (nil2: ChainEnd) => build<Pair>(acc)
+      (nil2: ChainEnd) => build(acc)
       (b: ChainLink)   => zipLoop(l.next, b.next,
                                   b.value < 0 ? acc          # filled by default
-                                              : push<Pair>(acc, Pair(l.value, b.value)))
+                                              : push(acc, Pair(l.value, b.value)))
 
 fun [tail] pairLoop(ps: Chain<Pair>, r: Resolver, rights: List<SEntry>,
                     acc: PairTally): PairTally
@@ -447,7 +447,7 @@ fun isLazy(sp: Spec): Bool
 fun unionMembers(sp: Spec): List<Spec>
   ret match(sp)
     (cm: SCombination) => cm.scTypes
-    (o: Spec)          => prepend(sp, List<Spec>())
+    (o: Spec)          => prepend(sp, List())
 
 # Unwrap a 1-tuple to its element, repeatedly. None = an entry type is unknown,
 # so the caller must treat the comparison as undecided.

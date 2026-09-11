@@ -68,7 +68,7 @@ fun readZip(s: String): ZipResult
   let start = u32At(s, eocd + 16)
   if count < 0 || start < 0 || start > length(s)
     ret ZipErr("malformed end-of-central-directory record")
-  ret centralWalk(s, start, count, builder<ZipEntry>())
+  ret centralWalk(s, start, count, builder())
 
 fun [tail] centralWalk(s: String, at: Int, left: Int,
                        [terminal] b: ListBuilder<ZipEntry>): ZipResult
@@ -100,7 +100,7 @@ fun [tail] centralWalk(s: String, at: Int, left: Int,
                                            + "\" has a malformed local header"))
 
 fun zipDiscard([terminal] b: ListBuilder<ZipEntry>, e: ZipResult): ZipResult
-  ret build(b) |> (l: List<ZipEntry>) => e
+  ret build(b) |> (l) => e
 
 # The local header repeats the name and carries its OWN extra-field length,
 # which routinely differs from the central directory's — the data offset must

@@ -28,7 +28,7 @@ fun [tail] dsFunction(f: CgFunction): CgFunction
 # plus every op's saved_vars. Dict-backed SET (Python's is a set; user ruling
 # 2026-07-22: lookups are dict-backed).
 fun dsCollectReads(ops: Segment<Op>|None): Dict<String, Bool>
-  ret fold(ops, Dict<String, Bool>(), dsOpReads)
+  ret fold(ops, Dict(), dsOpReads)
 
 fun dsOpReads(acc: Dict<String, Bool>, op: Op): Dict<String, Bool>
   ret fold(opSavedVars(op),
@@ -45,8 +45,8 @@ fun dsIsRead(reads: Dict<String, Bool>, name: String): Bool
 
 fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
   let reads = dsCollectReads(f.fnOps)
-  let walked = dsWalk<SeqStream<Op>>(seqStream<Op>(f.fnOps), reads,
-                                       seqBuilder<Op >(), false)
+  let walked = dsWalk(seqStream(f.fnOps), reads,
+                        seqBuilder(), false)
   ret walked.changed
     ? (cpPruneStackVars(f, walked.ops), true)
     : (f, false)
@@ -54,18 +54,18 @@ fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
 # Stream-driven (storage-agnostic): swapping the container is one source
 # construction in dsOnce, not a walk rewrite. Error arm unreachable: Never.
 fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
-                     [terminal] acc: SeqBuilder<Op >,
+                     [terminal] acc: SeqBuilder<Op>,
                      changed: Bool): (ops: Segment<Op>|None, changed: Bool) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => dsStep(cur, reads)
         |> (step) => match(step.op)
-          (kept: Op) => dsWalk<S>(r.stream, reads, push<Op >(acc, kept),
+          (kept: Op) => dsWalk<S>(r.stream, reads, push<Op>(acc, kept),
                                   changed || step.changed)
           ()         => dsWalk<S>(r.stream, reads, acc, true)
-      (n: None) => (build<Op >(acc), changed)
-    (er: Error<Op | None, Never>) => (build<Op >(acc), changed)
+      (n: None) => (build<Op>(acc), changed)
+    (er: Error<Op | None, Never>) => (build<Op>(acc), changed)
 
 # The per-op decision: the op to keep (possibly rewritten) or None to drop,
 # plus whether anything changed.
@@ -102,8 +102,8 @@ fun dsStepParallel(p: OpParallelCall,
 
 fun dsOptList(r: RParam|None): List<RParam>
   ret match(r)
-    (x: RParam) => list1<RParam>(x)
-    ()          => List<RParam>()
+    (x: RParam) => list1(x)
+    ()          => List()
 
 fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>): Bool
   ret match(os)

@@ -112,7 +112,7 @@ fun cpError(cp: Int32): String
 
 # Uppercase hex, unpadded — Python's `{cp:X}`. Same shape as hashes.yafl's
 # b64Char: index the digit alphabet by slice.
-let hexDigits: String = "0123456789ABCDEF"
+let hexDigits = "0123456789ABCDEF"
 
 fun hexChar(v: Int): String
   ret slice(hexDigits, v, v + 1)

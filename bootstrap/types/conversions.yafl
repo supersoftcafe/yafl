@@ -182,7 +182,7 @@ fun hasMatchingVariant(r: Resolver, source: Spec, target: Spec): Bool
 fun tupleEntries(sp: Spec): List<SEntry>
   ret match(sp)
     (t2: STuple) => t2.stEntries
-    (o: Spec)    => List<SEntry>()
+    (o: Spec)    => List()
 
 # Single-entry test, structurally — arity is never counted, only probed.
 fun tupleSingle(sp: Spec): Bool

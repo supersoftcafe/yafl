@@ -18,13 +18,13 @@ fun hashName(name: String, lr: PLine): String
   ret name + "@" + hash6(lr.plFile, lr.plLine, lr.plCol)
 
 fun oneEntryTuple(x: PExpr, lr: PLine): PExpr
-  ret PeTuple(prepend(PTupEnt("", false, x), List<PTupEnt>()), lr)
+  ret PeTuple(prepend(PTupEnt("", false, x), List()), lr)
 
 fun twoEntryTuple(a: PExpr, b: PExpr, lr: PLine): PExpr
-  ret PeTuple(build<PTupEnt>(push<PTupEnt>(push<PTupEnt>(builder<PTupEnt>(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
+  ret PeTuple(build(push(push(builder(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
 
 fun callNamed(name: String, args: PExpr, lr: PLine): PExpr
-  ret PeCall(PeName(name, List<Spec>(), lr), args, lr)
+  ret PeCall(PeName(name, List(), lr), args, lr)
 
 # ── __to_call_operators / __fold_binary: `a op b` → `op`(a, b), andNot fold ──
 
@@ -101,14 +101,14 @@ fun pipePlaceholder(last: PExpr, stage: PExpr): PExpr
   let filled = match(stage)
     (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine)
     (other)     => stage
-  let bind = PsLet(tmp, List<PAttr>(), List<PGen>(), None, last, "", List<Spec>(), lr)
-  ret PeBlock(prepend(bind, List<PStmt>()), filled, "", lr)
+  let bind = PsLet(tmp, List(), List(), None, last, "", List(), lr)
+  ret PeBlock(prepend(bind, List()), filled, "", lr)
 
 fun fillHole(param: PExpr, tmp: String, lr: PLine): PExpr
   ret match(param)
-    (t2: PeTuple) => PeTuple(map(t2.exprs, (en: PTupEnt) =>
+    (t2: PeTuple) => PeTuple(map(t2.exprs, (en) =>
         isHole(en.tupValue)
-          ? PTupEnt(en.tupName, en.tupSpread, PeName(tmp, List<Spec>(), lr))
+          ? PTupEnt(en.tupName, en.tupSpread, PeName(tmp, List(), lr))
           : en), t2.petLine)
     (other)       => param
 
@@ -119,11 +119,11 @@ fun fillHole(param: PExpr, tmp: String, lr: PLine): PExpr
 fun pipeBeta(last: PExpr, lm: PeLambda): PExpr
   let lr = lm.pelLine
   let tmp = "$pipe@" + hash6(lr.plFile, lr.plLine, lr.plCol)
-  let ref = PeName(tmp, List<Spec>(), lr)
+  let ref = PeName(tmp, List(), lr)
   let binder = betaBinder(lm.lamParams, ref, lr)
-  let inner = PeBlock(prepend(binder, List<PStmt>()), lm.lamBody, "", lr)
-  let outer = PsLet(tmp, List<PAttr>(), List<PGen>(), None, last, "", List<Spec>(), lr)
-  ret PeBlock(prepend(outer, List<PStmt>()), inner, "", lr)
+  let inner = PeBlock(prepend(binder, List()), lm.lamBody, "", lr)
+  let outer = PsLet(tmp, List(), List(), None, last, "", List(), lr)
+  ret PeBlock(prepend(outer, List()), inner, "", lr)
 
 fun betaBinder(params: PStmt, ref: PExpr, lr: PLine): PStmt
   ret match(params)
@@ -156,15 +156,15 @@ fun classConstructorOf(st: PStmt): PStmt
 
 fun classConstructor(c: PsClass): PStmt
   let lr = c.pscLine
-  let tps = map(c.cGens, (g2: PGen) => SGeneric(g2.genName, false, g2.pgLine))
+  let tps = map(c.cGens, (g2) => SGeneric(g2.genName, false, g2.pgLine))
   let clsTy = SClass(c.cName, tps, lr)
   let fields = paramsOf(c.cParams)
-  let entries = map(fields, (f: PStmt) => ctorEntry(f))
-  let body = PeBlock(List<PStmt>(), PeNew(clsTy, PeTuple(entries, lr), lr), "", lr)
-  let ctorParams = PsDestructure("_", List<PAttr>(), None,
-                                 map(fields, (f: PStmt) => ctorParam(f)), None, lr)
+  let entries = map(fields, (f) => ctorEntry(f))
+  let body = PeBlock(List(), PeNew(clsTy, PeTuple(entries, lr), lr), "", lr)
+  let ctorParams = PsDestructure("_", List(), None,
+                                 map(fields, (f) => ctorParam(f)), None, lr)
   # The constructor COPIES its class's ImportGroup (create_constructor).
-  ret PsFun(c.cName, List<PAttr>(), c.cGens, ctorParams, body, clsTy, c.cWheres,
+  ret PsFun(c.cName, List(), c.cGens, ctorParams, body, clsTy, c.cWheres,
             lr, false, false, c.cImports)
 
 # An array field is CONSTRUCTED from an initialiser function `(:Int32): Elem`
@@ -177,7 +177,7 @@ fun ctorParam(f: PStmt): PStmt
                           SCallable(STuple(prepend(SEntry("",
                                                           SBuiltin("int32", l.pslLine),
                                                           None),
-                                                   List<SEntry>()),
+                                                   List()),
                                            l.pslLine),
                                     el, l.pslLine),
                           l.lDefault, l.lArrayLen, l.lWheres, l.pslLine)
@@ -187,7 +187,7 @@ fun ctorParam(f: PStmt): PStmt
 
 fun ctorEntry(f: PStmt): PTupEnt
   ret match(f)
-    (l: PsLet) => PTupEnt(l.lName, false, PeName(l.lName, List<Spec>(), l.pslLine))
+    (l: PsLet) => PTupEnt(l.lName, false, PeName(l.lName, List(), l.pslLine))
     (o: PStmt) => PTupEnt("", false, PeNothing(stmtLine(o)))
 
 fun stmtLine(st: PStmt): PLine
@@ -215,7 +215,7 @@ fun withArrayAccessor(c: PsClass): PStmt
   ret match(accessorFor(chain(paramsOf(c.cParams))))
     (acc: PStmt) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                             c.cWheres,
-                            build<PStmt >(push<PStmt >(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt>(c.cMembers)), acc)),
+                            build(push(builderFrom(c.cMembers), acc)),
                             c.cIsInterface,
                             c.pscLine, c.cAllParents, c.cAllSlots, c.cImports)
     ()           => c
@@ -243,15 +243,15 @@ fun arrayElemOf(t2: Spec): Spec|None
 
 fun arrayAccessor(field: String, elem: Spec, lr: PLine): PStmt
   let idxName = hashName("index", lr)
-  let idx = PsLet(idxName, List<PAttr>(), List<PGen>(), SBuiltin("int32", lr),
-                  None, "", List<Spec>(), lr)
-  let body = PeBlock(List<PStmt>(),
-                     PeArrayRead(PeName("this", List<Spec>(), lr),
-                                 PeName(idxName, List<Spec>(), lr), lr), "", lr)
+  let idx = PsLet(idxName, List(), List(), SBuiltin("int32", lr),
+                  None, "", List(), lr)
+  let body = PeBlock(List(),
+                     PeArrayRead(PeName("this", List(), lr),
+                                 PeName(idxName, List(), lr), lr), "", lr)
   ret PsFun(field + "@" + hash6(lr.plFile, lr.plLine, lr.plCol) + "r",
-            List<PAttr>(), List<PGen>(),
-            PsDestructure("_", List<PAttr>(), None, prepend(idx, List<PStmt>()), None, lr),
-            body, elem, List<Spec>(), lr)
+            List(), List(),
+            PsDestructure("_", List(), None, prepend(idx, List()), None, lr),
+            body, elem, List(), lr)
 
 fun bareName(name: String): String
   let at = findByte(name, '@', 0)
@@ -263,28 +263,28 @@ fun bareName(name: String): String
 # ROOT enum type, its body a NewEnum expression.
 
 fun enumLeafConstructors(root: PsEnum, grp: List<PStmt>): List<PStmt>
-  ret build<PStmt >(leafWalk(root, root, List<PStmt>(), grp,
-                             builder<PStmt >()))
+  ret build(leafWalk(root, root, List(), grp,
+                     builder()))
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited: List<PStmt>,
-             grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+             grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   let params = concat(inherited, paramsOf(node.eParams))
   if isEmpty(node.eVariants)
     # Leaf constructors come out in variant declaration order.
     ret node.eHasParams
-      ? push<PStmt >(acc, leafConstructor(root, node, params, grp))
+      ? push(acc, leafConstructor(root, node, params, grp))
       : acc
   ret variantsWalk(root, chain(node.eVariants), params, grp, acc)
 
 fun [tail] variantsWalk(root: PsEnum, vs: Chain<PStmt>, params: List<PStmt>,
-                        grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                        grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => variantsWalk(root, l.next, params, grp,
                                     leafWalkOf(root, l.value, params, grp, acc))
 
 fun leafWalkOf(root: PsEnum, v: PStmt, params: List<PStmt>,
-               grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+               grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(v)
     (e: PsEnum) => leafWalk(root, e, params, grp, acc)
     (o: PStmt)  => acc
@@ -292,27 +292,27 @@ fun leafWalkOf(root: PsEnum, v: PStmt, params: List<PStmt>,
 fun paramsOf(d: PStmt): List<PStmt>
   ret match(d)
     (ds: PsDestructure) => ds.dTargets
-    (o: PStmt)          => List<PStmt>()
+    (o: PStmt)          => List()
 
 fun leafConstructor(root: PsEnum, leaf: PsEnum, params: List<PStmt>,
                     grp: List<PStmt>): PStmt
   let lr = leaf.pseLine
-  let tps = map(root.eGens, (g2: PGen) => SGeneric(g2.genName, false, g2.pgLine))
+  let tps = map(root.eGens, (g2) => SGeneric(g2.genName, false, g2.pgLine))
   # A construction builds exactly one variant, so the constructor returns
   # the LEAF type (USER RULING 2026-08-24; parser.py mirror). The
   # representation is unchanged — a leaf-typed value carries the root's
   # struct — so this is a type-system fact only.
   let retTy = SNamed(leaf.eName, tps, lr)
-  let body = PeBlock(List<PStmt>(),
+  let body = PeBlock(List(),
                      PeNewEnum(root.eName, leaf.eName,
-                               map(params, (p: PStmt) =>
+                               map(params, (p) =>
                                  PFieldArg(letName(p),
-                                           PeName(letName(p), List<Spec>(), lr))),
+                                           PeName(letName(p), List(), lr))),
                                tps, lr), "", lr)
   # A leaf constructor carries the file's ImportGroup, like any top-level fun.
-  ret PsFun(leaf.eName, List<PAttr>(), root.eGens,
-            PsDestructure("_", List<PAttr>(), None, params, None, lr),
-            body, retTy, List<Spec>(), lr, false, false, grp)
+  ret PsFun(leaf.eName, List(), root.eGens,
+            PsDestructure("_", List(), None, params, None, lr),
+            body, retTy, List(), lr, false, false, grp)
 
 fun letName(p: PStmt): String
   ret match(p)
@@ -388,8 +388,8 @@ fun exprLine(x: PExpr): PLine
 fun fixupProgram(stmts: List<PStmt>): List<PStmt>
   ret match(chain(blockGroupsOf(chain(stmts))))
     (g2: ChainLink) => fixupLoop(chain(stmts), "Main::", g2.next, g2.value,
-                                 builder<PStmt>())
-    (nil: ChainEnd) => List<PStmt>()   # unreachable: the default block always exists
+                                 builder())
+    (nil: ChainEnd) => List()   # unreachable: the default block always exists
 
 # Block-scoped ImportGroups (USER RULING 2026-08-23; parser.py mirror): one
 # group per namespace block — the block's self-import (members see their
@@ -399,7 +399,7 @@ fun fixupProgram(stmts: List<PStmt>): List<PStmt>
 # the first namespace declaration form the default block (namespace Main,
 # no self-import).
 fun blockGroupsOf(ss: Chain<PStmt>): List<List<PStmt>>
-  ret bgLoop(ss, List<PStmt>(), builder<List<PStmt>>())
+  ret bgLoop(ss, List(), builder())
 
 fun [tail] bgLoop(ss: Chain<PStmt>, cur: List<PStmt>,
                   [terminal] done: ListBuilder<List<PStmt>>): List<List<PStmt>>
@@ -408,7 +408,7 @@ fun [tail] bgLoop(ss: Chain<PStmt>, cur: List<PStmt>,
     (l: ChainLink)  => match(l.value)
       (im: PsImport)    => bgLoop(l.next, concat(cur, list1(l.value)), done)
       (n2: PsNamespace) => bgLoop(l.next,
-                                  list1<PStmt>(PsImport(n2.nsPath, n2.psnLine)),
+                                  list1(PsImport(n2.nsPath, n2.psnLine)),
                                   push(done, cur))
       (o: PStmt)        => bgLoop(l.next, cur, done)
 
@@ -436,7 +436,7 @@ fun fixupNextBlock(rest: Chain<PStmt>, n2: PsNamespace, grps: Chain<List<PStmt>>
                    acc: ListBuilder<PStmt>): List<PStmt>
   ret match(grps)
     (g2: ChainLink)  => fixupLoop(rest, n2.nsPath + "::", g2.next, g2.value, acc)
-    (nil2: ChainEnd) => fixupLoop(rest, n2.nsPath + "::", grps, List<PStmt>(), acc)   # unreachable: one group per namespace declaration
+    (nil2: ChainEnd) => fixupLoop(rest, n2.nsPath + "::", grps, List(), acc)   # unreachable: one group per namespace declaration
 
 # Attach the ImportGroup to a NAMED statement (the kinds parse() attaches to).
 fun withImports(st: PStmt, grp: List<PStmt>): PStmt
@@ -503,6 +503,6 @@ fun addNamespace(st: PStmt, ns: String): PStmt
                                              ti.tiWheres, ti.tiMembers,
                                              ti.pstiLine, ti.tiImports)
     (e: PsEnum) => PsEnum(ns + e.eName, e.eAttrs, e.eGens, e.eParams,
-                          map(e.eVariants, (v: PStmt) => addNamespace(v, ns)),
+                          map(e.eVariants, (v) => addNamespace(v, ns)),
                           e.eHasParams, e.pseLine)
     (other)     => st

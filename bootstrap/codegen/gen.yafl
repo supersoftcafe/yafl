@@ -29,10 +29,10 @@ fun cgTypePointerPaths(t2: CgType, path: String): List<String>
     (fp: CgFuncPointer)     => list1(path + ".o")
     (s2: CgStruct)          => cgPathsFields(s2.fields, path)
     (im: CgImmediateStruct) => cgPathsFields(im.fields, path)
-    (o: CgType)             => List<String>()
+    (o: CgType)             => List()
 
 fun cgPathsFields(fields: List<CgField>, path: String): List<String>
-  ret fold(fields, List<String>(), (acc: List<String>, f2: CgField) =>
+  ret fold(fields, List(), (acc, f2) =>
         concat(acc, cgTypePointerPaths(f2.fieldType, path + "." + mangleName(f2.fieldName))))
 
 # ── function-id enum ─────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ fun cgPathsFields(fields: List<CgField>, path: String): List<String>
 fun genFunctionIds(methodIds: List<MethodId>): String
   if isEmpty(methodIds)
     ret ""
-  ret "enum {" + join(map(methodIds, (m: MethodId) =>
+  ret "enum {" + join(map(methodIds, (m) =>
         "\n    __FUNCTION_ID__" + mangleName(m.mName) + " = rotate_function_id(" + String(m.mId) + ")"), ",")
       + "\n};\n"
 
@@ -58,15 +58,15 @@ fun genFunctionIds(methodIds: List<MethodId>): String
 # [linear,final] because it holds builders; the cache rides along as a plain
 # value, threaded rather than accumulated.
 class [linear, final] GenAcc(gaCache: List<CgCacheEntry>,
-                             gaTypedefs: ListBuilder<String >,
-                             gaForwards: ListBuilder<String >,
-                             gaVariables: ListBuilder<String >,
-                             gaFunctions: ListBuilder<String >,
-                             gaGcRoots: ListBuilder<String >)
+                             gaTypedefs: ListBuilder<String>,
+                             gaForwards: ListBuilder<String>,
+                             gaVariables: ListBuilder<String>,
+                             gaFunctions: ListBuilder<String>,
+                             gaGcRoots: ListBuilder<String>)
 
 fun genAccEmpty(): GenAcc
-  ret GenAcc(List<CgCacheEntry>(), builder<String >(), builder<String >(),
-             builder<String >(), builder<String >(), builder<String >())
+  ret GenAcc(List(), builder(), builder(),
+             builder(), builder(), builder())
 
 # ── per-function: cleanup chain then prototype + implement ───────────────────
 
@@ -85,12 +85,12 @@ fun genFunction([terminal] acc: GenAcc, f0: CgFunction, profId: Int|None): GenAc
   let proto = cgFunctionToCPrototype(fi, acc.gaCache)
   let impl = cgFunctionToCImplement(fi, proto.cache)
   ret GenAcc(impl.cache, acc.gaTypedefs,
-             push<String >(acc.gaForwards, proto.text), acc.gaVariables,
-             push<String >(acc.gaFunctions, impl.text), acc.gaGcRoots)
+             push(acc.gaForwards, proto.text), acc.gaVariables,
+             push(acc.gaFunctions, impl.text), acc.gaGcRoots)
 
 fun genExtern([terminal] acc: GenAcc, f: CgFunction): GenAcc
   let ext = cgFunctionToCExtern(f, acc.gaCache)
-  ret GenAcc(ext.cache, acc.gaTypedefs, push<String >(acc.gaForwards, ext.text),
+  ret GenAcc(ext.cache, acc.gaTypedefs, push(acc.gaForwards, ext.text),
              acc.gaVariables, acc.gaFunctions, acc.gaGcRoots)
 
 # ── extends-order object walk (DFS, insertion tie-break, pre-marked) ─────────
@@ -98,13 +98,13 @@ fun genExtern([terminal] acc: GenAcc, f: CgFunction): GenAcc
 # The emission order (parents before children) and the visited marks. The
 # order is a builder — it is the order objects reach the C file — and `seen`
 # is asked only whether a name has been visited, so it is a Set.
-class [linear, final] ObjOrder(ooOrder: ListBuilder<CgObject >,
-                               ooSeen: Set<String >)
+class [linear, final] ObjOrder(ooOrder: ListBuilder<CgObject>,
+                               ooSeen: Set<String>)
 
 fun objectsInExtendsOrder(a: CgApp): List<CgObject>
-  ret build<CgObject >(objVisitAll(chain(appObjects(a)), a,
-                           ObjOrder(builder<CgObject >(),
-                                    Set<String >())).ooOrder)
+  ret build(objVisitAll(chain(appObjects(a)), a,
+                ObjOrder(builder(),
+                         Set())).ooOrder)
 
 fun [tail] objVisitAll(os: Chain<CgObject>, a: CgApp,
                        [terminal] acc: ObjOrder): ObjOrder
@@ -114,18 +114,18 @@ fun [tail] objVisitAll(os: Chain<CgObject>, a: CgApp,
                                    objVisit(acc, l.value.objName, a))
 
 fun objVisit([terminal] acc: ObjOrder, name: String, a: CgApp): ObjOrder
-  if contains<String >(acc.ooSeen, name)
+  if contains(acc.ooSeen, name)
     ret acc
   # Pre-mark: extends cycles terminate; foreign/extern parents not in the
   # registry are marked and skipped rather than emitted.
-  let marked = ObjOrder(acc.ooOrder, add<String >(acc.ooSeen, name))
+  let marked = ObjOrder(acc.ooOrder, add(acc.ooSeen, name))
   ret match(appObject(a, name))
     (o: CgObject) => objVisitParents(marked, o, a)
     ()             => marked
 
 fun objVisitParents([terminal] acc: ObjOrder, o: CgObject, a: CgApp): ObjOrder
   ret objVisitOne(chain(o.objExtends), a, acc)
-    |> (afterParents) => ObjOrder(push<CgObject >(afterParents.ooOrder, o),
+    |> (afterParents) => ObjOrder(push(afterParents.ooOrder, o),
                                   afterParents.ooSeen)
 
 fun [tail] objVisitOne(ps: Chain<String>, a: CgApp,
@@ -157,15 +157,15 @@ fun [tail] vtImplText(es: Chain<String>, n: Int, acc: String): (n: Int, text: St
 
 # Method names AND their count from one walk (no-length ruling).
 fun vtEntryOf(o: CgObject): VtableEntry
-  let ms = vtMethodsOf(chain(o.objFunctions), 0, builder<String >())
+  let ms = vtMethodsOf(chain(o.objFunctions), 0, builder())
   ret VtableEntry(o.objName, ms.names, ms.n)
 
 fun [tail] vtMethodsOf(fs: Chain<CgFuncSlot>, n: Int,
-                       [terminal] acc: ListBuilder<String >): (names: List<String>, n: Int)
+                       [terminal] acc: ListBuilder<String>): (names: List<String>, n: Int)
   ret match(fs)
-    (nil: ChainEnd) => (build<String >(acc), n)
+    (nil: ChainEnd) => (build(acc), n)
     (l: ChainLink)  => vtMethodsOf(l.next, n + 1,
-                                   push<String >(acc, l.value.slotVirtualName))
+                                   push(acc, l.value.slotVirtualName))
 
 fun vtDefaultRow(): VtRow
   ret VtRow("-1", "(void*)&abort_on_vtable_lookup")
@@ -176,15 +176,15 @@ fun vtIsDefault(r: VtRow): Bool
 fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
               sizes: Dict<String, Int>): GenAcc
   let vtableSize = vtableSizeGet(sizes, o.objName)
-  let rows0 = vtRows(vtableSize, List<VtRow>())
-  let rows1 = fold(o.objFunctions, rows0, (rs: List<VtRow>, s2: CgFuncSlot) =>
+  let rows0 = vtRows(vtableSize, List())
+  let rows1 = fold(o.objFunctions, rows0, (rs, s2) =>
                 vtPlace(rs, s2, methodIds, vtableSize))
   # Ensure the last entry is an empty catch-all.
   # The catch-all must be LAST, so when it is missing it is pushed on the end.
   let rows = vtLastIsDefault(rows1)
     ? rows1
-    : build<VtRow >(push<VtRow >(builderFrom<VtRow>(rows1),
-                                 vtDefaultRow()))
+    : build(push(builderFrom(rows1),
+                 vtDefaultRow()))
   let mangled = mangleName(o.objName)
   # Counts ride the SAME walks that render the text (no-length ruling):
   # one pass produces both the joined C fragment and the number the macro
@@ -193,13 +193,13 @@ fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
   let vt = vtRowsText(chain(rows), 0, "")
   let commentLine = cgObjectCommentLine(o)
   let typedefDecl = cgDeclare(o.objFields, acc.gaCache)
-  let typedefs1 = push<String >(acc.gaTypedefs,
+  let typedefs1 = push(acc.gaTypedefs,
         commentLine + "typedef " + typedefDecl.text + " ALIGNED " + mangled + "_t;\n")
   let arrElSize = cgObjectGetArrayElSize(o, typedefDecl.cache)
   let arrPtrMask = cgObjectGetArrayPointerMask(o, arrElSize.cache)
   let masks = genObjectMasks(o, commentLine, mangled)
-  let variables1 = push<String >(_pushChain<String >(acc.gaVariables,
-                                     chain<String>(masks.gmVarLines)),
+  let variables1 = push(pushAll(acc.gaVariables,
+                            masks.gmVarLines),
         (commentLine + "static vtable_t* const obj_" + mangled
               + " = VTABLE_DECLARE(" + String(vt.n) + "){\n"
               + "    .object_size = " + cgObjectGetObjectSize(o) + ",\n"
@@ -217,7 +217,7 @@ fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
               + "    .lookup = { " + vt.text + " },\n"
               + "};\n"))
   ret GenAcc(arrPtrMask.cache, typedefs1,
-             push<String >(acc.gaForwards, commentLine + "static vtable_t* const obj_" + mangled + ";\n"),
+             push(acc.gaForwards, commentLine + "static vtable_t* const obj_" + mangled + ";\n"),
              variables1, acc.gaFunctions, acc.gaGcRoots)
 
 # n copies of the catch-all row. Prepended, not appended: every element is the
@@ -248,19 +248,19 @@ fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: Dict<String, Int>, siz
 # probe runs off the end). The old form re-indexed and rebuilt the whole table
 # per probe step.
 fun vtProbe(rows: List<VtRow>, index: Int, row: VtRow): List<VtRow>
-  ret build<VtRow >(vtProbeLoop(chain(rows), index, row, builder<VtRow >()))
+  ret build(vtProbeLoop(chain(rows), index, row, builder()))
 
 # The rows walked so far are re-emitted in place, so they go into a builder;
 # the table is index-addressed, so this order IS the table.
 fun [tail] vtProbeLoop(rest: Chain<VtRow>, index: Int, row: VtRow,
-                       [terminal] seen: ListBuilder<VtRow >): ListBuilder<VtRow >
+                       [terminal] seen: ListBuilder<VtRow>): ListBuilder<VtRow>
   ret match(rest)
-    (nil: ChainEnd) => push<VtRow >(seen, row)
+    (nil: ChainEnd) => push(seen, row)
     (l: ChainLink)  => index > 0
-      ? vtProbeLoop(l.next, index - 1, row, push<VtRow >(seen, l.value))
+      ? vtProbeLoop(l.next, index - 1, row, push(seen, l.value))
       : vtIsDefault(l.value)
-        ? _pushChain<VtRow >(push<VtRow >(seen, row), l.next)
-        : vtProbeLoop(l.next, index, row, push<VtRow >(seen, l.value))
+        ? _pushChain(push(seen, row), l.next)
+        : vtProbeLoop(l.next, index, row, push(seen, l.value))
 
 fun genArrayLenOffset(o: CgObject): String
   ret match(o.objLengthField)
@@ -274,10 +274,10 @@ class [final] GenMasks(gmVarLines: List<String>, gmMasksInit: String)
 fun genObjectMasks(o: CgObject, commentLine: String, mangled: String): GenMasks
   let nwindows = cgObjectGetPointerMaskWindowCount(o)
   if nwindows <= 1
-    ret GenMasks(List<String>(), "")
+    ret GenMasks(List(), "")
   let masksName = "pmasks_" + mangled
-  let windows = join(build<String >(genMaskWindows(o, nwindows, 0,
-                                                  builder<String >())),
+  let windows = join(build(genMaskWindows(o, nwindows, 0,
+                                         builder())),
                      ",\n    ")
   ret GenMasks(list1(commentLine + "static const ptr_mask_t " + masksName + "[" + String(nwindows)
                      + "] = {\n    " + windows + "\n};\n"),
@@ -286,11 +286,11 @@ fun genObjectMasks(o: CgObject, commentLine: String, mangled: String): GenMasks
 
 # Window w of the pointer mask, low word first — the order is the array's.
 fun [tail] genMaskWindows(o: CgObject, n: Int, w: Int,
-                          [terminal] acc: ListBuilder<String >): ListBuilder<String >
+                          [terminal] acc: ListBuilder<String>): ListBuilder<String>
   if w >= n
     ret acc
   ret genMaskWindows(o, n, w + 1,
-                     push<String >(acc, cgObjectGetPointerMaskWindow(o, w)))
+                     push(acc, cgObjectGetPointerMaskWindow(o, w)))
 
 # ── per-global: emission + GC roots ──────────────────────────────────────────
 
@@ -301,9 +301,9 @@ fun genGlobal([terminal] acc: GenAcc, g2: CgGlobal, a: CgApp): GenAcc
   let proto = cgGlobalToCPrototype(g2, acc.gaCache)
   let impl = cgGlobalToCImplement(g2, proto.cache)
   let roots = genGlobalRoots(g2, a)
-  ret GenAcc(impl.cache, acc.gaTypedefs, push<String >(acc.gaForwards, proto.text),
-             push<String >(acc.gaVariables, impl.text), acc.gaFunctions,
-             _pushChain<String >(acc.gaGcRoots, chain<String>(roots)))
+  ret GenAcc(impl.cache, acc.gaTypedefs, push(acc.gaForwards, proto.text),
+             push(acc.gaVariables, impl.text), acc.gaFunctions,
+             pushAll(acc.gaGcRoots, roots))
 
 fun genGlobalRoots(g2: CgGlobal, a: CgApp): List<String>
   # Old-style lazy global: the value lives directly in the slot.
@@ -319,7 +319,7 @@ fun genGlobalRoots(g2: CgGlobal, a: CgApp): List<String>
      && !(isNoneStr(g2.globalLazyInitFunction)
           && startsWith(g2.globalName, "$strings::"))
     ret genStaticInstanceRoots(g2, a)
-  ret List<String>()
+  ret List()
 
 fun isNoneR2(r: RParam|None): Bool
   ret match(r)
@@ -330,19 +330,19 @@ fun genStaticInstanceRoots(g2: CgGlobal, a: CgApp): List<String>
   ret match(g2.globalObjectName)
     (objName: String) => match(appObject(a, objName))
       (cls: CgObject) => genStaticRootsFields(cls, g2)
-      ()               => List<String>()
-    ()                 => List<String>()
+      ()               => List()
+    ()                 => List()
 
 fun genStaticRootsFields(cls: CgObject, g2: CgGlobal): List<String>
   let fields = cgFieldsOfOrEmpty(cls.objFields)
   if atMost(chain(fields), 1)
-    ret List<String>()
+    ret List()
   ret cgPathsFields(tail(fields), cgGlobalToCName(g2) + "_data")
 
 # ── roots + main ─────────────────────────────────────────────────────────────
 
 fun genDeclareRoots(roots: List<String>): String
-  let declarations = join(map(roots, (r: String) => "declare((object_t**)&" + r + ")"), ";\n    ")
+  let declarations = join(map(roots, (r) => "declare((object_t**)&" + r + ")"), ";\n    ")
   ret "static roots_declaration_func_t _previous_declare_roots;\n"
       + "static void _declare_roots(void(*declare)(object_t**)) {\n"
       + "    _previous_declare_roots(declare);\n"
@@ -401,28 +401,28 @@ fun [tail] profTableRows(fs: Chain<CgFunction>, n: Int,
 # ── the assembly ─────────────────────────────────────────────────────────────
 
 fun genDiagnostics(): String
-  ret join(map(build<String>(push<String>(push<String>(push<String>(push<String>(builder<String>(), "-Wunused-variable"), "-Wunused-but-set-variable"), "-Wunused-parameter"), "-Wunused-const-variable")),
-        (w: String) => "#pragma GCC diagnostic ignored \"" + w + "\""), "\n")
+  ret join(map(build(push(push(push(push(builder(), "-Wunused-variable"), "-Wunused-but-set-variable"), "-Wunused-parameter"), "-Wunused-const-variable")),
+        (w) => "#pragma GCC diagnostic ignored \"" + w + "\""), "\n")
       + "\n#pragma GCC diagnostic ignored \"-Wmissing-braces\""
 
 fun [tail] vtEntries(os: Chain<CgObject>,
-                     [terminal] acc: ListBuilder<VtableEntry >): ListBuilder<VtableEntry >
+                     [terminal] acc: ListBuilder<VtableEntry>): ListBuilder<VtableEntry>
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => vtEntries(l.next, l.value.objIsForeign
       ? acc
-      : push<VtableEntry >(acc, vtEntryOf(l.value)))
+      : push(acc, vtEntryOf(l.value)))
 
 fun genApplication(a: CgApp, headers: List<String>, profile: Bool): List<String>
-  let vtables = build<VtableEntry >(vtEntries(chain(appObjects(a)),
-                                              builder<VtableEntry >()))
+  let vtables = build(vtEntries(chain(appObjects(a)),
+                                builder()))
   let ph = createPerfectLookups(vtables)
   # Explicit walks rather than folds: the accumulator is linear, so it is
   # threaded through one call per element instead of riding a fold's lambda.
   let acc1 = genFunctionsLoop(chain(appFunctions(a)), profile, 0, genAccEmpty())
   let acc2 = genObjectsLoop(chain(objectsInExtendsOrder(a)),
-                            methodIdDict(chain(ph.methodIds), Dict<String, Int>()),
-                            vtableSizeDict(chain(ph.vtableSizes), Dict<String, Int>()),
+                            methodIdDict(chain(ph.methodIds), Dict()),
+                            vtableSizeDict(chain(ph.vtableSizes), Dict()),
                             acc1)
   let acc0 = genGlobalsLoop(chain(appGlobals(a)), a, acc2)
   # The descriptor table is appended AFTER the emission loops: the lazy
@@ -432,7 +432,7 @@ fun genApplication(a: CgApp, headers: List<String>, profile: Bool): List<String>
   let prof: (text: String, n: Int) = profile ? genProfTable(a) : ("", 0)
   let acc3 = profile
     ? GenAcc(acc0.gaCache, acc0.gaTypedefs, acc0.gaForwards,
-             push<String >(acc0.gaVariables, prof.text),
+             push(acc0.gaVariables, prof.text),
              acc0.gaFunctions, acc0.gaGcRoots)
     : acc0
   # A flat list of modest fragments, never one giant string — the caller
@@ -445,24 +445,24 @@ fun genApplication(a: CgApp, headers: List<String>, profile: Bool): List<String>
   # The sections in file order, pushed one at a time. The FIRST section is the
   # #include block — it must stay first, and it is the reason `headers` is a
   # parameter at all.
-  let sec = push<List<String> >(push<List<String> >(push<List<String> >(
-                push<List<String> >(push<List<String> >(push<List<String> >(
-                    push<List<String> >(push<List<String> >(push<List<String> >(
-                        push<List<String> >(push<List<String> >(
-                            builder<List<String> >(),
-                            map(headers, (h: String) => "#include <" + h + ">")),
-                            prepend(genDiagnostics(), List<String>())),
-                        prepend(genFunctionIds(ph.methodIds), List<String>())),
-                        map(acc3.gaCache, (e2: CgCacheEntry) => e2.entryTypedef)),
-                    build<String >(acc3.gaTypedefs)),
-                    build<String >(acc3.gaForwards)),
-                    List<String>()),
-                build<String >(acc3.gaVariables)),
-                build<String >(acc3.gaFunctions)),
-            prepend(genDeclareRoots(build<String >(acc3.gaGcRoots)),
-                    List<String>())),
-            prepend(genDeclareMain(profile, prof.n), List<String>()))
-  ret genFlatten(build<List<String> >(sec))
+  let sec = push(push(push(
+                push(push(push(
+                    push(push(push(
+                        push(push(
+                            builder(),
+                            map(headers, (h) => "#include <" + h + ">")),
+                            prepend(genDiagnostics(), List())),
+                        prepend(genFunctionIds(ph.methodIds), List())),
+                        map(acc3.gaCache, (e2) => e2.entryTypedef)),
+                    build(acc3.gaTypedefs)),
+                    build(acc3.gaForwards)),
+                    List()),
+                build(acc3.gaVariables)),
+                build(acc3.gaFunctions)),
+            prepend(genDeclareRoots(build(acc3.gaGcRoots)),
+                    List())),
+            prepend(genDeclareMain(profile, prof.n), List()))
+  ret genFlatten(build(sec))
 
 fun profIdOf(profile: Bool, id2: Int): Int|None
   ret profile ? id2 : None
@@ -497,19 +497,19 @@ fun [tail] genGlobalsLoop(gs: Chain<CgGlobal>, a: CgApp,
 # twin of the old nested join: "\n\n" precedes every section but the first,
 # "\n" precedes every item but its section's first.
 fun genFlatten(sections: List<List<String>>): List<String>
-  ret build<String >(gfSections(chain(sections), true, builder<String >()))
+  ret build(gfSections(chain(sections), true, builder()))
 
 fun [tail] gfSections(ss: Chain<List<String>>, first: Bool,
-                      [terminal] acc: ListBuilder<String >): ListBuilder<String >
+                      [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => gfSections(l.next, false,
         gfItems(chain(l.value), true,
-                first ? acc : push<String >(acc, "\n\n")))
+                first ? acc : push(acc, "\n\n")))
 
 fun [tail] gfItems(is2: Chain<String>, first: Bool,
-                   [terminal] acc: ListBuilder<String >): ListBuilder<String >
+                   [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(is2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => gfItems(l.next, false,
-        push<String >(first ? acc : push<String >(acc, "\n"), l.value))
+        push(first ? acc : push(acc, "\n"), l.value))

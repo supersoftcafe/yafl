@@ -51,13 +51,13 @@ fun scopeResolver(st: PStmt, r: Resolver): Resolver
 
 # The statement's ImportGroup paths (deduplicated), plus its OWN namespace.
 fun stmtScopes(st: PStmt): List<String>
-  let grp = importPaths(chain(stmtImports(st)), List<String>())
+  let grp = importPaths(chain(stmtImports(st)), List())
   let own = ownNamespace(stmtName2(st))
   # The statement's OWN namespace comes after its imports: the search order
   # is the list's order.
   ret own == "" || contains2(grp, own)
     ? grp
-    : build<String >(push<String >(builderFrom<String>(grp), own))
+    : build(push(builderFrom(grp), own))
 
 fun stmtImports(st: PStmt): List<PStmt>
   ret match(st)
@@ -67,29 +67,29 @@ fun stmtImports(st: PStmt): List<PStmt>
     (e: PsEnum)       => importsOr(e.eImports)
     (ta: PsTypealias) => importsOr(ta.taImports)
     (ti: PsTraitInstance) => importsOr(ti.tiImports)
-    (o: PStmt)        => List<PStmt>()
+    (o: PStmt)        => List()
 
 fun importsOr(grp: List<PStmt>|None): List<PStmt>
   ret match(grp)
     (g2: List<PStmt>) => g2
-    ()                => List<PStmt>()
+    ()                => List()
 
 # Same shape as mergeNames: Set for "seen", builder for order.
 fun importPaths(ss: Chain<PStmt>, acc: List<String>): List<String>
-  ret build<String >(importPathsB(ss,
-                                  builderFrom<String>(acc),
-                                  _chainToSet<String >(chain<String >(acc),
-                                                       Set<String >())))
+  ret build(importPathsB(ss,
+                         builderFrom(acc),
+                         _chainToSet(chain(acc),
+                                     Set())))
 
-fun [tail] importPathsB(ss: Chain<PStmt>, [terminal] out: ListBuilder<String >,
-                        seen: Set<String >): ListBuilder<String >
+fun [tail] importPathsB(ss: Chain<PStmt>, [terminal] out: ListBuilder<String>,
+                        seen: Set<String>): ListBuilder<String>
   ret match(ss)
     (nil: ChainEnd) => out
     (l: ChainLink)  => match(l.value)
-      (im: PsImport) => contains<String >(seen, im.importPath)
+      (im: PsImport) => contains(seen, im.importPath)
         ? importPathsB(l.next, out, seen)
-        : importPathsB(l.next, push<String >(out, im.importPath),
-                       add<String >(seen, im.importPath))
+        : importPathsB(l.next, push(out, im.importPath),
+                       add(seen, im.importPath))
       (o: PStmt)     => importPathsB(l.next, out, seen)
 
 # "Main" from "Main::main@JnNy0L".
@@ -121,23 +121,23 @@ fun typealiasScope(ta: PsTypealias, r: Resolver): Resolver
 # through the ordinary type path to `SGeneric(TVal@hash)`.
 
 fun genScope(gens: List<PGen>, r: Resolver): Resolver
-  ret isEmpty(gens) ? r : RTypes(genFounds(chain(gens), List<Found>()), r)
+  ret isEmpty(gens) ? r : RTypes(genFounds(chain(gens), List()), r)
 
 fun genFounds(gs: Chain<PGen>, acc: List<Found>): List<Found>
-  ret build<Found >(genFoundsB(gs, builderFrom<Found>(acc)))
+  ret build(genFoundsB(gs, builderFrom(acc)))
 
-fun [tail] genFoundsB(gs: Chain<PGen>, [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
+fun [tail] genFoundsB(gs: Chain<PGen>, [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
   ret match(gs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => genFoundsB(l.next, push<Found >(acc, genFound(l.value)))
+    (l: ChainLink)  => genFoundsB(l.next, push(acc, genFound(l.value)))
 
 fun genFound(g: PGen): Found
   ret Found(g.genName, genAlias(g), ScLocal())
 
 fun genAlias(g: PGen): PStmt
-  ret PsTypealias(g.genName, List<PAttr>(), List<PGen>(),
+  ret PsTypealias(g.genName, List(), List(),
                   SGeneric(g.genName, isLinearGen(g), g.pgLine),
-                  List<Spec>(), g.pgLine)
+                  List(), g.pgLine)
 
 fun isLinearGen(g: PGen): Bool
   ret hasAttr(g.genAttrs, "linear")
@@ -148,20 +148,20 @@ fun isLinearGen(g: PGen): Bool
 fun localScope(lets: List<PStmt>, r: Resolver): Resolver
   ret isEmpty(lets)
     ? r
-    : RData(build<Found >(letFounds(chain(lets), builder<Found >())), r)
+    : RData(build(letFounds(chain(lets), builder())), r)
 
 fun [tail] letFounds(ls: Chain<PStmt>,
-                     [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
+                     [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
   ret match(ls)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => letFounds(l.next, addLetFound(acc, l.value))
 
-fun addLetFound([terminal] acc: ListBuilder<Found >, st: PStmt): ListBuilder<Found >
+fun addLetFound([terminal] acc: ListBuilder<Found>, st: PStmt): ListBuilder<Found>
   ret match(st)
-    (l: PsLet) => push<Found >(acc, Found(l.lName, st, ScLocal()))
+    (l: PsLet) => push(acc, Found(l.lName, st, ScLocal()))
     # A NESTED FUNCTION binds a name in its block, exactly as a let does — a
     # `[tail] loop` helper must be visible to its siblings and to the body.
-    (f: PsFun) => push<Found >(acc, Found(f.fName, st, ScLocal()))
+    (f: PsFun) => push(acc, Found(f.fName, st, ScLocal()))
     (d: PsDestructure) => letFounds(chain(d.dTargets), acc)
     (o: PStmt) => acc
 
@@ -170,8 +170,8 @@ fun addLetFound([terminal] acc: ListBuilder<Found >, st: PStmt): ListBuilder<Fou
 fun paramLets(params: PStmt): List<PStmt>
   ret match(params)
     (d: PsDestructure) => d.dTargets
-    (l: PsLet)         => prepend(params, List<PStmt>())
-    (o: PStmt)         => List<PStmt>()
+    (l: PsLet)         => prepend(params, List())
+    (o: PStmt)         => List()
 
 # A block's statements bind names for the whole block — a block-scoped `let` is
 # visible to the statements after it AND to the block's value.
@@ -199,12 +199,12 @@ fun blockScope(stmts: List<PStmt>, r: Resolver): Resolver
 # aliases, gathered from the resolver chain at query time.
 fun traitScope(wheres: List<Spec>, r: Resolver): Resolver
   let amb = ambientEntries(r)
-  let plain = plainEntries(chain(wheres), builder<TraitEntry>())
+  let plain = plainEntries(chain(wheres), builder())
   # The ambient list is deduplicated once per pass at build time; here only
   # the (tiny) where-clause list screens against it — Python's `add` order:
   # where entries first, ambient after, (spec, own) dedupe.
   let all = concat(plain, ambNotIn(chain(amb.aeEntries), plain,
-                                   builder<TraitEntry>()))
+                                   builder()))
   ret RTraits(wheres, all, anyNamed(chain(wheres)) || amb.aeBlocked, r)
 
 fun [tail] ambNotIn(es: Chain<TraitEntry>, plain: List<TraitEntry>,
@@ -238,7 +238,7 @@ fun [tail] plainEntries(ws: Chain<Spec>,
     (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => match(l.value)
       (c: SClass) => isConcrete(c)
-        ? plainEntries(l.next, push(acc, TraitEntry(l.value, List<String>())))
+        ? plainEntries(l.next, push(acc, TraitEntry(l.value, List())))
         : plainEntries(l.next, acc)
       (o: Spec)   => plainEntries(l.next, acc)
 
@@ -275,7 +275,7 @@ fun [tail] entrySeen(ss: Chain<TraitEntry>, x: TraitEntry): Bool
       : entrySeen(l.next, x)
 
 fun eqNameList(a: List<String>, b: List<String>): Bool
-  ret eqBy<String>(a, b, (x: String, y: String) => x == y)
+  ret eqBy(a, b, (x, y) => x == y)
 
 fun containsSpec(ss: List<Spec>, sp: Spec): Bool
   ret specSeen(chain(ss), sp)
@@ -313,19 +313,19 @@ fun membersViaMerged(mt: MergedTable, c: SClass, own: List<String>,
   ret match(get(mt.mtRows, query))
     (row: MergedRow) => Findings(wrapMerged(chain(row.mrEntries),
                                             paramMapping(mt.mtGens, c.scParams),
-                                            c, own, builder<Found >()),
+                                            c, own, builder()),
                                  row.mrComplete)
     ()                => mt.mtAbsentInc ? incompleteFindings() : emptyFindings()
 
 fun [tail] wrapMerged(es: Chain<MergedEntry>, mapping: List<Binding>,
                       c: SClass, own: List<String>,
-                      [terminal] acc: ListBuilder<Found >): List<Found>
+                      [terminal] acc: ListBuilder<Found>): List<Found>
   ret match(es)
-    (nil: ChainEnd) => build<Found >(acc)
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => wrapMerged(l.next, mapping, c, own,
-        push<Found >(acc, Found(stmtName(l.value.meStmt), l.value.meStmt,
-                                ScTrait(), mergedTp(l.value.mePattern, mapping, c),
-                                l.value.meOwner, own)))
+        push(acc, Found(stmtName(l.value.meStmt), l.value.meStmt,
+                        ScTrait(), mergedTp(l.value.mePattern, mapping, c),
+                        l.value.meOwner, own)))
 
 fun mergedTp(pattern: Spec|None, mapping: List<Binding>, c: SClass): Spec
   ret match(pattern)
@@ -346,7 +346,7 @@ fun membersViaIdx(mi: MemberIdx, c: SClass, own: List<String>, query: String,
   if !arityMatches(mi.miClass, c)
     ret emptyFindings()
   let direct = wrapMembers(chain(memberBucket(mi, query)), c, mi.miClass, own,
-                           builder<Found >())
+                           builder())
   ret isEmpty(direct)
     ? parentMembers(mi.miClass, c, own, query, r)
     : Findings(direct, true)
@@ -354,15 +354,15 @@ fun membersViaIdx(mi: MemberIdx, c: SClass, own: List<String>, query: String,
 fun memberBucket(mi: MemberIdx, query: String): List<PStmt>
   ret match(get(mi.miByKey, query))
     (ms: List<PStmt>) => ms
-    ()                => List<PStmt>()
+    ()                => List()
 
 fun [tail] wrapMembers(ms: Chain<PStmt>, tp: SClass, owner: PsClass,
                        own: List<String>,
-                       [terminal] acc: ListBuilder<Found >): List<Found>
+                       [terminal] acc: ListBuilder<Found>): List<Found>
   ret match(ms)
-    (nil: ChainEnd) => build<Found >(acc)
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => wrapMembers(l.next, tp, owner, own,
-                                   push<Found >(acc,
+                                   push(acc,
                                        Found(stmtName(l.value), l.value,
                                              ScTrait(), tp, owner, own)))
 
@@ -377,7 +377,7 @@ fun classMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
                  r: Resolver): Findings
   let direct = memberMatches(chain(concat(flattenParams(cs.cParams),
                                           cs.cMembers)),
-                             query, c, cs, own, List<Found>())
+                             query, c, cs, own, List())
   ret isEmpty(direct)
     ? parentMembers(cs, c, own, query, r)
     : Findings(direct, true)
@@ -385,17 +385,17 @@ fun classMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
 fun memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
                          owner: PsClass, own: List<String>,
                          acc: List<Found>): List<Found>
-  ret build<Found >(memberMatchesB(ms, query, tp, owner, own, builderFrom<Found>(acc)))
+  ret build(memberMatchesB(ms, query, tp, owner, own, builderFrom(acc)))
 
 fun [tail] memberMatchesB(ms: Chain<PStmt>, query: String, tp: SClass,
                          owner: PsClass, own: List<String>,
-                         [terminal] acc: ListBuilder<Found >): ListBuilder<Found >
+                         [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameMatches(stmtName(l.value), query)
       ? memberMatchesB(l.next, query, tp, owner, own,
-                      push<Found >(acc, Found(stmtName(l.value), l.value,
-                                        ScTrait(), tp, owner, own)))
+                      push(acc, Found(stmtName(l.value), l.value,
+                                ScTrait(), tp, owner, own)))
       : memberMatchesB(l.next, query, tp, owner, own, acc)
 
 # Recurse into each parent interface with this instance's type args substituted
@@ -426,17 +426,17 @@ fun parentFindings(p: Spec, own: List<String>, query: String, r: Resolver): Find
     (o: Spec)   => emptyFindings()
 
 fun paramMapping(gens: List<PGen>, args: List<Spec>): List<Binding>
-  ret mapLoop(chain(gens), chain(args), List<Binding>())
+  ret mapLoop(chain(gens), chain(args), List())
 
 fun mapLoop(gs: Chain<PGen>, as2: Chain<Spec>,
                    acc: List<Binding>): List<Binding>
-  ret build<Binding >(mapLoopB(gs, as2, builderFrom<Binding>(acc)))
+  ret build(mapLoopB(gs, as2, builderFrom(acc)))
 
 fun [tail] mapLoopB(gs: Chain<PGen>, as2: Chain<Spec>,
-                   [terminal] acc: ListBuilder<Binding >): ListBuilder<Binding >
+                   [terminal] acc: ListBuilder<Binding>): ListBuilder<Binding>
   ret match(gs)
     (nil: ChainEnd) => acc
     (g: ChainLink)  => match(as2)
       (nil2: ChainEnd) => acc
       (a: ChainLink)   => mapLoopB(g.next, a.next,
-                                  push<Binding >(acc, Binding(g.value.genName, a.value)))
+                                  push(acc, Binding(g.value.genName, a.value)))

@@ -47,15 +47,15 @@ fun [tail] convergeLoop(statements: List<PStmt>, pass: Int): Converged
 # and the extra statements it creates join the set for the next pass.
 fun compilePass(statements: List<PStmt>): List<PStmt>
   let r = rootResolver(statements, collectParamSuggestions(statements))
-  ret build<PStmt >(passLoop(chain(statements), r, builder<PStmt >()))
+  ret build(passLoop(chain(statements), r, builder()))
 
 # Each statement's own output, then whatever it hoisted out beside itself:
 # this is the program's statement order, so a builder, not a set.
 fun [tail] passLoop(ss: Chain<PStmt>, r: Resolver,
-                    [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => compileStmt(l.value, scopeResolver(l.value, r), None)
       |> (out) => passLoop(l.next, r,
-                           _pushChain<PStmt >(addStmt(acc, out.soStmt),
-                                              chain(out.soExtra)))
+                           pushAll(addStmt(acc, out.soStmt),
+                                       out.soExtra))

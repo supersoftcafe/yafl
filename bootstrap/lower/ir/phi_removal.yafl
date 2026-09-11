@@ -17,21 +17,21 @@ import Bootstrap::StdlibCandidates
 
 fun removePhis(a: CgApp): CgApp
   ret appWithFunctions(a, map(appFunctions(a),
-        (f: CgFunction) => prCoalesceCopies(cgFunctionLowerPhis(f))))
+        (f) => prCoalesceCopies(cgFunctionLowerPhis(f))))
 
 # ── def/read counts (saved_vars are reads) ──────────────────────────────────
 
 class [final] PrCounts(prDefs: List<StrCount>, prReads: List<StrCount>)
 
 fun prCountVars(ops: Segment<Op>|None): PrCounts
-  ret fold(ops, PrCounts(List<StrCount>(), List<StrCount>()), prCountOp)
+  ret fold(ops, PrCounts(List(), List()), prCountOp)
 
 fun prCountOp(acc: PrCounts, op: Op): PrCounts
   let reads1 = fold(opReadVarNames(op), acc.prReads, strCountIncr)
   let reads2 = fold(opSavedVars(op), reads1,
-                    (r: List<StrCount>, sv: RParam) => prIncrIfStackVar(r, sv))
+                    (r, sv) => prIncrIfStackVar(r, sv))
   let defs1 = fold(ssavOpWrites(op), acc.prDefs,
-                   (d: List<StrCount>, sv: RParam) => prIncrIfStackVar(d, sv))
+                   (d, sv) => prIncrIfStackVar(d, sv))
   ret PrCounts(defs1, reads2)
 
 fun prIncrIfStackVar(acc: List<StrCount>, sv: RParam): List<StrCount>
@@ -43,8 +43,8 @@ fun prIncrIfStackVar(acc: List<StrCount>, sv: RParam): List<StrCount>
 
 fun prCoalesceCopies(f: CgFunction): CgFunction
   let counts = prCountVars(f.fnOps)
-  let p0 = cgPullOp(seqStream<Op>(f.fnOps))
-  let out = prScan(p0.op, p0.stream, List<Op>(), counts, 0, List<Int>(), List<PrRename>(),
+  let p0 = cgPullOp(seqStream(f.fnOps))
+  let out = prScan(p0.op, p0.stream, List(), counts, 0, List(), List(),
                    counts.prDefs)
   ret isEmpty(out.proRemoved)
     ? f
@@ -133,7 +133,7 @@ fun prBlockBoundary(op: Op): Bool
     (o: Op)            => false
 
 fun prWritesName(op: Op, name: String): Bool
-  ret any(ssavOpWrites(op), (sv: RParam) => prIsNamed(sv, name))
+  ret any(ssavOpWrites(op), (sv) => prIsNamed(sv, name))
 
 fun prIsNamed(sv: RParam, name: String): Bool
   ret match(sv)
@@ -146,15 +146,15 @@ fun prTouches(op: Op, name: String): Bool
 # ── rebuild: apply renames, drop removed ops and dead source stackvars ──────
 
 fun prRebuild(f: CgFunction, out: PrOut): CgFunction
-  let removedSet = prRemovedSet(chain(out.proRemoved), Dict<Int, Bool>())
+  let removedSet = prRemovedSet(chain(out.proRemoved), Dict())
   let newOps = prRebuildOps(f.fnOps, out, removedSet)
-  let dead = prDeadSources(f.fnOps, 0i32, 0, removedSet, Set<String>())
+  let dead = prDeadSources(f.fnOps, 0i32, 0, removedSet, Set())
   ret cgFunctionWith(f, newOps,
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
-                        (fld: CgField) => !contains<String>(dead, fld.fieldName))))
+                        (fld) => !contains(dead, fld.fieldName))))
 
 fun prRebuildOps(ops: Segment<Op>|None, out: PrOut, removedSet: Dict<Int, Bool>): Segment<Op>|None
-  ret build<Op >(prRebuildLoopB(ops, 0i32, out, removedSet, 0, seqBuilder<Op >()))
+  ret build(prRebuildLoopB(ops, 0i32, out, removedSet, 0, seqBuilder()))
 
 # Removed indices are a SET (Python's `removed: set[int]`) — the membership
 # test runs once per op, so a list scan made the rebuild quadratic.
@@ -170,19 +170,19 @@ fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int): Bool
 
 fun [tail] prRebuildLoopB(s: Segment<Op>|None, iSeg: Int32, out: PrOut,
                           removedSet: Dict<Int, Bool>,
-                          i: Int, [terminal] acc: SeqBuilder<Op >): SeqBuilder<Op >
+                          i: Int, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
       ? prRebuildLoopB(s, iSeg + 1i32, out, removedSet, i + 1,
           prIsRemoved(removedSet, i)
             ? acc
-            : push<Op >(acc, prApplyRename(seg.array(iSeg), i, out.proRenames)))
+            : push(acc, prApplyRename(seg.array(iSeg), i, out.proRenames)))
       : prRebuildLoopB(seg.next, 0i32, out, removedSet, i, acc)
 
 fun prApplyRename(op: Op, i: Int, renames: List<PrRename>): Op
-  ret fold(renames, op, (o: Op, r: PrRename) => r.prrIdx == i
-             ? opReplaceParams(o, (p: RParam) => prIsNamed(p, r.prrOld) ? r.prrNewVar : p)
+  ret fold(renames, op, (o, r) => r.prrIdx == i
+             ? opReplaceParams(o, (p) => prIsNamed(p, r.prrOld) ? r.prrNewVar : p)
              : o)
 
 # Dead = each removed non-self copy's SOURCE name.
@@ -197,5 +197,5 @@ fun [tail] prDeadSources(s: Segment<Op>|None, iSeg: Int32, i: Int, removedSet: D
 
 fun prDeadOne(acc: Set<String>, op: Op): Set<String>
   ret match(prCandidate(op))
-    (c: PrCand) => c.pcSelf ? acc : add<String>(acc, c.pcS)
+    (c: PrCand) => c.pcSelf ? acc : add(acc, c.pcS)
     ()           => acc

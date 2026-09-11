@@ -40,7 +40,7 @@ fun tokensMode(text: System::String): (out: System::String, code: System::Int)
 # against the Python LineRef.hash6 by tests/test_bootstrap_hash6.py.
 fun hash6Mode(text: System::String): (out: System::String, code: System::Int)
   ret (hash6Lines(chain(splitLines(text)), StringBuilder())
-       |> (sb: StringBuilder) => toString(sb), 0)
+       |> (sb) => toString(sb), 0)
 
 fun [tail] hash6Lines(lines: Chain<System::String>, sb: StringBuilder): StringBuilder
   ret match(lines)
@@ -65,7 +65,7 @@ fun hash6Line(line: System::String, sb: StringBuilder): StringBuilder
 # hashlib.sha1 by tests/test_bootstrap_sha1.py (irMangle's struct hashing).
 fun sha1Mode(text: System::String): (out: System::String, code: System::Int)
   ret (sha1Lines(chain(splitLines(text)), StringBuilder())
-       |> (sb: StringBuilder) => toString(sb), 0)
+       |> (sb) => toString(sb), 0)
 
 # Empty segments are skipped: splitLines yields a trailing one after the
 # final newline, which must not hash.
@@ -99,13 +99,13 @@ fun [tail] tomlDump(es: Chain<TomlEntry>, [terminal] sb: StringBuilder): StringB
 # ignored parameter accepted for uniformity with the other modes is exactly the
 # shape a deleted use leaves behind.
 fun libsMode(): (out: String, code: Int)
-  ret match(discoverLibraries(searchPaths(List<String>())))
+  ret match(discoverLibraries(searchPaths(List())))
     (e: LibsErr) => ("error:" + e.libsWhy + "\n", 1)
     (ok: LibsOk) => (toString(libsDump(chain(sortLibs(ok.libsFound)),
                                        StringBuilder())), 0)
 
 fun sortLibs(ls: List<Library>): List<Library>
-  ret sortBy(ls, (a: Library, b: Library) =>
+  ret sortBy(ls, (a, b) =>
         a.libManifest.libName < b.libManifest.libName)
 
 fun [tail] libsDump(ls: Chain<Library>, [terminal] sb: StringBuilder): StringBuilder
@@ -127,14 +127,14 @@ fun libsForMode(text: String): (out: String, code: Int)
     (stmts: List<PStmt>) => libsForStmts(stmts)
 
 fun libsForStmts(stmts: List<PStmt>): (out: String, code: Int)
-  ret match(discoverLibraries(searchPaths(List<String>())))
+  ret match(discoverLibraries(searchPaths(List())))
     (e: LibsErr) => ("error:" + e.libsWhy + "\n", 1)
     (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
       (why: String)        => ("error:" + why + "\n", 1)
       (idx: List<NsEntry>) => libsForIndex(stmts, idx)
 
 fun libsForIndex(stmts: List<PStmt>, idx: List<NsEntry>): (out: String, code: Int)
-  ret match(libsFrontier(stmts, idx, List<String>(), List<Library>()))
+  ret match(libsFrontier(stmts, idx, List(), List()))
     (why: String)         => ("error:" + why + "\n", 1)
     (found: List<Library>) => (toString(libsDump(chain(sortLibs(found)),
                                                  StringBuilder())), 0)
@@ -157,10 +157,10 @@ fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
                             already)
   ret isEmpty(step.stepLibs)
     ? found
-    : match(parseLibraries(chain(step.stepLibs), List<PStmt>()))
+    : match(parseLibraries(chain(step.stepLibs), List()))
       (why: String)          => why
       (next: List<PStmt>)    => libsFrontier(next, idx,
-          concat(already, map(step.stepLibs, (l: Library) => l.libRoot)),
+          concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(found, step.stepLibs))
 
 # The imports of a parsed program are NOT PsImport statements: fixupProgram
@@ -169,7 +169,7 @@ fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
 # accessor, and reading it here is what compiler.py's `_candidate_namespaces`
 # does with `st.imports.imports`.
 fun declaredImports(stmts: List<PStmt>): List<String>
-  ret importsOfStmts(chain(stmts), List<String>())
+  ret importsOfStmts(chain(stmts), List())
 
 fun [tail] importsOfStmts(ss: Chain<PStmt>, acc: List<String>): List<String>
   ret match(ss)
@@ -262,7 +262,7 @@ fun [tail] joinInts(is: Chain<Int>, acc: String): String
     (l: ChainLink)  => joinInts(l.next, acc + (acc == "" ? "" : ",") + String(l.value))
 
 fun splitNames(s: String): List<String>
-  ret map(split(s, ","), (n: String) => n == "_" ? "" : n)
+  ret map(split(s, ","), (n) => n == "_" ? "" : n)
 
 # resolve mode: parse the source on stdin, build the statement index, then
 # answer the queries that follow a "?" line — `data <name>` / `type <name>` —
@@ -297,7 +297,7 @@ fun answerOne(idx: Statements, q: String, sb: StringBuilder): StringBuilder
   let name = slice(q, sp + 1, length(q))
   # A pure lookup resolver for the query interface: nothing on this path
   # asks the breaker analysis.
-  let r = RRoot((root: String) => false, idx)
+  let r = RRoot((root) => false, idx)
   let bag = kind == "type" ? findType(r, name) : findData(r, name)
   ret append(sb, foundLine(chain(bag.bItems), 0, "") + "\n")
 
@@ -721,12 +721,12 @@ fun cMode(text: String, optLevel: Int, profile: Bool): (outs: List<String>, code
   let _ = spanEnd(spParse)
   ret match(parsed)
     (stmts: List<PStmt>) => cModeConverge(stmts, optLevel, profile, baseHeaders())
-    ()                   => (prepend("parse error\n", List<String>()), 1)
+    ()                   => (prepend("parse error\n", List()), 1)
 
 # yafl.h is the runtime ABI baseline — the entrypoint references it — so it is
 # always included and loaded libraries append their own.
 fun baseHeaders(): List<System::String>
-  ret prepend("yafl.h", List<System::String>())
+  ret prepend("yafl.h", List())
 
 fun cModeConverge(stmts: List<PStmt>, optLevel: Int, profile: Bool,
                   headers: List<System::String>): (outs: List<String>, code: Int)
@@ -735,7 +735,7 @@ fun cModeConverge(stmts: List<PStmt>, optLevel: Int, profile: Bool,
   let _ = spanEnd(sp)
   ret match(pm)
     (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers)
-    (tx: PmText) => (prepend(tx.pmOut, List<String>()), tx.pmCode)
+    (tx: PmText) => (prepend(tx.pmOut, List()), tx.pmCode)
 
 fun convergeToPostmono(stmts: List<PStmt>): PmRes
   ret match(converge(stmts))
@@ -750,7 +750,7 @@ fun convergeToPostmono(stmts: List<PStmt>): PmRes
 fun parseMulti(text: String): List<PStmt>|None
   if !startsWith(text, "#FILE# ")
     ret parseSingle(text)
-  ret parseSorted(collectParts(text, 0, Dict<String, String>()))
+  ret parseSorted(collectParts(text, 0, Dict()))
 
 # ── project mode: COMPILE WITH LIBRARIES ─────────────────────────────────────
 # The mirror of compiler.py `compile_project`, and the point of all the
@@ -768,13 +768,13 @@ fun projectMode(text: String, optLevel: Int,
                 profile: Bool): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => projectCompile(stmts, optLevel, profile)
-    ()                   => (prepend("parse error\n", List<String>()), 1)
+    ()                   => (prepend("parse error\n", List()), 1)
 
 fun projectTestMode(text: String, optLevel: Int,
                     profile: Bool): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, true)
-    ()                   => (prepend("parse error\n", List<String>()), 1)
+    ()                   => (prepend("parse error\n", List()), 1)
 
 fun projectCompile(user: List<PStmt>, optLevel: Int,
                    profile: Bool): (outs: List<String>, code: Int)
@@ -782,9 +782,9 @@ fun projectCompile(user: List<PStmt>, optLevel: Int,
   let loaded = loadProject(user)
   let _ = spanEnd(sp)
   ret match(loaded)
-    (why: String)      => (prepend("error:" + why + "\n", List<String>()), 1)
+    (why: String)      => (prepend("error:" + why + "\n", List()), 1)
     (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
-      (why2: String)   => (prepend("error:" + why2 + "\n", List<String>()), 1)
+      (why2: String)   => (prepend("error:" + why2 + "\n", List()), 1)
       (spec: LinkSpec) =>
         # `lib_statements + user_statements`, in that order: statement order is
         # emission order, so the libraries come first exactly as they do in
@@ -797,7 +797,7 @@ fun projectCompile(user: List<PStmt>, optLevel: Int,
 # declares it (the shipped System library does).
 fun projectHeaders(spec: LinkSpec): List<System::String>
   ret concat(baseHeaders(),
-             filter(spec.specHeaders, (h: String) => h != "yafl.h"))
+             filter(spec.specHeaders, (h) => h != "yafl.h"))
 
 # compile_project RETURNS the LinkSpec alongside the C — the caller needs the
 # `-I` directories and the archives to link, and for a `.yl` those only exist
@@ -822,12 +822,12 @@ fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int)
 class [final] ProjectLoad(plStmts: List<PStmt>, plLibs: List<Library>)
 
 fun loadProject(user: List<PStmt>): ProjectLoad|String
-  ret match(discoverLibraries(searchPaths(List<String>())))
+  ret match(discoverLibraries(searchPaths(List())))
     (e: LibsErr) => e.libsWhy
     (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
       (why: String)        => why
-      (idx: List<NsEntry>) => projectRounds(user, idx, List<String>(),
-                                            List<PStmt>(), List<Library>())
+      (idx: List<NsEntry>) => projectRounds(user, idx, List(),
+                                            List(), List())
 
 # `while frontier:` — each round loads the libraries the CURRENT statements
 # reference, and what was just loaded becomes the next frontier, so a library
@@ -842,10 +842,10 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
                             already)
   ret isEmpty(step.stepLibs)
     ? ProjectLoad(acc, libs)
-    : match(parseLibraries(chain(step.stepLibs), List<PStmt>()))
+    : match(parseLibraries(chain(step.stepLibs), List()))
       (why: String)       => why
       (next: List<PStmt>) => projectRounds(next, idx,
-          concat(already, map(step.stepLibs, (l: Library) => l.libRoot)),
+          concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(acc, next), concat(libs, step.stepLibs))
 
 # ONE __tokenize_and_parse call PER LIBRARY, and that call SORTS ITS INPUTS BY
@@ -860,14 +860,14 @@ fun [tail] parseLibraries(ls: Chain<Library>,
       (stmts: List<PStmt>) => parseLibraries(l.next, concat(acc, stmts))
 
 fun parseLibrary(lib: Library): List<PStmt>|String
-  ret parseSources(chain(sortSources(lib.libSources)), builder<PStmt>())
+  ret parseSources(chain(sortSources(lib.libSources)), builder())
 
 # By UNIT NAME — the path relative to the library root, which is what
 # `Input.filename` holds and the sort key __tokenize_and_parse uses. Two
 # sub-directories holding the same basename now sort as the distinct units
 # they are.
 fun sortSources(srcs: List<LibSource>): List<LibSource>
-  ret sortBy(srcs, (a: LibSource, b: LibSource) => a.libFileName < b.libFileName)
+  ret sortBy(srcs, (a, b) => a.libFileName < b.libFileName)
 
 fun [tail] parseSources(ss: Chain<LibSource>,
                         [terminal] b: ListBuilder<PStmt>): List<PStmt>|String
@@ -879,7 +879,7 @@ fun [tail] parseSources(ss: Chain<LibSource>,
       (stmts: List<PStmt>) => parseSources(l.next, pushAll(b, stmts))
 
 fun parseDiscard([terminal] b: ListBuilder<PStmt>, why: String): List<PStmt>|String
-  ret build(b) |> (l: List<PStmt>) => why
+  ret build(b) |> (l) => why
 
 
 # ── --test: build a TEST binary from the [test] functions ────────────────────
@@ -898,15 +898,15 @@ fun cTestMode(text: String, optLevel: Int,
               profile: Bool): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, false)
-    ()                   => (prepend("parse error\n", List<String>()), 1)
+    ()                   => (prepend("parse error\n", List()), 1)
 
 fun cTestInject(stmts: List<PStmt>, optLevel: Int, profile: Bool,
                 withLibs: Bool): (outs: List<String>, code: Int)
-  let tests = testFunsOf(chain(stmts), builder<PsFun>())
+  let tests = testFunsOf(chain(stmts), builder())
   ret isEmpty(tests)
     # A test binary with nothing in it must NOT be built and exit 0 — that is a
     # green run reporting coverage it does not have.
-    ? (prepend("--test: no [test] functions found\n", List<String>()), 1)
+    ? (prepend("--test: no [test] functions found\n", List()), 1)
     : cTestParsed(stmts, tests, optLevel, profile, withLibs)
 
 fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel: Int,
@@ -917,22 +917,22 @@ fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel: Int,
   # compilers disagree byte-for-byte on identical input.
   ret match(parseProgram(testRegistrySource(tests), "$test_main.yafl"))
     (gen: List<PStmt>) => concat(dropSourceMains(chain(stmts),
-                                                 builder<PStmt>()), gen)
+                                                 builder()), gen)
       # The registry is part of the USER statements before the worklist runs,
       # which is what makes its `System::Test::run` reference load the library.
-      |> (user: List<PStmt>) => withLibs
+      |> (user) => withLibs
         ? projectCompile(user, optLevel, profile)
         : cModeConverge(user, optLevel, profile, baseHeaders())
     (f: PFail)         => (prepend("--test: generated main failed to parse\n",
-                                   List<String>()), 1)
+                                   List()), 1)
 
 fun [tail] testFunsOf(sts: Chain<PStmt>,
                       [terminal] b: ListBuilder<PsFun>): List<PsFun>
   ret match(sts)
-    (nil: ChainEnd) => build<PsFun>(b)
+    (nil: ChainEnd) => build(b)
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => hasAttr(f.fAttrs, "test")
-        ? testFunsOf(l.next, push<PsFun>(b, f))
+        ? testFunsOf(l.next, push(b, f))
         : testFunsOf(l.next, b)
       (o: PStmt) => testFunsOf(l.next, b)
 
@@ -941,10 +941,10 @@ fun [tail] testFunsOf(sts: Chain<PStmt>,
 fun [tail] dropSourceMains(sts: Chain<PStmt>,
                            [terminal] b: ListBuilder<PStmt>): List<PStmt>
   ret match(sts)
-    (nil: ChainEnd) => build<PStmt>(b)
+    (nil: ChainEnd) => build(b)
     (l: ChainLink)  => isSourceMain(l.value)
       ? dropSourceMains(l.next, b)
-      : dropSourceMains(l.next, push<PStmt>(b, l.value))
+      : dropSourceMains(l.next, push(b, l.value))
 
 fun isSourceMain(st: PStmt): Bool
   ret match(st)
@@ -963,7 +963,7 @@ fun testRegistryChunk(): Int
   ret 16
 
 fun testRegistrySource(tests: List<PsFun>): String
-  let n = chainLength<PsFun>(chain(tests))
+  let n = chainLength(chain(tests))
   let nChunks = n == 0 ? 1 : (n + testRegistryChunk() - 1) / testRegistryChunk()
   ret toString(append(
         emitChunks(tests, 0, append(StringBuilder(), "namespace Yafl::TestMain\n\n")),
@@ -985,7 +985,7 @@ fun emitOneChunk(chunk: List<PsFun>, k: Int): String
     + "  let b0 = System::builder<System::Test::TestCase>()\n"
     + toString(chunkRows(chain(chunk), 0, StringBuilder()))
     + "  ret System::build<System::Test::TestCase>(b"
-    + String(chainLength<PsFun>(chain(chunk))) + ")\n\n"
+    + String(chainLength(chain(chunk))) + ")\n\n"
 
 fun [tail] chunkRows(ts: Chain<PsFun>, i: Int,
                      [terminal] sb: StringBuilder): StringBuilder
@@ -1066,7 +1066,7 @@ fun [tail] collectParts(text: String, at: Int,
   ret nextMark < 0 ? acc2 : collectParts(text, nextMark + 1, acc2)
 
 fun parseSorted(parts: Dict<String, String>): List<PStmt>|None
-  ret parseInOrder(chain(sort(keys(parts))), parts, List<PStmt>())
+  ret parseInOrder(chain(sort(keys(parts))), parts, List())
 
 fun [tail] parseInOrder(ns: Chain<String>, parts: Dict<String, String>,
                         acc: List<PStmt>): List<PStmt>|None
@@ -1087,13 +1087,13 @@ fun cStage(stmts: List<PStmt>, optLevel: Int, profile: Bool,
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
   let _1 = spanEnd(spTail)
   if !isEmpty(tl.tlErrs)
-    ret (prepend(printedDiagnostics(tl.tlErrs), List<String>()), 1)
+    ret (prepend(printedDiagnostics(tl.tlErrs), List()), 1)
   let spInline = spanBegin("lower", "ast_inline+literals")
   let lowered = fixGlobalIntegers(fixGlobalStrings(inlineAst(tl.tlStmts)))
   let _2 = spanEnd(spInline)
   let fwd = checkLazyForwardRefs(lowered)
   if !isEmpty(fwd)
-    ret (prepend(printedDiagnostics(fwd), List<String>()), 1)
+    ret (prepend(printedDiagnostics(fwd), List()), 1)
   let spLazy = spanBegin("lower", "lazy_lets")
   let low1 = lowerLazyLets(lowered)
   let _3 = spanEnd(spLazy)
@@ -1108,7 +1108,7 @@ fun cStage(stmts: List<PStmt>, optLevel: Int, profile: Bool,
   let _6 = spanEnd(spExits)
   ret match(cFindMain(chain(final2)))
     (nm: System::String) => cEmit(final2, nm, optLevel, profile, headers)
-    ()                    => (prepend("No main function found\n", List<String>()), 1)
+    ()                    => (prepend("No main function found\n", List()), 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
 # `main` in no namespace is not a main), the return type must be the bigint
@@ -1144,7 +1144,7 @@ fun cEmit(stmts: List<PStmt>, mainName: System::String, optLevel: Int,
   let _ = spanEnd(sp)
   ret isEmpty(out.ccErrors)
     ? (out.ccParts, 0)
-    : (prepend(join(out.ccErrors, "\n") + "\n", List<String>()), 1)
+    : (prepend(join(out.ccErrors, "\n") + "\n", List()), 1)
 
 fun astMode(text: String): (out: String, code: Int)
   ret match(parseProgram(text, "x"))

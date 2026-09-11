@@ -46,10 +46,10 @@ fun compileStmt(st: PStmt, r: Resolver, retType: Spec|None): StmtOut
     # proper ones into their if at both fold sites); it passes through
     # unchanged and check reports it. Imports and namespaces carry no
     # behaviour of their own.
-    (ei: PsElseIf)     => StmtOut(st, List<PStmt>())
-    (el: PsElse)       => StmtOut(st, List<PStmt>())
-    (im: PsImport)     => StmtOut(st, List<PStmt>())
-    (ns: PsNamespace)  => StmtOut(st, List<PStmt>())
+    (ei: PsElseIf)     => StmtOut(st, List())
+    (el: PsElse)       => StmtOut(st, List())
+    (im: PsImport)     => StmtOut(st, List())
+    (ns: PsNamespace)  => StmtOut(st, List())
     (inst: PsTraitInstance) => compileTraitInstance(inst, r)
 
 # ── the inference core ──────────────────────────────────────────────────────
@@ -117,8 +117,8 @@ fun compileDestructure(d: PsDestructure, r: Resolver): StmtOut
   # THEN propagate the parent tuple's entry types onto the RAW targets, and
   # only then compile them — Python refines first (lets.py:518-534).
   let refined = propagate(finalTy, d.dTargets, r)
-  let compiled = compileStmts(chain(refined), r, None, builder<PStmt >(),
-                              List<PStmt>())
+  let compiled = compileStmts(chain(refined), r, None, builder(),
+                              List())
   ret StmtOut(PsDestructure(d.dName, d.dAttrs, finalTy, compiled.slStmts,
                             exprOf(init), d.psdLine, inferredNow),
               concat(globalsOf(init),
@@ -134,24 +134,24 @@ fun propagate(parentTy: Spec|None, targets: List<PStmt>,
   ret match(parentTy)
     (p: Spec) => match(p)
       (st: STuple) => sameLen(chain(st.stEntries), chain(targets))
-        ? propagateLoop(chain(targets), chain(st.stEntries), r, List<PStmt>())
+        ? propagateLoop(chain(targets), chain(st.stEntries), r, List())
         : targets
       (o: Spec)    => targets
     ()        => targets
 
 fun propagateLoop(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
                          acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(propagateLoopB(ts, es, r, builderFrom<PStmt>(acc)))
+  ret build(propagateLoopB(ts, es, r, builderFrom(acc)))
 
 fun [tail] propagateLoopB(ts: Chain<PStmt>, es: Chain<SEntry>, r: Resolver,
-                         [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                         [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ts)
     (nil: ChainEnd) => acc
     (t2: ChainLink) => match(es)
       (nil2: ChainEnd) => acc
       (e: ChainLink)   => propagateLoopB(t2.next, e.next, r,
-                                        push<PStmt >(acc, adopt(t2.value,
-                                                          e.value.seType, r)))
+                                        push(acc, adopt(t2.value,
+                                                  e.value.seType, r)))
 
 fun adopt(target: PStmt, entryTy: Spec|None, r: Resolver): PStmt
   ret match(target)
@@ -234,8 +234,8 @@ fun compileClass(c: PsClass, r0: Resolver): StmtOut
   let r = classScope(c, r0)
   let inh = findClassesOrError(c.cImplements, r)
   let allSlots = overrideInheritedSlots(r0, createSlotsFromMembers(c),
-                                        parentSlotsOf(chain(inh), List<Slot>()))
-  let allParents = buildAllParents(chain(inh), r, List<Spec>())
+                                        parentSlotsOf(chain(inh), List()))
+  let allParents = buildAllParents(chain(inh), r, List())
   let params = compileStmt(c.cParams, r, None)
   let wheres = compileParams(c.cWheres, r)
   # Members compile in the class-BODY scope: the class's fields and methods
@@ -245,9 +245,9 @@ fun compileClass(c: PsClass, r0: Resolver): StmtOut
   # fixed signatures); the stored statement keeps none.
   let members = compileStmts(chain(withOwnerWheres(c.cMembers, c.cWheres)),
                              genScope(c.cGens, RClassBody(c, r0)), None,
-                             builder<PStmt >(), List<PStmt>())
+                             builder(), List())
   ret StmtOut(PsClass(c.cName, c.cAttrs, c.cGens, stmtOr(params, c.cParams),
-                      resolvedImplements(chain(inh), List<Spec>()),
+                      resolvedImplements(chain(inh), List()),
                       wheres.psSpecs, stripOwnerWheres(members.slStmts, c.cWheres),
                       c.cIsInterface, c.pscLine, allParents, allSlots,
                       c.cImports),
@@ -263,7 +263,7 @@ fun compileTraitInstance(inst: PsTraitInstance, r0: Resolver): StmtOut
   let wheres = compileParams(inst.tiWheres, r)
   let members = compileStmts(chain(withOwnerWheres(inst.tiMembers,
                                                    inst.tiWheres)),
-                             r, None, builder<PStmt >(), List<PStmt>())
+                             r, None, builder(), List())
   ret StmtOut(PsTraitInstance(inst.tiName, inst.tiAttrs, inst.tiAmbient,
                               inst.tiGens,
                               specOr(pat, inst.tiPattern), wheres.psSpecs,
@@ -283,7 +283,7 @@ fun specOr(out: SpecOut|None, orig: Spec): Spec
 # only a global function declares type parameters — does not depend on whether
 # the owner happens to carry a `where`.
 fun withOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>
-  ret map(ms, (m: PStmt) => ownerWhereFn(m, wheres))
+  ret map(ms, (m) => ownerWhereFn(m, wheres))
 
 fun ownerWhereFn(m: PStmt, wheres: List<Spec>): PStmt
   ret match(m)
@@ -294,22 +294,22 @@ fun ownerWhereFn(m: PStmt, wheres: List<Spec>): PStmt
     (o: PStmt) => m
 
 fun stripOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>
-  ret isEmpty(wheres) ? ms : map(ms, (m: PStmt) => strippedWhereFn(m))
+  ret isEmpty(wheres) ? ms : map(ms, (m) => strippedWhereFn(m))
 
 fun strippedWhereFn(m: PStmt): PStmt
   ret match(m)
     (f: PsFun) => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
-                        f.fRet, List<Spec>(), f.psfLine, f.fRetInferred,
+                        f.fRet, List(), f.psfLine, f.fRetInferred,
                         f.fNested, f.fImports)
     (o: PStmt) => m
 
 fun resolvedImplements(fs: Chain<FoundClass>, acc: List<Spec>): List<Spec>
-  ret build<Spec >(resolvedImplementsB(fs, builderFrom<Spec>(acc)))
+  ret build(resolvedImplementsB(fs, builderFrom(acc)))
 
-fun [tail] resolvedImplementsB(fs: Chain<FoundClass>, [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
+fun [tail] resolvedImplementsB(fs: Chain<FoundClass>, [terminal] acc: ListBuilder<Spec>): ListBuilder<Spec>
   ret match(fs)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => resolvedImplementsB(l.next, push<Spec >(acc, l.value.fcSpec))
+    (l: ChainLink)  => resolvedImplementsB(l.next, push(acc, l.value.fcSpec))
 
 fun [tail] parentSlotsOf(fs: Chain<FoundClass>, acc: List<Slot>): List<Slot>
   ret match(fs)
@@ -321,7 +321,7 @@ fun [tail] parentSlotsOf(fs: Chain<FoundClass>, acc: List<Slot>): List<Slot>
 fun slotsOr(slots: List<Slot>|None): List<Slot>
   ret match(slots)
     (ss: List<Slot>) => ss
-    ()               => List<Slot>()
+    ()               => List()
 
 # Each resolved parent joins the set, then its OWN transitive parents join —
 # substituted through this instantiation's type args when both sides carry
@@ -351,7 +351,7 @@ fun closureNeedsMapping(spec: Spec, cs: PsClass): Bool
 fun specArgsOf(spec: Spec): List<Spec>
   ret match(spec)
     (c: SClass) => c.scParams
-    (o: Spec)   => List<Spec>()
+    (o: Spec)   => List()
 
 fun [tail] addSubstituted(ps: Chain<Spec>, mapping: List<Binding>,
                           acc: List<Spec>): List<Spec>
@@ -370,8 +370,8 @@ fun [tail] addSubstituted(ps: Chain<Spec>, mapping: List<Binding>,
 fun compileEnum(e: PsEnum, r0: Resolver): StmtOut
   let r = enumScope(e, r0)
   let params = compileStmt(e.eParams, r, None)
-  let variants = compileStmts(chain(e.eVariants), r, None, builder<PStmt >(),
-                              List<PStmt>())
+  let variants = compileStmts(chain(e.eVariants), r, None, builder(),
+                              List())
   let glb = concat(params.soExtra, variants.slGlobals)
   # The constructor returns the ROOT statement type — narrow back to the
   # variant to run the layout over the freshly compiled node.
@@ -400,13 +400,13 @@ fun deriveAllFields(e: PsEnum): List<SField>
 # statement (a stale reference to a pruned generic) derives EMPTY fields:
 # such a spec is only ever a pointer; its layout is never asked for.
 fun enumFieldsProvider(statements: List<PStmt>): (:String): List<SField>
-  let reg = efRegistry(chain(statements), Dict<String, PsEnum>())
-  ret memoize<String, List<SField>>((root: String) => efDerive(reg, root))
+  let reg = efRegistry(chain(statements), Dict())
+  ret memoize((root) => efDerive(reg, root))
 
 fun efDerive(reg: Dict<String, PsEnum>, root: String): List<SField>
   ret match(get(reg, root))
     (e: PsEnum) => deriveAllFields(e)
-    ()          => List<SField>()
+    ()          => List()
 
 fun [tail] efRegistry(ss: Chain<PStmt>,
                       acc: Dict<String, PsEnum>): Dict<String, PsEnum>
@@ -438,15 +438,15 @@ fun enumFieldsDerive(r: Resolver, root: String): List<SField>
   ret match(soleItem(findType(r, root)))
     (f: Found) => match(f.fStmt)
       (e: PsEnum) => deriveAllFields(e)
-      (o: PStmt)  => List<SField>()
-    ()         => List<SField>()
+      (o: PStmt)  => List()
+    ()         => List()
 
 # _collect_leaf_names: a node with no variants IS a leaf — unless it also has
 # no parameter list, which is the uninhabited empty type (`enum Never`).
 fun collectLeafNames(e: PsEnum): List<String>
   ret isEmpty(e.eVariants)
-    ? (e.eHasParams ? prepend(e.eName, List<String>()) : List<String>())
-    : leafLoop(chain(e.eVariants), List<String>())
+    ? (e.eHasParams ? prepend(e.eName, List()) : List())
+    : leafLoop(chain(e.eVariants), List())
 
 fun [tail] leafLoop(vs: Chain<PStmt>, acc: List<String>): List<String>
   ret match(vs)
@@ -460,12 +460,12 @@ fun [tail] leafLoop(vs: Chain<PStmt>, acc: List<String>): List<String>
 # (types.py _collect_data_fields): the dedup reads the SET, so the fields ride
 # ONE builder in declaration order — the old per-add list rebuild cost 1.4e9
 # pushes per self-compile (fields are DERIVED per read, so this path is hot).
-class [linear, final] FieldAcc(faSeen: Set<String >, faOut: ListBuilder<SField >)
+class [linear, final] FieldAcc(faSeen: Set<String>, faOut: ListBuilder<SField>)
 
 fun collectDataFields(e: PsEnum): List<SField>
-  ret build<SField >(dfVariants(chain(e.eVariants),
-                     dfParams(chain(flattenParams(e.eParams)),
-                              FieldAcc(Set<String >(), builder<SField >()))).faOut)
+  ret build(dfVariants(chain(e.eVariants),
+            dfParams(chain(flattenParams(e.eParams)),
+                     FieldAcc(Set(), builder()))).faOut)
 
 fun dfVariants(vs: Chain<PStmt>, [terminal] acc: FieldAcc): FieldAcc
   ret match(vs)
@@ -489,9 +489,9 @@ fun [tail] dfParams(ls: Chain<PStmt>, [terminal] acc: FieldAcc): FieldAcc
 fun addFieldOnce([terminal] acc: FieldAcc, name: String, ty: Spec): FieldAcc
   let seen = acc.faSeen
   let out = acc.faOut
-  ret contains<String >(seen, name)
+  ret contains(seen, name)
     ? FieldAcc(seen, out)
-    : FieldAcc(add<String >(seen, name), push<SField >(out, SField(name, ty)))
+    : FieldAcc(add(seen, name), push(out, SField(name, ty)))
 
 fun [tail] hasFieldNamed(fs: Chain<SField>, name: String): Bool
   ret match(fs)
@@ -504,28 +504,28 @@ fun [tail] hasFieldNamed(fs: Chain<SField>, name: String): Bool
 fun assignSpecs(e: PsEnum, root: String, allLeaves: List<String>): PStmt
   ret PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams,
              assignAllSpecs(chain(e.eVariants), root, allLeaves,
-                            List<PStmt>()),
+                            List()),
              e.eHasParams, e.pseLine, root,
-             SEnum(root, collectLeafNames(e), allLeaves, List<Spec>(),
+             SEnum(root, collectLeafNames(e), allLeaves, List(),
                    e.pseLine),
              e.eImports)
 
 fun assignAllSpecs(vs: Chain<PStmt>, root: String,
                           allLeaves: List<String>,
                           acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(assignAllSpecsB(vs, root, allLeaves, builderFrom<PStmt>(acc)))
+  ret build(assignAllSpecsB(vs, root, allLeaves, builderFrom(acc)))
 
 fun [tail] assignAllSpecsB(vs: Chain<PStmt>, root: String,
                           allLeaves: List<String>,
-                          [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+                          [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (v: PsEnum) => assignAllSpecsB(l.next, root, allLeaves,
-                                    push<PStmt >(acc, assignSpecs(v, root,
-                                                            allLeaves)))
+                                    push(acc, assignSpecs(v, root,
+                                                    allLeaves)))
       (o: PStmt)  => assignAllSpecsB(l.next, root, allLeaves,
-                                    push<PStmt >(acc, l.value))
+                                    push(acc, l.value))
 
 # ── control ─────────────────────────────────────────────────────────────────
 
@@ -546,9 +546,9 @@ fun compileIf(i: PsIf, r: Resolver, retType: Spec|None): StmtOut
   let t0 = collapseElseIf(i.ifTrue)
   let f0 = collapseElseIf(i.ifFalse)
   let t2 = compileStmts(chain(t0), blockScope(t0, r), retType,
-                        builder<PStmt >(), List<PStmt>())
+                        builder(), List())
   let f = compileStmts(chain(f0), blockScope(f0, r), retType,
-                       builder<PStmt >(), List<PStmt>())
+                       builder(), List())
   ret StmtOut(PsIf(cond.eoExpr, t2.slStmts, f.slStmts, i.psifLine),
               concat(cond.eoGlobals, concat(t2.slGlobals, f.slGlobals)))
 
@@ -561,25 +561,25 @@ fun compileIf(i: PsIf, r: Resolver, retType: Spec|None): StmtOut
 # the false branch a previous pass folded in.
 
 fun collapseElseIf(stmts: List<PStmt>): List<PStmt>
-  ret ceiLoop(chain(stmts), List<PStmt>())
+  ret ceiLoop(chain(stmts), List())
 
 fun ceiLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
-  ret build<PStmt >(ceiLoopB(ss, builderFrom<PStmt>(acc)))
+  ret build(ceiLoopB(ss, builderFrom(acc)))
 
-fun [tail] ceiLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+fun [tail] ceiLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (i: PsIf)  => foldChain(i, l.next)
-        |> (fc) => ceiLoopB(fc.fcRest, push<PStmt >(acc, fc.fcIf))
-      (o: PStmt) => ceiLoopB(l.next, push<PStmt >(acc, l.value))
+        |> (fc) => ceiLoopB(fc.fcRest, push(acc, fc.fcIf))
+      (o: PStmt) => ceiLoopB(l.next, push(acc, l.value))
 
 class [final] FoldedChain(fcIf: PStmt, fcRest: Chain<PStmt>)
 
 # Gather the trailing else-if siblings; an else CONSUMES and stops, anything
 # else stops without consuming.
 fun foldChain(i: PsIf, rest: Chain<PStmt>): FoldedChain
-  ret gatherArms(rest, List<PStmt>(), i)
+  ret gatherArms(rest, List(), i)
 
 # Arms accumulate INNERMOST-FIRST (prepend), which is the order nestArms
 # consumes them in — so nothing is reversed. Python builds them in source order
@@ -608,7 +608,7 @@ fun finishFold(i: PsIf, arms: List<PStmt>, elseBody: List<PStmt>|None,
 fun elseTail(elseBody: List<PStmt>|None): List<PStmt>
   ret match(elseBody)
     (b: List<PStmt>) => b
-    ()               => List<PStmt>()
+    ()               => List()
 
 # Right-nest the arms, innermost first: each else-if becomes an If whose false
 # branch is everything folded so far.
@@ -618,7 +618,7 @@ fun [tail] nestArms(armsRev: Chain<PStmt>, tail2: List<PStmt>): List<PStmt>
     (l: ChainLink)  => match(l.value)
       (ei: PsElseIf) => nestArms(l.next,
                                  prepend(PsIf(ei.eiCond, ei.eiStmts, tail2,
-                                             ei.pseiLine), List<PStmt>()))
+                                             ei.pseiLine), List()))
       (o: PStmt)     => nestArms(l.next, tail2)
 
 # ── lists ───────────────────────────────────────────────────────────────────
@@ -626,17 +626,17 @@ fun [tail] nestArms(armsRev: Chain<PStmt>, tail2: List<PStmt>): List<PStmt>
 class [final] StmtsOut(slStmts: List<PStmt>, slGlobals: List<PStmt>)
 
 fun [tail] compileStmts(ss: Chain<PStmt>, r: Resolver, retType: Spec|None,
-                        [terminal] acc: ListBuilder<PStmt >,
+                        [terminal] acc: ListBuilder<PStmt>,
                         glb: List<PStmt>): StmtsOut
   ret match(ss)
-    (nil: ChainEnd) => StmtsOut(build<PStmt >(acc), glb)
+    (nil: ChainEnd) => StmtsOut(build(acc), glb)
     (l: ChainLink)  => compileStmt(l.value, r, retType)
       |> (one) => compileStmts(l.next, r, retType, addStmt(acc, one.soStmt),
                                concat(glb, one.soExtra))
 
-fun addStmt([terminal] acc: ListBuilder<PStmt >, st: PStmt|None): ListBuilder<PStmt >
+fun addStmt([terminal] acc: ListBuilder<PStmt>, st: PStmt|None): ListBuilder<PStmt>
   ret match(st)
-    (x: PStmt) => push<PStmt >(acc, x)
+    (x: PStmt) => push(acc, x)
     ()         => acc
 
 # ── small helpers ───────────────────────────────────────────────────────────
@@ -654,7 +654,7 @@ fun exprOf(o: ExprOut|None): PExpr|None
 fun globalsOf(o: ExprOut|None): List<PStmt>
   ret match(o)
     (e: ExprOut) => e.eoGlobals
-    ()           => List<PStmt>()
+    ()           => List()
 
 fun specOf(o: SpecOut|None): Spec|None
   ret match(o)
@@ -664,7 +664,7 @@ fun specOf(o: SpecOut|None): Spec|None
 fun globalsOfSpec(o: SpecOut|None): List<PStmt>
   ret match(o)
     (s2: SpecOut) => s2.soGlobals
-    ()            => List<PStmt>()
+    ()            => List()
 
 fun stmtOr(o: StmtOut, fallback: PStmt): PStmt
   ret match(o.soStmt)

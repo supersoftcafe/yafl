@@ -24,11 +24,11 @@ fun [tail] btFunction(f: CgFunction): CgFunction
 class [final] BtOut(btOps: Segment<Op>|None, btChanged: Bool)
 
 # Instruction order out; `changed` rides alongside as a plain value.
-class [linear, final] BtAcc(baOps: SeqBuilder<Op >, baChanged: Bool)
+class [linear, final] BtAcc(baOps: SeqBuilder<Op>, baChanged: Bool)
 
 fun btOnce(ops: Segment<Op>|None): BtOut
-  ret btLoop<SeqStream<Op>>(seqStream<Op>(ops), ops,
-                              BtAcc(seqBuilder<Op >(), false))
+  ret btLoop(seqStream(ops), ops,
+               BtAcc(seqBuilder(), false))
 
 # Stream-driven walk; `ops` rides alongside for the label-target search
 # (random access, not part of the sequential drive). Error arm: Never.
@@ -38,17 +38,17 @@ fun [tail] btLoop<S>(s: S, ops: Segment<Op>|None,
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => btLoop<S>(r.stream, ops, btStep(acc, cur, ops))
-      (n: None) => BtOut(build<Op >(acc.baOps), acc.baChanged)
-    (er: Error<Op | None, Never>) => BtOut(build<Op >(acc.baOps), acc.baChanged)
+      (n: None) => BtOut(build<Op>(acc.baOps), acc.baChanged)
+    (er: Error<Op | None, Never>) => BtOut(build<Op>(acc.baOps), acc.baChanged)
 
 fun btStep([terminal] acc: BtAcc, op: Op, ops: Segment<Op>|None): BtAcc
   ret match(op)
     (j: OpJump) => match(btTerminatorAfter(ops, j.jumpName))
       (t2: Op) => btSameJump(t2, j)
-        ? BtAcc(push<Op >(acc.baOps, op), acc.baChanged)
-        : BtAcc(push<Op >(acc.baOps, t2), true)
-      ()        => BtAcc(push<Op >(acc.baOps, op), acc.baChanged)
-    (o: Op)     => BtAcc(push<Op >(acc.baOps, op), acc.baChanged)
+        ? BtAcc(push(acc.baOps, op), acc.baChanged)
+        : BtAcc(push(acc.baOps, t2), true)
+      ()        => BtAcc(push(acc.baOps, op), acc.baChanged)
+    (o: Op)     => BtAcc(push(acc.baOps, op), acc.baChanged)
 
 fun btSameJump(t2: Op, j: OpJump): Bool
   ret match(t2)
@@ -56,7 +56,7 @@ fun btSameJump(t2: Op, j: OpJump): Bool
     (o: Op)      => false
 
 fun btTerminatorAfter(ops: Segment<Op>|None, labelName: String): Op|None
-  ret btTaLoop(seqStream<Op>(ops), labelName)
+  ret btTaLoop(seqStream(ops), labelName)
 
 fun [tail] btTaLoop(st: SeqStream<Op>, labelName: String): Op|None
   let p = cgPullOp(st)

@@ -48,7 +48,7 @@ fun svLazyDiscard(): RParam
 fun lazyRuntimeCall1(name: String, argName: String, argVal: RParam): Op
   ret OpMove(svLazyDiscard(),
              RpRuntimeInvoke(name, RpNewStruct(list1(RpNamedValue(argName, argVal))), CgDataPointer()),
-             true, List<RParam>())
+             true, List())
 
 # Insertion shades for a value stored into a declared-root slot (the lazy
 # stub's `value` field is a declared root): with roots scanned ONCE at cycle
@@ -57,24 +57,24 @@ fun lazyRuntimeCall1(name: String, argName: String, argVal: RParam): Op
 # the marker. One gc_root_publish per pointer leaf, mirroring Python's
 # _publish_root_shades (DataPointer; FuncPointer's .o; struct leaves).
 fun lazyPublishRootShades(value: RParam, valueType: CgType): List<Op>
-  ret map(build<RParam >(lazyPublishLeaves(value, valueType,
-                                           builder<RParam >())),
-          (leaf: RParam) => lazyRuntimeCall1("gc_root_publish", "value", leaf))
+  ret map(build(lazyPublishLeaves(value, valueType,
+                                  builder())),
+          (leaf) => lazyRuntimeCall1("gc_root_publish", "value", leaf))
 
 # The pointer leaves in FIELD order — each becomes a publish call in that
 # order.
 fun lazyPublishLeaves(v: RParam, t2: CgType,
-                      [terminal] acc: ListBuilder<RParam >): ListBuilder<RParam >
+                      [terminal] acc: ListBuilder<RParam>): ListBuilder<RParam>
   ret match(t2)
-    (d: CgDataPointer)      => push<RParam >(acc, v)
-    (f2: CgFuncPointer)     => push<RParam >(acc, RpStructField(v, "o"))
+    (d: CgDataPointer)      => push(acc, v)
+    (f2: CgFuncPointer)     => push(acc, RpStructField(v, "o"))
     (s2: CgStruct)          => lazyPublishLeavesFields(v, chain(s2.fields), acc)
     (im: CgImmediateStruct) => lazyPublishLeavesFields(v, chain(im.fields), acc)
     (o: CgType)              => acc
 
 # A walk, not a fold: the builder is linear and cannot ride a fold's lambda.
 fun lazyPublishLeavesFields(v: RParam, fields: Chain<CgField>,
-                            [terminal] acc: ListBuilder<RParam >): ListBuilder<RParam >
+                            [terminal] acc: ListBuilder<RParam>): ListBuilder<RParam>
   ret match(fields)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => lazyPublishLeavesFields(v, l.next,
@@ -98,7 +98,7 @@ fun lazySyncWrap(value: RParam, wrapped: CgType): RParam
 # ── stub class ───────────────────────────────────────────────────────────────
 
 fun makeStubObject(valueType: CgType): CgObject
-  ret CgObject(stubClassName(valueType), List<String>(), List<CgFuncSlot>(),
+  ret CgObject(stubClassName(valueType), List(), List(),
                CgImmediateStruct(list4(CgField("type", CgDataPointer()),
                                        CgField("flag", CgDataPointer()),
                                        CgField("closure", CgFuncPointer()),
@@ -114,12 +114,12 @@ fun makeDrainFunction(valueType: CgType): CgFunction
   let value = RpStackVar(valueType, "value")
   let svHead = RpStackVar(CgDataPointer(), "$sv_head")
   let svNext = RpStackVar(CgDataPointer(), "$sv_next")
-  let ops = build<Op>(push<Op>(push<Op>(push<Op>(push<Op>(push<Op>(push<Op>(push<Op>(push<Op>(push<Op>(builder<Op>(), OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
+  let ops = build(push(push(push(push(push(push(push(push(push(builder<Op>(), OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
                                      RpNewStruct(list1(RpNamedValue("flag", flagField))),
-                                     CgDataPointer()), false, List<RParam>())), OpLabel("$loop", List<RParam>())), OpJumpIf("$done", svHead, true, List<RParam>())), # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
-      OpMove(RpObjectField(valueType, svHead, waiterTy, "result", None, false), value, false, List<RParam>())), OpMove(svNext, RpRuntimeInvoke("lazy_chain_step",
+                                     CgDataPointer()), false, List())), OpLabel("$loop", List())), OpJumpIf("$done", svHead, true, List())), # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
+      OpMove(RpObjectField(valueType, svHead, waiterTy, "result", None, false), value, false, List())), OpMove(svNext, RpRuntimeInvoke("lazy_chain_step",
                                      RpNewStruct(list1(RpNamedValue("head", svHead))),
-                                     CgDataPointer()), false, List<RParam>())), lazyRuntimeCall1("task_complete_deferred", "self", svHead)), OpMove(svHead, svNext, false, List<RParam>())), OpJump("$loop", List<RParam>())), OpLabel("$done", List<RParam>())))
+                                     CgDataPointer()), false, List())), lazyRuntimeCall1("task_complete_deferred", "self", svHead)), OpMove(svHead, svNext, false, List())), OpJump("$loop", List())), OpLabel("$done", List())))
   ret CgFunction(drainFunctionName(valueType),
                  CgStruct(list3(CgField("this", CgDataPointer()),
                                 CgField("flag_field", CgDataPointer()),
@@ -128,7 +128,7 @@ fun makeDrainFunction(valueType: CgType): CgFunction
                  CgStruct(list3(CgField("$sv_head", CgDataPointer()),
                                 CgField("$sv_next", CgDataPointer()),
                                 CgField("$sv_lazy_discard", CgDataPointer()))),
-                 build<Op >(push<Op >(_pushChain<Op >(seqBuilder<Op >(), chain<Op>(ops)), OpReturn(RpNullPointer(), List<RParam>()))),
+                 build(push(pushAll(seqBuilder(), ops), OpReturn(RpNullPointer(), List()))),
                  "lazy chain drain for " + irMangle(valueType),
                  None, false, false, true, false)
 
@@ -137,7 +137,7 @@ fun emitDrainCall(valueType: CgType, flagAddr: RParam, value: RParam): Op
   ret OpCall(RpGlobalFunction(drainFunctionName(valueType), None, false, None, false, false),
              RpNewStruct(list2(RpNamedValue("flag_field", flagAddr),
                                RpNamedValue("value", value))),
-             None, false, false, CgDataPointer(), List<RParam>())
+             None, false, false, CgDataPointer(), List())
 
 # ── fetch: the force protocol (bypass_async, hand-built IS_TASK branching) ──
 
@@ -161,13 +161,12 @@ fun makeFetchFunction(valueType: CgType): CgFunction
                  CgStruct(list1(CgField("this", CgDataPointer()))),
                  wrapped,
                  # Stack layout, in declaration order.
-                 CgStruct(build<CgField >(push<CgField >(push<CgField >(
-                     _pushChain<CgField >(builder<CgField >(),
-                         chain<CgField>(list5(CgField("waiter", CgDataPointer()),
-                                              CgField("status", CgInt(32)),
-                                              CgField("flag_addr", CgDataPointer()),
-                                              CgField("closure", CgFuncPointer()),
-                                              CgField("result_wrapped", wrapped)))),
+                 CgStruct(build(push(push(
+                     builderFrom(list5(CgField("waiter", CgDataPointer()),
+                                       CgField("status", CgInt(32)),
+                                       CgField("flag_addr", CgDataPointer()),
+                                       CgField("closure", CgFuncPointer()),
+                                       CgField("result_wrapped", wrapped))),
                      CgField("value", valueType)),
                      CgField("$sv_lazy_discard", CgDataPointer())))),
                  cgOpsOf(fetchOps(valueType, cls, waiterTy, wrapped, this, waiter, status, flagAddr,
@@ -181,36 +180,36 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
              flagF: RParam, closureF: RParam, valueF: RParam, isComplete: RParam): List<Op>
   let finisher = finisherFunctionName(valueType)
   let head = list5(
-      OpJumpIf("$slow", isComplete, true, List<RParam>()),
-      OpReturn(lazySyncWrap(valueF, wrapped), List<RParam>()),
-      OpLabel("$slow", List<RParam>()),
-      OpNewObject(waiterTy, waiter, None, List<RParam>()),
+      OpJumpIf("$slow", isComplete, true, List()),
+      OpReturn(lazySyncWrap(valueF, wrapped), List()),
+      OpLabel("$slow", List()),
+      OpNewObject(waiterTy, waiter, None, List()),
       lazyRuntimeCall1("task_init", "self", waiter))
   let enqueue = list5(
-      OpMove(flagAddr, RpPointerTo(flagF), false, List<RParam>()),
+      OpMove(flagAddr, RpPointerTo(flagF), false, List()),
       OpMove(status, RpRuntimeInvoke("lazy_thunk_enqueue",
                                      RpNewStruct(list2(RpNamedValue("flag", flagAddr),
                                                        RpNamedValue("waiter", waiter))),
-                                     CgInt(32)), false, List<RParam>()),
-      OpJumpIf("$already_done", RpIntEqConst(status, 2), false, List<RParam>()),
-      OpJumpIf("$return_waiter", RpIntEqConst(status, 0), false, List<RParam>()),
+                                     CgInt(32)), false, List()),
+      OpJumpIf("$already_done", RpIntEqConst(status, 2), false, List()),
+      OpJumpIf("$return_waiter", RpIntEqConst(status, 0), false, List()),
       # status == 1: won init race
-      OpMove(closure, closureF, false, List<RParam>()))
+      OpMove(closure, closureF, false, List()))
   # Sync init: unwrap, store, publish (root shade), clear closure, drain
   let syncInit = concat(list4(
-      OpCall(closure, RpNewStruct(List<RpNamedValue>()), rwrapped, false, false, None, List<RParam>()),
+      OpCall(closure, RpNewStruct(List()), rwrapped, false, false, None, List()),
       OpJumpIf("$async_init",
                RpRuntimeInvoke("UNLIKELY",
                                RpNewStruct(list1(RpNamedValue("x", isTaskParam(rwrapped, wrapped)))),
-                               CgInt(32)), false, List<RParam>()),
-      OpMove(value, lazyExtractValue(rwrapped, valueType, wrapped), false, List<RParam>()),
-      OpMove(valueF, value, false, List<RParam>())),
+                               CgInt(32)), false, List()),
+      OpMove(value, lazyExtractValue(rwrapped, valueType, wrapped), false, List()),
+      OpMove(valueF, value, false, List())),
     concat(lazyPublishRootShades(value, valueType),
-           list1(OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List<RParam>()))))
+           list1(OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List()))))
   let asyncTail = list4(
       emitDrainCall(valueType, RpPointerTo(flagF), value),
-      OpReturn(lazySyncWrap(value, wrapped), List<RParam>()),
-      OpLabel("$async_init", List<RParam>()),
+      OpReturn(lazySyncWrap(value, wrapped), List()),
+      OpLabel("$async_init", List()),
       OpMove(svLazyDiscard(),
              RpRuntimeInvoke("task_on_complete",
                              RpNewStruct(list2(
@@ -219,13 +218,13 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
                                               CgDataPointer())),
                                RpNamedValue("cb", RpGlobalFunction(finisher, this, false, None, false, false)))),
                              CgDataPointer()),
-             true, List<RParam>()))
+             true, List()))
   let tail = list5(
-      OpReturn(RpTagTask(waiter, wrapped), List<RParam>()),
-      OpLabel("$already_done", List<RParam>()),
-      OpReturn(lazySyncWrap(valueF, wrapped), List<RParam>()),
-      OpLabel("$return_waiter", List<RParam>()),
-      OpReturn(RpTagTask(waiter, wrapped), List<RParam>()))
+      OpReturn(RpTagTask(waiter, wrapped), List()),
+      OpLabel("$already_done", List()),
+      OpReturn(lazySyncWrap(valueF, wrapped), List()),
+      OpLabel("$return_waiter", List()),
+      OpReturn(RpTagTask(waiter, wrapped), List()))
   ret concat(concat(concat(concat(head, enqueue), syncInit), asyncTail), tail)
 
 # ── [future] worker runner ───────────────────────────────────────────────────
@@ -244,8 +243,8 @@ fun makeFutureRunnerFunction(valueType: CgType): CgFunction
                  CgDataPointer(),
                  CgStruct(list1(CgField("result_wrapped", wrapped))),
                  cgOpsOf(list2(OpCall(RpGlobalFunction(fetchFunctionName(valueType), this, false, None, false, false),
-                              RpNewStruct(List<RpNamedValue>()), rwrapped, false, false, None, List<RParam>()),
-                       OpReturn(RpNullPointer(), List<RParam>()))),
+                              RpNewStruct(List()), rwrapped, false, false, None, List()),
+                       OpReturn(RpNullPointer(), List()))),
                  "[future] worker runner for " + irMangle(valueType),
                  None, false, false, true, false)
 
@@ -267,12 +266,12 @@ fun makeFinisherFunction(valueType: CgType): CgFunction
                  CgDataPointer(),
                  CgStruct(list2(CgField("value", valueType),
                                 CgField("$sv_lazy_discard", CgDataPointer()))),
-                 cgOpsOf(concat(concat(list2(OpMove(value, completedResult, false, List<RParam>()),
-                                     OpMove(valueF, value, false, List<RParam>())),
+                 cgOpsOf(concat(concat(list2(OpMove(value, completedResult, false, List()),
+                                     OpMove(valueF, value, false, List())),
                                lazyPublishRootShades(value, valueType)),
-                        list3(OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List<RParam>()),
+                        list3(OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List()),
                               emitDrainCall(valueType, RpPointerTo(flagF), value),
-                              OpReturn(RpNullPointer(), List<RParam>())))),
+                              OpReturn(RpNullPointer(), List())))),
                  "lazy fetch async-finisher for " + irMangle(valueType),
                  None, true, false, true, false)
 

@@ -382,38 +382,38 @@ fun eqStrOpt(a: String|None, b: String|None): Bool
 
 # Python's field_args dict equality: same keys in order AND equal value exprs.
 fun eqFieldArgs(a: List<PFieldArg>, b: List<PFieldArg>): Bool
-  ret eqBy<PFieldArg>(a, b, (x: PFieldArg, y: PFieldArg) =>
+  ret eqBy(a, b, (x, y) =>
         x.faName == y.faName && eqExpr(x.faValue, y.faValue))
 
 fun eqStrs(a: List<String>, b: List<String>): Bool
-  ret eqBy<String>(a, b, (x: String, y: String) => x == y)
+  ret eqBy(a, b, (x, y) => x == y)
 
 fun eqSpecs(a: List<Spec>, b: List<Spec>): Bool
-  ret eqBy<Spec>(a, b, (x: Spec, y: Spec) => eqSpec(x, y))
+  ret eqBy(a, b, (x, y) => eqSpec(x, y))
 
 fun eqEntries(a: List<SEntry>, b: List<SEntry>): Bool
-  ret eqBy<SEntry>(a, b, (x: SEntry, y: SEntry) => eqEntry(x, y))
+  ret eqBy(a, b, (x, y) => eqEntry(x, y))
 
 fun eqExprs(a: List<PExpr>, b: List<PExpr>): Bool
-  ret eqBy<PExpr>(a, b, (x: PExpr, y: PExpr) => eqExpr(x, y))
+  ret eqBy(a, b, (x, y) => eqExpr(x, y))
 
 fun eqStmts(a: List<PStmt>, b: List<PStmt>): Bool
-  ret eqBy<PStmt>(a, b, (x: PStmt, y: PStmt) => eqStmt(x, y))
+  ret eqBy(a, b, (x, y) => eqStmt(x, y))
 
 fun eqTupEnts(a: List<PTupEnt>, b: List<PTupEnt>): Bool
-  ret eqBy<PTupEnt>(a, b, (x: PTupEnt, y: PTupEnt) => eqTupEnt(x, y))
+  ret eqBy(a, b, (x, y) => eqTupEnt(x, y))
 
 fun eqArms(a: List<PArm>, b: List<PArm>): Bool
-  ret eqBy<PArm>(a, b, (x: PArm, y: PArm) => eqArm(x, y))
+  ret eqBy(a, b, (x, y) => eqArm(x, y))
 
 fun eqLits(a: List<PLit>, b: List<PLit>): Bool
-  ret eqBy<PLit>(a, b, (x: PLit, y: PLit) => eqLit(x, y))
+  ret eqBy(a, b, (x, y) => eqLit(x, y))
 
 fun eqAttrs(a: List<PAttr>, b: List<PAttr>): Bool
-  ret eqBy<PAttr>(a, b, (x: PAttr, y: PAttr) => eqAttr(x, y))
+  ret eqBy(a, b, (x, y) => eqAttr(x, y))
 
 fun eqGens(a: List<PGen>, b: List<PGen>): Bool
-  ret eqBy<PGen>(a, b, (x: PGen, y: PGen) => eqGen(x, y))
+  ret eqBy(a, b, (x, y) => eqGen(x, y))
 
 # ── set-wise comparisons ─────────────────────────────────────────────────────
 # Python holds _all_parents and a slot's provides as SETS: equality is mutual
@@ -459,7 +459,7 @@ fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None): Bool
 # The slot LIST is ordered (own slots first, surviving parent slots after);
 # each slot's provides is a set.
 fun eqSlots(a: List<Slot>, b: List<Slot>): Bool
-  ret eqBy<Slot>(a, b, (x: Slot, y: Slot) => eqSlot(x, y))
+  ret eqBy(a, b, (x, y) => eqSlot(x, y))
 
 fun eqSlot(a: Slot, b: Slot): Bool
   ret a.slotName == b.slotName

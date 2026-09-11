@@ -76,25 +76,25 @@ fun uidCallable(cl: SCallable): String
   ret p == "" ? "" : "f" + p
 
 fun uidTuple(t2: STuple): String
-  ret match(entryUidList(chain(t2.stEntries), builder<String >()))
+  ret match(entryUidList(chain(t2.stEntries), builder()))
     (ids: List<String>) => "(" + join(ids, ",") + ")"
     ()                  => ""
 
 # POSITIONAL: a tuple's identity is its entry uids IN ORDER.
 fun [tail] entryUidList(es: Chain<SEntry>,
-                        [terminal] acc: ListBuilder<String >): List<String>|None
+                        [terminal] acc: ListBuilder<String>): List<String>|None
   ret match(es)
-    (nil: ChainEnd) => build<String >(acc)
+    (nil: ChainEnd) => build(acc)
     (l: ChainLink)  => match(l.value.seType)
       (t2: Spec) => uid(t2)
         |> (u) => u == "" ? None
-                          : entryUidList(l.next, push<String >(acc, u))
+                          : entryUidList(l.next, push(acc, u))
       ()         => None
 
 # A union's identity is its SORTED member ids — set semantics, so `A|B` and
 # `B|A` are the same type.
 fun uidUnion(cm: SCombination): String
-  let ids = memberUids(chain(reprMembers(cm)), List<String>())
+  let ids = memberUids(chain(reprMembers(cm)), List())
   ret match(ids)
     (l: List<String>) => "union(" + join(sort(l), ",") + ")"
     ()                => ""
@@ -187,7 +187,7 @@ fun withoutNone(sp: Spec): Spec|None
     (o: Spec)          => None
 
 fun withoutNoneOf(members: List<Spec>, lr: PLine): Spec|None
-  let kept = filter(members, (m: Spec) => !isUnitSpec(m))
+  let kept = filter(members, (m) => !isUnitSpec(m))
   ret sameLen(chain(kept), chain(members)) || isEmpty(kept)
     ? None
     : (exactly(chain(kept), 1) ? head(kept) : SCombination(kept, lr))
@@ -196,7 +196,7 @@ fun withoutNoneOf(members: List<Spec>, lr: PLine): Spec|None
 # enum type, so a caller that has just built an SCombination cannot pass it
 # where an SCombination is expected.
 fun reprMembersOf(types: List<Spec>): List<Spec>
-  ret flattenMembers(chain(types), List<Spec>())
+  ret flattenMembers(chain(types), List())
     |> (flat) => dropSubsumed(flat)
 
 fun [tail] flattenMembers(ts: Chain<Spec>, acc: List<Spec>): List<Spec>
@@ -211,7 +211,7 @@ fun addMember(acc: List<Spec>, sp: Spec): List<Spec>
     # `acc` is read just above for the dedup, so it cannot be a builder.
     (o)                => uid(sp) != "" && hasUid(acc, uid(sp))
       ? acc
-      : build<Spec >(push<Spec >(builderFrom<Spec>(acc), sp))
+      : build(push(builderFrom(acc), sp))
 
 fun [tail] hasUidIn(ts: Chain<Spec>, u: String): Bool
   ret match(ts)
@@ -222,19 +222,19 @@ fun hasUid(ts: List<Spec>, u: String): Bool
   ret hasUidIn(chain(ts), u)
 
 fun dropSubsumed(flat: List<Spec>): List<Spec>
-  ret keepUnsubsumed(chain(flat), flat, List<Spec>())
+  ret keepUnsubsumed(chain(flat), flat, List())
 
 fun keepUnsubsumed(ms: Chain<Spec>, all2: List<Spec>,
                           acc: List<Spec>): List<Spec>
-  ret build<Spec >(keepUnsubsumedB(ms, all2, builderFrom<Spec>(acc)))
+  ret build(keepUnsubsumedB(ms, all2, builderFrom(acc)))
 
 fun [tail] keepUnsubsumedB(ms: Chain<Spec>, all2: List<Spec>,
-                          [terminal] acc: ListBuilder<Spec >): ListBuilder<Spec >
+                          [terminal] acc: ListBuilder<Spec>): ListBuilder<Spec>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isSubsumed(l.value, all2)
       ? keepUnsubsumedB(l.next, all2, acc)
-      : keepUnsubsumedB(l.next, all2, push<Spec >(acc, l.value))
+      : keepUnsubsumedB(l.next, all2, push(acc, l.value))
 
 # An enum member whose valid leaves are a STRICT subset of another member of
 # the same enum carries no values the wider member lacks.
@@ -290,19 +290,19 @@ fun bindTupleEntries(declared: List<SEntry>,
                      supplied: List<String>): List<Int>|None
   if shorterThan(chain(declared), chain(supplied))
     ret None
-  let bare = bareNames(chain(declared), List<String>())
+  let bare = bareNames(chain(declared), List())
   if sameLen(chain(supplied), chain(declared)) && !anyOverlap(chain(supplied), bare)
-    ret identityBinding(chain(declared), 0, List<Int>())
+    ret identityBinding(chain(declared), 0, List())
   ret bindLoop(chain(supplied), 0, declared, bare,
-               blankSlots(chain(declared), List<Int>()), false)
+               blankSlots(chain(declared), List()), false)
 
 fun bareNames(ds: Chain<SEntry>, acc: List<String>): List<String>
-  ret build<String >(bareNamesB(ds, builderFrom<String>(acc)))
+  ret build(bareNamesB(ds, builderFrom(acc)))
 
-fun [tail] bareNamesB(ds: Chain<SEntry>, [terminal] acc: ListBuilder<String >): ListBuilder<String >
+fun [tail] bareNamesB(ds: Chain<SEntry>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
   ret match(ds)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => bareNamesB(l.next, push<String >(acc, bareOfName(l.value.seName)))
+    (l: ChainLink)  => bareNamesB(l.next, push(acc, bareOfName(l.value.seName)))
 
 fun bareOfName(name: String): String
   let at = findByte(name, '@', 0)
@@ -317,20 +317,20 @@ fun [tail] anyOverlap(ss: Chain<String>, bare: List<String>): Bool
 
 # One slot per declared entry, sized by the walk (no-length ruling).
 fun identityBinding(ds: Chain<SEntry>, i: Int, acc: List<Int>): List<Int>
-  ret build<Int >(identityBindingB(ds, i, builderFrom<Int>(acc)))
+  ret build(identityBindingB(ds, i, builderFrom(acc)))
 
-fun [tail] identityBindingB(ds: Chain<SEntry>, i: Int, [terminal] acc: ListBuilder<Int >): ListBuilder<Int >
+fun [tail] identityBindingB(ds: Chain<SEntry>, i: Int, [terminal] acc: ListBuilder<Int>): ListBuilder<Int>
   ret match(ds)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => identityBindingB(l.next, i + 1, push<Int >(acc, i))
+    (l: ChainLink)  => identityBindingB(l.next, i + 1, push(acc, i))
 
 fun blankSlots(ds: Chain<SEntry>, acc: List<Int>): List<Int>
-  ret build<Int >(blankSlotsB(ds, builderFrom<Int>(acc)))
+  ret build(blankSlotsB(ds, builderFrom(acc)))
 
-fun [tail] blankSlotsB(ds: Chain<SEntry>, [terminal] acc: ListBuilder<Int >): ListBuilder<Int >
+fun [tail] blankSlotsB(ds: Chain<SEntry>, [terminal] acc: ListBuilder<Int>): ListBuilder<Int>
   ret match(ds)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => blankSlotsB(l.next, push<Int >(acc, -1))
+    (l: ChainLink)  => blankSlotsB(l.next, push(acc, -1))
 
 # `slots` carries -1 for "unbound so far"; a field bound by name or position
 # takes the supplied index. seenName tracks the "bare positional after a
@@ -339,7 +339,7 @@ fun bindLoop(ss: Chain<String>, i: Int, declared: List<SEntry>,
              bare: List<String>, slots: List<Int>, seenName: Bool): List<Int>|None
   ret match(ss)
     (nil: ChainEnd) => fillDefaults(chain(declared), chain(slots), 0,
-                                    builder<Int >())
+                                    builder())
     (l: ChainLink)  => bindOne(l, i, declared, bare, slots, seenName)
 
 fun bindOne(l: ChainLink<String>, i: Int, declared: List<SEntry>,
@@ -364,13 +364,13 @@ fun [tail] slotAt(ss: Chain<Int>, i: Int): Int|None
 
 # An unbound field is filled by its default, or the binding fails.
 fun [tail] fillDefaults(ds: Chain<SEntry>, ss: Chain<Int>, i: Int,
-                 [terminal] acc: ListBuilder<Int >): List<Int>|None
+                 [terminal] acc: ListBuilder<Int>): List<Int>|None
   ret match(ds)
-    (nil: ChainEnd) => build<Int >(acc)
+    (nil: ChainEnd) => build(acc)
     (ld: ChainLink) => match(ss)
       (ls: ChainLink) => ls.value < 0 && !hasDefault(ld.value)
         ? None
-        : fillDefaults(ld.next, ls.next, i + 1, push<Int >(acc, ls.value))
+        : fillDefaults(ld.next, ls.next, i + 1, push(acc, ls.value))
       ()              => None
 
 fun hasDefault(e: SEntry): Bool
@@ -392,18 +392,18 @@ fun nth(xs: List<Int>, i: Int): Int
     ()       => -1
 
 fun setSlot(xs: List<Int>, at: Int, v: Int): List<Int>
-  ret setLoop(chain(xs), 0, at, v, List<Int>())
+  ret setLoop(chain(xs), 0, at, v, List())
 
 fun setLoop(xs: Chain<Int>, i: Int, at: Int, v: Int,
                    acc: List<Int>): List<Int>
-  ret build<Int >(setLoopB(xs, i, at, v, builderFrom<Int>(acc)))
+  ret build(setLoopB(xs, i, at, v, builderFrom(acc)))
 
 fun [tail] setLoopB(xs: Chain<Int>, i: Int, at: Int, v: Int,
-                   [terminal] acc: ListBuilder<Int >): ListBuilder<Int >
+                   [terminal] acc: ListBuilder<Int>): ListBuilder<Int>
   ret match(xs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => setLoopB(l.next, i + 1, at, v,
-                               push<Int >(acc, i == at ? v : l.value))
+                               push(acc, i == at ? v : l.value))
 
 # ══ spec text format (test harness only) ═════════════════════════════════════
 # A compact spelling so the Python side can drive both implementations over
@@ -425,7 +425,7 @@ fun parseSpecText(s: String): Spec|None
   if k == 'G'
     ret SGeneric(afterColon(t2), false, noLine())
   if k == 'C'
-    ret SClass(afterColon(t2), List<Spec>(), noLine())
+    ret SClass(afterColon(t2), List(), noLine())
   if k == 'E'
     ret parseEnumText(afterColon(t2))
   if k == 'U'
@@ -454,23 +454,23 @@ fun parseEnumText(body: String): Spec
   let root = c < 0 ? body : slice(body, 0, c)
   let tail2 = c < 0 ? "" : slice(body, c + 1, length(body))
   let leaves = tail2 == "" ? List<String>() : split(tail2, "|")
-  ret SEnum(root, leaves, leaves, List<Spec>(), noLine())
+  ret SEnum(root, leaves, leaves, List(), noLine())
 
 fun parseUnionText(body: String): Spec|None
-  ret unionParts(chain(topLevelParts(body)), builder<Spec >())
+  ret unionParts(chain(topLevelParts(body)), builder())
 
 # `_=spec,name=spec` — a tuple spelling; `_` is an unnamed entry.
 fun parseTupleText(body: String): Spec|None
-  ret tupleParts(chain(topLevelParts(body)), builder<SEntry >())
+  ret tupleParts(chain(topLevelParts(body)), builder())
 
-fun [tail] tupleParts(ps: Chain<String>, [terminal] acc: ListBuilder<SEntry >): Spec|None
+fun [tail] tupleParts(ps: Chain<String>, [terminal] acc: ListBuilder<SEntry>): Spec|None
   ret match(ps)
-    (nil: ChainEnd) => STuple(build<SEntry >(acc), noLine())
+    (nil: ChainEnd) => STuple(build(acc), noLine())
     (l: ChainLink)  => trim(l.value) == ""
       ? tupleParts(l.next, acc)
       : tupleEntryText(l.value)
         |> (en) => match(en)
-          (e: SEntry) => tupleParts(l.next, push<SEntry >(acc, e))
+          (e: SEntry) => tupleParts(l.next, push(acc, e))
           ()          => None
 
 fun tupleEntryText(part: String): SEntry|None
@@ -484,43 +484,43 @@ fun tupleEntryText(part: String): SEntry|None
 
 # Split on TOP-LEVEL commas only — a nested U(...)/T(...) carries its own.
 fun topLevelParts(body: String): List<String>
-  ret partLoop(body, 0, 0, 0, List<String>())
+  ret partLoop(body, 0, 0, 0, List())
 
 fun partLoop(body: String, at: Int, start: Int, depth: Int,
                     acc: List<String>): List<String>
-  ret build<String >(partLoopB(body, at, start, depth, builderFrom<String>(acc)))
+  ret build(partLoopB(body, at, start, depth, builderFrom(acc)))
 
 fun [tail] partLoopB(body: String, at: Int, start: Int, depth: Int,
-                    [terminal] acc: ListBuilder<String >): ListBuilder<String >
+                    [terminal] acc: ListBuilder<String>): ListBuilder<String>
   if at >= length(body)
-    ret push<String >(acc, slice(body, start, length(body)))
+    ret push(acc, slice(body, start, length(body)))
   let c = byteAt(body, at)
   ret c == '(' ? partLoopB(body, at + 1, start, depth + 1, acc)
     : c == ')' ? partLoopB(body, at + 1, start, depth - 1, acc)
     : c == ',' && depth == 0
       ? partLoopB(body, at + 1, at + 1, depth,
-                 push<String >(acc, slice(body, start, at)))
+                 push(acc, slice(body, start, at)))
       : partLoopB(body, at + 1, start, depth, acc)
 
-fun [tail] unionParts(ps: Chain<String>, [terminal] acc: ListBuilder<Spec >): Spec|None
+fun [tail] unionParts(ps: Chain<String>, [terminal] acc: ListBuilder<Spec>): Spec|None
   ret match(ps)
-    (nil: ChainEnd) => SCombination(build<Spec >(acc), noLine())
+    (nil: ChainEnd) => SCombination(build(acc), noLine())
     (l: ChainLink)  => match(parseSpecText(l.value))
-      (s2: Spec) => unionParts(l.next, push<Spec >(acc, s2))
+      (s2: Spec) => unionParts(l.next, push(acc, s2))
       ()         => None
 
 # `name=spec;name=spec` — declared tuple entries (a trailing `!` marks a
 # default). Semicolons separate entries so commas stay free for unions.
 fun parseEntriesText(s: String): List<SEntry>
-  ret entryParts(chain(split(s, ";")), List<SEntry>())
+  ret entryParts(chain(split(s, ";")), List())
 
 fun entryParts(ps: Chain<String>, acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(entryPartsB(ps, builderFrom<SEntry>(acc)))
+  ret build(entryPartsB(ps, builderFrom(acc)))
 
-fun [tail] entryPartsB(ps: Chain<String>, [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
+fun [tail] entryPartsB(ps: Chain<String>, [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
   ret match(ps)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => entryPartsB(l.next, push<SEntry >(acc, oneEntry(trim(l.value))))
+    (l: ChainLink)  => entryPartsB(l.next, push(acc, oneEntry(trim(l.value))))
 
 fun oneEntry(part: String): SEntry
   let hasDflt = endsWith(part, "!")

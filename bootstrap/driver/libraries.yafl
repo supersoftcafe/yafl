@@ -59,7 +59,7 @@ fun manifestFrom(entries: List<TomlEntry>, origin: String): LibManifest|String
 # becomes "unnamed" there too, so an empty string must not be passed through.
 fun manifestName(entries: List<TomlEntry>): String
   ret tomlString(entries, "name", "unnamed")
-    |> (n: String) => n == "" ? "unnamed" : n
+    |> (n) => n == "" ? "unnamed" : n
 
 
 # ── reading a library off disk ──────────────────────────────────────────────
@@ -105,7 +105,7 @@ fun readDirLibrary(path: String): Library|String|None
       (m: LibManifest)  => dirLibraryWith(m, path)
 
 fun dirLibraryWith(m: LibManifest, path: String): Library|String
-  ret match(yaflPaths(path, List<String>()))
+  ret match(yaflPaths(path, List()))
     (why: String)            => why
     (paths: List<String>)    => match(readSources(path, sortByUnitName(path, paths)))
       (why2: String)          => why2
@@ -120,7 +120,7 @@ fun dirLibraryWith(m: LibManifest, path: String): Library|String
 # same C.
 fun sortByUnitName(root: String, paths: List<String>): List<String>
   ret sortBy(paths,
-             (a: String, b: String) => relativeTo(root, a) < relativeTo(root, b))
+             (a, b) => relativeTo(root, a) < relativeTo(root, b))
 
 # RECURSIVE: `Library.yafl_sources` is `root.rglob("*.yafl")`, so a library
 # whose sources sit in sub-directories is perfectly legal. Listing only the
@@ -154,7 +154,7 @@ fun isDotEntry(name: String): Bool
 
 fun yaflEntry(path: String, acc: List<String>): List<String>|String
   ret isDirectory(path) ? yaflPaths(path, acc)
-    : endsWith(path, ".yafl") ? concat(acc, list1<String>(path))
+    : endsWith(path, ".yafl") ? concat(acc, list1(path))
     : acc
 
 fun isDirectory(path: String): Bool
@@ -172,7 +172,7 @@ fun isRegularFile(path: String): Bool
 # generated symbol, so two files of the same name in different sub-directories
 # are distinct sources that must report DISTINCT filenames.
 fun readSources(root: String, paths: List<String>): List<LibSource>|String
-  ret srcLoop(root, chain(paths), builder<LibSource>())
+  ret srcLoop(root, chain(paths), builder())
 
 fun [tail] srcLoop(root: String, ps: Chain<String>,
                    [terminal] b: ListBuilder<LibSource>): List<LibSource>|String
@@ -184,7 +184,7 @@ fun [tail] srcLoop(root: String, ps: Chain<String>,
                                 push(b, LibSource(relativeTo(root, l.value), t)))
 
 fun srcDiscard([terminal] b: ListBuilder<LibSource>, why: String): List<LibSource>|String
-  ret build(b) |> (l: List<LibSource>) => why
+  ret build(b) |> (l) => why
 
 # A `.yl` archive: the same manifest and sources, read out of the zip.
 fun readZipLibrary(path: String): Library|String|None
@@ -202,7 +202,7 @@ fun zipLibraryFrom(entries: List<ZipEntry>, path: String): Library|String
     ()              => path + ": .yl has no yafl.toml"
 
 fun zipSources(entries: List<ZipEntry>): List<LibSource>
-  ret build(zipSrcLoop(chain(sortEntries(entries)), builder<LibSource>()))
+  ret build(zipSrcLoop(chain(sortEntries(entries)), builder()))
 
 fun [tail] zipSrcLoop(es: Chain<ZipEntry>,
                       [terminal] b: ListBuilder<LibSource>): ListBuilder<LibSource>
@@ -213,7 +213,7 @@ fun [tail] zipSrcLoop(es: Chain<ZipEntry>,
       : zipSrcLoop(l.next, b)
 
 fun sortEntries(entries: List<ZipEntry>): List<ZipEntry>
-  ret sortBy(entries, (a: ZipEntry, b: ZipEntry) => a.zipName < b.zipName)
+  ret sortBy(entries, (a, b) => a.zipName < b.zipName)
 
 # `path` with the `root/` prefix removed — the unit's name. Every collected
 # path is built as `root + "/" + ...` by `yaflPaths`, so the prefix is exactly
@@ -225,7 +225,7 @@ fun relativeTo(root: String, path: String): String
     : path
 
 fun baseName(p: String): String
-  ret lastSlash(p, length(p) - 1) |> (i: Int) => slice(p, i + 1, length(p))
+  ret lastSlash(p, length(p) - 1) |> (i) => slice(p, i + 1, length(p))
 
 fun [tail] lastSlash(p: String, at: Int): Int
   ret at < 0 ? -1 : byteAt(p, at) == '/' ? at : lastSlash(p, at - 1)
@@ -261,13 +261,13 @@ fun searchPaths(extra: List<String>): List<String>
 fun installPaths(): List<String>
   let exe = argv0()
   ret !contains(exe, "/")
-    ? List<String>()
-    : list1<String>(dirOf(dirOf(exe)) + "/lib/yafl")
+    ? List()
+    : list1(dirOf(dirOf(exe)) + "/lib/yafl")
 
 fun envPaths(): List<String>
   ret match(env("YAFL_PATH"))
-    (v: String) => filter(split(v, ":"), (p: String) => p != "")
-    ()          => List<String>()
+    (v: String) => filter(split(v, ":"), (p) => p != "")
+    ()          => List()
 
 
 # ── discovery ───────────────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ fun envPaths(): List<String>
 # otherwise depend on directory order.
 
 fun discoverLibraries(paths: List<String>): LibResult
-  ret discoverLoop(chain(paths), List<String>(), builder<Library>())
+  ret discoverLoop(chain(paths), List(), builder())
 
 fun [tail] discoverLoop(ps: Chain<String>, seen: List<String>,
                         [terminal] acc: ListBuilder<Library>): LibResult
@@ -309,7 +309,7 @@ fun [tail] discoverInto(rest: Chain<String>, base: String, ns: Chain<String>,
       : match(readEntry(base + "/" + l.value))
         (why: String)  => libDiscard(acc, LibsErr(why))
         (lib: Library) => discoverInto(rest, base, l.next,
-                                       concat(seen, list1<String>(base + "/" + l.value)),
+                                       concat(seen, list1(base + "/" + l.value)),
                                        push(acc, lib))
         ()             => discoverInto(rest, base, l.next, seen, acc)
 
@@ -325,7 +325,7 @@ fun readEntry(path: String): Library|String|None
     : None
 
 fun libDiscard([terminal] acc: ListBuilder<Library>, e: LibResult): LibResult
-  ret build(acc) |> (l: List<Library>) => e
+  ret build(acc) |> (l) => e
 
 
 # ── namespace index ─────────────────────────────────────────────────────────
@@ -341,7 +341,7 @@ class [final] NsEntry(nsName: String, nsLib: Library)
 # rule the code did not enforce, `nsSeek` returned the first match, and the
 # result was the directory-order-dependent silent shadow it forbids.
 fun namespaceIndex(libs: List<Library>): List<NsEntry>|String
-  ret nsIndexLoop(chain(libs), List<NsEntry>())
+  ret nsIndexLoop(chain(libs), List())
 
 fun nsIndexLoop(ls: Chain<Library>, acc: List<NsEntry>): List<NsEntry>|String
   ret match(ls)
@@ -363,7 +363,7 @@ fun nsAddAll(lib: Library, ns: Chain<String>,
         : "namespace '" + l.value + "' is declared by two libraries: '"
           + other.libManifest.libName + "' and '" + lib.libManifest.libName + "'"
       ()               => nsAddAll(lib, l.next,
-                                   concat(acc, list1<NsEntry>(NsEntry(l.value, lib))))
+                                   concat(acc, list1(NsEntry(l.value, lib))))
 
 fun nsLookup(index: List<NsEntry>, name: String): Library|None
   ret nsSeek(chain(index), name)
@@ -385,20 +385,20 @@ fun [tail] nsSeek(es: Chain<NsEntry>, name: String): Library|None
 
 fun prefixesOf(qualified: String): List<String>
   ret prefixWalk(chain(map(split(qualified, "::"), stripUnique)), "",
-                 builder<String>())
+                 builder())
 
 fun stripUnique(part: String): String
-  ret findByte(part, '@', 0) |> (at: Int) => at < 0 ? part : slice(part, 0, at)
+  ret findByte(part, '@', 0) |> (at) => at < 0 ? part : slice(part, 0, at)
 
 fun [tail] prefixWalk(ps: Chain<String>, acc: String,
                       [terminal] b: ListBuilder<String>): List<String>
   ret match(ps)
     (nil: ChainEnd) => build(b)
     (l: ChainLink)  => (acc == "" ? l.value : acc + "::" + l.value)
-      |> (next: String) => prefixWalk(l.next, next, push(b, next))
+      |> (next) => prefixWalk(l.next, next, push(b, next))
 
 fun candidateNamespaces(imports: List<String>, quals: List<String>): List<String>
-  let a = addAllPrefixes(chain(imports), builder<String>())
+  let a = addAllPrefixes(chain(imports), builder())
   let b = addAllPrefixes(chain(quals), a)
   ret dedupe(build(composeAll(chain(imports), quals, b)))
 
@@ -414,10 +414,10 @@ fun [tail] composeAll(imps: Chain<String>, quals: List<String>,
   ret match(imps)
     (nil: ChainEnd) => b
     (l: ChainLink)  => composeAll(l.next, quals,
-        addAllPrefixes(chain(map(quals, (q: String) => l.value + "::" + q)), b))
+        addAllPrefixes(chain(map(quals, (q) => l.value + "::" + q)), b))
 
 fun dedupe(xs: List<String>): List<String>
-  ret sort(Set<String>(xs))
+  ret sort(Set(xs))
 
 
 # ── the load worklist ───────────────────────────────────────────────────────
@@ -436,7 +436,7 @@ class [final] LoadStep(stepSources: List<LibSource>, stepLibs: List<Library>)
 fun loadReferenced(index: List<NsEntry>, wanted: List<String>,
                    already: List<String>): LoadStep
   ret loadLoop(chain(wanted), index, already,
-               builder<LibSource>(), builder<Library>())
+               builder(), builder())
 
 fun [tail] loadLoop(ns: Chain<String>, index: List<NsEntry>,
                     already: List<String>,
@@ -497,7 +497,7 @@ fun [tail] extractEach(rels: Chain<String>, entries: List<ZipEntry>,
   ret match(rels)
     (nil: ChainEnd) => NativeOk(dir)
     (l: ChainLink)  => (dir + "/" + l.value)
-      |> (dest: String) => exists(dest)
+      |> (dest) => exists(dest)
         ? extractEach(l.next, entries, lib, dir)
         : match(zipFind(entries, l.value))
           (e: ZipEntry)   => match(writeWholeFile(dest, e.zipBody))
@@ -540,7 +540,7 @@ fun envOr(name: String, fallback: String): String
 
 fun dirOf(p: String): String
   ret lastSlash(p, length(p) - 1)
-    |> (i: Int) => i <= 0 ? (i == 0 ? "/" : ".") : slice(p, 0, i)
+    |> (i) => i <= 0 ? (i == 0 ? "/" : ".") : slice(p, 0, i)
 
 
 # ── link spec ───────────────────────────────────────────────────────────────
@@ -562,10 +562,10 @@ class [final] LinkSpec(specHeaders: List<String>, specIncludeDirs: List<String>,
                        specStaticLibs: List<String>)
 
 fun linkSpecFor(libs: List<Library>): LinkSpec|String
-  ret match(gatherNative(chain(libs), List<String>(), List<String>()))
+  ret match(gatherNative(chain(libs), List(), List()))
     (why: String)  => why
     (n: NativePaths) => LinkSpec(
-        dedupeStable(build(gatherHeaders(chain(libs), builder<String>()))),
+        dedupeStable(build(gatherHeaders(chain(libs), builder()))),
         dedupeStable(n.npIncludes), dedupeStable(n.npStatics))
 
 class [final] NativePaths(npIncludes: List<String>, npStatics: List<String>)
@@ -576,7 +576,7 @@ fun [tail] gatherHeaders(ls: Chain<Library>,
     (nil: ChainEnd) => b
     (l: ChainLink)  => gatherHeaders(l.next,
         pushAll(b, map(l.value.libManifest.libHeaders,
-                       (h: String) => baseName(h))))
+                       (h) => baseName(h))))
 
 # Include dirs and archive paths both hang off the materialised directory, so
 # they are gathered together — one extraction per library, not two.
@@ -592,24 +592,24 @@ fun [tail] gatherNative(ls: Chain<Library>, incs: List<String>,
         (ok: NativeOk) => gatherNative(l.next,
             concat(incs, includeDirsUnder(ok.ndPath, l.value)),
             concat(statics, map(l.value.libManifest.libStaticLibs,
-                                (s: String) => ok.ndPath + "/" + s)))
+                                (s) => ok.ndPath + "/" + s)))
 
 # `sorted({(base / h).parent for h in headers})` — a header may sit in a
 # sub-directory, and it is that directory the C compiler needs on -I, not the
 # header. A SET then sorted: two headers in one directory contribute it once.
 fun includeDirsUnder(base: String, lib: Library): List<String>
   ret isEmpty(lib.libManifest.libHeaders)
-    ? List<String>()
-    : sort(Set<String>(map(lib.libManifest.libHeaders,
-                           (h: String) => dirOf(base + "/" + h))))
+    ? List()
+    : sort(Set(map(lib.libManifest.libHeaders,
+                   (h) => dirOf(base + "/" + h))))
 
 # Order-preserving, unlike `dedupe`: see the banner above.
 fun dedupeStable(xs: List<String>): List<String>
-  ret stableLoop(chain(xs), List<String>())
+  ret stableLoop(chain(xs), List())
 
 fun [tail] stableLoop(xs: Chain<String>, acc: List<String>): List<String>
   ret match(xs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => contains(acc, l.value)
       ? stableLoop(l.next, acc)
-      : stableLoop(l.next, concat(acc, list1<String>(l.value)))
+      : stableLoop(l.next, concat(acc, list1(l.value)))
