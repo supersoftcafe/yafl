@@ -320,7 +320,7 @@ fun gsubOf(gens: List<PGen>, args: List<Spec>,
 # Every placeholder an enum template declares — the only ones the bare-name
 # match is for (see resolveGp).
 fun enumFormalNames(formals: Dict<String, List<String>>): Set<String>
-  ret fold(values(formals), Set<String>(),
+  ret fold(values(formals), Set(),
            (acc, ns) => fold(ns, acc, (a2, n) => add(a2, n)))
 
 fun [tail] gsubLoop(gs: Chain<PGen>, as2: Chain<Spec>, acc: GSub): GSub

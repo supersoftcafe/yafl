@@ -37,11 +37,11 @@ fun [tail] ktWalk<S>(s: S, defs: SsaDefs,
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => match(cur)
         (ji: OpJumpIf) => match(staticInt(ji.jumpIfCondition, defs))
-          (cond: Int) => ktWalk<S>(r.stream, defs, ktHarden(acc, ji, cond), true)
-          ()          => ktWalk<S>(r.stream, defs, push<Op>(acc, cur), folded)
-        (o: Op)        => ktWalk<S>(r.stream, defs, push<Op>(acc, cur), folded)
-      (n: None) => (build<Op>(acc), folded)
-    (er: Error<Op | None, Never>) => (build<Op>(acc), folded)
+          (cond: Int) => ktWalk(r.stream, defs, ktHarden(acc, ji, cond), true)
+          ()          => ktWalk(r.stream, defs, push(acc, cur), folded)
+        (o: Op)        => ktWalk(r.stream, defs, push(acc, cur), folded)
+      (n: None) => (build(acc), folded)
+    (er: Error<Op | None, Never>) => (build(acc), folded)
 
 # Taken: `Jump(label)`; never taken: the guard evaporates.
 fun ktHarden([terminal] acc: SeqBuilder<Op>, ji: OpJumpIf,

@@ -35,7 +35,7 @@ fun matchCoverageErrs(mt: PeMatch, st: Spec, r: Resolver): Set<PErr>
 class [final] LitAcc(laErrs: Set<PErr>, laSeen: Set<String>, laElse: Bool)
 
 fun literalArmErrs(mt: PeMatch, kind: String): Set<PErr>
-  let acc = litArms(chain(mt.arms), kind, LitAcc(noErrs(), Set<String>(), false))
+  let acc = litArms(chain(mt.arms), kind, LitAcc(noErrs(), Set(), false))
   ret acc.laElse
     ? acc.laErrs
     : add(acc.laErrs, PErr(mt.pemLine, "non-exhaustive match; a literal-pattern match on "
@@ -276,7 +276,7 @@ fun unionCovers(c: Cov, a: PArm, covers: List<String>): Cov
 fun armCoveredIds(armType: Spec, members: List<Member>, left: List<String>,
                   r: Resolver): List<String>
   ret match(armType)
-    (cm: SCombination) => fold(reprMembers(cm), List<String>(),
+    (cm: SCombination) => fold(reprMembers(cm), List(),
                                (acc, m) => concat(acc, armCoveredIds(m, members, left, r)))
     (o: Spec)          => map(filter(members, (m) => contains2(left, m.mUid)
                                                    && triTrue(assignableFrom(r, armType, m.mSpec))),
@@ -330,7 +330,7 @@ fun positionTable(sp: Spec|None): PosTable|None
   ret match(sp)
     (s2: Spec) => match(s2)
       (e: SEnum)         => PosTable(s2, e.seValidLeaves,
-                                     fold(e.seValidLeaves, Dict<String, String>(),
+                                     fold(e.seValidLeaves, Dict(),
                                           (d, n) => put(d, n, n)))
       (cm: SCombination) => unionPositionTable(s2, reprMembers(cm))
       (o: Spec)          => None
@@ -340,7 +340,7 @@ fun unionPositionTable(sp: Spec, members: List<Spec>): PosTable|None
   if any(members, (v) => uid(v) == "")
     ret None
   ret PosTable(sp, map(members, (v) => uid(v)),
-               fold(members, Dict<String, String>(),
+               fold(members, Dict(),
                     (d, v) => put(d, uid(v), printableName(v))))
 
 fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r: Resolver): Set<PErr>
@@ -356,12 +356,12 @@ fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r: Resolver): Set<PErr>
 
 # Every combination of one key per position, in position order.
 fun productSpace(tables: List<PosTable>): List<List<String>>
-  ret fold(tables, prepend(List<String>(), List<List<String>>()),
+  ret fold(tables, prepend(List(), List()),
            (space, t) => flatMapKeys(space, t.ptKeys))
 
 fun flatMapKeys(space: List<List<String>>, keys: List<String>): List<List<String>>
-  ret fold(space, List<List<String>>(),
-           (acc, tup) => concat(acc, map(keys, (k) => concat(tup, prepend(k, List<String>())))))
+  ret fold(space, List(),
+           (acc, tup) => concat(acc, map(keys, (k) => concat(tup, prepend(k, List())))))
 
 fun [tail] multiCovArms(as2: Chain<PArm>, tables: List<PosTable>, r: Resolver,
                      c: MultiCov): MultiCov
@@ -411,7 +411,7 @@ fun coveredKeys(subj: Spec, armType: Spec|None, keys: List<String>, r: Resolver)
 
 fun coveredKeysOther(subj: Spec, t: Spec, keys: List<String>, r: Resolver): List<String>
   ret match(t)
-    (cm: SCombination) => fold(reprMembers(cm), List<String>(),
+    (cm: SCombination) => fold(reprMembers(cm), List(),
                                (acc, m) => concat(acc, coveredKeys(subj, m, keys, r)))
     (o: Spec)          => filter(keys, (k) => memberAssignable(subj, k, t, r))
 

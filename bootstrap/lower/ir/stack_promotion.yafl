@@ -111,7 +111,7 @@ fun spDefCount(ops: Segment<Op>|None, name: String): Int
                                                        name)))
 
 fun countIf<T>(l: List<T>, pred: (:T): Bool): Int
-  ret fold(l, 0, (n: Int, x: T) => pred(x) ? n + 1 : n)
+  ret fold(l, 0, (n, x) => pred(x) ? n + 1 : n)
 
 fun spOpEscapes(op: Op, name: String): Bool
   if any(opSavedVars(op), (sv) => saIsVarNamed(sv, name))

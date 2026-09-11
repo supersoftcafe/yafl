@@ -593,14 +593,14 @@ fun [tail] alNtLoop(c: Chain<ABlock>, n: Int,
 
 # Everything but the last element, in order.
 fun alDropLast<T>(l: List<T>): List<T>
-  ret build<T>(alDropLastLoop<T>(chain(l), builder<T>()))
+  ret build(alDropLastLoop(chain(l), builder()))
 
 fun [tail] alDropLastLoop<T>(c: Chain<T>, [terminal] acc: ListBuilder<T>): ListBuilder<T>
   ret match(c)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.next)
       (nil2: ChainEnd) => acc
-      (l2: ChainLink)  => alDropLastLoop<T>(l.next, push<T>(acc, l.value))
+      (l2: ChainLink)  => alDropLastLoop(l.next, push(acc, l.value))
 
 # The frame's fields as Python builds them: a DICT, where assigning a key that
 # is already present replaces its value and leaves it in its original position.
@@ -1483,7 +1483,7 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName: String, subtype: String|Non
   let wrappedResult = wrapReturnType(f.fnResult)
   let ops0 = list1<Op>(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), List()))
   # Stub launch stores into its own fresh $sv_state (Python 1053).
-  let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc: List<Op>, p: CgField) =>
+  let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc, p) =>
                concat(acc, alStoreVar(RpStackVar(p.fieldType, p.fieldName), alSvState(), stateName, layout)))
   let ops2 = concat(ops1, list2(
       OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
@@ -2456,9 +2456,9 @@ fun alZeroInitUnwrittenSaves(f: CgFunction): CgFunction
     ret f
   let inits = map<RParam, Op>(svSortedByName(offenders), (v) =>
         OpMove(v, alZeroVal(rpGetType(v)), false, List()))
-  ret cgFunctionWith(f, build<Op>(pushAll<Op>(pushAll<Op>(seqBuilder<Op>(),
-                                                              inits),
-                                              f.fnOps)),
+  ret cgFunctionWith(f, build(pushAll(pushAll(seqBuilder(),
+                                                  inits),
+                                      f.fnOps)),
                      f.fnStackVars)
 
 fun [tail] alZiusLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, entry: Dict<Int, InitSet>,

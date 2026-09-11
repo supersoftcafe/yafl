@@ -175,7 +175,7 @@ fun [tail] saFindPlan<S>(s: S, i: Int, defs: SsaDefs,
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => match(saPlanForOp(cur, i, defs, reads))
         (plan: SaPlan) => plan
-        ()             => saFindPlan<S>(r.stream, i + 1, defs, reads)
+        ()             => saFindPlan(r.stream, i + 1, defs, reads)
       (n: None) => None
     (er: Error<Op | None, Never>) => None
 
@@ -251,7 +251,7 @@ fun [tail] saLabelScan<S>(s: S, i: Int, phiIdx: Int,
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => i >= phiIdx
         ? latest
-        : saLabelScan<S>(r.stream, i + 1, phiIdx, saLabelName(cur, latest))
+        : saLabelScan(r.stream, i + 1, phiIdx, saLabelName(cur, latest))
       (n: None) => latest
     (er: Error<Op | None, Never>) => latest
 
@@ -275,8 +275,8 @@ fun [tail] saSpanScan<S>(s: S, i: Int, lbl: String, latest: Int): Int where Stre
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
-      (cur: Op) => saSpanScan<S>(r.stream, i + 1, lbl,
-                                 saTargets(cur, lbl) ? i : latest)
+      (cur: Op) => saSpanScan(r.stream, i + 1, lbl,
+                              saTargets(cur, lbl) ? i : latest)
       (n: None) => latest
     (er: Error<Op | None, Never>) => latest
 
@@ -307,7 +307,7 @@ fun [tail] saAnyInSpan<S>(s: S, i: Int, from2: Int, to2: Int,
         ? false
         : i >= from2 && saReadsAccOutsideChain(cur, acc, chainAll)
           ? true
-          : saAnyInSpan<S>(r.stream, i + 1, from2, to2, acc, chainAll)
+          : saAnyInSpan(r.stream, i + 1, from2, to2, acc, chainAll)
       (n: None) => false
     (er: Error<Op | None, Never>) => false
 
@@ -337,7 +337,7 @@ fun [tail] saAnyBuried<S>(s: S, i: Int, plan: SaPlan): Bool where Stream<S, Op, 
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => saPhiSourceBuriesAcc(cur, i, plan)
         ? true
-        : saAnyBuried<S>(r.stream, i + 1, plan)
+        : saAnyBuried(r.stream, i + 1, plan)
       (n: None) => false
     (er: Error<Op | None, Never>) => false
 

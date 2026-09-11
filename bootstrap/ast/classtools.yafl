@@ -336,11 +336,11 @@ fun [tail] atLeast<T>(c: Chain<T>, n: Int): Bool
 
 # At most n elements: walks at most n+1 cells.
 fun atMost<T>(c: Chain<T>, n: Int): Bool
-  ret !atLeast<T>(c, n + 1)
+  ret !atLeast(c, n + 1)
 
 # Exactly n elements: two bounded probes.
 fun exactly<T>(c: Chain<T>, n: Int): Bool
-  ret atLeast<T>(c, n) && !atLeast<T>(c, n + 1)
+  ret atLeast(c, n) && !atLeast(c, n + 1)
 
 # ── Seq twins ────────────────────────────────────────────────────────────────
 # The same vocabulary over Segment chains. Per-segment STORED lengths are
@@ -353,10 +353,10 @@ fun [tail] atLeast<T>(s: Segment<T>|None, n: Int): Bool
     (nil: None)        => false
     (seg: Segment<T>)  => Int(seg.length) >= n
       ? true
-      : atLeast<T>(seg.next, n - Int(seg.length))
+      : atLeast(seg.next, n - Int(seg.length))
 
 fun exactly<T>(s: Segment<T>|None, n: Int): Bool
-  ret atLeast<T>(s, n) && !atLeast<T>(s, n + 1)
+  ret atLeast(s, n) && !atLeast(s, n + 1)
 
 # Indexed read by segment hop — O(segments) to the target, then one inline
 # read; the List twin (frontend/checks.yafl nthOf) walks every cell.
@@ -365,15 +365,15 @@ fun [tail] nthOf<T>(s: Segment<T>|None, idx: Int): T|None
     (nil: None)        => None
     (seg: Segment<T>)  => idx < Int(seg.length)
       ? seg.array(truncateToInt32(idx))
-      : nthOf<T>(seg.next, idx - Int(seg.length))
+      : nthOf(seg.next, idx - Int(seg.length))
 
 fun sameLen<T, U>(a: Segment<T>|None, b: Segment<U>|None): Bool
-  ret _segLenSum<T>(a, 0) == _segLenSum<U>(b, 0)
+  ret _segLenSum(a, 0) == _segLenSum(b, 0)
 
 fun [tail] _segLenSum<T>(s: Segment<T>|None, acc: Int): Int
   ret match(s)
     (nil: None)        => acc
-    (seg: Segment<T>)  => _segLenSum<T>(seg.next, acc + Int(seg.length))
+    (seg: Segment<T>)  => _segLenSum(seg.next, acc + Int(seg.length))
 
 # The two-list co-walks spell EVERY generic call with explicit type args.
 # The silent third-shape abort (a bare match arm inside a two-type-param host
@@ -399,19 +399,19 @@ fun restOf<T>(c: Chain<T>): Chain<T>
 
 # Same length: co-walk, stops at the shorter.
 fun [tail] sameLen<T, U>(a: Chain<T>, b: Chain<U>): Bool
-  ret isEnd<T>(a) || isEnd<U>(b)
-    ? isEnd<T>(a) && isEnd<U>(b)
-    : sameLen<T, U>(restOf<T>(a), restOf<U>(b))
+  ret isEnd(a) || isEnd(b)
+    ? isEnd(a) && isEnd(b)
+    : sameLen(restOf(a), restOf(b))
 
 # Strictly fewer elements than b: co-walk, stops at the shorter.
 fun [tail] shorterThan<T, U>(a: Chain<T>, b: Chain<U>): Bool
-  ret isEnd<U>(b)
+  ret isEnd(b)
     ? false
-    : (isEnd<T>(a) ? true : shorterThan<T, U>(restOf<T>(a), restOf<U>(b)))
+    : (isEnd(a) ? true : shorterThan(restOf(a), restOf(b)))
 
 # All but the last element, structurally.
 fun initOf<T>(l: List<T>): List<T>
-  ret build<T>(initLoop<T>(chain(l), builder<T>()))
+  ret build(initLoop(chain(l), builder()))
 
 # Everything but the last element, in order.
 fun [tail] initLoop<T>(c: Chain<T>, [terminal] acc: ListBuilder<T>): ListBuilder<T>
@@ -419,4 +419,4 @@ fun [tail] initLoop<T>(c: Chain<T>, [terminal] acc: ListBuilder<T>): ListBuilder
     (nil: ChainEnd) => acc
     (l: ChainLink)  => l.next is ChainEnd
       ? acc
-      : initLoop<T>(l.next, push<T>(acc, l.value))
+      : initLoop(l.next, push(acc, l.value))

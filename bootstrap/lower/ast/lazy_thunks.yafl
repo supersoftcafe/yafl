@@ -114,7 +114,7 @@ fun makeDrainFunction(valueType: CgType): CgFunction
   let value = RpStackVar(valueType, "value")
   let svHead = RpStackVar(CgDataPointer(), "$sv_head")
   let svNext = RpStackVar(CgDataPointer(), "$sv_next")
-  let ops = build(push(push(push(push(push(push(push(push(push(builder<Op>(), OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
+  let ops = build(push(push(push(push(push(push(push(push(push(builder(), OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
                                      RpNewStruct(list1(RpNamedValue("flag", flagField))),
                                      CgDataPointer()), false, List())), OpLabel("$loop", List())), OpJumpIf("$done", svHead, true, List())), # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
       OpMove(RpObjectField(valueType, svHead, waiterTy, "result", None, false), value, false, List())), OpMove(svNext, RpRuntimeInvoke("lazy_chain_step",

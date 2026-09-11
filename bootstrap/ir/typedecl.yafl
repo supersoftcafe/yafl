@@ -85,7 +85,7 @@ class [final] CgLitField(fieldName: String, fieldValue: CgLit)
 # ── small helpers shared across this file ───────────────────────────────────
 
 fun listAt<T>(l: List<T>, i: Int): T|None
-  ret head<T>(drop<T>(l, i))
+  ret head(drop(l, i))
 
 # ── isinstance(_, Struct) — matches CgStruct AND CgImmediateStruct, exactly
 # like Python's isinstance sees ImmediateStruct as a Struct subclass ─────────
@@ -516,7 +516,7 @@ fun cgFlattenPrimitivesN(t: CgType): (ps: List<CgType>, n: Int)
           cgFlattenPrimitivesN(fld.fieldType)
             |> (sub) => (concat(acc.ps, sub.ps), acc.n + sub.n))
     () => match(t)
-      (fp: CgFuncPointer) => (build(push(push(builder<CgType>(), CgIntPtr()), CgDataPointer())), 2)
+      (fp: CgFuncPointer) => (build(push(push(builder(), CgIntPtr()), CgDataPointer())), 2)
       (o: CgType)         => (prepend(o, List()), 1)
 
 fun cgPrimitiveRank(t: CgType): Int

@@ -57,9 +57,9 @@ fun cpWalk<S>(s: S, readCounts: Dict<String, Int>,
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
-      (first: Op) => cpCarry<S>(first, r.stream, readCounts, acc, changed)
-      (n: None)   => CpWalkOut(build<Op>(acc), changed)
-    (er: Error<Op | None, Never>) => CpWalkOut(build<Op>(acc), changed)
+      (first: Op) => cpCarry(first, r.stream, readCounts, acc, changed)
+      (n: None)   => CpWalkOut(build(acc), changed)
+    (er: Error<Op | None, Never>) => CpWalkOut(build(acc), changed)
 
 fun [tail] cpCarry<S>(cur: Op, s: S, readCounts: Dict<String, Int>,
                       [terminal] acc: SeqBuilder<Op>, changed: Bool): CpWalkOut where Stream<S, Op, Never>
@@ -73,15 +73,15 @@ fun [tail] cpCarry<S>(cur: Op, s: S, readCounts: Dict<String, Int>,
         (s2: CpStep) => streamNext<S, Op, Never>(r.stream)
           |> (r2) => match(r2.value)
             (ok2: Ok<Op | None, Never>) => match(ok2.value)
-              (nx2: Op)  => cpCarry<S>(nx2, r2.stream, readCounts,
-                                       pushAll<Op>(acc, s2.cpsEmit), true)
-              (n2: None) => CpWalkOut(build<Op>(pushAll<Op>(acc, s2.cpsEmit)), true)
+              (nx2: Op)  => cpCarry(nx2, r2.stream, readCounts,
+                                    pushAll(acc, s2.cpsEmit), true)
+              (n2: None) => CpWalkOut(build(pushAll(acc, s2.cpsEmit)), true)
             (er2: Error<Op | None, Never>) =>
-              CpWalkOut(build<Op>(pushAll<Op>(acc, s2.cpsEmit)), true)
-        ()            => cpCarry<S>(nxt, r.stream, readCounts,
-                                    push<Op>(acc, cur), changed)
-      (n: None) => CpWalkOut(build<Op>(push<Op>(acc, cur)), changed)
-    (er: Error<Op | None, Never>) => CpWalkOut(build<Op>(push<Op>(acc, cur)), changed)
+              CpWalkOut(build(pushAll(acc, s2.cpsEmit)), true)
+        ()            => cpCarry(nxt, r.stream, readCounts,
+                                 push(acc, cur), changed)
+      (n: None) => CpWalkOut(build(push(acc, cur)), changed)
+    (er: Error<Op | None, Never>) => CpWalkOut(build(push(acc, cur)), changed)
 
 class [final] CpStep(cpsEmit: List<Op>)
 

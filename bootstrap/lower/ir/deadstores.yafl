@@ -61,11 +61,11 @@ fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => dsStep(cur, reads)
         |> (step) => match(step.op)
-          (kept: Op) => dsWalk<S>(r.stream, reads, push<Op>(acc, kept),
-                                  changed || step.changed)
-          ()         => dsWalk<S>(r.stream, reads, acc, true)
-      (n: None) => (build<Op>(acc), changed)
-    (er: Error<Op | None, Never>) => (build<Op>(acc), changed)
+          (kept: Op) => dsWalk(r.stream, reads, push(acc, kept),
+                               changed || step.changed)
+          ()         => dsWalk(r.stream, reads, acc, true)
+      (n: None) => (build(acc), changed)
+    (er: Error<Op | None, Never>) => (build(acc), changed)
 
 # The per-op decision: the op to keep (possibly rewritten) or None to drop,
 # plus whether anything changed.

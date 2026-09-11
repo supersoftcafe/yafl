@@ -552,7 +552,7 @@ fun withDrops(body: PExpr, drops: List<PStmt>): PExpr
   # Order is the whole point here: the body's own statements, then the let
   # that saves its value, then the drop calls.
   let stmts = build(pushAll(
-      push(builderFrom<PStmt>(stmts0),
+      push(builderFrom(stmts0),
            PsLet(keep, List(), List(), None,
                  value0, "", List(), lr)),
       dropCalls(chain(drops), List())))
