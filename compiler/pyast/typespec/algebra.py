@@ -71,13 +71,47 @@ def placeholder_names_in(spec: "TypeSpec | None") -> set[str]:
     return names
 
 
+def resolves_in_scope(name: str, resolver: "g.Resolver") -> bool:
+    """The scope test for a placeholder NAME: it resolves when the use sits
+    inside its declaring generic (an enclosing function's own `T`), where the
+    placeholder is a real type; anywhere else it is a hole."""
+    return bool(resolver.find_type(name))
+
+
+def is_narrowed_view(spec: "TypeSpec | None") -> bool:
+    """True for an enum VIEW narrower than its enum — `Circle` of `Shape`. A
+    type inferred from such a value is provisional: the context may ask for
+    the root (or a wider view), and `meet` joins views."""
+    return (isinstance(spec, EnumSpec)
+            and spec.valid_leaf_names < frozenset(spec.all_leaf_names))
+
+
+def contains_narrowed_view(spec: "TypeSpec | None") -> bool:
+    """True when a narrowed enum view appears anywhere in `spec` — `Circle`
+    itself, or the `Op{Move}` inside a stored `List<Op{Move}>`. Such an
+    inferred type is provisional: a use-site binding re-infers against its
+    expected type, and a stored let/return type keeps refining, so `meet`
+    widens it exactly as far as the context demands."""
+    if isinstance(spec, EnumSpec):
+        return is_narrowed_view(spec) or any(contains_narrowed_view(tp) for tp in spec.type_params)
+    if isinstance(spec, ClassSpec):
+        return any(contains_narrowed_view(tp) for tp in spec.type_params)
+    if isinstance(spec, TupleSpec):
+        return any(contains_narrowed_view(en.type) for en in spec.entries)
+    if isinstance(spec, CombinationSpec):
+        return any(contains_narrowed_view(m) for m in spec.types)
+    if isinstance(spec, CallableSpec):
+        return contains_narrowed_view(spec.parameters) or contains_narrowed_view(spec.result)
+    return False
+
+
 def has_free_placeholders(spec: "TypeSpec | None", resolver: "g.Resolver") -> bool:
     """True when `spec` contains a GenericPlaceholderSpec that does NOT resolve in
     the current scope — a blank that leaked out of another declaration's generic
     context (e.g. a constructor's own params latched before inference bound them).
     The scope-aware complement of `is_concrete()`: a placeholder is a real type
     inside its declaring generic, a hole everywhere else."""
-    return any(not resolver.find_type(name)
+    return any(not resolves_in_scope(name, resolver)
                for name in placeholder_names_in(spec))
 
 
@@ -273,8 +307,12 @@ def refine(current: "TypeSpec | None", resolver: "g.Resolver",
     blanks may travel across a statement boundary and fill later, but an
     unresolved NAME may not (a callee's raw `T` would land in a scope that
     cannot resolve it). Merge — `meet`, so information only ever accumulates;
-    a conflict (check's job to report) leaves `current` unchanged."""
-    if current is not None and not has_free_placeholders(current, resolver):
+    a conflict (check's job to report) leaves `current` unchanged.
+    A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on
+    an early pass) stays refinable too: generic arguments are invariant, so it
+    must widen with its right-hand side rather than pin the view."""
+    if (current is not None and not has_free_placeholders(current, resolver)
+            and not contains_narrowed_view(current)):
         return current
     inferred = infer()
     if inferred is None or not inferred.is_concrete():
@@ -285,7 +323,8 @@ def refine(current: "TypeSpec | None", resolver: "g.Resolver",
 
 def _unify_union(generic: "CombinationSpec", concrete: "CombinationSpec",
                  placeholder_names: set[str],
-                 mapping: dict[str, "TypeSpec"]) -> dict[str, "TypeSpec"] | None:
+                 mapping: dict[str, "TypeSpec"],
+                 in_scope: "Callable[[str], bool] | None" = None) -> dict[str, "TypeSpec"] | None:
     """Union-vs-union unification. Union members are a SET, so `E | X` against
     `A | X` must solve E by set difference, never by positional alignment —
     the error-growing instance pattern (`Stream<Lexer<S,E>, T, E|ParseError>`)
@@ -307,7 +346,7 @@ def _unify_union(generic: "CombinationSpec", concrete: "CombinationSpec",
     if len(generic.types) == len(concrete.types):
         trial: dict[str, TypeSpec] | None = dict(mapping)
         for gv, cv in zip(generic.types, concrete.types):
-            trial = unify_generic(gv, cv, placeholder_names, trial)
+            trial = unify_generic(gv, cv, placeholder_names, trial, in_scope)
             if trial is None:
                 break
         if trial is not None:
@@ -356,22 +395,34 @@ def _unify_union(generic: "CombinationSpec", concrete: "CombinationSpec",
 
 def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
                   placeholder_names: set[str],
-                  mapping: dict[str, "TypeSpec"] | None = None) -> dict[str, "TypeSpec"] | None:
+                  mapping: dict[str, "TypeSpec"] | None = None,
+                  in_scope: "Callable[[str], bool] | None" = None) -> dict[str, "TypeSpec"] | None:
     """Match a generic type tree against a concrete type tree; return a
     {placeholder_name: concrete_type} mapping, or None if they don't unify.
 
     Only recognises placeholders whose name appears in `placeholder_names`.
     Unknown / unresolved branches are skipped (return the current mapping
     unchanged) — the caller should treat a partial mapping as a failure if
-    every placeholder must be resolved.
+    every placeholder must be resolved. `in_scope` is the use site's scope
+    test (resolves_in_scope): a concrete-side placeholder that passes it is a
+    real type there and may be bound to.
     """
     if mapping is None:
         mapping = {}
 
     if isinstance(generic, GenericPlaceholderSpec) and generic.name in placeholder_names:
-        # Don't let a placeholder bind to itself (or to any other placeholder):
-        # the concrete side is not concrete enough to pin down.
-        if isinstance(concrete, GenericPlaceholderSpec):
+        # A concrete-side placeholder pins nothing down when it is one of this
+        # callee's OWN params (binding to itself) or another declaration's
+        # unbound leftover (a hole). But an ENCLOSING generic's parameter, in
+        # scope at the use site, is a real type there: inside `shorter<T, U>`,
+        # `isEnd(b)` with `b: Chain<U>` binds isEnd's T to U. Refusing it left
+        # the callee's own placeholder behind, which monomorphisation then
+        # completed by bare NAME to the host's T — a silent miscompile. Without
+        # a scope test (callers outside use-site inference) every placeholder
+        # stays a hole.
+        if isinstance(concrete, GenericPlaceholderSpec) and (
+                in_scope is None or concrete.name in placeholder_names
+                or not in_scope(concrete.name)):
             return mapping
         # Nor to a spec still carrying raw NamedSpec spellings (an uncompiled
         # signature view): those names must not escape their declaring scope
@@ -408,7 +459,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             return mapping
         m: dict[str, TypeSpec] | None = mapping
         for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = unify_generic(gp, cp, placeholder_names, m)
+            m = unify_generic(gp, cp, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
@@ -428,7 +479,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             return mapping
         m = mapping
         for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = unify_generic(gp, cp, placeholder_names, m)
+            m = unify_generic(gp, cp, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
@@ -444,7 +495,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             return mapping
         m = mapping
         for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = unify_generic(gp, cp, placeholder_names, m)
+            m = unify_generic(gp, cp, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
@@ -464,20 +515,21 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             ce = concrete.entries[b]
             if ge.type is None or ce.type is None:
                 continue
-            m = unify_generic(ge.type, ce.type, placeholder_names, m)
+            m = unify_generic(ge.type, ce.type, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
 
     if isinstance(generic, CombinationSpec) and isinstance(concrete, CombinationSpec):
-        return _unify_union(generic, concrete, placeholder_names, mapping)
+        return _unify_union(generic, concrete, placeholder_names, mapping, in_scope)
 
     if isinstance(generic, CallableSpec) and isinstance(concrete, CallableSpec):
-        m = unify_generic(generic.parameters, concrete.parameters, placeholder_names, mapping)
+        m = unify_generic(generic.parameters, concrete.parameters, placeholder_names, mapping,
+                          in_scope)
         if m is None:
             return None
         if generic.result is not None and concrete.result is not None:
-            m = unify_generic(generic.result, concrete.result, placeholder_names, m)
+            m = unify_generic(generic.result, concrete.result, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m

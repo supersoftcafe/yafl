@@ -1,0 +1,35 @@
+# check-contract corpus: generic type arguments are INVARIANT over enum views.
+# A narrowed view (`Circle` of enum `Shape`) is a different type from the root
+# (user ruling: ListBuilder<Circle> != ListBuilder<Shape>), so a Box<Circle>
+# or Holder<Circle> must not pass where Box<Shape> / Holder<Shape> is
+# declared — for a generic ENUM argument and a generic CLASS argument alike.
+# Sharing a representation or a monomorphised instance is not a typing rule.
+typealias Int : __builtin_type__<bigint>
+
+enum Shape
+  enum Circle(r: Int)
+  enum Square(s: Int)
+
+enum Box<T>
+  enum Full(v: T)
+  enum Empty()
+
+class [final] Holder<T>(v: T)
+
+fun takesBox(b: Box<Shape>): Int
+  ret 0
+
+fun takesHolder(h: Holder<Shape>): Int
+  ret 0
+
+# Box<Circle> where Box<Shape> is declared. The let types the value before it
+# meets the parameter; inline, the construction would take Box<Shape> as its
+# expected type and legitimately build a Box<Shape> holding a Circle.
+fun viaEnum(): Int
+  let b = Full(Circle(1))
+  ret takesBox(b)
+
+# Holder<Circle> where Holder<Shape> is declared.
+fun main(): Int
+  let h = Holder(Circle(2))
+  ret takesHolder(h)

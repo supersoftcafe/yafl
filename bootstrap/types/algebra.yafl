@@ -366,9 +366,12 @@ fun withParams(base: Spec, params: List<Spec>): Spec
 # Threshold — an inferred view is adopted only if CONCRETE (a placeholder may
 # travel across a statement boundary and fill later; an unresolved NAME may
 # not — a callee's raw T would land in a scope that cannot resolve it).
+# A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on an
+# early pass) stays refinable too: generic arguments are invariant, so it must
+# widen with its right-hand side rather than pin the view.
 fun refine(current: Spec|None, r: Resolver, inferred: Spec|None): Spec|None
   ret match(current)
-    (c: Spec) => hasFreePlaceholders(c, r)
+    (c: Spec) => hasFreePlaceholders(c, r) || containsNarrowedView(c)
       ? refineWith(current, inferred)
       : current
     ()        => refineWith(current, inferred)
@@ -382,6 +385,33 @@ fun refineWith(current: Spec|None, inferred: Spec|None): Spec|None
         (o)         => current
     ()         => current
 
+# An enum VIEW narrower than its enum — `Circle` of `Shape`. A type inferred
+# from such a value is provisional: the context may ask for the root (or a
+# wider view), and `meet` joins views. The valid leaves are always a subset of
+# all leaves, so "narrower" is "fewer".
+fun isNarrowedView(sp: Spec): Bool
+  ret match(sp)
+    (e: SEnum) => !sameLen(chain(e.seValidLeaves), chain(e.seAllLeaves))
+    (o: Spec)  => false
+
+# A narrowed view anywhere in `sp` — `Circle` itself, or the `Op{Move}` inside
+# a stored `List<Op{Move}>`. Such an inferred type is provisional: a use-site
+# binding re-infers against its expected type, and a stored let/return type
+# keeps refining, so `meet` widens it exactly as far as the context demands.
+fun containsNarrowedView(sp: Spec): Bool
+  ret match(sp)
+    (e: SEnum)         => isNarrowedView(sp) || any(e.seParams, (p) => containsNarrowedView(p))
+    (c: SClass)        => any(c.scParams, (p) => containsNarrowedView(p))
+    (t2: STuple)       => any(t2.stEntries, (en) => optNarrowed(en.seType))
+    (cm: SCombination) => any(cm.scTypes, (m) => containsNarrowedView(m))
+    (cl: SCallable)    => containsNarrowedView(cl.scParams2) || optNarrowed(cl.scResult)
+    (o: Spec)          => false
+
+fun optNarrowed(sp: Spec|None): Bool
+  ret match(sp)
+    (s2: Spec) => containsNarrowedView(s2)
+    ()         => false
+
 # has_free_placeholders: `sp` contains a generic placeholder that does NOT
 # resolve in the current scope — a blank that leaked out of another
 # declaration's generic context. The scope-aware complement of isConcrete: a
@@ -389,8 +419,13 @@ fun refineWith(current: Spec|None, inferred: Spec|None): Spec|None
 # "Does ANY placeholder fail to resolve" is a question about membership, not
 # about order, so it is asked of the set directly.
 fun hasFreePlaceholders(sp: Spec, r: Resolver): Bool
-  ret any(placeholderNames(sp),
-          (n) => isEmpty(findType(r, n).bItems))
+  ret any(placeholderNames(sp), (n) => !resolvesInScope(n, r))
+
+# The scope test for a placeholder NAME: it resolves when the use sits inside
+# its declaring generic (an enclosing function's own `T`), where the
+# placeholder is a real type; anywhere else it is a hole.
+fun resolvesInScope(name: String, r: Resolver): Bool
+  ret !isEmpty(findType(r, name).bItems)
 
 # _contains_named_spec: `sp` is or contains a raw SNamed spelling — a signature
 # view that hasn't compiled yet. Its names are only meaningful in the declaring
@@ -439,35 +474,56 @@ enum Unify
 
 fun unifyGeneric(generic: Spec, concrete: Spec, names: List<String>,
                  mapping: List<Binding>): Unify
-  # A placeholder we own binds to the concrete side — unless that side is
-  # itself a placeholder (not concrete enough to pin anything down).
+  ret unifyGenericIn(generic, concrete, names, None, mapping)
+
+# `scope` is the use site's scope (Python's `in_scope`): a concrete-side
+# placeholder that resolves there is a real type and may be bound to. Only
+# use-site inference has one; every other caller unifies without.
+fun unifyGenericIn(generic: Spec, concrete: Spec, names: List<String>,
+                   scope: Resolver|None, mapping: List<Binding>): Unify
+  # A placeholder we own binds to the concrete side (see bindHole for which
+  # concrete sides are concrete enough).
   ret match(generic)
     (g: SGeneric)      => contains2(names, g.sgName)
-      ? bindHole(g.sgName, concrete, names, mapping)
+      ? bindHole(g.sgName, concrete, names, scope, mapping)
       : UMap(mapping)
     (b: SBuiltin)      => unifyBuiltin(b, concrete, mapping)
-    (c: SClass)        => unifyClass(c, concrete, names, mapping)
-    (e: SEnum)         => unifyEnum(e, concrete, names, mapping)
-    (n: SNamed)        => unifyNamed(n, concrete, names, mapping)
-    (t2: STuple)       => unifyTuple(t2, concrete, names, mapping)
-    (cm: SCombination) => unifyUnion(cm, concrete, names, mapping)
-    (cl: SCallable)    => unifyCallable(cl, concrete, names, mapping)
+    (c: SClass)        => unifyClass(c, concrete, names, scope, mapping)
+    (e: SEnum)         => unifyEnum(e, concrete, names, scope, mapping)
+    (n: SNamed)        => unifyNamed(n, concrete, names, scope, mapping)
+    (t2: STuple)       => unifyTuple(t2, concrete, names, scope, mapping)
+    (cm: SCombination) => unifyUnion(cm, concrete, names, scope, mapping)
+    (cl: SCallable)    => unifyCallable(cl, concrete, names, scope, mapping)
     (o)                => UMap(mapping)
 
 # Two bindings for one placeholder MEET rather than collide: a hole refines to
 # ground; only a genuine ground-vs-ground clash fails.
 # A bind is a COPY out of the concrete side's scope, and a NamedSpec is only
 # safely resolvable in its original context — so a spec that is or contains
-# one must never bind (containsNamedSpec, deep); nor may a bare placeholder
-# (not concrete enough to pin anything down). DEFER — the fixpoint retries
+# one must never bind (containsNamedSpec, deep). DEFER — the fixpoint retries
 # once the callee's signature grounds.
 fun bindHole(name: String, concrete: Spec, names: List<String>,
-             mapping: List<Binding>): Unify
-  if isHoleSpec(concrete) || containsNamedSpec(concrete)
+             scope: Resolver|None, mapping: List<Binding>): Unify
+  if placeholderUnbindable(concrete, names, scope) || containsNamedSpec(concrete)
     ret UMap(mapping)
   ret match(bindingOf(mapping, name))
     (prior: Spec) => mergeBinding(name, prior, concrete, mapping)
     ()            => UMap(prepend(Binding(name, concrete), mapping))
+
+# A concrete-side placeholder pins nothing down when it is one of the callee's
+# OWN params (binding to itself) or another declaration's unbound leftover (a
+# hole). But an ENCLOSING generic's parameter, in scope at the use site, is a
+# real type there: inside `shorter<T, U>`, `isEnd(b)` with `b: Chain<U>` binds
+# isEnd's T to U. Refusing it left the callee's own placeholder behind, which
+# monomorphisation then completed by bare NAME to the host's T — a silent
+# miscompile. Without a scope every placeholder stays a hole.
+fun placeholderUnbindable(concrete: Spec, names: List<String>,
+                          scope: Resolver|None): Bool
+  ret match(concrete)
+    (g: SGeneric) => match(scope)
+      (r: Resolver) => contains2(names, g.sgName) || !resolvesInScope(g.sgName, r)
+      ()            => true
+    (o)           => false
 
 fun mergeBinding(name: String, prior: Spec, concrete: Spec,
                  mapping: List<Binding>): Unify
@@ -496,50 +552,50 @@ fun unifyBuiltin(b: SBuiltin, concrete: Spec, mapping: List<Binding>): Unify
     (o)            => UMap(mapping)
 
 fun unifyClass(c: SClass, concrete: Spec, names: List<String>,
-               mapping: List<Binding>): Unify
+               scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(concrete)
     (cc: SClass) => c.scName != cc.scName
                     || !sameLen(chain(c.scParams), chain(cc.scParams))
       ? UMap(mapping)
-      : unifyList(chain(c.scParams), chain(cc.scParams), names, mapping)
+      : unifyList(chain(c.scParams), chain(cc.scParams), names, scope, mapping)
     (o)          => UMap(mapping)
 
 # Generic ENUM instances (List<T> vs List<Thing>, Dict<K,V>) unify through
 # their type arguments exactly like classes — this is how a container-only
 # call site binds its element type.
 fun unifyEnum(e: SEnum, concrete: Spec, names: List<String>,
-              mapping: List<Binding>): Unify
+              scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(concrete)
     (ce: SEnum) => e.seRoot != ce.seRoot
                    || isEmpty(e.seParams)
                    || !sameLen(chain(e.seParams), chain(ce.seParams))
       ? UMap(mapping)
-      : unifyList(chain(e.seParams), chain(ce.seParams), names, mapping)
+      : unifyList(chain(e.seParams), chain(ce.seParams), names, scope, mapping)
     (o)         => UMap(mapping)
 
 fun unifyNamed(n: SNamed, concrete: Spec, names: List<String>,
-               mapping: List<Binding>): Unify
+               scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(concrete)
     (cn: SNamed) => n.snName != cn.snName
                     || isEmpty(n.snParams)
                     || !sameLen(chain(n.snParams), chain(cn.snParams))
       ? UMap(mapping)
-      : unifyList(chain(n.snParams), chain(cn.snParams), names, mapping)
+      : unifyList(chain(n.snParams), chain(cn.snParams), names, scope, mapping)
     (o)          => UMap(mapping)
 
 fun unifyCallable(cl: SCallable, concrete: Spec, names: List<String>,
-                  mapping: List<Binding>): Unify
+                  scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(concrete)
-    (cc: SCallable) => match(unifyGeneric(cl.scParams2, cc.scParams2, names, mapping))
+    (cc: SCallable) => match(unifyGenericIn(cl.scParams2, cc.scParams2, names, scope, mapping))
       (uf: UFail) => UFail()
-      (um: UMap)  => unifyOpt(cl.scResult, cc.scResult, names, um.uBindings)
+      (um: UMap)  => unifyOpt(cl.scResult, cc.scResult, names, scope, um.uBindings)
     (o)             => UMap(mapping)
 
 fun unifyOpt(a: Spec|None, b: Spec|None, names: List<String>,
-             mapping: List<Binding>): Unify
+             scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(a)
     (sa: Spec) => match(b)
-      (sb: Spec) => unifyGeneric(sa, sb, names, mapping)
+      (sb: Spec) => unifyGenericIn(sa, sb, names, scope, mapping)
       ()         => UMap(mapping)
     ()         => UMap(mapping)
 
@@ -547,11 +603,12 @@ fun unifyOpt(a: Spec|None, b: Spec|None, names: List<String>,
 # unifies against the field it actually binds (positional zip would infer a
 # placeholder from the wrong field). Default-filled fields contribute nothing.
 fun unifyTuple(t2: STuple, concrete: Spec, names: List<String>,
-               mapping: List<Binding>): Unify
+               scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(concrete)
     (ct: STuple) => match(bindTupleEntries(t2.stEntries,
                             entryNames(chain(ct.stEntries), List())))
-      (b2: List<Int>) => unifyBound(chain(t2.stEntries), b2, ct.stEntries, names, mapping)
+      (b2: List<Int>) => unifyBound(chain(t2.stEntries), b2, ct.stEntries, names, scope,
+                                    mapping)
       ()              => UMap(mapping)
     (o)          => UMap(mapping)
 
@@ -564,36 +621,38 @@ fun [tail] entryNamesB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String>): 
     (l: ChainLink)  => entryNamesB(l.next, push(acc, l.value.seName))
 
 fun [tail] unifyBound(ds: Chain<SEntry>, binding: List<Int>, supplied: List<SEntry>,
-               names: List<String>, mapping: List<Binding>): Unify
+               names: List<String>, scope: Resolver|None,
+               mapping: List<Binding>): Unify
   ret match(ds)
     (nil: ChainEnd) => UMap(mapping)
     (l: ChainLink)  => match(head(binding))
       (ix: Int) => ix < 0
-        ? unifyBound(l.next, tail(binding), supplied, names, mapping)
+        ? unifyBound(l.next, tail(binding), supplied, names, scope, mapping)
         : unifyEntryPair(l.value, nthEntry(supplied, ix), l.next, tail(binding),
-                         supplied, names, mapping)
+                         supplied, names, scope, mapping)
       ()        => UMap(mapping)
 
 fun unifyEntryPair(d: SEntry, s2: SEntry|None, rest: Chain<SEntry>,
                    restBind: List<Int>, supplied: List<SEntry>,
-                   names: List<String>, mapping: List<Binding>): Unify
+                   names: List<String>, scope: Resolver|None,
+                   mapping: List<Binding>): Unify
   ret match(s2)
-    (se: SEntry) => match(unifyOpt(d.seType, se.seType, names, mapping))
+    (se: SEntry) => match(unifyOpt(d.seType, se.seType, names, scope, mapping))
       (uf: UFail) => UFail()
-      (um: UMap)  => unifyBound(rest, restBind, supplied, names, um.uBindings)
-    ()           => unifyBound(rest, restBind, supplied, names, mapping)
+      (um: UMap)  => unifyBound(rest, restBind, supplied, names, scope, um.uBindings)
+    ()           => unifyBound(rest, restBind, supplied, names, scope, mapping)
 
 fun nthEntry(es: List<SEntry>, ix: Int): SEntry|None
   ret head(drop(es, ix))
 
 fun [tail] unifyList(gs: Chain<Spec>, cs: Chain<Spec>, names: List<String>,
-              mapping: List<Binding>): Unify
+              scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(gs)
     (nil: ChainEnd) => UMap(mapping)
     (lg: ChainLink) => match(cs)
-      (lc: ChainLink) => match(unifyGeneric(lg.value, lc.value, names, mapping))
+      (lc: ChainLink) => match(unifyGenericIn(lg.value, lc.value, names, scope, mapping))
         (uf: UFail) => UFail()
-        (um: UMap)  => unifyList(lg.next, lc.next, names, um.uBindings)
+        (um: UMap)  => unifyList(lg.next, lc.next, names, scope, um.uBindings)
       ()              => UMap(mapping)
 
 # Union-vs-union: members are a SET. Positional alignment FIRST (the fixpoint's
@@ -601,15 +660,15 @@ fun [tail] unifyList(gs: Chain<Spec>, cs: Chain<Spec>, names: List<String>,
 # ground pattern members are matched and removed, and a single unbound
 # placeholder member binds to whatever concrete members remain.
 fun unifyUnion(cm: SCombination, concrete: Spec, names: List<String>,
-               mapping: List<Binding>): Unify
+               scope: Resolver|None, mapping: List<Binding>): Unify
   ret match(concrete)
-    (cc: SCombination) => unifyUnionSets(cm, cc, names, mapping)
+    (cc: SCombination) => unifyUnionSets(cm, cc, names, scope, mapping)
     (o)                => UMap(mapping)
 
 fun unifyUnionSets(cm: SCombination, cc: SCombination, names: List<String>,
-                   mapping: List<Binding>): Unify
+                   scope: Resolver|None, mapping: List<Binding>): Unify
   if sameLen(chain(cm.scTypes), chain(cc.scTypes))
-    let trial = unifyList(chain(cm.scTypes), chain(cc.scTypes), names, mapping)
+    let trial = unifyList(chain(cm.scTypes), chain(cc.scTypes), names, scope, mapping)
     ret match(trial)
       (um: UMap)  => um
       (uf: UFail) => unifyUnionBySet(cm, cc, names, mapping)

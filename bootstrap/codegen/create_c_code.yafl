@@ -75,7 +75,7 @@ fun createEntryPoint(mainName: String): CgFunction
                                    RpNewStruct(list2(RpNamedValue("task", untag),
                                                      RpNamedValue("cb", continuation))),
                                    CgDataPointer())
-  let ops = concat(list5(
+  let ops = concat<Op>(list5(
       OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
              RpNewStruct(List()), svResult, false, false, None, List()),
       OpJumpIf("$async_entry", unlikelyChk, false, List()),

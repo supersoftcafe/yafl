@@ -70,7 +70,7 @@ fun genRetInFrame(rt: PsRet, r: Resolver, frame: FrBlock): GBundle
 
 fun genRetJump(rt: PsRet, frame: FrBlock, vb: GBundle): GBundle
   let exitLabel = "blockexit$" + frame.fbTag + "$" + String(rt.retIndex)
-  let tail = list2(OpLabel(exitLabel, List()), OpJump(blockEndLabel(frame), List()))
+  let tail = list2<Op>(OpLabel(exitLabel, List()), OpJump(blockEndLabel(frame), List()))
   ret match(vb.gbResult)
     (rv: RParam) => genRetValued(rt, frame, vb, exitLabel, tail, rv)
     # This exit edge is the LAST phi source added so far, matching the label.

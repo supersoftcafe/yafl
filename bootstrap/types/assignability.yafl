@@ -167,26 +167,16 @@ fun [tail] argsRestUnknown(r: Resolver, ls: Chain<Spec>, rs: Chain<Spec>): Tri
 # not the end: invariance means type EQUIVALENCE, which the existing rules
 # define with their deliberate leniencies (callable parameter NAMES do not
 # distinguish types) — mutually assignable arguments are equivalent.
+#
+# Views of one enum are NOT one type argument: `Box<Circle>` and `Box<Shape>`
+# are different types (user ruling), whatever representation or monomorphised
+# instance they might share — sharing code is an optimisation question, never
+# a typing rule. A narrower view is assignable to the root but not the other
+# way, so the mutual check rejects the pair.
 fun argPairSame(r: Resolver, a: Spec, b: Spec): Int
   if eqSpec(a, b)
     ret 1
-  ret argPairMutual(r, a, argNormaliseView(a, b))
-
-# Views of one enum are ONE type argument (uids are root-only, and every
-# view shares the root's representation), so invariance ignores leaf sets:
-# normalise the right side's to the left's and let the mutual check below
-# recurse into the enums' own arguments. Mirrors specs.py's
-# trivially_assignable_from param loop.
-fun argNormaliseView(a: Spec, b: Spec): Spec
-  ret match(a)
-    (ea: SEnum) => match(b)
-      (eb: SEnum) => ea.seRoot == eb.seRoot
-          && sameLen(chain(ea.seAllLeaves), chain(eb.seAllLeaves))
-          && allIn(chain(ea.seAllLeaves), eb.seAllLeaves)
-        ? SEnum(eb.seRoot, ea.seValidLeaves, eb.seAllLeaves, eb.seParams, eb.seLine)
-        : b
-      (o: Spec)   => b
-    (o: Spec)    => b
+  ret argPairMutual(r, a, b)
 
 fun argPairMutual(r: Resolver, a: Spec, b: Spec): Int
   if argOneUnknown(a, b)

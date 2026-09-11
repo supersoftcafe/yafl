@@ -736,9 +736,9 @@ fun genArrayReadOn(ar: PeArrayRead, info: (cname: String, elem: Spec, lenName: S
   let objVar = RpStackVar(CgDataPointer(), "aobj")
   let idxVar = RpStackVar(CgInt(32), "aidx")
   let elem = RpArrayElement(specGenerate(info.elem, r), objVar, info.cname, "array", info.lenName, idxVar, true)
-  let moveOps = list2(OpMove(objVar, mustResult(objB), false, List()),
+  let moveOps = list2<Op>(OpMove(objVar, mustResult(objB), false, List()),
                       OpMove(idxVar, mustResult(idxB), false, List()))
-  ret bundleJoin(bundleJoin(objB, idxB), GBundle(list2(objVar, idxVar), moveOps, elem, List(), List()))
+  ret bundleJoin(bundleJoin(objB, idxB), GBundle(list2(objVar, idxVar), moveOps, elem, List<RecurSource>(), List<ExitSource>()))
 
 # ── LazyExpression ───────────────────────────────────────────────────────────
 # GAP (see report): `irMangle`'s struct case doesn't port lazy_thunks.py's
@@ -1072,10 +1072,10 @@ fun genNewClass(nw: PeNew, xtypeSpec: Spec, ctype: SClass, cs: PsClass, r: Resol
 
 fun genNewPlain(cs: PsClass, cname: String, paramsBundle: GBundle, paramsVar: RParam, resultVar: RParam, r: Resolver): GBundle
   let moveOps = fieldMoveOps(chain(classFields(cs)), cname, resultVar, paramsVar, 0, r, List())
-  let ops = concat(list2(OpMove(paramsVar, mustResult(paramsBundle), false, List()),
+  let ops = concat(list2(OpMove(paramsVar, mustResult(paramsBundle), false, List<RParam>()),
                         OpNewObject(cname, resultVar, None, List())),
                    moveOps)
-  let ctorBundle = GBundle(list2(paramsVar, resultVar), ops, resultVar, List(), List())
+  let ctorBundle = GBundle(list2(paramsVar, resultVar), ops, resultVar, List<RecurSource>(), List<ExitSource>())
   ret bundleJoin(paramsBundle, ctorBundle)
 
 fun fieldMoveOps(fs: Chain<PStmt>, cname: String, resultVar: RParam, paramsVar: RParam,
@@ -1113,7 +1113,7 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname: String, param
   let scalarOps = build(scalarFieldMoveOps(chain(params), cname,
                             resultVar, paramsVar, arrIdx, 0, r,
                             builder()))
-  let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, List()),
+  let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, List<RParam>()),
                              OpNewObject(cname, resultVar, length2, List())),
                        scalarOps)
   let iVar = RpStackVar(CgInt(32), "filli")
@@ -1121,9 +1121,9 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname: String, param
   let elemVar = RpStackVar(elemCtype, "fillelem")
   let less = RpRuntimeInvoke("int32_test_lt", RpNewStruct(list2(RpNamedValue("a", iVar), RpNamedValue("b", length2))), CgInt(8))
   let incr = RpRuntimeInvoke("int32_add", RpNewStruct(list2(RpNamedValue("a", iVar), RpNamedValue("b", RpInteger(1, 32)))), CgInt(32))
-  let loopOps = list2(OpLabel("fillentry", List()), OpLabel("fillhead", List()))
+  let loopOps = list2<Op>(OpLabel("fillentry", List()), OpLabel("fillhead", List()))
   let phiOp = OpPhi(iVar, list2(OpPhiSource("fillentry", RpInteger(0, 32)), OpPhiSource("fillback", iNext)), List())
-  let restOps = concat(
+  let restOps = concat<Op>(
     list3(OpJumpIf("fillbody", less, false, List()),
           OpJump("fillend", List()),
           OpLabel("fillbody", List())),
@@ -1133,7 +1133,7 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname: String, param
             OpMove(iNext, incr, false, List())),
       list3(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()))))
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))
-  ret GBundle(list5(paramsVar, resultVar, iVar, iNext, elemVar), ops, resultVar, List(), List())
+  ret GBundle(list5(paramsVar, resultVar, iVar, iNext, elemVar), ops, resultVar, List<RecurSource>(), List<ExitSource>())
 
 fun [tail] indexWhereArrayField(ps: Chain<PStmt>, i: Int): Int
   ret match(ps)
@@ -1414,10 +1414,10 @@ fun genLoop(lp: PeLoop, r: Resolver, expected: Spec|None): GBundle
                             renameResultOpt(bodyBundle.gbResult, renames),
                             List(), List())
   let entry = "loopentry$" + tag
-  let lvStackVars = map3(lp.loopParams, paramCTypes, lv, (p, ct, pr) => RpStackVar(ct, pr.lrNew))
+  let lvStackVars: List<RParam> = map3(lp.loopParams, paramCTypes, lv, (p, ct, pr) => RpStackVar(ct, pr.lrNew))
   let phis = buildLoopPhis(chain(lp.loopParams), paramCTypes, paramRefs, lv, entry, bodyBundle.gbRecurSources, 0)
-  let ops = concat(list2(OpLabel(entry, List()), OpLabel(loopHead(frame), List())), concat(phis, bodyRenamed.gbOps))
-  ret GBundle(concat(lvStackVars, bodyRenamed.gbStackVars), ops, bodyRenamed.gbResult, List(), List())
+  let ops = concat(list2(OpLabel(entry, List<RParam>()), OpLabel(loopHead(frame), List<RParam>())), concat(phis, bodyRenamed.gbOps))
+  ret GBundle(concat(lvStackVars, bodyRenamed.gbStackVars), ops, bodyRenamed.gbResult, List<RecurSource>(), List<ExitSource>())
 
 fun exprTypeForceSpec(p: PExpr, r: Resolver): Spec
   ret match(exprType(p, r))

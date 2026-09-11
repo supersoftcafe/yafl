@@ -548,20 +548,15 @@ class EnumSpec(TypeSpec):
         if len(self.type_params) != len(right.type_params):
             return None    # arity mismatch here is convergence noise, not proof
         result: bool | None = True
+        # Views of one enum are NOT one type argument: `Box<Circle>` and
+        # `Box<Shape>` are different types (user ruling), whatever
+        # representation or monomorphised instance they might share — sharing
+        # code is an optimisation question, never a typing rule. A narrower
+        # view is assignable to the root but not the other way, so the mutual
+        # check below rejects the pair, exactly as ClassSpec's loop does.
         for lp, rp in zip(self.type_params, right.type_params):
             if lp == rp:
                 continue
-            if (isinstance(lp, EnumSpec) and isinstance(rp, EnumSpec)
-                    and lp.root_name == rp.root_name
-                    and lp.all_leaf_names == rp.all_leaf_names):
-                # Views of one enum are ONE type argument: every view shares
-                # the root's representation and monomorphisation identity
-                # (uids are root-only), so invariance ignores the leaf sets.
-                # Fall through to the MUTUAL check with the leaf sets
-                # normalised — equality is param-blind for enums, so it must
-                # not be rechecked here; the mutual recursion compares the
-                # enums' own arguments.
-                rp = dataclasses.replace(rp, valid_leaf_names=lp.valid_leaf_names)
             if (isinstance(lp, NamedSpec) or isinstance(rp, NamedSpec)
                     or _holds_placeholder(lp) or _holds_placeholder(rp)
                     or not lp.is_concrete() or not rp.is_concrete()):

@@ -41,9 +41,16 @@ fun useSiteTypeParams(stmt: PStmt, supplied: List<Spec>, expected: Spec|None,
       (o: Spec)         => supplied
     ()         => supplied
 
+# A binding to a NARROWED enum view (`T = Circle`, from a Circle-valued
+# argument) is provisional too: the context may expect the root — a list of
+# Circles flowing where List<Shape> is declared — and generic type arguments
+# are invariant, so the use must widen rather than latch. `meet` joins views,
+# so re-inferring against the expected type widens the binding exactly as far
+# as the context demands and no further.
 fun suppliedComplete(supplied: List<Spec>, gens: List<PGen>,
                      r: Resolver): Bool
   ret sameLen(chain(supplied), chain(gens)) && !anyFree(chain(supplied), r)
+      && !any(supplied, (sp) => containsNarrowedView(sp))
 
 fun [tail] anyFree(ts: Chain<Spec>, r: Resolver): Bool
   ret match(ts)
@@ -118,9 +125,11 @@ fun ownPlaceholder(g2: PGen): Spec
 fun inferTypeParams(stmt: PStmt, gens: List<PGen>, declared: SCallable,
                     want: SCallable, r: Resolver): List<Binding>|None
   let names = genNames(chain(gens), List())
-  ret match(unifyGeneric(declared.scParams2, want.scParams2, names,
-                         List()))
-    (m: UMap)  => match(resultUnified(declared, want, names, m.uBindings))
+  # An enclosing generic's parameter is a real type at this use site, so the
+  # callee's params may bind to it (see unifyGenericIn / bindHole).
+  ret match(unifyGenericIn(declared.scParams2, want.scParams2, names, r,
+                           List()))
+    (m: UMap)  => match(resultUnified(declared, want, names, r, m.uBindings))
       (rm: List<Binding>) => viaWhere(stmt, gens, rm, r, declared.scParams2)
       ()                  => None
     (f: UFail) => None
@@ -128,10 +137,10 @@ fun inferTypeParams(stmt: PStmt, gens: List<PGen>, declared: SCallable,
 # A result-unify FAILURE fails the whole inference (Python: `mapping = ...;
 # if mapping is None: return None`), not just this source.
 fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
-                  mapping: List<Binding>): List<Binding>|None
+                  r: Resolver, mapping: List<Binding>): List<Binding>|None
   ret match(declared.scResult)
     (dr: Spec) => match(want.scResult)
-      (wr: Spec) => match(unifyGeneric(dr, wr, names, mapping))
+      (wr: Spec) => match(unifyGenericIn(dr, wr, names, r, mapping))
         (m: UMap)  => m.uBindings
         (f: UFail) => None
       ()         => mapping

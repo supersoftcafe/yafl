@@ -1316,7 +1316,7 @@ fun alHotValuedTemp(bb: ABlock, c: OpCall, reg: RParam, wrappedType: CgType,
 
 # sync: $asynccommon aborts (a proven-sync fn reached it = broken contract).
 fun alHotAssembleSync(f: CgFunction, wrappedResult: CgType, body: HotOut, hasPar: Bool): CgFunction
-  let commonOps = list2(OpLabel("$asynccommon", List()),
+  let commonOps = list2<Op>(OpLabel("$asynccommon", List()),
                         OpAbort("sync function reached $asynccommon", List()))
   let parFields = hasPar
     ? list3(CgField("$sv_par_task", CgDataPointer()),
@@ -1481,9 +1481,9 @@ fun alPlaced(acc: AFrame, name: String): Bool
 fun alCreateStubLaunchFunc(f: CgFunction, stateName: String, subtype: String|None,
                            layout: AFrame, entryIdx: Int): CgFunction
   let wrappedResult = wrapReturnType(f.fnResult)
-  let ops0 = list1(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), List()))
+  let ops0 = list1<Op>(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), List()))
   # Stub launch stores into its own fresh $sv_state (Python 1053).
-  let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc, p) =>
+  let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc: List<Op>, p: CgField) =>
                concat(acc, alStoreVar(RpStackVar(p.fieldType, p.fieldName), alSvState(), stateName, layout)))
   let ops2 = concat(ops1, list2(
       OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
@@ -2454,11 +2454,11 @@ fun alZeroInitUnwrittenSaves(f: CgFunction): CgFunction
   let offenders = alZiusLoop(f.fnOps, 0i32, 0, entry, List())
   if isEmpty(offenders)
     ret f
-  let inits = map(svSortedByName(offenders), (v) =>
+  let inits = map<RParam, Op>(svSortedByName(offenders), (v) =>
         OpMove(v, alZeroVal(rpGetType(v)), false, List()))
-  ret cgFunctionWith(f, build(pushAll(pushAll(seqBuilder(),
-                                                  inits),
-                                      f.fnOps)),
+  ret cgFunctionWith(f, build<Op>(pushAll<Op>(pushAll<Op>(seqBuilder<Op>(),
+                                                              inits),
+                                              f.fnOps)),
                      f.fnStackVars)
 
 fun [tail] alZiusLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, entry: Dict<Int, InitSet>,

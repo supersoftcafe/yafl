@@ -114,9 +114,17 @@ def _infer_type_params(stmt: s.Statement, declared: t.CallableSpec,
     unbound); the caller decides how to apply it. None means the shapes don't
     unify at all."""
     placeholder_names = {tp.name for tp in (getattr(stmt, "type_params", None) or ())}
-    mapping = t.unify_generic(declared.parameters, expected.parameters, placeholder_names)
+
+    # An enclosing generic's parameter is a real type at this use site, so the
+    # callee's params may bind to it (see unify_generic).
+    def in_scope(name: str) -> bool:
+        return t.resolves_in_scope(name, resolver)
+
+    mapping = t.unify_generic(declared.parameters, expected.parameters, placeholder_names,
+                              None, in_scope)
     if mapping is not None and declared.result is not None and expected.result is not None:
-        mapping = t.unify_generic(declared.result, expected.result, placeholder_names, mapping)
+        mapping = t.unify_generic(declared.result, expected.result, placeholder_names, mapping,
+                                  in_scope)
     if mapping is None:
         return None
     return _infer_type_params_via_where(stmt, mapping, resolver, declared.parameters)
@@ -148,8 +156,15 @@ def use_site_type_params(stmt: s.Statement,
     stmt_type_params = getattr(stmt, "type_params", None) or ()
     if not stmt_type_params or not isinstance(expected_type, t.CallableSpec):
         return supplied
+    # A binding to a NARROWED enum view (`T = Circle`, from a Circle-valued
+    # argument) is provisional too: the context may expect the root — a list
+    # of Circles flowing where List<Shape> is declared — and generic type
+    # arguments are invariant, so the use must widen rather than latch. `meet`
+    # joins views, so re-inferring against the expected type widens the
+    # binding exactly as far as the context demands and no further.
     complete = (len(supplied) == len(stmt_type_params)
-                and not any(t.has_free_placeholders(tp, resolver) for tp in supplied))
+                and not any(t.has_free_placeholders(tp, resolver) for tp in supplied)
+                and not any(t.contains_narrowed_view(tp) for tp in supplied))
     if complete:
         return supplied
     declared = stmt.get_type() if hasattr(stmt, "get_type") else None

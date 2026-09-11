@@ -67,7 +67,7 @@ fun ucComputeEntrySets(f: CgFunction): Dict<Int, InitSet>
   let labels = ucLabelIndex(f.fnOps)
   let params = map(cgFieldsOfOrEmpty(f.fnParams), ucKeyField)
   let ix = ucIndexOps(f.fnOps)
-  let entry0 = put(Dict(), 0,
+  let entry0 = put<Int, InitSet>(Dict(), 0,
                    IsSet(fold(params, Set(), ucAddName)))
   ret ucFixpoint(ix, labels, entry0, list1(0))
 

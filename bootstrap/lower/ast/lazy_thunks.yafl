@@ -179,13 +179,13 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
              closure: RParam, rwrapped: RParam, value: RParam,
              flagF: RParam, closureF: RParam, valueF: RParam, isComplete: RParam): List<Op>
   let finisher = finisherFunctionName(valueType)
-  let head = list5(
+  let head = list5<Op>(
       OpJumpIf("$slow", isComplete, true, List()),
       OpReturn(lazySyncWrap(valueF, wrapped), List()),
       OpLabel("$slow", List()),
       OpNewObject(waiterTy, waiter, None, List()),
       lazyRuntimeCall1("task_init", "self", waiter))
-  let enqueue = list5(
+  let enqueue = list5<Op>(
       OpMove(flagAddr, RpPointerTo(flagF), false, List()),
       OpMove(status, RpRuntimeInvoke("lazy_thunk_enqueue",
                                      RpNewStruct(list2(RpNamedValue("flag", flagAddr),
@@ -219,7 +219,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
                                RpNamedValue("cb", RpGlobalFunction(finisher, this, false, None, false, false)))),
                              CgDataPointer()),
              true, List()))
-  let tail = list5(
+  let tail = list5<Op>(
       OpReturn(RpTagTask(waiter, wrapped), List()),
       OpLabel("$already_done", List()),
       OpReturn(lazySyncWrap(valueF, wrapped), List()),

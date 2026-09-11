@@ -541,8 +541,8 @@ fun flatEnumArm(em: GEmit, arm: PArm, sv: RParam, tag: RParam, subjType: Spec, a
 fun flatEnumArmOn(em: GEmit, arm: PArm, tag: RParam, subjType: Spec, allLeafNames: List<String>,
                   armType: SEnum, sv: RParam, resultType: Spec|None, r: Resolver): GEmit
   let ordered = sortLeavesByGuardOrder(armType.seValidLeaves, allLeafNames)
-  let guards = map(ordered, (leaf) => RpIntEqConst(tag, leafId(allLeafNames, leaf)))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List())
+  let guards = map<String, RParam>(ordered, (leaf) => RpIntEqConst(tag, leafId(allLeafNames, leaf)))
+  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List<GBundle>())
 
 # ── tagged combination ──────────────────────────────────────────────────
 
@@ -948,8 +948,8 @@ fun complexEnumArm(em: GEmit, arm: PArm, sv: RParam, tag: RParam, subjType: Spec
 fun complexEnumArmOn(em: GEmit, arm: PArm, tag: RParam, subjType: Spec, rootName: String, discs: Dict<String, Int>,
                      armType: SEnum, sv: RParam, resultType: Spec|None, r: Resolver): GEmit
   let ordered = sortLeavesByComplexId(armType.seValidLeaves, rootName, discs)
-  let guards = map(ordered, (leaf) => RpIntEqConst(tag, complexLeafId(rootName, leaf, discs)))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List())
+  let guards = map<String, RParam>(ordered, (leaf) => RpIntEqConst(tag, complexLeafId(rootName, leaf, discs)))
+  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List<GBundle>())
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 6: box_value (CombinationSpec targets only).
@@ -1370,8 +1370,8 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName: String,
   let objVar = RpStackVar(CgDataPointer(), "boxed")
   let step = bxConstructFields(chain(leafFields), objName, objVar, fieldArgs, r,
                                CcAcc(builder(), builder()))
-  let ops = concat(list1(OpNewObject(objName, objVar, None, List())), step.ccOps)
-  let allocBundle = GBundle(list1(objVar), ops, objVar, List(), List())
+  let ops = concat(list1<Op>(OpNewObject(objName, objVar, None, List<RParam>())), step.ccOps)
+  let allocBundle = GBundle(list1(objVar), ops, objVar, List<RecurSource>(), List<ExitSource>())
   ret match(listAt(variantSlots2, 0))
     (se: CgSlotEntry) => bundleJoin(bundleJoinAll(step.ccBundles),
                              bundleJoin(allocBundle,
@@ -1459,8 +1459,8 @@ fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName: String, fie
   let step = complexConstructFields(chain(leafFields), objName, resultVar,
                                     fieldArgs, r,
                                     CcAcc(builder(), builder()))
-  let ops = concat(list1(OpNewObject(objName, resultVar, None, List())), step.ccOps)
-  let ctorBundle = GBundle(list1(resultVar), ops, resultVar, List(), List())
+  let ops = concat(list1<Op>(OpNewObject(objName, resultVar, None, List<RParam>())), step.ccOps)
+  let ctorBundle = GBundle(list1(resultVar), ops, resultVar, List<RecurSource>(), List<ExitSource>())
   ret bundleJoin(bundleJoinAll(step.ccBundles), ctorBundle)
 
 class [final] ComplexConstructOut(ccOps: List<Op>, ccBundles: List<GBundle>)

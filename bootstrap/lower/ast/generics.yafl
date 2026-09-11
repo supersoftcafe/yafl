@@ -300,21 +300,28 @@ fun fciSpecsOpt(ss: List<Spec>|None, acc: GRefs): GRefs
     ()              => acc
 
 # ── substitution ────────────────────────────────────────────────────────────
-# Placeholders substitute by SPEC-scope name first, then by BARE name (strip
-# @hash) — an enum's own T-scope hash differs from the function's, but both
-# come from one source identifier, so the bare match is correct within a
-# single specialisation. EnumSpec substitution walks all_fields with a
+# Placeholders substitute by SPEC-scope name first, then — for an enum
+# template's own placeholders only — by BARE name (strip @hash): an enum's
+# T-scope hash differs from the function's, but both come from one source
+# identifier, so the bare match is correct within a single specialisation. EnumSpec substitution walks all_fields with a
 # visited-set cycle guard (search_and_replace deliberately skips them) AND
 # its own params; a NamedSpec-with-params inside all_fields inline-redirects
 # to its mangled name once concrete.
 
 class [final] GSub(gsExact: List<Binding>, gsBare: List<Binding>,
-                   gsFormals: Dict<String, List<String>>)
+                   gsFormals: Dict<String, List<String>>,
+                   gsEnumFormals: Set<String>)
 
 fun gsubOf(gens: List<PGen>, args: List<Spec>,
            formals: Dict<String, List<String>>): GSub
-  ret gsubLoop(chain(gens), chain(args), GSub(List(),
-                                              List(), formals))
+  ret gsubLoop(chain(gens), chain(args), GSub(List(), List(), formals,
+                                              enumFormalNames(formals)))
+
+# Every placeholder an enum template declares — the only ones the bare-name
+# match is for (see resolveGp).
+fun enumFormalNames(formals: Dict<String, List<String>>): Set<String>
+  ret fold(values(formals), Set<String>(),
+           (acc, ns) => fold(ns, acc, (a2, n) => add(a2, n)))
 
 fun [tail] gsubLoop(gs: Chain<PGen>, as2: Chain<Spec>, acc: GSub): GSub
   ret match(gs)
@@ -328,16 +335,24 @@ fun [tail] gsubLoop(gs: Chain<PGen>, as2: Chain<Spec>, acc: GSub): GSub
           GSub(prepend(Binding(g2.value.genName, a.value), acc.gsExact),
                prepend(Binding(bareGenName(g2.value.genName), a.value),
                        acc.gsBare),
-               acc.gsFormals))
+               acc.gsFormals, acc.gsEnumFormals))
 
 fun bareGenName(name: String): String
   let at = findByte(name, '@', 0)
   ret at < 0 ? name : slice(name, 0, at)
 
+# The bare-name match is for ENUM-template placeholders only — the ones
+# all_fields and identity completion carry under the enum's own scope hash.
+# Any other unmatched placeholder (a callee's own param left unbound at a call
+# site) is not this specialisation's to guess: binding it by name to whichever
+# host param shares the letter was a silent miscompile. Left in place, the
+# unresolved-generic-call report names it at the use site.
 fun resolveGp(name: String, sub: GSub): Spec|None
   ret match(bindingOf(sub.gsExact, name))
     (b: Spec) => b
-    ()        => bindingOf(sub.gsBare, bareGenName(name))
+    ()        => contains(sub.gsEnumFormals, name)
+      ? bindingOf(sub.gsBare, bareGenName(name))
+      : None
 
 fun gsubSpec(sp: Spec, sub: GSub, visited: List<String>): Spec
   ret match(sp)

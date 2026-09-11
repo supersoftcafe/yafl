@@ -216,11 +216,21 @@ def __substitute_type_params(
         if isinstance(k, t.GenericPlaceholderSpec):
             bare = k.name.rpartition("@")[0] or k.name
             name_map[bare] = v
+    # The bare-name match is for ENUM-template placeholders only — the ones
+    # all_fields and identity completion carry under the enum's own scope hash.
+    # Any other unmatched placeholder (a callee's own param left unbound at a
+    # call site) is not this specialisation's to guess: binding it by name to
+    # whichever host param shares the letter was a silent miscompile. Left in
+    # place, report_unresolved_generic_calls reports it at the use site.
+    enum_formals = {f.name for formals in (template_formals or {}).values()
+                    for f in formals if isinstance(f, t.GenericPlaceholderSpec)}
 
     def _resolve_gp(gp: t.GenericPlaceholderSpec) -> t.TypeSpec:
         direct = type_param_map.get(gp)
         if direct is not None:
             return direct
+        if gp.name not in enum_formals:
+            return gp
         bare = gp.name.rpartition("@")[0] or gp.name
         return name_map.get(bare, gp)
 
