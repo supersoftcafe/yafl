@@ -515,11 +515,10 @@ fun checkMatchTyped(mt: PeMatch, st: Spec, r: Resolver, expected: Spec|None,
                oneErr(mt.pemLine,
                       "match subject must be a union type, or use literal "
                       + "patterns on an Int/String subject"))
-  # NOT PORTED YET: __check_literal_arms / __check_exhaustiveness (coverage,
-  # duplicate literals, unreachable arms) — the contract's next diff will
-  # demand them.
-  ret union(multiSubjectErrs(mt),
-            matchArmChecks(chain(mt.arms), r, expected, subjectErr))
+  # Coverage, duplicate literals and unreachable arms: match_coverage.yafl.
+  ret union(union(multiSubjectErrs(mt),
+                  matchArmChecks(chain(mt.arms), r, expected, subjectErr)),
+            matchCoverageErrs(mt, st, r))
 
 # ── multi-subject arity ─────────────────────────────────────────────────────
 # Arity is a pure AST property — one pattern per subject — so it is checked
@@ -693,7 +692,10 @@ fun referencedNames(x: PExpr, acc: List<String>): List<String>
     (lm: PeLambda) => referencedNames(lm.lamBody, refStmt(lm.lamParams, acc))
     (bk: PeBlock)  => referencedNames(bk.blockValue,
                                       referencedInStmts(chain(bk.blockStmts), acc))
-    (mt: PeMatch)  => refArms(chain(mt.arms), referencedNames(mt.subject, acc))
+    # Every subject is a use — the extra subjects of `match(a, b)` included.
+    (mt: PeMatch)  => refArms(chain(mt.arms),
+                              fold(mt.matchExtra, referencedNames(mt.subject, acc),
+                                   (a2, sx) => referencedNames(sx, a2)))
     (op: PeBuiltinOp) => referencedNames(op.opParams, acc)
     (nw: PeNew)    => referencedNames(nw.newParam, acc)
     (ar: PeArrayRead) => referencedNames(ar.arrIndex,

@@ -1,0 +1,18 @@
+# check-contract corpus: a multi-subject match whose arm has FEWER patterns
+# than there are subjects. The arity error is the diagnosis; the coverage
+# pass must not index the missing position (it used to crash the checker
+# with an IndexError) — a mis-arity arm covers nothing, so the match is also
+# reported non-exhaustive.
+typealias Int : __builtin_type__<bigint>
+
+enum Shape
+  enum Circle(r: Int)
+  enum Square(s: Int)
+
+fun short(a: Shape, b: Shape): Int
+  ret match(a, b)
+    (x: Circle) => 1
+    (x: Square, y: Shape) => 2
+
+fun main(): Int
+  ret 0

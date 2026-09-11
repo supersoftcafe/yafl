@@ -1,0 +1,29 @@
+# check-contract corpus: MULTI-SUBJECT match coverage — over the PRODUCT of
+# the subjects' variants. Each function breaks one coverage rule.
+typealias Int : __builtin_type__<bigint>
+
+enum Shape
+  enum Circle(r: Int)
+  enum Square(s: Int)
+
+# (Square, Circle) is never matched.
+fun pair(a: Shape, b: Shape): Int
+  ret match(a, b)
+    (x: Circle, y: Shape)  => 1
+    (x: Square, y: Square) => 2
+
+# The second arm's combinations are all taken by the first.
+fun shadowed(a: Shape, b: Shape): Int
+  ret match(a, b)
+    (x: Shape, y: Shape)   => 1
+    (x: Circle, y: Circle) => 2
+
+# Every combination is covered before the else arm.
+fun deadElse(a: Shape, b: Shape): Int
+  ret match(a, b)
+    (x: Circle, y: Shape) => 1
+    (x: Square, y: Shape) => 2
+    ()                    => 3
+
+fun main(): Int
+  ret 0

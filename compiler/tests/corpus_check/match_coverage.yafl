@@ -1,0 +1,49 @@
+# check-contract corpus: MATCH COVERAGE on enum and union subjects.
+# A non-exhaustive or overlapping match is a CHECK error: compiled anyway, the
+# missing case falls through every arm and aborts at runtime. Each function
+# below breaks exactly one coverage rule.
+typealias Int : __builtin_type__<bigint>
+
+enum Shape
+  enum Circle(r: Int)
+  enum Square(s: Int)
+  enum Tri(t: Int)
+
+class [final] Apple(v: Int)
+class [final] Pear(v: Int)
+
+# Tri is never matched.
+fun missingLeaf(s: Shape): Int
+  ret match(s)
+    (c: Circle) => 1
+    (q: Square) => 2
+
+# The second Circle arm can never run.
+fun repeatedLeaf(s: Shape): Int
+  ret match(s)
+    (c: Circle)  => 1
+    (c2: Circle) => 2
+    (q: Square)  => 3
+    (t: Tri)     => 4
+
+# Every leaf is covered before the else arm.
+fun deadElse(s: Shape): Int
+  ret match(s)
+    (c: Circle) => 1
+    (q: Square) => 2
+    (t: Tri)    => 3
+    ()          => 4
+
+# Nothing after an else arm is reachable.
+fun afterElse(s: Shape): Int
+  ret match(s)
+    ()          => 1
+    (c: Circle) => 2
+
+# Union subject: Pear is never matched.
+fun missingMember(x: Apple|Pear): Int
+  ret match(x)
+    (a: Apple) => 1
+
+fun main(): Int
+  ret 0

@@ -852,6 +852,10 @@ class MatchExpression(e.Expression):
                         "unreachable else arm: all combinations already covered"))
                 remaining = set()
                 continue
+            if len(pats) != len(tables):
+                # A mis-arity arm is reported by check(); it covers nothing
+                # (indexing its missing positions used to crash the checker).
+                continue
             per_pos = [self.__covered_keys(tables[i][0], pats[i], tables[i][1], resolver)
                        for i in range(len(tables))]
             covers = {tup for tup in remaining
@@ -975,10 +979,12 @@ class MatchExpression(e.Expression):
         # member (`Never` in an error union) is covered by the laws of physics.
         # An EXPLICIT arm for it stays legal (it sits in `remaining` until
         # matched) — writing one documents intent, omitting one costs nothing.
+        # Union members are listed in canonical member order: a set here
+        # printed them in hash order, which no port can reproduce.
         if not else_seen:
             uncovered = (remaining if isinstance(remaining, set) else
-                         {uid for uid, (_, v) in remaining.items()
-                          if not (isinstance(v, t.EnumSpec) and not v.valid_leaf_names)})
+                         [uid for uid, (_, v) in remaining.items()
+                          if not (isinstance(v, t.EnumSpec) and not v.valid_leaf_names)])
             if uncovered:
                 errors.append(Error(self.line_ref,
                     f"non-exhaustive match; missing: {missing_name(uncovered)}"))

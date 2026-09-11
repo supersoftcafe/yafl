@@ -1,0 +1,38 @@
+# check-contract corpus: LITERAL match arms on a primitive subject.
+# Int and String are not finite, so a literal match needs an else arm; a
+# repeated literal can never match; a literal must have the subject's width;
+# and nothing after an else arm is reachable. Each function breaks one rule.
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+
+# The second (1) can never match.
+fun dupLit(n: Int): Int
+  ret match(n)
+    (1) => 10
+    (1) => 11
+    ()  => 0
+
+# No else arm on an Int subject.
+fun noElse(n: Int): Int
+  ret match(n)
+    (1 | 2) => 1
+
+# No else arm on a String subject.
+fun noElseStr(s: String): Int
+  ret match(s)
+    ("a") => 1
+
+# An Int32 literal against an Int subject: there is no implicit widening.
+fun widthMismatch(n: Int): Int
+  ret match(n)
+    (1i32) => 1
+    ()     => 0
+
+# Nothing after an else arm is reachable.
+fun litAfterElse(n: Int): Int
+  ret match(n)
+    ()  => 0
+    (3) => 3
+
+fun main(): Int
+  ret 0
