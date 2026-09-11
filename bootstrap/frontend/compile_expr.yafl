@@ -918,7 +918,7 @@ fun markOne(st: PStmt): PStmt
     (f: PsFun) => f.fNested
       ? st
       : PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody, f.fRet,
-              f.fWheres, f.psfLine, f.fRetInferred, true, f.fImports)
+              f.fWheres, f.psfLine, f.fRetInferred, true, f.fImports, false)
     (o: PStmt) => st
 
 # A primitive op owns its conversion — its result boxing into a union slot —

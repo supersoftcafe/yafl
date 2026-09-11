@@ -696,6 +696,44 @@ fun scT2cPut(acc: Dict<String, String>, name: String,
 fun scClassForUid(t2c: Dict<String, String>, u: String): String|None
   ret u == "" ? None : get(t2c, u)
 
+# ── 8b. methodOwners ─────────────────────────────────────────────────────────
+# Method name -> the simple class that declares it. Names are unique: each is
+# minted as `name@<hash6>` from its own source position, so two classes spelling
+# a method the same way still hold distinct names. A name that somehow IS shared
+# is dropped rather than guessed at.
+
+class [final] ScOwners(soMap: Dict<String, String>, soShared: List<String>)
+
+fun scMethodOwners(cands: ScCands): Dict<String, String>
+  ret scOwnersDrop(scOwnLoop(chain(scNames(cands)), cands,
+                             ScOwners(Dict<String, String>(), List<String>())))
+
+fun scOwnersDrop(o: ScOwners): Dict<String, String>
+  ret fold<String, Dict<String, String> >(o.soShared, o.soMap,
+          (d: Dict<String, String>, n: String) => remove(d, n))
+
+fun [tail] scOwnLoop(ns: Chain<String>, cands: ScCands,
+                     acc: ScOwners): ScOwners
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (n: ChainLink)  => match(scClassFor(cands, n.value))
+      (cls: PsClass) => scOwnLoop(n.next, cands,
+                            scOwnMembers(chain(scMethodNames(cls)), n.value, acc))
+      ()             => scOwnLoop(n.next, cands, acc)
+
+fun [tail] scOwnMembers(ms: Chain<String>, clsName: String,
+                        acc: ScOwners): ScOwners
+  ret match(ms)
+    (nil: ChainEnd) => acc
+    (m: ChainLink)  => scOwnMembers(m.next, clsName, scOwnOne(m.value, clsName, acc))
+
+fun scOwnOne(name: String, clsName: String, acc: ScOwners): ScOwners
+  ret match(get(acc.soMap, name))
+    (prev: String) => prev == clsName
+      ? acc
+      : ScOwners(acc.soMap, prepend(name, acc.soShared))
+    ()             => ScOwners(put(acc.soMap, name, clsName), acc.soShared)
+
 # ── 9. liftMethod ────────────────────────────────────────────────────────────
 
 fun scRenameThisCb(x: PExpr): PExpr|None
@@ -751,8 +789,30 @@ fun [tail] scLiftAllLoop(ns: Chain<String>, from2: ScCands, specs: ScSpecs,
     (n: ChainLink)  => scLiftAllLoop(n.next, from2, specs,
                            scLiftOne(n.value, from2, specs, acc))
 
-fun scLiftAll(cands: ScCands, specs: ScSpecs): List<PStmt>
-  ret scLiftAllLoop(chain(scNames(cands)), cands, specs, List<PStmt>())
+# The lifted methods are EMITTED in this order, so it must match Python's
+# `simple_classes.items()` — declaration order, as __find_simple_classes walked
+# the statement list. Sorting the names instead put a later class's methods
+# first whenever source and alphabetical order disagreed, which the two
+# AST-comparison gates read straight out. Taken from the statement list because
+# that is what defines it; no second copy to fall out of step.
+fun scLiftAll(statements: List<PStmt>, cands: ScCands,
+              specs: ScSpecs): List<PStmt>
+  ret scLiftAllLoop(chain(scDeclOrder(statements, cands)), cands, specs,
+                    List<PStmt>())
+
+# Candidate class names in declaration order.
+fun scDeclOrder(statements: List<PStmt>, cands: ScCands): List<String>
+  ret build<String >(scDeclOrderB(chain(statements), cands, builder<String >()))
+
+fun [tail] scDeclOrderB(ss: Chain<PStmt>, cands: ScCands,
+                        [terminal] acc: ListBuilder<String >): ListBuilder<String >
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (c: PsClass) => scHasCand(cands, c.cName)
+        ? scDeclOrderB(l.next, cands, push<String >(acc, c.cName))
+        : scDeclOrderB(l.next, cands, acc)
+      (o: PStmt)   => scDeclOrderB(l.next, cands, acc)
 
 # ── 10. nameTupleEntries ─────────────────────────────────────────────────────
 
@@ -807,12 +867,21 @@ fun scCtorReplacement(c: PeCall, nm: PeName, specs: ScSpecs): PExpr|None
     (sp: Spec) => scNameTupleEntries(c.parameter, sp)
     ()         => None
 
-fun scClassNameForDotBase(base: PExpr, cands: ScCands, t2c: Dict<String, String>,
+fun scClassNameForDotBase(base: PExpr, member: String, cands: ScCands,
+                          t2c: Dict<String, String>,
+                          owners: Dict<String, String>,
                           r: Resolver): String|None
   ret match(exprType(base, r))
     (bt: Spec) => match(bt)
       (cs2: SClass) => scHasCand(cands, cs2.scName) ? cs2.scName : None
-      (t2: STuple)  => scClassForUid(t2c, uid(t2))
+      # The receiver is already flattened, so recover its class from the
+      # METHOD, not the shape: a tuple's unique id is built from field TYPES
+      # alone, so `Alpha(a: Int)` and `Beta(b: Int)` share one and the shape map
+      # holds only whichever came last. The shape map still answers if a method
+      # name is somehow shared.
+      (t2: STuple)  => match(get(owners, member))
+        (n: String) => n
+        ()          => scClassForUid(t2c, uid(t2))
       (o: Spec)     => None
     ()         => None
 
@@ -830,27 +899,29 @@ fun scBuildMethodCall(c: PeCall, d: PeDot, clsName: String, cands: ScCands): PEx
     ()             => None
 
 fun scReplaceMethodCall(c: PeCall, d: PeDot, cands: ScCands,
-                        t2c: Dict<String, String>, r: Resolver): PExpr|None
-  ret match(scClassNameForDotBase(d.base, cands, t2c, r))
+                        t2c: Dict<String, String>,
+                        owners: Dict<String, String>, r: Resolver): PExpr|None
+  ret match(scClassNameForDotBase(d.base, d.member, cands, t2c, owners, r))
     (clsName: String) => scBuildMethodCall(c, d, clsName, cands)
     ()                => None
 
 fun scReplaceCall(c: PeCall, cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
-                  r: Resolver): PExpr|None
+                  owners: Dict<String, String>, r: Resolver): PExpr|None
   ret match(c.function)
     (nm: PeName) => scReplaceCtorCall(c, nm, cands, specs)
-    (d: PeDot)   => scReplaceMethodCall(c, d, cands, t2c, r)
+    (d: PeDot)   => scReplaceMethodCall(c, d, cands, t2c, owners, r)
     (o: PExpr)   => None
 
 fun scReplaceExpr(x: PExpr, cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
-                  r: Resolver): PExpr|None
+                  owners: Dict<String, String>, r: Resolver): PExpr|None
   ret match(x)
     (nw: PeNew) => scReplaceNew(nw)
-    (c: PeCall) => scReplaceCall(c, cands, specs, t2c, r)
+    (c: PeCall) => scReplaceCall(c, cands, specs, t2c, owners, r)
     (o: PExpr)  => None
 
-fun scReplaceFn(cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>, r: Resolver): Rw
-  ret Rw((x: PExpr) => scReplaceExpr(x, cands, specs, t2c, r),
+fun scReplaceFn(cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
+                owners: Dict<String, String>, r: Resolver): Rw
+  ret Rw((x: PExpr) => scReplaceExpr(x, cands, specs, t2c, owners, r),
          (sp: Spec) => scMainSpecOne(sp, cands, specs),
          rwNoStmt)
 
@@ -895,11 +966,12 @@ fun lowerSimpleClasses(statements: List<PStmt>): List<PStmt>
   let cands = filtered2.sfCands
   let specs = filtered2.sfSpecs
   let t2c = scTupleIdToClass(specs)
-  let liftedPre = scLiftAll(cands, specs)
+  let owners = scMethodOwners(cands)
+  let liftedPre = scLiftAll(statements, cands, specs)
   let rewriteResolver = rootResolver(concat(statements, liftedPre))
   # Resolver-THREADED rewrite (scT*): Python's callback sees the resolver in
   # effect at each node — a receiver that is a param or local must resolve.
-  let ctx = ScCtx(cands, specs, t2c)
+  let ctx = ScCtx(cands, specs, t2c, owners)
   let newStatements0 = scTTop(chain(statements), cands, ctx, rewriteResolver,
                               List<PStmt>())
   let liftedFinal = scTStmts(liftedPre, ctx, rewriteResolver)
@@ -917,7 +989,8 @@ fun lowerSimpleClasses(statements: List<PStmt>): List<PStmt>
 # walker in the tree — consolidate into rewrite.yafl during the migration.)
 
 class [final] ScCtx(sxCands: ScCands, sxSpecs: ScSpecs,
-                    sxT2c: Dict<String, String>)
+                    sxT2c: Dict<String, String>,
+                    sxOwners: Dict<String, String>)
 
 fun scTSpec(sp: Spec, c: ScCtx): Spec
   ret rwSpec(sp, rwOnSpec((s2: Spec) => scMainSpecOne(s2, c.sxCands,
@@ -1003,7 +1076,7 @@ fun scTExprOpt(x: PExpr|None, c: ScCtx, r: Resolver): PExpr|None
 
 fun scTExpr(x: PExpr, c: ScCtx, r: Resolver): PExpr
   let rebuilt = scTKids(x, c, r)
-  ret match(scReplaceExpr(rebuilt, c.sxCands, c.sxSpecs, c.sxT2c, r))
+  ret match(scReplaceExpr(rebuilt, c.sxCands, c.sxSpecs, c.sxT2c, c.sxOwners, r))
     (rep: PExpr) => rep
     ()           => rebuilt
 

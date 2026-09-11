@@ -45,6 +45,10 @@ class TraitInstanceStatement(NamedStatement):
     statements: list[Statement]              # the member functions
 
     def __member_with_wheres(self, x: Statement) -> Statement:
+        # A member is not global — only a global function may declare type
+        # params or a `where`, and FunctionStatement.check asks exactly that.
+        if isinstance(x, FunctionStatement):
+            x = dataclasses.replace(x, is_global=False)
         if isinstance(x, FunctionStatement) and self.trait_params:
             return dataclasses.replace(x, trait_params=self.trait_params)
         return x

@@ -89,7 +89,7 @@ class BlockExpression(Expression):
         # A block is never top level, so every function declared in it is an
         # INNER function: mark it, so it establishes no trait scope of its own
         # (it carries no `where` and inherits the owner's lexically). Idempotent.
-        return [dataclasses.replace(x, is_nested=True)
+        return [dataclasses.replace(x, is_nested=True, is_global=False)
                 if isinstance(x, s.FunctionStatement) and not x.is_nested else x
                 for x in self.statements]
 

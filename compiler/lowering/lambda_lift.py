@@ -39,7 +39,7 @@ import pyast.statement as s
 import pyast.expression as e
 import pyast.resolver as g
 from langtools import checked_cast
-from lowering.ast_inline import _free_refs, _tarjan_sccs
+from lowering.ast_inline import _free_refs, _tarjan_sccs, _class_declares_nested_fns
 
 
 def __call_args(call: e.CallExpression) -> list[e.TupleEntryExpression]:
@@ -142,6 +142,19 @@ def __lift_in_function(fn: s.FunctionStatement) -> s.FunctionStatement:
                         fn.search_and_replace(g.ResolverRoot([]), rewrite))
 
 
+def __lift_in_statement(stmt: s.Statement) -> s.Statement:
+    # Class members are functions with a receiver; a nested helper inside one
+    # threads captured PARAMETERS exactly as it would inside a free function.
+    # `this` is not a parameter, so it is never threaded here — it stays
+    # implicit, and the hoist makes the helper a sibling member to keep it so.
+    if isinstance(stmt, s.FunctionStatement):
+        return __lift_in_function(stmt)
+    if isinstance(stmt, s.ClassStatement) and _class_declares_nested_fns(stmt):
+        return dataclasses.replace(stmt, statements=[
+            __lift_in_function(member) if isinstance(member, s.FunctionStatement) else member
+            for member in stmt.statements])
+    return stmt
+
+
 def lift_captured_calls(statements: list[s.Statement]) -> list[s.Statement]:
-    return [__lift_in_function(stmt) if isinstance(stmt, s.FunctionStatement) else stmt
-            for stmt in statements]
+    return [__lift_in_statement(stmt) for stmt in statements]

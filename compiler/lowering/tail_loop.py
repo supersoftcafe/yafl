@@ -67,10 +67,24 @@ def _transform(stmt: s.Statement, resolver: g.Resolver, errors: list[Error]) -> 
 
     params = tuple(e.NamedExpression(stmt.line_ref, prm.name) for prm in stmt.parameters.targets)
 
+    def is_self_reference(fn_expr: object) -> bool:
+        # A member's reference to itself is `this.<name>`: convergence rewrites
+        # every MEMBER-scoped name that way (access.py), so a `[tail]` method's
+        # self-call never arrives as a bare name and would otherwise look like
+        # no self-call at all — the "requires direct self-recursion" error, on a
+        # function that plainly does recurse. The shape only arises for the
+        # enclosing class's own member: `this` names the receiver of the method
+        # being rewritten, so `this.<its own name>` is that method.
+        if isinstance(fn_expr, e.NamedExpression):
+            return fn_expr.name == stmt.name
+        return (isinstance(fn_expr, e.DotExpression)
+                and isinstance(fn_expr.base, e.NamedExpression)
+                and fn_expr.base.name == "this"
+                and fn_expr.name == stmt.name)
+
     def is_self_call(expr: object) -> bool:
         return (isinstance(expr, e.CallExpression)
-                and isinstance(expr.function, e.NamedExpression)
-                and expr.function.name == stmt.name)
+                and is_self_reference(expr.function))
 
     # Count self-calls in the function's own body, ignoring any inside a lambda:
     # a self-call captured in a surviving closure is a normal recursive call to

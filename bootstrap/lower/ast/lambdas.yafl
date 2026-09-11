@@ -347,17 +347,24 @@ fun clRemoveNames(cc: ClCaps, remove: List<String>): ClCaps
 # A pure, stateless rewrite (Python threads a dummy empty ResolverRoot([])
 # through it too — the callback never reads its resolver argument).
 
+# `lamLine` is the LAMBDA's own line, distinct from the body line `lr` that
+# every synthesised node carries: it is what names the captured-`this` field,
+# and that name has to be the one classOf and replacementExprFor mint from the
+# same lambda.
 fun redirectBody(body: PExpr, cpt: ClCaps, selfNames: List<String>,
-                 methodName: String, clsName: String): PExpr
+                 methodName: String, clsName: String, lamLine: PLine): PExpr
   let lr = exprLine(body)
   ret rwExpr(body, rwOnExpr((x: PExpr) =>
-      redirectOne(x, ccNames(cpt), selfNames, methodName, clsName, lr)))
+      redirectOne(x, ccNames(cpt), selfNames, methodName, clsName, lr,
+                  lamLine)))
 
 fun redirectOne(x: PExpr, captureNames: List<String>, selfNames: List<String>,
-                methodName: String, clsName: String, lr: PLine): PExpr|None
+                methodName: String, clsName: String, lr: PLine,
+                lamLine: PLine): PExpr|None
   ret match(x)
     (nm: PeName) => contains2(captureNames, nm.refName)
-      ? PeDot(PeName("this", List<Spec>(), lr, None), nm.refName, lr)
+      ? PeDot(PeName("this", List<Spec>(), lr, None),
+              capturedFieldName(nm.refName, lamLine), lr)
       : redirectSelfRef(nm, selfNames, methodName, lr)
     (lz: PeLazy) => contains2(captureNames, lz.stubName)
       ? PeLazy(lz.stubName, lz.lzTarget, clsName, lz.lzStubOnly, lz.pelzLine)
@@ -388,7 +395,7 @@ fun lambdaResultType(lamRet: Spec|None): Spec|None
 fun classOf(lm: PeLambda, nme: String, cpt: ClCaps, fn: PStmt): PStmt
   let lr = lm.pelLine
   let names = ccNames(cpt)
-  let entries = clEntries(chain(names), cpt, List<SEntry>())
+  let entries = clEntries(chain(names), cpt, lr, List<SEntry>())
   let paramLets = clParamLets(chain(names), cpt, lr, List<PStmt>())
   ret PsClass(nme, prepend(PAttr("final", PeInt(1, 32, lr)), List<PAttr>()),
              List<PGen>(),
@@ -397,16 +404,16 @@ fun classOf(lm: PeLambda, nme: String, cpt: ClCaps, fn: PStmt): PStmt
              List<Spec>(), List<Spec>(), prepend(fn, List<PStmt>()), false, lr,
              List<Spec>(), List<Slot>(), List<PStmt>())
 
-fun clEntries(ns: Chain<String>, cpt: ClCaps,
+fun clEntries(ns: Chain<String>, cpt: ClCaps, lr: PLine,
                      acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(clEntriesB(ns, cpt, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build<SEntry >(clEntriesB(ns, cpt, lr, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
 
-fun [tail] clEntriesB(ns: Chain<String>, cpt: ClCaps,
+fun [tail] clEntriesB(ns: Chain<String>, cpt: ClCaps, lr: PLine,
                      [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(ns)
     (nil: ChainEnd) => acc
-    (n: ChainLink)  => clEntriesB(n.next, cpt,
-                          push<SEntry >(acc, SEntry(n.value,
+    (n: ChainLink)  => clEntriesB(n.next, cpt, lr,
+                          push<SEntry >(acc, SEntry(capturedFieldName(n.value, lr),
                                                     ccTypeOf(cpt, n.value),
                                                     None)))
 
@@ -419,7 +426,8 @@ fun [tail] clParamLetsB(ns: Chain<String>, cpt: ClCaps, lr: PLine,
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => clParamLetsB(n.next, cpt, lr,
-        push<PStmt >(acc, PsLet(n.value, List<PAttr>(), List<PGen>(),
+        push<PStmt >(acc, PsLet(capturedFieldName(n.value, lr), List<PAttr>(),
+                          List<PGen>(),
                           ccTypeOf(cpt, n.value), None, "", List<Spec>(), lr,
                           false, List<PStmt>())))
 
@@ -446,8 +454,10 @@ fun [tail] captureArgsB(ns: Chain<String>, cpt: ClCaps, lr: PLine,
                        [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
   ret match(ns)
     (nil: ChainEnd) => acc
+    # The entry NAME is the closure field; the value still reads the outer
+    # binding under the name it has here.
     (n: ChainLink)  => captureArgsB(n.next, cpt, lr,
-        push<PTupEnt >(acc, PTupEnt(n.value, false,
+        push<PTupEnt >(acc, PTupEnt(capturedFieldName(n.value, lr), false,
                               captureRead(n.value, ccTypeOf(cpt, n.value),
                                           lr))))
 
@@ -653,7 +663,8 @@ fun clExportLambda(lm: PeLambda, r: Resolver, paths: ClPaths,
   let cpt0 = discoverCaptures(r, lm)
   let selfNames = clSelfRefNames(cpt0, lm.lamRet)
   let cpt = clRemoveNames(cpt0, selfNames)
-  let redirected = redirectBody(lm.lamBody, cpt, selfNames, nme, nme)
+  let redirected = redirectBody(lm.lamBody, cpt, selfNames, nme, nme,
+                                lm.pelLine)
   let fn = buildFunctionFromLambda(lm, nme, redirected)
   ret isEmpty(cpt.ccMap)
     ? ClEx(PeName(nme, List<Spec>(), lm.pelLine, None), clExport(exports, fn))

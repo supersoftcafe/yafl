@@ -45,6 +45,11 @@ class FunctionStatement(DataStatement):
     # is parsed inside a body, and cleared (with the owner's traits copied on)
     # if it is later hoisted to top level.
     is_nested: bool = False
+    # False when this function is declared anywhere other than top level — in a
+    # block, or as a class / instance member. Set by whoever declares it; only a
+    # global function may carry type parameters or a `where`, and this is what
+    # `check` asks. Excluded from equality: it is position, not program identity.
+    is_global: bool = dataclasses.field(default=True, compare=False)
     # True once inference has FILLED an undeclared return type. A declared
     # return is fixed (its holes fill by refinement); an inferred one is the
     # JOIN of the body and must be free to WIDEN as late-resolving branches
@@ -205,10 +210,18 @@ class FunctionStatement(DataStatement):
             if len(list(self.parameters.flatten())) != 0:
                 test_err.append(Error(self.line_ref, "[test] functions take no parameters"))
 
-        # An inner function carries no `where`: it has no trait scope of its own
-        # (it inherits its owner's), so a `where` on it would silently do
-        # nothing. Reject it — move the function to top level if it needs one.
+        # Only a GLOBAL function declares type parameters or a `where`. Anything
+        # else — an inner function, a class or instance member — has no scope of
+        # its own but inherits its owner's, so a `where` here would silently do
+        # nothing and a type parameter would rebind a name that is already
+        # bound: a restated `<T>` resolves ambiguously, a fresh `<X>` is not in
+        # scope inside its own body.
         inner_where_err: list[Error] = []
+        if not self.is_global and self.type_params:
+            inner_where_err.append(Error(self.line_ref,
+                "only a global function declares type parameters — an inner function "
+                "inherits the enclosing function's, a member function its class or "
+                "instance's"))
         if self.is_nested and self.trait_params:
             inner_where_err.append(Error(self.line_ref, "`where` is not allowed on an inner function — move it to a top-level function"))
 

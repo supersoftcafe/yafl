@@ -1507,8 +1507,10 @@ fun parseProgram(src: String, filename: String): List<PStmt>|PFail
       ()          => fixupProgram(stmts)
 
 # A member is a vtable slot: its signature is the interface declaration with
-# the OWNER's type args substituted, so a member function declares neither
-# type parameters nor a `where` clause (they belong on the class/instance).
+# the OWNER's type args substituted, so a member function declares no `where`
+# clause (constraints belong on the class/instance). The TYPE PARAMETER half of
+# the rule is the function's own check, on fGlobal; a member's `where` cannot be
+# asked there because the owner grafts its clause on before that check runs.
 # (Python appends a parse error and continues; the port's single-failure
 # channel stops at the first violation — divergent only on invalid input.)
 fun [tail] memberSignatureViolation(ss: Chain<PStmt>): PFail|None
@@ -1520,17 +1522,17 @@ fun [tail] memberSignatureViolation(ss: Chain<PStmt>): PFail|None
 
 fun memberViolationOf(st: PStmt): PFail|None
   ret match(st)
-    (c: PsClass)       => membersViolation(chain(c.cMembers))
+    (c: PsClass)            => membersViolation(chain(c.cMembers))
     (inst: PsTraitInstance) => membersViolation(chain(inst.tiMembers))
-    (o: PStmt)         => None
+    (o: PStmt)              => None
 
 fun [tail] membersViolation(ms: Chain<PStmt>): PFail|None
   ret match(ms)
     (nil: ChainEnd) => None
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => !isEmpty(f.fGens) || !isEmpty(f.fWheres)
+      (f: PsFun) => !isEmpty(f.fWheres)
         ? PFail(true,
-                "a member function declares neither type parameters nor a `where` clause — generics and constraints belong on the class or instance",
+                "a member function declares no `where` clause — constraints belong on the class or instance",
                 f.psfLine.plLine, f.psfLine.plCol)
         : membersViolation(l.next)
       (o: PStmt) => membersViolation(l.next)

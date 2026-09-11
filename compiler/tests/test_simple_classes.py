@@ -381,3 +381,52 @@ fun main(): Int
     ret pick(Wrap((x: Int) => x + 41)) - 42
 """
         self.assertEqual(0, _run(src))
+
+
+class TestSameShapedSimpleClasses(TestCase):
+    """Two simple classes whose fields have the same TYPES.
+
+    The receiver of a method call is identified from its type, and by the
+    time the rewrite reaches a call the receiver's ClassSpec may already have
+    been flattened to a TupleSpec — so the pass keeps a map back from the flat
+    shape to the class it came from. That map was keyed on the tuple's unique
+    id, which is built from the field TYPES ALONE: `Alpha(a: Int)` and
+    `Beta(b: Int)` produce the same id, so one class's entry overwrote the
+    other's. Calls on the loser were then attributed to the winner, found no
+    such method there, and were left un-rewritten — reaching codegen as a
+    method call on a bare tuple ("could not cast None object to CallableSpec").
+
+    Nothing exotic is required to hit it: two [final] one-Int-field classes,
+    each with a method, is enough."""
+
+    def test_two_classes_with_identical_field_types(self):
+        src = _PREAMBLE + _ARITH + """\
+class [final] Alpha(a: Int)
+    fun go(x: Int): Int
+        ret x + a
+
+class [final] Beta(b: Int)
+    fun go2(x: Int): Int
+        ret x - b
+
+fun main(): Int
+    ret Alpha(10).go(5) + Beta(20).go2(23)
+"""
+        self.assertEqual(18, _run(src))
+
+    def test_same_shape_with_same_method_name(self):
+        """The same collision where the two classes ALSO share a method name,
+        so the method name cannot disambiguate on its own."""
+        src = _PREAMBLE + _ARITH + """\
+class [final] Alpha(a: Int)
+    fun go(x: Int): Int
+        ret x + a
+
+class [final] Beta(b: Int)
+    fun go(x: Int): Int
+        ret x - b
+
+fun main(): Int
+    ret Alpha(10).go(5) + Beta(20).go(23)
+"""
+        self.assertEqual(18, _run(src))

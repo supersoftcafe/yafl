@@ -278,14 +278,19 @@ fun specOr(out: SpecOut|None, orig: Spec): Spec
     (s2: Spec) => s2
     ()         => orig
 
+# Every member is marked NOT GLOBAL; the owner's clause is grafted on as well
+# when it has one. The marking is unconditional because the rule it feeds —
+# only a global function declares type parameters — does not depend on whether
+# the owner happens to carry a `where`.
 fun withOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>
-  ret isEmpty(wheres) ? ms : map(ms, (m: PStmt) => ownerWhereFn(m, wheres))
+  ret map(ms, (m: PStmt) => ownerWhereFn(m, wheres))
 
 fun ownerWhereFn(m: PStmt, wheres: List<Spec>): PStmt
   ret match(m)
     (f: PsFun) => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
-                        f.fRet, wheres, f.psfLine, f.fRetInferred, f.fNested,
-                        f.fImports)
+                        f.fRet, isEmpty(wheres) ? f.fWheres : wheres,
+                        f.psfLine, f.fRetInferred, f.fNested,
+                        f.fImports, false)
     (o: PStmt) => m
 
 fun stripOwnerWheres(ms: List<PStmt>, wheres: List<Spec>): List<PStmt>

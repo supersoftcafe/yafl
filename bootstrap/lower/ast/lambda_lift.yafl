@@ -29,8 +29,28 @@ fun [tail] llTopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBu
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => llTopB(l.next, push<PStmt >(acc, liftInFunction(f)))
-      (o: PStmt) => llTopB(l.next, push<PStmt >(acc, l.value))
+      (f: PsFun)   => llTopB(l.next, push<PStmt >(acc, liftInFunction(f)))
+      (c: PsClass) => llTopB(l.next, push<PStmt >(acc, llInClass(c)))
+      (o: PStmt)   => llTopB(l.next, push<PStmt >(acc, l.value))
+
+# A class member is a function with a receiver; a nested helper inside one
+# threads captured PARAMETERS exactly as it would inside a free function.
+# `this` is not a parameter, so it is never threaded here — it stays implicit,
+# and the hoist makes the helper a sibling member to keep it so.
+fun llInClass(c: PsClass): PStmt
+  ret hoClassDeclaresNested(c)
+    ? with c(cMembers = llMembers(chain(c.cMembers), List<PStmt>()))
+    : c
+
+fun llMembers(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+  ret build<PStmt >(llMembersB(ss, _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(acc))))
+
+fun [tail] llMembersB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >): ListBuilder<PStmt >
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => llMembersB(l.next, push<PStmt >(acc, liftInFunction(f)))
+      (o: PStmt) => llMembersB(l.next, push<PStmt >(acc, l.value))
 
 # Lift what qualifies inside f's own body (deepest nesting first: a nested
 # function's own helpers lift before it is itself considered).

@@ -339,10 +339,28 @@ def __flatten_class_rule(
     return rule
 
 
+def __method_owners(simple_classes: dict[str, s.ClassStatement]) -> dict[str, str]:
+    """Method name → the simple class that declares it.
+
+    Names are unique: each is minted as `name@<hash6>` from its own source
+    position, so two classes spelling a method the same way still hold distinct
+    names. A name that somehow IS shared is dropped rather than guessed at."""
+    owners: dict[str, str] = {}
+    shared: set[str] = set()
+    for cls_name, cls in simple_classes.items():
+        for member in cls.statements:
+            if isinstance(member, s.FunctionStatement):
+                if member.name in owners and owners[member.name] != cls_name:
+                    shared.add(member.name)
+                owners[member.name] = cls_name
+    return {name: owner for name, owner in owners.items() if name not in shared}
+
+
 def __build_replace_fn(
         simple_classes: dict[str, s.ClassStatement],
         simple_tuple_specs: dict[str, t.TupleSpec],
         tuple_id_to_class: dict[str, str],
+        method_owners: dict[str, str],
         fields_of=None,
 ):
     """Return the AST replace function that rewrites all simple-class references."""
@@ -379,8 +397,14 @@ def __build_replace_fn(
             if isinstance(base_type, t.ClassSpec) and base_type.name in simple_classes:
                 cls_name = base_type.name
             elif isinstance(base_type, t.TupleSpec):
+                # The receiver is already flattened, so recover its class from
+                # the METHOD, not the shape: a tuple's unique id is built from
+                # field TYPES alone, so `Alpha(a: Int)` and `Beta(b: Int)` share
+                # one and the shape map holds only whichever came last. The
+                # shape map still answers if a method name is somehow shared.
                 uid = base_type.as_unique_id_str()
-                cls_name = tuple_id_to_class.get(uid) if uid else None
+                cls_name = (method_owners.get(dot.name)
+                            or (tuple_id_to_class.get(uid) if uid else None))
 
             if cls_name is not None:
                 cls = simple_classes[cls_name]
@@ -436,7 +460,8 @@ def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
         if v.as_unique_id_str() is not None
     }
 
-    replace_fn = __build_replace_fn(simple_classes, simple_tuple_specs, tuple_id_to_class)
+    replace_fn = __build_replace_fn(simple_classes, simple_tuple_specs, tuple_id_to_class,
+                                    __method_owners(simple_classes))
 
     # Lift each method to a top-level free function
     lifted_pre: list[s.FunctionStatement] = [

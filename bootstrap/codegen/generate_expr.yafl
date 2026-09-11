@@ -643,7 +643,7 @@ fun genDotClassField(d: PeDot, cs: PsClass, baseBundle: GBundle, r: Resolver): G
 
 fun genDotClassMember(cs: PsClass, data: PStmt, d: PeDot, baseBundle: GBundle, r: Resolver): GBundle
   ret match(data)
-    (fn: PsFun) => hasAttr(cs.cAttrs, "final")
+    (fn: PsFun) => hasAttr(cs.cAttrs, "final") || !occupiesSlot(cs, d.member)
       ? bundleJoin(baseBundle, bundleValue(RpGlobalFunction(d.member, mustResult(baseBundle), false, foreignSymbol(fn), isImpureFn(fn), isSyncFn(fn))))
       : bundleJoin(baseBundle, bundleValue(RpVirtualFunction(d.member, mustResult(baseBundle), false)))
     (l: PsLet)  => genDotField(cs, l, d, baseBundle, r)

@@ -164,7 +164,13 @@ enum PStmt
   enum PsFun(fName: String, fAttrs: List<PAttr>, fGens: List<PGen>,
              fParams: PStmt, fBody: PExpr|None, fRet: Spec|None,
              fWheres: List<Spec>, psfLine: PLine, fRetInferred: Bool = false,
-             fNested: Bool = false, fImports: List<PStmt>|None = None)
+             fNested: Bool = false, fImports: List<PStmt>|None = None,
+             # fGlobal: false when declared anywhere other than top level — in
+             # a block, or as a class / instance member. Set by whoever
+             # declares it; only a global function may carry type parameters,
+             # and that is what checkStmt asks. NOT program identity (Python's
+             # is_global is compare=False), so equality does not see it.
+             fGlobal: Bool = true)
   enum PsDestructure(dName: String, dAttrs: List<PAttr>,
                      dType: Spec|None, dTargets: List<PStmt>,
                      dDefault: PExpr|None, psdLine: PLine,

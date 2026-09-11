@@ -227,13 +227,20 @@ fun tailErrs(f: PsFun): Set<PErr>
                          oneErr(f.psfLine,
                                 "[tail] cannot be applied to a foreign function"))
 
-# An inner function carries no `where` — it inherits its owner's trait scope,
-# so a `where` on it would silently do nothing.
+# An inner function declares neither a `where` nor type parameters: it has no
+# scope of its own but inherits its owner's, so a `where` here would silently do
+# nothing and a type parameter would rebind a name that is already bound — a
+# restated `<T>` resolves ambiguously, a fresh `<X>` is not in scope inside its
+# own body.
 fun innerWhereErrs(f: PsFun): Set<PErr>
-  ret f.fNested && !isEmpty(f.fWheres)
-    ? oneErr(f.psfLine,
-             "`where` is not allowed on an inner function — move it to a top-level function")
-    : noErrs()
+  ret union(!f.fGlobal && !isEmpty(f.fGens)
+              ? oneErr(f.psfLine,
+                       "only a global function declares type parameters — an inner function inherits the enclosing function's, a member function its class or instance's")
+              : noErrs(),
+            f.fNested && !isEmpty(f.fWheres)
+              ? oneErr(f.psfLine,
+                       "`where` is not allowed on an inner function — move it to a top-level function")
+              : noErrs())
 
 fun [tail] paramDefaultErrs(ls: Chain<PStmt>, r: Resolver,
                             acc: Set<PErr>): Set<PErr>

@@ -1,0 +1,160 @@
+# Nested functions inside CLASS MEMBER functions — all four strategies in one
+# unit, so the C-parity gate covers each of them.
+#
+# A member function is a function, and a helper nested in one is placed by what
+# it reaches for, exactly as it would be inside a free function:
+#
+#   mnTwice   — reaches nothing outside itself      -> global scope
+#   mnAddBase — reaches a field, so keeps `this`    -> sibling MEMBER
+#   mnCombine — a field plus an enclosing parameter -> sibling member, the
+#                                                      parameter threaded as an
+#                                                      extra argument
+#   mnEscape  — the reference travels as a value    -> its own closure class,
+#                                                      capturing `this` under a
+#                                                      renamed field
+#   mnEven/mnOdd — mutually recursive AND capturing -> one coalesced closure
+#                                                      class holding `this`
+#
+# The renamed field is the point of the last two: a closure field spelled
+# `this` collides with the receiver a class puts in scope for every method body,
+# and lookup matches by prefix, so `this@<hash>` would collide too. It is
+# `$this@<hash>` for that reason.
+#
+# MnShape is deliberately NOT `[final]` and implements an interface, so its
+# hoisted sibling is a member of a class that dispatches virtually. The sibling
+# gets no vtable slot — the slot table is fixed during convergence, before the
+# hoist runs — so its call has to go direct rather than through a slot that was
+# never built.
+namespace Corpus
+
+import System
+
+
+fun mnApply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+
+
+class [final] MnCounter(mnBase: Int)
+
+  # Reaches nothing: a global by the time codegen sees it.
+  fun mnPlain(x: Int): Int
+    fun mnTwice(y: Int): Int
+      ret y + y
+    ret mnTwice(x)
+
+  # Reaches a field: a sibling member, `this` still implicit.
+  fun mnField(x: Int): Int
+    fun mnAddBase(y: Int): Int
+      ret y + mnBase
+    ret mnAddBase(x)
+
+  # A field AND an enclosing parameter, only ever called: still a sibling
+  # member, with `x` threaded through as a parameter.
+  fun mnFieldAndParam(x: Int): Int
+    fun mnCombine(y: Int): Int
+      ret y + mnBase + x
+    ret mnCombine(1)
+
+  # A field and a block LET. A let is not threadable (it would need dominance
+  # reasoning under whole-block scoping), so this one closes over both.
+  fun mnFieldAndLet(x: Int): Int
+    let mnBump = x + x
+    fun mnCombineLet(y: Int): Int
+      ret y + mnBase + mnBump
+    ret mnCombineLet(1)
+
+  # The reference travels as a value: a real closure object, capturing `this`.
+  fun mnEscaping(x: Int): Int
+    fun mnEscape(y: Int): Int
+      ret y + mnBase + x
+    ret mnApply(mnEscape, 1)
+
+  # The same capture spelled as a lambda.
+  fun mnLambda(x: Int): Int
+    ret mnApply((y: Int) => y + mnBase + x, 1)
+
+  # A closure-bound helper calling a sibling that became a class member. The
+  # sibling is only reachable through a receiver now, so the closure has to
+  # capture `this` to make the call — which is why the redirect runs before the
+  # capture set is computed rather than after.
+  fun mnMixed(x: Int): Int
+    fun mnOnlyField(y: Int): Int
+      ret y + mnBase
+    fun mnEscapes(z: Int): Int
+      ret mnOnlyField(z) + x
+    ret mnApply(mnEscapes, 1)
+
+  # Mutually recursive and reaching a field: one coalesced closure class.
+  fun mnClassify(n: Int): Int
+    fun mnEven(x: Int): Int
+      ret x < 1 ? 1 : (x > mnBase ? 99 : mnOdd(x - 1))
+    fun mnOdd(x: Int): Int
+      ret x < 1 ? 0 : (x > mnBase ? 99 : mnEven(x - 1))
+    ret mnEven(n)
+
+  # A helper inside a helper, both reaching the field.
+  fun mnDeep(x: Int): Int
+    fun mnOuter(y: Int): Int
+      fun mnInner(z: Int): Int
+        ret z + mnBase
+      ret mnInner(y) + mnInner(y)
+    ret mnOuter(x)
+
+  # A `[tail]` helper reaching a field: the hoist runs before tail_loop here
+  # too, so it is a sibling member by the time the loop rewrite sees it.
+  fun mnSumTo(n: Int): Int
+    fun [tail] mnGo(i: Int, acc: Int): Int
+      ret i > n ? acc : mnGo(i + 1, acc + mnBase)
+    ret mnGo(1, 0)
+
+
+# A helper name may repeat across members: each is its own sibling.
+class [final] MnRepeat(mnR: Int)
+  fun mnUp(x: Int): Int
+    fun mnHelp(y: Int): Int
+      ret y + mnR
+    ret mnHelp(x)
+  fun mnDown(x: Int): Int
+    fun mnHelp(y: Int): Int
+      ret mnR - y
+    ret mnHelp(x)
+
+
+# Classes are monomorphised before the hoist, so `this` is concrete by the time
+# a helper claims it.
+class [final] MnBox<T>(mnValue: T)
+  fun mnPick(mnOther: T, mnUseOther: Bool): T
+    fun mnChoose(flag: Bool): T
+      ret flag ? mnOther : mnValue
+    ret mnChoose(mnUseOther)
+
+
+interface MnShape
+  fun mnArea(): Int
+
+class MnSquare(mnSide: Int) : MnShape
+  fun mnArea(): Int
+    fun mnSq(n: Int): Int
+      ret n * mnSide
+    ret mnSq(mnSide)
+
+fun mnTotalArea(s: MnShape): Int
+  ret s.mnArea()
+
+
+fun main(): Int
+  let c = MnCounter(10)
+  # 10 + 15 + 16 + 21 + 16 + 16 + 16 = 110
+  let a = c.mnPlain(5) + c.mnField(5) + c.mnFieldAndParam(5)
+          + c.mnFieldAndLet(5) + c.mnEscaping(5) + c.mnLambda(5)
+          + c.mnMixed(5)
+  # 1 + 30 + 40 = 71
+  let b = c.mnClassify(4) + c.mnDeep(5) + c.mnSumTo(4)
+  # 15 + 7 = 22
+  let d = MnRepeat(10).mnUp(5) + MnRepeat(10).mnDown(3)
+  # 7 + 20 = 27
+  let e = MnBox<Int>(7).mnPick(9, false) + MnBox<Int>(1).mnPick(20, true)
+  # 110 + 71 + 22 + 27 + 36 = 266, offset to keep the exit code under the 256
+  # an exit status wraps at — 266 would leave 10, which reads as a pass for the
+  # wrong reason.
+  ret a + b + d + e + mnTotalArea(MnSquare(6)) - 200

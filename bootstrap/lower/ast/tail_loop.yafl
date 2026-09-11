@@ -127,10 +127,26 @@ fun [tail] tlStripTailB(as2: Chain<PAttr>, [terminal] acc: ListBuilder<PAttr >):
 
 fun tlIsSelfCall(x: PExpr, fName: String): Bool
   ret match(x)
-    (c: PeCall) => match(c.function)
-      (nm: PeName) => nm.refName == fName
-      (o: PExpr)   => false
+    (c: PeCall) => tlIsSelfRef(c.function, fName)
     (o2: PExpr) => false
+
+# A member's reference to itself is `this.<name>`: convergence rewrites every
+# MEMBER-scoped name that way, so a `[tail]` method's self-call never arrives as
+# a bare name and would otherwise look like no self-call at all — the "requires
+# direct self-recursion" error, on a function that plainly does recurse. The
+# shape only arises for the enclosing class's own member: `this` names the
+# receiver of the method being rewritten, so `this.<its own name>` is that
+# method.
+fun tlIsSelfRef(f: PExpr, fName: String): Bool
+  ret match(f)
+    (nm: PeName) => nm.refName == fName
+    (d: PeDot)   => d.member == fName && tlIsThis(d.base)
+    (o: PExpr)   => false
+
+fun tlIsThis(x: PExpr): Bool
+  ret match(x)
+    (nm: PeName) => nm.refName == "this"
+    (o: PExpr)   => false
 
 # ── the self-call counter ────────────────────────────────────────────────────
 # Python blanks every lambda to a leaf, then counts self-calls with a full

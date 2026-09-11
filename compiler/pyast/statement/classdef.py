@@ -87,6 +87,23 @@ class ClassStatement(TypeStatement):
             return m + s
         return finder
 
+    def occupies_slot(self, member_name: str) -> bool:
+        """Does this member have a vtable slot, and so dispatch virtually?
+
+        Every member the class declares does — including an abstract one, whose
+        slot exists with nothing providing it yet. The table is built in
+        `compile()`, so a member added after convergence has none: the hoist
+        gives a class sibling helpers that nothing outside can reach, let alone
+        override, and dispatching one virtually would look up a slot that was
+        never built.
+
+        `_all_slots` is None only before the class has compiled, where no call
+        is being generated; answering true there lets this narrow the dispatch
+        but never widen it."""
+        if self._all_slots is None:
+            return True
+        return any(slot.name == member_name for slot in self._all_slots)
+
     def find_data(self, resolver: g.Resolver, query: str) -> list[g.Resolved[DataStatement]]:
         # The trailing array field is internal storage — member access to it
         # resolves to the generated accessor method (same name, see
@@ -213,6 +230,10 @@ class ClassStatement(TypeStatement):
 
 
     def __with_owner_wheres(self, x: Statement) -> Statement:
+        # A member is not global — only a global function may declare type
+        # params or a `where`, and FunctionStatement.check asks exactly that.
+        if isinstance(x, FunctionStatement):
+            x = dataclasses.replace(x, is_global=False)
         if isinstance(x, FunctionStatement) and self.trait_params:
             return dataclasses.replace(x, trait_params=self.trait_params)
         return x

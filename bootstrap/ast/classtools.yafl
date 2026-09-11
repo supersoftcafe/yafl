@@ -10,8 +10,46 @@ import System
 import Bootstrap::Codegen
 import Bootstrap::Parse
 import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
+
+
+# ── capture field names (pyast/utils.py: capture_field_name) ────────────────
+# The field a synthesised closure class stores a capture of `name` under:
+# itself, unless it is `this`.
+#
+# A field spelled `this` would collide with the receiver a class puts in scope
+# for every method body, leaving the reference with two candidates. The `$` is
+# what avoids that and a hash alone would not: lookup matches by PREFIX
+# (nameMatches), so `this@<hash>` still answers to `this`. `lr` makes the name
+# unique within the class that holds it.
+
+fun capturedFieldName(name: String, lr: PLine): String
+  ret name == "this"
+    ? "$this@" + hash6(lr.plFile, lr.plLine, lr.plCol)
+    : name
+
+
+# ── does a member occupy a vtable slot, and so dispatch virtually? ───────────
+# Every member the class declares does, own or inherited — including an abstract
+# one, whose slot exists with nothing providing it yet. The slot table is built
+# during convergence, from the members as they stood then. A member added
+# AFTERWARDS therefore has none: the nested-function hoist gives a class new
+# sibling helpers once convergence is over and the table is fixed, and such a
+# helper is unreachable from outside the class, so nothing can ever override it.
+# Dispatching a call to one virtually would look up a slot that was never built,
+# so it is called directly instead.
+#
+# cAllSlots is None only before the class has compiled, where no call is being
+# generated yet; that answers true, so the test can only narrow the dispatch,
+# never widen it.
+
+fun occupiesSlot(cs: PsClass, memberName: String): Bool
+  ret match(cs.cAllSlots)
+    (slots: List<Slot>) => any<Slot>(slots,
+                               (s2: Slot) => s2.slotName == memberName)
+    ()                  => true
 
 
 # ── parameters.flatten() ─────────────────────────────────────────────────────

@@ -1187,15 +1187,17 @@ def parse(tokens: list[p.Token]) -> p.Result[list[s.Statement]]:
             case s.FunctionStatement() | s.LetStatement() | s.TypeAliasStatement() | s.ClassStatement() | s.TraitInstanceStatement(): # Rename and add to list
                 # A member is a vtable slot: its signature is the interface
                 # declaration with the OWNER's type args substituted, so a
-                # member function declares neither type params nor a `where`
-                # clause (generics/constraints belong on the class/instance).
+                # member function declares no `where` clause (constraints
+                # belong on the class/instance). The TYPE PARAMETER half of the
+                # rule is FunctionStatement's own check, on `is_global`; a
+                # member's `where` cannot be asked there because the owner
+                # grafts its clause onto each member before that check runs.
                 if isinstance(statement, (s.ClassStatement, s.TraitInstanceStatement)):
                     for m in statement.statements:
-                        if isinstance(m, s.FunctionStatement) and (m.type_params or m.trait_params):
+                        if isinstance(m, s.FunctionStatement) and m.trait_params:
                             errors = errors + [p.Error(m.line_ref,
-                                "a member function declares neither type parameters nor a "
-                                "`where` clause — generics and constraints belong on the "
-                                "class or instance")]
+                                "a member function declares no `where` clause — "
+                                "constraints belong on the class or instance")]
                 statement = statement.add_namespace(current_namespace)
                 statement = dataclasses.replace(statement, imports=import_group)
                 if isinstance(statement, s.ClassStatement) and not statement.is_interface:

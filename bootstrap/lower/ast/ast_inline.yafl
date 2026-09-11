@@ -182,9 +182,15 @@ fun toLetLambda(f: PsFun): PStmt
 # because captures are collected from sort<String>(freeRefs(...)) already.
 class [final] OuterTypes(otMap: Dict<String, Spec>)
 
-fun gatherOuterVarTypes(f: PsFun): OuterTypes
-  let fromParams = otAdd(chain(flattenParams(f.fParams)),
-                         OuterTypes(Dict<String, Spec>()))
+# Inside a class member `this` is an outer variable like any other — implicit
+# rather than declared, so its type comes from the owning class rather than from
+# a statement in the body. Seeded FIRST so the shadowing rule below (first
+# binding wins) treats it exactly as it treats a parameter.
+fun gatherOuterVarTypes(f: PsFun, thisType: Spec|None): OuterTypes
+  let seed = match(thisType)
+    (sp: Spec) => OuterTypes(put<String, Spec>(Dict<String, Spec>(), "this", sp))
+    ()         => OuterTypes(Dict<String, Spec>())
+  let fromParams = otAdd(chain(flattenParams(f.fParams)), seed)
   ret match(f.fBody)
     (b: PExpr) => match(b)
       (bk: PeBlock) => otAdd(chain(bk.blockStmts), fromParams)
@@ -353,14 +359,14 @@ fun coalesceMutualScc(sccFns: List<PsFun>, outer: OuterTypes,
   let capNames = coCapNames(caps)
   let renames = coRenames(chain(sccFns), lr, specSuffix,
                           ThisMap(Dict<String, String>()))
-  # Captured names redirect to themselves; method names redirect to their
-  # class-unique targets. The capture entries are put in LAST so that they win
-  # a collision, which is what the old shape did by placing them first in a
-  # chain searched from the head.
+  # Captured names redirect to their field (themselves, bar a captured `this`);
+  # method names redirect to their class-unique targets. The capture entries are
+  # put in LAST so that they win a collision, which is what the old shape did by
+  # placing them first in a chain searched from the head.
   let thisMap = ThisMap(fold<String, Dict<String, String> >(capNames,
                             renames.tmMap,
                             (d: Dict<String, String>, n: String) =>
-                              put<String, String>(d, n, n)))
+                              put<String, String>(d, n, capturedFieldName(n, lr))))
   let methods = coMethods(chain(sccFns), renames, thisMap, List<PStmt>())
   let clsName = "$mutual::class@" + hash6(lr.plFile, lr.plLine, lr.plCol)
                 + specSuffix
@@ -429,6 +435,9 @@ fun coAddCap(acc: OuterTypes, n: String, outer: OuterTypes): OuterTypes
 fun coCapNames(caps: OuterTypes): List<String>
   ret sort<String>(keys<String, Spec>(caps.otMap))
 
+# Only the FIELD is renamed here — the constructor argument still reads the
+# outer binding under its own name.
+
 fun [tail] coRenames(fs: Chain<PsFun>, lr: PLine, specSuffix: String,
                      acc: ThisMap): ThisMap
   ret match(fs)
@@ -464,7 +473,7 @@ fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap): PStmt
 fun coClassParam(caps: OuterTypes, lr: PLine): PStmt
   let ns = coCapNames(caps)
   ret PsDestructure("_", List<PAttr>(),
-                    STuple(coEntries(chain(ns), caps, List<SEntry>()), lr),
+                    STuple(coEntries(chain(ns), caps, lr, List<SEntry>()), lr),
                     coParamLets(chain(ns), caps, lr, List<PStmt>()),
                     None, lr, false)
 
@@ -472,18 +481,19 @@ fun coClassParam(caps: OuterTypes, lr: PLine): PStmt
 # cannot fall out of step — which the old pair of chains walked in lockstep
 # could, silently, by ending at different lengths. Names come from the map's
 # own keys, so the None arm is unreachable; it is there to make the match total.
-fun coEntries(ns: Chain<String>, caps: OuterTypes,
+fun coEntries(ns: Chain<String>, caps: OuterTypes, lr: PLine,
                      acc: List<SEntry>): List<SEntry>
-  ret build<SEntry >(coEntriesB(ns, caps, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
+  ret build<SEntry >(coEntriesB(ns, caps, lr, _pushChain<SEntry >(builder<SEntry >(), chain<SEntry >(acc))))
 
-fun [tail] coEntriesB(ns: Chain<String>, caps: OuterTypes,
+fun [tail] coEntriesB(ns: Chain<String>, caps: OuterTypes, lr: PLine,
                      [terminal] acc: ListBuilder<SEntry >): ListBuilder<SEntry >
   ret match(ns)
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(get<String, Spec>(caps.otMap, n.value))
-      (sp: Spec) => coEntriesB(n.next, caps,
-                               push<SEntry >(acc, SEntry(n.value, sp, None)))
-      ()         => coEntriesB(n.next, caps, acc)
+      (sp: Spec) => coEntriesB(n.next, caps, lr,
+                               push<SEntry >(acc, SEntry(capturedFieldName(n.value, lr),
+                                                         sp, None)))
+      ()         => coEntriesB(n.next, caps, lr, acc)
 
 fun coParamLets(ns: Chain<String>, caps: OuterTypes, lr: PLine,
                        acc: List<PStmt>): List<PStmt>
@@ -495,7 +505,8 @@ fun [tail] coParamLetsB(ns: Chain<String>, caps: OuterTypes, lr: PLine,
     (nil: ChainEnd) => acc
     (n: ChainLink)  => match(get<String, Spec>(caps.otMap, n.value))
       (sp: Spec) => coParamLetsB(n.next, caps, lr,
-          push<PStmt >(acc, PsLet(n.value, List<PAttr>(), List<PGen>(), sp,
+          push<PStmt >(acc, PsLet(capturedFieldName(n.value, lr), List<PAttr>(),
+                            List<PGen>(), sp,
                             None, "", List<Spec>(), lr, false,
                             List<PStmt>())))
       ()         => coParamLetsB(n.next, caps, lr, acc)
@@ -508,8 +519,10 @@ fun [tail] coCaptureArgsB(ns: Chain<String>, lr: PLine,
                          [terminal] acc: ListBuilder<PTupEnt >): ListBuilder<PTupEnt >
   ret match(ns)
     (nil: ChainEnd) => acc
+    # The entry NAME is the closure field; the value still reads the outer
+    # binding under the name it has here.
     (l: ChainLink)  => coCaptureArgsB(l.next, lr,
-        push<PTupEnt >(acc, PTupEnt(l.value, false,
+        push<PTupEnt >(acc, PTupEnt(capturedFieldName(l.value, lr), false,
                             PeName(l.value, List<Spec>(), lr, None))))
 
 # One shared instance, then one let per method exposing it under the
@@ -538,28 +551,36 @@ fun coRenameOf(renames: ThisMap, name: String): String
 
 # ── the hoist ────────────────────────────────────────────────────────────────
 
+# What one function body yielded to the hoist. hoBody replaces the block's
+# statements; hoOut goes to global scope and hoClass to the enclosing class.
+# The two rewrites are separate because they are different rewrites: hoRenames
+# swaps one name for another, while hoToMember turns a bare name into a read
+# through the receiver. Both are applied by the caller, which owns the block
+# value the body statements sit in front of.
 class [final] Hoisted(hoBody: List<PStmt>, hoRenames: ThisMap,
-                      hoOut: List<PStmt>)
+                      hoOut: List<PStmt>, hoClass: List<PStmt>,
+                      hoToMember: ThisMap)
 
-fun hoistFromBody(f: PsFun): Hoisted
+fun emptyHoisted(): Hoisted
+  ret Hoisted(List<PStmt>(), ThisMap(Dict<String, String>()), List<PStmt>(),
+              List<PStmt>(), ThisMap(Dict<String, String>()))
+
+fun hoistFromBody(f: PsFun, thisType: Spec|None): Hoisted
   ret match(f.fBody)
     (b: PExpr) => match(b)
-      (bk: PeBlock) => hoistFromBlock(f, bk)
-      (o: PExpr)    => Hoisted(List<PStmt>(),
-                               ThisMap(Dict<String, String>()),
-                               List<PStmt>())
-    ()         => Hoisted(List<PStmt>(),
-                          ThisMap(Dict<String, String>()),
-                          List<PStmt>())
+      (bk: PeBlock) => hoistFromBlock(f, bk, thisType)
+      (o: PExpr)    => emptyHoisted()
+    ()         => emptyHoisted()
 
-fun hoistFromBlock(f: PsFun, bk: PeBlock): Hoisted
+fun hoistFromBlock(f: PsFun, bk: PeBlock, thisType: Spec|None): Hoisted
   let outerVars = frBlockNames(chain(bk.blockStmts),
                                allStmtNames(chain(flattenParams(f.fParams)),
                                             List<String>()))
   let nested = hoNestedFns(chain(bk.blockStmts), List<PsFun>())
   if isEmpty(nested)
     ret Hoisted(bk.blockStmts, ThisMap(Dict<String, String>()),
-                List<PStmt>())
+                List<PStmt>(), List<PStmt>(),
+                ThisMap(Dict<String, String>()))
   let siblingNames = hoFnNames(chain(nested), List<String>())
   let specSuffix = specializationSuffix(f.fName)
   let callEdges = hoCallEdges(chain(nested), siblingNames,
@@ -567,13 +588,65 @@ fun hoistFromBlock(f: PsFun, bk: PeBlock): Hoisted
   let directCaptures = hoDirectCaptures(chain(nested), siblingNames,
                                         hoOuterOnly(outerVars, siblingNames),
                                         List<String>())
+  # Inside a class member, a helper that needs no closure goes to CLASS scope —
+  # all of them, not just those naming `this`. A member has the class's TYPE
+  # PARAMETERS in scope as well as its receiver, and a helper using one would
+  # lose it at global scope: `fun outOfRange(): T` inside RRBTree's `at` names
+  # no receiver but is not a global function. Tracked apart from the captures
+  # above because it does not force a closure: a sibling member is handed the
+  # receiver by the class.
+  let directThis = match(thisType)
+    (sp: Spec) => siblingNames
+    ()         => List<String>()
   let sccs = aiSccs(siblingNames, callEdges)
   let needsClosure = hoNeedsClosure(chain(sccs), sccs, callEdges,
                                     directCaptures, Set<String >())
-  let outerTypes = gatherOuterVarTypes(f)
-  ret hoBuild(hoWalkBody(chain(bk.blockStmts), f, sccs, needsClosure,
-                         callEdges, nested, outerTypes, siblingNames,
-                         specSuffix, Set<String >(), HoAcc(builder<PStmt >(), ThisMap(Dict<String, String>()), builder<PStmt >())))
+  # Propagates over the same edges and in the same one reverse-topo pass: a
+  # caller of a sibling member must itself be a sibling member, or the call has
+  # no receiver to make.
+  let needsThis = hoNeedsClosure(chain(sccs), sccs, callEdges,
+                                 directThis, Set<String >())
+  let outerTypes = gatherOuterVarTypes(f, thisType)
+  # Settled BEFORE anything is built, because the redirect changes the bodies
+  # the other two strategies are handed: a closure-bound helper that calls a
+  # class-hoisted sibling reaches it through a captured `this`, and that capture
+  # only exists if the `this` reference is already in its body when the capture
+  # set is computed.
+  let toMember = hoToMemberMap(chain(sccs), needsClosure, needsThis, specSuffix,
+                               ThisMap(Dict<String, String>()))
+  let stmts = isEmpty(toMember.tmMap)
+    ? bk.blockStmts
+    : rcmStmts(chain(bk.blockStmts), toMember, List<PStmt>())
+  let nested2 = isEmpty(toMember.tmMap)
+    ? nested
+    : hoNestedFns(chain(stmts), List<PsFun>())
+  ret hoBuild(hoWalkBody(chain(stmts), f, sccs, needsClosure, needsThis,
+                         callEdges, nested2, outerTypes, siblingNames,
+                         specSuffix, Set<String >(),
+                         HoAcc(builder<PStmt >(), ThisMap(Dict<String, String>()),
+                               builder<PStmt >(), builder<PStmt >(), toMember)))
+
+# The class-scope SCCs and their post-suffix names, ahead of the walk.
+fun [tail] hoToMemberMap(ss: Chain<List<String>>, needy: Set<String >,
+                         needyThis: Set<String >, specSuffix: String,
+                         acc: ThisMap): ThisMap
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => hoSccIsNeedy(l.value, needy)
+                       || !hoSccIsNeedy(l.value, needyThis)
+      ? hoToMemberMap(l.next, needy, needyThis, specSuffix, acc)
+      : hoToMemberMap(l.next, needy, needyThis, specSuffix,
+                      hoToMemberNames(chain(l.value), specSuffix, acc))
+
+fun [tail] hoToMemberNames(ns: Chain<String>, specSuffix: String,
+                           acc: ThisMap): ThisMap
+  ret match(ns)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => hoToMemberNames(l.next, specSuffix,
+        ThisMap(put<String, String>(acc.tmMap, l.value,
+            specSuffix != "" && !endsWith(l.value, specSuffix)
+              ? l.value + specSuffix
+              : l.value)))
 
 # `outer_var_names` excludes nothing in Python (params | lets, funs separate);
 # the frBlockNames above also collected nested FN names — drop those.
@@ -723,47 +796,53 @@ fun [tail] hoSccOf(ss: Chain<List<String>>, name: String): List<String>
 # discarded by the branches that do not want it — hoKeep builds it where it is
 # used instead.
 class [linear, final] HoAcc(haBody: ListBuilder<PStmt >, haRenames: ThisMap,
-                            haOut: ListBuilder<PStmt >)
+                            haOut: ListBuilder<PStmt >,
+                            haClass: ListBuilder<PStmt >,
+                            haToMember: ThisMap)
 
 # Out of the builders and into the plain result, once the walk is over. The
 # result is read many times by the caller, which a linear value could not be.
 fun hoBuild(acc: HoAcc): Hoisted
   ret Hoisted(build<PStmt >(acc.haBody), acc.haRenames,
-              build<PStmt >(acc.haOut))
+              build<PStmt >(acc.haOut), build<PStmt >(acc.haClass),
+              acc.haToMember)
 
 class [linear, final] HoStep(wsProcessed: Set<String >, wsAcc: HoAcc)
 
 fun [tail] hoWalkBody(ss: Chain<PStmt>, f: PsFun, sccs: List<List<String>>,
-                      needy: Set<String >, edges: EEdges,
+                      needy: Set<String >, needyThis: Set<String >,
+                      edges: EEdges,
                       nested: List<PsFun>, outerTypes: OuterTypes,
                       siblingNames: List<String>, specSuffix: String,
                       processed: Set<String >,
                       [terminal] acc: HoAcc): HoAcc
   ret match(ss)
     (nil: ChainEnd) => acc
-    (l: ChainLink)  => hoStep(l.value, f, sccs, needy, nested, outerTypes,
-                              siblingNames, specSuffix, processed, acc)
-      |> (st2) => hoWalkBody(l.next, f, sccs, needy, edges, nested,
+    (l: ChainLink)  => hoStep(l.value, f, sccs, needy, needyThis, nested,
+                              outerTypes, siblingNames, specSuffix, processed,
+                              acc)
+      |> (st2) => hoWalkBody(l.next, f, sccs, needy, needyThis, edges, nested,
                              outerTypes, siblingNames, specSuffix,
                              st2.wsProcessed, st2.wsAcc)
 
 fun hoStep(st: PStmt, f: PsFun, sccs: List<List<String>>,
-           needy: Set<String >, nested: List<PsFun>,
+           needy: Set<String >, needyThis: Set<String >, nested: List<PsFun>,
            outerTypes: OuterTypes, siblingNames: List<String>,
            specSuffix: String, processed: Set<String >,
            acc: HoAcc): HoStep
   ret match(st)
-    (fn: PsFun) => hoStepFn(fn, f, sccs, needy, nested, outerTypes,
+    (fn: PsFun) => hoStepFn(fn, f, sccs, needy, needyThis, nested, outerTypes,
                             siblingNames, specSuffix, processed, acc)
     (o: PStmt)  => hoKeep(st, processed, acc)
 
 # This statement stays where it is: push it to the body and move on.
 fun hoKeep(st: PStmt, processed: Set<String >, acc: HoAcc): HoStep
   ret HoStep(processed,
-             HoAcc(push<PStmt >(acc.haBody, st), acc.haRenames, acc.haOut))
+             HoAcc(push<PStmt >(acc.haBody, st), acc.haRenames, acc.haOut,
+                   acc.haClass, acc.haToMember))
 
 fun hoStepFn(fn: PsFun, f: PsFun, sccs: List<List<String>>,
-             needy: Set<String >, nested: List<PsFun>,
+             needy: Set<String >, needyThis: Set<String >, nested: List<PsFun>,
              outerTypes: OuterTypes, siblingNames: List<String>,
              specSuffix: String, processed: Set<String >,
              acc: HoAcc): HoStep
@@ -778,20 +857,24 @@ fun hoStepFn(fn: PsFun, f: PsFun, sccs: List<List<String>>,
   let scc = hoSccOf(chain(sccs), fn.fName)
   ret HoStep(fold<String, Set<String > >(scc, processed,
                  (s: Set<String >, n: String) => add<String >(s, n)),
-             hoScc(scc, f, needy, nested, outerTypes, siblingNames,
+             hoScc(scc, f, needy, needyThis, nested, outerTypes, siblingNames,
                    specSuffix, acc))
 
 fun hoScc(scc: List<String>, f: PsFun, needy: Set<String >,
+          needyThis: Set<String >,
           nested: List<PsFun>, outerTypes: OuterTypes,
           siblingNames: List<String>, specSuffix: String,
           acc: HoAcc): HoAcc
   let members = hoMembersOf(chain(scc), nested, List<PsFun>())
   if !hoSccIsNeedy(scc, needy)
-    ret hoGlobals(chain(members), f, specSuffix, acc)
+    ret hoSccIsNeedy(scc, needyThis)
+      ? hoClassMembers(chain(members), acc)
+      : hoGlobals(chain(members), f, specSuffix, acc)
   ret match(chain(members))
     (l: ChainLink) => match(l.next)
       (nil: ChainEnd) => HoAcc(push<PStmt >(acc.haBody, toLetLambda(l.value)),
-                               acc.haRenames, acc.haOut)
+                               acc.haRenames, acc.haOut, acc.haClass,
+                               acc.haToMember)
       (m: ChainLink)  => hoCoalesce(members, outerTypes, siblingNames,
                                     specSuffix, acc)
     (nil2: ChainEnd) => acc
@@ -805,7 +888,8 @@ fun hoCoalesce(members: List<PsFun>, outerTypes: OuterTypes,
   let co = coalesceMutualScc(members, outerTypes, siblingNames, specSuffix)
   ret HoAcc(_pushChain<PStmt >(acc.haBody, chain<PStmt >(co.coLets)),
             acc.haRenames,
-            push<PStmt >(acc.haOut, co.coClass))
+            push<PStmt >(acc.haOut, co.coClass),
+            acc.haClass, acc.haToMember)
 
 # Every member of an SCC shares its neediness, so one member answers for all.
 fun hoSccIsNeedy(scc: List<String>, needy: Set<String >): Bool
@@ -832,6 +916,34 @@ fun [tail] hoFnByName(fs: Chain<PsFun>, name: String): PsFun|None
       ? l.value
       : hoFnByName(l.next, name)
 
+# Hoist to CLASS scope: the helper reaches the enclosing `this`, so it becomes a
+# sibling member, which is what keeps that receiver in scope for it.
+#
+# A member declares no trait scope of its own — it compiles under the owner
+# class's `where`, which is the very clause the host member was resolved against
+# — so unlike the global case below there is nothing to make explicit here. The
+# name is not a haRenames entry either: the redirect done before the walk
+# already rewrote every reference, spec suffix and all.
+fun [tail] hoClassMembers(fs: Chain<PsFun>, [terminal] acc: HoAcc): HoAcc
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => hoClassMembers(l.next, hoClassMemberOne(l.value, acc))
+
+fun hoClassMemberOne(member0: PsFun, acc: HoAcc): HoAcc
+  ret HoAcc(acc.haBody, acc.haRenames, acc.haOut,
+            push<PStmt >(acc.haClass,
+                   PsFun(hoMemberName(acc.haToMember, member0.fName),
+                         member0.fAttrs, member0.fGens,
+                         member0.fParams, member0.fBody, member0.fRet,
+                         List<Spec>(), member0.psfLine,
+                         member0.fRetInferred, false, member0.fImports)),
+            acc.haToMember)
+
+fun hoMemberName(m: ThisMap, name: String): String
+  ret match(tmLookup(m, name))
+    (n: String) => n
+    ()          => name
+
 # Direct hoist to global: the member loses is_nested, takes the owner's
 # wheres, and — for a generic specialisation host — the spec suffix.
 fun [tail] hoGlobals(fs: Chain<PsFun>, f: PsFun, specSuffix: String,
@@ -855,14 +967,16 @@ fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix: String,
                            member0.fGens, member0.fParams, member0.fBody,
                            member0.fRet, f.fWheres, member0.psfLine,
                            member0.fRetInferred, false,
-                           member0.fImports)))
+                           member0.fImports)),
+              acc.haClass, acc.haToMember)
   ret HoAcc(acc.haBody, acc.haRenames,
             push<PStmt >(acc.haOut,
                    PsFun(member0.fName, member0.fAttrs, member0.fGens,
                          member0.fParams, member0.fBody, member0.fRet,
                          f.fWheres, member0.psfLine,
                          member0.fRetInferred, false,
-                         member0.fImports)))
+                         member0.fImports)),
+            acc.haClass, acc.haToMember)
 
 # ── the recursive driver ─────────────────────────────────────────────────────
 # Applied recursively so nested-inside-nested functions are hoisted too.
@@ -892,29 +1006,128 @@ fun [tail] hoDriveB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt >,
     # stack, overflowing 8MB at self-host scale.
     (l: ChainLink)  => match(l.value)
       (f: PsFun) => hoHasBlockBody(f)
-        ? hoDriveFnStep(f) |> (st: PStmt, outs: List<PStmt>) =>
+        # A free function has no receiver, so nothing can be class-hoisted out
+        # of it and hoClass comes back empty.
+        ? hoDriveFnStep(f, None) |> (st: PStmt, outs: List<PStmt>, sibs: List<PStmt>) =>
             hoDriveB(l.next, push<PStmt >(acc, st), concat(extra, outs))
         : hoDriveB(l.next, push<PStmt >(acc, l.value), extra)
+      (c: PsClass) => hoInClass(c) |> (cls: PStmt, outs: List<PStmt>) =>
+          hoDriveB(l.next, push<PStmt >(acc, cls), concat(extra, outs))
       (o: PStmt) => hoDriveB(l.next, push<PStmt >(acc, l.value), extra)
 
-fun hoDriveFnStep(f: PsFun): (stmt: PStmt, outs: List<PStmt>)
-  let ho = hoistFromBody(f)
-  let renamed = isEmpty(ho.hoRenames.tmMap)
-    ? ho
-    : Hoisted(rnmStmts(chain(ho.hoBody), ho.hoRenames, List<PStmt>()),
-              ho.hoRenames,
-              rnmStmts(chain(ho.hoOut), ho.hoRenames, List<PStmt>()))
-  let newBody = hoRebuiltBody(f, renamed)
-  ret (hoWithBody(f, newBody), renamed.hoOut)
+# Hoist out of every member body of one class.
+#
+# Members reaching `this` land back in this class as new siblings, and a new
+# sibling can itself hold nested declarations, so the walk repeats until a round
+# adds none. It terminates because each round strictly consumes the nested
+# declarations it walks over: the members it adds are one nesting level
+# shallower than the bodies they came out of.
+fun hoInClass(c: PsClass): (cls: PStmt, outs: List<PStmt>)
+  if !hoClassDeclaresNested(c)
+    ret (c, List<PStmt>())
+  let r = hoClassRounds(chain(c.cMembers), thisType(c), List<PStmt>(),
+                        List<PStmt>())
+  ret (with c(cMembers = r.hcMembers), r.hcOut)
 
-fun hoRebuiltBody(f: PsFun, ho: Hoisted): PExpr
+# Does any member of this class hold a nested function declaration? A class with
+# none is passed through untouched, rather than rebuilt to no effect. Only the
+# top level of a member's body needs looking at: a deeper nested function can
+# only live inside a top-level one.
+fun hoClassDeclaresNested(c: PsClass): Bool
+  ret any<PStmt>(c.cMembers, (m: PStmt) => hoMemberDeclaresNested(m))
+
+fun hoMemberDeclaresNested(m: PStmt): Bool
+  ret match(m)
+    (f: PsFun) => match(f.fBody)
+      (b: PExpr) => match(b)
+        (bk: PeBlock) => any<PStmt>(bk.blockStmts, (st: PStmt) => hoStmtIsFun(st))
+        (o: PExpr)    => false
+      ()         => false
+    (o: PStmt) => false
+
+fun hoStmtIsFun(st: PStmt): Bool
+  ret match(st)
+    (f: PsFun) => true
+    (o: PStmt) => false
+
+class [final] HoClass(hcMembers: List<PStmt>, hcOut: List<PStmt>,
+                      hcPending: List<PStmt>)
+
+# The three lists are all ordered and all built at the tail, so each round runs
+# on builders and materialises once — the HoAcc shape, for the same reason.
+class [linear, final] HcAcc(hcMembers: ListBuilder<PStmt >,
+                            hcOut: ListBuilder<PStmt >,
+                            hcPending: ListBuilder<PStmt >)
+
+fun hoClassRounds(pending: Chain<PStmt>, ths: Spec, members: List<PStmt>,
+                  outs: List<PStmt>): HoClass
+  let r = hoClassBuild(hoClassRound(pending, ths,
+              HcAcc(_pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(members)),
+                    _pushChain<PStmt >(builder<PStmt >(), chain<PStmt >(outs)),
+                    builder<PStmt >())))
+  ret isEmpty(r.hcPending)
+    ? r
+    : hoClassRounds(chain(r.hcPending), ths, r.hcMembers, r.hcOut)
+
+fun hoClassBuild(acc: HcAcc): HoClass
+  ret HoClass(build<PStmt >(acc.hcMembers), build<PStmt >(acc.hcOut),
+              build<PStmt >(acc.hcPending))
+
+fun [tail] hoClassRound(ss: Chain<PStmt>, ths: Spec,
+                        [terminal] acc: HcAcc): HcAcc
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(l.value)
+      (f: PsFun) => hoHasBlockBody(f)
+        ? hoClassRound(l.next, ths, hoClassMemberStep(f, ths, acc))
+        : hoClassRound(l.next, ths, hoClassKeep(l.value, acc))
+      (o: PStmt) => hoClassRound(l.next, ths, hoClassKeep(l.value, acc))
+
+fun hoClassKeep(st: PStmt, acc: HcAcc): HcAcc
+  ret HcAcc(push<PStmt >(acc.hcMembers, st), acc.hcOut, acc.hcPending)
+
+fun hoClassMemberStep(f: PsFun, ths: Spec, acc: HcAcc): HcAcc
+  ret hoDriveFnStep(f, ths) |> (st: PStmt, outs: List<PStmt>, sibs: List<PStmt>) =>
+    HcAcc(push<PStmt >(acc.hcMembers, st),
+          _pushChain<PStmt >(acc.hcOut, chain<PStmt >(outs)),
+          _pushChain<PStmt >(acc.hcPending, chain<PStmt >(sibs)))
+
+fun hoDriveFnStep(f: PsFun, ths: Spec|None): (stmt: PStmt, outs: List<PStmt>,
+                                              sibs: List<PStmt>)
+  let ho = hoistFromBody(f, ths)
+  # hoistFromBlock redirected the body STATEMENTS before it decided anything,
+  # because the redirect changes what the closure strategies see. The block
+  # VALUE sits behind them and takes the same redirect here.
+  let value = isEmpty(ho.hoToMember.tmMap)
+    ? hoBlockValue(f)
+    : rcmExpr(hoBlockValue(f), ho.hoToMember)
+  # Then one rename over all four, exactly as Python applies it.
+  ret isEmpty(ho.hoRenames.tmMap)
+    ? hoFnStep(f, ho.hoBody, value, ho.hoOut, ho.hoClass)
+    : hoFnStep(f, rnmStmts(chain(ho.hoBody), ho.hoRenames, List<PStmt>()),
+               rnmExpr(value, ho.hoRenames),
+               rnmStmts(chain(ho.hoOut), ho.hoRenames, List<PStmt>()),
+               rnmStmts(chain(ho.hoClass), ho.hoRenames, List<PStmt>()))
+
+fun hoFnStep(f: PsFun, body: List<PStmt>, value: PExpr, outs: List<PStmt>,
+             sibs: List<PStmt>): (stmt: PStmt, outs: List<PStmt>,
+                                  sibs: List<PStmt>)
+  ret (hoWithBody(f, hoRebuiltBody(f, body, value)), outs, sibs)
+
+# The block's value before any rewrite. A non-block body is returned as-is and a
+# missing one as PeNothing; hoistFromBody declines both, so neither rewrite has
+# anything to say about them.
+fun hoBlockValue(f: PsFun): PExpr
   ret match(f.fBody)
     (b: PExpr) => match(b)
-      (bk: PeBlock) => PeBlock(ho.hoBody,
-                               isEmpty(ho.hoRenames.tmMap)
-                                 ? bk.blockValue
-                                 : rnmExpr(bk.blockValue, ho.hoRenames),
-                               bk.blockTag, bk.pebkLine)
+      (bk: PeBlock) => bk.blockValue
+      (o: PExpr)    => o
+    ()         => PeNothing(f.psfLine)
+
+fun hoRebuiltBody(f: PsFun, body: List<PStmt>, value: PExpr): PExpr
+  ret match(f.fBody)
+    (b: PExpr) => match(b)
+      (bk: PeBlock) => PeBlock(body, value, bk.blockTag, bk.pebkLine)
       (o: PExpr)    => b
     ()         => PeNothing(f.psfLine)
 

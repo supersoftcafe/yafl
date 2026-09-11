@@ -8,6 +8,7 @@ import pyast.expression as e
 
 import pyast.resolver as g
 import pyast.typespec as t
+import pyast.utils as u
 
 from langtools import checked_cast
 from parsing.tokenizer import LineRef
@@ -122,13 +123,16 @@ def __discover_captures(resolver: g.Resolver, lmd: e.LambdaExpression) -> list[t
     return captures
 
 
-def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]], self_ref_names: frozenset[str] = frozenset(), method_nme: str = "", cls_name: str = "") -> e.Expression:
+def __redirect_references_to_class(xpr: e.Expression, cpt: list[tuple[str, t.TypeSpec]], lmd_line: LineRef, self_ref_names: frozenset[str] = frozenset(), method_nme: str = "", cls_name: str = "") -> e.Expression:
+    # `lr` is where the rewritten nodes are placed; `lmd_line` identifies the
+    # lambda, and so names its captured-`this` field. They are not the same.
     lr = xpr.line_ref
     capture_names = {name for name, _ in cpt}
     def redirect_reference(resolver: g.Resolver, thing):
         if isinstance(thing, e.NamedExpression):
             if thing.name in capture_names:
-                return e.DotExpression(lr, e.NamedExpression(lr, "this"), thing.name)
+                return e.DotExpression(lr, e.NamedExpression(lr, "this"),
+                                       u.capture_field_name(thing.name, lmd_line))
             elif thing.name in self_ref_names:
                 # Self-referential capture: reconstruct the fun_t from `this` rather
                 # than reading a captured field (which would be null at creation time).
@@ -154,8 +158,9 @@ def __create_function_from_lambda(lmd: e.LambdaExpression, nme: str, xpr: e.Expr
 def __create_class_from_lambda(lmd: e.LambdaExpression, nme: str, fnc: s.FunctionStatement, cpt: list[tuple[str, t.TypeSpec]]) -> s.ClassStatement|None:
     lr = lmd.line_ref
     if cpt:
-        parameters = [s.LetStatement(lr, name, __empty_imports, {}, (), None, xtype) for name, xtype in cpt]
-        parameter_type = t.TupleSpec(lr, [t.TupleEntrySpec(name, xtype) for name, xtype in cpt])
+        fields = [(u.capture_field_name(name, lr), xtype) for name, xtype in cpt]
+        parameters = [s.LetStatement(lr, name, __empty_imports, {}, (), None, xtype) for name, xtype in fields]
+        parameter_type = t.TupleSpec(lr, [t.TupleEntrySpec(name, xtype) for name, xtype in fields])
         parameter = s.DestructureStatement(lr, "_", __empty_imports, {}, (), None, parameter_type, parameters)
         attributes = {"final": e.IntegerExpression(lr, 1, 32)}
         xclass = s.ClassStatement(lr, nme, __empty_imports, attributes, (), parameter, [fnc], [], False, set(), [])
@@ -177,7 +182,10 @@ def __create_new_expression(cls: s.ClassStatement|None, fnc: s.FunctionStatement
         return e.NamedExpression(lr, name)
 
     if cpt:
-        captures = [e.TupleEntryExpression(name, _capture_read(name, xtype)) for name, xtype in cpt]
+        # Entry name = the closure's field; entry value = a read of the outer
+        # binding, which still goes by its own name out here.
+        captures = [e.TupleEntryExpression(u.capture_field_name(name, lr), _capture_read(name, xtype))
+                    for name, xtype in cpt]
         parameters = e.TupleExpression(lr, captures)                 # Capture parameters for class constructor
         clstype = t.ClassSpec(lr, cls.name)                          # Reference to class type
         newexpression = e.NewExpression(lr, clstype, parameters)     # Construct class with captured variables
@@ -224,7 +232,7 @@ def __scan_function_and_export_lambdas(statement: s.Statement, all_statements_re
         self_ref_names = frozenset(name for name, xtype in cpt if xtype == lmd.return_type)
         cpt = [(name, xtype) for name, xtype in cpt if name not in self_ref_names]
 
-        xpr = __redirect_references_to_class(lmd.expression, cpt, self_ref_names, nme, cls_name=nme)
+        xpr = __redirect_references_to_class(lmd.expression, cpt, lmd.line_ref, self_ref_names, nme, cls_name=nme)
         fnc = __create_function_from_lambda(lmd, nme, xpr, cpt)
         cls = __create_class_from_lambda(lmd, nme, fnc, cpt)
         result = __create_new_expression(cls, fnc, cpt)
@@ -266,11 +274,3 @@ def __convert_lambdas_to_functions(statements: list[s.Statement],
 def convert_lambdas_to_functions(statements: list[s.Statement]) -> list[s.Statement]:
     statements = __convert_lambdas_to_functions(statements)
     return statements
-
-
-# TODO
-#  1. Add 'this' to ClassStatement resolver
-#     a. How to cope with nested classes?
-#        Maybe this@sdfu9s using the LineRef of the class declaration?
-#        Will have some tricky moments trying to figure out which 'this' to resolve to in nested cases.
-#  2. Fix function to discover captures

@@ -308,7 +308,7 @@ class DotExpression(Expression):
 
                 if not isinstance(data, s.FunctionStatement):
                     result_var = cg_p.ObjectField(xtype, base_bundle.result_var, cdecl.name, data.name, None)
-                elif "final" not in cdecl.attributes:
+                elif "final" not in cdecl.attributes and cdecl.occupies_slot(data.name):
                     result_var = cg_p.VirtualFunction(data.name, base_bundle.result_var)
                 else:
                     result_var = cg_p.GlobalFunction(data.name, base_bundle.result_var, c_symbol=_foreign_symbol(data), impure=_is_impure(data), sync=_is_sync(data))
