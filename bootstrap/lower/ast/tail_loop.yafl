@@ -36,7 +36,7 @@ fun [tail] tlLoop(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>,
 
 # Recurse into nested functions and class methods first (bottom-up), so a
 # [tail] function nested inside another is lowered too.
-fun tlTransform(st: PStmt): TlStmt
+fun tlTransform(st): TlStmt
   ret match(st)
     (f: PsFun)   => tlAfterNested(tlNested(f))
     (c: PsClass) => tlMembers(chain(c.cMembers), builder(),
@@ -56,14 +56,14 @@ fun [tail] tlMembers(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>,
       |> (out) => tlMembers(l.next, push(acc, out.tsStmt),
                             union(errs, out.tsErrs))
 
-fun tlAfterNested(out: TlStmt): TlStmt
+fun tlAfterNested(out): TlStmt
   ret match(out.tsStmt)
     (f2: PsFun) => hasAttr(f2.fAttrs, "tail")
       ? tlLowerFun(f2, out.tsErrs)
       : out
     (o: PStmt)  => out
 
-fun tlNested(f: PsFun): TlStmt
+fun tlNested(f): TlStmt
   ret match(f.fBody)
     (b: PExpr) => match(b)
       (bk: PeBlock) => tlMembers(chain(bk.blockStmts), builder(),
@@ -82,7 +82,7 @@ fun tlLowerFun(f: PsFun, errs0: Set<PErr>): TlStmt
     (body: PExpr) => tlLowerBody(f, body, errs0)
     ()            => TlStmt(f, errs0)
 
-fun tlLowerBody(f: PsFun, body: PExpr, errs0: Set<PErr>): TlStmt
+fun tlLowerBody(f, body, errs0): TlStmt
   let total = tlCountSelf(body, f.fName, 0)
   let rw2 = tlRewriteTail(body, f.fName, 0)
   if total == 0
@@ -115,7 +115,7 @@ fun [tail] tlParamRefs(ts: Chain<PStmt>, lr: PLine,
         push(acc, PeName(stmtName(l.value), List(), lr,
                          None)))
 
-fun tlStripTail(as2: Chain<PAttr>, acc: List<PAttr>): List<PAttr>
+fun tlStripTail(as2, acc: List<PAttr>): List<PAttr>
   ret build(tlStripTailB(as2, builderFrom(acc)))
 
 fun [tail] tlStripTailB(as2: Chain<PAttr>, [terminal] acc: ListBuilder<PAttr>): ListBuilder<PAttr>
@@ -125,7 +125,7 @@ fun [tail] tlStripTailB(as2: Chain<PAttr>, [terminal] acc: ListBuilder<PAttr>): 
       ? tlStripTailB(l.next, acc)
       : tlStripTailB(l.next, push(acc, l.value))
 
-fun tlIsSelfCall(x: PExpr, fName: String): Bool
+fun tlIsSelfCall(x, fName): Bool
   ret match(x)
     (c: PeCall) => tlIsSelfRef(c.function, fName)
     (o2: PExpr) => false
@@ -137,13 +137,13 @@ fun tlIsSelfCall(x: PExpr, fName: String): Bool
 # shape only arises for the enclosing class's own member: `this` names the
 # receiver of the method being rewritten, so `this.<its own name>` is that
 # method.
-fun tlIsSelfRef(f: PExpr, fName: String): Bool
+fun tlIsSelfRef(f, fName): Bool
   ret match(f)
     (nm: PeName) => nm.refName == fName
     (d: PeDot)   => d.member == fName && tlIsThis(d.base)
     (o: PExpr)   => false
 
-fun tlIsThis(x: PExpr): Bool
+fun tlIsThis(x): Bool
   ret match(x)
     (nm: PeName) => nm.refName == "this"
     (o: PExpr)   => false
@@ -152,7 +152,7 @@ fun tlIsThis(x: PExpr): Bool
 # Python blanks every lambda to a leaf, then counts self-calls with a full
 # search_and_replace walk; a fold that skips lambda subtrees counts the same.
 
-fun tlCountSelf(x: PExpr, fName: String, n: Int): Int
+fun tlCountSelf(x, fName, n): Int
   let n2 = tlIsSelfCall(x, fName) ? n + 1 : n
   ret match(x)
     (d: PeDot)     => tlCountSelf(d.base, fName, n2)
@@ -184,20 +184,20 @@ fun tlCountSelf(x: PExpr, fName: String, n: Int): Int
     (o: PeLowered) => n2
     (o: PeName) => n2
 
-fun [tail] tlCountEnts(es: Chain<PTupEnt>, fName: String, n: Int): Int
+fun [tail] tlCountEnts(es: Chain<PTupEnt>, fName, n): Int
   ret match(es)
     (nil: ChainEnd) => n
     (l: ChainLink)  => tlCountEnts(l.next, fName,
                                    tlCountSelf(l.value.tupValue, fName, n))
 
-fun [tail] tlCountArms(as2: Chain<PArm>, fName: String, n: Int): Int
+fun [tail] tlCountArms(as2: Chain<PArm>, fName, n): Int
   ret match(as2)
     (nil: ChainEnd) => n
     (l: ChainLink)  => tlCountArms(l.next, fName,
         tlCountOpt(l.value.armGuard, fName,
                    tlCountSelf(l.value.armBody, fName, n)))
 
-fun tlCountOpt(x: PExpr|None, fName: String, n: Int): Int
+fun tlCountOpt(x: PExpr|None, fName, n): Int
   ret match(x)
     (e2: PExpr) => tlCountSelf(e2, fName, n)
     ()          => n
@@ -208,7 +208,7 @@ fun [tail] tlCountStmts(ss: Chain<PStmt>, fName: String, n: Int): Int
     (l: ChainLink)  => tlCountStmts(l.next, fName,
                                     tlCountStmt(l.value, fName, n))
 
-fun tlCountStmt(st: PStmt, fName: String, n: Int): Int
+fun tlCountStmt(st, fName, n): Int
   ret match(st)
     (f: PsFun)   => tlCountOpt(f.fBody, fName,
                                tlCountStmt(f.fParams, fName, n))
@@ -223,7 +223,7 @@ fun tlCountStmt(st: PStmt, fName: String, n: Int): Int
                                                           n)))
     (o: PStmt)   => n
 
-fun tlCountStmt2(st: PStmt, fName: String, n: Int): Int
+fun tlCountStmt2(st, fName, n): Int
   ret tlCountStmt(st, fName, n)
 
 # ── the tail rewriter ────────────────────────────────────────────────────────
@@ -231,7 +231,7 @@ fun tlCountStmt2(st: PStmt, fName: String, n: Int): Int
 # true branch before false, arms in order) — the same order Python's mutable
 # counter produces.
 
-fun tlRewriteTail(x: PExpr, fName: String, n: Int): TlRw
+fun tlRewriteTail(x, fName, n): TlRw
   if tlIsSelfCall(x, fName)
     ret tlToRecur(x, n)
   ret match(x)
@@ -250,7 +250,7 @@ fun tlRewriteTail(x: PExpr, fName: String, n: Int): TlRw
       |> (ao) => TlRw(with mt(arms = ao.aoArms), ao.aoN)
     (o: PExpr)     => TlRw(x, n)   # non-tail-bearing: a base-case value
 
-fun tlToRecur(x: PExpr, n: Int): TlRw
+fun tlToRecur(x, n): TlRw
   ret match(x)
     (c: PeCall) => match(c.parameter)
       (tp: PeTuple) => TlRw(PeRecur(tlEntValues(chain(tp.exprs),
@@ -263,7 +263,7 @@ fun tlToRecur(x: PExpr, n: Int): TlRw
 fun tlEntValues(es: Chain<PTupEnt>, acc: List<PExpr>): List<PExpr>
   ret build(tlEntValuesB(es, builderFrom(acc)))
 
-fun [tail] tlEntValuesB(es: Chain<PTupEnt>, [terminal] acc: ListBuilder<PExpr>): ListBuilder<PExpr>
+fun [tail] tlEntValuesB(es: Chain<PTupEnt>, [terminal] acc): ListBuilder<PExpr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => tlEntValuesB(l.next, push(acc, l.value.tupValue))

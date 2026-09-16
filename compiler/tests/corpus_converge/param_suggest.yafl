@@ -1,7 +1,7 @@
-# Converge-contract corpus: PATH-3 inference (B8). `v` declares no type; the
-# call site `bump(x)` supplies one, gathered by __collect_param_suggestions
-# and adopted by the function's own compile. A port whose fixpoint resolver
-# carries no suggestions leaves `v` untyped forever.
+# Converge-contract corpus: parameter inference from the BODY (B8). `v`
+# declares no type; the declared result of `bump` bounds what `ret v` may be,
+# so the parameter is an Int. A port whose parameter inference never reads the
+# result type leaves `v` untyped forever.
 namespace Corpus
 
 typealias Int : __builtin_type__<bigint>

@@ -41,13 +41,13 @@ enum LibResult
 # defaults. A manifest declaring no namespace can never be selected by the
 # worklist, so accepting it would produce a library that silently never loads.
 
-fun parseManifest(text: String, origin: String): LibManifest|String
+fun parseManifest(text, origin): LibManifest|String
   ret match(parseToml(text))
     (e: TomlErr) => origin + ": invalid manifest TOML at line "
                     + String(e.tomlLine) + ": " + e.tomlMessage
     (ok: TomlOk) => manifestFrom(ok.entries, origin)
 
-fun manifestFrom(entries: List<TomlEntry>, origin: String): LibManifest|String
+fun manifestFrom(entries: List<TomlEntry>, origin): LibManifest|String
   let ns = tomlStrings(entries, "namespaces")
   ret isEmpty(ns)
     ? origin + ": a library manifest must declare at least one namespace"
@@ -64,7 +64,7 @@ fun manifestName(entries: List<TomlEntry>): String
 
 # ── reading a library off disk ──────────────────────────────────────────────
 
-fun readWholeFile(path: String): String|IOError
+fun readWholeFile(path): String|IOError
   ret match(open_read(path))
     (e: IOError) => e
     (io: IO)     => drainFile(io, StringBuilder())
@@ -77,7 +77,7 @@ fun readWholeFile(path: String): String|IOError
 # EOF arrives as EOFError, NOT as a zero-length read — treating every IOError
 # as failure made this report "cannot be read" for every file that was read
 # perfectly well, right up to its end.
-fun [tail] drainFile(io: IO, [terminal] sb: StringBuilder): String|IOError
+fun [tail] drainFile(io: IO, [terminal] sb): String|IOError
   let r = io.read(65536)
   ret match(r.v)
     (e: IOError) => drainEnd(r.io, sb, e)
@@ -86,7 +86,7 @@ fun [tail] drainFile(io: IO, [terminal] sb: StringBuilder): String|IOError
 # TWO-LEVEL match: an IOError VARIANT cannot be an arm of `String|IOError`
 # directly — the union is matched first, then the error's variants. The builder
 # is consumed on BOTH paths; on the error path its text is discarded.
-fun drainEnd(io: IO, [terminal] sb: StringBuilder, e: IOError): String|IOError
+fun drainEnd(io: IO, [terminal] sb, e): String|IOError
   ret match(e)
     (eof: EOFError) => (io.close(), toString(sb)) |> (c, text) => text
     (o: IOError)    => (io.close(), toString(sb), o) |> (c, t, err) => err
@@ -94,7 +94,7 @@ fun drainEnd(io: IO, [terminal] sb: StringBuilder, e: IOError): String|IOError
 # A directory library: `yafl.toml` beside its `.yafl` sources. Returns None
 # when there is no manifest — that is "not a library", not an error, since a
 # search path legitimately contains unrelated directories.
-fun readDirLibrary(path: String): Library|String|None
+fun readDirLibrary(path): Library|String|None
   let manifestPath = path + "/yafl.toml"
   if !exists(manifestPath)
     ret None
@@ -104,7 +104,7 @@ fun readDirLibrary(path: String): Library|String|None
       (why: String)     => why
       (m: LibManifest)  => dirLibraryWith(m, path)
 
-fun dirLibraryWith(m: LibManifest, path: String): Library|String
+fun dirLibraryWith(m, path): Library|String
   ret match(yaflPaths(path, List()))
     (why: String)            => why
     (paths: List<String>)    => match(readSources(path, sortByUnitName(path, paths)))
@@ -118,7 +118,7 @@ fun dirLibraryWith(m: LibManifest, path: String): Library|String
 # package present identical names in an identical order. Statement order is
 # emission order, so that agreement is what keeps the two forms emitting the
 # same C.
-fun sortByUnitName(root: String, paths: List<String>): List<String>
+fun sortByUnitName(root, paths: List<String>): List<String>
   ret sortBy(paths,
              (a, b) => relativeTo(root, a) < relativeTo(root, b))
 
@@ -130,7 +130,7 @@ fun sortByUnitName(root: String, paths: List<String>): List<String>
 #
 # The walk order does not matter: `dirLibraryWith` sorts the collected paths by
 # their unit name — the path relative to the library root — before reading them.
-fun yaflPaths(dir: String, acc: List<String>): List<String>|String
+fun yaflPaths(dir, acc): List<String>|String
   ret match(listDir(dir))
     (e: IOError)         => dir + ": cannot be listed"
     (names: Set<String>) => yaflEntries(chain(sort(names)), dir, acc)
@@ -149,7 +149,7 @@ fun yaflEntries(ns: Chain<String>, dir: String,
 # `Path.rglob` never do. Descending into `.` recurses for ever — the path grows
 # one "/." per level until open fails, which is precisely how it presented:
 # `alpha/./././././… cannot be listed`.
-fun isDotEntry(name: String): Bool
+fun isDotEntry(name): Bool
   ret name == "." || name == ".."
 
 fun yaflEntry(path: String, acc: List<String>): List<String>|String
@@ -157,12 +157,12 @@ fun yaflEntry(path: String, acc: List<String>): List<String>|String
     : endsWith(path, ".yafl") ? concat(acc, list1(path))
     : acc
 
-fun isDirectory(path: String): Bool
+fun isDirectory(path): Bool
   ret match(stat(path))
     (fi: FileInfo) => fi.isDir
     (e: IOError)   => false
 
-fun isRegularFile(path: String): Bool
+fun isRegularFile(path): Bool
   ret match(stat(path))
     (fi: FileInfo) => fi.isRegular
     (e: IOError)   => false
@@ -171,7 +171,7 @@ fun isRegularFile(path: String): Bool
 # `SourceFile(unit_name(p, root), ...)`. The name is hashed into every
 # generated symbol, so two files of the same name in different sub-directories
 # are distinct sources that must report DISTINCT filenames.
-fun readSources(root: String, paths: List<String>): List<LibSource>|String
+fun readSources(root, paths: List<String>): List<LibSource>|String
   ret srcLoop(root, chain(paths), builder())
 
 fun [tail] srcLoop(root: String, ps: Chain<String>,
@@ -183,18 +183,18 @@ fun [tail] srcLoop(root: String, ps: Chain<String>,
       (t: String)    => srcLoop(root, l.next,
                                 push(b, LibSource(relativeTo(root, l.value), t)))
 
-fun srcDiscard([terminal] b: ListBuilder<LibSource>, why: String): List<LibSource>|String
+fun srcDiscard([terminal] b: ListBuilder<LibSource>, why): List<LibSource>|String
   ret build(b) |> (l) => why
 
 # A `.yl` archive: the same manifest and sources, read out of the zip.
-fun readZipLibrary(path: String): Library|String|None
+fun readZipLibrary(path): Library|String|None
   ret match(readWholeFile(path))
     (e: IOError)   => path + ": cannot be read"
     (bytes: String) => match(readZip(bytes))
       (e: ZipErr)  => path + ": " + e.zipWhy
       (z: ZipOk)   => zipLibraryFrom(z.zipEntries, path)
 
-fun zipLibraryFrom(entries: List<ZipEntry>, path: String): Library|String
+fun zipLibraryFrom(entries: List<ZipEntry>, path): Library|String
   ret match(zipFind(entries, "yafl.toml"))
     (e: ZipEntry)   => match(parseManifest(e.zipBody, path + "!yafl.toml"))
       (why: String)    => why
@@ -205,7 +205,7 @@ fun zipSources(entries: List<ZipEntry>): List<LibSource>
   ret build(zipSrcLoop(chain(sortEntries(entries)), builder()))
 
 fun [tail] zipSrcLoop(es: Chain<ZipEntry>,
-                      [terminal] b: ListBuilder<LibSource>): ListBuilder<LibSource>
+                      [terminal] b): ListBuilder<LibSource>
   ret match(es)
     (nil: ChainEnd) => b
     (l: ChainLink)  => endsWith(l.value.zipName, ".yafl")
@@ -219,15 +219,15 @@ fun sortEntries(entries: List<ZipEntry>): List<ZipEntry>
 # path is built as `root + "/" + ...` by `yaflPaths`, so the prefix is exactly
 # `root` and a length is all this needs; a path that is not under `root` is
 # handed back whole rather than mangled.
-fun relativeTo(root: String, path: String): String
+fun relativeTo(root, path): String
   ret length(path) > length(root) + 1 && startsWith(path, root + "/")
     ? slice(path, length(root) + 1, length(path))
     : path
 
-fun baseName(p: String): String
+fun baseName(p): String
   ret lastSlash(p, length(p) - 1) |> (i) => slice(p, i + 1, length(p))
 
-fun [tail] lastSlash(p: String, at: Int): Int
+fun [tail] lastSlash(p, at): Int
   ret at < 0 ? -1 : byteAt(p, at) == '/' ? at : lastSlash(p, at - 1)
 
 
@@ -319,12 +319,12 @@ fun [tail] discoverInto(rest: Chain<String>, base: String, ns: Chain<String>,
 # discovery treats a read failure as fatal — so one oddly-named directory
 # anywhere on the search path killed the whole compile. Anything else is
 # "not a library", which is not an error.
-fun readEntry(path: String): Library|String|None
+fun readEntry(path): Library|String|None
   ret isDirectory(path) ? readDirLibrary(path)
     : isRegularFile(path) && endsWith(path, ".yl") ? readZipLibrary(path)
     : None
 
-fun libDiscard([terminal] acc: ListBuilder<Library>, e: LibResult): LibResult
+fun libDiscard([terminal] acc: ListBuilder<Library>, e): LibResult
   ret build(acc) |> (l) => e
 
 
@@ -383,11 +383,11 @@ fun [tail] nsSeek(es: Chain<NsEntry>, name: String): Library|None
 # A miss is harmless (it matches no library); a MISS THAT MATTERED would be a
 # library silently not loaded, which is why this errs wide.
 
-fun prefixesOf(qualified: String): List<String>
+fun prefixesOf(qualified): List<String>
   ret prefixWalk(chain(map(split(qualified, "::"), stripUnique)), "",
                  builder())
 
-fun stripUnique(part: String): String
+fun stripUnique(part): String
   ret findByte(part, '@', 0) |> (at) => at < 0 ? part : slice(part, 0, at)
 
 fun [tail] prefixWalk(ps: Chain<String>, acc: String,
@@ -434,7 +434,7 @@ class [final] LoadStep(stepSources: List<LibSource>, stepLibs: List<Library>)
 # them collided and the second library was never loaded. libRoot is the
 # discovered path, which is unique per library by construction.
 fun loadReferenced(index: List<NsEntry>, wanted: List<String>,
-                   already: List<String>): LoadStep
+                   already): LoadStep
   ret loadLoop(chain(wanted), index, already,
                builder(), builder())
 
@@ -478,7 +478,7 @@ fun materialisedNativeDir(lib: Library): NativeDir
         (e: IOError)    => NativeErr(lib.libRoot + ": cannot be read")
         (bytes: String) => extractNative(lib, bytes)
 
-fun extractNative(lib: Library, bytes: String): NativeDir
+fun extractNative(lib: Library, bytes): NativeDir
   let dir = tempDir() + "/yafl-lib-cache/" + lib.libManifest.libName
             + "-" + sha256Hex16(bytes)
   ret match(makeDirs(dir))
@@ -506,7 +506,7 @@ fun [tail] extractEach(rels: Chain<String>, entries: List<ZipEntry>,
           ()              => NativeErr(lib.libRoot + ": declares \"" + l.value
                                        + "\" but the archive has no such entry")
 
-fun writeWholeFile(path: String, body: String): String|None
+fun writeWholeFile(path, body): String|None
   ret match(makeDirs(dirOf(path)))
     (e: IOError) => dirOf(path) + ": cannot be created"
     ()           => match(create(path))
@@ -517,7 +517,7 @@ fun writeWholeFile(path: String, body: String): String|None
 
 # writeAll reports the BYTE COUNT on success, not None — the handle is closed
 # on both paths either way, since a failed write still owns an open file.
-fun finishWrite(path: String,
+fun finishWrite(path,
                 w: (io: IO, v: System::Int|IOError)): String|None
   ret match(w.v)
     (e: IOError) => (w.io.close(), path + ": cannot be written")
@@ -533,12 +533,12 @@ fun finishWrite(path: String,
 fun tempDir(): String
   ret envOr("TMPDIR", envOr("TEMP", envOr("TMP", "/tmp")))
 
-fun envOr(name: String, fallback: String): String
+fun envOr(name, fallback): String
   ret match(env(name))
     (v: String) => v == "" ? fallback : v
     ()          => fallback
 
-fun dirOf(p: String): String
+fun dirOf(p): String
   ret lastSlash(p, length(p) - 1)
     |> (i) => i <= 0 ? (i == 0 ? "/" : ".") : slice(p, 0, i)
 
@@ -597,7 +597,7 @@ fun [tail] gatherNative(ls: Chain<Library>, incs: List<String>,
 # `sorted({(base / h).parent for h in headers})` — a header may sit in a
 # sub-directory, and it is that directory the C compiler needs on -I, not the
 # header. A SET then sorted: two headers in one directory contribute it once.
-fun includeDirsUnder(base: String, lib: Library): List<String>
+fun includeDirsUnder(base, lib: Library): List<String>
   ret isEmpty(lib.libManifest.libHeaders)
     ? List()
     : sort(Set(map(lib.libManifest.libHeaders,

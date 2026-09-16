@@ -1,0 +1,36 @@
+# Converge-contract corpus: PARAMETER INFERENCE from the body. Every function
+# here leaves its parameter un-annotated and the body determines it a different
+# way, so a port that reaches a different answer — or the same answer in a
+# different number of passes — fails the contract rather than silently drifting.
+namespace Corpus
+
+import System
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+  enum Tri(t: System::Int)
+
+# UPPER bound from the declared result: whatever `ret` hands back must fit it.
+fun echoed(x): System::Int
+  ret x
+
+# UPPER bound from a call: `ring` takes a Circle, and only one `ring` fits, so
+# the argument is read off its parameter.
+fun ring(c: Circle): System::Int
+  ret c.r
+
+fun viaCall(y): System::Int
+  ret ring(y)
+
+# LOWER bounds from match arms generalise to the ROOT enum — Circle and Square
+# as arms make the parameter a Shape, which is why the Tri arm is reachable and
+# the match is exhaustive.
+fun sides(s): System::Int
+  ret match(s)
+    (c: Circle) => 1
+    (q: Square) => 4
+    (t: Tri)    => 3
+
+fun use(n: System::Int): System::Int
+  ret echoed(n) + viaCall(Circle(n)) + sides(Tri(n))

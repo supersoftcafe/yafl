@@ -21,7 +21,7 @@ fun resolveFlatStructGlobalInits(a: CgApp): CgApp
   ret appOf(appFunctions(a), appObjects(a),
             map(appGlobals(a), (g2) => siResolveGlobal(g2, a)))
 
-fun siResolveGlobal(g2: CgGlobal, a: CgApp): CgGlobal
+fun siResolveGlobal(g2, a: CgApp): CgGlobal
   if !isNoneStr(g2.globalObjectName) || !isNoneStr(g2.globalLazyInitFunction)
     ret g2
   ret match(g2.globalInit)
@@ -30,7 +30,7 @@ fun siResolveGlobal(g2: CgGlobal, a: CgApp): CgGlobal
       (o: RParam)        => g2
     ()              => g2
 
-fun siResolvedGlobal(g2: CgGlobal, resolved: RParam|None): CgGlobal
+fun siResolvedGlobal(g2, resolved: RParam|None): CgGlobal
   ret match(resolved)
     (r: RParam) => CgGlobal(g2.globalName, g2.globalType, r, g2.globalObjectName,
                             g2.globalLazyInitFunction, g2.globalLazyInitFlag)
@@ -38,7 +38,7 @@ fun siResolvedGlobal(g2: CgGlobal, resolved: RParam|None): CgGlobal
 
 # _resolve_rparam_constants: Integer/String pass through; a GlobalVar traces
 # to its constant; a NewStruct resolves field-wise (all or nothing).
-fun siResolveConstants(val: RParam, a: CgApp): RParam|None
+fun siResolveConstants(val, a: CgApp): RParam|None
   ret match(val)
     (i: RpInteger)   => val
     (s2: RpString)   => val
@@ -65,7 +65,7 @@ fun siResolveField(acc: SiVals, nv: RpNamedValue, a: CgApp): SiVals
 # are constants; a NewStruct is constant when every field is (rebuilt from
 # the traced constants); a GlobalVar reads a non-lazy, non-object global's
 # Integer/String init; a StackVar dead-ends without a value map.
-fun [tail] siTraceToConstant(val: RParam, vmap: FunValues, a: CgApp): RParam|None
+fun [tail] siTraceToConstant(val, vmap: FunValues, a: CgApp): RParam|None
   ret match(val)
     (i: RpInteger)    => val
     (s2: RpString)    => val
@@ -133,8 +133,8 @@ class [final] SiAssign(saReg: String, saField: String, saIdx: Int,
 fun siNewObjPositions(ops: Segment<Op>|None): List<SiNewObj>
   ret build(siNopLoop(ops, 0i32, 0, builder()))
 
-fun [tail] siNopLoop(s: Segment<Op>|None, iSeg: Int32, i: Int,
-                     [terminal] acc: ListBuilder<SiNewObj>): ListBuilder<SiNewObj>
+fun [tail] siNopLoop(s: Segment<Op>|None, iSeg: Int32, i,
+                     [terminal] acc): ListBuilder<SiNewObj>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
@@ -143,8 +143,8 @@ fun [tail] siNopLoop(s: Segment<Op>|None, iSeg: Int32, i: Int,
 
 # In op order: the promotion walk follows it, and the globals it yields are
 # emitted in that order.
-fun siNopOne([terminal] acc: ListBuilder<SiNewObj>, op: Op,
-             i: Int): ListBuilder<SiNewObj>
+fun siNopOne([terminal] acc, op,
+             i): ListBuilder<SiNewObj>
   ret match(op)
     (no: OpNewObject) => no.newObjSize is None
       ? match(no.newObjRegister)
@@ -160,8 +160,8 @@ fun siFieldAssigns(ops: Segment<Op>|None, news: List<SiNewObj>): List<SiAssign>
                      put(ix, n.snReg, true))
   ret siFaLoop(ops, 0i32, 0, regIx, List())
 
-fun [tail] siFaLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, regIx: Dict<String, Bool>,
-                    acc: List<SiAssign>): List<SiAssign>
+fun [tail] siFaLoop(s: Segment<Op>|None, iSeg: Int32, i, regIx: Dict<String, Bool>,
+                    acc): List<SiAssign>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
@@ -169,7 +169,7 @@ fun [tail] siFaLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, regIx: Dict<String
                  siFaOne(acc, seg.array(iSeg), i, regIx))
       : siFaLoop(seg.next, 0i32, i, regIx, acc)
 
-fun siFaOne(acc: List<SiAssign>, op: Op, i: Int,
+fun siFaOne(acc, op, i,
             regIx: Dict<String, Bool>): List<SiAssign>
   ret match(op)
     (m: OpMove) => match(m.moveTarget)
@@ -179,7 +179,7 @@ fun siFaOne(acc: List<SiAssign>, op: Op, i: Int,
       (o: RParam)         => acc
     (o: Op)     => acc
 
-fun siFaStore(acc: List<SiAssign>, of: RpObjectField, src: RParam, i: Int,
+fun siFaStore(acc, of: RpObjectField, src, i,
               regIx: Dict<String, Bool>): List<SiAssign>
   ret match(of.pointer)
     (sv: RpStackVar) => !(get(regIx, sv.name) is None)
@@ -188,8 +188,8 @@ fun siFaStore(acc: List<SiAssign>, of: RpObjectField, src: RParam, i: Int,
     (o: RParam)      => acc
 
 # Last store wins (Python dict assignment).
-fun siFaPut(acc: List<SiAssign>, reg: String, field: String, i: Int,
-            src: RParam): List<SiAssign>
+fun siFaPut(acc: List<SiAssign>, reg: String, field: String, i,
+            src): List<SiAssign>
   ret any(acc, (a2) => a2.saReg == reg && a2.saField == field)
     ? map(acc, (a2) => a2.saReg == reg && a2.saField == field
                  ? SiAssign(reg, field, i, src)
@@ -198,7 +198,7 @@ fun siFaPut(acc: List<SiAssign>, reg: String, field: String, i: Int,
     # cannot be a builder; this is the copy the old append did, spelled out.
     : build(push(builderFrom(acc), SiAssign(reg, field, i, src)))
 
-fun siAssignsFor(assigns: List<SiAssign>, reg: String): List<SiAssign>
+fun siAssignsFor(assigns: List<SiAssign>, reg): List<SiAssign>
   ret filter(assigns, (a2) => a2.saReg == reg)
 
 fun [tail] siAssignFor(as2: Chain<SiAssign>, field: String): SiAssign|None
@@ -302,7 +302,7 @@ fun siPromoCommit(cand: SiNewObj, dataFields: List<CgField>,
 # ir.Global emits `{ vtable, v1, v2, ... }` positionally, so a field skipped
 # by siPayload would otherwise shift every field after it.
 fun siInitValues(a: CgApp, className: String,
-                 traced: List<RpNamedValue>): List<RpNamedValue>
+                 traced): List<RpNamedValue>
   ret match(appObject(a, className))
     (obj: CgObject) =>
       fold(filter(cgFieldsOfOrEmpty(obj.objFields),
@@ -341,8 +341,8 @@ fun siRebuildOps(ops: Segment<Op>|None, promos: List<SiPromo>): Segment<Op>|None
                    (acc, p2) => concat(acc, p2.spDrop))
   ret build(siRebuildLoopB(ops, 0i32, 0, promos, drops, seqBuilder()))
 
-fun [tail] siRebuildLoopB(s: Segment<Op>|None, iSeg: Int32, i: Int, promos: List<SiPromo>,
-                         drops: List<Int>, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
+fun [tail] siRebuildLoopB(s: Segment<Op>|None, iSeg: Int32, i, promos: List<SiPromo>,
+                         drops: List<Int>, [terminal] acc): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
@@ -352,7 +352,7 @@ fun [tail] siRebuildLoopB(s: Segment<Op>|None, iSeg: Int32, i: Int, promos: List
             : push(acc, siMaybeReplace(seg.array(iSeg), i, promos)))
       : siRebuildLoopB(seg.next, 0i32, i, promos, drops, acc)
 
-fun siMaybeReplace(op: Op, i: Int, promos: List<SiPromo>): Op
+fun siMaybeReplace(op, i: Int, promos: List<SiPromo>): Op
   ret match(head(filter(promos, (p2) => p2.spNewIdx == i)))
     (p2: SiPromo) => p2.spMove
     ()            => op
@@ -387,7 +387,7 @@ fun [tail] siPsLoop(fs: Chain<CgFunction>, a: CgApp, counter: Int,
 
 # ── inline_single_use_globals ───────────────────────────────────────────────
 
-fun [tail] siGlobalNamesInRp(val: RParam): List<String>
+fun [tail] siGlobalNamesInRp(val): List<String>
   ret match(val)
     (gv: RpGlobalVar)   => list1(gv.name)
     (ns: RpNewStruct)   => fold(ns.values, List(),
@@ -397,7 +397,7 @@ fun [tail] siGlobalNamesInRp(val: RParam): List<String>
     (o: RParam)         => List()
 
 # Mirror Python's per-op SET exactly: each name counts once per op.
-fun siGlobalNamesInOp(op: Op): List<String>
+fun siGlobalNamesInOp(op): List<String>
   let raw = match(op)
     (m: OpMove)       => concat(siMoveTargetNames(m.moveTarget),
                                 siGlobalNamesInRp(m.moveSource))
@@ -412,7 +412,7 @@ fun siGlobalNamesInOp(op: Op): List<String>
     (o: Op)           => List()
   ret siDedup(raw)
 
-fun siMoveTargetNames(target: RParam): List<String>
+fun siMoveTargetNames(target): List<String>
   ret match(target)
     (gv: RpGlobalVar)   => list1(gv.name)
     (of: RpObjectField) => siGlobalNamesInRp(of.pointer)
@@ -434,7 +434,7 @@ fun siCallRegisterName(r: RParam|None): List<String>
 # srFirstFn sweep below was introduced to remove. A linear scan over three or
 # four names allocates nothing but the cons cells, and the order is not
 # observed — both consumers fold these into Dicts.
-fun siAddName(acc: List<String>, n: String): List<String>
+fun siAddName(acc, n): List<String>
   ret any(acc, (y) => y == n) ? acc : prepend(n, acc)
 
 fun siDedup(names: List<String>): List<String>
@@ -462,14 +462,14 @@ fun siCountGlobalRefs(a: CgApp): SiRefs
 fun siCountFn(acc: SiRefs, f: CgFunction): SiRefs
   ret fold(f.fnOps, acc, (a2, op) => siCountOp(a2, op, f.fnName))
 
-fun siCountOp(acc: SiRefs, op: Op, fnName: String): SiRefs
+fun siCountOp(acc: SiRefs, op, fnName: String): SiRefs
   ret fold(siGlobalNamesInOp(op), acc,
            (a3, n) =>
              SiRefs(sdBump(a3.srCounts, n), siFirstSeen(a3.srFirstFn, n, fnName)))
 
 # FIRST in iteration order — the same function the old per-candidate scan
 # would have stopped at, since both walk appFunctions in order.
-fun siFirstSeen(m: Dict<String, String>, name: String,
+fun siFirstSeen(m, name: String,
                 fnName: String): Dict<String, String>
   ret match(get(m, name))
     (seen: String) => m
@@ -483,7 +483,7 @@ fun siCountGlobal(acc: Dict<String, Int>, g2: CgGlobal): Dict<String, Int>
     (flag: String) => sdBump(withInit, flag)
     ()             => withInit
 
-fun [tail] siTraceToGlobal(val: RParam, vmap: FunValues): String|None
+fun [tail] siTraceToGlobal(val, vmap: FunValues): String|None
   ret match(val)
     (gv: RpGlobalVar) => gv.name
     (sv: RpStackVar)  => match(gfFvLookup(vmap, sv.name))
@@ -492,7 +492,7 @@ fun [tail] siTraceToGlobal(val: RParam, vmap: FunValues): String|None
     (o: RParam)       => None
 
 # fn does nothing but copy the source global to the target global.
-fun siIsTrivialCopyFn(f: CgFunction, source: String, target: String): Bool
+fun siIsTrivialCopyFn(f: CgFunction, source, target): Bool
   if any(f.fnOps, siHardOp)
     ret false
   let writes = filter(f.fnOps, (op) => siWritesGlobal(op, target))
@@ -506,14 +506,14 @@ fun siIsTrivialCopyFn(f: CgFunction, source: String, target: String): Bool
       (o: Op)     => false
     ()      => false
 
-fun siHardOp(op: Op): Bool
+fun siHardOp(op): Bool
   ret match(op)
     (c: OpCall)       => true
     (no: OpNewObject) => true
     (ji: OpJumpIf)    => true
     (o: Op)           => false
 
-fun siWritesGlobal(op: Op, name: String): Bool
+fun siWritesGlobal(op, name): Bool
   ret match(op)
     (m: OpMove) => match(m.moveTarget)
       (gv: RpGlobalVar) => gv.name == name
@@ -545,7 +545,7 @@ fun siInlineSingleUseGlobals(a: CgApp): CgApp
                                     (fd) => fd.sfSi == g2.globalName)),
                 (g2) => siFolded(g2, folds)))
 
-fun siFolded(g2: CgGlobal, folds: List<SiFold>): CgGlobal
+fun siFolded(g2, folds: List<SiFold>): CgGlobal
   ret match(head(filter(folds,
                         (fd) => fd.sfTarget == g2.globalName)))
     (fd: SiFold) => fd.sfNew
@@ -553,7 +553,7 @@ fun siFolded(g2: CgGlobal, folds: List<SiFold>): CgGlobal
 
 # A static global (objectName set, no lazy init) referenced EXACTLY once,
 # from a lazy-init function that is a trivial copy into its target.
-fun siTryFold(acc: List<SiFold>, g2: CgGlobal, a: CgApp,
+fun siTryFold(acc, g2: CgGlobal, a: CgApp,
               refs: SiRefs,
               lazyTargets: Dict<String, CgGlobal>): List<SiFold>
   if g2.globalObjectName is None || !(g2.globalLazyInitFunction is None)
@@ -566,8 +566,8 @@ fun siTryFold(acc: List<SiFold>, g2: CgGlobal, a: CgApp,
     (fnName: String) => siFoldAgainst(acc, g2, a, fnName, lazyTargets)
     ()               => acc
 
-fun siFoldAgainst(acc: List<SiFold>, si: CgGlobal, a: CgApp,
-                  fnName: String,
+fun siFoldAgainst(acc, si: CgGlobal, a: CgApp,
+                  fnName,
                   lazyTargets: Dict<String, CgGlobal>): List<SiFold>
   ret match(get(lazyTargets, fnName))
     (target: CgGlobal) => match(appFunction(a, fnName))

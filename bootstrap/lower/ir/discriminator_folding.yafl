@@ -34,7 +34,7 @@ fun dfoFunction(f: CgFunction, a: CgApp): CgFunction
                               (p) => dfoReplace(p, newobjs, defs, a))),
                      f.fnStackVars)
 
-fun dfoCollect(acc: List<DfoNewObj>, op: Op): List<DfoNewObj>
+fun dfoCollect(acc, op): List<DfoNewObj>
   ret match(op)
     (no: OpNewObject) => match(no.newObjRegister)
       # Looked up by register name — the table's own order is not observed.
@@ -43,7 +43,7 @@ fun dfoCollect(acc: List<DfoNewObj>, op: Op): List<DfoNewObj>
     (o: Op)           => acc
 
 fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
-                      defs: SsaDefs, depth: Int): String|None
+                      defs: SsaDefs, depth): String|None
   if depth <= 0
     ret None
   ret match(param)
@@ -62,7 +62,7 @@ fun [tail] dfoLookup(ns: Chain<DfoNewObj>, name: String): String|None
       ? l.value.dfoClass
       : dfoLookup(l.next, name)
 
-fun dfoReplace(p: RParam, newobjs: List<DfoNewObj>, defs: SsaDefs,
+fun dfoReplace(p, newobjs: List<DfoNewObj>, defs: SsaDefs,
                a: CgApp): RParam
   ret match(p)
     (vd: RpVtableDiscriminator) =>

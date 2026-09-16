@@ -42,10 +42,10 @@ class [final] PerfectHashResult(methodIds: List<MethodId>, vtableSizes: List<Vta
 # Python's int.bit_length() measures the ABSOLUTE value, so
 # (-1).bit_length() == 1 and next_power_of_two(0) == 2 — a method-less
 # vtable still gets two catch-all rows. The port must keep the quirk.
-fun bitLength(n: Int): Int
+fun bitLength(n): Int
   ret n < 0 ? bitLength(0 - n) : n == 0 ? 0 : 1 + bitLength(n / 2)
 
-fun nextPowerOfTwo(n: Int): Int
+fun nextPowerOfTwo(n): Int
   ret pow2(bitLength(n - 1))
 
 # Python: `sorted(set(name for sublist in vtables.values() for name in sublist))`.
@@ -83,12 +83,12 @@ fun phVtableSizes(vtables: List<VtableEntry>): List<VtableSize>
 # dicts from the start; the port's Lists stay authoritative for emission
 # order, and these twins retire the linear per-query scans (vtableSizeGet
 # alone was 19.1s of a self-compile at ~116us per call).
-fun [tail] methodIdDict(ms: Chain<MethodId>, acc: Dict<String, Int>): Dict<String, Int>
+fun [tail] methodIdDict(ms: Chain<MethodId>, acc): Dict<String, Int>
   ret match(ms)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => methodIdDict(l.next, put(acc, l.value.mName, l.value.mId))
 
-fun [tail] vtableSizeDict(vs: Chain<VtableSize>, acc: Dict<String, Int>): Dict<String, Int>
+fun [tail] vtableSizeDict(vs: Chain<VtableSize>, acc): Dict<String, Int>
   ret match(vs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => vtableSizeDict(l.next, put(acc, l.value.vsClassName, l.value.vsSize))
@@ -131,7 +131,7 @@ fun [tail] phScanClassSlots(methods: Chain<String>, methodIds: Dict<String, Int>
 
 fun [tail] phScanAllSlots(vtables: Chain<VtableEntry>, methodIds: Dict<String, Int>,
                           vtableSizes: Dict<String, Int>,
-                          [terminal] pairs: ListBuilder<CollisionPair>): ListBuilder<CollisionPair>
+                          [terminal] pairs): ListBuilder<CollisionPair>
   ret match(vtables)
     (nil: ChainEnd) => pairs
     (l: ChainLink)  => phScanAllSlots(l.next, methodIds, vtableSizes,
@@ -162,7 +162,7 @@ fun buildConflictGraph(pairs: List<CollisionPair>): ConflictGraph
 fun cgFinish(acc: CgAcc): ConflictGraph
   ret ConflictGraph(build(acc.caOrder), acc.caEdges)
 
-fun [tail] bcgLoop(ps: Chain<CollisionPair>, [terminal] acc: CgAcc): CgAcc
+fun [tail] bcgLoop(ps: Chain<CollisionPair>, [terminal] acc): CgAcc
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => bcgLoop(l.next, cgAddEdge(acc, l.value.pairA, l.value.pairB))
@@ -227,7 +227,7 @@ fun greedyVertexCoverStep(g: ConflictGraph, cover: List<String>): List<String>
   let g3 = conflictGraphClearMethod(g2, method)
   ret greedyVertexCover(g3, prepend(method, cover))
 
-fun greedyVertexCover(g: ConflictGraph, cover: List<String>): List<String>
+fun greedyVertexCover(g: ConflictGraph, cover): List<String>
   ret conflictGraphHasAnyEdges(g) ? greedyVertexCoverStep(g, cover) : cover
 
 # ── re-assign fresh ids to every method in the cover, then re-iterate ──────
@@ -241,13 +241,13 @@ fun phReassignCover(methodIds: List<MethodId>, cover: List<String>, nextId0: Int
   ret fold(sort(cover), (methodIds, nextId0),
            (acc, m) => phReassignOne(acc, m))
 
-fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int, pairs: List<CollisionPair>): List<MethodId>
+fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration, nextId0: Int, pairs: List<CollisionPair>): List<MethodId>
   let graph = buildConflictGraph(pairs)
   let cover = greedyVertexCover(graph, List())
   let reassigned = phReassignCover(methodIds0, cover, nextId0)
   ret phFixpoint(vtables, reassigned.methodIds, vtableSizes, iteration + 1, reassigned.nextId)
 
-fun phFixpointStep(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int): List<MethodId>
+fun phFixpointStep(vtables: List<VtableEntry>, methodIds0, vtableSizes: List<VtableSize>, iteration, nextId0: Int): List<MethodId>
   # The dict views are per ROUND (ids are reassigned between rounds); the
   # build is one walk, against millions of per-method linear scans inside.
   let pairs = build(phScanAllSlots(chain(vtables),
@@ -258,7 +258,7 @@ fun phFixpointStep(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtabl
     ? methodIds0
     : phFixpointCollision(vtables, methodIds0, vtableSizes, iteration, nextId0, pairs)
 
-fun phFixpoint(vtables: List<VtableEntry>, methodIds0: List<MethodId>, vtableSizes: List<VtableSize>, iteration: Int, nextId0: Int): List<MethodId>
+fun phFixpoint(vtables: List<VtableEntry>, methodIds0, vtableSizes: List<VtableSize>, iteration, nextId0: Int): List<MethodId>
   ret iteration >= 1000 ? methodIds0 : phFixpointStep(vtables, methodIds0, vtableSizes, iteration, nextId0)
 
 # ── public entry point ───────────────────────────────────────────────────────

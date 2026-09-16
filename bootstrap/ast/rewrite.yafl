@@ -29,6 +29,7 @@ import System
 
 import Bootstrap::Frontend
 import Bootstrap::Parse
+import Bootstrap::Resolve
 
 
 
@@ -46,13 +47,13 @@ fun rwNoStmt(st: PStmt): PStmt|None
   ret None
 
 # The common shapes.
-fun rwOnExpr(f: (:PExpr): PExpr|None): Rw
+fun rwOnExpr(f): Rw
   ret Rw(f, rwNoSpec, rwNoStmt)
 
-fun rwOnSpec(f: (:Spec): Spec|None): Rw
+fun rwOnSpec(f): Rw
   ret Rw(rwNoExpr, f, rwNoStmt)
 
-fun rwOnStmt(f: (:PStmt): PStmt|None): Rw
+fun rwOnStmt(f): Rw
   ret Rw(rwNoExpr, rwNoSpec, f)
 
 # ── statements ───────────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ fun rwOnStmt(f: (:PStmt): PStmt|None): Rw
 # the ListFull skeleton and every chain cell rebuild through `with`, returning
 # the ORIGINAL when nothing beneath changed.  (Non-tail spine recursion:
 # depth = list length, small frames — fine at compiler scale.)
-fun rwStmts(ss: List<PStmt>, w: Rw): List<PStmt>
+fun rwStmts(ss, w: Rw): List<PStmt>
   ret match(ss)
     (le: ListEmpty) => ss
     (lf: ListFull)  => with lf(front = rwStmtChain(lf.front, w))
@@ -73,13 +74,13 @@ fun rwStmtChain(ss: Chain<PStmt>, w: Rw): Chain<PStmt>
     (l: ChainLink)  => with l(value = rwStmt(l.value, w),
                               next  = rwStmtChain(l.next, w))
 
-fun rwStmt(st: PStmt, w: Rw): PStmt
+fun rwStmt(st, w: Rw): PStmt
   let rebuilt = rwStmtKids(st, w)
   ret match(w.rwFnStmt(rebuilt))
     (r: PStmt) => r
     ()         => rebuilt
 
-fun rwStmtKids(st: PStmt, w: Rw): PStmt
+fun rwStmtKids(st, w: Rw): PStmt
   ret match(st)
     (f: PsFun)  => with f(fParams = rwStmt(f.fParams, w),
                           fBody   = rwExprOpt(f.fBody, w),
@@ -119,7 +120,7 @@ fun rwExprOpt(x: PExpr|None, w: Rw): PExpr|None
     (e2: PExpr) => rwExpr(e2, w)
     ()          => None
 
-fun rwExprs(es: List<PExpr>, w: Rw): List<PExpr>
+fun rwExprs(es, w: Rw): List<PExpr>
   ret match(es)
     (le: ListEmpty) => es
     (lf: ListFull)  => with lf(front = rwExprChain(lf.front, w))
@@ -130,7 +131,7 @@ fun rwExprChain(es: Chain<PExpr>, w: Rw): Chain<PExpr>
     (l: ChainLink)  => with l(value = rwExpr(l.value, w),
                               next  = rwExprChain(l.next, w))
 
-fun rwExprKids(x: PExpr, w: Rw): PExpr
+fun rwExprKids(x, w: Rw): PExpr
   ret match(x)
     (nm: PeName)   => with nm(refTypeParams = rwSpecs(nm.refTypeParams, w),
                               penTrait      = rwTrait(nm.penTrait, w))
@@ -181,7 +182,7 @@ fun rwTrait(sp: Spec|None, w: Rw): Spec|None
       (o: Spec)   => None
     ()         => None
 
-fun rwTupEnts(es: List<PTupEnt>, w: Rw): List<PTupEnt>
+fun rwTupEnts(es, w: Rw): List<PTupEnt>
   ret match(es)
     (le: ListEmpty) => es
     (lf: ListFull)  => with lf(front = rwTupEntChain(lf.front, w))
@@ -195,7 +196,7 @@ fun rwTupEntChain(es: Chain<PTupEnt>, w: Rw): Chain<PTupEnt>
 fun rwTupEnt(te2: PTupEnt, w: Rw): PTupEnt
   ret with te2(tupValue = rwExpr(te2.tupValue, w))
 
-fun rwArms(as2: List<PArm>, w: Rw): List<PArm>
+fun rwArms(as2, w: Rw): List<PArm>
   ret match(as2)
     (le: ListEmpty) => as2
     (lf: ListFull)  => with lf(front = rwArmChain(lf.front, w))
@@ -215,7 +216,7 @@ fun rwArm(a: PArm, w: Rw): PArm
 
 # An extra position carries a SPEC, and a spec position a walker does not
 # reach is a spec that never resolves or substitutes.
-fun rwPositions(ps: List<PPos>, w: Rw): List<PPos>
+fun rwPositions(ps, w: Rw): List<PPos>
   ret match(ps)
     (le: ListEmpty) => ps
     (lf: ListFull)  => with lf(front = rwPosChain(lf.front, w))
@@ -230,7 +231,7 @@ fun rwPosChain(ps: Chain<PPos>, w: Rw): Chain<PPos>
 # (match.py:181) — a fold or rewrite that skips them diverges (first seen as
 # _node_count undercounting literal-heavy functions below the inline
 # threshold).
-fun rwLits(ls: List<PLit>, w: Rw): List<PLit>
+fun rwLits(ls, w: Rw): List<PLit>
   ret match(ls)
     (le: ListEmpty) => ls
     (lf: ListFull)  => with lf(front = rwLitChain(lf.front, w))
@@ -241,13 +242,13 @@ fun rwLitChain(ls: Chain<PLit>, w: Rw): Chain<PLit>
     (l: ChainLink)  => with l(value = rwLit(l.value, w),
                               next  = rwLitChain(l.next, w))
 
-fun rwLit(lt: PLit, w: Rw): PLit
+fun rwLit(lt, w: Rw): PLit
   ret match(lt)
     (le: PlExpr)  => with le(litExpr = rwExpr(le.litExpr, w))
     (lr: PlRange) => with lr(rangeLo = rwExpr(lr.rangeLo, w),
                              rangeHi = rwExpr(lr.rangeHi, w))
 
-fun rwFieldArgs(fas: List<PFieldArg>, w: Rw): List<PFieldArg>
+fun rwFieldArgs(fas, w: Rw): List<PFieldArg>
   ret match(fas)
     (le: ListEmpty) => fas
     (lf: ListFull)  => with lf(front = rwFieldArgChain(lf.front, w))
@@ -263,7 +264,7 @@ fun rwFieldArg(fa: PFieldArg, w: Rw): PFieldArg
 
 # ── specs ────────────────────────────────────────────────────────────────────
 
-fun rwSpec(sp: Spec, w: Rw): Spec
+fun rwSpec(sp, w: Rw): Spec
   let rebuilt = rwSpecKids(sp, w)
   ret match(w.rwFnSpec(rebuilt))
     (r: Spec) => r
@@ -274,7 +275,7 @@ fun rwSpecOpt(sp: Spec|None, w: Rw): Spec|None
     (s2: Spec) => rwSpec(s2, w)
     ()         => None
 
-fun rwSpecs(ts: List<Spec>, w: Rw): List<Spec>
+fun rwSpecs(ts, w: Rw): List<Spec>
   ret match(ts)
     (le: ListEmpty) => ts
     (lf: ListFull)  => with lf(front = rwSpecChain(lf.front, w))
@@ -290,7 +291,7 @@ fun rwSpecsOpt(ss: List<Spec>|None, w: Rw): List<Spec>|None
     (l: List<Spec>) => rwSpecs(l, w)
     ()              => None
 
-fun rwSpecKids(sp: Spec, w: Rw): Spec
+fun rwSpecKids(sp, w: Rw): Spec
   ret match(sp)
     (e2: SEnum)        => with e2(seParams = rwSpecs(e2.seParams, w))
     (cl: SClass)       => with cl(scParams = rwSpecs(cl.scParams, w))
@@ -303,7 +304,7 @@ fun rwSpecKids(sp: Spec, w: Rw): Spec
     (ls: SLazyStub)    => with ls(slsTarget = rwSpecOpt(ls.slsTarget, w))
     (o: Spec)          => sp
 
-fun rwEntries(es: List<SEntry>, w: Rw): List<SEntry>
+fun rwEntries(es, w: Rw): List<SEntry>
   ret match(es)
     (le: ListEmpty) => es
     (lf: ListFull)  => with lf(front = rwEntryChain(lf.front, w))
@@ -335,7 +336,7 @@ fun [tail] foldStmtLoop<T>(ss: Chain<PStmt>, f: (:T, :PStmt): T,
     (l: ChainLink)  => foldStmtLoop(l.next, f, fx,
                                     foldStmt(l.value, f, fx, acc))
 
-fun foldStmt<T>(st: PStmt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+fun foldStmt<T>(st, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                 acc: T): T
   let acc2 = f(acc, st)
   ret match(st)
@@ -372,7 +373,7 @@ fun foldExprOpt<T>(x: PExpr|None, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
     (e2: PExpr) => foldExpr(e2, f, fx, acc)
     ()          => acc
 
-fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+fun foldExpr<T>(x, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                 acc: T): T
   let acc2 = fx(acc, x)
   ret match(x)
@@ -458,7 +459,7 @@ fun [tail] foldLits<T>(ls: Chain<PLit>, f: (:T, :PStmt): T,
     (l: ChainLink)  => foldLits(l.next, f, fx, foldLit(l.value, f, fx,
                                                        acc))
 
-fun foldLit<T>(lt: PLit, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T
+fun foldLit<T>(lt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T
   ret match(lt)
     (le: PlExpr)  => foldExpr(le.litExpr, f, fx, acc)
     (lr: PlRange) => foldExpr(lr.rangeHi, f, fx,
@@ -475,7 +476,7 @@ fun foldLit<T>(lt: PLit, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T
 # Specs themselves fire NO callback — Python counts only Expression/
 # Statement instances. Reach mirrors rwSpecKids/rwEntry exactly.
 
-fun foldSpec<T>(sp: Spec, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
+fun foldSpec<T>(sp, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                 acc: T): T
   ret match(sp)
     (e2: SEnum)        => foldSpecs(chain(e2.seParams), f, fx, acc)
@@ -525,75 +526,125 @@ fun foldNoStmt<T>(acc: T, st: PStmt): T
 # exactly Python's order, including inside nested rewrites fired mid-walk).
 # The callback returns the updated counter plus the replacement (or None).
 
-class [final] RwN(rnFnExpr: (:Int, :PExpr): (n2: Int, r: PExpr|None),
-                  rnFnStmt: (:Int, :PStmt): (n2: Int, r: PStmt|None))
+class [final] RwN(rnFnExpr: (:Int, :Resolver|None, :PExpr): (n2: Int, r: PExpr|None),
+                  rnFnStmt: (:Int, :Resolver|None, :PStmt): (n2: Int, r: PStmt|None))
 class [final] RwNE(rneN: Int, rneExpr: PExpr)
 class [final] RwNS(rnsN: Int, rnsStmt: PStmt)
 class [final] RwNSs(rnssN: Int, rnssStmts: List<PStmt>)
 
-fun rwnNoExpr(n: Int, x: PExpr): (n2: Int, r: PExpr|None)
+fun rwnNoExpr(n: Int, _sc: Resolver|None, x: PExpr): (n2: Int, r: PExpr|None)
   ret (n, None)
 
-fun rwnNoStmt(n: Int, st: PStmt): (n2: Int, r: PStmt|None)
+fun rwnNoStmt(n: Int, _sc: Resolver|None, st: PStmt): (n2: Int, r: PStmt|None)
   ret (n, None)
 
-fun rwnStmts(ss: List<PStmt>, w: RwN, n: Int): RwNSs
-  ret rwnStmtLoop(chain(ss), w, n, builder())
+# ── the scope in effect at each node ─────────────────────────────────────────
+# Python's search_and_replace hands every node the resolver in effect THERE,
+# and a callback may read types through it: the inliner types an untyped
+# parameter's binding let from its argument, and an argument that names a
+# match-arm binder has a type only inside that arm. So the walk threads the
+# resolver and adds exactly the scopes Python's nodes add — block locals,
+# lambda params, match-arm bindings (with each extra position's), if-branch
+# lets, a function's params, a class body — while every other child sees its
+# parent's. Each callback receives its node's INCOMING resolver, as
+# rw.rewrite passes it. A walk that needs no scope (block_exits) threads None,
+# which stays None.
 
-fun [tail] rwnStmtLoop(ss: Chain<PStmt>, w: RwN, n: Int,
+fun rwnLocalScope(lets: List<PStmt>, sc: Resolver|None): Resolver|None
+  ret match(sc)
+    (r2: Resolver) => localScope(lets, r2)
+    ()             => None
+
+fun rwnFunScope(f: PsFun, sc: Resolver|None): Resolver|None
+  ret match(sc)
+    (r2: Resolver) => localScope(flattenParams(f.fParams),
+                                 f.fNested ? r2 : traitScope(f.fWheres, r2))
+    ()             => None
+
+fun rwnClassScope(c: PsClass, sc: Resolver|None): Resolver|None
+  ret match(sc)
+    (r2: Resolver) => genScope(c.cGens, RClassBody(c, r2))
+    ()             => None
+
+# The arm's own binding, then one per extra position at its DECLARED type —
+# posScope's fallback type is the subject's, which search_and_replace does not
+# consult, so the fallback chain is empty.
+fun rwnArmScope(a: PArm, sc: Resolver|None): Resolver|None
+  ret match(sc)
+    (r2: Resolver) => extraScope(chain(a.armExtra),
+                                 chain2(List<Spec|None>()),
+                                 bindingScope(a, a.armType, r2))
+    ()             => None
+
+fun rwnStmts(ss: List<PStmt>, w: RwN, sc: Resolver|None, n): RwNSs
+  ret rwnStmtLoop(chain(ss), w, sc, n, builder())
+
+fun [tail] rwnStmtLoop(ss: Chain<PStmt>, w: RwN, sc: Resolver|None, n: Int,
                        [terminal] acc: ListBuilder<PStmt>): RwNSs
   ret match(ss)
     (nil: ChainEnd) => RwNSs(n, build(acc))
-    (l: ChainLink)  => rwnStmt(l.value, w, n)
-      |> (o) => rwnStmtLoop(l.next, w, o.rnsN, push(acc, o.rnsStmt))
+    (l: ChainLink)  => rwnStmt(l.value, w, sc, n)
+      |> (o) => rwnStmtLoop(l.next, w, sc, o.rnsN, push(acc, o.rnsStmt))
 
-fun rwnStmt(st: PStmt, w: RwN, n: Int): RwNS
-  let kids = rwnStmtKids(st, w, n)
-  let out = w.rnFnStmt(kids.rnsN, kids.rnsStmt)
+fun rwnStmt(st, w: RwN, sc: Resolver|None, n): RwNS
+  let kids = rwnStmtKids(st, w, sc, n)
+  let out = w.rnFnStmt(kids.rnsN, rwnOwnScope(st, sc), kids.rnsStmt)
   ret match(out.r)
-    (r: PStmt) => RwNS(out.n2, r)
-    ()         => RwNS(out.n2, kids.rnsStmt)
+    (rep: PStmt) => RwNS(out.n2, rep)
+    ()           => RwNS(out.n2, kids.rnsStmt)
 
-fun rwnStmtKids(st: PStmt, w: RwN, n: Int): RwNS
+# The resolver a statement's OWN callback receives. Python's FunctionStatement
+# and ClassStatement hand rw.rewrite their nested scope (the body's, the
+# members'); every other statement hands on the scope it was entered with.
+fun rwnOwnScope(st, sc: Resolver|None): Resolver|None
   ret match(st)
-    (f: PsFun)  => rwnStmt(f.fParams, w, n)
-      |> (p) => (p, rwnExprOpt(f.fBody, w, p.rnsN))
+    (f: PsFun)   => rwnFunScope(f, sc)
+    (c: PsClass) => rwnClassScope(c, sc)
+    (o: PStmt)   => sc
+
+fun rwnStmtKids(st, w: RwN, sc: Resolver|None, n): RwNS
+  ret match(st)
+    (f: PsFun)  => rwnStmt(f.fParams, w, sc, n)
+      |> (p) => (p, rwnExprOpt(f.fBody, w, rwnFunScope(f, sc), p.rnsN))
       |> (p, b) => RwNS(b.rneN2,
                         PsFun(f.fName, f.fAttrs, f.fGens, p.rnsStmt,
                               b.rneExpr2, f.fRet, f.fWheres, f.psfLine,
                               f.fRetInferred, f.fNested, f.fImports))
-    (l: PsLet)  => rwnExprOpt(l.lDefault, w, n)
+    (l: PsLet)  => rwnExprOpt(l.lDefault, w, sc, n)
       |> (d) => RwNS(d.rneN2,
                      PsLet(l.lName, l.lAttrs, l.lGens, l.lType, d.rneExpr2,
                            l.lArrayLen, l.lWheres, l.pslLine,
                            l.lTypeInferred, l.lImports))
-    (d: PsDestructure) => rwnExprOpt(d.dDefault, w, n)
-      |> (dv) => (dv, rwnStmts(d.dTargets, w, dv.rneN2))
+    (d: PsDestructure) => rwnExprOpt(d.dDefault, w, sc, n)
+      |> (dv) => (dv, rwnStmts(d.dTargets, w, sc, dv.rneN2))
       |> (dv, ts) => RwNS(ts.rnssN,
                           PsDestructure(d.dName, d.dAttrs, d.dType,
                                         ts.rnssStmts, dv.rneExpr2, d.psdLine,
                                         d.dTypeInferred))
-    (c: PsClass) => rwnStmt(c.cParams, w, n)
-      |> (p) => (p, rwnStmts(c.cMembers, w, p.rnsN))
+    (c: PsClass) => rwnStmt(c.cParams, w, sc, n)
+      |> (p) => (p, rwnStmts(c.cMembers, w, rwnClassScope(c, sc), p.rnsN))
       |> (p, ms) => RwNS(ms.rnssN,
                          PsClass(c.cName, c.cAttrs, c.cGens, p.rnsStmt,
                                  c.cImplements, c.cWheres, ms.rnssStmts,
                                  c.cIsInterface, c.pscLine, c.cAllParents,
                                  c.cAllSlots, c.cImports))
-    (e2: PsEnum) => rwnStmt(e2.eParams, w, n)
-      |> (p) => (p, rwnStmts(e2.eVariants, w, p.rnsN))
+    (e2: PsEnum) => rwnStmt(e2.eParams, w, sc, n)
+      |> (p) => (p, rwnStmts(e2.eVariants, w, sc, p.rnsN))
       |> (p, vs) => RwNS(vs.rnssN,
                          PsEnum(e2.eName, e2.eAttrs, e2.eGens, p.rnsStmt,
                                 vs.rnssStmts,
                                 e2.eHasParams, e2.pseLine, e2.eRootName,
                                 e2.eSpec, e2.eImports))
-    (rt: PsRet)  => rwnExpr(rt.retValue, w, n)
+    (rt: PsRet)  => rwnExpr(rt.retValue, w, sc, n)
       |> (v) => RwNS(v.rneN, PsRet(v.rneExpr, rt.psrLine))
-    (a: PsAction) => rwnExpr(a.action, w, n)
+    (a: PsAction) => rwnExpr(a.action, w, sc, n)
       |> (v) => RwNS(v.rneN, PsAction(v.rneExpr, a.psaLine))
-    (i: PsIf)    => rwnExpr(i.ifCond, w, n)
-      |> (cd) => (cd, rwnStmts(i.ifTrue, w, cd.rneN))
-      |> (cd, tb) => (cd, tb, rwnStmts(i.ifFalse, w, tb.rnssN))
+    (i: PsIf)    => rwnExpr(i.ifCond, w, sc, n)
+      |> (cd) => (cd, rwnStmts(i.ifTrue, w, rwnLocalScope(i.ifTrue, sc),
+                               cd.rneN))
+      |> (cd, tb) => (cd, tb, rwnStmts(i.ifFalse, w,
+                                       rwnLocalScope(i.ifFalse, sc),
+                                       tb.rnssN))
       |> (cd, tb, fb) => RwNS(fb.rnssN,
                               PsIf(cd.rneExpr, tb.rnssStmts, fb.rnssStmts,
                                    i.psifLine))
@@ -601,86 +652,96 @@ fun rwnStmtKids(st: PStmt, w: RwN, n: Int): RwNS
 
 class [final] RwNEo(rneN2: Int, rneExpr2: PExpr|None)
 
-fun rwnExprOpt(x: PExpr|None, w: RwN, n: Int): RwNEo
+fun rwnExprOpt(x: PExpr|None, w: RwN, sc: Resolver|None, n): RwNEo
   ret match(x)
-    (e2: PExpr) => rwnExpr(e2, w, n)
+    (e2: PExpr) => rwnExpr(e2, w, sc, n)
       |> (o) => RwNEo(o.rneN, o.rneExpr)
     ()          => RwNEo(n, None)
 
-fun rwnExpr(x: PExpr, w: RwN, n: Int): RwNE
-  let kids = rwnExprKids(x, w, n)
-  let out = w.rnFnExpr(kids.rneN, kids.rneExpr)
+fun rwnExpr(x, w: RwN, sc: Resolver|None, n): RwNE
+  let kids = rwnExprKids(x, w, sc, n)
+  let out = w.rnFnExpr(kids.rneN, sc, kids.rneExpr)
   ret match(out.r)
-    (r: PExpr) => RwNE(out.n2, r)
-    ()         => RwNE(out.n2, kids.rneExpr)
+    (rep: PExpr) => RwNE(out.n2, rep)
+    ()           => RwNE(out.n2, kids.rneExpr)
 
 class [final] RwNEs(rnesN: Int, rnesExprs: List<PExpr>)
 class [final] RwNTs(rntsN: Int, rntsEnts: List<PTupEnt>)
 class [final] RwNAs(rnasN: Int, rnasArms: List<PArm>)
 
-fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
+# A block's statements and its value both see the block's own lets; the
+# block's callback (in rwnExpr) sees the scope it was entered with.
+fun rwnBlockIn(bk: PeBlock, w: RwN, bsc: Resolver|None, n: Int): RwNE
+  ret rwnStmts(bk.blockStmts, w, bsc, n)
+    |> (ss) => (ss, rwnExpr(bk.blockValue, w, bsc, ss.rnssN))
+    |> (ss, v) => RwNE(v.rneN, PeBlock(ss.rnssStmts, v.rneExpr,
+                                       bk.blockTag, bk.pebkLine))
+
+fun rwnExprKids(x, w: RwN, sc: Resolver|None, n): RwNE
   ret match(x)
-    (d: PeDot)     => rwnExpr(d.base, w, n)
+    (d: PeDot)     => rwnExpr(d.base, w, sc, n)
       |> (b) => RwNE(b.rneN, PeDot(b.rneExpr, d.member, d.pedLine))
-    (c: PeCall)    => rwnExpr(c.function, w, n)
-      |> (f) => (f, rwnExpr(c.parameter, w, f.rneN))
+    (c: PeCall)    => rwnExpr(c.function, w, sc, n)
+      |> (f) => (f, rwnExpr(c.parameter, w, sc, f.rneN))
       |> (f, p) => RwNE(p.rneN, PeCall(f.rneExpr, p.rneExpr, c.pecLine))
-    (tp: PeTuple)  => rwnTupEnts(chain(tp.exprs), w, n, builder())
+    (tp: PeTuple)  => rwnTupEnts(chain(tp.exprs), w, sc, n, builder())
       |> (es) => RwNE(es.rntsN, PeTuple(es.rntsEnts, tp.petLine))
-    (te: PeTernary) => rwnExpr(te.condition, w, n)
-      |> (cd) => (cd, rwnExpr(te.trueResult, w, cd.rneN))
-      |> (cd, tr) => (cd, tr, rwnExpr(te.falseResult, w, tr.rneN))
+    (te: PeTernary) => rwnExpr(te.condition, w, sc, n)
+      |> (cd) => (cd, rwnExpr(te.trueResult, w, sc, cd.rneN))
+      |> (cd, tr) => (cd, tr, rwnExpr(te.falseResult, w, sc, tr.rneN))
       |> (cd, tr, fr) => RwNE(fr.rneN,
                               PeTernary(cd.rneExpr, tr.rneExpr, fr.rneExpr,
                                         te.pety))
-    (lm: PeLambda) => rwnStmt(lm.lamParams, w, n)
-      |> (p) => (p, rwnExpr(lm.lamBody, w, p.rnsN))
+    (lm: PeLambda) => rwnStmt(lm.lamParams, w, sc, n)
+      |> (p) => (p, rwnExpr(lm.lamBody, w,
+                            rwnLocalScope(flattenParams(lm.lamParams), sc),
+                            p.rnsN))
       |> (p, b) => RwNE(b.rneN, PeLambda(p.rnsStmt, b.rneExpr, lm.pelLine,
                                          lm.lamRet))
-    (bk: PeBlock)  => rwnStmts(bk.blockStmts, w, n)
-      |> (ss) => (ss, rwnExpr(bk.blockValue, w, ss.rnssN))
-      |> (ss, v) => RwNE(v.rneN, PeBlock(ss.rnssStmts, v.rneExpr,
-                                         bk.blockTag, bk.pebkLine))
-    (mt: PeMatch)  => rwnExpr(mt.subject, w, n)
-      |> (sj) => (sj, rwnExprs(chain(mt.matchExtra), w, sj.rneN,
-                               builder()))
-      |> (sj, ex) => (sj, ex, rwnArms(chain(mt.arms), w, ex.rnesN,
-                                      builder()))
-      |> (sj, ex, as3) => RwNE(as3.rnasN,
+    (bk: PeBlock)  => rwnBlockIn(bk, w, rwnLocalScope(bk.blockStmts, sc), n)
+    # Python's order: subject, arms, extra subjects (match.py). The counter
+    # advances inside arms, so visiting the extras first would renumber any
+    # inline in an extra subject.
+    (mt: PeMatch)  => rwnExpr(mt.subject, w, sc, n)
+      |> (sj) => (sj, rwnArms(chain(mt.arms), w, sc, sj.rneN, builder()))
+      |> (sj, as3) => (sj, as3, rwnExprs(chain(mt.matchExtra), w, sc,
+                                         as3.rnasN, builder()))
+      |> (sj, as3, ex) => RwNE(ex.rnesN,
                                with mt(subject    = sj.rneExpr,
                                        arms       = as3.rnasArms,
                                        matchExtra = ex.rnesExprs))
-    (op: PeBuiltinOp) => rwnExpr(op.opParams, w, n)
+    (op: PeBuiltinOp) => rwnExpr(op.opParams, w, sc, n)
       |> (p) => RwNE(p.rneN, PeBuiltinOp(op.opType, op.opName, p.rneExpr,
                                          op.peboLine))
-    (nw: PeNew)    => rwnExpr(nw.newParam, w, n)
+    (nw: PeNew)    => rwnExpr(nw.newParam, w, sc, n)
       |> (p) => RwNE(p.rneN, PeNew(nw.newType, p.rneExpr, nw.penwLine))
-    (ar: PeArrayRead) => rwnExpr(ar.arrObj, w, n)
-      |> (ob) => (ob, rwnExpr(ar.arrIndex, w, ob.rneN))
+    (ar: PeArrayRead) => rwnExpr(ar.arrObj, w, sc, n)
+      |> (ob) => (ob, rwnExpr(ar.arrIndex, w, sc, ob.rneN))
       |> (ob, ix) => RwNE(ix.rneN, PeArrayRead(ob.rneExpr, ix.rneExpr,
                                                ar.pearLine))
-    (cv: PeConvert) => rwnExpr(cv.convInner, w, n)
+    (cv: PeConvert) => rwnExpr(cv.convInner, w, sc, n)
       |> (iv) => RwNE(iv.rneN, PeConvert(iv.rneExpr, cv.convTarget,
                                          cv.pecvLine))
-    (qq: PeCoalesce) => rwnExpr(qq.qqSubject, w, n)
-      |> (sv) => (sv, rwnExpr(qq.qqFallback, w, sv.rneN))
+    (qq: PeCoalesce) => rwnExpr(qq.qqSubject, w, sc, n)
+      |> (sv) => (sv, rwnExpr(qq.qqFallback, w, sc, sv.rneN))
       |> (sv, fv) => RwNE(fv.rneN, PeCoalesce(sv.rneExpr, fv.rneExpr,
                                               qq.peqqLine))
-    (wx: PeWith)   => rwnExpr(wx.withSubject, w, n)
-      |> (sv) => (sv, rwnExpr(wx.withRepls, w, sv.rneN))
+    (wx: PeWith)   => rwnExpr(wx.withSubject, w, sc, n)
+      |> (sv) => (sv, rwnExpr(wx.withRepls, w, sc, sv.rneN))
       |> (sv, rv) => RwNE(rv.rneN, PeWith(sv.rneExpr, rv.rneExpr,
                                           wx.pewLine))
-    (pl: PeParallel) => rwnExpr(pl.parParams, w, n)
+    (pl: PeParallel) => rwnExpr(pl.parParams, w, sc, n)
       |> (p) => RwNE(p.rneN, PeParallel(p.rneExpr, pl.pepLine))
-    (ne: PeNewEnum) => rwnFieldArgs(chain(ne.fieldArgs), w, n, builder())
+    (ne: PeNewEnum) => rwnFieldArgs(chain(ne.fieldArgs), w, sc, n, builder())
       |> (fas) => RwNE(fas.rnfN, PeNewEnum(ne.rootName, ne.leafName,
                                            fas.rnfArgs, ne.neTypeParams,
                                            ne.penewLine))
-    (lp: PeLoop)   => rwnExprs(chain(lp.loopParams), w, n, builder())
-      |> (ps) => (ps, rwnExpr(lp.loopBody, w, ps.rnesN))
-      |> (ps, b) => RwNE(b.rneN, PeLoop(b.rneExpr, ps.rnesExprs,
-                                        lp.pelpLine))
-    (rc: PeRecur)  => rwnExprs(chain(rc.recArgs), w, n, builder())
+    # Python's order: body, then params (loop.py).
+    (lp: PeLoop)   => rwnExpr(lp.loopBody, w, sc, n)
+      |> (b) => (b, rwnExprs(chain(lp.loopParams), w, sc, b.rneN, builder()))
+      |> (b, ps) => RwNE(ps.rnesN, PeLoop(b.rneExpr, ps.rnesExprs,
+                                          lp.pelpLine))
+    (rc: PeRecur)  => rwnExprs(chain(rc.recArgs), w, sc, n, builder())
       |> (as3) => RwNE(as3.rnesN, PeRecur(as3.rnesExprs, rc.recIndex,
                                           rc.percLine))
     (lz: PeLazy)   => RwNE(n, x)   # target type carries no counter work
@@ -689,57 +750,59 @@ fun rwnExprKids(x: PExpr, w: RwN, n: Int): RwNE
 
 class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
 
-fun [tail] rwnFieldArgs(fas: Chain<PFieldArg>, w: RwN, n: Int,
+fun [tail] rwnFieldArgs(fas: Chain<PFieldArg>, w: RwN, sc: Resolver|None, n,
                         [terminal] acc: ListBuilder<PFieldArg>): RwNFas
   ret match(fas)
     (nil: ChainEnd) => RwNFas(n, build(acc))
-    (l: ChainLink)  => rwnExpr(l.value.faValue, w, n)
-      |> (v) => rwnFieldArgs(l.next, w, v.rneN,
+    (l: ChainLink)  => rwnExpr(l.value.faValue, w, sc, n)
+      |> (v) => rwnFieldArgs(l.next, w, sc, v.rneN,
                              push(acc,
                                  PFieldArg(l.value.faName, v.rneExpr)))
 
-fun [tail] rwnExprs(es: Chain<PExpr>, w: RwN, n: Int,
+fun [tail] rwnExprs(es: Chain<PExpr>, w: RwN, sc: Resolver|None, n: Int,
                     [terminal] acc: ListBuilder<PExpr>): RwNEs
   ret match(es)
     (nil: ChainEnd) => RwNEs(n, build(acc))
-    (l: ChainLink)  => rwnExpr(l.value, w, n)
-      |> (o) => rwnExprs(l.next, w, o.rneN, push(acc, o.rneExpr))
+    (l: ChainLink)  => rwnExpr(l.value, w, sc, n)
+      |> (o) => rwnExprs(l.next, w, sc, o.rneN, push(acc, o.rneExpr))
 
-fun [tail] rwnTupEnts(es: Chain<PTupEnt>, w: RwN, n: Int,
+fun [tail] rwnTupEnts(es: Chain<PTupEnt>, w: RwN, sc: Resolver|None, n,
                       [terminal] acc: ListBuilder<PTupEnt>): RwNTs
   ret match(es)
     (nil: ChainEnd) => RwNTs(n, build(acc))
-    (l: ChainLink)  => rwnExpr(l.value.tupValue, w, n)
-      |> (o) => rwnTupEnts(l.next, w, o.rneN,
+    (l: ChainLink)  => rwnExpr(l.value.tupValue, w, sc, n)
+      |> (o) => rwnTupEnts(l.next, w, sc, o.rneN,
                            push(acc,
                                PTupEnt(l.value.tupName, l.value.tupSpread,
                                        o.rneExpr)))
 
-fun [tail] rwnArms(as2: Chain<PArm>, w: RwN, n: Int,
+# An arm's body and guard see its binding; its literals see the match's scope.
+fun [tail] rwnArms(as2: Chain<PArm>, w: RwN, sc: Resolver|None, n: Int,
                    [terminal] acc: ListBuilder<PArm>): RwNAs
   ret match(as2)
     (nil: ChainEnd) => RwNAs(n, build(acc))
-    (l: ChainLink)  => rwnExpr(l.value.armBody, w, n)
-      |> (b) => (b, rwnLits(chain(l.value.armLiterals), w, b.rneN,
+    (l: ChainLink)  => rwnExpr(l.value.armBody, w, rwnArmScope(l.value, sc), n)
+      |> (b) => (b, rwnLits(chain(l.value.armLiterals), w, sc, b.rneN,
                             builder()))
-      |> (b, ls) => (b, ls, rwnExprOpt(l.value.armGuard, w, ls.rnlsN))
-      |> (b, ls, gd) => rwnArms(l.next, w, gd.rneN2,
+      |> (b, ls) => (b, ls, rwnExprOpt(l.value.armGuard, w,
+                                       rwnArmScope(l.value, sc), ls.rnlsN))
+      |> (b, ls, gd) => rwnArms(l.next, w, sc, gd.rneN2,
                                 push(acc,
                                     with l.value(armBody = b.rneExpr, armLiterals = ls.rnlsLits, armGuard = gd.rneExpr2)))
 
 class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
 
-fun [tail] rwnLits(ls: Chain<PLit>, w: RwN, n: Int,
+fun [tail] rwnLits(ls: Chain<PLit>, w: RwN, sc: Resolver|None, n: Int,
                    [terminal] acc: ListBuilder<PLit>): RwNLs
   ret match(ls)
     (nil: ChainEnd) => RwNLs(n, build(acc))
     (l: ChainLink)  => match(l.value)
-      (le: PlExpr)  => rwnExpr(le.litExpr, w, n)
-        |> (o) => rwnLits(l.next, w, o.rneN,
+      (le: PlExpr)  => rwnExpr(le.litExpr, w, sc, n)
+        |> (o) => rwnLits(l.next, w, sc, o.rneN,
                           push(acc, PlExpr(o.rneExpr)))
-      (lr: PlRange) => rwnExpr(lr.rangeLo, w, n)
-        |> (lo) => (lo, rwnExpr(lr.rangeHi, w, lo.rneN))
-        |> (lo, hi) => rwnLits(l.next, w, hi.rneN,
+      (lr: PlRange) => rwnExpr(lr.rangeLo, w, sc, n)
+        |> (lo) => (lo, rwnExpr(lr.rangeHi, w, sc, lo.rneN))
+        |> (lo, hi) => rwnLits(l.next, w, sc, hi.rneN,
                                push(acc,
                                    PlRange(lo.rneExpr, hi.rneExpr,
                                            lr.plrLine)))
@@ -759,7 +822,7 @@ fun [tail] fasStmts<T>(ss: Chain<PStmt>, f: (:T, :Spec): T, acc: T): T
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fasStmts(l.next, f, fasStmt(l.value, f, acc))
 
-fun fasStmt<T>(st: PStmt, f: (:T, :Spec): T, acc: T): T
+fun fasStmt<T>(st, f: (:T, :Spec): T, acc: T): T
   ret match(st)
     (f2: PsFun) => fasSpecs(chain(f2.fWheres), f,
                      fasSpecOpt(f2.fRet, f,
@@ -795,7 +858,7 @@ fun [tail] fasExprs<T>(es: Chain<PExpr>, f: (:T, :Spec): T, acc: T): T
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fasExprs(l.next, f, fasExpr(l.value, f, acc))
 
-fun fasExpr<T>(x: PExpr, f: (:T, :Spec): T, acc: T): T
+fun fasExpr<T>(x, f: (:T, :Spec): T, acc: T): T
   ret match(x)
     (nm: PeName)    => fasTrait(nm.penTrait, f, fasSpecs(chain(nm.refTypeParams), f, acc))
     (d: PeDot)      => fasExpr(d.base, f, acc)
@@ -855,13 +918,13 @@ fun [tail] fasLits<T>(ls: Chain<PLit>, f: (:T, :Spec): T, acc: T): T
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fasLits(l.next, f, fasLit(l.value, f, acc))
 
-fun fasLit<T>(lt: PLit, f: (:T, :Spec): T, acc: T): T
+fun fasLit<T>(lt, f: (:T, :Spec): T, acc: T): T
   ret match(lt)
     (le: PlExpr)  => fasExpr(le.litExpr, f, acc)
     (lr: PlRange) => fasExpr(lr.rangeHi, f, fasExpr(lr.rangeLo, f, acc))
 
 # Specs: kids first (bottom-up), then the node itself.
-fun fasSpec<T>(sp: Spec, f: (:T, :Spec): T, acc: T): T
+fun fasSpec<T>(sp, f: (:T, :Spec): T, acc: T): T
   ret f(fasSpecKids(sp, f, acc), sp)
 
 fun fasSpecOpt<T>(sp: Spec|None, f: (:T, :Spec): T, acc: T): T
@@ -879,7 +942,7 @@ fun fasSpecsOpt<T>(ss: List<Spec>|None, f: (:T, :Spec): T, acc: T): T
     (l: List<Spec>) => fasSpecs(chain(l), f, acc)
     ()               => acc
 
-fun fasSpecKids<T>(sp: Spec, f: (:T, :Spec): T, acc: T): T
+fun fasSpecKids<T>(sp, f: (:T, :Spec): T, acc: T): T
   ret match(sp)
     (e2: SEnum)        => fasSpecs(chain(e2.seParams), f, acc)
     (cl: SClass)       => fasSpecs(chain(cl.scParams), f, acc)

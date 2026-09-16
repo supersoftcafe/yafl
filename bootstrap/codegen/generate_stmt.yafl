@@ -28,7 +28,7 @@ import Bootstrap::StdlibCandidates
 # Python: each Statement subclass's generate(resolver, func_ret_type). A block
 # post-lowering holds only lets/destructures/actions/ifs/returns; anything
 # else reaching generate is a miswiring — loud, like Python's AttributeError.
-fun gsStmt(st: PStmt, r: Resolver, expected: Spec|None): GBundle
+fun gsStmt(st, r, expected: Spec|None): GBundle
   ret match(st)
     (rt: PsRet)         => genRetStmt(rt, r)
     (a: PsAction)       => genExpr(a.action, r)
@@ -43,7 +43,7 @@ fun gsStmt(st: PStmt, r: Resolver, expected: Spec|None): GBundle
 # nearest enclosing BlockExpression, supplying its value as one source of that
 # block's end Phi. The value is coerced to the BLOCK's result type; the
 # (exit-label, value) pair flows up via exit_sources.
-fun genRetStmt(rt: PsRet, r: Resolver): GBundle
+fun genRetStmt(rt: PsRet, r): GBundle
   ret match(asFrBlock(getBlockFrame(r)))
     (f2: FrBlock) => genRetInFrame(rt, r, f2)
     ()             => bundleOp1(OpAbort("ReturnStatement generated outside any BlockExpression", List()))
@@ -54,12 +54,12 @@ fun asFrBlock(f: GenFrame|None): FrBlock|None
     (f2: GenFrame) => asFrBlockOf(f2)
     ()              => None
 
-fun asFrBlockOf(f2: GenFrame): FrBlock|None
+fun asFrBlockOf(f2): FrBlock|None
   ret match(f2)
     (fb: FrBlock) => fb
     (fl: FrLoop)  => None
 
-fun genRetInFrame(rt: PsRet, r: Resolver, frame: FrBlock): GBundle
+fun genRetInFrame(rt: PsRet, r, frame): GBundle
   let vb = genExprTo(rt.retValue, r, frame.fbResultType)
   # The value itself transferred control away (a [tail] recur, an inner
   # return): no fall-through to jump from, and the block Phi must not receive
@@ -68,7 +68,7 @@ fun genRetInFrame(rt: PsRet, r: Resolver, frame: FrBlock): GBundle
     ? GBundle(vb.gbStackVars, vb.gbOps, None, vb.gbRecurSources, vb.gbExitSources)
     : genRetJump(rt, frame, vb)
 
-fun genRetJump(rt: PsRet, frame: FrBlock, vb: GBundle): GBundle
+fun genRetJump(rt: PsRet, frame, vb: GBundle): GBundle
   let exitLabel = "blockexit$" + frame.fbTag + "$" + String(rt.retIndex)
   let tail = list2<Op>(OpLabel(exitLabel, List()), OpJump(blockEndLabel(frame), List()))
   ret match(vb.gbResult)
@@ -78,8 +78,8 @@ fun genRetJump(rt: PsRet, frame: FrBlock, vb: GBundle): GBundle
                              vb.gbRecurSources,
                              build(push(builderFrom(vb.gbExitSources), ExitSource(exitLabel, None))))
 
-fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel: String,
-                 tail: List<Op>, rv: RParam): GBundle
+fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel,
+                 tail: List<Op>, rv): GBundle
   let valvar = RpStackVar(rpGetType(rv), "blockval$" + frame.fbTag + "$" + String(rt.retIndex))
   ret GBundle(build(push(builderFrom(vb.gbStackVars), valvar)),
               build(pushAll(push(
@@ -94,7 +94,7 @@ fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel: String,
 # Branches are pure scopes (branch-local lets + nested fns, mirrored by
 # localScope). Labels are prefix-relative names — with_prefix renames them per
 # call site, exactly like Python's bare "T_branch"/"F_branch"/"if_end".
-fun genIfStmt(f2: PsIf, r: Resolver, expected: Spec|None): GBundle
+fun genIfStmt(f2: PsIf, r, expected: Spec|None): GBundle
   let condBundle = withPrefix(genExpr(f2.ifCond, r), "cond")
   let trueBundle = genIfBranch(f2.ifTrue, r, expected, "T")
   let falseBundle = genIfBranch(f2.ifFalse, r, expected, "F")
@@ -107,7 +107,7 @@ fun genIfStmt(f2: PsIf, r: Resolver, expected: Spec|None): GBundle
       bundleJoin(trueBundle,
                  bundleOp1(OpLabel("if_end", List())))))))
 
-fun genIfBranch(stmts: List<PStmt>, r: Resolver, expected: Spec|None, prefix: String): GBundle
+fun genIfBranch(stmts: List<PStmt>, r, expected: Spec|None, prefix): GBundle
   ret genIfBranchLoop(chain(stmts), localScope(stmts, r), expected, prefix, 0, emptyBundle())
 
 fun [tail] genIfBranchLoop(ss: Chain<PStmt>, r: Resolver, expected: Spec|None,
@@ -121,7 +121,7 @@ fun [tail] genIfBranchLoop(ss: Chain<PStmt>, r: Resolver, expected: Spec|None,
 
 # `[lazy]` lets are handled out-of-band by genBlockTo's two-phase emission;
 # any other call site is a bug (Python raises RuntimeError).
-fun genLetStmt(l: PsLet, r: Resolver): GBundle
+fun genLetStmt(l: PsLet, r): GBundle
   if isDeferredInit(l)
     ret bundleOp1(OpAbort("[lazy] let reached LetStatement.generate directly — only genBlockTo's two-phase emission may generate it", List()))
   let exprBundle = withPrefix(genExprToOpt(l.lDefault, r, l.lType), "expr")
@@ -131,21 +131,21 @@ fun genLetStmt(l: PsLet, r: Resolver): GBundle
                  GBundle(list1(sv), list1(OpMove(sv, mustResult(exprBundle), false, List())),
                          None, List(), List()))
 
-fun genExprToOpt(x: PExpr|None, r: Resolver, expected: Spec|None): GBundle
+fun genExprToOpt(x: PExpr|None, r, expected: Spec|None): GBundle
   ret match(x)
     (e2: PExpr) => genExprTo(e2, r, expected)
     ()           => emptyBundle()
 
 # ── [lazy] two-phase halves (lets.py) ───────────────────────────────────────
 
-fun gsStmtLazyAlloc(st: PStmt, r: Resolver): GBundle
+fun gsStmtLazyAlloc(st, r): GBundle
   ret match(st)
     (l: PsLet) => genLazyAlloc(l, r)
     (o: PStmt) => bundleOp1(OpAbort("generate_lazy_alloc on a non-let", List()))
 
 # Stub allocation half — at block entry, so forward references inside other
 # lazies see the stub slot pointing at a real heap object.
-fun genLazyAlloc(l: PsLet, r: Resolver): GBundle
+fun genLazyAlloc(l: PsLet, r): GBundle
   let irT = specGenerateOpt(l.lType, r)
   let cls = stubClassName(irT)
   let svStub = RpStackVar(CgDataPointer(), l.lName)
@@ -157,7 +157,7 @@ fun genLazyAlloc(l: PsLet, r: Resolver): GBundle
                     OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List())),
               None, List(), List())
 
-fun gsStmtLazyPopulate(st: PStmt, r: Resolver): GBundle
+fun gsStmtLazyPopulate(st, r): GBundle
   ret match(st)
     (l: PsLet) => genLazyPopulate(l, r)
     (o: PStmt) => bundleOp1(OpAbort("generate_lazy_populate on a non-let", List()))
@@ -165,7 +165,7 @@ fun gsStmtLazyPopulate(st: PStmt, r: Resolver): GBundle
 # Closure-population half — at the let's original textual position. The
 # lambdas pass has already turned the RHS into a fun_t-valued expression and
 # the stub slot is bound.
-fun genLazyPopulate(l: PsLet, r: Resolver): GBundle
+fun genLazyPopulate(l: PsLet, r): GBundle
   let irT = specGenerateOpt(l.lType, r)
   let cls = stubClassName(irT)
   let closureBundle = withPrefix(genExprToOpt(l.lDefault, r, None), "closure")
@@ -179,7 +179,7 @@ fun genLazyPopulate(l: PsLet, r: Resolver): GBundle
 
 # `[future]`: hand the populated stub to the worker pool. Must follow the
 # closure Move — a worker may fire immediately.
-fun genFuturePost(irT: CgType, svStub: RParam, moveOp: Op): GBundle
+fun genFuturePost(irT, svStub, moveOp: Op): GBundle
   let svDiscard = RpStackVar(CgDataPointer(), "$sv_future_discard")
   let post = RpRuntimeInvoke("future_post",
                              RpNewStruct(list1(RpNamedValue("cb", RpGlobalFunction(futureRunnerName(irT), svStub, false, None, false, false)))),
@@ -188,17 +188,17 @@ fun genFuturePost(irT: CgType, svStub: RParam, moveOp: Op): GBundle
               list2(moveOp, OpMove(svDiscard, post, true, List())),
               None, List(), List())
 
-fun stubClassName(t2: CgType): String
+fun stubClassName(t2): String
   ret "Lazy$" + irMangle(t2)
 
-fun futureRunnerName(t2: CgType): String
+fun futureRunnerName(t2): String
   ret "future_run$" + irMangle(t2)
 
 # ── DestructureStatement (lets.py) ──────────────────────────────────────────
 
 # The slot is the TARGETS' tuple type, not the RHS's own (an annotated target
 # may be wider than its entry); the widening itself was inserted at compile.
-fun genDestructureStmt(d: PsDestructure, r: Resolver): GBundle
+fun genDestructureStmt(d: PsDestructure, r): GBundle
   let slotType = destructureSlotType(d)
   let exprBundle = withPrefix(genExprToOpt(d.dDefault, r, slotType), "expr")
   let sv = RpStackVar(specGenerateOpt(slotType, r), d.dName)
@@ -220,7 +220,7 @@ fun destructureSlotType(d: PsDestructure): Spec|None
 fun dPureTupleType(d: PsDestructure): Spec
   ret STuple(map(d.dTargets, dTargetEntry), noLine())
 
-fun dTargetEntry(st: PStmt): SEntry
+fun dTargetEntry(st): SEntry
   ret match(st)
     (l: PsLet)         => SEntry(l.lName, l.lType, l.lDefault)
     (d2: PsDestructure) => SEntry(d2.dName, dPureTupleType(d2), d2.dDefault)
@@ -228,7 +228,7 @@ fun dTargetEntry(st: PStmt): SEntry
 
 # to_c_destructure: leaf let → Move into a stack var named for the let;
 # destructure → per-target f{i} prefixed moves off `_i` struct fields.
-fun toCDestructureTargets(d: PsDestructure, root: RParam, r: Resolver): GBundle
+fun toCDestructureTargets(d: PsDestructure, root, r): GBundle
   ret tcdLoop(chain(d.dTargets), root, r, 0, emptyBundle())
 
 fun [tail] tcdLoop(ts: Chain<PStmt>, root: RParam, r: Resolver, i: Int, acc: GBundle): GBundle
@@ -238,13 +238,13 @@ fun [tail] tcdLoop(ts: Chain<PStmt>, root: RParam, r: Resolver, i: Int, acc: GBu
                          bundleJoin(acc, withPrefix(tcdTarget(l.value, RpStructField(root, "_" + String(i)), r),
                                                     "f" + String(i))))
 
-fun tcdTarget(st: PStmt, root: RParam, r: Resolver): GBundle
+fun tcdTarget(st, root, r): GBundle
   ret match(st)
     (l: PsLet)          => tcdLeaf(l, root, r)
     (d2: PsDestructure) => toCDestructureTargets(d2, root, r)
     (o: PStmt)          => emptyBundle()
 
-fun tcdLeaf(l: PsLet, root: RParam, r: Resolver): GBundle
+fun tcdLeaf(l: PsLet, root, r): GBundle
   let sv = RpStackVar(specGenerateOpt(l.lType, r), l.lName)
   ret GBundle(list1(sv), list1(OpMove(sv, root, false, List())),
               None, List(), List())

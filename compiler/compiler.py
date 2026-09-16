@@ -72,6 +72,7 @@ from codegen.gen import Application
 import pyast.resolver as g
 import pyast.typespec as t
 import pyast.rewrite as rw
+import pyast.param_inference as pi
 from dataclasses import dataclass, fields
 
 from parsing.tokenizer import tokenize, LineRef
@@ -400,96 +401,25 @@ _MAX_COMPILE_ITERATIONS = 100
 _TEST_REGISTRY_CHUNK = 16
 
 
-def __meet_hint(a, b):
-    """Accumulate one parameter's call-site hints. `_CONFLICT` is sticky — once two
-    call sites disagree on a parameter, no later agreeing site revives a suggestion
-    for it (a disagreement means "do not use them", per the inference model)."""
-    if a is t._CONFLICT or b is t._CONFLICT:
-        return t._CONFLICT
-    return t.meet(a, b)
-
-
-def __collect_param_suggestions(statements: list[s.Statement]) -> dict[str, t.TupleSpec]:
-    """Path 3 of the inference model: gather, for each function, the parameter
-    shape implied by its CALL SITES, so an un-annotated parameter can be typed from
-    how the function is used. A pure function of the AST, recomputed each pass —
-    the resolver carries it down read-only, nothing is mutated mid-compile.
-
-    Each resolved call `f(args)` contributes its argument tuple as a hint for `f`'s
-    parameters; hints from multiple sites meet per position (a hole contributes
-    nothing, a disagreement cancels that position). `search_and_replace` threads
-    function/block scope, so an argument that references a local types correctly."""
-    resolver = g.ResolverRoot(statements)
-    hints: dict[str, list] = {}
-    def visit(res: g.Resolver, thing):
-        if isinstance(thing, e.CallExpression):
-            name = getattr(thing.function, "name", None)
-            ptype = thing.parameter.get_type(res)
-            if name and "@" in name and isinstance(ptype, t.TupleSpec):
-                arg_types = [en.type for en in ptype.entries]
-                existing = hints.get(name)
-                if existing is None:
-                    hints[name] = arg_types
-                elif len(existing) == len(arg_types):
-                    hints[name] = [__meet_hint(x, y) for x, y in zip(existing, arg_types)]
-        return rw.UNCHANGED
-    for stmt in statements:
-        stmt.search_and_replace(resolver, visit)
-    lr = LineRef("suggestion", 0, 0)
-    return {name: t.TupleSpec(lr, [t.TupleEntrySpec(None, None if h is t._CONFLICT else h)
-                                   for h in entry_hints])
-            for name, entry_hints in hints.items()}
-
-
-def __collect_param_suggestion_detail(statements: list[s.Statement]) -> dict[str, list[set[str]]]:
-    """Per function, per parameter, the DISTINCT types its call sites supply (as
-    readable type ids). Used only to put a clue in the error when a parameter never
-    gets a type — `[]` means no call site pins it, more than one entry means the
-    call sites disagree (so no suggestion was usable)."""
-    resolver = g.ResolverRoot(statements)
-    detail: dict[str, list[set[str]]] = {}
-    def visit(res: g.Resolver, thing):
-        if isinstance(thing, e.CallExpression):
-            name = getattr(thing.function, "name", None)
-            ptype = thing.parameter.get_type(res)
-            if name and "@" in name and isinstance(ptype, t.TupleSpec):
-                slots = detail.setdefault(name, [set() for _ in ptype.entries])
-                if len(slots) == len(ptype.entries):
-                    for slot, en in zip(slots, ptype.entries):
-                        uid = en.type.as_unique_id_str() if en.type is not None else None
-                        if uid is not None:
-                            slot.add(g.simple_name(uid))
-        return rw.UNCHANGED
-    for stmt in statements:
-        stmt.search_and_replace(resolver, visit)
-    return detail
-
-
 def __check_untyped_params(statements: list[s.Statement]) -> list[Error]:
-    """After the compile loop converges, a non-generic parameter that still has no
-    type cannot be inferred from anywhere. Report it with the call-site suggestions
-    as a clue (path 3), since that is exactly the evidence the inference used."""
+    """After the compile loop converges, a parameter that still has no type is one
+    the BODY's uses never determined: no use pinned it, or more than one answer
+    fits. Both are the same diagnostic — the body is the only evidence there is
+    (callers never supply parameter types), so the clue names what was found."""
+    resolver = g.ResolverRoot(statements)
     errors: list[Error] = []
-    detail: dict[str, list[set[str]]] | None = None
     for stmt in statements:
         if not isinstance(stmt, s.FunctionStatement):
             continue
-        for idx, tgt in enumerate(stmt.parameters.targets):
-            if tgt.get_type() is not None:
-                continue
-            if detail is None:
-                detail = __collect_param_suggestion_detail(statements)
-            slots = detail.get(stmt.name, [])
-            seen = slots[idx] if idx < len(slots) else set()
-            if len(seen) > 1:
-                clue = "call sites disagree (" + ", ".join(sorted(seen)) + ")"
-            elif seen:
-                clue = "call sites only partly determine it (" + next(iter(seen)) + ")"
-            else:
-                clue = "no call site supplies a type to infer it from"
-            errors.append(Error(tgt.line_ref,
-                f"Parameter '{g.simple_name(tgt.name)}' of '{g.simple_name(stmt.name)}' "
-                f"has no type and could not be inferred — {clue}"))
+        untyped = [tgt for tgt in stmt.parameters.targets if tgt.get_type() is None]
+        if not untyped:
+            continue
+        scope = stmt.body_scope(__stmt_scope_resolver(stmt, resolver))
+        errors += [Error(tgt.line_ref,
+                         f"Parameter '{g.simple_name(tgt.name)}' of '{g.simple_name(stmt.name)}' "
+                         f"has no type and could not be inferred — "
+                         f"{pi.uninferable_clue(stmt, tgt, scope)}")
+                   for tgt in untyped]
     return errors
 
 
@@ -553,7 +483,7 @@ def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Reso
     same count — a port that reached the same answer in a different number of
     passes is doing more or less per pass than this compiler)."""
     for passes in range(1, _MAX_COMPILE_ITERATIONS + 1):
-        resolver = g.ResolverRoot(statements, __collect_param_suggestions(statements))
+        resolver = g.ResolverRoot(statements)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
         if new_statements == statements:
             return new_statements, resolver, passes

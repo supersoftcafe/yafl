@@ -33,12 +33,12 @@ fun [tail] dumpTokens(ts: Chain<Token>, sb: StringBuilder): StringBuilder
           l.value.col), "|"),
           l.value.text + "\n"))
 
-fun tokensMode(text: System::String): (out: System::String, code: System::Int)
+fun tokensMode(text): (out: System::String, code: System::Int)
   ret (toString(dumpTokens(chain(tokenize(text)), StringBuilder())), 0)
 
 # hash6 mode: each stdin line `file|line|col` prints its hash6 — diffed
 # against the Python LineRef.hash6 by tests/test_bootstrap_hash6.py.
-fun hash6Mode(text: System::String): (out: System::String, code: System::Int)
+fun hash6Mode(text): (out: System::String, code: System::Int)
   ret (hash6Lines(chain(splitLines(text)), StringBuilder())
        |> (sb) => toString(sb), 0)
 
@@ -47,7 +47,7 @@ fun [tail] hash6Lines(lines: Chain<System::String>, sb: StringBuilder): StringBu
     (nil: ChainEnd) => sb
     (l: ChainLink)  => hash6Lines(l.next, hash6Line(l.value, sb))
 
-fun hash6Line(line: System::String, sb: StringBuilder): StringBuilder
+fun hash6Line(line, sb): StringBuilder
   let p1 = System::findByte(line, '|', 0)
   let p2 = p1 < 0 ? -1 : System::findByte(line, '|', p1 + 1)
   if p2 < 0
@@ -63,7 +63,7 @@ fun hash6Line(line: System::String, sb: StringBuilder): StringBuilder
 
 # sha1 mode: each stdin line prints its sha1 hexdigest — diffed against
 # hashlib.sha1 by tests/test_bootstrap_sha1.py (irMangle's struct hashing).
-fun sha1Mode(text: System::String): (out: System::String, code: System::Int)
+fun sha1Mode(text): (out: System::String, code: System::Int)
   ret (sha1Lines(chain(splitLines(text)), StringBuilder())
        |> (sb) => toString(sb), 0)
 
@@ -79,12 +79,12 @@ fun [tail] sha1Lines(lines: Chain<System::String>, sb: StringBuilder): StringBui
 # toml mode: parse a manifest on stdin and print one normalised line per
 # entry — `key=v1,v2` — for diffing against Python's tomllib
 # (tests/test_bootstrap_toml.py). Errors print `error:<line>:<message>`.
-fun tomlMode(text: String): (out: String, code: Int)
+fun tomlMode(text): (out: String, code: Int)
   ret match(parseToml(text))
     (ok: TomlOk)   => (toString(tomlDump(chain(ok.entries), StringBuilder())), 0)
     (e: TomlErr)   => ("error:" + String(e.tomlLine) + ":" + e.tomlMessage + "\n", 1)
 
-fun [tail] tomlDump(es: Chain<TomlEntry>, [terminal] sb: StringBuilder): StringBuilder
+fun [tail] tomlDump(es: Chain<TomlEntry>, [terminal] sb): StringBuilder
   ret match(es)
     (nil: ChainEnd) => sb
     (l: ChainLink)  => tomlDump(l.next,
@@ -108,7 +108,7 @@ fun sortLibs(ls: List<Library>): List<Library>
   ret sortBy(ls, (a, b) =>
         a.libManifest.libName < b.libManifest.libName)
 
-fun [tail] libsDump(ls: Chain<Library>, [terminal] sb: StringBuilder): StringBuilder
+fun [tail] libsDump(ls: Chain<Library>, [terminal] sb): StringBuilder
   ret match(ls)
     (nil: ChainEnd) => sb
     (l: ChainLink)  => libsDump(l.next, append(sb,
@@ -120,7 +120,7 @@ fun [tail] libsDump(ls: Chain<Library>, [terminal] sb: StringBuilder): StringBui
 # libsfor mode: parse the source on stdin and print which libraries its
 # imports would pull in, one name per line. This is the end-to-end check that
 # `import System::Test` RESOLVES — the capability the port lacked entirely.
-fun libsForMode(text: String): (out: String, code: Int)
+fun libsForMode(text): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
                              + ": " + f.msg + "\n", 1)
@@ -177,7 +177,7 @@ fun [tail] importsOfStmts(ss: Chain<PStmt>, acc: List<String>): List<String>
     (l: ChainLink)  => importsOfStmts(l.next,
                                       importPaths(chain(stmtImports(l.value)), acc))
 
-fun unescMode(text: String): (out: String, code: Int)
+fun unescMode(text): (out: String, code: Int)
   ret (unescDump(chain(splitLines(text)), StringBuilder()) |> (sb) => toString(sb), 0)
 
 fun [tail] unescDump(lines: Chain<String>, sb: StringBuilder): StringBuilder
@@ -185,7 +185,7 @@ fun [tail] unescDump(lines: Chain<String>, sb: StringBuilder): StringBuilder
     (nil: ChainEnd) => sb
     (l: ChainLink)  => unescDump(l.next, unescLine(l.value, sb))
 
-fun unescLine(line: String, sb: StringBuilder): StringBuilder
+fun unescLine(line, sb): StringBuilder
   let u = unescape(line)
   ret append(append(append(append(append(append(sb, "in="), String(length(line))),
               " out="), String(length(u.uText))), " err=" + u.uErr + " val="), u.uText + "\n")
@@ -196,7 +196,7 @@ fun unescLine(line: String, sb: StringBuilder): StringBuilder
 #   meet <spec> <spec>
 #   unify <names> <spec> <spec>
 #   bind <declared-entries> <supplied-names>
-fun specsMode(text: String): (out: String, code: Int)
+fun specsMode(text): (out: String, code: Int)
   ret (toString(specLines(chain(splitLines(text)), StringBuilder())), 0)
 
 fun [tail] specLines(lines: Chain<String>, sb: StringBuilder): StringBuilder
@@ -204,7 +204,7 @@ fun [tail] specLines(lines: Chain<String>, sb: StringBuilder): StringBuilder
     (nil: ChainEnd) => sb
     (l: ChainLink)  => specLines(l.next, specLine(l.value, sb))
 
-fun specLine(line: String, sb: StringBuilder): StringBuilder
+fun specLine(line, sb): StringBuilder
   if line == ""
     ret sb
   let sp = findByte(line, ' ', 0)
@@ -214,7 +214,7 @@ fun specLine(line: String, sb: StringBuilder): StringBuilder
   let rest = slice(line, sp + 1, length(line))
   ret append(sb, evalCase(op, rest) + "\n")
 
-fun evalCase(op: String, rest: String): String
+fun evalCase(op, rest): String
   if op == "uid"
     ret parseSpecText(rest) |> (r) => uidOf(r)
   if op == "meet"
@@ -228,7 +228,7 @@ fun uidOf(r: Spec|None): String
     (s2: Spec) => uid(s2) == "" ? "-" : uid(s2)
     ()         => "!"
 
-fun meetCase(rest: String): String
+fun meetCase(rest): String
   let bar = indexOf(rest, " ;; ", 0)
   if bar < 0
     ret "!"
@@ -246,7 +246,7 @@ fun meetResult(m: Meet): String
     (mc: MConflict) => "CONFLICT"
     ()              => "NONE"
 
-fun bindCase(rest: String): String
+fun bindCase(rest): String
   let bar = indexOf(rest, " ;; ", 0)
   if bar < 0
     ret "!"
@@ -261,13 +261,13 @@ fun [tail] joinInts(is: Chain<Int>, acc: String): String
     (nil: ChainEnd) => acc == "" ? "()" : acc
     (l: ChainLink)  => joinInts(l.next, acc + (acc == "" ? "" : ",") + String(l.value))
 
-fun splitNames(s: String): List<String>
+fun splitNames(s): List<String>
   ret map(split(s, ","), (n) => n == "_" ? "" : n)
 
 # resolve mode: parse the source on stdin, build the statement index, then
 # answer the queries that follow a "?" line — `data <name>` / `type <name>` —
 # printing `count|scope|uniquename,...` for diffing against pyast/resolver.py.
-fun resolveMode(text: String): (out: String, code: Int)
+fun resolveMode(text): (out: String, code: Int)
   let cut = indexOf(text, "\n?\n", 0)
   if cut < 0
     ret ("no query section\n", 1)
@@ -278,7 +278,7 @@ fun resolveMode(text: String): (out: String, code: Int)
     (stmts: List<PStmt>) => (answerAll(buildStatements(stmts),
                                        chain(splitLines(queries))), 0)
 
-fun answerAll(idx: Statements, qs: Chain<String>): String
+fun answerAll(idx, qs): String
   ret toString(answerLoop(idx, qs, StringBuilder()))
 
 fun [tail] answerLoop(idx: Statements, qs: Chain<String>,
@@ -287,7 +287,7 @@ fun [tail] answerLoop(idx: Statements, qs: Chain<String>,
     (nil: ChainEnd) => sb
     (l: ChainLink)  => answerLoop(idx, l.next, answerOne(idx, l.value, sb))
 
-fun answerOne(idx: Statements, q: String, sb: StringBuilder): StringBuilder
+fun answerOne(idx, q, sb): StringBuilder
   if q == ""
     ret sb
   let sp = findByte(q, ' ', 0)
@@ -303,13 +303,13 @@ fun answerOne(idx: Statements, q: String, sb: StringBuilder): StringBuilder
 
 # Count and names from ONE walk (the no-length ruling: the count rides the
 # traversal that already exists for the names).
-fun [tail] foundLine(fs: Chain<Found>, n: Int, acc: String): String
+fun [tail] foundLine(fs: Chain<Found>, n: Int, acc): String
   ret match(fs)
     (nil: ChainEnd) => String(n) + "|" + acc
     (l: ChainLink)  => foundLine(l.next, n + 1,
                                  acc + (acc == "" ? "" : ",") + l.value.fName)
 
-fun convertMode(text: String): (out: String, code: Int)
+fun convertMode(text): (out: String, code: Int)
   let cut = indexOf(text, "\n?\n", 0)
   if cut < 0
     ret ("no query section\n", 1)
@@ -320,7 +320,7 @@ fun convertMode(text: String): (out: String, code: Int)
     (stmts: List<PStmt>) => (convertAll(rootResolver(stmts),
                                         chain(splitLines(cases))), 0)
 
-fun convertAll(r: Resolver, cs: Chain<String>): String
+fun convertAll(r, cs): String
   ret toString(convertLoop(r, cs, StringBuilder()))
 
 fun [tail] convertLoop(r: Resolver, cs: Chain<String>,
@@ -331,7 +331,7 @@ fun [tail] convertLoop(r: Resolver, cs: Chain<String>,
 
 # `SOURCE ;; TARGET` → Y when representing the source value as the target needs
 # a representation change, N when it does not.
-fun convertOne(r: Resolver, c: String, sb: StringBuilder): StringBuilder
+fun convertOne(r, c, sb): StringBuilder
   if c == ""
     ret sb
   let bar = indexOf(c, " ;; ", 0)
@@ -341,7 +341,7 @@ fun convertOne(r: Resolver, c: String, sb: StringBuilder): StringBuilder
   let b = parseSpecText(slice(c, bar + 4, length(c)))
   ret append(sb, (needsConversion(r, a, b) ? "Y" : "N") + "\n")
 
-fun assignMode(text: String): (out: String, code: Int)
+fun assignMode(text): (out: String, code: Int)
   let cut = indexOf(text, "\n?\n", 0)
   if cut < 0
     ret ("no query section\n", 1)
@@ -352,7 +352,7 @@ fun assignMode(text: String): (out: String, code: Int)
     (stmts: List<PStmt>) => (assignAll(rootResolver(stmts),
                                        chain(splitLines(cases))), 0)
 
-fun assignAll(r: Resolver, cs: Chain<String>): String
+fun assignAll(r, cs): String
   ret toString(assignLoop(r, cs, StringBuilder()))
 
 fun [tail] assignLoop(r: Resolver, cs: Chain<String>,
@@ -361,7 +361,7 @@ fun [tail] assignLoop(r: Resolver, cs: Chain<String>,
     (nil: ChainEnd) => sb
     (l: ChainLink)  => assignLoop(r, l.next, assignOne(r, l.value, sb))
 
-fun assignOne(r: Resolver, c: String, sb: StringBuilder): StringBuilder
+fun assignOne(r, c, sb): StringBuilder
   if c == ""
     ret sb
   let bar = indexOf(c, " ;; ", 0)
@@ -373,7 +373,7 @@ fun assignOne(r: Resolver, c: String, sb: StringBuilder): StringBuilder
 
 # The three-valued answer, spelled T / F / ? — `?` is UNDECIDED, and the
 # contract cares about it as much as about T and F.
-fun assignAnswer(r: Resolver, a: Spec|None, b: Spec|None): String
+fun assignAnswer(r, a: Spec|None, b: Spec|None): String
   ret match(a)
     (sa: Spec) => match(b)
       (sb2: Spec) => triStr(assignableEq(r, sa, sb2))
@@ -388,13 +388,13 @@ fun triStr(x: Tri): String
 # converge mode: run the compile fixpoint, then dump the CONVERGED tree. The
 # same dump the `ast` mode emits, so the contract is a straight diff against the
 # Python compiler's converged AST — the whole of inference, checked at once.
-fun convergeMode(text: String): (out: String, code: Int)
+fun convergeMode(text): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
                              + ": " + f.msg + "\n", 1)
     (stmts: List<PStmt>) => convergeDump(converge(stmts))
 
-fun convergeDump(c: Converged): (out: String, code: Int)
+fun convergeDump(c): (out: String, code: Int)
   ret match(c)
     (ok: CvOk)       => (dumpProgram(ok.cvStatements), 0)
     (d: CvDiverged)  => ("compile loop did not converge — a compile() pass is "
@@ -402,7 +402,7 @@ fun convergeDump(c: Converged): (out: String, code: Int)
 
 # passes mode: just the pass COUNT, so the contract can pin that the port takes
 # the same number of iterations to settle as Python does.
-fun passesMode(text: String): (out: String, code: Int)
+fun passesMode(text): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error\n", 1)
     (stmts: List<PStmt>) => match(converge(stmts))
@@ -411,7 +411,7 @@ fun passesMode(text: String): (out: String, code: Int)
 
 # check mode: parse, converge, run the post-convergence diagnostic phases and
 # print sorted(set(errors)) — the check contract diffs this byte for byte.
-fun checkMode(text: String): (out: String, code: Int)
+fun checkMode(text): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error\n", 1)
     (stmts: List<PStmt>) => match(converge(stmts))
@@ -427,8 +427,8 @@ fun checkOutput(stmts0: List<PStmt>): String
     (ok: CvOk)      => checkedOutput(ok.cvStatements)
     (dv: CvDiverged) => "diverged\n"
 
-fun checkedOutput(stmts: List<PStmt>): String
-  let r = rootResolver(stmts, collectParamSuggestions(stmts))
+fun checkedOutput(stmts): String
+  let r = rootResolver(stmts)
   let d = collectDiagnostics(stmts, r)
   if !isEmpty(d.dFails)
     ret printedDiagnostics(d.dFails)
@@ -442,7 +442,7 @@ fun checkedOutput(stmts: List<PStmt>): String
 # unresolved-generic-call guard — then dumps the monomorphised tree. Errors
 # from either generics phase print as sorted(set(errors)) instead, so the
 # polymorphic-recursion messages are pinned by the same contract.
-fun genericsMode(text: String): (out: String, code: Int)
+fun genericsMode(text): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error\n", 1)
     (stmts: List<PStmt>) => match(converge(stmts))
@@ -456,7 +456,7 @@ fun genericsOutput(stmts0: List<PStmt>): (out: String, code: Int)
     (ok: CvOk)       => genericsDump(ok.cvStatements)
     (dv: CvDiverged) => ("diverged\n", 2)
 
-fun genericsDump(stmts0: List<PStmt>): (out: String, code: Int)
+fun genericsDump(stmts0): (out: String, code: Int)
   # Derived enum equality first, as postmonoRes3 and compiler.py order it —
   # this chain is SEPARATE from postmonoRes3 and must mirror it.
   let de = deriveEquality(stmts0)
@@ -479,7 +479,7 @@ fun genericsDumpB(stmts0: List<PStmt>): (out: String, code: Int)
     (ok: CvOk)       => genericsDump2(ok.cvStatements)
     (dv: CvDiverged) => ("diverged\n", 2)
 
-fun genericsDump2(stmts: List<PStmt>): (out: String, code: Int)
+fun genericsDump2(stmts): (out: String, code: Int)
   let it = convertGenericToConcrete(stmts)
   if !isEmpty(it.giErrs)
     ret (printedDiagnostics(it.giErrs), 0)
@@ -503,7 +503,7 @@ enum PmRes
 # canonical (name-sorted) order exactly as mode c does — so every telescoping
 # dump mode can compare the SAME framing the C contract runs under. A plain
 # single file is unchanged (parseMulti falls back to one-part parse).
-fun postmonoRes(text: String): PmRes
+fun postmonoRes(text): PmRes
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => match(converge(stmts))
       (ok: CvOk)      => postmonoRes2(ok.cvStatements, false)
@@ -537,8 +537,8 @@ fun postmonoRes2(stmts0: List<PStmt>, gated: Bool): PmRes
 # A failure is a REFUSAL — code 1, no C — matching main.py, which exits 1 when
 # compile_project hands back no code so a build system cannot pick up a stale
 # object file.
-fun postmonoGate(stmts: List<PStmt>): PmRes
-  let r = rootResolver(stmts, collectParamSuggestions(stmts))
+fun postmonoGate(stmts): PmRes
+  let r = rootResolver(stmts)
   # requireMain false: cStage reports a missing main itself, in the bare
   # spelling the byte-parity contract pins.
   let d = collectDiagnostics2(stmts, r, false)
@@ -549,7 +549,7 @@ fun postmonoGate(stmts: List<PStmt>): PmRes
     ret PmText(printedDiagnostics(lin), 1)
   ret postmonoRes3(stmts)
 
-fun postmonoRes3(stmts0: List<PStmt>): PmRes
+fun postmonoRes3(stmts0): PmRes
   # Derived enum equality, then the [hashed] split, as compiler.py orders it.
   let de = deriveEquality(stmts0)
   ret match(de.deChanged ? converge(de.deStmts) : CvOk(de.deStmts, 0))
@@ -572,7 +572,7 @@ fun postmonoRes3b(stmts0: List<PStmt>): PmRes
     (ok: CvOk)       => postmonoRes4(ok.cvStatements)
     (dv: CvDiverged) => PmText("diverged\n", 2)
 
-fun postmonoRes4(stmts: List<PStmt>): PmRes
+fun postmonoRes4(stmts): PmRes
   let it = convertGenericToConcrete(stmts)
   if !isEmpty(it.giErrs)
     ret PmText(printedDiagnostics(it.giErrs), 0)
@@ -592,7 +592,7 @@ fun postmonoRes4(stmts: List<PStmt>): PmRes
         : PmText(printedDiagnostics(errs), 1)
     (dv: CvDiverged) => PmText("diverged\n", 2)
 
-fun postmonoMode(text: String): (out: String, code: Int)
+fun postmonoMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => (dumpProgram(ok.pmStmts), 0)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -600,7 +600,7 @@ fun postmonoMode(text: String): (out: String, code: Int)
 # tail mode: postmono, then lambda_lift → hoist_nested → tail_loop — the
 # driver's exact order (compiler.py:602-611). Tail errors print as
 # sorted(set(errors)).
-fun tailMode(text: String): (out: String, code: Int)
+fun tailMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => tailStageDump(ok.pmStmts)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -614,7 +614,7 @@ fun tailStageDump(stmts: List<PStmt>): (out: String, code: Int)
 # inline mode: the tail pipeline, then the AST inliner to fixpoint — the
 # driver's compiler.py:612 (optimisation level does not affect this pass;
 # the contract pins -O1, the bootstrap's own build level).
-fun inlineMode(text: String): (out: String, code: Int)
+fun inlineMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => inlineStageDump(ok.pmStmts)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -627,7 +627,7 @@ fun inlineStageDump(stmts: List<PStmt>): (out: String, code: Int)
 
 # literals mode: inline, then string and bigint literal hoisting — the
 # driver's compiler.py:613-614.
-fun literalsMode(text: String): (out: String, code: Int)
+fun literalsMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => literalsStageDump(ok.pmStmts)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -641,7 +641,7 @@ fun literalsStageDump(stmts: List<PStmt>): (out: String, code: Int)
 
 # lazy mode: literals, then the [lazy] forward-ref check (errors print
 # sorted) and the deferred-init lowering — driver compiler.py:618-624.
-fun lazyMode(text: String): (out: String, code: Int)
+fun lazyMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => lazyStageDump(ok.pmStmts)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -659,7 +659,7 @@ fun lazyStageDump(stmts: List<PStmt>): (out: String, code: Int)
 # lambdas mode: lazy, then closure conversion — every LambdaExpression
 # becomes a top-level function (or a [final] closure class + constructor call
 # when it captures) — driver compiler.py:625.
-fun lambdasMode(text: String): (out: String, code: Int)
+fun lambdasMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => lambdasStageDump(ok.pmStmts)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -676,7 +676,7 @@ fun lambdasStageDump(stmts: List<PStmt>): (out: String, code: Int)
 
 # simple mode: lambdas, then flat-struct lowering — qualifying classes become
 # bare tuples + free functions — driver compiler.py:626.
-fun simpleMode(text: String): (out: String, code: Int)
+fun simpleMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => simpleStageDump(ok.pmStmts)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -691,7 +691,7 @@ fun simpleStageDump(stmts: List<PStmt>): (out: String, code: Int)
     ? (dumpProgram(lowerSimpleClasses(convertLambdasToFunctions(lowerLazyLets(lowered)))), 0)
     : (printedDiagnostics(fwd), 0)
 
-fun exitsMode(text: String): (out: String, code: Int)
+fun exitsMode(text): (out: String, code: Int)
   ret match(postmonoRes(text))
     (ok: PmOk)   => exitsStageDump(ok.pmStmts)
     (tx: PmText) => (tx.pmOut, tx.pmCode)
@@ -715,7 +715,7 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
 # `impure`, so the timings bracket exactly the phase they name. With YAFL_LOG
 # unset every one of these is a foreign call and an integer compare — see
 # System::Log on why the level test is inside the call rather than at the site.
-fun cMode(text: String, optLevel: Int, profile: Bool): (outs: List<String>, code: Int)
+fun cMode(text, optLevel, profile): (outs: List<String>, code: Int)
   let spParse = spanBegin("compile", "parse")
   let parsed = parseMulti(text)
   let _ = spanEnd(spParse)
@@ -728,7 +728,7 @@ fun cMode(text: String, optLevel: Int, profile: Bool): (outs: List<String>, code
 fun baseHeaders(): List<System::String>
   ret prepend("yafl.h", List())
 
-fun cModeConverge(stmts: List<PStmt>, optLevel: Int, profile: Bool,
+fun cModeConverge(stmts, optLevel, profile,
                   headers: List<System::String>): (outs: List<String>, code: Int)
   let sp = spanBegin("compile", "converge+mono")
   let pm = convergeToPostmono(stmts)
@@ -737,7 +737,7 @@ fun cModeConverge(stmts: List<PStmt>, optLevel: Int, profile: Bool,
     (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers)
     (tx: PmText) => (prepend(tx.pmOut, List()), tx.pmCode)
 
-fun convergeToPostmono(stmts: List<PStmt>): PmRes
+fun convergeToPostmono(stmts): PmRes
   ret match(converge(stmts))
     (ok: CvOk)      => postmonoRes2(ok.cvStatements, true)
     (d: CvDiverged) => PmText("diverged\n", 2)
@@ -747,7 +747,7 @@ fun convergeToPostmono(stmts: List<PStmt>): PmRes
 # imposes the identical order (compiler.py __tokenize_and_parse); statement
 # order IS emission order, so without this the two compilers agree only by the
 # caller's good manners. Names are unique within a stream.
-fun parseMulti(text: String): List<PStmt>|None
+fun parseMulti(text): List<PStmt>|None
   if !startsWith(text, "#FILE# ")
     ret parseSingle(text)
   ret parseSorted(collectParts(text, 0, Dict()))
@@ -764,20 +764,20 @@ fun parseMulti(text: String): List<PStmt>|None
 # giving it a second, environment-dependent input would make that contract
 # depend on YAFL_PATH.
 
-fun projectMode(text: String, optLevel: Int,
-                profile: Bool): (outs: List<String>, code: Int)
+fun projectMode(text, optLevel,
+                profile): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => projectCompile(stmts, optLevel, profile)
     ()                   => (prepend("parse error\n", List()), 1)
 
-fun projectTestMode(text: String, optLevel: Int,
-                    profile: Bool): (outs: List<String>, code: Int)
+fun projectTestMode(text, optLevel,
+                    profile): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, true)
     ()                   => (prepend("parse error\n", List()), 1)
 
-fun projectCompile(user: List<PStmt>, optLevel: Int,
-                   profile: Bool): (outs: List<String>, code: Int)
+fun projectCompile(user: List<PStmt>, optLevel,
+                   profile): (outs: List<String>, code: Int)
   let sp = spanBegin("compile", "libraries")
   let loaded = loadProject(user)
   let _ = spanEnd(sp)
@@ -804,7 +804,7 @@ fun projectHeaders(spec: LinkSpec): List<System::String>
 # once its native artefacts have been extracted. `project` writes C to stdout,
 # so the spec gets its own mode over the same input rather than being computed
 # and thrown away.
-fun linkSpecMode(text: String): (out: String, code: Int)
+fun linkSpecMode(text): (out: String, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => linkSpecFor2(stmts)
     ()                   => ("parse error\n", 1)
@@ -878,7 +878,7 @@ fun [tail] parseSources(ss: Chain<LibSource>,
           + String(f.line) + ":" + String(f.col) + "] - " + f.msg)
       (stmts: List<PStmt>) => parseSources(l.next, pushAll(b, stmts))
 
-fun parseDiscard([terminal] b: ListBuilder<PStmt>, why: String): List<PStmt>|String
+fun parseDiscard([terminal] b: ListBuilder<PStmt>, why): List<PStmt>|String
   ret build(b) |> (l) => why
 
 
@@ -894,13 +894,13 @@ fun parseDiscard([terminal] b: ListBuilder<PStmt>, why: String): List<PStmt>|Str
 # Python. In plain `ctest` mode there is no discovery and the caller's stream
 # must already contain System::Test, as it already contains the stdlib.
 
-fun cTestMode(text: String, optLevel: Int,
-              profile: Bool): (outs: List<String>, code: Int)
+fun cTestMode(text, optLevel,
+              profile): (outs: List<String>, code: Int)
   ret match(parseMulti(text))
     (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, false)
     ()                   => (prepend("parse error\n", List()), 1)
 
-fun cTestInject(stmts: List<PStmt>, optLevel: Int, profile: Bool,
+fun cTestInject(stmts: List<PStmt>, optLevel, profile,
                 withLibs: Bool): (outs: List<String>, code: Int)
   let tests = testFunsOf(chain(stmts), builder())
   ret isEmpty(tests)
@@ -909,8 +909,8 @@ fun cTestInject(stmts: List<PStmt>, optLevel: Int, profile: Bool,
     ? (prepend("--test: no [test] functions found\n", List()), 1)
     : cTestParsed(stmts, tests, optLevel, profile, withLibs)
 
-fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel: Int,
-                profile: Bool, withLibs: Bool): (outs: List<String>, code: Int)
+fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel,
+                profile, withLibs: Bool): (outs: List<String>, code: Int)
   # Parsed under the SAME filename Python gives it ($test_main.yafl), not
   # parseSingle's "x": the filename feeds hash6, which feeds the generated
   # names, which feed the emitted C. A different name here would make the two
@@ -946,7 +946,7 @@ fun [tail] dropSourceMains(sts: Chain<PStmt>,
       ? dropSourceMains(l.next, b)
       : dropSourceMains(l.next, push(b, l.value))
 
-fun isSourceMain(st: PStmt): Bool
+fun isSourceMain(st): Bool
   ret match(st)
     (f: PsFun) => bareOfUnique(f.fName) == "main"
                   && isEmpty(flattenParams(f.fParams))
@@ -973,8 +973,8 @@ fun testRegistrySource(tests: List<PsFun>): String
 # take/drop the list a chunk at a time — the same shape as the Python side's
 # slice loop, rather than a hand-rolled index/wrap state machine (whose first
 # version never closed a chunk that filled exactly).
-fun [tail] emitChunks(ts: List<PsFun>, k: Int,
-                      [terminal] sb: StringBuilder): StringBuilder
+fun [tail] emitChunks(ts: List<PsFun>, k,
+                      [terminal] sb): StringBuilder
   ret isEmpty(ts) && k > 0
     ? sb
     : emitChunks(drop(ts, testRegistryChunk()), k + 1,
@@ -1015,15 +1015,15 @@ fun testRegistryRow(f: PsFun, i: Int): String
 # Escape for embedding in a GENERATED YAFL string literal. Backslash first,
 # or the escaping escapes itself. Newline too: a description carrying one
 # would otherwise emit source with an unterminated literal.
-fun escapeForSource(s: String): String
+fun escapeForSource(s): String
   ret escLoop(s, 0, "")
 
-fun [tail] escLoop(s: String, at: Int, acc: String): String
+fun [tail] escLoop(s, at, acc): String
   if at >= length(s)
     ret acc
   ret escLoop(s, at + 1, acc + escByte(byteAt(s, at)))
 
-fun escByte(c: Int32): String
+fun escByte(c): String
   if c == '\\'
     ret "\\\\"
   if c == '"'
@@ -1037,7 +1037,7 @@ fun testDescriptionOf(f: PsFun): String
     (v: PExpr) => soleStringOf(v)
     ()         => ""
 
-fun soleStringOf(x: PExpr): String
+fun soleStringOf(x): String
   ret match(x)
     (tp: PeTuple) => match(head(tp.exprs))
       (en: PTupEnt) => match(en.tupValue)
@@ -1046,7 +1046,7 @@ fun soleStringOf(x: PExpr): String
       ()            => ""
     (o: PExpr)    => ""
 
-fun parseSingle(text: String): List<PStmt>|None
+fun parseSingle(text): List<PStmt>|None
   ret match(parseProgram(text, "x"))
     (fp: PFail)          => None
     (stmts: List<PStmt>) => stmts
@@ -1054,7 +1054,7 @@ fun parseSingle(text: String): List<PStmt>|None
 # Each part: `#FILE# <name>\n` then content up to the next marker (markers
 # sit at line starts — search for `\n#FILE# `). Collected first, parsed after,
 # so the parse can run in name order rather than stream order.
-fun [tail] collectParts(text: String, at: Int,
+fun [tail] collectParts(text, at,
                         acc: Dict<String, String>): Dict<String, String>
   let nameEnd = findByte(text, '\n', at + 7)
   if nameEnd < 0
@@ -1081,7 +1081,7 @@ fun partText(parts: Dict<String, String>, name: String): String
     (t2: String) => t2
     ()           => ""   # unreachable: the name came from keys(parts)
 
-fun cStage(stmts: List<PStmt>, optLevel: Int, profile: Bool,
+fun cStage(stmts: List<PStmt>, optLevel, profile,
            headers: List<System::String>): (outs: List<String>, code: Int)
   let spTail = spanBegin("lower", "lift+hoist+tail")
   let tl = lowerTailLoops(hoistNestedFunctions(liftCapturedCalls(stmts)))
@@ -1136,8 +1136,8 @@ fun cIsBigintRet(ret2: Spec|None): Bool
       (o: Spec)     => false
     ()          => false
 
-fun cEmit(stmts: List<PStmt>, mainName: System::String, optLevel: Int,
-          profile: Bool,
+fun cEmit(stmts, mainName, optLevel,
+          profile,
           headers: List<System::String>): (outs: List<String>, code: Int)
   let sp = spanBegin("codegen", "create_c_code")
   let out = createCCode(stmts, mainName, optLevel, profile, headers)
@@ -1146,7 +1146,7 @@ fun cEmit(stmts: List<PStmt>, mainName: System::String, optLevel: Int,
     ? (out.ccParts, 0)
     : (prepend(join(out.ccErrors, "\n") + "\n", List()), 1)
 
-fun astMode(text: String): (out: String, code: Int)
+fun astMode(text): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
                              + ": " + f.msg + "\n", 1)
@@ -1156,7 +1156,7 @@ fun astMode(text: String): (out: String, code: Int)
 # statements, one row per line. Python's dataclass `__eq__` must produce the
 # same matrix — a field the port forgot to compare shows up as a 1 where
 # Python says 0.
-fun eqMode(text: String): (out: String, code: Int)
+fun eqMode(text): (out: String, code: Int)
   ret match(parseProgram(text, "x"))
     (f: PFail)           => ("parse error at " + String(f.line) + ":" + String(f.col)
                              + ": " + f.msg + "\n", 1)
@@ -1181,11 +1181,11 @@ fun [tail] eqRow(row: PStmt, cols: Chain<PStmt>,
 
 # -1 for "not this family", so one lookup answers both "is it?" and "which
 # level?" without a second mode-string table to keep in step.
-fun projectLevel(mode: System::String): Int
+fun projectLevel(mode): Int
   ret mode == "project" ? 0 : mode == "project1" ? 1 : mode == "project2" ? 2
     : mode == "project3" ? 3 : -1
 
-fun projectTestLevel(mode: System::String): Int
+fun projectTestLevel(mode): Int
   ret mode == "projecttest" ? 0 : mode == "project1test" ? 1
     : mode == "project2test" ? 2 : mode == "project3test" ? 3 : -1
 
@@ -1194,7 +1194,7 @@ fun modeOf(argv: List<System::String>): System::String
     (m: System::String) => m
     ()                  => "census"
 
-fun run(text: System::String, i: IO): System::Int
+fun run(text, i: IO): System::Int
   let mode = modeOf(args())
   if mode == "c" || mode == "c1" || mode == "c2" || mode == "c3"
     ret runC(text, mode == "c" ? 0 : mode == "c1" ? 1 : mode == "c2" ? 2 : 3, false, i)
@@ -1247,26 +1247,26 @@ fun run(text: System::String, i: IO): System::Int
 # The C modes emit a LIST of fragments streamed to stdout in order — the
 # joined text was the compiler's one giant contiguous allocation (~83MB on a
 # self-host) and the only consumer is this write loop.
-fun runCTest(text: System::String, optLevel: Int, i: IO): System::Int
+fun runCTest(text, optLevel, i: IO): System::Int
   let r = cTestMode(text, optLevel, false)
   let w = writeParts(stdout(), chain(r.outs), false)
   let code = w.failed2 ? 1 : r.code
   ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result
 
-fun runC(text: System::String, optLevel: Int, profile: Bool, i: IO): System::Int
+fun runC(text, optLevel, profile, i: IO): System::Int
   let r = cMode(text, optLevel, profile)
   let w = writeParts(stdout(), chain(r.outs), false)
   let code = w.failed2 ? 1 : r.code
   ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result
 
-fun runProject(text: System::String, optLevel: Int, profile: Bool,
+fun runProject(text, optLevel, profile,
                i: IO): System::Int
   let r = projectMode(text, optLevel, profile)
   let w = writeParts(stdout(), chain(r.outs), false)
   let code = w.failed2 ? 1 : r.code
   ret (w.io3.close(), i.close(), code) |> (c1, c2, result) => result
 
-fun runProjectTest(text: System::String, optLevel: Int, i: IO): System::Int
+fun runProjectTest(text, optLevel, i: IO): System::Int
   let r = projectTestMode(text, optLevel, false)
   let w = writeParts(stdout(), chain(r.outs), false)
   let code = w.failed2 ? 1 : r.code

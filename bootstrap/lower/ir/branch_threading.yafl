@@ -15,7 +15,7 @@ import Bootstrap::Ir
 fun threadBranches(a: CgApp): CgApp
   ret appWithFunctions(a, map(appFunctions(a), btFunction))
 
-fun [tail] btFunction(f: CgFunction): CgFunction
+fun [tail] btFunction(f): CgFunction
   let out = btOnce(f.fnOps)
   ret out.btChanged
     ? btFunction(cgFunctionStripUnusedOperations(cgFunctionWith(f, out.btOps, f.fnStackVars)))
@@ -41,7 +41,7 @@ fun [tail] btLoop<S>(s: S, ops: Segment<Op>|None,
       (n: None) => BtOut(build(acc.baOps), acc.baChanged)
     (er: Error<Op | None, Never>) => BtOut(build(acc.baOps), acc.baChanged)
 
-fun btStep([terminal] acc: BtAcc, op: Op, ops: Segment<Op>|None): BtAcc
+fun btStep([terminal] acc: BtAcc, op, ops: Segment<Op>|None): BtAcc
   ret match(op)
     (j: OpJump) => match(btTerminatorAfter(ops, j.jumpName))
       (t2: Op) => btSameJump(t2, j)
@@ -50,15 +50,15 @@ fun btStep([terminal] acc: BtAcc, op: Op, ops: Segment<Op>|None): BtAcc
       ()        => BtAcc(push(acc.baOps, op), acc.baChanged)
     (o: Op)     => BtAcc(push(acc.baOps, op), acc.baChanged)
 
-fun btSameJump(t2: Op, j: OpJump): Bool
+fun btSameJump(t2, j: OpJump): Bool
   ret match(t2)
     (j2: OpJump) => j2.jumpName == j.jumpName
     (o: Op)      => false
 
-fun btTerminatorAfter(ops: Segment<Op>|None, labelName: String): Op|None
+fun btTerminatorAfter(ops: Segment<Op>|None, labelName): Op|None
   ret btTaLoop(seqStream(ops), labelName)
 
-fun [tail] btTaLoop(st: SeqStream<Op>, labelName: String): Op|None
+fun [tail] btTaLoop(st: SeqStream<Op>, labelName): Op|None
   let p = cgPullOp(st)
   ret match(p.op)
     (nil: None) => None
@@ -66,7 +66,7 @@ fun [tail] btTaLoop(st: SeqStream<Op>, labelName: String): Op|None
       ? btNextTerminator(cgPullOp(p.stream).op)
       : btTaLoop(p.stream, labelName)
 
-fun btIsTargetLabel(op: Op, labelName: String): Bool
+fun btIsTargetLabel(op, labelName): Bool
   ret match(op)
     (lb: OpLabel) => lb.labelName == labelName
     (o: Op)       => false

@@ -40,7 +40,7 @@ fun spFieldsOf(o: CgObject): List<CgField>|None
 fun spIsArray(t2: CgType): Bool
   ret t2 is CgArray
 
-fun spZeroOf(ft: CgType): RParam
+fun spZeroOf(ft): RParam
   ret match(ft)
     (dp: CgDataPointer) => RpNullPointer()
     (i: CgInt)          => RpInteger(0, i.precision)
@@ -48,12 +48,12 @@ fun spZeroOf(ft: CgType): RParam
 
 # True if `name` occurs in `param`'s tree anywhere other than as the base of
 # a plain ObjectField read — i.e. the raw pointer is consumed.
-fun spBarePointerIn(param: RParam|None, name: String): Bool
+fun spBarePointerIn(param: RParam|None, name): Bool
   ret match(param)
     (p: RParam) => spBareIn(p, name)
     ()          => false
 
-fun spBareIn(p: RParam, name: String): Bool
+fun spBareIn(p, name): Bool
   ret match(p)
     (sv: RpStackVar)    => sv.name == name
     (of: RpObjectField) => spBaseIsName(of.pointer, name)
@@ -64,7 +64,7 @@ fun spBareIn(p: RParam, name: String): Bool
     # by construction.
     (o: RParam)         => rpTest(p, (q) => saIsVarNamed(q, name))
 
-fun spBaseIsName(ptr: RParam, name: String): Bool
+fun spBaseIsName(ptr, name): Bool
   ret match(ptr)
     (sv: RpStackVar) => sv.name == name
     (o: RParam)      => false
@@ -82,21 +82,21 @@ fun spCandidates(f: CgFunction, a: CgApp): List<SpCand>
                                     (op) => spOpEscapes(op, c.spReg)))
 
 fun [tail] spNewsLoop(s: Segment<Op>|None, i: Int32, a: CgApp,
-                      [terminal] acc: ListBuilder<SpCand>): ListBuilder<SpCand>
+                      [terminal] acc): ListBuilder<SpCand>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => i < seg.length
       ? spNewsLoop(s, i + 1i32, a, spNewsOp(acc, seg.array(i), a))
       : spNewsLoop(seg.next, 0i32, a, acc)
 
-fun spNewsOp([terminal] acc: ListBuilder<SpCand>, op: Op, a: CgApp): ListBuilder<SpCand>
+fun spNewsOp([terminal] acc, op, a: CgApp): ListBuilder<SpCand>
   ret match(op)
     (no: OpNewObject) => no.newObjSize is None
       ? spNewsRegister(acc, no, a)
       : acc
     (o: Op)           => acc
 
-fun spNewsRegister([terminal] acc: ListBuilder<SpCand>, no: OpNewObject,
+fun spNewsRegister([terminal] acc, no: OpNewObject,
                    a: CgApp): ListBuilder<SpCand>
   ret match(no.newObjRegister)
     (sv: RpStackVar) => match(spPayloadFields(appObject(a, no.newObjName)))
@@ -104,7 +104,7 @@ fun spNewsRegister([terminal] acc: ListBuilder<SpCand>, no: OpNewObject,
       ()                       => acc
     (o: RParam)      => acc
 
-fun spDefCount(ops: Segment<Op>|None, name: String): Int
+fun spDefCount(ops: Segment<Op>|None, name): Int
   ret fold(ops, 0,
            (n, op) => n + countIf(opGetLiveVars(op).writes,
                                   (sv) => saIsVarNamed(sv,
@@ -113,7 +113,7 @@ fun spDefCount(ops: Segment<Op>|None, name: String): Int
 fun countIf<T>(l: List<T>, pred: (:T): Bool): Int
   ret fold(l, 0, (n, x) => pred(x) ? n + 1 : n)
 
-fun spOpEscapes(op: Op, name: String): Bool
+fun spOpEscapes(op, name): Bool
   if any(opSavedVars(op), (sv) => saIsVarNamed(sv, name))
     ret true
   ret match(op)
@@ -127,10 +127,10 @@ fun spOpEscapes(op: Op, name: String): Bool
     (no: OpNewObject)    => false
     (o: Op)              => spReadsName(op, name)
 
-fun spReadsName(op: Op, name: String): Bool
+fun spReadsName(op, name): Bool
   ret any(opGetLiveVars(op).reads, (sv) => saIsVarNamed(sv, name))
 
-fun spMoveEscapes(m: OpMove, name: String): Bool
+fun spMoveEscapes(m: OpMove, name): Bool
   if spBareIn(m.moveSource, name)
     ret true
   ret match(m.moveTarget)
@@ -161,7 +161,7 @@ fun [tail] spCandFor(cs: Chain<SpCand>, name: String): SpCand|None
     (l: ChainLink)  => l.value.spReg == name ? l.value : spCandFor(l.next,
                                                                   name)
 
-fun spFieldLocal(cand: SpCand, field: String): RParam
+fun spFieldLocal(cand: SpCand, field): RParam
   let ft = spFieldType(chain(cand.spPayload), field)
   ret RpStackVar(ft, cand.spReg + "$" + field)
 
@@ -172,7 +172,7 @@ fun [tail] spFieldType(fs: Chain<CgField>, field: String): CgType
       ? l.value.fieldType
       : spFieldType(l.next, field)
 
-fun spRewrite(p: RParam, promoted: List<SpCand>): RParam
+fun spRewrite(p, promoted: List<SpCand>): RParam
   ret match(p)
     (of: RpObjectField) => of.index is None
       ? spRewriteField(of, promoted)
@@ -187,7 +187,7 @@ fun spRewriteField(of: RpObjectField, promoted: List<SpCand>): RParam
     (o: RParam)      => of
 
 fun [tail] spRewriteLoop(s: Segment<Op>|None, i: Int32, promoted: List<SpCand>,
-                         [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
+                         [terminal] acc): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => i < seg.length
@@ -195,7 +195,7 @@ fun [tail] spRewriteLoop(s: Segment<Op>|None, i: Int32, promoted: List<SpCand>,
                       spRewriteOp(acc, seg.array(i), promoted))
       : spRewriteLoop(seg.next, 0i32, promoted, acc)
 
-fun spRewriteOp([terminal] acc: SeqBuilder<Op>, op: Op,
+fun spRewriteOp([terminal] acc, op,
                 promoted: List<SpCand>): SeqBuilder<Op>
   ret match(op)
     (no: OpNewObject) => match(spPromotedRegister(no, promoted))
@@ -206,7 +206,7 @@ fun spRewriteOp([terminal] acc: SeqBuilder<Op>, op: Op,
       ()             => push(acc, spReplaced(op, promoted))
     (o: Op)           => push(acc, spReplaced(op, promoted))
 
-fun spReplaced(op: Op, promoted: List<SpCand>): Op
+fun spReplaced(op, promoted: List<SpCand>): Op
   ret opReplaceParams(op, (p) => spRewrite(p, promoted))
 
 fun spPromotedRegister(no: OpNewObject, promoted: List<SpCand>): SpCand|None
@@ -216,11 +216,11 @@ fun spPromotedRegister(no: OpNewObject, promoted: List<SpCand>): SpCand|None
 
 # NewObject zero-fills; the field locals must match so a partially-
 # initialised read stays defined.
-fun spZeroFills([terminal] acc: SeqBuilder<Op>, cand: SpCand): SeqBuilder<Op>
+fun spZeroFills([terminal] acc, cand: SpCand): SeqBuilder<Op>
   ret spZeroFillsLoop(chain(cand.spPayload), cand, acc)
 
 fun [tail] spZeroFillsLoop(fs: Chain<CgField>, cand: SpCand,
-                           [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
+                           [terminal] acc): SeqBuilder<Op>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => spZeroFillsLoop(l.next, cand,
@@ -263,12 +263,12 @@ fun [tail] spCandsFields(cs: Chain<SpCand>,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => spCandsFields(l.next, spCandFields(acc, l.value))
 
-fun spCandFields([terminal] acc: ListBuilder<CgField>,
+fun spCandFields([terminal] acc,
                  cand: SpCand): ListBuilder<CgField>
   ret spCandFieldsLoop(chain(cand.spPayload), cand, acc)
 
 fun [tail] spCandFieldsLoop(fs: Chain<CgField>, cand: SpCand,
-                            [terminal] acc: ListBuilder<CgField>): ListBuilder<CgField>
+                            [terminal] acc): ListBuilder<CgField>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => spCandFieldsLoop(l.next, cand,

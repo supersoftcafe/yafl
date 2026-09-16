@@ -41,7 +41,7 @@ enum TypeId
 
 # ── building ─────────────────────────────────────────────────────────────────
 
-fun spellingOf(sp: Spec): TypeId
+fun spellingOf(sp): TypeId
   ret match(sp)
     (bi: SBuiltin)     => TiBuiltin(bi.sbName)
     (n: SNamed)        => TiNamed(n.snName, spellList(n.snParams))
@@ -77,7 +77,7 @@ fun tiSortBySpelling(ids: List<TypeId>): List<TypeId>
 
 # ── the canonical spelling ───────────────────────────────────────────────────
 
-fun tiSerialise(t2: TypeId): String
+fun tiSerialise(t2): String
   ret match(t2)
     (x: TiNone)        => "_"
     (b: TiBuiltin)     => "B(" + b.tibName + ")"
@@ -100,7 +100,7 @@ fun tiJoin(ids: List<TypeId>): String
 
 # ── equality and hashing ─────────────────────────────────────────────────────
 
-fun eqTypeId(a: TypeId, b: TypeId): Bool
+fun eqTypeId(a, b): Bool
   ret match(a)
     (x: TiNone)        => b is TiNone
     (x: TiBuiltin)     => match(b)
@@ -150,12 +150,12 @@ fun [tail] eqTiEntries(a: Chain<(tteName: String, tteId: TypeId)>,
         ? eqTiEntries(la.next, lb.next)
         : false
 
-fun _tiMix(acc: Int32, h: Int32): Int32
+fun _tiMix(acc, h): Int32
   ret (acc * 31i32 + h) & 2147483647i32
 
 # Structural hash, cached per node through the hidden $hash slot — self-calls
 # reach child nodes through THEIR caches, so a deep identity hashes O(fanout).
-fun [hashed] hashTypeId(v: TypeId): Int32
+fun [hashed] hashTypeId(v): Int32
   ret match(v)
     (x: TiNone)        => 11i32
     (b: TiBuiltin)     => _tiMix(13i32, hashOf(b.tibName))
@@ -186,5 +186,5 @@ fun [tail] hashTiEntries(es: Chain<(tteName: String, tteId: TypeId)>, acc: Int32
 instance [ambient] BasicEquality<TypeId>
   fun `==`(left: TypeId, right: TypeId): Bool
     ret eqTypeId(left, right)
-  fun hashOf(value: TypeId): Int32
+  fun hashOf(value): Int32
     ret hashTypeId(value)

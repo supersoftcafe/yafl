@@ -10,7 +10,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun fixGlobalStrings(statements: List<PStmt>): List<PStmt>
+fun fixGlobalStrings(statements): List<PStmt>
   let values = sort(foldStmts(statements,
                                     gsIdNames,
                                     gsCollect,
@@ -22,10 +22,10 @@ fun fixGlobalStrings(statements: List<PStmt>): List<PStmt>
              rwStmts(statements, rwOnExpr((x) => gsReplace(x,
                                                            values))))
 
-fun gsIdNames(acc: List<String>, st: PStmt): List<String>
+fun gsIdNames(acc, st: PStmt): List<String>
   ret acc
 
-fun gsCollect(acc: List<String>, x: PExpr): List<String>
+fun gsCollect(acc, x): List<String>
   ret match(x)
     # First-seen order: gsGlobals numbers these by index, so the order is
     # part of the generated global names. `acc` is read by the dedup.
@@ -34,7 +34,7 @@ fun gsCollect(acc: List<String>, x: PExpr): List<String>
       : build(push(builderFrom(acc), s2.strValue))
     (o: PExpr)  => acc
 
-fun gsGlobals(vs: Chain<String>, index: Int,
+fun gsGlobals(vs, index: Int,
                      acc: List<PStmt>): List<PStmt>
   ret build(gsGlobalsB(vs, index, builderFrom(acc)))
 
@@ -50,7 +50,7 @@ fun [tail] gsGlobalsB(vs: Chain<String>, index: Int,
                   "", List(), PLine("$strings", index + 1, 1),
                   false, List<PStmt>())))
 
-fun gsReplace(x: PExpr, values: List<String>): PExpr|None
+fun gsReplace(x, values: List<String>): PExpr|None
   ret match(x)
     (s2: PeStr) => PeName("$strings::string@"
                             + String(gsIndexOf(chain(values), s2.strValue,

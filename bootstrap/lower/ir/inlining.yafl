@@ -60,7 +60,7 @@ class [linear, final] InlAcc(inlOps: ListBuilder<Op>,
 # The inlined-name uniquifier is the fixpoint EPOCH, not the op count:
 # distinct per round by construction (the count merely happened to change
 # every round), and never a calculated length. Python mirrors this exactly.
-fun doInlining(f: CgFunction, tag: String, a: CgApp,
+fun doInlining(f: CgFunction, tag, a: CgApp,
                shouldInline: (:CgFunction): Bool): CgFunction
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
     ret f
@@ -71,9 +71,9 @@ fun doInlining(f: CgFunction, tag: String, a: CgApp,
   ret cgFunctionWith(f, cgOpsOf(build(out.inlOps)),
         CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), out.inlVars)))
 
-fun [tail] inlLoop(s: Segment<Op>|None, iSeg: Int32, index: Int, tag: String, f: CgFunction,
+fun [tail] inlLoop(s: Segment<Op>|None, iSeg: Int32, index: Int, tag, f: CgFunction,
                    a: CgApp, shouldInline: (:CgFunction): Bool,
-                   [terminal] acc: InlAcc): InlAcc
+                   [terminal] acc): InlAcc
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
@@ -83,7 +83,7 @@ fun [tail] inlLoop(s: Segment<Op>|None, iSeg: Int32, index: Int, tag: String, f:
       : inlLoop(seg.next, 0i32, index, tag, f, a, shouldInline, acc)
 
 # One op: splice the callee in when every guard passes, else keep the op.
-fun inlStep(op: Op, uniqueId: String, f: CgFunction, a: CgApp,
+fun inlStep(op, uniqueId, f: CgFunction, a: CgApp,
             shouldInline: (:CgFunction): Bool,
             [terminal] acc: InlAcc): InlAcc
   ret match(inlCandidate(op, f, a, shouldInline))
@@ -93,7 +93,7 @@ fun inlStep(op: Op, uniqueId: String, f: CgFunction, a: CgApp,
 class [final] InlTarget(itCall: OpCall, itGf: RpGlobalFunction,
                         itArgs: RpNewStruct, itTarget: CgFunction)
 
-fun inlCandidate(op: Op, f: CgFunction, a: CgApp,
+fun inlCandidate(op, f: CgFunction, a: CgApp,
                  shouldInline: (:CgFunction): Bool): InlTarget|None
   ret match(op)
     (c: OpCall) => match(c.callFunction)
@@ -103,7 +103,7 @@ fun inlCandidate(op: Op, f: CgFunction, a: CgApp,
       (o: RParam)   => None
     (o4: Op)    => None
 
-fun inlCandidateChecked(c: OpCall, gf: RpGlobalFunction, ns: RpNewStruct,
+fun inlCandidateChecked(c, gf, ns,
                         f: CgFunction, a: CgApp,
                         shouldInline: (:CgFunction): Bool): InlTarget|None
   if f.fnName == gf.name || c.callMusttail
@@ -116,7 +116,7 @@ fun inlCandidateChecked(c: OpCall, gf: RpGlobalFunction, ns: RpNewStruct,
       : None
     ()                    => None
 
-fun inlIsParallel(op: Op): Bool
+fun inlIsParallel(op): Bool
   ret match(op)
     (p: OpParallelCall) => true
     (o: Op)             => false
@@ -130,7 +130,7 @@ fun inlIsParallel(op: Op): Bool
 # first-index semantics — the label is unique per splice, so the global test
 # reduces to this segment).
 
-fun inlSplice(t2: InlTarget, uniqueId: String,
+fun inlSplice(t2: InlTarget, uniqueId,
               [terminal] acc: InlAcc): InlAcc
   let target = t2.itTarget
   let pFields = cgFieldsOfOrEmpty(target.fnParams)
@@ -151,11 +151,11 @@ fun inlSplice(t2: InlTarget, uniqueId: String,
   ret InlAcc(builderFrom(inlEndBookkeeping(build(ops3), endLabel)),
              concat(acc.inlVars, newVars))
 
-fun inlLabelRenames(ops: Segment<Op>|None, uniqueId: String): List<RpRename>
+fun inlLabelRenames(ops: Segment<Op>|None, uniqueId): List<RpRename>
   ret build(inlLabelRenamesB(ops, 0i32, uniqueId, builder()))
 
-fun [tail] inlLabelRenamesB(s: Segment<Op>|None, i: Int32, uniqueId: String,
-                           [terminal] acc: ListBuilder<RpRename>): ListBuilder<RpRename>
+fun [tail] inlLabelRenamesB(s: Segment<Op>|None, i: Int32, uniqueId,
+                           [terminal] acc): ListBuilder<RpRename>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => i >= seg.length
@@ -169,14 +169,14 @@ fun [tail] inlLabelRenamesB(s: Segment<Op>|None, i: Int32, uniqueId: String,
 # The renamed StackVar for a callee param/local (its declared type + the
 # fresh inl<id>$ name) — the Move targets Python builds via variable_mapping.
 fun inlMappedVar(fields: List<CgField>, name: String,
-                 uniqueId: String): RParam
+                 uniqueId): RParam
   ret match(head(filter(fields, (f2) => f2.fieldName == name)))
     (f2: CgField) => RpStackVar(f2.fieldType, "inl" + uniqueId + "$" + name)
     ()             => RpStackVar(CgVoid(), "inl" + uniqueId + "$" + name)
                       # unreachable: every param name is a field
 
-fun inlThisCapture(t2: InlTarget, uniqueId: String, allFields: List<CgField>,
-                   [terminal] ops: ListBuilder<Op>): ListBuilder<Op>
+fun inlThisCapture(t2: InlTarget, uniqueId, allFields: List<CgField>,
+                   [terminal] ops): ListBuilder<Op>
   ret match(t2.itGf.object)
     (obj: RParam) => match(head(cgFieldsOfOrEmpty(t2.itTarget.fnParams)))
       (f2: CgField) => push(ops,
@@ -186,13 +186,13 @@ fun inlThisCapture(t2: InlTarget, uniqueId: String, allFields: List<CgField>,
     ()             => ops
 
 fun inlParamMoves(args: Chain<RpNamedValue>, params: Chain<CgField>,
-                         uniqueId: String, allFields: List<CgField>,
+                         uniqueId, allFields: List<CgField>,
                          ops: List<Op>): List<Op>
   ret build(inlParamMovesB(args, params, uniqueId, allFields, builderFrom(ops)))
 
 fun [tail] inlParamMovesB(args: Chain<RpNamedValue>, params: Chain<CgField>,
-                         uniqueId: String, allFields: List<CgField>,
-                         [terminal] ops: ListBuilder<Op>): ListBuilder<Op>
+                         uniqueId, allFields: List<CgField>,
+                         [terminal] ops): ListBuilder<Op>
   ret match(args)
     (nil: ChainEnd) => ops
     (av: ChainLink) => match(params)
@@ -203,8 +203,8 @@ fun [tail] inlParamMovesB(args: Chain<RpNamedValue>, params: Chain<CgField>,
                         av.value.value, false, List())))
 
 fun [tail] inlBody(s: Segment<Op>|None, i: Int32, c: OpCall, renames: List<RpRename>,
-                   endLabel: String,
-                   [terminal] acc: ListBuilder<Op>): ListBuilder<Op>
+                   endLabel,
+                   [terminal] acc): ListBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => i < seg.length
@@ -212,8 +212,8 @@ fun [tail] inlBody(s: Segment<Op>|None, i: Int32, c: OpCall, renames: List<RpRen
                 inlBodyOp(seg.array(i), c, renames, endLabel, acc))
       : inlBody(seg.next, 0i32, c, renames, endLabel, acc)
 
-fun inlBodyOp(op: Op, c: OpCall, renames: List<RpRename>, endLabel: String,
-              [terminal] acc: ListBuilder<Op>): ListBuilder<Op>
+fun inlBodyOp(op, c: OpCall, renames: List<RpRename>, endLabel,
+              [terminal] acc): ListBuilder<Op>
   ret match(op)
     (r: OpReturn)  => push(inlReturnMove(r, c, renames, acc),
                            OpJump(endLabel, List()))
@@ -226,7 +226,7 @@ fun inlBodyOp(op: Op, c: OpCall, renames: List<RpRename>, endLabel: String,
     (o: Op)        => push(acc, opRenameVars(op, renames))
 
 fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
-                  [terminal] acc: ListBuilder<Op>): ListBuilder<Op>
+                  [terminal] acc): ListBuilder<Op>
   ret match(c.callRegister)
     (reg: RParam) => push(acc, OpMove(reg,
                                    rpRenameVars(r.returnValue, renames),
@@ -236,7 +236,7 @@ fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
 # Python: `if end_jump in new_ops` (any Return was seen), then FIRST index —
 # if it is not the very last op, some jump needs a target: append the Label;
 # otherwise the sole jump sits just before where the label would go: pop it.
-fun inlEndBookkeeping(ops: List<Op>, endLabel: String): List<Op>
+fun inlEndBookkeeping(ops, endLabel): List<Op>
   ret match(inlFirstEndJumpIsLast(chain(ops), endLabel))
     (isLast: Bool) => isLast
       ? inlDropLast(chain(ops), List())
@@ -256,7 +256,7 @@ fun [tail] inlFirstEndJumpIsLast(ops: Chain<Op>, endLabel: String): Bool|None
         : inlFirstEndJumpIsLast(l.next, endLabel)
       (o: Op)     => inlFirstEndJumpIsLast(l.next, endLabel)
 
-fun inlDropLast(ops: Chain<Op>, acc: List<Op>): List<Op>
+fun inlDropLast(ops, acc: List<Op>): List<Op>
   ret build(inlDropLastB(ops, builderFrom(acc)))
 
 fun [tail] inlDropLastB(ops: Chain<Op>, [terminal] acc: ListBuilder<Op>): ListBuilder<Op>
@@ -284,7 +284,7 @@ fun functionReferenceCounts(a: CgApp): Dict<String, Int>
 fun frcFunction(acc: Dict<String, Int>, f: CgFunction): Dict<String, Int>
   ret fold(f.fnOps, acc, frcOp)
 
-fun frcOp(acc: Dict<String, Int>, op: Op): Dict<String, Int>
+fun frcOp(acc: Dict<String, Int>, op): Dict<String, Int>
   ret match(op)
     (c: OpCall) => match(c.callFunction)
       (gf: RpGlobalFunction) => gf.external

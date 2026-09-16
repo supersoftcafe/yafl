@@ -21,12 +21,12 @@ enum PErr(errLine: PLine, errMsg: String, errWarn: Bool = false)
 fun noErrs(): Set<PErr>
   ret Set()
 
-fun oneErr(lr: PLine, msg: String): Set<PErr>
+fun oneErr(lr, msg): Set<PErr>
   ret add(Set(), PErr(lr, msg))
 
 # ── TypeSpec.check ──────────────────────────────────────────────────────────
 
-fun checkSpec(sp: Spec, r: Resolver): Set<PErr>
+fun checkSpec(sp, r): Set<PErr>
   ret match(sp)
     (b: SBuiltin)      => isKnownBuiltin(b.sbName)
       ? noErrs()
@@ -44,7 +44,7 @@ fun checkSpec(sp: Spec, r: Resolver): Set<PErr>
     (af: SArrayField)  => checkSpec(af.safElem, r)
     (ls: SLazyStub)    => checkSpecOpt(ls.slsTarget, r)
 
-fun checkSpecOpt(sp: Spec|None, r: Resolver): Set<PErr>
+fun checkSpecOpt(sp: Spec|None, r): Set<PErr>
   ret match(sp)
     (s2: Spec) => checkSpec(s2, r)
     ()         => noErrs()
@@ -55,19 +55,19 @@ fun [tail] checkSpecs(ss: Chain<Spec>, r: Resolver,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => checkSpecs(l.next, r, union(acc, checkSpec(l.value, r)))
 
-fun [tail] checkFields(fs: Chain<SField>, r: Resolver,
-                       acc: Set<PErr>): Set<PErr>
+fun [tail] checkFields(fs: Chain<SField>, r,
+                       acc): Set<PErr>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => checkFields(l.next, r,
                                    union(acc, checkSpec(l.value.sfType, r)))
 
-fun isKnownBuiltin(name: String): Bool
+fun isKnownBuiltin(name): Bool
   ret name == "str" || name == "bigint" || name == "bool"
       || name == "int8" || name == "int16" || name == "int32"
       || name == "int64" || name == "float32" || name == "float64"
 
-fun checkNamed(n: SNamed, r: Resolver): Set<PErr>
+fun checkNamed(n: SNamed, r): Set<PErr>
   let found = findType(r, n.snName)
   if atLeast(chain(found.bItems), 2)
     ret oneErr(n.snLine, "Ambiguous reference to '" + n.snName + "'")
@@ -75,7 +75,7 @@ fun checkNamed(n: SNamed, r: Resolver): Set<PErr>
     ret noErrs()
   ret oneErr(n.snLine, "Unresolved reference to '" + n.snName + "'")
 
-fun checkClassSpec(c: SClass, r: Resolver): Set<PErr>
+fun checkClassSpec(c: SClass, r): Set<PErr>
   let tpErrs = checkSpecs(chain(c.scParams), r, noErrs())
   let found = findType(r, c.scName)
   if isEmpty(found.bItems)
@@ -92,7 +92,7 @@ fun checkClassSpec(c: SClass, r: Resolver): Set<PErr>
     ()         => tpErrs
 
 # A tuple: all named entries after all positional ones, then each entry.
-fun checkTuple(t2: STuple, r: Resolver): Set<PErr>
+fun checkTuple(t2: STuple, r): Set<PErr>
   if namedBeforePositional(t2.stEntries)
     ret oneErr(t2.stLine,
                "Named parameters are not allowed before positional parameters")
@@ -116,7 +116,7 @@ fun [tail] checkEntries(es: Chain<SEntry>, r: Resolver,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => checkEntries(l.next, r, union(acc, checkEntry(l.value, r)))
 
-fun checkEntry(en: SEntry, r: Resolver): Set<PErr>
+fun checkEntry(en: SEntry, r): Set<PErr>
   let err1 = checkSpecOpt(en.seType, r)
   let err2 = checkExprOpt(en.seDefault, r, en.seType)
   ret union(err1,
@@ -132,8 +132,8 @@ fun entryLine(en: SEntry): PLine
 # A default is cloned into every site that omits the field, so it must be a
 # literal or a [const] value: no captures, no effects, no evaluation order.
 
-fun defaultValueErrors(default: PExpr|None, r: Resolver, lr: PLine,
-                       what: String): Set<PErr>
+fun defaultValueErrors(default: PExpr|None, r, lr,
+                       what): Set<PErr>
   ret match(default)
     (d: PExpr) => isLiteralValue(d)
       ? noErrs()
@@ -142,7 +142,7 @@ fun defaultValueErrors(default: PExpr|None, r: Resolver, lr: PLine,
          : oneErr(lr, "a " + what + " default must be a literal or a [const] value"))
     ()         => noErrs()
 
-fun isLiteralValue(x: PExpr): Bool
+fun isLiteralValue(x): Bool
   ret match(stripConversions(x))
     (i: PeInt)     => true
     (f: PeFloat)   => true
@@ -159,19 +159,19 @@ fun [tail] allLiteralEntries(es: Chain<PTupEnt>): Bool
       ? allLiteralEntries(l.next)
       : false
 
-fun [tail] stripConversions(x: PExpr): PExpr
+fun [tail] stripConversions(x): PExpr
   ret match(x)
     (cv: PeConvert) => stripConversions(cv.convInner)
     (o: PExpr)      => x
 
-fun isConstReference(x: PExpr, r: Resolver): Bool
+fun isConstReference(x, r): Bool
   ret match(x)
     (nm: PeName) => match(soleItem(findData(r, nm.refName)))
       (f: Found) => hasAttr(stmtAttrs(f.fStmt), "const")
       ()         => false
     (o: PExpr)   => false
 
-fun stmtAttrs(st: PStmt): List<PAttr>
+fun stmtAttrs(st): List<PAttr>
   ret match(st)
     (f: PsFun)        => f.fAttrs
     (l: PsLet)        => l.lAttrs
@@ -184,17 +184,17 @@ fun stmtAttrs(st: PStmt): List<PAttr>
 # Arity first; then each `where` constraint, compiled with the caller's type
 # args in scope, must match some in-scope [trait] instance's declared type.
 
-fun checkCallerTypeParams(st: PsClass, callerParams: List<Spec>, lr: PLine,
-                          r: Resolver): Set<PErr>
+fun checkCallerTypeParams(st, callerParams: List<Spec>, lr,
+                          r): Set<PErr>
   ret callerTypeParamErrs(narrowClassStmt(st), callerParams, lr, r)
 
-fun narrowClassStmt(st: PsClass): PStmt
+fun narrowClassStmt(st): PStmt
   ret st
 
 # check_caller_type_params on ANY named statement (a function reference with
 # explicit type args checks the same arity + where-discharge rules).
-fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
-                        r: Resolver): Set<PErr>
+fun callerTypeParamErrs(st, callerParams: List<Spec>, lr,
+                        r): Set<PErr>
   let gens = stmtGens(st)
   if shorterThan(chain(gens), chain(callerParams))
     ret oneErr(lr, "Excess type parameters")
@@ -206,7 +206,7 @@ fun callerTypeParamErrs(st: PStmt, callerParams: List<Spec>, lr: PLine,
                          r),
                   lr, noErrs())
 
-fun callerGenFounds(gs: Chain<PGen>, cs: Chain<Spec>,
+fun callerGenFounds(gs, cs,
                            acc: List<Found>): List<Found>
   ret build(callerGenFoundsB(gs, cs, builderFrom(acc)))
 
@@ -230,7 +230,7 @@ fun [tail] checkWheres(ws: Chain<Spec>, r: Resolver, lr: PLine,
     (l: ChainLink)  => checkWheres(l.next, r, lr,
                                    union(acc, checkOneWhere(l.value, r, lr)))
 
-fun checkOneWhere(w: Spec, r: Resolver, lr: PLine): Set<PErr>
+fun checkOneWhere(w, r, lr): Set<PErr>
   let compiled = compileSpec(w, r)
   if !isEmpty(compiled.soGlobals)
     ret oneErr(lr, "Compile steps incomplete for '" + ctWhereName(w)
@@ -270,8 +270,8 @@ fun [tail] anyInstanceMatches(ts: Chain<PStmt>, compiled: Spec,
         : anyInstanceMatches(l.next, compiled, r)
       (o: PStmt)            => anyInstanceMatches(l.next, compiled, r)
 
-fun instancePatternMatches(ti: PsTraitInstance, compiled: Spec,
-                           r: Resolver): Bool
+fun instancePatternMatches(ti: PsTraitInstance, compiled,
+                           r): Bool
   ret match(ti.tiPattern)
     (pat: SClass) => match(compiled)
       (cmp: SClass) => pat.scName != cmp.scName
@@ -284,7 +284,7 @@ fun instancePatternMatches(ti: PsTraitInstance, compiled: Spec,
 # `unify_generic(inst.pattern, compiled, {p.name for p in inst.type_params})
 #  is not None` — the instance's OWN params are the holes; anything else is
 # rigid.
-fun unifiesWithInstance(pat: SClass, cmp: SClass, ti: PsTraitInstance): Bool
+fun unifiesWithInstance(pat: SClass, cmp, ti: PsTraitInstance): Bool
   ret match(unifyGeneric(pat, cmp,
                          genNames(chain(ti.tiGens), builder()),
                          List()))
@@ -296,13 +296,13 @@ fun unifiesWithInstance(pat: SClass, cmp: SClass, ti: PsTraitInstance): Bool
 fun triTrue2(x: Tri): Bool
   ret triTrue(x)
 
-fun ctWhereName(sp: Spec): String
+fun ctWhereName(sp): String
   ret match(sp)
     (n: SNamed) => n.snName
     (c: SClass) => c.scName
     (o: Spec)   => ""
 
-fun ctSpecLine(sp: Spec): PLine
+fun ctSpecLine(sp): PLine
   ret match(sp)
     (b: SBuiltin)      => b.sbLine
     (n: SNamed)        => n.snLine

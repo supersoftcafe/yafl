@@ -32,10 +32,10 @@ enum Converged
   enum CvOk(cvStatements: List<PStmt>, cvPasses: Int)
   enum CvDiverged(cvLast: List<PStmt>)
 
-fun converge(statements: List<PStmt>): Converged
+fun converge(statements): Converged
   ret convergeLoop(statements, 1)
 
-fun [tail] convergeLoop(statements: List<PStmt>, pass: Int): Converged
+fun [tail] convergeLoop(statements, pass): Converged
   if pass > MAX_COMPILE_ITERATIONS
     ret CvDiverged(statements)
   let next = compilePass(statements)
@@ -45,8 +45,8 @@ fun [tail] convergeLoop(statements: List<PStmt>, pass: Int): Converged
 
 # One pass: every statement compiles against a resolver over the CURRENT set,
 # and the extra statements it creates join the set for the next pass.
-fun compilePass(statements: List<PStmt>): List<PStmt>
-  let r = rootResolver(statements, collectParamSuggestions(statements))
+fun compilePass(statements): List<PStmt>
+  let r = rootResolver(statements)
   ret build(passLoop(chain(statements), r, builder()))
 
 # Each statement's own output, then whatever it hoisted out beside itself:

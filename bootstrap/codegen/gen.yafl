@@ -23,7 +23,7 @@ import Bootstrap::Types
 
 # ── pointer paths (typedecl get_pointer_paths) ───────────────────────────────
 
-fun cgTypePointerPaths(t2: CgType, path: String): List<String>
+fun cgTypePointerPaths(t2, path): List<String>
   ret match(t2)
     (d: CgDataPointer)      => list1(path)
     (fp: CgFuncPointer)     => list1(path + ".o")
@@ -31,7 +31,7 @@ fun cgTypePointerPaths(t2: CgType, path: String): List<String>
     (im: CgImmediateStruct) => cgPathsFields(im.fields, path)
     (o: CgType)             => List()
 
-fun cgPathsFields(fields: List<CgField>, path: String): List<String>
+fun cgPathsFields(fields: List<CgField>, path): List<String>
   ret fold(fields, List(), (acc, f2) =>
         concat(acc, cgTypePointerPaths(f2.fieldType, path + "." + mangleName(f2.fieldName))))
 
@@ -107,13 +107,13 @@ fun objectsInExtendsOrder(a: CgApp): List<CgObject>
                          Set())).ooOrder)
 
 fun [tail] objVisitAll(os: Chain<CgObject>, a: CgApp,
-                       [terminal] acc: ObjOrder): ObjOrder
+                       [terminal] acc): ObjOrder
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => objVisitAll(l.next, a,
                                    objVisit(acc, l.value.objName, a))
 
-fun objVisit([terminal] acc: ObjOrder, name: String, a: CgApp): ObjOrder
+fun objVisit([terminal] acc: ObjOrder, name, a: CgApp): ObjOrder
   if contains(acc.ooSeen, name)
     ret acc
   # Pre-mark: extends cycles terminate; foreign/extern parents not in the
@@ -123,7 +123,7 @@ fun objVisit([terminal] acc: ObjOrder, name: String, a: CgApp): ObjOrder
     (o: CgObject) => objVisitParents(marked, o, a)
     ()             => marked
 
-fun objVisitParents([terminal] acc: ObjOrder, o: CgObject, a: CgApp): ObjOrder
+fun objVisitParents([terminal] acc, o: CgObject, a: CgApp): ObjOrder
   ret objVisitOne(chain(o.objExtends), a, acc)
     |> (afterParents) => ObjOrder(push(afterParents.ooOrder, o),
                                   afterParents.ooSeen)
@@ -140,7 +140,7 @@ class [final] VtRow(vtI: String, vtF: String)
 
 # One walk each: the rendered C fragment AND the count the macro argument
 # needs (no-length ruling — counts ride existing walks, joins unchanged).
-fun [tail] vtRowsText(rs: Chain<VtRow>, n: Int, acc: String): (n: Int, text: String)
+fun [tail] vtRowsText(rs: Chain<VtRow>, n, acc): (n: Int, text: String)
   ret match(rs)
     (nil: ChainEnd) => (n, acc)
     (l: ChainLink)  => vtRowsText(l.next, n + 1,
@@ -160,7 +160,7 @@ fun vtEntryOf(o: CgObject): VtableEntry
   let ms = vtMethodsOf(chain(o.objFunctions), 0, builder())
   ret VtableEntry(o.objName, ms.names, ms.n)
 
-fun [tail] vtMethodsOf(fs: Chain<CgFuncSlot>, n: Int,
+fun [tail] vtMethodsOf(fs: Chain<CgFuncSlot>, n,
                        [terminal] acc: ListBuilder<String>): (names: List<String>, n: Int)
   ret match(fs)
     (nil: ChainEnd) => (build(acc), n)
@@ -222,7 +222,7 @@ fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
 
 # n copies of the catch-all row. Prepended, not appended: every element is the
 # same value, so which end they go on cannot be observed.
-fun [tail] vtRows(n: Int, acc: List<VtRow>): List<VtRow>
+fun [tail] vtRows(n, acc: List<VtRow>): List<VtRow>
   if n <= 0
     ret acc
   ret vtRows(n - 1, prepend(vtDefaultRow(), acc))
@@ -237,7 +237,7 @@ fun [tail] vtLastLoop(rs: Chain<VtRow>, sofar: Bool): Bool
     (l: ChainLink)  => vtLastLoop(l.next, vtIsDefault(l.value))
 
 # id & (size-1), linear probe past occupied rows, growing as needed.
-fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: Dict<String, Int>, size: Int): List<VtRow>
+fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: Dict<String, Int>, size): List<VtRow>
   let id = methodIdGet(methodIds, s2.slotVirtualName)
   ret vtProbe(rows, id & (size - 1),
               VtRow("__FUNCTION_ID__" + mangleName(s2.slotVirtualName),
@@ -247,7 +247,7 @@ fun vtPlace(rows: List<VtRow>, s2: CgFuncSlot, methodIds: Dict<String, Int>, siz
 # default slot, splicing the new row in where it lands (or appending when the
 # probe runs off the end). The old form re-indexed and rebuilt the whole table
 # per probe step.
-fun vtProbe(rows: List<VtRow>, index: Int, row: VtRow): List<VtRow>
+fun vtProbe(rows: List<VtRow>, index, row: VtRow): List<VtRow>
   ret build(vtProbeLoop(chain(rows), index, row, builder()))
 
 # The rows walked so far are re-emitted in place, so they go into a builder;
@@ -271,7 +271,7 @@ class [final] GenMasks(gmVarLines: List<String>, gmMasksInit: String)
 
 # Objects wider than 64 slots carry the rest of the pointer map in a static
 # window array; window 0 duplicates the inline word.
-fun genObjectMasks(o: CgObject, commentLine: String, mangled: String): GenMasks
+fun genObjectMasks(o: CgObject, commentLine, mangled): GenMasks
   let nwindows = cgObjectGetPointerMaskWindowCount(o)
   if nwindows <= 1
     ret GenMasks(List(), "")
@@ -285,7 +285,7 @@ fun genObjectMasks(o: CgObject, commentLine: String, mangled: String): GenMasks
                + "    .object_pointer_mask_words = " + String(nwindows) + ",\n")
 
 # Window w of the pointer mask, low word first — the order is the array's.
-fun [tail] genMaskWindows(o: CgObject, n: Int, w: Int,
+fun [tail] genMaskWindows(o: CgObject, n: Int, w,
                           [terminal] acc: ListBuilder<String>): ListBuilder<String>
   if w >= n
     ret acc
@@ -365,11 +365,11 @@ fun genDeclareMain(profile: Bool, nProf: Int): String
 
 # c_str: escape backslashes and quotes only — the exact twin of gen.py's local
 # escaper (names and paths never contain other C-special bytes).
-fun profCStr(s: String): String
+fun profCStr(s): String
   ret "\"" + toString(profCStrBody(s, 0, StringBuilder())) + "\""
 
-fun [tail] profCStrBody(s: String, i: Int,
-                        [terminal] sb: StringBuilder): StringBuilder
+fun [tail] profCStrBody(s, i,
+                        [terminal] sb): StringBuilder
   let bs = findByte(s, '\\', i)
   let qt = findByte(s, '"', i)
   let nxt = bs < 0 ? qt : qt < 0 ? bs : bs < qt ? bs : qt
@@ -464,7 +464,7 @@ fun genApplication(a: CgApp, headers: List<String>, profile: Bool): List<String>
             prepend(genDeclareMain(profile, prof.n), List()))
   ret genFlatten(build(sec))
 
-fun profIdOf(profile: Bool, id2: Int): Int|None
+fun profIdOf(profile: Bool, id2): Int|None
   ret profile ? id2 : None
 
 # --profile: non-foreign functions are numbered 0..N-1 in emission order —

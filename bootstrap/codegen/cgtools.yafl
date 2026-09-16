@@ -13,7 +13,7 @@ import Bootstrap::Types
 # ported below (typedecl/param/ops/ir). Named "cgtools" rather than Python's
 # bare "tools" — too generic for this single flat namespace.
 
-fun isValidMangleChar(c: Int32): Bool
+fun isValidMangleChar(c): Bool
   ret (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 
 fun operatorCharName(c: Int32): String|None
@@ -34,11 +34,11 @@ fun operatorCharName(c: Int32): String|None
     ('~') => "tilde"
     ()    => None
 
-fun hexDigit(n: Int): String
+fun hexDigit(n): String
   let hexd = "0123456789abcdef"
   ret slice(hexd, n, n + 1)
 
-fun hexDigits(n: Int): String
+fun hexDigits(n): String
   ret n < 16 ? hexDigit(n) : hexDigits(n / 16) + hexDigit(n % 16)
 
 fun hexMin2(v: Int32): String
@@ -46,10 +46,10 @@ fun hexMin2(v: Int32): String
   ret n < 16 ? "0" + hexDigit(n) : hexDigits(n)
 
 # `::` (namespace separator) becomes `__` before individual char processing.
-fun joinDoubleColon(s: String): String
+fun joinDoubleColon(s): String
   ret join(split(s, "::"), "__")
 
-fun mangleChar(c: Int32): String
+fun mangleChar(c): String
   if isValidMangleChar(c)
     ret asciiToString(c)
   if c == '@' || c == '$'
@@ -60,14 +60,14 @@ fun mangleChar(c: Int32): String
     (name: String) => name
     ()             => "X" + hexMin2(c)
 
-fun mangleName(symbol: String): String
+fun mangleName(symbol): String
   ret fold(codepoints(joinDoubleColon(symbol)), "", (acc, c) => acc + mangleChar(c))
 
-fun toPointerMask(fieldType: CgType, typeStr: String): String
+fun toPointerMask(fieldType, typeStr): String
   ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path) => "|maskof(" + typeStr + ", " + path + ")"), "") + ")"
 
 # One 64-slot window of a wide object's pointer map. maskof_w is 0 for a field
 # outside the window (modulo keeps the shift defined), so every field appears
 # in every window's expression and C folds each to its constant.
-fun toPointerMaskWindow(fieldType: CgType, typeStr: String, window: Int): String
+fun toPointerMaskWindow(fieldType, typeStr, window: Int): String
   ret "(0" + join(map(cgGetPointerPaths(fieldType, ""), (path) => "|maskof_w(" + typeStr + ", " + path + ", " + String(window) + ")"), "") + ")"

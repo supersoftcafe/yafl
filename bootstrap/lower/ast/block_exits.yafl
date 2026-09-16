@@ -12,17 +12,22 @@ import Bootstrap::Ast
 
 
 
+# Numbering reads no types, so the walk threads no scope (None).
 fun assignBlockExits(statements: List<PStmt>): List<PStmt>
-  let blocks = rwnStmts(statements, RwN(beBlockCb, rwnNoStmt), 0)
-  ret rwnStmts(blocks.rnssStmts, RwN(rwnNoExpr, beRetCb), 0).rnssStmts
+  let blocks = rwnStmts(statements,
+                        RwN((n, _sc, x) => beBlockCb(n, x), rwnNoStmt),
+                        None, 0)
+  ret rwnStmts(blocks.rnssStmts,
+               RwN(rwnNoExpr, (n, _sc, st) => beRetCb(n, st)),
+               None, 0).rnssStmts
 
-fun beBlockCb(n: Int, x: PExpr): (n2: Int, r: PExpr|None)
+fun beBlockCb(n: Int, x): (n2: Int, r: PExpr|None)
   ret match(x)
     (bk: PeBlock) => (n + 1, PeBlock(bk.blockStmts, bk.blockValue,
                                      "blk@" + String(n), bk.pebkLine))
     (o: PExpr)    => (n, None)
 
-fun beRetCb(n: Int, st: PStmt): (n2: Int, r: PStmt|None)
+fun beRetCb(n, st): (n2: Int, r: PStmt|None)
   ret match(st)
     (rt: PsRet) => (n + 1, PsRet(rt.retValue, rt.psrLine, n))
     (o: PStmt)  => (n, None)

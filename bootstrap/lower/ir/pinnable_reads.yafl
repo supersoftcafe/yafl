@@ -34,14 +34,14 @@ import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
 
 
-fun resolvePinnableReads(a: CgApp): CgApp
+fun resolvePinnableReads(a): CgApp
   let names = prNames(chain(appObjects(a)), setEmpty())
   ret isEmpty(names.setIx)
     ? a
     : appWithFunctions(a, map(appFunctions(a),
                               (f) => prFunction(f, names)))
 
-fun [tail] prNames(os: Chain<CgObject>, acc: StrSet): StrSet
+fun [tail] prNames(os: Chain<CgObject>, acc): StrSet
   ret match(os)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => prNames(l.next, l.value.objIsPinnable
@@ -56,7 +56,7 @@ fun prFunction(f: CgFunction, names: StrSet): CgFunction
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
                  f.fnSourceFile, f.fnSourceLine)
 
-fun prRewrite(p: RParam, names: StrSet): RParam
+fun prRewrite(p, names: StrSet): RParam
   ret match(p)
     (x: RpObjectField)  => prRewriteField(x, names)
     (x: RpArrayElement) => prRewriteElement(x, names)
@@ -89,7 +89,7 @@ fun prRewriteField(x: RpObjectField, names: StrSet): RParam
                                     CgDataPointer()),
                     x.objectName, x.field, x.index, x.fresh)
 
-fun prAlreadyResolved(p: RParam): Bool
+fun prAlreadyResolved(p): Bool
   ret match(p)
     (x: RpRuntimeInvoke) => x.function == "object_resolve"
     (o: RParam)          => false

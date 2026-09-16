@@ -13,26 +13,26 @@ import Bootstrap::Types
 
 
 
-fun dLine(sb: StringBuilder, depth: Int, kind: String,
-          lr: PLine, extra: String): StringBuilder
+fun dLine(sb, depth, kind,
+          lr: PLine, extra): StringBuilder
   ret append(sb, indentOf(depth) + kind + "|" + String(lr.plLine) + ":"
              + String(lr.plCol) + "|" + extra + "\n")
 
-fun [tail] indentLoop(n: Int, acc: String): String
+fun [tail] indentLoop(n, acc): String
   ret n == 0 ? acc : indentLoop(n - 1, acc + "  ")
 
-fun indentOf(depth: Int): String
+fun indentOf(depth): String
   ret indentLoop(depth, "")
 
 # ── Python str repr ─────────────────────────────────────────────────────────
 
-fun pyRepr(s: String): String
+fun pyRepr(s): String
   let useDouble = containsByte(s, '\'') && !containsByte(s, '"')
   let q = useDouble ? "\"" : "'"
   ret q + reprBody(s, 0, useDouble ? '"' : '\'', "") + q
 
-fun [tail] reprBody(s: String, at: Int, quote: Int32,
-                    acc: String): String
+fun [tail] reprBody(s, at, quote: Int32,
+                    acc): String
   if at >= length(s)
     ret acc
   let c = byteAt(s, at)
@@ -53,7 +53,7 @@ fun reprByte(c: Int32, quote: Int32): String
     ret "\\x" + hexByte(Int(c))
   ret asciiToString(c)
 
-fun hexByte(v: Int): String
+fun hexByte(v): String
   let hexd = "0123456789abcdef"
   ret slice(hexd, v / 16, v / 16 + 1) + slice(hexd, v % 16, v % 16 + 1)
 
@@ -64,7 +64,7 @@ fun tyStr(o: Spec|None): String
     (ty: Spec) => tyOf(ty)
     ()        => "-"
 
-fun tyOf(ty: Spec): String
+fun tyOf(ty): String
   ret match(ty)
     (n: SNamed)    => "N(" + n.snName + (isEmpty(n.snParams) ? ""
                         : "<" + tyList(n.snParams) + ">") + ")"
@@ -117,12 +117,12 @@ fun wheresStr(ws: List<Spec>): String
 
 # ── expression walk ──────────────────────────────────────────────────────────
 
-fun dumpExprOpt(o: PExpr|None, depth: Int, sb: StringBuilder): StringBuilder
+fun dumpExprOpt(o: PExpr|None, depth, sb): StringBuilder
   ret match(o)
     (x: PExpr) => dumpExpr(x, depth, sb)
     ()         => append(sb, indentOf(depth) + "None|-|\n")
 
-fun dumpExpr(x: PExpr, depth: Int, sb: StringBuilder): StringBuilder
+fun dumpExpr(x, depth, sb): StringBuilder
   ret match(x)
     (i: PeInt)    => dLine(sb, depth, "Int", i.peiLine,
                            String(i.value) + ":" + String(i.precision))
@@ -203,7 +203,7 @@ fun lazyCapMark(c: String|None): String
     (n: String) => "!cap=" + n
     ()          => ""
 
-fun loopParamNames(ps: Chain<PExpr>, acc: List<String>): List<String>
+fun loopParamNames(ps, acc: List<String>): List<String>
   ret build(loopParamNamesB(ps, builderFrom(acc)))
 
 fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
@@ -213,14 +213,14 @@ fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String>
       (nm: PeName) => loopParamNamesB(l.next, push(acc, nm.refName))
       (o: PExpr)   => loopParamNamesB(l.next, acc)
 
-fun [tail] dumpExprs(es: List<PExpr>, depth: Int,
-                     sb: StringBuilder): StringBuilder
+fun [tail] dumpExprs(es: List<PExpr>, depth,
+                     sb): StringBuilder
   ret match(head(es))
     (x: PExpr) => dumpExprs(tail(es), depth, dumpExpr(x, depth, sb))
     ()         => sb
 
-fun [tail] dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth: Int,
-                       sb: StringBuilder): StringBuilder
+fun [tail] dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth,
+                       sb): StringBuilder
   ret match(head(es))
     (en: PTupEnt) => dumpTupEnts(tail(es), lr, depth,
         dumpExpr(en.tupValue, depth + 1,
@@ -228,12 +228,12 @@ fun [tail] dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth: Int,
                 en.tupName + "|" + (en.tupSpread ? "*" : ""))))
     ()            => sb
 
-fun [tail] dumpArms(arms: List<PArm>, depth: Int, sb: StringBuilder): StringBuilder
+fun [tail] dumpArms(arms: List<PArm>, depth, sb): StringBuilder
   ret match(head(arms))
     (a: PArm) => dumpArms(tail(arms), depth, dumpArm(a, depth, sb))
     ()        => sb
 
-fun dumpArm(a: PArm, depth: Int, sb: StringBuilder): StringBuilder
+fun dumpArm(a: PArm, depth, sb): StringBuilder
   let opened = dLine(sb, depth, "Arm", a.parmLine, a.armName + "|" + tyStr(a.armType))
   let lits = dumpLits(a.armLiterals, depth + 1, opened)
   let guarded = match(a.armGuard)
@@ -241,12 +241,12 @@ fun dumpArm(a: PArm, depth: Int, sb: StringBuilder): StringBuilder
     ()          => lits
   ret dumpExpr(a.armBody, depth + 1, guarded)
 
-fun [tail] dumpLits(ls: List<PLit>, depth: Int, sb: StringBuilder): StringBuilder
+fun [tail] dumpLits(ls: List<PLit>, depth, sb): StringBuilder
   ret match(head(ls))
     (l: PLit) => dumpLits(tail(ls), depth, dumpLit(l, depth, sb))
     ()        => sb
 
-fun dumpLit(l: PLit, depth: Int, sb: StringBuilder): StringBuilder
+fun dumpLit(l, depth, sb): StringBuilder
   ret match(l)
     (x: PlExpr)  => dumpExpr(x.litExpr, depth, sb)
     (r: PlRange) => dumpExpr(r.rangeHi, depth + 1,
@@ -255,12 +255,12 @@ fun dumpLit(l: PLit, depth: Int, sb: StringBuilder): StringBuilder
 
 # ── statement walk ───────────────────────────────────────────────────────────
 
-fun [tail] dumpStmts(ss: List<PStmt>, depth: Int, sb: StringBuilder): StringBuilder
+fun [tail] dumpStmts(ss: List<PStmt>, depth, sb): StringBuilder
   ret match(head(ss))
     (st: PStmt) => dumpStmts(tail(ss), depth, dumpStmt(st, depth, sb))
     ()          => sb
 
-fun dumpStmt(st: PStmt, depth: Int, sb: StringBuilder): StringBuilder
+fun dumpStmt(st, depth, sb): StringBuilder
   ret match(st)
     (f: PsFun) => dLine(sb, depth, "Fun", f.psfLine,
                         f.fName + "|" + attrsStr(f.fAttrs) + "|" + gensStr(f.fGens)

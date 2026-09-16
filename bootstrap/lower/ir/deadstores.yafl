@@ -20,7 +20,7 @@ import Bootstrap::StdlibCandidates
 fun eliminateDeadStores(a: CgApp): CgApp
   ret appWithFunctions(a, map(appFunctions(a), dsFunction))
 
-fun [tail] dsFunction(f: CgFunction): CgFunction
+fun [tail] dsFunction(f): CgFunction
   let out = dsOnce(f)
   ret out.changed ? dsFunction(out.fn) : f
 
@@ -30,12 +30,12 @@ fun [tail] dsFunction(f: CgFunction): CgFunction
 fun dsCollectReads(ops: Segment<Op>|None): Dict<String, Bool>
   ret fold(ops, Dict(), dsOpReads)
 
-fun dsOpReads(acc: Dict<String, Bool>, op: Op): Dict<String, Bool>
+fun dsOpReads(acc: Dict<String, Bool>, op): Dict<String, Bool>
   ret fold(opSavedVars(op),
            fold(opGetLiveVars(op).reads, acc, dsAddStackVarName),
            dsAddStackVarName)
 
-fun dsAddStackVarName(acc: Dict<String, Bool>, rp: RParam): Dict<String, Bool>
+fun dsAddStackVarName(acc, rp): Dict<String, Bool>
   ret match(rp)
     (sv: RpStackVar) => put(acc, sv.name, true)
     (o: RParam)      => acc
@@ -69,7 +69,7 @@ fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
 
 # The per-op decision: the op to keep (possibly rewritten) or None to drop,
 # plus whether anything changed.
-fun dsStep(op: Op, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
+fun dsStep(op, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
   ret match(op)
     (m: OpMove)         => dsStepMove(m, reads)
     (c: OpCall)         => dsStepCall(c, reads)

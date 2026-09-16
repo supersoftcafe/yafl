@@ -31,25 +31,25 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun saInvoke1(function: String, a0: RParam): RParam
+fun saInvoke1(function, a0): RParam
   ret RpRuntimeInvoke(function,
                       RpNewStruct(list1(RpNamedValue("a0", a0))),
                       CgDataPointer())
 
-fun saInvoke2(function: String, a0: RParam, a1: RParam): RParam
+fun saInvoke2(function, a0, a1): RParam
   ret RpRuntimeInvoke(function,
                       RpNewStruct(list2(RpNamedValue("a0", a0),
                                         RpNamedValue("a1", a1))),
                       CgDataPointer())
 
-fun saInvoke3(function: String, a0: RParam, a1: RParam, a2: RParam): RParam
+fun saInvoke3(function, a0, a1, a2): RParam
   ret RpRuntimeInvoke(function,
                       RpNewStruct(list3(RpNamedValue("a0", a0),
                                         RpNamedValue("a1", a1),
                                         RpNamedValue("a2", a2))),
                       CgDataPointer())
 
-fun saLengthOf(value: RParam): RParam
+fun saLengthOf(value): RParam
   ret saInvoke1("string_length_int", value)
 
 # One back-edge's recognised push chain.
@@ -73,7 +73,7 @@ fun saOperandsOf(inv: RpRuntimeInvoke): List<RParam>|None
 # Chase a Phi source to an append/concat_n chain left-rooted at `acc`. The
 # Phi source itself must be a single-read var defined by the chain's final
 # invoke (the Phi counts as its one read).
-fun saRecogniseStep(edge: String, source: RParam, acc: String,
+fun saRecogniseStep(edge, source, acc,
                     defs: SsaDefs, reads: Dict<String, Int>): SaStep|None
   ret match(source)
     (sv: RpStackVar) => scReadOnce(reads, sv.name)
@@ -81,7 +81,7 @@ fun saRecogniseStep(edge: String, source: RParam, acc: String,
       : None
     (o: RParam)      => None
 
-fun saStepFromRoot(edge: String, resultName: String, acc: String,
+fun saStepFromRoot(edge, resultName, acc,
                    defs: SsaDefs, reads: Dict<String, Int>): SaStep|None
   ret match(sdGet(defs, resultName))
     (rootDef: RParam) => match(saFlatten(rootDef, acc, defs, reads))
@@ -92,7 +92,7 @@ fun saStepFromRoot(edge: String, resultName: String, acc: String,
 
 # Operand spine of the append tree at `param`; None = not a chain. Names of
 # single-read locals the chase passed through ride along in `moves`.
-fun saFlatten(param: RParam, acc: String, defs: SsaDefs,
+fun saFlatten(param, acc, defs: SsaDefs,
               reads: Dict<String, Int>): (ops: List<RParam>, moves: List<String>)|None
   ret match(param)
     (inv: RpRuntimeInvoke) => match(saOperandsOf(inv))
@@ -105,7 +105,7 @@ fun saFlatten(param: RParam, acc: String, defs: SsaDefs,
         : None
     (o: RParam)            => None
 
-fun saFlattenInvoke(ops: List<RParam>, acc: String, defs: SsaDefs,
+fun saFlattenInvoke(ops: List<RParam>, acc, defs: SsaDefs,
                     reads: Dict<String, Int>): (ops: List<RParam>, moves: List<String>)|None
   ret match(head(ops))
     (first: RParam) => match(saFlatten(first, acc, defs, reads))
@@ -114,7 +114,7 @@ fun saFlattenInvoke(ops: List<RParam>, acc: String, defs: SsaDefs,
       ()                                               => None
     ()              => None
 
-fun saFlattenChase(sv: RpStackVar, acc: String, defs: SsaDefs,
+fun saFlattenChase(sv: RpStackVar, acc, defs: SsaDefs,
                    reads: Dict<String, Int>): (ops: List<RParam>, moves: List<String>)|None
   ret match(sdGet(defs, sv.name))
     (inner: RParam) => match(saFlatten(inner, acc, defs, reads))
@@ -123,7 +123,7 @@ fun saFlattenChase(sv: RpStackVar, acc: String, defs: SsaDefs,
       ()                                                 => None
     ()              => None
 
-fun saStepFromSpine(edge: String, resultName: String, acc: String,
+fun saStepFromSpine(edge, resultName, acc,
                     spine: List<RParam>, moves: List<String>): SaStep|None
   if !atLeast(chain(spine), 2)
     ret None
@@ -136,17 +136,17 @@ fun saStepFromSpine(edge: String, resultName: String, acc: String,
     ? SaStep(edge, resultName, pushes, prepend(resultName, moves))
     : None
 
-fun saRootIsAcc(root: RParam|None, acc: String): Bool
+fun saRootIsAcc(root: RParam|None, acc): Bool
   ret match(root)
     (r: RParam) => match(r)
       (sv: RpStackVar) => sv.name == acc
       (o: RParam)      => false
     ()          => false
 
-fun saMentionsVar(p: RParam, name: String): Bool
+fun saMentionsVar(p, name): Bool
   ret rpTest(p, (q) => saIsVarNamed(q, name))
 
-fun saIsVarNamed(q: RParam, name: String): Bool
+fun saIsVarNamed(q, name): Bool
   ret match(q)
     (sv: RpStackVar) => sv.name == name
     (o: RParam)      => false
@@ -160,7 +160,7 @@ fun deforestStringAccumulation(a: CgApp): CgApp
 class [final] SaPlan(saPhiIdx: Int, saAcc: String, saSteps: List<SaStep>,
                      saInits: List<OpPhiSource>)
 
-fun saFunction(f: CgFunction): CgFunction
+fun saFunction(f): CgFunction
   let defs = singleDefs(f)
   let reads = sdReadCounts(f)
   ret match(saFindPlan(seqStream(f.fnOps), 0, defs, reads))
@@ -168,7 +168,7 @@ fun saFunction(f: CgFunction): CgFunction
     ()             => f
 
 # Stream + carried index (the plan records op POSITIONS). Error arm: Never.
-fun [tail] saFindPlan<S>(s: S, i: Int, defs: SsaDefs,
+fun [tail] saFindPlan<S>(s: S, i, defs: SsaDefs,
                          reads: Dict<String, Int>): SaPlan|None where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
@@ -179,7 +179,7 @@ fun [tail] saFindPlan<S>(s: S, i: Int, defs: SsaDefs,
       (n: None) => None
     (er: Error<Op | None, Never>) => None
 
-fun saPlanForOp(op: Op, i: Int, defs: SsaDefs,
+fun saPlanForOp(op, i, defs: SsaDefs,
                 reads: Dict<String, Int>): SaPlan|None
   ret match(op)
     (ph: OpPhi) => match(ph.phiTarget)
@@ -187,7 +187,7 @@ fun saPlanForOp(op: Op, i: Int, defs: SsaDefs,
       (o: RParam)      => None
     (o: Op)     => None
 
-fun saPlanForPhi(ph: OpPhi, acc: String, i: Int, defs: SsaDefs,
+fun saPlanForPhi(ph: OpPhi, acc, i, defs: SsaDefs,
                  reads: Dict<String, Int>): SaPlan|None
   let split = saSplitSources(chain(ph.phiSources), acc, defs, reads,
                              SaSplit(builder(),
@@ -225,7 +225,7 @@ fun [tail] saSplitSources(ss: Chain<OpPhiSource>, acc: String,
 # (its value is consumed on the predecessor edge, where an inserted snapshot
 # Move would not execute); a DIRECT acc source takes the snapshot expression
 # itself, so only the buried shape bails.
-fun saPhiSourceBuriesAcc(op: Op, i: Int, plan: SaPlan): Bool
+fun saPhiSourceBuriesAcc(op, i: Int, plan: SaPlan): Bool
   ret match(op)
     (ph: OpPhi) => i != plan.saPhiIdx
       && any(ph.phiSources,
@@ -233,7 +233,7 @@ fun saPhiSourceBuriesAcc(op: Op, i: Int, plan: SaPlan): Bool
                                   && saMentionsVar(s2.sourceValue, plan.saAcc))
     (o: Op)     => false
 
-fun saIsDirectAcc(v: RParam, acc: String): Bool
+fun saIsDirectAcc(v, acc): Bool
   ret match(v)
     (sv: RpStackVar) => sv.name == acc
     (o: RParam)      => false
@@ -244,8 +244,8 @@ fun saIsDirectAcc(v: RParam, acc: String): Bool
 fun saLoopLabel(f: CgFunction, phiIdx: Int): String|None
   ret saLabelScan(seqStream(f.fnOps), 0, phiIdx, None)
 
-fun [tail] saLabelScan<S>(s: S, i: Int, phiIdx: Int,
-                          latest: String|None): String|None where Stream<S, Op, Never>
+fun [tail] saLabelScan<S>(s: S, i, phiIdx: Int,
+                          latest): String|None where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -255,23 +255,23 @@ fun [tail] saLabelScan<S>(s: S, i: Int, phiIdx: Int,
       (n: None) => latest
     (er: Error<Op | None, Never>) => latest
 
-fun saLabelName(op: Op, latest: String|None): String|None
+fun saLabelName(op, latest): String|None
   ret match(op)
     (lb: OpLabel) => lb.labelName
     (o: Op)       => latest
 
-fun saJumpTarget(op: Op): String|None
+fun saJumpTarget(op): String|None
   ret match(op)
     (ji: OpJumpIf) => ji.jumpIfLabel
     (j: OpJump)    => j.jumpName
     (o: Op)        => None
 
-fun saSpanEnd(f: CgFunction, loopLabel: String|None, phiIdx: Int): Int
+fun saSpanEnd(f: CgFunction, loopLabel: String|None, phiIdx): Int
   ret match(loopLabel)
     (lbl: String) => saSpanScan(seqStream(f.fnOps), 0, lbl, phiIdx)
     ()            => phiIdx
 
-fun [tail] saSpanScan<S>(s: S, i: Int, lbl: String, latest: Int): Int where Stream<S, Op, Never>
+fun [tail] saSpanScan<S>(s: S, i, lbl, latest): Int where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -280,7 +280,7 @@ fun [tail] saSpanScan<S>(s: S, i: Int, lbl: String, latest: Int): Int where Stre
       (n: None) => latest
     (er: Error<Op | None, Never>) => latest
 
-fun saTargets(op: Op, lbl: String): Bool
+fun saTargets(op, lbl): Bool
   ret match(saJumpTarget(op))
     (t2: String) => t2 == lbl
     ()           => false
@@ -313,8 +313,8 @@ fun [tail] saAnyInSpan<S>(s: S, i: Int, from2: Int, to2: Int,
 
 # ── the rewrite ─────────────────────────────────────────────────────────────
 
-fun saBufName(base: String): String   ret base + "$sb_buf"
-fun saOffName(base: String): String   ret base + "$sb_off"
+fun saBufName(base): String   ret base + "$sb_buf"
+fun saOffName(base): String   ret base + "$sb_off"
 
 fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: SsaDefs,
                 reads: Dict<String, Int>): CgFunction
@@ -331,7 +331,7 @@ fun saApplyPlan(f: CgFunction, plan: SaPlan, defs: SsaDefs,
   let out = saRewriteOps(f.fnOps, 0i32, 0, plan, chainAll, (List(), 0))
   ret saRestack(f, plan, chainAll, out.ops, out.n)
 
-fun [tail] saAnyBuried<S>(s: S, i: Int, plan: SaPlan): Bool where Stream<S, Op, Never>
+fun [tail] saAnyBuried<S>(s: S, i, plan: SaPlan): Bool where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -388,7 +388,7 @@ fun saStepOrChainMove(op: Op, plan: SaPlan, chainAll: Set<String>): Int|None
       (o: RParam)      => None
     (o: Op)     => None
 
-fun saStepFor(op: Op, plan: SaPlan): SaStep
+fun saStepFor(op, plan: SaPlan): SaStep
   let name = match(op)
     (m: OpMove) => match(m.moveTarget)
       (sv: RpStackVar) => sv.name
@@ -427,15 +427,15 @@ fun saPushSeq(step: SaStep, plan: SaPlan): List<Op>
   ret build(saPushLoop(chain(step.saPushes), 0, step,
                        saBufVar(plan), saOffVar(plan), builder()))
 
-fun saPushLoop(ps: Chain<RParam>, i: Int, step: SaStep,
-                      curBuf: RParam, curOff: RParam,
-                      [terminal] acc: ListBuilder<Op>): ListBuilder<Op>
+fun saPushLoop(ps: Chain<RParam>, i, step: SaStep,
+                      curBuf, curOff,
+                      [terminal] acc): ListBuilder<Op>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => saPushStep(l, i, step, curBuf, curOff, acc)
 
-fun saPushStep(l: ChainLink<RParam>, i: Int, step: SaStep,
-                      curBuf: RParam, curOff: RParam,
+fun saPushStep(l: ChainLink<RParam>, i, step: SaStep,
+                      curBuf, curOff,
                       [terminal] acc: ListBuilder<Op>): ListBuilder<Op>
   let names = saPushNames(step, i, l.next is ChainEnd)
   let nbuf = RpStackVar(CgDataPointer(), names.buf)
@@ -462,7 +462,7 @@ fun saPushNames(step: SaStep, i: Int, isLast: Bool): (buf: String, off: String)
 
 # Everything else: reads of the accumulator become snapshots, and a saved
 # accumulator becomes a saved (buf, off) pair.
-fun saRewriteRead(op: Op, plan: SaPlan,
+fun saRewriteRead(op, plan: SaPlan,
                   acc: (ops: List<Op>, n: Int)): (ops: List<Op>, n: Int)
   let stage1 = match(op)
     (ph: OpPhi) => saPhiRead(ph, plan, acc.n)
@@ -488,8 +488,8 @@ fun saOtherPhi(ph: OpPhi, plan: SaPlan): Op
 
 # The snap ordinal is the CARRIED count of snaps taken so far — never the
 # list's length (no-length ruling).
-fun saSnapRead(op: Op, plan: SaPlan,
-               n: Int): (op: Op, pre: List<Op>, n: Int)
+fun saSnapRead(op, plan: SaPlan,
+               n): (op: Op, pre: List<Op>, n: Int)
   if !any(opGetLiveVars(op).reads,
           (sv) => saIsDirectAcc(sv, plan.saAcc))
     ret (op, List(), n)
@@ -506,8 +506,8 @@ fun saSnapVar(plan: SaPlan, k: Int): RParam
 
 # Fields for snaps 0..n-1, in ordinal order — the order they were taken in,
 # which is the order Python's snap_vars list holds them.
-fun [tail] saSnapFields(k: Int, n: Int, plan: SaPlan,
-                        [terminal] acc: ListBuilder<CgField>): ListBuilder<CgField>
+fun [tail] saSnapFields(k, n: Int, plan: SaPlan,
+                        [terminal] acc): ListBuilder<CgField>
   ret k >= n
     ? acc
     : saSnapFields(k + 1, n, plan,
@@ -515,7 +515,7 @@ fun [tail] saSnapFields(k: Int, n: Int, plan: SaPlan,
                        CgField(stackVarName(saSnapVar(plan, k)),
                                CgDataPointer())))
 
-fun saResave(op: Op, plan: SaPlan): Op
+fun saResave(op, plan: SaPlan): Op
   ret any(opSavedVars(op), (sv) => saIsDirectAcc(sv, plan.saAcc))
     ? opWithSavedVars(op,
         svSetUnion(filter(opSavedVars(op),
@@ -545,12 +545,12 @@ fun saRestack(f: CgFunction, plan: SaPlan, chainAll: Set<String>,
 fun saStepFields(acc: List<CgField>, step: SaStep): List<CgField>
   ret saStepFieldLoop(chain(step.saPushes), 0, step, acc)
 
-fun saStepFieldLoop(ps: Chain<RParam>, i: Int, step: SaStep,
+fun saStepFieldLoop(ps: Chain<RParam>, i, step: SaStep,
                            acc: List<CgField>): List<CgField>
   ret build(saStepFieldLoopB(ps, i, step, builderFrom(acc)))
 
-fun [tail] saStepFieldLoopB(ps: Chain<RParam>, i: Int, step: SaStep,
-                           [terminal] acc: ListBuilder<CgField>): ListBuilder<CgField>
+fun [tail] saStepFieldLoopB(ps: Chain<RParam>, i, step: SaStep,
+                           [terminal] acc): ListBuilder<CgField>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => saPushNames(step, i, l.next is ChainEnd)

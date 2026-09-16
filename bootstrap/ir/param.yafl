@@ -71,7 +71,7 @@ class [final] RpRename(oldName: String, newName: String)
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
-fun [tail] renameLookup(renames: List<RpRename>, name: String): String
+fun [tail] renameLookup(renames: List<RpRename>, name): String
   ret match(head(renames))
     (r: RpRename) => r.oldName == name ? r.newName : renameLookup(tail(renames), name)
     ()            => name
@@ -82,7 +82,7 @@ fun orNullOpt(o: String|None): String
     ()          => "NULL"
 
 # `isinstance(_, LParam)` — the 3 writable-location variants.
-fun rpIsLParam(r: RParam): Bool
+fun rpIsLParam(r): Bool
   ret match(r)
     (s: RpStackVar) => true
     (g: RpGlobalVar) => true
@@ -94,7 +94,7 @@ fun rpIsLParam(r: RParam): Bool
 # override never have get_type() called on them; the fallback below is
 # documented as unreachable.
 
-fun rpGetType(r: RParam): CgType
+fun rpGetType(r): CgType
   ret match(r)
     (x: RpNewStruct) => CgStruct(map(x.values, (v) => CgField(v.name, rpGetType(v.value))))
     (x: RpRuntimeInvoke) => x.resultType
@@ -127,20 +127,20 @@ fun rpStructFieldType(x: RpStructField): CgType
     (fields: List<CgField>) => rpStructFieldLookup(fields, x.field)
     () => rpStructFieldTypeSpecial(rpGetType(x.structVal), x.field)
 
-fun rpStructFieldTypeSpecial(xtype: CgType, field: String): CgType
+fun rpStructFieldTypeSpecial(xtype, field): CgType
   ret match(xtype)
     (w: CgTaskWrapper) => field == "task" ? CgDataPointer() : w.inner
     (fp: CgFuncPointer) => CgDataPointer()   # both "f" and "o" are DataPointer per Python
     (o: CgType) => CgVoid()                  # unreachable (Python raises ValueError)
 
-fun [tail] rpStructFieldLookup(fields: List<CgField>, name: String): CgType
+fun [tail] rpStructFieldLookup(fields: List<CgField>, name): CgType
   ret match(head(fields))
     (f: CgField) => f.fieldName == name ? f.fieldType : rpStructFieldLookup(tail(fields), name)
     ()           => CgVoid()   # unreachable (Python raises ValueError)
 
 # ── flatten(is_reader) ───────────────────────────────────────────────────────
 
-fun rpFlatten(r: RParam, isReader: Bool): List<RParam>
+fun rpFlatten(r, isReader: Bool): List<RParam>
   ret match(r)
     (x: RpInitArray) => prepend(r, rpFlattenValues(x.values))
     (x: RpNewStruct) => prepend(r, rpFlattenNamedValues(x.values))
@@ -183,10 +183,10 @@ fun rpFlattenOpt(o: RParam|None, isReader: Bool): List<RParam>
 
 # ── test(predicate) ──────────────────────────────────────────────────────────
 
-fun rpTest(r: RParam, pred: (:RParam): Bool): Bool
+fun rpTest(r, pred: (:RParam): Bool): Bool
   ret pred(r) || rpTestChildren(r, pred)
 
-fun rpTestChildren(r: RParam, pred: (:RParam): Bool): Bool
+fun rpTestChildren(r, pred: (:RParam): Bool): Bool
   ret match(r)
     (x: RpInitArray) => any(x.values, (v) => rpTest(v, pred))
     (x: RpNewStruct) => any(x.values, (v) => rpTest(v.value, pred))
@@ -214,7 +214,7 @@ fun rpTestOpt(o: RParam|None, pred: (:RParam): Bool): Bool
 
 # ── rename_vars(renames) ─────────────────────────────────────────────────────
 
-fun rpRenameVars(r: RParam, renames: List<RpRename>): RParam
+fun rpRenameVars(r, renames: List<RpRename>): RParam
   ret match(r)
     (x: RpInitArray) => RpInitArray(x.memberType, map(x.values, (v) => rpRenameVars(v, renames)))
     (x: RpNewStruct) => RpNewStruct(map(x.values, (v) => RpNamedValue(v.name, rpRenameVars(v.value, renames))))
@@ -252,7 +252,7 @@ fun rpRenameVarsOpt(o: RParam|None, renames: List<RpRename>): RParam|None
 # LParam-shape invariant at those call sites, exactly as Python's static type
 # checker (not its runtime) enforced it.
 
-fun rpReplaceParams(r: RParam, replacer: (:RParam): RParam): RParam
+fun rpReplaceParams(r, replacer): RParam
   ret match(r)
     (x: RpInitArray) => replacer(with x(values = map(x.values, (v) => rpReplaceParams(v, replacer))))
     (x: RpNewStruct) => replacer(with x(values = map(x.values, (v) => with v(value = rpReplaceParams(v.value, replacer)))))
@@ -278,21 +278,21 @@ fun rpReplaceParams(r: RParam, replacer: (:RParam): RParam): RParam
                                       mfEnv  = rpReplaceParams(x.mfEnv, replacer)))
     (o: RParam) => replacer(r)   # base default: replacer(self)
 
-fun rpReplaceParamsOpt(o: RParam|None, replacer: (:RParam): RParam): RParam|None
+fun rpReplaceParamsOpt(o: RParam|None, replacer): RParam|None
   ret match(o)
     (v: RParam) => rpReplaceParams(v, replacer)
     ()          => None
 
 # ── get_live_vars() — set of StackVar-shaped RParam values ──────────────────
 
-fun eqRpStackVar(a: RParam, b: RParam): Bool
+fun eqRpStackVar(a, b): Bool
   ret match(a)
     (x: RpStackVar) => match(b)
       (y: RpStackVar) => x.name == y.name && eqCgType(x.fieldType, y.fieldType)
       (o: RParam)     => false
     (o: RParam) => false
 
-fun rpStackVarMember(l: List<RParam>, x: RParam): Bool
+fun rpStackVarMember(l: List<RParam>, x): Bool
   ret any(l, (y) => eqRpStackVar(x, y))
 
 # A SET UNION. Python's get_live_vars returns a frozenset, and every consumer
@@ -309,7 +309,7 @@ fun rpStackVarUnion(a: List<RParam>, b: List<RParam>): List<RParam>
   ret fold(b, a, (acc, x) =>
         rpStackVarMember(acc, x) ? acc : prepend(x, acc))
 
-fun rpGetLiveVars(r: RParam): List<RParam>
+fun rpGetLiveVars(r): List<RParam>
   ret match(r)
     (x: RpInitArray) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v)))
     (x: RpNewStruct) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v.value)))
@@ -371,7 +371,7 @@ fun eqStringOpt(a: String|None, b: String|None): Bool
       (xb: String) => false
       ()           => true
 
-fun eqRParam(a: RParam, b: RParam): Bool
+fun eqRParam(a, b): Bool
   ret match(a)
     (x: RpInitArray) => match(b)
       (y: RpInitArray) => eqCgType(x.memberType, y.memberType) && eqRParamList(x.values, y.values)
@@ -466,7 +466,7 @@ fun rpToCMakeFun(x: RpMakeFun, cache0: List<CgCacheEntry>): (text: String, cache
   let envC = rpToC(x.mfEnv, codeC.cache)
   ret ("((fun_t){.f=(void*)(" + codeC.text + "),.o=" + envC.text + "})", envC.cache)
 
-fun rpToC(r: RParam, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(r)
     (x: RpInitArray) => rpToCInitArray(x, cache)
     (x: RpNewStruct) => rpToCNewStruct(x, cache)
@@ -498,7 +498,7 @@ fun rpToCInitArray(x: RpInitArray, cache0: List<CgCacheEntry>): (text: String, c
   let result = fold(x.values, ("", cache0, true), (acc, v) => rpToCInitArrayStep(acc, v))
   ret ("{" + result.text + "}", result.cache)
 
-fun rpToCInitArrayStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), v: RParam): (text: String, cache: List<CgCacheEntry>, first: Bool)
+fun rpToCInitArrayStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), v): (text: String, cache: List<CgCacheEntry>, first: Bool)
   let sub = rpToC(v, acc.cache)
   ret (acc.first ? sub.text : acc.text + ", " + sub.text, sub.cache, false)
 
@@ -509,7 +509,7 @@ fun rpToCNewStruct(x: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, c
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
-fun rpToCNewStructShort(values: List<RpNamedValue>, typeName: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCNewStructShort(values: List<RpNamedValue>, typeName, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let result = fold(values, ("", cache0, true), (acc, v) => rpToCNewStructShortStep(acc, v))
   ret ("(" + typeName + "){" + result.text + "}", result.cache)
 
@@ -518,7 +518,7 @@ fun rpToCNewStructShortStep(acc: (text: String, cache: List<CgCacheEntry>, first
   let piece = "." + mangleName(v.name) + " = " + sub.text
   ret (acc.first ? piece : acc.text + ", " + piece, sub.cache, false)
 
-fun rpToCNewStructLong(values: List<RpNamedValue>, typeName: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCNewStructLong(values: List<RpNamedValue>, typeName, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let result = fold(values, ("", cache0), (acc, v) => rpToCNewStructLongStep(acc, v))
   ret ("(" + typeName + "){" + result.text + "\n    }", result.cache)
 
@@ -531,15 +531,15 @@ fun rpToCRuntimeInvoke(x: RpRuntimeInvoke, cache0: List<CgCacheEntry>): (text: S
     (p: RpNewStruct) => rpToCRuntimeInvokeNewStruct(x.function, p.values, cache0)
     (p: RParam)      => rpToCRuntimeInvokeGeneric(x.function, p, cache0)
 
-fun rpToCRuntimeInvokeNewStruct(function: String, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCRuntimeInvokeNewStruct(function, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let result = fold(values, ("", cache0, true), (acc, v) => rpToCArgStep(acc, v.value))
   ret (function + "(" + result.text + ")", result.cache)
 
-fun rpToCArgStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), v: RParam): (text: String, cache: List<CgCacheEntry>, first: Bool)
+fun rpToCArgStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), v): (text: String, cache: List<CgCacheEntry>, first: Bool)
   let sub = rpToC(v, acc.cache)
   ret (acc.first ? sub.text : acc.text + ", " + sub.text, sub.cache, false)
 
-fun rpToCRuntimeInvokeGeneric(function: String, p: RParam, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCRuntimeInvokeGeneric(function, p, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(p, cache0)
   let ptype = rpGetType(p)
   ret match(cgFieldsOf(ptype))
@@ -582,12 +582,12 @@ fun rpToCZeroOf(x: RpZeroOf, cache0: List<CgCacheEntry>): (text: String, cache: 
     (fp: CgFuncPointer) => ("((fun_t){0})", cache0)
     (o: CgType) => rpToCZeroOfCompound(o, cache0)
 
-fun rpToCZeroOfCompound(vt: CgType, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCZeroOfCompound(vt, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(vt, cache0)
   let init = rpZeroOfInitText(vt)
   ret ("((" + declared.text + ")" + init + ")", declared.cache)
 
-fun rpZeroOfInitText(vt: CgType): String
+fun rpZeroOfInitText(vt): String
   ret match(vt)
     (s: CgStruct) => isEmpty(s.fields) ? "{}" : "{0}"
     (o: CgType)   => "{0}"
@@ -608,31 +608,31 @@ fun rpToCTagTask(x: RpTagTask, cache0: List<CgCacheEntry>): (text: String, cache
     (m: CgImmediateStruct) => rpToCTagTaskStruct(m.fields, taskC.text, taskC.cache)
     (o: CgType) => ("", taskC.cache)   # unreachable (Python raises ValueError)
 
-fun rpToCTagTaskWrapper(w: CgTaskWrapper, taskC: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCTagTaskWrapper(w: CgTaskWrapper, taskC, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let innerZero = rpToC(RpZeroOf(w.inner), cache0)
   let declared = cgDeclare(CgTaskWrapper(w.inner), innerZero.cache)
   ret ("((" + declared.text + "){.value=" + innerZero.text + ",.task=" + taskC + "})", declared.cache)
 
-fun rpToCTagTaskStruct(fields: List<CgField>, taskC: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCTagTaskStruct(fields, taskC, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(cgFirstPointerFieldOfFields(fields))
     (fname: String) => rpToCTagTaskStructBody(fields, fname, taskC, cache0)
     ()               => ("", cache0)   # unreachable (Python raises ValueError)
 
 # `cgFirstPointerField` takes a CgType; TagTask already has the field list.
-fun cgFirstPointerFieldOfFields(fields: List<CgField>): String|None
+fun cgFirstPointerFieldOfFields(fields): String|None
   ret cgFirstPointerField(CgStruct(fields))
 
-fun rpToCTagTaskStructBody(fields: List<CgField>, fname: String, taskC: String, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCTagTaskStructBody(fields, fname: String, taskC, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(CgStruct(fields), cache0)
   let result = fold(fields, ("", declared.cache, true), (acc, f) => rpToCTagTaskFieldStep(acc, f, fname, taskC))
   ret ("((" + declared.text + "){" + result.text + "})", result.cache)
 
-fun rpToCTagTaskFieldStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), f: CgField, fname: String, taskC: String): (text: String, cache: List<CgCacheEntry>, first: Bool)
+fun rpToCTagTaskFieldStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), f: CgField, fname: String, taskC): (text: String, cache: List<CgCacheEntry>, first: Bool)
   ret f.fieldName == fname
     ? rpToCTagTaskFieldStepTagged(acc, f, taskC)
     : rpToCTagTaskFieldStepZero(acc, f)
 
-fun rpToCTagTaskFieldStepTagged(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), f: CgField, taskC: String): (text: String, cache: List<CgCacheEntry>, first: Bool)
+fun rpToCTagTaskFieldStepTagged(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), f: CgField, taskC): (text: String, cache: List<CgCacheEntry>, first: Bool)
   let piece = "." + mangleName(f.fieldName) + " = (object_t*)((uintptr_t)" + taskC + " | PTR_TAG_TASK)"
   ret (acc.first ? piece : acc.text + ", " + piece, acc.cache, false)
 
@@ -649,7 +649,7 @@ fun rpToCGlobalFunction(x: RpGlobalFunction, cache0: List<CgCacheEntry>): (text:
     (o: RParam) => rpToCGlobalFunctionWithObject(fRef, o, cache0)
     ()           => ("((fun_t){.f=" + fRef + ",.o=NULL})", cache0)
 
-fun rpToCGlobalFunctionWithObject(fRef: String, o: RParam, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCGlobalFunctionWithObject(fRef, o, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(o, cache0)
   ret ("((fun_t){.f=" + fRef + ",.o=" + sub.text + "})", sub.cache)
 
@@ -668,7 +668,7 @@ fun rpToCObjectField(x: RpObjectField, cache0: List<CgCacheEntry>): (text: Strin
     (idx: RParam) => rpToCObjectFieldIndexed(base, idx, pointerC.cache)
     ()             => (base, pointerC.cache)
 
-fun rpToCObjectFieldIndexed(base: String, idx: RParam, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCObjectFieldIndexed(base, idx, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(idx, cache0)
   ret (base + ".a[" + sub.text + "]", sub.cache)
 
@@ -683,39 +683,39 @@ fun rpToCArrayElement(x: RpArrayElement, cache0: List<CgCacheEntry>): (text: Str
     ? rpToCArrayElementChecked(x, obj, idxC.text, base, elemPtr, declared.cache)
     : ("((" + elemPtr + ")" + base + ")[" + idxC.text + "]", declared.cache)
 
-fun rpToCArrayElementChecked(x: RpArrayElement, obj: String, idx: String, base: String, elemPtr: String, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun rpToCArrayElementChecked(x: RpArrayElement, obj, idx, base, elemPtr, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let length2 = obj + "->" + mangleName(x.lengthField)
   ret ("((" + elemPtr + ")array_bounds_check(" + idx + ", " + length2 + ", " + base + "))[" + idx + "]", cache)
 
 # ── to_c_store — only meaningful for RpStackVar / RpGlobalVar / RpObjectField
 # (Python's LParam.to_c_store, overridden by ObjectField). ─────────────────
 
-fun rpToCStore(r: RParam, cache0: List<CgCacheEntry>, value: String): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStore(r, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   ret match(r)
     (x: RpObjectField) => rpToCStoreObjectField(x, cache0, value)
     (o: RParam)         => rpToCStoreDefault(r, cache0, value)
 
-fun rpToCStoreDefault(r: RParam, cache0: List<CgCacheEntry>, value: String): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreDefault(r, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(r, cache0)
   ret ("    " + sub.text + " = " + value + ";\n", sub.cache)
 
-fun rpToCStoreObjectField(x: RpObjectField, cache0: List<CgCacheEntry>, value: String): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectField(x: RpObjectField, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let pointerC = rpToC(x.pointer, cache0)
   let fieldRefBase = "((" + mangleName(x.objectName) + "_t*)" + pointerC.text + ")->" + mangleName(x.field)
   ret match(x.index)
     (idx: RParam) => rpToCStoreObjectFieldIndexed(x, fieldRefBase, idx, pointerC.cache, value)
     ()             => rpToCStoreObjectFieldFinish(x, fieldRefBase, pointerC.cache, value)
 
-fun rpToCStoreObjectFieldIndexed(x: RpObjectField, fieldRefBase: String, idx: RParam, cache0: List<CgCacheEntry>, value: String): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectFieldIndexed(x: RpObjectField, fieldRefBase, idx, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let idxC = rpToC(idx, cache0)
   ret rpToCStoreObjectFieldFinish(x, fieldRefBase + ".a[" + idxC.text + "]", idxC.cache, value)
 
-fun rpToCStoreObjectFieldFinish(x: RpObjectField, fieldRef: String, cache0: List<CgCacheEntry>, value: String): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectFieldFinish(x: RpObjectField, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   ret cgHasPointers(x.fieldType) && !x.fresh
     ? rpToCStoreObjectFieldBarrier(x, fieldRef, cache0, value)
     : ("    " + fieldRef + " = " + value + ";\n", cache0)
 
-fun rpToCStoreObjectFieldBarrier(x: RpObjectField, fieldRef: String, cache0: List<CgCacheEntry>, value: String): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectFieldBarrier(x: RpObjectField, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.fieldType, cache0)
   let mask = toPointerMask(x.fieldType, declared.text)
   ret ("    GC_WRITE_BARRIER(" + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
@@ -728,7 +728,7 @@ fun rpNewStructAdd(a: RpNewStruct, b: RpNewStruct): RParam
 # ── `union_struct` — builds an exhaustive RpNewStructTyped for a union slot
 # struct, zero-filling any unspecified fields. ──────────────────────────────
 
-fun rpZeroFor(fieldType: CgType): RParam
+fun rpZeroFor(fieldType): RParam
   ret match(fieldType)
     (d: CgDataPointer) => RpNullPointer()
     (i: CgInt) => RpInteger(0, i.precision)
@@ -736,7 +736,7 @@ fun rpZeroFor(fieldType: CgType): RParam
     (f: CgFloat) => RpFloat(0.0, f.precision)
     (o: CgType) => RpNullPointer()   # unreachable (Python raises ValueError)
 
-fun unionStruct(container: CgType, namedValues: List<RpNamedValue>): RParam
+fun unionStruct(container, namedValues: List<RpNamedValue>): RParam
   ret match(container)
     (s: CgStruct) => RpNewStructTyped(container, map(s.fields, (f) => unionStructField(f, namedValues)))
     (o: CgType)   => RpNewStructTyped(container, List())   # unreachable
@@ -746,7 +746,7 @@ fun unionStructField(f: CgField, namedValues: List<RpNamedValue>): RpNamedValue
     (v: RParam) => RpNamedValue(f.fieldName, v)
     ()          => RpNamedValue(f.fieldName, rpZeroFor(f.fieldType))
 
-fun [tail] rpNamedValuesGet(values: List<RpNamedValue>, name: String): RParam|None
+fun [tail] rpNamedValuesGet(values: List<RpNamedValue>, name): RParam|None
   ret match(head(values))
     (v: RpNamedValue) => v.name == name ? v.value : rpNamedValuesGet(tail(values), name)
     ()                => None

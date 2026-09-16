@@ -26,7 +26,7 @@ import Bootstrap::Types
 
 class [final] Diag(dFails: Set<PErr>, dWarns: Set<PErr>)
 
-fun collectDiagnostics(statements: List<PStmt>, r: Resolver): Diag
+fun collectDiagnostics(statements: List<PStmt>, r): Diag
   ret collectDiagnostics2(statements, r, true)
 
 # `requireMain` false for the C path. compiler.py's __collect_diagnostics does
@@ -37,9 +37,9 @@ fun collectDiagnostics(statements: List<PStmt>, r: Resolver): Diag
 # `none[0:0] - No main function found` for every main-less corpus file and
 # broke 56 contract tests — the corpus is stdlib and bootstrap sources, none of
 # which has a main.
-fun collectDiagnostics2(statements: List<PStmt>, r: Resolver,
+fun collectDiagnostics2(statements: List<PStmt>, r,
                         requireMain: Bool): Diag
-  let untyped = untypedParamErrors(statements)
+  let untyped = untypedParamErrors(statements, r)
   if !isEmpty(untyped)
     ret Diag(untyped, noErrs())
   let future = futureGlobalErrors(chain(statements), noErrs())
@@ -67,7 +67,7 @@ fun [tail] stmtChecks(ss: Chain<PStmt>, r: Resolver,
                                                                        r),
                                                          None)))
 
-fun withMainCount(statements: List<PStmt>, acc: Set<PErr>): Set<PErr>
+fun withMainCount(statements: List<PStmt>, acc): Set<PErr>
   let mains = countMains(chain(statements), 0)
   if mains == 0
     ret add(acc, PErr(PLine("none", 0, 0), "No main function found"))
@@ -80,7 +80,7 @@ fun [tail] countMains(ss: Chain<PStmt>, n: Int): Int
     (nil: ChainEnd) => n
     (l: ChainLink)  => countMains(l.next, isMainFunction(l.value) ? n + 1 : n)
 
-fun isMainFunction(st: PStmt): Bool
+fun isMainFunction(st): Bool
   ret match(st)
     (f: PsFun) => contains(f.fName, "::main@")
                   && retIsBigint(f.fRet)
@@ -95,10 +95,9 @@ fun retIsBigint(sp: Spec|None): Bool
     ()         => false
 
 
-fun untypedParamErrors(statements: List<PStmt>): Set<PErr>
+fun untypedParamErrors(statements: List<PStmt>, r): Set<PErr>
   ret hasAnyUntyped(chain(statements))
-    ? untypedLoop(chain(statements), collectSuggestionDetail(statements),
-                  noErrs())
+    ? untypedLoop(chain(statements), r, noErrs())
     : noErrs()
 
 fun [tail] hasAnyUntyped(ss: Chain<PStmt>): Bool
@@ -119,53 +118,38 @@ fun [tail] anyUntypedTarget(ts: Chain<PStmt>): Bool
         ()         => true
       (o: PStmt)    => anyUntypedTarget(l.next)
 
-fun [tail] untypedLoop(ss: Chain<PStmt>, detail: Dict<String, List<List<String>>>,
-                       acc: Set<PErr>): Set<PErr>
+fun [tail] untypedLoop(ss: Chain<PStmt>, r: Resolver, acc: Set<PErr>): Set<PErr>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
-      (f: PsFun) => untypedLoop(l.next, detail,
-                                funUntyped(f, chain(paramLets(f.fParams)), 0,
-                                           detail, acc))
-      (o: PStmt) => untypedLoop(l.next, detail, acc)
+      (f: PsFun) => untypedLoop(l.next, r,
+                                funUntyped(f, chain(paramLets(f.fParams)),
+                                           paramBodyScope(f, scopeResolver(f, r)),
+                                           acc))
+      (o: PStmt) => untypedLoop(l.next, r, acc)
 
 
-fun [tail] funUntyped(f: PsFun, ts: Chain<PStmt>, idx: Int,
-                      detail: Dict<String, List<List<String>>>,
+fun [tail] funUntyped(f: PsFun, ts: Chain<PStmt>, bodyR: Resolver,
                       acc: Set<PErr>): Set<PErr>
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value)
       (let2: PsLet) => match(let2.lType)
-        (t2: Spec) => funUntyped(f, l.next, idx + 1, detail, acc)
-        ()         => funUntyped(f, l.next, idx + 1, detail,
-                                 add(acc, untypedError(f, let2, idx, detail)))
-      (o: PStmt)    => funUntyped(f, l.next, idx + 1, detail, acc)
+        (t2: Spec) => funUntyped(f, l.next, bodyR, acc)
+        ()         => funUntyped(f, l.next, bodyR,
+                                 add(acc, untypedError(f, let2, bodyR)))
+      (o: PStmt)    => funUntyped(f, l.next, bodyR, acc)
 
-fun untypedError(f: PsFun, tgt: PsLet, idx: Int,
-                 detail: Dict<String, List<List<String>>>): PErr
+# The clue comes from the BODY — the only evidence there is — so it names what
+# the uses actually said, not what any call site passed.
+fun untypedError(f: PsFun, tgt: PsLet, bodyR): PErr
   ret PErr(tgt.pslLine,
            "Parameter '" + simpleName(tgt.lName) + "' of '"
            + simpleName(f.fName)
            + "' has no type and could not be inferred — "
-           + clueFor(detailSlot(detail, f.fName, idx)))
+           + uninferableClue(f, tgt, bodyR))
 
-fun detailSlot(detail: Dict<String, List<List<String>>>, name: String,
-               idx: Int): List<String>
-  ret match(get(detail, name))
-    (slots: List<List<String>>) => match(nthOf(slots, idx))
-      (seen: List<String>) => seen
-      ()                   => List()
-    ()                           => List()
-
-fun clueFor(seen: List<String>): String
-  if atLeast(chain(seen), 2)
-    ret "call sites disagree (" + join(sort(seen), ", ") + ")"
-  ret match(head(seen))
-    (one: String) => "call sites only partly determine it (" + one + ")"
-    ()            => "no call site supplies a type to infer it from"
-
-fun nthOf<T>(l: List<T>, idx: Int): T|None
+fun nthOf<T>(l: List<T>, idx): T|None
   ret head(drop(l, idx))
 
 # ── phase 2: [future] on a global let ───────────────────────────────────────
@@ -185,10 +169,10 @@ fun [tail] futureGlobalErrors(ss: Chain<PStmt>, acc: Set<PErr>): Set<PErr>
 
 # ── phase 3 dispatch ────────────────────────────────────────────────────────
 
-fun checkStmt2(st: PStmt, r: Resolver, retTy: Spec|None): Set<PErr>
+fun checkStmt2(st, r, retTy: Spec|None): Set<PErr>
   ret checkStmtKind(st, r, retTy)
 
-fun checkExprOpt(x: PExpr|None, r: Resolver, expected: Spec|None): Set<PErr>
+fun checkExprOpt(x: PExpr|None, r, expected: Spec|None): Set<PErr>
   ret match(x)
     (e2: PExpr) => checkExpr(e2, r, expected)
     ()          => noErrs()
@@ -205,7 +189,7 @@ fun [tail] nsStmts(ss: Chain<PStmt>, acc: Set<PErr>): Set<PErr>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsStmts(l.next, nsStmt(l.value, acc))
 
-fun nsStmt(st: PStmt, acc: Set<PErr>): Set<PErr>
+fun nsStmt(st, acc): Set<PErr>
   ret match(st)
     (f: PsFun)         => nsExprOpt(f.fBody,
                             nsSpecs(chain(f.fWheres),
@@ -228,7 +212,7 @@ fun nsStmt(st: PStmt, acc: Set<PErr>): Set<PErr>
     (el: PsElse)       => nsStmts(chain(el.elStmts), acc)
     (o: PStmt)         => acc
 
-fun nsExpr(x: PExpr, acc: Set<PErr>): Set<PErr>
+fun nsExpr(x, acc): Set<PErr>
   ret match(x)
     (nm: PeName)   => nsSpecOpt(nm.penTrait, nsSpecs(chain(nm.refTypeParams), acc))
     (d: PeDot)     => nsExpr(d.base, acc)
@@ -253,12 +237,12 @@ fun nsExpr(x: PExpr, acc: Set<PErr>): Set<PErr>
     (o: PeLowered) => acc
     (o: PeParallel) => acc
 
-fun [tail] nsEntries(es: Chain<PTupEnt>, acc: Set<PErr>): Set<PErr>
+fun [tail] nsEntries(es: Chain<PTupEnt>, acc): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsEntries(l.next, nsExpr(l.value.tupValue, acc))
 
-fun [tail] nsArms(as2: Chain<PArm>, acc: Set<PErr>): Set<PErr>
+fun [tail] nsArms(as2: Chain<PArm>, acc): Set<PErr>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsArms(l.next,
@@ -266,12 +250,12 @@ fun [tail] nsArms(as2: Chain<PArm>, acc: Set<PErr>): Set<PErr>
                                 nsExpr(l.value.armBody,
                                   nsSpecOpt(l.value.armType, acc))))
 
-fun nsExprOpt(x: PExpr|None, acc: Set<PErr>): Set<PErr>
+fun nsExprOpt(x: PExpr|None, acc): Set<PErr>
   ret match(x)
     (e2: PExpr) => nsExpr(e2, acc)
     ()          => acc
 
-fun nsSpec(sp: Spec, acc: Set<PErr>): Set<PErr>
+fun nsSpec(sp, acc): Set<PErr>
   ret match(sp)
     (n: SNamed)        => add(acc, PErr(n.snLine,
                                            "Failed to resolve type '"
@@ -290,22 +274,22 @@ fun [tail] nsSpecList(ss: Chain<Spec>, acc: Set<PErr>): Set<PErr>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsSpecList(l.next, nsSpec(l.value, acc))
 
-fun [tail] nsSpecEntries(es: Chain<SEntry>, acc: Set<PErr>): Set<PErr>
+fun [tail] nsSpecEntries(es: Chain<SEntry>, acc): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nsSpecEntries(l.next,
                                      nsExprOpt(l.value.seDefault,
                                                nsSpecOpt(l.value.seType, acc)))
 
-fun nsSpecOpt(sp: Spec|None, acc: Set<PErr>): Set<PErr>
+fun nsSpecOpt(sp: Spec|None, acc): Set<PErr>
   ret match(sp)
     (s2: Spec) => nsSpec(s2, acc)
     ()         => acc
 
-fun nsSpecs(ss: Chain<Spec>, acc: Set<PErr>): Set<PErr>
+fun nsSpecs(ss, acc): Set<PErr>
   ret nsSpecList(ss, acc)
 
-fun nsSpecsOpt(ss: List<Spec>|None, acc: Set<PErr>): Set<PErr>
+fun nsSpecsOpt(ss: List<Spec>|None, acc): Set<PErr>
   ret match(ss)
     (l: List<Spec>) => nsSpecList(chain(l), acc)
     ()              => acc

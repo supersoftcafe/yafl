@@ -2,7 +2,7 @@
 error output to compiler.py's over a corpus of deliberately-broken sources.
 
 The contract covers the post-convergence diagnostic phases in driver order:
-uninferable untyped params (with call-site clues), the [future]-global
+uninferable untyped params (with the clue read off the BODY), the [future]-global
 rejection, every node's check() plus the main-function count, the
 warning/error split, and the unresolved-NamedSpec scan. Output is
 `sorted(set(errors))` printed one per line — Error and LineRef are both

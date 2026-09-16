@@ -57,7 +57,7 @@ emission machinery.
 
 ```python
 for iteration_count in range(1, _MAX_COMPILE_ITERATIONS + 1):
-    resolver = g.ResolverRoot(statements, __collect_param_suggestions(statements))
+    resolver = g.ResolverRoot(statements)
     new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
     if new_statements == statements:
         break
@@ -144,10 +144,15 @@ separate constraint solver):
   (`CallExpression.compile` threads the actual argument tuple and expected
   result into the callee's generic-parameter unification).
 2. **Up** — an expression's result type flows into its consumer (`get_type`).
-3. **Sideways** — every call site emits a *suggestion* for the callee's
-  untyped parameters (`compiler.__collect_param_suggestions`, a pure function
-  of the AST recomputed each pass); declared types always win; disagreeing
-  suggestions cancel.
+3. **Sideways** — a function's un-annotated PARAMETER takes its type from what
+  its own BODY does with it (`pyast/param_inference.py`, a pure function of the
+  function, recomputed each pass): UPPER bounds from the calls it is passed to
+  and from `ret` against a declared result, LOWER bounds from the arm types of
+  `match(x)`, which generalise to the enum ROOT or to the interface two classes
+  share. Callers never supply a parameter's type — a function means the same
+  thing wherever it is called. A declared type always wins; no use that
+  determines the parameter, or uses that disagree, is an ambiguity error
+  naming what was found.
 
 `where`-clause constraints are discharged at the call site by matching against
 the `[trait]` instances in scope (`solve_trait_constraint`, single-step —

@@ -91,7 +91,7 @@ fun tomlLine(line: String, rest: Chain<String>, seen: List<String>): LineOut
 # tomllib accepts a quoted key (`"name" = "x"`); keeping the quotes made the
 # key literally `"name"`, so the lookup missed and the field silently took its
 # default — for `name` that is the worklist's identity.
-fun tomlKey(raw: String): String
+fun tomlKey(raw): String
   ret length(raw) >= 2 && byteAt(raw, 0) == '"' && byteAt(raw, length(raw) - 1) == '"'
     ? slice(raw, 1, length(raw) - 1)
     : raw
@@ -111,7 +111,7 @@ fun [tail] joinArray(text: String, rest: Chain<String>, count: Int): LogicalLine
       (l: ChainLink)  => joinArray(text + " " + stripComment(l.value),
                                    l.next, count + 1)
 
-fun [tail] bracketDepth(s: String, at: Int, depth: Int, inStr: Bool): Int
+fun [tail] bracketDepth(s, at, depth, inStr): Int
   if at >= length(s)
     ret depth
   let c = byteAt(s, at)
@@ -123,7 +123,7 @@ fun [tail] bracketDepth(s: String, at: Int, depth: Int, inStr: Bool): Int
     : bracketDepth(s, at + 1, depth, false)
 
 # The builder is [linear] and must be consumed on the error path too.
-fun discardOn([terminal] acc: ListBuilder<TomlEntry>, e: TomlResult): TomlResult
+fun discardOn([terminal] acc: ListBuilder<TomlEntry>, e): TomlResult
   ret build(acc) |> (l) => e
 
 
@@ -134,10 +134,10 @@ fun discardOn([terminal] acc: ListBuilder<TomlEntry>, e: TomlResult): TomlResult
 # The `\\` skip is what makes this agree with quoteBody, which does honour
 # escapes: without it `"a\"#b"` looked like a CLOSED string followed by a
 # comment, so the line was truncated and then failed as an unterminated string.
-fun stripComment(line: String): String
+fun stripComment(line): String
   ret slice(line, 0, commentAt(line, 0, false))
 
-fun [tail] commentAt(s: String, at: Int, inStr: Bool): Int
+fun [tail] commentAt(s, at, inStr): Int
   if at >= length(s)
     ret length(s)
   let c = byteAt(s, at)
@@ -151,19 +151,19 @@ enum TomlValue
   enum TomlGood(goodValues: List<String>, goodIsArray: Bool)
   enum TomlBad(badWhy: String)
 
-fun tomlValue(rhs: String): TomlValue
+fun tomlValue(rhs): TomlValue
   if length(rhs) == 0
     ret TomlBad("missing value")
   ret byteAt(rhs, 0) == '[' ? tomlArray(rhs) : tomlScalar(rhs)
 
-fun tomlScalar(rhs: String): TomlValue
+fun tomlScalar(rhs): TomlValue
   ret match(quotedAt(rhs, 0))
     (q: QuoteOk) => trimStart(slice(rhs, q.qEnd, length(rhs))) == ""
       ? TomlGood(prepend(q.qText, List()), false)
       : TomlBad("trailing text after value")
     (b: QuoteBad) => TomlBad(b.qWhy)
 
-fun tomlArray(rhs: String): TomlValue
+fun tomlArray(rhs): TomlValue
   ret arrayItems(rhs, 1, false, builder())
 
 # `needSep` is what makes `["a" "b"]` an error. Without it a missing comma was
@@ -171,7 +171,7 @@ fun tomlArray(rhs: String): TomlValue
 # what tomllib rejects — accepting invalid input is the same class of
 # divergence as rejecting valid input, just quieter. A TRAILING comma is legal
 # TOML and stays legal: `,` merely clears the flag.
-fun [tail] arrayItems(s: String, at: Int, needSep: Bool,
+fun [tail] arrayItems(s, at, needSep: Bool,
                       [terminal] b: ListBuilder<String>): TomlValue
   let i = skipBlanks(s, at)
   if i >= length(s)
@@ -190,10 +190,10 @@ fun [tail] arrayItems(s: String, at: Int, needSep: Bool,
     (q: QuoteOk)  => arrayItems(s, q.qEnd, true, push(b, q.qText))
     (e: QuoteBad) => discardStrs(b, TomlBad(e.qWhy))
 
-fun discardStrs([terminal] b: ListBuilder<String>, v: TomlValue): TomlValue
+fun discardStrs([terminal] b: ListBuilder<String>, v): TomlValue
   ret build(b) |> (l) => v
 
-fun [tail] skipBlanks(s: String, at: Int): Int
+fun [tail] skipBlanks(s, at): Int
   ret at < length(s) && (byteAt(s, at) == ' ' || byteAt(s, at) == '\t')
     ? skipBlanks(s, at + 1)
     : at
@@ -209,7 +209,7 @@ enum QuoteRes
   enum QuoteOk(qText: String, qEnd: Int)
   enum QuoteBad(qWhy: String)
 
-fun quotedAt(s: String, at: Int): QuoteRes
+fun quotedAt(s, at): QuoteRes
   let i = skipBlanks(s, at)
   if i >= length(s) || byteAt(s, i) != '"'
     ret QuoteBad("expected a quoted string")
@@ -218,7 +218,7 @@ fun quotedAt(s: String, at: Int): QuoteRes
 # The escape handling is INLINE rather than a helper: routing it through
 # quoteEscape made this mutually recursive, and [tail] requires direct
 # self-recursion. A string body can be long, so the marker is worth keeping.
-fun [tail] quoteBody(s: String, at: Int, acc: String): QuoteRes
+fun [tail] quoteBody(s, at, acc): QuoteRes
   if at >= length(s)
     ret QuoteBad("unterminated string")
   let c = byteAt(s, at)
@@ -253,7 +253,7 @@ fun tomlStrings(entries: List<TomlEntry>, key: String): List<String>
     (e: TomlEntry) => e.values
     ()             => List()
 
-fun tomlString(entries: List<TomlEntry>, key: String, fallback: String): String
+fun tomlString(entries: List<TomlEntry>, key: String, fallback): String
   ret match(tomlGet(entries, key))
     (e: TomlEntry) => match(head(e.values))
       (v: String) => v

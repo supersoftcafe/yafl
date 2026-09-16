@@ -54,13 +54,13 @@ fun scFunction(f: CgFunction): CgFunction
 # keep=True Moves anchor side effects — never absorb them (absorbing would
 # duplicate the computation at the read site while the anchor keeps the
 # original alive).
-fun scAnchoredNames(acc: List<String>, op: Op): List<String>
+fun scAnchoredNames(acc, op): List<String>
   ret match(op)
     (m: OpMove) => m.moveKeep ? scAnchTarget(acc, m.moveTarget) : acc
     (o: Op)     => acc
 
 # An anchored-name SET, membership-tested by scReplace.
-fun scAnchTarget(acc: List<String>, target: RParam): List<String>
+fun scAnchTarget(acc, target): List<String>
   ret match(target)
     (sv: RpStackVar) => prepend(sv.name, acc)
     (o: RParam)      => acc
@@ -86,7 +86,7 @@ fun scArgPair(vs: List<RpNamedValue>): (l: RParam, r: RParam)|None
 # names of single-read locals the chase passed through. The caller commits
 # the taking-names ONLY if it actually rewrites (>= 3 operands) — exploring
 # a chain that stays under the fold threshold must drop nothing.
-fun scSpine(param: RParam, defs: SsaDefs, reads: Dict<String, Int>,
+fun scSpine(param, defs: SsaDefs, reads: Dict<String, Int>,
             anchored: List<String>): (ops: List<RParam>, taking: List<String>)
   ret match(param)
     (inv: RpRuntimeInvoke) => match(scAppendArgs(inv))
@@ -97,7 +97,7 @@ fun scSpine(param: RParam, defs: SsaDefs, reads: Dict<String, Int>,
         : scSpineVar(param, defs, reads, anchored)
     (o: RParam)            => scSpineVar(param, defs, reads, anchored)
 
-fun scSpinePair(l: RParam, r: RParam, defs: SsaDefs,
+fun scSpinePair(l, r, defs: SsaDefs,
                 reads: Dict<String, Int>,
                 anchored: List<String>): (ops: List<RParam>, taking: List<String>)
   let a = scSpine(l, defs, reads, anchored)
@@ -119,7 +119,7 @@ fun scConcatOperands(inv: RpRuntimeInvoke): (ops: List<RParam>, taking: List<Str
 # adjacent-op rule never folds. A copy, an append, or an already-folded
 # concat all absorb; any other def (call result, Phi, impure invoke) stays a
 # leaf operand.
-fun scSpineVar(param: RParam, defs: SsaDefs, reads: Dict<String, Int>,
+fun scSpineVar(param, defs: SsaDefs, reads: Dict<String, Int>,
                anchored: List<String>): (ops: List<RParam>, taking: List<String>)
   ret match(param)
     (sv: RpStackVar) => scReadOnce(reads, sv.name)
@@ -142,7 +142,7 @@ fun scIsAppend(inv: RpRuntimeInvoke): Bool
     (args: (l: RParam, r: RParam)) => true
     ()                             => false
 
-fun scAbsorbableDef(src: RParam): Bool
+fun scAbsorbableDef(src): Bool
   ret match(src)
     (sv2: RpStackVar)      => true
     (inv: RpRuntimeInvoke) => scIsAppend(inv)
@@ -180,7 +180,7 @@ fun [tail] scNumbered(os: Chain<RParam>, i: Int,
                                       RpNamedValue("s" + String(i),
                                                    l.value)))
 
-fun scReplace(p: RParam, defs: SsaDefs, reads: Dict<String, Int>,
+fun scReplace(p, defs: SsaDefs, reads: Dict<String, Int>,
               anchored: List<String>): RParam
   ret match(p)
     (inv: RpRuntimeInvoke) => scIsAppend(inv)
@@ -189,14 +189,14 @@ fun scReplace(p: RParam, defs: SsaDefs, reads: Dict<String, Int>,
       : p
     (o: RParam)            => p
 
-fun scCollectAbsorbed(acc: Set<String>, op: Op, defs: SsaDefs,
+fun scCollectAbsorbed(acc: Set<String>, op, defs: SsaDefs,
                       reads: Dict<String, Int>,
                       anchored: List<String>): Set<String>
   ret fold(opAllParams(op), acc,
            (a2, p) =>
              scCollectRoot(a2, p, defs, reads, anchored))
 
-fun scCollectRoot(acc: Set<String>, p: RParam, defs: SsaDefs,
+fun scCollectRoot(acc, p, defs: SsaDefs,
                   reads: Dict<String, Int>, anchored: List<String>): Set<String>
   ret match(p)
     (inv: RpRuntimeInvoke) => scIsAppend(inv)

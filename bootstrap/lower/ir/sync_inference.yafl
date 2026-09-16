@@ -47,7 +47,7 @@ fun siMaterialise(f: CgFunction, syncSet: Set<String>): CgFunction
 fun siReturnsTaggedTask(f: CgFunction): Bool
   ret any(f.fnOps, siOpReturnsTagTask)
 
-fun siOpReturnsTagTask(op: Op): Bool
+fun siOpReturnsTagTask(op): Bool
   ret match(op)
     (r: OpReturn) => match(r.returnValue)
       (tt: RpTagTask) => true
@@ -57,7 +57,7 @@ fun siOpReturnsTagTask(op: Op): Bool
 fun siHasNoNontailCalls(f: CgFunction): Bool
   ret !any(f.fnOps, siOpIsNontailCallish)
 
-fun siOpIsNontailCallish(op: Op): Bool
+fun siOpIsNontailCallish(op): Bool
   ret match(op)
     (c: OpCall)          => !c.callMusttail
     (pc: OpParallelCall) => true

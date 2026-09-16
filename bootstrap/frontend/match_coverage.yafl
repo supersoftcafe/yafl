@@ -18,7 +18,7 @@ import Bootstrap::Types
 # Python check(): a primitive subject gets the literal-arm rules, any other
 # concrete subject gets coverage; an unresolved subject is checked on a later
 # pass.
-fun matchCoverageErrs(mt: PeMatch, st: Spec, r: Resolver): Set<PErr>
+fun matchCoverageErrs(mt: PeMatch, st, r): Set<PErr>
   if !isConcrete(st)
     ret noErrs()
   ret match(st)
@@ -34,7 +34,7 @@ fun matchCoverageErrs(mt: PeMatch, st: Spec, r: Resolver): Set<PErr>
 
 class [final] LitAcc(laErrs: Set<PErr>, laSeen: Set<String>, laElse: Bool)
 
-fun literalArmErrs(mt: PeMatch, kind: String): Set<PErr>
+fun literalArmErrs(mt: PeMatch, kind): Set<PErr>
   let acc = litArms(chain(mt.arms), kind, LitAcc(noErrs(), Set(), false))
   ret acc.laElse
     ? acc.laErrs
@@ -46,7 +46,7 @@ fun [tail] litArms(as2: Chain<PArm>, kind: String, acc: LitAcc): LitAcc
     (nil: ChainEnd) => acc
     (l: ChainLink)  => litArms(l.next, kind, litArm(l.value, kind, acc))
 
-fun litArm(a: PArm, kind: String, acc: LitAcc): LitAcc
+fun litArm(a: PArm, kind, acc): LitAcc
   if acc.laElse
     ret withLitErr(acc, PErr(a.parmLine, "unreachable arm: follows an else arm"))
   ret match(a.armType)
@@ -71,7 +71,7 @@ enum LitVerdict
   enum LvKey(lvKey: String)
   enum LvNoKey()
 
-fun oneLit(lit: PLit, a: PArm, kind: String, acc: LitAcc): LitAcc
+fun oneLit(lit, a: PArm, kind, acc): LitAcc
   ret match(lit)
     # Ranges take no part in duplicate tracking.
     (rg: PlRange) => match(rangeErr(rg, kind))
@@ -89,7 +89,7 @@ fun seenOrDup(key: String, a: PArm, acc: LitAcc): LitAcc
     ? withLitErr(acc, PErr(a.parmLine, "unreachable arm: literal value already matched"))
     : LitAcc(acc.laErrs, add(acc.laSeen, key), acc.laElse)
 
-fun rangeErr(rg: PlRange, kind: String): PErr|None
+fun rangeErr(rg: PlRange, kind): PErr|None
   if kind == "str"
     ret PErr(rg.plrLine, "a range arm needs an integer or float subject")
   if isFloatKind(kind)
@@ -102,7 +102,7 @@ fun rangeErr(rg: PlRange, kind: String): PErr|None
       : None
     (o: PExpr) => None
 
-fun litVerdict(x: PExpr, a: PArm, kind: String): LitVerdict
+fun litVerdict(x, a: PArm, kind): LitVerdict
   if kind == "str"
     ret match(x)
       (s: PeStr) => LvKey("str:" + s.strValue)
@@ -126,7 +126,7 @@ fun litVerdict(x: PExpr, a: PArm, kind: String): LitVerdict
 
 # Python keys a float literal by its VALUE: `1.0` and `1.00` are one key,
 # `-0.0 == 0.0`, and NaN equals nothing.
-fun floatKey(text: String): LitVerdict
+fun floatKey(text): LitVerdict
   ret match(parseFloat(text))
     (v: Float) => v != v
       ? LvNoKey()
@@ -135,26 +135,26 @@ fun floatKey(text: String): LitVerdict
 
 # An unsuffixed float literal (precision 0) narrows to its subject's width; a
 # suffixed one must match exactly.
-fun floatFits(x: PExpr, kind: String): Bool
+fun floatFits(x, kind): Bool
   ret match(x)
     (f: PeFloat) => f.fPrecision == 0 || f.fPrecision == floatWidth(kind)
     (o: PExpr)   => false
 
-fun isFloatKind(kind: String): Bool
+fun isFloatKind(kind): Bool
   ret kind == "float32" || kind == "float64"
 
-fun floatWidth(kind: String): Int
+fun floatWidth(kind): Int
   ret kind == "float32" ? 32 : 64
 
 # Expected integer-literal precision for an integer-like subject: 0 for
 # bigint, else the fixed width.
-fun intPrecision(kind: String): Int
+fun intPrecision(kind): Int
   ret kind == "int8" ? 8 : kind == "int16" ? 16 : kind == "int32" ? 32
     : kind == "int64" ? 64 : 0
 
 # The Python node class a literal would be — the messages name it. The parser
 # only puts literal nodes in an arm's literal list.
-fun pyLiteralClass(x: PExpr): String
+fun pyLiteralClass(x): String
   ret match(x)
     (i: PeInt)     => "IntegerExpression"
     (f: PeFloat)   => "FloatExpression"
@@ -170,7 +170,7 @@ fun pyLiteralClass(x: PExpr): String
 # covered variant is unreachable. A guarded arm covers nothing (its guard may
 # fail at runtime) and literal arms only narrow.
 
-fun exhaustivenessErrs(mt: PeMatch, st: Spec, r: Resolver): Set<PErr>
+fun exhaustivenessErrs(mt: PeMatch, st, r): Set<PErr>
   if !isEmpty(mt.matchExtra)
     ret multiCoverageErrs(mt, r)
   ret match(st)
@@ -218,7 +218,7 @@ fun [tail] enumArms(as2: Chain<PArm>, c: Cov): Cov
     (nil: ChainEnd) => c
     (l: ChainLink)  => enumArms(l.next, enumArm(l.value, c))
 
-fun enumArm(a: PArm, c: Cov): Cov
+fun enumArm(a: PArm, c): Cov
   ret match(covPrelude(c, a))
     (done: Cov) => done
     ()          => match(a.armType)
@@ -239,7 +239,7 @@ fun enumCovers(c: Cov, a: PArm, covers: List<String>): Cov
 # resolved (no uid) defers the whole check to a later pass.
 class [final] Member(mUid: String, mName: String, mSpec: Spec)
 
-fun unionCoverage(mt: PeMatch, cm: SCombination, r: Resolver): Set<PErr>
+fun unionCoverage(mt: PeMatch, cm: SCombination, r): Set<PErr>
   let members = map(reprMembers(cm), (v) => Member(uid(v), printableName(v), v))
   if any(members, (m) => m.mUid == "")
     ret noErrs()
@@ -259,7 +259,7 @@ fun [tail] unionArms(as2: Chain<PArm>, members: List<Member>, r: Resolver, c: Co
     (nil: ChainEnd) => c
     (l: ChainLink)  => unionArms(l.next, members, r, unionArm(l.value, members, r, c))
 
-fun unionArm(a: PArm, members: List<Member>, r: Resolver, c: Cov): Cov
+fun unionArm(a: PArm, members: List<Member>, r, c): Cov
   ret match(covPrelude(c, a))
     (done: Cov) => done
     ()          => match(a.armType)
@@ -273,8 +273,8 @@ fun unionCovers(c: Cov, a: PArm, covers: List<String>): Cov
 
 # The uids of the still-uncovered members this arm's type covers; a union arm
 # covers what any of its members covers.
-fun armCoveredIds(armType: Spec, members: List<Member>, left: List<String>,
-                  r: Resolver): List<String>
+fun armCoveredIds(armType, members: List<Member>, left: List<String>,
+                  r): List<String>
   ret match(armType)
     (cm: SCombination) => fold(reprMembers(cm), List(),
                                (acc, m) => concat(acc, armCoveredIds(m, members, left, r)))
@@ -282,14 +282,14 @@ fun armCoveredIds(armType: Spec, members: List<Member>, left: List<String>,
                                                    && triTrue(assignableFrom(r, armType, m.mSpec))),
                               (m) => m.mUid)
 
-fun isUninhabited(sp: Spec): Bool
+fun isUninhabited(sp): Bool
   ret match(sp)
     (e: SEnum) => isEmpty(e.seValidLeaves)
     (o: Spec)  => false
 
 # Python prints `getattr(v, "name", uid)`: the specs with a `name` field show
 # it, every other spec shows its uid.
-fun printableName(v: Spec): String
+fun printableName(v): String
   ret match(v)
     (c: SClass)   => c.scName
     (n: SNamed)   => n.snName
@@ -305,7 +305,7 @@ class [final] PosTable(ptSpec: Spec, ptKeys: List<String>, ptNames: Dict<String,
 
 class [final] MultiCov(mcErrs: Set<PErr>, mcLeft: List<List<String>>)
 
-fun multiCoverageErrs(mt: PeMatch, r: Resolver): Set<PErr>
+fun multiCoverageErrs(mt: PeMatch, r): Set<PErr>
   ret match(positionTables(prepend(mt.subject, mt.matchExtra), r))
     (tables: List<PosTable>) => multiCoverage(mt, tables, r)
     ()                       => noErrs()      # a subject not resolved yet
@@ -336,14 +336,14 @@ fun positionTable(sp: Spec|None): PosTable|None
       (o: Spec)          => None
     ()         => None
 
-fun unionPositionTable(sp: Spec, members: List<Spec>): PosTable|None
+fun unionPositionTable(sp, members: List<Spec>): PosTable|None
   if any(members, (v) => uid(v) == "")
     ret None
   ret PosTable(sp, map(members, (v) => uid(v)),
                fold(members, Dict(),
                     (d, v) => put(d, uid(v), printableName(v))))
 
-fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r: Resolver): Set<PErr>
+fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r): Set<PErr>
   let c = multiCovArms(chain(mt.arms), tables, r, MultiCov(noErrs(), productSpace(tables)))
   if isEmpty(c.mcLeft)
     ret c.mcErrs
@@ -369,7 +369,7 @@ fun [tail] multiCovArms(as2: Chain<PArm>, tables: List<PosTable>, r: Resolver,
     (nil: ChainEnd) => c
     (l: ChainLink)  => multiCovArms(l.next, tables, r, multiCovArm(l.value, tables, r, c))
 
-fun multiCovArm(a: PArm, tables: List<PosTable>, r: Resolver, c: MultiCov): MultiCov
+fun multiCovArm(a: PArm, tables: List<PosTable>, r, c: MultiCov): MultiCov
   if !(a.armGuard is None) || !isEmpty(a.armLiterals)
     ret c                                    # covers nothing / narrows only
   let pats = prepend(a.armType, map(a.armExtra, (p) => p.posType))
@@ -400,7 +400,7 @@ fun [tail] zipCovered(ts: Chain<PosTable>, ps: Chain<Spec|None>, r: Resolver,
                                                            lt.value.ptKeys, r)))
 
 # Which of `keys` one arm pattern matches at one position.
-fun coveredKeys(subj: Spec, armType: Spec|None, keys: List<String>, r: Resolver): List<String>
+fun coveredKeys(subj, armType: Spec|None, keys, r): List<String>
   ret match(armType)
     (t: Spec) => match(subj)
       (se: SEnum) => match(t)
@@ -409,13 +409,13 @@ fun coveredKeys(subj: Spec, armType: Spec|None, keys: List<String>, r: Resolver)
       (o: Spec)   => coveredKeysOther(subj, t, keys, r)
     ()        => keys                        # no pattern here: anything
 
-fun coveredKeysOther(subj: Spec, t: Spec, keys: List<String>, r: Resolver): List<String>
+fun coveredKeysOther(subj, t, keys, r): List<String>
   ret match(t)
     (cm: SCombination) => fold(reprMembers(cm), List(),
                                (acc, m) => concat(acc, coveredKeys(subj, m, keys, r)))
     (o: Spec)          => filter(keys, (k) => memberAssignable(subj, k, t, r))
 
-fun memberAssignable(subj: Spec, key: String, t: Spec, r: Resolver): Bool
+fun memberAssignable(subj, key, t, r): Bool
   ret match(subj)
     (cm: SCombination) => match(head(filter(reprMembers(cm), (m) => uid(m) == key)))
       (v: Spec) => triTrue(assignableFrom(r, t, v))
@@ -452,7 +452,7 @@ fun [tail] namesLoop(ks: Chain<String>, ts: Chain<PosTable>,
       (nil2: ChainEnd) => build(acc)
       (lt: ChainLink)  => namesLoop(lk.next, lt.next, push(acc, nameOf(lt.value, lk.value)))
 
-fun nameOf(t: PosTable, key: String): String
+fun nameOf(t: PosTable, key): String
   ret match(get(t.ptNames, key))
     (s: String) => s
     ()          => key

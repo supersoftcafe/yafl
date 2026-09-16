@@ -29,7 +29,7 @@ import Bootstrap::Resolve
 # global statements its compilation created.
 class [final] SpecOut(soSpec: Spec, soGlobals: List<PStmt>)
 
-fun compileSpec(sp: Spec, r: Resolver): SpecOut
+fun compileSpec(sp, r): SpecOut
   ret match(sp)
     (b: SBuiltin)      => SpecOut(sp, List())
     (g: SGeneric)      => SpecOut(sp, List())
@@ -42,7 +42,7 @@ fun compileSpec(sp: Spec, r: Resolver): SpecOut
     (t2: STuple)       => compileTuple(t2, r)
     (af: SArrayField)  => compileArray(af, r)
 
-fun compileSpecOpt(sp: Spec|None, r: Resolver): SpecOut|None
+fun compileSpecOpt(sp: Spec|None, r): SpecOut|None
   ret match(sp)
     (x: Spec) => compileSpec(x, r)
     ()        => None
@@ -51,7 +51,7 @@ fun compileSpecOpt(sp: Spec|None, r: Resolver): SpecOut|None
 # The one resolution step: `Foo` becomes the class/enum/builtin it names, or
 # stays an SNamed for the next pass.
 
-fun compileNamed(n: SNamed, r: Resolver): SpecOut
+fun compileNamed(n, r): SpecOut
   let bag = findType(r, n.snName)
   ret match(soleItem(bag))
     (f: Found) => resolveNamedTo(n, f.fStmt, r)
@@ -72,12 +72,12 @@ fun resolveNamedTo(n: SNamed, st: PStmt, r: Resolver): SpecOut
     (e: PsEnum) => enumSpecOf(n, e, r)
     (o: PStmt)  => SpecOut(n, List())
 
-fun enumSpecOf(n: SNamed, e: PsEnum, r: Resolver): SpecOut
+fun enumSpecOf(n, e: PsEnum, r): SpecOut
   ret match(e.eSpec)
     (canon: Spec) => withTypeArgs(canon, n, r)
     ()            => SpecOut(n, List())   # variants not laid out yet
 
-fun withTypeArgs(canon: Spec, n: SNamed, r: Resolver): SpecOut
+fun withTypeArgs(canon, n: SNamed, r): SpecOut
   if isEmpty(n.snParams)
     ret SpecOut(canon, List())
   let ps = compileParams(n.snParams, r)
@@ -91,7 +91,7 @@ fun withTypeArgs(canon: Spec, n: SNamed, r: Resolver): SpecOut
 
 # A ClassSpec keeps resolving its own name: the parser writes the bare name,
 # and it must settle to the declaration's unique (hashed) one.
-fun compileClass(c: SClass, r: Resolver): SpecOut
+fun compileClass(c, r): SpecOut
   let bag = findType(r, c.scName)
   ret match(soleItem(bag))
     (f: Found) => compileParams(c.scParams, r)
@@ -100,19 +100,19 @@ fun compileClass(c: SClass, r: Resolver): SpecOut
 
 # An enum re-reads its fields from the declaration each pass — the instance in
 # hand may predate the layout that filled them in.
-fun compileEnum(e: SEnum, r: Resolver): SpecOut
+fun compileEnum(e, r): SpecOut
   ret match(soleItem(findType(r, e.seRoot)))
     (f: Found) => canonicalEnum(e, f.fStmt)
     ()         => SpecOut(e, List())
 
-fun canonicalEnum(e: SEnum, st: PStmt): SpecOut
+fun canonicalEnum(e, st): SpecOut
   ret match(st)
     (en: PsEnum) => match(en.eSpec)
       (canon: Spec) => refreshedEnum(e, canon)
       ()            => SpecOut(e, List())
     (o: PStmt)   => SpecOut(e, List())
 
-fun refreshedEnum(e: SEnum, canon: Spec): SpecOut
+fun refreshedEnum(e, canon): SpecOut
   ret match(canon)
     (ce: SEnum) => SpecOut(SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
                                  e.seParams, e.seLine),
@@ -121,7 +121,7 @@ fun refreshedEnum(e: SEnum, canon: Spec): SpecOut
 
 # ── the structural types ────────────────────────────────────────────────────
 
-fun compileCallable(cl: SCallable, r: Resolver): SpecOut
+fun compileCallable(cl: SCallable, r): SpecOut
   let ps = compileSpec(cl.scParams2, r)
   ret match(compileSpecOpt(cl.scResult, r))
     (rs: SpecOut) => SpecOut(SCallable(ps.soSpec, rs.soSpec, cl.sclLine),
@@ -130,16 +130,16 @@ fun compileCallable(cl: SCallable, r: Resolver): SpecOut
 
 # A union re-canonicalises after its members compile: a member that resolved
 # into an enum may now be subsumed by another member (see reprMembers).
-fun compileUnion(cm: SCombination, r: Resolver): SpecOut
+fun compileUnion(cm: SCombination, r): SpecOut
   let ps = compileParams(cm.scTypes, r)
   let flat = reprMembersOf(ps.psSpecs)
   ret SpecOut(SCombination(flat, cm.scmLine), ps.psGlobals)
 
-fun compileArray(af: SArrayField, r: Resolver): SpecOut
+fun compileArray(af: SArrayField, r): SpecOut
   let el = compileSpec(af.safElem, r)
   ret SpecOut(SArrayField(el.soSpec, af.safLenField, af.safLine), el.soGlobals)
 
-fun compileTuple(t2: STuple, r: Resolver): SpecOut
+fun compileTuple(t2: STuple, r): SpecOut
   let es = compileEntries(chain(t2.stEntries), r, builder(), List())
   ret SpecOut(STuple(es.esEntries, t2.stLine), es.esGlobals)
 
@@ -161,7 +161,7 @@ class [final] EntryOut(eoEntry: SEntry, eoGlobals: List<PStmt>)
 # pass owns it, and wires in here when it lands. Until then a default is
 # carried through untouched — which is why nothing yet drives this file as a
 # fixpoint.
-fun compileEntry(en: SEntry, r: Resolver): EntryOut
+fun compileEntry(en: SEntry, r): EntryOut
   let ty = compileSpecOpt(en.seType, r)
   ret match(ty)
     (t2: SpecOut) => EntryOut(SEntry(en.seName, t2.soSpec, en.seDefault),
@@ -173,7 +173,7 @@ fun compileEntry(en: SEntry, r: Resolver): EntryOut
 
 class [final] ParamsOut(psSpecs: List<Spec>, psGlobals: List<PStmt>)
 
-fun compileParams(ts: List<Spec>, r: Resolver): ParamsOut
+fun compileParams(ts: List<Spec>, r): ParamsOut
   ret compileParamLoop(chain(ts), r, builder(), List())
 
 fun [tail] compileParamLoop(ts: Chain<Spec>, r: Resolver, [terminal] acc: ListBuilder<Spec>,

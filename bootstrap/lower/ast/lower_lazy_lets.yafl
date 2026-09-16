@@ -25,12 +25,12 @@ fun isDeferredInit(l: PsLet): Bool
 # plan, so promotion decision and emission cannot disagree (Python's own
 # rule, lets.py:281-284).
 
-fun hasStaticGlobalPlan(l: PsLet, r: Resolver, chasing: List<String>): Bool
+fun hasStaticGlobalPlan(l: PsLet, r, chasing: List<String>): Bool
   ret match(staticGlobalPlan(l, r, chasing))
     (plan: List<CgGlobal>) => true
     ()                      => false
 
-fun specHasNamed(sp: Spec): Bool
+fun specHasNamed(sp): Bool
   ret match(sp)
     (n: SNamed)        => true
     (c: SClass)        => sgAnyNamed(chain(c.scParams))
@@ -60,10 +60,10 @@ fun sgOptNamed(sp: Spec|None): Bool
 
 # ── auto-promotion ───────────────────────────────────────────────────────────
 
-fun promoteNonTrivialGlobals(statements: List<PStmt>, r: Resolver): List<PStmt>
+fun promoteNonTrivialGlobals(statements: List<PStmt>, r): List<PStmt>
   ret pngLoop(chain(statements), r, List())
 
-fun pngLoop(ss: Chain<PStmt>, r: Resolver,
+fun pngLoop(ss, r,
                    acc: List<PStmt>): List<PStmt>
   ret build(pngLoopB(ss, r, builderFrom(acc)))
 
@@ -75,7 +75,7 @@ fun [tail] pngLoopB(ss: Chain<PStmt>, r: Resolver,
       (let2: PsLet) => pngLoopB(l.next, r, push(acc, pngOne(let2, r)))
       (o: PStmt)    => pngLoopB(l.next, r, push(acc, l.value))
 
-fun pngOne(let2: PsLet, r: Resolver): PStmt
+fun pngOne(let2: PsLet, r): PStmt
   if isDeferredInit(let2)
     ret let2
   let promotable = match(let2.lDefault)
@@ -98,10 +98,10 @@ fun pngOne(let2: PsLet, r: Resolver): PStmt
 fun checkLazyForwardRefs(statements: List<PStmt>): Set<PErr>
   ret foldStmts(statements, clfIdStmt, clfBlockCb, Set())
 
-fun clfIdStmt(acc: Set<PErr>, st: PStmt): Set<PErr>
+fun clfIdStmt(acc, st: PStmt): Set<PErr>
   ret acc
 
-fun clfBlockCb(acc: Set<PErr>, x: PExpr): Set<PErr>
+fun clfBlockCb(acc, x): Set<PErr>
   ret match(x)
     (bk: PeBlock) => clfBlock(bk.blockStmts, acc)
     (o: PExpr)    => acc
@@ -112,7 +112,7 @@ fun clfBlockCb(acc: Set<PErr>, x: PExpr): Set<PErr>
 class [final] ClfDecl(cdIdx: Int, cdLazy: Bool)
 class [final] ClfDecls(cdMap: Dict<String, ClfDecl>)
 
-fun clfBlock(stmts: List<PStmt>, acc: Set<PErr>): Set<PErr>
+fun clfBlock(stmts: List<PStmt>, acc): Set<PErr>
   let decls = clfDecls(chain(stmts), 0,
                        ClfDecls(Dict()))
   ret clfScan(chain(stmts), 0, decls, acc)
@@ -145,8 +145,8 @@ fun [tail] clfScan(ss: Chain<PStmt>, i: Int, decls: ClfDecls,
         : clfScan(l.next, i + 1, decls, acc)
       (o: PStmt)    => clfScan(l.next, i + 1, decls, acc)
 
-fun clfLet(let2: PsLet, i: Int, decls: ClfDecls,
-           acc: Set<PErr>): Set<PErr>
+fun clfLet(let2: PsLet, i, decls: ClfDecls,
+           acc): Set<PErr>
   ret match(let2.lDefault)
     (dv: PExpr) => foldExpr(dv, clfIdStmt,
                      (a, x) =>
@@ -154,7 +154,7 @@ fun clfLet(let2: PsLet, i: Int, decls: ClfDecls,
                      acc)
     ()          => acc
 
-fun clfRef(acc: Set<PErr>, x: PExpr, let2: PsLet, i: Int,
+fun clfRef(acc, x, let2: PsLet, i,
            decls: ClfDecls): Set<PErr>
   ret match(x)
     # No "have I reported this already" scan: the same (let, ref) pair yields
@@ -171,24 +171,24 @@ fun clfRef(acc: Set<PErr>, x: PExpr, let2: PsLet, i: Int,
     (o: PExpr)   => acc
 
 # FIRST declaration of a name wins, as the head-first chain walk did.
-fun clfDeclAdd(acc: ClfDecls, name: String, i: Int, lazy: Bool): ClfDecls
+fun clfDeclAdd(acc, name: String, i, lazy): ClfDecls
   ret contains(acc.cdMap, name)
     ? acc
     : ClfDecls(put(acc.cdMap, name, ClfDecl(i, lazy)))
 
-fun clfBad(name: String, i: Int, decls: ClfDecls): Bool
+fun clfBad(name: String, i, decls: ClfDecls): Bool
   ret match(get(decls.cdMap, name))
     (d: ClfDecl) => d.cdIdx > i && !d.cdLazy
     ()           => false
 
 # Python's per-let `seen` set: one error per referenced name per lazy let.
 
-fun containsSub(s: String, needle: String): Bool
+fun containsSub(s, needle): Bool
   ret find(s, needle) >= 0
 
 # ── the lowering ─────────────────────────────────────────────────────────────
 
-fun lowerLazyLets(statements: List<PStmt>): List<PStmt>
+fun lowerLazyLets(statements): List<PStmt>
   let r = rootResolver(statements)
   let promoted = promoteNonTrivialGlobals(statements, r)
   let lazies = foldStmts(promoted, lllCollect, lllIdExpr,
@@ -198,10 +198,10 @@ fun lowerLazyLets(statements: List<PStmt>): List<PStmt>
   ret rwStmts(promoted, Rw((x) => lllRefCb(x, lazies), rwNoSpec,
                            lllWrapCb))
 
-fun lllIdExpr(acc: OuterTypes, x: PExpr): OuterTypes
+fun lllIdExpr(acc, x: PExpr): OuterTypes
   ret acc
 
-fun lllCollect(acc: OuterTypes, st: PStmt): OuterTypes
+fun lllCollect(acc, st): OuterTypes
   ret match(st)
     (let2: PsLet) => isDeferredInit(let2) ? lllAdd(acc, let2) : acc
     (o: PStmt)    => acc
@@ -210,14 +210,14 @@ fun lllCollect(acc: OuterTypes, st: PStmt): OuterTypes
 # the head: these lets are gathered from the whole statement tree, so two
 # scopes may declare the same name, and a later one must not retype an earlier
 # one's references.
-fun lllAdd(acc: OuterTypes, let2: PsLet): OuterTypes
+fun lllAdd(acc, let2: PsLet): OuterTypes
   ret match(let2.lType)
     (t2: Spec) => contains(acc.otMap, let2.lName)
       ? acc
       : OuterTypes(put(acc.otMap, let2.lName, t2))
     ()         => acc
 
-fun lllRefCb(x: PExpr, lazies: OuterTypes): PExpr|None
+fun lllRefCb(x, lazies: OuterTypes): PExpr|None
   ret match(x)
     (nm: PeName) => match(get(lazies.otMap, nm.refName))
       (t2: Spec) => PeLazy(nm.refName, t2, None, false, nm.penLine)
@@ -226,7 +226,7 @@ fun lllRefCb(x: PExpr, lazies: OuterTypes): PExpr|None
 
 # Wrap EVERY deferred-init RHS in a nullary `() => expr` thunk (bottom-up:
 # the references inside were already rewritten to PeLazy).
-fun lllWrapCb(st: PStmt): PStmt|None
+fun lllWrapCb(st): PStmt|None
   ret match(st)
     (let2: PsLet) => isDeferredInit(let2) ? lllWrapLet(let2) : None
     (o: PStmt)    => None
@@ -245,7 +245,7 @@ fun lllWrapLet(let2: PsLet): PStmt|None
       ()         => None
     ()          => None
 
-fun lllEmptyParams(lr: PLine): PStmt
+fun lllEmptyParams(lr): PStmt
   ret PsDestructure("_", List(),
                     STuple(List(), lr), List(), None, lr,
                     false)

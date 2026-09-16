@@ -43,7 +43,7 @@ fun [tail] icCollect(ss: Chain<PStmt>, acc: IcConsts): IcConsts
         : icCollect(l.next, acc)
       (o: PStmt)    => icCollect(l.next, acc)
 
-fun icCollectLet(let2: PsLet, acc: IcConsts): IcConsts
+fun icCollectLet(let2: PsLet, acc): IcConsts
   ret match(let2.lDefault)
     (v: PExpr) => icIsLiteral(v)
       # FIRST declaration of a name wins, as the head-first walk did.
@@ -53,7 +53,7 @@ fun icCollectLet(let2: PsLet, acc: IcConsts): IcConsts
       : acc
     ()         => acc
 
-fun icIsLiteral(x: PExpr): Bool
+fun icIsLiteral(x): Bool
   ret match(x)
     (i: PeInt)   => true
     (f: PeFloat) => true
@@ -62,7 +62,7 @@ fun icIsLiteral(x: PExpr): Bool
     (o: PExpr)   => false
 
 # The literal, re-stamped with the reference's line.
-fun icRestamp(v: PExpr, line: PLine): PExpr
+fun icRestamp(v, line): PExpr
   ret match(v)
     (i: PeInt)   => PeInt(i.value, i.precision, line)
     (f: PeFloat) => PeFloat(f.floatText, f.fPrecision, line)
@@ -71,7 +71,7 @@ fun icRestamp(v: PExpr, line: PLine): PExpr
     (o: PExpr)   => v
 
 # Top level: const declarations are DROPPED — they live only as inlined uses.
-fun icDropDecls(ss: Chain<PStmt>, c: IcConsts,
+fun icDropDecls(ss, c: IcConsts,
                        acc: List<PStmt>): List<PStmt>
   ret build(icDropDeclsB(ss, c, builderFrom(acc)))
 
@@ -86,7 +86,7 @@ fun [tail] icDropDeclsB(ss: Chain<PStmt>, c: IcConsts,
       (o: PStmt)    => icDropDeclsB(l.next, c, push(acc, l.value))
 
 # The walker callback: a bare name that aliases a const becomes the literal.
-fun icReplace(x: PExpr, c: IcConsts): PExpr|None
+fun icReplace(x, c: IcConsts): PExpr|None
   ret match(x)
     (nm: PeName) => match(get(c.icMap, nm.refName))
       (v: PExpr) => icRestamp(v, nm.penLine)

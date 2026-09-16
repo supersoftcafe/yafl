@@ -28,8 +28,8 @@ import Bootstrap::Types
 # LATCHES; one that does not — even buried inside a compound argument — is a
 # not-yet-bound leftover, and this use refreshes once the inner hole fills.
 
-fun useSiteTypeParams(stmt: PStmt, supplied: List<Spec>, expected: Spec|None,
-                      r: Resolver): List<Spec>
+fun useSiteTypeParams(stmt, supplied, expected: Spec|None,
+                      r): List<Spec>
   let gens = stmtGens(stmt)
   if isEmpty(gens)
     ret supplied
@@ -48,7 +48,7 @@ fun useSiteTypeParams(stmt: PStmt, supplied: List<Spec>, expected: Spec|None,
 # so re-inferring against the expected type widens the binding exactly as far
 # as the context demands and no further.
 fun suppliedComplete(supplied: List<Spec>, gens: List<PGen>,
-                     r: Resolver): Bool
+                     r): Bool
   ret sameLen(chain(supplied), chain(gens)) && !anyFree(chain(supplied), r)
       && !any(supplied, (sp) => containsNarrowedView(sp))
 
@@ -57,8 +57,8 @@ fun [tail] anyFree(ts: Chain<Spec>, r: Resolver): Bool
     (nil: ChainEnd) => false
     (l: ChainLink)  => hasFreePlaceholders(l.value, r) ? true : anyFree(l.next, r)
 
-fun reinferred(stmt: PStmt, gens: List<PGen>, supplied: List<Spec>,
-               want: SCallable, r: Resolver): List<Spec>
+fun reinferred(stmt, gens: List<PGen>, supplied,
+               want: SCallable, r): List<Spec>
   ret match(stmtType(stmt))
     (dt: Spec) => match(dt)
       (declared: SCallable) => match(inferTypeParams(stmt, gens, declared,
@@ -79,7 +79,7 @@ fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
     : List()
   ret mergeLoop(chain(gens), prior, mapping, List())
 
-fun priorBindings(gs: Chain<PGen>, ss: Chain<Spec>,
+fun priorBindings(gs, ss,
                          acc: List<Binding>): List<Binding>
   ret build(priorBindingsB(gs, ss, builderFrom(acc)))
 
@@ -93,7 +93,7 @@ fun [tail] priorBindingsB(gs: Chain<PGen>, ss: Chain<Spec>,
                                         push(acc, Binding(g2.value.genName,
                                                   s2.value)))
 
-fun mergeLoop(gs: Chain<PGen>, prior: List<Binding>,
+fun mergeLoop(gs, prior: List<Binding>,
                      mapping: List<Binding>, acc: List<Spec>): List<Spec>
   ret build(mergeLoopB(gs, prior, mapping, builderFrom(acc)))
 
@@ -122,8 +122,8 @@ fun ownPlaceholder(g2: PGen): Spec
 # only in a `where` clause — the trait instances in scope. The mapping may be
 # PARTIAL; None means the shapes don't unify at all.
 
-fun inferTypeParams(stmt: PStmt, gens: List<PGen>, declared: SCallable,
-                    want: SCallable, r: Resolver): List<Binding>|None
+fun inferTypeParams(stmt, gens: List<PGen>, declared: SCallable,
+                    want: SCallable, r): List<Binding>|None
   let names = genNames(chain(gens), List())
   # An enclosing generic's parameter is a real type at this use site, so the
   # callee's params may bind to it (see unifyGenericIn / bindHole).
@@ -149,7 +149,7 @@ fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
 fun genNames(gs: Chain<PGen>, acc: List<String>): List<String>
   ret build(genNamesB(gs, builderFrom(acc)))
 
-fun [tail] genNamesB(gs: Chain<PGen>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
+fun [tail] genNamesB(gs: Chain<PGen>, [terminal] acc): ListBuilder<String>
   ret match(gs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => genNamesB(l.next, push(acc, l.value.genName))
@@ -161,8 +161,8 @@ fun [tail] genNamesB(gs: Chain<PGen>, [terminal] acc: ListBuilder<String>): List
 # come from the arguments; binding it from an arbitrary instance would pick
 # the wrong one. Additive: the mapping is untouched when nothing grounds.
 
-fun viaWhere(stmt: PStmt, gens: List<PGen>, mapping: List<Binding>,
-             r: Resolver, declaredParams: Spec): List<Binding>
+fun viaWhere(stmt, gens: List<PGen>, mapping,
+             r, declaredParams): List<Binding>
   let argInferrable = placeholderNames(declaredParams)
   let targets = whereTargets(chain(gens), mapping, argInferrable,
                              List())
@@ -178,7 +178,7 @@ fun whereTargets(gs: Chain<PGen>, mapping: List<Binding>,
 
 fun [tail] whereTargetsB(gs: Chain<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
-                        [terminal] acc: ListBuilder<String>): ListBuilder<String>
+                        [terminal] acc): ListBuilder<String>
   ret match(gs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => isWhereTarget(l.value.genName, mapping, argInferrable)
@@ -206,7 +206,7 @@ fun [tail] whereLoop(ws: Chain<Spec>, gens: List<PGen>,
                                               instances, r),
                                  argInferrable, instances, r)
 
-fun dischargeOne(wc: Spec, mapping: List<Binding>, targets: List<String>,
+fun dischargeOne(wc, mapping, targets: List<String>,
                  instances: List<TraitInst>, r: Resolver): List<Binding>
   ret match(substitute(wc, mapping))
     (sub: SClass) => match(solveTraitConstraint(sub, targets, instances, r))
@@ -214,7 +214,7 @@ fun dischargeOne(wc: Spec, mapping: List<Binding>, targets: List<String>,
       ()                 => mapping
     (o: Spec)     => mapping
 
-fun stmtWheres(stmt: PStmt): List<Spec>
+fun stmtWheres(stmt): List<Spec>
   ret match(stmt)
     (f: PsFun)   => f.fWheres
     (l: PsLet)   => l.lWheres
@@ -227,14 +227,14 @@ fun stmtWheres(stmt: PStmt): List<Spec>
 # params, matched from the constraint's own type args. An instance whose
 # witness class has not resolved its parents yet is skipped this pass.
 
-fun traitInstances(r: Resolver): List<TraitInst>
+fun traitInstances(r): List<TraitInst>
   ret sortByParamCount(
         tiStmtLoop(chain(traitInstanceStmts(r)),
                    instLoop(chain(traitLets(r)), r, List())))
 
 # PRE-LOWERING first-class instances: the pattern IS the interface — no
 # witness lookup, no parent substitution (_trait_instances).
-fun tiStmtLoop(ts: Chain<PStmt>, acc: List<TraitInst>): List<TraitInst>
+fun tiStmtLoop(ts, acc: List<TraitInst>): List<TraitInst>
   ret build(tiStmtLoopB(ts, builderFrom(acc)))
 
 fun [tail] tiStmtLoopB(ts: Chain<PStmt>, [terminal] acc: ListBuilder<TraitInst>): ListBuilder<TraitInst>
@@ -257,7 +257,7 @@ fun [tail] instLoop(ts: Chain<PStmt>, r: Resolver,
       (let2: PsLet) => instLoop(l.next, r, instancesOf(let2, r, acc))
       (o: PStmt)    => instLoop(l.next, r, acc)
 
-fun instancesOf(let2: PsLet, r: Resolver, acc: List<TraitInst>): List<TraitInst>
+fun instancesOf(let2: PsLet, r, acc): List<TraitInst>
   ret match(let2.lType)
     (dt: Spec) => match(dt)
       (dc: SClass) => match(soleItem(findType(r, dc.scName)))
@@ -269,7 +269,7 @@ fun instancesOf(let2: PsLet, r: Resolver, acc: List<TraitInst>): List<TraitInst>
     ()         => acc
 
 fun witnessParents(let2: PsLet, dc: SClass, cls: PsClass,
-                   acc: List<TraitInst>): List<TraitInst>
+                   acc): List<TraitInst>
   ret match(cls.cAllParents)
     (parents: List<Spec>) => parentIfaces(chain(parents),
                                           witnessRemap(dc, cls),
@@ -295,8 +295,8 @@ fun [tail] parentIfaces(ps: Chain<Spec>, remap: List<Binding>,
                                             paramNames, acc))
       (o: Spec)    => parentIfaces(l.next, remap, paramNames, acc)
 
-fun addIface(iface: Spec, paramNames: List<String>,
-             acc: List<TraitInst>): List<TraitInst>
+fun addIface(iface, paramNames,
+             acc): List<TraitInst>
   ret match(iface)
     # Declaration order is kept: the sort is STABLE, so this order decides
     # ties between instances of equal param count.

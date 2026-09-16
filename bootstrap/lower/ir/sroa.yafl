@@ -22,7 +22,7 @@ fun splitProjectedAggregates(a: CgApp): CgApp
   ret appWithFunctions(a, map(appFunctions(a),
         (f) => sroaFix(f, List(), 8)))
 
-fun [tail] sroaFix(f: CgFunction, done: List<String>, left: Int): CgFunction
+fun [tail] sroaFix(f, done: List<String>, left): CgFunction
   if left == 0
     ret f
   let sp = sroaFindSplittable(f, done)
@@ -64,7 +64,7 @@ fun sroaSvReads(ops: Segment<Op>|None): List<StrCount>
   ret fold(ops, List(),
            (acc, op) => fold(opAllParams(op), acc, sroaSvRead1))
 
-fun sroaSvRead1(acc: List<StrCount>, p: RParam): List<StrCount>
+fun sroaSvRead1(acc, p): List<StrCount>
   ret match(p)
     (sv: RpStackVar) => strCountIncr(acc, sv.name)
     (o: RParam)       => acc
@@ -73,7 +73,7 @@ fun sroaProjReads(ops: Segment<Op>|None): List<ProjCount>
   ret fold(ops, List(),
            (acc, op) => fold(opAllParams(op), acc, sroaProj1))
 
-fun sroaProj1(acc: List<ProjCount>, p: RParam): List<ProjCount>
+fun sroaProj1(acc, p): List<ProjCount>
   ret match(p)
     (sf: RpStructField) => match(sf.structVal)
       (sv: RpStackVar) => pjIncr(acc, sv.name, sf.field)
@@ -97,7 +97,7 @@ class [final] SroaDefs(sdEntries: List<SroaDef>, sdMulti: Set<String>)
 fun sroaDefs(ops: Segment<Op>|None): SroaDefs
   ret sroaDefsLoop(ops, 0i32, 0, SroaDefs(List(), Set()))
 
-fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, acc: SroaDefs): SroaDefs
+fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg: Int32, i, acc): SroaDefs
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
@@ -106,7 +106,7 @@ fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg: Int32, i: Int, acc: SroaDefs)
                (a, w) => sroaDef1(a, w, i, seg.array(iSeg))))
       : sroaDefsLoop(seg.next, 0i32, i, acc)
 
-fun sroaDef1(acc: SroaDefs, w: RParam, i: Int, op: Op): SroaDefs
+fun sroaDef1(acc, w, i, op): SroaDefs
   ret match(w)
     (sv: RpStackVar) => any(acc.sdEntries, (e2) => e2.sdName == sv.name)
       ? SroaDefs(map(acc.sdEntries, (e2) => e2.sdName == sv.name ? SroaDef(sv.name, w, i, op) : e2),
@@ -118,7 +118,7 @@ fun sroaDef1(acc: SroaDefs, w: RParam, i: Int, op: Op): SroaDefs
                  acc.sdMulti)
     (o: RParam)       => acc
 
-fun sroaConsider([terminal] acc: ListBuilder<Sroa>, name: String,
+fun sroaConsider([terminal] acc, name: String,
                  done: List<String>, svReads: List<StrCount>,
                  projReads: List<ProjCount>, defs: SroaDefs): ListBuilder<Sroa>
   if contains(defs.sdMulti, name) || strListMember(done, name)
@@ -149,7 +149,7 @@ fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name: String,
                 map(used, (fld) => SroaField(fld,
                       RpStackVar(rpStructFieldLookup(fields, fld), name + "$" + fld)))))
 
-fun sroaStructFields(t2: CgType): List<CgField>
+fun sroaStructFields(t2): List<CgField>
   ret match(t2)
     (s2: CgStruct)          => s2.fields
     (im: CgImmediateStruct) => im.fields
@@ -157,7 +157,7 @@ fun sroaStructFields(t2: CgType): List<CgField>
 
 # Project after an ordinary single-result definition only; a Phi join and
 # side-effect-anchoring keep-Moves stay whole.
-fun sroaDefOpOk(op: Op): Bool
+fun sroaDefOpOk(op): Bool
   ret match(op)
     (m: OpMove) => !m.moveKeep
     (c: OpCall) => true
@@ -177,8 +177,8 @@ fun sroaApply(f: CgFunction, sp: List<Sroa>): CgFunction
 # Rewrite every projection v.f → v$f; the freshly inserted seeding Moves are
 # NOT routed through the replacer, so they read the original v exactly once,
 # right after its definition — before any suspension can intervene.
-fun [tail] sroaApplyLoop(s: Segment<Op>|None, iSeg: Int32, sp: List<Sroa>, i: Int,
-                         [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
+fun [tail] sroaApplyLoop(s: Segment<Op>|None, iSeg: Int32, sp: List<Sroa>, i,
+                         [terminal] acc): SeqBuilder<Op>
   ret match(s)
     (nil: None)        => acc
     (seg: Segment<Op>) => iSeg < seg.length
@@ -189,14 +189,14 @@ fun [tail] sroaApplyLoop(s: Segment<Op>|None, iSeg: Int32, sp: List<Sroa>, i: In
               sroaSeedMoves(sp, i)))
       : sroaApplyLoop(seg.next, 0i32, sp, i, acc)
 
-fun sroaReplacer(p: RParam, sp: List<Sroa>): RParam
+fun sroaReplacer(p, sp: List<Sroa>): RParam
   ret match(p)
     (sf: RpStructField) => match(sf.structVal)
       (sv: RpStackVar) => sroaFieldLocal(sp, sv.name, sf.field, p)
       (o: RParam)       => p
     (o2: RParam)         => p
 
-fun sroaFieldLocal(sp: List<Sroa>, v: String, f: String, orig: RParam): RParam
+fun sroaFieldLocal(sp: List<Sroa>, v: String, f, orig): RParam
   ret match(head(filter(sp, (s2) => s2.srName == v)))
     (s2: Sroa) => match(head(filter(s2.srFields, (fl) => fl.sfField == f)))
       (fl: SroaField) => fl.sfLocal

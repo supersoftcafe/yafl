@@ -51,7 +51,7 @@ fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc: ERoots): ERoots
       (e2: PsEnum) => ceRootsLoop(l.next, ceRootAdd(acc, e2))
       (o: PStmt)   => ceRootsLoop(l.next, acc)
 
-fun ceRootAdd(acc: ERoots, e2: PsEnum): ERoots
+fun ceRootAdd(acc, e2: PsEnum): ERoots
   ret match(e2.eSpec)
     (sp: Spec) => match(sp)
       # FIRST declaration of a root wins.
@@ -78,7 +78,7 @@ fun [tail] ceMapLoop(ns: Chain<String>, acc: NameMap): NameMap
                                                    l.value),
                                           bareOfUnique(l.value), l.value))
 
-fun ceMapAdd(acc: NameMap, key: String, root: String): NameMap
+fun ceMapAdd(acc, key: String, root: String): NameMap
   ret get(acc.nmIndex, key) is None
     ? NameMap(put(acc.nmIndex, key, root))
     : acc
@@ -87,7 +87,7 @@ fun ceMapAdd(acc: NameMap, key: String, root: String): NameMap
 # "AnyNs::Foo::Bar" in either direction. EVERY match is collected and the
 # answer stands only if exactly one survives (RULING A), so the order the
 # keys are walked in cannot affect it.
-fun ceLookup2(map: NameMap, name: String): String|None
+fun ceLookup2(map: NameMap, name): String|None
   ret match(get(map.nmIndex, name))
     (hit: String) => hit
     ()            => singleOrNone(ceSuffixMatches(chain(nmNames(map)),
@@ -111,7 +111,7 @@ fun [tail] ceSuffixMatches(ks: Chain<String>, map: NameMap, name: String,
           ? add(acc, ceRootFor(map, k.value))
           : acc)
 
-fun ceRootFor(map: NameMap, key: String): String
+fun ceRootFor(map: NameMap, key): String
   ret match(get(map.nmIndex, key))
     (r: String) => r
     ()          => key
@@ -124,13 +124,13 @@ fun ceRootFor(map: NameMap, key: String): String
 
 # The reached roots are a SET — the walk deduped by scanning what it had
 # already collected, and the one consumer sorts them into the edge list.
-fun ceReachOpt(sp: Spec|None, out: Set<String>,
+fun ceReachOpt(sp: Spec|None, out,
                map: NameMap): Set<String>
   ret match(sp)
     (s2: Spec) => ceReach(s2, out, map)
     ()         => out
 
-fun ceReach(sp: Spec, out: Set<String>, map: NameMap): Set<String>
+fun ceReach(sp, out, map: NameMap): Set<String>
   ret match(sp)
     # `add` is idempotent, so the "already reached" test went with the Set.
     (e2: SEnum)        => add(out, e2.seRoot)
@@ -143,7 +143,7 @@ fun ceReach(sp: Spec, out: Set<String>, map: NameMap): Set<String>
       ()             => out
     (o: Spec)          => out
 
-fun [tail] ceReachEntries(es: Chain<SEntry>, out: Set<String>,
+fun [tail] ceReachEntries(es: Chain<SEntry>, out,
                           map: NameMap): Set<String>
   ret match(es)
     (nil: ChainEnd) => out
@@ -188,7 +188,7 @@ fun [tail] ceEdgeLoop(ns: Chain<String>, roots: ERoots, map: NameMap,
                    sort(ceFieldsReach(chain(fieldsOf(n.value)),
                                       Set(), map)))))
 
-fun [tail] ceFieldsReach(fs: Chain<SField>, out: Set<String>,
+fun [tail] ceFieldsReach(fs: Chain<SField>, out,
                          map: NameMap): Set<String>
   ret match(fs)
     (nil: ChainEnd) => out
@@ -299,7 +299,7 @@ fun [tail] tjFirstIndex(ss: Chain<String>, v: String, at: Int): Int
     (nil: ChainEnd) => at
     (l: ChainLink)  => l.value == v ? at : tjFirstIndex(l.next, v, at + 1)
 
-fun tjRemoveAll(ss: Chain<String>, gone: List<String>,
+fun tjRemoveAll(ss, gone: List<String>,
                        acc: List<String>): List<String>
   ret build(tjRemoveAllB(ss, gone, builderFrom(acc)))
 
@@ -317,20 +317,20 @@ fun [tail] tjRemoveAllB(ss: Chain<String>, gone: List<String>,
 # self-loop test reads the CURRENT work graph, updated as breakers are
 # removed within the round, exactly like Python.
 
-fun cePickBreakers(edges: EEdges, roots: ERoots,
+fun cePickBreakers(edges, roots: ERoots,
                    fieldsOf: (:String): List<SField>): List<String>
   ret cePickLoop(edges, roots, fieldsOf, List())
 
-fun [tail] cePickLoop(work: EEdges, roots: ERoots,
+fun [tail] cePickLoop(work, roots: ERoots,
                       fieldsOf: (:String): List<SField>,
-                      acc: List<String>): List<String>
+                      acc): List<String>
   let cyclic = ceCyclicSccs(chain(ceSccs(work)), work, List())
   if isEmpty(cyclic)
     ret acc
   ret ceBreakSccs(chain(cyclic), work, roots, fieldsOf, acc)
     |> (out) => cePickLoop(out.pbWork, roots, fieldsOf, out.pbChosen)
 
-fun ceCyclicSccs(ss: Chain<List<String>>, work: EEdges,
+fun ceCyclicSccs(ss, work: EEdges,
                         acc: List<List<String>>): List<List<String>>
   ret build(ceCyclicSccsB(ss, work, builderFrom(acc)))
 
@@ -394,7 +394,7 @@ fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots,
     ret shorterThan(chain(aFields), chain(bFields))
   ret a < b
 
-fun ceIsSystem(name: String): Bool
+fun ceIsSystem(name): Bool
   ret startsWith(simpleName(name), "System::")
 
 # Drop the node AND every edge into it. The node itself goes with `remove`; the
@@ -454,14 +454,14 @@ fun [tail] ceAmbiguities(ns: Chain<String>, map: NameMap,
                                                   map, acc))
 
 fun [tail] ceFieldAmbig(fs: Chain<SField>, map: NameMap,
-                        acc: Set<PErr>): Set<PErr>
+                        acc): Set<PErr>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => ceFieldAmbig(l.next, map,
                                     ceSpecAmbig(l.value.sfType, map, acc))
 
 # Only a NAMED spec can be ambiguous; the structural cases just descend.
-fun ceSpecAmbig(sp: Spec, map: NameMap, acc: Set<PErr>): Set<PErr>
+fun ceSpecAmbig(sp, map: NameMap, acc): Set<PErr>
   ret match(sp)
     (n: SNamed)        => get(map.nmIndex, n.snName) is None
       ? ceReportAmbig(n, ceSuffixMatches(chain(nmNames(map)), map, n.snName,
@@ -472,7 +472,7 @@ fun ceSpecAmbig(sp: Spec, map: NameMap, acc: Set<PErr>): Set<PErr>
     (cl: SCallable)    => ceSpecAmbig(cl.scParams2, map, acc)
     (o: Spec)          => acc
 
-fun ceReportAmbig(n: SNamed, ms: Set<String>, acc: Set<PErr>): Set<PErr>
+fun ceReportAmbig(n: SNamed, ms: Set<String>, acc): Set<PErr>
   ret isMoreThanOne(ms)
     ? add(acc, PErr(n.snLine,
         "ambiguous enum reference '" + n.snName + "' — matches "
@@ -480,7 +480,7 @@ fun ceReportAmbig(n: SNamed, ms: Set<String>, acc: Set<PErr>): Set<PErr>
     : acc
 
 fun [tail] ceEntryAmbig(es: Chain<SEntry>, map: NameMap,
-                        acc: Set<PErr>): Set<PErr>
+                        acc): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => ceEntryAmbig(l.next, map,
@@ -488,7 +488,7 @@ fun [tail] ceEntryAmbig(es: Chain<SEntry>, map: NameMap,
 
 # Optional-spec variant, mirroring ceReachOpt: a match cannot be spelled
 # inline as a call argument.
-fun ceSpecAmbigOpt(sp: Spec|None, map: NameMap, acc: Set<PErr>): Set<PErr>
+fun ceSpecAmbigOpt(sp: Spec|None, map: NameMap, acc): Set<PErr>
   ret match(sp)
     (s2: Spec) => ceSpecAmbig(s2, map, acc)
     ()         => acc
@@ -508,12 +508,11 @@ fun [tail] ceListAmbig(ss: Chain<Spec>, map: NameMap,
 # same lifetime as every per-pass cache. Mirror of Python
 # ResolverRoot.is_complex_root. The breaker list is small; membership is a
 # linear scan.
-fun rootResolver(statements: List<PStmt>,
-                 suggest: Dict<String, Spec>|None = None): Resolver
+fun rootResolver(statements): Resolver
   let [lazy] breakers: List<String> = computeBreakers(statements)
   let st = buildStatements(statements)
   ret RRoot((root) => contains2(breakers, root),
-            st, suggest, None, 0,
+            st, None, 0,
             enumFieldsTable(statements), None,
             mergedMembersTable(st))
 
@@ -610,7 +609,7 @@ fun bxBytes(a: BxPrims): Int
   ret 8 * (a.bpPtr + a.bpCode + a.bpI64 + a.bpF64) + 4 * (a.bpI32 + a.bpF32)
     + 2 * a.bpI16 + a.bpI8
 
-fun bxBuiltinPrims(name: String): BxPrims
+fun bxBuiltinPrims(name): BxPrims
   ret name == "int64" ? BxPrims(0, 0, 1, 0, 0, 0, 0, 0)
     : name == "float64" ? BxPrims(0, 0, 0, 1, 0, 0, 0, 0)
     : name == "int32" ? BxPrims(0, 0, 0, 0, 1, 0, 0, 0)
@@ -620,7 +619,7 @@ fun bxBuiltinPrims(name: String): BxPrims
     : bxPtrOne()   # bigint, str, unknown
 
 fun computeBoxedLeaves(statements: List<PStmt>,
-                       breakers: List<String>): Dict<String, Bool>
+                       breakers): Dict<String, Bool>
   let roots = ceCollectRoots(statements)
   let ctx = BoxCtx(breakers, bxRootStmts(statements), ceNameMap(roots),
                    bxForeignClasses(statements))
@@ -686,7 +685,7 @@ fun bxPointerKind(ctx: BoxCtx, sp: Spec|None): String
     (s2: Spec) => bxPointerKindOn(ctx, s2)
     ()          => ""
 
-fun bxPointerKindOn(ctx: BoxCtx, sp: Spec): String
+fun bxPointerKindOn(ctx: BoxCtx, sp): String
   ret match(sp)
     (t2: STuple)  => isEmpty(t2.stEntries) ? "unit" : bxNewtypeKind(ctx, t2.stEntries)
     (b: SBuiltin) => b.sbName == "bigint" ? "int"
@@ -722,7 +721,7 @@ fun bxCollapses(ctx: BoxCtx, members: List<Spec>): Bool
   let t2 = fold(kinds, BxKindTally(0, 0, 0, false, Set()), bxKindStep)
   ret t2.ktNonUnit > 0 && t2.ktUnits <= 1 && t2.ktForeign <= 1 && !t2.ktDup
 
-fun bxKindStep(t2: BxKindTally, k: String): BxKindTally
+fun bxKindStep(t2: BxKindTally, k): BxKindTally
   ret k == "unit"
     ? BxKindTally(t2.ktUnits + 1, t2.ktForeign, t2.ktNonUnit, t2.ktDup, t2.ktSeen)
     : k == "foreign"
@@ -734,13 +733,13 @@ fun bxKindStep(t2: BxKindTally, k: String): BxKindTally
 # ── widths ─────────────────────────────────────────────────────────────────
 
 fun bxSpecPrims(ctx: BoxCtx, sp: Spec|None, stack: List<String>,
-                st: BoxState): BxOut
+                st): BxOut
   ret match(sp)
     (s2: Spec) => bxSpecPrimsOn(ctx, s2, stack, st)
     ()          => BxOut(bxPtrOne(), st)
 
-fun bxSpecPrimsOn(ctx: BoxCtx, sp: Spec, stack: List<String>,
-                  st: BoxState): BxOut
+fun bxSpecPrimsOn(ctx: BoxCtx, sp, stack: List<String>,
+                  st): BxOut
   ret match(sp)
     (b: SBuiltin)      => BxOut(bxBuiltinPrims(b.sbName), st)
     (cl: SCallable)    => BxOut(bxFunPrims(), st)
@@ -756,46 +755,46 @@ fun bxSpecPrimsOn(ctx: BoxCtx, sp: Spec, stack: List<String>,
     (o: Spec)          => BxOut(bxPtrOne(), st)   # classes, placeholders
 
 fun bxEntriesPrims(ctx: BoxCtx, es: Chain<SEntry>, stack: List<String>,
-                   st: BoxState, acc: BxPrims): BxOut
+                   st, acc): BxOut
   ret match(es)
     (nil: ChainEnd) => BxOut(acc, st)
     (l: ChainLink)  => bxEntriesStep(ctx, l, stack, st, acc)
 
 fun bxEntriesStep(ctx: BoxCtx, l: ChainLink<SEntry>, stack: List<String>,
-                  st: BoxState, acc: BxPrims): BxOut
+                  st, acc: BxPrims): BxOut
   let o = bxSpecPrims(ctx, l.value.seType, stack, st)
   ret bxEntriesPrims(ctx, l.next, stack, o.bxSt, bxAdd(acc, o.bxP))
 
 # Tagged combination: per-class maxima over the members, plus a byte tag.
 fun bxCombPrims(ctx: BoxCtx, ss: Chain<Spec>, stack: List<String>,
-                st: BoxState, acc: BxPrims): BxOut
+                st, acc: BxPrims): BxOut
   ret match(ss)
     (nil: ChainEnd) => BxOut(bxAddTag(acc), st)
     (l: ChainLink)  => bxCombStep(ctx, l, stack, st, acc)
 
 fun bxCombStep(ctx: BoxCtx, l: ChainLink<Spec>, stack: List<String>,
-               st: BoxState, acc: BxPrims): BxOut
+               st, acc: BxPrims): BxOut
   let o = bxSpecPrimsOn(ctx, l.value, stack, st)
   ret bxCombPrims(ctx, l.next, stack, o.bxSt, bxMax(acc, o.bxP))
 
-fun bxEnumValuePrims(ctx: BoxCtx, root: String, stack: List<String>,
-                     st: BoxState): BxOut
+fun bxEnumValuePrims(ctx: BoxCtx, root, stack: List<String>,
+                     st): BxOut
   if contains2(ctx.bxBreakers, root) || contains2(stack, root)
     ret BxOut(bxPtrOne(), st)   # heap pointer: complex, or defensive on-stack
   ret match(get(st.bsMemo, root))
     (p: BxPrims) => BxOut(p, st)
     ()            => bxComputeRoot(ctx, root, stack, st)
 
-fun bxComputeRoot(ctx: BoxCtx, root: String, stack: List<String>,
-                  st: BoxState): BxOut
+fun bxComputeRoot(ctx: BoxCtx, root, stack: List<String>,
+                  st): BxOut
   ret match(get(ctx.bxStmts, root))
     (e2: PsEnum) => match(asEnumVariant(e2.eSpec))
       (sp: SEnum) => bxRootPool(ctx, root, e2, sp, stack, st)
       ()           => BxOut(bxPtrOne(), st)   # unreachable: keyed by SEnum
     ()            => BxOut(bxPtrOne(), st)    # no root statement: a pointer
 
-fun bxRootPool(ctx: BoxCtx, root: String, e2: PsEnum, sp: SEnum,
-               stack: List<String>, st: BoxState): BxOut
+fun bxRootPool(ctx: BoxCtx, root, e2: PsEnum, sp: SEnum,
+               stack: List<String>, st): BxOut
   let out = bxLeafLoop(ctx, root, chain(sp.seAllLeaves),
                        chain(collectLeafFieldSets(e2, List())),
                        !bxHasInteriorFields(e2), concat(stack, list1(root)),
@@ -803,18 +802,18 @@ fun bxRootPool(ctx: BoxCtx, root: String, e2: PsEnum, sp: SEnum,
   ret BxOut(out.bxP,
             BoxState(put(out.bxSt.bsMemo, root, out.bxP), out.bxSt.bsBoxed))
 
-fun bxLeafLoop(ctx: BoxCtx, root: String, names: Chain<String>,
+fun bxLeafLoop(ctx: BoxCtx, root, names: Chain<String>,
                sets: Chain<List<PStmt>>, boxable: Bool, stack: List<String>,
-               st: BoxState, pool: BxPrims): BxOut
+               st, pool: BxPrims): BxOut
   ret match(names)
     (nil: ChainEnd) => BxOut(bxAddTag(pool), st)   # widest variant + tag
     (l: ChainLink)  => match(sets)
       (nil2: ChainEnd) => BxOut(bxAddTag(pool), st)   # unreachable: zip 1:1
       (s2: ChainLink)  => bxLeafStep(ctx, root, l, s2, boxable, stack, st, pool)
 
-fun bxLeafStep(ctx: BoxCtx, root: String, l: ChainLink<String>,
+fun bxLeafStep(ctx: BoxCtx, root, l: ChainLink<String>,
                s2: ChainLink<List<PStmt>>, boxable: Bool, stack: List<String>,
-               st: BoxState, pool: BxPrims): BxOut
+               st, pool: BxPrims): BxOut
   let o = bxFieldsPrims(ctx, chain(s2.value), stack, st, bxZero())
   if bxBytes(o.bxP) > maxValueStructBytes && boxable
     ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack,
@@ -832,7 +831,7 @@ fun bxFieldsPrims(ctx: BoxCtx, fs: Chain<PStmt>, stack: List<String>,
       (let2: PsLet) => bxFieldLet(ctx, let2, l.next, stack, st, acc)
       (o: PStmt)    => bxFieldsPrims(ctx, l.next, stack, st, acc)
 
-fun bxFieldLet(ctx: BoxCtx, let2: PsLet, rest: Chain<PStmt>,
-               stack: List<String>, st: BoxState, acc: BxPrims): BxOut
+fun bxFieldLet(ctx: BoxCtx, let2: PsLet, rest,
+               stack: List<String>, st, acc: BxPrims): BxOut
   let o = bxSpecPrims(ctx, let2.lType, stack, st)
   ret bxFieldsPrims(ctx, rest, stack, o.bxSt, bxAdd(acc, o.bxP))

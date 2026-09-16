@@ -14,21 +14,21 @@ import Bootstrap::Types
 
 # ── shared little constructors ──────────────────────────────────────────────
 
-fun hashName(name: String, lr: PLine): String
+fun hashName(name, lr: PLine): String
   ret name + "@" + hash6(lr.plFile, lr.plLine, lr.plCol)
 
-fun oneEntryTuple(x: PExpr, lr: PLine): PExpr
+fun oneEntryTuple(x, lr): PExpr
   ret PeTuple(prepend(PTupEnt("", false, x), List()), lr)
 
-fun twoEntryTuple(a: PExpr, b: PExpr, lr: PLine): PExpr
+fun twoEntryTuple(a, b, lr): PExpr
   ret PeTuple(build(push(push(builder(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
 
-fun callNamed(name: String, args: PExpr, lr: PLine): PExpr
+fun callNamed(name, args, lr): PExpr
   ret PeCall(PeName(name, List(), lr), args, lr)
 
 # ── __to_call_operators / __fold_binary: `a op b` → `op`(a, b), andNot fold ──
 
-fun foldBinary(op: String, lhs: PExpr, rhs: PExpr, lr: PLine): PExpr
+fun foldBinary(op, lhs, rhs, lr): PExpr
   if op == "&"
     ret match(invertOperand(rhs))
       (ir: PExpr) => andNot(lhs, ir, lr)
@@ -37,10 +37,10 @@ fun foldBinary(op: String, lhs: PExpr, rhs: PExpr, lr: PLine): PExpr
         ()          => opCall(op, lhs, rhs, lr)
   ret opCall(op, lhs, rhs, lr)
 
-fun opCall(op: String, lhs: PExpr, rhs: PExpr, lr: PLine): PExpr
+fun opCall(op, lhs, rhs, lr): PExpr
   ret callNamed("`" + op + "`", twoEntryTuple(lhs, rhs, lr), lr)
 
-fun andNot(a: PExpr, b: PExpr, lr: PLine): PExpr
+fun andNot(a, b, lr): PExpr
   ret callNamed("andNot", twoEntryTuple(a, b, lr), lr)
 
 # A `~x` operand's inner expression, when the expression is exactly the
@@ -64,7 +64,7 @@ fun innerOfUnary(param: PExpr): PExpr|None
 # `l |> stage`: a lambda stage beta-reduces to a Block binding its params
 # from l; a call stage with one `_` placeholder binds l to $pipe@hash and
 # substitutes; any other stage becomes stage(l).
-fun pipeStage(last: PExpr, stage: PExpr): PExpr
+fun pipeStage(last, stage): PExpr
   let holes = placeholderCount(stage)
   if holes == 1
     ret pipePlaceholder(last, stage)
@@ -73,7 +73,7 @@ fun pipeStage(last: PExpr, stage: PExpr): PExpr
     ()             => PeCall(stage, pipeArgs(last), exprLine(stage))
 
 # `l |> f` wraps l in a tuple UNLESS it already is one (Python __to_pipeline).
-fun pipeArgs(last: PExpr): PExpr
+fun pipeArgs(last): PExpr
   ret match(last)
     (t2: PeTuple) => last
     (o)           => oneEntryTuple(last, exprLine(last))
@@ -95,7 +95,7 @@ fun isHole(x: PExpr): Bool
     (n: PeName) => n.refName == "_"
     ()          => false
 
-fun pipePlaceholder(last: PExpr, stage: PExpr): PExpr
+fun pipePlaceholder(last, stage): PExpr
   let lr = exprLine(stage)
   let tmp = "$pipe@" + hash6(lr.plFile, lr.plLine, lr.plCol)
   let filled = match(stage)
@@ -104,7 +104,7 @@ fun pipePlaceholder(last: PExpr, stage: PExpr): PExpr
   let bind = PsLet(tmp, List(), List(), None, last, "", List(), lr)
   ret PeBlock(prepend(bind, List()), filled, "", lr)
 
-fun fillHole(param: PExpr, tmp: String, lr: PLine): PExpr
+fun fillHole(param, tmp, lr): PExpr
   ret match(param)
     (t2: PeTuple) => PeTuple(map(t2.exprs, (en) =>
         isHole(en.tupValue)
@@ -116,7 +116,7 @@ fun fillHole(param: PExpr, tmp: String, lr: PLine): PExpr
 # an OUTER block binds `l` to a fresh $pipe@hash intermediate (nothing inside
 # `l` can resolve to it), and an INNER block binds the lambda's parameters
 # from that name — one target binds it directly, several destructure it.
-fun pipeBeta(last: PExpr, lm: PeLambda): PExpr
+fun pipeBeta(last, lm: PeLambda): PExpr
   let lr = lm.pelLine
   let tmp = "$pipe@" + hash6(lr.plFile, lr.plLine, lr.plCol)
   let ref = PeName(tmp, List(), lr)
@@ -125,7 +125,7 @@ fun pipeBeta(last: PExpr, lm: PeLambda): PExpr
   let outer = PsLet(tmp, List(), List(), None, last, "", List(), lr)
   ret PeBlock(prepend(outer, List()), inner, "", lr)
 
-fun betaBinder(params: PStmt, ref: PExpr, lr: PLine): PStmt
+fun betaBinder(params, ref, lr: PLine): PStmt
   ret match(params)
     (d: PsDestructure) => match(head(d.dTargets))
       (only: PStmt) => isEmpty(tail(d.dTargets))
@@ -134,7 +134,7 @@ fun betaBinder(params: PStmt, ref: PExpr, lr: PLine): PStmt
       ()            => destructureWithValue(d, ref)
     (o: PStmt)         => o
 
-fun letWithValue(target: PStmt, value: PExpr): PStmt
+fun letWithValue(target, value): PStmt
   ret match(target)
     (l: PsLet) => PsLet(l.lName, l.lAttrs, l.lGens, l.lType, value, l.lArrayLen,
                         l.lWheres, l.pslLine)
@@ -142,14 +142,14 @@ fun letWithValue(target: PStmt, value: PExpr): PStmt
 
 # A DestructureStatement WITH a default value: the holder binds the piped
 # intermediate and its targets destructure it.
-fun destructureWithValue(d: PsDestructure, value: PExpr): PStmt
+fun destructureWithValue(d: PsDestructure, value): PStmt
   ret PsDestructure(d.dName, d.dAttrs, d.dType, d.dTargets, value, d.psdLine)
 
 # ── class constructors (pyast/utils.create_constructor) ────────────────────
 # Every non-interface class gets a constructor function of its own name whose
 # body is a New expression over a tuple of NAMED entries — one per field.
 
-fun classConstructorOf(st: PStmt): PStmt
+fun classConstructorOf(st): PStmt
   ret match(st)
     (c: PsClass) => classConstructor(c)
     (o: PStmt)   => o
@@ -169,7 +169,7 @@ fun classConstructor(c: PsClass): PStmt
 
 # An array field is CONSTRUCTED from an initialiser function `(:Int32): Elem`
 # whose results are tabulated into the trailing storage (utils.__constructor_param).
-fun ctorParam(f: PStmt): PStmt
+fun ctorParam(f): PStmt
   ret match(f)
     (l: PsLet) => match(arrayElem(l.lType))
       # The initialiser's signature: one Int32 index parameter, element result.
@@ -185,12 +185,12 @@ fun ctorParam(f: PStmt): PStmt
       ()        => l
     (o: PStmt) => o
 
-fun ctorEntry(f: PStmt): PTupEnt
+fun ctorEntry(f): PTupEnt
   ret match(f)
     (l: PsLet) => PTupEnt(l.lName, false, PeName(l.lName, List(), l.pslLine))
     (o: PStmt) => PTupEnt("", false, PeNothing(stmtLine(o)))
 
-fun stmtLine(st: PStmt): PLine
+fun stmtLine(st): PLine
   ret match(st)
     (f: PsFun) => f.psfLine
     (d: PsDestructure) => d.psdLine
@@ -211,7 +211,7 @@ fun stmtLine(st: PStmt): PLine
 # A class with a trailing array field gains an accessor member `field@hash6r`
 # — a `(Int32): Elem` function reading the element via ArrayRead.
 
-fun withArrayAccessor(c: PsClass): PStmt
+fun withArrayAccessor(c): PStmt
   ret match(accessorFor(chain(paramsOf(c.cParams))))
     (acc: PStmt) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                             c.cWheres,
@@ -241,7 +241,7 @@ fun arrayElemOf(t2: Spec): Spec|None
     (af: SArrayField) => af.safElem
     (o)                => None
 
-fun arrayAccessor(field: String, elem: Spec, lr: PLine): PStmt
+fun arrayAccessor(field, elem, lr): PStmt
   let idxName = hashName("index", lr)
   let idx = PsLet(idxName, List(), List(), SBuiltin("int32", lr),
                   None, "", List(), lr)
@@ -253,7 +253,7 @@ fun arrayAccessor(field: String, elem: Spec, lr: PLine): PStmt
             PsDestructure("_", List(), None, prepend(idx, List()), None, lr),
             body, elem, List(), lr)
 
-fun bareName(name: String): String
+fun bareName(name): String
   let at = findByte(name, '@', 0)
   ret at < 0 ? name : slice(name, 0, at)
 
@@ -262,12 +262,12 @@ fun bareName(name: String): String
 # after the leaf, taking every field from the root down to it, returning the
 # ROOT enum type, its body a NewEnum expression.
 
-fun enumLeafConstructors(root: PsEnum, grp: List<PStmt>): List<PStmt>
+fun enumLeafConstructors(root: PsEnum, grp): List<PStmt>
   ret build(leafWalk(root, root, List(), grp,
                      builder()))
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited: List<PStmt>,
-             grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
+             grp, [terminal] acc): ListBuilder<PStmt>
   let params = concat(inherited, paramsOf(node.eParams))
   if isEmpty(node.eVariants)
     # Leaf constructors come out in variant declaration order.
@@ -283,19 +283,19 @@ fun [tail] variantsWalk(root: PsEnum, vs: Chain<PStmt>, params: List<PStmt>,
     (l: ChainLink)  => variantsWalk(root, l.next, params, grp,
                                     leafWalkOf(root, l.value, params, grp, acc))
 
-fun leafWalkOf(root: PsEnum, v: PStmt, params: List<PStmt>,
-               grp: List<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
+fun leafWalkOf(root: PsEnum, v, params: List<PStmt>,
+               grp, [terminal] acc): ListBuilder<PStmt>
   ret match(v)
     (e: PsEnum) => leafWalk(root, e, params, grp, acc)
     (o: PStmt)  => acc
 
-fun paramsOf(d: PStmt): List<PStmt>
+fun paramsOf(d): List<PStmt>
   ret match(d)
     (ds: PsDestructure) => ds.dTargets
     (o: PStmt)          => List()
 
-fun leafConstructor(root: PsEnum, leaf: PsEnum, params: List<PStmt>,
-                    grp: List<PStmt>): PStmt
+fun leafConstructor(root: PsEnum, leaf: PsEnum, params,
+                    grp): PStmt
   let lr = leaf.pseLine
   let tps = map<PGen, Spec>(root.eGens, (g2) => SGeneric(g2.genName, false, g2.pgLine))
   # A construction builds exactly one variant, so the constructor returns
@@ -314,7 +314,7 @@ fun leafConstructor(root: PsEnum, leaf: PsEnum, params: List<PStmt>,
             PsDestructure("_", List(), None, params, None, lr),
             body, retTy, List(), lr, false, false, grp)
 
-fun letName(p: PStmt): String
+fun letName(p): String
   ret match(p)
     (l: PsLet) => l.lName
     (o: PStmt) => "_"
@@ -323,7 +323,7 @@ fun letName(p: PStmt): String
 # token of the expression — which for a call is its callee's start and for a
 # dot/ternary its left/condition start — except a parenthesised tuple, whose
 # own line is already the post-paren position (requires(sym("("), ...)).
-fun [tail] startLine(x: PExpr): PLine
+fun [tail] startLine(x): PLine
   ret match(x)
     (c: PeCall)     => startLine(c.function)
     (d: PeDot)      => startLine(d.base)
@@ -351,7 +351,7 @@ fun letStart(l: PsLet, bk: PeBlock): PLine
     (v: PExpr) => startLine(v)
     ()         => bk.pebkLine
 
-fun exprLine(x: PExpr): PLine
+fun exprLine(x): PLine
   ret match(x)
     (i: PeInt) => i.peiLine
     (f: PeFloat) => f.pefLine
@@ -398,7 +398,7 @@ fun fixupProgram(stmts: List<PStmt>): List<PStmt>
 # access to it, and imports do not pool across blocks. Statements before
 # the first namespace declaration form the default block (namespace Main,
 # no self-import).
-fun blockGroupsOf(ss: Chain<PStmt>): List<List<PStmt>>
+fun blockGroupsOf(ss): List<List<PStmt>>
   ret bgLoop(ss, List(), builder())
 
 fun [tail] bgLoop(ss: Chain<PStmt>, cur: List<PStmt>,
@@ -439,7 +439,7 @@ fun fixupNextBlock(rest: Chain<PStmt>, n2: PsNamespace, grps: Chain<List<PStmt>>
     (nil2: ChainEnd) => fixupLoop(rest, n2.nsPath + "::", grps, List(), acc)   # unreachable: one group per namespace declaration
 
 # Attach the ImportGroup to a NAMED statement (the kinds parse() attaches to).
-fun withImports(st: PStmt, grp: List<PStmt>): PStmt
+fun withImports(st, grp): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
                          f.fRet, f.fWheres, f.psfLine, f.fRetInferred,
@@ -463,7 +463,7 @@ fun withImports(st: PStmt, grp: List<PStmt>): PStmt
     (other)     => st
 
 # A class emits itself then its constructor (interfaces get neither).
-fun classWithCtor(c: PsClass, ns: String, grp: List<PStmt>,
+fun classWithCtor(c, ns, grp,
                   acc: ListBuilder<PStmt>): ListBuilder<PStmt>
   let named = importedClass(namespacedClass(c, ns), grp)
   ret c.cIsInterface
@@ -471,22 +471,22 @@ fun classWithCtor(c: PsClass, ns: String, grp: List<PStmt>,
     : withArrayAccessor(named)
       |> (full) => push(push(acc, full), classConstructorOf(full))
 
-fun importedClass(c: PsClass, grp: List<PStmt>): PsClass
+fun importedClass(c, grp): PsClass
   ret match(withImports(c, grp))
     (c2: PsClass) => c2
     (other)       => c
 
-fun namespacedClass(c: PsClass, ns: String): PsClass
+fun namespacedClass(c, ns): PsClass
   ret match(addNamespace(c, ns))
     (c2: PsClass) => c2
     (other)       => c
 
-fun namespacedEnum(e: PsEnum, ns: String): PsEnum
+fun namespacedEnum(e, ns): PsEnum
   ret match(addNamespace(e, ns))
     (e2: PsEnum) => e2
     (other)      => e
 
-fun addNamespace(st: PStmt, ns: String): PStmt
+fun addNamespace(st, ns): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(ns + f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
                          f.fRet, f.fWheres, f.psfLine)

@@ -5,8 +5,9 @@
 
 `import pyast.typespec as t` exposes the same flat surface as the former single
 module. The underscore names re-exported here (`_CONFLICT`,
-`_collect_leaf_field_sets`) have external callers (the suggestion registry's
-sticky-conflict marker; enum codegen in statement.py).
+`_collect_leaf_field_sets`) have external callers (`meet`'s conflict marker,
+which the spec tests and the bootstrap spec harness compare against; enum
+codegen in statement.py).
 """
 from __future__ import annotations
 

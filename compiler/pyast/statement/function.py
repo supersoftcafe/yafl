@@ -1,5 +1,5 @@
-"""FunctionStatement: signature resolution, call-site suggestion filling
-(path 3), return-type refinement, and function codegen.
+"""FunctionStatement: signature resolution, parameter and return-type
+inference from the body, and function codegen.
 """
 from __future__ import annotations
 
@@ -91,35 +91,36 @@ class FunctionStatement(DataStatement):
             resolver = g.ResolverTraitData(resolver, self._find_trait_data)
         return g.ResolverData(resolver, self.__find_locals())
 
-    def __with_param_suggestion(self, resolver: g.Resolver) -> DestructureStatement:
-        """Fill any UN-annotated parameter from the call-site suggestion gathered
-        for this function (path 3). The per-parameter type lives on the TARGET, so
-        a target with no declared type adopts the suggested one; a target that
-        declares its own type always wins. This is per-parameter and so applies to
-        generic functions too: `a` in `fun foo<N>(a: N, b)` declares `N` and ignores
-        suggestions, while the untyped `b` is a plain hole filled like any other."""
-        suggestion = resolver.get_param_suggestion(self.name)
-        targets = self.parameters.targets
-        if not isinstance(suggestion, t.TupleSpec) or len(suggestion.entries) != len(targets):
-            return self.parameters
-        def usable(typ: t.TypeSpec | None) -> bool:
-            # A suggested type is usable here only if it resolves IN THIS scope. A
-            # generic placeholder is a real type inside the scope that binds it and
-            # a hole outside it (a caller's `N` means nothing in a callee that does
-            # not share it), so an entry carrying an out-of-scope placeholder is a
-            # hole and fills nothing — its concrete sibling entries still do.
-            return typ is not None and not t.has_free_placeholders(typ, resolver)
-        new_targets = [tgt if tgt.declared_type is not None or not usable(su.type)
-                       else dataclasses.replace(tgt, declared_type=su.type)
-                       for tgt, su in zip(targets, suggestion.entries)]
-        if new_targets == list(targets):
-            return self.parameters
-        return dataclasses.replace(self.parameters, targets=new_targets)
+    def body_scope(self, resolver: g.Resolver) -> g.Resolver:
+        """The scope this function's BODY sees, built from the scope its
+        DECLARATION sees: the generic type params, the trait scope (top level
+        only) and the parameters. `compile` and `check` wrap the type params
+        themselves — they compile the signature in that scope too — and go
+        straight to the inner half; everyone else starts here."""
+        return self.__body_resolver(g.ResolverType(resolver, self._find_generic_types))
+
+    def __with_inferred_params(self, prms: DestructureStatement,
+                               resolver: g.Resolver) -> DestructureStatement:
+        """Fill any UN-annotated parameter from what the BODY does with it (see
+        pyast/param_inference.py). A parameter is filled once and then stands:
+        inference says nothing while the names its evidence hangs on are still
+        resolving, so what it does say is read from a body it could read."""
+        from pyast import param_inference
+        probe = dataclasses.replace(self, parameters=prms)
+        found = param_inference.infer_param_types(probe, probe.__body_resolver(resolver))
+        if not found:
+            return prms
+        return dataclasses.replace(prms, targets=[
+            dataclasses.replace(tgt, declared_type=found[tgt.name])
+            if tgt.declared_type is None and tgt.name in found else tgt
+            for tgt in prms.targets])
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[FunctionStatement | None, list[Statement]]:
         resolver = g.ResolverType(resolver, self._find_generic_types)
         rettype, rettype_glb = self.return_type.compile(resolver) if self.return_type else (None, [])
-        prms, prms_glb = self.__with_param_suggestion(resolver).compile(resolver, None)
+        prms, prms_glb = self.parameters.compile(resolver, None)
+        if self.body is not None and any(tgt.declared_type is None for tgt in prms.targets):
+            prms = self.__with_inferred_params(prms, resolver)
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
 
         body_resolver = self.__body_resolver(resolver)

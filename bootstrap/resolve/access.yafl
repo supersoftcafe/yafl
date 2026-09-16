@@ -28,7 +28,7 @@ fun soleOf(datas: Bag<Found>): Found|None
 # retry on the parameters alone: a call OWNS its result conversion, so a
 # candidate returning a MEMBER of the expected union is still the winner.
 
-fun resolveOverloads(r: Resolver, expected: Spec|None,
+fun resolveOverloads(r, expected: Spec|None,
                      candidates: List<Found>): Bag<Found>
   if atMost(chain(candidates), 1)
     ret Bag(candidates)
@@ -53,7 +53,7 @@ fun resolveOverloads(r: Resolver, expected: Spec|None,
 class [final] Verdicts(pvTrue: Bag<Found>, pvMaybe: Bag<Found>)
 
 fun partitionByVerdict(cands: List<Found>, expected: Spec|None,
-                       r: Resolver): Bag<Found>
+                       r): Bag<Found>
   let v = verdictLoop(chain(cands), expected, r, Bag(), Bag())
   ret isEmpty(v.pvTrue) ? v.pvMaybe : v.pvTrue
 
@@ -77,15 +77,26 @@ fun [tail] verdictLoop(cs: Chain<Found>, expected: Spec|None, r: Resolver,
 # reject it; the unresolvable wildcard name makes every comparison through
 # such a slot undecided, even on the contravariant side. A placeholder the
 # candidate does NOT own stays put and keeps rejecting concrete instances.
-fun candidateType(x: Found, r: Resolver): Spec|None
+# A candidate's type with its TRAIT scope's type arguments applied, so
+# `Plus<Int>::+` reads as `(Int, Int): Int` rather than the declaration's
+# `(TVal, TVal): TVal`. Overload narrowing (candidateType, below) and parameter
+# inference (param_inference.yafl) both read candidates through this: one asks
+# which candidate a call picks, the other what that candidate then TAKES, and
+# they must not disagree about what a candidate's signature is.
+fun candidateSignature(x: Found): Spec|None
   ret match(stmtType(x.fStmt))
-    (ty: Spec) => instanceWildcarded(wildcarded(traitSubstituted(ty, x), x), x)
+    (ty: Spec) => traitSubstituted(ty, x)
+    ()         => None
+
+fun candidateType(x: Found, r: Resolver): Spec|None
+  ret match(candidateSignature(x))
+    (ty: Spec) => instanceWildcarded(wildcarded(ty, x), x)
     ()         => None
 
 # A GENERIC ambient instance's placeholders are equally the candidate's own:
 # the instance is a family, and instantiating this member can bind them to
 # whatever the use site holds.
-fun instanceWildcarded(ty: Spec, x: Found): Spec
+fun instanceWildcarded(ty, x: Found): Spec
   ret match(x.fInstanceParams)
     (ns: List<String>) => isEmpty(ns)
       ? ty
@@ -93,7 +104,7 @@ fun instanceWildcarded(ty: Spec, x: Found): Spec
                                      List()))
     ()                 => ty
 
-fun nameWildcards(ns: Chain<String>, lr: PLine,
+fun nameWildcards(ns, lr,
                          acc: List<Binding>): List<Binding>
   ret build(nameWildcardsB(ns, lr, builderFrom(acc)))
 
@@ -120,7 +131,7 @@ fun solveInstanceScope(f: Found, own: List<String>, expected: Spec|None,
       ()         => None
     ()          => None
 
-fun solveAgainst(effective: Spec, expected: Spec, ts: Spec,
+fun solveAgainst(effective: Spec, expected, ts,
                  own: List<String>): Spec|None
   ret match(unifyGeneric(effective, expected, own, List()))
     (m: UMap)  => bindsAll(chain(own), m.uBindings)
@@ -140,7 +151,7 @@ fun [tail] hasBinding(bs: Chain<Binding>, name: String): Bool
     (nil: ChainEnd) => false
     (l: ChainLink)  => l.value.bName == name ? true : hasBinding(l.next, name)
 
-fun traitSubstituted(ty: Spec, x: Found): Spec
+fun traitSubstituted(ty, x: Found): Spec
   ret match(traitMapping(x))
     (m: List<Binding>) => substitute(ty, m)
     ()                 => ty
@@ -159,19 +170,19 @@ fun ownerMapping(owner: PStmt|None, tsc: SClass): List<Binding>|None
       (o: PStmt)     => None
     ()          => None
 
-fun wildcarded(ty: Spec, x: Found): Spec
+fun wildcarded(ty, x: Found): Spec
   let gens = stmtGens(x.fStmt)
   ret isEmpty(gens)
     ? ty
     : substitute(ty, wildcardBindings(chain(gens), stmtLine(x.fStmt),
                                       List()))
 
-fun wildcardBindings(gs: Chain<PGen>, lr: PLine,
+fun wildcardBindings(gs: Chain<PGen>, lr,
                             acc: List<Binding>): List<Binding>
   ret build(wildcardBindingsB(gs, lr, builderFrom(acc)))
 
-fun [tail] wildcardBindingsB(gs: Chain<PGen>, lr: PLine,
-                            [terminal] acc: ListBuilder<Binding>): ListBuilder<Binding>
+fun [tail] wildcardBindingsB(gs: Chain<PGen>, lr,
+                            [terminal] acc): ListBuilder<Binding>
   ret match(gs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => wildcardBindingsB(l.next, lr,
@@ -180,7 +191,7 @@ fun [tail] wildcardBindingsB(gs: Chain<PGen>, lr: PLine,
                                         SNamed("$overload$wildcard",
                                                List(), lr))))
 
-fun stmtGens(st: PStmt): List<PGen>
+fun stmtGens(st): List<PGen>
   ret match(st)
     (f: PsFun)        => f.fGens
     (l: PsLet)        => l.lGens
@@ -194,7 +205,7 @@ fun stmtGens(st: PStmt): List<PGen>
 # and rewrite them inside the field's declared type — `b: Box<Int>` reads
 # `b.value: Int`, not the bare T.
 fun substituteClassTypeParams(r: Resolver, receiver: SClass, cdecl: PsClass,
-                              fieldType: Spec|None): Spec|None
+                              fieldType): Spec|None
   ret match(fieldType)
     (ft: Spec) => isEmpty(cdecl.cGens) || isEmpty(receiver.scParams)
       ? fieldType

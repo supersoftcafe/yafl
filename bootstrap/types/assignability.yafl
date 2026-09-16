@@ -41,14 +41,14 @@ fun triFalse(x: Tri): Bool
 # trivially_assignable_equals: the 1-tuple unwrap and the union-on-the-right
 # decomposition happen HERE, before the left type's own rule sees anything.
 
-fun assignableEq(r: Resolver, left: Spec|None, right: Spec|None): Tri
+fun assignableEq(r, left: Spec|None, right: Spec|None): Tri
   ret match(left)
     (l: Spec) => match(right)
       (rt: Spec) => assignableEqBoth(r, l, rt)
       ()         => None
     () => None
 
-fun assignableEqBoth(r: Resolver, left: Spec, right: Spec): Tri
+fun assignableEqBoth(r, left, right): Tri
   # The empty type (a leafless enum — Never) is the BOTTOM type: it has no
   # values, so a Never-typed expression fits anywhere.
   if isNever(right)
@@ -70,7 +70,7 @@ fun assignableEqBoth(r: Resolver, left: Spec, right: Spec): Tri
       ()         => None
     () => None
 
-fun assignableUnwrapped(r: Resolver, left: Spec, right: Spec): Tri
+fun assignableUnwrapped(r, left, right): Tri
   # Set semantics of a union VALUE: it is ONE of its members, so a union on the
   # right is assignable iff EVERY member is. (A union on the LEFT keeps its own
   # memberwise rule, below.)
@@ -78,7 +78,7 @@ fun assignableUnwrapped(r: Resolver, left: Spec, right: Spec): Tri
     ? allMembersAssignable(r, left, unionMembers(right))
     : assignableFrom(r, left, right)
 
-fun allMembersAssignable(r: Resolver, left: Spec, members: List<Spec>): Tri
+fun allMembersAssignable(r, left: Spec, members: List<Spec>): Tri
   ret memberLoop(chain(members), r, left, false)
 
 fun [tail] memberLoop(ms: Chain<Spec>, r: Resolver, left: Spec,
@@ -92,7 +92,7 @@ fun [tail] memberLoop(ms: Chain<Spec>, r: Resolver, left: Spec,
 
 # ── the per-type rules ──────────────────────────────────────────────────────
 
-fun assignableFrom(r: Resolver, left: Spec, right: Spec): Tri
+fun assignableFrom(r, left, right): Tri
   # An unresolved RIGHT tells us nothing yet, whatever the left is.
   if isNamed(right)
     ret None
@@ -112,19 +112,19 @@ fun assignableFrom(r: Resolver, left: Spec, right: Spec): Tri
     (g: SGeneric)      => genericFrom(g, right)
     (n: SNamed)        => None                    # left not resolved yet
 
-fun builtinFrom(b: SBuiltin, right: Spec): Tri
+fun builtinFrom(b: SBuiltin, right): Tri
   ret match(right)
     (rb: SBuiltin) => b.sbName == rb.sbName
     (o: Spec)      => false
 
-fun genericFrom(g: SGeneric, right: Spec): Tri
+fun genericFrom(g: SGeneric, right): Tri
   ret match(right)
     (rg: SGeneric) => g.sgName == rg.sgName ? true : None
     (o: Spec)      => None
 
 # A class accepts itself and its descendants. `_all_parents` is computed by the
 # class's own compile; while it is absent the hierarchy is not known yet.
-fun classFrom(r: Resolver, c: SClass, right: Spec): Tri
+fun classFrom(r, c: SClass, right): Tri
   if !contains(c.scName, "@")
     ret None                                      # left not resolved yet
   ret match(right)
@@ -173,12 +173,12 @@ fun [tail] argsRestUnknown(r: Resolver, ls: Chain<Spec>, rs: Chain<Spec>): Tri
 # instance they might share — sharing code is an optimisation question, never
 # a typing rule. A narrower view is assignable to the root but not the other
 # way, so the mutual check rejects the pair.
-fun argPairSame(r: Resolver, a: Spec, b: Spec): Int
+fun argPairSame(r, a, b): Int
   if eqSpec(a, b)
     ret 1
   ret argPairMutual(r, a, b)
 
-fun argPairMutual(r: Resolver, a: Spec, b: Spec): Int
+fun argPairMutual(r, a, b): Int
   if argOneUnknown(a, b)
     ret 0
   ret match(assignableFrom(r, a, b))
@@ -189,10 +189,10 @@ fun argPairMutual(r: Resolver, a: Spec, b: Spec): Int
         ()          => 0
     ()          => 0
 
-fun argOneUnknown(a: Spec, b: Spec): Bool
+fun argOneUnknown(a, b): Bool
   ret specUnresolved(a) || specUnresolved(b)
 
-fun specUnresolved(sp: Spec): Bool
+fun specUnresolved(sp): Bool
   ret match(sp)
     (g2: SGeneric)     => true
     (n: SNamed)        => true
@@ -214,7 +214,7 @@ fun [tail] anyEntryUnresolved(es: Chain<SEntry>): Bool
       (sp: Spec) => specUnresolved(sp) ? true : anyEntryUnresolved(l.next)
       ()         => anyEntryUnresolved(l.next)
 
-fun inheritsFrom(r: Resolver, c: SClass, rc: SClass): Tri
+fun inheritsFrom(r, c: SClass, rc: SClass): Tri
   ret match(soleItem(findType(r, rc.scName)))
     (f: Found) => parentsOf(f.fStmt)
       |> (ps) => match(ps)
@@ -222,7 +222,7 @@ fun inheritsFrom(r: Resolver, c: SClass, rc: SClass): Tri
         ()                 => None                # parents not resolved yet
     ()         => None
 
-fun parentsOf(st: PStmt): List<Spec>|None
+fun parentsOf(st): List<Spec>|None
   ret match(st)
     (cs: PsClass) => cs.cAllParents
     (o: PStmt)    => None
@@ -232,7 +232,7 @@ fun [tail] anyNamed(ps: Chain<Spec>, name: String): Bool
     (nil: ChainEnd) => false
     (l: ChainLink)  => specName(l.value) == name ? true : anyNamed(l.next, name)
 
-fun specName(sp: Spec): String
+fun specName(sp): String
   ret match(sp)
     (c: SClass) => c.scName
     (n: SNamed) => n.snName
@@ -240,7 +240,7 @@ fun specName(sp: Spec): String
 
 # An enum accepts a NARROWING of itself: same root, and the right's valid
 # leaves a subset of ours.
-fun enumFrom(r: Resolver, e: SEnum, right: Spec): Tri
+fun enumFrom(r, e: SEnum, right): Tri
   ret match(right)
     (re: SEnum) => !contains(e.seRoot, "@") || !contains(re.seRoot, "@")
       ? None
@@ -251,7 +251,7 @@ fun enumFrom(r: Resolver, e: SEnum, right: Spec): Tri
             : argsInvariant(r, chain(e.seParams), chain(re.seParams)))
     (o: Spec)   => false
 
-fun arrayFrom(r: Resolver, af: SArrayField, right: Spec): Tri
+fun arrayFrom(r, af: SArrayField, right): Tri
   ret match(right)
     (ra: SArrayField) => af.safLenField != ra.safLenField
       ? false
@@ -267,7 +267,7 @@ fun arrayFrom(r: Resolver, af: SArrayField, right: Spec): Tri
 # — never via the 1-tuple unwrap: a parameter list's ARITY is significant, so
 # an N-vs-1 mismatch rejects on the arguments alone even while the lone
 # parameter's type is unresolved.
-fun callableFrom(r: Resolver, cl: SCallable, right: Spec): Tri
+fun callableFrom(r, cl: SCallable, right): Tri
   ret match(right)
     (rn: SNamed)    => None                       # not resolved yet
     (rc: SCallable) => callableVerdict(resultEquiv(r, cl.scResult, rc.scResult),
@@ -275,7 +275,7 @@ fun callableFrom(r: Resolver, cl: SCallable, right: Spec): Tri
                                                       cl.scParams2))
     (o: Spec)       => false
 
-fun resultEquiv(r: Resolver, a: Spec|None, b: Spec|None): Tri
+fun resultEquiv(r, a: Spec|None, b: Spec|None): Tri
   let fwd = assignableEq(r, a, b)
   let rev = assignableEq(r, b, a)
   ret fwd is None || rev is None
@@ -292,12 +292,12 @@ fun callableVerdict(res: Tri, params: Tri): Tri
 # fields covered by their defaults). Only the BOUND pairs are type-compared —
 # a default's type was already checked at its declaration.
 
-fun tupleFrom(r: Resolver, left: STuple, right: Spec): Tri
+fun tupleFrom(r, left: STuple, right): Tri
   ret match(right)
     (rt: STuple) => tupleFromTuple(r, left, rt)
     (o: Spec)    => false
 
-fun tupleFromTuple(r: Resolver, left: STuple, right: STuple): Tri
+fun tupleFromTuple(r, left: STuple, right: STuple): Tri
   ret match(bindTupleEntries(left.stEntries, entryNames(right.stEntries)))
     (b: List<Int>) => comparePairs(r, left, right, b)
     ()             => false                       # does not bind at all
@@ -308,7 +308,7 @@ fun entryNames(es: List<SEntry>): List<String>
 fun nameLoop(es: Chain<SEntry>, acc: List<String>): List<String>
   ret build(nameLoopB(es, builderFrom(acc)))
 
-fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
+fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc): ListBuilder<String>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameLoopB(l.next, push(acc, l.value.seName))
@@ -320,7 +320,7 @@ fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc: ListBuilder<String>): Li
 class [final] PairTally(ptStructFalse: Bool, ptAnyFalse: Bool,
                         ptAllFalse: Bool, ptUnknown: Bool, ptCount: Int)
 
-fun comparePairs(r: Resolver, left: STuple, right: STuple,
+fun comparePairs(r, left: STuple, right: STuple,
                  binding: List<Int>): Tri
   let t2 = pairLoop(chain(zipBinding(left.stEntries, binding)), r,
                     right.stEntries,
@@ -353,7 +353,7 @@ fun [tail] pairLoop(ps: Chain<Pair>, r: Resolver, rights: List<SEntry>,
     (l: ChainLink)  => pairLoop(l.next, r, rights,
                                 tally(acc, r, l.value, rights))
 
-fun tally(acc: PairTally, r: Resolver, p: Pair, rights: List<SEntry>): PairTally
+fun tally(acc: PairTally, r, p: Pair, rights: List<SEntry>): PairTally
   let res = assignableEq(r, p.prLeft.seType, entryAt(rights, p.prSlot))
   let isFalse = triFalse(res)
   let placeholder = isGenericSpec(p.prLeft.seType)
@@ -364,10 +364,10 @@ fun tally(acc: PairTally, r: Resolver, p: Pair, rights: List<SEntry>): PairTally
                 acc.ptUnknown || (!triTrue(res) && !(isFalse && !placeholder)),
                 acc.ptCount + 1)
 
-fun entryAt(es: List<SEntry>, i: Int): Spec|None
+fun entryAt(es: List<SEntry>, i): Spec|None
   ret entryAtLoop(chain(es), i)
 
-fun [tail] entryAtLoop(es: Chain<SEntry>, i: Int): Spec|None
+fun [tail] entryAtLoop(es: Chain<SEntry>, i): Spec|None
   ret match(es)
     (nil: ChainEnd) => None
     (l: ChainLink)  => i <= 0 ? l.value.seType : entryAtLoop(l.next, i - 1)
@@ -382,7 +382,7 @@ fun isGenericSpec(sp: Spec|None): Bool
 # ── the union rule (union on the LEFT) ──────────────────────────────────────
 # Every member of the right must be assignable to SOME member of the left.
 
-fun unionFrom(r: Resolver, cm: SCombination, right: Spec): Tri
+fun unionFrom(r, cm: SCombination, right): Tri
   ret outerLoop(chain(unionMembers(right)), r, cm.scTypes, true)
 
 fun [tail] outerLoop(rs: Chain<Spec>, r: Resolver, lefts: List<Spec>,
@@ -395,7 +395,7 @@ fun [tail] outerLoop(rs: Chain<Spec>, r: Resolver, lefts: List<Spec>,
         : outerLoop(l.next, r, lefts, allTrue && triTrue(res))
 
 # Fits SOME left member: one true wins; all false loses; otherwise undecided.
-fun fitsAny(r: Resolver, lefts: List<Spec>, right: Spec): Tri
+fun fitsAny(r, lefts: List<Spec>, right: Spec): Tri
   ret innerLoop(chain(lefts), r, right, true)
 
 fun [tail] innerLoop(ls: Chain<Spec>, r: Resolver, right: Spec,
@@ -409,39 +409,39 @@ fun [tail] innerLoop(ls: Chain<Spec>, r: Resolver, right: Spec,
 
 # ── shape helpers ───────────────────────────────────────────────────────────
 
-fun isNever(sp: Spec): Bool
+fun isNever(sp): Bool
   ret match(sp)
     (e: SEnum) => isEmpty(e.seValidLeaves)
     (o: Spec)  => false
 
-fun isTuple(sp: Spec): Bool
+fun isTuple(sp): Bool
   ret match(sp)
     (t2: STuple) => true
     (o: Spec)    => false
 
-fun isUnion(sp: Spec): Bool
+fun isUnion(sp): Bool
   ret match(sp)
     (cm: SCombination) => true
     (o: Spec)          => false
 
-fun isNamed(sp: Spec): Bool
+fun isNamed(sp): Bool
   ret match(sp)
     (n: SNamed) => true
     (o: Spec)   => false
 
-fun isLazy(sp: Spec): Bool
+fun isLazy(sp): Bool
   ret match(sp)
     (ls: SLazyStub) => true
     (o: Spec)       => false
 
-fun unionMembers(sp: Spec): List<Spec>
+fun unionMembers(sp): List<Spec>
   ret match(sp)
     (cm: SCombination) => cm.scTypes
     (o: Spec)          => prepend(sp, List())
 
 # Unwrap a 1-tuple to its element, repeatedly. None = an entry type is unknown,
 # so the caller must treat the comparison as undecided.
-fun unwrapOne(sp: Spec): Spec|None
+fun unwrapOne(sp): Spec|None
   ret match(sp)
     (t2: STuple) => exactly(chain(t2.stEntries), 1)
       ? unwrapEntry(head(t2.stEntries))

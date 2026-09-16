@@ -195,15 +195,6 @@ class Resolver:
     def get_traits(self) -> list[s.LetStatement]:
         return []
 
-    # The suggested parameter shape for the function `name` (its unique `@`-name),
-    # gathered from the previous pass's call sites — a TupleSpec whose entries may
-    # be partial (a hole where no call site pinned that parameter, or where call
-    # sites disagreed). None when nothing was suggested. Read-only: a declared
-    # parameter type always overrides, so this only fills holes. See
-    # compiler.__collect_param_suggestions (path 3 of the inference model).
-    def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
-        return None
-
     # PRE-LOWERING trait instances (first-class TraitInstanceStatements) —
     # constraint discharge and droppability read these before
     # lowering/instances.py turns them into `[trait]` record lets.
@@ -275,9 +266,6 @@ class DelegatingResolver(Resolver):
 
     def get_traits(self) -> list[s.LetStatement]:
         return self._parent.get_traits()
-
-    def get_param_suggestion(self, name: str) -> "t.TypeSpec | None":
-        return self._parent.get_param_suggestion(name)
 
     def get_trait_instances(self) -> "list[s.TraitInstanceStatement]":
         return self._parent.get_trait_instances()
@@ -469,14 +457,10 @@ def as_statements(statements: "Iterable[s.Statement] | Statements") -> Statement
 
 
 class ResolverRoot(Resolver):
-    def __init__(self, statements: "Iterable[s.Statement] | Statements",
-                 param_suggestions: "dict[str, t.TupleSpec] | None" = None) -> None:
+    def __init__(self, statements: "Iterable[s.Statement] | Statements") -> None:
         # The collection carries its own index; wrapping a `Statements` reuses
         # it, wrapping a list builds it once here.
         self.__statements = as_statements(statements)
-        # {function unique-name: suggested param TupleSpec}, computed once per
-        # compile pass from the previous pass's call sites (path 3).
-        self.__param_suggestions = param_suggestions or {}
         # Lazy per-pass memo for get_ambient_patterns (roots are per-pass).
         self.__ambient = None
         # Lazy per-pass memo for get_enum_fields, keyed by statement name —
@@ -614,9 +598,6 @@ class ResolverRoot(Resolver):
 
     def get_trait_instances(self) -> "list[s.TraitInstanceStatement]":
         return list(self.__statements.instances)
-
-    def get_param_suggestion(self, name: str) -> "t.TupleSpec | None":
-        return self.__param_suggestions.get(name)
 
     def get_enum_fields(self, stmt) -> tuple:
         cached = self.__enum_fields.get(stmt.name)

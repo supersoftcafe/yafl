@@ -32,20 +32,20 @@ fun collectDiscriminatorIds(statements: List<PStmt>): Dict<String, Int>
                     (a, st) => discEnumLeaves(a, st, breakers))
   ret foldAllSpecs(statements, discSpec, leaves).daIds
 
-fun discAssign(acc: DiscAcc, uid2: String): DiscAcc
+fun discAssign(acc, uid2): DiscAcc
   if length(uid2) == 0
     ret acc
   ret match(get(acc.daIds, uid2))
     (i: Int) => acc
     ()        => DiscAcc(put(acc.daIds, uid2, acc.daN + 1), acc.daN + 1)
 
-fun discEnumLeaves(acc: DiscAcc, st: PStmt,
+fun discEnumLeaves(acc, st,
                    breakers: List<String>): DiscAcc
   ret match(st)
     (e2: PsEnum) => discEnumRoot(acc, e2, breakers)
     (o: PStmt)   => acc
 
-fun discEnumRoot(acc: DiscAcc, e2: PsEnum,
+fun discEnumRoot(acc, e2: PsEnum,
                  breakers: List<String>): DiscAcc
   if !enumIsRootStmt(e2)
     ret acc
@@ -54,14 +54,14 @@ fun discEnumRoot(acc: DiscAcc, e2: PsEnum,
         fold(sp.seAllLeaves, acc, (a, leaf) => discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
     ()           => acc
 
-fun discSpec(acc: DiscAcc, sp: Spec): DiscAcc
+fun discSpec(acc, sp): DiscAcc
   ret match(sp)
     (cm: SCombination) => fold(cm.scTypes, acc, (a, v) => discAssign(a, uid(v)))
     (o: Spec)          => acc
 
 # ── the entry point (__create_entry_point) ───────────────────────────────────
 
-fun createEntryPoint(mainName: String): CgFunction
+fun createEntryPoint(mainName): CgFunction
   let svResult = RpStackVar(CgDataPointer(), "result")
   let svDiscard = RpStackVar(CgDataPointer(), "$sv_discard")
   let continuation = RpStackVar(CgFuncPointer(), "$continuation")
@@ -100,7 +100,7 @@ fun createEntryPoint(mainName: String): CgFunction
 # Python reverses Lazy$<mangle> names via a mutable registry; the port derives
 # the (type) set directly from the deferred-init lets (top-level and in
 # bodies), where the type is known — same machinery, pure plumbing.
-fun collectLazyTypes(statements: List<PStmt>, r: Resolver): List<CgType>
+fun collectLazyTypes(statements: List<PStmt>, r): List<CgType>
   let out = foldStmts(statements,
                       (acc, st) => lazyTypeOf(acc, st, r),
                       foldNoExprLT, LazyTypes(List(), Dict()))
@@ -113,10 +113,10 @@ fun collectLazyTypes(statements: List<PStmt>, r: Resolver): List<CgType>
 # self-compile.
 class [final] LazyTypes(ltList: List<CgType>, ltSeen: Dict<String, Bool>)
 
-fun foldNoExprLT(acc: LazyTypes, x: PExpr): LazyTypes
+fun foldNoExprLT(acc, x: PExpr): LazyTypes
   ret acc
 
-fun lazyTypeOf(acc: LazyTypes, st: PStmt, r: Resolver): LazyTypes
+fun lazyTypeOf(acc, st, r): LazyTypes
   ret match(st)
     (l: PsLet) => isDeferredInit(l) && !isNoneSpec2(l.lType)
       ? lazyTypeAdd(acc, specGenerateOpt(l.lType, r))
@@ -128,7 +128,7 @@ fun isNoneSpec2(sp: Spec|None): Bool
     (s2: Spec) => false
     ()          => true
 
-fun lazyTypeAdd(acc: LazyTypes, t2: CgType): LazyTypes
+fun lazyTypeAdd(acc, t2): LazyTypes
   let m2 = irMangle(t2)
   ret contains(acc.ltSeen, m2)
     ? acc
@@ -141,7 +141,7 @@ fun ensureLazyMachinery(a: CgApp, types2: List<CgType>): CgApp
   let withTask = appHasObject(a, "task") ? a : appPutObject(a, makeTaskForeignObject())
   ret fold(types2, withTask, ensureLazyOne)
 
-fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
+fun ensureLazyOne(a: CgApp, t2): CgApp
   if appHasObject(a, stubClassName(t2))
     ret a
   let m = lazyMachinery(t2)
@@ -157,13 +157,13 @@ fun ensureLazyOne(a: CgApp, t2: CgType): CgApp
 # compiled into something that never matches, so the program is refused
 # instead — mirroring MatchExpression.check on the Python side.
 
-fun multiSubjectPositionErrs(statements: List<PStmt>, r: Resolver): List<String>
+fun multiSubjectPositionErrs(statements: List<PStmt>, r): List<String>
   ret foldStmts(statements,
         (acc, st) => acc,
         (acc, x) => msPosExpr(acc, x, r),
         List())
 
-fun msPosExpr(acc: List<String>, x: PExpr, r: Resolver): List<String>
+fun msPosExpr(acc, x, r): List<String>
   ret match(x)
     (mt: PeMatch) => isEmpty(mt.matchExtra)
       ? acc
@@ -188,8 +188,8 @@ fun [tail] msPosOne(acc: List<String>, pats: Chain<Spec|None>,
     (l: ChainLink)  => msPosOne(msPosCheck(acc, l.value, msHeadExpr(subs), r),
                                 l.next, msRestExprs(subs), r)
 
-fun msPosCheck(acc: List<String>, pat: Spec|None, sub: PExpr|None,
-               r: Resolver): List<String>
+fun msPosCheck(acc, pat: Spec|None, sub: PExpr|None,
+               r): List<String>
   ret match(pat)
     (p2: Spec) => match(sub)
       (e2: PExpr) => match(exprType(e2, r))
@@ -200,21 +200,21 @@ fun msPosCheck(acc: List<String>, pat: Spec|None, sub: PExpr|None,
       ()           => acc
     ()           => acc
 
-fun msSupported(acc: List<String>, rep: GRepr, pat: Spec,
-                r: Resolver): List<String>
+fun msSupported(acc, rep, pat: Spec,
+                r): List<String>
   ret match(reprPositionGuards(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
     (g: List<RParam>) => acc
     ()                => build(push(builderFrom(acc),
                            "this pattern cannot serve a position of a "
                            + "multi-subject match"))
 
-fun isEnumOrUnion2(sp: Spec): Bool
+fun isEnumOrUnion2(sp): Bool
   ret match(sp)
     (e2: SEnum)        => true
     (cm: SCombination) => true
     (o: Spec)          => false
 
-fun msRestExprs(es: Chain<PExpr>): Chain<PExpr>
+fun msRestExprs(es): Chain<PExpr>
   ret match(es)
     (l: ChainLink)  => l.next
     (nil: ChainEnd) => es
@@ -226,8 +226,8 @@ fun msHeadExpr(es: Chain<PExpr>): PExpr|None
 
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
-fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
-                profile: Bool, headers: List<String>): CreateCOut
+fun createCCode(statements, mainName, optLevel,
+                profile, headers: List<String>): CreateCOut
   let discs = collectDiscriminatorIds(statements)
   let [lazy] breakers: List<String> = computeBreakers(statements)
   # Per-leaf value-struct-threshold analysis (the enum-encoding principle):
@@ -236,7 +236,7 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
   let boxedLeaves = computeBoxedLeaves(statements, breakers)
   let st = buildStatements(statements)
   let r = RRoot((root) => contains2(breakers, root),
-                st, None, discs, optLevel,
+                st, discs, optLevel,
                 None, boxedLeaves, mergedMembersTable(st))
   let spIr = spanBegin("codegen", "ir_build")
   let a0 = fold(statements, emptyApp(), (a, st) => ccStmt(a, st, r))
@@ -327,7 +327,7 @@ fun createCCode(statements: List<PStmt>, mainName: String, optLevel: Int,
 # Python compiler.py: `if optimization_level >= 2` — resolve indirect fun_t
 # calls to known targets first (a direct call is what makes the closure
 # inlinable), inline + trim, stop on shape stability; 16-round bound.
-fun [tail] ccO2Fixpoint(a0: CgApp, round2: Int, prev: CgApp|None,
+fun [tail] ccO2Fixpoint(a0: CgApp, round2, prev: CgApp|None,
                         inlineAlways: Bool): CgApp
   if round2 >= 16
     ret a0
@@ -375,7 +375,7 @@ fun ccO1Block(a0: CgApp): CgApp
 
 # Static init promotion runs FOUR rounds; the $si$N counter threads across
 # rounds AND functions (Python's module-level itertools.count).
-fun [tail] ccStaticRounds(a: CgApp, round2: Int, counter: Int): CgApp
+fun [tail] ccStaticRounds(a: CgApp, round2, counter: Int): CgApp
   if round2 >= 4
     ret a
   let sp = spanBegin("o1", "static_round")
@@ -387,7 +387,7 @@ fun [tail] ccStaticRounds(a: CgApp, round2: Int, counter: Int): CgApp
 # 1`): branch threading + copy propagation + the known-value folds, to a
 # 16-round bound or SHAPE stability — shape = every function's (name, op
 # count), exactly Python's `tuple((n, len(f.ops)) ...)`.
-fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
+fun [tail] ccFoldFixpoint(a0: CgApp, round2,
                           prev: CgApp|None): CgApp
   if round2 >= 16
     ret a0
@@ -406,7 +406,7 @@ fun [tail] ccFoldFixpoint(a0: CgApp, round2: Int,
 # the identical predicate with no length ever taken (no-length ruling). O3
 # additionally compares per-object slot lists, sorted by object name (names
 # are unique, so Python's (name, count) sort order IS name order).
-fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects: Bool): Bool
+fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects): Bool
   ret match(prev)
     (p: CgApp) => ccFnsSame(appFunctions(p), appFunctions(cur))
                   && (!withObjects
@@ -428,7 +428,7 @@ fun ccSortObjs(os: List<CgObject>): List<CgObject>
   # prefix and rebuilding it as it went.
   ret sortBy(os, (a, b) => a.objName < b.objName)
 
-fun ccStmt(a: CgApp, st: PStmt, r: Resolver): CgApp
+fun ccStmt(a, st, r): CgApp
   let r2 = scopeResolver(st, r)
   ret match(st)
     (f: PsFun)   => appPutFunction(a, funGlobalCodegen(f, r2))
@@ -440,12 +440,12 @@ fun ccStmt(a: CgApp, st: PStmt, r: Resolver): CgApp
     (ns: PsNamespace) => a
     (o: PStmt)   => a   # unreachable: top level holds declarations only
 
-fun ccLet(a: CgApp, l: PsLet, r: Resolver): CgApp
+fun ccLet(a: CgApp, l: PsLet, r): CgApp
   let out = letGlobalCodegen(l, r)
   let withGlobals = fold(out.lcGlobals, a, appPutGlobal)
   ret fold(out.lcFunctions, withGlobals, appPutFunction)
 
-fun ccClass(a: CgApp, c: PsClass, r: Resolver): CgApp
+fun ccClass(a: CgApp, c, r): CgApp
   let out = classGlobalCodegen(c, r)
   ret fold(out.ccFunctions, appPutObject2(a, out.ccObject), appPutFunction)
 

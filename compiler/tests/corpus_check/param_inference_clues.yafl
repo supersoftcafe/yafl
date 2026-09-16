@@ -1,0 +1,41 @@
+# check-contract corpus: the CLUE on a parameter the body never determined.
+# Each function fails a different way, and the exact wording is compared
+# byte-for-byte between the two compilers — the clue is the only thing that
+# tells the failure modes apart, so drift in it is drift in the diagnostic.
+typealias Int : __builtin_type__<bigint>
+typealias Bool : __builtin_type__<bool>
+
+class [final] Box(bv: Int)
+
+fun takesInt(a: Int): Int
+  ret a
+
+fun takesBox(b: Box): Int
+  ret b.bv
+
+# Contradictory upper bounds: `p` is required to be an Int here and a Box
+# there, and no single type satisfies both.
+fun both(p, flag: Bool): Int
+  ret flag ? takesInt(p) : takesBox(p)
+
+# No use in the body determines `q` at all.
+fun nothing(q): Int
+  ret 0
+
+# An ELSE arm stops a match determining its subject: the named arm alone would
+# say Box, while the author's else arm says "or something else".
+fun elseArm(o): Int
+  ret match(o)
+    (b: Box) => b.bv
+    ()       => 0
+
+enum Wrap<T>
+  enum Empty()
+  enum Full(wv: T)
+
+# BARE generic arms carry no type argument while the subject is the parameter
+# being inferred, so they cannot generalise to a type.
+fun bareArms(w): Int
+  ret match(w)
+    (e: Empty) => 0
+    (f: Full)  => 1

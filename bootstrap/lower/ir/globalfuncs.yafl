@@ -58,7 +58,7 @@ class [final] FunValues(fvMap: Dict<String, FunValue>)
 fun gfFunValueMap(f: CgFunction): FunValues
   ret fold(f.fnOps, FunValues(Dict()), gfFvStep)
 
-fun gfFvStep(acc: FunValues, op: Op): FunValues
+fun gfFvStep(acc, op): FunValues
   ret match(op)
     (m: OpMove) => match(m.moveTarget)
       (sv: RpStackVar) => gfFvAdd(acc, sv.name, m.moveSource, 1)
@@ -69,12 +69,12 @@ fun gfFvStep(acc: FunValues, op: Op): FunValues
       ()           => acc
     (o: Op)      => acc
 
-fun gfFvOpaque(acc: FunValues, target: RParam): FunValues
+fun gfFvOpaque(acc, target): FunValues
   ret match(target)
     (sv: RpStackVar) => gfFvAdd(acc, sv.name, RpNullPointer(), 2)
     (o: RParam)       => acc
 
-fun gfFvAdd(acc: FunValues, name: String, value: RParam, n: Int): FunValues
+fun gfFvAdd(acc: FunValues, name, value, n): FunValues
   ret match(get(acc.fvMap, name))
     (e2: FunValue) => FunValues(put(acc.fvMap, name,
                                     FunValue(name, value, e2.fvCount + n)))
@@ -84,7 +84,7 @@ fun gfFvLookup(vmap: FunValues, name: String): RParam|None
   ret match(get(vmap.fvMap, name))
     (e2: FunValue) => e2.fvCount == 1 ? e2.fvValue : None
     ()             => None
-fun [tail] gfResolveFun(rp: RParam, vmap: FunValues, depth: Int): RpGlobalFunction|None
+fun [tail] gfResolveFun(rp, vmap: FunValues, depth): RpGlobalFunction|None
   if depth <= 0
     ret None
   ret match(rp)
@@ -118,19 +118,19 @@ fun gfOptimizeFunctionCalls(f: CgFunction, slots: List<SlotFuncs>): CgFunction
   let vmap = gfFunValueMap(f)
   ret cgFunctionWith(f, map(f.fnOps, (op) => gfOptimizeOp(op, slots, vmap)), f.fnStackVars)
 
-fun gfOptimizeOp(op: Op, slots: List<SlotFuncs>, vmap: FunValues): Op
+fun gfOptimizeOp(op, slots: List<SlotFuncs>, vmap: FunValues): Op
   ret match(op)
     (c: OpCall) => gfOptimizeCall(c, slots, vmap)
     (o: Op)     => op
 
-fun gfOptimizeCall(c: OpCall, slots: List<SlotFuncs>, vmap: FunValues): Op
+fun gfOptimizeCall(c, slots: List<SlotFuncs>, vmap: FunValues): Op
   ret match(c.callFunction)
     (vf: RpVirtualFunction) => gfDevirtualise(c, vf, slots)
     (sv: RpStackVar)        => gfDirectify(c, sv, vmap)
     (sf: RpStructField)     => gfDirectify(c, sf, vmap)
     (o: RParam)             => c
 
-fun gfDevirtualise(c: OpCall, vf: RpVirtualFunction, slots: List<SlotFuncs>): Op
+fun gfDevirtualise(c, vf: RpVirtualFunction, slots: List<SlotFuncs>): Op
   let globals2 = gfSlotLookup(slots, vf.name)
   ret exactly(chain(globals2), 1)
     ? OpCall(RpGlobalFunction(forceHead(globals2), vf.object, false, None, false, false),
@@ -138,7 +138,7 @@ fun gfDevirtualise(c: OpCall, vf: RpVirtualFunction, slots: List<SlotFuncs>): Op
              c.callResultType, c.callSavedVars)
     : c
 
-fun gfDirectify(c: OpCall, expr: RParam, vmap: FunValues): Op
+fun gfDirectify(c, expr, vmap: FunValues): Op
   ret match(gfResolveFun(expr, vmap, 16))
     (gf: RpGlobalFunction) => OpCall(gf, c.callParameters, c.callRegister,
                                      c.callMusttail, c.callImpure,

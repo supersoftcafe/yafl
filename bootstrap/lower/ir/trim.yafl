@@ -33,7 +33,7 @@ fun set1(name: String): StrSet
 fun setHas(s2: StrSet, name: String): Bool
   ret !(get(s2.setIx, name) is None)
 
-fun setAdd(s2: StrSet, name: String): StrSet
+fun setAdd(s2, name: String): StrSet
   ret setHas(s2, name)
     ? s2
     : StrSet(put(s2.setIx, name, true))
@@ -82,7 +82,7 @@ fun ssSub(a: ScanSets, b: ScanSets): ScanSets
 
 # ── the reference scan (trim.py __scan_rparam / __scan_op) ───────────────────
 
-fun scanRParam(p: RParam): ScanSets
+fun scanRParam(p): ScanSets
   ret match(p)
     (ia: RpInitArray)      => fold(ia.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x)))
     (ns: RpNewStruct)      => fold(ns.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x.value)))
@@ -121,7 +121,7 @@ fun scanOptObject(name: String|None): ScanSets
     (n: String) => ssObject1(n)
     ()           => ssEmpty()
 
-fun scanOp(op: Op): ScanSets
+fun scanOp(op): ScanSets
   ret match(op)
     (m: OpMove)         => ssUnion(scanRParam(m.moveTarget), scanRParam(m.moveSource))
     (ji: OpJumpIf)      => scanRParam(ji.jumpIfCondition)

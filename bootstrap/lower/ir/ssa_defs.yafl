@@ -27,7 +27,7 @@ fun sdMaxChase(): Int
 fun singleDefs(f: CgFunction): SsaDefs
   ret fold(f.fnOps, SsaDefs(Dict()), sdCollectOp)
 
-fun sdCollectOp(acc: SsaDefs, op: Op): SsaDefs
+fun sdCollectOp(acc, op): SsaDefs
   ret match(op)
     (m: OpMove)  => match(m.moveTarget)
       (sv: RpStackVar) => sdDefine(acc, sv.name, m.moveSource)
@@ -44,7 +44,7 @@ fun sdCollectOp(acc: SsaDefs, op: Op): SsaDefs
 
 # A REPEATED definition poisons to None (defensive — ssa_validate should
 # forbid it pre-async).
-fun sdDefine(acc: SsaDefs, name: String, source: RParam|None): SsaDefs
+fun sdDefine(acc: SsaDefs, name: String, source): SsaDefs
   ret match(get(acc.sdMap, name))
     (prior: SdEntry) => SsaDefs(put(acc.sdMap, name, SdEntry(None)))
     ()               => SsaDefs(put(acc.sdMap, name, SdEntry(source)))
@@ -62,11 +62,11 @@ fun sdGet(defs: SsaDefs, name: String): RParam|None
 fun sdReadCounts(f: CgFunction): Dict<String, Int>
   ret fold(f.fnOps, Dict(), sdCountOp)
 
-fun sdCountOp(acc: Dict<String, Int>, op: Op): Dict<String, Int>
+fun sdCountOp(acc: Dict<String, Int>, op): Dict<String, Int>
   ret fold(opSavedVars(op),
            fold(opGetLiveVars(op).reads, acc, sdCountVar), sdCountVar)
 
-fun sdCountVar(acc: Dict<String, Int>, rp: RParam): Dict<String, Int>
+fun sdCountVar(acc, rp): Dict<String, Int>
   ret match(rp)
     (sv: RpStackVar) => sdBump(acc, sv.name)
     (o: RParam)      => acc
@@ -83,7 +83,7 @@ fun sdCountOf(counts: Dict<String, Int>, name: String): Int
 
 # Chase `param` through StackVar copies to its defining value, if that value
 # is statically known. Returns a NewStruct/Integer/... or None.
-fun [tail] resolveValue(param: RParam, defs: SsaDefs, depth: Int): RParam|None
+fun [tail] resolveValue(param, defs: SsaDefs, depth): RParam|None
   if depth <= 0
     ret None
   ret match(param)
@@ -100,7 +100,7 @@ fun [tail] resolveValue(param: RParam, defs: SsaDefs, depth: Int): RParam|None
     (gf: RpGlobalFunction) => param
     (o: RParam)            => None
 
-fun sdResolveField(sf: RpStructField, defs: SsaDefs, depth: Int): RParam|None
+fun sdResolveField(sf: RpStructField, defs: SsaDefs, depth): RParam|None
   ret match(resolveValue(sf.structVal, defs, depth - 1))
     (base: RParam) => match(base)
       (ns: RpNewStruct) => sdFieldValue(chain(ns.values), sf.field, defs, depth)
@@ -109,14 +109,14 @@ fun sdResolveField(sf: RpStructField, defs: SsaDefs, depth: Int): RParam|None
 
 # `resolve_value(fval) or fval`: prefer the chased value, else the raw one.
 fun [tail] sdFieldValue(vs: Chain<RpNamedValue>, field: String,
-                        defs: SsaDefs, depth: Int): RParam|None
+                        defs: SsaDefs, depth): RParam|None
   ret match(vs)
     (nil: ChainEnd) => None
     (l: ChainLink)  => l.value.name == field
       ? sdPreferChased(l.value.value, defs, depth)
       : sdFieldValue(l.next, field, defs, depth)
 
-fun sdPreferChased(v: RParam, defs: SsaDefs, depth: Int): RParam
+fun sdPreferChased(v, defs: SsaDefs, depth): RParam
   ret match(resolveValue(v, defs, depth - 1))
     (rv: RParam) => rv
     ()           => v
@@ -124,7 +124,7 @@ fun sdPreferChased(v: RParam, defs: SsaDefs, depth: Int): RParam
 # A value simple enough to duplicate into each read site: pure, no evaluation
 # order, no code growth beyond a name. (RuntimeInvoke and friends are
 # excluded — side effects / non-trivial C expressions stay anchored.)
-fun sdIsDuplicable(p: RParam): Bool
+fun sdIsDuplicable(p): Bool
   ret match(p)
     (sv: RpStackVar)       => true
     (i: RpInteger)         => true
@@ -136,7 +136,7 @@ fun sdIsDuplicable(p: RParam): Bool
     (o: RParam)            => false
 
 # The compile-time integer value of `param`, or None if not decidable.
-fun staticInt(param: RParam, defs: SsaDefs): Int|None
+fun staticInt(param, defs: SsaDefs): Int|None
   ret match(param)
     (eq: RpIntEqConst) => match(staticInt(eq.value, defs))
       (v: Int) => v == eq.constVal ? 1 : 0

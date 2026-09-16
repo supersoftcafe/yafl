@@ -33,19 +33,19 @@ fun ssavFn(f: CgFunction, ssa: Bool): List<String>
 
 # Async-lowering reuses fixed scratch slots across call sites — deliberate
 # multi-write.
-fun ssavIsScratchSlot(name: String): Bool
+fun ssavIsScratchSlot(name): Bool
   ret startsWith(name, "$sv_") || startsWith(name, "$wrap$")
       || startsWith(name, "$sm_wrap$") || startsWith(name, "$musttail$ret$")
       || name == "$state" || name == "$completed_task"
 
 # A Move from a type-appropriate zero is a GC-safety / state-machine
 # pre-initialisation — logically a declaration, not a redefinition.
-fun ssavIsZeroInit(op: Op): Bool
+fun ssavIsZeroInit(op): Bool
   ret match(op)
     (m: OpMove) => ssavIsZeroSource(m.moveSource)
     (o: Op)     => false
 
-fun ssavIsZeroSource(src: RParam): Bool
+fun ssavIsZeroSource(src): Bool
   ret match(src)
     (np: RpNullPointer) => true
     (z: RpZeroOf)       => true
@@ -58,18 +58,18 @@ fun ssavCollectWriteCounts(f: CgFunction): List<StrCount>
                         (acc, fld) => strCountIncr(acc, fld.fieldName))
   ret fold(f.fnOps, fromParams, ssavCountOp)
 
-fun ssavCountOp(acc: List<StrCount>, op: Op): List<StrCount>
+fun ssavCountOp(acc, op): List<StrCount>
   ret ssavIsZeroInit(op)
     ? acc
     : fold(ssavOpWrites(op), acc, ssavCountTarget)
 
-fun ssavCountTarget(acc: List<StrCount>, target: RParam): List<StrCount>
+fun ssavCountTarget(acc, target): List<StrCount>
   ret match(target)
     (sv: RpStackVar) => strCountIncr(acc, sv.name)
     (o: RParam)       => acc
 
 # The write set per op kind — Python's op.get_live_vars() writes half.
-fun ssavOpWrites(op: Op): List<RParam>
+fun ssavOpWrites(op): List<RParam>
   ret match(op)
     (m: OpMove)         => list1(m.moveTarget)
     (c: OpCall)         => ssavOptWrite(c.callRegister)
@@ -120,7 +120,7 @@ fun [tail] lastOp(ops: Chain<Op>): Op|None
       (nil2: ChainEnd) => l.value
       (l2: ChainLink)  => lastOp(l.next)
 
-fun ssavIsTerminator(op: Op): Bool
+fun ssavIsTerminator(op): Bool
   ret match(op)
     (r: OpReturn)      => true
     (rv: OpReturnVoid) => true
@@ -141,8 +141,8 @@ fun ssavPredecessors(f: CgFunction): List<PredEntry>
   let p0 = cgPullOp(seqStream(f.fnOps))
   ret ssavPredLoop(p0.op, p0.stream, None, "", List())
 
-fun [tail] ssavPredLoop(cur: Op|None, st: SeqStream<Op>, prev: Op|None, current: String,
-                        acc: List<PredEntry>): List<PredEntry>
+fun [tail] ssavPredLoop(cur: Op|None, st: SeqStream<Op>, prev: Op|None, current,
+                        acc): List<PredEntry>
   if cur is None
     ret acc
   let op = forceOp(cur)
@@ -150,13 +150,13 @@ fun [tail] ssavPredLoop(cur: Op|None, st: SeqStream<Op>, prev: Op|None, current:
   ret ssavPredLoop(p.op, p.stream, op, ssavNextCurrent(op, current),
                    ssavPredStep(op, prev, current, acc))
 
-fun ssavNextCurrent(op: Op, current: String): String
+fun ssavNextCurrent(op, current): String
   ret match(op)
     (lb: OpLabel) => lb.labelName
     (o: Op)       => current
 
-fun ssavPredStep(op: Op, prev: Op|None, current: String,
-                 acc: List<PredEntry>): List<PredEntry>
+fun ssavPredStep(op, prev: Op|None, current: String,
+                 acc): List<PredEntry>
   ret match(op)
     (lb: OpLabel)      => ssavFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
     (j: OpJump)        => predAdd(acc, j.jumpName, current)
@@ -169,12 +169,12 @@ fun ssavPredStep(op: Op, prev: Op|None, current: String,
 # Fall-through edge from the previous block unless the previous op was an
 # unconditional terminator (Abort included — abort() does not return).
 fun ssavFallThroughEdge(lb: OpLabel, prev: Op|None, current: String,
-                        acc: List<PredEntry>): List<PredEntry>
+                        acc): List<PredEntry>
   ret match(prev)
     (p: Op) => ssavPrevFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
     ()       => acc
 
-fun ssavPrevFallsThrough(p: Op): Bool
+fun ssavPrevFallsThrough(p): Bool
   ret match(p)
     (j: OpJump)        => false
     (r: OpReturn)      => false
@@ -182,7 +182,7 @@ fun ssavPrevFallsThrough(p: Op): Bool
     (a: OpAbort)       => false
     (o: Op)            => true
 
-fun predEnsure(acc: List<PredEntry>, label: String): List<PredEntry>
+fun predEnsure(acc, label): List<PredEntry>
   ret any(acc, (e2) => e2.peLabel == label)
     ? acc
     # A label -> predecessors map, looked up by label; its own order is not
@@ -208,8 +208,8 @@ fun ssavPhiWellFormed(f: CgFunction): List<String>
   let p0 = cgPullOp(seqStream(f.fnOps))
   ret ssavPhiLoop(p0.op, p0.stream, preds, f.fnName, "", false, List())
 
-fun [tail] ssavPhiLoop(cur: Op|None, st: SeqStream<Op>, preds: List<PredEntry>, fname: String,
-                       current: String, inRegion: Bool, acc: List<String>): List<String>
+fun [tail] ssavPhiLoop(cur: Op|None, st: SeqStream<Op>, preds: List<PredEntry>, fname,
+                       current, inRegion, acc: List<String>): List<String>
   if cur is None
     ret acc
   let op = forceOp(cur)
@@ -220,8 +220,8 @@ fun [tail] ssavPhiLoop(cur: Op|None, st: SeqStream<Op>, preds: List<PredEntry>, 
                                  concat(acc, ssavPhiCheck(ph, preds, fname, current, inRegion)))
     (o: Op)       => ssavPhiLoop(p.op, p.stream, preds, fname, current, false, acc)
 
-fun ssavPhiCheck(ph: OpPhi, preds: List<PredEntry>, fname: String,
-                 current: String, inRegion: Bool): List<String>
+fun ssavPhiCheck(ph: OpPhi, preds: List<PredEntry>, fname,
+                 current, inRegion): List<String>
   if !inRegion || length(current) == 0
     ret list1(fname + ": Phi appears outside the Phi region of any block")
   let expected = filter(predsOf(preds, current), (s2) => length(s2) > 0)

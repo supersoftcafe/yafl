@@ -22,23 +22,23 @@ import Bootstrap::Types
 # ── names ───────────────────────────────────────────────────────────────────
 # A unique name is `path::name@hash`; queries are written without the hash.
 
-fun simpleName(name: String): String
+fun simpleName(name): String
   let at = lastIndexOf(name, '@')
   ret at < 0 ? name : slice(name, 0, at)
 
 # The unqualified simple name: hash suffix AND namespace path both stripped.
-fun bareOfUnique(name: String): String
+fun bareOfUnique(name): String
   let s = simpleName(name)
   let ix = lastSep(s, 0, -1)
   ret ix < 0 ? s : slice(s, ix + 2, length(s))
 
-fun [tail] lastSep(s: String, at: Int, best: Int): Int
+fun [tail] lastSep(s, at, best: Int): Int
   if at + 1 >= length(s)
     ret best
   ret lastSep(s, at + 1,
               byteAt(s, at) == ':' && byteAt(s, at + 1) == ':' ? at : best)
 
-fun matchName(left: String, right: String): Bool
+fun matchName(left, right): Bool
   ret simpleName(left) == simpleName(right)
 
 # A candidate matches a query when identical, or when it is the query's
@@ -46,20 +46,20 @@ fun matchName(left: String, right: String): Bool
 fun nameMatches(candidate: String, query: String): Bool
   ret candidate == query || startsWith(candidate, query + "@")
 
-fun lastIndexOf(s: String, c: Int32): Int
+fun lastIndexOf(s, c): Int
   ret lastIndexLoop(s, 0, -1, c)
 
-fun [tail] lastIndexLoop(s: String, at: Int, best: Int, c: Int32): Int
+fun [tail] lastIndexLoop(s, at, best, c): Int
   ret at >= length(s)
     ? best
     : lastIndexLoop(s, at + 1, byteAt(s, at) == c ? at : best, c)
 
 # Every prefix of a name at its `@` boundaries — the index keys, so a
 # prefix-match lookup is a plain hit rather than a scan.
-fun namePrefixes(name: String): List<String>
+fun namePrefixes(name): List<String>
   ret prefixLoop(chain(split(name, "@")), "", List())
 
-fun prefixLoop(ps: Chain<String>, acc: String,
+fun prefixLoop(ps, acc,
                       out: List<String>): List<String>
   ret build(prefixLoopB(ps, acc, builderFrom(out)))
 
@@ -150,7 +150,7 @@ class [final] Statements(stOrdered: List<PStmt>,
                          stBareData: Dict<String, Dict<String, Findings>>,
                          stMembers: Dict<String, MemberIdx>)
 
-fun buildStatements(stmts: List<PStmt>): Statements
+fun buildStatements(stmts): Statements
   ret withKindIndexes(withAmbient(indexLoop(chain(stmts),
                             Statements(stmts, Dict(),
                                        List(), List(),
@@ -184,9 +184,9 @@ fun [tail] bareView(ks: Chain<String>, kind: Dict<String, Findings>,
       ? bareView(l.next, kind, acc)
       : bareView(l.next, kind, bareViewAdd(acc, kind, l.value))
 
-fun bareViewAdd(acc: Dict<String, Dict<String, Findings>>,
+fun bareViewAdd(acc,
                 kind: Dict<String, Findings>,
-                key: String): Dict<String, Dict<String, Findings>>
+                key): Dict<String, Dict<String, Findings>>
   ret match(get(kind, key))
     (f: Findings) => bareViewPut(acc, bareOfUnique(key), namespacePart(key), f)
     ()            => acc
@@ -225,7 +225,7 @@ fun [tail] memberKeys(ms: Chain<PStmt>,
 # The per-pass member index, when the root carries one; a miss (direct RRoot
 # builder, or a class spelling the canonical key does not cover) derives per
 # query as before.
-fun [tail] memberIdxHook(r: Resolver, className: String): MemberIdx|None
+fun [tail] memberIdxHook(r, className: String): MemberIdx|None
   ret match(r)
     (root: RRoot)    => get(root.rrStmts.stMembers, className)
     (sc: RScopes)    => memberIdxHook(sc.rsParent, className)
@@ -246,8 +246,8 @@ fun [tail] kindLoop(ks: Chain<String>, index: Dict<String, List<PStmt>>,
                                 kindPut(acc, l.value, get(index, l.value),
                                         wantType))
 
-fun kindPut(acc: Dict<String, Findings>, key: String,
-            bucket: List<PStmt>|None, wantType: Bool): Dict<String, Findings>
+fun kindPut(acc, key: String,
+            bucket: List<PStmt>|None, wantType): Dict<String, Findings>
   let found = match(bucket)
     (b: List<PStmt>) => globalLoop(chain(b), wantType, List())
     ()               => List()
@@ -305,8 +305,8 @@ fun buildAmbient(ts: Chain<PStmt>,
 
 # First-class instances carry the pattern DIRECTLY — no witness lookup,
 # no parent substitution (TraitInstanceStatement, __build_ambient_patterns).
-fun buildAmbientOne(ti: PsTraitInstance, rest: Chain<PStmt>,
-                    acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
+fun buildAmbientOne(ti: PsTraitInstance, rest,
+                    acc: ListBuilder<AmbEntry>, blocked): AmbBuilt
   ret match(ti.tiPattern)
     (n: SNamed) => buildAmbient(rest, acc, true)
     (c: SClass) => anyNamed(chain(c.scParams))
@@ -325,14 +325,14 @@ fun [tail] indexLoop(ss: Chain<PStmt>, acc: Statements): Statements
     (nil: ChainEnd) => acc
     (l: ChainLink)  => indexLoop(l.next, indexOne(acc, l.value))
 
-fun indexOne(acc: Statements, st: PStmt): Statements
+fun indexOne(acc: Statements, st): Statements
   let name = stmtName(st)
   if name == ""
     ret acc                              # imports/namespaces carry no name
   let withName = addPrefixes(acc, name, st)
   ret classify(withName, st, name)
 
-fun addPrefixes(acc: Statements, name: String, st: PStmt): Statements
+fun addPrefixes(acc: Statements, name, st: PStmt): Statements
   ret Statements(acc.stOrdered,
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
                  acc.stTraits, acc.stInstances, acc.stAmbient,
@@ -355,7 +355,7 @@ fun putUnder(d: Dict<String, List<PStmt>>, key: String,
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
 # iteration; `[trait]` lets are precomputed.
-fun classify(acc: Statements, st: PStmt, name: String): Statements
+fun classify(acc, st, name: String): Statements
   ret match(st)
     (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
     (l: PsLet)  => hasAttr(l.lAttrs, "trait")
@@ -379,7 +379,7 @@ fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
     (nil: ChainEnd) => acc
     (l: ChainLink)  => indexVariants(indexVariant(acc, l.value), l.next)
 
-fun indexVariant(acc: Statements, v: PStmt): Statements
+fun indexVariant(acc, v): Statements
   ret match(v)
     (e: PsEnum) => indexVariants(addPrefixes(acc, e.eName, v), chain(e.eVariants))
     (o: PStmt)  => acc
@@ -402,8 +402,6 @@ fun lookup(idx: Statements, query: String): List<PStmt>
 # statement index; scopes stack over it.
 
 enum Resolver
-  # rrSuggest: {function unique-name → suggested param TupleSpec}, computed
-  # once per compile pass from the previous pass's call sites (path 3).
   # rrDiscriminators / rrOptLevel: GENERATE-only config (ResolverDiscriminators
   # in Python), read by union_repr/generate through getDiscriminators/getOptLevel
   # in generate_expr.yafl. Carried on the root (rather than as a wrapping layer,
@@ -421,7 +419,7 @@ enum Resolver
   # membersOf's one-probe fast path; None on direct builders (the old
   # per-query derivation serves).
   enum RRoot(rrComplex: (:String): Bool,
-             rrStmts: Statements, rrSuggest: Dict<String, Spec>|None = None,
+             rrStmts: Statements,
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
              rrEnumFields: Dict<String, List<SField>>|None = None,
              rrBoxedLeaves: Dict<String, Bool>|None = None,
@@ -455,7 +453,7 @@ enum Resolver
   # versa) so this file need not carry two near-identical cases.
   enum RGen(rgFrame: GenFrame, rgParent: Resolver)
 
-fun findData(r: Resolver, query: String): Findings
+fun findData(r, query): Findings
   ret match(r)
     (root: RRoot) => globalFindings(root.rrStmts, query, false)
     (rg: RGen)    => findData(rg.rgParent, query)
@@ -471,7 +469,7 @@ fun findData(r: Resolver, query: String): Findings
                              findData(tr.rtrParent, query))
     (cb: RClassBody) => classBodyFindings(cb, query)
 
-fun findType(r: Resolver, query: String): Findings
+fun findType(r, query): Findings
   ret match(r)
     (root: RRoot) => globalFindings(root.rrStmts, query, true)
     (rg: RGen)    => findType(rg.rgParent, query)
@@ -494,7 +492,7 @@ fun findType(r: Resolver, query: String): Findings
 # filtered per query site — the walk only collects the in-scope namespaces.
 # get_trait_instances: pre-lowering first-class instances (constraint
 # discharge and droppability read these before lower_instances runs).
-fun [tail] traitInstanceStmts(r: Resolver): List<PStmt>
+fun [tail] traitInstanceStmts(r): List<PStmt>
   ret match(r)
     (root: RRoot)    => root.rrStmts.stInstances
     (sc: RScopes)    => traitInstanceStmts(sc.rsParent)
@@ -507,7 +505,7 @@ fun [tail] traitInstanceStmts(r: Resolver): List<PStmt>
 # DERIVED is_complex: walk to the root resolver and ask its breaker
 # analysis (identity vs state — no stamps anywhere). Mirror of
 # Python Resolver.is_complex_root.
-fun [tail] isComplexRoot(r: Resolver, root2: String): Bool
+fun [tail] isComplexRoot(r, root2: String): Bool
   ret match(r)
     (root: RRoot)    => root.rrComplex(root2)
     (sc: RScopes)    => isComplexRoot(sc.rsParent, root2)
@@ -519,13 +517,13 @@ fun [tail] isComplexRoot(r: Resolver, root2: String): Bool
 
 # The one place the (root, leaf) pair becomes a Dict key (shared by the
 # analysis writer in complex_enums.yafl and the reader below).
-fun boxedLeafKey(root: String, leaf: String): String
+fun boxedLeafKey(root, leaf): String
   ret root + "|" + leaf
 
 # DERIVED per-leaf boxing decision (the enum-encoding principle): walk to
 # the root resolver and ask its threshold analysis. Mirror of Python
 # Resolver.is_boxed_leaf; None (non-generate roots) boxes nothing.
-fun [tail] isBoxedLeaf(r: Resolver, root2: String, leaf: String): Bool
+fun [tail] isBoxedLeaf(r, root2, leaf): Bool
   ret match(r)
     (root: RRoot)    => match(root.rrBoxedLeaves)
       (d2: Dict<String, Bool>) => !(get(d2, boxedLeafKey(root2, leaf)) is None)
@@ -537,10 +535,10 @@ fun [tail] isBoxedLeaf(r: Resolver, root2: String, leaf: String): Bool
     (cb: RClassBody)    => isBoxedLeaf(cb.rcbParent, root2, leaf)
     (rg: RGen)    => isBoxedLeaf(rg.rgParent, root2, leaf)
 
-fun ambientEntries(r: Resolver): AmbEntries
+fun ambientEntries(r): AmbEntries
   ret ambEntryWalk(r, List())
 
-fun [tail] ambEntryWalk(r: Resolver, scopes: List<String>): AmbEntries
+fun [tail] ambEntryWalk(r, scopes: List<String>): AmbEntries
   ret match(r)
     (root: RRoot) => isEmpty(scopes)
       ? AmbEntries(List(), false)
@@ -571,30 +569,15 @@ fun [tail] anyInScopes(ns: Chain<String>, scopes: List<String>): Bool
       : anyInScopes(l.next, scopes)
 
 # Everything before the LAST '::' (Python name.rpartition('::')[0]).
-fun namespacePart(name: String): String
+fun namespacePart(name): String
   let ix = lastSep(name, 0, -1)
   ret ix < 0 ? "" : slice(name, 0, ix)
-
-# get_param_suggestion: the call-site-implied parameter shape for `name`, or
-# None when nothing was suggested. Read-only — a declared parameter type
-# always overrides; this only fills holes.
-fun [tail] paramSuggestion(r: Resolver, name: String): Spec|None
-  ret match(r)
-    (root: RRoot)    => match(root.rrSuggest)
-      (d: Dict<String, Spec>) => get(d, name)
-      ()                      => None
-    (sc: RScopes)    => paramSuggestion(sc.rsParent, name)
-    (d2: RData)      => paramSuggestion(d2.rdParent, name)
-    (t2: RTypes)     => paramSuggestion(t2.rtParent, name)
-    (tr: RTraits)    => paramSuggestion(tr.rtrParent, name)
-    (cb: RClassBody) => paramSuggestion(cb.rcbParent, name)
-    (rg: RGen)       => paramSuggestion(rg.rgParent, name)
 
 # The per-pass derived-enum-fields table, carried on RRoot (rootResolver
 # supplies it, precomputed eagerly per pass — the stAmbient pattern). A root
 # built without one answers None and readers derive per query as before; a
 # table MISS is a pruned root, whose fields are empty either way.
-fun [tail] enumFieldsHook(r: Resolver, root: String): List<SField>|None
+fun [tail] enumFieldsHook(r, root: String): List<SField>|None
   ret match(r)
     (rt2: RRoot)     => match(rt2.rrEnumFields)
       (d: Dict<String, List<SField>>) => enumFieldsAt(d, root)
@@ -613,7 +596,7 @@ fun enumFieldsAt(d: Dict<String, List<SField>>, root: String): List<SField>
 
 # get_traits: every `[trait]` let in the statement set (precomputed by the
 # index) — no scope filter, exactly like Python's root.
-fun [tail] traitLets(r: Resolver): List<PStmt>
+fun [tail] traitLets(r): List<PStmt>
   ret match(r)
     (root: RRoot)    => root.rrStmts.stTraits
     (sc: RScopes)    => traitLets(sc.rsParent)
@@ -647,7 +630,7 @@ fun [tail] mergeNamesB([terminal] out: ListBuilder<String>, seen: Set<String>,
 # per-namespace root round trips (one query-string build + one root query
 # each) are replaced by ONE filtered bare-index lookup at the root: same
 # bags, same namespace-then-declaration order (Python AddScopeResolution).
-fun scopedFindings(sc: RScopes, query: String, wantType: Bool): Findings
+fun scopedFindings(sc: RScopes, query, wantType: Bool): Findings
   let direct = wantType ? findType(sc.rsParent, query)
                         : findData(sc.rsParent, query)
   ret contains(query, "::") || contains(query, "@")
@@ -664,7 +647,7 @@ fun joinFindings(a: Findings, b: Findings): Findings
     ret a
   ret addFindings(a, b)
 
-fun [tail] bareScoped(r: Resolver, bare: String, wantType: Bool,
+fun [tail] bareScoped(r, bare: String, wantType: Bool,
                       namespaces: List<String>): Findings
   ret match(r)
     (root: RRoot)    => bareAtRoot(root, bare, wantType, namespaces)
@@ -692,7 +675,7 @@ fun [tail] underScopes(ns: Chain<String>, inner: Dict<String, Findings>,
     (l: ChainLink)  => underScopes(l.next, inner,
                                    underAdd(acc, get(inner, l.value)))
 
-fun underAdd(acc: Findings, hit: Findings|None): Findings
+fun underAdd(acc, hit: Findings|None): Findings
   ret match(hit)
     (f: Findings) => joinFindings(acc, f)
     ()            => acc
@@ -710,7 +693,7 @@ fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
     (f: Findings) => f
     ()            => emptyFindingsGlobal
 
-fun globalLoop(ss: Chain<PStmt>, wantType: Bool,
+fun globalLoop(ss, wantType,
                       acc: List<Found>): List<Found>
   ret build(globalLoopB(ss, wantType, builderFrom(acc)))
 
@@ -724,10 +707,10 @@ fun [tail] globalLoopB(ss: Chain<PStmt>, wantType: Bool,
                    push(acc, Found(stmtName(l.value), l.value, ScGlobal())))
       : globalLoopB(l.next, wantType, acc)
 
-fun wantsThis(isType: Bool, wantType: Bool): Bool
+fun wantsThis(isType: Bool, wantType): Bool
   ret isType ? wantType : !wantType
 
-fun isTypeStmt(st: PStmt): Bool
+fun isTypeStmt(st): Bool
   ret match(st)
     (c: PsClass)      => true
     (e: PsEnum)       => true
@@ -741,15 +724,15 @@ fun isTypeStmt(st: PStmt): Bool
 # in neither. Without this the port's "everything that isn't a type is data"
 # split leaks it into findData, and a lookup of the synthesised
 # `instance$<hash>` name resolves here while Python finds nothing.
-fun isNeitherStmt(st: PStmt): Bool
+fun isNeitherStmt(st): Bool
   ret match(st)
     (ti: PsTraitInstance) => true
     (o: PStmt)            => false
 
-fun localsFirst(own: Findings, parent: Resolver, query: String): Findings
+fun localsFirst(own, parent, query): Findings
   ret isEmpty(own.bItems) ? findData(parent, query) : own
 
-fun classBodyFindings(cb: RClassBody, query: String): Findings
+fun classBodyFindings(cb: RClassBody, query): Findings
   let own = concat(classFindData(cb.rcbClass, cb.rcbParent, query),
                    thisFound(cb.rcbClass, query))
   ret isEmpty(own) ? findData(cb.rcbParent, query) : Findings(own, true)
@@ -757,7 +740,7 @@ fun classBodyFindings(cb: RClassBody, query: String): Findings
 fun matchingFound(names: List<Found>, query: String): Findings
   ret Findings(matchLoop(chain(names), query, List()), true)
 
-fun matchLoop(fs: Chain<Found>, query: String,
+fun matchLoop(fs, query: String,
                      acc: List<Found>): List<Found>
   ret build(matchLoopB(fs, query, builderFrom(acc)))
 
@@ -769,7 +752,7 @@ fun [tail] matchLoopB(fs: Chain<Found>, query: String,
       ? matchLoopB(l.next, query, push(acc, l.value))
       : matchLoopB(l.next, query, acc)
 
-fun stmtName(st: PStmt): String
+fun stmtName(st): String
   ret match(st)
     (f: PsFun)        => f.fName
     (l: PsLet)        => l.lName
@@ -808,13 +791,13 @@ fun mergedMembersTable(st: Statements): Dict<String, MergedOut>
              mmEnsure(name, st, List(), acc))
 
 fun mmEnsure(name: String, st: Statements, visiting: List<String>,
-             acc: Dict<String, MergedOut>): Dict<String, MergedOut>
+             acc): Dict<String, MergedOut>
   ret match(get(acc, name))
     (done: MergedOut) => acc
     ()                 => mmBuild(name, st, visiting, acc)
 
 fun mmBuild(name: String, st: Statements, visiting: List<String>,
-            acc: Dict<String, MergedOut>): Dict<String, MergedOut>
+            acc): Dict<String, MergedOut>
   if contains2(visiting, name)
     ret put(acc, name, MMissing())   # defensive: cyclic implements
   ret match(get(st.stMembers, name))
@@ -825,7 +808,7 @@ class [final] MMState(mmRows: Dict<String, MergedRow>, mmAbsent: Bool,
                       mmBroken: Bool, mmAcc: Dict<String, MergedOut>)
 
 fun mmBuildClass(name: String, mi: MemberIdx, st: Statements,
-                 visiting: List<String>, acc: Dict<String, MergedOut>): Dict<String, MergedOut>
+                 visiting: List<String>, acc): Dict<String, MergedOut>
   let ownRows = mmOwnRows(sort(keys(mi.miByKey)), mi, Dict())
   let stt = fold(mi.miClass.cImplements,
                  MMState(ownRows, false, false, acc),
@@ -837,7 +820,7 @@ fun mmBuildClass(name: String, mi: MemberIdx, st: Statements,
                             mi.miClass.cGens)))
 
 fun [tail] mmOwnRows(ks: List<String>, mi: MemberIdx,
-                     acc: Dict<String, MergedRow>): Dict<String, MergedRow>
+                     acc): Dict<String, MergedRow>
   ret match(head(ks))
     (k: String) => mmOwnRows(tail(ks), mi,
         put(acc, k, MergedRow(map(memberBucket(mi, k),
@@ -853,12 +836,12 @@ fun mmMarkNonOwn(rows: Dict<String, MergedRow>, mi: MemberIdx): Dict<String, Mer
                ? acc
                : mmMarkOne(acc, k))
 
-fun mmMarkOne(rows: Dict<String, MergedRow>, k: String): Dict<String, MergedRow>
+fun mmMarkOne(rows, k: String): Dict<String, MergedRow>
   ret match(get(rows, k))
     (row: MergedRow) => put(rows, k, MergedRow(row.mrEntries, false))
     ()                => rows
 
-fun mmParent(s2: MMState, parent: Spec, mi: MemberIdx, st: Statements,
+fun mmParent(s2, parent, mi: MemberIdx, st: Statements,
              visiting: List<String>): MMState
   ret match(parent)
     (n: SNamed) => MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
@@ -889,8 +872,8 @@ fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
                       : mmMergeRow(acc, k, sub, parent, mapping))
   ret MMState(rows, s2.mmAbsent || sub.mtAbsentInc, s2.mmBroken, s2.mmAcc)
 
-fun mmMergeRow(acc: Dict<String, MergedRow>, k: String, sub: MergedTable,
-               parent: SClass, mapping: List<Binding>): Dict<String, MergedRow>
+fun mmMergeRow(acc, k: String, sub: MergedTable,
+               parent, mapping: List<Binding>): Dict<String, MergedRow>
   ret match(get(sub.mtRows, k))
     (row: MergedRow) => mmAppendRow(acc, k,
         map(row.mrEntries, (e) =>
@@ -898,20 +881,20 @@ fun mmMergeRow(acc: Dict<String, MergedRow>, k: String, sub: MergedTable,
         row.mrComplete)
     ()                => acc   # unreachable: k came from sub's keys
 
-fun mmCompose(pattern: Spec|None, parent: SClass, mapping: List<Binding>): Spec|None
+fun mmCompose(pattern: Spec|None, parent, mapping: List<Binding>): Spec|None
   ret match(pattern)
     (p: Spec) => substitute(p, mapping)
     ()         => parent
 
 fun mmAppendRow(acc: Dict<String, MergedRow>, k: String,
-                entries: List<MergedEntry>, comp: Bool): Dict<String, MergedRow>
+                entries, comp): Dict<String, MergedRow>
   ret match(get(acc, k))
     (prev: MergedRow) => put(acc, k, MergedRow(concat(prev.mrEntries, entries),
                                                prev.mrComplete && comp))
     ()                 => put(acc, k, MergedRow(entries, comp))
 
 # The per-pass merged table, when the root carries one.
-fun [tail] mergedHook(r: Resolver, className: String): MergedOut|None
+fun [tail] mergedHook(r, className: String): MergedOut|None
   ret match(r)
     (root: RRoot)    => match(root.rrMerged)
       (d2: Dict<String, MergedOut>) => get(d2, className)

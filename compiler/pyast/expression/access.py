@@ -99,6 +99,22 @@ def _substitute_enum_type_params(
 
 
 
+def candidate_signature(resolver: g.Resolver, x: g.Resolved[s.DataStatement]) -> t.TypeSpec | None:
+    """A candidate's type with its TRAIT scope's type arguments applied, so
+    `Plus<Int>::+` reads as `(Int, Int): Int` rather than the declaration's
+    `(TVal, TVal): TVal`. Overload narrowing (below) and parameter inference
+    (pyast/param_inference.py) both read candidates through this: the one asks
+    which candidate a call picks, the other what that candidate then takes, and
+    they must not disagree about what a candidate's signature IS."""
+    xtype = x.statement.get_type()
+    if (x.scope == g.ResolvedScope.TRAIT
+            and x.trait_scope is not None
+            and x.owner_class is not None):
+        mapping = {p.name: c for p, c in zip(x.owner_class.type_params, x.trait_scope.type_params)}
+        xtype = t.substitute_placeholders(xtype, mapping, resolver)
+    return xtype
+
+
 def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, candidates: list[g.Resolved[s.DataStatement]]) -> list[g.Resolved[s.DataStatement]]:
     if len(candidates) <= 1:
         return candidates
@@ -108,14 +124,9 @@ def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, c
     # generic dispatch — e.g. `0 == 1` picks `BasicEquality<Int>::==` over
     # the in-scope-but-unconstrained `BasicEquality<K>::==`.
     def candidate_type(x: g.Resolved[s.DataStatement]) -> t.TypeSpec | None:
-        other_type = x.statement.get_type()
-        # Apply trait type param substitution so e.g. Plus<Int>.+ has effective type
-        # (Int,Int)->Int rather than (TVal,TVal)->TVal, enabling correct disambiguation.
-        if (x.scope == g.ResolvedScope.TRAIT
-                and x.trait_scope is not None
-                and x.owner_class is not None):
-            mapping = {p.name: c for p, c in zip(x.owner_class.type_params, x.trait_scope.type_params)}
-            other_type = t.substitute_placeholders(other_type, mapping, resolver)
+        # The trait scope's arguments first (candidate_signature), so a trait
+        # method compares as the use site calls it.
+        other_type = candidate_signature(resolver, x)
         # The candidate's OWN generic parameters are wildcards: instantiating
         # this candidate can bind them to whatever the argument holds, so no
         # structural mismatch through them may reject it. Substituting an

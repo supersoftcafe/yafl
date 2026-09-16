@@ -22,11 +22,11 @@ import Bootstrap::Types
 class [final] GRef(grName: String, grArgs: List<Spec>, grIds: List<TypeId>)
 class [final] GRefs(gdData: List<GRef>, gdTypes: List<GRef>)
 
-fun mkGRef(name: String, args: List<Spec>): GRef
+fun mkGRef(name, args): GRef
   ret GRef(name, args, spellList(args))
 
 # name$generic$uid1_uid2 — "unknown" for an id-less arg, exactly as Python.
-fun mangledName(base: String, args: List<Spec>): String
+fun mangledName(base, args: List<Spec>): String
   ret isEmpty(args) ? base : base + "$generic$" + joinUids(chain(args), "")
 
 fun [tail] joinUids(as2: Chain<Spec>, acc: String): String
@@ -37,7 +37,7 @@ fun [tail] joinUids(as2: Chain<Spec>, acc: String): String
                                   ? uidOrUnknown(l.value)
                                   : acc + "_" + uidOrUnknown(l.value))
 
-fun uidOrUnknown(sp: Spec): String
+fun uidOrUnknown(sp): String
   ret uid(sp) == "" ? "unknown" : uid(sp)
 
 fun refKey(g2: GRef): String
@@ -53,7 +53,7 @@ fun refKey(g2: GRef): String
 # first (createSpecializedStatements), so the order it is gathered in is never
 # read. The dedup still keeps the first STRUCTURE seen, which is what decides
 # membership — a later equal ref is dropped either way round.
-fun addRef(refs: List<GRef>, g2: GRef): List<GRef>
+fun addRef(refs, g2: GRef): List<GRef>
   ret hasRefStruct(chain(refs), g2) ? refs : prepend(g2, refs)
 
 fun [tail] hasRefStruct(rs: Chain<GRef>, g2: GRef): Bool
@@ -93,7 +93,7 @@ fun [tail] allConcreteArgs(as2: Chain<Spec>): Bool
 # `BasicEquality$generic$unknown`, so no concrete demand could ever unify
 # against it and the instance was silently never selected — the whole reason a
 # tuple could not be a Dict key.
-fun concreteArg(sp: Spec): Bool
+fun concreteArg(sp): Bool
   ret match(sp)
     (g2: SGeneric)     => false
     (e2: SEnum)        => isEmpty(e2.seParams) && !containsPlaceholder(sp)
@@ -101,7 +101,7 @@ fun concreteArg(sp: Spec): Bool
     (n: SNamed)        => isEmpty(n.snParams) && !containsPlaceholder(sp)
     (o: Spec)          => !containsPlaceholder(o)
 
-fun containsPlaceholder(sp: Spec): Bool
+fun containsPlaceholder(sp): Bool
   ret match(sp)
     (g2: SGeneric)     => true
     (cm: SCombination) => anyContainsPlaceholder(chain(cm.scTypes))
@@ -127,7 +127,7 @@ fun [tail] anyEntryPlaceholder(es: Chain<SEntry>): Bool
 # Is `name` used anywhere in `sp` OUTSIDE a union? Union-only params are the
 # benign where-bindable gap; outside-union means the interface match should
 # have pinned it and where-solving would rescue a bogus match.
-fun appearsOutsideUnion(sp: Spec, name: String, inUnion: Bool): Bool
+fun appearsOutsideUnion(sp, name, inUnion): Bool
   ret match(sp)
     (g2: SGeneric)     => g2.sgName == name && !inUnion
     (cm: SCombination) => anyOutsideUnion(chain(cm.scTypes), name, true)
@@ -143,8 +143,8 @@ fun [tail] anyOutsideUnion(ss: Chain<Spec>, name: String, inUnion: Bool): Bool
       ? true
       : anyOutsideUnion(l.next, name, inUnion)
 
-fun [tail] anyEntryOutside(es: Chain<SEntry>, name: String,
-                           inUnion: Bool): Bool
+fun [tail] anyEntryOutside(es: Chain<SEntry>, name,
+                           inUnion): Bool
   ret match(es)
     (nil: ChainEnd) => false
     (l: ChainLink)  => match(l.value.seType)
@@ -165,7 +165,7 @@ fun [tail] fciStmts(ss: Chain<PStmt>, acc: GRefs): GRefs
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fciStmts(l.next, fciStmt(l.value, acc))
 
-fun fciStmt(st: PStmt, acc: GRefs): GRefs
+fun fciStmt(st, acc): GRefs
   ret match(st)
     (f: PsFun)         => fciExprOpt(f.fBody,
                             fciSpecs(chain(f.fWheres),
@@ -190,7 +190,7 @@ fun fciStmt(st: PStmt, acc: GRefs): GRefs
                                      fciExpr(i.ifCond, acc)))
     (o: PStmt)         => acc
 
-fun fciExpr(x: PExpr, acc: GRefs): GRefs
+fun fciExpr(x, acc): GRefs
   ret match(x)
     # penTrait is a SPEC field Python's search_and_replace walks: an AMBIENT
     # member's SOLVED scope (Sized<Wrap<Box>>) mints its type refs here —
@@ -223,17 +223,17 @@ fun fciExpr(x: PExpr, acc: GRefs): GRefs
     (o: PeLiteral) => acc
     (o: PeLowered) => acc
 
-fun nameRef(name: String, args: List<Spec>, acc: GRefs): GRefs
+fun nameRef(name, args, acc): GRefs
   ret !isEmpty(args) && isConcreteTypeArgs(args)
     ? GRefs(addRef(acc.gdData, mkGRef(name, args)), acc.gdTypes)
     : acc
 
-fun [tail] fciEntries(es: Chain<PTupEnt>, acc: GRefs): GRefs
+fun [tail] fciEntries(es: Chain<PTupEnt>, acc): GRefs
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fciEntries(l.next, fciExpr(l.value.tupValue, acc))
 
-fun [tail] fciArms(as2: Chain<PArm>, acc: GRefs): GRefs
+fun [tail] fciArms(as2: Chain<PArm>, acc): GRefs
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fciArms(l.next,
@@ -241,12 +241,12 @@ fun [tail] fciArms(as2: Chain<PArm>, acc: GRefs): GRefs
                           fciExpr(l.value.armBody,
                                   fciSpecOpt(l.value.armType, acc))))
 
-fun fciExprOpt(x: PExpr|None, acc: GRefs): GRefs
+fun fciExprOpt(x: PExpr|None, acc): GRefs
   ret match(x)
     (e2: PExpr) => fciExpr(e2, acc)
     ()          => acc
 
-fun fciSpec(sp: Spec, acc: GRefs): GRefs
+fun fciSpec(sp, acc): GRefs
   ret match(sp)
     (c: SClass)        => fciSpecs(chain(c.scParams),
                                    !isEmpty(c.scParams)
@@ -282,19 +282,19 @@ fun [tail] fciSpecs(ss: Chain<Spec>, acc: GRefs): GRefs
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fciSpecs(l.next, fciSpec(l.value, acc))
 
-fun [tail] fciSpecEntries(es: Chain<SEntry>, acc: GRefs): GRefs
+fun [tail] fciSpecEntries(es: Chain<SEntry>, acc): GRefs
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => fciSpecEntries(l.next,
                                       fciSpecOpt(l.value.seType,
                                         fciExprOpt(l.value.seDefault, acc)))
 
-fun fciSpecOpt(sp: Spec|None, acc: GRefs): GRefs
+fun fciSpecOpt(sp: Spec|None, acc): GRefs
   ret match(sp)
     (s2: Spec) => fciSpec(s2, acc)
     ()         => acc
 
-fun fciSpecsOpt(ss: List<Spec>|None, acc: GRefs): GRefs
+fun fciSpecsOpt(ss: List<Spec>|None, acc): GRefs
   ret match(ss)
     (l: List<Spec>) => fciSpecs(chain(l), acc)
     ()              => acc
@@ -313,7 +313,7 @@ class [final] GSub(gsExact: List<Binding>, gsBare: List<Binding>,
                    gsEnumFormals: Set<String>)
 
 fun gsubOf(gens: List<PGen>, args: List<Spec>,
-           formals: Dict<String, List<String>>): GSub
+           formals): GSub
   ret gsubLoop(chain(gens), chain(args), GSub(List(), List(), formals,
                                               enumFormalNames(formals)))
 
@@ -337,7 +337,7 @@ fun [tail] gsubLoop(gs: Chain<PGen>, as2: Chain<Spec>, acc: GSub): GSub
                        acc.gsBare),
                acc.gsFormals, acc.gsEnumFormals))
 
-fun bareGenName(name: String): String
+fun bareGenName(name): String
   let at = findByte(name, '@', 0)
   ret at < 0 ? name : slice(name, 0, at)
 
@@ -347,14 +347,14 @@ fun bareGenName(name: String): String
 # site) is not this specialisation's to guess: binding it by name to whichever
 # host param shares the letter was a silent miscompile. Left in place, the
 # unresolved-generic-call report names it at the use site.
-fun resolveGp(name: String, sub: GSub): Spec|None
+fun resolveGp(name, sub: GSub): Spec|None
   ret match(bindingOf(sub.gsExact, name))
     (b: Spec) => b
     ()        => contains(sub.gsEnumFormals, name)
       ? bindingOf(sub.gsBare, bareGenName(name))
       : None
 
-fun gsubSpec(sp: Spec, sub: GSub, visited: List<String>): Spec
+fun gsubSpec(sp, sub: GSub, visited: List<String>): Spec
   ret match(sp)
     (g2: SGeneric)     => match(resolveGp(g2.sgName, sub))
       (b: Spec) => b
@@ -400,7 +400,7 @@ fun gsubEnumNode(e2: SEnum, params0: List<Spec>, sub: GSub,
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
             gsubCompleted(e2, params2, sub), e2.seLine)
 
-fun gsubCompleted(e2: SEnum, params2: List<Spec>, sub: GSub): List<Spec>
+fun gsubCompleted(e2: SEnum, params2, sub: GSub): List<Spec>
   if !isEmpty(params2)
     ret params2
   ret match(get(sub.gsFormals, e2.seRoot))
@@ -421,7 +421,7 @@ fun [tail] gsubFormalArgs(ns: Chain<String>, e2: SEnum, sub: GSub,
                                        SGeneric(l.value, false,
                                                 e2.seLine)))
 
-fun gsubInField(ft: Spec, sub: GSub, visited: List<String>): Spec
+fun gsubInField(ft, sub: GSub, visited: List<String>): Spec
   ret match(ft)
     (g2: SGeneric) => match(resolveGp(g2.sgName, sub))
       (b: Spec) => b
@@ -447,7 +447,7 @@ fun gsubInFieldList(ts: List<Spec>, sub: GSub,
                     visited: List<String>): List<Spec>
   ret gsubInFieldLoop(chain(ts), sub, visited, List())
 
-fun gsubInFieldLoop(ts: Chain<Spec>, sub: GSub, visited: List<String>,
+fun gsubInFieldLoop(ts, sub: GSub, visited: List<String>,
                            acc: List<Spec>): List<Spec>
   ret build(gsubInFieldLoopB(ts, sub, visited, builderFrom(acc)))
 
@@ -462,7 +462,7 @@ fun [tail] gsubInFieldLoopB(ts: Chain<Spec>, sub: GSub, visited: List<String>,
 fun gsubList(ts: List<Spec>, sub: GSub, visited: List<String>): List<Spec>
   ret gsubListLoop(chain(ts), sub, visited, List())
 
-fun gsubListLoop(ts: Chain<Spec>, sub: GSub, visited: List<String>,
+fun gsubListLoop(ts, sub: GSub, visited: List<String>,
                         acc: List<Spec>): List<Spec>
   ret build(gsubListLoopB(ts, sub, visited, builderFrom(acc)))
 
@@ -484,7 +484,7 @@ fun gsubEntries(es: Chain<SEntry>, sub: GSub, visited: List<String>,
   ret build(gsubEntriesB(es, sub, visited, builderFrom(acc)))
 
 fun [tail] gsubEntriesB(es: Chain<SEntry>, sub: GSub, visited: List<String>,
-                       [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
+                       [terminal] acc): ListBuilder<SEntry>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => gsubEntriesB(l.next, sub, visited,
@@ -493,7 +493,7 @@ fun [tail] gsubEntriesB(es: Chain<SEntry>, sub: GSub, visited: List<String>,
                   gsubExprOpt(l.value.seDefault, sub, visited))))
 
 # The tree substitution: every spec position rewritten; expressions recurse.
-fun gsubStmt(st: PStmt, sub: GSub): PStmt
+fun gsubStmt(st, sub: GSub): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens,
                          gsubStmt(f.fParams, sub),
@@ -545,7 +545,7 @@ fun gsubStmt(st: PStmt, sub: GSub): PStmt
                          i.psifLine)
     (o: PStmt)   => st
 
-fun gsubStmts(ss: Chain<PStmt>, sub: GSub,
+fun gsubStmts(ss, sub: GSub,
                      acc: List<PStmt>): List<PStmt>
   ret build(gsubStmtsB(ss, sub, builderFrom(acc)))
 
@@ -561,7 +561,7 @@ fun gsubSpecsOpt(ss: List<Spec>|None, sub: GSub): List<Spec>|None
     (l: List<Spec>) => gsubList(l, sub, List())
     ()              => None
 
-fun gsubExpr(x: PExpr, sub: GSub, visited: List<String>): PExpr
+fun gsubExpr(x, sub: GSub, visited: List<String>): PExpr
   ret match(x)
     (nm: PeName)   => PeName(nm.refName, gsubList(nm.refTypeParams, sub,
                                                   visited),
@@ -626,14 +626,14 @@ fun gsubTupEnts(es: Chain<PTupEnt>, sub: GSub, visited: List<String>,
   ret build(gsubTupEntsB(es, sub, visited, builderFrom(acc)))
 
 fun [tail] gsubTupEntsB(es: Chain<PTupEnt>, sub: GSub, visited: List<String>,
-                       [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
+                       [terminal] acc): ListBuilder<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => gsubTupEntsB(l.next, sub, visited,
         push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                   gsubExpr(l.value.tupValue, sub, visited))))
 
-fun gsubArms(as2: Chain<PArm>, sub: GSub, visited: List<String>,
+fun gsubArms(as2, sub: GSub, visited: List<String>,
                     acc: List<PArm>): List<PArm>
   ret build(gsubArmsB(as2, sub, visited, builderFrom(acc)))
 
@@ -645,7 +645,7 @@ fun [tail] gsubArmsB(as2: Chain<PArm>, sub: GSub, visited: List<String>,
         push(acc, with l.value(armType = gsubOpt(l.value.armType, sub, visited), armBody = gsubExpr(l.value.armBody, sub, visited), armLiterals = gsubLits(chain(l.value.armLiterals), sub, visited,
                            List()), armGuard = gsubExprOpt(l.value.armGuard, sub, visited))))
 
-fun gsubLits(ls: Chain<PLit>, sub: GSub, visited: List<String>,
+fun gsubLits(ls, sub: GSub, visited: List<String>,
                     acc: List<PLit>): List<PLit>
   ret build(gsubLitsB(ls, sub, visited, builderFrom(acc)))
 
@@ -661,8 +661,8 @@ fun [tail] gsubLitsB(ls: Chain<PLit>, sub: GSub, visited: List<String>,
 # instantiations would otherwise emit colliding C symbols; '@' keeps
 # name_matches compatibility for member lookup.
 
-fun createSpecializedVersion(st: PStmt, args: List<Spec>,
-                             formals: Dict<String, List<String>>): PStmt
+fun createSpecializedVersion(st, args: List<Spec>,
+                             formals): PStmt
   let gens = stmtGens(st)
   if isEmpty(gens) || isEmpty(args)
     ret st
@@ -670,7 +670,7 @@ fun createSpecializedVersion(st: PStmt, args: List<Spec>,
   let newName = mangledName(stmtName(st), args)
   ret renameSpecialized(gsubStmt(st, sub), newName, args)
 
-fun renameSpecialized(st: PStmt, newName: String, args: List<Spec>): PStmt
+fun renameSpecialized(st, newName, args: List<Spec>): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(newName, f.fAttrs, List(), f.fParams, f.fBody,
                          f.fRet, f.fWheres, f.psfLine, f.fRetInferred,
@@ -696,7 +696,7 @@ fun renameSpecialized(st: PStmt, newName: String, args: List<Spec>): PStmt
 fun renameVariantTree(vs: List<PStmt>, args: List<Spec>): List<PStmt>
   ret map(vs, (v) => renameVariant(v, args))
 
-fun renameVariant(v: PStmt, args: List<Spec>): PStmt
+fun renameVariant(v, args: List<Spec>): PStmt
   ret match(v)
     (ve: PsEnum) => PsEnum(mangledName(ve.eName, args), ve.eAttrs, ve.eGens,
                            ve.eParams,
@@ -705,7 +705,7 @@ fun renameVariant(v: PStmt, args: List<Spec>): PStmt
                            ve.eImports)
     (o: PStmt)   => v
 
-fun specializedClass(c: PsClass, newName: String, args: List<Spec>): PStmt
+fun specializedClass(c: PsClass, newName, args: List<Spec>): PStmt
   let sig = joinUids(chain(args), "")
   let rn = methodRenames(chain(c.cMembers), sig, List())
   ret PsClass(newName, c.cAttrs, List(), c.cParams, c.cImplements,
@@ -716,7 +716,7 @@ fun specializedClass(c: PsClass, newName: String, args: List<Spec>): PStmt
 
 class [final] Binding2(b2From: String, b2To: String)
 
-fun methodRenames(ms: Chain<PStmt>, sig: String,
+fun methodRenames(ms, sig,
                          acc: List<Binding2>): List<Binding2>
   ret build(methodRenamesB(ms, sig, builderFrom(acc)))
 
@@ -741,7 +741,7 @@ fun [tail] rnLoop(rs: Chain<Binding2>, name: String): String
     (l: ChainLink)  => l.value.b2From == name ? l.value.b2To : rnLoop(l.next,
                                                                      name)
 
-fun renameMembers(ms: Chain<PStmt>, rn: List<Binding2>,
+fun renameMembers(ms, rn: List<Binding2>,
                          acc: List<PStmt>): List<PStmt>
   ret build(renameMembersB(ms, rn, builderFrom(acc)))
 
@@ -759,7 +759,7 @@ fun [tail] renameMembersB(ms: Chain<PStmt>, rn: List<Binding2>,
                         f.fImports)))
       (o: PStmt) => renameMembersB(l.next, rn, push(acc, l.value))
 
-fun renameSlots(ss: List<Slot>|None, rn: List<Binding2>): List<Slot>|None
+fun renameSlots(ss, rn: List<Binding2>): List<Slot>|None
   ret match(ss)
     (l: List<Slot>) => isEmpty(rn) ? ss : renameSlotList(chain(l), rn,
                                                          List())
@@ -770,7 +770,7 @@ fun renameSlotList(ss: Chain<Slot>, rn: List<Binding2>,
   ret build(renameSlotListB(ss, rn, builderFrom(acc)))
 
 fun [tail] renameSlotListB(ss: Chain<Slot>, rn: List<Binding2>,
-                          [terminal] acc: ListBuilder<Slot>): ListBuilder<Slot>
+                          [terminal] acc): ListBuilder<Slot>
   ret match(ss)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => renameSlotListB(l.next, rn,
@@ -813,7 +813,7 @@ fun [tail] gsFormalsOf(ss: Chain<PStmt>,
                                       (g2) => g2.genName)))
       (o: PStmt)  => gsFormalsOf(l.next, acc)
 
-fun stmtKind(st: PStmt): String
+fun stmtKind(st): String
   ret match(st)
     (f: PsFun)   => "fun"
     (l: PsLet)   => "let"
@@ -853,7 +853,7 @@ fun refLess(a: GRef, b: GRef): Bool
 
 # Python's sort key uses `as_unique_id_str() or ""` — the EMPTY string for
 # an id-less spec (mangledName's "unknown" belongs to naming, not sorting).
-fun refUid(sp: Spec): String
+fun refUid(sp): String
   ret uid(sp)
 
 # Lexicographic list-of-strings compare (Python tuple <).
@@ -868,7 +868,7 @@ fun [tail] strsLess(a: Chain<String>, b: Chain<String>): Bool
 
 # The deep spelling is the serialised TypeId — ONE identity spelling, defined
 # in ast/identity.yafl and mirrored by Python's pyast/typespec/identity.py.
-fun deepId(sp: Spec): String
+fun deepId(sp): String
   ret tiSerialise(spellingOf(sp))
 
 # The specialisations emitted, in order, and the keys already emitted. The
@@ -896,9 +896,9 @@ fun [tail] cssForStmt(rs: Chain<GRef>, st: PStmt,
       : cssOne(l.value, st, formals, keys, acc)
         |> (st2) => cssForStmt(l.next, st, formals, st2.csKeys, st2.csOut)
 
-fun cssOne(ref: GRef, st: PStmt,
-           formals: Dict<String, List<String>>, keys: Set<String>,
-           acc: List<PStmt>): CssState
+fun cssOne(ref: GRef, st,
+           formals, keys: Set<String>,
+           acc): CssState
   let key = mangledName(ref.grName, ref.grArgs) + "\t" + stmtKind(st)
   if contains(keys, key)
     ret CssState(acc, keys)
@@ -918,7 +918,7 @@ fun replaceConcreteReferences(statements: List<PStmt>,
                               refs: GRefsIx): List<PStmt>
   ret rcrStmts(chain(statements), refs, List())
 
-fun rcrStmts(ss: Chain<PStmt>, refs: GRefsIx,
+fun rcrStmts(ss, refs: GRefsIx,
                     acc: List<PStmt>): List<PStmt>
   ret build(rcrStmtsB(ss, refs, builderFrom(acc)))
 
@@ -954,7 +954,7 @@ fun ixAdd(acc: Dict<String, List<GRef>>, g2: GRef): Dict<String, List<GRef>>
     (bucket: List<GRef>) => put(acc, refKey(g2), prepend(g2, bucket))
     ()                    => put(acc, refKey(g2), list1(g2))
 
-fun inRefs(ix: Dict<String, List<GRef>>, name: String,
+fun inRefs(ix: Dict<String, List<GRef>>, name,
            args: List<Spec>): Bool
   ret !isEmpty(args) && isConcreteTypeArgs(args)
       && inRefsHit(ix, name, args, mangledName(name, args))
@@ -1005,7 +1005,7 @@ fun rcrNewEnum(ne: PeNewEnum, refs: GRefsIx): PExpr
                 fas, List(), ne.penewLine)
     : PeNewEnum(ne.rootName, ne.leafName, fas, tps, ne.penewLine)
 
-fun rcrSpec(sp: Spec, refs: GRefsIx): Spec
+fun rcrSpec(sp, refs: GRefsIx): Spec
   ret match(sp)
     # CHILDREN FIRST, exactly Python's rw.rewrite order: the redirect callback
     # fires on the REBUILT node, so the table lookup sees params that already
@@ -1039,7 +1039,7 @@ fun rcrSpec(sp: Spec, refs: GRefsIx): Spec
 fun mangleLeaves(leaves: List<String>, args: List<Spec>): List<String>
   ret mlLoop(chain(leaves), args, List())
 
-fun mlLoop(ls: Chain<String>, args: List<Spec>,
+fun mlLoop(ls, args: List<Spec>,
                   acc: List<String>): List<String>
   ret build(mlLoopB(ls, args, builderFrom(acc)))
 
@@ -1053,7 +1053,7 @@ fun [tail] mlLoopB(ls: Chain<String>, args: List<Spec>,
 fun rcrSpecs(ss: List<Spec>, refs: GRefsIx): List<Spec>
   ret rcrSpecLoop(chain(ss), refs, List())
 
-fun rcrSpecLoop(ss: Chain<Spec>, refs: GRefsIx,
+fun rcrSpecLoop(ss, refs: GRefsIx,
                        acc: List<Spec>): List<Spec>
   ret build(rcrSpecLoopB(ss, refs, builderFrom(acc)))
 
@@ -1075,14 +1075,14 @@ fun rcrEntries(es: Chain<SEntry>, refs: GRefsIx,
   ret build(rcrEntriesB(es, refs, builderFrom(acc)))
 
 fun [tail] rcrEntriesB(es: Chain<SEntry>, refs: GRefsIx,
-                      [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
+                      [terminal] acc): ListBuilder<SEntry>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rcrEntriesB(l.next, refs,
         push(acc, SEntry(l.value.seName, rcrSpecOpt(l.value.seType, refs),
                   rcrExprOpt(l.value.seDefault, refs))))
 
-fun rcrStmt(st: PStmt, refs: GRefsIx): PStmt
+fun rcrStmt(st, refs: GRefsIx): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rcrStmt(f.fParams, refs),
                          rcrExprOpt(f.fBody, refs), rcrSpecOpt(f.fRet, refs),
@@ -1136,7 +1136,7 @@ fun rcrSpecsOpt(ss: List<Spec>|None, refs: GRefsIx): List<Spec>|None
 fun rcrFieldArgs(fas: List<PFieldArg>, refs: GRefsIx): List<PFieldArg>
   ret map(fas, (fa) => PFieldArg(fa.faName, rcrExpr(fa.faValue, refs)))
 
-fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr
+fun rcrExpr(x, refs: GRefsIx): PExpr
   ret match(x)
     # penTrait is a SPEC field: Python's search_and_replace rewrites
     # resolved_trait_scope with the same redirect (access.py:375), so a
@@ -1193,14 +1193,14 @@ fun rcrTupEnts(es: Chain<PTupEnt>, refs: GRefsIx,
   ret build(rcrTupEntsB(es, refs, builderFrom(acc)))
 
 fun [tail] rcrTupEntsB(es: Chain<PTupEnt>, refs: GRefsIx,
-                      [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
+                      [terminal] acc): ListBuilder<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rcrTupEntsB(l.next, refs,
         push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                   rcrExpr(l.value.tupValue, refs))))
 
-fun rcrArms(as2: Chain<PArm>, refs: GRefsIx,
+fun rcrArms(as2, refs: GRefsIx,
                    acc: List<PArm>): List<PArm>
   ret build(rcrArmsB(as2, refs, builderFrom(acc)))
 
@@ -1216,7 +1216,7 @@ fun [tail] rcrArmsB(as2: Chain<PArm>, refs: GRefsIx,
 fun pruneUnusedGenerics(statements: List<PStmt>): List<PStmt>
   ret pugLoop(chain(statements), List())
 
-fun pugLoop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun pugLoop(ss, acc: List<PStmt>): List<PStmt>
   ret build(pugLoopB(ss, builderFrom(acc)))
 
 fun [tail] pugLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
@@ -1231,7 +1231,7 @@ fun finalizeSpecializedEnumSpecs(statements: List<PStmt>,
                                  specialized: List<String>): List<PStmt>
   ret fseLoop(chain(statements), specialized, List())
 
-fun fseLoop(ss: Chain<PStmt>, specialized: List<String>,
+fun fseLoop(ss, specialized: List<String>,
                    acc: List<PStmt>): List<PStmt>
   ret build(fseLoopB(ss, specialized, builderFrom(acc)))
 
@@ -1259,7 +1259,7 @@ fun isRootEnum(e2: PsEnum): Bool
 class [final] GProvider(gpLet: PsLet, gpPattern: SClass)
 
 fun genericInstanceProviders(statements: List<PStmt>,
-                             r: Resolver): List<GProvider>
+                             r): List<GProvider>
   ret gipLoop(chain(statements), r, List())
 
 fun [tail] gipLoop(ss: Chain<PStmt>, r: Resolver,
@@ -1272,8 +1272,8 @@ fun [tail] gipLoop(ss: Chain<PStmt>, r: Resolver,
         : gipLoop(l.next, r, acc)
       (o: PStmt)    => gipLoop(l.next, r, acc)
 
-fun providerPatterns(let2: PsLet, r: Resolver,
-                     acc: List<GProvider>): List<GProvider>
+fun providerPatterns(let2, r,
+                     acc): List<GProvider>
   ret match(let2.lType)
     (dt: Spec) => match(dt)
       (dc: SClass) => match(soleItem(findType(r, dc.scName)))
@@ -1289,7 +1289,7 @@ fun providerPatterns(let2: PsLet, r: Resolver,
       (o2: Spec)   => acc
     ()         => acc
 
-fun patternLoop(ps: Chain<Spec>, remap: List<Binding>, let2: PsLet,
+fun patternLoop(ps, remap: List<Binding>, let2,
                        acc: List<GProvider>): List<GProvider>
   ret build(patternLoopB(ps, remap, let2, builderFrom(acc)))
 
@@ -1312,7 +1312,7 @@ fun [tail] patternLoopB(ps: Chain<Spec>, remap: List<Binding>, let2: PsLet,
 # output is gathered into the ref set and SORTED before anything is generated
 # from it, so the order constraints are discovered in is not observable. The
 # first spelling still wins, which is what the dedup decides.
-fun addConstraintOnce(acc: List<Spec>, sp: Spec): List<Spec>
+fun addConstraintOnce(acc, sp): List<Spec>
   ret hasConstraint(chain(acc), spellingOf(sp)) ? acc : prepend(sp, acc)
 
 fun [tail] hasConstraint(cs: Chain<Spec>, id2: TypeId): Bool
@@ -1326,7 +1326,7 @@ fun [tail] hasConstraint(cs: Chain<Spec>, id2: TypeId): Bool
 # (top-level and nested method wheres alike) — Python walks with
 # search_and_replace, so this fold visits every statement and expression.
 fun collectConcreteConstraints(statements: List<PStmt>,
-                               acc: List<Spec>): List<Spec>
+                               acc): List<Spec>
   ret cccStmts(chain(statements), acc)
 
 fun [tail] cccStmts(ss: Chain<PStmt>, acc: List<Spec>): List<Spec>
@@ -1334,7 +1334,7 @@ fun [tail] cccStmts(ss: Chain<PStmt>, acc: List<Spec>): List<Spec>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => cccStmts(l.next, cccStmt(l.value, acc))
 
-fun cccStmt(st: PStmt, acc: List<Spec>): List<Spec>
+fun cccStmt(st, acc): List<Spec>
   ret match(st)
     (f: PsFun)   => cccWheres(chain(f.fWheres),
                               cccExprOpt(f.fBody,
@@ -1355,7 +1355,7 @@ fun cccStmt(st: PStmt, acc: List<Spec>): List<Spec>
                                       cccExpr(i.ifCond, acc)))
     (o: PStmt)   => acc
 
-fun cccExpr(x: PExpr, acc: List<Spec>): List<Spec>
+fun cccExpr(x, acc): List<Spec>
   ret match(x)
     # An AMBIENT instance member call records its demand on the use, not in
     # any `where` clause: the solved scope committed by compileName is a
@@ -1382,24 +1382,24 @@ fun cccExpr(x: PExpr, acc: List<Spec>): List<Spec>
     (o: PeLowered) => acc
     (o: PeNewEnum) => acc
 
-fun cccExprOpt(x: PExpr|None, acc: List<Spec>): List<Spec>
+fun cccExprOpt(x: PExpr|None, acc): List<Spec>
   ret match(x)
     (e2: PExpr) => cccExpr(e2, acc)
     ()          => acc
 
-fun cccTraitScope(ts: Spec|None, acc: List<Spec>): List<Spec>
+fun cccTraitScope(ts: Spec|None, acc): List<Spec>
   ret match(ts)
     (t2: Spec) => match(t2)
       (c: SClass) => isConcrete(c) ? addConstraintOnce(acc, t2) : acc
       (o: Spec)   => acc
     ()         => acc
 
-fun [tail] cccTupEnts(es: Chain<PTupEnt>, acc: List<Spec>): List<Spec>
+fun [tail] cccTupEnts(es: Chain<PTupEnt>, acc): List<Spec>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => cccTupEnts(l.next, cccExpr(l.value.tupValue, acc))
 
-fun [tail] cccArms(as2: Chain<PArm>, acc: List<Spec>): List<Spec>
+fun [tail] cccArms(as2: Chain<PArm>, acc): List<Spec>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => cccArms(l.next,
@@ -1426,7 +1426,7 @@ fun [tail] monoLookup(rs: Chain<GRef>, mangled: String): GRef|None
                                                   : monoLookup(l.next, mangled)
 
 # Undo mangling structurally: Wrap$generic$Leaf → Wrap<Leaf>, recursively.
-fun specFromMangled(sp: Spec, mono: List<GRef>): Spec
+fun specFromMangled(sp, mono: List<GRef>): Spec
   ret match(sp)
     (c: SClass) => isEmpty(c.scParams)
       ? sfmBare(c, mono)
@@ -1442,21 +1442,21 @@ fun specFromMangled(sp: Spec, mono: List<GRef>): Spec
               sfmList(chain(e2.seParams), mono, List()), e2.seLine)
     (o: Spec)   => sp
 
-fun sfmEnumBare(e2: SEnum, mono: List<GRef>): Spec
+fun sfmEnumBare(e2, mono: List<GRef>): Spec
   ret match(monoLookup(chain(mono), e2.seRoot))
     (g2: GRef) => SEnum(g2.grName, e2.seValidLeaves, e2.seAllLeaves,
                         sfmList(chain(g2.grArgs), mono, List()),
                         e2.seLine)
     ()         => e2
 
-fun sfmBare(c: SClass, mono: List<GRef>): Spec
+fun sfmBare(c, mono: List<GRef>): Spec
   ret match(monoLookup(chain(mono), c.scName))
     (g2: GRef) => SClass(g2.grName,
                          sfmList(chain(g2.grArgs), mono, List()),
                          c.scLine)
     ()         => c
 
-fun sfmList(ss: Chain<Spec>, mono: List<GRef>,
+fun sfmList(ss, mono: List<GRef>,
                    acc: List<Spec>): List<Spec>
   ret build(sfmListB(ss, mono, builderFrom(acc)))
 
@@ -1468,7 +1468,7 @@ fun [tail] sfmListB(ss: Chain<Spec>, mono: List<GRef>,
                                push(acc, specFromMangled(l.value, mono)))
 
 # Inverse: structural Wrap<Leaf,Int> → bare Wrap$generic$Leaf_Int.
-fun mangledFromSpec(sp: Spec): Spec
+fun mangledFromSpec(sp): Spec
   ret match(sp)
     (c: SClass) => isEmpty(c.scParams)
       ? sp
@@ -1477,7 +1477,7 @@ fun mangledFromSpec(sp: Spec): Spec
                List(), c.scLine)
     (o: Spec)   => sp
 
-fun mfsList(ss: Chain<Spec>, acc: List<Spec>): List<Spec>
+fun mfsList(ss, acc: List<Spec>): List<Spec>
   ret build(mfsListB(ss, builderFrom(acc)))
 
 fun [tail] mfsListB(ss: Chain<Spec>, [terminal] acc: ListBuilder<Spec>): ListBuilder<Spec>
@@ -1487,7 +1487,7 @@ fun [tail] mfsListB(ss: Chain<Spec>, [terminal] acc: ListBuilder<Spec>): ListBui
 
 # The concrete interfaces implemented by NON-generic [trait] instances.
 fun concreteInstanceInterfaces(statements: List<PStmt>,
-                               r: Resolver): List<Spec>
+                               r): List<Spec>
   ret build(ciiLoop(chain(statements), r, builder()))
 
 # One builder threaded through all three levels: the statement walk, the
@@ -1503,8 +1503,8 @@ fun [tail] ciiLoop(ss: Chain<PStmt>, r: Resolver,
         : ciiLoop(l.next, r, acc)
       (o: PStmt)    => ciiLoop(l.next, r, acc)
 
-fun instanceIfaces(let2: PsLet, r: Resolver,
-                   [terminal] acc: ListBuilder<Spec>): ListBuilder<Spec>
+fun instanceIfaces(let2: PsLet, r,
+                   [terminal] acc): ListBuilder<Spec>
   ret match(let2.lType)
     (dt: Spec) => match(dt)
       (dc: SClass) => match(soleItem(findType(r, dc.scName)))
@@ -1534,7 +1534,7 @@ fun [tail] ifaceLoop(ps: Chain<Spec>, remap: List<Binding>,
 
 # Mono-time where-discharge: strict positional bind_from_constraint_match
 # against re-inflated concrete instance interfaces.
-fun bindWhereParams(let2: PsLet, mapping: List<Binding>,
+fun bindWhereParams(let2: PsLet, mapping,
                     instanceIfaces2: List<Spec>,
                     mono: List<GRef>): List<Binding>
   ret bwpWheres(chain(let2.lWheres), let2, mapping, instanceIfaces2, mono)
@@ -1556,7 +1556,7 @@ fun unboundGens(gs: Chain<PGen>, mapping: List<Binding>,
   ret build(unboundGensB(gs, mapping, builderFrom(acc)))
 
 fun [tail] unboundGensB(gs: Chain<PGen>, mapping: List<Binding>,
-                       [terminal] acc: ListBuilder<String>): ListBuilder<String>
+                       [terminal] acc): ListBuilder<String>
   ret match(gs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(bindingOf(mapping, l.value.genName))
@@ -1564,7 +1564,7 @@ fun [tail] unboundGensB(gs: Chain<PGen>, mapping: List<Binding>,
       ()        => unboundGensB(l.next, mapping,
                                push(acc, l.value.genName))
 
-fun bwpOne(wc: Spec, mapping: List<Binding>, targets: List<String>,
+fun bwpOne(wc, mapping, targets: List<String>,
            ifaces: List<Spec>, mono: List<GRef>): List<Binding>
   ret match(substitute(wc, mapping))
     (sub: SClass) => bwpIfaces(chain(ifaces), sub, mapping, targets, mono)
@@ -1609,8 +1609,8 @@ fun [tail] girConstraints(cs: Chain<Spec>, p: GProvider, mono: List<GRef>,
         : girConstraints(l.next, p, mono, ifaces, acc)
       (o: Spec)     => girConstraints(l.next, p, mono, ifaces, acc)
 
-fun girOne(p: GProvider, con: SClass, mono: List<GRef>, ifaces: List<Spec>,
-           acc: List<GRef>): List<GRef>
+fun girOne(p: GProvider, con, mono: List<GRef>, ifaces: List<Spec>,
+           acc): List<GRef>
   let letGens = p.gpLet.lGens
   let names = genNames(chain(letGens), List())
   ret match(specFromMangled(con, mono))
@@ -1622,8 +1622,8 @@ fun girOne(p: GProvider, con: SClass, mono: List<GRef>, ifaces: List<Spec>,
     (o: Spec)          => acc
 
 fun girBound(p: GProvider, letGens: List<PGen>, names: List<String>,
-             mapping0: List<Binding>, ifaces: List<Spec>, mono: List<GRef>,
-             acc: List<GRef>): List<GRef>
+             mapping0, ifaces: List<Spec>, mono: List<GRef>,
+             acc): List<GRef>
   let unbound = unboundGens(chain(letGens), mapping0, List())
   let mapping = !isEmpty(unbound) && !isEmpty(mapping0)
                 && allUnionOnly(chain(unbound), p.gpPattern)
@@ -1648,7 +1648,7 @@ fun mangledArgs(gs: Chain<PGen>, mapping: List<Binding>,
   ret build(mangledArgsB(gs, mapping, builderFrom(acc)))
 
 fun [tail] mangledArgsB(gs: Chain<PGen>, mapping: List<Binding>,
-                       [terminal] acc: ListBuilder<Spec>): ListBuilder<Spec>
+                       [terminal] acc): ListBuilder<Spec>
   ret match(gs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(bindingOf(mapping, l.value.genName))
@@ -1689,12 +1689,12 @@ fun [tail] addNamesAllB(ns: Chain<String>, [terminal] out: ListBuilder<String>,
       : addNamesAllB(l.next, push(out, l.value),
                      add(seen, l.value))
 
-fun convertGenericsIterative(statements: List<PStmt>): GIter
+fun convertGenericsIterative(statements): GIter
   ret monoRound(statements, 0, List(), List(), List())
 
-fun [tail] monoRound(statements: List<PStmt>, round2: Int,
-                     allSpecEnums: List<String>, seenCons: List<Spec>,
-                     seenMono: List<GRef>): GIter
+fun [tail] monoRound(statements, round2,
+                     allSpecEnums: List<String>, seenCons,
+                     seenMono): GIter
   if round2 >= 64                                # _MAX_MONO_ROUNDS
     ret monoErrors(statements, seenMono)
   # Step 1: find all concrete instantiations.
@@ -1751,7 +1751,7 @@ fun withExtraRefs(refs: GRefs, specialized: List<PStmt>,
                                           List())),
                        refs.gdTypes))
 
-fun existingOnly(rs: Chain<GRef>, existing: List<String>,
+fun existingOnly(rs, existing: List<String>,
                         acc: List<GRef>): List<GRef>
   ret build(existingOnlyB(rs, existing, builderFrom(acc)))
 
@@ -1763,7 +1763,7 @@ fun [tail] existingOnlyB(rs: Chain<GRef>, existing: List<String>,
       ? existingOnlyB(l.next, existing, push(acc, l.value))
       : existingOnlyB(l.next, existing, acc)
 
-fun allStmtNames(ss: Chain<PStmt>, acc: List<String>): List<String>
+fun allStmtNames(ss, acc: List<String>): List<String>
   ret build(allStmtNamesB(ss, builderFrom(acc)))
 
 fun [tail] allStmtNamesB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
@@ -1771,10 +1771,10 @@ fun [tail] allStmtNamesB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String>):
     (nil: ChainEnd) => acc
     (l: ChainLink)  => allStmtNamesB(l.next, push(acc, stmtName(l.value)))
 
-fun enumNamesOf(ss: Chain<PStmt>): List<String>
+fun enumNamesOf(ss): List<String>
   ret enumNamesLoop(ss, List())
 
-fun enumNamesLoop(ss: Chain<PStmt>, acc: List<String>): List<String>
+fun enumNamesLoop(ss, acc: List<String>): List<String>
   ret build(enumNamesLoopB(ss, builderFrom(acc)))
 
 fun [tail] enumNamesLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
@@ -1786,7 +1786,7 @@ fun [tail] enumNamesLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<String>)
 
 # Loop exhausted: blame the generics with runaway per-name instantiation
 # counts, at their declarations; else one generic message.
-fun monoErrors(statements: List<PStmt>, seenMono: List<GRef>): GIter
+fun monoErrors(statements, seenMono: List<GRef>): GIter
   let offenders = sort(offenderNames(seenMono))
   ret isEmpty(offenders)
     ? GIter(statements, add(Set(),PErr(PLine("$generics", 1, 1),
@@ -1810,7 +1810,7 @@ fun [tail] offNamesLoop(rs: Chain<GRef>, all: List<GRef>,
       ? offNamesLoop(l.next, all, out)          # _MAX_MONO_ROUNDS // 2
       : offNamesLoop(l.next, all, add(out, l.value.grName))
 
-fun [tail] countRefsFor(rs: Chain<GRef>, name: String, n: Int): Int
+fun [tail] countRefsFor(rs: Chain<GRef>, name: String, n): Int
   ret match(rs)
     (nil: ChainEnd) => n
     (l: ChainLink)  => countRefsFor(l.next, name,
@@ -1826,12 +1826,12 @@ fun [tail] offenderErrs(ns: Chain<String>, statements: List<PStmt>,
                                      countRefsFor(chain(seenMono), l.value,
                                                   0)))))
 
-fun offenderMsg(name: String, count: Int): String
+fun offenderMsg(name, count: Int): String
   ret "polymorphic recursion: `" + bareOfUnique(name) + "` is instantiated at ever-deeper type arguments (" + show(count) + " distinct instantiations without stabilising) — a recursive call must use the function's own type parameters, not a compound of them (e.g. Wrap<T>)"
 
 # Python's by_name dict: later statements with the same name overwrite, so the
 # LAST match wins.
-fun offenderLine(ss: Chain<PStmt>, name: String): PLine
+fun offenderLine(ss, name): PLine
   ret offLineLoop(ss, name, PLine("$generics", 1, 1))
 
 fun [tail] offLineLoop(ss: Chain<PStmt>, name: String, best: PLine): PLine
@@ -1847,11 +1847,11 @@ fun [tail] offLineLoop(ss: Chain<PStmt>, name: String, best: PLine): PLine
 # concrete [trait] instance whose witness class implements the required trait,
 # so codegen sees a normal method call.
 
-fun resolveTraitReferences(statements: List<PStmt>): List<PStmt>
+fun resolveTraitReferences(statements): List<PStmt>
   let r = rootResolver(statements)
   ret rtrStmts(chain(statements), r, traitLets(r), List())
 
-fun rtrStmts(ss: Chain<PStmt>, r: Resolver, traits: List<PStmt>,
+fun rtrStmts(ss, r, traits: List<PStmt>,
                     acc: List<PStmt>): List<PStmt>
   ret build(rtrStmtsB(ss, r, traits, builderFrom(acc)))
 
@@ -1862,7 +1862,7 @@ fun [tail] rtrStmtsB(ss: Chain<PStmt>, r: Resolver, traits: List<PStmt>,
     (l: ChainLink)  => rtrStmtsB(l.next, r, traits,
                                 push(acc, rtrStmt(l.value, r, traits)))
 
-fun rtrStmt(st: PStmt, r: Resolver, traits: List<PStmt>): PStmt
+fun rtrStmt(st, r, traits: List<PStmt>): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens,
                          rtrStmt(f.fParams, r, traits),
@@ -1897,12 +1897,12 @@ fun rtrStmt(st: PStmt, r: Resolver, traits: List<PStmt>): PStmt
                          i.psifLine)
     (o: PStmt)   => st
 
-fun rtrExprOpt(x: PExpr|None, r: Resolver, traits: List<PStmt>): PExpr|None
+fun rtrExprOpt(x: PExpr|None, r, traits: List<PStmt>): PExpr|None
   ret match(x)
     (e2: PExpr) => rtrExpr(e2, r, traits)
     ()          => None
 
-fun rtrExpr(x: PExpr, r: Resolver, traits: List<PStmt>): PExpr
+fun rtrExpr(x, r, traits: List<PStmt>): PExpr
   ret match(x)
     (nm: PeName)   => redirectName(nm, r, traits)
     (d: PeDot)     => PeDot(rtrExpr(d.base, r, traits), d.member, d.pedLine)
@@ -1945,19 +1945,19 @@ fun rtrExpr(x: PExpr, r: Resolver, traits: List<PStmt>): PExpr
     (o: PeLowered) => x
     (o: PeNewEnum) => x
 
-fun rtrTupEnts(es: Chain<PTupEnt>, r: Resolver, traits: List<PStmt>,
+fun rtrTupEnts(es: Chain<PTupEnt>, r, traits: List<PStmt>,
                       acc: List<PTupEnt>): List<PTupEnt>
   ret build(rtrTupEntsB(es, r, traits, builderFrom(acc)))
 
-fun [tail] rtrTupEntsB(es: Chain<PTupEnt>, r: Resolver, traits: List<PStmt>,
-                      [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
+fun [tail] rtrTupEntsB(es: Chain<PTupEnt>, r, traits: List<PStmt>,
+                      [terminal] acc): ListBuilder<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rtrTupEntsB(l.next, r, traits,
         push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                   rtrExpr(l.value.tupValue, r, traits))))
 
-fun rtrArms(as2: Chain<PArm>, r: Resolver, traits: List<PStmt>,
+fun rtrArms(as2, r, traits: List<PStmt>,
                    acc: List<PArm>): List<PArm>
   ret build(rtrArmsB(as2, r, traits, builderFrom(acc)))
 
@@ -1970,19 +1970,19 @@ fun [tail] rtrArmsB(as2: Chain<PArm>, r: Resolver, traits: List<PStmt>,
 
 # Redirect one name: use the trait_scope recorded during compilation if
 # available, otherwise derive it from a TRAIT-scoped find.
-fun redirectName(nm: PeName, r: Resolver, traits: List<PStmt>): PExpr
+fun redirectName(nm, r, traits: List<PStmt>): PExpr
   ret match(traitSpecFor(nm, r))
     (ts: SClass) => redirectWith(nm, ts, r, traits)
     ()           => nm
 
-fun traitSpecFor(nm: PeName, r: Resolver): SClass|None
+fun traitSpecFor(nm: PeName, r): SClass|None
   ret match(nm.penTrait)
     (sp: Spec) => match(sp)
       (c: SClass) => c
       (o: Spec)   => None
     ()         => derivedTraitScope(nm, r)
 
-fun derivedTraitScope(nm: PeName, r: Resolver): SClass|None
+fun derivedTraitScope(nm: PeName, r): SClass|None
   ret match(soleItem(findData(r, nm.refName)))
     (f: Found) => match(f.fScope)
       (t2: ScTrait) => match(f.fTraitScope)
@@ -1993,7 +1993,7 @@ fun derivedTraitScope(nm: PeName, r: Resolver): SClass|None
       (o2: RScope)  => None
     ()         => None
 
-fun redirectWith(nm: PeName, ts: SClass, r: Resolver,
+fun redirectWith(nm, ts: SClass, r,
                  traits: List<PStmt>): PExpr
   ret match(soleLetOf(traitProviders(chain(traits), ts, r, List())))
     (provider: PsLet) => redirectVia(nm, ts, provider, r)
@@ -2011,7 +2011,7 @@ fun [tail] traitProviderCount(ls: Chain<PStmt>, ts: SClass, r: Resolver,
         : traitProviderCount(l.next, ts, r, n)
       (o: PStmt)    => traitProviderCount(l.next, ts, r, n)
 
-fun traitProviders(ls: Chain<PStmt>, ts: SClass, r: Resolver,
+fun traitProviders(ls, ts: SClass, r,
                           acc: List<PsLet>): List<PsLet>
   ret build(traitProvidersB(ls, ts, r, builderFrom(acc)))
 
@@ -2025,7 +2025,7 @@ fun [tail] traitProvidersB(ls: Chain<PStmt>, ts: SClass, r: Resolver,
         : traitProvidersB(l.next, ts, r, acc)
       (o: PStmt)    => traitProvidersB(l.next, ts, r, acc)
 
-fun implementsTrait(tr: PsLet, ts: SClass, r: Resolver): Bool
+fun implementsTrait(tr: PsLet, ts: SClass, r): Bool
   ret match(tr.lType)
     (dt: Spec) => match(dt)
       (dc: SClass) => match(soleItem(findType(r, dc.scName)))
@@ -2043,7 +2043,7 @@ fun implementsTrait(tr: PsLet, ts: SClass, r: Resolver): Bool
 # A monomorphised witness declares its parents with MANGLED inner names
 # (Sized<List$generic$Int>) while the demanded scope is structural
 # (Sized<List<Int>>): compare against both spellings.
-fun mangledSpecList(ss: Chain<Spec>, acc: List<Spec>): List<Spec>
+fun mangledSpecList(ss, acc: List<Spec>): List<Spec>
   ret build(mangledSpecListB(ss, builderFrom(acc)))
 
 fun [tail] mangledSpecListB(ss: Chain<Spec>, [terminal] acc: ListBuilder<Spec>): ListBuilder<Spec>
@@ -2091,8 +2091,8 @@ fun redirectVia(nm: PeName, ts: SClass, provider: PsLet,
       (o2: Spec)   => nm
     ()         => nm
 
-fun redirectMethod(nm: PeName, ts: SClass, provider: PsLet, cls: PsClass,
-                   r: Resolver): PExpr
+fun redirectMethod(nm, ts: SClass, provider: PsLet, cls: PsClass,
+                   r): PExpr
   let mds0 = classFindData(cls, r, simpleName(nm.refName))
   if isEmpty(mds0)
     ret nm
@@ -2108,24 +2108,24 @@ fun redirectMethod(nm: PeName, ts: SClass, provider: PsLet, cls: PsClass,
 
 # Multiple overloads — disambiguate by comparing the concrete type of the
 # interface method (looked up by exact hash) against the class methods.
-fun disambiguateMethods(mds: List<Found>, nm: PeName, ts: SClass,
-                        r: Resolver): List<Found>
+fun disambiguateMethods(mds, nm: PeName, ts: SClass,
+                        r): List<Found>
   ret match(soleItem(findType(r, ts.scName)))
     (f: Found) => match(f.fStmt)
       (icls: PsClass) => disambiguateVia(mds, nm, ts, icls, r)
       (o: PStmt)      => mds
     ()         => mds
 
-fun disambiguateVia(mds: List<Found>, nm: PeName, ts: SClass, icls: PsClass,
-                    r: Resolver): List<Found>
+fun disambiguateVia(mds, nm: PeName, ts: SClass, icls: PsClass,
+                    r): List<Found>
   ret match(soleFoundOf(classFindData(icls, r, nm.refName)))
     (imd: Found) => match(imd.fStmt)
       (ifn: PsFun) => disambiguateByType(mds, ts, icls, ifn, r)
       (o: PStmt)   => mds
     ()           => mds
 
-fun disambiguateByType(mds: List<Found>, ts: SClass, icls: PsClass,
-                       ifn: PsFun, r: Resolver): List<Found>
+fun disambiguateByType(mds, ts: SClass, icls: PsClass,
+                       ifn: PsFun, r): List<Found>
   let ifaceType0 = funType(ifn)
   let ifaceType = !isEmpty(icls.cGens) && !isEmpty(ts.scParams)
     ? substitute(ifaceType0, paramMapping(icls.cGens, ts.scParams))
@@ -2136,7 +2136,7 @@ fun disambiguateByType(mds: List<Found>, ts: SClass, icls: PsClass,
     ()           => false
   ret single ? matching : mds
 
-fun matchingByType(ms: Chain<Found>, ifaceType: Spec, r: Resolver,
+fun matchingByType(ms, ifaceType: Spec, r,
                           acc: List<Found>): List<Found>
   ret build(matchingByTypeB(ms, ifaceType, r, builderFrom(acc)))
 
@@ -2181,7 +2181,7 @@ fun [tail] collectCanonical(ss: Chain<PStmt>, acc: Canon): Canon
         : collectCanonical(l.next, acc)
       (o: PStmt)   => collectCanonical(l.next, acc)
 
-fun canonAdd(acc: Canon, e2: PsEnum): Canon
+fun canonAdd(acc, e2: PsEnum): Canon
   ret match(e2.eSpec)
     (sp: Spec) => match(sp)
       # FIRST spec for a root wins, as the scan-then-append did.
@@ -2213,7 +2213,7 @@ fun refreshedEnum(fe: SEnum, spec: SEnum): Spec
   ret SEnum(fe.seRoot, fe.seValidLeaves, spec.seAllLeaves, fe.seParams,
             fe.seLine)
 
-fun rfrStmts(ss: Chain<PStmt>, c: Canon,
+fun rfrStmts(ss, c: Canon,
                     acc: List<PStmt>): List<PStmt>
   ret build(rfrStmtsB(ss, c, builderFrom(acc)))
 
@@ -2223,7 +2223,7 @@ fun [tail] rfrStmtsB(ss: Chain<PStmt>, c: Canon,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rfrStmtsB(l.next, c, push(acc, rfrStmt(l.value, c)))
 
-fun rfrStmt(st: PStmt, c: Canon): PStmt
+fun rfrStmt(st, c: Canon): PStmt
   ret match(st)
     (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rfrStmt(f.fParams, c),
                          rfrExprOpt(f.fBody, c), rfrSpecOpt(f.fRet, c),
@@ -2266,7 +2266,7 @@ fun rfrExprOpt(x: PExpr|None, c: Canon): PExpr|None
     (e2: PExpr) => rfrExpr(e2, c)
     ()          => None
 
-fun rfrExpr(x: PExpr, c: Canon): PExpr
+fun rfrExpr(x, c: Canon): PExpr
   ret match(x)
     (nm: PeName)   => PeName(nm.refName, rfrSpecList(nm.refTypeParams, c),
                              nm.penLine, rfrSpecOpt(nm.penTrait, c))
@@ -2314,14 +2314,14 @@ fun rfrTupEnts(es: Chain<PTupEnt>, c: Canon,
   ret build(rfrTupEntsB(es, c, builderFrom(acc)))
 
 fun [tail] rfrTupEntsB(es: Chain<PTupEnt>, c: Canon,
-                      [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
+                      [terminal] acc): ListBuilder<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rfrTupEntsB(l.next, c,
         push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                   rfrExpr(l.value.tupValue, c))))
 
-fun rfrArms(as2: Chain<PArm>, c: Canon, acc: List<PArm>): List<PArm>
+fun rfrArms(as2, c: Canon, acc: List<PArm>): List<PArm>
   ret build(rfrArmsB(as2, c, builderFrom(acc)))
 
 fun [tail] rfrArmsB(as2: Chain<PArm>, c: Canon, [terminal] acc: ListBuilder<PArm>): ListBuilder<PArm>
@@ -2343,7 +2343,7 @@ fun rfrSpecsOpt(ss: List<Spec>|None, c: Canon): List<Spec>|None
 fun rfrSpecList(ts: List<Spec>, c: Canon): List<Spec>
   ret rfrSpecLoop(chain(ts), c, List())
 
-fun rfrSpecLoop(ts: Chain<Spec>, c: Canon,
+fun rfrSpecLoop(ts, c: Canon,
                        acc: List<Spec>): List<Spec>
   ret build(rfrSpecLoopB(ts, c, builderFrom(acc)))
 
@@ -2356,7 +2356,7 @@ fun [tail] rfrSpecLoopB(ts: Chain<Spec>, c: Canon,
 
 # Children first, canonical refresh at the SEnum node itself. Never recurse
 # into seAllFields — EnumSpec.search_and_replace deliberately skips them.
-fun rfrSpec(sp: Spec, c: Canon): Spec
+fun rfrSpec(sp, c: Canon): Spec
   ret match(sp)
     (e2: SEnum)        => rfrEnum(e2, c)
     (cl: SClass)       => SClass(cl.scName, rfrSpecList(cl.scParams, c),
@@ -2379,7 +2379,7 @@ fun rfrEntries(es: Chain<SEntry>, c: Canon,
   ret build(rfrEntriesB(es, c, builderFrom(acc)))
 
 fun [tail] rfrEntriesB(es: Chain<SEntry>, c: Canon,
-                      [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
+                      [terminal] acc): ListBuilder<SEntry>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rfrEntriesB(l.next, c,
@@ -2414,7 +2414,7 @@ fun rfrEnum(e2: SEnum, c: Canon): Spec
 
 class [final] UtAcc(utSeen: Set<String>, utErrs: Set<PErr>)
 
-fun reportUndischargedTraits(statements: List<PStmt>): Set<PErr>
+fun reportUndischargedTraits(statements): Set<PErr>
   let r = rootResolver(statements)
   ret utTop(chain(statements), r, traitLets(r),
             UtAcc(Set(), Set())).utErrs
@@ -2431,10 +2431,10 @@ fun [tail] utTop(ss: Chain<PStmt>, r: Resolver, traits: List<PStmt>,
       : utTop(l.next, r, traits, acc)   # a surviving generic template: its
                                         # TRAIT refs are legitimately unbound
 
-fun utStmtCb(a: UtAcc, st: PStmt): UtAcc
+fun utStmtCb(a, st: PStmt): UtAcc
   ret a
 
-fun utExprCb(a: UtAcc, x: PExpr, r: Resolver, traits: List<PStmt>): UtAcc
+fun utExprCb(a, x, r, traits: List<PStmt>): UtAcc
   ret match(x)
     (nm: PeName) => match(traitSpecFor(nm, r))
       (ts: SClass) => utCheck(a, nm, ts, r, traits)
@@ -2444,7 +2444,7 @@ fun utExprCb(a: UtAcc, x: PExpr, r: Resolver, traits: List<PStmt>): UtAcc
 # One error per CONSTRAINT, not per reference: a single missing instance
 # otherwise reports once per `==`/`hashOf` call inside the monomorphised
 # container.
-fun utCheck(a: UtAcc, nm: PeName, ts: SClass, r: Resolver,
+fun utCheck(a: UtAcc, nm: PeName, ts: SClass, r,
             traits: List<PStmt>): UtAcc
   let n = traitProviderCount(chain(traits), ts, r, 0)
   if n == 1
@@ -2455,7 +2455,7 @@ fun utCheck(a: UtAcc, nm: PeName, ts: SClass, r: Resolver,
   ret UtAcc(add(a.utSeen, shown),
             add(a.utErrs, PErr(nm.penLine, utMessage(shown, nm, n))))
 
-fun utMessage(shown: String, nm: PeName, n: Int): String
+fun utMessage(shown, nm: PeName, n: Int): String
   let method = bareOfUnique(nm.refName)
   ret n == 0
     ? "no instance of " + shown + " (needed by `" + method + "`)"
@@ -2474,7 +2474,7 @@ fun traitDisplay(ts: SClass): String
       + slice(ts.scName, gx + 9, length(ts.scName)) + ">"
 
 
-fun reportUnresolvedGenericCalls(statements: List<PStmt>): Set<PErr>
+fun reportUnresolvedGenericCalls(statements): Set<PErr>
   let r = rootResolver(statements)
   ret rugTop(chain(statements), r, Set())
 
@@ -2493,7 +2493,7 @@ fun [tail] rugStmts(ss: Chain<PStmt>, r: Resolver,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rugStmts(l.next, r, rugStmt(l.value, r, acc))
 
-fun rugStmt(st: PStmt, r: Resolver, acc: Set<PErr>): Set<PErr>
+fun rugStmt(st, r, acc): Set<PErr>
   ret match(st)
     (f: PsFun)   => rugExprOpt(f.fBody, r, rugStmt(f.fParams, r, acc))
     (l: PsLet)   => rugExprOpt(l.lDefault, r, acc)
@@ -2509,12 +2509,12 @@ fun rugStmt(st: PStmt, r: Resolver, acc: Set<PErr>): Set<PErr>
                                       rugExpr(i.ifCond, r, acc)))
     (o: PStmt)   => acc
 
-fun rugExprOpt(x: PExpr|None, r: Resolver, acc: Set<PErr>): Set<PErr>
+fun rugExprOpt(x: PExpr|None, r, acc): Set<PErr>
   ret match(x)
     (e2: PExpr) => rugExpr(e2, r, acc)
     ()          => acc
 
-fun rugExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr>
+fun rugExpr(x, r, acc): Set<PErr>
   ret match(x)
     (nm: PeName)   => rugName(nm, r, acc)
     (d: PeDot)     => rugExpr(d.base, r, acc)
@@ -2539,30 +2539,30 @@ fun rugExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr>
     (o: PeLowered) => acc
     (o: PeNewEnum) => acc
 
-fun [tail] rugTupEnts(es: Chain<PTupEnt>, r: Resolver,
-                      acc: Set<PErr>): Set<PErr>
+fun [tail] rugTupEnts(es: Chain<PTupEnt>, r,
+                      acc): Set<PErr>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rugTupEnts(l.next, r,
                                   rugExpr(l.value.tupValue, r, acc))
 
-fun [tail] rugArms(as2: Chain<PArm>, r: Resolver,
-                   acc: Set<PErr>): Set<PErr>
+fun [tail] rugArms(as2: Chain<PArm>, r,
+                   acc): Set<PErr>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => rugArms(l.next, r,
                                rugExprOpt(l.value.armGuard, r,
                                           rugExpr(l.value.armBody, r, acc)))
 
-fun rugName(nm: PeName, r: Resolver, acc: Set<PErr>): Set<PErr>
+fun rugName(nm: PeName, r, acc): Set<PErr>
   ret rugUnresolved(nm, r)
     ? add(acc, PErr(nm.penLine, rugMsg(bareOfUnique(nm.refName))))
     : acc
 
-fun rugMsg(name: String): String
+fun rugMsg(name): String
   ret "cannot infer the type arguments of generic function `" + name + "` here — write them explicitly: " + name + "<...>(...)"
 
-fun rugUnresolved(nm: PeName, r: Resolver): Bool
+fun rugUnresolved(nm: PeName, r): Bool
   let bag = findData(r, nm.refName)
   ret match(soleItem(bag))
     (f: Found) => match(f.fStmt)
@@ -2591,7 +2591,7 @@ fun [tail] anyFreePlaceholders(ts: Chain<Spec>, r: Resolver): Bool
 # Python: convert_generic_to_concrete. On errors the ORIGINAL statements come
 # back with them; otherwise iterate → refresh → resolve traits.
 
-fun convertGenericToConcrete(statements: List<PStmt>): GIter
+fun convertGenericToConcrete(statements): GIter
   let it = convertGenericsIterative(statements)
   if !isEmpty(it.giErrs)
     ret GIter(statements, it.giErrs)

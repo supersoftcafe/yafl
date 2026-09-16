@@ -1,3 +1,6 @@
+
+
+
 # OPEN BUGS — take these first, fresh session
 
 (FIXED 2026-08-12, same session it was found: whole-compiler c1 byte parity

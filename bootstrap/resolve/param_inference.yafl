@@ -1,0 +1,946 @@
+# bootstrap/resolve/param_inference.yafl — ported from
+# compiler/pyast/param_inference.py.
+#
+# Function PARAMETER types, inferred from the BODY. A parameter that declares
+# no type takes it from what the body DOES with it — the implementer's "it's
+# obvious, I shouldn't have to write it again". Never from the callers: a
+# function means the same thing wherever it is called, so the body is the one
+# piece of evidence every call site shares.
+#
+# Uses speak in two directions:
+#
+#   * UPPER bounds — "x must FIT here": x passed to a call whose overloads
+#     narrow to one reading, or returned against a declared result type.
+#   * LOWER bounds — "x must ACCEPT these": the arm types of `match(x)`.
+#
+# The answer is the generalisation of the lower bounds, checked against every
+# upper bound; with no lower bounds it is the narrowest upper bound. Variants
+# of one enum generalise to the ROOT enum, classes to the interface they share
+# — deliberately unlike `join`, which is the honest SET union a BRANCH result
+# needs. A programmer who wanted the narrower reading writes the type out.
+#
+# Narrowing a call's overloads is ASSIGNABILITY, not arity: the shape is built
+# with a HOLE where the parameter sits, so a candidate only falls out when some
+# OTHER argument definitively rejects it. `3 * x` leaves exactly one `*`
+# standing, and x is read off its second parameter.
+#
+# Everything else is an ambiguity, which is an error: no use that determines
+# the parameter, several readings that disagree, upper bounds that cannot all
+# hold. The author's answer to all of them is the same, so they share one
+# diagnostic — uninferableClue supplies the part that tells them apart.
+#
+# Evidence is recomputed from scratch on every compile pass. An early pass sees
+# names that have not resolved yet, says nothing about them, and leaves the
+# parameter untyped; the answer only ever fills IN, never changes.
+namespace Bootstrap::Resolve
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Frontend
+import Bootstrap::Parse
+import Bootstrap::Types
+
+
+# What one parameter's uses say about it. evDeferred holds uses whose reading
+# is not settled YET (a callee that has not resolved, an argument with no
+# type); evClashes holds uses with several readings that disagree — settled,
+# and an error.
+class [final] Ev(evUppers: List<Spec>, evLowers: List<Spec>,
+                 evDeferred: List<String>, evClashes: List<String>)
+
+# Exactly one of these is set: the inferred type, or why there isn't one.
+class [final] Verdict(vType: Spec|None, vClue: String|None)
+
+# A name lookup's answer: the parameter it read (None when it reads none), and
+# the evidence table, which the lookup itself may have DEFERRED.
+class [final] PHit(phName: String|None, phEv: Dict<String, Ev>)
+
+# generalise's answer: the type, or None with gDeferred saying WHY none —
+# "not known yet" is a different answer from "they share nothing".
+class [final] Gen(gType: Spec|None, gDeferred: Bool)
+
+# One expression whose value IS the function's result, with the resolver its
+# own scope provides.
+class [final] RPos(rpExpr: PExpr, rpR: Resolver)
+
+fun noUseClue(): String
+  ret "no use in its body determines it"
+
+
+# ── the API ─────────────────────────────────────────────────────────────────
+
+# {parameter name: inferred type} for the parameters this body determines.
+# Silent about the rest — a parameter with no answer stays untyped and is
+# reported once the compile loop has converged (uninferableClue), by which time
+# every name the evidence hangs on has had its chance to resolve.
+fun inferParamTypes(f: PsFun, bodyR): Dict<String, Spec>
+  ret inferLoop(chain(untypedParams(f)), collectEvidence(f, bodyR), bodyR,
+                Dict())
+
+fun [tail] inferLoop(ps: Chain<PStmt>, ev: Dict<String, Ev>, r: Resolver,
+                     acc: Dict<String, Spec>): Dict<String, Spec>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => inferLoop(l.next, ev, r, inferOne(l.value, ev, r, acc))
+
+fun inferOne(p, ev: Dict<String, Ev>, r,
+             acc): Dict<String, Spec>
+  ret match(p)
+    (let2: PsLet) => match(verdictFor(let2.lName, ev, r).vType)
+      (ty: Spec) => put(acc, let2.lName, ty)
+      ()         => acc
+    (o: PStmt)    => acc
+
+# Why the body never determined `tgt`. Every outcome but a type is the same
+# kind of failure, so this clue is the only thing that tells them apart.
+fun uninferableClue(f: PsFun, tgt: PsLet, bodyR): String
+  ret match(verdictFor(tgt.lName, collectEvidence(f, bodyR), bodyR).vClue)
+    (c: String) => c
+    ()          => noUseClue()
+
+fun verdictFor(name: String, ev: Dict<String, Ev>, r): Verdict
+  ret match(get(ev, name))
+    (e2: Ev) => verdict(e2, r)
+    ()       => Verdict(None, noUseClue())
+
+
+# ── gathering the evidence ──────────────────────────────────────────────────
+
+fun collectEvidence(f: PsFun, bodyR): Dict<String, Ev>
+  let ps = untypedParams(f)
+  if isEmpty(ps)
+    ret Dict()
+  ret match(f.fBody)
+    (b: PExpr) => resultEvidence(f, b, bodyR, ps,
+                                 evExpr(b, bodyR, ps, blankEv(chain(ps), Dict())))
+    ()         => Dict()
+
+fun untypedParams(f: PsFun): List<PStmt>
+  ret build(untypedParamsB(chain(paramLets(f.fParams)), builder()))
+
+fun [tail] untypedParamsB(ts: Chain<PStmt>,
+                          [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
+  ret match(ts)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => untypedParamsB(l.next, isUntypedParam(l.value)
+                                               ? push(acc, l.value)
+                                               : acc)
+
+fun isUntypedParam(p): Bool
+  ret match(p)
+    (let2: PsLet) => match(let2.lType)
+      (t2: Spec) => false
+      ()         => true
+    (o: PStmt)    => false
+
+fun [tail] blankEv(ps: Chain<PStmt>, acc: Dict<String, Ev>): Dict<String, Ev>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => blankEv(l.next, blankOne(l.value, acc))
+
+fun blankOne(p, acc): Dict<String, Ev>
+  ret match(p)
+    (let2: PsLet) => put(acc, let2.lName, Ev(List(), List(), List(), List()))
+    (o: PStmt)    => acc
+
+
+# ── the walk ────────────────────────────────────────────────────────────────
+# Scope threading mirrors search_and_replace exactly: a fun body sees its
+# params (and, top-level, the trait layer), a block its lets, a lambda its
+# params, a match arm its binding.
+
+fun evExprOpt(x: PExpr|None, r, ps: List<PStmt>,
+              acc): Dict<String, Ev>
+  ret match(x)
+    (e2: PExpr) => evExpr(e2, r, ps, acc)
+    ()          => acc
+
+# Every node with children is named: a catch-all would state "everything I did
+# not name is a leaf" about an OPEN set, and a new variant WITH children would
+# then silently stop being descended.
+#
+# A node's own evidence is recorded AFTER its children's, because Python's
+# search_and_replace fires its callback bottom-up — and the order evidence
+# accumulates in decides which bound is seen first and the order a clue lists
+# its reasons. Children go in Python's field order (a match: subject, arms,
+# extra subjects).
+fun evExpr(x, r, ps: List<PStmt>,
+           acc): Dict<String, Ev>
+  ret match(x)
+    (c: PeCall)       => callEvidence(c, r, ps,
+                                      evExpr(c.parameter, r, ps,
+                                             evExpr(c.function, r, ps, acc)))
+    (d: PeDot)        => evExpr(d.base, r, ps, acc)
+    (tp: PeTuple)     => evEntries(chain(tp.exprs), r, ps, acc)
+    (te: PeTernary)   => evExpr(te.falseResult, r, ps,
+                                evExpr(te.trueResult, r, ps,
+                                       evExpr(te.condition, r, ps, acc)))
+    (lm: PeLambda)    => evExpr(lm.lamBody,
+                                localScope(flattenParams(lm.lamParams), r), ps,
+                                evStmt(lm.lamParams, r, ps, acc))
+    (bk: PeBlock)     => evExpr(bk.blockValue, blockScope(bk.blockStmts, r), ps,
+                                evStmts(chain(bk.blockStmts),
+                                        blockScope(bk.blockStmts, r), ps, acc))
+    (mt: PeMatch)     => matchEvidence(mt, r, ps,
+                                       evExprs(chain(mt.matchExtra), r, ps,
+                                               evArms(chain(mt.arms), r, ps,
+                                                      evExpr(mt.subject, r, ps,
+                                                             acc))))
+    (op: PeBuiltinOp) => evExpr(op.opParams, r, ps, acc)
+    (nw: PeNew)       => evExpr(nw.newParam, r, ps, acc)
+    (ne: PeNewEnum)   => evFieldArgs(chain(ne.fieldArgs), r, ps, acc)
+    (pl: PeParallel)  => evExpr(pl.parParams, r, ps, acc)
+    (ar: PeArrayRead) => evExpr(ar.arrIndex, r, ps, evExpr(ar.arrObj, r, ps, acc))
+    (cv: PeConvert)   => evExpr(cv.convInner, r, ps, acc)
+    (qq: PeCoalesce)  => evExpr(qq.qqFallback, r, ps,
+                                evExpr(qq.qqSubject, r, ps, acc))
+    (wx: PeWith)      => evExpr(wx.withRepls, r, ps,
+                                evExpr(wx.withSubject, r, ps, acc))
+    (o: PeLiteral)    => acc
+    (o: PeLowered)    => acc
+    (o: PeName)       => acc
+
+fun [tail] evExprs(xs: Chain<PExpr>, r: Resolver, ps: List<PStmt>,
+                   acc: Dict<String, Ev>): Dict<String, Ev>
+  ret match(xs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => evExprs(l.next, r, ps, evExpr(l.value, r, ps, acc))
+
+fun [tail] evEntries(es: Chain<PTupEnt>, r, ps: List<PStmt>,
+                     acc): Dict<String, Ev>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => evEntries(l.next, r, ps,
+                                 evExpr(l.value.tupValue, r, ps, acc))
+
+fun [tail] evFieldArgs(fs: Chain<PFieldArg>, r, ps: List<PStmt>,
+                       acc): Dict<String, Ev>
+  ret match(fs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => evFieldArgs(l.next, r, ps,
+                                   evExpr(l.value.faValue, r, ps, acc))
+
+fun [tail] evStmts(ss: Chain<PStmt>, r: Resolver, ps: List<PStmt>,
+                   acc: Dict<String, Ev>): Dict<String, Ev>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => evStmts(l.next, r, ps, evStmt(l.value, r, ps, acc))
+
+fun evStmt(st, r, ps: List<PStmt>,
+           acc): Dict<String, Ev>
+  ret match(st)
+    (fn2: PsFun)       => evExprOpt(fn2.fBody, funBodyScope(fn2, r), ps,
+                                    evStmt(fn2.fParams, r, ps, acc))
+    (l2: PsLet)        => evExprOpt(l2.lDefault, r, ps, acc)
+    (d: PsDestructure) => evStmts(chain(d.dTargets), r, ps,
+                                  evExprOpt(d.dDefault, r, ps, acc))
+    (rt: PsRet)        => evExpr(rt.retValue, r, ps, acc)
+    (a: PsAction)      => evExpr(a.action, r, ps, acc)
+    (i: PsIf)          => evStmts(chain(i.ifFalse), blockScope(i.ifFalse, r), ps,
+                                  evStmts(chain(i.ifTrue), blockScope(i.ifTrue, r),
+                                          ps, evExpr(i.ifCond, r, ps, acc)))
+    # Python's ElseIf/Else statements (which exist only until a block's first
+    # compile collapses them) keep the ENCLOSING scope — only a whole `if`
+    # statement opens branch scopes.
+    (ei: PsElseIf)     => evStmts(chain(ei.eiStmts), r, ps,
+                                  evExpr(ei.eiCond, r, ps, acc))
+    (el: PsElse)       => evStmts(chain(el.elStmts), r, ps, acc)
+    (o: PStmt)         => acc
+
+# Python's __body_resolver: the trait layer (top level only), then every
+# parameter — flattened, as parameters.flatten() walks nested destructures.
+fun funBodyScope(f: PsFun, r): Resolver
+  ret localScope(flattenParams(f.fParams),
+                 f.fNested ? r : traitScope(f.fWheres, r))
+
+# The scope a function's BODY sees, built from the scope its DECLARATION sees:
+# the generic type params, the trait layer (top level only) and the parameters.
+# compileFun wraps the generic scope itself — it compiles the signature in that
+# scope too — and goes straight to the inner half; everyone else starts here.
+fun paramBodyScope(f: PsFun, r): Resolver
+  ret funBodyScope(f, genScope(f.fGens, r))
+
+fun [tail] evArms(as2: Chain<PArm>, r: Resolver, ps: List<PStmt>,
+                  acc: Dict<String, Ev>): Dict<String, Ev>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => evArms(l.next, r, ps, evArm(l.value, r, ps, acc))
+
+fun evArm(a: PArm, r, ps: List<PStmt>,
+          acc): Dict<String, Ev>
+  let bodyR = armBodyScope(a, r)
+  ret evExprOpt(a.armGuard, bodyR, ps, evExpr(a.armBody, bodyR, ps, acc))
+
+# What an arm's body and guard see — Python's MatchArm.body_resolver: the arm's
+# own binding, then one per extra position at its DECLARED type. (posScope
+# falls back to the subject's type, which this walk never consults, so that
+# chain is empty.)
+fun armBodyScope(a: PArm, r: Resolver): Resolver
+  ret extraScope(chain(a.armExtra), chain2(List<Spec|None>()),
+                 bindingScope(a, a.armType, r))
+
+
+# ── reading a parameter reference ───────────────────────────────────────────
+
+# The parameter `x` reads, or None. A name that COULD be one but has not
+# resolved yet DEFERS that parameter: a half-read body must not settle a type
+# the rest of it would widen.
+fun namedParam(x, r, ps: List<PStmt>,
+               acc): PHit
+  ret match(x)
+    (nm: PeName) => namedParamHit(nm, r, ps, acc)
+    (o: PExpr)   => PHit(None, acc)
+
+fun namedParamHit(nm: PeName, r, ps: List<PStmt>,
+                  acc): PHit
+  ret match(paramNamed(chain(ps), nm.refName))
+    (p: PsLet) => resolvedParam(nm, p, r, acc)
+    ()         => PHit(None, acc)
+
+fun [tail] paramNamed(ps: Chain<PStmt>, query: String): PsLet|None
+  ret match(ps)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => match(l.value)
+      (let2: PsLet) => matchName(let2.lName, query)
+        ? let2
+        : paramNamed(l.next, query)
+      (o: PStmt)    => paramNamed(l.next, query)
+
+fun resolvedParam(nm: PeName, p: PsLet, r,
+                  acc): PHit
+  let found = findData(r, nm.refName)
+  if !found.bComplete
+    ret PHit(None, defer(p.lName, "a name in its body has not resolved yet", acc))
+  ret isTheParam(found.bItems, p) ? PHit(p.lName, acc) : PHit(None, acc)
+
+# Exactly one resolution, and it IS this parameter — an inner binding of the
+# same name is somebody else's.
+fun isTheParam(items: List<Found>, p: PsLet): Bool
+  ret match(head(items))
+    (f: Found) => isEmpty(drop(items, 1)) && foundIsParam(f, p)
+    ()         => false
+
+fun foundIsParam(f: Found, p: PsLet): Bool
+  ret match(f.fStmt)
+    (let2: PsLet) => let2.lName == p.lName
+    (o: PStmt)    => false
+
+
+# ── evidence: a call ────────────────────────────────────────────────────────
+
+# `f(x)` — x flows into f's parameter, so it is bounded ABOVE by whatever f
+# declares there, once f's overloads narrow to one reading.
+fun callEvidence(c: PeCall, r, ps: List<PStmt>,
+                 acc): Dict<String, Ev>
+  ret match(c.parameter)
+    (tp: PeTuple) => argLoop(chain(tp.exprs), 0, c, tp, r, ps, acc)
+    (o: PExpr)    => acc
+
+fun [tail] argLoop(es: Chain<PTupEnt>, idx: Int, c: PeCall, tp: PeTuple,
+                   r: Resolver, ps: List<PStmt>,
+                   acc: Dict<String, Ev>): Dict<String, Ev>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => argLoop(l.next, idx + 1, c, tp, r, ps,
+                               argOne(l.value, idx, c, tp, r, ps, acc))
+
+fun argOne(en: PTupEnt, idx: Int, c: PeCall, tp: PeTuple, r,
+           ps: List<PStmt>, acc): Dict<String, Ev>
+  let hit = namedParam(en.tupValue, r, ps, acc)
+  ret match(hit.phName)
+    (name: String) => argumentUpper(c, tp, idx, name, r, hit.phEv)
+    ()             => hit.phEv
+
+fun argumentUpper(c: PeCall, tp: PeTuple, idx: Int, name: String,
+                  r, acc): Dict<String, Ev>
+  ret match(c.function)
+    (nm: PeName) => anySpread(chain(tp.exprs))
+      ? defer(name, "it is passed in a spread argument list", acc)
+      : calleeUpper(nm, c, tp, idx, name, r, acc)
+    (o: PExpr)   => defer(name, "it is passed to a computed callable", acc)
+
+fun calleeUpper(nm: PeName, c: PeCall, tp: PeTuple, idx: Int, name: String,
+                r, acc): Dict<String, Ev>
+  let called = bareOfUnique(nm.refName)
+  let cands = findData(r, nm.refName)
+  if !cands.bComplete
+    ret defer(name, "`" + called + "` has not resolved yet", acc)
+  if isEmpty(cands.bItems)
+    ret defer(name, "no function named `" + called + "` is in scope", acc)
+  # The call shape as far as it is known: every OTHER argument's type, and a
+  # HOLE where this parameter sits. Assignability against that hole is Unknown,
+  # never a rejection, so a candidate only falls out when one of the KNOWN
+  # arguments definitively does not fit it.
+  let shape = SCallable(STuple(shapeEntries(chain(tp.exprs), 0, idx, r, List()),
+                               c.pecLine),
+                        None, c.pecLine)
+  let readings = candidateReadings(resolveOverloads(r, shape, cands.bItems),
+                                   idx, entryNames2(chain(tp.exprs), List()))
+  ret settleReadings(readings, called, name, acc)
+
+fun shapeEntries(es: Chain<PTupEnt>, at: Int, idx: Int, r,
+                 acc: List<SEntry>): List<SEntry>
+  ret build(shapeEntriesB(es, at, idx, r, builderFrom(acc)))
+
+fun [tail] shapeEntriesB(es: Chain<PTupEnt>, at: Int, idx: Int, r,
+                         [terminal] acc): ListBuilder<SEntry>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => shapeEntriesB(l.next, at + 1, idx, r,
+                                     push(acc, SEntry(l.value.tupName,
+                                                      at == idx
+                                                        ? None
+                                                        : exprType(l.value.tupValue, r),
+                                                      None)))
+
+fun entryNames2(es: Chain<PTupEnt>, acc: List<String>): List<String>
+  ret build(entryNames2B(es, builderFrom(acc)))
+
+fun [tail] entryNames2B(es: Chain<PTupEnt>,
+                        [terminal] acc): ListBuilder<String>
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => entryNames2B(l.next, push(acc, l.value.tupName))
+
+fun [tail] anySpread(es: Chain<PTupEnt>): Bool
+  ret match(es)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => l.value.tupSpread ? true : anySpread(l.next)
+
+# The DISTINCT types the surviving candidates declare for this argument.
+fun candidateReadings(survivors: Bag<Found>, idx: Int,
+                      names: List<String>): List<Spec>
+  ret fold(survivors, List(),
+           (acc: List<Spec>, x: Found) => addReading(acc, parameterAt(x, idx, names)))
+
+fun addReading(acc, at: Spec|None): List<Spec>
+  ret match(at)
+    (ty: Spec) => specListHas(chain(acc), ty) ? acc : addedSpec(acc, ty)
+    ()         => acc
+
+# The type this candidate declares for the argument at position `idx`, or None
+# when that is no evidence: a generic candidate's own placeholder, an
+# unresolved name, or an argument list it cannot bind at all.
+#
+# WHICH parameter an argument fills is bindTupleEntries' answer, not the
+# argument's index — `f(second = x, first = y)` binds by NAME. Using the
+# routine assignability itself binds with keeps the reading and the narrowing
+# talking about the same slot, and the candidate is read through the same
+# candidateSignature the narrowing used, so a trait method answers with its
+# scope's arguments applied (`Times<Int>::*` takes an Int, not a TVal).
+fun parameterAt(x: Found, idx: Int, names: List<String>): Spec|None
+  ret match(candidateSignature(x))
+    (ty: Spec) => match(ty)
+      (cl: SCallable) => calleeSlotType(cl, idx, names)
+      (o: Spec)       => None
+    ()         => None
+
+fun calleeSlotType(cl: SCallable, idx: Int, names: List<String>): Spec|None
+  ret match(cl.scParams2)
+    (tp: STuple) => match(bindTupleEntries(tp.stEntries, names))
+      (binding: List<Int>) => usableSlot(tp.stEntries,
+                                         slotFilledBy(chain(binding), 0, idx))
+      ()                   => None
+    (o: Spec)    => None
+
+# Which DECLARED slot the supplied entry `idx` fills (-1 when it fills none).
+fun [tail] slotFilledBy(binding: Chain<Int>, at: Int, idx: Int): Int
+  ret match(binding)
+    (nil: ChainEnd) => -1
+    (l: ChainLink)  => l.value == idx ? at : slotFilledBy(l.next, at + 1, idx)
+
+fun usableSlot(entries: List<SEntry>, slot): Spec|None
+  if slot < 0
+    ret None
+  ret match(entryAtSlot(entries, slot))
+    (en: SEntry) => usableEvidence(en.seType)
+    ()           => None
+
+fun entryAtSlot(entries: List<SEntry>, idx): SEntry|None
+  ret head(drop(entries, idx))
+
+# A placeholder says nothing about the argument — only an instantiation would,
+# and this is not one; an unresolved name is not an answer yet either.
+fun usableEvidence(at: Spec|None): Spec|None
+  ret match(at)
+    (ty: Spec) => match(ty)
+      (n: SNamed) => None
+      (o: Spec)   => isEmpty(placeholderNames(ty)) ? ty : None
+    ()         => None
+
+fun settleReadings(readings: List<Spec>, called, name: String,
+                   acc): Dict<String, Ev>
+  if isEmpty(readings)
+    ret acc                      # this use tells us nothing; another may
+  ret match(drop(readings, 1))
+    (rest: List<Spec>) => isEmpty(rest)
+      ? addUpper(name, readings, acc)
+      : clash(name, "`" + called + "` could take "
+                    + join(sort(dedupeStrs(typeStrs(readings))), " or "), acc)
+
+fun addUpper(name: String, readings: List<Spec>,
+             acc): Dict<String, Ev>
+  ret match(head(readings))
+    (ty: Spec) => upper(name, ty, acc)
+    ()         => acc
+
+
+# ── evidence: a match ───────────────────────────────────────────────────────
+
+# `match(x)` arms are LOWER bounds — x must accept every one of them.
+#
+# An ELSE arm stops the match determining anything. It PROVES the subject has
+# at least one member the named arms do not cover, and which members those are
+# is written nowhere: `match(o) (s: Spec) => … ; () => "-"` says o is a Spec or
+# something else, and that something is exactly what the author's `Spec|None`
+# was carrying. Taking the named arms alone would infer `Spec` and then reject
+# the author's own else arm as unreachable. So the match contributes NOTHING
+# and other evidence — or the ambiguity error — decides.
+fun matchEvidence(mt: PeMatch, r, ps: List<PStmt>,
+                  acc): Dict<String, Ev>
+  let hit = namedParam(mt.subject, r, ps, acc)
+  ret match(hit.phName)
+    (name: String) => matchArmsEvidence(mt, name, r, hit.phEv)
+    ()             => hit.phEv
+
+# Python's precedence: an else arm stops the match; an arm whose enum root is
+# not settled DEFERS the parameter (a half-read body must not settle a type the
+# rest of it would change); a bare generic arm stops the match; only then are
+# the arms lower bounds.
+fun matchArmsEvidence(mt: PeMatch, name: String, r,
+                      acc): Dict<String, Ev>
+  if hasElseArm(chain(mt.arms))
+    ret acc
+  if anyArmUnsettled(chain(mt.arms), r)
+    ret defer(name, "a match arm's type has not resolved yet", acc)
+  if anyArmUnusable(chain(mt.arms), r)
+    ret acc
+  ret armLoop(chain(mt.arms), name, r, acc)
+
+# A GENERIC enum arm written WITHOUT its type arguments determines nothing:
+# `match(ps)` with arms `(nil: ChainEnd)` / `(l: ChainLink)` over a
+# `Chain<Spec>` subject has BARE arms, because arms receive the subject's type
+# arguments only once the subject's type is known — and here the subject IS the
+# parameter being inferred. Generalising bare arms yields a bare `Chain`, which
+# monomorphisation cannot specialise, and field reads on it then look up a root
+# that no longer exists. ONE such arm spoils the whole match: a partial set of
+# lower bounds would generalise to the wrong type.
+fun [tail] anyArmUnsettled(as2: Chain<PArm>, r): Bool
+  ret match(as2)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(armUsableLower(l.value, r))
+      (b: Bool) => anyArmUnsettled(l.next, r)
+      ()        => true
+
+fun [tail] anyArmUnusable(as2: Chain<PArm>, r): Bool
+  ret match(as2)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(armUsableLower(l.value, r))
+      (b: Bool) => b ? anyArmUnusable(l.next, r) : true
+      ()        => anyArmUnusable(l.next, r)
+
+# Python's _usable_lower: true for anything but a generic enum written with no
+# type arguments (an arm with no type pattern is neutral); None while that
+# enum's root has not resolved — not known yet, which defers rather than decides.
+fun armUsableLower(a: PArm, r): Bool|None
+  ret match(a.armType)
+    (ty: Spec) => match(ty)
+      (e2: SEnum) => isEmpty(e2.seParams) ? enumRootNotGeneric(e2.seRoot, r) : true
+      (o: Spec)   => true
+    ()         => true
+
+fun enumRootNotGeneric(root, r): Bool|None
+  let found = findType(r, root)
+  if !found.bComplete
+    ret None
+  ret match(soleItem(found))
+    (f: Found) => isEmpty(stmtGens(f.fStmt))
+    ()         => None
+
+fun [tail] hasElseArm(as2: Chain<PArm>): Bool
+  ret match(as2)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => armIsElse(l.value) ? true : hasElseArm(l.next)
+
+# A true else arm — no type pattern and no literals, a bound `(x) => …` else
+# included — is check_expr's `armIsElse`, reused rather than restated. (Codegen
+# has its own `isElseArm`, which ALSO demands a single subject; that is not
+# this question: a multi-subject match with an else arm determines its subject
+# no better than a single-subject one does.)
+
+fun [tail] armLoop(as2: Chain<PArm>, name: String, r,
+                   acc): Dict<String, Ev>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => armLoop(l.next, name, r, armLower(l.value, name, r, acc))
+
+fun armLower(a: PArm, name: String, r,
+             acc): Dict<String, Ev>
+  ret match(a.armType)
+    (ty: Spec) => match(ty)
+      (n: SNamed) => defer(name, "a match arm's type has not resolved yet", acc)
+      (o: Spec)   => lower(name, ty, acc)
+    ()         => armLitLoop(chain(a.armLiterals), name, r, acc)
+
+fun [tail] armLitLoop(ls: Chain<PLit>, name: String, r,
+                   acc): Dict<String, Ev>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => armLitLoop(l.next, name, r, litLower(l.value, name, r, acc))
+
+fun litLower(lit, name: String, r,
+             acc): Dict<String, Ev>
+  ret match(exprType(armLitExpr(lit), r))
+    (ty: Spec) => lower(name, ty, acc)
+    ()         => defer(name, "a literal match arm has no type yet", acc)
+
+fun armLitExpr(lit): PExpr
+  ret match(lit)
+    (le: PlExpr)  => le.litExpr
+    (rg: PlRange) => rg.rangeLo
+
+
+# ── evidence: the declared result ───────────────────────────────────────────
+
+# A declared result is an UPPER bound on whatever the body returns: `ret x`
+# says x fits it, and `ret c(3)` says c is a callable WITH that result — the
+# only thing that can complete a callable parameter, which is why a function
+# taking one must declare either the parameter or its own result.
+fun resultEvidence(f: PsFun, body, r, ps,
+                   acc): Dict<String, Ev>
+  ret f.fRetInferred
+    ? acc
+    : match(f.fRet)
+      (rt: Spec) => posLoop(chain(resultPositions(body, r)), rt, ps, acc)
+      ()         => acc
+
+fun [tail] posLoop(qs: Chain<RPos>, rt, ps,
+                   acc): Dict<String, Ev>
+  ret match(qs)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => posLoop(l.next, rt, ps, posOne(l.value, rt, ps, acc))
+
+fun posOne(q: RPos, rt, ps,
+           acc): Dict<String, Ev>
+  let hit = namedParam(q.rpExpr, q.rpR, ps, acc)
+  ret match(hit.phName)
+    (name: String) => upper(name, rt, hit.phEv)
+    ()             => calledParam(q, rt, ps, hit.phEv)
+
+fun calledParam(q: RPos, rt, ps,
+                acc): Dict<String, Ev>
+  ret match(q.rpExpr)
+    (c: PeCall) => calleeIsParam(c, q.rpR, rt, ps, acc)
+    (o: PExpr)  => acc
+
+fun calleeIsParam(c: PeCall, r, rt, ps,
+                  acc): Dict<String, Ev>
+  let hit = namedParam(c.function, r, ps, acc)
+  ret match(hit.phName)
+    (name: String) => callableUpper(c, r, rt, name, hit.phEv)
+    ()             => hit.phEv
+
+fun callableUpper(c: PeCall, r, rt, name: String,
+                  acc): Dict<String, Ev>
+  ret match(c.parameter)
+    (tp: PeTuple) => anySpread(chain(tp.exprs))
+      ? defer(name, "its argument list is not a plain positional tuple", acc)
+      : callableShape(c, tp, r, rt, name, acc)
+    (o: PExpr)    => defer(name, "its argument list is not a plain positional tuple", acc)
+
+fun callableShape(c: PeCall, tp: PeTuple, r, rt, name: String,
+                  acc): Dict<String, Ev>
+  ret match(argEntries(chain(tp.exprs), r, List()))
+    (es: List<SEntry>) => upper(name,
+                                SCallable(STuple(es, c.pecLine), rt, c.pecLine),
+                                acc)
+    ()                 => defer(name,
+                                "an argument it is called with has no type yet",
+                                acc)
+
+# None as soon as ONE argument has no type: a half-known shape is not a type.
+fun [tail] argEntries(es: Chain<PTupEnt>, r,
+                      acc): List<SEntry>|None
+  ret match(es)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => match(exprType(l.value.tupValue, r))
+      (ty: Spec) => argEntries(l.next, r,
+                               addedEntry(acc, SEntry(l.value.tupName, ty, None)))
+      ()         => None
+
+# Every expression whose value IS the function's result, each with the resolver
+# its own scope provides: a block's trailing value (the parser folds a final
+# `ret` into it), and through a match or a ternary, each branch's.
+fun resultPositions(x, r): List<RPos>
+  ret match(x)
+    (bk: PeBlock)   => resultPositions(bk.blockValue, blockScope(bk.blockStmts, r))
+    (mt: PeMatch)   => armPositions(chain(mt.arms), r, List())
+    (te: PeTernary) => concat(resultPositions(te.trueResult, r),
+                              resultPositions(te.falseResult, r))
+    (o: PExpr)      => build(push(builder(), RPos(x, r)))
+
+fun [tail] armPositions(as2: Chain<PArm>, r,
+                        acc): List<RPos>
+  ret match(as2)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => armPositions(l.next, r,
+                                    concat(acc,
+                                           resultPositions(l.value.armBody,
+                                                           armBodyScope(l.value, r))))
+
+
+# ── reading the verdict off the evidence ────────────────────────────────────
+
+fun verdict(e2: Ev, r): Verdict
+  if !isEmpty(e2.evClashes)
+    ret Verdict(None, joinClues(e2.evClashes))
+  ret isEmpty(e2.evLowers)
+    ? verdictFromUppers(e2, r)
+    : verdictFromLowers(e2, r, generalise(e2.evLowers, r))
+
+fun verdictFromLowers(e2: Ev, r, gen: Gen): Verdict
+  ret match(gen.gType)
+    (ty: Spec) => settle(e2, r, ty)
+    ()         => unsettledLowers(e2, gen.gDeferred)
+
+# "Not known yet" is not "share nothing": only a SETTLED absence is an error. A
+# generalisation that could not read an inheritance graph defers with its OWN
+# reason, after the uses' — Python's _generalise appends it to ev.deferred.
+fun unsettledLowers(e2: Ev, graphPending: Bool): Verdict
+  if graphPending
+    ret Verdict(None, joinClues(addedStr(e2.evDeferred,
+                                         "an inheritance graph it reads is not built yet")))
+  if !isEmpty(e2.evDeferred)
+    ret Verdict(None, deferredClue(e2))
+  ret Verdict(None, "its match arms share no type — "
+                    + join(sort(dedupeStrs(typeStrs(e2.evLowers))), ", "))
+
+fun verdictFromUppers(e2: Ev, r): Verdict
+  ret match(narrowest(chain(e2.evUppers), e2.evUppers, r))
+    (ty: Spec) => settle(e2, r, ty)
+    ()         => Verdict(None, uppersClue(e2))
+
+# An answer stands only when every upper bound accepts it AND the body could be
+# read in full — a deferred use may still widen it on a later pass.
+fun settle(e2: Ev, r, ty): Verdict
+  if anyUpperRejects(chain(e2.evUppers), ty, r)
+    ret Verdict(None, uppersClue(e2))
+  ret isEmpty(e2.evDeferred) ? Verdict(ty, None) : Verdict(None, deferredClue(e2))
+
+fun [tail] anyUpperRejects(us: Chain<Spec>, ty, r): Bool
+  ret match(us)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => match(assignableEq(r, l.value, ty))
+      (b: Bool) => b ? anyUpperRejects(l.next, ty, r) : true
+      ()        => anyUpperRejects(l.next, ty, r)
+
+fun uppersClue(e2: Ev): String
+  if !isEmpty(e2.evDeferred)
+    ret deferredClue(e2)
+  ret isEmpty(e2.evUppers)
+    ? noUseClue()
+    : "its uses require " + join(sort(dedupeStrs(typeStrs(e2.evUppers))), " and ")
+
+fun deferredClue(e2: Ev): String
+  ret joinClues(e2.evDeferred)
+
+fun joinClues(cs): String
+  ret join(dedupeStrs(cs), "; ")
+
+# The one type that accepts every lower bound. Variants of an enum generalise
+# to the ROOT — a parameter matched as Circle and as Square takes any Shape —
+# and classes to the interface they share, a class being allowed to inherit
+# only from pure interfaces. None when they share nothing, which is an
+# ambiguity like any other.
+fun generalise(lowers: List<Spec>, r): Gen
+  ret match(head(lowers))
+    (first: Spec) => allSameSpec(chain(lowers), first)
+      ? Gen(first, false)
+      : generaliseMixed(lowers, first, r)
+    ()            => Gen(None, false)
+
+fun generaliseMixed(lowers: List<Spec>, first, r): Gen
+  if allEnums(chain(lowers))
+    ret Gen(rootEnumOf(lowers, first), false)
+  ret allClasses(chain(lowers)) ? sharedGen(lowers, r) : Gen(None, false)
+
+fun rootEnumOf(lowers: List<Spec>, first): Spec|None
+  ret match(first)
+    (e2: SEnum) => sameRoot(chain(lowers), e2.seRoot)
+      ? SEnum(e2.seRoot, e2.seAllLeaves, e2.seAllLeaves, e2.seParams, e2.seLine)
+      : None
+    (o: Spec)   => None
+
+fun sharedGen(lowers: List<Spec>, r): Gen
+  ret match(sharedInterfaces(lowers, r))
+    (shared: List<Spec>) => soleShared(shared)
+    ()                   => Gen(None, true)
+
+fun soleShared(shared: List<Spec>): Gen
+  ret match(head(shared))
+    (one: Spec) => isEmpty(drop(shared, 1)) ? Gen(one, false) : Gen(None, false)
+    ()          => Gen(None, false)
+
+# The interfaces every one of these classes implements, or None while the
+# inheritance graph is still being built — "not known yet" is a different
+# answer from "none shared", and only the latter is an error. Zero or several
+# shared is an ambiguity: picking one would be choosing for the author, and
+# they can say which by writing the type out.
+fun sharedInterfaces(specs: List<Spec>, r): List<Spec>|None
+  ret sharedLoop(chain(specs), r, None)
+
+fun [tail] sharedLoop(ss: Chain<Spec>, r,
+                      acc: List<Spec>|None): List<Spec>|None
+  ret match(ss)
+    (nil: ChainEnd) => match(acc)
+      (l2: List<Spec>) => l2
+      # Explicit: the expected type here is the union `List<Spec>|None`, and a
+      # union expected type does not pin a generic call's type arguments.
+      ()               => List<Spec>()
+    (l: ChainLink)  => match(interfacesOf(l.value, r))
+      (ps2: List<Spec>) => sharedLoop(l.next, r, intersectSpecs(acc, ps2))
+      ()                => None
+
+fun interfacesOf(sp, r): List<Spec>|None
+  ret match(sp)
+    (c: SClass) => classParents(c, r)
+    (o: Spec)   => None
+
+fun classParents(c: SClass, r): List<Spec>|None
+  let found = findType(r, c.scName)
+  if !found.bComplete
+    ret None
+  ret match(head(found.bItems))
+    (f: Found) => isEmpty(drop(found.bItems, 1)) ? classParents2(f, c) : None
+    ()         => None
+
+fun classParents2(f: Found, c: SClass): List<Spec>|None
+  ret match(f.fStmt)
+    (cls: PsClass) => match(cls.cAllParents)
+      (parents: List<Spec>) => withoutSelf(chain(parents), c.scName, List())
+      ()                    => None      # the graph is not built yet
+    (o: PStmt)     => None
+
+fun [tail] withoutSelf(ps: Chain<Spec>, self,
+                       acc): List<Spec>
+  ret match(ps)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => withoutSelf(l.next, self,
+                                   specNameOf(l.value) == self
+                                     ? acc
+                                     : addedSpec(acc, l.value))
+
+fun intersectSpecs(acc: List<Spec>|None, ps): List<Spec>
+  ret match(acc)
+    (l2: List<Spec>) => keepShared(chain(l2), ps, List())
+    ()               => ps
+
+fun [tail] keepShared(ls: Chain<Spec>, ps: List<Spec>,
+                      acc): List<Spec>
+  ret match(ls)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => keepShared(l.next, ps,
+                                  specListHas(chain(ps), l.value)
+                                    ? addedSpec(acc, l.value)
+                                    : acc)
+
+# The one upper bound that satisfies all the others — a parameter used as a
+# Circle and as a Shape is a Circle. None when no single bound fits inside the
+# rest: they contradict, and the parameter has no type.
+fun [tail] narrowest(us: Chain<Spec>, all: List<Spec>, r): Spec|None
+  ret match(us)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => fitsAll(chain(all), l.value, r)
+      ? l.value
+      : narrowest(l.next, all, r)
+
+fun [tail] fitsAll(us: Chain<Spec>, cand: Spec, r: Resolver): Bool
+  ret match(us)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => eqSpec(l.value, cand)
+      ? fitsAll(l.next, cand, r)
+      : match(assignableEq(r, l.value, cand))
+        (b: Bool) => b ? fitsAll(l.next, cand, r) : false
+        ()        => false
+
+
+# ── small shared helpers ────────────────────────────────────────────────────
+
+fun upper(name: String, ty: Spec, acc): Dict<String, Ev>
+  ret match(get(acc, name))
+    (e2: Ev) => put(acc, name, Ev(addedSpec(e2.evUppers, ty), e2.evLowers,
+                                  e2.evDeferred, e2.evClashes))
+    ()       => acc
+
+fun lower(name: String, ty: Spec, acc): Dict<String, Ev>
+  ret match(get(acc, name))
+    (e2: Ev) => put(acc, name, Ev(e2.evUppers, addedSpec(e2.evLowers, ty),
+                                  e2.evDeferred, e2.evClashes))
+    ()       => acc
+
+fun defer(name: String, why: String, acc): Dict<String, Ev>
+  ret match(get(acc, name))
+    (e2: Ev) => put(acc, name, Ev(e2.evUppers, e2.evLowers,
+                                  addedStr(e2.evDeferred, why), e2.evClashes))
+    ()       => acc
+
+fun clash(name: String, why: String, acc): Dict<String, Ev>
+  ret match(get(acc, name))
+    (e2: Ev) => put(acc, name, Ev(e2.evUppers, e2.evLowers, e2.evDeferred,
+                                  addedStr(e2.evClashes, why)))
+    ()       => acc
+
+fun addedSpec(l: List<Spec>, x: Spec): List<Spec>
+  ret build(push(builderFrom(l), x))
+
+fun addedEntry(l: List<SEntry>, x: SEntry): List<SEntry>
+  ret build(push(builderFrom(l), x))
+
+fun addedStr(l: List<String>, x: String): List<String>
+  ret build(push(builderFrom(l), x))
+
+fun [tail] specListHas(ss: Chain<Spec>, x): Bool
+  ret match(ss)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => eqSpec(l.value, x) ? true : specListHas(l.next, x)
+
+fun [tail] allSameSpec(ss: Chain<Spec>, first): Bool
+  ret match(ss)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => eqSpec(l.value, first) ? allSameSpec(l.next, first) : false
+
+fun [tail] allEnums(ss: Chain<Spec>): Bool
+  ret match(ss)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(l.value)
+      (e2: SEnum) => allEnums(l.next)
+      (o: Spec)   => false
+
+fun [tail] allClasses(ss: Chain<Spec>): Bool
+  ret match(ss)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(l.value)
+      (c: SClass) => allClasses(l.next)
+      (o: Spec)   => false
+
+fun [tail] sameRoot(ss: Chain<Spec>, root): Bool
+  ret match(ss)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => match(l.value)
+      (e2: SEnum) => e2.seRoot == root ? sameRoot(l.next, root) : false
+      (o: Spec)   => false
+
+fun specNameOf(sp): String
+  ret match(sp)
+    (c: SClass) => c.scName
+    (o: Spec)   => ""
+
+fun typeStrs(specs: List<Spec>): List<String>
+  ret build(typeStrsB(chain(specs), builder()))
+
+fun [tail] typeStrsB(ss: Chain<Spec>,
+                     [terminal] acc): ListBuilder<String>
+  ret match(ss)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => typeStrsB(l.next, push(acc, typeStr(l.value)))

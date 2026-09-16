@@ -21,7 +21,7 @@ import Bootstrap::StdlibCandidates
 
 # ── FunctionStatement.global_codegen ────────────────────────────────────────
 
-fun funGlobalCodegen(f: PsFun, r0: Resolver): CgFunction
+fun funGlobalCodegen(f: PsFun, r0): CgFunction
   let r = genScope(f.fGens, r0)
   let bodyR = localScope(paramLets(f.fParams), f.fNested ? r : traitScope(f.fWheres, r))
   let paramBundle = fgcParamBundles(chain(paramTargets(f.fParams)), bodyR, 0, emptyBundle())
@@ -37,7 +37,7 @@ fun funGlobalCodegen(f: PsFun, r0: Resolver): CgFunction
                  inlineAlways(f),
                  f.psfLine.plFile, f.psfLine.plLine)
 
-fun fgcBodyBundle(b: PExpr, bodyR: Resolver, fRet: Spec|None): GBundle
+fun fgcBodyBundle(b, bodyR, fRet: Spec|None): GBundle
   let bodyBundle = genExprTo(b, bodyR, fRet)
   ret bundleJoin(bodyBundle, bundleOp1(OpReturn(mustResult(bodyBundle), List())))
 
@@ -51,17 +51,17 @@ fun [tail] fgcParamBundles(ts: Chain<PStmt>, r: Resolver, i: Int, acc: GBundle):
     (l: ChainLink)  => fgcParamBundles(l.next, r, i + 1,
                          bundleJoin(acc, withPrefix(tcdRootless(l.value, r), "p" + String(i))))
 
-fun tcdRootless(st: PStmt, r: Resolver): GBundle
+fun tcdRootless(st, r): GBundle
   ret match(st)
     (d: PsDestructure) => toCDestructureTargets(d, RpStackVar(specGenerate(dPureTupleType(d), r), d.dName), r)
     (o: PStmt)         => emptyBundle()
 
-fun paramTargets(params: PStmt): List<PStmt>
+fun paramTargets(params): List<PStmt>
   ret match(params)
     (d: PsDestructure) => d.dTargets
     (o: PStmt)         => List()   # unreachable: a fun's parameters node is a destructure
 
-fun targetType(st: PStmt): Spec|None
+fun targetType(st): Spec|None
   ret match(st)
     (l: PsLet)         => l.lType
     (d: PsDestructure) => d.dType
@@ -92,7 +92,7 @@ fun inlineAlways(f: PsFun): Bool
 
 class [final] ClassCodegenOut(ccObject: CgObject, ccFunctions: List<CgFunction>)
 
-fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
+fun classGlobalCodegen(c, r0): ClassCodegenOut
   # Python: ResolverType(ResolverData(resolver, __find_locals)) — the class's
   # find_data (params + members + parents) PLUS `this`, no trait data.
   # RClassBody is that exact scope (classBodyFindings); params-only localScope
@@ -115,7 +115,7 @@ fun classGlobalCodegen(c: PsClass, r0: Resolver): ClassCodegenOut
                  hasAttr(c.cAttrs, "pinnable")),
         concat(genFunctions, thunks))
 
-fun classMemberFunctions(ms: Chain<PStmt>, r: Resolver, acc: List<CgFunction>): List<CgFunction>
+fun classMemberFunctions(ms, r, acc: List<CgFunction>): List<CgFunction>
   ret build(classMemberFunctionsB(ms, r, builderFrom(acc)))
 
 fun [tail] classMemberFunctionsB(ms: Chain<PStmt>, r: Resolver, [terminal] acc: ListBuilder<CgFunction>): ListBuilder<CgFunction>
@@ -147,8 +147,8 @@ fun [tail] cseLoop(ss: Chain<Slot>, acc: List<CgFuncSlot>): List<CgFuncSlot>
 
 # A fun-typed FIELD occupying a vtable slot needs a dispatch thunk: load the
 # field off `this`, call it with the packed params, return the result.
-fun classFieldThunks(ps: Chain<PStmt>, className: String, functionNames: List<String>,
-                            r: Resolver, acc: List<CgFunction>): List<CgFunction>
+fun classFieldThunks(ps, className, functionNames: List<String>,
+                            r, acc: List<CgFunction>): List<CgFunction>
   ret build(classFieldThunksB(ps, className, functionNames, r, builderFrom(acc)))
 
 fun [tail] classFieldThunksB(ps: Chain<PStmt>, className: String, functionNames: List<String>,
@@ -161,7 +161,7 @@ fun [tail] classFieldThunksB(ps: Chain<PStmt>, className: String, functionNames:
         : classFieldThunksB(l.next, className, functionNames, r, acc)
       (o: PStmt)    => classFieldThunksB(l.next, className, functionNames, r, acc)
 
-fun createThunk(className: String, let2: PsLet, r: Resolver): CgFunction
+fun createThunk(className, let2: PsLet, r): CgFunction
   let paramStruct = thunkParamStruct(let2.lType, r)
   let resultType = thunkResultType(let2.lType, r)
   let paramVars = map(cgStructFields(paramStruct), (f2) => RpStackVar(f2.fieldType, f2.fieldName))
@@ -176,21 +176,21 @@ fun createThunk(className: String, let2: PsLet, r: Resolver): CgFunction
                  cgOpsOf(list2(opCall, OpReturn(resultVar, List()))),
                  "", None, false, false, false, false)
 
-fun thunkParamStruct(sp: Spec|None, r: Resolver): CgType
+fun thunkParamStruct(sp: Spec|None, r): CgType
   ret match(sp)
     (s2: Spec) => match(s2)
       (cl: SCallable) => specGenerate(cl.scParams2, r)
       (o: Spec)       => CgStruct(List())
     ()          => CgStruct(List())
 
-fun thunkResultType(sp: Spec|None, r: Resolver): CgType
+fun thunkResultType(sp: Spec|None, r): CgType
   ret match(sp)
     (s2: Spec) => match(s2)
       (cl: SCallable) => specGenerateOpt(cl.scResult, r)
       (o: Spec)       => CgDataPointer()
     ()          => CgDataPointer()
 
-fun cgStructFields(t2: CgType): List<CgField>
+fun cgStructFields(t2): List<CgField>
   ret match(t2)
     (s2: CgStruct) => s2.fields
     (o: CgType)    => List()
@@ -200,7 +200,7 @@ fun cgStructFields(t2: CgType): List<CgField>
 # "array" field.
 class [final] ClassObjFields(cofStruct: CgType, cofLengthField: String|None)
 
-fun classObjectFields(c: PsClass, r: Resolver): ClassObjFields
+fun classObjectFields(c: PsClass, r): ClassObjFields
   let params = flattenParams(c.cParams)
   ret match(classArrayParam(chain(params)))
     (ap: PsLet) => classObjectFieldsArray(params, ap, r)
@@ -209,7 +209,7 @@ fun classObjectFields(c: PsClass, r: Resolver): ClassObjFields
                                                 map(params, (p) => letCgField(p, r)))),
                       None)
 
-fun letCgField(p: PStmt, r: Resolver): CgField
+fun letCgField(p, r): CgField
   ret match(p)
     (l: PsLet) => CgField(l.lName, specGenerateOpt(l.lType, r))
     (o: PStmt) => CgField("", CgDataPointer())
@@ -228,7 +228,7 @@ fun isArrayField(sp: Spec|None): Bool
       (o: Spec)         => false
     ()          => false
 
-fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r: Resolver): ClassObjFields
+fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r): ClassObjFields
   let scalars = filter(params, (p) => !isSameLet(p, ap))
   let scalarFields = map(scalars, (p) => letCgField(p, r))
   let arrayField = CgField("array", CgArray(specGenerateOpt(arrayElem(ap.lType), r), 0))
@@ -238,7 +238,7 @@ fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r: Resolver): ClassOb
                                  build(push(builderFrom(scalarFields), arrayField)))),
         arrayLengthFieldName(scalars, ap))
 
-fun isSameLet(p: PStmt, ap: PsLet): Bool
+fun isSameLet(p, ap: PsLet): Bool
   ret match(p)
     (l: PsLet) => l.lName == ap.lName
     (o: PStmt) => false
@@ -259,12 +259,12 @@ fun arrayLengthFieldName(scalars: List<PStmt>, ap: PsLet): String|None
 # the enum-encoding principle) emits the marker plus one Object per boxed
 # leaf, borrowing the same machinery; its inline leaves stay in the pool.
 # Simple enums (and non-root statements) emit nothing.
-fun enumGlobalCodegen(st: PsEnum, r: Resolver): List<CgObject>
+fun enumGlobalCodegen(st: PsEnum, r): List<CgObject>
   ret match(asEnumVariant(st.eSpec))
     (sp: SEnum) if enumIsRootStmt(st) => enumRootObjects(st, sp, r)
     ()           => List()
 
-fun enumRootObjects(st: PsEnum, sp: SEnum, r: Resolver): List<CgObject>
+fun enumRootObjects(st: PsEnum, sp: SEnum, r): List<CgObject>
   if isComplexRoot(r, sp.seRoot)
     ret enumComplexObjects(st, sp, r, true)
   ret enumAnyBoxedLeaf(chain(sp.seAllLeaves), r, sp.seRoot)
@@ -283,7 +283,7 @@ fun enumIsRootStmt(st: PsEnum): Bool
     (rn: String) => rn == st.eName
     ()            => true
 
-fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver, isComplex: Bool): List<CgObject>
+fun enumComplexObjects(st: PsEnum, sp: SEnum, r, isComplex: Bool): List<CgObject>
   let discs = getDiscriminators(r)
   # NOTE: [mutable] on enums is still unimplemented (the ATTRIBUTE now parses;
   # honouring it here is separate work). Leaves are emitted immutable.
@@ -307,8 +307,8 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r: Resolver, isComplex: Bool): Lis
              enumLeafObjects(chain(sp.seAllLeaves), chain(leafSets), st.eName,
                              discs, r, prefix, List()))
 
-fun enumLeafObjects(names: Chain<String>, sets: Chain<List<PStmt>>, rootName: String,
-                           discs: Dict<String, Int>, r: Resolver,
+fun enumLeafObjects(names, sets, rootName,
+                           discs: Dict<String, Int>, r,
                            prefix: List<CgField>, acc: List<CgObject>): List<CgObject>
   ret build(enumLeafObjectsB(names, sets, rootName, discs, r, prefix, builderFrom(acc)))
 
@@ -322,8 +322,8 @@ fun [tail] enumLeafObjectsB(names: Chain<String>, sets: Chain<List<PStmt>>, root
       (ls: ChainLink)  => enumLeafObjectsB(l.next, ls.next, rootName, discs, r, prefix,
                             push(acc, enumLeafObject(l.value, ls.value, rootName, discs, r, prefix)))
 
-fun enumLeafObject(leafName: String, leafFields: List<PStmt>, rootName: String,
-                   discs: Dict<String, Int>, r: Resolver, prefix: List<CgField>): CgObject
+fun enumLeafObject(leafName, leafFields: List<PStmt>, rootName,
+                   discs: Dict<String, Int>, r, prefix: List<CgField>): CgObject
   let objName = enumLeafObjectName(rootName, leafName)
   let fields = concat(prefix,
                        map(leafFields, (p) => letCgField(p, r)))
@@ -336,18 +336,18 @@ fun enumLeafObject(leafName: String, leafFields: List<PStmt>, rootName: String,
                getOr0(discs, "enumleaf(" + objName + ")"),
                enumLeafIsPinnable(rootName, leafName, r))
 
-fun enumLeafIsPinnable(rootName: String, leafName: String, r: Resolver): Bool
+fun enumLeafIsPinnable(rootName, leafName, r): Bool
   ret match(soleItem(findType(r, rootName)))
     (f: Found) => match(f.fStmt)
       (e: PsEnum) => leafHasAttr(e, leafName, "pinnable")
       (o: PStmt)  => false
     ()          => false
 
-fun leafHasAttr(e: PsEnum, leafName: String, attr: String): Bool
+fun leafHasAttr(e: PsEnum, leafName, attr: String): Bool
   ret fold(e.eVariants, false, (found, v) =>
         found || variantHasAttr(v, leafName, attr))
 
-fun variantHasAttr(v: PStmt, leafName: String, attr: String): Bool
+fun variantHasAttr(v, leafName, attr: String): Bool
   ret match(v)
     (ve: PsEnum) => isEmpty(ve.eVariants)
       ? (ve.eName == leafName && hasAttr(ve.eAttrs, attr))
@@ -364,7 +364,7 @@ fun variantHasAttr(v: PStmt, leafName: String, attr: String): Bool
 # ONE routine, so decision and emission cannot disagree (Python's own rule).
 class [final] LetCodegenOut(lcGlobals: List<CgGlobal>, lcFunctions: List<CgFunction>)
 
-fun letGlobalCodegen(l: PsLet, r: Resolver): LetCodegenOut
+fun letGlobalCodegen(l: PsLet, r): LetCodegenOut
   if isDeferredInit(l)
     ret LetCodegenOut(letLazyGlobal(l, r), List())
   ret match(staticGlobalPlan(l, r, List()))
@@ -375,7 +375,7 @@ fun letGlobalCodegen(l: PsLet, r: Resolver): LetCodegenOut
 # auto-promote — the init must be a single pure RParam (Python raises on a
 # non-trivial bundle; here the abort surfaces via an OpAbort-free contract
 # diff instead).
-fun letPlainGlobal(l: PsLet, r: Resolver): List<CgGlobal>
+fun letPlainGlobal(l: PsLet, r): List<CgGlobal>
   let xtype = specGenerateOpt(l.lType, r)
   ret match(l.lDefault)
     (dv: PExpr) => list1(CgGlobal(l.lName, xtype, mustResult(genExprTo(dv, r, l.lType)), None, None, None))
@@ -384,7 +384,7 @@ fun letPlainGlobal(l: PsLet, r: Resolver): List<CgGlobal>
 # [lazy] global — a static Lazy$<irmangle> stub whose closure points at the
 # lifted captureless init function (the lambdas pass guarantees the RHS is a
 # single fun_t value by now).
-fun letLazyGlobal(l: PsLet, r: Resolver): List<CgGlobal>
+fun letLazyGlobal(l: PsLet, r): List<CgGlobal>
   let xtype = specGenerateOpt(l.lType, r)
   let stubCls = stubClassName(xtype)
   let closureValue = match(l.lDefault)
@@ -401,7 +401,7 @@ fun letLazyGlobal(l: PsLet, r: Resolver): List<CgGlobal>
 # plus the anonymous statics emitted along the way, in emission order.
 class [final] SgpOut(sgpRp: RParam|None, sgpGlobals: List<CgGlobal>)
 
-fun staticGlobalPlan(l: PsLet, r: Resolver, chasing: List<String>): List<CgGlobal>|None
+fun staticGlobalPlan(l: PsLet, r, chasing: List<String>): List<CgGlobal>|None
   if contains2(chasing, l.lName)
     ret None
   ret match(l.lDefault)
@@ -416,7 +416,7 @@ fun staticGlobalPlan(l: PsLet, r: Resolver, chasing: List<String>): List<CgGloba
       ()         => None
     ()          => None
 
-fun sgpFinish(l: PsLet, r: Resolver, out: SgpOut): List<CgGlobal>|None
+fun sgpFinish(l: PsLet, r, out: SgpOut): List<CgGlobal>|None
   ret match(out.sgpRp)
     (rp: RParam) => sgpLeafOk(rp)
       # The let's own global comes after the ones its initialiser needed.
@@ -426,7 +426,7 @@ fun sgpFinish(l: PsLet, r: Resolver, out: SgpOut): List<CgGlobal>|None
 
 # Everything a C static initialiser can hold. A GlobalVar READ is not a
 # constant expression, so a reference surviving to a leaf disqualifies.
-fun sgpLeafOk(rp: RParam): Bool
+fun sgpLeafOk(rp): Bool
   ret match(rp)
     (ns: RpNewStruct)       => sgpLeavesOk(chain(ns.values))
     (i: RpInteger)          => true
@@ -447,7 +447,7 @@ fun [tail] sgpLeavesOk(vs: Chain<RpNamedValue>): Bool
 # a reference to another global let → chase its plan and borrow a constant /
 # static address (strings stay a GlobalVar read and fail leaf_ok at the use
 # site); anything else must generate to a single pure RParam.
-fun sgpEmit(x: PExpr, r: Resolver, chasing: List<String>, hint: String): SgpOut
+fun sgpEmit(x, r, chasing: List<String>, hint): SgpOut
   ret match(x)
     (c: PeCall)    => match(c.function)
       (nm: PeName) => match(c.parameter)
@@ -468,7 +468,7 @@ fun sgpNo(): SgpOut
 
 # Anything else: literals, tuples of constants, unit refs — must generate to
 # a single pure RParam (no ops, no stack vars). Validated by leaf_ok upstream.
-fun sgpEmitFallback(x: PExpr, r: Resolver): SgpOut
+fun sgpEmitFallback(x, r): SgpOut
   let b = genExpr(x, r)
   ret isEmpty(b.gbOps) && isEmpty(b.gbStackVars)
     ? SgpOut(b.gbResult, List())
@@ -476,26 +476,26 @@ fun sgpEmitFallback(x: PExpr, r: Resolver): SgpOut
 
 # A conversion (boxing into a union slot): convert the constant value; only a
 # PURE emission (no ops) stays static.
-fun sgpEmitConvert(cv: PeConvert, r: Resolver, chasing: List<String>, hint: String): SgpOut
+fun sgpEmitConvert(cv: PeConvert, r, chasing: List<String>, hint): SgpOut
   let inner = sgpEmit(cv.convInner, r, chasing, hint)
   ret match(inner.sgpRp)
     (rp: RParam) => sgpEmitConvertOn(cv, r, inner, rp)
     ()            => sgpNo()
 
-fun sgpEmitConvertOn(cv: PeConvert, r: Resolver, inner: SgpOut, rp: RParam): SgpOut
+fun sgpEmitConvertOn(cv: PeConvert, r, inner: SgpOut, rp: RParam): SgpOut
   let b = emitConversion(rp, exprType(cv.convInner, r), cv.convTarget, r)
   ret isEmpty(b.gbOps) && isEmpty(b.gbStackVars)
     ? SgpOut(b.gbResult, inner.sgpGlobals)
     : sgpNo()
 
-fun sgpEmitCtor(name: String, args: PeTuple, r: Resolver, chasing: List<String>, hint: String): SgpOut
+fun sgpEmitCtor(name, args: PeTuple, r, chasing: List<String>, hint): SgpOut
   ret match(soleItem(findType(r, name)))
     (f: Found) => match(f.fStmt)
       (cls: PsClass) => sgpEmitInstance(cls, args, r, chasing, hint)
       (o: PStmt)     => sgpNo()
     ()          => sgpNo()
 
-fun sgpEmitInstance(cls: PsClass, args: PeTuple, r: Resolver, chasing: List<String>, hint: String): SgpOut
+fun sgpEmitInstance(cls: PsClass, args: PeTuple, r, chasing: List<String>, hint): SgpOut
   if cls.cIsInterface || isSomeLet(classArrayParam(chain(flattenParams(cls.cParams))))
     ret sgpNo()
   let fields = flattenParams(cls.cParams)
@@ -509,9 +509,9 @@ fun isSomeLet(l: PsLet|None): Bool
     (l2: PsLet) => true
     ()           => false
 
-fun sgpEmitFields(as2: Chain<PTupEnt>, fs: Chain<PStmt>, cls: PsClass, r: Resolver,
-                         chasing: List<String>, hint: String, i: Int,
-                         pairs: List<RpNamedValue>, globals: List<CgGlobal>): SgpOut
+fun sgpEmitFields(as2, fs, cls: PsClass, r,
+                         chasing: List<String>, hint, i: Int,
+                         pairs, globals: List<CgGlobal>): SgpOut
   ret match(as2)
     (nil: ChainEnd) => sgpInstanceDone(cls, hint, pairs, globals)
     (l: ChainLink)  => match(fs)
@@ -519,7 +519,7 @@ fun sgpEmitFields(as2: Chain<PTupEnt>, fs: Chain<PStmt>, cls: PsClass, r: Resolv
       (lf: ChainLink)  => sgpEmitField(as2, fs, l, lf, cls, r, chasing, hint, i, pairs, globals)
 
 fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, lf: ChainLink<PStmt>,
-                 cls: PsClass, r: Resolver, chasing: List<String>, hint: String, i: Int,
+                 cls: PsClass, r, chasing: List<String>, hint, i: Int,
                  pairs: List<RpNamedValue>, globals: List<CgGlobal>): SgpOut
   let sub = sgpEmit(l.value.tupValue, r, chasing, hint + "$f" + String(i))
   ret match(sub.sgpRp)
@@ -531,7 +531,7 @@ fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, l
                       concat(globals, sub.sgpGlobals))
     ()            => sgpNo()
 
-fun sgpInstanceDone(cls: PsClass, hint: String, pairs: List<RpNamedValue>,
+fun sgpInstanceDone(cls: PsClass, hint, pairs,
                     globals: List<CgGlobal>): SgpOut
   ret SgpOut(RpStaticObjectRef(hint),
              build(push(builderFrom(globals), CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None))))
@@ -539,7 +539,7 @@ fun sgpInstanceDone(cls: PsClass, hint: String, pairs: List<RpNamedValue>,
 # A reference to another global let: chase its own plan. An integer/float
 # constant inlines its constant; a static class instance is referenced by
 # address. Strings stay a GlobalVar read and fail leaf_ok at the use site.
-fun sgpEmitChase(name: String, r: Resolver, chasing: List<String>): SgpOut
+fun sgpEmitChase(name, r, chasing: List<String>): SgpOut
   ret match(soleItem(findData(r, name)))
     (f: Found) => match(f.fStmt)
       (let2: PsLet) => !isDeferredInit(let2) && !contains2(chasing, let2.lName)
@@ -548,7 +548,7 @@ fun sgpEmitChase(name: String, r: Resolver, chasing: List<String>): SgpOut
       (o: PStmt)    => sgpNo()
     ()          => sgpNo()
 
-fun sgpChasePlan(let2: PsLet, r: Resolver, chasing: List<String>): SgpOut
+fun sgpChasePlan(let2: PsLet, r, chasing: List<String>): SgpOut
   ret match(staticGlobalPlan(let2, r, chasing))
     (sub: List<CgGlobal>) => sgpBorrowLast(sub)
     ()                     => sgpNo()
@@ -562,7 +562,7 @@ fun sgpBorrowLast(sub: List<CgGlobal>): SgpOut
       ()              => sgpNo()
     ()              => sgpNo()
 
-fun sgpBorrowInit(init: RParam): SgpOut
+fun sgpBorrowInit(init): SgpOut
   ret match(init)
     (i: RpInteger)          => SgpOut(init, List())
     (f: RpFloat)            => SgpOut(init, List())

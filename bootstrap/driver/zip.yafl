@@ -32,12 +32,12 @@ enum ZipResult
 # the end yields -1 rather than aborting, so a truncated archive is reported
 # as a malformed one.
 
-fun u16At(s: String, at: Int): Int
+fun u16At(s, at): Int
   ret at < 0 || at + 2 > length(s)
     ? -1
     : Int(byteAt(s, at)) + Int(byteAt(s, at + 1)) * 256
 
-fun u32At(s: String, at: Int): Int
+fun u32At(s, at): Int
   ret at < 0 || at + 4 > length(s)
     ? -1
     : Int(byteAt(s, at))
@@ -51,16 +51,16 @@ fun u32At(s: String, at: Int): Int
 # has to be found by scanning BACKWARDS for its signature. Scanning forwards
 # would match a signature that happened to occur inside stored file data.
 
-fun findEocd(s: String): Int
+fun findEocd(s): Int
   ret eocdScan(s, length(s) - 22)
 
-fun [tail] eocdScan(s: String, at: Int): Int
+fun [tail] eocdScan(s, at): Int
   ret at < 0 ? -1
     : u32At(s, at) == 101010256 ? at
     : eocdScan(s, at - 1)
 
 
-fun readZip(s: String): ZipResult
+fun readZip(s): ZipResult
   let eocd = findEocd(s)
   if eocd < 0
     ret ZipErr("not a zip archive: no end-of-central-directory record")
@@ -70,7 +70,7 @@ fun readZip(s: String): ZipResult
     ret ZipErr("malformed end-of-central-directory record")
   ret centralWalk(s, start, count, builder())
 
-fun [tail] centralWalk(s: String, at: Int, left: Int,
+fun [tail] centralWalk(s, at, left,
                        [terminal] b: ListBuilder<ZipEntry>): ZipResult
   if left <= 0
     ret ZipOk(build(b))
@@ -99,13 +99,13 @@ fun [tail] centralWalk(s: String, at: Int, left: Int,
     ()             => zipDiscard(b, ZipErr("entry \"" + name
                                            + "\" has a malformed local header"))
 
-fun zipDiscard([terminal] b: ListBuilder<ZipEntry>, e: ZipResult): ZipResult
+fun zipDiscard([terminal] b: ListBuilder<ZipEntry>, e): ZipResult
   ret build(b) |> (l) => e
 
 # The local header repeats the name and carries its OWN extra-field length,
 # which routinely differs from the central directory's — the data offset must
 # be computed from the local header, not from the central one.
-fun storedBody(s: String, localAt: Int, size: Int): String|None
+fun storedBody(s, localAt, size): String|None
   if u32At(s, localAt) != 67324752
     ret None
   let nameLen = u16At(s, localAt + 26)

@@ -36,7 +36,7 @@ fun eqSpecOpt(a: Spec|None, b: Spec|None): Bool
       (y: Spec) => false
       ()        => true
 
-fun eqSpec(a: Spec, b: Spec): Bool
+fun eqSpec(a, b): Bool
   ret match(a)
     (x: SBuiltin) => match(b)
       (y: SBuiltin) => x.sbName == y.sbName
@@ -94,7 +94,7 @@ fun eqExprOpt(a: PExpr|None, b: PExpr|None): Bool
       (y: PExpr) => false
       ()         => true
 
-fun eqExpr(a: PExpr, b: PExpr): Bool
+fun eqExpr(a, b): Bool
   ret match(a)
     (x: PeInt) => match(b)
       (y: PeInt) => x.value == y.value && x.precision == y.precision
@@ -227,7 +227,7 @@ fun eqArm(a: PArm, b: PArm): Bool
       && eqExpr(a.armBody, b.armBody)
       && eqLine(a.parmLine, b.parmLine)
 
-fun eqLit(a: PLit, b: PLit): Bool
+fun eqLit(a, b): Bool
   ret match(a)
     (x: PlExpr) => match(b)
       (y: PlExpr) => eqExpr(x.litExpr, y.litExpr)
@@ -246,7 +246,7 @@ fun eqGen(a: PGen, b: PGen): Bool
       && eqLine(a.pgLine, b.pgLine)
 
 # `==` has no Bool instance in the stdlib, and YAFL derives nothing.
-fun eqBool(a: Bool, b: Bool): Bool
+fun eqBool(a: Bool, b): Bool
   ret a ? b : !b
 
 fun eqLine(a: PLine, b: PLine): Bool
@@ -256,7 +256,7 @@ fun eqLine(a: PLine, b: PLine): Bool
 # The `inferred` flags and the enum's cached root/spec are derived caches —
 # excluded here exactly as Python excludes them.
 
-fun eqStmt(a: PStmt, b: PStmt): Bool
+fun eqStmt(a, b): Bool
   ret match(a)
     (x: PsFun) => match(b)
       (y: PsFun) => x.fName == y.fName

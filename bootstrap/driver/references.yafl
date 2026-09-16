@@ -32,7 +32,7 @@ fun qualifiedRefs(stmts: List<PStmt>): List<String>
 
 # A name is a candidate only when it is qualified; `prefixesOf` splits it and
 # strips the `@unique` tags later.
-fun noteName(name: String, acc: Set<String>): Set<String>
+fun noteName(name, acc): Set<String>
   ret contains(name, "::") ? add(acc, name) : acc
 
 
@@ -46,7 +46,7 @@ fun [tail] refsStmts(ss: Chain<PStmt>, acc: Set<String>): Set<String>
 # fImports/cImports/... are deliberately NOT descended: the import group is
 # read directly by declaredImports, and descending it here would count each
 # block's imports once per statement of that block.
-fun refsStmt(st: PStmt, acc: Set<String>): Set<String>
+fun refsStmt(st, acc): Set<String>
   ret match(st)
     (f: PsFun) => acc
       |> (a) => refsAttrs(chain(f.fAttrs), a)
@@ -101,7 +101,7 @@ fun refsStmt(st: PStmt, acc: Set<String>): Set<String>
     (im: PsImport)    => acc
     (n2: PsNamespace) => acc
 
-fun [tail] refsAttrs(as2: Chain<PAttr>, acc: Set<String>): Set<String>
+fun [tail] refsAttrs(as2: Chain<PAttr>, acc): Set<String>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsAttrs(l.next, refsOptExpr(l.value.attrValue, acc))
@@ -119,12 +119,12 @@ fun [tail] refsExprs(es: Chain<PExpr>, acc: Set<String>): Set<String>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsExprs(l.next, refsExpr(l.value, acc))
 
-fun refsOptExpr(ex: PExpr|None, acc: Set<String>): Set<String>
+fun refsOptExpr(ex: PExpr|None, acc): Set<String>
   ret match(ex)
     (e: PExpr) => refsExpr(e, acc)
     ()         => acc
 
-fun refsExpr(ex: PExpr, acc: Set<String>): Set<String>
+fun refsExpr(ex, acc): Set<String>
   ret match(ex)
     (n2: PeName) => noteName(n2.refName, acc)
       |> (a) => refsSpecs(chain(n2.refTypeParams), a)
@@ -157,12 +157,12 @@ fun refsExpr(ex: PExpr, acc: Set<String>): Set<String>
     (li: PeLiteral) => acc
     (lo: PeLowered) => acc
 
-fun [tail] refsTupEnts(ts: Chain<PTupEnt>, acc: Set<String>): Set<String>
+fun [tail] refsTupEnts(ts: Chain<PTupEnt>, acc): Set<String>
   ret match(ts)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsTupEnts(l.next, refsExpr(l.value.tupValue, acc))
 
-fun [tail] refsFieldArgs(fs: Chain<PFieldArg>, acc: Set<String>): Set<String>
+fun [tail] refsFieldArgs(fs: Chain<PFieldArg>, acc): Set<String>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsFieldArgs(l.next, refsExpr(l.value.faValue, acc))
@@ -172,7 +172,7 @@ fun [tail] refsArms(as3: Chain<PArm>, acc: Set<String>): Set<String>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsArms(l.next, refsArm(l.value, acc))
 
-fun refsArm(arm: PArm, acc: Set<String>): Set<String>
+fun refsArm(arm: PArm, acc): Set<String>
   ret refsOptSpec(arm.armType, acc)
     |> (a) => refsExpr(arm.armBody, a)
     |> (a) => refsLits(chain(arm.armLiterals), a)
@@ -184,12 +184,12 @@ fun [tail] refsLits(ls: Chain<PLit>, acc: Set<String>): Set<String>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsLits(l.next, refsLit(l.value, acc))
 
-fun refsLit(lit: PLit, acc: Set<String>): Set<String>
+fun refsLit(lit, acc): Set<String>
   ret match(lit)
     (x: PlExpr)  => refsExpr(x.litExpr, acc)
     (r: PlRange) => refsExpr(r.rangeHi, refsExpr(r.rangeLo, acc))
 
-fun [tail] refsPositions(ps: Chain<PPos>, acc: Set<String>): Set<String>
+fun [tail] refsPositions(ps: Chain<PPos>, acc): Set<String>
   ret match(ps)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsPositions(l.next, refsOptSpec(l.value.posType, acc))
@@ -206,12 +206,12 @@ fun [tail] refsSpecs(ss: Chain<Spec>, acc: Set<String>): Set<String>
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsSpecs(l.next, refsSpec(l.value, acc))
 
-fun refsOptSpec(sp: Spec|None, acc: Set<String>): Set<String>
+fun refsOptSpec(sp: Spec|None, acc): Set<String>
   ret match(sp)
     (s2: Spec) => refsSpec(s2, acc)
     ()         => acc
 
-fun refsSpec(sp: Spec, acc: Set<String>): Set<String>
+fun refsSpec(sp, acc): Set<String>
   ret match(sp)
     (n2: SNamed) => refsSpecs(chain(n2.snParams), noteName(n2.snName, acc))
     (c: SClass)  => refsSpecs(chain(c.scParams), acc)
@@ -224,7 +224,7 @@ fun refsSpec(sp: Spec, acc: Set<String>): Set<String>
     (b: SBuiltin) => acc
     (g: SGeneric) => acc
 
-fun [tail] refsEntries(es: Chain<SEntry>, acc: Set<String>): Set<String>
+fun [tail] refsEntries(es: Chain<SEntry>, acc): Set<String>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => refsEntries(l.next,

@@ -18,7 +18,7 @@ import Bootstrap::Parse
 
 
 
-fun trimUnusedVtableSlots(a: CgApp): CgApp
+fun trimUnusedVtableSlots(a): CgApp
   let fromFns = fold(appFunctions(a), setEmpty(), vtuFunction)
   let used = fold(appGlobals(a), fromFns, vtuGlobal)
   let out = fold(appObjects(a),
@@ -34,12 +34,12 @@ fun vtuFunction(acc: StrSet, f: CgFunction): StrSet
         fold(opAllParams(op), a2, (a3, p) =>
           fold(rpFlatten(p, true), a3, vtuAddVirtual)))
 
-fun vtuGlobal(acc: StrSet, g2: CgGlobal): StrSet
+fun vtuGlobal(acc, g2: CgGlobal): StrSet
   ret match(g2.globalInit)
     (init: RParam) => fold(rpFlatten(init, true), acc, vtuAddVirtual)
     ()              => acc
 
-fun vtuAddVirtual(acc: StrSet, p: RParam): StrSet
+fun vtuAddVirtual(acc, p): StrSet
   ret match(p)
     (vf: RpVirtualFunction) => setAdd(acc, vf.name)
     (o: RParam)             => acc

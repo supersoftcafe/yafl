@@ -34,19 +34,19 @@ import Bootstrap::Types
 # its compilation created.
 class [final] ExprOut(eoExpr: PExpr, eoGlobals: List<PStmt>)
 
-fun noGlobals(x: PExpr): ExprOut
+fun noGlobals(x): ExprOut
   ret ExprOut(x, List())
 
 # ── the conversion wrap ─────────────────────────────────────────────────────
 # THE compile-side insertion point. Identity when the receiver expects nothing,
 # and when no representation change is needed.
 
-fun converted(x: PExpr, expected: Spec|None, r: Resolver): PExpr
+fun converted(x, expected: Spec|None, r): PExpr
   ret match(expected)
     (want: Spec) if needsConversion(r, exprType(x, r), want) => PeConvert(x, want, exprLine(x))
     ()           => x
 
-fun convertedOut(out: ExprOut, expected: Spec|None, r: Resolver): ExprOut
+fun convertedOut(out: ExprOut, expected: Spec|None, r): ExprOut
   ret ExprOut(converted(out.eoExpr, expected, r), out.eoGlobals)
 
 # A Convert node RE-COMPILES its inner every pass (Python conversion.py:56):
@@ -59,7 +59,7 @@ fun convertedOut(out: ExprOut, expected: Spec|None, r: Resolver): ExprOut
 # view wins: a ground expected that differs from our target means the receiver
 # WIDENED since this wrap was inserted — retarget to it. The wrap dissolves
 # when no conversion remains.
-fun compileConvert(cv: PeConvert, r: Resolver, expected: Spec|None): ExprOut
+fun compileConvert(cv: PeConvert, r, expected: Spec|None): ExprOut
   let inner = compileExpr(cv.convInner, r, None)
   let spec = compileSpec(cv.convTarget, r)
   let target = retargeted(spec.soSpec, expected)
@@ -68,7 +68,7 @@ fun compileConvert(cv: PeConvert, r: Resolver, expected: Spec|None): ExprOut
               concat(inner.eoGlobals, spec.soGlobals))
     : ExprOut(inner.eoExpr, concat(inner.eoGlobals, spec.soGlobals))
 
-fun retargeted(target: Spec, expected: Spec|None): Spec
+fun retargeted(target, expected: Spec|None): Spec
   ret match(expected)
     (e2: Spec) if isConcrete(e2) && uid(e2) != "" && uid(e2) != uid(target) => e2
     ()         => target
@@ -78,7 +78,7 @@ fun retargeted(target: Spec, expected: Spec|None): Spec
 # match it means. Mirrors pyast/expression/coalesce.py; see nodes.yafl for why
 # this cannot be parse-time sugar.
 
-fun compileCoalesce(qq: PeCoalesce, r: Resolver, expected: Spec|None): ExprOut
+fun compileCoalesce(qq: PeCoalesce, r, expected): ExprOut
   # The subject compiles with NO expected type: pushing the receiver's type
   # down would land the fallback's type on the option and defeat the
   # narrowing. This compile is also how the subject's type becomes known,
@@ -90,15 +90,15 @@ fun compileCoalesce(qq: PeCoalesce, r: Resolver, expected: Spec|None): ExprOut
       : coalesceStay(qq, subj, r, expected)
     ()         => coalesceStay(qq, subj, r, expected)
 
-fun coalesceOn(qq: PeCoalesce, subj: ExprOut, st: Spec, r: Resolver,
-               expected: Spec|None): ExprOut
+fun coalesceOn(qq: PeCoalesce, subj: ExprOut, st, r,
+               expected): ExprOut
   ret match(withoutNone(st))
     (nr: Spec) => coalesceDesugar(qq, nr, r, expected)
     ()         => coalesceStay(qq, subj, r, expected)
 
 # Not ground yet: keep the node, with both children advanced one pass.
-fun coalesceStay(qq: PeCoalesce, subj: ExprOut, r: Resolver,
-                 expected: Spec|None): ExprOut
+fun coalesceStay(qq: PeCoalesce, subj: ExprOut, r,
+                 expected): ExprOut
   let fb = compileExpr(qq.qqFallback, r, expected)
   ret ExprOut(PeCoalesce(subj.eoExpr, fb.eoExpr, qq.peqqLine),
               concat(subj.eoGlobals, fb.eoGlobals))
@@ -116,7 +116,7 @@ fun coalesceStay(qq: PeCoalesce, subj: ExprOut, r: Resolver,
 # anything that LIFTS: a lambda in the subject became two
 # `$lambdas::lambda@...` globals and the two compilers disagreed about which
 # survived. Recompiling from the original is deterministic and yields one.
-fun coalesceDesugar(qq: PeCoalesce, narrowed: Spec, r: Resolver,
+fun coalesceDesugar(qq: PeCoalesce, narrowed, r,
                     expected: Spec|None): ExprOut
   let subject = qq.qqSubject
   let fallback = qq.qqFallback
@@ -138,7 +138,7 @@ fun coalesceDesugar(qq: PeCoalesce, narrowed: Spec, r: Resolver,
 
 # ── the pass ────────────────────────────────────────────────────────────────
 
-fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
+fun compileExpr(x, r, expected): ExprOut
   ret match(x)
     # A literal's ONLY conversion is boxing into a union slot.
     (i: PeInt)     => noGlobals(converted(x, expected, r))
@@ -176,7 +176,7 @@ fun compileExpr(x: PExpr, r: Resolver, expected: Spec|None): ExprOut
 # `this.field`; a TRAIT hit records which interface instantiation won (the
 # disambiguation cache — excluded from identity). An unresolved name returns
 # UNTOUCHED: no type-param compile, no conversion.
-fun compileName(nm: PeName, r: Resolver, expected: Spec|None): ExprOut
+fun compileName(nm, r, expected: Spec|None): ExprOut
   let bag = findData(r, nm.refName)
   ret contains(nm.refName, "@")
     ? hashedName(nm, bag, r, expected)
@@ -184,12 +184,12 @@ fun compileName(nm: PeName, r: Resolver, expected: Spec|None): ExprOut
 
 # Already committed: the ambiguity check is skipped, but the type-param step
 # below still reruns (inference may only ground on a later pass).
-fun hashedName(nm: PeName, bag: Findings, r: Resolver, expected: Spec|None): ExprOut
+fun hashedName(nm, bag: Findings, r, expected: Spec|None): ExprOut
   ret match(soleItem(bag))
     (f: Found) => finishName(nm, f.fStmt, nm.refName, nm.penTrait, r, expected)
     ()         => noGlobals(nm)
 
-fun unhashedName(nm: PeName, bag: Findings, r: Resolver,
+fun unhashedName(nm, bag: Findings, r,
                  expected: Spec|None): ExprOut
   if !bag.bComplete
     ret noGlobals(nm)
@@ -202,7 +202,7 @@ fun unhashedName(nm: PeName, bag: Findings, r: Resolver,
 # A generic ambient instance's member commits only once the use site binds
 # every instance placeholder (the SOLVED scope is what the node records);
 # until then leave the use unresolved and let a later pass retry.
-fun traitCommit(nm: PeName, f: Found, r: Resolver,
+fun traitCommit(nm, f: Found, r,
                 expected: Spec|None): ExprOut
   ret match(f.fInstanceParams)
     (own: List<String>) => isEmpty(own)
@@ -212,7 +212,7 @@ fun traitCommit(nm: PeName, f: Found, r: Resolver,
     ()                  => finishName(nm, f.fStmt, f.fName, wonTraitScope(f),
                                       r, expected)
 
-fun traitCommitSolved(nm: PeName, f: Found, solved: Spec|None, r: Resolver,
+fun traitCommitSolved(nm, f: Found, solved, r,
                       expected: Spec|None): ExprOut
   ret match(solved)
     (sc: Spec) => finishName(nm, f.fStmt, f.fName, classTraitScope(solved),
@@ -230,7 +230,7 @@ fun wonTraitScope(f: Found): Spec|None
     (t2: ScTrait) => classTraitScope(f.fTraitScope)
     (o: RScope)   => None
 
-fun classTraitScope(ts: Spec|None): Spec|None
+fun classTraitScope(ts): Spec|None
   ret match(ts)
     (t2: Spec) => match(t2)
       (c: SClass) => ts
@@ -241,8 +241,8 @@ fun classTraitScope(ts: Spec|None): Spec|None
 # type (use_site_type_params) — runs while any supplied argument still carries
 # a hole, keeping a partial result's placeholders for a later pass — then
 # compile them like any spelled type params.
-fun finishName(nm: PeName, decl: PStmt, newName: String,
-               traitScope: Spec|None, r: Resolver,
+fun finishName(nm: PeName, decl, newName,
+               traitScope, r,
                expected: Spec|None): ExprOut
   let inferred = useSiteTypeParams(decl, nm.refTypeParams, expected, r)
   let tps = compileParams(inferred, r)
@@ -258,7 +258,7 @@ fun finishName(nm: PeName, decl: PStmt, newName: String,
 # compiled (only when fully ground — a placeholder mid-resolution keeps the
 # original), and the result preferring the call site's expected type so a
 # narrower body widens via boxing.
-fun compileLambda(lm: PeLambda, r0: Resolver, expected: Spec|None): ExprOut
+fun compileLambda(lm: PeLambda, r0, expected: Spec|None): ExprOut
   let r = localScope(paramLets(lm.lamParams), r0)
   let params0 = threadExpected(lm.lamParams, expected)
   let prm = compileStmt(params0, r, None)
@@ -272,7 +272,7 @@ fun compileLambda(lm: PeLambda, r0: Resolver, expected: Spec|None): ExprOut
                                  lm.pelLine)),
               concat(prm.soExtra, body.eoGlobals))
 
-fun threadExpected(params: PStmt, expected: Spec|None): PStmt
+fun threadExpected(params, expected: Spec|None): PStmt
   ret match(expected)
     (e2: Spec) => match(e2)
       (c: SCallable) => match(c.scParams2)
@@ -299,8 +299,8 @@ fun expectedResult(expected: Spec|None): Spec|None
 
 # Prefer the expected result when the body's type fits it — the lambda widens
 # via boxing and the call's parameter check sees matching types.
-fun lambdaResult(subExpected: Spec|None, bodyTy: Spec|None,
-                 r: Resolver): Spec|None
+fun lambdaResult(subExpected, bodyTy,
+                 r): Spec|None
   ret match(subExpected)
     (se: Spec) => match(bodyTy)
       (bt: Spec) => isConcrete(se) && triTrue(assignableFrom(r, se, bt))
@@ -312,20 +312,20 @@ fun lambdaResult(subExpected: Spec|None, bodyTy: Spec|None,
 # The parameter types the body was ACTUALLY compiled against — but only when
 # fully ground; otherwise the original spelling (avoids reporting an
 # unresolved generic mid-resolution).
-fun reportedParams(compiled: PStmt, original: PStmt): Spec
+fun reportedParams(compiled, original): Spec
   let threaded = paramsTupleOf(compiled)
   ret uid(threaded) != "" ? threaded : paramsTupleOf(original)
 
 # A field read: the base compiles with NO expectation (it is not the value the
 # receiver wants), then the read owns its own conversion. An ENUM-typed base
 # resolves a bare member through the enum's NARROWING (below).
-fun compileDot(d: PeDot, r: Resolver, expected: Spec|None): ExprOut
+fun compileDot(d: PeDot, r, expected: Spec|None): ExprOut
   let base = compileExpr(d.base, r, None)
   let out = PeDot(base.eoExpr, dotMemberName(d, base.eoExpr, r, expected),
                   d.pedLine)
   ret ExprOut(converted(out, expected, r), base.eoGlobals)
 
-fun dotMemberName(d: PeDot, base: PExpr, r: Resolver,
+fun dotMemberName(d: PeDot, base, r,
                   expected: Spec|None): String
   ret match(exprType(base, r))
     (bt: Spec) => match(bt)
@@ -339,7 +339,7 @@ fun dotMemberName(d: PeDot, base: PExpr, r: Resolver,
       (o2: Spec)  => d.member
     ()         => d.member
 
-fun classDotName(d: PeDot, c2: SClass, r: Resolver,
+fun classDotName(d: PeDot, c2: SClass, r,
                  expected: Spec|None): String
   ret match(soleItem(findType(r, c2.scName)))
     (f: Found) => match(f.fStmt)
@@ -351,7 +351,7 @@ fun classDotName(d: PeDot, c2: SClass, r: Resolver,
       (o: PStmt)    => d.member
     ()         => d.member
 
-fun narrowedName(n: Narrowed, fallback: String): String
+fun narrowedName(n, fallback): String
   ret match(n)
     (h: NfHit)    => h.nfName
     (o: Narrowed) => fallback
@@ -364,7 +364,7 @@ fun narrowedName(n: Narrowed, fallback: String): String
 # win — reading any other would be reading a sibling variant's slot.
 
 
-fun narrowedEnumField(r: Resolver, e2: SEnum, bare: String): Narrowed
+fun narrowedEnumField(r, e2: SEnum, bare): Narrowed
   let cands = fieldsMatching(chain(enumFieldsVia(r, e2.seRoot)), bare,
                              List())
   if exactly(chain(cands), 1)
@@ -378,7 +378,7 @@ fun narrowedEnumField(r: Resolver, e2: SEnum, bare: String): Narrowed
     # Root not resolved yet: retry next pass.
     ()         => NfMiss()
 
-fun fieldsMatching(fs: Chain<SField>, bare: String,
+fun fieldsMatching(fs, bare,
                           acc: List<SField>): List<SField>
   ret build(fieldsMatchingB(fs, bare, builderFrom(acc)))
 
@@ -399,7 +399,7 @@ fun ownedHit(cands: List<SField>, covering: List<SField>): Narrowed
   let owned = fieldsCovered(chain(cands), covering, List())
   ret exactly(chain(owned), 1) ? hitOf(owned) : NfAmbiguous()
 
-fun fieldsCovered(cs: Chain<SField>, covering: List<SField>,
+fun fieldsCovered(cs, covering: List<SField>,
                          acc: List<SField>): List<SField>
   ret build(fieldsCoveredB(cs, covering, builderFrom(acc)))
 
@@ -431,7 +431,7 @@ fun [tail] coverVariants(vs: Chain<PStmt>, valid: List<String>,
       (v: PsEnum) => coverVariants(l.next, valid, coverNode(v, valid, acc))
       (o: PStmt)  => coverVariants(l.next, valid, acc)
 
-fun typedFieldsOf(ls: Chain<PStmt>, acc: List<SField>): List<SField>
+fun typedFieldsOf(ls, acc: List<SField>): List<SField>
   ret build(typedFieldsOfB(ls, builderFrom(acc)))
 
 fun [tail] typedFieldsOfB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<SField>): ListBuilder<SField>
@@ -446,8 +446,8 @@ fun [tail] typedFieldsOfB(ls: Chain<PStmt>, [terminal] acc: ListBuilder<SField>)
 # _substitute_enum_type_params: a generic enum's fields are stored against the
 # declaration's placeholders (`value: T`); a read off a concrete instantiation
 # (Chain<String>) maps them through the receiver's type arguments.
-fun substituteEnumTypeParams(r: Resolver, receiver: SEnum,
-                             fieldType: Spec|None): Spec|None
+fun substituteEnumTypeParams(r, receiver: SEnum,
+                             fieldType): Spec|None
   ret match(fieldType)
     (ft: Spec) => isEmpty(receiver.seParams)
       ? fieldType
@@ -473,7 +473,7 @@ fun mapEnumField(r: Resolver, receiver: SEnum, ft: Spec): Spec|None
 # NewEnumExpression.compile (new.py:185-210): thread each construction
 # argument's declared FIELD type down — the argument node owns any boxing
 # toward it; the constructed value owns its conversion to the receiver.
-fun compileNewEnum(ne: PeNewEnum, r: Resolver, expected: Spec|None): ExprOut
+fun compileNewEnum(ne: PeNewEnum, r, expected: Spec|None): ExprOut
   let leafFields = cneLeafFields(ne, r)
   let out = cneArgs(chain(ne.fieldArgs), leafFields, r, builder(),
                     List())
@@ -481,7 +481,7 @@ fun compileNewEnum(ne: PeNewEnum, r: Resolver, expected: Spec|None): ExprOut
                      ne.penewLine)
   ret ExprOut(converted(e2, expected, r), out.cneGlobals)
 
-fun cneLeafFields(ne: PeNewEnum, r: Resolver): List<PStmt>
+fun cneLeafFields(ne: PeNewEnum, r): List<PStmt>
   ret match(soleItem(findType(r, ne.rootName)))
     (f: Found) => match(f.fStmt)
       (root: PsEnum) => cneLeafFieldsOf(ne, root)
@@ -496,8 +496,8 @@ fun cneLeafFieldsOf(ne: PeNewEnum, root: PsEnum): List<PStmt>
 
 class [final] CneOut(cneFas: List<PFieldArg>, cneGlobals: List<PStmt>)
 
-fun [tail] cneArgs(fas: Chain<PFieldArg>, leafFields: List<PStmt>, r: Resolver,
-                   [terminal] acc: ListBuilder<PFieldArg>, globals2: List<PStmt>): CneOut
+fun [tail] cneArgs(fas: Chain<PFieldArg>, leafFields: List<PStmt>, r,
+                   [terminal] acc: ListBuilder<PFieldArg>, globals2): CneOut
   ret match(fas)
     (nil: ChainEnd) => CneOut(build(acc), globals2)
     (l: ChainLink)  => compileExpr(l.value.faValue, r,
@@ -508,7 +508,7 @@ fun [tail] cneArgs(fas: Chain<PFieldArg>, leafFields: List<PStmt>, r: Resolver,
                             PFieldArg(l.value.faName, o.eoExpr)),
                         concat(globals2, o.eoGlobals))
 
-fun compileCall(c: PeCall, r: Resolver, expected: Spec|None): ExprOut
+fun compileCall(c: PeCall, r, expected): ExprOut
   let arg = compileExpr(c.parameter, r, paramShapeOf(exprType(c.function, r)))
   ret match(exprType(arg.eoExpr, r))
     (pt: Spec) => match(pt)
@@ -519,8 +519,8 @@ fun compileCall(c: PeCall, r: Resolver, expected: Spec|None): ExprOut
 fun partialCall(c: PeCall, arg: ExprOut): ExprOut
   ret ExprOut(PeCall(c.function, arg.eoExpr, c.pecLine), arg.eoGlobals)
 
-fun callWithShape(c: PeCall, r: Resolver, arg: ExprOut, tp: STuple,
-                  expected: Spec|None): ExprOut
+fun callWithShape(c: PeCall, r, arg: ExprOut, tp,
+                  expected): ExprOut
   let fn = compileExpr(c.function, r, SCallable(tp, expected, c.pecLine))
   ret ExprOut(converted(PeCall(fn.eoExpr, arg.eoExpr, c.pecLine), expected, r),
               concat(fn.eoGlobals, arg.eoGlobals))
@@ -536,7 +536,7 @@ fun paramShapeOf(ft: Spec|None): Spec|None
 # toward the field it BINDS (positionally, or by NAME — `f(5, bias = 7)`
 # converges its second entry toward `bias`, not toward index 1), and the whole
 # tuple then owns any box into a union.
-fun compileTuple(tp: PeTuple, r: Resolver, expected: Spec|None): ExprOut
+fun compileTuple(tp, r, expected: Spec|None): ExprOut
   let slots = entrySlots(tp, r, expected)
   let es = compileTupEnts(chain(tp.exprs), r, slots, 0, builder(),
                           List())
@@ -545,9 +545,9 @@ fun compileTuple(tp: PeTuple, r: Resolver, expected: Spec|None): ExprOut
 
 class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>)
 
-fun [tail] compileTupEnts(es: Chain<PTupEnt>, r: Resolver, slots: List<SEntry>,
-                          i: Int, [terminal] acc: ListBuilder<PTupEnt>,
-                          glb: List<PStmt>): TupEntsOut
+fun [tail] compileTupEnts(es: Chain<PTupEnt>, r, slots: List<SEntry>,
+                          i, [terminal] acc: ListBuilder<PTupEnt>,
+                          glb): TupEntsOut
   ret match(es)
     (nil: ChainEnd) => TupEntsOut(build(acc), glb)
     (l: ChainLink)  => compileExpr(l.value.tupValue, r, entryAt(slots, i))
@@ -559,21 +559,21 @@ fun [tail] compileTupEnts(es: Chain<PTupEnt>, r: Resolver, slots: List<SEntry>,
 
 # The receiver's entries, ORDERED to match this tuple's entries via the shared
 # binding. A union receiver first narrows to the tuple variant this value fits.
-fun entrySlots(tp: PeTuple, r: Resolver, expected: Spec|None): List<SEntry>
+fun entrySlots(tp, r, expected: Spec|None): List<SEntry>
   ret match(effectiveTarget(tp, r, expected))
     (t2: Spec) => match(t2)
       (st: STuple) => boundSlots(st, tp)
       (o: Spec)    => List()
     ()         => List()
 
-fun effectiveTarget(tp: PeTuple, r: Resolver, expected: Spec|None): Spec|None
+fun effectiveTarget(tp, r, expected: Spec|None): Spec|None
   ret match(expected)
     (want: Spec) => isUnion(want)
       ? tupleVariantOf(tp, r, want)
       : want
     ()           => None
 
-fun tupleVariantOf(tp: PeTuple, r: Resolver, want: Spec): Spec|None
+fun tupleVariantOf(tp, r, want): Spec|None
   ret match(exprType(tp, r))
     (actual: Spec) if isConcrete(actual) => matchingTupleVariant(r, actual, want)
     ()             => None
@@ -589,7 +589,7 @@ fun tupNames(tp: PeTuple): List<String>
 fun nameOfEnts(es: Chain<PTupEnt>, acc: List<String>): List<String>
   ret build(nameOfEntsB(es, builderFrom(acc)))
 
-fun [tail] nameOfEntsB(es: Chain<PTupEnt>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
+fun [tail] nameOfEntsB(es: Chain<PTupEnt>, [terminal] acc): ListBuilder<String>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => nameOfEntsB(l.next, push(acc, l.value.tupName))
@@ -606,7 +606,7 @@ fun slotsFor(declared: List<SEntry>, binding: List<Int>,
 fun emptySlots(es: Chain<PTupEnt>, acc: List<SEntry>): List<SEntry>
   ret build(emptySlotsB(es, builderFrom(acc)))
 
-fun [tail] emptySlotsB(es: Chain<PTupEnt>, [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
+fun [tail] emptySlotsB(es: Chain<PTupEnt>, [terminal] acc): ListBuilder<SEntry>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => emptySlotsB(l.next, push(acc, SEntry("", None, None)))
@@ -627,7 +627,7 @@ fun [tail] invertLoop(ds: Chain<SEntry>, bs: Chain<Int>,
 fun setAt(es: List<SEntry>, i: Int, v: SEntry): List<SEntry>
   ret setLoop(chain(es), i, v, 0, List())
 
-fun setLoop(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
+fun setLoop(es, i: Int, v: SEntry, at: Int,
                    acc: List<SEntry>): List<SEntry>
   ret build(setLoopB(es, i, v, at, builderFrom(acc)))
 
@@ -640,7 +640,7 @@ fun [tail] setLoopB(es: Chain<SEntry>, i: Int, v: SEntry, at: Int,
 
 # A branch threads the receiver's type into BOTH sides — each arm owns its own
 # conversion — while the branch's own type stays the honest JOIN of its arms.
-fun compileTernary(te: PeTernary, r: Resolver, expected: Spec|None): ExprOut
+fun compileTernary(te: PeTernary, r, expected): ExprOut
   let cond = compileExpr(te.condition, r, SBuiltin("bool", te.pety))
   let t2 = compileExpr(te.trueResult, r, expected)
   let f = compileExpr(te.falseResult, r, expected)
@@ -660,7 +660,7 @@ fun compileTernary(te: PeTernary, r: Resolver, expected: Spec|None): ExprOut
 # enum formal's spelling — a silent runtime abort. An unresolved NamedSpec or
 # a FREE placeholder (another declaration's blank) stays deferred; the
 # fixpoint fires the propagation once it grounds.
-fun compileMatch(mt: PeMatch, r: Resolver, expected: Spec|None): ExprOut
+fun compileMatch(mt: PeMatch, r, expected): ExprOut
   let subj = compileExpr(mt.subject, r, None)
   let subjTy = exprType(subj.eoExpr, r)
   # Subjects after the first compile the same way; their arm patterns are
@@ -675,8 +675,8 @@ fun compileMatch(mt: PeMatch, r: Resolver, expected: Spec|None): ExprOut
 class [final] CompiledExprs(ceExprs: List<PExpr>, ceGlobals: List<PStmt>,
                             ceTypes: List<Spec|None>)
 
-fun compileExprs(es: Chain<PExpr>, r: Resolver, [terminal] acc: ListBuilder<PExpr>,
-                 glb: List<PStmt>): CompiledExprs
+fun compileExprs(es, r, [terminal] acc: ListBuilder<PExpr>,
+                 glb): CompiledExprs
   ret compileExprsB(es, r, acc, glb, List())
 
 fun [tail] compileExprsB(es: Chain<PExpr>, r: Resolver,
@@ -730,7 +730,7 @@ fun headOf(tys: Chain<Spec|None>): Spec|None
     (l: ChainLink)  => l.value
     (nil: ChainEnd) => None
 
-fun posScope(p: PPos, subjTy: Spec|None, r: Resolver): Resolver
+fun posScope(p: PPos, subjTy, r): Resolver
   ret p.posName == "" || p.posName == "_"
     ? r
     : match(posBindType(p, subjTy))
@@ -752,7 +752,7 @@ fun [tail] renamePositions(ps: Chain<PPos>, tys: Chain<Spec|None>, r: Resolver,
 fun appendPosOut(acc: List<PPos>, p: PPos): List<PPos>
   ret build(push(builderFrom(acc), p))
 
-fun posBindType(p: PPos, subjTy: Spec|None): Spec|None
+fun posBindType(p: PPos, subjTy): Spec|None
   ret match(p.posType)
     (t2: Spec) => p.posType
     ()         => subjTy
@@ -763,7 +763,7 @@ fun posUniqueName(p: PPos): String
     : p.posName + "@arm" + hash6(p.pposLine.plFile, p.pposLine.plLine,
                                  p.pposLine.plCol)
 
-fun posBinderLet(p: PPos, ty: Spec): PStmt
+fun posBinderLet(p: PPos, ty): PStmt
   ret PsLet(posUniqueName(p), List(), List(), ty, None, "",
             List(), p.pposLine)
 
@@ -772,8 +772,8 @@ fun posBinderLet(p: PPos, ty: Spec): PStmt
 # bind the same identifier at different types. The body and the guard see the
 # binding; the arm is renamed in the same pass so it stays in sync with the
 # body's rewritten names.
-fun compileArm(a0: PArm, r: Resolver, subjTy: Spec|None,
-               expected: Spec|None, extraTys: List<Spec|None>): ArmOut
+fun compileArm(a0, r, subjTy,
+               expected, extraTys: List<Spec|None>): ArmOut
   let a = propagateSubjParams(a0, subjTy, r)
   # Every position binds: position 0 through the arm, the rest through their
   # own PPos. Positions are independent, so the chaining order is immaterial.
@@ -791,7 +791,7 @@ fun compileArm(a0: PArm, r: Resolver, subjTy: Spec|None,
                     concat(globalsOfSpec(ty),
                            concat(lits.loGlobals, globalsOf(guard)))))
 
-fun armBindType(a: PArm, subjTy: Spec|None): Spec|None
+fun armBindType(a: PArm, subjTy): Spec|None
   ret match(a.armType)
     (t2: Spec) => a.armType
     ()         => subjTy
@@ -805,7 +805,7 @@ fun armUniqueName(a: PArm): String
     : a.armName + "@arm" + hash6(a.parmLine.plFile, a.parmLine.plLine,
                                  a.parmLine.plCol)
 
-fun bindingScope(a: PArm, ty: Spec|None, r: Resolver): Resolver
+fun bindingScope(a: PArm, ty: Spec|None, r): Resolver
   ret a.armName == "" || a.armName == "_"
     ? r
     : match(ty)
@@ -816,21 +816,21 @@ fun bindingScope(a: PArm, ty: Spec|None, r: Resolver): Resolver
                           r)
       ()         => r
 
-fun armBinderLet(a: PArm, ty: Spec): PStmt
+fun armBinderLet(a: PArm, ty): PStmt
   ret PsLet(armUniqueName(a), List(), List(), ty, None, "",
             List(), a.parmLine)
 
-fun propagateSubjParams(a: PArm, subjTy: Spec|None, r: Resolver): PArm
+fun propagateSubjParams(a, subjTy: Spec|None, r): PArm
   ret match(subjTy)
     (st: Spec) if resolvedParams(typeParamsOf(st), r) => withSubjParams(a, typeParamsOf(st))
     ()         => a
 
-fun withSubjParams(a: PArm, params: List<Spec>): PArm
+fun withSubjParams(a, params): PArm
   ret match(a.armType)
     (t2: Spec) => withArmSpecParams(a, t2, params)
     ()         => a
 
-fun withArmSpecParams(a: PArm, t2: Spec, params: List<Spec>): PArm
+fun withArmSpecParams(a, t2, params): PArm
   ret match(t2)
     (n: SNamed) => isEmpty(n.snParams)
       ? with a(armType = SNamed(n.snName, params, n.snLine))
@@ -841,7 +841,7 @@ fun withArmSpecParams(a: PArm, t2: Spec, params: List<Spec>): PArm
       : a
     (o: Spec)   => a
 
-fun typeParamsOf(sp: Spec): List<Spec>
+fun typeParamsOf(sp): List<Spec>
   ret match(sp)
     (n: SNamed) => n.snParams
     (c: SClass) => c.scParams
@@ -850,7 +850,7 @@ fun typeParamsOf(sp: Spec): List<Spec>
 
 # Resolved = non-empty, no unresolved NamedSpec arg, and no FREE placeholder —
 # a placeholder that resolves in scope is the host's own param and latches.
-fun resolvedParams(ps: List<Spec>, r: Resolver): Bool
+fun resolvedParams(ps: List<Spec>, r): Bool
   ret !isEmpty(ps) && !anyHoleParam(chain(ps), r)
 
 fun [tail] anyHoleParam(ps: Chain<Spec>, r: Resolver): Bool
@@ -873,7 +873,7 @@ fun [tail] compileLits(ls: Chain<PLit>, r: Resolver, [terminal] acc: ListBuilder
       |> (o) => compileLits(l.next, r, push(acc, o.l1Lit),
                             concat(glb, o.l1Globals))
 
-fun compileLit(l: PLit, r: Resolver): LitOut
+fun compileLit(l, r): LitOut
   ret match(l)
     (e2: PlExpr)  => litExprOut(compileExpr(e2.litExpr, r, None))
     (rg: PlRange) => litRangeOut(rg, compileExpr(rg.rangeLo, r, None),
@@ -889,7 +889,7 @@ fun litRangeOut(rg: PlRange, lo: ExprOut, hi: ExprOut): LitOut
 # A block defers to its VALUE: the receiver's type threads through to it, and
 # the block's own type is the value's.
 # A block's own lets are in scope for its statements AND for its value.
-fun compileBlock(bk: PeBlock, r0: Resolver, expected: Spec|None): ExprOut
+fun compileBlock(bk: PeBlock, r0, expected): ExprOut
   # A block is never top level, so every function declared in it is an INNER
   # function: mark it (idempotent), so it establishes no trait scope of its
   # own. Then fold any else-if chains among the statements (the first of the
@@ -905,7 +905,7 @@ fun compileBlock(bk: PeBlock, r0: Resolver, expected: Spec|None): ExprOut
   ret ExprOut(PeBlock(ss.slStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
               concat(ss.slGlobals, v.eoGlobals))
 
-fun markInner(ss: Chain<PStmt>): List<PStmt>
+fun markInner(ss): List<PStmt>
   ret build(markInnerB(ss, builder()))
 
 fun [tail] markInnerB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
@@ -913,7 +913,7 @@ fun [tail] markInnerB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): Lis
     (nil: ChainEnd) => acc
     (l: ChainLink)  => markInnerB(l.next, push(acc, markOne(l.value)))
 
-fun markOne(st: PStmt): PStmt
+fun markOne(st): PStmt
   ret match(st)
     (f: PsFun) => f.fNested
       ? st
@@ -925,7 +925,7 @@ fun markOne(st: PStmt): PStmt
 # EXCEPT when it folds: an integer comparison of two bigint literals (the body
 # of Int's ==/</>) collapses to a Bool literal. The language has no true/false
 # token, so this fold is what lets a constant Bool become a literal and inline.
-fun compileBuiltinOp(op: PeBuiltinOp, r: Resolver, expected: Spec|None): ExprOut
+fun compileBuiltinOp(op: PeBuiltinOp, r, expected: Spec|None): ExprOut
   let ps = compileExpr(op.opParams, r, None)
   # The declared type may be a full spec (array_builder_alloc's Array<T>):
   # compile it so the name resolves like any declared type. SBuiltins
@@ -938,7 +938,7 @@ fun compileBuiltinOp(op: PeBuiltinOp, r: Resolver, expected: Spec|None): ExprOut
 
 # Takes the ROOT type: an enum-variant constructor yields the root, so a caller
 # that has just built a PeBuiltinOp cannot pass it as one.
-fun foldConstCompare(x: PExpr): PExpr|None
+fun foldConstCompare(x): PExpr|None
   ret match(x)
     (op: PeBuiltinOp) => foldOp(op)
     (o: PExpr)        => None
@@ -950,17 +950,17 @@ fun foldOp(op: PeBuiltinOp): PExpr|None
     (nm: String) => foldWith(nm, op)
     ()           => None
 
-fun isBoolBuiltin(sp: Spec): Bool
+fun isBoolBuiltin(sp): Bool
   ret match(sp)
     (b: SBuiltin) => b.sbName == "bool"
     (o: Spec)     => false
 
-fun opName(x: PExpr): String|None
+fun opName(x): String|None
   ret match(x)
     (s2: PeStr) => s2.strValue
     (o: PExpr)  => None
 
-fun foldWith(nm: String, op: PeBuiltinOp): PExpr|None
+fun foldWith(nm, op: PeBuiltinOp): PExpr|None
   if nm != "integer_test_eq" && nm != "integer_test_lt" && nm != "integer_test_gt"
     ret None
   ret match(twoBigints(op.opParams))
@@ -971,7 +971,7 @@ class [final] IntPair(ipLeft: Int, ipRight: Int)
 
 # Both operands must be UNSUFFIXED (precision 0) integer literals — a sized
 # literal is a different type and does not fold here.
-fun twoBigints(params: PExpr): IntPair|None
+fun twoBigints(params): IntPair|None
   ret match(params)
     (tp: PeTuple) => exactly(chain(tp.exprs), 2) ? pairOf(tp) : None
     (o: PExpr)    => None
@@ -983,7 +983,7 @@ fun pairOf(tp: PeTuple): IntPair|None
       ()       => None
     ()       => None
 
-fun bigintAt(es: List<PTupEnt>, i: Int): Int|None
+fun bigintAt(es: List<PTupEnt>, i): Int|None
   ret match(entAt(chain(es), i))
     (en: PTupEnt) => bigintOf(en.tupValue)
     ()            => None
@@ -993,36 +993,36 @@ fun [tail] entAt(es: Chain<PTupEnt>, i: Int): PTupEnt|None
     (nil: ChainEnd) => None
     (l: ChainLink)  => i <= 0 ? l.value : entAt(l.next, i - 1)
 
-fun bigintOf(x: PExpr): Int|None
+fun bigintOf(x): Int|None
   ret match(x)
     (i: PeInt) => i.precision == 0 ? i.value : None
     (o: PExpr) => None
 
-fun compareInts(nm: String, a: Int, b: Int): Bool
+fun compareInts(nm, a: Int, b: Int): Bool
   ret nm == "integer_test_eq" ? a == b
     : nm == "integer_test_lt" ? a < b
     : a > b
 
-fun compileNew(nw: PeNew, r: Resolver, expected: Spec|None): ExprOut
+fun compileNew(nw: PeNew, r, expected: Spec|None): ExprOut
   let ty = compileSpec(nw.newType, r)
   let arg = compileExpr(nw.newParam, r, paramsTupleOfSpec(ty.soSpec))
   let out = PeNew(ty.soSpec, arg.eoExpr, nw.penwLine)
   ret ExprOut(converted(out, expected, r),
               concat(ty.soGlobals, arg.eoGlobals))
 
-fun paramsTupleOfSpec(sp: Spec): Spec|None
+fun paramsTupleOfSpec(sp): Spec|None
   ret match(sp)
     (t2: STuple) => t2
     (o: Spec)    => None
 
-fun compileArrayRead(ar: PeArrayRead, r: Resolver, expected: Spec|None): ExprOut
+fun compileArrayRead(ar: PeArrayRead, r, expected: Spec|None): ExprOut
   let obj = compileExpr(ar.arrObj, r, None)
   let idx = compileExpr(ar.arrIndex, r, SBuiltin("int32", ar.pearLine))
   let out = PeArrayRead(obj.eoExpr, idx.eoExpr, ar.pearLine)
   ret ExprOut(converted(out, expected, r),
               concat(obj.eoGlobals, idx.eoGlobals))
 
-fun compileParallel(pl: PeParallel, r: Resolver): ExprOut
+fun compileParallel(pl: PeParallel, r): ExprOut
   let ps = compileExpr(pl.parParams, r, None)
   ret ExprOut(PeParallel(ps.eoExpr, pl.pepLine), ps.eoGlobals)
 
@@ -1038,7 +1038,7 @@ fun compileParallel(pl: PeParallel, r: Resolver): ExprOut
 #
 # Shape/visibility problems leave the node UNEXPANDED; checkWith reports.
 
-fun compileWith(wx: PeWith, r: Resolver, expected: Spec|None): ExprOut
+fun compileWith(wx: PeWith, r, expected: Spec|None): ExprOut
   let subj = compileExpr(wx.withSubject, r, None)
   let reps = compileExpr(wx.withRepls, r, None)
   let node: PExpr = PeWith(subj.eoExpr, reps.eoExpr, wx.pewLine)
@@ -1051,7 +1051,7 @@ fun compileWith(wx: PeWith, r: Resolver, expected: Spec|None): ExprOut
         ()         => ExprOut(node, glb)
     (o: PExpr)   => ExprOut(node, glb)   # unreachable: node is built above
 
-fun withExpand(wx: PeWith, r: Resolver): PExpr|None
+fun withExpand(wx: PeWith, r): PExpr|None
   ret match(exprType(wx.withSubject, r))
     (sp: Spec) => match(sp)
       (c: SClass) => withExpandClass(wx, c, r)
@@ -1069,7 +1069,7 @@ fun withEntryList(wx: PeWith): List<PTupEnt>
 
 # The subject and each replacement bind ONCE; replacements are referred to by
 # their $w{i} names thereafter.
-fun withLets(wx: PeWith, tag: String): List<PStmt>
+fun withLets(wx: PeWith, tag): List<PStmt>
   let lr = wx.pewLine
   # The subject let comes first and the per-entry lets follow in tuple order:
   # these are STATEMENTS, so the order is the program.
@@ -1078,8 +1078,8 @@ fun withLets(wx: PeWith, tag: String): List<PStmt>
                                None, wx.withSubject, "", List(), lr))
   ret build(withReplLets(chain(withEntryList(wx)), 0, tag, lr, base))
 
-fun [tail] withReplLets(es: Chain<PTupEnt>, i: Int, tag: String, lr: PLine,
-                        [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
+fun [tail] withReplLets(es: Chain<PTupEnt>, i: Int, tag, lr,
+                        [terminal] acc): ListBuilder<PStmt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => withReplLets(l.next, i + 1, tag, lr,
@@ -1088,11 +1088,11 @@ fun [tail] withReplLets(es: Chain<PTupEnt>, i: Int, tag: String, lr: PLine,
                                 List(), None, l.value.tupValue, "",
                                 List(), lr)))
 
-fun withReplRef(name: String, es: List<PTupEnt>, lr: PLine): PExpr|None
+fun withReplRef(name: String, es: List<PTupEnt>, lr): PExpr|None
   ret withReplRefLoop(chain(es), name, 0, lr)
 
 fun [tail] withReplRefLoop(es: Chain<PTupEnt>, name: String, i: Int,
-                           lr: PLine): PExpr|None
+                           lr): PExpr|None
   ret match(es)
     (nil: ChainEnd) => None
     (l: ChainLink)  => l.value.tupName == name
@@ -1100,11 +1100,11 @@ fun [tail] withReplRefLoop(es: Chain<PTupEnt>, name: String, i: Int,
       : withReplRefLoop(l.next, name, i + 1, lr)
 
 # SAME guard: every replacement bit-identical to the current field.
-fun withGuard(wx: PeWith, lr: PLine): PExpr
+fun withGuard(wx: PeWith, lr): PExpr
   ret withGuardLoop(chain(withEntryList(wx)), 0, None, lr)
 
 fun [tail] withGuardLoop(es: Chain<PTupEnt>, i: Int, acc: PExpr|None,
-                         lr: PLine): PExpr
+                         lr): PExpr
   ret match(es)
     (nil: ChainEnd) => match(acc)
       (a: PExpr) => a
@@ -1120,20 +1120,20 @@ fun [tail] withGuardLoop(es: Chain<PTupEnt>, i: Int, acc: PExpr|None,
                 lr),
         lr)
 
-fun withAnd(acc: PExpr|None, one: PExpr, lr: PLine): PExpr
+fun withAnd(acc: PExpr|None, one, lr): PExpr
   ret match(acc)
     (a: PExpr) => PeTernary(a, one, PeBool(false, lr), lr)
     ()         => one
 
 # Constructor call mixing carried fields with replacements.
-fun withConstruct(ctorName: String, fields: List<PStmt>, repls: List<PTupEnt>,
-                  carrier: String, lr: PLine): PExpr
+fun withConstruct(ctorName, fields: List<PStmt>, repls: List<PTupEnt>,
+                  carrier, lr): PExpr
   ret PeCall(PeName(ctorName, List(), lr),
              PeTuple(withCtorArgs(chain(fields), repls, carrier, lr,
                                   List()), lr), lr)
 
-fun withCtorArgs(fs: Chain<PStmt>, repls: List<PTupEnt>,
-                        carrier: String, lr: PLine,
+fun withCtorArgs(fs, repls: List<PTupEnt>,
+                        carrier, lr,
                         acc: List<PTupEnt>): List<PTupEnt>
   ret build(withCtorArgsB(fs, repls, carrier, lr, builderFrom(acc)))
 
@@ -1149,13 +1149,13 @@ fun [tail] withCtorArgsB(fs: Chain<PStmt>, repls: List<PTupEnt>,
                                 lr))))
       (o: PStmt) => withCtorArgsB(l.next, repls, carrier, lr, acc)
 
-fun withCtorArg(bare: String, repls: List<PTupEnt>, carrier: String,
-                lr: PLine): PExpr
+fun withCtorArg(bare, repls: List<PTupEnt>, carrier,
+                lr): PExpr
   ret match(withReplRef(bare, repls, lr))
     (rr: PExpr) => rr
     ()          => PeDot(PeName(carrier, List(), lr), bare, lr)
 
-fun withExpandClass(wx: PeWith, c: SClass, r: Resolver): PExpr|None
+fun withExpandClass(wx: PeWith, c: SClass, r): PExpr|None
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
       (cls: PsClass) => withNamesOk(wx, withBareNames(chain(flattenParams(cls.cParams)), List()))
@@ -1176,7 +1176,7 @@ fun [tail] withNamesOkLoop(es: Chain<PTupEnt>, visible: List<String>): Bool
       ? withNamesOkLoop(l.next, visible)
       : false
 
-fun withExpandEnum(wx: PeWith, e2: SEnum, r: Resolver): PExpr|None
+fun withExpandEnum(wx: PeWith, e2: SEnum, r): PExpr|None
   ret match(soleItem(findType(r, e2.seRoot)))
     (f: Found) => match(f.fStmt)
       (en: PsEnum) => withNamesOk(wx,
@@ -1207,10 +1207,10 @@ fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum): PExpr|None
                          wx, e2, List()),
                 lr, List()))
 
-fun withValidLeaves(ns: Chain<String>, valid: List<String>): List<String>
+fun withValidLeaves(ns, valid: List<String>): List<String>
   ret withValidLoop(ns, valid, List())
 
-fun withValidLoop(ns: Chain<String>, valid: List<String>,
+fun withValidLoop(ns, valid: List<String>,
                          acc: List<String>): List<String>
   ret build(withValidLoopB(ns, valid, builderFrom(acc)))
 
@@ -1232,8 +1232,8 @@ fun [tail] withSingleLeaf(ns: Chain<String>, sets: Chain<List<PStmt>>,
         ? withConstruct(n.value, l.value, withEntryList(wx), "$ws", lr)
         : withSingleLeaf(n.next, l.next, wx, e2, lr)
 
-fun withArms(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
-                    tag: String, wx: PeWith, e2: SEnum,
+fun withArms(ns, sets, i: Int,
+                    tag, wx: PeWith, e2: SEnum,
                     acc: List<PArm>): List<PArm>
   ret build(withArmsB(ns, sets, i, tag, wx, e2, builderFrom(acc)))
 
@@ -1253,7 +1253,7 @@ fun [tail] withArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
                                     "$wx" + String(i), wx.pewLine),
                       List(), None, wx.pewLine, List())))
 
-fun withAssemble(wx: PeWith, copy: PExpr): PExpr
+fun withAssemble(wx: PeWith, copy): PExpr
   let lr = wx.pewLine
   ret PeBlock(withLets(wx, withTag(lr)),
               PeTernary(withGuard(wx, lr),
@@ -1262,7 +1262,7 @@ fun withAssemble(wx: PeWith, copy: PExpr): PExpr
 
 # (leaf unique name, fields root-down), declaration order.
 fun withLeaves(st: PsEnum, inherited: List<PStmt>,
-               acc: (names: List<String>, sets: List<List<PStmt>>)): (names: List<String>, sets: List<List<PStmt>>)
+               acc): (names: List<String>, sets: List<List<PStmt>>)
   let own = concat(inherited, flattenParams(st.eParams))
   if isEmpty(st.eVariants)
     # Leaf name and its field set, POSITIONALLY paired.

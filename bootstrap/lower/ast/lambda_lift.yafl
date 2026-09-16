@@ -22,7 +22,7 @@ import Bootstrap::StdlibCandidates
 fun liftCapturedCalls(statements: List<PStmt>): List<PStmt>
   ret llTop(chain(statements), List())
 
-fun llTop(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun llTop(ss, acc: List<PStmt>): List<PStmt>
   ret build(llTopB(ss, builderFrom(acc)))
 
 fun [tail] llTopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
@@ -37,12 +37,12 @@ fun [tail] llTopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBui
 # threads captured PARAMETERS exactly as it would inside a free function.
 # `this` is not a parameter, so it is never threaded here — it stays implicit,
 # and the hoist makes the helper a sibling member to keep it so.
-fun llInClass(c: PsClass): PStmt
+fun llInClass(c): PStmt
   ret hoClassDeclaresNested(c)
     ? with c(cMembers = llMembers(chain(c.cMembers), List()))
     : c
 
-fun llMembers(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun llMembers(ss, acc: List<PStmt>): List<PStmt>
   ret build(llMembersB(ss, builderFrom(acc)))
 
 fun [tail] llMembersB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
@@ -54,7 +54,7 @@ fun [tail] llMembersB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): Lis
 
 # Lift what qualifies inside f's own body (deepest nesting first: a nested
 # function's own helpers lift before it is itself considered).
-fun liftInFunction(f: PsFun): PStmt
+fun liftInFunction(f): PStmt
   ret match(f.fBody)
     (b: PExpr) => match(b)
       (bk: PeBlock) => llInBlock(f, bk)
@@ -73,7 +73,7 @@ fun llInBlock(f0: PsFun, bk0: PeBlock): PStmt
     ret rebuilt
   ret llAnalyse(rebuilt, nested)
 
-fun llDeepFirst(ss: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun llDeepFirst(ss, acc: List<PStmt>): List<PStmt>
   ret build(llDeepFirstB(ss, builderFrom(acc)))
 
 fun [tail] llDeepFirstB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
@@ -85,7 +85,7 @@ fun [tail] llDeepFirstB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): L
 
 # ALL nested fns count here (Python gates on FunctionStatement only, not on
 # block-bodied ones like the hoist does).
-fun hoNestedFns2(ss: Chain<PStmt>, acc: List<PsFun>): List<PsFun>
+fun hoNestedFns2(ss, acc: List<PsFun>): List<PsFun>
   ret build(hoNestedFns2B(ss, builderFrom(acc)))
 
 fun [tail] hoNestedFns2B(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PsFun>): ListBuilder<PsFun>
@@ -97,7 +97,7 @@ fun [tail] hoNestedFns2B(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PsFun>): 
 
 class [final] LiftCtx(lcNames: List<String>, lcExtras: List<List<String>>)
 
-fun llAnalyse(f: PsFun, nested: List<PsFun>): PStmt
+fun llAnalyse(f, nested: List<PsFun>): PStmt
   let paramLets = flattenParams(f.fParams)
   let paramNames = allStmtNames(chain(paramLets), List())
   let siblingNames = hoFnNames(chain(nested), List())
@@ -116,7 +116,7 @@ fun llAnalyse(f: PsFun, nested: List<PsFun>): PStmt
     ret f
   ret llStmt(f, ctx, paramLets)
 
-fun llCapturesOf(fs: Chain<PsFun>, siblingNames: List<String>,
+fun llCapturesOf(fs, siblingNames: List<String>,
                         paramNames: List<String>,
                         acc: List<List<String>>): List<List<String>>
   ret build(llCapturesOfB(fs, siblingNames, paramNames, builderFrom(acc)))
@@ -260,12 +260,12 @@ fun [tail] llRefsOk(ns: Chain<String>, f: PsFun): Bool
       ? false
       : llRefsOk(l.next, f)
 
-fun llTotalRefs(f: PsFun, name: String): Int
+fun llTotalRefs(f: PsFun, name): Int
   ret match(f.fBody)
     (b: PExpr) => llCountNames(b, name, 0)
     ()         => 0
 
-fun llCallRefs(f: PsFun, name: String): Int
+fun llCallRefs(f: PsFun, name): Int
   ret match(f.fBody)
     (b: PExpr) => llCountCalls(b, name, 0)
     ()         => 0
@@ -316,25 +316,25 @@ fun llFirstOf(scc: List<String>): String
 
 # ── the reference counters (lambda subtrees ARE visited, like Python) ───────
 
-fun llCountNames(x: PExpr, name: String, n: Int): Int
+fun llCountNames(x, name, n): Int
   let n2 = llIsName(x, name) ? n + 1 : n
   ret llFold(x, name, n2, false)
 
-fun llCountCalls(x: PExpr, name: String, n: Int): Int
+fun llCountCalls(x, name, n): Int
   let n2 = llIsCallOf(x, name) ? n + 1 : n
   ret llFold(x, name, n2, true)
 
-fun llIsName(x: PExpr, name: String): Bool
+fun llIsName(x, name): Bool
   ret match(x)
     (nm: PeName) => nm.refName == name
     (o: PExpr)   => false
 
-fun llIsCallOf(x: PExpr, name: String): Bool
+fun llIsCallOf(x, name): Bool
   ret match(x)
     (c: PeCall) => llIsName(c.function, name)
     (o: PExpr)  => false
 
-fun llFold(x: PExpr, name: String, n: Int, calls: Bool): Int
+fun llFold(x, name, n, calls: Bool): Int
   ret match(x)
     (d: PeDot)     => llCountOne(d.base, name, n, calls)
     (c: PeCall)    => llCountOne(c.parameter, name,
@@ -379,7 +379,7 @@ fun llFold(x: PExpr, name: String, n: Int, calls: Bool): Int
     (o: PeLazy) => n
     (o: PeName) => n
 
-fun llCountOne(x: PExpr, name: String, n: Int, calls: Bool): Int
+fun llCountOne(x, name, n, calls: Bool): Int
   ret calls ? llCountCalls(x, name, n) : llCountNames(x, name, n)
 
 fun [tail] llFoldExprs(es: Chain<PExpr>, name: String, n: Int,
@@ -390,7 +390,7 @@ fun [tail] llFoldExprs(es: Chain<PExpr>, name: String, n: Int,
                                    llCountOne(l.value, name, n, calls),
                                    calls)
 
-fun [tail] llFoldEnts(es: Chain<PTupEnt>, name: String, n: Int,
+fun [tail] llFoldEnts(es: Chain<PTupEnt>, name, n,
                       calls: Bool): Int
   ret match(es)
     (nil: ChainEnd) => n
@@ -399,7 +399,7 @@ fun [tail] llFoldEnts(es: Chain<PTupEnt>, name: String, n: Int,
                                              calls),
                                   calls)
 
-fun [tail] llFoldArms(as2: Chain<PArm>, name: String, n: Int,
+fun [tail] llFoldArms(as2: Chain<PArm>, name, n,
                       calls: Bool): Int
   ret match(as2)
     (nil: ChainEnd) => n
@@ -408,7 +408,7 @@ fun [tail] llFoldArms(as2: Chain<PArm>, name: String, n: Int,
                   llCountOne(l.value.armBody, name, n, calls), calls),
         calls)
 
-fun llFoldOpt(x: PExpr|None, name: String, n: Int, calls: Bool): Int
+fun llFoldOpt(x: PExpr|None, name, n, calls: Bool): Int
   ret match(x)
     (e2: PExpr) => llCountOne(e2, name, n, calls)
     ()          => n
@@ -421,7 +421,7 @@ fun [tail] llFoldStmts(ss: Chain<PStmt>, name: String, n: Int,
                                    llFoldStmt(l.value, name, n, calls),
                                    calls)
 
-fun llFoldStmt(st: PStmt, name: String, n: Int, calls: Bool): Int
+fun llFoldStmt(st, name, n, calls: Bool): Int
   ret match(st)
     (f: PsFun)   => llFoldOpt(f.fBody, name,
                               llFoldStmt(f.fParams, name, n, calls), calls)
@@ -446,13 +446,13 @@ fun llFoldStmt(st: PStmt, name: String, n: Int, calls: Bool): Int
 fun llExtrasFor(ctx: LiftCtx, name: String): List<String>
   ret llParallelGet(chain(ctx.lcNames), chain(ctx.lcExtras), name)
 
-fun llCallArgs(p: PExpr): List<PTupEnt>
+fun llCallArgs(p): List<PTupEnt>
   ret match(p)
     (tp: PeTuple)   => tp.exprs
     (ng: PeNothing) => List()
     (o: PExpr)      => prepend(PTupEnt("", false, p), List())
 
-fun llStmt(st: PStmt, ctx: LiftCtx, paramLets: List<PStmt>): PStmt
+fun llStmt(st, ctx: LiftCtx, paramLets: List<PStmt>): PStmt
   ret match(st)
     (f: PsFun)  => llFnStmt(f, ctx, paramLets)
     (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
@@ -484,7 +484,7 @@ fun llFnStmt(f: PsFun, ctx: LiftCtx, paramLets: List<PStmt>): PStmt
     ret rebuilt
   ret llWithParams(rebuilt, extras, paramLets)
 
-fun llWithParams(st: PStmt, extras: List<String>,
+fun llWithParams(st, extras: List<String>,
                  paramLets: List<PStmt>): PStmt
   ret match(st)
     (f: PsFun) => match(f.fParams)
@@ -499,7 +499,7 @@ fun llWithParams(st: PStmt, extras: List<String>,
       (o: PStmt)         => f
     (o2: PStmt) => st
 
-fun llParamCopies(ns: Chain<String>, paramLets: List<PStmt>,
+fun llParamCopies(ns, paramLets: List<PStmt>,
                          acc: List<PStmt>): List<PStmt>
   ret build(llParamCopiesB(ns, paramLets, builderFrom(acc)))
 
@@ -518,7 +518,7 @@ fun [tail] llParamByName(ps: Chain<PStmt>, name: String): PStmt|None
       ? l.value
       : llParamByName(l.next, name)
 
-fun llStmts(ss: Chain<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>,
+fun llStmts(ss, ctx: LiftCtx, paramLets: List<PStmt>,
                    acc: List<PStmt>): List<PStmt>
   ret build(llStmtsB(ss, ctx, paramLets, builderFrom(acc)))
 
@@ -534,7 +534,7 @@ fun llExprOpt(x: PExpr|None, ctx: LiftCtx, paramLets: List<PStmt>): PExpr|None
     (e2: PExpr) => llExpr(e2, ctx, paramLets)
     ()          => None
 
-fun llExpr(x: PExpr, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
+fun llExpr(x, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
   ret match(x)
     (c: PeCall)    => llCallExpr(c, ctx, paramLets)
     (d: PeDot)     => PeDot(llExpr(d.base, ctx, paramLets), d.member,
@@ -602,7 +602,7 @@ fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>): PExpr
                rebuilt.pecLine)
     (o: PExpr)   => rebuilt
 
-fun llExtraEnts(ns: Chain<String>, lr: PLine,
+fun llExtraEnts(ns, lr,
                        acc: List<PTupEnt>): List<PTupEnt>
   ret build(llExtraEntsB(ns, lr, builderFrom(acc)))
 
@@ -614,7 +614,7 @@ fun [tail] llExtraEntsB(ns: Chain<String>, lr: PLine,
         push(acc, PTupEnt("", false,
                   PeName(l.value, List(), lr, None))))
 
-fun llExprs(es: Chain<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>,
+fun llExprs(es, ctx: LiftCtx, paramLets: List<PStmt>,
                    acc: List<PExpr>): List<PExpr>
   ret build(llExprsB(es, ctx, paramLets, builderFrom(acc)))
 
@@ -630,14 +630,14 @@ fun llEnts(es: Chain<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
   ret build(llEntsB(es, ctx, paramLets, builderFrom(acc)))
 
 fun [tail] llEntsB(es: Chain<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
-                  [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
+                  [terminal] acc): ListBuilder<PTupEnt>
   ret match(es)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => llEntsB(l.next, ctx, paramLets,
         push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
                   llExpr(l.value.tupValue, ctx, paramLets))))
 
-fun llArms(as2: Chain<PArm>, ctx: LiftCtx, paramLets: List<PStmt>,
+fun llArms(as2, ctx: LiftCtx, paramLets: List<PStmt>,
                   acc: List<PArm>): List<PArm>
   ret build(llArmsB(as2, ctx, paramLets, builderFrom(acc)))
 

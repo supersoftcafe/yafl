@@ -59,7 +59,7 @@ fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
 
-fun lhOne(st: PStmt, roots: List<String>,
+fun lhOne(st, roots: List<String>,
           [terminal] acc: LhAcc): LhAcc
   ret match(st)
     (f: PsFun) => hasAttr(f.fAttrs, "refeq")
@@ -110,7 +110,7 @@ fun lhReturnsInt32(sp: Spec|None): Bool
       (o: Spec)     => false
     ()         => false
 
-fun lhSplit(f: PsFun, paramName: String): (wrap: PStmt, raw: PStmt)
+fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
   let lr = f.psfLine
   let attrs2 = filter(f.fAttrs, (a) => a.attrName != "hashed")
   # Path-based, collision-free: reuse the original's namespace path and line
@@ -198,7 +198,7 @@ fun lhReturnsBool(sp: Spec|None): Bool
       (o: Spec)     => false
     ()         => false
 
-fun lhSplitRefeq(f: PsFun, lName: String, rName: String): (wrap: PStmt, raw: PStmt)
+fun lhSplitRefeq(f: PsFun, lName, rName): (wrap: PStmt, raw: PStmt)
   let lr = f.psfLine
   let attrs2 = filter(f.fAttrs, (a) => a.attrName != "refeq")
   let rawName = hashName(simpleName(f.fName) + "$reraw", lr)

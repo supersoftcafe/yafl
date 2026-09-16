@@ -50,7 +50,7 @@ fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>): ListBuilder<PStmt>
                 classConstructorOf(witness)),
            record)
 
-fun [tail] liOwnArgs(gs: Chain<PGen>, lr: PLine,
+fun [tail] liOwnArgs(gs: Chain<PGen>, lr,
                      acc: ListBuilder<Spec>): List<Spec>
   ret match(gs)
     (nil: ChainEnd) => build(acc)

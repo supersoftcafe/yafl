@@ -11,7 +11,7 @@ import Bootstrap::Types
 
 
 
-fun checkStmtKind(st: PStmt, r: Resolver, retTy: Spec|None): Set<PErr>
+fun checkStmtKind(st, r, retTy: Spec|None): Set<PErr>
   ret match(st)
     (f: PsFun)         => checkFun2(f, r)
     (l: PsLet)         => checkLet2(l, r)
@@ -34,7 +34,7 @@ fun checkStmtKind(st: PStmt, r: Resolver, retTy: Spec|None): Set<PErr>
 # Pattern + wheres under the generic scope; members under the transient
 # owner-wheres copy; the pattern must name an INTERFACE.
 
-fun checkTraitInstance(inst: PsTraitInstance, r0: Resolver): Set<PErr>
+fun checkTraitInstance(inst: PsTraitInstance, r0): Set<PErr>
   let r = genScope(inst.tiGens, r0)
   let e1 = checkSpecOpt(inst.tiPattern, r)
   let e2 = checkSpecs(chain(inst.tiWheres), r, noErrs())
@@ -45,7 +45,7 @@ fun checkTraitInstance(inst: PsTraitInstance, r0: Resolver): Set<PErr>
              attrErrs(inst.tiAttrs, isKnownInstanceAttr, inst.pstiLine,
                       "an instance")))))
 
-fun instancePatternErrs(inst: PsTraitInstance, r: Resolver): Set<PErr>
+fun instancePatternErrs(inst: PsTraitInstance, r): Set<PErr>
   ret match(inst.tiPattern)
     (c: SClass) => match(soleItem(findType(r, c.scName)))
       (f: Found) => match(f.fStmt)
@@ -59,7 +59,7 @@ fun instancePatternErrs(inst: PsTraitInstance, r: Resolver): Set<PErr>
 
 # ── FunctionStatement ───────────────────────────────────────────────────────
 
-fun checkFun2(f: PsFun, r0: Resolver): Set<PErr>
+fun checkFun2(f: PsFun, r0): Set<PErr>
   let r = genScope(f.fGens, r0)
   let bodyR = localScope(paramLets(f.fParams),
                          f.fNested ? r : traitScope(f.fWheres, r))
@@ -83,7 +83,7 @@ fun checkFun2(f: PsFun, r0: Resolver): Set<PErr>
 # value (no `ret` reaches the function block and no trailing value) would
 # generate `Return(None)` and crash codegen — a bare tail-call STATEMENT where
 # `ret f(...)` was meant.
-fun missingRetErrs(f: PsFun, bodyR: Resolver): Set<PErr>
+fun missingRetErrs(f: PsFun, bodyR): Set<PErr>
   ret match(f.fBody)
     (b: PExpr) => match(f.fRet)
       (rt: Spec) => match(exprType(b, bodyR))
@@ -112,7 +112,7 @@ fun funAttrErrs(f: PsFun): Set<PErr>
 # order as the Python side (base.py `unknown_attribute_errors`).
 
 fun [tail] unknownAttrErrs(as2: Chain<PAttr>, known: (:String): Bool,
-                           lr: PLine, kind: String, acc: Set<PErr>): Set<PErr>
+                           lr, kind, acc): Set<PErr>
   ret match(as2)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => known(l.value.attrName)
@@ -121,32 +121,32 @@ fun [tail] unknownAttrErrs(as2: Chain<PAttr>, known: (:String): Bool,
           add(acc, PErr(lr, "unknown attribute [" + l.value.attrName
                             + "] on " + kind)))
 
-fun attrErrs(attrs: List<PAttr>, known: (:String): Bool, lr: PLine,
-             kind: String): Set<PErr>
+fun attrErrs(attrs: List<PAttr>, known: (:String): Bool, lr,
+             kind): Set<PErr>
   ret unknownAttrErrs(chain(attrs), known, lr, kind, noErrs())
 
-fun isKnownFunAttr(n: String): Bool
+fun isKnownFunAttr(n): Bool
   ret n == "foreign" || n == "impure" || n == "sync" || n == "tail"
    || n == "terminal" || n == "inline" || n == "hashed" || n == "refeq"
    || n == "linear" || n == "lazy" || n == "final" || n == "future"
    || n == "pinnable" || n == "test"
 
-fun isKnownClassAttr(n: String): Bool
+fun isKnownClassAttr(n): Bool
   ret n == "final" || n == "linear" || n == "foreign" || n == "pinnable"
    || n == "hashed" || n == "refeq" || n == "mutable"
 
-fun isKnownLetAttr(n: String): Bool
+fun isKnownLetAttr(n): Bool
   ret n == "terminal" || n == "const" || n == "lazy" || n == "trait"
    || n == "future" || n == "linear" || n == "final" || n == "mutable"
    || n == "ambient" || n == "pinnable"
 
-fun isKnownEnumAttr(n: String): Bool
+fun isKnownEnumAttr(n): Bool
   ret n == "hashed" || n == "refeq" || n == "linear" || n == "final"
 
-fun isKnownTypealiasAttr(n: String): Bool
+fun isKnownTypealiasAttr(n): Bool
   ret n == "linear"
 
-fun isKnownInstanceAttr(n: String): Bool
+fun isKnownInstanceAttr(n): Bool
   ret n == "ambient" || n == "trait"
 
 fun attrValueOf(attrs: List<PAttr>, name: String): PExpr|None
@@ -159,7 +159,7 @@ fun [tail] avLoop(as2: Chain<PAttr>, name: String): PExpr|None
       ? l.value.attrValue
       : avLoop(l.next, name)
 
-fun noArgAttr(f: PsFun, name: String, msg: String): Set<PErr>
+fun noArgAttr(f: PsFun, name: String, msg): Set<PErr>
   if !hasAttr(f.fAttrs, name)
     ret noErrs()
   ret match(attrValueOf(f.fAttrs, name))
@@ -284,11 +284,11 @@ fun skipParamWarn(let2: PsLet, referenced: List<String>): Bool
 
 # ── LetStatement / DestructureStatement ─────────────────────────────────────
 
-fun checkLet2(l: PsLet, r: Resolver): Set<PErr>
+fun checkLet2(l: PsLet, r): Set<PErr>
   let bad = letTypeErr(l, r)
   ret isEmpty(bad) ? letSubErrs(l, r) : bad
 
-fun letTypeErr(l: PsLet, r: Resolver): Set<PErr>
+fun letTypeErr(l: PsLet, r): Set<PErr>
   ret match(l.lDefault)
     (d: PExpr) => match(l.lType)
       (want: Spec) => match(exprType(d, r))
@@ -299,7 +299,7 @@ fun letTypeErr(l: PsLet, r: Resolver): Set<PErr>
       ()           => noErrs()
     ()         => noErrs()
 
-fun letSubErrs(l: PsLet, r: Resolver): Set<PErr>
+fun letSubErrs(l: PsLet, r): Set<PErr>
   let err1 = match(l.lDefault)
     (d: PExpr) => checkExpr(d, r, l.lType)
     ()         => noErrs()
@@ -320,7 +320,7 @@ fun constErrs(l: PsLet): Set<PErr>
     ? argErr
     : union(argErr, oneErr(l.pslLine, "[const] requires a literal value"))
 
-fun letAttrArgErr(l: PsLet, name: String, msg: String): Set<PErr>
+fun letAttrArgErr(l: PsLet, name: String, msg): Set<PErr>
   ret match(attrValueOf(l.lAttrs, name))
     (v: PExpr) => oneErr(l.pslLine, msg)
     ()         => noErrs()
@@ -362,7 +362,7 @@ fun futureErrs(l: PsLet): Set<PErr>
 
 # A destructure inherits the let rules (Python: DestructureStatement extends
 # LetStatement and does not override check).
-fun checkDestructure2(d: PsDestructure, r: Resolver): Set<PErr>
+fun checkDestructure2(d: PsDestructure, r): Set<PErr>
   let typeErr = match(d.dDefault)
     (x: PExpr) => match(d.dType)
       (want: Spec) => match(exprType(x, r))
@@ -381,7 +381,7 @@ fun checkDestructure2(d: PsDestructure, r: Resolver): Set<PErr>
 
 # ── control ─────────────────────────────────────────────────────────────────
 
-fun checkRet2(rt: PsRet, r: Resolver, retTy: Spec|None): Set<PErr>
+fun checkRet2(rt: PsRet, r, retTy: Spec|None): Set<PErr>
   ret match(exprType(rt.retValue, r))
     (xt: Spec) if triFalse(assignableEq(r, retTy, xt)) =>
         oneErr(rt.psrLine, "Incorrect return type")
@@ -389,7 +389,7 @@ fun checkRet2(rt: PsRet, r: Resolver, retTy: Spec|None): Set<PErr>
 
 # No value vanishes silently: a statement-position expression discards its
 # result. Unit carries nothing and is fine; anything else warns.
-fun checkAction2(a: PsAction, r: Resolver): Set<PErr>
+fun checkAction2(a: PsAction, r): Set<PErr>
   let errs = checkExpr(a.action, r, None)
   ret match(exprType(a.action, r))
     (xt: Spec) => isUnitType(xt)
@@ -399,12 +399,12 @@ fun checkAction2(a: PsAction, r: Resolver): Set<PErr>
                           + "discard explicitly", true))
     ()         => errs
 
-fun isUnitType(xt: Spec): Bool
+fun isUnitType(xt): Bool
   ret match(xt)
     (tp: STuple) => isEmpty(tp.stEntries)
     (o: Spec)    => false
 
-fun checkIf2(i: PsIf, r: Resolver, retTy: Spec|None): Set<PErr>
+fun checkIf2(i: PsIf, r, retTy: Spec|None): Set<PErr>
   let condErr = checkExpr(i.ifCond, r, SBuiltin("bool", i.psifLine))
   let boolErr = match(exprType(i.ifCond, r))
     (ct: Spec) => triTrue(assignableEq(r, SBuiltin("bool", i.psifLine), ct))
@@ -427,7 +427,7 @@ fun [tail] branchChecks(ss: Chain<PStmt>, r: Resolver, retTy: Spec|None,
 
 # ── classes / enums / typealiases ───────────────────────────────────────────
 
-fun checkClass2(c: PsClass, r0: Resolver): Set<PErr>
+fun checkClass2(c, r0): Set<PErr>
   ret match(c.cAllParents)
     (ps: List<Spec>) => classChecks(c, r0)
     ()               => oneErr(c.pscLine, "Missed compile step")
@@ -435,7 +435,7 @@ fun checkClass2(c: PsClass, r0: Resolver): Set<PErr>
 # NOT PORTED YET: the [foreign]-class rules and the slot multi-override /
 # no-implementation checks (classdef.py:235-260, needs invert_and_merge_slots)
 # — the check contract's first-diff will demand them when a corpus case does.
-fun classChecks(c: PsClass, r0: Resolver): Set<PErr>
+fun classChecks(c, r0): Set<PErr>
   let inh = findClassesOrError(c.cImplements, r0)
   let implErr = implErrors(chain(c.cImplements), r0, noErrs())
   let pureErr = allPureInterfaces(chain(inh))
@@ -479,7 +479,7 @@ fun classFields(c: PsClass): List<PStmt>
   ret concat(flattenParams(c.cParams), letMembers(chain(c.cMembers),
                                                   List()))
 
-fun letMembers(ms: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun letMembers(ms, acc: List<PStmt>): List<PStmt>
   ret build(letMembersB(ms, builderFrom(acc)))
 
 fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
@@ -489,7 +489,7 @@ fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): Li
       (let2: PsLet) => letMembersB(l.next, push(acc, l.value))
       (o: PStmt)    => letMembersB(l.next, acc)
 
-fun arrayFieldsOf(fs: Chain<PStmt>, acc: List<PStmt>): List<PStmt>
+fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt>
   ret build(arrayFieldsOfB(fs, builderFrom(acc)))
 
 fun [tail] arrayFieldsOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
@@ -548,14 +548,14 @@ fun [tail] implErrors(ts: Chain<Spec>, r: Resolver,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => implErrors(l.next, r, union(acc, implError(l.value, r)))
 
-fun implError(xtype: Spec, r: Resolver): Set<PErr>
+fun implError(xtype, r): Set<PErr>
   ret match(xtype)
     (n: SNamed) => implNameError(n.snName, ctSpecLine(xtype), r)
     (c: SClass) => implNameError(c.scName, ctSpecLine(xtype), r)
     (o: Spec)   => oneErr(ctSpecLine(xtype),
                           "Class cannot inherit from this type \"<class 't'>\"")
 
-fun implNameError(name: String, lr: PLine, r: Resolver): Set<PErr>
+fun implNameError(name, lr, r): Set<PErr>
   let found = findType(r, name)
   if isEmpty(found.bItems)
     ret oneErr(lr, "Could not find class named \"" + name + "\"")
@@ -576,7 +576,7 @@ fun [tail] allPureInterfaces(fs: Chain<FoundClass>): Bool
 
 
 fun [tail] finalParentErrs(c: PsClass, fs: Chain<FoundClass>,
-                           acc: Set<PErr>): Set<PErr>
+                           acc): Set<PErr>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value.fcClass)
@@ -590,7 +590,7 @@ fun [tail] finalParentErrs(c: PsClass, fs: Chain<FoundClass>,
 
 # Fragile-base warning: one method overriding several similar methods of a
 # SINGLE immediate parent.
-fun fragileWarns(c: PsClass, inh: List<FoundClass>, r: Resolver): Set<PErr>
+fun fragileWarns(c: PsClass, inh: List<FoundClass>, r): Set<PErr>
   ret fbLoop(chain(createSlotsFromMembers(c)), c, inh, r, noErrs())
 
 fun [tail] fbLoop(bs: Chain<Slot>, c: PsClass, inh: List<FoundClass>,
@@ -601,7 +601,7 @@ fun [tail] fbLoop(bs: Chain<Slot>, c: PsClass, inh: List<FoundClass>,
                               fbParents(l.value, chain(inh), c, r, acc))
 
 fun [tail] fbParents(slot: Slot, fs: Chain<FoundClass>, c: PsClass,
-                     r: Resolver, acc: Set<PErr>): Set<PErr>
+                     r, acc): Set<PErr>
   ret match(fs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => match(l.value.fcClass)
@@ -609,8 +609,8 @@ fun [tail] fbParents(slot: Slot, fs: Chain<FoundClass>, c: PsClass,
                                 fbOne(slot, p, c, r, acc))
       ()           => fbParents(slot, l.next, c, r, acc)
 
-fun fbOne(slot: Slot, p: PsClass, c: PsClass, r: Resolver,
-          acc: Set<PErr>): Set<PErr>
+fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
+          acc): Set<PErr>
   let nCaptured = capturedCount(chain(createSlotsFromMembers(p)), slot, r,
                                 List(), 0)
   ret nCaptured > 1
@@ -625,8 +625,8 @@ fun fbOne(slot: Slot, p: PsClass, c: PsClass, r: Resolver,
 
 # The deduped capture count, taken on the SAME walk that dedups — the names
 # exist only to dedup; the diagnostic needs the count (no-length ruling).
-fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r: Resolver,
-                         seen: List<String>, n: Int): Int
+fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r,
+                         seen: List<String>, n): Int
   ret match(ps)
     (nil: ChainEnd) => n
     (l: ChainLink)  => matchName(slot.slotName, l.value.slotName)
@@ -636,7 +636,7 @@ fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r: Resolver,
       ? capturedCount(l.next, slot, r, prepend(l.value.slotName, seen), n + 1)
       : capturedCount(l.next, slot, r, seen, n)
 
-fun checkEnum2(e2: PsEnum, r: Resolver): Set<PErr>
+fun checkEnum2(e2: PsEnum, r): Set<PErr>
   ret match(e2.eSpec)
     (sp: Spec) => union(checkStmt2(e2.eParams, r, None),
                   union(branchChecks(chain(e2.eVariants), r, None, noErrs()),
@@ -647,7 +647,7 @@ fun checkEnum2(e2: PsEnum, r: Resolver): Set<PErr>
 
 
 fun [tail] linearGenErrs(e2: PsEnum, gs: Chain<PGen>,
-                         acc: Set<PErr>): Set<PErr>
+                         acc): Set<PErr>
   ret match(gs)
     (nil: ChainEnd) => acc
     (l: ChainLink)  => hasAttr(l.value.genAttrs, "linear")
@@ -656,7 +656,7 @@ fun [tail] linearGenErrs(e2: PsEnum, gs: Chain<PGen>,
                            "[linear] type parameters are only supported on functions")))
       : linearGenErrs(e2, l.next, acc)
 
-fun checkTypealias2(ta: PsTypealias, r0: Resolver): Set<PErr>
+fun checkTypealias2(ta: PsTypealias, r0): Set<PErr>
   let r = isEmpty(ta.taGens) && isEmpty(ta.taWheres)
     ? r0
     : genScope(ta.taGens, r0)

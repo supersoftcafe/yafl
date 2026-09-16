@@ -31,7 +31,7 @@ fun taskFields(): List<CgField>
 # Adjust a function's return type so it can carry the task-pending signal: a
 # pointer-shaped type carries the tag in-band; anything else wraps in
 # CgTaskWrapper {value, task*}.
-fun wrapReturnType(t2: CgType): CgType
+fun wrapReturnType(t2): CgType
   ret match(t2)
     (v: CgVoid)         => t2
     (d: CgDataPointer)  => t2
@@ -39,7 +39,7 @@ fun wrapReturnType(t2: CgType): CgType
     (s2: CgStruct)      => wrapIfNoPointer(t2)
     (o: CgType)         => CgTaskWrapper(t2)
 
-fun wrapIfNoPointer(t2: CgType): CgType
+fun wrapIfNoPointer(t2): CgType
   ret match(cgFirstPointerField(t2))
     (name: String) => t2
     ()              => CgTaskWrapper(t2)
@@ -49,7 +49,7 @@ fun wrapIfNoPointer(t2: CgType): CgType
 # value in the result field share one subtype; distinct struct layouts get a
 # unique name — sha1 over the same structural signature _ir_mangle hashes
 # (taskTypeSig below), byte-identical to Python's task_abi._type_sig.
-fun [tail] taskSubtypeName(resultType: CgType): String|None
+fun [tail] taskSubtypeName(resultType): String|None
   ret match(resultType)
     (v: CgVoid)          => None
     # DataPointer (bigint, str, class pointers) — all stored as object_t*;
@@ -61,7 +61,7 @@ fun [tail] taskSubtypeName(resultType: CgType): String|None
     (o: CgType)          => "task$T" + slice(sha1Hex(taskTypeSig(o)), 0, 16)
 
 # The structural signature taskSubtypeName hashes — Python task_abi._type_sig.
-fun [tail] taskTypeSig(t2: CgType): String
+fun [tail] taskTypeSig(t2): String
   ret match(t2)
     (d: CgDataPointer)  => "ptr"
     (i: CgInt)          => "i" + String(i.precision)
@@ -87,7 +87,7 @@ fun makeTaskForeignObject(): CgObject
 # A task subtype carrying `resultType` in its trailing `result` field.
 # task_obj is pre-declared in yafllib so it stays foreign; other subtypes are
 # compiler-emitted. is_mutable: state/result/next written after construction.
-fun makeTaskSubtypeObject(subtypeName: String, resultType: CgType): CgObject
+fun makeTaskSubtypeObject(subtypeName, resultType): CgObject
   ret CgObject(subtypeName, list1("task"), List(),
                # The task_t prefix, then the result field LAST.
                CgImmediateStruct(build(push(builderFrom(taskFields()), CgField("result", resultType)))),
@@ -96,7 +96,7 @@ fun makeTaskSubtypeObject(subtypeName: String, resultType: CgType): CgObject
 
 # Truthy (Int32) when `resultVar` carries a task signal; `wrappedType` is the
 # ALREADY-wrapped return type.
-fun isTaskParam(resultVar: RParam, wrappedType: CgType): RParam
+fun isTaskParam(resultVar, wrappedType): RParam
   ret match(wrappedType)
     (d: CgDataPointer)  => RpRuntimeInvoke("PTR_IS_TASK",
                              RpNewStruct(list1(RpNamedValue("p", resultVar))), CgInt(32))
@@ -105,21 +105,21 @@ fun isTaskParam(resultVar: RParam, wrappedType: CgType): RParam
     (w: CgTaskWrapper)  => RpStructField(resultVar, "task")
     (o: CgType)         => isTaskParamStruct(resultVar, o)
 
-fun isTaskParamStruct(resultVar: RParam, wrappedType: CgType): RParam
+fun isTaskParamStruct(resultVar, wrappedType): RParam
   ret match(cgFirstPointerField(wrappedType))
     (name: String) => RpRuntimeInvoke("PTR_IS_TASK",
                         RpNewStruct(list1(RpNamedValue("p", RpStructField(resultVar, name)))), CgInt(32))
     ()              => RpNullPointer()   # unreachable (Python raises ValueError)
 
 # The pointer-to-task (suitable for TASK_UNTAG) from a task-carrying result.
-fun taskPtrFrom(resultVar: RParam, wrappedType: CgType): RParam
+fun taskPtrFrom(resultVar, wrappedType): RParam
   ret match(wrappedType)
     (d: CgDataPointer)  => resultVar
     (fp: CgFuncPointer) => RpStructField(resultVar, "o")
     (w: CgTaskWrapper)  => RpStructField(resultVar, "task")
     (o: CgType)         => taskPtrFromStruct(resultVar, o)
 
-fun taskPtrFromStruct(resultVar: RParam, wrappedType: CgType): RParam
+fun taskPtrFromStruct(resultVar, wrappedType): RParam
   ret match(cgFirstPointerField(wrappedType))
     (name: String) => RpStructField(resultVar, name)
     ()              => RpNullPointer()   # unreachable (Python raises ValueError)

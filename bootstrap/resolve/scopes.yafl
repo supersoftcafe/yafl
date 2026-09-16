@@ -38,7 +38,7 @@ import Bootstrap::Types
 # declaration twice, the bag holds two items, and the name then looks
 # AMBIGUOUS and never resolves. (stdlib code is itself in `System`, so the
 # own-namespace and the import coincide.)
-fun scopeResolver(st: PStmt, r: Resolver): Resolver
+fun scopeResolver(st, r): Resolver
   let scopes = stmtScopes(st)
   let scoped = isEmpty(scopes) ? r : RScopes(scopes, r)
   # A TOP-LEVEL let's initialiser resolves like a function body (Python:
@@ -50,7 +50,7 @@ fun scopeResolver(st: PStmt, r: Resolver): Resolver
     (o: PStmt) => scoped
 
 # The statement's ImportGroup paths (deduplicated), plus its OWN namespace.
-fun stmtScopes(st: PStmt): List<String>
+fun stmtScopes(st): List<String>
   let grp = importPaths(chain(stmtImports(st)), List())
   let own = ownNamespace(stmtName2(st))
   # The statement's OWN namespace comes after its imports: the search order
@@ -59,7 +59,7 @@ fun stmtScopes(st: PStmt): List<String>
     ? grp
     : build(push(builderFrom(grp), own))
 
-fun stmtImports(st: PStmt): List<PStmt>
+fun stmtImports(st): List<PStmt>
   ret match(st)
     (f: PsFun)        => importsOr(f.fImports)
     (l: PsLet)        => importsOr(l.lImports)
@@ -93,37 +93,37 @@ fun [tail] importPathsB(ss: Chain<PStmt>, [terminal] out: ListBuilder<String>,
       (o: PStmt)     => importPathsB(l.next, out, seen)
 
 # "Main" from "Main::main@JnNy0L".
-fun ownNamespace(name: String): String
+fun ownNamespace(name): String
   let ix = lastSep(name, 0, -1)
   ret ix < 0 ? "" : slice(name, 0, ix)
 
-fun stmtName2(st: PStmt): String
+fun stmtName2(st): String
   ret stmtName(st)
 
 # A global let's initialiser resolves like a function body: it needs the same
 # generic scope AND the same trait operators, so an operator resolves the same
 # in each. (_initialiser_resolver — installed by scopeResolver above, for
 # top-level lets ONLY.)
-fun letScope(l: PsLet, r: Resolver): Resolver
+fun letScope(l: PsLet, r): Resolver
   ret traitScope(l.lWheres, genScope(l.lGens, r))
 
-fun classScope(c: PsClass, r: Resolver): Resolver
+fun classScope(c: PsClass, r): Resolver
   ret genScope(c.cGens, r)
 
-fun enumScope(e: PsEnum, r: Resolver): Resolver
+fun enumScope(e: PsEnum, r): Resolver
   ret genScope(e.eGens, r)
 
-fun typealiasScope(ta: PsTypealias, r: Resolver): Resolver
+fun typealiasScope(ta: PsTypealias, r): Resolver
   ret genScope(ta.taGens, r)
 
 # ── generic type params ─────────────────────────────────────────────────────
 # Each becomes a typealias bound to its own placeholder, so `TVal` resolves
 # through the ordinary type path to `SGeneric(TVal@hash)`.
 
-fun genScope(gens: List<PGen>, r: Resolver): Resolver
+fun genScope(gens: List<PGen>, r): Resolver
   ret isEmpty(gens) ? r : RTypes(genFounds(chain(gens), List()), r)
 
-fun genFounds(gs: Chain<PGen>, acc: List<Found>): List<Found>
+fun genFounds(gs, acc: List<Found>): List<Found>
   ret build(genFoundsB(gs, builderFrom(acc)))
 
 fun [tail] genFoundsB(gs: Chain<PGen>, [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
@@ -145,7 +145,7 @@ fun isLinearGen(g: PGen): Bool
 # ── locals ──────────────────────────────────────────────────────────────────
 # A function's parameters, and a block's own lets.
 
-fun localScope(lets: List<PStmt>, r: Resolver): Resolver
+fun localScope(lets: List<PStmt>, r): Resolver
   ret isEmpty(lets)
     ? r
     : RData(build(letFounds(chain(lets), builder())), r)
@@ -156,7 +156,7 @@ fun [tail] letFounds(ls: Chain<PStmt>,
     (nil: ChainEnd) => acc
     (l: ChainLink)  => letFounds(l.next, addLetFound(acc, l.value))
 
-fun addLetFound([terminal] acc: ListBuilder<Found>, st: PStmt): ListBuilder<Found>
+fun addLetFound([terminal] acc, st): ListBuilder<Found>
   ret match(st)
     (l: PsLet) => push(acc, Found(l.lName, st, ScLocal()))
     # A NESTED FUNCTION binds a name in its block, exactly as a let does — a
@@ -167,7 +167,7 @@ fun addLetFound([terminal] acc: ListBuilder<Found>, st: PStmt): ListBuilder<Foun
 
 # The lets a parameter list introduces: a destructure's targets ARE the
 # parameters.
-fun paramLets(params: PStmt): List<PStmt>
+fun paramLets(params): List<PStmt>
   ret match(params)
     (d: PsDestructure) => d.dTargets
     (l: PsLet)         => prepend(params, List())
@@ -175,7 +175,7 @@ fun paramLets(params: PStmt): List<PStmt>
 
 # A block's statements bind names for the whole block — a block-scoped `let` is
 # visible to the statements after it AND to the block's value.
-fun blockScope(stmts: List<PStmt>, r: Resolver): Resolver
+fun blockScope(stmts: List<PStmt>, r): Resolver
   ret localScope(stmts, r)
 
 # ── the trait scope ─────────────────────────────────────────────────────────
@@ -197,7 +197,7 @@ fun blockScope(stmts: List<PStmt>, r: Resolver): Resolver
 # let's initialiser (Python: _initialiser_resolver / __body_resolver): even a
 # statement with no `where` of its own sees the in-scope IMPLICIT `[where]`
 # aliases, gathered from the resolver chain at query time.
-fun traitScope(wheres: List<Spec>, r: Resolver): Resolver
+fun traitScope(wheres, r): Resolver
   let amb = ambientEntries(r)
   let plain = plainEntries(chain(wheres), builder())
   # The ambient list is deduplicated once per pass at build time; here only
@@ -228,7 +228,7 @@ class [final] AmbEntries(aeEntries: List<TraitEntry>, aeBlocked: Bool)
 # `instance [ambient]` records join the SAME search — availability, not
 # constraint. Entries and dedupe are PREBUILT on the layer (traitScope);
 # per query only the member search runs.
-fun traitFindings(tr: RTraits, query: String, r: Resolver): Findings
+fun traitFindings(tr: RTraits, query: String, r): Findings
   ret traitLoop(chain(tr.rtEntries), query, r,
                 tr.rtBlocked ? incompleteFindings() : emptyFindings())
 
@@ -261,7 +261,7 @@ fun [tail] traitLoop(es: Chain<TraitEntry>, query: String, r: Resolver,
     (l: ChainLink)  => traitLoop(l.next, query, r,
                                  addFindings(acc, entryMembers(l.value, query, r)))
 
-fun entryMembers(e2: TraitEntry, query: String, r: Resolver): Findings
+fun entryMembers(e2: TraitEntry, query: String, r): Findings
   ret match(e2.teSpec)
     (c: SClass) => membersOf(c, e2.teOwn, query, r)
     (o: Spec)   => emptyFindings()
@@ -277,7 +277,7 @@ fun [tail] entrySeen(ss: Chain<TraitEntry>, x: TraitEntry): Bool
 fun eqNameList(a: List<String>, b: List<String>): Bool
   ret eqBy(a, b, (x, y) => x == y)
 
-fun containsSpec(ss: List<Spec>, sp: Spec): Bool
+fun containsSpec(ss: List<Spec>, sp): Bool
   ret specSeen(chain(ss), sp)
 
 fun [tail] specSeen(ss: Chain<Spec>, sp: Spec): Bool
@@ -293,7 +293,7 @@ fun [tail] specSeen(ss: Chain<Spec>, sp: Spec): Bool
 # ran this 166.6M times per self-compile, one findType + one member scan each
 # — Python's ClassStatement.member_index() is the mirror); a hook miss
 # derives per query exactly as before.
-fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Findings
+fun membersOf(c, own, query: String, r): Findings
   ret match(mergedHook(r, c.scName))
     (mo: MergedOut) => match(mo)
       (ms: MTable) => membersViaMerged(ms.mtoTable, c, own, query, r)
@@ -306,7 +306,7 @@ fun membersOf(c: SClass, own: List<String>, query: String, r: Resolver): Finding
 # shadowing, per-name completeness and DFS parent order); substitution
 # grounds each HIT's pattern against the queried instantiation. Misses pay
 # a single dict get.
-fun membersViaMerged(mt: MergedTable, c: SClass, own: List<String>,
+fun membersViaMerged(mt: MergedTable, c, own,
                      query: String, r: Resolver): Findings
   if !sameLen(chain(mt.mtGens), chain(c.scParams))
     ret emptyFindings()
@@ -318,7 +318,7 @@ fun membersViaMerged(mt: MergedTable, c: SClass, own: List<String>,
     ()                => mt.mtAbsentInc ? incompleteFindings() : emptyFindings()
 
 fun [tail] wrapMerged(es: Chain<MergedEntry>, mapping: List<Binding>,
-                      c: SClass, own: List<String>,
+                      c, own,
                       [terminal] acc: ListBuilder<Found>): List<Found>
   ret match(es)
     (nil: ChainEnd) => build(acc)
@@ -327,12 +327,12 @@ fun [tail] wrapMerged(es: Chain<MergedEntry>, mapping: List<Binding>,
                         ScTrait(), mergedTp(l.value.mePattern, mapping, c),
                         l.value.meOwner, own)))
 
-fun mergedTp(pattern: Spec|None, mapping: List<Binding>, c: SClass): Spec
+fun mergedTp(pattern: Spec|None, mapping: List<Binding>, c): Spec
   ret match(pattern)
     (p: Spec) => isEmpty(mapping) ? p : substitute(p, mapping)
     ()         => c
 
-fun membersDerive(c: SClass, own: List<String>, query: String, r: Resolver): Findings
+fun membersDerive(c, own, query: String, r): Findings
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
       (cs: PsClass) => arityMatches(cs, c)
@@ -341,8 +341,8 @@ fun membersDerive(c: SClass, own: List<String>, query: String, r: Resolver): Fin
       (o: PStmt)    => emptyFindings()
     ()         => incompleteFindings()
 
-fun membersViaIdx(mi: MemberIdx, c: SClass, own: List<String>, query: String,
-                  r: Resolver): Findings
+fun membersViaIdx(mi: MemberIdx, c, own, query: String,
+                  r): Findings
   if !arityMatches(mi.miClass, c)
     ret emptyFindings()
   let direct = wrapMembers(chain(memberBucket(mi, query)), c, mi.miClass, own,
@@ -373,8 +373,8 @@ fun arityMatches(cs: PsClass, c: SClass): Bool
 # PLUS its body statements. A trait find carries the interface INSTANTIATION
 # it came through and the interface's declaration — overload resolution
 # substitutes the instantiation's type args through the member's type.
-fun classMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
-                 r: Resolver): Findings
+fun classMembers(cs, c, own, query: String,
+                 r): Findings
   let direct = memberMatches(chain(concat(flattenParams(cs.cParams),
                                           cs.cMembers)),
                              query, c, cs, own, List())
@@ -382,8 +382,8 @@ fun classMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
     ? parentMembers(cs, c, own, query, r)
     : Findings(direct, true)
 
-fun memberMatches(ms: Chain<PStmt>, query: String, tp: SClass,
-                         owner: PsClass, own: List<String>,
+fun memberMatches(ms, query: String, tp,
+                         owner, own,
                          acc: List<Found>): List<Found>
   ret build(memberMatchesB(ms, query, tp, owner, own, builderFrom(acc)))
 
@@ -402,8 +402,8 @@ fun [tail] memberMatchesB(ms: Chain<PStmt>, query: String, tp: SClass,
 # (Math<TVal> : Plus<TVal>, asked as Math<Int> ⇒ Plus<Int>). A parent that has
 # not grounded — its own name, OR any of its type args, still an SNamed —
 # BLOCKS the whole search.
-fun parentMembers(cs: PsClass, c: SClass, own: List<String>, query: String,
-                  r: Resolver): Findings
+fun parentMembers(cs: PsClass, c: SClass, own, query: String,
+                  r): Findings
   let mapping = paramMapping(cs.cGens, c.scParams)
   ret parentLoop(chain(cs.cImplements), mapping, own, query, r, emptyFindings())
 
@@ -417,7 +417,7 @@ fun [tail] parentLoop(ps: Chain<Spec>, mapping: List<Binding>,
                                                                     mapping),
                                                          own, query, r)))
 
-fun parentFindings(p: Spec, own: List<String>, query: String, r: Resolver): Findings
+fun parentFindings(p, own, query: String, r): Findings
   ret match(p)
     (n: SNamed) => incompleteFindings()
     (c: SClass) => anyNamed(chain(c.scParams))
@@ -428,7 +428,7 @@ fun parentFindings(p: Spec, own: List<String>, query: String, r: Resolver): Find
 fun paramMapping(gens: List<PGen>, args: List<Spec>): List<Binding>
   ret mapLoop(chain(gens), chain(args), List())
 
-fun mapLoop(gs: Chain<PGen>, as2: Chain<Spec>,
+fun mapLoop(gs, as2,
                    acc: List<Binding>): List<Binding>
   ret build(mapLoopB(gs, as2, builderFrom(acc)))
 
