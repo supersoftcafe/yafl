@@ -23,6 +23,7 @@ import pyast.classtools as c
 import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
+import pyast.hints as h
 
 import pyast.utils as u
 
@@ -36,7 +37,7 @@ class ImportGroup:
 class Statement:
     line_ref: LineRef
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
         raise NotImplementedError()
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
@@ -215,7 +216,7 @@ class TypeStatement(NamedStatement):
 
 @dataclass
 class DataStatement(NamedStatement):
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DataStatement, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DataStatement, list[Statement], h.Hints]:
         raise NotImplementedError()
 
     def get_type(self) -> t.TypeSpec|None:
@@ -226,8 +227,8 @@ class DataStatement(NamedStatement):
 class ImportStatement(Statement):
     path: str
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         return []
@@ -237,8 +238,8 @@ class ImportStatement(Statement):
 class NamespaceStatement(Statement):
     path: str
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         return []

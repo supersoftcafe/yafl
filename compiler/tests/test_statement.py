@@ -19,7 +19,7 @@ class _DummyStatement(s.Statement):
     """A minimal Statement subclass for use as a side-effect in tests."""
 
     def compile(self, resolver, func_ret_type):
-        return self, []
+        return self, [], {}
 
     def check(self, resolver, func_ret_type):
         return []
@@ -34,7 +34,7 @@ class _ExprWithSideEffect(e.Expression):
         return t.BuiltinSpec(lr, "int32")
 
     def compile(self, resolver, expected_type):
-        return e.IntegerExpression(lr, 42), [self.side_stmt]
+        return e.IntegerExpression(lr, 42), [self.side_stmt], {}
 
     def check(self, resolver, expected_type):
         return []
@@ -124,7 +124,7 @@ class TestReturnStatementCompile(TestCase):
         expr = _ExprWithSideEffect(lr, side_stmt)
         ret_stmt = s.ReturnStatement(lr, expr)
 
-        _, stmts = ret_stmt.compile(resolver, int32_type)
+        _, stmts, _ = ret_stmt.compile(resolver, int32_type)
 
         self.assertIn(
             side_stmt,
@@ -152,7 +152,7 @@ class TestMatchArmCompile(TestCase):
         subject = e.IntegerExpression(lr, 0, precision=32)
         match_expr = m.MatchExpression(lr, subject, [arm])
 
-        _, stmts = match_expr.compile(resolver, int32_type)
+        _, stmts, _ = match_expr.compile(resolver, int32_type)
 
         self.assertIn(
             side_stmt,

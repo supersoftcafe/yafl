@@ -32,18 +32,16 @@ enum ZipResult
 # the end yields -1 rather than aborting, so a truncated archive is reported
 # as a malformed one.
 
-fun u16At(s, at): Int
-  ret at < 0 || at + 2 > length(s)
-    ? -1
-    : Int(byteAt(s, at)) + Int(byteAt(s, at + 1)) * 256
+fun u16At(s, at) => at < 0 || at + 2 > length(s)
+  ? -1
+  : Int(byteAt(s, at)) + Int(byteAt(s, at + 1)) * 256
 
-fun u32At(s, at): Int
-  ret at < 0 || at + 4 > length(s)
-    ? -1
-    : Int(byteAt(s, at))
-      + Int(byteAt(s, at + 1)) * 256
-      + Int(byteAt(s, at + 2)) * 65536
-      + Int(byteAt(s, at + 3)) * 16777216
+fun u32At(s, at) => at < 0 || at + 4 > length(s)
+  ? -1
+  : Int(byteAt(s, at))
+    + Int(byteAt(s, at + 1)) * 256
+    + Int(byteAt(s, at + 2)) * 65536
+    + Int(byteAt(s, at + 3)) * 16777216
 
 
 # ── end of central directory ────────────────────────────────────────────────
@@ -51,16 +49,14 @@ fun u32At(s, at): Int
 # has to be found by scanning BACKWARDS for its signature. Scanning forwards
 # would match a signature that happened to occur inside stored file data.
 
-fun findEocd(s): Int
-  ret eocdScan(s, length(s) - 22)
+fun findEocd(s) => eocdScan(s, length(s) - 22)
 
-fun [tail] eocdScan(s, at): Int
-  ret at < 0 ? -1
-    : u32At(s, at) == 101010256 ? at
-    : eocdScan(s, at - 1)
+fun [tail] eocdScan(s, at) => at < 0 ? -1
+  : u32At(s, at) == 101010256 ? at
+  : eocdScan(s, at - 1)
 
 
-fun readZip(s): ZipResult
+fun readZip(s)
   let eocd = findEocd(s)
   if eocd < 0
     ret ZipErr("not a zip archive: no end-of-central-directory record")
@@ -71,7 +67,7 @@ fun readZip(s): ZipResult
   ret centralWalk(s, start, count, builder())
 
 fun [tail] centralWalk(s, at, left,
-                       [terminal] b: ListBuilder<ZipEntry>): ZipResult
+                       [terminal] b)
   if left <= 0
     ret ZipOk(build(b))
   if u32At(s, at) != 33639248
@@ -99,13 +95,12 @@ fun [tail] centralWalk(s, at, left,
     ()             => zipDiscard(b, ZipErr("entry \"" + name
                                            + "\" has a malformed local header"))
 
-fun zipDiscard([terminal] b: ListBuilder<ZipEntry>, e): ZipResult
-  ret build(b) |> (l) => e
+fun zipDiscard([terminal] b: ListBuilder<ZipEntry>, e): ZipResult => build(b) |> (l) => e
 
 # The local header repeats the name and carries its OWN extra-field length,
 # which routinely differs from the central directory's — the data offset must
 # be computed from the local header, not from the central one.
-fun storedBody(s, localAt, size): String|None
+fun storedBody(s, localAt, size)
   if u32At(s, localAt) != 67324752
     ret None
   let nameLen = u16At(s, localAt + 26)
@@ -116,10 +111,8 @@ fun storedBody(s, localAt, size): String|None
   ret from < 0 || from + size > length(s) ? None : slice(s, from, from + size)
 
 
-fun zipFind(entries: List<ZipEntry>, name: String): ZipEntry|None
-  ret zipSeek(chain(entries), name)
+fun zipFind(entries: List<ZipEntry>, name: String) => zipSeek(chain(entries), name)
 
-fun [tail] zipSeek(es: Chain<ZipEntry>, name: String): ZipEntry|None
-  ret match(es)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.zipName == name ? l.value : zipSeek(l.next, name)
+fun [tail] zipSeek(es: Chain<ZipEntry>, name: String) => match(es)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.zipName == name ? l.value : zipSeek(l.next, name)

@@ -16,16 +16,15 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun propagateCopies(a: CgApp): CgApp
-  ret appWithFunctions(a, map(appFunctions(a), cpFunction))
+fun propagateCopies(a: CgApp) => appWithFunctions(a, map(appFunctions(a), cpFunction))
 
-fun [tail] cpFunction(f): CgFunction
+fun [tail] cpFunction(f)
   let out = cpOnce(f)
   ret out.cpChanged ? cpFunction(out.cpFn) : f
 
 class [final] CpOut(cpFn: CgFunction, cpChanged: Bool)
 
-fun cpOnce(f): CpOut
+fun cpOnce(f)
   let readCounts = cpCountReads(f.fnOps)
   let walked = cpWalk(seqStream(f.fnOps),
                         readCounts, seqBuilder(), false)
@@ -36,10 +35,9 @@ fun cpOnce(f): CpOut
 # Python's get_live_vars returns a frozenset PER OP: an op reading the same
 # var twice (done.io, done.v in one call) counts ONCE. Counting occurrences
 # instead keeps the Move on the multi-reader path where Python drops it.
-fun cpAddName(acc: Set<String>, n: String): Set<String>
-  ret add(acc, n)
+fun cpAddName(acc: Set<String>, n: String) => add(acc, n)
 
-fun cpCountReads(ops: Segment<Op>|None): Dict<String, Int>
+fun cpCountReads(ops: Segment<Op>|None)
   ret fold(ops, Dict(),
            (acc, op) =>
              fold(fold(opReadVarNames(op), Set(), cpAddName), acc, sdBump))
@@ -53,7 +51,7 @@ class [final] CpWalkOut(cpwOps: Segment<Op>|None, cpwChanged: Bool)
 # carry, recurse. Storage-agnostic: the container appears only in cpOnce's
 # source construction.
 fun cpWalk<S>(s: S, readCounts: Dict<String, Int>,
-              [terminal] acc: SeqBuilder<Op>, changed): CpWalkOut where Stream<S, Op, Never>
+              [terminal] acc, changed) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -62,7 +60,7 @@ fun cpWalk<S>(s: S, readCounts: Dict<String, Int>,
     (er: Error<Op | None, Never>) => CpWalkOut(build(acc), changed)
 
 fun [tail] cpCarry<S>(cur, s: S, readCounts: Dict<String, Int>,
-                      [terminal] acc: SeqBuilder<Op>, changed): CpWalkOut where Stream<S, Op, Never>
+                      [terminal] acc, changed) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -88,31 +86,28 @@ class [final] CpStep(cpsEmit: List<Op>)
 # The candidate shape: Move(M:StackVar, S:StackVar); next op not a Label and
 # reads M. Emits the substituted next op (keeping the Move when M has other
 # readers); the carry loop consumes both.
-fun cpTryPropagate(cur, nxt, readCounts: Dict<String, Int>): CpStep|None
-  ret match(cur)
-    (m: OpMove) => cpTryMove(m, nxt, readCounts)
-    (o: Op)     => None
+fun cpTryPropagate(cur, nxt, readCounts: Dict<String, Int>) => match(cur)
+  (m: OpMove) => cpTryMove(m, nxt, readCounts)
+  (o: Op)     => None
 
-fun cpTryMove(m: OpMove, nxt, readCounts: Dict<String, Int>): CpStep|None
-  ret match(m.moveTarget)
-    (mt: RpStackVar) => match(m.moveSource)
-      (ms: RpStackVar) => cpTryNext(m, mt, ms, nxt, readCounts)
-      (o: RParam)       => None
-    (o2: RParam)      => None
+fun cpTryMove(m, nxt, readCounts: Dict<String, Int>) => match(m.moveTarget)
+  (mt: RpStackVar) => match(m.moveSource)
+    (ms: RpStackVar) => cpTryNext(m, mt, ms, nxt, readCounts)
+    (o: RParam)       => None
+  (o2: RParam)      => None
 
-fun cpTryNext(m: OpMove, mt: RpStackVar, ms, nxt,
-              readCounts: Dict<String, Int>): CpStep|None
-  ret match(nxt)
-    (lb: OpLabel) => None
-    (o: Op)       => strListMember(opReadVarNames(nxt), mt.name)
-      ? cpEmit(m, mt, ms, nxt, readCounts)
-      : None
+fun cpTryNext(m, mt: RpStackVar, ms, nxt,
+              readCounts: Dict<String, Int>) => match(nxt)
+  (lb: OpLabel) => None
+  (o: Op)       => strListMember(opReadVarNames(nxt), mt.name)
+    ? cpEmit(m, mt, ms, nxt, readCounts)
+    : None
 
 # `m` is the Move being (possibly) kept — but this helper only re-emits it,
 # so it takes the ROOT type: a narrowed variant type in a signature is for
 # helpers that read variant fields.
-fun cpEmit(m: Op, mt: RpStackVar, ms, nxt,
-           readCounts: Dict<String, Int>): CpStep
+fun cpEmit(m, mt: RpStackVar, ms, nxt,
+           readCounts: Dict<String, Int>)
   # Python substitutes the SOURCE INSTANCE (replace_params swaps the whole
   # StackVar node for `s`, TYPE INCLUDED) — a name-only rename would keep the
   # target instance's type and mint a same-name-different-type chimera when
@@ -124,13 +119,12 @@ fun cpEmit(m: Op, mt: RpStackVar, ms, nxt,
     ? CpStep(list1(substituted))
     : CpStep(list2(m, substituted))
 
-fun cpSubstVar(p, m, s): RParam
-  ret match(p)
-    (sv: RpStackVar) => sv.name == m ? s : p
-    (o: RParam)      => p
+fun cpSubstVar(p, m, s) => match(p)
+  (sv: RpStackVar) => sv.name == m ? s : p
+  (o: RParam)      => p
 
 # Drop stack_var declarations no longer referenced anywhere (reads OR writes).
-fun cpPruneStackVars(f: CgFunction, newOps): CgFunction
+fun cpPruneStackVars(f: CgFunction, newOps)
   let mentioned = fold(newOps, Set(),
                        (acc, op) =>
                          fold(concat(opReadVarNames(op), cpWriteNames(op)), acc,
@@ -139,5 +133,4 @@ fun cpPruneStackVars(f: CgFunction, newOps): CgFunction
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
                         (fld) => contains(mentioned, fld.fieldName))))
 
-fun cpWriteNames(op): List<String>
-  ret fold(ssavOpWrites(op), List(), rpTakeStackVarName)
+fun cpWriteNames(op) => fold(ssavOpWrites(op), List(), rpTakeStackVarName)

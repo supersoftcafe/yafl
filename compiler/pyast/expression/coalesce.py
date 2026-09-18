@@ -46,6 +46,7 @@ from parsing.parselib import Error
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 from pyast.expression.base import Expression
 
 
@@ -103,12 +104,12 @@ class CoalesceExpression(Expression):
         return narrowed if ft is None else t.join(narrowed, ft)
 
     def compile(self, resolver: g.Resolver,
-                expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+                expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # The subject compiles with NO expected type: feeding the receiver's
         # type down would push the fallback's type onto the option and defeat
         # the narrowing. This compile is also how the subject's type becomes
         # known, which is what decides whether the node can dissolve yet.
-        subject, s1 = self.subject.compile(resolver, None)
+        subject, s1, sh = self.subject.compile(resolver, None)
         st = subject.get_type(resolver)
         narrowed = without_none(st) if st is not None else None
         if narrowed is not None and st.is_concrete():
@@ -121,8 +122,8 @@ class CoalesceExpression(Expression):
             # deterministic and yields exactly one of each.
             return self.__desugar(narrowed, resolver, expected_type)
         # Not ground yet: keep the node, with both children advanced one pass.
-        fallback, s2 = self.fallback.compile(resolver, expected_type)
-        return dataclasses.replace(self, subject=subject, fallback=fallback), s1 + s2
+        fallback, s2, fh = self.fallback.compile(resolver, expected_type)
+        return dataclasses.replace(self, subject=subject, fallback=fallback), s1 + s2, h.merge(sh, fh)
 
     def __desugar(self, narrowed, resolver, expected_type):
         """Become `match(subject) (v: narrowed) => v; () => fallback`.

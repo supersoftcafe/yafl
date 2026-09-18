@@ -34,65 +34,56 @@ import Bootstrap::Types
 class [final] ERoots(erIndex: Dict<String, SEnum>)
 class [final] NameMap(nmIndex: Dict<String, String>)
 
-fun erNames(r: ERoots): List<String>
-  ret sort(keys(r.erIndex))
+fun erNames(r: ERoots) => sort(keys(r.erIndex))
 
-fun nmNames(m: NameMap): List<String>
-  ret sort(keys(m.nmIndex))
+fun nmNames(m: NameMap) => sort(keys(m.nmIndex))
 
 fun ceCollectRoots(statements: List<PStmt>): ERoots
   ret ceRootsLoop(chain(statements),
                   ERoots(Dict()))
 
-fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc: ERoots): ERoots
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (e2: PsEnum) => ceRootsLoop(l.next, ceRootAdd(acc, e2))
-      (o: PStmt)   => ceRootsLoop(l.next, acc)
+fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (e2: PsEnum) => ceRootsLoop(l.next, ceRootAdd(acc, e2))
+    (o: PStmt)   => ceRootsLoop(l.next, acc)
 
-fun ceRootAdd(acc, e2: PsEnum): ERoots
-  ret match(e2.eSpec)
-    (sp: Spec) => match(sp)
-      # FIRST declaration of a root wins.
-      (es: SEnum) => contains(acc.erIndex, es.seRoot)
-        ? acc
-        : ERoots(put(acc.erIndex, es.seRoot, es))
-      (o: Spec)   => acc
-    ()         => acc
+fun ceRootAdd(acc, e2: PsEnum) => match(e2.eSpec)
+  (sp: Spec) => match(sp)
+    # FIRST declaration of a root wins.
+    (es: SEnum) => contains(acc.erIndex, es.seRoot)
+      ? acc
+      : ERoots(put(acc.erIndex, es.seRoot, es))
+    (o: Spec)   => acc
+  ()         => acc
 
-fun ceRootSpecOf(roots: ERoots, root: String): SEnum|None
-  ret get(roots.erIndex, root)
+fun ceRootSpecOf(roots: ERoots, root: String) => get(roots.erIndex, root)
 
 # Every name form of an enum root maps to its canonical root_name: the
 # no-hash namespaced form and the bare name (Name@hash itself is NOT a key —
 # NamedSpec.name typically lacks the hash). First form wins (setdefault).
-fun ceNameMap(roots: ERoots): NameMap
-  ret ceMapLoop(chain(erNames(roots)), NameMap(Dict()))
+fun ceNameMap(roots: ERoots): NameMap => ceMapLoop(chain(erNames(roots)), NameMap(Dict()))
 
-fun [tail] ceMapLoop(ns: Chain<String>, acc: NameMap): NameMap
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceMapLoop(l.next,
-                                 ceMapAdd(ceMapAdd(acc, simpleName(l.value),
-                                                   l.value),
-                                          bareOfUnique(l.value), l.value))
+fun [tail] ceMapLoop(ns: Chain<String>, acc) => match(ns)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => ceMapLoop(l.next,
+                               ceMapAdd(ceMapAdd(acc, simpleName(l.value),
+                                                 l.value),
+                                        bareOfUnique(l.value), l.value))
 
-fun ceMapAdd(acc, key: String, root: String): NameMap
-  ret get(acc.nmIndex, key) is None
-    ? NameMap(put(acc.nmIndex, key, root))
-    : acc
+fun ceMapAdd(acc, key, root) => get(acc.nmIndex, key) is None
+  ? NameMap(put(acc.nmIndex, key, root))
+  : acc
 
 # Direct hit first (dict get), then the suffix fallback: "Foo::Bar" matches
 # "AnyNs::Foo::Bar" in either direction. EVERY match is collected and the
 # answer stands only if exactly one survives (RULING A), so the order the
 # keys are walked in cannot affect it.
-fun ceLookup2(map: NameMap, name): String|None
-  ret match(get(map.nmIndex, name))
-    (hit: String) => hit
-    ()            => singleOrNone(ceSuffixMatches(chain(nmNames(map)),
-                                                  map, name,
-                                                  Set()))
+fun ceLookup2(map: NameMap, name) => match(get(map.nmIndex, name))
+  (hit: String) => hit
+  ()            => singleOrNone(ceSuffixMatches(chain(nmNames(map)),
+                                                map, name,
+                                                Set()))
 
 # EVERY candidate, not just the first. Stopping at the first made the answer
 # depend on NameMap INSERTION ORDER: two roots that both suffix-match resolved
@@ -102,19 +93,17 @@ fun ceLookup2(map: NameMap, name): String|None
 # deciding anything. A Set collects the distinct matches, so singleOrNone above
 # yields the answer only when it is UNAMBIGUOUS, and ceAmbiguous below reports
 # the rest (USER RULING).
-fun [tail] ceSuffixMatches(ks: Chain<String>, map: NameMap, name: String,
-                           acc: Set<String>): Set<String>
-  ret match(ks)
-    (nil: ChainEnd) => acc
-    (k: ChainLink)  => ceSuffixMatches(k.next, map, name,
-        endsWith(k.value, "::" + name) || endsWith(name, "::" + k.value)
-          ? add(acc, ceRootFor(map, k.value))
-          : acc)
+fun [tail] ceSuffixMatches(ks: Chain<String>, map: NameMap, name,
+                           acc: Set<String>) => match(ks)
+  (nil: ChainEnd) => acc
+  (k: ChainLink)  => ceSuffixMatches(k.next, map, name,
+      endsWith(k.value, "::" + name) || endsWith(name, "::" + k.value)
+        ? add(acc, ceRootFor(map, k.value))
+        : acc)
 
-fun ceRootFor(map: NameMap, key): String
-  ret match(get(map.nmIndex, key))
-    (r: String) => r
-    ()          => key
+fun ceRootFor(map: NameMap, key) => match(get(map.nmIndex, key))
+  (r: String) => r
+  ()          => key
 
 # ── reachability ─────────────────────────────────────────────────────────────
 # Collect every enum root directly referenced in a spec, stopping at SEnum
@@ -125,37 +114,33 @@ fun ceRootFor(map: NameMap, key): String
 # The reached roots are a SET — the walk deduped by scanning what it had
 # already collected, and the one consumer sorts them into the edge list.
 fun ceReachOpt(sp: Spec|None, out,
-               map: NameMap): Set<String>
-  ret match(sp)
-    (s2: Spec) => ceReach(s2, out, map)
-    ()         => out
+               map: NameMap) => match(sp)
+  (s2: Spec) => ceReach(s2, out, map)
+  ()         => out
 
-fun ceReach(sp, out, map: NameMap): Set<String>
-  ret match(sp)
-    # `add` is idempotent, so the "already reached" test went with the Set.
-    (e2: SEnum)        => add(out, e2.seRoot)
-    (t2: STuple)       => ceReachEntries(chain(t2.stEntries), out, map)
-    (cm: SCombination) => ceReachList(chain(cm.scTypes), out, map)
-    (cl: SCallable)    => ceReachOpt(cl.scResult,
-                                     ceReach(cl.scParams2, out, map), map)
-    (n: SNamed)        => match(ceLookup2(map, n.snName))
-      (root: String) => add(out, root)
-      ()             => out
-    (o: Spec)          => out
+fun ceReach(sp, out, map: NameMap): Set<String> => match(sp)
+  # `add` is idempotent, so the "already reached" test went with the Set.
+  (e2: SEnum)        => add(out, e2.seRoot)
+  (t2: STuple)       => ceReachEntries(chain(t2.stEntries), out, map)
+  (cm: SCombination) => ceReachList(chain(cm.scTypes), out, map)
+  (cl: SCallable)    => ceReachOpt(cl.scResult,
+                                   ceReach(cl.scParams2, out, map), map)
+  (n: SNamed)        => match(ceLookup2(map, n.snName))
+    (root: String) => add(out, root)
+    ()             => out
+  (o: Spec)          => out
 
 fun [tail] ceReachEntries(es: Chain<SEntry>, out,
-                          map: NameMap): Set<String>
-  ret match(es)
-    (nil: ChainEnd) => out
-    (l: ChainLink)  => ceReachEntries(l.next,
-                                      ceReachOpt(l.value.seType, out, map),
-                                      map)
+                          map: NameMap) => match(es)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => ceReachEntries(l.next,
+                                    ceReachOpt(l.value.seType, out, map),
+                                    map)
 
 fun [tail] ceReachList(ss: Chain<Spec>, out: Set<String>,
-                       map: NameMap): Set<String>
-  ret match(ss)
-    (nil: ChainEnd) => out
-    (l: ChainLink)  => ceReachList(l.next, ceReach(l.value, out, map), map)
+                       map: NameMap) => match(ss)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => ceReachList(l.next, ceReach(l.value, out, map), map)
 
 # The directed graph between root names: each name to the names it reaches.
 #
@@ -170,8 +155,7 @@ class [final] EEdges(eeMap: Dict<String, List<String>>)
 
 # The nodes, in a deterministic order. Sorted, because the SCC decomposition
 # has to visit roots in the same order the Python compiler does.
-fun eeNodes(work: EEdges): List<String>
-  ret sort(keys(work.eeMap))
+fun eeNodes(work: EEdges) => sort(keys(work.eeMap))
 
 fun ceEdges(roots: ERoots, map: NameMap,
             fieldsOf: (:String): List<SField>): EEdges
@@ -180,25 +164,22 @@ fun ceEdges(roots: ERoots, map: NameMap,
 
 fun [tail] ceEdgeLoop(ns: Chain<String>, roots: ERoots, map: NameMap,
                       fieldsOf: (:String): List<SField>,
-                      acc: EEdges): EEdges
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => ceEdgeLoop(n.next, roots, map, fieldsOf,
-        EEdges(put(acc.eeMap, n.value,
-                   sort(ceFieldsReach(chain(fieldsOf(n.value)),
-                                      Set(), map)))))
+                      acc: EEdges) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => ceEdgeLoop(n.next, roots, map, fieldsOf,
+      EEdges(put(acc.eeMap, n.value,
+                 sort(ceFieldsReach(chain(fieldsOf(n.value)),
+                                    Set(), map)))))
 
 fun [tail] ceFieldsReach(fs: Chain<SField>, out,
-                         map: NameMap): Set<String>
-  ret match(fs)
-    (nil: ChainEnd) => out
-    (l: ChainLink)  => ceFieldsReach(l.next,
-                                     ceReach(l.value.sfType, out, map), map)
+                         map: NameMap) => match(fs)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => ceFieldsReach(l.next,
+                                   ceReach(l.value.sfType, out, map), map)
 
-fun ceChildrenOf(work: EEdges, v: String): List<String>
-  ret match(get(work.eeMap, v))
-    (cs: List<String>) => cs
-    ()                 => List()
+fun ceChildrenOf(work: EEdges, v: String) => match(get(work.eeMap, v))
+  (cs: List<String>) => cs
+  ()                 => List()
 
 # ── Tarjan's SCC algorithm ───────────────────────────────────────────────────
 # Deterministic: roots and neighbours visited in sorted order, like Python.
@@ -207,20 +188,19 @@ class [final] Tj(tjIndex: Dict<String, Int>, tjLow: Dict<String, Int>,
                  tjStack: List<String>, tjOn: Set<String>,
                  tjSccs: List<List<String>>, tjN: Int)
 
-fun ceSccs(work: EEdges): List<List<String>>
+fun ceSccs(work: EEdges)
   let order = eeNodes(work)
   ret tjRoots(chain(order), work,
               Tj(Dict(), Dict(), List(),
                  Set(), List(), 0)).tjSccs
 
-fun [tail] tjRoots(ns: Chain<String>, work: EEdges, st: Tj): Tj
-  ret match(ns)
-    (nil: ChainEnd) => st
-    (l: ChainLink)  => match(get(st.tjIndex, l.value))
-      (i: Int) => tjRoots(l.next, work, st)
-      ()       => tjRoots(l.next, work, tjVisit(l.value, work, st))
+fun [tail] tjRoots(ns: Chain<String>, work: EEdges, st: Tj) => match(ns)
+  (nil: ChainEnd) => st
+  (l: ChainLink)  => match(get(st.tjIndex, l.value))
+    (i: Int) => tjRoots(l.next, work, st)
+    ()       => tjRoots(l.next, work, tjVisit(l.value, work, st))
 
-fun tjVisit(v: String, work: EEdges, st0: Tj): Tj
+fun tjVisit(v, work: EEdges, st0: Tj)
   let st1 = Tj(put(st0.tjIndex, v, st0.tjN), put(st0.tjLow, v, st0.tjN),
                prepend(v, st0.tjStack), add(st0.tjOn, v),
                st0.tjSccs, st0.tjN + 1)
@@ -228,37 +208,32 @@ fun tjVisit(v: String, work: EEdges, st0: Tj): Tj
                          v, work, st1)
   ret tjIndexOf(st2, v) == tjLowOf(st2, v) ? tjPop(st2, v) : st2
 
-fun [tail] tjNeighbours(ws: Chain<String>, v: String, work: EEdges,
-                        st: Tj): Tj
-  ret match(ws)
-    (nil: ChainEnd) => st
-    (l: ChainLink)  => match(get(st.tjIndex, l.value))
-      (i: Int) => contains(st.tjOn, l.value)
-        ? tjNeighbours(l.next, v, work,
-                       tjSetLow(st, v, minInt(tjLowOf(st, v), i)))
-        : tjNeighbours(l.next, v, work, st)
-      ()       => tjVisit(l.value, work, st)
-        |> (st2) => tjNeighbours(l.next, v, work,
-                                 tjSetLow(st2, v,
-                                          minInt(tjLowOf(st2, v),
-                                                 tjLowOf(st2, l.value))))
+fun [tail] tjNeighbours(ws: Chain<String>, v, work: EEdges,
+                        st: Tj) => match(ws)
+  (nil: ChainEnd) => st
+  (l: ChainLink)  => match(get(st.tjIndex, l.value))
+    (i: Int) => contains(st.tjOn, l.value)
+      ? tjNeighbours(l.next, v, work,
+                     tjSetLow(st, v, minInt(tjLowOf(st, v), i)))
+      : tjNeighbours(l.next, v, work, st)
+    ()       => tjVisit(l.value, work, st)
+      |> (st2) => tjNeighbours(l.next, v, work,
+                               tjSetLow(st2, v,
+                                        minInt(tjLowOf(st2, v),
+                                               tjLowOf(st2, l.value))))
 
-fun tjIndexOf(st: Tj, v: String): Int
-  ret match(get(st.tjIndex, v))
-    (i: Int) => i
-    ()       => -1
+fun tjIndexOf(st: Tj, v: String) => match(get(st.tjIndex, v))
+  (i: Int) => i
+  ()       => -1
 
-fun tjLowOf(st: Tj, v: String): Int
-  ret match(get(st.tjLow, v))
-    (i: Int) => i
-    ()       => -1
+fun tjLowOf(st: Tj, v: String) => match(get(st.tjLow, v))
+  (i: Int) => i
+  ()       => -1
 
-fun tjSetLow(st: Tj, v: String, x: Int): Tj
-  ret Tj(st.tjIndex, put(st.tjLow, v, x), st.tjStack, st.tjOn, st.tjSccs,
-         st.tjN)
+fun tjSetLow(st: Tj, v, x) => Tj(st.tjIndex, put(st.tjLow, v, x), st.tjStack, st.tjOn, st.tjSccs,
+                                 st.tjN)
 
-fun minInt(a: Int, b: Int): Int
-  ret a < b ? a : b
+fun minInt(a: Int, b: Int) => a < b ? a : b
 
 # Pop the stack down to v inclusive — that prefix is one SCC. Python pops ONE
 # AT A TIME, appending, so its member list runs [latest-discovered … v]. The
@@ -271,12 +246,11 @@ fun minInt(a: Int, b: Int): Int
 # list reversal in the port, deleted by choosing the representation that
 # matches how the value is consumed.
 # Remove an SCC's members from the on-stack set.
-fun [tail] tjOnDrop(ns: Chain<String>, acc: Set<String>): Set<String>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => tjOnDrop(l.next, remove(acc, l.value))
+fun [tail] tjOnDrop(ns: Chain<String>, acc: Set<String>) => match(ns)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => tjOnDrop(l.next, remove(acc, l.value))
 
-fun tjPop(st: Tj, v: String): Tj
+fun tjPop(st: Tj, v: String)
   let at = tjFirstIndex(chain(st.tjStack), v, 0)
   let scc = take(st.tjStack, at + 1)
   # tjOn is a membership set, so the SCC's members are simply removed from it.
@@ -294,22 +268,19 @@ fun tjPop(st: Tj, v: String): Tj
          st.tjN)
 
 # The stack is newest-first, so the MOST RECENT v is the FIRST match.
-fun [tail] tjFirstIndex(ss: Chain<String>, v: String, at: Int): Int
-  ret match(ss)
-    (nil: ChainEnd) => at
-    (l: ChainLink)  => l.value == v ? at : tjFirstIndex(l.next, v, at + 1)
+fun [tail] tjFirstIndex(ss: Chain<String>, v: String, at) => match(ss)
+  (nil: ChainEnd) => at
+  (l: ChainLink)  => l.value == v ? at : tjFirstIndex(l.next, v, at + 1)
 
 fun tjRemoveAll(ss, gone: List<String>,
-                       acc: List<String>): List<String>
-  ret build(tjRemoveAllB(ss, gone, builderFrom(acc)))
+                       acc: List<String>) => build(tjRemoveAllB(ss, gone, builderFrom(acc)))
 
 fun [tail] tjRemoveAllB(ss: Chain<String>, gone: List<String>,
-                       [terminal] acc: ListBuilder<String>): ListBuilder<String>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => contains2(gone, l.value)
-      ? tjRemoveAllB(l.next, gone, acc)
-      : tjRemoveAllB(l.next, gone, push(acc, l.value))
+                       [terminal] acc: ListBuilder<String>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => contains2(gone, l.value)
+    ? tjRemoveAllB(l.next, gone, acc)
+    : tjRemoveAllB(l.next, gone, push(acc, l.value))
 
 # ── cycle breakers ───────────────────────────────────────────────────────────
 # Iterate until no cycles remain; per round, every cyclic SCC contributes its
@@ -331,55 +302,50 @@ fun [tail] cePickLoop(work, roots: ERoots,
     |> (out) => cePickLoop(out.pbWork, roots, fieldsOf, out.pbChosen)
 
 fun ceCyclicSccs(ss, work: EEdges,
-                        acc: List<List<String>>): List<List<String>>
-  ret build(ceCyclicSccsB(ss, work, builderFrom(acc)))
+                        acc: List<List<String>>) => build(ceCyclicSccsB(ss, work, builderFrom(acc)))
 
 fun [tail] ceCyclicSccsB(ss: Chain<List<String>>, work: EEdges,
-                        [terminal] acc: ListBuilder<List<String>>): ListBuilder<List<String>>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceIsCyclic(l.value, work)
-      ? ceCyclicSccsB(l.next, work, push(acc, l.value))
-      : ceCyclicSccsB(l.next, work, acc)
+                        [terminal] acc: ListBuilder<List<String>>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => ceIsCyclic(l.value, work)
+    ? ceCyclicSccsB(l.next, work, push(acc, l.value))
+    : ceCyclicSccsB(l.next, work, acc)
 
-fun ceIsCyclic(scc: List<String>, work: EEdges): Bool
+fun ceIsCyclic(scc: List<String>, work: EEdges)
   if !isEmpty(drop(scc, 1))
     ret true
   ret ceAnySelfLoop(chain(scc), work)
 
-fun [tail] ceAnySelfLoop(ss: Chain<String>, work: EEdges): Bool
-  ret match(ss)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => contains2(ceChildrenOf(work, l.value), l.value)
-      ? true
-      : ceAnySelfLoop(l.next, work)
+fun [tail] ceAnySelfLoop(ss: Chain<String>, work: EEdges) => match(ss)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => contains2(ceChildrenOf(work, l.value), l.value)
+    ? true
+    : ceAnySelfLoop(l.next, work)
 
 class [final] PickOut(pbWork: EEdges, pbChosen: List<String>)
 
-fun [tail] ceBreakSccs(ss: Chain<List<String>>, work: EEdges, roots: ERoots,
+fun [tail] ceBreakSccs(ss: Chain<List<String>>, work, roots: ERoots,
                        fieldsOf: (:String): List<SField>,
-                       acc: List<String>): PickOut
-  ret match(ss)
-    (nil: ChainEnd) => PickOut(work, acc)
-    (l: ChainLink)  => ceMinBy(chain(l.value), work, roots, fieldsOf, "")
-      # The chosen breakers are a set of names to mark — order not observed.
-      |> (chosen) => ceBreakSccs(l.next, ceRemoveNode(work, chosen), roots,
-                                 fieldsOf, prepend(chosen, acc))
+                       acc) => match(ss)
+  (nil: ChainEnd) => PickOut(work, acc)
+  (l: ChainLink)  => ceMinBy(chain(l.value), work, roots, fieldsOf, "")
+    # The chosen breakers are a set of names to mark — order not observed.
+    |> (chosen) => ceBreakSccs(l.next, ceRemoveNode(work, chosen), roots,
+                               fieldsOf, prepend(chosen, acc))
 
 fun [tail] ceMinBy(ss: Chain<String>, work: EEdges, roots: ERoots,
                    fieldsOf: (:String): List<SField>,
-                   best: String): String
-  ret match(ss)
-    (nil: ChainEnd) => best
-    (l: ChainLink)  => best == "" || ceKeyLess(l.value, best, work, roots,
-                                               fieldsOf)
-      ? ceMinBy(l.next, work, roots, fieldsOf, l.value)
-      : ceMinBy(l.next, work, roots, fieldsOf, best)
+                   best) => match(ss)
+  (nil: ChainEnd) => best
+  (l: ChainLink)  => best == "" || ceKeyLess(l.value, best, work, roots,
+                                             fieldsOf)
+    ? ceMinBy(l.next, work, roots, fieldsOf, l.value)
+    : ceMinBy(l.next, work, roots, fieldsOf, best)
 
 # The sort key tuple (not System::, not self-loop, len(all_fields), name),
 # compared lexicographically.
-fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots,
-              fieldsOf: (:String): List<SField>): Bool
+fun ceKeyLess(a, b, work: EEdges, roots: ERoots,
+              fieldsOf: (:String): List<SField>)
   let aSys = ceIsSystem(a)
   let bSys = ceIsSystem(b)
   if aSys != bSys
@@ -394,26 +360,24 @@ fun ceKeyLess(a: String, b: String, work: EEdges, roots: ERoots,
     ret shorterThan(chain(aFields), chain(bFields))
   ret a < b
 
-fun ceIsSystem(name): Bool
-  ret startsWith(simpleName(name), "System::")
+fun ceIsSystem(name) => startsWith(simpleName(name), "System::")
 
 # Drop the node AND every edge into it. The node itself goes with `remove`; the
 # incoming edges still have to be swept out of the remaining child lists, which
 # is a walk of the whole graph either way.
-fun ceRemoveNode(work: EEdges, v: String): EEdges
+fun ceRemoveNode(work: EEdges, v: String)
   ret ceRemoveLoop(chain(eeNodes(work)), work, v, EEdges(Dict()))
 
 fun [tail] ceRemoveLoop(ns: Chain<String>, work: EEdges, v: String,
-                        acc: EEdges): EEdges
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => n.value == v
-      ? ceRemoveLoop(n.next, work, v, acc)
-      : ceRemoveLoop(n.next, work, v,
-                     EEdges(put(acc.eeMap, n.value,
-                                tjRemoveAll(chain(ceChildrenOf(work, n.value)),
-                                            prepend(v, List()),
-                                            List()))))
+                        acc: EEdges) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => n.value == v
+    ? ceRemoveLoop(n.next, work, v, acc)
+    : ceRemoveLoop(n.next, work, v,
+                   EEdges(put(acc.eeMap, n.value,
+                              tjRemoveAll(chain(ceChildrenOf(work, n.value)),
+                                          prepend(v, List()),
+                                          List()))))
 
 # ── the rewrite ──────────────────────────────────────────────────────────────
 # Every EnumSpec anywhere: is_complex set by membership, and NamedSpec
@@ -446,58 +410,51 @@ fun markComplexEnums(statements: List<PStmt>): (stmts: List<PStmt>, errs: Set<PE
 
 fun [tail] ceAmbiguities(ns: Chain<String>, map: NameMap,
                          fieldsOf: (:String): List<SField>,
-                         acc: Set<PErr>): Set<PErr>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => ceAmbiguities(n.next, map, fieldsOf,
-                                     ceFieldAmbig(chain(fieldsOf(n.value)),
-                                                  map, acc))
+                         acc: Set<PErr>) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => ceAmbiguities(n.next, map, fieldsOf,
+                                   ceFieldAmbig(chain(fieldsOf(n.value)),
+                                                map, acc))
 
 fun [tail] ceFieldAmbig(fs: Chain<SField>, map: NameMap,
-                        acc): Set<PErr>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceFieldAmbig(l.next, map,
-                                    ceSpecAmbig(l.value.sfType, map, acc))
+                        acc): Set<PErr> => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => ceFieldAmbig(l.next, map,
+                                  ceSpecAmbig(l.value.sfType, map, acc))
 
 # Only a NAMED spec can be ambiguous; the structural cases just descend.
-fun ceSpecAmbig(sp, map: NameMap, acc): Set<PErr>
-  ret match(sp)
-    (n: SNamed)        => get(map.nmIndex, n.snName) is None
-      ? ceReportAmbig(n, ceSuffixMatches(chain(nmNames(map)), map, n.snName,
-                                         Set()), acc)
-      : acc
-    (t2: STuple)       => ceEntryAmbig(chain(t2.stEntries), map, acc)
-    (cm: SCombination) => ceListAmbig(chain(cm.scTypes), map, acc)
-    (cl: SCallable)    => ceSpecAmbig(cl.scParams2, map, acc)
-    (o: Spec)          => acc
-
-fun ceReportAmbig(n: SNamed, ms: Set<String>, acc): Set<PErr>
-  ret isMoreThanOne(ms)
-    ? add(acc, PErr(n.snLine,
-        "ambiguous enum reference '" + n.snName + "' — matches "
-          + join(sort(ms), ", ") + "; qualify it"))
+fun ceSpecAmbig(sp, map: NameMap, acc): Set<PErr> => match(sp)
+  (n: SNamed)        => get(map.nmIndex, n.snName) is None
+    ? ceReportAmbig(n, ceSuffixMatches(chain(nmNames(map)), map, n.snName,
+                                       Set()), acc)
     : acc
+  (t2: STuple)       => ceEntryAmbig(chain(t2.stEntries), map, acc)
+  (cm: SCombination) => ceListAmbig(chain(cm.scTypes), map, acc)
+  (cl: SCallable)    => ceSpecAmbig(cl.scParams2, map, acc)
+  (o: Spec)          => acc
+
+fun ceReportAmbig(n: SNamed, ms: Set<String>, acc): Set<PErr> => isMoreThanOne(ms)
+  ? add(acc, PErr(n.snLine,
+      "ambiguous enum reference '" + n.snName + "' — matches "
+        + join(sort(ms), ", ") + "; qualify it"))
+  : acc
 
 fun [tail] ceEntryAmbig(es: Chain<SEntry>, map: NameMap,
-                        acc): Set<PErr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceEntryAmbig(l.next, map,
-                                    ceSpecAmbigOpt(l.value.seType, map, acc))
+                        acc): Set<PErr> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => ceEntryAmbig(l.next, map,
+                                  ceSpecAmbigOpt(l.value.seType, map, acc))
 
 # Optional-spec variant, mirroring ceReachOpt: a match cannot be spelled
 # inline as a call argument.
-fun ceSpecAmbigOpt(sp: Spec|None, map: NameMap, acc): Set<PErr>
-  ret match(sp)
-    (s2: Spec) => ceSpecAmbig(s2, map, acc)
-    ()         => acc
+fun ceSpecAmbigOpt(sp: Spec|None, map: NameMap, acc): Set<PErr> => match(sp)
+  (s2: Spec) => ceSpecAmbig(s2, map, acc)
+  ()         => acc
 
 fun [tail] ceListAmbig(ss: Chain<Spec>, map: NameMap,
-                       acc: Set<PErr>): Set<PErr>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ceListAmbig(l.next, map, ceSpecAmbig(l.value, map, acc))
+                       acc: Set<PErr>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => ceListAmbig(l.next, map, ceSpecAmbig(l.value, map, acc))
 
 # The breaker set — WHICH enum roots must lower complex — as a pure function
 # of the statements (mirror of Python's compute_breakers): collect roots,
@@ -508,7 +465,7 @@ fun [tail] ceListAmbig(ss: Chain<Spec>, map: NameMap,
 # same lifetime as every per-pass cache. Mirror of Python
 # ResolverRoot.is_complex_root. The breaker list is small; membership is a
 # linear scan.
-fun rootResolver(statements): Resolver
+fun rootResolver(statements)
   let [lazy] breakers: List<String> = computeBreakers(statements)
   let st = buildStatements(statements)
   ret RRoot((root) => contains2(breakers, root),
@@ -518,18 +475,16 @@ fun rootResolver(statements): Resolver
 
 # Every root enum's derived fields, once per pass (the stAmbient pattern —
 # resolver-path readers asked ~938k times per self-compile otherwise).
-fun enumFieldsTable(statements: List<PStmt>): Dict<String, List<SField>>
-  ret eftLoop(chain(statements), Dict())
+fun enumFieldsTable(statements: List<PStmt>) => eftLoop(chain(statements), Dict())
 
 fun [tail] eftLoop(ss: Chain<PStmt>,
-                   acc: Dict<String, List<SField>>): Dict<String, List<SField>>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (e: PsEnum) => efIsRoot(e)
-        ? eftLoop(l.next, put(acc, e.eName, deriveAllFields(e)))
-        : eftLoop(l.next, acc)
-      (o: PStmt)  => eftLoop(l.next, acc)
+                   acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (e: PsEnum) => efIsRoot(e)
+      ? eftLoop(l.next, put(acc, e.eName, deriveAllFields(e)))
+      : eftLoop(l.next, acc)
+    (o: PStmt)  => eftLoop(l.next, acc)
 
 fun computeBreakers(statements: List<PStmt>): List<String>
   let roots = ceCollectRoots(statements)
@@ -577,49 +532,41 @@ class [final] BxPrims(bpPtr: Int, bpCode: Int, bpI64: Int, bpF64: Int,
 class [final] BoxState(bsMemo: Dict<String, BxPrims>, bsBoxed: Dict<String, Bool>)
 class [final] BxOut(bxP: BxPrims, bxSt: BoxState)
 
-fun bxZero(): BxPrims
-  ret BxPrims(0, 0, 0, 0, 0, 0, 0, 0)
+fun bxZero() => BxPrims(0, 0, 0, 0, 0, 0, 0, 0)
 
-fun bxPtrOne(): BxPrims
-  ret BxPrims(1, 0, 0, 0, 0, 0, 0, 0)
+fun bxPtrOne() => BxPrims(1, 0, 0, 0, 0, 0, 0, 0)
 
 # fun_t: env pointer + code word.
-fun bxFunPrims(): BxPrims
-  ret BxPrims(1, 1, 0, 0, 0, 0, 0, 0)
+fun bxFunPrims() => BxPrims(1, 1, 0, 0, 0, 0, 0, 0)
 
-fun bxAddTag(a: BxPrims): BxPrims
-  ret BxPrims(a.bpPtr, a.bpCode, a.bpI64, a.bpF64, a.bpI32, a.bpF32,
-              a.bpI16, a.bpI8 + 1)
+fun bxAddTag(a: BxPrims) => BxPrims(a.bpPtr, a.bpCode, a.bpI64, a.bpF64, a.bpI32, a.bpF32,
+                                    a.bpI16, a.bpI8 + 1)
 
-fun bxAdd(a: BxPrims, b: BxPrims): BxPrims
+fun bxAdd(a: BxPrims, b: BxPrims)
   ret BxPrims(a.bpPtr + b.bpPtr, a.bpCode + b.bpCode, a.bpI64 + b.bpI64,
               a.bpF64 + b.bpF64, a.bpI32 + b.bpI32, a.bpF32 + b.bpF32,
               a.bpI16 + b.bpI16, a.bpI8 + b.bpI8)
 
-fun bxMaxI(a: Int, b: Int): Int
-  ret a > b ? a : b
+fun bxMaxI(a: Int, b: Int) => a > b ? a : b
 
-fun bxMax(a: BxPrims, b: BxPrims): BxPrims
-  ret BxPrims(bxMaxI(a.bpPtr, b.bpPtr), bxMaxI(a.bpCode, b.bpCode),
-              bxMaxI(a.bpI64, b.bpI64), bxMaxI(a.bpF64, b.bpF64),
-              bxMaxI(a.bpI32, b.bpI32), bxMaxI(a.bpF32, b.bpF32),
-              bxMaxI(a.bpI16, b.bpI16), bxMaxI(a.bpI8, b.bpI8))
+fun bxMax(a: BxPrims, b: BxPrims) => BxPrims(bxMaxI(a.bpPtr, b.bpPtr), bxMaxI(a.bpCode, b.bpCode),
+                                             bxMaxI(a.bpI64, b.bpI64), bxMaxI(a.bpF64, b.bpF64),
+                                             bxMaxI(a.bpI32, b.bpI32), bxMaxI(a.bpF32, b.bpF32),
+                                             bxMaxI(a.bpI16, b.bpI16), bxMaxI(a.bpI8, b.bpI8))
 
-fun bxBytes(a: BxPrims): Int
-  ret 8 * (a.bpPtr + a.bpCode + a.bpI64 + a.bpF64) + 4 * (a.bpI32 + a.bpF32)
-    + 2 * a.bpI16 + a.bpI8
+fun bxBytes(a: BxPrims) => 8 * (a.bpPtr + a.bpCode + a.bpI64 + a.bpF64) + 4 * (a.bpI32 + a.bpF32)
+  + 2 * a.bpI16 + a.bpI8
 
-fun bxBuiltinPrims(name): BxPrims
-  ret name == "int64" ? BxPrims(0, 0, 1, 0, 0, 0, 0, 0)
-    : name == "float64" ? BxPrims(0, 0, 0, 1, 0, 0, 0, 0)
-    : name == "int32" ? BxPrims(0, 0, 0, 0, 1, 0, 0, 0)
-    : name == "float32" ? BxPrims(0, 0, 0, 0, 0, 1, 0, 0)
-    : name == "int16" ? BxPrims(0, 0, 0, 0, 0, 0, 1, 0)
-    : name == "int8" || name == "bool" ? BxPrims(0, 0, 0, 0, 0, 0, 0, 1)
-    : bxPtrOne()   # bigint, str, unknown
+fun bxBuiltinPrims(name) => name == "int64" ? BxPrims(0, 0, 1, 0, 0, 0, 0, 0)
+  : name == "float64" ? BxPrims(0, 0, 0, 1, 0, 0, 0, 0)
+  : name == "int32" ? BxPrims(0, 0, 0, 0, 1, 0, 0, 0)
+  : name == "float32" ? BxPrims(0, 0, 0, 0, 0, 1, 0, 0)
+  : name == "int16" ? BxPrims(0, 0, 0, 0, 0, 0, 1, 0)
+  : name == "int8" || name == "bool" ? BxPrims(0, 0, 0, 0, 0, 0, 0, 1)
+  : bxPtrOne()   # bigint, str, unknown
 
 fun computeBoxedLeaves(statements: List<PStmt>,
-                       breakers): Dict<String, Bool>
+                       breakers)
   let roots = ceCollectRoots(statements)
   let ctx = BoxCtx(breakers, bxRootStmts(statements), ceNameMap(roots),
                    bxForeignClasses(statements))
@@ -631,82 +578,72 @@ fun computeBoxedLeaves(statements: List<PStmt>,
 
 # Root STATEMENTS by root name (first declaration wins): collectLeafFieldSets
 # needs the PsEnum, not just its spec.
-fun bxRootStmts(statements: List<PStmt>): Dict<String, PsEnum>
-  ret bxRootStmtsLoop(chain(statements), Dict())
+fun bxRootStmts(statements: List<PStmt>) => bxRootStmtsLoop(chain(statements), Dict())
 
 fun [tail] bxRootStmtsLoop(ss: Chain<PStmt>,
-                           acc: Dict<String, PsEnum>): Dict<String, PsEnum>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (e2: PsEnum) => bxRootStmtsLoop(l.next, bxRootStmtAdd(acc, e2))
-      (o: PStmt)   => bxRootStmtsLoop(l.next, acc)
+                           acc: Dict<String, PsEnum>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (e2: PsEnum) => bxRootStmtsLoop(l.next, bxRootStmtAdd(acc, e2))
+    (o: PStmt)   => bxRootStmtsLoop(l.next, acc)
 
-fun bxRootStmtAdd(acc: Dict<String, PsEnum>, e2: PsEnum): Dict<String, PsEnum>
-  ret match(asEnumVariant(e2.eSpec))
-    (sp: SEnum) => enumIsRootStmt(e2) && !contains(acc, sp.seRoot)
-      ? put(acc, sp.seRoot, e2)
-      : acc
-    ()           => acc
+fun bxRootStmtAdd(acc: Dict<String, PsEnum>, e2: PsEnum) => match(asEnumVariant(e2.eSpec))
+  (sp: SEnum) => enumIsRootStmt(e2) && !contains(acc, sp.seRoot)
+    ? put(acc, sp.seRoot, e2)
+    : acc
+  ()           => acc
 
 # The [foreign] classes by canonical name (ClassSpec.name matches).
-fun bxForeignClasses(statements: List<PStmt>): Dict<String, Bool>
-  ret bxForeignLoop(chain(statements), Dict())
+fun bxForeignClasses(statements: List<PStmt>) => bxForeignLoop(chain(statements), Dict())
 
 fun [tail] bxForeignLoop(ss: Chain<PStmt>,
-                         acc: Dict<String, Bool>): Dict<String, Bool>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (c: PsClass) => hasAttr(c.cAttrs, "foreign")
-        ? bxForeignLoop(l.next, put(acc, c.cName, true))
-        : bxForeignLoop(l.next, acc)
-      (o: PStmt)   => bxForeignLoop(l.next, acc)
+                         acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (c: PsClass) => hasAttr(c.cAttrs, "foreign")
+      ? bxForeignLoop(l.next, put(acc, c.cName, true))
+      : bxForeignLoop(l.next, acc)
+    (o: PStmt)   => bxForeignLoop(l.next, acc)
 
 # True when any non-leaf node of the variant tree declares fields.
-fun bxHasInteriorFields(e2: PsEnum): Bool
-  ret isEmpty(e2.eVariants)
-    ? false
-    : !isEmpty(filterDeclaredFields(chain(flattenParams(e2.eParams)), List()))
-      || bxAnyInteriorVariant(chain(e2.eVariants))
+fun bxHasInteriorFields(e2: PsEnum) => isEmpty(e2.eVariants)
+  ? false
+  : !isEmpty(filterDeclaredFields(chain(flattenParams(e2.eParams)), List()))
+    || bxAnyInteriorVariant(chain(e2.eVariants))
 
-fun [tail] bxAnyInteriorVariant(vs: Chain<PStmt>): Bool
-  ret match(vs)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => match(l.value)
-      (v: PsEnum) => bxHasInteriorFields(v) ? true : bxAnyInteriorVariant(l.next)
-      (o: PStmt)  => bxAnyInteriorVariant(l.next)
+fun [tail] bxAnyInteriorVariant(vs: Chain<PStmt>) => match(vs)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => match(l.value)
+    (v: PsEnum) => bxHasInteriorFields(v) ? true : bxAnyInteriorVariant(l.next)
+    (o: PStmt)  => bxAnyInteriorVariant(l.next)
 
 # ── the pointer-word mirror (union_repr._pointer_word_kind at spec level) ──
 # "" when the member is not representable as one tagged pointer word.
 
-fun bxPointerKind(ctx: BoxCtx, sp: Spec|None): String
-  ret match(sp)
-    (s2: Spec) => bxPointerKindOn(ctx, s2)
-    ()          => ""
+fun bxPointerKind(ctx: BoxCtx, sp: Spec|None) => match(sp)
+  (s2: Spec) => bxPointerKindOn(ctx, s2)
+  ()          => ""
 
-fun bxPointerKindOn(ctx: BoxCtx, sp): String
-  ret match(sp)
-    (t2: STuple)  => isEmpty(t2.stEntries) ? "unit" : bxNewtypeKind(ctx, t2.stEntries)
-    (b: SBuiltin) => b.sbName == "bigint" ? "int"
-                   : b.sbName == "str" ? "str"
-                   : ""
-    (cl: SClass)  => contains(ctx.bxForeign, cl.scName)
-      ? "foreign"
-      : "class:" + cl.scName
-    (e2: SEnum)   => contains2(ctx.bxBreakers, e2.seRoot) ? "enum:" + e2.seRoot : ""
-    (n: SNamed)   => match(get(ctx.bxMap.nmIndex, n.snName))
-      (root: String) => contains2(ctx.bxBreakers, root) ? "enum:" + root : ""
-      ()             => ""
-    (o: Spec)     => ""
+fun bxPointerKindOn(ctx: BoxCtx, sp) => match(sp)
+  (t2: STuple)  => isEmpty(t2.stEntries) ? "unit" : bxNewtypeKind(ctx, t2.stEntries)
+  (b: SBuiltin) => b.sbName == "bigint" ? "int"
+                 : b.sbName == "str" ? "str"
+                 : ""
+  (cl: SClass)  => contains(ctx.bxForeign, cl.scName)
+    ? "foreign"
+    : "class:" + cl.scName
+  (e2: SEnum)   => contains2(ctx.bxBreakers, e2.seRoot) ? "enum:" + e2.seRoot : ""
+  (n: SNamed)   => match(get(ctx.bxMap.nmIndex, n.snName))
+    (root: String) => contains2(ctx.bxBreakers, root) ? "enum:" + root : ""
+    ()             => ""
+  (o: Spec)     => ""
 
 # A single-field tuple is a newtype wrapper: peel to the inner kind.
-fun bxNewtypeKind(ctx: BoxCtx, entries: List<SEntry>): String
-  ret isEmpty(tail(entries))
-    ? match(head(entries))
-        (e2: SEntry) => bxPointerKind(ctx, e2.seType)
-        ()            => ""
-    : ""
+fun bxNewtypeKind(ctx: BoxCtx, entries: List<SEntry>) => isEmpty(tail(entries))
+  ? match(head(entries))
+      (e2: SEntry) => bxPointerKind(ctx, e2.seType)
+      ()            => ""
+  : ""
 
 class [final] BxKindTally(ktUnits: Int, ktForeign: Int, ktNonUnit: Int,
                           ktDup: Bool, ktSeen: Set<String>)
@@ -714,87 +651,81 @@ class [final] BxKindTally(ktUnits: Int, ktForeign: Int, ktNonUnit: Int,
 # Mirror of _union_collapses_to_pointer: every member a pointer word, at
 # least one non-unit, at most one unit and one foreign, testable kinds
 # mutually distinct.
-fun bxCollapses(ctx: BoxCtx, members: List<Spec>): Bool
+fun bxCollapses(ctx: BoxCtx, members: List<Spec>)
   let kinds = map(members, (m) => bxPointerKindOn(ctx, m))
   if contains2(kinds, "")
     ret false
   let t2 = fold(kinds, BxKindTally(0, 0, 0, false, Set()), bxKindStep)
   ret t2.ktNonUnit > 0 && t2.ktUnits <= 1 && t2.ktForeign <= 1 && !t2.ktDup
 
-fun bxKindStep(t2: BxKindTally, k): BxKindTally
-  ret k == "unit"
-    ? BxKindTally(t2.ktUnits + 1, t2.ktForeign, t2.ktNonUnit, t2.ktDup, t2.ktSeen)
-    : k == "foreign"
-      ? BxKindTally(t2.ktUnits, t2.ktForeign + 1, t2.ktNonUnit + 1, t2.ktDup, t2.ktSeen)
-      : BxKindTally(t2.ktUnits, t2.ktForeign, t2.ktNonUnit + 1,
-                    t2.ktDup || contains(t2.ktSeen, k),
-                    add(t2.ktSeen, k))
+fun bxKindStep(t2: BxKindTally, k) => k == "unit"
+  ? BxKindTally(t2.ktUnits + 1, t2.ktForeign, t2.ktNonUnit, t2.ktDup, t2.ktSeen)
+  : k == "foreign"
+    ? BxKindTally(t2.ktUnits, t2.ktForeign + 1, t2.ktNonUnit + 1, t2.ktDup, t2.ktSeen)
+    : BxKindTally(t2.ktUnits, t2.ktForeign, t2.ktNonUnit + 1,
+                  t2.ktDup || contains(t2.ktSeen, k),
+                  add(t2.ktSeen, k))
 
 # ── widths ─────────────────────────────────────────────────────────────────
 
-fun bxSpecPrims(ctx: BoxCtx, sp: Spec|None, stack: List<String>,
-                st): BxOut
-  ret match(sp)
-    (s2: Spec) => bxSpecPrimsOn(ctx, s2, stack, st)
-    ()          => BxOut(bxPtrOne(), st)
+fun bxSpecPrims(ctx: BoxCtx, sp: Spec|None, stack,
+                st) => match(sp)
+  (s2: Spec) => bxSpecPrimsOn(ctx, s2, stack, st)
+  ()          => BxOut(bxPtrOne(), st)
 
-fun bxSpecPrimsOn(ctx: BoxCtx, sp, stack: List<String>,
-                  st): BxOut
-  ret match(sp)
-    (b: SBuiltin)      => BxOut(bxBuiltinPrims(b.sbName), st)
-    (cl: SCallable)    => BxOut(bxFunPrims(), st)
-    (t2: STuple)       => bxEntriesPrims(ctx, chain(t2.stEntries), stack, st, bxZero())
-    (cm: SCombination) => bxCollapses(ctx, cm.scTypes)
-      ? BxOut(bxPtrOne(), st)
-      : bxCombPrims(ctx, chain(cm.scTypes), stack, st, bxZero())
-    (e2: SEnum)        => bxEnumValuePrims(ctx, e2.seRoot, stack, st)
-    # Direct name-map hit only (no suffix fallback), as Python.
-    (n: SNamed)        => match(get(ctx.bxMap.nmIndex, n.snName))
-      (root: String) => bxEnumValuePrims(ctx, root, stack, st)
-      ()             => BxOut(bxPtrOne(), st)
-    (o: Spec)          => BxOut(bxPtrOne(), st)   # classes, placeholders
+fun bxSpecPrimsOn(ctx: BoxCtx, sp, stack,
+                  st) => match(sp)
+  (b: SBuiltin)      => BxOut(bxBuiltinPrims(b.sbName), st)
+  (cl: SCallable)    => BxOut(bxFunPrims(), st)
+  (t2: STuple)       => bxEntriesPrims(ctx, chain(t2.stEntries), stack, st, bxZero())
+  (cm: SCombination) => bxCollapses(ctx, cm.scTypes)
+    ? BxOut(bxPtrOne(), st)
+    : bxCombPrims(ctx, chain(cm.scTypes), stack, st, bxZero())
+  (e2: SEnum)        => bxEnumValuePrims(ctx, e2.seRoot, stack, st)
+  # Direct name-map hit only (no suffix fallback), as Python.
+  (n: SNamed)        => match(get(ctx.bxMap.nmIndex, n.snName))
+    (root: String) => bxEnumValuePrims(ctx, root, stack, st)
+    ()             => BxOut(bxPtrOne(), st)
+  (o: Spec)          => BxOut(bxPtrOne(), st)   # classes, placeholders
 
-fun bxEntriesPrims(ctx: BoxCtx, es: Chain<SEntry>, stack: List<String>,
-                   st, acc): BxOut
-  ret match(es)
-    (nil: ChainEnd) => BxOut(acc, st)
-    (l: ChainLink)  => bxEntriesStep(ctx, l, stack, st, acc)
+fun bxEntriesPrims(ctx: BoxCtx, es: Chain<SEntry>, stack,
+                   st, acc) => match(es)
+  (nil: ChainEnd) => BxOut(acc, st)
+  (l: ChainLink)  => bxEntriesStep(ctx, l, stack, st, acc)
 
-fun bxEntriesStep(ctx: BoxCtx, l: ChainLink<SEntry>, stack: List<String>,
-                  st, acc: BxPrims): BxOut
+fun bxEntriesStep(ctx: BoxCtx, l: ChainLink<SEntry>, stack,
+                  st, acc: BxPrims)
   let o = bxSpecPrims(ctx, l.value.seType, stack, st)
   ret bxEntriesPrims(ctx, l.next, stack, o.bxSt, bxAdd(acc, o.bxP))
 
 # Tagged combination: per-class maxima over the members, plus a byte tag.
-fun bxCombPrims(ctx: BoxCtx, ss: Chain<Spec>, stack: List<String>,
-                st, acc: BxPrims): BxOut
-  ret match(ss)
-    (nil: ChainEnd) => BxOut(bxAddTag(acc), st)
-    (l: ChainLink)  => bxCombStep(ctx, l, stack, st, acc)
+fun bxCombPrims(ctx: BoxCtx, ss: Chain<Spec>, stack,
+                st, acc: BxPrims) => match(ss)
+  (nil: ChainEnd) => BxOut(bxAddTag(acc), st)
+  (l: ChainLink)  => bxCombStep(ctx, l, stack, st, acc)
 
-fun bxCombStep(ctx: BoxCtx, l: ChainLink<Spec>, stack: List<String>,
-               st, acc: BxPrims): BxOut
+fun bxCombStep(ctx: BoxCtx, l: ChainLink<Spec>, stack,
+               st, acc: BxPrims)
   let o = bxSpecPrimsOn(ctx, l.value, stack, st)
   ret bxCombPrims(ctx, l.next, stack, o.bxSt, bxMax(acc, o.bxP))
 
-fun bxEnumValuePrims(ctx: BoxCtx, root, stack: List<String>,
-                     st): BxOut
+fun bxEnumValuePrims(ctx: BoxCtx, root, stack,
+                     st)
   if contains2(ctx.bxBreakers, root) || contains2(stack, root)
     ret BxOut(bxPtrOne(), st)   # heap pointer: complex, or defensive on-stack
   ret match(get(st.bsMemo, root))
     (p: BxPrims) => BxOut(p, st)
     ()            => bxComputeRoot(ctx, root, stack, st)
 
-fun bxComputeRoot(ctx: BoxCtx, root, stack: List<String>,
-                  st): BxOut
-  ret match(get(ctx.bxStmts, root))
-    (e2: PsEnum) => match(asEnumVariant(e2.eSpec))
-      (sp: SEnum) => bxRootPool(ctx, root, e2, sp, stack, st)
-      ()           => BxOut(bxPtrOne(), st)   # unreachable: keyed by SEnum
-    ()            => BxOut(bxPtrOne(), st)    # no root statement: a pointer
+fun bxComputeRoot(ctx: BoxCtx, root, stack,
+                  st) => match(get(ctx.bxStmts, root))
+  (e2: PsEnum) => match(asEnumVariant(e2.eSpec))
+    (sp: SEnum) => bxRootPool(ctx, root, e2, sp, stack, st)
+    ()           => BxOut(bxPtrOne(), st)   # unreachable: keyed by SEnum
+  ()            => BxOut(bxPtrOne(), st)    # no root statement: a pointer
 
 fun bxRootPool(ctx: BoxCtx, root, e2: PsEnum, sp: SEnum,
-               stack: List<String>, st): BxOut
+               stack, st)
   let out = bxLeafLoop(ctx, root, chain(sp.seAllLeaves),
                        chain(collectLeafFieldSets(e2, List())),
                        !bxHasInteriorFields(e2), concat(stack, list1(root)),
@@ -803,17 +734,16 @@ fun bxRootPool(ctx: BoxCtx, root, e2: PsEnum, sp: SEnum,
             BoxState(put(out.bxSt.bsMemo, root, out.bxP), out.bxSt.bsBoxed))
 
 fun bxLeafLoop(ctx: BoxCtx, root, names: Chain<String>,
-               sets: Chain<List<PStmt>>, boxable: Bool, stack: List<String>,
-               st, pool: BxPrims): BxOut
-  ret match(names)
-    (nil: ChainEnd) => BxOut(bxAddTag(pool), st)   # widest variant + tag
-    (l: ChainLink)  => match(sets)
-      (nil2: ChainEnd) => BxOut(bxAddTag(pool), st)   # unreachable: zip 1:1
-      (s2: ChainLink)  => bxLeafStep(ctx, root, l, s2, boxable, stack, st, pool)
+               sets: Chain<List<PStmt>>, boxable, stack,
+               st, pool: BxPrims) => match(names)
+  (nil: ChainEnd) => BxOut(bxAddTag(pool), st)   # widest variant + tag
+  (l: ChainLink)  => match(sets)
+    (nil2: ChainEnd) => BxOut(bxAddTag(pool), st)   # unreachable: zip 1:1
+    (s2: ChainLink)  => bxLeafStep(ctx, root, l, s2, boxable, stack, st, pool)
 
 fun bxLeafStep(ctx: BoxCtx, root, l: ChainLink<String>,
-               s2: ChainLink<List<PStmt>>, boxable: Bool, stack: List<String>,
-               st, pool: BxPrims): BxOut
+               s2: ChainLink<List<PStmt>>, boxable, stack,
+               st, pool: BxPrims)
   let o = bxFieldsPrims(ctx, chain(s2.value), stack, st, bxZero())
   if bxBytes(o.bxP) > maxValueStructBytes && boxable
     ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack,
@@ -823,15 +753,14 @@ fun bxLeafStep(ctx: BoxCtx, root, l: ChainLink<String>,
   ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack, o.bxSt,
                  bxMax(pool, o.bxP))
 
-fun bxFieldsPrims(ctx: BoxCtx, fs: Chain<PStmt>, stack: List<String>,
-                  st: BoxState, acc: BxPrims): BxOut
-  ret match(fs)
-    (nil: ChainEnd) => BxOut(acc, st)
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => bxFieldLet(ctx, let2, l.next, stack, st, acc)
-      (o: PStmt)    => bxFieldsPrims(ctx, l.next, stack, st, acc)
+fun bxFieldsPrims(ctx: BoxCtx, fs: Chain<PStmt>, stack,
+                  st, acc) => match(fs)
+  (nil: ChainEnd) => BxOut(acc, st)
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => bxFieldLet(ctx, let2, l.next, stack, st, acc)
+    (o: PStmt)    => bxFieldsPrims(ctx, l.next, stack, st, acc)
 
 fun bxFieldLet(ctx: BoxCtx, let2: PsLet, rest,
-               stack: List<String>, st, acc: BxPrims): BxOut
+               stack, st, acc: BxPrims)
   let o = bxSpecPrims(ctx, let2.lType, stack, st)
   ret bxFieldsPrims(ctx, rest, stack, o.bxSt, bxAdd(acc, o.bxP))

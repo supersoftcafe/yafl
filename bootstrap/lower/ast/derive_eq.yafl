@@ -56,58 +56,51 @@ fun deriveEquality(statements): (deStmts: List<PStmt>, deChanged: Bool)
 
 # ── which types already have equality ────────────────────────────────────────
 
-fun [tail] deCollectInstanced(ss: Chain<PStmt>, r: Resolver,
-                              acc: DeInfo): DeInfo
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => deCollectInstanced(l.next, r, deCollectOne(l.value, r, acc))
+fun [tail] deCollectInstanced(ss: Chain<PStmt>, r,
+                              acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => deCollectInstanced(l.next, r, deCollectOne(l.value, r, acc))
 
-fun deCollectOne(st, r, acc): DeInfo
-  ret match(st)
-    (ti: PsTraitInstance) => deRecord(ti.tiPattern, r, acc)
-    # The older form: a `[trait]` let whose witness CLASS implements the
-    # interface — the same walk the post-mono discharge uses.
-    (let2: PsLet) => hasAttr(let2.lAttrs, "trait") && isEmpty(let2.lGens)
-      ? deRecordLet(let2, r, acc)
-      : acc
-    (o: PStmt) => acc
+fun deCollectOne(st, r, acc) => match(st)
+  (ti: PsTraitInstance) => deRecord(ti.tiPattern, r, acc)
+  # The older form: a `[trait]` let whose witness CLASS implements the
+  # interface — the same walk the post-mono discharge uses.
+  (let2: PsLet) => hasAttr(let2.lAttrs, "trait") && isEmpty(let2.lGens)
+    ? deRecordLet(let2, r, acc)
+    : acc
+  (o: PStmt) => acc
 
-fun deRecordLet(let2: PsLet, r, acc): DeInfo
-  ret match(let2.lType)
-    (dt: Spec) => match(dt)
-      (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-        (f: Found) => match(f.fStmt)
-          (cls: PsClass) => match(cls.cAllParents)
-            (ps: List<Spec>) => deRecordParents(chain(ps), r, acc)
-            ()               => acc
-          (o: PStmt)     => acc
-        ()         => acc
-      (o2: Spec)   => acc
-    ()         => acc
+fun deRecordLet(let2: PsLet, r, acc) => match(let2.lType)
+  (dt: Spec) => match(dt)
+    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+      (f: Found) => match(f.fStmt)
+        (cls: PsClass) => match(cls.cAllParents)
+          (ps: List<Spec>) => deRecordParents(chain(ps), r, acc)
+          ()               => acc
+        (o: PStmt)     => acc
+      ()         => acc
+    (o2: Spec)   => acc
+  ()         => acc
 
-fun [tail] deRecordParents(ps: Chain<Spec>, r: Resolver, acc: DeInfo): DeInfo
-  ret match(ps)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => deRecordParents(l.next, r, deRecord(l.value, r, acc))
+fun [tail] deRecordParents(ps: Chain<Spec>, r, acc) => match(ps)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => deRecordParents(l.next, r, deRecord(l.value, r, acc))
 
-fun deRecord(pat, r, acc): DeInfo
-  ret match(pat)
-    (c: SClass) => isEmpty(c.scParams) || !deReachesEquality(c.scName, r)
-      ? acc
-      : deRecordArg(deArgOf(c), r, acc)
-    (n: SNamed) => isEmpty(n.snParams) || !deReachesEquality(n.snName, r)
-      ? acc
-      : deRecordArg(deArgOfNamed(n), r, acc)
-    (o: Spec)   => acc
+fun deRecord(pat, r, acc) => match(pat)
+  (c: SClass) => isEmpty(c.scParams) || !deReachesEquality(c.scName, r)
+    ? acc
+    : deRecordArg(deArgOf(c), r, acc)
+  (n: SNamed) => isEmpty(n.snParams) || !deReachesEquality(n.snName, r)
+    ? acc
+    : deRecordArg(deArgOfNamed(n), r, acc)
+  (o: Spec)   => acc
 
-fun deArgOf(c: SClass): Spec|None
-  ret head(c.scParams)
+fun deArgOf(c: SClass) => head(c.scParams)
 
-fun deArgOfNamed(n: SNamed): Spec|None
-  ret head(n.snParams)
+fun deArgOfNamed(n: SNamed) => head(n.snParams)
 
 # Equality arrives TRANSITIVELY: the interface's cAllParents is the closure.
-fun deReachesEquality(name, r): Bool
+fun deReachesEquality(name, r)
   if deBaseName(name) == "System::BasicEquality"
     ret true
   ret match(soleItem(findType(r, name)))
@@ -118,50 +111,45 @@ fun deReachesEquality(name, r): Bool
       (o: PStmt)     => false
     ()         => false
 
-fun [tail] deAnyEquality(ps: Chain<Spec>): Bool
-  ret match(ps)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => match(l.value)
-      (c: SClass) => deBaseName(c.scName) == "System::BasicEquality"
-        ? true
-        : deAnyEquality(l.next)
-      (o: Spec)   => deAnyEquality(l.next)
+fun [tail] deAnyEquality(ps: Chain<Spec>) => match(ps)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => match(l.value)
+    (c: SClass) => deBaseName(c.scName) == "System::BasicEquality"
+      ? true
+      : deAnyEquality(l.next)
+    (o: Spec)   => deAnyEquality(l.next)
 
-fun deBaseName(name): String
+fun deBaseName(name)
   let g2 = indexOf(name, "$generic$", 0)
   ret simpleName(g2 < 0 ? name : slice(name, 0, g2))
 
-fun deRecordArg(arg: Spec|None, r, acc): DeInfo
-  ret match(arg)
-    (sp: Spec) => match(sp)
-      (t2: STuple) => DeInfo(acc.diKeys,
-                             prepend(t2.stEntries, acc.diArities))
-      (o: Spec)    => deAddKey(deKeyOf(o, r, 0), acc)
-    ()         => acc
+fun deRecordArg(arg: Spec|None, r, acc) => match(arg)
+  (sp: Spec) => match(sp)
+    (t2: STuple) => DeInfo(acc.diKeys,
+                           prepend(t2.stEntries, acc.diArities))
+    (o: Spec)    => deAddKey(deKeyOf(o, r, 0), acc)
+  ()         => acc
 
-fun deAddKey(k, acc): DeInfo
-  ret k == "" || contains(acc.diKeys, k)
-    ? acc
-    : DeInfo(add(acc.diKeys, k), acc.diArities)
+fun deAddKey(k, acc) => k == "" || contains(acc.diKeys, k)
+  ? acc
+  : DeInfo(add(acc.diKeys, k), acc.diArities)
 
 # Instance PATTERNS keep their typealias spellings, so the key comes from the
 # RESOLVED statement, following alias chains.
-fun deKeyOf(arg, r, depth): String
-  ret match(arg)
-    (b: SBuiltin) => "b:" + b.sbName
-    (e2: SEnum)   => "e:" + e2.seRoot
-    (c: SClass)   => "c:" + c.scName
-    (n: SNamed)   => depth < 8 ? deKeyOfNamed(n, r, depth) : ""
-    (o: Spec)     => ""
+fun deKeyOf(arg, r, depth) => match(arg)
+  (b: SBuiltin) => "b:" + b.sbName
+  (e2: SEnum)   => "e:" + e2.seRoot
+  (c: SClass)   => "c:" + c.scName
+  (n: SNamed)   => depth < 8 ? deKeyOfNamed(n, r, depth) : ""
+  (o: Spec)     => ""
 
-fun deKeyOfNamed(n: SNamed, r, depth): String
-  ret match(soleItem(findType(r, n.snName)))
-    (f: Found) => match(f.fStmt)
-      (ta: PsTypealias) => deKeyOf(ta.taType, r, depth + 1)
-      (cls: PsClass)    => "c:" + cls.cName
-      (en: PsEnum)      => "e:" + en.eName
-      (o: PStmt)        => ""
-    ()         => ""
+fun deKeyOfNamed(n: SNamed, r, depth) => match(soleItem(findType(r, n.snName)))
+  (f: Found) => match(f.fStmt)
+    (ta: PsTypealias) => deKeyOf(ta.taType, r, depth + 1)
+    (cls: PsClass)    => "c:" + cls.cName
+    (en: PsEnum)      => "e:" + en.eName
+    (o: PStmt)        => ""
+  ()         => ""
 
 # ── candidates and their leaves ──────────────────────────────────────────────
 
@@ -200,21 +188,20 @@ fun deLeaves(e: PsEnum, inherited: List<PStmt>): DeLeaves|None
                  DeLeaves(List(), List()))
 
 fun [tail] deLeafLoop(vs: Chain<PStmt>, own: List<PStmt>,
-                      acc: DeLeaves): DeLeaves|None
-  ret match(vs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (v: PsEnum) => match(deLeaves(v, own))
-        (dl: DeLeaves) => deLeafLoop(l.next, own,
-                                     DeLeaves(concat(acc.dlNames, dl.dlNames),
-                                              concat(acc.dlSets, dl.dlSets)))
-        ()             => None
-      (o: PStmt)  => deLeafLoop(l.next, own, acc)
+                      acc: DeLeaves): DeLeaves|None => match(vs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (v: PsEnum) => match(deLeaves(v, own))
+      (dl: DeLeaves) => deLeafLoop(l.next, own,
+                                   DeLeaves(concat(acc.dlNames, dl.dlNames),
+                                            concat(acc.dlSets, dl.dlSets)))
+      ()             => None
+    (o: PStmt)  => deLeafLoop(l.next, own, acc)
 
 # ── the coinductive fixpoint ─────────────────────────────────────────────────
 
 fun deFixpoint(names: List<String>, leaves: List<DeLeaves>,
-                      info: DeInfo): List<String>
+                      info: DeInfo)
   let ok2 = deSurvivors(chain(names), chain(leaves), names, info,
                         List())
   ret sameLen(chain(ok2), chain(names))
@@ -222,7 +209,7 @@ fun deFixpoint(names: List<String>, leaves: List<DeLeaves>,
     : deFixpoint2(ok2, names, leaves, info)
 
 fun [tail] deFixpoint2(ok: List<String>, names: List<String>,
-                       leaves: List<DeLeaves>, info: DeInfo): List<String>
+                       leaves: List<DeLeaves>, info: DeInfo)
   let ok2 = deSurvivors(chain(names), chain(leaves), ok, info,
                         List())
   ret sameLen(chain(ok2), chain(ok))
@@ -236,93 +223,84 @@ fun deSurvivors(ns, ls,
 
 fun [tail] deSurvivorsB(ns: Chain<String>, ls: Chain<DeLeaves>,
                        ok: List<String>, info: DeInfo,
-                       [terminal] acc: ListBuilder<String>): ListBuilder<String>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(ls)
-      (nil2: ChainEnd) => acc
-      (l: ChainLink)   => !contains2(ok, n.value)
-        ? deSurvivorsB(n.next, l.next, ok, info, acc)
-        : deAllFieldsSat(chain(l.value.dlSets), ok, info)
-          ? deSurvivorsB(n.next, l.next, ok, info, push(acc, n.value))
-          : deSurvivorsB(n.next, l.next, ok, info, acc)
+                       [terminal] acc: ListBuilder<String>) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => match(ls)
+    (nil2: ChainEnd) => acc
+    (l: ChainLink)   => !contains2(ok, n.value)
+      ? deSurvivorsB(n.next, l.next, ok, info, acc)
+      : deAllFieldsSat(chain(l.value.dlSets), ok, info)
+        ? deSurvivorsB(n.next, l.next, ok, info, push(acc, n.value))
+        : deSurvivorsB(n.next, l.next, ok, info, acc)
 
 fun [tail] deAllFieldsSat(sets: Chain<List<PStmt>>, ok: List<String>,
-                          info: DeInfo): Bool
-  ret match(sets)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => deFieldsSat(chain(l.value), ok, info)
-      ? deAllFieldsSat(l.next, ok, info)
-      : false
+                          info: DeInfo) => match(sets)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => deFieldsSat(chain(l.value), ok, info)
+    ? deAllFieldsSat(l.next, ok, info)
+    : false
 
-fun [tail] deFieldsSat(fs: Chain<PStmt>, ok: List<String>, info: DeInfo): Bool
-  ret match(fs)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => match(l.value)
-      (p: PsLet) => match(p.lType)
-        (sp: Spec) => deSatisfies(sp, ok, info) ? deFieldsSat(l.next, ok, info)
-                                                : false
-        ()         => false
-      (o: PStmt) => false
-
-fun deSatisfies(sp, ok: List<String>, info: DeInfo): Bool
-  ret match(sp)
-    (b: SBuiltin) => contains(info.diKeys, "b:" + b.sbName)
-    (e2: SEnum)   => contains2(ok, e2.seRoot)
-                     || contains(info.diKeys, "e:" + e2.seRoot)
-    (c: SClass)   => contains(info.diKeys, "c:" + c.scName)
-    (t2: STuple)  => deArityOk(chain(info.diArities), t2.stEntries)
-                     && deEntriesSat(chain(t2.stEntries), ok, info)
-    (o: Spec)     => false
-
-fun [tail] deArityOk(as2: Chain<List<SEntry>>, es: List<SEntry>): Bool
-  ret match(as2)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => sameLen(chain(l.value), chain(es))
-      ? true
-      : deArityOk(l.next, es)
-
-fun [tail] deEntriesSat(es: Chain<SEntry>, ok: List<String>, info: DeInfo): Bool
-  ret match(es)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => match(l.value.seType)
-      (sp: Spec) => deSatisfies(sp, ok, info) ? deEntriesSat(l.next, ok, info)
+fun [tail] deFieldsSat(fs: Chain<PStmt>, ok: List<String>, info: DeInfo) => match(fs)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(l.value)
+    (p: PsLet) => match(p.lType)
+      (sp: Spec) => deSatisfies(sp, ok, info) ? deFieldsSat(l.next, ok, info)
                                               : false
       ()         => false
+    (o: PStmt) => false
+
+fun deSatisfies(sp, ok: List<String>, info: DeInfo) => match(sp)
+  (b: SBuiltin) => contains(info.diKeys, "b:" + b.sbName)
+  (e2: SEnum)   => contains2(ok, e2.seRoot)
+                   || contains(info.diKeys, "e:" + e2.seRoot)
+  (c: SClass)   => contains(info.diKeys, "c:" + c.scName)
+  (t2: STuple)  => deArityOk(chain(info.diArities), t2.stEntries)
+                   && deEntriesSat(chain(t2.stEntries), ok, info)
+  (o: Spec)     => false
+
+fun [tail] deArityOk(as2: Chain<List<SEntry>>, es: List<SEntry>) => match(as2)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => sameLen(chain(l.value), chain(es))
+    ? true
+    : deArityOk(l.next, es)
+
+fun [tail] deEntriesSat(es: Chain<SEntry>, ok: List<String>, info: DeInfo) => match(es)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(l.value.seType)
+    (sp: Spec) => deSatisfies(sp, ok, info) ? deEntriesSat(l.next, ok, info)
+                                            : false
+    ()         => false
 
 # ── emission ─────────────────────────────────────────────────────────────────
 
 fun deEmit(ss, names: List<String>,
                   leaves: List<DeLeaves>, ok: List<String>,
-                  acc: List<PStmt>): List<PStmt>
-  ret build(deEmitB(ss, names, leaves, ok, builderFrom(acc)))
+                  acc: List<PStmt>) => build(deEmitB(ss, names, leaves, ok, builderFrom(acc)))
 
 fun [tail] deEmitB(ss: Chain<PStmt>, names: List<String>,
                   leaves: List<DeLeaves>, ok: List<String>,
-                  [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (e2: PsEnum) => contains2(ok, e2.eName)
-        ? deEmitB(l.next, names, leaves, ok,
-                 push(push(acc, l.value),
-                        deSynthesise(e2, deLeavesFor(chain(names),
-                                                     chain(leaves),
-                                                     e2.eName))))
-        : deEmitB(l.next, names, leaves, ok, push(acc, l.value))
-      (o: PStmt)   => deEmitB(l.next, names, leaves, ok, push(acc, l.value))
+                  [terminal] acc: ListBuilder<PStmt>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (e2: PsEnum) => contains2(ok, e2.eName)
+      ? deEmitB(l.next, names, leaves, ok,
+               push(push(acc, l.value),
+                      deSynthesise(e2, deLeavesFor(chain(names),
+                                                   chain(leaves),
+                                                   e2.eName))))
+      : deEmitB(l.next, names, leaves, ok, push(acc, l.value))
+    (o: PStmt)   => deEmitB(l.next, names, leaves, ok, push(acc, l.value))
 
 fun [tail] deLeavesFor(ns: Chain<String>, ls: Chain<DeLeaves>,
-                       name: String): DeLeaves
-  ret match(ns)
-    (nil: ChainEnd) => DeLeaves(List(), List())
-    (n: ChainLink)  => match(ls)
-      (nil2: ChainEnd) => DeLeaves(List(), List())
-      (l: ChainLink)   => n.value == name
-        ? l.value
-        : deLeavesFor(n.next, l.next, name)
+                       name: String) => match(ns)
+  (nil: ChainEnd) => DeLeaves(List(), List())
+  (n: ChainLink)  => match(ls)
+    (nil2: ChainEnd) => DeLeaves(List(), List())
+    (l: ChainLink)   => n.value == name
+      ? l.value
+      : deLeavesFor(n.next, l.next, name)
 
-fun deSynthesise(e2: PsEnum, dl: DeLeaves): PStmt
+fun deSynthesise(e2: PsEnum, dl: DeLeaves)
   let lr = e2.pseLine
   let ns = deNamespaceOf(e2.eName)
   let iname = ns == "" ? "instance$eq" + deTag(lr) : ns + "::instance$eq" + deTag(lr)
@@ -333,41 +311,34 @@ fun deSynthesise(e2: PsEnum, dl: DeLeaves): PStmt
                       list2(deEqMember(e2, dl), deHashMember(e2, dl)),
                       lr, e2.eImports)
 
-fun deTag(lr: PLine): String
-  ret hash6(lr.plFile, lr.plLine, lr.plCol)
+fun deTag(lr: PLine) => hash6(lr.plFile, lr.plLine, lr.plCol)
 
-fun deNamespaceOf(name): String
+fun deNamespaceOf(name)
   let s2 = simpleName(name)
   let ix = lastIndexOf2(s2, "::")
   ret ix < 0 ? "" : slice(s2, 0, ix)
 
-fun lastIndexOf2(s2, needle): Int
-  ret deLastIx(s2, needle, 0, -1)
+fun lastIndexOf2(s2, needle) => deLastIx(s2, needle, 0, -1)
 
 fun [tail] deLastIx(s2, needle, from, best): Int
   let ix = indexOf(s2, needle, from)
   ret ix < 0 ? best : deLastIx(s2, needle, ix + 1, ix)
 
-fun deRef(name, lr): PExpr
-  ret PeName(name, List(), lr)
+fun deRef(name, lr) => PeName(name, List(), lr)
 
-fun deOp(rtype, name, args, lr): PExpr
+fun deOp(rtype, name, args, lr)
   ret PeBuiltinOp(SBuiltin(rtype, lr), PeStr(name, lr), PeTuple(args, lr), lr)
 
-fun deEnt(x): PTupEnt
-  ret PTupEnt("", false, x)
+fun deEnt(x) => PTupEnt("", false, x)
 
-fun deCall2(fn, a, b, lr): PExpr
-  ret PeCall(deRef(fn, lr), PeTuple(list2(deEnt(a), deEnt(b)), lr), lr)
+fun deCall2(fn, a, b, lr) => PeCall(deRef(fn, lr), PeTuple(list2(deEnt(a), deEnt(b)), lr), lr)
 
-fun deCall1(fn, a, lr): PExpr
-  ret PeCall(deRef(fn, lr), PeTuple(list1(deEnt(a)), lr), lr)
+fun deCall1(fn, a, lr) => PeCall(deRef(fn, lr), PeTuple(list1(deEnt(a)), lr), lr)
 
-fun deParam(name, typeName, lr): PStmt
-  ret PsLet(hashName(name, lr), List(), List(),
-            SNamed(typeName, List(), lr), None, "", List(), lr)
+fun deParam(name, typeName, lr) => PsLet(hashName(name, lr), List(), List(),
+                                         SNamed(typeName, List(), lr), None, "", List(), lr)
 
-fun deEqMember(e2: PsEnum, dl: DeLeaves): PStmt
+fun deEqMember(e2: PsEnum, dl: DeLeaves)
   let lr = e2.pseLine
   let arms = deEqArms(chain(dl.dlNames), chain(dl.dlSets), 0,
                       atLeast(chain(dl.dlNames), 2), e2, List())
@@ -385,18 +356,17 @@ fun deEqArms(ns, sets, i,
                     many: Bool, e2: PsEnum, acc: List<PArm>): List<PArm>
   ret build(deEqArmsB(ns, sets, i, many, e2, builderFrom(acc)))
 
-fun [tail] deEqArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
-                    many: Bool, e2: PsEnum, [terminal] acc: ListBuilder<PArm>): ListBuilder<PArm>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(sets)
-      (nil2: ChainEnd) => acc
-      (l: ChainLink)   => deEqArmsB(n.next, l.next, i + 1, many, e2,
-                                   push(acc, deEqArm(n.value, l.value, i,
-                                                many, e2)))
+fun [tail] deEqArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i,
+                    many, e2: PsEnum, [terminal] acc: ListBuilder<PArm>) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => match(sets)
+    (nil2: ChainEnd) => acc
+    (l: ChainLink)   => deEqArmsB(n.next, l.next, i + 1, many, e2,
+                                 push(acc, deEqArm(n.value, l.value, i,
+                                              many, e2)))
 
-fun deEqArm(leafName, fields: List<PStmt>, i: Int, many: Bool,
-            e2: PsEnum): PArm
+fun deEqArm(leafName, fields: List<PStmt>, i: Int, many,
+            e2: PsEnum)
   let lr = e2.pseLine
   let xn = "x" + String(i)
   let yn = "y" + String(i)
@@ -412,31 +382,29 @@ fun deEqArm(leafName, fields: List<PStmt>, i: Int, many: Bool,
            PeMatch(deRef("right", lr), innerArms, lr, List()),
            List(), None, lr, List())
 
-fun [tail] deFieldsCmp(fs: Chain<PStmt>, xn: String, yn: String,
-                       acc: PExpr|None, lr: PLine): PExpr
-  ret match(fs)
-    (nil: ChainEnd) => match(acc)
-      (a: PExpr) => a
-      ()         => PeBool(true, lr)
-    (l: ChainLink)  => match(l.value)
-      (p: PsLet) => deFieldsCmp(l.next, xn, yn,
-                                deAnd(acc,
-                                      deCall2("`==`",
-                                              PeDot(deRef(xn, lr),
-                                                    bareName(p.lName), lr),
-                                              PeDot(deRef(yn, lr),
-                                                    bareName(p.lName), lr),
-                                              lr),
-                                      lr),
-                                lr)
-      (o: PStmt) => deFieldsCmp(l.next, xn, yn, acc, lr)
+fun [tail] deFieldsCmp(fs: Chain<PStmt>, xn, yn,
+                       acc: PExpr|None, lr) => match(fs)
+  (nil: ChainEnd) => match(acc)
+    (a: PExpr) => a
+    ()         => PeBool(true, lr)
+  (l: ChainLink)  => match(l.value)
+    (p: PsLet) => deFieldsCmp(l.next, xn, yn,
+                              deAnd(acc,
+                                    deCall2("`==`",
+                                            PeDot(deRef(xn, lr),
+                                                  bareName(p.lName), lr),
+                                            PeDot(deRef(yn, lr),
+                                                  bareName(p.lName), lr),
+                                            lr),
+                                    lr),
+                              lr)
+    (o: PStmt) => deFieldsCmp(l.next, xn, yn, acc, lr)
 
-fun deAnd(acc: PExpr|None, one, lr): PExpr
-  ret match(acc)
-    (a: PExpr) => PeTernary(a, one, PeBool(false, lr), lr)
-    ()         => one
+fun deAnd(acc: PExpr|None, one, lr) => match(acc)
+  (a: PExpr) => PeTernary(a, one, PeBool(false, lr), lr)
+  ()         => one
 
-fun deHashMember(e2: PsEnum, dl: DeLeaves): PStmt
+fun deHashMember(e2: PsEnum, dl: DeLeaves)
   let lr = e2.pseLine
   let arms = deHashArms(chain(dl.dlNames), chain(dl.dlSets), 0, e2,
                         List())
@@ -461,18 +429,17 @@ fun deHashArms(ns, sets, i,
                       e2: PsEnum, acc: List<PArm>): List<PArm>
   ret build(deHashArmsB(ns, sets, i, e2, builderFrom(acc)))
 
-fun [tail] deHashArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i: Int,
-                      e2: PsEnum, [terminal] acc: ListBuilder<PArm>): ListBuilder<PArm>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => match(sets)
-      (nil2: ChainEnd) => acc
-      (l: ChainLink)   => deHashArmsB(n.next, l.next, i + 1, e2,
-                                     push(acc, deHashArm(n.value, l.value,
-                                                    i, e2)))
+fun [tail] deHashArmsB(ns: Chain<String>, sets: Chain<List<PStmt>>, i,
+                      e2: PsEnum, [terminal] acc: ListBuilder<PArm>) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => match(sets)
+    (nil2: ChainEnd) => acc
+    (l: ChainLink)   => deHashArmsB(n.next, l.next, i + 1, e2,
+                                   push(acc, deHashArm(n.value, l.value,
+                                                  i, e2)))
 
-fun deHashArm(leafName, fields: List<PStmt>, i: Int,
-              e2: PsEnum): PArm
+fun deHashArm(leafName, fields: List<PStmt>, i,
+              e2: PsEnum)
   let lr = e2.pseLine
   let xn = "h" + String(i)
   let acc0 = PeInt(i, 32, lr)
@@ -480,26 +447,24 @@ fun deHashArm(leafName, fields: List<PStmt>, i: Int,
            deHashFold(chain(fields), xn, acc0, lr),
            List(), None, lr, List())
 
-fun [tail] deHashFold(fs: Chain<PStmt>, xn: String, acc: PExpr,
-                      lr: PLine): PExpr
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (p: PsLet) => deHashFold(l.next, xn,
-                               deMix(acc,
-                                     deCall1("hashOf",
-                                             PeDot(deRef(xn, lr),
-                                                   bareName(p.lName), lr),
-                                             lr),
-                                     lr),
-                               lr)
-      (o: PStmt) => deHashFold(l.next, xn, acc, lr)
+fun [tail] deHashFold(fs: Chain<PStmt>, xn, acc,
+                      lr) => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (p: PsLet) => deHashFold(l.next, xn,
+                             deMix(acc,
+                                   deCall1("hashOf",
+                                           PeDot(deRef(xn, lr),
+                                                 bareName(p.lName), lr),
+                                           lr),
+                                   lr),
+                             lr)
+    (o: PStmt) => deHashFold(l.next, xn, acc, lr)
 
-fun deMix(acc, h, lr): PExpr
-  ret deOp("int32", "int32_and",
-           list2(deEnt(deOp("int32", "int32_add",
-                                   list2(deEnt(deOp("int32", "int32_mul",
-                                                           list2(deEnt(acc), deEnt(PeInt(31, 32, lr))),
-                                                           lr)), deEnt(h)),
-                                   lr)), deEnt(PeInt(2147483647, 32, lr))),
-           lr)
+fun deMix(acc, h, lr) => deOp("int32", "int32_and",
+                              list2(deEnt(deOp("int32", "int32_add",
+                                                      list2(deEnt(deOp("int32", "int32_mul",
+                                                                              list2(deEnt(acc), deEnt(PeInt(31, 32, lr))),
+                                                                              lr)), deEnt(h)),
+                                                      lr)), deEnt(PeInt(2147483647, 32, lr))),
+                              lr)

@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast import union_repr
 from pyast.expression.base import Expression
@@ -35,15 +36,15 @@ class NewExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.type
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         xtype = self.parameter.get_type(resolver)
         if not isinstance(xtype, t.TupleSpec):
-            return self, []
+            return self, [], {}
 
         type, tstmt = self.type.compile(resolver)
-        parm, pstmt = self.parameter.compile(resolver, None)
+        parm, pstmt, hints = self.parameter.compile(resolver, None)
 
-        return dataclasses.replace(self, type=type, parameter=parm), tstmt+pstmt
+        return dataclasses.replace(self, type=type, parameter=parm), tstmt+pstmt, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         err = self.type.check(resolver) + self.parameter.check(resolver, None)
@@ -191,7 +192,7 @@ class NewEnumExpression(Expression):
             return spec
         return None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # Thread each construction argument's declared FIELD type down — the
         # argument node owns any boxing toward it (a union-typed field takes a
         # narrow argument). Mirrors the field lookup construct_enum_value
@@ -207,16 +208,18 @@ class NewEnumExpression(Expression):
                 by_name = {let.name: let.declared_type for let in leaf_fields}
         new_field_args: dict[str, Expression] = {}
         all_stmts: list[s.Statement] = []
+        hints: h.Hints = {}
         for fname, fexpr in self.field_args.items():
-            new_fexpr, stmts = fexpr.compile(resolver, by_name.get(fname))
+            new_fexpr, stmts, fh = fexpr.compile(resolver, by_name.get(fname))
             new_field_args[fname] = new_fexpr
             all_stmts.extend(stmts)
+            hints = h.merge(hints, fh)
         expr = dataclasses.replace(self, field_args=new_field_args)
         # The constructed enum value owns its conversion to the receiver — an
         # enum member boxing into a union that contains it (`JsonParseError`
         # into `State | JsonParseError`).
         from pyast.expression.conversion import converted
-        return converted(expr, expected_type, resolver), all_stmts
+        return converted(expr, expected_type, resolver), all_stmts, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         errors: list[Error] = []

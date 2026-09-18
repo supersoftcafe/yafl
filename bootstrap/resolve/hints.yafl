@@ -1,0 +1,256 @@
+# bootstrap/resolve/hints.yafl — ported from compiler/pyast/hints.py and the
+# converge/branch_type half of compiler/pyast/typespec/algebra.py.
+#
+# What compile learned about untyped names. A load of an untyped let records
+# the type its receiver expected; a match over one records its arm types.
+# Hints flow up out of compile, keyed by unique name, and the function or
+# lambda that owns a parameter reads its type off them.
+namespace Bootstrap::Resolve
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Frontend
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+# hLower: "must accept this" (a match arm); otherwise "must fit here".
+class [final] Hint(hSpec: Spec, hLower: Bool)
+
+# Exactly one is set.
+class [final] Verdict(vType: Spec|None, vClue: String|None)
+
+
+# ── the hints table ─────────────────────────────────────────────────────────
+
+fun noHints(): Dict<String, List<Hint>> => Dict()
+
+# A name that has not resolved yet: its uses may still say something.
+fun unsettledKey() => "$unsettled"
+
+fun unsettled() => put(noHints(), unsettledKey(), List())
+
+fun isUnsettled(hs: Dict<String, List<Hint>>) => contains(hs, unsettledKey())
+
+fun hintOf(name: String, spec, lower)
+  ret put(noHints(), name, build(push(builder(), Hint(spec, lower))))
+
+fun hintsFor(hs: Dict<String, List<Hint>>, name: String) => match(get(hs, name))
+  (l: List<Hint>) => l
+  ()              => List()
+
+fun mergeHints(a: Dict<String, List<Hint>>,
+               b: Dict<String, List<Hint>>): Dict<String, List<Hint>> => isEmpty(b)
+  ? a
+  : fold(keys(b), a,
+         (acc, k) => put(acc, k, concat(hintsFor(acc, k), hintsFor(b, k))))
+
+# Drop `names`, and any hint mentioning one of `placeholders`.
+fun hintsWithout(hs: Dict<String, List<Hint>>, names: Set<String>,
+                 placeholders: Set<String>): Dict<String, List<Hint>> => isEmpty(hs)
+  ? hs
+  : fold(keys(hs), noHints(),
+         (acc, k) => contains(names, k)
+           ? acc
+           : keptHints(acc, k, hintsFor(hs, k), placeholders))
+
+fun keptHints(acc: Dict<String, List<Hint>>, k: String, hs: List<Hint>,
+              placeholders: Set<String>)
+  let kept = freeOf(hs, placeholders)
+  ret isEmpty(kept) && !isEmpty(hs) ? acc : put(acc, k, kept)
+
+fun freeOf(hs: List<Hint>, placeholders: Set<String>) => isEmpty(placeholders)
+  ? hs
+  : filter(hs, (h) => !any(placeholderNames(h.hSpec),
+                           (n) => contains(placeholders, n)))
+
+# Does a load of `f`, expecting `expected`, leave a hint?
+fun registersHint(f: Found, expected: Spec|None) => match(expected)
+  (e2: Spec) => match(f.fScope)
+    (lc: ScLocal) => isUntypedLet(f.fStmt)
+    (o: RScope)   => false
+  ()         => false
+
+fun isUntypedLet(st) => match(st)
+  (l: PsLet) => match(l.lType)
+    (t2: Spec) => l.lTypeInferred
+    ()         => true
+  (o: PStmt) => false
+
+
+# ── the verdict ─────────────────────────────────────────────────────────────
+
+fun noUseClue() => "no use in its body determines it"
+
+fun unresolvedClue() => "a name in its body has not resolved yet"
+
+fun hintVerdict(hs: List<Hint>, r)
+  let usable = filter(hs, (h) => completeHint(h.hSpec, r))
+  if isEmpty(usable)
+    ret Verdict(None, isEmpty(hs)
+                        ? noUseClue()
+                        : "its uses leave it incomplete — "
+                          + listed(map(hs, (h) => h.hSpec), ", "))
+  let uppers = map(filter(usable, (h) => !h.hLower), (h) => h.hSpec)
+  let lowers = map(filter(usable, (h) => h.hLower), (h) => h.hSpec)
+  let upper = upperOf(uppers, r)
+  if !isEmpty(uppers) && upper is None
+    ret Verdict(None, "its uses require " + listed(uppers, " and "))
+  let lower = isEmpty(lowers) ? None : convergeTypes(lowers, r)
+  if !isEmpty(lowers) && lower is None
+    ret Verdict(None, "its match arms share no type — " + listed(lowers, ", "))
+  ret match(combined(lower, upper, r))
+    (t2: Spec) => Verdict(t2, None)
+    ()         => Verdict(None, "its uses require " + listed(uppers, " and "))
+
+# The lower answer when it fits the upper one; otherwise their common parent.
+fun combined(lower, upper, r) => match(lower)
+  (lo: Spec) => match(upper)
+    (up: Spec) => eqSpec(lo, up) || triTrue(assignableEq(r, up, lo))
+      ? lower
+      : convergeTypes(list2(lo, up), r)
+    ()         => lower
+  ()         => upper
+
+fun upperOf(uppers: List<Spec>, r)
+  if isEmpty(uppers)
+    ret None
+  ret match(narrowest(chain(uppers), uppers, r))
+    (n: Spec) => n
+    ()        => convergeTypes(uppers, r)
+
+fun completeHint(sp, r) => isConcrete(sp) && !openResult(sp) && !hasFreePlaceholders(sp, r)
+
+fun openResult(sp) => match(sp)
+  (cl: SCallable) => cl.scResult is None
+  (o: Spec)       => false
+
+fun listed(specs: List<Spec>, sep: String)
+  ret join(sort(dedupeStrs(map(specs, (sp) => typeStr(sp)))), sep)
+
+# The one upper bound that satisfies all the others.
+fun [tail] narrowest(us: Chain<Spec>, all: List<Spec>, r) => match(us)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => allFit(chain(all), l.value, r, false)
+    ? l.value
+    : narrowest(l.next, all, r)
+
+# widest: `cand` accepts each; otherwise each accepts `cand`.
+fun [tail] allFit(us: Chain<Spec>, cand, r, widest) => match(us)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => eqSpec(l.value, cand)
+                     || triTrue(widest ? assignableEq(r, cand, l.value)
+                                       : assignableEq(r, l.value, cand))
+    ? allFit(l.next, cand, r, widest)
+    : false
+
+
+# ── converge ────────────────────────────────────────────────────────────────
+
+# The one type all of `types` fit: the same type, the widest of them, their
+# enum's root, or the one interface their classes share.
+fun convergeTypes(types: List<Spec>, r) => match(head(types))
+  (first: Spec) => allSameSpec(chain(types), first)
+    ? first
+    : convergeMixed(types, first, r)
+  ()            => None
+
+fun convergeMixed(types: List<Spec>, first, r) => match(widestOf(chain(types), types, r))
+  (w: Spec) => w
+  ()        => allEnums(chain(types))
+    ? rootEnumOf(types, first)
+    : allClasses(chain(types)) ? soleShared(sharedInterfaces(types, r)) : None
+
+fun [tail] widestOf(ws: Chain<Spec>, all: List<Spec>, r) => match(ws)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => allFit(chain(all), l.value, r, true)
+    ? l.value
+    : widestOf(l.next, all, r)
+
+fun rootEnumOf(types: List<Spec>, first) => match(first)
+  (e2: SEnum) => sameEnumFamily(chain(types), e2)
+    ? SEnum(e2.seRoot, e2.seAllLeaves, e2.seAllLeaves, e2.seParams, e2.seLine)
+    : None
+  (o: Spec)   => None
+
+fun [tail] sameEnumFamily(ss: Chain<Spec>, e2: SEnum) => match(ss)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(l.value)
+    (x: SEnum) => x.seRoot == e2.seRoot && eqSpecs(x.seParams, e2.seParams)
+      ? sameEnumFamily(l.next, e2)
+      : false
+    (o: Spec)  => false
+
+fun soleShared(shared: List<Spec>|None) => match(shared)
+  (l: List<Spec>) => exactly(chain(l), 1) ? head(l) : None
+  ()              => None
+
+# A ternary's or match's type: its branches converged, else their union.
+fun branchType(types: List<Spec|None>, r): Spec|None
+  let known = knownSpecs(chain(types), builder())
+  ret isEmpty(known)
+    ? None
+    : match(convergeTypes(known, r))
+      (c: Spec) => c
+      ()        => fold(drop(known, 1), head(known), (acc, x) => join(acc, x))
+
+fun [tail] knownSpecs(ts: Chain<Spec|None>,
+                      [terminal] acc: ListBuilder<Spec>) => match(ts)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => match(l.value)
+    (x: Spec) => knownSpecs(l.next, push(acc, x))
+    ()        => knownSpecs(l.next, acc)
+
+# The interfaces every one of these classes implements, or None while an
+# inheritance graph is unbuilt.
+fun sharedInterfaces(specs: List<Spec>, r) => sharedLoop(chain(specs), r, None)
+
+fun [tail] sharedLoop(ss: Chain<Spec>, r,
+                      acc: List<Spec>|None) => match(ss)
+  (nil: ChainEnd) => match(acc)
+    (l2: List<Spec>) => l2
+    ()               => List()
+  (l: ChainLink)  => match(interfacesOf(l.value, r))
+    (ps2: List<Spec>) => sharedLoop(l.next, r, intersectSpecs(acc, ps2))
+    ()                => None
+
+fun interfacesOf(sp, r) => match(sp)
+  (c: SClass) => classParents(c, r)
+  (o: Spec)   => None
+
+fun classParents(c: SClass, r)
+  let found = findType(r, c.scName)
+  if !found.bComplete
+    ret None
+  ret match(soleItem(found))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (parents: List<Spec>) => filter(parents, (p) => specNameOf(p) != c.scName)
+        ()                    => None
+      (o: PStmt)     => None
+    ()         => None
+
+fun intersectSpecs(acc: List<Spec>|None, ps) => match(acc)
+  (l2: List<Spec>) => filter(l2, (x) => any(ps, (p) => eqSpec(p, x)))
+  ()               => ps
+
+fun specNameOf(sp) => match(sp)
+  (c: SClass) => c.scName
+  (o: Spec)   => ""
+
+fun [tail] allSameSpec(ss: Chain<Spec>, first) => match(ss)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => eqSpec(l.value, first) ? allSameSpec(l.next, first) : false
+
+fun [tail] allEnums(ss: Chain<Spec>) => match(ss)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(l.value)
+    (e2: SEnum) => allEnums(l.next)
+    (o: Spec)   => false
+
+fun [tail] allClasses(ss: Chain<Spec>) => match(ss)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(l.value)
+    (c: SClass) => allClasses(l.next)
+    (o: Spec)   => false

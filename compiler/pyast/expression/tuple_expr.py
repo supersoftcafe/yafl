@@ -37,6 +37,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 
@@ -72,10 +73,10 @@ class TupleEntryExpression:
     def get_type(self, resolver: g.Resolver) -> t.TupleSpec | None:
         return self.value.get_type(resolver)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[TupleEntryExpression, list[s.Statement]]:
-        new_value, new_statements = self.value.compile(resolver, expected_type)
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[TupleEntryExpression, list[s.Statement], h.Hints]:
+        new_value, new_statements, hints = self.value.compile(resolver, expected_type)
         new_value = _unwrap_one_tuple(new_value)
-        return dataclasses.replace(self, value=new_value), new_statements
+        return dataclasses.replace(self, value=new_value), new_statements, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return self.value.check(resolver, expected_type)
@@ -105,7 +106,7 @@ class TupleExpression(Expression):
                 entries.append(t.TupleEntrySpec(x.name, x.get_type(resolver)))
         return t.TupleSpec(self.line_ref, entries = entries)
 
-    def __expand_spreads(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def __expand_spreads(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         """Rewrite a tuple literal containing `*spread` entries into a block:
         each spread's value binds once via a destructure, and the rebuilt
         literal splices the bound fields in place (positionally — names never
@@ -114,11 +115,11 @@ class TupleExpression(Expression):
         from pyast.expression.access import NamedExpression
         from pyast.expression.block import BlockExpression
         compiled = [x.compile(resolver, None) for x in self.expressions]
-        new_exprs = [ce for ce, _ in compiled]
-        globals = [st for _, sts in compiled for st in sts]
+        new_exprs = [ce for ce, _, _ in compiled]
+        globals = [st for _, sts, _ in compiled for st in sts]
         if any(x.spread and not isinstance(x.value.get_type(resolver), t.TupleSpec)
                for x in new_exprs):
-            return dataclasses.replace(self, expressions=new_exprs), globals
+            return dataclasses.replace(self, expressions=new_exprs), globals, h.merge(*(ch for _, _, ch in compiled))
         binders: list[s.Statement] = []
         entries: list[TupleEntryExpression] = []
         for idx, x in enumerate(new_exprs):
@@ -133,10 +134,10 @@ class TupleExpression(Expression):
             entries.extend(TupleEntryExpression(None, NamedExpression(lr, nm)) for nm in fresh)
         block = BlockExpression(self.line_ref, binders,
                                 TupleExpression(self.line_ref, entries))
-        expr, block_globals = block.compile(resolver, expected_type)
-        return expr, globals + block_globals
+        expr, block_globals, block_hints = block.compile(resolver, expected_type)
+        return expr, globals + block_globals, block_hints
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         if any(x.spread for x in self.expressions):
             return self.__expand_spreads(resolver, expected_type)
         # A tuple literal converges FIELD-WISE against a tuple receiver: each
@@ -165,9 +166,10 @@ class TupleExpression(Expression):
                 return expected_entries[j].type if j is not None else None
             return expected_entries[i].type if i < len(expected_entries) else None
         p = [x.compile(resolver, entry_expected(i)) for i, x in enumerate(self.expressions)]
-        new_expressions, new_statements_lists = zip(*p) if p else ([], [])
+        new_expressions, new_statements_lists, hint_parts = zip(*p) if p else ([], [], [])
         expr = dataclasses.replace(self, expressions=list(new_expressions))
-        return converted(expr, expected_type, resolver), list(x for l in new_statements_lists for x in l)
+        return (converted(expr, expected_type, resolver),
+                list(x for l in new_statements_lists for x in l), h.merge(*hint_parts))
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # TODO: Breakdown expected_type and pass it into the check function

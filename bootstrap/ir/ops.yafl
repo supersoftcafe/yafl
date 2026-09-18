@@ -54,145 +54,136 @@ enum Op
 class [final] OpCase(caseValue: Int, caseLabel: String)
 class [final] OpPhiSource(sourceLabel: String, sourceValue: RParam)
 
-fun opSavedVars(op): List<RParam>
-  ret match(op)
-    (x: OpLabel) => x.labelSavedVars
-    (x: OpMove) => x.moveSavedVars
-    (x: OpJump) => x.jumpSavedVars
-    (x: OpJumpIf) => x.jumpIfSavedVars
-    (x: OpIfTask) => x.taskSavedVars
-    (x: OpSwitchJump) => x.switchSavedVars
-    (x: OpNewObject) => x.newObjSavedVars
-    (x: OpCall) => x.callSavedVars
-    (x: OpReturnVoid) => x.retVoidSavedVars
-    (x: OpAbort) => x.abortSavedVars
-    (x: OpReturn) => x.returnSavedVars
-    (x: OpParallelCall) => x.parSavedVars
-    (x: OpPhi) => x.phiSavedVars
-    (x: OpProfEnter) => x.profEnterSavedVars
-    (x: OpProfLeave) => x.profLeaveSavedVars
+fun opSavedVars(op): List<RParam> => match(op)
+  (x: OpLabel) => x.labelSavedVars
+  (x: OpMove) => x.moveSavedVars
+  (x: OpJump) => x.jumpSavedVars
+  (x: OpJumpIf) => x.jumpIfSavedVars
+  (x: OpIfTask) => x.taskSavedVars
+  (x: OpSwitchJump) => x.switchSavedVars
+  (x: OpNewObject) => x.newObjSavedVars
+  (x: OpCall) => x.callSavedVars
+  (x: OpReturnVoid) => x.retVoidSavedVars
+  (x: OpAbort) => x.abortSavedVars
+  (x: OpReturn) => x.returnSavedVars
+  (x: OpParallelCall) => x.parSavedVars
+  (x: OpPhi) => x.phiSavedVars
+  (x: OpProfEnter) => x.profEnterSavedVars
+  (x: OpProfLeave) => x.profLeaveSavedVars
 
 # ── test_params(predicate) ───────────────────────────────────────────────────
 
-fun opTestParams(op, pred): Bool
-  ret match(op)
-    (x: OpMove) => pred(x.moveTarget) || pred(x.moveSource)
-    (x: OpJumpIf) => pred(x.jumpIfCondition)
-    (x: OpIfTask) => pred(x.taskCondition) || pred(x.taskSource)
-    (x: OpSwitchJump) => pred(x.switchCondition)
-    (x: OpCall) => opTestParamsCall(x, pred)
-    (x: OpReturn) => pred(x.returnValue)
-    (o: Op) => false   # base default: False (Label/Jump/NewObject/ReturnVoid/Abort/ParallelCall/Phi don't override)
+fun opTestParams(op, pred) => match(op)
+  (x: OpMove) => pred(x.moveTarget) || pred(x.moveSource)
+  (x: OpJumpIf) => pred(x.jumpIfCondition)
+  (x: OpIfTask) => pred(x.taskCondition) || pred(x.taskSource)
+  (x: OpSwitchJump) => pred(x.switchCondition)
+  (x: OpCall) => opTestParamsCall(x, pred)
+  (x: OpReturn) => pred(x.returnValue)
+  (o: Op) => false   # base default: False (Label/Jump/NewObject/ReturnVoid/Abort/ParallelCall/Phi don't override)
 
-fun opTestParamsCall(x: OpCall, pred): Bool
+fun opTestParamsCall(x: OpCall, pred)
   ret pred(x.callFunction) || pred(x.callParameters) || opTestParamsCallRegister(x.callRegister, pred)
 
-fun opTestParamsCallRegister(register: RParam|None, pred): Bool
-  ret match(register)
-    (r: RParam) => pred(r)
-    ()          => false
+fun opTestParamsCallRegister(register: RParam|None, pred) => match(register)
+  (r: RParam) => pred(r)
+  ()          => false
 
 # ── all_params() ─────────────────────────────────────────────────────────────
 
-fun opAllParams(op): List<RParam>
-  ret match(op)
-    (x: OpMove) => concat(rpFlatten(x.moveTarget, false), rpFlatten(x.moveSource, true))
-    (x: OpJumpIf) => rpFlatten(x.jumpIfCondition, true)
-    (x: OpIfTask) => opAllParamsIfTask(x)
-    (x: OpSwitchJump) => rpFlatten(x.switchCondition, true)
-    (x: OpNewObject) => opAllParamsNewObject(x)
-    (x: OpCall) => opAllParamsCall(x)
-    (x: OpReturn) => rpFlatten(x.returnValue, true)
-    (x: OpParallelCall) => opAllParamsParallel(x)
-    (x: OpPhi) => opAllParamsPhi(x)
-    (o: Op) => List()   # base default: [] (Label/Jump/ReturnVoid/Abort don't override)
+fun opAllParams(op) => match(op)
+  (x: OpMove) => concat(rpFlatten(x.moveTarget, false), rpFlatten(x.moveSource, true))
+  (x: OpJumpIf) => rpFlatten(x.jumpIfCondition, true)
+  (x: OpIfTask) => opAllParamsIfTask(x)
+  (x: OpSwitchJump) => rpFlatten(x.switchCondition, true)
+  (x: OpNewObject) => opAllParamsNewObject(x)
+  (x: OpCall) => opAllParamsCall(x)
+  (x: OpReturn) => rpFlatten(x.returnValue, true)
+  (x: OpParallelCall) => opAllParamsParallel(x)
+  (x: OpPhi) => opAllParamsPhi(x)
+  (o: Op) => List()   # base default: [] (Label/Jump/ReturnVoid/Abort don't override)
 
-fun opAllParamsIfTask(x: OpIfTask): List<RParam>
+fun opAllParamsIfTask(x: OpIfTask)
   ret concat(concat(rpFlatten(x.taskCondition, true), rpFlatten(x.taskSource, true)),
               concat(rpFlatten(x.taskLhs, false), rpFlatten(x.callIdLhs, false)))
 
-fun opAllParamsNewObject(x: OpNewObject): List<RParam>
+fun opAllParamsNewObject(x: OpNewObject)
   ret concat(rpFlatten(x.newObjRegister, false), rpFlattenOpt(x.newObjSize, true))
 
-fun opAllParamsCall(x: OpCall): List<RParam>
+fun opAllParamsCall(x: OpCall)
   ret concat(concat(rpFlatten(x.callFunction, true), rpFlatten(x.callParameters, true)),
               opAllParamsCallRegister(x.callRegister))
 
-fun opAllParamsCallRegister(register: RParam|None): List<RParam>
-  ret match(register)
-    (r: RParam) => rpFlatten(r, false)
-    ()          => List()
+fun opAllParamsCallRegister(register: RParam|None) => match(register)
+  (r: RParam) => rpFlatten(r, false)
+  ()          => List()
 
-fun opAllParamsParallel(x: OpParallelCall): List<RParam>
+fun opAllParamsParallel(x: OpParallelCall)
   let reads = fold(x.parCalls, List(), (acc, c) => concat(acc, rpFlatten(c, true)))
   let writes = fold(x.parResults, List(), (acc, r) => concat(acc, rpFlatten(r, false)))
   ret concat(reads, concat(writes, opAllParamsCallRegister(x.parRegister)))
 
-fun opAllParamsPhi(x: OpPhi): List<RParam>
+fun opAllParamsPhi(x: OpPhi)
   let sourceParams = fold(x.phiSources, List(), (acc, s) => concat(acc, rpFlatten(s.sourceValue, true)))
   ret concat(sourceParams, rpFlatten(x.phiTarget, false))
 
 # ── rename_vars(renames) ─────────────────────────────────────────────────────
 
-fun opRenameVars(op, renames: List<RpRename>): Op
-  ret match(op)
-    (x: OpLabel) => OpLabel(renameLookup(renames, x.labelName), x.labelSavedVars)
-    (x: OpMove) => OpMove(rpRenameVars(x.moveTarget, renames), rpRenameVars(x.moveSource, renames), x.moveKeep, x.moveSavedVars)
-    (x: OpJump) => OpJump(renameLookup(renames, x.jumpName), x.jumpSavedVars)
-    (x: OpJumpIf) => OpJumpIf(renameLookup(renames, x.jumpIfLabel), rpRenameVars(x.jumpIfCondition, renames), x.jumpIfInvert, x.jumpIfSavedVars)
-    (x: OpIfTask) => OpIfTask(rpRenameVars(x.taskCondition, renames), rpRenameVars(x.taskSource, renames),
-                              rpRenameVars(x.taskLhs, renames), rpRenameVars(x.callIdLhs, renames), x.callId,
-                              renameLookup(renames, x.taskTarget), x.taskSavedVars)
-    (x: OpSwitchJump) => OpSwitchJump(rpRenameVars(x.switchCondition, renames),
-                                      map(x.switchCases, (c) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
-                                      x.switchSavedVars)
-    (x: OpNewObject) => OpNewObject(x.newObjName, rpRenameVars(x.newObjRegister, renames), rpRenameVarsOpt(x.newObjSize, renames), x.newObjSavedVars)
-    (x: OpCall) => OpCall(rpRenameVars(x.callFunction, renames), rpRenameVars(x.callParameters, renames),
-                          opRenameVarsOpt(x.callRegister, renames), x.callMusttail, x.callImpure, x.callResultType, x.callSavedVars)
-    (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
-    (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c) => rpRenameVars(c, renames)),
-                                          map(x.parResults, (r) => rpRenameVars(r, renames)),
-                                          opRenameVarsOpt(x.parRegister, renames), x.parSavedVars)
-    (x: OpPhi) => OpPhi(rpRenameVars(x.phiTarget, renames),
-                        map(x.phiSources, (s) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
-                        x.phiSavedVars)
-    (o: Op) => op   # base default: self (ReturnVoid/Abort don't override)
+fun opRenameVars(op, renames: List<RpRename>) => match(op)
+  (x: OpLabel) => OpLabel(renameLookup(renames, x.labelName), x.labelSavedVars)
+  (x: OpMove) => OpMove(rpRenameVars(x.moveTarget, renames), rpRenameVars(x.moveSource, renames), x.moveKeep, x.moveSavedVars)
+  (x: OpJump) => OpJump(renameLookup(renames, x.jumpName), x.jumpSavedVars)
+  (x: OpJumpIf) => OpJumpIf(renameLookup(renames, x.jumpIfLabel), rpRenameVars(x.jumpIfCondition, renames), x.jumpIfInvert, x.jumpIfSavedVars)
+  (x: OpIfTask) => OpIfTask(rpRenameVars(x.taskCondition, renames), rpRenameVars(x.taskSource, renames),
+                            rpRenameVars(x.taskLhs, renames), rpRenameVars(x.callIdLhs, renames), x.callId,
+                            renameLookup(renames, x.taskTarget), x.taskSavedVars)
+  (x: OpSwitchJump) => OpSwitchJump(rpRenameVars(x.switchCondition, renames),
+                                    map(x.switchCases, (c) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
+                                    x.switchSavedVars)
+  (x: OpNewObject) => OpNewObject(x.newObjName, rpRenameVars(x.newObjRegister, renames), rpRenameVarsOpt(x.newObjSize, renames), x.newObjSavedVars)
+  (x: OpCall) => OpCall(rpRenameVars(x.callFunction, renames), rpRenameVars(x.callParameters, renames),
+                        opRenameVarsOpt(x.callRegister, renames), x.callMusttail, x.callImpure, x.callResultType, x.callSavedVars)
+  (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
+  (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c) => rpRenameVars(c, renames)),
+                                        map(x.parResults, (r) => rpRenameVars(r, renames)),
+                                        opRenameVarsOpt(x.parRegister, renames), x.parSavedVars)
+  (x: OpPhi) => OpPhi(rpRenameVars(x.phiTarget, renames),
+                      map(x.phiSources, (s) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
+                      x.phiSavedVars)
+  (o: Op) => op   # base default: self (ReturnVoid/Abort don't override)
 
-fun opRenameVarsOpt(o: RParam|None, renames: List<RpRename>): RParam|None
-  ret match(o)
-    (v: RParam) => rpRenameVars(v, renames)
-    ()          => None
+fun opRenameVarsOpt(o: RParam|None, renames: List<RpRename>) => match(o)
+  (v: RParam) => rpRenameVars(v, renames)
+  ()          => None
 
 # ── replace_params(replacer) ─────────────────────────────────────────────────
 
-fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op
-  ret match(op)
-    (x: OpMove) => with x(moveTarget = rpReplaceParams(x.moveTarget, replacer),
-                          moveSource = rpReplaceParams(x.moveSource, replacer))
-    (x: OpJumpIf) => with x(jumpIfCondition = rpReplaceParams(x.jumpIfCondition, replacer))
-    (x: OpIfTask) => with x(taskCondition = rpReplaceParams(x.taskCondition, replacer),
-                            taskSource    = rpReplaceParams(x.taskSource, replacer),
-                            taskLhs       = rpReplaceParams(x.taskLhs, replacer),
-                            callIdLhs     = rpReplaceParams(x.callIdLhs, replacer))
-    (x: OpSwitchJump) => with x(switchCondition = rpReplaceParams(x.switchCondition, replacer))
-    (x: OpNewObject) => with x(newObjRegister = rpReplaceParams(x.newObjRegister, replacer),
-                               newObjSize     = rpReplaceParamsOpt(x.newObjSize, replacer))
-    (x: OpCall) => with x(callFunction   = rpReplaceParams(x.callFunction, replacer),
-                          callParameters = rpReplaceParams(x.callParameters, replacer),
-                          callRegister   = opReplaceParamsOpt(x.callRegister, replacer))
-    (x: OpReturn) => with x(returnValue = rpReplaceParams(x.returnValue, replacer))
-    (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c) => replacer(c)),
-                                  parResults = map(x.parResults, (r) => replacer(r)),
-                                  parRegister = opReplaceParamsRegisterDirect(x.parRegister, replacer))
-    (x: OpPhi) => with x(phiTarget = replacer(x.phiTarget),
-                         phiSources = map(x.phiSources,
-                                          (s) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
-    (o: Op) => op   # base default: self (Label/Jump/ReturnVoid/Abort don't override)
+fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op => match(op)
+  (x: OpMove) => with x(moveTarget = rpReplaceParams(x.moveTarget, replacer),
+                        moveSource = rpReplaceParams(x.moveSource, replacer))
+  (x: OpJumpIf) => with x(jumpIfCondition = rpReplaceParams(x.jumpIfCondition, replacer))
+  (x: OpIfTask) => with x(taskCondition = rpReplaceParams(x.taskCondition, replacer),
+                          taskSource    = rpReplaceParams(x.taskSource, replacer),
+                          taskLhs       = rpReplaceParams(x.taskLhs, replacer),
+                          callIdLhs     = rpReplaceParams(x.callIdLhs, replacer))
+  (x: OpSwitchJump) => with x(switchCondition = rpReplaceParams(x.switchCondition, replacer))
+  (x: OpNewObject) => with x(newObjRegister = rpReplaceParams(x.newObjRegister, replacer),
+                             newObjSize     = rpReplaceParamsOpt(x.newObjSize, replacer))
+  (x: OpCall) => with x(callFunction   = rpReplaceParams(x.callFunction, replacer),
+                        callParameters = rpReplaceParams(x.callParameters, replacer),
+                        callRegister   = opReplaceParamsOpt(x.callRegister, replacer))
+  (x: OpReturn) => with x(returnValue = rpReplaceParams(x.returnValue, replacer))
+  (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c) => replacer(c)),
+                                parResults = map(x.parResults, (r) => replacer(r)),
+                                parRegister = opReplaceParamsRegisterDirect(x.parRegister, replacer))
+  (x: OpPhi) => with x(phiTarget = replacer(x.phiTarget),
+                       phiSources = map(x.phiSources,
+                                        (s) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
+  (o: Op) => op   # base default: self (Label/Jump/ReturnVoid/Abort don't override)
 
-fun opReplaceParamsOpt(o: RParam|None, replacer): RParam|None
-  ret match(o)
-    (v: RParam) => rpReplaceParams(v, replacer)
-    ()          => None
+fun opReplaceParamsOpt(o: RParam|None, replacer): RParam|None => match(o)
+  (v: RParam) => rpReplaceParams(v, replacer)
+  ()          => None
 
 # ParallelCall.replace_params calls `replacer(r)` DIRECTLY on each element
 # (NOT `r.replace_params(replacer)`) — matches Python exactly.
@@ -203,18 +194,17 @@ fun opReplaceParamsRegisterDirect(o: RParam|None, replacer: (:RParam): RParam): 
 
 # ── get_live_vars() -> (reads, writes) ──────────────────────────────────────
 
-fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>)
-  ret match(op)
-    (x: OpMove) => opGetLiveVarsMove(x)
-    (x: OpJumpIf) => (rpGetLiveVars(x.jumpIfCondition), List())
-    (x: OpIfTask) => (rpStackVarUnion(rpGetLiveVars(x.taskCondition), rpGetLiveVars(x.taskSource)), List())
-    (x: OpSwitchJump) => (rpGetLiveVars(x.switchCondition), List())
-    (x: OpNewObject) => opGetLiveVarsNewObject(x)
-    (x: OpCall) => opGetLiveVarsCall(x)
-    (x: OpReturn) => (rpGetLiveVars(x.returnValue), List())
-    (x: OpParallelCall) => opGetLiveVarsParallel(x)
-    (x: OpPhi) => opGetLiveVarsPhi(x)
-    (o: Op) => (List(), List())   # base default: (set(), set()) (Label/Jump/ReturnVoid/Abort don't override)
+fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>) => match(op)
+  (x: OpMove) => opGetLiveVarsMove(x)
+  (x: OpJumpIf) => (rpGetLiveVars(x.jumpIfCondition), List())
+  (x: OpIfTask) => (rpStackVarUnion(rpGetLiveVars(x.taskCondition), rpGetLiveVars(x.taskSource)), List())
+  (x: OpSwitchJump) => (rpGetLiveVars(x.switchCondition), List())
+  (x: OpNewObject) => opGetLiveVarsNewObject(x)
+  (x: OpCall) => opGetLiveVarsCall(x)
+  (x: OpReturn) => (rpGetLiveVars(x.returnValue), List())
+  (x: OpParallelCall) => opGetLiveVarsParallel(x)
+  (x: OpPhi) => opGetLiveVarsPhi(x)
+  (o: Op) => (List(), List())   # base default: (set(), set()) (Label/Jump/ReturnVoid/Abort don't override)
 
 fun opGetLiveVarsMove(x: OpMove): (reads: List<RParam>, writes: List<RParam>)
   let live = rpGetLiveVars(x.moveSource)
@@ -255,30 +245,28 @@ fun opGetLiveVarsPhi(x: OpPhi): (reads: List<RParam>, writes: List<RParam>)
 
 # ── is_direct_call() (Call only) ────────────────────────────────────────────
 
-fun opIsDirectCall(x: OpCall): Bool
-  ret match(x.callFunction)
-    (g: RpGlobalFunction) => true
-    (o: RParam)           => false
+fun opIsDirectCall(x: OpCall) => match(x.callFunction)
+  (g: RpGlobalFunction) => true
+  (o: RParam)           => false
 
 # ── to_c ─────────────────────────────────────────────────────────────────────
 
-fun opToC(op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret match(op)
-    (x: OpLabel) => (mangleName(x.labelName) + ":\n", cache)
-    (x: OpMove) => opToCMove(x, cache)
-    (x: OpJump) => ("    goto " + mangleName(x.jumpName) + ";\n", cache)
-    (x: OpJumpIf) => opToCJumpIf(x, cache)
-    (x: OpIfTask) => opToCIfTask(x, cache)
-    (x: OpSwitchJump) => opToCSwitchJump(x, cache)
-    (x: OpNewObject) => opToCNewObject(x, cache)
-    (x: OpCall) => opToCCall(x, cache)
-    (x: OpReturnVoid) => ("    return;\n", cache)
-    (x: OpAbort) => opToCAbort(x, cache)
-    (x: OpReturn) => opToCReturn(x, cache)
-    (x: OpParallelCall) => ("", cache)   # unreachable: async_lower must remove ParallelCall before codegen
-    (x: OpPhi) => ("", cache)            # unreachable: from_ssa must lower Phi to Moves before codegen
-    (x: OpProfEnter) => ("    yafl_prof_enter(" + String(x.profEnterFnId) + "u);\n", cache)
-    (x: OpProfLeave) => ("    yafl_prof_leave();\n", cache)
+fun opToC(op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>) => match(op)
+  (x: OpLabel) => (mangleName(x.labelName) + ":\n", cache)
+  (x: OpMove) => opToCMove(x, cache)
+  (x: OpJump) => ("    goto " + mangleName(x.jumpName) + ";\n", cache)
+  (x: OpJumpIf) => opToCJumpIf(x, cache)
+  (x: OpIfTask) => opToCIfTask(x, cache)
+  (x: OpSwitchJump) => opToCSwitchJump(x, cache)
+  (x: OpNewObject) => opToCNewObject(x, cache)
+  (x: OpCall) => opToCCall(x, cache)
+  (x: OpReturnVoid) => ("    return;\n", cache)
+  (x: OpAbort) => opToCAbort(x, cache)
+  (x: OpReturn) => opToCReturn(x, cache)
+  (x: OpParallelCall) => ("", cache)   # unreachable: async_lower must remove ParallelCall before codegen
+  (x: OpPhi) => ("", cache)            # unreachable: from_ssa must lower Phi to Moves before codegen
+  (x: OpProfEnter) => ("    yafl_prof_enter(" + String(x.profEnterFnId) + "u);\n", cache)
+  (x: OpProfLeave) => ("    yafl_prof_leave();\n", cache)
 
 fun opToCMove(x: OpMove, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sourceC = rpToC(x.moveSource, cache0)
@@ -353,8 +341,7 @@ fun opToCCallBody(x: OpCall, returnType, tailreturn, ptype, fields: List<CgField
     (prms: RpNewStruct) => opToCCallNewStruct(x, returnType, tailreturn, prms, cache0)
     (prms: RParam)        => opToCCallGenericParams(x, returnType, tailreturn, ptype, fields, prms, cache0)
 
-fun opToCCallPrefixJoin(list: List<String>): String
-  ret fold(list, "", (acc, s) => acc + ", " + s)
+fun opToCCallPrefixJoin(list: List<String>) => fold(list, "", (acc, s) => acc + ", " + s)
 
 # The three accumulators below built a List<String> whose ONLY consumer was
 # opToCCallPrefixJoin. Since the join prefixes every element with ", " and never
@@ -443,100 +430,87 @@ fun opToCCallIndirectFinish(funDecl, unpack, assignR: (text: String, cache: List
 # Python: reads = StackVars in read positions; a non-StackVar TARGET (an
 # ObjectField store) contributes its inner reads (the pointer) as reads.
 
-fun rpReadVarNames(r): List<String>
-  ret fold(rpFlatten(r, true), List(), rpTakeStackVarName)
+fun rpReadVarNames(r) => fold(rpFlatten(r, true), List(), rpTakeStackVarName)
 
 # The stack-var names a param reads. Every consumer treats these as a set —
 # liveness unions and membership tests — so the order is not observed.
-fun rpTakeStackVarName(acc, x): List<String>
-  ret match(x)
-    (sv: RpStackVar) => prepend(sv.name, acc)
-    (o: RParam)       => acc
+fun rpTakeStackVarName(acc, x) => match(x)
+  (sv: RpStackVar) => prepend(sv.name, acc)
+  (o: RParam)       => acc
 
-fun rpTargetReadNames(target): List<String>
-  ret match(target)
-    (sv: RpStackVar) => List()
-    (o: RParam)       => rpReadVarNames(target)
+fun rpTargetReadNames(target): List<String> => match(target)
+  (sv: RpStackVar) => List()
+  (o: RParam)       => rpReadVarNames(target)
 
-fun rpOptReadNames(r: RParam|None): List<String>
-  ret match(r)
-    (x: RParam) => rpReadVarNames(x)
-    ()           => List()
+fun rpOptReadNames(r: RParam|None) => match(r)
+  (x: RParam) => rpReadVarNames(x)
+  ()           => List()
 
-fun opReadVarNames(op): List<String>
-  ret match(op)
-    (m: OpMove)          => concat(rpReadVarNames(m.moveSource), rpTargetReadNames(m.moveTarget))
-    (ji: OpJumpIf)       => rpReadVarNames(ji.jumpIfCondition)
-    (t2: OpIfTask)       => concat(rpReadVarNames(t2.taskCondition), rpReadVarNames(t2.taskSource))
-    (sw: OpSwitchJump)   => rpReadVarNames(sw.switchCondition)
-    (n: OpNewObject)     => concat(rpOptReadNames(n.newObjSize), rpTargetReadNames(n.newObjRegister))
-    (c: OpCall)          => concat(concat(rpReadVarNames(c.callFunction), rpReadVarNames(c.callParameters)),
-                                   rpOptTargetReadNames(c.callRegister))
-    (r: OpReturn)        => rpReadVarNames(r.returnValue)
-    (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadVarNames(x)))
-    (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadVarNames(s2.sourceValue)))
-    (o: Op)              => List()
+fun opReadVarNames(op) => match(op)
+  (m: OpMove)          => concat(rpReadVarNames(m.moveSource), rpTargetReadNames(m.moveTarget))
+  (ji: OpJumpIf)       => rpReadVarNames(ji.jumpIfCondition)
+  (t2: OpIfTask)       => concat(rpReadVarNames(t2.taskCondition), rpReadVarNames(t2.taskSource))
+  (sw: OpSwitchJump)   => rpReadVarNames(sw.switchCondition)
+  (n: OpNewObject)     => concat(rpOptReadNames(n.newObjSize), rpTargetReadNames(n.newObjRegister))
+  (c: OpCall)          => concat(concat(rpReadVarNames(c.callFunction), rpReadVarNames(c.callParameters)),
+                                 rpOptTargetReadNames(c.callRegister))
+  (r: OpReturn)        => rpReadVarNames(r.returnValue)
+  (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadVarNames(x)))
+  (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadVarNames(s2.sourceValue)))
+  (o: Op)              => List()
 
-fun rpOptTargetReadNames(r: RParam|None): List<String>
-  ret match(r)
-    (x: RParam) => rpTargetReadNames(x)
-    ()           => List()
+fun rpOptTargetReadNames(r: RParam|None): List<String> => match(r)
+  (x: RParam) => rpTargetReadNames(x)
+  ()           => List()
 
 # ── saved_vars setter (async_lower's liveness fixpoint rewrites them) ────────
 
-fun opWithSavedVars(op, sv): Op
-  ret match(op)
-    (x: OpLabel)        => OpLabel(x.labelName, sv)
-    (x: OpMove)         => OpMove(x.moveTarget, x.moveSource, x.moveKeep, sv)
-    (x: OpJump)         => OpJump(x.jumpName, sv)
-    (x: OpJumpIf)       => OpJumpIf(x.jumpIfLabel, x.jumpIfCondition, x.jumpIfInvert, sv)
-    (x: OpIfTask)       => OpIfTask(x.taskCondition, x.taskSource, x.taskLhs, x.callIdLhs, x.callId, x.taskTarget, sv)
-    (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
-    (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, sv)
-    (x: OpCall)         => OpCall(x.callFunction, x.callParameters, x.callRegister, x.callMusttail, x.callImpure, x.callResultType, sv)
-    (x: OpReturnVoid)   => OpReturnVoid(sv)
-    (x: OpAbort)        => OpAbort(x.abortReason, sv)
-    (x: OpReturn)       => OpReturn(x.returnValue, sv)
-    (x: OpParallelCall) => OpParallelCall(x.parCalls, x.parResults, x.parRegister, sv)
-    (x: OpPhi)          => OpPhi(x.phiTarget, x.phiSources, sv)
-    (x: OpProfEnter)    => OpProfEnter(x.profEnterFnId, sv)
-    (x: OpProfLeave)    => OpProfLeave(sv)
+fun opWithSavedVars(op, sv) => match(op)
+  (x: OpLabel)        => OpLabel(x.labelName, sv)
+  (x: OpMove)         => OpMove(x.moveTarget, x.moveSource, x.moveKeep, sv)
+  (x: OpJump)         => OpJump(x.jumpName, sv)
+  (x: OpJumpIf)       => OpJumpIf(x.jumpIfLabel, x.jumpIfCondition, x.jumpIfInvert, sv)
+  (x: OpIfTask)       => OpIfTask(x.taskCondition, x.taskSource, x.taskLhs, x.callIdLhs, x.callId, x.taskTarget, sv)
+  (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
+  (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, sv)
+  (x: OpCall)         => OpCall(x.callFunction, x.callParameters, x.callRegister, x.callMusttail, x.callImpure, x.callResultType, sv)
+  (x: OpReturnVoid)   => OpReturnVoid(sv)
+  (x: OpAbort)        => OpAbort(x.abortReason, sv)
+  (x: OpReturn)       => OpReturn(x.returnValue, sv)
+  (x: OpParallelCall) => OpParallelCall(x.parCalls, x.parResults, x.parRegister, sv)
+  (x: OpPhi)          => OpPhi(x.phiTarget, x.phiSources, sv)
+  (x: OpProfEnter)    => OpProfEnter(x.profEnterFnId, sv)
+  (x: OpProfLeave)    => OpProfLeave(sv)
 
 # Reads as StackVar RPARAMS (types intact — the liveness sets feed state-field
 # layout); the names-only twin is opReadVarNames above.
-fun rpReadStackVars(r): List<RParam>
-  ret fold(rpFlatten(r, true), List(), rpTakeStackVar)
+fun rpReadStackVars(r) => fold(rpFlatten(r, true), List(), rpTakeStackVar)
 
-fun rpTakeStackVar(acc, x): List<RParam>
-  ret match(x)
-    (sv: RpStackVar) => prepend(x, acc)
-    (o: RParam)       => acc
+fun rpTakeStackVar(acc, x) => match(x)
+  (sv: RpStackVar) => prepend(x, acc)
+  (o: RParam)       => acc
 
-fun rpTargetReadStackVars(target): List<RParam>
-  ret match(target)
-    (sv: RpStackVar) => List()
-    (o: RParam)       => rpReadStackVars(target)
+fun rpTargetReadStackVars(target): List<RParam> => match(target)
+  (sv: RpStackVar) => List()
+  (o: RParam)       => rpReadStackVars(target)
 
-fun rpOptReadStackVars(r: RParam|None): List<RParam>
-  ret match(r)
-    (x: RParam) => rpReadStackVars(x)
-    ()           => List()
+fun rpOptReadStackVars(r: RParam|None) => match(r)
+  (x: RParam) => rpReadStackVars(x)
+  ()           => List()
 
-fun rpOptTargetReadStackVars(r: RParam|None): List<RParam>
-  ret match(r)
-    (x: RParam) => rpTargetReadStackVars(x)
-    ()           => List()
+fun rpOptTargetReadStackVars(r: RParam|None): List<RParam> => match(r)
+  (x: RParam) => rpTargetReadStackVars(x)
+  ()           => List()
 
-fun opReadStackVars(op): List<RParam>
-  ret match(op)
-    (m: OpMove)          => concat(rpReadStackVars(m.moveSource), rpTargetReadStackVars(m.moveTarget))
-    (ji: OpJumpIf)       => rpReadStackVars(ji.jumpIfCondition)
-    (t2: OpIfTask)       => concat(rpReadStackVars(t2.taskCondition), rpReadStackVars(t2.taskSource))
-    (sw: OpSwitchJump)   => rpReadStackVars(sw.switchCondition)
-    (n: OpNewObject)     => concat(rpOptReadStackVars(n.newObjSize), rpTargetReadStackVars(n.newObjRegister))
-    (c: OpCall)          => concat(concat(rpReadStackVars(c.callFunction), rpReadStackVars(c.callParameters)),
-                                   rpOptTargetReadStackVars(c.callRegister))
-    (r: OpReturn)        => rpReadStackVars(r.returnValue)
-    (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadStackVars(x)))
-    (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadStackVars(s2.sourceValue)))
-    (o: Op)              => List()
+fun opReadStackVars(op) => match(op)
+  (m: OpMove)          => concat(rpReadStackVars(m.moveSource), rpTargetReadStackVars(m.moveTarget))
+  (ji: OpJumpIf)       => rpReadStackVars(ji.jumpIfCondition)
+  (t2: OpIfTask)       => concat(rpReadStackVars(t2.taskCondition), rpReadStackVars(t2.taskSource))
+  (sw: OpSwitchJump)   => rpReadStackVars(sw.switchCondition)
+  (n: OpNewObject)     => concat(rpOptReadStackVars(n.newObjSize), rpTargetReadStackVars(n.newObjRegister))
+  (c: OpCall)          => concat(concat(rpReadStackVars(c.callFunction), rpReadStackVars(c.callParameters)),
+                                 rpOptTargetReadStackVars(c.callRegister))
+  (r: OpReturn)        => rpReadStackVars(r.returnValue)
+  (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadStackVars(x)))
+  (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadStackVars(s2.sourceValue)))
+  (o: Op)              => List()

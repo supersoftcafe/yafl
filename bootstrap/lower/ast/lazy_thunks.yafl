@@ -25,25 +25,21 @@ import Bootstrap::StdlibCandidates
 # ── naming (stubClassName / futureRunnerName live in generate_stmt.yafl,
 #    fetchFunctionName in generate_expr.yafl) ────────────────────────────────
 
-fun finisherFunctionName(t2): String
-  ret "lazy_finish$" + irMangle(t2)
+fun finisherFunctionName(t2) => "lazy_finish$" + irMangle(t2)
 
-fun drainFunctionName(t2): String
-  ret "lazy_drain$" + irMangle(t2)
+fun drainFunctionName(t2) => "lazy_drain$" + irMangle(t2)
 
 # The task subtype every [lazy] waiter is an instance of — shared with
 # async_lower's naming so reads of a completed task's `result` cast to the
 # actual emitted struct. Goes through wrapReturnType because async_lower
 # keys subtypes by unwrapped result types.
-fun waiterSubtypeName(t2): String
-  ret match(taskSubtypeName(wrapReturnType(t2)))
-    (name: String) => name
-    ()              => ""   # unreachable: a lazy value type is never Void
+fun waiterSubtypeName(t2) => match(taskSubtypeName(wrapReturnType(t2)))
+  (name: String) => name
+  ()              => ""   # unreachable: a lazy value type is never Void
 
 # ── shared helpers ───────────────────────────────────────────────────────────
 
-fun svLazyDiscard(): RParam
-  ret RpStackVar(CgDataPointer(), "$sv_lazy_discard")
+fun svLazyDiscard() => RpStackVar(CgDataPointer(), "$sv_lazy_discard")
 
 fun lazyRuntimeCall1(name, argName, argVal): Op
   ret OpMove(svLazyDiscard(),
@@ -64,40 +60,36 @@ fun lazyPublishRootShades(value, valueType): List<Op>
 # The pointer leaves in FIELD order — each becomes a publish call in that
 # order.
 fun lazyPublishLeaves(v, t2,
-                      [terminal] acc): ListBuilder<RParam>
-  ret match(t2)
-    (d: CgDataPointer)      => push(acc, v)
-    (f2: CgFuncPointer)     => push(acc, RpStructField(v, "o"))
-    (s2: CgStruct)          => lazyPublishLeavesFields(v, chain(s2.fields), acc)
-    (im: CgImmediateStruct) => lazyPublishLeavesFields(v, chain(im.fields), acc)
-    (o: CgType)              => acc
+                      [terminal] acc): ListBuilder<RParam> => match(t2)
+  (d: CgDataPointer)      => push(acc, v)
+  (f2: CgFuncPointer)     => push(acc, RpStructField(v, "o"))
+  (s2: CgStruct)          => lazyPublishLeavesFields(v, chain(s2.fields), acc)
+  (im: CgImmediateStruct) => lazyPublishLeavesFields(v, chain(im.fields), acc)
+  (o: CgType)              => acc
 
 # A walk, not a fold: the builder is linear and cannot ride a fold's lambda.
 fun lazyPublishLeavesFields(v, fields: Chain<CgField>,
-                            [terminal] acc): ListBuilder<RParam>
-  ret match(fields)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => lazyPublishLeavesFields(v, l.next,
-        lazyPublishLeaves(RpStructField(v, l.value.fieldName),
-                          l.value.fieldType, acc))
+                            [terminal] acc): ListBuilder<RParam> => match(fields)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => lazyPublishLeavesFields(v, l.next,
+      lazyPublishLeaves(RpStructField(v, l.value.fieldName),
+                        l.value.fieldType, acc))
 
 # Recover the raw value from the wrapped form an async-ABI callee returns:
 # pass-through wraps ARE the value; CgTaskWrapper extracts `.value`.
-fun lazyExtractValue(svWrapped, valueType: CgType, wrapped): RParam
-  ret match(wrapped)
-    (w: CgTaskWrapper) => RpStructField(svWrapped, "value")
-    (o: CgType)        => svWrapped
+fun lazyExtractValue(svWrapped, valueType: CgType, wrapped) => match(wrapped)
+  (w: CgTaskWrapper) => RpStructField(svWrapped, "value")
+  (o: CgType)        => svWrapped
 
 # SyncWrap applies only to a CgTaskWrapper-promoted return; pass-through
 # wraps already have the correct ABI shape.
-fun lazySyncWrap(value, wrapped): RParam
-  ret match(wrapped)
-    (w: CgTaskWrapper) => RpSyncWrap(value, wrapped)
-    (o: CgType)        => value
+fun lazySyncWrap(value, wrapped) => match(wrapped)
+  (w: CgTaskWrapper) => RpSyncWrap(value, wrapped)
+  (o: CgType)        => value
 
 # ── stub class ───────────────────────────────────────────────────────────────
 
-fun makeStubObject(valueType): CgObject
+fun makeStubObject(valueType)
   ret CgObject(stubClassName(valueType), List(), List(),
                CgImmediateStruct(list4(CgField("type", CgDataPointer()),
                                        CgField("flag", CgDataPointer()),
@@ -233,7 +225,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
 # the fetch must NOT be fired directly (its wrapped(T) result can be a hidden
 # sret and would misread the fire's two-pointer frame). Runs the fetch and
 # discards the result; either race outcome leaves the protocol consistent.
-fun makeFutureRunnerFunction(valueType): CgFunction
+fun makeFutureRunnerFunction(valueType)
   let wrapped = wrapReturnType(valueType)
   let this = RpStackVar(CgDataPointer(), "this")
   let rwrapped = RpStackVar(wrapped, "result_wrapped")
@@ -283,7 +275,7 @@ class [final] LazyMachineryOut(lmObjects: List<CgObject>, lmFunctions: List<CgFu
 # type. The driver dedupes by name against what async_lower will later
 # register (same subtype names ⇒ same emitted structs, no cross-type punning)
 # and adds the foreign `task` object once.
-fun lazyMachinery(valueType): LazyMachineryOut
+fun lazyMachinery(valueType)
   ret LazyMachineryOut(
         list2(makeTaskSubtypeObject(waiterSubtypeName(valueType), valueType),
               makeStubObject(valueType)),

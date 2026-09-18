@@ -19,7 +19,7 @@ import pyast.resolver as g
 from pyast.typespec.specs import (
     TypeSpec, BuiltinSpec, CallableSpec, ClassSpec, CombinationSpec, EnumSpec,
     GenericPlaceholderSpec, NamedSpec, TupleSpec,
-    bind_tuple_entries,
+    bind_tuple_entries, trivially_assignable_equals,
 )
 
 
@@ -247,6 +247,60 @@ def join(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None":
     return members[0] if len(members) == 1 else CombinationSpec(a.line_ref, members)
 
 
+def converge(types: "list[TypeSpec]", resolver: "g.Resolver") -> "TypeSpec | None":
+    """The one type all of `types` fit: the same type, the widest of them,
+    their enum's root, or the one interface their classes share."""
+    first = types[0]
+    if all(x == first for x in types[1:]):
+        return first
+    for wide in types:
+        if all(x == wide or trivially_assignable_equals(resolver, wide, x) is True for x in types):
+            return wide
+    if all(isinstance(x, EnumSpec) for x in types):
+        same_enum = len({(x.root_name, x.type_params) for x in types}) == 1
+        return dataclasses.replace(first, valid_leaf_names=frozenset(first.all_leaf_names)) if same_enum else None
+    if all(isinstance(x, ClassSpec) for x in types):
+        shared = _shared_interfaces(types, resolver)
+        return shared[0] if len(shared) == 1 else None
+    return None
+
+
+def _shared_interfaces(specs: "list[ClassSpec]", resolver: "g.Resolver") -> "list[ClassSpec]":
+    """The interfaces every class implements, in name order; empty while any
+    inheritance graph is unbuilt."""
+    import pyast.statement as s
+    common: set[str] | None = None
+    by_name: dict[str, ClassSpec] = {}
+    for spec in specs:
+        found = resolver.find_type(spec.name)
+        if (not found.complete or len(found) != 1
+                or not isinstance(found[0].statement, s.ClassStatement)
+                or found[0].statement._all_parents is None):
+            return []
+        names = set()
+        for parent in found[0].statement._all_parents:
+            name = getattr(parent, "name", None)
+            if name is not None and name != spec.name:
+                names.add(name)
+                by_name[name] = parent
+        common = names if common is None else common & names
+    return [by_name[name] for name in sorted(common or ())]
+
+
+def branch_type(types: "list[TypeSpec | None]", resolver: "g.Resolver") -> "TypeSpec | None":
+    """A ternary's or match's type: its branches converged, else their union."""
+    known = [x for x in types if x is not None]
+    if not known:
+        return None
+    converged = converge(known, resolver)
+    if converged is not None:
+        return converged
+    union = known[0]
+    for x in known[1:]:
+        union = join(union, x)
+    return union
+
+
 def refine_widening(current: "TypeSpec | None", resolver: "g.Resolver",
                     infer: "Callable[[], TypeSpec | None]") -> "TypeSpec | None":
     """`refine` for a type inferred from a source that can WIDEN across passes.
@@ -346,7 +400,7 @@ def _unify_union(generic: "CombinationSpec", concrete: "CombinationSpec",
     if len(generic.types) == len(concrete.types):
         trial: dict[str, TypeSpec] | None = dict(mapping)
         for gv, cv in zip(generic.types, concrete.types):
-            trial = unify_generic(gv, cv, placeholder_names, trial, in_scope)
+            trial = _unify(gv, cv, placeholder_names, trial, in_scope)
             if trial is None:
                 break
         if trial is not None:
@@ -406,9 +460,45 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
     every placeholder must be resolved. `in_scope` is the use site's scope
     test (resolves_in_scope): a concrete-side placeholder that passes it is a
     real type there and may be bound to.
+
+    A callable's parameter is contravariant: `(:Shape): Int` is a fine
+    `(:Circle): Int`. So it binds only a placeholder that appears nowhere
+    else, and otherwise may only refine a binding (names, holes), never widen
+    a view.
     """
     if mapping is None:
         mapping = {}
+    covariant = _without_callable_params(generic)
+    mapping = _unify(covariant, concrete, placeholder_names, mapping, in_scope)
+    if mapping is None or covariant is generic:
+        return mapping
+    upper = _unify(generic, concrete, placeholder_names, {}, in_scope) or {}
+    elsewhere = placeholder_names_in(covariant)
+    for name, spec in upper.items():
+        existing = mapping.get(name)
+        if existing is None:
+            if name not in elsewhere:
+                mapping[name] = spec
+            continue
+        merged = meet(existing, spec)
+        if isinstance(merged, TypeSpec) and not contains_narrowed_view(existing):
+            mapping[name] = merged
+    return mapping
+
+
+def _without_callable_params(spec: "TypeSpec") -> "TypeSpec":
+    def blank(_, thing):
+        if isinstance(thing, CallableSpec) and isinstance(thing.parameters, TupleSpec):
+            entries = tuple(dataclasses.replace(en, type=None) for en in thing.parameters.entries)
+            return dataclasses.replace(thing, parameters=dataclasses.replace(thing.parameters, entries=entries))
+        return rw.UNCHANGED
+    return rw.resolved(spec.search_and_replace(None, blank), spec)
+
+
+def _unify(generic: "TypeSpec", concrete: "TypeSpec",
+           placeholder_names: set[str],
+           mapping: dict[str, "TypeSpec"],
+           in_scope: "Callable[[str], bool] | None") -> dict[str, "TypeSpec"] | None:
 
     if isinstance(generic, GenericPlaceholderSpec) and generic.name in placeholder_names:
         # A concrete-side placeholder pins nothing down when it is one of this
@@ -459,7 +549,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             return mapping
         m: dict[str, TypeSpec] | None = mapping
         for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = unify_generic(gp, cp, placeholder_names, m, in_scope)
+            m = _unify(gp, cp, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
@@ -479,7 +569,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             return mapping
         m = mapping
         for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = unify_generic(gp, cp, placeholder_names, m, in_scope)
+            m = _unify(gp, cp, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
@@ -495,7 +585,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             return mapping
         m = mapping
         for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = unify_generic(gp, cp, placeholder_names, m, in_scope)
+            m = _unify(gp, cp, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
@@ -515,7 +605,7 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
             ce = concrete.entries[b]
             if ge.type is None or ce.type is None:
                 continue
-            m = unify_generic(ge.type, ce.type, placeholder_names, m, in_scope)
+            m = _unify(ge.type, ce.type, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m
@@ -524,12 +614,12 @@ def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
         return _unify_union(generic, concrete, placeholder_names, mapping, in_scope)
 
     if isinstance(generic, CallableSpec) and isinstance(concrete, CallableSpec):
-        m = unify_generic(generic.parameters, concrete.parameters, placeholder_names, mapping,
+        m = _unify(generic.parameters, concrete.parameters, placeholder_names, mapping,
                           in_scope)
         if m is None:
             return None
         if generic.result is not None and concrete.result is not None:
-            m = unify_generic(generic.result, concrete.result, placeholder_names, m, in_scope)
+            m = _unify(generic.result, concrete.result, placeholder_names, m, in_scope)
             if m is None:
                 return None
         return m

@@ -45,12 +45,10 @@ import Bootstrap::Types
 
 # ── 1. unique naming (lambdas.py:22-31) ─────────────────────────────────────
 
-fun uniqueLambdaName(lm: PeLambda, path): String
-  ret "$lambdas::lambda@" + lamPathPrefix(path)
-      + hash6(lm.pelLine.plFile, lm.pelLine.plLine, lm.pelLine.plCol)
+fun uniqueLambdaName(lm: PeLambda, path) => "$lambdas::lambda@" + lamPathPrefix(path)
+    + hash6(lm.pelLine.plFile, lm.pelLine.plLine, lm.pelLine.plCol)
 
-fun lamPathPrefix(path): String
-  ret isEmpty(path) ? "" : join(path, "$") + "$"
+fun lamPathPrefix(path) => isEmpty(path) ? "" : join(path, "$") + "$"
 
 # ── 2a. collectLambdaPaths (lambdas.py:34-78) ────────────────────────────────
 # Parallel lists (List<PLine>, List<List<String>>) compared with eqLine — the
@@ -63,45 +61,39 @@ fun lamPathPrefix(path): String
 # walks of the same two parallel lists.
 class [final] ClPaths(cpMap: Dict<PLine, List<String>>)
 
-fun emptyClPaths(): ClPaths
-  ret ClPaths(Dict())
+fun emptyClPaths() => ClPaths(Dict())
 
 # FIRST record for a line wins, as the scan-then-append did.
-fun cpRecord(acc, lr: PLine, path: List<String>): ClPaths
-  ret contains(acc.cpMap, lr)
-    ? acc
-    : ClPaths(put(acc.cpMap, lr, path))
+fun cpRecord(acc, lr, path) => contains(acc.cpMap, lr)
+  ? acc
+  : ClPaths(put(acc.cpMap, lr, path))
 
-fun cpPathFor(acc: ClPaths, lr: PLine): List<String>
-  ret match(get(acc.cpMap, lr))
-    (p: List<String>) => p
-    ()                => List()
+fun cpPathFor(acc: ClPaths, lr: PLine) => match(get(acc.cpMap, lr))
+  (p: List<String>) => p
+  ()                => List()
 
 # One more step on the end of a structural path — the order IS the path.
-fun cpExtend(path, name): List<String>
-  ret name == ""
-    ? path
-    : build(push(builderFrom(path),
-                 name))
+fun cpExtend(path, name) => name == ""
+  ? path
+  : build(push(builderFrom(path),
+               name))
 
-fun collectLambdaPaths(st): ClPaths
-  ret cpStmt(st, List(), emptyClPaths())
+fun collectLambdaPaths(st) => cpStmt(st, List(), emptyClPaths())
 
 # ── statements ──
-fun cpStmt(st, path, acc): ClPaths
-  ret match(st)
-    (f: PsFun)         => cpFunStmt(f, cpExtend(path, f.fName), acc)
-    (l: PsLet)         => cpLetStmt(l, cpExtend(path, l.lName), acc)
-    (d: PsDestructure) => cpDestructureStmt(d, cpExtend(path, d.dName), acc)
-    (c: PsClass)       => cpClassStmt(c, cpExtend(path, c.cName), acc)
-    (e2: PsEnum)       => cpEnumStmt(e2, cpExtend(path, e2.eName), acc)
-    (ta: PsTypealias)  => cpSpec(ta.taType, cpExtend(path, ta.taName), acc)
-    (rt: PsRet)        => cpExpr(rt.retValue, path, acc)
-    (a: PsAction)      => cpExpr(a.action, path, acc)
-    (i: PsIf)          => cpIfStmt(i, path, acc)
-    (o: PStmt)         => acc
+fun cpStmt(st, path, acc) => match(st)
+  (f: PsFun)         => cpFunStmt(f, cpExtend(path, f.fName), acc)
+  (l: PsLet)         => cpLetStmt(l, cpExtend(path, l.lName), acc)
+  (d: PsDestructure) => cpDestructureStmt(d, cpExtend(path, d.dName), acc)
+  (c: PsClass)       => cpClassStmt(c, cpExtend(path, c.cName), acc)
+  (e2: PsEnum)       => cpEnumStmt(e2, cpExtend(path, e2.eName), acc)
+  (ta: PsTypealias)  => cpSpec(ta.taType, cpExtend(path, ta.taName), acc)
+  (rt: PsRet)        => cpExpr(rt.retValue, path, acc)
+  (a: PsAction)      => cpExpr(a.action, path, acc)
+  (i: PsIf)          => cpIfStmt(i, path, acc)
+  (o: PStmt)         => acc
 
-fun cpFunStmt(f: PsFun, newPath, acc): ClPaths
+fun cpFunStmt(f: PsFun, newPath, acc)
   let a1 = cpStmt(f.fParams, newPath, acc)
   let a2 = cpSpecOpt(f.fRet, newPath, a1)
   let a3 = cpSpecs(f.fWheres, newPath, a2)
@@ -117,85 +109,78 @@ fun cpDestructureStmt(d: PsDestructure, newPath,
   let a2 = cpExprOpt(d.dDefault, newPath, a1)
   ret cpStmts(d.dTargets, newPath, a2)
 
-fun cpClassStmt(c: PsClass, newPath, acc): ClPaths
+fun cpClassStmt(c: PsClass, newPath, acc)
   let a1 = cpStmt(c.cParams, newPath, acc)
   let a2 = cpSpecs(c.cImplements, newPath, a1)
   let a3 = cpSpecs(c.cWheres, newPath, a2)
   ret cpStmts(c.cMembers, newPath, a3)
 
-fun cpEnumStmt(e2: PsEnum, newPath, acc): ClPaths
+fun cpEnumStmt(e2: PsEnum, newPath, acc)
   let a1 = cpStmt(e2.eParams, newPath, acc)
   ret cpStmts(e2.eVariants, newPath, a1)
 
-fun cpIfStmt(i: PsIf, path, acc): ClPaths
+fun cpIfStmt(i: PsIf, path, acc)
   let a1 = cpExpr(i.ifCond, path, acc)
   let a2 = cpStmts(i.ifTrue, path, a1)
   ret cpStmts(i.ifFalse, path, a2)
 
-fun cpStmts(ss: List<PStmt>, path, acc): ClPaths
-  ret cpStmtLoop(chain(ss), path, acc)
+fun cpStmts(ss: List<PStmt>, path, acc) => cpStmtLoop(chain(ss), path, acc)
 
-fun [tail] cpStmtLoop(ss: Chain<PStmt>, path: List<String>,
-                      acc: ClPaths): ClPaths
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cpStmtLoop(l.next, path, cpStmt(l.value, path, acc))
+fun [tail] cpStmtLoop(ss: Chain<PStmt>, path,
+                      acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => cpStmtLoop(l.next, path, cpStmt(l.value, path, acc))
 
 # ── expressions ──
-fun cpExpr(x, path, acc): ClPaths
-  ret match(x)
-    (nm: PeName)      => cpSpecs(nm.refTypeParams, path, acc)
-    (d: PeDot)        => cpExpr(d.base, path, acc)
-    (c: PeCall)       => cpExpr(c.parameter, path, cpExpr(c.function, path, acc))
-    (tp: PeTuple)     => cpTupEnts(chain(tp.exprs), path, acc)
-    (te: PeTernary)   => cpExpr(te.falseResult, path,
-                                cpExpr(te.trueResult, path,
-                                       cpExpr(te.condition, path, acc)))
-    (lm: PeLambda)    => cpLambdaExpr(lm, path, acc)
-    (bk: PeBlock)     => cpExpr(bk.blockValue, path, cpStmts(bk.blockStmts, path, acc))
-    (mt: PeMatch)     => cpArms(chain(mt.arms), path, cpExpr(mt.subject, path, acc))
-    (op: PeBuiltinOp) => cpExpr(op.opParams, path, cpSpec(op.opType, path, acc))
-    (nw: PeNew)       => cpExpr(nw.newParam, path, cpSpec(nw.newType, path, acc))
-    (ne: PeNewEnum)   => cpSpecs(ne.neTypeParams, path,
-                                 fold(ne.fieldArgs, acc, (a2, fa) =>
-                                   cpExpr(fa.faValue, path, a2)))
-    (qq: PeCoalesce) => cpExpr(qq.qqFallback, path, cpExpr(qq.qqSubject, path, acc))
-    (ar: PeArrayRead) => cpExpr(ar.arrIndex, path, cpExpr(ar.arrObj, path, acc))
-    (cv: PeConvert)   => cpSpec(cv.convTarget, path, cpExpr(cv.convInner, path, acc))
-    (wx: PeWith)      => cpExpr(wx.withRepls, path,
-                                cpExpr(wx.withSubject, path, acc))
-    (pl: PeParallel)  => cpExpr(pl.parParams, path, acc)
-    (lp: PeLoop)      => cpExprs(chain(lp.loopParams), path, cpExpr(lp.loopBody, path, acc))
-    (rc: PeRecur)     => cpExprs(chain(rc.recArgs), path, acc)
-    (lz: PeLazy)      => cpSpec(lz.lzTarget, path, acc)
-    (o: PeLiteral) => acc
+fun cpExpr(x, path, acc) => match(x)
+  (nm: PeName)      => cpSpecs(nm.refTypeParams, path, acc)
+  (d: PeDot)        => cpExpr(d.base, path, acc)
+  (c: PeCall)       => cpExpr(c.parameter, path, cpExpr(c.function, path, acc))
+  (tp: PeTuple)     => cpTupEnts(chain(tp.exprs), path, acc)
+  (te: PeTernary)   => cpExpr(te.falseResult, path,
+                              cpExpr(te.trueResult, path,
+                                     cpExpr(te.condition, path, acc)))
+  (lm: PeLambda)    => cpLambdaExpr(lm, path, acc)
+  (bk: PeBlock)     => cpExpr(bk.blockValue, path, cpStmts(bk.blockStmts, path, acc))
+  (mt: PeMatch)     => cpArms(chain(mt.arms), path, cpExpr(mt.subject, path, acc))
+  (op: PeBuiltinOp) => cpExpr(op.opParams, path, cpSpec(op.opType, path, acc))
+  (nw: PeNew)       => cpExpr(nw.newParam, path, cpSpec(nw.newType, path, acc))
+  (ne: PeNewEnum)   => cpSpecs(ne.neTypeParams, path,
+                               fold(ne.fieldArgs, acc, (a2, fa) =>
+                                 cpExpr(fa.faValue, path, a2)))
+  (qq: PeCoalesce) => cpExpr(qq.qqFallback, path, cpExpr(qq.qqSubject, path, acc))
+  (ar: PeArrayRead) => cpExpr(ar.arrIndex, path, cpExpr(ar.arrObj, path, acc))
+  (cv: PeConvert)   => cpSpec(cv.convTarget, path, cpExpr(cv.convInner, path, acc))
+  (wx: PeWith)      => cpExpr(wx.withRepls, path,
+                              cpExpr(wx.withSubject, path, acc))
+  (pl: PeParallel)  => cpExpr(pl.parParams, path, acc)
+  (lp: PeLoop)      => cpExprs(chain(lp.loopParams), path, cpExpr(lp.loopBody, path, acc))
+  (rc: PeRecur)     => cpExprs(chain(rc.recArgs), path, acc)
+  (lz: PeLazy)      => cpSpec(lz.lzTarget, path, acc)
+  (o: PeLiteral) => acc
 
-fun cpLambdaExpr(lm: PeLambda, path, acc): ClPaths
+fun cpLambdaExpr(lm: PeLambda, path, acc)
   let acc1 = cpRecord(acc, lm.pelLine, path)
   let acc2 = cpStmt(lm.lamParams, path, acc1)
   let acc3 = cpExpr(lm.lamBody, path, acc2)
   ret cpSpecOpt(lm.lamRet, path, acc3)
 
-fun cpExprOpt(x: PExpr|None, path, acc): ClPaths
-  ret match(x)
-    (e2: PExpr) => cpExpr(e2, path, acc)
-    ()          => acc
+fun cpExprOpt(x: PExpr|None, path, acc) => match(x)
+  (e2: PExpr) => cpExpr(e2, path, acc)
+  ()          => acc
 
-fun [tail] cpExprs(es: Chain<PExpr>, path: List<String>, acc: ClPaths): ClPaths
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cpExprs(l.next, path, cpExpr(l.value, path, acc))
+fun [tail] cpExprs(es: Chain<PExpr>, path, acc) => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => cpExprs(l.next, path, cpExpr(l.value, path, acc))
 
 fun [tail] cpTupEnts(es: Chain<PTupEnt>, path,
-                     acc): ClPaths
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cpTupEnts(l.next, path, cpExpr(l.value.tupValue, path, acc))
+                     acc) => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => cpTupEnts(l.next, path, cpExpr(l.value.tupValue, path, acc))
 
-fun [tail] cpArms(as2: Chain<PArm>, path: List<String>, acc: ClPaths): ClPaths
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cpArms(l.next, path, cpArmOne(l.value, path, acc))
+fun [tail] cpArms(as2: Chain<PArm>, path, acc: ClPaths) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => cpArms(l.next, path, cpArmOne(l.value, path, acc))
 
 fun cpArmOne(a: PArm, path, acc): ClPaths
   let a1 = cpSpecOpt(a.armType, path, acc)
@@ -203,47 +188,41 @@ fun cpArmOne(a: PArm, path, acc): ClPaths
   let a3 = cpLits(chain(a.armLiterals), path, a2)
   ret cpExprOpt(a.armGuard, path, a3)
 
-fun [tail] cpLits(ls: Chain<PLit>, path: List<String>, acc: ClPaths): ClPaths
-  ret match(ls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (le: PlExpr)   => cpLits(l.next, path, cpExpr(le.litExpr, path, acc))
-      (lr2: PlRange) => cpLits(l.next, path,
-                               cpExpr(lr2.rangeHi, path,
-                                      cpExpr(lr2.rangeLo, path, acc)))
+fun [tail] cpLits(ls: Chain<PLit>, path, acc) => match(ls)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (le: PlExpr)   => cpLits(l.next, path, cpExpr(le.litExpr, path, acc))
+    (lr2: PlRange) => cpLits(l.next, path,
+                             cpExpr(lr2.rangeHi, path,
+                                    cpExpr(lr2.rangeLo, path, acc)))
 
 # ── specs (reaches SEntry.seDefault inside STuple, per the port map) ──
-fun cpSpec(sp, path, acc): ClPaths
-  ret match(sp)
-    (e2: SEnum)        => cpSpecs(e2.seParams, path, acc)
-    (cl2: SClass)      => cpSpecs(cl2.scParams, path, acc)
-    (n: SNamed)        => acc
-    (cm: SCombination) => cpSpecs(cm.scTypes, path, acc)
-    (t2: STuple)       => cpEntries(chain(t2.stEntries), path, acc)
-    (cb: SCallable)    => cpSpecOpt(cb.scResult, path, cpSpec(cb.scParams2, path, acc))
-    (af: SArrayField)  => cpSpec(af.safElem, path, acc)
-    (ls: SLazyStub)    => cpSpecOpt(ls.slsTarget, path, acc)
-    (o: Spec)          => acc
+fun cpSpec(sp, path, acc): ClPaths => match(sp)
+  (e2: SEnum)        => cpSpecs(e2.seParams, path, acc)
+  (cl2: SClass)      => cpSpecs(cl2.scParams, path, acc)
+  (n: SNamed)        => acc
+  (cm: SCombination) => cpSpecs(cm.scTypes, path, acc)
+  (t2: STuple)       => cpEntries(chain(t2.stEntries), path, acc)
+  (cb: SCallable)    => cpSpecOpt(cb.scResult, path, cpSpec(cb.scParams2, path, acc))
+  (af: SArrayField)  => cpSpec(af.safElem, path, acc)
+  (ls: SLazyStub)    => cpSpecOpt(ls.slsTarget, path, acc)
+  (o: Spec)          => acc
 
-fun cpSpecOpt(sp: Spec|None, path, acc): ClPaths
-  ret match(sp)
-    (s2: Spec) => cpSpec(s2, path, acc)
-    ()         => acc
+fun cpSpecOpt(sp: Spec|None, path, acc): ClPaths => match(sp)
+  (s2: Spec) => cpSpec(s2, path, acc)
+  ()         => acc
 
-fun cpSpecs(ss: List<Spec>, path, acc): ClPaths
-  ret cpSpecLoop(chain(ss), path, acc)
+fun cpSpecs(ss: List<Spec>, path, acc): ClPaths => cpSpecLoop(chain(ss), path, acc)
 
-fun [tail] cpSpecLoop(ss: Chain<Spec>, path: List<String>, acc: ClPaths): ClPaths
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cpSpecLoop(l.next, path, cpSpec(l.value, path, acc))
+fun [tail] cpSpecLoop(ss: Chain<Spec>, path, acc: ClPaths) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => cpSpecLoop(l.next, path, cpSpec(l.value, path, acc))
 
 fun [tail] cpEntries(es: Chain<SEntry>, path,
-                     acc): ClPaths
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => cpEntries(l.next, path,
-        cpExprOpt(l.value.seDefault, path, cpSpecOpt(l.value.seType, path, acc)))
+                     acc): ClPaths => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => cpEntries(l.next, path,
+      cpExprOpt(l.value.seDefault, path, cpSpecOpt(l.value.seType, path, acc)))
 
 # ── 2b. discoverCaptures (lambdas.py:81-113) ─────────────────────────────────
 # Walks the WHOLE lambda (parameters, then body) with the FIXED outer
@@ -263,23 +242,19 @@ fun [tail] cpEntries(es: Chain<SEntry>, path,
 # exactly this map's key.
 class [final] ClCaps(ccMap: Dict<String, Spec|None>)
 
-fun emptyClCaps(): ClCaps
-  ret ClCaps(Dict())
+fun emptyClCaps() => ClCaps(Dict())
 
 # The captured names in their canonical order. Every consumer that walks the
 # captures goes through this, so none of them can disagree about the order.
-fun ccNames(cc: ClCaps): List<String>
-  ret sort(keys(cc.ccMap))
+fun ccNames(cc: ClCaps) => sort(keys(cc.ccMap))
 
 # A name with no recorded type and a name that is absent answer the same way,
 # which is what the parallel-list form did too.
-fun ccTypeOf(cc: ClCaps, name: String): Spec|None
-  ret get(cc.ccMap, name)
+fun ccTypeOf(cc: ClCaps, name: String) => get(cc.ccMap, name)
 
-fun clIdStmt(acc, st: PStmt): ClCaps
-  ret acc
+fun clIdStmt(acc, st: PStmt): ClCaps => acc
 
-fun discoverCaptures(outer, lam: PeLambda): ClCaps
+fun discoverCaptures(outer, lam: PeLambda)
   let afterParams = foldStmt(lam.lamParams, clIdStmt,
       (acc, x) => dcCheck(outer, acc, x), emptyClCaps())
   let afterBody = foldExpr(lam.lamBody, clIdStmt,
@@ -287,42 +262,37 @@ fun discoverCaptures(outer, lam: PeLambda): ClCaps
   let paramNames = allStmtNames(chain(flattenParams(lam.lamParams)), List())
   ret dcRemoveParams(afterBody, paramNames)
 
-fun dcCheck(outer, acc, x): ClCaps
-  ret match(x)
-    (nm: PeName) => dcCheckName(outer, acc, nm.refName)
-    (lz: PeLazy) => dcCheckLazy(outer, acc, lz)
-    (o: PExpr)   => acc
+fun dcCheck(outer, acc, x) => match(x)
+  (nm: PeName) => dcCheckName(outer, acc, nm.refName)
+  (lz: PeLazy) => dcCheckLazy(outer, acc, lz)
+  (o: PExpr)   => acc
 
-fun isGlobalScope(sc): Bool
-  ret match(sc)
-    (g2: ScGlobal) => true
-    (o: RScope)    => false
+fun isGlobalScope(sc) => match(sc)
+  (g2: ScGlobal) => true
+  (o: RScope)    => false
 
-fun dcCheckName(outer, acc, name): ClCaps
-  ret match(soleItem(findData(outer, name)))
-    (f: Found) => isGlobalScope(f.fScope)
-                  || contains(acc.ccMap, name)
-      ? acc
-      : ClCaps(put(acc.ccMap, name, stmtType(f.fStmt)))
-    ()         => acc
+fun dcCheckName(outer, acc, name) => match(soleItem(findData(outer, name)))
+  (f: Found) => isGlobalScope(f.fScope)
+                || contains(acc.ccMap, name)
+    ? acc
+    : ClCaps(put(acc.ccMap, name, stmtType(f.fStmt)))
+  ()         => acc
 
-fun dcCheckLazy(outer, acc, lz: PeLazy): ClCaps
-  ret match(soleItem(findData(outer, lz.stubName)))
-    (f: Found) => isGlobalScope(f.fScope)
-                  || contains(acc.ccMap, lz.stubName)
-      ? acc
-      : ClCaps(put<String, Spec|None>(acc.ccMap, lz.stubName,
-                   SLazyStub(lz.lzTarget, lz.pelzLine)))
-    ()         => acc
+fun dcCheckLazy(outer, acc, lz: PeLazy) => match(soleItem(findData(outer, lz.stubName)))
+  (f: Found) => isGlobalScope(f.fScope)
+                || contains(acc.ccMap, lz.stubName)
+    ? acc
+    : ClCaps(put<String, Spec|None>(acc.ccMap, lz.stubName,
+                 SLazyStub(lz.lzTarget, lz.pelzLine)))
+  ()         => acc
 
 # The lambda's own parameters are not captures.
-fun dcRemoveParams(cc: ClCaps, paramNames: List<String>): ClCaps
-  ret ccDrop(cc, paramNames)
+fun dcRemoveParams(cc: ClCaps, paramNames: List<String>) => ccDrop(cc, paramNames)
 
 # Everything but the named entries. A rebuild rather than a filter because
 # Dict has no filter; the walk is over the map's own keys, so the order it
 # happens in cannot affect the result.
-fun ccDrop(cc: ClCaps, remove: List<String>): ClCaps
+fun ccDrop(cc: ClCaps, remove: List<String>)
   ret ClCaps(fold(ccNames(cc),
                  Dict(),
                  (d, n) =>
@@ -335,12 +305,11 @@ fun ccDrop(cc: ClCaps, remove: List<String>): ClCaps
 # letrec binding this very lambda; redirect self-calls to `this.method`
 # instead of capturing (which would read null at construction time).
 
-fun clSelfRefNames(cpt: ClCaps, lamRet: Spec|None): List<String>
+fun clSelfRefNames(cpt: ClCaps, lamRet: Spec|None)
   ret filter(ccNames(cpt),
              (n) => eqSpecOpt(ccTypeOf(cpt, n), lamRet))
 
-fun clRemoveNames(cc: ClCaps, remove: List<String>): ClCaps
-  ret ccDrop(cc, remove)
+fun clRemoveNames(cc: ClCaps, remove: List<String>) => ccDrop(cc, remove)
 
 # ── redirect (lambdas.py:116-134) ────────────────────────────────────────────
 # A pure, stateless rewrite (Python threads a dummy empty ResolverRoot([])
@@ -351,7 +320,7 @@ fun clRemoveNames(cc: ClCaps, remove: List<String>): ClCaps
 # and that name has to be the one classOf and replacementExprFor mint from the
 # same lambda.
 fun redirectBody(body, cpt: ClCaps, selfNames: List<String>,
-                 methodName, clsName, lamLine: PLine): PExpr
+                 methodName, clsName, lamLine: PLine)
   let lr = exprLine(body)
   ret rwExpr(body, rwOnExpr((x) =>
       redirectOne(x, ccNames(cpt), selfNames, methodName, clsName, lr,
@@ -359,39 +328,36 @@ fun redirectBody(body, cpt: ClCaps, selfNames: List<String>,
 
 fun redirectOne(x, captureNames: List<String>, selfNames: List<String>,
                 methodName, clsName, lr,
-                lamLine: PLine): PExpr|None
-  ret match(x)
-    (nm: PeName) => contains2(captureNames, nm.refName)
-      ? PeDot(PeName("this", List(), lr, None),
-              capturedFieldName(nm.refName, lamLine), lr)
-      : redirectSelfRef(nm, selfNames, methodName, lr)
-    (lz: PeLazy) => contains2(captureNames, lz.stubName)
-      ? PeLazy(lz.stubName, lz.lzTarget, clsName, lz.lzStubOnly, lz.pelzLine)
-      : None
-    (o: PExpr)   => None
+                lamLine: PLine) => match(x)
+  (nm: PeName) => contains2(captureNames, nm.refName)
+    ? PeDot(PeName("this", List(), lr, None),
+            capturedFieldName(nm.refName, lamLine), lr)
+    : redirectSelfRef(nm, selfNames, methodName, lr)
+  (lz: PeLazy) => contains2(captureNames, lz.stubName)
+    ? PeLazy(lz.stubName, lz.lzTarget, clsName, lz.lzStubOnly, lz.pelzLine)
+    : None
+  (o: PExpr)   => None
 
 fun redirectSelfRef(nm: PeName, selfNames: List<String>, methodName,
-                    lr): PExpr|None
-  ret contains2(selfNames, nm.refName)
-    ? PeDot(PeName("this", List(), lr, None), methodName, lr)
-    : None
+                    lr) => contains2(selfNames, nm.refName)
+  ? PeDot(PeName("this", List(), lr, None), methodName, lr)
+  : None
 
 # ── construction (lambdas.py:137-178) ────────────────────────────────────────
 
-fun buildFunctionFromLambda(lm: PeLambda, nme, body): PStmt
+fun buildFunctionFromLambda(lm: PeLambda, nme, body)
   ret PsFun(nme, List(), List(), lm.lamParams,
             PeBlock(List(), body, "", lm.pelLine),
             lambdaResultType(lm.lamRet), List(), lm.pelLine, false, false,
             List<PStmt>())
 
-fun lambdaResultType(lamRet: Spec|None): Spec|None
-  ret match(lamRet)
-    (t2: Spec) => match(t2)
-      (cb: SCallable) => cb.scResult
-      (o: Spec)       => None
-    ()          => None
+fun lambdaResultType(lamRet: Spec|None) => match(lamRet)
+  (t2: Spec) => match(t2)
+    (cb: SCallable) => cb.scResult
+    (o: Spec)       => None
+  ()          => None
 
-fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn: PStmt): PStmt
+fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
   let lr = lm.pelLine
   let names = ccNames(cpt)
   let entries = clEntries(chain(names), cpt, lr, List())
@@ -404,63 +370,55 @@ fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn: PStmt): PStmt
              List<Spec>(), List<Slot>(), List<PStmt>())
 
 fun clEntries(ns, cpt: ClCaps, lr: PLine,
-                     acc: List<SEntry>): List<SEntry>
-  ret build(clEntriesB(ns, cpt, lr, builderFrom(acc)))
+                     acc: List<SEntry>) => build(clEntriesB(ns, cpt, lr, builderFrom(acc)))
 
 fun [tail] clEntriesB(ns: Chain<String>, cpt: ClCaps, lr: PLine,
-                     [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => clEntriesB(n.next, cpt, lr,
-                          push(acc, SEntry(capturedFieldName(n.value, lr),
-                                           ccTypeOf(cpt, n.value),
-                                           None)))
+                     [terminal] acc: ListBuilder<SEntry>) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => clEntriesB(n.next, cpt, lr,
+                        push(acc, SEntry(capturedFieldName(n.value, lr),
+                                         ccTypeOf(cpt, n.value),
+                                         None)))
 
 fun clParamLets(ns, cpt: ClCaps, lr,
-                       acc: List<PStmt>): List<PStmt>
-  ret build(clParamLetsB(ns, cpt, lr, builderFrom(acc)))
+                       acc: List<PStmt>) => build(clParamLetsB(ns, cpt, lr, builderFrom(acc)))
 
-fun [tail] clParamLetsB(ns: Chain<String>, cpt: ClCaps, lr: PLine,
-                       [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (n: ChainLink)  => clParamLetsB(n.next, cpt, lr,
-        push(acc, PsLet(capturedFieldName(n.value, lr), List(),
-                  List(),
-                  ccTypeOf(cpt, n.value), None, "", List(), lr,
-                  false, List<PStmt>())))
+fun [tail] clParamLetsB(ns: Chain<String>, cpt: ClCaps, lr,
+                       [terminal] acc: ListBuilder<PStmt>) => match(ns)
+  (nil: ChainEnd) => acc
+  (n: ChainLink)  => clParamLetsB(n.next, cpt, lr,
+      push(acc, PsLet(capturedFieldName(n.value, lr), List(),
+                List(),
+                ccTypeOf(cpt, n.value), None, "", List(), lr,
+                false, List<PStmt>())))
 
-fun captureRead(name, xtype: Spec|None, lr): PExpr
-  ret match(xtype)
-    (t0: Spec) => match(t0)
-      (ls: SLazyStub) => clStubRead(name, ls, lr)
-      (o: Spec)       => PeName(name, List(), lr, None)
-    ()         => PeName(name, List(), lr, None)
+fun captureRead(name, xtype: Spec|None, lr) => match(xtype)
+  (t0: Spec) => match(t0)
+    (ls: SLazyStub) => clStubRead(name, ls, lr)
+    (o: Spec)       => PeName(name, List(), lr, None)
+  ()         => PeName(name, List(), lr, None)
 
 # Python reads xtype.target_type directly (Spec|None); PeLazy.lzTarget is a
 # plain Spec in the port, so an absent target keeps the plain name read —
 # unreachable in practice (lower_lazy_lets always records the target).
-fun clStubRead(name, ls: SLazyStub, lr): PExpr
-  ret match(ls.slsTarget)
-    (t2: Spec) => PeLazy(name, t2, None, true, lr)
-    ()         => PeName(name, List(), lr, None)
+fun clStubRead(name, ls: SLazyStub, lr) => match(ls.slsTarget)
+  (t2: Spec) => PeLazy(name, t2, None, true, lr)
+  ()         => PeName(name, List(), lr, None)
 
 fun captureArgs(ns, cpt: ClCaps, lr,
-                       acc: List<PTupEnt>): List<PTupEnt>
-  ret build(captureArgsB(ns, cpt, lr, builderFrom(acc)))
+                       acc: List<PTupEnt>) => build(captureArgsB(ns, cpt, lr, builderFrom(acc)))
 
-fun [tail] captureArgsB(ns: Chain<String>, cpt: ClCaps, lr: PLine,
-                       [terminal] acc: ListBuilder<PTupEnt>): ListBuilder<PTupEnt>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    # The entry NAME is the closure field; the value still reads the outer
-    # binding under the name it has here.
-    (n: ChainLink)  => captureArgsB(n.next, cpt, lr,
-        push(acc, PTupEnt(capturedFieldName(n.value, lr), false,
-                    captureRead(n.value, ccTypeOf(cpt, n.value),
-                                lr))))
+fun [tail] captureArgsB(ns: Chain<String>, cpt: ClCaps, lr,
+                       [terminal] acc: ListBuilder<PTupEnt>) => match(ns)
+  (nil: ChainEnd) => acc
+  # The entry NAME is the closure field; the value still reads the outer
+  # binding under the name it has here.
+  (n: ChainLink)  => captureArgsB(n.next, cpt, lr,
+      push(acc, PTupEnt(capturedFieldName(n.value, lr), false,
+                  captureRead(n.value, ccTypeOf(cpt, n.value),
+                              lr))))
 
-fun replacementExprFor(nme, cpt: ClCaps, lr): PExpr
+fun replacementExprFor(nme, cpt: ClCaps, lr)
   ret PeDot(PeNew(SClass(nme, List(), lr),
                  PeTuple(captureArgs(chain(ccNames(cpt)), cpt, lr,
                                     List()), lr),
@@ -482,17 +440,16 @@ class [final] ClArmsOut(clArmsArms: List<PArm>, clArmsExports: List<PStmt>)
 class [final] ClLitsOut(clLitsLits: List<PLit>, clLitsExports: List<PStmt>)
 
 # ── statements ──
-fun clStmt(st, r, paths: ClPaths, exports): ClSt
-  ret match(st)
-    (f: PsFun)         => clFunStmt(f, r, paths, exports)
-    (l: PsLet)         => clLetStmt(l, r, paths, exports)
-    (d: PsDestructure) => clDestructureStmt(d, r, paths, exports)
-    (c: PsClass)       => clClassStmt(c, r, paths, exports)
-    (e2: PsEnum)       => clEnumStmt(e2, r, paths, exports)
-    (rt: PsRet)        => clRetStmt(rt, r, paths, exports)
-    (a: PsAction)      => clActionStmt(a, r, paths, exports)
-    (i: PsIf)          => clIfStmt(i, r, paths, exports)
-    (o: PStmt)         => ClSt(st, exports)
+fun clStmt(st, r, paths: ClPaths, exports) => match(st)
+  (f: PsFun)         => clFunStmt(f, r, paths, exports)
+  (l: PsLet)         => clLetStmt(l, r, paths, exports)
+  (d: PsDestructure) => clDestructureStmt(d, r, paths, exports)
+  (c: PsClass)       => clClassStmt(c, r, paths, exports)
+  (e2: PsEnum)       => clEnumStmt(e2, r, paths, exports)
+  (rt: PsRet)        => clRetStmt(rt, r, paths, exports)
+  (a: PsAction)      => clActionStmt(a, r, paths, exports)
+  (i: PsIf)          => clIfStmt(i, r, paths, exports)
+  (o: PStmt)         => ClSt(st, exports)
 
 fun clFunBodyResolver(f: PsFun, r): Resolver
   ret localScope(flattenParams(f.fParams), f.fNested ? r : traitScope(f.fWheres, r))
@@ -505,14 +462,14 @@ fun clFunStmt(f: PsFun, r, paths: ClPaths, exports): ClSt
                 f.fWheres, f.psfLine, f.fRetInferred, f.fNested, f.fImports),
            b.clExOExports)
 
-fun clLetStmt(l: PsLet, r, paths: ClPaths, exports): ClSt
+fun clLetStmt(l: PsLet, r, paths: ClPaths, exports)
   let d = clExprOpt(l.lDefault, r, paths, exports)
   ret ClSt(PsLet(l.lName, l.lAttrs, l.lGens, l.lType, d.clExOExpr, l.lArrayLen,
                 l.lWheres, l.pslLine, l.lTypeInferred, l.lImports),
            d.clExOExports)
 
 fun clDestructureStmt(d: PsDestructure, r, paths: ClPaths,
-                      exports): ClSt
+                      exports)
   let dv = clExprOpt(d.dDefault, r, paths, exports)
   let ts = clStmts(d.dTargets, r, paths, dv.clExOExports)
   ret ClSt(PsDestructure(d.dName, d.dAttrs, d.dType, ts.clStsStmts, dv.clExOExpr,
@@ -530,7 +487,7 @@ fun clClassStmt(c, r, paths: ClPaths,
            ms.clStsExports)
 
 fun clEnumStmt(e2: PsEnum, r, paths: ClPaths,
-              exports): ClSt
+              exports)
   let p = clStmt(e2.eParams, r, paths, exports)
   let vs = clStmts(e2.eVariants, r, paths, p.clStExports)
   ret ClSt(PsEnum(e2.eName, e2.eAttrs, e2.eGens, p.clStStmt, vs.clStsStmts,
@@ -539,12 +496,12 @@ fun clEnumStmt(e2: PsEnum, r, paths: ClPaths,
            vs.clStsExports)
 
 fun clRetStmt(rt: PsRet, r, paths: ClPaths,
-             exports): ClSt
+             exports)
   let v = clExpr(rt.retValue, r, paths, exports)
   ret ClSt(PsRet(v.clExExpr, rt.psrLine), v.clExExports)
 
 fun clActionStmt(a: PsAction, r, paths: ClPaths,
-                 exports): ClSt
+                 exports)
   let v = clExpr(a.action, r, paths, exports)
   ret ClSt(PsAction(v.clExExpr, a.psaLine), v.clExExports)
 
@@ -558,72 +515,69 @@ fun clIfStmt(i: PsIf, r, paths: ClPaths, exports): ClSt
            fb.clStsExports)
 
 fun clStmts(ss: List<PStmt>, r, paths: ClPaths,
-           exports): ClSts
-  ret clStmtLoop(chain(ss), r, paths, exports, builder())
+           exports): ClSts => clStmtLoop(chain(ss), r, paths, exports, builder())
 
 # Program order out. `exports` stays a plain List: it is READ, by clDedupName,
 # to keep lifted names unique.
-fun [tail] clStmtLoop(ss: Chain<PStmt>, r: Resolver, paths: ClPaths,
-                      exports: List<PStmt>,
-                      [terminal] acc: ListBuilder<PStmt>): ClSts
-  ret match(ss)
-    (nil: ChainEnd) => ClSts(build(acc), exports)
-    (l: ChainLink)  => clStmt(l.value, r, paths, exports)
-      |> (o) => clStmtLoop(l.next, r, paths, o.clStExports,
-                           push(acc, o.clStStmt))
+fun [tail] clStmtLoop(ss: Chain<PStmt>, r, paths: ClPaths,
+                      exports,
+                      [terminal] acc) => match(ss)
+  (nil: ChainEnd) => ClSts(build(acc), exports)
+  (l: ChainLink)  => clStmt(l.value, r, paths, exports)
+    |> (o) => clStmtLoop(l.next, r, paths, o.clStExports,
+                         push(acc, o.clStStmt))
 
 # ── expressions ──
-fun clExpr(x, r, paths: ClPaths, exports): ClEx
-  ret match(x)
-    (d: PeDot)        => clExpr(d.base, r, paths, exports)
-      |> (b) => ClEx(PeDot(b.clExExpr, d.member, d.pedLine), b.clExExports)
-    (c: PeCall)       => clExpr(c.function, r, paths, exports)
-      |> (f2) => (f2, clExpr(c.parameter, r, paths, f2.clExExports))
-      |> (f2, p) => ClEx(PeCall(f2.clExExpr, p.clExExpr, c.pecLine), p.clExExports)
-    (qq: PeCoalesce)      => clExpr(qq.qqSubject, r, paths, exports)
-      |> (s2) => (s2, clExpr(qq.qqFallback, r, paths, s2.clExExports))
-      |> (s2, p) => ClEx(PeCoalesce(s2.clExExpr, p.clExExpr, qq.peqqLine),
-                         p.clExExports)
-    (wx: PeWith)      => clExpr(wx.withSubject, r, paths, exports)
-      |> (s2) => (s2, clExpr(wx.withRepls, r, paths, s2.clExExports))
-      |> (s2, p) => ClEx(PeWith(s2.clExExpr, p.clExExpr, wx.pewLine),
-                         p.clExExports)
-    (tp: PeTuple)     => clTupEnts(chain(tp.exprs), r, paths, exports, builder())
-      |> (es) => ClEx(PeTuple(es.clEntsEnts, tp.petLine), es.clEntsExports)
-    (te: PeTernary)   => clExpr(te.condition, r, paths, exports)
-      |> (cd) => (cd, clExpr(te.trueResult, r, paths, cd.clExExports))
-      |> (cd, tr) => (cd, tr, clExpr(te.falseResult, r, paths, tr.clExExports))
-      |> (cd, tr, fr) => ClEx(PeTernary(cd.clExExpr, tr.clExExpr, fr.clExExpr,
-                                       te.pety),
-                             fr.clExExports)
-    (lm: PeLambda)    => clLambdaExpr(lm, r, paths, exports)
-    (bk: PeBlock)     => clBlockExpr(bk, r, paths, exports)
-    (mt: PeMatch)     => clMatchExpr(mt, r, paths, exports)
-    (op: PeBuiltinOp) => clExpr(op.opParams, r, paths, exports)
-      |> (p) => ClEx(PeBuiltinOp(op.opType, op.opName, p.clExExpr, op.peboLine),
-                    p.clExExports)
-    (nw: PeNew)       => clExpr(nw.newParam, r, paths, exports)
-      |> (p) => ClEx(PeNew(nw.newType, p.clExExpr, nw.penwLine), p.clExExports)
-    (ar: PeArrayRead) => clExpr(ar.arrObj, r, paths, exports)
-      |> (ob) => (ob, clExpr(ar.arrIndex, r, paths, ob.clExExports))
-      |> (ob, ix) => ClEx(PeArrayRead(ob.clExExpr, ix.clExExpr, ar.pearLine),
-                         ix.clExExports)
-    (cv: PeConvert)   => clExpr(cv.convInner, r, paths, exports)
-      |> (iv) => ClEx(PeConvert(iv.clExExpr, cv.convTarget, cv.pecvLine),
-                     iv.clExExports)
-    (pl: PeParallel)  => clExpr(pl.parParams, r, paths, exports)
-      |> (p) => ClEx(PeParallel(p.clExExpr, pl.pepLine), p.clExExports)
-    (lp: PeLoop)      => clExprs(chain(lp.loopParams), r, paths, exports, builder())
-      |> (ps) => (ps, clExpr(lp.loopBody, r, paths, ps.clExsExports))
-      |> (ps, b) => ClEx(PeLoop(b.clExExpr, ps.clExsExprs, lp.pelpLine),
-                        b.clExExports)
-    (rc: PeRecur)     => clExprs(chain(rc.recArgs), r, paths, exports, builder())
-      |> (as3) => ClEx(PeRecur(as3.clExsExprs, rc.recIndex, rc.percLine),
-                      as3.clExsExports)
-    (o: PeLiteral) => ClEx(x, exports)
-    (o: PeLazy) => ClEx(x, exports)
-    (o: PeName) => ClEx(x, exports)
-    (o: PeNewEnum) => ClEx(x, exports)
+fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
+  (d: PeDot)        => clExpr(d.base, r, paths, exports)
+    |> (b) => ClEx(PeDot(b.clExExpr, d.member, d.pedLine), b.clExExports)
+  (c: PeCall)       => clExpr(c.function, r, paths, exports)
+    |> (f2) => (f2, clExpr(c.parameter, r, paths, f2.clExExports))
+    |> (f2, p) => ClEx(PeCall(f2.clExExpr, p.clExExpr, c.pecLine), p.clExExports)
+  (qq: PeCoalesce)      => clExpr(qq.qqSubject, r, paths, exports)
+    |> (s2) => (s2, clExpr(qq.qqFallback, r, paths, s2.clExExports))
+    |> (s2, p) => ClEx(PeCoalesce(s2.clExExpr, p.clExExpr, qq.peqqLine),
+                       p.clExExports)
+  (wx: PeWith)      => clExpr(wx.withSubject, r, paths, exports)
+    |> (s2) => (s2, clExpr(wx.withRepls, r, paths, s2.clExExports))
+    |> (s2, p) => ClEx(PeWith(s2.clExExpr, p.clExExpr, wx.pewLine),
+                       p.clExExports)
+  (tp: PeTuple)     => clTupEnts(chain(tp.exprs), r, paths, exports, builder())
+    |> (es) => ClEx(PeTuple(es.clEntsEnts, tp.petLine), es.clEntsExports)
+  (te: PeTernary)   => clExpr(te.condition, r, paths, exports)
+    |> (cd) => (cd, clExpr(te.trueResult, r, paths, cd.clExExports))
+    |> (cd, tr) => (cd, tr, clExpr(te.falseResult, r, paths, tr.clExExports))
+    |> (cd, tr, fr) => ClEx(PeTernary(cd.clExExpr, tr.clExExpr, fr.clExExpr,
+                                     te.pety),
+                           fr.clExExports)
+  (lm: PeLambda)    => clLambdaExpr(lm, r, paths, exports)
+  (bk: PeBlock)     => clBlockExpr(bk, r, paths, exports)
+  (mt: PeMatch)     => clMatchExpr(mt, r, paths, exports)
+  (op: PeBuiltinOp) => clExpr(op.opParams, r, paths, exports)
+    |> (p) => ClEx(PeBuiltinOp(op.opType, op.opName, p.clExExpr, op.peboLine),
+                  p.clExExports)
+  (nw: PeNew)       => clExpr(nw.newParam, r, paths, exports)
+    |> (p) => ClEx(PeNew(nw.newType, p.clExExpr, nw.penwLine), p.clExExports)
+  (ar: PeArrayRead) => clExpr(ar.arrObj, r, paths, exports)
+    |> (ob) => (ob, clExpr(ar.arrIndex, r, paths, ob.clExExports))
+    |> (ob, ix) => ClEx(PeArrayRead(ob.clExExpr, ix.clExExpr, ar.pearLine),
+                       ix.clExExports)
+  (cv: PeConvert)   => clExpr(cv.convInner, r, paths, exports)
+    |> (iv) => ClEx(PeConvert(iv.clExExpr, cv.convTarget, cv.pecvLine),
+                   iv.clExExports)
+  (pl: PeParallel)  => clExpr(pl.parParams, r, paths, exports)
+    |> (p) => ClEx(PeParallel(p.clExExpr, pl.pepLine), p.clExExports)
+  (lp: PeLoop)      => clExprs(chain(lp.loopParams), r, paths, exports, builder())
+    |> (ps) => (ps, clExpr(lp.loopBody, r, paths, ps.clExsExports))
+    |> (ps, b) => ClEx(PeLoop(b.clExExpr, ps.clExsExprs, lp.pelpLine),
+                      b.clExExports)
+  (rc: PeRecur)     => clExprs(chain(rc.recArgs), r, paths, exports, builder())
+    |> (as3) => ClEx(PeRecur(as3.clExsExprs, rc.recIndex, rc.percLine),
+                    as3.clExsExports)
+  (o: PeLiteral) => ClEx(x, exports)
+  (o: PeLazy) => ClEx(x, exports)
+  (o: PeName) => ClEx(x, exports)
+  (o: PeNewEnum) => ClEx(x, exports)
 
 fun clLambdaExpr(lm: PeLambda, r, paths: ClPaths,
                  exports): ClEx
@@ -640,24 +594,22 @@ fun clLambdaExpr(lm: PeLambda, r, paths: ClPaths,
 # order, mirroring Python's taken_names set; a collision can only occur
 # within one host statement (paths differ across hosts), so the threaded
 # exports list IS the taken set.
-fun clDedupName(base, exports: List<PStmt>): String
+fun clDedupName(base, exports: List<PStmt>)
   ret clNameTaken(base, exports) ? clDedupLoop(base, exports, 2) : base
 
-fun [tail] clDedupLoop(base, exports: List<PStmt>, k: Int): String
+fun [tail] clDedupLoop(base, exports: List<PStmt>, k)
   let cand = base + "$dup" + String(k)
   ret clNameTaken(cand, exports) ? clDedupLoop(base, exports, k + 1) : cand
 
-fun clNameTaken(n, exports: List<PStmt>): Bool
-  ret any(exports, (st) => clExportName(st) == n)
+fun clNameTaken(n, exports: List<PStmt>) => any(exports, (st) => clExportName(st) == n)
 
-fun clExportName(st): String
-  ret match(st)
-    (f2: PsFun)   => f2.fName
-    (c2: PsClass) => c2.cName
-    (o: PStmt)    => ""
+fun clExportName(st) => match(st)
+  (f2: PsFun)   => f2.fName
+  (c2: PsClass) => c2.cName
+  (o: PStmt)    => ""
 
 fun clExportLambda(lm: PeLambda, r, paths: ClPaths,
-                   exports: List<PStmt>): ClEx
+                   exports: List<PStmt>)
   let nme = clDedupName(uniqueLambdaName(lm, cpPathFor(paths, lm.pelLine)), exports)
   let cpt0 = discoverCaptures(r, lm)
   let selfNames = clSelfRefNames(cpt0, lm.lamRet)
@@ -673,7 +625,7 @@ fun clExportLambda(lm: PeLambda, r, paths: ClPaths,
 # One more lifted statement on the END of the exports. They are emitted in this
 # order, and the list is read back by clDedupName, so it stays a List and this
 # stays a copy — once per lifted lambda, not once per expression walked.
-fun clExport(exports: List<PStmt>, st: PStmt): List<PStmt>
+fun clExport(exports: List<PStmt>, st: PStmt)
   ret build(push(builderFrom(exports),
                  st))
 
@@ -686,21 +638,20 @@ fun clBlockExpr(bk: PeBlock, r, paths: ClPaths,
           v.clExExports)
 
 fun clMatchExpr(mt: PeMatch, r, paths: ClPaths,
-                exports): ClEx
+                exports)
   let subj = clExpr(mt.subject, r, paths, exports)
   let arms = clArms(chain(mt.arms), r, paths, subj.clExExports,
                     builder())
   ret ClEx(with mt(subject = subj.clExExpr, arms = arms.clArmsArms),
            arms.clArmsExports)
 
-fun [tail] clArms(as2: Chain<PArm>, r: Resolver, paths: ClPaths,
-                  exports: List<PStmt>,
-                  [terminal] acc: ListBuilder<PArm>): ClArmsOut
-  ret match(as2)
-    (nil: ChainEnd) => ClArmsOut(build(acc), exports)
-    (l: ChainLink)  => clArmOne(l.value, r, paths, exports)
-      |> (o) => clArms(l.next, r, paths, o.claoExports,
-                       push(acc, o.claoArm))
+fun [tail] clArms(as2: Chain<PArm>, r, paths: ClPaths,
+                  exports,
+                  [terminal] acc) => match(as2)
+  (nil: ChainEnd) => ClArmsOut(build(acc), exports)
+  (l: ChainLink)  => clArmOne(l.value, r, paths, exports)
+    |> (o) => clArms(l.next, r, paths, o.claoExports,
+                     push(acc, o.claoArm))
 
 class [final] ClArmOne(claoArm: PArm, claoExports: List<PStmt>)
 
@@ -713,48 +664,44 @@ fun clArmOne(a: PArm, r, paths: ClPaths, exports): ClArmOne
   ret ClArmOne(with a(armBody = body.clExExpr, armLiterals = lits.clLitsLits, armGuard = guard.clExOExpr),
               guard.clExOExports)
 
-fun [tail] clLits(ls: Chain<PLit>, r: Resolver, paths: ClPaths,
-                  exports: List<PStmt>,
-                  [terminal] acc: ListBuilder<PLit>): ClLitsOut
-  ret match(ls)
-    (nil: ChainEnd) => ClLitsOut(build(acc), exports)
-    (l: ChainLink)  => match(l.value)
-      (le: PlExpr)   => clExpr(le.litExpr, r, paths, exports)
-        |> (o) => clLits(l.next, r, paths, o.clExExports,
-                         push(acc, PlExpr(o.clExExpr)))
-      (lr2: PlRange) => clExpr(lr2.rangeLo, r, paths, exports)
-        |> (lo) => (lo, clExpr(lr2.rangeHi, r, paths, lo.clExExports))
-        |> (lo, hi) => clLits(l.next, r, paths, hi.clExExports,
-                              push(acc, PlRange(lo.clExExpr,
-                                                hi.clExExpr,
-                                                lr2.plrLine)))
+fun [tail] clLits(ls: Chain<PLit>, r, paths: ClPaths,
+                  exports,
+                  [terminal] acc) => match(ls)
+  (nil: ChainEnd) => ClLitsOut(build(acc), exports)
+  (l: ChainLink)  => match(l.value)
+    (le: PlExpr)   => clExpr(le.litExpr, r, paths, exports)
+      |> (o) => clLits(l.next, r, paths, o.clExExports,
+                       push(acc, PlExpr(o.clExExpr)))
+    (lr2: PlRange) => clExpr(lr2.rangeLo, r, paths, exports)
+      |> (lo) => (lo, clExpr(lr2.rangeHi, r, paths, lo.clExExports))
+      |> (lo, hi) => clLits(l.next, r, paths, hi.clExExports,
+                            push(acc, PlRange(lo.clExExpr,
+                                              hi.clExExpr,
+                                              lr2.plrLine)))
 
 fun clExprOpt(x, r, paths: ClPaths,
-             exports): ClExO
-  ret match(x)
-    (e2: PExpr) => clExpr(e2, r, paths, exports)
-      |> (o) => ClExO(o.clExExpr, o.clExExports)
-    ()          => ClExO(x, exports)
+             exports): ClExO => match(x)
+  (e2: PExpr) => clExpr(e2, r, paths, exports)
+    |> (o) => ClExO(o.clExExpr, o.clExExports)
+  ()          => ClExO(x, exports)
 
-fun [tail] clExprs(es: Chain<PExpr>, r: Resolver, paths: ClPaths,
-                   exports: List<PStmt>,
-                   [terminal] acc: ListBuilder<PExpr>): ClExsOut
-  ret match(es)
-    (nil: ChainEnd) => ClExsOut(build(acc), exports)
-    (l: ChainLink)  => clExpr(l.value, r, paths, exports)
-      |> (o) => clExprs(l.next, r, paths, o.clExExports,
-                        push(acc, o.clExExpr))
+fun [tail] clExprs(es: Chain<PExpr>, r, paths: ClPaths,
+                   exports,
+                   [terminal] acc) => match(es)
+  (nil: ChainEnd) => ClExsOut(build(acc), exports)
+  (l: ChainLink)  => clExpr(l.value, r, paths, exports)
+    |> (o) => clExprs(l.next, r, paths, o.clExExports,
+                      push(acc, o.clExExpr))
 
 fun [tail] clTupEnts(es: Chain<PTupEnt>, r, paths: ClPaths,
                      exports,
-                     [terminal] acc: ListBuilder<PTupEnt>): ClEntsOut
-  ret match(es)
-    (nil: ChainEnd) => ClEntsOut(build(acc), exports)
-    (l: ChainLink)  => clExpr(l.value.tupValue, r, paths, exports)
-      |> (v) => clTupEnts(l.next, r, paths, v.clExExports,
-                          push(acc, PTupEnt(l.value.tupName,
-                                            l.value.tupSpread,
-                                            v.clExExpr)))
+                     [terminal] acc) => match(es)
+  (nil: ChainEnd) => ClEntsOut(build(acc), exports)
+  (l: ChainLink)  => clExpr(l.value.tupValue, r, paths, exports)
+    |> (v) => clTupEnts(l.next, r, paths, v.clExExports,
+                        push(acc, PTupEnt(l.value.tupName,
+                                          l.value.tupSpread,
+                                          v.clExExpr)))
 
 # ── 3. the entry point (lambdas.py:226-240) ──────────────────────────────────
 # r = rootResolver(statements) built ONCE per recursion level; every
@@ -763,7 +710,7 @@ fun [tail] clTupEnts(es: Chain<PTupEnt>, r, paths: ClPaths,
 
 class [final] ClScanAll(csaStmts: List<PStmt>, csaExports: List<PStmt>)
 
-fun clScanTop(st, r): ClSt
+fun clScanTop(st, r)
   let paths = collectLambdaPaths(st)
   ret clStmt(st, r, paths, List())
 
@@ -773,15 +720,14 @@ class [linear, final] ScanAcc(saStmts: ListBuilder<PStmt>,
                               saExports: ListBuilder<PStmt>)
 
 fun [tail] clScanAll(ss: Chain<PStmt>, r: Resolver,
-                     [terminal] acc: ScanAcc): ClScanAll
-  ret match(ss)
-    (nil: ChainEnd) => ClScanAll(build(acc.saStmts),
-                                 build(acc.saExports))
-    (l: ChainLink)  => clScanTop(l.value, r)
-      |> (o) => clScanAll(l.next, r,
-                    ScanAcc(push(acc.saStmts, o.clStStmt),
-                            pushAll(acc.saExports,
-                                o.clStExports)))
+                     [terminal] acc: ScanAcc): ClScanAll => match(ss)
+  (nil: ChainEnd) => ClScanAll(build(acc.saStmts),
+                               build(acc.saExports))
+  (l: ChainLink)  => clScanTop(l.value, r)
+    |> (o) => clScanAll(l.next, r,
+                  ScanAcc(push(acc.saStmts, o.clStStmt),
+                          pushAll(acc.saExports,
+                              o.clStExports)))
 
 fun convertLambdasToFunctions(statements): List<PStmt>
   let r = rootResolver(statements)

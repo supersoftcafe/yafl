@@ -22,47 +22,41 @@ fun fixGlobalStrings(statements): List<PStmt>
              rwStmts(statements, rwOnExpr((x) => gsReplace(x,
                                                            values))))
 
-fun gsIdNames(acc, st: PStmt): List<String>
-  ret acc
+fun gsIdNames(acc, st: PStmt): List<String> => acc
 
-fun gsCollect(acc, x): List<String>
-  ret match(x)
-    # First-seen order: gsGlobals numbers these by index, so the order is
-    # part of the generated global names. `acc` is read by the dedup.
-    (s2: PeStr) => contains2(acc, s2.strValue)
-      ? acc
-      : build(push(builderFrom(acc), s2.strValue))
-    (o: PExpr)  => acc
+fun gsCollect(acc, x) => match(x)
+  # First-seen order: gsGlobals numbers these by index, so the order is
+  # part of the generated global names. `acc` is read by the dedup.
+  (s2: PeStr) => contains2(acc, s2.strValue)
+    ? acc
+    : build(push(builderFrom(acc), s2.strValue))
+  (o: PExpr)  => acc
 
 fun gsGlobals(vs, index: Int,
-                     acc: List<PStmt>): List<PStmt>
-  ret build(gsGlobalsB(vs, index, builderFrom(acc)))
+                     acc: List<PStmt>) => build(gsGlobalsB(vs, index, builderFrom(acc)))
 
-fun [tail] gsGlobalsB(vs: Chain<String>, index: Int,
-                     [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(vs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => gsGlobalsB(l.next, index + 1,
-        push(acc, PsLet("$strings::string@" + String(index),
-                  List(), List(),
-                  SBuiltin("str", PLine("$strings", index + 1, 1)),
-                  PeStr(l.value, PLine("$strings", index + 1, 1)),
-                  "", List(), PLine("$strings", index + 1, 1),
-                  false, List<PStmt>())))
+fun [tail] gsGlobalsB(vs: Chain<String>, index,
+                     [terminal] acc: ListBuilder<PStmt>) => match(vs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => gsGlobalsB(l.next, index + 1,
+      push(acc, PsLet("$strings::string@" + String(index),
+                List(), List(),
+                SBuiltin("str", PLine("$strings", index + 1, 1)),
+                PeStr(l.value, PLine("$strings", index + 1, 1)),
+                "", List(), PLine("$strings", index + 1, 1),
+                false, List<PStmt>())))
 
-fun gsReplace(x, values: List<String>): PExpr|None
-  ret match(x)
-    (s2: PeStr) => PeName("$strings::string@"
-                            + String(gsIndexOf(chain(values), s2.strValue,
-                                               0)),
-                          List(),
-                          PLine("$strings",
-                                gsIndexOf(chain(values), s2.strValue, 0) + 1,
-                                1),
-                          None)
-    (o: PExpr)  => None
+fun gsReplace(x, values: List<String>) => match(x)
+  (s2: PeStr) => PeName("$strings::string@"
+                          + String(gsIndexOf(chain(values), s2.strValue,
+                                             0)),
+                        List(),
+                        PLine("$strings",
+                              gsIndexOf(chain(values), s2.strValue, 0) + 1,
+                              1),
+                        None)
+  (o: PExpr)  => None
 
-fun [tail] gsIndexOf(vs: Chain<String>, v: String, i: Int): Int
-  ret match(vs)
-    (nil: ChainEnd) => -1
-    (l: ChainLink)  => l.value == v ? i : gsIndexOf(l.next, v, i + 1)
+fun [tail] gsIndexOf(vs: Chain<String>, v: String, i) => match(vs)
+  (nil: ChainEnd) => -1
+  (l: ChainLink)  => l.value == v ? i : gsIndexOf(l.next, v, i + 1)

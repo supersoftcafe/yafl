@@ -13,43 +13,40 @@ import Bootstrap::Types
 # ported below (typedecl/param/ops/ir). Named "cgtools" rather than Python's
 # bare "tools" — too generic for this single flat namespace.
 
-fun isValidMangleChar(c): Bool
+fun isValidMangleChar(c)
   ret (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'
 
-fun operatorCharName(c: Int32): String|None
-  ret match(c)
-    ('+') => "plus"
-    ('-') => "minus"
-    ('*') => "star"
-    ('/') => "slash"
-    ('=') => "eq"
-    ('>') => "gt"
-    ('<') => "lt"
-    ('?') => "bind"
-    ('|') => "or"
-    ('&') => "and"
-    ('!') => "bang"
-    ('%') => "mod"
-    ('^') => "xor"
-    ('~') => "tilde"
-    ()    => None
+fun operatorCharName(c: Int32) => match(c)
+  ('+') => "plus"
+  ('-') => "minus"
+  ('*') => "star"
+  ('/') => "slash"
+  ('=') => "eq"
+  ('>') => "gt"
+  ('<') => "lt"
+  ('?') => "bind"
+  ('|') => "or"
+  ('&') => "and"
+  ('!') => "bang"
+  ('%') => "mod"
+  ('^') => "xor"
+  ('~') => "tilde"
+  ()    => None
 
-fun hexDigit(n): String
+fun hexDigit(n)
   let hexd = "0123456789abcdef"
   ret slice(hexd, n, n + 1)
 
-fun hexDigits(n): String
-  ret n < 16 ? hexDigit(n) : hexDigits(n / 16) + hexDigit(n % 16)
+fun hexDigits(n) => n < 16 ? hexDigit(n) : hexDigits(n / 16) + hexDigit(n % 16)
 
-fun hexMin2(v: Int32): String
+fun hexMin2(v: Int32)
   let n = Int(v)
   ret n < 16 ? "0" + hexDigit(n) : hexDigits(n)
 
 # `::` (namespace separator) becomes `__` before individual char processing.
-fun joinDoubleColon(s): String
-  ret join(split(s, "::"), "__")
+fun joinDoubleColon(s) => join(split(s, "::"), "__")
 
-fun mangleChar(c): String
+fun mangleChar(c)
   if isValidMangleChar(c)
     ret asciiToString(c)
   if c == '@' || c == '$'
@@ -60,7 +57,7 @@ fun mangleChar(c): String
     (name: String) => name
     ()             => "X" + hexMin2(c)
 
-fun mangleName(symbol): String
+fun mangleName(symbol)
   ret fold(codepoints(joinDoubleColon(symbol)), "", (acc, c) => acc + mangleChar(c))
 
 fun toPointerMask(fieldType, typeStr): String

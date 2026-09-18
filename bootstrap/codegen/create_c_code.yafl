@@ -26,13 +26,13 @@ import Bootstrap::StdlibCandidates
 # at 1: 0 is the vtable default, "never dispatched on".
 class [final] DiscAcc(daIds: Dict<String, Int>, daN: Int)
 
-fun collectDiscriminatorIds(statements: List<PStmt>): Dict<String, Int>
+fun collectDiscriminatorIds(statements: List<PStmt>)
   let breakers = computeBreakers(statements)
   let leaves = fold(statements, DiscAcc(Dict(), 0),
                     (a, st) => discEnumLeaves(a, st, breakers))
   ret foldAllSpecs(statements, discSpec, leaves).daIds
 
-fun discAssign(acc, uid2): DiscAcc
+fun discAssign(acc, uid2)
   if length(uid2) == 0
     ret acc
   ret match(get(acc.daIds, uid2))
@@ -40,13 +40,12 @@ fun discAssign(acc, uid2): DiscAcc
     ()        => DiscAcc(put(acc.daIds, uid2, acc.daN + 1), acc.daN + 1)
 
 fun discEnumLeaves(acc, st,
-                   breakers: List<String>): DiscAcc
-  ret match(st)
-    (e2: PsEnum) => discEnumRoot(acc, e2, breakers)
-    (o: PStmt)   => acc
+                   breakers: List<String>) => match(st)
+  (e2: PsEnum) => discEnumRoot(acc, e2, breakers)
+  (o: PStmt)   => acc
 
 fun discEnumRoot(acc, e2: PsEnum,
-                 breakers: List<String>): DiscAcc
+                 breakers: List<String>)
   if !enumIsRootStmt(e2)
     ret acc
   ret match(asEnumVariant(e2.eSpec))
@@ -54,10 +53,9 @@ fun discEnumRoot(acc, e2: PsEnum,
         fold(sp.seAllLeaves, acc, (a, leaf) => discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
     ()           => acc
 
-fun discSpec(acc, sp): DiscAcc
-  ret match(sp)
-    (cm: SCombination) => fold(cm.scTypes, acc, (a, v) => discAssign(a, uid(v)))
-    (o: Spec)          => acc
+fun discSpec(acc, sp) => match(sp)
+  (cm: SCombination) => fold(cm.scTypes, acc, (a, v) => discAssign(a, uid(v)))
+  (o: Spec)          => acc
 
 # ── the entry point (__create_entry_point) ───────────────────────────────────
 
@@ -100,7 +98,7 @@ fun createEntryPoint(mainName): CgFunction
 # Python reverses Lazy$<mangle> names via a mutable registry; the port derives
 # the (type) set directly from the deferred-init lets (top-level and in
 # bodies), where the type is known — same machinery, pure plumbing.
-fun collectLazyTypes(statements: List<PStmt>, r): List<CgType>
+fun collectLazyTypes(statements: List<PStmt>, r)
   let out = foldStmts(statements,
                       (acc, st) => lazyTypeOf(acc, st, r),
                       foldNoExprLT, LazyTypes(List(), Dict()))
@@ -113,35 +111,32 @@ fun collectLazyTypes(statements: List<PStmt>, r): List<CgType>
 # self-compile.
 class [final] LazyTypes(ltList: List<CgType>, ltSeen: Dict<String, Bool>)
 
-fun foldNoExprLT(acc, x: PExpr): LazyTypes
-  ret acc
+fun foldNoExprLT(acc, x: PExpr): LazyTypes => acc
 
-fun lazyTypeOf(acc, st, r): LazyTypes
-  ret match(st)
-    (l: PsLet) => isDeferredInit(l) && !isNoneSpec2(l.lType)
-      ? lazyTypeAdd(acc, specGenerateOpt(l.lType, r))
-      : acc
-    (o: PStmt) => acc
+fun lazyTypeOf(acc, st, r) => match(st)
+  (l: PsLet) => isDeferredInit(l) && !isNoneSpec2(l.lType)
+    ? lazyTypeAdd(acc, specGenerateOpt(l.lType, r))
+    : acc
+  (o: PStmt) => acc
 
-fun isNoneSpec2(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => false
-    ()          => true
+fun isNoneSpec2(sp: Spec|None) => match(sp)
+  (s2: Spec) => false
+  ()          => true
 
-fun lazyTypeAdd(acc, t2): LazyTypes
+fun lazyTypeAdd(acc, t2)
   let m2 = irMangle(t2)
   ret contains(acc.ltSeen, m2)
     ? acc
     : LazyTypes(build(push(builderFrom(acc.ltList), t2)),
                 put(acc.ltSeen, m2, true))
 
-fun ensureLazyMachinery(a: CgApp, types2: List<CgType>): CgApp
+fun ensureLazyMachinery(a, types2: List<CgType>)
   if isEmpty(types2)
     ret a
   let withTask = appHasObject(a, "task") ? a : appPutObject(a, makeTaskForeignObject())
   ret fold(types2, withTask, ensureLazyOne)
 
-fun ensureLazyOne(a: CgApp, t2): CgApp
+fun ensureLazyOne(a, t2)
   if appHasObject(a, stubClassName(t2))
     ret a
   let m = lazyMachinery(t2)
@@ -163,42 +158,38 @@ fun multiSubjectPositionErrs(statements: List<PStmt>, r): List<String>
         (acc, x) => msPosExpr(acc, x, r),
         List())
 
-fun msPosExpr(acc, x, r): List<String>
-  ret match(x)
-    (mt: PeMatch) => isEmpty(mt.matchExtra)
-      ? acc
-      : msPosArms(acc, chain(mt.arms), prepend(mt.subject, mt.matchExtra), r)
-    (o: PExpr)    => acc
+fun msPosExpr(acc, x, r) => match(x)
+  (mt: PeMatch) => isEmpty(mt.matchExtra)
+    ? acc
+    : msPosArms(acc, chain(mt.arms), prepend(mt.subject, mt.matchExtra), r)
+  (o: PExpr)    => acc
 
-fun [tail] msPosArms(acc: List<String>, as2: Chain<PArm>, subs: List<PExpr>,
-                     r: Resolver): List<String>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => msPosArms(
-        msPosOne(acc,
-                 chain(prepend(l.value.armType,
-                               map(l.value.armExtra, (p) => p.posType))),
-                 chain(subs), r),
-        l.next, subs, r)
+fun [tail] msPosArms(acc, as2: Chain<PArm>, subs: List<PExpr>,
+                     r) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => msPosArms(
+      msPosOne(acc,
+               chain(prepend(l.value.armType,
+                             map(l.value.armExtra, (p) => p.posType))),
+               chain(subs), r),
+      l.next, subs, r)
 
-fun [tail] msPosOne(acc: List<String>, pats: Chain<Spec|None>,
-                    subs: Chain<PExpr>, r: Resolver): List<String>
-  ret match(pats)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => msPosOne(msPosCheck(acc, l.value, msHeadExpr(subs), r),
-                                l.next, msRestExprs(subs), r)
+fun [tail] msPosOne(acc, pats: Chain<Spec|None>,
+                    subs: Chain<PExpr>, r) => match(pats)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => msPosOne(msPosCheck(acc, l.value, msHeadExpr(subs), r),
+                              l.next, msRestExprs(subs), r)
 
 fun msPosCheck(acc, pat: Spec|None, sub: PExpr|None,
-               r): List<String>
-  ret match(pat)
-    (p2: Spec) => match(sub)
-      (e2: PExpr) => match(exprType(e2, r))
-        (st: Spec) => isEnumOrUnion2(st)
-          ? msSupported(acc, classifyRepr(st, r), p2, r)
-          : acc
-        ()         => acc
-      ()           => acc
+               r) => match(pat)
+  (p2: Spec) => match(sub)
+    (e2: PExpr) => match(exprType(e2, r))
+      (st: Spec) => isEnumOrUnion2(st)
+        ? msSupported(acc, classifyRepr(st, r), p2, r)
+        : acc
+      ()         => acc
     ()           => acc
+  ()           => acc
 
 fun msSupported(acc, rep, pat: Spec,
                 r): List<String>
@@ -208,21 +199,18 @@ fun msSupported(acc, rep, pat: Spec,
                            "this pattern cannot serve a position of a "
                            + "multi-subject match"))
 
-fun isEnumOrUnion2(sp): Bool
-  ret match(sp)
-    (e2: SEnum)        => true
-    (cm: SCombination) => true
-    (o: Spec)          => false
+fun isEnumOrUnion2(sp) => match(sp)
+  (e2: SEnum)        => true
+  (cm: SCombination) => true
+  (o: Spec)          => false
 
-fun msRestExprs(es): Chain<PExpr>
-  ret match(es)
-    (l: ChainLink)  => l.next
-    (nil: ChainEnd) => es
+fun msRestExprs(es): Chain<PExpr> => match(es)
+  (l: ChainLink)  => l.next
+  (nil: ChainEnd) => es
 
-fun msHeadExpr(es: Chain<PExpr>): PExpr|None
-  ret match(es)
-    (l: ChainLink)  => l.value
-    (nil: ChainEnd) => None
+fun msHeadExpr(es: Chain<PExpr>) => match(es)
+  (l: ChainLink)  => l.value
+  (nil: ChainEnd) => None
 
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
@@ -375,7 +363,7 @@ fun ccO1Block(a0: CgApp): CgApp
 
 # Static init promotion runs FOUR rounds; the $si$N counter threads across
 # rounds AND functions (Python's module-level itertools.count).
-fun [tail] ccStaticRounds(a: CgApp, round2, counter: Int): CgApp
+fun [tail] ccStaticRounds(a: CgApp, round2, counter): CgApp
   if round2 >= 4
     ret a
   let sp = spanBegin("o1", "static_round")
@@ -388,7 +376,7 @@ fun [tail] ccStaticRounds(a: CgApp, round2, counter: Int): CgApp
 # 16-round bound or SHAPE stability — shape = every function's (name, op
 # count), exactly Python's `tuple((n, len(f.ops)) ...)`.
 fun [tail] ccFoldFixpoint(a0: CgApp, round2,
-                          prev: CgApp|None): CgApp
+                          prev: CgApp|None)
   if round2 >= 16
     ret a0
   let a1 = threadBranches(a0)
@@ -406,24 +394,23 @@ fun [tail] ccFoldFixpoint(a0: CgApp, round2,
 # the identical predicate with no length ever taken (no-length ruling). O3
 # additionally compares per-object slot lists, sorted by object name (names
 # are unique, so Python's (name, count) sort order IS name order).
-fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects): Bool
-  ret match(prev)
-    (p: CgApp) => ccFnsSame(appFunctions(p), appFunctions(cur))
-                  && (!withObjects
-                      || ccObjsSame(ccSortObjs(appObjects(p)),
-                                    ccSortObjs(appObjects(cur))))
-    ()         => false
+fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects) => match(prev)
+  (p: CgApp) => ccFnsSame(appFunctions(p), appFunctions(cur))
+                && (!withObjects
+                    || ccObjsSame(ccSortObjs(appObjects(p)),
+                                  ccSortObjs(appObjects(cur))))
+  ()         => false
 
-fun ccFnsSame(a: List<CgFunction>, b: List<CgFunction>): Bool
+fun ccFnsSame(a: List<CgFunction>, b: List<CgFunction>)
   ret eqBy(a, b, (x, y) =>
         x.fnName == y.fnName && sameLen(x.fnOps, y.fnOps))
 
-fun ccObjsSame(a: List<CgObject>, b: List<CgObject>): Bool
+fun ccObjsSame(a: List<CgObject>, b: List<CgObject>)
   ret eqBy(a, b, (x, y) =>
         x.objName == y.objName
         && sameLen(chain(x.objFunctions), chain(y.objFunctions)))
 
-fun ccSortObjs(os: List<CgObject>): List<CgObject>
+fun ccSortObjs(os: List<CgObject>)
   # By name. This was an INSERTION SORT — each object walking the sorted
   # prefix and rebuilding it as it went.
   ret sortBy(os, (a, b) => a.objName < b.objName)
@@ -445,18 +432,16 @@ fun ccLet(a: CgApp, l: PsLet, r): CgApp
   let withGlobals = fold(out.lcGlobals, a, appPutGlobal)
   ret fold(out.lcFunctions, withGlobals, appPutFunction)
 
-fun ccClass(a: CgApp, c, r): CgApp
+fun ccClass(a: CgApp, c, r)
   let out = classGlobalCodegen(c, r)
   ret fold(out.ccFunctions, appPutObject2(a, out.ccObject), appPutFunction)
 
-fun appPutObject2(a: CgApp, o: CgObject): CgApp
-  ret appPutObject(a, o)
+fun appPutObject2(a: CgApp, o) => appPutObject(a, o)
 
 # Python raises ValueError on a malformed __entrypoint__.
-fun ccValidateEntrypoint(a: CgApp): List<String>
-  ret match(appFunction(a, "__entrypoint__"))
-    (f: CgFunction) => ccEntryShape(f)
-    ()               => list1("A function called '__entrypoint__' is required")
+fun ccValidateEntrypoint(a: CgApp) => match(appFunction(a, "__entrypoint__"))
+  (f: CgFunction) => ccEntryShape(f)
+  ()               => list1("A function called '__entrypoint__' is required")
 
 fun ccEntryShape(f: CgFunction): List<String>
   let paramsOk = eqCgType(f.fnParams,

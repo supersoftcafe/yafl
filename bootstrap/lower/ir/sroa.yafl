@@ -18,9 +18,8 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun splitProjectedAggregates(a: CgApp): CgApp
-  ret appWithFunctions(a, map(appFunctions(a),
-        (f) => sroaFix(f, List(), 8)))
+fun splitProjectedAggregates(a: CgApp) => appWithFunctions(a, map(appFunctions(a),
+                                            (f) => sroaFix(f, List(), 8)))
 
 fun [tail] sroaFix(f, done: List<String>, left): CgFunction
   if left == 0
@@ -38,7 +37,7 @@ class [final] SroaField(sfField: String, sfLocal: RParam)
 
 class [final] ProjCount(pjVar: String, pjField: String, pjCount: Int)
 
-fun sroaFindSplittable(f: CgFunction, done: List<String>): List<Sroa>
+fun sroaFindSplittable(f: CgFunction, done: List<String>)
   let svReads = sroaSvReads(f.fnOps)
   let projReads = sroaProjReads(f.fnOps)
   let defs = sroaDefs(f.fnOps)
@@ -50,43 +49,37 @@ fun sroaFindSplittable(f: CgFunction, done: List<String>): List<Sroa>
 fun [tail] sroaConsiderAll(ns: Chain<String>, done: List<String>,
                            svReads: List<StrCount>,
                            projReads: List<ProjCount>, defs: SroaDefs,
-                           [terminal] acc: ListBuilder<Sroa>): ListBuilder<Sroa>
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => sroaConsiderAll(l.next, done, svReads, projReads, defs,
-                           sroaConsider(acc, l.value, done, svReads,
-                                        projReads, defs))
+                           [terminal] acc: ListBuilder<Sroa>) => match(ns)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => sroaConsiderAll(l.next, done, svReads, projReads, defs,
+                         sroaConsider(acc, l.value, done, svReads,
+                                      projReads, defs))
 
 # Read occurrences: a projection StructField(StackVar v, f) flattens to BOTH
 # nodes, so a var whose every read is a projection has sv_reads == proj_total;
 # any whole use is a bare StackVar with no enclosing StructField.
-fun sroaSvReads(ops: Segment<Op>|None): List<StrCount>
-  ret fold(ops, List(),
-           (acc, op) => fold(opAllParams(op), acc, sroaSvRead1))
+fun sroaSvReads(ops: Segment<Op>|None) => fold(ops, List(),
+                                               (acc, op) => fold(opAllParams(op), acc, sroaSvRead1))
 
-fun sroaSvRead1(acc, p): List<StrCount>
-  ret match(p)
-    (sv: RpStackVar) => strCountIncr(acc, sv.name)
+fun sroaSvRead1(acc, p): List<StrCount> => match(p)
+  (sv: RpStackVar) => strCountIncr(acc, sv.name)
+  (o: RParam)       => acc
+
+fun sroaProjReads(ops: Segment<Op>|None) => fold(ops, List(),
+                                                 (acc, op) => fold(opAllParams(op), acc, sroaProj1))
+
+fun sroaProj1(acc, p) => match(p)
+  (sf: RpStructField) => match(sf.structVal)
+    (sv: RpStackVar) => pjIncr(acc, sv.name, sf.field)
     (o: RParam)       => acc
+  (o2: RParam)         => acc
 
-fun sroaProjReads(ops: Segment<Op>|None): List<ProjCount>
-  ret fold(ops, List(),
-           (acc, op) => fold(opAllParams(op), acc, sroaProj1))
-
-fun sroaProj1(acc, p): List<ProjCount>
-  ret match(p)
-    (sf: RpStructField) => match(sf.structVal)
-      (sv: RpStackVar) => pjIncr(acc, sv.name, sf.field)
-      (o: RParam)       => acc
-    (o2: RParam)         => acc
-
-fun pjIncr(acc: List<ProjCount>, v: String, f: String): List<ProjCount>
-  ret any(acc, (e2) => e2.pjVar == v && e2.pjField == f)
-    ? map(acc, (e2) => e2.pjVar == v && e2.pjField == f
-                 ? ProjCount(v, f, e2.pjCount + 1) : e2)
-    # A counter table keyed by (var, field): every reader sums or filters it,
-    # so its order is not observable and a new key goes on the front.
-    : prepend(ProjCount(v, f, 1), acc)
+fun pjIncr(acc, v, f) => any(acc, (e2) => e2.pjVar == v && e2.pjField == f)
+  ? map(acc, (e2) => e2.pjVar == v && e2.pjField == f
+               ? ProjCount(v, f, e2.pjCount + 1) : e2)
+  # A counter table keyed by (var, field): every reader sums or filters it,
+  # so its order is not observable and a new key goes on the front.
+  : prepend(ProjCount(v, f, 1), acc)
 
 # Single-definition sites (SSA — a name written twice is defensively skipped).
 # sdOp is the defining op itself — carried, so the eligibility test does not
@@ -94,42 +87,39 @@ fun pjIncr(acc: List<ProjCount>, v: String, f: String): List<ProjCount>
 class [final] SroaDef(sdName: String, sdVar: RParam, sdIndex: Int, sdOp: Op)
 class [final] SroaDefs(sdEntries: List<SroaDef>, sdMulti: Set<String>)
 
-fun sroaDefs(ops: Segment<Op>|None): SroaDefs
-  ret sroaDefsLoop(ops, 0i32, 0, SroaDefs(List(), Set()))
+fun sroaDefs(ops: Segment<Op>|None) => sroaDefsLoop(ops, 0i32, 0, SroaDefs(List(), Set()))
 
-fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg: Int32, i, acc): SroaDefs
-  ret match(s)
-    (nil: None)        => acc
-    (seg: Segment<Op>) => iSeg < seg.length
-      ? sroaDefsLoop(s, iSeg + 1i32, i + 1,
-          fold(ssavOpWrites(seg.array(iSeg)), acc,
-               (a, w) => sroaDef1(a, w, i, seg.array(iSeg))))
-      : sroaDefsLoop(seg.next, 0i32, i, acc)
+fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg, i, acc) => match(s)
+  (nil: None)        => acc
+  (seg: Segment<Op>) => iSeg < seg.length
+    ? sroaDefsLoop(s, iSeg + 1i32, i + 1,
+        fold(ssavOpWrites(seg.array(iSeg)), acc,
+             (a, w) => sroaDef1(a, w, i, seg.array(iSeg))))
+    : sroaDefsLoop(seg.next, 0i32, i, acc)
 
-fun sroaDef1(acc, w, i, op): SroaDefs
-  ret match(w)
-    (sv: RpStackVar) => any(acc.sdEntries, (e2) => e2.sdName == sv.name)
-      ? SroaDefs(map(acc.sdEntries, (e2) => e2.sdName == sv.name ? SroaDef(sv.name, w, i, op) : e2),
-                 add(acc.sdMulti, sv.name))
-      # A name appears at most once here — a repeat takes the branch above,
-      # which replaces in place — so the entry list is a lookup with no
-      # observable order and a new entry goes on the front.
-      : SroaDefs(prepend(SroaDef(sv.name, w, i, op), acc.sdEntries),
-                 acc.sdMulti)
-    (o: RParam)       => acc
+fun sroaDef1(acc, w, i, op) => match(w)
+  (sv: RpStackVar) => any(acc.sdEntries, (e2) => e2.sdName == sv.name)
+    ? SroaDefs(map(acc.sdEntries, (e2) => e2.sdName == sv.name ? SroaDef(sv.name, w, i, op) : e2),
+               add(acc.sdMulti, sv.name))
+    # A name appears at most once here — a repeat takes the branch above,
+    # which replaces in place — so the entry list is a lookup with no
+    # observable order and a new entry goes on the front.
+    : SroaDefs(prepend(SroaDef(sv.name, w, i, op), acc.sdEntries),
+               acc.sdMulti)
+  (o: RParam)       => acc
 
 fun sroaConsider([terminal] acc, name: String,
                  done: List<String>, svReads: List<StrCount>,
-                 projReads: List<ProjCount>, defs: SroaDefs): ListBuilder<Sroa>
+                 projReads: List<ProjCount>, defs: SroaDefs)
   if contains(defs.sdMulti, name) || strListMember(done, name)
     ret acc
   ret match(head(filter(defs.sdEntries, (e2) => e2.sdName == name)))
     (d: SroaDef) => sroaConsiderDef(acc, name, d, svReads, projReads)
     ()            => acc
 
-fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name: String,
+fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name,
                     d: SroaDef, svReads: List<StrCount>,
-                    projReads: List<ProjCount>): ListBuilder<Sroa>
+                    projReads: List<ProjCount>)
   # Only plain non-empty structs — never the async TaskWrapper ABI.
   let fields = sroaStructFields(rpGetType(d.sdVar))
   if isEmpty(fields)
@@ -149,23 +139,21 @@ fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name: String,
                 map(used, (fld) => SroaField(fld,
                       RpStackVar(rpStructFieldLookup(fields, fld), name + "$" + fld)))))
 
-fun sroaStructFields(t2): List<CgField>
-  ret match(t2)
-    (s2: CgStruct)          => s2.fields
-    (im: CgImmediateStruct) => im.fields
-    (o: CgType)             => List()
+fun sroaStructFields(t2) => match(t2)
+  (s2: CgStruct)          => s2.fields
+  (im: CgImmediateStruct) => im.fields
+  (o: CgType)             => List()
 
 # Project after an ordinary single-result definition only; a Phi join and
 # side-effect-anchoring keep-Moves stay whole.
-fun sroaDefOpOk(op): Bool
-  ret match(op)
-    (m: OpMove) => !m.moveKeep
-    (c: OpCall) => true
-    (o: Op)     => false
+fun sroaDefOpOk(op) => match(op)
+  (m: OpMove) => !m.moveKeep
+  (c: OpCall) => true
+  (o: Op)     => false
 
 # ── the rewrite ──────────────────────────────────────────────────────────────
 
-fun sroaApply(f: CgFunction, sp: List<Sroa>): CgFunction
+fun sroaApply(f: CgFunction, sp: List<Sroa>)
   let newOps = build(sroaApplyLoop(f.fnOps, 0i32, sp, 0,
                                    seqBuilder()))
   let newFields = fold(sp, List(),
@@ -178,23 +166,21 @@ fun sroaApply(f: CgFunction, sp: List<Sroa>): CgFunction
 # NOT routed through the replacer, so they read the original v exactly once,
 # right after its definition — before any suspension can intervene.
 fun [tail] sroaApplyLoop(s: Segment<Op>|None, iSeg: Int32, sp: List<Sroa>, i,
-                         [terminal] acc): SeqBuilder<Op>
-  ret match(s)
-    (nil: None)        => acc
-    (seg: Segment<Op>) => iSeg < seg.length
-      ? sroaApplyLoop(s, iSeg + 1i32, sp, i + 1,
-          pushAll(
-              push(acc, opReplaceParams(seg.array(iSeg),
-                            (p) => sroaReplacer(p, sp))),
-              sroaSeedMoves(sp, i)))
-      : sroaApplyLoop(seg.next, 0i32, sp, i, acc)
+                         [terminal] acc): SeqBuilder<Op> => match(s)
+  (nil: None)        => acc
+  (seg: Segment<Op>) => iSeg < seg.length
+    ? sroaApplyLoop(s, iSeg + 1i32, sp, i + 1,
+        pushAll(
+            push(acc, opReplaceParams(seg.array(iSeg),
+                          (p) => sroaReplacer(p, sp))),
+            sroaSeedMoves(sp, i)))
+    : sroaApplyLoop(seg.next, 0i32, sp, i, acc)
 
-fun sroaReplacer(p, sp: List<Sroa>): RParam
-  ret match(p)
-    (sf: RpStructField) => match(sf.structVal)
-      (sv: RpStackVar) => sroaFieldLocal(sp, sv.name, sf.field, p)
-      (o: RParam)       => p
-    (o2: RParam)         => p
+fun sroaReplacer(p, sp: List<Sroa>): RParam => match(p)
+  (sf: RpStructField) => match(sf.structVal)
+    (sv: RpStackVar) => sroaFieldLocal(sp, sv.name, sf.field, p)
+    (o: RParam)       => p
+  (o2: RParam)         => p
 
 fun sroaFieldLocal(sp: List<Sroa>, v: String, f, orig): RParam
   ret match(head(filter(sp, (s2) => s2.srName == v)))

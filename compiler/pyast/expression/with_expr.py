@@ -34,6 +34,7 @@ from typing import Any, Callable
 import pyast.resolver as g
 import pyast.rewrite as rw
 import pyast.typespec as t
+import pyast.hints as h
 from parsing.parselib import Error
 from pyast.expression.base import Expression
 from pyast.expression.literal import BoolExpression, StringExpression
@@ -88,18 +89,19 @@ class WithExpression(Expression):
 
     # ── compile: expand once the types allow it ──────────────────────────────
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list]:
-        subject, stmts = self.subject.compile(resolver, None)
-        repl, stmts2 = self.replacements.compile(resolver, None)
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list, h.Hints]:
+        subject, stmts, sh = self.subject.compile(resolver, None)
+        repl, stmts2, rh = self.replacements.compile(resolver, None)
+        hints = h.merge(sh, rh)
         node = dataclasses.replace(self, subject=subject,
                                    replacements=repl if isinstance(repl, TupleExpression) else self.replacements)
         if node.__shape_error() is not None:
-            return node, stmts + stmts2
+            return node, stmts + stmts2, hints
         expanded = node.__expand(resolver)
         if expanded is None:
-            return node, stmts + stmts2      # types not resolved yet: wait
+            return node, stmts + stmts2, hints      # types not resolved yet: wait
         from pyast.expression.conversion import converted
-        return converted(expanded, expected_type, resolver), stmts + stmts2
+        return converted(expanded, expected_type, resolver), stmts + stmts2, hints
 
     def __expand(self, resolver: g.Resolver) -> "Expression | None":
         import pyast.statement as s
@@ -122,8 +124,10 @@ class WithExpression(Expression):
         repl_lets: list = []
         repl_ref: dict[str, Expression] = {}
         for i, en in enumerate(self.replacements.expressions):
+            # Typed as the FIELD, so the SAME guard compares like with like.
+            field_type = e.DotExpression(lr, self.subject, by_bare[en.name][0]).get_type(resolver)
             repl_lets.append(s.LetStatement(lr, f"$w{i}@{tag}", None, {}, (),
-                                            en.value, None))
+                                            en.value, field_type))
             repl_ref[en.name] = ref(f"$w{i}")
 
         # SAME guard: every replacement bit-identical to the current field.

@@ -41,14 +41,13 @@ fun resolvePinnableReads(a): CgApp
     : appWithFunctions(a, map(appFunctions(a),
                               (f) => prFunction(f, names)))
 
-fun [tail] prNames(os: Chain<CgObject>, acc): StrSet
-  ret match(os)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => prNames(l.next, l.value.objIsPinnable
-                                         ? setAdd(acc, l.value.objName)
-                                         : acc)
+fun [tail] prNames(os: Chain<CgObject>, acc) => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => prNames(l.next, l.value.objIsPinnable
+                                       ? setAdd(acc, l.value.objName)
+                                       : acc)
 
-fun prFunction(f: CgFunction, names: StrSet): CgFunction
+fun prFunction(f: CgFunction, names: StrSet)
   let ops = map(f.fnOps,
                 (op) => opReplaceParams(op, (p) => prRewrite(p, names)))
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars,
@@ -56,16 +55,15 @@ fun prFunction(f: CgFunction, names: StrSet): CgFunction
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
                  f.fnSourceFile, f.fnSourceLine)
 
-fun prRewrite(p, names: StrSet): RParam
-  ret match(p)
-    (x: RpObjectField)  => prRewriteField(x, names)
-    (x: RpArrayElement) => prRewriteElement(x, names)
-    (o: RParam)         => p
+fun prRewrite(p, names: StrSet) => match(p)
+  (x: RpObjectField)  => prRewriteField(x, names)
+  (x: RpArrayElement) => prRewriteElement(x, names)
+  (o: RParam)         => p
 
 # A [pinnable] ARRAY class's element read (`a[i]`): the base pointer resolves
 # for the same reason — the elements and the sealed length are late-pin
 # written, so a stale base reads pre-write slots (pinnable_reads.py).
-fun prRewriteElement(x: RpArrayElement, names: StrSet): RParam
+fun prRewriteElement(x, names: StrSet)
   ret !setHas(names, x.objectName) || prAlreadyResolved(x.pointer)
     ? x
     : RpArrayElement(x.elementType,
@@ -79,7 +77,7 @@ fun prRewriteElement(x: RpArrayElement, names: StrSet): RParam
 # A FRESH store needs no resolve: the object was allocated moments ago on a
 # thread-private page, straight-line before this store, so it cannot have been
 # relocated yet.
-fun prRewriteField(x: RpObjectField, names: StrSet): RParam
+fun prRewriteField(x, names: StrSet)
   ret !setHas(names, x.objectName) || x.fresh || prAlreadyResolved(x.pointer)
     ? x
     : RpObjectField(x.fieldType,
@@ -89,7 +87,6 @@ fun prRewriteField(x: RpObjectField, names: StrSet): RParam
                                     CgDataPointer()),
                     x.objectName, x.field, x.index, x.fresh)
 
-fun prAlreadyResolved(p): Bool
-  ret match(p)
-    (x: RpRuntimeInvoke) => x.function == "object_resolve"
-    (o: RParam)          => false
+fun prAlreadyResolved(p) => match(p)
+  (x: RpRuntimeInvoke) => x.function == "object_resolve"
+  (o: RParam)          => false

@@ -72,8 +72,12 @@ def _node_count(obj: Any) -> int:
     return total[0]
 
 
-def _collect_called_names(stmts: list[s.Statement]) -> set[str]:
-    """Names that appear as the function of a CallExpression anywhere in stmts."""
+def _collect_called_names(body: e.BlockExpression) -> set[str]:
+    """Names that appear as the function of a CallExpression anywhere in a
+    function body — its statements AND its trailing value. `ret <expr>` leaves
+    the block with no statements at all, so reading only the statement list
+    reported no calls for most functions and every call-graph cycle survived
+    the prune below."""
     names: set[str] = set()
 
     def visit(_resolver, thing):
@@ -81,8 +85,7 @@ def _collect_called_names(stmts: list[s.Statement]) -> set[str]:
             names.add(thing.function.name)
         return thing
 
-    for stmt in stmts:
-        stmt.search_and_replace(g.ResolverRoot([]), visit)
+    body.search_and_replace(g.ResolverRoot([]), visit)
     return names
 
 
@@ -268,7 +271,7 @@ def _build_catalog(statements: list[s.Statement], optimization_level: int) -> di
     # candidates and keep only functions whose reachable call set doesn't
     # include themselves.
     callees: dict[str, set[str]] = {
-        name: _collect_called_names(fn.body.statements) & candidates.keys()
+        name: _collect_called_names(fn.body) & candidates.keys()
         for name, fn in candidates.items()
         if isinstance(fn.body, e.BlockExpression)
     }

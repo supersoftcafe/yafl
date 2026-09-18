@@ -14,8 +14,7 @@ import Bootstrap::Types
 
 
 
-fun isDeferredInit(l: PsLet): Bool
-  ret hasAttr(l.lAttrs, "lazy") || hasAttr(l.lAttrs, "future")
+fun isDeferredInit(l: PsLet) => hasAttr(l.lAttrs, "lazy") || hasAttr(l.lAttrs, "future")
 
 # ── the static-plan PREDICATE ────────────────────────────────────────────────
 # AST-level mirror of LetStatement.static_global_plan's DECISION half
@@ -25,38 +24,34 @@ fun isDeferredInit(l: PsLet): Bool
 # plan, so promotion decision and emission cannot disagree (Python's own
 # rule, lets.py:281-284).
 
-fun hasStaticGlobalPlan(l: PsLet, r, chasing: List<String>): Bool
+fun hasStaticGlobalPlan(l: PsLet, r, chasing: List<String>)
   ret match(staticGlobalPlan(l, r, chasing))
     (plan: List<CgGlobal>) => true
     ()                      => false
 
-fun specHasNamed(sp): Bool
-  ret match(sp)
-    (n: SNamed)        => true
-    (c: SClass)        => sgAnyNamed(chain(c.scParams))
-    (e2: SEnum)        => sgAnyNamed(chain(e2.seParams))
-    (cm: SCombination) => sgAnyNamed(chain(cm.scTypes))
-    (t2: STuple)       => sgEntsNamed(chain(t2.stEntries))
-    (cb: SCallable)    => specHasNamed(cb.scParams2)
-                          || sgOptNamed(cb.scResult)
-    (af: SArrayField)  => specHasNamed(af.safElem)
-    (ls: SLazyStub)    => sgOptNamed(ls.slsTarget)
-    (o: Spec)          => false
+fun specHasNamed(sp) => match(sp)
+  (n: SNamed)        => true
+  (c: SClass)        => sgAnyNamed(chain(c.scParams))
+  (e2: SEnum)        => sgAnyNamed(chain(e2.seParams))
+  (cm: SCombination) => sgAnyNamed(chain(cm.scTypes))
+  (t2: STuple)       => sgEntsNamed(chain(t2.stEntries))
+  (cb: SCallable)    => specHasNamed(cb.scParams2)
+                        || sgOptNamed(cb.scResult)
+  (af: SArrayField)  => specHasNamed(af.safElem)
+  (ls: SLazyStub)    => sgOptNamed(ls.slsTarget)
+  (o: Spec)          => false
 
-fun [tail] sgAnyNamed(ts: Chain<Spec>): Bool
-  ret match(ts)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => specHasNamed(l.value) ? true : sgAnyNamed(l.next)
+fun [tail] sgAnyNamed(ts: Chain<Spec>) => match(ts)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => specHasNamed(l.value) ? true : sgAnyNamed(l.next)
 
-fun [tail] sgEntsNamed(es: Chain<SEntry>): Bool
-  ret match(es)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => sgOptNamed(l.value.seType) ? true : sgEntsNamed(l.next)
+fun [tail] sgEntsNamed(es: Chain<SEntry>) => match(es)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => sgOptNamed(l.value.seType) ? true : sgEntsNamed(l.next)
 
-fun sgOptNamed(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => specHasNamed(s2)
-    ()         => false
+fun sgOptNamed(sp: Spec|None) => match(sp)
+  (s2: Spec) => specHasNamed(s2)
+  ()         => false
 
 # ── auto-promotion ───────────────────────────────────────────────────────────
 
@@ -64,18 +59,16 @@ fun promoteNonTrivialGlobals(statements: List<PStmt>, r): List<PStmt>
   ret pngLoop(chain(statements), r, List())
 
 fun pngLoop(ss, r,
-                   acc: List<PStmt>): List<PStmt>
-  ret build(pngLoopB(ss, r, builderFrom(acc)))
+                   acc: List<PStmt>): List<PStmt> => build(pngLoopB(ss, r, builderFrom(acc)))
 
-fun [tail] pngLoopB(ss: Chain<PStmt>, r: Resolver,
-                   [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => pngLoopB(l.next, r, push(acc, pngOne(let2, r)))
-      (o: PStmt)    => pngLoopB(l.next, r, push(acc, l.value))
+fun [tail] pngLoopB(ss: Chain<PStmt>, r,
+                   [terminal] acc: ListBuilder<PStmt>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => pngLoopB(l.next, r, push(acc, pngOne(let2, r)))
+    (o: PStmt)    => pngLoopB(l.next, r, push(acc, l.value))
 
-fun pngOne(let2: PsLet, r): PStmt
+fun pngOne(let2, r)
   if isDeferredInit(let2)
     ret let2
   let promotable = match(let2.lDefault)
@@ -95,16 +88,14 @@ fun pngOne(let2: PsLet, r): PStmt
 # capture an uninitialised slot. Error order differs from Python's post-order
 # block walk, but the driver prints sorted(set(errors)).
 
-fun checkLazyForwardRefs(statements: List<PStmt>): Set<PErr>
+fun checkLazyForwardRefs(statements: List<PStmt>)
   ret foldStmts(statements, clfIdStmt, clfBlockCb, Set())
 
-fun clfIdStmt(acc, st: PStmt): Set<PErr>
-  ret acc
+fun clfIdStmt(acc, st: PStmt): Set<PErr> => acc
 
-fun clfBlockCb(acc, x): Set<PErr>
-  ret match(x)
-    (bk: PeBlock) => clfBlock(bk.blockStmts, acc)
-    (o: PExpr)    => acc
+fun clfBlockCb(acc, x): Set<PErr> => match(x)
+  (bk: PeBlock) => clfBlock(bk.blockStmts, acc)
+  (o: PExpr)    => acc
 
 # Declared name -> where it was declared and whether it is [lazy]. A Dict:
 # the only reader asks about ONE name, and the three parallel lists it
@@ -117,74 +108,66 @@ fun clfBlock(stmts: List<PStmt>, acc): Set<PErr>
                        ClfDecls(Dict()))
   ret clfScan(chain(stmts), 0, decls, acc)
 
-fun [tail] clfDecls(ss: Chain<PStmt>, i: Int, acc: ClfDecls): ClfDecls
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => clfDecls(l.next, i + 1,
-          clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
-      (d: PsDestructure) => clfDecls(l.next, i + 1,
-          clfSubDecls(chain(d.dTargets), i, acc))
-      (o: PStmt)    => clfDecls(l.next, i + 1, acc)
+fun [tail] clfDecls(ss: Chain<PStmt>, i, acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => clfDecls(l.next, i + 1,
+        clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
+    (d: PsDestructure) => clfDecls(l.next, i + 1,
+        clfSubDecls(chain(d.dTargets), i, acc))
+    (o: PStmt)    => clfDecls(l.next, i + 1, acc)
 
-fun [tail] clfSubDecls(ts: Chain<PStmt>, i: Int, acc: ClfDecls): ClfDecls
-  ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => clfSubDecls(l.next, i,
-          clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
-      (o: PStmt)    => clfSubDecls(l.next, i, acc)
+fun [tail] clfSubDecls(ts: Chain<PStmt>, i, acc) => match(ts)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => clfSubDecls(l.next, i,
+        clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
+    (o: PStmt)    => clfSubDecls(l.next, i, acc)
 
-fun [tail] clfScan(ss: Chain<PStmt>, i: Int, decls: ClfDecls,
-                   acc: Set<PErr>): Set<PErr>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => isDeferredInit(let2)
-        ? clfScan(l.next, i + 1, decls, clfLet(let2, i, decls, acc))
-        : clfScan(l.next, i + 1, decls, acc)
-      (o: PStmt)    => clfScan(l.next, i + 1, decls, acc)
+fun [tail] clfScan(ss: Chain<PStmt>, i, decls: ClfDecls,
+                   acc: Set<PErr>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => isDeferredInit(let2)
+      ? clfScan(l.next, i + 1, decls, clfLet(let2, i, decls, acc))
+      : clfScan(l.next, i + 1, decls, acc)
+    (o: PStmt)    => clfScan(l.next, i + 1, decls, acc)
 
 fun clfLet(let2: PsLet, i, decls: ClfDecls,
-           acc): Set<PErr>
-  ret match(let2.lDefault)
-    (dv: PExpr) => foldExpr(dv, clfIdStmt,
-                     (a, x) =>
-                       clfRef(a, x, let2, i, decls),
-                     acc)
-    ()          => acc
+           acc): Set<PErr> => match(let2.lDefault)
+  (dv: PExpr) => foldExpr(dv, clfIdStmt,
+                   (a, x) =>
+                     clfRef(a, x, let2, i, decls),
+                   acc)
+  ()          => acc
 
 fun clfRef(acc, x, let2: PsLet, i,
-           decls: ClfDecls): Set<PErr>
-  ret match(x)
-    # No "have I reported this already" scan: the same (let, ref) pair yields
-    # an IDENTICAL PErr — same line, same message — so adding it twice is a
-    # no-op in a Set. That replaced an O(n) walk doing a SUBSTRING match on
-    # every accumulated error.
-    (nm: PeName) => clfBad(nm.refName, i, decls)
-      ? add(acc, PErr(let2.pslLine,
-          "[lazy] let '" + let2.lName + "' forward-references non-lazy let '"
-            + nm.refName + "'. Mark '" + nm.refName
-            + "' as [lazy], or move its declaration before '" + let2.lName
-            + "'."))
-      : acc
-    (o: PExpr)   => acc
+           decls: ClfDecls): Set<PErr> => match(x)
+  # No "have I reported this already" scan: the same (let, ref) pair yields
+  # an IDENTICAL PErr — same line, same message — so adding it twice is a
+  # no-op in a Set. That replaced an O(n) walk doing a SUBSTRING match on
+  # every accumulated error.
+  (nm: PeName) => clfBad(nm.refName, i, decls)
+    ? add(acc, PErr(let2.pslLine,
+        "[lazy] let '" + let2.lName + "' forward-references non-lazy let '"
+          + nm.refName + "'. Mark '" + nm.refName
+          + "' as [lazy], or move its declaration before '" + let2.lName
+          + "'."))
+    : acc
+  (o: PExpr)   => acc
 
 # FIRST declaration of a name wins, as the head-first chain walk did.
-fun clfDeclAdd(acc, name: String, i, lazy): ClfDecls
-  ret contains(acc.cdMap, name)
-    ? acc
-    : ClfDecls(put(acc.cdMap, name, ClfDecl(i, lazy)))
+fun clfDeclAdd(acc, name, i, lazy) => contains(acc.cdMap, name)
+  ? acc
+  : ClfDecls(put(acc.cdMap, name, ClfDecl(i, lazy)))
 
-fun clfBad(name: String, i, decls: ClfDecls): Bool
-  ret match(get(decls.cdMap, name))
-    (d: ClfDecl) => d.cdIdx > i && !d.cdLazy
-    ()           => false
+fun clfBad(name: String, i, decls: ClfDecls) => match(get(decls.cdMap, name))
+  (d: ClfDecl) => d.cdIdx > i && !d.cdLazy
+  ()           => false
 
 # Python's per-let `seen` set: one error per referenced name per lazy let.
 
-fun containsSub(s, needle): Bool
-  ret find(s, needle) >= 0
+fun containsSub(s, needle) => find(s, needle) >= 0
 
 # ── the lowering ─────────────────────────────────────────────────────────────
 
@@ -198,54 +181,47 @@ fun lowerLazyLets(statements): List<PStmt>
   ret rwStmts(promoted, Rw((x) => lllRefCb(x, lazies), rwNoSpec,
                            lllWrapCb))
 
-fun lllIdExpr(acc, x: PExpr): OuterTypes
-  ret acc
+fun lllIdExpr(acc, x: PExpr): OuterTypes => acc
 
-fun lllCollect(acc, st): OuterTypes
-  ret match(st)
-    (let2: PsLet) => isDeferredInit(let2) ? lllAdd(acc, let2) : acc
-    (o: PStmt)    => acc
+fun lllCollect(acc, st): OuterTypes => match(st)
+  (let2: PsLet) => isDeferredInit(let2) ? lllAdd(acc, let2) : acc
+  (o: PStmt)    => acc
 
 # FIRST binding of a name wins, as it did when this was a chain searched from
 # the head: these lets are gathered from the whole statement tree, so two
 # scopes may declare the same name, and a later one must not retype an earlier
 # one's references.
-fun lllAdd(acc, let2: PsLet): OuterTypes
-  ret match(let2.lType)
-    (t2: Spec) => contains(acc.otMap, let2.lName)
-      ? acc
-      : OuterTypes(put(acc.otMap, let2.lName, t2))
-    ()         => acc
+fun lllAdd(acc, let2: PsLet) => match(let2.lType)
+  (t2: Spec) => contains(acc.otMap, let2.lName)
+    ? acc
+    : OuterTypes(put(acc.otMap, let2.lName, t2))
+  ()         => acc
 
-fun lllRefCb(x, lazies: OuterTypes): PExpr|None
-  ret match(x)
-    (nm: PeName) => match(get(lazies.otMap, nm.refName))
-      (t2: Spec) => PeLazy(nm.refName, t2, None, false, nm.penLine)
-      ()         => None
-    (o: PExpr)   => None
+fun lllRefCb(x, lazies: OuterTypes): PExpr|None => match(x)
+  (nm: PeName) => match(get(lazies.otMap, nm.refName))
+    (t2: Spec) => PeLazy(nm.refName, t2, None, false, nm.penLine)
+    ()         => None
+  (o: PExpr)   => None
 
 # Wrap EVERY deferred-init RHS in a nullary `() => expr` thunk (bottom-up:
 # the references inside were already rewritten to PeLazy).
-fun lllWrapCb(st): PStmt|None
-  ret match(st)
-    (let2: PsLet) => isDeferredInit(let2) ? lllWrapLet(let2) : None
-    (o: PStmt)    => None
+fun lllWrapCb(st): PStmt|None => match(st)
+  (let2: PsLet) => isDeferredInit(let2) ? lllWrapLet(let2) : None
+  (o: PStmt)    => None
 
-fun lllWrapLet(let2: PsLet): PStmt|None
-  ret match(let2.lDefault)
-    (dv: PExpr) => match(let2.lType)
-      (t2: Spec) => PsLet(let2.lName, let2.lAttrs, let2.lGens, let2.lType,
-                          PeLambda(lllEmptyParams(let2.pslLine), dv,
-                                   let2.pslLine,
-                                   SCallable(STuple(List(),
-                                                    let2.pslLine),
-                                             t2, let2.pslLine)),
-                          let2.lArrayLen, let2.lWheres, let2.pslLine,
-                          let2.lTypeInferred, let2.lImports)
-      ()         => None
-    ()          => None
+fun lllWrapLet(let2: PsLet) => match(let2.lDefault)
+  (dv: PExpr) => match(let2.lType)
+    (t2: Spec) => PsLet(let2.lName, let2.lAttrs, let2.lGens, let2.lType,
+                        PeLambda(lllEmptyParams(let2.pslLine), dv,
+                                 let2.pslLine,
+                                 SCallable(STuple(List(),
+                                                  let2.pslLine),
+                                           t2, let2.pslLine)),
+                        let2.lArrayLen, let2.lWheres, let2.pslLine,
+                        let2.lTypeInferred, let2.lImports)
+    ()         => None
+  ()          => None
 
-fun lllEmptyParams(lr): PStmt
-  ret PsDestructure("_", List(),
-                    STuple(List(), lr), List(), None, lr,
-                    false)
+fun lllEmptyParams(lr) => PsDestructure("_", List(),
+                                        STuple(List(), lr), List(), None, lr,
+                                        false)

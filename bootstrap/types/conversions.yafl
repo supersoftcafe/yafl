@@ -21,14 +21,13 @@ import Bootstrap::Resolve
 
 
 
-fun needsConversion(r, source: Spec|None, target: Spec|None): Bool
-  ret match(source)
-    (s2: Spec) => match(target)
-      (t2: Spec) => needsConv(r, s2, t2)
-      ()         => false
-    () => false
+fun needsConversion(r, source: Spec|None, target: Spec|None) => match(source)
+  (s2: Spec) => match(target)
+    (t2: Spec) => needsConv(r, s2, t2)
+    ()         => false
+  () => false
 
-fun needsConv(r, source, target): Bool
+fun needsConv(r, source, target)
   # An uninhabited source (Never) is dead code, but its SHAPE must still change
   # unless the target is identical.
   if isNever(source)
@@ -57,7 +56,7 @@ fun needsConv(r, source, target): Bool
 # ── tuple into tuple ────────────────────────────────────────────────────────
 
 fun tupleIntoTuple(r, source, target,
-                   su, tu: String): Bool
+                   su, tu)
   # 1-tuple WRAP first: when the target is a one-entry tuple whose entry the
   # SOURCE-AS-A-WHOLE fits (it IS the entry type, or it is a member tuple of the
   # entry's union — e.g. a simple class's structural tuple), the conversion is a
@@ -72,7 +71,7 @@ fun tupleIntoTuple(r, source, target,
       : (su != tu && anyEntryConverts(r, sEntries, tEntries))
     ()             => false                     # not assignable — not our call
 
-fun wrapsWhole(r, source, target, su): Bool
+fun wrapsWhole(r, source, target, su)
   if !tupleSingle(target)
     ret false
   ret match(entryTypeAt(target, 0))
@@ -83,30 +82,27 @@ fun wrapsWhole(r, source, target, su): Bool
           : isUnion(ety) && hasMatchingVariant(r, source, ety))
     ()          => false
 
-fun isIdentityBinding(b: List<Int>): Bool
-  ret identityLoop(chain(b), 0)
+fun isIdentityBinding(b: List<Int>) => identityLoop(chain(b), 0)
 
-fun [tail] identityLoop(bs: Chain<Int>, i: Int): Bool
-  ret match(bs)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => l.value != i ? false : identityLoop(l.next, i + 1)
+fun [tail] identityLoop(bs: Chain<Int>, i) => match(bs)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => l.value != i ? false : identityLoop(l.next, i + 1)
 
-fun anyEntryConverts(r, ss: List<SEntry>, ts: List<SEntry>): Bool
+fun anyEntryConverts(r, ss: List<SEntry>, ts: List<SEntry>)
   ret entryConvLoop(chain(ss), chain(ts), r)
 
-fun [tail] entryConvLoop(ss: Chain<SEntry>, ts: Chain<SEntry>, r): Bool
-  ret match(ss)
-    (nil: ChainEnd) => false
-    (a: ChainLink)  => match(ts)
-      (nil2: ChainEnd) => false
-      (b: ChainLink)   => needsConversion(r, a.value.seType, b.value.seType)
-        ? true
-        : entryConvLoop(a.next, b.next, r)
+fun [tail] entryConvLoop(ss: Chain<SEntry>, ts: Chain<SEntry>, r) => match(ss)
+  (nil: ChainEnd) => false
+  (a: ChainLink)  => match(ts)
+    (nil2: ChainEnd) => false
+    (b: ChainLink)   => needsConversion(r, a.value.seType, b.value.seType)
+      ? true
+      : entryConvLoop(a.next, b.next, r)
 
 # ── into a union ────────────────────────────────────────────────────────────
 
-fun intoUnion(r: Resolver, source: Spec, target: Spec,
-              su: String, tu: String): Bool
+fun intoUnion(r, source, target,
+              su, tu)
   if isTuple(source)
     # A tuple that fits one of the union's tuple variants BOXES into it.
     ret hasMatchingVariant(r, source, target)
@@ -125,10 +121,9 @@ fun intoUnion(r: Resolver, source: Spec, target: Spec,
   # An ordinary value boxes in when it IS one of the members.
   ret anyMemberIs(chain(reprMembersOf(unionMembers(target))), su)
 
-fun [tail] anyMemberIs(ms: Chain<Spec>, su: String): Bool
-  ret match(ms)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => uid(l.value) == su ? true : anyMemberIs(l.next, su)
+fun [tail] anyMemberIs(ms: Chain<Spec>, su) => match(ms)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => uid(l.value) == su ? true : anyMemberIs(l.next, su)
 
 # ── the union's matching tuple variant ──────────────────────────────────────
 # THE single home for this match: the decision (here), the emission (coerce)
@@ -136,18 +131,17 @@ fun [tail] anyMemberIs(ms: Chain<Spec>, su: String): Bool
 # nominally distinct variants collapsed to one structural spec — which the
 # union-collision pruning must prevent — so it is not silently tolerated.
 
-fun matchingTupleVariant(r, source, target): Spec|None
+fun matchingTupleVariant(r, source, target)
   ret variantLoop(chain(reprMembersOf(unionMembers(target))), r, source, None)
 
-fun [tail] variantLoop(vs: Chain<Spec>, r: Resolver, source: Spec,
-                       found: Spec|None): Spec|None
-  ret match(vs)
-    (nil: ChainEnd) => found
-    (l: ChainLink)  => variantFits(r, l.value, source)
-      ? variantLoop(l.next, r, source, l.value)
-      : variantLoop(l.next, r, source, found)
+fun [tail] variantLoop(vs: Chain<Spec>, r, source,
+                       found: Spec|None) => match(vs)
+  (nil: ChainEnd) => found
+  (l: ChainLink)  => variantFits(r, l.value, source)
+    ? variantLoop(l.next, r, source, l.value)
+    : variantLoop(l.next, r, source, found)
 
-fun variantFits(r, v, source): Bool
+fun variantFits(r, v, source)
   # A tuple variant matches structurally...
   if isTuple(v)
     ret triTrue(assignableFrom(r, v, source))
@@ -158,41 +152,35 @@ fun variantFits(r, v, source): Bool
     (st: Spec) => triTrue(assignableFrom(r, st, source))
     ()         => false
 
-fun classStructuralTuple(r, v): Spec|None
-  ret match(v)
-    (c: SClass) => finalClassTuple(r, c)
-    (o: Spec)   => None
+fun classStructuralTuple(r, v) => match(v)
+  (c: SClass) => finalClassTuple(r, c)
+  (o: Spec)   => None
 
-fun finalClassTuple(r, c: SClass): Spec|None
-  ret match(soleItem(findType(r, c.scName)))
-    (f: Found) => match(f.fStmt)
-      (cs: PsClass) => hasAttr(cs.cAttrs, "final")
-        ? paramsTuple(cs.cParams)
-        : None
-      (o: PStmt)    => None
-    ()         => None
+fun finalClassTuple(r, c: SClass) => match(soleItem(findType(r, c.scName)))
+  (f: Found) => match(f.fStmt)
+    (cs: PsClass) => hasAttr(cs.cAttrs, "final")
+      ? paramsTuple(cs.cParams)
+      : None
+    (o: PStmt)    => None
+  ()         => None
 
-fun hasMatchingVariant(r, source, target): Bool
-  ret match(matchingTupleVariant(r, source, target))
-    (v: Spec) => true
-    ()        => false
+fun hasMatchingVariant(r, source, target) => match(matchingTupleVariant(r, source, target))
+  (v: Spec) => true
+  ()        => false
 
 # ── shape helpers ───────────────────────────────────────────────────────────
 
-fun tupleEntries(sp): List<SEntry>
-  ret match(sp)
-    (t2: STuple) => t2.stEntries
-    (o: Spec)    => List()
+fun tupleEntries(sp) => match(sp)
+  (t2: STuple) => t2.stEntries
+  (o: Spec)    => List()
 
 # Single-entry test, structurally — arity is never counted, only probed.
-fun tupleSingle(sp): Bool
-  ret exactly(chain(tupleEntries(sp)), 1)
+fun tupleSingle(sp) => exactly(chain(tupleEntries(sp)), 1)
 
-fun entryTypeAt(sp, i): Spec|None
-  ret entryAt(tupleEntries(sp), i)
+fun entryTypeAt(sp, i) => entryAt(tupleEntries(sp), i)
 
 # A genuine 1-tuple wrapper of the type with id `tu`.
-fun isWrapperOf(source, tu): Bool
+fun isWrapperOf(source, tu)
   if !isTuple(source) || !tupleSingle(source)
     ret false
   ret match(entryTypeAt(source, 0))

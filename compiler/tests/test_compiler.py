@@ -274,7 +274,7 @@ fun main(): System::Int
 
             def compile(self, resolver, func_ret_type):
                 call_count["n"] += 1
-                return dataclasses.replace(self, counter=call_count["n"]), []
+                return dataclasses.replace(self, counter=call_count["n"]), [], {}
 
             def check(self, resolver, func_ret_type):
                 return []

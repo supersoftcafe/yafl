@@ -11,52 +11,50 @@ import Bootstrap::Types
 
 
 
-fun [tail] checkRecurArgs(as2: Chain<PExpr>, r: Resolver,
-                          acc: Set<PErr>): Set<PErr>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => checkRecurArgs(l.next, r,
-                                      union(acc, checkExpr(l.value, r,
-                                                            None)))
+fun [tail] checkRecurArgs(as2: Chain<PExpr>, r,
+                          acc: Set<PErr>) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => checkRecurArgs(l.next, r,
+                                    union(acc, checkExpr(l.value, r,
+                                                          None)))
 
-fun checkExpr(x, r, expected: Spec|None): Set<PErr>
-  ret match(x)
-    (i: PeInt)      => noErrs()
-    (f: PeFloat)    => noErrs()
-    (b: PeBool)     => noErrs()
-    (s2: PeStr)     => noErrs()
-    (rx: PeRegex)   => noErrs()
-    (ng: PeNothing) => noErrs()
-    (nm: PeName)    => checkName(nm, r)
-    (d: PeDot)      => checkDot(d, r)
-    (c: PeCall)     => checkCall(c, r)
-    (tp: PeTuple)   => checkTupleExpr(tp, r, expected)
-    (te: PeTernary) => checkTernary(te, r, expected)
-    (lm: PeLambda)  => checkLambda(lm, r, expected)
-    (bk: PeBlock)   => checkBlock(bk, r, expected)
-    (mt: PeMatch)   => checkMatch(mt, r, expected)
-    (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
-    (nw: PeNew)     => checkNew(nw, r)
-    (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2, fa) =>
-                            union(a2, checkExpr(fa.faValue, r, None)))
-    (ar: PeArrayRead) => union(checkExpr(ar.arrObj, r, None),
-                                checkExpr(ar.arrIndex, r, None))
-    (pl: PeParallel) => checkExpr(pl.parParams, r, None)
-    (wx: PeWith)   => checkWith(wx, r)
-    (cv: PeConvert) => checkExpr(cv.convInner, r, None)
-    (qq: PeCoalesce) => union(checkExpr(qq.qqSubject, r, None),
-                              checkExpr(qq.qqFallback, r, expected))
-    # tail_loop lowering only — never present at check time; mirrored from
-    # loop.py's check methods for completeness.
-    (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
-    (rc: PeRecur)   => checkRecurArgs(chain(rc.recArgs), r, noErrs())
-    (lz: PeLazy)    => noErrs()
+fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
+  (i: PeInt)      => noErrs()
+  (f: PeFloat)    => noErrs()
+  (b: PeBool)     => noErrs()
+  (s2: PeStr)     => noErrs()
+  (rx: PeRegex)   => noErrs()
+  (ng: PeNothing) => noErrs()
+  (nm: PeName)    => checkName(nm, r)
+  (d: PeDot)      => checkDot(d, r)
+  (c: PeCall)     => checkCall(c, r)
+  (tp: PeTuple)   => checkTupleExpr(tp, r, expected)
+  (te: PeTernary) => checkTernary(te, r, expected)
+  (lm: PeLambda)  => checkLambda(lm, r, expected)
+  (bk: PeBlock)   => checkBlock(bk, r, expected)
+  (mt: PeMatch)   => checkMatch(mt, r, expected)
+  (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
+  (nw: PeNew)     => checkNew(nw, r)
+  (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2, fa) =>
+                          union(a2, checkExpr(fa.faValue, r, None)))
+  (ar: PeArrayRead) => union(checkExpr(ar.arrObj, r, None),
+                              checkExpr(ar.arrIndex, r, None))
+  (pl: PeParallel) => checkExpr(pl.parParams, r, None)
+  (wx: PeWith)   => checkWith(wx, r)
+  (cv: PeConvert) => checkExpr(cv.convInner, r, None)
+  (qq: PeCoalesce) => union(checkExpr(qq.qqSubject, r, None),
+                            checkExpr(qq.qqFallback, r, expected))
+  # tail_loop lowering only — never present at check time; mirrored from
+  # loop.py's check methods for completeness.
+  (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
+  (rc: PeRecur)   => checkRecurArgs(chain(rc.recArgs), r, noErrs())
+  (lz: PeLazy)    => noErrs()
 
 # ── NamedExpression ─────────────────────────────────────────────────────────
 # Duplicate-route resolutions of one statement are ONE candidate here (only in
 # check — compile/get_type keep the raw multiplicity as an unresolved signal).
 
-fun checkName(nm: PeName, r): Set<PErr>
+fun checkName(nm: PeName, r)
   let tpErrs = checkSpecs(chain(nm.refTypeParams), r, noErrs())
   let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
                             nm.penTrait)
@@ -84,80 +82,69 @@ fun checkName(nm: PeName, r): Set<PErr>
                            ", ")),
              tpErrs)
 
-fun unresolvedAmbient(nm: PeName, f: Found): Bool
-  ret match(f.fInstanceParams)
-    (own: List<String>) => !isEmpty(own) && match(nm.penTrait)
-      (c: Spec) => false
-      ()        => true
-    ()                  => false
+fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
+  (own: List<String>) => !isEmpty(own) && match(nm.penTrait)
+    (c: Spec) => false
+    ()        => true
+  ()                  => false
 
-fun foundNames(ds: Chain<Found>, acc: List<String>): List<String>
-  ret build(foundNamesB(ds, builderFrom(acc)))
+fun foundNames(ds: Chain<Found>, acc: List<String>) => build(foundNamesB(ds, builderFrom(acc)))
 
-fun [tail] foundNamesB(ds: Chain<Found>, [terminal] acc): ListBuilder<String>
-  ret match(ds)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => foundNamesB(l.next, push(acc, l.value.fName))
+fun [tail] foundNamesB(ds: Chain<Found>, [terminal] acc): ListBuilder<String> => match(ds)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => foundNamesB(l.next, push(acc, l.value.fName))
 
-fun dedupeStrs(ss: List<String>): List<String>
-  ret ddsLoop(chain(ss), List())
+fun dedupeStrs(ss: List<String>) => ddsLoop(chain(ss), List())
 
-fun [tail] ddsLoop(ss: Chain<String>, acc: List<String>): List<String>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ddsLoop(l.next, addNameOnce(acc, l.value))
+fun [tail] ddsLoop(ss: Chain<String>, acc: List<String>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => ddsLoop(l.next, addNameOnce(acc, l.value))
 
 # _distinct_resolutions: several ROUTES to one statement are one candidate.
-fun distinctFinds(ds: List<Found>): List<Found>
-  ret dfLoop(chain(ds), List(), List())
+fun distinctFinds(ds: List<Found>) => dfLoop(chain(ds), List(), List())
 
 fun dfLoop(ds, acc: List<Found>,
-                  seen: List<String>): List<Found>
-  ret build(dfLoopB(ds, builderFrom(acc), seen))
+                  seen: List<String>) => build(dfLoopB(ds, builderFrom(acc), seen))
 
 fun [tail] dfLoopB(ds: Chain<Found>, [terminal] acc: ListBuilder<Found>,
-                  seen: List<String>): ListBuilder<Found>
-  ret match(ds)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => contains2(seen, l.value.fName)
-      ? dfLoopB(l.next, acc, seen)
-      # `seen` is a dedup set — order not observed.
-      : dfLoopB(l.next, push(acc, l.value),
-                prepend(l.value.fName, seen))
+                  seen: List<String>) => match(ds)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => contains2(seen, l.value.fName)
+    ? dfLoopB(l.next, acc, seen)
+    # `seen` is a dedup set — order not observed.
+    : dfLoopB(l.next, push(acc, l.value),
+              prepend(l.value.fName, seen))
 
 # ── DotExpression ───────────────────────────────────────────────────────────
 
-fun checkDot(d: PeDot, r): Set<PErr>
-  ret match(exprType(d.base, r))
-    (bt: Spec) => match(bt)
-      (t2: STuple) => tupleFieldExists(chain(t2.stEntries), d.member)
-        ? noErrs()
-        : oneErr(d.pedLine, "Could not find field " + d.member)
-      (c2: SClass) => checkClassDot(d, c2, r)
-      (e2: SEnum)  => checkEnumDot(d, e2, r)
-      (o: Spec)    => noErrs()
-    ()         => noErrs()
+fun checkDot(d: PeDot, r) => match(exprType(d.base, r))
+  (bt: Spec) => match(bt)
+    (t2: STuple) => tupleFieldExists(chain(t2.stEntries), d.member)
+      ? noErrs()
+      : oneErr(d.pedLine, "Could not find field " + d.member)
+    (c2: SClass) => checkClassDot(d, c2, r)
+    (e2: SEnum)  => checkEnumDot(d, e2, r)
+    (o: Spec)    => noErrs()
+  ()         => noErrs()
 
-fun [tail] tupleFieldExists(es: Chain<SEntry>, name: String): Bool
-  ret match(es)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => l.value.seName == name ? true : tupleFieldExists(l.next, name)
+fun [tail] tupleFieldExists(es: Chain<SEntry>, name: String) => match(es)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => l.value.seName == name ? true : tupleFieldExists(l.next, name)
 
-fun checkClassDot(d: PeDot, c2: SClass, r): Set<PErr>
-  ret match(soleItem(findType(r, c2.scName)))
-    (f: Found) => match(f.fStmt)
-      (cs: PsClass) => classDotErrs(d, classFindData(cs, r, d.member))
-      (o: PStmt)    => noErrs()
-    ()         => noErrs()
+fun checkClassDot(d: PeDot, c2: SClass, r) => match(soleItem(findType(r, c2.scName)))
+  (f: Found) => match(f.fStmt)
+    (cs: PsClass) => classDotErrs(d, classFindData(cs, r, d.member))
+    (o: PStmt)    => noErrs()
+  ()         => noErrs()
 
-fun classDotErrs(d: PeDot, datas: List<Found>): Set<PErr>
+fun classDotErrs(d: PeDot, datas: List<Found>)
   if isEmpty(datas)
     ret oneErr(d.pedLine, "Could not find a field named " + d.member)
   if atLeast(chain(datas), 2)
     ret oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
   ret noErrs()
 
-fun checkEnumDot(d: PeDot, e2: SEnum, r): Set<PErr>
+fun checkEnumDot(d: PeDot, e2: SEnum, r)
   if hasFieldNamed(chain(enumFieldsVia(r, e2.seRoot)), d.member)
     ret noErrs()                       # already resolved to a unique field name
   ret match(narrowedEnumField(r, e2, d.member))
@@ -178,7 +165,7 @@ fun checkEnumDot(d: PeDot, e2: SEnum, r): Set<PErr>
 # reports which arguments failed and what the candidates take. Only when
 # nothing accepts them: two candidates that both fit ARE ambiguous.
 
-fun checkCall(c: PeCall, r): Set<PErr>
+fun checkCall(c: PeCall, r)
   let calleeParams = paramShapeOf(exprType(c.function, r))
   let fnErrs = checkExpr(c.function, r, None)
   let argErrs = checkExpr(c.parameter, r, calleeParams)
@@ -203,24 +190,21 @@ fun checkCall(c: PeCall, r): Set<PErr>
       (o: Spec)    => oneErr(c.pecLine, "parameter expression must be of TupleType")
     ()         => oneErr(c.pecLine, "parameter expression must be of TupleType")
 
-fun callShapeErrs(c: PeCall, ptype, r): Set<PErr>
-  ret match(exprType(c.function, r))
-    (ft: Spec) => match(ft)
-      (cl: SCallable) => triFalse(assignableFrom(r, cl.scParams2, ptype))
-        ? oneErr(c.pecLine, "Parameters are not assignment compatible")
-        : noErrs()
-      (o: Spec)       => add(noErrs(), unresolvedCallError(c, ptype, ft, r))
-    ()         => add(noErrs(), unresolvedCallError2(c, ptype, r))
+fun callShapeErrs(c: PeCall, ptype, r) => match(exprType(c.function, r))
+  (ft: Spec) => match(ft)
+    (cl: SCallable) => triFalse(assignableFrom(r, cl.scParams2, ptype))
+      ? oneErr(c.pecLine, "Parameters are not assignment compatible")
+      : noErrs()
+    (o: Spec)       => add(noErrs(), unresolvedCallError(c, ptype, ft, r))
+  ()         => add(noErrs(), unresolvedCallError2(c, ptype, r))
 
-fun calleeCandidates(c: PeCall, r): List<Found>
-  ret match(c.function)
-    (nm: PeName) => findData(r, nm.refName).bItems
-    (o: PExpr)   => List()
+fun calleeCandidates(c: PeCall, r) => match(c.function)
+  (nm: PeName) => findData(r, nm.refName).bItems
+  (o: PExpr)   => List()
 
-fun paramShapeMissing(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => false
-    ()         => true
+fun paramShapeMissing(sp: Spec|None) => match(sp)
+  (s2: Spec) => false
+  ()         => true
 
 # Does at least one overload of the callee accept these arguments? True means
 # the call really IS ambiguous — several readings fit and the author must
@@ -228,33 +212,29 @@ fun paramShapeMissing(sp: Spec|None): Bool
 # Narrowing goes through the same resolveOverloads the compile path uses, so
 # both agree about what "fits" (in particular about a candidate's own generic
 # parameters, which are wildcards it may bind).
-fun anyCandidateAccepts(c: PeCall, ptype, r): Bool
-  ret match(c.function)
-    (nm: PeName) => candidatesAccept(findData(r, nm.refName).bItems, ptype, c, r)
-    (o: PExpr)   => false
+fun anyCandidateAccepts(c: PeCall, ptype, r) => match(c.function)
+  (nm: PeName) => candidatesAccept(findData(r, nm.refName).bItems, ptype, c, r)
+  (o: PExpr)   => false
 
-fun candidatesAccept(cands: List<Found>, ptype, c: PeCall,
-                     r): Bool
-  ret isEmpty(cands)
-    ? false
-    : !isEmpty(resolveOverloads(r, SCallable(ptype, None, c.pecLine), cands))
+fun candidatesAccept(cands, ptype, c: PeCall,
+                     r) => isEmpty(cands)
+  ? false
+  : !isEmpty(resolveOverloads(r, SCallable(ptype, None, c.pecLine), cands))
 
 # The callee didn't resolve to a single callable. Say WHY in the author's
 # terms: the called name, the argument types, the candidate signatures.
-fun unresolvedCallError2(c: PeCall, ptype, r): PErr
-  ret match(c.function)
-    (nm: PeName) => namedCallError(c, nm, ptype, r)
-    (o: PExpr)   => PErr(c.pecLine,
-                         "the value being called is not a function (its type is unknown)")
+fun unresolvedCallError2(c: PeCall, ptype, r) => match(c.function)
+  (nm: PeName) => namedCallError(c, nm, ptype, r)
+  (o: PExpr)   => PErr(c.pecLine,
+                       "the value being called is not a function (its type is unknown)")
 
-fun unresolvedCallError(c: PeCall, ptype, ft: Spec, r): PErr
-  ret match(c.function)
-    (nm: PeName) => namedCallError(c, nm, ptype, r)
-    (o: PExpr)   => PErr(c.pecLine,
-                         "the value being called is not a function (its type is "
-                         + typeStr(ft) + ")")
+fun unresolvedCallError(c: PeCall, ptype, ft: Spec, r) => match(c.function)
+  (nm: PeName) => namedCallError(c, nm, ptype, r)
+  (o: PExpr)   => PErr(c.pecLine,
+                       "the value being called is not a function (its type is "
+                       + typeStr(ft) + ")")
 
-fun namedCallError(c: PeCall, nm: PeName, ptype, r): PErr
+fun namedCallError(c: PeCall, nm: PeName, ptype, r)
   let name = backTicked(bareOfUnique(nm.refName))
   let cands = findData(r, nm.refName).bItems
   if isEmpty(cands)
@@ -271,60 +251,54 @@ fun namedCallError(c: PeCall, nm: PeName, ptype, r): PErr
            "no " + name + " accepts arguments " + typeStr2(ptype)
            + " — candidates: " + join(sort(dedupeStrs(sigs)), "; "))
 
-fun backTicked(raw): String
-  ret startsWith(raw, "`") ? raw : "`" + raw + "`"
+fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
 
-fun candidateSigs(cs: Chain<Found>, acc: List<String>): List<String>
+fun candidateSigs(cs: Chain<Found>, acc: List<String>)
   ret build(candidateSigsB(cs, builderFrom(acc)))
 
-fun [tail] candidateSigsB(cs: Chain<Found>, [terminal] acc): ListBuilder<String>
-  ret match(cs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(stmtType(l.value.fStmt))
-      (ty: Spec) => match(ty)
-        (cl: SCallable) => candidateSigsB(l.next, push(acc, typeStr(ty)))
-        (o: Spec)       => candidateSigsB(l.next, acc)
-      ()         => candidateSigsB(l.next, acc)
+fun [tail] candidateSigsB(cs: Chain<Found>, [terminal] acc): ListBuilder<String> => match(cs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(stmtType(l.value.fStmt))
+    (ty: Spec) => match(ty)
+      (cl: SCallable) => candidateSigsB(l.next, push(acc, typeStr(ty)))
+      (o: Spec)       => candidateSigsB(l.next, acc)
+    ()         => candidateSigsB(l.next, acc)
 
-fun [tail] firstNonCallable(cs: Chain<Found>): Spec|None
-  ret match(cs)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => match(stmtType(l.value.fStmt))
-      (ty: Spec) => match(ty)
-        (cl: SCallable) => firstNonCallable(l.next)
-        (o: Spec)       => ty
-      ()         => firstNonCallable(l.next)
+fun [tail] firstNonCallable(cs: Chain<Found>) => match(cs)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => match(stmtType(l.value.fStmt))
+    (ty: Spec) => match(ty)
+      (cl: SCallable) => firstNonCallable(l.next)
+      (o: Spec)       => ty
+    ()         => firstNonCallable(l.next)
 
 # _type_str: a source-shaped rendering for diagnostics — never the internal
 # spec name.
-fun typeStr(ts: Spec|None): String
-  ret match(ts)
-    (t2: Spec) => typeStrOf(t2)
-    ()         => "unknown"
+fun typeStr(ts: Spec|None) => match(ts)
+  (t2: Spec) => typeStrOf(t2)
+  ()         => "unknown"
 
-fun typeStr2(ts): String
-  ret typeStrOf(ts)
+fun typeStr2(ts) => typeStrOf(ts)
 
-fun typeStrOf(t2): String
-  ret match(t2)
-    (b: SBuiltin)      => builtinStr(b.sbName)
-    (n: SNamed)        => specName(n.snName, n.snParams)
-    (tp: STuple)       => "(" + joinTypeStrs(chain(tp.stEntries), "") + ")"
-    (cm: SCombination) => joinMemberStrs(chain(cm.scTypes), "")
-    (cl: SCallable)    => typeStr(cl.scParams2) + ": " + typeStr(cl.scResult)
-    (c: SClass)        => specName(c.scName, c.scParams)
-    (g2: SGeneric)     => bareOfUnique(g2.sgName)
-    # Without the root name an enum rendered as the literal "EnumSpec" — the
-    # internal class name these strings exist to avoid. List, Option and
-    # Result are all enums, so it was the common case.
-    (e2: SEnum)        => specName(e2.seRoot, e2.seParams)
-    (af: SArrayField)  => "ArrayFieldSpec"
-    (ls: SLazyStub)    => "LazyStubSpec"
+fun typeStrOf(t2) => match(t2)
+  (b: SBuiltin)      => builtinStr(b.sbName)
+  (n: SNamed)        => specName(n.snName, n.snParams)
+  (tp: STuple)       => "(" + joinTypeStrs(chain(tp.stEntries), "") + ")"
+  (cm: SCombination) => joinMemberStrs(chain(cm.scTypes), "")
+  (cl: SCallable)    => typeStr(cl.scParams2) + ": " + typeStr(cl.scResult)
+  (c: SClass)        => specName(c.scName, c.scParams)
+  (g2: SGeneric)     => bareOfUnique(g2.sgName)
+  # Without the root name an enum rendered as the literal "EnumSpec" — the
+  # internal class name these strings exist to avoid. List, Option and
+  # Result are all enums, so it was the common case.
+  (e2: SEnum)        => specName(e2.seRoot, e2.seParams)
+  (af: SArrayField)  => "ArrayFieldSpec"
+  (ls: SLazyStub)    => "LazyStubSpec"
 
 # A declared type's name as the author would write it: no namespace, no
 # unique-name hash, and a monomorphised specialisation shown with its argument
 # list rather than the `$generic$` mangling it carries internally.
-fun specName(name, params: List<Spec>): String
+fun specName(name, params: List<Spec>)
   let bare = bareOfUnique(name)
   let gi = find(bare, "$generic$")
   let head2 = beforeHash(gi < 0 ? bare : slice(bare, 0, gi))
@@ -334,58 +308,52 @@ fun specName(name, params: List<Spec>): String
     : joinArgStrs(chain(params), "")
   ret args == "" ? head2 : head2 + "<" + args + ">"
 
-fun beforeHash(s2): String
-  ret find(s2, "@") < 0 ? s2 : slice(s2, 0, find(s2, "@"))
+fun beforeHash(s2) => find(s2, "@") < 0 ? s2 : slice(s2, 0, find(s2, "@"))
 
-fun [tail] joinArgStrs(ps: Chain<Spec>, acc: String): String
-  ret match(ps)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => joinArgStrs(l.next,
-                                   acc == ""
-                                     ? typeStrOf(l.value)
-                                     : acc + ", " + typeStrOf(l.value))
+fun [tail] joinArgStrs(ps: Chain<Spec>, acc) => match(ps)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => joinArgStrs(l.next,
+                                 acc == ""
+                                   ? typeStrOf(l.value)
+                                   : acc + ", " + typeStrOf(l.value))
 
-fun [tail] joinMangledArgs(as2: Chain<String>, acc: String): String
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => l.value == ""
-      ? joinMangledArgs(l.next, acc)
-      : joinMangledArgs(l.next,
-                        acc == ""
-                          ? builtinStr(beforeHash(l.value))
-                          : acc + ", " + builtinStr(beforeHash(l.value)))
+fun [tail] joinMangledArgs(as2: Chain<String>, acc) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => l.value == ""
+    ? joinMangledArgs(l.next, acc)
+    : joinMangledArgs(l.next,
+                      acc == ""
+                        ? builtinStr(beforeHash(l.value))
+                        : acc + ", " + builtinStr(beforeHash(l.value)))
 
-fun builtinStr(name): String
-  ret name == "bigint" ? "Int"
-    : name == "int8" ? "Int8"
-    : name == "int16" ? "Int16"
-    : name == "int32" ? "Int32"
-    : name == "int64" ? "Int64"
-    : name == "float32" ? "Float32"
-    : name == "float64" ? "Float64"
-    : name == "bool" ? "Bool"
-    : name == "str" ? "String"
-    : name
+fun builtinStr(name) => name == "bigint" ? "Int"
+  : name == "int8" ? "Int8"
+  : name == "int16" ? "Int16"
+  : name == "int32" ? "Int32"
+  : name == "int64" ? "Int64"
+  : name == "float32" ? "Float32"
+  : name == "float64" ? "Float64"
+  : name == "bool" ? "Bool"
+  : name == "str" ? "String"
+  : name
 
-fun [tail] joinTypeStrs(es: Chain<SEntry>, acc): String
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => joinTypeStrs(l.next,
+fun [tail] joinTypeStrs(es: Chain<SEntry>, acc) => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => joinTypeStrs(l.next,
+                                  acc == ""
+                                    ? typeStr(l.value.seType)
+                                    : acc + ", " + typeStr(l.value.seType))
+
+fun [tail] joinMemberStrs(ms: Chain<Spec>, acc) => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => joinMemberStrs(l.next,
                                     acc == ""
-                                      ? typeStr(l.value.seType)
-                                      : acc + ", " + typeStr(l.value.seType))
-
-fun [tail] joinMemberStrs(ms: Chain<Spec>, acc: String): String
-  ret match(ms)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => joinMemberStrs(l.next,
-                                      acc == ""
-                                        ? typeStrOf(l.value)
-                                        : acc + " | " + typeStrOf(l.value))
+                                      ? typeStrOf(l.value)
+                                      : acc + " | " + typeStrOf(l.value))
 
 # ── the rest ────────────────────────────────────────────────────────────────
 
-fun checkTernary(te, r, expected: Spec|None): Set<PErr>
+fun checkTernary(te, r, expected: Spec|None)
   let condErr = checkExpr(te.condition, r, SBuiltin("bool", PLine("none", 0, 0)))
   let trueErr = checkExpr(te.trueResult, r, expected)
   let falseErr = checkExpr(te.falseResult, r, expected)
@@ -394,7 +362,7 @@ fun checkTernary(te, r, expected: Spec|None): Set<PErr>
     ()         => oneErr(te.pety, "Failed to resolve type of ternery expression")
   ret union(condErr, union(trueErr, union(falseErr, selfErr)))
 
-fun checkNew(nw: PeNew, r): Set<PErr>
+fun checkNew(nw: PeNew, r)
   let sub = union(checkSpec(nw.newType, r), checkExpr(nw.newParam, r, None))
   if !isEmpty(sub)
     ret sub
@@ -406,16 +374,15 @@ fun checkNew(nw: PeNew, r): Set<PErr>
       (o2: Spec)   => oneErr(nw.penwLine, "parameter expression must be of TupleType")
     ()         => oneErr(nw.penwLine, "parameter expression must be of TupleType")
 
-fun checkTupleExpr(tp: PeTuple, r, expected: Spec|None): Set<PErr>
+fun checkTupleExpr(tp: PeTuple, r, expected: Spec|None)
   ret checkTupEnts2(chain(tp.exprs), r, noErrs())
 
 fun [tail] checkTupEnts2(es: Chain<PTupEnt>, r,
-                         acc): Set<PErr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => checkTupEnts2(l.next, r,
-                                     union(acc, checkExpr(l.value.tupValue, r,
-                                                           None)))
+                         acc): Set<PErr> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => checkTupEnts2(l.next, r,
+                                   union(acc, checkExpr(l.value.tupValue, r,
+                                                         None)))
 
 fun checkLambda(lm: PeLambda, r0, expected: Spec|None): Set<PErr>
   let r = localScope(paramLets(lm.lamParams), r0)
@@ -435,12 +402,11 @@ fun checkBlock(bk: PeBlock, r0, expected: Spec|None): Set<PErr>
   ret union(stmtErrs, union(valErrs, union(typeErr, unusedBindings(bk, r))))
 
 fun [tail] blockStmtChecks(ss: Chain<PStmt>, r: Resolver, expected: Spec|None,
-                           acc: Set<PErr>): Set<PErr>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => blockStmtChecks(l.next, r, expected,
-                                       union(acc, checkStmt2(l.value, r,
-                                                              expected)))
+                           acc: Set<PErr>): Set<PErr> => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => blockStmtChecks(l.next, r, expected,
+                                     union(acc, checkStmt2(l.value, r,
+                                                            expected)))
 
 fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
                  valErrs: Set<PErr>): Set<PErr>
@@ -468,43 +434,41 @@ fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
 
 # Declaration order, which is the order the shadowing check reports in.
 fun [tail] bindingLets(ss: Chain<PStmt>,
-                       [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (d: PsDestructure) => bindingLets(l.next,
-                                pushAll(acc,
-                                    flattenParams(l.value)))
-      (let2: PsLet)      => bindingLets(l.next, push(acc, l.value))
-      (o: PStmt)         => bindingLets(l.next, acc)
+                       [terminal] acc: ListBuilder<PStmt>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (d: PsDestructure) => bindingLets(l.next,
+                              pushAll(acc,
+                                  flattenParams(l.value)))
+    (let2: PsLet)      => bindingLets(l.next, push(acc, l.value))
+    (o: PStmt)         => bindingLets(l.next, acc)
 
 
 fun [tail] unusedWarns(ls: Chain<PStmt>, referenced: List<String>,
-                       acc: Set<PErr>): Set<PErr>
-  ret match(ls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => startsWith(bareOfUnique(let2.lName), "_")
-                       || contains2(referenced, let2.lName)
-        ? unusedWarns(l.next, referenced, acc)
-        : unusedWarns(l.next, referenced,
-                      add(acc, PErr(let2.pslLine,
-                                       "'" + bareOfUnique(let2.lName)
-                                       + "' is never used", true)))
-      (o: PStmt)    => unusedWarns(l.next, referenced, acc)
+                       acc: Set<PErr>) => match(ls)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => startsWith(bareOfUnique(let2.lName), "_")
+                     || contains2(referenced, let2.lName)
+      ? unusedWarns(l.next, referenced, acc)
+      : unusedWarns(l.next, referenced,
+                    add(acc, PErr(let2.pslLine,
+                                     "'" + bareOfUnique(let2.lName)
+                                     + "' is never used", true)))
+    (o: PStmt)    => unusedWarns(l.next, referenced, acc)
 
 # The subject is checked first; a subject whose TYPE is unknowable
 # short-circuits everything below (its own errors are all there is). Literal
 # arms need a primitive variant in the subject; type-arm matches need a
 # union-ish subject; the else arm stays guard-free (totality).
-fun checkMatch(mt: PeMatch, r, expected: Spec|None): Set<PErr>
+fun checkMatch(mt: PeMatch, r, expected: Spec|None)
   let subjectErr = checkExpr(mt.subject, r, None)
   ret match(exprType(mt.subject, r))
     (st: Spec) => checkMatchTyped(mt, st, r, expected, subjectErr)
     ()         => subjectErr
 
 fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
-                    subjectErr): Set<PErr>
+                    subjectErr)
   let hasLit = anyArmLiterals(chain(mt.arms))
   if hasLit && !(isPrimitiveSubject(st) || unionHasPrimitive(st))
     ret union(subjectErr,
@@ -532,21 +496,18 @@ fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
 # Checked for EVERY match, not only multi-subject ones: the mismatch runs both
 # ways, and `match(a)` with a two-pattern arm is the commoner mistake. Gating
 # this on `matchExtra` being non-empty missed exactly that case.
-fun multiSubjectErrs(mt: PeMatch): Set<PErr>
-  ret arityErrs(chain(mt.arms), 1 + countOf(mt.matchExtra), noErrs())
+fun multiSubjectErrs(mt: PeMatch) => arityErrs(chain(mt.arms), 1 + countOf(mt.matchExtra), noErrs())
 
-fun countOf(es: List<PExpr>): Int
-  ret fold(es, 0, (n, e2) => n + 1)
+fun countOf(es: List<PExpr>) => fold(es, 0, (n, e2) => n + 1)
 
 # Accumulator-threaded so the self-call stays in TAIL position — wrapping it
 # in `union(...)` would not be one.
-fun [tail] arityErrs(as2: Chain<PArm>, want: Int, acc: Set<PErr>): Set<PErr>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => arityErrs(l.next, want,
-                                 union(acc, armArityErr(l.value, want)))
+fun [tail] arityErrs(as2: Chain<PArm>, want, acc: Set<PErr>) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => arityErrs(l.next, want,
+                               union(acc, armArityErr(l.value, want)))
 
-fun armArityErr(a: PArm, want: Int): Set<PErr>
+fun armArityErr(a: PArm, want)
   let got = 1 + countPos(a.armExtra)
   ret isElseArmC(a) || got == want
     ? noErrs()
@@ -554,58 +515,49 @@ fun armArityErr(a: PArm, want: Int): Set<PErr>
              + (got == 1 ? "" : "s") + " but the match has " + String(want)
              + " subject" + (want == 1 ? "" : "s"))
 
-fun countPos(ps: List<PPos>): Int
-  ret fold(ps, 0, (n, p) => n + 1)
+fun countPos(ps: List<PPos>) => fold(ps, 0, (n, p) => n + 1)
 
-fun isElseArmC(a: PArm): Bool
-  ret isNoneSpec3(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
+fun isElseArmC(a: PArm) => isNoneSpec3(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
 
-fun isNoneSpec3(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => false
-    ()         => true
+fun isNoneSpec3(sp: Spec|None) => match(sp)
+  (s2: Spec) => false
+  ()         => true
 
-fun [tail] anyArmLiterals(as2: Chain<PArm>): Bool
-  ret match(as2)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => isEmpty(l.value.armLiterals) ? anyArmLiterals(l.next) : true
+fun [tail] anyArmLiterals(as2: Chain<PArm>) => match(as2)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => isEmpty(l.value.armLiterals) ? anyArmLiterals(l.next) : true
 
-fun isPrimitiveSubject(st): Bool
-  ret match(st)
-    (b: SBuiltin) => isPrimitiveMatchType(b.sbName)
-    (o: Spec)     => false
+fun isPrimitiveSubject(st) => match(st)
+  (b: SBuiltin) => isPrimitiveMatchType(b.sbName)
+  (o: Spec)     => false
 
-fun isPrimitiveMatchType(name): Bool
+fun isPrimitiveMatchType(name)
   ret name == "str" || name == "bigint" || name == "int8" || name == "int16"
       || name == "int32" || name == "int64" || name == "float32"
       || name == "float64"
 
-fun unionHasPrimitive(st): Bool
-  ret match(st)
-    (cm: SCombination) => anyPrimMember(chain(cm.scTypes))
-    (o: Spec)          => false
+fun unionHasPrimitive(st) => match(st)
+  (cm: SCombination) => anyPrimMember(chain(cm.scTypes))
+  (o: Spec)          => false
 
-fun [tail] anyPrimMember(ms: Chain<Spec>): Bool
-  ret match(ms)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => match(l.value)
-      (b: SBuiltin) => b.sbName == "bigint" || b.sbName == "str"
-        ? true
-        : anyPrimMember(l.next)
-      (o: Spec)     => anyPrimMember(l.next)
+fun [tail] anyPrimMember(ms: Chain<Spec>) => match(ms)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => match(l.value)
+    (b: SBuiltin) => b.sbName == "bigint" || b.sbName == "str"
+      ? true
+      : anyPrimMember(l.next)
+    (o: Spec)     => anyPrimMember(l.next)
 
-fun isEnumOrUnion(st): Bool
-  ret match(st)
-    (e2: SEnum)        => true
-    (cm: SCombination) => true
-    (o: Spec)          => false
+fun isEnumOrUnion(st) => match(st)
+  (e2: SEnum)        => true
+  (cm: SCombination) => true
+  (o: Spec)          => false
 
-fun [tail] matchArmChecks(as2: Chain<PArm>, r: Resolver, expected: Spec|None,
-                          acc: Set<PErr>): Set<PErr>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => matchArmChecks(l.next, r, expected,
-                                      union(acc, checkArm(l.value, r, expected)))
+fun [tail] matchArmChecks(as2: Chain<PArm>, r, expected: Spec|None,
+                          acc) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => matchArmChecks(l.next, r, expected,
+                                    union(acc, checkArm(l.value, r, expected)))
 
 fun checkArm(a: PArm, r, expected: Spec|None): Set<PErr>
   let bodyR = bindingScope(a, a.armType, r)
@@ -617,28 +569,24 @@ fun checkArm(a: PArm, r, expected: Spec|None): Set<PErr>
       union(guardErr, union(elseGuardErr(a), mixedKindErr(a)))))
 
 # The else arm must stay TOTAL — the match's coverage guarantee rests on it.
-fun elseGuardErr(a: PArm): Set<PErr>
-  ret hasGuard(a) && armIsElse(a)
-    ? oneErr(a.parmLine,
-             "a guard is not allowed on the else arm — put the guarded case "
-             + "in its own arm before it")
-    : noErrs()
+fun elseGuardErr(a: PArm) => hasGuard(a) && armIsElse(a)
+  ? oneErr(a.parmLine,
+           "a guard is not allowed on the else arm — put the guarded case "
+           + "in its own arm before it")
+  : noErrs()
 
-fun hasGuard(a: PArm): Bool
-  ret match(a.armGuard)
-    (g2: PExpr) => true
-    ()          => false
+fun hasGuard(a: PArm) => match(a.armGuard)
+  (g2: PExpr) => true
+  ()          => false
 
-fun armIsElse(a: PArm): Bool
-  ret isEmpty(a.armLiterals) && armHasNoType(a)
+fun armIsElse(a: PArm) => isEmpty(a.armLiterals) && armHasNoType(a)
 
-fun armHasNoType(a: PArm): Bool
-  ret match(a.armType)
-    (t2: Spec) => false
-    ()         => true
+fun armHasNoType(a: PArm) => match(a.armType)
+  (t2: Spec) => false
+  ()         => true
 
 # One arm, one literal KIND (a range counts as its lo's kind).
-fun mixedKindErr(a: PArm): Set<PErr>
+fun mixedKindErr(a: PArm)
   if atMost(chain(a.armLiterals), 1)
     ret noErrs()
   let kinds = litKinds(chain(a.armLiterals), List())
@@ -647,114 +595,103 @@ fun mixedKindErr(a: PArm): Set<PErr>
              "all literals in one arm must be the same kind (integers, floats or strings)")
     : noErrs()
 
-fun [tail] litKinds(ls: Chain<PLit>, acc: List<String>): List<String>
-  ret match(ls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => litKinds(l.next, addNameOnce(acc, litKind(l.value)))
+fun [tail] litKinds(ls: Chain<PLit>, acc: List<String>) => match(ls)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => litKinds(l.next, addNameOnce(acc, litKind(l.value)))
 
-fun litKind(l): String
-  ret match(l)
-    (e2: PlExpr)  => exprKind(e2.litExpr)
-    (rg: PlRange) => exprKind(rg.rangeLo)
+fun litKind(l) => match(l)
+  (e2: PlExpr)  => exprKind(e2.litExpr)
+  (rg: PlRange) => exprKind(rg.rangeLo)
 
-fun exprKind(x): String
-  ret match(x)
-    (s2: PeStr)   => "str"
-    (f: PeFloat)  => "float"
-    (o: PExpr)    => "int"
+fun exprKind(x) => match(x)
+  (s2: PeStr)   => "str"
+  (f: PeFloat)  => "float"
+  (o: PExpr)    => "int"
 
-fun armGuardErrs(a: PArm, bodyR, r: Resolver): Set<PErr>
-  ret match(a.armGuard)
-    (g2: PExpr) => union(checkExpr(g2, bodyR, None),
-                          guardBoolErr(a, g2, bodyR))
-    ()          => noErrs()
+fun armGuardErrs(a: PArm, bodyR, r: Resolver): Set<PErr> => match(a.armGuard)
+  (g2: PExpr) => union(checkExpr(g2, bodyR, None),
+                        guardBoolErr(a, g2, bodyR))
+  ()          => noErrs()
 
-fun guardBoolErr(a: PArm, g2, bodyR): Set<PErr>
-  ret match(exprType(g2, bodyR))
-    (t2: Spec) => match(t2)
-      (b: SBuiltin) => b.sbName == "bool"
-        ? noErrs()
-        : oneErr(a.parmLine, "a match guard must be a Bool")
-      (o: Spec)     => oneErr(a.parmLine, "a match guard must be a Bool")
-    ()         => noErrs()
+fun guardBoolErr(a: PArm, g2, bodyR) => match(exprType(g2, bodyR))
+  (t2: Spec) => match(t2)
+    (b: SBuiltin) => b.sbName == "bool"
+      ? noErrs()
+      : oneErr(a.parmLine, "a match guard must be a Bool")
+    (o: Spec)     => oneErr(a.parmLine, "a match guard must be a Bool")
+  ()         => noErrs()
 
 # Every name a NamedExpression references anywhere inside (referenced_names).
-fun referencedNames(x, acc): List<String>
-  ret match(x)
-    # A name set, membership-tested by its reader.
-    (nm: PeName)   => prepend(nm.refName, acc)
-    (d: PeDot)     => referencedNames(d.base, acc)
-    (c: PeCall)    => referencedNames(c.parameter, referencedNames(c.function, acc))
-    (tp: PeTuple)  => refEntries(chain(tp.exprs), acc)
-    (te: PeTernary) => referencedNames(te.falseResult,
-                        referencedNames(te.trueResult,
-                          referencedNames(te.condition, acc)))
-    (lm: PeLambda) => referencedNames(lm.lamBody, refStmt(lm.lamParams, acc))
-    (bk: PeBlock)  => referencedNames(bk.blockValue,
-                                      referencedInStmts(chain(bk.blockStmts), acc))
-    # Every subject is a use — the extra subjects of `match(a, b)` included.
-    (mt: PeMatch)  => refArms(chain(mt.arms),
-                              fold(mt.matchExtra, referencedNames(mt.subject, acc),
-                                   (a2, sx) => referencedNames(sx, a2)))
-    (op: PeBuiltinOp) => referencedNames(op.opParams, acc)
-    (nw: PeNew)    => referencedNames(nw.newParam, acc)
-    (ar: PeArrayRead) => referencedNames(ar.arrIndex,
-                                         referencedNames(ar.arrObj, acc))
-    (cv: PeConvert) => referencedNames(cv.convInner, acc)
-    (qq: PeCoalesce) => referencedNames(qq.qqFallback,
-                                        referencedNames(qq.qqSubject, acc))
-    # A NewEnum's references live in its field-arg VALUE expressions.
-    (wx: PeWith)   => referencedNames(wx.withRepls,
-                                      referencedNames(wx.withSubject, acc))
-    (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
-                            referencedNames(fa.faValue, a2))
-    (pl: PeParallel) => referencedNames(pl.parParams, acc)
-    (o: PeLiteral) => acc
-    (o: PeLowered) => acc
+fun referencedNames(x, acc): List<String> => match(x)
+  # A name set, membership-tested by its reader.
+  (nm: PeName)   => prepend(nm.refName, acc)
+  (d: PeDot)     => referencedNames(d.base, acc)
+  (c: PeCall)    => referencedNames(c.parameter, referencedNames(c.function, acc))
+  (tp: PeTuple)  => refEntries(chain(tp.exprs), acc)
+  (te: PeTernary) => referencedNames(te.falseResult,
+                      referencedNames(te.trueResult,
+                        referencedNames(te.condition, acc)))
+  (lm: PeLambda) => referencedNames(lm.lamBody, refStmt(lm.lamParams, acc))
+  (bk: PeBlock)  => referencedNames(bk.blockValue,
+                                    referencedInStmts(chain(bk.blockStmts), acc))
+  # Every subject is a use — the extra subjects of `match(a, b)` included.
+  (mt: PeMatch)  => refArms(chain(mt.arms),
+                            fold(mt.matchExtra, referencedNames(mt.subject, acc),
+                                 (a2, sx) => referencedNames(sx, a2)))
+  (op: PeBuiltinOp) => referencedNames(op.opParams, acc)
+  (nw: PeNew)    => referencedNames(nw.newParam, acc)
+  (ar: PeArrayRead) => referencedNames(ar.arrIndex,
+                                       referencedNames(ar.arrObj, acc))
+  (cv: PeConvert) => referencedNames(cv.convInner, acc)
+  (qq: PeCoalesce) => referencedNames(qq.qqFallback,
+                                      referencedNames(qq.qqSubject, acc))
+  # A NewEnum's references live in its field-arg VALUE expressions.
+  (wx: PeWith)   => referencedNames(wx.withRepls,
+                                    referencedNames(wx.withSubject, acc))
+  (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
+                          referencedNames(fa.faValue, a2))
+  (pl: PeParallel) => referencedNames(pl.parParams, acc)
+  (o: PeLiteral) => acc
+  (o: PeLowered) => acc
 
-fun [tail] refEntries(es: Chain<PTupEnt>, acc): List<String>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => refEntries(l.next, referencedNames(l.value.tupValue, acc))
+fun [tail] refEntries(es: Chain<PTupEnt>, acc): List<String> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => refEntries(l.next, referencedNames(l.value.tupValue, acc))
 
-fun [tail] refArms(as2: Chain<PArm>, acc): List<String>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => refArms(l.next,
-                               refOpt(l.value.armGuard,
-                                      referencedNames(l.value.armBody, acc)))
+fun [tail] refArms(as2: Chain<PArm>, acc): List<String> => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => refArms(l.next,
+                             refOpt(l.value.armGuard,
+                                    referencedNames(l.value.armBody, acc)))
 
-fun refOpt(x: PExpr|None, acc): List<String>
-  ret match(x)
-    (e2: PExpr) => referencedNames(e2, acc)
-    ()          => acc
+fun refOpt(x: PExpr|None, acc) => match(x)
+  (e2: PExpr) => referencedNames(e2, acc)
+  ()          => acc
 
-fun [tail] referencedInStmts(ss: Chain<PStmt>, acc: List<String>): List<String>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => referencedInStmts(l.next, refStmt(l.value, acc))
+fun [tail] referencedInStmts(ss: Chain<PStmt>, acc: List<String>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => referencedInStmts(l.next, refStmt(l.value, acc))
 
-fun refStmt(st, acc): List<String>
-  ret match(st)
-    (f: PsFun)         => refOpt(f.fBody, acc)
-    (l: PsLet)         => refOpt(l.lDefault, acc)
-    (d: PsDestructure) => referencedInStmts(chain(d.dTargets),
-                                            refOpt(d.dDefault, acc))
-    (rt: PsRet)        => referencedNames(rt.retValue, acc)
-    (a: PsAction)      => referencedNames(a.action, acc)
-    (i: PsIf)          => referencedInStmts(chain(i.ifFalse),
-                            referencedInStmts(chain(i.ifTrue),
-                              referencedNames(i.ifCond, acc)))
-    (ei: PsElseIf)     => referencedInStmts(chain(ei.eiStmts),
-                                            referencedNames(ei.eiCond, acc))
-    (el: PsElse)       => referencedInStmts(chain(el.elStmts), acc)
-    (o: PStmt)         => acc
+fun refStmt(st, acc): List<String> => match(st)
+  (f: PsFun)         => refOpt(f.fBody, acc)
+  (l: PsLet)         => refOpt(l.lDefault, acc)
+  (d: PsDestructure) => referencedInStmts(chain(d.dTargets),
+                                          refOpt(d.dDefault, acc))
+  (rt: PsRet)        => referencedNames(rt.retValue, acc)
+  (a: PsAction)      => referencedNames(a.action, acc)
+  (i: PsIf)          => referencedInStmts(chain(i.ifFalse),
+                          referencedInStmts(chain(i.ifTrue),
+                            referencedNames(i.ifCond, acc)))
+  (ei: PsElseIf)     => referencedInStmts(chain(ei.eiStmts),
+                                          referencedNames(ei.eiCond, acc))
+  (el: PsElse)       => referencedInStmts(chain(el.elStmts), acc)
+  (o: PStmt)         => acc
 
 
 # ── `with` — only reached when the frontend could not expand it ─────────────
 # Mirrors WithExpression.check byte for byte (parity of diagnostics).
 
-fun checkWith(wx: PeWith, r): Set<PErr>
+fun checkWith(wx: PeWith, r)
   let sub = checkExpr(wx.withSubject, r, None)
   if !isEmpty(sub)
     ret sub
@@ -773,23 +710,21 @@ fun checkWith(wx: PeWith, r): Set<PErr>
     ()         => add(Set(),PErr(wx.pewLine,
       "the subject type of `with` did not resolve"))
 
-fun withShapeError(wx: PeWith): String
-  ret match(wx.withRepls)
-    (tp: PeTuple) => isEmpty(tp.exprs)
-      ? "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
-      : withEntriesError(chain(tp.exprs), List())
-    (o: PExpr)    => "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
+fun withShapeError(wx: PeWith) => match(wx.withRepls)
+  (tp: PeTuple) => isEmpty(tp.exprs)
+    ? "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
+    : withEntriesError(chain(tp.exprs), List())
+  (o: PExpr)    => "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
 
-fun [tail] withEntriesError(es: Chain<PTupEnt>, seen: List<String>): String
-  ret match(es)
-    (nil: ChainEnd) => ""
-    (l: ChainLink)  => l.value.tupSpread
-      ? "a `with` replacement cannot be a spread"
-      : l.value.tupName == ""
-        ? "`with` replacements must be named — `with x(field = value)`"
-        : contains2(seen, l.value.tupName)
-          ? "a `with` expression replaces each field at most once"
-          : withEntriesError(l.next, prepend(l.value.tupName, seen))
+fun [tail] withEntriesError(es: Chain<PTupEnt>, seen: List<String>) => match(es)
+  (nil: ChainEnd) => ""
+  (l: ChainLink)  => l.value.tupSpread
+    ? "a `with` replacement cannot be a spread"
+    : l.value.tupName == ""
+      ? "`with` replacements must be named — `with x(field = value)`"
+      : contains2(seen, l.value.tupName)
+        ? "a `with` expression replaces each field at most once"
+        : withEntriesError(l.next, prepend(l.value.tupName, seen))
 
 fun checkWithFields(wx: PeWith, r): Set<PErr>
   let visible = withVisibleFields(wx, r)
@@ -798,46 +733,42 @@ fun checkWithFields(wx: PeWith, r): Set<PErr>
     (o: PExpr)    => Set()
 
 fun [tail] withNamesKnown(es: Chain<PTupEnt>, visible: List<String>,
-                          lr): Set<PErr>
-  ret match(es)
-    (nil: ChainEnd) => Set()
-    (l: ChainLink)  => contains2(visible, l.value.tupName)
-      ? withNamesKnown(l.next, visible, lr)
-      : add(Set(),PErr(lr,
-          "`" + l.value.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
+                          lr): Set<PErr> => match(es)
+  (nil: ChainEnd) => Set()
+  (l: ChainLink)  => contains2(visible, l.value.tupName)
+    ? withNamesKnown(l.next, visible, lr)
+    : add(Set(),PErr(lr,
+        "`" + l.value.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
 
-fun withVisibleFields(wx: PeWith, r): List<String>
-  ret match(exprType(wx.withSubject, r))
-    (sp: Spec) => match(sp)
-      (c: SClass) => match(soleItem(findType(r, c.scName)))
-        (f: Found) => match(f.fStmt)
-          (cls: PsClass) => withBareNames(chain(flattenParams(cls.cParams)),
-                                          List())
-          (o: PStmt)     => List()
-        ()         => List()
-      (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
-        (f: Found) => match(f.fStmt)
-          (en: PsEnum) => withCoverBares(chain(coveringFields(en, e2.seValidLeaves)),
-                                         List())
-          (o: PStmt)   => List()
-        ()         => List()
-      (o2: Spec)  => List()
-    ()         => List()
+fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
+  (sp: Spec) => match(sp)
+    (c: SClass) => match(soleItem(findType(r, c.scName)))
+      (f: Found) => match(f.fStmt)
+        (cls: PsClass) => withBareNames(chain(flattenParams(cls.cParams)),
+                                        List())
+        (o: PStmt)     => List()
+      ()         => List()
+    (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
+      (f: Found) => match(f.fStmt)
+        (en: PsEnum) => withCoverBares(chain(coveringFields(en, e2.seValidLeaves)),
+                                       List())
+        (o: PStmt)   => List()
+      ()         => List()
+    (o2: Spec)  => List()
+  ()         => List()
 
 fun withBareNames(fs, acc: List<String>): List<String>
   ret build(withBareNamesB(fs, builderFrom(acc)))
 
-fun [tail] withBareNamesB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<String>): ListBuilder<String>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (p: PsLet) => withBareNamesB(l.next, push(acc, bareName(p.lName)))
-      (o: PStmt) => withBareNamesB(l.next, acc)
+fun [tail] withBareNamesB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<String>) => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (p: PsLet) => withBareNamesB(l.next, push(acc, bareName(p.lName)))
+    (o: PStmt) => withBareNamesB(l.next, acc)
 
-fun withCoverBares(fs: Chain<SField>, acc: List<String>): List<String>
+fun withCoverBares(fs: Chain<SField>, acc: List<String>)
   ret build(withCoverBaresB(fs, builderFrom(acc)))
 
-fun [tail] withCoverBaresB(fs: Chain<SField>, [terminal] acc): ListBuilder<String>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => withCoverBaresB(l.next, push(acc, bareName(l.value.sfName)))
+fun [tail] withCoverBaresB(fs: Chain<SField>, [terminal] acc): ListBuilder<String> => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => withCoverBaresB(l.next, push(acc, bareName(l.value.sfName)))

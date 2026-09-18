@@ -21,11 +21,30 @@ import codegen.ir as cg_ir
 import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
+import pyast.hints as h
 
 import pyast.utils as u
 
 from pyast.statement.base import Statement, NamedStatement, DataStatement, ImportGroup
 from pyast.statement.lets import LetStatement, DestructureStatement
+
+
+def inferred_params(prms: DestructureStatement, hints: h.Hints,
+                    resolver: g.Resolver) -> DestructureStatement:
+    """Type each un-annotated parameter from its hints. The inferred type is
+    re-read every pass and may change; nothing is read while a name in the
+    body has not resolved. A declared type always stands."""
+    if h.UNSETTLED in hints:
+        return prms
+
+    def infer(tgt: LetStatement) -> LetStatement:
+        if isinstance(tgt, DestructureStatement) or (tgt.declared_type is not None and not tgt.type_inferred):
+            return tgt
+        fresh = h.verdict(hints.get(tgt.name, ()), resolver).type
+        if fresh is None:
+            return tgt
+        return dataclasses.replace(tgt, declared_type=fresh, type_inferred=True)
+    return dataclasses.replace(prms, targets=[infer(tgt) for tgt in prms.targets])
 
 
 @dataclass
@@ -99,28 +118,10 @@ class FunctionStatement(DataStatement):
         straight to the inner half; everyone else starts here."""
         return self.__body_resolver(g.ResolverType(resolver, self._find_generic_types))
 
-    def __with_inferred_params(self, prms: DestructureStatement,
-                               resolver: g.Resolver) -> DestructureStatement:
-        """Fill any UN-annotated parameter from what the BODY does with it (see
-        pyast/param_inference.py). A parameter is filled once and then stands:
-        inference says nothing while the names its evidence hangs on are still
-        resolving, so what it does say is read from a body it could read."""
-        from pyast import param_inference
-        probe = dataclasses.replace(self, parameters=prms)
-        found = param_inference.infer_param_types(probe, probe.__body_resolver(resolver))
-        if not found:
-            return prms
-        return dataclasses.replace(prms, targets=[
-            dataclasses.replace(tgt, declared_type=found[tgt.name])
-            if tgt.declared_type is None and tgt.name in found else tgt
-            for tgt in prms.targets])
-
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[FunctionStatement | None, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[FunctionStatement | None, list[Statement], h.Hints]:
         resolver = g.ResolverType(resolver, self._find_generic_types)
         rettype, rettype_glb = self.return_type.compile(resolver) if self.return_type else (None, [])
-        prms, prms_glb = self.parameters.compile(resolver, None)
-        if self.body is not None and any(tgt.declared_type is None for tgt in prms.targets):
-            prms = self.__with_inferred_params(prms, resolver)
+        prms, prms_glb, _ = self.parameters.compile(resolver, None)
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
 
         body_resolver = self.__body_resolver(resolver)
@@ -131,7 +132,8 @@ class FunctionStatement(DataStatement):
             # pass — a generic combinator body grounds off it. It does NOT pin a
             # widening union: a match/branch's get_type is the JOIN of its arms'
             # own types, independent of the expected slot.
-            new_body, body_glb = self.body.compile(body_resolver, self.return_type)
+            new_body, body_glb, body_hints = self.body.compile(body_resolver, self.return_type)
+            prms = inferred_params(prms, body_hints, body_resolver)
             if declared:
                 rettype = t.refine(rettype, resolver, lambda: new_body.get_type(body_resolver))
             else:
@@ -142,12 +144,14 @@ class FunctionStatement(DataStatement):
                 rettype = t.refine_widening(rettype, resolver,
                                             lambda: new_body.get_type(body_resolver))
         else:
-            new_body, body_glb = None, []
+            new_body, body_glb, body_hints = None, [], {}
 
         globals = body_glb + rettype_glb + prms_glb + trts_glb
         new_self = dataclasses.replace(self, trait_params=tuple(trts), parameters=prms, body=new_body,
                                        return_type=rettype, return_inferred=new_inferred)
-        return new_self, globals
+        own = {let.name for let in self.parameters.flatten()}
+        placeholders = {tp.name for tp in self.type_params}
+        return new_self, globals, h.without(body_hints, own, placeholders)
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         resolver = g.ResolverType(resolver, self._find_generic_types)
@@ -235,14 +239,22 @@ class FunctionStatement(DataStatement):
         # value) would generate `Return(None)` and crash codegen — a bare
         # tail-call STATEMENT where `ret f(...)` was meant.
         missing_ret_err: list[Error] = []
-        if (self.body is not None and self.return_type is not None
+        declared_ret = self.return_type is not None and not self.return_inferred
+        if self.body is not None and not declared_ret and (
+                self.return_type is None or self.body.get_type(body_resolver) is None):
+            missing_ret_err.append(Error(self.line_ref,
+                f"Return type of '{g.bare_name(self.name)}' could not be inferred — declare it"))
+        elif (self.body is not None and declared_ret
                 and self.body.get_type(body_resolver) is None):
             missing_ret_err.append(Error(self.line_ref,
                 f"function '{g.bare_name(self.name)}' declares a result but its body never returns a value — missing `ret`?"))
 
+        # A top-level function's are reported before the check phase.
+        untyped_err = [] if self.is_global else h.untyped_param_errors(self, body_resolver)
+
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
                 + tail_err + terminal_err + inner_where_err + default_err
-                + missing_ret_err + test_err
+                + missing_ret_err + untyped_err + test_err
                 + self.unknown_attribute_errors("a function")
                 + self.__unused_param_warnings())
 

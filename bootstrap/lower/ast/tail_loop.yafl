@@ -22,65 +22,58 @@ class [final] TlOut(tlStmts: List<PStmt>, tlErrs: Set<PErr>)
 class [final] TlStmt(tsStmt: PStmt, tsErrs: Set<PErr>)
 class [final] TlRw(rwExpr: PExpr, rwN: Int)
 
-fun lowerTailLoops(statements: List<PStmt>): TlOut
-  ret tlLoop(chain(statements), builder(), Set())
+fun lowerTailLoops(statements: List<PStmt>) => tlLoop(chain(statements), builder(), Set())
 
 # Program order out; the errors are a set, so they ride alongside untouched.
-fun [tail] tlLoop(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>,
-                  errs: Set<PErr>): TlOut
-  ret match(ss)
-    (nil: ChainEnd) => TlOut(build(acc), errs)
-    (l: ChainLink)  => tlTransform(l.value)
-      |> (out) => tlLoop(l.next, push(acc, out.tsStmt),
-                         union(errs, out.tsErrs))
+fun [tail] tlLoop(ss: Chain<PStmt>, [terminal] acc,
+                  errs) => match(ss)
+  (nil: ChainEnd) => TlOut(build(acc), errs)
+  (l: ChainLink)  => tlTransform(l.value)
+    |> (out) => tlLoop(l.next, push(acc, out.tsStmt),
+                       union(errs, out.tsErrs))
 
 # Recurse into nested functions and class methods first (bottom-up), so a
 # [tail] function nested inside another is lowered too.
-fun tlTransform(st): TlStmt
-  ret match(st)
-    (f: PsFun)   => tlAfterNested(tlNested(f))
-    (c: PsClass) => tlMembers(chain(c.cMembers), builder(),
-                              Set())
-      |> (out) => TlStmt(PsClass(c.cName, c.cAttrs, c.cGens, c.cParams,
-                                 c.cImplements, c.cWheres, out.tlStmts,
-                                 c.cIsInterface, c.pscLine, c.cAllParents,
-                                 c.cAllSlots, c.cImports),
+fun tlTransform(st) => match(st)
+  (f: PsFun)   => tlAfterNested(tlNested(f))
+  (c: PsClass) => tlMembers(chain(c.cMembers), builder(),
+                            Set())
+    |> (out) => TlStmt(PsClass(c.cName, c.cAttrs, c.cGens, c.cParams,
+                               c.cImplements, c.cWheres, out.tlStmts,
+                               c.cIsInterface, c.pscLine, c.cAllParents,
+                               c.cAllSlots, c.cImports),
+                       out.tlErrs)
+  (o: PStmt)   => TlStmt(st, Set())
+
+fun [tail] tlMembers(ss: Chain<PStmt>, [terminal] acc,
+                     errs) => match(ss)
+  (nil: ChainEnd) => TlOut(build(acc), errs)
+  (l: ChainLink)  => tlTransform(l.value)
+    |> (out) => tlMembers(l.next, push(acc, out.tsStmt),
+                          union(errs, out.tsErrs))
+
+fun tlAfterNested(out) => match(out.tsStmt)
+  (f2: PsFun) => hasAttr(f2.fAttrs, "tail")
+    ? tlLowerFun(f2, out.tsErrs)
+    : out
+  (o: PStmt)  => out
+
+fun tlNested(f) => match(f.fBody)
+  (b: PExpr) => match(b)
+    (bk: PeBlock) => tlMembers(chain(bk.blockStmts), builder(),
+                               Set())
+      |> (out) => TlStmt(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
+                               PeBlock(out.tlStmts, bk.blockValue,
+                                       bk.blockTag, bk.pebkLine),
+                               f.fRet, f.fWheres, f.psfLine,
+                               f.fRetInferred, f.fNested, f.fImports),
                          out.tlErrs)
-    (o: PStmt)   => TlStmt(st, Set())
+    (o: PExpr)    => TlStmt(f, Set())
+  ()         => TlStmt(f, Set())
 
-fun [tail] tlMembers(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>,
-                     errs: Set<PErr>): TlOut
-  ret match(ss)
-    (nil: ChainEnd) => TlOut(build(acc), errs)
-    (l: ChainLink)  => tlTransform(l.value)
-      |> (out) => tlMembers(l.next, push(acc, out.tsStmt),
-                            union(errs, out.tsErrs))
-
-fun tlAfterNested(out): TlStmt
-  ret match(out.tsStmt)
-    (f2: PsFun) => hasAttr(f2.fAttrs, "tail")
-      ? tlLowerFun(f2, out.tsErrs)
-      : out
-    (o: PStmt)  => out
-
-fun tlNested(f): TlStmt
-  ret match(f.fBody)
-    (b: PExpr) => match(b)
-      (bk: PeBlock) => tlMembers(chain(bk.blockStmts), builder(),
-                                 Set())
-        |> (out) => TlStmt(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
-                                 PeBlock(out.tlStmts, bk.blockValue,
-                                         bk.blockTag, bk.pebkLine),
-                                 f.fRet, f.fWheres, f.psfLine,
-                                 f.fRetInferred, f.fNested, f.fImports),
-                           out.tlErrs)
-      (o: PExpr)    => TlStmt(f, Set())
-    ()         => TlStmt(f, Set())
-
-fun tlLowerFun(f: PsFun, errs0: Set<PErr>): TlStmt
-  ret match(f.fBody)
-    (body: PExpr) => tlLowerBody(f, body, errs0)
-    ()            => TlStmt(f, errs0)
+fun tlLowerFun(f, errs0) => match(f.fBody)
+  (body: PExpr) => tlLowerBody(f, body, errs0)
+  ()            => TlStmt(f, errs0)
 
 fun tlLowerBody(f, body, errs0): TlStmt
   let total = tlCountSelf(body, f.fName, 0)
@@ -101,34 +94,29 @@ fun tlLowerBody(f, body, errs0): TlStmt
              errs0)
 
 # The loop-carried params: NamedExpression references at the FUNCTION's line.
-fun tlParams(f: PsFun): List<PExpr>
-  ret match(f.fParams)
-    (d: PsDestructure) => build(tlParamRefs(chain(d.dTargets), f.psfLine,
-                                           builder()))
-    (o: PStmt)         => List()
+fun tlParams(f: PsFun) => match(f.fParams)
+  (d: PsDestructure) => build(tlParamRefs(chain(d.dTargets), f.psfLine,
+                                         builder()))
+  (o: PStmt)         => List()
 
-fun [tail] tlParamRefs(ts: Chain<PStmt>, lr: PLine,
-                       [terminal] acc: ListBuilder<PExpr>): ListBuilder<PExpr>
-  ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => tlParamRefs(l.next, lr,
-        push(acc, PeName(stmtName(l.value), List(), lr,
-                         None)))
+fun [tail] tlParamRefs(ts: Chain<PStmt>, lr,
+                       [terminal] acc: ListBuilder<PExpr>) => match(ts)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => tlParamRefs(l.next, lr,
+      push(acc, PeName(stmtName(l.value), List(), lr,
+                       None)))
 
-fun tlStripTail(as2, acc: List<PAttr>): List<PAttr>
-  ret build(tlStripTailB(as2, builderFrom(acc)))
+fun tlStripTail(as2, acc: List<PAttr>): List<PAttr> => build(tlStripTailB(as2, builderFrom(acc)))
 
-fun [tail] tlStripTailB(as2: Chain<PAttr>, [terminal] acc: ListBuilder<PAttr>): ListBuilder<PAttr>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => l.value.attrName == "tail"
-      ? tlStripTailB(l.next, acc)
-      : tlStripTailB(l.next, push(acc, l.value))
+fun [tail] tlStripTailB(as2: Chain<PAttr>, [terminal] acc: ListBuilder<PAttr>) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => l.value.attrName == "tail"
+    ? tlStripTailB(l.next, acc)
+    : tlStripTailB(l.next, push(acc, l.value))
 
-fun tlIsSelfCall(x, fName): Bool
-  ret match(x)
-    (c: PeCall) => tlIsSelfRef(c.function, fName)
-    (o2: PExpr) => false
+fun tlIsSelfCall(x, fName) => match(x)
+  (c: PeCall) => tlIsSelfRef(c.function, fName)
+  (o2: PExpr) => false
 
 # A member's reference to itself is `this.<name>`: convergence rewrites every
 # MEMBER-scoped name that way, so a `[tail]` method's self-call never arrives as
@@ -137,16 +125,14 @@ fun tlIsSelfCall(x, fName): Bool
 # shape only arises for the enclosing class's own member: `this` names the
 # receiver of the method being rewritten, so `this.<its own name>` is that
 # method.
-fun tlIsSelfRef(f, fName): Bool
-  ret match(f)
-    (nm: PeName) => nm.refName == fName
-    (d: PeDot)   => d.member == fName && tlIsThis(d.base)
-    (o: PExpr)   => false
+fun tlIsSelfRef(f, fName) => match(f)
+  (nm: PeName) => nm.refName == fName
+  (d: PeDot)   => d.member == fName && tlIsThis(d.base)
+  (o: PExpr)   => false
 
-fun tlIsThis(x): Bool
-  ret match(x)
-    (nm: PeName) => nm.refName == "this"
-    (o: PExpr)   => false
+fun tlIsThis(x) => match(x)
+  (nm: PeName) => nm.refName == "this"
+  (o: PExpr)   => false
 
 # ── the self-call counter ────────────────────────────────────────────────────
 # Python blanks every lambda to a leaf, then counts self-calls with a full
@@ -184,54 +170,48 @@ fun tlCountSelf(x, fName, n): Int
     (o: PeLowered) => n2
     (o: PeName) => n2
 
-fun [tail] tlCountEnts(es: Chain<PTupEnt>, fName, n): Int
-  ret match(es)
-    (nil: ChainEnd) => n
-    (l: ChainLink)  => tlCountEnts(l.next, fName,
-                                   tlCountSelf(l.value.tupValue, fName, n))
+fun [tail] tlCountEnts(es: Chain<PTupEnt>, fName, n): Int => match(es)
+  (nil: ChainEnd) => n
+  (l: ChainLink)  => tlCountEnts(l.next, fName,
+                                 tlCountSelf(l.value.tupValue, fName, n))
 
-fun [tail] tlCountArms(as2: Chain<PArm>, fName, n): Int
-  ret match(as2)
-    (nil: ChainEnd) => n
-    (l: ChainLink)  => tlCountArms(l.next, fName,
-        tlCountOpt(l.value.armGuard, fName,
-                   tlCountSelf(l.value.armBody, fName, n)))
+fun [tail] tlCountArms(as2: Chain<PArm>, fName, n): Int => match(as2)
+  (nil: ChainEnd) => n
+  (l: ChainLink)  => tlCountArms(l.next, fName,
+      tlCountOpt(l.value.armGuard, fName,
+                 tlCountSelf(l.value.armBody, fName, n)))
 
-fun tlCountOpt(x: PExpr|None, fName, n): Int
-  ret match(x)
-    (e2: PExpr) => tlCountSelf(e2, fName, n)
-    ()          => n
+fun tlCountOpt(x: PExpr|None, fName, n) => match(x)
+  (e2: PExpr) => tlCountSelf(e2, fName, n)
+  ()          => n
 
-fun [tail] tlCountStmts(ss: Chain<PStmt>, fName: String, n: Int): Int
-  ret match(ss)
-    (nil: ChainEnd) => n
-    (l: ChainLink)  => tlCountStmts(l.next, fName,
-                                    tlCountStmt(l.value, fName, n))
+fun [tail] tlCountStmts(ss: Chain<PStmt>, fName: String, n) => match(ss)
+  (nil: ChainEnd) => n
+  (l: ChainLink)  => tlCountStmts(l.next, fName,
+                                  tlCountStmt(l.value, fName, n))
 
-fun tlCountStmt(st, fName, n): Int
-  ret match(st)
-    (f: PsFun)   => tlCountOpt(f.fBody, fName,
-                               tlCountStmt(f.fParams, fName, n))
-    (l: PsLet)   => tlCountOpt(l.lDefault, fName, n)
-    (d: PsDestructure) => tlCountStmts(chain(d.dTargets), fName,
-                                       tlCountOpt(d.dDefault, fName, n))
-    (rt: PsRet)  => tlCountSelf(rt.retValue, fName, n)
-    (a: PsAction) => tlCountSelf(a.action, fName, n)
-    (i: PsIf)    => tlCountStmts(chain(i.ifFalse), fName,
-                                 tlCountStmts(chain(i.ifTrue), fName,
-                                              tlCountSelf(i.ifCond, fName,
-                                                          n)))
-    (o: PStmt)   => n
+fun tlCountStmt(st, fName, n): Int => match(st)
+  (f: PsFun)   => tlCountOpt(f.fBody, fName,
+                             tlCountStmt(f.fParams, fName, n))
+  (l: PsLet)   => tlCountOpt(l.lDefault, fName, n)
+  (d: PsDestructure) => tlCountStmts(chain(d.dTargets), fName,
+                                     tlCountOpt(d.dDefault, fName, n))
+  (rt: PsRet)  => tlCountSelf(rt.retValue, fName, n)
+  (a: PsAction) => tlCountSelf(a.action, fName, n)
+  (i: PsIf)    => tlCountStmts(chain(i.ifFalse), fName,
+                               tlCountStmts(chain(i.ifTrue), fName,
+                                            tlCountSelf(i.ifCond, fName,
+                                                        n)))
+  (o: PStmt)   => n
 
-fun tlCountStmt2(st, fName, n): Int
-  ret tlCountStmt(st, fName, n)
+fun tlCountStmt2(st, fName, n) => tlCountStmt(st, fName, n)
 
 # ── the tail rewriter ────────────────────────────────────────────────────────
 # Ordinals are assigned in rewrite order (statements before the block value,
 # true branch before false, arms in order) — the same order Python's mutable
 # counter produces.
 
-fun tlRewriteTail(x, fName, n): TlRw
+fun tlRewriteTail(x, fName, n)
   if tlIsSelfCall(x, fName)
     ret tlToRecur(x, n)
   ret match(x)
@@ -250,23 +230,20 @@ fun tlRewriteTail(x, fName, n): TlRw
       |> (ao) => TlRw(with mt(arms = ao.aoArms), ao.aoN)
     (o: PExpr)     => TlRw(x, n)   # non-tail-bearing: a base-case value
 
-fun tlToRecur(x, n): TlRw
-  ret match(x)
-    (c: PeCall) => match(c.parameter)
-      (tp: PeTuple) => TlRw(PeRecur(tlEntValues(chain(tp.exprs),
-                                                List()),
-                                    n, c.pecLine),
-                            n + 1)
-      (o: PExpr)    => TlRw(x, n)
-    (o2: PExpr) => TlRw(x, n)
+fun tlToRecur(x, n) => match(x)
+  (c: PeCall) => match(c.parameter)
+    (tp: PeTuple) => TlRw(PeRecur(tlEntValues(chain(tp.exprs),
+                                              List()),
+                                  n, c.pecLine),
+                          n + 1)
+    (o: PExpr)    => TlRw(x, n)
+  (o2: PExpr) => TlRw(x, n)
 
-fun tlEntValues(es: Chain<PTupEnt>, acc: List<PExpr>): List<PExpr>
-  ret build(tlEntValuesB(es, builderFrom(acc)))
+fun tlEntValues(es: Chain<PTupEnt>, acc: List<PExpr>) => build(tlEntValuesB(es, builderFrom(acc)))
 
-fun [tail] tlEntValuesB(es: Chain<PTupEnt>, [terminal] acc): ListBuilder<PExpr>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => tlEntValuesB(l.next, push(acc, l.value.tupValue))
+fun [tail] tlEntValuesB(es: Chain<PTupEnt>, [terminal] acc): ListBuilder<PExpr> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => tlEntValuesB(l.next, push(acc, l.value.tupValue))
 
 class [final] TlSo(soStmts: List<PStmt>, soN: Int)
 class [final] TlAo(aoArms: List<PArm>, aoN: Int)
@@ -275,30 +252,28 @@ class [final] TlAo(aoArms: List<PArm>, aoN: Int)
 # `if` branches, which are scopes, not blocks — is a tail exit. Other
 # statement kinds run BEFORE the block's result and are left alone.
 # (Not [tail]: the PsIf arm recurses into both branches.)
-fun tlStmtTails(ss: Chain<PStmt>, fName: String, n: Int,
-                       [terminal] acc: ListBuilder<PStmt>): TlSo
-  ret match(ss)
-    (nil: ChainEnd) => TlSo(build(acc), n)
-    (l: ChainLink)  => match(l.value)
-      (rt: PsRet) => tlRewriteTail(rt.retValue, fName, n)
-        |> (vo) => tlStmtTails(l.next, fName, vo.rwN,
-                               push(acc,
-                                   PsRet(vo.rwExpr, rt.psrLine)))
-      (i: PsIf)   => tlStmtTails(chain(i.ifTrue), fName, n, builder())
-        |> (to) => (to, tlStmtTails(chain(i.ifFalse), fName, to.soN,
-                                    builder()))
-        |> (to, fo) => tlStmtTails(l.next, fName, fo.soN,
-                                   push(acc,
-                                       PsIf(i.ifCond, to.soStmts,
-                                            fo.soStmts, i.psifLine)))
-      (o: PStmt)  => tlStmtTails(l.next, fName, n,
-                                 push(acc, l.value))
+fun tlStmtTails(ss: Chain<PStmt>, fName, n,
+                       [terminal] acc) => match(ss)
+  (nil: ChainEnd) => TlSo(build(acc), n)
+  (l: ChainLink)  => match(l.value)
+    (rt: PsRet) => tlRewriteTail(rt.retValue, fName, n)
+      |> (vo) => tlStmtTails(l.next, fName, vo.rwN,
+                             push(acc,
+                                 PsRet(vo.rwExpr, rt.psrLine)))
+    (i: PsIf)   => tlStmtTails(chain(i.ifTrue), fName, n, builder())
+      |> (to) => (to, tlStmtTails(chain(i.ifFalse), fName, to.soN,
+                                  builder()))
+      |> (to, fo) => tlStmtTails(l.next, fName, fo.soN,
+                                 push(acc,
+                                     PsIf(i.ifCond, to.soStmts,
+                                          fo.soStmts, i.psifLine)))
+    (o: PStmt)  => tlStmtTails(l.next, fName, n,
+                               push(acc, l.value))
 
-fun [tail] tlArmTails(as2: Chain<PArm>, fName: String, n: Int,
-                      [terminal] acc: ListBuilder<PArm>): TlAo
-  ret match(as2)
-    (nil: ChainEnd) => TlAo(build(acc), n)
-    (l: ChainLink)  => tlRewriteTail(l.value.armBody, fName, n)
-      |> (bo) => tlArmTails(l.next, fName, bo.rwN,
-                            push(acc,
-                                with l.value(armBody = bo.rwExpr)))
+fun [tail] tlArmTails(as2: Chain<PArm>, fName, n,
+                      [terminal] acc) => match(as2)
+  (nil: ChainEnd) => TlAo(build(acc), n)
+  (l: ChainLink)  => tlRewriteTail(l.value.armBody, fName, n)
+    |> (bo) => tlArmTails(l.next, fName, bo.rwN,
+                          push(acc,
+                              with l.value(armBody = bo.rwExpr)))

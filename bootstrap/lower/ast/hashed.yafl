@@ -34,8 +34,7 @@ import Bootstrap::Types
 class [linear, final] LhAcc(lhStmts: ListBuilder<PStmt>, lhErrs: Set<PErr>,
                             lhChanged: Bool)
 
-fun lhKeep([terminal] acc: LhAcc, st: PStmt): LhAcc
-  ret LhAcc(push(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
+fun lhKeep([terminal] acc: LhAcc, st) => LhAcc(push(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
 
 fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PErr>, lhChanged: Bool)
   let out = lhStmtsLoop(chain(statements), List(),
@@ -46,28 +45,25 @@ fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PEr
 # three internals are representation-aware at codegen, so a value-repr enum
 # simply never caches (peek is constant 0) and never identity-matches
 # (ref_eq is constant false). The parameter may name the root or any variant.
-fun lhIsHashedType(sp: Spec|None, roots: List<String>): Bool
-  ret match(sp)
-    (s2: Spec) => match(s2)
-      (e2: SEnum) => true
-      (o: Spec)   => false
-    ()         => false
+fun lhIsHashedType(sp: Spec|None, roots: List<String>) => match(sp)
+  (s2: Spec) => match(s2)
+    (e2: SEnum) => true
+    (o: Spec)   => false
+  ()         => false
 
 fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
-                       [terminal] acc: LhAcc): LhAcc
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
+                       [terminal] acc: LhAcc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
 
 fun lhOne(st, roots: List<String>,
-          [terminal] acc: LhAcc): LhAcc
-  ret match(st)
-    (f: PsFun) => hasAttr(f.fAttrs, "refeq")
-      ? lhRefeqFun(f, roots, acc)
-      : hasAttr(f.fAttrs, "hashed")
-        ? lhFun(f, roots, acc)
-        : lhKeep(acc, st)
-    (o: PStmt) => lhKeep(acc, st)
+          [terminal] acc: LhAcc) => match(st)
+  (f: PsFun) => hasAttr(f.fAttrs, "refeq")
+    ? lhRefeqFun(f, roots, acc)
+    : hasAttr(f.fAttrs, "hashed")
+      ? lhFun(f, roots, acc)
+      : lhKeep(acc, st)
+  (o: PStmt) => lhKeep(acc, st)
 
 fun lhFun(f: PsFun, roots: List<String>,
           [terminal] acc: LhAcc): LhAcc
@@ -89,26 +85,23 @@ fun lhFun(f: PsFun, roots: List<String>,
   ret LhAcc(push(push(acc.lhStmts, split.wrap), split.raw),
             acc.lhErrs, true)
 
-fun lhFirstParamHashed(params: List<PStmt>, roots: List<String>): Bool
-  ret match(head(params))
-    (st: PStmt) => match(st)
-      (p: PsLet)  => lhIsHashedType(p.lType, roots)
-      (o: PStmt)  => false
-    ()          => false
+fun lhFirstParamHashed(params: List<PStmt>, roots: List<String>) => match(head(params))
+  (st: PStmt) => match(st)
+    (p: PsLet)  => lhIsHashedType(p.lType, roots)
+    (o: PStmt)  => false
+  ()          => false
 
-fun lhFirstParamName(params: List<PStmt>): String
-  ret match(head(params))
-    (st: PStmt) => match(st)
-      (p: PsLet) => p.lName
-      (o: PStmt) => ""
-    ()          => ""
+fun lhFirstParamName(params: List<PStmt>) => match(head(params))
+  (st: PStmt) => match(st)
+    (p: PsLet) => p.lName
+    (o: PStmt) => ""
+  ()          => ""
 
-fun lhReturnsInt32(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => match(s2)
-      (b: SBuiltin) => b.sbName == "int32"
-      (o: Spec)     => false
-    ()         => false
+fun lhReturnsInt32(sp: Spec|None) => match(sp)
+  (s2: Spec) => match(s2)
+    (b: SBuiltin) => b.sbName == "int32"
+    (o: Spec)     => false
+  ()         => false
 
 fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
   let lr = f.psfLine
@@ -167,36 +160,32 @@ fun lhRefeqFun(f: PsFun, roots: List<String>,
   ret LhAcc(push(push(acc.lhStmts, split.wrap), split.raw),
             acc.lhErrs, true)
 
-fun lhRefeqParamsOk(params: List<PStmt>, roots: List<String>): Bool
-  ret lhFirstParamHashed(params, roots)
-      && lhFirstParamHashed(tail(params), roots)
-      && lhSameRoot(lhFirstParamType(params),
-                    lhFirstParamType(tail(params)))
+fun lhRefeqParamsOk(params: List<PStmt>, roots: List<String>) => lhFirstParamHashed(params, roots)
+    && lhFirstParamHashed(tail(params), roots)
+    && lhSameRoot(lhFirstParamType(params),
+                  lhFirstParamType(tail(params)))
 
-fun lhFirstParamType(params: List<PStmt>): Spec|None
-  ret match(head(params))
-    (st: PStmt) => match(st)
-      (p: PsLet) => p.lType
-      (o: PStmt) => None
-    ()          => None
+fun lhFirstParamType(params: List<PStmt>) => match(head(params))
+  (st: PStmt) => match(st)
+    (p: PsLet) => p.lType
+    (o: PStmt) => None
+  ()          => None
 
-fun lhSameRoot(x: Spec|None, y: Spec|None): Bool
-  ret match(x)
-    (xs: Spec) => match(xs)
-      (xe: SEnum) => match(y)
-        (ys: Spec) => match(ys)
-          (ye: SEnum) => xe.seRoot == ye.seRoot
-          (o: Spec)   => false
-        ()         => false
-      (o2: Spec)  => false
-    ()         => false
+fun lhSameRoot(x: Spec|None, y: Spec|None) => match(x)
+  (xs: Spec) => match(xs)
+    (xe: SEnum) => match(y)
+      (ys: Spec) => match(ys)
+        (ye: SEnum) => xe.seRoot == ye.seRoot
+        (o: Spec)   => false
+      ()         => false
+    (o2: Spec)  => false
+  ()         => false
 
-fun lhReturnsBool(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => match(s2)
-      (b: SBuiltin) => b.sbName == "bool"
-      (o: Spec)     => false
-    ()         => false
+fun lhReturnsBool(sp: Spec|None) => match(sp)
+  (s2: Spec) => match(s2)
+    (b: SBuiltin) => b.sbName == "bool"
+    (o: Spec)     => false
+  ()         => false
 
 fun lhSplitRefeq(f: PsFun, lName, rName): (wrap: PStmt, raw: PStmt)
   let lr = f.psfLine

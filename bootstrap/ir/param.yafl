@@ -71,176 +71,162 @@ class [final] RpRename(oldName: String, newName: String)
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
-fun [tail] renameLookup(renames: List<RpRename>, name): String
-  ret match(head(renames))
-    (r: RpRename) => r.oldName == name ? r.newName : renameLookup(tail(renames), name)
-    ()            => name
+fun [tail] renameLookup(renames: List<RpRename>, name) => match(head(renames))
+  (r: RpRename) => r.oldName == name ? r.newName : renameLookup(tail(renames), name)
+  ()            => name
 
-fun orNullOpt(o: String|None): String
-  ret match(o)
-    (s: String) => s
-    ()          => "NULL"
+fun orNullOpt(o: String|None) => match(o)
+  (s: String) => s
+  ()          => "NULL"
 
 # `isinstance(_, LParam)` — the 3 writable-location variants.
-fun rpIsLParam(r): Bool
-  ret match(r)
-    (s: RpStackVar) => true
-    (g: RpGlobalVar) => true
-    (o: RpObjectField) => true
-    (o: RParam) => false
+fun rpIsLParam(r) => match(r)
+  (s: RpStackVar) => true
+  (g: RpGlobalVar) => true
+  (o: RpObjectField) => true
+  (o: RParam) => false
 
 # ── get_type ─────────────────────────────────────────────────────────────────
 # Python's base RParam.get_type() raises ValueError() — variants without an
 # override never have get_type() called on them; the fallback below is
 # documented as unreachable.
 
-fun rpGetType(r): CgType
-  ret match(r)
-    (x: RpNewStruct) => CgStruct(map(x.values, (v) => CgField(v.name, rpGetType(v.value))))
-    (x: RpRuntimeInvoke) => x.resultType
-    (x: RpStructField) => rpStructFieldType(x)
-    (x: RpString) => CgDataPointer()
-    (x: RpInteger) => x.precision == 0 ? CgDataPointer() : CgInt(x.precision)
-    (x: RpFloat) => CgFloat(x.precision)
-    (x: RpIntEqConst) => CgInt(32)
-    (x: RpNullPointer) => CgDataPointer()
-    (x: RpStaticObjectRef) => CgDataPointer()
-    (x: RpVtableDiscriminator) => CgInt(32)
-    (x: RpObjVtableEq) => CgInt(8)
-    (x: RpSyncWrap) => x.wrapperType
-    (x: RpZeroOf) => x.valueType
-    (x: RpNewStructTyped) => x.structType
-    (x: RpTagTask) => x.targetType
-    (x: RpGlobalFunction) => CgFuncPointer()
-    (x: RpVirtualFunction) => CgFuncPointer()
-    (x: RpPointerTo) => CgDataPointer()
-    (x: RpStackVar) => x.fieldType
-    (x: RpGlobalVar) => x.fieldType
-    (x: RpObjectField) => x.fieldType
-    (x: RpArrayElement) => x.elementType
-    (x: RpInitArray) => CgVoid()   # unreachable: Python's InitArray never overrides get_type()
-    (x: RpFunField) => x.ffPart == "f" ? CgIntPtr() : CgDataPointer()
-    (x: RpMakeFun) => CgFuncPointer()
+fun rpGetType(r) => match(r)
+  (x: RpNewStruct) => CgStruct(map(x.values, (v) => CgField(v.name, rpGetType(v.value))))
+  (x: RpRuntimeInvoke) => x.resultType
+  (x: RpStructField) => rpStructFieldType(x)
+  (x: RpString) => CgDataPointer()
+  (x: RpInteger) => x.precision == 0 ? CgDataPointer() : CgInt(x.precision)
+  (x: RpFloat) => CgFloat(x.precision)
+  (x: RpIntEqConst) => CgInt(32)
+  (x: RpNullPointer) => CgDataPointer()
+  (x: RpStaticObjectRef) => CgDataPointer()
+  (x: RpVtableDiscriminator) => CgInt(32)
+  (x: RpObjVtableEq) => CgInt(8)
+  (x: RpSyncWrap) => x.wrapperType
+  (x: RpZeroOf) => x.valueType
+  (x: RpNewStructTyped) => x.structType
+  (x: RpTagTask) => x.targetType
+  (x: RpGlobalFunction) => CgFuncPointer()
+  (x: RpVirtualFunction) => CgFuncPointer()
+  (x: RpPointerTo) => CgDataPointer()
+  (x: RpStackVar) => x.fieldType
+  (x: RpGlobalVar) => x.fieldType
+  (x: RpObjectField) => x.fieldType
+  (x: RpArrayElement) => x.elementType
+  (x: RpInitArray) => CgVoid()   # unreachable: Python's InitArray never overrides get_type()
+  (x: RpFunField) => x.ffPart == "f" ? CgIntPtr() : CgDataPointer()
+  (x: RpMakeFun) => CgFuncPointer()
 
-fun rpStructFieldType(x: RpStructField): CgType
-  ret match(cgFieldsOf(rpGetType(x.structVal)))
-    (fields: List<CgField>) => rpStructFieldLookup(fields, x.field)
-    () => rpStructFieldTypeSpecial(rpGetType(x.structVal), x.field)
+fun rpStructFieldType(x: RpStructField) => match(cgFieldsOf(rpGetType(x.structVal)))
+  (fields: List<CgField>) => rpStructFieldLookup(fields, x.field)
+  () => rpStructFieldTypeSpecial(rpGetType(x.structVal), x.field)
 
-fun rpStructFieldTypeSpecial(xtype, field): CgType
-  ret match(xtype)
-    (w: CgTaskWrapper) => field == "task" ? CgDataPointer() : w.inner
-    (fp: CgFuncPointer) => CgDataPointer()   # both "f" and "o" are DataPointer per Python
-    (o: CgType) => CgVoid()                  # unreachable (Python raises ValueError)
+fun rpStructFieldTypeSpecial(xtype, field) => match(xtype)
+  (w: CgTaskWrapper) => field == "task" ? CgDataPointer() : w.inner
+  (fp: CgFuncPointer) => CgDataPointer()   # both "f" and "o" are DataPointer per Python
+  (o: CgType) => CgVoid()                  # unreachable (Python raises ValueError)
 
-fun [tail] rpStructFieldLookup(fields: List<CgField>, name): CgType
-  ret match(head(fields))
-    (f: CgField) => f.fieldName == name ? f.fieldType : rpStructFieldLookup(tail(fields), name)
-    ()           => CgVoid()   # unreachable (Python raises ValueError)
+fun [tail] rpStructFieldLookup(fields: List<CgField>, name) => match(head(fields))
+  (f: CgField) => f.fieldName == name ? f.fieldType : rpStructFieldLookup(tail(fields), name)
+  ()           => CgVoid()   # unreachable (Python raises ValueError)
 
 # ── flatten(is_reader) ───────────────────────────────────────────────────────
 
-fun rpFlatten(r, isReader: Bool): List<RParam>
-  ret match(r)
-    (x: RpInitArray) => prepend(r, rpFlattenValues(x.values))
-    (x: RpNewStruct) => prepend(r, rpFlattenNamedValues(x.values))
-    (x: RpRuntimeInvoke) => prepend(r, rpFlatten(x.parameters, true))
-    (x: RpStructField) => prepend(r, rpFlatten(x.structVal, true))
-    (x: RpIntEqConst) => prepend(r, rpFlatten(x.value, true))
-    (x: RpVtableDiscriminator) => prepend(r, rpFlatten(x.value, true))
-    (x: RpObjVtableEq) => prepend(r, rpFlatten(x.value, true))
-    (x: RpSyncWrap) => prepend(r, rpFlatten(x.value, isReader))
-    (x: RpNewStructTyped) => prepend(r, rpFlattenNamedValues(x.values))
-    (x: RpTagTask) => prepend(r, rpFlatten(x.task, true))
-    (x: RpGlobalFunction) => prepend(r, rpFlattenOpt(x.object, true))
-    (x: RpVirtualFunction) => prepend(r, rpFlatten(x.object, true))
-    (x: RpPointerTo) => prepend(r, rpFlatten(x.value, true))
-    (x: RpStackVar) => isReader ? list1(r) : List()
-    (x: RpGlobalVar) => isReader ? list1(r) : List()
-    (x: RpObjectField) => rpFlattenObjectField(r, x, isReader)
-    (x: RpArrayElement) => concat(prepend(r, rpFlatten(x.pointer, true)), rpFlatten(x.index, true))
-    (x: RpFunField) => prepend(r, rpFlatten(x.ffFun, true))
-    (x: RpMakeFun) => prepend(r, concat(rpFlatten(x.mfCode, true), rpFlatten(x.mfEnv, true)))
-    (o: RParam) => list1(r)   # base default: [self]
+fun rpFlatten(r, isReader) => match(r)
+  (x: RpInitArray) => prepend(r, rpFlattenValues(x.values))
+  (x: RpNewStruct) => prepend(r, rpFlattenNamedValues(x.values))
+  (x: RpRuntimeInvoke) => prepend(r, rpFlatten(x.parameters, true))
+  (x: RpStructField) => prepend(r, rpFlatten(x.structVal, true))
+  (x: RpIntEqConst) => prepend(r, rpFlatten(x.value, true))
+  (x: RpVtableDiscriminator) => prepend(r, rpFlatten(x.value, true))
+  (x: RpObjVtableEq) => prepend(r, rpFlatten(x.value, true))
+  (x: RpSyncWrap) => prepend(r, rpFlatten(x.value, isReader))
+  (x: RpNewStructTyped) => prepend(r, rpFlattenNamedValues(x.values))
+  (x: RpTagTask) => prepend(r, rpFlatten(x.task, true))
+  (x: RpGlobalFunction) => prepend(r, rpFlattenOpt(x.object, true))
+  (x: RpVirtualFunction) => prepend(r, rpFlatten(x.object, true))
+  (x: RpPointerTo) => prepend(r, rpFlatten(x.value, true))
+  (x: RpStackVar) => isReader ? list1(r) : List()
+  (x: RpGlobalVar) => isReader ? list1(r) : List()
+  (x: RpObjectField) => rpFlattenObjectField(r, x, isReader)
+  (x: RpArrayElement) => concat(prepend(r, rpFlatten(x.pointer, true)), rpFlatten(x.index, true))
+  (x: RpFunField) => prepend(r, rpFlatten(x.ffFun, true))
+  (x: RpMakeFun) => prepend(r, concat(rpFlatten(x.mfCode, true), rpFlatten(x.mfEnv, true)))
+  (o: RParam) => list1(r)   # base default: [self]
 
-fun rpFlattenObjectField(r: RParam, x: RpObjectField, isReader: Bool): List<RParam>
+fun rpFlattenObjectField(r: RParam, x: RpObjectField, isReader)
   let head2 = isReader ? list1(r) : List()
   let withPointer = concat(head2, rpFlatten(x.pointer, true))
   ret match(x.index)
     (idx: RParam) => concat(withPointer, rpFlatten(idx, true))
     ()            => withPointer
 
-fun rpFlattenValues(values: List<RParam>): List<RParam>
+fun rpFlattenValues(values: List<RParam>)
   ret fold(values, List(), (acc, v) => concat(acc, rpFlatten(v, true)))
 
-fun rpFlattenNamedValues(values: List<RpNamedValue>): List<RParam>
+fun rpFlattenNamedValues(values: List<RpNamedValue>)
   ret fold(values, List(), (acc, v) => concat(acc, rpFlatten(v.value, true)))
 
-fun rpFlattenOpt(o: RParam|None, isReader: Bool): List<RParam>
-  ret match(o)
-    (v: RParam) => rpFlatten(v, isReader)
-    ()          => List()
+fun rpFlattenOpt(o: RParam|None, isReader) => match(o)
+  (v: RParam) => rpFlatten(v, isReader)
+  ()          => List()
 
 # ── test(predicate) ──────────────────────────────────────────────────────────
 
-fun rpTest(r, pred: (:RParam): Bool): Bool
-  ret pred(r) || rpTestChildren(r, pred)
+fun rpTest(r, pred) => pred(r) || rpTestChildren(r, pred)
 
-fun rpTestChildren(r, pred: (:RParam): Bool): Bool
-  ret match(r)
-    (x: RpInitArray) => any(x.values, (v) => rpTest(v, pred))
-    (x: RpNewStruct) => any(x.values, (v) => rpTest(v.value, pred))
-    (x: RpRuntimeInvoke) => rpTest(x.parameters, pred)
-    (x: RpStructField) => rpTest(x.structVal, pred)
-    (x: RpIntEqConst) => rpTest(x.value, pred)
-    (x: RpVtableDiscriminator) => rpTest(x.value, pred)
-    (x: RpObjVtableEq) => rpTest(x.value, pred)
-    (x: RpSyncWrap) => rpTest(x.value, pred)
-    (x: RpNewStructTyped) => any(x.values, (v) => rpTest(v.value, pred))
-    (x: RpTagTask) => rpTest(x.task, pred)
-    (x: RpGlobalFunction) => rpTestOpt(x.object, pred)
-    (x: RpVirtualFunction) => rpTest(x.object, pred)
-    (x: RpPointerTo) => rpTest(x.value, pred)
-    (x: RpObjectField) => rpTest(x.pointer, pred) || rpTestOpt(x.index, pred)
-    (x: RpArrayElement) => rpTest(x.pointer, pred) || rpTest(x.index, pred)
-    (x: RpFunField) => rpTest(x.ffFun, pred)
-    (x: RpMakeFun) => rpTest(x.mfCode, pred) || rpTest(x.mfEnv, pred)
-    (o: RParam) => false
+fun rpTestChildren(r, pred) => match(r)
+  (x: RpInitArray) => any(x.values, (v) => rpTest(v, pred))
+  (x: RpNewStruct) => any(x.values, (v) => rpTest(v.value, pred))
+  (x: RpRuntimeInvoke) => rpTest(x.parameters, pred)
+  (x: RpStructField) => rpTest(x.structVal, pred)
+  (x: RpIntEqConst) => rpTest(x.value, pred)
+  (x: RpVtableDiscriminator) => rpTest(x.value, pred)
+  (x: RpObjVtableEq) => rpTest(x.value, pred)
+  (x: RpSyncWrap) => rpTest(x.value, pred)
+  (x: RpNewStructTyped) => any(x.values, (v) => rpTest(v.value, pred))
+  (x: RpTagTask) => rpTest(x.task, pred)
+  (x: RpGlobalFunction) => rpTestOpt(x.object, pred)
+  (x: RpVirtualFunction) => rpTest(x.object, pred)
+  (x: RpPointerTo) => rpTest(x.value, pred)
+  (x: RpObjectField) => rpTest(x.pointer, pred) || rpTestOpt(x.index, pred)
+  (x: RpArrayElement) => rpTest(x.pointer, pred) || rpTest(x.index, pred)
+  (x: RpFunField) => rpTest(x.ffFun, pred)
+  (x: RpMakeFun) => rpTest(x.mfCode, pred) || rpTest(x.mfEnv, pred)
+  (o: RParam) => false
 
-fun rpTestOpt(o: RParam|None, pred: (:RParam): Bool): Bool
-  ret match(o)
-    (v: RParam) => rpTest(v, pred)
-    ()          => false
+fun rpTestOpt(o: RParam|None, pred) => match(o)
+  (v: RParam) => rpTest(v, pred)
+  ()          => false
 
 # ── rename_vars(renames) ─────────────────────────────────────────────────────
 
-fun rpRenameVars(r, renames: List<RpRename>): RParam
-  ret match(r)
-    (x: RpInitArray) => RpInitArray(x.memberType, map(x.values, (v) => rpRenameVars(v, renames)))
-    (x: RpNewStruct) => RpNewStruct(map(x.values, (v) => RpNamedValue(v.name, rpRenameVars(v.value, renames))))
-    (x: RpRuntimeInvoke) => RpRuntimeInvoke(x.function, rpRenameVars(x.parameters, renames), x.resultType)
-    (x: RpStructField) => RpStructField(rpRenameVars(x.structVal, renames), x.field)
-    (x: RpIntEqConst) => RpIntEqConst(rpRenameVars(x.value, renames), x.constVal)
-    (x: RpVtableDiscriminator) => RpVtableDiscriminator(rpRenameVars(x.value, renames))
-    (x: RpObjVtableEq) => RpObjVtableEq(rpRenameVars(x.value, renames), x.className, x.externSymbol)
-    (x: RpSyncWrap) => RpSyncWrap(rpRenameVars(x.value, renames), x.wrapperType)
-    (x: RpNewStructTyped) => RpNewStructTyped(x.structType, map(x.values, (v) => RpNamedValue(v.name, rpRenameVars(v.value, renames))))
-    (x: RpTagTask) => RpTagTask(rpRenameVars(x.task, renames), x.targetType)
-    (x: RpGlobalFunction) => RpGlobalFunction(x.name, rpRenameVarsOpt(x.object, renames), x.external, x.cSymbol, x.impure, x.sync)
-    (x: RpVirtualFunction) => RpVirtualFunction(x.name, rpRenameVars(x.object, renames), x.fastLookup)
-    (x: RpPointerTo) => RpPointerTo(rpRenameVars(x.value, renames))
-    (x: RpStackVar) => RpStackVar(x.fieldType, renameLookup(renames, x.name))
-    (x: RpGlobalVar) => r   # GlobalVar.rename_vars is identity in Python
-    (x: RpObjectField) => RpObjectField(x.fieldType, rpRenameVars(x.pointer, renames), x.objectName, x.field, rpRenameVarsOpt(x.index, renames), x.fresh)
-    (x: RpArrayElement) => RpArrayElement(x.elementType, rpRenameVars(x.pointer, renames), x.objectName, x.field, x.lengthField, rpRenameVars(x.index, renames), x.checked)
-    (x: RpFunField) => RpFunField(rpRenameVars(x.ffFun, renames), x.ffPart)
-    (x: RpMakeFun) => RpMakeFun(rpRenameVars(x.mfCode, renames), rpRenameVars(x.mfEnv, renames))
-    (o: RParam) => r   # base default: self
+fun rpRenameVars(r, renames: List<RpRename>) => match(r)
+  (x: RpInitArray) => RpInitArray(x.memberType, map(x.values, (v) => rpRenameVars(v, renames)))
+  (x: RpNewStruct) => RpNewStruct(map(x.values, (v) => RpNamedValue(v.name, rpRenameVars(v.value, renames))))
+  (x: RpRuntimeInvoke) => RpRuntimeInvoke(x.function, rpRenameVars(x.parameters, renames), x.resultType)
+  (x: RpStructField) => RpStructField(rpRenameVars(x.structVal, renames), x.field)
+  (x: RpIntEqConst) => RpIntEqConst(rpRenameVars(x.value, renames), x.constVal)
+  (x: RpVtableDiscriminator) => RpVtableDiscriminator(rpRenameVars(x.value, renames))
+  (x: RpObjVtableEq) => RpObjVtableEq(rpRenameVars(x.value, renames), x.className, x.externSymbol)
+  (x: RpSyncWrap) => RpSyncWrap(rpRenameVars(x.value, renames), x.wrapperType)
+  (x: RpNewStructTyped) => RpNewStructTyped(x.structType, map(x.values, (v) => RpNamedValue(v.name, rpRenameVars(v.value, renames))))
+  (x: RpTagTask) => RpTagTask(rpRenameVars(x.task, renames), x.targetType)
+  (x: RpGlobalFunction) => RpGlobalFunction(x.name, rpRenameVarsOpt(x.object, renames), x.external, x.cSymbol, x.impure, x.sync)
+  (x: RpVirtualFunction) => RpVirtualFunction(x.name, rpRenameVars(x.object, renames), x.fastLookup)
+  (x: RpPointerTo) => RpPointerTo(rpRenameVars(x.value, renames))
+  (x: RpStackVar) => RpStackVar(x.fieldType, renameLookup(renames, x.name))
+  (x: RpGlobalVar) => r   # GlobalVar.rename_vars is identity in Python
+  (x: RpObjectField) => RpObjectField(x.fieldType, rpRenameVars(x.pointer, renames), x.objectName, x.field, rpRenameVarsOpt(x.index, renames), x.fresh)
+  (x: RpArrayElement) => RpArrayElement(x.elementType, rpRenameVars(x.pointer, renames), x.objectName, x.field, x.lengthField, rpRenameVars(x.index, renames), x.checked)
+  (x: RpFunField) => RpFunField(rpRenameVars(x.ffFun, renames), x.ffPart)
+  (x: RpMakeFun) => RpMakeFun(rpRenameVars(x.mfCode, renames), rpRenameVars(x.mfEnv, renames))
+  (o: RParam) => r   # base default: self
 
-fun rpRenameVarsOpt(o: RParam|None, renames: List<RpRename>): RParam|None
-  ret match(o)
-    (v: RParam) => rpRenameVars(v, renames)
-    ()          => None
+fun rpRenameVarsOpt(o: RParam|None, renames: List<RpRename>) => match(o)
+  (v: RParam) => rpRenameVars(v, renames)
+  ()          => None
 
 # ── replace_params(replacer) ─────────────────────────────────────────────────
 # Every override in Python calls `replacer(dataclasses.replace(self, ...))` —
@@ -252,48 +238,44 @@ fun rpRenameVarsOpt(o: RParam|None, renames: List<RpRename>): RParam|None
 # LParam-shape invariant at those call sites, exactly as Python's static type
 # checker (not its runtime) enforced it.
 
-fun rpReplaceParams(r, replacer): RParam
-  ret match(r)
-    (x: RpInitArray) => replacer(with x(values = map(x.values, (v) => rpReplaceParams(v, replacer))))
-    (x: RpNewStruct) => replacer(with x(values = map(x.values, (v) => with v(value = rpReplaceParams(v.value, replacer)))))
-    (x: RpRuntimeInvoke) => replacer(with x(parameters = rpReplaceParams(x.parameters, replacer)))
-    (x: RpStructField) => replacer(with x(structVal = rpReplaceParams(x.structVal, replacer)))
-    (x: RpIntEqConst) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
-    (x: RpVtableDiscriminator) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
-    (x: RpObjVtableEq) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
-    (x: RpSyncWrap) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
-    (x: RpNewStructTyped) => replacer(with x(values = map(x.values, (v) => with v(value = rpReplaceParams(v.value, replacer)))))
-    (x: RpTagTask) => replacer(with x(task = rpReplaceParams(x.task, replacer)))
-    (x: RpGlobalFunction) => replacer(with x(object = rpReplaceParamsOpt(x.object, replacer)))
-    (x: RpVirtualFunction) => replacer(with x(object = rpReplaceParams(x.object, replacer)))
-    (x: RpPointerTo) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
-    (x: RpStackVar) => replacer(r)
-    (x: RpGlobalVar) => replacer(r)
-    (x: RpObjectField) => replacer(with x(pointer = rpReplaceParams(x.pointer, replacer),
-                                          index   = rpReplaceParamsOpt(x.index, replacer)))
-    (x: RpArrayElement) => replacer(with x(pointer = rpReplaceParams(x.pointer, replacer),
-                                           index   = rpReplaceParams(x.index, replacer)))
-    (x: RpFunField) => replacer(with x(ffFun = rpReplaceParams(x.ffFun, replacer)))
-    (x: RpMakeFun) => replacer(with x(mfCode = rpReplaceParams(x.mfCode, replacer),
-                                      mfEnv  = rpReplaceParams(x.mfEnv, replacer)))
-    (o: RParam) => replacer(r)   # base default: replacer(self)
+fun rpReplaceParams(r, replacer): RParam => match(r)
+  (x: RpInitArray) => replacer(with x(values = map(x.values, (v) => rpReplaceParams(v, replacer))))
+  (x: RpNewStruct) => replacer(with x(values = map(x.values, (v) => with v(value = rpReplaceParams(v.value, replacer)))))
+  (x: RpRuntimeInvoke) => replacer(with x(parameters = rpReplaceParams(x.parameters, replacer)))
+  (x: RpStructField) => replacer(with x(structVal = rpReplaceParams(x.structVal, replacer)))
+  (x: RpIntEqConst) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
+  (x: RpVtableDiscriminator) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
+  (x: RpObjVtableEq) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
+  (x: RpSyncWrap) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
+  (x: RpNewStructTyped) => replacer(with x(values = map(x.values, (v) => with v(value = rpReplaceParams(v.value, replacer)))))
+  (x: RpTagTask) => replacer(with x(task = rpReplaceParams(x.task, replacer)))
+  (x: RpGlobalFunction) => replacer(with x(object = rpReplaceParamsOpt(x.object, replacer)))
+  (x: RpVirtualFunction) => replacer(with x(object = rpReplaceParams(x.object, replacer)))
+  (x: RpPointerTo) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
+  (x: RpStackVar) => replacer(r)
+  (x: RpGlobalVar) => replacer(r)
+  (x: RpObjectField) => replacer(with x(pointer = rpReplaceParams(x.pointer, replacer),
+                                        index   = rpReplaceParamsOpt(x.index, replacer)))
+  (x: RpArrayElement) => replacer(with x(pointer = rpReplaceParams(x.pointer, replacer),
+                                         index   = rpReplaceParams(x.index, replacer)))
+  (x: RpFunField) => replacer(with x(ffFun = rpReplaceParams(x.ffFun, replacer)))
+  (x: RpMakeFun) => replacer(with x(mfCode = rpReplaceParams(x.mfCode, replacer),
+                                    mfEnv  = rpReplaceParams(x.mfEnv, replacer)))
+  (o: RParam) => replacer(r)   # base default: replacer(self)
 
-fun rpReplaceParamsOpt(o: RParam|None, replacer): RParam|None
-  ret match(o)
-    (v: RParam) => rpReplaceParams(v, replacer)
-    ()          => None
+fun rpReplaceParamsOpt(o: RParam|None, replacer): RParam|None => match(o)
+  (v: RParam) => rpReplaceParams(v, replacer)
+  ()          => None
 
 # ── get_live_vars() — set of StackVar-shaped RParam values ──────────────────
 
-fun eqRpStackVar(a, b): Bool
-  ret match(a)
-    (x: RpStackVar) => match(b)
-      (y: RpStackVar) => x.name == y.name && eqCgType(x.fieldType, y.fieldType)
-      (o: RParam)     => false
-    (o: RParam) => false
+fun eqRpStackVar(a, b) => match(a)
+  (x: RpStackVar) => match(b)
+    (y: RpStackVar) => x.name == y.name && eqCgType(x.fieldType, y.fieldType)
+    (o: RParam)     => false
+  (o: RParam) => false
 
-fun rpStackVarMember(l: List<RParam>, x): Bool
-  ret any(l, (y) => eqRpStackVar(x, y))
+fun rpStackVarMember(l: List<RParam>, x) => any(l, (y) => eqRpStackVar(x, y))
 
 # A SET UNION. Python's get_live_vars returns a frozenset, and every consumer
 # here treats the result the same way — membership (stack_promotion), a count
@@ -305,153 +287,145 @@ fun rpStackVarMember(l: List<RParam>, x): Bool
 # are the same var when their name and C type match, and every non-StackVar
 # RParam is outside the set entirely. Derived equality on the RParam enum would
 # compare the whole tree instead.
-fun rpStackVarUnion(a: List<RParam>, b: List<RParam>): List<RParam>
-  ret fold(b, a, (acc, x) =>
-        rpStackVarMember(acc, x) ? acc : prepend(x, acc))
+fun rpStackVarUnion(a: List<RParam>, b: List<RParam>) => fold(b, a, (acc, x) =>
+                                                           rpStackVarMember(acc, x) ? acc : prepend(x, acc))
 
-fun rpGetLiveVars(r): List<RParam>
-  ret match(r)
-    (x: RpInitArray) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v)))
-    (x: RpNewStruct) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v.value)))
-    (x: RpRuntimeInvoke) => rpGetLiveVars(x.parameters)
-    (x: RpStructField) => rpGetLiveVars(x.structVal)
-    (x: RpIntEqConst) => rpGetLiveVars(x.value)
-    (x: RpVtableDiscriminator) => rpGetLiveVars(x.value)
-    (x: RpObjVtableEq) => rpGetLiveVars(x.value)
-    (x: RpSyncWrap) => rpGetLiveVars(x.value)
-    (x: RpNewStructTyped) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v.value)))
-    (x: RpTagTask) => rpGetLiveVars(x.task)
-    (x: RpGlobalFunction) => rpGetLiveVarsOpt(x.object)
-    (x: RpVirtualFunction) => rpGetLiveVars(x.object)
-    (x: RpPointerTo) => rpGetLiveVars(x.value)
-    (x: RpStackVar) => list1(r)
-    (x: RpGlobalVar) => List()
-    (x: RpObjectField) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVarsOpt(x.index))
-    (x: RpArrayElement) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVars(x.index))
-    (x: RpFunField) => rpGetLiveVars(x.ffFun)
-    (x: RpMakeFun) => rpStackVarUnion(rpGetLiveVars(x.mfCode), rpGetLiveVars(x.mfEnv))
-    (o: RParam) => List()   # base default: empty set
+fun rpGetLiveVars(r) => match(r)
+  (x: RpInitArray) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v)))
+  (x: RpNewStruct) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v.value)))
+  (x: RpRuntimeInvoke) => rpGetLiveVars(x.parameters)
+  (x: RpStructField) => rpGetLiveVars(x.structVal)
+  (x: RpIntEqConst) => rpGetLiveVars(x.value)
+  (x: RpVtableDiscriminator) => rpGetLiveVars(x.value)
+  (x: RpObjVtableEq) => rpGetLiveVars(x.value)
+  (x: RpSyncWrap) => rpGetLiveVars(x.value)
+  (x: RpNewStructTyped) => fold(x.values, List(), (acc, v) => rpStackVarUnion(acc, rpGetLiveVars(v.value)))
+  (x: RpTagTask) => rpGetLiveVars(x.task)
+  (x: RpGlobalFunction) => rpGetLiveVarsOpt(x.object)
+  (x: RpVirtualFunction) => rpGetLiveVars(x.object)
+  (x: RpPointerTo) => rpGetLiveVars(x.value)
+  (x: RpStackVar) => list1(r)
+  (x: RpGlobalVar) => List()
+  (x: RpObjectField) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVarsOpt(x.index))
+  (x: RpArrayElement) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVars(x.index))
+  (x: RpFunField) => rpGetLiveVars(x.ffFun)
+  (x: RpMakeFun) => rpStackVarUnion(rpGetLiveVars(x.mfCode), rpGetLiveVars(x.mfEnv))
+  (o: RParam) => List()   # base default: empty set
 
-fun rpGetLiveVarsOpt(o: RParam|None): List<RParam>
-  ret match(o)
-    (v: RParam) => rpGetLiveVars(v)
-    ()          => List()
+fun rpGetLiveVarsOpt(o: RParam|None) => match(o)
+  (v: RParam) => rpGetLiveVars(v)
+  ()          => List()
 
 # ── full structural equality (dict-key semantics for the CSE cache) ────────
 
-fun [tail] eqRpNamedValues(a: List<RpNamedValue>, b: List<RpNamedValue>): Bool
-  ret match(head(a))
-    (fa: RpNamedValue) => match(head(b))
-      (fb: RpNamedValue) => fa.name == fb.name && eqRParam(fa.value, fb.value) && eqRpNamedValues(tail(a), tail(b))
-      ()                  => false
-    () => isEmpty(b)
+fun [tail] eqRpNamedValues(a: List<RpNamedValue>, b: List<RpNamedValue>) => match(head(a))
+  (fa: RpNamedValue) => match(head(b))
+    (fb: RpNamedValue) => fa.name == fb.name && eqRParam(fa.value, fb.value) && eqRpNamedValues(tail(a), tail(b))
+    ()                  => false
+  () => isEmpty(b)
 
-fun [tail] eqRParamList(a: List<RParam>, b: List<RParam>): Bool
-  ret match(head(a))
-    (xa: RParam) => match(head(b))
-      (xb: RParam) => eqRParam(xa, xb) && eqRParamList(tail(a), tail(b))
-      ()           => false
-    () => isEmpty(b)
+fun [tail] eqRParamList(a: List<RParam>, b: List<RParam>) => match(head(a))
+  (xa: RParam) => match(head(b))
+    (xb: RParam) => eqRParam(xa, xb) && eqRParamList(tail(a), tail(b))
+    ()           => false
+  () => isEmpty(b)
 
-fun eqRParamOpt(a: RParam|None, b: RParam|None): Bool
-  ret match(a)
-    (xa: RParam) => match(b)
-      (xb: RParam) => eqRParam(xa, xb)
-      ()           => false
-    () => match(b)
-      (xb: RParam) => false
-      ()           => true
+fun eqRParamOpt(a: RParam|None, b: RParam|None) => match(a)
+  (xa: RParam) => match(b)
+    (xb: RParam) => eqRParam(xa, xb)
+    ()           => false
+  () => match(b)
+    (xb: RParam) => false
+    ()           => true
 
-fun eqStringOpt(a: String|None, b: String|None): Bool
-  ret match(a)
-    (xa: String) => match(b)
-      (xb: String) => xa == xb
-      ()           => false
-    () => match(b)
-      (xb: String) => false
-      ()           => true
+fun eqStringOpt(a: String|None, b: String|None) => match(a)
+  (xa: String) => match(b)
+    (xb: String) => xa == xb
+    ()           => false
+  () => match(b)
+    (xb: String) => false
+    ()           => true
 
-fun eqRParam(a, b): Bool
-  ret match(a)
-    (x: RpInitArray) => match(b)
-      (y: RpInitArray) => eqCgType(x.memberType, y.memberType) && eqRParamList(x.values, y.values)
-      (o: RParam) => false
-    (x: RpNewStruct) => match(b)
-      (y: RpNewStruct) => eqRpNamedValues(x.values, y.values)
-      (o: RParam) => false
-    (x: RpRuntimeInvoke) => match(b)
-      (y: RpRuntimeInvoke) => x.function == y.function && eqRParam(x.parameters, y.parameters) && eqCgType(x.resultType, y.resultType)
-      (o: RParam) => false
-    (x: RpStructField) => match(b)
-      (y: RpStructField) => eqRParam(x.structVal, y.structVal) && x.field == y.field
-      (o: RParam) => false
-    (x: RpString) => match(b)
-      (y: RpString) => x.value == y.value
-      (o: RParam) => false
-    (x: RpInteger) => match(b)
-      (y: RpInteger) => x.value == y.value && x.precision == y.precision
-      (o: RParam) => false
-    (x: RpFloat) => match(b)
-      (y: RpFloat) => x.value == y.value && x.precision == y.precision
-      (o: RParam) => false
-    (x: RpIntEqConst) => match(b)
-      (y: RpIntEqConst) => eqRParam(x.value, y.value) && x.constVal == y.constVal
-      (o: RParam) => false
-    (x: RpNullPointer) => match(b)
-      (y: RpNullPointer) => true
-      (o: RParam) => false
-    (x: RpStaticObjectRef) => match(b)
-      (y: RpStaticObjectRef) => x.name == y.name
-      (o: RParam) => false
-    (x: RpVtableDiscriminator) => match(b)
-      (y: RpVtableDiscriminator) => eqRParam(x.value, y.value)
-      (o: RParam) => false
-    (x: RpObjVtableEq) => match(b)
-      (y: RpObjVtableEq) => eqRParam(x.value, y.value) && eqStringOpt(x.className, y.className) && eqStringOpt(x.externSymbol, y.externSymbol)
-      (o: RParam) => false
-    (x: RpSyncWrap) => match(b)
-      (y: RpSyncWrap) => eqRParam(x.value, y.value) && eqCgType(x.wrapperType, y.wrapperType)
-      (o: RParam) => false
-    (x: RpZeroOf) => match(b)
-      (y: RpZeroOf) => eqCgType(x.valueType, y.valueType)
-      (o: RParam) => false
-    (x: RpNewStructTyped) => match(b)
-      (y: RpNewStructTyped) => eqCgType(x.structType, y.structType) && eqRpNamedValues(x.values, y.values)
-      (o: RParam) => false
-    (x: RpTagTask) => match(b)
-      (y: RpTagTask) => eqRParam(x.task, y.task) && eqCgType(x.targetType, y.targetType)
-      (o: RParam) => false
-    (x: RpGlobalFunction) => match(b)
-      (y: RpGlobalFunction) => x.name == y.name && eqRParamOpt(x.object, y.object) && x.external == y.external
-                               && eqStringOpt(x.cSymbol, y.cSymbol) && x.impure == y.impure && x.sync == y.sync
-      (o: RParam) => false
-    (x: RpVirtualFunction) => match(b)
-      (y: RpVirtualFunction) => x.name == y.name && eqRParam(x.object, y.object) && x.fastLookup == y.fastLookup
-      (o: RParam) => false
-    (x: RpPointerTo) => match(b)
-      (y: RpPointerTo) => eqRParam(x.value, y.value)
-      (o: RParam) => false
-    (x: RpStackVar) => match(b)
-      (y: RpStackVar) => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
-      (o: RParam) => false
-    (x: RpGlobalVar) => match(b)
-      (y: RpGlobalVar) => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
-      (o: RParam) => false
-    (x: RpObjectField) => match(b)
-      (y: RpObjectField) => eqCgType(x.fieldType, y.fieldType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
-                            && x.field == y.field && eqRParamOpt(x.index, y.index)
-                            # `fresh` is compare=False in Python (provenance, not identity)
-      (o: RParam) => false
-    (x: RpArrayElement) => match(b)
-      (y: RpArrayElement) => eqCgType(x.elementType, y.elementType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
-                             && x.field == y.field && x.lengthField == y.lengthField && eqRParam(x.index, y.index) && x.checked == y.checked
-      (o: RParam) => false
-    (x: RpFunField) => match(b)
-      (y: RpFunField) => eqRParam(x.ffFun, y.ffFun) && x.ffPart == y.ffPart
-      (o: RParam) => false
-    (x: RpMakeFun) => match(b)
-      (y: RpMakeFun) => eqRParam(x.mfCode, y.mfCode) && eqRParam(x.mfEnv, y.mfEnv)
-      (o: RParam) => false
+fun eqRParam(a, b) => match(a)
+  (x: RpInitArray) => match(b)
+    (y: RpInitArray) => eqCgType(x.memberType, y.memberType) && eqRParamList(x.values, y.values)
+    (o: RParam) => false
+  (x: RpNewStruct) => match(b)
+    (y: RpNewStruct) => eqRpNamedValues(x.values, y.values)
+    (o: RParam) => false
+  (x: RpRuntimeInvoke) => match(b)
+    (y: RpRuntimeInvoke) => x.function == y.function && eqRParam(x.parameters, y.parameters) && eqCgType(x.resultType, y.resultType)
+    (o: RParam) => false
+  (x: RpStructField) => match(b)
+    (y: RpStructField) => eqRParam(x.structVal, y.structVal) && x.field == y.field
+    (o: RParam) => false
+  (x: RpString) => match(b)
+    (y: RpString) => x.value == y.value
+    (o: RParam) => false
+  (x: RpInteger) => match(b)
+    (y: RpInteger) => x.value == y.value && x.precision == y.precision
+    (o: RParam) => false
+  (x: RpFloat) => match(b)
+    (y: RpFloat) => x.value == y.value && x.precision == y.precision
+    (o: RParam) => false
+  (x: RpIntEqConst) => match(b)
+    (y: RpIntEqConst) => eqRParam(x.value, y.value) && x.constVal == y.constVal
+    (o: RParam) => false
+  (x: RpNullPointer) => match(b)
+    (y: RpNullPointer) => true
+    (o: RParam) => false
+  (x: RpStaticObjectRef) => match(b)
+    (y: RpStaticObjectRef) => x.name == y.name
+    (o: RParam) => false
+  (x: RpVtableDiscriminator) => match(b)
+    (y: RpVtableDiscriminator) => eqRParam(x.value, y.value)
+    (o: RParam) => false
+  (x: RpObjVtableEq) => match(b)
+    (y: RpObjVtableEq) => eqRParam(x.value, y.value) && eqStringOpt(x.className, y.className) && eqStringOpt(x.externSymbol, y.externSymbol)
+    (o: RParam) => false
+  (x: RpSyncWrap) => match(b)
+    (y: RpSyncWrap) => eqRParam(x.value, y.value) && eqCgType(x.wrapperType, y.wrapperType)
+    (o: RParam) => false
+  (x: RpZeroOf) => match(b)
+    (y: RpZeroOf) => eqCgType(x.valueType, y.valueType)
+    (o: RParam) => false
+  (x: RpNewStructTyped) => match(b)
+    (y: RpNewStructTyped) => eqCgType(x.structType, y.structType) && eqRpNamedValues(x.values, y.values)
+    (o: RParam) => false
+  (x: RpTagTask) => match(b)
+    (y: RpTagTask) => eqRParam(x.task, y.task) && eqCgType(x.targetType, y.targetType)
+    (o: RParam) => false
+  (x: RpGlobalFunction) => match(b)
+    (y: RpGlobalFunction) => x.name == y.name && eqRParamOpt(x.object, y.object) && x.external == y.external
+                             && eqStringOpt(x.cSymbol, y.cSymbol) && x.impure == y.impure && x.sync == y.sync
+    (o: RParam) => false
+  (x: RpVirtualFunction) => match(b)
+    (y: RpVirtualFunction) => x.name == y.name && eqRParam(x.object, y.object) && x.fastLookup == y.fastLookup
+    (o: RParam) => false
+  (x: RpPointerTo) => match(b)
+    (y: RpPointerTo) => eqRParam(x.value, y.value)
+    (o: RParam) => false
+  (x: RpStackVar) => match(b)
+    (y: RpStackVar) => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
+    (o: RParam) => false
+  (x: RpGlobalVar) => match(b)
+    (y: RpGlobalVar) => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
+    (o: RParam) => false
+  (x: RpObjectField) => match(b)
+    (y: RpObjectField) => eqCgType(x.fieldType, y.fieldType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
+                          && x.field == y.field && eqRParamOpt(x.index, y.index)
+                          # `fresh` is compare=False in Python (provenance, not identity)
+    (o: RParam) => false
+  (x: RpArrayElement) => match(b)
+    (y: RpArrayElement) => eqCgType(x.elementType, y.elementType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
+                           && x.field == y.field && x.lengthField == y.lengthField && eqRParam(x.index, y.index) && x.checked == y.checked
+    (o: RParam) => false
+  (x: RpFunField) => match(b)
+    (y: RpFunField) => eqRParam(x.ffFun, y.ffFun) && x.ffPart == y.ffPart
+    (o: RParam) => false
+  (x: RpMakeFun) => match(b)
+    (y: RpMakeFun) => eqRParam(x.mfCode, y.mfCode) && eqRParam(x.mfEnv, y.mfEnv)
+    (o: RParam) => false
 
 # ── to_c ─────────────────────────────────────────────────────────────────────
 
@@ -466,33 +440,32 @@ fun rpToCMakeFun(x: RpMakeFun, cache0: List<CgCacheEntry>): (text: String, cache
   let envC = rpToC(x.mfEnv, codeC.cache)
   ret ("((fun_t){.f=(void*)(" + codeC.text + "),.o=" + envC.text + "})", envC.cache)
 
-fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret match(r)
-    (x: RpInitArray) => rpToCInitArray(x, cache)
-    (x: RpNewStruct) => rpToCNewStruct(x, cache)
-    (x: RpRuntimeInvoke) => rpToCRuntimeInvoke(x, cache)
-    (x: RpStructField) => rpToCStructField(x, cache)
-    (x: RpString) => (cgStrLiteral(x.value), cache)
-    (x: RpInteger) => rpToCInteger(x, cache)
-    (x: RpFloat) => cgInitialise(CgFloat(x.precision), CgLitFloat(x.value), cache)
-    (x: RpIntEqConst) => rpToCIntEqConst(x, cache)
-    (x: RpNullPointer) => ("((object_t*)0)", cache)
-    (x: RpStaticObjectRef) => ("((object_t*)&" + mangleName(x.name) + "_data)", cache)
-    (x: RpVtableDiscriminator) => rpToCVtableDiscriminator(x, cache)
-    (x: RpObjVtableEq) => rpToCObjVtableEq(x, cache)
-    (x: RpSyncWrap) => rpToCSyncWrap(x, cache)
-    (x: RpZeroOf) => rpToCZeroOf(x, cache)
-    (x: RpNewStructTyped) => rpToCNewStructTyped(x, cache)
-    (x: RpTagTask) => rpToCTagTask(x, cache)
-    (x: RpGlobalFunction) => rpToCGlobalFunction(x, cache)
-    (x: RpFunField) => rpToCFunField(x, cache)
-    (x: RpMakeFun) => rpToCMakeFun(x, cache)
-    (x: RpVirtualFunction) => rpToCVirtualFunction(x, cache)
-    (x: RpPointerTo) => rpToCPointerTo(x, cache)
-    (x: RpStackVar) => (mangleName(x.name), cache)
-    (x: RpGlobalVar) => (mangleName(x.name), cache)
-    (x: RpObjectField) => rpToCObjectField(x, cache)
-    (x: RpArrayElement) => rpToCArrayElement(x, cache)
+fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>) => match(r)
+  (x: RpInitArray) => rpToCInitArray(x, cache)
+  (x: RpNewStruct) => rpToCNewStruct(x, cache)
+  (x: RpRuntimeInvoke) => rpToCRuntimeInvoke(x, cache)
+  (x: RpStructField) => rpToCStructField(x, cache)
+  (x: RpString) => (cgStrLiteral(x.value), cache)
+  (x: RpInteger) => rpToCInteger(x, cache)
+  (x: RpFloat) => cgInitialise(CgFloat(x.precision), CgLitFloat(x.value), cache)
+  (x: RpIntEqConst) => rpToCIntEqConst(x, cache)
+  (x: RpNullPointer) => ("((object_t*)0)", cache)
+  (x: RpStaticObjectRef) => ("((object_t*)&" + mangleName(x.name) + "_data)", cache)
+  (x: RpVtableDiscriminator) => rpToCVtableDiscriminator(x, cache)
+  (x: RpObjVtableEq) => rpToCObjVtableEq(x, cache)
+  (x: RpSyncWrap) => rpToCSyncWrap(x, cache)
+  (x: RpZeroOf) => rpToCZeroOf(x, cache)
+  (x: RpNewStructTyped) => rpToCNewStructTyped(x, cache)
+  (x: RpTagTask) => rpToCTagTask(x, cache)
+  (x: RpGlobalFunction) => rpToCGlobalFunction(x, cache)
+  (x: RpFunField) => rpToCFunField(x, cache)
+  (x: RpMakeFun) => rpToCMakeFun(x, cache)
+  (x: RpVirtualFunction) => rpToCVirtualFunction(x, cache)
+  (x: RpPointerTo) => rpToCPointerTo(x, cache)
+  (x: RpStackVar) => (mangleName(x.name), cache)
+  (x: RpGlobalVar) => (mangleName(x.name), cache)
+  (x: RpObjectField) => rpToCObjectField(x, cache)
+  (x: RpArrayElement) => rpToCArrayElement(x, cache)
 
 fun rpToCInitArray(x: RpInitArray, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let result = fold(x.values, ("", cache0, true), (acc, v) => rpToCInitArrayStep(acc, v))
@@ -587,10 +560,9 @@ fun rpToCZeroOfCompound(vt, cache0: List<CgCacheEntry>): (text: String, cache: L
   let init = rpZeroOfInitText(vt)
   ret ("((" + declared.text + ")" + init + ")", declared.cache)
 
-fun rpZeroOfInitText(vt): String
-  ret match(vt)
-    (s: CgStruct) => isEmpty(s.fields) ? "{}" : "{0}"
-    (o: CgType)   => "{0}"
+fun rpZeroOfInitText(vt) => match(vt)
+  (s: CgStruct) => isEmpty(s.fields) ? "{}" : "{0}"
+  (o: CgType)   => "{0}"
 
 fun rpToCNewStructTyped(x: RpNewStructTyped, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.structType, cache0)
@@ -619,8 +591,7 @@ fun rpToCTagTaskStruct(fields, taskC, cache0: List<CgCacheEntry>): (text: String
     ()               => ("", cache0)   # unreachable (Python raises ValueError)
 
 # `cgFirstPointerField` takes a CgType; TagTask already has the field list.
-fun cgFirstPointerFieldOfFields(fields): String|None
-  ret cgFirstPointerField(CgStruct(fields))
+fun cgFirstPointerFieldOfFields(fields) => cgFirstPointerField(CgStruct(fields))
 
 fun rpToCTagTaskStructBody(fields, fname: String, taskC, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(CgStruct(fields), cache0)
@@ -722,31 +693,27 @@ fun rpToCStoreObjectFieldBarrier(x: RpObjectField, fieldRef, cache0: List<CgCach
 
 # ── `NewStruct.__add__` (used by lowering passes, not within this file) ────
 
-fun rpNewStructAdd(a: RpNewStruct, b: RpNewStruct): RParam
-  ret RpNewStruct(concat(a.values, b.values))
+fun rpNewStructAdd(a: RpNewStruct, b: RpNewStruct) => RpNewStruct(concat(a.values, b.values))
 
 # ── `union_struct` — builds an exhaustive RpNewStructTyped for a union slot
 # struct, zero-filling any unspecified fields. ──────────────────────────────
 
-fun rpZeroFor(fieldType): RParam
-  ret match(fieldType)
-    (d: CgDataPointer) => RpNullPointer()
-    (i: CgInt) => RpInteger(0, i.precision)
-    (p: CgIntPtr) => RpInteger(0, 64)
-    (f: CgFloat) => RpFloat(0.0, f.precision)
-    (o: CgType) => RpNullPointer()   # unreachable (Python raises ValueError)
+fun rpZeroFor(fieldType) => match(fieldType)
+  (d: CgDataPointer) => RpNullPointer()
+  (i: CgInt) => RpInteger(0, i.precision)
+  (p: CgIntPtr) => RpInteger(0, 64)
+  (f: CgFloat) => RpFloat(0.0, f.precision)
+  (o: CgType) => RpNullPointer()   # unreachable (Python raises ValueError)
 
-fun unionStruct(container, namedValues: List<RpNamedValue>): RParam
-  ret match(container)
-    (s: CgStruct) => RpNewStructTyped(container, map(s.fields, (f) => unionStructField(f, namedValues)))
-    (o: CgType)   => RpNewStructTyped(container, List())   # unreachable
+fun unionStruct(container, namedValues: List<RpNamedValue>) => match(container)
+  (s: CgStruct) => RpNewStructTyped(container, map(s.fields, (f) => unionStructField(f, namedValues)))
+  (o: CgType)   => RpNewStructTyped(container, List())   # unreachable
 
-fun unionStructField(f: CgField, namedValues: List<RpNamedValue>): RpNamedValue
+fun unionStructField(f: CgField, namedValues: List<RpNamedValue>)
   ret match(rpNamedValuesGet(namedValues, f.fieldName))
     (v: RParam) => RpNamedValue(f.fieldName, v)
     ()          => RpNamedValue(f.fieldName, rpZeroFor(f.fieldType))
 
-fun [tail] rpNamedValuesGet(values: List<RpNamedValue>, name): RParam|None
-  ret match(head(values))
-    (v: RpNamedValue) => v.name == name ? v.value : rpNamedValuesGet(tail(values), name)
-    ()                => None
+fun [tail] rpNamedValuesGet(values: List<RpNamedValue>, name) => match(head(values))
+  (v: RpNamedValue) => v.name == name ? v.value : rpNamedValuesGet(tail(values), name)
+  ()                => None

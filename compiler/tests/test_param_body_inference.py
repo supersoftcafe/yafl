@@ -27,6 +27,7 @@ import io
 
 import compiler as c
 from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 
@@ -174,11 +175,165 @@ class TestParamBodyInference(TestCase):
         self.assertIn("'x'", errs)
         self.assertIn("could not be inferred", errs)
 
-    def test_contradictory_uses_are_an_error(self):
+    def test_disagreeing_call_uses_generalise_to_the_root(self):
+        # Used as a Circle and as a Square: x is a Shape (user ruling 09-16),
+        # so each call then rejects it — the error is at the calls.
         errs = _errors(_SHAPES + "fun ring(c: Circle): System::Int\n  ret c.r\n"
                        "fun side(q: Square): System::Int\n  ret q.s\n"
                        "fun both(x): System::Int\n  ret ring(x) + side(x)\n"
                        "fun main(): System::Int\n  ret both(Circle(1))\n")
+        self.assertIn("Parameters are not assignment compatible", errs)
+        self.assertNotIn("could not be inferred", errs)
+
+    def test_unrelated_call_uses_are_an_error(self):
+        errs = _errors(_SHAPES + "fun ring(c: Circle): System::Int\n  ret c.r\n"
+                       "fun heavy(r: Rock): System::Int\n  ret r.weight()\n"
+                       "fun both(x): System::Int\n  ret ring(x) + heavy(x)\n"
+                       "fun main(): System::Int\n  ret both(Circle(1))\n")
+        self.assertIn("'x'", errs)
+        self.assertIn("could not be inferred", errs)
+
+    def test_trait_operators_take_the_expected_type(self):
+        # `&` pins on mask32, `+` then pins on `&`'s Int, and a, b take it.
+        rc, _out = compile_and_run_stdlib_capture(
+            "namespace Test\nimport System\n"
+            "let mask32 = 4294967295\n"
+            "fun add32(a, b)\n  ret (a + b) & mask32\n"
+            "fun rotl32(x, c)\n  ret ((x << c) | (x >> (32 - c))) & mask32\n"
+            "fun main(): System::Int\n  ret add32(1, rotl32(2, 3))\n", timeout=120)
+        self.assertEqual(17, rc)
+
+    def test_declared_result_pins_a_trait_operator(self):
+        rc, _out = compile_and_run_stdlib_capture(
+            "namespace Test\nimport System\n"
+            "fun addr(a, b): System::Int\n  ret a + b\n"
+            "fun main(): System::Int\n  ret addr(3, 4)\n", timeout=120)
+        self.assertEqual(7, rc)
+
+    def test_lambda_parameter_infers_from_its_body(self):
+        rc, _out = compile_and_run_stdlib_capture(
+            "namespace Test\nimport System\n"
+            "fun main(): System::Int\n"
+            "  let triple = (x) => 3 * x\n"
+            "  ret triple(14)\n", timeout=120)
+        self.assertEqual(42, rc)
+
+    def test_a_late_pinning_call_still_informs(self):
+        # `3 * a` makes a an Int; only then does `both` pin, and b takes
+        # the String its second parameter expects.
+        rc, _out = compile_and_run_stdlib_capture(
+            "namespace Test\nimport System\n"
+            "fun both(n: System::Int, s: System::String): System::Int\n"
+            "  ret n + length(s)\n"
+            "fun both(n: System::Int32, s: System::Int32): System::Int\n"
+            "  ret 1\n"
+            "fun late(a, b): System::Int\n  ret both(a, b) + 3 * a\n"
+            "fun main(): System::Int\n  ret late(2, \"abc\")\n", timeout=120)
+        self.assertEqual(11, rc)
+
+    def test_ternary_branches_converge_on_the_root(self):
+        # Circle and Square branches give Shape, so the Tri arm is reachable.
+        rc, _out = compile_and_run_stdlib_capture(
+            _SHAPES + "fun pick(flag: System::Bool)\n"
+            "  ret flag ? Circle(1) : Square(2)\n"
+            "fun main(): System::Int\n"
+            "  ret match(pick(false))\n"
+            "    (c: Circle) => c.r\n"
+            "    (q: Square) => q.s\n"
+            "    (t: Tri)    => t.t\n", timeout=120)
+        self.assertEqual(2, rc)
+
+    def test_match_branches_converge_on_the_root(self):
+        rc, _out = compile_and_run_stdlib_capture(
+            _SHAPES + "fun pick(n: System::Int)\n"
+            "  ret match(n)\n"
+            "    (0) => Circle(1)\n"
+            "    ()  => Square(2)\n"
+            "fun main(): System::Int\n"
+            "  ret match(pick(0))\n"
+            "    (c: Circle) => c.r\n"
+            "    (q: Square) => q.s\n"
+            "    (t: Tri)    => t.t\n", timeout=120)
+        self.assertEqual(1, rc)
+
+    def test_branches_with_no_common_parent_are_the_union(self):
+        rc, _out = compile_and_run_stdlib_capture(
+            "namespace Test\nimport System\n"
+            "fun maybe(flag: System::Bool)\n  ret flag ? 5 : None\n"
+            "fun main(): System::Int\n"
+            "  ret match(maybe(true))\n"
+            "    (n: System::Int) => n\n"
+            "    (z: System::None) => 0\n", timeout=120)
+        self.assertEqual(5, rc)
+
+    def test_an_unresolved_operator_does_not_latch_a_wider_type(self):
+        # `+` resolves passes after `ret` says Int|None; i must still be Int.
+        rc, _out = compile_and_run_stdlib_capture(
+            "namespace Test\nimport System\n"
+            "fun [tail] idxLoop(es: List<String>, name: String, i): Int|None\n"
+            "  ret match(head(es))\n"
+            "    (s: String) => s == name ? i : idxLoop(drop(es, 1), name, i + 1)\n"
+            "    ()          => None\n"
+            "fun main(): System::Int\n"
+            "  let words: List<String> = prepend(\"a\", prepend(\"bcd\", List()))\n"
+            "  ret idxLoop(words, \"bcd\", 0) ?? 99\n", timeout=120)
+        self.assertEqual(1, rc)
+
+    def test_a_lambda_argument_takes_the_expected_signature(self):
+        # The body alone says String|None for sp; map's signature says String.
+        rc, _out = compile_and_run_stdlib_capture(
+            "namespace Test\nimport System\n"
+            "fun label(s: String|None): Int\n"
+            "  ret match(s)\n"
+            "    (x: String) => length(x)\n"
+            "    ()          => 0\n"
+            "fun main(): System::Int\n"
+            "  let words: List<String> = prepend(\"ab\", List())\n"
+            "  ret fold(map(words, (sp) => label(sp)), 0, (acc, n) => acc + n)\n", timeout=120)
+        self.assertEqual(2, rc)
+
+    def test_a_lambda_body_does_not_bind_its_callees_type_parameter(self):
+        # area(c) wants a Shape, but map's T comes from the List<Circle>.
+        rc, _out = compile_and_run_stdlib_capture(
+            _SHAPES + "fun area(sh: Shape): System::Int\n"
+            "  ret match(sh)\n"
+            "    (c: Circle) => c.r * c.r\n"
+            "    (q: Square) => q.s * q.s\n"
+            "    (t: Tri)    => t.t\n"
+            "fun total(circles: List<Circle>): System::Int\n"
+            "  ret fold(map(circles, (c) => area(c)), 0, (acc, n) => acc + n)\n"
+            "fun main(): System::Int\n"
+            "  let cs: List<Circle> = prepend(Circle(2), prepend(Circle(3), List()))\n"
+            "  ret total(cs)\n", timeout=120)
+        self.assertEqual(13, rc)
+
+    def test_an_uninferable_return_type_is_an_error(self):
+        # Recursion with no base case gives the body nothing to type.
+        errs = _errors("namespace Test\nimport System\n"
+                       "fun spin(n: System::Int) => spin(n - 1)\n"
+                       "fun outer(n: System::Int): System::Int\n"
+                       "  fun inner(k: System::Int) => inner(k + 1)\n"
+                       "  ret n\n"
+                       "fun fine(n: System::Int) => n + 1\n"
+                       "fun main(): System::Int\n  ret fine(0)\n")
+        self.assertIn("Return type of 'spin' could not be inferred", errs)
+        self.assertIn("Return type of 'inner' could not be inferred", errs)
+        self.assertNotIn("'fine'", errs)
+
+    def test_an_uninferable_nested_parameter_is_an_error(self):
+        errs = _errors("namespace Test\nimport System\n"
+                       "fun outer(n: System::Int): System::Int\n"
+                       "  fun inner(k): System::Int\n"
+                       "    ret 0\n"
+                       "  ret inner(n)\n"
+                       "fun main(): System::Int\n  ret outer(1)\n")
+        self.assertIn("Parameter 'k' of 'inner' has no type and could not be inferred", errs)
+
+    def test_a_generic_slot_does_not_leak_its_placeholder(self):
+        errs = _errors("namespace Test\nimport System\n"
+                       "fun ident<T>(v: T): T\n  ret v\n"
+                       "fun viaGeneric(x)\n  ret ident(x)\n"
+                       "fun main(): System::Int\n  ret 0\n")
         self.assertIn("'x'", errs)
         self.assertIn("could not be inferred", errs)
 
@@ -206,3 +361,34 @@ class TestParamBodyInference(TestCase):
                        "fun addSomeThings(a, b)\n  ret a + b\n"
                        "fun main(): System::Int\n  ret addSomeThings(1, 45)\n")
         self.assertIn("could not be inferred", errs)
+
+
+class TestHintLocality(TimedTestCase):
+    def test_a_converted_use_keeps_its_hint(self):
+        # `take(v)` wraps v in a conversion once v is an Int; the use still
+        # expects Int|None, and the body must still say so.
+        from parsing.tokenizer import tokenize
+        from parsing.parser import parse
+        import pyast.statement as s
+        import pyast.expression as e
+        from tests.testutil import stdlib_files
+        src = ("namespace Test\nimport System\n"
+               "fun take(x: System::Int|None): System::Int\n  ret 0\n"
+               "fun twice(n: System::Int): System::Int\n  ret n\n"
+               "fun use(v): System::Int\n  ret take(v) + twice(v)\n")
+        text = "".join(p.read_text() for p in stdlib_files()) + src
+        statements, resolver, _ = c.__dict__["__converge"](parse(tokenize(text, "x")).value)
+        use = next(st for st in statements
+                   if isinstance(st, s.FunctionStatement) and "::use@" in st.name)
+        found = []
+        def visit(_, thing):
+            if isinstance(thing, e.ConvertExpression):
+                found.append(thing)
+            return thing
+        use.body.search_and_replace(None, visit)
+        self.assertTrue(found, "the argument to take() should be converted")
+        scope = use.body_scope(c.__dict__["__stmt_scope_resolver"](use, resolver))
+        hints = use.body.compile(scope, use.return_type)[2]
+        v = use.parameters.targets[0].name
+        shown = sorted(str(hint.spec.as_unique_id_str()) for hint in hints.get(v, ()))
+        self.assertEqual(2, len(shown), shown)

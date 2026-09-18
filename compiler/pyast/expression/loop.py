@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 from pyast.expression.access import NamedExpression
@@ -62,8 +63,8 @@ class RecurExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return None  # bottom
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return [err for a in self.args for err in a.check(resolver, None)]
@@ -131,8 +132,8 @@ class LoopExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.body.get_type(resolver)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return self.body.check(resolver, expected_type)

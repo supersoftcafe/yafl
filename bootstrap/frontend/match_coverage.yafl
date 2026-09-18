@@ -18,7 +18,7 @@ import Bootstrap::Types
 # Python check(): a primitive subject gets the literal-arm rules, any other
 # concrete subject gets coverage; an unresolved subject is checked on a later
 # pass.
-fun matchCoverageErrs(mt: PeMatch, st, r): Set<PErr>
+fun matchCoverageErrs(mt: PeMatch, st, r)
   if !isConcrete(st)
     ret noErrs()
   ret match(st)
@@ -34,19 +34,18 @@ fun matchCoverageErrs(mt: PeMatch, st, r): Set<PErr>
 
 class [final] LitAcc(laErrs: Set<PErr>, laSeen: Set<String>, laElse: Bool)
 
-fun literalArmErrs(mt: PeMatch, kind): Set<PErr>
+fun literalArmErrs(mt: PeMatch, kind)
   let acc = litArms(chain(mt.arms), kind, LitAcc(noErrs(), Set(), false))
   ret acc.laElse
     ? acc.laErrs
     : add(acc.laErrs, PErr(mt.pemLine, "non-exhaustive match; a literal-pattern match on "
                                        + kind + " requires an else arm"))
 
-fun [tail] litArms(as2: Chain<PArm>, kind: String, acc: LitAcc): LitAcc
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => litArms(l.next, kind, litArm(l.value, kind, acc))
+fun [tail] litArms(as2: Chain<PArm>, kind, acc) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => litArms(l.next, kind, litArm(l.value, kind, acc))
 
-fun litArm(a: PArm, kind, acc): LitAcc
+fun litArm(a: PArm, kind, acc)
   if acc.laElse
     ret withLitErr(acc, PErr(a.parmLine, "unreachable arm: follows an else arm"))
   ret match(a.armType)
@@ -56,13 +55,11 @@ fun litArm(a: PArm, kind, acc): LitAcc
       ? LitAcc(acc.laErrs, acc.laSeen, true)
       : litLoop(chain(a.armLiterals), a, kind, acc)
 
-fun withLitErr(acc: LitAcc, e: PErr): LitAcc
-  ret LitAcc(add(acc.laErrs, e), acc.laSeen, acc.laElse)
+fun withLitErr(acc: LitAcc, e) => LitAcc(add(acc.laErrs, e), acc.laSeen, acc.laElse)
 
-fun [tail] litLoop(ls: Chain<PLit>, a: PArm, kind: String, acc: LitAcc): LitAcc
-  ret match(ls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => litLoop(l.next, a, kind, oneLit(l.value, a, kind, acc))
+fun [tail] litLoop(ls: Chain<PLit>, a: PArm, kind, acc) => match(ls)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => litLoop(l.next, a, kind, oneLit(l.value, a, kind, acc))
 
 # What one literal says about the match: a type error, a duplicate-tracking
 # key, or nothing to track (a NaN float equals nothing, so never repeats).
@@ -71,25 +68,23 @@ enum LitVerdict
   enum LvKey(lvKey: String)
   enum LvNoKey()
 
-fun oneLit(lit, a: PArm, kind, acc): LitAcc
-  ret match(lit)
-    # Ranges take no part in duplicate tracking.
-    (rg: PlRange) => match(rangeErr(rg, kind))
-      (e: PErr) => withLitErr(acc, e)
-      ()        => acc
-    (pe: PlExpr)  => match(litVerdict(pe.litExpr, a, kind))
-      (le: LvErr) => withLitErr(acc, le.lvErr)
-      # A guarded arm may repeat a value (its guard differentiates), and it
-      # blocks nothing for later arms.
-      (lk: LvKey) => a.armGuard is None ? seenOrDup(lk.lvKey, a, acc) : acc
-      (o)         => acc
+fun oneLit(lit, a: PArm, kind, acc) => match(lit)
+  # Ranges take no part in duplicate tracking.
+  (rg: PlRange) => match(rangeErr(rg, kind))
+    (e: PErr) => withLitErr(acc, e)
+    ()        => acc
+  (pe: PlExpr)  => match(litVerdict(pe.litExpr, a, kind))
+    (le: LvErr) => withLitErr(acc, le.lvErr)
+    # A guarded arm may repeat a value (its guard differentiates), and it
+    # blocks nothing for later arms.
+    (lk: LvKey) => a.armGuard is None ? seenOrDup(lk.lvKey, a, acc) : acc
+    (o)         => acc
 
-fun seenOrDup(key: String, a: PArm, acc: LitAcc): LitAcc
-  ret contains(acc.laSeen, key)
-    ? withLitErr(acc, PErr(a.parmLine, "unreachable arm: literal value already matched"))
-    : LitAcc(acc.laErrs, add(acc.laSeen, key), acc.laElse)
+fun seenOrDup(key, a: PArm, acc: LitAcc) => contains(acc.laSeen, key)
+  ? withLitErr(acc, PErr(a.parmLine, "unreachable arm: literal value already matched"))
+  : LitAcc(acc.laErrs, add(acc.laSeen, key), acc.laElse)
 
-fun rangeErr(rg: PlRange, kind): PErr|None
+fun rangeErr(rg: PlRange, kind)
   if kind == "str"
     ret PErr(rg.plrLine, "a range arm needs an integer or float subject")
   if isFloatKind(kind)
@@ -102,7 +97,7 @@ fun rangeErr(rg: PlRange, kind): PErr|None
       : None
     (o: PExpr) => None
 
-fun litVerdict(x, a: PArm, kind): LitVerdict
+fun litVerdict(x, a: PArm, kind)
   if kind == "str"
     ret match(x)
       (s: PeStr) => LvKey("str:" + s.strValue)
@@ -126,43 +121,37 @@ fun litVerdict(x, a: PArm, kind): LitVerdict
 
 # Python keys a float literal by its VALUE: `1.0` and `1.00` are one key,
 # `-0.0 == 0.0`, and NaN equals nothing.
-fun floatKey(text): LitVerdict
-  ret match(parseFloat(text))
-    (v: Float) => v != v
-      ? LvNoKey()
-      : LvKey("float:" + (v == 0.0 ? "0" : String(v)))
-    ()         => LvKey("float:" + text)
+fun floatKey(text) => match(parseFloat(text))
+  (v: Float) => v != v
+    ? LvNoKey()
+    : LvKey("float:" + (v == 0.0 ? "0" : String(v)))
+  ()         => LvKey("float:" + text)
 
 # An unsuffixed float literal (precision 0) narrows to its subject's width; a
 # suffixed one must match exactly.
-fun floatFits(x, kind): Bool
-  ret match(x)
-    (f: PeFloat) => f.fPrecision == 0 || f.fPrecision == floatWidth(kind)
-    (o: PExpr)   => false
+fun floatFits(x, kind) => match(x)
+  (f: PeFloat) => f.fPrecision == 0 || f.fPrecision == floatWidth(kind)
+  (o: PExpr)   => false
 
-fun isFloatKind(kind): Bool
-  ret kind == "float32" || kind == "float64"
+fun isFloatKind(kind) => kind == "float32" || kind == "float64"
 
-fun floatWidth(kind): Int
-  ret kind == "float32" ? 32 : 64
+fun floatWidth(kind) => kind == "float32" ? 32 : 64
 
 # Expected integer-literal precision for an integer-like subject: 0 for
 # bigint, else the fixed width.
-fun intPrecision(kind): Int
-  ret kind == "int8" ? 8 : kind == "int16" ? 16 : kind == "int32" ? 32
-    : kind == "int64" ? 64 : 0
+fun intPrecision(kind) => kind == "int8" ? 8 : kind == "int16" ? 16 : kind == "int32" ? 32
+  : kind == "int64" ? 64 : 0
 
 # The Python node class a literal would be — the messages name it. The parser
 # only puts literal nodes in an arm's literal list.
-fun pyLiteralClass(x): String
-  ret match(x)
-    (i: PeInt)     => "IntegerExpression"
-    (f: PeFloat)   => "FloatExpression"
-    (s: PeStr)     => "StringExpression"
-    (b: PeBool)    => "BoolExpression"
-    (rx: PeRegex)  => "RegexExpression"
-    (n: PeNothing) => "NothingExpression"
-    (o: PExpr)     => "Expression"
+fun pyLiteralClass(x) => match(x)
+  (i: PeInt)     => "IntegerExpression"
+  (f: PeFloat)   => "FloatExpression"
+  (s: PeStr)     => "StringExpression"
+  (b: PeBool)    => "BoolExpression"
+  (rx: PeRegex)  => "RegexExpression"
+  (n: PeNothing) => "NothingExpression"
+  (o: PExpr)     => "Expression"
 
 # ── coverage (__check_exhaustiveness) ───────────────────────────────────────
 # An arm's type T covers a subject variant V when V is assignable to T, so an
@@ -170,7 +159,7 @@ fun pyLiteralClass(x): String
 # covered variant is unreachable. A guarded arm covers nothing (its guard may
 # fail at runtime) and literal arms only narrow.
 
-fun exhaustivenessErrs(mt: PeMatch, st, r): Set<PErr>
+fun exhaustivenessErrs(mt: PeMatch, st, r)
   if !isEmpty(mt.matchExtra)
     ret multiCoverageErrs(mt, r)
   ret match(st)
@@ -182,20 +171,18 @@ fun exhaustivenessErrs(mt: PeMatch, st, r): Set<PErr>
 # arm has taken the rest.
 class [final] Cov(cvErrs: Set<PErr>, cvLeft: List<String>, cvElse: Bool)
 
-fun covErr(c: Cov, e: PErr): Cov
-  ret Cov(add(c.cvErrs, e), c.cvLeft, c.cvElse)
+fun covErr(c: Cov, e) => Cov(add(c.cvErrs, e), c.cvLeft, c.cvElse)
 
 # An else arm with nothing left is itself unreachable (and takes nothing, so
 # the arms after it are judged as ordinary arms); otherwise it takes the rest.
-fun covElse(c: Cov, a: PArm): Cov
-  ret isEmpty(c.cvLeft)
-    ? covErr(c, PErr(a.parmLine, "unreachable else arm: all variants already covered"))
-    : Cov(c.cvErrs, List(), true)
+fun covElse(c: Cov, a: PArm) => isEmpty(c.cvLeft)
+  ? covErr(c, PErr(a.parmLine, "unreachable else arm: all variants already covered"))
+  : Cov(c.cvErrs, List(), true)
 
 # The arm-independent part of both walks: after an else arm nothing is
 # reachable; a guarded or literal arm covers nothing. Returns None when the
 # arm is an ordinary pattern arm the caller must judge.
-fun covPrelude(c: Cov, a: PArm): Cov|None
+fun covPrelude(c, a: PArm)
   if c.cvElse
     ret covErr(c, PErr(a.parmLine, "unreachable arm: follows an else arm"))
   if !(a.armGuard is None) || !isEmpty(a.armLiterals)
@@ -206,32 +193,29 @@ fun covPrelude(c: Cov, a: PArm): Cov|None
 
 # Enum subject: coverage is over the valid leaves; the missing ones are named
 # in sorted order.
-fun enumCoverage(mt: PeMatch, e: SEnum): Set<PErr>
+fun enumCoverage(mt: PeMatch, e: SEnum)
   let c = enumArms(chain(mt.arms), Cov(noErrs(), e.seValidLeaves, false))
   ret c.cvElse || isEmpty(c.cvLeft)
     ? c.cvErrs
     : add(c.cvErrs, PErr(mt.pemLine, "non-exhaustive match; missing: "
                                      + join(sort(c.cvLeft), " | ")))
 
-fun [tail] enumArms(as2: Chain<PArm>, c: Cov): Cov
-  ret match(as2)
-    (nil: ChainEnd) => c
-    (l: ChainLink)  => enumArms(l.next, enumArm(l.value, c))
+fun [tail] enumArms(as2: Chain<PArm>, c) => match(as2)
+  (nil: ChainEnd) => c
+  (l: ChainLink)  => enumArms(l.next, enumArm(l.value, c))
 
-fun enumArm(a: PArm, c): Cov
-  ret match(covPrelude(c, a))
-    (done: Cov) => done
-    ()          => match(a.armType)
-      (t: Spec) => match(t)
-        (ae: SEnum) => enumCovers(c, a, filter(c.cvLeft,
-                                               (leaf) => contains2(ae.seValidLeaves, leaf)))
-        (o: Spec)   => c                  # not an enum arm: other checks report it
-      ()        => c
+fun enumArm(a: PArm, c) => match(covPrelude(c, a))
+  (done: Cov) => done
+  ()          => match(a.armType)
+    (t: Spec) => match(t)
+      (ae: SEnum) => enumCovers(c, a, filter(c.cvLeft,
+                                             (leaf) => contains2(ae.seValidLeaves, leaf)))
+      (o: Spec)   => c                  # not an enum arm: other checks report it
+    ()        => c
 
-fun enumCovers(c: Cov, a: PArm, covers: List<String>): Cov
-  ret isEmpty(covers)
-    ? covErr(c, PErr(a.parmLine, "unreachable arm: leaves already covered"))
-    : Cov(c.cvErrs, filter(c.cvLeft, (leaf) => !contains2(covers, leaf)), c.cvElse)
+fun enumCovers(c: Cov, a: PArm, covers: List<String>) => isEmpty(covers)
+  ? covErr(c, PErr(a.parmLine, "unreachable arm: leaves already covered"))
+  : Cov(c.cvErrs, filter(c.cvLeft, (leaf) => !contains2(covers, leaf)), c.cvElse)
 
 # Union subject: coverage is over the canonical members, keyed by uid. An enum
 # member is matched whole (per-variant arms through a union subject need
@@ -239,7 +223,7 @@ fun enumCovers(c: Cov, a: PArm, covers: List<String>): Cov
 # resolved (no uid) defers the whole check to a later pass.
 class [final] Member(mUid: String, mName: String, mSpec: Spec)
 
-fun unionCoverage(mt: PeMatch, cm: SCombination, r): Set<PErr>
+fun unionCoverage(mt: PeMatch, cm: SCombination, r)
   let members = map(reprMembers(cm), (v) => Member(uid(v), printableName(v), v))
   if any(members, (m) => m.mUid == "")
     ret noErrs()
@@ -254,47 +238,41 @@ fun unionCoverage(mt: PeMatch, cm: SCombination, r): Set<PErr>
     : add(c.cvErrs, PErr(mt.pemLine, "non-exhaustive match; missing: "
                                      + join(map(uncovered, (m) => m.mName), " | ")))
 
-fun [tail] unionArms(as2: Chain<PArm>, members: List<Member>, r: Resolver, c: Cov): Cov
-  ret match(as2)
-    (nil: ChainEnd) => c
-    (l: ChainLink)  => unionArms(l.next, members, r, unionArm(l.value, members, r, c))
+fun [tail] unionArms(as2: Chain<PArm>, members: List<Member>, r, c) => match(as2)
+  (nil: ChainEnd) => c
+  (l: ChainLink)  => unionArms(l.next, members, r, unionArm(l.value, members, r, c))
 
-fun unionArm(a: PArm, members: List<Member>, r, c): Cov
-  ret match(covPrelude(c, a))
-    (done: Cov) => done
-    ()          => match(a.armType)
-      (t: Spec) => unionCovers(c, a, armCoveredIds(t, members, c.cvLeft, r))
-      ()        => c
+fun unionArm(a: PArm, members: List<Member>, r, c) => match(covPrelude(c, a))
+  (done: Cov) => done
+  ()          => match(a.armType)
+    (t: Spec) => unionCovers(c, a, armCoveredIds(t, members, c.cvLeft, r))
+    ()        => c
 
-fun unionCovers(c: Cov, a: PArm, covers: List<String>): Cov
-  ret isEmpty(covers)
-    ? covErr(c, PErr(a.parmLine, "unreachable arm: variant not in match subject or already covered"))
-    : Cov(c.cvErrs, filter(c.cvLeft, (k) => !contains2(covers, k)), c.cvElse)
+fun unionCovers(c: Cov, a: PArm, covers: List<String>) => isEmpty(covers)
+  ? covErr(c, PErr(a.parmLine, "unreachable arm: variant not in match subject or already covered"))
+  : Cov(c.cvErrs, filter(c.cvLeft, (k) => !contains2(covers, k)), c.cvElse)
 
 # The uids of the still-uncovered members this arm's type covers; a union arm
 # covers what any of its members covers.
 fun armCoveredIds(armType, members: List<Member>, left: List<String>,
-                  r): List<String>
-  ret match(armType)
-    (cm: SCombination) => fold(reprMembers(cm), List(),
-                               (acc, m) => concat(acc, armCoveredIds(m, members, left, r)))
-    (o: Spec)          => map(filter(members, (m) => contains2(left, m.mUid)
-                                                   && triTrue(assignableFrom(r, armType, m.mSpec))),
-                              (m) => m.mUid)
+                  r): List<String> => match(armType)
+  (cm: SCombination) => fold(reprMembers(cm), List(),
+                             (acc, m) => concat(acc, armCoveredIds(m, members, left, r)))
+  (o: Spec)          => map(filter(members, (m) => contains2(left, m.mUid)
+                                                 && triTrue(assignableFrom(r, armType, m.mSpec))),
+                            (m) => m.mUid)
 
-fun isUninhabited(sp): Bool
-  ret match(sp)
-    (e: SEnum) => isEmpty(e.seValidLeaves)
-    (o: Spec)  => false
+fun isUninhabited(sp) => match(sp)
+  (e: SEnum) => isEmpty(e.seValidLeaves)
+  (o: Spec)  => false
 
 # Python prints `getattr(v, "name", uid)`: the specs with a `name` field show
 # it, every other spec shows its uid.
-fun printableName(v): String
-  ret match(v)
-    (c: SClass)   => c.scName
-    (n: SNamed)   => n.snName
-    (g: SGeneric) => g.sgName
-    (o: Spec)     => uid(v)
+fun printableName(v) => match(v)
+  (c: SClass)   => c.scName
+  (n: SNamed)   => n.snName
+  (g: SGeneric) => g.sgName
+  (o: Spec)     => uid(v)
 
 # ── multi-subject coverage (__check_exhaustiveness_multi) ───────────────────
 # Coverage over the PRODUCT of the subjects' variants: an arm covers the
@@ -305,36 +283,32 @@ class [final] PosTable(ptSpec: Spec, ptKeys: List<String>, ptNames: Dict<String,
 
 class [final] MultiCov(mcErrs: Set<PErr>, mcLeft: List<List<String>>)
 
-fun multiCoverageErrs(mt: PeMatch, r): Set<PErr>
+fun multiCoverageErrs(mt: PeMatch, r)
   ret match(positionTables(prepend(mt.subject, mt.matchExtra), r))
     (tables: List<PosTable>) => multiCoverage(mt, tables, r)
     ()                       => noErrs()      # a subject not resolved yet
 
-fun positionTables(subjects: List<PExpr>, r: Resolver): List<PosTable>|None
-  ret tablesLoop(chain(subjects), r, builder())
+fun positionTables(subjects: List<PExpr>, r) => tablesLoop(chain(subjects), r, builder())
 
-fun [tail] tablesLoop(ss: Chain<PExpr>, r: Resolver,
-                      [terminal] acc: ListBuilder<PosTable>): List<PosTable>|None
-  ret match(ss)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => match(positionTable(exprType(l.value, r)))
-      (t: PosTable) => tablesLoop(l.next, r, push(acc, t))
-      ()            => discardTables(acc)
+fun [tail] tablesLoop(ss: Chain<PExpr>, r,
+                      [terminal] acc: ListBuilder<PosTable>) => match(ss)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => match(positionTable(exprType(l.value, r)))
+    (t: PosTable) => tablesLoop(l.next, r, push(acc, t))
+    ()            => discardTables(acc)
 
-fun discardTables([terminal] acc: ListBuilder<PosTable>): List<PosTable>|None
-  ret discard(acc)
+fun discardTables([terminal] acc: ListBuilder<PosTable>) => discard(acc)
 
 # One subject's variants as (key -> printable name), or None when the subject
 # is not resolved enough to enumerate.
-fun positionTable(sp: Spec|None): PosTable|None
-  ret match(sp)
-    (s2: Spec) => match(s2)
-      (e: SEnum)         => PosTable(s2, e.seValidLeaves,
-                                     fold(e.seValidLeaves, Dict(),
-                                          (d, n) => put(d, n, n)))
-      (cm: SCombination) => unionPositionTable(s2, reprMembers(cm))
-      (o: Spec)          => None
-    ()         => None
+fun positionTable(sp: Spec|None) => match(sp)
+  (s2: Spec) => match(s2)
+    (e: SEnum)         => PosTable(s2, e.seValidLeaves,
+                                   fold(e.seValidLeaves, Dict(),
+                                        (d, n) => put(d, n, n)))
+    (cm: SCombination) => unionPositionTable(s2, reprMembers(cm))
+    (o: Spec)          => None
+  ()         => None
 
 fun unionPositionTable(sp, members: List<Spec>): PosTable|None
   if any(members, (v) => uid(v) == "")
@@ -343,7 +317,7 @@ fun unionPositionTable(sp, members: List<Spec>): PosTable|None
                fold(members, Dict(),
                     (d, v) => put(d, uid(v), printableName(v))))
 
-fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r): Set<PErr>
+fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r)
   let c = multiCovArms(chain(mt.arms), tables, r, MultiCov(noErrs(), productSpace(tables)))
   if isEmpty(c.mcLeft)
     ret c.mcErrs
@@ -355,21 +329,18 @@ fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r): Set<PErr>
   ret add(c.mcErrs, PErr(mt.pemLine, "non-exhaustive match; missing: " + shown + more))
 
 # Every combination of one key per position, in position order.
-fun productSpace(tables: List<PosTable>): List<List<String>>
-  ret fold(tables, prepend(List(), List()),
-           (space, t) => flatMapKeys(space, t.ptKeys))
+fun productSpace(tables: List<PosTable>) => fold(tables, prepend(List(), List()),
+                                                 (space, t) => flatMapKeys(space, t.ptKeys))
 
-fun flatMapKeys(space: List<List<String>>, keys: List<String>): List<List<String>>
-  ret fold(space, List(),
-           (acc, tup) => concat(acc, map(keys, (k) => concat(tup, prepend(k, List())))))
+fun flatMapKeys(space: List<List<String>>, keys: List<String>) => fold(space, List(),
+                                                                       (acc, tup) => concat(acc, map(keys, (k) => concat(tup, prepend(k, List())))))
 
-fun [tail] multiCovArms(as2: Chain<PArm>, tables: List<PosTable>, r: Resolver,
-                     c: MultiCov): MultiCov
-  ret match(as2)
-    (nil: ChainEnd) => c
-    (l: ChainLink)  => multiCovArms(l.next, tables, r, multiCovArm(l.value, tables, r, c))
+fun [tail] multiCovArms(as2: Chain<PArm>, tables: List<PosTable>, r,
+                     c) => match(as2)
+  (nil: ChainEnd) => c
+  (l: ChainLink)  => multiCovArms(l.next, tables, r, multiCovArm(l.value, tables, r, c))
 
-fun multiCovArm(a: PArm, tables: List<PosTable>, r, c: MultiCov): MultiCov
+fun multiCovArm(a: PArm, tables: List<PosTable>, r, c)
   if !(a.armGuard is None) || !isEmpty(a.armLiterals)
     ret c                                    # covers nothing / narrows only
   let pats = prepend(a.armType, map(a.armExtra, (p) => p.posType))
@@ -389,76 +360,67 @@ fun multiCovArm(a: PArm, tables: List<PosTable>, r, c: MultiCov): MultiCov
                c.mcLeft)
     : MultiCov(c.mcErrs, filter(c.mcLeft, (tup) => !tupleCovered(chain(tup), chain(perPos))))
 
-fun [tail] zipCovered(ts: Chain<PosTable>, ps: Chain<Spec|None>, r: Resolver,
-                      [terminal] acc: ListBuilder<List<String>>): List<List<String>>
-  ret match(ts)
-    (nil: ChainEnd) => build(acc)
-    (lt: ChainLink) => match(ps)
-      (nil2: ChainEnd) => build(acc)
-      (lp: ChainLink)  => zipCovered(lt.next, lp.next, r,
-                                     push(acc, coveredKeys(lt.value.ptSpec, lp.value,
-                                                           lt.value.ptKeys, r)))
+fun [tail] zipCovered(ts: Chain<PosTable>, ps: Chain<Spec|None>, r,
+                      [terminal] acc: ListBuilder<List<String>>) => match(ts)
+  (nil: ChainEnd) => build(acc)
+  (lt: ChainLink) => match(ps)
+    (nil2: ChainEnd) => build(acc)
+    (lp: ChainLink)  => zipCovered(lt.next, lp.next, r,
+                                   push(acc, coveredKeys(lt.value.ptSpec, lp.value,
+                                                         lt.value.ptKeys, r)))
 
 # Which of `keys` one arm pattern matches at one position.
-fun coveredKeys(subj, armType: Spec|None, keys, r): List<String>
-  ret match(armType)
-    (t: Spec) => match(subj)
-      (se: SEnum) => match(t)
-        (ae: SEnum) => filter(keys, (k) => contains2(ae.seValidLeaves, k))
-        (o: Spec)   => List()
-      (o: Spec)   => coveredKeysOther(subj, t, keys, r)
-    ()        => keys                        # no pattern here: anything
+fun coveredKeys(subj, armType: Spec|None, keys, r): List<String> => match(armType)
+  (t: Spec) => match(subj)
+    (se: SEnum) => match(t)
+      (ae: SEnum) => filter(keys, (k) => contains2(ae.seValidLeaves, k))
+      (o: Spec)   => List()
+    (o: Spec)   => coveredKeysOther(subj, t, keys, r)
+  ()        => keys                        # no pattern here: anything
 
-fun coveredKeysOther(subj, t, keys, r): List<String>
-  ret match(t)
-    (cm: SCombination) => fold(reprMembers(cm), List(),
-                               (acc, m) => concat(acc, coveredKeys(subj, m, keys, r)))
-    (o: Spec)          => filter(keys, (k) => memberAssignable(subj, k, t, r))
+fun coveredKeysOther(subj, t, keys, r): List<String> => match(t)
+  (cm: SCombination) => fold(reprMembers(cm), List(),
+                             (acc, m) => concat(acc, coveredKeys(subj, m, keys, r)))
+  (o: Spec)          => filter(keys, (k) => memberAssignable(subj, k, t, r))
 
-fun memberAssignable(subj, key, t, r): Bool
-  ret match(subj)
-    (cm: SCombination) => match(head(filter(reprMembers(cm), (m) => uid(m) == key)))
-      (v: Spec) => triTrue(assignableFrom(r, t, v))
-      ()        => false
-    (o: Spec)          => false
+fun memberAssignable(subj, key, t, r) => match(subj)
+  (cm: SCombination) => match(head(filter(reprMembers(cm), (m) => uid(m) == key)))
+    (v: Spec) => triTrue(assignableFrom(r, t, v))
+    ()        => false
+  (o: Spec)          => false
 
-fun [tail] tupleCovered(tup: Chain<String>, perPos: Chain<List<String>>): Bool
-  ret match(tup)
-    (nil: ChainEnd) => true
-    (lk: ChainLink) => match(perPos)
-      (nil2: ChainEnd) => true
-      (lp: ChainLink)  => contains2(lp.value, lk.value) ? tupleCovered(lk.next, lp.next) : false
+fun [tail] tupleCovered(tup: Chain<String>, perPos: Chain<List<String>>) => match(tup)
+  (nil: ChainEnd) => true
+  (lk: ChainLink) => match(perPos)
+    (nil2: ChainEnd) => true
+    (lp: ChainLink)  => contains2(lp.value, lk.value) ? tupleCovered(lk.next, lp.next) : false
 
 # Python sorts the uncovered tuples lexicographically, position by position.
-fun [tail] tupleLess(a: Chain<String>, b: Chain<String>): Bool
-  ret match(a)
-    (nil: ChainEnd) => match(b)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => true
-    (la: ChainLink) => match(b)
-      (nil2: ChainEnd) => false
-      (lb: ChainLink)  => la.value == lb.value
-        ? tupleLess(la.next, lb.next)
-        : la.value < lb.value
+fun [tail] tupleLess(a: Chain<String>, b: Chain<String>) => match(a)
+  (nil: ChainEnd) => match(b)
+    (nil2: ChainEnd) => false
+    (lb: ChainLink)  => true
+  (la: ChainLink) => match(b)
+    (nil2: ChainEnd) => false
+    (lb: ChainLink)  => la.value == lb.value
+      ? tupleLess(la.next, lb.next)
+      : la.value < lb.value
 
-fun tupleNames(tup: List<String>, tables: List<PosTable>): String
+fun tupleNames(tup: List<String>, tables: List<PosTable>)
   ret join(namesLoop(chain(tup), chain(tables), builder()), ", ")
 
 fun [tail] namesLoop(ks: Chain<String>, ts: Chain<PosTable>,
-                     [terminal] acc: ListBuilder<String>): List<String>
-  ret match(ks)
-    (nil: ChainEnd) => build(acc)
-    (lk: ChainLink) => match(ts)
-      (nil2: ChainEnd) => build(acc)
-      (lt: ChainLink)  => namesLoop(lk.next, lt.next, push(acc, nameOf(lt.value, lk.value)))
+                     [terminal] acc: ListBuilder<String>) => match(ks)
+  (nil: ChainEnd) => build(acc)
+  (lk: ChainLink) => match(ts)
+    (nil2: ChainEnd) => build(acc)
+    (lt: ChainLink)  => namesLoop(lk.next, lt.next, push(acc, nameOf(lt.value, lk.value)))
 
-fun nameOf(t: PosTable, key): String
-  ret match(get(t.ptNames, key))
-    (s: String) => s
-    ()          => key
+fun nameOf(t: PosTable, key) => match(get(t.ptNames, key))
+  (s: String) => s
+  ()          => key
 
-fun [tail] firstN(ts: Chain<List<String>>, n: Int,
-                  [terminal] acc: ListBuilder<List<String>>): List<List<String>>
-  ret match(ts)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => n <= 0 ? build(acc) : firstN(l.next, n - 1, push(acc, l.value))
+fun [tail] firstN(ts: Chain<List<String>>, n,
+                  [terminal] acc: ListBuilder<List<String>>) => match(ts)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => n <= 0 ? build(acc) : firstN(l.next, n - 1, push(acc, l.value))

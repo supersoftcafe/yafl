@@ -1,0 +1,23 @@
+# Mutually recursive functions must not be inlined into each other. The
+# inliner's cycle prune read the call graph off a body's STATEMENT list, but
+# `ret <expr>` leaves the block with no statements and the whole body in its
+# trailing value — so no edges were seen, the cycle survived the prune, and
+# the inliner substituted the pair into each other until the stack gave out.
+namespace Corpus
+
+import System
+
+enum MrStep
+  enum MrDown(mrDown: Int)
+  enum MrStop(mrStop: Int)
+
+fun mrPick(e)
+  ret match(e)
+    (a: MrStop) => a.mrStop
+    (b: MrDown) => mrTake(b)
+
+fun mrTake(v: MrDown)
+  ret mrPick(MrStop(v.mrDown))
+
+fun main(): Int
+  ret mrPick(MrStop(40)) + mrTake(MrDown(2))

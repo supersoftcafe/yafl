@@ -1,0 +1,24 @@
+# Inference that never settles: each single-arm `match` is a NARROW lower
+# bound for its own parameter, and each forwarding call makes the OTHER
+# parameter's current type an upper bound. The lower bound fits, so both
+# narrow; next pass the two uppers disagree, so both widen to the root; for
+# ever. The fixpoint must name the flipping declarations rather than run to
+# the pass limit and blame the compiler.
+namespace Corpus
+
+import System
+
+enum OscShape
+  enum OscA(oscA: Int)
+  enum OscB(oscB: Int)
+
+fun oscFirst(x)
+  ret match(x)
+    (a: OscA) => oscSecond(x)
+
+fun oscSecond(y)
+  ret match(y)
+    (b: OscB) => oscFirst(y)
+
+fun main(): Int
+  ret oscFirst(OscA(1)) + oscSecond(OscB(2))

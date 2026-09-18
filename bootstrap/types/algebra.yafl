@@ -27,16 +27,14 @@ enum Meet
 
 # A HOLE carries no type information yet: absent, an unbound placeholder, or a
 # still-unresolved name.
-fun isHole(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => isHoleSpec(s2)
-    ()         => true
+fun isHole(sp: Spec|None) => match(sp)
+  (s2: Spec) => isHoleSpec(s2)
+  ()         => true
 
-fun isHoleSpec(sp: Spec): Bool
-  ret match(sp)
-    (g: SGeneric) => true
-    (n: SNamed)   => true
-    (o)           => false
+fun isHoleSpec(sp: Spec) => match(sp)
+  (g: SGeneric) => true
+  (n: SNamed)   => true
+  (o)           => false
 
 # A LIST with a linear dedup, NOT a Set — deliberately.
 #
@@ -47,39 +45,33 @@ fun isHoleSpec(sp: Spec): Bool
 # the cons cells plus a three-element scan. Dedupe still happens (a
 # placeholder in several positions is one placeholder); it just happens
 # against the short list.
-fun placeholderNames(sp): List<String>
-  ret phNames(sp, List())
+fun placeholderNames(sp) => phNames(sp, List())
 
-fun phAdd(acc, n): List<String>
-  ret any(acc, (y) => y == n) ? acc : prepend(n, acc)
+fun phAdd(acc, n): List<String> => any(acc, (y) => y == n) ? acc : prepend(n, acc)
 
-fun phNames(sp, acc): List<String>
-  ret match(sp)
-    (g: SGeneric)      => phAdd(acc, g.sgName)
-    (c: SClass)        => phList(chain(c.scParams), acc)
-    (e: SEnum)         => phList(chain(e.seParams), acc)
-    (n: SNamed)        => phList(chain(n.snParams), acc)
-    (cm: SCombination) => phList(chain(cm.scTypes), acc)
-    (cl: SCallable)    => phOpt(cl.scResult, phNames(cl.scParams2, acc))
-    (t2: STuple)       => phEntries(chain(t2.stEntries), acc)
-    (af: SArrayField)  => phNames(af.safElem, acc)
-    (ls: SLazyStub)    => phOpt(ls.slsTarget, acc)
-    (b: SBuiltin)      => acc
+fun phNames(sp, acc): List<String> => match(sp)
+  (g: SGeneric)      => phAdd(acc, g.sgName)
+  (c: SClass)        => phList(chain(c.scParams), acc)
+  (e: SEnum)         => phList(chain(e.seParams), acc)
+  (n: SNamed)        => phList(chain(n.snParams), acc)
+  (cm: SCombination) => phList(chain(cm.scTypes), acc)
+  (cl: SCallable)    => phOpt(cl.scResult, phNames(cl.scParams2, acc))
+  (t2: STuple)       => phEntries(chain(t2.stEntries), acc)
+  (af: SArrayField)  => phNames(af.safElem, acc)
+  (ls: SLazyStub)    => phOpt(ls.slsTarget, acc)
+  (b: SBuiltin)      => acc
 
-fun [tail] phList(ts: Chain<Spec>, acc: List<String>): List<String>
-  ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => phList(l.next, phNames(l.value, acc))
+fun [tail] phList(ts: Chain<Spec>, acc: List<String>) => match(ts)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => phList(l.next, phNames(l.value, acc))
 
-fun [tail] phEntries(es: Chain<SEntry>, acc): List<String>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => phEntries(l.next, phOpt(l.value.seType, acc))
+fun [tail] phEntries(es: Chain<SEntry>, acc): List<String> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => phEntries(l.next, phOpt(l.value.seType, acc))
 
-fun phOpt(sp: Spec|None, acc): List<String>
-  ret match(sp)
-    (s2: Spec) => phNames(s2, acc)
-    ()         => acc
+fun phOpt(sp: Spec|None, acc): List<String> => match(sp)
+  (s2: Spec) => phNames(s2, acc)
+  ()         => acc
 
 # ── substitution ────────────────────────────────────────────────────────────
 # substitute_placeholders: replace every placeholder named in `mapping` with
@@ -89,7 +81,7 @@ fun phOpt(sp: Spec|None, acc): List<String>
 
 class [final] Binding(bName: String, bSpec: Spec)
 
-fun substitute(sp, mapping: List<Binding>): Spec
+fun substitute(sp, mapping: List<Binding>)
   if isEmpty(mapping)
     ret sp
   ret match(sp)
@@ -108,65 +100,55 @@ fun substitute(sp, mapping: List<Binding>): Spec
     (ls: SLazyStub)    => SLazyStub(substOpt(ls.slsTarget, mapping), ls.slsLine)
     (b: SBuiltin)      => sp
 
-fun substGeneric(sp, mapping: List<Binding>, name: String): Spec
-  ret match(bindingOf(mapping, name))
-    (b: Spec) => b
-    ()        => sp
+fun substGeneric(sp, mapping: List<Binding>, name: String) => match(bindingOf(mapping, name))
+  (b: Spec) => b
+  ()        => sp
 
-fun substList(ts: List<Spec>, mapping: List<Binding>): List<Spec>
-  ret substLoop(chain(ts), mapping, builder())
+fun substList(ts: List<Spec>, mapping: List<Binding>) => substLoop(chain(ts), mapping, builder())
 
 fun [tail] substLoop(ts: Chain<Spec>, mapping: List<Binding>,
-                     acc: ListBuilder<Spec>): List<Spec>
-  ret match(ts)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => substLoop(l.next, mapping, push(acc, substitute(l.value, mapping)))
+                     acc: ListBuilder<Spec>) => match(ts)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => substLoop(l.next, mapping, push(acc, substitute(l.value, mapping)))
 
-fun substOpt(sp: Spec|None, mapping: List<Binding>): Spec|None
-  ret match(sp)
-    (s2: Spec) => substitute(s2, mapping)
-    ()         => None
+fun substOpt(sp: Spec|None, mapping: List<Binding>) => match(sp)
+  (s2: Spec) => substitute(s2, mapping)
+  ()         => None
 
-fun substEntries(es: List<SEntry>, mapping: List<Binding>): List<SEntry>
+fun substEntries(es: List<SEntry>, mapping: List<Binding>)
   ret substEntLoop(chain(es), mapping, List())
 
 fun substEntLoop(es: Chain<SEntry>, mapping: List<Binding>,
-                        acc: List<SEntry>): List<SEntry>
-  ret build(substEntLoopB(es, mapping, builderFrom(acc)))
+                        acc: List<SEntry>) => build(substEntLoopB(es, mapping, builderFrom(acc)))
 
 fun [tail] substEntLoopB(es: Chain<SEntry>, mapping: List<Binding>,
-                        [terminal] acc): ListBuilder<SEntry>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => substEntLoopB(l.next, mapping,
-        push(acc, SEntry(l.value.seName, substOpt(l.value.seType, mapping),
-                  l.value.seDefault)))
+                        [terminal] acc): ListBuilder<SEntry> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => substEntLoopB(l.next, mapping,
+      push(acc, SEntry(l.value.seName, substOpt(l.value.seType, mapping),
+                l.value.seDefault)))
 
-fun bindingOf(ms: List<Binding>, name: String): Spec|None
-  ret bindingLoop(chain(ms), name)
+fun bindingOf(ms: List<Binding>, name: String) => bindingLoop(chain(ms), name)
 
-fun [tail] bindingLoop(ms: Chain<Binding>, name: String): Spec|None
-  ret match(ms)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.bName == name ? l.value.bSpec : bindingLoop(l.next, name)
+fun [tail] bindingLoop(ms: Chain<Binding>, name: String) => match(ms)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.bName == name ? l.value.bSpec : bindingLoop(l.next, name)
 
 # A union whose canonical members collapse to one IS that one type.
-fun canonUnion(sp): Spec
-  ret match(sp)
-    (cm: SCombination) => canonMembers(reprMembers(cm), cm.scmLine, sp)
-    (o)                => sp
+fun canonUnion(sp) => match(sp)
+  (cm: SCombination) => canonMembers(reprMembers(cm), cm.scmLine, sp)
+  (o)                => sp
 
-fun canonMembers(members, lr, orig): Spec
-  ret match(head(members))
-    (only: Spec) => isEmpty(tail(members)) ? only : SCombination(members, lr)
-    ()           => orig
+fun canonMembers(members, lr, orig) => match(head(members))
+  (only: Spec) => isEmpty(tail(members)) ? only : SCombination(members, lr)
+  ()           => orig
 
 # ── meet / refine ───────────────────────────────────────────────────────────
 # meet: the most-refined common form of two possibly-partial types. A hole is
 # refined by the other side; compounds meet element-wise and propagate a
 # conflict; two ground leaves must be equal. Symmetric.
 
-fun meet(a: Spec|None, b: Spec|None): Meet
+fun meet(a: Spec|None, b: Spec|None)
   if isHole(a)
     ret optMeet(b)
   if isHole(b)
@@ -177,19 +159,17 @@ fun meet(a: Spec|None, b: Spec|None): Meet
       ()         => MNone()
     ()         => MNone()
 
-fun optMeet(sp: Spec|None): Meet
-  ret match(sp)
-    (s2: Spec) => MSpec(s2)
-    ()         => MNone()
+fun optMeet(sp: Spec|None) => match(sp)
+  (s2: Spec) => MSpec(s2)
+  ()         => MNone()
 
-fun meetSpecs(a, b): Meet
-  ret match(a)
-    (ca: SClass)       => meetClass(ca, b)
-    (ea: SEnum)        => meetEnum(ea, b)
-    (ta: STuple)       => meetTuple(ta, b)
-    (ua: SCombination) => meetUnion(ua, b)
-    (cla: SCallable)   => meetCallable(cla, b)
-    (o)                => eqSpec(a, b) ? MSpec(a) : MConflict()
+fun meetSpecs(a, b) => match(a)
+  (ca: SClass)       => meetClass(ca, b)
+  (ea: SEnum)        => meetEnum(ea, b)
+  (ta: STuple)       => meetTuple(ta, b)
+  (ua: SCombination) => meetUnion(ua, b)
+  (cla: SCallable)   => meetCallable(cla, b)
+  (o)                => eqSpec(a, b) ? MSpec(a) : MConflict()
 
 # A union is a SET, and its member list is NOT canonically ordered (only the
 # id is sorted), so meet set-wise, never positionally. Two fully-ground unions
@@ -198,26 +178,23 @@ fun meetSpecs(a, b): Meet
 # otherwise it carries a member the ground side lacks: a real conflict. Both
 # sides still holey: defer (CONFLICT here just skips this pass; a later pass
 # grounds one side and resolves it).
-fun meetUnion(ua, b: Spec): Meet
-  ret match(b)
-    (ub2: SCombination) => meetUnionPair(ua, ub2)
-    (o)                 => MConflict()
+fun meetUnion(ua, b: Spec) => match(b)
+  (ub2: SCombination) => meetUnionPair(ua, ub2)
+  (o)                 => MConflict()
 
 fun meetUnionPair(a, b): Meet
   # SHORT LISTS, not Sets. The only consumer is the subset test below, so
   # there is no order — but a union carries a handful of members, and `meet`
   # runs on every assignability check. Two hash-tree allocations per meet to
   # hold three uids costs more than the O(n) scan they were meant to replace.
-  fun [tail] groundUids(ms: Chain<Spec>, acc: List<String>): List<String>
-    ret match(ms)
-      (nil: ChainEnd) => acc
-      (l: ChainLink)  => uid(l.value) == ""
-        ? groundUids(l.next, acc)
-        : groundUids(l.next, contains2(acc, uid(l.value))
-                               ? acc
-                               : prepend(uid(l.value), acc))
-  fun subLoop(xs: List<String>, ys: List<String>): Bool
-    ret all(xs, (x) => contains2(ys, x))
+  fun [tail] groundUids(ms: Chain<Spec>, acc) => match(ms)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => uid(l.value) == ""
+      ? groundUids(l.next, acc)
+      : groundUids(l.next, contains2(acc, uid(l.value))
+                             ? acc
+                             : prepend(uid(l.value), acc))
+  fun subLoop(xs: List<String>, ys: List<String>): Bool => all(xs, (x) => contains2(ys, x))
   let ia = uid(a)
   let ib = uid(b)
   if ia != "" && ib != ""
@@ -230,16 +207,14 @@ fun meetUnionPair(a, b): Meet
     ret subLoop(ga, gb) ? MSpec(b) : MConflict()
   ret MConflict()
 
-fun meetCallable(a: SCallable, b: Spec): Meet
-  ret match(b)
-    (cb: SCallable) => meetCallablePair(a, cb)
-    (o)             => MConflict()
+fun meetCallable(a: SCallable, b: Spec) => match(b)
+  (cb: SCallable) => meetCallablePair(a, cb)
+  (o)             => MConflict()
 
-fun meetCallablePair(a: SCallable, b: SCallable): Meet
-  fun mcParams(pm): Spec
-    ret match(pm)
-      (ms: MSpec) => ms.mSpec
-      (o: Meet)   => a.scParams2
+fun meetCallablePair(a: SCallable, b: SCallable)
+  fun mcParams(pm) => match(pm)
+    (ms: MSpec) => ms.mSpec
+    (o: Meet)   => a.scParams2
   ret match(meet(a.scParams2, b.scParams2))
     (pc: MConflict) => MConflict()
     (pm: Meet)      => match(meet(a.scResult, b.scResult))
@@ -247,30 +222,28 @@ fun meetCallablePair(a: SCallable, b: SCallable): Meet
       (rm: MSpec)     => MSpec(SCallable(mcParams(pm), rm.mSpec, a.sclLine))
       (rn: Meet)      => MSpec(SCallable(mcParams(pm), None, a.sclLine))
 
-fun meetClass(ca, b: Spec): Meet
-  ret match(b)
-    (cb: SClass) => ca.scName == cb.scName
-                    && sameLen(chain(ca.scParams), chain(cb.scParams))
-      ? meetParams(ca, ca.scParams, cb.scParams)
-      : MConflict()
-    (o)          => MConflict()
+fun meetClass(ca, b: Spec) => match(b)
+  (cb: SClass) => ca.scName == cb.scName
+                  && sameLen(chain(ca.scParams), chain(cb.scParams))
+    ? meetParams(ca, ca.scParams, cb.scParams)
+    : MConflict()
+  (o)          => MConflict()
 
 # Enum IDENTITY is root + valid leaves (a narrowed enum is a different type),
 # by NAME (sameEnum) — the family question is identity-by-name, never
 # equality (which now includes seParams: a complete spec's identity is its
 # name plus ALL its arguments). Params refine positionally.
-fun meetEnum(ea: SEnum, b: Spec): Meet
-  ret match(b)
-    (eb: SEnum) => ea.seRoot != eb.seRoot
-      ? MConflict()
-      : meetEnumViews(ea, eb)
-    (o)         => MConflict()
+fun meetEnum(ea, b: Spec) => match(b)
+  (eb: SEnum) => ea.seRoot != eb.seRoot
+    ? MConflict()
+    : meetEnumViews(ea, eb)
+  (o)         => MConflict()
 
 # Same enum, possibly different VIEWS — a leaf-typed construction meeting
 # the root (or a sibling leaf) from another flow. Views JOIN: the union of
 # the valid leaf sets is what both flows satisfy, and every view shares one
 # representation (the enum-encoding principle), so the join costs nothing.
-fun meetEnumViews(ea: SEnum, eb: SEnum): Meet
+fun meetEnumViews(ea, eb: SEnum)
   # Views join only within ONE instantiation: the all-leaf sets must agree
   # (mirrors specs.py meet's guard); different all-sets are stale copies of
   # different instantiations — a genuine conflict.
@@ -285,72 +258,63 @@ fun meetEnumViews(ea: SEnum, eb: SEnum): Meet
     ? MSpec(joined)
     : meetParams(joined, ea.seParams, eb.seParams)
 
-fun unionLeaves(a: List<String>, b: List<String>): List<String>
-  ret fold(b, a, (acc, n) =>
+fun unionLeaves(a: List<String>, b: List<String>) => fold(b, a, (acc, n) =>
     contains2(acc, n) ? acc : prepend(n, acc))
 
-fun sameEnum(ea: SEnum, eb: SEnum): Bool
-  ret ea.seRoot == eb.seRoot
-      && sameLen(chain(ea.seValidLeaves), chain(eb.seValidLeaves))
-      && allIn(chain(ea.seValidLeaves), eb.seValidLeaves)
+fun sameEnum(ea: SEnum, eb: SEnum) => ea.seRoot == eb.seRoot
+    && sameLen(chain(ea.seValidLeaves), chain(eb.seValidLeaves))
+    && allIn(chain(ea.seValidLeaves), eb.seValidLeaves)
 
-fun meetTuple(ta: STuple, b: Spec): Meet
-  ret match(b)
-    (tb: STuple) => !sameLen(chain(ta.stEntries), chain(tb.stEntries))
-      ? MConflict()
-      : meetEntries(ta, chain(ta.stEntries), chain(tb.stEntries), builder())
-    (o)          => MConflict()
+fun meetTuple(ta: STuple, b: Spec) => match(b)
+  (tb: STuple) => !sameLen(chain(ta.stEntries), chain(tb.stEntries))
+    ? MConflict()
+    : meetEntries(ta, chain(ta.stEntries), chain(tb.stEntries), builder())
+  (o)          => MConflict()
 
 # The entries are a TUPLE's fields, so their order is the tuple's identity —
 # this is genuinely ordered accumulation, and a threaded ListBuilder is the
 # answer rather than a different container. build() at the base case turns it
 # back into the List the STuple holds.
 fun meetEntries(base: STuple, as2: Chain<SEntry>, bs: Chain<SEntry>,
-                [terminal] acc: ListBuilder<SEntry>): Meet
-  ret match(as2)
-    (nil: ChainEnd) => MSpec(STuple(build(acc), base.stLine))
-    (la: ChainLink) => match(bs)
-      (lb: ChainLink) => meetEntry(base, la, lb, acc)
-      ()              => MConflict()
+                [terminal] acc) => match(as2)
+  (nil: ChainEnd) => MSpec(STuple(build(acc), base.stLine))
+  (la: ChainLink) => match(bs)
+    (lb: ChainLink) => meetEntry(base, la, lb, acc)
+    ()              => MConflict()
 
 fun meetEntry(base: STuple, la: ChainLink<SEntry>, lb: ChainLink<SEntry>,
-              [terminal] acc: ListBuilder<SEntry>): Meet
-  ret match(meet(la.value.seType, lb.value.seType))
-    (mc: MConflict) => MConflict()
-    (ms: MSpec)     => meetEntries(base, la.next, lb.next,
-        push(acc, SEntry(entryName(la.value, lb.value), ms.mSpec, la.value.seDefault)))
-    ()              => meetEntries(base, la.next, lb.next,
-        push(acc, SEntry(entryName(la.value, lb.value), None, la.value.seDefault)))
+              [terminal] acc) => match(meet(la.value.seType, lb.value.seType))
+  (mc: MConflict) => MConflict()
+  (ms: MSpec)     => meetEntries(base, la.next, lb.next,
+      push(acc, SEntry(entryName(la.value, lb.value), ms.mSpec, la.value.seDefault)))
+  ()              => meetEntries(base, la.next, lb.next,
+      push(acc, SEntry(entryName(la.value, lb.value), None, la.value.seDefault)))
 
-fun entryName(a: SEntry, b: SEntry): String
-  ret a.seName != "" ? a.seName : b.seName
+fun entryName(a: SEntry, b: SEntry) => a.seName != "" ? a.seName : b.seName
 
-fun meetParams(base, as2: List<Spec>, bs: List<Spec>): Meet
+fun meetParams(base, as2: List<Spec>, bs: List<Spec>)
   ret meetParamLoop(base, chain(as2), chain(bs), builder())
 
 # Type parameters: position IS the meaning (List<A,B> is not List<B,A>), so a
 # threaded builder, not a container swap.
 fun meetParamLoop(base, as2: Chain<Spec>, bs: Chain<Spec>,
-                  [terminal] acc: ListBuilder<Spec>): Meet
-  ret match(as2)
-    (nil: ChainEnd) => MSpec(withParams(base, build(acc)))
-    (la: ChainLink) => match(bs)
-      (lb: ChainLink) => meetParam(base, la, lb, acc)
-      ()              => MConflict()
+                  [terminal] acc) => match(as2)
+  (nil: ChainEnd) => MSpec(withParams(base, build(acc)))
+  (la: ChainLink) => match(bs)
+    (lb: ChainLink) => meetParam(base, la, lb, acc)
+    ()              => MConflict()
 
 fun meetParam(base, la: ChainLink<Spec>, lb: ChainLink<Spec>,
-              [terminal] acc: ListBuilder<Spec>): Meet
-  ret match(meet(la.value, lb.value))
-    (mc: MConflict) => MConflict()
-    (ms: MSpec)     => meetParamLoop(base, la.next, lb.next, push(acc, ms.mSpec))
-    ()              => meetParamLoop(base, la.next, lb.next, push(acc, la.value))
+              [terminal] acc) => match(meet(la.value, lb.value))
+  (mc: MConflict) => MConflict()
+  (ms: MSpec)     => meetParamLoop(base, la.next, lb.next, push(acc, ms.mSpec))
+  ()              => meetParamLoop(base, la.next, lb.next, push(acc, la.value))
 
-fun withParams(base, params): Spec
-  ret match(base)
-    (c: SClass) => SClass(c.scName, params, c.scLine)
-    (e: SEnum)  => SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves, params,
-                         e.seLine)
-    (o)         => base
+fun withParams(base, params) => match(base)
+  (c: SClass) => SClass(c.scName, params, c.scLine)
+  (e: SEnum)  => SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves, params,
+                       e.seLine)
+  (o)         => base
 
 # refine: the ONE rule for a stored inferred type (an untyped let's declared
 # type, an undeclared function's return type). Refinable only while `current`
@@ -369,48 +333,43 @@ fun withParams(base, params): Spec
 # A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on an
 # early pass) stays refinable too: generic arguments are invariant, so it must
 # widen with its right-hand side rather than pin the view.
-fun refine(current, r, inferred: Spec|None): Spec|None
-  ret match(current)
-    (c: Spec) => hasFreePlaceholders(c, r) || containsNarrowedView(c)
-      ? refineWith(current, inferred)
-      : current
-    ()        => refineWith(current, inferred)
+fun refine(current, r, inferred: Spec|None) => match(current)
+  (c: Spec) => hasFreePlaceholders(c, r) || containsNarrowedView(c)
+    ? refineWith(current, inferred)
+    : current
+  ()        => refineWith(current, inferred)
 
-fun refineWith(current, inferred: Spec|None): Spec|None
-  ret match(inferred)
-    (i2: Spec) => !isConcrete(i2)
-      ? current
-      : match(meet(current, i2))
-        (ms: MSpec) => ms.mSpec
-        (o)         => current
-    ()         => current
+fun refineWith(current, inferred: Spec|None) => match(inferred)
+  (i2: Spec) => !isConcrete(i2)
+    ? current
+    : match(meet(current, i2))
+      (ms: MSpec) => ms.mSpec
+      (o)         => current
+  ()         => current
 
 # An enum VIEW narrower than its enum — `Circle` of `Shape`. A type inferred
 # from such a value is provisional: the context may ask for the root (or a
 # wider view), and `meet` joins views. The valid leaves are always a subset of
 # all leaves, so "narrower" is "fewer".
-fun isNarrowedView(sp): Bool
-  ret match(sp)
-    (e: SEnum) => !sameLen(chain(e.seValidLeaves), chain(e.seAllLeaves))
-    (o: Spec)  => false
+fun isNarrowedView(sp) => match(sp)
+  (e: SEnum) => !sameLen(chain(e.seValidLeaves), chain(e.seAllLeaves))
+  (o: Spec)  => false
 
 # A narrowed view anywhere in `sp` — `Circle` itself, or the `Op{Move}` inside
 # a stored `List<Op{Move}>`. Such an inferred type is provisional: a use-site
 # binding re-infers against its expected type, and a stored let/return type
 # keeps refining, so `meet` widens it exactly as far as the context demands.
-fun containsNarrowedView(sp): Bool
-  ret match(sp)
-    (e: SEnum)         => isNarrowedView(sp) || any(e.seParams, (p) => containsNarrowedView(p))
-    (c: SClass)        => any(c.scParams, (p) => containsNarrowedView(p))
-    (t2: STuple)       => any(t2.stEntries, (en) => optNarrowed(en.seType))
-    (cm: SCombination) => any(cm.scTypes, (m) => containsNarrowedView(m))
-    (cl: SCallable)    => containsNarrowedView(cl.scParams2) || optNarrowed(cl.scResult)
-    (o: Spec)          => false
+fun containsNarrowedView(sp) => match(sp)
+  (e: SEnum)         => isNarrowedView(sp) || any(e.seParams, (p) => containsNarrowedView(p))
+  (c: SClass)        => any(c.scParams, (p) => containsNarrowedView(p))
+  (t2: STuple)       => any(t2.stEntries, (en) => optNarrowed(en.seType))
+  (cm: SCombination) => any(cm.scTypes, (m) => containsNarrowedView(m))
+  (cl: SCallable)    => containsNarrowedView(cl.scParams2) || optNarrowed(cl.scResult)
+  (o: Spec)          => false
 
-fun optNarrowed(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => containsNarrowedView(s2)
-    ()         => false
+fun optNarrowed(sp: Spec|None) => match(sp)
+  (s2: Spec) => containsNarrowedView(s2)
+  ()         => false
 
 # has_free_placeholders: `sp` contains a generic placeholder that does NOT
 # resolve in the current scope — a blank that leaked out of another
@@ -418,47 +377,41 @@ fun optNarrowed(sp: Spec|None): Bool
 # placeholder is a real type inside its declaring generic, a hole elsewhere.
 # "Does ANY placeholder fail to resolve" is a question about membership, not
 # about order, so it is asked of the set directly.
-fun hasFreePlaceholders(sp, r): Bool
-  ret any(placeholderNames(sp), (n) => !resolvesInScope(n, r))
+fun hasFreePlaceholders(sp, r) => any(placeholderNames(sp), (n) => !resolvesInScope(n, r))
 
 # The scope test for a placeholder NAME: it resolves when the use sits inside
 # its declaring generic (an enclosing function's own `T`), where the
 # placeholder is a real type; anywhere else it is a hole.
-fun resolvesInScope(name, r): Bool
-  ret !isEmpty(findType(r, name).bItems)
+fun resolvesInScope(name, r) => !isEmpty(findType(r, name).bItems)
 
 # _contains_named_spec: `sp` is or contains a raw SNamed spelling — a signature
 # view that hasn't compiled yet. Its names are only meaningful in the declaring
 # scope, so it must never escape into a type-param binding that outlives that
 # scope (compiled at a use site, the `T` inside a latched `List<T>` can never
 # resolve and survives to the post-converge scan).
-fun containsNamedSpec(sp): Bool
-  ret match(sp)
-    (n: SNamed)        => true
-    (c: SClass)        => cnsList(chain(c.scParams))
-    (e: SEnum)         => cnsList(chain(e.seParams))
-    (cm: SCombination) => cnsList(chain(cm.scTypes))
-    (cl: SCallable)    => containsNamedSpec(cl.scParams2) || cnsOpt(cl.scResult)
-    (t2: STuple)       => cnsEntries(chain(t2.stEntries))
-    (af: SArrayField)  => containsNamedSpec(af.safElem)
-    (ls: SLazyStub)    => cnsOpt(ls.slsTarget)
-    (g: SGeneric)      => false
-    (b: SBuiltin)      => false
+fun containsNamedSpec(sp) => match(sp)
+  (n: SNamed)        => true
+  (c: SClass)        => cnsList(chain(c.scParams))
+  (e: SEnum)         => cnsList(chain(e.seParams))
+  (cm: SCombination) => cnsList(chain(cm.scTypes))
+  (cl: SCallable)    => containsNamedSpec(cl.scParams2) || cnsOpt(cl.scResult)
+  (t2: STuple)       => cnsEntries(chain(t2.stEntries))
+  (af: SArrayField)  => containsNamedSpec(af.safElem)
+  (ls: SLazyStub)    => cnsOpt(ls.slsTarget)
+  (g: SGeneric)      => false
+  (b: SBuiltin)      => false
 
-fun [tail] cnsList(ts: Chain<Spec>): Bool
-  ret match(ts)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => containsNamedSpec(l.value) ? true : cnsList(l.next)
+fun [tail] cnsList(ts: Chain<Spec>) => match(ts)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => containsNamedSpec(l.value) ? true : cnsList(l.next)
 
-fun [tail] cnsEntries(es: Chain<SEntry>): Bool
-  ret match(es)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => cnsOpt(l.value.seType) ? true : cnsEntries(l.next)
+fun [tail] cnsEntries(es: Chain<SEntry>) => match(es)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => cnsOpt(l.value.seType) ? true : cnsEntries(l.next)
 
-fun cnsOpt(sp: Spec|None): Bool
-  ret match(sp)
-    (s2: Spec) => containsNamedSpec(s2)
-    ()         => false
+fun cnsOpt(sp: Spec|None) => match(sp)
+  (s2: Spec) => containsNamedSpec(s2)
+  ()         => false
 
 
 # ══ unification ══════════════════════════════════════════════════════════════
@@ -472,15 +425,52 @@ enum Unify
   enum UMap(uBindings: List<Binding>)
   enum UFail()
 
-fun unifyGeneric(generic: Spec, concrete, names: List<String>,
-                 mapping): Unify
-  ret unifyGenericIn(generic, concrete, names, None, mapping)
+fun unifyGeneric(generic, concrete, names: List<String>,
+                 mapping) => unifyGenericIn(generic, concrete, names, None, mapping)
 
 # `scope` is the use site's scope (Python's `in_scope`): a concrete-side
 # placeholder that resolves there is a real type and may be bound to. Only
 # use-site inference has one; every other caller unifies without.
-fun unifyGenericIn(generic: Spec, concrete, names: List<String>,
-                   scope: Resolver|None, mapping): Unify
+#
+# A callable's parameter is contravariant: `(:Shape): Int` is a fine
+# `(:Circle): Int`. So it binds only a placeholder that appears nowhere else,
+# and otherwise may only refine a binding (names, holes), never widen a view.
+fun unifyGenericIn(generic, concrete, names: List<String>,
+                   scope: Resolver|None, mapping)
+  let covariant = withoutCallableParams(generic)
+  ret match(unifyTree(covariant, concrete, names, scope, mapping))
+    (um: UMap)  => eqSpec(covariant, generic)
+      ? um
+      : UMap(refinedBy(um.uBindings, placeholderNames(covariant),
+                       unifyTree(generic, concrete, names, scope, List())))
+    (uf: UFail) => uf
+
+fun refinedBy(mapping: List<Binding>, elsewhere: List<String>,
+              upper) => match(upper)
+  (um: UMap)  => fold(um.uBindings, mapping,
+                      (acc, b) => refinedOne(acc, elsewhere, b))
+  (uf: UFail) => mapping
+
+fun refinedOne(mapping: List<Binding>, elsewhere: List<String>,
+               b: Binding) => match(bindingOf(mapping, b.bName))
+  (existing: Spec) => containsNarrowedView(existing)
+    ? mapping
+    : match(meet(existing, b.bSpec))
+      (ms: MSpec) => rebind(mapping, b.bName, ms.mSpec)
+      (o: Meet)   => mapping
+  ()               => contains2(elsewhere, b.bName) ? mapping : prepend(b, mapping)
+
+fun withoutCallableParams(sp: Spec): Spec => rwSpec(sp, rwOnSpec(blankParams))
+
+fun blankParams(sp): Spec|None => match(sp)
+  (cb: SCallable) => match(cb.scParams2)
+    (t2: STuple) => with cb(scParams2 = with t2(stEntries = map(t2.stEntries,
+                                                               (en) => SEntry(en.seName, None, en.seDefault))))
+    (o: Spec)    => None
+  (o: Spec)       => None
+
+fun unifyTree(generic: Spec, concrete, names: List<String>,
+              scope: Resolver|None, mapping)
   # A placeholder we own binds to the concrete side (see bindHole for which
   # concrete sides are concrete enough).
   ret match(generic)
@@ -503,7 +493,7 @@ fun unifyGenericIn(generic: Spec, concrete, names: List<String>,
 # one must never bind (containsNamedSpec, deep). DEFER — the fixpoint retries
 # once the callee's signature grounds.
 fun bindHole(name, concrete, names: List<String>,
-             scope: Resolver|None, mapping): Unify
+             scope: Resolver|None, mapping)
   if placeholderUnbindable(concrete, names, scope) || containsNamedSpec(concrete)
     ret UMap(mapping)
   ret match(bindingOf(mapping, name))
@@ -518,155 +508,136 @@ fun bindHole(name, concrete, names: List<String>,
 # monomorphisation then completed by bare NAME to the host's T — a silent
 # miscompile. Without a scope every placeholder stays a hole.
 fun placeholderUnbindable(concrete: Spec, names: List<String>,
-                          scope: Resolver|None): Bool
-  ret match(concrete)
-    (g: SGeneric) => match(scope)
-      (r: Resolver) => contains2(names, g.sgName) || !resolvesInScope(g.sgName, r)
-      ()            => true
-    (o)           => false
+                          scope: Resolver|None) => match(concrete)
+  (g: SGeneric) => match(scope)
+    (r: Resolver) => contains2(names, g.sgName) || !resolvesInScope(g.sgName, r)
+    ()            => true
+  (o)           => false
 
-fun mergeBinding(name: String, prior: Spec, concrete: Spec,
-                 mapping): Unify
-  ret match(meet(prior, concrete))
-    (mc: MConflict) => UFail()
-    (ms: MSpec)     => UMap(rebind(mapping, name, ms.mSpec))
-    ()              => UMap(mapping)
+fun mergeBinding(name, prior: Spec, concrete: Spec,
+                 mapping) => match(meet(prior, concrete))
+  (mc: MConflict) => UFail()
+  (ms: MSpec)     => UMap(rebind(mapping, name, ms.mSpec))
+  ()              => UMap(mapping)
 
-fun rebind(mapping: List<Binding>, name: String, sp): List<Binding>
-  ret rebindLoop(chain(mapping), name, sp, List())
+fun rebind(mapping: List<Binding>, name, sp) => rebindLoop(chain(mapping), name, sp, List())
 
 fun rebindLoop(ms, name: String, sp,
-                      acc: List<Binding>): List<Binding>
-  ret build(rebindLoopB(ms, name, sp, builderFrom(acc)))
+                      acc: List<Binding>) => build(rebindLoopB(ms, name, sp, builderFrom(acc)))
 
-fun [tail] rebindLoopB(ms: Chain<Binding>, name: String, sp: Spec,
-                      [terminal] acc: ListBuilder<Binding>): ListBuilder<Binding>
-  ret match(ms)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => rebindLoopB(l.next, name, sp,
-        push(acc, l.value.bName == name ? Binding(name, sp) : l.value))
+fun [tail] rebindLoopB(ms: Chain<Binding>, name, sp,
+                      [terminal] acc: ListBuilder<Binding>) => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => rebindLoopB(l.next, name, sp,
+      push(acc, l.value.bName == name ? Binding(name, sp) : l.value))
 
-fun unifyBuiltin(b: SBuiltin, concrete: Spec, mapping): Unify
-  ret match(concrete)
-    (cb: SBuiltin) => b.sbName == cb.sbName ? UMap(mapping) : UFail()
-    (o)            => UMap(mapping)
+fun unifyBuiltin(b: SBuiltin, concrete: Spec, mapping) => match(concrete)
+  (cb: SBuiltin) => b.sbName == cb.sbName ? UMap(mapping) : UFail()
+  (o)            => UMap(mapping)
 
 fun unifyClass(c: SClass, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping): Unify
-  ret match(concrete)
-    (cc: SClass) => c.scName != cc.scName
-                    || !sameLen(chain(c.scParams), chain(cc.scParams))
-      ? UMap(mapping)
-      : unifyList(chain(c.scParams), chain(cc.scParams), names, scope, mapping)
-    (o)          => UMap(mapping)
+               scope: Resolver|None, mapping) => match(concrete)
+  (cc: SClass) => c.scName != cc.scName
+                  || !sameLen(chain(c.scParams), chain(cc.scParams))
+    ? UMap(mapping)
+    : unifyList(chain(c.scParams), chain(cc.scParams), names, scope, mapping)
+  (o)          => UMap(mapping)
 
 # Generic ENUM instances (List<T> vs List<Thing>, Dict<K,V>) unify through
 # their type arguments exactly like classes — this is how a container-only
 # call site binds its element type.
 fun unifyEnum(e: SEnum, concrete: Spec, names: List<String>,
-              scope: Resolver|None, mapping): Unify
-  ret match(concrete)
-    (ce: SEnum) => e.seRoot != ce.seRoot
-                   || isEmpty(e.seParams)
-                   || !sameLen(chain(e.seParams), chain(ce.seParams))
-      ? UMap(mapping)
-      : unifyList(chain(e.seParams), chain(ce.seParams), names, scope, mapping)
-    (o)         => UMap(mapping)
+              scope: Resolver|None, mapping) => match(concrete)
+  (ce: SEnum) => e.seRoot != ce.seRoot
+                 || isEmpty(e.seParams)
+                 || !sameLen(chain(e.seParams), chain(ce.seParams))
+    ? UMap(mapping)
+    : unifyList(chain(e.seParams), chain(ce.seParams), names, scope, mapping)
+  (o)         => UMap(mapping)
 
 fun unifyNamed(n: SNamed, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping): Unify
-  ret match(concrete)
-    (cn: SNamed) => n.snName != cn.snName
-                    || isEmpty(n.snParams)
-                    || !sameLen(chain(n.snParams), chain(cn.snParams))
-      ? UMap(mapping)
-      : unifyList(chain(n.snParams), chain(cn.snParams), names, scope, mapping)
-    (o)          => UMap(mapping)
+               scope: Resolver|None, mapping) => match(concrete)
+  (cn: SNamed) => n.snName != cn.snName
+                  || isEmpty(n.snParams)
+                  || !sameLen(chain(n.snParams), chain(cn.snParams))
+    ? UMap(mapping)
+    : unifyList(chain(n.snParams), chain(cn.snParams), names, scope, mapping)
+  (o)          => UMap(mapping)
 
 fun unifyCallable(cl: SCallable, concrete: Spec, names: List<String>,
-                  scope: Resolver|None, mapping): Unify
-  ret match(concrete)
-    (cc: SCallable) => match(unifyGenericIn(cl.scParams2, cc.scParams2, names, scope, mapping))
-      (uf: UFail) => UFail()
-      (um: UMap)  => unifyOpt(cl.scResult, cc.scResult, names, scope, um.uBindings)
-    (o)             => UMap(mapping)
+                  scope: Resolver|None, mapping) => match(concrete)
+  (cc: SCallable) => match(unifyTree(cl.scParams2, cc.scParams2, names, scope, mapping))
+    (uf: UFail) => UFail()
+    (um: UMap)  => unifyOpt(cl.scResult, cc.scResult, names, scope, um.uBindings)
+  (o)             => UMap(mapping)
 
 fun unifyOpt(a: Spec|None, b: Spec|None, names: List<String>,
-             scope: Resolver|None, mapping): Unify
-  ret match(a)
-    (sa: Spec) => match(b)
-      (sb: Spec) => unifyGenericIn(sa, sb, names, scope, mapping)
-      ()         => UMap(mapping)
+             scope: Resolver|None, mapping) => match(a)
+  (sa: Spec) => match(b)
+    (sb: Spec) => unifyTree(sa, sb, names, scope, mapping)
     ()         => UMap(mapping)
+  ()         => UMap(mapping)
 
 # Tuple entries pair via the shared BINDING, so a named/defaulted argument
 # unifies against the field it actually binds (positional zip would infer a
 # placeholder from the wrong field). Default-filled fields contribute nothing.
 fun unifyTuple(t2: STuple, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping): Unify
-  ret match(concrete)
-    (ct: STuple) => match(bindTupleEntries(t2.stEntries,
-                            entryNames(chain(ct.stEntries), List())))
-      (b2: List<Int>) => unifyBound(chain(t2.stEntries), b2, ct.stEntries, names, scope,
-                                    mapping)
-      ()              => UMap(mapping)
-    (o)          => UMap(mapping)
+               scope: Resolver|None, mapping) => match(concrete)
+  (ct: STuple) => match(bindTupleEntries(t2.stEntries,
+                          entryNames(chain(ct.stEntries), List())))
+    (b2: List<Int>) => unifyBound(chain(t2.stEntries), b2, ct.stEntries, names, scope,
+                                  mapping)
+    ()              => UMap(mapping)
+  (o)          => UMap(mapping)
 
-fun entryNames(es: Chain<SEntry>, acc: List<String>): List<String>
-  ret build(entryNamesB(es, builderFrom(acc)))
+fun entryNames(es: Chain<SEntry>, acc: List<String>) => build(entryNamesB(es, builderFrom(acc)))
 
-fun [tail] entryNamesB(es: Chain<SEntry>, [terminal] acc): ListBuilder<String>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => entryNamesB(l.next, push(acc, l.value.seName))
+fun [tail] entryNamesB(es: Chain<SEntry>, [terminal] acc): ListBuilder<String> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => entryNamesB(l.next, push(acc, l.value.seName))
 
 fun [tail] unifyBound(ds: Chain<SEntry>, binding: List<Int>, supplied: List<SEntry>,
                names: List<String>, scope: Resolver|None,
-               mapping: List<Binding>): Unify
-  ret match(ds)
-    (nil: ChainEnd) => UMap(mapping)
-    (l: ChainLink)  => match(head(binding))
-      (ix: Int) => ix < 0
-        ? unifyBound(l.next, tail(binding), supplied, names, scope, mapping)
-        : unifyEntryPair(l.value, nthEntry(supplied, ix), l.next, tail(binding),
-                         supplied, names, scope, mapping)
-      ()        => UMap(mapping)
+               mapping) => match(ds)
+  (nil: ChainEnd) => UMap(mapping)
+  (l: ChainLink)  => match(head(binding))
+    (ix: Int) => ix < 0
+      ? unifyBound(l.next, tail(binding), supplied, names, scope, mapping)
+      : unifyEntryPair(l.value, nthEntry(supplied, ix), l.next, tail(binding),
+                       supplied, names, scope, mapping)
+    ()        => UMap(mapping)
 
 fun unifyEntryPair(d: SEntry, s2: SEntry|None, rest,
                    restBind: List<Int>, supplied: List<SEntry>,
                    names: List<String>, scope: Resolver|None,
-                   mapping): Unify
-  ret match(s2)
-    (se: SEntry) => match(unifyOpt(d.seType, se.seType, names, scope, mapping))
-      (uf: UFail) => UFail()
-      (um: UMap)  => unifyBound(rest, restBind, supplied, names, scope, um.uBindings)
-    ()           => unifyBound(rest, restBind, supplied, names, scope, mapping)
+                   mapping) => match(s2)
+  (se: SEntry) => match(unifyOpt(d.seType, se.seType, names, scope, mapping))
+    (uf: UFail) => UFail()
+    (um: UMap)  => unifyBound(rest, restBind, supplied, names, scope, um.uBindings)
+  ()           => unifyBound(rest, restBind, supplied, names, scope, mapping)
 
-fun nthEntry(es: List<SEntry>, ix): SEntry|None
-  ret head(drop(es, ix))
+fun nthEntry(es: List<SEntry>, ix) => head(drop(es, ix))
 
 fun [tail] unifyList(gs: Chain<Spec>, cs: Chain<Spec>, names: List<String>,
-              scope: Resolver|None, mapping: List<Binding>): Unify
-  ret match(gs)
-    (nil: ChainEnd) => UMap(mapping)
-    (lg: ChainLink) => match(cs)
-      (lc: ChainLink) => match(unifyGenericIn(lg.value, lc.value, names, scope, mapping))
-        (uf: UFail) => UFail()
-        (um: UMap)  => unifyList(lg.next, lc.next, names, scope, um.uBindings)
-      ()              => UMap(mapping)
+              scope: Resolver|None, mapping) => match(gs)
+  (nil: ChainEnd) => UMap(mapping)
+  (lg: ChainLink) => match(cs)
+    (lc: ChainLink) => match(unifyTree(lg.value, lc.value, names, scope, mapping))
+      (uf: UFail) => UFail()
+      (um: UMap)  => unifyList(lg.next, lc.next, names, scope, um.uBindings)
+    ()              => UMap(mapping)
 
 # Union-vs-union: members are a SET. Positional alignment FIRST (the fixpoint's
 # progression is tuned to it), then a set-wise fallback for when position lies:
 # ground pattern members are matched and removed, and a single unbound
 # placeholder member binds to whatever concrete members remain.
 fun unifyUnion(cm: SCombination, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping): Unify
-  ret match(concrete)
-    (cc: SCombination) => unifyUnionSets(cm, cc, names, scope, mapping)
-    (o)                => UMap(mapping)
+               scope: Resolver|None, mapping) => match(concrete)
+  (cc: SCombination) => unifyUnionSets(cm, cc, names, scope, mapping)
+  (o)                => UMap(mapping)
 
 fun unifyUnionSets(cm: SCombination, cc: SCombination, names: List<String>,
-                   scope: Resolver|None, mapping): Unify
+                   scope: Resolver|None, mapping)
   if sameLen(chain(cm.scTypes), chain(cc.scTypes))
     let trial = unifyList(chain(cm.scTypes), chain(cc.scTypes), names, scope, mapping)
     ret match(trial)
@@ -675,7 +646,7 @@ fun unifyUnionSets(cm: SCombination, cc: SCombination, names: List<String>,
   ret unifyUnionBySet(cm, cc, names, mapping)
 
 fun unifyUnionBySet(cm: SCombination, cc: SCombination, names: List<String>,
-                    mapping): Unify
+                    mapping)
   let gen = reprMembers(cm)
   let con = reprMembers(cc)
   let holes = ownHoles(chain(gen), names, List())
@@ -689,70 +660,60 @@ fun unifyUnionBySet(cm: SCombination, cc: SCombination, names: List<String>,
 # A short list: `holes` is tested for "exactly one" and then read. A union's
 # holes number zero or one in practice, so this never needs a tree.
 fun [tail] ownHoles(ms: Chain<Spec>, names: List<String>,
-                    acc: List<String>): List<String>
-  ret match(ms)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => ownHoles(l.next, names, holeName(l.value, names, acc))
+                    acc) => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => ownHoles(l.next, names, holeName(l.value, names, acc))
 
-fun holeName(sp: Spec, names: List<String>, acc): List<String>
-  ret match(sp)
-    (g: SGeneric) => contains2(names, g.sgName) && !contains2(acc, g.sgName)
-      ? prepend(g.sgName, acc)
-      : acc
-    (o)           => acc
+fun holeName(sp: Spec, names: List<String>, acc) => match(sp)
+  (g: SGeneric) => contains2(names, g.sgName) && !contains2(acc, g.sgName)
+    ? prepend(g.sgName, acc)
+    : acc
+  (o)           => acc
 
 fun [tail] groundMembers(ms: Chain<Spec>, names: List<String>,
-                         [terminal] acc: ListBuilder<Spec>): List<Spec>
-  ret match(ms)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => groundMembers(l.next, names,
-        isOwnHole(l.value, names) ? acc : push(acc, l.value))
+                         [terminal] acc: ListBuilder<Spec>) => match(ms)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => groundMembers(l.next, names,
+      isOwnHole(l.value, names) ? acc : push(acc, l.value))
 
-fun isOwnHole(sp: Spec, names: List<String>): Bool
-  ret match(sp)
-    (g: SGeneric) => contains2(names, g.sgName)
-    (o)           => false
+fun isOwnHole(sp: Spec, names: List<String>) => match(sp)
+  (g: SGeneric) => contains2(names, g.sgName)
+  (o)           => false
 
 # A ground pattern member that itself mentions one of our placeholders leaves
 # no clean set partition.
-fun [tail] anyGroundHole(ms: Chain<Spec>, names: List<String>): Bool
-  ret match(ms)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => sharesName(placeholderNames(l.value), names)
-      ? true
-      : anyGroundHole(l.next, names)
+fun [tail] anyGroundHole(ms: Chain<Spec>, names: List<String>) => match(ms)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => sharesName(placeholderNames(l.value), names)
+    ? true
+    : anyGroundHole(l.next, names)
 
 # Do these two name collections overlap? Set-against-list, and neither side's
 # order can change the answer.
-fun sharesName(a: List<String>, b: List<String>): Bool
-  ret any(a, (n) => contains2(b, n))
+fun sharesName(a: List<String>, b: List<String>) => any(a, (n) => contains2(b, n))
 
-fun [tail] sharesLoop(a: Chain<String>, b: List<String>): Bool
-  ret match(a)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => contains2(b, l.value) ? true : sharesLoop(l.next, b)
+fun [tail] sharesLoop(a: Chain<String>, b: List<String>) => match(a)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => contains2(b, l.value) ? true : sharesLoop(l.next, b)
 
 # Remove each ground pattern member from the concrete set; None when one is
 # absent (deferral, not failure — the concrete side may still be settling).
 # Matched by STRUCTURAL equality (Python `cm == gm`): a raw SNamed spelling has
 # no uid yet must still match its equal spelling on the concrete side.
-fun [tail] removeGround(gs: Chain<Spec>, con: List<Spec>): List<Spec>|None
-  ret match(gs)
-    (nil: ChainEnd) => con
-    (l: ChainLink)  => match(removeOne(con, l.value))
-      (rest: List<Spec>) => removeGround(l.next, rest)
-      ()                 => None
+fun [tail] removeGround(gs: Chain<Spec>, con) => match(gs)
+  (nil: ChainEnd) => con
+  (l: ChainLink)  => match(removeOne(con, l.value))
+    (rest: List<Spec>) => removeGround(l.next, rest)
+    ()                 => None
 
-fun removeOne(con: List<Spec>, gm): List<Spec>|None
-  ret removeLoop(chain(con), gm, builder(), false)
+fun removeOne(con: List<Spec>, gm) => removeLoop(chain(con), gm, builder(), false)
 
-fun [tail] removeLoop(ms: Chain<Spec>, gm: Spec, [terminal] acc: ListBuilder<Spec>,
-                      dropped: Bool): List<Spec>|None
-  ret match(ms)
-    (nil: ChainEnd) => dropped ? build(acc) : None
-    (l: ChainLink)  => !dropped && eqSpec(l.value, gm)
-      ? removeLoop(l.next, gm, acc, true)
-      : removeLoop(l.next, gm, push(acc, l.value), dropped)
+fun [tail] removeLoop(ms: Chain<Spec>, gm, [terminal] acc: ListBuilder<Spec>,
+                      dropped) => match(ms)
+  (nil: ChainEnd) => dropped ? build(acc) : None
+  (l: ChainLink)  => !dropped && eqSpec(l.value, gm)
+    ? removeLoop(l.next, gm, acc, true)
+    : removeLoop(l.next, gm, push(acc, l.value), dropped)
 
 # An already-pinned hole makes the slot a set-equality CHECK, not a binding
 # site: `existing ∪ ground` must equal the concrete set — every leftover
@@ -764,42 +725,35 @@ fun [tail] removeLoop(ms: Chain<Spec>, gm: Spec, [terminal] acc: ListBuilder<Spe
 # these ask the chain directly. (The resolver reports that as "Ambiguous —
 # Candidates: ..." rather than "nothing accepts a List", which is misleading;
 # that diagnostic is tracked separately. These helpers are correct either way.)
-fun holesMoreThanOne(holes: List<String>): Bool
-  ret match(chain(holes))
-    (l: ChainLink) => l.next is ChainLink
-    (e: ChainEnd)  => false
+fun holesMoreThanOne(holes: List<String>) => match(chain(holes))
+  (l: ChainLink) => l.next is ChainLink
+  (e: ChainEnd)  => false
 
-fun holesSingle(holes: List<String>): String|None
-  ret match(chain(holes))
-    (l: ChainLink) => l.next is ChainEnd ? l.value : None
-    (e: ChainEnd)  => None
+fun holesSingle(holes: List<String>) => match(chain(holes))
+  (l: ChainLink) => l.next is ChainEnd ? l.value : None
+  (e: ChainEnd)  => None
 
 fun bindRemainder(holes: List<String>, rest, con: List<Spec>,
-                  cm: SCombination, mapping): Unify
-  ret match(holesSingle(holes))
-    (name: String) => match(bindingOf(mapping, name))
-      (prior: Spec) => checkPinned(prior, rest, con, mapping)
-      ()            => isEmpty(rest)
-        ? UMap(mapping)
-        : bindHoleTo(name, rest, cm, mapping)
-    ()             => UMap(mapping)
+                  cm: SCombination, mapping) => match(holesSingle(holes))
+  (name: String) => match(bindingOf(mapping, name))
+    (prior: Spec) => checkPinned(prior, rest, con, mapping)
+    ()            => isEmpty(rest)
+      ? UMap(mapping)
+      : bindHoleTo(name, rest, cm, mapping)
+  ()             => UMap(mapping)
 
 fun checkPinned(prior, rest: List<Spec>, con: List<Spec>,
-                mapping): Unify
-  fun hasSpec(ys, x): Bool
-    ret hasLoop(chain(ys), x)
-  fun [tail] hasLoop(ys: Chain<Spec>, x: Spec): Bool
-    ret match(ys)
-      (nil: ChainEnd) => false
-      (l: ChainLink)  => eqSpec(l.value, x) ? true : hasLoop(l.next, x)
-  fun [tail] allInSet(xs: Chain<Spec>, ys: List<Spec>): Bool
-    ret match(xs)
-      (nil: ChainEnd) => true
-      (l: ChainLink)  => hasSpec(ys, l.value) ? allInSet(l.next, ys) : false
-  fun [tail] anyHole(ms: Chain<Spec>): Bool
-    ret match(ms)
-      (nil: ChainEnd) => false
-      (l: ChainLink)  => isHoleSpec(l.value) ? true : anyHole(l.next)
+                mapping)
+  fun hasSpec(ys, x) => hasLoop(chain(ys), x)
+  fun [tail] hasLoop(ys: Chain<Spec>, x: Spec): Bool => match(ys)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => eqSpec(l.value, x) ? true : hasLoop(l.next, x)
+  fun [tail] allInSet(xs: Chain<Spec>, ys) => match(xs)
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => hasSpec(ys, l.value) ? allInSet(l.next, ys) : false
+  fun [tail] anyHole(ms: Chain<Spec>) => match(ms)
+    (nil: ChainEnd) => false
+    (l: ChainLink)  => isHoleSpec(l.value) ? true : anyHole(l.next)
   let bound = match(prior)
     (u: SCombination) => reprMembers(u)
     (o: Spec)         => prepend(o, List())
@@ -808,7 +762,7 @@ fun checkPinned(prior, rest: List<Spec>, con: List<Spec>,
   ret anyHole(chain(con)) ? UMap(mapping) : UFail()
 
 fun bindHoleTo(name, rest, cm: SCombination,
-               mapping: List<Binding>): Unify
+               mapping)
   let value = match(head(rest))
     (only: Spec) if isEmpty(tail(rest)) => only
     ()           => SCombination(rest, cm.scmLine)
@@ -825,14 +779,13 @@ fun bindHoleTo(name, rest, cm: SCombination,
 # merge, no assignability absorption. The one collapse is the set's own —
 # flatten + dedupe via reprMembers — so `A ⊔ (A|None)` is `A|None`, and
 # `A ⊔ A` is `A`.
-fun join(a: Spec|None, b): Spec|None
-  ret match(a)
-    (x: Spec) => match(b)
-      (y: Spec) => joinBoth(x, y)
-      ()        => x
-    () => b
+fun join(a: Spec|None, b): Spec|None => match(a)
+  (x: Spec) => match(b)
+    (y: Spec) => joinBoth(x, y)
+    ()        => x
+  () => b
 
-fun joinBoth(x, y): Spec
+fun joinBoth(x, y)
   if eqSpec(x, y)
     ret x
   let members = reprMembersOf(prepend(x, prepend(y, List())))
@@ -840,10 +793,9 @@ fun joinBoth(x, y): Spec
     ? soleMember(members, x)
     : SCombination(members, specLine(x))
 
-fun soleMember(members: List<Spec>, fallback): Spec
-  ret match(head(members))
-    (m: Spec) => m
-    ()        => fallback
+fun soleMember(members: List<Spec>, fallback) => match(head(members))
+  (m: Spec) => m
+  ()        => fallback
 
 # ── refine_widening ─────────────────────────────────────────────────────────
 # `refine` for a type inferred from a source that can WIDEN across passes.
@@ -861,22 +813,20 @@ fun soleMember(members: List<Spec>, fallback): Spec
 # terminates. Deliberately NOT gated on whether the AST changed: a receiver's
 # type can widen while its own expression is value-equal, because the widening
 # happened inside a callee.
-fun refineWidening(current, fresh: Spec|None, r): Spec|None
+fun refineWidening(current, fresh: Spec|None, r)
   let refined = refine(current, r, fresh)
   ret match(refined)
     (rf: Spec) if isConcrete(rf) => widenTo(rf, fresh, r)
     ()         => refined
 
-fun widenTo(refined, fresh: Spec|None, r): Spec
-  ret match(fresh)
-    (f: Spec) if isConcrete(f) && strictlyWider(f, refined, r) => f
-    ()        => refined
+fun widenTo(refined, fresh: Spec|None, r) => match(fresh)
+  (f: Spec) if isConcrete(f) && strictlyWider(f, refined, r) => f
+  ()        => refined
 
 # `f` is a STRICT superset of `refined`: it accepts everything refined does,
 # and refined does not accept everything it does.
-fun strictlyWider(f, refined, r): Bool
-  ret triTrue(assignableFrom(r, f, refined))
-      && !triTrue(assignableFrom(r, refined, f))
+fun strictlyWider(f, refined, r) => triTrue(assignableFrom(r, f, refined))
+    && !triTrue(assignableFrom(r, refined, f))
 
 # ── trait-constraint solving ─────────────────────────────────────────────────
 # The call-site (pre-monomorphisation) where-discharge: ground a constraint's
@@ -906,22 +856,20 @@ fun bindFromConstraintMatch(constraint: SClass, iface: SClass,
     ()                 => None
 
 fun [tail] bfcLoop(cs: Chain<Spec>, is2: Chain<Spec>, targets: List<String>,
-                   [terminal] acc: ListBuilder<Binding>): List<Binding>|None
-  ret match(cs)
-    (nil: ChainEnd) => build(acc)
-    (c: ChainLink)  => match(is2)
-      (nil2: ChainEnd) => build(acc)
-      (i: ChainLink)   => match(bfcOne(c.value, i.value, targets, acc))
-        (next2: ListBuilder<Binding>) => bfcLoop(c.next, i.next, targets, next2)
-        ()                            => None
+                   [terminal] acc: ListBuilder<Binding>) => match(cs)
+  (nil: ChainEnd) => build(acc)
+  (c: ChainLink)  => match(is2)
+    (nil2: ChainEnd) => build(acc)
+    (i: ChainLink)   => match(bfcOne(c.value, i.value, targets, acc))
+      (next2: ListBuilder<Binding>) => bfcLoop(c.next, i.next, targets, next2)
+      ()                            => None
 
 fun bfcOne(cArg: Spec, iArg: Spec, targets: List<String>,
-           [terminal] acc: ListBuilder<Binding>): ListBuilder<Binding>|None
-  ret match(cArg)
-    (g2: SGeneric) => contains2(targets, g2.sgName)
-      ? (isConcrete(iArg) ? push(acc, Binding(g2.sgName, iArg)) : None)
-      : anchorsEqual(cArg, iArg, acc)
-    (o: Spec)      => anchorsEqual(cArg, iArg, acc)
+           [terminal] acc: ListBuilder<Binding>) => match(cArg)
+  (g2: SGeneric) => contains2(targets, g2.sgName)
+    ? (isConcrete(iArg) ? push(acc, Binding(g2.sgName, iArg)) : None)
+    : anchorsEqual(cArg, iArg, acc)
+  (o: Spec)      => anchorsEqual(cArg, iArg, acc)
 
 # Threads the builder through untouched when the two anchors agree, and fails
 # the whole match otherwise — it adds no binding of its own.
@@ -934,34 +882,31 @@ fun anchorsEqual(cArg, iArg,
 # specs must share name and arity and agree element-wise; other concrete
 # types must have equal ids. A cheap structural prune so the solver only
 # unifies a RELEVANT provider.
-fun traitPatternCompatible(pattern, constraint): Bool
-  ret match(pattern)
-    (pg: SGeneric) => true
-    (pc: SClass)   => match(constraint)
-      (cg: SGeneric) => true
-      (cc: SClass)   => pc.scName == cc.scName
-                        && patternArgsCompatible(chain(pc.scParams),
-                                                 chain(cc.scParams))
-      (co: Spec)     => idsCompatible(pattern, constraint)
-    (po: Spec)     => match(constraint)
-      (cg: SGeneric) => true
-      (co: Spec)     => idsCompatible(pattern, constraint)
+fun traitPatternCompatible(pattern, constraint) => match(pattern)
+  (pg: SGeneric) => true
+  (pc: SClass)   => match(constraint)
+    (cg: SGeneric) => true
+    (cc: SClass)   => pc.scName == cc.scName
+                      && patternArgsCompatible(chain(pc.scParams),
+                                               chain(cc.scParams))
+    (co: Spec)     => idsCompatible(pattern, constraint)
+  (po: Spec)     => match(constraint)
+    (cg: SGeneric) => true
+    (co: Spec)     => idsCompatible(pattern, constraint)
 
-fun [tail] patternArgsCompatible(ps: Chain<Spec>, cs: Chain<Spec>): Bool
-  ret match(ps)
-    (nil: ChainEnd) => match(cs)
-      (nil2: ChainEnd) => true
-      (c: ChainLink)   => false
-    (p: ChainLink)  => match(cs)
-      (nil2: ChainEnd) => false
-      (c: ChainLink)   => traitPatternCompatible(p.value, c.value)
-        ? patternArgsCompatible(p.next, c.next)
-        : false
+fun [tail] patternArgsCompatible(ps: Chain<Spec>, cs: Chain<Spec>) => match(ps)
+  (nil: ChainEnd) => match(cs)
+    (nil2: ChainEnd) => true
+    (c: ChainLink)   => false
+  (p: ChainLink)  => match(cs)
+    (nil2: ChainEnd) => false
+    (c: ChainLink)   => traitPatternCompatible(p.value, c.value)
+      ? patternArgsCompatible(p.next, c.next)
+      : false
 
-fun idsCompatible(pattern, constraint): Bool
-  ret uid(pattern) == "" || uid(constraint) == ""
-    ? true
-    : uid(pattern) == uid(constraint)
+fun idsCompatible(pattern, constraint) => uid(pattern) == "" || uid(constraint) == ""
+  ? true
+  : uid(pattern) == uid(constraint)
 
 # Ground the `targets` placeholders of a trait constraint by matching it
 # against the instances (concrete first); the first whose grounded interface
@@ -969,28 +914,26 @@ fun idsCompatible(pattern, constraint): Bool
 # placeholder cannot be matched — wait for the fixpoint to make it concrete.
 fun solveTraitConstraint(constraint, targets: List<String>,
                          instances: List<TraitInst>,
-                         r: Resolver): List<Binding>|None
+                         r: Resolver)
   if subjectIsPlaceholder(constraint)
     ret None
   ret solveLoop(chain(instances), constraint, targets, r)
 
-fun subjectIsPlaceholder(constraint: SClass): Bool
-  ret match(head(constraint.scParams))
-    (s2: Spec) => match(s2)
-      (g2: SGeneric) => true
-      (o: Spec)      => false
-    ()         => false
+fun subjectIsPlaceholder(constraint: SClass) => match(head(constraint.scParams))
+  (s2: Spec) => match(s2)
+    (g2: SGeneric) => true
+    (o: Spec)      => false
+  ()         => false
 
-fun [tail] solveLoop(is2: Chain<TraitInst>, constraint: SClass,
-                     targets: List<String>, r: Resolver): List<Binding>|None
-  ret match(is2)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => match(tryInstance(l.value, constraint, targets, r))
-      (b: List<Binding>) => b
-      ()                 => solveLoop(l.next, constraint, targets, r)
+fun [tail] solveLoop(is2: Chain<TraitInst>, constraint,
+                     targets: List<String>, r: Resolver) => match(is2)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => match(tryInstance(l.value, constraint, targets, r))
+    (b: List<Binding>) => b
+    ()                 => solveLoop(l.next, constraint, targets, r)
 
 fun tryInstance(inst: TraitInst, constraint, targets: List<String>,
-                r: Resolver): List<Binding>|None
+                r: Resolver)
   if !traitPatternCompatible(inst.tiIface, constraint)
     ret None
   ret match(instanceMapping(inst, constraint))
@@ -998,7 +941,7 @@ fun tryInstance(inst: TraitInst, constraint, targets: List<String>,
     ()                 => None
 
 # The instance's OWN params must all be fixed by the constraint.
-fun instanceMapping(inst: TraitInst, constraint): List<Binding>|None
+fun instanceMapping(inst: TraitInst, constraint)
   if isEmpty(inst.tiParams)
     ret List<Binding>()
   ret match(unifyGeneric(inst.tiIface, constraint, inst.tiParams,
@@ -1008,15 +951,14 @@ fun instanceMapping(inst: TraitInst, constraint): List<Binding>|None
       : None
     (f: UFail) => None
 
-fun [tail] allParamsBound(ps: Chain<String>, m: List<Binding>): Bool
-  ret match(ps)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => match(bindingOf(m, l.value))
-      (b: Spec) => allParamsBound(l.next, m)
-      ()        => false
+fun [tail] allParamsBound(ps: Chain<String>, m: List<Binding>) => match(ps)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(bindingOf(m, l.value))
+    (b: Spec) => allParamsBound(l.next, m)
+    ()        => false
 
 fun groundedBinding(inst: TraitInst, m: List<Binding>, constraint: SClass,
-                    targets: List<String>): List<Binding>|None
+                    targets: List<String>)
   if isEmpty(m)
     ret bindFromConstraintMatch(constraint, inst.tiIface, targets)
   ret match(substitute(inst.tiIface, m))

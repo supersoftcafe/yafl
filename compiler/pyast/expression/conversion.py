@@ -34,6 +34,7 @@ import codegen.param as cg_p
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 from pyast import union_repr
 from pyast.expression.base import Expression
 
@@ -53,13 +54,13 @@ class ConvertExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec:
         return self.target
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # The inner compiles with NO expected type: it is the raw source value —
         # this node is the adapter to the receiver, and feeding the receiver's
         # type back down would make the inner wrap itself again. Safe because a
         # wrap is only ever inserted over ground types (needs_conversion), so
         # the inner's names are already committed.
-        inner, stmts = self.inner.compile(resolver, None)
+        inner, stmts, hints = self.inner.compile(resolver, None)
         target, spec_stmts = self.target.compile(resolver)
         # The receiver's view wins: a ground expected that differs from our
         # target means the receiver WIDENED since this wrap was inserted
@@ -72,9 +73,11 @@ class ConvertExpression(Expression):
         # itself, or a retarget made the wrap moot). Idempotent at fixpoint:
         # the parent's own `converted` re-wraps only if needs_conversion says
         # so, which is exactly the kept case.
+        # The wrapped load still expects the receiver's type.
+        hints = h.merge(hints, h.load_hint(resolver, inner, target))
         if not needs_conversion(inner.get_type(resolver), target, resolver):
-            return inner, stmts + spec_stmts
-        return dataclasses.replace(self, inner=inner, target=target), stmts + spec_stmts
+            return inner, stmts + spec_stmts, hints
+        return dataclasses.replace(self, inner=inner, target=target), stmts + spec_stmts, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return self.inner.check(resolver, None)

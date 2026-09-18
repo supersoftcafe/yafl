@@ -55,11 +55,16 @@ class TestBootstrapCheck(TestCase):
     def _python_diagnostics_uncached(self, text: str) -> str:
         result = parse(tokenize(text, "x"))
         self.assertFalse(result.errors, "python parse errors")
-        statements, resolver, _passes = _CONVERGE(result.value)
-        statements = lowering.lambda_globals.lower_lambda_globals(statements)
-        statements, dropped = lowering.drops.insert_drops(statements)
-        if dropped:
-            statements, resolver, _p2 = _CONVERGE(statements)
+        # A fixpoint that never settles reports the declarations that flip —
+        # the driver prints those and stops, so the contract compares them.
+        try:
+            statements, resolver, _passes = _CONVERGE(result.value)
+            statements = lowering.lambda_globals.lower_lambda_globals(statements)
+            statements, dropped = lowering.drops.insert_drops(statements)
+            if dropped:
+                statements, resolver, _p2 = _CONVERGE(statements)
+        except c.ConvergenceError as unsettled:
+            return "".join(f"{e}\n" for e in sorted(set(unsettled.errors)))
         failures, warnings = _DIAGNOSE(statements, resolver)
         if not failures:
             # Mirror the driver: linearity runs only on a clean check phase,

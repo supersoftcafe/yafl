@@ -21,6 +21,7 @@ import pyast.classtools as c
 import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
+import pyast.hints as h
 
 import pyast.utils as u
 
@@ -166,7 +167,7 @@ class ClassStatement(TypeStatement):
             _all_parents=new_parents)
 
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
         # Resolve each of the inherited types and update the implements list
         # Use a resolver that includes this class's own generic type params so that
         # e.g. `TVal` in `class Foo<TVal> : Bar<TVal>` resolves to GenericPlaceholderSpec.
@@ -203,7 +204,7 @@ class ClassStatement(TypeStatement):
         # so that a `T` referenced inside the constructor destructure (e.g.
         # `class Box<T>(value: T)`) or inside a method body resolves to the
         # class's GenericPlaceholderSpec rather than failing the lookup.
-        new_parameters, prm_glb = self.parameters.compile(type_resolver, None)
+        new_parameters, prm_glb, _ = self.parameters.compile(type_resolver, None)
         statement_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
         # Member bodies resolve through the CLASS's `where` clause: a member
         # declares no generics/wheres of its own (a vtable slot has a fixed
@@ -226,7 +227,7 @@ class ClassStatement(TypeStatement):
               _all_slots=new_all_slots,
             _all_parents=new_all_parents)
 
-        return result, prm_glb + trts_glb + stm_glb
+        return result, prm_glb + trts_glb + stm_glb, {}
 
 
     def __with_owner_wheres(self, x: Statement) -> Statement:
@@ -239,7 +240,7 @@ class ClassStatement(TypeStatement):
         return x
 
     def __strip_owner_wheres(self, original: Statement, compiled):
-        new_x, extra = compiled
+        new_x, extra, _ = compiled
         if isinstance(original, FunctionStatement) and self.trait_params \
                 and isinstance(new_x, FunctionStatement):
             new_x = dataclasses.replace(new_x, trait_params=())

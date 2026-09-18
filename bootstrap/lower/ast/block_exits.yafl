@@ -21,13 +21,11 @@ fun assignBlockExits(statements: List<PStmt>): List<PStmt>
                RwN(rwnNoExpr, (n, _sc, st) => beRetCb(n, st)),
                None, 0).rnssStmts
 
-fun beBlockCb(n: Int, x): (n2: Int, r: PExpr|None)
-  ret match(x)
-    (bk: PeBlock) => (n + 1, PeBlock(bk.blockStmts, bk.blockValue,
-                                     "blk@" + String(n), bk.pebkLine))
-    (o: PExpr)    => (n, None)
+fun beBlockCb(n, x): (n2: Int, r: PExpr|None) => match(x)
+  (bk: PeBlock) => (n + 1, PeBlock(bk.blockStmts, bk.blockValue,
+                                   "blk@" + String(n), bk.pebkLine))
+  (o: PExpr)    => (n, None)
 
-fun beRetCb(n, st): (n2: Int, r: PStmt|None)
-  ret match(st)
-    (rt: PsRet) => (n + 1, PsRet(rt.retValue, rt.psrLine, n))
-    (o: PStmt)  => (n, None)
+fun beRetCb(n, st): (n2: Int, r: PStmt|None) => match(st)
+  (rt: PsRet) => (n + 1, PsRet(rt.retValue, rt.psrLine, n))
+  (o: PStmt)  => (n, None)

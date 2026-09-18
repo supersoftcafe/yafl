@@ -17,10 +17,10 @@ import Bootstrap::Types
 
 
 
-fun ssaValidate(fns: List<CgFunction>, ssa: Bool): List<String>
+fun ssaValidate(fns: List<CgFunction>, ssa)
   ret fold(fns, List(), (acc, f) => concat(acc, ssavFn(f, ssa)))
 
-fun ssavFn(f: CgFunction, ssa: Bool): List<String>
+fun ssavFn(f: CgFunction, ssa)
   if f.fnName == "__entrypoint__"
     ret List()
   # After phi_removal the IR is deliberately not single-assignment; the final
@@ -33,56 +33,49 @@ fun ssavFn(f: CgFunction, ssa: Bool): List<String>
 
 # Async-lowering reuses fixed scratch slots across call sites — deliberate
 # multi-write.
-fun ssavIsScratchSlot(name): Bool
-  ret startsWith(name, "$sv_") || startsWith(name, "$wrap$")
-      || startsWith(name, "$sm_wrap$") || startsWith(name, "$musttail$ret$")
-      || name == "$state" || name == "$completed_task"
+fun ssavIsScratchSlot(name) => startsWith(name, "$sv_") || startsWith(name, "$wrap$")
+    || startsWith(name, "$sm_wrap$") || startsWith(name, "$musttail$ret$")
+    || name == "$state" || name == "$completed_task"
 
 # A Move from a type-appropriate zero is a GC-safety / state-machine
 # pre-initialisation — logically a declaration, not a redefinition.
-fun ssavIsZeroInit(op): Bool
-  ret match(op)
-    (m: OpMove) => ssavIsZeroSource(m.moveSource)
-    (o: Op)     => false
+fun ssavIsZeroInit(op) => match(op)
+  (m: OpMove) => ssavIsZeroSource(m.moveSource)
+  (o: Op)     => false
 
-fun ssavIsZeroSource(src): Bool
-  ret match(src)
-    (np: RpNullPointer) => true
-    (z: RpZeroOf)       => true
-    (i: RpInteger)      => i.value == 0
-    (f: RpFloat)        => f.value == 0.0
-    (o: RParam)         => false
+fun ssavIsZeroSource(src) => match(src)
+  (np: RpNullPointer) => true
+  (z: RpZeroOf)       => true
+  (i: RpInteger)      => i.value == 0
+  (f: RpFloat)        => f.value == 0.0
+  (o: RParam)         => false
 
-fun ssavCollectWriteCounts(f: CgFunction): List<StrCount>
+fun ssavCollectWriteCounts(f: CgFunction)
   let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), List(),
                         (acc, fld) => strCountIncr(acc, fld.fieldName))
   ret fold(f.fnOps, fromParams, ssavCountOp)
 
-fun ssavCountOp(acc, op): List<StrCount>
-  ret ssavIsZeroInit(op)
-    ? acc
-    : fold(ssavOpWrites(op), acc, ssavCountTarget)
+fun ssavCountOp(acc, op): List<StrCount> => ssavIsZeroInit(op)
+  ? acc
+  : fold(ssavOpWrites(op), acc, ssavCountTarget)
 
-fun ssavCountTarget(acc, target): List<StrCount>
-  ret match(target)
-    (sv: RpStackVar) => strCountIncr(acc, sv.name)
-    (o: RParam)       => acc
+fun ssavCountTarget(acc, target): List<StrCount> => match(target)
+  (sv: RpStackVar) => strCountIncr(acc, sv.name)
+  (o: RParam)       => acc
 
 # The write set per op kind — Python's op.get_live_vars() writes half.
-fun ssavOpWrites(op): List<RParam>
-  ret match(op)
-    (m: OpMove)         => list1(m.moveTarget)
-    (c: OpCall)         => ssavOptWrite(c.callRegister)
-    (n: OpNewObject)    => list1(n.newObjRegister)
-    (p: OpParallelCall) => concat(p.parResults, ssavOptWrite(p.parRegister))
-    (ph: OpPhi)         => list1(ph.phiTarget)
-    (t2: OpIfTask)      => list2(t2.taskLhs, t2.callIdLhs)
-    (o: Op)             => List()
+fun ssavOpWrites(op) => match(op)
+  (m: OpMove)         => list1(m.moveTarget)
+  (c: OpCall)         => ssavOptWrite(c.callRegister)
+  (n: OpNewObject)    => list1(n.newObjRegister)
+  (p: OpParallelCall) => concat(p.parResults, ssavOptWrite(p.parRegister))
+  (ph: OpPhi)         => list1(ph.phiTarget)
+  (t2: OpIfTask)      => list2(t2.taskLhs, t2.callIdLhs)
+  (o: Op)             => List()
 
-fun ssavOptWrite(r: RParam|None): List<RParam>
-  ret match(r)
-    (x: RParam) => list1(x)
-    ()           => List()
+fun ssavOptWrite(r: RParam|None) => match(r)
+  (x: RParam) => list1(x)
+  ()           => List()
 
 fun ssavSingleDefinition(f: CgFunction): List<String>
   let violations = filter(ssavCollectWriteCounts(f),
@@ -98,38 +91,34 @@ fun ssavSingleDefinition(f: CgFunction): List<String>
 # failure is checked: the last op must be a terminator (Return/ReturnVoid/
 # Abort/Jump, a musttail Call, or a conditional whose fall-through is the
 # not-taken path).
-fun ssavAllPathsReturn(f: CgFunction): List<String>
-  ret match(lastOp(f.fnOps))
-    (op: Op) => ssavIsTerminator(op)
-      ? List()
-      : list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
-    ()        => List()
+fun ssavAllPathsReturn(f: CgFunction): List<String> => match(lastOp(f.fnOps))
+  (op: Op) => ssavIsTerminator(op)
+    ? List()
+    : list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
+  ()        => List()
 
 # Seq twin: hop to the last segment, read its final element.
-fun [tail] lastOp(s: Segment<Op>|None): Op|None
-  ret match(s)
-    (nil: None)        => None
-    (seg: Segment<Op>) => match(seg.next)
-      (n2: Segment<Op>) => lastOp(seg.next)
-      (nil2: None)      => seg.length > 0i32 ? seg.array(seg.length - 1i32) : None
+fun [tail] lastOp(s: Segment<Op>|None): Op|None => match(s)
+  (nil: None)        => None
+  (seg: Segment<Op>) => match(seg.next)
+    (n2: Segment<Op>) => lastOp(seg.next)
+    (nil2: None)      => seg.length > 0i32 ? seg.array(seg.length - 1i32) : None
 
-fun [tail] lastOp(ops: Chain<Op>): Op|None
-  ret match(ops)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => match(l.next)
-      (nil2: ChainEnd) => l.value
-      (l2: ChainLink)  => lastOp(l.next)
+fun [tail] lastOp(ops: Chain<Op>): Op|None => match(ops)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => match(l.next)
+    (nil2: ChainEnd) => l.value
+    (l2: ChainLink)  => lastOp(l.next)
 
-fun ssavIsTerminator(op): Bool
-  ret match(op)
-    (r: OpReturn)      => true
-    (rv: OpReturnVoid) => true
-    (a: OpAbort)       => true
-    (j: OpJump)        => true
-    (c: OpCall)        => c.callMusttail
-    (t2: OpIfTask)     => true
-    (sw: OpSwitchJump) => true
-    (o: Op)            => false
+fun ssavIsTerminator(op) => match(op)
+  (r: OpReturn)      => true
+  (rv: OpReturnVoid) => true
+  (a: OpAbort)       => true
+  (j: OpJump)        => true
+  (c: OpCall)        => c.callMusttail
+  (t2: OpIfTask)     => true
+  (sw: OpSwitchJump) => true
+  (o: Op)            => false
 
 # ── Phi well-formedness ──────────────────────────────────────────────────────
 
@@ -150,53 +139,47 @@ fun [tail] ssavPredLoop(cur: Op|None, st: SeqStream<Op>, prev: Op|None, current,
   ret ssavPredLoop(p.op, p.stream, op, ssavNextCurrent(op, current),
                    ssavPredStep(op, prev, current, acc))
 
-fun ssavNextCurrent(op, current): String
-  ret match(op)
-    (lb: OpLabel) => lb.labelName
-    (o: Op)       => current
+fun ssavNextCurrent(op, current) => match(op)
+  (lb: OpLabel) => lb.labelName
+  (o: Op)       => current
 
-fun ssavPredStep(op, prev: Op|None, current: String,
-                 acc): List<PredEntry>
-  ret match(op)
-    (lb: OpLabel)      => ssavFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
-    (j: OpJump)        => predAdd(acc, j.jumpName, current)
-    (ji: OpJumpIf)     => predAdd(acc, ji.jumpIfLabel, current)
-    (t2: OpIfTask)     => predAdd(acc, t2.taskTarget, current)
-    (sw: OpSwitchJump) => fold(sw.switchCases, acc,
-                               (a, c) => predAdd(a, c.caseLabel, current))
-    (o: Op)            => acc
+fun ssavPredStep(op, prev: Op|None, current,
+                 acc) => match(op)
+  (lb: OpLabel)      => ssavFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
+  (j: OpJump)        => predAdd(acc, j.jumpName, current)
+  (ji: OpJumpIf)     => predAdd(acc, ji.jumpIfLabel, current)
+  (t2: OpIfTask)     => predAdd(acc, t2.taskTarget, current)
+  (sw: OpSwitchJump) => fold(sw.switchCases, acc,
+                             (a, c) => predAdd(a, c.caseLabel, current))
+  (o: Op)            => acc
 
 # Fall-through edge from the previous block unless the previous op was an
 # unconditional terminator (Abort included — abort() does not return).
-fun ssavFallThroughEdge(lb: OpLabel, prev: Op|None, current: String,
-                        acc): List<PredEntry>
-  ret match(prev)
-    (p: Op) => ssavPrevFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
-    ()       => acc
+fun ssavFallThroughEdge(lb: OpLabel, prev: Op|None, current,
+                        acc) => match(prev)
+  (p: Op) => ssavPrevFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
+  ()       => acc
 
-fun ssavPrevFallsThrough(p): Bool
-  ret match(p)
-    (j: OpJump)        => false
-    (r: OpReturn)      => false
-    (rv: OpReturnVoid) => false
-    (a: OpAbort)       => false
-    (o: Op)            => true
+fun ssavPrevFallsThrough(p) => match(p)
+  (j: OpJump)        => false
+  (r: OpReturn)      => false
+  (rv: OpReturnVoid) => false
+  (a: OpAbort)       => false
+  (o: Op)            => true
 
-fun predEnsure(acc, label): List<PredEntry>
-  ret any(acc, (e2) => e2.peLabel == label)
-    ? acc
-    # A label -> predecessors map, looked up by label; its own order is not
-    # observed, and the predecessor lists are membership sets.
-    : prepend(PredEntry(label, Set()), acc)
+fun predEnsure(acc, label) => any(acc, (e2) => e2.peLabel == label)
+  ? acc
+  # A label -> predecessors map, looked up by label; its own order is not
+  # observed, and the predecessor lists are membership sets.
+  : prepend(PredEntry(label, Set()), acc)
 
-fun predAdd(acc: List<PredEntry>, label: String, src: String): List<PredEntry>
-  ret any(acc, (e2) => e2.peLabel == label)
-    ? map(acc, (e2) => e2.peLabel == label
-                 ? PredEntry(label, add(e2.pePreds, src))
-                 : e2)
-    : prepend(PredEntry(label, add(Set(), src)), acc)
+fun predAdd(acc, label, src) => any(acc, (e2) => e2.peLabel == label)
+  ? map(acc, (e2) => e2.peLabel == label
+               ? PredEntry(label, add(e2.pePreds, src))
+               : e2)
+  : prepend(PredEntry(label, add(Set(), src)), acc)
 
-fun predsOf(acc: List<PredEntry>, label: String): Set<String>
+fun predsOf(acc: List<PredEntry>, label: String)
   ret match(head(filter(acc, (e2) => e2.peLabel == label)))
     (e2: PredEntry) => e2.pePreds
     ()               => Set()

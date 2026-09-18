@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 from pyast.expression.literal import BoolExpression, IntegerExpression
@@ -37,8 +38,8 @@ class BuiltinOpExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.type
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
-        new_params, new_statements = self.params.compile(resolver, None)
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        new_params, new_statements, hints = self.params.compile(resolver, None)
         # The declared type may be a full TypeSpec (array_builder_alloc's
         # Array<T>): compile it so the name resolves like any declared type.
         # BuiltinSpecs compile to themselves, so the historical ops are
@@ -50,7 +51,7 @@ class BuiltinOpExpression(Expression):
         # boxing into a union slot (`string_parse_int`'s bigint into `Int|None`).
         from pyast.expression.conversion import converted
         folded = expr._fold_const_compare()
-        return (folded if folded is not None else converted(expr, expected_type, resolver)), list(new_statements)
+        return (folded if folded is not None else converted(expr, expected_type, resolver)), list(new_statements), hints
 
     # An integer comparison of two bigint literals (the body of Int's `==`/`<`/
     # `>`) folds to a Bool literal. The language has no true/false token, so

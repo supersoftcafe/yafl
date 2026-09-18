@@ -1,0 +1,30 @@
+# `with` replacing an optional field with None, through the port's C path.
+#
+# The SAME guard compares each replacement with the current field. The
+# replacement is typed as the FIELD, so `None` is compared at the field's
+# representation; typed as itself it was an empty struct, the compare covered
+# zero bytes, and the original came back unchanged.
+namespace Corpus
+
+import System
+
+class [final] WnOpt(wnName: String, wnTy: Int|None)
+
+enum WnShape
+  enum WnBox(wnLabel: String|None)
+
+fun wnTyOr(o: WnOpt): Int
+  ret match(o.wnTy)
+    (n: Int) => n
+    ()       => 100
+
+fun wnLabelOr(s: WnBox): Int
+  ret match(s.wnLabel)
+    (l: String) => length(l)
+    ()          => 50
+
+fun main(): Int
+  let a = WnOpt("a", 7)
+  let b = with a(wnTy = None)
+  let c = WnBox("xyz")
+  ret wnTyOr(b) + wnLabelOr(with c(wnLabel = None)) + wnTyOr(a) + wnLabelOr(c)

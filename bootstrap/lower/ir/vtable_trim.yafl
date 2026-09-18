@@ -29,20 +29,18 @@ fun trimUnusedVtableSlots(a): CgApp
     ? appOf(appFunctions(a), out.objs, appGlobals(a))
     : a
 
-fun vtuFunction(acc: StrSet, f: CgFunction): StrSet
+fun vtuFunction(acc: StrSet, f: CgFunction)
   ret fold(f.fnOps, acc, (a2, op) =>
         fold(opAllParams(op), a2, (a3, p) =>
           fold(rpFlatten(p, true), a3, vtuAddVirtual)))
 
-fun vtuGlobal(acc, g2: CgGlobal): StrSet
-  ret match(g2.globalInit)
-    (init: RParam) => fold(rpFlatten(init, true), acc, vtuAddVirtual)
-    ()              => acc
+fun vtuGlobal(acc, g2: CgGlobal) => match(g2.globalInit)
+  (init: RParam) => fold(rpFlatten(init, true), acc, vtuAddVirtual)
+  ()              => acc
 
-fun vtuAddVirtual(acc, p): StrSet
-  ret match(p)
-    (vf: RpVirtualFunction) => setAdd(acc, vf.name)
-    (o: RParam)             => acc
+fun vtuAddVirtual(acc, p) => match(p)
+  (vf: RpVirtualFunction) => setAdd(acc, vf.name)
+  (o: RParam)             => acc
 
 fun vtuObject(acc: (objs: List<CgObject>, changed: Bool), o: CgObject,
               used: StrSet): (objs: List<CgObject>, changed: Bool)

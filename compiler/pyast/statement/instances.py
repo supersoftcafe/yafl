@@ -29,6 +29,7 @@ import dataclasses
 import pyast.rewrite as rw
 import pyast.resolver as g
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 
 from parsing.parselib import Error
@@ -62,20 +63,20 @@ class TraitInstanceStatement(NamedStatement):
     def __scope(self, resolver: g.Resolver) -> g.Resolver:
         return g.ResolverType(resolver, self._find_generic_types)
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
         scoped = self.__scope(resolver)
         new_pattern, pat_stmts = self.pattern.compile(scoped)
         trts, trt_stmts = u.flatten_lists(x.compile(scoped) for x in self.trait_params)
         members, mem_stmts = self.__compile_members(scoped)
         new_self = dataclasses.replace(
             self, pattern=new_pattern, trait_params=tuple(trts), statements=members)
-        return new_self, pat_stmts + trt_stmts + mem_stmts
+        return new_self, pat_stmts + trt_stmts + mem_stmts, {}
 
     def __compile_members(self, scoped: g.Resolver):
         out: list[Statement] = []
         extra: list[Statement] = []
         for m in self.statements:
-            new_m, m_stmts = self.__member_with_wheres(m).compile(scoped, None)
+            new_m, m_stmts, _ = self.__member_with_wheres(m).compile(scoped, None)
             out.append(self.__member_stripped(m, new_m))
             extra.extend(m_stmts)
         return out, extra

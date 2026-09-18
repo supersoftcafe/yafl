@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 
@@ -113,14 +114,17 @@ class BlockExpression(Expression):
         nested = g.ResolverData(resolver, self._find_locals())
         return self.value.get_type(nested)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         statements = s.collapse_else_if(self.__inner_marked())
         nested = g.ResolverData(resolver, self._find_locals())
         stmt_results = [x.compile(nested, expected_type) for x in statements]
         new_stmts = [r[0] for r in stmt_results if r[0]]
         glbs: list[s.Statement] = [glb for r in stmt_results for glb in r[1]]
-        new_val, val_glbs = self.value.compile(nested, expected_type)
-        return dataclasses.replace(self, statements=new_stmts, value=new_val), glbs + val_glbs
+        new_val, val_glbs, val_hints = self.value.compile(nested, expected_type)
+        hints = h.merge(*(r[2] for r in stmt_results), val_hints)
+        locals_ = {let.name for let in u.binding_lets(new_stmts)}
+        return (dataclasses.replace(self, statements=new_stmts, value=new_val),
+                glbs + val_glbs, h.without(hints, locals_))
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         nested = g.ResolverData(resolver, self._find_locals())

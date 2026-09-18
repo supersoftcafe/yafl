@@ -22,12 +22,12 @@ import Bootstrap::Types
 # ── names ───────────────────────────────────────────────────────────────────
 # A unique name is `path::name@hash`; queries are written without the hash.
 
-fun simpleName(name): String
+fun simpleName(name)
   let at = lastIndexOf(name, '@')
   ret at < 0 ? name : slice(name, 0, at)
 
 # The unqualified simple name: hash suffix AND namespace path both stripped.
-fun bareOfUnique(name): String
+fun bareOfUnique(name)
   let s = simpleName(name)
   let ix = lastSep(s, 0, -1)
   ret ix < 0 ? s : slice(s, ix + 2, length(s))
@@ -38,39 +38,34 @@ fun [tail] lastSep(s, at, best: Int): Int
   ret lastSep(s, at + 1,
               byteAt(s, at) == ':' && byteAt(s, at + 1) == ':' ? at : best)
 
-fun matchName(left, right): Bool
-  ret simpleName(left) == simpleName(right)
+fun matchName(left, right) => simpleName(left) == simpleName(right)
 
 # A candidate matches a query when identical, or when it is the query's
 # fully-qualified form (`query@hash`).
 fun nameMatches(candidate: String, query: String): Bool
   ret candidate == query || startsWith(candidate, query + "@")
 
-fun lastIndexOf(s, c): Int
-  ret lastIndexLoop(s, 0, -1, c)
+fun lastIndexOf(s, c) => lastIndexLoop(s, 0, -1, c)
 
-fun [tail] lastIndexLoop(s, at, best, c): Int
-  ret at >= length(s)
-    ? best
-    : lastIndexLoop(s, at + 1, byteAt(s, at) == c ? at : best, c)
+fun [tail] lastIndexLoop(s, at, best, c): Int => at >= length(s)
+  ? best
+  : lastIndexLoop(s, at + 1, byteAt(s, at) == c ? at : best, c)
 
 # Every prefix of a name at its `@` boundaries — the index keys, so a
 # prefix-match lookup is a plain hit rather than a scan.
-fun namePrefixes(name): List<String>
-  ret prefixLoop(chain(split(name, "@")), "", List())
+fun namePrefixes(name): List<String> => prefixLoop(chain(split(name, "@")), "", List())
 
 fun prefixLoop(ps, acc,
                       out: List<String>): List<String>
   ret build(prefixLoopB(ps, acc, builderFrom(out)))
 
-fun [tail] prefixLoopB(ps: Chain<String>, acc: String,
-                      [terminal] out: ListBuilder<String>): ListBuilder<String>
-  ret match(ps)
-    (nil: ChainEnd) => out
-    (l: ChainLink)  => acc == ""
-      ? prefixLoopB(l.next, l.value, push(out, l.value))
-      : prefixLoopB(l.next, acc + "@" + l.value,
-                   push(out, acc + "@" + l.value))
+fun [tail] prefixLoopB(ps: Chain<String>, acc,
+                      [terminal] out: ListBuilder<String>) => match(ps)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => acc == ""
+    ? prefixLoopB(l.next, l.value, push(out, l.value))
+    : prefixLoopB(l.next, acc + "@" + l.value,
+                 push(out, acc + "@" + l.value))
 
 # ── bags ────────────────────────────────────────────────────────────────────
 
@@ -94,18 +89,15 @@ class [final] Found(fName: String, fStmt: PStmt, fScope: RScope,
 
 class [final] Findings(bItems: List<Found>, bComplete: Bool)
 
-fun emptyFindings(): Findings
-  ret Findings(List(), true)
+fun emptyFindings() => Findings(List(), true)
 
 # Nothing found YET: the search was blocked, so absence proves nothing.
-fun incompleteFindings(): Findings
-  ret Findings(List(), false)
+fun incompleteFindings() => Findings(List(), false)
 
 fun addFindings(a: Findings, b: Findings): Findings
   ret Findings(concat(a.bItems, b.bItems), a.bComplete && b.bComplete)
 
-fun soleItem(b: Findings): Found|None
-  ret exactly(chain(b.bItems), 1) ? head(b.bItems) : None
+fun soleItem(b: Findings): Found|None => exactly(chain(b.bItems), 1) ? head(b.bItems) : None
 
 # ── the statement index ─────────────────────────────────────────────────────
 # Built ONCE per statement set: name-prefix → statements, plus the two
@@ -150,7 +142,7 @@ class [final] Statements(stOrdered: List<PStmt>,
                          stBareData: Dict<String, Dict<String, Findings>>,
                          stMembers: Dict<String, MemberIdx>)
 
-fun buildStatements(stmts): Statements
+fun buildStatements(stmts)
   ret withKindIndexes(withAmbient(indexLoop(chain(stmts),
                             Statements(stmts, Dict(),
                                        List(), List(),
@@ -161,7 +153,7 @@ fun buildStatements(stmts): Statements
                                        Dict(),
                                        Dict()))))
 
-fun withKindIndexes(base: Statements): Statements
+fun withKindIndexes(base: Statements)
   # keys() answers a Set; sorted once into a walkable list (the walk order is
   # unobservable — the kind dicts are only ever queried by key).
   let ks = sort(keys(base.stIndex))
@@ -177,83 +169,76 @@ fun withKindIndexes(base: Statements): Statements
                  memberIndex(chain(base.stOrdered), Dict()))
 
 fun [tail] bareView(ks: Chain<String>, kind: Dict<String, Findings>,
-                    acc: Dict<String, Dict<String, Findings>>): Dict<String, Dict<String, Findings>>
-  ret match(ks)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => contains(l.value, "@")
-      ? bareView(l.next, kind, acc)
-      : bareView(l.next, kind, bareViewAdd(acc, kind, l.value))
+                    acc: Dict<String, Dict<String, Findings>>) => match(ks)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => contains(l.value, "@")
+    ? bareView(l.next, kind, acc)
+    : bareView(l.next, kind, bareViewAdd(acc, kind, l.value))
 
 fun bareViewAdd(acc,
                 kind: Dict<String, Findings>,
-                key): Dict<String, Dict<String, Findings>>
-  ret match(get(kind, key))
-    (f: Findings) => bareViewPut(acc, bareOfUnique(key), namespacePart(key), f)
-    ()            => acc
+                key): Dict<String, Dict<String, Findings>> => match(get(kind, key))
+  (f: Findings) => bareViewPut(acc, bareOfUnique(key), namespacePart(key), f)
+  ()            => acc
 
 fun bareViewPut(acc: Dict<String, Dict<String, Findings>>, bare: String,
-                ns: String, f: Findings): Dict<String, Dict<String, Findings>>
-  ret match(get(acc, bare))
-    (inner: Dict<String, Findings>) => put(acc, bare, put(inner, ns, f))
-    ()                               => put(acc, bare,
-                                            put(Dict(), ns, f))
+                ns, f) => match(get(acc, bare))
+  (inner: Dict<String, Findings>) => put(acc, bare, put(inner, ns, f))
+  ()                               => put(acc, bare,
+                                          put(Dict(), ns, f))
 
 fun [tail] memberIndex(ss: Chain<PStmt>,
-                       acc: Dict<String, MemberIdx>): Dict<String, MemberIdx>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (cs: PsClass) => memberIndex(l.next,
-          put(acc, cs.cName,
-              MemberIdx(cs, memberKeys(chain(concat(flattenParams(cs.cParams),
-                                                    cs.cMembers)),
-                                       Dict()))))
-      (o: PStmt)    => memberIndex(l.next, acc)
+                       acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (cs: PsClass) => memberIndex(l.next,
+        put(acc, cs.cName,
+            MemberIdx(cs, memberKeys(chain(concat(flattenParams(cs.cParams),
+                                                  cs.cMembers)),
+                                     Dict()))))
+    (o: PStmt)    => memberIndex(l.next, acc)
 
 # member_index: ctor params (flattened to leaf lets) PLUS body statements, in
 # declaration order — the order memberMatchesB walked. addKeys is the same
 # helper the global index uses, so bucket semantics match nameMatches.
 fun [tail] memberKeys(ms: Chain<PStmt>,
-                      acc: Dict<String, List<PStmt>>): Dict<String, List<PStmt>>
-  ret match(ms)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => stmtName(l.value) == ""
-      ? memberKeys(l.next, acc)
-      : memberKeys(l.next, addKeys(acc, chain(namePrefixes(stmtName(l.value))),
-                                   l.value))
+                      acc: Dict<String, List<PStmt>>) => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => stmtName(l.value) == ""
+    ? memberKeys(l.next, acc)
+    : memberKeys(l.next, addKeys(acc, chain(namePrefixes(stmtName(l.value))),
+                                 l.value))
 
 # The per-pass member index, when the root carries one; a miss (direct RRoot
 # builder, or a class spelling the canonical key does not cover) derives per
 # query as before.
-fun [tail] memberIdxHook(r, className: String): MemberIdx|None
-  ret match(r)
-    (root: RRoot)    => get(root.rrStmts.stMembers, className)
-    (sc: RScopes)    => memberIdxHook(sc.rsParent, className)
-    (d: RData)       => memberIdxHook(d.rdParent, className)
-    (t2: RTypes)     => memberIdxHook(t2.rtParent, className)
-    (tr: RTraits)    => memberIdxHook(tr.rtrParent, className)
-    (cb: RClassBody) => memberIdxHook(cb.rcbParent, className)
-    (rg: RGen)       => memberIdxHook(rg.rgParent, className)
+fun [tail] memberIdxHook(r, className) => match(r)
+  (root: RRoot)    => get(root.rrStmts.stMembers, className)
+  (sc: RScopes)    => memberIdxHook(sc.rsParent, className)
+  (d: RData)       => memberIdxHook(d.rdParent, className)
+  (t2: RTypes)     => memberIdxHook(t2.rtParent, className)
+  (tr: RTraits)    => memberIdxHook(tr.rtrParent, className)
+  (cb: RClassBody) => memberIdxHook(cb.rcbParent, className)
+  (rg: RGen)       => memberIdxHook(rg.rgParent, className)
 
 # Per key, the kind walk REUSES globalLoop — the exact per-query filter — so
 # the prebuilt answers cannot diverge from what the query path produced.
 fun [tail] kindLoop(ks: Chain<String>, index: Dict<String, List<PStmt>>,
-                    wantType: Bool,
-                    acc: Dict<String, Findings>): Dict<String, Findings>
-  ret match(ks)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => kindLoop(l.next, index, wantType,
-                                kindPut(acc, l.value, get(index, l.value),
-                                        wantType))
+                    wantType,
+                    acc: Dict<String, Findings>) => match(ks)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => kindLoop(l.next, index, wantType,
+                              kindPut(acc, l.value, get(index, l.value),
+                                      wantType))
 
 fun kindPut(acc, key: String,
-            bucket: List<PStmt>|None, wantType): Dict<String, Findings>
+            bucket: List<PStmt>|None, wantType)
   let found = match(bucket)
     (b: List<PStmt>) => globalLoop(chain(b), wantType, List())
     ()               => List()
   ret isEmpty(found) ? acc : put(acc, key, Findings(found, true))
 
-fun withAmbient(base: Statements): Statements
+fun withAmbient(base: Statements)
   let amb = buildAmbient(chain(base.stInstances),
                          builder(), false)
   ret Statements(base.stOrdered, base.stIndex, base.stTraits,
@@ -266,73 +251,68 @@ fun withAmbient(base: Statements): Statements
 # ONE search entry (Python's per-query `add` set), whichever namespaces they
 # came from: the entry keeps the UNION of namespaces and is in scope when
 # any of them is imported.
-fun [tail] dedupeAmb(es: Chain<AmbEntry>, acc: List<AmbEntry>): List<AmbEntry>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => dedupeAmb(l.next, mergeAmb(chain(acc), l.value,
-                                                 builder(), false))
+fun [tail] dedupeAmb(es: Chain<AmbEntry>, acc: List<AmbEntry>) => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => dedupeAmb(l.next, mergeAmb(chain(acc), l.value,
+                                               builder(), false))
 
 # Entries keep their order: it is the order the "Candidates:" message lists
 # them in. An unmerged entry goes on the end.
 fun [tail] mergeAmb(es: Chain<AmbEntry>, x: AmbEntry,
                     [terminal] out: ListBuilder<AmbEntry>,
-                    merged: Bool): List<AmbEntry>
-  ret match(es)
-    (nil: ChainEnd) => build(merged
-      ? out
-      : push(out, x))
-    (l: ChainLink)  => eqSpec(l.value.amSpec, x.amSpec)
-                       && eqNameList(l.value.amOwn, x.amOwn)
-      ? mergeAmb(l.next, x,
-                 push(out, AmbEntry(mergeNames(l.value.amNs,
-                                               chain(x.amNs)),
-                                    l.value.amSpec,
-                                    l.value.amOwn)),
-                 true)
-      : mergeAmb(l.next, x, push(out, l.value), merged)
+                    merged) => match(es)
+  (nil: ChainEnd) => build(merged
+    ? out
+    : push(out, x))
+  (l: ChainLink)  => eqSpec(l.value.amSpec, x.amSpec)
+                     && eqNameList(l.value.amOwn, x.amOwn)
+    ? mergeAmb(l.next, x,
+               push(out, AmbEntry(mergeNames(l.value.amNs,
+                                             chain(x.amNs)),
+                                  l.value.amSpec,
+                                  l.value.amOwn)),
+               true)
+    : mergeAmb(l.next, x, push(out, l.value), merged)
 
 class [final] AmbBuilt(abEntries: List<AmbEntry>, abBlocked: Bool)
 
 fun buildAmbient(ts: Chain<PStmt>,
-                 acc: ListBuilder<AmbEntry>, blocked: Bool): AmbBuilt
-  ret match(ts)
-    (nil: ChainEnd) => AmbBuilt(build(acc), blocked)
-    (l: ChainLink)  => match(l.value)
-      (ti: PsTraitInstance) => ti.tiAmbient
-        ? buildAmbientOne(ti, l.next, acc, blocked)
-        : buildAmbient(l.next, acc, blocked)
-      (o: PStmt)    => buildAmbient(l.next, acc, blocked)
+                 acc, blocked) => match(ts)
+  (nil: ChainEnd) => AmbBuilt(build(acc), blocked)
+  (l: ChainLink)  => match(l.value)
+    (ti: PsTraitInstance) => ti.tiAmbient
+      ? buildAmbientOne(ti, l.next, acc, blocked)
+      : buildAmbient(l.next, acc, blocked)
+    (o: PStmt)    => buildAmbient(l.next, acc, blocked)
 
 # First-class instances carry the pattern DIRECTLY — no witness lookup,
 # no parent substitution (TraitInstanceStatement, __build_ambient_patterns).
 fun buildAmbientOne(ti: PsTraitInstance, rest,
-                    acc: ListBuilder<AmbEntry>, blocked): AmbBuilt
-  ret match(ti.tiPattern)
-    (n: SNamed) => buildAmbient(rest, acc, true)
-    (c: SClass) => anyNamed(chain(c.scParams))
-      ? buildAmbient(rest, acc, true)
-      : buildAmbient(rest,
-                     push(acc, AmbEntry(prepend(namespacePart(ti.tiName),
-                                                List()),
-                                        ti.tiPattern,
-                                        genNames(chain(ti.tiGens),
-                                                 builder()))),
-                     blocked)
-    (o: Spec)   => buildAmbient(rest, acc, blocked)
+                    acc, blocked) => match(ti.tiPattern)
+  (n: SNamed) => buildAmbient(rest, acc, true)
+  (c: SClass) => anyNamed(chain(c.scParams))
+    ? buildAmbient(rest, acc, true)
+    : buildAmbient(rest,
+                   push(acc, AmbEntry(prepend(namespacePart(ti.tiName),
+                                              List()),
+                                      ti.tiPattern,
+                                      genNames(chain(ti.tiGens),
+                                               builder()))),
+                   blocked)
+  (o: Spec)   => buildAmbient(rest, acc, blocked)
 
-fun [tail] indexLoop(ss: Chain<PStmt>, acc: Statements): Statements
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => indexLoop(l.next, indexOne(acc, l.value))
+fun [tail] indexLoop(ss: Chain<PStmt>, acc) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => indexLoop(l.next, indexOne(acc, l.value))
 
-fun indexOne(acc: Statements, st): Statements
+fun indexOne(acc, st)
   let name = stmtName(st)
   if name == ""
     ret acc                              # imports/namespaces carry no name
   let withName = addPrefixes(acc, name, st)
   ret classify(withName, st, name)
 
-fun addPrefixes(acc: Statements, name, st: PStmt): Statements
+fun addPrefixes(acc: Statements, name, st)
   ret Statements(acc.stOrdered,
                  addKeys(acc.stIndex, chain(namePrefixes(name)), st),
                  acc.stTraits, acc.stInstances, acc.stAmbient,
@@ -340,62 +320,54 @@ fun addPrefixes(acc: Statements, name, st: PStmt): Statements
                  acc.stBareTypes, acc.stBareData, acc.stMembers)
 
 fun [tail] addKeys(d: Dict<String, List<PStmt>>, ks: Chain<String>,
-                   st: PStmt): Dict<String, List<PStmt>>
-  ret match(ks)
-    (nil: ChainEnd) => d
-    (l: ChainLink)  => addKeys(putUnder(d, l.value, st), l.next, st)
+                   st) => match(ks)
+  (nil: ChainEnd) => d
+  (l: ChainLink)  => addKeys(putUnder(d, l.value, st), l.next, st)
 
 fun putUnder(d: Dict<String, List<PStmt>>, key: String,
-             st: PStmt): Dict<String, List<PStmt>>
-  ret match(get(d, key))
-    # Declaration order within a bucket: it is the candidate order overload
-    # resolution and the "Candidates:" message both see.
-    (prev: List<PStmt>) => put(d, key, build(push(builderFrom(prev), st)))
-    ()                  => put(d, key, prepend(st, List()))
+             st) => match(get(d, key))
+  # Declaration order within a bucket: it is the candidate order overload
+  # resolution and the "Candidates:" message both see.
+  (prev: List<PStmt>) => put(d, key, build(push(builderFrom(prev), st)))
+  ()                  => put(d, key, prepend(st, List()))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
 # iteration; `[trait]` lets are precomputed.
-fun classify(acc, st, name: String): Statements
-  ret match(st)
-    (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
-    (l: PsLet)  => hasAttr(l.lAttrs, "trait")
-      ? Statements(acc.stOrdered, acc.stIndex,
-                   build(push(builderFrom(acc.stTraits), st)),
-                   acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
-                   acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData,
-                   acc.stMembers)
-      : acc
-    (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
-                                        acc.stTraits,
-                                        build(push(builderFrom(acc.stInstances), st)),
-                                        acc.stAmbient, acc.stAmbientBlocked,
-                                        acc.stTypesIdx, acc.stDataIdx,
-                                        acc.stBareTypes, acc.stBareData,
-                                        acc.stMembers)
-    (o: PStmt)  => acc
+fun classify(acc, st, name: String) => match(st)
+  (e: PsEnum) => indexVariants(acc, chain(e.eVariants))
+  (l: PsLet)  => hasAttr(l.lAttrs, "trait")
+    ? Statements(acc.stOrdered, acc.stIndex,
+                 build(push(builderFrom(acc.stTraits), st)),
+                 acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
+                 acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData,
+                 acc.stMembers)
+    : acc
+  (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
+                                      acc.stTraits,
+                                      build(push(builderFrom(acc.stInstances), st)),
+                                      acc.stAmbient, acc.stAmbientBlocked,
+                                      acc.stTypesIdx, acc.stDataIdx,
+                                      acc.stBareTypes, acc.stBareData,
+                                      acc.stMembers)
+  (o: PStmt)  => acc
 
-fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>): Statements
-  ret match(vs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => indexVariants(indexVariant(acc, l.value), l.next)
+fun [tail] indexVariants(acc: Statements, vs: Chain<PStmt>) => match(vs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => indexVariants(indexVariant(acc, l.value), l.next)
 
-fun indexVariant(acc, v): Statements
-  ret match(v)
-    (e: PsEnum) => indexVariants(addPrefixes(acc, e.eName, v), chain(e.eVariants))
-    (o: PStmt)  => acc
+fun indexVariant(acc, v): Statements => match(v)
+  (e: PsEnum) => indexVariants(addPrefixes(acc, e.eName, v), chain(e.eVariants))
+  (o: PStmt)  => acc
 
-fun hasAttr(attrs: List<PAttr>, name: String): Bool
-  ret attrLoop(chain(attrs), name)
+fun hasAttr(attrs: List<PAttr>, name: String) => attrLoop(chain(attrs), name)
 
-fun [tail] attrLoop(as2: Chain<PAttr>, name: String): Bool
-  ret match(as2)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => l.value.attrName == name ? true : attrLoop(l.next, name)
+fun [tail] attrLoop(as2: Chain<PAttr>, name: String) => match(as2)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => l.value.attrName == name ? true : attrLoop(l.next, name)
 
-fun lookup(idx: Statements, query: String): List<PStmt>
-  ret match(get(idx.stIndex, query))
-    (found: List<PStmt>) => found
-    ()                   => List()
+fun lookup(idx: Statements, query: String): List<PStmt> => match(get(idx.stIndex, query))
+  (found: List<PStmt>) => found
+  ()                   => List()
 
 # ── the resolver chain ──────────────────────────────────────────────────────
 # Each layer answers what it knows and delegates outward. The root holds the
@@ -453,32 +425,30 @@ enum Resolver
   # versa) so this file need not carry two near-identical cases.
   enum RGen(rgFrame: GenFrame, rgParent: Resolver)
 
-fun findData(r, query): Findings
-  ret match(r)
-    (root: RRoot) => globalFindings(root.rrStmts, query, false)
-    (rg: RGen)    => findData(rg.rgParent, query)
-    # Lexical SHADOWING (ResolverData): a name bound at this scope hides the
-    # same name in every enclosing scope — the parent is consulted only on a
-    # miss. Merging instead would poison a complete local hit with an
-    # enclosing trait layer's INCOMPLETE, or read as ambiguity.
-    (d: RData)    => localsFirst(matchingFound(d.rdNames, query),
-                                 d.rdParent, query)
-    (t2: RTypes)  => findData(t2.rtParent, query)
-    (sc: RScopes) => scopedFindings(sc, query, false)
-    (tr: RTraits) => addFindings(traitFindings(tr, query, tr.rtrParent),
-                             findData(tr.rtrParent, query))
-    (cb: RClassBody) => classBodyFindings(cb, query)
+fun findData(r, query): Findings => match(r)
+  (root: RRoot) => globalFindings(root.rrStmts, query, false)
+  (rg: RGen)    => findData(rg.rgParent, query)
+  # Lexical SHADOWING (ResolverData): a name bound at this scope hides the
+  # same name in every enclosing scope — the parent is consulted only on a
+  # miss. Merging instead would poison a complete local hit with an
+  # enclosing trait layer's INCOMPLETE, or read as ambiguity.
+  (d: RData)    => localsFirst(matchingFound(d.rdNames, query),
+                               d.rdParent, query)
+  (t2: RTypes)  => findData(t2.rtParent, query)
+  (sc: RScopes) => scopedFindings(sc, query, false)
+  (tr: RTraits) => addFindings(traitFindings(tr, query, tr.rtrParent),
+                           findData(tr.rtrParent, query))
+  (cb: RClassBody) => classBodyFindings(cb, query)
 
-fun findType(r, query): Findings
-  ret match(r)
-    (root: RRoot) => globalFindings(root.rrStmts, query, true)
-    (rg: RGen)    => findType(rg.rgParent, query)
-    (d: RData)    => findType(d.rdParent, query)
-    (t2: RTypes)  => addFindings(matchingFound(t2.rtNames, query),
-                             findType(t2.rtParent, query))
-    (sc: RScopes) => scopedFindings(sc, query, true)
-    (tr: RTraits) => findType(tr.rtrParent, query)
-    (cb: RClassBody) => findType(cb.rcbParent, query)
+fun findType(r, query): Findings => match(r)
+  (root: RRoot) => globalFindings(root.rrStmts, query, true)
+  (rg: RGen)    => findType(rg.rgParent, query)
+  (d: RData)    => findType(d.rdParent, query)
+  (t2: RTypes)  => addFindings(matchingFound(t2.rtNames, query),
+                           findType(t2.rtParent, query))
+  (sc: RScopes) => scopedFindings(sc, query, true)
+  (tr: RTraits) => findType(tr.rtrParent, query)
+  (cb: RClassBody) => findType(cb.rcbParent, query)
 
 # ── implicit [where] specs ──────────────────────────────────────────────────
 # get_implicit_where_specs: each namespace-scope layer MERGES its names on the
@@ -492,84 +462,76 @@ fun findType(r, query): Findings
 # filtered per query site — the walk only collects the in-scope namespaces.
 # get_trait_instances: pre-lowering first-class instances (constraint
 # discharge and droppability read these before lower_instances runs).
-fun [tail] traitInstanceStmts(r): List<PStmt>
-  ret match(r)
-    (root: RRoot)    => root.rrStmts.stInstances
-    (sc: RScopes)    => traitInstanceStmts(sc.rsParent)
-    (d: RData)       => traitInstanceStmts(d.rdParent)
-    (t2: RTypes)     => traitInstanceStmts(t2.rtParent)
-    (tr: RTraits)    => traitInstanceStmts(tr.rtrParent)
-    (cb: RClassBody) => traitInstanceStmts(cb.rcbParent)
-    (rg: RGen)       => traitInstanceStmts(rg.rgParent)
+fun [tail] traitInstanceStmts(r) => match(r)
+  (root: RRoot)    => root.rrStmts.stInstances
+  (sc: RScopes)    => traitInstanceStmts(sc.rsParent)
+  (d: RData)       => traitInstanceStmts(d.rdParent)
+  (t2: RTypes)     => traitInstanceStmts(t2.rtParent)
+  (tr: RTraits)    => traitInstanceStmts(tr.rtrParent)
+  (cb: RClassBody) => traitInstanceStmts(cb.rcbParent)
+  (rg: RGen)       => traitInstanceStmts(rg.rgParent)
 
 # DERIVED is_complex: walk to the root resolver and ask its breaker
 # analysis (identity vs state — no stamps anywhere). Mirror of
 # Python Resolver.is_complex_root.
-fun [tail] isComplexRoot(r, root2: String): Bool
-  ret match(r)
-    (root: RRoot)    => root.rrComplex(root2)
-    (sc: RScopes)    => isComplexRoot(sc.rsParent, root2)
-    (d: RData)    => isComplexRoot(d.rdParent, root2)
-    (t2: RTypes)    => isComplexRoot(t2.rtParent, root2)
-    (tr: RTraits)    => isComplexRoot(tr.rtrParent, root2)
-    (cb: RClassBody)    => isComplexRoot(cb.rcbParent, root2)
-    (rg: RGen)    => isComplexRoot(rg.rgParent, root2)
+fun [tail] isComplexRoot(r, root2) => match(r)
+  (root: RRoot)    => root.rrComplex(root2)
+  (sc: RScopes)    => isComplexRoot(sc.rsParent, root2)
+  (d: RData)    => isComplexRoot(d.rdParent, root2)
+  (t2: RTypes)    => isComplexRoot(t2.rtParent, root2)
+  (tr: RTraits)    => isComplexRoot(tr.rtrParent, root2)
+  (cb: RClassBody)    => isComplexRoot(cb.rcbParent, root2)
+  (rg: RGen)    => isComplexRoot(rg.rgParent, root2)
 
 # The one place the (root, leaf) pair becomes a Dict key (shared by the
 # analysis writer in complex_enums.yafl and the reader below).
-fun boxedLeafKey(root, leaf): String
-  ret root + "|" + leaf
+fun boxedLeafKey(root, leaf): String => root + "|" + leaf
 
 # DERIVED per-leaf boxing decision (the enum-encoding principle): walk to
 # the root resolver and ask its threshold analysis. Mirror of Python
 # Resolver.is_boxed_leaf; None (non-generate roots) boxes nothing.
-fun [tail] isBoxedLeaf(r, root2, leaf): Bool
-  ret match(r)
-    (root: RRoot)    => match(root.rrBoxedLeaves)
-      (d2: Dict<String, Bool>) => !(get(d2, boxedLeafKey(root2, leaf)) is None)
-      ()                        => false
-    (sc: RScopes)    => isBoxedLeaf(sc.rsParent, root2, leaf)
-    (d: RData)    => isBoxedLeaf(d.rdParent, root2, leaf)
-    (t2: RTypes)    => isBoxedLeaf(t2.rtParent, root2, leaf)
-    (tr: RTraits)    => isBoxedLeaf(tr.rtrParent, root2, leaf)
-    (cb: RClassBody)    => isBoxedLeaf(cb.rcbParent, root2, leaf)
-    (rg: RGen)    => isBoxedLeaf(rg.rgParent, root2, leaf)
+fun [tail] isBoxedLeaf(r, root2, leaf) => match(r)
+  (root: RRoot)    => match(root.rrBoxedLeaves)
+    (d2: Dict<String, Bool>) => !(get(d2, boxedLeafKey(root2, leaf)) is None)
+    ()                        => false
+  (sc: RScopes)    => isBoxedLeaf(sc.rsParent, root2, leaf)
+  (d: RData)    => isBoxedLeaf(d.rdParent, root2, leaf)
+  (t2: RTypes)    => isBoxedLeaf(t2.rtParent, root2, leaf)
+  (tr: RTraits)    => isBoxedLeaf(tr.rtrParent, root2, leaf)
+  (cb: RClassBody)    => isBoxedLeaf(cb.rcbParent, root2, leaf)
+  (rg: RGen)    => isBoxedLeaf(rg.rgParent, root2, leaf)
 
-fun ambientEntries(r): AmbEntries
-  ret ambEntryWalk(r, List())
+fun ambientEntries(r) => ambEntryWalk(r, List())
 
-fun [tail] ambEntryWalk(r, scopes: List<String>): AmbEntries
-  ret match(r)
-    (root: RRoot) => isEmpty(scopes)
-      ? AmbEntries(List(), false)
-      : AmbEntries(ambFilter(chain(root.rrStmts.stAmbient), scopes,
-                             builder()),
-                   root.rrStmts.stAmbientBlocked)
-    (sc: RScopes)    => ambEntryWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
-    (d: RData)       => ambEntryWalk(d.rdParent, scopes)
-    (t2: RTypes)     => ambEntryWalk(t2.rtParent, scopes)
-    (tr: RTraits)    => ambEntryWalk(tr.rtrParent, scopes)
-    (cb: RClassBody) => ambEntryWalk(cb.rcbParent, scopes)
-    (rg: RGen)       => ambEntryWalk(rg.rgParent, scopes)
+fun [tail] ambEntryWalk(r, scopes: List<String>) => match(r)
+  (root: RRoot) => isEmpty(scopes)
+    ? AmbEntries(List(), false)
+    : AmbEntries(ambFilter(chain(root.rrStmts.stAmbient), scopes,
+                           builder()),
+                 root.rrStmts.stAmbientBlocked)
+  (sc: RScopes)    => ambEntryWalk(sc.rsParent, mergeNames(scopes, chain(sc.rsNames)))
+  (d: RData)       => ambEntryWalk(d.rdParent, scopes)
+  (t2: RTypes)     => ambEntryWalk(t2.rtParent, scopes)
+  (tr: RTraits)    => ambEntryWalk(tr.rtrParent, scopes)
+  (cb: RClassBody) => ambEntryWalk(cb.rcbParent, scopes)
+  (rg: RGen)       => ambEntryWalk(rg.rgParent, scopes)
 
 fun [tail] ambFilter(es: Chain<AmbEntry>, scopes: List<String>,
-                     acc: ListBuilder<TraitEntry>): List<TraitEntry>
-  ret match(es)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => anyInScopes(chain(l.value.amNs), scopes)
-      ? ambFilter(l.next, scopes,
-                  push(acc, TraitEntry(l.value.amSpec, l.value.amOwn)))
-      : ambFilter(l.next, scopes, acc)
+                     acc: ListBuilder<TraitEntry>) => match(es)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => anyInScopes(chain(l.value.amNs), scopes)
+    ? ambFilter(l.next, scopes,
+                push(acc, TraitEntry(l.value.amSpec, l.value.amOwn)))
+    : ambFilter(l.next, scopes, acc)
 
-fun [tail] anyInScopes(ns: Chain<String>, scopes: List<String>): Bool
-  ret match(ns)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => contains2(scopes, l.value)
-      ? true
-      : anyInScopes(l.next, scopes)
+fun [tail] anyInScopes(ns: Chain<String>, scopes: List<String>) => match(ns)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => contains2(scopes, l.value)
+    ? true
+    : anyInScopes(l.next, scopes)
 
 # Everything before the LAST '::' (Python name.rpartition('::')[0]).
-fun namespacePart(name): String
+fun namespacePart(name)
   let ix = lastSep(name, 0, -1)
   ret ix < 0 ? "" : slice(name, 0, ix)
 
@@ -577,53 +539,49 @@ fun namespacePart(name): String
 # supplies it, precomputed eagerly per pass — the stAmbient pattern). A root
 # built without one answers None and readers derive per query as before; a
 # table MISS is a pruned root, whose fields are empty either way.
-fun [tail] enumFieldsHook(r, root: String): List<SField>|None
-  ret match(r)
-    (rt2: RRoot)     => match(rt2.rrEnumFields)
-      (d: Dict<String, List<SField>>) => enumFieldsAt(d, root)
-      ()                                => None
-    (sc: RScopes)    => enumFieldsHook(sc.rsParent, root)
-    (d: RData)       => enumFieldsHook(d.rdParent, root)
-    (t2: RTypes)     => enumFieldsHook(t2.rtParent, root)
-    (tr: RTraits)    => enumFieldsHook(tr.rtrParent, root)
-    (cb: RClassBody) => enumFieldsHook(cb.rcbParent, root)
-    (rg: RGen)       => enumFieldsHook(rg.rgParent, root)
+fun [tail] enumFieldsHook(r, root: String) => match(r)
+  (rt2: RRoot)     => match(rt2.rrEnumFields)
+    (d: Dict<String, List<SField>>) => enumFieldsAt(d, root)
+    ()                                => None
+  (sc: RScopes)    => enumFieldsHook(sc.rsParent, root)
+  (d: RData)       => enumFieldsHook(d.rdParent, root)
+  (t2: RTypes)     => enumFieldsHook(t2.rtParent, root)
+  (tr: RTraits)    => enumFieldsHook(tr.rtrParent, root)
+  (cb: RClassBody) => enumFieldsHook(cb.rcbParent, root)
+  (rg: RGen)       => enumFieldsHook(rg.rgParent, root)
 
-fun enumFieldsAt(d: Dict<String, List<SField>>, root: String): List<SField>
-  ret match(get(d, root))
-    (fs: List<SField>) => fs
-    ()                 => List()   # pruned root: no fields to resolve against
+fun enumFieldsAt(d: Dict<String, List<SField>>, root: String) => match(get(d, root))
+  (fs: List<SField>) => fs
+  ()                 => List()   # pruned root: no fields to resolve against
 
 # get_traits: every `[trait]` let in the statement set (precomputed by the
 # index) — no scope filter, exactly like Python's root.
-fun [tail] traitLets(r): List<PStmt>
-  ret match(r)
-    (root: RRoot)    => root.rrStmts.stTraits
-    (sc: RScopes)    => traitLets(sc.rsParent)
-    (d: RData)       => traitLets(d.rdParent)
-    (t2: RTypes)     => traitLets(t2.rtParent)
-    (tr: RTraits)    => traitLets(tr.rtrParent)
-    (cb: RClassBody) => traitLets(cb.rcbParent)
-    (rg: RGen)       => traitLets(rg.rgParent)
+fun [tail] traitLets(r) => match(r)
+  (root: RRoot)    => root.rrStmts.stTraits
+  (sc: RScopes)    => traitLets(sc.rsParent)
+  (d: RData)       => traitLets(d.rdParent)
+  (t2: RTypes)     => traitLets(t2.rtParent)
+  (tr: RTraits)    => traitLets(tr.rtrParent)
+  (cb: RClassBody) => traitLets(cb.rcbParent)
+  (rg: RGen)       => traitLets(rg.rgParent)
 
 # Dedupe preserving FIRST-SEEN order: a Set answers "have I seen this" in
 # O(log n) where scanning the accumulator was O(n) per element, and a builder
 # keeps the order the Set cannot. Reading a half-built list was the only
 # reason this loop could not simply push.
-fun mergeNames(acc: List<String>, ns: Chain<String>): List<String>
+fun mergeNames(acc: List<String>, ns: Chain<String>)
   ret build(mergeNamesB(builderFrom(acc),
                         _chainToSet(chain(acc),
                                     Set()),
                         ns))
 
 fun [tail] mergeNamesB([terminal] out: ListBuilder<String>, seen: Set<String>,
-                       ns: Chain<String>): ListBuilder<String>
-  ret match(ns)
-    (nil: ChainEnd) => out
-    (l: ChainLink)  => contains(seen, l.value)
-      ? mergeNamesB(out, seen, l.next)
-      : mergeNamesB(push(out, l.value), add(seen, l.value),
-                    l.next)
+                       ns: Chain<String>) => match(ns)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => contains(seen, l.value)
+    ? mergeNamesB(out, seen, l.next)
+    : mergeNamesB(push(out, l.value), add(seen, l.value),
+                  l.next)
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
 # for a name that is still unqualified (no `::`) and unhashed (no `@`). The
@@ -640,26 +598,25 @@ fun scopedFindings(sc: RScopes, query, wantType: Bool): Findings
 
 # addFindings without the allocation when either side is a complete empty —
 # the overwhelmingly common shapes here.
-fun joinFindings(a: Findings, b: Findings): Findings
+fun joinFindings(a, b): Findings
   if isEmpty(a.bItems) && a.bComplete
     ret b
   if isEmpty(b.bItems) && b.bComplete
     ret a
   ret addFindings(a, b)
 
-fun [tail] bareScoped(r, bare: String, wantType: Bool,
-                      namespaces: List<String>): Findings
-  ret match(r)
-    (root: RRoot)    => bareAtRoot(root, bare, wantType, namespaces)
-    (sc: RScopes)    => bareScoped(sc.rsParent, bare, wantType, namespaces)
-    (d: RData)       => bareScoped(d.rdParent, bare, wantType, namespaces)
-    (t2: RTypes)     => bareScoped(t2.rtParent, bare, wantType, namespaces)
-    (tr: RTraits)    => bareScoped(tr.rtrParent, bare, wantType, namespaces)
-    (cb: RClassBody) => bareScoped(cb.rcbParent, bare, wantType, namespaces)
-    (rg: RGen)       => bareScoped(rg.rgParent, bare, wantType, namespaces)
+fun [tail] bareScoped(r, bare: String, wantType,
+                      namespaces: List<String>): Findings => match(r)
+  (root: RRoot)    => bareAtRoot(root, bare, wantType, namespaces)
+  (sc: RScopes)    => bareScoped(sc.rsParent, bare, wantType, namespaces)
+  (d: RData)       => bareScoped(d.rdParent, bare, wantType, namespaces)
+  (t2: RTypes)     => bareScoped(t2.rtParent, bare, wantType, namespaces)
+  (tr: RTraits)    => bareScoped(tr.rtrParent, bare, wantType, namespaces)
+  (cb: RClassBody) => bareScoped(cb.rcbParent, bare, wantType, namespaces)
+  (rg: RGen)       => bareScoped(rg.rgParent, bare, wantType, namespaces)
 
-fun bareAtRoot(root: RRoot, bare: String, wantType: Bool,
-               namespaces: List<String>): Findings
+fun bareAtRoot(root: RRoot, bare: String, wantType,
+               namespaces: List<String>)
   ret match(get(wantType ? root.rrStmts.stBareTypes : root.rrStmts.stBareData,
                 bare))
     (inner: Dict<String, Findings>) => underScopes(chain(namespaces), inner,
@@ -669,16 +626,14 @@ fun bareAtRoot(root: RRoot, bare: String, wantType: Bool,
 # Sum the per-namespace bags in scope order; the single-hit case returns the
 # shared bag (Python resolver._under).
 fun [tail] underScopes(ns: Chain<String>, inner: Dict<String, Findings>,
-                       acc: Findings): Findings
-  ret match(ns)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => underScopes(l.next, inner,
-                                   underAdd(acc, get(inner, l.value)))
+                       acc) => match(ns)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => underScopes(l.next, inner,
+                                 underAdd(acc, get(inner, l.value)))
 
-fun underAdd(acc, hit: Findings|None): Findings
-  ret match(hit)
-    (f: Findings) => joinFindings(acc, f)
-    ()            => acc
+fun underAdd(acc, hit: Findings|None) => match(hit)
+  (f: Findings) => joinFindings(acc, f)
+  ()            => acc
 
 # The shared miss answer (Python's module-level EMPTY): the query path must
 # not allocate.
@@ -697,25 +652,22 @@ fun globalLoop(ss, wantType,
                       acc: List<Found>): List<Found>
   ret build(globalLoopB(ss, wantType, builderFrom(acc)))
 
-fun [tail] globalLoopB(ss: Chain<PStmt>, wantType: Bool,
-                      [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => !isNeitherStmt(l.value)
-                       && wantsThis(isTypeStmt(l.value), wantType)
-      ? globalLoopB(l.next, wantType,
-                   push(acc, Found(stmtName(l.value), l.value, ScGlobal())))
-      : globalLoopB(l.next, wantType, acc)
+fun [tail] globalLoopB(ss: Chain<PStmt>, wantType,
+                      [terminal] acc: ListBuilder<Found>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => !isNeitherStmt(l.value)
+                     && wantsThis(isTypeStmt(l.value), wantType)
+    ? globalLoopB(l.next, wantType,
+                 push(acc, Found(stmtName(l.value), l.value, ScGlobal())))
+    : globalLoopB(l.next, wantType, acc)
 
-fun wantsThis(isType: Bool, wantType): Bool
-  ret isType ? wantType : !wantType
+fun wantsThis(isType, wantType) => isType ? wantType : !wantType
 
-fun isTypeStmt(st): Bool
-  ret match(st)
-    (c: PsClass)      => true
-    (e: PsEnum)       => true
-    (ta: PsTypealias) => true
-    (o: PStmt)        => false
+fun isTypeStmt(st) => match(st)
+  (c: PsClass)      => true
+  (e: PsEnum)       => true
+  (ta: PsTypealias) => true
+  (o: PStmt)        => false
 
 # A trait `instance` is INDEXED (so its name is reachable) but is neither a
 # type nor data, so it belongs to NEITHER bag. Python's
@@ -724,15 +676,13 @@ fun isTypeStmt(st): Bool
 # in neither. Without this the port's "everything that isn't a type is data"
 # split leaks it into findData, and a lookup of the synthesised
 # `instance$<hash>` name resolves here while Python finds nothing.
-fun isNeitherStmt(st): Bool
-  ret match(st)
-    (ti: PsTraitInstance) => true
-    (o: PStmt)            => false
+fun isNeitherStmt(st) => match(st)
+  (ti: PsTraitInstance) => true
+  (o: PStmt)            => false
 
-fun localsFirst(own, parent, query): Findings
-  ret isEmpty(own.bItems) ? findData(parent, query) : own
+fun localsFirst(own, parent, query) => isEmpty(own.bItems) ? findData(parent, query) : own
 
-fun classBodyFindings(cb: RClassBody, query): Findings
+fun classBodyFindings(cb: RClassBody, query)
   let own = concat(classFindData(cb.rcbClass, cb.rcbParent, query),
                    thisFound(cb.rcbClass, query))
   ret isEmpty(own) ? findData(cb.rcbParent, query) : Findings(own, true)
@@ -744,24 +694,22 @@ fun matchLoop(fs, query: String,
                      acc: List<Found>): List<Found>
   ret build(matchLoopB(fs, query, builderFrom(acc)))
 
-fun [tail] matchLoopB(fs: Chain<Found>, query: String,
-                     [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => nameMatches(l.value.fName, query)
-      ? matchLoopB(l.next, query, push(acc, l.value))
-      : matchLoopB(l.next, query, acc)
+fun [tail] matchLoopB(fs: Chain<Found>, query,
+                     [terminal] acc: ListBuilder<Found>) => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => nameMatches(l.value.fName, query)
+    ? matchLoopB(l.next, query, push(acc, l.value))
+    : matchLoopB(l.next, query, acc)
 
-fun stmtName(st): String
-  ret match(st)
-    (f: PsFun)        => f.fName
-    (l: PsLet)        => l.lName
-    (c: PsClass)      => c.cName
-    (e: PsEnum)       => e.eName
-    (ta: PsTypealias) => ta.taName
-    (ti: PsTraitInstance) => ti.tiName
-    (d: PsDestructure) => d.dName
-    (o: PStmt)        => ""
+fun stmtName(st) => match(st)
+  (f: PsFun)        => f.fName
+  (l: PsLet)        => l.lName
+  (c: PsClass)      => c.cName
+  (e: PsEnum)       => e.eName
+  (ta: PsTypealias) => ta.taName
+  (ti: PsTraitInstance) => ti.tiName
+  (d: PsDestructure) => d.dName
+  (o: PStmt)        => ""
 
 # ══════════════════════════════════════════════════════════════════════════
 # Merged member tables (Python ResolverRoot.merged_members): the per-class
@@ -790,14 +738,13 @@ fun mergedMembersTable(st: Statements): Dict<String, MergedOut>
            (acc, name) =>
              mmEnsure(name, st, List(), acc))
 
-fun mmEnsure(name: String, st: Statements, visiting: List<String>,
-             acc): Dict<String, MergedOut>
-  ret match(get(acc, name))
-    (done: MergedOut) => acc
-    ()                 => mmBuild(name, st, visiting, acc)
+fun mmEnsure(name, st: Statements, visiting: List<String>,
+             acc) => match(get(acc, name))
+  (done: MergedOut) => acc
+  ()                 => mmBuild(name, st, visiting, acc)
 
-fun mmBuild(name: String, st: Statements, visiting: List<String>,
-            acc): Dict<String, MergedOut>
+fun mmBuild(name, st: Statements, visiting: List<String>,
+            acc)
   if contains2(visiting, name)
     ret put(acc, name, MMissing())   # defensive: cyclic implements
   ret match(get(st.stMembers, name))
@@ -808,7 +755,7 @@ class [final] MMState(mmRows: Dict<String, MergedRow>, mmAbsent: Bool,
                       mmBroken: Bool, mmAcc: Dict<String, MergedOut>)
 
 fun mmBuildClass(name: String, mi: MemberIdx, st: Statements,
-                 visiting: List<String>, acc): Dict<String, MergedOut>
+                 visiting: List<String>, acc)
   let ownRows = mmOwnRows(sort(keys(mi.miByKey)), mi, Dict())
   let stt = fold(mi.miClass.cImplements,
                  MMState(ownRows, false, false, acc),
@@ -820,38 +767,35 @@ fun mmBuildClass(name: String, mi: MemberIdx, st: Statements,
                             mi.miClass.cGens)))
 
 fun [tail] mmOwnRows(ks: List<String>, mi: MemberIdx,
-                     acc): Dict<String, MergedRow>
-  ret match(head(ks))
-    (k: String) => mmOwnRows(tail(ks), mi,
-        put(acc, k, MergedRow(map(memberBucket(mi, k),
-                                  (m) => MergedEntry(m, mi.miClass, None)),
-                              true)))
-    ()           => acc
+                     acc) => match(head(ks))
+  (k: String) => mmOwnRows(tail(ks), mi,
+      put(acc, k, MergedRow(map(memberBucket(mi, k),
+                                (m) => MergedEntry(m, mi.miClass, None)),
+                            true)))
+  ()           => acc
 
 # A broken parent means every non-own answer may be missing candidates.
-fun mmMarkNonOwn(rows: Dict<String, MergedRow>, mi: MemberIdx): Dict<String, MergedRow>
+fun mmMarkNonOwn(rows: Dict<String, MergedRow>, mi: MemberIdx)
   ret fold(sort(keys(rows)), rows,
            (acc, k) =>
              contains(mi.miByKey, k)
                ? acc
                : mmMarkOne(acc, k))
 
-fun mmMarkOne(rows, k: String): Dict<String, MergedRow>
-  ret match(get(rows, k))
-    (row: MergedRow) => put(rows, k, MergedRow(row.mrEntries, false))
-    ()                => rows
+fun mmMarkOne(rows, k: String): Dict<String, MergedRow> => match(get(rows, k))
+  (row: MergedRow) => put(rows, k, MergedRow(row.mrEntries, false))
+  ()                => rows
 
 fun mmParent(s2, parent, mi: MemberIdx, st: Statements,
-             visiting: List<String>): MMState
-  ret match(parent)
-    (n: SNamed) => MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
-    (c: SClass) => anyNamed(chain(c.scParams))
-      ? MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
-      : mmParentClass(s2, c, mi, st, visiting)
-    (o: Spec)   => s2   # unreachable: implements entries are class or named
+             visiting: List<String>) => match(parent)
+  (n: SNamed) => MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
+  (c: SClass) => anyNamed(chain(c.scParams))
+    ? MMState(s2.mmRows, s2.mmAbsent, true, s2.mmAcc)
+    : mmParentClass(s2, c, mi, st, visiting)
+  (o: Spec)   => s2   # unreachable: implements entries are class or named
 
-fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: Statements,
-                  visiting: List<String>): MMState
+fun mmParentClass(s2: MMState, parent, mi: MemberIdx, st: Statements,
+                  visiting: List<String>)
   let acc2 = mmEnsure(parent.scName, st, visiting, s2.mmAcc)
   ret match(get(acc2, parent.scName))
     (mo: MergedOut) => match(mo)
@@ -862,8 +806,8 @@ fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: Statements,
       (mn: MMissing) => MMState(s2.mmRows, s2.mmAbsent, true, acc2)
     ()               => MMState(s2.mmRows, s2.mmAbsent, true, acc2)   # unreachable
 
-fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
-                  mi: MemberIdx): MMState
+fun mmMergeParent(s2: MMState, parent, sub: MergedTable,
+                  mi: MemberIdx)
   let mapping = paramMapping(sub.mtGens, parent.scParams)
   let rows = fold(sort(keys(sub.mtRows)), s2.mmRows,
                   (acc, k) =>
@@ -873,35 +817,31 @@ fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
   ret MMState(rows, s2.mmAbsent || sub.mtAbsentInc, s2.mmBroken, s2.mmAcc)
 
 fun mmMergeRow(acc, k: String, sub: MergedTable,
-               parent, mapping: List<Binding>): Dict<String, MergedRow>
-  ret match(get(sub.mtRows, k))
-    (row: MergedRow) => mmAppendRow(acc, k,
-        map(row.mrEntries, (e) =>
-          MergedEntry(e.meStmt, e.meOwner, mmCompose(e.mePattern, parent, mapping))),
-        row.mrComplete)
-    ()                => acc   # unreachable: k came from sub's keys
+               parent, mapping: List<Binding>) => match(get(sub.mtRows, k))
+  (row: MergedRow) => mmAppendRow(acc, k,
+      map(row.mrEntries, (e) =>
+        MergedEntry(e.meStmt, e.meOwner, mmCompose(e.mePattern, parent, mapping))),
+      row.mrComplete)
+  ()                => acc   # unreachable: k came from sub's keys
 
-fun mmCompose(pattern: Spec|None, parent, mapping: List<Binding>): Spec|None
-  ret match(pattern)
-    (p: Spec) => substitute(p, mapping)
-    ()         => parent
+fun mmCompose(pattern: Spec|None, parent, mapping: List<Binding>) => match(pattern)
+  (p: Spec) => substitute(p, mapping)
+  ()         => parent
 
 fun mmAppendRow(acc: Dict<String, MergedRow>, k: String,
-                entries, comp): Dict<String, MergedRow>
-  ret match(get(acc, k))
-    (prev: MergedRow) => put(acc, k, MergedRow(concat(prev.mrEntries, entries),
-                                               prev.mrComplete && comp))
-    ()                 => put(acc, k, MergedRow(entries, comp))
+                entries, comp) => match(get(acc, k))
+  (prev: MergedRow) => put(acc, k, MergedRow(concat(prev.mrEntries, entries),
+                                             prev.mrComplete && comp))
+  ()                 => put(acc, k, MergedRow(entries, comp))
 
 # The per-pass merged table, when the root carries one.
-fun [tail] mergedHook(r, className: String): MergedOut|None
-  ret match(r)
-    (root: RRoot)    => match(root.rrMerged)
-      (d2: Dict<String, MergedOut>) => get(d2, className)
-      ()                             => None
-    (sc: RScopes)    => mergedHook(sc.rsParent, className)
-    (d: RData)       => mergedHook(d.rdParent, className)
-    (t2: RTypes)     => mergedHook(t2.rtParent, className)
-    (tr: RTraits)    => mergedHook(tr.rtrParent, className)
-    (cb: RClassBody) => mergedHook(cb.rcbParent, className)
-    (rg: RGen)       => mergedHook(rg.rgParent, className)
+fun [tail] mergedHook(r, className) => match(r)
+  (root: RRoot)    => match(root.rrMerged)
+    (d2: Dict<String, MergedOut>) => get(d2, className)
+    ()                             => None
+  (sc: RScopes)    => mergedHook(sc.rsParent, className)
+  (d: RData)       => mergedHook(d.rdParent, className)
+  (t2: RTypes)     => mergedHook(t2.rtParent, className)
+  (tr: RTraits)    => mergedHook(tr.rtrParent, className)
+  (cb: RClassBody) => mergedHook(cb.rcbParent, className)
+  (rg: RGen)       => mergedHook(rg.rgParent, className)

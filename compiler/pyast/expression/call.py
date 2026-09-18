@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 
@@ -71,6 +72,10 @@ def _type_str(ts: t.TypeSpec | None) -> str:
     return type(ts).__name__
 
 
+def _parameters_of(ftype: t.TypeSpec | None) -> t.TypeSpec | None:
+    return ftype.parameters if isinstance(ftype, t.CallableSpec) else None
+
+
 @dataclass
 class CallExpression(Expression):
     function: Expression
@@ -85,7 +90,7 @@ class CallExpression(Expression):
         func_type = self.function.get_type(resolver)
         return func_type.result if isinstance(func_type, t.CallableSpec) else None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         func_type = self.function.get_type(resolver)
 
         # Compile the ARGUMENT before inferring the function's generic type
@@ -94,13 +99,19 @@ class CallExpression(Expression):
         # (`Wrap<Leaf>` rather than the still-generic `Wrap<S>`). Inferring the
         # outer function's params from the un-compiled argument would bind them
         # to a placeholder-bearing type that never monomorphises.
-        parameter, pglb = self.parameter.compile(resolver, func_type.parameters if isinstance(func_type, t.CallableSpec) else None)
+        parameter, pglb, phints = self.parameter.compile(resolver, _parameters_of(func_type))
         prtr_type = parameter.get_type(resolver)
 
         if not isinstance(prtr_type, t.TupleSpec):
-            return dataclasses.replace(self, parameter=parameter), pglb
+            return dataclasses.replace(self, parameter=parameter), pglb, phints
 
-        function, fglb = self.function.compile(resolver, t.CallableSpec(self.line_ref, prtr_type, expected_type))
+        function, fglb, fhints = self.function.compile(resolver, t.CallableSpec(self.line_ref, prtr_type, expected_type))
+
+        # The callee pinned just now: give the open arguments its parameter types.
+        pinned = _parameters_of(function.get_type(resolver))
+        if _parameters_of(func_type) is None and pinned is not None and not prtr_type.is_concrete():
+            parameter, retry_glb, phints = parameter.compile(resolver, pinned)
+            pglb = pglb + retry_glb
 
         expr = dataclasses.replace(self, function=function, parameter=parameter)
         # This node owns the conversion between itself and its receiver: a call
@@ -108,7 +119,7 @@ class CallExpression(Expression):
         # wraps ITSELF (no-op until both types are ground — needs_conversion is
         # conservative, so generic templates never wrap).
         from pyast.expression.conversion import converted
-        return converted(expr, expected_type, resolver), fglb+pglb
+        return converted(expr, expected_type, resolver), fglb+pglb, h.merge(fhints, phints)
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # The argument tuple checks against the resolved parameter shape, so an

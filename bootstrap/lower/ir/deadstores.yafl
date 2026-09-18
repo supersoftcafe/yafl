@@ -17,8 +17,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun eliminateDeadStores(a: CgApp): CgApp
-  ret appWithFunctions(a, map(appFunctions(a), dsFunction))
+fun eliminateDeadStores(a: CgApp): CgApp => appWithFunctions(a, map(appFunctions(a), dsFunction))
 
 fun [tail] dsFunction(f): CgFunction
   let out = dsOnce(f)
@@ -27,21 +26,18 @@ fun [tail] dsFunction(f): CgFunction
 # All StackVar names ever READ across all ops — the get_live_vars reads half,
 # plus every op's saved_vars. Dict-backed SET (Python's is a set; user ruling
 # 2026-07-22: lookups are dict-backed).
-fun dsCollectReads(ops: Segment<Op>|None): Dict<String, Bool>
-  ret fold(ops, Dict(), dsOpReads)
+fun dsCollectReads(ops: Segment<Op>|None) => fold(ops, Dict(), dsOpReads)
 
 fun dsOpReads(acc: Dict<String, Bool>, op): Dict<String, Bool>
   ret fold(opSavedVars(op),
            fold(opGetLiveVars(op).reads, acc, dsAddStackVarName),
            dsAddStackVarName)
 
-fun dsAddStackVarName(acc, rp): Dict<String, Bool>
-  ret match(rp)
-    (sv: RpStackVar) => put(acc, sv.name, true)
-    (o: RParam)      => acc
+fun dsAddStackVarName(acc, rp) => match(rp)
+  (sv: RpStackVar) => put(acc, sv.name, true)
+  (o: RParam)      => acc
 
-fun dsIsRead(reads: Dict<String, Bool>, name: String): Bool
-  ret !(get(reads, name) is None)
+fun dsIsRead(reads: Dict<String, Bool>, name: String) => !(get(reads, name) is None)
 
 fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
   let reads = dsCollectReads(f.fnOps)
@@ -55,7 +51,7 @@ fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
 # construction in dsOnce, not a walk rewrite. Error arm unreachable: Never.
 fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
                      [terminal] acc: SeqBuilder<Op>,
-                     changed: Bool): (ops: Segment<Op>|None, changed: Bool) where Stream<S, Op, Never>
+                     changed): (ops: Segment<Op>|None, changed: Bool) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -69,12 +65,11 @@ fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
 
 # The per-op decision: the op to keep (possibly rewritten) or None to drop,
 # plus whether anything changed.
-fun dsStep(op, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
-  ret match(op)
-    (m: OpMove)         => dsStepMove(m, reads)
-    (c: OpCall)         => dsStepCall(c, reads)
-    (p: OpParallelCall) => dsStepParallel(p, reads)
-    (o: Op)             => (op, false)
+fun dsStep(op, reads: Dict<String, Bool>): (op: Op|None, changed: Bool) => match(op)
+  (m: OpMove)         => dsStepMove(m, reads)
+  (c: OpCall)         => dsStepCall(c, reads)
+  (p: OpParallelCall) => dsStepParallel(p, reads)
+  (o: Op)             => (op, false)
 
 fun dsStepMove(m: OpMove, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
   ret match(m.moveTarget)
@@ -100,16 +95,14 @@ fun dsStepParallel(p: OpParallelCall,
     ? (None, true)
     : (p, false)
 
-fun dsOptList(r: RParam|None): List<RParam>
-  ret match(r)
-    (x: RParam) => list1(x)
-    ()          => List()
+fun dsOptList(r: RParam|None) => match(r)
+  (x: RParam) => list1(x)
+  ()          => List()
 
-fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>): Bool
-  ret match(os)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => match(l.value)
-      (sv: RpStackVar) => dsIsRead(reads, sv.name)
-        ? false
-        : dsAllUnread(l.next, reads)
-      (o: RParam)      => dsAllUnread(l.next, reads)
+fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>) => match(os)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(l.value)
+    (sv: RpStackVar) => dsIsRead(reads, sv.name)
+      ? false
+      : dsAllUnread(l.next, reads)
+    (o: RParam)      => dsAllUnread(l.next, reads)

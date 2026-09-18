@@ -13,33 +13,30 @@ import Bootstrap::StdlibCandidates
 
 # ── hex helpers ──────────────────────────────────────────────────────────────
 
-fun isHexByte(c: Int32): Bool
-  ret match(c)
-    ('0' .. '9' | 'a' .. 'f' | 'A' .. 'F') => true
-    ()                                   => false
+fun isHexByte(c: Int32) => match(c)
+  ('0' .. '9' | 'a' .. 'f' | 'A' .. 'F') => true
+  ()                                   => false
 
-fun hexVal(c): Int32
+fun hexVal(c)
   if c <= '9'
     ret c - '0'
   ret c <= 'F' ? c - 'A' + 10i32 : c - 'a' + 10i32
 
-fun [tail] hexSpan(s, at, stop: Int, acc): Int32
+fun [tail] hexSpan(s, at, stop, acc)
   ret at >= stop ? acc : hexSpan(s, at + 1, stop, acc * 16i32 + hexVal(byteAt(s, at)))
 
-fun [tail] allHex(s, at, stop: Int): Bool
+fun [tail] allHex(s, at, stop)
   ret at >= stop ? true : isHexByte(byteAt(s, at)) && allHex(s, at + 1, stop)
 
 # Codepoint → UTF-8 comes from stdlib Char(Int32); only validity is ours.
 
-fun codepointOk(cp: Int32): Bool
-  ret cp <= 1114111i32 && !(cp >= 55296i32 && cp <= 57343i32)
+fun codepointOk(cp) => cp <= 1114111i32 && !(cp >= 55296i32 && cp <= 57343i32)
 
 # ── string unescape (the body between the quotes) ───────────────────────────
 
 class [final] Unescaped(uText: String, uErr: String)   # uErr "" = success
 
-fun unescape(raw): Unescaped
-  ret unescapeLoop(raw, 0, "")
+fun unescape(raw): Unescaped => unescapeLoop(raw, 0, "")
 
 fun [tail] unescapeLoop(raw, i, acc): Unescaped
   if i >= length(raw)
@@ -63,7 +60,7 @@ fun [tail] unescapeLoop(raw, i, acc): Unescaped
 
 # '\0' produces a NUL byte, which cannot ride a String return marker — encode
 # it as the sentinel "@0" from simpleEscape and expand at the call site above.
-fun simpleEscape(c): String
+fun simpleEscape(c)
   if c == 'n'
     ret "\n"
   if c == 'r'
@@ -80,7 +77,7 @@ fun simpleEscape(c): String
     ret "'"
   ret ""
 
-fun unescapeU(raw, i, acc): Unescaped
+fun unescapeU(raw, i, acc)
   if i + 2 < length(raw) && byteAt(raw, i + 2) == '{'
     let close = findByte(raw, '}', i + 3)
     if close < 0
@@ -105,22 +102,19 @@ fun unescapeU(raw, i, acc): Unescaped
 # has to include the digits. These two read "codepoint out of range (max
 # 10FFFF)" and "surrogate codepoints are not valid scalars" until the `unesc`
 # contract was finally driven against Python and found them.
-fun cpError(cp: Int32): String
-  ret cp > 1114111i32
-    ? "codepoint U+" + upperHex(Int(cp)) + " is out of range (max U+10FFFF)"
-    : "codepoint U+" + upperHex(Int(cp)) + " is a UTF-16 surrogate, not a scalar value"
+fun cpError(cp) => cp > 1114111i32
+  ? "codepoint U+" + upperHex(Int(cp)) + " is out of range (max U+10FFFF)"
+  : "codepoint U+" + upperHex(Int(cp)) + " is a UTF-16 surrogate, not a scalar value"
 
 # Uppercase hex, unpadded — Python's `{cp:X}`. Same shape as hashes.yafl's
 # b64Char: index the digit alphabet by slice.
 let hexDigits = "0123456789ABCDEF"
 
-fun hexChar(v): String
-  ret slice(hexDigits, v, v + 1)
+fun hexChar(v) => slice(hexDigits, v, v + 1)
 
-fun upperHex(v): String
-  ret v < 16
-    ? hexChar(v)
-    : upperHex(v / 16) + hexChar(v % 16)
+fun upperHex(v) => v < 16
+  ? hexChar(v)
+  : upperHex(v / 16) + hexChar(v % 16)
 
 # ── integer lexeme → (value, precision) ─────────────────────────────────────
 # Mirrors __integer(): radix by 0x/0b/0o prefix, i8/i16/i32/i64 suffix sets
@@ -128,7 +122,7 @@ fun upperHex(v): String
 
 class [final] IntLex(ilValue: Int, ilPrecision: Int, ilErr: String)
 
-fun decodeInt(lexeme): IntLex
+fun decodeInt(lexeme)
   let radix = startsWith(lexeme, "0x") || startsWith(lexeme, "0X") ? 16
     : startsWith(lexeme, "0b") || startsWith(lexeme, "0B") ? 2
     : startsWith(lexeme, "0o") || startsWith(lexeme, "0O") ? 8
@@ -142,7 +136,7 @@ fun decodeInt(lexeme): IntLex
   let trimr = prec == 8 ? 2 : prec == 0 ? 0 : 3
   ret intLoop(lexeme, from, length(lexeme) - trimr, radix, 0)
 
-fun [tail] intLoop(s, at, stop: Int, radix: Int, acc: Int): IntLex
+fun [tail] intLoop(s, at, stop, radix, acc)
   if at >= stop
     ret IntLex(acc, precOf(s), "")
   let c = byteAt(s, at)
@@ -153,9 +147,8 @@ fun [tail] intLoop(s, at, stop: Int, radix: Int, acc: Int): IntLex
     ? IntLex(0, 0, "invalid digit in integer literal")
     : intLoop(s, at + 1, stop, radix, acc * radix + v)
 
-fun precOf(lexeme): Int
-  ret endsWith(lexeme, "i8") ? 8
-    : endsWith(lexeme, "i16") ? 16
-    : endsWith(lexeme, "i32") ? 32
-    : endsWith(lexeme, "i64") ? 64
-    : 0
+fun precOf(lexeme) => endsWith(lexeme, "i8") ? 8
+  : endsWith(lexeme, "i16") ? 16
+  : endsWith(lexeme, "i32") ? 32
+  : endsWith(lexeme, "i64") ? 64
+  : 0

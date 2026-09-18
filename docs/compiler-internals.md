@@ -70,6 +70,30 @@ cannot make progress this pass (a name that doesn't resolve yet, a generic
 argument still unknown) simply returns itself unchanged and tries again next
 pass, when some other node's progress may have unblocked it.
 
+**A fixpoint that never settles is usually the PROGRAM's problem.** Two
+parameters can chase each other: each `match` arm is a narrow lower bound for
+its own parameter, and each forwarding call makes the other parameter's
+current type an upper bound, so both narrow, then both widen when those
+answers disagree, for ever. The loop watches for that with Brent's cycle
+detection — one retained tree (the tortoise), which the hare jumps to whenever
+it has travelled the current window, the window doubling each time — so a
+cycle of any period closes against it, not merely period 2. The watch starts
+at `_CYCLE_WATCH_FROM` passes, because the comparison it costs is a whole-tree
+walk and anything still moving that late is not settling (the port itself
+converges in 15).
+
+On a repeat, the two consecutive trees are walked in lockstep and every
+INFERRED declaration whose type differs is reported against its own line:
+
+```
+Parameter 'x' of 'Test::fa' alternates between 'SA' and 'Sp' across compile passes — declare it
+```
+
+The two types are sorted, so the message never leaks which pass caught the
+cycle. A cycle with no inferred declaration flipping means a `compile()` that
+is not idempotent — the compiler's own bug, and reported as such, as is
+exhausting `_MAX_COMPILE_ITERATIONS` without repeating.
+
 **The converged AST is the absolute source of truth for program correctness.**
 Between the compile fixpoint (plus its check phase) and the generate stage, the
 AST must yield no errors: every name resolved, every type ground where codegen
@@ -144,15 +168,19 @@ separate constraint solver):
   (`CallExpression.compile` threads the actual argument tuple and expected
   result into the callee's generic-parameter unification).
 2. **Up** — an expression's result type flows into its consumer (`get_type`).
-3. **Sideways** — a function's un-annotated PARAMETER takes its type from what
-  its own BODY does with it (`pyast/param_inference.py`, a pure function of the
-  function, recomputed each pass): UPPER bounds from the calls it is passed to
-  and from `ret` against a declared result, LOWER bounds from the arm types of
-  `match(x)`, which generalise to the enum ROOT or to the interface two classes
-  share. Callers never supply a parameter's type — a function means the same
-  thing wherever it is called. A declared type always wins; no use that
-  determines the parameter, or uses that disagree, is an ambiguity error
-  naming what was found.
+3. **Sideways** — `compile` returns HINTS (`pyast/hints.py`) alongside the
+  rewritten node: every load of an untyped let records the type its receiver
+  expected, and a `match(x)` records its arm types. A function or lambda reads
+  its un-annotated PARAMETERS off its body's hints each pass (re-read, may
+  only widen): the narrowest expected type, else their common parent — the
+  enum ROOT or the one interface two classes share. Callers never supply a
+  parameter's type. A declared type always wins; hints that share no type,
+  or none at all, are an ambiguity error naming what was found.
+
+A call compiles its argument, then its callee against the argument shape; a
+callee that pins in that pass hands its parameter types straight back to any
+argument still open. Ternary and match share one branch rule
+(`t.branch_type`): the branches' common type or parent, else their union.
 
 `where`-clause constraints are discharged at the call site by matching against
 the `[trait]` instances in scope (`solve_trait_constraint`, single-step —

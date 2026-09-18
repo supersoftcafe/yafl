@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 
@@ -32,11 +33,11 @@ class StringExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return t.BuiltinSpec(self.line_ref, "str")
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # A literal owns its conversion to the receiver — its only case is
         # boxing into a union slot (`"x"` into `String|None`).
         from pyast.expression.conversion import converted
-        return converted(self, expected_type, resolver), []
+        return converted(self, expected_type, resolver), [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []
@@ -65,7 +66,7 @@ class _NumericLiteral(Expression):
         name = self._WIDE if self.precision == 0 else f"{self._KIND}{self.precision}"
         return t.BuiltinSpec(self.line_ref, name)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # RULED (2026-07-04): a literal's type comes from its SPELLING alone —
         # 37 is Int, 37i32 is Int32, 12.5 is Float64, 12.5f32 is Float32, and
         # a char literal is an Int32 literal. No context narrowing, no
@@ -74,7 +75,7 @@ class _NumericLiteral(Expression):
         # The one conversion a literal owns is boxing into a union slot
         # (`7` into `Int|None`) — a representation change, not a re-typing.
         from pyast.expression.conversion import converted
-        return converted(self, expected_type, resolver), []
+        return converted(self, expected_type, resolver), [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []
@@ -117,10 +118,10 @@ class BoolExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return t.BuiltinSpec(self.line_ref, "bool")
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # Boxing into a union slot is the one conversion a literal owns.
         from pyast.expression.conversion import converted
-        return converted(self, expected_type, resolver), []
+        return converted(self, expected_type, resolver), [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []
@@ -144,8 +145,8 @@ class RegexExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return [Error(self.line_ref, "internal: regex literal was not lowered (lowering/regexes.py)")]
@@ -159,8 +160,8 @@ class NothingExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []

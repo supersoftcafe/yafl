@@ -21,6 +21,7 @@ import codegen.param as cg_p
 import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
+import pyast.hints as h
 
 import pyast.utils as u
 
@@ -41,9 +42,9 @@ class ReturnStatement(Statement):
         return rw.rewrite(self, replace, resolver,
             value=self.value.search_and_replace(resolver, replace))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        new_value, stmts = self.value.compile(resolver, func_ret_type)
-        return dataclasses.replace(self, value=new_value), stmts
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        new_value, stmts, hints = self.value.compile(resolver, func_ret_type)
+        return dataclasses.replace(self, value=new_value), stmts, hints
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         xtype = self.value.get_type(resolver)
@@ -108,9 +109,9 @@ class ActionStatement(Statement):
         return rw.rewrite(self, replace, resolver,
             action=self.action.search_and_replace(resolver, replace))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        new_action, stmts = self.action.compile(resolver, None)
-        return dataclasses.replace(self, action = new_action), stmts
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        new_action, stmts, hints = self.action.compile(resolver, None)
+        return dataclasses.replace(self, action = new_action), stmts, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         errors = self.action.check(resolver, None)
@@ -160,22 +161,24 @@ class IfStatement(Statement):
             true_block=rw.seq(self.true_block, true_resolver, replace),
             false_block=rw.seq(self.false_block, false_resolver, replace))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        new_cond, cond_glb = self.condition.compile(resolver, t.BuiltinSpec(self.line_ref, "bool"))
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        new_cond, cond_glb, cond_hints = self.condition.compile(resolver, t.BuiltinSpec(self.line_ref, "bool"))
 
-        def compile_branch(stmts: list[Statement]) -> tuple[list[Statement], list[Statement]]:
+        def compile_branch(stmts: list[Statement]) -> tuple[list[Statement], list[Statement], h.Hints]:
             stmts = collapse_else_if(stmts)
             nested = g.ResolverData(resolver, self._branch_finder(stmts))
             results = [x.compile(nested, func_ret_type) for x in stmts]
             new_stmts = [r[0] for r in results if r[0] is not None]
             glbs = [g for r in results for g in r[1]]
-            return new_stmts, glbs
+            locals_ = {let.name for let in u.binding_lets(new_stmts)}
+            return new_stmts, glbs, h.without(h.merge(*(r[2] for r in results)), locals_)
 
-        new_true, true_glb = compile_branch(self.true_block)
-        new_false, false_glb = compile_branch(self.false_block)
+        new_true, true_glb, true_hints = compile_branch(self.true_block)
+        new_false, false_glb, false_hints = compile_branch(self.false_block)
         return dataclasses.replace(self, condition=new_cond,
                                     true_block=new_true,
-                                    false_block=new_false), cond_glb + true_glb + false_glb
+                                    false_block=new_false), \
+            cond_glb + true_glb + false_glb, h.merge(cond_hints, true_hints, false_hints)
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         errs: list[Error] = list(self.condition.check(resolver, t.BuiltinSpec(self.line_ref, "bool")))
@@ -233,8 +236,8 @@ class ElseIfStatement(Statement):
             condition=self.condition.search_and_replace(resolver, replace),
             body=rw.seq(self.body, resolver, replace))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         return [Error(self.line_ref, "`else if` without a matching preceding `if`")]
@@ -252,8 +255,8 @@ class ElseStatement(Statement):
         return rw.rewrite(self, replace, resolver,
             body=rw.seq(self.body, resolver, replace))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
-        return self, []
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         return [Error(self.line_ref, "`else` without a matching preceding `if`")]

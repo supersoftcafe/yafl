@@ -20,11 +20,11 @@ import Bootstrap::Ir
 # StackVar name → class name for every NewObject register in the function.
 class [final] DfoNewObj(dfoVar: String, dfoClass: String)
 
-fun resolveKnownDiscriminators(a: CgApp): CgApp
+fun resolveKnownDiscriminators(a: CgApp)
   ret appWithFunctions(a, map(appFunctions(a),
                               (f) => dfoFunction(f, a)))
 
-fun dfoFunction(f: CgFunction, a: CgApp): CgFunction
+fun dfoFunction(f, a: CgApp)
   let newobjs = fold(f.fnOps, List(), dfoCollect)
   if isEmpty(newobjs)
     ret f
@@ -34,16 +34,15 @@ fun dfoFunction(f: CgFunction, a: CgApp): CgFunction
                               (p) => dfoReplace(p, newobjs, defs, a))),
                      f.fnStackVars)
 
-fun dfoCollect(acc, op): List<DfoNewObj>
-  ret match(op)
-    (no: OpNewObject) => match(no.newObjRegister)
-      # Looked up by register name — the table's own order is not observed.
-      (sv: RpStackVar) => prepend(DfoNewObj(sv.name, no.newObjName), acc)
-      (o: RParam)      => acc
-    (o: Op)           => acc
+fun dfoCollect(acc, op) => match(op)
+  (no: OpNewObject) => match(no.newObjRegister)
+    # Looked up by register name — the table's own order is not observed.
+    (sv: RpStackVar) => prepend(DfoNewObj(sv.name, no.newObjName), acc)
+    (o: RParam)      => acc
+  (o: Op)           => acc
 
 fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
-                      defs: SsaDefs, depth): String|None
+                      defs: SsaDefs, depth)
   if depth <= 0
     ret None
   ret match(param)
@@ -55,22 +54,20 @@ fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
       (o: RParam)      => None
     ()          => None
 
-fun [tail] dfoLookup(ns: Chain<DfoNewObj>, name: String): String|None
-  ret match(ns)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.dfoVar == name
-      ? l.value.dfoClass
-      : dfoLookup(l.next, name)
+fun [tail] dfoLookup(ns: Chain<DfoNewObj>, name: String) => match(ns)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.dfoVar == name
+    ? l.value.dfoClass
+    : dfoLookup(l.next, name)
 
 fun dfoReplace(p, newobjs: List<DfoNewObj>, defs: SsaDefs,
-               a: CgApp): RParam
-  ret match(p)
-    (vd: RpVtableDiscriminator) =>
-      match(dfoClassOf(vd.value, newobjs, defs, sdMaxChase()))
-        (cls: String) => match(appObject(a, cls))
-          (obj: CgObject) => obj.objDiscriminator != 0
-            ? RpInteger(obj.objDiscriminator, 32)
-            : p
-          ()              => p
-        ()            => p
-    (o: RParam)                 => p
+               a: CgApp) => match(p)
+  (vd: RpVtableDiscriminator) =>
+    match(dfoClassOf(vd.value, newobjs, defs, sdMaxChase()))
+      (cls: String) => match(appObject(a, cls))
+        (obj: CgObject) => obj.objDiscriminator != 0
+          ? RpInteger(obj.objDiscriminator, 32)
+          : p
+        ()              => p
+      ()            => p
+  (o: RParam)                 => p

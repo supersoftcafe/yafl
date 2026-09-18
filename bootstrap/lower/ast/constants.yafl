@@ -33,62 +33,55 @@ fun inlineConstants(statements: List<PStmt>): List<PStmt>
   ret rwStmts(icDropDecls(chain(statements), consts, List()),
               Rw((x) => icReplace(x, consts), rwNoSpec, rwNoStmt))
 
-fun [tail] icCollect(ss: Chain<PStmt>, acc: IcConsts): IcConsts
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => hasAttr(let2.lAttrs, "const")
-        ? icCollectLet(let2, acc)
-          |> (acc2) => icCollect(l.next, acc2)
-        : icCollect(l.next, acc)
-      (o: PStmt)    => icCollect(l.next, acc)
+fun [tail] icCollect(ss: Chain<PStmt>, acc): IcConsts => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => hasAttr(let2.lAttrs, "const")
+      ? icCollectLet(let2, acc)
+        |> (acc2) => icCollect(l.next, acc2)
+      : icCollect(l.next, acc)
+    (o: PStmt)    => icCollect(l.next, acc)
 
-fun icCollectLet(let2: PsLet, acc): IcConsts
-  ret match(let2.lDefault)
-    (v: PExpr) => icIsLiteral(v)
-      # FIRST declaration of a name wins, as the head-first walk did.
-      ? (contains(acc.icMap, let2.lName)
-           ? acc
-           : IcConsts(put(acc.icMap, let2.lName, v)))
-      : acc
-    ()         => acc
+fun icCollectLet(let2: PsLet, acc) => match(let2.lDefault)
+  (v: PExpr) => icIsLiteral(v)
+    # FIRST declaration of a name wins, as the head-first walk did.
+    ? (contains(acc.icMap, let2.lName)
+         ? acc
+         : IcConsts(put(acc.icMap, let2.lName, v)))
+    : acc
+  ()         => acc
 
-fun icIsLiteral(x): Bool
-  ret match(x)
-    (i: PeInt)   => true
-    (f: PeFloat) => true
-    (s2: PeStr)  => true
-    (b: PeBool)  => true
-    (o: PExpr)   => false
+fun icIsLiteral(x) => match(x)
+  (i: PeInt)   => true
+  (f: PeFloat) => true
+  (s2: PeStr)  => true
+  (b: PeBool)  => true
+  (o: PExpr)   => false
 
 # The literal, re-stamped with the reference's line.
-fun icRestamp(v, line): PExpr
-  ret match(v)
-    (i: PeInt)   => PeInt(i.value, i.precision, line)
-    (f: PeFloat) => PeFloat(f.floatText, f.fPrecision, line)
-    (s2: PeStr)  => PeStr(s2.strValue, line)
-    (b: PeBool)  => PeBool(b.boolValue, line)
-    (o: PExpr)   => v
+fun icRestamp(v, line) => match(v)
+  (i: PeInt)   => PeInt(i.value, i.precision, line)
+  (f: PeFloat) => PeFloat(f.floatText, f.fPrecision, line)
+  (s2: PeStr)  => PeStr(s2.strValue, line)
+  (b: PeBool)  => PeBool(b.boolValue, line)
+  (o: PExpr)   => v
 
 # Top level: const declarations are DROPPED — they live only as inlined uses.
 fun icDropDecls(ss, c: IcConsts,
-                       acc: List<PStmt>): List<PStmt>
-  ret build(icDropDeclsB(ss, c, builderFrom(acc)))
+                       acc: List<PStmt>) => build(icDropDeclsB(ss, c, builderFrom(acc)))
 
 fun [tail] icDropDeclsB(ss: Chain<PStmt>, c: IcConsts,
-                       [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => contains(c.icMap, let2.lName)
-        ? icDropDeclsB(l.next, c, acc)
-        : icDropDeclsB(l.next, c, push(acc, l.value))
-      (o: PStmt)    => icDropDeclsB(l.next, c, push(acc, l.value))
+                       [terminal] acc: ListBuilder<PStmt>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => contains(c.icMap, let2.lName)
+      ? icDropDeclsB(l.next, c, acc)
+      : icDropDeclsB(l.next, c, push(acc, l.value))
+    (o: PStmt)    => icDropDeclsB(l.next, c, push(acc, l.value))
 
 # The walker callback: a bare name that aliases a const becomes the literal.
-fun icReplace(x, c: IcConsts): PExpr|None
-  ret match(x)
-    (nm: PeName) => match(get(c.icMap, nm.refName))
-      (v: PExpr) => icRestamp(v, nm.penLine)
-      ()         => None
-    (o: PExpr)   => None
+fun icReplace(x, c: IcConsts): PExpr|None => match(x)
+  (nm: PeName) => match(get(c.icMap, nm.refName))
+    (v: PExpr) => icRestamp(v, nm.penLine)
+    ()         => None
+  (o: PExpr)   => None

@@ -947,7 +947,7 @@ class TupleEntrySpec:
 
     def compile(self, resolver: g.Resolver) ->  tuple[TupleEntrySpec, list[s.Statement]]:
         new_type, new_statements1 = self.type.compile(resolver) if self.type else (None, [])
-        new_default, new_statements2 = self.default.compile(resolver, new_type) if self.default else (None, [])
+        new_default, new_statements2, _ = self.default.compile(resolver, new_type) if self.default else (None, [], {})
         return dataclasses.replace(self, type=new_type, default=new_default), new_statements1 + new_statements2
 
     def check(self, resolver: g.Resolver) -> list[Error]:

@@ -19,6 +19,7 @@ import pyast.expression as e
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 from pyast import union_repr
 
 
@@ -153,10 +154,10 @@ class MatchRange:
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.lo.get_type(resolver)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple["MatchRange", list[s.Statement]]:
-        lo, lo_stmts = self.lo.compile(resolver, None)
-        hi, hi_stmts = self.hi.compile(resolver, None)
-        return dataclasses.replace(self, lo=lo, hi=hi), lo_stmts + hi_stmts
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple["MatchRange", list[s.Statement], h.Hints]:
+        lo, lo_stmts, lo_hints = self.lo.compile(resolver, None)
+        hi, hi_stmts, hi_hints = self.hi.compile(resolver, None)
+        return dataclasses.replace(self, lo=lo, hi=hi), lo_stmts + hi_stmts, h.merge(lo_hints, hi_hints)
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list:
         errors = self.lo.check(resolver, None) + self.hi.check(resolver, None)
@@ -243,15 +244,15 @@ class MatchArm:
             guard=rw.opt(self.guard, self.__body_resolver(resolver), replace),
             extra=_rewritten_extra(self.extra, resolver, replace))
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[MatchArm, list[s.Statement]]:
-        new_body, body_stmts = self.body.compile(self.__body_resolver(resolver), func_ret_type)
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[MatchArm, list[s.Statement], h.Hints]:
+        new_body, body_stmts, body_hints = self.body.compile(self.__body_resolver(resolver), func_ret_type)
         new_type, type_stmts = self.type_spec.compile(resolver) if self.type_spec else (None, [])
         lit_results = [lit.compile(resolver, None) for lit in self.literals]
-        new_literals = tuple(lit for lit, _ in lit_results)
-        lit_stmts = [st for _, sts in lit_results for st in sts]
+        new_literals = tuple(lit for lit, _, _ in lit_results)
+        lit_stmts = [st for _, sts, _ in lit_results for st in sts]
         # The guard sees the arm's binding, exactly like the body.
-        new_guard, guard_stmts = (self.guard.compile(self.__body_resolver(resolver), None)
-                                  if self.guard else (None, []))
+        new_guard, guard_stmts, guard_hints = (self.guard.compile(self.__body_resolver(resolver), None)
+                                               if self.guard else (None, [], {}))
         # Rename arm.name to the unique form so it stays in sync with the
         # body's NamedExpressions (which the binding finder rewrote during
         # the body.compile() call above).  ast_inline then renames arm.name
@@ -265,10 +266,12 @@ class MatchArm:
             type_stmts = type_stmts + pstmts
             new_extra.append(dataclasses.replace(pos, name=_arm_unique_name(pos),
                                                  type_spec=pt))
+        hints = h.merge(body_hints, *(lh for _, _, lh in lit_results), guard_hints)
+        binders = {_arm_unique_name(self)} | {pos.name for pos in new_extra}
         return dataclasses.replace(self, name=_arm_unique_name(self),
                                     type_spec=new_type, body=new_body, literals=new_literals,
                                     guard=new_guard, extra=tuple(new_extra)), \
-               body_stmts + type_stmts + lit_stmts + guard_stmts
+               body_stmts + type_stmts + lit_stmts + guard_stmts, h.without(hints, binders)
 
     def get_body_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         return self.body.get_type(self.__body_resolver(resolver))
@@ -515,6 +518,41 @@ class _Emitter:
         return bundle, _binding_resolver(self.resolver, arm, arm.type_spec)
 
 
+def _arm_hints(resolver: g.Resolver, subject: e.Expression, arms) -> h.Hints:
+    """A match over an untyped name: each arm type is a LOWER hint for it.
+
+    An else arm, a bare generic arm, or an arm not resolved yet says nothing:
+    the arms alone would name the wrong type."""
+    if not isinstance(subject, e.NamedExpression):
+        return {}
+    datas = resolver.find_data(subject.name)
+    if len(datas) != 1 or not h.is_untyped_let(datas[0].statement):
+        return {}
+    if any(arm.type_spec is None and not arm.literals for arm in arms):
+        return {}
+    types = [arm.type_spec for arm in arms if arm.type_spec is not None]
+    types += [lit.get_type(resolver) for arm in arms if arm.type_spec is None for lit in arm.literals]
+    usable = [_usable_lower(resolver, ty) for ty in types]
+    if any(u is None for u in usable):
+        return h.unsettled()
+    if not all(usable):
+        return {}
+    return h.merge(*(h.of(datas[0].unique_name, ty, lower=True) for ty in types))
+
+
+def _usable_lower(resolver: g.Resolver, spec: t.TypeSpec | None) -> bool | None:
+    """A resolved arm type that carries its type arguments; None while it
+    has not resolved."""
+    if spec is None or isinstance(spec, t.NamedSpec):
+        return None
+    if not isinstance(spec, t.EnumSpec) or spec.type_params:
+        return True
+    found = resolver.find_type(spec.root_name)
+    if not found.complete or len(found) != 1:
+        return None
+    return not (getattr(found[0].statement, "type_params", ()) or ())
+
+
 @dataclass
 class MatchExpression(e.Expression):
     """match subject(, subject)*\n    arm*
@@ -537,30 +575,19 @@ class MatchExpression(e.Expression):
             extra_subjects=rw.seq(self.extra_subjects, resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        # A match yields a value of ANY arm's body type, so its type is a pure
-        # function of them: the one type they all share, or their flattened SET
-        # UNION — total, never failing, never clever (no common-parent search,
-        # no field-wise tuple merging; see t.join). Incompatibility with the
-        # receiver is the RECEIVER's error to report; a declared receiver type
-        # threads back into the arms and converges them. Taking only the first
-        # arm made the shared result slot too narrow, so a wider later arm was
-        # truncated into it (a value of `A|None` stored as `A`) — a C type
-        # mismatch under -O2.
-        resolved = [ty for ty in (arm.get_body_type(resolver) for arm in self.arms)
-                    if ty is not None]
-        if not resolved:
-            return None
-        return reduce(t.join, resolved)
+        # Every arm is a branch: the same rule as a ternary.
+        return t.branch_type([arm.get_body_type(resolver) for arm in self.arms], resolver)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement]]:
-        new_subject, subj_stmts = self.subject.compile(resolver, None)
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[e.Expression, list[s.Statement], h.Hints]:
+        new_subject, subj_stmts, hints = self.subject.compile(resolver, None)
         # Subjects after the first compile the same way; their arm patterns are
         # plain type dispatch, so nothing threads down to them.
         extra_compiled = []
         for x in self.extra_subjects:
-            cx, cstmts = x.compile(resolver, None)
+            cx, cstmts, xh = x.compile(resolver, None)
             extra_compiled.append(cx)
             subj_stmts = subj_stmts + cstmts
+            hints = h.merge(hints, xh)
         subj_type = new_subject.get_type(resolver)
         # When the subject is a concrete generic-enum instantiation (e.g.
         # Chain<String>), its variant arms (e.g. `(link: ChainLink)`) bind the
@@ -599,11 +626,13 @@ class MatchExpression(e.Expression):
                     arm = dataclasses.replace(
                         arm, type_spec=dataclasses.replace(arm.type_spec, type_params=tuple(subj_tparams)))
                 arm_results.append(arm.compile(resolver, expected_type))
-        new_arms = [arm for arm, _ in arm_results]
-        arm_stmts = [stmt for _, stmts in arm_results for stmt in stmts]
+        new_arms = [arm for arm, _, _ in arm_results]
+        arm_stmts = [stmt for _, stmts, _ in arm_results for stmt in stmts]
+        hints = h.merge(hints, *(ah for _, _, ah in arm_results),
+                        _arm_hints(resolver, new_subject, new_arms))
         return (dataclasses.replace(self, subject=new_subject, arms=new_arms,
                                     extra_subjects=tuple(extra_compiled)),
-                subj_stmts + arm_stmts)
+                subj_stmts + arm_stmts, hints)
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list:
         # The subject is an ordinary expression: check it, so an unresolved

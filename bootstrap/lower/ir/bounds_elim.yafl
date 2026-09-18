@@ -42,52 +42,47 @@ enum BeVal
   enum BeInduction(beIndName: String)
   enum BeOpaque()
 
-fun [tail] beEq(a, b: BeVal): Bool
-  ret match(a)
-    (ia: BeInt)       => match(b)
-      (ib: BeInt) => ia.beIntVal == ib.beIntVal && ia.beIntPrec == ib.beIntPrec
-      (o)         => false
-    (fa: BeField)     => match(b)
-      (fb: BeField) => fa.beFieldName == fb.beFieldName
-                       && beEq(fa.beFieldPtr, fb.beFieldPtr)
-      (o)           => false
-    (va: BeInvoke)    => match(b)
-      (vb: BeInvoke) => va.beInvFn == vb.beInvFn
-                        && beArgsEq(va.beInvArgs, vb.beInvArgs)
-      (o)            => false
-    (ra: BeVar)       => match(b)
-      (rb: BeVar) => ra.beVarName == rb.beVarName
-      (o)         => false
-    (ca: BeCycle)     => match(b)
-      (cb: BeCycle) => ca.beCycleName == cb.beCycleName
-      (o)           => false
-    (na: BeInduction) => match(b)
-      (nb: BeInduction) => na.beIndName == nb.beIndName
-      (o)               => false
-    (oa: BeOpaque)    => b is BeOpaque
+fun [tail] beEq(a, b: BeVal) => match(a)
+  (ia: BeInt)       => match(b)
+    (ib: BeInt) => ia.beIntVal == ib.beIntVal && ia.beIntPrec == ib.beIntPrec
+    (o)         => false
+  (fa: BeField)     => match(b)
+    (fb: BeField) => fa.beFieldName == fb.beFieldName
+                     && beEq(fa.beFieldPtr, fb.beFieldPtr)
+    (o)           => false
+  (va: BeInvoke)    => match(b)
+    (vb: BeInvoke) => va.beInvFn == vb.beInvFn
+                      && beArgsEq(va.beInvArgs, vb.beInvArgs)
+    (o)            => false
+  (ra: BeVar)       => match(b)
+    (rb: BeVar) => ra.beVarName == rb.beVarName
+    (o)         => false
+  (ca: BeCycle)     => match(b)
+    (cb: BeCycle) => ca.beCycleName == cb.beCycleName
+    (o)           => false
+  (na: BeInduction) => match(b)
+    (nb: BeInduction) => na.beIndName == nb.beIndName
+    (o)               => false
+  (oa: BeOpaque)    => b is BeOpaque
 
-fun beArgsEq(a: List<BeVal>|None, b: List<BeVal>|None): Bool
-  ret match(a)
-    (la: List<BeVal>) => match(b)
-      (lb: List<BeVal>) => sameLen(chain(la), chain(lb))
-                           && beListEq(chain(la), chain(lb))
-      ()                => false
-    ()                => b is None
+fun beArgsEq(a: List<BeVal>|None, b: List<BeVal>|None) => match(a)
+  (la: List<BeVal>) => match(b)
+    (lb: List<BeVal>) => sameLen(chain(la), chain(lb))
+                         && beListEq(chain(la), chain(lb))
+    ()                => false
+  ()                => b is None
 
-fun [tail] beListEq(a: Chain<BeVal>, b: Chain<BeVal>): Bool
-  ret match(a)
-    (nil: ChainEnd) => true
-    (la: ChainLink) => match(b)
-      (lb: ChainLink) => beEq(la.value, lb.value)
-        ? beListEq(la.next, lb.next)
-        : false
-      ()              => false
+fun [tail] beListEq(a: Chain<BeVal>, b: Chain<BeVal>) => match(a)
+  (nil: ChainEnd) => true
+  (la: ChainLink) => match(b)
+    (lb: ChainLink) => beEq(la.value, lb.value)
+      ? beListEq(la.next, lb.next)
+      : false
+    ()              => false
 
-fun beIsOpaque(v: BeVal): Bool
-  ret v is BeOpaque
+fun beIsOpaque(v: BeVal) => v is BeOpaque
 
-fun beContains(vs: List<BeVal>, x: BeVal): Bool
-  ret any(vs, (v) => beEq(v, x))
+fun beContains(vs: List<BeVal>, x: BeVal) => any(vs, (v) => beEq(v, x))
 
 # ── single defs (this pass's own flavour: Phis kept as definitions) ─────────
 
@@ -101,89 +96,81 @@ enum BeDef
 
 class [final] BeDefEntry(bdName: String, bdDef: BeDef, bdCount: Int)
 
-fun beSingleDefs(ops: Segment<Op>|None): List<BeDefEntry>
-  ret filter(fold(ops, List(), beDefOp),
-             (e) => e.bdCount == 1)
+fun beSingleDefs(ops: Segment<Op>|None) => filter(fold(ops, List(), beDefOp),
+                                                  (e) => e.bdCount == 1)
 
-fun beDefOp(acc, op): List<BeDefEntry>
-  ret match(op)
-    (m: OpMove)       => match(m.moveTarget)
-      (sv: RpStackVar) => beSeen(acc, sv.name, BdSource(m.moveSource))
-      (o: RParam)      => acc
-    (ph: OpPhi)       => match(ph.phiTarget)
-      (sv: RpStackVar) => beSeen(acc, sv.name, BdPhi(ph))
-      (o: RParam)      => acc
-    (c: OpCall)       => match(c.callRegister)
-      (r0: RParam) => match(r0)
-        (sv: RpStackVar) => beSeen(acc, sv.name, BdOpaque())
-        (o: RParam)      => acc
-      ()           => acc
-    (no: OpNewObject) => match(no.newObjRegister)
+fun beDefOp(acc, op) => match(op)
+  (m: OpMove)       => match(m.moveTarget)
+    (sv: RpStackVar) => beSeen(acc, sv.name, BdSource(m.moveSource))
+    (o: RParam)      => acc
+  (ph: OpPhi)       => match(ph.phiTarget)
+    (sv: RpStackVar) => beSeen(acc, sv.name, BdPhi(ph))
+    (o: RParam)      => acc
+  (c: OpCall)       => match(c.callRegister)
+    (r0: RParam) => match(r0)
       (sv: RpStackVar) => beSeen(acc, sv.name, BdOpaque())
       (o: RParam)      => acc
-    (o: Op)           => acc
+    ()           => acc
+  (no: OpNewObject) => match(no.newObjRegister)
+    (sv: RpStackVar) => beSeen(acc, sv.name, BdOpaque())
+    (o: RParam)      => acc
+  (o: Op)           => acc
 
-fun beSeen(acc: List<BeDefEntry>, name: String, d): List<BeDefEntry>
-  ret any(acc, (e) => e.bdName == name)
-    ? map(acc, (e) => e.bdName == name
-                 ? BeDefEntry(name, d, e.bdCount + 1)
-                 : e)
-    # A name->definition table read by first match; the branch above means a
-    # name appears at most once, so which end it goes on is not observable.
-    : prepend(BeDefEntry(name, d, 1), acc)
+fun beSeen(acc, name, d) => any(acc, (e) => e.bdName == name)
+  ? map(acc, (e) => e.bdName == name
+               ? BeDefEntry(name, d, e.bdCount + 1)
+               : e)
+  # A name->definition table read by first match; the branch above means a
+  # name appears at most once, so which end it goes on is not observable.
+  : prepend(BeDefEntry(name, d, 1), acc)
 
-fun [tail] beDefOf(es: Chain<BeDefEntry>, name: String): BeDef|None
-  ret match(es)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.bdName == name ? l.value.bdDef : beDefOf(l.next, name)
+fun [tail] beDefOf(es: Chain<BeDefEntry>, name: String) => match(es)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.bdName == name ? l.value.bdDef : beDefOf(l.next, name)
 
 # ── the resolver ────────────────────────────────────────────────────────────
 
 fun beResolve(rp, defs: List<BeDefEntry>,
-              visiting: List<String>): BeVal
-  ret match(rp)
-    (i: RpInteger)         => BeInt(i.value, i.precision)
-    (of: RpObjectField)    => BeField(beResolve(of.pointer, defs, visiting),
-                                      of.field)
-    (inv: RpRuntimeInvoke) => BeInvoke(inv.function,
-                                       beInvokeArgs(inv.parameters, defs,
-                                                    visiting))
-    (sf: RpStructField)    => beResolveStructField(sf, defs, visiting)
-    (sv: RpStackVar)       => beResolveVar(sv.name, defs, visiting)
-    (o: RParam)            => BeOpaque()
+              visiting) => match(rp)
+  (i: RpInteger)         => BeInt(i.value, i.precision)
+  (of: RpObjectField)    => BeField(beResolve(of.pointer, defs, visiting),
+                                    of.field)
+  (inv: RpRuntimeInvoke) => BeInvoke(inv.function,
+                                     beInvokeArgs(inv.parameters, defs,
+                                                  visiting))
+  (sf: RpStructField)    => beResolveStructField(sf, defs, visiting)
+  (sv: RpStackVar)       => beResolveVar(sv.name, defs, visiting)
+  (o: RParam)            => BeOpaque()
 
 fun beInvokeArgs(params, defs: List<BeDefEntry>,
-                 visiting: List<String>): List<BeVal>|None
-  ret match(params)
-    (ns: RpNewStruct) => map(ns.values,
-                             (v) => beResolve(v.value, defs,
-                                              visiting))
-    (o: RParam)       => None
+                 visiting) => match(params)
+  (ns: RpNewStruct) => map(ns.values,
+                           (v) => beResolve(v.value, defs,
+                                            visiting))
+  (o: RParam)       => None
 
 fun beResolveStructField(sf: RpStructField, defs: List<BeDefEntry>,
-                         visiting: List<String>): BeVal
-  ret match(sf.structVal)
-    (sv: RpStackVar) => match(beDefOf(chain(defs), sv.name))
-      (d: BeDef) => match(d)
-        (src: BdSource) => match(src.bdSource)
-          (ns: RpNewStruct) => beStructValue(chain(ns.values), sf.field,
-                                             defs, visiting)
-          (o: RParam)       => BeOpaque()
-        (o: BeDef)      => BeOpaque()
-      ()         => BeOpaque()
-    (o: RParam)      => BeOpaque()
+                         visiting) => match(sf.structVal)
+  (sv: RpStackVar) => match(beDefOf(chain(defs), sv.name))
+    (d: BeDef) => match(d)
+      (src: BdSource) => match(src.bdSource)
+        (ns: RpNewStruct) => beStructValue(chain(ns.values), sf.field,
+                                           defs, visiting)
+        (o: RParam)       => BeOpaque()
+      (o: BeDef)      => BeOpaque()
+    ()         => BeOpaque()
+  (o: RParam)      => BeOpaque()
 
 fun [tail] beStructValue(vs: Chain<RpNamedValue>, field: String,
                          defs: List<BeDefEntry>,
-                         visiting: List<String>): BeVal
-  ret match(vs)
-    (nil: ChainEnd) => BeOpaque()
-    (l: ChainLink)  => l.value.name == field
-      ? beResolve(l.value.value, defs, visiting)
-      : beStructValue(l.next, field, defs, visiting)
+                         visiting) => match(vs)
+  (nil: ChainEnd) => BeOpaque()
+  (l: ChainLink)  => l.value.name == field
+    ? beResolve(l.value.value, defs, visiting)
+    : beStructValue(l.next, field, defs, visiting)
 
 fun beResolveVar(name, defs: List<BeDefEntry>,
-                 visiting: List<String>): BeVal
+                 visiting)
   if contains2(visiting, name)
     ret BeCycle(name)
   ret match(beDefOf(chain(defs), name))
@@ -197,7 +184,7 @@ fun beResolveVar(name, defs: List<BeDefEntry>,
     ()         => BeVar(name)          # parameter or multi-def: stable identity
 
 fun beResolvePhi(name, phi: OpPhi, defs: List<BeDefEntry>,
-                 visiting: List<String>): BeVal
+                 visiting)
   if !exactly(chain(phi.phiSources), 2)
     ret BeOpaque()
   let id0 = bePhiSourceId(phi, 0, defs, visiting)
@@ -209,38 +196,34 @@ fun beResolvePhi(name, phi: OpPhi, defs: List<BeDefEntry>,
       ()          => BeOpaque()
 
 fun bePhiSourceId(phi: OpPhi, ix, defs: List<BeDefEntry>,
-                  visiting: List<String>): BeVal
-  ret match(nthOf(phi.phiSources, ix))
-    (s2: OpPhiSource) => beResolve(s2.sourceValue, defs, visiting)
-    ()                => BeOpaque()
+                  visiting) => match(nthOf(phi.phiSources, ix))
+  (s2: OpPhiSource) => beResolve(s2.sourceValue, defs, visiting)
+  ()                => BeOpaque()
 
 # back == cycle → INVARIANT (entry passes through); back == int32_add(cycle,
 # 1) → INDUCTION.
-fun bePhiClass(name, back, entry: BeVal): BeVal|None
+fun bePhiClass(name, back, entry)
   if beEq(back, BeCycle(name))
     ret entry
   ret beIsIncrement(back, name) ? BeInduction(name) : None
 
-fun beIsIncrement(back: BeVal, name): Bool
-  ret match(back)
-    (inv: BeInvoke) => inv.beInvFn == "int32_add"
-                       && beIncArgs(inv.beInvArgs, name)
-    (o)             => false
+fun beIsIncrement(back: BeVal, name) => match(back)
+  (inv: BeInvoke) => inv.beInvFn == "int32_add"
+                     && beIncArgs(inv.beInvArgs, name)
+  (o)             => false
 
-fun beIncArgs(args0: List<BeVal>|None, name): Bool
-  ret match(args0)
-    (args: List<BeVal>) => exactly(chain(args), 2)
-                           && beContains(args, BeCycle(name))
-                           && beContains(args, BeInt(1, 32))
-    ()                  => false
+fun beIncArgs(args0: List<BeVal>|None, name) => match(args0)
+  (args: List<BeVal>) => exactly(chain(args), 2)
+                         && beContains(args, BeCycle(name))
+                         && beContains(args, BeInt(1, 32))
+  ()                  => false
 
 # The entry value of an induction variable, re-derived from its Phi.
-fun beEntryOf(name, defs: List<BeDefEntry>): BeVal|None
-  ret match(beDefOf(chain(defs), name))
-    (d: BeDef) => match(d)
-      (ph: BdPhi) => beEntryFromPhi(name, ph.bdPhi, defs)
-      (o: BeDef)  => None
-    ()         => None
+fun beEntryOf(name, defs: List<BeDefEntry>) => match(beDefOf(chain(defs), name))
+  (d: BeDef) => match(d)
+    (ph: BdPhi) => beEntryFromPhi(name, ph.bdPhi, defs)
+    (o: BeDef)  => None
+  ()         => None
 
 fun beEntryFromPhi(name, phi: OpPhi,
                    defs: List<BeDefEntry>): BeVal|None
@@ -263,82 +246,75 @@ fun beEntryFromPhi(name, phi: OpPhi,
 class [final] BeStore(bsPtr: BeVal, bsField: String, bsValue: BeVal,
                       bsCount: Int)
 
-fun beFieldStores(ops: Segment<Op>|None, defs: List<BeDefEntry>): List<BeStore>
+fun beFieldStores(ops: Segment<Op>|None, defs: List<BeDefEntry>)
   ret filter(fold(ops, List(),
                   (acc, op) => beStoreOp(acc, op, defs)),
              (s2) => s2.bsCount == 1 && !beIsOpaque(s2.bsPtr))
 
-fun beStoreOp(acc, op, defs: List<BeDefEntry>): List<BeStore>
-  ret match(op)
-    (m: OpMove) => match(m.moveTarget)
-      (of: RpObjectField) => of.index is None
-        ? beStoreAdd(acc, beResolve(of.pointer, defs, List()),
-                     of.field, beResolve(m.moveSource, defs, List()))
-        : acc
-      (o: RParam)         => acc
-    (o: Op)     => acc
+fun beStoreOp(acc, op, defs: List<BeDefEntry>) => match(op)
+  (m: OpMove) => match(m.moveTarget)
+    (of: RpObjectField) => of.index is None
+      ? beStoreAdd(acc, beResolve(of.pointer, defs, List()),
+                   of.field, beResolve(m.moveSource, defs, List()))
+      : acc
+    (o: RParam)         => acc
+  (o: Op)     => acc
 
-fun beStoreAdd(acc: List<BeStore>, ptr, field: String,
-               value): List<BeStore>
-  ret any(acc, (s2) => s2.bsField == field && beEq(s2.bsPtr, ptr))
-    ? map(acc, (s2) => s2.bsField == field && beEq(s2.bsPtr, ptr)
-                 ? BeStore(ptr, field, value, s2.bsCount + 1)
-                 : s2)
-    # A (pointer, field) -> value table read by lookup; the merge branch above
-    # keeps keys unique, so the order is not observable.
-    : prepend(BeStore(ptr, field, value, 1), acc)
+fun beStoreAdd(acc, ptr, field,
+               value) => any(acc, (s2) => s2.bsField == field && beEq(s2.bsPtr, ptr))
+  ? map(acc, (s2) => s2.bsField == field && beEq(s2.bsPtr, ptr)
+               ? BeStore(ptr, field, value, s2.bsCount + 1)
+               : s2)
+  # A (pointer, field) -> value table read by lookup; the merge branch above
+  # keeps keys unique, so the order is not observable.
+  : prepend(BeStore(ptr, field, value, 1), acc)
 
 fun beStoreLookup(stores: List<BeStore>, ptr: BeVal,
-                  field: String): BeVal|None
-  ret match(head(filter(stores,
-                        (s2) => s2.bsField == field
-                                         && beEq(s2.bsPtr, ptr))))
-    (s2: BeStore) => s2.bsValue
-    ()            => None
+                  field: String) => match(head(filter(stores,
+                                                      (s2) => s2.bsField == field
+                                       && beEq(s2.bsPtr, ptr))))
+  (s2: BeStore) => s2.bsValue
+  ()            => None
 
 # ── loop regions + guards ───────────────────────────────────────────────────
 
 class [final] BeRegion(brLo: Int, brHi: Int)
 class [final] BeLabelAt(blName: String, blIndex: Int)
 
-fun beLabelIndex(ops: Segment<Op>|None): List<BeLabelAt>
-  ret build(beLabelLoopB(ops, 0i32, 0, builder()))
+fun beLabelIndex(ops: Segment<Op>|None) => build(beLabelLoopB(ops, 0i32, 0, builder()))
 
-fun [tail] beLabelLoopB(s: Segment<Op>|None, iSeg: Int32, i,
-                       [terminal] acc): ListBuilder<BeLabelAt>
-  ret match(s)
-    (nil: None)        => acc
-    (seg: Segment<Op>) => iSeg >= seg.length
-      ? beLabelLoopB(seg.next, 0i32, i, acc)
-      : match(seg.array(iSeg))
-          (lb: OpLabel) => beLabelLoopB(s, iSeg + 1i32, i + 1,
-                                       push(acc, BeLabelAt(lb.labelName, i)))
-          (o: Op)       => beLabelLoopB(s, iSeg + 1i32, i + 1, acc)
+fun [tail] beLabelLoopB(s: Segment<Op>|None, iSeg, i,
+                       [terminal] acc): ListBuilder<BeLabelAt> => match(s)
+  (nil: None)        => acc
+  (seg: Segment<Op>) => iSeg >= seg.length
+    ? beLabelLoopB(seg.next, 0i32, i, acc)
+    : match(seg.array(iSeg))
+        (lb: OpLabel) => beLabelLoopB(s, iSeg + 1i32, i + 1,
+                                     push(acc, BeLabelAt(lb.labelName, i)))
+        (o: Op)       => beLabelLoopB(s, iSeg + 1i32, i + 1, acc)
 
-fun [tail] beLabelAt(ls: Chain<BeLabelAt>, name: String): Int|None
-  ret match(ls)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.blName == name
-      ? l.value.blIndex
-      : beLabelAt(l.next, name)
+fun [tail] beLabelAt(ls: Chain<BeLabelAt>, name: String) => match(ls)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.blName == name
+    ? l.value.blIndex
+    : beLabelAt(l.next, name)
 
-fun beLoopRegions(ops: Segment<Op>|None, labels: List<BeLabelAt>): List<BeRegion>
+fun beLoopRegions(ops: Segment<Op>|None, labels: List<BeLabelAt>)
   ret build(beRegionLoopB(ops, 0i32, 0, labels, builder()))
 
-fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg: Int32, i, labels: List<BeLabelAt>,
-                        [terminal] acc): ListBuilder<BeRegion>
-  ret match(s)
-    (nil: None)        => acc
-    (seg: Segment<Op>) => iSeg >= seg.length
-      ? beRegionLoopB(seg.next, 0i32, i, labels, acc)
-      : match(seg.array(iSeg))
-          (j: OpJump) => match(beLabelAt(chain(labels), j.jumpName))
-            (at: Int) => at < i
-              ? beRegionLoopB(s, iSeg + 1i32, i + 1, labels,
-                             push(acc, BeRegion(at, i)))
-              : beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
-            ()        => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
-          (o: Op)     => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
+fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg, i, labels: List<BeLabelAt>,
+                        [terminal] acc): ListBuilder<BeRegion> => match(s)
+  (nil: None)        => acc
+  (seg: Segment<Op>) => iSeg >= seg.length
+    ? beRegionLoopB(seg.next, 0i32, i, labels, acc)
+    : match(seg.array(iSeg))
+        (j: OpJump) => match(beLabelAt(chain(labels), j.jumpName))
+          (at: Int) => at < i
+            ? beRegionLoopB(s, iSeg + 1i32, i + 1, labels,
+                           push(acc, BeRegion(at, i)))
+            : beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
+          ()        => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
+        (o: Op)     => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
 
 # (induction_id, bound_id) pairs proven `induction < bound` inside the
 # region's body. The key question per guard is which truth value of its
@@ -350,12 +326,12 @@ class [final] BeProof(bpInd: BeVal, bpBound: BeVal)
 
 fun beGuardedBounds(ops: Segment<Op>|None, region: BeRegion,
                     labels: List<BeLabelAt>,
-                    defs: List<BeDefEntry>): List<BeProof>
+                    defs: List<BeDefEntry>)
   ret beGuardLoop(ops, region.brLo, region, labels, defs, List())
 
 fun [tail] beGuardLoop(ops: Segment<Op>|None, i, region: BeRegion,
                        labels: List<BeLabelAt>, defs: List<BeDefEntry>,
-                       acc): List<BeProof>
+                       acc)
   if i >= region.brHi
     ret acc
   ret match(nthOf(ops, i))
@@ -366,30 +342,28 @@ fun [tail] beGuardLoop(ops: Segment<Op>|None, i, region: BeRegion,
 
 fun beGuardOne(op, i, ops: Segment<Op>|None, region: BeRegion,
                labels: List<BeLabelAt>, defs: List<BeDefEntry>,
-               acc): List<BeProof>
-  ret match(op)
-    (ji: OpJumpIf) => match(beResolve(ji.jumpIfCondition, defs,
-                                      List()))
-      (inv: BeInvoke) => match(inv.beInvArgs)
-        (args: List<BeVal>) => exactly(chain(args), 2)
-          ? beGuardWithTruth(inv.beInvFn, args, ji, i, ops, region, labels,
-                             defs, acc)
-          : acc
-        ()                  => acc
-      (o: BeVal)      => acc
-    (o: Op)        => acc
+               acc) => match(op)
+  (ji: OpJumpIf) => match(beResolve(ji.jumpIfCondition, defs,
+                                    List()))
+    (inv: BeInvoke) => match(inv.beInvArgs)
+      (args: List<BeVal>) => exactly(chain(args), 2)
+        ? beGuardWithTruth(inv.beInvFn, args, ji, i, ops, region, labels,
+                           defs, acc)
+        : acc
+      ()                  => acc
+    (o: BeVal)      => acc
+  (o: Op)        => acc
 
 fun beGuardWithTruth(fnName, args: List<BeVal>, ji: OpJumpIf,
                      i, ops: Segment<Op>|None, region: BeRegion,
                      labels: List<BeLabelAt>, defs: List<BeDefEntry>,
-                     acc): List<BeProof>
-  ret match(beGuardTruth(ji, i, ops, region, labels))
-    (bodyTruth: Bool) => beGuardCommit(fnName, args, bodyTruth, defs, acc)
-    ()                => acc
+                     acc) => match(beGuardTruth(ji, i, ops, region, labels))
+  (bodyTruth: Bool) => beGuardCommit(fnName, args, bodyTruth, defs, acc)
+  ()                => acc
 
 # Which truth value of the condition ENTERS the body; None = not a guard.
 fun beGuardTruth(ji: OpJumpIf, i, ops: Segment<Op>|None, region: BeRegion,
-                 labels: List<BeLabelAt>): Bool|None
+                 labels: List<BeLabelAt>)
   let target = beLabelAt(chain(labels), ji.jumpIfLabel)
   let inside = beInRegion(target, region)
   if !inside
@@ -404,71 +378,65 @@ fun beGuardTruth(ji: OpJumpIf, i, ops: Segment<Op>|None, region: BeRegion,
       (o: Op)     => None
     ()        => None
 
-fun beInRegion(at: Int|None, region: BeRegion): Bool
-  ret match(at)
-    (i: Int) => i >= region.brLo && i <= region.brHi
-    ()       => false
+fun beInRegion(at: Int|None, region: BeRegion) => match(at)
+  (i: Int) => i >= region.brLo && i <= region.brHi
+  ()       => false
 
 fun beGuardCommit(fnName, args: List<BeVal>, bodyTruth,
-                  defs: List<BeDefEntry>, acc): List<BeProof>
+                  defs: List<BeDefEntry>, acc)
   let a = beArgAt(args, 0)
   let b = beArgAt(args, 1)
   let acc2 = beGuardPair(fnName, a, b, true, bodyTruth, defs, acc)
   ret beGuardPair(fnName, b, a, false, bodyTruth, defs, acc2)
 
-fun beArgAt(args: List<BeVal>, ix): BeVal
-  ret match(nthOf(args, ix))
-    (v: BeVal) => v
-    ()         => BeOpaque()
+fun beArgAt(args: List<BeVal>, ix): BeVal => match(nthOf(args, ix))
+  (v: BeVal) => v
+  ()         => BeOpaque()
 
 fun beGuardPair(fnName, x, y, asWritten,
                 bodyTruth, defs: List<BeDefEntry>,
-                acc): List<BeProof>
-  ret match(x)
-    (ind: BeInduction) => beGuardKind(fnName, ind, asWritten, bodyTruth,
-                                      defs)
-      # A proof set, scanned for a match.
-      ? prepend(BeProof(x, y), acc)
-      : acc
-    (o: BeVal)         => acc
+                acc) => match(x)
+  (ind: BeInduction) => beGuardKind(fnName, ind, asWritten, bodyTruth,
+                                    defs)
+    # A proof set, scanned for a match.
+    ? prepend(BeProof(x, y), acc)
+    : acc
+  (o: BeVal)         => acc
 
 fun beGuardKind(fnName, ind: BeInduction, asWritten,
-                bodyTruth, defs: List<BeDefEntry>): Bool
+                bodyTruth, defs: List<BeDefEntry>)
   if fnName == "int32_test_eq" && !bodyTruth
     ret beEntryIsZero(ind.beIndName, defs)
   # lt is not symmetric: only i < n, as written.
   ret fnName == "int32_test_lt" && bodyTruth && asWritten
 
-fun beEntryIsZero(name, defs: List<BeDefEntry>): Bool
-  ret match(beEntryOf(name, defs))
-    (e: BeVal) => beEq(e, BeInt(0, 32))
-    ()         => false
+fun beEntryIsZero(name, defs: List<BeDefEntry>): Bool => match(beEntryOf(name, defs))
+  (e: BeVal) => beEq(e, BeInt(0, 32))
+  ()         => false
 
 # ── the flip + rewrite ──────────────────────────────────────────────────────
 
-fun eliminateProvableBoundsChecks(a: CgApp): CgApp
-  ret appWithFunctions(a, map(appFunctions(a), beFunction))
+fun eliminateProvableBoundsChecks(a: CgApp) => appWithFunctions(a, map(appFunctions(a), beFunction))
 
-fun beFunction(f): CgFunction
+fun beFunction(f)
   let defs = beSingleDefs(f.fnOps)
   let stores = beFieldStores(f.fnOps, defs)
   let labels = beLabelIndex(f.fnOps)
   ret beRegionsLoop(chain(beLoopRegions(f.fnOps, labels)), f, defs, stores,
                     labels)
 
-fun [tail] beRegionsLoop(rs: Chain<BeRegion>, f: CgFunction,
+fun [tail] beRegionsLoop(rs: Chain<BeRegion>, f,
                          defs: List<BeDefEntry>, stores: List<BeStore>,
-                         labels: List<BeLabelAt>): CgFunction
-  ret match(rs)
-    (nil: ChainEnd) => f
-    (l: ChainLink)  => beRegionsLoop(l.next,
-                                     beApplyRegion(f, l.value, defs, stores,
-                                                   labels),
-                                     defs, stores, labels)
+                         labels: List<BeLabelAt>) => match(rs)
+  (nil: ChainEnd) => f
+  (l: ChainLink)  => beRegionsLoop(l.next,
+                                   beApplyRegion(f, l.value, defs, stores,
+                                                 labels),
+                                   defs, stores, labels)
 
-fun beApplyRegion(f: CgFunction, region: BeRegion, defs: List<BeDefEntry>,
+fun beApplyRegion(f, region: BeRegion, defs: List<BeDefEntry>,
                   stores: List<BeStore>,
-                  labels: List<BeLabelAt>): CgFunction
+                  labels: List<BeLabelAt>)
   let proven = beGuardedBounds(f.fnOps, region, labels, defs)
   if isEmpty(proven)
     ret f
@@ -478,30 +446,28 @@ fun beApplyRegion(f: CgFunction, region: BeRegion, defs: List<BeDefEntry>,
 
 fun beRewriteOps(ops: Segment<Op>|None, i, region: BeRegion,
                         proven: List<BeProof>, defs: List<BeDefEntry>,
-                        stores: List<BeStore>, acc: List<Op>): Segment<Op>|None
+                        stores: List<BeStore>, acc: List<Op>)
   ret build(beRewriteOpsB(ops, 0i32, i, region, proven, defs, stores, seqBuilder()))
 
-fun [tail] beRewriteOpsB(s: Segment<Op>|None, iSeg: Int32, i, region: BeRegion,
+fun [tail] beRewriteOpsB(s: Segment<Op>|None, iSeg, i, region: BeRegion,
                         proven: List<BeProof>, defs: List<BeDefEntry>,
-                        stores: List<BeStore>, [terminal] acc): SeqBuilder<Op>
-  ret match(s)
-    (nil: None)        => acc
-    (seg: Segment<Op>) => iSeg < seg.length
-      ? beRewriteOpsB(s, iSeg + 1i32, i + 1, region, proven, defs,
-                      stores,
-                      push(acc, i >= region.brLo
-                             && i <= region.brHi
-                        ? beRewriteOp(seg.array(iSeg), proven, defs,
-                                      stores)
-                        : seg.array(iSeg)))
-      : beRewriteOpsB(seg.next, 0i32, i, region, proven, defs, stores, acc)
+                        stores: List<BeStore>, [terminal] acc): SeqBuilder<Op> => match(s)
+  (nil: None)        => acc
+  (seg: Segment<Op>) => iSeg < seg.length
+    ? beRewriteOpsB(s, iSeg + 1i32, i + 1, region, proven, defs,
+                    stores,
+                    push(acc, i >= region.brLo
+                           && i <= region.brHi
+                      ? beRewriteOp(seg.array(iSeg), proven, defs,
+                                    stores)
+                      : seg.array(iSeg)))
+    : beRewriteOpsB(seg.next, 0i32, i, region, proven, defs, stores, acc)
 
 # Flip only at READ positions of the op kinds Python touches: Move.source,
 # Call.function+parameters, Return.value, JumpIf.condition, Phi sources.
 fun beRewriteOp(op, proven: List<BeProof>, defs: List<BeDefEntry>,
-                stores: List<BeStore>): Op
-  fun flip(rp): RParam
-    ret beFlip(rp, proven, defs, stores)
+                stores: List<BeStore>)
+  fun flip(rp) => beFlip(rp, proven, defs, stores)
   ret match(op)
     (m: OpMove)    => OpMove(m.moveTarget,
                              rpReplaceParams(m.moveSource, flip),
@@ -525,15 +491,14 @@ fun beRewriteOp(op, proven: List<BeProof>, defs: List<BeDefEntry>,
     (o: Op)        => op
 
 fun beFlip(rp, proven: List<BeProof>, defs: List<BeDefEntry>,
-           stores: List<BeStore>): RParam
-  ret match(rp)
-    (ae: RpArrayElement) => ae.checked
-      ? beFlipElement(ae, proven, defs, stores)
-      : rp
-    (o: RParam)          => rp
+           stores: List<BeStore>) => match(rp)
+  (ae: RpArrayElement) => ae.checked
+    ? beFlipElement(ae, proven, defs, stores)
+    : rp
+  (o: RParam)          => rp
 
-fun beFlipElement(ae: RpArrayElement, proven: List<BeProof>,
-                  defs: List<BeDefEntry>, stores: List<BeStore>): RParam
+fun beFlipElement(ae, proven: List<BeProof>,
+                  defs: List<BeDefEntry>, stores: List<BeStore>)
   let idx = beResolve(ae.index, defs, List())
   let ptr = beResolve(ae.pointer, defs, List())
   if beIsOpaque(idx) || beIsOpaque(ptr)
@@ -545,24 +510,22 @@ fun beFlipElement(ae: RpArrayElement, proven: List<BeProof>,
   ret beProofLoop(chain(proven), ae, idx, lengthIds, stores)
 
 fun beWithStored(acc, stores: List<BeStore>, ptr: BeVal,
-                 field: String): List<BeVal>
-  ret match(beStoreLookup(stores, ptr, field))
-    # Candidate values, scanned for a proof — order not observed.
-    (v: BeVal) => prepend(v, acc)
-    ()         => acc
+                 field: String) => match(beStoreLookup(stores, ptr, field))
+  # Candidate values, scanned for a proof — order not observed.
+  (v: BeVal) => prepend(v, acc)
+  ()         => acc
 
-fun [tail] beProofLoop(ps: Chain<BeProof>, ae: RpArrayElement, idx: BeVal,
+fun [tail] beProofLoop(ps: Chain<BeProof>, ae, idx,
                        lengthIds: List<BeVal>,
-                       stores: List<BeStore>): RParam
-  ret match(ps)
-    (nil: ChainEnd) => ae
-    (l: ChainLink)  => beProofMatches(l.value, idx, lengthIds, stores)
-      ? RpArrayElement(ae.elementType, ae.pointer, ae.objectName, ae.field,
-                       ae.lengthField, ae.index, false)
-      : beProofLoop(l.next, ae, idx, lengthIds, stores)
+                       stores: List<BeStore>) => match(ps)
+  (nil: ChainEnd) => ae
+  (l: ChainLink)  => beProofMatches(l.value, idx, lengthIds, stores)
+    ? RpArrayElement(ae.elementType, ae.pointer, ae.objectName, ae.field,
+                     ae.lengthField, ae.index, false)
+    : beProofLoop(l.next, ae, idx, lengthIds, stores)
 
 fun beProofMatches(proof: BeProof, idx, lengthIds: List<BeVal>,
-                   stores: List<BeStore>): Bool
+                   stores: List<BeStore>)
   if !beEq(idx, proof.bpInd)
     ret false
   let boundIds = beBoundIds(proof.bpBound, stores)
@@ -571,7 +534,7 @@ fun beProofMatches(proof: BeProof, idx, lengthIds: List<BeVal>,
 
 # The guard's bound, plus — when the bound is itself a length load whose
 # store is visible — the value that length was stored from.
-fun beBoundIds(bound, stores: List<BeStore>): List<BeVal>
+fun beBoundIds(bound, stores: List<BeStore>)
   let base = list1(bound)
   ret match(bound)
     (bf: BeField) => beWithStored(base, stores, bf.beFieldPtr,

@@ -24,18 +24,18 @@ import Bootstrap::StdlibCandidates
 # every suspension in the merged body saves the combined frame; the gate
 # keeps suspending helpers outboard where their own small frame is all they
 # save.
-fun computeSyncNames(a: CgApp): Set<String>
+fun computeSyncNames(a: CgApp)
   let virtualImpls = gfSlotFuncs(a)   # slot → implementing functions (all objects, foreign incl.)
   let seed = fold(appFunctions(a), Set(),
                   (acc, f) => siSeedable(f) ? add(acc, f.fnName) : acc)
   ret siFixpoint(a, virtualImpls, seed)
 
-fun inferSync(a: CgApp): CgApp
+fun inferSync(a: CgApp)
   let syncSet = computeSyncNames(a)
   ret appWithFunctions(a, map(appFunctions(a),
         (f) => siMaterialise(f, syncSet)))
 
-fun siMaterialise(f: CgFunction, syncSet: Set<String>): CgFunction
+fun siMaterialise(f: CgFunction, syncSet: Set<String>)
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars, f.fnOps,
                  f.fnComment, f.fnForeignSymbol,
                  contains(syncSet, f.fnName),
@@ -44,70 +44,62 @@ fun siMaterialise(f: CgFunction, syncSet: Set<String>): CgFunction
 
 # A body returning TagTask(...) produces a tagged task pointer — its callers'
 # PTR_IS_TASK fires; the function cannot be sync regardless of its Calls.
-fun siReturnsTaggedTask(f: CgFunction): Bool
-  ret any(f.fnOps, siOpReturnsTagTask)
+fun siReturnsTaggedTask(f: CgFunction) => any(f.fnOps, siOpReturnsTagTask)
 
-fun siOpReturnsTagTask(op): Bool
-  ret match(op)
-    (r: OpReturn) => match(r.returnValue)
-      (tt: RpTagTask) => true
-      (o: RParam)      => false
-    (o: Op)       => false
+fun siOpReturnsTagTask(op) => match(op)
+  (r: OpReturn) => match(r.returnValue)
+    (tt: RpTagTask) => true
+    (o: RParam)      => false
+  (o: Op)       => false
 
-fun siHasNoNontailCalls(f: CgFunction): Bool
-  ret !any(f.fnOps, siOpIsNontailCallish)
+fun siHasNoNontailCalls(f: CgFunction) => !any(f.fnOps, siOpIsNontailCallish)
 
-fun siOpIsNontailCallish(op): Bool
-  ret match(op)
-    (c: OpCall)          => !c.callMusttail
-    (pc: OpParallelCall) => true
-    (o: Op)              => false
+fun siOpIsNontailCallish(op) => match(op)
+  (c: OpCall)          => !c.callMusttail
+  (pc: OpParallelCall) => true
+  (o: Op)              => false
 
-fun siSeedable(f: CgFunction): Bool
-  ret f.fnSync
-      || (isNoneStr(f.fnForeignSymbol)
-          && !siReturnsTaggedTask(f)
-          && siHasNoNontailCalls(f))
+fun siSeedable(f: CgFunction) => f.fnSync
+    || (isNoneStr(f.fnForeignSymbol)
+        && !siReturnsTaggedTask(f)
+        && siHasNoNontailCalls(f))
 
-fun isNoneStr(s2: String|None): Bool
-  ret match(s2)
-    (x: String) => false
-    ()           => true
+fun isNoneStr(s2: String|None) => match(s2)
+  (x: String) => false
+  ()           => true
 
 # ── the fixed point ──────────────────────────────────────────────────────────
 
 # The sync names are a membership set — every reader asks "is this name in
 # it" — so it is a Set, and the fixpoint's "did anything get added" is its
 # size rather than a co-walk over two chains.
-fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: Set<String>): Set<String>
+fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: Set<String>)
   let grown = fold(appFunctions(a), syncSet,
                    (acc, f) => siTryAdd(acc, f, impls))
   ret size(grown) == size(syncSet) ? grown : siFixpoint(a, impls, grown)
 
 # Foreign functions have empty bodies (all([]) would falsely qualify) — their
 # sync-ness comes only from the programmer seed.
-fun siTryAdd(acc: Set<String>, f: CgFunction, impls: List<SlotFuncs>): Set<String>
+fun siTryAdd(acc: Set<String>, f: CgFunction, impls: List<SlotFuncs>)
   if contains(acc, f.fnName)
     ret acc
   if !isNoneStr(f.fnForeignSymbol) || siReturnsTaggedTask(f)
     ret acc
   ret siBodyIsSync(f, acc, impls) ? add(acc, f.fnName) : acc
 
-fun siBodyIsSync(f: CgFunction, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
+fun siBodyIsSync(f: CgFunction, syncSet: Set<String>, impls: List<SlotFuncs>)
   ret !any(f.fnOps, (op) => siOpBlocksSync(op, syncSet, impls))
 
-fun siOpBlocksSync(op: Op, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
-  ret match(op)
-    (pc: OpParallelCall) => true
-    (c: OpCall)          => !c.callMusttail && !siCallIsSync(c, syncSet, impls)
-    (o: Op)              => false
+fun siOpBlocksSync(op, syncSet: Set<String>, impls: List<SlotFuncs>) => match(op)
+  (pc: OpParallelCall) => true
+  (c: OpCall)          => !c.callMusttail && !siCallIsSync(c, syncSet, impls)
+  (o: Op)              => false
 
-fun siCallIsSync(c: OpCall, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
-  ret match(c.callFunction)
-    (gf: RpGlobalFunction)  => contains(syncSet, gf.name)
-    (vf: RpVirtualFunction) => siVirtualIsSync(vf.name, syncSet, impls)
-    (o: RParam)             => false
+fun siCallIsSync(c: OpCall, syncSet: Set<String>, impls: List<SlotFuncs>) => match(c.callFunction)
+  (gf: RpGlobalFunction)  => contains(syncSet, gf.name)
+  (vf: RpVirtualFunction) => siVirtualIsSync(vf.name, syncSet, impls)
+  (o: RParam)             => false
 
-fun siVirtualIsSync(name: String, syncSet: Set<String>, impls: List<SlotFuncs>): Bool
+fun siVirtualIsSync(name: String, syncSet: Set<String>, impls: List<SlotFuncs>)
   let names = gfSlotLookup(impls, name)
   ret !isEmpty(names) && !any(names, (n) => !contains(syncSet, n))

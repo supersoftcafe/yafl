@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 
@@ -33,20 +34,17 @@ class TernaryExpression(Expression):
             trueResult=self.trueResult.search_and_replace(resolver, replace),
             falseResult=self.falseResult.search_and_replace(resolver, replace))
 
-    # A ternary is a two-arm match on a Bool condition: the branches are the
-    # arms, and the same rules apply — broaden the branch types to their least
-    # upper bound (the result type), compile each branch against the receiver's
-    # expected type, and require the branches to converge.
+    # A ternary is a two-arm match on a Bool condition: the same rules apply.
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        return t.join(self.trueResult.get_type(resolver),
-                      self.falseResult.get_type(resolver))
+        return t.branch_type([self.trueResult.get_type(resolver),
+                              self.falseResult.get_type(resolver)], resolver)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        condition, conditionStatements = self.condition.compile(resolver, t.Bool())
-        trueResult, trueStatements = self.trueResult.compile(resolver, expected_type)
-        falseResult, falseStatements = self.falseResult.compile(resolver, expected_type)
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        condition, conditionStatements, ch = self.condition.compile(resolver, t.Bool())
+        trueResult, trueStatements, th = self.trueResult.compile(resolver, expected_type)
+        falseResult, falseStatements, fh = self.falseResult.compile(resolver, expected_type)
         return (dataclasses.replace(self, condition=condition, trueResult=trueResult, falseResult=falseResult),
-                conditionStatements + trueStatements + falseStatements)
+                conditionStatements + trueStatements + falseStatements, h.merge(ch, th, fh))
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         cond_err = self.condition.check(resolver, t.Bool())

@@ -39,3 +39,12 @@ fun bareArms(w): Int
   ret match(w)
     (e: Empty) => 0
     (f: Full)  => 1
+
+# A return type the body never determines: recursion with no base case.
+fun spin(n: Int) => spin(n)
+
+# A nested function's parameter is checked like a top-level one.
+fun hostFn(n: Int): Int
+  fun innerFn(k): Int
+    ret 0
+  ret innerFn(n)

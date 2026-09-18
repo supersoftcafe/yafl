@@ -20,6 +20,7 @@ import codegen.ir as cg_ir
 import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
+import pyast.hints as h
 
 import pyast.utils as u
 
@@ -40,7 +41,7 @@ class TypeAliasStatement(TypeStatement):
     def get_type(self) -> t.TypeSpec|None:
         return self.type if self.type.is_concrete() else None
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
         # A generic `where`-alias (`typealias [where] _W<S,T> : Box<Wrap<S,T>,T>
         # where Box<S,T>`) binds S/T over both its body and its constraints.
         trts: list[t.TypeSpec] = list(self.trait_params)
@@ -49,7 +50,7 @@ class TypeAliasStatement(TypeStatement):
             resolver = g.ResolverType(resolver, self._find_generic_types)
             trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
         new_type, new_statements = self.type.compile(resolver)
-        return dataclasses.replace(self, type=new_type, trait_params=tuple(trts)), new_statements + trts_glb
+        return dataclasses.replace(self, type=new_type, trait_params=tuple(trts)), new_statements + trts_glb, {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         if self.type_params or self.trait_params:
@@ -136,16 +137,16 @@ class EnumStatement(TypeStatement):
         new_variants = [v._assign_specs(root_name, all_leaf_names) for v in self.variants]
         return dataclasses.replace(self, variants=new_variants, _root_name=root_name, _enum_spec=my_spec)
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[EnumStatement, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[EnumStatement, list[Statement], h.Hints]:
         # Expose this enum's generic type params (K, V, …) so that variant
         # parameter types like `tail: _Bucket<K,V>` can resolve K and V.
         if self.type_params:
             resolver = g.ResolverType(resolver, self._find_generic_types)
-        new_parameters, prm_stmts = self.parameters.compile(resolver, None)
+        new_parameters, prm_stmts, _ = self.parameters.compile(resolver, None)
         new_variants: list[EnumStatement] = []
         var_stmts: list[Statement] = []
         for v in self.variants:
-            cv, vg = v.compile(resolver, None)
+            cv, vg, _ = v.compile(resolver, None)
             new_variants.append(cv)
             var_stmts.extend(vg)
         root_name = self.name
@@ -157,7 +158,7 @@ class EnumStatement(TypeStatement):
         new_self = dataclasses.replace(self,
             parameters=new_parameters, variants=final_variants,
             _root_name=root_name, _enum_spec=my_spec)
-        return new_self, prm_stmts + var_stmts
+        return new_self, prm_stmts + var_stmts, {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         if self._enum_spec is None:

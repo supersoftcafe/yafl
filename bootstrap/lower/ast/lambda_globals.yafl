@@ -10,36 +10,31 @@ import Bootstrap::Ast
 
 
 
-fun lowerLambdaGlobals(statements: List<PStmt>): List<PStmt>
-  ret llgLoop(chain(statements), List())
+fun lowerLambdaGlobals(statements: List<PStmt>) => llgLoop(chain(statements), List())
 
-fun llgLoop(ss, acc: List<PStmt>): List<PStmt>
-  ret build(llgLoopB(ss, builderFrom(acc)))
+fun llgLoop(ss, acc: List<PStmt>): List<PStmt> => build(llgLoopB(ss, builderFrom(acc)))
 
-fun [tail] llgLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => llgLoopB(l.next, push(acc, llgOne(l.value)))
+fun [tail] llgLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>) => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => llgLoopB(l.next, push(acc, llgOne(l.value)))
 
-fun llgOne(st): PStmt
-  ret match(st)
-    (l: PsLet) => match(l.lDefault)
-      (d: PExpr) => match(d)
-        (lm: PeLambda) => globalFunOf(l, lm)
-        (o: PExpr)     => st
-      ()         => st
-    (o: PStmt) => st
+fun llgOne(st) => match(st)
+  (l: PsLet) => match(l.lDefault)
+    (d: PExpr) => match(d)
+      (lm: PeLambda) => globalFunOf(l, lm)
+      (o: PExpr)     => st
+    ()         => st
+  (o: PStmt) => st
 
 # The lambda's return_type is the whole (params): result CallableSpec; the
 # function wants just the result.
-fun globalFunOf(l: PsLet, lm: PeLambda): PStmt
+fun globalFunOf(l: PsLet, lm: PeLambda)
   ret PsFun(l.lName, l.lAttrs, l.lGens, lm.lamParams, lm.lamBody,
             lambdaRetResult(lm), l.lWheres, l.pslLine, false, false,
             l.lImports)
 
-fun lambdaRetResult(lm: PeLambda): Spec|None
-  ret match(lm.lamRet)
-    (rt: Spec) => match(rt)
-      (cl: SCallable) => cl.scResult
-      (o: Spec)       => None
-    ()         => None
+fun lambdaRetResult(lm: PeLambda) => match(lm.lamRet)
+  (rt: Spec) => match(rt)
+    (cl: SCallable) => cl.scResult
+    (o: Spec)       => None
+  ()         => None

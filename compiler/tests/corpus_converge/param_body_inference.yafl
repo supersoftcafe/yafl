@@ -34,3 +34,41 @@ fun sides(s): System::Int
 
 fun use(n: System::Int): System::Int
   ret echoed(n) + viaCall(Circle(n)) + sides(Tri(n))
+
+# Trait operators pin through the EXPECTED type: `&` pins on mask32, then `+`
+# pins on the Int `&` expects, and a, b take it — no annotations anywhere.
+let mask32 = 4294967295
+
+fun add32(a, b)
+  ret (a + b) & mask32
+
+fun rotl32(x, c)
+  ret ((x << c) | (x >> (32 - c))) & mask32
+
+# A lambda's parameter infers from its body.
+fun tripled(n: System::Int): System::Int
+  let triple = (x) => 3 * x
+  ret triple(n)
+
+# `3 * a` makes a an Int; only then does `pair` pin, and b takes its String.
+fun pair(n: System::Int, s: System::String): System::Int
+  ret n + length(s)
+
+fun pair(_n: System::Int32, _s: System::Int32): System::Int
+  ret 1
+
+fun late(a, b): System::Int
+  ret pair(a, b) + 3 * a
+
+# Ternary and match branches converge on the ROOT.
+fun pickT(flag: System::Bool)
+  ret flag ? Circle(1) : Square(2)
+
+fun pickM(n: System::Int)
+  ret match(n)
+    (0) => Circle(1)
+    ()  => Square(2)
+
+fun more(n: System::Int): System::Int
+  ret add32(n, rotl32(n, 3)) + tripled(n) + late(n, "ab")
+    + sides(pickT(true)) + sides(pickM(n))

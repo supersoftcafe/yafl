@@ -15,33 +15,29 @@ import Bootstrap::Ir
 
 
 
-fun foldStructReads(a: CgApp): CgApp
-  ret appWithFunctions(a, map(appFunctions(a), sfoFunction))
+fun foldStructReads(a: CgApp) => appWithFunctions(a, map(appFunctions(a), sfoFunction))
 
-fun sfoFunction(f: CgFunction): CgFunction
+fun sfoFunction(f: CgFunction)
   let defs = singleDefs(f)
   ret cgFunctionWith(f, map(f.fnOps,
                             (op) => opReplaceParams(op,
                               (p) => sfoReplace(p, defs))),
                      f.fnStackVars)
 
-fun sfoReplace(p, defs: SsaDefs): RParam
-  ret match(p)
-    (sf: RpStructField) => match(sf.structVal)
-      (sv: RpStackVar) => sfoFold(sf, sv, defs)
-      (o: RParam)      => p
-    (o: RParam)         => p
+fun sfoReplace(p, defs: SsaDefs) => match(p)
+  (sf: RpStructField) => match(sf.structVal)
+    (sv: RpStackVar) => sfoFold(sf, sv, defs)
+    (o: RParam)      => p
+  (o: RParam)         => p
 
-fun sfoFold(sf, sv, defs: SsaDefs): RParam
-  ret match(resolveValue(sv, defs, sdMaxChase()))
-    (base: RParam) => match(base)
-      (ns: RpNewStruct) => sfoField(chain(ns.values), sf)
-      (o: RParam)       => sf
-    ()             => sf
+fun sfoFold(sf, sv, defs: SsaDefs): RParam => match(resolveValue(sv, defs, sdMaxChase()))
+  (base: RParam) => match(base)
+    (ns: RpNewStruct) => sfoField(chain(ns.values), sf)
+    (o: RParam)       => sf
+  ()             => sf
 
-fun [tail] sfoField(vs: Chain<RpNamedValue>, sf: RpStructField): RParam
-  ret match(vs)
-    (nil: ChainEnd) => sf
-    (l: ChainLink)  => l.value.name == sf.field && sdIsDuplicable(l.value.value)
-      ? l.value.value
-      : sfoField(l.next, sf)
+fun [tail] sfoField(vs: Chain<RpNamedValue>, sf: RpStructField) => match(vs)
+  (nil: ChainEnd) => sf
+  (l: ChainLink)  => l.value.name == sf.field && sdIsDuplicable(l.value.value)
+    ? l.value.value
+    : sfoField(l.next, sf)

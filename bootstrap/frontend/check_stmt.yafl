@@ -11,24 +11,23 @@ import Bootstrap::Types
 
 
 
-fun checkStmtKind(st, r, retTy: Spec|None): Set<PErr>
-  ret match(st)
-    (f: PsFun)         => checkFun2(f, r)
-    (l: PsLet)         => checkLet2(l, r)
-    (d: PsDestructure) => checkDestructure2(d, r)
-    (c: PsClass)       => checkClass2(c, r)
-    (e2: PsEnum)       => checkEnum2(e2, r)
-    (ta: PsTypealias)  => checkTypealias2(ta, r)
-    (rt: PsRet)        => checkRet2(rt, r, retTy)
-    (a: PsAction)      => checkAction2(a, r)
-    (i: PsIf)          => checkIf2(i, r, retTy)
-    (ei: PsElseIf)     => oneErr(ei.pseiLine,
-                                 "`else if` without a matching preceding `if`")
-    (el: PsElse)       => oneErr(el.pselLine,
-                                 "`else` without a matching preceding `if`")
-    (im: PsImport)     => noErrs()
-    (ns: PsNamespace)  => noErrs()
-    (inst: PsTraitInstance) => checkTraitInstance(inst, r)
+fun checkStmtKind(st, r, retTy: Spec|None) => match(st)
+  (f: PsFun)         => checkFun2(f, r)
+  (l: PsLet)         => checkLet2(l, r)
+  (d: PsDestructure) => checkDestructure2(d, r)
+  (c: PsClass)       => checkClass2(c, r)
+  (e2: PsEnum)       => checkEnum2(e2, r)
+  (ta: PsTypealias)  => checkTypealias2(ta, r)
+  (rt: PsRet)        => checkRet2(rt, r, retTy)
+  (a: PsAction)      => checkAction2(a, r)
+  (i: PsIf)          => checkIf2(i, r, retTy)
+  (ei: PsElseIf)     => oneErr(ei.pseiLine,
+                               "`else if` without a matching preceding `if`")
+  (el: PsElse)       => oneErr(el.pselLine,
+                               "`else` without a matching preceding `if`")
+  (im: PsImport)     => noErrs()
+  (ns: PsNamespace)  => noErrs()
+  (inst: PsTraitInstance) => checkTraitInstance(inst, r)
 
 # ── TraitInstanceStatement ──────────────────────────────────────────────────
 # Pattern + wheres under the generic scope; members under the transient
@@ -45,17 +44,16 @@ fun checkTraitInstance(inst: PsTraitInstance, r0): Set<PErr>
              attrErrs(inst.tiAttrs, isKnownInstanceAttr, inst.pstiLine,
                       "an instance")))))
 
-fun instancePatternErrs(inst: PsTraitInstance, r): Set<PErr>
-  ret match(inst.tiPattern)
-    (c: SClass) => match(soleItem(findType(r, c.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => cls.cIsInterface
-          ? noErrs()
-          : oneErr(inst.pstiLine,
-                   "an instance implements an interface, not a class")
-        (o: PStmt)     => noErrs()
-      ()         => noErrs()
-    (o: Spec)   => noErrs()
+fun instancePatternErrs(inst: PsTraitInstance, r) => match(inst.tiPattern)
+  (c: SClass) => match(soleItem(findType(r, c.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => cls.cIsInterface
+        ? noErrs()
+        : oneErr(inst.pstiLine,
+                 "an instance implements an interface, not a class")
+      (o: PStmt)     => noErrs()
+    ()         => noErrs()
+  (o: Spec)   => noErrs()
 
 # ── FunctionStatement ───────────────────────────────────────────────────────
 
@@ -76,32 +74,34 @@ fun checkFun2(f: PsFun, r0): Set<PErr>
       union(funAttrErrs(f),
       union(paramDefaultErrs(chain(flattenParams(f.fParams)), r, noErrs()),
       union(missingRetErrs(f, bodyR),
+      # A top-level function's are reported before the check phase.
+      union(f.fGlobal ? noErrs() : funUntypedErrors(f, bodyR, noErrs()),
       union(attrErrs(f.fAttrs, isKnownFunAttr, f.psfLine, "a function"),
-             unusedParamWarns(f)))))))))
+             unusedParamWarns(f))))))))))
 
 # A declared result must actually be produced: a body that type-checks to no
 # value (no `ret` reaches the function block and no trailing value) would
 # generate `Return(None)` and crash codegen — a bare tail-call STATEMENT where
 # `ret f(...)` was meant.
-fun missingRetErrs(f: PsFun, bodyR): Set<PErr>
-  ret match(f.fBody)
-    (b: PExpr) => match(f.fRet)
-      (rt: Spec) => match(exprType(b, bodyR))
-        (bt: Spec) => noErrs()
-        ()          => oneErr(f.psfLine,
-                              "function '" + bareOfUnique(f.fName)
-                              + "' declares a result but its body never returns a value — missing `ret`?")
-      ()         => noErrs()
-    ()         => noErrs()
+fun missingRetErrs(f: PsFun, bodyR): Set<PErr> => match(f.fBody)
+  (b: PExpr) => hasDeclaredRet(f)
+    ? (exprType(b, bodyR) is None
+        ? oneErr(f.psfLine, "function '" + bareOfUnique(f.fName)
+                            + "' declares a result but its body never returns a value — missing `ret`?")
+        : noErrs())
+    : (f.fRet is None || exprType(b, bodyR) is None
+        ? oneErr(f.psfLine, "Return type of '" + bareOfUnique(f.fName)
+                            + "' could not be inferred — declare it")
+        : noErrs())
+  ()         => noErrs()
 
-fun funAttrErrs(f: PsFun): Set<PErr>
-  ret union(foreignErrs(f),
-      union(noArgAttr(f, "impure", "[impure] takes no arguments"),
-      union(noArgAttr(f, "sync", "[sync] takes no arguments"),
-      union(tailErrs(f),
-      union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
-      union(testErrs(f),
-             innerWhereErrs(f)))))))
+fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
+                             union(noArgAttr(f, "impure", "[impure] takes no arguments"),
+                             union(noArgAttr(f, "sync", "[sync] takes no arguments"),
+                             union(tailErrs(f),
+                             union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
+                             union(testErrs(f),
+                                    innerWhereErrs(f)))))))
 
 # ── unknown attributes ──────────────────────────────────────────────────────
 # Attributes parse as an OPEN `[name]` / `[name(expr)]` list, so without this
@@ -112,61 +112,51 @@ fun funAttrErrs(f: PsFun): Set<PErr>
 # order as the Python side (base.py `unknown_attribute_errors`).
 
 fun [tail] unknownAttrErrs(as2: Chain<PAttr>, known: (:String): Bool,
-                           lr, kind, acc): Set<PErr>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => known(l.value.attrName)
-      ? unknownAttrErrs(l.next, known, lr, kind, acc)
-      : unknownAttrErrs(l.next, known, lr, kind,
-          add(acc, PErr(lr, "unknown attribute [" + l.value.attrName
-                            + "] on " + kind)))
+                           lr, kind, acc): Set<PErr> => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => known(l.value.attrName)
+    ? unknownAttrErrs(l.next, known, lr, kind, acc)
+    : unknownAttrErrs(l.next, known, lr, kind,
+        add(acc, PErr(lr, "unknown attribute [" + l.value.attrName
+                          + "] on " + kind)))
 
 fun attrErrs(attrs: List<PAttr>, known: (:String): Bool, lr,
-             kind): Set<PErr>
-  ret unknownAttrErrs(chain(attrs), known, lr, kind, noErrs())
+             kind): Set<PErr> => unknownAttrErrs(chain(attrs), known, lr, kind, noErrs())
 
-fun isKnownFunAttr(n): Bool
-  ret n == "foreign" || n == "impure" || n == "sync" || n == "tail"
-   || n == "terminal" || n == "inline" || n == "hashed" || n == "refeq"
-   || n == "linear" || n == "lazy" || n == "final" || n == "future"
-   || n == "pinnable" || n == "test"
+fun isKnownFunAttr(n) => n == "foreign" || n == "impure" || n == "sync" || n == "tail"
+ || n == "terminal" || n == "inline" || n == "hashed" || n == "refeq"
+ || n == "linear" || n == "lazy" || n == "final" || n == "future"
+ || n == "pinnable" || n == "test"
 
-fun isKnownClassAttr(n): Bool
-  ret n == "final" || n == "linear" || n == "foreign" || n == "pinnable"
-   || n == "hashed" || n == "refeq" || n == "mutable"
+fun isKnownClassAttr(n) => n == "final" || n == "linear" || n == "foreign" || n == "pinnable"
+ || n == "hashed" || n == "refeq" || n == "mutable"
 
-fun isKnownLetAttr(n): Bool
-  ret n == "terminal" || n == "const" || n == "lazy" || n == "trait"
-   || n == "future" || n == "linear" || n == "final" || n == "mutable"
-   || n == "ambient" || n == "pinnable"
+fun isKnownLetAttr(n) => n == "terminal" || n == "const" || n == "lazy" || n == "trait"
+ || n == "future" || n == "linear" || n == "final" || n == "mutable"
+ || n == "ambient" || n == "pinnable"
 
-fun isKnownEnumAttr(n): Bool
-  ret n == "hashed" || n == "refeq" || n == "linear" || n == "final"
+fun isKnownEnumAttr(n) => n == "hashed" || n == "refeq" || n == "linear" || n == "final"
 
-fun isKnownTypealiasAttr(n): Bool
-  ret n == "linear"
+fun isKnownTypealiasAttr(n) => n == "linear"
 
-fun isKnownInstanceAttr(n): Bool
-  ret n == "ambient" || n == "trait"
+fun isKnownInstanceAttr(n) => n == "ambient" || n == "trait"
 
-fun attrValueOf(attrs: List<PAttr>, name: String): PExpr|None
-  ret avLoop(chain(attrs), name)
+fun attrValueOf(attrs: List<PAttr>, name: String) => avLoop(chain(attrs), name)
 
-fun [tail] avLoop(as2: Chain<PAttr>, name: String): PExpr|None
-  ret match(as2)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.attrName == name
-      ? l.value.attrValue
-      : avLoop(l.next, name)
+fun [tail] avLoop(as2: Chain<PAttr>, name: String) => match(as2)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.attrName == name
+    ? l.value.attrValue
+    : avLoop(l.next, name)
 
-fun noArgAttr(f: PsFun, name: String, msg): Set<PErr>
+fun noArgAttr(f: PsFun, name: String, msg)
   if !hasAttr(f.fAttrs, name)
     ret noErrs()
   ret match(attrValueOf(f.fAttrs, name))
     (v: PExpr) => oneErr(f.psfLine, msg)
     ()         => noErrs()
 
-fun foreignErrs(f: PsFun): Set<PErr>
+fun foreignErrs(f: PsFun)
   if !hasAttr(f.fAttrs, "foreign")
     ret noErrs()
   if !isOneStringArg(attrValueOf(f.fAttrs, "foreign"))
@@ -181,7 +171,7 @@ fun foreignErrs(f: PsFun): Set<PErr>
 # here: `--test` puts the function in a TestCase whose `body` field is typed
 # `(): System::None|TestFailure`, so a wrong return type is caught there by
 # ordinary type checking rather than by a rule restated in two compilers.
-fun testErrs(f: PsFun): Set<PErr>
+fun testErrs(f: PsFun)
   if !hasAttr(f.fAttrs, "test")
     ret noErrs()
   let argErr = testArgErr(f)
@@ -195,29 +185,26 @@ fun testErrs(f: PsFun): Set<PErr>
   ret union(argErr, union(bodyErr, paramErr))
 
 # Absent is fine (the description is optional); present must be one string.
-fun testArgErr(f: PsFun): Set<PErr>
-  ret match(attrValueOf(f.fAttrs, "test"))
-    (v: PExpr) => isOneStringArg(v)
-      ? noErrs()
-      : oneErr(f.psfLine,
-               "[test] takes one optional string argument: [test(\"description\")]")
-    ()         => noErrs()
+fun testArgErr(f: PsFun) => match(attrValueOf(f.fAttrs, "test"))
+  (v: PExpr) => isOneStringArg(v)
+    ? noErrs()
+    : oneErr(f.psfLine,
+             "[test] takes one optional string argument: [test(\"description\")]")
+  ()         => noErrs()
 
-fun isOneStringArg(v: PExpr|None): Bool
-  ret match(v)
-    (x: PExpr) => match(x)
-      (tp: PeTuple) => exactly(chain(tp.exprs), 1) && firstIsString(head(tp.exprs))
-      (o: PExpr)    => false
-    ()         => false
+fun isOneStringArg(v: PExpr|None) => match(v)
+  (x: PExpr) => match(x)
+    (tp: PeTuple) => exactly(chain(tp.exprs), 1) && firstIsString(head(tp.exprs))
+    (o: PExpr)    => false
+  ()         => false
 
-fun firstIsString(en: PTupEnt|None): Bool
-  ret match(en)
-    (e2: PTupEnt) => match(e2.tupValue)
-      (s2: PeStr) => true
-      (o: PExpr)  => false
-    ()            => false
+fun firstIsString(en: PTupEnt|None) => match(en)
+  (e2: PTupEnt) => match(e2.tupValue)
+    (s2: PeStr) => true
+    (o: PExpr)  => false
+  ()            => false
 
-fun tailErrs(f: PsFun): Set<PErr>
+fun tailErrs(f: PsFun)
   if !hasAttr(f.fAttrs, "tail")
     ret noErrs()
   let argErr = noArgAttr(f, "tail", "[tail] takes no arguments")
@@ -232,51 +219,47 @@ fun tailErrs(f: PsFun): Set<PErr>
 # nothing and a type parameter would rebind a name that is already bound — a
 # restated `<T>` resolves ambiguously, a fresh `<X>` is not in scope inside its
 # own body.
-fun innerWhereErrs(f: PsFun): Set<PErr>
-  ret union(!f.fGlobal && !isEmpty(f.fGens)
-              ? oneErr(f.psfLine,
-                       "only a global function declares type parameters — an inner function inherits the enclosing function's, a member function its class or instance's")
-              : noErrs(),
-            f.fNested && !isEmpty(f.fWheres)
-              ? oneErr(f.psfLine,
-                       "`where` is not allowed on an inner function — move it to a top-level function")
-              : noErrs())
+fun innerWhereErrs(f: PsFun) => union(!f.fGlobal && !isEmpty(f.fGens)
+                                        ? oneErr(f.psfLine,
+                                                 "only a global function declares type parameters — an inner function inherits the enclosing function's, a member function its class or instance's")
+                                        : noErrs(),
+                                      f.fNested && !isEmpty(f.fWheres)
+                                        ? oneErr(f.psfLine,
+                                                 "`where` is not allowed on an inner function — move it to a top-level function")
+                                        : noErrs())
 
-fun [tail] paramDefaultErrs(ls: Chain<PStmt>, r: Resolver,
-                            acc: Set<PErr>): Set<PErr>
-  ret match(ls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => paramDefaultErrs(l.next, r,
-                         union(acc, defaultValueErrors(let2.lDefault, r,
-                                                        let2.pslLine,
-                                                        "parameter")))
-      (o: PStmt)    => paramDefaultErrs(l.next, r, acc)
+fun [tail] paramDefaultErrs(ls: Chain<PStmt>, r,
+                            acc: Set<PErr>) => match(ls)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => paramDefaultErrs(l.next, r,
+                       union(acc, defaultValueErrors(let2.lDefault, r,
+                                                      let2.pslLine,
+                                                      "parameter")))
+    (o: PStmt)    => paramDefaultErrs(l.next, r, acc)
 
 # No value vanishes silently: a parameter the body never reads. `this` is
 # implicit; a `_` prefix is the opt-out; [terminal] params are consumed on
 # arrival.
-fun unusedParamWarns(f: PsFun): Set<PErr>
-  ret match(f.fBody)
-    (b: PExpr) => unusedParamLoop(chain(flattenParams(f.fParams)),
-                                  referencedNames(b, List()), noErrs())
-    ()         => noErrs()
+fun unusedParamWarns(f: PsFun): Set<PErr> => match(f.fBody)
+  (b: PExpr) => unusedParamLoop(chain(flattenParams(f.fParams)),
+                                referencedNames(b, List()), noErrs())
+  ()         => noErrs()
 
 
 fun [tail] unusedParamLoop(ls: Chain<PStmt>, referenced: List<String>,
-                           acc: Set<PErr>): Set<PErr>
-  ret match(ls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => skipParamWarn(let2, referenced)
-        ? unusedParamLoop(l.next, referenced, acc)
-        : unusedParamLoop(l.next, referenced,
-            add(acc, PErr(let2.pslLine,
-                             "parameter '" + bareOfUnique(let2.lName)
-                             + "' is never used", true)))
-      (o: PStmt)    => unusedParamLoop(l.next, referenced, acc)
+                           acc: Set<PErr>) => match(ls)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => skipParamWarn(let2, referenced)
+      ? unusedParamLoop(l.next, referenced, acc)
+      : unusedParamLoop(l.next, referenced,
+          add(acc, PErr(let2.pslLine,
+                           "parameter '" + bareOfUnique(let2.lName)
+                           + "' is never used", true)))
+    (o: PStmt)    => unusedParamLoop(l.next, referenced, acc)
 
-fun skipParamWarn(let2: PsLet, referenced: List<String>): Bool
+fun skipParamWarn(let2: PsLet, referenced: List<String>)
   ret startsWith(bareOfUnique(let2.lName), "_")
       || bareOfUnique(let2.lName) == "this"
       || hasAttr(let2.lAttrs, "terminal")
@@ -284,22 +267,21 @@ fun skipParamWarn(let2: PsLet, referenced: List<String>): Bool
 
 # ── LetStatement / DestructureStatement ─────────────────────────────────────
 
-fun checkLet2(l: PsLet, r): Set<PErr>
+fun checkLet2(l: PsLet, r)
   let bad = letTypeErr(l, r)
   ret isEmpty(bad) ? letSubErrs(l, r) : bad
 
-fun letTypeErr(l: PsLet, r): Set<PErr>
-  ret match(l.lDefault)
-    (d: PExpr) => match(l.lType)
-      (want: Spec) => match(exprType(d, r))
-        (xt: Spec) => triFalse(assignableEq(r, want, xt))
-          ? oneErr(l.pslLine, "Incorrect type")
-          : noErrs()
-        ()         => noErrs()
-      ()           => noErrs()
-    ()         => noErrs()
+fun letTypeErr(l: PsLet, r) => match(l.lDefault)
+  (d: PExpr) => match(l.lType)
+    (want: Spec) => match(exprType(d, r))
+      (xt: Spec) => triFalse(assignableEq(r, want, xt))
+        ? oneErr(l.pslLine, "Incorrect type")
+        : noErrs()
+      ()         => noErrs()
+    ()           => noErrs()
+  ()         => noErrs()
 
-fun letSubErrs(l: PsLet, r): Set<PErr>
+fun letSubErrs(l: PsLet, r)
   let err1 = match(l.lDefault)
     (d: PExpr) => checkExpr(d, r, l.lType)
     ()         => noErrs()
@@ -307,12 +289,12 @@ fun letSubErrs(l: PsLet, r): Set<PErr>
   let whereErr = checkSpecs(chain(l.lWheres), r, noErrs())
   ret union(err1, union(err2, union(letAttrErrs(l, r), whereErr)))
 
-fun letAttrErrs(l: PsLet, r: Resolver): Set<PErr>
+fun letAttrErrs(l: PsLet, r: Resolver)
   ret union(constErrs(l),
       union(lazyFutureErrs(l),
              attrErrs(l.lAttrs, isKnownLetAttr, l.pslLine, "a let")))
 
-fun constErrs(l: PsLet): Set<PErr>
+fun constErrs(l: PsLet)
   if !hasAttr(l.lAttrs, "const")
     ret noErrs()
   let argErr = letAttrArgErr(l, "const", "[const] takes no arguments")
@@ -320,25 +302,21 @@ fun constErrs(l: PsLet): Set<PErr>
     ? argErr
     : union(argErr, oneErr(l.pslLine, "[const] requires a literal value"))
 
-fun letAttrArgErr(l: PsLet, name: String, msg): Set<PErr>
-  ret match(attrValueOf(l.lAttrs, name))
-    (v: PExpr) => oneErr(l.pslLine, msg)
-    ()         => noErrs()
+fun letAttrArgErr(l: PsLet, name: String, msg) => match(attrValueOf(l.lAttrs, name))
+  (v: PExpr) => oneErr(l.pslLine, msg)
+  ()         => noErrs()
 
-fun hasInit(l: PsLet): Bool
-  ret match(l.lDefault)
-    (d: PExpr) => true
-    ()         => false
+fun hasInit(l: PsLet) => match(l.lDefault)
+  (d: PExpr) => true
+  ()         => false
 
-fun isConstLiteral(d: PExpr|None): Bool
-  ret match(d)
-    (x: PExpr) => isLiteralValue(x)
-    ()         => false
+fun isConstLiteral(d: PExpr|None) => match(d)
+  (x: PExpr) => isLiteralValue(x)
+  ()         => false
 
-fun lazyFutureErrs(l: PsLet): Set<PErr>
-  ret union(lazyErrs(l), futureErrs(l))
+fun lazyFutureErrs(l: PsLet) => union(lazyErrs(l), futureErrs(l))
 
-fun lazyErrs(l: PsLet): Set<PErr>
+fun lazyErrs(l: PsLet)
   if !hasAttr(l.lAttrs, "lazy")
     ret noErrs()
   let argErr = letAttrArgErr(l, "lazy", "[lazy] takes no arguments")
@@ -346,7 +324,7 @@ fun lazyErrs(l: PsLet): Set<PErr>
     ? argErr
     : union(argErr, oneErr(l.pslLine, "[lazy] requires an initialiser"))
 
-fun futureErrs(l: PsLet): Set<PErr>
+fun futureErrs(l: PsLet)
   if !hasAttr(l.lAttrs, "future")
     ret noErrs()
   let argErr = letAttrArgErr(l, "future", "[future] takes no arguments")
@@ -362,7 +340,7 @@ fun futureErrs(l: PsLet): Set<PErr>
 
 # A destructure inherits the let rules (Python: DestructureStatement extends
 # LetStatement and does not override check).
-fun checkDestructure2(d: PsDestructure, r): Set<PErr>
+fun checkDestructure2(d: PsDestructure, r)
   let typeErr = match(d.dDefault)
     (x: PExpr) => match(d.dType)
       (want: Spec) => match(exprType(x, r))
@@ -381,15 +359,14 @@ fun checkDestructure2(d: PsDestructure, r): Set<PErr>
 
 # ── control ─────────────────────────────────────────────────────────────────
 
-fun checkRet2(rt: PsRet, r, retTy: Spec|None): Set<PErr>
-  ret match(exprType(rt.retValue, r))
-    (xt: Spec) if triFalse(assignableEq(r, retTy, xt)) =>
-        oneErr(rt.psrLine, "Incorrect return type")
-    ()         => checkExpr(rt.retValue, r, retTy)
+fun checkRet2(rt: PsRet, r, retTy: Spec|None) => match(exprType(rt.retValue, r))
+  (xt: Spec) if triFalse(assignableEq(r, retTy, xt)) =>
+      oneErr(rt.psrLine, "Incorrect return type")
+  ()         => checkExpr(rt.retValue, r, retTy)
 
 # No value vanishes silently: a statement-position expression discards its
 # result. Unit carries nothing and is fine; anything else warns.
-fun checkAction2(a: PsAction, r): Set<PErr>
+fun checkAction2(a: PsAction, r)
   let errs = checkExpr(a.action, r, None)
   ret match(exprType(a.action, r))
     (xt: Spec) => isUnitType(xt)
@@ -399,10 +376,9 @@ fun checkAction2(a: PsAction, r): Set<PErr>
                           + "discard explicitly", true))
     ()         => errs
 
-fun isUnitType(xt): Bool
-  ret match(xt)
-    (tp: STuple) => isEmpty(tp.stEntries)
-    (o: Spec)    => false
+fun isUnitType(xt) => match(xt)
+  (tp: STuple) => isEmpty(tp.stEntries)
+  (o: Spec)    => false
 
 fun checkIf2(i: PsIf, r, retTy: Spec|None): Set<PErr>
   let condErr = checkExpr(i.ifCond, r, SBuiltin("bool", i.psifLine))
@@ -419,18 +395,16 @@ fun checkIf2(i: PsIf, r, retTy: Spec|None): Set<PErr>
                           noErrs()))))
 
 fun [tail] branchChecks(ss: Chain<PStmt>, r: Resolver, retTy: Spec|None,
-                        acc: Set<PErr>): Set<PErr>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => branchChecks(l.next, r, retTy,
-                                    union(acc, checkStmt2(l.value, r, retTy)))
+                        acc: Set<PErr>): Set<PErr> => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => branchChecks(l.next, r, retTy,
+                                  union(acc, checkStmt2(l.value, r, retTy)))
 
 # ── classes / enums / typealiases ───────────────────────────────────────────
 
-fun checkClass2(c, r0): Set<PErr>
-  ret match(c.cAllParents)
-    (ps: List<Spec>) => classChecks(c, r0)
-    ()               => oneErr(c.pscLine, "Missed compile step")
+fun checkClass2(c, r0) => match(c.cAllParents)
+  (ps: List<Spec>) => classChecks(c, r0)
+  ()               => oneErr(c.pscLine, "Missed compile step")
 
 # NOT PORTED YET: the [foreign]-class rules and the slot multi-override /
 # no-implementation checks (classdef.py:235-260, needs invert_and_merge_slots)
@@ -461,7 +435,7 @@ fun classChecks(c, r0): Set<PErr>
 
 # The trailing array field: at most one, the class [final], and its length
 # field an Int32 sibling.
-fun arrayFieldErrs(c: PsClass, r: Resolver): Set<PErr>
+fun arrayFieldErrs(c: PsClass, r: Resolver)
   let fields = classFields(c)
   let arrays = arrayFieldsOf(chain(fields), List())
   if isEmpty(arrays)
@@ -475,40 +449,35 @@ fun arrayFieldErrs(c: PsClass, r: Resolver): Set<PErr>
   ret union(countErr,
              union(finalErr2, lenFieldErrs(chain(arrays), fields, noErrs())))
 
-fun classFields(c: PsClass): List<PStmt>
+fun classFields(c: PsClass)
   ret concat(flattenParams(c.cParams), letMembers(chain(c.cMembers),
                                                   List()))
 
-fun letMembers(ms, acc: List<PStmt>): List<PStmt>
-  ret build(letMembersB(ms, builderFrom(acc)))
+fun letMembers(ms, acc: List<PStmt>): List<PStmt> => build(letMembersB(ms, builderFrom(acc)))
 
-fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ms)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => letMembersB(l.next, push(acc, l.value))
-      (o: PStmt)    => letMembersB(l.next, acc)
+fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>) => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => letMembersB(l.next, push(acc, l.value))
+    (o: PStmt)    => letMembersB(l.next, acc)
 
-fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt>
-  ret build(arrayFieldsOfB(fs, builderFrom(acc)))
+fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt> => build(arrayFieldsOfB(fs, builderFrom(acc)))
 
-fun [tail] arrayFieldsOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => isArrayStorage(l.value)
-      ? arrayFieldsOfB(l.next, push(acc, l.value))
-      : arrayFieldsOfB(l.next, acc)
+fun [tail] arrayFieldsOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>) => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => isArrayStorage(l.value)
+    ? arrayFieldsOfB(l.next, push(acc, l.value))
+    : arrayFieldsOfB(l.next, acc)
 
 fun [tail] lenFieldErrs(as2: Chain<PStmt>, fields: List<PStmt>,
-                        acc: Set<PErr>): Set<PErr>
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value)
-      (af: PsLet) => lenFieldErrs(l.next, fields,
-                                  union(acc, oneLenErr(af, fields)))
-      (o: PStmt)  => lenFieldErrs(l.next, fields, acc)
+                        acc: Set<PErr>) => match(as2)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (af: PsLet) => lenFieldErrs(l.next, fields,
+                                union(acc, oneLenErr(af, fields)))
+    (o: PStmt)  => lenFieldErrs(l.next, fields, acc)
 
-fun oneLenErr(af: PsLet, fields: List<PStmt>): Set<PErr>
+fun oneLenErr(af: PsLet, fields: List<PStmt>)
   let lenName = arrayLenName(af.lType)
   ret match(fieldNamed2(chain(fields), lenName))
     (m: PsLet) => isInt32Field(m)
@@ -518,44 +487,39 @@ fun oneLenErr(af: PsLet, fields: List<PStmt>): Set<PErr>
     ()         => oneErr(af.pslLine, "array length field '" + lenName
                                      + "' is not a field of this class")
 
-fun arrayLenName(ty: Spec|None): String
-  ret match(ty)
-    (t2: Spec) => match(t2)
-      (af: SArrayField) => af.safLenField
-      (o: Spec)         => ""
-    ()         => ""
+fun arrayLenName(ty: Spec|None) => match(ty)
+  (t2: Spec) => match(t2)
+    (af: SArrayField) => af.safLenField
+    (o: Spec)         => ""
+  ()         => ""
 
-fun [tail] fieldNamed2(fs: Chain<PStmt>, name: String): PsLet|None
-  ret match(fs)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => matchName(let2.lName, name)
-        ? let2
-        : fieldNamed2(l.next, name)
-      (o: PStmt)    => fieldNamed2(l.next, name)
+fun [tail] fieldNamed2(fs: Chain<PStmt>, name) => match(fs)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => matchName(let2.lName, name)
+      ? let2
+      : fieldNamed2(l.next, name)
+    (o: PStmt)    => fieldNamed2(l.next, name)
 
-fun isInt32Field(m: PsLet): Bool
-  ret match(m.lType)
-    (t2: Spec) => match(t2)
-      (b: SBuiltin) => b.sbName == "int32"
-      (o: Spec)     => false
-    ()         => false
+fun isInt32Field(m: PsLet) => match(m.lType)
+  (t2: Spec) => match(t2)
+    (b: SBuiltin) => b.sbName == "int32"
+    (o: Spec)     => false
+  ()         => false
 
 # find_classes_or_error's ERROR half, reconstructed with the same messages.
-fun [tail] implErrors(ts: Chain<Spec>, r: Resolver,
-                      acc: Set<PErr>): Set<PErr>
-  ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => implErrors(l.next, r, union(acc, implError(l.value, r)))
+fun [tail] implErrors(ts: Chain<Spec>, r,
+                      acc) => match(ts)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => implErrors(l.next, r, union(acc, implError(l.value, r)))
 
-fun implError(xtype, r): Set<PErr>
-  ret match(xtype)
-    (n: SNamed) => implNameError(n.snName, ctSpecLine(xtype), r)
-    (c: SClass) => implNameError(c.scName, ctSpecLine(xtype), r)
-    (o: Spec)   => oneErr(ctSpecLine(xtype),
-                          "Class cannot inherit from this type \"<class 't'>\"")
+fun implError(xtype, r) => match(xtype)
+  (n: SNamed) => implNameError(n.snName, ctSpecLine(xtype), r)
+  (c: SClass) => implNameError(c.scName, ctSpecLine(xtype), r)
+  (o: Spec)   => oneErr(ctSpecLine(xtype),
+                        "Class cannot inherit from this type \"<class 't'>\"")
 
-fun implNameError(name, lr, r): Set<PErr>
+fun implNameError(name, lr, r)
   let found = findType(r, name)
   if isEmpty(found.bItems)
     ret oneErr(lr, "Could not find class named \"" + name + "\"")
@@ -567,47 +531,43 @@ fun implNameError(name, lr, r): Set<PErr>
       (o: PStmt)    => oneErr(lr, "Found non-class named \"" + name + "\"")
     ()         => noErrs()
 
-fun [tail] allPureInterfaces(fs: Chain<FoundClass>): Bool
-  ret match(fs)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => match(l.value.fcClass)
-      (cs: PsClass) => cs.cIsInterface ? allPureInterfaces(l.next) : false
-      ()            => allPureInterfaces(l.next)
+fun [tail] allPureInterfaces(fs: Chain<FoundClass>) => match(fs)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => match(l.value.fcClass)
+    (cs: PsClass) => cs.cIsInterface ? allPureInterfaces(l.next) : false
+    ()            => allPureInterfaces(l.next)
 
 
 fun [tail] finalParentErrs(c: PsClass, fs: Chain<FoundClass>,
-                           acc): Set<PErr>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value.fcClass)
-      (cs: PsClass) => hasAttr(cs.cAttrs, "final")
-        ? finalParentErrs(c, l.next,
-            add(acc, PErr(c.pscLine,
-                             "Cannot inherit from final class '" + cs.cName
-                             + "'")))
-        : finalParentErrs(c, l.next, acc)
-      ()            => finalParentErrs(c, l.next, acc)
+                           acc): Set<PErr> => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value.fcClass)
+    (cs: PsClass) => hasAttr(cs.cAttrs, "final")
+      ? finalParentErrs(c, l.next,
+          add(acc, PErr(c.pscLine,
+                           "Cannot inherit from final class '" + cs.cName
+                           + "'")))
+      : finalParentErrs(c, l.next, acc)
+    ()            => finalParentErrs(c, l.next, acc)
 
 # Fragile-base warning: one method overriding several similar methods of a
 # SINGLE immediate parent.
-fun fragileWarns(c: PsClass, inh: List<FoundClass>, r): Set<PErr>
+fun fragileWarns(c: PsClass, inh: List<FoundClass>, r)
   ret fbLoop(chain(createSlotsFromMembers(c)), c, inh, r, noErrs())
 
 fun [tail] fbLoop(bs: Chain<Slot>, c: PsClass, inh: List<FoundClass>,
-                  r: Resolver, acc: Set<PErr>): Set<PErr>
-  ret match(bs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => fbLoop(l.next, c, inh, r,
-                              fbParents(l.value, chain(inh), c, r, acc))
+                  r, acc: Set<PErr>) => match(bs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => fbLoop(l.next, c, inh, r,
+                            fbParents(l.value, chain(inh), c, r, acc))
 
 fun [tail] fbParents(slot: Slot, fs: Chain<FoundClass>, c: PsClass,
-                     r, acc): Set<PErr>
-  ret match(fs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => match(l.value.fcClass)
-      (p: PsClass) => fbParents(slot, l.next, c, r,
-                                fbOne(slot, p, c, r, acc))
-      ()           => fbParents(slot, l.next, c, r, acc)
+                     r, acc): Set<PErr> => match(fs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value.fcClass)
+    (p: PsClass) => fbParents(slot, l.next, c, r,
+                              fbOne(slot, p, c, r, acc))
+    ()           => fbParents(slot, l.next, c, r, acc)
 
 fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
           acc): Set<PErr>
@@ -626,35 +586,32 @@ fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
 # The deduped capture count, taken on the SAME walk that dedups — the names
 # exist only to dedup; the diagnostic needs the count (no-length ruling).
 fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r,
-                         seen: List<String>, n): Int
-  ret match(ps)
-    (nil: ChainEnd) => n
-    (l: ChainLink)  => matchName(slot.slotName, l.value.slotName)
-                       && triTrue(assignableEq(r, l.value.slotType,
-                                               slot.slotType))
-                       && !contains2(seen, l.value.slotName)
-      ? capturedCount(l.next, slot, r, prepend(l.value.slotName, seen), n + 1)
-      : capturedCount(l.next, slot, r, seen, n)
+                         seen: List<String>, n) => match(ps)
+  (nil: ChainEnd) => n
+  (l: ChainLink)  => matchName(slot.slotName, l.value.slotName)
+                     && triTrue(assignableEq(r, l.value.slotType,
+                                             slot.slotType))
+                     && !contains2(seen, l.value.slotName)
+    ? capturedCount(l.next, slot, r, prepend(l.value.slotName, seen), n + 1)
+    : capturedCount(l.next, slot, r, seen, n)
 
-fun checkEnum2(e2: PsEnum, r): Set<PErr>
-  ret match(e2.eSpec)
-    (sp: Spec) => union(checkStmt2(e2.eParams, r, None),
-                  union(branchChecks(chain(e2.eVariants), r, None, noErrs()),
-                  union(linearGenErrs(e2, chain(e2.eGens), noErrs()),
-                         attrErrs(e2.eAttrs, isKnownEnumAttr, e2.pseLine,
-                                  "an enum"))))
-    ()         => oneErr(e2.pseLine, "Missed compile step")
+fun checkEnum2(e2: PsEnum, r) => match(e2.eSpec)
+  (sp: Spec) => union(checkStmt2(e2.eParams, r, None),
+                union(branchChecks(chain(e2.eVariants), r, None, noErrs()),
+                union(linearGenErrs(e2, chain(e2.eGens), noErrs()),
+                       attrErrs(e2.eAttrs, isKnownEnumAttr, e2.pseLine,
+                                "an enum"))))
+  ()         => oneErr(e2.pseLine, "Missed compile step")
 
 
 fun [tail] linearGenErrs(e2: PsEnum, gs: Chain<PGen>,
-                         acc): Set<PErr>
-  ret match(gs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => hasAttr(l.value.genAttrs, "linear")
-      ? linearGenErrs(e2, l.next,
-          add(acc, PErr(e2.pseLine,
-                           "[linear] type parameters are only supported on functions")))
-      : linearGenErrs(e2, l.next, acc)
+                         acc): Set<PErr> => match(gs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => hasAttr(l.value.genAttrs, "linear")
+    ? linearGenErrs(e2, l.next,
+        add(acc, PErr(e2.pseLine,
+                         "[linear] type parameters are only supported on functions")))
+    : linearGenErrs(e2, l.next, acc)
 
 fun checkTypealias2(ta: PsTypealias, r0): Set<PErr>
   let r = isEmpty(ta.taGens) && isEmpty(ta.taWheres)

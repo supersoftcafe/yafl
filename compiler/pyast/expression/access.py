@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast import inference, union_repr
 from pyast.expression.base import Expression
@@ -102,10 +103,7 @@ def _substitute_enum_type_params(
 def candidate_signature(resolver: g.Resolver, x: g.Resolved[s.DataStatement]) -> t.TypeSpec | None:
     """A candidate's type with its TRAIT scope's type arguments applied, so
     `Plus<Int>::+` reads as `(Int, Int): Int` rather than the declaration's
-    `(TVal, TVal): TVal`. Overload narrowing (below) and parameter inference
-    (pyast/param_inference.py) both read candidates through this: the one asks
-    which candidate a call picks, the other what that candidate then takes, and
-    they must not disagree about what a candidate's signature IS."""
+    `(TVal, TVal): TVal`."""
     xtype = x.statement.get_type()
     if (x.scope == g.ResolvedScope.TRAIT
             and x.trait_scope is not None
@@ -237,8 +235,8 @@ class DotExpression(Expression):
         return None
 
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) ->  tuple[Expression, list[s.Statement]]:
-        base, new_statements = self.base.compile(resolver, None)
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        base, new_statements, hints = self.base.compile(resolver, None)
         name = self.name
 
         btype = base.get_type(resolver)
@@ -266,7 +264,7 @@ class DotExpression(Expression):
         # into an `A|None` slot). A method load (CallableSpec expected) never
         # converts.
         from pyast.expression.conversion import converted
-        return converted(expr, expected_type, resolver), new_statements
+        return converted(expr, expected_type, resolver), new_statements, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         btype = self.base.get_type(resolver)
@@ -460,7 +458,7 @@ class NamedExpression(Expression):
             type_params=rw.seq(self.type_params, resolver, replace),
             resolved_trait_scope=(rts if rts is rw.UNCHANGED or isinstance(rts, t.ClassSpec) else None))
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # Resolve the statement this name refers to. Once the name is fully
         # qualified (@-hash) we skip the ambiguity check but still run the
         # generic-inference step below, because the argument types feeding
@@ -473,15 +471,15 @@ class NamedExpression(Expression):
             # candidate that should win may not be visible yet. Leave the use
             # unresolved and retry once the blocker clears on a later pass.
             if not datas.complete:
-                return self, []
+                return self, [], h.unsettled()
             datas = _resolve_overloads(resolver, expected_type, datas)
             if len(datas) != 1:
-                return self, [] # didn't find a unique candidate
+                return self, [], {} # didn't find a unique candidate
             data = datas[0]
             if data.scope == g.ResolvedScope.MEMBER:
                 this = NamedExpression(self.line_ref, "this")
                 dot = DotExpression(self.line_ref, this, data.unique_name)
-                return dot, []
+                return dot, [], {}
             new_name = data.unique_name
             trait_scope = (data.trait_scope
                            if data.scope == g.ResolvedScope.TRAIT
@@ -493,10 +491,10 @@ class NamedExpression(Expression):
             if data.instance_params:
                 trait_scope = _solve_instance_scope(resolver, data, expected_type)
                 if trait_scope is None:
-                    return self, []
+                    return self, [], {}
         else:
             if len(datas) != 1:
-                return self, []
+                return self, [], {}
             data = datas[0]
             new_name = self.name
             trait_scope = self.resolved_trait_scope
@@ -514,8 +512,9 @@ class NamedExpression(Expression):
         # binding into an `A|None` slot). Ground types only, so the expected-
         # SHAPE overload selection above is undisturbed, and a CallableSpec
         # expected (this load is being called) never converts.
+        hints = h.of(new_name, expected_type) if h.registers(data, expected_type) else {}
         from pyast.expression.conversion import converted
-        return converted(expr, expected_type, resolver), new_statements
+        return converted(expr, expected_type, resolver), new_statements, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         tp_errors = [te for tp in self.type_params for te in tp.check(resolver)]
@@ -619,10 +618,10 @@ class ArrayReadExpression(Expression):
         info = self.__array_info(resolver)
         return info[1] if info is not None else None
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        obj, oglb = self.object.compile(resolver, None)
-        idx, iglb = self.index.compile(resolver, t.BuiltinSpec(self.line_ref, "int32"))
-        return dataclasses.replace(self, object=obj, index=idx), oglb + iglb
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        obj, oglb, oh = self.object.compile(resolver, None)
+        idx, iglb, ih = self.index.compile(resolver, t.BuiltinSpec(self.line_ref, "int32"))
+        return dataclasses.replace(self, object=obj, index=idx), oglb + iglb, h.merge(oh, ih)
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return self.object.check(resolver, None) + self.index.check(resolver, None)
@@ -683,10 +682,10 @@ class LazyExpression(Expression):
             return t.LazyStubSpec(self.line_ref, self.target_type)
         return self.target_type
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # lower_lazy_lets runs after the compile loop has converged, so
         # there's nothing left for LazyExpression to compile.
-        return self, []
+        return self, [], {}
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         return []

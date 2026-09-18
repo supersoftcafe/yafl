@@ -20,35 +20,28 @@ import System
 import Bootstrap::Lower::Ast
 
 
-fun list1<T>(a: T): List<T>
-  ret prepend(a, List())
+fun list1<T>(a: T): List<T> => prepend(a, List())
 
-fun list2<T>(a: T, b: T): List<T>
-  ret build(push(push(builder(), a), b))
+fun list2<T>(a: T, b: T): List<T> => build(push(push(builder(), a), b))
 
-fun list3<T>(a: T, b: T, c: T): List<T>
-  ret build(push(push(push(builder(), a), b), c))
+fun list3<T>(a: T, b: T, c: T): List<T> => build(push(push(push(builder(), a), b), c))
 
 
 # Membership in a genuine List — a name among an op's reads, a label among a
 # Phi's sources. The set-shaped accumulators that used to pair this with a
 # `strListAdd` are Set<String> now and use `contains`.
-fun strListMember(l: List<String>, x: String): Bool
-  ret any(l, (y) => y == x)
+fun strListMember(l: List<String>, x: String): Bool => any(l, (y) => y == x)
 
 
-fun dedent4(s): String
-  ret length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
+fun dedent4(s) => length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
 
-fun [tail] memberInt(l: List<Int>, x): Bool
-  ret match(head(l))
-    (h: Int) => h == x ? true : memberInt(tail(l), x)
-    ()       => false
+fun [tail] memberInt(l: List<Int>, x) => match(head(l))
+  (h: Int) => h == x ? true : memberInt(tail(l), x)
+  ()       => false
 
-fun disjointInt(a: List<Int>, b: List<Int>): Bool
-  ret !any(a, (x) => memberInt(b, x))
+fun disjointInt(a: List<Int>, b: List<Int>) => !any(a, (x) => memberInt(b, x))
 
-fun unionInt(a: List<Int>, b: List<Int>): List<Int>
+fun unionInt(a: List<Int>, b: List<Int>)
   # A set union — every reader asks membership or disjointness.
   ret fold(b, a, (acc, x) => memberInt(acc, x)
                    ? acc

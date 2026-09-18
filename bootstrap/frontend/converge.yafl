@@ -22,26 +22,162 @@ import System
 
 import Bootstrap::Ast
 import Bootstrap::Lower::Ast
+import Bootstrap::Parse
 import Bootstrap::Resolve
+import Bootstrap::Types
 
 
 
 let [const] MAX_COMPILE_ITERATIONS: Int = 100
 
+# Watch for a cycle only after this many passes. Convergence is linear in
+# chain depth and the whole port settles in 15, so anything still moving here
+# is not settling — and until here the loop pays no comparison for the watch.
+let [const] CYCLE_WATCH_FROM: Int = 20
+
 enum Converged
   enum CvOk(cvStatements: List<PStmt>, cvPasses: Int)
-  enum CvDiverged(cvLast: List<PStmt>)
+  enum CvDiverged(cvLast: List<PStmt>, cvErrs: Set<PErr>)
 
-fun converge(statements): Converged
-  ret convergeLoop(statements, 1)
+fun converge(statements) => convergeLoop(statements, statements, statements, 1, 1, 0)
 
-fun [tail] convergeLoop(statements, pass): Converged
+# Inference can CYCLE: two parameters each narrow to what the other's previous
+# answer allows, then both widen when those answers disagree, for ever.
+# Brent's detection finds that with ONE retained tree — `snapshot` is the
+# tortoise, and once the hare has travelled `window` passes the tortoise jumps
+# to it and the window doubles — so a cycle of ANY period closes against it,
+# not merely the short ones. The two consecutive trees then name what flips.
+fun [tail] convergeLoop(statements, previous, snapshot, pass, window, distance): Converged
   if pass > MAX_COMPILE_ITERATIONS
-    ret CvDiverged(statements)
+    ret CvDiverged(statements, flipErrs(previous, statements, limitClue()))
   let next = compilePass(statements)
-  ret eqStmts(next, statements)
-    ? CvOk(next, pass)
-    : convergeLoop(next, pass + 1)
+  if eqStmts(next, statements)
+    ret CvOk(next, pass)
+  # The watch costs a whole-tree comparison per pass, so it starts only once
+  # settling has plainly failed: the tortoise trails the newest tree until
+  # then, and a program that converges never pays for it at all.
+  if pass < CYCLE_WATCH_FROM
+    ret convergeLoop(next, statements, next, pass + 1, 1, 0)
+  ret eqStmts(next, snapshot)
+    ? CvDiverged(next, flipErrs(statements, next, cycleClue()))
+    : distance + 1 == window
+      ? convergeLoop(next, statements, next, pass + 1, window * 2, 0)
+      : convergeLoop(next, statements, snapshot, pass + 1, window, distance + 1)
+
+fun cycleClue() => "Compile loop cycles without settling. This is a compiler bug — "
+                 + "a compile() pass is not idempotent."
+
+fun limitClue() => "Compile loop failed to converge after "
+                 + String(MAX_COMPILE_ITERATIONS) + " iterations. This is a compiler "
+                 + "bug — a compile() pass is not idempotent."
+
+# ── what flips ───────────────────────────────────────────────────────────────
+# compiler.py::__flip_errors. Walk two trees of one cycle in lockstep and name
+# every INFERRED declaration whose type differs: those are the answers the
+# program leaves open, and writing one of them down breaks the cycle. Only
+# what holds declarations is followed, and a pair that already agrees is
+# pruned. Nothing inferred flipping means a compile() that is not idempotent —
+# the compiler's own bug, reported as such.
+
+fun flipErrs(before: List<PStmt>, after: List<PStmt>, otherwise: String): Set<PErr>
+  let found = flipStmts(chain(before), chain(after), noErrs())
+  ret isEmpty(found)
+    ? oneErr(movedLine(chain(before), chain(after)), otherwise)
+    : found
+
+fun [tail] movedLine(as2: Chain<PStmt>, bs: Chain<PStmt>): PLine => match(as2)
+  (nil: ChainEnd) => PLine("none", 0, 0)
+  (la: ChainLink) => match(bs)
+    (nilb: ChainEnd) => PLine("none", 0, 0)
+    (lb: ChainLink)  => eqStmt(la.value, lb.value)
+      ? movedLine(la.next, lb.next)
+      : stmtLine(la.value)
+
+fun [tail] flipStmts(as2: Chain<PStmt>, bs: Chain<PStmt>, acc: Set<PErr>): Set<PErr> => match(as2)
+  (nil: ChainEnd) => acc
+  (la: ChainLink) => match(bs)
+    (nilb: ChainEnd) => acc
+    (lb: ChainLink)  => flipStmts(la.next, lb.next, flipStmt(la.value, lb.value, acc))
+
+fun flipStmt(a: PStmt, b: PStmt, acc: Set<PErr>): Set<PErr>
+  ret eqStmt(a, b) ? acc : match(a)
+    (fa: PsFun) => match(b)
+      (fb: PsFun) => flipFun(fa, fb, acc)
+      (o: PStmt)  => acc
+    (ca: PsClass) => match(b)
+      (cb: PsClass) => flipStmts(chain(ca.cMembers), chain(cb.cMembers), acc)
+      (o: PStmt)    => acc
+    (ia: PsTraitInstance) => match(b)
+      (ib: PsTraitInstance) => flipStmts(chain(ia.tiMembers), chain(ib.tiMembers), acc)
+      (o: PStmt)            => acc
+    (o: PStmt) => acc
+
+fun flipFun(a: PsFun, b: PsFun, acc: Set<PErr>): Set<PErr>
+  let rets = a.fRetInferred && b.fRetInferred
+    ? flipSpec(a.psfLine, "Return type of '" + simpleName(a.fName) + "'",
+               a.fRet, b.fRet, acc)
+    : acc
+  let prms = flipParams(chain(flattenParams(a.fParams)), chain(flattenParams(b.fParams)),
+                        simpleName(a.fName), rets)
+  ret flipStmts(chain(bodyStmts(a)), chain(bodyStmts(b)), prms)
+
+fun [tail] flipParams(as2: Chain<PStmt>, bs: Chain<PStmt>, owner: String,
+                      acc: Set<PErr>): Set<PErr> => match(as2)
+  (nil: ChainEnd) => acc
+  (la: ChainLink) => match(bs)
+    (nilb: ChainEnd) => acc
+    (lb: ChainLink)  => flipParams(la.next, lb.next, owner,
+                                   flipParam(la.value, lb.value, owner, acc))
+
+fun flipParam(a: PStmt, b: PStmt, owner: String, acc: Set<PErr>): Set<PErr> => match(a)
+  (pa: PsLet) => match(b)
+    (pb: PsLet) => pa.lTypeInferred && pb.lTypeInferred
+      ? flipSpec(pa.pslLine, "Parameter '" + simpleName(pa.lName) + "' of '" + owner + "'",
+                 pa.lType, pb.lType, acc)
+      : acc
+    (o: PStmt)  => acc
+  (o: PStmt) => acc
+
+fun flipSpec(lr: PLine, what: String, was: Spec|None, now: Spec|None,
+             acc: Set<PErr>): Set<PErr> => match(was)
+  (w: Spec) => match(now)
+    (n: Spec) => eqSpec(w, n) ? acc : union(acc, flipErr(lr, what, typeView(w), typeView(n)))
+    ()        => acc
+  ()        => acc
+
+# Sorted: which of the two the cycle happens to be caught on is an accident of
+# the detecting pass, and the message must not say so.
+fun flipErr(lr: PLine, what: String, a: String, b: String): Set<PErr>
+  let one = a < b ? a : b
+  let other = a < b ? b : a
+  ret oneErr(lr, what + " alternates between '" + one + "' and '" + other
+                 + "' across compile passes — declare it")
+
+# A VIEW of an enum is a distinct type, and root-versus-view is what usually
+# flips — `typeStr` names both by the root, so name the leaves instead.
+fun typeView(sp: Spec): String => match(sp)
+  (e2: SEnum) => isEnumView(e2)
+    ? joinLeaves(chain(e2.seAllLeaves), e2.seValidLeaves, "")
+    : typeStr2(sp)
+  (o: Spec)   => typeStr2(sp)
+
+# A view excludes at least one of the root's leaves.
+fun isEnumView(e2: SEnum) => any(e2.seAllLeaves,
+                                 (l) => !any(e2.seValidLeaves, (v) => v == l))
+
+fun [tail] joinLeaves(ls: Chain<String>, valid: List<String>, acc: String): String => match(ls)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => joinLeaves(l.next, valid,
+                                any(valid, (v) => v == l.value)
+                                  ? (acc == "" ? specName(l.value, List())
+                                               : acc + " | " + specName(l.value, List()))
+                                  : acc)
+
+fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
+  (b: PExpr) => match(b)
+    (bk: PeBlock) => bk.blockStmts
+    (o: PExpr)    => List()
+  ()         => List()
 
 # One pass: every statement compiles against a resolver over the CURRENT set,
 # and the extra statements it creates join the set for the next pass.
@@ -52,10 +188,9 @@ fun compilePass(statements): List<PStmt>
 # Each statement's own output, then whatever it hoisted out beside itself:
 # this is the program's statement order, so a builder, not a set.
 fun [tail] passLoop(ss: Chain<PStmt>, r: Resolver,
-                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt>
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => compileStmt(l.value, scopeResolver(l.value, r), None)
-      |> (out) => passLoop(l.next, r,
-                           pushAll(addStmt(acc, out.soStmt),
-                                       out.soExtra))
+                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt> => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => compileStmt(l.value, scopeResolver(l.value, r), None)
+    |> (out) => passLoop(l.next, r,
+                         pushAll(addStmt(acc, out.soStmt),
+                                     out.soExtra))

@@ -17,10 +17,9 @@ import Bootstrap::Ir
 
 
 
-fun resolveKnownTags(a: CgApp): CgApp
-  ret appWithFunctions(a, map(appFunctions(a), ktFunction))
+fun resolveKnownTags(a: CgApp) => appWithFunctions(a, map(appFunctions(a), ktFunction))
 
-fun ktFunction(f: CgFunction): CgFunction
+fun ktFunction(f)
   let defs = singleDefs(f)
   let walked = ktWalk(seqStream(f.fnOps), defs,
                         seqBuilder(), false)
@@ -45,7 +44,6 @@ fun [tail] ktWalk<S>(s: S, defs: SsaDefs,
 
 # Taken: `Jump(label)`; never taken: the guard evaporates.
 fun ktHarden([terminal] acc, ji: OpJumpIf,
-             cond: Int): SeqBuilder<Op>
-  ret (cond != 0) != ji.jumpIfInvert
-    ? push(acc, OpJump(ji.jumpIfLabel, List()))
-    : acc
+             cond: Int): SeqBuilder<Op> => (cond != 0) != ji.jumpIfInvert
+  ? push(acc, OpJump(ji.jumpIfLabel, List()))
+  : acc

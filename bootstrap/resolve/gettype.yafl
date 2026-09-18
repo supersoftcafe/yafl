@@ -20,47 +20,40 @@ import Bootstrap::Types
 
 
 # A let's type is simply what it declares (inference fills that in).
-fun letType(l: PsLet): Spec|None
-  ret l.lType
+fun letType(l: PsLet) => l.lType
 
 # A destructure IS a tuple type — and this is where a parameter's `= literal`
 # default surfaces, into the CallableSpec that every call site sees.
-fun destructureType(d: PsDestructure): Spec
+fun destructureType(d: PsDestructure)
   ret STuple(build(targetEntries(chain(d.dTargets),
                                  builder())), d.psdLine)
 
-fun [tail] targetEntries(ts: Chain<PStmt>, [terminal] acc: ListBuilder<SEntry>): ListBuilder<SEntry>
-  ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => targetEntries(l.next, addTarget(acc, l.value))
+fun [tail] targetEntries(ts: Chain<PStmt>, [terminal] acc: ListBuilder<SEntry>) => match(ts)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => targetEntries(l.next, addTarget(acc, l.value))
 
-fun addTarget([terminal] acc, st): ListBuilder<SEntry>
-  ret match(st)
-    (l: PsLet) => push(acc, SEntry(l.lName, l.lType, l.lDefault))
-    (o: PStmt) => acc
+fun addTarget([terminal] acc, st): ListBuilder<SEntry> => match(st)
+  (l: PsLet) => push(acc, SEntry(l.lName, l.lType, l.lDefault))
+  (o: PStmt) => acc
 
 # A function is a callable over its parameter tuple.
-fun funType(f: PsFun): Spec
-  ret SCallable(paramsTupleOf(f.fParams), f.fRet, f.psfLine)
+fun funType(f: PsFun) => SCallable(paramsTupleOf(f.fParams), f.fRet, f.psfLine)
 
 # The parameter tuple of a fun/class param list. A class's parameters are its
 # STRUCTURAL type — which is what a [final] class member of a union is
 # represented as (see conversions.yafl).
-fun paramsTupleOf(params): Spec
-  ret match(params)
-    (d: PsDestructure) => destructureType(d)
-    (o: PStmt)         => STuple(List(), stmtLine(o))
+fun paramsTupleOf(params): Spec => match(params)
+  (d: PsDestructure) => destructureType(d)
+  (o: PStmt)         => STuple(List(), stmtLine(o))
 
-fun paramsTuple(params): Spec|None
-  ret paramsTupleOf(params)
+fun paramsTuple(params) => paramsTupleOf(params)
 
 # The type a statement DECLARES, if it declares one.
-fun stmtType(st): Spec|None
-  ret match(st)
-    (f: PsFun)         => funType(f)
-    (l: PsLet)         => letType(l)
-    (d: PsDestructure) => destructureType(d)
-    (o: PStmt)         => None
+fun stmtType(st) => match(st)
+  (f: PsFun)         => funType(f)
+  (l: PsLet)         => letType(l)
+  (d: PsDestructure) => destructureType(d)
+  (o: PStmt)         => None
 
 
 # ── expressions ─────────────────────────────────────────────────────────────
@@ -73,69 +66,65 @@ fun stmtType(st): Spec|None
 # whose callee has not resolved, a lambda not yet inferred. The fixpoint asks
 # again next pass.
 
-fun exprType(x, r): Spec|None
-  ret match(x)
-    (wx: PeWith)   => exprType(wx.withSubject, r)
-    (i: PeInt)       => SBuiltin(intBuiltin(i.precision), i.peiLine)
-    (f: PeFloat)     => SBuiltin(floatBuiltin(f.fPrecision), f.pefLine)
-    (bo: PeBool)     => SBuiltin("bool", bo.pebLine)
-    (st: PeStr)      => SBuiltin("str", st.pesLine)
-    (rx: PeRegex)    => SBuiltin("str", rx.perLine)
-    (n: PeNothing)   => None
-    # tail_loop lowering only: a loop types as its body; recur is bottom.
-    (lp: PeLoop)     => exprType(lp.loopBody, r)
-    (rc: PeRecur)    => None
-    # lower_lazy_lets only: the forced value's type; the raw stub when
-    # stubOnly.
-    (lz: PeLazy)     => lz.lzStubOnly
-      ? SLazyStub(lz.lzTarget, lz.pelzLine)
-      : lz.lzTarget
-    (nm: PeName)     => nameType(nm, r)
-    (d: PeDot)       => dotType(d, r)
-    (c: PeCall)      => callType(c, r)
-    (tp: PeTuple)    => tupleType(tp, r)
-    (te: PeTernary)  => join(exprType(te.trueResult, r),
-                            exprType(te.falseResult, r))
-    (lm: PeLambda)   => lm.lamRet       # its compile fills this each pass
-    # Python's BlockExpression.get_type wraps the resolver in the block's
-    # local scope before typing the value (a value reading a block-local let
-    # must see it — the drops pass inserts such bindings before check).
-    (bk: PeBlock)    => exprType(bk.blockValue, blockScope(bk.blockStmts, r))
-    (mt: PeMatch)    => matchType(mt, r)
-    (op: PeBuiltinOp) => op.opType
-    (pl: PeParallel) => parallelType(pl, r)
-    (ne: PeNewEnum)  => newEnumType(ne, r)
-    (nw: PeNew)      => nw.newType
-    (ar: PeArrayRead) => arrayReadType(ar, r)
-    (cv: PeConvert)   => cv.convTarget
-    (qq: PeCoalesce)  => coalesceType(qq, r)
+fun exprType(x, r): Spec|None => match(x)
+  (wx: PeWith)   => exprType(wx.withSubject, r)
+  (i: PeInt)       => SBuiltin(intBuiltin(i.precision), i.peiLine)
+  (f: PeFloat)     => SBuiltin(floatBuiltin(f.fPrecision), f.pefLine)
+  (bo: PeBool)     => SBuiltin("bool", bo.pebLine)
+  (st: PeStr)      => SBuiltin("str", st.pesLine)
+  (rx: PeRegex)    => SBuiltin("str", rx.perLine)
+  (n: PeNothing)   => None
+  # tail_loop lowering only: a loop types as its body; recur is bottom.
+  (lp: PeLoop)     => exprType(lp.loopBody, r)
+  (rc: PeRecur)    => None
+  # lower_lazy_lets only: the forced value's type; the raw stub when
+  # stubOnly.
+  (lz: PeLazy)     => lz.lzStubOnly
+    ? SLazyStub(lz.lzTarget, lz.pelzLine)
+    : lz.lzTarget
+  (nm: PeName)     => nameType(nm, r)
+  (d: PeDot)       => dotType(d, r)
+  (c: PeCall)      => callType(c, r)
+  (tp: PeTuple)    => tupleType(tp, r)
+  (te: PeTernary)  => branchType(twoTypes(exprType(te.trueResult, r),
+                                          exprType(te.falseResult, r)), r)
+  (lm: PeLambda)   => lm.lamRet       # its compile fills this each pass
+  # Python's BlockExpression.get_type wraps the resolver in the block's
+  # local scope before typing the value (a value reading a block-local let
+  # must see it — the drops pass inserts such bindings before check).
+  (bk: PeBlock)    => exprType(bk.blockValue, blockScope(bk.blockStmts, r))
+  (mt: PeMatch)    => matchType(mt, r)
+  (op: PeBuiltinOp) => op.opType
+  (pl: PeParallel) => parallelType(pl, r)
+  (ne: PeNewEnum)  => newEnumType(ne, r)
+  (nw: PeNew)      => nw.newType
+  (ar: PeArrayRead) => arrayReadType(ar, r)
+  (cv: PeConvert)   => cv.convTarget
+  (qq: PeCoalesce)  => coalesceType(qq, r)
 
 # `a ?? b` — the subject's non-None part joined with the fallback, which is
 # exactly the type of the match it becomes, so nothing shifts when the node
 # dissolves. Undecided (None) while the subject has no answerable non-None
 # part: the fixpoint asks again next pass.
-fun coalesceType(qq: PeCoalesce, r): Spec|None
-  ret match(exprType(qq.qqSubject, r))
-    (st: Spec) => match(withoutNone(st))
-      (nr: Spec) => join(nr, exprType(qq.qqFallback, r))
-      ()         => None
-    ()         => exprType(qq.qqFallback, r)
+fun coalesceType(qq: PeCoalesce, r): Spec|None => match(exprType(qq.qqSubject, r))
+  (st: Spec) => match(withoutNone(st))
+    (nr: Spec) => join(nr, exprType(qq.qqFallback, r))
+    ()         => None
+  ()         => exprType(qq.qqFallback, r)
 
 # A literal's precision names its builtin (0 = the unbounded default).
-fun intBuiltin(precision): String
-  ret precision == 0 ? "bigint"
-    : precision == 8 ? "int8"
-    : precision == 16 ? "int16"
-    : precision == 32 ? "int32"
-    : "int64"
+fun intBuiltin(precision) => precision == 0 ? "bigint"
+  : precision == 8 ? "int8"
+  : precision == 16 ? "int16"
+  : precision == 32 ? "int32"
+  : "int64"
 
-fun floatBuiltin(precision): String
-  ret precision == 32 ? "float32" : "float64"
+fun floatBuiltin(precision) => precision == 32 ? "float32" : "float64"
 
 # A name's type is its DECLARATION's type — so a name that resolves to exactly
 # one statement has a type, and one that is ambiguous or unresolved does not
 # (yet). An INCOMPLETE search proves nothing: defer.
-fun nameType(nm: PeName, r): Spec|None
+fun nameType(nm: PeName, r)
   let bag = findData(r, nm.refName)
   if !bag.bComplete
     ret None
@@ -148,14 +137,13 @@ fun nameType(nm: PeName, r): Spec|None
 # candidates); a generic ambient instance's candidate carries the PATTERN
 # scope, so it matches when the pattern unifies with the committed (solved)
 # scope through the instance's own placeholders (_scope_filtered).
-fun traitFiltered(datas, cache: Spec|None): List<Found>
-  ret match(cache)
-    (c: Spec) => atMost(chain(datas), 1)
-      ? datas
-      : preferScoped(scopeMatches(datas, c), datas)
-    ()        => datas
+fun traitFiltered(datas, cache: Spec|None): List<Found> => match(cache)
+  (c: Spec) => atMost(chain(datas), 1)
+    ? datas
+    : preferScoped(scopeMatches(datas, c), datas)
+  ()        => datas
 
-fun scopeMatches(datas: List<Found>, c): List<Found>
+fun scopeMatches(datas: List<Found>, c)
   let exact = filterByScope(chain(datas), c, List())
   ret exactly(chain(exact), 1)
     ? exact
@@ -165,13 +153,12 @@ fun filterByPattern(ds, cache,
                            acc: List<Found>): List<Found>
   ret build(filterByPatternB(ds, cache, builderFrom(acc)))
 
-fun [tail] filterByPatternB(ds: Chain<Found>, cache: Spec,
-                           [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
-  ret match(ds)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => patternMatches(l.value, cache)
-      ? filterByPatternB(l.next, cache, push(acc, l.value))
-      : filterByPatternB(l.next, cache, acc)
+fun [tail] filterByPatternB(ds: Chain<Found>, cache,
+                           [terminal] acc: ListBuilder<Found>) => match(ds)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => patternMatches(l.value, cache)
+    ? filterByPatternB(l.next, cache, push(acc, l.value))
+    : filterByPatternB(l.next, cache, acc)
 
 # unifyGeneric is deliberately lenient: a structural mismatch defers (returns
 # the mapping so far) rather than failing, so the caller must demand every
@@ -179,206 +166,176 @@ fun [tail] filterByPatternB(ds: Chain<Found>, cache: Spec,
 # Accepting any UMap let a FOREIGN generic instance of the same interface
 # through on the empty mapping (two generic ambient Drop instances made every
 # drop unresolvable). (access.py _scope_filtered)
-fun patternMatches(f: Found, cache): Bool
-  ret match(f.fInstanceParams)
-    (own: List<String>) => !isEmpty(own) && match(f.fTraitScope)
-      (ts: Spec) => match(unifyGeneric(ts, cache, own, List()))
-        (m: UMap)   => bindsAll(chain(own), m.uBindings)
-        (f2: UFail) => false
-      ()         => false
-    ()                  => false
+fun patternMatches(f: Found, cache) => match(f.fInstanceParams)
+  (own: List<String>) => !isEmpty(own) && match(f.fTraitScope)
+    (ts: Spec) => match(unifyGeneric(ts, cache, own, List()))
+      (m: UMap)   => bindsAll(chain(own), m.uBindings)
+      (f2: UFail) => false
+    ()         => false
+  ()                  => false
 
-fun preferScoped(scoped, datas): List<Found>
-  ret exactly(chain(scoped), 1) ? scoped : datas
+fun preferScoped(scoped, datas): List<Found> => exactly(chain(scoped), 1) ? scoped : datas
 
 fun filterByScope(ds, cache,
                          acc: List<Found>): List<Found>
   ret build(filterByScopeB(ds, cache, builderFrom(acc)))
 
-fun [tail] filterByScopeB(ds: Chain<Found>, cache: Spec,
-                         [terminal] acc: ListBuilder<Found>): ListBuilder<Found>
-  ret match(ds)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => sameTraitScope(l.value.fTraitScope, cache)
-      ? filterByScopeB(l.next, cache, push(acc, l.value))
-      : filterByScopeB(l.next, cache, acc)
+fun [tail] filterByScopeB(ds: Chain<Found>, cache,
+                         [terminal] acc: ListBuilder<Found>) => match(ds)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => sameTraitScope(l.value.fTraitScope, cache)
+    ? filterByScopeB(l.next, cache, push(acc, l.value))
+    : filterByScopeB(l.next, cache, acc)
 
-fun sameTraitScope(ts: Spec|None, cache): Bool
-  ret match(ts)
-    (t2: Spec) => eqSpec(t2, cache)
-    ()         => false
+fun sameTraitScope(ts: Spec|None, cache) => match(ts)
+  (t2: Spec) => eqSpec(t2, cache)
+  ()         => false
 
 # The declaration's type, instantiated: explicit call-site type args (case 1)
 # and a trait-scoped find's interface instantiation (case 2) both map the
 # declaration's placeholders to concrete types.
-fun nameTypeOf(nm: PeName, f: Found, r: Resolver): Spec|None
-  ret match(stmtType(f.fStmt))
-    (raw: Spec) => substitute(raw, nameMappings(nm, f))
-    ()          => None
+fun nameTypeOf(nm: PeName, f: Found, r: Resolver) => match(stmtType(f.fStmt))
+  (raw: Spec) => substitute(raw, nameMappings(nm, f))
+  ()          => None
 
-fun nameMappings(nm: PeName, f: Found): List<Binding>
-  ret concat(explicitMapping(nm, f), traitCaseMapping2(nm, f))
+fun nameMappings(nm: PeName, f: Found) => concat(explicitMapping(nm, f), traitCaseMapping2(nm, f))
 
 # A generic ambient instance's candidate carries the pattern scope; the
 # SOLVED scope compile committed (instance placeholders bound from the use
 # site) takes precedence when present.
-fun traitCaseMapping2(nm: PeName, f: Found): List<Binding>
-  ret match(f.fInstanceParams)
-    (own: List<String>) => isEmpty(own)
-      ? traitCaseMapping(f)
-      : solvedCaseMapping(nm, f)
-    ()                  => traitCaseMapping(f)
+fun traitCaseMapping2(nm: PeName, f: Found) => match(f.fInstanceParams)
+  (own: List<String>) => isEmpty(own)
+    ? traitCaseMapping(f)
+    : solvedCaseMapping(nm, f)
+  ()                  => traitCaseMapping(f)
 
-fun solvedCaseMapping(nm: PeName, f: Found): List<Binding>
-  ret match(nm.penTrait)
-    (c: Spec) => match(c)
-      (sc2: SClass) => solvedOwnerMapping(f, sc2)
-      (o: Spec)     => traitCaseMapping(f)
-    ()        => traitCaseMapping(f)
+fun solvedCaseMapping(nm: PeName, f: Found) => match(nm.penTrait)
+  (c: Spec) => match(c)
+    (sc2: SClass) => solvedOwnerMapping(f, sc2)
+    (o: Spec)     => traitCaseMapping(f)
+  ()        => traitCaseMapping(f)
 
-fun solvedOwnerMapping(f: Found, solved: SClass): List<Binding>
-  ret match(ownerMapping(f.fOwner, solved))
-    (m: List<Binding>) => m
-    ()                 => List()
+fun solvedOwnerMapping(f: Found, solved: SClass) => match(ownerMapping(f.fOwner, solved))
+  (m: List<Binding>) => m
+  ()                 => List()
 
-fun explicitMapping(nm: PeName, f: Found): List<Binding>
-  ret isEmpty(nm.refTypeParams)
-    ? List()
-    : paramMapping(stmtGens(f.fStmt), nm.refTypeParams)
+fun explicitMapping(nm: PeName, f: Found): List<Binding> => isEmpty(nm.refTypeParams)
+  ? List()
+  : paramMapping(stmtGens(f.fStmt), nm.refTypeParams)
 
-fun traitCaseMapping(f: Found): List<Binding>
-  ret match(traitMapping(f))
-    (m: List<Binding>) => m
-    ()                 => List()
+fun traitCaseMapping(f: Found) => match(traitMapping(f))
+  (m: List<Binding>) => m
+  ()                 => List()
 
-# A branch's type is the JOIN of its arms' own types — the honest set union,
-# independent of any expected type.
-fun matchType(mt: PeMatch, r): Spec|None
-  ret armJoin(chain(mt.arms), r, None)
+# Every arm is a branch: the same rule as a ternary.
+fun matchType(mt: PeMatch, r) => branchType(map(mt.arms, (a) => armBodyType(a, r)), r)
 
 # Each body types under its arm's OWN binding (get_body_type: the bound name
 # is a local of the arm's type_spec — an else arm binds nothing here; only
 # compile, which knows the subject type, can bind it).
-fun [tail] armJoin(as2: Chain<PArm>, r: Resolver, acc: Spec|None): Spec|None
-  ret match(as2)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => armJoin(l.next, r,
-                               join(acc, exprType(l.value.armBody,
-                                                  bindingScope(l.value,
-                                                               l.value.armType,
-                                                               r))))
+fun armBodyType(a: PArm, r): Spec|None => exprType(a.armBody, bindingScope(a, a.armType, r))
+
+fun twoTypes(a: Spec|None, b: Spec|None) => build(push(push(builder(), a), b))
 
 # A call's type is its callee's RESULT — and nothing else. A callee that has
 # not resolved to a callable yet simply has no result yet.
-fun callType(c: PeCall, r): Spec|None
-  ret match(exprType(c.function, r))
-    (ft: Spec) => match(ft)
-      (cl: SCallable) => cl.scResult
-      (o: Spec)       => None
-    ()         => None
+fun callType(c: PeCall, r) => match(exprType(c.function, r))
+  (ft: Spec) => match(ft)
+    (cl: SCallable) => cl.scResult
+    (o: Spec)       => None
+  ()         => None
 
-fun tupleType(tp: PeTuple, r): Spec|None
-  ret STuple(tupEntries(chain(tp.exprs), r, List()), tp.petLine)
+fun tupleType(tp: PeTuple, r) => STuple(tupEntries(chain(tp.exprs), r, List()), tp.petLine)
 
 fun tupEntries(es: Chain<PTupEnt>, r,
-                      acc: List<SEntry>): List<SEntry>
-  ret build(tupEntriesB(es, r, builderFrom(acc)))
+                      acc: List<SEntry>) => build(tupEntriesB(es, r, builderFrom(acc)))
 
 fun [tail] tupEntriesB(es: Chain<PTupEnt>, r,
-                      [terminal] acc): ListBuilder<SEntry>
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => tupEntriesB(l.next, r,
-                                  push(acc, SEntry(l.value.tupName,
-                                            exprType(l.value.tupValue, r),
-                                            None)))
+                      [terminal] acc): ListBuilder<SEntry> => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => tupEntriesB(l.next, r,
+                                push(acc, SEntry(l.value.tupName,
+                                          exprType(l.value.tupValue, r),
+                                          None)))
 
 # A __parallel__'s type is the TUPLE of its callables' results — None while
 # any callee has not resolved to a callable with a result yet
 # (ParallelExpression.get_type, parallel.py:32-39).
-fun parallelType(pl: PeParallel, r): Spec|None
+fun parallelType(pl: PeParallel, r)
   ret parTypeLoop(chain(exprsOfParallel(pl)), r, builder(),
                   pl.pepLine)
 
-fun [tail] parTypeLoop(es: Chain<PExpr>, r: Resolver, [terminal] acc: ListBuilder<SEntry>,
-                       lr: PLine): Spec|None
-  ret match(es)
-    (nil: ChainEnd) => STuple(build(acc), lr)
-    (l: ChainLink)  => match(exprType(l.value, r))
-      (ft: Spec) => match(ft)
-        (cl: SCallable) => match(cl.scResult)
-          (res: Spec) => parTypeLoop(l.next, r,
-                                     push(acc,
-                                         SEntry("", res, None)), lr)
-          ()           => None
-        (o: Spec)       => None
-      ()          => None
+fun [tail] parTypeLoop(es: Chain<PExpr>, r, [terminal] acc,
+                       lr) => match(es)
+  (nil: ChainEnd) => STuple(build(acc), lr)
+  (l: ChainLink)  => match(exprType(l.value, r))
+    (ft: Spec) => match(ft)
+      (cl: SCallable) => match(cl.scResult)
+        (res: Spec) => parTypeLoop(l.next, r,
+                                   push(acc,
+                                       SEntry("", res, None)), lr)
+        ()           => None
+      (o: Spec)       => None
+    ()          => None
 
 # A construction builds exactly one variant, so its type is the LEAF —
 # the declaration's spec restricted to that leaf (USER RULING 2026-08-24;
 # NewEnumExpression.get_type mirror). Read from the declaration, never
 # from a spec instance in hand (which may be a stale copy).
-fun newEnumType(ne: PeNewEnum, r): Spec|None
-  ret match(soleItem(findType(r, ne.rootName)))
-    (f: Found) => match(f.fStmt)
-      (e: PsEnum) => restrictToLeaf(e.eSpec, ne.leafName)
-      (o: PStmt)  => None
-    ()         => None
+fun newEnumType(ne: PeNewEnum, r) => match(soleItem(findType(r, ne.rootName)))
+  (f: Found) => match(f.fStmt)
+    (e: PsEnum) => restrictToLeaf(e.eSpec, ne.leafName)
+    (o: PStmt)  => None
+  ()         => None
 
-fun restrictToLeaf(sp: Spec|None, leafName: String): Spec|None
-  ret match(sp)
-    (s2: Spec) => match(s2)
-      (e2: SEnum) => contains2(e2.seAllLeaves, leafName)
-        ? SEnum(e2.seRoot, prepend(leafName, List()), e2.seAllLeaves, e2.seParams, e2.seLine)
-        : s2
-      (o: Spec)   => s2
-    ()          => None
+fun restrictToLeaf(sp: Spec|None, leafName) => match(sp)
+  (s2: Spec) => match(s2)
+    (e2: SEnum) => contains2(e2.seAllLeaves, leafName)
+      ? SEnum(e2.seRoot, prepend(leafName, List()), e2.seAllLeaves, e2.seParams, e2.seLine)
+      : s2
+    (o: Spec)   => s2
+  ()          => None
 
 # A field read: through a tuple by entry NAME, through a class or enum by
 # looking the member up on the DECLARATION.
-fun dotType(d: PeDot, r): Spec|None
-  ret match(exprType(d.base, r))
-    (bt: Spec) => memberType(bt, d.member, r)
-    ()         => None
+fun dotType(d: PeDot, r) => match(exprType(d.base, r))
+  (bt: Spec) => memberType(bt, d.member, r)
+  ()         => None
 
-fun memberType(bt, name: String, r): Spec|None
-  ret match(bt)
-    (t2: STuple) => entryNamed(chain(t2.stEntries), name)
-    (c: SClass)  => classMemberType(c, name, r)
-    (e: SEnum)   => enumFieldType(e, name, r)
-    (o: Spec)    => None
+fun memberType(bt, name, r) => match(bt)
+  (t2: STuple) => entryNamed(chain(t2.stEntries), name)
+  (c: SClass)  => classMemberType(c, name, r)
+  (e: SEnum)   => enumFieldType(e, name, r)
+  (o: Spec)    => None
 
-fun [tail] entryNamed(es: Chain<SEntry>, name: String): Spec|None
-  ret match(es)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.seName == name
-      ? l.value.seType
-      : entryNamed(l.next, name)
+fun [tail] entryNamed(es: Chain<SEntry>, name: String) => match(es)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.seName == name
+    ? l.value.seType
+    : entryNamed(l.next, name)
 
 # The member's declared type comes from the class's find_data — constructor
 # params AND body statements, then implemented interfaces — with the class's
 # type params substituted through the receiver's instantiation.
-fun classMemberType(c: SClass, name: String, r): Spec|None
-  ret match(soleItem(findType(r, c.scName)))
-    (f: Found) => match(f.fStmt)
-      (cs: PsClass) => match(soleOf(Bag(classFindData(cs, r, name))))
-        (m: Found) => substituteClassTypeParams(r, c, cs, stmtType(m.fStmt))
-        ()         => None
-      (o: PStmt)    => None
-    ()         => None
+fun classMemberType(c: SClass, name, r) => match(soleItem(findType(r, c.scName)))
+  (f: Found) => match(f.fStmt)
+    (cs: PsClass) => match(soleOf(Bag(classFindData(cs, r, name))))
+      (m: Found) => substituteClassTypeParams(r, c, cs, stmtType(m.fStmt))
+      ()         => None
+    (o: PStmt)    => None
+  ()         => None
 
 # An enum's fields live on the spec's all_fields — which compile_types refreshes
 # from the declaration every pass, so this never reads a stale copy.
-fun [tail] fieldNamed(fs: Chain<SField>, name: String): Spec|None
-  ret match(fs)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => l.value.sfName == name
-      ? l.value.sfType
-      : fieldNamed(l.next, name)
+fun [tail] fieldNamed(fs: Chain<SField>, name: String) => match(fs)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value.sfName == name
+    ? l.value.sfType
+    : fieldNamed(l.next, name)
 
 # The field's declared type, mapped through the receiver's type arguments
 # when the enum is a concrete generic instantiation.
-fun enumFieldType(e: SEnum, name: String, r): Spec|None
+fun enumFieldType(e: SEnum, name: String, r)
   ret substituteEnumTypeParams(r, e, fieldNamed(chain(enumFieldsVia(r, e.seRoot)),
                                                 name))
 
@@ -393,32 +350,28 @@ fun enumFieldType(e: SEnum, name: String, r): Spec|None
 # phase then reported it as a function whose body never returns a value. It
 # stayed hidden because only the check phase asks — and the C path never ran
 # the check phase (see postmonoRes2's `gated`).
-fun arrayReadType(ar: PeArrayRead, r): Spec|None
-  ret match(exprType(ar.arrObj, r))
-    (ot: Spec) => elementOf(ot, r)
-    ()         => None
+fun arrayReadType(ar: PeArrayRead, r) => match(exprType(ar.arrObj, r))
+  (ot: Spec) => elementOf(ot, r)
+  ()         => None
 
-fun elementOf(ot, r): Spec|None
-  ret match(ot)
-    # Already the field itself — kept for callers that hold one directly.
-    (af: SArrayField) => af.safElem
-    (sc: SClass)      => classArrayElem(sc, r)
-    (o: Spec)         => None
+fun elementOf(ot, r) => match(ot)
+  # Already the field itself — kept for callers that hold one directly.
+  (af: SArrayField) => af.safElem
+  (sc: SClass)      => classArrayElem(sc, r)
+  (o: Spec)         => None
 
-fun classArrayElem(sc: SClass, r): Spec|None
-  ret match(soleItem(findType(r, sc.scName)))
-    (f: Found) => match(f.fStmt)
-      (cls: PsClass) => firstArrayElem(chain(classFields(cls)))
-      (o: PStmt)     => None
-    ()         => None
+fun classArrayElem(sc: SClass, r) => match(soleItem(findType(r, sc.scName)))
+  (f: Found) => match(f.fStmt)
+    (cls: PsClass) => firstArrayElem(chain(classFields(cls)))
+    (o: PStmt)     => None
+  ()         => None
 
-fun [tail] firstArrayElem(fs: Chain<PStmt>): Spec|None
-  ret match(fs)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => match(l.value)
-      (let2: PsLet) => match(let2.lType)
-        (t2: Spec) => match(t2)
-          (af: SArrayField) => af.safElem
-          (o: Spec)         => firstArrayElem(l.next)
-        ()         => firstArrayElem(l.next)
-      (o: PStmt)    => firstArrayElem(l.next)
+fun [tail] firstArrayElem(fs: Chain<PStmt>) => match(fs)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => match(l.value)
+    (let2: PsLet) => match(let2.lType)
+      (t2: Spec) => match(t2)
+        (af: SArrayField) => af.safElem
+        (o: Spec)         => firstArrayElem(l.next)
+      ()         => firstArrayElem(l.next)
+    (o: PStmt)    => firstArrayElem(l.next)

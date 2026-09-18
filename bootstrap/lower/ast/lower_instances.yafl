@@ -16,18 +16,16 @@ import Bootstrap::StdlibCandidates
 
 class [final] LiOut(liStmts: List<PStmt>, liChanged: Bool)
 
-fun lowerTraitInstances(statements: List<PStmt>): LiOut
-  ret liLoop(chain(statements), builder(), false)
+fun lowerTraitInstances(statements: List<PStmt>) => liLoop(chain(statements), builder(), false)
 
-fun [tail] liLoop(ss: Chain<PStmt>, acc: ListBuilder<PStmt>,
-                  changed: Bool): LiOut
-  ret match(ss)
-    (nil: ChainEnd) => LiOut(build(acc), changed)
-    (l: ChainLink)  => match(l.value)
-      (ti: PsTraitInstance) => liLoop(l.next, liLower(ti, acc), true)
-      (o: PStmt)            => liLoop(l.next, push(acc, l.value), changed)
+fun [tail] liLoop(ss: Chain<PStmt>, acc,
+                  changed) => match(ss)
+  (nil: ChainEnd) => LiOut(build(acc), changed)
+  (l: ChainLink)  => match(l.value)
+    (ti: PsTraitInstance) => liLoop(l.next, liLower(ti, acc), true)
+    (o: PStmt)            => liLoop(l.next, push(acc, l.value), changed)
 
-fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>): ListBuilder<PStmt>
+fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>)
   let lr = ti.pstiLine
   let tag = hash6(lr.plFile, lr.plLine, lr.plCol)
   let ns = namespacePart(ti.tiName)
@@ -51,9 +49,8 @@ fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>): ListBuilder<PStmt>
            record)
 
 fun [tail] liOwnArgs(gs: Chain<PGen>, lr,
-                     acc: ListBuilder<Spec>): List<Spec>
-  ret match(gs)
-    (nil: ChainEnd) => build(acc)
-    (l: ChainLink)  => liOwnArgs(l.next, lr,
-                                 push(acc, SNamed(bareOfUnique(l.value.genName),
-                                                  List(), lr)))
+                     acc: ListBuilder<Spec>) => match(gs)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => liOwnArgs(l.next, lr,
+                               push(acc, SNamed(bareOfUnique(l.value.genName),
+                                                List(), lr)))

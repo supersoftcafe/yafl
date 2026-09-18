@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 
@@ -43,36 +44,21 @@ class LambdaExpression(Expression):
     def get_type(self, resolver: g.Resolver) -> t.CallableSpec | None:
         return self.return_type
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # Include parameters in data resolution hierarchy
         resolver = g.ResolverData(resolver, self._find_locals)
 
-        # Infer untyped parameters from the expected callable's parameter types:
-        # a lambda flowing into a slot of known signature lets an undeclared
-        # `(n) =>` adopt that parameter's type. Threading the expected parameter
-        # tuple as the destructure's type reuses DestructureStatement's existing
-        # propagation to fill each still-untyped target; explicitly-typed params
-        # are left untouched. Re-thread on every pass (rather than only when no
-        # type is present): across compile iterations the expected signature can
-        # arrive empty before it arrives concrete, so a one-shot gate would lock
-        # in the empty one. Two guards: matching arity (a mismatch is left for
-        # the call's parameter check to report), and *concreteness* — the
-        # expected types are re-compiled in this lambda's scope, so a callee
-        # generic param (`T`) that has not yet been substituted would resolve to
-        # an unresolved name here; wait for the concrete signature.
-        params = self.parameters
-        if (isinstance(expected_type, t.CallableSpec)
-                and isinstance(expected_type.parameters, t.TupleSpec)
-                and expected_type.parameters.is_concrete()
-                and len(expected_type.parameters.entries) == len(params.targets)):
-            params = dataclasses.replace(params, declared_type=expected_type.parameters)
-
         # Compile the parameter types
-        new_prm, new_prm_glb = params.compile(resolver, None)
+        new_prm, new_prm_glb, _ = self.parameters.compile(resolver, None)
 
         # Compile the expression
         sub_expected_type = expected_type.result if isinstance(expected_type, t.CallableSpec) else None
-        new_xpr, new_xpr_glb = self.expression.compile(resolver, sub_expected_type)
+        new_xpr, new_xpr_glb, body_hints = self.expression.compile(resolver, sub_expected_type)
+
+        # An un-annotated parameter must fit its body's uses and accept what the
+        # expected signature passes it.
+        from pyast.statement.function import inferred_params
+        new_prm = inferred_params(new_prm, h.merge(body_hints, self.__passed(expected_type)), resolver)
 
         # Calculate the return type. Prefer the expected result type from the
         # enclosing call site — that way a lambda whose body is narrower than
@@ -100,9 +86,20 @@ class LambdaExpression(Expression):
                        else self.parameters.get_type())
         new_ret = t.CallableSpec(self.line_ref, params_type, new_ret_result)
 
+        own = {let.name for let in self.parameters.flatten()}
         return dataclasses.replace(
             self, parameters=new_prm, expression=new_xpr,
-            return_type=new_ret), (new_prm_glb + new_xpr_glb)
+            return_type=new_ret), (new_prm_glb + new_xpr_glb), h.without(body_hints, own)
+
+    def __passed(self, expected_type: t.TypeSpec | None) -> h.Hints:
+        """What the expected signature passes each parameter: a LOWER hint."""
+        if not (isinstance(expected_type, t.CallableSpec)
+                and isinstance(expected_type.parameters, t.TupleSpec)
+                and len(expected_type.parameters.entries) == len(self.parameters.targets)):
+            return {}
+        return h.merge(*(h.of(tgt.name, en.type, lower=True)
+                         for tgt, en in zip(self.parameters.targets, expected_type.parameters.entries)
+                         if en.type is not None))
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         # Include parameters in data resolution hierarchy

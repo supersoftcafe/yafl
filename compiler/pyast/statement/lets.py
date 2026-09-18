@@ -22,6 +22,7 @@ import codegen.ir as cg_ir
 import pyast.resolver as g
 import pyast.expression as e
 import pyast.typespec as t
+import pyast.hints as h
 
 import pyast.utils as u
 
@@ -95,14 +96,14 @@ class LetStatement(DataStatement):
             # Just a value, no work, caller does it
             return g.OperationBundle()
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement]]:
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[LetStatement | None, list[Statement], h.Hints]:
         # A generic trait-instance let (`let [trait] _x<S,T>: … where Box<S,T>`)
         # carries a `where` clause that must be compiled. The generic scope
         # itself (S/T) is supplied by the caller via _initialiser_resolver
         # (see compiler.__stmt_scope_resolver), so do NOT re-wrap here — that
         # would shadow each placeholder and make references ambiguous.
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
-        dv, dv_glb = self.default_value.compile(resolver, self._rhs_expected()) if self.default_value else (None, [])
+        dv, dv_glb, hints = self.default_value.compile(resolver, self._rhs_expected()) if self.default_value else (None, [], {})
         dt, dt_glb = self.declared_type.compile(resolver) if self.declared_type else (None, [])
         # A DECLARED type is fixed (refine only fills its holes); an UNTYPED let
         # converges on the RHS and must be free to widen as a match/branch RHS
@@ -117,7 +118,7 @@ class LetStatement(DataStatement):
                 dt = t.refine_widening(dt, resolver, lambda: dv.get_type(resolver))
         stmt = dataclasses.replace(self, default_value=dv, declared_type=dt, trait_params=tuple(trts),
                                    type_inferred=new_type_inferred)
-        return stmt, dv_glb+dt_glb+trts_glb
+        return stmt, dv_glb+dt_glb+trts_glb, hints
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         # Generic scope (S/T) is supplied by _initialiser_resolver, as in compile.
@@ -517,8 +518,8 @@ class DestructureStatement(LetStatement):
             return self.declared_type
         return slot
 
-    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DestructureStatement, list[Statement]]:
-        stmt, stmt_glb = super().compile(resolver, func_ret_type)
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[DestructureStatement, list[Statement], h.Hints]:
+        stmt, stmt_glb, hints = super().compile(resolver, func_ret_type)
         # Propagate the parent tuple's entry types onto the targets. A target
         # with no type adopts the entry's (which may itself still be a generic
         # placeholder, needed inside a generic body) and is thereafter INFERRED:
@@ -549,7 +550,7 @@ class DestructureStatement(LetStatement):
         tgts = [x[0] for x in results]
         tgts_glb = [g for x in results for g in x[1]]
         stmt = dataclasses.replace(stmt, targets=tgts)
-        return checked_cast(DestructureStatement, stmt), stmt_glb+tgts_glb
+        return checked_cast(DestructureStatement, stmt), stmt_glb+tgts_glb, h.merge(hints, *(x[2] for x in results))
 
     def map_leaf_paths(self, make_leaf, path):
         return [make_leaf(path + [entry]) for target in self.targets for entry in target.flatten()]

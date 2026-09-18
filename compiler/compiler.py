@@ -72,7 +72,7 @@ from codegen.gen import Application
 import pyast.resolver as g
 import pyast.typespec as t
 import pyast.rewrite as rw
-import pyast.param_inference as pi
+import pyast.hints as hints
 from dataclasses import dataclass, fields
 
 from parsing.tokenizer import tokenize, LineRef
@@ -379,7 +379,7 @@ def __stmt_scope_resolver(stmt: s.Statement, glb: g.Resolver) -> g.Resolver:
 
 def __compile(stmt: s.Statement, glb: g.Resolver, expected_type: t.TypeSpec | None) -> list[s.Statement]:
     glb = __stmt_scope_resolver(stmt, glb)
-    result, extras = stmt.compile(glb, expected_type)
+    result, extras, _ = stmt.compile(glb, expected_type)
     return [result] + extras
 
 
@@ -396,6 +396,11 @@ def __is_main_function(stmt: s.FunctionStatement) -> bool:
 
 _MAX_COMPILE_ITERATIONS = 100
 
+# Watch for a cycle only after this many passes. Convergence is linear in
+# chain depth and the whole port settles in 15, so anything still moving here
+# is not settling — and until here the loop pays no comparison for the watch.
+_CYCLE_WATCH_FROM = 20
+
 # Registry chunk size — see __test_registry_source. Bounds the dependent-let
 # chain so convergence passes stay flat in the number of tests.
 _TEST_REGISTRY_CHUNK = 16
@@ -409,17 +414,9 @@ def __check_untyped_params(statements: list[s.Statement]) -> list[Error]:
     resolver = g.ResolverRoot(statements)
     errors: list[Error] = []
     for stmt in statements:
-        if not isinstance(stmt, s.FunctionStatement):
-            continue
-        untyped = [tgt for tgt in stmt.parameters.targets if tgt.get_type() is None]
-        if not untyped:
-            continue
-        scope = stmt.body_scope(__stmt_scope_resolver(stmt, resolver))
-        errors += [Error(tgt.line_ref,
-                         f"Parameter '{g.simple_name(tgt.name)}' of '{g.simple_name(stmt.name)}' "
-                         f"has no type and could not be inferred — "
-                         f"{pi.uninferable_clue(stmt, tgt, scope)}")
-                   for tgt in untyped]
+        if isinstance(stmt, s.FunctionStatement):
+            errors += hints.untyped_param_errors(
+                stmt, stmt.body_scope(__stmt_scope_resolver(stmt, resolver)))
     return errors
 
 
@@ -476,22 +473,115 @@ def __collect_diagnostics(statements: list[s.Statement],
     return [], warnings
 
 
+def __type_view(spec: t.TypeSpec) -> str:
+    """`_type_str` names an enum by its ROOT, but a view is a distinct type —
+    the answer that flips is often root versus view, so name the leaves."""
+    from pyast.expression.call import _type_str, _spec_name
+    if isinstance(spec, t.EnumSpec) and set(spec.valid_leaf_names) != set(spec.all_leaf_names):
+        return " | ".join(_spec_name(leaf) for leaf in spec.all_leaf_names
+                          if leaf in spec.valid_leaf_names)
+    return _type_str(spec)
+
+
+def __body_statements(fn: s.Statement) -> list[s.Statement]:
+    """A function's nested declarations: its body block's statements."""
+    return list(getattr(getattr(fn, "body", None), "statements", ()))
+
+
+def __flip_errors(before: list[s.Statement], after: list[s.Statement],
+                  otherwise: str) -> list[Error]:
+    """Name every declaration whose INFERRED type differs across one step of
+    the cycle: those are the answers the program leaves open, and writing one
+    of them down breaks it. Walks the two trees in lockstep, following only
+    what holds declarations, and prunes wherever they already agree. A cycle
+    with nothing inferred flipping is a compile() that is not idempotent —
+    the compiler's own bug, reported as such."""
+    errors: list[Error] = []
+
+    def flip(line_ref: LineRef, what: str, was: t.TypeSpec, now: t.TypeSpec) -> None:
+        # Sorted: which of the two the cycle happens to be caught on is an
+        # accident of the detecting pass, and the message must not say so.
+        one, other = sorted((__type_view(was), __type_view(now)))
+        errors.append(Error(line_ref, f"{what} alternates between '{one}' and "
+                                      f"'{other}' across compile passes — declare it"))
+
+    def walk(xs, ys) -> None:
+        for a, b in zip(xs, ys):
+            if a == b:
+                continue
+            if isinstance(a, s.FunctionStatement) and isinstance(b, s.FunctionStatement):
+                compare(a, b)
+            walk(getattr(a, "statements", ()), getattr(b, "statements", ()))
+
+    def compare(a: s.FunctionStatement, b: s.FunctionStatement) -> None:
+        bare = g.simple_name(a.name)
+        if (a.return_inferred and b.return_inferred
+                and a.return_type is not None and b.return_type is not None
+                and a.return_type != b.return_type):
+            flip(a.line_ref, f"Return type of '{bare}'", a.return_type, b.return_type)
+        for ta, tb in zip(a.parameters.targets, b.parameters.targets):
+            if (getattr(ta, "type_inferred", False) and getattr(tb, "type_inferred", False)
+                    and ta.declared_type is not None and tb.declared_type is not None
+                    and ta.declared_type != tb.declared_type):
+                flip(ta.line_ref, f"Parameter '{g.simple_name(ta.name)}' of '{bare}'",
+                     ta.declared_type, tb.declared_type)
+        walk(__body_statements(a), __body_statements(b))
+
+    walk(before, after)
+    if errors:
+        return sorted(errors)
+    moved = [a for a, b in zip(before, after) if a != b]
+    return [Error(moved[0].line_ref if moved else LineRef("none", 0, 0), otherwise)]
+
+
+class ConvergenceError(RuntimeError):
+    """The fixpoint stopped without settling. Carries located diagnostics."""
+
+    def __init__(self, errors: list[Error]):
+        super().__init__("; ".join(e.message for e in errors))
+        self.errors = errors
+
+
 def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Resolver, int]:
     """Run the compile fixpoint: rewrite every statement until a whole pass
     changes nothing. Returns the converged statements, the final resolver and
     the number of passes taken (the bootstrap contract pins the port to the
     same count — a port that reached the same answer in a different number of
-    passes is doing more or less per pass than this compiler)."""
+    passes is doing more or less per pass than this compiler).
+
+    Inference can also CYCLE: two parameters each narrow to what the other's
+    previous answer allows, then both widen when those answers disagree, for
+    ever. Brent's cycle detection catches the repeat with a single snapshot —
+    the tortoise moves to the current tree whenever the hare has travelled the
+    window, and the window doubles — so any period is found, not just the
+    short ones. The two consecutive trees then name what flips."""
+    snapshot, window, distance = statements, 1, 0
+    previous = statements
     for passes in range(1, _MAX_COMPILE_ITERATIONS + 1):
         resolver = g.ResolverRoot(statements)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
         if new_statements == statements:
             return new_statements, resolver, passes
-        statements = new_statements
-    raise RuntimeError(
+        if passes < _CYCLE_WATCH_FROM:
+            # The watch costs a whole-tree comparison per pass, so it starts
+            # only once settling has plainly failed: the tortoise trails the
+            # newest tree until then, and a program that converges (the port
+            # itself takes 15) never pays for it at all.
+            snapshot, window, distance = new_statements, 1, 0
+        elif new_statements == snapshot:
+            raise ConvergenceError(__flip_errors(
+                statements, new_statements,
+                "Compile loop cycles without settling. This is a compiler bug — "
+                "a compile() pass is not idempotent."))
+        elif distance + 1 == window:
+            snapshot, window, distance = new_statements, window * 2, 0
+        else:
+            distance += 1
+        previous, statements = statements, new_statements
+    raise ConvergenceError(__flip_errors(
+        previous, statements,
         f"Compile loop failed to converge after {_MAX_COMPILE_ITERATIONS} iterations. "
-        "This is a compiler bug — a compile() pass is not idempotent."
-    )
+        "This is a compiler bug — a compile() pass is not idempotent."))
 
 
 def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False) -> tuple[str, list[Error]] | list[Error]:
@@ -842,8 +932,11 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     # always included; loaded libraries append their own headers.
     headers = ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h")
 
-    compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
-        optimization_level=optimization_level, headers=headers, profile=profile)
+    try:
+        compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
+            optimization_level=optimization_level, headers=headers, profile=profile)
+    except ConvergenceError as unsettled:
+        return __print_errors(unsettled.errors), None, []
     if isinstance(compiled_result, list):
         return __print_errors(compiled_result), None, []
 

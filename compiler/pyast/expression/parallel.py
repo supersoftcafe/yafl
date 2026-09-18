@@ -17,6 +17,7 @@ import codegen.typedecl as cg_t
 import pyast.resolver as g
 import pyast.statement as s
 import pyast.typespec as t
+import pyast.hints as h
 import pyast.utils as u
 from pyast.expression.base import Expression
 
@@ -38,13 +39,14 @@ class ParallelExpression(Expression):
             entries.append(t.TupleEntrySpec(None, fn_type.result))
         return t.TupleSpec(self.line_ref, entries)
 
-    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement]]:
-        new_exprs, new_stmts = [], []
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        new_exprs, new_stmts, hints = [], [], {}
         for expr in self.exprs:
-            new_e, stmts = expr.compile(resolver, None)
+            new_e, stmts, eh = expr.compile(resolver, None)
             new_exprs.append(new_e)
             new_stmts.extend(stmts)
-        return dataclasses.replace(self, exprs=new_exprs), new_stmts
+            hints = h.merge(hints, eh)
+        return dataclasses.replace(self, exprs=new_exprs), new_stmts, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
         bad_arg = "__parallel__ argument must be a zero-parameter function"

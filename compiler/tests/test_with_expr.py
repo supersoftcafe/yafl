@@ -112,6 +112,27 @@ fun main(): System::Int
         self.assertEqual(0, code, out)
         self.assertEqual("", out.strip(), out)   # no compute: same object
 
+    def test_replacing_an_optional_field_with_none_copies(self):
+        """The SAME guard compares at the FIELD's representation: a None
+        replacement is not the current value of an `Int|None` field."""
+        src = """\
+import System
+
+class [final] Opt3(name: System::String, ty: System::Int|None)
+
+fun tyOr(o: Opt3): System::Int
+  ret match(o.ty)
+    (n: System::Int) => n
+    ()               => 100
+
+fun main(): System::Int
+  let a = Opt3("a", 7)
+  let b = with a(ty = None)
+  ret tyOr(a) == 7 && tyOr(b) == 100 ? 0 : 1
+"""
+        code, out = compile_and_run_stdlib_capture(src, timeout=30)
+        self.assertEqual(0, code, out)
+
     def test_copy_does_not_serve_a_stale_hash(self):
         """The copy's `$hash` slot must be ZEROED: hash the original (fills
         its cache), then hash a changed copy — a stale cache would return the

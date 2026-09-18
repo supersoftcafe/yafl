@@ -11,5 +11,4 @@ import Bootstrap::Ast
 
 
 
-fun hoistNestedFunctions(statements: List<PStmt>): List<PStmt>
-  ret hoistNestedFnsToLambdas(statements)
+fun hoistNestedFunctions(statements: List<PStmt>) => hoistNestedFnsToLambdas(statements)

@@ -35,14 +35,11 @@ let md5S =
   + "06101521061015210610152106101521"
 
 
-fun kOf(i): Int
-  ret hex8(md5K, i * 8)
+fun kOf(i): Int => hex8(md5K, i * 8)
 
-fun sOf(i): Int
-  ret digit(md5S, i * 2) * 10 + digit(md5S, i * 2 + 1)
+fun sOf(i): Int => digit(md5S, i * 2) * 10 + digit(md5S, i * 2 + 1)
 
-fun digit(s, at): Int
-  ret Int(byteAt(s, at) - '0')
+fun digit(s, at) => Int(byteAt(s, at) - '0')
 
 fun [tail] hex8Loop(s, at, left,
                     acc): Int
@@ -52,19 +49,15 @@ fun [tail] hex8Loop(s, at, left,
   let v = c <= '9' ? Int(c - '0') : Int(c - 'a') + 10
   ret hex8Loop(s, at + 1, left - 1, acc * 16 + v)
 
-fun hex8(s, at): Int
-  ret hex8Loop(s, at, 8, 0)
+fun hex8(s, at): Int => hex8Loop(s, at, 8, 0)
 
 # ── 32-bit helpers ───────────────────────────────────────────────────────────
 
-fun add32(a: Int, b: Int): Int
-  ret (a + b) & mask32
+fun add32(a, b) => (a + b) & mask32
 
-fun not32(a): Int
-  ret a ^ mask32
+fun not32(a) => a ^ mask32
 
-fun rotl32(x: Int, c: Int): Int
-  ret ((x << c) | (x >> (32 - c))) & mask32
+fun rotl32(x, c) => ((x << c) | (x >> (32 - c))) & mask32
 
 # ── message access: source bytes, 0x80, zero padding, 8-byte LE bit length ──
 
@@ -75,7 +68,7 @@ fun paddedLen(msgLen): Int
 
 # `len` is length(msg) computed ONCE per digest — length() walks UTF-8, so
 # calling it per byte made padding O(n^2).
-fun messageByte(msg, len: Int, idx: Int): Int
+fun messageByte(msg, len, idx)
   if idx < len
     ret Int(byteAt(msg, idx))
   if idx == len
@@ -86,7 +79,7 @@ fun messageByte(msg, len: Int, idx: Int): Int
   ret (len * 8 >> ((idx - (total - 8)) * 8)) & 255
 
 # Little-endian 32-bit word j (0..15) of the 64-byte chunk at `base`.
-fun wordOf(msg, len: Int, base, j): Int
+fun wordOf(msg, len, base, j): Int
   let at = base + j * 4
   ret messageByte(msg, len, at)
     | (messageByte(msg, len, at + 1) << 8)
@@ -99,8 +92,8 @@ class [final] Md5State(sa: Int, sb: Int,
                        sc: Int, sd: Int)
 
 fun [tail] rounds(msg, len: Int, base, i,
-                  a, b: Int, c: Int,
-                  d: Int): Md5State
+                  a, b, c,
+                  d): Md5State
   if i == 64
     ret Md5State(a, b, c, d)
   let f0 = i < 16 ? (b & c) | (not32(b) & d)
@@ -124,7 +117,7 @@ fun [tail] chunks(msg, len: Int, base, total: Int,
                       add32(st.sc, r.sc), add32(st.sd, r.sd)))
 
 # The 16 digest bytes: a0 b0 c0 d0, each little-endian.
-fun md5DigestByte(st: Md5State, i): Int
+fun md5DigestByte(st: Md5State, i)
   let word = i < 4 ? st.sa : i < 8 ? st.sb : i < 12 ? st.sc : st.sd
   ret (word >> ((i % 4) * 8)) & 255
 
@@ -138,8 +131,7 @@ fun md5(msg): Md5State
 let b64Alphabet =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
-fun b64Char(v): String
-  ret slice(b64Alphabet, v, v + 1)
+fun b64Char(v) => slice(b64Alphabet, v, v + 1)
 
 fun [tail] b64Groups(st: Md5State, i, acc): String
   if i >= 16
@@ -155,10 +147,9 @@ fun [tail] b64Groups(st: Md5State, i, acc): String
 
 # ── hash6: base64(md5("file:line:col")), alphanumerics only, first six ──────
 
-fun isAlnumByte(c: Int32): Bool
-  ret match(c)
-    ('0' .. '9' | 'a' .. 'z' | 'A' .. 'Z') => true
-    ()                                   => false
+fun isAlnumByte(c: Int32) => match(c)
+  ('0' .. '9' | 'a' .. 'z' | 'A' .. 'Z') => true
+  ()                                   => false
 
 fun [tail] takeAlnum(s, at, left,
                      acc): String
@@ -169,7 +160,7 @@ fun [tail] takeAlnum(s, at, left,
     ? takeAlnum(s, at + 1, left - 1, acc + slice(s, at, at + 1))
     : takeAlnum(s, at + 1, left, acc + "")
 
-fun hash6(filename, line: Int, col: Int): String
+fun hash6(filename, line: Int, col: Int)
   let b64 = b64Groups(md5(filename + ":" + String(line) + ":" + String(col)), 0, "")
   ret takeAlnum(b64, 0, 6, "")
 
@@ -179,7 +170,7 @@ fun hash6(filename, line: Int, col: Int): String
 # words, BIG-endian bit length, 5-word state and an 80-entry schedule. ────────
 
 # Same padding layout as MD5; only the trailing 8 length bytes flip to BE.
-fun sha1MessageByte(msg, len: Int, idx: Int): Int
+fun sha1MessageByte(msg, len, idx)
   if idx < len
     ret Int(byteAt(msg, idx))
   if idx == len
@@ -190,7 +181,7 @@ fun sha1MessageByte(msg, len: Int, idx: Int): Int
   ret (len * 8 >> ((total - 1 - idx) * 8)) & 255
 
 # Big-endian 32-bit word j (0..15) of the 64-byte chunk at `base`.
-fun sha1WordOf(msg, len: Int, base, j): Int
+fun sha1WordOf(msg, len, base, j): Int
   let at = base + j * 4
   ret (sha1MessageByte(msg, len, at) << 24)
     | (sha1MessageByte(msg, len, at + 1) << 16)
@@ -214,15 +205,14 @@ fun [tail] sha1Schedule(msg, len: Int, base, t,
   ret sha1Schedule(msg, len, base, t + 1, ChainLink(w, recent),
                    push(acc, w))
 
-fun [tail] tapAt(c: Chain<Int>, k: Int): Int
-  ret match(c)
-    (l: ChainLink)  => k == 0 ? l.value : tapAt(l.next, k - 1)
-    (nil: ChainEnd) => 0
+fun [tail] tapAt(c: Chain<Int>, k): Int => match(c)
+  (l: ChainLink)  => k == 0 ? l.value : tapAt(l.next, k - 1)
+  (nil: ChainEnd) => 0
 
 class [final] Sha1State(h0: Int, h1: Int, h2: Int, h3: Int, h4: Int)
 
 # The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
-fun [tail] sha1Rounds(ws: Chain<Int>, i: Int, a: Int, b: Int, c: Int, d: Int, e: Int): Sha1State
+fun [tail] sha1Rounds(ws: Chain<Int>, i, a, b, c, d, e): Sha1State
   if i == 80
     ret Sha1State(a, b, c, d, e)
   let wv = match(ws)
@@ -239,7 +229,7 @@ fun [tail] sha1Rounds(ws: Chain<Int>, i: Int, a: Int, b: Int, c: Int, d: Int, e:
   let temp = add32(add32(add32(add32(rotl32(a, 5), f0), e), k), wv)
   ret sha1Rounds(rest, i + 1, temp, a, rotl32(b, 30), c, d)
 
-fun [tail] sha1Chunks(msg, len: Int, base, total: Int, st: Sha1State): Sha1State
+fun [tail] sha1Chunks(msg, len, base, total, st: Sha1State): Sha1State
   if base >= total
     ret st
   let r = sha1Rounds(chain(sha1Schedule(msg, len, base, 0, ChainEnd(),
@@ -257,10 +247,10 @@ fun sha1(msg): Sha1State
 # hexdigest: 5 words big-endian, two lowercase hex chars per byte (40 chars).
 let hexAlphabet = "0123456789abcdef"
 
-fun sha1HexByte(v): String
+fun sha1HexByte(v)
   ret slice(hexAlphabet, v >> 4, (v >> 4) + 1) + slice(hexAlphabet, v & 15, (v & 15) + 1)
 
-fun sha1StateWord(st: Sha1State, i): Int
+fun sha1StateWord(st: Sha1State, i)
   ret i == 0 ? st.h0 : i == 1 ? st.h1 : i == 2 ? st.h2 : i == 3 ? st.h3 : st.h4
 
 fun [tail] sha1HexLoop(st: Sha1State, i, acc): String
@@ -269,8 +259,7 @@ fun [tail] sha1HexLoop(st: Sha1State, i, acc): String
   let w = sha1StateWord(st, i / 4)
   ret sha1HexLoop(st, i + 1, acc + sha1HexByte((w >> ((3 - i % 4) * 8)) & 255))
 
-fun sha1Hex(msg): String
-  ret sha1HexLoop(sha1(msg), 0, "")
+fun sha1Hex(msg): String => sha1HexLoop(sha1(msg), 0, "")
 
 
 # ── SHA256 (FIPS 180-4) — libraries.py keys a `.yl`'s extracted-native cache
@@ -296,11 +285,9 @@ let sha256K =
   + "19a4c1161e376c082748774c34b0bcb5391c0cb34ed8aa4a5b9cca4f682e6ff3"
   + "748f82ee78a5636f84c878148cc7020890befffaa4506cebbef9a3f7c67178f2"
 
-fun sha256K0f(i): Int
-  ret hex8(sha256K, i * 8)
+fun sha256K0f(i): Int => hex8(sha256K, i * 8)
 
-fun rotr32(x: Int, c: Int): Int
-  ret ((x >> c) | (x << (32 - c))) & mask32
+fun rotr32(x, c) => ((x >> c) | (x << (32 - c))) & mask32
 
 class [final] Sha256State(t0: Int, t1: Int, t2: Int, t3: Int,
                           t4: Int, t5: Int, t6: Int, t7: Int)
@@ -326,7 +313,7 @@ fun [tail] sha256Schedule(msg, len: Int, base, t,
 
 # The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
 fun [tail] sha256Rounds(ws: Chain<Int>, i: Int, a: Int, b: Int, c: Int, d: Int,
-                        e: Int, f: Int, g: Int, h: Int): Sha256State
+                        e, f, g, h): Sha256State
   if i == 64
     ret Sha256State(a, b, c, d, e, f, g, h)
   let wv = match(ws)
@@ -363,23 +350,21 @@ fun sha256(msg): Sha256State
                    Sha256State(1779033703, 3144134277, 1013904242, 2773480762,
                                1359893119, 2600822924, 528734635, 1541459225))
 
-fun sha256StateWord(st: Sha256State, i): Int
+fun sha256StateWord(st: Sha256State, i)
   ret i == 0 ? st.t0 : i == 1 ? st.t1 : i == 2 ? st.t2 : i == 3 ? st.t3
     : i == 4 ? st.t4 : i == 5 ? st.t5 : i == 6 ? st.t6 : st.t7
 
 # hexdigest, but only as far as `upto` BYTES: the one caller wants
 # `[:16]` hex chars, and hashing 2 MB then formatting the 24 bytes nobody
 # reads is pure waste.
-fun [tail] sha256HexLoop(st: Sha256State, i: Int, upto: Int, acc): String
+fun [tail] sha256HexLoop(st: Sha256State, i, upto, acc): String
   if i == upto
     ret acc
   let w = sha256StateWord(st, i / 4)
   ret sha256HexLoop(st, i + 1, upto,
                     acc + sha1HexByte((w >> ((3 - i % 4) * 8)) & 255))
 
-fun sha256Hex(msg): String
-  ret sha256HexLoop(sha256(msg), 0, 32, "")
+fun sha256Hex(msg): String => sha256HexLoop(sha256(msg), 0, 32, "")
 
 # The 16-char prefix libraries.py uses as a cache key.
-fun sha256Hex16(msg): String
-  ret sha256HexLoop(sha256(msg), 0, 8, "")
+fun sha256Hex16(msg): String => sha256HexLoop(sha256(msg), 0, 8, "")
