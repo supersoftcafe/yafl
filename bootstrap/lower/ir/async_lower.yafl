@@ -448,7 +448,7 @@ fun [tail] alPhiSourcesLoop(ix: AlIx, j, pred, acc)
 class [final] ABlock(abName: String, abOps: List<Op>, abLive: List<RParam>,
                      abResult: RParam|None)
 
-# Partition liveness-annotated ops on non-musttail Call | ParallelCall (the
+# Partition liveness-annotated ops on may-suspend Call | ParallelCall (the
 # splitter is the LAST op of its block); block name cont$<i>; live = last
 # op's saved_vars; result = last op's register.
 fun alCreateBasicBlocks(f: CgFunction): List<ABlock> => alCreateBasicBlocksN(f).bs
@@ -492,7 +492,7 @@ fun [tail] alPartitionB(st: SeqStream<Op>, n,
                                         acc.paBlocks))
 
 fun alIsSplitter(op) => match(op)
-  (c: OpCall)          => !c.callMusttail
+  (c: OpCall)          => opCallMaySuspend(c)
   (pc: OpParallelCall) => true
   (o: Op)              => false
 
@@ -929,21 +929,28 @@ fun alRebuildNested(f2: CgField, rest: List<CgField>, sp, stateName, idx,
 
 # ── musttail unroll (SM view) + state object ────────────────────────────────
 
+# A SYNC musttail is expanded in place (alExpandSyncCall) and never splits a
+# block, so no block result declares its temp — the unroll declares it (and
+# any wrap local) itself, as Python's does.
 fun alUnrollMusttail(f: CgFunction)
-  ret cgFunctionWith(f, build(alUmLoop(f.fnOps, 0i32, 0, seqBuilder())),
-                     f.fnStackVars)
+  let um = alUmLoop(f.fnOps, 0i32, 0, UmAcc(seqBuilder(), List()))
+  ret cgFunctionWith(f, build(um.uaOps),
+                     cgStructAdd(f.fnStackVars, CgStruct(um.uaVars)))
+
+class [linear, final] UmAcc(uaOps: SeqBuilder<Op>, uaVars: List<CgField>)
 
 fun [tail] alUmLoop(s: Segment<Op>|None, iSeg, counter,
-                    [terminal] acc): SeqBuilder<Op> => match(s)
+                    [terminal] acc: UmAcc): UmAcc => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg >= seg.length
     ? alUmLoop(seg.next, 0i32, counter, acc)
     : match(alUmOne(seg.array(iSeg), counter))
         (u: UmOut) => alUmLoop(s, iSeg + 1i32, u.umCounter,
-                               pushAll(acc, u.umOps))
-        ()          => alUmLoop(s, iSeg + 1i32, counter, push(acc, seg.array(iSeg)))
+                               UmAcc(pushAll(acc.uaOps, u.umOps), concat(acc.uaVars, u.umVars)))
+        ()          => alUmLoop(s, iSeg + 1i32, counter,
+                                UmAcc(push(acc.uaOps, seg.array(iSeg)), acc.uaVars))
 
-class [final] UmOut(umOps: List<Op>, umCounter: Int)
+class [final] UmOut(umOps: List<Op>, umCounter: Int, umVars: List<CgField>)
 
 fun alUmOne(op, counter) => match(op)
   (c: OpCall) => c.callMusttail ? alUmCall(c, counter + 1) : None
@@ -952,14 +959,95 @@ fun alUmOne(op, counter) => match(op)
 fun alUmCall(c: OpCall, n) => alResultTypeVoidish(c.callResultType)
   ? UmOut(list2(OpCall(c.callFunction, c.callParameters, None, false, c.callImpure,
                        c.callResultType, c.callSavedVars),
-                OpReturnVoid(List())), n)
+                OpReturnVoid(List())), n, List())
   : alUmValued(c, n)
 
 fun alUmValued(c: OpCall, n)
-  let tmp = RpStackVar(alForceResultType(c.callResultType), "$musttail$ret$" + String(n))
-  ret UmOut(list2(OpCall(c.callFunction, c.callParameters, tmp, false, c.callImpure,
-                         c.callResultType, c.callSavedVars),
-                  OpReturn(tmp, List())), n)
+  let tmpName = "$musttail$ret$" + String(n)
+  let tmpType = alForceResultType(c.callResultType)
+  let tmp = RpStackVar(tmpType, tmpName)
+  let call = OpCall(c.callFunction, c.callParameters, tmp, false, c.callImpure,
+                    c.callResultType, c.callSavedVars)
+  if opCallIsSync(call)
+    let se = alExpandSyncCall(call, "$syncwrap$" + tmpName)
+    ret UmOut(concat(se.seOps, list1<Op>(OpReturn(tmp, List()))), n,
+              prepend(CgField(tmpName, tmpType), se.seVars))
+  ret UmOut(list2<Op>(call, OpReturn(tmp, List())), n, List())
+
+# ── sync calls (async_lower.py __expand_sync_call / __expand_sync_calls) ────
+# A call proven sync is a plain call: no block split, no IfTask. It keeps the
+# uniform task-carrying return ABI — its callee may also be reached from a
+# may-suspend site — so a primitive result is received in its wrapped shape
+# and unwrapped, and every result passes a debug-build OpAssertNotTask.
+
+class [final] SyncExp(seOps: List<Op>, seVars: List<CgField>)
+
+fun alExpandSyncCall(c: OpCall, wrapName: String): SyncExp => match(c.callRegister)
+  (reg: RParam) => alExpandSyncValued(c, reg, wrapName)
+  ()            => alResultTypeVoidish(c.callResultType)
+                     ? SyncExp(list1<Op>(c), List())   # void: nothing comes back to check
+                     : alExpandSyncReceived(c, None, alForceResultType(c.callResultType), wrapName)
+
+fun alExpandSyncValued(c: OpCall, reg: RParam, wrapName: String)
+  let resultType = rpGetType(reg)
+  let wrapped = wrapReturnType(resultType)
+  ret eqCgType(wrapped, resultType)
+    ? SyncExp(list2<Op>(c, OpAssertNotTask(isTaskParam(reg, wrapped), List())), List())
+    : alExpandSyncReceived(c, reg, resultType, wrapName)
+
+# Receive into `wrapName` (the wrapped shape), check, and unwrap into the
+# original register when there is one.
+fun alExpandSyncReceived(c: OpCall, reg: RParam|None, resultType, wrapName: String)
+  let wrapped = wrapReturnType(resultType)
+  let received = RpStackVar(wrapped, wrapName)
+  let checked = list2<Op>(OpCall(c.callFunction, c.callParameters, received, c.callMusttail,
+                             c.callImpure, c.callResultType, c.callSavedVars),
+                      OpAssertNotTask(isTaskParam(received, wrapped), List()))
+  let ops = match(reg)
+    (r: RParam) => concat(checked, list1<Op>(OpMove(r, RpStructField(received, "value"), false, List())))
+    ()          => checked
+  ret SyncExp(ops, list1(CgField(wrapName, wrapped)))
+
+fun alIsSyncNontailCall(op) => match(op)
+  (c: OpCall) => !c.callMusttail && opCallIsSync(c)
+  (o: Op)     => false
+
+class [linear, final] EscAcc(ecOps: SeqBuilder<Op>, ecVars: List<CgField>, ecGrew: Bool)
+
+# Expand every non-tail sync call. Runs after tail discovery, so a sync call
+# in tail position stays a musttail passing its callee's result straight
+# through. Unchanged (Python returns fn itself) unless an expansion grew.
+fun alExpandSyncCalls(f: CgFunction)
+  let acc = alEscLoop(f.fnOps, 0i32, 0, EscAcc(seqBuilder(), List(), false))
+  let grew = acc.ecGrew
+  let vars = acc.ecVars
+  let ops = build(acc.ecOps)
+  ret grew ? cgFunctionWith(f, ops, cgStructAdd(f.fnStackVars, CgStruct(vars))) : f
+
+fun [tail] alEscLoop(s: Segment<Op>|None, iSeg, index,
+                     [terminal] acc: EscAcc): EscAcc => match(s)
+  (nil: None)        => acc
+  (seg: Segment<Op>) => iSeg >= seg.length
+    ? alEscLoop(seg.next, 0i32, index, acc)
+    : alEscLoop(s, iSeg + 1i32, index + 1, alEscOne(seg.array(iSeg), index, acc))
+
+fun alEscOne(op, index: Int, [terminal] acc: EscAcc): EscAcc => match(op)
+  (c: OpCall) => alIsSyncNontailCall(op)
+    ? alEscPush(alExpandSyncCall(c, alSyncWrapName(c.callRegister, index)), acc)
+    : EscAcc(push(acc.ecOps, op), acc.ecVars, acc.ecGrew)
+  (o: Op)     => EscAcc(push(acc.ecOps, op), acc.ecVars, acc.ecGrew)
+
+fun alEscPush(se: SyncExp, [terminal] acc: EscAcc): EscAcc
+  ret EscAcc(pushAll(acc.ecOps, se.seOps), concat(acc.ecVars, se.seVars),
+             acc.ecGrew || atLeast(chain(se.seOps), 2))
+
+fun alSyncWrapName(reg: RParam|None, index: Int) => match(reg)
+  (r: RParam) => alSyncWrapNameOf(r, index)
+  ()          => "$syncwrap$" + String(index)
+
+fun alSyncWrapNameOf(reg: RParam, index: Int) => match(reg)
+  (sv: RpStackVar) => "$syncwrap$" + sv.name
+  (o: RParam)      => "$syncwrap$" + String(index)
 
 fun alForceResultType(t2: CgType|None) => match(t2)
   (x: CgType) => x
@@ -1869,7 +1957,7 @@ fun alMergeOne([terminal] acc: AlAcc, out: AlOut)
 fun alConvertFunction(f: CgFunction): AlOut
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
     ret AlOut(list1(f), List())
-  let afterTail = alDiscoverTailCalls(f)
+  let afterTail = alExpandSyncCalls(alDiscoverTailCalls(f))
   let stateName = f.fnName + "$state"
   let built = alCreateBasicBlocksN(afterTail)
   if !atLeast(chain(built.bs), 2)
@@ -1923,7 +2011,7 @@ fun alIsMusttailCall(op) => match(op)
 # and stubbing it turns a zero-allocation call into a heap state allocation
 # per call. Walk once, recording the park count at each label; a jump back to
 # a seen label with parks accrued since is a parking loop. Park ops = exactly
-# what the basic-block builder splits on (non-musttail Call, ParallelCall).
+# what the basic-block builder splits on (a may-suspend Call, ParallelCall).
 fun alHasParkingLoop(ops: Segment<Op>|None) => alHplLoop(ops, 0i32, Dict(), 0)
 
 fun [tail] alHplLoop(s: Segment<Op>|None, i, labelParks,
@@ -1936,7 +2024,7 @@ fun [tail] alHplLoop(s: Segment<Op>|None, i, labelParks,
                                           put(labelParks, lb.labelName, parks),
                                           parks)
         (c: OpCall)          => alHplLoop(s, i + 1i32, labelParks,
-                                          c.callMusttail ? parks : parks + 1)
+                                          opCallMaySuspend(c) ? parks + 1 : parks)
         (pc: OpParallelCall) => alHplLoop(s, i + 1i32, labelParks, parks + 1)
         (j: OpJump)          => alHplHit(labelParks, j.jumpName, parks)
           ? true : alHplLoop(s, i + 1i32, labelParks, parks)

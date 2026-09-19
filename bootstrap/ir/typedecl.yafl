@@ -51,7 +51,10 @@ enum CgType
   enum CgFloat(precision: Int)                   # 32 | 64
   enum CgIntPtr()
   enum CgDataPointer()
-  enum CgFuncPointer()
+  # fpSync: every function the value can hold provably never suspends
+  # (sync_inference.yafl). A refinement, not a representation: eqCgType
+  # ignores it, as Python's compare=False does.
+  enum CgFuncPointer(fpSync: Bool)
   enum CgStruct(fields: List<CgField>)
   enum CgImmediateStruct(fields: List<CgField>)  # never dedupes into the shared anon-struct cache
   enum CgVoid()

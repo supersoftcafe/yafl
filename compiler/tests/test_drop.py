@@ -62,6 +62,20 @@ class TestAffineDrop(TestCase):
         self.assertEqual(9, rc)
         self.assertEqual(1, out.count("dropped"))
 
+    def test_early_return_before_the_binding_does_not_drop(self):
+        # Path balancing starts at the binding: a `ret` BEFORE `let r` never
+        # held `r`, so it must not drop it (it used to drop an unbound value).
+        rc, out = compile_and_run_stdlib_capture(_PRELUDE + (
+            "fun pick(early: System::Bool, use: System::Bool): System::Int\n"
+            "  if early\n"
+            "    ret 1\n"
+            "  let r = Res(5)\n"
+            "  ret use ? sink(r) : 2\n"
+            "fun main(): System::Int\n"
+            "  ret pick(true, true)\n"))
+        self.assertEqual(1, rc)
+        self.assertEqual(0, out.count("dropped"))
+
     def test_explicit_consumption_does_not_drop(self):
         rc, out = compile_and_run_stdlib_capture(_PRELUDE + (
             "fun main(): System::Int\n"

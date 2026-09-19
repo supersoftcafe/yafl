@@ -143,11 +143,11 @@ fun genLazyAlloc(l: PsLet, r)
   let cls = stubClassName(irT)
   let svStub = RpStackVar(CgDataPointer(), l.lName)
   let flagF = RpObjectField(CgDataPointer(), svStub, cls, "flag", None, true)
-  let closureF = RpObjectField(CgFuncPointer(), svStub, cls, "closure", None, true)
+  let closureF = RpObjectField(CgFuncPointer(false), svStub, cls, "closure", None, true)
   ret GBundle(list1(svStub),
               list3(OpNewObject(cls, svStub, None, List()),
                     OpMove(flagF, RpNullPointer(), false, List()),
-                    OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List())),
+                    OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())),
               None, List(), List())
 
 fun gsStmtLazyPopulate(st, r) => match(st)
@@ -162,7 +162,7 @@ fun genLazyPopulate(l: PsLet, r)
   let cls = stubClassName(irT)
   let closureBundle = withPrefix(genExprToOpt(l.lDefault, r, None), "closure")
   let svStub = RpStackVar(CgDataPointer(), l.lName)
-  let closureF = RpObjectField(CgFuncPointer(), svStub, cls, "closure", None, false)
+  let closureF = RpObjectField(CgFuncPointer(false), svStub, cls, "closure", None, false)
   let moveOp = OpMove(closureF, mustResult(closureBundle), false, List())
   ret hasAttr(l.lAttrs, "future")
     ? bundleJoin(closureBundle, genFuturePost(irT, svStub, moveOp))

@@ -367,14 +367,20 @@ class _Inserter:
 
         stmts = list(body.statements) if isinstance(body, e.BlockExpression) else []
         value = body.value if isinstance(body, e.BlockExpression) else body
+        # A block binding exists from its declaring statement on: a path that
+        # leaves before it (an early `ret`) never held it, so the accounting
+        # starts after it. A parameter has no declaring statement — it is
+        # held from the top.
+        start = next((i + 1 for i, st in enumerate(stmts)
+                      if any(b.name == name for b in u.binding_lets([st]))), 0)
         try:
-            new_stmts, new_value = ensure_stmts(stmts, value, tail_consumes=False)
+            new_stmts, new_value = ensure_stmts(stmts[start:], value, tail_consumes=False)
         except _Bail:
             return body
         if not did[0]:
             return body
         self.changed = True
-        return e.BlockExpression(body.line_ref, new_stmts, new_value)
+        return e.BlockExpression(body.line_ref, stmts[:start] + new_stmts, new_value)
 
 
 class _Bail(Exception):

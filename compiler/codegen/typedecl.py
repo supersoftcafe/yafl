@@ -205,6 +205,13 @@ class DataPointer(Type):
 
 @dataclass(frozen=True)
 class FuncPointer(Type):
+    # Every function this value can hold is provably unable to suspend, so a
+    # call through it is a plain call (lowering/sync_inference.py sets it,
+    # async_lower reads it). A REFINEMENT of the same type, not a different
+    # representation: sync ≤ may-suspend, merged by AND at Phi — so it takes
+    # no part in equality, and every type comparison is unchanged by it.
+    sync: bool = field(default=False, compare=False)
+
     def words_upper_bound(self) -> int:
         return 2  # fun_t = { void* f; void* o; }
     # @property

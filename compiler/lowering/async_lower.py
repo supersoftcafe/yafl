@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-# Async lowering: convert each function that has non-tail calls into two C functions:
+# Async lowering: convert each function that has may-suspend calls into two C
+# functions. A call through a function value proven sync (FuncPointer.sync,
+# lowering/sync_inference.py) is a plain call and no suspension point.
 #   1. Hot path  – original name, runs fully inline if all calls are sync.
-#      After each non-tail call, emits an UNLIKELY(IS_TASK) check; if true,
+#      After each may-suspend call, emits an UNLIKELY(IS_TASK) check; if true,
 #      branches to cold code at the tail that saves locals to a heap state
 #      object, creates a task, registers foo$async as callback, and returns
 #      the tagged task.
@@ -25,7 +27,7 @@ from lowering.task_abi import (
     task_subtype_name, make_task_foreign_object, make_task_subtype_object,
 )
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, AssertNotTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
 from codegen.ir import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type, Array,
@@ -677,6 +679,50 @@ def __state_field(name: str, typ: Type, state_param: RParam,
     return ObjectField(typ, state_param, state_name, name, None)
 
 
+def __expand_sync_call(op: Call, wrap_name: str) -> tuple[list[Op], list[tuple[str, Type]]]:
+    """A call proven sync is a plain call: no block split, no IfTask. It
+    keeps the uniform task-carrying return ABI — its callee may also be
+    reached from a may-suspend site — so a primitive result is received in
+    its wrapped shape (`wrap_name`) and unwrapped, and every result passes
+    a debug-build AssertNotTask. Returns the ops and any locals they add."""
+    if op.register is not None:
+        result_type = op.register.get_type()
+    elif op.result_type is not None and not isinstance(op.result_type, Void):
+        result_type = op.result_type
+    else:
+        return [op], []     # void: nothing comes back to check
+    wrapped = wrap_return_type(result_type)
+    if op.register is not None and wrapped is result_type:
+        return [op, AssertNotTask(is_task_param(op.register, wrapped))], []
+    received = StackVar(wrapped, wrap_name)
+    ops: list[Op] = [dataclasses.replace(op, register=received),
+                     AssertNotTask(is_task_param(received, wrapped))]
+    if op.register is not None:
+        ops.append(Move(op.register, StructField(received, "value")))
+    return ops, [(wrap_name, wrapped)]
+
+
+def __expand_sync_calls(fn: Function) -> Function:
+    """Expand every non-tail sync Call (`__expand_sync_call`). Runs after
+    tail discovery, so a sync call in tail position stays a musttail that
+    passes its callee's result straight through."""
+    new_ops: list[Op] = []
+    new_vars: list[tuple[str, Type]] = []
+    for index, op in enumerate(fn.ops):
+        if isinstance(op, Call) and not op.musttail and op.is_sync:
+            wrap_name = f"$syncwrap${op.register.name}" if isinstance(op.register, StackVar) \
+                else f"$syncwrap${index}"
+            ops, added = __expand_sync_call(op, wrap_name)
+            new_ops.extend(ops)
+            new_vars.extend(added)
+        else:
+            new_ops.append(op)
+    if len(new_ops) == len(fn.ops):
+        return fn
+    return dataclasses.replace(fn, ops=tuple(new_ops),
+                               stack_vars=fn.stack_vars + Struct(tuple(new_vars)))
+
+
 def __unroll_musttail_for_state_machine(fn: Function) -> Function:
     """Re-expand `Call(musttail=True)` back into `Call(register=tmp) + Return(tmp)`
     (or `Call + ReturnVoid` for void calls) so the state-machine code generation
@@ -689,9 +735,12 @@ def __unroll_musttail_for_state_machine(fn: Function) -> Function:
     must be a regular non-tail call whose result feeds task_complete.
 
     The fresh temp becomes a basic-block result and ends up as a state-object
-    field via the existing `__create_state_object` machinery.
+    field via the existing `__create_state_object` machinery — unless the
+    call is sync, when it is expanded in place (`__expand_sync_call`) and
+    never splits a block.
     """
     new_ops: list[Op] = []
+    new_vars: list[tuple[str, Type]] = []
     counter = 0
     for op in fn.ops:
         if isinstance(op, Call) and op.musttail:
@@ -701,17 +750,26 @@ def __unroll_musttail_for_state_machine(fn: Function) -> Function:
                 new_ops.append(ReturnVoid())
             else:
                 tmp = StackVar(op.result_type, f"$musttail$ret${counter}")
-                new_ops.append(dataclasses.replace(op, musttail=False, register=tmp))
+                call = dataclasses.replace(op, musttail=False, register=tmp)
+                if call.is_sync:
+                    # Not a block boundary, so no block result declares
+                    # `tmp` — declare it (and any wrap local) here.
+                    ops, added = __expand_sync_call(call, f"$syncwrap${tmp.name}")
+                    new_ops.extend(ops)
+                    new_vars.extend([(tmp.name, tmp.type)] + added)
+                else:
+                    new_ops.append(call)
                 new_ops.append(Return(tmp))
         else:
             new_ops.append(op)
-    return dataclasses.replace(fn, ops=tuple(new_ops))
+    return dataclasses.replace(fn, ops=tuple(new_ops),
+                               stack_vars=fn.stack_vars + Struct(tuple(new_vars)))
 
 
 def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
     liveness_fn = __calculate_saved_vars(fn)
     partitions = langtools.partition(liveness_fn.ops,
-                                     lambda op: (isinstance(op, Call) and not op.musttail)
+                                     lambda op: (isinstance(op, Call) and op.may_suspend)
                                                  or isinstance(op, ParallelCall))
 
     def make_block(index: int, ops: list[Op]) -> BasicBlock:
@@ -864,7 +922,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
             hot_ops.append(Jump("$asynccommon"))
             continue
 
-        assert isinstance(call_op, Call) and not call_op.musttail
+        assert isinstance(call_op, Call) and call_op.may_suspend
         result_var = call_op.register
 
         if result_var is None:
@@ -1439,8 +1497,9 @@ def _prune_unreachable_phi_sources(ops: tuple[Op, ...]) -> tuple[Op, ...]:
 def __convert_function_to_task_convention(
         fn: Function) -> tuple[dict[str, Function], dict[str, Object]]:
     """
-    If the function has no non-tail calls: just wrap its return type.
-    Otherwise: produce the hot-path function (with the cold $asynccommon
+    Sync calls are plain calls (`__expand_sync_calls`); only a may-suspend
+    call is a suspension point. If the function has none: just wrap its
+    return type. Otherwise: produce the hot-path function (with the cold $asynccommon
     block) and, for non-sync functions, the state-machine function plus a
     state Object. Sync functions reuse the same hot path; their cold block
     aborts instead of creating a task.
@@ -1455,7 +1514,7 @@ def __convert_function_to_task_convention(
     if fn.bypass_async:
         return {fn.name: fn}, {}
 
-    after_tail = __discover_tail_calls(fn)
+    after_tail = __expand_sync_calls(__discover_tail_calls(fn))
     state_name = f"{fn.name}$state"
     basic_blocks = __create_basic_blocks(after_tail, state_name)
 
@@ -1514,7 +1573,7 @@ def __convert_function_to_task_convention(
         # park ops = exactly what __create_basic_blocks splits on
         park_prefix = [0]
         for op in ops:
-            is_park = ((isinstance(op, Call) and not op.musttail)
+            is_park = ((isinstance(op, Call) and op.may_suspend)
                        or isinstance(op, ParallelCall))
             park_prefix.append(park_prefix[-1] + (1 if is_park else 0))
         label_at: dict[str, int] = {}

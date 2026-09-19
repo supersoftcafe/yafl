@@ -562,9 +562,15 @@ fun [tail] drBalLoop(ls: Chain<PStmt>, body, changed) => match(ls)
       |> (o) => drBalLoop(l.next, o.deExpr, changed || o.deChanged)
     (o: PStmt)    => drBalLoop(l.next, body, changed)
 
+# A block binding exists from its declaring statement on: a path that leaves
+# before it (an early `ret`) never held it, so the accounting starts after it
+# and the statements up to it pass through. A parameter has no declaring
+# statement — it is held from the top.
 fun drBalance(body, let2: PsLet)
-  let out = drEnsureStmts(chain(blockStmtsOf2(body)), blockValueOf(body),
-                          false, false, let2, builder(), false)
+  let stmts = blockStmtsOf2(body)
+  let start = drBindingEnd(chain(stmts), let2.lName, 1)
+  let out = drEnsureStmts(chain(drop(stmts, start)), blockValueOf(body),
+                          false, false, let2, builderFrom(take(stmts, start)), false)
   if !out.bsOk || !out.bsDid
     ret DrE(body, false)
   ret match(out.bsValue)
@@ -572,6 +578,18 @@ fun drBalance(body, let2: PsLet)
     ()         => DrE(body, false)
 
 fun drBail() => DrBs(List(), None, false, false)
+
+# One past the index of the statement that binds `name`, or 0 when none does.
+fun [tail] drBindingEnd(ss: Chain<PStmt>, name: String, at: Int): Int => match(ss)
+  (nil: ChainEnd) => 0
+  (l: ChainLink)  => any(build(bindingLets(chain(list1(l.value)), builder())),
+                         (b) => drLetName(b) == name)
+    ? at
+    : drBindingEnd(l.next, name, at + 1)
+
+fun drLetName(st: PStmt) => match(st)
+  (let2: PsLet) => let2.lName
+  (o: PStmt)    => ""
 
 fun drRefs(x, name: String): Bool => contains2(referencedNames(x, List()), name)
 

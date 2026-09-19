@@ -62,7 +62,7 @@ fun discSpec(acc, sp) => match(sp)
 fun createEntryPoint(mainName): CgFunction
   let svResult = RpStackVar(CgDataPointer(), "result")
   let svDiscard = RpStackVar(CgDataPointer(), "$sv_discard")
-  let continuation = RpStackVar(CgFuncPointer(), "$continuation")
+  let continuation = RpStackVar(CgFuncPointer(false), "$continuation")
   let isTask = RpRuntimeInvoke("PTR_IS_TASK",
                                RpNewStruct(list1(RpNamedValue("p", svResult))), CgInt(32))
   let unlikelyChk = RpRuntimeInvoke("UNLIKELY",
@@ -87,7 +87,7 @@ fun createEntryPoint(mainName): CgFunction
           OpReturnVoid(List())))
   ret CgFunction("__entrypoint__",
                  CgStruct(list2(CgField("this", CgDataPointer()),
-                                CgField("$continuation", CgFuncPointer()))),
+                                CgField("$continuation", CgFuncPointer(false)))),
                  CgVoid(),
                  CgStruct(list2(CgField("result", CgDataPointer()),
                                 CgField("$sv_discard", CgDataPointer()))),
@@ -446,7 +446,7 @@ fun ccValidateEntrypoint(a: CgApp) => match(appFunction(a, "__entrypoint__"))
 fun ccEntryShape(f: CgFunction): List<String>
   let paramsOk = eqCgType(f.fnParams,
                           CgStruct(list2(CgField("this", CgDataPointer()),
-                                         CgField("$continuation", CgFuncPointer()))))
+                                         CgField("$continuation", CgFuncPointer(false)))))
   let resultOk = alIsVoid(f.fnResult)
   ret paramsOk && resultOk
     ? List()

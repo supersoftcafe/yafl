@@ -21,6 +21,16 @@ harmless. Note the AST inliner cannot currently see asyncness — it runs
 before sync_inference — so enforcement lands in the IR inliner or needs an
 early asyncness estimate.
 
+**Sync call sites (2026-09-19).** A call whose function value is proven sync
+is now a plain call: `FuncPointer.sync` is inferred by an optimistic flow
+over functions and function-typed locations (lowering/sync_inference.py) and
+`async_lower` splits blocks, and emits IfTask, only at may-suspend calls.
+Before this, every call paid the async protocol whether or not its callee
+could suspend, and inlining was what hid that cost. Measured on the -O3
+port: `.text` 12.6 MB → 6.2 MB, self-compile wall about −13%, peak RSS
+flat — with the inlining cutoffs unchanged. A lower IR cutoff for sync
+callees is the natural next lever; it has not been measured.
+
 ## Async callee, async caller
 
 Potentially the MOST profitable inlining: an async call site pays the full

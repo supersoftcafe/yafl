@@ -24,7 +24,7 @@ fun taskFields() => build(
       CgField("type", CgDataPointer())),        # object_t vtable
       CgField("state", CgInt(32))),             # _Atomic(int32_t)
       CgField("thread_id", CgInt(32))),         # originating worker thread index
-      CgField("callback", CgFuncPointer())),    # fun_t
+      CgField("callback", CgFuncPointer(false))),    # fun_t
       CgField("next", CgDataPointer())))        # _Atomic(task_t*) — queue link
 
 # Adjust a function's return type so it can carry the task-pending signal: a

@@ -397,6 +397,17 @@ enum {
 #define PTR_IS_INTEGER(ptr) (((uintptr_t)(ptr)&PTR_TAG_INTEGER) != 0)
 #define PTR_IS_STRING(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == PTR_TAG_STRING)
 
+// Follows a call the compiler proved sync (lowering/sync_inference.py): the
+// result must not be a task. Checked in unoptimised (debug) builds; an
+// optimised build still evaluates the (side-effect-free) condition so the
+// result it reads never counts as set-but-unused.
+#ifdef __OPTIMIZE__
+#  define YAFL_ASSERT_NOT_TASK(is_task) ((void)(is_task))
+#else
+#  define YAFL_ASSERT_NOT_TASK(is_task)\
+        do { if (is_task) ERROR("a call proven sync returned a task"); } while (false)
+#endif
+
 
 EXTERN void gc_start();
 

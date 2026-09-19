@@ -246,7 +246,7 @@ fun [tail] getOptLevel(r): Int => match(r)
 
 fun [tail] specGenerate(sp, r): CgType => match(sp)
   (b: SBuiltin)      => builtinCType(b.sbName)
-  (cl: SCallable)    => CgFuncPointer()
+  (cl: SCallable)    => CgFuncPointer(false)
   (ls: SLazyStub)    => CgDataPointer()
   (af: SArrayField)  => specGenerate(af.safElem, r)
   (c: SClass)        => CgDataPointer()
@@ -578,7 +578,7 @@ fun genDotClassField(d: PeDot, cs: PsClass, baseBundle, r)
 fun genDotClassMember(cs: PsClass, data, d: PeDot, baseBundle, r) => match(data)
   (fn: PsFun) => hasAttr(cs.cAttrs, "final") || !occupiesSlot(cs, d.member)
     ? bundleJoin(baseBundle, bundleValue(RpGlobalFunction(d.member, mustResult(baseBundle), false, foreignSymbol(fn), isImpureFn(fn), isSyncFn(fn))))
-    : bundleJoin(baseBundle, bundleValue(RpVirtualFunction(d.member, mustResult(baseBundle), false)))
+    : bundleJoin(baseBundle, bundleValue(RpVirtualFunction(d.member, mustResult(baseBundle), false, false)))
   (l: PsLet)  => genDotField(cs, l, d, baseBundle, r)
   (o: PStmt)  => baseBundle   # unreachable: only funs/lets are callable class members
 

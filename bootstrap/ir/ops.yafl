@@ -36,6 +36,9 @@ enum Op
   enum OpJump(jumpName: String, jumpSavedVars: List<RParam>)
   enum OpJumpIf(jumpIfLabel: String, jumpIfCondition: RParam, jumpIfInvert: Bool, jumpIfSavedVars: List<RParam>)
   enum OpIfTask(taskCondition: RParam, taskSource: RParam, taskLhs: RParam, callIdLhs: RParam, callId: Int, taskTarget: String, taskSavedVars: List<RParam>)
+  # Follows a call proven sync: its result must not be a task. Aborts in a
+  # debug build, compiled away in an optimised one (YAFL_ASSERT_NOT_TASK).
+  enum OpAssertNotTask(antCondition: RParam, antSavedVars: List<RParam>)
   enum OpSwitchJump(switchCondition: RParam, switchCases: List<OpCase>, switchSavedVars: List<RParam>)
   enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjSavedVars: List<RParam>)
   enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: List<RParam>)
@@ -60,6 +63,7 @@ fun opSavedVars(op): List<RParam> => match(op)
   (x: OpJump) => x.jumpSavedVars
   (x: OpJumpIf) => x.jumpIfSavedVars
   (x: OpIfTask) => x.taskSavedVars
+  (x: OpAssertNotTask) => x.antSavedVars
   (x: OpSwitchJump) => x.switchSavedVars
   (x: OpNewObject) => x.newObjSavedVars
   (x: OpCall) => x.callSavedVars
@@ -77,6 +81,7 @@ fun opTestParams(op, pred) => match(op)
   (x: OpMove) => pred(x.moveTarget) || pred(x.moveSource)
   (x: OpJumpIf) => pred(x.jumpIfCondition)
   (x: OpIfTask) => pred(x.taskCondition) || pred(x.taskSource)
+  (x: OpAssertNotTask) => pred(x.antCondition)
   (x: OpSwitchJump) => pred(x.switchCondition)
   (x: OpCall) => opTestParamsCall(x, pred)
   (x: OpReturn) => pred(x.returnValue)
@@ -95,6 +100,7 @@ fun opAllParams(op) => match(op)
   (x: OpMove) => concat(rpFlatten(x.moveTarget, false), rpFlatten(x.moveSource, true))
   (x: OpJumpIf) => rpFlatten(x.jumpIfCondition, true)
   (x: OpIfTask) => opAllParamsIfTask(x)
+  (x: OpAssertNotTask) => rpFlatten(x.antCondition, true)
   (x: OpSwitchJump) => rpFlatten(x.switchCondition, true)
   (x: OpNewObject) => opAllParamsNewObject(x)
   (x: OpCall) => opAllParamsCall(x)
@@ -137,6 +143,7 @@ fun opRenameVars(op, renames: List<RpRename>) => match(op)
   (x: OpIfTask) => OpIfTask(rpRenameVars(x.taskCondition, renames), rpRenameVars(x.taskSource, renames),
                             rpRenameVars(x.taskLhs, renames), rpRenameVars(x.callIdLhs, renames), x.callId,
                             renameLookup(renames, x.taskTarget), x.taskSavedVars)
+  (x: OpAssertNotTask) => OpAssertNotTask(rpRenameVars(x.antCondition, renames), x.antSavedVars)
   (x: OpSwitchJump) => OpSwitchJump(rpRenameVars(x.switchCondition, renames),
                                     map(x.switchCases, (c) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
                                     x.switchSavedVars)
@@ -166,6 +173,7 @@ fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op => match(op)
                           taskSource    = rpReplaceParams(x.taskSource, replacer),
                           taskLhs       = rpReplaceParams(x.taskLhs, replacer),
                           callIdLhs     = rpReplaceParams(x.callIdLhs, replacer))
+  (x: OpAssertNotTask) => with x(antCondition = rpReplaceParams(x.antCondition, replacer))
   (x: OpSwitchJump) => with x(switchCondition = rpReplaceParams(x.switchCondition, replacer))
   (x: OpNewObject) => with x(newObjRegister = rpReplaceParams(x.newObjRegister, replacer),
                              newObjSize     = rpReplaceParamsOpt(x.newObjSize, replacer))
@@ -198,6 +206,7 @@ fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>) => match(op)
   (x: OpMove) => opGetLiveVarsMove(x)
   (x: OpJumpIf) => (rpGetLiveVars(x.jumpIfCondition), List())
   (x: OpIfTask) => (rpStackVarUnion(rpGetLiveVars(x.taskCondition), rpGetLiveVars(x.taskSource)), List())
+  (x: OpAssertNotTask) => (rpGetLiveVars(x.antCondition), List())
   (x: OpSwitchJump) => (rpGetLiveVars(x.switchCondition), List())
   (x: OpNewObject) => opGetLiveVarsNewObject(x)
   (x: OpCall) => opGetLiveVarsCall(x)
@@ -249,6 +258,18 @@ fun opIsDirectCall(x: OpCall) => match(x.callFunction)
   (g: RpGlobalFunction) => true
   (o: RParam)           => false
 
+# ── is_sync / may_suspend (Call only) ───────────────────────────────────────
+
+# Every function the called value can hold provably never suspends
+# (CgFuncPointer.fpSync, set by sync_inference.yafl).
+fun opCallIsSync(x: OpCall) => match(rpGetType(x.callFunction))
+  (fp: CgFuncPointer) => fp.fpSync
+  (o: CgType)         => false
+
+# A suspension point for the task lowering: a non-tail call through a
+# function value not proven sync.
+fun opCallMaySuspend(x: OpCall) => !x.callMusttail && !opCallIsSync(x)
+
 # ── to_c ─────────────────────────────────────────────────────────────────────
 
 fun opToC(op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>) => match(op)
@@ -257,6 +278,7 @@ fun opToC(op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntr
   (x: OpJump) => ("    goto " + mangleName(x.jumpName) + ";\n", cache)
   (x: OpJumpIf) => opToCJumpIf(x, cache)
   (x: OpIfTask) => opToCIfTask(x, cache)
+  (x: OpAssertNotTask) => opToCAssertNotTask(x, cache)
   (x: OpSwitchJump) => opToCSwitchJump(x, cache)
   (x: OpNewObject) => opToCNewObject(x, cache)
   (x: OpCall) => opToCCall(x, cache)
@@ -289,6 +311,10 @@ fun opToCIfTask(x: OpIfTask, cache0: List<CgCacheEntry>): (text: String, cache: 
     + "        goto " + mangleName(x.taskTarget) + ";\n"
     + "    }\n"
   ret (text, dstType.cache)
+
+fun opToCAssertNotTask(x: OpAssertNotTask, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let condC = rpToC(x.antCondition, cache0)
+  ret ("    YAFL_ASSERT_NOT_TASK(" + condC.text + ");\n", condC.cache)
 
 fun opToCSwitchJump(x: OpSwitchJump, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let condC = rpToC(x.switchCondition, cache0)
@@ -450,6 +476,7 @@ fun opReadVarNames(op) => match(op)
   (m: OpMove)          => concat(rpReadVarNames(m.moveSource), rpTargetReadNames(m.moveTarget))
   (ji: OpJumpIf)       => rpReadVarNames(ji.jumpIfCondition)
   (t2: OpIfTask)       => concat(rpReadVarNames(t2.taskCondition), rpReadVarNames(t2.taskSource))
+  (an: OpAssertNotTask) => rpReadVarNames(an.antCondition)
   (sw: OpSwitchJump)   => rpReadVarNames(sw.switchCondition)
   (n: OpNewObject)     => concat(rpOptReadNames(n.newObjSize), rpTargetReadNames(n.newObjRegister))
   (c: OpCall)          => concat(concat(rpReadVarNames(c.callFunction), rpReadVarNames(c.callParameters)),
@@ -471,6 +498,7 @@ fun opWithSavedVars(op, sv) => match(op)
   (x: OpJump)         => OpJump(x.jumpName, sv)
   (x: OpJumpIf)       => OpJumpIf(x.jumpIfLabel, x.jumpIfCondition, x.jumpIfInvert, sv)
   (x: OpIfTask)       => OpIfTask(x.taskCondition, x.taskSource, x.taskLhs, x.callIdLhs, x.callId, x.taskTarget, sv)
+  (x: OpAssertNotTask) => OpAssertNotTask(x.antCondition, sv)
   (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
   (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, sv)
   (x: OpCall)         => OpCall(x.callFunction, x.callParameters, x.callRegister, x.callMusttail, x.callImpure, x.callResultType, sv)
@@ -506,6 +534,7 @@ fun opReadStackVars(op) => match(op)
   (m: OpMove)          => concat(rpReadStackVars(m.moveSource), rpTargetReadStackVars(m.moveTarget))
   (ji: OpJumpIf)       => rpReadStackVars(ji.jumpIfCondition)
   (t2: OpIfTask)       => concat(rpReadStackVars(t2.taskCondition), rpReadStackVars(t2.taskSource))
+  (an: OpAssertNotTask) => rpReadStackVars(an.antCondition)
   (sw: OpSwitchJump)   => rpReadStackVars(sw.switchCondition)
   (n: OpNewObject)     => concat(rpOptReadStackVars(n.newObjSize), rpTargetReadStackVars(n.newObjRegister))
   (c: OpCall)          => concat(concat(rpReadStackVars(c.callFunction), rpReadStackVars(c.callParameters)),

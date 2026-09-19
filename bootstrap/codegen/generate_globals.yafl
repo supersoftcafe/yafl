@@ -155,7 +155,7 @@ fun createThunk(className, let2: PsLet, r)
   let resultType = thunkResultType(let2.lType, r)
   let paramVars = map(cgStructFields(paramStruct), (f2) => RpStackVar(f2.fieldType, f2.fieldName))
   let resultVar = RpStackVar(resultType, "result")
-  let opCall = OpCall(RpObjectField(CgFuncPointer(), RpStackVar(CgDataPointer(), "this"), className, let2.lName, None, false),
+  let opCall = OpCall(RpObjectField(CgFuncPointer(false), RpStackVar(CgDataPointer(), "this"), className, let2.lName, None, false),
                       RpNewStruct(map(paramVars, (sv) => RpNamedValue(stackVarName(sv), sv))),
                       resultVar, false, false, None, List())
   ret CgFunction(let2.lName,

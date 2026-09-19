@@ -11,7 +11,7 @@ from typing import Iterable
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, AssertNotTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
 from codegen.ir import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, Float, RParam, \
@@ -129,6 +129,9 @@ def __scan_op(op: Op) -> _scan_sets:
         case IfTask():
             return __scan_rparam(op.condition) | __scan_rparam(op.task_source)
 
+        case AssertNotTask():
+            return __scan_rparam(op.condition)
+
         case SwitchJump():
             return __scan_rparam(op.condition)
 
@@ -218,3 +221,30 @@ def function_reference_counts(app: Application) -> Counter[str]:
         if gl.init:
             bump(__scan_rparam(gl.init).functions)
     return counts
+
+
+def address_taken_functions(app: Application) -> frozenset[str]:
+    """Internal functions whose ADDRESS escapes as a value: every reference
+    except the callee slot of a direct call and a vtable slot (the virtual
+    call sites enumerate those). Such a function can be called from a site
+    the IR cannot enumerate — through a closure, a union slot, the runtime —
+    so nothing may be assumed about the arguments it receives. Built on the
+    same `__scan_*` reference model as the dead-code pass and
+    `function_reference_counts`."""
+    taken: set[str] = set()
+    for fn in app.functions.values():
+        for op in fn.ops:
+            if isinstance(op, Call) and isinstance(op.function, GlobalFunction):
+                taken |= __scan_rparam(op.parameters).functions
+                if op.register:
+                    taken |= __scan_rparam(op.register).functions
+                if op.function.object:
+                    taken |= __scan_rparam(op.function.object).functions
+            else:
+                taken |= __scan_op(op).functions
+    for gl in app.globals.values():
+        if gl.lazy_init_function:
+            taken.add(gl.lazy_init_function)
+        if gl.init:
+            taken |= __scan_rparam(gl.init).functions
+    return frozenset(taken)

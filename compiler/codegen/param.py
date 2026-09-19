@@ -602,7 +602,7 @@ class GlobalFunction(RParam):
     external: bool = False
     c_symbol: str | None = None
     impure: bool = False
-    sync: bool = False
+    sync: bool = False  # the target provably never suspends (lowering/sync_inference.py)
 
     def __post_init__(self):
         if not isinstance(self.name, str):
@@ -615,7 +615,7 @@ class GlobalFunction(RParam):
         return predicate(self) or (self.object and self.object.test(predicate))
 
     def get_type(self) -> t.FuncPointer:
-        return t.FuncPointer()
+        return t.FuncPointer(sync=self.sync)
 
     def rename_vars(self, renames: dict[str, str]) -> GlobalFunction:
         return dataclasses.replace(self, object = self.object and self.object.rename_vars(renames))
@@ -636,6 +636,7 @@ class VirtualFunction(RParam):
     name: str
     object: RParam
     fast_lookup: bool = False
+    sync: bool = False  # every implementation provably never suspends (lowering/sync_inference.py)
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
         return [self] + self.object.flatten()
@@ -644,7 +645,7 @@ class VirtualFunction(RParam):
         return predicate(self) or self.object.test(predicate)
 
     def get_type(self) -> t.FuncPointer:
-        return t.FuncPointer()
+        return t.FuncPointer(sync=self.sync)
 
     def rename_vars(self, renames: dict[str, str]) -> VirtualFunction:
         return dataclasses.replace(self, object = self.object.rename_vars(renames))

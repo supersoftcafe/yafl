@@ -93,7 +93,7 @@ fun makeStubObject(valueType)
   ret CgObject(stubClassName(valueType), List(), List(),
                CgImmediateStruct(list4(CgField("type", CgDataPointer()),
                                        CgField("flag", CgDataPointer()),
-                                       CgField("closure", CgFuncPointer()),
+                                       CgField("closure", CgFuncPointer(false)),
                                        CgField("value", valueType))),
                None, "lazy stub for " + irMangle(valueType),
                false, true, 0)   # is_mutable: flag/value memoised after construction
@@ -141,11 +141,11 @@ fun makeFetchFunction(valueType): CgFunction
   let waiter = RpStackVar(CgDataPointer(), "waiter")
   let status = RpStackVar(CgInt(32), "status")
   let flagAddr = RpStackVar(CgDataPointer(), "flag_addr")
-  let closure = RpStackVar(CgFuncPointer(), "closure")
+  let closure = RpStackVar(CgFuncPointer(false), "closure")
   let rwrapped = RpStackVar(wrapped, "result_wrapped")
   let value = RpStackVar(valueType, "value")
   let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false)
-  let closureF = RpObjectField(CgFuncPointer(), this, cls, "closure", None, false)
+  let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false)
   let valueF = RpObjectField(valueType, this, cls, "value", None, false)
   let isComplete = RpRuntimeInvoke("lazy_global_init_complete",
                                    RpNewStruct(list1(RpNamedValue("p", flagF))), CgInt(32))
@@ -157,7 +157,7 @@ fun makeFetchFunction(valueType): CgFunction
                      builderFrom(list5(CgField("waiter", CgDataPointer()),
                                        CgField("status", CgInt(32)),
                                        CgField("flag_addr", CgDataPointer()),
-                                       CgField("closure", CgFuncPointer()),
+                                       CgField("closure", CgFuncPointer(false)),
                                        CgField("result_wrapped", wrapped))),
                      CgField("value", valueType)),
                      CgField("$sv_lazy_discard", CgDataPointer())))),
@@ -197,7 +197,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
       OpMove(value, lazyExtractValue(rwrapped, valueType, wrapped), false, List()),
       OpMove(valueF, value, false, List())),
     concat(lazyPublishRootShades(value, valueType),
-           list1(OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List()))))
+           list1(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()))))
   let asyncTail = list4(
       emitDrainCall(valueType, RpPointerTo(flagF), value),
       OpReturn(lazySyncWrap(value, wrapped), List()),
@@ -248,7 +248,7 @@ fun makeFinisherFunction(valueType): CgFunction
   let this = RpStackVar(CgDataPointer(), "this")
   let completed = RpStackVar(CgDataPointer(), "completed")
   let value = RpStackVar(valueType, "value")
-  let closureF = RpObjectField(CgFuncPointer(), this, cls, "closure", None, false)
+  let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false)
   let valueF = RpObjectField(valueType, this, cls, "value", None, false)
   let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false)
   let completedResult = RpObjectField(valueType, completed, waiterTy, "result", None, false)
@@ -261,7 +261,7 @@ fun makeFinisherFunction(valueType): CgFunction
                  cgOpsOf(concat(concat(list2(OpMove(value, completedResult, false, List()),
                                      OpMove(valueF, value, false, List())),
                                lazyPublishRootShades(value, valueType)),
-                        list3(OpMove(closureF, RpZeroOf(CgFuncPointer()), false, List()),
+                        list3(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()),
                               emitDrainCall(valueType, RpPointerTo(flagF), value),
                               OpReturn(RpNullPointer(), List())))),
                  "lazy fetch async-finisher for " + irMangle(valueType),

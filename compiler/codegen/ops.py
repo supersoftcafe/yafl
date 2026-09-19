@@ -167,6 +167,33 @@ class IfTask(Op):
 
 
 @dataclass(frozen=True)
+class AssertNotTask(Op):
+    """Follows a call proven sync (lowering/sync_inference.py): its result
+    must not be a task. A misclassification aborts here in a debug build
+    rather than running on with a task pointer as its value; an optimised
+    build compiles the check away (`YAFL_ASSERT_NOT_TASK`, yafl.h)."""
+    condition: RParam   # IS_TASK expression over the call's result
+
+    def all_params(self) -> list[RParam]:
+        return self.condition.flatten()
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.condition)
+
+    def rename_vars(self, renames: dict[str, str]) -> AssertNotTask:
+        return dataclasses.replace(self, condition=self.condition.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> AssertNotTask:
+        return dataclasses.replace(self, condition=self.condition.replace_params(replacer))
+
+    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        return self.condition.get_live_vars(), frozenset()
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return f"    YAFL_ASSERT_NOT_TASK({self.condition.to_c(type_cache)});\n"
+
+
+@dataclass(frozen=True)
 class SwitchJump(Op):
     """Dispatch to labeled targets based on an integer condition value.
 
@@ -263,6 +290,19 @@ class Call(Op):
 
     def is_direct_call(self) -> bool:
         return isinstance(self.function, GlobalFunction)
+
+    @property
+    def is_sync(self) -> bool:
+        """Every function the called value can hold provably never suspends
+        (`FuncPointer.sync`, set by lowering/sync_inference.py)."""
+        fn_type = self.function.get_type()
+        return isinstance(fn_type, t.FuncPointer) and fn_type.sync
+
+    @property
+    def may_suspend(self) -> bool:
+        """A suspension point for the task lowering: a non-tail call through
+        a function value not proven sync."""
+        return not self.musttail and not self.is_sync
 
     def rename_vars(self, renames: dict[str, str]) -> Call:
         return dataclasses.replace(self,

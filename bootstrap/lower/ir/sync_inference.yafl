@@ -1,16 +1,50 @@
-# bootstrap/sync_inference.yafl — the sync-guarantee fixpoint, ported from
-# lowering/sync_inference.py. After inlining and before task lowering:
-# propagate [sync] to functions provably never suspending. Seed = programmer
-# [sync] + non-foreign leaves (no non-tail Calls, no ParallelCall, not
-# returning TagTask); propagate F when every non-tail Call resolves sync (a
-# VirtualFunction needs every implementation sync; empty impl set stays
-# conservatively async); materialise fn.sync only — task lowering uniformly
-# emits IfTask checks, so a misclassified suspender aborts cleanly.
+# bootstrap/sync_inference.yafl — ported from lowering/sync_inference.py.
+# After inlining and devirtualisation, before task lowering: prove which
+# functions — and which function VALUES — can never suspend, and record it
+# on the IR so the task lowering makes a call through a sync value a plain
+# call (no block split, no resume case, no IfTask).
+#
+# The fact lives on the function-value type: CgFuncPointer.fpSync. Every
+# call is a call through a function value, so one rule decides every call
+# site: opCallIsSync. RpGlobalFunction.sync / RpVirtualFunction.sync answer
+# for a constant function value; a StackVar / ObjectField / GlobalVar
+# answers through its type.
+#
+# THE FLOW: one optimistic dataflow over FUNCTION nodes ("may suspend") and
+# the function-typed LEAVES of locations (an SSA variable, a parameter — a
+# variable fed by its callers — a function result, an object field, a
+# global), each leaf addressed by its field path within the location's type
+# so a closure riding in a tuple or a flattened class is still tracked. Every
+# node starts sync and can only FALL; a node falls when any of its sources
+# falls:
+#   function F      every call's function value (tail calls too); ParallelCall,
+#                   a TagTask return, foreign/hand-built without sync: outright
+#   GlobalFunction  the function it names; VirtualFunction every implementation
+#   SSA variable    its definitions: Move source, Phi = AND of every incoming
+#                   value, a call's register = the callees' results
+#   parameter       the matching argument at every direct call site; a virtual
+#                   site feeds every implementation
+#   result of F     every Return value
+#   object field    every store program-wide, static initialisers included;
+#                   base- and derived-class views of one field are one node
+# Anything the flow cannot see is UNKNOWN and falls its dependent outright:
+# parameters of an address-taken function (trim.yafl addressTakenFunctions),
+# results through a non-constant function value, closures read out of arrays
+# or union slots, and fields of foreign (runtime-owned) objects. Each node
+# falls at most once — a linear worklist. Starting optimistic makes it the
+# GREATEST fixpoint: recursion that reaches no source of suspension is sync.
+# A [sync] (or authored-sync hand-built) function is trusted: it never falls.
+#
+# Node keys are strings joined by "\u{a7}" (no IR name contains it). The class
+# representative of a field is internal — only the PARTITION it induces can
+# reach the output, so it need not match Python's choice.
 namespace Bootstrap::Lower::Ir
 
 import System
 
 import Bootstrap::Ast
+
+import Bootstrap::Codegen
 
 import Bootstrap::Ir
 import Bootstrap::Parse
@@ -18,32 +52,203 @@ import Bootstrap::StdlibCandidates
 
 
 
-# The sync fixpoint without the materialisation: names provably unable to
-# suspend. Shared by inferSync and the -O3 single-caller inline gate —
+# ── public entry points ──────────────────────────────────────────────────────
+
+# The names of the functions provably unable to suspend, without
+# materialising anything. Shared by inferSync and the inline gates —
 # inlining a suspending callee into its caller merges the two live sets, so
-# every suspension in the merged body saves the combined frame; the gate
-# keeps suspending helpers outboard where their own small frame is all they
-# save.
+# every suspension in the merged body saves the combined frame.
 fun computeSyncNames(a: CgApp)
-  let virtualImpls = gfSlotFuncs(a)   # slot → implementing functions (all objects, foreign incl.)
-  let seed = fold(appFunctions(a), Set(),
-                  (acc, f) => siSeedable(f) ? add(acc, f.fnName) : acc)
-  ret siFixpoint(a, virtualImpls, seed)
+  let solved = siSolve(a)
+  ret fold(appFunctions(a), Set(), (acc, f) =>
+        siIsSync(solved, siFnNode(f.fnName)) ? add(acc, f.fnName) : acc)
 
 fun inferSync(a: CgApp)
-  let syncSet = computeSyncNames(a)
-  ret appWithFunctions(a, map(appFunctions(a),
-        (f) => siMaterialise(f, syncSet)))
+  let solved = siSolve(a)
+  let fns = map(appFunctions(a), (f) => siMaterialise(solved, f))
+  ret appWithObjects(appWithFunctions(a, fns),
+                     map(appObjects(a), (o) => siMaterialiseObject(solved, o)))
 
-fun siMaterialise(f: CgFunction, syncSet: Set<String>)
-  ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars, f.fnOps,
-                 f.fnComment, f.fnForeignSymbol,
-                 contains(syncSet, f.fnName),
-                 f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+# ── node keys ────────────────────────────────────────────────────────────────
 
-# A body returning TagTask(...) produces a tagged task pointer — its callers'
-# PTR_IS_TASK fires; the function cannot be sync regardless of its Calls.
+fun siSep() => "\u{a7}"
+
+fun siFnNode(name: String) => "fn" + siSep() + name
+
+fun siVarNode(fn: String, name: String, path: List<String>)
+  ret "var" + siSep() + fn + siSep() + name + siSep() + join(path, siSep())
+
+fun siResultNode(fn: String, path: List<String>)
+  ret "result" + siSep() + fn + siSep() + join(path, siSep())
+
+fun siGlobalNode(name: String, path: List<String>)
+  ret "global" + siSep() + name + siSep() + join(path, siSep())
+
+fun siFieldKey(obj: String, field: String) => obj + siSep() + field
+
+fun siFieldNode(flow: SiFlow, obj: String, field: String, path: List<String>)
+  let key = siFieldKey(obj, field)
+  let rep = match(get(flow.sfFieldRep, key))
+    (r: String) => r
+    ()           => key
+  ret "field" + siSep() + rep + siSep() + join(path, siSep())
+
+# ── function-typed leaves of a type ──────────────────────────────────────────
+
+# The field paths to every function-typed leaf of `t`: one empty path for a
+# function itself, one path per function field of a (nested) struct.
+fun siFunPaths(t): List<List<String>> => match(t)
+  (fp: CgFuncPointer) => list1(List())
+  (o: CgType)         => match(cgFieldsOf(t))
+    (fields: List<CgField>) => fold(fields, List(), (acc, f) =>
+                                 concat(acc, map(siFunPaths(f.fieldType),
+                                                 (p) => prepend(f.fieldName, p))))
+    ()                      => List()
+
+fun siHasFun(t) => !isEmpty(siFunPaths(t))
+
+# `t` with each function-typed leaf flagged `isSync(path)`.
+fun siRetype(t, isSync: (:List<String>): Bool): CgType => match(t)
+  (fp: CgFuncPointer)      => CgFuncPointer(isSync(List()))
+  (s: CgStruct)            => siHasFun(t) ? CgStruct(siRetypeFields(s.fields, isSync)) : t
+  (m: CgImmediateStruct)   => siHasFun(t) ? CgImmediateStruct(siRetypeFields(m.fields, isSync)) : t
+  (o: CgType)              => t
+
+fun siRetypeFields(fields: List<CgField>, isSync: (:List<String>): Bool)
+  ret map(fields, (f) => CgField(f.fieldName,
+        siRetype(f.fieldType, (p) => isSync(prepend(f.fieldName, p)))))
+
+# ── the flow state ───────────────────────────────────────────────────────────
+
+# The lookup tables the edge builder needs.
+class [final] SiFlow(sfApp: CgApp, sfImpls: Dict<String, List<String>>,
+                     sfFieldRep: Dict<String, String>, sfPinned: Set<String>,
+                     sfAddressTaken: StrSet)
+
+# Dependency edges (source → dependents) and the fallen set.
+class [final] SiAcc(saDeps: Dict<String, List<String>>, saFallen: Set<String>)
+
+# The solved flow: what fell, and the tables materialisation still reads.
+class [final] SiSolved(ssFlow: SiFlow, ssFallen: Set<String>)
+
+fun siIsSync(solved: SiSolved, node: String) => !contains(solved.ssFallen, node)
+
+# ── what a call can reach, what a value reads, where a write lands ──────────
+
+# The functions a call through `fnRef` can reach, or None when the IR cannot
+# enumerate them.
+fun siCallees(flow: SiFlow, fnRef): List<String>|None => match(fnRef)
+  (gf: RpGlobalFunction)  => appHasFunction(flow.sfApp, gf.name) ? list1(gf.name) : None
+  (vf: RpVirtualFunction) => siVirtualCallees(flow, vf.name)
+  (o: RParam)             => None
+
+fun siVirtualCallees(flow: SiFlow, name: String): List<String>|None => match(get(flow.sfImpls, name))
+  (impls: List<String>) => !isEmpty(impls) && !any(impls, (i) => !appHasFunction(flow.sfApp, i))
+                             ? impls : None
+  ()                    => None
+
+fun siFnNodes(targets: List<String>|None): List<String>|None => match(targets)
+  (ts: List<String>) => map(ts, siFnNode)
+  ()                 => None
+
+# The nodes the function-typed leaf `path` of `value` reads, or None when it
+# is unknown. A null function holds no function: it constrains nothing.
+fun siSources(flow: SiFlow, fnName: String, value, path: List<String>): List<String>|None
+  ret match(value)
+    (gf: RpGlobalFunction)  => isEmpty(path) ? siFnNodes(siCallees(flow, value)) : None
+    (vf: RpVirtualFunction) => isEmpty(path) ? siFnNodes(siCallees(flow, value)) : None
+    (sv: RpStackVar)        => list1(siVarNode(fnName, sv.name, path))
+    (of: RpObjectField)     => list1(siFieldNode(flow, of.objectName, of.field, path))
+    (gv: RpGlobalVar)       => list1(siGlobalNode(gv.name, path))
+    (sf: RpStructField)     => siSources(flow, fnName, sf.structVal, prepend(sf.field, path))
+    (ns: RpNewStruct)       => siStructSources(flow, fnName, ns.values, path)
+    (nt: RpNewStructTyped)  => siStructSources(flow, fnName, nt.values, path)
+    (np: RpNullPointer)     => List<String>()
+    (z: RpZeroOf)           => List<String>()
+    (o: RParam)             => None
+
+fun siStructSources(flow: SiFlow, fnName: String, values: List<RpNamedValue>,
+                    path: List<String>): List<String>|None => match(head(path))
+  (name: String) => match(head(filter(values, (v) => v.name == name)))
+    (v: RpNamedValue) => siSources(flow, fnName, v.value, tail(path))
+    ()                 => List<String>()
+  ()             => None
+
+# The node the function-typed leaf `path` of a WRITE lands in, or None for a
+# location whose reads are unknown anyway (an array element).
+fun siLocation(flow: SiFlow, fnName: String, lp, path: List<String>): String|None => match(lp)
+  (sv: RpStackVar)    => siVarNode(fnName, sv.name, path)
+  (of: RpObjectField) => siFieldNode(flow, of.objectName, of.field, path)
+  (gv: RpGlobalVar)   => siGlobalNode(gv.name, path)
+  (o: RParam)         => None
+
+# ── edges ────────────────────────────────────────────────────────────────────
+
+fun siFall(flow: SiFlow, acc: SiAcc, node: String): SiAcc
+  ret contains(flow.sfPinned, node) ? acc : SiAcc(acc.saDeps, add(acc.saFallen, node))
+
+fun siFallAll(flow: SiFlow, acc: SiAcc, t, nodeOf: (:List<String>): String): SiAcc
+  ret fold(siFunPaths(t), acc, (a, p) => siFall(flow, a, nodeOf(p)))
+
+# `dst` falls if any of `srcs` falls; unknown sources fall it now.
+fun siEdge(flow: SiFlow, acc: SiAcc, srcs: List<String>|None, dst: String|None): SiAcc => match(dst)
+  (d: String) => match(srcs)
+    (ss: List<String>) => SiAcc(fold(ss, acc.saDeps, (deps, s2) => siAddDep(deps, s2, d)),
+                                acc.saFallen)
+    ()                 => siFall(flow, acc, d)
+  ()          => acc
+
+fun siAddDep(deps: Dict<String, List<String>>, src: String, dst: String) => match(get(deps, src))
+  (prev: List<String>) => put(deps, src, prepend(dst, prev))
+  ()                   => put(deps, src, list1(dst))
+
+# Every function-typed leaf of `target` reads the same leaf of `value`.
+fun siAssign(flow: SiFlow, acc: SiAcc, fnName: String, target, value): SiAcc
+  ret fold(siFunPaths(rpGetType(target)), acc, (a, p) =>
+        siEdge(flow, a, siSources(flow, fnName, value, p), siLocation(flow, fnName, target, p)))
+
+# ── building the flow ────────────────────────────────────────────────────────
+
+fun siSolve(a: CgApp): SiSolved
+  let flow = SiFlow(a, siVirtualImpls(a), siFieldClasses(appObjects(a)),
+                    fold(appFunctions(a), Set(), (acc, f) =>
+                      f.fnSync ? add(acc, siFnNode(f.fnName)) : acc),
+                    addressTakenFunctions(a))
+  let fromFns = fold(appFunctions(a), SiAcc(Dict(), Set()), (acc, f) => siFunctionEdges(flow, acc, f))
+  let fromObjs = fold(appObjects(a), fromFns, (acc, o) => siForeignObject(flow, acc, o))
+  let built = fold(appGlobals(a), fromObjs, (acc, g2) => siGlobalEdges(flow, acc, g2))
+  ret SiSolved(flow, siPropagate(built.saDeps, flow.sfPinned,
+                                 chain(siSetList(built.saFallen)), built.saFallen))
+
+fun siSetList(s2: Set<String>) => fold(s2, List(), (acc, x) => prepend(x, acc))
+
+fun [tail] siPropagate(deps: Dict<String, List<String>>, pinned: Set<String>,
+                       work: Chain<String>, fallen: Set<String>): Set<String> => match(work)
+  (nil: ChainEnd) => fallen
+  (l: ChainLink)  => match(get(deps, l.value))
+    (dsts: List<String>) => siPropagateDsts(deps, pinned, l.next, fallen, chain(dsts))
+    ()                   => siPropagate(deps, pinned, l.next, fallen)
+
+fun [tail] siPropagateDsts(deps: Dict<String, List<String>>, pinned: Set<String>,
+                           work: Chain<String>, fallen: Set<String>,
+                           dsts: Chain<String>): Set<String> => match(dsts)
+  (nil: ChainEnd) => siPropagate(deps, pinned, work, fallen)
+  (l: ChainLink)  => contains(fallen, l.value) || contains(pinned, l.value)
+                       ? siPropagateDsts(deps, pinned, work, fallen, l.next)
+                       : siPropagateDsts(deps, pinned, ChainLink(l.value, work),
+                                         add(fallen, l.value), l.next)
+
+fun siVirtualImpls(a: CgApp): Dict<String, List<String>>
+  ret fold(appObjects(a), Dict(), (acc, o) => fold(o.objFunctions, acc, siImplAdd))
+
+fun siImplAdd(impls: Dict<String, List<String>>, s2: CgFuncSlot) => match(get(impls, s2.slotVirtualName))
+  (prev: List<String>) => put(impls, s2.slotVirtualName, prepend(s2.slotGlobalName, prev))
+  ()                   => put(impls, s2.slotVirtualName, list1(s2.slotGlobalName))
+
+fun siParams(f: CgFunction): List<CgField> => match(cgFieldsOf(f.fnParams))
+  (fields: List<CgField>) => fields
+  ()                      => List()
+
 fun siReturnsTaggedTask(f: CgFunction) => any(f.fnOps, siOpReturnsTagTask)
 
 fun siOpReturnsTagTask(op) => match(op)
@@ -52,54 +257,184 @@ fun siOpReturnsTagTask(op) => match(op)
     (o: RParam)      => false
   (o: Op)       => false
 
-fun siHasNoNontailCalls(f: CgFunction) => !any(f.fnOps, siOpIsNontailCallish)
-
-fun siOpIsNontailCallish(op) => match(op)
-  (c: OpCall)          => !c.callMusttail
+fun siIsParallelCall(op) => match(op)
   (pc: OpParallelCall) => true
   (o: Op)              => false
-
-fun siSeedable(f: CgFunction) => f.fnSync
-    || (isNoneStr(f.fnForeignSymbol)
-        && !siReturnsTaggedTask(f)
-        && siHasNoNontailCalls(f))
 
 fun isNoneStr(s2: String|None) => match(s2)
   (x: String) => false
   ()           => true
 
-# ── the fixed point ──────────────────────────────────────────────────────────
+fun siFunctionEdges(flow: SiFlow, acc0: SiAcc, f: CgFunction): SiAcc
+  let name = f.fnName
+  let foreign = !isNoneStr(f.fnForeignSymbol)
+  let acc1 = foreign || f.fnBypassAsync || name == "__entrypoint__"
+             || siReturnsTaggedTask(f) || any(f.fnOps, siIsParallelCall)
+    ? siFall(flow, acc0, siFnNode(name)) : acc0
+  let acc2 = foreign ? siFallAll(flow, acc1, f.fnResult, (p) => siResultNode(name, p)) : acc1
+  let acc3 = setHas(flow.sfAddressTaken, name) || foreign || name == "__entrypoint__"
+    ? fold(siParams(f), acc2, (a, pf) =>
+        siFallAll(flow, a, pf.fieldType, (p) => siVarNode(name, pf.fieldName, p)))
+    : acc2
+  ret fold(f.fnOps, acc3, (a: SiAcc, op: Op) => siOpEdges(flow, a, name, op))
 
-# The sync names are a membership set — every reader asks "is this name in
-# it" — so it is a Set, and the fixpoint's "did anything get added" is its
-# size rather than a co-walk over two chains.
-fun [tail] siFixpoint(a: CgApp, impls: List<SlotFuncs>, syncSet: Set<String>)
-  let grown = fold(appFunctions(a), syncSet,
-                   (acc, f) => siTryAdd(acc, f, impls))
-  ret size(grown) == size(syncSet) ? grown : siFixpoint(a, impls, grown)
+fun siOpEdges(flow: SiFlow, acc: SiAcc, fnName: String, op: Op): SiAcc => match(op)
+  (c: OpCall)   => siCallEdges(flow, acc, fnName, c)
+  (m: OpMove)   => siAssign(flow, acc, fnName, m.moveTarget, m.moveSource)
+  (ph: OpPhi)   => fold(ph.phiSources, acc, (a, s2) => siAssign(flow, a, fnName, ph.phiTarget, s2.sourceValue))
+  (r: OpReturn) => fold(siFunPaths(rpGetType(r.returnValue)), acc, (a, p) =>
+                     siEdge(flow, a, siSources(flow, fnName, r.returnValue, p), siResultNode(fnName, p)))
+  # Any other op that defines a variable holding a function (a ParallelCall
+  # slot result, …) is not modelled: unknown.
+  (o: Op)       => fold(opGetLiveVars(op).writes, acc, (a, w) =>
+                     siFallAll(flow, a, rpGetType(w), (p) => siVarNode(fnName, stackVarName(w), p)))
 
-# Foreign functions have empty bodies (all([]) would falsely qualify) — their
-# sync-ness comes only from the programmer seed.
-fun siTryAdd(acc: Set<String>, f: CgFunction, impls: List<SlotFuncs>)
-  if contains(acc, f.fnName)
-    ret acc
-  if !isNoneStr(f.fnForeignSymbol) || siReturnsTaggedTask(f)
-    ret acc
-  ret siBodyIsSync(f, acc, impls) ? add(acc, f.fnName) : acc
+fun siCallEdges(flow: SiFlow, acc0: SiAcc, fnName: String, c: OpCall): SiAcc
+  # The call can suspend iff its function value can.
+  let acc1 = siEdge(flow, acc0, siSources(flow, fnName, c.callFunction, List()), siFnNode(fnName))
+  let targets = siCallees(flow, c.callFunction)
+  let acc2 = match(targets)
+    (ts: List<String>) => fold(ts, acc1, (a, t) => siFeedParams(flow, a, t, c.callParameters, fnName))
+    ()                 => acc1
+  ret match(c.callRegister)
+    (reg: RParam) => fold(siFunPaths(rpGetType(reg)), acc2, (a, p) =>
+                       siEdge(flow, a, siResultNodes(targets, p), siLocation(flow, fnName, reg, p)))
+    ()            => acc2
 
-fun siBodyIsSync(f: CgFunction, syncSet: Set<String>, impls: List<SlotFuncs>)
-  ret !any(f.fnOps, (op) => siOpBlocksSync(op, syncSet, impls))
+fun siResultNodes(targets: List<String>|None, path: List<String>): List<String>|None => match(targets)
+  (ts: List<String>) => map(ts, (t) => siResultNode(t, path))
+  ()                 => None
 
-fun siOpBlocksSync(op, syncSet: Set<String>, impls: List<SlotFuncs>) => match(op)
-  (pc: OpParallelCall) => true
-  (c: OpCall)          => !c.callMusttail && !siCallIsSync(c, syncSet, impls)
-  (o: Op)              => false
+fun siFeedParams(flow: SiFlow, acc: SiAcc, callee: String, args, caller: String): SiAcc
+  let params = match(appFunction(flow.sfApp, callee))
+    (f: CgFunction) => tail(siParams(f))
+    ()              => List()
+  ret match(args)
+    (ns: RpNewStruct) => siFeedLoop(flow, acc, callee, caller, chain(ns.values), chain(params))
+    (o: RParam)       => fold(params, acc, (a, pf) =>
+                           siFallAll(flow, a, pf.fieldType, (p) => siVarNode(callee, pf.fieldName, p)))
 
-fun siCallIsSync(c: OpCall, syncSet: Set<String>, impls: List<SlotFuncs>) => match(c.callFunction)
-  (gf: RpGlobalFunction)  => contains(syncSet, gf.name)
-  (vf: RpVirtualFunction) => siVirtualIsSync(vf.name, syncSet, impls)
-  (o: RParam)             => false
+# Arguments pair with parameters positionally (Python's zip: the shorter wins).
+fun [tail] siFeedLoop(flow: SiFlow, acc: SiAcc, callee: String, caller: String,
+                      args: Chain<RpNamedValue>, params: Chain<CgField>): SiAcc => match(args)
+  (nil: ChainEnd) => acc
+  (la: ChainLink) => match(params)
+    (nil2: ChainEnd) => acc
+    (lp: ChainLink)  => siFeedLoop(flow,
+                          fold(siFunPaths(lp.value.fieldType), acc, (a, p) =>
+                            siEdge(flow, a, siSources(flow, caller, la.value.value, p),
+                                   siVarNode(callee, lp.value.fieldName, p))),
+                          callee, caller, la.next, lp.next)
 
-fun siVirtualIsSync(name: String, syncSet: Set<String>, impls: List<SlotFuncs>)
-  let names = gfSlotLookup(impls, name)
-  ret !isEmpty(names) && !any(names, (n) => !contains(syncSet, n))
+fun siObjFields(o: CgObject): List<CgField> => match(cgFieldsOf(o.objFields))
+  (fields: List<CgField>) => fields
+  ()                      => List()
+
+fun siForeignObject(flow: SiFlow, acc: SiAcc, o: CgObject): SiAcc
+  ret o.objIsForeign
+    ? fold(siObjFields(o), acc, (a, fd) =>
+        siFallAll(flow, a, fd.fieldType, (p) => siFieldNode(flow, o.objName, fd.fieldName, p)))
+    : acc
+
+fun siGlobalEdges(flow: SiFlow, acc: SiAcc, g2: CgGlobal): SiAcc => match(g2.globalInit)
+  (init: RParam) => match(siStaticObject(g2.globalObjectName, init))
+    (so: SiStaticObject) => siStaticObjectEdges(flow, acc, so)
+    ()                   => siAssign(flow, acc, "", RpGlobalVar(g2.globalType, g2.globalName), init)
+  ()             => acc
+
+# A static object instance: an object global initialised by a NewStruct.
+class [final] SiStaticObject(soObject: String, soInit: RpNewStruct)
+
+fun siStaticObject(objectName: String|None, init): SiStaticObject|None => match(objectName)
+  (obj: String) => match(init)
+    (ns: RpNewStruct) => SiStaticObject(obj, ns)
+    (o: RParam)       => None
+  ()            => None
+
+# Its initialiser stores each field.
+fun siStaticObjectEdges(flow: SiFlow, acc: SiAcc, so: SiStaticObject): SiAcc
+  ret fold(so.soInit.values, acc, (a, v) =>
+        fold(siFunPaths(rpGetType(v.value)), a, (a2, p) =>
+          siEdge(flow, a2, siSources(flow, "", v.value, p),
+                 siFieldNode(flow, so.soObject, v.name, p))))
+
+# ── field classes ────────────────────────────────────────────────────────────
+
+# Union the base- and derived-class views of every field holding a function
+# — an ObjectField may name either class for the same slot — mapping each
+# (object, field) key to one representative.
+fun siFieldClasses(objects: List<CgObject>): Dict<String, String>
+  let byName = fold(objects, Dict(), (acc, o) => put(acc, o.objName, o))
+  let parent = fold(objects, Dict(), (acc, o) =>
+        fold(siFunFieldNames(o), acc, (a, field) =>
+          fold(o.objExtends, a, (a2, ancestor) => siJoinAncestor(a2, byName, o, field, ancestor))))
+  ret fold(keys(parent), Dict(), (acc, k) => put(acc, k, siFind(parent, k)))
+
+fun siJoinAncestor(parent: Dict<String, String>, byName: Dict<String, CgObject>,
+                   o: CgObject, field: String, ancestor: String) => match(get(byName, ancestor))
+  (anc: CgObject) => any(siFunFieldNames(anc), (n) => n == field)
+                       ? siUnion(parent, siFieldKey(o.objName, field), siFieldKey(ancestor, field))
+                       : parent
+  ()              => parent
+
+fun siFunFieldNames(o: CgObject) => map(filter(siObjFields(o), (fd) => siHasFun(fd.fieldType)),
+                                        (fd) => fd.fieldName)
+
+fun [tail] siFind(parent: Dict<String, String>, k: String): String => match(get(parent, k))
+  (p: String) => siFind(parent, p)
+  ()          => k
+
+fun siUnion(parent: Dict<String, String>, a: String, b: String)
+  let ra = siFind(parent, a)
+  let rb = siFind(parent, b)
+  ret ra == rb ? parent : put(parent, rb, ra)
+
+# ── materialisation ─────────────────────────────────────────────────────────
+
+fun siMaterialise(solved: SiSolved, f: CgFunction)
+  let name = f.fnName
+  let varSync = (field: String, p: List<String>) => siIsSync(solved, siVarNode(name, field, p))
+  ret CgFunction(name, siRetypeStruct(f.fnParams, varSync), f.fnResult,
+                 siRetypeStruct(f.fnStackVars, varSync),
+                 map(f.fnOps, (op) => opReplaceParams(op, (p) => siMaterialiseParam(solved, name, p))),
+                 f.fnComment, f.fnForeignSymbol,
+                 siIsSync(solved, siFnNode(name)),
+                 f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
+
+fun siMaterialiseObject(solved: SiSolved, o: CgObject)
+  let flow = solved.ssFlow
+  ret with o(objFields = siRetypeStruct(o.objFields, (field, p) =>
+        siIsSync(solved, siFieldNode(flow, o.objName, field, p))))
+
+# Each field's function leaves flagged from `isSync(field, path)`.
+fun siRetypeStruct(t, isSync: (:String, :List<String>): Bool): CgType => match(t)
+  (s: CgStruct)          => CgStruct(siRetypeNamed(s.fields, isSync))
+  (m: CgImmediateStruct) => CgImmediateStruct(siRetypeNamed(m.fields, isSync))
+  (o: CgType)            => t
+
+fun siRetypeNamed(fields: List<CgField>, isSync: (:String, :List<String>): Bool)
+  ret map(fields, (f) => CgField(f.fieldName, siRetype(f.fieldType, (p) => isSync(f.fieldName, p))))
+
+fun siMaterialiseParam(solved: SiSolved, fnName: String, p): RParam
+  let flow = solved.ssFlow
+  ret match(p)
+    (gf: RpGlobalFunction)  => with gf(sync = siCalleesSync(solved, siCallees(flow, p)))
+    (vf: RpVirtualFunction) => with vf(sync = siCalleesSync(solved, siCallees(flow, p)))
+    (sv: RpStackVar)        => siHasFun(sv.fieldType)
+                                 ? with sv(fieldType = siRetype(sv.fieldType,
+                                     (path) => siIsSync(solved, siVarNode(fnName, sv.name, path))))
+                                 : p
+    (of: RpObjectField)     => siHasFun(of.fieldType)
+                                 ? with of(fieldType = siRetype(of.fieldType,
+                                     (path) => siIsSync(solved, siFieldNode(flow, of.objectName, of.field, path))))
+                                 : p
+    (gv: RpGlobalVar)       => siHasFun(gv.fieldType)
+                                 ? with gv(fieldType = siRetype(gv.fieldType,
+                                     (path) => siIsSync(solved, siGlobalNode(gv.name, path))))
+                                 : p
+    (o: RParam)             => p
+
+fun siCalleesSync(solved: SiSolved, targets: List<String>|None) => match(targets)
+  (ts: List<String>) => !any(ts, (t) => !siIsSync(solved, siFnNode(t)))
+  ()                 => false

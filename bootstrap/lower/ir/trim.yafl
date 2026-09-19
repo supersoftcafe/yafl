@@ -111,6 +111,7 @@ fun scanOp(op): ScanSets => match(op)
   (n: OpNewObject)    => ssUnion(ssUnion(ssObject1(n.newObjName), scanRParam(n.newObjRegister)),
                                  scanOptRParam(n.newObjSize))
   (t2: OpIfTask)      => ssUnion(scanRParam(t2.taskCondition), scanRParam(t2.taskSource))
+  (an: OpAssertNotTask) => scanRParam(an.antCondition)
   (sw: OpSwitchJump)  => scanRParam(sw.switchCondition)
   (pc: OpParallelCall) => fold(pc.parCalls, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x)))
   (ph: OpPhi)         => fold(ph.phiSources, scanRParam(ph.phiTarget),
@@ -204,3 +205,38 @@ fun [tail] trimPickGlbLoop(ns: Chain<String>, a: CgApp,
   (l: ChainLink)  => match(appGlobal(a, l.value))
     (g3: CgGlobal) => trimPickGlbLoop(l.next, a, push(acc, g3))
     ()              => trimPickGlbLoop(l.next, a, acc)
+
+# ── addressTakenFunctions (trim.py address_taken_functions) ─────────────────
+# Internal functions whose ADDRESS escapes as a value: every reference except
+# the callee slot of a direct call and a vtable slot (the virtual call sites
+# enumerate those). Such a function can be called from a site the IR cannot
+# enumerate — through a closure, a union slot, the runtime — so nothing may
+# be assumed about the arguments it receives. Same scan model as the
+# dead-code pass and functionReferenceCounts.
+
+fun addressTakenFunctions(a: CgApp): StrSet
+  let fromOps = fold(appFunctions(a), setEmpty(), (acc, f) => fold(f.fnOps, acc, atfOp))
+  ret fold(appGlobals(a), fromOps, atfGlobal)
+
+fun atfOp(acc: StrSet, op) => match(op)
+  (c: OpCall) => match(c.callFunction)
+    (gf: RpGlobalFunction) => atfCallSite(acc, c, gf)
+    (o: RParam)            => setUnion(acc, scanOp(op).ssFunctions)
+  (o2: Op)    => setUnion(acc, scanOp(op).ssFunctions)
+
+fun atfCallSite(acc: StrSet, c: OpCall, gf: RpGlobalFunction)
+  let s1 = setUnion(acc, scanRParam(c.callParameters).ssFunctions)
+  let s2 = match(c.callRegister)
+    (reg: RParam) => setUnion(s1, scanRParam(reg).ssFunctions)
+    ()             => s1
+  ret match(gf.object)
+    (obj: RParam) => setUnion(s2, scanRParam(obj).ssFunctions)
+    ()             => s2
+
+fun atfGlobal(acc: StrSet, g2: CgGlobal)
+  let s1 = match(g2.globalLazyInitFunction)
+    (name: String) => setAdd(acc, name)
+    ()              => acc
+  ret match(g2.globalInit)
+    (init: RParam) => setUnion(s1, scanRParam(init).ssFunctions)
+    ()              => s1

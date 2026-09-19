@@ -365,8 +365,7 @@ typealias Int : __builtin_type__<bigint>
 typealias None : ()
 let None: None = ()
 
-fun sideeffect(x: Int): Int
-    ret x
+fun [foreign("yafl_test_sideeffect"),impure] sideeffect(x: Int): Int
 
 fun effect(a: Int, b: Int): None
     let ra: Int = sideeffect(a)
@@ -379,9 +378,10 @@ fun main(): Int
 """
         c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=False, just_testing=False)
         self.assertTrue(c_code, "compilation produced no output")
-        # effect has two non-tail calls → should generate effect$async
-        self.assertIn("effect", c_code)
-        self.assertIn("$async", c_code)
+        # `sideeffect` is foreign without [sync], so both calls in effect may
+        # suspend → effect gets a state machine, effect$async. (A sync callee
+        # would make them plain calls and there would be no machine to test.)
+        self.assertRegex(c_code, r"void System__effect_\w+_async\(object_t\* _state")
 
         with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:
             obj = tmp.name

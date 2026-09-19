@@ -51,7 +51,7 @@ enum RParam
   enum RpNewStructTyped(structType: CgType, values: List<RpNamedValue>)
   enum RpTagTask(task: RParam, targetType: CgType)
   enum RpGlobalFunction(name: String, object: RParam|None, external: Bool, cSymbol: String|None, impure: Bool, sync: Bool)
-  enum RpVirtualFunction(name: String, object: RParam, fastLookup: Bool)
+  enum RpVirtualFunction(name: String, object: RParam, fastLookup: Bool, sync: Bool)
   enum RpPointerTo(value: RParam)                      # `value` MUST be StackVar/GlobalVar/ObjectField (Python: LParam)
   enum RpStackVar(fieldType: CgType, name: String)
   enum RpGlobalVar(fieldType: CgType, name: String)
@@ -107,8 +107,8 @@ fun rpGetType(r) => match(r)
   (x: RpZeroOf) => x.valueType
   (x: RpNewStructTyped) => x.structType
   (x: RpTagTask) => x.targetType
-  (x: RpGlobalFunction) => CgFuncPointer()
-  (x: RpVirtualFunction) => CgFuncPointer()
+  (x: RpGlobalFunction) => CgFuncPointer(x.sync)
+  (x: RpVirtualFunction) => CgFuncPointer(x.sync)
   (x: RpPointerTo) => CgDataPointer()
   (x: RpStackVar) => x.fieldType
   (x: RpGlobalVar) => x.fieldType
@@ -116,7 +116,7 @@ fun rpGetType(r) => match(r)
   (x: RpArrayElement) => x.elementType
   (x: RpInitArray) => CgVoid()   # unreachable: Python's InitArray never overrides get_type()
   (x: RpFunField) => x.ffPart == "f" ? CgIntPtr() : CgDataPointer()
-  (x: RpMakeFun) => CgFuncPointer()
+  (x: RpMakeFun) => CgFuncPointer(false)
 
 fun rpStructFieldType(x: RpStructField) => match(cgFieldsOf(rpGetType(x.structVal)))
   (fields: List<CgField>) => rpStructFieldLookup(fields, x.field)
@@ -214,7 +214,7 @@ fun rpRenameVars(r, renames: List<RpRename>) => match(r)
   (x: RpNewStructTyped) => RpNewStructTyped(x.structType, map(x.values, (v) => RpNamedValue(v.name, rpRenameVars(v.value, renames))))
   (x: RpTagTask) => RpTagTask(rpRenameVars(x.task, renames), x.targetType)
   (x: RpGlobalFunction) => RpGlobalFunction(x.name, rpRenameVarsOpt(x.object, renames), x.external, x.cSymbol, x.impure, x.sync)
-  (x: RpVirtualFunction) => RpVirtualFunction(x.name, rpRenameVars(x.object, renames), x.fastLookup)
+  (x: RpVirtualFunction) => RpVirtualFunction(x.name, rpRenameVars(x.object, renames), x.fastLookup, x.sync)
   (x: RpPointerTo) => RpPointerTo(rpRenameVars(x.value, renames))
   (x: RpStackVar) => RpStackVar(x.fieldType, renameLookup(renames, x.name))
   (x: RpGlobalVar) => r   # GlobalVar.rename_vars is identity in Python
