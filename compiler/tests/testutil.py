@@ -157,7 +157,7 @@ def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
 
-        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
+        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV, stdin=subprocess.DEVNULL)
         return run.returncode, ""
     finally:
         try:
@@ -215,7 +215,7 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
         )
         assert result.returncode == 0, f"clang failed:\n{result.stderr}"
         run_env = {**_RUN_ENV, **env} if env else _RUN_ENV
-        run = subprocess.run([binary, *(args or [])], capture_output=True, timeout=timeout, env=run_env)
+        run = subprocess.run([binary, *(args or [])], capture_output=True, timeout=timeout, env=run_env, stdin=subprocess.DEVNULL)
         return run.returncode, run.stdout.decode("utf-8", errors="replace")
     finally:
         try:
@@ -276,7 +276,7 @@ def compile_and_run_with_c_library(source: str, c_library: str, timeout: int = 5
         )
         assert result.returncode == 0, f"clang link failed:\n{result.stderr}"
 
-        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV)
+        run = subprocess.run([binary], capture_output=True, timeout=timeout, env=_RUN_ENV, stdin=subprocess.DEVNULL)
         return run.returncode
 
 

@@ -291,8 +291,17 @@ fun createCCode(statements, mainName, optLevel,
   # the pre-write copy. Last, so every RpObjectField the pipeline can produce
   # is already in place.
   let spPin = spanBegin("codegen", "pinnable_reads")
-  let a9 = resolvePinnableReads(a9pre)
+  let a9pin = resolvePinnableReads(a9pre)
   let _pin = spanEnd(spPin)
+  # Barrier elision, last of all: a store into an object that no safe point
+  # has been able to reach since its own allocation owes neither SATB shading
+  # nor a relocation resolve. Here because async lowering emits the biggest
+  # population of such stores, and because every RpObjectField must already
+  # be in its final shape — including the pinnable wraps above, which is what
+  # keeps [pinnable] objects out of the pass for free.
+  let spFast = spanBegin("codegen", "fast_stores")
+  let a9 = optLevel >= 1 ? markFastStores(a9pin) : a9pin
+  let _fast = spanEnd(spFast)
   let spCheck = spanBegin("codegen", "uninit_check")
   let v2 = checkApplication(a9)
   let _chk = spanEnd(spCheck)

@@ -1,0 +1,34 @@
+name: full-gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: full-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps (clang, cmake)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake
+
+      - name: Install build and test tooling
+        run: pip install pyinstaller unittest-parallel
+
+      - name: Run the full protocol
+        run: python3 full_protocol.py

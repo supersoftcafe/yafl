@@ -86,10 +86,11 @@ add_test(NAME compiler_suite
 # suite ever failed to be found. Treat an empty run as a failure regardless of
 # exit code — this is what makes a misdiscovered suite show up as a failure.
 set_tests_properties(compiler_suite PROPERTIES
-    # 4h. It was 1800s, which is LESS than the suite takes (~112 min at -j 3),
+    # 6h, comfortably above the real duration even on a slow 2-vCPU CI runner.
+    # It was 1800s, which is LESS than the suite takes (~112 min at -j 3),
     # so the gate reported a timeout rather than a result — a red run that says
     # nothing about the code. Keep this comfortably above the real duration.
-    TIMEOUT 14400
+    TIMEOUT 21600
     FAIL_REGULAR_EXPRESSION "Ran 0 test;NO TESTS RAN;\\(0 total tests\\)")
 
 set_tests_properties(compiler_suite PROPERTIES FIXTURES_REQUIRED bootstrap_bin)

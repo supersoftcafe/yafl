@@ -6,7 +6,8 @@
 # LOCAL PER FIELD (`reg$field`): stores and reads become plain Moves and
 # StackVar reads. ESCAPES (any one disqualifies): returned / call arg /
 # Phi'd; bare pointer consumed anywhere (a field READ of it is fine);
-# saved across a suspension; an unmodelled op shape reading it; a
+# saved across a suspension; an unmodelled op shape reading it (the whole
+# escape question lives in escapes.yafl, shared with fast_stores); a
 # multiply-defined register; an arrayed/mutable/foreign class; a sized
 # NewObject. Runs between phi_removal and async_lower (the field locals are
 # multi-write by nature, so this lives on the non-SSA side).
@@ -43,26 +44,6 @@ fun spZeroOf(ft) => match(ft)
   (i: CgInt)          => RpInteger(0, i.precision)
   (o: CgType)         => RpZeroOf(ft)
 
-# True if `name` occurs in `param`'s tree anywhere other than as the base of
-# a plain ObjectField read — i.e. the raw pointer is consumed.
-fun spBarePointerIn(param: RParam|None, name) => match(param)
-  (p: RParam) => spBareIn(p, name)
-  ()          => false
-
-fun spBareIn(p, name) => match(p)
-  (sv: RpStackVar)    => sv.name == name
-  (of: RpObjectField) => spBaseIsName(of.pointer, name)
-    ? spBarePointerIn(of.index, name)
-    : spBareIn(of.pointer, name) || spBarePointerIn(of.index, name)
-  # Any other compound (NewStruct pack, RuntimeInvoke args, …): an
-  # occurrence anywhere in here is the pointer travelling. Conservative
-  # by construction.
-  (o: RParam)         => rpTest(p, (q) => saIsVarNamed(q, name))
-
-fun spBaseIsName(ptr, name) => match(ptr)
-  (sv: RpStackVar) => sv.name == name
-  (o: RParam)      => false
-
 # ── candidate discovery ─────────────────────────────────────────────────────
 
 fun spCandidates(f: CgFunction, a: CgApp)
@@ -73,7 +54,7 @@ fun spCandidates(f: CgFunction, a: CgApp)
   ret filter(news,
              (c) => spDefCount(f.fnOps, c.spReg) == 1
                             && !any(f.fnOps,
-                                    (op) => spOpEscapes(op, c.spReg)))
+                                    (op) => esOpPublishes(op, c.spReg)))
 
 fun [tail] spNewsLoop(s: Segment<Op>|None, i, a: CgApp,
                       [terminal] acc): ListBuilder<SpCand> => match(s)
@@ -98,37 +79,10 @@ fun spNewsRegister([terminal] acc, no: OpNewObject,
 fun spDefCount(ops: Segment<Op>|None, name): Int
   ret fold(ops, 0,
            (n, op) => n + countIf(opGetLiveVars(op).writes,
-                                  (sv) => saIsVarNamed(sv,
+                                  (sv) => esIsVarNamed(sv,
                                                        name)))
 
 fun countIf<T>(l: List<T>, pred: (:T): Bool) => fold(l, 0, (n, x) => pred(x) ? n + 1 : n)
-
-fun spOpEscapes(op, name)
-  if any(opSavedVars(op), (sv) => saIsVarNamed(sv, name))
-    ret true
-  ret match(op)
-    (c: OpCall)          => spReadsName(op, name)
-    (pc: OpParallelCall) => spReadsName(op, name)
-    (r: OpReturn)        => spReadsName(op, name)
-    (ph: OpPhi)          => spReadsName(op, name)
-    (m: OpMove)          => spMoveEscapes(m, name)
-    (ji: OpJumpIf)       => spBareIn(ji.jumpIfCondition, name)
-    (sw: OpSwitchJump)   => spBareIn(sw.switchCondition, name)
-    (no: OpNewObject)    => false
-    (o: Op)              => spReadsName(op, name)
-
-fun spReadsName(op, name): Bool => any(opGetLiveVars(op).reads, (sv) => saIsVarNamed(sv, name))
-
-fun spMoveEscapes(m: OpMove, name)
-  if spBareIn(m.moveSource, name)
-    ret true
-  ret match(m.moveTarget)
-    (of: RpObjectField) => spBaseIsName(of.pointer, name)
-      # Store INTO the candidate = constructor write; the pointer is the
-      # base, not the value. An indexed store needs the index checked.
-      ? spBarePointerIn(of.index, name)
-      : spBareIn(of.pointer, name)
-    (o: RParam)         => false
 
 # ── the rewrite ─────────────────────────────────────────────────────────────
 

@@ -1,4 +1,74 @@
-# Copy elimination for object copy-and-modify (`with`) — in-place update lowering
+# Copy elimination for object copy-and-modify (`with`) — PARKED
+
+> **STATUS 2026-09-20: parked, not implemented.** The design below was checked
+> against the compiler and does not survive contact with it. What was
+> salvageable — the generalised "this store owes no barrier" idea — shipped
+> instead as `lowering/fast_stores.py` (`docs/compiler-internals.md` §6), which
+> is where the measured cost actually was. Keep this document for the analysis;
+> do not implement §2–§11 as written.
+>
+> ### What is wrong with it
+>
+> **§2 is a phantom bug.** It is built on `class Circle : Shape` extending a
+> class. Classes cannot extend classes — `ClassStatement.check` rejects it
+> ("Must only inherit from pure interfaces",
+> `compiler/pyast/statement/classdef.py`), and an interface-typed subject is
+> already refused by `with`'s own field-visibility check
+> (`with_expr.py` `check`). A `ClassSpec` subject's static type IS its dynamic
+> type, so nothing is lost and no class-subject `match` dispatch, reverse
+> subclass index or `ObjVtableEq` arm guard is needed. The `[final]`-only test
+> coverage the section calls suspicious is coverage of the only case there is.
+>
+> **Proof 1 (§4) is unsound as written.** It enumerates publication *within*
+> the function and never refuses a subject that IS a parameter — a reference
+> the caller holds by definition. §4.2 even lists "parameter → function entry"
+> as a legitimate anchor. The parenthetical claim that "every reference
+> creation is a use we see in SSA" is false for exactly this case: the
+> reference was created in the caller. A sound pass must require the subject to
+> be defined by a `NewObject` **in this function** (transitively, through
+> `Move`s), or carry an interprocedural uniqueness effect.
+>
+> **The opportunity is unquantified — and the obvious source-level reading of
+> it is misleading.** At SOURCE level all 126 `with` sites in `bootstrap/` are
+> match-arm binders over parameters rewriting shared persistent AST
+> (`bootstrap/ast/rewrite.yafl`), where in-place mutation is flatly wrong — the
+> SAME guard's identity propagation is the load-bearing mechanism there, not an
+> overhead. Separately, `lowering/simple_classes.py` flattens any class with ≤4
+> fields and no interface to a value struct, so those `with`s never allocate at
+> all. But NONE of that settles the question, because inlining is exactly the
+> transformation that turns a callee's parameter into a caller's local: at
+> -O2/-O3 a `with` inlined into a caller that allocated the subject becomes the
+> local-`NewObject` shape Proof 1 needs. Anyone reviving this must COUNT the
+> post-inlining fragments at the pass's insertion point (after the -O1+
+> known-value fixpoint) rather than grep the sources, which is what the
+> author of this note did first and should not have.
+>
+> **Three mechanical errors in the rewrite.** (a) Every boxed enum leaf carries
+> a hidden `$hash` cache slot (`pyast/statement/types.py`); a copy gets a zeroed
+> one from the allocator, so an in-place update must zero it explicitly or
+> `hashOf` serves a stale cache — `test_copy_does_not_serve_a_stale_hash`
+> exists for precisely this. (b) `deadstores` handles only `Move`/`Call`/
+> `ParallelCall`, never `NewObject`, so §12's open question is answered: the
+> pass must delete the allocation itself. (c) §7's suggested wiring site is
+> *before* the `branch_threading`/`copy_propagation`/`struct_folding` fixpoint
+> that §3.1 says the fragment shape depends on; it would have to go inside or
+> after that loop (`compiler.py`).
+>
+> **Two things it got right and that were reused.** The `gc_note_late_write`
+> announce (§6 Part B) is the correct duty for an in-place pointer store into a
+> possibly-aged page, and `yafllib/once.c` follows exactly that discipline. And
+> the observation that a barrier can be dropped when the prior value is
+> provably dead generalises — that is `fast_stores`, though it proves the
+> stronger and simpler "no safe point in the window" instead, which needs no
+> new IR flag (`ObjectField.fresh` already means this).
+>
+> **One correction to §5.2.** The proposed `no_barrier` flag is not needed and
+> `fresh` is not merely "prior value is NULL": `pinnable_reads` also reads it as
+> "cannot have been relocated yet". Both readers want the same window property.
+
+## Original design (unedited, for the analysis)
+
+### Copy elimination for object copy-and-modify (`with`) — in-place update lowering
 
 A plan for a late IR lowering stage that removes the heap copy behind
 copy-and-modify (`with x(f = v, …)`, and the broader *functional update*

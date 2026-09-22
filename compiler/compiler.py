@@ -41,6 +41,7 @@ import lowering.string_accumulation
 import lowering.string_concat
 import lowering.struct_folding
 import lowering.deadstores
+import lowering.fast_stores
 import lowering.discriminator_folding
 import lowering.drops
 import lowering.unions
@@ -347,6 +348,15 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # see the pre-write copy. Last, so every ObjectField the pipeline can
     # produce is already in place.
     a = lowering.pinnable_reads.resolve_pinnable_reads(a)
+    # Barrier elision, last of all: a store into an object that no safe point
+    # has been able to reach since its own allocation owes neither SATB shading
+    # nor a relocation resolve. It runs here because async lowering is what
+    # emits the biggest population of such stores (the state object's live-set
+    # save), and because every ObjectField the pipeline can produce must
+    # already be in its final shape — including the pinnable wraps above,
+    # which is what keeps [pinnable] objects out of the pass for free.
+    if optimization_level >= 1:
+        a = lowering.fast_stores.mark_fast_stores(a)
     lowering.uninit_check.check_application(a)
 
     # Final SSA validation, just before C emission. The IR is still SSA at

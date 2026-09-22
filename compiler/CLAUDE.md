@@ -4,6 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+**Run every gate (build, ctest, -O3 port build, examples, timed self-compile):**
+```bash
+python3 ../full_protocol.py          # ~2.5h; one line per stage, logs under build/protocol-runs/
+```
+This is the full protocol, and what CI runs. Prefer it over running the pieces
+by hand before a commit.
+
 **Run all tests:**
 ```bash
 python -m unittest discover

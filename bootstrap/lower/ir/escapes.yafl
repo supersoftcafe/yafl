@@ -1,0 +1,77 @@
+# bootstrap/lower/ir/escapes.yafl — ported from lowering/escapes.py: does
+# this op let a local's BARE POINTER get away? A LIBRARY, not a pass. Two
+# stages ask the same question and must answer it identically —
+# `stack_promotion` dissolves a heap object into per-field locals, sound only
+# while the pointer never leaves the function; `fast_stores` elides a store's
+# write barrier while the object is still private to the allocating function.
+# Reading a FIELD of the object is fine: the base pointer is consumed by the
+# load, not published. The pointer TRAVELLING is what matters — stored into
+# another object, packed into a struct, captured, returned, handed to a
+# callee. Pure queries, either side of the SSA boundary.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Ir
+
+
+
+# ── the bare-pointer query ──────────────────────────────────────────────────
+
+# True if `name` occurs in `param`'s tree anywhere other than as the base of
+# a plain ObjectField read — i.e. the raw pointer is consumed.
+fun esBarePointerIn(param: RParam|None, name) => match(param)
+  (p: RParam) => esBareIn(p, name)
+  ()          => false
+
+fun esBareIn(p, name) => match(p)
+  (sv: RpStackVar)    => sv.name == name
+  (of: RpObjectField) => esBaseIsName(of.pointer, name)
+    ? esBarePointerIn(of.index, name)
+    : esBareIn(of.pointer, name) || esBarePointerIn(of.index, name)
+  # Any other compound (NewStruct pack, RuntimeInvoke args, …): the node
+  # kinds above are the only ones with field-read structure to see through,
+  # so an occurrence anywhere in here is the pointer travelling. Conservative
+  # by construction.
+  (o: RParam)         => rpTest(p, (q) => esIsVarNamed(q, name))
+
+fun esBaseIsName(ptr, name) => match(ptr)
+  (sv: RpStackVar) => sv.name == name
+  (o: RParam)      => false
+
+fun esIsVarNamed(q, name) => match(q)
+  (sv: RpStackVar) => sv.name == name
+  (o: RParam)      => false
+
+# ── the per-op question ─────────────────────────────────────────────────────
+
+# True if `op` lets `name`'s pointer reach anywhere the function does not
+# exclusively own: a callee, a heap field, a struct pack, a return value, a
+# Phi merge, or the async state saved across a suspension.
+fun esOpPublishes(op: Op, name)
+  if any(opSavedVars(op), (sv) => esIsVarNamed(sv, name))
+    ret true
+  ret match(op)
+    (c: OpCall)          => esReadsName(op, name)
+    (pc: OpParallelCall) => esReadsName(op, name)
+    (r: OpReturn)        => esReadsName(op, name)
+    (ph: OpPhi)          => esReadsName(op, name)
+    (m: OpMove)          => esMoveEscapes(m, name)
+    (ji: OpJumpIf)       => esBareIn(ji.jumpIfCondition, name)
+    (sw: OpSwitchJump)   => esBareIn(sw.switchCondition, name)
+    (no: OpNewObject)    => false
+    (o: Op)              => esReadsName(op, name)
+
+fun esReadsName(op: Op, name): Bool => any(opGetLiveVars(op).reads,
+                                       (sv) => esIsVarNamed(sv, name))
+
+fun esMoveEscapes(m: OpMove, name)
+  if esBareIn(m.moveSource, name)
+    ret true
+  ret match(m.moveTarget)
+    (of: RpObjectField) => esBaseIsName(of.pointer, name)
+      # Store INTO the candidate = constructor write; the pointer is the
+      # base, not the value. An indexed store needs the index checked.
+      ? esBarePointerIn(of.index, name)
+      : esBareIn(of.pointer, name)
+    (o: RParam)         => false

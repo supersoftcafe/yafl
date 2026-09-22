@@ -64,7 +64,7 @@ def build(out: Path, optimization_level: int = 1) -> Path:
     # everywhere else. The runtime archive is already the release one.
     r = subprocess.run(["clang", "-g", "-x", "c", "-", "-O2",
                         *_CLANG_BUILD_FLAGS, *static_link_for(1), "-o", str(tmp)],
-                       input=c_code, text=True, capture_output=True, timeout=600)
+                       input=c_code, text=True, capture_output=True, timeout=1800)
     if r.returncode != 0:
         raise SystemExit(f"clang failed:\n{r.stderr[:4000]}")
     tmp.replace(out)                 # atomic: readers see whole file or none

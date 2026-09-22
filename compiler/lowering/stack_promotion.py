@@ -19,7 +19,8 @@ ESCAPES (any one disqualifies the candidate register):
     pointer itself travelling is not);
   - saved across a suspension (v1);
   - an op shape the analysis doesn't model (anything beyond Move / JumpIf /
-    SwitchJump reading it);
+    SwitchJump reading it) — the whole escape question lives in
+    `lowering/escapes.py`, shared with `fast_stores`;
   - a multiply-defined register, an arrayed/mutable/foreign class, or a
     sized NewObject.
 
@@ -33,13 +34,12 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import (
-    Op, Move, Call, ParallelCall, NewObject, Return, Phi, JumpIf, SwitchJump,
-)
+from codegen.ops import Op, Move, NewObject
 from codegen.param import (
     RParam, StackVar, ObjectField, ZeroOf, NullPointer, Integer,
 )
 from codegen import typedecl as t
+from lowering.escapes import op_publishes
 
 
 def __payload_fields(obj) -> tuple[tuple[str, t.Type], ...] | None:
@@ -61,26 +61,6 @@ def __zero_of(ft: t.Type) -> RParam:
     return ZeroOf(ft)
 
 
-def __bare_pointer_in(param: RParam | None, name: str) -> bool:
-    """True if `name` occurs in `param`'s tree anywhere other than as the
-    base of a plain ObjectField read — i.e. the raw pointer is consumed."""
-    if param is None:
-        return False
-    if isinstance(param, StackVar):
-        return param.name == name
-    if isinstance(param, ObjectField):
-        base_ok = isinstance(param.pointer, StackVar) and param.pointer.name == name
-        if base_ok:
-            return __bare_pointer_in(param.index, name)
-        return (__bare_pointer_in(param.pointer, name)
-                or __bare_pointer_in(param.index, name))
-    # Any other compound (NewStruct pack, RuntimeInvoke args, …): the node
-    # kinds above are the only ones with field-read structure to see through,
-    # so an occurrence anywhere in here is the pointer travelling. Conservative
-    # by construction.
-    return param.test(lambda q: isinstance(q, StackVar) and q.name == name)
-
-
 def __candidates(fn: Function, app: Application) -> dict[str, tuple[tuple[str, t.Type], ...]]:
     news: dict[str, tuple[tuple[str, t.Type], ...]] = {}
     defs: dict[str, int] = {}
@@ -92,34 +72,9 @@ def __candidates(fn: Function, app: Application) -> dict[str, tuple[tuple[str, t
             if payload is not None:
                 news[op.register.name] = payload
 
-    def op_escapes(op: Op, name: str) -> bool:
-        if any(sv.name == name for sv in op.saved_vars):
-            return True
-        if isinstance(op, (Call, ParallelCall, Return, Phi)):
-            return any(sv.name == name for sv in op.get_live_vars()[0])
-        if isinstance(op, Move):
-            if __bare_pointer_in(op.source, name):
-                return True
-            if isinstance(op.target, ObjectField):
-                # Store INTO the candidate = constructor write; the pointer
-                # is the base, not the value. An indexed store needs the
-                # index checked.
-                if (isinstance(op.target.pointer, StackVar)
-                        and op.target.pointer.name == name):
-                    return __bare_pointer_in(op.target.index, name)
-                return __bare_pointer_in(op.target.pointer, name)
-            return False
-        if isinstance(op, JumpIf):
-            return __bare_pointer_in(op.condition, name)
-        if isinstance(op, SwitchJump):
-            return __bare_pointer_in(op.value, name)
-        if isinstance(op, NewObject):
-            return False
-        return any(sv.name == name for sv in op.get_live_vars()[0])
-
     return {name: payload for name, payload in news.items()
             if defs.get(name) == 1
-            and not any(op_escapes(op, name) for op in fn.ops)}
+            and not any(op_publishes(op, name) for op in fn.ops)}
 
 
 def promote_to_stack(app: Application) -> Application:

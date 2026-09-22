@@ -159,6 +159,23 @@ This installs `yafl` to `<prefix>/bin` and the `System` library to
 
 ## Running the tests
 
+### The full protocol, one command
+
+`full_protocol.py` runs every gate in sequence — build, the CTest gate, the -O3
+port build, every example compiled and run against a fixture, and a timed
+best-of-three self-compile — and prints one line per stage:
+```
+python3 full_protocol.py                 # the whole thing (~2.5h)
+python3 full_protocol.py --only examples,o3_timed
+python3 full_protocol.py --keep-going    # every stage, fail at the end
+```
+Stages are sequential by design: two bootstrap builds at once exhaust this
+machine, and the timed legs need it to themselves. Each run tees its output to
+`build/protocol-runs/<timestamp>/`. It is also what CI runs
+(`.github/workflows/full-gate.yml`).
+
+### The test set alone
+
 The whole test set — the Python compiler suite plus the `yafllib` C unit tests —
 is wired into CTest. From a configured build, `--target check` builds everything
 (so the runtime archive and C test binaries exist) and runs it all:
