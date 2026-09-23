@@ -21,6 +21,7 @@ import compiler as c
 import lowering.linearity
 import lowering.lambda_globals
 import lowering.drops
+import warning_flags as wf
 from parsing.tokenizer import tokenize
 from parsing.parser import parse
 
@@ -47,12 +48,13 @@ class TestBootstrapCheck(TestCase):
     def tearDownClass(cls):
         pass  # the shared binary is cache-owned
 
-    def _python_diagnostics(self, text: str) -> str:
+    def _python_diagnostics(self, text: str, warn_flags: tuple[str, ...] = ()) -> str:
         from tests.testutil import cached_reference
         return cached_reference("check", text,
-                                lambda: self._python_diagnostics_uncached(text))
+                                lambda: self._python_diagnostics_uncached(text, warn_flags),
+                                extra="|".join(warn_flags))
 
-    def _python_diagnostics_uncached(self, text: str) -> str:
+    def _python_diagnostics_uncached(self, text: str, warn_flags: tuple[str, ...] = ()) -> str:
         result = parse(tokenize(text, "x"))
         self.assertFalse(result.errors, "python parse errors")
         # A fixpoint that never settles reports the declarations that flip —
@@ -65,7 +67,8 @@ class TestBootstrapCheck(TestCase):
                 statements, resolver, _p2 = _CONVERGE(statements)
         except c.ConvergenceError as unsettled:
             return "".join(f"{e}\n" for e in sorted(set(unsettled.errors)))
-        failures, warnings = _DIAGNOSE(statements, resolver)
+        enabled_warnings = wf.resolve_enabled_warnings(list(warn_flags))
+        failures, warnings = _DIAGNOSE(statements, resolver, enabled_warnings)
         if not failures:
             # Mirror the driver: linearity runs only on a clean check phase,
             # and its errors return ALONE.
@@ -103,3 +106,41 @@ class TestBootstrapCheck(TestCase):
                                    env=_RUN_ENV)
                 self.assertEqual(expected, r.stdout,
                                  f"{path.name}: diagnostics differ")
+
+    def test_wflag_matches_python(self):
+        # unused-parameter is off by default (the noisy warning this feature
+        # exists to gate); -Wunused-parameter turns it on, -Wall turns on
+        # every optional warning, -Wno-unused-variable turns off a
+        # default-on one. Each checked byte-for-byte against the same
+        # -W-aware Python reference used by the corpus contract above.
+        text = ("namespace Main\n"
+                "import System\n"
+                "fun f(a: System::Int, b: System::Int): System::Int\n"
+                "  ret a\n"
+                "fun main(): System::Int\n"
+                "  let x = 5\n"
+                "  ret f(1, 2)\n")
+        cases = [
+            (), ("unused-parameter",), ("all",), ("no-unused-variable",),
+        ]
+        for flags in cases:
+            with self.subTest(flags=flags):
+                expected = self._python_diagnostics(text, flags)
+                r = subprocess.run(
+                    [self.binary, "check", *[f"-W{f}" for f in flags]],
+                    input=text, capture_output=True, timeout=120, text=True,
+                    env=_RUN_ENV)
+                self.assertEqual(expected, r.stdout, f"flags={flags}: diagnostics differ")
+        # Sanity: the flag actually changes what's printed, both sides agree.
+        self.assertNotIn("parameter 'b' is never used", self._python_diagnostics(text, ()))
+        self.assertIn("parameter 'b' is never used", self._python_diagnostics(text, ("unused-parameter",)))
+
+    def test_unknown_wflag_fails_both_sides(self):
+        text = "namespace Main\nimport System\nfun main(): System::Int\n  ret 0\n"
+        with self.assertRaises(ValueError):
+            wf.resolve_enabled_warnings(["bogus"])
+        r = subprocess.run([self.binary, "check", "-Wbogus"], input=text,
+                           capture_output=True, timeout=120, text=True,
+                           env=_RUN_ENV)
+        self.assertNotEqual(0, r.returncode)
+        self.assertIn("unknown warning", r.stderr)

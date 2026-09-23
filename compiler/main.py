@@ -6,6 +6,8 @@ import subprocess
 import argparse
 import re
 
+import warning_flags
+
 
 def main():
     parser = argparse.ArgumentParser(description="My compiler-like tool")
@@ -49,6 +51,14 @@ def main():
         help="Instrument for profiling; the binary writes callgrind.out.<pid> at exit"
     )
 
+    # Warning categories: -Wname enables, -Wno-name disables, -Wall enables
+    # every optional one. Repeatable; applied left to right over the default
+    # set (see warning_flags.py for the registry and semantics).
+    parser.add_argument(
+        "-W", action="append", dest="W", default=[], metavar="WARNING",
+        help="Enable/disable a warning: -Wname, -Wall, -Wno-name"
+    )
+
     # Build a TEST binary instead of the program: every [test] function is
     # collected into a registry and a main is synthesised to drive it. The
     # program's own main, if it has one, is ignored rather than an error.
@@ -65,13 +75,19 @@ def main():
 
     args = parser.parse_args()
 
+    try:
+        enabled_warnings = warning_flags.resolve_enabled_warnings(args.W)
+    except ValueError as e:
+        parser.error(str(e))
+
     files = _gather_inputs(args.files)
     c_code, link_spec, warnings = c.compile_project(
         files, use_stdlib=True, just_testing=False,
         optimization_level=int(args.O),
         lib_paths=args.lib_path,
         profile=args.profile,
-        test_mode=args.test)
+        test_mode=args.test,
+        enabled_warnings=enabled_warnings)
     for w in sorted(set(warnings)):
         print(w, file=sys.stderr)
 

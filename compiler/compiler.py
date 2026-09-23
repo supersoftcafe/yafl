@@ -62,6 +62,7 @@ import lowering.vtable_trim
 import pyast.statement as s
 import pyast.expression as e
 import libraries
+import warning_flags
 
 from codegen.typedecl import DataPointer, FuncPointer, Struct, Int, Void
 from codegen.ir import Function
@@ -431,7 +432,8 @@ def __check_untyped_params(statements: list[s.Statement]) -> list[Error]:
 
 
 def __collect_diagnostics(statements: list[s.Statement],
-                          resolver: g.Resolver) -> tuple[list[Error], list[Error]]:
+                          resolver: g.Resolver,
+                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[list[Error], list[Error]]:
     """The post-convergence diagnostic phases, in driver order. Returns
     (failures, warnings): a non-empty `failures` is exactly the list the
     driver fails with (which may include warnings — on failure everything
@@ -456,6 +458,10 @@ def __collect_diagnostics(statements: list[s.Statement],
         return future_global_errors, []
 
     diagnostics = [x for stmt in statements for x in stmt.check(__stmt_scope_resolver(stmt, resolver), None)]
+    # A disabled warning category (see warning_flags.py) never enters the
+    # diagnostic stream at all — not on success, not folded into a failure's
+    # combined error+warning printout either.
+    diagnostics = [x for x in diagnostics if x.severity != "warning" or x.category in enabled_warnings]
     mains = [stmt for stmt in statements
              if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
     if not mains:
@@ -594,7 +600,8 @@ def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Reso
         "This is a compiler bug — a compile() pass is not idempotent."))
 
 
-def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False) -> tuple[str, list[Error]] | list[Error]:
+def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
+                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[str, list[Error]] | list[Error]:
     """Returns (c_code, warnings) on success, or the diagnostic list on failure
     (which may include warnings alongside the errors — all get printed)."""
     # Regex literals: validate at compile time and intern each distinct
@@ -620,7 +627,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
 
     mains = [stmt for stmt in new_statements if isinstance(stmt, s.FunctionStatement) and __is_main_function(stmt)]
 
-    failures, warnings = __collect_diagnostics(new_statements, resolver)
+    failures, warnings = __collect_diagnostics(new_statements, resolver, enabled_warnings)
     if failures:
         return failures
 
@@ -885,7 +892,8 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
                     optimization_level: int = 0,
                     lib_paths: list[str] | None = None,
                     profile: bool = False,
-                    test_mode: bool = False) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
+                    test_mode: bool = False,
+                    enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
     """Compile `source` together with every library it (transitively) references,
     discovered on the search path. Returns the generated C, the `LinkSpec`
     describing the headers/static libraries the loaded libraries need at link
@@ -944,7 +952,8 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
 
     try:
         compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
-            optimization_level=optimization_level, headers=headers, profile=profile)
+            optimization_level=optimization_level, headers=headers, profile=profile,
+            enabled_warnings=enabled_warnings)
     except ConvergenceError as unsettled:
         return __print_errors(unsettled.errors), None, []
     if isinstance(compiled_result, list):
@@ -954,9 +963,11 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     return c_code, link_spec, warnings
 
 
-def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, lib_paths: list[str] | None = None, profile: bool = False) -> str:
+def compile(source: list[Input], use_stdlib = False, just_testing = False, optimization_level: int = 0, lib_paths: list[str] | None = None, profile: bool = False,
+           enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> str:
     c_code, _, warnings = compile_project(source, use_stdlib=use_stdlib, just_testing=just_testing,
-        optimization_level=optimization_level, lib_paths=lib_paths, profile=profile)
+        optimization_level=optimization_level, lib_paths=lib_paths, profile=profile,
+        enabled_warnings=enabled_warnings)
     for w in sorted(set(warnings)):
         print(w, file=sys.stderr)
     return c_code

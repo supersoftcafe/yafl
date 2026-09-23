@@ -256,7 +256,7 @@ fun [tail] unusedParamLoop(ls: Chain<PStmt>, referenced: List<String>,
       : unusedParamLoop(l.next, referenced,
           add(acc, PErr(let2.pslLine,
                            "parameter '" + bareOfUnique(let2.lName)
-                           + "' is never used", true)))
+                           + "' is never used", true, "unused-parameter")))
     (o: PStmt)    => unusedParamLoop(l.next, referenced, acc)
 
 fun skipParamWarn(let2: PsLet, referenced: List<String>)
@@ -373,7 +373,7 @@ fun checkAction2(a: PsAction, r)
       ? errs
       : add(errs, PErr(a.psaLine,
                           "statement value is discarded — bind it to '_' to "
-                          + "discard explicitly", true))
+                          + "discard explicitly", true, "discarded-value"))
     ()         => errs
 
 fun isUnitType(xt) => match(xt)
@@ -580,7 +580,7 @@ fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
                        + bareOfUnique(p.cName)
                        + "` at once — a broad override silently captures "
                        + "them; give it a narrower signature or override "
-                       + "each explicitly", true))
+                       + "each explicitly", true, "fragile-base"))
     : acc
 
 # The deduped capture count, taken on the SAME walk that dedups — the names

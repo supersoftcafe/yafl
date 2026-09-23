@@ -26,7 +26,8 @@ import Bootstrap::Types
 
 class [final] Diag(dFails: Set<PErr>, dWarns: Set<PErr>)
 
-fun collectDiagnostics(statements: List<PStmt>, r): Diag => collectDiagnostics2(statements, r, true)
+fun collectDiagnostics(statements: List<PStmt>, r, enabledWarnings: Set<String>): Diag =>
+  collectDiagnostics2(statements, r, true, enabledWarnings)
 
 # `requireMain` false for the C path. compiler.py's __collect_diagnostics does
 # include the main check, but the C path reports a missing main SEPARATELY, as
@@ -37,14 +38,20 @@ fun collectDiagnostics(statements: List<PStmt>, r): Diag => collectDiagnostics2(
 # broke 56 contract tests — the corpus is stdlib and bootstrap sources, none of
 # which has a main.
 fun collectDiagnostics2(statements: List<PStmt>, r,
-                        requireMain: Bool): Diag
+                        requireMain: Bool, enabledWarnings: Set<String>): Diag
   let untyped = untypedParamErrors(statements, r)
   if !isEmpty(untyped)
     ret Diag(untyped, noErrs())
   let future = futureGlobalErrors(chain(statements), noErrs())
   if !isEmpty(future)
     ret Diag(future, noErrs())
-  let checks = stmtChecks(chain(statements), r, noErrs())
+  let checks0 = stmtChecks(chain(statements), r, noErrs())
+  # A disabled warning category (see warnings.yafl) never enters the
+  # diagnostic stream at all — not on success, not folded into a failure's
+  # combined error+warning printout either. Mirrors compiler.py's
+  # __collect_diagnostics, the single choke point every diagnostic passes
+  # through there too.
+  let checks = filter(checks0, (e2) => !e2.errWarn || contains(enabledWarnings, e2.errCategory))
   let diagnostics = requireMain ? withMainCount(statements, checks) : checks
   let warnings = filter(diagnostics, (e2) => e2.errWarn)
   # "not every diagnostic is a warning" — i.e. at least one real error. This

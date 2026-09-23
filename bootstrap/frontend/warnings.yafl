@@ -1,0 +1,66 @@
+# bootstrap/frontend/warnings.yafl — the -W flag registry, ported from
+# compiler/warning_flags.py. Keep the two in sync: same names, same defaults,
+# same left-to-right resolution rule (-Wall enables every known warning,
+# -Wname enables one, -Wno-name disables one, starting from the default set).
+namespace Bootstrap::Frontend
+
+import System
+
+
+# Existence checks only, never iterated in a chosen order — Set, not List.
+let knownWarnings: Set<String> = Set(prepend("unused-parameter",
+  prepend("unused-variable", prepend("discarded-value",
+    prepend("fragile-base", List())))))
+
+# unused-parameter is noisy for trait-constrained signatures, so it alone
+# defaults off; everything else defaults on.
+fun defaultOnWarning(name: String): Bool => name != "unused-parameter"
+
+fun isKnownWarning(name: String): Bool => contains(knownWarnings, name)
+
+let defaultEnabledWarnings: Set<String> = filter(knownWarnings, defaultOnWarning)
+
+# `flags` are the raw -W tokens with the leading "-W" stripped (e.g. "all",
+# "unused-parameter", "no-fragile-base"), in argv order, applied left to
+# right starting from the default set. An unknown name resolves to `WrErr`.
+fun resolveEnabledWarnings(flags: List<String>): WarnResolve =>
+  resolveLoop(chain(flags), defaultEnabledWarnings)
+
+fun [tail] resolveLoop(fs: Chain<String>, enabled: Set<String>): WarnResolve => match(fs)
+  (nil: ChainEnd) => WrOk(enabled)
+  (l: ChainLink)  => l.value == "all"
+    ? resolveLoop(l.next, knownWarnings)
+    : startsWith(l.value, "no-")
+      ? resolveDisable(l.next, enabled, dropPrefix(l.value, 3))
+      : resolveEnable(l.next, enabled, l.value)
+
+# Mutually (not directly) recursive with resolveLoop, so not [tail] — fine:
+# a -W flag list is a handful of tokens, never deep enough to need it.
+fun resolveEnable(rest: Chain<String>, enabled: Set<String>, name: String): WarnResolve =>
+  isKnownWarning(name)
+    ? resolveLoop(rest, add(enabled, name))
+    : WrErr("unknown warning '-W" + name + "'")
+
+fun resolveDisable(rest: Chain<String>, enabled: Set<String>, name: String): WarnResolve =>
+  isKnownWarning(name)
+    ? resolveLoop(rest, remove(enabled, name))
+    : WrErr("unknown warning '-Wno-" + name + "'")
+
+fun dropPrefix(s: String, n) => slice(s, n, length(s))
+
+# The mode word is argv's head (see main.yafl's modeOf); this CLI's entire
+# flag surface is everything after it, so every remaining token must be a
+# `-Wname` token — mirrors main.py's argparse `-W` short-option
+# attached-value parsing (`-Wall` -> W="all").
+fun resolveEnabledWarningsFromArgv(argvTail: List<String>): WarnResolve =>
+  stripLoop(chain(argvTail), builder<String>())
+
+fun [tail] stripLoop(ts: Chain<String>, acc: ListBuilder<String>): WarnResolve => match(ts)
+  (nil: ChainEnd) => resolveEnabledWarnings(build(acc))
+  (l: ChainLink)  => startsWith(l.value, "-W")
+    ? stripLoop(l.next, push(acc, dropPrefix(l.value, 2)))
+    : WrErr("unrecognised argument '" + l.value + "'")
+
+enum WarnResolve
+  enum WrOk(wrEnabled: Set<String>)
+  enum WrErr(wrMessage: String)

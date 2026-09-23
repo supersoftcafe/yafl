@@ -272,7 +272,8 @@ class ClassStatement(TypeStatement):
                 f"`{g.bare_name(slot.name)}` overrides {len(names)} similar "
                 f"methods of `{g.bare_name(parent_name)}` at once — a broad "
                 f"override silently captures them; give it a narrower signature "
-                f"or override each explicitly")
+                f"or override each explicitly",
+                "fragile-base")
             for slot, parent_name, names in c.fragile_base_captures(
                 resolver, base_slots, parent_classes)]
 

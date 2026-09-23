@@ -17,14 +17,17 @@ class Error:
     # One diagnostic type for both keeps every check() signature unchanged —
     # the partition happens once, at the top of the compile driver.
     severity: str = "error"
+    # The -W flag name that gates a warning (e.g. "unused-parameter"); unused
+    # for errors. See compiler/warnings.py for the registry these are drawn from.
+    category: str = ""
 
     def __str__(self):
         prefix = "warning: " if self.severity == "warning" else ""
         return f"{self.line_ref} - {prefix}{self.message}"
 
     @staticmethod
-    def warning(line_ref: LineRef, message: str) -> "Error":
-        return Error(line_ref, message, "warning")
+    def warning(line_ref: LineRef, message: str, category: str) -> "Error":
+        return Error(line_ref, message, "warning", category)
 
 
 @dataclass(frozen=True)

@@ -122,7 +122,8 @@ class ActionStatement(Statement):
         xtype = self.action.get_type(resolver)
         if xtype is not None and not (isinstance(xtype, t.TupleSpec) and not xtype.entries):
             errors = errors + [Error.warning(
-                self.line_ref, "statement value is discarded — bind it to '_' to discard explicitly")]
+                self.line_ref, "statement value is discarded — bind it to '_' to discard explicitly",
+                "discarded-value")]
         return errors
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:

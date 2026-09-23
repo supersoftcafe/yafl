@@ -150,7 +150,7 @@ class BlockExpression(Expression):
         for stmt in self.statements:
             referenced |= u.referenced_names(stmt)
         referenced |= u.referenced_names(self.value)
-        return [Error.warning(lr, f"'{g.bare_name(name)}' is never used")
+        return [Error.warning(lr, f"'{g.bare_name(name)}' is never used", "unused-variable")
                 for name, lr in declared if name not in referenced]
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:

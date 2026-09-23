@@ -454,7 +454,7 @@ fun [tail] unusedWarns(ls: Chain<PStmt>, referenced: List<String>,
       : unusedWarns(l.next, referenced,
                     add(acc, PErr(let2.pslLine,
                                      "'" + bareOfUnique(let2.lName)
-                                     + "' is never used", true)))
+                                     + "' is never used", true, "unused-variable")))
     (o: PStmt)    => unusedWarns(l.next, referenced, acc)
 
 # The subject is checked first; a subject whose TYPE is unknowable

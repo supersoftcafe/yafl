@@ -273,7 +273,7 @@ class FunctionStatement(DataStatement):
         if not declared:
             return []
         referenced = u.referenced_names(self.body)
-        return [Error.warning(lr, f"parameter '{g.bare_name(name)}' is never used")
+        return [Error.warning(lr, f"parameter '{g.bare_name(name)}' is never used", "unused-parameter")
                 for name, lr in declared if name not in referenced]
 
     def global_codegen(self, resolver: g.Resolver) -> cg_ir.Function:

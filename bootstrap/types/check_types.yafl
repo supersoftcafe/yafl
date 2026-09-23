@@ -15,8 +15,10 @@ import Bootstrap::Resolve
 
 
 # One diagnostic. `errWarn` mirrors Error.severity ("warning" reports and
-# continues; anything else fails the build).
-enum PErr(errLine: PLine, errMsg: String, errWarn: Bool = false)
+# continues; anything else fails the build). `errCategory` mirrors
+# Error.category — the -W flag name gating a warning (see
+# bootstrap/frontend/warnings.yafl); unused for errors.
+enum PErr(errLine: PLine, errMsg: String, errWarn: Bool = false, errCategory: String = "")
 
 fun noErrs(): Set<PErr> => Set()
 
