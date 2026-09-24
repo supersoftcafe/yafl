@@ -61,13 +61,31 @@ fun uid(sp) => match(sp)
   (b: SBuiltin)      => b.sbName
   (n: SNamed)        => ""                       # unresolved alias
   (g: SGeneric)      => ""                       # unbound placeholder
-  (c: SClass)        => c.scName
-  (e: SEnum)         => contains(e.seRoot, "@") ? "enum(" + e.seRoot + ")" : ""
+  (c: SClass)        => instantiationUid(c.scName, c.scParams)
+  (e: SEnum)         => contains(e.seRoot, "@")
+    ? instantiationUid("enum(" + e.seRoot + ")", e.seParams)
+    : ""
   (cl: SCallable)    => uidCallable(cl)
   (cm: SCombination) => uidUnion(cm)
   (t2: STuple)       => uidTuple(t2)
   (af: SArrayField)  => uidArray(af)
   (ls: SLazyStub)    => uidLazy(ls)
+
+# A generic instantiation is its root's id plus EVERY type argument's
+# (identity = name + all type args): `List<Int>` and `List<String>` are two
+# types. An argument not yet ground leaves the whole id "" (not ground).
+# Monomorphised specs carry no params, so their ids are the root's alone.
+fun instantiationUid(base, params: List<Spec>) => isEmpty(params)
+  ? base
+  : match(argUidList(chain(params), builder()))
+    (ids: List<String>) => base + "<" + join(ids, ",") + ">"
+    ()                  => ""
+
+fun [tail] argUidList(ps: Chain<Spec>,
+                      [terminal] acc: ListBuilder<String>) => match(ps)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => uid(l.value)
+    |> (u) => u == "" ? None : argUidList(l.next, push(acc, u))
 
 fun uidCallable(cl: SCallable)
   let p = uid(cl.scParams2)
@@ -364,6 +382,7 @@ fun [tail] setLoopB(xs: Chain<Int>, i, at, v: Int,
 # A compact spelling so the Python side can drive both implementations over
 # the same cases: i:Int b:Bool s:Str  E:Root:leaf1|leaf2  C:Name  G:Name
 # U(a,b)  T(name=spec,...)  F(params->result)
+# A class/enum may end in type arguments `<a+b>` (`+`, so commas stay free).
 # Nested commas are avoided by keeping the generated cases shallow.
 
 fun parseSpecText(s): Spec|None
@@ -380,7 +399,7 @@ fun parseSpecText(s): Spec|None
   if k == 'G'
     ret SGeneric(afterColon(t2), false, noLine())
   if k == 'C'
-    ret SClass(afterColon(t2), List(), noLine())
+    ret parseClassText(afterColon(t2))
   if k == 'E'
     ret parseEnumText(afterColon(t2))
   if k == 'U'
@@ -403,12 +422,33 @@ fun inParens(s)
 # NO leaves at all is the EMPTY type (Never), so the empty spelling must yield
 # an empty list — `split("", "|")` would hand back one empty name and make an
 # uninhabited enum look inhabited.
-fun parseEnumText(body)
+fun parseEnumText(text)
+  let parts = withArgsText(text)
+  let body = parts.head
   let c = findByte(body, ':', 0)
   let root = c < 0 ? body : slice(body, 0, c)
   let tail2 = c < 0 ? "" : slice(body, c + 1, length(body))
   let leaves = tail2 == "" ? List<String>() : split(tail2, "|")
-  ret SEnum(root, leaves, leaves, List(), noLine())
+  ret SEnum(root, leaves, leaves, parts.args, noLine())
+
+fun parseClassText(text)
+  let parts = withArgsText(text)
+  ret SClass(parts.head, parts.args, noLine())
+
+# A trailing `<a+b>`: the spelling before it, and its type arguments.
+fun withArgsText(body): (head: String, args: List<Spec>)
+  let o = findByte(body, '<', 0)
+  ret o < 0 || byteAt(body, length(body) - 1) != '>'
+    ? (head = body, args = List<Spec>())
+    : (head = slice(body, 0, o),
+       args = argSpecs(chain(split(slice(body, o + 1, length(body) - 1), "+")),
+                       builder()))
+
+fun [tail] argSpecs(ps: Chain<String>, [terminal] acc: ListBuilder<Spec>): List<Spec> => match(ps)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => match(parseSpecText(l.value))
+    (s2: Spec) => argSpecs(l.next, push(acc, s2))
+    ()         => argSpecs(l.next, acc)
 
 fun parseUnionText(body) => unionParts(chain(topLevelParts(body)), builder())
 

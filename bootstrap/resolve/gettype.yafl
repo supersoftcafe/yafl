@@ -102,15 +102,17 @@ fun exprType(x, r): Spec|None => match(x)
   (cv: PeConvert)   => cv.convTarget
   (qq: PeCoalesce)  => coalesceType(qq, r)
 
-# `a ?? b` — the subject's non-None part joined with the fallback, which is
-# exactly the type of the match it becomes, so nothing shifts when the node
-# dissolves. Undecided (None) while the subject has no answerable non-None
+# `a ?? b` — the subject's non-None part and the fallback as the arms of a
+# branch, exactly the type of the match it becomes, so nothing shifts when the
+# node dissolves. Undecided (None) while the subject has no answerable non-None
 # part: the fixpoint asks again next pass.
 fun coalesceType(qq: PeCoalesce, r): Spec|None => match(exprType(qq.qqSubject, r))
   (st: Spec) => match(withoutNone(st))
-    (nr: Spec) => join(nr, exprType(qq.qqFallback, r))
+    (nr: Spec) => branchType(coalesceArms(nr, exprType(qq.qqFallback, r)), r)
     ()         => None
   ()         => exprType(qq.qqFallback, r)
+
+fun coalesceArms(nr: Spec|None, fb: Spec|None): List<Spec|None> => prepend(nr, prepend(fb, List()))
 
 # A literal's precision names its builtin (0 = the unbounded default).
 fun intBuiltin(precision) => precision == 0 ? "bigint"

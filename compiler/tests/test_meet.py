@@ -9,8 +9,8 @@ These cases exercise paths the end-to-end suite does not reach but that are
 plainly possible in the language — a generic enum (`Result<T,E>`, the element of
 every stream `next`) and an order-independent union (every error channel `E`) —
 so they are pinned directly rather than left to chance compile coverage. The two
-soundness traps: EnumSpec excludes `type_params` from equality (so a leaf `==`
-would keep a hole), and a union's `types` tuple is not canonically ordered (so a
+soundness traps: EnumSpec once excluded `type_params` from equality (so a leaf
+`==` would keep a hole), and a union's `types` tuple is not canonically ordered (so a
 positional meet would misalign members)."""
 from tests.testutil import TimedTestCase as TestCase
 
@@ -110,3 +110,13 @@ class TestMeetUnion(TestCase):
 
     def test_two_ground_unions_different_set_conflict(self):
         self.assertIs(t.meet(union(i32, boolt), union(i32, strt)), t._CONFLICT)
+
+    def test_identical_holey_union_meets_itself(self):
+        # meet(x, x) = x. A union whose members hold a template's own
+        # placeholder (`Leaf<T> | Branch<T>`) has no ground id, and the
+        # set-wise rule alone called it a CONFLICT with itself — so a type
+        # param bound twice to that same union (from an argument and from
+        # the expected result) failed to infer at all.
+        u = union(cls("Leaf@1", hole("T@1")), cls("Branch@2", hole("T@1")))
+        self.assertEqual(u, t.meet(u, union(cls("Leaf@1", hole("T@1")),
+                                            cls("Branch@2", hole("T@1")))))

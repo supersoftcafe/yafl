@@ -93,15 +93,15 @@ class CoalesceExpression(Expression):
             fallback=self.fallback.search_and_replace(resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        """The narrowed subject joined with the fallback — the same rule the
-        match it becomes would give, so the type does not shift when the node
-        dissolves."""
+        """The narrowed subject and the fallback as the arms of a branch — the
+        rule the match it becomes gives, so the type does not shift when the
+        node dissolves."""
         st = self.subject.get_type(resolver)
         ft = self.fallback.get_type(resolver)
         narrowed = without_none(st) if st is not None else None
         if narrowed is None:
             return ft if st is None else None
-        return narrowed if ft is None else t.join(narrowed, ft)
+        return t.branch_type([narrowed, ft], resolver)
 
     def compile(self, resolver: g.Resolver,
                 expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:

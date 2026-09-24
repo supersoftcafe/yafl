@@ -115,6 +115,27 @@ def has_free_placeholders(spec: "TypeSpec | None", resolver: "g.Resolver") -> bo
                for name in placeholder_names_in(spec))
 
 
+def with_opaque_placeholders(spec: "TypeSpec", resolver: "g.Resolver") -> "TypeSpec":
+    """`spec` read where its placeholders are in scope: each one stands as an
+    opaque ground type, named by its (globally unique) placeholder name and
+    equal only to itself — a template's own `T` is a real type there."""
+    names = placeholder_names_in(spec)
+    if not names:
+        return spec
+    return substitute_placeholders(
+        spec, {name: BuiltinSpec(spec.line_ref, f"${name}") for name in names}, resolver)
+
+
+def scoped_unique_id(spec: "TypeSpec", resolver: "g.Resolver") -> str | None:
+    """`as_unique_id_str` read INSIDE a scope. A placeholder that resolves there
+    (a template's own `T`, and so `List<T>`) is a real type with an identity;
+    one that does not is still a hole, and anything else not yet ground stays
+    None, exactly as the plain id."""
+    if has_free_placeholders(spec, resolver):
+        return None
+    return with_opaque_placeholders(spec, resolver).as_unique_id_str()
+
+
 def _contains_named_spec(spec: "TypeSpec") -> bool:
     """True when `spec` is or contains a raw NamedSpec spelling — a signature
     view that hasn't compiled yet. Its names are only meaningful in the
@@ -157,6 +178,11 @@ def meet(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None | _Conf
     if _is_hole(a):
         return b
     if _is_hole(b):
+        return a
+    # Idempotent: a type meets itself. Every rule below already agrees except
+    # the union's set-wise one, which has no ground ids to compare for a union
+    # holding placeholder-bearing members (`Leaf<T> | Branch<T>`).
+    if a == b:
         return a
     # ClassSpec / generic EnumSpec: a generic instantiation, refined by its type
     # arguments positionally. The FAMILY question is identity-by-name (identity
@@ -288,10 +314,39 @@ def _shared_interfaces(specs: "list[ClassSpec]", resolver: "g.Resolver") -> "lis
 
 
 def branch_type(types: "list[TypeSpec | None]", resolver: "g.Resolver") -> "TypeSpec | None":
-    """A ternary's or match's type: its branches converged, else their union."""
+    """A ternary's or match's type: its branches converged, else their union.
+
+    An arm whose type holds a placeholder that is NOT in scope — a generic
+    call that bound nothing, `List()` — has only a SHAPE: `List<T>` names
+    List's own parameter, which means nothing here. Such an arm FITS a sibling
+    when binding its free placeholders makes it that sibling (its in-scope
+    placeholders must match exactly). It takes the one ground sibling it fits;
+    with none, the earliest arm it fits — so shapes of one family collapse to
+    one instead of standing as a union of holes; with several ground ones it
+    is ambiguous and stays as it is. Inside the generic itself the placeholder
+    IS a type, and nothing is filled."""
     known = [x for x in types if x is not None]
     if not known:
         return None
+
+    def fill(arm: "TypeSpec") -> "TypeSpec":
+        free = {n for n in placeholder_names_in(arm) if not resolves_in_scope(n, resolver)}
+        if not free:
+            return arm
+        def fits(sibling: "TypeSpec") -> bool:
+            # Against the sibling's placeholders made opaque, the free ones
+            # bind to ground parts and no scope question arises.
+            target = with_opaque_placeholders(sibling, resolver)
+            mapping = unify_generic(arm, target, free)
+            return (mapping is not None and with_opaque_placeholders(
+                substitute_placeholders(arm, mapping, resolver), resolver) == target)
+        fitting = [x for x in known if fits(x)]
+        ground = {x for x in fitting if not has_free_placeholders(x, resolver)}
+        if ground:
+            return ground.pop() if len(ground) == 1 else arm
+        return fitting[0]
+
+    known = [fill(x) for x in known]
     converged = converge(known, resolver)
     if converged is not None:
         return converged
@@ -557,8 +612,8 @@ def _unify(generic: "TypeSpec", concrete: "TypeSpec",
     # Generic ENUM instances — `List<T>` vs `List<Thing>`, `Dict<K,V>` vs a
     # concrete Dict — unify through their type arguments exactly like classes.
     # This is how a call such as `head(l)` binds T from the container argument
-    # alone. type_params is best-effort metadata (compare=False; empty on some
-    # instances): when either side lacks it there is nothing to walk, and the
+    # alone. type_params is empty on a monomorphised (or non-generic) enum:
+    # when either side lacks it there is nothing to walk, and the
     # mapping passes through unchanged — deferral, not failure, as everywhere
     # else in this function.
     if isinstance(generic, EnumSpec) and isinstance(concrete, EnumSpec):

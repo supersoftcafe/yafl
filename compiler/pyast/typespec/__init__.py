@@ -21,7 +21,7 @@ from pyast.typespec.specs import (
 )
 from pyast.typespec.algebra import (
     substitute_placeholders, placeholder_names_in, has_free_placeholders,
-    resolves_in_scope, is_narrowed_view, contains_narrowed_view,
+    resolves_in_scope, with_opaque_placeholders, scoped_unique_id, is_narrowed_view, contains_narrowed_view,
     meet, join, converge, branch_type, refine, refine_widening, unify_generic,
     bind_from_constraint_match, TraitInstance, solve_trait_constraint,
     _CONFLICT,

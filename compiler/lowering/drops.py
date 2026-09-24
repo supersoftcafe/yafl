@@ -47,13 +47,13 @@ def insert_drops(statements: list[s.Statement]) -> tuple[list[s.Statement], bool
     """Rewrite `statements`, appending scope-exit `drop(x)` calls for unused
     droppable linear bindings. Returns (new_statements, changed)."""
     resolver = g.ResolverRoot(statements)
-    inserter = _Inserter(resolver, statements)
+    inserter = _Inserter(resolver)
     new_statements = [inserter.rewrite_toplevel(stmt) for stmt in statements]
     return (new_statements, True) if inserter.changed else (statements, False)
 
 
 class _Inserter:
-    def __init__(self, resolver: g.Resolver, statements: list[s.Statement]):
+    def __init__(self, resolver: g.Resolver):
         self.resolver = resolver
         self.checker = _Checker(resolver)
         found = resolver.find_type("System::Drop")
@@ -61,23 +61,26 @@ class _Inserter:
         # nothing is droppable and every unused linear binding keeps its error.
         self._drop_name: str | None = (
             found[0].statement.name if len(found) == 1 else None)
-        self.droppable_ids = self.__droppable_type_ids(statements)
+        self.drop_instances = self.__drop_instances()
         self.changed = False
 
-    def __droppable_type_ids(self, statements: list[s.Statement]) -> frozenset[str]:
-        """Unique ids of every concrete T with a `[trait]` instance whose
-        witness implements System::Drop<T>."""
+    def __drop_instances(self) -> tuple[t.TraitInstance, ...]:
+        """Every `[trait]` instance whose witness implements System::Drop<T>,
+        as its interface over the instance's own type-parameter names: a
+        generic instance (`<T> Drop<ListBuilder<T>>`) covers every
+        instantiation of its `T`, a ground one exactly its type."""
         if self._drop_name is None:
-            return frozenset()
-        out: set[str] = set()
+            return ()
+        out: list[t.TraitInstance] = []
+
+        def add(names, iface) -> None:
+            if (isinstance(iface, t.ClassSpec) and iface.name == self._drop_name
+                    and len(iface.type_params) == 1):
+                out.append(t.TraitInstance(frozenset(p.name for p in names), iface))
+
         # PRE-LOWERING first-class instances: the pattern is the interface.
         for inst in self.resolver.get_trait_instances():
-            p2 = inst.pattern
-            if (isinstance(p2, t.ClassSpec) and p2.name == self._drop_name
-                    and len(p2.type_params) == 1):
-                uid = p2.type_params[0].as_unique_id_str()
-                if uid is not None:
-                    out.add(uid)
+            add(inst.type_params, inst.pattern)
         for st in self.resolver.get_traits():
             dt = st.declared_type
             if not isinstance(dt, t.ClassSpec):
@@ -89,12 +92,8 @@ class _Inserter:
             if cls._all_parents is None:
                 continue
             for parent in cls._all_parents:
-                if (isinstance(parent, t.ClassSpec) and parent.name == self._drop_name
-                        and len(parent.type_params) == 1):
-                    uid = parent.type_params[0].as_unique_id_str()
-                    if uid is not None:
-                        out.add(uid)
-        return frozenset(out)
+                add(cls.type_params, parent)
+        return tuple(out)
 
     # ── droppability ──────────────────────────────────────────────────────
 
@@ -102,18 +101,30 @@ class _Inserter:
                     fn_trait_params: tuple[t.TypeSpec, ...]) -> bool:
         if spec is None or not self.checker.carries_linearity(spec):
             return False
-        uid = spec.as_unique_id_str()
-        if uid is not None:
-            return uid in self.droppable_ids
         # A generic placeholder is droppable iff the enclosing function itself
         # declares `where Drop<T>` for it (current constraint semantics).
-        if isinstance(spec, t.GenericPlaceholderSpec) and self._drop_name is not None:
-            return any(isinstance(wc, t.ClassSpec) and wc.name == self._drop_name
-                       and len(wc.type_params) == 1
-                       and isinstance(wc.type_params[0], t.GenericPlaceholderSpec)
-                       and wc.type_params[0].name == spec.name
-                       for wc in fn_trait_params)
-        return False
+        if isinstance(spec, t.GenericPlaceholderSpec):
+            return self._drop_name is not None and any(
+                isinstance(wc, t.ClassSpec) and wc.name == self._drop_name
+                and len(wc.type_params) == 1
+                and isinstance(wc.type_params[0], t.GenericPlaceholderSpec)
+                and wc.type_params[0].name == spec.name
+                for wc in fn_trait_params)
+        # The binding's own placeholders (an enclosing generic's `T` in a
+        # `ListBuilder<T>`) are real types where it is declared.
+        wanted = t.with_opaque_placeholders(spec, self.resolver)
+        uid = wanted.as_unique_id_str()
+        if uid is None:
+            return False
+
+        def instantiates(inst: t.TraitInstance) -> bool:
+            pattern = inst.interface.type_params[0]
+            mapping = (t.unify_generic(pattern, wanted, set(inst.param_names))
+                       if inst.param_names else {})
+            return (mapping is not None and uid ==
+                    t.substitute_placeholders(pattern, mapping, self.resolver).as_unique_id_str())
+
+        return any(instantiates(inst) for inst in self.drop_instances)
 
     # ── rewriting ─────────────────────────────────────────────────────────
 

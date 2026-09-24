@@ -4,7 +4,7 @@ compiler/pyast/typespec over the same cases.
 The same diff methodology as the parser port: a compact spec spelling drives
 BOTH implementations over generated cases, and the answers must match —
 `uid` (as_unique_id_str: the structural identity every layout, mangle and
-union dedup reads through), `meet` (the fixpoint's refinement rule, including
+union dedup reads through — name plus every type argument), `meet` (the fixpoint's refinement rule, including
 its CONFLICT verdict), and `bind_tuple_entries` (the one binding shared by
 assignability, unification, conversion and calls).
 """
@@ -42,12 +42,13 @@ def _spec(text: str) -> t.TypeSpec | None:
     if kind == "G":
         return t.GenericPlaceholderSpec(_LR, text.split(":", 1)[1])
     if kind == "C":
-        return t.ClassSpec(_LR, text.split(":", 1)[1])
+        name, args = _with_args(text.split(":", 1)[1])
+        return t.ClassSpec(_LR, name, args)
     if kind == "E":
-        body = text.split(":", 1)[1]
+        body, args = _with_args(text.split(":", 1)[1])
         root, _, leaves = body.partition(":")
         leaf_names = tuple(leaves.split("|")) if leaves else ()
-        return t.EnumSpec(_LR, root, frozenset(leaf_names), leaf_names, ())
+        return t.EnumSpec(_LR, root, frozenset(leaf_names), leaf_names, args)
     if kind == "U":
         inner = text[text.index("(") + 1: -1]
         return t.CombinationSpec(_LR, tuple(_spec(p) for p in inner.split(",")))
@@ -64,6 +65,15 @@ def _spec(text: str) -> t.TypeSpec | None:
                                             _spec(spec)))
         return t.TupleSpec(_LR, tuple(entries))
     raise AssertionError(f"bad case spelling: {text!r}")
+
+
+def _with_args(body: str) -> tuple[str, tuple]:
+    """A trailing `<a+b>` on a class/enum spelling: its type arguments,
+    `+`-separated so a union's commas stay free (mirrors specs.yafl)."""
+    if body.endswith(">") and "<" in body:
+        at = body.index("<")
+        return body[:at], tuple(_spec(a) for a in body[at + 1:-1].split("+"))
+    return body, ()
 
 
 def _entries(text: str) -> list[t.TupleEntrySpec]:
@@ -105,7 +115,12 @@ def _py_bind(decl: str, supplied: str) -> str:
     return ",".join("-1" if b is None else str(b) for b in binding)
 
 
-_ATOMS = ["i", "b", "s", "C:Foo@1", "C:Bar@2", "E:En@1:LA|LB", "E:En@1:LA", "G:T@1"]
+_ATOMS = ["i", "b", "s", "C:Foo@1", "C:Bar@2", "E:En@1:LA|LB", "E:En@1:LA", "G:T@1",
+          # Instantiations of one generic are distinct types: identity is the
+          # name plus ALL type arguments, and a placeholder argument is not
+          # ground yet.
+          "C:Box@3<i>", "C:Box@3<s>", "C:Pair@4<i+s>",
+          "E:Lst@5:LE|LF<i>", "E:Lst@5:LE|LF<s>", "E:Lst@5:LE|LF<G:T@1>"]
 
 
 def _cases() -> tuple[list[str], list[str]]:
@@ -126,7 +141,11 @@ def _cases() -> tuple[list[str], list[str]]:
     for tp in tuples:
         lines.append(f"uid {tp}")
         expected.append(_py_uid(_spec(tp)))
-    for a, b in itertools.product(_ATOMS + unions[:6], repeat=2):
+    # A union holding a placeholder-bearing instantiation has no ground id:
+    # it must still meet ITSELF (meet(x, x) = x), in either member order.
+    holey = ["U(E:Lst@5:LE|LF<G:T@1>,C:Box@3<G:T@1>)",
+             "U(C:Box@3<G:T@1>,E:Lst@5:LE|LF<G:T@1>)"]
+    for a, b in itertools.product(_ATOMS + unions[:6] + holey, repeat=2):
         lines.append(f"meet {a} ;; {b}")
         expected.append(_py_meet(a, b))
     binds = [

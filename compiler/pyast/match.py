@@ -819,7 +819,7 @@ class MatchExpression(e.Expression):
             return None
         out = {}
         for v in subj_type.repr_members():
-            uid = v.as_unique_id_str()
+            uid = t.scoped_unique_id(v, resolver)
             if uid is None:
                 return None
             out[uid] = getattr(v, "name", uid)
@@ -841,7 +841,7 @@ class MatchExpression(e.Expression):
         out = set()
         for uid in keys:
             v = next((m for m in subj_type.repr_members()
-                      if m.as_unique_id_str() == uid), None)
+                      if t.scoped_unique_id(m, resolver) == uid), None)
             if v is not None and arm_type.trivially_assignable_from(resolver, v) is True:
                 out.add(uid)
         return out
@@ -927,7 +927,7 @@ class MatchExpression(e.Expression):
             # spelling may still say `(E3|W) | EU`. An ENUM member decomposes
             # into its leaves so per-variant arms can cover it piecewise.
             for v in subj_type.repr_members():
-                uid = v.as_unique_id_str()
+                uid = t.scoped_unique_id(v, resolver)
                 if uid is None:
                     return []  # Subject not yet fully resolved
                 # NOTE: an enum member is deliberately NOT decomposed into

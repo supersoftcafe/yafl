@@ -155,9 +155,14 @@ fun meet(a: Spec|None, b: Spec|None)
     ret optMeet(a)
   ret match(a)
     (sa: Spec) => match(b)
-      (sb: Spec) => meetSpecs(sa, sb)
+      (sb: Spec) => meetIdempotent(sa, sb)
       ()         => MNone()
     ()         => MNone()
+
+# Idempotent: a type meets itself. Every rule in meetSpecs already agrees
+# except the union's set-wise one, which has no ground ids to compare for a
+# union holding placeholder-bearing members (`Leaf<T> | Branch<T>`).
+fun meetIdempotent(a, b) => eqSpec(a, b) ? MSpec(a) : meetSpecs(a, b)
 
 fun optMeet(sp: Spec|None) => match(sp)
   (s2: Spec) => MSpec(s2)
@@ -379,6 +384,17 @@ fun optNarrowed(sp: Spec|None) => match(sp)
 # about order, so it is asked of the set directly.
 fun hasFreePlaceholders(sp, r) => any(placeholderNames(sp), (n) => !resolvesInScope(n, r))
 
+# `sp` read where its placeholders are in scope: each one stands as an opaque
+# ground type, named by its (globally unique) placeholder name and equal only
+# to itself — a template's own `T` is a real type there.
+fun withOpaquePlaceholders(sp) => substitute(sp, map(placeholderNames(sp),
+    (n) => Binding(n, SBuiltin("$" + n, specLine(sp)))))
+
+# as_unique_id_str read INSIDE a scope: a placeholder that resolves there (a
+# template's own `T`, and so `List<T>`) is a real type with an identity; one
+# that does not is still a hole ("").
+fun scopedUid(sp, r) => hasFreePlaceholders(sp, r) ? "" : uid(withOpaquePlaceholders(sp))
+
 # The scope test for a placeholder NAME: it resolves when the use sits inside
 # its declaring generic (an enclosing function's own `T`), where the
 # placeholder is a real type; anywhere else it is a hole.
@@ -497,7 +513,9 @@ fun bindHole(name, concrete, names: List<String>,
   if placeholderUnbindable(concrete, names, scope) || containsNamedSpec(concrete)
     ret UMap(mapping)
   ret match(bindingOf(mapping, name))
-    (prior: Spec) => mergeBinding(name, prior, concrete, mapping)
+    (prior: Spec) => eqSpec(prior, concrete)
+      ? UMap(mapping)
+      : mergeBinding(name, prior, concrete, mapping)
     ()            => UMap(prepend(Binding(name, concrete), mapping))
 
 # A concrete-side placeholder pins nothing down when it is one of the callee's

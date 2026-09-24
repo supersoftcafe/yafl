@@ -217,14 +217,15 @@ fun enumCovers(c: Cov, a: PArm, covers: List<String>) => isEmpty(covers)
   ? covErr(c, PErr(a.parmLine, "unreachable arm: leaves already covered"))
   : Cov(c.cvErrs, filter(c.cvLeft, (leaf) => !contains2(covers, leaf)), c.cvElse)
 
-# Union subject: coverage is over the canonical members, keyed by uid. An enum
+# Union subject: coverage is over the canonical members, keyed by their uid
+# read in scope (scopedUid — a template's own `T` is a real type). An enum
 # member is matched whole (per-variant arms through a union subject need
 # narrowing dispatch the union reprs cannot emit), and a member not yet
 # resolved (no uid) defers the whole check to a later pass.
 class [final] Member(mUid: String, mName: String, mSpec: Spec)
 
 fun unionCoverage(mt: PeMatch, cm: SCombination, r)
-  let members = map(reprMembers(cm), (v) => Member(uid(v), printableName(v), v))
+  let members = map(reprMembers(cm), (v) => Member(scopedUid(v, r), printableName(v, r), v))
   if any(members, (m) => m.mUid == "")
     ret noErrs()
   let c = unionArms(chain(mt.arms), members, r,
@@ -267,12 +268,12 @@ fun isUninhabited(sp) => match(sp)
   (o: Spec)  => false
 
 # Python prints `getattr(v, "name", uid)`: the specs with a `name` field show
-# it, every other spec shows its uid.
-fun printableName(v) => match(v)
+# it, every other spec shows its (scoped) uid.
+fun printableName(v, r) => match(v)
   (c: SClass)   => c.scName
   (n: SNamed)   => n.snName
   (g: SGeneric) => g.sgName
-  (o: Spec)     => uid(v)
+  (o: Spec)     => scopedUid(v, r)
 
 # ── multi-subject coverage (__check_exhaustiveness_multi) ───────────────────
 # Coverage over the PRODUCT of the subjects' variants: an arm covers the
@@ -293,7 +294,7 @@ fun positionTables(subjects: List<PExpr>, r) => tablesLoop(chain(subjects), r, b
 fun [tail] tablesLoop(ss: Chain<PExpr>, r,
                       [terminal] acc: ListBuilder<PosTable>) => match(ss)
   (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => match(positionTable(exprType(l.value, r)))
+  (l: ChainLink)  => match(positionTable(exprType(l.value, r), r))
     (t: PosTable) => tablesLoop(l.next, r, push(acc, t))
     ()            => discardTables(acc)
 
@@ -301,21 +302,21 @@ fun discardTables([terminal] acc: ListBuilder<PosTable>) => discard(acc)
 
 # One subject's variants as (key -> printable name), or None when the subject
 # is not resolved enough to enumerate.
-fun positionTable(sp: Spec|None) => match(sp)
+fun positionTable(sp: Spec|None, r) => match(sp)
   (s2: Spec) => match(s2)
     (e: SEnum)         => PosTable(s2, e.seValidLeaves,
                                    fold(e.seValidLeaves, Dict(),
                                         (d, n) => put(d, n, n)))
-    (cm: SCombination) => unionPositionTable(s2, reprMembers(cm))
+    (cm: SCombination) => unionPositionTable(s2, reprMembers(cm), r)
     (o: Spec)          => None
   ()         => None
 
-fun unionPositionTable(sp, members: List<Spec>): PosTable|None
-  if any(members, (v) => uid(v) == "")
+fun unionPositionTable(sp, members: List<Spec>, r): PosTable|None
+  if any(members, (v) => scopedUid(v, r) == "")
     ret None
-  ret PosTable(sp, map(members, (v) => uid(v)),
+  ret PosTable(sp, map(members, (v) => scopedUid(v, r)),
                fold(members, Dict(),
-                    (d, v) => put(d, uid(v), printableName(v))))
+                    (d, v) => put(d, scopedUid(v, r), printableName(v, r))))
 
 fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r)
   let c = multiCovArms(chain(mt.arms), tables, r, MultiCov(noErrs(), productSpace(tables)))
@@ -384,7 +385,7 @@ fun coveredKeysOther(subj, t, keys, r): List<String> => match(t)
   (o: Spec)          => filter(keys, (k) => memberAssignable(subj, k, t, r))
 
 fun memberAssignable(subj, key, t, r) => match(subj)
-  (cm: SCombination) => match(head(filter(reprMembers(cm), (m) => uid(m) == key)))
+  (cm: SCombination) => match(head(filter(reprMembers(cm), (m) => scopedUid(m, r) == key)))
     (v: Spec) => triTrue(assignableFrom(r, t, v))
     ()        => false
   (o: Spec)          => false

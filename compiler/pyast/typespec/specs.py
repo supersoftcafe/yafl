@@ -464,11 +464,26 @@ class ClassSpec(TypeSpec):
         return result
 
     def as_unique_id_str(self) -> str|None:
-        return self.name
+        return _instantiation_id(self.name, self.type_params)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
         return rw.rewrite(self, replace, resolver,
             type_params=rw.seq(self.type_params, resolver, replace))
+
+
+def _instantiation_id(base: str, type_params: tuple[TypeSpec, ...]) -> str | None:
+    """The identity of a generic class/enum INSTANTIATION: its root's id plus
+    every type argument's (identity = name + ALL type args). `List<Int>` and
+    `List<String>` are two types, so two union members and two layouts — a
+    root-only id collapsed them to whichever came first. An argument that is
+    not yet ground (a placeholder, an unresolved name) leaves the whole id
+    None, exactly as a bare placeholder's is. Monomorphised specs carry no
+    type_params, so their ids — and every mangled name built from them — are
+    the root id alone."""
+    if not type_params:
+        return base
+    ids = [tp.as_unique_id_str() for tp in type_params]
+    return f"{base}<{','.join(ids)}>" if all(ids) else None
 
 
 @dataclass(frozen=True)
@@ -476,20 +491,11 @@ class EnumSpec(TypeSpec):
     root_name: str
     valid_leaf_names: frozenset[str]
     all_leaf_names: tuple[str, ...]
-    # all_fields, is_complex, and type_params are excluded from equality:
-    # two EnumSpec instances with the same root_name and valid_leaf_names
-    # are the same TYPE; the other fields are metadata that converges
-    # iteratively (and may legitimately differ between instances during
-    # compile-loop iterations without changing the type's identity).
-    # Including them in equality breaks compile-loop convergence on
-    # recursive enums whose all_fields stabilises a tier at a time.
-    # Set when NamedSpec._compile() produces an EnumSpec that still
-    # carries the source NamedSpec's type arguments (K, V, etc.).
-    # Used by the generics pass to detect and redirect concrete
-    # instantiations of generic enums. Excluded from equality so the
-    # compile loop can converge regardless of whether type_params are
-    # present (two specs with the same root_name are the same type).
-    type_params: tuple[TypeSpec, ...] = field(default=())   # EXPERIMENT: in equality
+    # The type ARGUMENTS of a generic enum instantiation (`List<Int>`'s Int),
+    # set when NamedSpec._compile() produces an EnumSpec from a spelling that
+    # carries them; empty for a non-generic or monomorphised enum. Part of
+    # identity (name + ALL type args): in equality, and in as_unique_id_str.
+    type_params: tuple[TypeSpec, ...] = field(default=())
 
     def is_concrete(self) -> bool:
         return '@' in self.root_name
@@ -523,7 +529,7 @@ class EnumSpec(TypeSpec):
     def as_unique_id_str(self) -> str | None:
         if '@' not in self.root_name:
             return None
-        return f"enum({self.root_name})"
+        return _instantiation_id(f"enum({self.root_name})", self.type_params)
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):
@@ -536,9 +542,8 @@ class EnumSpec(TypeSpec):
             return False
         if right.valid_leaf_names > self.valid_leaf_names or not (right.valid_leaf_names <= self.valid_leaf_names):
             return False
-        # Same root — but generic type arguments are INVARIANT, and EnumSpec
-        # EQUALITY deliberately excludes type_params (convergence metadata),
-        # so assignability must compare them itself: pre-monomorphisation,
+        # Same root — but generic type arguments are INVARIANT, so
+        # assignability must compare them too: pre-monomorphisation,
         # List<A> and List<B> share root and leaves and differ ONLY here.
         # Comparing the root alone let a List<B> pass where List<A> was
         # declared, and the first symptom was a codegen crash far from the
@@ -586,14 +591,7 @@ class EnumSpec(TypeSpec):
         # DO recurse into type_params so that generics substitution can
         # replace GenericPlaceholderSpec(K) → Int, etc., preserving the
         # concrete type arguments for the generics redirect pass.
-        # Change detection must be by IDENTITY: TypeSpec equality is
-        # deliberately shallow (EnumSpec ignores type_params/all_fields), so
-        # `!=` judged a substituted nested spec "unchanged" and kept the stale
-        # one — the placeholder inside List<_N<T>>'s inner _N spec survived
-        # call-site substitution exactly that way.
-        # all_fields is deliberately NOT recursed (recursive enums self-reference
-        # it); the AST walk reaches those types via EnumStatement's variant lets.
-        # seq() reports change by the UNCHANGED signal, not by shallow ==/is.
+        # seq() reports change by the UNCHANGED signal, not by ==/is.
         return rw.rewrite(self, replace, resolver,
             type_params=rw.seq(self.type_params, resolver, replace))
 

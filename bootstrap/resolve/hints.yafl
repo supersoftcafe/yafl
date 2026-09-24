@@ -187,13 +187,41 @@ fun soleShared(shared: List<Spec>|None) => match(shared)
   ()              => None
 
 # A ternary's or match's type: its branches converged, else their union.
+# An arm whose type holds a placeholder that is NOT in scope — a generic call
+# that bound nothing, `List()` — has only a SHAPE. Such an arm FITS a sibling
+# when binding its free placeholders makes it that sibling (its in-scope
+# placeholders must match exactly). It takes the one ground sibling it fits;
+# with none, the earliest arm it fits — so shapes of one family collapse to
+# one instead of standing as a union of holes; with several ground ones it is
+# ambiguous and stays as it is.
 fun branchType(types: List<Spec|None>, r): Spec|None
-  let known = knownSpecs(chain(types), builder())
+  let arms = knownSpecs(chain(types), builder())
+  let known = map(arms, (x) => filledShape(x, arms, r))
   ret isEmpty(known)
     ? None
     : match(convergeTypes(known, r))
       (c: Spec) => c
       ()        => fold(drop(known, 1), head(known), (acc, x) => join(acc, x))
+
+fun filledShape(arm, siblings: List<Spec>, r)
+  let free = filter(placeholderNames(arm), (n) => !resolvesInScope(n, r))
+  if isEmpty(free)
+    ret arm
+  let fitting = filter(siblings, (x) => fitsShape(arm, x, free))
+  let ground = addSpecsOnce(List<Spec>(), chain(filter(fitting, (x) => !hasFreePlaceholders(x, r))))
+  ret match(head(ground))
+    (g: Spec) => exactly(chain(ground), 1) ? g : arm
+    ()        => match(head(fitting))
+      (f: Spec) => f
+      ()        => arm
+
+# Against the sibling's placeholders made opaque, the free ones bind to
+# ground parts and no scope question arises.
+fun fitsShape(arm, sibling, free: List<String>)
+  let target = withOpaquePlaceholders(sibling)
+  ret match(unifyGeneric(arm, target, free, List<Binding>()))
+    (um: UMap)  => eqSpec(withOpaquePlaceholders(substitute(arm, um.uBindings)), target)
+    (uf: UFail) => false
 
 fun [tail] knownSpecs(ts: Chain<Spec|None>,
                       [terminal] acc: ListBuilder<Spec>) => match(ts)
