@@ -1,6 +1,7 @@
 
 #include "yafl.h"
 #include "io_internal.h"
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -699,13 +700,13 @@ EXPORT object_t* io_close(object_t* self) {
     if (io->is_write)
         return _io_dispatch_close_with_flush(io);
 
+    errno = 0;
+    int32_t rc = (io->owned && fclose(io->file) != 0) ? -errno : 0;
     atomic_store_explicit(&io->closed, 1, memory_order_release);  // publish before file=NULL
-    if (io->owned)
-        fclose(io->file);
-    io->file = NULL;
+    io->file = NULL;          // handle is now closed whether or not there was an error
     io->buf_tail = 0;
     io->buf_head = 0;
-    return NULL;
+    return rc < 0 ? integer_from_int32_noalloc(rc) : NULL;
 }
 
 
