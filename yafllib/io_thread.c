@@ -278,8 +278,11 @@ static void* _io_thread_main(void* arg) {
                 size_t n = fwrite(io->buf, 1, (size_t)io->buf_tail, io->file);
                 if (n < (size_t)io->buf_tail) rc = -errno;
             }
-            if (io->owned && fclose(io->file) != 0 && rc == 0) {
-                rc = -errno;
+            // A stream we opened is unbuffered, and fclose reports its errors.
+            // One we didn't (stdout/stderr) stays open but has libc buffering:
+            // flush it, or data written just before close fails unreported.
+            if (io->owned ? fclose(io->file) != 0 : fflush(io->file) != 0) {
+                if (rc == 0) rc = -errno;
             }
             job->raw_result = rc;
         } break;
