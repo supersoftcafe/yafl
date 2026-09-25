@@ -137,20 +137,12 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
 
 # ── output ────────────────────────────────────────────────────────────────────
 
-fun describe(e: IOError): String
-  ret match(e)
-    (x: FileNotFoundError)     => "no such file or directory"
-    (x: PermissionDeniedError) => "permission denied"
-    (x: IsDirectoryError)      => "is a directory"
-    (x: EOFError)              => "unexpected end of file"
-    ()                         => "I/O error " + String(0 - e.code)
-
 # Write the results in order: matches to stdout, errors to stderr. A `[tail]`
 # loop over the list's chain, so very many matches cost no C stack; `?>`
 # threads each handle through its writes and, once one fails, carries that
 # error to the end without writing to it again. 1 if any path couldn't be
 # read, or any write or close failed; otherwise 0.
-fun writeResults(results: List<String|FileError>): System::Int
+fun writeResults(results: List<String|FileError>): System::Int where Show<IOError>
   fun [tail] loop(out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError),
                   failed: Bool, c: Chain<String|FileError>):
                   (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
@@ -161,7 +153,7 @@ fun writeResults(results: List<String|FileError>): System::Int
             loop(out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err, failed, l.next)
         (fe: FileError) =>
             loop(out, err ?> (io: IO, n: Int) =>
-                   writeAll(io, "findstr: " + fe.path + ": " + describe(fe.error) + "\n"),
+                   writeAll(io, "findstr: " + fe.path + ": " + show(fe.error) + "\n"),
                  true, l.next)
   let r = loop((stdout(), 0), (stderr(), 0), false, chain<String|FileError>(results))
   let outClosed = r.out.io.close()
