@@ -189,10 +189,16 @@ fun compileName(nm, r, expected: Spec|None)
     : unhashedName(nm, bag, r, expected)
 
 # Already committed: the ambiguity check is skipped, but the type-param step
-# below still reruns (inference may only ground on a later pass).
-fun hashedName(nm, bag: Findings, r, expected: Spec|None) => match(soleItem(bag))
-  (f: Found) => finishName(nm, f, nm.refName, nm.penTrait, r, expected)
-  ()         => noGlobals(nm)
+# below still reruns (inference may only ground on a later pass). The search
+# can still be blocked for a pass (statements arriving mid-fixpoint), and a
+# use that says nothing YET must say so, as an uncommitted one does —
+# otherwise its owner's parameter inference reads the silence as complete.
+fun hashedName(nm, bag: Findings, r, expected: Spec|None)
+  if !bag.bComplete
+    ret ExprOut(nm, List(), unsettled())
+  ret match(soleItem(bag))
+    (f: Found) => finishName(nm, f, nm.refName, nm.penTrait, r, expected)
+    ()         => noGlobals(nm)
 
 fun unhashedName(nm, bag: Findings, r,
                  expected: Spec|None)
@@ -643,10 +649,17 @@ fun [tail] setLoopB(es: Chain<SEntry>, i, v: SEntry, at,
 
 # A branch threads the receiver's type into BOTH sides — each arm owns its own
 # conversion. A ternary is a two-arm match: the same rules apply.
-fun compileTernary(te: PeTernary, r, expected)
+# With no receiver (a match subject, say) the ternary is its own: its arms land
+# in its branch type, so it owns their conversion into it — the result slot
+# generate sizes from that type would otherwise meet an unconverted arm.
+# Conversion only: its own, still-settling type is no evidence about the arms.
+fun compileTernary(te: PeTernary, r, expected: Spec|None)
   let cond = compileExpr(te.condition, r, SBuiltin("bool", te.pety))
-  let t2 = compileExpr(te.trueResult, r, expected)
-  let f = compileExpr(te.falseResult, r, expected)
+  let own = match(expected)
+    (e2: Spec) => None
+    ()         => exprType(te, r)
+  let t2 = convertedOut(compileExpr(te.trueResult, r, expected), own, r)
+  let f = convertedOut(compileExpr(te.falseResult, r, expected), own, r)
   ret ExprOut(PeTernary(cond.eoExpr, t2.eoExpr, f.eoExpr, te.pety),
               concat(cond.eoGlobals, concat(t2.eoGlobals, f.eoGlobals)),
               mergeHints(cond.eoHints, mergeHints(t2.eoHints, f.eoHints)))

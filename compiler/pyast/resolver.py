@@ -174,6 +174,11 @@ class Resolver:
         # overridden by ResolverRoot; an empty resolver boxes nothing.
         return False
 
+    def derives_equality(self, enum_name: str) -> bool:
+        # Whole-program derived-equality analysis: overridden by ResolverRoot;
+        # an empty resolver has no program, so nothing derives.
+        return False
+
     def merged_members(self, class_name: str):
         # Overridden by ResolverRoot with the per-pass merged member table;
         # an empty resolver resolves no classes (None = incomplete).
@@ -251,6 +256,9 @@ class DelegatingResolver(Resolver):
 
     def is_complex_root(self, root_name: str) -> bool:
         return self._parent.is_complex_root(root_name)
+
+    def derives_equality(self, enum_name: str) -> bool:
+        return self._parent.derives_equality(enum_name)
 
     def is_boxed_leaf(self, root_name: str, leaf_name: str) -> bool:
         return self._parent.is_boxed_leaf(root_name, leaf_name)
@@ -475,6 +483,10 @@ class ResolverRoot(Resolver):
         # Lazy per-leaf threshold analysis (derived is_boxed_leaf) — same
         # lifetime and safety argument as the breaker set it builds on.
         self.__boxed_leaves = None
+        # Lazy derived-equality analysis (lowering/derive_eq.derivable_enums):
+        # a whole-program fact, so computed once per pass from this root's
+        # own statements; each enum's compile asks it for its own name.
+        self.__derivable = None
         # Lazy per-pass merged member tables: find_in_class's per-query
         # parent-chain walk, precomputed once per class. See merged_members.
         self.__merged_members: dict = {}
@@ -484,6 +496,12 @@ class ResolverRoot(Resolver):
             from lowering.complex_enums import compute_breakers
             self.__breakers = compute_breakers(list(self.__statements))
         return root_name in self.__breakers
+
+    def derives_equality(self, enum_name: str) -> bool:
+        if self.__derivable is None:
+            from lowering.derive_eq import derivable_enums
+            self.__derivable = derivable_enums(list(self.__statements), self)
+        return enum_name in self.__derivable
 
     def is_boxed_leaf(self, root_name: str, leaf_name: str) -> bool:
         if self.__boxed_leaves is None:

@@ -199,3 +199,76 @@ fun main(): System::Int
 """
         code, out = compile_and_run_stdlib_capture(src, timeout=30)
         self.assertEqual(5, code, out)
+
+
+class TestDerivedEqualityIsVisibleToTheProgram(TestCase):
+    """Derivation happens inside the compile fixpoint, so a derived instance
+    is in scope like a written one: a direct `==` resolves, and the check
+    phase sees it. (When derivation was a sweep after the check phase, only
+    constraint discharge at monomorphisation could reach it, and a direct
+    `a == b` was rejected — "no `==` accepts arguments (Colour, Colour)".)"""
+
+    def test_direct_equality_on_a_derived_enum(self):
+        src = """\
+import System
+
+enum Colour
+  enum Red()
+  enum Green()
+  enum Rgb(r: System::Int, g: System::Int)
+
+fun main(): System::Int
+  let a: Colour = Rgb(1, 2)
+  let b: Colour = Rgb(1, 2)
+  ret a == b && !(a == Red()) && !(Rgb(1, 3) == b) ? 7 : 3
+"""
+        code, out = compile_and_run_stdlib_capture(src, timeout=30)
+        self.assertEqual(7, code, out)
+
+    def test_direct_equality_on_mutually_recursive_enums(self):
+        # Coinductive: each derives only because the other does.
+        src = """\
+import System
+
+enum Tree
+  enum Leaf(v: System::Int)
+  enum Node(kids: Forest)
+
+enum Forest
+  enum NoTrees()
+  enum Trees(first: Tree, rest: Forest)
+
+fun main(): System::Int
+  let x: Tree = Node(Trees(Leaf(1), NoTrees()))
+  let y: Tree = Node(Trees(Leaf(1), NoTrees()))
+  let z: Tree = Node(Trees(Leaf(2), NoTrees()))
+  ret x == y && !(x == z) ? 7 : 3
+"""
+        code, out = compile_and_run_stdlib_capture(src, timeout=30)
+        self.assertEqual(7, code, out)
+
+    def test_derivable_enum_alongside_ordering_code(self):
+        # Derivation is IDEMPOTENT: an enum with an instance never derives,
+        # whatever form the instance is in. After monomorphisation the
+        # lowered instance's witness names `BasicEquality$generic$enum(Col)`
+        # with no type argument; unrecognised, `Col` looked underived, a
+        # second instance appeared that nothing lowered, and codegen crashed
+        # in the stdlib's `<=` (a call with no callee type).
+        src = """\
+import System
+
+enum Col
+  enum Red()
+  enum Green()
+
+fun [tail] idxLoop(es: System::Chain<System::String>, name: System::String, i) => match(es)
+  (nil: System::ChainEnd) => None
+  (l: System::ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
+
+fun main(): System::Int
+  ret match(idxLoop(System::chain(System::prepend("b", System::prepend("a", System::List<System::String>()))), "a", 0))
+    (n: System::Int) => n + 7
+    ()               => 3
+"""
+        code, out = compile_and_run_stdlib_capture(src, timeout=30)
+        self.assertEqual(8, code, out)

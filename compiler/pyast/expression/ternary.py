@@ -43,6 +43,16 @@ class TernaryExpression(Expression):
         condition, conditionStatements, ch = self.condition.compile(resolver, t.Bool())
         trueResult, trueStatements, th = self.trueResult.compile(resolver, expected_type)
         falseResult, falseStatements, fh = self.falseResult.compile(resolver, expected_type)
+        if expected_type is None:
+            # With no receiver (a match subject, say) the ternary is its own:
+            # its arms land in its branch type, so it owns their conversion
+            # into it — the result slot generate sizes from that type would
+            # otherwise meet an unconverted arm. Conversion only: its own,
+            # still-settling type is no evidence about the arms.
+            from pyast.expression.conversion import converted
+            own = self.get_type(resolver)
+            trueResult = converted(trueResult, own, resolver)
+            falseResult = converted(falseResult, own, resolver)
         return (dataclasses.replace(self, condition=condition, trueResult=trueResult, falseResult=falseResult),
                 conditionStatements + trueStatements + falseStatements, h.merge(ch, th, fh))
 

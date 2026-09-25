@@ -392,3 +392,97 @@ class TestHintLocality(TimedTestCase):
         v = use.parameters.targets[0].name
         shown = sorted(str(hint.spec.as_unique_id_str()) for hint in hints.get(v, ()))
         self.assertEqual(2, len(shown), shown)
+
+
+class TestIncompleteSearchIsUnsettled(TimedTestCase):
+    """A name whose lookup is INCOMPLETE says nothing yet — and must say so.
+
+    The fixpoint can make a lookup incomplete for a pass (statements that
+    arrive mid-convergence, like a derived instance, leave trait searches
+    blocked until they compile). An uncommitted name already reported that
+    as UNSETTLED; a committed (`@`-hashed) one reported NO hints at all, so a
+    parameter's inference read the pass as complete, dropped the call's
+    evidence and latched the one stale hint left (`i` in `i + 1` flipping
+    from Int to the unit type, then never recovering)."""
+
+    def test_committed_name_with_incomplete_search_is_unsettled(self):
+        import pyast.hints as h
+        import pyast.resolver as g
+        from parsing.tokenizer import LineRef
+        from pyast.expression.access import NamedExpression
+
+        class Blocked(g.Resolver):
+            def find_data(self, name):
+                return g.INCOMPLETE
+
+        lr = LineRef("x", 0, 0)
+        for name in ("plus", "System::`+`@AbCdEf"):
+            with self.subTest(name=name):
+                _expr, _glb, hints = NamedExpression(lr, name).compile(Blocked(), None)
+                self.assertIn(h.UNSETTLED, hints)
+
+    def test_let_does_not_latch_a_partial_branch_while_unsettled(self):
+        # `let x = c ? blocked : 5` on a pass where `blocked` cannot be
+        # looked up: the branch's type is only the part that resolved (Int).
+        # Storing it would latch it — refinement only ever widens — so the
+        # let waits, exactly as a parameter does.
+        import pyast.expression as e
+        import pyast.hints as h
+        import pyast.resolver as g
+        import pyast.statement as s
+        from parsing.tokenizer import LineRef
+
+        class Blocked(g.Resolver):
+            def find_data(self, name):
+                return g.INCOMPLETE
+
+        lr = LineRef("x", 0, 0)
+        rhs = e.TernaryExpression(lr, e.BoolExpression(lr, True),
+                                  e.NamedExpression(lr, "System::blocked@AbCdEf"),
+                                  e.IntegerExpression(lr, 5))
+        let = s.LetStatement(lr, "x@AbCdEf", None, {}, (), rhs, None)
+        compiled, _glb, hints = let.compile(Blocked(), None)
+        self.assertIn(h.UNSETTLED, hints)
+        self.assertIsNone(compiled.declared_type)
+
+
+class TestVerdictMergesItsBounds(TimedTestCase):
+    """A parameter's upper bound RECEIVES its lower bound: the answer is their
+    merge (docs/type-merge-design.md). Matching `ss` on `ListEmpty` /
+    `ListFull` bounds it below by List spelled WITHOUT arguments — a shape —
+    and `ret ss` against `List<Int>` bounds it above; merged, that is
+    `List<Int>`. Before, nothing could say so, and `ss` was typed only on
+    passes where one of the bounds happened to be missing."""
+
+    def test_a_shape_below_and_an_instantiation_above(self):
+        import pyast.hints as h
+        import pyast.resolver as g
+        import pyast.typespec as t
+        from parsing.tokenizer import LineRef
+        lr = LineRef("v", 0, 0)
+        leaves = ("List@1", ("ListEmpty@1", "ListFull@1"))
+        bare = t.EnumSpec(lr, leaves[0], frozenset(leaves[1]), leaves[1])
+        of_int = t.EnumSpec(lr, leaves[0], frozenset(leaves[1]), leaves[1],
+                            type_params=(t.BuiltinSpec(lr, "bigint"),))
+        verdict = h.verdict((h.Hint(of_int), h.Hint(bare, lower=True)), g.ResolverRoot([]))
+        self.assertEqual(of_int, verdict.type)
+
+    def test_leaf_patterns_and_a_declared_return(self):
+        rc, _ = compile_and_run_stdlib_capture("""
+namespace Test
+import System
+
+fun rwChain(c: Chain<Int>): Chain<Int> => match(c)
+  (nil: ChainEnd) => c
+  (l: ChainLink)  => with l(value = l.value + 1, next = rwChain(l.next))
+
+fun rw(ss): List<Int> => match(ss)
+  (le: ListEmpty) => ss
+  (lf: ListFull)  => with lf(front = rwChain(lf.front))
+
+fun main(): System::Int
+  ret match(chainNext(chain(rw(prepend(6, List<Int>())))).head)
+    (i: Int) => i
+    ()       => 3
+""", timeout=120)
+        self.assertEqual(7, rc)

@@ -223,7 +223,8 @@ fun createCCode(statements, mainName, optLevel,
   # isBoxedLeaf (mirrors Python ResolverRoot's lazy is_boxed_leaf).
   let boxedLeaves = computeBoxedLeaves(statements, breakers)
   let st = buildStatements(statements)
-  let r = RRoot((root) => contains2(breakers, root),
+  # Codegen compiles no enum, so it never asks the derived-equality analysis.
+  let r = RRoot((root) => contains2(breakers, root), (name) => false,
                 st, discs, optLevel,
                 None, boxedLeaves, mergedMembersTable(st))
   let spIr = spanBegin("codegen", "ir_build")

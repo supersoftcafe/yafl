@@ -148,6 +148,398 @@ fun canonMembers(members, lr, orig) => match(head(members))
 # refined by the other side; compounds meet element-wise and propagate a
 # conflict; two ground leaves must be equal. Symmetric.
 
+# ── merge (docs/type-merge-design.md) ───────────────────────────────────────
+# The one type merge. LEFT is the receiver, RIGHT the value: left must be
+# assignable from right. Fills gaps and resolves hierarchy, never widens.
+# Returns the best correct answer (None when nothing merges), the bindings
+# extended by what was learned (returned, never mutated) and every
+# contradiction found — the caller collects them and carries on.
+#
+# A HOLE is absent, an unresolved name, or a placeholder that does not resolve
+# in scope; it takes the other side. A placeholder listed in the bindings is a
+# NAMED hole — the reference site's mapping (`T@callee = Int`, or another
+# scope's `T@caller`): unbound it binds once, bound it must agree — holes
+# inside the binding fill, nothing widens it. Generic ARGUMENTS are invariant
+# (hole-filling only); a generic spelled without arguments (a leaf pattern
+# `ListFull`) is a shape whose every argument is a hole. A value lifts to the
+# receiver's head through its class's recorded ancestor spelling (cAllParents:
+# `Car<X,Y>` records `Automobile<Y>`); an ancestor never fits a descendant.
+# Callable parameters reverse direction.
+
+class [final] MBind(mbName: String, mbSpec: Spec|None)
+class [final] MergeOut(moSpec: Spec|None, moBinds: List<MBind>, moErrs: Set<PErr>)
+class [final] MergeArgs(maSpecs: List<Spec>|None, maBinds: List<MBind>, maErrs: Set<PErr>)
+
+fun mergeSpecs(left: Spec|None, right: Spec|None, binds: List<MBind>, r): MergeOut
+  ret mgGo(left, right, binds, false, false, true, r)
+
+# `widen`: for a STORED inference only (refine) — a narrowed enum view there is
+# provisional, so a receiver's view widens to the union of both views,
+# arguments included, instead of conflicting.
+#
+# `calleeLeft`: which side is the CALLEE's own spelling — the only side where a
+# bound name is a hole (it flips through callable parameters). On the other
+# side the same name is the reference site's: its own type in scope, else a
+# leaked unbound placeholder — an anonymous hole (a nested call to the same
+# generic sees the outer call's unbound V under the name of its own V).
+fun mergeSpecsWidening(left: Spec|None, right: Spec|None, binds: List<MBind>,
+                       calleeLeft: Bool, r): MergeOut
+  ret mgGo(left, right, binds, false, true, calleeLeft, r)
+
+fun mgBindable(binds: List<MBind>, name) => any(binds, (b) => b.mbName == name)
+
+fun mgBoundSpec(binds: List<MBind>, name): Spec|None => match(head(filter(binds, (b) => b.mbName == name)))
+  (b: MBind) => b.mbSpec
+  ()         => None
+
+fun mgRebind(binds: List<MBind>, name, sp: Spec|None) => map(binds, (b) => b.mbName == name ? MBind(name, sp) : b)
+
+fun mgBindableName(x: Spec|None, binds: List<MBind>, calleeSide: Bool): String => match(x)
+  (s2: Spec) => match(s2)
+    (g: SGeneric) => calleeSide && mgBindable(binds, g.sgName) ? g.sgName : ""
+    (o: Spec)     => ""
+  ()         => ""
+
+fun mgIsHole(x: Spec|None, binds: List<MBind>, calleeSide: Bool, r): Bool => match(x)
+  (s2: Spec) => match(s2)
+    (n: SNamed)   => true
+    (g: SGeneric) => !(calleeSide && mgBindable(binds, g.sgName)) && !resolvesInScope(g.sgName, r)
+    (o: Spec)     => false
+  ()         => true
+
+fun mgLine(x: Spec|None) => match(x)
+  (s2: Spec) => specLine(s2)
+  ()         => PLine("", 0, 0)
+
+fun mgOk(sp: Spec|None, binds: List<MBind>) => MergeOut(sp, binds, noErrs())
+
+fun mgConflict(l: Spec|None, rr: Spec|None, binds: List<MBind>, why): MergeOut
+  let at = match(rr)
+    (rs: Spec) => specLine(rs)
+    ()         => mgLine(l)
+  ret MergeOut(None, binds, oneErr(at, "cannot merge " + Bootstrap::Frontend::typeStr(l)
+                                          + " with " + Bootstrap::Frontend::typeStr(rr) + ": " + why))
+
+# A named hole meeting `other`; `holderLeft` says which side it is on.
+# Bound: agree with it — holes inside the binding fill, nothing widens it.
+# Both sides are the reference site's types now, so no name in them is a named
+# hole (`S@drain = S@drain` in a self-recursive call is the caller's own S).
+fun mgNamed(name, other: Spec|None, binds: List<MBind>, holderLeft: Bool, wv: Bool, cl: Bool, r): MergeOut => match(mgBoundSpec(binds, name))
+  (bound: Spec) => mgAgree(name, binds, holderLeft ? mgGo(bound, other, List<MBind>(), true, wv, true, r)
+                                                  : mgGo(other, bound, List<MBind>(), true, wv, true, r))
+  ()            => mgIsHole(other, binds, false, r)
+    ? mgOk(SGeneric(name, false, mgLine(other)), binds)
+    : mgOk(other, mgRebind(binds, name, other))
+
+fun mgAgree(name, binds: List<MBind>, m: MergeOut): MergeOut => isEmpty(m.moErrs)
+  ? mgOk(m.moSpec, mgRebind(binds, name, m.moSpec))
+  : MergeOut(None, binds, m.moErrs)
+
+fun mgGo(l: Spec|None, rr: Spec|None, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  let ln = mgBindableName(l, binds, cl)
+  if ln != ""
+    ret mgNamed(ln, rr, binds, true, wv, cl, r)
+  let rn = mgBindableName(rr, binds, !cl)
+  if rn != ""
+    ret mgNamed(rn, l, binds, false, wv, cl, r)
+  if mgIsHole(l, binds, cl, r)
+    ret mgOk(rr, binds)
+  if mgIsHole(rr, binds, !cl, r)
+    ret mgOk(l, binds)
+  ret match(l)
+    (ls: Spec) => match(rr)
+      (rs: Spec) => mgShapes(ls, rs, binds, inv, wv, cl, r)
+      ()         => mgOk(l, binds)
+    ()         => mgOk(rr, binds)
+
+fun mgIsUnion(x) => match(x)
+  (cm: SCombination) => true
+  (o: Spec)          => false
+
+fun mgIsTuple(x) => match(x)
+  (t2: STuple) => true
+  (o: Spec)    => false
+
+fun mgIsGeneric(x) => match(x)
+  (g: SGeneric) => true
+  (o: Spec)     => false
+
+# A 1-tuple's element, or None when `x` is not a 1-tuple.
+fun mgSingle(x): SEntry|None => match(x)
+  (t2: STuple) => exactly(chain(t2.stEntries), 1) ? head(t2.stEntries) : None
+  (o: Spec)    => None
+
+fun mgShapes(l: Spec, rr: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  if mgIsUnion(l) || mgIsUnion(rr)
+    ret mgUnions(l, rr, binds, inv, wv, cl, r)
+  # A 1-tuple is its element.
+  if !mgIsTuple(rr)
+    ret match(mgSingle(l))
+      (e: SEntry) => mgGo(e.seType, rr, binds, inv, wv, cl, r)
+      ()          => mgShapes2(l, rr, binds, inv, wv, cl, r)
+  if !mgIsTuple(l)
+    ret match(mgSingle(rr))
+      (e: SEntry) => mgGo(l, e.seType, binds, inv, wv, cl, r)
+      ()          => mgShapes2(l, rr, binds, inv, wv, cl, r)
+  ret mgShapes2(l, rr, binds, inv, wv, cl, r)
+
+fun mgShapes2(l: Spec, rr: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  # In scope on both sides: a real type, equal only to itself.
+  if mgIsGeneric(l) || mgIsGeneric(rr)
+    ret mgSameOrConflict(l, rr, binds)
+  ret match(l)
+    (lt: STuple)    => match(rr)
+      (rt: STuple) => mgTuples(lt, rt, binds, inv, wv, cl, r)
+      (o: Spec)    => mgSameOrConflict(l, rr, binds)
+    (le: SEnum)     => match(rr)
+      (re2: SEnum) => mgEnums(le, re2, binds, inv, wv, cl, r)
+      (o: Spec)    => mgSameOrConflict(l, rr, binds)
+    (lc: SClass)    => match(rr)
+      (rc: SClass) => mgClasses(lc, rc, binds, inv, wv, cl, r)
+      (o: Spec)    => mgSameOrConflict(l, rr, binds)
+    (lf: SCallable) => match(rr)
+      (rf: SCallable) => mgCallables(lf, rf, binds, inv, wv, cl, r)
+      (o: Spec)       => mgSameOrConflict(l, rr, binds)
+    (o: Spec)       => mgSameOrConflict(l, rr, binds)
+
+fun mgSameOrConflict(l, rr, binds: List<MBind>) => eqSpec(l, rr)
+  ? mgOk(l, binds)
+  : mgConflict(l, rr, binds, "different types")
+
+fun mgCallables(l: SCallable, rr: SCallable, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  let p = mgGo(rr.scParams2, l.scParams2, binds, inv, wv, !cl, r)      # reversed
+  let res = mgGo(l.scResult, rr.scResult, p.moBinds, inv, wv, cl, r)
+  if !isEmpty(p.moErrs) || !isEmpty(res.moErrs)
+    ret MergeOut(None, res.moBinds, union(p.moErrs, res.moErrs))
+  ret match(p.moSpec)
+    (ps: Spec) => mgOk(SCallable(ps, res.moSpec, l.sclLine), res.moBinds)
+    ()         => mgOk(SCallable(l.scParams2, res.moSpec, l.sclLine), res.moBinds)
+
+fun mgTuples(l: STuple, rr: STuple, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  ret match(bindTupleEntries(l.stEntries, map(rr.stEntries, (e) => e.seName)))
+    (b: List<Int>) => mgEntries(chain(l.stEntries), chain(b), rr.stEntries, binds, inv, wv, cl, r,
+                                builder(), noErrs(), l)
+    ()             => mgConflict(l, rr, binds, "tuple shapes differ")
+
+fun [tail] mgEntries(ls: Chain<SEntry>, bs: Chain<Int>, rs: List<SEntry>, binds: List<MBind>,
+                     inv: Bool, wv: Bool, cl: Bool, r, [terminal] acc: ListBuilder<SEntry>, errs: Set<PErr>,
+                     l: STuple): MergeOut => match(ls)
+  (nil: ChainEnd) => mgEntriesDone(build(acc), binds, errs, l)
+  (le: ChainLink) => match(bs)
+    (nil2: ChainEnd) => mgEntriesDone(build(acc), binds, errs, l)
+    (bl: ChainLink)  => match(bl.value < 0 ? None : head(drop(rs, bl.value)))
+      (re2: SEntry) => mgGo(le.value.seType, re2.seType, binds, inv, wv, cl, r)
+        |> (m) => mgEntries(le.next, bl.next, rs, m.moBinds, inv, wv, cl, r,
+                            push(acc, SEntry(le.value.seName != "" ? le.value.seName : re2.seName,
+                                             m.moSpec, le.value.seDefault)),
+                            union(errs, m.moErrs), l)
+      ()            => mgEntries(le.next, bl.next, rs, binds, inv, wv, cl, r, push(acc, le.value), errs, l)
+
+fun mgEntriesDone(es: List<SEntry>, binds: List<MBind>, errs: Set<PErr>, l: STuple) => isEmpty(errs)
+  ? mgOk(STuple(es, l.stLine), binds)
+  : MergeOut(None, binds, errs)
+
+fun mgEnums(l: SEnum, rr: SEnum, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  if l.seRoot != rr.seRoot
+    ret mgConflict(l, rr, binds, "different enums")
+  if !wv && inv && !(allIn(chain(l.seValidLeaves), rr.seValidLeaves) && allIn(chain(rr.seValidLeaves), l.seValidLeaves))
+    ret mgConflict(l, rr, binds, "different views of one enum are different types")
+  if !wv && !allIn(chain(rr.seValidLeaves), l.seValidLeaves)
+    ret mgConflict(l, rr, binds, "the receiver cannot hold every variant of the value")
+  let leaves = wv ? unionLeaves(l.seValidLeaves, rr.seValidLeaves) : l.seValidLeaves
+  let a = mgArgs(l.seParams, rr.seParams, binds, wv, cl, r)
+  ret match(a.maSpecs)
+    (ps: List<Spec>) => mgOk(SEnum(l.seRoot, leaves, l.seAllLeaves, ps, l.seLine), a.maBinds)
+    ()               => MergeOut(None, a.maBinds, a.maErrs)
+
+fun mgClasses(l: SClass, rr: SClass, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  if l.scName == rr.scName
+    ret mgSameClass(l, mgArgs(l.scParams, rr.scParams, binds, wv, cl, r))
+  if inv
+    ret mgConflict(l, rr, binds, "different types")
+  # Lift the value to the receiver's head along its recorded ancestry.
+  ret match(soleItem(findType(r, rr.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => match(head(filter(ps, (p) => mgNamesClass(p, l.scName))))
+          (anc: Spec) => mgGo(l, substitute(anc, mgOwn(chain(cls.cGens), chain(rr.scParams), List())),
+                              binds, false, wv, cl, r)
+          ()          => mgConflict(l, rr, binds, "the value's class does not implement the receiver")
+        ()               => mgOk(l, binds)    # ancestry not known yet: nothing to add
+      (o: PStmt)     => mgConflict(l, rr, binds, "unrelated types")
+    ()         => mgConflict(l, rr, binds, "unrelated types")
+
+fun mgSameClass(l: SClass, a: MergeArgs) => match(a.maSpecs)
+  (ps: List<Spec>) => mgOk(SClass(l.scName, ps, l.scLine), a.maBinds)
+  ()               => MergeOut(None, a.maBinds, a.maErrs)
+
+fun mgNamesClass(p, name) => match(p)
+  (c: SClass) => c.scName == name
+  (o: Spec)   => false
+
+fun [tail] mgOwn(gs: Chain<PGen>, as2: Chain<Spec>, acc: List<Binding>): List<Binding> => match(gs)
+  (nil: ChainEnd) => acc
+  (g: ChainLink)  => match(as2)
+    (nil2: ChainEnd) => acc
+    (a: ChainLink)   => mgOwn(g.next, a.next, prepend(Binding(g.value.genName, a.value), acc))
+
+# Invariant generic arguments; an argument list left unspelled is all holes.
+fun mgArgs(la: List<Spec>, ra: List<Spec>, binds: List<MBind>, wv: Bool, cl: Bool, r): MergeArgs
+  if isEmpty(la)
+    ret MergeArgs(ra, binds, noErrs())
+  if isEmpty(ra)
+    ret MergeArgs(la, binds, noErrs())
+  if !sameLen(chain(la), chain(ra))
+    ret MergeArgs(None, binds, oneErr(mgLine(head(la)), "cannot merge: generic argument counts differ"))
+  ret mgArgLoop(chain(la), chain(ra), binds, wv, cl, r, builder(), noErrs())
+
+fun [tail] mgArgLoop(ls: Chain<Spec>, rs: Chain<Spec>, binds: List<MBind>, wv: Bool, cl: Bool, r,
+                     [terminal] acc: ListBuilder<Spec>, errs: Set<PErr>): MergeArgs => match(ls)
+  (nil: ChainEnd) => mgArgsDone(build(acc), binds, errs)
+  (l: ChainLink)  => match(rs)
+    (nil2: ChainEnd) => mgArgsDone(build(acc), binds, errs)
+    (rl: ChainLink)  => mgGo(l.value, rl.value, binds, true, wv, cl, r)
+      |> (m) => mgArgLoop(l.next, rl.next, m.moBinds, wv, cl, r, mgPushOpt(acc, m.moSpec),
+                          union(errs, m.moErrs))
+
+fun mgPushOpt([terminal] acc: ListBuilder<Spec>, sp: Spec|None): ListBuilder<Spec> => match(sp)
+  (s2: Spec) => push(acc, s2)
+  ()         => acc
+
+fun mgArgsDone(ps: List<Spec>, binds: List<MBind>, errs: Set<PErr>) => isEmpty(errs)
+  ? MergeArgs(ps, binds, errs)
+  : MergeArgs(None, binds, errs)
+
+# A union is a SET. Value members pair with receiver members first; then a
+# single callee-side named hole takes what is left by set difference — on the
+# value side the receiver members nobody matched, on the receiver side the
+# value members nobody placed (the error-growing `E | ParseError` pattern). An
+# anonymous receiver hole stands for the rest and becomes what it took.
+# Several holes on one side have no partition and stay as they are.
+fun mgUnions(l: Spec, rr: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
+  let lMembers = mgMembers(l)
+  let rMembers = mgMembers(rr)
+  if !mgIsUnion(l)
+    # Every member of the value must fit the one receiver.
+    ret mgAllInto(chain(rMembers), l, binds, inv, wv, cl, r, noErrs())
+  let rHoles = filter(rMembers, (m) => mgBindableName(m, binds, !cl) != "")
+  let rGround = filter(rMembers, (m) => mgBindableName(m, binds, !cl) == "")
+  ret mgEachFinds(chain(rGround), lMembers, List<Int>(), List<Spec>(), binds, inv, wv, cl, r,
+                  noErrs(), l, rr, rHoles)
+
+fun mgLeftHole(m, binds: List<MBind>, cl: Bool, r) => mgIsHole(m, binds, cl, r) || mgBindableName(m, binds, cl) != ""
+
+fun mgMembers(x) => match(x)
+  (cm: SCombination) => reprMembers(cm)
+  (o: Spec)          => prepend(x, List<Spec>())
+
+fun [tail] mgAllInto(rs: Chain<Spec>, out: Spec|None, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r,
+                     errs: Set<PErr>): MergeOut => match(rs)
+  (nil: ChainEnd) => isEmpty(errs) ? mgOk(out, binds) : MergeOut(None, binds, errs)
+  (l: ChainLink)  => mgGo(out, l.value, binds, inv, wv, cl, r)
+    |> (m) => match(m.moSpec)
+      (sp: Spec) => mgAllInto(l.next, sp, m.moBinds, inv, wv, cl, r, union(errs, m.moErrs))
+      ()         => MergeOut(None, m.moBinds, union(errs, m.moErrs))
+
+# Each value member finds the receiver member that takes it; one no member
+# takes lands in a receiver HOLE.
+fun [tail] mgEachFinds(rs: Chain<Spec>, members: List<Spec>, matched: List<Int>,
+                       absorbed: List<Spec>, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r,
+                       errs: Set<PErr>, l: Spec, rr: Spec, rHoles: List<Spec>): MergeOut => match(rs)
+  (nil: ChainEnd) => mgValueHole(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr, rHoles)
+  (x: ChainLink)  => match(mgFindMember(chain(members), 0, x.value, binds, inv, wv, cl, r))
+    (fm: MgFound) => mgEachFinds(x.next, mgSetAt(members, fm.mfIndex, fm.mfSpec),
+                                 prepend(fm.mfIndex, matched), absorbed, fm.mfBinds, inv, wv, cl, r,
+                                 errs, l, rr, rHoles)
+    ()            => any(members, (m) => mgLeftHole(m, binds, cl, r))
+      ? mgEachFinds(x.next, members, matched, build(push(builderFrom(absorbed), x.value)),
+                    binds, inv, wv, cl, r, errs, l, rr, rHoles)
+      : mgEachFinds(x.next, members, matched, absorbed, binds, inv, wv, cl, r,
+                    union(errs, mgConflict(l, x.value, binds,
+                                           "the receiver has no member for it").moErrs),
+                    l, rr, rHoles)
+
+# A value-side named hole: the receiver members nobody matched.
+fun mgValueHole(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, binds: List<MBind>,
+                inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec,
+                rHoles: List<Spec>): MergeOut
+  let restIx = mgRestIndexes(chain(members), 0, matched, binds, cl, r, List<Int>())
+  if !exactly(chain(rHoles), 1) || isEmpty(restIx)
+    ret mgReceiverHole(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr)
+  let rest = mgAtIndexes(members, restIx)
+  let m = mgNamed(mgBindableName(head(rHoles), binds, !cl), mgAsType(rest, l), binds, false, wv, cl, r)
+  ret mgReceiverHole(members, concat(matched, restIx), absorbed, m.moBinds, inv, wv, cl, r,
+                     union(errs, m.moErrs), l, rr)
+
+# A receiver-side named hole: the value members nobody placed.
+fun mgReceiverHole(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, binds: List<MBind>,
+                   inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec): MergeOut
+  let lNamed = filter(members, (m) => mgBindableName(m, binds, cl) != "")
+  if isEmpty(absorbed) || !exactly(chain(lNamed), 1) || any(members, (m) => mgIsHole(m, binds, cl, r))
+    ret mgUnionDone(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr)
+  let m = mgNamed(mgBindableName(head(lNamed), binds, cl), mgAsType(absorbed, l), binds, true, wv, cl, r)
+  ret mgUnionDone(members, matched, absorbed, m.moBinds, inv, wv, cl, r, union(errs, m.moErrs), l, rr)
+
+fun mgAbsorb(members: List<Spec>, absorbed: List<Spec>, binds: List<MBind>, cl: Bool, r) => isEmpty(absorbed)
+  ? members
+  : concat(filter(members, (m) => !mgLeftHole(m, binds, cl, r)), absorbed)
+
+fun mgAsType(ms: List<Spec>, l: Spec) => match(head(ms))
+  (only: Spec) => exactly(chain(ms), 1) ? only : SCombination(ms, specLine(l))
+  ()           => l
+
+fun [tail] mgRestIndexes(ms: Chain<Spec>, i: Int, matched: List<Int>, binds: List<MBind>, cl: Bool,
+                         r, acc: List<Int>): List<Int> => match(ms)
+  (nil: ChainEnd) => acc
+  (x: ChainLink)  => !any(matched, (j) => j == i) && !mgLeftHole(x.value, binds, cl, r)
+    ? mgRestIndexes(x.next, i + 1, matched, binds, cl, r, build(push(builderFrom(acc), i)))
+    : mgRestIndexes(x.next, i + 1, matched, binds, cl, r, acc)
+
+fun mgAtIndexes(ms: List<Spec>, ixs: List<Int>): List<Spec> => fold(ixs, List<Spec>(), (acc, i) => mgPushAt(acc, ms, i))
+
+fun mgPushAt(acc: List<Spec>, ms: List<Spec>, i: Int): List<Spec> => match(head(drop(ms, i)))
+  (sp: Spec) => build(push(builderFrom(acc), sp))
+  ()         => acc
+
+class [final] MgFound(mfIndex: Int, mfSpec: Spec|None, mfBinds: List<MBind>)
+
+fun [tail] mgFindMember(ms: Chain<Spec>, i: Int, v: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool,
+                        r): MgFound|None => match(ms)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => mgLeftHole(l.value, binds, cl, r)
+    ? mgFindMember(l.next, i + 1, v, binds, inv, wv, cl, r)
+    : mgGo(l.value, v, binds, inv, wv, cl, r)
+      |> (m) => isEmpty(m.moErrs)
+        ? MgFound(i, m.moSpec, m.moBinds)
+        : mgFindMember(l.next, i + 1, v, binds, inv, wv, cl, r)
+
+fun mgSetAt(ms: List<Spec>, i: Int, v: Spec|None): List<Spec> => match(v)
+  (sp: Spec) => mgSetLoop(chain(ms), 0, i, sp, builder())
+  ()         => ms
+
+fun [tail] mgSetLoop(ms: Chain<Spec>, j: Int, i: Int, v: Spec,
+                     [terminal] acc: ListBuilder<Spec>): List<Spec> => match(ms)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => mgSetLoop(l.next, j + 1, i, v, push(acc, j == i ? v : l.value))
+
+fun mgUnionDone(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>,
+                binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec): MergeOut
+  let unmatched = inv && isEmpty(errs) && mgAnyUnmatched(chain(members), 0, matched, binds, cl, r)
+  let all = unmatched ? union(errs, mgConflict(l, rr, binds, "different unions").moErrs) : errs
+  if !isEmpty(all)
+    ret MergeOut(None, binds, all)
+  let out = reprMembersOf(mgAbsorb(members, absorbed, binds, cl, r))
+  ret match(head(out))
+    (only: Spec) => mgOk(exactly(chain(out), 1) ? only : SCombination(out, specLine(l)), binds)
+    ()           => mgOk(l, binds)
+
+fun [tail] mgAnyUnmatched(ms: Chain<Spec>, i: Int, matched: List<Int>, binds: List<MBind>, cl: Bool,
+                          r): Bool => match(ms)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => !any(matched, (m) => m == i) && !mgLeftHole(l.value, binds, cl, r)
+    ? true
+    : mgAnyUnmatched(l.next, i + 1, matched, binds, cl, r)
+
 fun meet(a: Spec|None, b: Spec|None)
   if isHole(a)
     ret optMeet(b)
@@ -338,19 +730,59 @@ fun withParams(base, params) => match(base)
 # A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on an
 # early pass) stays refinable too: generic arguments are invariant, so it must
 # widen with its right-hand side rather than pin the view.
-fun refine(current, r, inferred: Spec|None) => match(current)
-  (c: Spec) => hasFreePlaceholders(c, r) || containsNarrowedView(c)
-    ? refineWith(current, inferred)
+#
+# A stored type that names a generic without its arguments (a leaf pattern
+# `ListFull`, or a type stored from one) is a shape — every argument a hole —
+# so it stays refinable too; filling holes is a merge (the stored type
+# RECEIVES the inference), and a contradiction leaves it unchanged.
+fun refine(current: Spec|None, r, inferred: Spec|None) => match(current)
+  (c: Spec) => hasFreePlaceholders(c, r) || hasMissingArguments(c, r) || containsNarrowedView(c)
+    ? refineMerging(current, inferred, r)
     : current
-  ()        => refineWith(current, inferred)
+  ()        => refineMerging(current, inferred, r)
 
-fun refineWith(current, inferred: Spec|None) => match(inferred)
+# The stored type RECEIVES the inference (docs/type-merge-design.md), its
+# narrowed views provisional; a contradiction leaves it unchanged.
+fun refineMerging(current: Spec|None, inferred: Spec|None, r) => match(inferred)
   (i2: Spec) => !isConcrete(i2)
     ? current
-    : match(meet(current, i2))
-      (ms: MSpec) => ms.mSpec
-      (o)         => current
+    : mergeSpecsWidening(current, i2, List<MBind>(), true, r)
+      |> (m) => isEmpty(m.moErrs) ? mergedOr(m.moSpec, current) : current
   ()         => current
+
+fun mergedOr(sp: Spec|None, current: Spec|None) => match(sp)
+  (s2: Spec) => s2
+  ()         => current
+
+# A GENERIC class or enum named without its type arguments anywhere inside —
+# a leaf pattern `ListFull`, or a type stored from one: a shape whose every
+# argument is a hole, not a settled type. A monomorphised instantiation
+# carries its arguments in its name and is complete.
+fun hasMissingArguments(sp, r): Bool => match(sp)
+  (c: SClass)        => isEmpty(c.scParams)
+    ? isGenericDecl(c.scName, r)
+    : any(c.scParams, (p) => hasMissingArguments(p, r))
+  (e: SEnum)         => isEmpty(e.seParams)
+    ? isGenericDecl(e.seRoot, r)
+    : any(e.seParams, (p) => hasMissingArguments(p, r))
+  (n: SNamed)        => any(n.snParams, (p) => hasMissingArguments(p, r))
+  (cm: SCombination) => any(cm.scTypes, (m) => hasMissingArguments(m, r))
+  (t2: STuple)       => any(t2.stEntries, (en) => optMissingArguments(en.seType, r))
+  (cl: SCallable)    => hasMissingArguments(cl.scParams2, r) || optMissingArguments(cl.scResult, r)
+  (af: SArrayField)  => hasMissingArguments(af.safElem, r)
+  (ls: SLazyStub)    => optMissingArguments(ls.slsTarget, r)
+  (o: Spec)          => false
+
+fun optMissingArguments(sp: Spec|None, r) => match(sp)
+  (s2: Spec) => hasMissingArguments(s2, r)
+  ()         => false
+
+fun isGenericDecl(name, r) => !contains(name, "$generic$") && match(soleItem(findType(r, name)))
+  (f: Found) => match(f.fStmt)
+    (e: PsEnum)  => !isEmpty(e.eGens)
+    (c: PsClass) => !isEmpty(c.cGens)
+    (o: PStmt)   => false
+  ()         => false
 
 # An enum VIEW narrower than its enum — `Circle` of `Shape`. A type inferred
 # from such a value is provisional: the context may ask for the root (or a
@@ -837,8 +1269,11 @@ fun refineWidening(current, fresh: Spec|None, r)
     (rf: Spec) if isConcrete(rf) => widenTo(rf, fresh, r)
     ()         => refined
 
+# A fresh type still holding a hole is not wider, only less finished:
+# adopted, the hole would outlive every later, complete answer.
 fun widenTo(refined, fresh: Spec|None, r) => match(fresh)
-  (f: Spec) if isConcrete(f) && strictlyWider(f, refined, r) => f
+  (f: Spec) if isConcrete(f) && !hasFreePlaceholders(f, r) && !hasMissingArguments(f, r)
+               && strictlyWider(f, refined, r) => f
   ()        => refined
 
 # `f` is a STRICT superset of `refined`: it accepts everything refined does,

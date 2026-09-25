@@ -123,21 +123,33 @@ fun inferTypeParams(stmt, gens: List<PGen>, declared: SCallable,
   # callee's params may bind to it (see unifyGenericIn / bindHole).
   ret match(unifyGenericIn(declared.scParams2, want.scParams2, names, r,
                            List()))
-    (m: UMap)  => match(resultUnified(declared, want, names, r, m.uBindings))
-      (rm: List<Binding>) => viaWhere(stmt, gens, rm, r, declared.scParams2)
-      ()                  => None
+    (m: UMap)  => viaWhere(stmt, gens, resultUnified(declared, want, names, r, m.uBindings),
+                           r, declared.scParams2)
     (f: UFail) => None
 
-# A result-unify FAILURE fails the whole inference (Python: `mapping = ...;
-# if mapping is None: return None`), not just this source.
 fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
-                  r: Resolver, mapping) => match(declared.scResult)
+                  r: Resolver, mapping): List<Binding> => match(declared.scResult)
   (dr: Spec) => match(want.scResult)
-    (wr: Spec) => match(unifyGenericIn(dr, wr, names, r, mapping))
-      (m: UMap)  => m.uBindings
-      (f: UFail) => None
+    (wr: Spec) => resultMerged(wr, dr, names, mapping, r)
     ()         => mapping
   ()         => mapping
+
+# The expected result RECEIVES the callee's result: a merge, with the callee's
+# params as named holes the arguments have already bound — so it fills only
+# what the arguments left open (`List()` against `List<Int> | None` is
+# `List<Int>`). A contradiction is the receiver's to report and never erases
+# what the arguments proved. A binding to a narrowed view is provisional and
+# widens to the view the receiver expects.
+fun resultMerged(want, dr, names: List<String>, mapping: List<Binding>, r): List<Binding>
+  let binds = map(names, (n) => MBind(n, bindingOf(mapping, n)))
+  let m = mergeSpecsWidening(want, dr, binds, false, r)
+  ret isEmpty(m.moErrs) ? learnedBindings(chain(m.moBinds), List()) : mapping
+
+fun [tail] learnedBindings(bs: Chain<MBind>, acc: List<Binding>): List<Binding> => match(bs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value.mbSpec)
+    (sp: Spec) => learnedBindings(l.next, prepend(Binding(l.value.mbName, sp), acc))
+    ()         => learnedBindings(l.next, acc)
 
 fun genNames(gs: Chain<PGen>, acc: List<String>) => build(genNamesB(gs, builderFrom(acc)))
 

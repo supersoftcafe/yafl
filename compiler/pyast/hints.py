@@ -127,7 +127,12 @@ def verdict(hints: tuple[Hint, ...], resolver: g.Resolver) -> Verdict:
     elif lower == upper or t.trivially_assignable_equals(resolver, upper, lower) is True:
         answer = lower
     else:
-        answer = t.converge([lower, upper], resolver)
+        # The upper bound RECEIVES the lower one: merge them (List spelled
+        # without arguments below, `List<Int>` above, is `List<Int>`). Until
+        # the remaining callers move to merge, a contradiction still falls
+        # back to the common parent.
+        merged, _bindings, errors = t.merge(upper, lower, {}, resolver)
+        answer = merged if merged is not None and not errors else t.converge([lower, upper], resolver)
     if answer is None:
         return Verdict(clue="its uses require " + _listed(uppers, " and "))
     return Verdict(type=answer)

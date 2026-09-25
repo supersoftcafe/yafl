@@ -63,6 +63,20 @@ class TestInstantiationIdentity(TestCase):
             self.assertEqual({_list(_INT), _list(_STR)}, set(joined.repr_members()))
 
 
+class TestShapeFillsFromUnionMembers(TestCase):
+    def test_shape_beside_a_union_takes_the_member_it_instantiates(self):
+        # A branch's type is the SET union of its arms, so `List<T>` beside
+        # `List<Int> | None` is `List<Int>` beside `List<Int>` and `None`.
+        # Comparing whole arms only left the shape standing as a third
+        # member, a hole the stored type then latched.
+        import pyast.resolver as g
+        free = t.GenericPlaceholderSpec(_lr, "T@free")
+        unit = t.TupleSpec(_lr, ())
+        sibling = t.CombinationSpec(_lr, (_list(_INT), unit))
+        result = t.branch_type([_list(free), sibling], g.Resolver())
+        self.assertEqual({_list(_INT), unit}, set(result.repr_members()))
+
+
 class TestUnboundArmTakesItsSiblingsType(TestCase):
     def test_unbound_arm_first(self):
         rc, _ = compile_and_run_stdlib_capture("""
@@ -149,6 +163,25 @@ fun orEmpty<U>(xs: List<U>, n: Int): List<U>
 fun main(): System::Int
   let xs = prepend(1, List<Int>())
   ret isEmpty(orEmpty(xs, 1)) && !isEmpty(orEmpty(xs, 0)) ? 7 : 3
+""", timeout=120)
+        self.assertEqual(7, rc)
+
+
+class TestUnionExpectedTypeBindsByShape(TestCase):
+    def test_unbound_call_against_a_union_expected_type(self):
+        # The receiver expects `List<Int> | None`; `List()` is a List, so the
+        # one member it instantiates — `List<Int>` — is what it must be.
+        rc, _ = compile_and_run_stdlib_capture("""
+namespace Test
+import System
+
+fun pick(n: Int): List<Int>|None
+  ret n > 0 ? List() : None
+
+fun main(): System::Int
+  ret match(pick(1))
+    (l: List<Int>) => isEmpty(l) ? 7 : 3
+    ()             => 5
 """, timeout=120)
         self.assertEqual(7, rc)
 

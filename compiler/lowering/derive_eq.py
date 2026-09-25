@@ -1,8 +1,9 @@
 """Derived enum equality — every qualifying enum gets `BasicEquality` for free.
 
 For each top-level, non-generic enum with no user-written
-`BasicEquality<E>` instance, if every member type satisfies equality, this
-pass synthesises
+`BasicEquality<E>` instance, if every member type satisfies equality, the
+enum's own compile (inside the fixpoint, like any other statement's extras)
+synthesises
 
     instance [ambient] System::BasicEquality<E>
       fun `==`(left: E, right: E): Bool
@@ -16,14 +17,16 @@ codegen (a value-repr enum gets no shortcut and no cache, and still computes
 correctly), so nothing here forces boxing. A user instance suppresses
 derivation — the vacuum rule: derivation fills a gap, never competes.
 
-"Satisfies equality" is COINDUCTIVE: while checking, every candidate enum is
-assumed to satisfy, so self- and mutually-recursive enums work; the
-assumption set then shrinks to a fixpoint as members fail. A member satisfies
-when it is a builtin/class/enum with an instance in scope, a candidate enum,
-or a tuple (of an arity the stdlib instances cover) of satisfying members.
-Everything else — unions, function types, generics — blocks derivation, and
-notably `Spec` never derives because `PLine` has no instance: `eqSpec` keeps
-sole ownership of spec equality.
+One question decides everything: does equality already EXIST for a type —
+does some instance, in whatever form it now has, cover it (with its `where`
+clauses met, so a tuple has equality when its members do)? An enum for which
+it does never derives (idempotence), and an enum derives only when it does
+for every member. That is COINDUCTIVE: while checking, every candidate enum
+is assumed to have equality, so self- and mutually-recursive enums work; the
+assumption set then shrinks to a fixpoint as members fail. Anything no
+instance covers — unions, function types, generic instantiations — blocks
+derivation, and notably `Spec` never derives because `PLine` has no
+instance: `eqSpec` keeps sole ownership of spec equality.
 
 Both compilers synthesise IDENTICAL statements (names and line refs derive
 from the enum's own), so the AST dumps and emitted C stay byte-comparable.
@@ -35,118 +38,150 @@ import pyast.statement as s
 import pyast.typespec as t
 import pyast.resolver as g
 from pyast.match import MatchArm, MatchExpression
+from typing import NamedTuple
 
 
-def derive_equality(statements: list[s.Statement]) -> tuple[list[s.Statement], bool]:
-    instanced, tuple_arities = __collect_instanced(statements)
+def derivable_enums(statements: list[s.Statement], resolver: g.Resolver) -> frozenset[str]:
+    """The top-level enums that derive equality in this pass's program. A
+    whole-program fact — ResolverRoot memoises it per pass, and each enum's
+    own compile emits its instance (see EnumStatement.compile).
 
-    candidates: dict[str, tuple] = {}
+    IDEMPOTENT: an enum that already has equality — a written instance, a
+    derived one, either of them lowered or monomorphised — never derives.
+    The same question decides every member: equality must exist for it
+    (`__has_equality`), or it is a candidate itself (coinductive).
+
+    Empty while the answer is not yet complete — an instance or witness not
+    yet resolved may be the one that already covers an enum, and derivation
+    must never compete with it — and in a program that does not declare
+    `System::BasicEquality` (compiled without the stdlib)."""
+    if not resolver.find_type("System::BasicEquality"):
+        return frozenset()
+    providers = __providers(statements, resolver)
+    if providers is None:
+        return frozenset()
+
+    candidates: dict[str, list] = {}
     for st in statements:
-        if not (isinstance(st, s.EnumStatement) and not st.type_params):
+        # Generic enums never derive — nor, after monomorphisation, their
+        # instantiations (`Chain$generic$bigint` has no type params left, but
+        # it is still an instance of a generic enum, not a source enum).
+        if not (isinstance(st, s.EnumStatement) and not st.type_params
+                and "$generic$" not in st.name and st.get_type() is not None):
             continue
-        if ("e", st.name) in instanced:
-            continue                       # user instance: never compete
+        if __has_equality(st.get_type(), frozenset(), providers, resolver):
+            continue
         leaves = __collect_leaves(st, [])
         if leaves is None or not leaves:   # uninhabited variant somewhere
             continue
-        candidates[st.name] = (st, leaves)
+        candidates[st.name] = leaves
 
-    # Coinductive fixpoint: assume every candidate satisfies, drop failures.
+    # Coinductive fixpoint: assume every candidate has equality, drop failures.
     ok = set(candidates)
     changed = True
     while changed:
         changed = False
         for name in sorted(ok):
-            _st, leaves = candidates[name]
-            if not all(__satisfies(let.declared_type, ok, instanced, tuple_arities)
-                       for _leaf, fields in leaves for let in fields):
+            if not all(__has_equality(let.declared_type, frozenset(ok), providers, resolver)
+                       for _leaf, fields in candidates[name] for let in fields):
                 ok.discard(name)
                 changed = True
-
-    if not ok:
-        return statements, False
-    out: list[s.Statement] = []
-    for st in statements:
-        out.append(st)
-        if isinstance(st, s.EnumStatement) and st.name in ok:
-            out.append(__synthesise(st, candidates[st.name][1]))
-    return out, True
+    return frozenset(ok)
 
 
-def __collect_instanced(statements) -> tuple[set, set]:
-    """Keys of every type with a BasicEquality instance in scope, plus the
-    tuple arities the generic stdlib instances cover.
+def derived_instance(st: s.EnumStatement) -> s.TraitInstanceStatement:
+    """The synthesised `BasicEquality<st>` instance for a derivable enum."""
+    return __synthesise(st, __collect_leaves(st, []))
 
-    Instance PATTERNS keep their typealias spellings (`System::Int`) as
-    NamedSpecs — unlike field types, which compile the alias away — so the
-    key is built from the RESOLVED statement, following alias chains."""
-    resolver = g.ResolverRoot(statements)
-    instanced: set = set()
-    tuple_arities: set = set()
 
-    def key_of(arg, depth: int = 0):
-        if isinstance(arg, t.BuiltinSpec):
-            return ("b", arg.type_name)
-        if isinstance(arg, t.EnumSpec):
-            return ("e", arg.root_name)
-        if isinstance(arg, t.ClassSpec):
-            return ("c", arg.name)
-        if isinstance(arg, t.NamedSpec) and depth < 8:
-            found = resolver.find_type(arg.name)
-            if len(found) == 1:
-                target = found[0].statement
-                if isinstance(target, s.TypeAliasStatement):
-                    return key_of(target.type, depth + 1)
-                if isinstance(target, s.ClassStatement):
-                    return ("c", target.name)
-                if isinstance(target, s.EnumStatement):
-                    return ("e", target.name)
-        return None
+class _Provider(NamedTuple):
+    """One source of `BasicEquality`: the type it covers, as a pattern over
+    the instance's own type params, with the `where` constraints a binding
+    must meet — or, once monomorphised, the covered type's unique id (the
+    `$generic$` suffix of the witness's interface, by construction)."""
+    params: frozenset[str]
+    covers: "t.TypeSpec | str"
+    wheres: tuple = ()
 
-    def reaches_equality(pat) -> bool:
-        # Equality arrives TRANSITIVELY: an instance of BasicMath<Int>
-        # provides BasicEquality<Int> because BasicMath : BasicPlus |
-        # BasicCompare and BasicCompare : BasicEquality. The interface's
-        # _all_parents is exactly that closure.
-        name = getattr(pat, "name", "")
-        if not isinstance(name, str):
-            return False
-        if name.split("@")[0].split("$generic$")[0] == "System::BasicEquality":
+
+def __providers(statements, resolver: g.Resolver) -> "list[_Provider] | None":
+    """Every source of equality in the program, in whatever form it now
+    has — or None while one of them has not resolved enough to read.
+    Equality arrives TRANSITIVELY: `BasicMath<Int>` provides it through the
+    interface closure (`_all_parents`)."""
+    out: list[_Provider] = []
+
+    def reaches_equality(iface: t.ClassSpec) -> bool | None:
+        if iface.name.split("@")[0].split("$generic$")[0] == "System::BasicEquality":
             return True
-        found = resolver.find_type(name)
+        found = resolver.find_type(iface.name)
         if len(found) != 1 or not isinstance(found[0].statement, s.ClassStatement):
             return False
+        parents = found[0].statement._all_parents
+        if parents is None:
+            return None
         return any(isinstance(par, t.ClassSpec)
-                   and par.name.split("@")[0] == "System::BasicEquality"
-                   for par in (found[0].statement._all_parents or ()))
+                   and par.name.split("@")[0] == "System::BasicEquality" for par in parents)
 
-    def record(pat) -> None:
-        if not getattr(pat, "type_params", ()) or not reaches_equality(pat):
-            return
-        arg = pat.type_params[0]
-        if isinstance(arg, t.TupleSpec):
-            tuple_arities.add(len(arg.entries))
-            return
-        k = key_of(arg)
-        if k is not None:
-            instanced.add(k)
+    def add(iface, params: frozenset[str], wheres: tuple) -> bool:
+        """Record `iface` if it provides equality; False when it cannot be read yet."""
+        if not isinstance(iface, t.ClassSpec):
+            return False
+        reaches = reaches_equality(iface)
+        if reaches is None:
+            return False
+        if reaches:
+            if iface.type_params:
+                out.append(_Provider(params, iface.type_params[0], wheres))
+            elif "$generic$" in iface.name:
+                out.append(_Provider(params, iface.name.partition("$generic$")[2]))
+        return True
 
     for st in statements:
-        # The modern form: first-class `instance` statements.
+        # First-class instances, generic ones with their `where` clauses.
         if isinstance(st, s.TraitInstanceStatement):
-            record(st.pattern)
-            continue
-        # The older form: a `[trait]` let whose witness CLASS implements the
-        # interface — Int/Int32/String/float equality still arrives this way.
-        # Same walk __implements_trait uses post-monomorphisation.
-        if (isinstance(st, s.LetStatement) and "trait" in st.attributes
-                and not st.type_params and isinstance(st.declared_type, t.ClassSpec)):
+            if not add(st.pattern, frozenset(p.name for p in st.type_params), tuple(st.trait_params)):
+                return None
+        # Lowered instances: a `[trait]` let whose witness CLASS implements
+        # the interface (monomorphised, its parents carry mangled names).
+        elif isinstance(st, s.LetStatement) and "trait" in st.attributes and not st.type_params:
+            if not isinstance(st.declared_type, t.ClassSpec):
+                return None
             found = resolver.find_type(st.declared_type.name)
             if len(found) == 1 and isinstance(found[0].statement, s.ClassStatement):
-                for parent in (found[0].statement._all_parents or ()):
-                    if isinstance(parent, t.ClassSpec):
-                        record(parent)
-    return instanced, tuple_arities
+                parents = found[0].statement._all_parents
+                if parents is None or not all(add(par, frozenset(), ()) for par in parents):
+                    return None
+    return out
+
+
+def __has_equality(spec, ok: frozenset[str], providers: list[_Provider],
+                   resolver: g.Resolver) -> bool:
+    """Does equality exist for `spec`? Some provider covers it — binding the
+    provider's own params makes its pattern `spec` (compared by unique id,
+    so enum views stay one type) and every `where` holds for the binding —
+    or it is a candidate enum, assumed to while the fixpoint runs."""
+    if spec is None:
+        return False
+    if isinstance(spec, t.EnumSpec) and spec.root_name in ok:
+        return True
+    uid = spec.as_unique_id_str()
+    if uid is None:
+        return False
+
+    def covered_by(p: _Provider) -> bool:
+        if isinstance(p.covers, str):
+            return p.covers == uid
+        mapping = t.unify_generic(p.covers, spec, set(p.params)) if p.params else {}
+        if mapping is None or t.substitute_placeholders(p.covers, mapping, resolver).as_unique_id_str() != uid:
+            return False
+        return all(isinstance(w, t.ClassSpec) and len(w.type_params) == 1
+                   and w.name.split("@")[0] == "System::BasicEquality"
+                   and __has_equality(t.substitute_placeholders(w.type_params[0], mapping, resolver),
+                                      ok, providers, resolver)
+                   for w in p.wheres)
+
+    return any(covered_by(p) for p in providers)
 
 
 def __collect_leaves(st: s.EnumStatement, inherited: list) -> "list | None":
@@ -166,21 +201,6 @@ def __collect_leaves(st: s.EnumStatement, inherited: list) -> "list | None":
             return None
         leaves.extend(sub)
     return leaves
-
-
-def __satisfies(spec, ok: set, instanced: set, tuple_arities: set) -> bool:
-    if isinstance(spec, t.BuiltinSpec):
-        return ("b", spec.type_name) in instanced
-    if isinstance(spec, t.EnumSpec):
-        return spec.root_name in ok or ("e", spec.root_name) in instanced
-    if isinstance(spec, t.ClassSpec):
-        return ("c", spec.name) in instanced
-    if isinstance(spec, t.TupleSpec):
-        return (len(spec.entries) in tuple_arities
-                and all(en.type is not None
-                        and __satisfies(en.type, ok, instanced, tuple_arities)
-                        for en in spec.entries))
-    return False
 
 
 # ── synthesis ────────────────────────────────────────────────────────────────

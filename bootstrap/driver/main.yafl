@@ -208,6 +208,8 @@ fun evalCase(op, rest)
     ret meetCase(rest)
   if op == "bind"
     ret bindCase(rest)
+  if op == "merge"
+    ret mergeCase(rest)
   ret "?"
 
 fun uidOf(r: Spec|None) => match(r)
@@ -230,6 +232,21 @@ fun meetResult(m: Meet) => match(m)
   (ms: MSpec)     => uid(ms.mSpec) == "" ? "-" : uid(ms.mSpec)
   (mc: MConflict) => "CONFLICT"
   ()              => "NONE"
+
+# merge L ;; R — the result's uid ("NONE" when nothing merges) and whether
+# any contradiction came back. No program, so no placeholder is in scope and
+# nothing is bindable.
+fun mergeCase(rest)
+  let bar = indexOf(rest, " ;; ", 0)
+  if bar < 0
+    ret "!"
+  let a = parseSpecText(slice(rest, 0, bar))
+  let b = parseSpecText(slice(rest, bar + 4, length(rest)))
+  let m = mergeSpecs(a, b, List<MBind>(), RRoot((root) => false, (name) => false, buildStatements(List<PStmt>())))
+  let res = match(m.moSpec)
+    (sp: Spec) => uid(sp) == "" ? "-" : uid(sp)
+    ()         => "NONE"
+  ret res + (isEmpty(m.moErrs) ? "|ok" : "|err")
 
 fun bindCase(rest)
   let bar = indexOf(rest, " ;; ", 0)
@@ -277,8 +294,8 @@ fun answerOne(idx, q, sb)
   let kind = slice(q, 0, sp)
   let name = slice(q, sp + 1, length(q))
   # A pure lookup resolver for the query interface: nothing on this path
-  # asks the breaker analysis.
-  let r = RRoot((root) => false, idx)
+  # asks the breaker or derived-equality analysis.
+  let r = RRoot((root) => false, (name) => false, idx)
   let bag = kind == "type" ? findType(r, name) : findData(r, name)
   ret append(sb, foundLine(chain(bag.bItems), 0, "") + "\n")
 
@@ -424,16 +441,9 @@ fun genericsOutput(stmts0: List<PStmt>): (out: String, code: Int)
     (ok: CvOk)       => genericsDump(ok.cvStatements)
     (dv: CvDiverged) => (printedDiagnostics(dv.cvErrs), 2)
 
-fun genericsDump(stmts0): (out: String, code: Int)
-  # Derived enum equality first, as postmonoRes3 and compiler.py order it —
-  # this chain is SEPARATE from postmonoRes3 and must mirror it.
-  let de = deriveEquality(stmts0)
-  ret match(de.deChanged ? converge(de.deStmts) : CvOk(de.deStmts, 0))
-    (ok: CvOk)       => genericsDumpH(ok.cvStatements)
-    (dv: CvDiverged) => (printedDiagnostics(dv.cvErrs), 2)
-
-fun genericsDumpH(stmts0: List<PStmt>): (out: String, code: Int)
-  # [hashed] split, mirroring compiler.py's order.
+fun genericsDump(stmts0: List<PStmt>): (out: String, code: Int)
+  # [hashed] split, mirroring compiler.py's order — this chain is SEPARATE
+  # from postmonoRes3 and must mirror it.
   let lh = lowerHashed(stmts0)
   if !isEmpty(lh.lhErrs)
     ret (printedDiagnostics(lh.lhErrs), 0)
@@ -499,7 +509,7 @@ fun postmonoRes2(stmts0: List<PStmt>): PmRes
 
 # The gated path: runs the user-facing CHECK PHASE — diagnostics then
 # linearity — at compiler.py's exact position (after the drops
-# re-convergence, before derive_equality), same as postmonoRes2 used to when
+# re-convergence), same as postmonoRes2 used to when
 # called with `gated=true`. Split into its own function (rather than a Bool
 # flag) because its result type differs: GatedResult carries the check
 # phase's warnings forward through postmonoRes3's shared dump-mode chain,
@@ -536,14 +546,7 @@ fun postmonoGate(stmts, enabledWarnings: Set<String>): GatedResult
     ret GatedResult(PmText(printedDiagnostics(lin), 1), noErrs())
   ret GatedResult(postmonoRes3(stmts), d.dWarns)
 
-fun postmonoRes3(stmts0): PmRes
-  # Derived enum equality, then the [hashed] split, as compiler.py orders it.
-  let de = deriveEquality(stmts0)
-  ret match(de.deChanged ? converge(de.deStmts) : CvOk(de.deStmts, 0))
-    (ok: CvOk)       => postmonoRes3h(ok.cvStatements)
-    (dv: CvDiverged) => PmText(printedDiagnostics(dv.cvErrs), 2)
-
-fun postmonoRes3h(stmts0: List<PStmt>): PmRes
+fun postmonoRes3(stmts0: List<PStmt>): PmRes
   # [hashed] split — needs converged types, and precedes monomorphisation so
   # generic callers monomorphise against the WRAPPER (compiler.py's order).
   let lh = lowerHashed(stmts0)

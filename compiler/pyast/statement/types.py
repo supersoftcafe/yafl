@@ -158,7 +158,15 @@ class EnumStatement(TypeStatement):
         new_self = dataclasses.replace(self,
             parameters=new_parameters, variants=final_variants,
             _root_name=root_name, _enum_spec=my_spec)
-        return new_self, prm_stmts + var_stmts, {}
+        # Derived equality: a qualifying enum brings its BasicEquality
+        # instance with it, placed right after it — once, since an enum that
+        # has an instance no longer qualifies. Synthesis reads only names and
+        # leaves, which compiling does not change.
+        derived = []
+        if resolver.derives_equality(self.name):
+            from lowering.derive_eq import derived_instance
+            derived.append(derived_instance(self))
+        return new_self, prm_stmts + var_stmts + derived, {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         if self._enum_spec is None:

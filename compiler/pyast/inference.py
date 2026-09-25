@@ -122,11 +122,21 @@ def _infer_type_params(stmt: s.Statement, declared: t.CallableSpec,
 
     mapping = t.unify_generic(declared.parameters, expected.parameters, placeholder_names,
                               None, in_scope)
-    if mapping is not None and declared.result is not None and expected.result is not None:
-        mapping = t.unify_generic(declared.result, expected.result, placeholder_names, mapping,
-                                  in_scope)
     if mapping is None:
         return None
+    # The expected result RECEIVES the callee's result: a merge, with the
+    # callee's params as named holes the arguments have already bound — so it
+    # fills only what the arguments left open (`List()` against
+    # `List<Int> | None` is `List<Int>`). A contradiction is the receiver's to
+    # report and never erases what the arguments proved. A binding to a
+    # narrowed view is provisional (see use_site_type_params) and widens to
+    # the view the receiver expects.
+    if declared.result is not None and expected.result is not None:
+        bindings = {name: mapping.get(name) for name in placeholder_names}
+        _result, learned, errors = t.merge(expected.result, declared.result, bindings, resolver,
+                                           widen_views=True, callee_left=False)
+        if not errors:
+            mapping = {name: spec for name, spec in learned.items() if spec is not None}
     return _infer_type_params_via_where(stmt, mapping, resolver, declared.parameters)
 
 

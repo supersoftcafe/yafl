@@ -134,7 +134,13 @@ class FunctionStatement(DataStatement):
             # own types, independent of the expected slot.
             new_body, body_glb, body_hints = self.body.compile(body_resolver, self.return_type)
             prms = inferred_params(prms, body_hints, body_resolver)
-            if declared:
+            # As for the parameters: a body that cannot say all it will yet
+            # (a name in it did not resolve this pass) leaves the return as it
+            # is — its type now is only the part that resolved, and
+            # refinement only ever widens, so storing it would latch.
+            if h.UNSETTLED in body_hints:
+                pass
+            elif declared:
                 rettype = t.refine(rettype, resolver, lambda: new_body.get_type(body_resolver))
             else:
                 # An undeclared return converges on the body's type and must be

@@ -493,6 +493,13 @@ class NamedExpression(Expression):
                 if trait_scope is None:
                     return self, [], {}
         else:
+            # Committed already — but the search can still be blocked for a
+            # pass (statements arriving mid-fixpoint), and a use that says
+            # nothing YET must say so, exactly as an uncommitted one does:
+            # otherwise its owner's parameter inference reads the silence
+            # as complete evidence.
+            if not datas.complete:
+                return self, [], h.unsettled()
             if len(datas) != 1:
                 return self, [], {}
             data = datas[0]

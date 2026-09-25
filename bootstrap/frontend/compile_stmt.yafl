@@ -65,8 +65,12 @@ fun compileLet(l: PsLet, r)
   let init = compileExprOpt(l.lDefault, r, declaredTy)
   let wheres = compileParams(l.lWheres, r)
   let declared = hasDeclaredType(l)
-  let inferredNow = declared ? l.lTypeInferred : true
-  let finalTy = inferType(declaredTy, initType(init, r), declared, r)
+  # A value that cannot say all it will yet (a name in it did not resolve
+  # this pass) must not be stored: its type is only the part that did, and
+  # refinement only ever widens, so it would latch.
+  let settled = !isUnsettled(hintsOf(init))
+  let inferredNow = settled ? (declared ? l.lTypeInferred : true) : l.lTypeInferred
+  let finalTy = settled ? inferType(declaredTy, initType(init, r), declared, r) : declaredTy
   ret StmtOut(PsLet(l.lName, l.lAttrs, l.lGens, finalTy, exprOf(init),
                     l.lArrayLen, wheres.psSpecs, l.pslLine, inferredNow,
                     l.lImports),
@@ -104,8 +108,9 @@ fun compileDestructure(d: PsDestructure, r)
   let ty = compileSpecOpt(d.dType, r)
   let declaredTy = specOf(ty)
   let dDeclared = destructureDeclared(d)
+  # An initialiser that cannot say all it will yet is not stored (compileLet).
   let hasInit2 = match(init)
-    (i: ExprOut) => true
+    (i: ExprOut) => !isUnsettled(i.eoHints)
     ()           => false
   let finalTy = hasInit2 ? inferType(declaredTy, initType(init, r),
                                      dDeclared, r)
@@ -189,11 +194,17 @@ fun compileFun(f: PsFun, r0): StmtOut
     ? inferredParams(compiledParams, hintsOf(body), bodyR)
     : compiledParams
   let declared = hasDeclaredRet(f)
-  let inferredNow = declared ? f.fRetInferred : hasBody(f)
+  # As for the parameters: a body that cannot say all it will yet (a name in
+  # it did not resolve this pass) leaves the return as it is — its type now
+  # is only the part that resolved, and refinement only ever widens.
+  let settled = !isUnsettled(hintsOf(body))
+  let inferredNow = declared || !settled ? f.fRetInferred : hasBody(f)
   let finalRet = match(body)
     # The body's own type is derived in the BODY's scope — its parameters must
     # resolve there too, not just inside its compile.
-    (b: ExprOut) => inferType(declaredRet, exprType(b.eoExpr, bodyR), declared, r)
+    (b: ExprOut) => settled
+      ? inferType(declaredRet, exprType(b.eoExpr, bodyR), declared, r)
+      : declaredRet
     ()           => declaredRet
   ret StmtOut(PsFun(f.fName, f.fAttrs, f.fGens, finalParams,
                     exprOf(body), finalRet, wheres.psSpecs, f.psfLine,
@@ -396,12 +407,20 @@ fun compileEnum(e: PsEnum, r0): StmtOut
   let variants = compileStmts(chain(e.eVariants), r, None, builder(),
                               List())
   let glb = concat(params.soExtra, variants.slGlobals)
+  # Derived equality: a qualifying enum brings its BasicEquality instance
+  # with it, placed right after it — once, since an enum that has an
+  # instance no longer qualifies. Synthesis reads only names and leaves,
+  # which compiling does not change.
+  let derived = derivesEquality(r, e.eName)
+    ? prepend(Bootstrap::Lower::Ast::derivedInstance(e), List<PStmt>())
+    : List<PStmt>()
   # The constructor returns the ROOT statement type — narrow back to the
   # variant to run the layout over the freshly compiled node.
   ret StmtOut(layoutEnum(PsEnum(e.eName, e.eAttrs, e.eGens,
                                 stmtOr(params, e.eParams),
                                 variants.slStmts, e.eHasParams, e.pseLine,
-                                None, None, e.eImports)), glb, noHints())
+                                None, None, e.eImports)),
+              concat(glb, derived), noHints())
 
 fun layoutEnum(t2: PsEnum)
   let allLeaves = collectLeafNames(t2)

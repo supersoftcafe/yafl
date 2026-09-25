@@ -104,14 +104,22 @@ fun hintVerdict(hs: List<Hint>, r)
     (t2: Spec) => Verdict(t2, None)
     ()         => Verdict(None, "its uses require " + listed(uppers, " and "))
 
-# The lower answer when it fits the upper one; otherwise their common parent.
+# The lower answer when it fits the upper one; otherwise the upper bound
+# RECEIVES the lower one: their merge (List spelled without arguments below,
+# `List<Int>` above, is `List<Int>`). Until the remaining callers move to
+# merge, a contradiction still falls back to the common parent.
 fun combined(lower, upper, r) => match(lower)
   (lo: Spec) => match(upper)
     (up: Spec) => eqSpec(lo, up) || triTrue(assignableEq(r, up, lo))
       ? lower
-      : convergeTypes(list2(lo, up), r)
+      : mergedBounds(lo, up, r)
     ()         => lower
   ()         => upper
+
+fun mergedBounds(lo, up, r) => mergeSpecs(up, lo, List<MBind>(), r)
+  |> (m) => match(m.moSpec)
+    (sp: Spec) => isEmpty(m.moErrs) ? sp : convergeTypes(list2(lo, up), r)
+    ()         => convergeTypes(list2(lo, up), r)
 
 fun upperOf(uppers: List<Spec>, r)
   if isEmpty(uppers)
@@ -193,7 +201,9 @@ fun soleShared(shared: List<Spec>|None) => match(shared)
 # placeholders must match exactly). It takes the one ground sibling it fits;
 # with none, the earliest arm it fits — so shapes of one family collapse to
 # one instead of standing as a union of holes; with several ground ones it is
-# ambiguous and stays as it is.
+# ambiguous and stays as it is. The candidates are the arms' MEMBERS: the
+# branch's type is their set union, so a `List<Spec>` inside a sibling's
+# `List<Spec> | None` is as good a sibling as a bare one.
 fun branchType(types: List<Spec|None>, r): Spec|None
   let arms = knownSpecs(chain(types), builder())
   let known = map(arms, (x) => filledShape(x, arms, r))
@@ -207,13 +217,18 @@ fun filledShape(arm, siblings: List<Spec>, r)
   let free = filter(placeholderNames(arm), (n) => !resolvesInScope(n, r))
   if isEmpty(free)
     ret arm
-  let fitting = filter(siblings, (x) => fitsShape(arm, x, free))
+  let members = fold(siblings, List<Spec>(), (acc, x) => concat(acc, branchMembers(x)))
+  let fitting = filter(members, (x) => fitsShape(arm, x, free))
   let ground = addSpecsOnce(List<Spec>(), chain(filter(fitting, (x) => !hasFreePlaceholders(x, r))))
   ret match(head(ground))
     (g: Spec) => exactly(chain(ground), 1) ? g : arm
     ()        => match(head(fitting))
       (f: Spec) => f
       ()        => arm
+
+fun branchMembers(sp): List<Spec> => match(sp)
+  (cm: SCombination) => reprMembers(cm)
+  (o: Spec)          => prepend(sp, List())
 
 # Against the sibling's placeholders made opaque, the free ones bind to
 # ground parts and no scope question arises.

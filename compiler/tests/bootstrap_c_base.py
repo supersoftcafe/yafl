@@ -37,7 +37,6 @@ import lowering.constants
 import lowering.drops
 import lowering.instances
 import lowering.hashed
-import lowering.derive_eq
 import lowering.generics
 import lowering.ast_inline
 import lowering.integers
@@ -183,7 +182,7 @@ def _python_c_text_uncached(target_name: str, optimization_level: int = 0,
     if dropped:
         statements, _resolver, _p2 = _CONVERGE(statements)
     # The CHECK PHASE, at compiler.py's position — after the drops
-    # re-convergence, before derive_equality.
+    # re-convergence.
     #
     # This mirror used to telescope straight past it, and so did the port's C
     # path, so the two agreed by both skipping. They no longer can: the port
@@ -217,10 +216,6 @@ def _python_c_text_uncached(target_name: str, optimization_level: int = 0,
     _lin = lowering.linearity.check_linearity(statements, _resolver)
     if _lin:
         return "".join(f"{e}\n" for e in sorted(set(_lin)))
-    # Derived enum equality, then the [hashed] split, as compiler.py does.
-    statements, _derived = lowering.derive_eq.derive_equality(statements)
-    if _derived:
-        statements, _resolver, _pd = _CONVERGE(statements)
     # [hashed] split before instance lowering, as compiler.py does.
     statements, _herrs, _hchanged = lowering.hashed.lower_hashed(statements)
     if _herrs:

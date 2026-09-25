@@ -110,7 +110,10 @@ class LetStatement(DataStatement):
         # broadens (`A`, then `A|None`) — the shared receiver-convergence step.
         declared = self.declared_type is not None and not self.type_inferred
         new_type_inferred = self.type_inferred
-        if dv is not None:
+        # A value that cannot say all it will yet (a name in it did not
+        # resolve this pass) must not be stored: its type is only the part
+        # that did, and refinement only ever widens, so it would latch.
+        if dv is not None and h.UNSETTLED not in hints:
             if declared:
                 dt = t.refine(dt, resolver, lambda: dv.get_type(resolver))
             else:

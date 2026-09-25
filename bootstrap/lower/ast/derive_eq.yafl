@@ -8,14 +8,21 @@
 #       fun hashOf(value: E): Int32           — peek/store cache around a
 #                                               variant-wise mix
 #
-# directly after the enum. The internals are representation-aware at codegen,
-# so nothing forces boxing. A user instance suppresses derivation.
+# directly after the enum — emitted by the enum's own compile, inside the
+# fixpoint (compileEnum asks derivesEquality). The internals are
+# representation-aware at codegen, so nothing forces boxing. A user instance
+# suppresses derivation.
 #
-# "Satisfies equality" is COINDUCTIVE (candidates assumed, shrunk to a
-# fixpoint), and equality can arrive TRANSITIVELY: an instance of
+# One question decides everything: does equality already EXIST for a type —
+# does some instance, in whatever form it now has, cover it (its `where`
+# clauses met, so a tuple has equality when its members do)? An enum for
+# which it does never derives (idempotence); an enum derives only when it does
+# for every member. COINDUCTIVE: candidates are assumed to have equality,
+# shrunk to a fixpoint. Equality arrives TRANSITIVELY: an instance of
 # BasicMath<Int> provides BasicEquality<Int> through the interface closure.
-# Unions, function types and generics block; `Spec` never derives because
-# PLine has no instance — eqSpec keeps sole ownership of spec equality.
+# Anything no instance covers — unions, function types, generic
+# instantiations — blocks; `Spec` never derives because PLine has no
+# instance, so eqSpec keeps sole ownership of spec equality.
 #
 # Synthesis is IDENTICAL to Python's, name for name and binder for binder
 # (per-arm indexed binders: match lowering makes one variable per binder name,
@@ -33,81 +40,112 @@ import Bootstrap::Types
 
 
 class [final] DeLeaves(dlNames: List<String>, dlSets: List<List<PStmt>>)
-# diArities holds REPRESENTATIVE entry lists; arity membership is a
-# sameLen co-walk against them (the no-length ruling: never a count).
-# diKeys answers membership only, so it is a Set. diArities is scanned for a
-# matching arity, so its own order is not read either.
-class [final] DeInfo(diKeys: Set<String>, diArities: List<List<SEntry>>)
 
-fun deriveEquality(statements): (deStmts: List<PStmt>, deChanged: Bool)
-  let r = rootResolver(statements)
-  let info = deCollectInstanced(chain(statements), r,
-                                DeInfo(Set(),
-                                       List()))
-  let cands = deCandidates(chain(statements), info,
+# The top-level enums that derive equality in this pass's program. A
+# whole-program fact — rootResolver memoises it per pass, and each enum's own
+# compile emits its instance. IDEMPOTENT: an enum that already has equality —
+# a written instance, a derived one, either lowered or monomorphised — never
+# derives. The same question decides every member: equality must exist for
+# it (deHasEquality), or it is a candidate itself (coinductive). Empty while
+# the answer is incomplete — an instance or witness not yet resolved may be
+# the one that already covers an enum — and in a program that does not
+# declare System::BasicEquality (compiled without the stdlib).
+fun derivableEnums(statements, r): List<String>
+  if isEmpty(findType(r, "System::BasicEquality").bItems)
+    ret List()
+  ret match(deProviders(chain(statements), r, List()))
+    (ps: List<DeProvider>) => deDerivable(statements, ps)
+    ()                     => List()
+
+fun deDerivable(statements, ps: List<DeProvider>)
+  let cands = deCandidates(chain(statements), ps,
                            DeCands(builder(),
                                    builder()))
-  let ok = deFixpoint(cands.names, cands.leaves, info)
-  if isEmpty(ok)
-    ret (statements, false)
-  ret (deEmit(chain(statements), cands.names, cands.leaves, ok,
-              List()),
-       true)
+  ret deFixpoint(cands.names, cands.leaves, ps)
 
-# ── which types already have equality ────────────────────────────────────────
+# The synthesised BasicEquality<e> instance for a derivable enum.
+fun derivedInstance(e: PsEnum) => match(deLeaves(e, List()))
+  (dl: DeLeaves) => deSynthesise(e, dl)
+  ()             => deSynthesise(e, DeLeaves(List(), List()))
 
-fun [tail] deCollectInstanced(ss: Chain<PStmt>, r,
-                              acc) => match(ss)
+# ── where equality comes from ────────────────────────────────────────────────
+
+# One source of BasicEquality: the type it covers, as a pattern over the
+# instance's own type params, with the `where` constraints a binding must
+# meet — or, once monomorphised, the covered type's unique id (dpId: the
+# `$generic$` suffix of the witness's interface, by construction; "" else).
+class [final] DeProvider(dpParams: List<String>, dpCovers: Spec|None,
+                         dpId: String, dpWheres: List<Spec>)
+
+# Every source of equality in the program, in whatever form it now has — or
+# None while one of them has not resolved enough to read.
+fun [tail] deProviders(ss: Chain<PStmt>, r,
+                       acc: List<DeProvider>): List<DeProvider>|None => match(ss)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => deCollectInstanced(l.next, r, deCollectOne(l.value, r, acc))
+  (l: ChainLink)  => match(deProvidersOf(l.value, r, acc))
+    (a: List<DeProvider>) => deProviders(l.next, r, a)
+    ()                    => None
 
-fun deCollectOne(st, r, acc) => match(st)
-  (ti: PsTraitInstance) => deRecord(ti.tiPattern, r, acc)
-  # The older form: a `[trait]` let whose witness CLASS implements the
-  # interface — the same walk the post-mono discharge uses.
+# First-class instances (generic ones with their `where` clauses), and
+# lowered ones: a `[trait]` let whose witness CLASS implements the interface
+# (monomorphised, its parents carry mangled names).
+fun deProvidersOf(st, r, acc: List<DeProvider>): List<DeProvider>|None => match(st)
+  (ti: PsTraitInstance) => deAdd(ti.tiPattern, genNames(chain(ti.tiGens), List()),
+                                 ti.tiWheres, r, acc)
   (let2: PsLet) => hasAttr(let2.lAttrs, "trait") && isEmpty(let2.lGens)
-    ? deRecordLet(let2, r, acc)
+    ? deAddWitness(let2, r, acc)
     : acc
   (o: PStmt) => acc
 
-fun deRecordLet(let2: PsLet, r, acc) => match(let2.lType)
+fun deAddWitness(let2: PsLet, r, acc: List<DeProvider>): List<DeProvider>|None => match(let2.lType)
   (dt: Spec) => match(dt)
     (dc: SClass) => match(soleItem(findType(r, dc.scName)))
       (f: Found) => match(f.fStmt)
         (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => deRecordParents(chain(ps), r, acc)
-          ()               => acc
+          (ps: List<Spec>) => deAddAll(chain(ps), r, acc)
+          ()               => None
         (o: PStmt)     => acc
       ()         => acc
-    (o2: Spec)   => acc
-  ()         => acc
+    (o2: Spec)   => None
+  ()         => None
 
-fun [tail] deRecordParents(ps: Chain<Spec>, r, acc) => match(ps)
+fun [tail] deAddAll(ps: Chain<Spec>, r,
+                    acc: List<DeProvider>): List<DeProvider>|None => match(ps)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => deRecordParents(l.next, r, deRecord(l.value, r, acc))
+  (l: ChainLink)  => match(deAdd(l.value, List(), List(), r, acc))
+    (a: List<DeProvider>) => deAddAll(l.next, r, a)
+    ()                    => None
 
-fun deRecord(pat, r, acc) => match(pat)
-  (c: SClass) => isEmpty(c.scParams) || !deReachesEquality(c.scName, r)
+# Record `iface` if it provides equality; None when it cannot be read yet.
+fun deAdd(iface, params: List<String>, wheres: List<Spec>, r,
+          acc: List<DeProvider>): List<DeProvider>|None => match(iface)
+  (c: SClass) => match(deReachesEquality(c.scName, r))
+    (b: Bool) => b ? deProvided(c, params, wheres, acc) : acc
+    ()        => None
+  (o: Spec)   => None
+
+fun deProvided(c: SClass, params: List<String>, wheres: List<Spec>,
+               acc: List<DeProvider>) => match(head(c.scParams))
+  (arg: Spec) => prepend(DeProvider(params, arg, "", wheres), acc)
+  ()          => deMonoProvided(c, acc)
+
+fun deMonoProvided(c: SClass, acc: List<DeProvider>)
+  let g2 = indexOf(c.scName, "$generic$", 0)
+  ret g2 < 0
     ? acc
-    : deRecordArg(deArgOf(c), r, acc)
-  (n: SNamed) => isEmpty(n.snParams) || !deReachesEquality(n.snName, r)
-    ? acc
-    : deRecordArg(deArgOfNamed(n), r, acc)
-  (o: Spec)   => acc
-
-fun deArgOf(c: SClass) => head(c.scParams)
-
-fun deArgOfNamed(n: SNamed) => head(n.snParams)
+    : prepend(DeProvider(List(), None, slice(c.scName, g2 + 9, length(c.scName)),
+                         List()), acc)
 
 # Equality arrives TRANSITIVELY: the interface's cAllParents is the closure.
-fun deReachesEquality(name, r)
+# None while that closure has not resolved.
+fun deReachesEquality(name, r): Bool|None
   if deBaseName(name) == "System::BasicEquality"
     ret true
   ret match(soleItem(findType(r, name)))
     (f: Found) => match(f.fStmt)
       (cls: PsClass) => match(cls.cAllParents)
         (ps: List<Spec>) => deAnyEquality(chain(ps))
-        ()               => false
+        ()               => None
       (o: PStmt)     => false
     ()         => false
 
@@ -123,33 +161,40 @@ fun deBaseName(name)
   let g2 = indexOf(name, "$generic$", 0)
   ret simpleName(g2 < 0 ? name : slice(name, 0, g2))
 
-fun deRecordArg(arg: Spec|None, r, acc) => match(arg)
-  (sp: Spec) => match(sp)
-    (t2: STuple) => DeInfo(acc.diKeys,
-                           prepend(t2.stEntries, acc.diArities))
-    (o: Spec)    => deAddKey(deKeyOf(o, r, 0), acc)
-  ()         => acc
+# Does equality exist for `sp`? Some provider covers it — binding the
+# provider's own params makes its pattern `sp` (compared by unique id, so
+# enum views stay one type) and every `where` holds for the binding — or it
+# is a candidate enum, assumed to while the fixpoint runs.
+fun deHasEquality(sp, ok: List<String>, ps: List<DeProvider>): Bool
+  if deAssumed(sp, ok)
+    ret true
+  let u = uid(sp)
+  ret u != "" && any(ps, (p) => deCovers(p, sp, u, ok, ps))
 
-fun deAddKey(k, acc) => k == "" || contains(acc.diKeys, k)
-  ? acc
-  : DeInfo(add(acc.diKeys, k), acc.diArities)
+fun deAssumed(sp, ok: List<String>) => match(sp)
+  (e2: SEnum) => contains2(ok, e2.seRoot)
+  (o: Spec)   => false
 
-# Instance PATTERNS keep their typealias spellings, so the key comes from the
-# RESOLVED statement, following alias chains.
-fun deKeyOf(arg, r, depth) => match(arg)
-  (b: SBuiltin) => "b:" + b.sbName
-  (e2: SEnum)   => "e:" + e2.seRoot
-  (c: SClass)   => "c:" + c.scName
-  (n: SNamed)   => depth < 8 ? deKeyOfNamed(n, r, depth) : ""
-  (o: Spec)     => ""
+fun deCovers(p: DeProvider, sp, u, ok: List<String>, ps: List<DeProvider>) => match(p.dpCovers)
+  (pat: Spec) => match(isEmpty(p.dpParams)
+                       ? UMap(List<Binding>())
+                       : unifyGeneric(pat, sp, p.dpParams, List<Binding>()))
+    (um: UMap)  => uid(substitute(pat, um.uBindings)) == u
+                   && all(p.dpWheres, (w) => deWhereHolds(w, um.uBindings, ok, ps))
+    (uf: UFail) => false
+  ()          => p.dpId == u
 
-fun deKeyOfNamed(n: SNamed, r, depth) => match(soleItem(findType(r, n.snName)))
-  (f: Found) => match(f.fStmt)
-    (ta: PsTypealias) => deKeyOf(ta.taType, r, depth + 1)
-    (cls: PsClass)    => "c:" + cls.cName
-    (en: PsEnum)      => "e:" + en.eName
-    (o: PStmt)        => ""
-  ()         => ""
+fun deWhereHolds(w, bindings: List<Binding>, ok: List<String>,
+                 ps: List<DeProvider>) => match(w)
+  (c: SClass) => deBaseName(c.scName) == "System::BasicEquality"
+                 && exactly(chain(c.scParams), 1)
+                 && deBoundHasEquality(head(c.scParams), bindings, ok, ps)
+  (o: Spec)   => false
+
+fun deBoundHasEquality(arg: Spec|None, bindings: List<Binding>, ok: List<String>,
+                       ps: List<DeProvider>) => match(arg)
+  (a: Spec) => deHasEquality(substitute(a, bindings), ok, ps)
+  ()        => false
 
 # ── candidates and their leaves ──────────────────────────────────────────────
 
@@ -158,23 +203,29 @@ fun deKeyOfNamed(n: SNamed, r, depth) => match(soleItem(findType(r, n.snName)))
 class [linear, final] DeCands(dcNames: ListBuilder<String>,
                               dcLeaves: ListBuilder<DeLeaves>)
 
-fun [tail] deCandidates(ss: Chain<PStmt>, info: DeInfo,
+fun [tail] deCandidates(ss: Chain<PStmt>, ps: List<DeProvider>,
                         [terminal] acc: DeCands): (names: List<String>, leaves: List<DeLeaves>)
   ret match(ss)
     (nil: ChainEnd) => (build(acc.dcNames),
                         build(acc.dcLeaves))
     (l: ChainLink)  => match(l.value)
-      (e2: PsEnum) => isEmpty(e2.eGens)
-                      && !contains(info.diKeys, "e:" + e2.eName)
+      # Generic enums never derive — nor, after monomorphisation, their
+      # instantiations (no type params left, still not a source enum).
+      (e2: PsEnum) => isEmpty(e2.eGens) && !contains(e2.eName, "$generic$")
+                      && deLacksEquality(e2, ps)
         ? match(deLeaves(e2, List()))
           (dl: DeLeaves) => isEmpty(dl.dlNames)
-            ? deCandidates(l.next, info, acc)
-            : deCandidates(l.next, info,
+            ? deCandidates(l.next, ps, acc)
+            : deCandidates(l.next, ps,
                            DeCands(push(acc.dcNames, e2.eName),
                                    push(acc.dcLeaves, dl)))
-          ()             => deCandidates(l.next, info, acc)
-        : deCandidates(l.next, info, acc)
-      (o: PStmt)   => deCandidates(l.next, info, acc)
+          ()             => deCandidates(l.next, ps, acc)
+        : deCandidates(l.next, ps, acc)
+      (o: PStmt)   => deCandidates(l.next, ps, acc)
+
+fun deLacksEquality(e2: PsEnum, ps: List<DeProvider>) => match(e2.eSpec)
+  (sp: Spec) => !deHasEquality(sp, List(), ps)
+  ()         => false
 
 # (leaf unique name, all fields root-down) per constructible leaf, in
 # declaration order. None when any variant is uninhabited.
@@ -201,104 +252,53 @@ fun [tail] deLeafLoop(vs: Chain<PStmt>, own: List<PStmt>,
 # ── the coinductive fixpoint ─────────────────────────────────────────────────
 
 fun deFixpoint(names: List<String>, leaves: List<DeLeaves>,
-                      info: DeInfo)
-  let ok2 = deSurvivors(chain(names), chain(leaves), names, info,
-                        List())
+               ps: List<DeProvider>)
+  let ok2 = deSurvivors(chain(names), chain(leaves), names, ps, List())
   ret sameLen(chain(ok2), chain(names))
     ? ok2
-    : deFixpoint2(ok2, names, leaves, info)
+    : deFixpoint2(ok2, names, leaves, ps)
 
 fun [tail] deFixpoint2(ok: List<String>, names: List<String>,
-                       leaves: List<DeLeaves>, info: DeInfo)
-  let ok2 = deSurvivors(chain(names), chain(leaves), ok, info,
-                        List())
+                       leaves: List<DeLeaves>, ps: List<DeProvider>)
+  let ok2 = deSurvivors(chain(names), chain(leaves), ok, ps, List())
   ret sameLen(chain(ok2), chain(ok))
     ? ok2
-    : deFixpoint2(ok2, names, leaves, info)
+    : deFixpoint2(ok2, names, leaves, ps)
 
-fun deSurvivors(ns, ls,
-                       ok: List<String>, info: DeInfo,
-                       acc: List<String>): List<String>
-  ret build(deSurvivorsB(ns, ls, ok, info, builderFrom(acc)))
+fun deSurvivors(ns, ls, ok: List<String>, ps: List<DeProvider>,
+                acc: List<String>): List<String>
+  ret build(deSurvivorsB(ns, ls, ok, ps, builderFrom(acc)))
 
 fun [tail] deSurvivorsB(ns: Chain<String>, ls: Chain<DeLeaves>,
-                       ok: List<String>, info: DeInfo,
-                       [terminal] acc: ListBuilder<String>) => match(ns)
+                        ok: List<String>, ps: List<DeProvider>,
+                        [terminal] acc: ListBuilder<String>) => match(ns)
   (nil: ChainEnd) => acc
   (n: ChainLink)  => match(ls)
     (nil2: ChainEnd) => acc
     (l: ChainLink)   => !contains2(ok, n.value)
-      ? deSurvivorsB(n.next, l.next, ok, info, acc)
-      : deAllFieldsSat(chain(l.value.dlSets), ok, info)
-        ? deSurvivorsB(n.next, l.next, ok, info, push(acc, n.value))
-        : deSurvivorsB(n.next, l.next, ok, info, acc)
+      ? deSurvivorsB(n.next, l.next, ok, ps, acc)
+      : deAllFieldsHave(chain(l.value.dlSets), ok, ps)
+        ? deSurvivorsB(n.next, l.next, ok, ps, push(acc, n.value))
+        : deSurvivorsB(n.next, l.next, ok, ps, acc)
 
-fun [tail] deAllFieldsSat(sets: Chain<List<PStmt>>, ok: List<String>,
-                          info: DeInfo) => match(sets)
+fun [tail] deAllFieldsHave(sets: Chain<List<PStmt>>, ok: List<String>,
+                           ps: List<DeProvider>) => match(sets)
   (nil: ChainEnd) => true
-  (l: ChainLink)  => deFieldsSat(chain(l.value), ok, info)
-    ? deAllFieldsSat(l.next, ok, info)
+  (l: ChainLink)  => deFieldsHave(chain(l.value), ok, ps)
+    ? deAllFieldsHave(l.next, ok, ps)
     : false
 
-fun [tail] deFieldsSat(fs: Chain<PStmt>, ok: List<String>, info: DeInfo) => match(fs)
+fun [tail] deFieldsHave(fs: Chain<PStmt>, ok: List<String>,
+                        ps: List<DeProvider>) => match(fs)
   (nil: ChainEnd) => true
   (l: ChainLink)  => match(l.value)
     (p: PsLet) => match(p.lType)
-      (sp: Spec) => deSatisfies(sp, ok, info) ? deFieldsSat(l.next, ok, info)
+      (sp: Spec) => deHasEquality(sp, ok, ps) ? deFieldsHave(l.next, ok, ps)
                                               : false
       ()         => false
     (o: PStmt) => false
 
-fun deSatisfies(sp, ok: List<String>, info: DeInfo) => match(sp)
-  (b: SBuiltin) => contains(info.diKeys, "b:" + b.sbName)
-  (e2: SEnum)   => contains2(ok, e2.seRoot)
-                   || contains(info.diKeys, "e:" + e2.seRoot)
-  (c: SClass)   => contains(info.diKeys, "c:" + c.scName)
-  (t2: STuple)  => deArityOk(chain(info.diArities), t2.stEntries)
-                   && deEntriesSat(chain(t2.stEntries), ok, info)
-  (o: Spec)     => false
-
-fun [tail] deArityOk(as2: Chain<List<SEntry>>, es: List<SEntry>) => match(as2)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => sameLen(chain(l.value), chain(es))
-    ? true
-    : deArityOk(l.next, es)
-
-fun [tail] deEntriesSat(es: Chain<SEntry>, ok: List<String>, info: DeInfo) => match(es)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(l.value.seType)
-    (sp: Spec) => deSatisfies(sp, ok, info) ? deEntriesSat(l.next, ok, info)
-                                            : false
-    ()         => false
-
-# ── emission ─────────────────────────────────────────────────────────────────
-
-fun deEmit(ss, names: List<String>,
-                  leaves: List<DeLeaves>, ok: List<String>,
-                  acc: List<PStmt>) => build(deEmitB(ss, names, leaves, ok, builderFrom(acc)))
-
-fun [tail] deEmitB(ss: Chain<PStmt>, names: List<String>,
-                  leaves: List<DeLeaves>, ok: List<String>,
-                  [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (e2: PsEnum) => contains2(ok, e2.eName)
-      ? deEmitB(l.next, names, leaves, ok,
-               push(push(acc, l.value),
-                      deSynthesise(e2, deLeavesFor(chain(names),
-                                                   chain(leaves),
-                                                   e2.eName))))
-      : deEmitB(l.next, names, leaves, ok, push(acc, l.value))
-    (o: PStmt)   => deEmitB(l.next, names, leaves, ok, push(acc, l.value))
-
-fun [tail] deLeavesFor(ns: Chain<String>, ls: Chain<DeLeaves>,
-                       name: String) => match(ns)
-  (nil: ChainEnd) => DeLeaves(List(), List())
-  (n: ChainLink)  => match(ls)
-    (nil2: ChainEnd) => DeLeaves(List(), List())
-    (l: ChainLink)   => n.value == name
-      ? l.value
-      : deLeavesFor(n.next, l.next, name)
+# ── synthesis ────────────────────────────────────────────────────────────────
 
 fun deSynthesise(e2: PsEnum, dl: DeLeaves)
   let lr = e2.pseLine

@@ -468,7 +468,12 @@ fun [tail] ceListAmbig(ss: Chain<Spec>, map: NameMap,
 fun rootResolver(statements)
   let [lazy] breakers: List<String> = computeBreakers(statements)
   let st = buildStatements(statements)
+  # The derived-equality analysis reads only type lookups, so a plain root
+  # over the same index serves it (the full root cannot name itself here).
+  let [lazy] derivable: List<String> = derivableEnums(statements,
+      RRoot((root) => false, (name) => false, st))
   ret RRoot((root) => contains2(breakers, root),
+            (name) => contains2(derivable, name),
             st, None, 0,
             enumFieldsTable(statements), None,
             mergedMembersTable(st))

@@ -390,7 +390,12 @@ enum Resolver
   # rrMerged: the per-pass merged member tables (mergedMembersTable) —
   # membersOf's one-probe fast path; None on direct builders (the old
   # per-query derivation serves).
+  # rrDerivesEq: the per-pass derived-equality analysis (Python
+  # ResolverRoot.derives_equality's lazy set) — which top-level enums bring a
+  # derived BasicEquality instance on this pass. Like rrComplex, a closure over
+  # a lazy value, so a pass that never compiles an enum never computes it.
   enum RRoot(rrComplex: (:String): Bool,
+             rrDerivesEq: (:String): Bool,
              rrStmts: Statements,
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
              rrEnumFields: Dict<String, List<SField>>|None = None,
@@ -482,6 +487,17 @@ fun [tail] isComplexRoot(r, root2) => match(r)
   (tr: RTraits)    => isComplexRoot(tr.rtrParent, root2)
   (cb: RClassBody)    => isComplexRoot(cb.rcbParent, root2)
   (rg: RGen)    => isComplexRoot(rg.rgParent, root2)
+
+# DERIVED equality: walk to the root resolver and ask its per-pass analysis.
+# Mirror of Python Resolver.derives_equality.
+fun [tail] derivesEquality(r, name) => match(r)
+  (root: RRoot)    => root.rrDerivesEq(name)
+  (sc: RScopes)    => derivesEquality(sc.rsParent, name)
+  (d: RData)    => derivesEquality(d.rdParent, name)
+  (t2: RTypes)    => derivesEquality(t2.rtParent, name)
+  (tr: RTraits)    => derivesEquality(tr.rtrParent, name)
+  (cb: RClassBody)    => derivesEquality(cb.rcbParent, name)
+  (rg: RGen)    => derivesEquality(rg.rgParent, name)
 
 # The one place the (root, leaf) pair becomes a Dict key (shared by the
 # analysis writer in complex_enums.yafl and the reader below).

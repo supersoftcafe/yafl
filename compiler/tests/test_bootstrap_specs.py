@@ -105,6 +105,13 @@ def _py_meet(a: str, b: str) -> str:
     return r.as_unique_id_str() or "-"
 
 
+def _py_merge(a: str, b: str) -> str:
+    import pyast.resolver as g
+    result, _bindings, errors = t.merge(_spec(a), _spec(b), {}, g.ResolverRoot([]))
+    uid = "NONE" if result is None else (result.as_unique_id_str() or "-")
+    return uid + ("|err" if errors else "|ok")
+
+
 def _py_bind(decl: str, supplied: str) -> str:
     names = [None if n == "_" else n for n in supplied.split(",")]
     binding = t.bind_tuple_entries(_entries(decl), names)
@@ -148,6 +155,13 @@ def _cases() -> tuple[list[str], list[str]]:
     for a, b in itertools.product(_ATOMS + unions[:6] + holey, repeat=2):
         lines.append(f"meet {a} ;; {b}")
         expected.append(_py_meet(a, b))
+    # merge is DIRECTIONAL (left receives right), so every ordered pair.
+    shapes = ["E:Lst@5:LE|LF<G:T@1>", "E:Lst@5:LE|LF<i>", "E:Lst@5:LE|LF<s>", "E:Lst@5:LF<i>",
+              "E:Lst@5:LE|LF", "C:Box@3<G:T@1>", "C:Box@3<i>", "T(_=i,_=G:T@1)", "T(_=G:T@1,_=s)",
+              "T(_=i,_=s)", "U(E:Lst@5:LE|LF<G:T@1>,b)", "U(E:Lst@5:LE|LF<i>,b)"]
+    for a, b in itertools.product(_ATOMS + unions[:6] + shapes, repeat=2):
+        lines.append(f"merge {a} ;; {b}")
+        expected.append(_py_merge(a, b))
     binds = [
         ("x=i;y=b", "_,_"), ("x=i;y=b", "_"), ("x=i;y=b!", "_"),
         ("x=i;y=b", "y,x"), ("x=i;y=b", "y"), ("x=i;y=b!", "x"),

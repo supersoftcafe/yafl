@@ -173,3 +173,22 @@ fun main(): System::Int
     ? 0 : 9
 """, timeout=120)
         self.assertEqual(0, rc)
+
+    def test_a_ternary_with_no_receiver_converts_its_arms(self):
+        # A ternary as a match SUBJECT has no expected type: its own branch
+        # type (`() | Ent`) is where its arms land, so each arm converts to
+        # that — the `None` arm reached codegen unconverted.
+        rc, out = compile_and_run_stdlib_capture("""
+import System
+
+class [final] Ent(name: System::String, kind: System::Int|None)
+
+fun pick(xs: System::List<Ent>, i: System::Int) => match(i < 0 ? None : System::head(System::drop(xs, i)))
+  (e: Ent) => 7
+  ()       => 3
+
+fun main(): System::Int
+  ret pick(System::prepend(Ent("a", None), System::List<Ent>()), 0)
+      + pick(System::List<Ent>(), -1)
+""", timeout=120)
+        self.assertEqual(10, rc)
