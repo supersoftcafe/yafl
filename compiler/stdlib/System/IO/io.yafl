@@ -58,6 +58,21 @@ fun _error_from_code(code: Int): IOError
     (-22) => InvalidArgError(code)
     ()    => UnknownIOError(code)
 
+# An IOError as a human-readable reason, for error messages ("permission
+# denied"). Variants without a fixed wording show their errno. Not ambient:
+# code that wants it brings it into scope.
+instance Show<IOError>
+  fun show(value: IOError): System::String
+    ret match(value)
+      (e: FileNotFoundError)     => "no such file or directory"
+      (e: PermissionDeniedError) => "permission denied"
+      (e: IsDirectoryError)      => "is a directory"
+      (e: FileExistsError)       => "file exists"
+      (e: NoSpaceError)          => "no space left on device"
+      (e: InvalidArgError)       => "invalid argument"
+      (e: EOFError)              => "unexpected end of file"
+      ()                         => "I/O error " + System::String(0 - value.code)
+
 
 # Public IO type. [final] — no subclassing, method calls dispatch directly
 # (no vtable). The wrapped _IO handle lives in the `_io` field.

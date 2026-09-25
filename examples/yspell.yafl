@@ -6,7 +6,9 @@
 # then checks every word of every file. Unknown words are reported once per
 # file as `file:line: 'word' -> suggestion, ...`, where suggestions are the
 # dictionary words one edit away (deletion, substitution, insertion or
-# transposition). Exit code: 0 = clean, 1 = misspellings found, 2 = usage.
+# transposition). A file that can't be read is reported on stderr as
+# `yspell: file: reason`, in file order. Exit code: 0 = clean, 1 = misspellings
+# found, 2 = usage or any IO error.
 #
 # As a YAFL showcase: the dictionary is a large immutable structure built once
 # and queried millions of times — it promotes into the collector's old
@@ -18,6 +20,11 @@
 #
 import System
 import System::IO
+
+
+# A file that couldn't be opened, read or closed. It travels in the report list
+# alongside the misspellings, so it keeps its place in file order.
+class FileError(path: String, error: IOError)
 
 
 # ── small string helpers ──────────────────────────────────────────────────────
@@ -100,15 +107,26 @@ fun [tail] hasWord(t: WordTree, w: String): Bool
     (e: NoWord) => false
 
 fun loadDictionary(path: String): WordTree|IOError
-  fun [tail] load(io: IO, words: List<String>): (io: IO, words: List<String>)
+  # End of file completes the word list; any other read error fails the load.
+  fun loadEnd(words: List<String>, e: IOError): List<String>|IOError
+    ret match(e)
+      (eof: EOFError) => words
+      ()              => e
+  fun [tail] load(io: IO, words: List<String>): (io: IO, words: List<String>|IOError)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => load(r.io, prepend<String>(chomp(line), words))
-      (e: IOError)   => (r.io, words)
-  fun loadOpen(io: IO): WordTree
+      (e: IOError)   => (r.io, loadEnd(words, e))
+  # A read error wins over a close error; either fails the load.
+  fun loaded(words: List<String>|IOError, closed: IOError|None): WordTree|IOError
+    ret match(words)
+      (e: IOError)      => e
+      (l: List<String>) => match(closed)
+        (e: IOError) => e
+        (n: None)    => buildTree(sortWords(l))
+  fun loadOpen(io: IO): WordTree|IOError
     let r = load(io, List<String>())
-    let closed = r.io.close()
-    ret buildTree(sortWords(r.words))
+    ret loaded(r.words, r.io.close())
   ret match(open_read(path))
     (io: IO)     => loadOpen(io)
     (e: IOError) => e
@@ -190,10 +208,10 @@ fun [tail] anyLetter(word: String, i: Int): Bool
 
 # Per-file report state. rpReports is ORDERED — the reports print in the order
 # the words were met — so it is a builder; rpReported is pure membership.
-class [linear, final] Rep(rpReports: ListBuilder<String >,
+class [linear, final] Rep(rpReports: ListBuilder<String|FileError>,
                           rpReported: Set<String>, rpCount: Int)
 
-fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: Int)
+fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, misspelt: Int)
   # All helpers sit at this level so closures only ever capture one enclosing
   # scope (dict/path); per-line state travels as explicit parameters.
 
@@ -203,8 +221,8 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: I
       : path + ":" + String(lineNo) + ": '" + word + "' -> " + join(suggestions, ", ")
 
   fun report(lineNo: Int, word: String, [terminal] a: Rep): Rep
-    ret Rep(push<String >(a.rpReports,
-                          reportLine(lineNo, word, suggest(dict, word))),
+    ret Rep(push<String|FileError>(a.rpReports,
+                                   reportLine(lineNo, word, suggest(dict, word))),
             add<String>(a.rpReported, word), a.rpCount + 1)
 
   fun checkWord(lineNo: Int, word: String, [terminal] a: Rep): Rep
@@ -225,69 +243,114 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String>, misspelt: I
                  : a)
         : scanLine(lineNo, line, i + 1, a)
 
+  # Record an IO error after the reports made so far.
+  fun failed([terminal] a: Rep, e: IOError): Rep
+    ret Rep(push<String|FileError>(a.rpReports, FileError(path, e)), a.rpReported, a.rpCount)
+
+  # End of file finishes the file cleanly; any other read error is recorded.
+  fun readEnd([terminal] a: Rep, e: IOError): Rep
+    ret match(e)
+      (eof: EOFError) => a
+      ()              => failed(a, e)
+
+  fun closeInto([terminal] a: Rep, closed: IOError|None): Rep
+    ret match(closed)
+      (e: IOError) => failed(a, e)
+      (n: None)    => a
+
   fun [tail] perLine(io: IO, lineNo: Int, [terminal] acc: Rep): (io: IO, acc: Rep)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => perLine(r.io, lineNo + 1, scanLine(lineNo, chomp(line), 0, acc))
-      (e: IOError)   => (r.io, acc)
+      (e: IOError)   => (r.io, readEnd(acc, e))
 
-  fun checkOpen(io: IO): (reports: List<String>, misspelt: Int)
-    let r = perLine(io, 1, Rep(builder<String >(), Set<String>(), 0))
-    let closed = r.io.close()
-    ret (build<String >(r.acc.rpReports), r.acc.rpCount)
+  fun checkOpen(io: IO): (reports: List<String|FileError>, misspelt: Int)
+    let r = perLine(io, 1, Rep(builder<String|FileError>(), Set<String>(), 0))
+    let done = closeInto(r.acc, r.io.close())
+    ret (build<String|FileError>(done.rpReports), done.rpCount)
 
   ret match(open_read(path))
     (io: IO)     => checkOpen(io)
-    (e: IOError) => (prepend<String>("yspell: cannot open " + path, List<String>()), 1)
+    (e: IOError) => (prepend<String|FileError>(FileError(path, e), List<String|FileError>()), 0)
 
 
 # ── parallel check over the file list ─────────────────────────────────────────
 
-fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String>, misspelt: Int)
-  fun joinResults(l: (reports: List<String>, misspelt: Int),
-                  r: (reports: List<String>, misspelt: Int))
-      : (reports: List<String>, misspelt: Int)
-    ret (concat<String>(l.reports, r.reports), l.misspelt + r.misspelt)
+fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String|FileError>, misspelt: Int)
+  fun joinResults(l: (reports: List<String|FileError>, misspelt: Int),
+                  r: (reports: List<String|FileError>, misspelt: Int))
+      : (reports: List<String|FileError>, misspelt: Int)
+    ret (concat<String|FileError>(l.reports, r.reports), l.misspelt + r.misspelt)
 
-  fun checkSplit(): (reports: List<String>, misspelt: Int)
+  fun checkSplit(): (reports: List<String|FileError>, misspelt: Int)
     let parts = splitHalf<String>(files)
     let (left, right) = __parallel__(
           () => checkFiles(dict, parts.left),
           () => checkFiles(dict, parts.right))
     ret joinResults(left, right)
 
-  fun checkFrom(first: String): (reports: List<String>, misspelt: Int)
+  fun checkFrom(first: String): (reports: List<String|FileError>, misspelt: Int)
     ret match(head<String>(tail<String>(files)))
       (second: String) => checkSplit()
       (e: None)        => checkFile(dict, first)
 
   ret match(head<String>(files))
     (first: String) => checkFrom(first)
-    (e: None)       => (List<String>(), 0)
+    (e: None)       => (List<String|FileError>(), 0)
+
+
+# ── output ────────────────────────────────────────────────────────────────────
+
+# The exit code once a handle's writes and close are known: any IO failure
+# makes it 2, otherwise `code` stands.
+fun ioStatus(code: Int, written: Int|IOError, closed: IOError|None): Int
+  ret written is IOError || closed !is None ? 2 : code
+
+# A one-line complaint on stderr, exit code 2.
+fun complain(line: String): Int
+  let w = writeAll(stderr(), line + "\n")
+  ret ioStatus(2, w.v, w.io.close())
+
+# Write the reports in order: misspellings to stdout, IO errors to stderr. A
+# `[tail]` loop over the list's chain; `?>` threads each handle through its
+# writes and, once one fails, carries that error to the end without writing to
+# it again. 2 if any file had an IO error or any write or close failed, else 1
+# if there were misspellings, else 0.
+fun writeReports(reports: List<String|FileError>, misspelt: Int): Int where Show<IOError>
+  fun [tail] loop(out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError),
+                  failed: Bool, c: Chain<String|FileError>):
+                  (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
+    ret match(c)
+      (nil: ChainEnd) => (out, err, failed)
+      (l: ChainLink)  => match(l.value)
+        (line: String) =>
+            loop(out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err, failed, l.next)
+        (fe: FileError) =>
+            loop(out, err ?> (io: IO, n: Int) =>
+                   writeAll(io, "yspell: " + fe.path + ": " + show(fe.error) + "\n"),
+                 true, l.next)
+  let r = loop((stdout(), 0), (stderr(), 0), false, chain<String|FileError>(reports))
+  let status = r.failed ? 2 : misspelt > 0 ? 1 : 0
+  let outStatus = ioStatus(status, r.out.v, r.out.io.close())
+  ret ioStatus(outStatus, r.err.v, r.err.io.close())
+
+fun dictError(path: String, e: IOError): Int where Show<IOError>
+  ret complain("yspell: cannot read dictionary " + path + ": " + show(e))
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
 fun main(): System::Int
   fun usage(): System::Int
-    println("usage: yspell [-d dictionary] <file> [file...]")
-    ret 2
-
-  fun printAll(lines: List<String>): System::None
-    ret fold<String, System::None>(lines, None,
-          (acc: System::None, line: String) => println(line))
+    ret complain("usage: yspell [-d dictionary] <file> [file...]")
 
   fun run(dictPath: String, files: List<String>): System::Int
     fun check(dict: WordTree): System::Int
       let result = checkFiles(dict, files)
-      printAll(result.reports)
-      ret result.misspelt > 0 ? 1 : 0
-    fun dictError(): System::Int
-      println("yspell: cannot read dictionary " + dictPath)
-      ret 2
+      ret writeReports(result.reports, result.misspelt)
     ret match(loadDictionary(dictPath))
       (dict: WordTree) => isEmpty<String>(files) ? usage() : check(dict)
-      (e: IOError)     => dictError()
+      (e: IOError)     => dictError(dictPath, e)
 
   fun dispatch(first: String, rest: List<String>): System::Int
     fun withDict(): System::Int

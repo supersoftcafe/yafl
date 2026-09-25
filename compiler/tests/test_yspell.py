@@ -4,7 +4,7 @@ Builds the example once and runs it against a fixture dictionary (via -d, so
 tests are independent of /usr/share/dict) and small temp files. Covers: clean
 runs, suggestion generation for each edit kind, per-file deduplication, case
 handling, apostrophes, multi-file (parallel) checking with deterministic output
-order, and the error/usage exit codes.
+order, and the error/usage exit codes (errors on stderr).
 """
 from __future__ import annotations
 
@@ -126,19 +126,22 @@ class TestYspell(TestCase):
         self.assertIn(c, lines[2])
 
     def test_missing_input_file(self):
-        rc, out = self._run(str(Path(self.tmp.name, "absent.txt")))
-        self.assertEqual(1, rc)
-        self.assertIn("cannot open", out)
+        absent = str(Path(self.tmp.name, "absent.txt"))
+        r = subprocess.run([self.binary, "-d", self.dict_path, absent],
+                           capture_output=True, timeout=30, text=True, env=_RUN_ENV)
+        self.assertEqual(2, r.returncode)
+        self.assertEqual("", r.stdout)
+        self.assertIn(f"{absent}: no such file or directory", r.stderr)
 
     def test_missing_dictionary(self):
         f = self._write("x.txt", "hello\n")
         r = subprocess.run([self.binary, "-d", "/nonexistent/dict", f],
                            capture_output=True, timeout=30, text=True, env=_RUN_ENV)
         self.assertEqual(2, r.returncode)
-        self.assertIn("cannot read dictionary", r.stdout)
+        self.assertIn("cannot read dictionary", r.stderr)
 
     def test_usage_when_no_args(self):
         r = subprocess.run([self.binary], capture_output=True, timeout=30,
                            text=True, env=_RUN_ENV)
         self.assertEqual(2, r.returncode)
-        self.assertIn("usage:", r.stdout)
+        self.assertIn("usage:", r.stderr)

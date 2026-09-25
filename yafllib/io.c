@@ -1,6 +1,7 @@
 
 #include "yafl.h"
 #include "io_internal.h"
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -130,7 +131,9 @@ static io_t* _io_alloc(FILE* file, bool owned, bool is_write) {
 //
 // stdin/stdout/stderr are already open and don't block on setup.  Their
 // buffering is owned by the terminal / libc stdio; we don't disable it
-// because the caller didn't open them.
+// because the caller didn't open them.  Closing one flushes libc's buffer
+// (see IO_OP_CLOSE), so a failed write is reported by close rather than
+// lost at process exit.
 
 EXPORT object_t* io_stdin (object_t* self) { (void)self; return (object_t*)_io_alloc(stdin,  false, false); }
 EXPORT object_t* io_stdout(object_t* self) { (void)self; return (object_t*)_io_alloc(stdout, false, true ); }
@@ -691,16 +694,19 @@ EXPORT object_t* io_close(object_t* self) {
     if (io == NULL || io->file == NULL)
         return NULL;
 
-    if (io->is_write && io->buf_tail > 0)
+    // A write handle always closes on the IO thread, even with nothing left in
+    // its own buffer: stdout/stderr may still hold data in libc's buffer, and
+    // flushing it is where a write error (full disk, closed pipe) shows up.
+    if (io->is_write)
         return _io_dispatch_close_with_flush(io);
 
+    errno = 0;
+    int32_t rc = (io->owned && fclose(io->file) != 0) ? -errno : 0;
     atomic_store_explicit(&io->closed, 1, memory_order_release);  // publish before file=NULL
-    if (io->owned)
-        fclose(io->file);
-    io->file = NULL;
+    io->file = NULL;          // handle is now closed whether or not there was an error
     io->buf_tail = 0;
     io->buf_head = 0;
-    return NULL;
+    return rc < 0 ? integer_from_int32_noalloc(rc) : NULL;
 }
 
 
