@@ -23,6 +23,7 @@ set(SRC_FILES
     heapprof.c
     stackguard.c
     string.c
+    str.c
     task.c
     thread.c
     yafl.c
@@ -79,6 +80,7 @@ set(TEST_SRC_FILES
     heapprof.c
     stackguard.c
     string.c
+    str.c
     task.c
     thread.c
     yafl.c
@@ -101,6 +103,7 @@ endfunction()
 
 add_yafl_test(test_integer)
 add_yafl_test(test_string)
+add_yafl_test(test_str)
 add_yafl_test(test_once)
 add_yafl_test(test_gc)
 add_yafl_test(test_io)

@@ -1265,6 +1265,16 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // pre-scan's pinned check does) or if the word already forwards.
         if (!object_try_pin(object))
             continue;
+        // An array built in place (array_cap_offset set) grows its `length`
+        // under this same pin, so the size read before the claim may be
+        // stale: copying it would drop the bytes appended since. Re-read under
+        // the pin; on a change, leave the object where it is (the unused
+        // target is ordinary garbage). Nothing else can change size.
+        vtable_t *cvt = vtable_untag((vtable_t*)((uintptr_t)object->vtable & ~(uintptr_t)VTABLE_PIN_BIT));
+        if (UNLIKELY(cvt->array_cap_offset) && object_get_size(object) != size) {
+            object_unpin(object);
+            continue;
+        }
 
         // Drop the PIN only: the vtable TAG must survive onto the copy, or the
         // copy's own header would read as a forwarding pointer.
@@ -1274,6 +1284,11 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // copy before anyone can reach it — the target is still private here,
         // so a plain store is enough.
         target->vtable = vt;
+        // An array built in place owned only `length` elements' worth of the
+        // copy: its spare capacity stayed behind, so say so on the copy.
+        if (UNLIKELY(cvt->array_cap_offset))
+            *(uint32_t*)((char*)target + cvt->array_cap_offset) =
+                *(uint32_t*)((char*)target + cvt->array_len_offset);
         // Publish the forwarding pointer, releasing the copy's contents: a
         // reader that follows this word must see a fully written object. The
         // store also drops the pin (a heap address has bit 0 clear), handing

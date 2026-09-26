@@ -1,12 +1,12 @@
 
 #include "yafl.h"
+#include "str_internal.h"
 #include <string.h>
 
 
 // Strict UTF-8 decoder, defined below — forward-declared so the codepoint-set
 // scanners (string_find_any / string_skip_any) can use it ahead of its
 // definition.
-static int _utf8_decode(const unsigned char* p, int32_t len, int32_t off, int32_t* out_cp);
 
 
 VTABLE_DECLARE_STRUCT(string_vtable, 16);
@@ -272,14 +272,9 @@ EXPORT object_t* string_index_of(object_t* self, object_t* o_needle, object_t* o
 // flagged so the (rare) non-ASCII input path knows whether to bother
 // re-scanning. `accept` is itself UTF-8, so it is decoded codepoint by
 // codepoint — `accept` is a set of CHARACTERS, not bytes.
-typedef struct {
-    unsigned char ascii[128];   // ascii[cp] == 1 iff codepoint cp (<0x80) ∈ accept
-    int has_non_ascii;          // does accept contain any codepoint ≥ 0x80?
-    const char* accept;         // accept bytes, for the non-ASCII linear probe
-    int32_t accept_len;
-} codepoint_set;
 
-static void _build_codepoint_set(const char* accept, int32_t accept_len,
+
+HIDDEN void _build_codepoint_set(const char* accept, int32_t accept_len,
                                  codepoint_set* set) {
     for (int i = 0; i < 128; ++i) set->ascii[i] = 0;
     set->has_non_ascii = 0;
@@ -296,7 +291,7 @@ static void _build_codepoint_set(const char* accept, int32_t accept_len,
 
 // O(1) for ASCII input; for a non-ASCII codepoint, linear-probe accept's
 // codepoints only when accept actually has non-ASCII members.
-static int _codepoint_in_set(int32_t cp, const codepoint_set* set) {
+HIDDEN int _codepoint_in_set(int32_t cp, const codepoint_set* set) {
     if (cp < 0x80) return set->ascii[cp];
     if (!set->has_non_ascii) return 0;
     int32_t acp;
@@ -448,7 +443,7 @@ EXPORT object_t* wchar_to_string(int32_t codepoint) {
 // greater than U+10FFFF. Because only minimal encodings are accepted, the
 // returned width always equals _utf8Width(*out_cp) — the YAFL `decode`
 // relies on this to advance to the next boundary without a second C call.
-static int _utf8_decode(const unsigned char* p, int32_t len, int32_t off, int32_t* out_cp) {
+HIDDEN int _utf8_decode(const unsigned char* p, int32_t len, int32_t off, int32_t* out_cp) {
     if (off < 0 || off >= len) return 0;
     unsigned char b0 = p[off];
     if (b0 < 0x80) { *out_cp = b0; return 1; }
