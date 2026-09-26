@@ -338,3 +338,38 @@ fun main(): Callee::Int
                          f"Expected compile failure on unresolved '+', got: {result!r}")
 
 
+
+
+class TestWhereConstraintAtTheUse(TestCase):
+    """A use of a generic function discharges its `where` clause for the type
+    arguments it USES: `>=`<Int> needs BasicCompare<Int>, not
+    BasicCompare<TVal>. Checking the uninstantiated constraint matched any
+    instance of the interface, so a type with no instance passed the check
+    and was only caught inside the generic's body, far from the call."""
+
+    @staticmethod
+    def _compile(body: str) -> tuple[str, str]:
+        import contextlib, io
+        content = ("import System\n"
+                   "\n"
+                   "class [final] Plain(n: System::Int)\n"
+                   "\n"
+                   "fun least<T>(a: T, b: T): T where System::BasicCompare<T>\n"
+                   "    ret a < b ? a : b\n"
+                   "\n"
+                   "fun main(): System::Int\n" + body)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        return result or "", buf.getvalue()
+
+    def test_a_type_with_no_instance_does_not_satisfy_the_constraint(self):
+        result, out = self._compile("    ret least(Plain(1), Plain(2)).n\n")
+        self.assertEqual("", result)
+        self.assertIn("file.yafl[9:", out)
+        self.assertIn("does not match any trait", out)
+
+    def test_an_instance_of_a_derived_interface_satisfies_it(self):
+        # BasicMath<Int> extends BasicCompare<Int>.
+        result, out = self._compile("    ret least(1, 2)\n")
+        self.assertNotEqual("", result, out)

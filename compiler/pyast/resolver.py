@@ -200,6 +200,11 @@ class Resolver:
     def get_traits(self) -> list[s.LetStatement]:
         return []
 
+    # The `where` constraints in scope — every enclosing declaration's: what
+    # a use inside it may assume holds.
+    def get_where_clauses(self) -> "list[t.TypeSpec]":
+        return []
+
     # PRE-LOWERING trait instances (first-class TraitInstanceStatements) —
     # constraint discharge and droppability read these before
     # lowering/instances.py turns them into `[trait]` record lets.
@@ -274,6 +279,9 @@ class DelegatingResolver(Resolver):
 
     def get_traits(self) -> list[s.LetStatement]:
         return self._parent.get_traits()
+
+    def get_where_clauses(self) -> "list[t.TypeSpec]":
+        return self._parent.get_where_clauses()
 
     def get_trait_instances(self) -> "list[s.TraitInstanceStatement]":
         return self._parent.get_trait_instances()
@@ -705,13 +713,22 @@ class AddScopeResolution(DelegatingResolver):
 
 
 class ResolverType(DelegatingResolver):
+    """A declaration's generic type params, and the `where` constraints it
+    states over them: inside the declaration — its signature as much as its
+    body — a use may assume they hold."""
     __find: Callable[[str], list[Resolved[s.TypeStatement]]]
+    __where: "tuple[t.TypeSpec, ...]"
     __cache: dict[str, list[Resolved[s.TypeStatement]]]
 
-    def __init__(self, parent: Resolver, find: Callable[[str], list[Resolved[s.TypeStatement]]]):
+    def __init__(self, parent: Resolver, find: Callable[[str], list[Resolved[s.TypeStatement]]],
+                 where: "Sequence[t.TypeSpec]" = ()):
         super().__init__(parent)
         self.__find = find
+        self.__where = tuple(where)
         self.__cache = {}
+
+    def get_where_clauses(self) -> "list[t.TypeSpec]":
+        return list(self.__where) + self._parent.get_where_clauses()
 
     def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
         cached = self.__cache.get(name)

@@ -175,7 +175,7 @@ fun adoptLet(l: PsLet, entryTy: Spec|None, r)
 # for a TOP-LEVEL function only, an inner one inherits its owner's lexically —
 # and its parameters as locals.
 fun compileFun(f: PsFun, r0): StmtOut
-  let r = genScope(f.fGens, r0)
+  let r = genScope(f.fGens, f.fWheres, r0)
   let ret2 = compileSpecOpt(f.fRet, r)
   let declaredRet = specOf(ret2)
   let params = compileStmt(f.fParams, r, None)
@@ -286,7 +286,7 @@ fun compileClass(c, r0): StmtOut
   # (a member declares no generics/wheres of its own — vtable slots have
   # fixed signatures); the stored statement keeps none.
   let members = compileStmts(chain(withOwnerWheres(c.cMembers, c.cWheres)),
-                             genScope(c.cGens, RClassBody(c, r0)), None,
+                             genScope(c.cGens, c.cWheres, RClassBody(c, r0)), None,
                              builder(), List())
   ret StmtOut(PsClass(c.cName, c.cAttrs, c.cGens, stmtOr(params, c.cParams),
                       resolvedImplements(chain(inh), List()),
@@ -301,7 +301,7 @@ fun compileClass(c, r0): StmtOut
 # generic scope; member bodies under a transient copy of the owner's clause
 # (stored statements keep none — a member is a vtable slot).
 fun compileTraitInstance(inst: PsTraitInstance, r0): StmtOut
-  let r = genScope(inst.tiGens, r0)
+  let r = genScope(inst.tiGens, inst.tiWheres, r0)
   let pat = compileSpecOpt(inst.tiPattern, r)
   let wheres = compileParams(inst.tiWheres, r)
   let members = compileStmts(chain(withOwnerWheres(inst.tiMembers,

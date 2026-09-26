@@ -410,7 +410,132 @@ class TestUnionHolesSolveBySetDifference(TestCase):
         self.assertEqual({INT, STR}, set(bindings["E@c"].repr_members()))
         self.assertEqual([], errors)
 
+    def test_a_bound_value_side_hole_contributes_its_binding(self):
+        # `Stream<Pretty<S,E>, String, E | ParseError>`: E is bound by the
+        # first argument to `Int | ParseError` (spelt STR here); the union's
+        # E then contributes those members, which cover the receiver's rest.
+        e = hole("E@c")
+        _r, bindings, errors = t.merge(union(STR, INT), union(e, STR), {"E@c": union(INT, STR)},
+                                       EMPTY, callee_left=False)
+        self.assertEqual([], errors)
+        # A bound member the receiver cannot hold is a contradiction.
+        _r, _b, errors = t.merge(union(STR, INT), union(e, STR), {"E@c": union(INT, BOOL)},
+                                 EMPTY, callee_left=False)
+        self.assertEqual(1, len(errors))
+
+    def test_a_bound_receiver_side_hole_holds_the_unplaced_members(self):
+        e = hole("E@c")
+        _r, _b, errors = t.merge(union(e, UNIT), union(INT, UNIT), {"E@c": union(INT, STR)}, EMPTY)
+        self.assertEqual([], errors)
+        _r, _b, errors = t.merge(union(e, UNIT), union(BOOL, UNIT), {"E@c": union(INT, STR)}, EMPTY)
+        self.assertEqual(1, len(errors))
+
+    def test_a_bound_receiver_member_pairs_and_the_other_takes_the_rest(self):
+        # `?>`'s `value: TIn | E` against `Int | Oops` once the lambda has
+        # bound TIn = Int: Int pairs with TIn, E takes Oops.
+        _r, bindings, errors = t.merge(union(hole("T@c"), hole("E@c")), union(INT, STR),
+                                       {"T@c": INT, "E@c": None}, EMPTY)
+        self.assertEqual([], errors)
+        self.assertEqual(STR, bindings["E@c"])
+
     def test_two_holes_have_no_partition(self):
         _r, bindings, _e = t.merge(union(INT, STR), union(hole("A@c"), hole("B@c")),
                                    {"A@c": None, "B@c": None}, EMPTY, callee_left=False)
         self.assertEqual({"A@c": None, "B@c": None}, bindings)
+
+
+class TestNoBindingToAnUnresolvedSpelling(TestCase):
+    """A raw NamedSpec only means something in its declaring scope: a named
+    hole never binds to a type still holding one (it would carry the raw
+    name into the caller's type arguments). The fixpoint retries once it
+    resolves."""
+
+    def test_a_named_hole_waits_for_an_unresolved_argument(self):
+        raw = enum(_LIST, t.NamedSpec(lr, "Foo"))
+        _r, bindings, errors = t.merge(hole("T@c"), raw, {"T@c": None}, EMPTY)
+        self.assertEqual({"T@c": None}, bindings)
+        self.assertEqual([], errors)
+
+
+class TestReceives(TestCase):
+    """`receives`: the value fits the receiver as it stands — nothing
+    contradicts and nothing is filled (converge's widest type, the hints'
+    bounds)."""
+
+    def test_a_view_fits_its_wider_view(self):
+        circle = enum(_SHAPE, leaves=("Circle@1",))
+        self.assertTrue(t.receives(enum(_SHAPE), circle, EMPTY))
+        self.assertFalse(t.receives(circle, enum(_SHAPE), EMPTY))
+
+    def test_filling_a_hole_is_not_fitting(self):
+        self.assertFalse(t.receives(enum(_LIST, hole()), enum(_LIST, INT), EMPTY))
+
+    def test_a_union_fits_itself_in_any_order(self):
+        self.assertTrue(t.receives(union(INT, STR), union(STR, INT), EMPTY))
+        self.assertTrue(t.receives(union(INT, STR, UNIT), INT, EMPTY))
+
+
+class TestAgreementTakesThePositionsVariance(TestCase):
+    """A bound named hole agrees with what it meets under that POSITION's
+    variance: invariant inside generic arguments, a plain fit elsewhere. A
+    lambda's `(String | ()) => …` takes the bound `T = String` of
+    `map(xs: List<T>, f: (:T): U)`; T stays String."""
+
+    def test_a_bound_hole_fits_a_wider_callable_parameter(self):
+        declared = tup((None, enum(_LIST, hole("T@c"))), (None, fn([hole("T@c")], hole("U@c"))))
+        actual = tup((None, enum(_LIST, STR)), (None, fn([union(STR, UNIT)], INT)))
+        _r, bindings, errors = t.merge(declared, actual, {"T@c": STR, "U@c": None}, EMPTY)
+        self.assertEqual([], errors)
+        self.assertEqual(STR, bindings["T@c"])
+        self.assertEqual(INT, bindings["U@c"])
+
+    def test_a_callable_parameter_still_fills_the_bindings_holes(self):
+        # fold(xs, (Dict(), 0), (acc: (d: Dict<Int>, i: Int), x) => ...): A is
+        # bound to the init's holey, unnamed tuple; the lambda's parameter
+        # fills its holes and names.
+        holey = tup((None, enum(_LIST, hole("K@free"))), (None, INT))
+        full = tup(("d", enum(_LIST, INT)), ("i", INT))
+        _r, bindings, errors = t.merge(fn([hole("A@c")], BOOL), fn([full], BOOL),
+                                       {"A@c": holey}, EMPTY)
+        self.assertEqual([], errors)
+        self.assertEqual(full, bindings["A@c"])
+
+    def test_a_callable_parameter_never_widens_the_binding(self):
+        # map(circles, (v) => Named(v)): the lambda takes a Shape, T stays
+        # Circle — a callable parameter never widens, even in a widening merge.
+        circle = enum(_SHAPE, leaves=("Circle@1",))
+        declared = tup((None, enum(_LIST, hole("T@c"))), (None, fn([hole("T@c")], BOOL)))
+        actual = tup((None, enum(_LIST, circle)), (None, fn([enum(_SHAPE)], BOOL)))
+        _r, bindings, errors = t.merge(declared, actual, {"T@c": None}, EMPTY, widen_views=True)
+        self.assertEqual([], errors)
+        self.assertEqual(circle, bindings["T@c"])
+
+    def test_inside_a_generic_argument_agreement_is_exact(self):
+        _r, _b, errors = t.merge(enum(_LIST, hole("T@c")), enum(_LIST, union(STR, UNIT)),
+                                 {"T@c": STR}, EMPTY)
+        self.assertEqual(1, len(errors))
+
+
+class TestAHoleThatTookTheRestIsMatched(TestCase):
+    def test_an_invariant_union_binds_its_hole_by_set_difference(self):
+        # Stream<Grow<S>, Int, E | Bool> against Stream<…, Int, Never | Bool>:
+        # inside generic arguments the union is invariant, and E, which took
+        # the Never, is a matched member.
+        never = enum(("Never@1", ()), leaves=())
+        _r, bindings, errors = t.merge(enum(_LIST, union(hole("E@c"), BOOL)), enum(_LIST, union(never, BOOL)),
+                                       {"E@c": None}, EMPTY)
+        self.assertEqual([], errors)
+        self.assertEqual(never, bindings["E@c"])
+
+
+class TestAnUnknownMemberLeavesThePartitionOpen(TestCase):
+    """A value union holding a member not known yet (an unresolved name) has
+    no set difference: the receiver's hole stays unbound — no guess, no
+    error — until the name resolves."""
+
+    def test_the_hole_waits(self):
+        raw = t.NamedSpec(lr, "Spec")
+        _r, bindings, errors = t.merge(union(hole("T@c"), BOOL), union(raw, INT, BOOL),
+                                       {"T@c": None}, EMPTY)
+        self.assertEqual([], errors)
+        self.assertEqual({"T@c": None}, bindings)

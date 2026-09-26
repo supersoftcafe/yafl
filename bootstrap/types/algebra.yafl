@@ -1,11 +1,8 @@
 # bootstrap/algebra.yafl — the type algebra, ported from
 # compiler/pyast/typespec/algebra.py: substitution, placeholder scanning, the
-# meet/refine refinement rules the compile fixpoint relies on, and generic
-# unification. Pure functions of specs (+ a read-only scope for resolution
-# questions); nothing here mutates.
-#
-# Conflict is a VALUE (MConflict), distinct from "no information" (MNone) —
-# statement-level callers use refine, which absorbs conflicts.
+# one directional type merge (docs/type-merge-design.md) and the refinement
+# rules the compile fixpoint builds on it. Pure functions of specs (+ a
+# read-only scope for resolution questions); nothing here mutates.
 namespace Bootstrap::Types
 
 import System
@@ -17,30 +14,13 @@ import Bootstrap::Resolve
 
 
 
-# meet's three-way result: a refined type, no information, or a real clash.
-enum Meet
-  enum MSpec(mSpec: Spec)
-  enum MNone()
-  enum MConflict()
-
 # ── placeholders ────────────────────────────────────────────────────────────
-
-# A HOLE carries no type information yet: absent, an unbound placeholder, or a
-# still-unresolved name.
-fun isHole(sp: Spec|None) => match(sp)
-  (s2: Spec) => isHoleSpec(s2)
-  ()         => true
-
-fun isHoleSpec(sp: Spec) => match(sp)
-  (g: SGeneric) => true
-  (n: SNamed)   => true
-  (o)           => false
 
 # A LIST with a linear dedup, NOT a Set — deliberately.
 #
 # A spec mentions one to three placeholders. This is called from
-# hasFreePlaceholders and sharesName, which sit in the type algebra's hot
-# path: every assignability and unification check reaches here. A Set means a
+# hasFreePlaceholders, which sits in the type algebra's hot path: every
+# merge and assignability check reaches here. A Set means a
 # hash-tree allocation per call to hold three names, which costs far more than
 # the cons cells plus a three-element scan. Dedupe still happens (a
 # placeholder in several positions is one placeholder); it just happens
@@ -143,11 +123,6 @@ fun canonMembers(members, lr, orig) => match(head(members))
   (only: Spec) => isEmpty(tail(members)) ? only : SCombination(members, lr)
   ()           => orig
 
-# ── meet / refine ───────────────────────────────────────────────────────────
-# meet: the most-refined common form of two possibly-partial types. A hole is
-# refined by the other side; compounds meet element-wise and propagate a
-# conflict; two ground leaves must be equal. Symmetric.
-
 # ── merge (docs/type-merge-design.md) ───────────────────────────────────────
 # The one type merge. LEFT is the receiver, RIGHT the value: left must be
 # assignable from right. Fills gaps and resolves hierarchy, never widens.
@@ -185,6 +160,31 @@ fun mergeSpecs(left: Spec|None, right: Spec|None, binds: List<MBind>, r): MergeO
 fun mergeSpecsWidening(left: Spec|None, right: Spec|None, binds: List<MBind>,
                        calleeLeft: Bool, r): MergeOut
   ret mgGo(left, right, binds, false, true, calleeLeft, r)
+
+# pattern_binding: does `concrete` fit `pattern`, whose own params `names` are
+# its holes — the question every instance lookup asks (a trait instance, a
+# drop, a derived equality, a generic witness)? A merge with the pattern as
+# the receiver: what the params bound, or None on a contradiction. Partial
+# when a param nothing pins (`E` in `E | Bool` against `Bool`) stays unbound;
+# a caller that needs every param bound says so.
+# receives: does `value` fit `receiver` as it stands — both complete
+# (nothing for the merge to fill on either side: a bare `List` shape is no
+# `List<Int>`), and a merge that contradicts nothing?
+fun receives(receiver: Spec, value: Spec, r): Bool
+  ret specComplete(receiver, r) && specComplete(value, r)
+      && isEmpty(mergeSpecs(receiver, value, List<MBind>(), r).moErrs)
+
+fun specComplete(sp: Spec, r) => isConcrete(sp) && !hasFreePlaceholders(sp, r) && !hasMissingArguments(sp, r)
+
+fun patternBinding(pattern: Spec, concrete: Spec, names: List<String>, r): List<Binding>|None
+  let m = mergeSpecs(pattern, concrete, map(names, (n) => MBind(n, None)), r)
+  ret isEmpty(m.moErrs) ? learnedBindings(chain(m.moBinds), List()) : None
+
+fun [tail] learnedBindings(bs: Chain<MBind>, acc: List<Binding>): List<Binding> => match(bs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value.mbSpec)
+    (sp: Spec) => learnedBindings(l.next, prepend(Binding(l.value.mbName, sp), acc))
+    ()         => learnedBindings(l.next, acc)
 
 fun mgBindable(binds: List<MBind>, name) => any(binds, (b) => b.mbName == name)
 
@@ -224,24 +224,42 @@ fun mgConflict(l: Spec|None, rr: Spec|None, binds: List<MBind>, why): MergeOut
 # Bound: agree with it — holes inside the binding fill, nothing widens it.
 # Both sides are the reference site's types now, so no name in them is a named
 # hole (`S@drain = S@drain` in a self-recursive call is the caller's own S).
-fun mgNamed(name, other: Spec|None, binds: List<MBind>, holderLeft: Bool, wv: Bool, cl: Bool, r): MergeOut => match(mgBoundSpec(binds, name))
-  (bound: Spec) => mgAgree(name, binds, holderLeft ? mgGo(bound, other, List<MBind>(), true, wv, true, r)
-                                                  : mgGo(other, bound, List<MBind>(), true, wv, true, r))
-  ()            => mgIsHole(other, binds, false, r)
+# Bound: agree with it — holes inside the binding fill, nothing widens it.
+fun mgNamed(name, other: Spec|None, binds: List<MBind>, holderLeft: Bool, inv: Bool, wv: Bool, cl: Bool,
+            r): MergeOut => match(mgBoundSpec(binds, name))
+  (bound: Spec) => holderLeft
+    ? mgAgree(name, binds, mgGo(bound, other, List<MBind>(), inv, wv, true, r), true)
+    : mgValueSideAgree(name, bound, other, binds, inv, wv, r)
+  # Nothing to bind yet — a hole, or a type still holding a raw name that
+  # only means something in its declaring scope.
+  ()            => mgIsHole(other, binds, false, r) || mgHoldsRaw(other)
     ? mgOk(SGeneric(name, false, mgLine(other)), binds)
     : mgOk(other, mgRebind(binds, name, other))
 
-fun mgAgree(name, binds: List<MBind>, m: MergeOut): MergeOut => isEmpty(m.moErrs)
-  ? mgOk(m.moSpec, mgRebind(binds, name, m.moSpec))
+# On the value side: the same type with its holes filled, or — outside
+# generic arguments — a binding that fits a wider receiver as it is (a lambda
+# over `String | ()` takes T = String; T stays String).
+fun mgValueSideAgree(name, bound: Spec, other: Spec|None, binds: List<MBind>, inv: Bool, wv: Bool, r): MergeOut
+  let filled = mgGo(bound, other, List<MBind>(), true, wv, true, r)
+  if isEmpty(filled.moErrs) || inv
+    ret mgAgree(name, binds, filled, true)
+  ret mgAgree(name, binds, mgGo(other, bound, List<MBind>(), false, wv, true, r), false)
+
+fun mgHoldsRaw(x: Spec|None) => match(x)
+  (s2: Spec) => containsNamedSpec(s2)
+  ()         => false
+
+fun mgAgree(name, binds: List<MBind>, m: MergeOut, rebind: Bool): MergeOut => isEmpty(m.moErrs)
+  ? mgOk(m.moSpec, rebind ? mgRebind(binds, name, m.moSpec) : binds)
   : MergeOut(None, binds, m.moErrs)
 
 fun mgGo(l: Spec|None, rr: Spec|None, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
   let ln = mgBindableName(l, binds, cl)
   if ln != ""
-    ret mgNamed(ln, rr, binds, true, wv, cl, r)
+    ret mgNamed(ln, rr, binds, true, inv, wv, cl, r)
   let rn = mgBindableName(rr, binds, !cl)
   if rn != ""
-    ret mgNamed(rn, l, binds, false, wv, cl, r)
+    ret mgNamed(rn, l, binds, false, inv, wv, cl, r)
   if mgIsHole(l, binds, cl, r)
     ret mgOk(rr, binds)
   if mgIsHole(rr, binds, !cl, r)
@@ -307,7 +325,10 @@ fun mgSameOrConflict(l, rr, binds: List<MBind>) => eqSpec(l, rr)
   : mgConflict(l, rr, binds, "different types")
 
 fun mgCallables(l: SCallable, rr: SCallable, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
-  let p = mgGo(rr.scParams2, l.scParams2, binds, inv, wv, !cl, r)      # reversed
+  # Reversed, and never widening: a callable parameter only fills a
+  # provisional view (`map(circles, (v) => named(v))` keeps T = Circle though
+  # the lambda takes a Shape).
+  let p = mgGo(rr.scParams2, l.scParams2, binds, inv, false, !cl, r)
   let res = mgGo(l.scResult, rr.scResult, p.moBinds, inv, wv, cl, r)
   if !isEmpty(p.moErrs) || !isEmpty(res.moErrs)
     ret MergeOut(None, res.moBinds, union(p.moErrs, res.moErrs))
@@ -352,6 +373,9 @@ fun mgEnums(l: SEnum, rr: SEnum, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bo
     (ps: List<Spec>) => mgOk(SEnum(l.seRoot, leaves, l.seAllLeaves, ps, l.seLine), a.maBinds)
     ()               => MergeOut(None, a.maBinds, a.maErrs)
 
+fun unionLeaves(a: List<String>, b: List<String>) => fold(b, a, (acc, n) =>
+    contains2(acc, n) ? acc : prepend(n, acc))
+
 fun mgClasses(l: SClass, rr: SClass, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
   if l.scName == rr.scName
     ret mgSameClass(l, mgArgs(l.scParams, rr.scParams, binds, wv, cl, r))
@@ -365,7 +389,8 @@ fun mgClasses(l: SClass, rr: SClass, binds: List<MBind>, inv: Bool, wv: Bool, cl
           (anc: Spec) => mgGo(l, substitute(anc, mgOwn(chain(cls.cGens), chain(rr.scParams), List())),
                               binds, false, wv, cl, r)
           ()          => mgConflict(l, rr, binds, "the value's class does not implement the receiver")
-        ()               => mgOk(l, binds)    # ancestry not known yet: nothing to add
+        # Not known yet is not a fit: the fixpoint asks again once it is.
+        ()               => mgConflict(l, rr, binds, "the value's ancestry is not known yet")
       (o: PStmt)     => mgConflict(l, rr, binds, "unrelated types")
     ()         => mgConflict(l, rr, binds, "unrelated types")
 
@@ -416,18 +441,46 @@ fun mgArgsDone(ps: List<Spec>, binds: List<MBind>, errs: Set<PErr>) => isEmpty(e
 # value members nobody placed (the error-growing `E | ParseError` pattern). An
 # anonymous receiver hole stands for the rest and becomes what it took.
 # Several holes on one side have no partition and stay as they are.
+# A BOUND name is no hole: it is its binding's members, on either side
+# (`TIn | E` with TIn = Int, against `Int | Oops`, leaves E the Oops;
+# `E | ParseError` with E = `Never | ParseError` is `Never | ParseError`).
 fun mgUnions(l: Spec, rr: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
-  let lMembers = mgMembers(l)
-  let rMembers = mgMembers(rr)
+  let lMembers = mgExpanded(mgMembers(l), binds, cl)
+  let rMembers = mgExpanded(mgMembers(rr), binds, !cl)
   if !mgIsUnion(l)
     # Every member of the value must fit the one receiver.
     ret mgAllInto(chain(rMembers), l, binds, inv, wv, cl, r, noErrs())
   let rHoles = filter(rMembers, (m) => mgBindableName(m, binds, !cl) != "")
-  let rGround = filter(rMembers, (m) => mgBindableName(m, binds, !cl) == "")
+  # A value member not known yet (an unresolved name) pairs with nothing,
+  # and leaves the partition open (mgValueUnknown).
+  let rGround = filter(rMembers, (m) => mgBindableName(m, binds, !cl) == "" && !mgIsHole(m, binds, !cl, r))
   ret mgEachFinds(chain(rGround), lMembers, List<Int>(), List<Spec>(), binds, inv, wv, cl, r,
                   noErrs(), l, rr, rHoles)
 
-fun mgLeftHole(m, binds: List<MBind>, cl: Bool, r) => mgIsHole(m, binds, cl, r) || mgBindableName(m, binds, cl) != ""
+fun mgExpanded(ms: List<Spec>, binds: List<MBind>, side: Bool): List<Spec>
+  ret fold(ms, List<Spec>(), (acc, m) => mgAddNew(acc, mgSpelt(m, binds, side)))
+
+fun mgSpelt(m: Spec, binds: List<MBind>, side: Bool): List<Spec>
+  let name = mgBindableName(m, binds, side)
+  if name == ""
+    ret prepend(m, List<Spec>())
+  ret match(mgBoundSpec(binds, name))
+    (b: Spec) => mgMembers(b)
+    ()        => prepend(m, List<Spec>())
+
+fun mgAddNew(acc: List<Spec>, xs: List<Spec>): List<Spec>
+  ret fold(xs, acc, (a, x) => any(a, (o) => eqSpec(o, x)) ? a : build(push(builderFrom(a), x)))
+
+# The value union holds a member not known yet: no set difference binds and
+# nothing is judged unmatched until it resolves.
+fun mgValueUnknown(rr: Spec, binds: List<MBind>, cl: Bool, r): Bool
+  ret any(mgExpanded(mgMembers(rr), binds, !cl), (m) => mgIsHole(m, binds, !cl, r))
+
+fun mgUnboundNamed(m, binds: List<MBind>, cl: Bool): Bool
+  let name = mgBindableName(m, binds, cl)
+  ret name != "" && mgBoundSpec(binds, name) is None
+
+fun mgLeftHole(m, binds: List<MBind>, cl: Bool, r) => mgIsHole(m, binds, cl, r) || mgUnboundNamed(m, binds, cl)
 
 fun mgMembers(x) => match(x)
   (cm: SCombination) => reprMembers(cm)
@@ -466,19 +519,30 @@ fun mgValueHole(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, b
   let restIx = mgRestIndexes(chain(members), 0, matched, binds, cl, r, List<Int>())
   if !exactly(chain(rHoles), 1) || isEmpty(restIx)
     ret mgReceiverHole(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr)
-  let rest = mgAtIndexes(members, restIx)
-  let m = mgNamed(mgBindableName(head(rHoles), binds, !cl), mgAsType(rest, l), binds, false, wv, cl, r)
+  let m = mgNamed(mgBindableName(head(rHoles), binds, !cl), mgAsType(mgAtIndexes(members, restIx), l),
+                  binds, false, inv, wv, cl, r)
   ret mgReceiverHole(members, concat(matched, restIx), absorbed, m.moBinds, inv, wv, cl, r,
                      union(errs, m.moErrs), l, rr)
 
 # A receiver-side named hole: the value members nobody placed.
 fun mgReceiverHole(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, binds: List<MBind>,
                    inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec): MergeOut
-  let lNamed = filter(members, (m) => mgBindableName(m, binds, cl) != "")
-  if isEmpty(absorbed) || !exactly(chain(lNamed), 1) || any(members, (m) => mgIsHole(m, binds, cl, r))
+  let lNamed = filter(members, (m) => mgUnboundNamed(m, binds, cl))
+  if isEmpty(absorbed) || !exactly(chain(lNamed), 1) || mgValueUnknown(rr, binds, cl, r)
+     || any(members, (m) => mgIsHole(m, binds, cl, r))
     ret mgUnionDone(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr)
-  let m = mgNamed(mgBindableName(head(lNamed), binds, cl), mgAsType(absorbed, l), binds, true, wv, cl, r)
-  ret mgUnionDone(members, matched, absorbed, m.moBinds, inv, wv, cl, r, union(errs, m.moErrs), l, rr)
+  let name = mgBindableName(head(lNamed), binds, cl)
+  let m = mgNamed(name, mgAsType(absorbed, l), binds, true, inv, wv, cl, r)
+  ret mgUnionDone(members, concat(matched, mgNamedAt(chain(members), 0, name, binds, cl, List<Int>())),
+                  absorbed, m.moBinds, inv, wv, cl, r, union(errs, m.moErrs), l, rr)
+
+# The index of the member spelled as the named hole `name` — it took the rest.
+fun [tail] mgNamedAt(ms: Chain<Spec>, i: Int, name: String, binds: List<MBind>, cl: Bool,
+                     acc: List<Int>): List<Int> => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => mgBindableName(l.value, binds, cl) == name
+    ? prepend(i, acc)
+    : mgNamedAt(l.next, i + 1, name, binds, cl, acc)
 
 fun mgAbsorb(members: List<Spec>, absorbed: List<Spec>, binds: List<MBind>, cl: Bool, r) => isEmpty(absorbed)
   ? members
@@ -524,10 +588,14 @@ fun [tail] mgSetLoop(ms: Chain<Spec>, j: Int, i: Int, v: Spec,
 
 fun mgUnionDone(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>,
                 binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec): MergeOut
-  let unmatched = inv && isEmpty(errs) && mgAnyUnmatched(chain(members), 0, matched, binds, cl, r)
+  let unmatched = inv && isEmpty(errs) && !mgValueUnknown(rr, binds, cl, r)
+                  && mgAnyUnmatched(chain(members), 0, matched, binds, cl, r)
   let all = unmatched ? union(errs, mgConflict(l, rr, binds, "different unions").moErrs) : errs
   if !isEmpty(all)
     ret MergeOut(None, binds, all)
+  # Nothing filled: the receiver as spelt.
+  if isEmpty(absorbed) && eqSpecs(members, mgMembers(l))
+    ret mgOk(l, binds)
   let out = reprMembersOf(mgAbsorb(members, absorbed, binds, cl, r))
   ret match(head(out))
     (only: Spec) => mgOk(exactly(chain(out), 1) ? only : SCombination(out, specLine(l)), binds)
@@ -540,184 +608,11 @@ fun [tail] mgAnyUnmatched(ms: Chain<Spec>, i: Int, matched: List<Int>, binds: Li
     ? true
     : mgAnyUnmatched(l.next, i + 1, matched, binds, cl, r)
 
-fun meet(a: Spec|None, b: Spec|None)
-  if isHole(a)
-    ret optMeet(b)
-  if isHole(b)
-    ret optMeet(a)
-  ret match(a)
-    (sa: Spec) => match(b)
-      (sb: Spec) => meetIdempotent(sa, sb)
-      ()         => MNone()
-    ()         => MNone()
-
-# Idempotent: a type meets itself. Every rule in meetSpecs already agrees
-# except the union's set-wise one, which has no ground ids to compare for a
-# union holding placeholder-bearing members (`Leaf<T> | Branch<T>`).
-fun meetIdempotent(a, b) => eqSpec(a, b) ? MSpec(a) : meetSpecs(a, b)
-
-fun optMeet(sp: Spec|None) => match(sp)
-  (s2: Spec) => MSpec(s2)
-  ()         => MNone()
-
-fun meetSpecs(a, b) => match(a)
-  (ca: SClass)       => meetClass(ca, b)
-  (ea: SEnum)        => meetEnum(ea, b)
-  (ta: STuple)       => meetTuple(ta, b)
-  (ua: SCombination) => meetUnion(ua, b)
-  (cla: SCallable)   => meetCallable(cla, b)
-  (o)                => eqSpec(a, b) ? MSpec(a) : MConflict()
-
-# A union is a SET, and its member list is NOT canonically ordered (only the
-# id is sorted), so meet set-wise, never positionally. Two fully-ground unions
-# meet iff they are the same set. If one side is ground, the other's ground
-# members must all be present in it — its holes then absorb the remainder —
-# otherwise it carries a member the ground side lacks: a real conflict. Both
-# sides still holey: defer (CONFLICT here just skips this pass; a later pass
-# grounds one side and resolves it).
-fun meetUnion(ua, b: Spec) => match(b)
-  (ub2: SCombination) => meetUnionPair(ua, ub2)
-  (o)                 => MConflict()
-
-fun meetUnionPair(a, b): Meet
-  # SHORT LISTS, not Sets. The only consumer is the subset test below, so
-  # there is no order — but a union carries a handful of members, and `meet`
-  # runs on every assignability check. Two hash-tree allocations per meet to
-  # hold three uids costs more than the O(n) scan they were meant to replace.
-  fun [tail] groundUids(ms: Chain<Spec>, acc) => match(ms)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => uid(l.value) == ""
-      ? groundUids(l.next, acc)
-      : groundUids(l.next, contains2(acc, uid(l.value))
-                             ? acc
-                             : prepend(uid(l.value), acc))
-  fun subLoop(xs: List<String>, ys: List<String>): Bool => all(xs, (x) => contains2(ys, x))
-  let ia = uid(a)
-  let ib = uid(b)
-  if ia != "" && ib != ""
-    ret ia == ib ? MSpec(a) : MConflict()
-  let ga = groundUids(chain(a.scTypes), List())
-  let gb = groundUids(chain(b.scTypes), List())
-  if ia != ""
-    ret subLoop(gb, ga) ? MSpec(a) : MConflict()
-  if ib != ""
-    ret subLoop(ga, gb) ? MSpec(b) : MConflict()
-  ret MConflict()
-
-fun meetCallable(a: SCallable, b: Spec) => match(b)
-  (cb: SCallable) => meetCallablePair(a, cb)
-  (o)             => MConflict()
-
-fun meetCallablePair(a: SCallable, b: SCallable)
-  fun mcParams(pm) => match(pm)
-    (ms: MSpec) => ms.mSpec
-    (o: Meet)   => a.scParams2
-  ret match(meet(a.scParams2, b.scParams2))
-    (pc: MConflict) => MConflict()
-    (pm: Meet)      => match(meet(a.scResult, b.scResult))
-      (rc: MConflict) => MConflict()
-      (rm: MSpec)     => MSpec(SCallable(mcParams(pm), rm.mSpec, a.sclLine))
-      (rn: Meet)      => MSpec(SCallable(mcParams(pm), None, a.sclLine))
-
-fun meetClass(ca, b: Spec) => match(b)
-  (cb: SClass) => ca.scName == cb.scName
-                  && sameLen(chain(ca.scParams), chain(cb.scParams))
-    ? meetParams(ca, ca.scParams, cb.scParams)
-    : MConflict()
-  (o)          => MConflict()
-
-# Enum IDENTITY is root + valid leaves (a narrowed enum is a different type),
-# by NAME (sameEnum) — the family question is identity-by-name, never
-# equality (which now includes seParams: a complete spec's identity is its
-# name plus ALL its arguments). Params refine positionally.
-fun meetEnum(ea, b: Spec) => match(b)
-  (eb: SEnum) => ea.seRoot != eb.seRoot
-    ? MConflict()
-    : meetEnumViews(ea, eb)
-  (o)         => MConflict()
-
-# Same enum, possibly different VIEWS — a leaf-typed construction meeting
-# the root (or a sibling leaf) from another flow. Views JOIN: the union of
-# the valid leaf sets is what both flows satisfy, and every view shares one
-# representation (the enum-encoding principle), so the join costs nothing.
-fun meetEnumViews(ea, eb: SEnum)
-  # Views join only within ONE instantiation: the all-leaf sets must agree
-  # (mirrors specs.py meet's guard); different all-sets are stale copies of
-  # different instantiations — a genuine conflict.
-  if !(sameLen(chain(ea.seAllLeaves), chain(eb.seAllLeaves))
-       && allIn(chain(ea.seAllLeaves), eb.seAllLeaves))
-    ret MConflict()
-  let joined = sameEnum(ea, eb)
-    ? ea
-    : SEnum(ea.seRoot, unionLeaves(ea.seValidLeaves, eb.seValidLeaves),
-            ea.seAllLeaves, ea.seParams, ea.seLine)
-  ret isEmpty(ea.seParams) || !sameLen(chain(ea.seParams), chain(eb.seParams))
-    ? MSpec(joined)
-    : meetParams(joined, ea.seParams, eb.seParams)
-
-fun unionLeaves(a: List<String>, b: List<String>) => fold(b, a, (acc, n) =>
-    contains2(acc, n) ? acc : prepend(n, acc))
-
-fun sameEnum(ea: SEnum, eb: SEnum) => ea.seRoot == eb.seRoot
-    && sameLen(chain(ea.seValidLeaves), chain(eb.seValidLeaves))
-    && allIn(chain(ea.seValidLeaves), eb.seValidLeaves)
-
-fun meetTuple(ta: STuple, b: Spec) => match(b)
-  (tb: STuple) => !sameLen(chain(ta.stEntries), chain(tb.stEntries))
-    ? MConflict()
-    : meetEntries(ta, chain(ta.stEntries), chain(tb.stEntries), builder())
-  (o)          => MConflict()
-
-# The entries are a TUPLE's fields, so their order is the tuple's identity —
-# this is genuinely ordered accumulation, and a threaded ListBuilder is the
-# answer rather than a different container. build() at the base case turns it
-# back into the List the STuple holds.
-fun meetEntries(base: STuple, as2: Chain<SEntry>, bs: Chain<SEntry>,
-                [terminal] acc) => match(as2)
-  (nil: ChainEnd) => MSpec(STuple(build(acc), base.stLine))
-  (la: ChainLink) => match(bs)
-    (lb: ChainLink) => meetEntry(base, la, lb, acc)
-    ()              => MConflict()
-
-fun meetEntry(base: STuple, la: ChainLink<SEntry>, lb: ChainLink<SEntry>,
-              [terminal] acc) => match(meet(la.value.seType, lb.value.seType))
-  (mc: MConflict) => MConflict()
-  (ms: MSpec)     => meetEntries(base, la.next, lb.next,
-      push(acc, SEntry(entryName(la.value, lb.value), ms.mSpec, la.value.seDefault)))
-  ()              => meetEntries(base, la.next, lb.next,
-      push(acc, SEntry(entryName(la.value, lb.value), None, la.value.seDefault)))
-
-fun entryName(a: SEntry, b: SEntry) => a.seName != "" ? a.seName : b.seName
-
-fun meetParams(base, as2: List<Spec>, bs: List<Spec>)
-  ret meetParamLoop(base, chain(as2), chain(bs), builder())
-
-# Type parameters: position IS the meaning (List<A,B> is not List<B,A>), so a
-# threaded builder, not a container swap.
-fun meetParamLoop(base, as2: Chain<Spec>, bs: Chain<Spec>,
-                  [terminal] acc) => match(as2)
-  (nil: ChainEnd) => MSpec(withParams(base, build(acc)))
-  (la: ChainLink) => match(bs)
-    (lb: ChainLink) => meetParam(base, la, lb, acc)
-    ()              => MConflict()
-
-fun meetParam(base, la: ChainLink<Spec>, lb: ChainLink<Spec>,
-              [terminal] acc) => match(meet(la.value, lb.value))
-  (mc: MConflict) => MConflict()
-  (ms: MSpec)     => meetParamLoop(base, la.next, lb.next, push(acc, ms.mSpec))
-  ()              => meetParamLoop(base, la.next, lb.next, push(acc, la.value))
-
-fun withParams(base, params) => match(base)
-  (c: SClass) => SClass(c.scName, params, c.scLine)
-  (e: SEnum)  => SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves, params,
-                       e.seLine)
-  (o)         => base
-
 # refine: the ONE rule for a stored inferred type (an untyped let's declared
 # type, an undeclared function's return type). Refinable only while `current`
 # is absent or still carries a hole; an inferred view is adopted only when
-# ground; the merge is `meet`, so information only ever accumulates, and a
-# conflict leaves `current` untouched.
+# ground; the stored type RECEIVES the inference (a merge), so information
+# only ever accumulates, and a contradiction leaves `current` untouched.
 # Gate — refinable only while `current` is missing (None) or carries a FREE
 # placeholder (one that does not resolve in this scope); anything else is
 # finished and returned untouched. In particular a NON-CONCRETE current — an
@@ -786,7 +681,7 @@ fun isGenericDecl(name, r) => !contains(name, "$generic$") && match(soleItem(fin
 
 # An enum VIEW narrower than its enum — `Circle` of `Shape`. A type inferred
 # from such a value is provisional: the context may ask for the root (or a
-# wider view), and `meet` joins views. The valid leaves are always a subset of
+# wider view), and a widening merge joins views. The valid leaves are always a subset of
 # all leaves, so "narrower" is "fewer".
 fun isNarrowedView(sp) => match(sp)
   (e: SEnum) => !sameLen(chain(e.seValidLeaves), chain(e.seAllLeaves))
@@ -795,7 +690,7 @@ fun isNarrowedView(sp) => match(sp)
 # A narrowed view anywhere in `sp` — `Circle` itself, or the `Op{Move}` inside
 # a stored `List<Op{Move}>`. Such an inferred type is provisional: a use-site
 # binding re-infers against its expected type, and a stored let/return type
-# keeps refining, so `meet` widens it exactly as far as the context demands.
+# keeps refining, so the merge widens it exactly as far as the context demands.
 fun containsNarrowedView(sp) => match(sp)
   (e: SEnum)         => isNarrowedView(sp) || any(e.seParams, (p) => containsNarrowedView(p))
   (c: SClass)        => any(c.scParams, (p) => containsNarrowedView(p))
@@ -862,51 +757,7 @@ fun cnsOpt(sp: Spec|None) => match(sp)
   ()         => false
 
 
-# ══ unification ══════════════════════════════════════════════════════════════
-# unify_generic: match a generic type tree against a concrete one, returning
-# the {placeholder → concrete} bindings, or failure. Unknown / mismatched
-# shapes DEFER (return the mapping unchanged) rather than fail hard — the
-# caller decides whether a partial mapping is good enough, and the fixpoint
-# retries once types ground.
-
-enum Unify
-  enum UMap(uBindings: List<Binding>)
-  enum UFail()
-
-fun unifyGeneric(generic, concrete, names: List<String>,
-                 mapping) => unifyGenericIn(generic, concrete, names, None, mapping)
-
-# `scope` is the use site's scope (Python's `in_scope`): a concrete-side
-# placeholder that resolves there is a real type and may be bound to. Only
-# use-site inference has one; every other caller unifies without.
-#
-# A callable's parameter is contravariant: `(:Shape): Int` is a fine
-# `(:Circle): Int`. So it binds only a placeholder that appears nowhere else,
-# and otherwise may only refine a binding (names, holes), never widen a view.
-fun unifyGenericIn(generic, concrete, names: List<String>,
-                   scope: Resolver|None, mapping)
-  let covariant = withoutCallableParams(generic)
-  ret match(unifyTree(covariant, concrete, names, scope, mapping))
-    (um: UMap)  => eqSpec(covariant, generic)
-      ? um
-      : UMap(refinedBy(um.uBindings, placeholderNames(covariant),
-                       unifyTree(generic, concrete, names, scope, List())))
-    (uf: UFail) => uf
-
-fun refinedBy(mapping: List<Binding>, elsewhere: List<String>,
-              upper) => match(upper)
-  (um: UMap)  => fold(um.uBindings, mapping,
-                      (acc, b) => refinedOne(acc, elsewhere, b))
-  (uf: UFail) => mapping
-
-fun refinedOne(mapping: List<Binding>, elsewhere: List<String>,
-               b: Binding) => match(bindingOf(mapping, b.bName))
-  (existing: Spec) => containsNarrowedView(existing)
-    ? mapping
-    : match(meet(existing, b.bSpec))
-      (ms: MSpec) => rebind(mapping, b.bName, ms.mSpec)
-      (o: Meet)   => mapping
-  ()               => contains2(elsewhere, b.bName) ? mapping : prepend(b, mapping)
+# ── callable parameters ──────────────────────────────────────────────────────
 
 fun withoutCallableParams(sp: Spec): Spec => rwSpec(sp, rwOnSpec(blankParams))
 
@@ -917,312 +768,11 @@ fun blankParams(sp): Spec|None => match(sp)
     (o: Spec)    => None
   (o: Spec)       => None
 
-fun unifyTree(generic: Spec, concrete, names: List<String>,
-              scope: Resolver|None, mapping)
-  # A placeholder we own binds to the concrete side (see bindHole for which
-  # concrete sides are concrete enough).
-  ret match(generic)
-    (g: SGeneric)      => contains2(names, g.sgName)
-      ? bindHole(g.sgName, concrete, names, scope, mapping)
-      : UMap(mapping)
-    (b: SBuiltin)      => unifyBuiltin(b, concrete, mapping)
-    (c: SClass)        => unifyClass(c, concrete, names, scope, mapping)
-    (e: SEnum)         => unifyEnum(e, concrete, names, scope, mapping)
-    (n: SNamed)        => unifyNamed(n, concrete, names, scope, mapping)
-    (t2: STuple)       => unifyTuple(t2, concrete, names, scope, mapping)
-    (cm: SCombination) => unifyUnion(cm, concrete, names, scope, mapping)
-    (cl: SCallable)    => unifyCallable(cl, concrete, names, scope, mapping)
-    (o)                => UMap(mapping)
-
-# Two bindings for one placeholder MEET rather than collide: a hole refines to
-# ground; only a genuine ground-vs-ground clash fails.
-# A bind is a COPY out of the concrete side's scope, and a NamedSpec is only
-# safely resolvable in its original context — so a spec that is or contains
-# one must never bind (containsNamedSpec, deep). DEFER — the fixpoint retries
-# once the callee's signature grounds.
-fun bindHole(name, concrete, names: List<String>,
-             scope: Resolver|None, mapping)
-  if placeholderUnbindable(concrete, names, scope) || containsNamedSpec(concrete)
-    ret UMap(mapping)
-  ret match(bindingOf(mapping, name))
-    (prior: Spec) => eqSpec(prior, concrete)
-      ? UMap(mapping)
-      : mergeBinding(name, prior, concrete, mapping)
-    ()            => UMap(prepend(Binding(name, concrete), mapping))
-
-# A concrete-side placeholder pins nothing down when it is one of the callee's
-# OWN params (binding to itself) or another declaration's unbound leftover (a
-# hole). But an ENCLOSING generic's parameter, in scope at the use site, is a
-# real type there: inside `shorter<T, U>`, `isEnd(b)` with `b: Chain<U>` binds
-# isEnd's T to U. Refusing it left the callee's own placeholder behind, which
-# monomorphisation then completed by bare NAME to the host's T — a silent
-# miscompile. Without a scope every placeholder stays a hole.
-fun placeholderUnbindable(concrete: Spec, names: List<String>,
-                          scope: Resolver|None) => match(concrete)
-  (g: SGeneric) => match(scope)
-    (r: Resolver) => contains2(names, g.sgName) || !resolvesInScope(g.sgName, r)
-    ()            => true
-  (o)           => false
-
-fun mergeBinding(name, prior: Spec, concrete: Spec,
-                 mapping) => match(meet(prior, concrete))
-  (mc: MConflict) => UFail()
-  (ms: MSpec)     => UMap(rebind(mapping, name, ms.mSpec))
-  ()              => UMap(mapping)
-
-fun rebind(mapping: List<Binding>, name, sp) => rebindLoop(chain(mapping), name, sp, List())
-
-fun rebindLoop(ms, name: String, sp,
-                      acc: List<Binding>) => build(rebindLoopB(ms, name, sp, builderFrom(acc)))
-
-fun [tail] rebindLoopB(ms: Chain<Binding>, name, sp,
-                      [terminal] acc: ListBuilder<Binding>) => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => rebindLoopB(l.next, name, sp,
-      push(acc, l.value.bName == name ? Binding(name, sp) : l.value))
-
-fun unifyBuiltin(b: SBuiltin, concrete: Spec, mapping) => match(concrete)
-  (cb: SBuiltin) => b.sbName == cb.sbName ? UMap(mapping) : UFail()
-  (o)            => UMap(mapping)
-
-fun unifyClass(c: SClass, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping) => match(concrete)
-  (cc: SClass) => c.scName != cc.scName
-                  || !sameLen(chain(c.scParams), chain(cc.scParams))
-    ? UMap(mapping)
-    : unifyList(chain(c.scParams), chain(cc.scParams), names, scope, mapping)
-  (o)          => UMap(mapping)
-
-# Generic ENUM instances (List<T> vs List<Thing>, Dict<K,V>) unify through
-# their type arguments exactly like classes — this is how a container-only
-# call site binds its element type.
-fun unifyEnum(e: SEnum, concrete: Spec, names: List<String>,
-              scope: Resolver|None, mapping) => match(concrete)
-  (ce: SEnum) => e.seRoot != ce.seRoot
-                 || isEmpty(e.seParams)
-                 || !sameLen(chain(e.seParams), chain(ce.seParams))
-    ? UMap(mapping)
-    : unifyList(chain(e.seParams), chain(ce.seParams), names, scope, mapping)
-  (o)         => UMap(mapping)
-
-fun unifyNamed(n: SNamed, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping) => match(concrete)
-  (cn: SNamed) => n.snName != cn.snName
-                  || isEmpty(n.snParams)
-                  || !sameLen(chain(n.snParams), chain(cn.snParams))
-    ? UMap(mapping)
-    : unifyList(chain(n.snParams), chain(cn.snParams), names, scope, mapping)
-  (o)          => UMap(mapping)
-
-fun unifyCallable(cl: SCallable, concrete: Spec, names: List<String>,
-                  scope: Resolver|None, mapping) => match(concrete)
-  (cc: SCallable) => match(unifyTree(cl.scParams2, cc.scParams2, names, scope, mapping))
-    (uf: UFail) => UFail()
-    (um: UMap)  => unifyOpt(cl.scResult, cc.scResult, names, scope, um.uBindings)
-  (o)             => UMap(mapping)
-
-fun unifyOpt(a: Spec|None, b: Spec|None, names: List<String>,
-             scope: Resolver|None, mapping) => match(a)
-  (sa: Spec) => match(b)
-    (sb: Spec) => unifyTree(sa, sb, names, scope, mapping)
-    ()         => UMap(mapping)
-  ()         => UMap(mapping)
-
-# Tuple entries pair via the shared BINDING, so a named/defaulted argument
-# unifies against the field it actually binds (positional zip would infer a
-# placeholder from the wrong field). Default-filled fields contribute nothing.
-fun unifyTuple(t2: STuple, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping) => match(concrete)
-  (ct: STuple) => match(bindTupleEntries(t2.stEntries,
-                          entryNames(chain(ct.stEntries), List())))
-    (b2: List<Int>) => unifyBound(chain(t2.stEntries), b2, ct.stEntries, names, scope,
-                                  mapping)
-    ()              => UMap(mapping)
-  (o)          => UMap(mapping)
-
-fun entryNames(es: Chain<SEntry>, acc: List<String>) => build(entryNamesB(es, builderFrom(acc)))
-
-fun [tail] entryNamesB(es: Chain<SEntry>, [terminal] acc): ListBuilder<String> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => entryNamesB(l.next, push(acc, l.value.seName))
-
-fun [tail] unifyBound(ds: Chain<SEntry>, binding: List<Int>, supplied: List<SEntry>,
-               names: List<String>, scope: Resolver|None,
-               mapping) => match(ds)
-  (nil: ChainEnd) => UMap(mapping)
-  (l: ChainLink)  => match(head(binding))
-    (ix: Int) => ix < 0
-      ? unifyBound(l.next, tail(binding), supplied, names, scope, mapping)
-      : unifyEntryPair(l.value, nthEntry(supplied, ix), l.next, tail(binding),
-                       supplied, names, scope, mapping)
-    ()        => UMap(mapping)
-
-fun unifyEntryPair(d: SEntry, s2: SEntry|None, rest,
-                   restBind: List<Int>, supplied: List<SEntry>,
-                   names: List<String>, scope: Resolver|None,
-                   mapping) => match(s2)
-  (se: SEntry) => match(unifyOpt(d.seType, se.seType, names, scope, mapping))
-    (uf: UFail) => UFail()
-    (um: UMap)  => unifyBound(rest, restBind, supplied, names, scope, um.uBindings)
-  ()           => unifyBound(rest, restBind, supplied, names, scope, mapping)
-
-fun nthEntry(es: List<SEntry>, ix) => head(drop(es, ix))
-
-fun [tail] unifyList(gs: Chain<Spec>, cs: Chain<Spec>, names: List<String>,
-              scope: Resolver|None, mapping) => match(gs)
-  (nil: ChainEnd) => UMap(mapping)
-  (lg: ChainLink) => match(cs)
-    (lc: ChainLink) => match(unifyTree(lg.value, lc.value, names, scope, mapping))
-      (uf: UFail) => UFail()
-      (um: UMap)  => unifyList(lg.next, lc.next, names, scope, um.uBindings)
-    ()              => UMap(mapping)
-
-# Union-vs-union: members are a SET. Positional alignment FIRST (the fixpoint's
-# progression is tuned to it), then a set-wise fallback for when position lies:
-# ground pattern members are matched and removed, and a single unbound
-# placeholder member binds to whatever concrete members remain.
-fun unifyUnion(cm: SCombination, concrete: Spec, names: List<String>,
-               scope: Resolver|None, mapping) => match(concrete)
-  (cc: SCombination) => unifyUnionSets(cm, cc, names, scope, mapping)
-  (o)                => UMap(mapping)
-
-fun unifyUnionSets(cm: SCombination, cc: SCombination, names: List<String>,
-                   scope: Resolver|None, mapping)
-  if sameLen(chain(cm.scTypes), chain(cc.scTypes))
-    let trial = unifyList(chain(cm.scTypes), chain(cc.scTypes), names, scope, mapping)
-    ret match(trial)
-      (um: UMap)  => um
-      (uf: UFail) => unifyUnionBySet(cm, cc, names, mapping)
-  ret unifyUnionBySet(cm, cc, names, mapping)
-
-fun unifyUnionBySet(cm: SCombination, cc: SCombination, names: List<String>,
-                    mapping)
-  let gen = reprMembers(cm)
-  let con = reprMembers(cc)
-  let holes = ownHoles(chain(gen), names, List())
-  let ground = groundMembers(chain(gen), names, builder())
-  if isEmpty(holes) || holesMoreThanOne(holes) || anyGroundHole(chain(ground), names)
-    ret UMap(mapping)                      # no single-hole partition: defer
-  ret match(removeGround(chain(ground), con))
-    (rest: List<Spec>) => bindRemainder(holes, rest, con, cm, mapping)
-    ()                 => UMap(mapping)    # a ground member is absent: defer
-
-# A short list: `holes` is tested for "exactly one" and then read. A union's
-# holes number zero or one in practice, so this never needs a tree.
-fun [tail] ownHoles(ms: Chain<Spec>, names: List<String>,
-                    acc) => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ownHoles(l.next, names, holeName(l.value, names, acc))
-
-fun holeName(sp: Spec, names: List<String>, acc) => match(sp)
-  (g: SGeneric) => contains2(names, g.sgName) && !contains2(acc, g.sgName)
-    ? prepend(g.sgName, acc)
-    : acc
-  (o)           => acc
-
-fun [tail] groundMembers(ms: Chain<Spec>, names: List<String>,
-                         [terminal] acc: ListBuilder<Spec>) => match(ms)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => groundMembers(l.next, names,
-      isOwnHole(l.value, names) ? acc : push(acc, l.value))
-
-fun isOwnHole(sp: Spec, names: List<String>) => match(sp)
-  (g: SGeneric) => contains2(names, g.sgName)
-  (o)           => false
-
-# A ground pattern member that itself mentions one of our placeholders leaves
-# no clean set partition.
-fun [tail] anyGroundHole(ms: Chain<Spec>, names: List<String>) => match(ms)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => sharesName(placeholderNames(l.value), names)
-    ? true
-    : anyGroundHole(l.next, names)
-
-# Do these two name collections overlap? Set-against-list, and neither side's
-# order can change the answer.
-fun sharesName(a: List<String>, b: List<String>) => any(a, (n) => contains2(b, n))
-
-fun [tail] sharesLoop(a: Chain<String>, b: List<String>) => match(a)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => contains2(b, l.value) ? true : sharesLoop(l.next, b)
-
-# Remove each ground pattern member from the concrete set; None when one is
-# absent (deferral, not failure — the concrete side may still be settling).
-# Matched by STRUCTURAL equality (Python `cm == gm`): a raw SNamed spelling has
-# no uid yet must still match its equal spelling on the concrete side.
-fun [tail] removeGround(gs: Chain<Spec>, con) => match(gs)
-  (nil: ChainEnd) => con
-  (l: ChainLink)  => match(removeOne(con, l.value))
-    (rest: List<Spec>) => removeGround(l.next, rest)
-    ()                 => None
-
-fun removeOne(con: List<Spec>, gm) => removeLoop(chain(con), gm, builder(), false)
-
-fun [tail] removeLoop(ms: Chain<Spec>, gm, [terminal] acc: ListBuilder<Spec>,
-                      dropped) => match(ms)
-  (nil: ChainEnd) => dropped ? build(acc) : None
-  (l: ChainLink)  => !dropped && eqSpec(l.value, gm)
-    ? removeLoop(l.next, gm, acc, true)
-    : removeLoop(l.next, gm, push(acc, l.value), dropped)
-
-# An already-pinned hole makes the slot a set-equality CHECK, not a binding
-# site: `existing ∪ ground` must equal the concrete set — every leftover
-# concrete member is in the binding and every binding member is in the
-# concrete union; a mismatch fails unless the concrete side still holds a
-# hole of its own. Otherwise `E | X` against bare `X` leaves nothing for E:
-# ambiguous, so defer.
-# `isMoreThanOne` and `singleOrNone` exist for Set and Bag but NOT for List, so
-# these ask the chain directly. (The resolver reports that as "Ambiguous —
-# Candidates: ..." rather than "nothing accepts a List", which is misleading;
-# that diagnostic is tracked separately. These helpers are correct either way.)
-fun holesMoreThanOne(holes: List<String>) => match(chain(holes))
-  (l: ChainLink) => l.next is ChainLink
-  (e: ChainEnd)  => false
-
-fun holesSingle(holes: List<String>) => match(chain(holes))
-  (l: ChainLink) => l.next is ChainEnd ? l.value : None
-  (e: ChainEnd)  => None
-
-fun bindRemainder(holes: List<String>, rest, con: List<Spec>,
-                  cm: SCombination, mapping) => match(holesSingle(holes))
-  (name: String) => match(bindingOf(mapping, name))
-    (prior: Spec) => checkPinned(prior, rest, con, mapping)
-    ()            => isEmpty(rest)
-      ? UMap(mapping)
-      : bindHoleTo(name, rest, cm, mapping)
-  ()             => UMap(mapping)
-
-fun checkPinned(prior, rest: List<Spec>, con: List<Spec>,
-                mapping)
-  fun hasSpec(ys, x) => hasLoop(chain(ys), x)
-  fun [tail] hasLoop(ys: Chain<Spec>, x: Spec): Bool => match(ys)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => eqSpec(l.value, x) ? true : hasLoop(l.next, x)
-  fun [tail] allInSet(xs: Chain<Spec>, ys) => match(xs)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => hasSpec(ys, l.value) ? allInSet(l.next, ys) : false
-  fun [tail] anyHole(ms: Chain<Spec>) => match(ms)
-    (nil: ChainEnd) => false
-    (l: ChainLink)  => isHoleSpec(l.value) ? true : anyHole(l.next)
-  let bound = match(prior)
-    (u: SCombination) => reprMembers(u)
-    (o: Spec)         => prepend(o, List())
-  if allInSet(chain(rest), bound) && allInSet(chain(bound), con)
-    ret UMap(mapping)
-  ret anyHole(chain(con)) ? UMap(mapping) : UFail()
-
-fun bindHoleTo(name, rest, cm: SCombination,
-               mapping)
-  let value = match(head(rest))
-    (only: Spec) if isEmpty(tail(rest)) => only
-    ()           => SCombination(rest, cm.scmLine)
-  ret UMap(prepend(Binding(name, value), mapping))
-
 # ── join ────────────────────────────────────────────────────────────────────
 # The type of a BRANCH (a match, a ternary) whose sides yield `a` and `b`: the
 # same type when they agree, otherwise their flattened SET UNION. Total — a
-# branch always HAS a type; only the receiver can reject it. Unlike meet, which
-# refines and can conflict, join never fails.
+# branch always HAS a type; only the receiver can reject it. Unlike merge,
+# which refines and can contradict, join never fails.
 #
 # Pure set semantics, nothing cleverer (user ruling): no common-parent search
 # (Child1 ⊔ Child2 is Child1|Child2, never their base), no field-wise tuple
@@ -1252,7 +802,7 @@ fun soleMember(members: List<Spec>, fallback) => match(head(members))
 #
 # A branch broadens its arms to their least upper bound, and that GROWS as arms
 # resolve late (`A`, then `A|None`). Plain refine latches the first concrete
-# view and its meet then rejects the wider one as a conflict — freezing the
+# view and its merge then rejects the wider one as a contradiction — freezing the
 # narrow type. So any receiver inferring from such a source (an undeclared
 # return, an untyped let, a destructure target) must be free to widen.
 #
@@ -1292,7 +842,7 @@ fun strictlyWider(f, refined, r) => triTrue(assignableFrom(r, f, refined))
 class [final] TraitInst(tiParams: List<String>, tiIface: SClass)
 
 # Positionally match an already-substituted constraint against a CONCRETE
-# instance interface. Strict and positional, deliberately NOT unifyGeneric: at
+# instance interface. Strict and positional: at
 # each position a target placeholder binds to the instance's type (only if
 # that side is itself concrete — an unresolved NAME would copy into a scope
 # that cannot resolve it); a concrete anchor must equal the instance's
@@ -1330,37 +880,6 @@ fun anchorsEqual(cArg, iArg,
                  [terminal] acc): ListBuilder<Binding>|None
   ret uid(cArg) != "" && uid(cArg) == uid(iArg) ? acc : None
 
-# Could `pattern` (a provider's interface, still holding its placeholders)
-# match `constraint`? A placeholder on either side is a wildcard; two class
-# specs must share name and arity and agree element-wise; other concrete
-# types must have equal ids. A cheap structural prune so the solver only
-# unifies a RELEVANT provider.
-fun traitPatternCompatible(pattern, constraint) => match(pattern)
-  (pg: SGeneric) => true
-  (pc: SClass)   => match(constraint)
-    (cg: SGeneric) => true
-    (cc: SClass)   => pc.scName == cc.scName
-                      && patternArgsCompatible(chain(pc.scParams),
-                                               chain(cc.scParams))
-    (co: Spec)     => idsCompatible(pattern, constraint)
-  (po: Spec)     => match(constraint)
-    (cg: SGeneric) => true
-    (co: Spec)     => idsCompatible(pattern, constraint)
-
-fun [tail] patternArgsCompatible(ps: Chain<Spec>, cs: Chain<Spec>) => match(ps)
-  (nil: ChainEnd) => match(cs)
-    (nil2: ChainEnd) => true
-    (c: ChainLink)   => false
-  (p: ChainLink)  => match(cs)
-    (nil2: ChainEnd) => false
-    (c: ChainLink)   => traitPatternCompatible(p.value, c.value)
-      ? patternArgsCompatible(p.next, c.next)
-      : false
-
-fun idsCompatible(pattern, constraint) => uid(pattern) == "" || uid(constraint) == ""
-  ? true
-  : uid(pattern) == uid(constraint)
-
 # Ground the `targets` placeholders of a trait constraint by matching it
 # against the instances (concrete first); the first whose grounded interface
 # binds the targets wins. A constraint whose SUBJECT is still a bare
@@ -1387,22 +906,15 @@ fun [tail] solveLoop(is2: Chain<TraitInst>, constraint,
 
 fun tryInstance(inst: TraitInst, constraint, targets: List<String>,
                 r: Resolver)
-  if !traitPatternCompatible(inst.tiIface, constraint)
-    ret None
-  ret match(instanceMapping(inst, constraint))
+  ret match(instanceMapping(inst, constraint, r))
     (m: List<Binding>) => groundedBinding(inst, m, constraint, targets)
     ()                 => None
 
 # The instance's OWN params must all be fixed by the constraint.
-fun instanceMapping(inst: TraitInst, constraint)
-  if isEmpty(inst.tiParams)
-    ret List<Binding>()
-  ret match(unifyGeneric(inst.tiIface, constraint, inst.tiParams,
-                         List()))
-    (m: UMap)  => allParamsBound(chain(inst.tiParams), m.uBindings)
-      ? m.uBindings
-      : None
-    (f: UFail) => None
+fun instanceMapping(inst: TraitInst, constraint, r)
+  ret match(patternBinding(inst.tiIface, constraint, inst.tiParams, r))
+    (m: List<Binding>) => allParamsBound(chain(inst.tiParams), m) ? m : None
+    ()                 => None
 
 fun [tail] allParamsBound(ps: Chain<String>, m: List<Binding>) => match(ps)
   (nil: ChainEnd) => true

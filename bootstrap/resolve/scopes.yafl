@@ -100,20 +100,20 @@ fun stmtName2(st) => stmtName(st)
 # generic scope AND the same trait operators, so an operator resolves the same
 # in each. (_initialiser_resolver — installed by scopeResolver above, for
 # top-level lets ONLY.)
-fun letScope(l: PsLet, r) => traitScope(l.lWheres, genScope(l.lGens, r))
+fun letScope(l: PsLet, r) => traitScope(l.lWheres, genScope(l.lGens, l.lWheres, r))
 
-fun classScope(c: PsClass, r) => genScope(c.cGens, r)
+fun classScope(c: PsClass, r) => genScope(c.cGens, c.cWheres, r)
 
-fun enumScope(e: PsEnum, r) => genScope(e.eGens, r)
+fun enumScope(e: PsEnum, r) => genScope(e.eGens, List(), r)
 
-fun typealiasScope(ta: PsTypealias, r) => genScope(ta.taGens, r)
+fun typealiasScope(ta: PsTypealias, r) => genScope(ta.taGens, ta.taWheres, r)
 
 # ── generic type params ─────────────────────────────────────────────────────
 # Each becomes a typealias bound to its own placeholder, so `TVal` resolves
 # through the ordinary type path to `SGeneric(TVal@hash)`.
 
-fun genScope(gens: List<PGen>, r): Resolver
-  ret isEmpty(gens) ? r : RTypes(genFounds(chain(gens), List()), r)
+fun genScope(gens: List<PGen>, wheres: List<Spec>, r): Resolver
+  ret isEmpty(gens) && isEmpty(wheres) ? r : RTypes(genFounds(chain(gens), List()), r, wheres)
 
 fun genFounds(gs, acc: List<Found>): List<Found> => build(genFoundsB(gs, builderFrom(acc)))
 
@@ -162,7 +162,7 @@ fun funBodyScope(f: PsFun, r) => localScope(flattenParams(f.fParams),
                                             f.fNested ? r : traitScope(f.fWheres, r))
 
 # The scope a function's BODY sees, built from the scope its DECLARATION sees.
-fun paramBodyScope(f: PsFun, r) => funBodyScope(f, genScope(f.fGens, r))
+fun paramBodyScope(f: PsFun, r) => funBodyScope(f, genScope(f.fGens, f.fWheres, r))
 
 # A block's statements bind names for the whole block — a block-scoped `let` is
 # visible to the statements after it AND to the block's value.

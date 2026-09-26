@@ -26,7 +26,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   (rx: PeRegex)   => noErrs()
   (ng: PeNothing) => noErrs()
   (nm: PeName)    => checkName(nm, r)
-  (d: PeDot)      => checkDot(d, r)
+  (d: PeDot)      => union(checkExpr(d.base, r, None), checkDot(d, r))
   (c: PeCall)     => checkCall(c, r)
   (tp: PeTuple)   => checkTupleExpr(tp, r, expected)
   (te: PeTernary) => checkTernary(te, r, expected)
@@ -57,7 +57,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
 fun checkName(nm: PeName, r)
   let tpErrs = checkSpecs(chain(nm.refTypeParams), r, noErrs())
   let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
-                            nm.penTrait)
+                            nm.penTrait, r)
   if isEmpty(datas)
     ret union(oneErr(nm.penLine, "Failed to resolve " + nm.refName), tpErrs)
   ret match(soleOf(Bag(datas)))
@@ -481,7 +481,7 @@ fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
                       + "patterns on an Int/String subject"))
   # Coverage, duplicate literals and unreachable arms: match_coverage.yafl.
   ret union(union(multiSubjectErrs(mt),
-                  matchArmChecks(chain(mt.arms), r, expected, subjectErr)),
+                  matchArmChecks(chain(mt.arms), st, r, expected, subjectErr)),
             matchCoverageErrs(mt, st, r))
 
 # ── multi-subject arity ─────────────────────────────────────────────────────
@@ -553,14 +553,18 @@ fun isEnumOrUnion(st) => match(st)
   (cm: SCombination) => true
   (o: Spec)          => false
 
-fun [tail] matchArmChecks(as2: Chain<PArm>, r, expected: Spec|None,
+fun [tail] matchArmChecks(as2: Chain<PArm>, st, r, expected: Spec|None,
                           acc) => match(as2)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => matchArmChecks(l.next, r, expected,
-                                    union(acc, checkArm(l.value, r, expected)))
+  (l: ChainLink)  => matchArmChecks(l.next, st, r, expected,
+                                    union(acc, checkArm(l.value, st, r, expected)))
 
-fun checkArm(a: PArm, r, expected: Spec|None): Set<PErr>
-  let bodyR = bindingScope(a, a.armType, r)
+# A bound else arm's binding is the whole subject, exactly as in compile;
+# every later position binds its own name at its declared type
+# (_extra_binding_resolver).
+fun checkArm(a: PArm, st, r, expected: Spec|None): Set<PErr>
+  let bodyR = extraScope(chain(a.armExtra), chain2(List<Spec|None>()),
+                         bindingScope(a, armHasNoType(a) ? st : a.armType, r))
   let typeErr = checkSpecOpt(a.armType, r)
   let bodyErr = checkExpr(a.armBody, bodyR, expected)
   let guardErr = armGuardErrs(a, bodyR, r)

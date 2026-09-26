@@ -267,6 +267,9 @@ class DotExpression(Expression):
         return converted(expr, expected_type, resolver), new_statements, hints
 
     def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        return self.base.check(resolver, None) + self.__field_errors(resolver)
+
+    def __field_errors(self, resolver: g.Resolver) -> list[Error]:
         btype = self.base.get_type(resolver)
         match btype:
             case t.TupleSpec(entries=entries):
@@ -352,7 +355,7 @@ def _distinct_resolutions(datas: list) -> list:
     return out
 
 
-def _scope_filtered(datas, resolved_trait_scope: t.ClassSpec | None):
+def _scope_filtered(datas, resolved_trait_scope: t.ClassSpec | None, resolver: g.Resolver):
     """Disambiguate multi-candidate trait members against the scope compile
     committed. Exact match first (where-clause / concrete-instance
     candidates); a generic ambient instance's candidate carries the PATTERN
@@ -362,18 +365,13 @@ def _scope_filtered(datas, resolved_trait_scope: t.ClassSpec | None):
         return datas
     filtered = [d for d in datas if d.trait_scope == resolved_trait_scope]
     if len(filtered) != 1:
-        # unify_generic is deliberately lenient: a structural mismatch defers
-        # (returns the mapping so far) rather than failing, so the caller must
-        # demand every instance placeholder actually bound — exactly as
-        # _solve_instance_scope does. Testing `is not None` alone let a
-        # FOREIGN generic instance of the same interface through on the empty
-        # mapping (two generic ambient Drop instances made every drop
-        # unresolvable).
+        # Every instance placeholder must bind: one left open says the scope
+        # never named this instance.
         def scope_binds(d) -> bool:
             if not d.instance_params or d.trait_scope is None:
                 return False
-            binding = t.unify_generic(d.trait_scope, resolved_trait_scope,
-                                      set(d.instance_params))
+            binding = t.pattern_binding(d.trait_scope, resolved_trait_scope,
+                                        d.instance_params, resolver)
             return binding is not None and set(binding) == set(d.instance_params)
         filtered = [d for d in datas if scope_binds(d)]
     return filtered if len(filtered) == 1 else datas
@@ -393,8 +391,16 @@ def _solve_instance_scope(resolver: g.Resolver, data,
     mapping = {p.name: c for p, c in zip(data.owner_class.type_params,
                                          data.trait_scope.type_params)}
     effective = t.substitute_placeholders(effective, mapping, resolver)
-    binding = t.unify_generic(effective, expected_type, set(data.instance_params))
-    if binding is None or set(binding) != set(data.instance_params):
+    # The use site's expected type RECEIVES the instance's member: a merge,
+    # the instance's params its named holes, all of which must bind — and to
+    # concrete types: ambience never serves a caller's own placeholder
+    # (USER RULING; generic code states its own `where`).
+    _m, learned, errors = t.merge(expected_type, effective,
+                                  {n: None for n in data.instance_params}, resolver,
+                                  callee_left=False)
+    binding = {n: spec for n, spec in learned.items() if spec is not None}
+    if (errors or set(binding) != set(data.instance_params)
+            or any(t.placeholder_names_in(spec) for spec in binding.values())):
         return None
     solved = t.substitute_placeholders(data.trait_scope, binding, resolver)
     return solved if isinstance(solved, t.ClassSpec) else None
@@ -419,7 +425,7 @@ class NamedExpression(Expression):
         if not datas.complete:
             return None
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
-        datas = _scope_filtered(datas, self.resolved_trait_scope)
+        datas = _scope_filtered(datas, self.resolved_trait_scope, resolver)
         if len(datas) != 1:
             return None
         resolved = datas[0]
@@ -531,7 +537,7 @@ class NamedExpression(Expression):
         # depends on, so they must keep seeing it.
         datas = _distinct_resolutions(resolver.find_data(self.name))
         # compile() already disambiguated via resolved_trait_scope; filter to that scope
-        datas = _scope_filtered(datas, self.resolved_trait_scope)
+        datas = _scope_filtered(datas, self.resolved_trait_scope, resolver)
         match datas:
             case []:
                 return [Error(self.line_ref, f"Failed to resolve {self.name}")] + tp_errors

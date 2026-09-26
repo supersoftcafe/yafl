@@ -47,14 +47,14 @@ class TypeAliasStatement(TypeStatement):
         trts: list[t.TypeSpec] = list(self.trait_params)
         trts_glb: list[Statement] = []
         if self.type_params or self.trait_params:
-            resolver = g.ResolverType(resolver, self._find_generic_types)
+            resolver = self._generic_scope(resolver)
             trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
         new_type, new_statements = self.type.compile(resolver)
         return dataclasses.replace(self, type=new_type, trait_params=tuple(trts)), new_statements + trts_glb, {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         if self.type_params or self.trait_params:
-            resolver = g.ResolverType(resolver, self._find_generic_types)
+            resolver = self._generic_scope(resolver)
         return (self.type.check(resolver)
                 + [e for x in self.trait_params for e in x.check(resolver)]
                 + self.unknown_attribute_errors("a typealias"))
@@ -141,7 +141,7 @@ class EnumStatement(TypeStatement):
         # Expose this enum's generic type params (K, V, …) so that variant
         # parameter types like `tail: _Bucket<K,V>` can resolve K and V.
         if self.type_params:
-            resolver = g.ResolverType(resolver, self._find_generic_types)
+            resolver = self._generic_scope(resolver)
         new_parameters, prm_stmts, _ = self.parameters.compile(resolver, None)
         new_variants: list[EnumStatement] = []
         var_stmts: list[Statement] = []
@@ -266,7 +266,7 @@ class EnumStatement(TypeStatement):
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> Statement:
         # Expose generic type params so variant field types resolve correctly.
-        variant_resolver = g.ResolverType(resolver, self._find_generic_types) if self.type_params else resolver
+        variant_resolver = self._generic_scope(resolver) if self.type_params else resolver
         new_spec = rw.opt(self._enum_spec, resolver, replace)
         return rw.rewrite(self, replace, resolver,
             parameters=self.parameters.search_and_replace(variant_resolver, replace),

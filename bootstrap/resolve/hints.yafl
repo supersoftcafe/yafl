@@ -106,20 +106,19 @@ fun hintVerdict(hs: List<Hint>, r)
 
 # The lower answer when it fits the upper one; otherwise the upper bound
 # RECEIVES the lower one: their merge (List spelled without arguments below,
-# `List<Int>` above, is `List<Int>`). Until the remaining callers move to
-# merge, a contradiction still falls back to the common parent.
+# `List<Int>` above, is `List<Int>`). Bounds that contradict generalise to
+# their common parent (USER RULING: uppers generalise) — joining is not the
+# merge's job.
 fun combined(lower, upper, r) => match(lower)
   (lo: Spec) => match(upper)
-    (up: Spec) => eqSpec(lo, up) || triTrue(assignableEq(r, up, lo))
+    (up: Spec) => eqSpec(lo, up) || receives(up, lo, r)
       ? lower
       : mergedBounds(lo, up, r)
     ()         => lower
   ()         => upper
 
-fun mergedBounds(lo, up, r) => mergeSpecs(up, lo, List<MBind>(), r)
-  |> (m) => match(m.moSpec)
-    (sp: Spec) => isEmpty(m.moErrs) ? sp : convergeTypes(list2(lo, up), r)
-    ()         => convergeTypes(list2(lo, up), r)
+fun mergedBounds(lo, up, r): Spec|None => mergeSpecs(up, lo, List<MBind>(), r)
+  |> (m) => isEmpty(m.moErrs) ? m.moSpec : convergeTypes(list2(lo, up), r)
 
 fun upperOf(uppers: List<Spec>, r)
   if isEmpty(uppers)
@@ -148,8 +147,7 @@ fun [tail] narrowest(us: Chain<Spec>, all: List<Spec>, r) => match(us)
 fun [tail] allFit(us: Chain<Spec>, cand, r, widest) => match(us)
   (nil: ChainEnd) => true
   (l: ChainLink)  => eqSpec(l.value, cand)
-                     || triTrue(widest ? assignableEq(r, cand, l.value)
-                                       : assignableEq(r, l.value, cand))
+                     || (widest ? receives(cand, l.value, r) : receives(l.value, cand, r))
     ? allFit(l.next, cand, r, widest)
     : false
 
@@ -197,8 +195,7 @@ fun soleShared(shared: List<Spec>|None) => match(shared)
 # A ternary's or match's type: its branches converged, else their union.
 # An arm whose type holds a placeholder that is NOT in scope — a generic call
 # that bound nothing, `List()` — has only a SHAPE. Such an arm FITS a sibling
-# when binding its free placeholders makes it that sibling (its in-scope
-# placeholders must match exactly). It takes the one ground sibling it fits;
+# when merging the sibling into it gives back the sibling (fitsShape). It takes the one ground sibling it fits;
 # with none, the earliest arm it fits — so shapes of one family collapse to
 # one instead of standing as a union of holes; with several ground ones it is
 # ambiguous and stays as it is. The candidates are the arms' MEMBERS: the
@@ -214,11 +211,10 @@ fun branchType(types: List<Spec|None>, r): Spec|None
       ()        => fold(drop(known, 1), head(known), (acc, x) => join(acc, x))
 
 fun filledShape(arm, siblings: List<Spec>, r)
-  let free = filter(placeholderNames(arm), (n) => !resolvesInScope(n, r))
-  if isEmpty(free)
+  if !hasFreePlaceholders(arm, r)
     ret arm
   let members = fold(siblings, List<Spec>(), (acc, x) => concat(acc, branchMembers(x)))
-  let fitting = filter(members, (x) => fitsShape(arm, x, free))
+  let fitting = filter(members, (x) => fitsShape(arm, x, r))
   let ground = addSpecsOnce(List<Spec>(), chain(filter(fitting, (x) => !hasFreePlaceholders(x, r))))
   ret match(head(ground))
     (g: Spec) => exactly(chain(ground), 1) ? g : arm
@@ -230,13 +226,11 @@ fun branchMembers(sp): List<Spec> => match(sp)
   (cm: SCombination) => reprMembers(cm)
   (o: Spec)          => prepend(sp, List())
 
-# Against the sibling's placeholders made opaque, the free ones bind to
-# ground parts and no scope question arises.
-fun fitsShape(arm, sibling, free: List<String>)
-  let target = withOpaquePlaceholders(sibling)
-  ret match(unifyGeneric(arm, target, free, List<Binding>()))
-    (um: UMap)  => eqSpec(withOpaquePlaceholders(substitute(arm, um.uBindings)), target)
-    (uf: UFail) => false
+# The arm fits when merging the sibling into it gives back the sibling: the
+# holes filled, nothing else changed (no lifting, no other view).
+fun fitsShape(arm, sibling, r) => match(mergeSpecs(arm, sibling, List(), r).moSpec)
+  (m: Spec) => eqSpec(m, sibling)
+  ()        => false
 
 fun [tail] knownSpecs(ts: Chain<Spec|None>,
                       [terminal] acc: ListBuilder<Spec>) => match(ts)

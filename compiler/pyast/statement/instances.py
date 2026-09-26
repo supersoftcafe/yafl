@@ -61,7 +61,7 @@ class TraitInstanceStatement(NamedStatement):
         return new_x
 
     def __scope(self, resolver: g.Resolver) -> g.Resolver:
-        return g.ResolverType(resolver, self._find_generic_types)
+        return self._generic_scope(resolver)
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
         scoped = self.__scope(resolver)

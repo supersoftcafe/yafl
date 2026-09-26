@@ -47,7 +47,7 @@ Source (.yafl)
 **`pyast/`** — The typed AST used throughout compilation (theory of operation: `docs/compiler-internals.md`):
 - `statement/` — `Statement` hierarchy, one kind per submodule: `base.py` (protocol + shared bases), `function.py`, `classdef.py`, `lets.py`, `types.py`, `control.py`. Statements have `compile()`, `check()`, and `generate()` methods.
 - `expression/` — Expression nodes, same one-kind-per-submodule layout.
-- `typespec/` — The type system: `specs.py` (representations: `BuiltinSpec`, `NamedSpec`, `TupleSpec`, `CombinationSpec`, `CallableSpec`, `ClassSpec`, `GenericPlaceholderSpec`) and `algebra.py` (`meet`, `refine`, `unify_generic`, `substitute_placeholders`, `solve_trait_constraint`).
+- `typespec/` — The type system: `specs.py` (representations: `BuiltinSpec`, `NamedSpec`, `TupleSpec`, `CombinationSpec`, `CallableSpec`, `ClassSpec`, `GenericPlaceholderSpec`) and `algebra.py` (`merge` — the one directional type merge, docs/type-merge-design.md — `refine`, `pattern_binding`, `substitute_placeholders`, `solve_trait_constraint`).
 - `resolver.py` — Name resolution (`Resolver`, `ResolverRoot`, `AddScopeResolution`, `OperationBundle`).
 
 **`lowering/`** — transformation passes; the full ordered list with each pass's

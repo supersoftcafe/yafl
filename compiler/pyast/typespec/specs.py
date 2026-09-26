@@ -3,7 +3,7 @@
 One frozen dataclass per kind of type (builtin, class, enum, tuple, callable,
 union, placeholder, unresolved name), each carrying its own compile / check /
 generate / assignability behaviour. The algorithms OVER these representations —
-meet, refine, unification, substitution, trait-constraint solving — live in
+merge, refine, substitution, trait-constraint solving — live in
 pyast/typespec/algebra.py; `import pyast.typespec as t` exposes both halves.
 """
 from __future__ import annotations

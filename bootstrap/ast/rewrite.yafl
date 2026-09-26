@@ -507,7 +507,7 @@ fun rwnFunScope(f: PsFun, sc: Resolver|None) => match(sc)
   ()             => None
 
 fun rwnClassScope(c, sc: Resolver|None) => match(sc)
-  (r2: Resolver) => genScope(c.cGens, RClassBody(c, r2))
+  (r2: Resolver) => genScope(c.cGens, c.cWheres, RClassBody(c, r2))
   ()             => None
 
 # The arm's own binding, then one per extra position at its DECLARED type —

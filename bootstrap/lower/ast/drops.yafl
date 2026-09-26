@@ -182,18 +182,16 @@ fun droppableSpec(s2, wheres: List<Spec>, r,
   (g2: SGeneric) => match(dropInterfaceName(r))
     (dn: String) => whereDropsPlaceholder(chain(wheres), dn, g2.sgName)
     ()           => false
-  (o: Spec)      => instantiatesADrop(withOpaquePlaceholders(s2), insts)
+  (o: Spec)      => instantiatesADrop(withOpaquePlaceholders(s2), insts, r)
 
-fun instantiatesADrop(wanted, insts: List<TraitInst>)
+fun instantiatesADrop(wanted, insts: List<TraitInst>, r)
   let u = uid(wanted)
-  ret u != "" && any(insts, (ti) => instantiatesDrop(ti, wanted, u))
+  ret u != "" && any(insts, (ti) => instantiatesDrop(ti, wanted, u, r))
 
-fun instantiatesDrop(ti: TraitInst, wanted, u) => match(head(ti.tiIface.scParams))
-  (pattern: Spec) => match(isEmpty(ti.tiParams)
-                           ? UMap(List<Binding>())
-                           : unifyGeneric(pattern, wanted, ti.tiParams, List<Binding>()))
-    (um: UMap)  => uid(substitute(pattern, um.uBindings)) == u
-    (uf: UFail) => false
+fun instantiatesDrop(ti: TraitInst, wanted, u, r) => match(head(ti.tiIface.scParams))
+  (pattern: Spec) => match(patternBinding(pattern, wanted, ti.tiParams, r))
+    (m: List<Binding>) => uid(substitute(pattern, m)) == u
+    ()                 => false
   ()              => false
 
 fun [tail] whereDropsPlaceholder(ws: Chain<Spec>, dn,

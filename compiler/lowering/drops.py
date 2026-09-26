@@ -119,8 +119,7 @@ class _Inserter:
 
         def instantiates(inst: t.TraitInstance) -> bool:
             pattern = inst.interface.type_params[0]
-            mapping = (t.unify_generic(pattern, wanted, set(inst.param_names))
-                       if inst.param_names else {})
+            mapping = t.pattern_binding(pattern, wanted, inst.param_names, self.resolver)
             return (mapping is not None and uid ==
                     t.substitute_placeholders(pattern, mapping, self.resolver).as_unique_id_str())
 

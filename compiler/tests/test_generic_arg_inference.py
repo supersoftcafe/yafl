@@ -14,7 +14,7 @@ import compiler as c
 # integer slot (e.g. an `Int32` parameter) without an explicit `i32` suffix
 # — a type annotation the user should not have to write when the context
 # already fixes the type.  This also voids generic inference: a width
-# mismatch in one argument position makes `unify_generic` discard the
+# mismatch in one argument position makes the parameter merge discard the
 # placeholder binding from the others.
 #
 # Written to FAIL today and to pass once integer literals are context-typed
@@ -104,5 +104,49 @@ class Test(TestCase):
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertEqual("", result or "")
         content = content.replace("takesF32(1.5)", "takesF32(1.5f32)")
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)
+
+
+class TestSiblingVariantsBindOneParam(TestCase):
+    def test_two_variants_of_one_enum_bind_t_to_both(self):
+        # `pair(Circle(..), Square(..))`: the first argument binds T to the
+        # Circle view, the second must widen it — an argument binding is a
+        # provisional view, never a contradiction (list2(OpMove, OpNewObject)
+        # in the port).
+        content = ("import System\n"
+                   "\n"
+                   "enum Shape\n"
+                   "  enum Circle(r: System::Int)\n"
+                   "  enum Square(s: System::Int)\n"
+                   "\n"
+                   "fun pair<T>(a: T, b: T): System::Int\n"
+                   "    ret 0\n"
+                   "\n"
+                   "fun main(): System::Int\n"
+                   "    ret pair(Circle(1), Square(2))\n")
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        self.assertNotEqual("", result)
+
+
+class TestACallableParameterBindsOnlyWhatNothingElseCan(TestCase):
+    def test_a_lambda_parameter_waits_for_the_list(self):
+        # fold(drop(known, 1), head(known), (acc, x) => pick(acc, x)): while
+        # `known` is still untyped the lambda's `x` (pick takes Int|None)
+        # must not bind fold's T — T also types the list, and waits for it.
+        content = ("namespace Test\nimport System\n"
+                   "fun twice(i: System::Int): System::Int => i * 2\n"
+                   "fun pick(a: System::Int|System::None, b: System::Int|System::None): System::Int|System::None => match(a)\n"
+                   "  (x: System::Int) => match(b)\n"
+                   "    (y: System::Int) => x > y ? x : y\n"
+                   "    ()               => x\n"
+                   "  () => b\n"
+                   "fun best(xs: System::List<System::Int>): System::Int|System::None\n"
+                   "  let known = map(xs, (x) => twice(x))\n"
+                   "  ret fold(drop(known, 1), head(known), (acc, x) => pick(acc, x))\n"
+                   "fun main(): System::Int\n"
+                   "  ret match(best(prepend(3, prepend(4, List()))))\n"
+                   "    (i: System::Int) => i\n"
+                   "    ()               => 0\n")
         result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)

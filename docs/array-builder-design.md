@@ -100,7 +100,7 @@ failed parse alternative, an early exit) must still release its pinned run
 (a leaked pin is a permanently unmovable object): `discard` seals empty,
 unpinning, so run and referents die at the next cycle. (Adding this SECOND
 generic ambient Drop instance exposed a latent resolver bug — see
-`_scope_filtered` in `pyast/expression/access.py`: `unify_generic` callers
+`_scope_filtered` in `pyast/expression/access.py`: an instance lookup
 must demand every instance placeholder bound, not merely a non-None
 mapping.) `SeqBuilder<T>`'s ambient Drop is now the third generic instance
 riding the same resolution path.

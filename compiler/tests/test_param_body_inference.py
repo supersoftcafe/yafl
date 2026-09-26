@@ -455,16 +455,19 @@ class TestVerdictMergesItsBounds(TimedTestCase):
     passes where one of the bounds happened to be missing."""
 
     def test_a_shape_below_and_an_instantiation_above(self):
+        # Converged, so the resolver knows Box is generic: a bare `Box` is a
+        # shape, not a type that fits `Box<Int>` as it stands.
         import pyast.hints as h
-        import pyast.resolver as g
+        import pyast.statement as st
         import pyast.typespec as t
-        from parsing.tokenizer import LineRef
-        lr = LineRef("v", 0, 0)
-        leaves = ("List@1", ("ListEmpty@1", "ListFull@1"))
-        bare = t.EnumSpec(lr, leaves[0], frozenset(leaves[1]), leaves[1])
-        of_int = t.EnumSpec(lr, leaves[0], frozenset(leaves[1]), leaves[1],
-                            type_params=(t.BuiltinSpec(lr, "bigint"),))
-        verdict = h.verdict((h.Hint(of_int), h.Hint(bare, lower=True)), g.ResolverRoot([]))
+        from parsing.parser import parse
+        from parsing.tokenizer import tokenize
+        source = "namespace G\nenum Box<T>\n  enum Full(value: T)\n  enum Empty()\n"
+        statements, resolver, _passes = c.__dict__["__converge"](parse(tokenize(source, "vb")).value)
+        bare = next(x for x in statements if isinstance(x, st.EnumStatement)).get_type()
+        of_int = t.EnumSpec(bare.line_ref, bare.root_name, bare.valid_leaf_names, bare.all_leaf_names,
+                            type_params=(t.BuiltinSpec(bare.line_ref, "bigint"),))
+        verdict = h.verdict((h.Hint(of_int), h.Hint(bare, lower=True)), resolver)
         self.assertEqual(of_int, verdict.type)
 
     def test_leaf_patterns_and_a_declared_return(self):

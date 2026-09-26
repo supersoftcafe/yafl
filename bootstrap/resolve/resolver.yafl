@@ -402,7 +402,10 @@ enum Resolver
              rrBoxedLeaves: Dict<String, Bool>|None = None,
              rrMerged: Dict<String, MergedOut>|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
-  enum RTypes(rtNames: List<Found>, rtParent: Resolver)    # generic params
+  # A declaration's generic params, and the `where` constraints it states
+  # over them: inside the declaration — its signature as much as its body —
+  # a use may assume they hold.
+  enum RTypes(rtNames: List<Found>, rtParent: Resolver, rtWheres: List<Spec>)
   # In-scope NAMESPACES (the imports, plus the statement's own): an unqualified
   # name is ALSO looked up under each of them, which is how `print` finds
   # `System::print@hash`. Only a name that is neither qualified nor already
@@ -444,6 +447,10 @@ fun findData(r, query): Findings => match(r)
   (tr: RTraits) => addFindings(traitFindings(tr, query, tr.rtrParent),
                            findData(tr.rtrParent, query))
   (cb: RClassBody) => classBodyFindings(cb, query)
+
+# A root over no statements: Python's `ResolverRoot([])`, for a lowering
+# stage that has no scope to offer.
+fun emptyResolver() => RRoot((root) => false, (name) => false, buildStatements(List<PStmt>()))
 
 fun findType(r, query): Findings => match(r)
   (root: RRoot) => globalFindings(root.rrStmts, query, true)
@@ -580,6 +587,17 @@ fun [tail] traitLets(r) => match(r)
   (tr: RTraits)    => traitLets(tr.rtrParent)
   (cb: RClassBody) => traitLets(cb.rcbParent)
   (rg: RGen)       => traitLets(rg.rgParent)
+
+# get_where_clauses: the `where` constraints in scope — every enclosing
+# declaration's: what a use inside it may assume holds.
+fun whereClauses(r): List<Spec> => match(r)
+  (root: RRoot)    => List<Spec>()
+  (sc: RScopes)    => whereClauses(sc.rsParent)
+  (d: RData)       => whereClauses(d.rdParent)
+  (t2: RTypes)     => concat(t2.rtWheres, whereClauses(t2.rtParent))
+  (tr: RTraits)    => whereClauses(tr.rtrParent)
+  (cb: RClassBody) => whereClauses(cb.rcbParent)
+  (rg: RGen)       => whereClauses(rg.rgParent)
 
 # Dedupe preserving FIRST-SEEN order: a Set answers "have I seen this" in
 # O(log n) where scanning the accumulator was O(n) per element, and a builder

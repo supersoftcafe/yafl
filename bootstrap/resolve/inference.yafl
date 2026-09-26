@@ -44,9 +44,9 @@ fun useSiteTypeParams(stmt, supplied, expected: Spec|None,
 # A binding to a NARROWED enum view (`T = Circle`, from a Circle-valued
 # argument) is provisional too: the context may expect the root — a list of
 # Circles flowing where List<Shape> is declared — and generic type arguments
-# are invariant, so the use must widen rather than latch. `meet` joins views,
-# so re-inferring against the expected type widens the binding exactly as far
-# as the context demands and no further.
+# are invariant, so the use must widen rather than latch. The merge widens
+# views, so re-inferring against the expected type widens the binding exactly
+# as far as the context demands and no further.
 fun suppliedComplete(supplied: List<Spec>, gens: List<PGen>,
                      r) => sameLen(chain(supplied), chain(gens)) && !anyFree(chain(supplied), r)
     && !any(supplied, (sp) => containsNarrowedView(sp))
@@ -60,21 +60,22 @@ fun reinferred(stmt, gens: List<PGen>, supplied,
   (dt: Spec) => match(dt)
     (declared: SCallable) => match(inferTypeParams(stmt, gens, declared,
                                                    want, r))
-      (mapping: List<Binding>) => mergedParams(gens, supplied, mapping)
+      (mapping: List<Binding>) => mergedParams(gens, supplied, mapping, r)
       ()                       => supplied
     (o: Spec)             => supplied
   ()         => supplied
 
-# MONOTONE re-inference: a param this pass could not re-derive keeps its
-# previously stored binding (MEET — a fresh hole must never overwrite a ground
-# binding); a param never bound keeps its OWN placeholder, so the use stays
-# generic until a later pass.
+# MONOTONE re-inference: the stored binding RECEIVES this pass's — a merge
+# that widens a provisional view — so a fresh hole never overwrites a ground
+# binding; types only refine. A param never bound keeps its OWN placeholder,
+# so the use stays generic until a later pass. A contradiction takes the
+# fresh binding.
 fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
-                 mapping: List<Binding>)
+                 mapping: List<Binding>, r)
   let prior = sameLen(chain(supplied), chain(gens))
     ? priorBindings(chain(gens), chain(supplied), List())
     : List()
-  ret mergeLoop(chain(gens), prior, mapping, List())
+  ret mergeLoop(chain(gens), prior, mapping, r, List())
 
 fun priorBindings(gs, ss,
                          acc: List<Binding>): List<Binding>
@@ -90,23 +91,23 @@ fun [tail] priorBindingsB(gs: Chain<PGen>, ss: Chain<Spec>,
                                                 s2.value)))
 
 fun mergeLoop(gs, prior: List<Binding>,
-                     mapping: List<Binding>, acc: List<Spec>)
-  ret build(mergeLoopB(gs, prior, mapping, builderFrom(acc)))
+                     mapping: List<Binding>, r, acc: List<Spec>)
+  ret build(mergeLoopB(gs, prior, mapping, r, builderFrom(acc)))
 
 fun [tail] mergeLoopB(gs: Chain<PGen>, prior: List<Binding>,
-                     mapping: List<Binding>, [terminal] acc: ListBuilder<Spec>) => match(gs)
+                     mapping: List<Binding>, r, [terminal] acc: ListBuilder<Spec>) => match(gs)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => mergeLoopB(l.next, prior, mapping,
-                               push(acc, boundParam(l.value, prior,
-                                               mapping)))
+  (l: ChainLink)  => mergeLoopB(l.next, prior, mapping, r,
+                               push(acc, boundParam(l.value, prior, mapping, r)))
 
-fun boundParam(g2: PGen, prior: List<Binding>, mapping: List<Binding>)
+fun boundParam(g2: PGen, prior: List<Binding>, mapping: List<Binding>, r): Spec
   let fresh = match(bindingOf(mapping, g2.genName))
     (b: Spec) => b
     ()        => ownPlaceholder(g2)
-  ret match(meet(bindingOf(prior, g2.genName), fresh))
-    (ms: MSpec) => ms.mSpec
-    (o: Meet)   => fresh
+  let m = mergeSpecsWidening(bindingOf(prior, g2.genName), fresh, List(), true, r)
+  ret match(m.moSpec)
+    (sp: Spec) => isEmpty(m.moErrs) ? sp : fresh
+    ()         => fresh
 
 fun ownPlaceholder(g2: PGen) => SGeneric(g2.genName, isLinearGen(g2), g2.pgLine)
 
@@ -114,18 +115,92 @@ fun ownPlaceholder(g2: PGen) => SGeneric(g2.genName, isLinearGen(g2), g2.pgLine)
 # Three sources, strongest first: argument types (declared parameter tuple vs
 # the call's actual one), the expected result, and — for a param that appears
 # only in a `where` clause — the trait instances in scope. The mapping may be
-# PARTIAL; None means the shapes don't unify at all.
+# PARTIAL; None means the arguments contradict the parameters.
 
 fun inferTypeParams(stmt, gens: List<PGen>, declared: SCallable,
                     want: SCallable, r)
   let names = genNames(chain(gens), List())
-  # An enclosing generic's parameter is a real type at this use site, so the
-  # callee's params may bind to it (see unifyGenericIn / bindHole).
-  ret match(unifyGenericIn(declared.scParams2, want.scParams2, names, r,
-                           List()))
-    (m: UMap)  => viaWhere(stmt, gens, resultUnified(declared, want, names, r, m.uBindings),
-                           r, declared.scParams2)
-    (f: UFail) => None
+  ret match(paramsMerged(declared, want, names, r))
+    (m: List<Binding>) => viaWhere(stmt, gens, resultUnified(declared, want, names, r, m),
+                                   r, declared.scParams2)
+    ()                 => None
+
+# The declared parameters RECEIVE the arguments: a merge, the callee's params
+# its named holes. Covariant positions first — a callable parameter's own
+# parameters are contravariant, so they only fill what the rest left open
+# (`map(xs: List<T>, f: (:T): U)` takes T from xs). An argument's view is
+# provisional, so there a binding widens across arguments (`pair(Circle(1),
+# Square(2))` binds T to Shape); a callable parameter only fills it, never
+# widens it (`map(circles, (v) => named(v))` keeps T = Circle though the lambda
+# takes a Shape), and never binds a parameter whose argument is still unknown
+# — that waits for the argument (`fold(xs, init, (a, x) => …)` takes T from
+# xs, never from x, while xs is untyped). A known argument that cannot decide
+# (`?>`'s `value: TIn | E` against `Int | Oops`) leaves it to the lambda's own
+# `(a: Int)`, and a binding one position learns can decide another, so the
+# merge repeats until nothing more is learned. A contradiction in the
+# covariant positions means this candidate does not take these arguments; a
+# callable parameter's type is only evidence to learn from — a lambda's is
+# derived from this very binding on an earlier pass — and the checker owns its
+# mismatches.
+fun paramsMerged(declared: SCallable, want: SCallable, names: List<String>, r): List<Binding>|None
+  let covariant = withoutCallableParams(declared.scParams2)
+  let fuel = chain(prepend("", names))   # one pass per name, and one more
+  let first = settledMerge(covariant, want.scParams2, map(names, (n) => MBind(n, None)), r, fuel)
+  if !isEmpty(first.moErrs)
+    ret None
+  let waiting = unknownArgNames(covariant, want.scParams2, r)
+  let open = filter(first.moBinds, (b) => isBound(b) || !contains2(waiting, b.mbName))
+  let full = settledMerge(declared.scParams2, want.scParams2, open, r, fuel)
+  ret learnedBindings(chain(full.moBinds), List())
+
+fun [tail] settledMerge(declared: Spec, want: Spec, binds: List<MBind>, r, fuel: Chain<String>): MergeOut
+  let m = mergeSpecsWidening(declared, want, binds, true, r)
+  ret match(fuel)
+    (nil: ChainEnd) => m
+    (l: ChainLink)  => sameBinds(m.moBinds, binds) ? m : settledMerge(declared, want, m.moBinds, r, l.next)
+
+fun sameBinds(a: List<MBind>, b: List<MBind>) => eqBy(a, b, (x, y) => x.mbName == y.mbName && sameOpt(x.mbSpec, y.mbSpec))
+
+fun sameOpt(a: Spec|None, b: Spec|None) => match(a)
+  (x: Spec) => match(b)
+    (y: Spec) => eqSpec(x, y)
+    ()        => false
+  ()        => b is None
+
+fun isBound(b: MBind) => match(b.mbSpec)
+  (sp: Spec) => true
+  ()         => false
+
+# _unknown_argument_names: the placeholders of every declared parameter whose
+# argument's type is not known yet (absent, unresolved, or holding a hole).
+fun unknownArgNames(covariant, actual, r): List<String> => match(covariant)
+  (dt: STuple) => match(actual)
+    (at: STuple) => match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
+      (b: List<Int>) => unknownLoop(chain(dt.stEntries), chain(b), at.stEntries, r, List<String>())
+      ()             => List<String>()
+    (o: Spec)    => List<String>()
+  (o: Spec)    => List<String>()
+
+fun [tail] unknownLoop(ds: Chain<SEntry>, bs: Chain<Int>, actual: List<SEntry>, r,
+                       acc: List<String>): List<String> => match(ds)
+  (nil: ChainEnd) => acc
+  (d: ChainLink)  => match(bs)
+    (nil2: ChainEnd) => acc
+    (b: ChainLink)   => unknownLoop(d.next, b.next, actual, r,
+                                    argKnown(b.value, actual, r) ? acc : concat(acc, entryNamesOf(d.value)))
+
+fun argKnown(ix: Int, actual: List<SEntry>, r): Bool
+  if ix < 0
+    ret false
+  ret match(head(drop(actual, ix)))
+    (e: SEntry) => match(e.seType)
+      (sp: Spec) => isConcrete(sp) && !hasFreePlaceholders(sp, r) && !hasMissingArguments(sp, r)
+      ()         => false
+    ()          => false
+
+fun entryNamesOf(e: SEntry): List<String> => match(e.seType)
+  (sp: Spec) => placeholderNames(sp)
+  ()         => List<String>()
 
 fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
                   r: Resolver, mapping): List<Binding> => match(declared.scResult)
@@ -144,12 +219,6 @@ fun resultMerged(want, dr, names: List<String>, mapping: List<Binding>, r): List
   let binds = map(names, (n) => MBind(n, bindingOf(mapping, n)))
   let m = mergeSpecsWidening(want, dr, binds, false, r)
   ret isEmpty(m.moErrs) ? learnedBindings(chain(m.moBinds), List()) : mapping
-
-fun [tail] learnedBindings(bs: Chain<MBind>, acc: List<Binding>): List<Binding> => match(bs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value.mbSpec)
-    (sp: Spec) => learnedBindings(l.next, prepend(Binding(l.value.mbName, sp), acc))
-    ()         => learnedBindings(l.next, acc)
 
 fun genNames(gs: Chain<PGen>, acc: List<String>) => build(genNamesB(gs, builderFrom(acc)))
 

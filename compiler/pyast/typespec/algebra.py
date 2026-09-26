@@ -1,12 +1,11 @@
 """The type algebra: the algorithms over pyast/typespec/specs.py representations.
 
 Everything here is a pure function of specs (+ a read-only resolver for scope
-questions): substitution, placeholder scanning, the meet/refine refinement
-rules the compile fixpoint relies on, generic-parameter unification, and
-where-constraint solving against trait instances. No spec class calls into
-this module; the dependency is strictly specs <- algebra. The `_CONFLICT`
-sentinel is internal to the algebra: statement-level callers use `refine`,
-which absorbs conflict handling.
+questions): substitution, placeholder scanning, the one directional type
+`merge` (docs/type-merge-design.md) and the refinement rules the compile
+fixpoint builds on it, and where-constraint solving against trait instances.
+No spec class calls into this module; the dependency is strictly specs <-
+algebra.
 """
 from __future__ import annotations
 
@@ -20,7 +19,7 @@ from parsing.parselib import Error
 from pyast.typespec.specs import (
     TypeSpec, BuiltinSpec, CallableSpec, ClassSpec, CombinationSpec, EnumSpec,
     GenericPlaceholderSpec, NamedSpec, TupleSpec,
-    bind_tuple_entries, trivially_assignable_equals,
+    bind_tuple_entries,
 )
 
 
@@ -82,7 +81,7 @@ def resolves_in_scope(name: str, resolver: "g.Resolver") -> bool:
 def is_narrowed_view(spec: "TypeSpec | None") -> bool:
     """True for an enum VIEW narrower than its enum — `Circle` of `Shape`. A
     type inferred from such a value is provisional: the context may ask for
-    the root (or a wider view), and `meet` joins views."""
+    the root (or a wider view), and a widening merge joins views."""
     return (isinstance(spec, EnumSpec)
             and spec.valid_leaf_names < frozenset(spec.all_leaf_names))
 
@@ -91,7 +90,7 @@ def contains_narrowed_view(spec: "TypeSpec | None") -> bool:
     """True when a narrowed enum view appears anywhere in `spec` — `Circle`
     itself, or the `Op{Move}` inside a stored `List<Op{Move}>`. Such an
     inferred type is provisional: a use-site binding re-infers against its
-    expected type, and a stored let/return type keeps refining, so `meet`
+    expected type, and a stored let/return type keeps refining, so the merge
     widens it exactly as far as the context demands."""
     if isinstance(spec, EnumSpec):
         return is_narrowed_view(spec) or any(contains_narrowed_view(tp) for tp in spec.type_params)
@@ -174,13 +173,6 @@ def _contains_named_spec(spec: "TypeSpec") -> bool:
     return found[0]
 
 
-class _Conflict:
-    """Sentinel returned by `meet` for two ground types that cannot be reconciled.
-    Distinct from None, which `meet` uses for a hole (no information yet)."""
-    __slots__ = ()
-_CONFLICT = _Conflict()
-
-
 def merge(left: "TypeSpec | None", right: "TypeSpec | None",
           bindings: "dict[str, TypeSpec | None]", resolver: "g.Resolver",
           widen_views: bool = False, callee_left: bool = True
@@ -233,24 +225,34 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
         where = (r if r is not None else l).line_ref
         return None, binds, [Error(where, f"cannot merge {_type_str(l)} with {_type_str(r)}: {why}")]
 
-    def named(name: str, other, binds, holder_left: bool):
+    def named(name: str, other, binds, holder_left: bool, invariant: bool, wv: bool):
         """A named hole meeting `other`; `holder_left` says which side it is on."""
         bound = binds[name]
         if bound is None:
-            if is_hole(other, binds, False):
+            # Nothing to bind yet — a hole, or a type still holding a raw
+            # name that only means something in its declaring scope.
+            if is_hole(other, binds, False) or _contains_named_spec(other):
                 return GenericPlaceholderSpec(other.line_ref if other is not None else None, name), binds, []
             return other, {**binds, name: other}, []
         # Bound: agree with it — holes inside the binding fill, nothing widens
         # it. Both sides are the reference site's types now, so no name in
         # them is a named hole (`S@drain = S@drain` in a self-recursive call
         # is the caller's own S, a real type there).
-        m, _none, errs = (go(bound, other, {}, True, True) if holder_left
-                          else go(other, bound, {}, True, True))
-        if errs:
+        if holder_left:
+            m, _none, errs = go(bound, other, {}, invariant, True, wv)
+            return (None, binds, errs) if errs else (m, {**binds, name: m}, [])
+        # On the value side: the same type with its holes filled, or —
+        # outside generic arguments — a binding that fits a wider receiver as
+        # it is (a lambda over `String | ()` takes T = String; T stays String).
+        filled, _none, errs = go(bound, other, {}, True, True, wv)
+        if not errs:
+            return filled, {**binds, name: filled}, []
+        if invariant:
             return None, binds, errs
-        return m, {**binds, name: m}, []
+        m, _none, errs = go(other, bound, {}, False, True, wv)
+        return (None, binds, errs) if errs else (m, binds, [])
 
-    def args(l_args, r_args, binds, cl):
+    def args(l_args, r_args, binds, cl, wv):
         """Invariant generic arguments; an argument list left unspelled is all holes."""
         if not l_args:
             return tuple(r_args), binds, []
@@ -260,47 +262,50 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
             return None, binds, [Error(l_args[0].line_ref, "cannot merge: generic argument counts differ")]
         out, errs = [], []
         for la, ra in zip(l_args, r_args):
-            m, binds, e = go(la, ra, binds, True, cl)
+            m, binds, e = go(la, ra, binds, True, cl, wv)
             out.append(m)
             errs += e
         return (None if errs else tuple(out)), binds, errs
 
-    def go(l, r, binds, invariant: bool, cl: bool):
+    def go(l, r, binds, invariant: bool, cl: bool, wv: bool):
         name = named_name(l, binds, cl)
         if name is not None:
-            return named(name, r, binds, True)
+            return named(name, r, binds, True, invariant, wv)
         name = named_name(r, binds, not cl)
         if name is not None:
-            return named(name, l, binds, False)
+            return named(name, l, binds, False, invariant, wv)
         if is_hole(l, binds, cl):
             return r, binds, []
         if is_hole(r, binds, not cl):
             return l, binds, []
         if isinstance(l, CombinationSpec) or isinstance(r, CombinationSpec):
-            return unions(l, r, binds, invariant, cl)
+            return unions(l, r, binds, invariant, cl, wv)
         # A 1-tuple is its element.
         if isinstance(l, TupleSpec) and len(l.entries) == 1 and not isinstance(r, TupleSpec):
-            return go(l.entries[0].type, r, binds, invariant, cl)
+            return go(l.entries[0].type, r, binds, invariant, cl, wv)
         if isinstance(r, TupleSpec) and len(r.entries) == 1 and not isinstance(l, TupleSpec):
-            return go(l, r.entries[0].type, binds, invariant, cl)
+            return go(l, r.entries[0].type, binds, invariant, cl, wv)
         if isinstance(l, GenericPlaceholderSpec) or isinstance(r, GenericPlaceholderSpec):
             # In scope on both sides: a real type, equal only to itself.
             return (l, binds, []) if l == r else conflict(l, r, binds, "different types")
         if isinstance(l, TupleSpec) and isinstance(r, TupleSpec):
-            return tuples(l, r, binds, invariant, cl)
+            return tuples(l, r, binds, invariant, cl, wv)
         if isinstance(l, EnumSpec) and isinstance(r, EnumSpec):
-            return enums(l, r, binds, invariant, cl)
+            return enums(l, r, binds, invariant, cl, wv)
         if isinstance(l, ClassSpec) and isinstance(r, ClassSpec):
-            return classes(l, r, binds, invariant, cl)
+            return classes(l, r, binds, invariant, cl, wv)
         if isinstance(l, CallableSpec) and isinstance(r, CallableSpec):
-            p, binds, pe = go(r.parameters, l.parameters, binds, invariant, not cl)   # reversed
-            res, binds, re_ = go(l.result, r.result, binds, invariant, cl)
+            # Reversed, and never widening: a callable parameter only fills
+            # a provisional view (`map(circles, (v) => named(v))` keeps T =
+            # Circle though the lambda takes a Shape).
+            p, binds, pe = go(r.parameters, l.parameters, binds, invariant, not cl, False)
+            res, binds, re_ = go(l.result, r.result, binds, invariant, cl, wv)
             if pe or re_:
                 return None, binds, pe + re_
             return dataclasses.replace(l, parameters=p, result=res), binds, []
         return (l, binds, []) if l == r else conflict(l, r, binds, "different types")
 
-    def tuples(l, r, binds, invariant, cl):
+    def tuples(l, r, binds, invariant, cl, wv):
         binding = bind_tuple_entries(l.entries, [en.name for en in r.entries])
         if binding is None:
             return conflict(l, r, binds, "tuple shapes differ")
@@ -309,27 +314,27 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
             if b is None:
                 out.append(le)
                 continue
-            m, binds, e = go(le.type, r.entries[b].type, binds, invariant, cl)
+            m, binds, e = go(le.type, r.entries[b].type, binds, invariant, cl, wv)
             out.append(dataclasses.replace(le, type=m, name=le.name or r.entries[b].name))
             errs += e
         return (None if errs else dataclasses.replace(l, entries=tuple(out))), binds, errs
 
-    def enums(l, r, binds, invariant, cl):
+    def enums(l, r, binds, invariant, cl, wv):
         if l.root_name != r.root_name:
             return conflict(l, r, binds, "different enums")
-        if widen_views:
+        if wv:
             if not l.valid_leaf_names >= r.valid_leaf_names:
                 l = dataclasses.replace(l, valid_leaf_names=l.valid_leaf_names | r.valid_leaf_names)
         elif invariant and l.valid_leaf_names != r.valid_leaf_names:
             return conflict(l, r, binds, "different views of one enum are different types")
         elif not l.valid_leaf_names >= r.valid_leaf_names:
             return conflict(l, r, binds, "the receiver cannot hold every variant of the value")
-        a, binds, errs = args(l.type_params, r.type_params, binds, cl)
+        a, binds, errs = args(l.type_params, r.type_params, binds, cl, wv)
         return (None if errs else dataclasses.replace(l, type_params=a)), binds, errs
 
-    def classes(l, r, binds, invariant, cl):
+    def classes(l, r, binds, invariant, cl, wv):
         if l.name == r.name:
-            a, binds, errs = args(l.type_params, r.type_params, binds, cl)
+            a, binds, errs = args(l.type_params, r.type_params, binds, cl, wv)
             return (None if errs else dataclasses.replace(l, type_params=a)), binds, errs
         if invariant:
             return conflict(l, r, binds, "different types")
@@ -340,47 +345,68 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
             return conflict(l, r, binds, "unrelated types")
         cls = found[0].statement
         if cls._all_parents is None:
-            return l, binds, []                    # ancestry not known yet: nothing to add
+            # Not known yet is not a fit: the fixpoint asks again once it is.
+            return conflict(l, r, binds, "the value's ancestry is not known yet")
         ancestor = next((p for p in cls._all_parents
                          if isinstance(p, ClassSpec) and p.name == l.name), None)
         if ancestor is None:
             return conflict(l, r, binds, "the value's class does not implement the receiver")
         own = {p.name: a for p, a in zip(cls.type_params, r.type_params)}
-        return go(l, substitute_placeholders(ancestor, own, resolver), binds, False, cl)
+        return go(l, substitute_placeholders(ancestor, own, resolver), binds, False, cl, wv)
 
-    def unions(l, r, binds, invariant, cl):
+    def unions(l, r, binds, invariant, cl, wv):
         """A union is a SET. Value members pair with receiver members first;
         then a single callee-side named hole takes what is left by set
         difference — on the value side the receiver members nobody matched,
         on the receiver side the value members nobody placed (the
         error-growing `E | ParseError` pattern). An anonymous receiver hole
         stands for the rest and becomes what it took. Several holes on one
-        side have no partition and stay as they are."""
-        l_members = list(l.repr_members()) if isinstance(l, CombinationSpec) else [l]
-        r_members = list(r.repr_members()) if isinstance(r, CombinationSpec) else [r]
+        side have no partition and stay as they are. A BOUND name is no hole:
+        it is its binding's members, on either side (`TIn | E` with TIn = Int,
+        against `Int | Oops`, leaves E the Oops; `E | ParseError` with E =
+        `Never | ParseError` is `Never | ParseError`)."""
+        def expanded(members, callee_side: bool) -> list:
+            out: list = []
+            for m in members:
+                name = named_name(m, binds, callee_side)
+                bound = binds[name] if name is not None else None
+                spelt = ([m] if bound is None else
+                         list(bound.repr_members()) if isinstance(bound, CombinationSpec) else [bound])
+                out += [x for x in spelt if not any(x == o for o in out)]
+            return out
+        l_members = expanded(l.repr_members() if isinstance(l, CombinationSpec) else [l], cl)
+        r_members = expanded(r.repr_members() if isinstance(r, CombinationSpec) else [r], not cl)
         if not isinstance(l, CombinationSpec):
             # Every member of the value must fit the one receiver.
             out, errs = l, []
             for rm in r_members:
-                out, binds, e = go(out, rm, binds, invariant, cl)
+                out, binds, e = go(out, rm, binds, invariant, cl, wv)
                 errs += e
                 if out is None:
                     break
             return (None if errs else out), binds, errs
 
+        def unbound_named(lm) -> bool:
+            name = named_name(lm, binds, cl)
+            return name is not None and binds[name] is None
+
         def left_hole(lm) -> bool:
-            return is_hole(lm, binds, cl) or named_name(lm, binds, cl) is not None
+            return is_hole(lm, binds, cl) or unbound_named(lm)
         r_holes = [rm for rm in r_members if named_name(rm, binds, not cl) is not None]
+        # A value member not known yet (an unresolved name) pairs with
+        # nothing, and leaves the partition open: no set difference binds
+        # and nothing is judged unmatched until it resolves.
+        unknown = any(is_hole(rm, binds, not cl) for rm in r_members)
         matched: set[int] = set()
         absorbed: list[TypeSpec] = []
         errs: list[Error] = []
         for rm in r_members:
-            if any(rm is h for h in r_holes):
+            if any(rm is h for h in r_holes) or is_hole(rm, binds, not cl):
                 continue
             for i, lm in enumerate(l_members):
                 if left_hole(lm):
                     continue
-                m, b2, e = go(lm, rm, binds, invariant, cl)
+                m, b2, e = go(lm, rm, binds, invariant, cl, wv)
                 if not e:
                     l_members[i], binds = m, b2
                     matched.add(i)
@@ -398,115 +424,51 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
         if len(r_holes) == 1:
             rest = [lm for i, lm in enumerate(l_members) if i not in matched and not left_hole(lm)]
             if rest:
-                _m, binds, e = named(named_name(r_holes[0], binds, not cl), as_type(rest), binds, False)
+                _m, binds, e = named(named_name(r_holes[0], binds, not cl), as_type(rest), binds,
+                                     False, invariant, wv)
                 errs += e
                 matched.update(i for i, lm in enumerate(l_members) if any(lm is x for x in rest))
         # A receiver-side hole: the value members nobody placed.
-        l_named = [lm for lm in l_members if named_name(lm, binds, cl) is not None]
-        if absorbed and len(l_named) == 1 and not any(is_hole(lm, binds, cl) for lm in l_members):
-            _m, binds, e = named(l_named[0].name, as_type(absorbed), binds, True)
+        l_named = [lm for lm in l_members if unbound_named(lm)]
+        if absorbed and len(l_named) == 1 and not unknown and not any(is_hole(lm, binds, cl) for lm in l_members):
+            _m, binds, e = named(l_named[0].name, as_type(absorbed), binds, True, invariant, wv)
             errs += e
-        if invariant and not errs and any(i not in matched and not left_hole(lm)
+            matched.update(i for i, lm in enumerate(l_members) if lm is l_named[0])
+        if invariant and not errs and not unknown and any(i not in matched and not left_hole(lm)
                                           for i, lm in enumerate(l_members)):
             errs += conflict(l, r, binds, "different unions")[2]
         if errs:
             return None, binds, errs
+        if not absorbed and l_members == list(l.repr_members() if isinstance(l, CombinationSpec) else [l]):
+            return l, binds, []                   # nothing filled: the receiver as spelt
         members = [lm for lm in l_members if not left_hole(lm)] + absorbed if absorbed else l_members
         out = CombinationSpec(l.line_ref, tuple(members)).repr_members()
         return (out[0] if len(out) == 1 else CombinationSpec(l.line_ref, tuple(out))), binds, []
 
-    return go(left, right, dict(bindings), False, callee_left)
+    return go(left, right, dict(bindings), False, callee_left, widen_views)
 
 
-def _is_hole(spec: "TypeSpec | None") -> bool:
-    """A hole carries no type information yet, so anything refines it: a missing
-    (None) slot, an unbound generic placeholder, or a still-unresolved NamedSpec."""
-    return spec is None or isinstance(spec, (GenericPlaceholderSpec, NamedSpec))
+def receives(receiver: "TypeSpec", value: "TypeSpec", resolver: "g.Resolver") -> bool:
+    """Does `value` fit `receiver` as it stands — both complete (nothing for
+    the merge to fill on either side: a bare `List` shape is no `List<Int>`),
+    and a merge that contradicts nothing?"""
+    def complete(spec: "TypeSpec") -> bool:
+        return (spec.is_concrete() and not has_free_placeholders(spec, resolver)
+                and not has_missing_arguments(spec, resolver))
+    return complete(receiver) and complete(value) and not merge(receiver, value, {}, resolver)[2]
 
 
-def meet(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None | _Conflict":
-    """The most-refined common form of two possibly-partial types, or `_CONFLICT`
-    if they genuinely cannot be reconciled (None means both sides were holes — no
-    information either way).
-
-    A HOLE (see `_is_hole`) is refined by the other side; compounds meet
-    element-wise and propagate a conflict in any element; two ground leaves must
-    be equal. This is the read-through refinement the inference fixpoint relies on,
-    so a freshly arg-derived binding (`Lex<One>`) and a stale expected-result view
-    of the same slot (`Lex<_>`) reconcile to the ground form instead of colliding
-    to a hard failure. Symmetric: `meet(a, b)` and `meet(b, a)` agree."""
-    if _is_hole(a):
-        return b
-    if _is_hole(b):
-        return a
-    # Idempotent: a type meets itself. Every rule below already agrees except
-    # the union's set-wise one, which has no ground ids to compare for a union
-    # holding placeholder-bearing members (`Leaf<T> | Branch<T>`).
-    if a == b:
-        return a
-    # ClassSpec / generic EnumSpec: a generic instantiation, refined by its type
-    # arguments positionally. The FAMILY question is identity-by-name (identity
-    # vs state, user ruling): root name — plus, for enums, the narrowing
-    # (valid/all leaf names), which is genuine identity. Full equality now
-    # includes type_params, so it can no longer double as the family check —
-    # `Result<Int,_>` and `Result<Int,Bool>` are UNEQUAL (correctly), and this
-    # rule is what refines the hole instead.
-    if (isinstance(a, ClassSpec) and isinstance(b, ClassSpec)
-            and a.name == b.name and len(a.type_params) == len(b.type_params)):
-        return _meet_params(a, a.type_params, b.type_params)
-    if (isinstance(a, EnumSpec) and isinstance(b, EnumSpec)
-            and a.root_name == b.root_name
-            and a.all_leaf_names == b.all_leaf_names
-            and len(a.type_params) == len(b.type_params)):
-        # Same enum, possibly different VIEWS — a leaf-typed construction
-        # meeting the root (or a sibling leaf) from another flow. Views JOIN:
-        # the union of the valid leaf sets is what both flows satisfy, and
-        # every view shares one representation (the enum-encoding
-        # principle), so the join costs nothing.
-        joined = (a if a.valid_leaf_names == b.valid_leaf_names
-                  else dataclasses.replace(
-                      a, valid_leaf_names=a.valid_leaf_names | b.valid_leaf_names))
-        return (_meet_params(joined, a.type_params, b.type_params)
-                if a.type_params else joined)
-    if (isinstance(a, TupleSpec) and isinstance(b, TupleSpec)
-            and len(a.entries) == len(b.entries)):
-        out = []
-        for ea, eb in zip(a.entries, b.entries):
-            m = meet(ea.type, eb.type)
-            if m is _CONFLICT:
-                return _CONFLICT
-            out.append(dataclasses.replace(ea, type=(None if m is None else m),
-                                           name=ea.name or eb.name))
-        return dataclasses.replace(a, entries=tuple(out))
-    if isinstance(a, CombinationSpec) and isinstance(b, CombinationSpec):
-        # A union is a SET, and `types` is NOT canonically ordered (only the id is
-        # sorted), so meet set-wise, never positionally. Two fully-ground unions
-        # meet iff they are the same set. If one side is ground, the other's ground
-        # members must all be present in it — its holes then absorb the remainder —
-        # otherwise it carries a member the ground side lacks: a real conflict.
-        # Both sides still holey: defer (CONFLICT here just skips this pass; a later
-        # pass grounds one side and resolves it).
-        ua, ub = a.as_unique_id_str(), b.as_unique_id_str()
-        if ua is not None and ub is not None:
-            return a if ua == ub else _CONFLICT
-        ga = {u for u in (m.as_unique_id_str() for m in a.types) if u is not None}
-        gb = {u for u in (m.as_unique_id_str() for m in b.types) if u is not None}
-        if ua is not None:
-            return a if gb <= ga else _CONFLICT
-        if ub is not None:
-            return b if ga <= gb else _CONFLICT
-        return _CONFLICT
-    if isinstance(a, CallableSpec) and isinstance(b, CallableSpec):
-        p = meet(a.parameters, b.parameters)
-        r = meet(a.result, b.result)
-        if p is _CONFLICT or r is _CONFLICT:
-            return _CONFLICT
-        return dataclasses.replace(a,
-                                   parameters=a.parameters if p is None else p,
-                                   result=None if r is None else r)
-    # Ground leaves (BuiltinSpec, non-generic EnumSpec, resolved types of differing
-    # kinds): reconcilable only if equal.
-    return a if a == b else _CONFLICT
+def pattern_binding(pattern: "TypeSpec", concrete: "TypeSpec", names: "Iterable[str]",
+                    resolver: "g.Resolver") -> "dict[str, TypeSpec] | None":
+    """Does `concrete` fit `pattern`, whose own params `names` are its holes —
+    the question every instance lookup asks (a trait instance, a drop, a
+    derived equality, a generic witness)? `merge` with the pattern as the
+    receiver. Returns what the pattern's params bound, or None on a
+    contradiction. The binding may be partial: a param nothing pins (`E` in
+    `E | Bool` against `Bool`) stays unbound, and a caller that needs every
+    param bound says so."""
+    _m, learned, errors = merge(pattern, concrete, {n: None for n in names}, resolver)
+    return None if errors else {n: spec for n, spec in learned.items() if spec is not None}
 
 
 def join(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None":
@@ -521,8 +483,8 @@ def join(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None":
     into each arm, not through the join), NO assignability absorption. The one
     collapse is the set's own: flatten + dedupe (repr_members), so a member
     joined with its own union is that union (`A ⊔ (A|None)` = `A|None`) and
-    `A ⊔ A` is `A`. Unlike `meet` — which REFINES and conflicts on incompatible
-    leaves — join never fails."""
+    `A ⊔ A` is `A`. Unlike `merge` — which REFINES and can contradict — join
+    never fails."""
     if a is None:
         return b
     if b is None:
@@ -540,7 +502,7 @@ def converge(types: "list[TypeSpec]", resolver: "g.Resolver") -> "TypeSpec | Non
     if all(x == first for x in types[1:]):
         return first
     for wide in types:
-        if all(x == wide or trivially_assignable_equals(resolver, wide, x) is True for x in types):
+        if all(x == wide or receives(wide, x, resolver) for x in types):
             return wide
     if all(isinstance(x, EnumSpec) for x in types):
         same_enum = len({(x.root_name, x.type_params) for x in types}) == 1
@@ -573,26 +535,14 @@ def _shared_interfaces(specs: "list[ClassSpec]", resolver: "g.Resolver") -> "lis
     return [by_name[name] for name in sorted(common or ())]
 
 
-def fits_shape(shape: "TypeSpec", target: "TypeSpec", names: "set[str]",
-               resolver: "g.Resolver") -> bool:
-    """Does binding `names` in `shape` make it exactly `target`? Compared
-    against `target` with ITS placeholders made opaque, so `names` bind to
-    ground parts and no scope question arises; the rest of `shape` must match
-    as it stands."""
-    opaque = with_opaque_placeholders(target, resolver)
-    mapping = unify_generic(shape, opaque, names)
-    return (mapping is not None and with_opaque_placeholders(
-        substitute_placeholders(shape, mapping, resolver), resolver) == opaque)
-
-
 def branch_type(types: "list[TypeSpec | None]", resolver: "g.Resolver") -> "TypeSpec | None":
     """A ternary's or match's type: its branches converged, else their union.
 
     An arm whose type holds a placeholder that is NOT in scope — a generic
     call that bound nothing, `List()` — has only a SHAPE: `List<T>` names
     List's own parameter, which means nothing here. Such an arm FITS a sibling
-    when binding its free placeholders makes it that sibling (its in-scope
-    placeholders must match exactly). It takes the one ground sibling it fits;
+    when merging the sibling into it gives back the sibling: the holes filled,
+    nothing else changed (no lifting, no other view). It takes the one ground sibling it fits;
     with none, the earliest arm it fits — so shapes of one family collapse to
     one instead of standing as a union of holes; with several ground ones it
     is ambiguous and stays as it is. The candidates are the arms' MEMBERS: the
@@ -604,12 +554,11 @@ def branch_type(types: "list[TypeSpec | None]", resolver: "g.Resolver") -> "Type
         return None
 
     def fill(arm: "TypeSpec") -> "TypeSpec":
-        free = {n for n in placeholder_names_in(arm) if not resolves_in_scope(n, resolver)}
-        if not free:
+        if not has_free_placeholders(arm, resolver):
             return arm
         members = [m for x in known
                    for m in (x.repr_members() if isinstance(x, CombinationSpec) else (x,))]
-        fitting = [x for x in members if fits_shape(arm, x, free, resolver)]
+        fitting = [x for x in members if merge(arm, x, {}, resolver)[0] == x]
         ground = {x for x in fitting if not has_free_placeholders(x, resolver)}
         if ground:
             return ground.pop() if len(ground) == 1 else arm
@@ -631,7 +580,7 @@ def refine_widening(current: "TypeSpec | None", resolver: "g.Resolver",
 
     A match/branch broadens its arms to their least upper bound, and that grows
     as arms resolve late (`A`, then `A|None`). Plain `refine` latches the first
-    concrete view and its `meet` rejects the wider one as a conflict, freezing
+    concrete view and its merge rejects the wider one as a contradiction, freezing
     the narrow type. So any receiver inferring from such a source — an undeclared
     return, an untyped `let`, a destructure target — must be free to WIDEN.
 
@@ -656,18 +605,6 @@ def refine_widening(current: "TypeSpec | None", resolver: "g.Resolver",
                 and refined.trivially_assignable_from(resolver, fresh) is not True):
             return fresh
     return refined
-
-
-def _meet_params(base: "TypeSpec", a_params: "tuple", b_params: "tuple") -> "TypeSpec | _Conflict":
-    """Meet two positional type-argument lists of a generic class/enum and return
-    `base` rebuilt with the refined arguments, or `_CONFLICT` if any argument
-    conflicts. Class/enum arguments are never None, so a `None` from `meet` (both
-    holes) keeps the original argument."""
-    merged = [meet(x, y) for x, y in zip(a_params, b_params)]
-    if any(m is _CONFLICT for m in merged):
-        return _CONFLICT
-    return dataclasses.replace(base, type_params=tuple(
-        o if m is None else m for m, o in zip(merged, a_params)))
 
 
 def refine(current: "TypeSpec | None", resolver: "g.Resolver",
@@ -708,258 +645,13 @@ def refine(current: "TypeSpec | None", resolver: "g.Resolver",
     return merged if merged is not None and not errors else current
 
 
-def _unify_union(generic: "CombinationSpec", concrete: "CombinationSpec",
-                 placeholder_names: set[str],
-                 mapping: dict[str, "TypeSpec"],
-                 in_scope: "Callable[[str], bool] | None" = None) -> dict[str, "TypeSpec"] | None:
-    """Union-vs-union unification. Union members are a SET, so `E | X` against
-    `A | X` must solve E by set difference, never by positional alignment —
-    the error-growing instance pattern (`Stream<Lexer<S,E>, T, E|ParseError>`)
-    depends on it, including when E itself grounds to a union that overlaps
-    the pattern's ground members (`(A|X) | X` flattens to `A | X`).
-
-    Ground pattern members are matched (and removed) by structural equality;
-    a single unbound placeholder member then binds to whatever concrete
-    members remain; an already-bound placeholder makes the slot a set-equality
-    CHECK against its binding. Patterns with several placeholder-bearing
-    members have no set partition to exploit and keep the old positional
-    alignment."""
-    # Positional alignment first — the historic behaviour, which the inference
-    # fixpoint's progression is tuned to (it binds a hole from its written
-    # position when the members happen to align). Set-wise matching is the
-    # FALLBACK for when position lies: the error-growing instance pattern
-    # (`E | ParseError` against a concrete set whose E is itself a union)
-    # positionally binds garbage and conflicts; only then re-match as a set.
-    if len(generic.types) == len(concrete.types):
-        trial: dict[str, TypeSpec] | None = dict(mapping)
-        for gv, cv in zip(generic.types, concrete.types):
-            trial = _unify(gv, cv, placeholder_names, trial, in_scope)
-            if trial is None:
-                break
-        if trial is not None:
-            mapping.clear()
-            mapping.update(trial)
-            return mapping
-    gen = list(generic.repr_members())
-    con = list(concrete.repr_members())
-    holes = [m for m in gen
-             if isinstance(m, GenericPlaceholderSpec) and m.name in placeholder_names]
-    ground = [m for m in gen
-              if not (isinstance(m, GenericPlaceholderSpec) and m.name in placeholder_names)]
-    if len(holes) != 1 or any(placeholder_names & placeholder_names_in(m) for m in ground):
-        return mapping  # no single-hole partition either: defer to the caller
-    # Deferral, not failure, on any mismatch: mid-fixpoint the concrete side
-    # may still hold unresolved members, and this function's contract (like
-    # the leaf cases') is to leave the mapping incomplete and let the caller
-    # decide — solve_trait_constraint skips an instance whose params stay
-    # unbound, and the inference fixpoint simply retries once types ground.
-    remaining = list(con)
-    for gm in ground:
-        idx = next((i for i, cm in enumerate(remaining) if cm == gm), -1)
-        if idx < 0:
-            return mapping  # ground pattern member absent (or not yet resolved)
-        remaining.pop(idx)
-    hole = holes[0]
-    existing = mapping.get(hole.name)
-    if existing is not None:
-        # The hole is already pinned (usually by the carrier slot): this slot
-        # is a consistency check, not a binding site. `existing ∪ ground` must
-        # equal the concrete set: every leftover concrete member is in the
-        # binding, and every binding member is in the concrete union.
-        bound = list(existing.repr_members()) if isinstance(existing, CombinationSpec) else [existing]
-        if all(any(rm == bm for bm in bound) for rm in remaining) \
-                and all(any(bm == cm for cm in con) for bm in bound):
-            return mapping
-        return mapping if any(_is_hole(cm) for cm in con) else None
-    if not remaining:
-        # `E | X` against bare `X`: E could be any subset of the matched
-        # members — ambiguous, so leave it for another slot to pin.
-        return mapping
-    mapping[hole.name] = remaining[0] if len(remaining) == 1 \
-        else CombinationSpec(generic.line_ref, tuple(remaining))
-    return mapping
-
-
-def unify_generic(generic: "TypeSpec", concrete: "TypeSpec",
-                  placeholder_names: set[str],
-                  mapping: dict[str, "TypeSpec"] | None = None,
-                  in_scope: "Callable[[str], bool] | None" = None) -> dict[str, "TypeSpec"] | None:
-    """Match a generic type tree against a concrete type tree; return a
-    {placeholder_name: concrete_type} mapping, or None if they don't unify.
-
-    Only recognises placeholders whose name appears in `placeholder_names`.
-    Unknown / unresolved branches are skipped (return the current mapping
-    unchanged) — the caller should treat a partial mapping as a failure if
-    every placeholder must be resolved. `in_scope` is the use site's scope
-    test (resolves_in_scope): a concrete-side placeholder that passes it is a
-    real type there and may be bound to.
-
-    A callable's parameter is contravariant: `(:Shape): Int` is a fine
-    `(:Circle): Int`. So it binds only a placeholder that appears nowhere
-    else, and otherwise may only refine a binding (names, holes), never widen
-    a view.
-    """
-    if mapping is None:
-        mapping = {}
-    covariant = _without_callable_params(generic)
-    mapping = _unify(covariant, concrete, placeholder_names, mapping, in_scope)
-    if mapping is None or covariant is generic:
-        return mapping
-    upper = _unify(generic, concrete, placeholder_names, {}, in_scope) or {}
-    elsewhere = placeholder_names_in(covariant)
-    for name, spec in upper.items():
-        existing = mapping.get(name)
-        if existing is None:
-            if name not in elsewhere:
-                mapping[name] = spec
-            continue
-        merged = meet(existing, spec)
-        if isinstance(merged, TypeSpec) and not contains_narrowed_view(existing):
-            mapping[name] = merged
-    return mapping
-
-
-def _without_callable_params(spec: "TypeSpec") -> "TypeSpec":
+def without_callable_params(spec: "TypeSpec") -> "TypeSpec":
     def blank(_, thing):
         if isinstance(thing, CallableSpec) and isinstance(thing.parameters, TupleSpec):
             entries = tuple(dataclasses.replace(en, type=None) for en in thing.parameters.entries)
             return dataclasses.replace(thing, parameters=dataclasses.replace(thing.parameters, entries=entries))
         return rw.UNCHANGED
     return rw.resolved(spec.search_and_replace(None, blank), spec)
-
-
-def _unify(generic: "TypeSpec", concrete: "TypeSpec",
-           placeholder_names: set[str],
-           mapping: dict[str, "TypeSpec"],
-           in_scope: "Callable[[str], bool] | None") -> dict[str, "TypeSpec"] | None:
-
-    if isinstance(generic, GenericPlaceholderSpec) and generic.name in placeholder_names:
-        # A concrete-side placeholder pins nothing down when it is one of this
-        # callee's OWN params (binding to itself) or another declaration's
-        # unbound leftover (a hole). But an ENCLOSING generic's parameter, in
-        # scope at the use site, is a real type there: inside `shorter<T, U>`,
-        # `isEnd(b)` with `b: Chain<U>` binds isEnd's T to U. Refusing it left
-        # the callee's own placeholder behind, which monomorphisation then
-        # completed by bare NAME to the host's T — a silent miscompile. Without
-        # a scope test (callers outside use-site inference) every placeholder
-        # stays a hole.
-        if isinstance(concrete, GenericPlaceholderSpec) and (
-                in_scope is None or concrete.name in placeholder_names
-                or not in_scope(concrete.name)):
-            return mapping
-        # Nor to a spec still carrying raw NamedSpec spellings (an uncompiled
-        # signature view): those names must not escape their declaring scope
-        # (see _contains_named_spec). DEFER — the fixpoint retries once the
-        # callee's signature grounds.
-        if _contains_named_spec(concrete):
-            return mapping
-        existing = mapping.get(generic.name)
-        if existing is None:
-            mapping[generic.name] = concrete
-            return mapping
-        if existing == concrete:
-            return mapping
-        # Two bindings for the same placeholder. They MEET rather than collide:
-        # one may be a freshly arg-derived ground type and the other a stale,
-        # hole-bearing view of the same slot back-propagated as an expected type
-        # (e.g. `Lex<One>` from the argument vs `Lex<_>` carried down from a prior
-        # pass's result expectation). A hole refines to ground; only a genuine
-        # ground-vs-ground mismatch is a real conflict.
-        merged = meet(existing, concrete)
-        if merged is _CONFLICT:
-            return None
-        mapping[generic.name] = existing if merged is None else merged
-        return mapping
-
-    # Same concrete leaf types — nothing to infer, but compatible.
-    if isinstance(generic, BuiltinSpec) and isinstance(concrete, BuiltinSpec):
-        return mapping if generic.type_name == concrete.type_name else None
-
-    if isinstance(generic, ClassSpec) and isinstance(concrete, ClassSpec):
-        if generic.name != concrete.name:
-            return mapping  # can't unify further, accept what we have
-        if len(generic.type_params) != len(concrete.type_params):
-            return mapping
-        m: dict[str, TypeSpec] | None = mapping
-        for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = _unify(gp, cp, placeholder_names, m, in_scope)
-            if m is None:
-                return None
-        return m
-
-    # Generic ENUM instances — `List<T>` vs `List<Thing>`, `Dict<K,V>` vs a
-    # concrete Dict — unify through their type arguments exactly like classes.
-    # This is how a call such as `head(l)` binds T from the container argument
-    # alone. type_params is empty on a monomorphised (or non-generic) enum:
-    # when either side lacks it there is nothing to walk, and the
-    # mapping passes through unchanged — deferral, not failure, as everywhere
-    # else in this function.
-    if isinstance(generic, EnumSpec) and isinstance(concrete, EnumSpec):
-        if generic.root_name != concrete.root_name:
-            return mapping
-        if (not generic.type_params
-                or len(generic.type_params) != len(concrete.type_params)):
-            return mapping
-        m = mapping
-        for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = _unify(gp, cp, placeholder_names, m, in_scope)
-            if m is None:
-                return None
-        return m
-
-    # Two still-unresolved spellings of the same generic type: infer through
-    # the written type arguments (`Wrap<T>` vs `Wrap<Leaf>` before either
-    # resolves). Same-name-only, same deferral rules as the branches above.
-    if isinstance(generic, NamedSpec) and isinstance(concrete, NamedSpec):
-        if generic.name != concrete.name:
-            return mapping
-        if (not generic.type_params
-                or len(generic.type_params) != len(concrete.type_params)):
-            return mapping
-        m = mapping
-        for gp, cp in zip(generic.type_params, concrete.type_params):
-            m = _unify(gp, cp, placeholder_names, m, in_scope)
-            if m is None:
-                return None
-        return m
-
-    if isinstance(generic, TupleSpec) and isinstance(concrete, TupleSpec):
-        # Pair entries via the shared binding, so named/defaulted arguments
-        # unify against the field they BIND (positional zip would infer a
-        # placeholder from the wrong field). Default-filled fields contribute
-        # nothing — a default is a literal, never placeholder-typed.
-        binding = bind_tuple_entries(generic.entries, [en.name for en in concrete.entries])
-        if binding is None:
-            return mapping
-        m = mapping
-        for ge, b in zip(generic.entries, binding):
-            if b is None:
-                continue
-            ce = concrete.entries[b]
-            if ge.type is None or ce.type is None:
-                continue
-            m = _unify(ge.type, ce.type, placeholder_names, m, in_scope)
-            if m is None:
-                return None
-        return m
-
-    if isinstance(generic, CombinationSpec) and isinstance(concrete, CombinationSpec):
-        return _unify_union(generic, concrete, placeholder_names, mapping, in_scope)
-
-    if isinstance(generic, CallableSpec) and isinstance(concrete, CallableSpec):
-        m = _unify(generic.parameters, concrete.parameters, placeholder_names, mapping,
-                          in_scope)
-        if m is None:
-            return None
-        if generic.result is not None and concrete.result is not None:
-            m = _unify(generic.result, concrete.result, placeholder_names, m, in_scope)
-            if m is None:
-                return None
-        return m
-
-    # Unknown / mismatched shapes — return current mapping unchanged rather
-    # than failing hard; the caller decides whether it's complete enough.
-    return mapping
 
 
 def bind_from_constraint_match(constraint: "ClassSpec", iface: "ClassSpec",
@@ -973,7 +665,7 @@ def bind_from_constraint_match(constraint: "ClassSpec", iface: "ClassSpec",
     `E = Never`. Returns the bindings for `target_names`, or None if the match is
     rejected or adds nothing.
 
-    Strict and positional, deliberately NOT unify_generic. At each position a
+    Strict and positional. At each position a
     target placeholder is bound to the instance's type; a concrete anchor must
     equal the instance's exactly; anything else — a name/arity mismatch, or an
     anchor that is itself still an unbound placeholder — rejects the whole match.
@@ -1001,33 +693,11 @@ def bind_from_constraint_match(constraint: "ClassSpec", iface: "ClassSpec",
     return binding or None
 
 
-
 class TraitInstance(NamedTuple):
     """A `[trait]` instance as solve_trait_constraint sees it: the implemented
     `interface`, expressed over `param_names` (empty for a non-generic instance)."""
     param_names: frozenset[str]
     interface: "ClassSpec"
-
-
-def _trait_pattern_compatible(pattern: "TypeSpec", constraint: "TypeSpec") -> bool:
-    """Could `pattern` (a provider's interface, still holding its placeholders)
-    match `constraint`? A placeholder on either side is a wildcard; two ClassSpecs
-    must share a name and arity and agree element-wise; other concrete types must
-    have equal ids. A cheap structural prune so the solver only `unify`s a relevant
-    provider — without it, `unify_generic`'s leniency on a head mismatch lets every
-    `Stream` provider (Map, Filter, …) be tried for a `Stream<Pretty<…>, …>`
-    constraint."""
-    if isinstance(pattern, GenericPlaceholderSpec) or isinstance(constraint, GenericPlaceholderSpec):
-        return True
-    if isinstance(pattern, ClassSpec) and isinstance(constraint, ClassSpec):
-        if pattern.name != constraint.name or len(pattern.type_params) != len(constraint.type_params):
-            return False
-        return all(_trait_pattern_compatible(p, c)
-                   for p, c in zip(pattern.type_params, constraint.type_params))
-    pu, cu = pattern.as_unique_id_str(), constraint.as_unique_id_str()
-    if pu is not None and cu is not None:
-        return pu == cu
-    return True
 
 
 def solve_trait_constraint(constraint: "ClassSpec", target_names: set[str],
@@ -1045,9 +715,9 @@ def solve_trait_constraint(constraint: "ClassSpec", target_names: set[str],
     off the grounded interface. A concrete leaf instance (no params) binds directly.
 
     Instances are tried in `instances` order (concrete first); the first whose
-    grounded interface binds the targets wins. `_trait_pattern_compatible` keys on
-    the wrapper head, so two providers rarely match one constraint. Returns
-    {name: type} for the targets, or None.
+    grounded interface binds the targets wins. The match keys on the wrapper
+    head, so two providers rarely match one constraint. Returns {name: type}
+    for the targets, or None.
 
     This is the CALL-SITE (pre-monomorphisation) where-discharge; its mono-time
     counterpart is lowering/generics.py::__bind_where_params. The two are
@@ -1055,13 +725,11 @@ def solve_trait_constraint(constraint: "ClassSpec", target_names: set[str],
     design note in docs/compiler-internals.md §3."""
     # A constraint whose subject type is still a bare placeholder cannot be matched
     # — there is no concrete stream to read the error off. Wait for the fixpoint to
-    # make it concrete (also avoids the wildcard prune trying every provider).
+    # make it concrete.
     if constraint.type_params and isinstance(constraint.type_params[0], GenericPlaceholderSpec):
         return None
     for inst in instances:
-        if not _trait_pattern_compatible(inst.interface, constraint):
-            continue
-        mapping = unify_generic(inst.interface, constraint, set(inst.param_names)) if inst.param_names else {}
+        mapping = pattern_binding(inst.interface, constraint, inst.param_names, resolver)
         if mapping is None or set(inst.param_names) - set(mapping):
             continue  # the instance's params are not all fixed by the constraint
         grounded = substitute_placeholders(inst.interface, mapping, resolver) if mapping else inst.interface

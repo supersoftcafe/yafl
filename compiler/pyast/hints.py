@@ -124,15 +124,15 @@ def verdict(hints: tuple[Hint, ...], resolver: g.Resolver) -> Verdict:
         return Verdict(clue="its match arms share no type — " + _listed(lowers))
     if lower is None or upper is None:
         answer = upper if lower is None else lower
-    elif lower == upper or t.trivially_assignable_equals(resolver, upper, lower) is True:
+    elif lower == upper or t.receives(upper, lower, resolver):
         answer = lower
     else:
         # The upper bound RECEIVES the lower one: merge them (List spelled
-        # without arguments below, `List<Int>` above, is `List<Int>`). Until
-        # the remaining callers move to merge, a contradiction still falls
-        # back to the common parent.
+        # without arguments below, `List<Int>` above, is `List<Int>`). Bounds
+        # that contradict generalise to their common parent (USER RULING:
+        # uppers generalise) — joining is not the merge's job.
         merged, _bindings, errors = t.merge(upper, lower, {}, resolver)
-        answer = merged if merged is not None and not errors else t.converge([lower, upper], resolver)
+        answer = merged if not errors else t.converge([lower, upper], resolver)
     if answer is None:
         return Verdict(clue="its uses require " + _listed(uppers, " and "))
     return Verdict(type=answer)
@@ -145,7 +145,7 @@ def _complete(spec: t.TypeSpec, resolver: g.Resolver) -> bool:
 
 def _narrowest(uppers: list[t.TypeSpec], resolver: g.Resolver) -> t.TypeSpec | None:
     for cand in uppers:
-        if all(x == cand or t.trivially_assignable_equals(resolver, x, cand) is True for x in uppers):
+        if all(x == cand or t.receives(x, cand, resolver) for x in uppers):
             return cand
     return None
 

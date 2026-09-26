@@ -695,7 +695,10 @@ class MatchExpression(e.Expression):
                     f"match arm has {got} pattern{'' if got == 1 else 's'} "
                     f"but the match has {want} subject{'' if want == 1 else 's'}"))
         for arm in self.arms:
-            errors += arm.check(resolver, expected_type)
+            # A bound else arm's binding is the whole subject, exactly as in
+            # compile — only this level knows its type.
+            arm_resolver = _binding_resolver(resolver, arm, subj_type) if arm.type_spec is None else resolver
+            errors += arm.check(arm_resolver, expected_type)
             # The else arm must stay total — the match's coverage guarantee
             # rests on it. Guard an ordinary arm before it instead.
             if arm.guard is not None and arm.type_spec is None and not arm.literals:

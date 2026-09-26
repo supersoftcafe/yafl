@@ -181,8 +181,7 @@ fun unescLine(line, sb)
 # specs mode: each stdin line is a spec-algebra case; the answer is printed
 # for diffing against the Python typespec (tests/test_bootstrap_specs.py).
 #   uid <spec>
-#   meet <spec> <spec>
-#   unify <names> <spec> <spec>
+#   merge <spec> ;; <spec>
 #   bind <declared-entries> <supplied-names>
 fun specsMode(text): (out: String, code: Int)
   ret (toString(specLines(chain(splitLines(text)), StringBuilder())), 0)
@@ -204,8 +203,6 @@ fun specLine(line, sb)
 fun evalCase(op, rest)
   if op == "uid"
     ret parseSpecText(rest) |> (r) => uidOf(r)
-  if op == "meet"
-    ret meetCase(rest)
   if op == "bind"
     ret bindCase(rest)
   if op == "merge"
@@ -216,23 +213,6 @@ fun uidOf(r: Spec|None) => match(r)
   (s2: Spec) => uid(s2) == "" ? "-" : uid(s2)
   ()         => "!"
 
-fun meetCase(rest): String
-  let bar = indexOf(rest, " ;; ", 0)
-  if bar < 0
-    ret "!"
-  let a = parseSpecText(slice(rest, 0, bar))
-  let b = parseSpecText(slice(rest, bar + 4, length(rest)))
-  ret match(a)
-    (sa: Spec) => match(b)
-      (sb: Spec) => meetResult(meet(sa, sb))
-      ()         => "!"
-    ()         => "!"
-
-fun meetResult(m: Meet) => match(m)
-  (ms: MSpec)     => uid(ms.mSpec) == "" ? "-" : uid(ms.mSpec)
-  (mc: MConflict) => "CONFLICT"
-  ()              => "NONE"
-
 # merge L ;; R — the result's uid ("NONE" when nothing merges) and whether
 # any contradiction came back. No program, so no placeholder is in scope and
 # nothing is bindable.
@@ -242,7 +222,7 @@ fun mergeCase(rest)
     ret "!"
   let a = parseSpecText(slice(rest, 0, bar))
   let b = parseSpecText(slice(rest, bar + 4, length(rest)))
-  let m = mergeSpecs(a, b, List<MBind>(), RRoot((root) => false, (name) => false, buildStatements(List<PStmt>())))
+  let m = mergeSpecs(a, b, List<MBind>(), emptyResolver())
   let res = match(m.moSpec)
     (sp: Spec) => uid(sp) == "" ? "-" : uid(sp)
     ()         => "NONE"

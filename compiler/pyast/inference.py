@@ -1,13 +1,13 @@
 """Call-site generic-parameter inference — the compile-side of the type system.
 
 The compile-fixpoint twin of pyast/typespec/algebra.py: where the algebra
-answers questions about types (meet/refine/unify/solve), this module answers
+answers questions about types (merge/refine/solve), this module answers
 ONE question about a USE of a generic statement — what type arguments should it
 carry? — by combining the three sources, strongest first: the argument types,
 the expected result type, and the `where` constraints discharged against the
 `[trait]` instances in scope (t.solve_trait_constraint). Results may be
 PARTIAL (unbound params keep their own placeholder for a later pass) and are
-MONOTONE across passes (fresh bindings meet previously stored ones — inference
+MONOTONE across passes (fresh bindings merge into previously stored ones — inference
 refines, never forgets).
 
 `use_site_type_params` is the entry point (NamedExpression.compile); the rest
@@ -100,6 +100,23 @@ def _infer_type_params_via_where(stmt: s.Statement, mapping: dict[str, t.TypeSpe
     return mapping
 
 
+def _unknown_argument_names(covariant: t.TypeSpec, actual: t.TypeSpec,
+                            resolver: g.Resolver) -> set[str]:
+    """The placeholders of every declared parameter whose argument's type is
+    not known yet (absent, unresolved, or holding a hole)."""
+    if not isinstance(covariant, t.TupleSpec) or not isinstance(actual, t.TupleSpec):
+        return set()
+    binding = t.bind_tuple_entries(covariant.entries, [en.name for en in actual.entries])
+    if binding is None:
+        return set()
+    def known(spec: t.TypeSpec | None) -> bool:
+        return (spec is not None and spec.is_concrete() and not t.has_free_placeholders(spec, resolver)
+                and not t.has_missing_arguments(spec, resolver))
+    return {name for entry, b in zip(covariant.entries, binding)
+            if b is None or not known(actual.entries[b].type)
+            for name in t.placeholder_names_in(entry.type)}
+
+
 def _infer_type_params(stmt: s.Statement, declared: t.CallableSpec,
                        expected: t.CallableSpec,
                        resolver: g.Resolver) -> dict[str, t.TypeSpec] | None:
@@ -111,19 +128,46 @@ def _infer_type_params(stmt: s.Statement, declared: t.CallableSpec,
     vs the actual one), the expected result type, and — for a parameter that
     appears only in a `where` clause — the concrete trait instances in scope.
     Returns the {name: type} mapping, which may be PARTIAL (some params still
-    unbound); the caller decides how to apply it. None means the shapes don't
-    unify at all."""
+    unbound); the caller decides how to apply it. None means the arguments
+    contradict the parameters."""
     placeholder_names = {tp.name for tp in (getattr(stmt, "type_params", None) or ())}
 
-    # An enclosing generic's parameter is a real type at this use site, so the
-    # callee's params may bind to it (see unify_generic).
-    def in_scope(name: str) -> bool:
-        return t.resolves_in_scope(name, resolver)
+    # The declared parameters RECEIVE the arguments: a merge, the callee's
+    # params its named holes. Covariant positions first — a callable
+    # parameter's own parameters are contravariant, so they only fill what
+    # the rest left open (`map(xs: List<T>, f: (:T): U)` takes T from xs).
+    # An argument's view is provisional, so there a binding widens across
+    # arguments (`pair(Circle(1), Square(2))` binds T to Shape); a callable
+    # parameter only fills it, never widens it (`map(circles, (v) =>
+    # named(v))` keeps T = Circle though the lambda takes a Shape), and never
+    # binds a parameter whose argument is still unknown — that waits for the
+    # argument (`fold(xs, init, (a, x) => …)` takes T from xs, never from x,
+    # while xs is untyped). A known argument that cannot decide (`?>`'s
+    # `value: TIn | E` against `Int | Oops`) leaves it to the lambda's own
+    # `(a: Int)`, and a binding one position learns can decide another, so
+    # the merge repeats until nothing more is learned. A contradiction in the
+    # covariant positions means this candidate does not take these
+    # arguments; a callable parameter's type is only evidence to learn from —
+    # a lambda's is derived from this very binding on an earlier pass — and
+    # the checker owns its mismatches.
+    def settled(spec: t.TypeSpec, bindings: dict[str, t.TypeSpec | None]):
+        errors: list = []
+        for _ in range(len(bindings) + 1):
+            _p, learned, errors = t.merge(spec, expected.parameters, bindings, resolver, widen_views=True)
+            if learned == bindings:
+                break
+            bindings = learned
+        return bindings, errors
 
-    mapping = t.unify_generic(declared.parameters, expected.parameters, placeholder_names,
-                              None, in_scope)
-    if mapping is None:
+    covariant = t.without_callable_params(declared.parameters)
+    learned, errors = settled(covariant, {name: None for name in placeholder_names})
+    if errors:
         return None
+    waiting = {name for name in _unknown_argument_names(covariant, expected.parameters, resolver)
+               if name in placeholder_names and learned.get(name) is None}
+    learned, _errors = settled(declared.parameters,
+                               {name: spec for name, spec in learned.items() if name not in waiting})
+    mapping = {name: spec for name, spec in learned.items() if spec is not None}
     # The expected result RECEIVES the callee's result: a merge, with the
     # callee's params as named holes the arguments have already bound — so it
     # fills only what the arguments left open (`List()` against
@@ -169,8 +213,8 @@ def use_site_type_params(stmt: s.Statement,
     # A binding to a NARROWED enum view (`T = Circle`, from a Circle-valued
     # argument) is provisional too: the context may expect the root — a list
     # of Circles flowing where List<Shape> is declared — and generic type
-    # arguments are invariant, so the use must widen rather than latch. `meet`
-    # joins views, so re-inferring against the expected type widens the
+    # arguments are invariant, so the use must widen rather than latch. The
+    # merge widens views, so re-inferring against the expected type widens the
     # binding exactly as far as the context demands and no further.
     complete = (len(supplied) == len(stmt_type_params)
                 and not any(t.has_free_placeholders(tp, resolver) for tp in supplied)
@@ -183,14 +227,15 @@ def use_site_type_params(stmt: s.Statement,
     mapping = _infer_type_params(stmt, declared, expected_type, resolver)
     if mapping is None:
         return supplied
-    # MONOTONE re-inference: a param this pass could not re-derive keeps its
-    # previously stored binding (meet — a fresh hole must never overwrite a
-    # ground binding; types only refine). A param never bound keeps its own
-    # placeholder (`p.type`), so the use stays generic until a later pass.
+    # MONOTONE re-inference: the stored binding RECEIVES this pass's — a merge
+    # that widens a provisional view — so a fresh hole never overwrites a
+    # ground binding; types only refine. A param never bound keeps its own
+    # placeholder (`p.type`), so the use stays generic until a later pass. A
+    # contradiction takes the fresh binding.
     prior = (dict(zip((p.name for p in stmt_type_params), supplied))
              if len(supplied) == len(stmt_type_params) else {})
     def bound(p) -> t.TypeSpec:
         fresh = mapping.get(p.name, p.type)
-        merged = t.meet(prior.get(p.name), fresh)
-        return merged if isinstance(merged, t.TypeSpec) else fresh
+        merged, _b, errors = t.merge(prior.get(p.name), fresh, {}, resolver, widen_views=True)
+        return merged if merged is not None and not errors else fresh
     return tuple(bound(p) for p in stmt_type_params)

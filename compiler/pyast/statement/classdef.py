@@ -149,7 +149,7 @@ class ClassStatement(TypeStatement):
 
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
-        nested_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
+        nested_resolver = self._generic_scope(g.ResolverData(resolver, self.__find_locals(resolver)))
         if self._all_parents is None:
             new_parents = rw.UNCHANGED
         else:
@@ -171,7 +171,7 @@ class ClassStatement(TypeStatement):
         # Resolve each of the inherited types and update the implements list
         # Use a resolver that includes this class's own generic type params so that
         # e.g. `TVal` in `class Foo<TVal> : Bar<TVal>` resolves to GenericPlaceholderSpec.
-        type_resolver = g.ResolverType(resolver, self._find_generic_types)
+        type_resolver = self._generic_scope(resolver)
         # `implements` is a flat list of individual interfaces (the parser splits
         # the `A | B` inheritance spelling — see __flatten_inheritance), so there
         # is no union left to unpack here.
@@ -205,7 +205,7 @@ class ClassStatement(TypeStatement):
         # `class Box<T>(value: T)`) or inside a method body resolves to the
         # class's GenericPlaceholderSpec rather than failing the lookup.
         new_parameters, prm_glb, _ = self.parameters.compile(type_resolver, None)
-        statement_resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
+        statement_resolver = self._generic_scope(g.ResolverData(resolver, self.__find_locals(resolver)))
         # Member bodies resolve through the CLASS's `where` clause: a member
         # declares no generics/wheres of its own (a vtable slot has a fixed
         # signature), so each member function COMPILES under a transient copy
@@ -288,9 +288,9 @@ class ClassStatement(TypeStatement):
         # Parameters need the generic-aware resolver too — a constructor
         # destructure like `class Box<T>(value: T)` must see T as a
         # GenericPlaceholderSpec, not fail to resolve.
-        type_resolver = g.ResolverType(resolver, self._find_generic_types)
+        type_resolver = self._generic_scope(resolver)
         prm_err = self.parameters.check(type_resolver, None)
-        resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
+        resolver = self._generic_scope(g.ResolverData(resolver, self.__find_locals(resolver)))
         stm_err = [x for stm in self.statements
                    for x in self.__with_owner_wheres(stm).check(resolver, None)]
 
@@ -356,7 +356,7 @@ class ClassStatement(TypeStatement):
 
 
     def global_codegen(self, resolver: g.Resolver) -> tuple[cg_ir.Object, list[cg_ir.Function]]:
-        resolver = g.ResolverType(g.ResolverData(resolver, self.__find_locals(resolver)), self._find_generic_types)
+        resolver = self._generic_scope(g.ResolverData(resolver, self.__find_locals(resolver)))
         ast_functions = [fnc for fnc in self.statements if isinstance(fnc, FunctionStatement)]
         gen_functions = [fnc.global_codegen(resolver) for fnc in ast_functions]
 

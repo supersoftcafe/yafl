@@ -119,17 +119,22 @@ fun solveInstanceScope(f: Found, own: List<String>, expected: Spec|None,
                        r: Resolver) => match(expected)
   (exp: Spec) => match(f.fTraitScope)
     (ts: Spec) => match(stmtType(f.fStmt))
-      (eff: Spec) => solveAgainst(traitSubstituted(eff, f), exp, ts, own)
+      (eff: Spec) => solveAgainst(traitSubstituted(eff, f), exp, ts, own, r)
       ()          => None
     ()         => None
   ()          => None
 
-fun solveAgainst(effective, expected, ts,
-                 own: List<String>) => match(unifyGeneric(effective, expected, own, List()))
-  (m: UMap)  => bindsAll(chain(own), m.uBindings)
-    ? substitute(ts, m.uBindings)
+# The use site's expected type RECEIVES the instance's member: a merge, the
+# instance's params its named holes, all of which must bind — and to concrete
+# types: ambience never serves a caller's own placeholder (USER RULING; generic
+# code states its own `where`).
+fun solveAgainst(effective, expected, ts, own: List<String>, r)
+  let m = mgGo(expected, effective, map(own, (n) => MBind(n, None)), false, false, false, r)
+  let bound = learnedBindings(chain(m.moBinds), List())
+  ret isEmpty(m.moErrs) && bindsAll(chain(own), bound)
+      && !any(bound, (b) => !isEmpty(placeholderNames(b.bSpec)))
+    ? substitute(ts, bound)
     : None
-  (f2: UFail) => None
 
 fun [tail] bindsAll(ns: Chain<String>, bs: List<Binding>) => match(ns)
   (nil: ChainEnd) => true

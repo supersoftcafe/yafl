@@ -22,7 +22,7 @@ import Bootstrap::StdlibCandidates
 # ── FunctionStatement.global_codegen ────────────────────────────────────────
 
 fun funGlobalCodegen(f: PsFun, r0): CgFunction
-  let r = genScope(f.fGens, r0)
+  let r = genScope(f.fGens, f.fWheres, r0)
   let bodyR = localScope(paramLets(f.fParams), f.fNested ? r : traitScope(f.fWheres, r))
   let paramBundle = fgcParamBundles(chain(paramTargets(f.fParams)), bodyR, 0, emptyBundle())
   let bundle = match(f.fBody)
@@ -90,7 +90,7 @@ fun classGlobalCodegen(c, r0): ClassCodegenOut
   # find_data (params + members + parents) PLUS `this`, no trait data.
   # RClassBody is that exact scope (classBodyFindings); params-only localScope
   # left `this` unresolvable inside member bodies at generate.
-  let r = genScope(c.cGens, RClassBody(c, r0))
+  let r = genScope(c.cGens, c.cWheres, RClassBody(c, r0))
   let genFunctions = classMemberFunctions(chain(c.cMembers), r, List())
   let extends = c.cIsInterface ? List<String>() : sort(classParentUids(c))
   let functions = c.cIsInterface ? List<CgFuncSlot>() : classSlotEntries(c)

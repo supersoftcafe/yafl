@@ -4,9 +4,10 @@ compiler/pyast/typespec over the same cases.
 The same diff methodology as the parser port: a compact spec spelling drives
 BOTH implementations over generated cases, and the answers must match —
 `uid` (as_unique_id_str: the structural identity every layout, mangle and
-union dedup reads through — name plus every type argument), `meet` (the fixpoint's refinement rule, including
-its CONFLICT verdict), and `bind_tuple_entries` (the one binding shared by
-assignability, unification, conversion and calls).
+union dedup reads through — name plus every type argument), `merge` (the one
+directional type merge, including whether it found a contradiction), and
+`bind_tuple_entries` (the one binding shared by assignability, merging,
+conversion and calls).
 """
 from __future__ import annotations
 
@@ -95,16 +96,6 @@ def _py_uid(spec) -> str:
     return u if u else ("-" if spec is not None else "!")
 
 
-def _py_meet(a: str, b: str) -> str:
-    from pyast.typespec.algebra import meet, _CONFLICT
-    r = meet(_spec(a), _spec(b))
-    if r is _CONFLICT:
-        return "CONFLICT"
-    if r is None:
-        return "NONE"
-    return r.as_unique_id_str() or "-"
-
-
 def _py_merge(a: str, b: str) -> str:
     import pyast.resolver as g
     result, _bindings, errors = t.merge(_spec(a), _spec(b), {}, g.ResolverRoot([]))
@@ -148,15 +139,12 @@ def _cases() -> tuple[list[str], list[str]]:
     for tp in tuples:
         lines.append(f"uid {tp}")
         expected.append(_py_uid(_spec(tp)))
-    # A union holding a placeholder-bearing instantiation has no ground id:
-    # it must still meet ITSELF (meet(x, x) = x), in either member order.
+    # merge is DIRECTIONAL (left receives right), so every ordered pair. A
+    # union holding a placeholder-bearing instantiation has no ground id: it
+    # must still merge with ITSELF, in either member order.
     holey = ["U(E:Lst@5:LE|LF<G:T@1>,C:Box@3<G:T@1>)",
              "U(C:Box@3<G:T@1>,E:Lst@5:LE|LF<G:T@1>)"]
-    for a, b in itertools.product(_ATOMS + unions[:6] + holey, repeat=2):
-        lines.append(f"meet {a} ;; {b}")
-        expected.append(_py_meet(a, b))
-    # merge is DIRECTIONAL (left receives right), so every ordered pair.
-    shapes = ["E:Lst@5:LE|LF<G:T@1>", "E:Lst@5:LE|LF<i>", "E:Lst@5:LE|LF<s>", "E:Lst@5:LF<i>",
+    shapes = holey + ["E:Lst@5:LE|LF<G:T@1>", "E:Lst@5:LE|LF<i>", "E:Lst@5:LE|LF<s>", "E:Lst@5:LF<i>",
               "E:Lst@5:LE|LF", "C:Box@3<G:T@1>", "C:Box@3<i>", "T(_=i,_=G:T@1)", "T(_=G:T@1,_=s)",
               "T(_=i,_=s)", "U(E:Lst@5:LE|LF<G:T@1>,b)", "U(E:Lst@5:LE|LF<i>,b)"]
     for a, b in itertools.product(_ATOMS + unions[:6] + shapes, repeat=2):

@@ -581,7 +581,7 @@ def __spec_from_mangled(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t
     discharge only ever exists with its inner types already mangled — the
     concreteness gate specialises `Wrap<Leaf,Int>` to its opaque name *before*
     the wrapping `useBox`/instance is even instantiable — so we rebuild the
-    structure the unifier needs from the (name, type_args) of each specialisation."""
+    structure a pattern match needs from the (name, type_args) of each specialisation."""
     if isinstance(spec, t.ClassSpec):
         if not spec.type_params and spec.name in mono_map:
             base_name, base_args = mono_map[spec.name]
@@ -592,14 +592,18 @@ def __spec_from_mangled(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t
             return dataclasses.replace(
                 spec, type_params=tuple(__spec_from_mangled(a, mono_map) for a in spec.type_params))
     # A mangled ENUM inner type (`Sized<List$generic$bigint>` demanded against
-    # the pattern `Sized<List<T>>`): restore root_name + type_params, the two
-    # fields unify_generic's enum branch walks. Leaf names stay mangled — the
-    # unifier never reads them, and the inflated copy exists only to bind.
+    # the pattern `Sized<List<T>>`): restore the root, the type params and the
+    # leaves (`ListFull$generic$bigint` is the view's `ListFull`) — a merge
+    # compares views.
     if isinstance(spec, t.EnumSpec):
         if not spec.type_params and spec.root_name in mono_map:
             base_name, base_args = mono_map[spec.root_name]
+            def leaf(name: str) -> str:
+                return name.split("$generic$", 1)[0]
             return dataclasses.replace(
                 spec, root_name=base_name,
+                valid_leaf_names=frozenset(leaf(n) for n in spec.valid_leaf_names),
+                all_leaf_names=tuple(leaf(n) for n in spec.all_leaf_names),
                 type_params=tuple(__spec_from_mangled(a, mono_map) for a in base_args))
         if spec.type_params:
             return dataclasses.replace(
@@ -672,13 +676,11 @@ def __bind_where_params(st: s.LetStatement, mapping: dict[str, t.TypeSpec],
     interface match left out; error-preserving combinators bind every parameter
     up front, so for them it does nothing.
 
-    The match is strict and positional, deliberately NOT unify_generic.
-    unify_generic is lenient — on a mismatched concrete anchor it returns the
-    mapping unchanged — which would bind a target parameter from an unrelated
-    instance and cascade into runaway Map<Map<...>> instantiation. So here a
+    The match is strict and positional (bind_from_constraint_match): a
     concrete anchor position MUST equal the instance's exactly; a target
     placeholder is bound; anything else (e.g. an anchor that is itself still an
-    unbound placeholder) rejects the match.
+    unbound placeholder) rejects the match. Binding a target from an unrelated
+    instance would cascade into runaway Map<Map<...>> instantiation.
 
     This is the MONO-TIME where-discharge; its call-site (pre-monomorphisation)
     counterpart is typespec/algebra.py::solve_trait_constraint. The two are
@@ -730,7 +732,7 @@ def __generic_instance_refs(
             if pattern.name != constraint.name:
                 continue
             inflated = __spec_from_mangled(constraint, mono_map)
-            mapping = t.unify_generic(pattern, inflated, names)
+            mapping = t.pattern_binding(pattern, inflated, names, g.ResolverRoot([]))
             if mapping is None:
                 continue
             # Interface unification can leave a param undetermined when it only

@@ -117,26 +117,31 @@ carries a comment saying why.
 **Types only ever refine.** A stored type starts as a hole and monotonically
 gains information; nothing overwrites ground facts. The three primitives:
 
-- `meet(a, b)` — the most-refined common form of two partial types. A hole is
-  refined by the other side; compounds meet element-wise; two ground leaves
-  must be equal (`_CONFLICT` sentinel otherwise, internal to the type algebra).
+- `merge(left, right, bindings)` — the one directional type merge
+  (docs/type-merge-design.md): LEFT receives RIGHT. Holes fill from the other
+  side, a value lifts to the receiver's ancestor, generic arguments are
+  invariant, callable parameters reverse; named holes (`bindings`) are a
+  use site's type parameters. Returns the best answer, the bindings learned,
+  and every contradiction — the caller collects them and carries on.
 - `refine(current, resolver, infer)` — THE rule for any statement that stores
   an inferred type across passes (an untyped `let`, an undeclared function
   return type). Gate: refinable only while `current` is missing or carries an
   out-of-scope placeholder. Threshold: adopt only a *concrete* inferred view
   (placeholder blanks may cross a statement boundary and fill later; unresolved
-  names may not). Merge: `meet`. **If you add a new statement kind that caches
+  names may not). The stored type RECEIVES the inference (`merge`, views
+  widening). **If you add a new statement kind that caches
   a type, use `refine` — do not hand-roll a latch.** Both historical hand-rolled
   latches were bugs.
-- `unify_generic(generic, concrete, names)` — match a generic signature against
-  actual types to bind type parameters; partial results are kept and completed
-  on later passes.
+- `pattern_binding(pattern, concrete, names)` — does `concrete` fit an
+  instance's `pattern` (its own params the holes)? The one question every
+  instance lookup asks; partial results are kept and completed on later
+  passes.
 
 
 ## 3. Type-system vocabulary
 
 `pyast/typespec/specs.py` holds the spec classes; the algorithms over them
-(`meet`, `refine`, `unify_generic`, `substitute_placeholders`,
+(`merge`, `refine`, `pattern_binding`, `substitute_placeholders`,
 `solve_trait_constraint`, …) are the *type algebra*
 (`pyast/typespec/algebra.py`); the package `__init__` re-exports both so
 callers just use `t.*`. The call-site inference family — what type arguments
@@ -210,7 +215,7 @@ carry that growing state into the fixpoint (or the fixpoint's resolver into
 the mono loop): an abstraction straddling two lifecycles, for two callers.
 What genuinely can be shared already is: both phases delegate the strict
 positional match to `bind_from_constraint_match` and the structural match to
-`unify_generic`. If you feel the urge to unify further, that pressure is the
+`pattern_binding`. If you feel the urge to unify further, that pressure is the
 design telling you one of the phases has grown a responsibility it shouldn't
 have — look for that instead.
 
@@ -354,7 +359,7 @@ this is the collected summary. **AST-level**, after the fixpoint and checks:
 2. `pyast/statement/base.py` `Statement` / `pyast/expression/base.py`
    `Expression` — the protocol.
 3. `pyast/typespec/specs.py` header, then `pyast/typespec/algebra.py`
-   (`meet`, `refine`, `unify_generic`) — the vocabulary of §3.
+   (`merge`, `refine`, `pattern_binding`) — the vocabulary of §3.
 4. `pyast/resolver.py` — the onion; read `DelegatingResolver`'s docstring.
 5. One simple node end-to-end: `pyast/expression/ternary.py` (compile → check
    → generate, with `generate_to` coercion and path-prefixed bundles).

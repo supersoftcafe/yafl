@@ -200,8 +200,7 @@ Moved to `merge` (both compilers):
   generic spelled without arguments counts as a hole (`has_missing_arguments`).
   `meet` no longer used here.
 - The hints verdict — a parameter's upper bound receives its lower bound
-  (the `rw` case); the old common-parent step remains as the fallback on a
-  contradiction, to go when the rest have moved.
+  (the `rw` case).
 - Use-site inference's RESULT step — the expected result receives the
   callee's result, the arguments' bindings pre-set; a contradiction no longer
   erases them. Replaced the hand-written union-member rule.
@@ -212,7 +211,76 @@ return updated from a body that was not yet settled; `refine_widening`
 adopted a fresh type that still held holes; a ternary with no receiver never
 converted its arms into its own type (codegen crash, present at HEAD).
 
-Still to move: `unify_generic`'s parameter step (and its other six callers),
-`fits_shape` in `branch_type`, `converge`'s inheritance step, the remaining
-`meet` uses (`inference.py`'s monotone re-inference, `_unify`); then delete
-`meet`, `fits_shape`, `_unify_union`.
+- Use-site inference's PARAMETER step — the declared parameters receive the
+  arguments (covariant positions first); argument views widen across
+  arguments (`pair(Circle(1), Square(2))` binds T to Shape), and a
+  contradiction rejects the candidate. The monotone re-inference is a
+  widening merge of the stored binding with the fresh one.
+- Instance lookups — `pattern_binding(pattern, concrete, names)`: the trait
+  scope filter, the ambient-instance scope solve (expected type receives the
+  member), drops, derived equality, the mono-time witness binder and
+  `solve_trait_constraint` (its structural prune went: merge rejects
+  everything it rejected).
+- `branch_type`'s shape fill — an arm fits a sibling when merging the
+  sibling into it gives back the sibling.
+
+Deleted: `meet`, `unify_generic`, `_unify`, `_unify_union`, `fits_shape`,
+`_CONFLICT` (Python); `meet`, `unifyGeneric`, `unifyGenericIn` and their
+helpers (port). `tests/test_meet.py` became `test_merge_partial_types.py`.
+
+Found on the way and fixed (both compilers):
+
+- A bound named hole inside a union (`E | JsonParseError` with E already
+  `Never | JsonParseError`) took only the unmatched rest and conflicted; it
+  now contributes its binding's members, which must sit in the receiver and
+  cover the rest.
+- The use-site `where` check was vacuous: the constraint was checked
+  UNinstantiated (`BasicCompare<TVal>`), and the lenient match accepted any
+  instance of the interface. It is now instantiated with the use's type
+  arguments and must be provided by a `where` in scope, a `[trait]` let or
+  an instance — one rule, a merge, lifting through interface ancestry
+  (`BasicMath<Int>` provides `BasicCompare<Int>`). A declaration's `where`
+  is now in scope with its type parameters (`ResolverType` / `RTypes`), for
+  its signature as well as its body.
+- `a.b` never checked `a`: an error inside `f(x).field` went unreported.
+- The mono-time witness binder inflated a mangled enum without its leaves;
+  a merge compares views, so the leaves are restored too.
+
+- `converge`'s widest type and the hints' narrowest upper bound —
+  `receives(receiver, value)`: both complete (nothing for the merge to fill
+  on either side — a bare `List` shape is no `List<Int>`) and a merge that
+  contradicts nothing. (A union merge also hands back the receiver as spelt
+  when nothing was filled.)
+- A bound named hole agrees under its POSITION's variance: exact inside
+  generic arguments, a plain fit elsewhere (`map`'s `f: (:T): U` takes a
+  lambda over `String | ()` with T bound to String; T stays String).
+- A class whose ancestry is not built yet is no fit (it was "nothing to
+  add"): an unknown never counts as a success, and the fixpoint asks again.
+- The hints verdict — bounds that contradict still generalise to their
+  common parent (USER RULING: uppers generalise); that is a join, which
+  `merge` deliberately does not do.
+
+- A BOUND name inside a union is its binding's members, on either side
+  (`TIn | E` with TIn = Int against `Int | Oops` leaves E the Oops;
+  `E | ParseError` with E = `Never | ParseError` is `Never | ParseError`).
+- A value union holding a member not known yet (an unresolved name) has no
+  set difference: the member pairs with nothing, the receiver's hole stays
+  unbound and nothing is judged unmatched until it resolves. (Python let
+  the unknown "pair" with an arbitrary member and bound the rest; the port
+  bound the raw name — each guessed differently.)
+- A hole that took the rest by set difference is a MATCHED member (the
+  invariant every-member check ran after the binding and missed it).
+- The parameter step: covariant positions first (they alone can reject the
+  candidate); a callable parameter never widens a binding and never binds a
+  name whose ARGUMENT is still unknown (it waits for the argument); a known
+  argument that cannot decide leaves it to the lambda's own annotation; and
+  the merge repeats until the bindings settle, since one position's binding
+  can decide another's union.
+- An ambient instance solves only to CONCRETE types (USER RULING): a binding
+  to a caller's own placeholder is no solve.
+- A match's else-arm binder was never in scope during `check` (hidden until
+  `a.b` checked `a`).
+
+What stays outside `merge`: `join` (a branch's union) and `converge`'s root
+enum / shared interface steps — joining is a different problem (ruling 3);
+`bind_from_constraint_match` (the strict positional target binder).

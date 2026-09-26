@@ -148,6 +148,10 @@ class NamedStatement(Statement):
     def _find_generic_types(self, query: str) -> list[g.Resolved[TypeStatement]]:
         return [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in self.type_params if g.name_matches(tp.name, query)]
 
+    def _generic_scope(self, resolver: g.Resolver) -> g.Resolver:
+        """`resolver` plus this declaration's type params and its `where`."""
+        return g.ResolverType(resolver, self._find_generic_types, self.trait_params)
+
     def _initialiser_resolver(self, resolver: g.Resolver,
                               local_lets: Sequence[DataStatement] = ()) -> g.Resolver:
         """Resolver for a body or initialiser: this statement's generic type
@@ -155,7 +159,7 @@ class NamedStatement(Statement):
         interface methods — operators included — that are in scope. Function
         bodies and global-let initialisers share it so operators resolve the
         same in each."""
-        typed = g.ResolverType(resolver, self._find_generic_types)
+        typed = self._generic_scope(resolver)
         # Trait / interface operators JOIN this scope (only a local shadows), and
         # this scope is established ONCE, here, for a top-level function or let.
         # Inner functions carry no `where`: they do not call this and never add
@@ -182,27 +186,27 @@ class NamedStatement(Statement):
         resolver = g.ResolverType(resolver, lambda query:
             [g.Resolved(tp.name, tp, g.ResolvedScope.LOCAL) for tp in type_params if g.name_matches(tp.name, query)])
 
-        # for each trait_param
-        #   temporary compile, to resolve real type parameters
-        #   find one trait that is assignment compatible
-        trait_providers = resolver.get_traits()
-        instance_providers = resolver.get_trait_instances()
+        # Each constraint, instantiated for this use, must be provided: by a
+        # `where` in scope, a `[trait]` let, or an instance. A provider
+        # satisfies it when it merges into it — an instance's own params are
+        # the holes, and an interface lifts through its ancestry
+        # (BasicMath<Int> is a BasicCompare<Int>).
+        instantiation = {tp.name: ct for tp, ct in zip(self.type_params, caller_type_params)}
+        providers = ([(w, ()) for w in resolver.get_where_clauses()]
+                     + [(tp.declared_type, ()) for tp in resolver.get_traits()]
+                     + [(inst.pattern, tuple(p.name for p in inst.type_params))
+                        for inst in resolver.get_trait_instances()])
         for trait_param in self.trait_params:
             compiled, extra = trait_param.compile(resolver)
             if extra: # Skip if compilation is still producing new statements
                 return [Error(line_ref, f"Compile steps incomplete for '{trait_param.name}'. Seeing this message indicates a compiler error.")]
-            tp_found = [tp for tp in trait_providers if t.trivially_assignable_equals(resolver, compiled, tp.declared_type)]
-            # PRE-LOWERING first-class instances: the pattern IS the
-            # interface; a generic instance matches when the constraint
-            # unifies through its own params.
-            inst_found = [inst for inst in instance_providers
-                          if isinstance(inst.pattern, t.ClassSpec)
-                          and isinstance(compiled, t.ClassSpec)
-                          and inst.pattern.name == compiled.name
-                          and (t.trivially_assignable_equals(resolver, compiled, inst.pattern)
-                               or t.unify_generic(inst.pattern, compiled,
-                                                  {p.name for p in inst.type_params}) is not None)]
-            if len(tp_found) == 0 and len(inst_found) == 0:
+            compiled = t.substitute_placeholders(compiled, instantiation, resolver)
+
+            def satisfies(provider: t.TypeSpec, own: tuple[str, ...]) -> bool:
+                merged, _b, errors = t.merge(compiled, provider, {n: None for n in own},
+                                             resolver, callee_left=False)
+                return merged is not None and not errors
+            if not any(satisfies(provider, own) for provider, own in providers):
                 return [Error(line_ref, f"Trait parameter '{trait_param.name}' does not match any trait")]
 
         return []

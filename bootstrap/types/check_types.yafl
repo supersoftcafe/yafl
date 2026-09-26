@@ -166,8 +166,8 @@ fun stmtAttrs(st) => match(st)
   (o: PStmt)        => List()
 
 # ── check_caller_type_params (NamedStatement) ───────────────────────────────
-# Arity first; then each `where` constraint, compiled with the caller's type
-# args in scope, must match some in-scope [trait] instance's declared type.
+# Arity first; then each `where` constraint, instantiated with the caller's
+# type args, must be provided in scope.
 
 fun checkCallerTypeParams(st, callerParams: List<Spec>, lr,
                           r) => callerTypeParamErrs(narrowClassStmt(st), callerParams, lr, r)
@@ -183,11 +183,19 @@ fun callerTypeParamErrs(st, callerParams: List<Spec>, lr,
     ret oneErr(lr, "Excess type parameters")
   if shorterThan(chain(callerParams), chain(gens))
     ret oneErr(lr, "Not enough type parameters")
-  ret checkWheres(chain(stmtWheres(st)),
+  ret checkWheres(chain(stmtWheres(st)), instantiation(chain(gens), chain(callerParams), List()),
                   RTypes(callerGenFounds(chain(gens), chain(callerParams),
                                          List()),
-                         r),
-                  lr, noErrs())
+                         r, List()),
+                  lr)
+
+# The constraint compiles to the declaration's own placeholders; this use
+# instantiates them (`BasicCompare<TVal>` at `>=`<Int> is BasicCompare<Int>).
+fun [tail] instantiation(gs: Chain<PGen>, cs: Chain<Spec>, acc: List<Binding>): List<Binding> => match(gs)
+  (nil: ChainEnd) => acc
+  (g2: ChainLink) => match(cs)
+    (nil2: ChainEnd) => acc
+    (c: ChainLink)   => instantiation(g2.next, c.next, prepend(Binding(g2.value.genName, c.value), acc))
 
 fun callerGenFounds(gs, cs,
                            acc: List<Found>): List<Found>
@@ -205,73 +213,44 @@ fun [tail] callerGenFoundsB(gs: Chain<PGen>, cs: Chain<Spec>,
                               g2.value.pgLine),
                   ScLocal())))
 
-fun [tail] checkWheres(ws: Chain<Spec>, r, lr,
-                       acc: Set<PErr>) => match(ws)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => checkWheres(l.next, r, lr,
-                                 union(acc, checkOneWhere(l.value, r, lr)))
+# Each constraint, instantiated for this use, must be provided: by a `where`
+# in scope, a `[trait]` let, or an instance. The first that is not is the
+# error.
+fun [tail] checkWheres(ws: Chain<Spec>, inst: List<Binding>, r, lr): Set<PErr> => match(ws)
+  (nil: ChainEnd) => noErrs()
+  (l: ChainLink)  => checkOneWhere(l.value, inst, r, lr)
+    |> (errs) => isEmpty(errs) ? checkWheres(l.next, inst, r, lr) : errs
 
-fun checkOneWhere(w, r, lr)
+fun checkOneWhere(w, inst: List<Binding>, r, lr)
   let compiled = compileSpec(w, r)
   if !isEmpty(compiled.soGlobals)
     ret oneErr(lr, "Compile steps incomplete for '" + ctWhereName(w)
                    + "'. Seeing this message indicates a compiler error.")
-  ret anyTraitMatches(chain(traitLets(r)), compiled.soSpec, r)
-       || anyInstanceMatches(chain(traitInstanceStmts(r)), compiled.soSpec, r)
+  let wanted = substitute(compiled.soSpec, inst)
+  ret any(whereClauses(r), (w2) => satisfies(wanted, w2, List(), r))
+       || any(traitLets(r), (t2) => letSatisfies(wanted, t2, r))
+       || any(traitInstanceStmts(r), (t2) => instanceSatisfies(wanted, t2, r))
     ? noErrs()
     : oneErr(lr, "Trait parameter '" + ctWhereName(w)
                  + "' does not match any trait")
 
-fun [tail] anyTraitMatches(ts: Chain<PStmt>, compiled: Spec,
-                           r) => match(ts)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => triTrue2(assignableEq(r, compiled, let2.lType))
-      ? true
-      : anyTraitMatches(l.next, compiled, r)
-    (o: PStmt)    => anyTraitMatches(l.next, compiled, r)
+# A provider satisfies a constraint when it merges into it — an instance's own
+# params are the holes, and an interface lifts through its ancestry
+# (BasicMath<Int> is a BasicCompare<Int>).
+fun satisfies(wanted, provider: Spec|None, own: List<String>, r)
+  let m = mgGo(wanted, provider, map(own, (n) => MBind(n, None)), false, false, false, r)
+  ret match(m.moSpec)
+    (sp: Spec) => isEmpty(m.moErrs)
+    ()         => false
 
-# PRE-LOWERING first-class instances: the pattern IS the interface, so a
-# constraint matches when it equals the pattern, or when a GENERIC instance
-# unifies through its own params (base.py's `inst_found`).
-#
-# The port had only the `[trait]`-let half. That was invisible while the C
-# path ran no check phase at all: gate the C path and the bootstrap itself
-# stops compiling — 512 "does not match any trait" failures, every one a
-# constraint a first-class `instance` satisfies. Lowering already knew about
-# them (lower_instances runs in postmonoRes3b); only checking did not.
-fun [tail] anyInstanceMatches(ts: Chain<PStmt>, compiled,
-                              r) => match(ts)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => match(l.value)
-    (ti: PsTraitInstance) => instancePatternMatches(ti, compiled, r)
-      ? true
-      : anyInstanceMatches(l.next, compiled, r)
-    (o: PStmt)            => anyInstanceMatches(l.next, compiled, r)
+fun letSatisfies(wanted, st: PStmt, r) => match(st)
+  (let2: PsLet) => satisfies(wanted, let2.lType, List(), r)
+  (o: PStmt)    => false
 
-fun instancePatternMatches(ti: PsTraitInstance, compiled,
-                           r) => match(ti.tiPattern)
-  (pat: SClass) => match(compiled)
-    (cmp: SClass) => pat.scName != cmp.scName
-      ? false
-      : triTrue2(assignableEq(r, cmp, pat))
-        || unifiesWithInstance(pat, cmp, ti)
-    (o: Spec)     => false
-  (o2: Spec)    => false
-
-# `unify_generic(inst.pattern, compiled, {p.name for p in inst.type_params})
-#  is not None` — the instance's OWN params are the holes; anything else is
-# rigid.
-fun unifiesWithInstance(pat, cmp, ti: PsTraitInstance)
-  ret match(unifyGeneric(pat, cmp,
-                         genNames(chain(ti.tiGens), builder()),
-                         List()))
-    (m: UMap)   => true
-    (f2: UFail) => false
-
-# Python uses the RAW truthiness of trivially_assignable_equals here (None is
-# falsy), so only a definite True matches.
-fun triTrue2(x: Tri) => triTrue(x)
+# PRE-LOWERING first-class instances: the pattern IS the interface.
+fun instanceSatisfies(wanted, st: PStmt, r) => match(st)
+  (ti: PsTraitInstance) => satisfies(wanted, ti.tiPattern, genNames(chain(ti.tiGens), List()), r)
+  (o: PStmt)            => false
 
 fun ctWhereName(sp) => match(sp)
   (n: SNamed) => n.snName

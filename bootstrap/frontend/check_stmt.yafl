@@ -34,7 +34,7 @@ fun checkStmtKind(st, r, retTy: Spec|None) => match(st)
 # owner-wheres copy; the pattern must name an INTERFACE.
 
 fun checkTraitInstance(inst: PsTraitInstance, r0): Set<PErr>
-  let r = genScope(inst.tiGens, r0)
+  let r = genScope(inst.tiGens, inst.tiWheres, r0)
   let e1 = checkSpecOpt(inst.tiPattern, r)
   let e2 = checkSpecs(chain(inst.tiWheres), r, noErrs())
   let e3 = branchChecks(chain(withOwnerWheres(inst.tiMembers, inst.tiWheres)),
@@ -58,7 +58,7 @@ fun instancePatternErrs(inst: PsTraitInstance, r) => match(inst.tiPattern)
 # ── FunctionStatement ───────────────────────────────────────────────────────
 
 fun checkFun2(f: PsFun, r0): Set<PErr>
-  let r = genScope(f.fGens, r0)
+  let r = genScope(f.fGens, f.fWheres, r0)
   let bodyR = localScope(paramLets(f.fParams),
                          f.fNested ? r : traitScope(f.fWheres, r))
   let err1 = checkSpecOpt(f.fRet, r)
@@ -417,11 +417,11 @@ fun classChecks(c, r0): Set<PErr>
     : oneErr(c.pscLine, "Must only inherit from pure interfaces")
   let finalErr = finalParentErrs(c, chain(inh), noErrs())
   let fragile = fragileWarns(c, inh, r0)
-  let prmErr = checkStmt2(c.cParams, genScope(c.cGens, r0), None)
+  let prmErr = checkStmt2(c.cParams, genScope(c.cGens, c.cWheres, r0), None)
   # Member fns CHECK under the same transient owner-wheres copy they
   # compiled under (compile_stmt withOwnerWheres).
   let stmErr = branchChecks(chain(withOwnerWheres(c.cMembers, c.cWheres)),
-                            genScope(c.cGens, RClassBody(c, r0)), None,
+                            genScope(c.cGens, c.cWheres, RClassBody(c, r0)), None,
                             noErrs())
   ret union(implErr,
       union(pureErr,
@@ -616,7 +616,7 @@ fun [tail] linearGenErrs(e2: PsEnum, gs: Chain<PGen>,
 fun checkTypealias2(ta: PsTypealias, r0): Set<PErr>
   let r = isEmpty(ta.taGens) && isEmpty(ta.taWheres)
     ? r0
-    : genScope(ta.taGens, r0)
+    : genScope(ta.taGens, ta.taWheres, r0)
   ret union(checkSpec(ta.taType, r),
       union(checkSpecs(chain(ta.taWheres), r, noErrs()),
              attrErrs(ta.taAttrs, isKnownTypealiasAttr, ta.pstLine,

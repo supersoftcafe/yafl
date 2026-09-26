@@ -130,7 +130,7 @@ fun nameType(nm: PeName, r)
   let bag = findData(r, nm.refName)
   if !bag.bComplete
     ret None
-  ret match(soleOf(Bag(traitFiltered(bag.bItems, nm.penTrait))))
+  ret match(soleOf(Bag(traitFiltered(bag.bItems, nm.penTrait, r))))
     (f: Found) => nameTypeOf(nm, f, r)
     ()         => None
 
@@ -139,40 +139,36 @@ fun nameType(nm: PeName, r)
 # candidates); a generic ambient instance's candidate carries the PATTERN
 # scope, so it matches when the pattern unifies with the committed (solved)
 # scope through the instance's own placeholders (_scope_filtered).
-fun traitFiltered(datas, cache: Spec|None): List<Found> => match(cache)
+fun traitFiltered(datas, cache: Spec|None, r): List<Found> => match(cache)
   (c: Spec) => atMost(chain(datas), 1)
     ? datas
-    : preferScoped(scopeMatches(datas, c), datas)
+    : preferScoped(scopeMatches(datas, c, r), datas)
   ()        => datas
 
-fun scopeMatches(datas: List<Found>, c)
+fun scopeMatches(datas: List<Found>, c, r)
   let exact = filterByScope(chain(datas), c, List())
   ret exactly(chain(exact), 1)
     ? exact
-    : filterByPattern(chain(datas), c, List())
+    : filterByPattern(chain(datas), c, r, List())
 
-fun filterByPattern(ds, cache,
+fun filterByPattern(ds, cache, r,
                            acc: List<Found>): List<Found>
-  ret build(filterByPatternB(ds, cache, builderFrom(acc)))
+  ret build(filterByPatternB(ds, cache, r, builderFrom(acc)))
 
-fun [tail] filterByPatternB(ds: Chain<Found>, cache,
+fun [tail] filterByPatternB(ds: Chain<Found>, cache, r,
                            [terminal] acc: ListBuilder<Found>) => match(ds)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => patternMatches(l.value, cache)
-    ? filterByPatternB(l.next, cache, push(acc, l.value))
-    : filterByPatternB(l.next, cache, acc)
+  (l: ChainLink)  => patternMatches(l.value, cache, r)
+    ? filterByPatternB(l.next, cache, r, push(acc, l.value))
+    : filterByPatternB(l.next, cache, r, acc)
 
-# unifyGeneric is deliberately lenient: a structural mismatch defers (returns
-# the mapping so far) rather than failing, so the caller must demand every
-# instance placeholder actually bound — exactly as solveInstanceScope does.
-# Accepting any UMap let a FOREIGN generic instance of the same interface
-# through on the empty mapping (two generic ambient Drop instances made every
-# drop unresolvable). (access.py _scope_filtered)
-fun patternMatches(f: Found, cache) => match(f.fInstanceParams)
+# Every instance placeholder must bind: one left open says the scope never
+# named this instance. (access.py _scope_filtered)
+fun patternMatches(f: Found, cache, r) => match(f.fInstanceParams)
   (own: List<String>) => !isEmpty(own) && match(f.fTraitScope)
-    (ts: Spec) => match(unifyGeneric(ts, cache, own, List()))
-      (m: UMap)   => bindsAll(chain(own), m.uBindings)
-      (f2: UFail) => false
+    (ts: Spec) => match(patternBinding(ts, cache, own, r))
+      (m: List<Binding>) => bindsAll(chain(own), m)
+      ()                 => false
     ()         => false
   ()                  => false
 

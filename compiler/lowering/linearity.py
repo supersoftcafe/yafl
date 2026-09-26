@@ -227,7 +227,7 @@ class _Checker:
                 env[prm.name] = prm.declared_type
 
         body_resolver = g.ResolverData(
-            g.ResolverType(self.resolver, fn._find_generic_types),
+            fn._generic_scope(self.resolver),
             self._params_finder(params))
         self._analyze_scope(fn.body, env, fn.line_ref, body_resolver)
 

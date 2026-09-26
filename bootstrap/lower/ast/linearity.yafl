@@ -334,7 +334,7 @@ fun linBody(f: PsFun, b, params: List<PStmt>, thisTy: Spec|None,
       : envPut(emptyEnv(), "this", tt)
     ()         => emptyEnv()
   let env = paramEnv(chain(params), r0, env0)
-  let bodyR = localScope(params, genScope(f.fGens, r0))
+  let bodyR = localScope(params, genScope(f.fGens, f.fWheres, r0))
   ret analyzeScope(b, env, f.psfLine, bodyR, r0, acc)
 
 fun [tail] paramEnv(ps: Chain<PStmt>, r, env) => match(ps)

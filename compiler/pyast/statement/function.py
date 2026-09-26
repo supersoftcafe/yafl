@@ -116,10 +116,10 @@ class FunctionStatement(DataStatement):
         only) and the parameters. `compile` and `check` wrap the type params
         themselves — they compile the signature in that scope too — and go
         straight to the inner half; everyone else starts here."""
-        return self.__body_resolver(g.ResolverType(resolver, self._find_generic_types))
+        return self.__body_resolver(self._generic_scope(resolver))
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[FunctionStatement | None, list[Statement], h.Hints]:
-        resolver = g.ResolverType(resolver, self._find_generic_types)
+        resolver = self._generic_scope(resolver)
         rettype, rettype_glb = self.return_type.compile(resolver) if self.return_type else (None, [])
         prms, prms_glb, _ = self.parameters.compile(resolver, None)
         trts, trts_glb = u.flatten_lists(tp.compile(resolver) for tp in self.trait_params)
@@ -160,7 +160,7 @@ class FunctionStatement(DataStatement):
         return new_self, globals, h.without(body_hints, own, placeholders)
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
-        resolver = g.ResolverType(resolver, self._find_generic_types)
+        resolver = self._generic_scope(resolver)
         body_resolver = self.__body_resolver(resolver)
         err1 = self.return_type.check(resolver) if self.return_type else []
         err2 = self.parameters.check(resolver, None)
@@ -283,7 +283,7 @@ class FunctionStatement(DataStatement):
                 for name, lr in declared if name not in referenced]
 
     def global_codegen(self, resolver: g.Resolver) -> cg_ir.Function:
-        resolver = g.ResolverType(resolver, self._find_generic_types)
+        resolver = self._generic_scope(resolver)
         resolver = self.__body_resolver(resolver)
 
         bundle = g.OperationBundle()

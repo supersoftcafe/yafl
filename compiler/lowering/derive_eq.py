@@ -172,7 +172,7 @@ def __has_equality(spec, ok: frozenset[str], providers: list[_Provider],
     def covered_by(p: _Provider) -> bool:
         if isinstance(p.covers, str):
             return p.covers == uid
-        mapping = t.unify_generic(p.covers, spec, set(p.params)) if p.params else {}
+        mapping = t.pattern_binding(p.covers, spec, p.params, resolver)
         if mapping is None or t.substitute_placeholders(p.covers, mapping, resolver).as_unique_id_str() != uid:
             return False
         return all(isinstance(w, t.ClassSpec) and len(w.type_params) == 1

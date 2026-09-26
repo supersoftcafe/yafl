@@ -1309,9 +1309,9 @@ fun specFromMangled(sp, mono: List<GRef>) => match(sp)
     : SClass(c.scName, sfmList(chain(c.scParams), mono, List()),
              c.scLine)
   # A mangled ENUM inner type (Sized<List$generic$bigint> demanded against
-  # the pattern Sized<List<T>>): restore root + type params, the two
-  # fields the enum unify branch walks. Leaf names stay mangled — the
-  # unifier never reads them; the inflated copy exists only to bind.
+  # the pattern Sized<List<T>>): restore the root, the type params and the
+  # leaves (ListFull$generic$bigint is the view's ListFull) — a merge
+  # compares views.
   (e2: SEnum) => isEmpty(e2.seParams)
     ? sfmEnumBare(e2, mono)
     : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
@@ -1319,10 +1319,14 @@ fun specFromMangled(sp, mono: List<GRef>) => match(sp)
   (o: Spec)   => sp
 
 fun sfmEnumBare(e2, mono: List<GRef>) => match(monoLookup(chain(mono), e2.seRoot))
-  (g2: GRef) => SEnum(g2.grName, e2.seValidLeaves, e2.seAllLeaves,
+  (g2: GRef) => SEnum(g2.grName, map(e2.seValidLeaves, sfmLeaf), map(e2.seAllLeaves, sfmLeaf),
                       sfmList(chain(g2.grArgs), mono, List()),
                       e2.seLine)
   ()         => e2
+
+fun sfmLeaf(name: String): String
+  let at = indexOf(name, "$generic$", 0)
+  ret at < 0 ? name : slice(name, 0, at)
 
 fun sfmBare(c, mono: List<GRef>) => match(monoLookup(chain(mono), c.scName))
   (g2: GRef) => SClass(g2.grName,
@@ -1473,11 +1477,10 @@ fun girOne(p: GProvider, con, mono: List<GRef>, ifaces: List<Spec>,
   let letGens = p.gpLet.lGens
   let names = genNames(chain(letGens), List())
   ret match(specFromMangled(con, mono))
-    (inflated: SClass) => match(unifyGeneric(p.gpPattern, inflated, names,
-                                             List()))
-      (m: UMap)  => girBound(p, letGens, names, m.uBindings, ifaces, mono,
-                             acc)
-      (f: UFail) => acc
+    (inflated: SClass) => match(patternBinding(p.gpPattern, inflated, names,
+                                               emptyResolver()))
+      (m: List<Binding>) => girBound(p, letGens, names, m, ifaces, mono, acc)
+      ()                 => acc
     (o: Spec)          => acc
 
 fun girBound(p: GProvider, letGens: List<PGen>, names: List<String>,
