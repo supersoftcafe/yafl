@@ -93,14 +93,19 @@ def flatten_lists[_X,_Y](lists: Iterable[tuple[_X, list[_Y]]]) -> tuple[list[_X]
 
 def capture_field_name(name: str, lr: "LineRef") -> str:
     """The field a synthesised closure class stores a capture of `name` under:
-    itself, unless it is `this`.
+    itself, unless it answers to `this`.
 
     A field spelled `this` would collide with the receiver ClassStatement puts
     in scope for every method body (`__find_locals`), leaving the reference with
     two candidates. The `$` is what avoids that and a hash alone would not:
     lookup matches by PREFIX (`g.name_matches`), so `this@<hash>` still answers
-    to `this`. `lr` makes the name unique within the class that holds it."""
-    return f"$this@{lr.hash6()}" if name == "this" else name
+    to `this`. That is also the spelling of a captured LOCAL named `this` —
+    uniquified to `this@<hash>` — so it takes the `$` too; its own hash already
+    makes it unique. The receiver has none, and `lr` makes its field unique
+    within the class that holds it."""
+    if name == "this":
+        return f"$this@{lr.hash6()}"
+    return f"${name}" if name.startswith("this@") else name
 
 
 def referenced_names(node: "e.Expression | s.Statement") -> set[str]:

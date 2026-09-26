@@ -1,0 +1,18 @@
+# A LOCAL named `this`, captured by a closure.
+#
+# Locals are uniquified to `this@<hash>`, and name lookup matches by PREFIX, so
+# a closure-class field spelled `this@<hash>` answers to the closure's own
+# receiver `this` too: the method body's reference then has two candidates and
+# codegen fails. A captured local named `this` must be stored under a
+# `$`-prefixed field, exactly as the captured receiver already is. `applyN` is
+# recursive so the AST inliner cannot beta-reduce the closure away.
+namespace Corpus
+
+import System
+
+fun [tail] applyN(k: Int, f: (): Int, acc: Int): Int
+  ret k <= 0 ? acc : applyN(k - 1, f, acc + f())
+
+fun main(): Int
+  let this = 42
+  ret applyN(2, () => this + 1, 0) == 86 ? 0 : 1

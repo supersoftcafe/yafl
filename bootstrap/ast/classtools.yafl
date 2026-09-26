@@ -17,17 +17,20 @@ import Bootstrap::Types
 
 # ── capture field names (pyast/utils.py: capture_field_name) ────────────────
 # The field a synthesised closure class stores a capture of `name` under:
-# itself, unless it is `this`.
+# itself, unless it answers to `this`.
 #
 # A field spelled `this` would collide with the receiver a class puts in scope
 # for every method body, leaving the reference with two candidates. The `$` is
 # what avoids that and a hash alone would not: lookup matches by PREFIX
-# (nameMatches), so `this@<hash>` still answers to `this`. `lr` makes the name
-# unique within the class that holds it.
+# (nameMatches), so `this@<hash>` still answers to `this`. That is also the
+# spelling of a captured LOCAL named `this` — uniquified to `this@<hash>` — so
+# it takes the `$` too; its own hash already makes it unique. The receiver has
+# none, and `lr` makes its field unique within the class that holds it.
 
-fun capturedFieldName(name, lr: PLine) => name == "this"
-  ? "$this@" + hash6(lr.plFile, lr.plLine, lr.plCol)
-  : name
+fun capturedFieldName(name, lr: PLine): String
+  if name == "this"
+    ret "$this@" + hash6(lr.plFile, lr.plLine, lr.plCol)
+  ret startsWith(name, "this@") ? "$" + name : name
 
 
 # ── does a member occupy a vtable slot, and so dispatch virtually? ───────────

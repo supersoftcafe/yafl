@@ -593,7 +593,16 @@ EXPORT object_t* string_builder_reserve(object_t* buf, object_t* used, object_t*
     total = (total + GC_ALLOC_GRANULE - 1) / GC_ALLOC_GRANULE * GC_ALLOC_GRANULE;
     int64_t capacity = total - overhead;
     if (capacity > INT32_MAX) __abort_on_overflow();
-    return string_resize(buf, integer_from_int32((int32_t)capacity));
+    // PINNED for life, like an array under construction: every append writes
+    // the buffer in place with raw stores, and the fill may suspend (an async
+    // call between appends parks the buffer in a heap frame), so the buffer
+    // crosses safe points where compaction would otherwise relocate it and the
+    // next append would write a stale copy. A buffer is never published — the
+    // finished string is always a copy (string_resize) — so the pin is never
+    // released: the buffer dies pinned and is freed like any other object.
+    object_t* grown = string_resize(buf, integer_from_int32((int32_t)capacity));
+    object_pin(grown);
+    return grown;
 }
 
 
