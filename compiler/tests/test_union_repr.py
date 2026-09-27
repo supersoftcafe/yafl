@@ -348,6 +348,32 @@ fun main(): System::Int
         self.assertEqual("-1 5 2", out.strip())
 
 
+    def test_variant_less_enum_over_threshold_boxes(self):
+        # An enum with NO variants is its own single leaf. Over the threshold
+        # that leaf boxes — and its object name is the root's own name, so it
+        # must not also emit a root marker it `extends`: the leaf would
+        # replace the marker and extend ITSELF, its vtable's implements_array
+        # reading its own obj_* inside its own initialiser (a C constant-
+        # expression error). 9 Ints = 72B > 64.
+        src = """
+namespace Main
+import System
+enum Big(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int)
+fun mk(k: Int): Big
+  ret Big(k, 2, 3, 4, 5, 6, 7, 8, 9)
+fun describe(v: Big|None): Int
+  ret match(v)
+    (b: Big)  => b.a + b.i
+    (n: None) => 0
+fun main(): System::Int
+  println(String(describe(mk(3))) + " " + String(describe(None)))
+  ret 0
+"""
+        rc, out = compile_and_run_stdlib_capture(src)
+        self.assertEqual(0, rc)
+        self.assertEqual("12 0", out.strip())
+
+
 class TestLeafConstructorTyping(TestCase):
     """A construction builds exactly one variant, so its TYPE is the leaf
     (USER RULING): `Dark(7, "d")` has type Dark, not Shade. Representation

@@ -215,13 +215,20 @@ class EnumStatement(TypeStatement):
         # no barrier, and deliberately NOT [mutable] — a store lost to a
         # compaction move is a benign recompute, as string_t's lazy hash.
         prefix: tuple = (("type", cg_t.DataPointer()), ("$hash", cg_t.Int(32)))
+        # A variant-less enum is its own single leaf, and that leaf's object
+        # carries the root's own name: it IS the root, so there is no marker
+        # to emit and nothing for it to extend (an instance test against the
+        # root is plain vtable identity). Emitting both would give two objects
+        # one name — the leaf replacing the marker and extending itself.
+        root_is_leaf = any(t.enum_leaf_object_name(self.name, leaf) == self.name
+                           for leaf in self._enum_spec.all_leaf_names)
         marker = cg_ir.Object(
             name=self.name,
             extends=(),
             functions=(),
             fields=cg_t.ImmediateStruct(prefix),
             comment=f"{self.name} — enum root marker (never instantiated)")
-        objects = [marker]
+        objects = [] if root_is_leaf else [marker]
         leaf_field_sets = t._collect_leaf_field_sets(self, [])
         # A VARIANT's attributes reach its emitted object: `[pinnable]` on a
         # leaf (ChainLink — its `next` is late-pin written by the builder)
@@ -236,7 +243,7 @@ class EnumStatement(TypeStatement):
                 (let.name, let.declared_type.generate(resolver)) for let in leaf_fields)
             objects.append(cg_ir.Object(
                 name=obj_name,
-                extends=(self.name,),
+                extends=() if obj_name == self.name else (self.name,),
                 functions=(),
                 fields=cg_t.ImmediateStruct(fields),
                 # Strict lookup: the registry enumerates leaves from these

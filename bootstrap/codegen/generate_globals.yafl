@@ -258,6 +258,14 @@ fun [tail] enumAnyBoxedLeaf(names: Chain<String>, r, rootName) => match(names)
     ? true
     : enumAnyBoxedLeaf(l.next, r, rootName)
 
+# A variant-less enum is its own single leaf, and that leaf's object carries
+# the root's own name: it IS the root — no marker, nothing to extend.
+fun [tail] enumRootIsLeaf(names: Chain<String>, rootName) => match(names)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => enumLeafObjectName(rootName, l.value) == rootName
+    ? true
+    : enumRootIsLeaf(l.next, rootName)
+
 fun enumIsRootStmt(st: PsEnum) => match(st.eRootName)
   (rn: String) => rn == st.eName
   ()            => true
@@ -282,9 +290,11 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r, isComplex: Bool)
                         None, st.eName + " — enum root marker (never instantiated)",
                         false, false, 0)
   let leafSets = collectLeafFieldSets(st, List())
-  ret concat(list1(marker),
-             enumLeafObjects(chain(sp.seAllLeaves), chain(leafSets), st.eName,
-                             discs, r, prefix, List()))
+  let leaves = enumLeafObjects(chain(sp.seAllLeaves), chain(leafSets), st.eName,
+                               discs, r, prefix, List())
+  ret enumRootIsLeaf(chain(sp.seAllLeaves), st.eName)
+    ? leaves
+    : concat(list1(marker), leaves)
 
 fun enumLeafObjects(names, sets, rootName,
                            discs: Dict<String, Int>, r,
@@ -309,7 +319,7 @@ fun enumLeafObject(leafName, leafFields: List<PStmt>, rootName,
   # statements, so a miss is a compiler bug — loud, not a dispatch fall-through.
   # A VARIANT's [pinnable] reaches its emitted object (a leaf whose field is
   # late-pin written), exactly as for a [pinnable] class.
-  ret CgObject(objName, list1(rootName), List(),
+  ret CgObject(objName, objName == rootName ? List() : list1(rootName), List(),
                CgImmediateStruct(fields), None, "", false, false,
                getOr0(discs, "enumleaf(" + objName + ")"),
                enumLeafIsPinnable(rootName, leafName, r))
