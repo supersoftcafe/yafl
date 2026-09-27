@@ -36,7 +36,6 @@ import lowering.simple_classes
 import lowering.ssa_defs  # analysis library shared by the known-value stages
 import lowering.stack_promotion
 import lowering.staticinit
-import lowering.string_accumulation
 import lowering.string_concat
 import lowering.struct_folding
 import lowering.deadstores
@@ -316,7 +315,8 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
             a = lowering.discriminator_folding.resolve_known_discriminators(a)
             a = lowering.known_tags.resolve_known_tags(a)
             a = lowering.string_concat.flatten_string_appends(a)
-            a = lowering.string_accumulation.deforest_string_accumulation(a)
+            # string_accumulation (builder deforestation) is retired: a String
+            # value extends its own head in place (yafllib/str.c).
             a = lowering.deadstores.eliminate_dead_stores(a)
             shape = tuple((n, len(f.ops)) for n, f in a.functions.items())
             if shape == prev_shape:

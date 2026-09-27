@@ -62,10 +62,10 @@ fun truncateToInt(f: System::Float): System::Int
   ret __builtin_op__<bigint>("integer_from_float64", f)
 
 fun String(f: System::Float): System::String
-  ret __builtin_op__<str>("string_from_float64", f)
+  ret __builtin_op__<str>("str_from_float64", f)
 
 fun parseFloat(s: System::String): System::Float|System::None
-  let v: System::Float = __builtin_op__<float64>("float64_parse_or_nan", s)
+  let v: System::Float = __builtin_op__<float64>("str_parse_float64", s)
   ret isNaN(v) ? None : v
 
 instance [ambient] Show<System::Float>
@@ -137,10 +137,10 @@ fun truncateToInt32(value: System::Float32): System::Int32
   ret __builtin_op__<int32>("int32_from_float32", value)
 
 fun String(value: System::Float32): System::String
-  ret __builtin_op__<str>("string_from_float32", value)
+  ret __builtin_op__<str>("str_from_float32", value)
 
 fun parseFloat32(s: System::String): System::Float32|System::None
-  let v: System::Float32 = __builtin_op__<float32>("float32_parse_or_nan", s)
+  let v: System::Float32 = __builtin_op__<float32>("str_parse_float32", s)
   ret isNaN(v) ? None : v
 
 instance [ambient] Show<System::Float32>

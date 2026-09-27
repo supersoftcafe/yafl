@@ -235,9 +235,10 @@ _MAX_VALUE_STRUCT_BYTES = _MAX_VALUE_STRUCT_WORDS * 8
 _ZERO = (0, 0, 0, 0, 0, 0, 0, 0)
 _PTR = (1, 0, 0, 0, 0, 0, 0, 0)
 _FUN = (1, 1, 0, 0, 0, 0, 0, 0)     # fun_t: env pointer + code word
+_STR = (1, 1, 0, 0, 0, 0, 0, 0)     # str_t: head pointer + one payload word
 _TAG = (0, 0, 0, 0, 0, 0, 0, 1)
 _BUILTIN_PRIMS = {
-    "bigint": _PTR, "str": _PTR,
+    "bigint": _PTR, "str": _STR,
     "int64": (0, 0, 1, 0, 0, 0, 0, 0), "float64": (0, 0, 0, 1, 0, 0, 0, 0),
     "int32": (0, 0, 0, 0, 1, 0, 0, 0), "float32": (0, 0, 0, 0, 0, 1, 0, 0),
     "int16": (0, 0, 0, 0, 0, 0, 1, 0),
@@ -348,7 +349,9 @@ def compute_boxed_leaves(statements: list[s.Statement],
             return acc
         if isinstance(spec, t.CombinationSpec):
             if collapses_to_pointer(list(spec.types)):
-                return _PTR
+                # A String member widens the one word to a String value.
+                return (_STR if any(pointer_kind(m) == ('STR',) for m in spec.types)
+                        else _PTR)
             acc = _ZERO
             for m in spec.types:
                 acc = _prims_max(acc, spec_prims(m, stack))

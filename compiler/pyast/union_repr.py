@@ -42,7 +42,7 @@ def literal_eq_test(lit_type_name: str, value: cg_p.RParam,
     """Boolean IR expression comparing a primitive `value` to a `literal`."""
     args = cg_p.NewStruct((("a", value), ("b", literal)))
     if lit_type_name == "str":
-        return cg_p.IntEqConst(cg_p.RuntimeInvoke("string_compare", args, cg_t.Int(32)), 0)
+        return cg_p.RuntimeInvoke("str_eq", args, cg_t.Int(8))
     if lit_type_name == "bigint":
         return cg_p.RuntimeInvoke("integer_test_eq", args, cg_t.Int(8))
     if lit_type_name in ("float32", "float64"):
@@ -160,6 +160,19 @@ def _union_collapses_to_pointer(members: list, resolver: g.Resolver) -> bool:
         return False
     testable = [k for k in kinds if k not in (('UNIT',), ('FOREIGN',))]
     return len(testable) == len(set(testable))
+
+
+def _peeled_ctype(ctype):
+    """The ctype `_unwrap_to_pointer_word` peels down to."""
+    while isinstance(ctype, cg_t.Struct) and len(ctype.fields) == 1:
+        ctype = ctype.fields[0][1]
+    return ctype
+
+
+def str_word(word: cg_p.RParam) -> cg_p.RParam:
+    """A one-word member value (NULL / tagged Int / object pointer) as a
+    two-word union value: word 0 carries it, the String payload is zero."""
+    return cg_p.RuntimeInvoke("str_word", cg_p.NewStruct((("word", word),)), cg_t.Str())
 
 
 def _unwrap_to_pointer_word(value, ctype):
@@ -442,13 +455,20 @@ class TaggedRepr(UnionRepr):
                         continue  # check() validated coverage; skip defensively
                     member_tag = discriminators[uid]
                     if narrow_map is None:
-                        # DataPointer narrow union: NULL for the unit member,
-                        # else the member's single pointer slot.
+                        # Pointer narrow union: NULL for the unit member, else
+                        # the member's single slot. A WIDE narrow union (a
+                        # String member, ctype Str) carries a one-word member
+                        # in word 0 and a String member as the whole value.
+                        wide = narrow_ctype == cg_t.Str()
                         if member.generate(resolver) == cg_t.Struct(()):
                             value: cg_p.RParam = cg_p.NullPointer()
+                            if wide:
+                                value = str_word(value)
                         else:
                             wsi, _ = variant_map[vi][0]
                             value = cg_p.StructField(sv, slot_fields[wsi][0])
+                            if wide and _peeled_ctype(member.generate(resolver)) != cg_t.Str():
+                                value = str_word(value)
                     else:
                         fields = {"$tag": cg_p.Integer(member_tag, 32)}
                         for (nsi, _nt), (wsi, _wt) in zip(narrow_map[k], variant_map[vi]):
@@ -683,11 +703,17 @@ class TaggedRepr(UnionRepr):
         unit_variant = next((v for v, vt in zip(source.repr_members(), src_variant_types) if vt == unit_type), None)
         assert ptr_variant is not None, "DataPointer union must have a non-unit pointer variant"
 
+        # A wide source (String member) tests its dispatch word; the pointer
+        # variant's slot value is the whole value for a String, else the word.
+        src_repr = classify(source, resolver)
+        word = src_repr._word(sv) if isinstance(src_repr, PointerRepr) else sv
+        ptr_ctype = ptr_variant.generate(resolver)
+        ptr_value = sv if _peeled_ctype(ptr_ctype) == cg_t.Str() else word
         null_label = "wide_null"
         ptr_uid = ptr_variant.as_unique_id_str()
         ptr_tag = discriminators.get(ptr_uid, 0)
         tgt_ptr_idx = next((i for i, v in enumerate(target.repr_members()) if v.as_unique_id_str() == ptr_uid), None)
-        slot_values = [(tgt_slot_fields[tgt_si][0], sv) for tgt_si, _ in tgt_variant_map[tgt_ptr_idx]] \
+        slot_values = [(tgt_slot_fields[tgt_si][0], ptr_value) for tgt_si, _ in tgt_variant_map[tgt_ptr_idx]] \
             if tgt_ptr_idx is not None else []
         slot_values.append(("$tag", cg_p.Integer(ptr_tag, 32)))
 
@@ -697,7 +723,7 @@ class TaggedRepr(UnionRepr):
         wide_results.append(("null_exit", cg_p.union_struct(tgt_ctype, {"$tag": cg_p.Integer(unit_tag, 32)})))
 
         return [
-            g.OperationBundle(operations=(cg_o.JumpIf(null_label, cg_p.IntEqConst(sv, 0)),)),
+            g.OperationBundle(operations=(cg_o.JumpIf(null_label, cg_p.IntEqConst(word, 0)),)),
             g.OperationBundle(operations=(cg_o.Label("ptr_exit"), cg_o.Jump(end_label), cg_o.Label(null_label))),
             g.OperationBundle(operations=(cg_o.Label("null_exit"),)),
         ]
@@ -748,13 +774,32 @@ class TaggedRepr(UnionRepr):
 
 @dataclasses.dataclass(frozen=True)
 class PointerRepr(UnionRepr):
+    """One dispatch word per value. NARROW (no String member): the value IS
+    that word, a DataPointer. WIDE (a String member): the value is a String
+    value, `str_t` — word 0 (`head`) is the same dispatch word, the rest is
+    String payload (yafl.h, "String values") — so every guard reads `head`,
+    a String arm binds the whole value, and any other arm binds `head`."""
     union_type: t.TypeSpec
+    wide: bool = False
 
     def ctype(self) -> cg_t.Type:
-        return cg_t.DataPointer()
+        return cg_t.Str() if self.wide else cg_t.DataPointer()
+
+    def _word(self, sv):
+        """The dispatch word of a value of this union."""
+        return cg_p.StructField(sv, "head") if self.wide else sv
+
+    def _as(self, sv, arm_type: t.TypeSpec, resolver: g.Resolver):
+        """The subject seen at an arm's type: the whole value when that type
+        is (a newtype over) a String value, else the dispatch word."""
+        if not self.wide:
+            return sv
+        arm_ctype = arm_type.generate(resolver)
+        return sv if _peeled_ctype(arm_ctype) == cg_t.Str() else self._word(sv)
 
     def position_bind(self, em, holder, sv, arm_type, subj_type, resolver):
-        return em.bind_subject(holder, arm_type if arm_type is not None else subj_type, sv)
+        bound = arm_type if arm_type is not None else subj_type
+        return em.bind_subject(holder, bound, self._as(sv, bound, resolver))
 
     def position_guards(self, sv, arm_type, resolver):
         """NULL for the unit member, vtable identity for the rest.
@@ -766,6 +811,7 @@ class PointerRepr(UnionRepr):
         members = (arm_type.repr_members()
                    if isinstance(arm_type, t.CombinationSpec) else [arm_type])
         guards = []
+        sv = self._word(sv)
         for member in members:
             if member.generate(resolver) == unit_type:
                 guards.append(cg_p.IntEqConst(sv, 0))
@@ -788,8 +834,12 @@ class PointerRepr(UnionRepr):
         implicit fallback (untestable from generated code)."""
         subj_type = self.union_type
         unit_type = cg_t.Struct(())
-        sv = subj_bundle.result_var
+        value = subj_bundle.result_var
+        sv = self._word(value)          # the dispatch word every guard reads
         subj_has_none = any(v.generate(resolver) == unit_type for v in subj_type.repr_members())
+
+        def bind(arm, bound_type):
+            return em.bind_subject(arm, bound_type, self._as(value, bound_type, resolver))
 
         def member_guard(member: t.TypeSpec) -> cg_p.RParam | None:
             kind = _pointer_word_kind(member, resolver)
@@ -836,12 +886,11 @@ class PointerRepr(UnionRepr):
                 em.guard_to_fallback(cg_p.IntEqConst(sv, 0))
             else:
                 em.arm(null_target, [[cg_p.IntEqConst(sv, 0)]],
-                       bind=em.bind_subject(null_target,
-                                            null_target.type_spec or subj_type, sv))
+                       bind=bind(null_target, null_target.type_spec or subj_type))
 
         for arm in guarded:
             if arm.literals:
-                self._pointer_literal_arm(em, arm, sv, resolver)
+                self._pointer_literal_arm(em, arm, value, resolver)
             elif isinstance(arm.type_spec, t.CombinationSpec):
                 guards = []
                 for member in arm.type_spec.repr_members():
@@ -851,32 +900,33 @@ class PointerRepr(UnionRepr):
                         guard = member_guard(member)
                         if guard is not None:
                             guards.append(guard)
-                em.arm(arm, [guards], bind=em.bind_subject(arm, arm.type_spec, sv))
+                em.arm(arm, [guards], bind=bind(arm, arm.type_spec))
             else:
                 guard = member_guard(arm.type_spec)
                 if guard is None:
                     continue  # untestable arm kind; check() rejects these
-                em.arm(arm, [[guard]], bind=em.bind_subject(arm, arm.type_spec, sv))
+                em.arm(arm, [[guard]], bind=bind(arm, arm.type_spec))
 
         final_fallback = foreign_fallback if foreign_fallback is not None else else_arm
         em.fallback(final_fallback,
-                    em.bind_subject(final_fallback,
-                                    final_fallback.type_spec or subj_type, sv)
+                    bind(final_fallback, final_fallback.type_spec or subj_type)
                     if final_fallback else None,
                     "pointer-union match fell through all arms")
 
-    def _pointer_literal_arm(self, em, arm, sv, resolver):
+    def _pointer_literal_arm(self, em, arm, value, resolver):
         lit_ast_type = arm.literals[0].get_type(resolver)
         if not isinstance(lit_ast_type, t.BuiltinSpec):
             return  # unreachable — check() already validated
+        word = self._word(value)
         if lit_ast_type.type_name == "str":
-            kind_guard = cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE")
+            kind_guard = cg_p.ObjVtableEq(word, extern_symbol="STRING_VTABLE")
         elif lit_ast_type.type_name == "bigint":
-            kind_guard = cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
+            kind_guard = cg_p.ObjVtableEq(word, extern_symbol="INTEGER_VTABLE")
         else:
             return  # unreachable — check() already validated
+        compared = value if lit_ast_type.type_name == "str" else word
         bundles, value_tests = literal_alternative_tests(
-            arm.literals, lit_ast_type.type_name, sv, resolver, f"lit{em.counter}")
+            arm.literals, lit_ast_type.type_name, compared, resolver, f"lit{em.counter}")
         em.arm(arm, [[kind_guard], value_tests], pre=bundles)
 
     def box_value(self, value, source_type, resolver):
@@ -885,8 +935,12 @@ class PointerRepr(UnionRepr):
         newtype -> its bare pointer, an already-DataPointer value -> itself."""
         inner_ctype = source_type.generate(resolver)
         if inner_ctype == cg_t.Struct(()):  # unit / None variant
-            return g.OperationBundle((), (), cg_p.NullPointer())
-        return g.OperationBundle((), (), _unwrap_to_pointer_word(value, inner_ctype))
+            word = cg_p.NullPointer()
+            return g.OperationBundle((), (), str_word(word) if self.wide else word)
+        word = _unwrap_to_pointer_word(value, inner_ctype)
+        if self.wide and _peeled_ctype(inner_ctype) != cg_t.Str():
+            word = str_word(word)
+        return g.OperationBundle((), (), word)
 
     def widen_from(self, src_repr, value, resolver):
         """Widen to a collapsed pointer union: both unions share the same
@@ -894,6 +948,8 @@ class PointerRepr(UnionRepr):
         with identical pointer repr, so the value passes through unchanged."""
         assert isinstance(src_repr, PointerRepr), \
             f"widen: DataPointer target requires a DataPointer source, got {type(src_repr).__name__}"
+        if self.wide and not src_repr.wide:
+            return g.OperationBundle((), (), str_word(value))
         return g.OperationBundle((), (), value)
 
 
@@ -1025,8 +1081,10 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
         return TaggedRepr(union_type, container, ())
 
     if isinstance(union_type, t.CombinationSpec):
-        if _union_collapses_to_pointer(list(union_type.repr_members()), resolver):
-            return PointerRepr(union_type)
+        members = list(union_type.repr_members())
+        if _union_collapses_to_pointer(members, resolver):
+            wide = any(_pointer_word_kind(m, resolver) == ('STR',) for m in members)
+            return PointerRepr(union_type, wide)
         variant_types = [v.generate(resolver) for v in union_type.repr_members()]
         container, vmap = cg_t.compute_union_slots(variant_types,
                                                    max_tag=_global_max_tag(resolver))

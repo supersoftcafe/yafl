@@ -285,6 +285,13 @@ EXPORT object_t* str_to_legacy(str_t s) {
 }
 
 
+EXPORT object_t* str_union_to_legacy(str_t s) {
+    if (s.head != NULL && object_is_instance(s.head, (vtable_t*)&STRING_VTABLE))
+        return str_to_legacy(s);
+    return s.head;
+}
+
+
 // ── Comparison and hashing ────────────────────────────────────────────────
 
 EXPORT int str_compare(str_t a, str_t b) {
@@ -520,3 +527,5 @@ EXPORT str_t str_from_int32(int32_t v)   { return str_from_legacy(string_from_in
 EXPORT str_t str_from_int64(int64_t v)   { return str_from_legacy(string_from_int64(v)); }
 EXPORT str_t str_from_float32(float v)   { return str_from_legacy(string_from_float32(v)); }
 EXPORT str_t str_from_float64(double v)  { return str_from_legacy(string_from_float64(v)); }
+EXPORT double str_parse_float64(str_t s) { return float64_parse_or_nan(str_to_legacy(s)); }
+EXPORT float  str_parse_float32(str_t s) { return float32_parse_or_nan(str_to_legacy(s)); }

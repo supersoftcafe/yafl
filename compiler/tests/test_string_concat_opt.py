@@ -1,8 +1,8 @@
 """The string-concat flattening stage (lowering/string_concat.py, -O1+):
-`a + b + c + …` chains fold into one exact-size `string_concat_n` allocation.
+`a + b + c + …` chains fold into one `str_concat_n` call.
 
 Checks both halves: the values are byte-correct at -O3, and the emitted C
-actually contains `string_concat_n` (the rewrite fired) — including a chain
+actually contains `str_concat_n` (the rewrite fired) — including a chain
 long enough to exercise the 16-operand runtime-cap chunking.
 """
 from __future__ import annotations
@@ -28,7 +28,7 @@ class TestStringConcatFlattening(TestCase):
         self.assertEqual(len("[alpha=42][beta=7]!"), rc)
         c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
                            just_testing=True, optimization_level=3)
-        self.assertIn("string_concat_n", c_code)
+        self.assertIn("str_concat_n", c_code)
 
     def test_long_chain_chunks_past_runtime_cap(self):
         # 20 operands > the 16-operand runtime cap: the chunking path must

@@ -248,7 +248,7 @@ class BuiltinSpec(TypeSpec):
     def __translate(self) -> cg_t.Type|None:
         match self.type_name:
             case "str":
-                return cg_t.DataPointer()
+                return cg_t.Str()
             case "int8":
                 return cg_t.Int(8)
             case "int16":

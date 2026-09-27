@@ -8,6 +8,6 @@ L=../yafllib
 for v in "b32:" "b16:-DFAT16"; do
     name=${v%%:*}; flag=${v#*:}
     gcc -O2 -g -DNDEBUG $flag -Wall -Wextra -I$L bench2.c $L/build/rel/libyafl.a -lpthread -lm -ldl -o $name
-    gcc -O0 -g $flag -I$L bench2.c $L/build/dbg/libyafl.a -lpthread -lm -ldl -o ${name}d
+    gcc -O0 -g $flag -I$L bench2.c $L/build/debug-unix/libyafl.a -lpthread -lm -ldl -o ${name}d
 done
 echo built

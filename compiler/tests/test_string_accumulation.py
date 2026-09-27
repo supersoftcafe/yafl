@@ -1,13 +1,15 @@
-"""The accumulation-deforestation stage (lowering/string_accumulation.py,
--O1+): a loop-carried `acc + x` accumulator becomes in-place builder writes
-(`string_builder_reserve` + dangerous copy), turning O(n²) into O(n).
+"""Loop-carried String accumulation: `acc + x` in a [tail] loop is linear.
 
-The scale test is the acceptance criterion the design agreed: naive user code,
-no StringBuilder in sight, builds a 1MB string in linear time — at -O0 the
-same program is quadratic and would take ~10s+, so the 100k-iteration run
-finishing inside the harness timeout at all is itself the proof the rewrite
-fired (belt and braces: the emitted C is checked for the reserve call and for
-the absence of in-loop appends).
+It used to be made linear by a compiler stage (lowering/string_accumulation.py,
+now retired) that deforested the loop into in-place builder writes. A String
+is now a VALUE that extends its own head buffer in place whenever it owns the
+end of it (yafllib/str.c), so naive user code is linear with no rewrite: the
+accumulator's appends ARE the builder.
+
+The scale test is the acceptance criterion: naive user code, no StringBuilder
+in sight, builds a 1MB string in linear time — quadratic would blow the
+harness timeout. The compaction test pins the in-place extension against a
+buffer that compaction relocates while the loop is suspended.
 """
 from __future__ import annotations
 
@@ -40,7 +42,9 @@ class TestStringAccumulation(TestCase):
         self.assertEqual("xabab", out)
         c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
                            just_testing=True, optimization_level=3)
-        self.assertIn("string_builder_reserve", c_code)
+        # No builder machinery: the loop appends String values directly.
+        self.assertNotIn("string_builder_reserve", c_code)
+        self.assertTrue("str_append" in c_code or "str_concat_n" in c_code)
 
     def test_chain_step_multi_push(self):
         # `acc + a + b` — string_concat flattens the step to a concat_n rooted
@@ -103,12 +107,12 @@ class TestStringAccumulation(TestCase):
             "  ret rounds(40, 0)\n")
         c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
                            just_testing=True, optimization_level=2)
-        # The rewrite must have fired in the suspending loop itself, or the
-        # run below proves nothing about in-place buffers.
-        head = re.search(r"^object_t\* Main__suspending_\w+\(.*\)\n\{", c_code, re.MULTILINE)
+        # The suspending loop itself must append to its String accumulator,
+        # or the run below proves nothing about in-place extension.
+        head = re.search(r"^(?:object_t\*|str_t) Main__suspending_\w+\(.*\)\n\{", c_code, re.MULTILINE)
         self.assertIsNotNone(head)
         body = c_code[head.end():c_code.index("\n}\n", head.end())]
-        self.assertIn("string_builder_reserve", body)
+        self.assertTrue("str_append" in body or "str_concat_n" in body)
         with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
             binary = tmp.name
         try:

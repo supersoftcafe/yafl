@@ -311,10 +311,21 @@ class FunctionStatement(DataStatement):
                           and isinstance(foreign_attr.expressions[0].value, e.StringExpression)
                           else None)
 
+        result = self.return_type.generate(resolver)
+        if foreign_symbol is not None:
+            # A foreign C function speaks the one-word string ABI: String
+            # values (and the unions sharing their representation) cross as
+            # a legacy word. Its IR signature describes the C side; call
+            # sites convert (expression/call.py `_foreign_call`).
+            def c_side(xtype: cg_t.Type) -> cg_t.Type:
+                return cg_t.DataPointer() if xtype == cg_t.Str() else xtype
+            params = [(name, c_side(xtype)) for name, xtype in params]
+            result = c_side(result)
+
         return cg_ir.Function(
             name = self.name,
             params = cg_t.Struct(fields = tuple(params)),
-            result = self.return_type.generate(resolver),
+            result = result,
             stack_vars = cg_t.Struct(fields = tuple(vars)),
             ops = tuple(bundle.operations),
             comment = self.name,

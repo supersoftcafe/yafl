@@ -1,10 +1,10 @@
 """Flatten String `+` chains into one exact-size n-ary concatenation.
 
 `a + b + c + d` reaches this IR (after the tiny `+` impl inlines) as a chain of
-`RuntimeInvoke("string_append")` steps, each materialising an intermediate
+`RuntimeInvoke("str_append")` steps, each materialising an intermediate
 String that the next step immediately consumes — n-1 allocations, all but the
 last garbage. This stage rewrites any chain of three or more operands into a
-single `RuntimeInvoke("string_concat_n")` (yafllib/string.c): sum the lengths,
+single `RuntimeInvoke("str_concat_n")` (yafllib/str.c): sum the lengths,
 allocate once at exact size, copy each piece. No intermediates, and none of a
 StringBuilder's growth/resize overhead — for a statically-known chain this is
 the optimal shape.
@@ -13,7 +13,7 @@ The chain is discovered through the SSA def-chains (lowering/ssa_defs.py):
 an operand that is a directly-nested append, or a StackVar read exactly once
 whose sole def is an append, is absorbed into the flat operand list (its Move
 is then dropped). Absorption relocates a pure computation from its def site to
-its sole read site — safe for `string_append` (pure allocation), and dominance
+its sole read site — safe for `str_append` (pure allocation), and dominance
 holds by SSA construction. Chains longer than the runtime's 16-operand cap are
 grouped recursively. Runs in the pre-async fixpoint at -O1+: every elided
 intermediate is also a value that never needs saving across a suspension.
@@ -25,16 +25,16 @@ import dataclasses
 from codegen.gen import Application
 from codegen.ops import Op, Move
 from codegen.param import RParam, StackVar, NewStruct, Integer, RuntimeInvoke
-from codegen.typedecl import DataPointer
+from codegen.typedecl import Str
 from lowering.ssa_defs import single_defs, read_counts
 
-_APPEND = "string_append"
-_CONCAT_N = "string_concat_n"
-_RUNTIME_CAP = 16   # string_concat_n's fixed operand arrays
+_APPEND = "str_append"
+_CONCAT_N = "str_concat_n"
+_RUNTIME_CAP = 16   # str_concat_n's fixed operand arrays
 
 
 def _append_args(invoke: RuntimeInvoke) -> tuple[RParam, RParam] | None:
-    """The (left, right) operands of a string_append invoke, when visible."""
+    """The (left, right) operands of a str_append invoke, when visible."""
     if invoke.function != _APPEND or not isinstance(invoke.parameters, NewStruct):
         return None
     values = [v for _, v in invoke.parameters.values]
@@ -42,7 +42,7 @@ def _append_args(invoke: RuntimeInvoke) -> tuple[RParam, RParam] | None:
 
 
 def _concat_of(operands: list[RParam]) -> RParam:
-    """A string_concat_n invoke over `operands`, grouped in runtime-cap-sized
+    """A str_concat_n invoke over `operands`, grouped in runtime-cap-sized
     chunks when the chain is longer than the C side's fixed arrays."""
     if len(operands) == 1:
         return operands[0]
@@ -51,7 +51,7 @@ def _concat_of(operands: list[RParam]) -> RParam:
         return _concat_of([head] + operands[_RUNTIME_CAP:])
     fields = ((("count", Integer(len(operands), 32)),)
               + tuple((f"s{i}", v) for i, v in enumerate(operands)))
-    return RuntimeInvoke(_CONCAT_N, NewStruct(fields), DataPointer())
+    return RuntimeInvoke(_CONCAT_N, NewStruct(fields), Str())
 
 
 def flatten_string_appends(app: Application) -> Application:

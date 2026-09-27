@@ -78,7 +78,7 @@ from codegen.param import (
     SyncWrap,
 )
 from codegen.typedecl import (
-    DataPointer, Float, Int, Struct, Type, FuncPointer, ImmediateStruct,
+    DataPointer, Float, Int, Struct, Type, FuncPointer, Str, ImmediateStruct,
     TaskWrapper,
 )
 from lowering.task_abi import (
@@ -109,6 +109,8 @@ def _ir_mangle(t: Type) -> str:
             return f"f{t.precision}"
     if isinstance(t, FuncPointer):
         return "fun"
+    if isinstance(t, Str):
+        return "str"
     if isinstance(t, Struct):
         # Hash the field signature for a stable, unique mangle.  Field
         # names are part of the signature: tuples (`_0`, `_1`, …) and
@@ -157,6 +159,7 @@ def ir_mangle_to_type(suffix: str) -> Type:
     compiler.py to decode Lazy$X references back into IR types."""
     if suffix == "ptr": return DataPointer()
     if suffix == "fun": return FuncPointer()
+    if suffix == "str": return Str()
     if suffix.startswith("i"):
         bits = int(suffix[1:])
         if bits in (8, 16, 32, 64): return Int(bits)
@@ -190,6 +193,8 @@ def _publish_root_shades(value: RParam, value_type: Type) -> tuple[Op, ...]:
             yield v
         elif isinstance(t, FuncPointer):
             yield StructField(v, "o")
+        elif isinstance(t, Str):
+            yield StructField(v, "head")
         elif isinstance(t, Struct):
             for fname, ft in t.fields:
                 yield from leaves(StructField(v, fname), ft)

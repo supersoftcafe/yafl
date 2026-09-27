@@ -90,7 +90,10 @@ def str_literal(value: str) -> str:
             out.append(chr(byte))
         else:
             out.append(f"\\{byte:03o}")
-    return f"STR(\"{''.join(out)}\")"
+    # The runtime's literal forms (yafl.h): inline up to 15 UTF-8 bytes, a
+    # static read-only head beyond — the canonical-by-length rule.
+    form = "STR16_SHORT" if len(value.encode("utf-8")) <= 15 else "STR16_LONG"
+    return f"{form}(\"{''.join(out)}\")"
 
 
 def bigint_literal(value: int) -> str:
@@ -201,6 +204,28 @@ class DataPointer(Type):
 
     def get_pointer_paths(self, path: str) -> list[str]:
         return [path]
+
+
+@dataclass(frozen=True)
+class Str(Type):
+    """A String value: yafllib's 16-byte `str_t`. OPAQUE to the compiler
+    except word 0, `head` — the only GC-visible word, and the dispatch word
+    when a union containing String shares this representation (yafl.h,
+    "String values"). The rest of the layout is the runtime's business and
+    differs by word size, so the compiler never names it."""
+
+    def words_upper_bound(self) -> int:
+        return 2   # 16 bytes
+
+    @property
+    def has_pointers(self) -> bool:
+        return True
+
+    def _declare(self, type_cache: dict[Type, tuple[str, str]], field_indent: str) -> str:
+        return "str_t"
+
+    def get_pointer_paths(self, path: str) -> list[str]:
+        return [f"{path}.head"]
 
 
 @dataclass(frozen=True)
@@ -416,6 +441,8 @@ def is_task_check(expr: str, t: Type) -> str:
         return f"PTR_IS_TASK({expr})"
     if isinstance(t, FuncPointer):
         return f"PTR_IS_TASK(({expr}).o)"
+    if isinstance(t, Str):
+        return f"PTR_IS_TASK(({expr}).head)"
     if isinstance(t, TaskWrapper):
         return f"({expr}).task"
     if isinstance(t, Struct):

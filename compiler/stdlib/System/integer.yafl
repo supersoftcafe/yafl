@@ -145,7 +145,7 @@ fun truncateToInt32(value: System::Float): System::Int32
   ret __builtin_op__<int32>("int32_from_float64", value)
 
 fun String(value: System::Int32): System::String
-  ret __builtin_op__<str>("string_from_int32", value)
+  ret __builtin_op__<str>("str_from_int32", value)
 
 # Parses an Int via the existing big-integer parser, then verifies the value
 # round-trips through Int32 (i.e. fits in 32 bits). Anything out-of-range
@@ -219,7 +219,7 @@ fun truncateToInt8(value: System::Float32): System::Int8
   ret __builtin_op__<int8>("int8_from_float32", value)
 
 fun String(value: System::Int8): System::String
-  ret __builtin_op__<str>("string_from_int8", value)
+  ret __builtin_op__<str>("str_from_int8", value)
 
 fun _checkFitsInt8(i: System::Int): System::Int8|System::None
   let narrow: System::Int8 = truncateToInt8(i)
@@ -282,7 +282,7 @@ fun truncateToInt16(value: System::Float32): System::Int16
   ret __builtin_op__<int16>("int16_from_float32", value)
 
 fun String(value: System::Int16): System::String
-  ret __builtin_op__<str>("string_from_int16", value)
+  ret __builtin_op__<str>("str_from_int16", value)
 
 fun _checkFitsInt16(i: System::Int): System::Int16|System::None
   let narrow: System::Int16 = truncateToInt16(i)
@@ -339,7 +339,7 @@ fun truncateToInt64(value: System::Float32): System::Int64
   ret __builtin_op__<int64>("int64_from_float32", value)
 
 fun String(value: System::Int64): System::String
-  ret __builtin_op__<str>("string_from_int64", value)
+  ret __builtin_op__<str>("str_from_int64", value)
 
 fun _checkFitsInt64(i: System::Int): System::Int64|System::None
   let narrow: System::Int64 = truncateToInt64(i)

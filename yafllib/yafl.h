@@ -1727,10 +1727,22 @@ INLINE int32_t str_length(str_t s) {
         { VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(c), 0, c }, \
     .meta = STRING_LEN(c), .tail = { 0 } })
 
+// A one-word union member (None = NULL, a tagged Int, an object) placed in a
+// two-word union value: word 0 carries it, the payload words are zero.
+INLINE str_t str_word(object_t* word) {
+    str_t s;
+    memset(&s, 0, sizeof s);
+    s.head = word;
+    return s;
+}
+
 EXTERN str_t     str_from_bytes(const uint8_t* data, int32_t length);
 EXTERN str_t     str_from_legacy(object_t* legacy);
 EXTERN str_t     str_union_from_legacy(object_t* word);
 EXTERN object_t* str_to_legacy(str_t s);
+// The inverse of str_union_from_legacy: word 0 of a two-word union value as
+// a one-word union value — a string member converted, anything else as is.
+EXTERN object_t* str_union_to_legacy(str_t s);
 EXTERN str_t     str_append(str_t a, str_t b);
 EXTERN str_t     str_concat_n(int32_t count, ...);
 EXTERN int       str_compare(str_t a, str_t b);
@@ -1765,6 +1777,8 @@ EXTERN str_t     str_from_int32(int32_t v);
 EXTERN str_t     str_from_int64(int64_t v);
 EXTERN str_t     str_from_float32(float v);
 EXTERN str_t     str_from_float64(double v);
+EXTERN double    str_parse_float64(str_t s);
+EXTERN float     str_parse_float32(str_t s);
 
 EXTERN object_t* string_builder_reserve(object_t* buf, object_t* used, object_t* extra);
 EXTERN object_t* string_copy_range_to_dangerously(object_t* self, object_t* o_index, object_t* value, object_t* o_from, object_t* o_end);
