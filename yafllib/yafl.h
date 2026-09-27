@@ -1755,8 +1755,12 @@ EXTERN str_t     str_append(str_t a, str_t b);
 EXTERN str_t     str_concat_n(int32_t count, ...);
 EXTERN int       str_compare(str_t a, str_t b);
 INLINE bool      str_eq(str_t a, str_t b) {
-    if (str_is_inline(a) || str_is_inline(b))    // canonical: compare the bytes
-        return memcmp(&a, &b, sizeof a) == 0;
+    // The same 16 bytes are the same string: for inline values that is the
+    // whole test (canonical by length); for heap values it is the same head,
+    // length and tail — the common case of a dict key found by itself.
+    if (memcmp(&a, &b, sizeof a) == 0) return true;
+    if (str_is_inline(a) || str_is_inline(b)) return false;
+    if (str_length(a) != str_length(b)) return false;
     return str_compare(a, b) == 0;
 }
 INLINE bool      str_lt(str_t a, str_t b) { return str_compare(a, b) < 0; }
@@ -1766,7 +1770,49 @@ INLINE object_t* str_compare_int(str_t a, str_t b) {
     return integer_from_int32(r < 0 ? -1 : r > 0 ? 1 : 0);
 }
 INLINE object_t* str_length_int(str_t s) { return integer_from_int32(str_length(s)); }
-EXTERN int32_t   str_hash(str_t s);
+// Hashing. The byte stream 8 bytes per multiply, length mixed in, 31 bits,
+// never 0 (0 stays the "no hash" sentinel). The fast paths live here, at the
+// call site: an INLINE value is its own zero-padded 15 content bytes — two
+// words, no loop — and needs no cache (it can never equal a heap string: those
+// are all longer); a tail-less HEAP value whose head caches the hash of exactly
+// its length is one load and one compare. Everything else: str_hash_heap.
+#define STR_HASH_SEED 0x243F6A8885A308D3ull
+INLINE uint64_t str_hash_mix(uint64_t h, uint64_t w) {
+    h ^= w;
+    h *= 0x9E3779B97F4A7C15ull;
+    return h ^ (h >> 32);
+}
+INLINE int32_t str_hash_finish(uint64_t h) {
+    h ^= h >> 29;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 32;
+    uint32_t m = (uint32_t)h & 0x7fffffffu;
+    return (int32_t)(m ? m : 1);
+}
+INLINE uint64_t str_load_le64(const void* p) {
+    uint64_t w;
+    memcpy(&w, p, sizeof w);
+#if !IS_LITTLE_ENDIAN
+    w = __builtin_bswap64(w);
+#endif
+    return w;
+}
+EXTERN int32_t   str_hash_heap(str_t s);
+INLINE int32_t   str_hash(str_t s) {
+    if (str_is_inline(s)) {
+        const uint8_t* b = (const uint8_t*)&s;           // byte 0 is the tag
+        uint64_t h = STR_HASH_SEED ^ (uint64_t)str_length(s);
+        h = str_hash_mix(h, str_load_le64(b + 1));        // content bytes 0..7
+        h = str_hash_mix(h, str_load_le64(b + 8) >> 8);   // content bytes 8..14
+        return str_hash_finish(h);
+    }
+    if ((s.meta >> STR_META_LEN_BITS) == 0) {
+        uint64_t k = atomic_load_explicit(&((string_t*)s.head)->hash, memory_order_relaxed);
+        if ((uint32_t)(k >> 32) == (s.meta & STR_META_LEN_MASK))
+            return (int32_t)(uint32_t)k;
+    }
+    return str_hash_heap(s);
+}
 EXTERN str_t     str_slice(str_t s, object_t* start, object_t* end);
 EXTERN int32_t   str_byte_at(str_t s, object_t* index);
 EXTERN object_t* str_find_byte(str_t s, int32_t byte, object_t* from);

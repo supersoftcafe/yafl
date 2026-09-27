@@ -3,17 +3,10 @@
 #include <string.h>
 
 
-// A legacy string hashes exactly as a String value over the same bytes (one
-// function, one cache word): a packed word is already inline form, a heap
-// string is read as a head covering all of its bytes.
+// A legacy string hashes exactly as the String value of the same bytes: its
+// canonical form (inline up to 15 bytes, else a head covering all of it).
 EXPORT int32_t string_hash(object_t* s) {
-    if (PTR_IS_STRING(s))
-        return str_hash(str_from_legacy(s));
-    str_t v;
-    memset(&v, 0, sizeof v);
-    v.head = s;
-    v.meta = ((string_t*)s)->length - 1;
-    return str_hash(v);
+    return str_hash(str_from_legacy(s));
 }
 
 
