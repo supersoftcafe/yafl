@@ -311,16 +311,32 @@ EXPORT int str_compare(str_t a, str_t b) {
     return la < lb ? -1 : la > lb ? 1 : 0;
 }
 
-// Word-at-a-time hash of the byte stream, 8 bytes per multiply. The stream
-// crosses the head/tail join transparently (a partial word carries over), so
-// the result depends only on the bytes — never on how a value is split — and
-// words are assembled little-endian on every host, so the full-word path and
-// the byte-carry path agree. The length is mixed in, so zero-padded partial
-// words cannot collide. 31 bits, never 0: 0 stays the "no hash" sentinel.
-static inline uint64_t hash_mix(uint64_t h, uint64_t w) {
-    h ^= w;
-    h *= 0x9E3779B97F4A7C15ull;
-    return h ^ (h >> 32);
+// String hashing is ACCUMULATIVE: a 32-bit running state advanced one 8-byte
+// word at a time, with words at fixed offsets from the start of the string,
+// and a separate finaliser that mixes in the length. So the hash depends only
+// on the bytes (never on how a value is split into head and tail), and a
+// head can cache the running state over a prefix of itself.
+//
+// The cache word in a head's header is (prefix length << 32) | state, where
+// the prefix is a whole number of words. Bytes [0, used) of a head never
+// change, so ANY value over that head covering at least the prefix — the
+// owner after an append, a fork, a value with tail bytes — resumes from it
+// and hashes only its own remaining bytes. The cached prefix only grows (a
+// racing store can shrink it: a recompute, never a wrong answer).
+
+#define HASH_SEED 0x2545F491u
+
+static inline uint32_t hash_step(uint32_t s, uint64_t w) {
+    uint64_t x = (w ^ ((uint64_t)s << 32 | s)) * 0x9E3779B97F4A7C15ull;
+    return (uint32_t)(x ^ (x >> 32));
+}
+
+static inline int32_t hash_final(uint32_t s, uint32_t length) {
+    uint32_t f = s ^ length;
+    f *= 0x85EBCA6Bu; f ^= f >> 13;
+    f *= 0xC2B2AE35u; f ^= f >> 16;
+    f &= 0x7fffffffu;
+    return (int32_t)(f ? f : 1);            // 0 stays the "no hash" sentinel
 }
 
 static inline uint64_t load_le64(const uint8_t* p) {
@@ -332,46 +348,48 @@ static inline uint64_t load_le64(const uint8_t* p) {
     return w;
 }
 
+// The little-endian word of bytes [off, off + n) of the stream, n <= 8
+// (zero-padded), across the segment join if need be.
+static inline uint64_t stream_word(segs_t g, int32_t off, int32_t n) {
+    if (n == 8 && off + 8 <= g.na) return load_le64(g.a + off);
+    uint64_t w = 0;
+    for (int32_t i = 0; i < n; i++) w |= (uint64_t)seg_at(g, off + i) << (8 * i);
+    return w;
+}
+
 EXPORT int32_t str_hash(str_t s) {
-    // A heap value with no tail covers exactly head[0, head_len): the head's
-    // cache word answers when it covers that same length. (A value with tail
-    // bytes, or covering a different prefix, just computes.)
-    string_t* cached = NULL;
-    uint32_t covered = 0;
-    if (!str_is_inline(s) && tail_len_of(s) == 0) {
-        cached = (string_t*)s.head;
-        covered = head_len_of(s);
-        uint64_t k = atomic_load_explicit(&cached->hash, memory_order_relaxed);
-        if ((uint32_t)(k >> 32) == covered)
-            return (int32_t)(uint32_t)k;
-    }
     segs_t g = segs_of(&s);
-    uint64_t h = 0x243F6A8885A308D3ull ^ (uint64_t)segs_len(g);
-    uint64_t acc = 0;
-    int k = 0;                                  // bytes pending in acc
-    const uint8_t* ps[2] = { g.a, g.b };
-    int32_t ns[2] = { g.na, g.nb };
-    for (int seg = 0; seg < 2; seg++) {
-        const uint8_t* p = ps[seg];
-        int32_t n = ns[seg], i = 0;
-        if (k) {                                // finish the carried word
-            while (k < 8 && i < n) acc |= (uint64_t)p[i++] << (8 * k++);
-            if (k < 8) continue;
-            h = hash_mix(h, acc); acc = 0; k = 0;
+    uint32_t len = (uint32_t)segs_len(g);
+    uint32_t state = HASH_SEED;
+    int32_t off = 0;
+
+    // A heap value resumes from its head's cached prefix when it covers it.
+    string_t* head = str_is_inline(s) ? NULL : (string_t*)s.head;
+    uint32_t cached_prefix = 0;
+    if (head) {
+        uint64_t k = atomic_load_explicit(&head->hash, memory_order_relaxed);
+        cached_prefix = (uint32_t)(k >> 32);
+        if (cached_prefix != 0 && cached_prefix <= (uint32_t)g.na) {
+            state = (uint32_t)k;
+            off = (int32_t)cached_prefix;
         }
-        for (; i + 8 <= n; i += 8) h = hash_mix(h, load_le64(p + i));
-        while (i < n) acc |= (uint64_t)p[i++] << (8 * k++);
     }
-    if (k) h = hash_mix(h, acc);
-    h ^= h >> 29;
-    h *= 0xBF58476D1CE4E5B9ull;
-    h ^= h >> 32;
-    uint32_t masked = (uint32_t)h & 0x7fffffffu;
-    if (masked == 0) masked = 1;
-    if (cached)
-        atomic_store_explicit(&cached->hash, ((uint64_t)covered << 32) | masked,
+
+    // Whole words; remember the state at the end of the head's whole words.
+    int32_t head_words_end = g.na & ~7;
+    uint32_t state_at_head_end = state;
+    for (; off + 8 <= (int32_t)len; off += 8) {
+        state = hash_step(state, stream_word(g, off, 8));
+        if (off + 8 == head_words_end) state_at_head_end = state;
+    }
+    if (off < (int32_t)len)
+        state = hash_step(state, stream_word(g, off, (int32_t)len - off));
+
+    if (head && (uint32_t)head_words_end > cached_prefix)
+        atomic_store_explicit(&head->hash,
+                              ((uint64_t)head_words_end << 32) | state_at_head_end,
                               memory_order_relaxed);
-    return (int32_t)masked;
+    return hash_final(state, len);
 }
 
 

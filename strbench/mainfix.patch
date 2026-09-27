@@ -1,0 +1,115 @@
+diff --git a/bootstrap/codegen/generate_globals.yafl b/bootstrap/codegen/generate_globals.yafl
+index ffe9bf4..573328f 100644
+--- a/bootstrap/codegen/generate_globals.yafl
++++ b/bootstrap/codegen/generate_globals.yafl
+@@ -258,6 +258,14 @@ fun [tail] enumAnyBoxedLeaf(names: Chain<String>, r, rootName) => match(names)
+     ? true
+     : enumAnyBoxedLeaf(l.next, r, rootName)
+ 
++# A variant-less enum is its own single leaf, and that leaf's object carries
++# the root's own name: it IS the root — no marker, nothing to extend.
++fun [tail] enumRootIsLeaf(names: Chain<String>, rootName) => match(names)
++  (nil: ChainEnd) => false
++  (l: ChainLink)  => enumLeafObjectName(rootName, l.value) == rootName
++    ? true
++    : enumRootIsLeaf(l.next, rootName)
++
+ fun enumIsRootStmt(st: PsEnum) => match(st.eRootName)
+   (rn: String) => rn == st.eName
+   ()            => true
+@@ -282,9 +290,11 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r, isComplex: Bool)
+                         None, st.eName + " — enum root marker (never instantiated)",
+                         false, false, 0)
+   let leafSets = collectLeafFieldSets(st, List())
+-  ret concat(list1(marker),
+-             enumLeafObjects(chain(sp.seAllLeaves), chain(leafSets), st.eName,
+-                             discs, r, prefix, List()))
++  let leaves = enumLeafObjects(chain(sp.seAllLeaves), chain(leafSets), st.eName,
++                               discs, r, prefix, List())
++  ret enumRootIsLeaf(chain(sp.seAllLeaves), st.eName)
++    ? leaves
++    : concat(list1(marker), leaves)
+ 
+ fun enumLeafObjects(names, sets, rootName,
+                            discs: Dict<String, Int>, r,
+@@ -309,7 +319,7 @@ fun enumLeafObject(leafName, leafFields: List<PStmt>, rootName,
+   # statements, so a miss is a compiler bug — loud, not a dispatch fall-through.
+   # A VARIANT's [pinnable] reaches its emitted object (a leaf whose field is
+   # late-pin written), exactly as for a [pinnable] class.
+-  ret CgObject(objName, list1(rootName), List(),
++  ret CgObject(objName, objName == rootName ? List() : list1(rootName), List(),
+                CgImmediateStruct(fields), None, "", false, false,
+                getOr0(discs, "enumleaf(" + objName + ")"),
+                enumLeafIsPinnable(rootName, leafName, r))
+diff --git a/compiler/pyast/statement/types.py b/compiler/pyast/statement/types.py
+index 18b674e..e7104a4 100644
+--- a/compiler/pyast/statement/types.py
++++ b/compiler/pyast/statement/types.py
+@@ -215,13 +215,20 @@ class EnumStatement(TypeStatement):
+         # no barrier, and deliberately NOT [mutable] — a store lost to a
+         # compaction move is a benign recompute, as string_t's lazy hash.
+         prefix: tuple = (("type", cg_t.DataPointer()), ("$hash", cg_t.Int(32)))
++        # A variant-less enum is its own single leaf, and that leaf's object
++        # carries the root's own name: it IS the root, so there is no marker
++        # to emit and nothing for it to extend (an instance test against the
++        # root is plain vtable identity). Emitting both would give two objects
++        # one name — the leaf replacing the marker and extending itself.
++        root_is_leaf = any(t.enum_leaf_object_name(self.name, leaf) == self.name
++                           for leaf in self._enum_spec.all_leaf_names)
+         marker = cg_ir.Object(
+             name=self.name,
+             extends=(),
+             functions=(),
+             fields=cg_t.ImmediateStruct(prefix),
+             comment=f"{self.name} — enum root marker (never instantiated)")
+-        objects = [marker]
++        objects = [] if root_is_leaf else [marker]
+         leaf_field_sets = t._collect_leaf_field_sets(self, [])
+         # A VARIANT's attributes reach its emitted object: `[pinnable]` on a
+         # leaf (ChainLink — its `next` is late-pin written by the builder)
+@@ -236,7 +243,7 @@ class EnumStatement(TypeStatement):
+                 (let.name, let.declared_type.generate(resolver)) for let in leaf_fields)
+             objects.append(cg_ir.Object(
+                 name=obj_name,
+-                extends=(self.name,),
++                extends=() if obj_name == self.name else (self.name,),
+                 functions=(),
+                 fields=cg_t.ImmediateStruct(fields),
+                 # Strict lookup: the registry enumerates leaves from these
+diff --git a/compiler/tests/test_union_repr.py b/compiler/tests/test_union_repr.py
+index 2156fcf..2ec76e4 100644
+--- a/compiler/tests/test_union_repr.py
++++ b/compiler/tests/test_union_repr.py
+@@ -351,6 +351,32 @@ fun main(): System::Int
+         self.assertEqual("-1 5 2", out.strip())
+ 
+ 
++    def test_variant_less_enum_over_threshold_boxes(self):
++        # An enum with NO variants is its own single leaf. Over the threshold
++        # that leaf boxes — and its object name is the root's own name, so it
++        # must not also emit a root marker it `extends`: the leaf would
++        # replace the marker and extend ITSELF, its vtable's implements_array
++        # reading its own obj_* inside its own initialiser (a C constant-
++        # expression error). 9 Ints = 72B > 64.
++        src = """
++namespace Main
++import System
++enum Big(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int)
++fun mk(k: Int): Big
++  ret Big(k, 2, 3, 4, 5, 6, 7, 8, 9)
++fun describe(v: Big|None): Int
++  ret match(v)
++    (b: Big)  => b.a + b.i
++    (n: None) => 0
++fun main(): System::Int
++  println(String(describe(mk(3))) + " " + String(describe(None)))
++  ret 0
++"""
++        rc, out = compile_and_run_stdlib_capture(src)
++        self.assertEqual(0, rc)
++        self.assertEqual("12 0", out.strip())
++
++
+ class TestLeafConstructorTyping(TestCase):
+     """A construction builds exactly one variant, so its TYPE is the leaf
+     (USER RULING): `Dark(7, "d")` has type Dark, not Shade. Representation

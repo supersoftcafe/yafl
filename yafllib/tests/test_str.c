@@ -173,6 +173,30 @@ TEST(hash_cache_is_per_covered_length)
     ASSERT(hp != hg);
 TEST_END()
 
+static int32_t flat_hash(const char* c) { return str_hash(str_from_bytes((const uint8_t*)c, (int32_t)strlen(c))); }
+
+TEST(hash_resumes_from_cached_prefix)
+    /* The dict-key scenario: hash a key (caches its head's prefix state),
+     * append in place, hash the grown value (resumes, caches a longer
+     * prefix), hash the key again (the longer prefix does not apply: it must
+     * recompute, not reuse) — plus a tailed value and a fork over the same
+     * head. Every hash equals the hash of a fresh flat copy of its bytes. */
+    str_t key = S("0123456789abcdefghij");                          /* 20 bytes */
+    ASSERT(str_hash(key) == flat_hash("0123456789abcdefghij"));
+    str_t tailed = str_append(key, S("xyz"));                        /* tail: 3 bytes */
+    ASSERT(tailed.head == key.head && tail_len(tailed) == 3);
+    ASSERT(str_hash(tailed) == flat_hash("0123456789abcdefghijxyz"));
+    str_t grown = str_append(key, S("KLMNOPQRSTUVW"));               /* in place */
+    ASSERT(grown.head == key.head);
+    ASSERT(str_hash(grown) == flat_hash("0123456789abcdefghijKLMNOPQRSTUVW"));
+    ASSERT(str_hash(key) == flat_hash("0123456789abcdefghij"));      /* after the longer prefix */
+    ASSERT(str_hash(tailed) == flat_hash("0123456789abcdefghijxyz"));
+    str_t fork = str_append(key, S("----------------"));             /* copies: new head */
+    ASSERT(fork.head != key.head);
+    ASSERT(str_hash(fork) == flat_hash("0123456789abcdefghij----------------"));
+    ASSERT(str_hash(grown) == flat_hash("0123456789abcdefghijKLMNOPQRSTUVW"));
+TEST_END()
+
 TEST(slice_across_join)
     str_t t = mk_tailed("0123456789abcdef", "xyzw");
     ASSERT(same(str_slice(t, integer_from_int32(14), integer_from_int32(18)), "efxy"));
@@ -280,6 +304,7 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(compare_across_modes);
     RUN(hash_depends_only_on_bytes);
     RUN(hash_cache_is_per_covered_length);
+    RUN(hash_resumes_from_cached_prefix);
     RUN(slice_across_join);
     RUN(byte_at_across_join);
     RUN(find_byte_in_tail);
