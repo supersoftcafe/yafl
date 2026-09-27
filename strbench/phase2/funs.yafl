@@ -4,6 +4,8 @@ import System
 
 class [final] Wrap(w: Int)
 
+class [final] Pair(a: Int, b: Int)
+
 fun double(x: Int): Int => x * 2
 
 fun makeAdder(n: Int): (:Int): Int
@@ -20,6 +22,14 @@ fun pickIF(k: Int): Int|((:Int): Int)
 
 fun pickWF(k: Int): Wrap|((:Int): Int)
   ret k % 2 == 0 ? Wrap(k) : makeAdder(k)
+
+fun pickPF(k: Int): Pair|((:Int): Int)
+  ret k % 2 == 0 ? Pair(k, k + 1) : makeAdder(k)
+
+fun usePF(v: Pair|((:Int): Int)): String
+  ret match(v)
+    (p: Pair)        => "p" + String(p.a + p.b)
+    (f: (:Int): Int) => "f" + String(f(2))
 
 fun useF(v: ((:Int): Int)|None): String
   ret match(v)
@@ -49,7 +59,7 @@ fun [tail] loop(k: Int, n: Int, acc: String): String
   if k >= n
     ret acc
   let line = useF(pickF(k)) + " " + useSF(pickSF(k)) + " " + useIF(pickIF(k))
-    + " " + useWF(pickWF(k)) + " " + useSF(widenF(k)) + "\n"
+    + " " + useWF(pickWF(k)) + " " + useSF(widenF(k)) + " " + usePF(pickPF(k)) + "\n"
   ret loop(k + 1, n, acc + line)
 
 fun main(): System::Int

@@ -307,6 +307,8 @@ def compute_boxed_leaves(statements: list[s.Statement],
             if len(spec.entries) == 1 and spec.entries[0].type is not None:
                 return pointer_kind(spec.entries[0].type)   # newtype wrapper
             return None
+        if isinstance(spec, t.CallableSpec):
+            return ('FUN',)
         if isinstance(spec, t.BuiltinSpec):
             if spec.type_name == "bigint":
                 return ('INT',)
@@ -331,8 +333,11 @@ def compute_boxed_leaves(statements: list[s.Statement],
     def collapses_to_pointer(members: list) -> bool:
         """Spec-level mirror of _union_collapses_to_pointer."""
         kinds = [pointer_kind(m) for m in members]
+        if ('FUN',) in kinds and any(k is not None and k[0] in ('CLASS', 'ENUM', 'FOREIGN')
+                                     for k in kinds):
+            return False
         if any(k is not None and k[0] == 'SCALAR' for k in kinds) and (
-                ('STR',) not in kinds or ('FOREIGN',) in kinds):
+                not (('STR',) in kinds or ('FUN',) in kinds) or ('FOREIGN',) in kinds):
             return False
         if any(k is None for k in kinds):
             return False
@@ -355,8 +360,8 @@ def compute_boxed_leaves(statements: list[s.Statement],
             return acc
         if isinstance(spec, t.CombinationSpec):
             if collapses_to_pointer(list(spec.types)):
-                # A String member widens the one word to a String value.
-                return (_STR if any(pointer_kind(m) == ('STR',) for m in spec.types)
+                # A String or function member widens the one word to 16 bytes.
+                return (_STR if any(pointer_kind(m) in (('STR',), ('FUN',)) for m in spec.types)
                         else _PTR)
             acc = _ZERO
             for m in spec.types:

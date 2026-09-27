@@ -1787,6 +1787,31 @@ INLINE int64_t str_unpack_int64(str_t s)   { return (int64_t)str_unpack_bits(s);
 INLINE float   str_unpack_float32(str_t s) { uint32_t b = (uint32_t)str_unpack_bits(s); float v; memcpy(&v, &b, 4); return v; }
 INLINE double  str_unpack_float64(str_t s) { uint64_t b = str_unpack_bits(s); double v; memcpy(&v, &b, 8); return v; }
 
+// A FUNCTION member of a wide union: word 0 is its environment (the GC word,
+// as in fun_t {o, f}) and value bytes 8.. its code pointer. A NULL environment
+// cannot be NULL here (that is None): it is spare code 0 instead. Such a union
+// has no class members (a bound method's environment IS a class instance), so
+// any other untagged, non-string, non-integer word is a function environment.
+#define STR_CODE_FUN_NULL_ENV 0
+INLINE str_t str_from_fun(fun_t f) {
+    str_t s;
+    memset(&s, 0, sizeof s);
+    s.head = f.o ? (object_t*)f.o : STR_SPARE_WORD(STR_CODE_FUN_NULL_ENV);
+    memcpy((uint8_t*)&s + 8, &f.f, sizeof f.f);
+    return s;
+}
+INLINE fun_t str_to_fun(str_t s) {
+    fun_t f;
+    f.o = str_word_code(s.head) == STR_CODE_FUN_NULL_ENV ? NULL : (void*)s.head;
+    memcpy(&f.f, (uint8_t*)&s + 8, sizeof f.f);
+    return f;
+}
+INLINE bool str_word_is_fun(object_t* w) {
+    if ((uintptr_t)w & PTR_TAG_MASK) return str_word_code(w) == STR_CODE_FUN_NULL_ENV;
+    return w != NULL && !object_is_instance(w, (vtable_t*)&STRING_VTABLE)
+                     && !object_is_instance(w, (vtable_t*)&INTEGER_VTABLE);
+}
+
 EXTERN str_t     str_from_bytes(const uint8_t* data, int32_t length);
 EXTERN str_t     str_from_legacy(object_t* legacy);
 EXTERN str_t     str_union_from_legacy(object_t* word);

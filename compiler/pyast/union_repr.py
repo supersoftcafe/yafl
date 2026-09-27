@@ -138,7 +138,12 @@ def _pointer_word_kind(member: t.TypeSpec, resolver: g.Resolver) -> tuple | None
                        in word 0 with the payload in word 1 — only inside a
                        WIDE union (one with a String member), see
                        _union_collapses_to_pointer
+      ('FUN',)         a function value -> its environment in word 0 (spare
+                       code 0 when NULL), its code pointer in word 1; the union
+                       is wide, and may hold no class (see the collapse rule)
     """
+    if isinstance(member.generate(resolver), cg_t.FuncPointer):
+        return ('FUN',)
     if member.generate(resolver) == cg_t.Struct(()):     # unit / None
         return ('UNIT',)
     if (isinstance(member, t.TupleSpec) and len(member.entries) == 1
@@ -176,11 +181,16 @@ def _union_collapses_to_pointer(members: list, resolver: g.Resolver) -> bool:
     kinds = [_pointer_word_kind(m, resolver) for m in members]
     if any(k is None for k in kinds):
         return False
+    if ('FUN',) in kinds and any(k[0] in ('CLASS', 'ENUM', 'FOREIGN') for k in kinds):
+        # A bound method's environment IS a class instance: a class member
+        # and a function member could not be told apart by word 0.
+        return False
     if any(k[0] == 'SCALAR' for k in kinds):
         # Scalars ride in a WIDE union's second word, so only a union that is
-        # wide anyway (a String member) packs them; a foreign fallback cannot
-        # be told apart from a spare code, so it keeps the tagged struct.
-        if ('STR',) not in kinds or ('FOREIGN',) in kinds:
+        # wide anyway (a String or function member) packs them; a foreign
+        # fallback cannot be told apart from a spare code, so it keeps the
+        # tagged struct.
+        if not (('STR',) in kinds or ('FUN',) in kinds) or ('FOREIGN',) in kinds:
             return False
     if not any(k != ('UNIT',) for k in kinds):
         return False  # all-unit: a compact int tag (compute_union_slots) is smaller
@@ -846,9 +856,14 @@ class PointerRepr(UnionRepr):
             return cg_p.IntEqConst(
                 cg_p.RuntimeInvoke("str_word_code", cg_p.NewStruct((("w", word),)), cg_t.Int(32)),
                 _SCALAR_CODES[kind[1]])
+        if kind == ('FUN',):
+            return cg_p.RuntimeInvoke("str_word_is_fun", cg_p.NewStruct((("w", word),)), cg_t.Int(8))
         if kind is not None and kind[0] in ('CLASS', 'ENUM'):
             return cg_p.ObjVtableEq(word, class_name=kind[1])
         return None
+
+    def _to_fun(self, value):
+        return cg_p.RuntimeInvoke("str_to_fun", cg_p.NewStruct((("s", value),)), cg_t.FuncPointer())
 
     def _unpack(self, value, scalar: str):
         c = _SCALAR_C[scalar]
@@ -864,6 +879,8 @@ class PointerRepr(UnionRepr):
         kind = _pointer_word_kind(member, resolver)
         if kind is not None and kind[0] == 'SCALAR':
             return _wrap_leaf(mctype, self._unpack(value, kind[1]))
+        if kind == ('FUN',):
+            return _wrap_leaf(mctype, self._to_fun(value))
         leaf = value if (self.wide and _peeled_ctype(mctype) == cg_t.Str()) else self._word(value)
         return _wrap_leaf(mctype, leaf)
 
@@ -880,6 +897,8 @@ class PointerRepr(UnionRepr):
             kind = _pointer_word_kind(arm_type, resolver)
             if kind is not None and kind[0] == 'SCALAR':
                 return self._unpack(sv, kind[1])
+            if kind == ('FUN',):
+                return self._to_fun(sv)
         return self._word(sv)
 
     def position_bind(self, em, holder, sv, arm_type, subj_type, resolver):
@@ -1032,6 +1051,9 @@ class PointerRepr(UnionRepr):
                 f"str_pack_{c}",
                 cg_p.NewStruct((("code", cg_p.Integer(_SCALAR_CODES[kind[1]], 32)), ("v", word))),
                 cg_t.Str()))
+        if kind == ('FUN',):
+            return g.OperationBundle((), (), cg_p.RuntimeInvoke(
+                "str_from_fun", cg_p.NewStruct((("f", word),)), cg_t.Str()))
         if self.wide and _peeled_ctype(inner_ctype) != cg_t.Str():
             word = str_word(word)
         return g.OperationBundle((), (), word)
@@ -1234,8 +1256,8 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
         members = list(union_type.repr_members())
         if _union_collapses_to_pointer(members, resolver):
             kinds = [_pointer_word_kind(m, resolver) for m in members]
-            wide = ('STR',) in kinds
-            packs = any(k is not None and k[0] == 'SCALAR' for k in kinds)
+            wide = ('STR',) in kinds or ('FUN',) in kinds
+            packs = any(k is not None and k[0] in ('SCALAR', 'FUN') for k in kinds)
             return PointerRepr(union_type, wide, packs)
         variant_types = [v.generate(resolver) for v in union_type.repr_members()]
         container, vmap = cg_t.compute_union_slots(variant_types,
