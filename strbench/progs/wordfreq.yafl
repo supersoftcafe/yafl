@@ -1,0 +1,24 @@
+namespace WordFreq
+
+import System
+
+# Word frequencies in a Dict<String, Int>: long (heap) keys, so every put/get
+# hashes and compares a String key — the hash cache's workload.
+fun key(i: Int): String => "identifier_prefix_" + String(i % 20000)
+
+fun [tail] count(i: Int, n: Int, d: Dict<String, Int>): Dict<String, Int>
+  if i >= n
+    ret d
+  let k = key(i * 7919)
+  let c = match(get(d, k))
+    (v: Int)  => v + 1
+    (x: None) => 1
+  ret count(i + 1, n, put(d, k, c))
+
+fun main(): System::Int
+  let d = count(0, 1500000, Dict())
+  let probe = match(get(d, key(4242)))
+    (v: Int)  => v
+    (x: None) => 0 - 1
+  println(String(size(d)) + " " + String(probe))
+  ret 0

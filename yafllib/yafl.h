@@ -1751,7 +1751,30 @@ EXTERN object_t* str_to_legacy(str_t s);
 // The inverse of str_union_from_legacy: word 0 of a two-word union value as
 // a one-word union value — a string member converted, anything else as is.
 EXTERN object_t* str_union_to_legacy(str_t s);
-EXTERN str_t     str_append(str_t a, str_t b);
+// Appending two INLINE values that still fit inline is pure bit arithmetic:
+// canonical zero padding means b's content can be shifted in after a's with
+// no masking. Everything else — any heap side, or a result past 15 bytes —
+// goes out of line.
+EXTERN str_t     str_append_slow(str_t a, str_t b);
+INLINE str_t     str_append(str_t a, str_t b) {
+#if defined(__SIZEOF_INT128__) && IS_LITTLE_ENDIAN
+    if (str_is_inline(a) && str_is_inline(b)) {
+        uint32_t la = (uint32_t)str_length(a), lb = (uint32_t)str_length(b);
+        if (la + lb <= STR_INLINE_MAX) {
+            unsigned __int128 va, vb;
+            memcpy(&va, &a, sizeof va);
+            memcpy(&vb, &b, sizeof vb);
+            va |= (vb >> 8) << (8 * (la + 1));              // b's content after a's
+            va = (va & ~(unsigned __int128)0xFF)
+               | (unsigned __int128)((la + lb) * (PTR_TAG_MASK + 1) + PTR_TAG_STRING);
+            str_t r;
+            memcpy(&r, &va, sizeof r);
+            return r;
+        }
+    }
+#endif
+    return str_append_slow(a, b);
+}
 EXTERN str_t     str_concat_n(int32_t count, ...);
 EXTERN int       str_compare(str_t a, str_t b);
 INLINE bool      str_eq(str_t a, str_t b) {
@@ -1814,7 +1837,22 @@ INLINE int32_t   str_hash(str_t s) {
     return str_hash_heap(s);
 }
 EXTERN str_t     str_slice(str_t s, object_t* start, object_t* end);
-EXTERN int32_t   str_byte_at(str_t s, object_t* index);
+// Unsigned byte value [0..255], or -1 when the index is out of range. Inline:
+// parsers call it per byte.
+INLINE int32_t   str_byte_at(str_t s, object_t* o_index) {
+    int overflow = 0;
+    int32_t i = int32_from_integer_with_overflow(o_index, &overflow);
+    if (overflow || i < 0 || i >= str_length(s)) return -1;
+    // Each read carries its own bound (redundant after the length check, but
+    // visible to the compiler once a constant index is propagated in).
+    if (str_is_inline(s))
+        return (uint32_t)i < STR_INLINE_MAX ? str_inline_bytes(&s)[i] : -1;
+    uint32_t hl = s.meta & STR_META_LEN_MASK;
+    if ((uint32_t)i < hl)
+        return ((const uint8_t*)s.head + offsetof(string_t, array))[i];
+    uint32_t t = (uint32_t)i - hl;
+    return t < STR_TAIL_MAX ? str_tail_bytes(&s)[t] : -1;
+}
 EXTERN object_t* str_find_byte(str_t s, int32_t byte, object_t* from);
 EXTERN object_t* str_index_of(str_t s, str_t needle, object_t* from);
 EXTERN object_t* str_find_any(str_t s, str_t accept, object_t* from);

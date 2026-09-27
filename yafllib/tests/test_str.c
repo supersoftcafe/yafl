@@ -54,6 +54,24 @@ TEST(inline_equality_is_bytes)
     ASSERT(!str_eq(S("abc"), S("abcd")));
 TEST_END()
 
+TEST(inline_append_every_length_pair)
+    /* Every (la, lb) in 0..15 x 0..15: the inline fast path (la + lb <= 15)
+     * and the step past it into the heap. Content, length and mode checked. */
+    const char* A = "ABCDEFGHIJKLMNO";
+    const char* B = "abcdefghijklmno";
+    char expect[32];
+    for (int la = 0; la <= 15; la++)
+        for (int lb = 0; lb <= 15; lb++) {
+            str_t a = str_from_bytes((const uint8_t*)A, la);
+            str_t b = str_from_bytes((const uint8_t*)B, lb);
+            str_t r = str_append(a, b);
+            memcpy(expect, A, la); memcpy(expect + la, B, lb); expect[la + lb] = 0;
+            ASSERT(same(r, expect));
+            ASSERT(str_is_inline(r) == (la + lb <= 15));
+            ASSERT(str_eq(r, str_from_bytes((const uint8_t*)expect, la + lb)));
+        }
+TEST_END()
+
 /* ---- tails and in-place growth ---- */
 
 TEST(small_append_goes_to_tail)
@@ -295,6 +313,7 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(literal_long_heap);
     RUN(canonical_by_length);
     RUN(inline_equality_is_bytes);
+    RUN(inline_append_every_length_pair);
     RUN(small_append_goes_to_tail);
     RUN(owner_extends_in_place);
     RUN(fork_copies_and_leaves_owner_intact);

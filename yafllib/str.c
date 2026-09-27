@@ -153,6 +153,16 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     int64_t total = la + extra;
     if (total > (int64_t)STR_META_LEN_MASK) { __abort_on_overflow(); __builtin_unreachable(); }
 
+    if (str_is_inline(a) && total <= STR_INLINE_MAX) {   // stays inline: no pieces array
+        str_t r = a;
+        uint8_t* d = str_inline_bytes(&r);
+        uint32_t at = (uint32_t)la;
+        for (int i = 0; i < np; i++)
+            for (int32_t k = 0; k < pieces[i].n && at < STR_INLINE_MAX; k++)
+                d[at++] = pieces[i].p[k];
+        *(uint8_t*)&r = (uint8_t)(total * (PTR_TAG_MASK + 1) + PTR_TAG_STRING);
+        return r;
+    }
     if (str_is_inline(a)) {
         piece_t all[40];
         all[0] = (piece_t){ str_inline_bytes(&a), (int32_t)la };
@@ -210,7 +220,7 @@ EXPORT str_t str_from_bytes(const uint8_t* data, int32_t length) {
     return from_pieces(&p, 1, length, false);
 }
 
-EXPORT str_t str_append(str_t a, str_t b) {
+EXPORT str_t str_append_slow(str_t a, str_t b) {
     int32_t lb = str_length(b);
     if (lb == 0) return a;
     if (str_length(a) == 0) return b;
@@ -379,13 +389,6 @@ EXPORT str_t str_slice(str_t s, object_t* o_start, object_t* o_end) {
     return from_pieces(p, np, end - start, false);
 }
 
-EXPORT int32_t str_byte_at(str_t s, object_t* o_index) {
-    int overflow = 0;
-    int32_t i = int32_arg(o_index, &overflow);
-    segs_t g = segs_of(&s);
-    if (overflow || i < 0 || i >= segs_len(g)) return -1;
-    return seg_at(g, i);
-}
 
 EXPORT object_t* str_find_byte(str_t s, int32_t byte, object_t* o_from) {
     if (byte < 0 || byte > 255) return integer_from_int32(-1);
@@ -469,13 +472,19 @@ static object_t* scan_any(str_t s, str_t accept, object_t* o_from, bool want_mem
     build_set(&accept, &set, scratch, sizeof scratch, &owned);
 
     int32_t result = len, cp;
+    int want = want_member ? 1 : 0;
     for (int32_t i = from; i < len; ) {
+        int c = i < g.na ? g.a[i] : g.b[i - g.na];
+        if (c < 0x80) {                            // ASCII: its own codepoint
+            if (set.ascii[c] == want) { result = i; break; }
+            ++i; continue;
+        }
         int w = decode_at(g, i, &cp);
         if (w == 0) {                              // malformed byte
             if (!want_member) { result = i; break; }   // not in accept: stop
             ++i; continue;                             // not a member: skip
         }
-        if (_codepoint_in_set(cp, &set) == want_member) { result = i; break; }
+        if (_codepoint_in_set(cp, &set) == want) { result = i; break; }
         i += w;
     }
     free(owned);

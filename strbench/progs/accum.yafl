@@ -1,0 +1,13 @@
+namespace Accum
+
+import System
+
+# Naive accumulation: `acc + a + b + c` in a [tail] loop, ~40MB. (The baseline
+# compiler deforests this into builder writes; fat strings extend in place.)
+fun [tail] build(i: Int, n: Int, acc: String): String
+  ret i >= n ? acc : build(i + 1, n, acc + "item " + String(i) + ";")
+
+fun main(): System::Int
+  let s = build(0, 3000000, "")
+  println(String(length(s)) + " " + slice(s, length(s) - 24, length(s)))
+  ret 0
