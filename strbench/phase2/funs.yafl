@@ -1,0 +1,58 @@
+namespace Funs
+
+import System
+
+class [final] Wrap(w: Int)
+
+fun double(x: Int): Int => x * 2
+
+fun makeAdder(n: Int): (:Int): Int
+  ret (x: Int) => x + n
+
+fun pickF(k: Int): ((:Int): Int)|None
+  ret k % 3 == 0 ? makeAdder(k) : k % 3 == 1 ? double : None
+
+fun pickSF(k: Int): String|((:Int): Int)|None
+  ret k % 3 == 0 ? "str" + String(k) : k % 3 == 1 ? makeAdder(k * 100) : None
+
+fun pickIF(k: Int): Int|((:Int): Int)
+  ret k % 2 == 0 ? k * 7 : double
+
+fun pickWF(k: Int): Wrap|((:Int): Int)
+  ret k % 2 == 0 ? Wrap(k) : makeAdder(k)
+
+fun useF(v: ((:Int): Int)|None): String
+  ret match(v)
+    (f: (:Int): Int) => "f" + String(f(10))
+    (n: None)        => "none"
+
+fun useSF(v: String|((:Int): Int)|None): String
+  ret match(v)
+    (s: String)      => "s" + s
+    (f: (:Int): Int) => "f" + String(f(1))
+    (n: None)        => "n"
+
+fun useIF(v: Int|((:Int): Int)): String
+  ret match(v)
+    (i: Int)         => "i" + String(i)
+    (f: (:Int): Int) => "f" + String(f(3))
+
+fun useWF(v: Wrap|((:Int): Int)): String
+  ret match(v)
+    (w: Wrap)        => "w" + String(w.w)
+    (f: (:Int): Int) => "f" + String(f(5))
+
+fun widenF(k: Int): String|((:Int): Int)|None
+  ret pickF(k)
+
+fun [tail] loop(k: Int, n: Int, acc: String): String
+  if k >= n
+    ret acc
+  let line = useF(pickF(k)) + " " + useSF(pickSF(k)) + " " + useIF(pickIF(k))
+    + " " + useWF(pickWF(k)) + " " + useSF(widenF(k)) + "\n"
+  ret loop(k + 1, n, acc + line)
+
+fun main(): System::Int
+  let (pa, pb) = __parallel__(() => useF(pickF(3)), () => useSF(pickSF(4)))
+  print(loop(0, 9, "") + pa + " " + pb + "\n")
+  ret 0

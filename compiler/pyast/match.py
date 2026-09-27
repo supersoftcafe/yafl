@@ -479,7 +479,10 @@ class _Emitter:
         # is the bare pointer word, so re-wrap it into the tuple struct the arm
         # binds (the inverse of union_repr._unwrap_to_pointer_word).
         elif (isinstance(arm_ctype, cg_t.Struct)
-              and cg_t._flatten_primitives(arm_ctype) in ([cg_t.DataPointer()], [cg_t.Str()])):
+              and len(cg_t._flatten_primitives(arm_ctype)) == 1
+              and value.get_type() != arm_ctype):
+            # A newtype arm bound from a union's LEAF value (a pointer word, a
+            # String value, an unpacked scalar): rebuild the nesting.
             value = _wrap_pointer_into(arm_ctype, value)
         arm_sv = cg_p.StackVar(arm_ctype, _arm_unique_name(arm))
         bundle = g.OperationBundle(stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, value),))

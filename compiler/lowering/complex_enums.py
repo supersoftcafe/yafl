@@ -312,6 +312,9 @@ def compute_boxed_leaves(statements: list[s.Statement],
                 return ('INT',)
             if spec.type_name == "str":
                 return ('STR',)
+            if spec.type_name in ("bool", "int8", "int16", "int32", "int64",
+                                  "float32", "float64"):
+                return ('SCALAR', spec.type_name)   # packable in a wide union
             return None
         if isinstance(spec, t.ClassSpec):
             return (('FOREIGN',) if spec.name in foreign_classes
@@ -328,6 +331,9 @@ def compute_boxed_leaves(statements: list[s.Statement],
     def collapses_to_pointer(members: list) -> bool:
         """Spec-level mirror of _union_collapses_to_pointer."""
         kinds = [pointer_kind(m) for m in members]
+        if any(k is not None and k[0] == 'SCALAR' for k in kinds) and (
+                ('STR',) not in kinds or ('FOREIGN',) in kinds):
+            return False
         if any(k is None for k in kinds):
             return False
         if not any(k != ('UNIT',) for k in kinds):

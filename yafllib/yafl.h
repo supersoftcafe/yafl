@@ -1744,6 +1744,49 @@ INLINE str_t str_word(object_t* word) {
     return s;
 }
 
+// Word 0 of a wide union can also be a SPARE code: a packed-string tagged word
+// whose length field is 16..31 — a length no inline string has — so the GC
+// ignores it (it is tagged) and a string test that checks the length never
+// mistakes it for a string. Code k names a scalar member's TYPE globally (the
+// same k in every union — the compiler's table — so values widen between
+// unions untouched); its payload is value bytes 8..15. None stays NULL.
+#define STR_SPARE_WORD(k) ((object_t*)(uintptr_t)((16 + (k)) * (PTR_TAG_MASK + 1) + PTR_TAG_STRING))
+INLINE bool str_word_is_string(object_t* w) {
+    uintptr_t r = (uintptr_t)w;
+    if ((r & PTR_TAG_MASK) == PTR_TAG_STRING) return ((r & 0xff) >> 3) <= STR_INLINE_MAX;
+    return w != NULL && object_is_instance(w, (vtable_t*)&STRING_VTABLE);
+}
+// The spare code in word 0, or -1 when it is not one.
+INLINE int32_t str_word_code(object_t* w) {
+    uintptr_t r = (uintptr_t)w;
+    uint32_t len = (uint32_t)(r & 0xff) >> 3;
+    return ((r & PTR_TAG_MASK) == PTR_TAG_STRING && len > STR_INLINE_MAX) ? (int32_t)len - 16 : -1;
+}
+INLINE str_t str_pack_bits(int32_t code, uint64_t bits) {
+    str_t s;
+    memset(&s, 0, sizeof s);
+    s.head = STR_SPARE_WORD(code);
+    memcpy((uint8_t*)&s + 8, &bits, sizeof bits);
+    return s;
+}
+INLINE uint64_t str_unpack_bits(str_t s) {
+    uint64_t bits;
+    memcpy(&bits, (uint8_t*)&s + 8, sizeof bits);
+    return bits;
+}
+INLINE str_t   str_pack_int8(int32_t code, int8_t v)    { return str_pack_bits(code, (uint8_t)v); }
+INLINE str_t   str_pack_int16(int32_t code, int16_t v)  { return str_pack_bits(code, (uint16_t)v); }
+INLINE str_t   str_pack_int32(int32_t code, int32_t v)  { return str_pack_bits(code, (uint32_t)v); }
+INLINE str_t   str_pack_int64(int32_t code, int64_t v)  { return str_pack_bits(code, (uint64_t)v); }
+INLINE str_t   str_pack_float32(int32_t code, float v)  { uint32_t b; memcpy(&b, &v, 4); return str_pack_bits(code, b); }
+INLINE str_t   str_pack_float64(int32_t code, double v) { uint64_t b; memcpy(&b, &v, 8); return str_pack_bits(code, b); }
+INLINE int8_t  str_unpack_int8(str_t s)    { return (int8_t)(uint8_t)str_unpack_bits(s); }
+INLINE int16_t str_unpack_int16(str_t s)   { return (int16_t)(uint16_t)str_unpack_bits(s); }
+INLINE int32_t str_unpack_int32(str_t s)   { return (int32_t)(uint32_t)str_unpack_bits(s); }
+INLINE int64_t str_unpack_int64(str_t s)   { return (int64_t)str_unpack_bits(s); }
+INLINE float   str_unpack_float32(str_t s) { uint32_t b = (uint32_t)str_unpack_bits(s); float v; memcpy(&v, &b, 4); return v; }
+INLINE double  str_unpack_float64(str_t s) { uint64_t b = str_unpack_bits(s); double v; memcpy(&v, &b, 8); return v; }
+
 EXTERN str_t     str_from_bytes(const uint8_t* data, int32_t length);
 EXTERN str_t     str_from_legacy(object_t* legacy);
 EXTERN str_t     str_union_from_legacy(object_t* word);

@@ -1,0 +1,86 @@
+namespace Scalars
+
+import System
+
+fun pick(k: Int): String|Int32|None
+  ret k % 3 == 0 ? "three" : k % 3 == 1 ? truncateToInt32(k * 10) : None
+
+fun pick2(k: Int): String|Float64|Bool|None
+  ret k % 4 == 0 ? "a much longer string than fifteen bytes"
+    : k % 4 == 1 ? Float(k) / 4.0
+    : k % 4 == 2 ? k > 5
+    : None
+
+fun pick3(k: Int): String|Int64
+  ret k % 2 == 0 ? "even" : truncateToInt64(k) * 1000000000000i64
+
+fun narrow(k: Int): Int32|None
+  ret k % 2 == 0 ? truncateToInt32(k) : None
+
+fun widenTagged(k: Int): String|Int32|None
+  ret narrow(k)
+
+fun widenPointer(k: Int): String|Int32|None
+  let s: String|None = k % 2 == 0 ? "p" + String(k) : None
+  ret s
+
+fun describe(v: String|Int32|None): String
+  ret match(v)
+    (s: String) => "S:" + s
+    (i: Int32)  => "I:" + String(i)
+    (n: None)   => "N"
+
+fun literalArms(v: String|Int32|None): String
+  ret match(v)
+    (5i32 | 10i32) => "five-or-ten"
+    ("three")     => "the-string-three"
+    (i: Int32)    => "other-int:" + String(i)
+    (s: String)   => "other-string:" + s
+    (n: None)     => "none"
+
+fun unionArm(v: String|Int32|None): String
+  ret match(v)
+    (x: Int32|None) => match(x)
+      (i: Int32) => "num " + String(i)
+      (n: None)  => "nothing"
+    (s: String) => "str " + s
+
+fun describe2(v: String|Float64|Bool|None): String
+  ret match(v)
+    (s: String)  => "S:" + s
+    (f: Float64) => "F:" + String(f)
+    (b: Bool)    => b ? "T" : "F"
+    (n: None)    => "N"
+
+fun describe3(v: String|Int64): String
+  ret match(v)
+    (s: String) => "S:" + s
+    (i: Int64)  => "L:" + String(i)
+
+fun toBig(v: String|Int32|None): String|Int32|Float64|None
+  ret v
+
+fun describeBig(v: String|Int32|Float64|None): String
+  ret match(v)
+    (s: String)  => "s" + s
+    (i: Int32)   => "i" + String(i)
+    (f: Float64) => "f" + String(f)
+    (n: None)    => "n"
+
+fun [tail] loop(k: Int, n: Int, acc: String): String
+  if k >= n
+    ret acc
+  let line = describe(pick(k)) + " " + literalArms(pick(k)) + " " + unionArm(pick(k))
+    + " " + describe2(pick2(k)) + " " + describe3(pick3(k))
+    + " " + describe(widenTagged(k)) + " " + describe(widenPointer(k))
+    + " " + describeBig(toBig(pick(k))) + "\n"
+  ret loop(k + 1, n, acc + line)
+
+fun [tail] joinPicks(k: Int, n: Int, acc: String): String
+  ret k >= n ? acc : joinPicks(k + 1, n, acc + describe(pick(k)) + ";")
+
+fun main(): System::Int
+  let joined = joinPicks(0, 8, "")
+  let (pa, pb) = __parallel__(() => describe(pick(4)), () => describe2(pick2(5)))
+  print(loop(0, 12, "") + joined + "\n" + pa + " " + pb + "\n")
+  ret 0

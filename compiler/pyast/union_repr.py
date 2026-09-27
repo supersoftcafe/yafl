@@ -103,6 +103,22 @@ def _classspec_is_foreign(member: t.ClassSpec, resolver: g.Resolver) -> bool:
     return False
 
 
+# Spare word-0 codes for scalar members of a wide union (yafl.h STR_SPARE_WORD):
+# one per TYPE, the same in every union, so a value widens between unions
+# unchanged. The C helper suffix names the payload's C type.
+_SCALAR_CODES = {"bool": 1, "int8": 2, "int16": 3, "int32": 4, "int64": 5,
+                 "float32": 6, "float64": 7}
+_SCALAR_C = {"bool": "int8", "int8": "int8", "int16": "int16", "int32": "int32",
+             "int64": "int64", "float32": "float32", "float64": "float64"}
+
+
+def _scalar_name(member: t.TypeSpec) -> str:
+    """The builtin scalar under a (possibly newtype-wrapped) scalar member."""
+    while isinstance(member, t.TupleSpec) and len(member.entries) == 1:
+        member = member.entries[0].type
+    return member.type_name
+
+
 def _pointer_word_kind(member: t.TypeSpec, resolver: g.Resolver) -> tuple | None:
     """The runtime dispatch kind of a union member IF it is representable as a
     single pointer-word (a heap pointer or a tagged immediate), looking through
@@ -118,6 +134,10 @@ def _pointer_word_kind(member: t.TypeSpec, resolver: g.Resolver) -> tuple | None
       ('CLASS', name)  heap class                -> its own vtable
       ('ENUM', root)   complex enum              -> the root marker vtable
       ('FOREIGN',)     foreign class             -> untestable; the fallback
+      ('SCALAR', name) bool / int8..int64 / float32 / float64 -> a SPARE code
+                       in word 0 with the payload in word 1 — only inside a
+                       WIDE union (one with a String member), see
+                       _union_collapses_to_pointer
     """
     if member.generate(resolver) == cg_t.Struct(()):     # unit / None
         return ('UNIT',)
@@ -129,7 +149,9 @@ def _pointer_word_kind(member: t.TypeSpec, resolver: g.Resolver) -> tuple | None
             return ('INT',)
         if member.type_name == "str":
             return ('STR',)
-        return None                                       # int32, float, bool, ...
+        if member.type_name in _SCALAR_CODES:
+            return ('SCALAR', member.type_name)
+        return None
     if isinstance(member, t.ClassSpec):
         # A ClassSpec surviving to generate() is a non-simple class (simple ones
         # are already TupleSpec). All heap classes are a single pointer-word.
@@ -154,6 +176,12 @@ def _union_collapses_to_pointer(members: list, resolver: g.Resolver) -> bool:
     kinds = [_pointer_word_kind(m, resolver) for m in members]
     if any(k is None for k in kinds):
         return False
+    if any(k[0] == 'SCALAR' for k in kinds):
+        # Scalars ride in a WIDE union's second word, so only a union that is
+        # wide anyway (a String member) packs them; a foreign fallback cannot
+        # be told apart from a spare code, so it keeps the tagged struct.
+        if ('STR',) not in kinds or ('FOREIGN',) in kinds:
+            return False
     if not any(k != ('UNIT',) for k in kinds):
         return False  # all-unit: a compact int tag (compute_union_slots) is smaller
     if kinds.count(('UNIT',)) > 1 or kinds.count(('FOREIGN',)) > 1:
@@ -167,6 +195,15 @@ def _peeled_ctype(ctype):
     while isinstance(ctype, cg_t.Struct) and len(ctype.fields) == 1:
         ctype = ctype.fields[0][1]
     return ctype
+
+
+def _wrap_leaf(ctype, leaf):
+    """Rebuild single-field newtype nesting around a leaf value (the inverse of
+    _unwrap_to_pointer_word)."""
+    if isinstance(ctype, cg_t.Struct) and len(ctype.fields) == 1:
+        fname, ftype = ctype.fields[0]
+        return cg_p.NewStruct(((fname, _wrap_leaf(ftype, leaf)),))
+    return leaf
 
 
 def str_word(word: cg_p.RParam) -> cg_p.RParam:
@@ -694,39 +731,41 @@ class TaggedRepr(UnionRepr):
 
     def _widen_from_pointer(self, sv, source, target, tgt_ctype, tgt_variant_map,
                             tgt_slot_fields, discriminators, end_label, wide_results, resolver):
-        """Widen a DataPointer union (null = unit/None, non-null = pointer variant)
-        to this tagged-union Struct. The non-null pointer path and the null path
-        each contribute a single tagged-union expression to the Phi."""
-        unit_type = cg_t.Struct(())
-        src_variant_types = [v.generate(resolver) for v in source.repr_members()]
-        ptr_variant = next((v for v, vt in zip(source.repr_members(), src_variant_types) if vt != unit_type), None)
-        unit_variant = next((v for v, vt in zip(source.repr_members(), src_variant_types) if vt == unit_type), None)
-        assert ptr_variant is not None, "DataPointer union must have a non-unit pointer variant"
-
-        # A wide source (String member) tests its dispatch word; the pointer
-        # variant's slot value is the whole value for a String, else the word.
+        """Widen a pointer union (one dispatch word; wide ones carry a String
+        payload or a spare-coded scalar) to this tagged-union Struct: test each
+        source member in turn with the source's own guards — the untestable
+        one (a foreign class), if any, is the fall-through — and slot its value
+        into the target. Each member's exit contributes one tagged-union
+        expression to the Phi."""
         src_repr = classify(source, resolver)
-        word = src_repr._word(sv) if isinstance(src_repr, PointerRepr) else sv
-        ptr_ctype = ptr_variant.generate(resolver)
-        ptr_value = sv if _peeled_ctype(ptr_ctype) == cg_t.Str() else word
-        null_label = "wide_null"
-        ptr_uid = ptr_variant.as_unique_id_str()
-        ptr_tag = discriminators.get(ptr_uid, 0)
-        tgt_ptr_idx = next((i for i, v in enumerate(target.repr_members()) if v.as_unique_id_str() == ptr_uid), None)
-        slot_values = [(tgt_slot_fields[tgt_si][0], ptr_value) for tgt_si, _ in tgt_variant_map[tgt_ptr_idx]] \
-            if tgt_ptr_idx is not None else []
-        slot_values.append(("$tag", cg_p.Integer(ptr_tag, 32)))
-
-        unit_tag = discriminators.get(unit_variant.as_unique_id_str(), 0) if unit_variant else 0
-
-        wide_results.append(("ptr_exit",  cg_p.union_struct(tgt_ctype, dict(slot_values))))
-        wide_results.append(("null_exit", cg_p.union_struct(tgt_ctype, {"$tag": cg_p.Integer(unit_tag, 32)})))
-
-        return [
-            g.OperationBundle(operations=(cg_o.JumpIf(null_label, cg_p.IntEqConst(word, 0)),)),
-            g.OperationBundle(operations=(cg_o.Label("ptr_exit"), cg_o.Jump(end_label), cg_o.Label(null_label))),
-            g.OperationBundle(operations=(cg_o.Label("null_exit"),)),
-        ]
+        word = src_repr._word(sv)
+        members = list(source.repr_members())
+        # Guarded members first (None's NULL test among them), the untestable
+        # one last; with none untestable the last member is the fall-through.
+        guarded = [m for m in members if src_repr._guard(m, word, resolver) is not None]
+        rest = [m for m in members if src_repr._guard(m, word, resolver) is None]
+        ordered = guarded + rest
+        target_members = list(target.repr_members())
+        ops: list = []
+        for k, member in enumerate(ordered[:-1]):
+            ops.append(cg_o.JumpIf(f"wide_p{k}", src_repr._guard(member, word, resolver)))
+        ops.append(cg_o.Jump(f"wide_p{len(ordered) - 1}"))
+        for k, member in enumerate(ordered):
+            uid = member.as_unique_id_str()
+            tgt_idx = next((i for i, v in enumerate(target_members)
+                            if v.as_unique_id_str() == uid), None)
+            mv = src_repr._member_value(member, sv, resolver)
+            slot_values = (_variant_slots(mv, member.generate(resolver),
+                                          tgt_variant_map[tgt_idx], tgt_slot_fields)
+                           if tgt_idx is not None else [])
+            slot_values.append(("$tag", cg_p.Integer(discriminators.get(uid, 0), 32)))
+            # The last exit falls through into the join (a jump to the very
+            # next label would be folded away, merging the blocks under the Phi).
+            ops.append(cg_o.Label(f"wide_p{k}"))
+            if k < len(ordered) - 1:
+                ops.append(cg_o.Jump(end_label))
+            wide_results.append((f"wide_p{k}", cg_p.union_struct(tgt_ctype, dict(slot_values))))
+        return [g.OperationBundle(operations=tuple(ops))]
 
     def _widen_from_tagged(self, sv, src_repr, target, tgt_ctype, tgt_variant_map,
                            tgt_slot_fields, discriminators, end_label, wide_results, resolver):
@@ -781,6 +820,7 @@ class PointerRepr(UnionRepr):
     a String arm binds the whole value, and any other arm binds `head`."""
     union_type: t.TypeSpec
     wide: bool = False
+    packs: bool = False     # scalar members ride as spare codes (wide only)
 
     def ctype(self) -> cg_t.Type:
         return cg_t.Str() if self.wide else cg_t.DataPointer()
@@ -789,13 +829,58 @@ class PointerRepr(UnionRepr):
         """The dispatch word of a value of this union."""
         return cg_p.StructField(sv, "head") if self.wide else sv
 
+    def _guard(self, member: t.TypeSpec, word, resolver: g.Resolver):
+        """The test that `word` (a value's dispatch word) holds `member`, or
+        None for an untestable member (a foreign class: the fallback)."""
+        if member.generate(resolver) == cg_t.Struct(()):
+            return cg_p.IntEqConst(word, 0)
+        kind = _pointer_word_kind(member, resolver)
+        if kind == ('INT',):
+            return cg_p.ObjVtableEq(word, extern_symbol="INTEGER_VTABLE")
+        if kind == ('STR',):
+            if self.packs:   # a spare code is a tag-4 word too: check the length
+                return cg_p.RuntimeInvoke("str_word_is_string",
+                                          cg_p.NewStruct((("w", word),)), cg_t.Int(8))
+            return cg_p.ObjVtableEq(word, extern_symbol="STRING_VTABLE")
+        if kind is not None and kind[0] == 'SCALAR':
+            return cg_p.IntEqConst(
+                cg_p.RuntimeInvoke("str_word_code", cg_p.NewStruct((("w", word),)), cg_t.Int(32)),
+                _SCALAR_CODES[kind[1]])
+        if kind is not None and kind[0] in ('CLASS', 'ENUM'):
+            return cg_p.ObjVtableEq(word, class_name=kind[1])
+        return None
+
+    def _unpack(self, value, scalar: str):
+        c = _SCALAR_C[scalar]
+        ctype = cg_t.Float(int(c[5:])) if c.startswith("float") else cg_t.Int(int(c[3:]))
+        return cg_p.RuntimeInvoke(f"str_unpack_{c}", cg_p.NewStruct((("s", value),)), ctype)
+
+    def _member_value(self, member: t.TypeSpec, value, resolver: g.Resolver):
+        """A value of this union, known to hold `member`, as that member's own
+        representation (newtype nesting included)."""
+        mctype = member.generate(resolver)
+        if mctype == cg_t.Struct(()):
+            return cg_p.ZeroOf(mctype)
+        kind = _pointer_word_kind(member, resolver)
+        if kind is not None and kind[0] == 'SCALAR':
+            return _wrap_leaf(mctype, self._unpack(value, kind[1]))
+        leaf = value if (self.wide and _peeled_ctype(mctype) == cg_t.Str()) else self._word(value)
+        return _wrap_leaf(mctype, leaf)
+
     def _as(self, sv, arm_type: t.TypeSpec, resolver: g.Resolver):
-        """The subject seen at an arm's type: the whole value when that type
-        is (a newtype over) a String value, else the dispatch word."""
+        """The subject seen at an arm's type, as a LEAF (bind_subject rebuilds
+        any newtype nesting): the whole value for a String, the unpacked
+        payload for a scalar, else the dispatch word."""
         if not self.wide:
             return sv
         arm_ctype = arm_type.generate(resolver)
-        return sv if _peeled_ctype(arm_ctype) == cg_t.Str() else self._word(sv)
+        if _peeled_ctype(arm_ctype) == cg_t.Str():
+            return sv
+        if not isinstance(arm_type, t.CombinationSpec):
+            kind = _pointer_word_kind(arm_type, resolver)
+            if kind is not None and kind[0] == 'SCALAR':
+                return self._unpack(sv, kind[1])
+        return self._word(sv)
 
     def position_bind(self, em, holder, sv, arm_type, subj_type, resolver):
         bound = arm_type if arm_type is not None else subj_type
@@ -811,20 +896,12 @@ class PointerRepr(UnionRepr):
         members = (arm_type.repr_members()
                    if isinstance(arm_type, t.CombinationSpec) else [arm_type])
         guards = []
-        sv = self._word(sv)
+        word = self._word(sv)
         for member in members:
-            if member.generate(resolver) == unit_type:
-                guards.append(cg_p.IntEqConst(sv, 0))
-                continue
-            kind = _pointer_word_kind(member, resolver)
-            if kind == ('INT',):
-                guards.append(cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE"))
-            elif kind == ('STR',):
-                guards.append(cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE"))
-            elif kind is not None and kind[0] in ('CLASS', 'ENUM'):
-                guards.append(cg_p.ObjVtableEq(sv, class_name=kind[1]))
-            else:
+            guard = self._guard(member, word, resolver)
+            if guard is None:
                 return super().position_guards(sv, arm_type, resolver)
+            guards.append(guard)
         return guards
 
     def generate_match(self, em, subj_bundle, arms, else_arm, resolver):
@@ -842,14 +919,9 @@ class PointerRepr(UnionRepr):
             return em.bind_subject(arm, bound_type, self._as(value, bound_type, resolver))
 
         def member_guard(member: t.TypeSpec) -> cg_p.RParam | None:
-            kind = _pointer_word_kind(member, resolver)
-            if kind == ('INT',):
-                return cg_p.ObjVtableEq(sv, extern_symbol="INTEGER_VTABLE")
-            if kind == ('STR',):
-                return cg_p.ObjVtableEq(sv, extern_symbol="STRING_VTABLE")
-            if kind is not None and kind[0] in ('CLASS', 'ENUM'):
-                return cg_p.ObjVtableEq(sv, class_name=kind[1])
-            return None  # FOREIGN (fallback) / UNIT / non-pointer-word
+            if member.generate(resolver) == unit_type:
+                return None   # the NULL arm is routed separately below
+            return self._guard(member, sv, resolver)   # None: FOREIGN (fallback)
 
         # Classify the arms, preserving source order for the guarded ones.
         null_arm = None
@@ -892,6 +964,20 @@ class PointerRepr(UnionRepr):
             if arm.literals:
                 self._pointer_literal_arm(em, arm, value, resolver)
             elif isinstance(arm.type_spec, t.CombinationSpec):
+                narrow = classify(arm.type_spec, resolver)
+                if not isinstance(narrow, PointerRepr):
+                    # A TAGGED sub-union (scalars without a String): one entry
+                    # per member, each narrowed into the arm's own repr.
+                    entries = []
+                    for member in arm.type_spec.repr_members():
+                        guard = self._guard(member, sv, resolver)
+                        boxed = narrow.box_value(self._member_value(member, value, resolver),
+                                                 member, resolver)
+                        assert not boxed.operations and not boxed.stack_vars, \
+                            "narrowing into a tagged arm must be a pure value"
+                        entries.append((guard, boxed.result_var))
+                    em.multi_entry_arm(arm, entries, arm.type_spec.generate(resolver))
+                    continue
                 guards = []
                 for member in arm.type_spec.repr_members():
                     if member.generate(resolver) == unit_type:
@@ -918,13 +1004,14 @@ class PointerRepr(UnionRepr):
         if not isinstance(lit_ast_type, t.BuiltinSpec):
             return  # unreachable — check() already validated
         word = self._word(value)
-        if lit_ast_type.type_name == "str":
-            kind_guard = cg_p.ObjVtableEq(word, extern_symbol="STRING_VTABLE")
-        elif lit_ast_type.type_name == "bigint":
-            kind_guard = cg_p.ObjVtableEq(word, extern_symbol="INTEGER_VTABLE")
+        tn = lit_ast_type.type_name
+        if tn in ("str", "bigint") or tn in _SCALAR_CODES:
+            kind_guard = self._guard(lit_ast_type, word, resolver)
         else:
             return  # unreachable — check() already validated
-        compared = value if lit_ast_type.type_name == "str" else word
+        compared = (value if tn == "str"
+                    else self._unpack(value, tn) if tn in _SCALAR_CODES
+                    else word)
         bundles, value_tests = literal_alternative_tests(
             arm.literals, lit_ast_type.type_name, compared, resolver, f"lit{em.counter}")
         em.arm(arm, [[kind_guard], value_tests], pre=bundles)
@@ -938,6 +1025,13 @@ class PointerRepr(UnionRepr):
             word = cg_p.NullPointer()
             return g.OperationBundle((), (), str_word(word) if self.wide else word)
         word = _unwrap_to_pointer_word(value, inner_ctype)
+        kind = _pointer_word_kind(source_type, resolver)
+        if kind is not None and kind[0] == 'SCALAR':
+            c = _SCALAR_C[kind[1]]
+            return g.OperationBundle((), (), cg_p.RuntimeInvoke(
+                f"str_pack_{c}",
+                cg_p.NewStruct((("code", cg_p.Integer(_SCALAR_CODES[kind[1]], 32)), ("v", word))),
+                cg_t.Str()))
         if self.wide and _peeled_ctype(inner_ctype) != cg_t.Str():
             word = str_word(word)
         return g.OperationBundle((), (), word)
@@ -946,11 +1040,67 @@ class PointerRepr(UnionRepr):
         """Widen to a collapsed pointer union: both unions share the same
         tag-bit pointer encoding and every source variant is a target variant
         with identical pointer repr, so the value passes through unchanged."""
+        if isinstance(src_repr, TaggedRepr):
+            return self._widen_from_tagged(src_repr, value, resolver)
         assert isinstance(src_repr, PointerRepr), \
             f"widen: DataPointer target requires a DataPointer source, got {type(src_repr).__name__}"
         if self.wide and not src_repr.wide:
             return g.OperationBundle((), (), str_word(value))
         return g.OperationBundle((), (), value)
+
+
+    def _widen_from_tagged(self, src: "TaggedRepr", value, resolver):
+        """Widen a tagged union (e.g. Int32|None) into this one: dispatch on the
+        source's $tag, rebuild each member from its slots, box it here, and
+        join the boxed values with a Phi."""
+        members = list(src.union_type.repr_members())
+        discriminators = resolver.get_discriminators()
+        tag = cg_p.StructField(value, "$tag")
+        slot_fields = src.container.fields
+        ops: list = []
+        results: list = []
+        for k, member in enumerate(members):
+            d = discriminators.get(member.as_unique_id_str(), 0)
+            ops.append(cg_o.JumpIf(f"widen_t{k}", cg_p.IntEqConst(tag, d)))
+        ops.append(cg_o.Jump(f"widen_t{len(members) - 1}"))
+        bodies: list = []
+        for k, member in enumerate(members):
+            mctype = member.generate(resolver)
+            mv = _slots_value(mctype, src.variant_map[k], slot_fields, value)
+            boxed = self.box_value(mv, member, resolver)
+            assert not boxed.operations and not boxed.stack_vars
+            bodies.append(cg_o.Label(f"widen_t{k}"))
+            if k < len(members) - 1:          # the last exit falls through
+                bodies.append(cg_o.Jump("widen_end"))
+            results.append((f"widen_t{k}", boxed.result_var))
+        result = cg_p.StackVar(self.ctype(), "widen_result")
+        return g.OperationBundle(
+            stack_vars=(result,),
+            operations=tuple(ops + bodies + [cg_o.Label("widen_end"),
+                                             cg_o.Phi(target=result, sources=tuple(results))]),
+            result_var=result)
+
+
+def _slots_value(ctype, slot_assignments, slot_fields, sv):
+    """A tagged union's variant, rebuilt from its slots (match.bind_from_slots'
+    reconstruct, as a pure value)."""
+    def rebuild(ct, offset):
+        if isinstance(ct, cg_t.FuncPointer):
+            si_f, _ = slot_assignments[offset]
+            si_o, _ = slot_assignments[offset + 1]
+            return cg_p.MakeFun(cg_p.StructField(sv, slot_fields[si_f][0]),
+                                cg_p.StructField(sv, slot_fields[si_o][0])), offset + 2
+        if not isinstance(ct, cg_t.Struct):
+            si, _ = slot_assignments[offset]
+            return cg_p.StructField(sv, slot_fields[si][0]), offset + 1
+        if not ct.fields:
+            return cg_p.ZeroOf(ct), offset
+        fvs = {}
+        for fname, ftype in ct.fields:
+            fvs[fname], offset = rebuild(ftype, offset)
+        return cg_p.union_struct(ct, fvs), offset
+    value, _ = rebuild(ctype, 0)
+    return value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1083,8 +1233,10 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
     if isinstance(union_type, t.CombinationSpec):
         members = list(union_type.repr_members())
         if _union_collapses_to_pointer(members, resolver):
-            wide = any(_pointer_word_kind(m, resolver) == ('STR',) for m in members)
-            return PointerRepr(union_type, wide)
+            kinds = [_pointer_word_kind(m, resolver) for m in members]
+            wide = ('STR',) in kinds
+            packs = any(k is not None and k[0] == 'SCALAR' for k in kinds)
+            return PointerRepr(union_type, wide, packs)
         variant_types = [v.generate(resolver) for v in union_type.repr_members()]
         container, vmap = cg_t.compute_union_slots(variant_types,
                                                    max_tag=_global_max_tag(resolver))
