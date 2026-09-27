@@ -171,7 +171,13 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     }
 
     uint32_t hl = head_len_of(a), tl = tail_len_of(a);
-    if (tl + extra <= STR_TAIL_MAX) {
+    // The tail only pays when the head can later grow in place: on a
+    // read-only head (a literal, a legacy string) it would just postpone the
+    // copy — and a tailed value can never use the hash cache. So appends to a
+    // read-only head copy straight into a fresh, exact, tail-less buffer.
+    object_t* h = a.head;
+    bool growable = in_heap(h) && object_get_vtable(h) == (vtable_t*)&STR_BUF_VTABLE;
+    if (growable && tl + extra <= STR_TAIL_MAX) {
         uint8_t* d = str_tail_bytes(&a) + tl;
         for (int i = 0; i < np; i++) { memcpy(d, pieces[i].p, (size_t)pieces[i].n); d += pieces[i].n; }
         a.meta = hl | (uint32_t)((tl + extra) << STR_META_LEN_BITS);
@@ -181,9 +187,8 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     // Flush the tail and the pieces into the head. Pin FIRST, then read
     // used/capacity: the pin is the mutex both for competing appenders and
     // for the compactor (which re-reads the size under it).
-    object_t* h = a.head;
     bool grow = false;
-    if (in_heap(h) && object_try_pin(h)) {
+    if (growable && object_try_pin(h)) {
         string_t* b = (string_t*)h;
         if (vtable_untag(b->vtable) == (vtable_t*)&STR_BUF_VTABLE && b->length - 1 == hl) {
             if ((b->capacity - 1) - hl >= tl + extra) {

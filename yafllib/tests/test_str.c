@@ -108,6 +108,21 @@ TEST(legacy_head_is_read_only)
     ASSERT(string_length(legacy) == 26);
 TEST_END()
 
+TEST(read_only_head_takes_no_tail)
+    /* A short append to a read-only head (a long literal, a legacy string)
+     * copies into a fresh exact buffer instead of parking bytes in the tail:
+     * the tail would only postpone the copy, and a tailed value can never
+     * use the hash cache. */
+    str_t lit = STR16_LONG("identifier_prefix_");
+    str_t k = str_append(lit, S("1234"));
+    ASSERT(k.head != lit.head && tail_len(k) == 0);
+    ASSERT(same(k, "identifier_prefix_1234"));
+    object_t* legacy = string_from_bytes((uint8_t*)"legacy string of 26 bytes!", 26);
+    str_t l = str_append(str_from_legacy(legacy), S("xy"));
+    ASSERT(l.head != legacy && tail_len(l) == 0);
+    ASSERT(same(l, "legacy string of 26 bytes!xy"));
+TEST_END()
+
 TEST(random_appends_and_forks_match_reference)
     /* Many values over shared buffers, appended in random order; each keeps
      * its own C reference copy. */
@@ -318,6 +333,7 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(owner_extends_in_place);
     RUN(fork_copies_and_leaves_owner_intact);
     RUN(legacy_head_is_read_only);
+    RUN(read_only_head_takes_no_tail);
     RUN(random_appends_and_forks_match_reference);
     RUN(concat_n_first_operand_extends);
     RUN(compare_across_modes);
