@@ -22,6 +22,14 @@ class Type(ABC):
         alignment never exceeds a word) — an overshoot merely emits an all-zero
         trailing mask window, which the GC walkers skip for free."""
         return 1
+
+    @property
+    def nominal_size(self) -> int:
+        """Rank for laying out tagged-union slots, largest first. An IR fact,
+        not a byte count: a pointer's 6 places pointers between the 8-byte
+        and 4-byte scalars whatever the target's word size. Only primitive
+        slot types have one — a new primitive must choose, never default."""
+        raise NotImplementedError(f"{type(self).__name__} has no nominal size")
     # @property
     # @abstractmethod
     # def size(self) -> int:
@@ -121,6 +129,10 @@ def bigint_literal(value: int) -> str:
 class Int(Type):
     precision: int  # Bit precision: 8, 16, 32, or 64 only — use DataPointer() for bigint
 
+    @property
+    def nominal_size(self) -> int:
+        return self.precision // 8
+
     # @property
     # def size(self) -> int:
     #     return self.precision // 8
@@ -150,6 +162,10 @@ class Int(Type):
 class Float(Type):
     precision: int  # 32 or 64
 
+    @property
+    def nominal_size(self) -> int:
+        return self.precision // 8
+
     def _initialise(self, type_cache: dict[Type, tuple[str, str]], data: Any, field_indent: str) -> str:
         if not isinstance(data, (int, float)):
             raise ValueError("Float literal must be int or float")
@@ -178,6 +194,10 @@ class Float(Type):
 
 @dataclass(frozen=True)
 class IntPtr(Type):
+    @property
+    def nominal_size(self) -> int:
+        return 5   # pointer-sized, after the GC pointers
+
     # @property
     # def size(self) -> int:
     #     return word_size
@@ -191,6 +211,10 @@ class IntPtr(Type):
 
 @dataclass(frozen=True)
 class DataPointer(Type):
+    @property
+    def nominal_size(self) -> int:
+        return 6   # between the 8-byte and 4-byte scalars
+
     # @property
     # def size(self) -> int:
     #     return word_size
@@ -216,6 +240,10 @@ class Str(Type):
 
     def words_upper_bound(self) -> int:
         return 2   # 16 bytes
+
+    @property
+    def nominal_size(self) -> int:
+        return 16
 
     @property
     def has_pointers(self) -> bool:
@@ -461,19 +489,6 @@ def _flatten_primitives(t: Type) -> list[Type]:
     return [t]  # Int, Float, DataPointer, IntPtr — already primitive
 
 
-def _primitive_rank(t: Type) -> int:
-    """Lower rank = stored first in the slot struct."""
-    if isinstance(t, Int) and t.precision == 64: return 0   # Int64 (8 bytes)
-    if isinstance(t, Float) and t.precision == 64: return 0 # Float64 (8 bytes)
-    if isinstance(t, DataPointer): return 1                  # GC pointer
-    if isinstance(t, IntPtr): return 2                       # non-GC pointer-sized
-    if isinstance(t, Int) and t.precision == 32: return 3   # Int32
-    if isinstance(t, Float) and t.precision == 32: return 3 # Float32
-    if isinstance(t, Int) and t.precision == 16: return 4   # Int16
-    if isinstance(t, Int) and t.precision == 8: return 5    # Int8/Bool
-    return 6
-
-
 def _can_merge_into(small: Type, large: Type) -> bool:
     """True if a fixed-width small integer can be stored in a fixed-width larger integer slot."""
     return (isinstance(small, Int) and isinstance(large, Int)
@@ -540,9 +555,10 @@ def compute_union_slots(variant_types: list[Type], max_tag: int | None = None) -
                     break
             if changed: break
 
-    # Collect active slots and sort by rank
+    # Collect active slots, largest nominal size first (a stable sort: equal
+    # sizes keep first-use order)
     active = [(si, s) for si, s in enumerate(slots_list) if s is not None]
-    active.sort(key=lambda x: _primitive_rank(x[1][0]))
+    active.sort(key=lambda x: -x[1][0].nominal_size)
     renumber = {old_si: new_si for new_si, (old_si, _) in enumerate(active)}
 
     # The tag must hold the largest value actually STORED: a flat enum stores
