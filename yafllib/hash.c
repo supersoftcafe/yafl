@@ -3,34 +3,17 @@
 #include <string.h>
 
 
+// A legacy string hashes exactly as a String value over the same bytes (one
+// function, one cache word): a packed word is already inline form, a heap
+// string is read as a head covering all of its bytes.
 EXPORT int32_t string_hash(object_t* s) {
-    // Lazy cache: heap strings carry the hash in the header, 0 = not yet
-    // computed. A string hash is NEVER 0 (masked-zero maps to 1 below), so
-    // 0 is a true reserved sentinel — in the header cache and for any
-    // caller wanting in-band "no hash yet". Packed short strings have no
-    // header and are at most a word of bytes — computing beats any cache.
-    int is_heap = !PTR_IS_STRING(s);
-    if (is_heap) {
-        uint32_t cached = ((string_t*)s)->hash;
-        if (cached) return (int32_t)cached;
-    }
-    intptr_t buf;
-    int32_t len;
-    const char* data = string_to_cstr(s, &buf, &len);
-    // FNV-1a 32-bit
-    uint32_t h = 2166136261u;
-    for (int32_t i = 0; i < len; i++) {
-        h ^= (uint8_t)data[i];
-        h *= 16777619u;
-    }
-    uint32_t masked = h & 0x7fffffffu;
-    if (masked == 0) masked = 1;  // reserve 0: the never-0 contract
-    if (is_heap)
-        // Plain idempotent store on an immutable object: a racing writer
-        // stores the same value; a store lost to a compaction copy costs
-        // one recompute.
-        ((string_t*)s)->hash = masked;
-    return (int32_t)masked;
+    if (PTR_IS_STRING(s))
+        return str_hash(str_from_legacy(s));
+    str_t v;
+    memset(&v, 0, sizeof v);
+    v.head = s;
+    v.meta = ((string_t*)s)->length - 1;
+    return str_hash(v);
 }
 
 

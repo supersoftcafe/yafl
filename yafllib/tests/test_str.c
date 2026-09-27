@@ -133,11 +133,44 @@ TEST(compare_across_modes)
     ASSERT(str_compare(t, S("0123456789abcdef")) > 0);
 TEST_END()
 
-TEST(hash_matches_legacy)
-    str_t t = mk_tailed("0123456789abcdef", "xy");
-    object_t* legacy = string_from_bytes((uint8_t*)"0123456789abcdefxy", 18);
-    ASSERT(str_hash(t) == string_hash(legacy));
-    ASSERT(str_hash(S("hi")) == string_hash(string_from_bytes((uint8_t*)"hi", 2)));
+TEST(hash_depends_only_on_bytes)
+    /* The same bytes in every shape — inline, exact heap, heap + tail at each
+     * possible split — hash equally; different bytes (incl. a trailing NUL)
+     * almost surely do not. */
+    const char* text = "0123456789abcdefghijklmnopqrstuvwxyz";
+    int32_t n = (int32_t)strlen(text);
+    str_t flat = str_from_bytes((const uint8_t*)text, n);
+    for (int32_t split = 16; split <= n; split++) {
+        str_t h = str_from_bytes((const uint8_t*)text, split);
+        for (int32_t k = split; k < n; ) {           /* append 1..4 bytes at a time */
+            int32_t m = n - k < 3 ? n - k : 3;
+            h = str_append(h, str_from_bytes((const uint8_t*)text + k, m));
+            k += m;
+        }
+        ASSERT(str_hash(h) == str_hash(flat));
+    }
+    ASSERT(str_hash(S("hi")) == str_hash(STR16_SHORT("hi")));
+    ASSERT(str_hash(S("hi")) != str_hash(S("ih")));
+    ASSERT(str_hash(S("a")) != str_hash(str_from_bytes((const uint8_t*)"a\0", 2)));
+    ASSERT(str_hash(S("")) != 0);
+TEST_END()
+
+TEST(hash_cache_is_per_covered_length)
+    /* A prefix value and the owner that grew past it share one head. Each
+     * must get the hash of ITS bytes, whichever computed (and cached) first,
+     * in any interleaving — the cache is keyed by covered length. */
+    str_t prefix = S("0123456789abcdefghij");                      /* 20 bytes, heap, no tail */
+    str_t grown  = str_append(prefix, S("KLMNOPQRSTUVW"));          /* extends the same head */
+    ASSERT(grown.head == prefix.head);
+    int32_t hp = str_hash(str_from_bytes((const uint8_t*)"0123456789abcdefghij", 20));
+    int32_t hg = str_hash(str_from_bytes((const uint8_t*)"0123456789abcdefghijKLMNOPQRSTUVW", 33));
+    for (int round = 0; round < 3; round++) {
+        ASSERT(str_hash(prefix) == hp);
+        ASSERT(str_hash(grown) == hg);
+        ASSERT(str_hash(grown) == hg);                               /* cached */
+        ASSERT(str_hash(prefix) == hp);
+    }
+    ASSERT(hp != hg);
 TEST_END()
 
 TEST(slice_across_join)
@@ -245,7 +278,8 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(random_appends_and_forks_match_reference);
     RUN(concat_n_first_operand_extends);
     RUN(compare_across_modes);
-    RUN(hash_matches_legacy);
+    RUN(hash_depends_only_on_bytes);
+    RUN(hash_cache_is_per_covered_length);
     RUN(slice_across_join);
     RUN(byte_at_across_join);
     RUN(find_byte_in_tail);

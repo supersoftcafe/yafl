@@ -1464,15 +1464,22 @@ EXTERN int32_t float32_hash(float f);
  *****************************
  **********************************************************/
 
+// One header for every heap string — legacy, static literal, and the
+// growable heads of String values (str_t) — so a head's bytes are always at
+// the same offset.
 typedef struct string {
     vtable_t* vtable;
     uint32_t length;
-    // Lazy FNV-1a hash cache (see string_hash): 0 = not yet computed. The
-    // write is a plain idempotent store on an immutable object — a race or
-    // a store lost to a compaction copy just means one recompute. Builder
-    // APIs that mutate bytes in place (the *_dangerously writes, truncate)
-    // reset it. Also moves `array` to offset 16 — word-aligned data.
-    uint32_t hash;
+    // Growable heads (STR_BUF_VTABLE): capacity + 1. It is the vtable's
+    // array_cap_offset, so compaction resets it to `length` on a copy (the
+    // copy owns no spare room). 0 on every other string.
+    uint32_t capacity;
+    // Hash cache: (covered length << 32) | hash of array[0, covered length);
+    // 0 = none. The covered bytes never change (a head only grows past its
+    // used length), so one atomic word is the whole protocol — a racing
+    // writer stores a correct value too, and a compaction copy carries a
+    // still-valid entry. Builder writes that change bytes in place reset it.
+    _Atomic(uint64_t) hash;
     uint8_t array[16];
 } ALIGNED string_t;
 
@@ -1543,9 +1550,10 @@ EXTERN struct string_vtable STRING_VTABLE;
             struct { \
                 vtable_t* v; \
                 uint32_t l; \
-                uint32_t h; \
+                uint32_t c; \
+                uint64_t h; \
                 char a[sizeof(contents)]; \
-            }){VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(contents), 0, contents})
+            }){VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(contents), 0, 0, contents})
 
 
 INLINE int32_t string_length(object_t* self) {
@@ -1613,7 +1621,7 @@ INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, o
     int32_t vlen;
     char* vstr = string_to_cstr(value, &local_buffer, &vlen);
     memcpy(((string_t*)self)->array + idx, vstr, vlen);
-    ((string_t*)self)->hash = 0;  // bytes changed: invalidate the lazy hash
+    atomic_store_explicit(&((string_t*)self)->hash, 0, memory_order_relaxed);  // bytes changed
     return self;
 }
 
@@ -1723,8 +1731,8 @@ INLINE int32_t str_length(str_t s) {
     .meta = STR16_W32(c, 8), .tail = { STR16_W32(c, 12) } })
 #endif
 #define STR16_LONG(c) ((str_t){ \
-    .head = (object_t*)&(struct { vtable_t* v; uint32_t l; uint32_t h; char a[sizeof(c)]; }) \
-        { VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(c), 0, c }, \
+    .head = (object_t*)&(struct { vtable_t* v; uint32_t l; uint32_t cap; uint64_t h; char a[sizeof(c)]; }) \
+        { VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(c), 0, 0, c }, \
     .meta = STRING_LEN(c), .tail = { 0 } })
 
 // A one-word union member (None = NULL, a tagged Int, an object) placed in a

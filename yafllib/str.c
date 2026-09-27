@@ -21,7 +21,7 @@
 
 VTABLE_DECLARE_STRUCT(string_vtable, 16);
 
-// Growable head buffers: `length` = used + 1, hash slot = capacity + 1, and
+// Growable head buffers: `length` = used + 1, `capacity` = capacity + 1, and
 // array_cap_offset makes compaction reset capacity to length on the copy (a
 // moved buffer never extends in place). Implements STRING_VTABLE, so a head
 // in word 0 dispatches as a String.
@@ -32,7 +32,7 @@ EXPORT struct string_vtable STR_BUF_VTABLE = {
     .array_el_pointer_locations = 0,
     .functions_mask = 0,
     .array_len_offset = offsetof(string_t, length),
-    .array_cap_offset = offsetof(string_t, hash),
+    .array_cap_offset = offsetof(string_t, capacity),
     .name = "string_buffer",
     .implements_array = VTABLE_IMPLEMENTS(1, (vtable_t*)&STRING_VTABLE),
 };
@@ -121,7 +121,8 @@ static object_t* buf_alloc(int64_t used, bool grow) {
     int64_t cap = total - overhead;
     if (cap > (int64_t)STR_META_LEN_MASK) cap = STR_META_LEN_MASK;
     string_t* b = (string_t*)array_create((vtable_t*)&STR_BUF_VTABLE, (int32_t)cap + 1);
-    b->hash = (uint32_t)cap + 1;          // capacity (array_cap_offset)
+    b->capacity = (uint32_t)cap + 1;      // array_cap_offset
+    atomic_store_explicit(&b->hash, 0, memory_order_relaxed);
     b->length = (uint32_t)used + 1;       // used: the GC's view of the object
     head_bytes((object_t*)b)[used] = 0;
     return (object_t*)b;
@@ -175,7 +176,7 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     if (in_heap(h) && object_try_pin(h)) {
         string_t* b = (string_t*)h;
         if (vtable_untag(b->vtable) == (vtable_t*)&STR_BUF_VTABLE && b->length - 1 == hl) {
-            if ((b->hash - 1) - hl >= tl + extra) {
+            if ((b->capacity - 1) - hl >= tl + extra) {
                 uint8_t* d = head_bytes(h) + hl;
                 memcpy(d, str_tail_bytes(&a), tl); d += tl;
                 for (int i = 0; i < np; i++) { memcpy(d, pieces[i].p, (size_t)pieces[i].n); d += pieces[i].n; }
@@ -310,14 +311,67 @@ EXPORT int str_compare(str_t a, str_t b) {
     return la < lb ? -1 : la > lb ? 1 : 0;
 }
 
-// FNV-1a, masked to 31 bits and never 0 — the same function as string_hash.
+// Word-at-a-time hash of the byte stream, 8 bytes per multiply. The stream
+// crosses the head/tail join transparently (a partial word carries over), so
+// the result depends only on the bytes — never on how a value is split — and
+// words are assembled little-endian on every host, so the full-word path and
+// the byte-carry path agree. The length is mixed in, so zero-padded partial
+// words cannot collide. 31 bits, never 0: 0 stays the "no hash" sentinel.
+static inline uint64_t hash_mix(uint64_t h, uint64_t w) {
+    h ^= w;
+    h *= 0x9E3779B97F4A7C15ull;
+    return h ^ (h >> 32);
+}
+
+static inline uint64_t load_le64(const uint8_t* p) {
+    uint64_t w;
+    memcpy(&w, p, sizeof w);
+#if !IS_LITTLE_ENDIAN
+    w = __builtin_bswap64(w);
+#endif
+    return w;
+}
+
 EXPORT int32_t str_hash(str_t s) {
+    // A heap value with no tail covers exactly head[0, head_len): the head's
+    // cache word answers when it covers that same length. (A value with tail
+    // bytes, or covering a different prefix, just computes.)
+    string_t* cached = NULL;
+    uint32_t covered = 0;
+    if (!str_is_inline(s) && tail_len_of(s) == 0) {
+        cached = (string_t*)s.head;
+        covered = head_len_of(s);
+        uint64_t k = atomic_load_explicit(&cached->hash, memory_order_relaxed);
+        if ((uint32_t)(k >> 32) == covered)
+            return (int32_t)(uint32_t)k;
+    }
     segs_t g = segs_of(&s);
-    uint32_t h = 2166136261u;
-    for (int32_t i = 0; i < g.na; i++) { h ^= g.a[i]; h *= 16777619u; }
-    for (int32_t i = 0; i < g.nb; i++) { h ^= g.b[i]; h *= 16777619u; }
-    uint32_t masked = h & 0x7fffffffu;
-    return (int32_t)(masked ? masked : 1);
+    uint64_t h = 0x243F6A8885A308D3ull ^ (uint64_t)segs_len(g);
+    uint64_t acc = 0;
+    int k = 0;                                  // bytes pending in acc
+    const uint8_t* ps[2] = { g.a, g.b };
+    int32_t ns[2] = { g.na, g.nb };
+    for (int seg = 0; seg < 2; seg++) {
+        const uint8_t* p = ps[seg];
+        int32_t n = ns[seg], i = 0;
+        if (k) {                                // finish the carried word
+            while (k < 8 && i < n) acc |= (uint64_t)p[i++] << (8 * k++);
+            if (k < 8) continue;
+            h = hash_mix(h, acc); acc = 0; k = 0;
+        }
+        for (; i + 8 <= n; i += 8) h = hash_mix(h, load_le64(p + i));
+        while (i < n) acc |= (uint64_t)p[i++] << (8 * k++);
+    }
+    if (k) h = hash_mix(h, acc);
+    h ^= h >> 29;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 32;
+    uint32_t masked = (uint32_t)h & 0x7fffffffu;
+    if (masked == 0) masked = 1;
+    if (cached)
+        atomic_store_explicit(&cached->hash, ((uint64_t)covered << 32) | masked,
+                              memory_order_relaxed);
+    return (int32_t)masked;
 }
 
 
