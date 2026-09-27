@@ -1,0 +1,12 @@
+namespace BigLeaf
+
+import System
+
+enum Big(a: String, b: String, c: String, d: String, e: Bool)
+
+fun mk(k: Int): Big
+  ret Big("a" + String(k), "bb", "ccc", "dddd", k > 0)
+
+fun main(): System::Int
+  let x = mk(3)
+  ret length(x.a) + length(x.d) + (x.e ? 1 : 0)

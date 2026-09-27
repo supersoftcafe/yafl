@@ -5,3 +5,4 @@ b32d
 yafl/*
 !yafl/*.yafl
 results/ut*/
+.commitmsg
