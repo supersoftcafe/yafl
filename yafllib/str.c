@@ -116,7 +116,7 @@ static str_t heap_value(object_t* head, uint32_t head_len) {
 static object_t* buf_alloc(int64_t used, bool grow) {
     if (used > (int64_t)STR_META_LEN_MASK) { __abort_on_overflow(); __builtin_unreachable(); }
     int64_t overhead = (int64_t)offsetof(string_t, array) + 1;
-    int64_t total = (grow ? used * 2 : used) + overhead;
+    int64_t total = (grow ? used * 2 : used) + overhead;   // 2x: 1.5x and a lower large-object factor measured no better
     total = (total + GC_ALLOC_GRANULE - 1) / GC_ALLOC_GRANULE * GC_ALLOC_GRANULE;
     int64_t cap = total - overhead;
     if (cap > (int64_t)STR_META_LEN_MASK) cap = STR_META_LEN_MASK;
