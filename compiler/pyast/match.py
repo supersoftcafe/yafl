@@ -70,17 +70,6 @@ def _arm_unique_name(arm: "MatchArm") -> str:
     return f"{arm.name}@arm{arm.line_ref.hash6()}"
 
 
-def _wrap_pointer_into(ctype: cg_t.Type, ptr_value: cg_p.RParam) -> cg_p.RParam:
-    """Rebuild a single-field newtype wrapper (a chain of one-field structs
-    ending in a DataPointer) from a bare pointer word — the inverse of
-    union_repr._unwrap_to_pointer_word, used when binding a newtype arm out of a
-    collapsed pointer union."""
-    if isinstance(ctype, cg_t.Struct) and len(ctype.fields) == 1:
-        fname, ftype = ctype.fields[0]
-        return cg_p.NewStruct(((fname, _wrap_pointer_into(ftype, ptr_value)),))
-    return ptr_value
-
-
 def _rewritten_extra(extra: tuple, resolver: g.Resolver,
                      replace: Callable[[g.Resolver, Any], Any]) -> Any:
     """Rewrite each extra position's spec, honouring rw's UNCHANGED protocol.
@@ -475,15 +464,11 @@ class _Emitter:
         # struct{}, so synthesise the empty value instead.
         if isinstance(arm_ctype, cg_t.Struct) and not arm_ctype.fields:
             value = cg_p.ZeroOf(arm_ctype)
-        # A single-field newtype arm in a COLLAPSED pointer union: the subject
-        # is the bare pointer word, so re-wrap it into the tuple struct the arm
-        # binds (the inverse of union_repr._unwrap_to_pointer_word).
-        elif (isinstance(arm_ctype, cg_t.Struct)
-              and len(cg_t._flatten_primitives(arm_ctype)) == 1
-              and value.get_type() != arm_ctype):
-            # A newtype arm bound from a union's LEAF value (a pointer word, a
-            # String value, an unpacked scalar): rebuild the nesting.
-            value = _wrap_pointer_into(arm_ctype, value)
+        # A single-field newtype arm bound from a COLLAPSED union's LEAF value
+        # (a pointer word, a String value, an unpacked scalar or function):
+        # rebuild the nesting (the inverse of union_repr._unwrap_to_pointer_word).
+        elif union_repr._peeled_ctype(arm_ctype) == value.get_type() != arm_ctype:
+            value = union_repr._wrap_leaf(arm_ctype, value)
         arm_sv = cg_p.StackVar(arm_ctype, _arm_unique_name(arm))
         bundle = g.OperationBundle(stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, value),))
         return bundle, _binding_resolver(self.resolver, arm, bound_type)
