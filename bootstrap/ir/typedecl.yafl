@@ -51,6 +51,10 @@ enum CgType
   enum CgFloat(precision: Int)                   # 32 | 64
   enum CgIntPtr()
   enum CgDataPointer()
+  # A String value: yafllib's 16-byte `str_t`. OPAQUE except word 0, `head`
+  # — the only GC-visible word, and the dispatch word when a union containing
+  # String shares this representation (yafl.h, "String values").
+  enum CgStr()
   # fpSync: every function the value can hold provably never suspends
   # (sync_inference.yafl). A refinement, not a representation: eqCgType
   # ignores it, as Python's compare=False does.
@@ -116,6 +120,9 @@ fun [tail] eqCgType(a, b): Bool => match(a)
   (x: CgDataPointer) => match(b)
     (y: CgDataPointer) => true
     (o: CgType)        => false
+  (x: CgStr) => match(b)
+    (y: CgStr)  => true
+    (o: CgType) => false
   (x: CgFuncPointer) => match(b)
     (y: CgFuncPointer) => true
     (o: CgType)        => false
@@ -149,6 +156,7 @@ fun cgWordsUpperBound(t) => match(t)
   (f: CgFloat) => 1
   (p: CgIntPtr) => 1
   (d: CgDataPointer) => 1
+  (st: CgStr) => 2           # 16 bytes
   (fp: CgFuncPointer) => 2   # fun_t = { void* f; void* o; }
   (s: CgStruct) => cgFieldsWordsUpperBound(s.fields)
   (m: CgImmediateStruct) => cgFieldsWordsUpperBound(m.fields)
@@ -164,6 +172,7 @@ fun [tail] cgHasPointers(t) => match(t)
   (f: CgFloat) => false
   (p: CgIntPtr) => false
   (d: CgDataPointer) => true
+  (st: CgStr) => true
   (fp: CgFuncPointer) => true
   (s: CgStruct) => any(s.fields, (fld) => cgHasPointers(fld.fieldType))
   (m: CgImmediateStruct) => any(m.fields, (fld) => cgHasPointers(fld.fieldType))
@@ -180,6 +189,7 @@ fun cgGetPointerPaths(t, path): List<String> => match(t)
   (f: CgFloat) => List()
   (p: CgIntPtr) => List()
   (d: CgDataPointer) => prepend(path, List())
+  (st: CgStr) => prepend(path + ".head", List())
   (fp: CgFuncPointer) => prepend(path + ".o", List())
   (v: CgVoid) => List()
   (s: CgStruct) => cgStructPointerPaths(s.fields, path)
@@ -217,6 +227,7 @@ fun cgDeclareIndent(t, cache: List<CgCacheEntry>, fieldIndent): (text: String, c
     (f: CgFloat) => (cgDeclareFloatType(f), cache)
     (p: CgIntPtr) => ("intptr_t", cache)
     (d: CgDataPointer) => ("object_t*", cache)
+    (st: CgStr) => ("str_t", cache)
     (fp: CgFuncPointer) => ("fun_t", cache)
     (v: CgVoid) => ("void", cache)
     (a: CgArray) => cgDeclareArrayInline(a, cache, fieldIndent)
@@ -291,6 +302,7 @@ fun cgInitialiseIndent(t, data, fieldIndent, cache: List<CgCacheEntry>): (text: 
     (f: CgFloat) => (cgInitFloat(f, data), cache)
     (p: CgIntPtr) => (cgLitToString(data), cache)          # base passthrough (unused in practice)
     (d: CgDataPointer) => (cgLitToString(data), cache)     # base passthrough (unused in practice)
+    (st: CgStr) => (cgLitToString(data), cache)            # base passthrough (unused in practice)
     (v: CgVoid) => (cgLitToString(data), cache)            # base passthrough (unused in practice)
     (fp: CgFuncPointer) => (cgInitFuncPointer(data), cache)
     (s: CgStruct) => cgInitStructFields(s.fields, data, fieldIndent, cache)
@@ -399,7 +411,11 @@ fun cgInitArrayItemsHit(elemType, item, rest: Chain<CgLit>, index: Int, fieldInd
 
 # ── string / bigint literal encoders (free functions in Python too) ────────
 
-fun cgStrLiteral(value) => "STR(\"" + strLiteralBytes(value, 0, "") + "\")"
+# The runtime's literal forms (yafl.h): inline up to 15 UTF-8 bytes, a static
+# read-only head beyond — the canonical-by-length rule.
+fun cgStrLiteral(value)
+  let form = length(value) <= 15 ? "STR16_SHORT" : "STR16_LONG"
+  ret form + "(\"" + strLiteralBytes(value, 0, "") + "\")"
 
 fun [tail] strLiteralBytes(value, i, acc)
   ret i >= length(value) ? acc : strLiteralBytes(value, i + 1, acc + strLiteralByte(byteAt(value, i)))
@@ -464,6 +480,7 @@ fun [tail] cgFirstPointerFieldLoop(fields: List<CgField>) => match(head(fields))
 fun cgIsTaskCheck(expr, t) => match(t)
   (d: CgDataPointer) => "PTR_IS_TASK(" + expr + ")"
   (fp: CgFuncPointer) => "PTR_IS_TASK((" + expr + ").o)"
+  (st: CgStr) => "PTR_IS_TASK((" + expr + ").head)"
   (w: CgTaskWrapper) => "(" + expr + ").task"
   (o: CgType) => cgIsTaskCheckStruct(expr, o)
 
@@ -486,12 +503,16 @@ fun cgFlattenPrimitivesN(t): (ps: List<CgType>, n: Int) => match(cgFieldsOf(t))
     (fp: CgFuncPointer) => (build(push(push(builder(), CgIntPtr()), CgDataPointer())), 2)
     (o: CgType)         => (prepend(o, List()), 1)
 
-fun cgPrimitiveRank(t) => match(t)
-  (i: CgInt) => i.precision == 64 ? 0 : i.precision == 32 ? 3 : i.precision == 16 ? 4 : i.precision == 8 ? 5 : 6
-  (f: CgFloat) => f.precision == 64 ? 0 : f.precision == 32 ? 3 : 6
-  (d: CgDataPointer) => 1
-  (p: CgIntPtr) => 2
-  (o: CgType) => 6
+# Rank for laying out union slots, largest first. An IR fact, not a byte
+# count: a pointer's 6 places pointers between the 8-byte and 4-byte scalars
+# whatever the target's word size. Only primitive slot types have one.
+fun cgNominalSize(t) => match(t)
+  (i: CgInt) => i.precision / 8
+  (f: CgFloat) => f.precision / 8
+  (st: CgStr) => 16
+  (d: CgDataPointer) => 6   # between the 8-byte and 4-byte scalars
+  (p: CgIntPtr) => 5        # pointer-sized, after the GC pointers
+  (o: CgType) => 0          # unreachable: not a primitive slot (Python raises)
 
 fun canMergeInto(small, large) => match(small)
   (si: CgInt) => match(large)
@@ -634,7 +655,7 @@ fun forceSlot(x: CgSlot|None) => match(x)
   ()          => CgSlot(CgVoid(), List(), false, 0 - 1)   # unreachable
 
 # Phase 3: collect the surviving (active) slots WITH their original indices,
-# stable-sort by primitive rank, and renumber positionally — this becomes the
+# stable-sort by nominal size (largest first), and renumber positionally — this becomes the
 # `$s0`, `$s1`, ... fields, plus a trailing `$tag`. Positional, exactly like
 # Python's `renumber = {old_si: new_si for new_si, (old_si, _) in
 # enumerate(active)}` — never by slot VALUE, which would mis-map two active
@@ -652,15 +673,15 @@ fun cgActiveWithIndices(slots: List<CgSlot>)
   ret build(cgActiveWithIndicesLoop(chain(slots), 0,
                                     builder()))
 
-# Stable insertion sort by primitive rank (Python's list.sort is stable; the
-# active-slot lists here are small, so O(n^2) is not a concern).
-fun cgSortIdxByRank(slots: List<CgIdxSlot>)
-  ret fold(slots, List(), (acc, s) => cgInsertIdxByRank(acc, s))
+# Stable insertion sort, largest nominal size first (Python's list.sort is
+# stable; the active-slot lists here are small, so O(n^2) is not a concern).
+fun cgSortIdxBySize(slots: List<CgIdxSlot>)
+  ret fold(slots, List(), (acc, s) => cgInsertIdxBySize(acc, s))
 
-fun cgInsertIdxByRank(sorted: List<CgIdxSlot>, s: CgIdxSlot) => match(head(sorted))
-  (h: CgIdxSlot) => cgPrimitiveRank(s.isSlot.slotType) < cgPrimitiveRank(h.isSlot.slotType)
+fun cgInsertIdxBySize(sorted: List<CgIdxSlot>, s: CgIdxSlot) => match(head(sorted))
+  (h: CgIdxSlot) => cgNominalSize(s.isSlot.slotType) > cgNominalSize(h.isSlot.slotType)
     ? prepend(s, sorted)
-    : prepend(h, cgInsertIdxByRank(tail(sorted), s))
+    : prepend(h, cgInsertIdxBySize(tail(sorted), s))
   () => prepend(s, List())
 
 class [final] CgUnionLayout(fieldsStruct: CgType, variantMap: List<List<CgSlotEntry>>)
@@ -669,7 +690,7 @@ fun computeUnionSlots(variantTypes: List<CgType>, maxTag: Int|None): CgUnionLayo
   let flat = map(variantTypes, (vt) => cgFlattenPrimitives(vt))
   let built = cgBuildInitialSlotsLoop(flat, 0, List(), List())
   let merged = cgMergeSlotsLoop(built.slots, built.vmap)
-  let active = cgSortIdxByRank(cgActiveWithIndices(merged.slots))
+  let active = cgSortIdxBySize(cgActiveWithIndices(merged.slots))
   let renumber = cgBuildRenumber(active)
   let tagBound = maxOf(built.nVariants, orZero(maxTag) + 1)
   # The tag is the LAST field of the union struct.

@@ -1,9 +1,9 @@
 # bootstrap/string_concat.yafl — ported from lowering/string_concat.py:
 # flatten String `+` chains into one exact-size n-ary concatenation.
 # `a + b + c + d` reaches this IR (after the tiny `+` impl inlines) as a
-# chain of `RuntimeInvoke("string_append")` steps, each materialising an
+# chain of `RuntimeInvoke("str_append")` steps, each materialising an
 # intermediate String the next step immediately consumes. Any chain of three
-# or more operands rewrites into a single `RuntimeInvoke("string_concat_n")`
+# or more operands rewrites into a single `RuntimeInvoke("str_concat_n")`
 # (yafllib/string.c): sum the lengths, allocate once, copy each piece.
 # The chain is discovered through the SSA def-chains (ssa_defs): an operand
 # that is a directly-nested append, or a StackVar read exactly once whose
@@ -28,9 +28,9 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun scAppendName(): String   ret "string_append"
-fun scConcatName(): String   ret "string_concat_n"
-fun scRuntimeCap(): Int      ret 16   # string_concat_n's fixed operand arrays
+fun scAppendName(): String   ret "str_append"
+fun scConcatName(): String   ret "str_concat_n"
+fun scRuntimeCap(): Int      ret 16   # str_concat_n's fixed operand arrays
 
 fun flattenStringAppends(a: CgApp) => appWithFunctions(a, map(appFunctions(a), scFunction))
 
@@ -62,7 +62,7 @@ fun scAnchTarget(acc, target) => match(target)
   (sv: RpStackVar) => prepend(sv.name, acc)
   (o: RParam)      => acc
 
-# The (left, right) operands of a string_append invoke, when visible.
+# The (left, right) operands of a str_append invoke, when visible.
 fun scAppendArgs(inv: RpRuntimeInvoke): (l: RParam, r: RParam)|None
   if inv.function != scAppendName()
     ret None
@@ -142,7 +142,7 @@ fun scAbsorbableDef(src) => match(src)
 
 fun scReadOnce(cs: Dict<String, Int>, name: String) => sdCountOf(cs, name) == 1
 
-# A string_concat_n invoke over `operands`, grouped in runtime-cap-sized
+# A str_concat_n invoke over `operands`, grouped in runtime-cap-sized
 # chunks when the chain is longer than the C side's fixed arrays.
 fun scConcatOf(operands) => match(head(operands))
   (only: RParam) => isEmpty(tail(operands))
@@ -157,7 +157,7 @@ fun scConcatBuild(operands: List<RParam>): RParam
   let numbered = scNumbered(chain(operands), 0, builder())
   let fields = prepend(RpNamedValue("count", RpInteger(numbered.n, 32)),
                        numbered.vals)
-  ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgDataPointer())
+  ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgStr())
 
 # The operand count rides the numbering walk (no-length ruling).
 fun [tail] scNumbered(os: Chain<RParam>, i,

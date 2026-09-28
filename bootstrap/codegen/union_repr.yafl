@@ -9,8 +9,10 @@
 #
 #   GTagged      by-value {$s0.., $tag} struct. Non-collapsing SCombination
 #                and flat (non-complex) SEnum.
-#   GPointer     one DataPointer word; None=NULL, every other member
+#   GPointer     one dispatch word; None=NULL, every other member
 #                dispatches by pointer tag/vtable. Collapsing SCombination.
+#                WIDE (a String or function member): the value is a str_t
+#                whose `head` is that word; scalars ride as spare codes.
 #   GComplexEnum DataPointer + per-variant heap objects, dispatch by
 #                vtable.discriminator. Complex SEnum.
 #
@@ -150,6 +152,12 @@ enum PtrKind
   enum PkUnit()
   enum PkInt()
   enum PkStr()
+  # bool / int8..int64 / float32 / float64 -> a SPARE code in word 0 with the
+  # payload in word 1 — only inside a WIDE union (unionCollapsesToPointer).
+  enum PkScalar(pkScalar: String)
+  # a function value -> its environment in word 0 (spare code 0 when NULL),
+  # its code pointer in word 1; the union is wide and may hold no class.
+  enum PkFun()
   enum PkClass(pkName: String)
   enum PkEnum(pkRoot: String)
   enum PkForeign()
@@ -158,7 +166,11 @@ fun eqPtrKind(a, b) => match(a)
   (x: PkUnit)    => isUnitKind(b)
   (x: PkInt)     => isIntKind(b)
   (x: PkStr)     => isStrKind(b)
+  (x: PkFun)     => isFunKind(b)
   (x: PkForeign) => isForeignKind(b)
+  (x: PkScalar)  => match(b)
+    (y: PkScalar) => x.pkScalar == y.pkScalar
+    (o: PtrKind)  => false
   (x: PkClass)   => match(b)
     (y: PkClass) => x.pkName == y.pkName
     (o: PtrKind) => false
@@ -182,6 +194,36 @@ fun isForeignKind(k) => match(k)
   (f: PkForeign) => true
   (o: PtrKind)   => false
 
+fun isFunKind(k) => match(k)
+  (f: PkFun)   => true
+  (o: PtrKind) => false
+
+fun isScalarKind(k) => match(k)
+  (sc: PkScalar) => true
+  (o: PtrKind)   => false
+
+# A heap object in word 0: a function's environment cannot share it.
+fun isObjectKind(k) => match(k)
+  (c: PkClass)   => true
+  (e2: PkEnum)   => true
+  (f: PkForeign) => true
+  (o: PtrKind)   => false
+
+# Spare word-0 codes for scalar members of a wide union (yafl.h
+# STR_SPARE_WORD): one per TYPE, the same in every union, so a value widens
+# between unions unchanged. The C helper suffix names the payload's C type.
+fun isScalarName(name) => name == "bool" || name == "int8" || name == "int16" || name == "int32"
+  || name == "int64" || name == "float32" || name == "float64"
+
+fun scalarCode(name) => name == "bool" ? 1 : name == "int8" ? 2 : name == "int16" ? 3
+  : name == "int32" ? 4 : name == "int64" ? 5 : name == "float32" ? 6 : 7
+
+fun scalarC(name) => name == "bool" ? "int8" : name
+
+fun scalarCtype(name): CgType => name == "float32" ? CgFloat(32) : name == "float64" ? CgFloat(64)
+  : name == "int16" ? CgInt(16) : name == "int32" ? CgInt(32) : name == "int64" ? CgInt(64)
+  : CgInt(8)
+
 fun classSpecIsForeign(c: SClass, r) => anyFoundIsForeignClass(chain(findType(r, c.scName).bItems))
 
 fun [tail] anyFoundIsForeignClass(fs: Chain<Found>) => match(fs)
@@ -190,9 +232,11 @@ fun [tail] anyFoundIsForeignClass(fs: Chain<Found>) => match(fs)
     (cs: PsClass) => hasAttr(cs.cAttrs, "foreign") ? true : anyFoundIsForeignClass(l.next)
     (o: PStmt)    => anyFoundIsForeignClass(l.next)
 
-fun pointerWordKind(member, r): PtrKind|None => eqCgType(specGenerate(member, r), CgStruct(List()))
-  ? PkUnit()
-  : pointerWordKindNonUnit(member, r)
+fun pointerWordKind(member, r): PtrKind|None => match(specGenerate(member, r))
+  (fp: CgFuncPointer) => PkFun()
+  (o: CgType)         => eqCgType(o, CgStruct(List()))
+    ? PkUnit()
+    : pointerWordKindNonUnit(member, r)
 
 fun pointerWordKindNonUnit(member, r) => match(member)
   (t2: STuple) => pointerWordKindTuple(t2, r)
@@ -208,8 +252,11 @@ fun pointerWordKindTupleEntry(ety: Spec|None, r) => match(ety)
   (e2: Spec) => pointerWordKind(e2, r)
   ()          => None
 
-fun pointerWordKindBuiltin(b: SBuiltin)
-  ret b.sbName == "bigint" ? PkInt() : (b.sbName == "str" ? PkStr() : None)
+fun pointerWordKindBuiltin(b: SBuiltin): PtrKind|None
+  ret b.sbName == "bigint" ? PkInt()
+    : b.sbName == "str" ? PkStr()
+    : isScalarName(b.sbName) ? PkScalar(b.sbName)
+    : None
 
 fun unionCollapsesToPointer(members: List<Spec>, r): Bool
   let kinds = map(members, (m) => pointerWordKind(m, r))
@@ -223,7 +270,18 @@ fun forceKindId(k: PtrKind|None) => match(k)
   (kk: PtrKind) => kk
   ()             => PkUnit()   # unreachable: caller already excluded None
 
-fun unionCollapsesToPointerOn(ks: List<PtrKind>) => !any(ks, (k) => !isUnitKind(k))
+# A bound method's environment IS a class instance: a class member and a
+# function member could not be told apart by word 0. Scalars ride in a WIDE
+# union's second word, so only a union that is wide anyway (a String or
+# function member) packs them; a foreign fallback cannot be told apart from
+# a spare code, so it keeps the tagged struct.
+fun unionCollapsesToPointerOn(ks: List<PtrKind>) => (any(ks, isFunKind) && any(ks, isObjectKind))
+    || (any(ks, isScalarKind)
+        && (!(any(ks, isStrKind) || any(ks, isFunKind)) || any(ks, isForeignKind)))
+  ? false
+  : unionCollapsesToPointerRest(ks)
+
+fun unionCollapsesToPointerRest(ks: List<PtrKind>) => !any(ks, (k) => !isUnitKind(k))
   ? false
   : (countKind(ks, isUnitKind) > 1 || countKind(ks, isForeignKind) > 1 ? false : allDistinctKinds(filterKinds(ks)))
 
@@ -250,6 +308,91 @@ fun [tail] unwrapToPointerWord(value, ctype) => match(cgFieldsOf(ctype))
   ()               => value
 
 fun soleField(fields: List<CgField>) => exactly(chain(fields), 1) ? head(fields) : None
+
+# The ctype `unwrapToPointerWord` peels down to.
+fun [tail] peeledCtype(ctype): CgType => match(cgFieldsOf(ctype))
+  (fields: List<CgField>) => match(soleField(fields))
+    (f: CgField) => peeledCtype(f.fieldType)
+    ()            => ctype
+  ()               => ctype
+
+# Rebuild single-field newtype nesting around a leaf value (the inverse of
+# unwrapToPointerWord).
+fun wrapLeaf(ctype, leaf): RParam => match(cgFieldsOf(ctype))
+  (fields: List<CgField>) => match(soleField(fields))
+    (f: CgField) => RpNewStruct(list1(RpNamedValue(f.fieldName, wrapLeaf(f.fieldType, leaf))))
+    ()            => leaf
+  ()               => leaf
+
+# A one-word member value (NULL / tagged Int / object pointer) as a two-word
+# union value: word 0 carries it, the String payload is zero.
+fun strWord(word): RParam => RpRuntimeInvoke("str_word", RpNewStruct(list1(RpNamedValue("word", word))), CgStr())
+
+# The dispatch word of a value of this union.
+fun ptrWord(gp: GPointer, sv): RParam => gp.grpWide ? RpStructField(sv, "head") : sv
+
+# The test that `word` (a value's dispatch word) holds `member`, or None for
+# an untestable member (a foreign class: the fallback).
+fun ptrGuard(gp: GPointer, member, word, r): RParam|None
+  ret eqCgType(specGenerate(member, r), CgStruct(List()))
+    ? RpIntEqConst(word, 0)
+    : match(pointerWordKind(member, r))
+        (k: PtrKind) => ptrGuardOf(gp, k, word)
+        ()           => None
+
+fun ptrGuardOf(gp: GPointer, k, word): RParam|None => match(k)
+  (i: PkInt)      => RpObjVtableEq(word, None, "INTEGER_VTABLE")
+  # A spare code is a tag-4 word too: check the length.
+  (s2: PkStr)     => gp.grpPacks
+    ? RpRuntimeInvoke("str_word_is_string", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(8))
+    : RpObjVtableEq(word, None, "STRING_VTABLE")
+  (sc: PkScalar)  => RpIntEqConst(RpRuntimeInvoke("str_word_code", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(32)),
+                                  scalarCode(sc.pkScalar))
+  (f: PkFun)      => RpRuntimeInvoke("str_word_is_fun", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(8))
+  (c: PkClass)    => RpObjVtableEq(word, c.pkName, None)
+  (e2: PkEnum)    => RpObjVtableEq(word, e2.pkRoot, None)
+  (u: PkUnit)     => None
+  (fo: PkForeign) => None
+
+fun ptrToFun(value) => RpRuntimeInvoke("str_to_fun", RpNewStruct(list1(RpNamedValue("s", value))), CgFuncPointer(false))
+
+fun ptrUnpack(value, scalar) => RpRuntimeInvoke("str_unpack_" + scalarC(scalar),
+                                                RpNewStruct(list1(RpNamedValue("s", value))), scalarCtype(scalar))
+
+# A value of this union, known to hold `member`, as that member's own
+# representation (newtype nesting included).
+fun ptrMemberValue(gp: GPointer, member, value, r): RParam
+  let mctype = specGenerate(member, r)
+  ret eqCgType(mctype, CgStruct(List()))
+    ? RpZeroOf(mctype)
+    : wrapLeaf(mctype, ptrMemberLeaf(gp, mctype, pointerWordKind(member, r), value))
+
+fun ptrMemberLeaf(gp: GPointer, mctype, kind: PtrKind|None, value): RParam => match(kind)
+  (k: PtrKind) => match(k)
+    (sc: PkScalar) => ptrUnpack(value, sc.pkScalar)
+    (f: PkFun)     => ptrToFun(value)
+    (o: PtrKind)   => ptrStrOrWord(gp, mctype, value)
+  ()           => ptrStrOrWord(gp, mctype, value)
+
+fun ptrStrOrWord(gp: GPointer, mctype, value): RParam
+  ret gp.grpWide && eqCgType(peeledCtype(mctype), CgStr()) ? value : ptrWord(gp, value)
+
+# The subject seen at an arm's type, as a LEAF (bindSubject rebuilds any
+# newtype nesting): the whole value for a String, the unpacked payload for a
+# scalar, else the dispatch word.
+fun ptrAs(gp: GPointer, sv, armType, r): RParam
+  if !gp.grpWide
+    ret sv
+  if eqCgType(peeledCtype(specGenerate(armType, r)), CgStr())
+    ret sv
+  ret match(armType)
+    (cm: SCombination) => ptrWord(gp, sv)
+    (o: Spec)          => match(pointerWordKind(armType, r))
+      (k: PtrKind) => match(k)
+        (sc: PkScalar) => ptrUnpack(sv, sc.pkScalar)
+        (f: PkFun)     => ptrToFun(sv)
+        (o2: PtrKind)  => ptrWord(gp, sv)
+      ()           => ptrWord(gp, sv)
 
 class [final] SlotValuePair(svpName: String, svpValue: RParam)
 
@@ -302,7 +445,10 @@ fun collectVariantSlotsFieldsStep(l: ChainLink<CgField>, param, slotAssignments:
 
 enum GRepr
   enum GTagged(grtType: Spec, grtContainer: CgType, grtVariantMap: List<List<CgSlotEntry>>)
-  enum GPointer(grpType: Spec)
+  # grpWide: a String or function member — the value is a str_t whose head
+  # is the dispatch word. grpPacks: scalar or function members ride as spare
+  # codes (wide only).
+  enum GPointer(grpType: Spec, grpWide: Bool, grpPacks: Bool)
   enum GComplexEnum(grcType: Spec)
 
 # DERIVED is_complex: the resolver carries the breaker analysis (identity
@@ -312,7 +458,7 @@ fun isComplexEnum(sp: SEnum, r) => isComplexRoot(r, sp.seRoot)
 fun classifyRepr(sp, r): GRepr => match(sp)
   (e2: SEnum) => classifyEnum(e2, r)
   (cm: SCombination) => classifyCombination(cm, r)
-  (o: Spec)   => GPointer(sp)   # unreachable (Python raises TypeError): not a union type
+  (o: Spec)   => GPointer(sp, false, false)   # unreachable (Python raises TypeError): not a union type
 
 fun classifyEnum(e2, r): GRepr => isComplexEnum(e2, r) ? GComplexEnum(e2) : classifyFlatEnum(e2, r)
 
@@ -333,7 +479,12 @@ fun classifyFlatEnumFallback(e2, r)
 
 fun classifyCombination(cm, r): GRepr
   let members = reprMembersOf(cm.scTypes)
-  ret unionCollapsesToPointer(members, r) ? GPointer(cm) : classifyCombinationTagged(cm, members, r)
+  ret unionCollapsesToPointer(members, r) ? classifyPointer(cm, members, r) : classifyCombinationTagged(cm, members, r)
+
+fun classifyPointer(cm, members: List<Spec>, r)
+  let kinds = map(members, (m) => forceKindId(pointerWordKind(m, r)))
+  ret GPointer(cm, any(kinds, (k) => isStrKind(k) || isFunKind(k)),
+               any(kinds, (k) => isScalarKind(k) || isFunKind(k)))
 
 fun classifyCombinationTagged(cm, members: List<Spec>, r)
   let layout = computeUnionSlots(map(members, (v) => specGenerate(v, r)), globalMaxTag(r))
@@ -341,7 +492,7 @@ fun classifyCombinationTagged(cm, members: List<Spec>, r)
 
 fun reprCtype(rep): CgType => match(rep)
   (gt: GTagged) => gt.grtContainer
-  (gp: GPointer) => CgDataPointer()
+  (gp: GPointer) => gp.grpWide ? CgStr() : CgDataPointer()
   (gc: GComplexEnum) => CgDataPointer()
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -368,7 +519,7 @@ fun reprPositionGuardsOn(rep, sv, armType,
   (gt: GTagged) => match(gt.grtType)
     (e2: SEnum) => flatEnumPositionGuards(sv, armType, e2.seAllLeaves)
     (o: Spec)   => combinationPositionGuards(gt, sv, armType, r)
-  (gp: GPointer)     => pointerPositionGuards(sv, armType, r)
+  (gp: GPointer)     => pointerPositionGuards(gp, sv, armType, r)
   (gc: GComplexEnum) => complexPositionGuards(gc, sv, armType, r)
 
 fun flatEnumPositionGuards(sv, armType: Spec,
@@ -395,19 +546,16 @@ fun complexPositionGuards(gc: GComplexEnum, sv, armType: Spec,
 # NULL for the unit member, vtable identity for the rest. A FOREIGN class is
 # untestable from generated code — in a single-subject match it can be the
 # implicit fallback, but a POSITION has no fallback to be.
-fun pointerPositionGuards(sv, armType,
+fun pointerPositionGuards(gp: GPointer, sv, armType,
                           r): List<RParam>|None
-  ret pointerGuardLoop(chain(unionMembers(armType)), sv, r, List())
+  ret pointerGuardLoop(gp, chain(unionMembers(armType)), ptrWord(gp, sv), r, List())
 
-fun [tail] pointerGuardLoop(ms: Chain<Spec>, sv, r,
+fun [tail] pointerGuardLoop(gp: GPointer, ms: Chain<Spec>, word, r,
                             acc) => match(ms)
   (nil: ChainEnd) => isEmpty(acc) ? None : acc
-  (l: ChainLink)  => isNoneSpec2(l.value)
-    ? pointerGuardLoop(l.next, sv, r,
-                       appendGuard(acc, RpIntEqConst(sv, 0)))
-    : match(memberGuard(l.value, sv, r))
-      (g: RParam) => pointerGuardLoop(l.next, sv, r, appendGuard(acc, g))
-      ()          => None          # FOREIGN: untestable in a position
+  (l: ChainLink)  => match(ptrGuard(gp, l.value, word, r))
+    (g: RParam) => pointerGuardLoop(gp, l.next, word, r, appendGuard(acc, g))
+    ()          => None          # FOREIGN: untestable in a position
 
 fun appendGuard(acc: List<RParam>, g: RParam) => build(push(builderFrom(acc), g))
 
@@ -437,12 +585,33 @@ fun discOf(discs: Dict<String, Int>, u: String) => match(get(discs, u))
   (i: Int) => i
   ()       => 0
 
+# Bind ONE position's name, or None when it binds nothing. The enum reprs
+# bind at the SUBJECT type on purpose (an SEnum arm type may be a pruned
+# generic spec with stale fields — only leaf identity matters for the guard);
+# a pointer union binds at the ARM's type, since the value IS the narrowed
+# pointer; and a tagged combination REASSEMBLES the variant out of the
+# union's slots.
+fun reprPositionBind(rep, holder: PArm, sv, armType, subjType, r): GBind|None => match(rep)
+  (gt: GTagged) => match(gt.grtType)
+    (e2: SEnum) => bindSubject(r, holder, subjType, sv)
+    (o: Spec)   => combinationPositionBind(gt, holder, sv, armType, r)
+  (gp: GPointer)     => bindSubject(r, holder, armType, ptrAs(gp, sv, armType, r))
+  (gc: GComplexEnum) => bindSubject(r, holder, subjType, sv)
+
+fun combinationPositionBind(gt: GTagged, holder: PArm, sv, armType, r): GBind|None
+  ret match(soleMemberOf(armType))
+    (m: Spec) => match(variantIndexOf(reprMembersOf(unionMembers(gt.grtType)), uid(m)))
+      (vi: Int) => bindFromSlots(r, holder, specGenerate(m, r), forceNth(gt.grtVariantMap, vi),
+                                 forceFields(gt.grtContainer), sv)
+      ()        => None
+    ()        => None                # several members need a Phi, not a stage
+
 fun reprGenerateMatch(rep, em, resultType, subjBundle: GBundle,
                      arms: List<PArm>, elseArm, r): GEmit => match(rep)
   (gt: GTagged) => match(gt.grtType)
     (e2: SEnum) => generateFlatEnumMatch(em, resultType, subjBundle, gt.grtType, e2.seAllLeaves, arms, elseArm, r)
     (o: Spec)   => generateCombinationMatch(em, resultType, subjBundle, gt.grtType, gt.grtContainer, gt.grtVariantMap, arms, elseArm, r)
-  (gp: GPointer) => generatePointerMatch(em, resultType, subjBundle, gp.grpType, arms, elseArm, r)
+  (gp: GPointer) => generatePointerMatch(em, resultType, subjBundle, gp, arms, elseArm, r)
   (gc: GComplexEnum) => generateComplexEnumMatch(em, resultType, subjBundle, gc.grcType, arms, elseArm, r)
 
 # isNoneSpec is reused as-is from generate_expr2.yafl.
@@ -584,61 +753,54 @@ fun combinationUnionArm(em: GEmit, arm: PArm, cm, sv, tag, members: List<Spec>,
                         discs: Dict<String, Int>, resultType, r)
   let narrowCtype = specGenerate(cm, r)
   let narrowMembers = reprMembersOf(unionMembers(cm))
-  let hasNarrowMap = isStructLike(narrowCtype)
-  let narrowMap = hasNarrowMap
+  let narrowRep = classifyRepr(cm, r)
+  let narrowMap = isStructLike(narrowCtype)
     ? computeUnionSlots(map(narrowMembers, (m) => specGenerate(m, r)), None).variantMap
     : List()
   let entries = combinationUnionEntries(chain(narrowMembers), 0, members, variantMap, slotFields, discs, tag, sv,
-                                        narrowCtype, narrowMap, hasNarrowMap, r,
+                                        narrowCtype, narrowMap, narrowRep, r,
                                         builder())
   ret emMultiEntryArm(em, r, resultType, arm, entries, narrowCtype)
 
 fun combinationUnionEntries(narrowMembers: Chain<Spec>, k, members: List<Spec>,
                                    variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                                    discs: Dict<String, Int>, tag, sv, narrowCtype,
-                                   narrowMap: List<List<CgSlotEntry>>, hasNarrowMap, r,
+                                   narrowMap: List<List<CgSlotEntry>>, narrowRep: GRepr, r,
                                    [terminal] acc): List<GEntry> => match(narrowMembers)
   (nil: ChainEnd) => build(acc)
   (l: ChainLink)  => combinationUnionEntriesStep(l, k, members, variantMap, slotFields, discs, tag, sv,
-                                                 narrowCtype, narrowMap, hasNarrowMap, r, acc)
+                                                 narrowCtype, narrowMap, narrowRep, r, acc)
 
 fun combinationUnionEntriesStep(l: ChainLink<Spec>, k, members: List<Spec>,
                                variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                                discs: Dict<String, Int>, tag, sv, narrowCtype,
-                               narrowMap: List<List<CgSlotEntry>>, hasNarrowMap, r,
+                               narrowMap: List<List<CgSlotEntry>>, narrowRep: GRepr, r,
                                [terminal] acc): List<GEntry>
   let u = uid(l.value)
-  ret combinationUnionEntries(l.next, k + 1, members, variantMap, slotFields, discs, tag, sv, narrowCtype, narrowMap, hasNarrowMap, r,
-        combinationUnionEntryFor(variantIndexOf(members, u), l.value, u, discs, k, variantMap, slotFields, tag, sv, narrowCtype, narrowMap, hasNarrowMap, r, acc))
+  ret combinationUnionEntries(l.next, k + 1, members, variantMap, slotFields, discs, tag, sv, narrowCtype, narrowMap, narrowRep, r,
+        combinationUnionEntryFor(variantIndexOf(members, u), l.value, u, discs, k, variantMap, slotFields, tag, sv, narrowCtype, narrowMap, narrowRep, r, acc))
 
 fun combinationUnionEntryFor(vi: Int|None, member, u, discs: Dict<String, Int>, k,
                              variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>, tag, sv,
-                             narrowCtype, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap, r,
+                             narrowCtype, narrowMap: List<List<CgSlotEntry>>, narrowRep: GRepr, r,
                              [terminal] acc): ListBuilder<GEntry> => match(vi)
   (viv: Int) if contains(discs, u) =>
       push(acc, combinationUnionEntry(viv, member, u, discs, variantMap,
                                       slotFields, tag, sv, k, narrowCtype,
-                                      narrowMap, hasNarrowMap, r))
+                                      narrowMap, narrowRep, r))
   ()          => acc
 
 fun combinationUnionEntry(vi, member, u: String, discs: Dict<String, Int>, variantMap: List<List<CgSlotEntry>>,
                           slotFields: List<CgField>, tag, sv, k,
-                          narrowCtype, narrowMap: List<List<CgSlotEntry>>, hasNarrowMap, r)
+                          narrowCtype, narrowMap: List<List<CgSlotEntry>>, narrowRep: GRepr, r)
   let memberTag = getOr0(discs, u)
-  let value = hasNarrowMap
-    ? combinationUnionValueTagged(narrowCtype, forceNth(narrowMap, k), forceNth(variantMap, vi), slotFields, sv, memberTag)
-    : combinationUnionValuePointer(specGenerate(member, r), vi, variantMap, slotFields, sv)
+  # Pointer narrow union: the member's LEAF, read out of its wide slots and
+  # boxed by the narrow union itself (NULL for the unit member, a spare code
+  # for a scalar, environment + code for a function).
+  let value = match(narrowRep)
+    (np: GPointer) => pointerBoxLeaf(np, leafFromSlots(member, forceNth(variantMap, vi), slotFields, sv, r), member, r)
+    (o: GRepr)     => combinationUnionValueTagged(narrowCtype, forceNth(narrowMap, k), forceNth(variantMap, vi), slotFields, sv, memberTag)
   ret GEntry(RpIntEqConst(tag, memberTag), value)
-
-# DataPointer narrow union: NULL for the unit member, else the member's single
-# pointer slot. The emptiness test is on the MEMBER's generated ctype (Python:
-# `member.generate(resolver) == Struct(())`) — NOT the arm's narrow ctype,
-# which on this path is a DataPointer and never the empty struct.
-fun combinationUnionValuePointer(memberCtype, vi, variantMap: List<List<CgSlotEntry>>,
-                                 slotFields: List<CgField>, sv)
-  ret eqCgType(memberCtype, CgStruct(List()))
-    ? RpNullPointer()
-    : RpStructField(sv, fieldNameAt(slotFields, forceSlotIndex(forceNth(variantMap, vi))))
 
 # The slot values with the discriminator LAST. Not a list utility: the tag's
 # position IS its position in the union struct, so this names the layout rule
@@ -734,97 +896,127 @@ fun armTypeOr(arm: PArm, fallback): Spec => match(arm.armType)
   (t2: Spec) => t2
   ()          => fallback
 
-fun memberGuard(member, sv, r) => match(pointerWordKind(member, r))
-  (k: PtrKind) => memberGuardOf(k, sv)
-  ()            => None
+# A member's guard; the unit member's NULL test is routed separately.
+fun memberGuard(gp: GPointer, member, sv, r): RParam|None
+  ret eqCgType(specGenerate(member, r), CgStruct(List())) ? None : ptrGuard(gp, member, sv, r)
 
-fun memberGuardOf(k, sv) => match(k)
-  (i: PkInt)     => RpObjVtableEq(sv, None, "INTEGER_VTABLE")
-  (s2: PkStr)    => RpObjVtableEq(sv, None, "STRING_VTABLE")
-  (c: PkClass)   => RpObjVtableEq(sv, c.pkName, None)
-  (e2: PkEnum)   => RpObjVtableEq(sv, e2.pkRoot, None)
-  (u: PkUnit)    => None
-  (f: PkForeign) => None
+# Bind an arm to the subject seen at `boundType` (ptrAs).
+fun ptrBind(gp: GPointer, r, arm: PArm, boundType, value): GBind|None
+  ret bindSubject(r, arm, boundType, ptrAs(gp, value, boundType, r))
 
-fun generatePointerMatch(em0, resultType: Spec|None, subjBundle: GBundle, subjType,
+# Pointer-union dispatch: the dispatch word == NULL → the None arm; typed arms
+# test vtable identity / pointer tag bits / spare codes (ptrGuard); literal
+# arms test kind then value; at most one foreign class acts as the implicit
+# fallback (untestable from generated code).
+fun generatePointerMatch(em0, resultType: Spec|None, subjBundle: GBundle, gp: GPointer,
                         arms: List<PArm>, elseArm: PArm|None, r): GEmit
-  let sv = mustResult(subjBundle)
+  let subjType = gp.grpType
+  let value = mustResult(subjBundle)
+  let sv = ptrWord(gp, value)          # the dispatch word every guard reads
   let subjHasNone = any(reprMembersOf(unionMembers(subjType)), (v) => eqCgType(specGenerate(v, r), CgStruct(List())))
   let cls = classifyPointerArms(arms, r)
-  let em1 = genPointerNullRouting(em0, r, resultType, subjType, sv, cls, elseArm, subjHasNone)
-  let em2 = fold(cls.mcGuarded, em1, (acc, arm) => genPointerGuardedArm(acc, r, resultType, arm, sv))
+  let em1 = genPointerNullRouting(em0, r, resultType, gp, value, sv, cls, elseArm, subjHasNone)
+  let em2 = fold(cls.mcGuarded, em1, (acc, arm) => genPointerGuardedArm(acc, r, resultType, arm, gp, value, sv))
   let finalFallback = match(cls.mcForeignFallback)
     (ff: PArm) => cls.mcForeignFallback
     ()          => elseArm
   let bind = match(finalFallback)
-    (fb: PArm) => bindSubject(r, fb, armTypeOr(fb, subjType), sv)
+    (fb: PArm) => ptrBind(gp, r, fb, armTypeOr(fb, subjType), value)
     ()          => None
   ret emFallback(em2, r, resultType, finalFallback, bind, "pointer-union match fell through all arms")
 
-fun genPointerNullRouting(em, r, resultType: Spec|None, subjType, sv,
+fun genPointerNullRouting(em, r, resultType: Spec|None, gp: GPointer, value, sv,
                           cls: MemberClassification, elseArm: PArm|None, subjHasNone: Bool): GEmit
   ret match(cls.mcNullArm)
     (na: PArm) => emArm(em, r, resultType, na, list1(list1(RpIntEqConst(sv, 0))),
-                        bindSubject(r, na, armTypeOr(na, subjType), sv), List())
+                        ptrBind(gp, r, na, armTypeOr(na, gp.grpType), value), List())
     ()          => (subjHasNone && !cls.mcUnionArmCoversNone)
-      ? genPointerNullRoutingToElse(em, r, resultType, subjType, sv, cls, elseArm)
+      ? genPointerNullRoutingToElse(em, r, resultType, gp, value, sv, cls, elseArm)
       : em
 
-fun genPointerNullRoutingToElse(em, r, resultType: Spec|None, subjType, sv,
+fun genPointerNullRoutingToElse(em, r, resultType: Spec|None, gp: GPointer, value, sv,
                                 cls: MemberClassification, elseArm: PArm|None): GEmit
   ret match(elseArm)
     (ea: PArm) => isNoneArm(cls.mcForeignFallback)
       ? emGuardToFallback(em, RpIntEqConst(sv, 0))
-      : emArm(em, r, resultType, ea, list1(list1(RpIntEqConst(sv, 0))), bindSubject(r, ea, subjType, sv), List())
+      : emArm(em, r, resultType, ea, list1(list1(RpIntEqConst(sv, 0))),
+              ptrBind(gp, r, ea, armTypeOr(ea, gp.grpType), value), List())
     ()          => em
 
-fun genPointerGuardedArm(em, r, resultType: Spec|None, arm: PArm, sv): GEmit
+fun genPointerGuardedArm(em, r, resultType: Spec|None, arm: PArm, gp: GPointer, value, sv): GEmit
   ret !isEmpty(arm.armLiterals)
-    ? genPointerLiteralArm(em, arm, sv, r, resultType)
-    : genPointerGuardedTypedArm(em, r, resultType, arm, sv)
+    ? genPointerLiteralArm(em, arm, gp, value, r, resultType)
+    : genPointerGuardedTypedArm(em, r, resultType, arm, gp, value, sv)
 
-fun genPointerGuardedTypedArm(em, r, resultType: Spec|None, arm: PArm, sv): GEmit
+fun genPointerGuardedTypedArm(em, r, resultType: Spec|None, arm: PArm, gp: GPointer, value, sv): GEmit
   ret match(arm.armType)
     (whole: Spec) => match(whole)
-      (cm: SCombination) => genPointerUnionArm(em, r, resultType, arm, cm, sv)
-      (t2: Spec)          => genPointerPlainArm(em, r, resultType, arm, t2, sv)
+      (cm: SCombination) => genPointerUnionArm(em, r, resultType, arm, cm, gp, value, sv)
+      (t2: Spec)          => genPointerPlainArm(em, r, resultType, arm, t2, gp, value, sv)
     ()             => em   # unreachable: an else arm never ends up in `guarded`
 
-fun genPointerUnionArm(em: GEmit, r, resultType, arm: PArm, cm, sv)
-  let guards = build(pointerUnionGuards(
+fun genPointerUnionArm(em: GEmit, r, resultType, arm: PArm, cm, gp: GPointer, value, sv): GEmit
+  ret match(classifyRepr(cm, r))
+    (np: GPointer) => genPointerUnionArmGuarded(em, r, resultType, arm, cm, gp, value, sv)
+    (nr: GRepr)    => genPointerUnionArmTagged(em, r, resultType, arm, cm, nr, gp, value, sv)
+
+fun genPointerUnionArmGuarded(em: GEmit, r, resultType, arm: PArm, cm, gp: GPointer, value, sv): GEmit
+  let guards = build(pointerUnionGuards(gp,
       chain(reprMembersOf(unionMembers(cm))), sv, r, builder()))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, cm, sv), List())
+  ret emArm(em, r, resultType, arm, list1(guards), ptrBind(gp, r, arm, cm, value), List())
+
+# A TAGGED sub-union (scalars without a String): one entry per member, each
+# narrowed into the arm's own repr.
+fun genPointerUnionArmTagged(em: GEmit, r, resultType, arm: PArm, cm, nr, gp: GPointer, value, sv): GEmit
+  let entries = map(reprMembersOf(unionMembers(cm)), (m) =>
+    GEntry(guardOrNever(ptrGuard(gp, m, sv, r)),
+           mustResult(reprBoxValue(nr, ptrMemberValue(gp, m, value, r), m, r))))
+  ret emMultiEntryArm(em, r, resultType, arm, entries, specGenerate(cm, r))
+
+fun guardOrNever(g2: RParam|None): RParam => match(g2)
+  (gg: RParam) => gg
+  ()           => RpIntEqConst(RpInteger(0, 32), 1)   # unreachable: collapse rules exclude it
 
 # One guard per union member, in member order — the tests are emitted in this
 # order, so it is the order of the generated condition chain.
-fun [tail] pointerUnionGuards(members: Chain<Spec>, sv, r,
+fun [tail] pointerUnionGuards(gp: GPointer, members: Chain<Spec>, sv, r,
                               [terminal] acc: ListBuilder<RParam>) => match(members)
   (nil: ChainEnd) => acc
   (l: ChainLink)  => eqCgType(specGenerate(l.value, r), CgStruct(List()))
-    ? pointerUnionGuards(l.next, sv, r, push(acc, RpIntEqConst(sv, 0)))
-    : pointerUnionGuards(l.next, sv, r, pushMemberGuard(acc, memberGuard(l.value, sv, r)))
+    ? pointerUnionGuards(gp, l.next, sv, r, push(acc, RpIntEqConst(sv, 0)))
+    : pointerUnionGuards(gp, l.next, sv, r, pushMemberGuard(acc, memberGuard(gp, l.value, sv, r)))
 
 fun pushMemberGuard([terminal] acc,
                     g2: RParam|None): ListBuilder<RParam> => match(g2)
   (gg: RParam) => push(acc, gg)
   ()            => acc
 
-fun genPointerPlainArm(em, r, resultType, arm: PArm, t2, sv) => match(memberGuard(t2, sv, r))
-  (g2: RParam) => emArm(em, r, resultType, arm, list1(list1(g2)), bindSubject(r, arm, t2, sv), List())
+fun genPointerPlainArm(em, r, resultType, arm: PArm, t2, gp: GPointer, value, sv) => match(memberGuard(gp, t2, sv, r))
+  (g2: RParam) => emArm(em, r, resultType, arm, list1(list1(g2)), ptrBind(gp, r, arm, t2, value), List())
   ()            => em
 
-fun genPointerLiteralArm(em, arm: PArm, sv, r, resultType: Spec|None): GEmit
+fun genPointerLiteralArm(em, arm: PArm, gp: GPointer, value, r, resultType: Spec|None): GEmit
   ret match(litTypeNameOfFirst(arm.armLiterals, r))
-    (typeName: String) => typeName == "str"
-      ? genPointerLiteralArmGuarded(em, arm, sv, r, resultType, typeName, RpObjVtableEq(sv, None, "STRING_VTABLE"))
-      : (typeName == "bigint"
-          ? genPointerLiteralArmGuarded(em, arm, sv, r, resultType, typeName, RpObjVtableEq(sv, None, "INTEGER_VTABLE"))
-          : em)
-    ()                   => em
+    (tn: String) => (tn == "str" || tn == "bigint" || isScalarName(tn))
+      ? genPointerLiteralArmKind(em, arm, gp, value, r, resultType, tn)
+      : em
+    ()           => em
 
-fun genPointerLiteralArmGuarded(em: GEmit, arm: PArm, sv, r, resultType,
+fun genPointerLiteralArmKind(em, arm: PArm, gp: GPointer, value, r, resultType, tn): GEmit
+  ret match(pointerWordKindBuiltin(SBuiltin(tn, noLine())))
+    (k: PtrKind) => match(ptrGuardOf(gp, k, ptrWord(gp, value)))
+      (kg: RParam) => genPointerLiteralArmGuarded(em, arm, literalCompared(gp, value, tn), r, resultType, tn, kg)
+      ()           => em
+    ()           => em
+
+# What the literal is compared against: the whole value for a String, the
+# unpacked payload for a scalar, else the dispatch word.
+fun literalCompared(gp: GPointer, value, tn): RParam
+  ret tn == "str" ? value : isScalarName(tn) ? ptrUnpack(value, tn) : ptrWord(gp, value)
+
+fun genPointerLiteralArmGuarded(em: GEmit, arm: PArm, compared, r, resultType,
                                 typeName, kindGuard)
-  let lt = literalAlternativeTests(arm.armLiterals, typeName, sv, r, "lit" + String(em.geCounter))
+  let lt = literalAlternativeTests(arm.armLiterals, typeName, compared, r, "lit" + String(em.geCounter))
   ret emArm(em, r, resultType, arm, list2(list1(kindGuard), lt.ltoTests), None, lt.ltoBundles)
 
 # ── complex enum ─────────────────────────────────────────────────────────
@@ -883,7 +1075,7 @@ fun complexEnumArmOn(em: GEmit, arm: PArm, tag, subjType, rootName, discs: Dict<
 
 fun reprBoxValue(rep, value, sourceType, r) => match(rep)
   (gt: GTagged) => taggedBoxValue(gt, value, sourceType, r)
-  (gp: GPointer) => pointerBoxValue(value, sourceType, r)
+  (gp: GPointer) => pointerBoxValue(gp, value, sourceType, r)
   (gc: GComplexEnum) => bundleValue(value)   # unreachable: Python raises NotImplementedError
 
 fun taggedBoxValue(gt: GTagged, value, sourceType, r)
@@ -905,9 +1097,46 @@ fun taggedBoxValueAt(gt: GTagged, value, innerCtype, su: String, vi, r)
       tagValue)
   ret bundleValue(unionStruct(gt.grtContainer, namedValues))
 
-fun pointerBoxValue(value, sourceType, r)
+# Box a value of `sourceType` into the pointer union: None/unit -> NULL, a
+# scalar -> its spare code + payload, a function -> env + code, a single-
+# field newtype -> its bare word; a wide union carries a one-word member in
+# word 0 of a String value.
+fun pointerBoxValue(gp: GPointer, value, sourceType, r)
+  ret bundleValue(pointerBoxLeaf(gp, unwrapToPointerWord(value, specGenerate(sourceType, r)), sourceType, r))
+
+# A member's LEAF value (newtype nesting already peeled; ignored for the unit
+# member) as a value of this union.
+fun pointerBoxLeaf(gp: GPointer, leaf, sourceType, r): RParam
   let innerCtype = specGenerate(sourceType, r)
-  ret eqCgType(innerCtype, CgStruct(List())) ? bundleValue(RpNullPointer()) : bundleValue(unwrapToPointerWord(value, innerCtype))
+  if eqCgType(innerCtype, CgStruct(List()))
+    ret gp.grpWide ? strWord(RpNullPointer()) : RpNullPointer()
+  ret pointerBoxWord(gp, pointerWordKind(sourceType, r), innerCtype, leaf)
+
+# A pointer-union member's LEAF (newtype nesting peeled) read out of a tagged
+# union's slots: a function from its two slots (code, environment), any other
+# leaf from its one. The unit member has none: NULL stands in, and
+# pointerBoxLeaf ignores it.
+fun leafFromSlots(member, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, sv, r): RParam
+  let leafCtype = peeledCtype(specGenerate(member, r))
+  ret eqCgType(leafCtype, CgStruct(List()))
+    ? RpNullPointer()
+    : match(leafCtype)
+        (fp: CgFuncPointer) => reconstructFun(slotAssignments, slotFields, sv, 0).rfValue
+        (o: CgType)         => reconstructLeaf(slotAssignments, slotFields, sv, 0).rfValue
+
+fun pointerBoxWord(gp: GPointer, kind: PtrKind|None, innerCtype, word): RParam => match(kind)
+  (k: PtrKind) => match(k)
+    (sc: PkScalar) => RpRuntimeInvoke("str_pack_" + scalarC(sc.pkScalar),
+                                      RpNewStruct(list2(RpNamedValue("code", RpInteger(scalarCode(sc.pkScalar), 32)),
+                                                        RpNamedValue("v", word))),
+                                      CgStr())
+    (f: PkFun)     => RpRuntimeInvoke("str_from_fun", RpNewStruct(list1(RpNamedValue("f", word))), CgStr())
+    (o: PtrKind)   => wideWord(gp, innerCtype, word)
+  ()           => wideWord(gp, innerCtype, word)
+
+# A wide union carries a one-word member in word 0 of a String value.
+fun wideWord(gp: GPointer, innerCtype, word): RParam
+  ret gp.grpWide && !eqCgType(peeledCtype(innerCtype), CgStr()) ? strWord(word) : word
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 7: widen_from (CombinationSpec targets only).
@@ -917,17 +1146,56 @@ class [final] WidenOut(woBundles: List<GBundle>, woSources: List<OpPhiSource>)
 
 fun reprWidenFrom(targetRep, srcRep, value, r) => match(targetRep)
   (gt: GTagged) => taggedWidenFrom(gt, srcRep, value, r)
-  (gp: GPointer) => pointerWidenFrom(srcRep, value)
+  (gp: GPointer) => pointerWidenFrom(gp, srcRep, value, r)
   (gc: GComplexEnum) => bundleValue(value)   # unreachable: Python raises NotImplementedError
 
-fun pointerWidenFrom(srcRep, value) => match(srcRep)
-  (gp: GPointer) => bundleValue(value)
-  (o: GRepr)     => bundleValue(value)   # unreachable: Python asserts src must be PointerRepr too
+# Both pointer unions share the tag-bit word encoding and every source member
+# is a target member, so the value passes through — wrapped in a String
+# value when only the target is wide.
+fun pointerWidenFrom(gp: GPointer, srcRep, value, r) => match(srcRep)
+  (sp: GPointer) => bundleValue(gp.grpWide && !sp.grpWide ? strWord(value) : value)
+  (gt: GTagged)  => pointerWidenFromTagged(gp, gt, value, r)
+  (o: GRepr)     => bundleValue(value)   # unreachable: Python asserts the source kind
+
+# Widen a tagged union (e.g. Int32|None) into this one: dispatch on the
+# source's $tag, read each member's leaf from its slots, box it here, and join the
+# boxed values with a Phi. The last exit falls through into the join.
+class [final] WidenTAcc(wtJumps: List<Op>, wtBodies: List<Op>, wtResults: List<OpPhiSource>)
+
+fun pointerWidenFromTagged(gp: GPointer, src: GTagged, value, r): GBundle
+  let acc = widenTLoop(gp, src, chain(reprMembersOf(unionMembers(src.grtType))), 0, value,
+                       getDiscriminators(r), r, WidenTAcc(List(), List(), List()))
+  let result = RpStackVar(reprCtype(gp), "widen_result")
+  ret GBundle(list1(result),
+              concat(concat(acc.wtJumps, acc.wtBodies),
+                     list2(OpLabel("widen_end", List()), OpPhi(result, acc.wtResults, List()))),
+              result, List(), List())
+
+fun [tail] widenTLoop(gp: GPointer, src: GTagged, ms: Chain<Spec>, k, value,
+                      discs: Dict<String, Int>, r, acc: WidenTAcc): WidenTAcc => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => widenTLoop(gp, src, l.next, k + 1, value, discs, r,
+                                widenTStep(gp, src, l.value, isChainEnd(l.next), k, value, discs, r, acc))
+
+fun widenTStep(gp: GPointer, src: GTagged, member, last: Bool, k, value,
+               discs: Dict<String, Int>, r, acc: WidenTAcc): WidenTAcc
+  let label = "widen_t" + String(k)
+  let jumpIf = OpJumpIf(label, RpIntEqConst(RpStructField(value, "$tag"), getOr0(discs, uid(member))), false, List())
+  let leaf = leafFromSlots(member, forceNth(src.grtVariantMap, k), forceFields(src.grtContainer), value, r)
+  let boxed = pointerBoxLeaf(gp, leaf, member, r)
+  ret WidenTAcc(concat(acc.wtJumps, last ? list2(jumpIf, OpJump(label, List())) : list1(jumpIf)),
+                concat(acc.wtBodies, last ? list1(OpLabel(label, List()))
+                                          : list2(OpLabel(label, List()), OpJump("widen_end", List()))),
+                build(push(builderFrom(acc.wtResults), OpPhiSource(label, boxed))))
+
+fun isChainEnd<T>(c: Chain<T>) => match(c)
+  (nil: ChainEnd) => true
+  (l: ChainLink)  => false
 
 fun taggedWidenFrom(gt: GTagged, srcRep, value, r)
   let endLabel = "wide_end"
   let wo = match(srcRep)
-    (gp: GPointer) => widenFromPointer(value, gp.grpType, gt, endLabel, r)
+    (gp: GPointer) => widenFromPointer(value, gp, gt, endLabel, r)
     (o: GRepr)      => widenFromTagged(value, forceTagged(srcRep), gt, endLabel, r)
   let resultVar = RpStackVar(gt.grtContainer, "wide_result")
   let joinBundle = GBundle(list1(resultVar), list2(OpLabel(endLabel, List()), OpPhi(resultVar, wo.woSources, List())), resultVar, List(), List())
@@ -937,47 +1205,53 @@ fun forceTagged(rep) => match(rep)
   (gt: GTagged) => gt
   (o: GRepr)    => GTagged(SBuiltin("bool", noLine()), CgVoid(), List())   # unreachable
 
-fun [tail] findPointerVariant(members: List<Spec>, r) => match(head(members))
-  (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List())) ? findPointerVariant(tail(members), r) : m
-  ()         => None
+# Widen a pointer union (one dispatch word; wide ones carry a String payload or
+# a spare-coded scalar) to this tagged union: test each source member in turn
+# with the source's own guards — the untestable one (a foreign class), if
+# any, is the fall-through — and slot its value into the target. Each
+# member's exit contributes one tagged-union expression to the Phi. Guarded
+# members first (None's NULL test among them), the untestable one last; with
+# none untestable the last member is the fall-through.
+class [final] WidenPAcc(wpJumps: List<Op>, wpBodies: List<Op>, wpSources: List<OpPhiSource>)
 
-fun [tail] findUnitVariant(members: List<Spec>, r) => match(head(members))
-  (m: Spec) => eqCgType(specGenerate(m, r), CgStruct(List())) ? m : findUnitVariant(tail(members), r)
-  ()         => None
+fun widenFromPointer(sv, gp: GPointer, gt: GTagged, endLabel, r): WidenOut
+  let word = ptrWord(gp, sv)
+  let members = reprMembersOf(unionMembers(gp.grpType))
+  let ordered = concat(filter(members, (m) => hasPtrGuard(gp, m, word, r)),
+                       filter(members, (m) => !hasPtrGuard(gp, m, word, r)))
+  let acc = widenPLoop(gp, gt, chain(ordered), 0, sv, word, reprMembersOf(unionMembers(gt.grtType)),
+                       getDiscriminators(r), endLabel, r, WidenPAcc(List(), List(), List()))
+  ret WidenOut(list1(bundleOps(concat(acc.wpJumps, acc.wpBodies))), acc.wpSources)
 
-fun widenFromPointer(sv, source, gt: GTagged, endLabel, r)
-  let members = reprMembersOf(unionMembers(source))
-  ret widenFromPointerOn(sv, findPointerVariant(members, r), findUnitVariant(members, r), gt, endLabel, r)
+fun hasPtrGuard(gp: GPointer, m, word, r) => match(ptrGuard(gp, m, word, r))
+  (g2: RParam) => true
+  ()           => false
 
-fun widenFromPointerOn(sv, ptrVariant: Spec|None, unitVariant: Spec|None, gt: GTagged, endLabel, r)
-  ret match(ptrVariant)
-    (pv: Spec) => widenFromPointerWithVariant(sv, pv, unitVariant, gt, endLabel, r)
-    ()          => WidenOut(List(), List())   # unreachable: a DataPointer union always has one
+fun [tail] widenPLoop(gp: GPointer, gt: GTagged, ms: Chain<Spec>, k, sv, word, targetMembers: List<Spec>,
+                      discs: Dict<String, Int>, endLabel, r, acc: WidenPAcc): WidenPAcc => match(ms)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => widenPLoop(gp, gt, l.next, k + 1, sv, word, targetMembers, discs, endLabel, r,
+                                widenPStep(gp, gt, l.value, isChainEnd(l.next), k, sv, word, targetMembers,
+                                           discs, endLabel, r, acc))
 
-fun widenFromPointerWithVariant(sv, ptrVariant, unitVariant: Spec|None, gt: GTagged, endLabel, r)
-  let nullLabel = "wide_null"
-  let ptrUid = uid(ptrVariant)
-  let discs = getDiscriminators(r)
-  let ptrTag = getOr0(discs, ptrUid)
-  let targetMembers = reprMembersOf(unionMembers(gt.grtType))
-  let slotFields = forceFields(gt.grtContainer)
-  let slotValues = match(variantIndexOf(targetMembers, ptrUid))
-    (tpi: Int) => withTagField(
-        map(forceNth(gt.grtVariantMap, tpi),
-            (e2) => RpNamedValue(fieldNameAt(slotFields,
-                                             e2.slotIndex), sv)),
-        ptrTag)
-    ()          => list1(RpNamedValue("$tag", RpInteger(ptrTag, 32)))
-  let unitTag = match(unitVariant)
-    (uv: Spec) => getOr0(discs, uid(uv))
-    ()          => 0
-  let sources = list2(OpPhiSource("ptr_exit", unionStruct(gt.grtContainer, slotValues)),
-                      OpPhiSource("null_exit", unionStruct(gt.grtContainer, list1(RpNamedValue("$tag", RpInteger(unitTag, 32))))))
-  let bodies = list3(
-    bundleOps(list1(OpJumpIf(nullLabel, RpIntEqConst(sv, 0), false, List()))),
-    bundleOps(list3(OpLabel("ptr_exit", List()), OpJump(endLabel, List()), OpLabel(nullLabel, List()))),
-    bundleOps(list1(OpLabel("null_exit", List()))))
-  ret WidenOut(bodies, sources)
+fun widenPStep(gp: GPointer, gt: GTagged, member, last: Bool, k: Int, sv, word, targetMembers: List<Spec>,
+               discs: Dict<String, Int>, endLabel, r, acc: WidenPAcc): WidenPAcc
+  let label = "wide_p" + String(k)
+  let u = uid(member)
+  let mv = ptrMemberValue(gp, member, sv, r)
+  let slotValues = match(variantIndexOf(targetMembers, u))
+    (tvi: Int) => map(variantSlots(mv, specGenerate(member, r), forceNth(gt.grtVariantMap, tvi),
+                                   forceFields(gt.grtContainer)),
+                      (p) => RpNamedValue(p.svpName, p.svpValue))
+    ()         => List()
+  let jump = last ? OpJump(label, List())
+                  : OpJumpIf(label, guardOrNever(ptrGuard(gp, member, word, r)), false, List())
+  ret WidenPAcc(build(push(builderFrom(acc.wpJumps), jump)),
+                concat(acc.wpBodies, last ? list1(OpLabel(label, List()))
+                                          : list2(OpLabel(label, List()), OpJump(endLabel, List()))),
+                build(push(builderFrom(acc.wpSources),
+                           OpPhiSource(label, unionStruct(gt.grtContainer,
+                                                          withTagField(slotValues, getOr0(discs, u)))))))
 
 class [final] OneWidenOut(owBundles: List<GBundle>, owSource: OpPhiSource)
 

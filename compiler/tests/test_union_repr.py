@@ -484,3 +484,51 @@ class TestReprPartialOperationContract(TestCase):
             rep.box_value(None, None, None)
         with self.assertRaisesRegex(NotImplementedError, "ComplexEnumRepr"):
             rep.widen_from(None, None, None)
+
+
+class TestNarrowTaggedIntoWideArm(TestCase):
+    """A TAGGED subject (a two-field tuple member cannot share one word)
+    matched by a union arm that is itself a WIDE pointer union: the arm's
+    members are read out of the wide slots and boxed by the narrow union.
+    A scalar member needs its spare code (str_pack_*), a function member its
+    environment + code (str_from_fun) — wrapping every slot as a one-word
+    member (str_word) passed an Int32 / a code word where C wants object_t*.
+    (Top-level names are unique across this class: batched compiles share one
+    flat name pool.)"""
+
+    _SRC = """
+namespace Main
+import System
+fun ntPick(k: Int): (a: Int, b: Int)|Int32|String
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? truncateToInt32(k * 10) : "s" + String(k)
+fun ntDescribe(x: Int32|String): String
+  ret match(x)
+    (i: Int32)  => "I:" + String(i)
+    (s: String) => "S:" + s
+fun ntArm(v: (a: Int, b: Int)|Int32|String): String
+  ret match(v)
+    (p: (a: Int, b: Int)) => "P:" + String(p.a) + "," + String(p.b)
+    (x: Int32|String)     => ntDescribe(x)
+fun ntPickF(k: Int): (a: Int, b: Int)|((:Int): Int)|String
+  let f: (:Int): Int = (x: Int) => x + k
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? f : "f" + String(k)
+fun ntDescribeF(x: ((:Int): Int)|String): String
+  ret match(x)
+    (f: (:Int): Int) => "F:" + String(f(100))
+    (s: String)      => "S:" + s
+fun ntArmF(v: (a: Int, b: Int)|((:Int): Int)|String): String
+  ret match(v)
+    (p: (a: Int, b: Int))     => "P:" + String(p.a)
+    (x: ((:Int): Int)|String) => ntDescribeF(x)
+fun [tail] ntLoop(k: Int, n: Int, acc: String): String
+  ret k >= n ? acc : ntLoop(k + 1, n, acc + ntArm(ntPick(k)) + " " + ntArmF(ntPickF(k)) + "|")
+fun main(): System::Int
+  println(ntLoop(0, 6, ""))
+  ret 0
+"""
+
+    def test_scalar_and_function_members_narrow_into_wide_arm(self):
+        rc, out = compile_and_run_stdlib_capture(self._SRC)
+        self.assertEqual(0, rc)
+        self.assertEqual("P:0,1 P:0|I:10 F:101|S:s2 S:f2|P:3,4 P:3|I:40 F:104|S:s5 S:f5|",
+                         out.strip())

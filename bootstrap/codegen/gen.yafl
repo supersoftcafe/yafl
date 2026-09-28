@@ -21,19 +21,6 @@ import Bootstrap::Types
 
 
 
-# ── pointer paths (typedecl get_pointer_paths) ───────────────────────────────
-
-fun cgTypePointerPaths(t2, path) => match(t2)
-  (d: CgDataPointer)      => list1(path)
-  (fp: CgFuncPointer)     => list1(path + ".o")
-  (s2: CgStruct)          => cgPathsFields(s2.fields, path)
-  (im: CgImmediateStruct) => cgPathsFields(im.fields, path)
-  (o: CgType)             => List()
-
-fun cgPathsFields(fields: List<CgField>, path)
-  ret fold(fields, List(), (acc, f2) =>
-        concat(acc, cgTypePointerPaths(f2.fieldType, path + "." + mangleName(f2.fieldName))))
-
 # ── function-id enum ─────────────────────────────────────────────────────────
 
 fun genFunctionIds(methodIds: List<MethodId>)
@@ -295,7 +282,7 @@ fun genGlobal([terminal] acc: GenAcc, g2: CgGlobal, a: CgApp): GenAcc
 fun genGlobalRoots(g2: CgGlobal, a: CgApp): List<String>
   # Old-style lazy global: the value lives directly in the slot.
   if isNoneStr(g2.globalObjectName) && !isNoneStr(g2.globalLazyInitFunction)
-    ret cgTypePointerPaths(g2.globalType, cgGlobalToCName(g2))
+    ret cgGetPointerPaths(g2.globalType, cgGlobalToCName(g2))
   # Static class-instance global: register the <name>_data in-struct pointer
   # field addresses (skip the leading vtable `type` field). INTERNED STRING
   # LITERALS are not roots: compile-time constants, bytes in .data, never
@@ -322,7 +309,7 @@ fun genStaticRootsFields(cls: CgObject, g2: CgGlobal)
   let fields = cgFieldsOfOrEmpty(cls.objFields)
   if atMost(chain(fields), 1)
     ret List()
-  ret cgPathsFields(tail(fields), cgGlobalToCName(g2) + "_data")
+  ret cgStructPointerPaths(tail(fields), cgGlobalToCName(g2) + "_data")
 
 # ── roots + main ─────────────────────────────────────────────────────────────
 

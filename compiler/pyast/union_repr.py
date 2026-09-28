@@ -502,20 +502,14 @@ class TaggedRepr(UnionRepr):
                         continue  # check() validated coverage; skip defensively
                     member_tag = discriminators[uid]
                     if narrow_map is None:
-                        # Pointer narrow union: NULL for the unit member, else
-                        # the member's single slot. A WIDE narrow union (a
-                        # String member, ctype Str) carries a one-word member
-                        # in word 0 and a String member as the whole value.
-                        wide = narrow_ctype == cg_t.Str()
-                        if member.generate(resolver) == cg_t.Struct(()):
-                            value: cg_p.RParam = cg_p.NullPointer()
-                            if wide:
-                                value = str_word(value)
-                        else:
-                            wsi, _ = variant_map[vi][0]
-                            value = cg_p.StructField(sv, slot_fields[wsi][0])
-                            if wide and _peeled_ctype(member.generate(resolver)) != cg_t.Str():
-                                value = str_word(value)
+                        # Pointer narrow union: the member's LEAF, read out of
+                        # its wide slots and boxed by the narrow union itself
+                        # (NULL for the unit member, a spare code for a scalar,
+                        # environment + code for a function).
+                        narrow = classify(arm.type_spec, resolver)
+                        value = narrow.box_leaf(
+                            _leaf_from_slots(member, variant_map[vi], slot_fields, sv, resolver),
+                            member, resolver)
                     else:
                         fields = {"$tag": cg_p.Integer(member_tag, 32)}
                         for (nsi, _nt), (wsi, _wt) in zip(narrow_map[k], variant_map[vi]):
@@ -1039,24 +1033,31 @@ class PointerRepr(UnionRepr):
         """Box an already-generated value of `source_type` (a variant of this
         union) into the collapsed pointer word: None/unit -> NULL, a single-field
         newtype -> its bare pointer, an already-DataPointer value -> itself."""
+        leaf = _unwrap_to_pointer_word(value, source_type.generate(resolver))
+        return g.OperationBundle((), (), self.box_leaf(leaf, source_type, resolver))
+
+    def box_leaf(self, leaf, source_type, resolver) -> cg_p.RParam:
+        """A member's LEAF value (newtype nesting already peeled; ignored for
+        the unit member) as a value of this union: None/unit -> NULL, a scalar
+        -> its spare code with the payload, a function -> its environment with
+        its code, anything else -> the word itself. A wide union carries a
+        one-word member in word 0 of a String value."""
         inner_ctype = source_type.generate(resolver)
         if inner_ctype == cg_t.Struct(()):  # unit / None variant
             word = cg_p.NullPointer()
-            return g.OperationBundle((), (), str_word(word) if self.wide else word)
-        word = _unwrap_to_pointer_word(value, inner_ctype)
+            return str_word(word) if self.wide else word
         kind = _pointer_word_kind(source_type, resolver)
         if kind is not None and kind[0] == 'SCALAR':
             c = _SCALAR_C[kind[1]]
-            return g.OperationBundle((), (), cg_p.RuntimeInvoke(
+            return cg_p.RuntimeInvoke(
                 f"str_pack_{c}",
-                cg_p.NewStruct((("code", cg_p.Integer(_SCALAR_CODES[kind[1]], 32)), ("v", word))),
-                cg_t.Str()))
+                cg_p.NewStruct((("code", cg_p.Integer(_SCALAR_CODES[kind[1]], 32)), ("v", leaf))),
+                cg_t.Str())
         if kind == ('FUN',):
-            return g.OperationBundle((), (), cg_p.RuntimeInvoke(
-                "str_from_fun", cg_p.NewStruct((("f", word),)), cg_t.Str()))
+            return cg_p.RuntimeInvoke("str_from_fun", cg_p.NewStruct((("f", leaf),)), cg_t.Str())
         if self.wide and _peeled_ctype(inner_ctype) != cg_t.Str():
-            word = str_word(word)
-        return g.OperationBundle((), (), word)
+            return str_word(leaf)
+        return leaf
 
     def widen_from(self, src_repr, value, resolver):
         """Widen to a collapsed pointer union: both unions share the same
@@ -1073,7 +1074,7 @@ class PointerRepr(UnionRepr):
 
     def _widen_from_tagged(self, src: "TaggedRepr", value, resolver):
         """Widen a tagged union (e.g. Int32|None) into this one: dispatch on the
-        source's $tag, rebuild each member from its slots, box it here, and
+        source's $tag, read each member's leaf from its slots, box it here, and
         join the boxed values with a Phi."""
         members = list(src.union_type.repr_members())
         discriminators = resolver.get_discriminators()
@@ -1087,14 +1088,11 @@ class PointerRepr(UnionRepr):
         ops.append(cg_o.Jump(f"widen_t{len(members) - 1}"))
         bodies: list = []
         for k, member in enumerate(members):
-            mctype = member.generate(resolver)
-            mv = _slots_value(mctype, src.variant_map[k], slot_fields, value)
-            boxed = self.box_value(mv, member, resolver)
-            assert not boxed.operations and not boxed.stack_vars
+            leaf = _leaf_from_slots(member, src.variant_map[k], slot_fields, value, resolver)
             bodies.append(cg_o.Label(f"widen_t{k}"))
             if k < len(members) - 1:          # the last exit falls through
                 bodies.append(cg_o.Jump("widen_end"))
-            results.append((f"widen_t{k}", boxed.result_var))
+            results.append((f"widen_t{k}", self.box_leaf(leaf, member, resolver)))
         result = cg_p.StackVar(self.ctype(), "widen_result")
         return g.OperationBundle(
             stack_vars=(result,),
@@ -1103,26 +1101,20 @@ class PointerRepr(UnionRepr):
             result_var=result)
 
 
-def _slots_value(ctype, slot_assignments, slot_fields, sv):
-    """A tagged union's variant, rebuilt from its slots (match.bind_from_slots'
-    reconstruct, as a pure value)."""
-    def rebuild(ct, offset):
-        if isinstance(ct, cg_t.FuncPointer):
-            si_f, _ = slot_assignments[offset]
-            si_o, _ = slot_assignments[offset + 1]
-            return cg_p.MakeFun(cg_p.StructField(sv, slot_fields[si_f][0]),
-                                cg_p.StructField(sv, slot_fields[si_o][0])), offset + 2
-        if not isinstance(ct, cg_t.Struct):
-            si, _ = slot_assignments[offset]
-            return cg_p.StructField(sv, slot_fields[si][0]), offset + 1
-        if not ct.fields:
-            return cg_p.ZeroOf(ct), offset
-        fvs = {}
-        for fname, ftype in ct.fields:
-            fvs[fname], offset = rebuild(ftype, offset)
-        return cg_p.union_struct(ct, fvs), offset
-    value, _ = rebuild(ctype, 0)
-    return value
+def _leaf_from_slots(member, slot_assignments, slot_fields, sv, resolver):
+    """A pointer-union member's LEAF (newtype nesting peeled) read out of a
+    tagged union's slots: a function from its two slots (code, environment),
+    any other leaf from its one; None for the unit member, which has none."""
+    leaf_ctype = _peeled_ctype(member.generate(resolver))
+    if leaf_ctype == cg_t.Struct(()):
+        return None
+    if isinstance(leaf_ctype, cg_t.FuncPointer):
+        si_f, _ = slot_assignments[0]
+        si_o, _ = slot_assignments[1]
+        return cg_p.MakeFun(cg_p.StructField(sv, slot_fields[si_f][0]),
+                            cg_p.StructField(sv, slot_fields[si_o][0]))
+    si, _ = slot_assignments[0]
+    return cg_p.StructField(sv, slot_fields[si][0])
 
 
 @dataclasses.dataclass(frozen=True)

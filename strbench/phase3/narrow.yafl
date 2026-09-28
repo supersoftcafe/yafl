@@ -1,0 +1,40 @@
+namespace Narrow
+
+import System
+
+# A TAGGED subject (the two-field tuple cannot share a word) whose union arm
+# narrows into a WIDE, PACKED union (Int32|String -> str_t with a spare code).
+fun pick(k: Int): (a: Int, b: Int)|Int32|String
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? truncateToInt32(k * 10) : "s" + String(k)
+
+fun narrowArm(v: (a: Int, b: Int)|Int32|String): String
+  ret match(v)
+    (p: (a: Int, b: Int)) => "P:" + String(p.a) + "," + String(p.b)
+    (x: Int32|String)     => describe(x)
+
+fun describe(x: Int32|String): String
+  ret match(x)
+    (i: Int32)  => "I:" + String(i)
+    (s: String) => "S:" + s
+
+# The same with a function member.
+fun pickF(k: Int): (a: Int, b: Int)|((:Int): Int)|String
+  let f: (:Int): Int = (x: Int) => x + k
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? f : "f" + String(k)
+
+fun narrowArmF(v: (a: Int, b: Int)|((:Int): Int)|String): String
+  ret match(v)
+    (p: (a: Int, b: Int))     => "P:" + String(p.a)
+    (x: ((:Int): Int)|String) => describeF(x)
+
+fun describeF(x: ((:Int): Int)|String): String
+  ret match(x)
+    (f: (:Int): Int) => "F:" + String(f(100))
+    (s: String)      => "S:" + s
+
+fun [tail] loop(k: Int, n: Int, acc: String): String
+  ret k >= n ? acc : loop(k + 1, n, acc + narrowArm(pick(k)) + " " + narrowArmF(pickF(k)) + "\n")
+
+fun main(): System::Int
+  print(loop(0, 6, ""))
+  ret 0
