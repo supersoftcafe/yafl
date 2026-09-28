@@ -38,7 +38,7 @@ enum TomlResult
   enum TomlErr(tomlMessage: String, tomlLine: Int)
 
 
-fun parseToml(text) => tomlLines(chain(splitLines(text)), 1, List(), builder())
+fun parseToml(text) => tomlLines(chain(splitLines(text)), 1, Set(), builder())
 
 # One line's outcome, so the loop below can stay DIRECTLY self-recursive. The
 # per-line work needs a statement body (lets and early returns) and match arms
@@ -55,17 +55,18 @@ enum LineOut
   enum LineEntry(loEntry: TomlEntry, loRest: Chain<String>, loCount: Int)
   enum LineErr(loWhy: String)
 
-fun [tail] tomlLines(ls: Chain<String>, n, seen,
+# `seen` answers membership only: a Set, so a many-key manifest stays linear.
+fun [tail] tomlLines(ls: Chain<String>, n, seen: Set<String>,
                      [terminal] acc) => match(ls)
   (nil: ChainEnd) => TomlOk(build(acc))
   (l: ChainLink)  => match(tomlLine(l.value, l.next, seen))
     (s: LineSkip)   => tomlLines(l.next, n + 1, seen, acc)
     (e: LineErr)    => discardOn(acc, TomlErr(e.loWhy, n))
     (en: LineEntry) => tomlLines(en.loRest, n + en.loCount,
-                                 concat(seen, list1(en.loEntry.key)),
+                                 add(seen, en.loEntry.key),
                                  push(acc, en.loEntry))
 
-fun tomlLine(line, rest, seen: List<String>)
+fun tomlLine(line, rest, seen: Set<String>)
   let bare = trimEnd(trimStart(stripComment(line)))
   if length(bare) == 0
     ret LineSkip()
