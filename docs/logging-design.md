@@ -137,7 +137,7 @@ Rules the implementation must hold to:
    API safe to call from inside the GC later.
 2. **`Int` is arbitrary precision.** DONE — `integer_to_cstr(obj, buf, size)`
    is in `integer.c`, declared in `yafl.h`, with 10 unit tests. The stdlib's
-   `String(Int)` builds on the YAFL heap via StringBuilder, which a logger must
+   `String(Int)` builds a String on the YAFL heap, which a logger must
    never do; this renders into the caller's buffer and allocates nothing. It
    handles tagged literals and multi-limb magnitudes, and when the exact value
    does not fit it writes `<int:~N digits>` rather than a truncated numeral —

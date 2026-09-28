@@ -5,9 +5,9 @@
 String that the next step immediately consumes — n-1 allocations, all but the
 last garbage. This stage rewrites any chain of three or more operands into a
 single `RuntimeInvoke("str_concat_n")` (yafllib/str.c): sum the lengths,
-allocate once at exact size, copy each piece. No intermediates, and none of a
-StringBuilder's growth/resize overhead — for a statically-known chain this is
-the optimal shape.
+extend the first operand in place (or allocate once at exact size), copy each
+piece. No intermediates — for a statically-known chain this is the optimal
+shape.
 
 The chain is discovered through the SSA def-chains (lowering/ssa_defs.py):
 an operand that is a directly-nested append, or a StackVar read exactly once

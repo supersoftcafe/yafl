@@ -63,11 +63,9 @@ fun _slotValue(parts: Array<String>, n: Int): String
 
 # Emit a valid `{N}` slot: literal prefix `f[pos..open)`, then the
 # value for slot N, then continue scanning after the closing `}`.
-fun _emitSlot(sb: StringBuilder, f: String, pos: Int, open: Int, dEnd: Int, parts: Array<String>): StringBuilder
+fun _emitSlot(out: String, f: String, pos: Int, open: Int, dEnd: Int, parts: Array<String>): String
   let argN = _parseDigits(f, open + 1, dEnd, 0)
-  let sb1 = appendSlice(sb, f, pos, open)
-  let sb2 = append(sb1, _slotValue(parts, argN))
-  ret _formatScan(sb2, f, dEnd + 1, parts)
+  ret _formatScan(out + slice(f, pos, open) + _slotValue(parts, argN), f, dEnd + 1, parts)
 
 
 # True iff `f[open..]` is a valid `{N}` slot — i.e. one or more digits
@@ -81,20 +79,20 @@ fun _slotClosed(f: String, dEnd: Int): Bool
 
 # Saw a `{` at `open`: decide if it begins a valid `{N}` slot, or is just
 # a literal `{` to emit.
-fun _trySlot(sb: StringBuilder, f: String, pos: Int, open: Int, parts: Array<String>): StringBuilder
+fun _trySlot(out: String, f: String, pos: Int, open: Int, parts: Array<String>): String
   let dEnd = _digitsEnd(f, open + 1)
   ret _isSlot(f, open, dEnd)
-    ? _emitSlot(sb, f, pos, open, dEnd, parts)
-    : _formatScan(appendSlice(sb, f, pos, open + 1), f, open + 1, parts)
+    ? _emitSlot(out, f, pos, open, dEnd, parts)
+    : _formatScan(out + slice(f, pos, open + 1), f, open + 1, parts)
 
 
 # Walk the template from `pos`: find the next `{` (if any), and either
 # emit the trailing literal or dispatch to `_trySlot`.
-fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: Array<String>): StringBuilder
+fun _formatScan(out: String, f: String, pos: Int, parts: Array<String>): String
   let open = findByte(f, '{', pos)
   ret open < 0
-    ? appendSlice(sb, f, pos, length(f))
-    : _trySlot(sb, f, pos, open, parts)
+    ? out + slice(f, pos, length(f))
+    : _trySlot(out, f, pos, open, parts)
 
 
 # ─── Per-arity public API ───────────────────────────────────────────────────
@@ -110,14 +108,14 @@ fun _formatScan(sb: StringBuilder, f: String, pos: Int, parts: Array<String>): S
 fun format<T1>(f: String, p1: T1): String where Show<T1>
   let s1: String = show(p1)
   let parts = Array<String>(1i32, (i: Int32) => s1)
-  ret toString(_formatScan(StringBuilder(), f, 0, parts))
+  ret _formatScan("", f, 0, parts)
 
 
 fun format<T1, T2>(f: String, p1: T1, p2: T2): String where Show<T1>|Show<T2>
   let s1: String = show(p1)
   let s2: String = show(p2)
   let parts = Array<String>(2i32, (i: Int32) => i == 0i32 ? s1 : s2)
-  ret toString(_formatScan(StringBuilder(), f, 0, parts))
+  ret _formatScan("", f, 0, parts)
 
 
 fun format<T1, T2, T3>(f: String, p1: T1, p2: T2, p3: T3): String where Show<T1>|Show<T2>|Show<T3>
@@ -125,7 +123,7 @@ fun format<T1, T2, T3>(f: String, p1: T1, p2: T2, p3: T3): String where Show<T1>
   let s2: String = show(p2)
   let s3: String = show(p3)
   let parts = Array<String>(3i32, (i: Int32) => i == 0i32 ? s1 : i == 1i32 ? s2 : s3)
-  ret toString(_formatScan(StringBuilder(), f, 0, parts))
+  ret _formatScan("", f, 0, parts)
 
 
 fun format<T1, T2, T3, T4>(f: String, p1: T1, p2: T2, p3: T3, p4: T4): String where Show<T1>|Show<T2>|Show<T3>|Show<T4>
@@ -134,4 +132,4 @@ fun format<T1, T2, T3, T4>(f: String, p1: T1, p2: T2, p3: T3, p4: T4): String wh
   let s3: String = show(p3)
   let s4: String = show(p4)
   let parts = Array<String>(4i32, (i: Int32) => i == 0i32 ? s1 : i == 1i32 ? s2 : i == 2i32 ? s3 : s4)
-  ret toString(_formatScan(StringBuilder(), f, 0, parts))
+  ret _formatScan("", f, 0, parts)

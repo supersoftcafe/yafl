@@ -6,8 +6,8 @@ is now a VALUE that extends its own head buffer in place whenever it owns the
 end of it (yafllib/str.c), so naive user code is linear with no rewrite: the
 accumulator's appends ARE the builder.
 
-The scale test is the acceptance criterion: naive user code, no StringBuilder
-in sight, builds a 1MB string in linear time — quadratic would blow the
+The scale test is the acceptance criterion: naive user code builds a 1MB
+string in linear time — quadratic would blow the
 harness timeout. The compaction test pins the in-place extension against a
 buffer that compaction relocates while the loop is suspended.
 """
@@ -42,8 +42,7 @@ class TestStringAccumulation(TestCase):
         self.assertEqual("xabab", out)
         c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
                            just_testing=True, optimization_level=3)
-        # No builder machinery: the loop appends String values directly.
-        self.assertNotIn("string_builder_reserve", c_code)
+        # The loop appends String values directly.
         self.assertTrue("str_append" in c_code or "str_concat_n" in c_code)
 
     def test_chain_step_multi_push(self):

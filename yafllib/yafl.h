@@ -108,8 +108,7 @@ enum { GC_PAGE_SIZE = 16384 };
 
 
 // The allocator's slot granule: every heap object occupies a multiple of
-// this, on 32- and 64-bit alike. object.c's slot_t asserts it; size-aware
-// callers (string_builder_reserve's perfect-fill policy) consume it.
+// this, on 32- and 64-bit alike. object.c's slot_t asserts it.
 #define GC_ALLOC_GRANULE 32
 #define ALIGNED     __attribute__((aligned(GC_ALLOC_GRANULE)))
 
@@ -1611,20 +1610,6 @@ INLINE int32_t string_byte_at(object_t* self, object_t* o_index) {
     return (unsigned char)cstr[idx];
 }
 
-INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, object_t* value) {
-    // `self` must be a heap-allocated string (a packed short string would
-    // segfault on the memcpy destination cast). `value` may be packed or
-    // heap — `string_to_cstr` handles both.
-    int overflow = 0;
-    int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
-    intptr_t local_buffer;
-    int32_t vlen;
-    char* vstr = string_to_cstr(value, &local_buffer, &vlen);
-    memcpy(((string_t*)self)->array + idx, vstr, vlen);
-    atomic_store_explicit(&((string_t*)self)->hash, 0, memory_order_relaxed);  // bytes changed
-    return self;
-}
-
 INLINE object_t* ascii_to_string(int32_t b) {
     // Build a one-byte packed short string in a single instruction sequence.
     // No allocation; the byte lives in the pointer bits. Caller is expected
@@ -1635,7 +1620,6 @@ INLINE object_t* ascii_to_string(int32_t b) {
     return (object_t*)SHORT_STRING(bytes, 1);
 }
 
-EXTERN object_t* string_resize(object_t* self, object_t* new_size);
 
 /**********************************************************
  *****
@@ -1940,8 +1924,6 @@ EXTERN str_t     str_from_float64(double v);
 EXTERN double    str_parse_float64(str_t s);
 EXTERN float     str_parse_float32(str_t s);
 
-EXTERN object_t* string_builder_reserve(object_t* buf, object_t* used, object_t* extra);
-EXTERN object_t* string_copy_range_to_dangerously(object_t* self, object_t* o_index, object_t* value, object_t* o_from, object_t* o_end);
 EXTERN object_t* string_find_byte(object_t* self, int32_t byte_value, object_t* from);
 EXTERN object_t* string_index_of (object_t* self, object_t* needle,     object_t* from);
 EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);

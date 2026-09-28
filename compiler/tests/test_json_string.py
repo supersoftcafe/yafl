@@ -1,7 +1,7 @@
 """JSON of a String: the IO pipeline over a one-shot in-memory source.
 
 `System::once` (a `Never`-typed single-value stream — it cannot fail, and the
-type says so) + `System::collect` (a StringBuilder drain) make
+type says so) + `System::collect` (a String drain) make
 `Json::prettyString` pure composition: once → tokenize → prettyEmit → collect.
 The result carries the honest union `String | JsonParseError | Never`;
 exhaustiveness counts inhabited members only, so consumers owe no arm for the
@@ -51,15 +51,15 @@ class TestJsonOfString(TestCase):
 
     def test_pretty_string_escapes_flow_through(self):
         # Escapes are preserved verbatim by the token stream (TokString carries
-        # the raw body); the StringBuilder-backed collect must reassemble them.
+        # the raw body); collect must reassemble them.
         rc, out = compile_and_run_stdlib_capture(
             _MAIN % '"{\\"s\\":\\"x\\\\ny\\"}"')
         self.assertEqual(0, rc)
         self.assertEqual('{\n  "s": "x\\ny"\n}', out)
 
     def test_value_parser_string_body_builder(self):
-        # `parse` decodes string bodies through the StringBuilder-backed
-        # _strBody (bulk runs + escape expansion); verify decode + error paths.
+        # `parse` decodes string bodies through _strBody (bulk runs + escape
+        # expansion); verify decode + error paths.
         rc, out = compile_and_run_stdlib_capture(
             "namespace Main\n"
             "import System\n"

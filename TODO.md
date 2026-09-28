@@ -614,9 +614,8 @@ and multi-page allocations during a GC cycle.
 **Knock-on once this lands.** `abort_on_too_large_object` becomes
 unreachable — remove it. The "Large strings" entry further down this file
 is subsumed: `String` just works at any size, no rope wrapper needed.
-`StringBuilder` is no longer load-bearing for safety; still a perf win
-for many-concat workloads but no longer the only way to produce a large
-string.
+(`StringBuilder` is gone: a String extends its own buffer in place, so
+`acc + x` is the amortised-linear append.)
 
 
 ## Follow-up — optimal binding-order analysis (was: nested-fn codegen hazards)
@@ -750,12 +749,13 @@ helpers `sys_argc` / `sys_argv_at`. Callers get the user-supplied
 positional args without the program path. Landed in `f9ad565`.
 
 
-# StringBuilder — done
+# StringBuilder — done, then removed
 
-`stdlib/string.yafl` provides a `StringBuilder` for amortised-linear
-string concatenation; `format` is the primary user. Eliminates the
-O(n²) `+`-concat hazard for code that produces tens of KB of output
-(notably codegen). Landed in `f9ad565`.
+`stdlib/string.yafl` provided a `StringBuilder` for amortised-linear
+string concatenation (`f9ad565`). Removed with the 16-byte String value:
+a String extends its own buffer in place when it owns the end of it, so
+`acc + x` is the amortised-linear append and the builder had nothing left
+to do.
 
 
 # format / printf — done

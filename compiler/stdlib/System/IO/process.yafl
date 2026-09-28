@@ -29,15 +29,14 @@ class [foreign,final] _SpawnResult
 class ProcessResult(exitCode: Int, out: String, err: String)
 
 
-# Build "program\0arg0\0arg1\0…". Builds through a linear StringBuilder
-# (mirrors System::join's shape — the builder is threaded by explicit
-# recursion because fold's accumulator type is unrestricted).
+# Build "program\0arg0\0arg1\0…" — linear in the total size, the accumulator
+# extending its own buffer in place.
 fun _packArgs(program: String, args: List<String>): String
-  fun [tail] packRest(sb: System::StringBuilder, rest: List<String>): System::StringBuilder
+  fun [tail] packRest(acc: String, rest: List<String>): String
     ret match(head<String>(rest))
-      (a: String)       => packRest(System::append(System::append(sb, "\u{0}"), a), tail<String>(rest))
-      (n: System::None) => sb
-  ret System::toString(packRest(System::append(System::StringBuilder(), program), args))
+      (a: String)       => packRest(acc + "\u{0}" + a, tail<String>(rest))
+      (n: System::None) => acc
+  ret packRest(program, args)
 
 
 # Run `program` (resolved on PATH) with `args`. Returns a ProcessResult on a

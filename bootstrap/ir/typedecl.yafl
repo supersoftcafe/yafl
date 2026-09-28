@@ -30,8 +30,8 @@ import Bootstrap::Types
 # everywhere it recurs. YAFL has no mutable containers, so the cache is an
 # ordinary immutable `List<CgCacheEntry>` threaded explicitly: every function
 # that can grow it takes the current cache and RETURNS the (possibly grown)
-# next one as part of its result tuple, exactly the way `StringBuilder`
-# threading works in astdump.yafl. Callers MUST feed the returned cache into
+# next one as part of its result tuple, exactly the way the output string
+# threads through astdump.yafl. Callers MUST feed the returned cache into
 # the next call in sequence — dropping it silently reintroduces Python's
 # by-reference sharing as accidental resets (duplicate/colliding anon names).
 #

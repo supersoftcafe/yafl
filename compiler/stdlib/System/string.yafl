@@ -251,17 +251,15 @@ fun split(s: System::String, sep: System::String): List<System::String>
     ? prepend(s, List<System::String>())
     : build<System::String >(loop(0, builder<System::String >()))
 
-# Join `parts` into one string with `sep` between adjacent elements. Builds
-# through a StringBuilder, so the cost is linear in the total size. The builder
-# is linear, so it is threaded by explicit recursion rather than `fold` (whose
-# accumulator type is unrestricted).
+# Join `parts` into one string with `sep` between adjacent elements — linear in
+# the total size, the accumulator extending its own buffer in place.
 fun join(parts: List<System::String>, sep: System::String): System::String
-  fun [tail] joinRest(sb: StringBuilder, rest: List<System::String>): StringBuilder
+  fun [tail] joinRest(acc: System::String, rest: List<System::String>): System::String
     ret match(head<System::String>(rest))
-      (x: System::String) => joinRest(append(append(sb, sep), x), tail<System::String>(rest))
-      (e: System::None)   => sb
+      (x: System::String) => joinRest(acc + sep + x, tail<System::String>(rest))
+      (e: System::None)   => acc
   ret match(head<System::String>(parts))
-    (first: System::String) => toString(joinRest(append(StringBuilder(), first), tail<System::String>(parts)))
+    (first: System::String) => joinRest(first, tail<System::String>(parts))
     (e: System::None)       => ""
 
 fun trimStart(s: System::String): System::String
@@ -278,33 +276,5 @@ fun trimEnd(s: System::String): System::String
 
 fun trim(s: System::String): System::String
   ret trimEnd(trimStart(s))
-
-
-# StringBuilder is now a thin linear wrapper over a String value: a String
-# extends its own buffer in place when it owns the end of it (yafllib/str.c),
-# so `acc + x` IS the amortised O(1) append a builder used to provide. Kept
-# so existing code compiles; new code can just append Strings.
-class [linear,final] StringBuilder(_value: String)
-
-fun StringBuilder(): StringBuilder => StringBuilder("")
-
-fun append([terminal] sb: StringBuilder, value: String): StringBuilder
-  ret StringBuilder(sb._value + value)
-
-fun append([terminal] sb: StringBuilder, value: Int): StringBuilder
-  ret StringBuilder(sb._value + String(value))
-
-fun toString([terminal] sb: StringBuilder): String
-  ret sb._value
-
-# Append `value[from .. end)`.
-fun appendSlice([terminal] sb: StringBuilder, value: String, from: System::Int, end: System::Int): StringBuilder
-  ret StringBuilder(sb._value + slice(value, from, end))
-
-# Consume a builder without producing its string — the error-path terminus,
-# where partial output is meaningless and the linear builder still must be
-# used exactly once.
-fun discard([terminal] sb: StringBuilder): System::None
-  ret None
 
 

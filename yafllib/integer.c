@@ -266,7 +266,7 @@ EXPORT object_t* string_from_int64(int64_t v) {
 // Renders an arbitrary-precision Int into a CALLER-SUPPLIED buffer. Touches
 // neither the YAFL heap nor malloc, so it is safe from the logger, from a GC
 // worker, and from anywhere a heap allocation would be a re-entrancy hazard.
-// (`String(Int)` in the stdlib goes the other way — StringBuilder on the YAFL
+// (`String(Int)` in the stdlib goes the other way — a String on the YAFL
 // heap — which is exactly what a logger must not do: the act of logging a
 // number would perturb the allocation behaviour being measured.)
 //

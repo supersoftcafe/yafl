@@ -336,36 +336,36 @@ fun genDeclareMain(profile, nProf: Int) => "int main(int argc, char** argv) {\n"
 
 # c_str: escape backslashes and quotes only — the exact twin of gen.py's local
 # escaper (names and paths never contain other C-special bytes).
-fun profCStr(s) => "\"" + toString(profCStrBody(s, 0, StringBuilder())) + "\""
+fun profCStr(s) => "\"" + profCStrBody(s, 0, "") + "\""
 
 fun [tail] profCStrBody(s, i,
-                        [terminal] sb): StringBuilder
+                        out: String): String
   let bs = findByte(s, '\\', i)
   let qt = findByte(s, '"', i)
   let nxt = bs < 0 ? qt : qt < 0 ? bs : bs < qt ? bs : qt
   if nxt < 0
-    ret append(sb, slice(s, i, length(s)))
+    ret out + slice(s, i, length(s))
   ret profCStrBody(s, nxt + 1,
-                   append(append(append(sb, slice(s, i, nxt)), "\\"),
-                          slice(s, nxt, nxt + 1)))
+                   out + slice(s, i, nxt) + "\\"
+                          + slice(s, nxt, nxt + 1))
 
 # Rows in id order — the same non-foreign walk order the numbering used; the
 # count rides the walk (no-length ruling).
 fun genProfTable(a: CgApp): (text: String, n: Int)
-  let rows = profTableRows(chain(appFunctions(a)), 0, StringBuilder())
+  let rows = profTableRows(chain(appFunctions(a)), 0, "")
   ret ("static const yafl_prof_fn_t yafl_prof_fns[" + String(rows.n) + "] = {\n"
-       + toString(rows.sb2) + "\n};\n", rows.n)
+       + rows.out2 + "\n};\n", rows.n)
 
 fun [tail] profTableRows(fs: Chain<CgFunction>, n,
-                         [terminal] sb): (sb2: StringBuilder, n: Int) => match(fs)
-  (nil: ChainEnd) => (sb, n)
+                         out: String): (out2: String, n: Int) => match(fs)
+  (nil: ChainEnd) => (out, n)
   (l: ChainLink)  => isNoneStr(l.value.fnForeignSymbol)
     ? profTableRows(l.next, n + 1,
-        append(n == 0 ? sb : append(sb, ",\n"),
-               "    { " + profCStr(l.value.fnName) + ", "
+        (n == 0 ? out : out + ",\n")
+               + "    { " + profCStr(l.value.fnName) + ", "
                + profCStr(l.value.fnSourceFile) + ", "
-               + String(l.value.fnSourceLine) + " }"))
-    : profTableRows(l.next, n, sb)
+               + String(l.value.fnSourceLine) + " }")
+    : profTableRows(l.next, n, out)
 
 # ── the assembly ─────────────────────────────────────────────────────────────
 

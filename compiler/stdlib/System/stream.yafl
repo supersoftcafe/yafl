@@ -221,20 +221,16 @@ fun once<T>(value: T): Once<T>
 
 
 # ── collect: drain a String stream into one String ───────────────────────────
-# Builds through a linear StringBuilder (cost linear in total size), threaded
-# through the [tail] loop. An error consumes the builder — the partial output
-# is meaningless — and surfaces as the stream's own `E`.
+# Appends chunk by chunk through the [tail] loop — linear in the total size,
+# the accumulator extending its own buffer in place. An error drops the
+# partial output and surfaces as the stream's own `E`.
 fun collect<S, E>(s: S): System::String | E where Stream<S, System::String, E>
-  ret _collectInto<S, E>(s, System::StringBuilder())
+  ret _collectInto<S, E>(s, "")
 
-fun _discardBuilder<E>(sb: System::StringBuilder, e: E): E
-  System::discard(sb)
-  ret e
-
-fun [tail] _collectInto<S, E>(s: S, sb: System::StringBuilder): System::String | E where Stream<S, System::String, E>
+fun [tail] _collectInto<S, E>(s: S, acc: System::String): System::String | E where Stream<S, System::String, E>
   let r = streamNext<S, System::String, E>(s)
   ret match(r.value)
     (ok: Ok<System::String | System::None, E>) => match(ok.value)
-      (chunk: System::String) => _collectInto<S, E>(r.stream, System::append(sb, chunk))
-      (n: System::None)       => System::toString(sb)
-    (er: Error<System::String | System::None, E>) => _discardBuilder<E>(sb, er.error)
+      (chunk: System::String) => _collectInto<S, E>(r.stream, acc + chunk)
+      (n: System::None)       => acc
+    (er: Error<System::String | System::None, E>) => er.error
