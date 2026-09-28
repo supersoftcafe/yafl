@@ -87,9 +87,11 @@ class LambdaExpression(Expression):
         new_ret = t.CallableSpec(self.line_ref, params_type, new_ret_result)
 
         own = {let.name for let in self.parameters.flatten()}
-        return dataclasses.replace(
-            self, parameters=new_prm, expression=new_xpr,
-            return_type=new_ret), (new_prm_glb + new_xpr_glb), h.without(body_hints, own)
+        # A lambda flowing into a union is converted there, like any expression.
+        from pyast.expression.conversion import converted
+        lam = dataclasses.replace(self, parameters=new_prm, expression=new_xpr, return_type=new_ret)
+        return (converted(lam, expected_type, resolver), (new_prm_glb + new_xpr_glb),
+                h.without(body_hints, own))
 
     def __passed(self, expected_type: t.TypeSpec | None) -> h.Hints:
         """What the expected signature passes each parameter: a LOWER hint."""

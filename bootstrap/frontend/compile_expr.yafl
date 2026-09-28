@@ -276,14 +276,16 @@ fun compileLambda(lm: PeLambda, r0, expected: Spec|None): ExprOut
                                  mergeHints(body.eoHints,
                                             passedHints(lm.lamParams, expected)),
                                  r)
-  ret ExprOut(PeLambda(newParams, body.eoExpr, lm.pelLine,
-                       SCallable(reportedParams(newParams, lm.lamParams),
-                                 lambdaResult(subExpected,
-                                              exprType(body.eoExpr, r), r),
-                                 lm.pelLine)),
-              concat(prm.soExtra, body.eoGlobals),
-              hintsWithout(body.eoHints, letNames(flattenParams(lm.lamParams)),
-                           Set()))
+  # A lambda flowing into a union is converted there, like any expression.
+  ret convertedOut(ExprOut(PeLambda(newParams, body.eoExpr, lm.pelLine,
+                                    SCallable(reportedParams(newParams, lm.lamParams),
+                                              lambdaResult(subExpected,
+                                                           exprType(body.eoExpr, r), r),
+                                              lm.pelLine)),
+                           concat(prm.soExtra, body.eoGlobals),
+                           hintsWithout(body.eoHints, letNames(flattenParams(lm.lamParams)),
+                                        Set())),
+                   expected, r0)
 
 # What the expected signature passes each parameter: a LOWER hint.
 fun passedHints(params, expected: Spec|None) => match(expected)
