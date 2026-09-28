@@ -43,18 +43,25 @@ static inline int _utf8_decode(const unsigned char* p, int32_t len, int32_t off,
 }
 
 // Codepoint membership set built from `accept` (itself UTF-8). ASCII members
-// go in an O(1) bitset; non-ASCII members are probed linearly.
+// go in an O(1) bitmap — 16 bytes, so building a set per scan stays cheap;
+// non-ASCII members are probed linearly.
 typedef struct {
-    unsigned char ascii[128];   // ascii[cp] == 1 iff codepoint cp (<0x80) is in accept
+    uint64_t ascii[2];          // bit cp set iff codepoint cp (<0x80) is in accept
     int has_non_ascii;          // does accept contain any codepoint >= 0x80?
     const char* accept;         // accept bytes, for the non-ASCII linear probe
     int32_t accept_len;
 } codepoint_set;
 
 HIDDEN void _build_codepoint_set(const char* accept, int32_t accept_len, codepoint_set* set);
+
+// Is ASCII codepoint `c` (< 0x80) a member? Inline: tested per byte.
+static inline int _ascii_in_set(int c, const codepoint_set* set) {
+    return (int)((set->ascii[c >> 6] >> (c & 63)) & 1);
+}
+
 // Inline: tested per character by the scanners.
 static inline int _codepoint_in_set(int32_t cp, const codepoint_set* set) {
-    if (cp < 0x80) return set->ascii[cp];
+    if (cp < 0x80) return _ascii_in_set(cp, set);
     if (!set->has_non_ascii) return 0;
     int32_t acp;
     for (int32_t i = 0; i < set->accept_len; ) {

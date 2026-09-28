@@ -282,6 +282,44 @@ TEST(find_and_skip_any_across_join)
     ASSERT(int32_from_integer(str_find_any(t, S("#"), integer_from_int32(0))) == 20);
 TEST_END()
 
+/* find/skip_any take a set of CODEPOINTS: multi-byte members and non-members
+ * are whole characters, results land on codepoint boundaries, and a malformed
+ * byte is never a member. The accept set is read three ways — in place (one
+ * run), gathered from a tail into scratch, gathered into a heap copy (> 64
+ * bytes) — and its ASCII members straddle both words of the bitmap. */
+TEST(find_and_skip_any_unicode)
+    str_t s = S("a\xC3\xA9\xE2\x82\xAC" "b~?@");        /* a é € b ~ ? @ : 10 bytes */
+    ASSERT(int32_from_integer(str_find_any(s, S("\xE2\x82\xAC"), integer_from_int32(0))) == 3);
+    ASSERT(int32_from_integer(str_find_any(s, S("b\xE2\x82\xAC\xC3\xA9"), integer_from_int32(0))) == 1);
+    ASSERT(int32_from_integer(str_skip_any(s, S("a\xC3\xA9\xE2\x82\xAC"), integer_from_int32(0))) == 6);
+    ASSERT(int32_from_integer(str_find_any(s, S(" \t"), integer_from_int32(0))) == 10);  /* steps over é, € */
+    /* ASCII members in word 0 ('?' = 63) and word 1 ('@' = 64, '~' = 126) */
+    ASSERT(int32_from_integer(str_find_any(s, S("~"), integer_from_int32(0))) == 7);
+    ASSERT(int32_from_integer(str_find_any(s, S("?"), integer_from_int32(0))) == 8);
+    ASSERT(int32_from_integer(str_find_any(s, S("@"), integer_from_int32(0))) == 9);
+    ASSERT(int32_from_integer(str_skip_any(s, S("a\xC3\xA9\xE2\x82\xAC" "b~?"), integer_from_int32(0))) == 9);
+    /* from = 2 is mid-sequence (é's continuation byte): malformed, not a member */
+    ASSERT(int32_from_integer(str_find_any(s, S("\xE2\x82\xAC"), integer_from_int32(2))) == 3);
+    ASSERT(int32_from_integer(str_skip_any(s, S("\xE2\x82\xAC"), integer_from_int32(2))) == 2);
+    /* a tailed subject: é and ! live in the tail */
+    str_t t = mk_tailed("aaaaaaaaaaaaaaaa", "\xC3\xA9!");
+    ASSERT(tail_len(t) == 3);
+    ASSERT(int32_from_integer(str_find_any(t, S("\xC3\xA9"), integer_from_int32(0))) == 16);
+    ASSERT(int32_from_integer(str_skip_any(t, S("a\xC3\xA9"), integer_from_int32(0))) == 18);
+    /* a tailed accept: gathered into scratch */
+    str_t acc = mk_tailed("0123456789ABCDEF", "\xE2\x82\xAC");
+    ASSERT(tail_len(acc) == 3);
+    ASSERT(int32_from_integer(str_find_any(s, acc, integer_from_int32(0))) == 3);
+    /* > 64 bytes: in place as one run, and gathered into a heap copy */
+    uint8_t xs[72]; memset(xs, 'x', 70); xs[70] = 0xC3; xs[71] = 0xA9;
+    str_t long_run = str_from_bytes(xs, 72);
+    ASSERT(tail_len(long_run) == 0);
+    ASSERT(int32_from_integer(str_find_any(s, long_run, integer_from_int32(0))) == 1);
+    str_t long_tailed = str_append(str_from_bytes(xs, 70), S("\xC3\xA9"));
+    ASSERT(tail_len(long_tailed) == 2);
+    ASSERT(int32_from_integer(str_find_any(s, long_tailed, integer_from_int32(0))) == 1);
+TEST_END()
+
 TEST(parse_int_across_join)
     str_t t = mk_tailed("-000000000000123", "4567");
     ASSERT(integer_test_eq(str_parse_int(t), integer_from_int64(-1234567)));
@@ -346,6 +384,7 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(index_of_straddles_join);
     RUN(codepoint_straddles_join);
     RUN(find_and_skip_any_across_join);
+    RUN(find_and_skip_any_unicode);
     RUN(parse_int_across_join);
     RUN(legacy_round_trips);
     RUN(union_from_legacy);

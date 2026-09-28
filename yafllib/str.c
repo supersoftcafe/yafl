@@ -455,12 +455,20 @@ EXPORT object_t* str_index_of(str_t s, str_t needle, object_t* o_from) {
 
 // ── Codepoints ────────────────────────────────────────────────────────────
 
+// The set over `accept`'s bytes, read in place when they are one run (an
+// inline value, or a head with no tail) — the set keeps pointing at them for
+// its non-ASCII probe, and `*accept` outlives the scan. Only a tailed value is
+// gathered, into `scratch` or a heap copy left in `*owned` for the caller.
 static void build_set(str_t* accept, codepoint_set* set, uint8_t* scratch, int32_t cap, uint8_t** owned) {
     segs_t ga = segs_of(accept);
     int32_t al = segs_len(ga);
-    uint8_t* buf = al <= cap ? scratch : (*owned = malloc((size_t)al));
-    segs_copy(ga, 0, al, buf);
-    _build_codepoint_set((const char*)buf, al, set);
+    const uint8_t* bytes = ga.a;
+    if (ga.nb != 0) {
+        uint8_t* buf = al <= cap ? scratch : (*owned = malloc((size_t)al));
+        segs_copy(ga, 0, al, buf);
+        bytes = buf;
+    }
+    _build_codepoint_set((const char*)bytes, al, set);
 }
 
 static object_t* scan_any(str_t s, str_t accept, object_t* o_from, bool want_member) {
@@ -481,7 +489,7 @@ static object_t* scan_any(str_t s, str_t accept, object_t* o_from, bool want_mem
     for (int32_t i = from; i < len; ) {
         int c = i < g.na ? g.a[i] : g.b[i - g.na];
         if (c < 0x80) {                            // ASCII: its own codepoint
-            if (set.ascii[c] == want) { result = i; break; }
+            if (_ascii_in_set(c, &set) == want) { result = i; break; }
             ++i; continue;
         }
         int w = decode_at(g, i, &cp);
@@ -492,7 +500,7 @@ static object_t* scan_any(str_t s, str_t accept, object_t* o_from, bool want_mem
         if (_codepoint_in_set(cp, &set) == want) { result = i; break; }
         i += w;
     }
-    free(owned);
+    if (owned) free(owned);
     return integer_from_int32(result);
 }
 

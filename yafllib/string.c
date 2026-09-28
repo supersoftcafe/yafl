@@ -278,7 +278,7 @@ EXPORT object_t* string_index_of(object_t* self, object_t* o_needle, object_t* o
 
 HIDDEN void _build_codepoint_set(const char* accept, int32_t accept_len,
                                  codepoint_set* set) {
-    for (int i = 0; i < 128; ++i) set->ascii[i] = 0;
+    set->ascii[0] = set->ascii[1] = 0;
     set->has_non_ascii = 0;
     set->accept = accept;
     set->accept_len = accept_len;
@@ -286,7 +286,8 @@ HIDDEN void _build_codepoint_set(const char* accept, int32_t accept_len,
     for (int32_t i = 0; i < accept_len; ) {
         int w = _utf8_decode((const unsigned char*)accept, accept_len, i, &cp);
         if (w == 0) { ++i; continue; }            // skip a malformed accept byte
-        if (cp < 0x80) set->ascii[cp] = 1; else set->has_non_ascii = 1;
+        if (cp < 0x80) set->ascii[cp >> 6] |= (uint64_t)1 << (cp & 63);
+        else set->has_non_ascii = 1;
         i += w;
     }
 }
