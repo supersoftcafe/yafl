@@ -1,3 +1,11 @@
+# Wide unions carrying SCALAR members in 16 bytes. A union with a String
+# member is a str_t; bool/int8..int64/float32/float64 members ride as spare
+# codes in word 0 with the payload in word 1. Covers boxing, typed and
+# literal arms, an arm narrowing to a tagged sub-union (Int32|None), widening
+# from a tagged union, from a narrow pointer union (String|None) and into a
+# wider wide union, and values crossing a __parallel__ boundary.
+# test_wide_union_packing pins the output.
+
 namespace Scalars
 
 import System

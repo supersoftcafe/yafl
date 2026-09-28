@@ -1,3 +1,11 @@
+# Wide unions carrying FUNCTION members in 16 bytes: word 0 is the closure's
+# environment (a spare code when it has none), word 1 its code pointer.
+# Covers functions beside String, Int, None and a newtype, with and without
+# captured environments, matching and calling out of the union — and
+# Pair|Fun, which must stay a tagged struct (a bound method's environment is
+# a class instance, so word 0 could not tell them apart).
+# test_wide_union_packing pins the output.
+
 namespace Funs
 
 import System
