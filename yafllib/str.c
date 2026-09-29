@@ -187,10 +187,6 @@ static str_t from_pieces(const piece_t* pieces, int np, int64_t total, bool grow
     return heap_value(b, (uint32_t)total);
 }
 
-static bool in_heap(object_t* o) {
-    return (size_t)((char*)o - _memory_heap_base) < _memory_heap_bytes;
-}
-
 static int pieces_of(str_t* s, piece_t* out) {
     segs_t g = segs_of(s);
     int n = 0;
@@ -226,7 +222,7 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     // copy — and a tailed value can never use the hash cache. So appends to a
     // read-only head copy straight into a fresh, exact, tail-less buffer.
     object_t* h = a.head;
-    bool growable = in_heap(h) && object_get_vtable(h) == (vtable_t*)&STR_BUF_VTABLE;
+    bool growable = object_get_vtable(h) == (vtable_t*)&STR_BUF_VTABLE;
     if (growable && tl + extra <= STR_TAIL_MAX) {
         uint8_t* d = str_tail_bytes(&a) + tl;
         for (int i = 0; i < np; i++) { memcpy(d, pieces[i].p, (size_t)pieces[i].n); d += pieces[i].n; }
