@@ -106,7 +106,7 @@ static int decode_at(segs_t g, int32_t i, int32_t* cp) {
 // The lossy decode (str_internal.h) at byte i: U+FFFD one byte wide where
 // decode_at finds no valid sequence; 0 only when i is out of range.
 static int decode_lossy_at(segs_t g, int32_t i, int32_t* cp) {
-    if (i < 0 || i >= segs_len(g)) return 0;
+    if (i < 0 || i >= segs_len(g)) { *cp = -1; return 0; }
     int w = decode_at(g, i, cp);
     if (w == 0) { *cp = UTF8_REPLACEMENT; return 1; }
     return w;
@@ -536,25 +536,18 @@ static object_t* scan_any(str_t s, str_t accept, object_t* o_from, bool want_mem
 EXPORT object_t* str_find_any(str_t s, str_t accept, object_t* from) { return scan_any(s, accept, from, true); }
 EXPORT object_t* str_skip_any(str_t s, str_t accept, object_t* from) { return scan_any(s, accept, from, false); }
 
-// The codepoint at byte offset `from` (U+FFFD for a malformed byte), or -1
-// past the end.
+// The codepoint at byte offset `from`; -1 past the end; -2 for a malformed
+// byte (read as a one-byte U+FFFD). One call gives a walker the value AND the
+// width: a valid sequence is minimally encoded, so its width follows from its
+// value, and -2 says "one byte" — a real U+FFFD (3 bytes) stays 0xFFFD.
 EXPORT int32_t str_codepoint_at(str_t s, object_t* o_from) {
     int overflow = 0;
     int32_t from = int32_arg(o_from, &overflow);
     if (overflow) return -1;
     int32_t cp;
-    return decode_lossy_at(segs_of(&s), from, &cp) ? cp : -1;
-}
-
-// The bytes the codepoint at `from` occupies: 1..4, 1 for a malformed byte
-// (read as U+FFFD), 0 past the end. The width cannot be derived from the
-// codepoint: a real U+FFFD is 3 bytes, a substituted one 1.
-EXPORT int32_t str_codepoint_width(str_t s, object_t* o_from) {
-    int overflow = 0;
-    int32_t from = int32_arg(o_from, &overflow);
-    if (overflow) return 0;
-    int32_t cp;
-    return decode_lossy_at(segs_of(&s), from, &cp);
+    segs_t g = segs_of(&s);
+    if (from < 0 || from >= segs_len(g)) return -1;
+    return decode_at(g, from, &cp) ? cp : -2;
 }
 
 // The number of steps a walk takes: the codepoints, malformed bytes counting

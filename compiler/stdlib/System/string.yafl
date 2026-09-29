@@ -134,24 +134,35 @@ fun parseInt(s: System::String): System::Int|System::None
 # steps, and nothing stops early. `isValidUtf8` is the strict check; the
 # bytes themselves stay available through `byteAt` and `slice`.
 
+# The C decoder at byte offset `off`, in ONE call: the scalar, -1 past the
+# end, or -2 for a malformed byte (a one-byte U+FFFD). Scalars are
+# non-negative, so both sentinels are unambiguous.
+fun _codepointRaw(s: System::String, off: System::Int): System::Int32
+  ret __builtin_op__<int32>("str_codepoint_at", s, off)
+
 # The codepoint starting at byte offset `off` (U+FFFD for a malformed byte),
 # or None past the end. A Unicode scalar always fits in Int32 (max U+10FFFF),
 # so codepoints are typed Int32 — YAFL has no `char` type.
-#
-# The C primitive returns the scalar or -1 (an unambiguous sentinel, since
-# scalars are non-negative); we lift -1 to None here.
 fun codepointAt(s: System::String, off: System::Int): System::Int32|System::None
-  let cp: System::Int32 = __builtin_op__<int32>("str_codepoint_at", s, off)
-  ret cp < 0i32 ? None : cp
+  let raw = _codepointRaw(s, off)
+  ret raw == -1i32 ? None : raw == -2i32 ? 0xFFFDi32 : raw
+
+# Minimal UTF-8 byte width of a codepoint. A valid sequence is minimally
+# encoded, so adding this width to its offset lands on the next boundary.
+# The width is the byte-offset delta, hence Int; the thresholds are Int32
+# literals so the comparison stays in the Int32 domain.
+fun _utf8Width(cp: System::Int32): System::Int
+  ret cp < 0x80i32 ? 1 : cp < 0x800i32 ? 2 : cp < 0x10000i32 ? 3 : 4
 
 # Codepoint at byte offset `off` together with the byte offset of the next
 # codepoint — the building block for forward iteration (cf. Rust's
-# char_indices). None past the end. The step is the decoder's own width, not
-# one derived from the codepoint: a real U+FFFD is 3 bytes, a substituted one 1.
+# char_indices). None past the end. One decode per step: a malformed byte
+# steps one byte (a real U+FFFD, a valid sequence, steps its three).
 fun decode(s: System::String, off: System::Int): (cp: System::Int32, next: System::Int)|System::None
-  ret match(codepointAt(s, off))
-    (cp: System::Int32) => (cp, off + Int(__builtin_op__<int32>("str_codepoint_width", s, off)))
-    (n: System::None)   => None
+  let raw = _codepointRaw(s, off)
+  ret raw == -1i32 ? None
+    : raw == -2i32 ? (0xFFFDi32, off + 1)
+    : (raw, off + _utf8Width(raw))
 
 # Number of codepoints (O(n)) — the steps a walk takes. For valid UTF-8 this
 # is the character count; the byte length is `length`.

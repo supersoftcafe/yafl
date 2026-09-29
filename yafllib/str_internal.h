@@ -44,11 +44,11 @@ static inline int _utf8_decode(const unsigned char* p, int32_t len, int32_t off,
 // Decoding for everything that WALKS a string: a byte that does not start a
 // valid, minimally-encoded sequence is U+FFFD, one byte wide — so a walk
 // always makes progress and covers every byte, and a binary blob read as a
-// String counts, iterates and scans consistently. 0 only past the end. Only
-// validity checks use the strict decoder above.
+// String counts, iterates and scans consistently. 0 only past the end, where
+// the codepoint is -1. Only validity checks use the strict decoder above.
 #define UTF8_REPLACEMENT 0xFFFD
 static inline int _utf8_decode_lossy(const unsigned char* p, int32_t len, int32_t off, int32_t* out_cp) {
-    if (off < 0 || off >= len) return 0;
+    if (off < 0 || off >= len) { *out_cp = -1; return 0; }
     int w = _utf8_decode(p, len, off, out_cp);
     if (w == 0) { *out_cp = UTF8_REPLACEMENT; return 1; }
     return w;
