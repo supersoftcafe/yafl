@@ -113,7 +113,7 @@ static inline void gc_pool_lock(void) {
         if (atomic_compare_exchange_weak_explicit(&gc_pool_lock_word, &expected, true,
                                                   memory_order_acquire, memory_order_relaxed))
             return;
-        do { __builtin_ia32_pause(); }
+        do { cpu_relax(); }
         while (atomic_load_explicit(&gc_pool_lock_word, memory_order_relaxed));
     }
 }
@@ -157,7 +157,23 @@ extern _Atomic(uint64_t) gc_stat_lat[8][GC_LAT_BUCKETS];
 extern _Atomic(uint64_t) gc_stat_fsa_calls;
 extern struct timespec   gc_stats_t0;
 
-static inline uint64_t gc_tsc(void) { unsigned lo, hi; __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi)); return ((uint64_t)hi << 32) | lo; }
+// A cheap monotonic tick for the stats-gated profile laps: only differences
+// are used, so each target reads its own counter.
+static inline uint64_t gc_tsc(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+#elif defined(__aarch64__)
+    uint64_t t;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+    return t;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+#endif
+}
 #define GC_STAT_BUMP(c)\
     do { if (UNLIKELY(gc_stats_enabled))\
              atomic_fetch_add_explicit(&(c), 1, memory_order_relaxed);\

@@ -66,8 +66,15 @@ static inline uint32_t tail_len_of(str_t s) { return s.meta >> STR_META_LEN_BITS
 static inline uint8_t* head_bytes(object_t* h) { return (uint8_t*)h + offsetof(str_head_t, array); }
 
 static inline segs_t segs_of(str_t* s) {
-    if (str_is_inline(*s))
-        return (segs_t){ str_inline_bytes(s), str_length(*s), NULL, 0 };
+    if (str_is_inline(*s)) {
+        // Content is the value's bytes around the tag byte: one run on
+        // little-endian (the tag is first), up to two on big-endian.
+        const uint8_t* v = (const uint8_t*)s;
+        int32_t len = str_length(*s);
+        int32_t first = len < STR_TAG_BYTE ? len : STR_TAG_BYTE;
+        if (first == 0) return (segs_t){ v + STR_TAG_BYTE + 1, len, NULL, 0 };
+        return (segs_t){ v, first, v + STR_TAG_BYTE + 1, len - first };
+    }
     return (segs_t){ head_bytes(s->head), (int32_t)head_len_of(*s),
                      str_tail_bytes(s), (int32_t)tail_len_of(*s) };
 }
@@ -121,6 +128,19 @@ static int32_t int32_arg(object_t* o, int* overflow) {
 
 typedef struct { const uint8_t* p; int32_t n; } piece_t;
 
+// Copy n bytes into an inline value at content offset `at` (at + n <= 15),
+// stepping over the tag byte: one run on little-endian, at most two on big.
+static inline void inline_put(str_t* s, int32_t at, const uint8_t* p, int32_t n) {
+    if (at < 0 || n < 0 || at + n > STR_INLINE_MAX) __builtin_unreachable();
+    uint8_t* v = (uint8_t*)s;
+    int32_t k = 0;
+    if (at < STR_TAG_BYTE) {
+        k = n < STR_TAG_BYTE - at ? n : STR_TAG_BYTE - at;
+        memcpy(v + at, p, (size_t)k);
+    }
+    memcpy(v + at + k + 1, p + k, (size_t)(n - k));
+}
+
 static str_t inline_value(int32_t len) {
     str_t s;
     memset(&s, 0, sizeof s);
@@ -157,8 +177,8 @@ static object_t* buf_alloc(int64_t used, bool grow) {
 static str_t from_pieces(const piece_t* pieces, int np, int64_t total, bool grow) {
     if (total <= STR_INLINE_MAX) {
         str_t s = inline_value((int32_t)total);
-        uint8_t* d = str_inline_bytes(&s);
-        for (int i = 0; i < np; i++) { memcpy(d, pieces[i].p, (size_t)pieces[i].n); d += pieces[i].n; }
+        int32_t at = 0;
+        for (int i = 0; i < np; i++) { inline_put(&s, at, pieces[i].p, pieces[i].n); at += pieces[i].n; }
         return s;
     }
     object_t* b = buf_alloc(total, grow);
@@ -171,6 +191,14 @@ static bool in_heap(object_t* o) {
     return (size_t)((char*)o - _memory_heap_base) < _memory_heap_bytes;
 }
 
+static int pieces_of(str_t* s, piece_t* out) {
+    segs_t g = segs_of(s);
+    int n = 0;
+    if (g.na) out[n++] = (piece_t){ g.a, g.na };
+    if (g.nb) out[n++] = (piece_t){ g.b, g.nb };
+    return n;
+}
+
 // `a` followed by `pieces` (extra bytes in all). The one growth path.
 static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     if (extra == 0) return a;
@@ -180,19 +208,16 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
 
     if (str_is_inline(a) && total <= STR_INLINE_MAX) {   // stays inline: no pieces array
         str_t r = a;
-        uint8_t* d = str_inline_bytes(&r);
-        uint32_t at = (uint32_t)la;
-        for (int i = 0; i < np; i++)
-            for (int32_t k = 0; k < pieces[i].n && at < STR_INLINE_MAX; k++)
-                d[at++] = pieces[i].p[k];
-        *(uint8_t*)&r = (uint8_t)(total * (PTR_TAG_MASK + 1) + PTR_TAG_STRING);
+        int32_t at = (int32_t)la;
+        for (int i = 0; i < np; i++) { inline_put(&r, at, pieces[i].p, pieces[i].n); at += pieces[i].n; }
+        ((uint8_t*)&r)[STR_TAG_BYTE] = (uint8_t)(total * (PTR_TAG_MASK + 1) + PTR_TAG_STRING);
         return r;
     }
     if (str_is_inline(a)) {
-        piece_t all[40];
-        all[0] = (piece_t){ str_inline_bytes(&a), (int32_t)la };
-        for (int i = 0; i < np; i++) all[i + 1] = pieces[i];
-        return from_pieces(all, np + 1, total, false);   // fresh: exact
+        piece_t all[41];
+        int na = pieces_of(&a, all);                     // one run, or two on big-endian
+        for (int i = 0; i < np; i++) all[na + i] = pieces[i];
+        return from_pieces(all, na + np, total, false);   // fresh: exact
     }
 
     uint32_t hl = head_len_of(a), tl = tail_len_of(a);
@@ -235,14 +260,6 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     all[1] = (piece_t){ str_tail_bytes(&a), (int32_t)tl };
     for (int i = 0; i < np; i++) all[i + 2] = pieces[i];
     return from_pieces(all, np + 2, total, grow);
-}
-
-static int pieces_of(str_t* s, piece_t* out) {
-    segs_t g = segs_of(s);
-    int n = 0;
-    if (g.na) out[n++] = (piece_t){ g.a, g.na };
-    if (g.nb) out[n++] = (piece_t){ g.b, g.nb };
-    return n;
 }
 
 EXPORT str_t str_from_bytes(const uint8_t* data, int32_t length) {
@@ -572,7 +589,8 @@ EXPORT bool str_valid_utf8(str_t s) {
 
 EXPORT str_t str_ascii(int32_t byte) {
     str_t s = inline_value(1);
-    str_inline_bytes(&s)[0] = (uint8_t)byte;
+    uint8_t b = (uint8_t)byte;
+    inline_put(&s, 0, &b, 1);
     return s;
 }
 

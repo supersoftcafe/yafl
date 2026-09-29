@@ -113,6 +113,19 @@ enum { GC_PAGE_SIZE = 16384 };
 #define ALIGNED     __attribute__((aligned(GC_ALLOC_GRANULE)))
 
 
+// Spin-wait hint for a waiter on a busy lock: lets an SMT sibling (often the
+// holder) run. Targets without an instruction for it get a compiler barrier.
+static inline void cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ volatile("yield" ::: "memory");
+#else
+    __asm__ volatile("" ::: "memory");
+#endif
+}
+
+
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #  define IS_LITTLE_ENDIAN 1
 #elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -1538,7 +1551,14 @@ _Static_assert(sizeof(str_t) == 16, "str_t is 16 bytes on every target");
 
 #define STR_INLINE_MAX    15
 #define STR_META_LEN_MASK ((1u << STR_META_LEN_BITS) - 1)
-INLINE uint8_t* str_inline_bytes(str_t* s) { return (uint8_t*)s + 1; }
+// The tag byte — `head`'s low byte, which carries PTR_TAG_STRING and the
+// inline length — sits at this offset in memory: first on little-endian,
+// last in the word on big-endian. An inline value's 15 content bytes are the
+// other 15, in memory order: bytes 1..15 on little-endian; on big-endian the
+// bytes before the tag byte, then the bytes after it.
+#define STR_TAG_BYTE (IS_LITTLE_ENDIAN ? 0 : (int)sizeof(void*) - 1)
+// Offset within the value of inline content byte i (0..14).
+INLINE int str_inline_off(int i) { return i < STR_TAG_BYTE ? i : i + 1; }
 INLINE uint8_t* str_tail_bytes(str_t* s)   { return (uint8_t*)s->tail; }
 
 EXTERN struct str_head_vtable STR_BUF_VTABLE;
@@ -1556,18 +1576,37 @@ INLINE int32_t str_length(str_t s) {
 // assembled into whichever words this target has.
 #define STR16_B(c, i) ((uint64_t)(uint8_t)(STRING_LEN(c) > (i) ? (c)[i] : 0))
 #define STR16_TAGB(c) ((uint64_t)(STRING_LEN(c) * (PTR_TAG_MASK+1) + PTR_TAG_STRING))
+#if IS_LITTLE_ENDIAN
 // Little-endian word of value bytes [o, o+4) where value byte 0 is the tag.
 #define STR16_W32(c, o) ((uint32_t)( \
       ((o) == 0 ? STR16_TAGB(c) : STR16_B(c, (o)-1)) \
     | STR16_B(c, (o))   << 8 | STR16_B(c, (o)+1) << 16 | STR16_B(c, (o)+2) << 24))
-#if WORD_SIZE == 32
+#else
+// Big-endian word of content bytes [k, k+4), and the head word's last word,
+// whose final byte is the tag.
+#define STR16_BE32(c, k) ((uint32_t)( \
+      STR16_B(c, (k)) << 24 | STR16_B(c, (k)+1) << 16 | STR16_B(c, (k)+2) << 8 | STR16_B(c, (k)+3)))
+#define STR16_BE32_TAG(c, k) ((uint32_t)( \
+      STR16_B(c, (k)) << 24 | STR16_B(c, (k)+1) << 16 | STR16_B(c, (k)+2) << 8 | STR16_TAGB(c)))
+#endif
+#if WORD_SIZE == 32 && IS_LITTLE_ENDIAN
 #define STR16_SHORT(c) ((str_t){ \
     .head = (object_t*)(uintptr_t)STR16_W32(c, 0), \
     .meta = STR16_W32(c, 4), .tail = { STR16_W32(c, 8), STR16_W32(c, 12) } })
-#else
+#elif IS_LITTLE_ENDIAN
 #define STR16_SHORT(c) ((str_t){ \
     .head = (object_t*)(uintptr_t)((uint64_t)STR16_W32(c, 0) | (uint64_t)STR16_W32(c, 4) << 32), \
     .meta = STR16_W32(c, 8), .tail = { STR16_W32(c, 12) } })
+#elif WORD_SIZE == 32
+// content 0..2 + tag | 3..6 | 7..10 | 11..14
+#define STR16_SHORT(c) ((str_t){ \
+    .head = (object_t*)(uintptr_t)STR16_BE32_TAG(c, 0), \
+    .meta = STR16_BE32(c, 3), .tail = { STR16_BE32(c, 7), STR16_BE32(c, 11) } })
+#else
+// content 0..3 | 4..6 + tag | 7..10 | 11..14
+#define STR16_SHORT(c) ((str_t){ \
+    .head = (object_t*)(uintptr_t)((uint64_t)STR16_BE32(c, 0) << 32 | (uint64_t)STR16_BE32_TAG(c, 4)), \
+    .meta = STR16_BE32(c, 7), .tail = { STR16_BE32(c, 11) } })
 #endif
 #define STR16_LONG(c) ((str_t){ \
     .head = (object_t*)&(struct { vtable_t* v; uint32_t l; uint32_t cap; uint64_t h; char a[sizeof(c)]; }) \
@@ -1758,10 +1797,18 @@ INLINE uint64_t str_load_le64(const void* p) {
 EXTERN int32_t   str_hash_heap(str_t s);
 INLINE int32_t   str_hash(str_t s) {
     if (str_is_inline(s)) {
-        const uint8_t* b = (const uint8_t*)&s;           // byte 0 is the tag
+        // The same words the heap path hashes: content bytes 0..7, 8..14.
         uint64_t h = STR_HASH_SEED ^ (uint64_t)str_length(s);
-        h = str_hash_mix(h, str_load_le64(b + 1));        // content bytes 0..7
-        h = str_hash_mix(h, str_load_le64(b + 8) >> 8);   // content bytes 8..14
+#if IS_LITTLE_ENDIAN
+        const uint8_t* b = (const uint8_t*)&s;           // byte 0 is the tag
+        h = str_hash_mix(h, str_load_le64(b + 1));
+        h = str_hash_mix(h, str_load_le64(b + 8) >> 8);
+#else
+        uint8_t c[16] = { 0 };                           // gather around the tag byte
+        for (int i = 0; i < STR_INLINE_MAX; i++) c[i] = ((const uint8_t*)&s)[str_inline_off(i)];
+        h = str_hash_mix(h, str_load_le64(c));
+        h = str_hash_mix(h, str_load_le64(c + 8));
+#endif
         return str_hash_finish(h);
     }
     if ((s.meta >> STR_META_LEN_BITS) == 0) {
@@ -1781,7 +1828,7 @@ INLINE int32_t   str_byte_at(str_t s, object_t* o_index) {
     // Each read carries its own bound (redundant after the length check, but
     // visible to the compiler once a constant index is propagated in).
     if (str_is_inline(s))
-        return (uint32_t)i < STR_INLINE_MAX ? str_inline_bytes(&s)[i] : -1;
+        return (uint32_t)i < STR_INLINE_MAX ? ((const uint8_t*)&s)[str_inline_off(i)] : -1;
     uint32_t hl = s.meta & STR_META_LEN_MASK;
     if ((uint32_t)i < hl)
         return ((const uint8_t*)s.head + offsetof(str_head_t, array))[i];

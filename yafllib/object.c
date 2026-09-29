@@ -1027,7 +1027,7 @@ EXPORT object_t* object_pin_resolve(object_t* o) {
             return o;
         // Every possible holder releases after a bounded, allocation-free
         // section, so spinning is right and back-off would only add latency.
-        __builtin_ia32_pause();
+        cpu_relax();
     }
 }
 

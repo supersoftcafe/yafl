@@ -24,6 +24,7 @@
  */
 
 #include "../yafl.h"
+#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -96,8 +97,7 @@ static void __attribute__((noinline)) bury_copy_page(void) {
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : "memory",
-        "rbx", "r12", "r13", "r14", "r15");
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
 }
 
 /* Each inspection runs in its OWN frame: at -O0 the compiler parks raw
