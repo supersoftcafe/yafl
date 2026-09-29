@@ -104,27 +104,23 @@ fun _escapeFrag(c: String): String
 # appends an escape expansion and loops, or reports an error. The escape is
 # decoded inline so the loop is a *direct* tail self-call — `[tail]` makes a
 # string with many escapes run in constant stack.
-fun _dropSb(sb: System::StringBuilder, e: JsonParseError): JsonParseError
-  System::discard(sb)
-  ret e
-
-fun [tail] _strBody(st: ParseState, sb: System::StringBuilder): (state: ParseState, v: JsonValue|JsonParseError)
+fun [tail] _strBody(st: ParseState, out: String): (state: ParseState, v: JsonValue|JsonParseError)
   let s: String = st.s
   let lenS: Int = System::length(s)
   let delim: Int = System::findAny(s, "\"\\", st.pos)   # next " or \, or lenS
-  let sb1: System::StringBuilder = delim > st.pos ? System::appendSlice(sb, s, st.pos, delim) : sb
+  let out1: String = delim > st.pos ? out + System::slice(s, st.pos, delim) : out
   let frag: String = delim < lenS ? _escapeFrag(System::slice(s, delim + 1, delim + 2)) : ""
   ret delim < lenS
     ? (System::byteAt(s, delim) == '"'
-        ? (ParseState(s, delim + 1), JsonStr(System::toString(sb1)))
+        ? (ParseState(s, delim + 1), JsonStr(out1))
         : (System::length(frag) == 0
-            ? (ParseState(s, delim + 1), _dropSb(sb1, JsonParseError("unknown escape", delim + 1)))
-            : _strBody(ParseState(s, delim + 2), System::append(sb1, frag))))
-    : (ParseState(s, lenS), _dropSb(sb1, JsonParseError("unterminated string", delim)))
+            ? (ParseState(s, delim + 1), JsonParseError("unknown escape", delim + 1))
+            : _strBody(ParseState(s, delim + 2), out1 + frag)))
+    : (ParseState(s, lenS), JsonParseError("unterminated string", delim))
 
 # Caller has peeked but not consumed the opening quote.
 fun _parseString(st: ParseState): (state: ParseState, v: JsonValue|JsonParseError)
-  ret _strBody(_advance(st), System::StringBuilder())
+  ret _strBody(_advance(st), "")
 
 
 # ─── Internal: array parsing ─────────────────────────────────────────────
@@ -244,8 +240,9 @@ fun parse(s: String): JsonValue|JsonParseError
 
 
 # ─── Writer ────────────────────────────────────────────────────────────────
-# The writer builds a String through a StringBuilder — no IO, sync, and no
-# error monad (appending never fails). Everything threads the builder.
+# The writer appends to one String — no IO, sync, and no error monad
+# (appending never fails). Everything threads the output string, which
+# extends its own buffer in place, so the whole write is linear.
 
 # Offset of the next byte in `s` (at or after `from`) that needs escaping
 # (`"`, `\`, newline, return, tab), or length(s) if none.
@@ -277,17 +274,17 @@ fun _printEscapeFor(c: String): String
 
 # Quoted-string body: bulk-append each safe run, escape each special byte.
 # `[tail]` so a string with many escapes builds in constant stack.
-fun [tail] _printQuotedBody(sb: StringBuilder, s: String, i: Int): StringBuilder
+fun [tail] _printQuotedBody(out: String, s: String, i: Int): String
   let lenS: Int = System::length(s)
   let nextSpecial: Int = _printScanSpecial(s, i)
   ret i == lenS
-    ? sb
+    ? out
     : nextSpecial > i
-        ? _printQuotedBody(System::append(sb, System::slice(s, i, nextSpecial)), s, nextSpecial)
-        : _printQuotedBody(System::append(sb, _printEscapeFor(System::slice(s, i, i + 1))), s, i + 1)
+        ? _printQuotedBody(out + System::slice(s, i, nextSpecial), s, nextSpecial)
+        : _printQuotedBody(out + _printEscapeFor(System::slice(s, i, i + 1)), s, i + 1)
 
-fun _printQuoted(sb: StringBuilder, s: String): StringBuilder
-  ret System::append(_printQuotedBody(System::append(sb, "\""), s, 0), "\"")
+fun _printQuoted(out: String, s: String): String
+  ret _printQuotedBody(out + "\"", s, 0) + "\""
 
 # Formatting policy threaded through the writer. `comma` separates items at
 # the same nesting level; `indent` is one indentation unit. An empty `indent`
@@ -298,57 +295,57 @@ class [final] Layout(comma: String, indent: String)
 
 # Append a newline followed by `depth` indentation units. With an empty indent
 # unit (compact mode) this is a no-op.
-fun _appendBreak(sb: StringBuilder, lay: Layout, depth: Int): StringBuilder
+fun _appendBreak(out: String, lay: Layout, depth: Int): String
   ret System::length(lay.indent) == 0
-    ? sb
-    : _appendIndent(System::append(sb, "\n"), lay.indent, depth)
+    ? out
+    : _appendIndent(out + "\n", lay.indent, depth)
 
-fun [tail] _appendIndent(sb: StringBuilder, indent: String, depth: Int): StringBuilder
+fun [tail] _appendIndent(out: String, indent: String, depth: Int): String
   ret depth == 0
-    ? sb
-    : _appendIndent(System::append(sb, indent), indent, depth - 1)
+    ? out
+    : _appendIndent(out + indent, indent, depth - 1)
 
 # Leader before an item at `depth`: a line break for the first item; the comma
 # separator followed by a break for later ones. In compact mode the break
 # vanishes, leaving "" for the first item and ", " between items.
-fun _itemLead(sb: StringBuilder, lay: Layout, depth: Int, hasPrev: Int): StringBuilder
+fun _itemLead(out: String, lay: Layout, depth: Int, hasPrev: Int): String
   ret hasPrev > 0
-    ? _appendBreak(System::append(sb, lay.comma), lay, depth)
-    : _appendBreak(sb, lay, depth)
+    ? _appendBreak(out + lay.comma, lay, depth)
+    : _appendBreak(out, lay, depth)
 
-fun _writeArray(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout): StringBuilder
-  fun [tail] _body(sb: StringBuilder, l: List<JsonValue>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
+fun _writeArray(out: String, l: List<JsonValue>, depth: Int, lay: Layout): String
+  fun [tail] _body(out: String, l: List<JsonValue>, depth: Int, lay: Layout, hasPrev: Int): String
     ret match(head<JsonValue>(l))
       (n: None)         => hasPrev > 0
-        ? System::append(_appendBreak(sb, lay, depth), "]")
-        : System::append(sb, "]")
+        ? _appendBreak(out, lay, depth) + "]"
+        : out + "]"
       (elem: JsonValue) =>
-        _body(_writeValue(_itemLead(sb, lay, depth + 1, hasPrev), elem, depth + 1, lay),
+        _body(_writeValue(_itemLead(out, lay, depth + 1, hasPrev), elem, depth + 1, lay),
               tail<JsonValue>(l), depth, lay, 1)
-  ret _body(System::append(sb, "["), l, depth, lay, 0)
+  ret _body(out + "[", l, depth, lay, 0)
 
-fun _writeObject(sb: StringBuilder, l: List<JsonPair>, depth: Int, lay: Layout): StringBuilder
-  fun [tail] _body(sb: StringBuilder, l: List<JsonPair>, depth: Int, lay: Layout, hasPrev: Int): StringBuilder
+fun _writeObject(out: String, l: List<JsonPair>, depth: Int, lay: Layout): String
+  fun [tail] _body(out: String, l: List<JsonPair>, depth: Int, lay: Layout, hasPrev: Int): String
     ret match(head<JsonPair>(l))
       (n: None)     => hasPrev > 0
-        ? System::append(_appendBreak(sb, lay, depth), "}")
-        : System::append(sb, "}")
+        ? _appendBreak(out, lay, depth) + "}"
+        : out + "}"
       (p: JsonPair) =>
-        _body(_writeValue(System::append(_printQuoted(_itemLead(sb, lay, depth + 1, hasPrev), p.key), ": "),
+        _body(_writeValue(_printQuoted(_itemLead(out, lay, depth + 1, hasPrev), p.key) + ": ",
                           p.value, depth + 1, lay),
               tail<JsonPair>(l), depth, lay, 1)
-  ret _body(System::append(sb, "{"), l, depth, lay, 0)
+  ret _body(out + "{", l, depth, lay, 0)
 
-fun _writeValue(sb: StringBuilder, v: JsonValue, depth: Int, lay: Layout): StringBuilder
+fun _writeValue(out: String, v: JsonValue, depth: Int, lay: Layout): String
   ret match(v)
-    (n: JsonNull)   => System::append(sb, "null")
-    (t: JsonTrue)   => System::append(sb, "true")
-    (f: JsonFalse)  => System::append(sb, "false")
-    (s: JsonStr)    => _printQuoted(sb, s.strValue)
-    (n: JsonNum)    => System::append(sb, System::String(n.numValue))
-    (i: JsonInt)    => System::append(sb, System::String(i.intValue))
-    (a: JsonArr)    => _writeArray(sb, a.elements, depth, lay)
-    (o: JsonObj)    => _writeObject(sb, o.pairs, depth, lay)
+    (n: JsonNull)   => out + "null"
+    (t: JsonTrue)   => out + "true"
+    (f: JsonFalse)  => out + "false"
+    (s: JsonStr)    => _printQuoted(out, s.strValue)
+    (n: JsonNum)    => out + System::String(n.numValue)
+    (i: JsonInt)    => out + System::String(i.intValue)
+    (a: JsonArr)    => _writeArray(out, a.elements, depth, lay)
+    (o: JsonObj)    => _writeObject(out, o.pairs, depth, lay)
 
 
 # ─── Public: stringify ──────────────────────────────────────────────────────
@@ -357,7 +354,7 @@ fun _writeValue(sb: StringBuilder, v: JsonValue, depth: Int, lay: Layout): Strin
 # the compact ", "-separated form.
 fun stringify(v: JsonValue, pretty: Bool): String
   let lay: Layout = pretty ? Layout(",", "  ") : Layout(", ", "")
-  ret System::toString(_writeValue(System::StringBuilder(), v, 0, lay))
+  ret _writeValue("", v, 0, lay)
 
 # Compact form — convenience overload for the common case.
 fun stringify(v: JsonValue): String
@@ -537,9 +534,9 @@ fun _indent(n: System::Int): System::String
     : _indentBuild(n)
 
 fun _indentBuild(n: System::Int): System::String
-  fun [tail] go(n: System::Int, sb: System::StringBuilder): System::StringBuilder
-    ret n <= 0 ? sb : go(n - 1, System::append(sb, "  "))
-  ret System::toString(go(n, System::StringBuilder()))
+  fun [tail] go(n: System::Int, out: System::String): System::String
+    ret n <= 0 ? out : go(n - 1, out + "  ")
+  ret go(n, "")
 
 fun _prefixVal(pending: System::Bool, depth: System::Int): System::String
   ret pending ? "\n" + _indent(depth) : ""

@@ -108,10 +108,22 @@ enum { GC_PAGE_SIZE = 16384 };
 
 
 // The allocator's slot granule: every heap object occupies a multiple of
-// this, on 32- and 64-bit alike. object.c's slot_t asserts it; size-aware
-// callers (string_builder_reserve's perfect-fill policy) consume it.
+// this, on 32- and 64-bit alike. object.c's slot_t asserts it.
 #define GC_ALLOC_GRANULE 32
 #define ALIGNED     __attribute__((aligned(GC_ALLOC_GRANULE)))
+
+
+// Spin-wait hint for a waiter on a busy lock: lets an SMT sibling (often the
+// holder) run. Targets without an instruction for it get a compiler barrier.
+static inline void cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ volatile("yield" ::: "memory");
+#else
+    __asm__ volatile("" ::: "memory");
+#endif
+}
 
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
@@ -172,9 +184,13 @@ typedef uint64_t ptr_mask_t;
         ((ptr_mask_t)((ptr_word_of(type, field) / 64 == (size_t)(w))\
             ? (((ptr_mask_t)1) << (ptr_word_of(type, field) % 64)) : (ptr_mask_t)0))
 
+// `o` FIRST: the GC word leads, so a function value lays out like a String
+// value (str_t: GC-visible word 0, payload word 1) and a union of the two
+// copies as plain words. Every initialiser is designated, so the order is
+// free everywhere else.
 typedef struct {
-    void* f;
     void* o;
+    void* f;
 } fun_t;
 
 
@@ -202,6 +218,11 @@ typedef struct vtable {
     // every walker treats NULL as a single-window map.
     const ptr_mask_t* object_pointer_masks;
     uint16_t object_pointer_mask_words;
+    // Offset of a uint32_t CAPACITY field for arrays built in place (0 = none).
+    // Capacity is in the same units as the array_len_offset field; the heap
+    // owns only `length` elements, so any copy (compaction) trims the object
+    // and resets capacity to length on the copy.
+    uint16_t array_cap_offset;
     const char *name;
     struct vtable** implements_array; // Array of all classes that this class extends
 #ifdef NDEBUG
@@ -223,6 +244,7 @@ typedef struct vtable {
             int32_t discriminator;\
             const ptr_mask_t* object_pointer_masks;\
             uint16_t object_pointer_mask_words;\
+            uint16_t array_cap_offset;\
             const char* name;\
             struct vtable** implements_array;\
             vtable_entry_t lookup[LOOKUP_COUNT];\
@@ -770,17 +792,17 @@ EXTERN fun_t object_lookup_vtable(object_t *object, intptr_t id);
 // Tag-aware "is-a" test for match-arm dispatch. True if `obj` is an instance
 // of `target` either exactly (its vtable == target) or transitively (target
 // appears in its vtable's implements_array). NULL and tagged pointers match
-// the appropriate pseudo-vtable (INTEGER_VTABLE / STRING_VTABLE) and nothing
-// else.
+// the appropriate pseudo-vtable (INTEGER_VTABLE / STR_HEAD_VTABLE — an inline
+// String's word 0 is a tagged word) and nothing else.
 struct integer_vtable;
-struct string_vtable;
+struct str_head_vtable;
 EXTERN struct integer_vtable INTEGER_VTABLE;
-EXTERN struct string_vtable STRING_VTABLE;
+EXTERN struct str_head_vtable STR_HEAD_VTABLE;
 INLINE bool object_is_instance(object_t* obj, vtable_t* target) {
     uintptr_t raw = (uintptr_t)obj;
     if (raw == 0) return false;
     if (raw & PTR_TAG_INTEGER) return target == (vtable_t*)&INTEGER_VTABLE;
-    if ((raw & PTR_TAG_MASK) == PTR_TAG_STRING) return target == (vtable_t*)&STRING_VTABLE;
+    if ((raw & PTR_TAG_MASK) == PTR_TAG_STRING) return target == (vtable_t*)&STR_HEAD_VTABLE;
     if (raw & PTR_TAG_TASK) return false;
     // Follow any forwarding pointers left by compaction: a relocated object's
     // old slot holds the new object's (heap) address, not a vtable. Mirrors
@@ -815,8 +837,6 @@ EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 extern int    _yafl_argc;
 extern char** _yafl_argv;
 EXTERN object_t* sys_argc(object_t* self);
-EXTERN object_t* sys_argv_at(object_t* self, object_t* o_index);
-EXTERN object_t* sys_getenv(object_t* self, object_t* o_name);
 
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
@@ -1367,10 +1387,6 @@ EXTERN int16_t   int16_from_integer_truncate(object_t* self);
 EXTERN int32_t   int32_from_integer_truncate(object_t* self);
 EXTERN int64_t   int64_from_integer_truncate(object_t* self);
 
-EXTERN object_t* string_from_int8 (int8_t  v);
-EXTERN object_t* string_from_int16(int16_t v);
-EXTERN object_t* string_from_int32(int32_t value);
-EXTERN object_t* string_from_int64(int64_t v);
 
 // Decimal-render an arbitrary-precision Int into a CALLER-SUPPLIED buffer.
 // Allocates nothing — neither YAFL heap nor malloc — so it is usable from the
@@ -1414,8 +1430,6 @@ INLINE bool     float64_is_nan(double a)         { return a != a; }
 
 EXTERN double    float64_from_integer(object_t* i);
 EXTERN object_t* integer_from_float64(double f);
-EXTERN object_t* string_from_float64(double f);
-EXTERN double    float64_parse_or_nan(object_t* s);
 
 INLINE float    float32_add(float a, float b) { return a + b; }
 INLINE float    float32_sub(float a, float b) { return a - b; }
@@ -1436,8 +1450,6 @@ INLINE float    float32_from_int32(int32_t i)  { return (float)i; }
 INLINE float    float32_from_int64(int64_t i)  { return (float)i; }
 EXTERN float    float32_from_integer(object_t* i);
 EXTERN object_t* integer_from_float32(float f);
-EXTERN object_t* string_from_float32(float f);
-EXTERN float    float32_parse_or_nan(object_t* s);
 EXTERN int32_t float32_hash(float f);
 
 
@@ -1454,183 +1466,394 @@ EXTERN int32_t float32_hash(float f);
  *****************************
  **********************************************************/
 
-typedef struct string {
+// The heap head of a String value: every heap-held String's bytes live in
+// one — a growable buffer (STR_BUF_VTABLE) or a read-only head (a static
+// literal, STR_HEAD_VTABLE) — so a head's bytes are always at the same offset.
+typedef struct str_head {
     vtable_t* vtable;
     uint32_t length;
-    // Lazy FNV-1a hash cache (see string_hash): 0 = not yet computed. The
-    // write is a plain idempotent store on an immutable object — a race or
-    // a store lost to a compaction copy just means one recompute. Builder
-    // APIs that mutate bytes in place (the *_dangerously writes, truncate)
-    // reset it. Also moves `array` to offset 16 — word-aligned data.
-    uint32_t hash;
+    // Growable heads (STR_BUF_VTABLE): capacity + 1. It is the vtable's
+    // array_cap_offset, so compaction resets it to `length` on a copy (the
+    // copy owns no spare room). 0 on every read-only head.
+    uint32_t capacity;
+    // Hash cache: (covered length << 32) | hash of array[0, covered length);
+    // 0 = none. The covered bytes never change (a head only grows past its
+    // used length), so one atomic word is the whole protocol — a racing
+    // writer stores a correct value too, and a compaction copy carries a
+    // still-valid entry.
+    _Atomic(uint64_t) hash;
     uint8_t array[16];
-} ALIGNED string_t;
+} ALIGNED str_head_t;
 
-struct string_vtable;
-EXTERN struct string_vtable STRING_VTABLE;
+struct str_head_vtable;
+EXTERN struct str_head_vtable STR_HEAD_VTABLE;
 
-
-// Helper macro to compute string length at compile time
+// Compile-time length of a C string literal.
 #define STRING_LEN(str) (sizeof(str) - 1)
 
-// Maximum characters that can fit in a pointer (leaving room for length byte)
-#define MAX_SHORT_LEN ((WORD_SIZE/8) - 1)
 
+/**********************************************************
+ *****
+ *************
+ *****************************
+ *                   String values (str_t)
+ **
+ *****
+ *************
+ *****************************
+ **********************************************************/
 
-// Helper macro to create a short string value for 32-bit.
-// The (uint8_t) cast is essential: `char` is signed on many platforms, so
-// `(uint32_t)str[i]` would sign-extend bytes ≥0x80 into the high bits and
-// corrupt the packed pointer (causing wrong string_length, wrong byte reads).
-#if IS_LITTLE_ENDIAN
-#define SHORT_STRING_32(str, len) ( \
-                  (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint32_t)(uint8_t)str[0] <<  8 ) | \
-    (len < 2 ? 0 : ((uint32_t)(uint8_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint32_t)(uint8_t)str[2] << 24)) )
-#else
-#define SHORT_STRING_32(str, len) ( \
-                  (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint32_t)(uint8_t)str[0] << 24 ) | \
-    (len < 2 ? 0 : ((uint32_t)(uint8_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint32_t)(uint8_t)str[2] <<  8)) )
-#endif
-
-// Helper macro to create a short string value for 64-bit.
-// The (uint8_t) cast guards against signed-char sign extension — see SHORT_STRING_32.
-#if IS_LITTLE_ENDIAN
-#define SHORT_STRING_64(str, len) ( \
-                  (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint64_t)(uint8_t)str[0] <<  8 ) | \
-    (len < 2 ? 0 : ((uint64_t)(uint8_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint64_t)(uint8_t)str[2] << 24)) | \
-    (len < 4 ? 0 : ((uint64_t)(uint8_t)str[3] << 32)) | \
-    (len < 5 ? 0 : ((uint64_t)(uint8_t)str[4] << 40)) | \
-    (len < 6 ? 0 : ((uint64_t)(uint8_t)str[5] << 48)) | \
-    (len < 7 ? 0 : ((uint64_t)(uint8_t)str[6] << 56)) )
-#else
-#define SHORT_STRING_64(str, len) ( \
-                  (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint64_t)(uint8_t)str[0] << 56 ) | \
-    (len < 2 ? 0 : ((uint64_t)(uint8_t)str[1] << 48)) | \
-    (len < 3 ? 0 : ((uint64_t)(uint8_t)str[2] << 40)) | \
-    (len < 4 ? 0 : ((uint64_t)(uint8_t)str[3] << 32)) | \
-    (len < 5 ? 0 : ((uint64_t)(uint8_t)str[4] << 24)) | \
-    (len < 6 ? 0 : ((uint64_t)(uint8_t)str[5] << 16)) | \
-    (len < 7 ? 0 : ((uint64_t)(uint8_t)str[6] <<  8)) )
-#endif
-
-// Choose appropriate short string implementation based on word size
+// A YAFL String is a 16-byte VALUE, two modes told apart by word 0:
+//
+//   INLINE (length <= 15): `head` is a packed-string word, low byte
+//     len << 3 | PTR_TAG_STRING (the GC reads any tagged word as a
+//     non-pointer); content bytes 0..14 are bytes 1..15 of the value.
+//   HEAP (length >= 16): `head` is a buffer (str_head_t layout); `meta` holds
+//     head_len (low 29 bits) | tail_len << 29, `tail` up to 4 more bytes.
+//
+//   content = inline bytes, or head->array[0 .. head_len) ++ tail[0 .. tail_len)
+//
+// CANONICAL BY LENGTH: inline exactly when length <= 15, and unused inline
+// bytes are always zero — so short strings are equal iff their 16 bytes are.
+//
+// Growable heads carry STR_BUF_VTABLE: `length` = used + 1 (the GC sizes the
+// object by it, so compaction trims spare capacity) and the hash slot =
+// capacity + 1 (array_cap_offset: compaction resets it to length on the
+// copy). `used` is the high-water mark; a value extends a head in place only
+// when it holds the PIN and owns the end (head_len == used) — see str.c.
+// Any other head (a static literal, STR_HEAD_VTABLE) is read-only.
+//
+// Union values that contain String use str_t too: word 0 dispatches exactly
+// like a one-word union (NULL = None, tagged Int, class pointer, or a
+// string), word 1 is String payload.
+// 16 bytes on every word size. 64-bit: 4 tail bytes, head_len 29 bits.
+// 32-bit: `head` is 4 bytes, so the tail is 8 and head_len 28 bits (4 bits of
+// tail_len). Inline content is always value bytes 1..15, and the tail always
+// starts at `tail` — C reaches both through byte pointers, never by word.
 #if WORD_SIZE == 32
-#define SHORT_STRING(str, len) SHORT_STRING_32(str, len)
+typedef struct str {
+    object_t* head;
+    uint32_t  meta;
+    uint32_t  tail[2];
+} str_t;
+#define STR_TAIL_MAX      8
+#define STR_META_LEN_BITS 28
 #else
-#define SHORT_STRING(str, len) SHORT_STRING_64(str, len)
+typedef struct str {
+    object_t* head;
+    uint32_t  meta;
+    uint32_t  tail[1];
+} str_t;
+#define STR_TAIL_MAX      4
+#define STR_META_LEN_BITS 29
 #endif
+_Static_assert(sizeof(str_t) == 16, "str_t is 16 bytes on every target");
 
-#define STR(contents) ( \
-    STRING_LEN(contents) <= MAX_SHORT_LEN ? \
-        (object_t*)SHORT_STRING(contents, STRING_LEN(contents)) : \
-        (object_t*)&( \
-            struct { \
-                vtable_t* v; \
-                uint32_t l; \
-                uint32_t h; \
-                char a[sizeof(contents)]; \
-            }){VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(contents), 0, contents})
+#define STR_INLINE_MAX    15
+#define STR_META_LEN_MASK ((1u << STR_META_LEN_BITS) - 1)
+// The tag byte — `head`'s low byte, which carries PTR_TAG_STRING and the
+// inline length — sits at this offset in memory: first on little-endian,
+// last in the word on big-endian. An inline value's 15 content bytes are the
+// other 15, in memory order: bytes 1..15 on little-endian; on big-endian the
+// bytes before the tag byte, then the bytes after it.
+#define STR_TAG_BYTE (IS_LITTLE_ENDIAN ? 0 : (int)sizeof(void*) - 1)
+// Offset within the value of inline content byte i (0..14).
+INLINE int str_inline_off(int i) { return i < STR_TAG_BYTE ? i : i + 1; }
+INLINE uint8_t* str_tail_bytes(str_t* s)   { return (uint8_t*)s->tail; }
 
+EXTERN struct str_head_vtable STR_BUF_VTABLE;
 
-INLINE int32_t string_length(object_t* self) {
-    // UNSIGNED: a packed short string whose final byte has the high bit set
-    // (any UTF-8 continuation byte in the last slot) makes the pointer value
-    // negative, and a SIGNED divide then sign-extends — corrupting the length
-    // bits. Short strings are a bit pattern, never a number.
-    if (PTR_IS_STRING(self))
-        return (int32_t)((sizeof(uintptr_t)-1) & ((uintptr_t)self / (PTR_TAG_MASK+1)));
-    return ((string_t*)self)->length - 1;
+INLINE bool str_is_inline(str_t s) {
+    return ((uintptr_t)s.head & PTR_TAG_MASK) == PTR_TAG_STRING;
+}
+INLINE int32_t str_length(str_t s) {
+    return str_is_inline(s) ? (int32_t)(((uintptr_t)s.head & 0xff) >> 3)
+                            : (int32_t)((s.meta & STR_META_LEN_MASK) + (s.meta >> STR_META_LEN_BITS));
 }
 
-EXTERN object_t* string_allocate(int32_t length);
-EXTERN object_t* string_from_bytes(uint8_t* data, int32_t length);
-EXTERN int32_t   string_copy_cstr(object_t* self, char* buf, int32_t buf_size);
-INLINE char* string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr) {
-    if (!PTR_IS_STRING(self)) {
-        *len_ptr = ((string_t*)self)->length - 1;
-        return (char*)((string_t*)self)->array;
+// Literals. The compiler picks the form from the UTF-8 byte length. The
+// short form spells the 16 bytes as byte 0 = tag, bytes 1..15 = content,
+// assembled into whichever words this target has.
+#define STR16_B(c, i) ((uint64_t)(uint8_t)(STRING_LEN(c) > (i) ? (c)[i] : 0))
+#define STR16_TAGB(c) ((uint64_t)(STRING_LEN(c) * (PTR_TAG_MASK+1) + PTR_TAG_STRING))
+#if IS_LITTLE_ENDIAN
+// Little-endian word of value bytes [o, o+4) where value byte 0 is the tag.
+#define STR16_W32(c, o) ((uint32_t)( \
+      ((o) == 0 ? STR16_TAGB(c) : STR16_B(c, (o)-1)) \
+    | STR16_B(c, (o))   << 8 | STR16_B(c, (o)+1) << 16 | STR16_B(c, (o)+2) << 24))
+#else
+// Big-endian word of content bytes [k, k+4), and the head word's last word,
+// whose final byte is the tag.
+#define STR16_BE32(c, k) ((uint32_t)( \
+      STR16_B(c, (k)) << 24 | STR16_B(c, (k)+1) << 16 | STR16_B(c, (k)+2) << 8 | STR16_B(c, (k)+3)))
+#define STR16_BE32_TAG(c, k) ((uint32_t)( \
+      STR16_B(c, (k)) << 24 | STR16_B(c, (k)+1) << 16 | STR16_B(c, (k)+2) << 8 | STR16_TAGB(c)))
+#endif
+#if WORD_SIZE == 32 && IS_LITTLE_ENDIAN
+#define STR16_SHORT(c) ((str_t){ \
+    .head = (object_t*)(uintptr_t)STR16_W32(c, 0), \
+    .meta = STR16_W32(c, 4), .tail = { STR16_W32(c, 8), STR16_W32(c, 12) } })
+#elif IS_LITTLE_ENDIAN
+#define STR16_SHORT(c) ((str_t){ \
+    .head = (object_t*)(uintptr_t)((uint64_t)STR16_W32(c, 0) | (uint64_t)STR16_W32(c, 4) << 32), \
+    .meta = STR16_W32(c, 8), .tail = { STR16_W32(c, 12) } })
+#elif WORD_SIZE == 32
+// content 0..2 + tag | 3..6 | 7..10 | 11..14
+#define STR16_SHORT(c) ((str_t){ \
+    .head = (object_t*)(uintptr_t)STR16_BE32_TAG(c, 0), \
+    .meta = STR16_BE32(c, 3), .tail = { STR16_BE32(c, 7), STR16_BE32(c, 11) } })
+#else
+// content 0..3 | 4..6 + tag | 7..10 | 11..14
+#define STR16_SHORT(c) ((str_t){ \
+    .head = (object_t*)(uintptr_t)((uint64_t)STR16_BE32(c, 0) << 32 | (uint64_t)STR16_BE32_TAG(c, 4)), \
+    .meta = STR16_BE32(c, 7), .tail = { STR16_BE32(c, 11) } })
+#endif
+#define STR16_LONG(c) ((str_t){ \
+    .head = (object_t*)&(struct { vtable_t* v; uint32_t l; uint32_t cap; uint64_t h; char a[sizeof(c)]; }) \
+        { VTABLE_TAG_CONST(&STR_HEAD_VTABLE), sizeof(c), 0, 0, c }, \
+    .meta = STRING_LEN(c), .tail = { 0 } })
+
+// A one-word union member (None = NULL, a tagged Int, an object) placed in a
+// two-word union value: word 0 carries it, the payload words are zero.
+INLINE str_t str_word(object_t* word) {
+    str_t s;
+    memset(&s, 0, sizeof s);
+    s.head = word;
+    return s;
+}
+
+// Word 0 of a wide union can also be a SPARE code: a packed-string tagged word
+// whose length field is 16..31 — a length no inline string has — so the GC
+// ignores it (it is tagged) and a string test that checks the length never
+// mistakes it for a string. Code k names a scalar member's TYPE globally (the
+// same k in every union — the compiler's table — so values widen between
+// unions untouched); its payload is value bytes 8..15. None stays NULL.
+#define STR_SPARE_WORD(k) ((object_t*)(uintptr_t)((16 + (k)) * (PTR_TAG_MASK + 1) + PTR_TAG_STRING))
+INLINE bool str_word_is_string(object_t* w) {
+    uintptr_t r = (uintptr_t)w;
+    if ((r & PTR_TAG_MASK) == PTR_TAG_STRING) return ((r & 0xff) >> 3) <= STR_INLINE_MAX;
+    return w != NULL && object_is_instance(w, (vtable_t*)&STR_HEAD_VTABLE);
+}
+// The spare code in word 0, or -1 when it is not one.
+INLINE int32_t str_word_code(object_t* w) {
+    uintptr_t r = (uintptr_t)w;
+    uint32_t len = (uint32_t)(r & 0xff) >> 3;
+    return ((r & PTR_TAG_MASK) == PTR_TAG_STRING && len > STR_INLINE_MAX) ? (int32_t)len - 16 : -1;
+}
+INLINE str_t str_pack_bits(int32_t code, uint64_t bits) {
+    str_t s;
+    memset(&s, 0, sizeof s);
+    s.head = STR_SPARE_WORD(code);
+    memcpy((uint8_t*)&s + 8, &bits, sizeof bits);
+    return s;
+}
+INLINE uint64_t str_unpack_bits(str_t s) {
+    uint64_t bits;
+    memcpy(&bits, (uint8_t*)&s + 8, sizeof bits);
+    return bits;
+}
+INLINE str_t   str_pack_int8(int32_t code, int8_t v)    { return str_pack_bits(code, (uint8_t)v); }
+INLINE str_t   str_pack_int16(int32_t code, int16_t v)  { return str_pack_bits(code, (uint16_t)v); }
+INLINE str_t   str_pack_int32(int32_t code, int32_t v)  { return str_pack_bits(code, (uint32_t)v); }
+INLINE str_t   str_pack_int64(int32_t code, int64_t v)  { return str_pack_bits(code, (uint64_t)v); }
+INLINE str_t   str_pack_float32(int32_t code, float v)  { uint32_t b; memcpy(&b, &v, 4); return str_pack_bits(code, b); }
+INLINE str_t   str_pack_float64(int32_t code, double v) { uint64_t b; memcpy(&b, &v, 8); return str_pack_bits(code, b); }
+INLINE int8_t  str_unpack_int8(str_t s)    { return (int8_t)(uint8_t)str_unpack_bits(s); }
+INLINE int16_t str_unpack_int16(str_t s)   { return (int16_t)(uint16_t)str_unpack_bits(s); }
+INLINE int32_t str_unpack_int32(str_t s)   { return (int32_t)(uint32_t)str_unpack_bits(s); }
+INLINE int64_t str_unpack_int64(str_t s)   { return (int64_t)str_unpack_bits(s); }
+INLINE float   str_unpack_float32(str_t s) { uint32_t b = (uint32_t)str_unpack_bits(s); float v; memcpy(&v, &b, 4); return v; }
+INLINE double  str_unpack_float64(str_t s) { uint64_t b = str_unpack_bits(s); double v; memcpy(&v, &b, 8); return v; }
+
+// A FUNCTION member of a wide union: word 0 is its environment (the GC word,
+// as in fun_t {o, f}) and value bytes 8.. its code pointer. A NULL environment
+// cannot be NULL here (that is None): it is spare code 0 instead. Such a union
+// has no class members (a bound method's environment IS a class instance), so
+// any other untagged, non-string, non-integer word is a function environment.
+#define STR_CODE_FUN_NULL_ENV 0
+INLINE str_t str_from_fun(fun_t f) {
+    str_t s;
+    memset(&s, 0, sizeof s);
+    s.head = f.o ? (object_t*)f.o : STR_SPARE_WORD(STR_CODE_FUN_NULL_ENV);
+    memcpy((uint8_t*)&s + 8, &f.f, sizeof f.f);
+    return s;
+}
+INLINE fun_t str_to_fun(str_t s) {
+    fun_t f;
+    f.o = str_word_code(s.head) == STR_CODE_FUN_NULL_ENV ? NULL : (void*)s.head;
+    memcpy(&f.f, (uint8_t*)&s + 8, sizeof f.f);
+    return f;
+}
+INLINE bool str_word_is_fun(object_t* w) {
+    if ((uintptr_t)w & PTR_TAG_MASK) return str_word_code(w) == STR_CODE_FUN_NULL_ENV;
+    return w != NULL && !object_is_instance(w, (vtable_t*)&STR_HEAD_VTABLE)
+                     && !object_is_instance(w, (vtable_t*)&INTEGER_VTABLE);
+}
+
+EXTERN str_t     str_from_bytes(const uint8_t* data, int32_t length);
+EXTERN str_t     str_from_cstr(const char* cstr);
+// Copy bytes [from, from + n) of `s` to `dst` (the range must lie within s).
+EXTERN void      str_copy_range(str_t s, int32_t from, int32_t n, uint8_t* dst);
+// Copy all str_length(s) bytes of `s` to `dst`.
+EXTERN void      str_copy_bytes(str_t s, uint8_t* dst);
+// `s` as a NUL-terminated C string (for fopen, getenv, …): in `buf` when it
+// fits, else in a malloc'd block returned through `*heap` for the caller to
+// free (NULL otherwise). Embedded NULs are the caller's concern.
+EXTERN char*     str_cstr(str_t s, char* buf, int32_t size, char** heap);
+// At most size-1 bytes of `s` into `buf`, NUL-terminated (truncating); the
+// number of bytes copied.
+EXTERN int32_t   str_copy_cstr(str_t s, char* buf, int32_t size);
+EXTERN object_t* print_string(object_t* self, str_t s);
+// The process arguments and environment (object.c).
+EXTERN str_t     sys_argv_at(object_t* self, object_t* o_index);
+EXTERN str_t     sys_getenv(object_t* self, str_t name);   // String|None
+
+// task_str_t: task subtype whose result is a String value, or a union that
+// shares its representation (the compiler's "task_str"). result.head sits at
+// the offset task_obj_t keeps its object result, so a runtime job embedding a
+// task_str_t serves one-word results through word 0 unchanged.
+typedef struct {
+    vtable_t*               type;
+    _Atomic(int32_t)        state;
+    int32_t                 thread_id;
+    fun_t                   callback;
+    _Atomic(struct task_s*) next;
+    str_t                   result;
+} task_str_t;
+_Static_assert(offsetof(task_str_t, result) == offsetof(task_obj_t, result),
+               "task_str_t.result.head shares task_obj_t.result's offset");
+EXTERN struct task_vtable TASK_STR_VTABLE;
+#define obj_task_str ((vtable_t*)&TASK_STR_VTABLE)
+EXTERN object_t* task_str_create(object_t* self);
+// Appending two INLINE values that still fit inline is pure bit arithmetic:
+// canonical zero padding means b's content can be shifted in after a's with
+// no masking. Everything else — any heap side, or a result past 15 bytes —
+// goes out of line.
+EXTERN str_t     str_append_slow(str_t a, str_t b);
+INLINE str_t     str_append(str_t a, str_t b) {
+#if defined(__SIZEOF_INT128__) && IS_LITTLE_ENDIAN
+    if (str_is_inline(a) && str_is_inline(b)) {
+        uint32_t la = (uint32_t)str_length(a), lb = (uint32_t)str_length(b);
+        if (la + lb <= STR_INLINE_MAX) {
+            unsigned __int128 va, vb;
+            memcpy(&va, &a, sizeof va);
+            memcpy(&vb, &b, sizeof vb);
+            va |= (vb >> 8) << (8 * (la + 1));              // b's content after a's
+            va = (va & ~(unsigned __int128)0xFF)
+               | (unsigned __int128)((la + lb) * (PTR_TAG_MASK + 1) + PTR_TAG_STRING);
+            str_t r;
+            memcpy(&r, &va, sizeof r);
+            return r;
+        }
     }
-    uintptr_t test = 1;
-    if (1 == *(uint8_t*)&test)
-         *local_buffer = (uintptr_t)self >> 8;
-    else *local_buffer = (uintptr_t)self & ~(uintptr_t)255;
-    *len_ptr = (int32_t)((sizeof(uintptr_t)-1) & ((uintptr_t)self / (PTR_TAG_MASK+1)));
-    return (char*)local_buffer;
+#endif
+    return str_append_slow(a, b);
 }
-EXTERN object_t* string_truncate(object_t* self, int32_t new_length);
-EXTERN object_t* string_append(object_t* self, object_t* data);
-EXTERN object_t* string_concat_n(int32_t count, ...);
-EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
-EXTERN int       string_compare(object_t* self, object_t* data);
-
-INLINE object_t* string_length_int(object_t* self) {
-    return integer_from_int32(string_length(self));
+EXTERN str_t     str_concat_n(int32_t count, ...);
+EXTERN int       str_compare(str_t a, str_t b);
+INLINE bool      str_eq(str_t a, str_t b) {
+    // The same 16 bytes are the same string: for inline values that is the
+    // whole test (canonical by length); for heap values it is the same head,
+    // length and tail — the common case of a dict key found by itself.
+    if (memcmp(&a, &b, sizeof a) == 0) return true;
+    if (str_is_inline(a) || str_is_inline(b)) return false;
+    if (str_length(a) != str_length(b)) return false;
+    return str_compare(a, b) == 0;
 }
-INLINE object_t* string_compare_int(object_t* self, object_t* data) {
-    int r = string_compare(self, data);
-    return integer_from_int24(r < 0 ? -1 : r > 0 ? 1 : 0);
+INLINE bool      str_lt(str_t a, str_t b) { return str_compare(a, b) < 0; }
+INLINE bool      str_gt(str_t a, str_t b) { return str_compare(a, b) > 0; }
+INLINE object_t* str_compare_int(str_t a, str_t b) {
+    int r = str_compare(a, b);
+    return integer_from_int32(r < 0 ? -1 : r > 0 ? 1 : 0);
 }
-INLINE bool string_eq(object_t* self, object_t* data) { return string_compare(self, data) == 0; }
-INLINE bool string_lt(object_t* self, object_t* data) { return string_compare(self, data) <  0; }
-INLINE bool string_gt(object_t* self, object_t* data) { return string_compare(self, data) >  0; }
-
-INLINE int32_t string_byte_at(object_t* self, object_t* o_index) {
-    // Returns the unsigned byte value [0..255] as an int32 (YAFL Int32), or
-    // -1 when `o_index` is out of range. The byte VALUE is Int32; the index
-    // is still an Int (object).
+INLINE object_t* str_length_int(str_t s) { return integer_from_int32(str_length(s)); }
+// Hashing. The byte stream 8 bytes per multiply, length mixed in, 31 bits,
+// never 0 (0 stays the "no hash" sentinel). The fast paths live here, at the
+// call site: an INLINE value is its own zero-padded 15 content bytes — two
+// words, no loop — and needs no cache (it can never equal a heap string: those
+// are all longer); a tail-less HEAP value whose head caches the hash of exactly
+// its length is one load and one compare. Everything else: str_hash_heap.
+#define STR_HASH_SEED 0x243F6A8885A308D3ull
+INLINE uint64_t str_hash_mix(uint64_t h, uint64_t w) {
+    h ^= w;
+    h *= 0x9E3779B97F4A7C15ull;
+    return h ^ (h >> 32);
+}
+INLINE int32_t str_hash_finish(uint64_t h) {
+    h ^= h >> 29;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 32;
+    uint32_t m = (uint32_t)h & 0x7fffffffu;
+    return (int32_t)(m ? m : 1);
+}
+INLINE uint64_t str_load_le64(const void* p) {
+    uint64_t w;
+    memcpy(&w, p, sizeof w);
+#if !IS_LITTLE_ENDIAN
+    w = __builtin_bswap64(w);
+#endif
+    return w;
+}
+EXTERN int32_t   str_hash_heap(str_t s);
+INLINE int32_t   str_hash(str_t s) {
+    if (str_is_inline(s)) {
+        // The same words the heap path hashes: content bytes 0..7, 8..14.
+        uint64_t h = STR_HASH_SEED ^ (uint64_t)str_length(s);
+#if IS_LITTLE_ENDIAN
+        const uint8_t* b = (const uint8_t*)&s;           // byte 0 is the tag
+        h = str_hash_mix(h, str_load_le64(b + 1));
+        h = str_hash_mix(h, str_load_le64(b + 8) >> 8);
+#else
+        uint8_t c[16] = { 0 };                           // gather around the tag byte
+        for (int i = 0; i < STR_INLINE_MAX; i++) c[i] = ((const uint8_t*)&s)[str_inline_off(i)];
+        h = str_hash_mix(h, str_load_le64(c));
+        h = str_hash_mix(h, str_load_le64(c + 8));
+#endif
+        return str_hash_finish(h);
+    }
+    if ((s.meta >> STR_META_LEN_BITS) == 0) {
+        uint64_t k = atomic_load_explicit(&((str_head_t*)s.head)->hash, memory_order_relaxed);
+        if ((uint32_t)(k >> 32) == (s.meta & STR_META_LEN_MASK))
+            return (int32_t)(uint32_t)k;
+    }
+    return str_hash_heap(s);
+}
+EXTERN str_t     str_slice(str_t s, object_t* start, object_t* end);
+// Unsigned byte value [0..255], or -1 when the index is out of range. Inline:
+// parsers call it per byte.
+INLINE int32_t   str_byte_at(str_t s, object_t* o_index) {
     int overflow = 0;
-    int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
-    if (overflow) return -1;
-    intptr_t buf; int32_t len;
-    char* cstr = string_to_cstr(self, &buf, &len);
-    if (idx < 0 || idx >= len) return -1;
-    return (unsigned char)cstr[idx];
+    int32_t i = int32_from_integer_with_overflow(o_index, &overflow);
+    if (overflow || i < 0 || i >= str_length(s)) return -1;
+    // Each read carries its own bound (redundant after the length check, but
+    // visible to the compiler once a constant index is propagated in).
+    if (str_is_inline(s))
+        return (uint32_t)i < STR_INLINE_MAX ? ((const uint8_t*)&s)[str_inline_off(i)] : -1;
+    uint32_t hl = s.meta & STR_META_LEN_MASK;
+    if ((uint32_t)i < hl)
+        return ((const uint8_t*)s.head + offsetof(str_head_t, array))[i];
+    uint32_t t = (uint32_t)i - hl;
+    return t < STR_TAIL_MAX ? str_tail_bytes(&s)[t] : -1;
 }
+EXTERN object_t* str_find_byte(str_t s, int32_t byte, object_t* from);
+EXTERN object_t* str_index_of(str_t s, str_t needle, object_t* from);
+EXTERN object_t* str_find_any(str_t s, str_t accept, object_t* from);
+EXTERN object_t* str_skip_any(str_t s, str_t accept, object_t* from);
+EXTERN object_t* str_parse_int(str_t s);
+EXTERN int32_t   str_codepoint_at(str_t s, object_t* from);
+EXTERN object_t* str_codepoint_count(str_t s);
+EXTERN bool      str_valid_utf8(str_t s);
+EXTERN str_t     str_ascii(int32_t byte);
+EXTERN str_t     str_wchar(int32_t codepoint);
+EXTERN str_t     str_from_int8(int8_t v);
+EXTERN str_t     str_from_int16(int16_t v);
+EXTERN str_t     str_from_int32(int32_t v);
+EXTERN str_t     str_from_int64(int64_t v);
+EXTERN str_t     str_from_float32(float v);
+EXTERN str_t     str_from_float64(double v);
+EXTERN double    str_parse_float64(str_t s);
+EXTERN float     str_parse_float32(str_t s);
 
-INLINE object_t* string_copy_to_dangerously(object_t* self, object_t* o_index, object_t* value) {
-    // `self` must be a heap-allocated string (a packed short string would
-    // segfault on the memcpy destination cast). `value` may be packed or
-    // heap — `string_to_cstr` handles both.
-    int overflow = 0;
-    int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
-    intptr_t local_buffer;
-    int32_t vlen;
-    char* vstr = string_to_cstr(value, &local_buffer, &vlen);
-    memcpy(((string_t*)self)->array + idx, vstr, vlen);
-    ((string_t*)self)->hash = 0;  // bytes changed: invalidate the lazy hash
-    return self;
-}
-
-INLINE object_t* ascii_to_string(int32_t b) {
-    // Build a one-byte packed short string in a single instruction sequence.
-    // No allocation; the byte lives in the pointer bits. Caller is expected
-    // to pass a value in [0..255]; we range-check to avoid silently corrupting
-    // the packed payload on negative or oversized inputs.
-    if (b < 0 || b > 255) __abort_on_overflow();
-    uint8_t bytes[MAX_SHORT_LEN] = { (uint8_t)b };
-    return (object_t*)SHORT_STRING(bytes, 1);
-}
-
-EXTERN object_t* string_resize(object_t* self, object_t* new_size);
-EXTERN object_t* string_builder_reserve(object_t* buf, object_t* used, object_t* extra);
-EXTERN object_t* string_copy_range_to_dangerously(object_t* self, object_t* o_index, object_t* value, object_t* o_from, object_t* o_end);
-EXTERN object_t* string_find_byte(object_t* self, int32_t byte_value, object_t* from);
-EXTERN object_t* string_index_of (object_t* self, object_t* needle,     object_t* from);
-EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);
-EXTERN object_t* string_skip_any (object_t* self, object_t* accept,     object_t* from);
-EXTERN object_t* string_parse_int(object_t* self);
-EXTERN int32_t   string_codepoint_at(object_t* self, object_t* from);
-EXTERN object_t* string_codepoint_count(object_t* self);
-EXTERN bool      string_valid_utf8(object_t* self);
-EXTERN object_t* wchar_to_string(int32_t codepoint);
-EXTERN object_t* print_string(object_t* self, object_t* data);
-EXTERN int32_t string_hash(object_t* s);
 EXTERN int32_t float64_hash(double f);
 INLINE bool yafl_ref_eq(object_t* a, object_t* b) { return a == b; }
 // The value-representation half of yafl_hash_store: no slot to write, but
@@ -1670,11 +1893,11 @@ EXTERN int32_t yafl_hash_store(object_t* v, int32_t h);
 EXPORT object_t* io_stdin (object_t* self);
 EXPORT object_t* io_stdout(object_t* self);
 EXPORT object_t* io_stderr(object_t* self);
-EXPORT object_t* io_create    (object_t* self, object_t* path);
-EXPORT object_t* io_open_read (object_t* self, object_t* path);
-EXPORT object_t* io_open_write(object_t* self, object_t* path, int8_t truncate);  // YAFL Bool ABI is int8_t
-EXPORT object_t* io_read (object_t* self, object_t* length);
-EXPORT object_t* io_write(object_t* self, object_t* data);
+EXPORT object_t* io_create    (object_t* self, str_t path);
+EXPORT object_t* io_open_read (object_t* self, str_t path);
+EXPORT object_t* io_open_write(object_t* self, str_t path, int8_t truncate);  // YAFL Bool ABI is int8_t
+EXPORT str_t     io_read (object_t* self, object_t* length);   // String|Int|None
+EXPORT object_t* io_write(object_t* self, str_t data);
 EXPORT object_t* io_close(object_t* self);
 
 // Filesystem metadata.  Both ops dispatch through the IO threadpool so
@@ -1689,12 +1912,12 @@ EXPORT object_t* io_close(object_t* self);
 // _FileInfo handle (on success) or a packed Int holding `-errno` on
 // failure.  The five accessors below read individual fields from a
 // successfully-resolved _FileInfo; all are sync (no task dispatch).
-EXPORT object_t* fs_exists   (object_t* self, object_t* path);
-EXPORT object_t* fs_stat     (object_t* self, object_t* path);
+EXPORT object_t* fs_exists   (object_t* self, str_t path);
+EXPORT object_t* fs_stat     (object_t* self, str_t path);
 // fs_mkdir creates ONE directory and resolves to a packed Int: 0 on success
 // (an already-existing directory counts as success, as `mkdir -p` does) or
 // -errno. Creating parents is the caller's loop over the path components.
-EXPORT object_t* fs_mkdir    (object_t* self, object_t* path);
+EXPORT object_t* fs_mkdir    (object_t* self, str_t path);
 EXPORT object_t* fs_fi_size  (object_t* self);
 EXPORT object_t* fs_fi_mtime (object_t* self);
 EXPORT object_t* fs_fi_isdir (object_t* self);
@@ -1705,8 +1928,8 @@ EXPORT object_t* fs_fi_mode  (object_t* self);
 // either a _Dir handle (success) or a packed Int holding -errno.  next
 // resolves to String (next entry name), None (end of stream), or Int
 // (-errno).  close resolves to None (success) or Int (-errno).
-EXPORT object_t* fs_open_dir (object_t* self, object_t* path);
-EXPORT object_t* fs_dir_next (object_t* self);
+EXPORT object_t* fs_open_dir (object_t* self, str_t path);
+EXPORT str_t     fs_dir_next (object_t* self);   // String|Int|None
 EXPORT object_t* fs_dir_close(object_t* self);
 
 

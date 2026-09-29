@@ -22,68 +22,65 @@ import Bootstrap::Types
 import System::IO
 
 
-fun [tail] dumpTokens(ts: Chain<Token>, sb) => match(ts)
-  (nil: ChainEnd) => sb
+fun [tail] dumpTokens(ts: Chain<Token>, out) => match(ts)
+  (nil: ChainEnd) => out
   (l: ChainLink)  => dumpTokens(l.next,
-      append(append(append(append(append(append(append(append(append(
-        sb, kindName(l.value.kind)), "|"),
-        l.value.indent), "|"),
-        l.value.line), "|"),
-        l.value.col), "|"),
-        l.value.text + "\n"))
+      out + kindName(l.value.kind) + "|"
+        + String(l.value.indent) + "|"
+        + String(l.value.line) + "|"
+        + String(l.value.col) + "|"
+        + l.value.text + "\n")
 
 fun tokensMode(text): (out: System::String, code: System::Int)
-  ret (toString(dumpTokens(chain(tokenize(text)), StringBuilder())), 0)
+  ret (dumpTokens(chain(tokenize(text)), ""), 0)
 
 # hash6 mode: each stdin line `file|line|col` prints its hash6 — diffed
 # against the Python LineRef.hash6 by tests/test_bootstrap_hash6.py.
 fun hash6Mode(text): (out: System::String, code: System::Int)
-  ret (hash6Lines(chain(splitLines(text)), StringBuilder())
-       |> (sb) => toString(sb), 0)
+  ret (hash6Lines(chain(splitLines(text)), ""), 0)
 
-fun [tail] hash6Lines(lines: Chain<System::String>, sb) => match(lines)
-  (nil: ChainEnd) => sb
-  (l: ChainLink)  => hash6Lines(l.next, hash6Line(l.value, sb))
+fun [tail] hash6Lines(lines: Chain<System::String>, out) => match(lines)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => hash6Lines(l.next, hash6Line(l.value, out))
 
-fun hash6Line(line, sb)
+fun hash6Line(line, out)
   let p1 = System::findByte(line, '|', 0)
   let p2 = p1 < 0 ? -1 : System::findByte(line, '|', p1 + 1)
   if p2 < 0
-    ret sb
+    ret out
   let file = System::slice(line, 0, p1)
   let ln = System::parseInt(System::slice(line, p1 + 1, p2))
   let col = System::parseInt(System::slice(line, p2 + 1, System::length(line)))
   ret match(ln)
     (a: System::Int) => match(col)
-      (b: System::Int) => append(sb, hash6(file, a, b) + "\n")
-      ()               => sb
-    ()               => sb
+      (b: System::Int) => out + hash6(file, a, b) + "\n"
+      ()               => out
+    ()               => out
 
 # sha1 mode: each stdin line prints its sha1 hexdigest — diffed against
 # hashlib.sha1 by tests/test_bootstrap_sha1.py (irMangle's struct hashing).
 fun sha1Mode(text): (out: System::String, code: System::Int)
-  ret (sha1Lines(chain(splitLines(text)), StringBuilder())
-       |> (sb) => toString(sb), 0)
+  ret (sha1Lines(chain(splitLines(text)), ""), 0)
 
 # Empty segments are skipped: splitLines yields a trailing one after the
 # final newline, which must not hash.
-fun [tail] sha1Lines(lines: Chain<System::String>, sb) => match(lines)
-  (nil: ChainEnd) => sb
+fun [tail] sha1Lines(lines: Chain<System::String>, out) => match(lines)
+  (nil: ChainEnd) => out
   (l: ChainLink)  => sha1Lines(l.next, length(l.value) == 0
-                                 ? sb
-                                 : append(sb, sha1Hex(l.value) + "\n"))
+                                 ? out
+                                 : out + sha1Hex(l.value) + "\n")
 
 # toml mode: parse a manifest on stdin and print one normalised line per
 # entry — `key=v1,v2` — for diffing against Python's tomllib
 # (tests/test_bootstrap_toml.py). Errors print `error:<line>:<message>`.
 fun tomlMode(text): (out: String, code: Int) => match(parseToml(text))
-  (ok: TomlOk)   => (toString(tomlDump(chain(ok.entries), StringBuilder())), 0)
+  (ok: TomlOk)   => (tomlDump(chain(ok.entries), ""), 0)
   (e: TomlErr)   => ("error:" + String(e.tomlLine) + ":" + e.tomlMessage + "\n", 1)
 
-fun [tail] tomlDump(es: Chain<TomlEntry>, [terminal] sb) => match(es)
-  (nil: ChainEnd) => sb
+fun [tail] tomlDump(es: Chain<TomlEntry>, out: String) => match(es)
+  (nil: ChainEnd) => out
   (l: ChainLink)  => tomlDump(l.next,
-      append(sb, l.value.key + "=" + join(l.value.values, ",") + "\n"))
+      out + l.value.key + "=" + join(l.value.values, ",") + "\n")
 
 # libs mode: print every library discoverable on YAFL_PATH, one per line as
 # `name|ns,ns|headers|statics`, sorted — diffed against
@@ -95,19 +92,18 @@ fun [tail] tomlDump(es: Chain<TomlEntry>, [terminal] sb) => match(es)
 # shape a deleted use leaves behind.
 fun libsMode(): (out: String, code: Int) => match(discoverLibraries(searchPaths(List())))
   (e: LibsErr) => ("error:" + e.libsWhy + "\n", 1)
-  (ok: LibsOk) => (toString(libsDump(chain(sortLibs(ok.libsFound)),
-                                     StringBuilder())), 0)
+  (ok: LibsOk) => (libsDump(chain(sortLibs(ok.libsFound)), ""), 0)
 
 fun sortLibs(ls: List<Library>) => sortBy(ls, (a, b) =>
                                      a.libManifest.libName < b.libManifest.libName)
 
-fun [tail] libsDump(ls: Chain<Library>, [terminal] sb) => match(ls)
-  (nil: ChainEnd) => sb
-  (l: ChainLink)  => libsDump(l.next, append(sb,
-      l.value.libManifest.libName + "|"
+fun [tail] libsDump(ls: Chain<Library>, out: String) => match(ls)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => libsDump(l.next, out
+      + l.value.libManifest.libName + "|"
       + join(l.value.libManifest.libNamespaces, ",") + "|"
       + join(l.value.libManifest.libHeaders, ",") + "|"
-      + join(l.value.libManifest.libStaticLibs, ",") + "\n"))
+      + join(l.value.libManifest.libStaticLibs, ",") + "\n")
 
 # libsfor mode: parse the source on stdin and print which libraries its
 # imports would pull in, one name per line. This is the end-to-end check that
@@ -127,8 +123,7 @@ fun libsForStmts(stmts: List<PStmt>): (out: String, code: Int)
 fun libsForIndex(stmts: List<PStmt>, idx: List<NsEntry>): (out: String, code: Int)
   ret match(libsFrontier(stmts, idx, List(), List()))
     (why: String)         => ("error:" + why + "\n", 1)
-    (found: List<Library>) => (toString(libsDump(chain(sortLibs(found)),
-                                                 StringBuilder())), 0)
+    (found: List<Library>) => (libsDump(chain(sortLibs(found)), ""), 0)
 
 # The worklist is a FIXPOINT, not one round: a library the program imports may
 # itself import a third, so what was just loaded becomes the next frontier.
@@ -167,16 +162,16 @@ fun [tail] importsOfStmts(ss: Chain<PStmt>, acc: List<String>) => match(ss)
                                     importPaths(chain(stmtImports(l.value)), acc))
 
 fun unescMode(text): (out: String, code: Int)
-  ret (unescDump(chain(splitLines(text)), StringBuilder()) |> (sb) => toString(sb), 0)
+  ret (unescDump(chain(splitLines(text)), ""), 0)
 
-fun [tail] unescDump(lines: Chain<String>, sb) => match(lines)
-  (nil: ChainEnd) => sb
-  (l: ChainLink)  => unescDump(l.next, unescLine(l.value, sb))
+fun [tail] unescDump(lines: Chain<String>, out) => match(lines)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => unescDump(l.next, unescLine(l.value, out))
 
-fun unescLine(line, sb)
+fun unescLine(line, out)
   let u = unescape(line)
-  ret append(append(append(append(append(append(sb, "in="), String(length(line))),
-              " out="), String(length(u.uText))), " err=" + u.uErr + " val="), u.uText + "\n")
+  ret out + "in=" + String(length(line))
+              + " out=" + String(length(u.uText)) + " err=" + u.uErr + " val=" + u.uText + "\n"
 
 # specs mode: each stdin line is a spec-algebra case; the answer is printed
 # for diffing against the Python typespec (tests/test_bootstrap_specs.py).
@@ -184,21 +179,21 @@ fun unescLine(line, sb)
 #   merge <spec> ;; <spec>
 #   bind <declared-entries> <supplied-names>
 fun specsMode(text): (out: String, code: Int)
-  ret (toString(specLines(chain(splitLines(text)), StringBuilder())), 0)
+  ret (specLines(chain(splitLines(text)), ""), 0)
 
-fun [tail] specLines(lines: Chain<String>, sb) => match(lines)
-  (nil: ChainEnd) => sb
-  (l: ChainLink)  => specLines(l.next, specLine(l.value, sb))
+fun [tail] specLines(lines: Chain<String>, out) => match(lines)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => specLines(l.next, specLine(l.value, out))
 
-fun specLine(line, sb)
+fun specLine(line, out)
   if line == ""
-    ret sb
+    ret out
   let sp = findByte(line, ' ', 0)
   if sp < 0
-    ret sb
+    ret out
   let op = slice(line, 0, sp)
   let rest = slice(line, sp + 1, length(line))
-  ret append(sb, evalCase(op, rest) + "\n")
+  ret out + evalCase(op, rest) + "\n"
 
 fun evalCase(op, rest)
   if op == "uid"
@@ -258,26 +253,26 @@ fun resolveMode(text): (out: String, code: Int)
     (stmts: List<PStmt>) => (answerAll(buildStatements(stmts),
                                        chain(splitLines(queries))), 0)
 
-fun answerAll(idx, qs): String => toString(answerLoop(idx, qs, StringBuilder()))
+fun answerAll(idx, qs): String => answerLoop(idx, qs, "")
 
 fun [tail] answerLoop(idx, qs: Chain<String>,
-                      sb) => match(qs)
-  (nil: ChainEnd) => sb
-  (l: ChainLink)  => answerLoop(idx, l.next, answerOne(idx, l.value, sb))
+                      out) => match(qs)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => answerLoop(idx, l.next, answerOne(idx, l.value, out))
 
-fun answerOne(idx, q, sb)
+fun answerOne(idx, q, out)
   if q == ""
-    ret sb
+    ret out
   let sp = findByte(q, ' ', 0)
   if sp < 0
-    ret sb
+    ret out
   let kind = slice(q, 0, sp)
   let name = slice(q, sp + 1, length(q))
   # A pure lookup resolver for the query interface: nothing on this path
   # asks the breaker or derived-equality analysis.
   let r = RRoot((root) => false, (name) => false, idx)
   let bag = kind == "type" ? findType(r, name) : findData(r, name)
-  ret append(sb, foundLine(chain(bag.bItems), 0, "") + "\n")
+  ret out + foundLine(chain(bag.bItems), 0, "") + "\n"
 
 # Count and names from ONE walk (the no-length ruling: the count rides the
 # traversal that already exists for the names).
@@ -297,24 +292,24 @@ fun convertMode(text): (out: String, code: Int)
     (stmts: List<PStmt>) => (convertAll(rootResolver(stmts),
                                         chain(splitLines(cases))), 0)
 
-fun convertAll(r, cs): String => toString(convertLoop(r, cs, StringBuilder()))
+fun convertAll(r, cs): String => convertLoop(r, cs, "")
 
 fun [tail] convertLoop(r, cs: Chain<String>,
-                       sb) => match(cs)
-  (nil: ChainEnd) => sb
-  (l: ChainLink)  => convertLoop(r, l.next, convertOne(r, l.value, sb))
+                       out) => match(cs)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => convertLoop(r, l.next, convertOne(r, l.value, out))
 
 # `SOURCE ;; TARGET` → Y when representing the source value as the target needs
 # a representation change, N when it does not.
-fun convertOne(r, c, sb)
+fun convertOne(r, c, out)
   if c == ""
-    ret sb
+    ret out
   let bar = indexOf(c, " ;; ", 0)
   if bar < 0
-    ret sb
+    ret out
   let a = parseSpecText(slice(c, 0, bar))
   let b = parseSpecText(slice(c, bar + 4, length(c)))
-  ret append(sb, (needsConversion(r, a, b) ? "Y" : "N") + "\n")
+  ret out + (needsConversion(r, a, b) ? "Y" : "N") + "\n"
 
 fun assignMode(text): (out: String, code: Int)
   let cut = indexOf(text, "\n?\n", 0)
@@ -327,22 +322,22 @@ fun assignMode(text): (out: String, code: Int)
     (stmts: List<PStmt>) => (assignAll(rootResolver(stmts),
                                        chain(splitLines(cases))), 0)
 
-fun assignAll(r, cs): String => toString(assignLoop(r, cs, StringBuilder()))
+fun assignAll(r, cs): String => assignLoop(r, cs, "")
 
 fun [tail] assignLoop(r, cs: Chain<String>,
-                      sb) => match(cs)
-  (nil: ChainEnd) => sb
-  (l: ChainLink)  => assignLoop(r, l.next, assignOne(r, l.value, sb))
+                      out) => match(cs)
+  (nil: ChainEnd) => out
+  (l: ChainLink)  => assignLoop(r, l.next, assignOne(r, l.value, out))
 
-fun assignOne(r, c, sb)
+fun assignOne(r, c, out)
   if c == ""
-    ret sb
+    ret out
   let bar = indexOf(c, " ;; ", 0)
   if bar < 0
-    ret sb
+    ret out
   let a = parseSpecText(slice(c, 0, bar))
   let b = parseSpecText(slice(c, bar + 4, length(c)))
-  ret append(sb, assignAnswer(r, a, b) + "\n")
+  ret out + assignAnswer(r, a, b) + "\n"
 
 # The three-valued answer, spelled T / F / ? — `?` is UNDECIDED, and the
 # contract cares about it as much as about T and F.
@@ -915,32 +910,31 @@ fun testRegistryChunk() => 16
 fun testRegistrySource(tests: List<PsFun>)
   let n = chainLength(chain(tests))
   let nChunks = n == 0 ? 1 : (n + testRegistryChunk() - 1) / testRegistryChunk()
-  ret toString(append(
-        emitChunks(tests, 0, append(StringBuilder(), "namespace Yafl::TestMain\n\n")),
-        "fun main(): System::Int\n  ret System::Test::run("
-        + joinChunks(0, nChunks) + ", System::args())\n"))
+  ret (emitChunks(tests, 0, "namespace Yafl::TestMain\n\n")
+        + "fun main(): System::Int\n  ret System::Test::run("
+        + joinChunks(0, nChunks) + ", System::args())\n")
 
 # take/drop the list a chunk at a time — the same shape as the Python side's
 # slice loop, rather than a hand-rolled index/wrap state machine (whose first
 # version never closed a chunk that filled exactly).
 fun [tail] emitChunks(ts: List<PsFun>, k,
-                      [terminal] sb) => isEmpty(ts) && k > 0
-  ? sb
+                      out: String) => isEmpty(ts) && k > 0
+  ? out
   : emitChunks(drop(ts, testRegistryChunk()), k + 1,
-               append(sb, emitOneChunk(take(ts, testRegistryChunk()), k)))
+               out + emitOneChunk(take(ts, testRegistryChunk()), k))
 
 fun emitOneChunk(chunk: List<PsFun>, k: Int)
   ret "fun _cases" + String(k) + "(): System::List<System::Test::TestCase>\n"
     + "  let b0 = System::builder<System::Test::TestCase>()\n"
-    + toString(chunkRows(chain(chunk), 0, StringBuilder()))
+    + chunkRows(chain(chunk), 0, "")
     + "  ret System::build<System::Test::TestCase>(b"
     + String(chainLength(chain(chunk))) + ")\n\n"
 
 fun [tail] chunkRows(ts: Chain<PsFun>, i,
-                     [terminal] sb) => match(ts)
-  (nil: ChainEnd) => sb
+                     out: String) => match(ts)
+  (nil: ChainEnd) => out
   (l: ChainLink)  => chunkRows(l.next, i + 1,
-                               append(sb, testRegistryRow(l.value, i)))
+                               out + testRegistryRow(l.value, i))
 
 # BALANCED, not right-nested: a linear nest would reintroduce the same
 # one-link-per-pass dependency at chunk granularity.
@@ -1099,19 +1093,19 @@ fun eqMode(text): (out: String, code: Int) => match(parseProgram(text, "x"))
                            + ": " + f.msg + "\n", 1)
   (stmts: List<PStmt>) => (eqMatrix(stmts), 0)
 
-fun eqMatrix(stmts: List<PStmt>) => toString(eqRows(stmts, chain(stmts), StringBuilder()))
+fun eqMatrix(stmts: List<PStmt>) => eqRows(stmts, chain(stmts), "")
 
 fun [tail] eqRows(all: List<PStmt>, rows: Chain<PStmt>,
-                  sb) => match(rows)
-  (nil: ChainEnd) => sb
+                  out) => match(rows)
+  (nil: ChainEnd) => out
   (l: ChainLink)  => eqRows(all, l.next,
-                            append(eqRow(l.value, chain(all), sb), "\n"))
+                            eqRow(l.value, chain(all), out) + "\n")
 
 fun [tail] eqRow(row, cols: Chain<PStmt>,
-                 sb) => match(cols)
-  (nil: ChainEnd) => sb
+                 out) => match(cols)
+  (nil: ChainEnd) => out
   (l: ChainLink)  => eqRow(row, l.next,
-                           append(sb, eqStmt(row, l.value) ? "1" : "0"))
+                           out + (eqStmt(row, l.value) ? "1" : "0"))
 
 # -1 for "not this family", so one lookup answers both "is it?" and "which
 # level?" without a second mode-string table to keep in step.

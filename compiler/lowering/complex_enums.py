@@ -235,9 +235,10 @@ _MAX_VALUE_STRUCT_BYTES = _MAX_VALUE_STRUCT_WORDS * 8
 _ZERO = (0, 0, 0, 0, 0, 0, 0, 0)
 _PTR = (1, 0, 0, 0, 0, 0, 0, 0)
 _FUN = (1, 1, 0, 0, 0, 0, 0, 0)     # fun_t: env pointer + code word
+_STR = (1, 1, 0, 0, 0, 0, 0, 0)     # str_t: head pointer + one payload word
 _TAG = (0, 0, 0, 0, 0, 0, 0, 1)
 _BUILTIN_PRIMS = {
-    "bigint": _PTR, "str": _PTR,
+    "bigint": _PTR, "str": _STR,
     "int64": (0, 0, 1, 0, 0, 0, 0, 0), "float64": (0, 0, 0, 1, 0, 0, 0, 0),
     "int32": (0, 0, 0, 0, 1, 0, 0, 0), "float32": (0, 0, 0, 0, 0, 1, 0, 0),
     "int16": (0, 0, 0, 0, 0, 0, 1, 0),
@@ -306,11 +307,16 @@ def compute_boxed_leaves(statements: list[s.Statement],
             if len(spec.entries) == 1 and spec.entries[0].type is not None:
                 return pointer_kind(spec.entries[0].type)   # newtype wrapper
             return None
+        if isinstance(spec, t.CallableSpec):
+            return ('FUN',)
         if isinstance(spec, t.BuiltinSpec):
             if spec.type_name == "bigint":
                 return ('INT',)
             if spec.type_name == "str":
                 return ('STR',)
+            if spec.type_name in ("bool", "int8", "int16", "int32", "int64",
+                                  "float32", "float64"):
+                return ('SCALAR', spec.type_name)   # packable in a wide union
             return None
         if isinstance(spec, t.ClassSpec):
             return (('FOREIGN',) if spec.name in foreign_classes
@@ -327,6 +333,12 @@ def compute_boxed_leaves(statements: list[s.Statement],
     def collapses_to_pointer(members: list) -> bool:
         """Spec-level mirror of _union_collapses_to_pointer."""
         kinds = [pointer_kind(m) for m in members]
+        if ('FUN',) in kinds and any(k is not None and k[0] in ('CLASS', 'ENUM', 'FOREIGN')
+                                     for k in kinds):
+            return False
+        if any(k is not None and k[0] == 'SCALAR' for k in kinds) and (
+                not (('STR',) in kinds or ('FUN',) in kinds) or ('FOREIGN',) in kinds):
+            return False
         if any(k is None for k in kinds):
             return False
         if not any(k != ('UNIT',) for k in kinds):
@@ -348,7 +360,9 @@ def compute_boxed_leaves(statements: list[s.Statement],
             return acc
         if isinstance(spec, t.CombinationSpec):
             if collapses_to_pointer(list(spec.types)):
-                return _PTR
+                # A String or function member widens the one word to 16 bytes.
+                return (_STR if any(pointer_kind(m) in (('STR',), ('FUN',)) for m in spec.types)
+                        else _PTR)
             acc = _ZERO
             for m in spec.types:
                 acc = _prims_max(acc, spec_prims(m, stack))

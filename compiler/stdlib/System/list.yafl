@@ -496,7 +496,7 @@ fun [tail] _pushChain<T>([terminal] b: ListBuilder<T>, c: Chain<T>): ListBuilder
     (l: ChainLink)  => _pushChain<T>(push(b, l.value), l.next)
 
 # Explicitly consume a builder without keeping its list — the failure-path
-# counterpart of build (StringBuilder's discard precedent). A ternary whose
+# counterpart of build. A ternary whose
 # branches mix implicit drop with consumption is rejected by the linearity
 # checker; route the failure branch through a helper that takes the builder
 # and lets the drop happen at statement level, or call discard directly.

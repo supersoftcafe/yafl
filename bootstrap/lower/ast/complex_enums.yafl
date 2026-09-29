@@ -544,6 +544,9 @@ fun bxPtrOne() => BxPrims(1, 0, 0, 0, 0, 0, 0, 0)
 # fun_t: env pointer + code word.
 fun bxFunPrims() => BxPrims(1, 1, 0, 0, 0, 0, 0, 0)
 
+# str_t: head pointer + one payload word.
+fun bxStrPrims() => BxPrims(1, 1, 0, 0, 0, 0, 0, 0)
+
 fun bxAddTag(a: BxPrims) => BxPrims(a.bpPtr, a.bpCode, a.bpI64, a.bpF64, a.bpI32, a.bpF32,
                                     a.bpI16, a.bpI8 + 1)
 
@@ -568,7 +571,8 @@ fun bxBuiltinPrims(name) => name == "int64" ? BxPrims(0, 0, 1, 0, 0, 0, 0, 0)
   : name == "float32" ? BxPrims(0, 0, 0, 0, 0, 1, 0, 0)
   : name == "int16" ? BxPrims(0, 0, 0, 0, 0, 0, 1, 0)
   : name == "int8" || name == "bool" ? BxPrims(0, 0, 0, 0, 0, 0, 0, 1)
-  : bxPtrOne()   # bigint, str, unknown
+  : name == "str" ? bxStrPrims()
+  : bxPtrOne()   # bigint, unknown
 
 fun computeBoxedLeaves(statements: List<PStmt>,
                        breakers)
@@ -633,7 +637,9 @@ fun bxPointerKindOn(ctx: BoxCtx, sp) => match(sp)
   (t2: STuple)  => isEmpty(t2.stEntries) ? "unit" : bxNewtypeKind(ctx, t2.stEntries)
   (b: SBuiltin) => b.sbName == "bigint" ? "int"
                  : b.sbName == "str" ? "str"
+                 : bxIsScalarName(b.sbName) ? "scalar:" + b.sbName   # packable in a wide union
                  : ""
+  (cl: SCallable) => "fun"
   (cl: SClass)  => contains(ctx.bxForeign, cl.scName)
     ? "foreign"
     : "class:" + cl.scName
@@ -642,6 +648,9 @@ fun bxPointerKindOn(ctx: BoxCtx, sp) => match(sp)
     (root: String) => contains2(ctx.bxBreakers, root) ? "enum:" + root : ""
     ()             => ""
   (o: Spec)     => ""
+
+fun bxIsScalarName(name) => name == "bool" || name == "int8" || name == "int16" || name == "int32"
+  || name == "int64" || name == "float32" || name == "float64"
 
 # A single-field tuple is a newtype wrapper: peel to the inner kind.
 fun bxNewtypeKind(ctx: BoxCtx, entries: List<SEntry>) => isEmpty(tail(entries))
@@ -655,9 +664,17 @@ class [final] BxKindTally(ktUnits: Int, ktForeign: Int, ktNonUnit: Int,
 
 # Mirror of _union_collapses_to_pointer: every member a pointer word, at
 # least one non-unit, at most one unit and one foreign, testable kinds
-# mutually distinct.
+# mutually distinct. A function's environment cannot share word 0 with a
+# class/enum/foreign member; a scalar packs only beside a String or
+# function member, and never with a foreign one.
 fun bxCollapses(ctx: BoxCtx, members: List<Spec>)
   let kinds = map(members, (m) => bxPointerKindOn(ctx, m))
+  let hasFun = contains2(kinds, "fun")
+  let hasForeign = contains2(kinds, "foreign")
+  if hasFun && any(kinds, (k) => startsWith(k, "class:") || startsWith(k, "enum:") || k == "foreign")
+    ret false
+  if any(kinds, (k) => startsWith(k, "scalar:")) && (!(contains2(kinds, "str") || hasFun) || hasForeign)
+    ret false
   if contains2(kinds, "")
     ret false
   let t2 = fold(kinds, BxKindTally(0, 0, 0, false, Set()), bxKindStep)
@@ -683,8 +700,9 @@ fun bxSpecPrimsOn(ctx: BoxCtx, sp, stack,
   (b: SBuiltin)      => BxOut(bxBuiltinPrims(b.sbName), st)
   (cl: SCallable)    => BxOut(bxFunPrims(), st)
   (t2: STuple)       => bxEntriesPrims(ctx, chain(t2.stEntries), stack, st, bxZero())
+  # A String or function member widens the one word to 16 bytes.
   (cm: SCombination) => bxCollapses(ctx, cm.scTypes)
-    ? BxOut(bxPtrOne(), st)
+    ? BxOut(bxCollapsedPrims(ctx, cm.scTypes), st)
     : bxCombPrims(ctx, chain(cm.scTypes), stack, st, bxZero())
   (e2: SEnum)        => bxEnumValuePrims(ctx, e2.seRoot, stack, st)
   # Direct name-map hit only (no suffix fallback), as Python.
@@ -692,6 +710,10 @@ fun bxSpecPrimsOn(ctx: BoxCtx, sp, stack,
     (root: String) => bxEnumValuePrims(ctx, root, stack, st)
     ()             => BxOut(bxPtrOne(), st)
   (o: Spec)          => BxOut(bxPtrOne(), st)   # classes, placeholders
+
+fun bxCollapsedPrims(ctx: BoxCtx, members: List<Spec>)
+  let wide = any(members, (m) => bxPointerKindOn(ctx, m) |> (k) => k == "str" || k == "fun")
+  ret wide ? bxStrPrims() : bxPtrOne()
 
 fun bxEntriesPrims(ctx: BoxCtx, es: Chain<SEntry>, stack,
                    st, acc) => match(es)

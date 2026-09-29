@@ -53,7 +53,8 @@ static void _decl(void(*declare)(object_t**)) {
 }
 
 static const char PAD[64] = "the quick brown fox jumps over the lazy dog 01234567 ABCDEFG";
-static void burn(int n) { for (int i = 0; i < n; ++i) { GC_SAFE_POINT(); (void)string_from_bytes((uint8_t*)PAD, 8 + (i & 31)); } }
+// 16+ bytes: a String that long has a heap head, so every one allocates.
+static void burn(int n) { for (int i = 0; i < n; ++i) { GC_SAFE_POINT(); (void)str_from_bytes((uint8_t*)PAD, 16 + (i & 31)); } }
 
 static atomic_llong _counter;
 static atomic_int   _registered;
@@ -89,7 +90,7 @@ static void* _worker(void* arg) {
         if (o && ((uintptr_t)o & PTR_TAG_MASK) == 0) {
             struct holder* hh = (struct holder*)o;
             GC_SAFE_POINT();
-            object_t* c = string_from_bytes((uint8_t*)PAD, 24);   // heap string
+            object_t* c = str_from_bytes((uint8_t*)PAD, 24).head;   // a String's heap head
             GC_WRITE_BARRIER(hh->child, 1);
             hh->child = c;
         }

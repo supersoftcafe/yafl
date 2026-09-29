@@ -395,9 +395,10 @@ fun [tail] ccFoldFixpoint(a0: CgApp, round2,
   let a4 = resolveKnownDiscriminators(a3)
   let a5 = resolveKnownTags(a4)
   let a6 = flattenStringAppends(a5)
-  let a7 = deforestStringAccumulation(a6)
-  let a8 = eliminateDeadStores(a7)
-  ret ccSameShape(prev, a8, false) ? a8 : ccFoldFixpoint(a8, round2 + 1, a8)
+  # string_accumulation (builder deforestation) is retired: a String value
+  # extends its own head in place (yafllib/str.c).
+  let a7 = eliminateDeadStores(a6)
+  ret ccSameShape(prev, a7, false) ? a7 : ccFoldFixpoint(a7, round2 + 1, a7)
 
 # Structural shape compare against the PREVIOUS round's app — Python
 # compares tuples of (name, len(ops)); equal names plus sameLen op-lists is

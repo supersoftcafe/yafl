@@ -33,7 +33,22 @@ EXPORT struct task_vtable TASK_OBJ_VTABLE = {
     .implements_array         = VTABLE_IMPLEMENTS(0),
 };
 
-// Compiler-facing vtable aliases (obj_task, obj_task_obj) are defined as
+// A String result: its GC word is result.head.
+EXPORT struct task_vtable TASK_STR_VTABLE = {
+    .object_size              = sizeof(task_str_t),
+    .array_el_size            = 0,
+    .object_pointer_locations = maskof(task_str_t, .callback.o)
+                              | maskof(task_str_t, .next)
+                              | maskof(task_str_t, .result.head),
+    .array_el_pointer_locations = 0,
+    .functions_mask           = 0,
+    .array_len_offset         = 0,
+    .is_mutable               = 1,
+    .name                     = "task_str",
+    .implements_array         = VTABLE_IMPLEMENTS(0),
+};
+
+// Compiler-facing vtable aliases (obj_task, obj_task_obj, obj_task_str) are defined as
 // macros in yafl.h so they expand to constant expressions usable inside
 // VTABLE_IMPLEMENTS' static initializer.
 
@@ -84,6 +99,14 @@ EXPORT object_t* task_obj_create(object_t* self) {
     task_init((object_t*)task);
     GC_WRITE_BARRIER(task->result, 1);   // object_create zeroed it; mark-old is a no-op but keeps every store uniform
     task->result = NULL;
+    return (object_t*)task;
+}
+
+
+EXPORT object_t* task_str_create(object_t* self) {
+    (void)self;
+    task_str_t* task = (task_str_t*)object_create((vtable_t*)&TASK_STR_VTABLE);
+    task_init((object_t*)task);   // object_create zeroed result: None
     return (object_t*)task;
 }
 

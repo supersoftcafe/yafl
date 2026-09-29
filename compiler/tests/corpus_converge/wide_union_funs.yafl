@@ -1,0 +1,76 @@
+# Wide unions carrying FUNCTION members in 16 bytes: word 0 is the closure's
+# environment (a spare code when it has none), word 1 its code pointer.
+# Covers functions beside String, Int, None and a newtype, with and without
+# captured environments, matching and calling out of the union — and
+# Pair|Fun, which must stay a tagged struct (a bound method's environment is
+# a class instance, so word 0 could not tell them apart).
+# test_wide_union_packing pins the output.
+
+namespace Funs
+
+import System
+
+class [final] Wrap(w: Int)
+
+class [final] Pair(a: Int, b: Int)
+
+fun double(x: Int): Int => x * 2
+
+fun makeAdder(n: Int): (:Int): Int
+  ret (x: Int) => x + n
+
+fun pickF(k: Int): ((:Int): Int)|None
+  ret k % 3 == 0 ? makeAdder(k) : k % 3 == 1 ? double : None
+
+fun pickSF(k: Int): String|((:Int): Int)|None
+  ret k % 3 == 0 ? "str" + String(k) : k % 3 == 1 ? makeAdder(k * 100) : None
+
+fun pickIF(k: Int): Int|((:Int): Int)
+  ret k % 2 == 0 ? k * 7 : double
+
+fun pickWF(k: Int): Wrap|((:Int): Int)
+  ret k % 2 == 0 ? Wrap(k) : makeAdder(k)
+
+fun pickPF(k: Int): Pair|((:Int): Int)
+  ret k % 2 == 0 ? Pair(k, k + 1) : makeAdder(k)
+
+fun usePF(v: Pair|((:Int): Int)): String
+  ret match(v)
+    (p: Pair)        => "p" + String(p.a + p.b)
+    (f: (:Int): Int) => "f" + String(f(2))
+
+fun useF(v: ((:Int): Int)|None): String
+  ret match(v)
+    (f: (:Int): Int) => "f" + String(f(10))
+    (n: None)        => "none"
+
+fun useSF(v: String|((:Int): Int)|None): String
+  ret match(v)
+    (s: String)      => "s" + s
+    (f: (:Int): Int) => "f" + String(f(1))
+    (n: None)        => "n"
+
+fun useIF(v: Int|((:Int): Int)): String
+  ret match(v)
+    (i: Int)         => "i" + String(i)
+    (f: (:Int): Int) => "f" + String(f(3))
+
+fun useWF(v: Wrap|((:Int): Int)): String
+  ret match(v)
+    (w: Wrap)        => "w" + String(w.w)
+    (f: (:Int): Int) => "f" + String(f(5))
+
+fun widenF(k: Int): String|((:Int): Int)|None
+  ret pickF(k)
+
+fun [tail] loop(k: Int, n: Int, acc: String): String
+  if k >= n
+    ret acc
+  let line = useF(pickF(k)) + " " + useSF(pickSF(k)) + " " + useIF(pickIF(k))
+    + " " + useWF(pickWF(k)) + " " + useSF(widenF(k)) + " " + usePF(pickPF(k)) + "\n"
+  ret loop(k + 1, n, acc + line)
+
+fun main(): System::Int
+  let (pa, pb) = __parallel__(() => useF(pickF(3)), () => useSF(pickSF(4)))
+  print(loop(0, 9, "") + pa + " " + pb + "\n")
+  ret 0

@@ -1027,7 +1027,7 @@ EXPORT object_t* object_pin_resolve(object_t* o) {
             return o;
         // Every possible holder releases after a bounded, allocation-free
         // section, so spinning is right and back-off would only add latency.
-        __builtin_ia32_pause();
+        cpu_relax();
     }
 }
 
@@ -1265,6 +1265,16 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // pre-scan's pinned check does) or if the word already forwards.
         if (!object_try_pin(object))
             continue;
+        // An array built in place (array_cap_offset set) grows its `length`
+        // under this same pin, so the size read before the claim may be
+        // stale: copying it would drop the bytes appended since. Re-read under
+        // the pin; on a change, leave the object where it is (the unused
+        // target is ordinary garbage). Nothing else can change size.
+        vtable_t *cvt = vtable_untag((vtable_t*)((uintptr_t)object->vtable & ~(uintptr_t)VTABLE_PIN_BIT));
+        if (UNLIKELY(cvt->array_cap_offset) && object_get_size(object) != size) {
+            object_unpin(object);
+            continue;
+        }
 
         // Drop the PIN only: the vtable TAG must survive onto the copy, or the
         // copy's own header would read as a forwarding pointer.
@@ -1274,6 +1284,11 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // copy before anyone can reach it — the target is still private here,
         // so a plain store is enough.
         target->vtable = vt;
+        // An array built in place owned only `length` elements' worth of the
+        // copy: its spare capacity stayed behind, so say so on the copy.
+        if (UNLIKELY(cvt->array_cap_offset))
+            *(uint32_t*)((char*)target + cvt->array_cap_offset) =
+                *(uint32_t*)((char*)target + cvt->array_len_offset);
         // Publish the forwarding pointer, releasing the copy's contents: a
         // reader that follows this word must see a fully written object. The
         // store also drops the pin (a heap address has bit 0 clear), handing
@@ -3027,38 +3042,29 @@ EXPORT object_t* sys_argc(object_t* self) {
 // DISTINCT from set-to-empty — collapsing the two would make `YAFL_PATH=`
 // indistinguishable from an absent YAFL_PATH.
 //
-// Returning NULL for the None arm is correct HERE because every member of this
-// union is pointer-represented, so the union collapses to a pointer and null is
-// the free spare value. That is a property of THIS union's representation, not
-// a general rule: None is NOT always NULL, and a union carrying a non-pointer
-// member is discriminated some other way. Check the representation before
-// copying this pattern.
+// String|None shares the String value's representation, with None as word 0 =
+// NULL (str_word(NULL)). That is a property of THIS union's representation,
+// not a general rule: a union with a member that is not a String, a one-word
+// member or a packable scalar is a tagged struct instead. Check the
+// representation before copying this pattern.
 //
 // Added for the library search path, which the self-hosted compiler could not
 // read at all: the runtime called getenv for its own knobs but exposed nothing
 // to YAFL.
-EXPORT object_t* sys_getenv(object_t* self, object_t* o_name) {
+EXPORT str_t sys_getenv(object_t* self, str_t name) {
     (void)self;
-    // getenv needs a NUL-terminated name, and string_to_cstr does not promise
-    // one in general (see _arg_str in log.c). It holds for BOTH string
-    // representations, which is why no copy is made: a heap string's array
-    // always has '\0' past its length, and a packed string is at most 7 bytes
-    // in an 8-byte buffer whose unused tail is zero. Same reasoning as
-    // float64_parse_or_nan.
-    intptr_t buf; int32_t len;
-    char* name = string_to_cstr(o_name, &buf, &len);
-    const char* v = getenv(name);
-    if (v == NULL) return NULL;
-    return string_from_bytes((uint8_t*)v, (int32_t)strlen(v));
+    char buf[256], *heap;
+    const char* v = getenv(str_cstr(name, buf, (int32_t)sizeof buf, &heap));
+    free(heap);
+    return v == NULL ? str_word(NULL) : str_from_cstr(v);
 }
 
-EXPORT object_t* sys_argv_at(object_t* self, object_t* o_index) {
+EXPORT str_t sys_argv_at(object_t* self, object_t* o_index) {
     (void)self;
     int overflow = 0;
     int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
     if (overflow || idx < 0 || idx >= _yafl_argc) __abort_on_overflow();
-    const char* s = _yafl_argv[idx];
-    return string_from_bytes((uint8_t*)s, (int32_t)strlen(s));
+    return str_from_cstr(_yafl_argv[idx]);
 }
 
 

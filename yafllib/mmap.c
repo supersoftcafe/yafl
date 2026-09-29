@@ -571,7 +571,7 @@ static inline void pool_lock(page_pool_t *p) {
         if (atomic_compare_exchange_weak_explicit(&p->lock, &expected, true,
                                                   memory_order_acquire, memory_order_relaxed))
             return;
-        do { __builtin_ia32_pause(); }
+        do { cpu_relax(); }
         while (atomic_load_explicit(&p->lock, memory_order_relaxed));
     }
 }

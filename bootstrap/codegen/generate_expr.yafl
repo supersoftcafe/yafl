@@ -257,7 +257,7 @@ fun [tail] specGenerate(sp, r): CgType => match(sp)
   (n: SNamed)        => CgVoid()   # unreachable: Python raises RuntimeError (must resolve first)
 
 fun builtinCType(name: String): CgType => match(name)
-  ("str")     => CgDataPointer()
+  ("str")     => CgStr()
   ("int8")    => CgInt(8)
   ("int16")   => CgInt(16)
   ("int32")   => CgInt(32)
@@ -676,6 +676,7 @@ fun irMangle(t) => match(t)
   (i: CgInt) => "i" + String(i.precision)
   (f: CgFloat) => "f" + String(f.precision)
   (fp: CgFuncPointer) => "fun"
+  (st: CgStr) => "str"
   # Python hashes the signature (hashlib.sha1(sig).hexdigest()[:16]); the
   # collision registry assert is Python-only — the C contract is the judge.
   (s: CgStruct) => "s_" + slice(sha1Hex(structFieldSig(s.fields)), 0, 16)

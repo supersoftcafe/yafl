@@ -147,7 +147,9 @@ class StructField(RParam):
         elif isinstance(xtype, t.TaskWrapper):
             fields = (("value", xtype.inner), ("task", t.DataPointer()))
         elif isinstance(xtype, t.FuncPointer):
-            fields = (("f", t.DataPointer()), ("o", t.DataPointer()))
+            fields = (("o", t.DataPointer()), ("f", t.DataPointer()))
+        elif isinstance(xtype, t.Str):
+            fields = (("head", t.DataPointer()),)   # the only word the compiler names
         else:
             raise ValueError(f"StructField requires a Struct, got {xtype}")
         result = next((ftype for name, ftype in fields if name == self.field), None)
@@ -238,8 +240,8 @@ class MakeFun(RParam):
 class String(RParam):
     value: str
 
-    def get_type(self) -> t.DataPointer:
-        return t.DataPointer()
+    def get_type(self) -> t.Str:
+        return t.Str()
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return t.str_literal(self.value)
@@ -374,7 +376,7 @@ class ObjVtableEq(RParam):
         the target is `obj_` + mangle_name(class_name), and the trim pass
         treats the class as live.
       * `extern_symbol` — a library-provided C symbol (e.g.
-        "STRING_VTABLE", "INTEGER_VTABLE"); address-of is applied since
+        "STR_HEAD_VTABLE", "INTEGER_VTABLE"); address-of is applied since
         these are declared as structs in libyafl."""
     value: RParam
     class_name: str | None = None
@@ -526,6 +528,8 @@ def _zero_for(field_type: t.Type) -> RParam:
         return Integer(0, 64)
     if isinstance(field_type, t.Float):
         return Float(0.0, field_type.precision)
+    if isinstance(field_type, t.Str):
+        return ZeroOf(field_type)
     raise ValueError(f"No zero value defined for slot type {field_type}")
 
 
@@ -573,6 +577,8 @@ class TagTask(RParam):
             return f"((object_t*)((uintptr_t){task_c} | PTR_TAG_TASK))"
         if isinstance(typ, t.FuncPointer):
             return f"((fun_t){{.f=NULL,.o=(void*)((uintptr_t){task_c} | PTR_TAG_TASK)}})"
+        if isinstance(typ, t.Str):
+            return f"str_word((object_t*)((uintptr_t){task_c} | PTR_TAG_TASK))"
         if isinstance(typ, t.TaskWrapper):
             inner_zero = ZeroOf(typ.inner).to_c(type_cache)
             type_name = typ.declare(type_cache)

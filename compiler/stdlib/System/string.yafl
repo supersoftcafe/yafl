@@ -4,22 +4,22 @@ typealias String : __builtin_type__<str>
 
 instance [ambient] BasicPlus<String>
   fun `+`(left: System::String, right: System::String): System::String
-    ret __builtin_op__<str>("string_append", left, right)
+    ret __builtin_op__<str>("str_append", left, right)
 
 instance [ambient] BasicCompare<String>
   fun `<`(left: System::String, right: System::String): System::Bool
-    ret __builtin_op__<bool>("string_lt", left, right)
+    ret __builtin_op__<bool>("str_lt", left, right)
 
   fun `==`(left: System::String, right: System::String): System::Bool
-    ret __builtin_op__<bool>("string_eq", left, right)
+    ret __builtin_op__<bool>("str_eq", left, right)
 
   fun `>`(left: System::String, right: System::String): System::Bool
-    ret __builtin_op__<bool>("string_gt", left, right)
+    ret __builtin_op__<bool>("str_gt", left, right)
 
   # Never 0 — the runtime maps a masked-zero FNV result to 1 so 0 stays a
   # reserved "no hash" sentinel (it is also the header cache's empty state).
   fun hashOf(value: System::String): System::Int32
-    ret __builtin_op__<int32>("string_hash", value)
+    ret __builtin_op__<int32>("str_hash", value)
 
 # Show<String> is identity — callers (notably `format`) want the natural
 # representation, not a debug-quoted form. If a quoted/escaped variant is
@@ -33,38 +33,44 @@ instance [ambient] Show<System::String>
 # is an Int32 — every scalar fits, and char literals are Int32, so `Char('A')`
 # works directly.
 fun Char(codepoint: System::Int32): System::String
-  ret __builtin_op__<str>("wchar_to_string", codepoint)
+  ret __builtin_op__<str>("str_wchar", codepoint)
 
 # Fast 1-byte string: no allocation, returns a packed-pointer short string.
 # Use when you have a byte value in [0..255]; for arbitrary code points
 # that need UTF-8 encoding (>127), use `Char` instead. The byte is an Int32.
 fun asciiToString(byte: System::Int32): System::String
-  ret __builtin_op__<str>("ascii_to_string", byte)
+  ret __builtin_op__<str>("str_ascii", byte)
 
 fun String(int: System::Int): System::String
-  ret toString(append(StringBuilder(), int))
+  # Most-significant digit first via recursion; each digit is a one-byte
+  # inline String, and the appends extend one buffer.
+  fun digits(acc: System::String, n: System::Int): System::String
+    ret n > 9
+      ? digits(acc, n / 10) + asciiToString('0' + truncateToInt32(n % 10))
+      : acc + asciiToString('0' + truncateToInt32(n))
+  ret int < 0 ? digits("-", -int) : digits("", int)
 
 fun length(s: System::String): System::Int
-  ret __builtin_op__<bigint>("string_length_int", s)
+  ret __builtin_op__<bigint>("str_length_int", s)
 
 fun slice(s: System::String, start: System::Int, end: System::Int): System::String
-  ret __builtin_op__<str>("string_slice", s, start, end)
+  ret __builtin_op__<str>("str_slice", s, start, end)
 
 fun compare(left: System::String, right: System::String): System::Int
-  ret __builtin_op__<bigint>("string_compare_int", left, right)
+  ret __builtin_op__<bigint>("str_compare_int", left, right)
 
 # Unsigned byte value [0..255] at byte offset i (as an Int32, so it compares
 # directly against char literals), or -1 if i is out of range. Use this for
 # byte-level dispatch; if a 1-byte string is needed, use `slice(s, i, i+1)`.
 fun byteAt(s: System::String, i: System::Int): System::Int32
-  ret __builtin_op__<int32>("string_byte_at", s, i)
+  ret __builtin_op__<int32>("str_byte_at", s, i)
 
 # Index of the first byte equal to `byte` at or after `from`, or -1 if not found.
 # `byte` is the byte VALUE (an Int32, so a char literal works); `from` and the
 # returned index are byte offsets (Int). Used by parsers to scan a buffer in
 # one C call rather than recursing per byte.
 fun findByte(s: System::String, byte: System::Int32, from: System::Int): System::Int
-  ret __builtin_op__<bigint>("string_find_byte", s, byte, from)
+  ret __builtin_op__<bigint>("str_find_byte", s, byte, from)
 
 # Byte offset of the first occurrence of `needle` at or after `from`, or -1
 # when absent. The empty needle matches immediately at `from` (clamped to the
@@ -90,7 +96,7 @@ fun find(s: System::String, needle: System::String,
 # codepoint boundary. Building block for bulk-scanning parsers (e.g. find the
 # next delimiter in a buffer).
 fun findAny(s: System::String, accept: System::String, from: System::Int): System::Int
-  ret __builtin_op__<bigint>("string_find_any", s, accept, from)
+  ret __builtin_op__<bigint>("str_find_any", s, accept, from)
 
 # Byte offset of the first CODEPOINT at or after `from` in `s` that is NOT in
 # the character set `accept`, or `length(s)` when every remaining codepoint is.
@@ -98,7 +104,7 @@ fun findAny(s: System::String, accept: System::String, from: System::Int): Syste
 # (whitespace, digits, etc.) in a single C call. The result is a codepoint
 # boundary.
 fun skipAny(s: System::String, accept: System::String, from: System::Int): System::Int
-  ret __builtin_op__<bigint>("string_skip_any", s, accept, from)
+  ret __builtin_op__<bigint>("str_skip_any", s, accept, from)
 
 # True if `s` contains any codepoint from the set `accept`. (`contains` above is
 # substring containment; this is the any-of-these-characters test.)
@@ -110,35 +116,39 @@ fun containsByte(s: System::String, byte: System::Int32): System::Bool
   ret findByte(s, byte, 0) >= 0
 
 fun parseInt(s: System::String): System::Int|System::None
-  ret __builtin_op__<bigint>("string_parse_int", s)
+  ret __builtin_op__<bigint>("str_parse_int", s)
 
 
 # ── Unicode / codepoint layer ─────────────────────────────────────────────
 # Strings are UTF-8 byte sequences. `length`, `slice`, `byteAt` and the
 # find* family all index in BYTES and stay O(1); byte-wise comparison already
 # equals codepoint order, so `compare`/`==`/`<`/`>` need no codepoint variant.
-# The functions below add a codepoint view, resting entirely on the one strict
-# C decoder behind `codepointAt`. The functional way to walk a string by
+# The functions below add a codepoint view, resting entirely on the C decoder
+# behind `codepointAt`/`decode`. The functional way to walk a string by
 # character is to fold over `codepoints` or step with `decode` — never O(n)
 # random indexing, which on UTF-8 would be an O(n^2) trap.
-
-# Strict UTF-8 decode of the codepoint starting at byte offset `off`. A
-# Unicode scalar always fits in Int32 (max U+10FFFF), so codepoints are typed
-# Int32 — YAFL has no `char` type. None when `off` is past the end, lands
-# inside a sequence (on a continuation byte), or the bytes there are not a
-# valid, minimally-encoded scalar (overlong, surrogate, > U+10FFFF, or
-# truncated). Use `isValidUtf8` to pre-check raw IO bytes when end-of-string
-# must be told apart from malformed input.
 #
-# The C primitive returns the scalar or -1 (an unambiguous sentinel, since
-# scalars are non-negative); we lift -1 to None here.
-fun codepointAt(s: System::String, off: System::Int): System::Int32|System::None
-  let cp: System::Int32 = __builtin_op__<int32>("string_codepoint_at", s, off)
-  ret cp < 0i32 ? None : cp
+# MALFORMED BYTES (a binary file read as a String, a slice through the middle
+# of a character) decode as U+FFFD, the replacement character, one byte wide
+# each: a walk always covers every byte, `codepointCount` equals the number of
+# steps, and nothing stops early. `isValidUtf8` is the strict check; the
+# bytes themselves stay available through `byteAt` and `slice`.
 
-# Minimal UTF-8 byte width of a codepoint. Total over the decoder's range:
-# `codepointAt` only ever yields a scalar whose minimal width matches the
-# bytes it consumed, so adding this width always lands on the next boundary.
+# The C decoder at byte offset `off`, in ONE call: the scalar, -1 past the
+# end, or -2 for a malformed byte (a one-byte U+FFFD). Scalars are
+# non-negative, so both sentinels are unambiguous.
+fun _codepointRaw(s: System::String, off: System::Int): System::Int32
+  ret __builtin_op__<int32>("str_codepoint_at", s, off)
+
+# The codepoint starting at byte offset `off` (U+FFFD for a malformed byte),
+# or None past the end. A Unicode scalar always fits in Int32 (max U+10FFFF),
+# so codepoints are typed Int32 — YAFL has no `char` type.
+fun codepointAt(s: System::String, off: System::Int): System::Int32|System::None
+  let raw = _codepointRaw(s, off)
+  ret raw == -1i32 ? None : raw == -2i32 ? 0xFFFDi32 : raw
+
+# Minimal UTF-8 byte width of a codepoint. A valid sequence is minimally
+# encoded, so adding this width to its offset lands on the next boundary.
 # The width is the byte-offset delta, hence Int; the thresholds are Int32
 # literals so the comparison stays in the Int32 domain.
 fun _utf8Width(cp: System::Int32): System::Int
@@ -146,33 +156,35 @@ fun _utf8Width(cp: System::Int32): System::Int
 
 # Codepoint at byte offset `off` together with the byte offset of the next
 # codepoint — the building block for forward iteration (cf. Rust's
-# char_indices). None at end / on malformed bytes.
+# char_indices). None past the end. One decode per step: a malformed byte
+# steps one byte (a real U+FFFD, a valid sequence, steps its three).
 fun decode(s: System::String, off: System::Int): (cp: System::Int32, next: System::Int)|System::None
-  ret match(codepointAt(s, off))
-    (cp: System::Int32) => (cp, off + _utf8Width(cp))
-    (n: System::None)   => None
+  let raw = _codepointRaw(s, off)
+  ret raw == -1i32 ? None
+    : raw == -2i32 ? (0xFFFDi32, off + 1)
+    : (raw, off + _utf8Width(raw))
 
-# Number of codepoints (O(n)). For valid UTF-8 this is the character count;
-# the byte length is `length`.
+# Number of codepoints (O(n)) — the steps a walk takes. For valid UTF-8 this
+# is the character count; the byte length is `length`.
 fun codepointCount(s: System::String): System::Int
-  ret __builtin_op__<bigint>("string_codepoint_count", s)
+  ret __builtin_op__<bigint>("str_codepoint_count", s)
 
 # True iff every byte of `s` is part of a valid, minimally-encoded UTF-8
 # sequence. Strings from literals, `Char`, concatenation and boundary slicing
 # are always valid; raw bytes read from IO may not be.
 fun isValidUtf8(s: System::String): System::Bool
-  ret __builtin_op__<bool>("string_valid_utf8", s)
+  ret __builtin_op__<bool>("str_valid_utf8", s)
 
-# All codepoints of `s`, front to back. Built purely on the strict decoder;
-# stops at the end of `s` (or, for invalid input, the first malformed byte).
+# All codepoints of `s`, front to back — every byte covered, malformed ones as
+# U+FFFD.
 fun codepoints(s: System::String): List<System::Int32>
   # Front to back, and that order is the whole point of the function, so the
   # codepoints go into a builder as they are decoded.
   fun [tail] loop(off: System::Int,
                   [terminal] acc: ListBuilder<System::Int32 >): ListBuilder<System::Int32 >
-    ret match(codepointAt(s, off))
-      (cp: System::Int32) => loop(off + _utf8Width(cp), push<System::Int32 >(acc, cp))
-      (n: System::None)   => acc
+    ret match(decode(s, off))
+      (d: (cp: System::Int32, next: System::Int)) => loop(d.next, push<System::Int32 >(acc, d.cp))
+      (n: System::None)                           => acc
   ret build<System::Int32 >(loop(0, builder<System::Int32 >()))
 
 
@@ -208,7 +220,7 @@ fun splitLines(s: System::String): List<System::String>
 # -1 if it does not occur. The empty needle matches at `from`. memmem-style
 # search in C — O(n+m) in practice, not the O(n*m) of a byte-by-byte loop.
 fun indexOf(s: System::String, needle: System::String, from: System::Int): System::Int
-  ret __builtin_op__<bigint>("string_index_of", s, needle, from)
+  ret __builtin_op__<bigint>("str_index_of", s, needle, from)
 
 # True if `needle` occurs anywhere in `s` (the empty needle always does).
 fun contains(s: System::String, needle: System::String): System::Bool
@@ -245,17 +257,15 @@ fun split(s: System::String, sep: System::String): List<System::String>
     ? prepend(s, List<System::String>())
     : build<System::String >(loop(0, builder<System::String >()))
 
-# Join `parts` into one string with `sep` between adjacent elements. Builds
-# through a StringBuilder, so the cost is linear in the total size. The builder
-# is linear, so it is threaded by explicit recursion rather than `fold` (whose
-# accumulator type is unrestricted).
+# Join `parts` into one string with `sep` between adjacent elements — linear in
+# the total size, the accumulator extending its own buffer in place.
 fun join(parts: List<System::String>, sep: System::String): System::String
-  fun [tail] joinRest(sb: StringBuilder, rest: List<System::String>): StringBuilder
+  fun [tail] joinRest(acc: System::String, rest: List<System::String>): System::String
     ret match(head<System::String>(rest))
-      (x: System::String) => joinRest(append(append(sb, sep), x), tail<System::String>(rest))
-      (e: System::None)   => sb
+      (x: System::String) => joinRest(acc + sep + x, tail<System::String>(rest))
+      (e: System::None)   => acc
   ret match(head<System::String>(parts))
-    (first: System::String) => toString(joinRest(append(StringBuilder(), first), tail<System::String>(parts)))
+    (first: System::String) => joinRest(first, tail<System::String>(parts))
     (e: System::None)       => ""
 
 fun trimStart(s: System::String): System::String
@@ -272,47 +282,5 @@ fun trimEnd(s: System::String): System::String
 
 fun trim(s: System::String): System::String
   ret trimEnd(trimStart(s))
-
-
-class [linear,final] StringBuilder(_buffer: String, _offset: Int)
-
-fun StringBuilder(): StringBuilder => StringBuilder("", 0)
-
-fun append([terminal] sb: StringBuilder, value: String): StringBuilder
-  # Growth policy lives in ONE place — string_builder_reserve (yafllib) —
-  # shared with the compiler's accumulation-loop rewrite: 1.5x growth,
-  # perfect-filled to the allocator's 32-byte granule, packed inits
-  # heapified. Returns the buffer unchanged when capacity suffices.
-  let new_buffer = __builtin_op__<str>("string_builder_reserve", sb._buffer, sb._offset, length(value))
-  ret StringBuilder(__builtin_op__<str>("string_copy_to_dangerously", new_buffer, sb._offset, value), sb._offset + length(value))
-
-fun append(sb: StringBuilder, value: Int): StringBuilder
-  # Walks the digits of `n` (assumed non-negative) most-significant first via
-  # recursion so they end up in left-to-right order in the builder. Each digit
-  # is appended as a packed-pointer one-byte string — no heap allocation per
-  # digit, and the only buffer growth is the StringBuilder's own.
-  fun appendDigits(sb: StringBuilder, n: Int): StringBuilder
-    ret n > 9
-      ? append(appendDigits(sb, n / 10), asciiToString('0' + truncateToInt32(n % 10)))
-      : append(sb, asciiToString('0' + truncateToInt32(n)))
-  ret value < 0
-    ? appendDigits(append(sb, "-"), -value)
-    : appendDigits(sb, value)
-
-fun toString([terminal] sb: StringBuilder): String
-  ret __builtin_op__<str>("string_resize", sb._buffer, sb._offset)
-
-# Append `value[from .. end)` without materialising the slice — the range
-# copies straight from the source into the builder's buffer.
-fun appendSlice([terminal] sb: StringBuilder, value: String, from: System::Int, end: System::Int): StringBuilder
-  let n = end > from ? end - from : 0
-  let new_buffer = __builtin_op__<str>("string_builder_reserve", sb._buffer, sb._offset, n)
-  ret StringBuilder(__builtin_op__<str>("string_copy_range_to_dangerously", new_buffer, sb._offset, value, from, end), sb._offset + n)
-
-# Consume a builder without producing its string — the error-path terminus,
-# where partial output is meaningless and the linear builder still must be
-# used exactly once.
-fun discard([terminal] sb: StringBuilder): System::None
-  ret None
 
 

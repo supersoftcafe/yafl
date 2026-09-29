@@ -64,28 +64,27 @@ fun manifestName(entries: List<TomlEntry>) => tomlString(entries, "name", "unnam
 
 fun readWholeFile(path) => match(open_read(path))
   (e: IOError) => e
-  (io: IO)     => drainFile(io, StringBuilder())
+  (io: IO)     => drainFile(io, "")
 
-# A BUILDER, not `acc + s`: concatenation copies the whole accumulated text per
-# 64 KB chunk, which is quadratic in file size. This path reads every `.yl` on
-# the search path, and a `.yl` is mostly libyafl.a — measured at 0.32s for 2 MB
-# but 1m51s for 40 MB before this was a builder.
+# `out + s` is linear in file size: the accumulator extends its own buffer in
+# place (yafllib/str.c). This path reads every `.yl` on the search path, and a
+# `.yl` is mostly libyafl.a — tens of MB.
 #
 # EOF arrives as EOFError, NOT as a zero-length read — treating every IOError
 # as failure made this report "cannot be read" for every file that was read
 # perfectly well, right up to its end.
-fun [tail] drainFile(io: IO, [terminal] sb)
+fun [tail] drainFile(io: IO, out: String)
   let r = io.read(65536)
   ret match(r.v)
-    (e: IOError) => drainEnd(r.io, sb, e)
-    (s: String)  => drainFile(r.io, append(sb, s))
+    (e: IOError) => drainEnd(r.io, out, e)
+    (s: String)  => drainFile(r.io, out + s)
 
 # TWO-LEVEL match: an IOError VARIANT cannot be an arm of `String|IOError`
-# directly — the union is matched first, then the error's variants. The builder
-# is consumed on BOTH paths; on the error path its text is discarded.
-fun drainEnd(io: IO, [terminal] sb, e) => match(e)
-  (eof: EOFError) => (io.close(), toString(sb)) |> (c, text) => text
-  (o: IOError)    => (io.close(), toString(sb), o) |> (c, t, err) => err
+# directly — the union is matched first, then the error's variants. On the
+# error path the text read so far is discarded.
+fun drainEnd(io: IO, out: String, e) => match(e)
+  (eof: EOFError) => (io.close(), out) |> (c, text) => text
+  (o: IOError)    => (io.close(), out, o) |> (c, t, err) => err
 
 # A directory library: `yafl.toml` beside its `.yafl` sources. Returns None
 # when there is no manifest — that is "not a library", not an error, since a

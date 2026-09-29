@@ -21,19 +21,6 @@ import Bootstrap::Types
 
 
 
-# ── pointer paths (typedecl get_pointer_paths) ───────────────────────────────
-
-fun cgTypePointerPaths(t2, path) => match(t2)
-  (d: CgDataPointer)      => list1(path)
-  (fp: CgFuncPointer)     => list1(path + ".o")
-  (s2: CgStruct)          => cgPathsFields(s2.fields, path)
-  (im: CgImmediateStruct) => cgPathsFields(im.fields, path)
-  (o: CgType)             => List()
-
-fun cgPathsFields(fields: List<CgField>, path)
-  ret fold(fields, List(), (acc, f2) =>
-        concat(acc, cgTypePointerPaths(f2.fieldType, path + "." + mangleName(f2.fieldName))))
-
 # ── function-id enum ─────────────────────────────────────────────────────────
 
 fun genFunctionIds(methodIds: List<MethodId>)
@@ -295,7 +282,7 @@ fun genGlobal([terminal] acc: GenAcc, g2: CgGlobal, a: CgApp): GenAcc
 fun genGlobalRoots(g2: CgGlobal, a: CgApp): List<String>
   # Old-style lazy global: the value lives directly in the slot.
   if isNoneStr(g2.globalObjectName) && !isNoneStr(g2.globalLazyInitFunction)
-    ret cgTypePointerPaths(g2.globalType, cgGlobalToCName(g2))
+    ret cgGetPointerPaths(g2.globalType, cgGlobalToCName(g2))
   # Static class-instance global: register the <name>_data in-struct pointer
   # field addresses (skip the leading vtable `type` field). INTERNED STRING
   # LITERALS are not roots: compile-time constants, bytes in .data, never
@@ -322,7 +309,7 @@ fun genStaticRootsFields(cls: CgObject, g2: CgGlobal)
   let fields = cgFieldsOfOrEmpty(cls.objFields)
   if atMost(chain(fields), 1)
     ret List()
-  ret cgPathsFields(tail(fields), cgGlobalToCName(g2) + "_data")
+  ret cgStructPointerPaths(tail(fields), cgGlobalToCName(g2) + "_data")
 
 # ── roots + main ─────────────────────────────────────────────────────────────
 
@@ -349,36 +336,36 @@ fun genDeclareMain(profile, nProf: Int) => "int main(int argc, char** argv) {\n"
 
 # c_str: escape backslashes and quotes only — the exact twin of gen.py's local
 # escaper (names and paths never contain other C-special bytes).
-fun profCStr(s) => "\"" + toString(profCStrBody(s, 0, StringBuilder())) + "\""
+fun profCStr(s) => "\"" + profCStrBody(s, 0, "") + "\""
 
 fun [tail] profCStrBody(s, i,
-                        [terminal] sb): StringBuilder
+                        out: String): String
   let bs = findByte(s, '\\', i)
   let qt = findByte(s, '"', i)
   let nxt = bs < 0 ? qt : qt < 0 ? bs : bs < qt ? bs : qt
   if nxt < 0
-    ret append(sb, slice(s, i, length(s)))
+    ret out + slice(s, i, length(s))
   ret profCStrBody(s, nxt + 1,
-                   append(append(append(sb, slice(s, i, nxt)), "\\"),
-                          slice(s, nxt, nxt + 1)))
+                   out + slice(s, i, nxt) + "\\"
+                          + slice(s, nxt, nxt + 1))
 
 # Rows in id order — the same non-foreign walk order the numbering used; the
 # count rides the walk (no-length ruling).
 fun genProfTable(a: CgApp): (text: String, n: Int)
-  let rows = profTableRows(chain(appFunctions(a)), 0, StringBuilder())
+  let rows = profTableRows(chain(appFunctions(a)), 0, "")
   ret ("static const yafl_prof_fn_t yafl_prof_fns[" + String(rows.n) + "] = {\n"
-       + toString(rows.sb2) + "\n};\n", rows.n)
+       + rows.out2 + "\n};\n", rows.n)
 
 fun [tail] profTableRows(fs: Chain<CgFunction>, n,
-                         [terminal] sb): (sb2: StringBuilder, n: Int) => match(fs)
-  (nil: ChainEnd) => (sb, n)
+                         out: String): (out2: String, n: Int) => match(fs)
+  (nil: ChainEnd) => (out, n)
   (l: ChainLink)  => isNoneStr(l.value.fnForeignSymbol)
     ? profTableRows(l.next, n + 1,
-        append(n == 0 ? sb : append(sb, ",\n"),
-               "    { " + profCStr(l.value.fnName) + ", "
+        (n == 0 ? out : out + ",\n")
+               + "    { " + profCStr(l.value.fnName) + ", "
                + profCStr(l.value.fnSourceFile) + ", "
-               + String(l.value.fnSourceLine) + " }"))
-    : profTableRows(l.next, n, sb)
+               + String(l.value.fnSourceLine) + " }")
+    : profTableRows(l.next, n, out)
 
 # ── the assembly ─────────────────────────────────────────────────────────────
 

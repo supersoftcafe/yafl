@@ -69,16 +69,6 @@ EXPORT object_t* integer_from_float64(double f) {
 }
 
 
-// Render a double as a YAFL String. %.17g gives a round-trip-safe form.
-EXPORT object_t* string_from_float64(double f) {
-    char buf[32];
-    int n = snprintf(buf, sizeof(buf), "%.17g", f);
-    if (n < 0) n = 0;
-    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
-    return string_from_bytes((uint8_t*)buf, n);
-}
-
-
 // Convert double → fixed-width int, truncating toward zero and clamping on
 // overflow. NaN → 0; +inf or values ≥ 2^(N-1) → INT<N>_MAX; -inf or values
 // < -2^(N-1) → INT<N>_MIN. Boundary constants use the exact float that's
@@ -143,26 +133,6 @@ EXPORT int64_t int64_from_float32(float f) {
 }
 
 
-// Parse a YAFL String into a double. On failure (empty, leftover chars, etc.)
-// returns NaN — callers wrap into Float|None by checking float64_is_nan.
-EXPORT double float64_parse_or_nan(object_t* self) {
-    intptr_t local; int32_t len;
-    char* src = string_to_cstr(self, &local, &len);
-
-    if (len <= 0) return NAN;
-
-    // strtod requires NUL-termination. Heap strings are NUL-terminated already
-    // (string_to_cstr returns the raw array, and string.c always appends '\0'
-    // past the length). Packed strings sit in `local`, which is at least
-    // sizeof(intptr_t) bytes wide and zero-fills its unused tail bytes — so it
-    // is also NUL-terminated within the buffer for any len < sizeof(intptr_t).
-    char* end = NULL;
-    double v = strtod(src, &end);
-    if (end != src + len) return NAN;
-    return v;
-}
-
-
 /**********************************************************
  *
  *                      Float32
@@ -194,25 +164,3 @@ EXPORT object_t* integer_from_float32(float f) {
 // helpers above; no duplicate definition here.
 
 
-// Render float32 as a string. %.9g gives a round-trip-safe form for binary32.
-EXPORT object_t* string_from_float32(float f) {
-    char buf[24];
-    int n = snprintf(buf, sizeof(buf), "%.9g", (double)f);
-    if (n < 0) n = 0;
-    if (n > (int)sizeof(buf) - 1) n = (int)sizeof(buf) - 1;
-    return string_from_bytes((uint8_t*)buf, n);
-}
-
-
-// Parse a YAFL String into a float. Same contract as float64_parse_or_nan:
-// returns NaN on any failure; callers wrap into Float32|None by checking
-// float32_is_nan. Uses strtof so the result is the correctly-rounded binary32.
-EXPORT float float32_parse_or_nan(object_t* self) {
-    intptr_t local; int32_t len;
-    char* src = string_to_cstr(self, &local, &len);
-    if (len <= 0) return NAN;
-    char* end = NULL;
-    float v = strtof(src, &end);
-    if (end != src + len) return NAN;
-    return v;
-}

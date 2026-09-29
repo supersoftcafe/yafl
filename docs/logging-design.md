@@ -35,7 +35,7 @@ That is a feature:
 | `[GC …]` line-per-record convention on stderr | `gc_stats.c` |
 | `thread_local int32_t _my_thread_id` + accessor | `thread.c:54` |
 | env-gated instrumentation (`YAFL_DURATION`, `YAFL_GC_STATS`) | `thread.c`, `object.c` |
-| `string_to_cstr(obj, &local, &len)` — short strings use a caller buffer | `string.c` |
+| `str_copy_cstr(s, buf, size)` — copy a String value into a caller buffer, NUL-terminated | `str.c` |
 | `[foreign(...), impure, sync]` declaration form | `stdlib/console.yafl:3` |
 | `{N}` 1-indexed slot syntax, per-arity overloads | `stdlib/format.yafl` |
 
@@ -133,11 +133,11 @@ call is too much.
 Rules the implementation must hold to:
 
 1. **No YAFL-heap allocation, ever.** Format into a `thread_local char[4096]`.
-   Strings arrive via `string_to_cstr` with a stack buffer. This also keeps the
+   Strings arrive as `str_t` values, copied out with `str_copy_cstr` into a stack buffer. This also keeps the
    API safe to call from inside the GC later.
 2. **`Int` is arbitrary precision.** DONE — `integer_to_cstr(obj, buf, size)`
    is in `integer.c`, declared in `yafl.h`, with 10 unit tests. The stdlib's
-   `String(Int)` builds on the YAFL heap via StringBuilder, which a logger must
+   `String(Int)` builds a String on the YAFL heap, which a logger must
    never do; this renders into the caller's buffer and allocates nothing. It
    handles tagged literals and multi-limb magnitudes, and when the exact value
    does not fit it writes `<int:~N digits>` rather than a truncated numeral —

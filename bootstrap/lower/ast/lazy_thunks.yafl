@@ -63,6 +63,7 @@ fun lazyPublishLeaves(v, t2,
                       [terminal] acc): ListBuilder<RParam> => match(t2)
   (d: CgDataPointer)      => push(acc, v)
   (f2: CgFuncPointer)     => push(acc, RpStructField(v, "o"))
+  (st: CgStr)             => push(acc, RpStructField(v, "head"))
   (s2: CgStruct)          => lazyPublishLeavesFields(v, chain(s2.fields), acc)
   (im: CgImmediateStruct) => lazyPublishLeavesFields(v, chain(im.fields), acc)
   (o: CgType)              => acc

@@ -28,7 +28,7 @@ HIDDEN struct io_job_vtable IO_JOB_VTABLE = {
     .array_el_size            = 0,
     .object_pointer_locations = maskof(io_job_t, .task.callback.o)
                               | maskof(io_job_t, .task.next)
-                              | maskof(io_job_t, .task.result)
+                              | maskof(io_job_t, .task.result.head)
                               | maskof(io_job_t, .next_in_io_queue)
                               | maskof(io_job_t, .io)
                               | maskof(io_job_t, .completion_task)

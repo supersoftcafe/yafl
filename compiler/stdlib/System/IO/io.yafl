@@ -127,38 +127,32 @@ class [linear,final] IO(_io: _IO)
 # and memory stays bounded regardless of file content. EOF before any bytes
 # yields EOFError; EOF after some bytes yields the final partial line.
 fun readLine(io: IO, maxLen: Int): (io: IO, v: String|IOError)
-  ret _read_line_loop(io, System::StringBuilder(), maxLen)
+  ret _read_line_loop(io, "", maxLen)
 
 # readLine with a default 4K cap.
 fun readLine(io: IO): (io: IO, v: String|IOError)
   ret readLine(io, 4096)
 
-fun _read_line_loop(io: IO, sb: System::StringBuilder, remaining: Int): (io: IO, v: String|IOError)
+fun _read_line_loop(io: IO, line: String, remaining: Int): (io: IO, v: String|IOError)
   let r = io.takeLine(remaining)
   let chunk = r.v
   let n = System::length(chunk)
   # Complete when the chunk ends in '\n' (true end of line) or the maxLen budget
   # is spent (forced break). Otherwise the buffer drained mid-line — refill.
   ret n >= remaining || (n > 0 && System::byteAt(chunk, n - 1) == '\n')
-    ? (r.io, System::toString(System::append(sb, chunk)))
-    : _read_line_refill(r.io, System::append(sb, chunk), remaining - n)
+    ? (r.io, line + chunk)
+    : _read_line_refill(r.io, line + chunk, remaining - n)
 
-fun _read_line_refill(io: IO, sb: System::StringBuilder, remaining: Int): (io: IO, v: String|IOError)
+fun _read_line_refill(io: IO, line: String, remaining: Int): (io: IO, v: String|IOError)
   let r = io.refill()
   ret match(r.v)
-    (c: Int)          => c < 0 ? _read_line_failed(r.io, sb, c) : _read_line_loop(r.io, sb, remaining)
-    (e: System::None) => _read_line_eof(r.io, sb)
+    (c: Int)          => c < 0 ? (r.io, _error_from_code(c)) : _read_line_loop(r.io, line, remaining)
+    (e: System::None) => _read_line_eof(r.io, line)
 
 # EOF: whatever was accumulated is the final line; nothing accumulated means the
 # stream is exhausted.
-fun _read_line_eof(io: IO, sb: System::StringBuilder): (io: IO, v: String|IOError)
-  let s = System::toString(sb)
-  ret System::length(s) == 0 ? (io, EOFError(0)) : (io, s)
-
-# Error mid-line: consume the linear builder and surface the errno.
-fun _read_line_failed(io: IO, sb: System::StringBuilder, code: Int): (io: IO, v: String|IOError)
-  let _ = System::toString(sb)
-  ret (io, _error_from_code(code))
+fun _read_line_eof(io: IO, line: String): (io: IO, v: String|IOError)
+  ret System::length(line) == 0 ? (io, EOFError(0)) : (io, line)
 
 
 fun _write_result(io: IO, n: Int): (io: IO, v: Int|IOError)

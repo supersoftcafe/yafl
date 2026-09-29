@@ -90,23 +90,23 @@ fun [tail] _readListLoop(s: System::String, pos: System::Int, build: (:Value): V
 # ── printer ──────────────────────────────────────────────────────────────────
 
 fun show(v: Value): System::String
-  ret System::toString(_show(System::StringBuilder(), v))
+  ret _show("", v)
 
-fun _show([terminal] sb: System::StringBuilder, v: Value): System::StringBuilder
+fun _show(out: System::String, v: Value): System::String
   ret match(v)
-    (n: VNil)     => System::append(sb, "()")
-    (b: VBool)    => System::append(sb, b.flag ? "#t" : "#f")
-    (i: VInt)     => System::append(sb, i.num)
-    (s: VSym)     => System::append(sb, s.name)
-    (p: VPair)    => _showTail(System::append(_show(System::append(sb, "("), p.head), ""), p.tail)
-    (c: VClosure) => System::append(sb, "#<closure>")
-    (f: VBuiltin) => System::append(sb, "#<builtin>")
+    (n: VNil)     => out + "()"
+    (b: VBool)    => out + (b.flag ? "#t" : "#f")
+    (i: VInt)     => out + System::String(i.num)
+    (s: VSym)     => out + s.name
+    (p: VPair)    => _showTail(_show(out + "(", p.head), p.tail)
+    (c: VClosure) => out + "#<closure>"
+    (f: VBuiltin) => out + "#<builtin>"
 
-fun [tail] _showTail([terminal] sb: System::StringBuilder, v: Value): System::StringBuilder
+fun [tail] _showTail(out: System::String, v: Value): System::String
   ret match(v)
-    (n: VNil)  => System::append(sb, ")")
-    (p: VPair) => _showTail(_show(System::append(sb, " "), p.head), p.tail)
-    (other: Value) => System::append(_show(System::append(sb, " . "), other), ")")
+    (n: VNil)  => out + ")"
+    (p: VPair) => _showTail(_show(out + " ", p.head), p.tail)
+    (other: Value) => _show(out + " . ", other) + ")"
 
 # ── evaluator ────────────────────────────────────────────────────────────────
 # The linear IO handle threads through EVERY call: any subexpression may

@@ -25,6 +25,7 @@ import langtools
 from lowering.task_abi import (
     TASK_FIELDS, wrap_return_type, is_task_param, task_ptr_from,
     task_subtype_name, make_task_foreign_object, make_task_subtype_object,
+    RUNTIME_TASK_SUBTYPES,
 )
 from codegen.gen import Application
 from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, AssertNotTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
@@ -203,15 +204,17 @@ def _emit_task_alloc(sv_task: StackVar, task_subtype_name: str | None) -> tuple[
 
     Three paths, all leaving sv_task pointing at a fully task_init'd task:
       - None        : Void-returning function uses the base task_t.
-      - "task_obj"  : pre-declared yafllib subtype (task_obj_create initialises).
+      - RUNTIME_TASK_SUBTYPES : pre-declared yafllib subtypes (task_obj,
+                                task_str), each initialised by `<name>_create`.
       - other       : compiler-synthesised subtype, allocate via NewObject + task_init.
     """
     if task_subtype_name is None:
         return (Move(sv_task,
             RuntimeInvoke("task_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
-    if task_subtype_name == "task_obj":
+    if task_subtype_name in RUNTIME_TASK_SUBTYPES:
         return (Move(sv_task,
-            RuntimeInvoke("task_obj_create", NewStruct((("self", NullPointer()),)), DataPointer())),)
+            RuntimeInvoke(f"{task_subtype_name}_create", NewStruct((("self", NullPointer()),)),
+                          DataPointer())),)
     return (
         NewObject(task_subtype_name, sv_task),
         Move(__sv_discard,

@@ -95,7 +95,7 @@ fun rpGetType(r) => match(r)
   (x: RpNewStruct) => CgStruct(map(x.values, (v) => CgField(v.name, rpGetType(v.value))))
   (x: RpRuntimeInvoke) => x.resultType
   (x: RpStructField) => rpStructFieldType(x)
-  (x: RpString) => CgDataPointer()
+  (x: RpString) => CgStr()
   (x: RpInteger) => x.precision == 0 ? CgDataPointer() : CgInt(x.precision)
   (x: RpFloat) => CgFloat(x.precision)
   (x: RpIntEqConst) => CgInt(32)
@@ -124,7 +124,8 @@ fun rpStructFieldType(x: RpStructField) => match(cgFieldsOf(rpGetType(x.structVa
 
 fun rpStructFieldTypeSpecial(xtype, field) => match(xtype)
   (w: CgTaskWrapper) => field == "task" ? CgDataPointer() : w.inner
-  (fp: CgFuncPointer) => CgDataPointer()   # both "f" and "o" are DataPointer per Python
+  (fp: CgFuncPointer) => CgDataPointer()   # both "o" and "f" are DataPointer per Python
+  (st: CgStr) => CgDataPointer()           # "head": the only word the compiler names
   (o: CgType) => CgVoid()                  # unreachable (Python raises ValueError)
 
 fun [tail] rpStructFieldLookup(fields: List<CgField>, name) => match(head(fields))
@@ -575,6 +576,7 @@ fun rpToCTagTask(x: RpTagTask, cache0: List<CgCacheEntry>): (text: String, cache
   ret match(x.targetType)
     (d: CgDataPointer) => ("((object_t*)((uintptr_t)" + taskC.text + " | PTR_TAG_TASK))", taskC.cache)
     (fp: CgFuncPointer) => ("((fun_t){.f=NULL,.o=(void*)((uintptr_t)" + taskC.text + " | PTR_TAG_TASK)})", taskC.cache)
+    (st: CgStr) => ("str_word((object_t*)((uintptr_t)" + taskC.text + " | PTR_TAG_TASK))", taskC.cache)
     (w: CgTaskWrapper) => rpToCTagTaskWrapper(w, taskC.text, taskC.cache)
     (s: CgStruct) => rpToCTagTaskStruct(s.fields, taskC.text, taskC.cache)
     (m: CgImmediateStruct) => rpToCTagTaskStruct(m.fields, taskC.text, taskC.cache)
@@ -703,6 +705,7 @@ fun rpZeroFor(fieldType) => match(fieldType)
   (i: CgInt) => RpInteger(0, i.precision)
   (p: CgIntPtr) => RpInteger(0, 64)
   (f: CgFloat) => RpFloat(0.0, f.precision)
+  (st: CgStr) => RpZeroOf(st)
   (o: CgType) => RpNullPointer()   # unreachable (Python raises ValueError)
 
 fun unionStruct(container, namedValues: List<RpNamedValue>) => match(container)

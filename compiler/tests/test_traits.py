@@ -73,7 +73,7 @@ class MathInt() : Math<System::Int>
 
 class PlusString() : Plus<System::String>
     fun `+`(left: System::String, right: System::String): System::String
-        ret __builtin_op__<str>("string_append", left, right)
+        ret __builtin_op__<str>("str_append", left, right)
 
 let [trait] _math_int: MathInt = MathInt()
 let [trait] _plus_string: PlusString = PlusString()

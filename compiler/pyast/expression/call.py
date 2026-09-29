@@ -243,6 +243,3 @@ class CallExpression(Expression):
         )
 
         return fun_op_bundle + prm_op_bundle + call_bundle
-
-
-

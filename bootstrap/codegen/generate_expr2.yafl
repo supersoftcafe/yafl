@@ -241,33 +241,17 @@ fun bindSubjectOn(resolver: Resolver, arm: PArm, boundType: Spec, value: RParam)
 
 # A unit-typed arm in a pointer union (the `None` of `Box|None`) carries no
 # data: the subject is object_t* and cannot assign to a struct{}, so
-# synthesise the empty value. A single-field newtype arm in a COLLAPSED
-# pointer union: the subject is the bare pointer word, so re-wrap it into the
-# tuple struct the arm binds.
+# synthesise the empty value. A single-field newtype arm bound from a
+# COLLAPSED union's LEAF value (a pointer word, a String value, an unpacked
+# scalar or function): rebuild the nesting (the inverse of
+# unwrapToPointerWord).
 fun adjustBoundValue(armCtype, value): RParam => match(cgFieldsOf(armCtype))
   (fields: List<CgField>) => isEmpty(fields)
     ? RpZeroOf(armCtype)
-    : (eqCgTypeList(cgFlattenPrimitives(armCtype), list1(CgDataPointer()))
-        ? wrapPointerInto(armCtype, value)
+    : (eqCgType(peeledCtype(armCtype), rpGetType(value)) && !eqCgType(rpGetType(value), armCtype)
+        ? wrapLeaf(armCtype, value)
         : value)
   ()                       => value
-
-fun [tail] eqCgTypeList(a: List<CgType>, b: List<CgType>): Bool => match(head(a))
-  (xa: CgType) => match(head(b))
-    (xb: CgType) => eqCgType(xa, xb) && eqCgTypeList(tail(a), tail(b))
-    ()            => false
-  () => isEmpty(b)
-
-# `_wrap_pointer_into`: rebuild a single-field newtype wrapper (a chain of
-# one-field structs ending in a DataPointer) from a bare pointer word.
-fun wrapPointerInto(ctype, ptrValue): RParam => match(cgFieldsOf(ctype))
-  (fields: List<CgField>) if exactly(chain(fields), 1) =>
-      wrapPointerIntoField(head(fields), ptrValue)
-  ()                       => ptrValue
-
-fun wrapPointerIntoField(f: CgField|None, ptrValue): RParam => match(f)
-  (fld: CgField) => RpNewStruct(list1(RpNamedValue(fld.fieldName, wrapPointerInto(fld.fieldType, ptrValue))))
-  ()              => ptrValue   # unreachable given the length check above
 
 # Bind the arm name to the variant value reassembled from union slots.
 # `slotAssignments` is variant_map[var_idx]: one (slot_index, orig_type) per
@@ -364,7 +348,7 @@ fun armResultsToPhi(ars: List<ArmResult>) => map(ars, (a) => OpPhiSource(a.arLab
 fun literalEqTest(litTypeName, value, literal)
   let args = RpNewStruct(list2(RpNamedValue("a", value), RpNamedValue("b", literal)))
   ret litTypeName == "str"
-    ? RpIntEqConst(RpRuntimeInvoke("string_compare", args, CgInt(32)), 0)
+    ? RpRuntimeInvoke("str_eq", args, CgInt(8))
     : (litTypeName == "bigint"
         ? RpRuntimeInvoke("integer_test_eq", args, CgInt(8))
         : ((litTypeName == "float32" || litTypeName == "float64")
@@ -578,21 +562,21 @@ fun mergeInto(acc, b: GBind|None): GBind|None => match(b)
     ()          => nb
   ()          => acc
 
+# A position with a pattern binds through its subject's repr (Python's
+# `position_bind`); a position without one binds nothing.
 fun bindPosition(p: PPos, sub: PExpr|None, g: GBundle|None,
                  r): GBind|None => match(sub)
   (e2: PExpr) => match(g)
-    (b: GBundle) => match(posBindSpec(p, exprType(e2, r)))
-      (bt: Spec) => bindSubject(r, PArm(p.posName, p.posType, PeNothing(p.pposLine),
-                                        List(), None, p.pposLine,
-                                        List()),
-                                bt, mustResult(b))
+    (b: GBundle) => match(p.posType)
+      (pt: Spec) => match(exprType(e2, r))
+        (st: Spec) => reprPositionBind(classifyRepr(st, r),
+                                       PArm(p.posName, p.posType, PeNothing(p.pposLine),
+                                            List(), None, p.pposLine, List()),
+                                       mustResult(b), pt, st, r)
+        ()         => None
       ()         => None
     ()           => None
   ()            => None
-
-fun posBindSpec(p: PPos, subjTy): Spec|None => match(p.posType)
-  (t2: Spec) => p.posType
-  ()         => subjTy
 
 fun genMatchOne(mt: PeMatch, r, expected)
   let subjBundle = withPrefix(genExpr(mt.subject, r), "subj")

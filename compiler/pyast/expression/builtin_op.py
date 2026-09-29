@@ -48,7 +48,7 @@ class BuiltinOpExpression(Expression):
         expr = dataclasses.replace(self, params=new_params, type=new_type)
         new_statements = list(new_statements) + list(type_stmts)
         # A primitive op owns its conversion to the receiver — its result
-        # boxing into a union slot (`string_parse_int`'s bigint into `Int|None`).
+        # boxing into a union slot (`str_parse_int`'s bigint into `Int|None`).
         from pyast.expression.conversion import converted
         folded = expr._fold_const_compare()
         return (folded if folded is not None else converted(expr, expected_type, resolver)), list(new_statements), hints

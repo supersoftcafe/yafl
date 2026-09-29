@@ -124,8 +124,8 @@ typedef struct spawn_aux {
 // the IO-thread-written structs it needs no is_mutable pinning.
 typedef struct {
     object_t  parent;
-    object_t* out;        // String
-    object_t* err;        // String
+    str_t     out;
+    str_t     err;
     int32_t   exit_code;
 } spawn_result_t;
 
@@ -142,7 +142,7 @@ HIDDEN extern struct spawn_result_vtable SPAWN_RESULT_VTABLE;
 // the start of the struct so the vtable's pointer mask stays compact and
 // the GC has all reachable references in one cache line.
 typedef struct io_job {
-    task_obj_t              task;              // GC: callback.o, result
+    task_str_t              task;              // GC: callback.o, result.head (see _io_resolve)
     _Atomic(struct io_job*) next_in_io_queue;  // GC: MPSC linkage in the IO queue
     io_t*                   io;                // GC: IO target handle (NULL for dir ops)
     task_t*                 completion_task;   // GC: pre-allocated task; callback = per-op finisher

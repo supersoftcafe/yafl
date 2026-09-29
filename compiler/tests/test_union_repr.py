@@ -120,12 +120,14 @@ fun main(): System::Int
 
     # ── representation: collapsed vs tagged in the generated C ────────────────
 
-    def _ret_type_collapsed(self, code: str, fn_substr: str) -> bool:
-        """True if the function whose mangled name contains fn_substr returns a
-        bare object_t* (collapsed); False if it returns a tagged struct."""
+    def _ret_type(self, code: str, fn_substr: str) -> str:
+        """The C return type of the function whose mangled name contains
+        fn_substr: `object_t*` (collapsed to one word), `str_t` (collapsed,
+        wide — a String member makes the one dispatch word a String value),
+        or a tagged struct."""
         for line in code.splitlines():
             if fn_substr in line and "(object_t* this" in line and line.rstrip().endswith(";"):
-                return line.lstrip().startswith("object_t*")
+                return line.lstrip().split(" ")[0]
         raise AssertionError(f"no prototype for {fn_substr!r} found")
 
     def test_collapsed_unions_are_single_word(self):
@@ -158,10 +160,13 @@ fun main(): System::Int
   ret useAb(0) + useIsn(0) + useTup(true)
 """
         code = _c_for(src)
-        self.assertTrue(self._ret_type_collapsed(code, "Main__ab_"),
-                        "A|B|None should collapse to a single object_t* word")
-        self.assertTrue(self._ret_type_collapsed(code, "Main__isn_"),
-                        "Int|String|None should collapse to a single object_t* word")
+        # Both collapse to ONE dispatch word; each carries a String member
+        # (B is a newtype over String), so that word is a String value's head
+        # and the union value is the String value, str_t.
+        self.assertEqual("str_t", self._ret_type(code, "Main__ab_"),
+                         "A|B|None should collapse to a String-value union")
+        self.assertEqual("str_t", self._ret_type(code, "Main__isn_"),
+                         "Int|String|None should collapse to a String-value union")
         # The composite-payload (a,b)|None case is covered behaviourally in
         # test_tuple_and_scalar_unions; its small function inlines away at -O2 so
         # there is no standalone prototype to inspect here.
@@ -213,20 +218,19 @@ fun main(): System::Int
                             "small variant must stay inline in the pool")
 
     def test_at_threshold_variant_stays_inline(self):
-        # Exactly 8 pointer words = 64 bytes: the rule is strictly greater-
-        # than, so this stays a flat tagged struct end to end.
+        # Exactly 64 bytes — four 16-byte String values: the rule is strictly
+        # greater-than, so this stays a flat tagged struct end to end.
         src = """
 namespace Main
 import System
 enum Edge
   enum Empty0()
-  enum Full8(f0: String, f1: String, f2: String, f3: String,
-             f4: String, f5: String, f6: String, f7: String)
+  enum Full8(f0: String, f1: String, f2: String, f3: String)
 fun mkEdge(b: Bool): Edge
-  ret b ? Full8("a", "b", "c", "d", "e", "f", "g", "h") : Empty0()
+  ret b ? Full8("a", "b", "c", "d") : Empty0()
 fun probeEdge(b: Bool): Int
   ret match(mkEdge(b))
-    (f: Full8)  => length(f.f0) + length(f.f7)
+    (f: Full8)  => length(f.f0) + length(f.f3)
     (n: Empty0) => 42
 fun main(): System::Int
   println(String(probeEdge(true)) + " " + String(probeEdge(false)))
@@ -276,10 +280,11 @@ fun main(): System::Int
         self.assertEqual("8 42", out.strip())
 
     def test_estimator_counts_nested_enum_pools_truly(self):
-        # A nested flat enum value costs its pool: one pointer + a byte tag
-        # here (9B), not pointer+word (16B). Six Strings + two such enums =
-        # 66B > 64: boxes. Five Strings + two = 58B: stays inline. The pin
-        # is the PAIR straddling the threshold under true arithmetic.
+        # A nested flat enum value costs its pool: here one String value
+        # (16B) + a byte tag = 17B, not String + a whole tag word (24B).
+        # Three such enums = 51B: stays inline (a per-word count says 72B and
+        # would box it). One String + three = 67B > 64: boxes. The pin is the
+        # PAIR straddling the threshold under true arithmetic.
         src = """
 namespace Main
 import System
@@ -287,21 +292,19 @@ enum Duo
   enum DuoA(dPtr: String)
   enum DuoB()
 enum Straddle
-  enum Under5(u0: String, u1: String, u2: String, u3: String, u4: String,
-              ua: Duo, ub: Duo)
-  enum Over6(o0: String, o1: String, o2: String, o3: String, o4: String,
-             o5: String, oa: Duo, ob: Duo)
+  enum Under5(ua: Duo, ub: Duo, uc: Duo)
+  enum Over6(o0: String, oa: Duo, ob: Duo, oc: Duo)
 fun mkS(k: Int): Straddle
   ret k == 0
-    ? Under5("a", "b", "c", "d", "e", DuoA("x"), DuoB())
-    : Over6("a", "b", "c", "d", "e", "f", DuoA("yy"), DuoB())
+    ? Under5(DuoA("x"), DuoB(), DuoB())
+    : Over6("f", DuoA("yy"), DuoB(), DuoB())
 fun probeS(k: Int): Int
   ret match(mkS(k))
     (u: Under5) => match(u.ua)
       (a: DuoA) => length(a.dPtr)
       (b: DuoB) => 0 - 2
     (o: Over6) => match(o.oa)
-      (a: DuoA) => length(a.dPtr) + length(o.o5)
+      (a: DuoA) => length(a.dPtr) + length(o.o0)
       (b: DuoB) => 0 - 3
 fun main(): System::Int
   println(String(probeS(0)) + " " + String(probeS(1)))
@@ -309,9 +312,9 @@ fun main(): System::Int
 """
         code = _c_for(src)
         self.assertNotRegex(code, r"Main__Under5\w*_t\b",
-                            "58B true width must stay inline")
+                            "51B true width must stay inline")
         self.assertRegex(code, r"Main__Over6\w*_t\b",
-                         "66B true width must box")
+                         "67B true width must box")
         rc, out = compile_and_run_stdlib_capture(src)
         self.assertEqual(0, rc)
         self.assertEqual("1 3", out.strip())
@@ -481,3 +484,51 @@ class TestReprPartialOperationContract(TestCase):
             rep.box_value(None, None, None)
         with self.assertRaisesRegex(NotImplementedError, "ComplexEnumRepr"):
             rep.widen_from(None, None, None)
+
+
+class TestNarrowTaggedIntoWideArm(TestCase):
+    """A TAGGED subject (a two-field tuple member cannot share one word)
+    matched by a union arm that is itself a WIDE pointer union: the arm's
+    members are read out of the wide slots and boxed by the narrow union.
+    A scalar member needs its spare code (str_pack_*), a function member its
+    environment + code (str_from_fun) — wrapping every slot as a one-word
+    member (str_word) passed an Int32 / a code word where C wants object_t*.
+    (Top-level names are unique across this class: batched compiles share one
+    flat name pool.)"""
+
+    _SRC = """
+namespace Main
+import System
+fun ntPick(k: Int): (a: Int, b: Int)|Int32|String
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? truncateToInt32(k * 10) : "s" + String(k)
+fun ntDescribe(x: Int32|String): String
+  ret match(x)
+    (i: Int32)  => "I:" + String(i)
+    (s: String) => "S:" + s
+fun ntArm(v: (a: Int, b: Int)|Int32|String): String
+  ret match(v)
+    (p: (a: Int, b: Int)) => "P:" + String(p.a) + "," + String(p.b)
+    (x: Int32|String)     => ntDescribe(x)
+fun ntPickF(k: Int): (a: Int, b: Int)|((:Int): Int)|String
+  let f: (:Int): Int = (x: Int) => x + k
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? f : "f" + String(k)
+fun ntDescribeF(x: ((:Int): Int)|String): String
+  ret match(x)
+    (f: (:Int): Int) => "F:" + String(f(100))
+    (s: String)      => "S:" + s
+fun ntArmF(v: (a: Int, b: Int)|((:Int): Int)|String): String
+  ret match(v)
+    (p: (a: Int, b: Int))     => "P:" + String(p.a)
+    (x: ((:Int): Int)|String) => ntDescribeF(x)
+fun [tail] ntLoop(k: Int, n: Int, acc: String): String
+  ret k >= n ? acc : ntLoop(k + 1, n, acc + ntArm(ntPick(k)) + " " + ntArmF(ntPickF(k)) + "|")
+fun main(): System::Int
+  println(ntLoop(0, 6, ""))
+  ret 0
+"""
+
+    def test_scalar_and_function_members_narrow_into_wide_arm(self):
+        rc, out = compile_and_run_stdlib_capture(self._SRC)
+        self.assertEqual(0, rc)
+        self.assertEqual("P:0,1 P:0|I:10 F:101|S:s2 S:f2|P:3,4 P:3|I:40 F:104|S:s5 S:f5|",
+                         out.strip())

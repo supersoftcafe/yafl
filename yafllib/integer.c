@@ -233,40 +233,12 @@ EXPORT object_t* integer_from_int64(int64_t v) {
 #endif
 }
 
-// Decimal render of fixed-width ints. Max width across all of these is
-// INT64_MIN's 20 bytes ("-9223372036854775808" + NUL).
-EXPORT object_t* string_from_int8(int8_t v) {
-    char buf[8];
-    int n = snprintf(buf, sizeof(buf), "%d", (int)v);
-    if (n < 0) n = 0;
-    return string_from_bytes((uint8_t*)buf, n);
-}
-EXPORT object_t* string_from_int16(int16_t v) {
-    char buf[8];
-    int n = snprintf(buf, sizeof(buf), "%d", (int)v);
-    if (n < 0) n = 0;
-    return string_from_bytes((uint8_t*)buf, n);
-}
-EXPORT object_t* string_from_int32(int32_t value) {
-    char buf[16];
-    int n = snprintf(buf, sizeof(buf), "%d", value);
-    if (n < 0) n = 0;
-    return string_from_bytes((uint8_t*)buf, n);
-}
-EXPORT object_t* string_from_int64(int64_t v) {
-    char buf[24];
-    int n = snprintf(buf, sizeof(buf), "%lld", (long long)v);
-    if (n < 0) n = 0;
-    return string_from_bytes((uint8_t*)buf, n);
-}
-
-
 // ─── Non-allocating decimal render ───────────────────────────────────────────
 //
 // Renders an arbitrary-precision Int into a CALLER-SUPPLIED buffer. Touches
 // neither the YAFL heap nor malloc, so it is safe from the logger, from a GC
 // worker, and from anywhere a heap allocation would be a re-entrancy hazard.
-// (`String(Int)` in the stdlib goes the other way — StringBuilder on the YAFL
+// (`String(Int)` in the stdlib goes the other way — a String on the YAFL
 // heap — which is exactly what a logger must not do: the act of logging a
 // number would perturb the allocation behaviour being measured.)
 //

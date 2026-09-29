@@ -15,14 +15,14 @@ struct gc_test_state {
     int32_t   length;          /* array capacity (= worker count) */
     _Atomic(int32_t) remaining;
     fun_t     continuation;
-    string_t* results[3];
+    str_head_t* results[3];
 };
 
 static vtable_t gc_test_state_vt = {
     .object_size              = offsetof(struct gc_test_state, results[0]),
-    .array_el_size            = sizeof(string_t*),
+    .array_el_size            = sizeof(str_head_t*),
     .object_pointer_locations = maskof(struct gc_test_state, .continuation.o),
-    .array_el_pointer_locations = maskof(string_t*, ),
+    .array_el_pointer_locations = maskof(str_head_t*, ),
     .functions_mask           = 0,
     .array_len_offset         = offsetof(integer_t, length),
     .is_mutable               = 1,
@@ -32,27 +32,29 @@ static vtable_t gc_test_state_vt = {
 
 /* These must be file-scope so the compound literal has static storage duration.
    Worker threads access them after run_tests() has returned. */
-static object_t* _left    = STR("Fred and bill went on a ride ");
-static object_t* _right   = STR("together in the jeep.");
+static str_t _left  = STR16_LONG("Fred and bill went on a ride ");
+static str_t _right = STR16_LONG("together in the jeep.");
 static const char* _expected = "Fred and bill went on a ride together in the jeep.";
 
 static void gc_test_declare_roots(void(*declare)(object_t**)) {
-    declare(&_left);
-    declare(&_right);
+    declare(&_left.head);
+    declare(&_right.head);
 }
 
 // Checked unconditionally rather than through assert(): a Release build defines
 // NDEBUG, which deleted every check below and left this stress test allocating
 // hard while verifying nothing. Aborts rather than using ASSERT because workers
 // run off-thread, where the framework's `_r` result block is not in scope.
-static void _check_survived(string_t* s) {
-    if (s != NULL && strcmp((char*)s->array, _expected) != 0) {
-        fprintf(stderr, "test_gc: string damaged across GC: \"%s\"\n", (char*)s->array);
+static void _check_survived(str_head_t* s) {
+    size_t n = strlen(_expected);
+    if (s != NULL && (s->length - 1 != n || memcmp(s->array, _expected, n) != 0)) {
+        fprintf(stderr, "test_gc: string damaged across GC: \"%.*s\"\n",
+                (int)(s->length - 1), (char*)s->array);
         abort();
     }
 }
 
-static void _worker_complete(struct gc_test_state* state, string_t* result) {
+static void _worker_complete(struct gc_test_state* state, str_head_t* result) {
     int32_t idx = atomic_fetch_sub(&state->remaining, 1) - 1;
     state->results[idx % 3] = result;
     if (idx == 0) {
@@ -73,7 +75,9 @@ static void _do_worker(struct gc_test_state* state) {
         GC_SAFE_POINT();
         for (int j = 0; j < 10; j++) {
             GC_SAFE_POINT();
-            string_t* str = (string_t*)string_append(_left, _right);
+            // Both operands are read-only heads, so the result is a fresh,
+            // exact, tail-less heap buffer: its head holds the whole string.
+            str_head_t* str = (str_head_t*)str_append(_left, _right).head;
             struct gc_test_state* slot = slots[j];
             if (slot) {
                 int idx = (round ^ j) % 3;

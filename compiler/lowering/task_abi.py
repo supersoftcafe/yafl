@@ -16,7 +16,7 @@ import hashlib
 from codegen.param import RParam, StructField, RuntimeInvoke, NewStruct
 from codegen.ir import Object
 from codegen.typedecl import (
-    Type, DataPointer, FuncPointer, Int, Struct, TaskWrapper, Void,
+    Type, DataPointer, FuncPointer, Int, Str, Struct, TaskWrapper, Void,
     ImmediateStruct, first_pointer_field,
 )
 
@@ -37,7 +37,7 @@ def wrap_return_type(t: Type) -> Type:
     """Adjust a function's return type so it can carry the task-pending
     signal. A pointer-shaped type carries the tag in-band; anything else
     is wrapped in `TaskWrapper {value, task*}`."""
-    if isinstance(t, (Void, DataPointer, FuncPointer)):
+    if isinstance(t, (Void, DataPointer, FuncPointer, Str)):
         return t
     if isinstance(t, Struct) and first_pointer_field(t) is not None:
         return t
@@ -61,12 +61,16 @@ def task_subtype_name(result_type: Type) -> str | None:
     """
     if isinstance(result_type, Void):
         return None
-    # DataPointer (covers bigint, str, class pointers) — all stored as object_t*.
-    # Maps to yafllib's pre-declared task_obj_t (yafl.h).
+    # DataPointer (bigint, class pointers) — stored as object_t*: yafllib's
+    # pre-declared task_obj_t (yafl.h).
     if isinstance(result_type, DataPointer):
         return "task_obj"
     if isinstance(result_type, FuncPointer):
         return "task$FuncPointer"
+    # A String value, or a union sharing its representation: yafllib's
+    # pre-declared task_str_t — the runtime's IO jobs resolve one too.
+    if isinstance(result_type, Str):
+        return "task_str"
     if isinstance(result_type, Int):
         return f"task$Int{result_type.precision}"
     if isinstance(result_type, TaskWrapper):
@@ -92,6 +96,8 @@ def _type_sig(t: Type) -> str:
         return f"i{t.precision}"
     if isinstance(t, FuncPointer):
         return "fun"
+    if isinstance(t, Str):
+        return "str"
     if isinstance(t, TaskWrapper):
         return _type_sig(t.inner)
     if isinstance(t, Struct):
@@ -118,11 +124,17 @@ def make_task_foreign_object() -> Object:
     )
 
 
+# Task subtypes yafllib declares itself (yafl.h), each allocated by its own
+# `<name>_create`.
+RUNTIME_TASK_SUBTYPES = ("task_obj", "task_str")
+
+
 def make_task_subtype_object(subtype_name: str, result_type: Type) -> Object:
     """A task subtype carrying `result_type` in its trailing `result`
-    field.  `task_obj` is pre-declared in yafllib (yafl.h's task_obj_t
-    + TASK_OBJ_VTABLE aliased as obj_task_obj) so we mark it foreign;
-    other subtypes are compiler-emitted via the usual class machinery."""
+    field.  The RUNTIME_TASK_SUBTYPES are pre-declared in yafllib (yafl.h's
+    task_obj_t / task_str_t, their vtables aliased as obj_task_obj /
+    obj_task_str) so we mark them foreign; other subtypes are
+    compiler-emitted via the usual class machinery."""
     return Object(
         name=subtype_name,
         extends=("task",),
@@ -131,7 +143,7 @@ def make_task_subtype_object(subtype_name: str, result_type: Type) -> Object:
         # The structural signature, not repr(): this lands in the emitted C
         # and must be reproducible by the bootstrap port byte for byte.
         comment=f"task subtype for result type {_type_sig(result_type)}",
-        is_foreign=subtype_name == "task_obj",
+        is_foreign=subtype_name in RUNTIME_TASK_SUBTYPES,
         is_mutable=True,   # state/result/next written after construction — not compactable
     )
 
@@ -144,6 +156,9 @@ def is_task_param(result_var: RParam, wrapped_type: Type) -> RParam:
     if isinstance(wrapped_type, FuncPointer):
         return RuntimeInvoke("PTR_IS_TASK",
                       NewStruct((("p", StructField(result_var, "o")),)), Int(32))
+    if isinstance(wrapped_type, Str):
+        return RuntimeInvoke("PTR_IS_TASK",
+                      NewStruct((("p", StructField(result_var, "head")),)), Int(32))
     if isinstance(wrapped_type, TaskWrapper):
         return StructField(result_var, "task")
     if isinstance(wrapped_type, Struct):
@@ -162,6 +177,8 @@ def task_ptr_from(result_var: RParam, wrapped_type: Type) -> RParam:
         return result_var
     if isinstance(wrapped_type, FuncPointer):
         return StructField(result_var, "o")
+    if isinstance(wrapped_type, Str):
+        return StructField(result_var, "head")
     if isinstance(wrapped_type, TaskWrapper):
         return StructField(result_var, "task")
     if isinstance(wrapped_type, Struct):

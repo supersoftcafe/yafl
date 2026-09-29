@@ -33,6 +33,12 @@ fun cpOr(s: System::String, off: System::Int): System::Int
 fun rebuild(s: System::String): System::String
   ret fold<System::Int32, System::String>(codepoints(s), "", (acc: System::String, cp: System::Int32) => acc + Char(cp))
 
+# Walk with `decode` from `off` to the end; the offset it stops at.
+fun [tail] walkEnd(s: System::String, off: System::Int): System::Int
+  ret match(decode(s, off))
+    (d: (cp: System::Int32, next: System::Int)) => walkEnd(s, d.next)
+    (n: System::None)                           => off
+
 fun main(): System::Int
   let s = "héllo🎉"
 
@@ -49,7 +55,7 @@ fun main(): System::Int
   # ─── codepointAt by byte offset ──────────────────────────────────────
   emit("cp_at_0", cpOr(s, 0))   # 'h'
   emit("cp_at_1", cpOr(s, 1))   # 'é'  (U+00E9, bytes 1..2)
-  emit("cp_at_2", cpOr(s, 2))   # inside 'é' → None → -1
+  emit("cp_at_2", cpOr(s, 2))   # inside 'é': a malformed start → U+FFFD
   emit("cp_at_3", cpOr(s, 3))   # 'l'
   emit("cp_at_6", cpOr(s, 6))   # '🎉' (U+1F389, bytes 6..9)
   emit("cp_at_end", cpOr(s, 10))  # past the end → -1
@@ -63,6 +69,21 @@ fun main(): System::Int
   emitBool("valid_full",  isValidUtf8(s))
   emitBool("valid_split", isValidUtf8(slice(s, 0, 2)))  # cuts 'é' in half
 
+  # ─── bytes that are not UTF-8 (a binary file read as a String): each ──
+  #     malformed byte is U+FFFD, one byte wide, so every walk covers the ──
+  #     whole string and agrees with the count. ──────────────────────────
+  #     a, A9 (stray continuation), b, F0 9F (truncated), c = 6 bytes
+  let bin = "a" + slice("é", 1, 2) + "b" + slice("🎉", 0, 2) + "c"
+  emit("bin_length",      length(bin))
+  emit("bin_count",       codepointCount(bin))
+  emit("bin_codepoints",  fold<System::Int32, System::Int>(codepoints(bin), 0, (n: System::Int, cp: System::Int32) => n + 1))
+  emit("bin_cp_1",        cpOr(bin, 1))
+  emit("bin_cp_4",        cpOr(bin, 4))
+  emit("bin_walk_end",    walkEnd(bin, 0))
+  emitBool("bin_valid",   isValidUtf8(bin))
+  emit("bin_find_fffd",   findAny(bin, "\\u{FFFD}", 0))
+  emit("bin_skip",        skipAny(bin, "ab\\u{FFFD}", 0))
+
   ret 0
 """
 
@@ -75,7 +96,7 @@ _EXPECTED_LINES = [
     "e_acute_byte_cont=169",
     "cp_at_0=104",
     "cp_at_1=233",
-    "cp_at_2=-1",
+    "cp_at_2=65533",
     "cp_at_3=108",
     "cp_at_6=127881",
     "cp_at_end=-1",
@@ -84,6 +105,15 @@ _EXPECTED_LINES = [
     "rebuild_round_trips=1",
     "valid_full=1",
     "valid_split=0",
+    "bin_length=6",
+    "bin_count=6",
+    "bin_codepoints=6",
+    "bin_cp_1=65533",
+    "bin_cp_4=65533",
+    "bin_walk_end=6",
+    "bin_valid=0",
+    "bin_find_fffd=1",
+    "bin_skip=5",
 ]
 
 

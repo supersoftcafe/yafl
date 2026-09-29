@@ -24,24 +24,26 @@ import compiler as c
 from tests.testutil import BatchedTestCase as TestCase
 
 
-# `both` suspends at a `__parallel__` with two pointer locals live across it,
+# `both` suspends at a `__parallel__` with two POINTER locals live across it,
 # so its state object is allocated at `$asynccommon` and then filled with
 # `prefix`/`suffix` (trailing array slots) and `my_task` (an inline field).
+# The locals are Int — a single pointer word (bigint). A String is a two-word
+# value now, saved in an inline field, so it would never reach the array.
 # No `namespace` declaration: the unit lands in `Main`.
 _SRC = """\
 import System
 
-fun [impure] work(s: System::String, n: System::Int32): System::String
-  ret n <= 0i32 ? s : work(s + "x", n - 1i32)
+fun [impure] work(s: System::Int, n: System::Int32): System::Int
+  ret n <= 0i32 ? s : work(s + 1, n - 1i32)
 
-fun [impure] both(a: System::String, b: System::String): System::String
+fun [impure] both(a: System::Int, b: System::Int): System::Int
   let prefix = work(a, 2i32)
   let suffix = work(b, 2i32)
   let (l, r) = __parallel__(() => work(a, 3i32), () => work(b, 3i32))
   ret prefix + l + r + suffix
 
 fun main(): System::Int
-  ret length(both("p", "q")) > 0 ? 0 : 1
+  ret both(1, 2) > 0 ? 0 : 1
 """
 
 # One compile per -O level for the whole class: each is a full stdlib build.
