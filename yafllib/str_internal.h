@@ -41,7 +41,21 @@ static inline int _utf8_decode(const unsigned char* p, int32_t len, int32_t off,
     return 0;                                             // 0xF8..0xFF: invalid lead
 }
 
-// Codepoint membership set built from `accept` (itself UTF-8). ASCII members
+// Decoding for everything that WALKS a string: a byte that does not start a
+// valid, minimally-encoded sequence is U+FFFD, one byte wide — so a walk
+// always makes progress and covers every byte, and a binary blob read as a
+// String counts, iterates and scans consistently. 0 only past the end. Only
+// validity checks use the strict decoder above.
+#define UTF8_REPLACEMENT 0xFFFD
+static inline int _utf8_decode_lossy(const unsigned char* p, int32_t len, int32_t off, int32_t* out_cp) {
+    if (off < 0 || off >= len) return 0;
+    int w = _utf8_decode(p, len, off, out_cp);
+    if (w == 0) { *out_cp = UTF8_REPLACEMENT; return 1; }
+    return w;
+}
+
+// Codepoint membership set built from `accept` (itself UTF-8, decoded the
+// same lossy way: a malformed accept byte means U+FFFD). ASCII members
 // go in an O(1) bitmap — 16 bytes, so building a set per scan stays cheap;
 // non-ASCII members are probed linearly.
 typedef struct {
@@ -64,10 +78,8 @@ static inline int _codepoint_in_set(int32_t cp, const codepoint_set* set) {
     if (!set->has_non_ascii) return 0;
     int32_t acp;
     for (int32_t i = 0; i < set->accept_len; ) {
-        int w = _utf8_decode((const unsigned char*)set->accept, set->accept_len, i, &acp);
-        if (w == 0) { ++i; continue; }
+        i += _utf8_decode_lossy((const unsigned char*)set->accept, set->accept_len, i, &acp);
         if (acp == cp) return 1;
-        i += w;
     }
     return 0;
 }

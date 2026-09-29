@@ -1794,6 +1794,7 @@ EXTERN object_t* str_find_any(str_t s, str_t accept, object_t* from);
 EXTERN object_t* str_skip_any(str_t s, str_t accept, object_t* from);
 EXTERN object_t* str_parse_int(str_t s);
 EXTERN int32_t   str_codepoint_at(str_t s, object_t* from);
+EXTERN int32_t   str_codepoint_width(str_t s, object_t* from);
 EXTERN object_t* str_codepoint_count(str_t s);
 EXTERN bool      str_valid_utf8(str_t s);
 EXTERN str_t     str_ascii(int32_t byte);

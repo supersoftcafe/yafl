@@ -263,7 +263,7 @@ TEST(codepoint_straddles_join)
     str_t t = str_append(h, str_from_bytes(tl, 2));
     ASSERT(tail_len(t) == 2);
     ASSERT(str_codepoint_at(t, integer_from_int32(15)) == 0xE9);
-    ASSERT(str_codepoint_at(t, integer_from_int32(16)) == -1);   /* mid-sequence */
+    ASSERT(str_codepoint_at(t, integer_from_int32(16)) == 0xFFFD);   /* mid-sequence: a malformed start */
     ASSERT(str_valid_utf8(t));
     ASSERT(int32_from_integer(str_codepoint_count(t)) == 17);
     ASSERT(!str_valid_utf8(h));                                   /* truncated */
@@ -359,18 +359,56 @@ TEST(wchar_encodes_every_width)
         ASSERT(same(str_wchar(cases[i].cp), cases[i].utf8));
 TEST_END()
 
-TEST(codepoint_at_decodes_strictly)
+TEST(codepoint_at_decodes_valid_sequences)
     str_t s = S("a\xc3\xa9\xe2\x82\xac\xf0\x9f\x8e\x89");      /* a é € 🎉 */
     ASSERT(str_codepoint_at(s, integer_from_int32(0)) == 'a');
     ASSERT(str_codepoint_at(s, integer_from_int32(1)) == 0xE9);
     ASSERT(str_codepoint_at(s, integer_from_int32(3)) == 0x20AC);
     ASSERT(str_codepoint_at(s, integer_from_int32(6)) == 0x1F389);
-    ASSERT(str_codepoint_at(s, integer_from_int32(2)) == -1);       /* inside a sequence */
     ASSERT(str_codepoint_at(s, integer_from_int32(10)) == -1);      /* out of range */
     ASSERT(str_codepoint_at(s, integer_from_int32(-1)) == -1);
-    ASSERT(str_codepoint_at(S("\xc0\x80"), integer_from_int32(0)) == -1);       /* overlong */
-    ASSERT(str_codepoint_at(S("\xed\xa0\x80"), integer_from_int32(0)) == -1);   /* surrogate */
-    ASSERT(str_codepoint_at(S("\xe2\x82"), integer_from_int32(0)) == -1);       /* truncated */
+    /* a real U+FFFD is three bytes */
+    ASSERT(str_codepoint_at(S("\xef\xbf\xbd"), integer_from_int32(0)) == 0xFFFD);
+    ASSERT(str_codepoint_width(S("\xef\xbf\xbd"), integer_from_int32(0)) == 3);
+TEST_END()
+
+/* Bytes that are not valid UTF-8 — a binary file read as a String — decode
+ * as U+FFFD, ONE byte wide each: every walker makes progress and covers the
+ * whole string, the count equals the number of steps, and the scanners see
+ * U+FFFD. Only isValidUtf8 is strict. */
+TEST(malformed_bytes_decode_as_replacement)
+    static const uint8_t bytes[] = {
+        'a', 0xA9,            /* 1: stray continuation byte */
+        'b', 0xF0, 0x9F,      /* 3,4: truncated 4-byte sequence */
+        'c', 0xC0, 0x80,      /* 6,7: overlong NUL */
+        0xED, 0xA0, 0x80,     /* 8..10: UTF-16 surrogate */
+        0xFF,                 /* 11: never a lead byte */
+        0xC3, 0xA9, 'd',      /* 12: a valid é (2 bytes), then 'd' */
+    };
+    str_t s = str_from_bytes(bytes, (int32_t)sizeof bytes);
+    static const struct { int32_t off, cp, width; } expect[] = {
+        {0,'a',1}, {1,0xFFFD,1}, {2,'b',1}, {3,0xFFFD,1}, {4,0xFFFD,1}, {5,'c',1},
+        {6,0xFFFD,1}, {7,0xFFFD,1}, {8,0xFFFD,1}, {9,0xFFFD,1}, {10,0xFFFD,1},
+        {11,0xFFFD,1}, {12,0xE9,2}, {14,'d',1},
+    };
+    int32_t n = (int32_t)(sizeof expect / sizeof expect[0]);
+    /* the walk: each step lands exactly where the table says */
+    int32_t off = 0, steps = 0;
+    while (str_codepoint_width(s, integer_from_int32(off)) > 0) {
+        ASSERT(steps < n && off == expect[steps].off);
+        ASSERT(str_codepoint_at(s, integer_from_int32(off)) == expect[steps].cp);
+        ASSERT(str_codepoint_width(s, integer_from_int32(off)) == expect[steps].width);
+        off += str_codepoint_width(s, integer_from_int32(off));
+        steps++;
+    }
+    ASSERT(steps == n && off == (int32_t)sizeof bytes);
+    ASSERT(int32_from_integer(str_codepoint_count(s)) == n);
+    ASSERT(str_codepoint_at(s, integer_from_int32(13)) == 0xFFFD);   /* inside é */
+    ASSERT(!str_valid_utf8(s));
+    /* the scanners see U+FFFD */
+    ASSERT(int32_from_integer(str_find_any(s, S("\xef\xbf\xbd"), integer_from_int32(0))) == 1);
+    ASSERT(int32_from_integer(str_skip_any(s, S("ab\xef\xbf\xbd"), integer_from_int32(0))) == 5);
+    ASSERT(int32_from_integer(str_find_any(s, S("d"), integer_from_int32(0))) == 14);
 TEST_END()
 
 TEST(codepoint_count_and_validity)
@@ -445,7 +483,8 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(slice_clamps_to_the_string);
     RUN(compare_orders_by_bytes_then_length);
     RUN(wchar_encodes_every_width);
-    RUN(codepoint_at_decodes_strictly);
+    RUN(codepoint_at_decodes_valid_sequences);
+    RUN(malformed_bytes_decode_as_replacement);
     RUN(codepoint_count_and_validity);
     RUN(c_strings_in_and_out);
     RUN(ascii_wchar_and_numbers);

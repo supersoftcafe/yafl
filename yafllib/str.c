@@ -91,7 +91,8 @@ static void segs_copy(segs_t g, int32_t from, int32_t n, uint8_t* dst) {
     }
 }
 
-// Strict UTF-8 decode at byte i, across the segment boundary if need be.
+// Strict UTF-8 decode at byte i, across the segment boundary if need be:
+// 0 when the bytes there are not a valid sequence (or i is out of range).
 static int decode_at(segs_t g, int32_t i, int32_t* cp) {
     int32_t len = segs_len(g);
     if (i < 0 || i >= len) return 0;
@@ -100,6 +101,15 @@ static int decode_at(segs_t g, int32_t i, int32_t* cp) {
     int32_t n = len - i < 4 ? len - i : 4;
     for (int32_t k = 0; k < n; k++) w[k] = (uint8_t)seg_at(g, i + k);
     return _utf8_decode(w, n, 0, cp);
+}
+
+// The lossy decode (str_internal.h) at byte i: U+FFFD one byte wide where
+// decode_at finds no valid sequence; 0 only when i is out of range.
+static int decode_lossy_at(segs_t g, int32_t i, int32_t* cp) {
+    if (i < 0 || i >= segs_len(g)) return 0;
+    int w = decode_at(g, i, cp);
+    if (w == 0) { *cp = UTF8_REPLACEMENT; return 1; }
+    return w;
 }
 
 static int32_t int32_arg(object_t* o, int* overflow) {
@@ -472,11 +482,9 @@ HIDDEN void _build_codepoint_set(const char* accept, int32_t accept_len,
     set->accept_len = accept_len;
     int32_t cp;
     for (int32_t i = 0; i < accept_len; ) {
-        int w = _utf8_decode((const unsigned char*)accept, accept_len, i, &cp);
-        if (w == 0) { ++i; continue; }            // skip a malformed accept byte
+        i += _utf8_decode_lossy((const unsigned char*)accept, accept_len, i, &cp);
         if (cp < 0x80) set->ascii[cp >> 6] |= (uint64_t)1 << (cp & 63);
         else set->has_non_ascii = 1;
-        i += w;
     }
 }
 
@@ -517,11 +525,7 @@ static object_t* scan_any(str_t s, str_t accept, object_t* o_from, bool want_mem
             if (_ascii_in_set(c, &set) == want) { result = i; break; }
             ++i; continue;
         }
-        int w = decode_at(g, i, &cp);
-        if (w == 0) {                              // malformed byte
-            if (!want_member) { result = i; break; }   // not in accept: stop
-            ++i; continue;                             // not a member: skip
-        }
+        int w = decode_lossy_at(g, i, &cp);         // a malformed byte is U+FFFD
         if (_codepoint_in_set(cp, &set) == want) { result = i; break; }
         i += w;
     }
@@ -532,19 +536,33 @@ static object_t* scan_any(str_t s, str_t accept, object_t* o_from, bool want_mem
 EXPORT object_t* str_find_any(str_t s, str_t accept, object_t* from) { return scan_any(s, accept, from, true); }
 EXPORT object_t* str_skip_any(str_t s, str_t accept, object_t* from) { return scan_any(s, accept, from, false); }
 
+// The codepoint at byte offset `from` (U+FFFD for a malformed byte), or -1
+// past the end.
 EXPORT int32_t str_codepoint_at(str_t s, object_t* o_from) {
     int overflow = 0;
     int32_t from = int32_arg(o_from, &overflow);
     if (overflow) return -1;
     int32_t cp;
-    return decode_at(segs_of(&s), from, &cp) ? cp : -1;
+    return decode_lossy_at(segs_of(&s), from, &cp) ? cp : -1;
 }
 
+// The bytes the codepoint at `from` occupies: 1..4, 1 for a malformed byte
+// (read as U+FFFD), 0 past the end. The width cannot be derived from the
+// codepoint: a real U+FFFD is 3 bytes, a substituted one 1.
+EXPORT int32_t str_codepoint_width(str_t s, object_t* o_from) {
+    int overflow = 0;
+    int32_t from = int32_arg(o_from, &overflow);
+    if (overflow) return 0;
+    int32_t cp;
+    return decode_lossy_at(segs_of(&s), from, &cp);
+}
+
+// The number of steps a walk takes: the codepoints, malformed bytes counting
+// one U+FFFD each.
 EXPORT object_t* str_codepoint_count(str_t s) {
     segs_t g = segs_of(&s);
-    int32_t count = 0;
-    for (int32_t i = 0; i < g.na; i++) if ((g.a[i] & 0xC0) != 0x80) count++;
-    for (int32_t i = 0; i < g.nb; i++) if ((g.b[i] & 0xC0) != 0x80) count++;
+    int32_t count = 0, cp;
+    for (int32_t i = 0, w; (w = decode_lossy_at(g, i, &cp)) > 0; i += w) count++;
     return integer_from_int32(count);
 }
 
