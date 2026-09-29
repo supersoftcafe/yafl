@@ -3042,38 +3042,29 @@ EXPORT object_t* sys_argc(object_t* self) {
 // DISTINCT from set-to-empty — collapsing the two would make `YAFL_PATH=`
 // indistinguishable from an absent YAFL_PATH.
 //
-// Returning NULL for the None arm is correct HERE because every member of this
-// union is pointer-represented, so the union collapses to a pointer and null is
-// the free spare value. That is a property of THIS union's representation, not
-// a general rule: None is NOT always NULL, and a union carrying a non-pointer
-// member is discriminated some other way. Check the representation before
-// copying this pattern.
+// String|None shares the String value's representation, with None as word 0 =
+// NULL (str_word(NULL)). That is a property of THIS union's representation,
+// not a general rule: a union with a member that is not a String, a one-word
+// member or a packable scalar is a tagged struct instead. Check the
+// representation before copying this pattern.
 //
 // Added for the library search path, which the self-hosted compiler could not
 // read at all: the runtime called getenv for its own knobs but exposed nothing
 // to YAFL.
-EXPORT object_t* sys_getenv(object_t* self, object_t* o_name) {
+EXPORT str_t sys_getenv(object_t* self, str_t name) {
     (void)self;
-    // getenv needs a NUL-terminated name, and string_to_cstr does not promise
-    // one in general (see _arg_str in log.c). It holds for BOTH string
-    // representations, which is why no copy is made: a heap string's array
-    // always has '\0' past its length, and a packed string is at most 7 bytes
-    // in an 8-byte buffer whose unused tail is zero. Same reasoning as
-    // float64_parse_or_nan.
-    intptr_t buf; int32_t len;
-    char* name = string_to_cstr(o_name, &buf, &len);
-    const char* v = getenv(name);
-    if (v == NULL) return NULL;
-    return string_from_bytes((uint8_t*)v, (int32_t)strlen(v));
+    char buf[256], *heap;
+    const char* v = getenv(str_cstr(name, buf, (int32_t)sizeof buf, &heap));
+    free(heap);
+    return v == NULL ? str_word(NULL) : str_from_cstr(v);
 }
 
-EXPORT object_t* sys_argv_at(object_t* self, object_t* o_index) {
+EXPORT str_t sys_argv_at(object_t* self, object_t* o_index) {
     (void)self;
     int overflow = 0;
     int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
     if (overflow || idx < 0 || idx >= _yafl_argc) __abort_on_overflow();
-    const char* s = _yafl_argv[idx];
-    return string_from_bytes((uint8_t*)s, (int32_t)strlen(s));
+    return str_from_cstr(_yafl_argv[idx]);
 }
 
 

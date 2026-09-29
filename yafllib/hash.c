@@ -3,13 +3,6 @@
 #include <string.h>
 
 
-// A legacy string hashes exactly as the String value of the same bytes: its
-// canonical form (inline up to 15 bytes, else a head covering all of it).
-EXPORT int32_t string_hash(object_t* s) {
-    return str_hash(str_from_legacy(s));
-}
-
-
 EXPORT int32_t float64_hash(double f) {
     // -0.0 == +0.0 but their bits differ; normalise to +0.0 so equal floats hash equal.
     if (f == 0.0) f = 0.0;
@@ -33,7 +26,7 @@ EXPORT int32_t float32_hash(float f) {
 // DIRECTLY AFTER the vtable pointer — a fixed offset shared by all [hashed]
 // types, which is what lets these two functions exist once instead of per
 // type. 0 means "not yet computed"; a computed 0 is stored and returned as 1,
-// deterministically (the same reservation string_hash documents).
+// deterministically (the same reservation str_hash documents).
 //
 // The store is a plain racy write, and that is deliberate: the value is a
 // deterministic function of immutable content, so two threads racing write

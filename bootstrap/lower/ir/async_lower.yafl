@@ -159,12 +159,12 @@ fun alEmitPostLauncher(launcherVar, parTaskVar,
             alRuntimeDiscard(alSvDiscard(), "thread_work_post_parallel",
                              list1(RpNamedValue("task", launcherVar))))
 
-# Task alloc: None → base task_t via task_create; task_obj → task_obj_create;
-# else NewObject + task_init.
+# Task alloc: None → base task_t via task_create; a runtime subtype (task_obj,
+# task_str) → its `<name>_create`; else NewObject + task_init.
 fun alEmitTaskAlloc(svTask, subtype: String|None): List<Op> => match(subtype)
-  (st: String) => st == "task_obj"
+  (st: String) => isRuntimeTaskSubtype(st)
     ? list1(OpMove(svTask,
-                   RpRuntimeInvoke("task_obj_create",
+                   RpRuntimeInvoke(st + "_create",
                                    RpNewStruct(list1(RpNamedValue("self", RpNullPointer()))),
                                    CgDataPointer()), false, List()))
     : list2(OpNewObject(st, svTask, None, List()),

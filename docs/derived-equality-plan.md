@@ -88,7 +88,7 @@ derived `==` cannot diverge.
 
 A derived `hashOf` is O(size), too slow to pay on every probe of a trie walk.
 
-The obvious fix — a lazy hash slot in the object header, as `string_t` has —
+The obvious fix — a lazy hash slot in the object header, as a String's `str_head_t` has —
 **does not work here**: enums and tuples are not always heap allocated. Simple
 classes flatten to unboxed structs, tag elimination and immediate structs
 remove the header, and those values have nowhere to put a cached word.
@@ -246,7 +246,7 @@ from it hashes in O(1).
 
 USER RULINGS: `[hashed]` must NOT imply `[mutable]` — pinning the spec graph
 from compaction would be actively harmful, and a lost racy scalar store is a
-benign recompute (exactly how `string_t`'s lazy hash already behaves under
+benign recompute (exactly how `str_head_t`'s lazy hash already behaves under
 compaction). And 3c becomes OPT-IN per type, which dissolves the NaN
 reflexivity objection.
 

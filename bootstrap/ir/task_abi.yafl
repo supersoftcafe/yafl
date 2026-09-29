@@ -53,7 +53,9 @@ fun [tail] taskSubtypeName(resultType) => match(resultType)
   # maps to yafllib's pre-declared task_obj_t (yafl.h).
   (d: CgDataPointer)   => "task_obj"
   (fp: CgFuncPointer)  => "task$FuncPointer"
-  (st: CgStr)          => "task$Str"
+  # A String value, or a union sharing its representation: yafllib's
+  # pre-declared task_str_t — the runtime's IO jobs resolve one too.
+  (st: CgStr)          => "task_str"
   (i: CgInt)           => "task$Int" + String(i.precision)
   (w: CgTaskWrapper)   => taskSubtypeName(w.inner)
   (o: CgType)          => "task$T" + slice(sha1Hex(taskTypeSig(o)), 0, 16)
@@ -81,15 +83,20 @@ fun makeTaskForeignObject() => CgObject("task", List(), List(),
                                         "foreign task_t — declared in yafllib/yafl.h",
                                         true, false, 0)
 
+# Task subtypes yafllib declares itself (yafl.h), each allocated by its own
+# `<name>_create`.
+fun isRuntimeTaskSubtype(name: String) => name == "task_obj" || name == "task_str"
+
 # A task subtype carrying `resultType` in its trailing `result` field.
-# task_obj is pre-declared in yafllib so it stays foreign; other subtypes are
-# compiler-emitted. is_mutable: state/result/next written after construction.
+# The runtime task subtypes are pre-declared in yafllib so they stay foreign;
+# other subtypes are compiler-emitted. is_mutable: state/result/next written
+# after construction.
 fun makeTaskSubtypeObject(subtypeName, resultType)
   ret CgObject(subtypeName, list1("task"), List(),
                # The task_t prefix, then the result field LAST.
                CgImmediateStruct(build(push(builderFrom(taskFields()), CgField("result", resultType)))),
                None, "task subtype for result type " + taskTypeSig(resultType),
-               subtypeName == "task_obj", true, 0)
+               isRuntimeTaskSubtype(subtypeName), true, 0)
 
 # Truthy (Int32) when `resultVar` carries a task signal; `wrappedType` is the
 # ALREADY-wrapped return type.

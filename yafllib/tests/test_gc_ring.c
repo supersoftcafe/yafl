@@ -110,7 +110,7 @@ static const char STR_PAD[64] = "the quick brown fox jumps over the lazy dog 012
 static void burn_strings(void) {   // collectable garbage to keep the GC working
     for (int i = 0; i < STRINGS_PER_STEP; ++i) {
         GC_SAFE_POINT();   // loop backedge safe-point, as generated YAFL code has
-        (void)string_from_bytes((uint8_t*)STR_PAD, (int)(8 + (i & 31)));
+        (void)str_from_bytes((uint8_t*)STR_PAD, (int)(16 + (i & 31)));   // 16+: heap-allocated
     }
 }
 

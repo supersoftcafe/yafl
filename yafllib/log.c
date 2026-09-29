@@ -172,19 +172,17 @@ static void _arg_int(log_arg_t* a, object_t* v) {
     integer_to_cstr(v, a->buf, (int32_t)sizeof(a->buf));
     a->p = a->buf;
 }
-static void _arg_str(log_arg_t* a, object_t* v) {
-    // string_copy_cstr copies into OUR buffer and NUL-terminates, truncating
-    // to fit. string_to_cstr's result is not NUL-terminated and may point into
-    // the object, so it is the wrong tool here. Nothing is allocated either way.
-    if (v == NULL) { a->buf[0] = '\0'; a->p = a->buf; return; }
-    string_copy_cstr(v, a->buf, (int32_t)sizeof(a->buf));
+static void _arg_str(log_arg_t* a, str_t v) {
+    // Copied into OUR buffer, NUL-terminated, truncated to fit. Nothing is
+    // allocated.
+    str_copy_cstr(v, a->buf, (int32_t)sizeof(a->buf));
     a->p = a->buf;
 }
 
-// Copy a YAFL string into a caller buffer, NUL-terminated, with a fallback.
-static const char* _cstr(object_t* v, char* buf, int32_t size, const char* dflt) {
-    if (v == NULL) return dflt;
-    string_copy_cstr(v, buf, size);
+// Copy a YAFL string into a caller buffer, NUL-terminated, with a fallback
+// for the empty string.
+static const char* _cstr(str_t v, char* buf, int32_t size, const char* dflt) {
+    str_copy_cstr(v, buf, size);
     return buf[0] ? buf : dflt;
 }
 
@@ -207,7 +205,7 @@ static int32_t _expand(char* out, int32_t cap, const char* fmt,
     return at;
 }
 
-static void _emit(int32_t level, object_t* ctx_o, object_t* fmt_o,
+static void _emit(int32_t level, str_t ctx_o, str_t fmt_o,
                   log_arg_t* args, int32_t argc) {
     if (!_initialised) yafl_log_init(NULL);
 
@@ -251,55 +249,55 @@ static void _emit(int32_t level, object_t* ctx_o, object_t* fmt_o,
 #define ARG_I(slot, v) _arg_int(&a[slot], (v))
 #define ARG_S(slot, v) _arg_str(&a[slot], (v))
 
-EXPORT object_t* yafl_log(object_t* self, int32_t l, object_t* c, object_t* f) {
+EXPORT object_t* yafl_log(object_t* self, int32_t l, str_t c, str_t f) {
     (void)self; _emit(l, c, f, NULL, 0); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_i(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x) {
+EXPORT object_t* yafl_log_i(object_t* self, int32_t l, str_t c, str_t f, object_t* x) {
     log_arg_t a[1]; ARG_I(0,x); (void)self; _emit(l,c,f,a,1); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_s(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x) {
+EXPORT object_t* yafl_log_s(object_t* self, int32_t l, str_t c, str_t f, str_t x) {
     log_arg_t a[1]; ARG_S(0,x); (void)self; _emit(l,c,f,a,1); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_ii(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y) {
+EXPORT object_t* yafl_log_ii(object_t* self, int32_t l, str_t c, str_t f, object_t* x, object_t* y) {
     log_arg_t a[2]; ARG_I(0,x); ARG_I(1,y); (void)self; _emit(l,c,f,a,2); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_is(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y) {
+EXPORT object_t* yafl_log_is(object_t* self, int32_t l, str_t c, str_t f, object_t* x, str_t y) {
     log_arg_t a[2]; ARG_I(0,x); ARG_S(1,y); (void)self; _emit(l,c,f,a,2); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_si(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y) {
+EXPORT object_t* yafl_log_si(object_t* self, int32_t l, str_t c, str_t f, str_t x, object_t* y) {
     log_arg_t a[2]; ARG_S(0,x); ARG_I(1,y); (void)self; _emit(l,c,f,a,2); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_ss(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y) {
+EXPORT object_t* yafl_log_ss(object_t* self, int32_t l, str_t c, str_t f, str_t x, str_t y) {
     log_arg_t a[2]; ARG_S(0,x); ARG_S(1,y); (void)self; _emit(l,c,f,a,2); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_iii(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_iii(object_t* self, int32_t l, str_t c, str_t f, object_t* x, object_t* y, object_t* z) {
     log_arg_t a[3]; ARG_I(0,x); ARG_I(1,y); ARG_I(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_iis(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_iis(object_t* self, int32_t l, str_t c, str_t f, object_t* x, object_t* y, str_t z) {
     log_arg_t a[3]; ARG_I(0,x); ARG_I(1,y); ARG_S(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_isi(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_isi(object_t* self, int32_t l, str_t c, str_t f, object_t* x, str_t y, object_t* z) {
     log_arg_t a[3]; ARG_I(0,x); ARG_S(1,y); ARG_I(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_iss(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_iss(object_t* self, int32_t l, str_t c, str_t f, object_t* x, str_t y, str_t z) {
     log_arg_t a[3]; ARG_I(0,x); ARG_S(1,y); ARG_S(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_sii(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_sii(object_t* self, int32_t l, str_t c, str_t f, str_t x, object_t* y, object_t* z) {
     log_arg_t a[3]; ARG_S(0,x); ARG_I(1,y); ARG_I(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_sis(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_sis(object_t* self, int32_t l, str_t c, str_t f, str_t x, object_t* y, str_t z) {
     log_arg_t a[3]; ARG_S(0,x); ARG_I(1,y); ARG_S(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_ssi(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_ssi(object_t* self, int32_t l, str_t c, str_t f, str_t x, str_t y, object_t* z) {
     log_arg_t a[3]; ARG_S(0,x); ARG_S(1,y); ARG_I(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
-EXPORT object_t* yafl_log_sss(object_t* self, int32_t l, object_t* c, object_t* f, object_t* x, object_t* y, object_t* z) {
+EXPORT object_t* yafl_log_sss(object_t* self, int32_t l, str_t c, str_t f, str_t x, str_t y, str_t z) {
     log_arg_t a[3]; ARG_S(0,x); ARG_S(1,y); ARG_S(2,z); (void)self; _emit(l,c,f,a,3); return integer_from_int32_noalloc(0);
 }
 
 // ── metrics ─────────────────────────────────────────────────────────────────
 
-EXPORT object_t* yafl_log_span_begin(object_t* self, object_t* ctx_o, object_t* name_o) {
+EXPORT object_t* yafl_log_span_begin(object_t* self, str_t ctx_o, str_t name_o) {
     (void)self;
     if (!_initialised) yafl_log_init(NULL);
     char cb[LOG_CTX_NAME]; const char* ctx = _cstr(ctx_o,  cb, (int32_t)sizeof(cb), "?");
@@ -353,7 +351,7 @@ EXPORT object_t* yafl_log_span_end(object_t* self, object_t* span_o) {
     return 0;
 }
 
-EXPORT object_t* yafl_log_count(object_t* self, object_t* ctx_o, object_t* name_o, object_t* n_o) {
+EXPORT object_t* yafl_log_count(object_t* self, str_t ctx_o, str_t name_o, object_t* n_o) {
     (void)self;
     if (!_initialised) yafl_log_init(NULL);
     char cb[LOG_CTX_NAME]; const char* ctx = _cstr(ctx_o,  cb, (int32_t)sizeof(cb), "?");

@@ -98,29 +98,24 @@ TEST(fork_copies_and_leaves_owner_intact)
     ASSERT(same(base, "0123456789abcdefxy"));
 TEST_END()
 
-TEST(legacy_head_is_read_only)
-    object_t* legacy = string_from_bytes((uint8_t*)"legacy string of 26 bytes!", 26);
-    str_t s = str_from_legacy(legacy);
-    ASSERT(!str_is_inline(s) && s.head == legacy);
+TEST(literal_head_is_read_only)
+    str_t s = STR16_LONG("literal string of 26 bytes");
+    ASSERT(!str_is_inline(s));
     str_t t = str_append(s, S("0123456789"));    /* past any tail: must copy */
-    ASSERT(t.head != legacy);
-    ASSERT(same(t, "legacy string of 26 bytes!0123456789"));
-    ASSERT(string_length(legacy) == 26);
+    ASSERT(t.head != s.head);
+    ASSERT(same(t, "literal string of 26 bytes0123456789"));
+    ASSERT(same(s, "literal string of 26 bytes"));
 TEST_END()
 
 TEST(read_only_head_takes_no_tail)
-    /* A short append to a read-only head (a long literal, a legacy string)
-     * copies into a fresh exact buffer instead of parking bytes in the tail:
+    /* A short append to a read-only head (a long literal) copies into a
+     * fresh exact buffer instead of parking bytes in the tail:
      * the tail would only postpone the copy, and a tailed value can never
      * use the hash cache. */
     str_t lit = STR16_LONG("identifier_prefix_");
     str_t k = str_append(lit, S("1234"));
     ASSERT(k.head != lit.head && tail_len(k) == 0);
     ASSERT(same(k, "identifier_prefix_1234"));
-    object_t* legacy = string_from_bytes((uint8_t*)"legacy string of 26 bytes!", 26);
-    str_t l = str_append(str_from_legacy(legacy), S("xy"));
-    ASSERT(l.head != legacy && tail_len(l) == 0);
-    ASSERT(same(l, "legacy string of 26 bytes!xy"));
 TEST_END()
 
 TEST(random_appends_and_forks_match_reference)
@@ -326,23 +321,84 @@ TEST(parse_int_across_join)
     ASSERT(str_parse_int(S("12x")) == NULL);
 TEST_END()
 
-/* ---- legacy bridge ---- */
+/* ---- slices, ordering, UTF-8 ---- */
 
-TEST(legacy_round_trips)
-    ASSERT(str_to_legacy(S("short")) == str_from_legacy(STR("short")).head);   /* packed == inline word */
-    ASSERT(string_compare(str_to_legacy(S("twelve chars")), STR("twelve chars")) == 0);
-    str_t t = mk_tailed("0123456789abcdef", "xy");
-    ASSERT(string_compare(str_to_legacy(t), STR("0123456789abcdefxy")) == 0);
-    ASSERT(same(str_from_legacy(STR("0123456789abcdefghij")), "0123456789abcdefghij"));
-    ASSERT(str_is_inline(str_from_legacy(STR("twelve chars"))));
+TEST(slice_clamps_to_the_string)
+    str_t s = S("hello");
+    ASSERT(same(str_slice(s, integer_from_int32(0), integer_from_int32(5)), "hello"));
+    ASSERT(same(str_slice(s, integer_from_int32(0), integer_from_int32(3)), "hel"));
+    ASSERT(same(str_slice(s, integer_from_int32(2), integer_from_int32(5)), "llo"));
+    ASSERT(str_length(str_slice(s, integer_from_int32(2), integer_from_int32(2))) == 0);
+    ASSERT(str_length(str_slice(s, integer_from_int32(4), integer_from_int32(2))) == 0);   /* inverted */
+    ASSERT(same(str_slice(s, integer_from_int32(0), integer_from_int32(100)), "hello"));
+    ASSERT(same(str_slice(s, integer_from_int32(-5), integer_from_int32(3)), "hel"));
 TEST_END()
 
-TEST(union_from_legacy)
-    str_t n = str_union_from_legacy(NULL);
-    ASSERT(n.head == NULL && n.meta == 0);
-    object_t* i = integer_from_int32(7);
-    ASSERT(str_union_from_legacy(i).head == i);
-    ASSERT(same(str_union_from_legacy(STR("0123456789abcdefghij")), "0123456789abcdefghij"));
+TEST(compare_orders_by_bytes_then_length)
+    ASSERT(str_compare(S("hello"), S("hello")) == 0);
+    ASSERT(str_compare(S("abc"), S("abd")) < 0 && str_compare(S("abd"), S("abc")) > 0);
+    ASSERT(str_compare(S("abc"), S("abcd")) < 0 && str_compare(S("abcd"), S("abc")) > 0);
+    ASSERT(str_compare(S(""), S("")) == 0);
+    /* by content and length, never stopping at a NUL; bytes compare unsigned */
+    str_t a = str_from_bytes((const uint8_t*)"a\0bc", 4);
+    str_t b = str_from_bytes((const uint8_t*)"a\0bd", 4);
+    ASSERT(str_compare(a, str_from_bytes((const uint8_t*)"a\0bc", 4)) == 0);
+    ASSERT(str_compare(a, b) < 0 && str_compare(b, a) > 0);
+    ASSERT(str_compare(str_from_bytes((const uint8_t*)"\x80", 1), S("\x7f")) > 0);
+TEST_END()
+
+/* str_wchar encodes at every UTF-8 width boundary. */
+TEST(wchar_encodes_every_width)
+    static const struct { int32_t cp; const char* utf8; } cases[] = {
+        { 0x41, "A" }, { 0x7F, "\x7f" },
+        { 0x80, "\xc2\x80" }, { 0xE9, "\xc3\xa9" }, { 0x7FF, "\xdf\xbf" },
+        { 0x800, "\xe0\xa0\x80" }, { 0x4E2D, "\xe4\xb8\xad" }, { 0xFFFF, "\xef\xbf\xbf" },
+        { 0x10000, "\xf0\x90\x80\x80" }, { 0x1F600, "\xf0\x9f\x98\x80" }, { 0x10FFFF, "\xf4\x8f\xbf\xbf" },
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        ASSERT(same(str_wchar(cases[i].cp), cases[i].utf8));
+TEST_END()
+
+TEST(codepoint_at_decodes_strictly)
+    str_t s = S("a\xc3\xa9\xe2\x82\xac\xf0\x9f\x8e\x89");      /* a é € 🎉 */
+    ASSERT(str_codepoint_at(s, integer_from_int32(0)) == 'a');
+    ASSERT(str_codepoint_at(s, integer_from_int32(1)) == 0xE9);
+    ASSERT(str_codepoint_at(s, integer_from_int32(3)) == 0x20AC);
+    ASSERT(str_codepoint_at(s, integer_from_int32(6)) == 0x1F389);
+    ASSERT(str_codepoint_at(s, integer_from_int32(2)) == -1);       /* inside a sequence */
+    ASSERT(str_codepoint_at(s, integer_from_int32(10)) == -1);      /* out of range */
+    ASSERT(str_codepoint_at(s, integer_from_int32(-1)) == -1);
+    ASSERT(str_codepoint_at(S("\xc0\x80"), integer_from_int32(0)) == -1);       /* overlong */
+    ASSERT(str_codepoint_at(S("\xed\xa0\x80"), integer_from_int32(0)) == -1);   /* surrogate */
+    ASSERT(str_codepoint_at(S("\xe2\x82"), integer_from_int32(0)) == -1);       /* truncated */
+TEST_END()
+
+TEST(codepoint_count_and_validity)
+    str_t s = S("a\xc3\xa9\xe2\x82\xac\xf0\x9f\x8e\x89");      /* 10 bytes, 4 codepoints */
+    ASSERT(str_length(s) == 10);
+    ASSERT(int32_from_integer(str_codepoint_count(s)) == 4);
+    ASSERT(int32_from_integer(str_codepoint_count(S(""))) == 0);
+    ASSERT(str_valid_utf8(s));
+    ASSERT(!str_valid_utf8(S("a\xc3")));                      /* a split sequence */
+TEST_END()
+
+/* ---- the C boundary ---- */
+
+TEST(c_strings_in_and_out)
+    ASSERT(same(str_from_cstr("from C"), "from C"));
+    str_t t = mk_tailed("0123456789abcdef", "xy");
+    char small[8], *heap;
+    /* too long for the buffer: a heap copy, NUL-terminated */
+    char* c = str_cstr(t, small, (int32_t)sizeof small, &heap);
+    ASSERT(heap != NULL && c == heap && strcmp(c, "0123456789abcdefxy") == 0);
+    free(heap);
+    /* fits: the caller's buffer */
+    c = str_cstr(S("hi"), small, (int32_t)sizeof small, &heap);
+    ASSERT(heap == NULL && c == small && strcmp(c, "hi") == 0);
+    /* truncating copy-out keeps size-1 bytes and terminates */
+    char buf[5];
+    ASSERT(str_copy_cstr(t, buf, (int32_t)sizeof buf) == 4 && strcmp(buf, "0123") == 0);
+    ASSERT(str_copy_cstr(S("hello"), small, (int32_t)sizeof small) == 5 && strcmp(small, "hello") == 0);
 TEST_END()
 
 TEST(ascii_wchar_and_numbers)
@@ -370,7 +426,7 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(small_append_goes_to_tail);
     RUN(owner_extends_in_place);
     RUN(fork_copies_and_leaves_owner_intact);
-    RUN(legacy_head_is_read_only);
+    RUN(literal_head_is_read_only);
     RUN(read_only_head_takes_no_tail);
     RUN(random_appends_and_forks_match_reference);
     RUN(concat_n_first_operand_extends);
@@ -386,8 +442,12 @@ static void run_tests(object_t* _, fun_t continuation) {
     RUN(find_and_skip_any_across_join);
     RUN(find_and_skip_any_unicode);
     RUN(parse_int_across_join);
-    RUN(legacy_round_trips);
-    RUN(union_from_legacy);
+    RUN(slice_clamps_to_the_string);
+    RUN(compare_orders_by_bytes_then_length);
+    RUN(wchar_encodes_every_width);
+    RUN(codepoint_at_decodes_strictly);
+    RUN(codepoint_count_and_validity);
+    RUN(c_strings_in_and_out);
     RUN(ascii_wchar_and_numbers);
     PRINT_RESULTS("str", _r);
     object_t* status = integer_from_int32(r.failed ? 1 : 0);

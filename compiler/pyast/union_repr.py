@@ -130,7 +130,7 @@ def _pointer_word_kind(member: t.TypeSpec, resolver: g.Resolver) -> tuple | None
     distinguishable, so a union containing them must stay a tagged struct:
       ('UNIT',)        empty tuple / None        -> NULL sentinel
       ('INT',)         bigint                    -> PTR_TAG_INTEGER / INTEGER_VTABLE
-      ('STR',)         str                       -> PTR_TAG_STRING / STRING_VTABLE
+      ('STR',)         str                       -> PTR_TAG_STRING / STR_HEAD_VTABLE
       ('CLASS', name)  heap class                -> its own vtable
       ('ENUM', root)   complex enum              -> the root marker vtable
       ('FOREIGN',)     foreign class             -> untestable; the fallback
@@ -845,7 +845,7 @@ class PointerRepr(UnionRepr):
             if self.packs:   # a spare code is a tag-4 word too: check the length
                 return cg_p.RuntimeInvoke("str_word_is_string",
                                           cg_p.NewStruct((("w", word),)), cg_t.Int(8))
-            return cg_p.ObjVtableEq(word, extern_symbol="STRING_VTABLE")
+            return cg_p.ObjVtableEq(word, extern_symbol="STR_HEAD_VTABLE")
         if kind is not None and kind[0] == 'SCALAR':
             return cg_p.IntEqConst(
                 cg_p.RuntimeInvoke("str_word_code", cg_p.NewStruct((("w", word),)), cg_t.Int(32)),

@@ -376,7 +376,7 @@ class ObjVtableEq(RParam):
         the target is `obj_` + mangle_name(class_name), and the trim pass
         treats the class as live.
       * `extern_symbol` — a library-provided C symbol (e.g.
-        "STRING_VTABLE", "INTEGER_VTABLE"); address-of is applied since
+        "STR_HEAD_VTABLE", "INTEGER_VTABLE"); address-of is applied since
         these are declared as structs in libyafl."""
     value: RParam
     class_name: str | None = None

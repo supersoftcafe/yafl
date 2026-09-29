@@ -30,10 +30,6 @@
 #include <stdlib.h>
 #include <time.h>
 
-EXTERN object_t* io_create     (object_t* self, object_t* path);
-EXTERN object_t* io_open_read  (object_t* self, object_t* path);
-EXTERN object_t* io_close      (object_t* self);
-EXTERN object_t* io_write      (object_t* self, object_t* data);
 
 
 // ---- Tunables ----------------------------------------------------------
@@ -124,7 +120,7 @@ static void* _watchdog_main(void* arg) {
 
 static fun_t       _exit_cont;
 static int32_t     _iter_remaining;
-static object_t*   _path;            // GC root: tmp file path
+static str_t       _path;            // GC root (head): tmp file path
 
 static void _do_iteration(void);
 
@@ -161,7 +157,7 @@ static void _stress_create_done(object_t* result) {
 static void _do_iteration(void) {
     char buf[64];
     int n = snprintf(buf, sizeof(buf), "/tmp/yafl_io_stress_%d.tmp", _iter_remaining);
-    _path = string_from_bytes((uint8_t*)buf, n);
+    _path = str_from_bytes((uint8_t*)buf, n);
     then(io_create(NULL, _path), _stress_create_done);
 }
 
@@ -169,7 +165,7 @@ static void _do_iteration(void) {
 static roots_declaration_func_t _prev_roots;
 static void _stress_declare_roots(void(*declare)(object_t**)) {
     _prev_roots(declare);
-    declare(&_path);
+    declare(&_path.head);
     declare(&_in_flight_task);
 }
 

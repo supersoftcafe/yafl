@@ -853,46 +853,9 @@ fun genCallOn(c: PeCall, cl: SCallable, r)
   let funRef = mustResult(funBundle)
   let resultType = specGenerateOpt(cl.scResult, r)
   let resultVar = RpStackVar(resultType, "result")
-  let callBundle = match(foreignCallee(funRef))
-    (gf: RpGlobalFunction) => foreignCall(gf, mustResult(prmBundle), resultVar, gf.impure)
-    ()                     => GBundle(list1(resultVar),
-                                      list1(OpCall(funRef, mustResult(prmBundle), resultVar, false,
-                                                   isImpureCall(funRef), None, List())),
-                                      resultVar, List(), List())
+  let callOp = OpCall(funRef, mustResult(prmBundle), resultVar, false, isImpureCall(funRef), None, List())
+  let callBundle = GBundle(list1(resultVar), list1(callOp), resultVar, List(), List())
   ret bundleJoin(bundleJoin(funBundle, prmBundle), callBundle)
-
-# The callee when it is a `[foreign]` C function (a non-empty C symbol).
-fun foreignCallee(funRef): RpGlobalFunction|None => match(funRef)
-  (gf: RpGlobalFunction) => match(gf.cSymbol)
-    (sym: String) => length(sym) > 0 ? gf : None
-    ()            => None
-  (o: RParam) => None
-
-# A call into a `[foreign]` C function. C speaks the one-word string ABI
-# (legacy string_t / packed words), so String values — and unions that carry
-# one, which share the String value's representation — cross as one word:
-# converted on the way in, and converted back on the way out.
-fun foreignCall(gf: RpGlobalFunction, params, resultVar, impure): GBundle
-  let fields = match(params)
-    (ns: RpNewStruct) => ns.values
-    (o: RParam)       => map(cgFieldsOfOrEmpty(rpGetType(params)),
-                             (f) => RpNamedValue(f.fieldName, RpStructField(params, f.fieldName)))
-  let legacyParams = RpNewStruct(map(fields, (nv) => RpNamedValue(nv.name, toLegacyWord(nv.value))))
-  if !eqCgType(rpGetType(resultVar), CgStr())
-    ret GBundle(list1(resultVar),
-                list1(OpCall(gf, legacyParams, resultVar, false, impure, None, List())),
-                resultVar, List(), List())
-  let legacyResult = RpStackVar(CgDataPointer(), "legacy_result")
-  ret GBundle(list2(legacyResult, resultVar),
-              list2(OpCall(gf, legacyParams, legacyResult, false, impure, None, List()),
-                    OpMove(resultVar, RpRuntimeInvoke("str_union_from_legacy",
-                                        RpNewStruct(list1(RpNamedValue("word", legacyResult))), CgStr()),
-                           false, List())),
-              resultVar, List(), List())
-
-fun toLegacyWord(v) => eqCgType(rpGetType(v), CgStr())
-  ? RpRuntimeInvoke("str_union_to_legacy", RpNewStruct(list1(RpNamedValue("s", v))), CgDataPointer())
-  : v
 
 fun isImpureCall(funRef) => match(funRef)
   (gf: RpGlobalFunction) => gf.impure

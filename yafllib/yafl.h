@@ -779,17 +779,17 @@ EXTERN fun_t object_lookup_vtable(object_t *object, intptr_t id);
 // Tag-aware "is-a" test for match-arm dispatch. True if `obj` is an instance
 // of `target` either exactly (its vtable == target) or transitively (target
 // appears in its vtable's implements_array). NULL and tagged pointers match
-// the appropriate pseudo-vtable (INTEGER_VTABLE / STRING_VTABLE) and nothing
-// else.
+// the appropriate pseudo-vtable (INTEGER_VTABLE / STR_HEAD_VTABLE — an inline
+// String's word 0 is a tagged word) and nothing else.
 struct integer_vtable;
-struct string_vtable;
+struct str_head_vtable;
 EXTERN struct integer_vtable INTEGER_VTABLE;
-EXTERN struct string_vtable STRING_VTABLE;
+EXTERN struct str_head_vtable STR_HEAD_VTABLE;
 INLINE bool object_is_instance(object_t* obj, vtable_t* target) {
     uintptr_t raw = (uintptr_t)obj;
     if (raw == 0) return false;
     if (raw & PTR_TAG_INTEGER) return target == (vtable_t*)&INTEGER_VTABLE;
-    if ((raw & PTR_TAG_MASK) == PTR_TAG_STRING) return target == (vtable_t*)&STRING_VTABLE;
+    if ((raw & PTR_TAG_MASK) == PTR_TAG_STRING) return target == (vtable_t*)&STR_HEAD_VTABLE;
     if (raw & PTR_TAG_TASK) return false;
     // Follow any forwarding pointers left by compaction: a relocated object's
     // old slot holds the new object's (heap) address, not a vtable. Mirrors
@@ -824,8 +824,6 @@ EXTERN void object_gc_print_heap(); // Print objects that survived the last GC
 extern int    _yafl_argc;
 extern char** _yafl_argv;
 EXTERN object_t* sys_argc(object_t* self);
-EXTERN object_t* sys_argv_at(object_t* self, object_t* o_index);
-EXTERN object_t* sys_getenv(object_t* self, object_t* o_name);
 
 EXTERN void* object_create(vtable_t* vtable);
 EXTERN void* array_create(vtable_t* vtable, int32_t length);
@@ -1376,10 +1374,6 @@ EXTERN int16_t   int16_from_integer_truncate(object_t* self);
 EXTERN int32_t   int32_from_integer_truncate(object_t* self);
 EXTERN int64_t   int64_from_integer_truncate(object_t* self);
 
-EXTERN object_t* string_from_int8 (int8_t  v);
-EXTERN object_t* string_from_int16(int16_t v);
-EXTERN object_t* string_from_int32(int32_t value);
-EXTERN object_t* string_from_int64(int64_t v);
 
 // Decimal-render an arbitrary-precision Int into a CALLER-SUPPLIED buffer.
 // Allocates nothing — neither YAFL heap nor malloc — so it is usable from the
@@ -1423,8 +1417,6 @@ INLINE bool     float64_is_nan(double a)         { return a != a; }
 
 EXTERN double    float64_from_integer(object_t* i);
 EXTERN object_t* integer_from_float64(double f);
-EXTERN object_t* string_from_float64(double f);
-EXTERN double    float64_parse_or_nan(object_t* s);
 
 INLINE float    float32_add(float a, float b) { return a + b; }
 INLINE float    float32_sub(float a, float b) { return a - b; }
@@ -1445,8 +1437,6 @@ INLINE float    float32_from_int32(int32_t i)  { return (float)i; }
 INLINE float    float32_from_int64(int64_t i)  { return (float)i; }
 EXTERN float    float32_from_integer(object_t* i);
 EXTERN object_t* integer_from_float32(float f);
-EXTERN object_t* string_from_float32(float f);
-EXTERN float    float32_parse_or_nan(object_t* s);
 EXTERN int32_t float32_hash(float f);
 
 
@@ -1463,162 +1453,30 @@ EXTERN int32_t float32_hash(float f);
  *****************************
  **********************************************************/
 
-// One header for every heap string — legacy, static literal, and the
-// growable heads of String values (str_t) — so a head's bytes are always at
-// the same offset.
-typedef struct string {
+// The heap head of a String value: every heap-held String's bytes live in
+// one — a growable buffer (STR_BUF_VTABLE) or a read-only head (a static
+// literal, STR_HEAD_VTABLE) — so a head's bytes are always at the same offset.
+typedef struct str_head {
     vtable_t* vtable;
     uint32_t length;
     // Growable heads (STR_BUF_VTABLE): capacity + 1. It is the vtable's
     // array_cap_offset, so compaction resets it to `length` on a copy (the
-    // copy owns no spare room). 0 on every other string.
+    // copy owns no spare room). 0 on every read-only head.
     uint32_t capacity;
     // Hash cache: (covered length << 32) | hash of array[0, covered length);
     // 0 = none. The covered bytes never change (a head only grows past its
     // used length), so one atomic word is the whole protocol — a racing
     // writer stores a correct value too, and a compaction copy carries a
-    // still-valid entry. Builder writes that change bytes in place reset it.
+    // still-valid entry.
     _Atomic(uint64_t) hash;
     uint8_t array[16];
-} ALIGNED string_t;
+} ALIGNED str_head_t;
 
-struct string_vtable;
-EXTERN struct string_vtable STRING_VTABLE;
+struct str_head_vtable;
+EXTERN struct str_head_vtable STR_HEAD_VTABLE;
 
-
-// Helper macro to compute string length at compile time
+// Compile-time length of a C string literal.
 #define STRING_LEN(str) (sizeof(str) - 1)
-
-// Maximum characters that can fit in a pointer (leaving room for length byte)
-#define MAX_SHORT_LEN ((WORD_SIZE/8) - 1)
-
-
-// Helper macro to create a short string value for 32-bit.
-// The (uint8_t) cast is essential: `char` is signed on many platforms, so
-// `(uint32_t)str[i]` would sign-extend bytes ≥0x80 into the high bits and
-// corrupt the packed pointer (causing wrong string_length, wrong byte reads).
-#if IS_LITTLE_ENDIAN
-#define SHORT_STRING_32(str, len) ( \
-                  (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint32_t)(uint8_t)str[0] <<  8 ) | \
-    (len < 2 ? 0 : ((uint32_t)(uint8_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint32_t)(uint8_t)str[2] << 24)) )
-#else
-#define SHORT_STRING_32(str, len) ( \
-                  (((uint32_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint32_t)(uint8_t)str[0] << 24 ) | \
-    (len < 2 ? 0 : ((uint32_t)(uint8_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint32_t)(uint8_t)str[2] <<  8)) )
-#endif
-
-// Helper macro to create a short string value for 64-bit.
-// The (uint8_t) cast guards against signed-char sign extension — see SHORT_STRING_32.
-#if IS_LITTLE_ENDIAN
-#define SHORT_STRING_64(str, len) ( \
-                  (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint64_t)(uint8_t)str[0] <<  8 ) | \
-    (len < 2 ? 0 : ((uint64_t)(uint8_t)str[1] << 16)) | \
-    (len < 3 ? 0 : ((uint64_t)(uint8_t)str[2] << 24)) | \
-    (len < 4 ? 0 : ((uint64_t)(uint8_t)str[3] << 32)) | \
-    (len < 5 ? 0 : ((uint64_t)(uint8_t)str[4] << 40)) | \
-    (len < 6 ? 0 : ((uint64_t)(uint8_t)str[5] << 48)) | \
-    (len < 7 ? 0 : ((uint64_t)(uint8_t)str[6] << 56)) )
-#else
-#define SHORT_STRING_64(str, len) ( \
-                  (((uint64_t)len) * (PTR_TAG_MASK+1) + PTR_TAG_STRING) | \
-                   ((uint64_t)(uint8_t)str[0] << 56 ) | \
-    (len < 2 ? 0 : ((uint64_t)(uint8_t)str[1] << 48)) | \
-    (len < 3 ? 0 : ((uint64_t)(uint8_t)str[2] << 40)) | \
-    (len < 4 ? 0 : ((uint64_t)(uint8_t)str[3] << 32)) | \
-    (len < 5 ? 0 : ((uint64_t)(uint8_t)str[4] << 24)) | \
-    (len < 6 ? 0 : ((uint64_t)(uint8_t)str[5] << 16)) | \
-    (len < 7 ? 0 : ((uint64_t)(uint8_t)str[6] <<  8)) )
-#endif
-
-// Choose appropriate short string implementation based on word size
-#if WORD_SIZE == 32
-#define SHORT_STRING(str, len) SHORT_STRING_32(str, len)
-#else
-#define SHORT_STRING(str, len) SHORT_STRING_64(str, len)
-#endif
-
-#define STR(contents) ( \
-    STRING_LEN(contents) <= MAX_SHORT_LEN ? \
-        (object_t*)SHORT_STRING(contents, STRING_LEN(contents)) : \
-        (object_t*)&( \
-            struct { \
-                vtable_t* v; \
-                uint32_t l; \
-                uint32_t c; \
-                uint64_t h; \
-                char a[sizeof(contents)]; \
-            }){VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(contents), 0, 0, contents})
-
-
-INLINE int32_t string_length(object_t* self) {
-    // UNSIGNED: a packed short string whose final byte has the high bit set
-    // (any UTF-8 continuation byte in the last slot) makes the pointer value
-    // negative, and a SIGNED divide then sign-extends — corrupting the length
-    // bits. Short strings are a bit pattern, never a number.
-    if (PTR_IS_STRING(self))
-        return (int32_t)((sizeof(uintptr_t)-1) & ((uintptr_t)self / (PTR_TAG_MASK+1)));
-    return ((string_t*)self)->length - 1;
-}
-
-EXTERN object_t* string_allocate(int32_t length);
-EXTERN object_t* string_from_bytes(uint8_t* data, int32_t length);
-EXTERN int32_t   string_copy_cstr(object_t* self, char* buf, int32_t buf_size);
-INLINE char* string_to_cstr(object_t* self, intptr_t* local_buffer, int32_t* len_ptr) {
-    if (!PTR_IS_STRING(self)) {
-        *len_ptr = ((string_t*)self)->length - 1;
-        return (char*)((string_t*)self)->array;
-    }
-    uintptr_t test = 1;
-    if (1 == *(uint8_t*)&test)
-         *local_buffer = (uintptr_t)self >> 8;
-    else *local_buffer = (uintptr_t)self & ~(uintptr_t)255;
-    *len_ptr = (int32_t)((sizeof(uintptr_t)-1) & ((uintptr_t)self / (PTR_TAG_MASK+1)));
-    return (char*)local_buffer;
-}
-EXTERN object_t* string_truncate(object_t* self, int32_t new_length);
-EXTERN object_t* string_append(object_t* self, object_t* data);
-EXTERN object_t* string_concat_n(int32_t count, ...);
-EXTERN object_t* string_slice(object_t* self, object_t* start, object_t* end);
-EXTERN int       string_compare(object_t* self, object_t* data);
-
-INLINE object_t* string_length_int(object_t* self) {
-    return integer_from_int32(string_length(self));
-}
-INLINE object_t* string_compare_int(object_t* self, object_t* data) {
-    int r = string_compare(self, data);
-    return integer_from_int24(r < 0 ? -1 : r > 0 ? 1 : 0);
-}
-INLINE bool string_eq(object_t* self, object_t* data) { return string_compare(self, data) == 0; }
-INLINE bool string_lt(object_t* self, object_t* data) { return string_compare(self, data) <  0; }
-INLINE bool string_gt(object_t* self, object_t* data) { return string_compare(self, data) >  0; }
-
-INLINE int32_t string_byte_at(object_t* self, object_t* o_index) {
-    // Returns the unsigned byte value [0..255] as an int32 (YAFL Int32), or
-    // -1 when `o_index` is out of range. The byte VALUE is Int32; the index
-    // is still an Int (object).
-    int overflow = 0;
-    int32_t idx = int32_from_integer_with_overflow(o_index, &overflow);
-    if (overflow) return -1;
-    intptr_t buf; int32_t len;
-    char* cstr = string_to_cstr(self, &buf, &len);
-    if (idx < 0 || idx >= len) return -1;
-    return (unsigned char)cstr[idx];
-}
-
-INLINE object_t* ascii_to_string(int32_t b) {
-    // Build a one-byte packed short string in a single instruction sequence.
-    // No allocation; the byte lives in the pointer bits. Caller is expected
-    // to pass a value in [0..255]; we range-check to avoid silently corrupting
-    // the packed payload on negative or oversized inputs.
-    if (b < 0 || b > 255) __abort_on_overflow();
-    uint8_t bytes[MAX_SHORT_LEN] = { (uint8_t)b };
-    return (object_t*)SHORT_STRING(bytes, 1);
-}
 
 
 /**********************************************************
@@ -1637,9 +1495,7 @@ INLINE object_t* ascii_to_string(int32_t b) {
 //   INLINE (length <= 15): `head` is a packed-string word, low byte
 //     len << 3 | PTR_TAG_STRING (the GC reads any tagged word as a
 //     non-pointer); content bytes 0..14 are bytes 1..15 of the value.
-//     A legacy packed short string (<= 7 bytes, zero-padded) IS this form
-//     with meta = tail = 0.
-//   HEAP (length >= 16): `head` is a buffer (string_t layout); `meta` holds
+//   HEAP (length >= 16): `head` is a buffer (str_head_t layout); `meta` holds
 //     head_len (low 29 bits) | tail_len << 29, `tail` up to 4 more bytes.
 //
 //   content = inline bytes, or head->array[0 .. head_len) ++ tail[0 .. tail_len)
@@ -1652,7 +1508,7 @@ INLINE object_t* ascii_to_string(int32_t b) {
 // capacity + 1 (array_cap_offset: compaction resets it to length on the
 // copy). `used` is the high-water mark; a value extends a head in place only
 // when it holds the PIN and owns the end (head_len == used) — see str.c.
-// Any other head (a legacy string_t, a static literal) is read-only.
+// Any other head (a static literal, STR_HEAD_VTABLE) is read-only.
 //
 // Union values that contain String use str_t too: word 0 dispatches exactly
 // like a one-word union (NULL = None, tagged Int, class pointer, or a
@@ -1685,8 +1541,7 @@ _Static_assert(sizeof(str_t) == 16, "str_t is 16 bytes on every target");
 INLINE uint8_t* str_inline_bytes(str_t* s) { return (uint8_t*)s + 1; }
 INLINE uint8_t* str_tail_bytes(str_t* s)   { return (uint8_t*)s->tail; }
 
-struct string_vtable;
-EXTERN struct string_vtable STR_BUF_VTABLE;
+EXTERN struct str_head_vtable STR_BUF_VTABLE;
 
 INLINE bool str_is_inline(str_t s) {
     return ((uintptr_t)s.head & PTR_TAG_MASK) == PTR_TAG_STRING;
@@ -1716,7 +1571,7 @@ INLINE int32_t str_length(str_t s) {
 #endif
 #define STR16_LONG(c) ((str_t){ \
     .head = (object_t*)&(struct { vtable_t* v; uint32_t l; uint32_t cap; uint64_t h; char a[sizeof(c)]; }) \
-        { VTABLE_TAG_CONST(&STRING_VTABLE), sizeof(c), 0, 0, c }, \
+        { VTABLE_TAG_CONST(&STR_HEAD_VTABLE), sizeof(c), 0, 0, c }, \
     .meta = STRING_LEN(c), .tail = { 0 } })
 
 // A one-word union member (None = NULL, a tagged Int, an object) placed in a
@@ -1738,7 +1593,7 @@ INLINE str_t str_word(object_t* word) {
 INLINE bool str_word_is_string(object_t* w) {
     uintptr_t r = (uintptr_t)w;
     if ((r & PTR_TAG_MASK) == PTR_TAG_STRING) return ((r & 0xff) >> 3) <= STR_INLINE_MAX;
-    return w != NULL && object_is_instance(w, (vtable_t*)&STRING_VTABLE);
+    return w != NULL && object_is_instance(w, (vtable_t*)&STR_HEAD_VTABLE);
 }
 // The spare code in word 0, or -1 when it is not one.
 INLINE int32_t str_word_code(object_t* w) {
@@ -1792,17 +1647,45 @@ INLINE fun_t str_to_fun(str_t s) {
 }
 INLINE bool str_word_is_fun(object_t* w) {
     if ((uintptr_t)w & PTR_TAG_MASK) return str_word_code(w) == STR_CODE_FUN_NULL_ENV;
-    return w != NULL && !object_is_instance(w, (vtable_t*)&STRING_VTABLE)
+    return w != NULL && !object_is_instance(w, (vtable_t*)&STR_HEAD_VTABLE)
                      && !object_is_instance(w, (vtable_t*)&INTEGER_VTABLE);
 }
 
 EXTERN str_t     str_from_bytes(const uint8_t* data, int32_t length);
-EXTERN str_t     str_from_legacy(object_t* legacy);
-EXTERN str_t     str_union_from_legacy(object_t* word);
-EXTERN object_t* str_to_legacy(str_t s);
-// The inverse of str_union_from_legacy: word 0 of a two-word union value as
-// a one-word union value — a string member converted, anything else as is.
-EXTERN object_t* str_union_to_legacy(str_t s);
+EXTERN str_t     str_from_cstr(const char* cstr);
+// Copy bytes [from, from + n) of `s` to `dst` (the range must lie within s).
+EXTERN void      str_copy_range(str_t s, int32_t from, int32_t n, uint8_t* dst);
+// Copy all str_length(s) bytes of `s` to `dst`.
+EXTERN void      str_copy_bytes(str_t s, uint8_t* dst);
+// `s` as a NUL-terminated C string (for fopen, getenv, …): in `buf` when it
+// fits, else in a malloc'd block returned through `*heap` for the caller to
+// free (NULL otherwise). Embedded NULs are the caller's concern.
+EXTERN char*     str_cstr(str_t s, char* buf, int32_t size, char** heap);
+// At most size-1 bytes of `s` into `buf`, NUL-terminated (truncating); the
+// number of bytes copied.
+EXTERN int32_t   str_copy_cstr(str_t s, char* buf, int32_t size);
+EXTERN object_t* print_string(object_t* self, str_t s);
+// The process arguments and environment (object.c).
+EXTERN str_t     sys_argv_at(object_t* self, object_t* o_index);
+EXTERN str_t     sys_getenv(object_t* self, str_t name);   // String|None
+
+// task_str_t: task subtype whose result is a String value, or a union that
+// shares its representation (the compiler's "task_str"). result.head sits at
+// the offset task_obj_t keeps its object result, so a runtime job embedding a
+// task_str_t serves one-word results through word 0 unchanged.
+typedef struct {
+    vtable_t*               type;
+    _Atomic(int32_t)        state;
+    int32_t                 thread_id;
+    fun_t                   callback;
+    _Atomic(struct task_s*) next;
+    str_t                   result;
+} task_str_t;
+_Static_assert(offsetof(task_str_t, result) == offsetof(task_obj_t, result),
+               "task_str_t.result.head shares task_obj_t.result's offset");
+EXTERN struct task_vtable TASK_STR_VTABLE;
+#define obj_task_str ((vtable_t*)&TASK_STR_VTABLE)
+EXTERN object_t* task_str_create(object_t* self);
 // Appending two INLINE values that still fit inline is pure bit arithmetic:
 // canonical zero padding means b's content can be shifted in after a's with
 // no masking. Everything else — any heap side, or a result past 15 bytes —
@@ -1882,7 +1765,7 @@ INLINE int32_t   str_hash(str_t s) {
         return str_hash_finish(h);
     }
     if ((s.meta >> STR_META_LEN_BITS) == 0) {
-        uint64_t k = atomic_load_explicit(&((string_t*)s.head)->hash, memory_order_relaxed);
+        uint64_t k = atomic_load_explicit(&((str_head_t*)s.head)->hash, memory_order_relaxed);
         if ((uint32_t)(k >> 32) == (s.meta & STR_META_LEN_MASK))
             return (int32_t)(uint32_t)k;
     }
@@ -1901,7 +1784,7 @@ INLINE int32_t   str_byte_at(str_t s, object_t* o_index) {
         return (uint32_t)i < STR_INLINE_MAX ? str_inline_bytes(&s)[i] : -1;
     uint32_t hl = s.meta & STR_META_LEN_MASK;
     if ((uint32_t)i < hl)
-        return ((const uint8_t*)s.head + offsetof(string_t, array))[i];
+        return ((const uint8_t*)s.head + offsetof(str_head_t, array))[i];
     uint32_t t = (uint32_t)i - hl;
     return t < STR_TAIL_MAX ? str_tail_bytes(&s)[t] : -1;
 }
@@ -1924,17 +1807,6 @@ EXTERN str_t     str_from_float64(double v);
 EXTERN double    str_parse_float64(str_t s);
 EXTERN float     str_parse_float32(str_t s);
 
-EXTERN object_t* string_find_byte(object_t* self, int32_t byte_value, object_t* from);
-EXTERN object_t* string_index_of (object_t* self, object_t* needle,     object_t* from);
-EXTERN object_t* string_find_any (object_t* self, object_t* accept,     object_t* from);
-EXTERN object_t* string_skip_any (object_t* self, object_t* accept,     object_t* from);
-EXTERN object_t* string_parse_int(object_t* self);
-EXTERN int32_t   string_codepoint_at(object_t* self, object_t* from);
-EXTERN object_t* string_codepoint_count(object_t* self);
-EXTERN bool      string_valid_utf8(object_t* self);
-EXTERN object_t* wchar_to_string(int32_t codepoint);
-EXTERN object_t* print_string(object_t* self, object_t* data);
-EXTERN int32_t string_hash(object_t* s);
 EXTERN int32_t float64_hash(double f);
 INLINE bool yafl_ref_eq(object_t* a, object_t* b) { return a == b; }
 // The value-representation half of yafl_hash_store: no slot to write, but
@@ -1974,11 +1846,11 @@ EXTERN int32_t yafl_hash_store(object_t* v, int32_t h);
 EXPORT object_t* io_stdin (object_t* self);
 EXPORT object_t* io_stdout(object_t* self);
 EXPORT object_t* io_stderr(object_t* self);
-EXPORT object_t* io_create    (object_t* self, object_t* path);
-EXPORT object_t* io_open_read (object_t* self, object_t* path);
-EXPORT object_t* io_open_write(object_t* self, object_t* path, int8_t truncate);  // YAFL Bool ABI is int8_t
-EXPORT object_t* io_read (object_t* self, object_t* length);
-EXPORT object_t* io_write(object_t* self, object_t* data);
+EXPORT object_t* io_create    (object_t* self, str_t path);
+EXPORT object_t* io_open_read (object_t* self, str_t path);
+EXPORT object_t* io_open_write(object_t* self, str_t path, int8_t truncate);  // YAFL Bool ABI is int8_t
+EXPORT str_t     io_read (object_t* self, object_t* length);   // String|Int|None
+EXPORT object_t* io_write(object_t* self, str_t data);
 EXPORT object_t* io_close(object_t* self);
 
 // Filesystem metadata.  Both ops dispatch through the IO threadpool so
@@ -1993,12 +1865,12 @@ EXPORT object_t* io_close(object_t* self);
 // _FileInfo handle (on success) or a packed Int holding `-errno` on
 // failure.  The five accessors below read individual fields from a
 // successfully-resolved _FileInfo; all are sync (no task dispatch).
-EXPORT object_t* fs_exists   (object_t* self, object_t* path);
-EXPORT object_t* fs_stat     (object_t* self, object_t* path);
+EXPORT object_t* fs_exists   (object_t* self, str_t path);
+EXPORT object_t* fs_stat     (object_t* self, str_t path);
 // fs_mkdir creates ONE directory and resolves to a packed Int: 0 on success
 // (an already-existing directory counts as success, as `mkdir -p` does) or
 // -errno. Creating parents is the caller's loop over the path components.
-EXPORT object_t* fs_mkdir    (object_t* self, object_t* path);
+EXPORT object_t* fs_mkdir    (object_t* self, str_t path);
 EXPORT object_t* fs_fi_size  (object_t* self);
 EXPORT object_t* fs_fi_mtime (object_t* self);
 EXPORT object_t* fs_fi_isdir (object_t* self);
@@ -2009,8 +1881,8 @@ EXPORT object_t* fs_fi_mode  (object_t* self);
 // either a _Dir handle (success) or a packed Int holding -errno.  next
 // resolves to String (next entry name), None (end of stream), or Int
 // (-errno).  close resolves to None (success) or Int (-errno).
-EXPORT object_t* fs_open_dir (object_t* self, object_t* path);
-EXPORT object_t* fs_dir_next (object_t* self);
+EXPORT object_t* fs_open_dir (object_t* self, str_t path);
+EXPORT str_t     fs_dir_next (object_t* self);   // String|Int|None
 EXPORT object_t* fs_dir_close(object_t* self);
 
 

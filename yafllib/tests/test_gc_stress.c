@@ -105,8 +105,9 @@ static void _finisher(task_obj_t* task) {
     object_t* result = NULL;
     for (int i = 0; i < ALLOCS_PER_ITER; ++i) {
         char buf[32];
-        int n = snprintf(buf, sizeof(buf), "stress-%d-%d", _iter_remaining, i);
-        result = string_from_bytes((uint8_t*)buf, n);
+        // 24 bytes: past the 15-byte inline limit, so each one allocates.
+        int n = snprintf(buf, sizeof(buf), "stress-%08d-%08d", _iter_remaining, i);
+        result = str_from_bytes((uint8_t*)buf, n).head;
     }
 
     GC_WRITE_BARRIER(task->result, 1);

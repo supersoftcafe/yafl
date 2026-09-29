@@ -31,23 +31,11 @@ fun funGlobalCodegen(f: PsFun, r0): CgFunction
   let params = concat(list1(CgField("this", CgDataPointer())),
                        map(paramTargets(f.fParams), (t2) => CgField(stmtName2(t2), specGenerateOpt(targetType(t2), bodyR))))
   let vars = map(bundle.gbStackVars, (sv) => CgField(stackVarName(sv), rpGetType(sv)))
-  let result = specGenerateOpt(f.fRet, bodyR)
-  # A foreign C function speaks the one-word string ABI: String values (and
-  # the unions sharing their representation) cross as a legacy word. Its IR
-  # signature describes the C side; call sites convert (generate_expr
-  # `foreignCall`).
-  let foreign = match(foreignSymbolOf(f))
-    (sym: String) => true
-    ()            => false
-  let cParams = foreign ? map(params, (p) => CgField(p.fieldName, foreignCSide(p.fieldType))) : params
-  let cResult = foreign ? foreignCSide(result) : result
-  ret CgFunction(f.fName, CgStruct(cParams), cResult, CgStruct(vars),
+  ret CgFunction(f.fName, CgStruct(params), specGenerateOpt(f.fRet, bodyR), CgStruct(vars),
                  cgOpsOf(bundle.gbOps), f.fName, foreignSymbolOf(f),
                  hasAttr(f.fAttrs, "sync"), hasAttr(f.fAttrs, "tail"), false,
                  inlineAlways(f),
                  f.psfLine.plFile, f.psfLine.plLine)
-
-fun foreignCSide(xtype: CgType): CgType => eqCgType(xtype, CgStr()) ? CgDataPointer() : xtype
 
 fun fgcBodyBundle(b, bodyR, fRet: Spec|None): GBundle
   let bodyBundle = genExprTo(b, bodyR, fRet)

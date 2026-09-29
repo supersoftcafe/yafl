@@ -61,9 +61,8 @@ struct test_results {
 
 #define ASSERT_STR_EQ(actual, expected_cstr) \
     do { \
-        object_t* _exp = string_from_bytes((uint8_t*)(expected_cstr), \
-                                           (int32_t)strlen(expected_cstr)); \
-        if (string_compare((actual), _exp) != 0) { \
+        str_t _exp = str_from_cstr(expected_cstr); \
+        if (str_compare((actual), _exp) != 0) { \
             printf("FAIL\n    line %d: string mismatch\n", __LINE__); \
             _r->failed++; \
             return; \

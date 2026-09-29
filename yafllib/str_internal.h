@@ -1,5 +1,4 @@
-// Helpers shared by the legacy string_t layer (string.c) and the str_t value
-// layer (str.c): one strict UTF-8 decoder, one codepoint-set.
+// String internals (str.c): the strict UTF-8 decoder and the codepoint set.
 #ifndef STR_INTERNAL_H
 #define STR_INTERNAL_H
 

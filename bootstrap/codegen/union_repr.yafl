@@ -345,7 +345,7 @@ fun ptrGuardOf(gp: GPointer, k, word): RParam|None => match(k)
   # A spare code is a tag-4 word too: check the length.
   (s2: PkStr)     => gp.grpPacks
     ? RpRuntimeInvoke("str_word_is_string", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(8))
-    : RpObjVtableEq(word, None, "STRING_VTABLE")
+    : RpObjVtableEq(word, None, "STR_HEAD_VTABLE")
   (sc: PkScalar)  => RpIntEqConst(RpRuntimeInvoke("str_word_code", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(32)),
                                   scalarCode(sc.pkScalar))
   (f: PkFun)      => RpRuntimeInvoke("str_word_is_fun", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(8))

@@ -56,15 +56,16 @@ static object_t* _do_alloc(int i) {
 #else
     (void)i;
     // Sized by the initialiser, not fixed at 256: PAD is handed to
-    // string_from_bytes with an explicit length, so it is a byte buffer and
+    // str_from_bytes with an explicit length, so it is a byte buffer and
     // never needs the terminator — but declaring it [256] silently dropped it.
     static const char PAD[] =
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--"
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--"
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--"
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789--";
-    int len = ALLOC_STR_LEN <= 255 ? ALLOC_STR_LEN : 255;
-    return string_from_bytes((uint8_t*)PAD, len);
+    // A String of 16+ bytes is the smallest with a heap head: the object.
+    int len = ALLOC_STR_LEN < 16 ? 16 : ALLOC_STR_LEN <= 255 ? ALLOC_STR_LEN : 255;
+    return str_from_bytes((uint8_t*)PAD, len).head;
 #endif
 }
 

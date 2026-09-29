@@ -41,7 +41,7 @@ static const yafl_prof_fn_t TEST_FNS[FN_COUNT] = {
 #define KEEP_BIG  4
 #define DROP_BIG  4
 
-// Small churn: enough 200-byte strings to cross many page refills; 63/64
+// Small churn: enough 200-byte objects to cross many page refills; 63/64
 // die, leaving the survivors' pages sparse enough for compaction to pick
 // them up on the following majors.
 #define SMALL_N     2048
@@ -60,16 +60,22 @@ static void _declare_roots(void (*declare)(object_t**)) {
     for (int i = 0; i < SMALL_N / SMALL_KEEP; i++) declare(&keep_small[i]);
 }
 
+// A heap object of `n` bytes — a String head. What these tests measure is
+// sampled allocation SIZE, so any array object would do.
+static object_t* alloc_bytes(int32_t n) {
+    return array_create((vtable_t*)&STR_HEAD_VTABLE, n + 1);
+}
+
 // Allocations happen in NOINLINE helpers so their frames (and any register
 // copies of dropped pointers) are gone before the killing majors run.
 static __attribute__((noinline)) void alloc_bigs(void) {
-    for (int i = 0; i < KEEP_BIG; i++) keep_big[i] = string_allocate(BIG_LEN);
-    for (int i = 0; i < DROP_BIG; i++) drop_big[i] = string_allocate(BIG_LEN);
+    for (int i = 0; i < KEEP_BIG; i++) keep_big[i] = alloc_bytes(BIG_LEN);
+    for (int i = 0; i < DROP_BIG; i++) drop_big[i] = alloc_bytes(BIG_LEN);
 }
 
 static __attribute__((noinline)) void churn_smalls(void) {
     for (int i = 0; i < SMALL_N; i++) {
-        object_t* s = string_allocate(SMALL_LEN);
+        object_t* s = alloc_bytes(SMALL_LEN);
         if (i % SMALL_KEEP == 0)
             keep_small[i / SMALL_KEEP] = s;
     }
@@ -77,7 +83,7 @@ static __attribute__((noinline)) void churn_smalls(void) {
 
 // Scrub argument/return registers of stale heap pointers.
 static __attribute__((noinline)) object_t* scrub(void) {
-    return string_allocate(8);
+    return alloc_bytes(8);
 }
 
 // gc_debug_major_now is ONE incremental FSA step with a major requested.
@@ -224,7 +230,7 @@ static void _entrypoint(object_t* self, fun_t continuation) {
     // publishes the live set.
     for (int i = 0; i < DROP_BIG; i++) drop_big[i] = NULL;
     keep_big[0] = scrub();          // also replaces one keeper with a small
-    keep_big[0] = string_allocate(BIG_LEN);
+    keep_big[0] = alloc_bytes(BIG_LEN);
     size_t bytes1 = settle();
     CHECK(bytes1 < bytes0, "dead sampled objects dropped by the major sweep");
     CHECK(bytes1 >= (size_t)KEEP_BIG * BIG_LEN, "live keepers retained");

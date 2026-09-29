@@ -18,23 +18,38 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
-VTABLE_DECLARE_STRUCT(string_vtable, 16);
+VTABLE_DECLARE_STRUCT(str_head_vtable, 16);
 
-// Growable head buffers: `length` = used + 1, `capacity` = capacity + 1, and
-// array_cap_offset makes compaction reset capacity to length on the copy (a
-// moved buffer never extends in place). Implements STRING_VTABLE, so a head
-// in word 0 dispatches as a String.
-EXPORT struct string_vtable STR_BUF_VTABLE = {
-    .object_size = offsetof(string_t, array[0]),
+// Read-only heads (static literals): `length` = byte length + 1, never
+// extended. Also the pseudo-vtable an inline String's tagged word 0 answers
+// to (object_is_instance), so it is THE String type test.
+EXPORT struct str_head_vtable STR_HEAD_VTABLE = {
+    .object_size = offsetof(str_head_t, array[0]),
     .array_el_size = sizeof(uint8_t),
     .object_pointer_locations = 0,
     .array_el_pointer_locations = 0,
     .functions_mask = 0,
-    .array_len_offset = offsetof(string_t, length),
-    .array_cap_offset = offsetof(string_t, capacity),
+    .array_len_offset = offsetof(str_head_t, length),
+    .name = "string",
+    .implements_array = VTABLE_IMPLEMENTS(0),
+};
+
+// Growable head buffers: `length` = used + 1, `capacity` = capacity + 1, and
+// array_cap_offset makes compaction reset capacity to length on the copy (a
+// moved buffer never extends in place). Implements STR_HEAD_VTABLE, so a head
+// in word 0 dispatches as a String.
+EXPORT struct str_head_vtable STR_BUF_VTABLE = {
+    .object_size = offsetof(str_head_t, array[0]),
+    .array_el_size = sizeof(uint8_t),
+    .object_pointer_locations = 0,
+    .array_el_pointer_locations = 0,
+    .functions_mask = 0,
+    .array_len_offset = offsetof(str_head_t, length),
+    .array_cap_offset = offsetof(str_head_t, capacity),
     .name = "string_buffer",
-    .implements_array = VTABLE_IMPLEMENTS(1, (vtable_t*)&STRING_VTABLE),
+    .implements_array = VTABLE_IMPLEMENTS(1, (vtable_t*)&STR_HEAD_VTABLE),
 };
 
 
@@ -46,9 +61,9 @@ typedef struct { const uint8_t* a; int32_t na; const uint8_t* b; int32_t nb; } s
 
 static inline uint32_t head_len_of(str_t s) { return s.meta & STR_META_LEN_MASK; }
 static inline uint32_t tail_len_of(str_t s) { return s.meta >> STR_META_LEN_BITS; }
-// A head's bytes. Through offsetof, not `->array`: string_t declares a
+// A head's bytes. Through offsetof, not `->array`: str_head_t declares a
 // nominal array[16], and the compiler would bound-check indexes against it.
-static inline uint8_t* head_bytes(object_t* h) { return (uint8_t*)h + offsetof(string_t, array); }
+static inline uint8_t* head_bytes(object_t* h) { return (uint8_t*)h + offsetof(str_head_t, array); }
 
 static inline segs_t segs_of(str_t* s) {
     if (str_is_inline(*s))
@@ -115,12 +130,12 @@ static str_t heap_value(object_t* head, uint32_t head_len) {
 // allocator granule: exact for a fresh copy, 2x for an owner's growth.
 static object_t* buf_alloc(int64_t used, bool grow) {
     if (used > (int64_t)STR_META_LEN_MASK) { __abort_on_overflow(); __builtin_unreachable(); }
-    int64_t overhead = (int64_t)offsetof(string_t, array) + 1;
+    int64_t overhead = (int64_t)offsetof(str_head_t, array) + 1;
     int64_t total = (grow ? used * 2 : used) + overhead;   // 2x: 1.5x and a lower large-object factor measured no better
     total = (total + GC_ALLOC_GRANULE - 1) / GC_ALLOC_GRANULE * GC_ALLOC_GRANULE;
     int64_t cap = total - overhead;
     if (cap > (int64_t)STR_META_LEN_MASK) cap = STR_META_LEN_MASK;
-    string_t* b = (string_t*)array_create((vtable_t*)&STR_BUF_VTABLE, (int32_t)cap + 1);
+    str_head_t* b = (str_head_t*)array_create((vtable_t*)&STR_BUF_VTABLE, (int32_t)cap + 1);
     b->capacity = (uint32_t)cap + 1;      // array_cap_offset
     atomic_store_explicit(&b->hash, 0, memory_order_relaxed);
     b->length = (uint32_t)used + 1;       // used: the GC's view of the object
@@ -172,7 +187,7 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
 
     uint32_t hl = head_len_of(a), tl = tail_len_of(a);
     // The tail only pays when the head can later grow in place: on a
-    // read-only head (a literal, a legacy string) it would just postpone the
+    // read-only head (a static literal) it would just postpone the
     // copy — and a tailed value can never use the hash cache. So appends to a
     // read-only head copy straight into a fresh, exact, tail-less buffer.
     object_t* h = a.head;
@@ -189,7 +204,7 @@ static str_t extend(str_t a, const piece_t* pieces, int np, int64_t extra) {
     // for the compactor (which re-reads the size under it).
     bool grow = false;
     if (growable && object_try_pin(h)) {
-        string_t* b = (string_t*)h;
+        str_head_t* b = (str_head_t*)h;
         if (vtable_untag(b->vtable) == (vtable_t*)&STR_BUF_VTABLE && b->length - 1 == hl) {
             if ((b->capacity - 1) - hl >= tl + extra) {
                 uint8_t* d = head_bytes(h) + hl;
@@ -221,6 +236,7 @@ static int pieces_of(str_t* s, piece_t* out) {
 }
 
 EXPORT str_t str_from_bytes(const uint8_t* data, int32_t length) {
+    if (length <= 0) return inline_value(0);   // `data` may be NULL here
     piece_t p = { data, length };
     return from_pieces(&p, 1, length, false);
 }
@@ -256,55 +272,45 @@ EXPORT str_t str_concat_n(int32_t count, ...) {
 }
 
 
-// ── Legacy bridge (the foreign-function boundary) ─────────────────────────
+// ── The C boundary ────────────────────────────────────────────────────────
 
-EXPORT str_t str_from_legacy(object_t* legacy) {
-    if (PTR_IS_STRING(legacy)) {             // packed <= 7 bytes: already inline
-        str_t s;
-        memset(&s, 0, sizeof s);
-        s.head = legacy;
-        return s;
-    }
-    string_t* ls = (string_t*)legacy;
-    int32_t n = (int32_t)ls->length - 1;
-    if (n <= STR_INLINE_MAX) return str_from_bytes(head_bytes(legacy), n);
-    return heap_value(legacy, (uint32_t)n);  // read-only head: never extended
+EXPORT str_t str_from_cstr(const char* cstr) {
+    return str_from_bytes((const uint8_t*)cstr, (int32_t)strlen(cstr));
 }
 
-// A one-word union value (legacy GPointer) → the two-word union: strings are
-// converted, every other member (None, Int, objects) moves across in word 0.
-EXPORT str_t str_union_from_legacy(object_t* word) {
-    if (word != NULL && object_is_instance(word, (vtable_t*)&STRING_VTABLE))
-        return str_from_legacy(word);
-    str_t s;
-    memset(&s, 0, sizeof s);
-    s.head = word;
-    return s;
+EXPORT void str_copy_range(str_t s, int32_t from, int32_t n, uint8_t* dst) {
+    segs_copy(segs_of(&s), from, n, dst);
 }
 
-EXPORT object_t* str_to_legacy(str_t s) {
+EXPORT void str_copy_bytes(str_t s, uint8_t* dst) {
+    str_copy_range(s, 0, str_length(s), dst);
+}
+
+EXPORT char* str_cstr(str_t s, char* buf, int32_t size, char** heap) {
     int32_t len = str_length(s);
-    if (str_is_inline(s)) {
-        if (len < (int32_t)sizeof(uintptr_t)) return s.head;   // packed form, zero-padded
-        return string_from_bytes(str_inline_bytes(&s), len);
-    }
-    // An exact read-only head (legacy or static) can be handed out as is; a
-    // growable one cannot — its owner may extend it while C holds it.
-    object_t* h = s.head;
-    if (tail_len_of(s) == 0
-            && object_get_vtable(h) == (vtable_t*)&STRING_VTABLE
-            && ((string_t*)h)->length - 1 == head_len_of(s))
-        return h;
-    object_t* out = string_allocate(len);
-    segs_copy(segs_of(&s), 0, len, head_bytes(out));
+    *heap = NULL;
+    char* out = len < size ? buf : (*heap = malloc((size_t)len + 1));
+    str_copy_bytes(s, (uint8_t*)out);
+    out[len] = 0;
     return out;
 }
 
+EXPORT int32_t str_copy_cstr(str_t s, char* buf, int32_t size) {
+    if (size <= 0) return 0;
+    segs_t g = segs_of(&s);
+    int32_t n = segs_len(g);
+    if (n > size - 1) n = size - 1;
+    segs_copy(g, 0, n, (uint8_t*)buf);
+    buf[n] = 0;
+    return n;
+}
 
-EXPORT object_t* str_union_to_legacy(str_t s) {
-    if (s.head != NULL && object_is_instance(s.head, (vtable_t*)&STRING_VTABLE))
-        return str_to_legacy(s);
-    return s.head;
+EXPORT object_t* print_string(object_t* self, str_t s) {
+    (void)self;   // ABI receiver, unused here
+    segs_t g = segs_of(&s);
+    int32_t n = (int32_t)fwrite(g.a, 1, (size_t)g.na, stdout);
+    if (g.nb) n += (int32_t)fwrite(g.b, 1, (size_t)g.nb, stdout);
+    return integer_from_int32(n);
 }
 
 
@@ -340,10 +346,10 @@ EXPORT int str_compare(str_t a, str_t b) {
 // an aligned 8-byte field whole — true of the word-or-wider copies memcpy
 // makes on our targets. A copy loop that split it could tear the word.
 EXPORT int32_t str_hash_heap(str_t s) {
-    string_t* cached = NULL;
+    str_head_t* cached = NULL;
     uint32_t covered = 0;
     if (tail_len_of(s) == 0) {
-        cached = (string_t*)s.head;
+        cached = (str_head_t*)s.head;
         covered = head_len_of(s);
     }
     segs_t g = segs_of(&s);
@@ -454,6 +460,25 @@ EXPORT object_t* str_index_of(str_t s, str_t needle, object_t* o_from) {
 
 
 // ── Codepoints ────────────────────────────────────────────────────────────
+
+// ASCII members go in the bitmap; the presence of any non-ASCII member is
+// flagged so the (rare) non-ASCII input path knows whether to probe. `accept`
+// is itself UTF-8: a set of CHARACTERS, not bytes.
+HIDDEN void _build_codepoint_set(const char* accept, int32_t accept_len,
+                                 codepoint_set* set) {
+    set->ascii[0] = set->ascii[1] = 0;
+    set->has_non_ascii = 0;
+    set->accept = accept;
+    set->accept_len = accept_len;
+    int32_t cp;
+    for (int32_t i = 0; i < accept_len; ) {
+        int w = _utf8_decode((const unsigned char*)accept, accept_len, i, &cp);
+        if (w == 0) { ++i; continue; }            // skip a malformed accept byte
+        if (cp < 0x80) set->ascii[cp >> 6] |= (uint64_t)1 << (cp & 63);
+        else set->has_non_ascii = 1;
+        i += w;
+    }
+}
 
 // The set over `accept`'s bytes, read in place when they are one run (an
 // inline value, or a head with no tail) — the set keeps pointing at them for
@@ -579,11 +604,50 @@ EXPORT object_t* str_parse_int(str_t s) {
     return acc;
 }
 
-EXPORT str_t str_from_int8(int8_t v)     { return str_from_legacy(string_from_int8(v)); }
-EXPORT str_t str_from_int16(int16_t v)   { return str_from_legacy(string_from_int16(v)); }
-EXPORT str_t str_from_int32(int32_t v)   { return str_from_legacy(string_from_int32(v)); }
-EXPORT str_t str_from_int64(int64_t v)   { return str_from_legacy(string_from_int64(v)); }
-EXPORT str_t str_from_float32(float v)   { return str_from_legacy(string_from_float32(v)); }
-EXPORT str_t str_from_float64(double v)  { return str_from_legacy(string_from_float64(v)); }
-EXPORT double str_parse_float64(str_t s) { return float64_parse_or_nan(str_to_legacy(s)); }
-EXPORT float  str_parse_float32(str_t s) { return float32_parse_or_nan(str_to_legacy(s)); }
+// ── Numbers ───────────────────────────────────────────────────────────────
+
+// snprintf into a stack buffer; every format here fits in 32 bytes.
+static str_t formatted(const char* fmt, ...) {
+    char buf[32];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n < 0) n = 0;
+    if (n > (int)sizeof buf - 1) n = (int)sizeof buf - 1;
+    return str_from_bytes((const uint8_t*)buf, n);
+}
+
+EXPORT str_t str_from_int8(int8_t v)     { return formatted("%d", (int)v); }
+EXPORT str_t str_from_int16(int16_t v)   { return formatted("%d", (int)v); }
+EXPORT str_t str_from_int32(int32_t v)   { return formatted("%d", (int)v); }
+EXPORT str_t str_from_int64(int64_t v)   { return formatted("%lld", (long long)v); }
+// Round-trip-safe forms: %.9g for binary32, %.17g for binary64.
+EXPORT str_t str_from_float32(float v)   { return formatted("%.9g", (double)v); }
+EXPORT str_t str_from_float64(double v)  { return formatted("%.17g", v); }
+
+// NaN on any failure (empty, leftover characters) — callers wrap the result
+// into Float|None by testing for NaN.
+EXPORT double str_parse_float64(str_t s) {
+    int32_t len = str_length(s);
+    if (len <= 0) return NAN;
+    char buf[64], *heap;
+    char* src = str_cstr(s, buf, (int32_t)sizeof buf, &heap);
+    char* end = NULL;
+    double v = strtod(src, &end);
+    bool whole = end == src + len;
+    free(heap);
+    return whole ? v : NAN;
+}
+
+EXPORT float str_parse_float32(str_t s) {
+    int32_t len = str_length(s);
+    if (len <= 0) return NAN;
+    char buf[64], *heap;
+    char* src = str_cstr(s, buf, (int32_t)sizeof buf, &heap);
+    char* end = NULL;
+    float v = strtof(src, &end);
+    bool whole = end == src + len;
+    free(heap);
+    return whole ? v : NAN;
+}

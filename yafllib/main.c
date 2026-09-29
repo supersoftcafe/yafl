@@ -118,14 +118,14 @@ struct test_gc_allocations_o {
     int32_t length;
     _Atomic(int32_t) result_counter;
     fun_t continuation;
-    string_t *results[3];
+    str_head_t *results[3];
 };
 
 static vtable_t test_gc_allocations_v = {
     .object_size = offsetof(struct test_gc_allocations_o, results[0]),
-    .array_el_size = sizeof(string_t*),
+    .array_el_size = sizeof(str_head_t*),
     .object_pointer_locations = maskof(struct test_gc_allocations_o, .continuation.o),
-    .array_el_pointer_locations = maskof(string_t*, ),
+    .array_el_pointer_locations = maskof(str_head_t*, ),
     .functions_mask = 0,
     .array_len_offset = offsetof(integer_t, length),
     .is_mutable = 1,
@@ -134,22 +134,24 @@ static vtable_t test_gc_allocations_v = {
 };
 
 
-static object_t* left_str = STR("Fred and bill went on a ride ");
-static object_t* right_str = STR("together in the jeep.");
+static str_t left_str  = STR16_LONG("Fred and bill went on a ride ");
+static str_t right_str = STR16_LONG("together in the jeep.");
 static const char* test_str = "Fred and bill went on a ride together in the jeep.";
 
 
 // Checked unconditionally rather than through assert(): a Release build defines
 // NDEBUG, which deleted the only verification do_allocation_test performs and
 // left it churning the collector while checking nothing.
-static void check_allocation_result(string_t* s) {
-    if (s != NULL && strcmp((char*)s->array, test_str) != 0) {
-        fprintf(stderr, "main: allocation test: string damaged across GC: \"%s\"\n", (char*)s->array);
+static void check_allocation_result(str_head_t* s) {
+    size_t n = strlen(test_str);
+    if (s != NULL && (s->length - 1 != n || memcmp(s->array, test_str, n) != 0)) {
+        fprintf(stderr, "main: allocation test: string damaged across GC: \"%.*s\"\n",
+                (int)(s->length - 1), (char*)s->array);
         abort();
     }
 }
 
-static void complete_allocation_test(struct test_gc_allocations_o* self, string_t* result) {
+static void complete_allocation_test(struct test_gc_allocations_o* self, str_head_t* result) {
     int32_t count = atomic_fetch_sub(&self->result_counter, 1) - 1;
     self->results[count] = result;
     if (count == 0) {
@@ -174,12 +176,14 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
         for (int count2 = 0; count2 < 100; ++count2) {
             GC_SAFE_POINT();
 
-            string_t* str = (string_t*)string_append(left_str, right_str);
+            // Both operands are read-only heads, so the result is a fresh,
+            // exact, tail-less heap buffer: its head holds the whole string.
+            str_head_t* str = (str_head_t*)str_append(left_str, right_str).head;
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
                 int i = (count ^ count2) % 3;
                 GC_WRITE_BARRIER(obj->results[i], 1);
-                obj->results[i] = (string_t*)str;
+                obj->results[i] = (str_head_t*)str;
             }
         }
 

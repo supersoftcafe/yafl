@@ -236,9 +236,6 @@ class CallExpression(Expression):
         impure = isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.impure
 
         result_var = cg_p.StackVar(xtype.result.generate(resolver), "result")
-        if isinstance(fun_ref, cg_p.GlobalFunction) and fun_ref.c_symbol:
-            return fun_op_bundle + prm_op_bundle + _foreign_call(
-                fun_ref, prm_op_bundle.result_var, result_var, impure)
         call_bundle = g.OperationBundle(
             (result_var,),
             (cg_o.Call(fun_ref, prm_op_bundle.result_var, result_var, impure=impure),),
@@ -246,36 +243,3 @@ class CallExpression(Expression):
         )
 
         return fun_op_bundle + prm_op_bundle + call_bundle
-
-
-def _foreign_call(fun_ref: cg_p.GlobalFunction, params: cg_p.RParam,
-                  result_var: cg_p.StackVar, impure: bool) -> g.OperationBundle:
-    """A call into a `[foreign]` C function. C speaks the one-word string ABI
-    (legacy string_t / packed words), so String values — and unions that
-    carry one, which share the String value's representation — cross as one
-    word: converted on the way in, and converted back on the way out."""
-    ptype = params.get_type()
-    if isinstance(params, cg_p.NewStruct):
-        fields = params.values
-    else:
-        fields = tuple((name, cg_p.StructField(params, name)) for name, _ in ptype.fields)
-    legacy_params = cg_p.NewStruct(tuple(
-        (name, cg_p.RuntimeInvoke("str_union_to_legacy", cg_p.NewStruct((("s", v),)),
-                                  cg_t.DataPointer())
-               if v.get_type() == cg_t.Str() else v)
-        for name, v in fields))
-    if result_var.get_type() != cg_t.Str():
-        return g.OperationBundle(
-            (result_var,),
-            (cg_o.Call(fun_ref, legacy_params, result_var, impure=impure),),
-            result_var)
-    legacy_result = cg_p.StackVar(cg_t.DataPointer(), "legacy_result")
-    return g.OperationBundle(
-        (legacy_result, result_var),
-        (cg_o.Call(fun_ref, legacy_params, legacy_result, impure=impure),
-         cg_o.Move(result_var, cg_p.RuntimeInvoke(
-             "str_union_from_legacy", cg_p.NewStruct((("word", legacy_result),)), cg_t.Str()))),
-        result_var)
-
-
-
