@@ -88,9 +88,14 @@ class TestFastStores(TestCase):
     def test_the_store_after_the_task_allocation_keeps_its_barrier(self):
         """`my_task` is written twice: NULL before the task allocation (fresh,
         elided) and the task itself after it. The allocation is a safe point,
-        so the second store must keep its barrier — one, not two."""
+        so the second store must keep its barrier — one, not two. The field is
+        found by what is stored in it: its name is positional after
+        lowering/canonicalise.py."""
         body = _body(_emit(2), "Main__both")
-        my_task = [ln for ln in _barriers_on(body, "_sv_state") if "->my_task" in ln]
+        field = re.search(r"_sv_state\)->(\w+) = _sv_task;", body)
+        self.assertIsNotNone(field, body)
+        my_task = [ln for ln in _barriers_on(body, "_sv_state")
+                   if re.search(rf"->{field.group(1)}\b", ln)]
         self.assertEqual(1, len(my_task), body)
 
     def test_the_resume_path_keeps_every_barrier(self):

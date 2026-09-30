@@ -303,10 +303,15 @@ fun createCCode(statements, mainName, optLevel,
   let spFast = spanBegin("codegen", "fast_stores")
   let a9fast = optLevel >= 1 ? markFastStores(a9pin) : a9pin
   let _fast = spanEnd(spFast)
+  # Spell equal code equally (the emitter's cleanups, positional object
+  # fields) so the merge below finds more of it.
+  let spCanon = spanBegin("codegen", "canonicalise")
+  let a9canon = canonicaliseApp(a9fast, profile)
+  let _canon = spanEnd(spCanon)
   # Merge entities with identical representation (one instantiation's code
   # under another's names). Last, so every function was optimised alone.
   let spDedup = spanBegin("codegen", "representation_dedup")
-  let a9 = mergeIdenticalRepresentations(a9fast, profile)
+  let a9 = mergeIdenticalRepresentations(a9canon, profile)
   let _dedup = spanEnd(spDedup)
   let spCheck = spanBegin("codegen", "uninit_check")
   let v2 = checkApplication(a9)

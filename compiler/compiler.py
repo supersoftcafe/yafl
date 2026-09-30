@@ -54,6 +54,7 @@ import lowering.sync_inference
 import lowering.sroa
 import lowering.tail_loop
 import lowering.trim
+import lowering.canonicalise
 import lowering.representation_dedup
 import lowering.uninit_check
 import lowering.vtable_trim
@@ -356,6 +357,9 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # which is what keeps [pinnable] objects out of the pass for free.
     if optimization_level >= 1:
         a = lowering.fast_stores.mark_fast_stores(a)
+    # Spell equal code equally (the emitter's cleanups, positional object
+    # fields) so the merge below finds more of it.
+    a = lowering.canonicalise.canonicalise(a)
     # Merge entities with identical representation (one instantiation's code
     # under another's names). Last, so every function was optimised alone.
     a = lowering.representation_dedup.merge_identical_representations(a)
