@@ -2418,7 +2418,7 @@ fun alZiusStateField(tf: RpObjectField) => match(tf.pointer)
   (p: RpStackVar) => p.name == "$state"
   (o: RParam)     => false
 
-# Entry sets key by name|type (ucKey) — membership must use the same key.
+# Entry sets key by name (ucKey) — membership must use the same key.
 fun alZiusSource(src, names: Set<String>, acc) => match(src)
   (v: RpStackVar) => contains(names, ucKey(src)) ? acc : svSetAdd(acc, src)
   (o: RParam)     => acc
