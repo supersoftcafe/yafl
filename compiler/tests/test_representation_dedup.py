@@ -51,6 +51,14 @@ def entry(*callees: str) -> Function:
     return fn("__entrypoint__", *ops)
 
 
+def _pair(f: str, g: str, literal: int) -> tuple[Function, Function]:
+    """f calls g; g returns `literal` or calls f. Different shapes, so the
+    pair only merges with another pair, never with itself."""
+    return (fn(f, Return(GlobalFunction(g))),
+            fn(g, JumpIf("l", Integer(literal, 32)), Return(GlobalFunction(f)),
+               Label("l"), Return(Integer(literal, 32))))
+
+
 class TestMerges(unittest.TestCase):
 
     def test_functions_equal_up_to_local_names_merge(self):
@@ -79,6 +87,14 @@ class TestMerges(unittest.TestCase):
         out = merge_identical_representations(a)
         self.assertNotIn("g", out.functions)
         self.assertEqual("g", out.functions["h"].ops[0].value.name)
+
+    def test_mutually_recursive_functions_merge(self):
+        """f1 <-> g1 and f2 <-> g2 with no object in the cycle: each needs
+        the other's group decided first, so only refinement merges them."""
+        a = app([], [*_pair("f1", "g1", 1), *_pair("f2", "g2", 1), entry("f1", "f2")])
+        out = merge_identical_representations(a)
+        self.assertEqual(["f1", "g1", "__entrypoint__"], list(out.functions))
+        self.assertEqual("f1", out.functions["__entrypoint__"].ops[1].value.name)
 
     def test_types_compare_by_their_own_equality(self):
         """FuncPointer.sync is a refinement that equality ignores."""
@@ -114,6 +130,12 @@ class TestKeepsApart(unittest.TestCase):
         a = app([], [fn("f", Return(IntEqConst(VtableDiscriminator(sv), 19))),
                      fn("g", Return(IntEqConst(sv, 19))), entry("f", "g")])
         self.assertEqual(3, len(merge_identical_representations(a).functions))
+
+    def test_difference_travels_round_a_cycle(self):
+        """g2 differs from g1 only in a literal; f2 differs from f1 only in
+        which of them it calls. Refinement must split both pairs."""
+        a = app([], [*_pair("f1", "g1", 1), *_pair("f2", "g2", 2), entry("f1", "f2")])
+        self.assertEqual(5, len(merge_identical_representations(a).functions))
 
     def test_different_layouts(self):
         a = app([obj("A"), obj("B", extra=(("n", t.Int(32)),))],
