@@ -1,20 +1,11 @@
 # bootstrap/canonicalise.yafl — ported from lowering/canonicalise.py: spell
-# equal code equally, so representation dedup finds more of it. Runs just
-# before dedup, after every other IR pass, and changes no behaviour.
-#
-# DEBRIS. The emitter's own per-function cleanup chain (gen.yafl genFunction:
-# lower phis, strip unused ops, simplify control flow, fold struct fields,
-# propagate copies, simplify again, eliminate common subexpressions) runs here,
-# BEFORE dedup, and the locals it leaves unused are dropped from the
-# declarations, which dedup compares as a set. Emission then finds nothing more
-# to do.
-#
-# OBJECT FIELD NAMES. A generated object's field names carry the hash of the
-# declaration that made them, so two classes with the same layout never
-# compare equal. Each generated object's fields are renamed to their position,
-# consistently in the object, every field access and every static initialiser.
-# Foreign objects keep their names, as do `type` and `array`. Off under
-# --profile, like dedup.
+# equal code equally, so representation dedup finds more of it. A generated
+# object's field names carry the hash of the declaration that made them, so
+# two classes with the same layout never compare equal. Each generated
+# object's fields are renamed to their position, consistently in the object,
+# every field access and every static initialiser. Foreign objects keep their
+# names, as do `type` and `array`. Runs just before cleanup and dedup; off
+# under --profile, like dedup.
 namespace Bootstrap::Lower::Ir
 
 import System
@@ -29,52 +20,9 @@ fun canonicaliseApp(a: CgApp, profile: Bool): CgApp
   if profile
     ret a
   let rn = cnRenames(appObjects(a))
-  ret appOf(map(appFunctions(a), (f) => cnFunctionFields(rn, cnCleaned(f))),
+  ret appOf(map(appFunctions(a), (f) => cnFunctionFields(rn, f)),
             map(appObjects(a), (o) => cnObject(rn, o)),
             map(appGlobals(a), (g2) => cnGlobal(rn, g2)))
-
-# ── debris: the emitter's cleanups, then unused declarations ────────────────
-
-fun cnCleaned(f: CgFunction): CgFunction
-  if !(f.fnForeignSymbol is None) || f.fnOps is None
-    ret f
-  let c = cgFunctionEliminateCSE(cgFunctionSimplifyControlFlow(cgFunctionCopyPropagate(
-            cgFunctionFoldStructFields(cgFunctionSimplifyControlFlow(
-              cgFunctionStripUnusedOperations(cgFunctionLowerPhis(f)))))))
-  let used = fold(c.fnOps, cnNames(setEmpty(), map(cgFieldsOfOrEmpty(c.fnParams), (fd) => fd.fieldName)),
-                  cnOpLocals)
-  let decls = cgFieldsOfOrEmpty(c.fnStackVars)
-  ret any(decls, (fd) => !setHas(used, fd.fieldName))
-    ? cgFunctionWith(c, c.fnOps, CgStruct(filter(decls, (fd) => setHas(used, fd.fieldName))))
-    : c
-
-fun cnNames(acc: StrSet, names: List<String>): StrSet => fold(names, acc, (s2, n) => setAdd(s2, n))
-
-# Every local an op mentions: what it reads (each flattened param re-flattened
-# as a read, as Python does), its saved set, and what it writes — a write is
-# not in the flattened params.
-fun cnOpLocals(acc: StrSet, op: Op): StrSet
-  let reads = fold(opAllParams(op), acc,
-                   (s2, q) => fold(rpFlatten(q, true), s2, cnAddLocal))
-  let saved = fold(opSavedVars(op), reads, cnAddLocal)
-  ret fold(cnWrites(op), saved, cnAddLocal)
-
-fun cnAddLocal(acc: StrSet, r: RParam): StrSet => match(r)
-  (sv: RpStackVar) => setAdd(acc, sv.name)
-  (o: RParam)      => acc
-
-fun cnWrites(op: Op): List<RParam> => match(op)
-  (x: OpMove)         => prepend(x.moveTarget, List())
-  (x: OpPhi)          => prepend(x.phiTarget, List())
-  (x: OpNewObject)    => prepend(x.newObjRegister, List())
-  (x: OpCall)         => cnOpt(x.callRegister, List())
-  (x: OpIfTask)       => prepend(x.taskLhs, prepend(x.callIdLhs, List()))
-  (x: OpParallelCall) => cnOpt(x.parRegister, x.parResults)
-  (o: Op)             => List()
-
-fun cnOpt(r: RParam|None, rest: List<RParam>): List<RParam> => match(r)
-  (x: RParam) => prepend(x, rest)
-  ()          => rest
 
 # ── object field names by position ───────────────────────────────────────────
 

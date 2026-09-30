@@ -1,4 +1,4 @@
-"""Canonicalise — spelling equal code equally before representation dedup.
+"""Canonicalise — positional object field names before representation dedup.
 
 Each test builds a small Application by hand: what the stage rewrites, what it
 must leave alone, and that dedup then merges what it could not before.
@@ -10,7 +10,7 @@ import unittest
 import codegen.typedecl as t
 from codegen.gen import Application
 from codegen.ir import Function, Global, Object
-from codegen.ops import Jump, Label, Move, NewObject, Return
+from codegen.ops import NewObject, Return
 from codegen.param import ArrayElement, GlobalFunction, Integer, NewStruct, ObjectField, StackVar
 from lowering.canonicalise import canonicalise
 from lowering.representation_dedup import merge_identical_representations
@@ -39,28 +39,6 @@ def app(objects=(), functions=(), globals_=()) -> Application:
 def entry(*callees: str) -> Function:
     return fn("__entrypoint__", Return(NewStruct(tuple((f"_{i}", GlobalFunction(c))
                                                        for i, c in enumerate(callees)))))
-
-
-class TestDebris(unittest.TestCase):
-
-    def test_locals_left_unused_by_the_cleanups_are_dropped(self):
-        """copy_propagate removes `y = x`; y is then declared for nothing."""
-        x, y = StackVar(PTR, "x"), StackVar(PTR, "y")
-        f = fn("f", NewObject("A", x), Move(y, x), Return(y), locals_=(("x", PTR), ("y", PTR)))
-        out = canonicalise(app([obj("A")], [f]))
-        self.assertEqual((("x", PTR),), out.functions["f"].stack_vars.fields)
-        self.assertEqual((NewObject("A", x), Return(x)), out.functions["f"].ops)
-
-    def test_debris_no_longer_keeps_instances_apart(self):
-        """A copy and a jump to the next label: the emitter would remove both,
-        so after this stage the two instances are the same function."""
-        x, y = StackVar(PTR, "x"), StackVar(PTR, "y")
-        f = fn("f", NewObject("A", x), Return(x))
-        g = fn("g", NewObject("A", x), Jump("l"), Label("l"), Move(y, x), Return(y),
-               locals_=(("x", PTR), ("y", PTR)))
-        a = app([obj("A")], [f, g, entry("f", "g")])
-        self.assertEqual(3, len(merge_identical_representations(a).functions))
-        self.assertEqual(2, len(merge_identical_representations(canonicalise(a)).functions))
 
 
 class TestObjectFields(unittest.TestCase):

@@ -55,6 +55,7 @@ import lowering.sroa
 import lowering.tail_loop
 import lowering.trim
 import lowering.canonicalise
+import lowering.cleanup
 import lowering.representation_dedup
 import lowering.uninit_check
 import lowering.vtable_trim
@@ -357,9 +358,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # which is what keeps [pinnable] objects out of the pass for free.
     if optimization_level >= 1:
         a = lowering.fast_stores.mark_fast_stores(a)
-    # Spell equal code equally (the emitter's cleanups, positional object
-    # fields) so the merge below finds more of it.
+    # Positional object field names, then the one per-function cleanup chain
+    # (emission no longer runs it), so the merge below finds more equal code.
     a = lowering.canonicalise.canonicalise(a)
+    a = lowering.cleanup.clean_functions(a)
     # Merge entities with identical representation (one instantiation's code
     # under another's names). Last, so every function was optimised alone.
     a = lowering.representation_dedup.merge_identical_representations(a)
@@ -368,8 +370,8 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Final SSA validation, just before C emission. The IR is still SSA at
     # this point: async lowering only writes to heap fields (ObjectField),
     # which don't count towards the single-definition invariant — that only
-    # constrains StackVar writes. Phi → per-edge Moves and the remaining
-    # imperative-style codegen transformations run inside `a.gen()`.
+    # constrains StackVar writes. Phis were lowered to per-edge Moves by
+    # lowering/cleanup.py above; `a.gen()` only emits.
     lowering.ssa_validate.validate(a, ssa=False)
 
     return a.gen(just_testing=just_testing)

@@ -1,32 +1,17 @@
 """Spell equal code equally, so representation dedup finds more of it.
 
-Dedup (lowering/representation_dedup.py) compares code as written. Two
-instances of the same generic can differ only in what the representation of
-the program leaves behind, and that is enough to keep them apart — and, since
-merges cascade, everything that refers to them apart with them. This stage
-removes two such differences. It changes no behaviour and runs just before
-dedup, after every other IR pass.
+Dedup (lowering/representation_dedup.py) compares code as written. A
+generated object's field names carry the hash of the declaration that made
+them (`value@jdhwD4`), so two classes with the same layout never compare equal
+— and, since merges cascade, neither does anything that refers to them. This
+stage renames each generated object's fields to their position, consistently
+in the object, every field access and every static initialiser. Only member
+names change in the C; the layout does not. Foreign objects (declared in
+yafl.h) keep their names, as do the vtable word `type` and the trailing
+`array`, which the IR requires by name.
 
-DEBRIS. The optimiser leaves copies it never propagated, unreachable ops,
-jumps to the next label, repeated subexpressions, and locals declared for ops
-since deleted. C emission cleans
-each function up with a fixed chain (lower_phis, strip_unused_operations,
-simplify_control_flow, fold_struct_fields, copy_propagate,
-eliminate_common_subexpressions). The same chain runs here, before dedup, and
-the locals it leaves unused are dropped from the declarations, which dedup
-compares as a set. Emission then finds nothing more to do: the code is what it
-would have emitted anyway.
-
-OBJECT FIELD NAMES. A generated object's field names carry the hash of the
-declaration that made them (`value@jdhwD4`), so two classes with the same
-layout never compare equal. Each generated object's fields are renamed to
-their position, consistently in the object and in every field access and
-static initialiser. Only member names change in the C; the layout does not.
-Foreign objects (declared in yafl.h) keep their names, as do the vtable word
-`type` and the trailing `array`, which the IR requires by name.
-
-Measured on the port against dedup alone: -O1 objects 1701 -> 1220 and
-functions 9255 -> 8745; -O3 C 59.5 -> 56.1 MB, .text 6.83 -> 6.68 MB.
+Runs just before lowering/cleanup.py and dedup. Measured on the port against
+dedup alone (with cleanup): -O1 objects 1701 -> 1220; -O3 C 59.5 -> 56.1 MB.
 Measured and left out (about zero): canonical evaluation order, commutative
 operand order, comparison direction, move sinking, clearing post-async sync
 flags, positional names in by-value structs. Off under --profile, like dedup.
@@ -35,16 +20,11 @@ from __future__ import annotations
 
 import dataclasses
 
-import codegen.ops as o
 import codegen.param as p
 import codegen.typedecl as t
 from codegen.gen import Application
 from codegen.ir import Function, Global, Object
 
-
-# ---------------------------------------------------------------------------
-# API
-# ---------------------------------------------------------------------------
 
 def canonicalise(app: Application) -> Application:
     """See module docstring."""
@@ -54,40 +34,8 @@ def canonicalise(app: Application) -> Application:
     return dataclasses.replace(
         app,
         objects={n: fields.object(x) for n, x in app.objects.items()},
-        functions={n: fields.function(_cleaned(x)) for n, x in app.functions.items()},
+        functions={n: fields.function(x) for n, x in app.functions.items()},
         globals={n: fields.global_(x) for n, x in app.globals.items()})
-
-
-# ---------------------------------------------------------------------------
-# Debris: the emitter's own cleanups, then unused declarations
-# ---------------------------------------------------------------------------
-
-def _cleaned(fn: Function) -> Function:
-    if fn.foreign_symbol or not fn.ops:
-        return fn
-    fn = (fn.lower_phis().strip_unused_operations().simplify_control_flow()
-            .fold_struct_fields().copy_propagate().simplify_control_flow()
-            .eliminate_common_subexpressions())
-    used = _mentioned_locals(fn)
-    kept = tuple((n, ty) for n, ty in fn.stack_vars.fields if n in used)
-    if len(kept) == len(fn.stack_vars.fields):
-        return fn
-    return dataclasses.replace(fn, stack_vars=t.Struct(kept))
-
-
-def _mentioned_locals(fn: Function) -> set[str]:
-    names = {n for n, _ in fn.params.fields}
-    for op in fn.ops:
-        names |= {v.name for v in op.saved_vars}
-        for q in op.all_params():
-            names |= {r.name for r in q.flatten() if isinstance(r, p.StackVar)}
-        for written in (getattr(op, "target", None), getattr(op, "register", None),
-                        getattr(op, "task_lhs", None), getattr(op, "call_id_lhs", None)):
-            if isinstance(written, p.StackVar):
-                names.add(written.name)
-        if isinstance(op, o.ParallelCall):
-            names |= {v.name for v in op.results}
-    return names
 
 
 # ---------------------------------------------------------------------------
