@@ -167,6 +167,96 @@ fun main(): Int
         self.assertEqual(1, compile_and_run_stdlib(src))
 
 
+class TestNestedFunctionsInsideClosures(TestCase):
+    """A nested function that becomes a CLOSURE (it captures, and its name
+    travels or its capture cannot be threaded) is a let-bound lambda — and
+    any function nested inside IT must be hoisted from the lambda body too.
+    Those inner functions see every enclosing scope: a reference two levels
+    out is a capture, not a global. Without that, an inner declaration was
+    left inside the lambda body and codegen raised on the stray local
+    function reference."""
+
+    def test_deep_capture_through_a_called_helper(self):
+        # rebalance captures x from outer, two levels out, and nests optimal.
+        src = """\
+import System
+fun outer(x: Int, k: Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun optimal(b: Int): Int
+        ret b + 1
+      ret c > 0 ? optimal(c) : x
+    ret rebalance(a) * 10
+  ret merge(k)
+
+fun main(): Int
+  ret outer(5, 1) + outer(5, 0)
+"""
+        self.assertEqual(70, compile_and_run_stdlib(src))
+
+    def test_deep_capture_through_a_helper_used_as_a_value(self):
+        # merge's name travels, so it cannot be lifted: it is a real closure.
+        src = """\
+import System
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+fun outer(x: Int, k: Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun optimal(b: Int): Int
+        ret b + 1
+      ret c > 0 ? optimal(c) : x
+    ret rebalance(a) * 10
+  ret apply(merge, k)
+
+fun main(): Int
+  ret apply((v: Int) => outer(5, v), 1) + outer(5, 0)
+"""
+        self.assertEqual(70, compile_and_run_stdlib(src))
+
+    def test_mutual_recursion_inside_a_closure(self):
+        # The inner pair captures x from outer; walk's name travels.
+        src = """\
+import System
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+fun outer(x: Int, n: Int): Int
+  fun walk(m: Int): Int
+    fun isEven(y: Int): Int
+      ret y < 1 ? x : isOdd(y - 1)
+    fun isOdd(y: Int): Int
+      ret y < 1 ? 0 : isEven(y - 1)
+    ret isEven(m)
+  ret apply(walk, n)
+
+fun main(): Int
+  ret outer(7, 4) + outer(7, 3)
+"""
+        self.assertEqual(7, compile_and_run_stdlib(src))
+
+    def test_generic_host_keeps_inner_names_apart(self):
+        # Two instantiations each hoist `pick` out of a closure: the hoisted
+        # names must carry the host's specialisation suffix or they collide.
+        src = """\
+import System
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+fun outer<T>(x: T, k: Int, size: (:T): Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun pick(b: Int): Int
+        ret b * 2
+      ret c > 0 ? pick(c) : size(x)
+    ret rebalance(a)
+  ret apply(merge, k)
+
+fun main(): Int
+  ret outer<Int>(4, 0, (v: Int) => v) + outer<String>("abc", 0, (v: String) => length(v))
+      + outer<Int>(4, 5, (v: Int) => v)
+"""
+        self.assertEqual(17, compile_and_run_stdlib(src))
+
+
 class TestNestedFunctionsInClassMembers(TestCase):
     """Nested functions inside CLASS MEMBER functions.
 
@@ -185,6 +275,27 @@ class TestNestedFunctionsInClassMembers(TestCase):
     collide with the synthesised receiver that ClassStatement puts in scope
     for every method body, and the reference resolves to two candidates.
     """
+
+    def test_member_helper_per_instantiation_of_a_phantom_generic(self):
+        """A helper hoisted to CLASS scope is a new own method, so like the
+        class's own methods it must carry the instantiation's `@type`
+        suffix. When the class's fields do not mention T, every instantiation
+        lowers to the same value struct, and identically named helpers made
+        one instantiation's helper answer for all of them."""
+        src = """\
+import System
+class [final] Tag<T>(n: Int)
+  fun go(x: T|None): Int
+    fun helper(): Int
+      ret match(x)
+        (v: T) => n
+        () => 0
+    ret helper()
+
+fun main(): Int
+  ret Tag<Int>(1).go(5) + Tag<String>(10).go("s")
+"""
+        self.assertEqual(11, compile_and_run_stdlib(src))
 
     def test_member_nested_no_capture(self):
         """A helper reaching for nothing hoists to global scope, as it would
