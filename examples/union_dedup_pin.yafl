@@ -1,0 +1,57 @@
+# Regression pin (2026-10-01): representation dedup across instantiations of
+# code that matches on a union of classes. Both compilers must agree on which
+# objects and functions merge, byte for byte:
+#  - an instance test over a union of classes keeps its class apart only from
+#    the union's other class members, so `Branch<Leaf<Bird>>` and
+#    `Branch<Leaf<Cat|Dog>>` (same shape) merge, and with them the walks;
+#  - the last arm of an exhaustive pointer-union match is untested, so the
+#    walk never names the leaf class at all;
+#  - `Cat` and `Dog` share a shape but are tested apart inside one union: they
+#    must NOT merge, or `describe` would answer "cat" for a dog — while
+#    `Bird`, never tested beside either, is free to merge with one;
+#  - `Leaf.size` is reached directly, never dispatched: from -O1 vtable trim
+#    drops its slot, whose per-type name would keep the leaf vtables apart.
+# No other corpus program instantiates a generic union walk over two pointer
+# element types.
+namespace UnionDedupPin
+
+import System
+
+class [final] Leaf<T>(n: Int32, xs: T[n])
+  fun size(): Int32
+    ret n
+
+class [final] Branch<L>(n: Int32, kids: (L|Branch<L>)[n])
+
+class [final] Cat(n: Int32, tags: String[n])
+class [final] Dog(n: Int32, tags: String[n])
+class [final] Bird(n: Int32, tags: String[n])
+
+fun [tail] leftmost<L>(node: L|Branch<L>): L => match(node)
+  (b: Branch<L>) => leftmost(b.kids(0i32))
+  (l: L)         => l
+
+fun [tail] depth<L>(node: L|Branch<L>, acc: Int): Int => match(node)
+  (b: Branch<L>) => depth(b.kids(b.n - 1i32), acc + 1)
+  (l: L)         => acc
+
+fun tree<T>(a: T, b: T): Branch<Leaf<T>>
+  let l1 = Leaf<T>(1i32, (i: Int32) => a)
+  let l2 = Leaf<T>(2i32, (i: Int32) => b)
+  let inner = Branch<Leaf<T>>(1i32, (i: Int32) => l2)
+  ret Branch<Leaf<T>>(2i32, (i: Int32) => i == 0i32 ? l1 : inner)
+
+fun describe(pet: Cat|Dog): String => match(pet)
+  (c: Cat) => "cat:" + c.tags(0i32)
+  (d: Dog) => "dog:" + d.tags(0i32)
+
+fun main(): Int
+  let birds = tree<Bird>(Bird(1i32, (i: Int32) => "tweety"), Bird(1i32, (i: Int32) => "polly"))
+  let pets = tree<Cat|Dog>(Cat(1i32, (i: Int32) => "tom"), Dog(1i32, (i: Int32) => "rex"))
+  let w = leftmost<Leaf<Bird>>(birds)
+  let p = leftmost<Leaf<Cat|Dog>>(pets)
+  println(w.xs(0i32).tags(0i32) + " " + String(Int(w.size())) + " " + String(depth<Leaf<Bird>>(birds, 0))
+          + " " + describe(p.xs(0i32)) + " " + String(Int(p.size()))
+          + " " + String(depth<Leaf<Cat|Dog>>(pets, 0))
+          + " " + describe(Dog(1i32, (i: Int32) => "fido")))
+  ret 0

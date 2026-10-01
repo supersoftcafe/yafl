@@ -15,8 +15,14 @@ inlined body names its locals by inline counter), types structurally, and
 everything else literally.
 
 RUNTIME IDENTITY is only merged where nothing can observe it:
-  * An object named by an instance test (`ObjVtableEq`) is never merged —
-    the test would start answering true for the other type.
+  * An instance test (`ObjVtableEq`) observes identity only among the
+    classes that can reach it. Over a union of classes that set is the
+    union's class members, which the test carries (`among`): the tested
+    class must stay apart from each of them, and is otherwise free to merge
+    — `Leaf<A>` and `Leaf<B>` may become one object, as long as no single
+    union holds both. A test whose set is open (`among` None: an interface
+    subject, an interface or enum member) pins its class: any implementor
+    could arrive, and the test would start answering true for it.
   * A complex-enum leaf's identity is its `Object.discriminator`, and match
     dispatch compares `VtableDiscriminator(v)` against leaf ids. Those
     comparisons are the only integers the pass reads as identities; every
@@ -155,6 +161,8 @@ class _Graph:
         self.refs: dict[Node, tuple[Node, ...]] = {}
         self.pinned: set[Node] = {(FUN, "__entrypoint__")}
         self.stray_discriminator = False
+        # Sets of objects an instance test must tell apart (see `among`).
+        self.separations: list[frozenset[str]] = []
 
         for n, obj in app.objects.items():
             self.__add((OBJ, n), self.__object(obj))
@@ -165,6 +173,25 @@ class _Graph:
 
         if self.stray_discriminator:
             self.pinned.update((OBJ, n) for n in self.leaf_by_id.values())
+        self.conflicts = self.__conflicts()
+
+    def __conflicts(self) -> dict[Node, set[Node]]:
+        """Which nodes each node must never share a group with: the other
+        leaves of its enum (a dispatch compares their ids), and the other
+        classes of any union an instance test separates it within."""
+        out: dict[Node, set[Node]] = {}
+        def apart(nodes: list[Node]) -> None:
+            for a in nodes:
+                out.setdefault(a, set()).update(b for b in nodes if b != a)
+        by_parent: dict[tuple[str, ...], list[Node]] = {}
+        for n in self.nodes:
+            if self.is_leaf(n):
+                by_parent.setdefault(self.parent(n), []).append(n)
+        for leaves in by_parent.values():
+            apart(leaves)
+        for names in self.separations:
+            apart([(OBJ, x) for x in sorted(names) if x in self.names[OBJ]])
+        return out
 
     def is_leaf(self, node: Node) -> bool:
         return node[0] == OBJ and self.names[OBJ][node[1]].discriminator != 0
@@ -294,7 +321,10 @@ class _Canon:
     def __dataclass(self, x: Any) -> None:
         cls = type(x)
         if cls is p.ObjVtableEq and x.class_name is not None:
-            self.graph.pinned.add((OBJ, x.class_name))
+            if x.among is None:
+                self.graph.pinned.add((OBJ, x.class_name))
+            else:
+                self.graph.separations.append(frozenset((x.class_name, *x.among)))
         for f in _fields(cls, compared=True):
             self.emit(getattr(x, f), _role(x, f))
 
@@ -356,23 +386,20 @@ def _number(nodes: list[Node], key: Callable[[Node], Any]) -> dict[Node, int]:
 
 
 def _separate_siblings(graph: _Graph, groups: dict[Node, int]) -> dict[Node, int] | None:
-    """Split any group holding two leaves of the same enum: a dispatch over
-    that enum must still see a distinct id per leaf. Each leaf goes to the
-    first sub-group without a sibling of it. None when nothing splits."""
+    """Split any group holding two nodes that must stay apart — two leaves of
+    one enum (a dispatch must still see a distinct id per leaf), or two
+    classes an instance test tells apart. Each such node goes to the first
+    sub-group holding none of its conflicts, in graph order. None when
+    nothing splits."""
     members: dict[int, list[Node]] = {}
     for n in graph.nodes:
-        if graph.is_leaf(n):
+        if n in graph.conflicts:
             members.setdefault(groups[n], []).append(n)
     split: dict[Node, int] = {}
-    for leaves in members.values():
-        buckets: list[set[tuple[str, ...]]] = []
-        for leaf in leaves:
-            parent = graph.parent(leaf)
-            index = next((i for i, b in enumerate(buckets) if parent not in b), len(buckets))
-            if index == len(buckets):
-                buckets.append(set())
-            buckets[index].add(parent)
-            split[leaf] = index
+    for nodes in members.values():
+        for n in nodes:
+            used = {split[m] for m in graph.conflicts[n] if m in split and groups[m] == groups[n]}
+            split[n] = next(i for i in range(len(used) + 1) if i not in used)
     if not any(split.values()):
         return None
     return _number(graph.nodes, lambda n: (groups[n], split.get(n, 0)))

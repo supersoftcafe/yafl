@@ -14,11 +14,13 @@
 # local, a label or a literal. Only the PARTITION must agree with Python — the
 # shape encoding is this file's own.
 #
-# RUNTIME IDENTITY merges only where nothing observes it: an instance-test
-# target (RpObjVtableEq) never merges; complex-enum leaves of one enum stay in
-# distinct groups; a discriminator read outside `== id` blocks every leaf
-# merge; the entry point is pinned. References are exactly trim's (trim has
-# just run). The first member of each group in app order survives.
+# RUNTIME IDENTITY merges only where nothing observes it: an instance test
+# over a union of classes keeps its class apart from the union's other class
+# members (`among`), and one whose set is open pins its class; complex-enum
+# leaves of one enum stay in distinct groups; a discriminator read outside
+# `== id` blocks every leaf merge; the entry point is pinned. References are
+# exactly trim's (trim has just run). The first member of each group in app
+# order survives.
 namespace Bootstrap::Lower::Ir
 
 import System
@@ -100,13 +102,17 @@ fun rddLookup(cx: RddCx, role: Int, name: String): Int|None
 class [final] RddSt(stVars: Dict<String, Int>, stVarN: Int,
                     stLabels: Dict<String, Int>, stLabelN: Int,
                     stRefs: Chain<Int>, stSets: Chain<List<RParam>>, stSetN: Int,
-                    stPins: Chain<String>, stStray: Bool)
+                    stPins: RddPins, stStray: Bool)
+
+# What the whole program's instance tests ask of the partition: the objects
+# they pin, and the sets of objects each must keep apart.
+class [final] RddPins(pnNames: Chain<String>, pnSeps: Chain<List<String>>)
 
 class [final] RddEnc(eText: String, eSt: RddSt)
 
 # A fresh node: its own locals, labels and references; the pins and the
 # stray flag carry across the whole program.
-fun rddStart(pins: Chain<String>, stray: Bool) =>
+fun rddStart(pins: RddPins, stray: Bool) =>
   RddEnc("", RddSt(Dict(), 0, Dict(), 0, ChainEnd(), ChainEnd(), 0, pins, stray))
 
 fun rddS(e: RddEnc, s: String): RddEnc => RddEnc((e.eText + s), e.eSt)
@@ -210,7 +216,16 @@ fun rddNameOpt(e: RddEnc, cx: RddCx, role: Int, name: String|None): RddEnc
 fun rddPin(e: RddEnc, name: String): RddEnc
   let st = e.eSt
   ret RddEnc(e.eText, RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
-                          st.stSets, st.stSetN, ChainLink(name, st.stPins), st.stStray))
+                          st.stSets, st.stSetN,
+                          RddPins(ChainLink(name, st.stPins.pnNames), st.stPins.pnSeps),
+                          st.stStray))
+
+fun rddSep(e: RddEnc, names: List<String>): RddEnc
+  let st = e.eSt
+  ret RddEnc(e.eText, RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
+                          st.stSets, st.stSetN,
+                          RddPins(st.stPins.pnNames, ChainLink(names, st.stPins.pnSeps)),
+                          st.stStray))
 
 fun rddStray(e: RddEnc): RddEnc
   let st = e.eSt
@@ -297,11 +312,15 @@ fun rddLeafId(e: RddEnc, cx: RddCx, id: Int): RddEnc => match(get(cx.cxLeafById,
   (n: Int) => rddRef(e, n)
   ()       => rddInt(e, id)
 
-# An instance-test target never merges: the test would answer true for the
-# other type.
+# An instance test observes identity only among the classes that can reach it:
+# over a union of classes (`among`) its class must stay apart from the union's
+# other class members, and is otherwise free to merge. A test whose set is open
+# pins its class — the test would answer true for any merged-in type.
 fun rddObjVtableEq(e: RddEnc, cx: RddCx, x: RpObjVtableEq): RddEnc
   let pinned = match(x.className)
-    (n: String) => rddPin(e, n)
+    (n: String) => match(x.among)
+      (am: List<String>) => rddSep(e, prepend(n, am))
+      ()                 => rddPin(e, n)
     ()          => e
   ret rddLitOpt(rddNameOpt(rddParam(rddS(pinned, "OV;"), cx, x.value), cx, 0, x.className),
                 x.externSymbol)
@@ -484,10 +503,11 @@ fun rddGlobal(e: RddEnc, cx: RddCx, g2: CgGlobal): RddEnc
 # ── the graph ────────────────────────────────────────────────────────────────
 # Shapes are interned as they are made: equal text, equal id.
 
-class [final] RddGraph(gShape: Array<Int>, gRefs: Array<List<Int>>, gPinned: Array<Bool>)
+class [final] RddGraph(gShape: Array<Int>, gRefs: Array<List<Int>>, gPinned: Array<Bool>,
+                       gConflicts: Dict<Int, List<Int>>)
 
 class [final] RddBuild(bIntern: Dict<String, Int>, bNext: Int, bShapes: Chain<Int>,
-                       bRefs: Chain<List<Int>>, bPins: Chain<String>, bStray: Bool)
+                       bRefs: Chain<List<Int>>, bPins: RddPins, bStray: Bool)
 
 fun rddAdd(b: RddBuild, e: RddEnc): RddBuild
   let st = e.eSt
@@ -502,14 +522,53 @@ fun rddAdd(b: RddBuild, e: RddEnc): RddBuild
 
 fun rddGraph(cx: RddCx, objs: List<CgObject>, fns: List<CgFunction>,
              glbs: List<CgGlobal>): RddGraph
-  let b0 = RddBuild(Dict(), 0, ChainEnd(), ChainEnd(), ChainEnd(), false)
+  let b0 = RddBuild(Dict(), 0, ChainEnd(), ChainEnd(), RddPins(ChainEnd(), ChainEnd()), false)
   let b1 = fold(objs, b0, (b, o) => rddAdd(b, rddObject(rddStart(b.bPins, b.bStray), cx, o)))
   let b2 = fold(fns, b1, (b, f) => rddAdd(b, rddFunction(rddStart(b.bPins, b.bStray), cx, f)))
   let b3 = fold(glbs, b2, (b, g2) => rddAdd(b, rddGlobal(rddStart(b.bPins, b.bStray), cx, g2)))
-  let pinnedNames = fold(List(b3.bPins), setEmpty(), (s2, n) => setAdd(s2, n))
+  let pinnedNames = fold(List(b3.bPins.pnNames), setEmpty(), (s2, n) => setAdd(s2, n))
   ret RddGraph(rddArray(rddReverse(b3.bShapes, ChainEnd()), cx.cxCount),
                rddArray(rddReverse(b3.bRefs, ChainEnd()), cx.cxCount),
-               build(rddPinned(cx, pinnedNames, b3.bStray, 0, arrayBuilder(cx.cxCount))))
+               build(rddPinned(cx, pinnedNames, b3.bStray, 0, arrayBuilder(cx.cxCount))),
+               rddConflicts(cx, List(b3.bPins.pnSeps)))
+
+# Which nodes each node must never share a group with: the other leaves of its
+# enum (a dispatch compares their ids), and the other classes of any union an
+# instance test separates it within.
+fun rddConflicts(cx: RddCx, seps: List<List<String>>): Dict<Int, List<Int>>
+  let byParent = rddLeavesByParent(cx, 0, Dict())
+  let withLeaves = fold(values(byParent), Dict(), (acc, ns) => rddApart(acc, ns))
+  ret fold(seps, withLeaves,
+           (acc, names) => rddApart(acc, rddObjectNodes(cx, sort(Set(names)))))
+
+fun [tail] rddLeavesByParent(cx: RddCx, i: Int, acc: Dict<String, List<Int>>
+                             ): Dict<String, List<Int>>
+  if i >= cx.cxCount
+    ret acc
+  if !cx.cxIsLeaf[i]
+    ret rddLeavesByParent(cx, i + 1, acc)
+  let parent = cx.cxParents[i]
+  let have = match(get(acc, parent))
+    (ns: List<Int>) => ns
+    ()              => List<Int>()
+  ret rddLeavesByParent(cx, i + 1, put(acc, parent, prepend(i, have)))
+
+fun rddObjectNodes(cx: RddCx, names: List<String>): List<Int>
+  ret fold(names, List<Int>(), (acc, n) => rddAddNode(acc, get(cx.cxObj, n)))
+
+fun rddAddNode(acc: List<Int>, node: Int|None): List<Int> => match(node)
+  (i: Int) => prepend(i, acc)
+  ()       => acc
+
+# Every node of `ns` conflicts with every other.
+fun rddApart(acc: Dict<Int, List<Int>>, ns: List<Int>): Dict<Int, List<Int>>
+  ret fold(ns, acc, (acc2, a2) => put(acc2, a2,
+             fold(ns, rddConflictsOf(acc2, a2),
+                  (cs, b2) => b2 == a2 || contains(cs, b2) ? cs : prepend(b2, cs))))
+
+fun rddConflictsOf(d: Dict<Int, List<Int>>, i: Int): List<Int> => match(get(d, i))
+  (cs: List<Int>) => cs
+  ()              => List<Int>()
 
 # Pinned: an instance-test target or foreign object (by name, objects only),
 # the entry point, and — after a stray discriminator read — every leaf.
@@ -534,7 +593,7 @@ fun rddRefine(cx: RddCx, g: RddGraph): RddGroups
 
 fun [tail] rddRefineLoop(cx: RddCx, g: RddGraph, groups: RddGroups): RddGroups
   let stable = rddStable(g, groups, cx.cxCount)
-  ret match(rddSeparate(cx, stable))
+  ret match(rddSeparate(cx, g, stable))
     (split: RddGroups) => rddRefineLoop(cx, g, split)
     ()                 => stable
 
@@ -558,11 +617,12 @@ fun [tail] rddNumberLoop(n: Int, key: (:Int): String, i: Int, ids: Dict<String, 
     (id: Int) => rddNumberLoop(n, key, i + 1, ids, next, push(acc, id))
     ()        => rddNumberLoop(n, key, i + 1, put(ids, k, next), next + 1, push(acc, next))
 
-# Split any group holding two leaves of the same enum: a dispatch over it must
-# still see a distinct id per leaf. Each leaf, in node order, goes to the first
-# sub-group without a sibling of it. None when nothing splits.
-fun rddSeparate(cx: RddCx, groups: RddGroups): RddGroups|None
-  let placed = rddPlaceLeaves(cx, groups, 0, Dict(), Dict(), false)
+# Split any group holding two nodes that must stay apart — two leaves of one
+# enum, or two classes an instance test tells apart. Each such node, in node
+# order, goes to the first sub-group holding none of its conflicts. None when
+# nothing splits. (The partition, not the walk, is what must agree with Python.)
+fun rddSeparate(cx: RddCx, g: RddGraph, groups: RddGroups): RddGroups|None
+  let placed = rddPlace(g, groups, 0, cx.cxCount, Dict(), false)
   if !placed.split
     ret None
   ret rddNumbered(cx.cxCount,
@@ -572,35 +632,29 @@ fun rddBucketOf(bucket: Dict<Int, Int>, i: Int): Int => match(get(bucket, i))
   (b: Int) => b
   ()       => 0
 
-# The sub-groups of one group: the parents already in each, by position.
-class [final] RddBuckets(bkSets: Dict<Int, StrSet>, bkCount: Int)
-
-fun [tail] rddPlaceLeaves(cx: RddCx, groups: RddGroups, i: Int,
-                          buckets: Dict<Int, RddBuckets>, bucket: Dict<Int, Int>,
-                          split: Bool): (bucket: Dict<Int, Int>, split: Bool)
-  if i >= cx.cxCount
+fun [tail] rddPlace(g: RddGraph, groups: RddGroups, i: Int, n: Int, bucket: Dict<Int, Int>,
+                    split: Bool): (bucket: Dict<Int, Int>, split: Bool)
+  if i >= n
     ret (bucket = bucket, split = split)
-  if !cx.cxIsLeaf[i]
-    ret rddPlaceLeaves(cx, groups, i + 1, buckets, bucket, split)
-  let gr = groups.grOf[i]
-  let parent = cx.cxParents[i]
-  let have = match(get(buckets, gr))
-    (bs: RddBuckets) => bs
-    ()               => RddBuckets(Dict(), 0)
-  let at = rddFirstWithout(have, parent, 0)
-  let sets = put(have.bkSets, at, setAdd(rddBucketSet(have, at), parent))
-  let grown = RddBuckets(sets, at == have.bkCount ? have.bkCount + 1 : have.bkCount)
-  ret rddPlaceLeaves(cx, groups, i + 1, put(buckets, gr, grown),
-                     put(bucket, i, at), split || at > 0)
+  ret match(get(g.gConflicts, i))
+    (cs: List<Int>) => rddPlaceOne(g, groups, i, n, bucket, split, cs)
+    ()              => rddPlace(g, groups, i + 1, n, bucket, split)
 
-fun rddBucketSet(bs: RddBuckets, k: Int): StrSet => match(get(bs.bkSets, k))
-  (s2: StrSet) => s2
-  ()           => setEmpty()
+fun rddPlaceOne(g: RddGraph, groups: RddGroups, i: Int, n: Int, bucket: Dict<Int, Int>,
+                split: Bool, cs: List<Int>): (bucket: Dict<Int, Int>, split: Bool)
+  let used = fold(cs, Set<Int>(), (acc, m) => groups.grOf[m] == groups.grOf[i]
+                                                ? rddAddBucket(acc, get(bucket, m))
+                                                : acc)
+  let at = rddFirstFree(used, 0)
+  ret rddPlace(g, groups, i + 1, n, put(bucket, i, at), split || at > 0)
 
-fun [tail] rddFirstWithout(bs: RddBuckets, parent: String, k: Int): Int
-  if k >= bs.bkCount
-    ret k
-  ret setHas(rddBucketSet(bs, k), parent) ? rddFirstWithout(bs, parent, k + 1) : k
+# A conflict already placed in this group holds its bucket.
+fun rddAddBucket(acc: Set<Int>, k: Int|None): Set<Int> => match(k)
+  (b: Int) => add(acc, b)
+  ()       => acc
+
+fun [tail] rddFirstFree(used: Set<Int>, k: Int): Int
+  ret contains(used, k) ? rddFirstFree(used, k + 1) : k
 
 # ── rewrite: keep the first member of each group, redirect the rest to it ────
 
@@ -692,7 +746,8 @@ fun rddRenameParam(rn: RddRenames, p: RParam): RParam => match(p)
                                                  x.cSymbol, x.impure, x.sync)
   (x: RpGlobalVar)       => RpGlobalVar(x.fieldType, rddTo(rn.rnGlb, x.name))
   (x: RpStaticObjectRef) => RpStaticObjectRef(rddTo(rn.rnGlb, x.name))
-  (x: RpObjVtableEq)     => RpObjVtableEq(x.value, rddToOpt(rn.rnObj, x.className), x.externSymbol)
+  (x: RpObjVtableEq)     => RpObjVtableEq(x.value, rddToOpt(rn.rnObj, x.className), x.externSymbol,
+                                           x.among)
   (x: RpObjectField)     => RpObjectField(x.fieldType, x.pointer, rddTo(rn.rnObj, x.objectName),
                                           x.field, x.index, x.fresh)
   (x: RpArrayElement)    => RpArrayElement(x.elementType, x.pointer, rddTo(rn.rnObj, x.objectName),

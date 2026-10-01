@@ -183,6 +183,7 @@ def _build_example_specs(run_dir: Path) -> list[Example]:
         Example("closure_field_union"),
         Example("hashed_tree"),
         Example("seq_pin"),
+        Example("union_dedup_pin"),
         Example("json_pretty", stdin='{"name": "yafl", "v": [1, 2, 3]}'),
         Example("linenumbers", stdin="a\nb\nc\n"),
         Example("findstr", args=["hello", str(findroot)]),

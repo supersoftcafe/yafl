@@ -337,22 +337,49 @@ fun ptrGuard(gp: GPointer, member, word, r): RParam|None
   ret eqCgType(specGenerate(member, r), CgStruct(List()))
     ? RpIntEqConst(word, 0)
     : match(pointerWordKind(member, r))
-        (k: PtrKind) => ptrGuardOf(gp, k, word)
+        (k: PtrKind) => ptrGuardOf(gp, k, word, r)
         ()           => None
 
-fun ptrGuardOf(gp: GPointer, k, word): RParam|None => match(k)
-  (i: PkInt)      => RpObjVtableEq(word, None, "INTEGER_VTABLE")
+fun ptrGuardOf(gp: GPointer, k, word, r): RParam|None => match(k)
+  (i: PkInt)      => RpObjVtableEq(word, None, "INTEGER_VTABLE", None)
   # A spare code is a tag-4 word too: check the length.
   (s2: PkStr)     => gp.grpPacks
     ? RpRuntimeInvoke("str_word_is_string", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(8))
-    : RpObjVtableEq(word, None, "STR_HEAD_VTABLE")
+    : RpObjVtableEq(word, None, "STR_HEAD_VTABLE", None)
   (sc: PkScalar)  => RpIntEqConst(RpRuntimeInvoke("str_word_code", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(32)),
                                   scalarCode(sc.pkScalar))
   (f: PkFun)      => RpRuntimeInvoke("str_word_is_fun", RpNewStruct(list1(RpNamedValue("w", word))), CgInt(8))
-  (c: PkClass)    => RpObjVtableEq(word, c.pkName, None)
-  (e2: PkEnum)    => RpObjVtableEq(word, e2.pkRoot, None)
+  (c: PkClass)    => RpObjVtableEq(word, c.pkName, None, ptrClassMembers(gp, r))
+  (e2: PkEnum)    => RpObjVtableEq(word, e2.pkRoot, None, None)
   (u: PkUnit)     => None
   (fo: PkForeign) => None
+
+# Every class this union's tests must tell apart — its class members — or None
+# when the set is open: an interface member admits any implementor, and an
+# enum member is tested through its root. (union_repr.py _class_members.)
+fun ptrClassMembers(gp: GPointer, r): List<String>|None
+  ret ptrClassMembersLoop(chain(reprMembersOf(unionMembers(gp.grpType))), r, Set<String>())
+
+fun [tail] ptrClassMembersLoop(ms: Chain<Spec>, r, acc: Set<String>): List<String>|None => match(ms)
+  (nil: ChainEnd) => sort(acc)
+  (l: ChainLink)  => match(pointerWordKind(l.value, r))
+    (k: PtrKind) => match(k)
+      (c: PkClass)    => specIsInterface(l.value, r) ? None
+                         : ptrClassMembersLoop(l.next, r, add(acc, c.pkName))
+      (e2: PkEnum)    => None
+      (fo: PkForeign) => None
+      (o: PtrKind)    => ptrClassMembersLoop(l.next, r, acc)
+    ()           => ptrClassMembersLoop(l.next, r, acc)
+
+fun specIsInterface(m: Spec, r): Bool => match(m)
+  (c: SClass) => soleFoundIsInterface(findType(r, c.scName).bItems)
+  (o: Spec)   => false
+
+fun soleFoundIsInterface(fs: List<Found>) => exactly(chain(fs), 1) && any(fs, foundIsInterface)
+
+fun foundIsInterface(f: Found): Bool => match(f.fStmt)
+  (cls: PsClass) => cls.cIsInterface
+  (o: PStmt)     => false
 
 fun ptrToFun(value) => RpRuntimeInvoke("str_to_fun", RpNewStruct(list1(RpNamedValue("s", value))), CgFuncPointer(false))
 
@@ -916,14 +943,93 @@ fun generatePointerMatch(em0, resultType: Spec|None, subjBundle: GBundle, gp: GP
   let subjHasNone = any(reprMembersOf(unionMembers(subjType)), (v) => eqCgType(specGenerate(v, r), CgStruct(List())))
   let cls = classifyPointerArms(arms, r)
   let em1 = genPointerNullRouting(em0, r, resultType, gp, value, sv, cls, elseArm, subjHasNone)
-  let em2 = fold(cls.mcGuarded, em1, (acc, arm) => genPointerGuardedArm(acc, r, resultType, arm, gp, value, sv))
-  let finalFallback = match(cls.mcForeignFallback)
-    (ff: PArm) => cls.mcForeignFallback
-    ()          => elseArm
+  # The LAST arm needs no test when the earlier arms and the NULL route have
+  # taken every member but the ones it covers (union_repr.py _implied_last).
+  let implied = ptrImpliedLast(gp, cls.mcGuarded, !isNoneArm(cls.mcNullArm),
+                               isNoneArm(cls.mcForeignFallback) && isNoneArm(elseArm), r)
+  let guarded = match(implied)
+    (ia: PArm) => build(ptrAllButLast(chain(cls.mcGuarded), builder()))
+    ()          => cls.mcGuarded
+  let em2 = fold(guarded, em1, (acc, arm) => genPointerGuardedArm(acc, r, resultType, arm, gp, value, sv))
+  let finalFallback = match(implied)
+    (ia: PArm) => implied
+    ()          => match(cls.mcForeignFallback)
+      (ff: PArm) => cls.mcForeignFallback
+      ()          => elseArm
   let bind = match(finalFallback)
     (fb: PArm) => ptrBind(gp, r, fb, armTypeOr(fb, subjType), value)
     ()          => None
   ret emFallback(em2, r, resultType, finalFallback, bind, "pointer-union match fell through all arms")
+
+# The last guarded arm, when it covers every member the arms before it (and
+# the NULL route) leave — so it can be reached untested — else None. Only plain
+# typed arms qualify: a literal or guarded arm does not cover its type, and a
+# tagged sub-union arm narrows per member.
+fun ptrImpliedLast(gp: GPointer, guarded: List<PArm>, nullRouted: Bool,
+                   noFallback: Bool, r): PArm|None
+  if !noFallback || any(guarded, (a) => !isEmpty(a.armLiterals) || hasGuard(a))
+    ret None
+  ret match(last(guarded))
+    (l: PArm) => ptrImpliedCheck(gp, guarded, l, nullRouted, r)
+    ()         => None
+
+fun ptrImpliedCheck(gp: GPointer, guarded: List<PArm>, l: PArm, nullRouted: Bool, r): PArm|None
+  ret match(l.armType)
+    (t2: Spec) => ptrArmNarrowsTagged(t2, r) ? None : ptrImpliedCover(gp, guarded, l, t2, nullRouted, r)
+    ()          => None
+
+fun ptrArmNarrowsTagged(t2: Spec, r): Bool => match(t2)
+  (cm: SCombination) => match(classifyRepr(cm, r))
+    (np: GPointer) => false
+    (o: GRepr)     => true
+  (o: Spec)          => false
+
+fun ptrImpliedCover(gp: GPointer, guarded: List<PArm>, l: PArm, t2: Spec,
+                    nullRouted: Bool, r): PArm|None
+  let all0 = ptrKindKeys(gp.grpType, r)
+  if contains(all0, "NONE") || contains(all0, "FOREIGN")
+    ret None
+  let all1 = nullRouted ? remove(all0, "UNIT") : all0
+  let rem = ptrRemainingAfter(chain(guarded), all1, r)
+  let lastKeys = ptrKindKeys(t2, r)
+  ret !isEmpty(rem) && all(rem, (k) => contains(lastKeys, k)) ? l : None
+
+# The members every arm but the last leaves.
+fun [tail] ptrRemainingAfter(c: Chain<PArm>, rem: Set<String>, r): Set<String> => match(c)
+  (nil: ChainEnd) => rem
+  (l: ChainLink)  => match(l.next)
+    (nil2: ChainEnd) => rem
+    (m: ChainLink)   => ptrRemainingAfter(l.next,
+                          fold(ptrArmKeys(l.value, r), rem, (acc, k) => remove(acc, k)), r)
+
+fun ptrArmKeys(a: PArm, r): Set<String> => match(a.armType)
+  (t2: Spec) => ptrKindKeys(t2, r)
+  ()          => Set<String>()
+
+# The pointer-word kinds of a type's members, as comparable keys.
+fun ptrKindKeys(spec: Spec, r): Set<String>
+  let members = match(spec)
+    (cm: SCombination) => reprMembersOf(unionMembers(cm))
+    (o: Spec)          => list1(spec)
+  ret fold(members, Set<String>(), (acc, m) => add(acc, ptrKindKey(pointerWordKind(m, r))))
+
+fun ptrKindKey(k: PtrKind|None): String => match(k)
+  (kk: PtrKind) => match(kk)
+    (u: PkUnit)     => "UNIT"
+    (i: PkInt)      => "INT"
+    (s2: PkStr)     => "STR"
+    (sc: PkScalar)  => "SCALAR:" + sc.pkScalar
+    (f: PkFun)      => "FUN"
+    (c: PkClass)    => "CLASS:" + c.pkName
+    (e2: PkEnum)    => "ENUM:" + e2.pkRoot
+    (fo: PkForeign) => "FOREIGN"
+  ()             => "NONE"
+
+fun [tail] ptrAllButLast(c: Chain<PArm>, [terminal] acc: ListBuilder<PArm>): ListBuilder<PArm> => match(c)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.next)
+    (nil2: ChainEnd) => acc
+    (m: ChainLink)   => ptrAllButLast(l.next, push(acc, l.value))
 
 fun genPointerNullRouting(em, r, resultType: Spec|None, gp: GPointer, value, sv,
                           cls: MemberClassification, elseArm: PArm|None, subjHasNone: Bool): GEmit
@@ -1004,7 +1110,7 @@ fun genPointerLiteralArm(em, arm: PArm, gp: GPointer, value, r, resultType: Spec
 
 fun genPointerLiteralArmKind(em, arm: PArm, gp: GPointer, value, r, resultType, tn): GEmit
   ret match(pointerWordKindBuiltin(SBuiltin(tn, noLine())))
-    (k: PtrKind) => match(ptrGuardOf(gp, k, ptrWord(gp, value)))
+    (k: PtrKind) => match(ptrGuardOf(gp, k, ptrWord(gp, value), r))
       (kg: RParam) => genPointerLiteralArmGuarded(em, arm, literalCompared(gp, value, tn), r, resultType, tn, kg)
       ()           => em
     ()           => em
