@@ -218,6 +218,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # levels, and those functions exist in no binary today at any -O level.)
     if optimization_level > 0:
         lowering.staticinit.reset_si_counter()
+        a = lowering.vtable_trim.trim_unused_vtable_slots(a)
         if optimization_level >= 2 and not profile:
             inline_always = optimization_level >= 3
             prev_shape: tuple | None = None
