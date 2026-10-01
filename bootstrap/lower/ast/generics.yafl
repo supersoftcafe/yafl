@@ -1006,8 +1006,10 @@ fun rcrStmt(st, refs: GRefsIx) => match(st)
                                                List()),
                                       rcrExprOpt(d.dDefault, refs),
                                       d.psdLine, d.dTypeInferred)
-  # Slots NOT redirected (ClassStatement.search_and_replace never visits
-  # _all_slots).
+  # The traversal never visits cAllSlots (derived data, rebuilt by every
+  # compile), but the first compile after this pass reads a PARENT's table
+  # before the parent rebuilds it — so the cached slot types are redirected
+  # here, by the same rules (generics.py redirect_slots).
   (c: PsClass) => PsClass(c.cName, c.cAttrs, c.cGens,
                           rcrStmt(c.cParams, refs),
                           rcrSpecs(c.cImplements, refs),
@@ -1015,7 +1017,7 @@ fun rcrStmt(st, refs: GRefsIx) => match(st)
                           rcrStmts(chain(c.cMembers), refs, List()),
                           c.cIsInterface, c.pscLine,
                           rcrSpecsOpt(c.cAllParents, refs),
-                          c.cAllSlots, c.cImports)
+                          rcrSlotsOpt(c.cAllSlots, refs), c.cImports)
   (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, rcrStmt(e2.eParams, refs),
                          rcrStmts(chain(e2.eVariants), refs, List()),
                          e2.eHasParams, e2.pseLine, e2.eRootName,
@@ -1036,6 +1038,11 @@ fun rcrStmt(st, refs: GRefsIx) => match(st)
 
 fun rcrSpecsOpt(ss: List<Spec>|None, refs: GRefsIx) => match(ss)
   (l: List<Spec>) => rcrSpecs(l, refs)
+  ()              => None
+
+fun rcrSlotsOpt(ss: List<Slot>|None, refs: GRefsIx) => match(ss)
+  (l: List<Slot>) => map(l, (sl) => Slot(sl.slotName, rcrSpecOpt(sl.slotType, refs),
+                                         sl.slotProvides))
   ()              => None
 
 fun rcrFieldArgs(fas: List<PFieldArg>, refs: GRefsIx)

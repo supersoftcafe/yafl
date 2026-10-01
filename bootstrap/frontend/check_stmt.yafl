@@ -588,7 +588,7 @@ fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
 fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r,
                          seen: List<String>, n) => match(ps)
   (nil: ChainEnd) => n
-  (l: ChainLink)  => matchName(slot.slotName, l.value.slotName)
+  (l: ChainLink)  => matchMemberName(slot.slotName, l.value.slotName)
                      && triTrue(assignableEq(r, l.value.slotType,
                                              slot.slotType))
                      && !contains2(seen, l.value.slotName)

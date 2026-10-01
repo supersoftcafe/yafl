@@ -38,7 +38,7 @@ def override_inherited_slots(
     def find_inheritance_matches(slot: s.ClassFunctionSlot) -> s.ClassFunctionSlot:
         names = {y
             for x in parent_slots
-            if g.match_name(slot.name, x.name) and t.trivially_assignable_equals(resolver, x.type, slot.type)
+            if g.match_member_name(slot.name, x.name) and t.trivially_assignable_equals(resolver, x.type, slot.type)
             for y in x.provides | {x.name}}
         result = dataclasses.replace(slot, provides=slot.provides | names)
         return result
@@ -67,7 +67,7 @@ def fragile_base_captures(
     for slot in base_slots:
         for parent in parent_classes:
             captured = sorted({x.name for x in create_slots_from_members(parent)
-                               if g.match_name(slot.name, x.name)
+                               if g.match_member_name(slot.name, x.name)
                                and t.trivially_assignable_equals(resolver, x.type, slot.type)})
             if len(captured) > 1:
                 out.append((slot, parent.name, captured))

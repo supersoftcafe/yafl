@@ -323,6 +323,17 @@ def bare_name(name: str) -> str:
 def match_name(left: str, right: str) -> bool:
     return simple_name(left) == simple_name(right)
 
+def member_name(name: str) -> str:
+    """A class member's DECLARED name: everything before its first `@`. A
+    member is `name@hash`, and a generic class's specialised member gains a
+    second `@type-signature` suffix (generics.py), which may itself contain
+    `@` — so simple_name's last-`@` split would leave `name@hash` and no
+    longer match the member it overrides."""
+    return name.partition('@')[0]
+
+def match_member_name(left: str, right: str) -> bool:
+    return member_name(left) == member_name(right)
+
 # Match a candidate statement name (`candidate`) against a single lookup
 # `query` — true if they're identical, or if `candidate` is a fully-qualified
 # variant of `query` (i.e. starts with `query@`).
