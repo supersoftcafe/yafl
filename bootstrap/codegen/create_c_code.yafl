@@ -280,6 +280,11 @@ fun createCCode(statements, mainName, optLevel,
   let spSroa = spanBegin("codegen", "sroa")
   let a7 = splitProjectedAggregates(a6)
   let _sroa = spanEnd(spSroa)
+  # Validate the SSA form every stage since AST lowering has relied on,
+  # before leaving it.
+  let vPrePhi = ssaValidate(appFunctions(a7), true)
+  if !isEmpty(vPrePhi)
+    ret CreateCOut(List(), vPrePhi)
   let spPhi = spanBegin("codegen", "phi_removal")
   let a8 = removePhis(a7)
   let _phi = spanEnd(spPhi)

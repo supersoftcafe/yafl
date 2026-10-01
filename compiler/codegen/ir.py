@@ -205,7 +205,58 @@ class Function:
                     seen.add(succ)
                     worklist.append(succ)
 
-        return dataclasses.replace(self, ops=tuple(op for i, op in enumerate(self.ops) if i in seen))
+        stripped = dataclasses.replace(self, ops=tuple(op for i, op in enumerate(self.ops) if i in seen))
+        return stripped.__without_stale_phi_sources()
+
+    def __without_stale_phi_sources(self) -> Function:
+        """Drop each Phi source whose block no longer reaches the Phi's block:
+        stripping unreachable ops deletes edges, and a Phi must name exactly
+        its block's predecessors (lowering/ssa_validate.py)."""
+        if not any(isinstance(op, Phi) for op in self.ops):
+            return self
+        preds = self.block_predecessors()
+        ops: list[Op] = []
+        current: str | None = None
+        for op in self.ops:
+            if isinstance(op, Label):
+                current = op.name
+            elif isinstance(op, Phi):
+                live = preds.get(current, set())
+                kept = tuple((label, value) for label, value in op.sources if label in live)
+                if len(kept) != len(op.sources):
+                    op = dataclasses.replace(op, sources=kept)
+            ops.append(op)
+        return dataclasses.replace(self, ops=tuple(ops))
+
+    def block_predecessors(self) -> dict[str, set[str | None]]:
+        """For each labelled block, the labels of the blocks (None for the
+        implicit entry block) that reach it by a Jump, JumpIf, IfTask,
+        SwitchJump or fall-through."""
+        preds: dict[str, set[str | None]] = {}
+        current: str | None = None
+
+        def add(target: str, src: str | None) -> None:
+            preds.setdefault(target, set()).add(src)
+
+        for i, op in enumerate(self.ops):
+            if isinstance(op, Label):
+                # Fall-through edge from the previous block, unless the
+                # previous op was a terminator (abort() does not return).
+                prev = self.ops[i - 1] if i > 0 else None
+                if prev is not None and not isinstance(prev, (Jump, Return, ReturnVoid, Abort)):
+                    add(op.name, current)
+                current = op.name
+                preds.setdefault(op.name, set())
+            elif isinstance(op, Jump):
+                add(op.name, current)
+            elif isinstance(op, JumpIf):
+                add(op.label, current)
+            elif isinstance(op, IfTask):
+                add(op.target, current)
+            elif isinstance(op, SwitchJump):
+                for _, lbl in op.cases:
+                    add(lbl, current)
+        return preds
 
 @dataclass(frozen=True)
 class Object:

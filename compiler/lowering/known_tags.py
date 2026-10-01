@@ -6,10 +6,10 @@ later; in SSA the tag is statically decidable (lowering/ssa_defs.py), so the
 taken). The dead pack then falls to deadstores, and the straightened flow lets
 branch threading collapse further. Runs in the pre-async fixpoint at -O1+.
 
-Phi-safe: no labels renamed or removed; a hardened/dropped JumpIf can strand
-its other edge as unreachable code — harmless (never executes; trim/emission
-strip it), and ssa_validate polices the result on both sides of async
-lowering.
+Phi-safe: no labels renamed; a hardened/dropped JumpIf can strand its other
+edge as unreachable code, which strip_unused_operations deletes — pruning the
+Phi sources of the edges it deletes, so each Phi still names exactly its
+block's predecessors (ssa_validate checks this just before phi_removal).
 """
 from __future__ import annotations
 

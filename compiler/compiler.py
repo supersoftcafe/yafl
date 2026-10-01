@@ -335,7 +335,9 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Leave SSA here: Phis → edge moves + copy-web coalescing shrinks the
     # local count (each survivor is a state field, boundary traffic and C
     # register pressure). Everything before this line relies on SSA;
-    # async lowering and emission do not.
+    # async lowering and emission do not. Validate the SSA form every stage
+    # since AST lowering has relied on, before leaving it.
+    lowering.ssa_validate.validate(a)
     a = lowering.phi_removal.remove_phis(a)
     # Non-escaping heap objects dissolve into per-field locals — the
     # allocation, its tracing and its initialising write barriers all
