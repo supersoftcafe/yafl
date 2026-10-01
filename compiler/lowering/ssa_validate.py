@@ -115,39 +115,8 @@ def __check_all_paths_return(fn: Function) -> None:
             f"{type(last).__name__} — control would fall off the end.")
 
 
-def __collect_block_predecessors(fn: Function) -> dict[str, set[str | None]]:
-    """For each labelled block in the function, the set of predecessor block
-    labels (or `None` for the implicit entry block) that can reach it via
-    a Jump, JumpIf, IfTask, SwitchJump, or fall-through."""
-    preds: dict[str, set[str | None]] = {}
-    current: str | None = None
-
-    def add(target: str, src: str | None) -> None:
-        preds.setdefault(target, set()).add(src)
-
-    for i, op in enumerate(fn.ops):
-        if isinstance(op, Label):
-            # Fall-through edge from previous block (if the previous op wasn't a terminator).
-            # `Abort` is a terminator too — `abort()` does not return.
-            prev = fn.ops[i - 1] if i > 0 else None
-            if prev is not None and not isinstance(prev, (Jump, Return, ReturnVoid, Abort)):
-                add(op.name, current)
-            current = op.name
-            preds.setdefault(op.name, set())
-        elif isinstance(op, Jump):
-            add(op.name, current)
-        elif isinstance(op, JumpIf):
-            add(op.label, current)
-        elif isinstance(op, IfTask):
-            add(op.target, current)
-        elif isinstance(op, SwitchJump):
-            for _, lbl in op.cases:
-                add(lbl, current)
-    return preds
-
-
 def __check_phi_well_formed(fn: Function) -> None:
-    preds = __collect_block_predecessors(fn)
+    preds = fn.block_predecessors()
     current_label: str | None = None
     in_phi_region = False
     for op in fn.ops:

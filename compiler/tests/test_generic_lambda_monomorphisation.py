@@ -37,7 +37,10 @@ _TWO_INSTANTIATIONS = """namespace Test
 import System
 
 class [final] A2(aname: String)
-class [final] B2(bnum: Int)
+# A2 holds a pointer and B2 an Int32: the two instantiations must differ in
+# REPRESENTATION, or representation dedup merges the correct lambda classes
+# back into one — and the wrong lambda would run without a visible failure.
+class [final] B2(bnum: Int32)
 
 # The vehicle: a generic function whose body holds a generic lambda.
 fun addAll<T>(a: List<T>, b: List<T>): List<T>
@@ -61,7 +64,7 @@ fun [tail] walkB(c: Chain<B2>, n: Int): Int
 
 fun main(): Int
   let a = addAll(prepend(A2("p"), List<A2>()), prepend(A2("q"), List<A2>()))
-  let b = addAll(prepend(B2(1), List<B2>()), prepend(B2(2), List<B2>()))
+  let b = addAll(prepend(B2(1i32), List<B2>()), prepend(B2(2i32), List<B2>()))
   print(String(countA(a)) + "|" + String(countB(b)) + "\\n")
   ret 0
 """

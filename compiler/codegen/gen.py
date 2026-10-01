@@ -41,15 +41,11 @@ class Application:
 
 
     def __gen_function(self, name: str, f: Function, prof_id: int | None = None):
-        # SSA → imperative first: replace every Phi with per-edge Moves while
-        # the original CFG (and thus predecessor labels) is still intact.
-        # All downstream codegen transformations are Phi-unaware and may
-        # rewrite labels, so they must only ever see plain Moves and Jumps.
-        f = f.lower_phis()
-        f = f.strip_unused_operations().simplify_control_flow().fold_struct_fields().copy_propagate().simplify_control_flow().eliminate_common_subexpressions()
-        # --profile instrumentation goes in LAST, after the cleanup chain, so
-        # nothing can merge, move or delete the enter/leave pairing (CSE would
-        # otherwise be entitled to coalesce identical leaves).
+        # Functions arrive cleaned (lowering/cleanup.py: Phis lowered, the
+        # cleanup chain applied). --profile instrumentation goes in here,
+        # after it, so nothing can merge, move or delete the enter/leave
+        # pairing (CSE would otherwise be entitled to coalesce identical
+        # leaves).
         if prof_id is not None:
             f = f.instrument_profile(prof_id)
         self.__forwards.append(f.to_c_prototype(self.__type_cache))

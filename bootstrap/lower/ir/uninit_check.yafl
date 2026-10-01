@@ -122,13 +122,15 @@ fun ucLabelOnly(labels: Dict<String, Int>, name: String) => match(ucLabelAt(labe
 # checked per-edge below). IfTask: get_live_vars omits task_lhs/call_id_lhs;
 # they land only on the taken branch.
 #
-# Sets key by NAME + TYPE (ucKey), matching Python's frozenset of StackVar
-# dataclasses exactly: a variable written at one precision and read at
-# another must NOT unify — that (type,name) strictness is how Python caught
-# the bool-slot precision bug (TODO.md OPEN 2026-07-17).
-fun ucKey(sv) => stackVarName(sv) + "|" + irMangle(rpGetType(sv))
+# Sets key by NAME (ucKey), as Python's uninit_check does since 259d06d: a
+# variable's identity is its name, and one variable can be SPELLED with
+# different types at different sites (an inlined enum constructor's param
+# struct adopts the payload SLOT type — a Bool declared int16 by its slot —
+# while the body reads it at its natural int8). Keying by name+type reported
+# those spellings as a false uninitialised read.
+fun ucKey(sv) => stackVarName(sv)
 
-fun ucKeyField(fld: CgField) => fld.fieldName + "|" + irMangle(fld.fieldType)
+fun ucKeyField(fld: CgField) => fld.fieldName
 
 # A key set, asked only for membership.
 fun ucTakeKey(acc, sv) => match(sv)

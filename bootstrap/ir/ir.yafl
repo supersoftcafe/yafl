@@ -13,19 +13,14 @@ import Bootstrap::StdlibCandidates
 
 # bootstrap/ir.yafl — port of compiler/codegen/ir.py: `Function`, `Object`,
 # `Global` — the top-level IR units gen.py assembles into a program, plus the
-# Function-local optimisation passes (lower_phis, simplify_control_flow,
-# strip_unused_operations, fold_struct_fields, copy_propagate,
-# eliminate_common_subexpressions).
+# Function-local passes other stages share (lower_phis, strip_unused_operations).
+# simplify_control_flow, fold_struct_fields, copy_propagate and
+# eliminate_common_subexpressions belong to lower/ir/cleanup.yafl alone.
 #
 # NAMING: "Cg"-prefixed (CgFunction/CgObject/CgGlobal) for the same reason as
 # typedecl.yafl's CgType family — plain "Function"/"Object"/"Global" are free
 # today but this keeps the whole codegen surface visually consistent.
-#
-# `available: dict[RParam, StackVar]` (the CSE cache) becomes an association
-# list `List<AvailEntry>` keyed by `eqRParam` (full structural equality,
-# defined in param.yafl) — this is the ONE place in the ported codegen
-# substrate that actually needs full RParam structural equality as a map key,
-# matching Python's frozen-dataclass `__hash__`/`__eq__`.
+
 
 class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 
@@ -280,49 +275,7 @@ fun cgLowerPhisForEmission(f: CgFunction)
 fun cgFunctionLowerPhis(f: CgFunction)
   ret cgFunctionWith(f, cgLowerPhisForEmission(f), f.fnStackVars)
 
-# ── simplify_control_flow ────────────────────────────────────────────────────
-# (`listAt` is defined once, in typedecl.yafl, and reused here.)
-
-fun isJumpToImmediateLabel(op, nextOp: Op|None) => match(op)
-  (j: OpJump) => isLabelNamed(nextOp, j.jumpName)
-  (o: Op) => false
-
-fun isJumpIfToImmediateLabel(op, nextOp: Op|None) => match(op)
-  (ji: OpJumpIf) => isLabelNamed(nextOp, ji.jumpIfLabel)
-  (o: Op) => false
-
-fun isLabelNamed(nextOp: Op|None, name) => match(nextOp)
-  (n: Op) => isLabelNamedOp(n, name)
-  ()       => false
-
-fun isLabelNamedOp(n, name) => match(n)
-  (l: OpLabel) => l.labelName == name
-  (o: Op)       => false
-
-fun isInvertibleJumpIfJumpLabel(op, nextOp: Op|None, next2Op: Op|None) => match(op)
-  (ji: OpJumpIf) => ji.jumpIfInvert ? false : isInvertibleJumpIfJumpLabelRest(ji, nextOp, next2Op)
-  (o: Op) => false
-
-fun isInvertibleJumpIfJumpLabelRest(ji: OpJumpIf, nextOp: Op|None, next2Op: Op|None)
-  ret match(nextOp)
-    (n: Op) => isInvertibleJumpIfJumpLabelRestOp(ji, n, next2Op)
-    ()       => false
-
-fun isInvertibleJumpIfJumpLabelRestOp(ji: OpJumpIf, n, next2Op: Op|None) => match(n)
-  (j: OpJump) => isLabelNamed(next2Op, ji.jumpIfLabel)
-  (o: Op) => false
-
-fun cgInvertJumpIf(op, nextOp: Op|None) => match(op)
-  (ji: OpJumpIf) => cgInvertJumpIfWith(ji, nextOp)
-  (o: Op) => op
-
-fun cgInvertJumpIfWith(ji, nextOp: Op|None) => match(nextOp)
-  (n: Op) => cgInvertJumpIfWithOp(ji, n)
-  ()       => ji
-
-fun cgInvertJumpIfWithOp(ji, n) => match(n)
-  (j: OpJump) => OpJumpIf(j.jumpName, ji.jumpIfCondition, true, ji.jumpIfSavedVars)
-  (o: Op)      => ji
+# ── op-stream pull (shared by every lookahead walk) ─────────────────────────
 
 # One O(n) walk per pass. Over segments a lookahead cannot peek a
 # neighbouring cell, so the stream pull maintains a TWO-OP window
@@ -336,55 +289,6 @@ fun [inline(always)] cgPullOp(st: SeqStream<Op>): (stream: SeqStream<Op>, op: Op
   ret match(r.value)
     (ok: Ok<Op | None, Never>)    => (r.stream, ok.value)
     (er: Error<Op | None, Never>) => (r.stream, None)   # unreachable: Never
-
-# ONE self-recursive stepper ([tail] accepts only direct self-recursion, so
-# the walk and its per-link body cannot be split into a mutual pair). Both
-# refills are pulled up front to keep every recursion direct; the one-shift
-# arms simply discard the second.
-fun [tail] cgSimplifyLoop(cur: Op|None, n1: Op|None, n2: Op|None, st: SeqStream<Op>,
-                          [terminal] acc: SeqBuilder<Op>,
-                          changed: Bool): (ops: Segment<Op>|None, changed: Bool)
-  if cur is None
-    ret (build(acc), changed)
-  let op = forceOp(cur)
-  let pA = cgPullOp(st)
-  let pB = cgPullOp(pA.stream)
-  ret (isJumpToImmediateLabel(op, n1) || isJumpIfToImmediateLabel(op, n1))
-    ? cgSimplifyLoop(n1, n2, pA.op, pA.stream, acc, true)
-    : isInvertibleJumpIfJumpLabel(op, n1, n2)
-      ? cgSimplifyLoop(n2, pA.op, pB.op, pB.stream,
-                       push(acc, cgInvertJumpIf(op, n1)), true)
-      : cgSimplifyLoop(n1, n2, pA.op, pA.stream, push(acc, op), changed)
-
-fun [tail] cgSimplifyControlFlowFixpoint(ops: Segment<Op>|None): Segment<Op>|None
-  let p0 = cgPullOp(seqStream(ops))
-  let p1 = cgPullOp(p0.stream)
-  let p2 = cgPullOp(p1.stream)
-  let pass2 = cgSimplifyLoop(p0.op, p1.op, p2.op, p2.stream, seqBuilder(), false)
-  ret pass2.changed ? cgSimplifyControlFlowFixpoint(pass2.ops) : pass2.ops
-
-fun cgCollectReferencedLabelsStep(acc, op) => match(op)
-  (j: OpJump) => setAdd(acc, j.jumpName)
-  (ji: OpJumpIf) => setAdd(acc, ji.jumpIfLabel)
-  (it: OpIfTask) => setAdd(acc, it.taskTarget)
-  (sj: OpSwitchJump) => fold(sj.switchCases, acc, (acc2, c) => setAdd(acc2, c.caseLabel))
-  (o: Op) => acc
-
-fun cgCollectReferencedLabels(ops: Segment<Op>|None)
-  ret fold(ops, setEmpty(), (acc, op) => cgCollectReferencedLabelsStep(acc, op))
-
-fun cgIsUnreferencedLabel(op, referenced: StrSet) => match(op)
-  (l: OpLabel) => !setHas(referenced, l.labelName)
-  (o: Op)       => false
-
-fun cgRemoveUnreferencedLabels(ops: Segment<Op>|None, referenced: StrSet)
-  ret filter(ops, (op) => !cgIsUnreferencedLabel(op, referenced))
-
-fun cgFunctionSimplifyControlFlow(f: CgFunction)
-  let ops1 = cgSimplifyControlFlowFixpoint(f.fnOps)
-  let referenced = cgCollectReferencedLabels(ops1)
-  let ops2 = cgRemoveUnreferencedLabels(ops1, referenced)
-  ret cgFunctionWith(f, ops2, f.fnStackVars)
 
 # ── strip_unused_operations ──────────────────────────────────────────────────
 
@@ -474,284 +378,93 @@ fun cgFunctionStripUnusedOperations(f: CgFunction)
   let seen = cgReachable(ix)
   let newOps = build(cgKeepSeenIndices(f.fnOps, 0i32, 0, seen,
                                       seqBuilder()))
-  ret cgFunctionWith(f, newOps, f.fnStackVars)
+  ret cgWithoutStalePhiSources(cgFunctionWith(f, newOps, f.fnStackVars))
 
-# ── fold_struct_fields ───────────────────────────────────────────────────────
+# Drop each Phi source whose block no longer reaches the Phi's block:
+# stripping unreachable ops deletes edges, and a Phi must name exactly its
+# block's predecessors (lower/ir/ssa_validate.yafl).
+fun cgWithoutStalePhiSources(f: CgFunction): CgFunction
+  if isEmpty(cgCollectPhis(f.fnOps))
+    ret f
+  let preds = cgBlockPredecessors(f)
+  ret cgFunctionWith(f, build(cgPrunePhisLoop(f.fnOps, 0i32, preds, "", seqBuilder())),
+                     f.fnStackVars)
 
-fun [tail] rpFoldStructFieldLookup(values: List<RpNamedValue>, field, fallback)
-  ret match(head(values))
-    (v: RpNamedValue) => v.name == field ? v.value : rpFoldStructFieldLookup(tail(values), field, fallback)
-    ()                  => fallback
-
-fun rpFoldStructFieldStruct(sf: RpStructField, whole) => match(sf.structVal)
-  (ns: RpNewStruct) => rpFoldStructFieldLookup(ns.values, sf.field, whole)
-  (nst: RpNewStructTyped) => rpFoldStructFieldLookup(nst.values, sf.field, whole)
-  (o: RParam) => whole
-
-fun rpFoldStructField(rparam) => match(rparam)
-  (sf: RpStructField) => rpFoldStructFieldStruct(sf, rparam)
-  (o: RParam)          => rparam
-
-fun cgFunctionFoldStructFields(f: CgFunction) => cgFunctionReplaceParams(f, rpFoldStructField)
-
-# ── copy_propagate ───────────────────────────────────────────────────────────
-
-# The parameter names are only ever asked "is this one of them", by the
-# alias check — so a Set, and the field walk drops its order on the way in.
-fun cgParamNames(f: CgFunction) => fold(cgFieldsOfOrEmpty(f.fnParams), Set(),
-                                        (acc, fld) => add(acc, fld.fieldName))
-
-fun cgCPWriteCountsMoveTarget(acc: (writes: List<StrCount>, zeroInit: Set<String>), sv: RpStackVar, source): (writes: List<StrCount>, zeroInit: Set<String>)
-  ret match(source)
-    (z: RpZeroOf) => (acc.writes, add(acc.zeroInit, sv.name))
-    (o: RParam)   => (strCountIncr(acc.writes, sv.name), acc.zeroInit)
-
-fun cgCPWriteCountsMove(acc, m: OpMove): (writes: List<StrCount>, zeroInit: Set<String>)
-  ret match(m.moveTarget)
-    (sv: RpStackVar) => cgCPWriteCountsMoveTarget(acc, sv, m.moveSource)
-    (o: RParam)       => acc
-
-fun cgCPWriteCountsReq(acc, register): (writes: List<StrCount>, zeroInit: Set<String>)
-  ret match(register)
-    (sv: RpStackVar) => (strCountIncr(acc.writes, sv.name), acc.zeroInit)
-    (o: RParam)       => acc
-
-fun cgCPWriteCountsOpt(acc, register: RParam|None): (writes: List<StrCount>, zeroInit: Set<String>)
-  ret match(register)
-    (r: RParam) => cgCPWriteCountsReq(acc, r)
-    ()           => acc
-
-fun cgCPWriteCountsStep(acc, op): (writes: List<StrCount>, zeroInit: Set<String>) => match(op)
-  (m: OpMove) => cgCPWriteCountsMove(acc, m)
-  (c: OpCall) => cgCPWriteCountsOpt(acc, c.callRegister)
-  (n: OpNewObject) => cgCPWriteCountsReq(acc, n.newObjRegister)
-  (o: Op) => acc
-
-fun cgCollectWrites(ops: Segment<Op>|None): (writes: List<StrCount>, zeroInit: Set<String>)
-  ret fold(ops, (List(), Set()), (acc, op) => cgCPWriteCountsStep(acc, op))
-
-class [final] AliasEntry(aeVarName: String, aeAliasOf: RParam)
-
-fun cgBuildAliasesCheck(acc, ta: RpStackVar, sb: RpStackVar, writes: List<StrCount>, zeroInit: Set<String>, gcSafe: Set<String>, paramNames: Set<String>)
-  ret strCountGet(writes, ta.name) != 1
-    ? acc
-    : (strCountGet(writes, sb.name) > 1
-      ? acc
-      : ((contains(zeroInit, ta.name) && !contains(gcSafe, sb.name) && !contains(paramNames, sb.name))
-        ? acc
-        # Looked up by target name — the table's order is not observed.
-        : prepend(AliasEntry(ta.name, sb), acc)))
-
-fun cgBuildAliasesMove(acc, m: OpMove, writes: List<StrCount>, zeroInit, gcSafe, paramNames): List<AliasEntry>
-  ret match(m.moveTarget)
-    (ta: RpStackVar) => cgBuildAliasesMoveSource(acc, ta, m.moveSource, writes, zeroInit, gcSafe, paramNames)
-    (o: RParam) => acc
-
-fun cgBuildAliasesMoveSource(acc, ta: RpStackVar, source, writes: List<StrCount>, zeroInit, gcSafe, paramNames): List<AliasEntry>
-  ret match(source)
-    (sb: RpStackVar) => cgBuildAliasesCheck(acc, ta, sb, writes, zeroInit, gcSafe, paramNames)
-    (o: RParam) => acc
-
-fun cgBuildAliasesStep(acc, op, writes: List<StrCount>, zeroInit, gcSafe, paramNames): List<AliasEntry>
-  ret match(op)
-    (m: OpMove) => cgBuildAliasesMove(acc, m, writes, zeroInit, gcSafe, paramNames)
-    (o: Op)      => acc
-
-fun cgBuildAliases(ops: Segment<Op>|None, writes: List<StrCount>, zeroInit, gcSafe, paramNames): List<AliasEntry>
-  ret fold(ops, List(), (acc, op) => cgBuildAliasesStep(acc, op, writes, zeroInit, gcSafe, paramNames))
-
-fun [tail] aliasLookup(aliases: List<AliasEntry>, name) => match(head(aliases))
-  (e: AliasEntry) => e.aeVarName == name ? e.aeAliasOf : aliasLookup(tail(aliases), name)
-  ()               => None
-
-fun resolveAliasStackVar(aliases: List<AliasEntry>, s: RpStackVar, seen: List<String>)
-  ret strListMember(seen, s.name) ? s : resolveAliasStackVarNext(aliases, s, seen)
-
-fun resolveAliasStackVarNext(aliases: List<AliasEntry>, s: RpStackVar, seen: List<String>)
-  ret match(aliasLookup(aliases, s.name))
-    (next: RParam) => resolveAlias(aliases, next, prepend(s.name, seen))
-    ()              => s
-
-fun resolveAlias(aliases: List<AliasEntry>, sv, seen: List<String>) => match(sv)
-  (s: RpStackVar) => resolveAliasStackVar(aliases, s, seen)
-  (o: RParam)      => sv
-
-fun cgResolvedAliases(aliases: List<AliasEntry>)
-  ret map(aliases, (e) => AliasEntry(e.aeVarName, resolveAlias(aliases, e.aeAliasOf, List())))
-
-fun rpParamName(r) => match(r)
-  (sv: RpStackVar) => sv.name
-  (o: RParam)       => ""   # unreachable: resolveAlias always returns a StackVar
-
-fun cgAliasesToRenames(resolved: List<AliasEntry>)
-  ret map(resolved, (e) => RpRename(e.aeVarName, rpParamName(e.aeAliasOf)))
-
-fun cgEliminatedNames(aliases: List<AliasEntry>) => map(aliases, (e) => e.aeVarName)
-
-fun cgIsEliminatedMove(op, eliminated: List<String>) => match(op)
-  (m: OpMove) => cgIsEliminatedMoveTarget(m.moveTarget, eliminated)
-  (o: Op) => false
-
-fun cgIsEliminatedMoveTarget(target, eliminated: List<String>) => match(target)
-  (sv: RpStackVar) => strListMember(eliminated, sv.name)
-  (o: RParam)       => false
-
-fun [tail] cgCopyPropagateFilterOps(s: Segment<Op>|None, i, eliminated: List<String>,
-                                    renames: List<RpRename>,
-                                    [terminal] acc): SeqBuilder<Op> => match(s)
+fun [tail] cgPrunePhisLoop(s: Segment<Op>|None, i, preds: List<PredEntry>, current: String,
+                           [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => i < seg.length
-    ? cgCopyPropagateFilterOps(s, i + 1i32, eliminated, renames,
-        cgIsEliminatedMove(seg.array(i), eliminated)
-          ? acc
-          : push(acc, opRenameVars(seg.array(i), renames)))
-    : cgCopyPropagateFilterOps(seg.next, 0i32, eliminated, renames, acc)
+    ? cgPrunePhisLoop(s, i + 1i32, preds, cgPredNextCurrent(seg.array(i), current),
+                      push(acc, cgPrunePhi(seg.array(i), predsOf(preds, current))))
+    : cgPrunePhisLoop(seg.next, 0i32, preds, current, acc)
 
-fun cgFunctionCopyPropagateApply(f: CgFunction, aliases: List<AliasEntry>)
-  let resolved = cgResolvedAliases(aliases)
-  let renames = cgAliasesToRenames(resolved)
-  let eliminated = cgEliminatedNames(aliases)
-  let newOps = build(cgCopyPropagateFilterOps(f.fnOps, 0i32, eliminated, renames,
-                                              seqBuilder()))
-  let newStackVars = filter(cgFieldsOfOrEmpty(f.fnStackVars), (fld) => !strListMember(eliminated, fld.fieldName))
-  ret cgFunctionWith(f, newOps, CgStruct(newStackVars))
+fun cgPrunePhi(op: Op, live: Set<String>): Op => match(op)
+  (ph: OpPhi) => OpPhi(ph.phiTarget, filter(ph.phiSources, (s2) => contains(live, s2.sourceLabel)),
+                       ph.phiSavedVars)
+  (o: Op)     => op
 
-fun cgFunctionCopyPropagate(f)
-  let paramNames = cgParamNames(f)
-  let collected = cgCollectWrites(f.fnOps)
-  let gcSafe = union(paramNames, collected.zeroInit)
-  let aliases = cgBuildAliases(f.fnOps, collected.writes, collected.zeroInit, gcSafe, paramNames)
-  ret isEmpty(aliases) ? f : cgFunctionCopyPropagateApply(f, aliases)
+# For each labelled block: the set of predecessor labels ("" = the implicit
+# entry block) reachable via Jump/JumpIf/IfTask/SwitchJump/fall-through.
+class [final] PredEntry(peLabel: String, pePreds: Set<String>)
 
-# ── eliminate_common_subexpressions ─────────────────────────────────────────
+fun cgBlockPredecessors(f: CgFunction): List<PredEntry>
+  let p0 = cgPullOp(seqStream(f.fnOps))
+  ret cgPredLoop(p0.op, p0.stream, None, "", List())
 
-fun cgCSEWriteCountsTarget(acc, target): List<StrCount> => match(target)
-  (sv: RpStackVar) => strCountIncr(acc, sv.name)
-  (o: RParam)       => acc
+fun [tail] cgPredLoop(cur: Op|None, st: SeqStream<Op>, prev: Op|None, current,
+                        acc): List<PredEntry>
+  if cur is None
+    ret acc
+  let op = forceOp(cur)
+  let p = cgPullOp(st)
+  ret cgPredLoop(p.op, p.stream, op, cgPredNextCurrent(op, current),
+                   cgPredStep(op, prev, current, acc))
 
-fun cgCSEWriteCountsCallRegister(acc, register: RParam|None): List<StrCount> => match(register)
-  (r: RParam) => cgCSEWriteCountsTarget(acc, r)
-  ()           => acc
+fun cgPredNextCurrent(op, current) => match(op)
+  (lb: OpLabel) => lb.labelName
+  (o: Op)       => current
 
-fun cgCSEWriteCountsStep(acc, op): List<StrCount> => match(op)
-  (m: OpMove) => cgCSEWriteCountsTarget(acc, m.moveTarget)
-  (c: OpCall) => cgCSEWriteCountsCallRegister(acc, c.callRegister)
-  (n: OpNewObject) => cgCSEWriteCountsTarget(acc, n.newObjRegister)
-  (o: Op) => acc
+fun cgPredStep(op, prev: Op|None, current,
+                 acc) => match(op)
+  (lb: OpLabel)      => cgPredFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
+  (j: OpJump)        => predAdd(acc, j.jumpName, current)
+  (ji: OpJumpIf)     => predAdd(acc, ji.jumpIfLabel, current)
+  (t2: OpIfTask)     => predAdd(acc, t2.taskTarget, current)
+  (sw: OpSwitchJump) => fold(sw.switchCases, acc,
+                             (a, c) => predAdd(a, c.caseLabel, current))
+  (o: Op)            => acc
 
-fun cgCSEWriteCounts(ops: Segment<Op>|None)
-  ret fold(ops, List(), (acc, op) => cgCSEWriteCountsStep(acc, op))
+# Fall-through edge from the previous block unless the previous op was an
+# unconditional terminator (Abort included — abort() does not return).
+fun cgPredFallThroughEdge(lb: OpLabel, prev: Op|None, current,
+                        acc) => match(prev)
+  (p: Op) => cgPredPrevFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
+  ()       => acc
 
-fun cseIsMultiWriteStackVar(x, multiWrite: List<String>) => match(x)
-  (sv: RpStackVar) => strListMember(multiWrite, sv.name)
-  (o: RParam)       => false
+fun cgPredPrevFallsThrough(p) => match(p)
+  (j: OpJump)        => false
+  (r: OpReturn)      => false
+  (rv: OpReturnVoid) => false
+  (a: OpAbort)       => false
+  (o: Op)            => true
 
-fun cseIsEligible(rparam, multiWrite: List<String>) => match(rparam)
-  (sv: RpStackVar) => false
-  (gv: RpGlobalVar) => false
-  (gf: RpGlobalFunction) => false
-  (o: RParam) => !rpTest(rparam, (x) => cseIsMultiWriteStackVar(x, multiWrite))
+fun predEnsure(acc, label) => any(acc, (e2) => e2.peLabel == label)
+  ? acc
+  # A label -> predecessors map, looked up by label; its own order is not
+  # observed, and the predecessor lists are membership sets.
+  : prepend(PredEntry(label, Set()), acc)
 
-class [final] AvailEntry(cseExpr: RParam, cseTarget: RParam)
+fun predAdd(acc, label, src) => any(acc, (e2) => e2.peLabel == label)
+  ? map(acc, (e2) => e2.peLabel == label
+               ? PredEntry(label, add(e2.pePreds, src))
+               : e2)
+  : prepend(PredEntry(label, add(Set(), src)), acc)
 
-fun [tail] availableGet(available: List<AvailEntry>, key) => match(head(available))
-  (e: AvailEntry) => eqRParam(e.cseExpr, key) ? e.cseTarget : availableGet(tail(available), key)
-  ()               => None
+fun predsOf(acc: List<PredEntry>, label: String)
+  ret match(head(filter(acc, (e2) => e2.peLabel == label)))
+    (e2: PredEntry) => e2.pePreds
+    ()               => Set()
 
-fun cseIsHeapRead(x) => match(x)
-  (sf: RpStructField) => true
-  (of: RpObjectField) => true
-  (ae: RpArrayElement) => true
-  (o: RParam) => false
-
-# The CSE walk's accumulator. newOps is the rewritten op stream — instruction
-# order — so it is a builder; appending to it per op made the pass quadratic in
-# the function's own size. The other three are lookup tables whose order is not
-# observed: renames is applied by name, eliminated is membership-tested, and
-# available is searched for a matching expression.
-class [linear, final] CseAcc(csRenames: List<RpRename>,
-                             csAvailable: List<AvailEntry>,
-                             csEliminated: List<String>,
-                             csNewOps: SeqBuilder<Op>)
-
-fun cgCSEInvalidate(available: List<AvailEntry>)
-  ret filter(available, (e) => !rpTest(e.cseExpr, cseIsHeapRead))
-
-fun cgCSEEliminate([terminal] acc: CseAcc, targetVarName, aliasTo)
-  ret CseAcc(prepend(RpRename(targetVarName, rpParamName(aliasTo)),
-                     acc.csRenames),
-             acc.csAvailable,
-             prepend(targetVarName, acc.csEliminated), acc.csNewOps)
-
-fun cgCSENoEliminate([terminal] acc: CseAcc, m: OpMove, op, eligible, notMultiWrite)
-  let newAvailable = (eligible && notMultiWrite)
-    ? prepend(AvailEntry(m.moveSource, m.moveTarget), acc.csAvailable)
-    : acc.csAvailable
-  ret CseAcc(acc.csRenames, newAvailable, acc.csEliminated,
-             push(acc.csNewOps, op))
-
-fun cgCSEStepMoveStackVar([terminal] acc: CseAcc, m: OpMove, sv: RpStackVar, op, multiWrite: List<String>)
-  let eligible = cseIsEligible(m.moveSource, multiWrite)
-  let notMultiWrite = !strListMember(multiWrite, sv.name)
-  let hit = (eligible && notMultiWrite)
-    ? availableGet(acc.csAvailable, m.moveSource)
-    : None
-  ret match(hit)
-    (targetOf: RParam) => cgCSEEliminate(acc, sv.name, targetOf)
-    ()                   => cgCSENoEliminate(acc, m, op, eligible, notMultiWrite)
-
-fun cgCSEStepMove([terminal] acc: CseAcc, m: OpMove, op, multiWrite: List<String>)
-  ret match(m.moveTarget)
-    (sv: RpStackVar) => cgCSEStepMoveStackVar(acc, m, sv, op, multiWrite)
-    (ofield: RpObjectField) => CseAcc(acc.csRenames, cgCSEInvalidate(acc.csAvailable), acc.csEliminated,
-                               push(acc.csNewOps, op))
-    (o: RParam) => CseAcc(acc.csRenames, acc.csAvailable, acc.csEliminated,
-                   push(acc.csNewOps, op))
-
-fun cgCSEStep([terminal] acc: CseAcc, op0, multiWrite: List<String>)
-  let op = opRenameVars(op0, acc.csRenames)
-  ret match(op)
-    (l: OpLabel) => CseAcc(acc.csRenames, List(), acc.csEliminated,
-                    push(acc.csNewOps, op))
-    (m: OpMove) => cgCSEStepMove(acc, m, op, multiWrite)
-    (c: OpCall) => CseAcc(acc.csRenames, cgCSEInvalidate(acc.csAvailable), acc.csEliminated,
-                   push(acc.csNewOps, op))
-    (n: OpNewObject) => CseAcc(acc.csRenames, cgCSEInvalidate(acc.csAvailable), acc.csEliminated,
-                        push(acc.csNewOps, op))
-    (o: Op) => CseAcc(acc.csRenames, acc.csAvailable, acc.csEliminated,
-               push(acc.csNewOps, op))
-
-# An explicit walk, not a fold: the accumulator is linear.
-fun cgCSEFold(ops: Segment<Op>|None, multiWrite: List<String>)
-  ret cseBuild(cgCSELoop(ops, 0i32, multiWrite,
-                         CseAcc(List(), List(),
-                                List(), seqBuilder())))
-
-fun [tail] cgCSELoop(s: Segment<Op>|None, i, multiWrite: List<String>,
-                     [terminal] acc): CseAcc => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => i < seg.length
-    ? cgCSELoop(s, i + 1i32, multiWrite,
-                cgCSEStep(acc, seg.array(i), multiWrite))
-    : cgCSELoop(seg.next, 0i32, multiWrite, acc)
-
-class [final] CseOut(coEliminated: List<String>, coNewOps: Segment<Op>|None)
-
-fun cseBuild(acc: CseAcc) => CseOut(acc.csEliminated, build(acc.csNewOps))
-
-fun cgFunctionEliminateCSEApply(f: CgFunction, result: CseOut)
-  let newStackVars = filter(cgFieldsOfOrEmpty(f.fnStackVars),
-                         (fld) => !strListMember(result.coEliminated,
-                                                 fld.fieldName))
-  ret cgFunctionWith(f, result.coNewOps, CgStruct(newStackVars))
-
-fun cgFunctionEliminateCSE(f)
-  let writeCounts = cgCSEWriteCounts(f.fnOps)
-  let multiWrite = map(filter(writeCounts, (e) => e.scCount > 1), (e) => e.scName)
-  let result = cgCSEFold(f.fnOps, multiWrite)
-  ret isEmpty(result.coEliminated)
-    ? f
-    : cgFunctionEliminateCSEApply(f, result)
 
 # ══════════════════════════════════════════════════════════════════════════
 # Object

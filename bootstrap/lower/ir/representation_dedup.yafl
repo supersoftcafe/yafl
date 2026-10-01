@@ -1,0 +1,705 @@
+# bootstrap/representation_dedup.yafl — ported from
+# lowering/representation_dedup.py: merge objects, functions and globals whose
+# representation is identical. Monomorphisation gives every instantiation its
+# own vtables and functions even when T only ever sits behind a pointer; this
+# keeps one of each group of indistinguishable entities.
+#
+# EQUIVALENCE is the coarsest partition in which members agree on their own
+# shape and refer to equivalent entities at the same positions — partition
+# refinement from groups keyed by shape, split by the groups of references
+# until nothing splits (merges cycles, which bottom-up cannot). A shape
+# compares locals and labels up to renaming, types by eqCgType, everything else
+# as written. Python walks the dataclasses generically; here every variant is
+# spelled out, in the same classification: a string field is a reference, a
+# local, a label or a literal. Only the PARTITION must agree with Python — the
+# shape encoding is this file's own.
+#
+# RUNTIME IDENTITY merges only where nothing observes it: an instance-test
+# target (RpObjVtableEq) never merges; complex-enum leaves of one enum stay in
+# distinct groups; a discriminator read outside `== id` blocks every leaf
+# merge; the entry point is pinned. References are exactly trim's (trim has
+# just run). The first member of each group in app order survives.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Ir
+
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+fun mergeIdenticalRepresentations(a: CgApp, profile: Bool): CgApp
+  if profile
+    ret a
+  let objs = appObjects(a)
+  let fns = appFunctions(a)
+  let glbs = appGlobals(a)
+  let cx = rddContext(objs, fns, glbs)
+  let g = rddGraph(cx, objs, fns, glbs)
+  ret rddRewrite(a, cx, objs, fns, glbs, rddRefine(cx, g))
+
+# ── the node table ───────────────────────────────────────────────────────────
+# Nodes are numbered objects, then functions, then globals, each in app order;
+# a node's number is its position. Kind 0 = object, 1 = function, 2 = global.
+
+class [final] RddCx(cxObj: Dict<String, Int>, cxFn: Dict<String, Int>,
+                    cxGlb: Dict<String, Int>, cxLeafById: Dict<Int, Int>,
+                    cxNames: Array<String>, cxKinds: Array<Int>,
+                    cxParents: Array<String>, cxIsLeaf: Array<Bool>,
+                    cxDisc: Array<Int>, cxCount: Int)
+
+fun rddContext(objs: List<CgObject>, fns: List<CgFunction>,
+               glbs: List<CgGlobal>): RddCx
+  let nO = rddIndex(chain(map(objs, (o) => o.objName)), 0, Dict())
+  let nF = rddIndex(chain(map(fns, (f) => f.fnName)), nO.next, Dict())
+  let nG = rddIndex(chain(map(glbs, (g2) => g2.globalName)), nF.next, Dict())
+  let n = nG.next
+  ret RddCx(nO.ix, nF.ix, nG.ix, rddLeaves(chain(objs), 0, Dict()),
+            rddTable(map(objs, (o) => o.objName), map(fns, (f) => f.fnName),
+                     map(glbs, (g2) => g2.globalName), n),
+            rddTable(map(objs, (o) => 0), map(fns, (f) => 1), map(glbs, (g2) => 2), n),
+            rddTable(map(objs, (o) => rddStrList(o.objExtends)), map(fns, (f) => ""),
+                     map(glbs, (g2) => ""), n),
+            rddTable(map(objs, (o) => o.objDiscriminator != 0), map(fns, (f) => false),
+                     map(glbs, (g2) => false), n),
+            rddTable(map(objs, (o) => o.objDiscriminator), map(fns, (f) => 0),
+                     map(glbs, (g2) => 0), n),
+            n)
+
+# One value per node: objects', then functions', then globals'.
+fun rddTable<T>(os: List<T>, fs: List<T>, gs: List<T>, n: Int): Array<T>
+  ret build(rddPushAll(chain(gs), rddPushAll(chain(fs), rddPushAll(chain(os), arrayBuilder(n)))))
+
+fun [tail] rddPushAll<T>(c: Chain<T>, [terminal] b: ArrayBuilder<T>): ArrayBuilder<T> => match(c)
+  (nil: ChainEnd) => b
+  (l: ChainLink)  => rddPushAll(l.next, push(b, l.value))
+
+fun rddArray<T>(c: Chain<T>, n: Int): Array<T> => build(rddPushAll(c, arrayBuilder(n)))
+
+# A leaf's discriminator id → its node.
+fun [tail] rddLeaves(c: Chain<CgObject>, i: Int, d: Dict<Int, Int>): Dict<Int, Int> => match(c)
+  (nil: ChainEnd) => d
+  (l: ChainLink)  => rddLeaves(l.next, i + 1,
+                               l.value.objDiscriminator != 0 ? put(d, l.value.objDiscriminator, i) : d)
+
+fun [tail] rddIndex(c: Chain<String>, next: Int,
+                    ix: Dict<String, Int>): (ix: Dict<String, Int>, next: Int) => match(c)
+  (nil: ChainEnd) => (ix = ix, next = next)
+  (l: ChainLink)  => rddIndex(l.next, next + 1, put(ix, l.value, next))
+
+# The node a reference names, if it is one: role 0/1/2 = object/function/global.
+fun rddLookup(cx: RddCx, role: Int, name: String): Int|None
+  ret role == 0 ? get(cx.cxObj, name) : role == 1 ? get(cx.cxFn, name) : get(cx.cxGlb, name)
+
+# ── the shape encoder ────────────────────────────────────────────────────────
+# Every token is self-delimiting, so equal text means equal shape. The text
+# grows by `+` (a String extends its own buffer in place); everything the walk
+# learns lives in RddSt, rebuilt only when it changes.
+
+class [final] RddSt(stVars: Dict<String, Int>, stVarN: Int,
+                    stLabels: Dict<String, Int>, stLabelN: Int,
+                    stRefs: Chain<Int>, stSets: Chain<List<RParam>>, stSetN: Int,
+                    stPins: Chain<String>, stStray: Bool)
+
+class [final] RddEnc(eText: String, eSt: RddSt)
+
+# A fresh node: its own locals, labels and references; the pins and the
+# stray flag carry across the whole program.
+fun rddStart(pins: Chain<String>, stray: Bool) =>
+  RddEnc("", RddSt(Dict(), 0, Dict(), 0, ChainEnd(), ChainEnd(), 0, pins, stray))
+
+fun rddS(e: RddEnc, s: String): RddEnc => RddEnc((e.eText + s), e.eSt)
+
+fun rddLitText(s: String) => "'" + String(length(s)) + ":" + s
+
+fun rddLit(e: RddEnc, s: String): RddEnc => rddS(e, rddLitText(s))
+
+fun rddLitOpt(e: RddEnc, s: String|None): RddEnc => match(s)
+  (x: String) => rddLit(e, x)
+  ()          => rddS(e, "N")
+
+fun rddInt(e: RddEnc, n: Int): RddEnc => rddS(e, "#" + String(n) + ";")
+
+fun rddBool(e: RddEnc, b: Bool): RddEnc => rddS(e, b ? "T" : "F")
+
+fun rddTy(e: RddEnc, t: CgType): RddEnc => rddS(e, "Y" + rddType(t))
+
+fun rddTyOpt(e: RddEnc, t: CgType|None): RddEnc => match(t)
+  (x: CgType) => rddTy(e, x)
+  ()          => rddS(e, "N")
+
+# A type by eqCgType: fpSync is a refinement, not part of the text.
+fun rddType(t: CgType): String => match(t)
+  (x: CgInt)             => "i" + String(x.precision) + ";"
+  (x: CgFloat)           => "f" + String(x.precision) + ";"
+  (x: CgIntPtr)          => "p"
+  (x: CgDataPointer)     => "d"
+  (x: CgFuncPointer)     => "F"
+  (x: CgStruct)          => "s" + rddFieldsText(x.fields) + "]"
+  (x: CgImmediateStruct) => "S" + rddFieldsText(x.fields) + "]"
+  (x: CgVoid)            => "v"
+  (x: CgArray)           => "a" + rddType(x.elemType) + String(x.arrLength) + ";"
+  (x: CgTaskWrapper)     => "t" + rddType(x.inner)
+  (x: CgStr)             => "r"
+
+fun rddFieldsText(fs: List<CgField>): String
+  ret fold(fs, "", (acc, f) => acc + rddLitText(f.fieldName) + rddType(f.fieldType))
+
+fun rddStrList(xs: List<String>): String
+  ret fold(xs, "", (acc, x) => acc + rddLitText(x)) + "]"
+
+# ── locals and labels ────────────────────────────────────────────────────────
+# Numbered by first use. A name whose spelling carries meaning to a later
+# stage (the receiver, async lowering's state, ssa_validate's scratch
+# prefixes) also carries that spelling, so it only merges with its own kind.
+
+fun rddKind(name: String): String
+  if name == "this" || name == "$state" || name == "$completed_task" || name == "$continuation"
+    ret name
+  ret length(name) > 0 && byteAt(name, 0) == '$' ? rddScratch(name, 1) : ""
+
+fun [tail] rddScratch(name: String, i: Int): String
+  if i >= length(name)
+    ret ""
+  let b = byteAt(name, i)
+  if b >= 'a' && b <= 'z'
+    ret rddScratch(name, i + 1)
+  ret i > 1 && (b == '_' || b == '$') ? slice(name, 0, i + 1) : ""
+
+# The number of `name`, assigning the next one on first sight.
+fun rddVarSt(st: RddSt, name: String): (st: RddSt, n: Int) => match(get(st.stVars, name))
+  (i: Int) => (st = st, n = i)
+  ()       => (st = RddSt(put(st.stVars, name, st.stVarN), st.stVarN + 1, st.stLabels,
+                         st.stLabelN, st.stRefs, st.stSets, st.stSetN, st.stPins,
+                         st.stStray),
+               n = st.stVarN)
+
+fun rddVarText(n: Int, name: String) => "v" + String(n) + "," + rddLitText(rddKind(name))
+
+fun rddVar(e: RddEnc, name: String): RddEnc
+  let v = rddVarSt(e.eSt, name)
+  ret RddEnc((e.eText + rddVarText(v.n, name)), v.st)
+
+fun rddLabel(e: RddEnc, name: String): RddEnc
+  let st = e.eSt
+  ret match(get(st.stLabels, name))
+    (i: Int) => RddEnc((e.eText + "l" + String(i) + ";"), st)
+    ()       => RddEnc((e.eText + "l" + String(st.stLabelN) + ";"),
+                       RddSt(st.stVars, st.stVarN, put(st.stLabels, name, st.stLabelN),
+                             st.stLabelN + 1, st.stRefs, st.stSets, st.stSetN,
+                             st.stPins, st.stStray))
+
+fun rddRef(e: RddEnc, node: Int): RddEnc
+  let st = e.eSt
+  ret RddEnc((e.eText + "R"),
+             RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN,
+                   ChainLink(node, st.stRefs), st.stSets, st.stSetN, st.stPins, st.stStray))
+
+# A string in a reference role: the node it names, else as written.
+fun rddName(e: RddEnc, cx: RddCx, role: Int, name: String): RddEnc
+  ret match(rddLookup(cx, role, name))
+    (n: Int) => rddRef(e, n)
+    ()       => rddLit(e, name)
+
+fun rddNameOpt(e: RddEnc, cx: RddCx, role: Int, name: String|None): RddEnc
+  ret match(name)
+    (x: String) => rddName(e, cx, role, x)
+    ()          => rddS(e, "N")
+
+fun rddPin(e: RddEnc, name: String): RddEnc
+  let st = e.eSt
+  ret RddEnc(e.eText, RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
+                          st.stSets, st.stSetN, ChainLink(name, st.stPins), st.stStray))
+
+fun rddStray(e: RddEnc): RddEnc
+  let st = e.eSt
+  ret RddEnc(e.eText, RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
+                          st.stSets, st.stSetN, st.stPins, true))
+
+# saved_vars is a SET in Python, so it may not number a local: it is recorded
+# here and encoded by rddCloseSets, once every local has its number.
+fun rddSaved(e: RddEnc, vs: List<RParam>): RddEnc
+  let st = e.eSt
+  ret RddEnc((e.eText + "S" + String(st.stSetN) + ";"),
+             RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
+                   ChainLink(vs, st.stSets), st.stSetN + 1, st.stPins, st.stStray))
+
+# ── values ───────────────────────────────────────────────────────────────────
+
+fun [tail] rddParams(e: RddEnc, cx: RddCx, c: Chain<RParam>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "]")
+  (l: ChainLink)  => rddParams(rddParam(e, cx, l.value), cx, l.next)
+
+fun rddParamList(e: RddEnc, cx: RddCx, xs: List<RParam>): RddEnc
+  ret rddParams(rddS(e, "["), cx, chain(xs))
+
+fun rddParamOpt(e: RddEnc, cx: RddCx, x: RParam|None): RddEnc => match(x)
+  (p: RParam) => rddParam(e, cx, p)
+  ()          => rddS(e, "N")
+
+fun [tail] rddNamed(e: RddEnc, cx: RddCx, c: Chain<RpNamedValue>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "]")
+  (l: ChainLink)  => rddNamed(rddParam(rddLit(e, l.value.name), cx, l.value.value), cx, l.next)
+
+fun rddNamedList(e: RddEnc, cx: RddCx, xs: List<RpNamedValue>): RddEnc
+  ret rddNamed(rddS(e, "["), cx, chain(xs))
+
+fun rddParam(e: RddEnc, cx: RddCx, r: RParam): RddEnc => match(r)
+  (x: RpInitArray)           => rddParamList(rddTy(rddS(e, "IA;"), x.memberType), cx, x.values)
+  (x: RpNewStruct)           => rddNamedList(rddS(e, "NS;"), cx, x.values)
+  (x: RpRuntimeInvoke)       => rddTy(rddParam(rddLit(rddS(e, "RI;"), x.function), cx, x.parameters),
+                                      x.resultType)
+  (x: RpStructField)         => rddLit(rddParam(rddS(e, "SF;"), cx, x.structVal), x.field)
+  (x: RpString)              => rddLit(rddS(e, "ST;"), x.value)
+  (x: RpInteger)             => rddInt(rddInt(rddS(e, "IN;"), x.value), x.precision)
+  (x: RpFloat)               => rddInt(rddLit(rddS(e, "FL;"), String(x.value)), x.precision)
+  (x: RpIntEqConst)          => rddIntEqConst(e, cx, x)
+  (x: RpNullPointer)         => rddS(e, "NP;")
+  (x: RpStaticObjectRef)     => rddName(rddS(e, "SO;"), cx, 2, x.name)
+  (x: RpVtableDiscriminator) => rddParam(rddS(rddStray(e), "VD;"), cx, x.value)
+  (x: RpObjVtableEq)         => rddObjVtableEq(e, cx, x)
+  (x: RpSyncWrap)            => rddTy(rddParam(rddS(e, "SW;"), cx, x.value), x.wrapperType)
+  (x: RpZeroOf)              => rddTy(rddS(e, "ZO;"), x.valueType)
+  (x: RpNewStructTyped)      => rddNamedList(rddTy(rddS(e, "NT;"), x.structType), cx, x.values)
+  (x: RpTagTask)             => rddTy(rddParam(rddS(e, "TT;"), cx, x.task), x.targetType)
+  (x: RpGlobalFunction)      => rddGlobalFunction(e, cx, x)
+  (x: RpVirtualFunction)     => rddBool(rddBool(rddParam(rddLit(rddS(e, "VF;"), x.name), cx, x.object),
+                                                x.fastLookup), x.sync)
+  (x: RpPointerTo)           => rddParam(rddS(e, "PT;"), cx, x.value)
+  (x: RpStackVar)            => rddTy(rddVar(rddS(e, "V;"), x.name), x.fieldType)
+  (x: RpGlobalVar)           => rddName(rddTy(rddS(e, "GV;"), x.fieldType), cx, 2, x.name)
+  # `fresh` is a refinement (compare=False in Python), not part of the shape.
+  (x: RpObjectField)         => rddParamOpt(rddLit(rddName(rddParam(rddTy(rddS(e, "OF;"), x.fieldType),
+                                                                     cx, x.pointer),
+                                                           cx, 0, x.objectName),
+                                                   x.field),
+                                            cx, x.index)
+  (x: RpArrayElement)        => rddBool(rddParam(rddLit(rddLit(rddName(rddParam(rddTy(rddS(e, "AE;"),
+                                                                                       x.elementType),
+                                                                                cx, x.pointer),
+                                                                        cx, 0, x.objectName),
+                                                                x.field),
+                                                        x.lengthField),
+                                                cx, x.index),
+                                        x.checked)
+  (x: RpFunField)            => rddLit(rddParam(rddS(e, "FF;"), cx, x.ffFun), x.ffPart)
+  (x: RpMakeFun)             => rddParam(rddParam(rddS(e, "MF;"), cx, x.mfCode), cx, x.mfEnv)
+
+# `v->vtable->discriminator == id`: the id names a leaf, so it is a reference
+# to that object. Tagged apart from a plain `v == id`, which it is not.
+fun rddIntEqConst(e: RddEnc, cx: RddCx, x: RpIntEqConst): RddEnc
+  ret match(x.value)
+    (vd: RpVtableDiscriminator) => rddLeafId(rddParam(rddS(e, "IV;"), cx, vd.value), cx, x.constVal)
+    (o: RParam)                 => rddInt(rddParam(rddS(e, "IE;"), cx, o), x.constVal)
+
+fun rddLeafId(e: RddEnc, cx: RddCx, id: Int): RddEnc => match(get(cx.cxLeafById, id))
+  (n: Int) => rddRef(e, n)
+  ()       => rddInt(e, id)
+
+# An instance-test target never merges: the test would answer true for the
+# other type.
+fun rddObjVtableEq(e: RddEnc, cx: RddCx, x: RpObjVtableEq): RddEnc
+  let pinned = match(x.className)
+    (n: String) => rddPin(e, n)
+    ()          => e
+  ret rddLitOpt(rddNameOpt(rddParam(rddS(pinned, "OV;"), cx, x.value), cx, 0, x.className),
+                x.externSymbol)
+
+# An external function's name is a C symbol, not a reference (as in trim).
+fun rddGlobalFunction(e: RddEnc, cx: RddCx, x: RpGlobalFunction): RddEnc
+  let named = x.external ? rddLit(rddS(e, "GF;"), x.name) : rddName(rddS(e, "GF;"), cx, 1, x.name)
+  ret rddBool(rddBool(rddLitOpt(rddBool(rddParamOpt(named, cx, x.object), x.external),
+                                x.cSymbol),
+                      x.impure),
+              x.sync)
+
+# ── ops ──────────────────────────────────────────────────────────────────────
+
+fun [tail] rddCases(e: RddEnc, c: Chain<OpCase>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "]")
+  (l: ChainLink)  => rddCases(rddLabel(rddInt(e, l.value.caseValue), l.value.caseLabel), l.next)
+
+fun [tail] rddSources(e: RddEnc, cx: RddCx, c: Chain<OpPhiSource>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "]")
+  (l: ChainLink)  => rddSources(rddParam(rddLabel(e, l.value.sourceLabel), cx, l.value.sourceValue),
+                                cx, l.next)
+
+fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
+  (x: OpLabel)         => rddLabel(rddSaved(rddS(e, "oL;"), x.labelSavedVars), x.labelName)
+  (x: OpMove)          => rddBool(rddParam(rddParam(rddSaved(rddS(e, "oM;"), x.moveSavedVars),
+                                                    cx, x.moveTarget),
+                                           cx, x.moveSource),
+                                  x.moveKeep)
+  (x: OpJump)          => rddLabel(rddSaved(rddS(e, "oJ;"), x.jumpSavedVars), x.jumpName)
+  (x: OpJumpIf)        => rddBool(rddParam(rddLabel(rddSaved(rddS(e, "oI;"), x.jumpIfSavedVars),
+                                                    x.jumpIfLabel),
+                                           cx, x.jumpIfCondition),
+                                  x.jumpIfInvert)
+  (x: OpIfTask)        => rddLabel(rddInt(rddParam(rddParam(rddParam(rddParam(
+                            rddSaved(rddS(e, "oT;"), x.taskSavedVars),
+                            cx, x.taskCondition), cx, x.taskSource), cx, x.taskLhs),
+                            cx, x.callIdLhs), x.callId), x.taskTarget)
+  (x: OpAssertNotTask) => rddParam(rddSaved(rddS(e, "oA;"), x.antSavedVars), cx, x.antCondition)
+  (x: OpSwitchJump)    => rddCases(rddS(rddParam(rddSaved(rddS(e, "oS;"), x.switchSavedVars),
+                                                 cx, x.switchCondition), "["),
+                                   chain(x.switchCases))
+  (x: OpNewObject)     => rddParamOpt(rddParam(rddName(rddSaved(rddS(e, "oN;"), x.newObjSavedVars),
+                                                       cx, 0, x.newObjName),
+                                               cx, x.newObjRegister),
+                                      cx, x.newObjSize)
+  (x: OpCall)          => rddTyOpt(rddBool(rddBool(rddParamOpt(rddParam(rddParam(
+                            rddSaved(rddS(e, "oC;"), x.callSavedVars),
+                            cx, x.callFunction), cx, x.callParameters), cx, x.callRegister),
+                            x.callMusttail), x.callImpure), x.callResultType)
+  (x: OpReturnVoid)    => rddSaved(rddS(e, "oV;"), x.retVoidSavedVars)
+  (x: OpAbort)         => rddLit(rddSaved(rddS(e, "oX;"), x.abortSavedVars), x.abortReason)
+  (x: OpReturn)        => rddParam(rddSaved(rddS(e, "oR;"), x.returnSavedVars), cx, x.returnValue)
+  (x: OpParallelCall)  => rddParamOpt(rddParamList(rddParamList(rddSaved(rddS(e, "oP;"), x.parSavedVars),
+                                                                cx, x.parCalls),
+                                                   cx, x.parResults),
+                                      cx, x.parRegister)
+  (x: OpPhi)           => rddSources(rddS(rddParam(rddSaved(rddS(e, "oH;"), x.phiSavedVars),
+                                                   cx, x.phiTarget), "["),
+                                     cx, chain(x.phiSources))
+  (x: OpProfEnter)     => rddInt(rddSaved(rddS(e, "oE;"), x.profEnterSavedVars), x.profEnterFnId)
+  (x: OpProfLeave)     => rddSaved(rddS(e, "oF;"), x.profLeaveSavedVars)
+
+fun [tail] rddOps(e: RddEnc, cx: RddCx, s: Segment<Op>|None, i: Int32): RddEnc => match(s)
+  (nil: None)        => rddS(e, "]")
+  (seg: Segment<Op>) => i < seg.length
+    ? rddOps(rddOp(e, cx, seg.array(i)), cx, s, i + 1i32)
+    : rddOps(e, cx, seg.next, 0i32)
+
+# ── nodes ────────────────────────────────────────────────────────────────────
+
+fun rddObject(e: RddEnc, cx: RddCx, o: CgObject): RddEnc
+  let pinned = o.objIsForeign ? rddPin(e, o.objName) : e
+  let head = rddBool(rddBool(rddBool(rddBool(rddLitOpt(rddTy(rddS(pinned, "O;"), o.objFields),
+                                                       o.objLengthField),
+                                             o.objIsForeign),
+                                     o.objIsMutable),
+                             o.objIsPinnable),
+                     o.objDiscriminator != 0)
+  ret rddSlots(rddExtends(rddS(head, "["), cx, chain(o.objExtends)), cx, chain(o.objFunctions))
+
+fun [tail] rddExtends(e: RddEnc, cx: RddCx, c: Chain<String>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "][")
+  (l: ChainLink)  => rddExtends(rddName(e, cx, 0, l.value), cx, l.next)
+
+fun [tail] rddSlots(e: RddEnc, cx: RddCx, c: Chain<CgFuncSlot>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "]")
+  (l: ChainLink)  => rddSlots(rddName(rddLit(e, l.value.slotVirtualName), cx, 1,
+                                      l.value.slotGlobalName),
+                              cx, l.next)
+
+# Parameters are positional; locals are numbered by first use, then any
+# declared-but-unused in declaration order, then any seen only in a saved set
+# by name; declarations compare as a set.
+fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
+  let withParams = rddDecls(rddS(e, "Fn;["), chain(rddFields(f.fnParams)))
+  let head = rddBool(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
+                                                   f.fnResult),
+                                             f.fnSync),
+                                     f.fnTail),
+                             f.fnBypassAsync),
+                     f.fnAlwaysInline)
+  let body = rddOps(rddS(head, "["), cx, f.fnOps, 0i32)
+  let declared = rddNumber(body, chain(map(rddFields(f.fnStackVars), (fd) => fd.fieldName)))
+  ret rddLocals(rddCloseSets(declared), rddFields(f.fnStackVars))
+
+fun rddFields(t: CgType): List<CgField> => match(t)
+  (s: CgStruct)          => s.fields
+  (s: CgImmediateStruct) => s.fields
+  (o: CgType)            => List()
+
+fun [tail] rddDecls(e: RddEnc, c: Chain<CgField>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "]")
+  (l: ChainLink)  => rddDecls(rddTy(rddVar(e, l.value.fieldName), l.value.fieldType), l.next)
+
+# Assign numbers without encoding anything.
+fun [tail] rddNumber(e: RddEnc, c: Chain<String>): RddEnc => match(c)
+  (nil: ChainEnd) => e
+  (l: ChainLink)  => rddNumber(RddEnc(e.eText, rddVarSt(e.eSt, l.value).st), l.next)
+
+# One local as (number, text), for the sorted set encodings.
+class [final] RddLocal(lcN: Int, lcText: String)
+
+fun rddLocalOf(st: RddSt, name: String, t: CgType): RddLocal
+  let n = match(get(st.stVars, name))
+    (i: Int) => i
+    ()       => -1
+  ret RddLocal(n, rddVarText(n, name) + "Y" + rddType(t))
+
+# A set of locals: sorted by number, duplicates dropped (a Python set).
+fun rddLocalSet(st: RddSt, ls: List<RddLocal>): String
+  let sorted = sortBy(ls, (a2, b2) => a2.lcN < b2.lcN)
+  ret fold(sorted, (text = "{", last = -2),
+           (acc, l) => l.lcN == acc.last ? acc
+                                          : (text = acc.text + l.lcText, last = l.lcN)).text + "}"
+
+fun rddSetNames(vs: List<RParam>): List<String>
+  ret sortBy(fold(vs, List(), rddAddName), (a2, b2) => a2 < b2)
+
+fun rddAddName(acc: List<String>, v: RParam): List<String> => match(v)
+  (sv: RpStackVar) => prepend(sv.name, acc)
+  (o: RParam)      => acc
+
+fun rddSetLocals(st: RddSt, vs: List<RParam>): List<RddLocal>
+  ret fold(vs, List(), (acc, v) => rddAddLocal(st, acc, v))
+
+fun rddAddLocal(st: RddSt, acc: List<RddLocal>, v: RParam): List<RddLocal> => match(v)
+  (sv: RpStackVar) => prepend(rddLocalOf(st, sv.name, sv.fieldType), acc)
+  (o: RParam)      => acc
+
+fun rddCloseSets(e: RddEnc): RddEnc
+  let sets = rddReverse(e.eSt.stSets, ChainEnd())
+  let numbered = rddNumberSets(e, sets)
+  let st = numbered.eSt
+  ret RddEnc((numbered.eText + fold(List(sets), "<",
+                                       (acc, vs) => acc + rddLocalSet(st, rddSetLocals(st, vs))) + ">"),
+             st)
+
+fun [tail] rddNumberSets(e: RddEnc, c: Chain<List<RParam>>): RddEnc => match(c)
+  (nil: ChainEnd) => e
+  (l: ChainLink)  => rddNumberSets(rddNumber(e, chain(rddSetNames(l.value))), l.next)
+
+fun rddLocals(e: RddEnc, decls: List<CgField>): RddEnc
+  let st = e.eSt
+  ret RddEnc((e.eText + rddLocalSet(st, map(decls, (d) => rddLocalOf(st, d.fieldName, d.fieldType)))),
+             st)
+
+fun [tail] rddReverse<T>(c: Chain<T>, acc: Chain<T>): Chain<T> => match(c)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => rddReverse(l.next, ChainLink(l.value, acc))
+
+fun rddGlobal(e: RddEnc, cx: RddCx, g2: CgGlobal): RddEnc
+  # Interned string literals are left out of the GC root set by name.
+  let head = rddBool(rddTy(rddS(e, "G;"), g2.globalType), startsWith(g2.globalName, "$strings::"))
+  ret rddNameOpt(rddNameOpt(rddNameOpt(rddParamOpt(head, cx, g2.globalInit),
+                                       cx, 0, g2.globalObjectName),
+                            cx, 1, g2.globalLazyInitFunction),
+                 cx, 2, g2.globalLazyInitFlag)
+
+# ── the graph ────────────────────────────────────────────────────────────────
+# Shapes are interned as they are made: equal text, equal id.
+
+class [final] RddGraph(gShape: Array<Int>, gRefs: Array<List<Int>>, gPinned: Array<Bool>)
+
+class [final] RddBuild(bIntern: Dict<String, Int>, bNext: Int, bShapes: Chain<Int>,
+                       bRefs: Chain<List<Int>>, bPins: Chain<String>, bStray: Bool)
+
+fun rddAdd(b: RddBuild, e: RddEnc): RddBuild
+  let st = e.eSt
+  let text = e.eText
+  let refs = List(rddReverse(st.stRefs, ChainEnd()))
+  ret match(get(b.bIntern, text))
+    (id: Int) => RddBuild(b.bIntern, b.bNext, ChainLink(id, b.bShapes),
+                          ChainLink(refs, b.bRefs), st.stPins, st.stStray)
+    ()        => RddBuild(put(b.bIntern, text, b.bNext), b.bNext + 1,
+                          ChainLink(b.bNext, b.bShapes), ChainLink(refs, b.bRefs),
+                          st.stPins, st.stStray)
+
+fun rddGraph(cx: RddCx, objs: List<CgObject>, fns: List<CgFunction>,
+             glbs: List<CgGlobal>): RddGraph
+  let b0 = RddBuild(Dict(), 0, ChainEnd(), ChainEnd(), ChainEnd(), false)
+  let b1 = fold(objs, b0, (b, o) => rddAdd(b, rddObject(rddStart(b.bPins, b.bStray), cx, o)))
+  let b2 = fold(fns, b1, (b, f) => rddAdd(b, rddFunction(rddStart(b.bPins, b.bStray), cx, f)))
+  let b3 = fold(glbs, b2, (b, g2) => rddAdd(b, rddGlobal(rddStart(b.bPins, b.bStray), cx, g2)))
+  let pinnedNames = fold(List(b3.bPins), setEmpty(), (s2, n) => setAdd(s2, n))
+  ret RddGraph(rddArray(rddReverse(b3.bShapes, ChainEnd()), cx.cxCount),
+               rddArray(rddReverse(b3.bRefs, ChainEnd()), cx.cxCount),
+               build(rddPinned(cx, pinnedNames, b3.bStray, 0, arrayBuilder(cx.cxCount))))
+
+# Pinned: an instance-test target or foreign object (by name, objects only),
+# the entry point, and — after a stray discriminator read — every leaf.
+fun [tail] rddPinned(cx: RddCx, names: StrSet, stray: Bool, i: Int,
+                     [terminal] acc: ArrayBuilder<Bool>): ArrayBuilder<Bool>
+  if i >= cx.cxCount
+    ret acc
+  let kind = cx.cxKinds[i]
+  let name = cx.cxNames[i]
+  let p = (kind == 0 && (setHas(names, name) || (stray && cx.cxIsLeaf[i])))
+       || (kind == 1 && name == "__entrypoint__")
+  ret rddPinned(cx, names, stray, i + 1, push(acc, p))
+
+# ── partition refinement ─────────────────────────────────────────────────────
+
+class [final] RddGroups(grOf: Array<Int>, grCount: Int)
+
+fun rddRefine(cx: RddCx, g: RddGraph): RddGroups
+  let initial = rddNumbered(cx.cxCount,
+                            (i) => g.gPinned[i] ? "p" + String(i) : "s" + String(g.gShape[i]))
+  ret rddRefineLoop(cx, g, initial)
+
+fun [tail] rddRefineLoop(cx: RddCx, g: RddGraph, groups: RddGroups): RddGroups
+  let stable = rddStable(g, groups, cx.cxCount)
+  ret match(rddSeparate(cx, stable))
+    (split: RddGroups) => rddRefineLoop(cx, g, split)
+    ()                 => stable
+
+fun [tail] rddStable(g: RddGraph, groups: RddGroups, n: Int): RddGroups
+  let refined = rddNumbered(n,
+                            (i) => String(groups.grOf[i]) + ":"
+                                   + fold(g.gRefs[i], "", (acc, r) => acc + String(groups.grOf[r]) + ","))
+  ret refined.grCount == groups.grCount ? groups : rddStable(g, refined, n)
+
+# Number nodes 0..n-1 by key, in node order.
+fun rddNumbered(n: Int, key: (:Int): String): RddGroups
+  let out = rddNumberLoop(n, key, 0, Dict(), 0, arrayBuilder(n))
+  ret RddGroups(out.of, out.count)
+
+fun [tail] rddNumberLoop(n: Int, key: (:Int): String, i: Int, ids: Dict<String, Int>,
+                         next: Int, [terminal] acc: ArrayBuilder<Int>): (of: Array<Int>, count: Int)
+  if i >= n
+    ret (of = build(acc), count = next)
+  let k = key(i)
+  ret match(get(ids, k))
+    (id: Int) => rddNumberLoop(n, key, i + 1, ids, next, push(acc, id))
+    ()        => rddNumberLoop(n, key, i + 1, put(ids, k, next), next + 1, push(acc, next))
+
+# Split any group holding two leaves of the same enum: a dispatch over it must
+# still see a distinct id per leaf. Each leaf, in node order, goes to the first
+# sub-group without a sibling of it. None when nothing splits.
+fun rddSeparate(cx: RddCx, groups: RddGroups): RddGroups|None
+  let placed = rddPlaceLeaves(cx, groups, 0, Dict(), Dict(), false)
+  if !placed.split
+    ret None
+  ret rddNumbered(cx.cxCount,
+                  (i) => String(groups.grOf[i]) + "/" + String(rddBucketOf(placed.bucket, i)))
+
+fun rddBucketOf(bucket: Dict<Int, Int>, i: Int): Int => match(get(bucket, i))
+  (b: Int) => b
+  ()       => 0
+
+# The sub-groups of one group: the parents already in each, by position.
+class [final] RddBuckets(bkSets: Dict<Int, StrSet>, bkCount: Int)
+
+fun [tail] rddPlaceLeaves(cx: RddCx, groups: RddGroups, i: Int,
+                          buckets: Dict<Int, RddBuckets>, bucket: Dict<Int, Int>,
+                          split: Bool): (bucket: Dict<Int, Int>, split: Bool)
+  if i >= cx.cxCount
+    ret (bucket = bucket, split = split)
+  if !cx.cxIsLeaf[i]
+    ret rddPlaceLeaves(cx, groups, i + 1, buckets, bucket, split)
+  let gr = groups.grOf[i]
+  let parent = cx.cxParents[i]
+  let have = match(get(buckets, gr))
+    (bs: RddBuckets) => bs
+    ()               => RddBuckets(Dict(), 0)
+  let at = rddFirstWithout(have, parent, 0)
+  let sets = put(have.bkSets, at, setAdd(rddBucketSet(have, at), parent))
+  let grown = RddBuckets(sets, at == have.bkCount ? have.bkCount + 1 : have.bkCount)
+  ret rddPlaceLeaves(cx, groups, i + 1, put(buckets, gr, grown),
+                     put(bucket, i, at), split || at > 0)
+
+fun rddBucketSet(bs: RddBuckets, k: Int): StrSet => match(get(bs.bkSets, k))
+  (s2: StrSet) => s2
+  ()           => setEmpty()
+
+fun [tail] rddFirstWithout(bs: RddBuckets, parent: String, k: Int): Int
+  if k >= bs.bkCount
+    ret k
+  ret setHas(rddBucketSet(bs, k), parent) ? rddFirstWithout(bs, parent, k + 1) : k
+
+# ── rewrite: keep the first member of each group, redirect the rest to it ────
+
+class [final] RddRenames(rnObj: Dict<String, String>, rnFn: Dict<String, String>,
+                         rnGlb: Dict<String, String>, rnIds: Dict<Int, Int>,
+                         rnAny: Bool)
+
+fun rddRewrite(a: CgApp, cx: RddCx, objs: List<CgObject>, fns: List<CgFunction>,
+               glbs: List<CgGlobal>, groups: RddGroups): CgApp
+  let rn = rddRenames(cx, groups)
+  if !rn.rnAny
+    ret a
+  ret appOf(map(filter(fns, (f) => get(rn.rnFn, f.fnName) is None),
+                (f) => rddRenameFunction(rn, f)),
+            map(filter(objs, (o) => get(rn.rnObj, o.objName) is None),
+                (o) => rddRenameObject(rn, o)),
+            map(filter(glbs, (g2) => get(rn.rnGlb, g2.globalName) is None),
+                (g2) => rddRenameGlobal(rn, g2)))
+
+# Survivor per group: its first node. Every other node is renamed to it; a
+# merged leaf's discriminator id maps to the survivor's.
+fun rddRenames(cx: RddCx, groups: RddGroups): RddRenames
+  let first = rddFirsts(groups, cx.cxCount, 0, Dict())
+  ret rddRenameLoop(cx, groups, first, 0, RddRenames(Dict(), Dict(), Dict(), Dict(), false))
+
+fun [tail] rddFirsts(groups: RddGroups, n: Int, i: Int, first: Dict<Int, Int>): Dict<Int, Int>
+  if i >= n
+    ret first
+  let gr = groups.grOf[i]
+  ret rddFirsts(groups, n, i + 1, get(first, gr) is None ? put(first, gr, i) : first)
+
+fun [tail] rddRenameLoop(cx: RddCx, groups: RddGroups, first: Dict<Int, Int>, i: Int,
+                         rn: RddRenames): RddRenames
+  if i >= cx.cxCount
+    ret rn
+  let s = match(get(first, groups.grOf[i]))
+    (n: Int) => n
+    ()       => i
+  if s == i
+    ret rddRenameLoop(cx, groups, first, i + 1, rn)
+  let name = cx.cxNames[i]
+  let to = cx.cxNames[s]
+  let kind = cx.cxKinds[i]
+  let ids = cx.cxDisc[i] != 0 ? put(rn.rnIds, cx.cxDisc[i], cx.cxDisc[s]) : rn.rnIds
+  let next = kind == 0 ? RddRenames(put(rn.rnObj, name, to), rn.rnFn, rn.rnGlb, ids, true)
+           : kind == 1 ? RddRenames(rn.rnObj, put(rn.rnFn, name, to), rn.rnGlb, ids, true)
+           : RddRenames(rn.rnObj, rn.rnFn, put(rn.rnGlb, name, to), ids, true)
+  ret rddRenameLoop(cx, groups, first, i + 1, next)
+
+fun rddTo(d: Dict<String, String>, name: String): String => match(get(d, name))
+  (x: String) => x
+  ()          => name
+
+fun rddToOpt(d: Dict<String, String>, name: String|None): String|None => match(name)
+  (x: String) => rddTo(d, x)
+  ()          => None
+
+fun rddRenameObject(rn: RddRenames, o: CgObject): CgObject
+  ret CgObject(o.objName, map(o.objExtends, (x) => rddTo(rn.rnObj, x)),
+               map(o.objFunctions, (sl) => CgFuncSlot(sl.slotVirtualName,
+                                                      rddTo(rn.rnFn, sl.slotGlobalName))),
+               o.objFields, o.objLengthField, o.objComment, o.objIsForeign,
+               o.objIsMutable, o.objDiscriminator, o.objIsPinnable)
+
+fun rddRenameFunction(rn: RddRenames, f: CgFunction): CgFunction
+  ret cgFunctionWith(f, map(f.fnOps, (op) => rddRenameOp(rn, op)), f.fnStackVars)
+
+fun rddRenameOp(rn: RddRenames, op: Op): Op
+  let renamed = opReplaceParams(op, (p) => rddRenameParam(rn, p))
+  ret match(renamed)
+    (x: OpNewObject) => OpNewObject(rddTo(rn.rnObj, x.newObjName), x.newObjRegister,
+                                    x.newObjSize, x.newObjSavedVars)
+    (o: Op)          => renamed
+
+fun rddRenameGlobal(rn: RddRenames, g2: CgGlobal): CgGlobal
+  ret CgGlobal(g2.globalName, g2.globalType, rddRenameInit(rn, g2.globalInit),
+               rddToOpt(rn.rnObj, g2.globalObjectName),
+               rddToOpt(rn.rnFn, g2.globalLazyInitFunction),
+               rddToOpt(rn.rnGlb, g2.globalLazyInitFlag))
+
+fun rddRenameInit(rn: RddRenames, init: RParam|None): RParam|None => match(init)
+  (x: RParam) => rpReplaceParams(x, (p) => rddRenameParam(rn, p))
+  ()          => None
+
+# Applied bottom-up by rpReplaceParams: each node sees its children renamed.
+fun rddRenameParam(rn: RddRenames, p: RParam): RParam => match(p)
+  (x: RpGlobalFunction)  => x.external ? p
+                              : RpGlobalFunction(rddTo(rn.rnFn, x.name), x.object, x.external,
+                                                 x.cSymbol, x.impure, x.sync)
+  (x: RpGlobalVar)       => RpGlobalVar(x.fieldType, rddTo(rn.rnGlb, x.name))
+  (x: RpStaticObjectRef) => RpStaticObjectRef(rddTo(rn.rnGlb, x.name))
+  (x: RpObjVtableEq)     => RpObjVtableEq(x.value, rddToOpt(rn.rnObj, x.className), x.externSymbol)
+  (x: RpObjectField)     => RpObjectField(x.fieldType, x.pointer, rddTo(rn.rnObj, x.objectName),
+                                          x.field, x.index, x.fresh)
+  (x: RpArrayElement)    => RpArrayElement(x.elementType, x.pointer, rddTo(rn.rnObj, x.objectName),
+                                           x.field, x.lengthField, x.index, x.checked)
+  (x: RpIntEqConst)      => match(x.value)
+    (vd: RpVtableDiscriminator) => match(get(rn.rnIds, x.constVal))
+      (id: Int) => RpIntEqConst(x.value, id)
+      ()        => p
+    (o: RParam)                 => p
+  (o: RParam)            => p

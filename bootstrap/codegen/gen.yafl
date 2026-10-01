@@ -53,16 +53,12 @@ class [linear, final] GenAcc(gaCache: List<CgCacheEntry>,
 fun genAccEmpty() => GenAcc(List(), builder(), builder(),
                             builder(), builder(), builder())
 
-# ── per-function: cleanup chain then prototype + implement ───────────────────
+# ── per-function: prototype + implement ──────────────────────────────────────
 
-fun genFunction([terminal] acc: GenAcc, f0: CgFunction, profId: Int|None): GenAcc
-  # SSA → imperative first (Phi → per-edge Moves while the CFG is intact);
-  # everything downstream is Phi-unaware.
-  let f = cgFunctionEliminateCSE(cgFunctionSimplifyControlFlow(cgFunctionCopyPropagate(
-            cgFunctionFoldStructFields(cgFunctionSimplifyControlFlow(
-              cgFunctionStripUnusedOperations(cgFunctionLowerPhis(f0)))))))
-  # --profile instrumentation goes in LAST, after the cleanup chain, so
-  # nothing can merge, move or delete the enter/leave pairing (gen.py
+fun genFunction([terminal] acc: GenAcc, f: CgFunction, profId: Int|None): GenAcc
+  # Functions arrive cleaned (lower/ir/cleanup.yafl: Phis lowered, the
+  # cleanup chain applied). --profile instrumentation goes in here, after it,
+  # so nothing can merge, move or delete the enter/leave pairing (gen.py
   # __gen_function's exact position).
   let fi = match(profId)
     (id2: Int) => cgFunctionInstrumentProfile(f, id2)

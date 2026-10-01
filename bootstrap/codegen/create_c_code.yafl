@@ -280,6 +280,11 @@ fun createCCode(statements, mainName, optLevel,
   let spSroa = spanBegin("codegen", "sroa")
   let a7 = splitProjectedAggregates(a6)
   let _sroa = spanEnd(spSroa)
+  # Validate the SSA form every stage since AST lowering has relied on,
+  # before leaving it.
+  let vPrePhi = ssaValidate(appFunctions(a7), true)
+  if !isEmpty(vPrePhi)
+    ret CreateCOut(List(), vPrePhi)
   let spPhi = spanBegin("codegen", "phi_removal")
   let a8 = removePhis(a7)
   let _phi = spanEnd(spPhi)
@@ -301,8 +306,21 @@ fun createCCode(statements, mainName, optLevel,
   # be in its final shape — including the pinnable wraps above, which is what
   # keeps [pinnable] objects out of the pass for free.
   let spFast = spanBegin("codegen", "fast_stores")
-  let a9 = optLevel >= 1 ? markFastStores(a9pin) : a9pin
+  let a9fast = optLevel >= 1 ? markFastStores(a9pin) : a9pin
   let _fast = spanEnd(spFast)
+  # Positional object field names, then the one per-function cleanup chain
+  # (emission no longer runs it), so the merge below finds more equal code.
+  let spCanon = spanBegin("codegen", "canonicalise")
+  let a9canon = canonicaliseApp(a9fast, profile)
+  let _canon = spanEnd(spCanon)
+  let spClean = spanBegin("codegen", "cleanup")
+  let a9clean = cleanupApp(a9canon)
+  let _clean = spanEnd(spClean)
+  # Merge entities with identical representation (one instantiation's code
+  # under another's names). Last, so every function was optimised alone.
+  let spDedup = spanBegin("codegen", "representation_dedup")
+  let a9 = mergeIdenticalRepresentations(a9clean, profile)
+  let _dedup = spanEnd(spDedup)
   let spCheck = spanBegin("codegen", "uninit_check")
   let v2 = checkApplication(a9)
   let _chk = spanEnd(spCheck)
