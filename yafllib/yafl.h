@@ -771,20 +771,21 @@ EXTERN bool array_builder_seal(object_t *arr, int32_t length);
 EXTERN bool gc_debug_major_now(object_t *ignored);
 EXTERN vtable_t *object_get_vtable(object_t *object);
 
-// TRUE virtual dispatch: probe the perfect-hashed function table. Entry
-// index = (pre-rotated id & mask) / entry-stride — ids are pre-rotated by
-// rotate_function_id and the mask is rotate(size-1), so the rotation factor
-// cancels into an array index. Perfect hashing guarantees present slots
-// never collide; unused slots hold abort_on_vtable_lookup. The id assert is
-// a debug tripwire only: a type-correct program never looks up a slot its
-// static type doesn't provide. (First exercised 2026-07-04: every earlier
-// dispatch in the tree was single-implementation and devirtualised at every
-// -O level, so no genuinely-virtual call had ever been emitted.)
+// TRUE virtual dispatch: probe the hashed function table. The pre-rotated
+// id masked by the pre-rotated mask (rotate(size-1)) is a BYTE offset into
+// lookup[], so the rotation factor cancels. The hash is near-perfect, not
+// perfect: create_perfect_lookups stops after a bounded number of rounds and
+// may leave a few collisions, which the generator places in the following
+// slots — so the lookup walks on from the hashed slot until the ids match,
+// exactly as object_lookup_vtable does. Signed arithmetic matters: blank
+// entries hold id -1, so a miss stops at the first blank, whose function is
+// abort_on_vtable_lookup. (A version that read only the hashed slot answered
+// a collided method with its neighbour's function.)
 INLINE fun_t vtable_lookup(object_t* object, intptr_t id) {
     vtable_t* vt = object_get_vtable(object);
     const vtable_entry_t* e =
-        &vt->lookup[(uint32_t)(id & vt->functions_mask) / (sizeof(intptr_t) * 2)];
-    assert(e->i == id);
+        (const vtable_entry_t*)((const char*)vt->lookup + (id & vt->functions_mask));
+    while ((e->i ^ id) > 0) e++;
     return (fun_t){ .f = e->f, .o = (void*)object };
 }
 EXTERN fun_t object_lookup_vtable(object_t *object, intptr_t id);
