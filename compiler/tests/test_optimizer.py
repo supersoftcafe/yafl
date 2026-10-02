@@ -219,7 +219,9 @@ fun main(): System::Int
         self.assertNotIn("_lambdas_", result,
                          "Lambdas in ?> chains should be fully inlined, not lifted to closures")
 
-    def test_nested_arithmetic_inlines_without_one_tuple_wrapping(self):
+    # One test per -O level: each compiles the whole stdlib, and the CPU-time
+    # budget is per test.
+    def _nested_arithmetic_c(self, level: int) -> str:
         """A 1-element tuple is equivalent to its sole value; the inliner must
         not wrap a scalar argument in `struct_anon_1_t` when substituting it
         into a __builtin_op__ that expects an object_t* / scalar.
@@ -240,24 +242,27 @@ fun main(): System::Int
     let (a, b) = (count(3), count(3))
     ret (a + b) - (a + b - 1)
 """
-        for level in (1, 2, 3):
-            with self.subTest(optimization_level=level):
-                result = c.compile(
-                    [c.Input(content, "file.yafl")],
-                    use_stdlib=True, just_testing=False,
-                    optimization_level=level,
-                )
-                self.assertNotEqual("", result, f"compilation failed at -O{level}")
-                # The buggy emit was `(struct_anon_1_t){._0 = ...}` wrapping
-                # a scalar argument before passing it to integer_sub. The fix
-                # must keep the args as scalars. The wrap only arose from
-                # inlining, which runs at -O>=2; at -O1 (no inlining) the
-                # genuine `(a, b)` 2-tuple legitimately appears as a struct, so
-                # the assertion only applies once inlining is in play.
-                if level >= 2:
-                    self.assertNotIn(
-                        "(struct_anon_1_t){._0 =", result,
-                        f"-O{level}: scalar argument was wrapped in a 1-tuple struct")
+        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False,
+                           optimization_level=level)
+        self.assertNotEqual("", result, f"compilation failed at -O{level}")
+        return result
+
+    def _assert_no_one_tuple_wrap(self, level: int) -> None:
+        # The buggy emit was `(struct_anon_1_t){._0 = ...}` wrapping a scalar
+        # argument before passing it to integer_sub. The wrap only arose from
+        # inlining, which runs at -O>=2; at -O1 (no inlining) the genuine
+        # `(a, b)` 2-tuple legitimately appears as a struct.
+        self.assertNotIn("(struct_anon_1_t){._0 =", self._nested_arithmetic_c(level),
+                         f"-O{level}: scalar argument was wrapped in a 1-tuple struct")
+
+    def test_nested_arithmetic_compiles_at_O1(self):
+        self._nested_arithmetic_c(1)
+
+    def test_nested_arithmetic_inlines_without_one_tuple_wrapping_at_O2(self):
+        self._assert_no_one_tuple_wrap(2)
+
+    def test_nested_arithmetic_inlines_without_one_tuple_wrapping_at_O3(self):
+        self._assert_no_one_tuple_wrap(3)
 
     def test_builtin_side_effect_survives_dead_store_elimination(self):
         """A __builtin_op__ call whose result is discarded must not be eliminated by DSE.
