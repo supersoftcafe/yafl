@@ -377,10 +377,18 @@ class ObjVtableEq(RParam):
         treats the class as live.
       * `extern_symbol` — a library-provided C symbol (e.g.
         "STR_HEAD_VTABLE", "INTEGER_VTABLE"); address-of is applied since
-        these are declared as structs in libyafl."""
+        these are declared as structs in libyafl.
+
+    `among`, for a class test, names every class the test must tell apart:
+    the other class members of the union it dispatches over. None when that
+    set is open (an interface subject, an enum or interface member) or not
+    known. It constrains representation dedup — two classes this test
+    separates must never merge — and is no part of the value: it takes no
+    part in equality, and emission ignores it."""
     value: RParam
     class_name: str | None = None
     extern_symbol: str | None = None
+    among: tuple[str, ...] | None = field(default=None, compare=False)
 
     def __post_init__(self):
         if (self.class_name is None) == (self.extern_symbol is None):

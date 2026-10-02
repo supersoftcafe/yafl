@@ -112,6 +112,16 @@ _SCALAR_C = {"bool": "int8", "int8": "int8", "int16": "int16", "int32": "int32",
              "int64": "int64", "float32": "float32", "float64": "float64"}
 
 
+def _is_interface(member: t.TypeSpec, resolver: g.Resolver) -> bool:
+    """Does this ClassSpec name an interface — a type whose values are any
+    implementor, so a test against it is not a test against one class?"""
+    if not isinstance(member, t.ClassSpec):
+        return False
+    found = resolver.find_type(member.name)
+    return (len(found) == 1 and isinstance(found[0].statement, s.ClassStatement)
+            and found[0].statement.is_interface)
+
+
 def _scalar_name(member: t.TypeSpec) -> str:
     """The builtin scalar under a (possibly newtype-wrapped) scalar member."""
     while isinstance(member, t.TupleSpec) and len(member.entries) == 1:
@@ -852,9 +862,26 @@ class PointerRepr(UnionRepr):
                 _SCALAR_CODES[kind[1]])
         if kind == ('FUN',):
             return cg_p.RuntimeInvoke("str_word_is_fun", cg_p.NewStruct((("w", word),)), cg_t.Int(8))
-        if kind is not None and kind[0] in ('CLASS', 'ENUM'):
+        if kind is not None and kind[0] == 'CLASS':
+            return cg_p.ObjVtableEq(word, class_name=kind[1],
+                                    among=self._class_members(resolver))
+        if kind is not None and kind[0] == 'ENUM':
             return cg_p.ObjVtableEq(word, class_name=kind[1])
         return None
+
+    def _class_members(self, resolver: g.Resolver) -> tuple[str, ...] | None:
+        """Every class this union's tests must tell apart — its class members —
+        or None when the set is open: an interface member admits any
+        implementor, and an enum member is tested through its root."""
+        names = []
+        for member in self.union_type.repr_members():
+            kind = _pointer_word_kind(member, resolver)
+            if kind is None or kind[0] in ('UNIT', 'INT', 'STR', 'SCALAR', 'FUN'):
+                continue
+            if kind[0] != 'CLASS' or _is_interface(member, resolver):
+                return None
+            names.append(kind[1])
+        return tuple(sorted(set(names)))
 
     def _to_fun(self, value):
         return cg_p.RuntimeInvoke("str_to_fun", cg_p.NewStruct((("s", value),)), cg_t.FuncPointer())
@@ -973,6 +1000,18 @@ class PointerRepr(UnionRepr):
                 em.arm(null_target, [[cg_p.IntEqConst(sv, 0)]],
                        bind=bind(null_target, null_target.type_spec or subj_type))
 
+        # The LAST arm needs no test when the earlier arms and the NULL route
+        # have taken every member but the ones it covers: the typing says the
+        # subject is a member, so whatever reaches it is one of those. That
+        # spares a test, and the abort behind it that could never run — and
+        # an arm that is not tested does not name its class at all, so code
+        # that differs only in which class it would have tested stays the same
+        # code (representation dedup can merge it).
+        implied = self._implied_last(guarded, null_target is not None and null_target is null_arm,
+                                     foreign_fallback is None and else_arm is None, resolver)
+        if implied is not None:
+            guarded = guarded[:-1]
+
         for arm in guarded:
             if arm.literals:
                 self._pointer_literal_arm(em, arm, value, resolver)
@@ -1006,11 +1045,39 @@ class PointerRepr(UnionRepr):
                     continue  # untestable arm kind; check() rejects these
                 em.arm(arm, [[guard]], bind=bind(arm, arm.type_spec))
 
-        final_fallback = foreign_fallback if foreign_fallback is not None else else_arm
+        final_fallback = (implied if implied is not None
+                          else foreign_fallback if foreign_fallback is not None else else_arm)
         em.fallback(final_fallback,
                     bind(final_fallback, final_fallback.type_spec or subj_type)
                     if final_fallback else None,
                     "pointer-union match fell through all arms")
+
+    def _implied_last(self, guarded, null_routed: bool, no_fallback: bool, resolver):
+        """The last guarded arm, when it covers every member the arms before
+        it (and the NULL route) leave — so it can be reached untested — else
+        None. Only plain typed arms qualify: a literal or guarded arm does not
+        cover its type, and a tagged sub-union arm narrows per member."""
+        if not no_fallback or not guarded:
+            return None
+        if any(a.literals or a.guard is not None for a in guarded):
+            return None
+        last = guarded[-1]
+        if (isinstance(last.type_spec, t.CombinationSpec)
+                and not isinstance(classify(last.type_spec, resolver), PointerRepr)):
+            return None
+
+        def kinds(spec: t.TypeSpec) -> set:
+            members = spec.repr_members() if isinstance(spec, t.CombinationSpec) else [spec]
+            return {_pointer_word_kind(m, resolver) for m in members}
+
+        remaining = kinds(self.union_type)
+        if None in remaining or ('FOREIGN',) in remaining:
+            return None
+        if null_routed:
+            remaining.discard(('UNIT',))
+        for arm in guarded[:-1]:
+            remaining -= kinds(arm.type_spec)
+        return last if remaining and remaining <= kinds(last.type_spec) else None
 
     def _pointer_literal_arm(self, em, arm, value, resolver):
         lit_ast_type = arm.literals[0].get_type(resolver)

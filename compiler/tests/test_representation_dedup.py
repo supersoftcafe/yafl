@@ -61,6 +61,20 @@ def _pair(f: str, g: str, literal: int) -> tuple[Function, Function]:
 
 class TestMerges(unittest.TestCase):
 
+    def test_classes_tested_in_different_unions_merge(self):
+        """A test over a union of classes observes identity only among that
+        union's members. A (tested within A|Ba) and B (within B|Bb) are in no
+        union together, so they merge — as do their identical siblings."""
+        ta = fn("ta", Return(ObjVtableEq(StackVar(PTR, "x"), class_name="A", among=("A", "Ba"))))
+        tb = fn("tb", Return(ObjVtableEq(StackVar(PTR, "x"), class_name="B", among=("B", "Bb"))))
+        a = app([obj("A"), obj("B"), obj("Ba", extra=(("n", t.Int(32)),)),
+                 obj("Bb", extra=(("n", t.Int(32)),))],
+                [allocates("fa", "A"), allocates("fb", "B"), allocates("fba", "Ba"),
+                 allocates("fbb", "Bb"), ta, tb, entry("fa", "fb", "fba", "fbb", "ta", "tb")])
+        out = merge_identical_representations(a)
+        self.assertEqual(["A", "Ba"], list(out.objects))
+        self.assertEqual(["fa", "fba", "ta", "__entrypoint__"], list(out.functions))
+
     def test_functions_equal_up_to_local_names_merge(self):
         a = app([obj("A")], [allocates("f", "A", "x_inl1"), allocates("g", "A", "x_inl2"),
                             entry("f", "g")])
@@ -149,6 +163,14 @@ class TestKeepsApart(unittest.TestCase):
         test = fn("t", Return(ObjVtableEq(StackVar(PTR, "x"), class_name="A")))
         a = app([obj("A"), obj("B")],
                 [allocates("f", "A"), allocates("g", "B"), test, entry("f", "g", "t")])
+        self.assertEqual(["A", "B"], list(merge_identical_representations(a).objects))
+
+    def test_classes_one_union_test_tells_apart(self):
+        """A test over the union A|B carries `among`: A and B must stay apart,
+        though identical — B arriving at `is A` must still answer false."""
+        test = fn("t", Return(ObjVtableEq(StackVar(PTR, "x"), class_name="A", among=("A", "B"))))
+        a = app([obj("A"), obj("B")],
+                [allocates("fa", "A"), allocates("fb", "B"), test, entry("fa", "fb", "t")])
         self.assertEqual(["A", "B"], list(merge_identical_representations(a).objects))
 
     def test_sibling_leaves(self):

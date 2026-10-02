@@ -45,7 +45,11 @@ enum RParam
   enum RpNullPointer()
   enum RpStaticObjectRef(name: String)
   enum RpVtableDiscriminator(value: RParam)
-  enum RpObjVtableEq(value: RParam, className: String|None, externSymbol: String|None)
+  # `among`, for a class test: every class it must tell apart (the union's
+  # class members), or None when that set is open. A constraint on
+  # representation dedup only — no part of equality, ignored by emission.
+  enum RpObjVtableEq(value: RParam, className: String|None, externSymbol: String|None,
+                     among: List<String>|None)
   enum RpSyncWrap(value: RParam, wrapperType: CgType)
   enum RpZeroOf(valueType: CgType)
   enum RpNewStructTyped(structType: CgType, values: List<RpNamedValue>)
@@ -210,7 +214,8 @@ fun rpRenameVars(r, renames: List<RpRename>) => match(r)
   (x: RpStructField) => RpStructField(rpRenameVars(x.structVal, renames), x.field)
   (x: RpIntEqConst) => RpIntEqConst(rpRenameVars(x.value, renames), x.constVal)
   (x: RpVtableDiscriminator) => RpVtableDiscriminator(rpRenameVars(x.value, renames))
-  (x: RpObjVtableEq) => RpObjVtableEq(rpRenameVars(x.value, renames), x.className, x.externSymbol)
+  (x: RpObjVtableEq) => RpObjVtableEq(rpRenameVars(x.value, renames), x.className, x.externSymbol,
+                                      x.among)
   (x: RpSyncWrap) => RpSyncWrap(rpRenameVars(x.value, renames), x.wrapperType)
   (x: RpNewStructTyped) => RpNewStructTyped(x.structType, map(x.values, (v) => RpNamedValue(v.name, rpRenameVars(v.value, renames))))
   (x: RpTagTask) => RpTagTask(rpRenameVars(x.task, renames), x.targetType)
