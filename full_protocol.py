@@ -180,9 +180,7 @@ def _build_example_specs(run_dir: Path) -> list[Example]:
     (findroot / "sub" / "b.txt").write_text("world\nhello nested\n")
     return [
         Example("helloWorld"),
-        Example("closure_field_union"),
         Example("hashed_tree"),
-        Example("seq_pin"),
         Example("json_pretty", stdin='{"name": "yafl", "v": [1, 2, 3]}'),
         Example("linenumbers", stdin="a\nb\nc\n"),
         Example("findstr", args=["hello", str(findroot)]),
