@@ -1,0 +1,34 @@
+# A method of a small class referenced WITHOUT being called, through a LOCAL.
+#
+# simple_classes flattens a small class into a tuple only when every method
+# reference on it is called: a reference that escapes as a function value needs
+# the object behind it. The count types each reference's receiver, and a
+# receiver that is a local (a let, a parameter, a block binding) is only typed
+# with that local's scope in view. The port once counted with the GLOBAL
+# resolver alone, so every escaping reference through a local went uncounted
+# and the class was flattened while Python kept it — hoisting a mutually
+# recursive pair out of a closure (`let isOdd = $mutual::shared.isOdd`) is the
+# shape that first exposed it.
+namespace StandaloneLocalMethodRef
+
+import System
+
+class Counter(step: Int)
+  fun bump(v: Int): Int
+    ret v + step
+
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+
+# The receiver is a let.
+fun viaLet(n: Int): Int
+  let c = Counter(n)
+  let f = c.bump
+  ret apply(f, 1)
+
+# The receiver is a parameter.
+fun viaParam(c: Counter): Int
+  ret apply(c.bump, 2)
+
+fun main(): Int
+  ret viaLet(3) + viaParam(Counter(4))

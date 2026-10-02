@@ -1,0 +1,62 @@
+# Regression pin (2026-10-01): functions nested inside a nested function that
+# becomes a CLOSURE. Such a helper is a let-bound lambda, and the functions
+# declared inside it are hoisted from that lambda body with every enclosing
+# scope in view: a reference two levels out is a capture, never a global, and a
+# function hoisted from a generic host's closure still carries the host's
+# specialisation suffix. No other corpus program nests a function inside a
+# closure-bound helper, so this pins the hoist both compilers must agree on.
+namespace NestedClosurePin
+
+import System
+
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+
+# A called-only helper whose own helper captures from two levels out.
+fun called(x: Int, k: Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun optimal(b: Int): Int
+        ret b + 1
+      ret c > 0 ? optimal(c) : x
+    ret rebalance(a) * 10
+  ret merge(k)
+
+# The same, but the helper's name travels: it is a real closure.
+fun valued(x: Int, k: Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun optimal(b: Int): Int
+        ret b + 1
+      ret c > 0 ? optimal(c) : x
+    ret rebalance(a) * 10
+  ret apply(merge, k)
+
+# A mutually recursive pair inside a closure, capturing from outside it.
+fun parity(x: Int, n: Int): Int
+  fun walk(m: Int): Int
+    fun isEven(y: Int): Int
+      ret y < 1 ? x : isOdd(y - 1)
+    fun isOdd(y: Int): Int
+      ret y < 1 ? 0 : isEven(y - 1)
+    ret isEven(m)
+  ret apply(walk, n)
+
+# Two instantiations, each hoisting `pick` out of a closure.
+fun generic<T>(x: T, k: Int, size: (:T): Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun pick(b: Int): Int
+        ret b * 2
+      ret c > 0 ? pick(c) : size(x)
+    ret rebalance(a)
+  ret apply(merge, k)
+
+fun main(): Int
+  println(String(called(5, 1) + called(5, 0)) + " "
+          + String(valued(5, 1) + valued(5, 0)) + " "
+          + String(parity(7, 4) + parity(7, 3)) + " "
+          + String(generic<Int>(4, 0, (v: Int) => v)
+                   + generic<String>("abc", 0, (v: String) => length(v))
+                   + generic<Int>(4, 5, (v: Int) => v)))
+  ret 0

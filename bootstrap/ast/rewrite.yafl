@@ -467,8 +467,6 @@ fun [tail] foldEntries<T>(es: Chain<SEntry>, f: (:T, :PStmt): T,
       foldExprOpt(l.value.seDefault, f, fx,
                   foldSpecOpt(l.value.seType, f, fx, acc)))
 
-fun foldNoStmt<T>(acc: T, st: PStmt): T => acc
-
 # ── counter-threading rewrite twins ──────────────────────────────────────────
 # Same traversal, threading an Int through in visit order — for passes whose
 # callbacks ALLOCATE (the inliner's fresh-suffix counter must increment in

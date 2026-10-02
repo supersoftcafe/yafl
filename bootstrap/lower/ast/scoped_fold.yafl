@@ -1,0 +1,96 @@
+# bootstrap/lower/ast/scoped_fold.yafl — rewrite.yafl's expression fold, with
+# the resolver in effect at each node.
+#
+# Python's search_and_replace hands its callback the resolver of the scope it
+# is in: a function body sees its parameters, a block its lets, a lambda its
+# parameters, a match arm its binding. A scan that types what it visits (a
+# method reference's receiver, say) must see the same scope, or every local
+# reads as unknown and the scan silently counts nothing. rewrite.yafl's fold
+# carries no resolver, so it cannot serve such a scan. The scope rules are
+# simple_classes.yafl's threaded rewrite's (scT*); the visit set is
+# rewrite.yafl's fold's, expressions only.
+namespace Bootstrap::Lower::Ast
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::Frontend
+import Bootstrap::Resolve
+
+
+
+# ── API ──────────────────────────────────────────────────────────────────────
+
+# Every expression under `ss`, pre-order, each with the resolver of its scope.
+fun foldExprsScoped<T>(ss: List<PStmt>, r: Resolver,
+                       fx: (:T, :PExpr, :Resolver): T, acc: T): T
+  ret sfStmts(chain(ss), r, fx, acc)
+
+# ── statements ───────────────────────────────────────────────────────────────
+
+fun [tail] sfStmts<T>(ss: Chain<PStmt>, r: Resolver,
+                      fx: (:T, :PExpr, :Resolver): T, acc: T): T => match(ss)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => sfStmts(l.next, r, fx, sfStmt(l.value, r, fx, acc))
+
+fun sfStmt<T>(st: PStmt, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T => match(st)
+  (f: PsFun)         => sfExprOpt(f.fBody, funBodyScope(f, r), fx, sfStmt(f.fParams, r, fx, acc))
+  (l: PsLet)         => sfExprOpt(l.lDefault, r, fx, acc)
+  (d: PsDestructure) => sfExprOpt(d.dDefault, r, fx, sfStmts(chain(d.dTargets), r, fx, acc))
+  (cl: PsClass)      => sfStmts(chain(cl.cMembers), RClassBody(cl, r), fx,
+                                sfStmt(cl.cParams, r, fx, acc))
+  (e2: PsEnum)       => sfStmts(chain(e2.eVariants), r, fx, sfStmt(e2.eParams, r, fx, acc))
+  (rt: PsRet)        => sfExpr(rt.retValue, r, fx, acc)
+  (a: PsAction)      => sfExpr(a.action, r, fx, acc)
+  (i: PsIf)          => sfStmts(chain(i.ifFalse), localScope(i.ifFalse, r), fx,
+                                sfStmts(chain(i.ifTrue), localScope(i.ifTrue, r), fx,
+                                        sfExpr(i.ifCond, r, fx, acc)))
+  (o: PStmt)         => acc
+
+# ── expressions ──────────────────────────────────────────────────────────────
+
+fun sfExprOpt<T>(x: PExpr|None, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T => match(x)
+  (e2: PExpr) => sfExpr(e2, r, fx, acc)
+  ()          => acc
+
+fun sfExpr<T>(x: PExpr, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
+  let acc2 = fx(acc, x, r)
+  ret match(x)
+    (d: PeDot)        => sfExpr(d.base, r, fx, acc2)
+    (c: PeCall)       => sfExpr(c.parameter, r, fx, sfExpr(c.function, r, fx, acc2))
+    (tp: PeTuple)     => fold(tp.exprs, acc2, (a2, te) => sfExpr(te.tupValue, r, fx, a2))
+    (te: PeTernary)   => sfExpr(te.falseResult, r, fx,
+                                sfExpr(te.trueResult, r, fx, sfExpr(te.condition, r, fx, acc2)))
+    (lm: PeLambda)    => sfExpr(lm.lamBody, localScope(flattenParams(lm.lamParams), r), fx,
+                                sfStmt(lm.lamParams, r, fx, acc2))
+    (bk: PeBlock)     => sfBlock(bk, blockScope(bk.blockStmts, r), fx, acc2)
+    (mt: PeMatch)     => fold(mt.arms, sfExprs(mt.matchExtra, r, fx, sfExpr(mt.subject, r, fx, acc2)),
+                              (a2, arm) => sfArm(arm, r, fx, a2))
+    (op: PeBuiltinOp) => sfExpr(op.opParams, r, fx, acc2)
+    (nw: PeNew)       => sfExpr(nw.newParam, r, fx, acc2)
+    (ar: PeArrayRead) => sfExpr(ar.arrIndex, r, fx, sfExpr(ar.arrObj, r, fx, acc2))
+    (cv: PeConvert)   => sfExpr(cv.convInner, r, fx, acc2)
+    (qq: PeCoalesce)  => sfExpr(qq.qqFallback, r, fx, sfExpr(qq.qqSubject, r, fx, acc2))
+    (wx: PeWith)      => sfExpr(wx.withRepls, r, fx, sfExpr(wx.withSubject, r, fx, acc2))
+    (pl: PeParallel)  => sfExpr(pl.parParams, r, fx, acc2)
+    (ne: PeNewEnum)   => fold(ne.fieldArgs, acc2, (a2, fa) => sfExpr(fa.faValue, r, fx, a2))
+    (lp: PeLoop)      => sfExpr(lp.loopBody, r, fx, sfExprs(lp.loopParams, r, fx, acc2))
+    (rc: PeRecur)     => sfExprs(rc.recArgs, r, fx, acc2)
+    (o: PExpr)        => acc2   # names, literals, lazy stubs: no expression children
+
+fun sfExprs<T>(es: List<PExpr>, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
+  ret fold(es, acc, (a2, x) => sfExpr(x, r, fx, a2))
+
+# A block's lets are in scope for its later statements and its value.
+fun sfBlock<T>(bk: PeBlock, blockR: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
+  ret sfExpr(bk.blockValue, blockR, fx, sfStmts(chain(bk.blockStmts), blockR, fx, acc))
+
+# An arm's binding is in scope for its body and guard; its literals are not.
+fun sfArm<T>(a: PArm, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
+  let bodyR = bindingScope(a, a.armType, r)
+  let withLits = fold(a.armLiterals, acc, (a2, lt) => sfLit(lt, r, fx, a2))
+  ret sfExprOpt(a.armGuard, bodyR, fx, sfExpr(a.armBody, bodyR, fx, withLits))
+
+fun sfLit<T>(lt: PLit, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T => match(lt)
+  (le: PlExpr)  => sfExpr(le.litExpr, r, fx, acc)
+  (lr: PlRange) => sfExpr(lr.rangeHi, r, fx, sfExpr(lr.rangeLo, r, fx, acc))

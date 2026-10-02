@@ -750,6 +750,15 @@ def _specialization_suffix(parent_name: str) -> str:
     return parent_name[idx:] if idx >= 0 else ''
 
 
+def _member_specialization_suffix(member_name: str) -> str:
+    """The `@type-signature` monomorphisation appends to a generic class's own
+    methods (generics.py) — everything after the member's `name@hash` — or ''
+    for a member of a class that is not a specialisation. The signature may
+    itself contain `@`, so only the first two separate."""
+    parts = member_name.split('@', 2)
+    return '@' + parts[2] if len(parts) == 3 else ''
+
+
 def _tarjan_sccs(nodes: list[str], edges: dict[str, set[str]]) -> list[list[str]]:
     """Tarjan's SCC algorithm.  Returns SCCs in reverse topological order
     (callees before callers).  Each SCC is a list of node names in
@@ -940,7 +949,9 @@ class _HoistResult:
 
 
 def _hoist_from_body(fn: s.FunctionStatement,
-                     this_type: t.ClassSpec | None = None) -> _HoistResult:
+                     this_type: t.ClassSpec | None = None,
+                     enclosing: dict[str, t.TypeSpec] | None = None,
+                     spec_suffix: str | None = None) -> _HoistResult:
     """Scan fn's body for nested FunctionStatements and decide how to handle each.
 
     Strategy per strongly-connected component of the sibling-call graph:
@@ -962,15 +973,24 @@ def _hoist_from_body(fn: s.FunctionStatement,
     specialisation suffix to prevent name collisions across instantiations.
     renames maps old → new name; callers must apply it to all remaining
     references in fn's body.
+
+    A helper that becomes a closure keeps its body — a lambda body — so the
+    functions nested inside IT are hoisted here too, before it is converted:
+    nothing visits a lambda body for declarations afterwards. Inside it, every
+    enclosing scope is still in scope, so `enclosing` carries those names and
+    their types (the host's variables and its closure-bound helpers) and a
+    reference to one is a capture, never a global. `spec_suffix` is the
+    host's, so a function hoisted from that deep still carries it.
     """
     if not isinstance(fn.body, e.BlockExpression):
         stmts = list(fn.body.statements) if hasattr(fn.body, 'statements') else []
         return _HoistResult(stmts, [], [], {}, {})
     body_stmts = list(fn.body.statements)
+    enclosing = enclosing or {}
     outer_params = {p.name for p in fn.parameters.flatten()}
     outer_lets = {stmt.name for stmt in body_stmts
                   if isinstance(stmt, s.LetStatement) and not isinstance(stmt, s.DestructureStatement)}
-    outer_var_names = outer_params | outer_lets
+    outer_var_names = outer_params | outer_lets | set(enclosing)
 
     nested_fns = [stmt for stmt in body_stmts
                   if isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression)]
@@ -980,7 +1000,14 @@ def _hoist_from_body(fn: s.FunctionStatement,
     if not nested_fns:
         return _HoistResult(body_stmts, [], [], {}, {})
 
-    spec_suffix = _specialization_suffix(fn.name)
+    if spec_suffix is None:
+        # A helper hoisted to CLASS scope becomes a new own method, so it takes
+        # the suffix the class's own methods carry: without it every
+        # instantiation's helper has the same name, and where the class's
+        # fields do not mention T (one value struct for every instantiation)
+        # one instantiation's helper answered for all of them.
+        spec_suffix = (_member_specialization_suffix(fn.name) if this_type is not None
+                       else _specialization_suffix(fn.name))
 
     # Sibling-call edges
     sibling_calls = {nf.name: _free_refs(nf, set()) & sibling_fn_names for nf in nested_fns}
@@ -1026,7 +1053,7 @@ def _hoist_from_body(fn: s.FunctionStatement,
                 scc_needs_closure[i] = scc_needs_closure[i] or scc_needs_closure[callee_scc]
                 scc_needs_this[i] = scc_needs_this[i] or scc_needs_this[callee_scc]
 
-    outer_var_types = (_gather_outer_var_types(fn, this_type)
+    outer_var_types = ({**enclosing, **_gather_outer_var_types(fn, this_type)}
                        if any(scc_needs_closure) else {})
 
     # Settled BEFORE anything is built, because the redirect changes the bodies
@@ -1054,6 +1081,21 @@ def _hoist_from_body(fn: s.FunctionStatement,
     hoisted: list[s.Statement] = []
     class_hoisted: list[s.FunctionStatement] = []
     processed_scc: set[int] = set()
+
+    # What a closure-bound helper's own nested functions see from out here:
+    # every variable in scope at this level, and the helpers that become
+    # closures (let-bound lambdas) beside it. `this` is not passed down: a
+    # helper reaching it goes to class scope by the existing route.
+    inner_env = ({name: ty for name, ty in outer_var_types.items() if name != "this"}
+                 | {nf.name: nf.get_type() for nf in nested_fns
+                    if scc_needs_closure[scc_index[nf.name]]})
+
+    def hoist_inside(member: s.FunctionStatement) -> s.FunctionStatement:
+        inner, inner_hoisted, inner_class = _hoist_one_function(
+            member, this_type, enclosing=inner_env, spec_suffix=spec_suffix)
+        hoisted.extend(inner_hoisted)
+        class_hoisted.extend(inner_class)
+        return inner
 
     for stmt in body_stmts:
         if not (isinstance(stmt, s.FunctionStatement) and isinstance(stmt.body, e.BlockExpression)):
@@ -1094,10 +1136,10 @@ def _hoist_from_body(fn: s.FunctionStatement,
                 else:
                     hoisted.append(member)
         elif len(scc_member_fns) == 1:
-            new_body.append(_to_let_lambda(scc_member_fns[0]))
+            new_body.append(_to_let_lambda(hoist_inside(scc_member_fns[0])))
         else:
-            cls, lets = _coalesce_mutual_scc(scc_member_fns, outer_var_types,
-                                              sibling_fn_names, spec_suffix)
+            cls, lets = _coalesce_mutual_scc([hoist_inside(m) for m in scc_member_fns],
+                                              outer_var_types, sibling_fn_names, spec_suffix)
             hoisted.append(cls)
             new_body.extend(lets)
 
@@ -1106,12 +1148,16 @@ def _hoist_from_body(fn: s.FunctionStatement,
 
 
 def _hoist_one_function(fn: s.FunctionStatement,
-                        this_type: t.ClassSpec | None) -> tuple[s.FunctionStatement,
-                                                                list[s.Statement],
-                                                                list[s.FunctionStatement]]:
+                        this_type: t.ClassSpec | None,
+                        enclosing: dict[str, t.TypeSpec] | None = None,
+                        spec_suffix: str | None = None) -> tuple[s.FunctionStatement,
+                                                                 list[s.Statement],
+                                                                 list[s.FunctionStatement]]:
     """Hoist out of one function body. Returns the rewritten function, what it
-    sent to global scope, and what it sent to its owning class."""
-    res = _hoist_from_body(fn, this_type)
+    sent to global scope, and what it sent to its owning class. `enclosing`
+    and `spec_suffix` are given only for a helper nested inside another
+    function's closure (see _hoist_from_body)."""
+    res = _hoist_from_body(fn, this_type, enclosing, spec_suffix)
     body_stmts = res.body
     hoisted = res.hoisted
     class_hoisted = res.class_hoisted

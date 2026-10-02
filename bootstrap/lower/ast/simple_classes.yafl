@@ -389,9 +389,12 @@ fun scCalledHit(acc, d: PeDot, cands: ScCands, r) => match(scClassNameOf(d.base,
   (clsName: String) => scHasMethod(cands, clsName, d.member) ? scBumpCalled(acc, clsName) : acc
   ()                => acc
 
-# NOTE: a called dot bumps BOTH counters — foldExpr fires fx on the PeCall
+# NOTE: a called dot bumps BOTH counters — the fold fires fx on the PeCall
 # node (bumping "called"), then separately descends into its PeDot child
 # (bumping "all"), exactly mirroring Python's search_and_replace traversal.
+# Each receiver is typed with the resolver of its own scope: a receiver that
+# is a local types as nothing against the global resolver, and an escaping
+# reference through it would go uncounted.
 fun scDotFold(acc, x, cands: ScCands, r) => match(x)
   (d: PeDot)  => scDotHit(acc, d, cands, r)
   (c: PeCall) => match(c.function)
@@ -401,8 +404,8 @@ fun scDotFold(acc, x, cands: ScCands, r) => match(x)
 
 fun scExcludeStandalone(cands: ScCands, specs: ScSpecs, statements: List<PStmt>,
                         r): ScFiltered
-  let counts = foldStmts(statements, foldNoStmt<ScCounts>,
-      (acc, x) => scDotFold(acc, x, cands, r), scEmptyCounts())
+  let counts = foldExprsScoped(statements, r, (acc, x, xr) => scDotFold(acc, x, cands, xr),
+                               scEmptyCounts())
   ret ScFiltered(
       scKeepCandsWhere(cands, (n) => scCountAll(counts, n) <= scCountCalled(counts, n)),
       scKeepSpecsWhere(specs, (n) => scCountAll(counts, n) <= scCountCalled(counts, n)))
