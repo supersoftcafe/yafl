@@ -40,6 +40,17 @@ fun [tail] lastSep(s, at, best: Int): Int
 
 fun matchName(left, right) => simpleName(left) == simpleName(right)
 
+# A class member's DECLARED name: everything before its FIRST '@'. A member
+# is `name@hash`, and a generic class's specialised member gains a second
+# `@type-signature` suffix (which may itself contain '@'), so simpleName's
+# last-'@' split would leave `name@hash` and miss the member it overrides.
+fun memberName(name: String): String
+  let at = indexOf(name, "@", 0)
+  ret at < 0 ? name : slice(name, 0, at)
+
+fun matchMemberName(left: String, right: String): Bool
+  ret memberName(left) == memberName(right)
+
 # A candidate matches a query when identical, or when it is the query's
 # fully-qualified form (`query@hash`).
 fun nameMatches(candidate: String, query: String): Bool

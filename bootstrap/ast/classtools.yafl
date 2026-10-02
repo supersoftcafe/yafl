@@ -182,7 +182,7 @@ fun absorbMatches(slot: Slot, r, parents: List<Slot>)
 fun [tail] matchedNames(ps: Chain<Slot>, slot: Slot, r,
                         acc): List<String> => match(ps)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => matchName(slot.slotName, l.value.slotName)
+  (l: ChainLink)  => matchMemberName(slot.slotName, l.value.slotName)
                      && triTrue(assignableEq(r, l.value.slotType,
                                              slot.slotType))
     ? matchedNames(l.next, slot, r,

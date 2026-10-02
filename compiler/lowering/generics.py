@@ -477,7 +477,27 @@ def __replace_concrete_references(
                 break  # matched class but no redirect — no other rule applies
         return rw.UNCHANGED
 
-    return [rw.resolved(stmt.search_and_replace(g.ResolverRoot([]), redirect_reference), stmt) for stmt in statements]
+    def redirect_slots(stmt):
+        # A class's cached slot table holds TYPES too, and the traversal
+        # deliberately never visits it: it is derived data, rebuilt by every
+        # compile. But the first compile after this pass reads a PARENT's table
+        # before the parent has rebuilt it, so a cached slot still naming a
+        # template this pass removed (`Array<Node>`, not its specialisation)
+        # cannot be compared with anything. Redirect the table here, by the
+        # same rules, so the cache never names what no longer exists.
+        if not isinstance(stmt, s.ClassStatement) or not stmt._all_slots:
+            return stmt
+        changed = False
+        slots = []
+        for slot in stmt._all_slots:
+            new_type = (rw.UNCHANGED if slot.type is None
+                        else slot.type.search_and_replace(g.ResolverRoot([]), redirect_reference))
+            changed = changed or new_type is not rw.UNCHANGED
+            slots.append(slot if new_type is rw.UNCHANGED else dataclasses.replace(slot, type=new_type))
+        return dataclasses.replace(stmt, _all_slots=slots) if changed else stmt
+
+    return [redirect_slots(rw.resolved(stmt.search_and_replace(g.ResolverRoot([]), redirect_reference), stmt))
+            for stmt in statements]
 
 
 def __prune_unused_generics(statements: list[s.Statement]) -> list[s.Statement]:
