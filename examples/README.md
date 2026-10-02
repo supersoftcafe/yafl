@@ -1,12 +1,8 @@
 # YAFL examples
 
-Example programs written in YAFL, kept here to show what the language looks
-like in real use. Each one is a complete program with a `main`, and most are
-useful tools in their own right.
-
-This folder holds examples only. Tests, regression pins and compiler corpus
-programs belong in `compiler/tests/` (for corpus programs,
-`compiler/tests/corpus_converge/`), not here.
+This folder holds example programs written in YAFL, to show what the language
+looks like in real use. Each one is a complete program with a `main`, and most
+are useful tools in their own right.
 
 ## The examples
 
