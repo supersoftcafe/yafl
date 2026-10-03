@@ -11,11 +11,11 @@ import Bootstrap::Types
 
 
 
-fun [tail] checkRecurArgs(as2: Chain<PExpr>, r,
-                          acc: Set<PErr>) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => checkRecurArgs(l.next, r,
-                                    union(acc, checkExpr(l.value, r,
+fun [tail] checkRecurArgs(as2: List<PExpr>, r,
+                          acc: Set<PErr>) => isEmpty(as2)
+  ? acc
+  : checkRecurArgs(tail(as2), r,
+                                    union(acc, checkExpr(first(as2), r,
                                                           None)))
 
 fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
@@ -47,7 +47,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   # tail_loop lowering only — never present at check time; mirrored from
   # loop.py's check methods for completeness.
   (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
-  (rc: PeRecur)   => checkRecurArgs(chain(rc.recArgs), r, noErrs())
+  (rc: PeRecur)   => checkRecurArgs(rc.recArgs, r, noErrs())
   (lz: PeLazy)    => noErrs()
 
 # ── NamedExpression ─────────────────────────────────────────────────────────
@@ -55,7 +55,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
 # check — compile/get_type keep the raw multiplicity as an unresolved signal).
 
 fun checkName(nm: PeName, r)
-  let tpErrs = checkSpecs(chain(nm.refTypeParams), r, noErrs())
+  let tpErrs = checkSpecs(nm.refTypeParams, r, noErrs())
   let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
                             nm.penTrait, r)
   if isEmpty(datas)
@@ -77,7 +77,7 @@ fun checkName(nm: PeName, r)
     ()         => union(oneErr(nm.penLine,
                     "Ambiguous reference '" + nm.refName
                     + "' — qualify it. Candidates: "
-                    + join(sort(dedupeStrs(foundNames(chain(datas),
+                    + join(sort(dedupeStrs(foundNames(datas,
                                                       List()))),
                            ", ")),
              tpErrs)
@@ -88,38 +88,38 @@ fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
     ()        => true
   ()                  => false
 
-fun foundNames(ds: Chain<Found>, acc: List<String>) => build(foundNamesB(ds, builderFrom(acc)))
+fun foundNames(ds: List<Found>, acc: List<String>) => (foundNamesB(ds, acc))
 
-fun [tail] foundNamesB(ds: Chain<Found>, [terminal] acc): ListBuilder<String> => match(ds)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => foundNamesB(l.next, push(acc, l.value.fName))
+fun [tail] foundNamesB(ds: List<Found>, acc): List<String> => isEmpty(ds)
+  ? acc
+  : foundNamesB(tail(ds), append(acc, first(ds).fName))
 
-fun dedupeStrs(ss: List<String>) => ddsLoop(chain(ss), List())
+fun dedupeStrs(ss: List<String>) => ddsLoop(ss, List())
 
-fun [tail] ddsLoop(ss: Chain<String>, acc: List<String>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ddsLoop(l.next, addNameOnce(acc, l.value))
+fun [tail] ddsLoop(ss: List<String>, acc: List<String>) => isEmpty(ss)
+  ? acc
+  : ddsLoop(tail(ss), addNameOnce(acc, first(ss)))
 
 # _distinct_resolutions: several ROUTES to one statement are one candidate.
-fun distinctFinds(ds: List<Found>) => dfLoop(chain(ds), List(), List())
+fun distinctFinds(ds: List<Found>) => dfLoop(ds, List(), List())
 
 fun dfLoop(ds, acc: List<Found>,
-                  seen: List<String>) => build(dfLoopB(ds, builderFrom(acc), seen))
+                  seen: List<String>) => (dfLoopB(ds, acc, seen))
 
-fun [tail] dfLoopB(ds: Chain<Found>, [terminal] acc: ListBuilder<Found>,
-                  seen: List<String>) => match(ds)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => contains2(seen, l.value.fName)
-    ? dfLoopB(l.next, acc, seen)
+fun [tail] dfLoopB(ds: List<Found>, acc: List<Found>,
+                  seen: List<String>) => isEmpty(ds)
+  ? acc
+  : contains2(seen, first(ds).fName)
+    ? dfLoopB(tail(ds), acc, seen)
     # `seen` is a dedup set — order not observed.
-    : dfLoopB(l.next, push(acc, l.value),
-              prepend(l.value.fName, seen))
+    : dfLoopB(tail(ds), append(acc, first(ds)),
+              prepend(first(ds).fName, seen))
 
 # ── DotExpression ───────────────────────────────────────────────────────────
 
 fun checkDot(d: PeDot, r) => match(exprType(d.base, r))
   (bt: Spec) => match(bt)
-    (t2: STuple) => tupleFieldExists(chain(t2.stEntries), d.member)
+    (t2: STuple) => tupleFieldExists(t2.stEntries, d.member)
       ? noErrs()
       : oneErr(d.pedLine, "Could not find field " + d.member)
     (c2: SClass) => checkClassDot(d, c2, r)
@@ -127,9 +127,9 @@ fun checkDot(d: PeDot, r) => match(exprType(d.base, r))
     (o: Spec)    => noErrs()
   ()         => noErrs()
 
-fun [tail] tupleFieldExists(es: Chain<SEntry>, name: String) => match(es)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => l.value.seName == name ? true : tupleFieldExists(l.next, name)
+fun [tail] tupleFieldExists(es: List<SEntry>, name: String) => isEmpty(es)
+  ? false
+  : first(es).seName == name ? true : tupleFieldExists(tail(es), name)
 
 fun checkClassDot(d: PeDot, c2: SClass, r) => match(soleItem(findType(r, c2.scName)))
   (f: Found) => match(f.fStmt)
@@ -140,12 +140,12 @@ fun checkClassDot(d: PeDot, c2: SClass, r) => match(soleItem(findType(r, c2.scNa
 fun classDotErrs(d: PeDot, datas: List<Found>)
   if isEmpty(datas)
     ret oneErr(d.pedLine, "Could not find a field named " + d.member)
-  if atLeast(chain(datas), 2)
+  if atLeast(datas, 2)
     ret oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
   ret noErrs()
 
 fun checkEnumDot(d: PeDot, e2: SEnum, r)
-  if hasFieldNamed(chain(enumFieldsVia(r, e2.seRoot)), d.member)
+  if hasFieldNamed(enumFieldsVia(r, e2.seRoot), d.member)
     ret noErrs()                       # already resolved to a unique field name
   ret match(narrowedEnumField(r, e2, d.member))
     (h: NfHit)       => noErrs()
@@ -239,9 +239,9 @@ fun namedCallError(c: PeCall, nm: PeName, ptype, r)
   let cands = findData(r, nm.refName).bItems
   if isEmpty(cands)
     ret PErr(c.pecLine, "no function named " + name + " is in scope")
-  let sigs = candidateSigs(chain(cands), List())
+  let sigs = candidateSigs(cands, List())
   if isEmpty(sigs)
-    ret match(firstNonCallable(chain(cands)))
+    ret match(firstNonCallable(cands))
       (t2: Spec) => PErr(c.pecLine, name + " is not a function — it is a "
                                     + typeStr(t2))
       ()         => PErr(c.pecLine,
@@ -253,24 +253,24 @@ fun namedCallError(c: PeCall, nm: PeName, ptype, r)
 
 fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
 
-fun candidateSigs(cs: Chain<Found>, acc: List<String>)
-  ret build(candidateSigsB(cs, builderFrom(acc)))
+fun candidateSigs(cs: List<Found>, acc: List<String>)
+  ret (candidateSigsB(cs, acc))
 
-fun [tail] candidateSigsB(cs: Chain<Found>, [terminal] acc): ListBuilder<String> => match(cs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(stmtType(l.value.fStmt))
+fun [tail] candidateSigsB(cs: List<Found>, acc): List<String> => isEmpty(cs)
+  ? acc
+  : match(stmtType(first(cs).fStmt))
     (ty: Spec) => match(ty)
-      (cl: SCallable) => candidateSigsB(l.next, push(acc, typeStr(ty)))
-      (o: Spec)       => candidateSigsB(l.next, acc)
-    ()         => candidateSigsB(l.next, acc)
+      (cl: SCallable) => candidateSigsB(tail(cs), append(acc, typeStr(ty)))
+      (o: Spec)       => candidateSigsB(tail(cs), acc)
+    ()         => candidateSigsB(tail(cs), acc)
 
-fun [tail] firstNonCallable(cs: Chain<Found>) => match(cs)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(stmtType(l.value.fStmt))
+fun [tail] firstNonCallable(cs: List<Found>) => isEmpty(cs)
+  ? None
+  : match(stmtType(first(cs).fStmt))
     (ty: Spec) => match(ty)
-      (cl: SCallable) => firstNonCallable(l.next)
+      (cl: SCallable) => firstNonCallable(tail(cs))
       (o: Spec)       => ty
-    ()         => firstNonCallable(l.next)
+    ()         => firstNonCallable(tail(cs))
 
 # _type_str: a source-shaped rendering for diagnostics — never the internal
 # spec name.
@@ -283,8 +283,8 @@ fun typeStr2(ts) => typeStrOf(ts)
 fun typeStrOf(t2) => match(t2)
   (b: SBuiltin)      => builtinStr(b.sbName)
   (n: SNamed)        => specName(n.snName, n.snParams)
-  (tp: STuple)       => "(" + joinTypeStrs(chain(tp.stEntries), "") + ")"
-  (cm: SCombination) => joinMemberStrs(chain(cm.scTypes), "")
+  (tp: STuple)       => "(" + joinTypeStrs(tp.stEntries, "") + ")"
+  (cm: SCombination) => joinMemberStrs(cm.scTypes, "")
   (cl: SCallable)    => typeStr(cl.scParams2) + ": " + typeStr(cl.scResult)
   (c: SClass)        => specName(c.scName, c.scParams)
   (g2: SGeneric)     => bareOfUnique(g2.sgName)
@@ -303,28 +303,28 @@ fun specName(name, params: List<Spec>)
   let gi = find(bare, "$generic$")
   let head2 = beforeHash(gi < 0 ? bare : slice(bare, 0, gi))
   let args = isEmpty(params)
-    ? (gi < 0 ? "" : joinMangledArgs(chain(split(slice(bare, gi + 9,
-                                                       length(bare)), "_")), ""))
-    : joinArgStrs(chain(params), "")
+    ? (gi < 0 ? "" : joinMangledArgs(split(slice(bare, gi + 9,
+                                                       length(bare)), "_"), ""))
+    : joinArgStrs(params, "")
   ret args == "" ? head2 : head2 + "<" + args + ">"
 
 fun beforeHash(s2) => find(s2, "@") < 0 ? s2 : slice(s2, 0, find(s2, "@"))
 
-fun [tail] joinArgStrs(ps: Chain<Spec>, acc) => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => joinArgStrs(l.next,
+fun [tail] joinArgStrs(ps: List<Spec>, acc) => isEmpty(ps)
+  ? acc
+  : joinArgStrs(tail(ps),
                                  acc == ""
-                                   ? typeStrOf(l.value)
-                                   : acc + ", " + typeStrOf(l.value))
+                                   ? typeStrOf(first(ps))
+                                   : acc + ", " + typeStrOf(first(ps)))
 
-fun [tail] joinMangledArgs(as2: Chain<String>, acc) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => l.value == ""
-    ? joinMangledArgs(l.next, acc)
-    : joinMangledArgs(l.next,
+fun [tail] joinMangledArgs(as2: List<String>, acc) => isEmpty(as2)
+  ? acc
+  : first(as2) == ""
+    ? joinMangledArgs(tail(as2), acc)
+    : joinMangledArgs(tail(as2),
                       acc == ""
-                        ? builtinStr(beforeHash(l.value))
-                        : acc + ", " + builtinStr(beforeHash(l.value)))
+                        ? builtinStr(beforeHash(first(as2)))
+                        : acc + ", " + builtinStr(beforeHash(first(as2))))
 
 fun builtinStr(name) => name == "bigint" ? "Int"
   : name == "int8" ? "Int8"
@@ -337,19 +337,19 @@ fun builtinStr(name) => name == "bigint" ? "Int"
   : name == "str" ? "String"
   : name
 
-fun [tail] joinTypeStrs(es: Chain<SEntry>, acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => joinTypeStrs(l.next,
+fun [tail] joinTypeStrs(es: List<SEntry>, acc) => isEmpty(es)
+  ? acc
+  : joinTypeStrs(tail(es),
                                   acc == ""
-                                    ? typeStr(l.value.seType)
-                                    : acc + ", " + typeStr(l.value.seType))
+                                    ? typeStr(first(es).seType)
+                                    : acc + ", " + typeStr(first(es).seType))
 
-fun [tail] joinMemberStrs(ms: Chain<Spec>, acc) => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => joinMemberStrs(l.next,
+fun [tail] joinMemberStrs(ms: List<Spec>, acc) => isEmpty(ms)
+  ? acc
+  : joinMemberStrs(tail(ms),
                                     acc == ""
-                                      ? typeStrOf(l.value)
-                                      : acc + " | " + typeStrOf(l.value))
+                                      ? typeStrOf(first(ms))
+                                      : acc + " | " + typeStrOf(first(ms)))
 
 # ── the rest ────────────────────────────────────────────────────────────────
 
@@ -375,13 +375,13 @@ fun checkNew(nw: PeNew, r)
     ()         => oneErr(nw.penwLine, "parameter expression must be of TupleType")
 
 fun checkTupleExpr(tp: PeTuple, r, expected: Spec|None)
-  ret checkTupEnts2(chain(tp.exprs), r, noErrs())
+  ret checkTupEnts2(tp.exprs, r, noErrs())
 
-fun [tail] checkTupEnts2(es: Chain<PTupEnt>, r,
-                         acc): Set<PErr> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => checkTupEnts2(l.next, r,
-                                   union(acc, checkExpr(l.value.tupValue, r,
+fun [tail] checkTupEnts2(es: List<PTupEnt>, r,
+                         acc): Set<PErr> => isEmpty(es)
+  ? acc
+  : checkTupEnts2(tail(es), r,
+                                   union(acc, checkExpr(first(es).tupValue, r,
                                                          None)))
 
 fun checkLambda(lm: PeLambda, r0, expected: Spec|None): Set<PErr>
@@ -396,16 +396,16 @@ fun checkLambda(lm: PeLambda, r0, expected: Spec|None): Set<PErr>
 
 fun checkBlock(bk: PeBlock, r0, expected: Spec|None): Set<PErr>
   let r = blockScope(bk.blockStmts, r0)
-  let stmtErrs = blockStmtChecks(chain(bk.blockStmts), r, expected, noErrs())
+  let stmtErrs = blockStmtChecks(bk.blockStmts, r, expected, noErrs())
   let valErrs = checkExpr(bk.blockValue, r, expected)
   let typeErr = blockTypeErr(bk, r, expected, valErrs)
   ret union(stmtErrs, union(valErrs, union(typeErr, unusedBindings(bk, r))))
 
-fun [tail] blockStmtChecks(ss: Chain<PStmt>, r: Resolver, expected: Spec|None,
-                           acc: Set<PErr>): Set<PErr> => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => blockStmtChecks(l.next, r, expected,
-                                     union(acc, checkStmt2(l.value, r,
+fun [tail] blockStmtChecks(ss: List<PStmt>, r: Resolver, expected: Spec|None,
+                           acc: Set<PErr>): Set<PErr> => isEmpty(ss)
+  ? acc
+  : blockStmtChecks(tail(ss), r, expected,
+                                     union(acc, checkStmt2(first(ss), r,
                                                             expected)))
 
 fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
@@ -423,39 +423,39 @@ fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
 # No value vanishes silently: a block-local binding never read discards its
 # value. A `_`-prefixed name is the explicit opt-out.
 fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
-  let declared = build(bindingLets(chain(bk.blockStmts),
-                                   builder()))
+  let declared = bindingLets(bk.blockStmts,
+                                   List())
   if isEmpty(declared)
     ret noErrs()
-  let referenced = referencedInStmts(chain(bk.blockStmts),
+  let referenced = referencedInStmts(bk.blockStmts,
                                      referencedNames(bk.blockValue,
                                                      List()))
-  ret unusedWarns(chain(declared), referenced, noErrs())
+  ret unusedWarns(declared, referenced, noErrs())
 
 # Declaration order, which is the order the shadowing check reports in.
-fun [tail] bindingLets(ss: Chain<PStmt>,
-                       [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (d: PsDestructure) => bindingLets(l.next,
-                              pushAll(acc,
-                                  flattenParams(l.value)))
-    (let2: PsLet)      => bindingLets(l.next, push(acc, l.value))
-    (o: PStmt)         => bindingLets(l.next, acc)
+fun [tail] bindingLets(ss: List<PStmt>,
+                       acc: List<PStmt>) => isEmpty(ss)
+  ? acc
+  : match(first(ss))
+    (d: PsDestructure) => bindingLets(tail(ss),
+                              concat(acc,
+                                  flattenParams(first(ss))))
+    (let2: PsLet)      => bindingLets(tail(ss), append(acc, first(ss)))
+    (o: PStmt)         => bindingLets(tail(ss), acc)
 
 
-fun [tail] unusedWarns(ls: Chain<PStmt>, referenced: List<String>,
-                       acc: Set<PErr>) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
+fun [tail] unusedWarns(ls: List<PStmt>, referenced: List<String>,
+                       acc: Set<PErr>) => isEmpty(ls)
+  ? acc
+  : match(first(ls))
     (let2: PsLet) => startsWith(bareOfUnique(let2.lName), "_")
                      || contains2(referenced, let2.lName)
-      ? unusedWarns(l.next, referenced, acc)
-      : unusedWarns(l.next, referenced,
+      ? unusedWarns(tail(ls), referenced, acc)
+      : unusedWarns(tail(ls), referenced,
                     add(acc, PErr(let2.pslLine,
                                      "'" + bareOfUnique(let2.lName)
                                      + "' is never used", true, "unused-variable")))
-    (o: PStmt)    => unusedWarns(l.next, referenced, acc)
+    (o: PStmt)    => unusedWarns(tail(ls), referenced, acc)
 
 # The subject is checked first; a subject whose TYPE is unknowable
 # short-circuits everything below (its own errors are all there is). Literal
@@ -469,7 +469,7 @@ fun checkMatch(mt: PeMatch, r, expected: Spec|None)
 
 fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
                     subjectErr)
-  let hasLit = anyArmLiterals(chain(mt.arms))
+  let hasLit = anyArmLiterals(mt.arms)
   if hasLit && !(isPrimitiveSubject(st) || unionHasPrimitive(st))
     ret union(subjectErr,
                oneErr(mt.pemLine,
@@ -481,7 +481,7 @@ fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
                       + "patterns on an Int/String subject"))
   # Coverage, duplicate literals and unreachable arms: match_coverage.yafl.
   ret union(union(multiSubjectErrs(mt),
-                  matchArmChecks(chain(mt.arms), st, r, expected, subjectErr)),
+                  matchArmChecks(mt.arms, st, r, expected, subjectErr)),
             matchCoverageErrs(mt, st, r))
 
 # ── multi-subject arity ─────────────────────────────────────────────────────
@@ -496,16 +496,16 @@ fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
 # Checked for EVERY match, not only multi-subject ones: the mismatch runs both
 # ways, and `match(a)` with a two-pattern arm is the commoner mistake. Gating
 # this on `matchExtra` being non-empty missed exactly that case.
-fun multiSubjectErrs(mt: PeMatch) => arityErrs(chain(mt.arms), 1 + countOf(mt.matchExtra), noErrs())
+fun multiSubjectErrs(mt: PeMatch) => arityErrs(mt.arms, 1 + countOf(mt.matchExtra), noErrs())
 
 fun countOf(es: List<PExpr>) => fold(es, 0, (n, e2) => n + 1)
 
 # Accumulator-threaded so the self-call stays in TAIL position — wrapping it
 # in `union(...)` would not be one.
-fun [tail] arityErrs(as2: Chain<PArm>, want, acc: Set<PErr>) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => arityErrs(l.next, want,
-                               union(acc, armArityErr(l.value, want)))
+fun [tail] arityErrs(as2: List<PArm>, want, acc: Set<PErr>) => isEmpty(as2)
+  ? acc
+  : arityErrs(tail(as2), want,
+                               union(acc, armArityErr(first(as2), want)))
 
 fun armArityErr(a: PArm, want)
   let got = 1 + countPos(a.armExtra)
@@ -523,9 +523,9 @@ fun isNoneSpec3(sp: Spec|None) => match(sp)
   (s2: Spec) => false
   ()         => true
 
-fun [tail] anyArmLiterals(as2: Chain<PArm>) => match(as2)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => isEmpty(l.value.armLiterals) ? anyArmLiterals(l.next) : true
+fun [tail] anyArmLiterals(as2: List<PArm>) => isEmpty(as2)
+  ? false
+  : isEmpty(first(as2).armLiterals) ? anyArmLiterals(tail(as2)) : true
 
 fun isPrimitiveSubject(st) => match(st)
   (b: SBuiltin) => isPrimitiveMatchType(b.sbName)
@@ -537,33 +537,33 @@ fun isPrimitiveMatchType(name)
       || name == "float64"
 
 fun unionHasPrimitive(st) => match(st)
-  (cm: SCombination) => anyPrimMember(chain(cm.scTypes))
+  (cm: SCombination) => anyPrimMember(cm.scTypes)
   (o: Spec)          => false
 
-fun [tail] anyPrimMember(ms: Chain<Spec>) => match(ms)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => match(l.value)
+fun [tail] anyPrimMember(ms: List<Spec>) => isEmpty(ms)
+  ? false
+  : match(first(ms))
     (b: SBuiltin) => b.sbName == "bigint" || b.sbName == "str"
       ? true
-      : anyPrimMember(l.next)
-    (o: Spec)     => anyPrimMember(l.next)
+      : anyPrimMember(tail(ms))
+    (o: Spec)     => anyPrimMember(tail(ms))
 
 fun isEnumOrUnion(st) => match(st)
   (e2: SEnum)        => true
   (cm: SCombination) => true
   (o: Spec)          => false
 
-fun [tail] matchArmChecks(as2: Chain<PArm>, st, r, expected: Spec|None,
-                          acc) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => matchArmChecks(l.next, st, r, expected,
-                                    union(acc, checkArm(l.value, st, r, expected)))
+fun [tail] matchArmChecks(as2: List<PArm>, st, r, expected: Spec|None,
+                          acc) => isEmpty(as2)
+  ? acc
+  : matchArmChecks(tail(as2), st, r, expected,
+                                    union(acc, checkArm(first(as2), st, r, expected)))
 
 # A bound else arm's binding is the whole subject, exactly as in compile;
 # every later position binds its own name at its declared type
 # (_extra_binding_resolver).
 fun checkArm(a: PArm, st, r, expected: Spec|None): Set<PErr>
-  let bodyR = extraScope(chain(a.armExtra), chain2(List<Spec|None>()),
+  let bodyR = extraScope(a.armExtra, chain2(List<Spec|None>()),
                          bindingScope(a, armHasNoType(a) ? st : a.armType, r))
   let typeErr = checkSpecOpt(a.armType, r)
   let bodyErr = checkExpr(a.armBody, bodyR, expected)
@@ -591,17 +591,17 @@ fun armHasNoType(a: PArm) => match(a.armType)
 
 # One arm, one literal KIND (a range counts as its lo's kind).
 fun mixedKindErr(a: PArm)
-  if atMost(chain(a.armLiterals), 1)
+  if atMost(a.armLiterals, 1)
     ret noErrs()
-  let kinds = litKinds(chain(a.armLiterals), List())
-  ret atLeast(chain(kinds), 2)
+  let kinds = litKinds(a.armLiterals, List())
+  ret atLeast(kinds, 2)
     ? oneErr(a.parmLine,
              "all literals in one arm must be the same kind (integers, floats or strings)")
     : noErrs()
 
-fun [tail] litKinds(ls: Chain<PLit>, acc: List<String>) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => litKinds(l.next, addNameOnce(acc, litKind(l.value)))
+fun [tail] litKinds(ls: List<PLit>, acc: List<String>) => isEmpty(ls)
+  ? acc
+  : litKinds(tail(ls), addNameOnce(acc, litKind(first(ls))))
 
 fun litKind(l) => match(l)
   (e2: PlExpr)  => exprKind(e2.litExpr)
@@ -631,15 +631,15 @@ fun referencedNames(x, acc): List<String> => match(x)
   (nm: PeName)   => prepend(nm.refName, acc)
   (d: PeDot)     => referencedNames(d.base, acc)
   (c: PeCall)    => referencedNames(c.parameter, referencedNames(c.function, acc))
-  (tp: PeTuple)  => refEntries(chain(tp.exprs), acc)
+  (tp: PeTuple)  => refEntries(tp.exprs, acc)
   (te: PeTernary) => referencedNames(te.falseResult,
                       referencedNames(te.trueResult,
                         referencedNames(te.condition, acc)))
   (lm: PeLambda) => referencedNames(lm.lamBody, refStmt(lm.lamParams, acc))
   (bk: PeBlock)  => referencedNames(bk.blockValue,
-                                    referencedInStmts(chain(bk.blockStmts), acc))
+                                    referencedInStmts(bk.blockStmts, acc))
   # Every subject is a use — the extra subjects of `match(a, b)` included.
-  (mt: PeMatch)  => refArms(chain(mt.arms),
+  (mt: PeMatch)  => refArms(mt.arms,
                             fold(mt.matchExtra, referencedNames(mt.subject, acc),
                                  (a2, sx) => referencedNames(sx, a2)))
   (op: PeBuiltinOp) => referencedNames(op.opParams, acc)
@@ -658,37 +658,37 @@ fun referencedNames(x, acc): List<String> => match(x)
   (o: PeLiteral) => acc
   (o: PeLowered) => acc
 
-fun [tail] refEntries(es: Chain<PTupEnt>, acc): List<String> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => refEntries(l.next, referencedNames(l.value.tupValue, acc))
+fun [tail] refEntries(es: List<PTupEnt>, acc): List<String> => isEmpty(es)
+  ? acc
+  : refEntries(tail(es), referencedNames(first(es).tupValue, acc))
 
-fun [tail] refArms(as2: Chain<PArm>, acc): List<String> => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => refArms(l.next,
-                             refOpt(l.value.armGuard,
-                                    referencedNames(l.value.armBody, acc)))
+fun [tail] refArms(as2: List<PArm>, acc): List<String> => isEmpty(as2)
+  ? acc
+  : refArms(tail(as2),
+                             refOpt(first(as2).armGuard,
+                                    referencedNames(first(as2).armBody, acc)))
 
 fun refOpt(x: PExpr|None, acc) => match(x)
   (e2: PExpr) => referencedNames(e2, acc)
   ()          => acc
 
-fun [tail] referencedInStmts(ss: Chain<PStmt>, acc: List<String>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => referencedInStmts(l.next, refStmt(l.value, acc))
+fun [tail] referencedInStmts(ss: List<PStmt>, acc: List<String>) => isEmpty(ss)
+  ? acc
+  : referencedInStmts(tail(ss), refStmt(first(ss), acc))
 
 fun refStmt(st, acc): List<String> => match(st)
   (f: PsFun)         => refOpt(f.fBody, acc)
   (l: PsLet)         => refOpt(l.lDefault, acc)
-  (d: PsDestructure) => referencedInStmts(chain(d.dTargets),
+  (d: PsDestructure) => referencedInStmts(d.dTargets,
                                           refOpt(d.dDefault, acc))
   (rt: PsRet)        => referencedNames(rt.retValue, acc)
   (a: PsAction)      => referencedNames(a.action, acc)
-  (i: PsIf)          => referencedInStmts(chain(i.ifFalse),
-                          referencedInStmts(chain(i.ifTrue),
+  (i: PsIf)          => referencedInStmts(i.ifFalse,
+                          referencedInStmts(i.ifTrue,
                             referencedNames(i.ifCond, acc)))
-  (ei: PsElseIf)     => referencedInStmts(chain(ei.eiStmts),
+  (ei: PsElseIf)     => referencedInStmts(ei.eiStmts,
                                           referencedNames(ei.eiCond, acc))
-  (el: PsElse)       => referencedInStmts(chain(el.elStmts), acc)
+  (el: PsElse)       => referencedInStmts(el.elStmts, acc)
   (o: PStmt)         => acc
 
 
@@ -717,44 +717,44 @@ fun checkWith(wx: PeWith, r)
 fun withShapeError(wx: PeWith) => match(wx.withRepls)
   (tp: PeTuple) => isEmpty(tp.exprs)
     ? "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
-    : withEntriesError(chain(tp.exprs), List())
+    : withEntriesError(tp.exprs, List())
   (o: PExpr)    => "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
 
-fun [tail] withEntriesError(es: Chain<PTupEnt>, seen: List<String>) => match(es)
-  (nil: ChainEnd) => ""
-  (l: ChainLink)  => l.value.tupSpread
+fun [tail] withEntriesError(es: List<PTupEnt>, seen: List<String>) => isEmpty(es)
+  ? ""
+  : first(es).tupSpread
     ? "a `with` replacement cannot be a spread"
-    : l.value.tupName == ""
+    : first(es).tupName == ""
       ? "`with` replacements must be named — `with x(field = value)`"
-      : contains2(seen, l.value.tupName)
+      : contains2(seen, first(es).tupName)
         ? "a `with` expression replaces each field at most once"
-        : withEntriesError(l.next, prepend(l.value.tupName, seen))
+        : withEntriesError(tail(es), prepend(first(es).tupName, seen))
 
 fun checkWithFields(wx: PeWith, r): Set<PErr>
   let visible = withVisibleFields(wx, r)
   ret match(wx.withRepls)
-    (tp: PeTuple) => withNamesKnown(chain(tp.exprs), visible, wx.pewLine)
+    (tp: PeTuple) => withNamesKnown(tp.exprs, visible, wx.pewLine)
     (o: PExpr)    => Set()
 
-fun [tail] withNamesKnown(es: Chain<PTupEnt>, visible: List<String>,
-                          lr): Set<PErr> => match(es)
-  (nil: ChainEnd) => Set()
-  (l: ChainLink)  => contains2(visible, l.value.tupName)
-    ? withNamesKnown(l.next, visible, lr)
+fun [tail] withNamesKnown(es: List<PTupEnt>, visible: List<String>,
+                          lr): Set<PErr> => isEmpty(es)
+  ? Set()
+  : contains2(visible, first(es).tupName)
+    ? withNamesKnown(tail(es), visible, lr)
     : add(Set(),PErr(lr,
-        "`" + l.value.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
+        "`" + first(es).tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
 
 fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
   (sp: Spec) => match(sp)
     (c: SClass) => match(soleItem(findType(r, c.scName)))
       (f: Found) => match(f.fStmt)
-        (cls: PsClass) => withBareNames(chain(flattenParams(cls.cParams)),
+        (cls: PsClass) => withBareNames(flattenParams(cls.cParams),
                                         List())
         (o: PStmt)     => List()
       ()         => List()
     (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
       (f: Found) => match(f.fStmt)
-        (en: PsEnum) => withCoverBares(chain(coveringFields(en, e2.seValidLeaves)),
+        (en: PsEnum) => withCoverBares(coveringFields(en, e2.seValidLeaves),
                                        List())
         (o: PStmt)   => List()
       ()         => List()
@@ -762,17 +762,17 @@ fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
   ()         => List()
 
 fun withBareNames(fs, acc: List<String>): List<String>
-  ret build(withBareNamesB(fs, builderFrom(acc)))
+  ret (withBareNamesB(fs, acc))
 
-fun [tail] withBareNamesB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<String>) => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (p: PsLet) => withBareNamesB(l.next, push(acc, bareName(p.lName)))
-    (o: PStmt) => withBareNamesB(l.next, acc)
+fun [tail] withBareNamesB(fs: List<PStmt>, acc: List<String>) => isEmpty(fs)
+  ? acc
+  : match(first(fs))
+    (p: PsLet) => withBareNamesB(tail(fs), append(acc, bareName(p.lName)))
+    (o: PStmt) => withBareNamesB(tail(fs), acc)
 
-fun withCoverBares(fs: Chain<SField>, acc: List<String>)
-  ret build(withCoverBaresB(fs, builderFrom(acc)))
+fun withCoverBares(fs: List<SField>, acc: List<String>)
+  ret (withCoverBaresB(fs, acc))
 
-fun [tail] withCoverBaresB(fs: Chain<SField>, [terminal] acc): ListBuilder<String> => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => withCoverBaresB(l.next, push(acc, bareName(l.value.sfName)))
+fun [tail] withCoverBaresB(fs: List<SField>, acc): List<String> => isEmpty(fs)
+  ? acc
+  : withCoverBaresB(tail(fs), append(acc, bareName(first(fs).sfName)))

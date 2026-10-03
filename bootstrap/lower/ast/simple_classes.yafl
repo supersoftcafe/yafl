@@ -47,15 +47,15 @@ fun scNames(c: ScCands) => sort(keys(c.scIndex))
 # contributes nothing — it cannot happen, since the names come from the map's
 # own keys, but saying so beats inventing a placeholder class.
 fun scClassesOf(c: ScCands)
-  ret build(scClassesLoop(chain(scNames(c)), c,
-                          builder()))
+  ret (scClassesLoop(scNames(c), c,
+                          List()))
 
-fun [tail] scClassesLoop(ns: Chain<String>, c: ScCands,
-                         [terminal] acc: ListBuilder<PsClass>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(get(c.scIndex, l.value))
-    (cls: PsClass) => scClassesLoop(l.next, c, push(acc, cls))
-    ()             => scClassesLoop(l.next, c, acc)
+fun [tail] scClassesLoop(ns: List<String>, c: ScCands,
+                         acc: List<PsClass>) => isEmpty(ns)
+  ? acc
+  : match(get(c.scIndex, first(ns)))
+    (cls: PsClass) => scClassesLoop(tail(ns), c, append(acc, cls))
+    ()             => scClassesLoop(tail(ns), c, acc)
 
 fun scBeEdge(acc, from2: ScCands, name,
              candNames: List<String>) => match(get(from2.scIndex, name))
@@ -79,39 +79,39 @@ class [final] ScFiltered(sfCands: ScCands, sfSpecs: ScSpecs)
 
 # ── generic name -> Int lookup/bump (shared by method-ref and uid counts) ───
 
-fun [tail] scCountLoop(ns: Chain<String>, vs: Chain<Int>, name: String) => match(ns)
-  (nil: ChainEnd) => 0
-  (n: ChainLink)  => match(vs)
-    (nil2: ChainEnd) => 0
-    (v: ChainLink)   => n.value == name ? v.value : scCountLoop(n.next, v.next, name)
+fun [tail] scCountLoop(ns: List<String>, vs: List<Int>, name: String) => isEmpty(ns)
+  ? 0
+  : isEmpty(vs)
+    ? 0
+    : first(ns) == name ? first(vs) : scCountLoop(tail(ns), tail(vs), name)
 
 # ── generic candidate/spec filtering by predicate on name ───────────────────
 
 fun scKeepCandsWhere(cands: ScCands, pred: (:String): Bool)
-  ret scKcLoop(chain(scNames(cands)), cands, pred, scCandsEmpty())
+  ret scKcLoop(scNames(cands), cands, pred, scCandsEmpty())
 
-fun [tail] scKcLoop(ns: Chain<String>, from2: ScCands, pred: (:String): Bool,
-                    acc) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => pred(n.value)
-    ? scKcLoop(n.next, from2, pred,
-               scCandsAddOpt(acc, n.value, get(from2.scIndex, n.value)))
-    : scKcLoop(n.next, from2, pred, acc)
+fun [tail] scKcLoop(ns: List<String>, from2: ScCands, pred: (:String): Bool,
+                    acc) => isEmpty(ns)
+  ? acc
+  : pred(first(ns))
+    ? scKcLoop(tail(ns), from2, pred,
+               scCandsAddOpt(acc, first(ns), get(from2.scIndex, first(ns))))
+    : scKcLoop(tail(ns), from2, pred, acc)
 
 fun scCandsAddOpt(acc, name, cls: PsClass|None) => match(cls)
   (c: PsClass) => scCandsAdd(acc, name, c)
   ()           => acc
 
 fun scKeepSpecsWhere(specs: ScSpecs, pred: (:String): Bool)
-  ret scKsLoop(chain(ssNames(specs)), specs, pred, scSpecsEmpty())
+  ret scKsLoop(ssNames(specs), specs, pred, scSpecsEmpty())
 
-fun [tail] scKsLoop(ns: Chain<String>, from2: ScSpecs, pred: (:String): Bool,
-                    acc) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => pred(n.value)
-    ? scKsLoop(n.next, from2, pred,
-               scSpecsAddOpt(acc, n.value, get(from2.ssIndex, n.value)))
-    : scKsLoop(n.next, from2, pred, acc)
+fun [tail] scKsLoop(ns: List<String>, from2: ScSpecs, pred: (:String): Bool,
+                    acc) => isEmpty(ns)
+  ? acc
+  : pred(first(ns))
+    ? scKsLoop(tail(ns), from2, pred,
+               scSpecsAddOpt(acc, first(ns), get(from2.ssIndex, first(ns))))
+    : scKsLoop(tail(ns), from2, pred, acc)
 
 fun scSpecsAddOpt(acc, name, sp: Spec|None) => match(sp)
   (s3: Spec) => scSpecsAdd(acc, name, s3)
@@ -136,15 +136,15 @@ fun scLookupSpec(specs: ScSpecs, name: String) => get(specs.ssIndex, name)
 
 fun scClassFor(cands: ScCands, name: String) => get(cands.scIndex, name)
 
-fun scMethodNames(cls: PsClass) => scMnLoop(chain(cls.cMembers), List())
+fun scMethodNames(cls: PsClass) => scMnLoop(cls.cMembers, List())
 
-fun scMnLoop(ms, acc: List<String>): List<String> => build(scMnLoopB(ms, builderFrom(acc)))
+fun scMnLoop(ms, acc: List<String>): List<String> => (scMnLoopB(ms, acc))
 
-fun [tail] scMnLoopB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<String>) => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (f: PsFun) => scMnLoopB(l.next, push(acc, f.fName))
-    (o: PStmt) => scMnLoopB(l.next, acc)
+fun [tail] scMnLoopB(ms: List<PStmt>, acc: List<String>) => isEmpty(ms)
+  ? acc
+  : match(first(ms))
+    (f: PsFun) => scMnLoopB(tail(ms), append(acc, f.fName))
+    (o: PStmt) => scMnLoopB(tail(ms), acc)
 
 fun scHasMethod(cands: ScCands, clsName: String, methodName: String)
   ret match(scClassFor(cands, clsName))
@@ -171,59 +171,59 @@ fun scIsSimple(cls: PsClass, baseNames: List<String>)
   if contains2(baseNames, cls.cName)
     ret false
   let fields = flattenParams(cls.cParams)
-  if atLeast(chain(fields), 5)
+  if atLeast(fields, 5)
     ret false
-  ret !scHasArrayField(chain(fields))
+  ret !scHasArrayField(fields)
 
-fun [tail] scHasArrayField(fs: Chain<PStmt>) => match(fs)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => match(l.value)
+fun [tail] scHasArrayField(fs: List<PStmt>) => isEmpty(fs)
+  ? false
+  : match(first(fs))
     (let2: PsLet) => match(arrayElem(let2.lType))
       (el: Spec) => true
-      ()         => scHasArrayField(l.next)
-    (o: PStmt)    => scHasArrayField(l.next)
+      ()         => scHasArrayField(tail(fs))
+    (o: PStmt)    => scHasArrayField(tail(fs))
 
 # ── 2. findSimpleClasses ─────────────────────────────────────────────────────
 
-fun scAllClasses(statements: List<PStmt>) => scAcLoop(chain(statements), scCandsEmpty())
+fun scAllClasses(statements: List<PStmt>) => scAcLoop(statements, scCandsEmpty())
 
-fun [tail] scAcLoop(ss: Chain<PStmt>, acc: ScCands) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (c: PsClass) => scAcLoop(l.next,
+fun [tail] scAcLoop(ss: List<PStmt>, acc: ScCands) => isEmpty(ss)
+  ? acc
+  : match(first(ss))
+    (c: PsClass) => scAcLoop(tail(ss),
                              scCandsAdd(acc, c.cName, c))
-    (o: PStmt)   => scAcLoop(l.next, acc)
+    (o: PStmt)   => scAcLoop(tail(ss), acc)
 
-fun scBaseClassNames(all2: ScCands) => scBcnLoop(chain(scClassesOf(all2)), List())
+fun scBaseClassNames(all2: ScCands) => scBcnLoop(scClassesOf(all2), List())
 
-fun [tail] scBcnLoop(cs: Chain<PsClass>, acc): List<String> => match(cs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scBcnLoop(l.next, scBcnParents(l.value.cAllParents, acc))
+fun [tail] scBcnLoop(cs: List<PsClass>, acc): List<String> => isEmpty(cs)
+  ? acc
+  : scBcnLoop(tail(cs), scBcnParents(first(cs).cAllParents, acc))
 
 fun scBcnParents(parents: List<Spec>|None, acc): List<String> => match(parents)
-  (ps: List<Spec>) => scBcnList(chain(ps), acc)
+  (ps: List<Spec>) => scBcnList(ps, acc)
   ()               => acc
 
-fun [tail] scBcnList(ps: Chain<Spec>, acc: List<String>) => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (c: SClass) => scBcnList(l.next, addNameOnce(acc, c.scName))
-    (o: Spec)   => scBcnList(l.next, acc)
+fun [tail] scBcnList(ps: List<Spec>, acc: List<String>) => isEmpty(ps)
+  ? acc
+  : match(first(ps))
+    (c: SClass) => scBcnList(tail(ps), addNameOnce(acc, c.scName))
+    (o: Spec)   => scBcnList(tail(ps), acc)
 
-fun [tail] scFilterSimple(ns: Chain<String>, from2: ScCands,
-                          baseNames: List<String>, acc: ScCands) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => match(get(from2.scIndex, n.value))
+fun [tail] scFilterSimple(ns: List<String>, from2: ScCands,
+                          baseNames: List<String>, acc: ScCands) => isEmpty(ns)
+  ? acc
+  : match(get(from2.scIndex, first(ns)))
     (cls: PsClass) => scIsSimple(cls, baseNames)
-      ? scFilterSimple(n.next, from2, baseNames,
-                       scCandsAdd(acc, n.value, cls))
-      : scFilterSimple(n.next, from2, baseNames, acc)
-    ()             => scFilterSimple(n.next, from2, baseNames, acc)
+      ? scFilterSimple(tail(ns), from2, baseNames,
+                       scCandsAdd(acc, first(ns), cls))
+      : scFilterSimple(tail(ns), from2, baseNames, acc)
+    ()             => scFilterSimple(tail(ns), from2, baseNames, acc)
 
 fun scFindSimpleClasses(statements: List<PStmt>)
   let all2 = scAllClasses(statements)
   let baseNames = scBaseClassNames(all2)
-  let simple = scFilterSimple(chain(scNames(all2)), all2, baseNames,
+  let simple = scFilterSimple(scNames(all2), all2, baseNames,
                               scCandsEmpty())
   ret scPruneRecursive(simple)
 
@@ -231,84 +231,84 @@ fun scFindSimpleClasses(statements: List<PStmt>)
 #      and ast_inline.yafl) ──────────────────────────────────────────────────
 
 fun scCollectRefs(sp, candNames: List<String>, acc): List<String> => match(sp)
-  (c: SClass)        => scAddIfCand(c.scName, candNames, scRefList(chain(c.scParams), candNames, acc))
-  (n: SNamed)        => scAddIfCand(n.snName, candNames, scRefList(chain(n.snParams), candNames, acc))
-  (e2: SEnum)        => scRefList(chain(e2.seParams), candNames, acc)
-  (cm: SCombination) => scRefList(chain(cm.scTypes), candNames, acc)
+  (c: SClass)        => scAddIfCand(c.scName, candNames, scRefList(c.scParams, candNames, acc))
+  (n: SNamed)        => scAddIfCand(n.snName, candNames, scRefList(n.snParams, candNames, acc))
+  (e2: SEnum)        => scRefList(e2.seParams, candNames, acc)
+  (cm: SCombination) => scRefList(cm.scTypes, candNames, acc)
   (cl: SCallable)    => scRefOpt(cl.scResult, candNames, scCollectRefs(cl.scParams2, candNames, acc))
-  (t2: STuple)       => scRefEntries(chain(t2.stEntries), candNames, acc)
+  (t2: STuple)       => scRefEntries(t2.stEntries, candNames, acc)
   (af: SArrayField)  => scCollectRefs(af.safElem, candNames, acc)
   (ls: SLazyStub)    => scRefOpt(ls.slsTarget, candNames, acc)
   (o: Spec)          => acc
 
-fun [tail] scRefList(ts: Chain<Spec>, candNames: List<String>, acc: List<String>) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scRefList(l.next, candNames, scCollectRefs(l.value, candNames, acc))
+fun [tail] scRefList(ts: List<Spec>, candNames: List<String>, acc: List<String>) => isEmpty(ts)
+  ? acc
+  : scRefList(tail(ts), candNames, scCollectRefs(first(ts), candNames, acc))
 
 fun scRefOpt(sp: Spec|None, candNames: List<String>, acc): List<String> => match(sp)
   (s2: Spec) => scCollectRefs(s2, candNames, acc)
   ()         => acc
 
-fun [tail] scRefEntries(es: Chain<SEntry>, candNames: List<String>, acc): List<String> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scRefEntries(l.next, candNames, scRefOpt(l.value.seType, candNames, acc))
+fun [tail] scRefEntries(es: List<SEntry>, candNames: List<String>, acc): List<String> => isEmpty(es)
+  ? acc
+  : scRefEntries(tail(es), candNames, scRefOpt(first(es).seType, candNames, acc))
 
 fun scAddIfCand(name: String, candNames: List<String>, acc): List<String>
   ret contains2(candNames, name) ? addNameOnce(acc, name) : acc
 
 fun scReferencedNames(cls: PsClass, candNames: List<String>)
-  ret scRefFields(chain(flattenParams(cls.cParams)), candNames, List())
+  ret scRefFields(flattenParams(cls.cParams), candNames, List())
 
-fun [tail] scRefFields(fs: Chain<PStmt>, candNames: List<String>, acc: List<String>) => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
+fun [tail] scRefFields(fs: List<PStmt>, candNames: List<String>, acc: List<String>) => isEmpty(fs)
+  ? acc
+  : match(first(fs))
     (let2: PsLet) => match(let2.lType)
-      (ty: Spec) => scRefFields(l.next, candNames, scCollectRefs(ty, candNames, acc))
-      ()         => scRefFields(l.next, candNames, acc)
-    (o: PStmt)    => scRefFields(l.next, candNames, acc)
+      (ty: Spec) => scRefFields(tail(fs), candNames, scCollectRefs(ty, candNames, acc))
+      ()         => scRefFields(tail(fs), candNames, acc)
+    (o: PStmt)    => scRefFields(tail(fs), candNames, acc)
 
-fun scBuildEdges(cands: ScCands) => scBeLoop(chain(scNames(cands)), cands, scNames(cands),
+fun scBuildEdges(cands: ScCands) => scBeLoop(scNames(cands), cands, scNames(cands),
                                              EEdges(Dict()))
 
-fun [tail] scBeLoop(ns: Chain<String>, from2: ScCands, candNames: List<String>,
-                    acc) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => scBeLoop(n.next, from2, candNames,
-                         scBeEdge(acc, from2, n.value, candNames))
+fun [tail] scBeLoop(ns: List<String>, from2: ScCands, candNames: List<String>,
+                    acc) => isEmpty(ns)
+  ? acc
+  : scBeLoop(tail(ns), from2, candNames,
+                         scBeEdge(acc, from2, first(ns), candNames))
 
 fun scPruneRecursive(cands: ScCands)
   let edges = scBuildEdges(cands)
-  ret scPruneLoop(chain(scNames(cands)), cands, edges,
+  ret scPruneLoop(scNames(cands), cands, edges,
                   scCandsEmpty())
 
-fun [tail] scPruneLoop(ns: Chain<String>, from2: ScCands, edges: EEdges,
-                       acc) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => aiReachesSelf(n.value, edges)
-    ? scPruneLoop(n.next, from2, edges, acc)
-    : scPruneLoop(n.next, from2, edges,
-                  scCandsAddOpt(acc, n.value,
-                                get(from2.scIndex, n.value)))
+fun [tail] scPruneLoop(ns: List<String>, from2: ScCands, edges: EEdges,
+                       acc) => isEmpty(ns)
+  ? acc
+  : aiReachesSelf(first(ns), edges)
+    ? scPruneLoop(tail(ns), from2, edges, acc)
+    : scPruneLoop(tail(ns), from2, edges,
+                  scCandsAddOpt(acc, first(ns),
+                                get(from2.scIndex, first(ns))))
 
 # ── 4. buildTupleSpecs ───────────────────────────────────────────────────────
 
 fun scTupleSpecOf(cls: PsClass)
-  ret STuple(scEntriesOf(chain(flattenParams(cls.cParams)), List()), cls.pscLine)
+  ret STuple(scEntriesOf(flattenParams(cls.cParams), List()), cls.pscLine)
 
-fun scEntriesOf(fs, acc: List<SEntry>): List<SEntry> => build(scEntriesOfB(fs, builderFrom(acc)))
+fun scEntriesOf(fs, acc: List<SEntry>): List<SEntry> => (scEntriesOfB(fs, acc))
 
-fun [tail] scEntriesOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<SEntry>) => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => scEntriesOfB(l.next, push(acc, SEntry(let2.lName, let2.lType, None)))
-    (o: PStmt)    => scEntriesOfB(l.next, acc)
+fun [tail] scEntriesOfB(fs: List<PStmt>, acc: List<SEntry>) => isEmpty(fs)
+  ? acc
+  : match(first(fs))
+    (let2: PsLet) => scEntriesOfB(tail(fs), append(acc, SEntry(let2.lName, let2.lType, None)))
+    (o: PStmt)    => scEntriesOfB(tail(fs), acc)
 
-fun scBuildTupleSpecs(cands: ScCands) => scBtsLoop(chain(scNames(cands)), cands, scSpecsEmpty())
+fun scBuildTupleSpecs(cands: ScCands) => scBtsLoop(scNames(cands), cands, scSpecsEmpty())
 
-fun [tail] scBtsLoop(ns: Chain<String>, from2: ScCands, acc) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => scBtsLoop(n.next, from2,
-                         scBtsOne(acc, from2, n.value))
+fun [tail] scBtsLoop(ns: List<String>, from2: ScCands, acc) => isEmpty(ns)
+  ? acc
+  : scBtsLoop(tail(ns), from2,
+                         scBtsOne(acc, from2, first(ns)))
 
 # ── 5. lowerNestedFieldTypes fixpoint ────────────────────────────────────────
 # `specsFixed` is the ORIGINAL, never-mutated map the rule substitutes from
@@ -331,17 +331,17 @@ fun scLnftStep(nrest, from2: ScSpecs, cands: List<String>,
     : scLnftRound(nrest, from2, cands, specsFixed,
                  scSpecsAdd(acc, name, newSpec), true)
 
-fun scLnftRound(ns: Chain<String>, from2: ScSpecs, cands: List<String>,
-                specsFixed: ScSpecs, acc, changed) => match(ns)
-  (nil: ChainEnd) => ScLnftOut(acc, changed)
-  (n: ChainLink)  => match(get(from2.ssIndex, n.value))
-    (sp: Spec) => scLnftStep(n.next, from2, cands, specsFixed, acc, changed,
-                             n.value, sp)
-    ()         => scLnftRound(n.next, from2, cands, specsFixed, acc,
+fun scLnftRound(ns: List<String>, from2: ScSpecs, cands: List<String>,
+                specsFixed: ScSpecs, acc, changed) => isEmpty(ns)
+  ? ScLnftOut(acc, changed)
+  : match(get(from2.ssIndex, first(ns)))
+    (sp: Spec) => scLnftStep(tail(ns), from2, cands, specsFixed, acc, changed,
+                             first(ns), sp)
+    ()         => scLnftRound(tail(ns), from2, cands, specsFixed, acc,
                               changed)
 
 fun [tail] scLnftFix(cands: List<String>, specsFixed: ScSpecs, specs: ScSpecs)
-  let out = scLnftRound(chain(ssNames(specs)), specs, cands, specsFixed,
+  let out = scLnftRound(ssNames(specs), specs, cands, specsFixed,
                         scSpecsEmpty(), false)
   ret out.lrChanged ? scLnftFix(cands, specsFixed, out.lrSpecs) : out.lrSpecs
 
@@ -415,9 +415,9 @@ fun scExcludeStandalone(cands: ScCands, specs: ScSpecs, statements: List<PStmt>,
 # small stmt/expr/spec fold — the SAME visit law as rwStmtKids/rwExprKids/
 # rwSpecKids (see rewrite.yafl's header comment), restricted to accumulation.
 
-fun [tail] scCuEntries(es: Chain<SEntry>, acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scCuEntries(l.next, scCuSpecOpt(l.value.seType, acc))
+fun [tail] scCuEntries(es: List<SEntry>, acc) => isEmpty(es)
+  ? acc
+  : scCuEntries(tail(es), scCuSpecOpt(first(es).seType, acc))
 
 # On the FRONT: the unions collected here are walked once, each checked for
 # name collisions independently of the others, and the names that come out are
@@ -427,11 +427,11 @@ fun scCuSpec(sp, acc)
     (cm: SCombination) => prepend(sp, acc)
     (o: Spec)          => acc
   ret match(sp)
-    (e2: SEnum)         => scCuSpecs(chain(e2.seParams), acc2)
-    (cl: SClass)        => scCuSpecs(chain(cl.scParams), acc2)
+    (e2: SEnum)         => scCuSpecs(e2.seParams, acc2)
+    (cl: SClass)        => scCuSpecs(cl.scParams, acc2)
     (n: SNamed)         => acc2
-    (cm2: SCombination) => scCuSpecs(chain(cm2.scTypes), acc2)
-    (t2: STuple)        => scCuEntries(chain(t2.stEntries), acc2)
+    (cm2: SCombination) => scCuSpecs(cm2.scTypes, acc2)
+    (t2: STuple)        => scCuEntries(t2.stEntries, acc2)
     (cb: SCallable)     => scCuSpecOpt(cb.scResult, scCuSpec(cb.scParams2, acc2))
     (af: SArrayField)   => scCuSpec(af.safElem, acc2)
     (ls: SLazyStub)     => scCuSpecOpt(ls.slsTarget, acc2)
@@ -442,51 +442,51 @@ fun scCuSpecOpt(sp: Spec|None, acc) => match(sp)
   ()         => acc
 
 fun scCuSpecsOpt(ss: List<Spec>|None, acc) => match(ss)
-  (l: List<Spec>) => scCuSpecs(chain(l), acc)
+  (l: List<Spec>) => scCuSpecs(l, acc)
   ()              => acc
 
-fun [tail] scCuSpecs(ss: Chain<Spec>, acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scCuSpecs(l.next, scCuSpec(l.value, acc))
+fun [tail] scCuSpecs(ss: List<Spec>, acc) => isEmpty(ss)
+  ? acc
+  : scCuSpecs(tail(ss), scCuSpec(first(ss), acc))
 
-fun [tail] scCuTupEnts(es: Chain<PTupEnt>, acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scCuTupEnts(l.next, scCuExpr(l.value.tupValue, acc))
+fun [tail] scCuTupEnts(es: List<PTupEnt>, acc) => isEmpty(es)
+  ? acc
+  : scCuTupEnts(tail(es), scCuExpr(first(es).tupValue, acc))
 
-fun [tail] scCuLits(ls: Chain<PLit>, acc) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (le: PlExpr)  => scCuLits(l.next, scCuExpr(le.litExpr, acc))
-    (lr: PlRange) => scCuLits(l.next, scCuExpr(lr.rangeHi, scCuExpr(lr.rangeLo, acc)))
+fun [tail] scCuLits(ls: List<PLit>, acc) => isEmpty(ls)
+  ? acc
+  : match(first(ls))
+    (le: PlExpr)  => scCuLits(tail(ls), scCuExpr(le.litExpr, acc))
+    (lr: PlRange) => scCuLits(tail(ls), scCuExpr(lr.rangeHi, scCuExpr(lr.rangeLo, acc)))
 
-fun [tail] scCuArms(as2: Chain<PArm>, acc) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scCuArms(l.next,
-      scCuExprOpt(l.value.armGuard,
-        scCuLits(chain(l.value.armLiterals),
-          scCuExpr(l.value.armBody, scCuSpecOpt(l.value.armType, acc)))))
+fun [tail] scCuArms(as2: List<PArm>, acc) => isEmpty(as2)
+  ? acc
+  : scCuArms(tail(as2),
+      scCuExprOpt(first(as2).armGuard,
+        scCuLits(first(as2).armLiterals,
+          scCuExpr(first(as2).armBody, scCuSpecOpt(first(as2).armType, acc)))))
 
-fun [tail] scCuExprs(es: Chain<PExpr>, acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scCuExprs(l.next, scCuExpr(l.value, acc))
+fun [tail] scCuExprs(es: List<PExpr>, acc) => isEmpty(es)
+  ? acc
+  : scCuExprs(tail(es), scCuExpr(first(es), acc))
 
 fun scCuExprOpt(x: PExpr|None, acc) => match(x)
   (e2: PExpr) => scCuExpr(e2, acc)
   ()          => acc
 
 fun scCuExpr(x, acc) => match(x)
-  (nm: PeName)      => scCuSpecOpt(nm.penTrait, scCuSpecs(chain(nm.refTypeParams), acc))
+  (nm: PeName)      => scCuSpecOpt(nm.penTrait, scCuSpecs(nm.refTypeParams, acc))
   (d: PeDot)        => scCuExpr(d.base, acc)
   (c: PeCall)       => scCuExpr(c.parameter, scCuExpr(c.function, acc))
-  (tp: PeTuple)     => scCuTupEnts(chain(tp.exprs), acc)
+  (tp: PeTuple)     => scCuTupEnts(tp.exprs, acc)
   (te: PeTernary)   => scCuExpr(te.falseResult, scCuExpr(te.trueResult,
                                 scCuExpr(te.condition, acc)))
   (lm: PeLambda)    => scCuSpecOpt(lm.lamRet, scCuExpr(lm.lamBody, scCuStmt(lm.lamParams, acc)))
-  (bk: PeBlock)     => scCuExpr(bk.blockValue, scCuStmts(chain(bk.blockStmts), acc))
-  (mt: PeMatch)     => scCuArms(chain(mt.arms), scCuExpr(mt.subject, acc))
+  (bk: PeBlock)     => scCuExpr(bk.blockValue, scCuStmts(bk.blockStmts, acc))
+  (mt: PeMatch)     => scCuArms(mt.arms, scCuExpr(mt.subject, acc))
   (op: PeBuiltinOp) => scCuExpr(op.opParams, scCuSpec(op.opType, acc))
   (nw: PeNew)       => scCuExpr(nw.newParam, scCuSpec(nw.newType, acc))
-  (ne: PeNewEnum)   => scCuSpecs(chain(ne.neTypeParams),
+  (ne: PeNewEnum)   => scCuSpecs(ne.neTypeParams,
                                  fold(ne.fieldArgs, acc, (a2, fa) =>
                                    scCuExpr(fa.faValue, a2)))
   (qq: PeCoalesce) => scCuExpr(qq.qqFallback, scCuExpr(qq.qqSubject, acc))
@@ -494,34 +494,34 @@ fun scCuExpr(x, acc) => match(x)
   (cv: PeConvert)   => scCuSpec(cv.convTarget, scCuExpr(cv.convInner, acc))
   (wx: PeWith)      => scCuExpr(wx.withRepls, scCuExpr(wx.withSubject, acc))
   (pl: PeParallel)  => scCuExpr(pl.parParams, acc)
-  (lp: PeLoop)      => scCuExpr(lp.loopBody, scCuExprs(chain(lp.loopParams), acc))
-  (rc: PeRecur)     => scCuExprs(chain(rc.recArgs), acc)
+  (lp: PeLoop)      => scCuExpr(lp.loopBody, scCuExprs(lp.loopParams, acc))
+  (rc: PeRecur)     => scCuExprs(rc.recArgs, acc)
   (lz: PeLazy)      => scCuSpec(lz.lzTarget, acc)
   (o: PeLiteral) => acc
 
 fun scCuStmt(st, acc) => match(st)
-  (f: PsFun)  => scCuSpecs(chain(f.fWheres),
+  (f: PsFun)  => scCuSpecs(f.fWheres,
                    scCuSpecOpt(f.fRet, scCuExprOpt(f.fBody, scCuStmt(f.fParams, acc))))
   (l: PsLet)  => scCuExprOpt(l.lDefault, scCuSpecOpt(l.lType, acc))
   (d: PsDestructure) => scCuExprOpt(d.dDefault,
-                          scCuStmts(chain(d.dTargets), scCuSpecOpt(d.dType, acc)))
+                          scCuStmts(d.dTargets, scCuSpecOpt(d.dType, acc)))
   (c: PsClass) => scCuSpecsOpt(c.cAllParents,
-                    scCuStmts(chain(c.cMembers),
-                      scCuSpecs(chain(c.cWheres),
-                        scCuSpecs(chain(c.cImplements), scCuStmt(c.cParams, acc)))))
+                    scCuStmts(c.cMembers,
+                      scCuSpecs(c.cWheres,
+                        scCuSpecs(c.cImplements, scCuStmt(c.cParams, acc)))))
   (e2: PsEnum) => scCuSpecOpt(e2.eSpec,
-                    scCuStmts(chain(e2.eVariants), scCuStmt(e2.eParams, acc)))
+                    scCuStmts(e2.eVariants, scCuStmt(e2.eParams, acc)))
   (ta: PsTypealias) => scCuSpec(ta.taType, acc)
   (rt: PsRet)  => scCuExpr(rt.retValue, acc)
   (a: PsAction) => scCuExpr(a.action, acc)
-  (i: PsIf)    => scCuStmts(chain(i.ifFalse), scCuStmts(chain(i.ifTrue), scCuExpr(i.ifCond, acc)))
+  (i: PsIf)    => scCuStmts(i.ifFalse, scCuStmts(i.ifTrue, scCuExpr(i.ifCond, acc)))
   (o: PStmt)   => acc
 
-fun [tail] scCuStmts(ss: Chain<PStmt>, acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scCuStmts(l.next, scCuStmt(l.value, acc))
+fun [tail] scCuStmts(ss: List<PStmt>, acc) => isEmpty(ss)
+  ? acc
+  : scCuStmts(tail(ss), scCuStmt(first(ss), acc))
 
-fun scCollectUnions(statements: List<PStmt>) => scCuStmts(chain(statements), List())
+fun scCollectUnions(statements: List<PStmt>) => scCuStmts(statements, List())
 
 # Map each union's repr_members() to (name, uid) pairs — name is "" ("None")
 # for a non-candidate member; uid is "" for an ungrounded spec.
@@ -529,36 +529,36 @@ fun scCollectUnions(statements: List<PStmt>) => scCuStmts(chain(statements), Lis
 # One entry per union member, POSITIONALLY paired: name (empty when the member
 # is not a candidate) beside the uid it maps to. scCollectColliding walks the
 # two in lockstep, so both are built in member order.
-class [linear, final] ScMapped(mnNames: ListBuilder<String>,
-                               mnUids: ListBuilder<String>)
+class [final] ScMapped(mnNames: List<String>,
+                               mnUids: List<String>)
 
 class [final] ScMappedOut(moNames: List<String>, moUids: List<String>)
 
-fun scMappedBuild(m: ScMapped) => ScMappedOut(build(m.mnNames), build(m.mnUids))
+fun scMappedBuild(m: ScMapped) => ScMappedOut(m.mnNames, m.mnUids)
 
 fun scUidOrEmpty(specs: ScSpecs, name: String) => match(scLookupSpec(specs, name))
   (sp: Spec) => uid(sp)
   ()         => ""
 
 fun scMapOne(m, cands: ScCands, specs: ScSpecs,
-             [terminal] acc: ScMapped) => match(m)
+             acc: ScMapped) => match(m)
   (c: SClass) => scHasCand(cands, c.scName)
-    ? ScMapped(push(acc.mnNames, c.scName),
-               push(acc.mnUids, scUidOrEmpty(specs, c.scName)))
-    : ScMapped(push(acc.mnNames, ""),
-               push(acc.mnUids, uid(m)))
+    ? ScMapped(append(acc.mnNames, c.scName),
+               append(acc.mnUids, scUidOrEmpty(specs, c.scName)))
+    : ScMapped(append(acc.mnNames, ""),
+               append(acc.mnUids, uid(m)))
   (n: SNamed) => scHasCand(cands, n.snName)
-    ? ScMapped(push(acc.mnNames, n.snName),
-               push(acc.mnUids, scUidOrEmpty(specs, n.snName)))
-    : ScMapped(push(acc.mnNames, ""),
-               push(acc.mnUids, uid(m)))
-  (o: Spec)   => ScMapped(push(acc.mnNames, ""),
-                          push(acc.mnUids, uid(m)))
+    ? ScMapped(append(acc.mnNames, n.snName),
+               append(acc.mnUids, scUidOrEmpty(specs, n.snName)))
+    : ScMapped(append(acc.mnNames, ""),
+               append(acc.mnUids, uid(m)))
+  (o: Spec)   => ScMapped(append(acc.mnNames, ""),
+                          append(acc.mnUids, uid(m)))
 
-fun [tail] scMapMembers(ms: Chain<Spec>, cands: ScCands, specs: ScSpecs,
-                        [terminal] acc: ScMapped) => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scMapMembers(l.next, cands, specs, scMapOne(l.value, cands, specs, acc))
+fun [tail] scMapMembers(ms: List<Spec>, cands: ScCands, specs: ScSpecs,
+                        acc: ScMapped) => isEmpty(ms)
+  ? acc
+  : scMapMembers(tail(ms), cands, specs, scMapOne(first(ms), cands, specs, acc))
 
 # How many members share each uid. Same shape as ScCounts, same reason.
 class [final] ScUidCounts(ucCounts: Dict<String, Int>)
@@ -567,40 +567,40 @@ fun scBumpUid(acc: ScUidCounts, u)
   ret ScUidCounts(put(acc.ucCounts, u,
                       scCountOf(acc.ucCounts, u) + 1))
 
-fun [tail] scCountUids(us: Chain<String>, acc: ScUidCounts) => match(us)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => l.value == "" ? scCountUids(l.next, acc)
-                                   : scCountUids(l.next, scBumpUid(acc, l.value))
+fun [tail] scCountUids(us: List<String>, acc: ScUidCounts) => isEmpty(us)
+  ? acc
+  : first(us) == "" ? scCountUids(tail(us), acc)
+                                   : scCountUids(tail(us), scBumpUid(acc, first(us)))
 
-fun [tail] scCollectColliding(ns: Chain<String>, us: Chain<String>, counts: ScUidCounts,
-                              acc: List<String>) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => match(us)
-    (nil2: ChainEnd) => acc
-    (u: ChainLink)   => (n.value != "" && u.value != ""
-                         && scCountOf(counts.ucCounts, u.value) > 1)
-      ? scCollectColliding(n.next, u.next, counts, addNameOnce(acc, n.value))
-      : scCollectColliding(n.next, u.next, counts, acc)
+fun [tail] scCollectColliding(ns: List<String>, us: List<String>, counts: ScUidCounts,
+                              acc: List<String>) => isEmpty(ns)
+  ? acc
+  : isEmpty(us)
+    ? acc
+    : (first(ns) != "" && first(us) != ""
+                         && scCountOf(counts.ucCounts, first(us)) > 1)
+      ? scCollectColliding(tail(ns), tail(us), counts, addNameOnce(acc, first(ns)))
+      : scCollectColliding(tail(ns), tail(us), counts, acc)
 
 fun scCollideUnion(cm: SCombination, cands: ScCands, specs: ScSpecs, acc): List<String>
-  let mapped = scMappedBuild(scMapMembers(chain(reprMembers(cm)), cands, specs,
-                                 ScMapped(builder(),
-                                          builder())))
-  let counts = scCountUids(chain(mapped.moUids), ScUidCounts(Dict()))
-  ret scCollectColliding(chain(mapped.moNames), chain(mapped.moUids), counts,
+  let mapped = scMappedBuild(scMapMembers(reprMembers(cm), cands, specs,
+                                 ScMapped(List(),
+                                          List())))
+  let counts = scCountUids(mapped.moUids, ScUidCounts(Dict()))
+  ret scCollectColliding(mapped.moNames, mapped.moUids, counts,
                          acc)
 
 fun scCollideOne(sp, cands: ScCands, specs: ScSpecs, acc): List<String> => match(sp)
   (cm: SCombination) => scCollideUnion(cm, cands, specs, acc)
   (o: Spec)           => acc
 
-fun [tail] scCollidingNames(us: Chain<Spec>, cands: ScCands, specs: ScSpecs,
-                            acc: List<String>) => match(us)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scCollidingNames(l.next, cands, specs, scCollideOne(l.value, cands, specs, acc))
+fun [tail] scCollidingNames(us: List<Spec>, cands: ScCands, specs: ScSpecs,
+                            acc: List<String>) => isEmpty(us)
+  ? acc
+  : scCollidingNames(tail(us), cands, specs, scCollideOne(first(us), cands, specs, acc))
 
 fun [tail] scExcludeUnions(unions: List<Spec>, cands, specs): ScFiltered
-  let colliding = scCollidingNames(chain(unions), cands, specs, List())
+  let colliding = scCollidingNames(unions, cands, specs, List())
   if isEmpty(colliding)
     ret ScFiltered(cands, specs)
   let newCands = scKeepCandsWhere(cands, (n) => !contains2(colliding, n))
@@ -609,13 +609,13 @@ fun [tail] scExcludeUnions(unions: List<Spec>, cands, specs): ScFiltered
 
 # ── 8. tupleIdToClass ────────────────────────────────────────────────────────
 
-fun scTupleIdToClass(specs: ScSpecs) => scT2cLoop(chain(ssNames(specs)), specs, Dict())
+fun scTupleIdToClass(specs: ScSpecs) => scT2cLoop(ssNames(specs), specs, Dict())
 
-fun [tail] scT2cLoop(ns: Chain<String>, from2: ScSpecs,
-                     acc: Dict<String, String>) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => scT2cLoop(n.next, from2,
-                        scT2cPut(acc, n.value, get(from2.ssIndex, n.value)))
+fun [tail] scT2cLoop(ns: List<String>, from2: ScSpecs,
+                     acc: Dict<String, String>) => isEmpty(ns)
+  ? acc
+  : scT2cLoop(tail(ns), from2,
+                        scT2cPut(acc, first(ns), get(from2.ssIndex, first(ns))))
 
 fun scT2cPut(acc, name: String,
              sp: Spec|None) => match(sp)
@@ -633,24 +633,24 @@ fun scClassForUid(t2c: Dict<String, String>, u) => u == "" ? None : get(t2c, u)
 class [final] ScOwners(soMap: Dict<String, String>, soShared: List<String>)
 
 fun scMethodOwners(cands: ScCands)
-  ret scOwnersDrop(scOwnLoop(chain(scNames(cands)), cands,
+  ret scOwnersDrop(scOwnLoop(scNames(cands), cands,
                              ScOwners(Dict(), List())))
 
 fun scOwnersDrop(o: ScOwners) => fold(o.soShared, o.soMap,
                                      (d, n) => remove(d, n))
 
-fun [tail] scOwnLoop(ns: Chain<String>, cands: ScCands,
-                     acc) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => match(scClassFor(cands, n.value))
-    (cls: PsClass) => scOwnLoop(n.next, cands,
-                          scOwnMembers(chain(scMethodNames(cls)), n.value, acc))
-    ()             => scOwnLoop(n.next, cands, acc)
+fun [tail] scOwnLoop(ns: List<String>, cands: ScCands,
+                     acc) => isEmpty(ns)
+  ? acc
+  : match(scClassFor(cands, first(ns)))
+    (cls: PsClass) => scOwnLoop(tail(ns), cands,
+                          scOwnMembers(scMethodNames(cls), first(ns), acc))
+    ()             => scOwnLoop(tail(ns), cands, acc)
 
-fun [tail] scOwnMembers(ms: Chain<String>, clsName,
-                        acc) => match(ms)
-  (nil: ChainEnd) => acc
-  (m: ChainLink)  => scOwnMembers(m.next, clsName, scOwnOne(m.value, clsName, acc))
+fun [tail] scOwnMembers(ms: List<String>, clsName,
+                        acc) => isEmpty(ms)
+  ? acc
+  : scOwnMembers(tail(ms), clsName, scOwnOne(first(ms), clsName, acc))
 
 fun scOwnOne(name, clsName, acc) => match(get(acc.soMap, name))
   (prev: String) => prev == clsName
@@ -686,26 +686,26 @@ fun scLiftMethod(clsName, tupleSpec, method: PsFun)
 
 fun scLiftMembers(ms, clsName, tupleSpec,
                          acc: List<PStmt>): List<PStmt>
-  ret build(scLiftMembersB(ms, clsName, tupleSpec, builderFrom(acc)))
+  ret (scLiftMembersB(ms, clsName, tupleSpec, acc))
 
-fun [tail] scLiftMembersB(ms: Chain<PStmt>, clsName, tupleSpec,
-                         [terminal] acc: ListBuilder<PStmt>) => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (f: PsFun) => scLiftMembersB(l.next, clsName, tupleSpec,
-                                push(acc, scLiftMethod(clsName, tupleSpec, f)))
-    (o: PStmt) => scLiftMembersB(l.next, clsName, tupleSpec, acc)
+fun [tail] scLiftMembersB(ms: List<PStmt>, clsName, tupleSpec,
+                         acc: List<PStmt>) => isEmpty(ms)
+  ? acc
+  : match(first(ms))
+    (f: PsFun) => scLiftMembersB(tail(ms), clsName, tupleSpec,
+                                append(acc, scLiftMethod(clsName, tupleSpec, f)))
+    (o: PStmt) => scLiftMembersB(tail(ms), clsName, tupleSpec, acc)
 
 fun scLiftClassMethods(clsName, cls: PsClass, specs: ScSpecs, acc): List<PStmt>
   ret match(scLookupSpec(specs, clsName))
-    (tupleSpec: Spec) => scLiftMembers(chain(cls.cMembers), clsName, tupleSpec, acc)
+    (tupleSpec: Spec) => scLiftMembers(cls.cMembers, clsName, tupleSpec, acc)
     ()                => acc
 
-fun [tail] scLiftAllLoop(ns: Chain<String>, from2: ScCands, specs: ScSpecs,
-                         acc: List<PStmt>) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => scLiftAllLoop(n.next, from2, specs,
-                         scLiftOne(n.value, from2, specs, acc))
+fun [tail] scLiftAllLoop(ns: List<String>, from2: ScCands, specs: ScSpecs,
+                         acc: List<PStmt>) => isEmpty(ns)
+  ? acc
+  : scLiftAllLoop(tail(ns), from2, specs,
+                         scLiftOne(first(ns), from2, specs, acc))
 
 # The lifted methods are EMITTED in this order, so it must match Python's
 # `simple_classes.items()` — declaration order, as __find_simple_classes walked
@@ -714,21 +714,21 @@ fun [tail] scLiftAllLoop(ns: Chain<String>, from2: ScCands, specs: ScSpecs,
 # AST-comparison gates read straight out. Taken from the statement list because
 # that is what defines it; no second copy to fall out of step.
 fun scLiftAll(statements: List<PStmt>, cands: ScCands,
-              specs: ScSpecs) => scLiftAllLoop(chain(scDeclOrder(statements, cands)), cands, specs,
+              specs: ScSpecs) => scLiftAllLoop(scDeclOrder(statements, cands), cands, specs,
                                                List())
 
 # Candidate class names in declaration order.
 fun scDeclOrder(statements: List<PStmt>, cands: ScCands)
-  ret build(scDeclOrderB(chain(statements), cands, builder()))
+  ret (scDeclOrderB(statements, cands, List()))
 
-fun [tail] scDeclOrderB(ss: Chain<PStmt>, cands: ScCands,
-                        [terminal] acc: ListBuilder<String>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
+fun [tail] scDeclOrderB(ss: List<PStmt>, cands: ScCands,
+                        acc: List<String>) => isEmpty(ss)
+  ? acc
+  : match(first(ss))
     (c: PsClass) => scHasCand(cands, c.cName)
-      ? scDeclOrderB(l.next, cands, push(acc, c.cName))
-      : scDeclOrderB(l.next, cands, acc)
-    (o: PStmt)   => scDeclOrderB(l.next, cands, acc)
+      ? scDeclOrderB(tail(ss), cands, append(acc, c.cName))
+      : scDeclOrderB(tail(ss), cands, acc)
+    (o: PStmt)   => scDeclOrderB(tail(ss), cands, acc)
 
 # ── 10. nameTupleEntries ─────────────────────────────────────────────────────
 
@@ -736,21 +736,21 @@ fun [tail] scDeclOrderB(ss: Chain<PStmt>, cands: ScCands,
 # pairing is the structure itself, never an index bound.
 fun scNteLoop(es, ses,
                      acc: List<PTupEnt>): List<PTupEnt>
-  ret build(scNteLoopB(es, ses, builderFrom(acc)))
+  ret (scNteLoopB(es, ses, acc))
 
-fun [tail] scNteLoopB(es: Chain<PTupEnt>, ses: Chain<SEntry>,
-                     [terminal] acc: ListBuilder<PTupEnt>) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(ses)
-    (sl: ChainLink)  => scNteLoopB(l.next, sl.next,
-        push(acc, l.value.tupName == ""
-          ? PTupEnt(sl.value.seName, l.value.tupSpread, l.value.tupValue)
-          : l.value))
-    (nil2: ChainEnd) => scNteLoopB(l.next, ses, push(acc, l.value))
+fun [tail] scNteLoopB(es: List<PTupEnt>, ses: List<SEntry>,
+                     acc: List<PTupEnt>) => isEmpty(es)
+  ? acc
+  : isEmpty(ses)
+    ? scNteLoopB(tail(es), ses, append(acc, first(es)))
+    : scNteLoopB(tail(es), tail(ses),
+        append(acc, first(es).tupName == ""
+          ? PTupEnt(first(ses).seName, first(es).tupSpread, first(es).tupValue)
+          : first(es)))
 
 fun scNameTupleEntries(param, spec) => match(param)
   (tp: PeTuple) => match(spec)
-    (t2: STuple) => PeTuple(scNteLoop(chain(tp.exprs), chain(t2.stEntries), List()), tp.petLine)
+    (t2: STuple) => PeTuple(scNteLoop(tp.exprs, t2.stEntries, List()), tp.petLine)
     (o: Spec)    => param
   (o: PExpr)    => param
 
@@ -836,26 +836,26 @@ fun scReplaceFn(cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
 # ── 13. the driver ───────────────────────────────────────────────────────────
 
 fun scRewriteTop(ss, cands: ScCands, w: Rw, acc: List<PStmt>): List<PStmt>
-  ret build(scRewriteTopB(ss, cands, w, builderFrom(acc)))
+  ret (scRewriteTopB(ss, cands, w, acc))
 
-fun [tail] scRewriteTopB(ss: Chain<PStmt>, cands: ScCands, w: Rw, [terminal] acc: ListBuilder<PStmt>)
-  ret match(ss)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => scIsDroppedClass(l.value, cands)
-      ? scRewriteTopB(l.next, cands, w, acc)
-      : scRewriteTopB(l.next, cands, w, push(acc, rwStmt(l.value, w)))
+fun [tail] scRewriteTopB(ss: List<PStmt>, cands: ScCands, w: Rw, acc: List<PStmt>)
+  ret isEmpty(ss)
+    ? acc
+    : scIsDroppedClass(first(ss), cands)
+      ? scRewriteTopB(tail(ss), cands, w, acc)
+      : scRewriteTopB(tail(ss), cands, w, append(acc, rwStmt(first(ss), w)))
 
 fun scIsDroppedClass(st, cands: ScCands) => match(st)
   (c: PsClass) => scHasCand(cands, c.cName)
   (o: PStmt)   => false
 
 fun scRewriteLifted(ls, w: Rw, acc: List<PStmt>): List<PStmt>
-  ret build(scRewriteLiftedB(ls, w, builderFrom(acc)))
+  ret (scRewriteLiftedB(ls, w, acc))
 
-fun [tail] scRewriteLiftedB(ls: Chain<PStmt>, w: Rw, [terminal] acc: ListBuilder<PStmt>)
-  ret match(ls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => scRewriteLiftedB(l.next, w, push(acc, rwStmt(l.value, w)))
+fun [tail] scRewriteLiftedB(ls: List<PStmt>, w: Rw, acc: List<PStmt>)
+  ret isEmpty(ls)
+    ? acc
+    : scRewriteLiftedB(tail(ls), w, append(acc, rwStmt(first(ls), w)))
 
 fun lowerSimpleClasses(statements): List<PStmt>
   let r = rootResolver(statements)
@@ -879,7 +879,7 @@ fun lowerSimpleClasses(statements): List<PStmt>
   # Resolver-THREADED rewrite (scT*): Python's callback sees the resolver in
   # effect at each node — a receiver that is a param or local must resolve.
   let ctx = ScCtx(cands, specs, t2c, owners)
-  let newStatements0 = scTTop(chain(statements), cands, ctx, rewriteResolver,
+  let newStatements0 = scTTop(statements, cands, ctx, rewriteResolver,
                               List())
   let liftedFinal = scTStmts(liftedPre, ctx, rewriteResolver)
   let newStatements = newStatements0
@@ -906,30 +906,30 @@ fun scTSpecOpt(sp: Spec|None, c: ScCtx): Spec|None => match(sp)
   (s2: Spec) => scTSpec(s2, c)
   ()         => None
 
-fun scTSpecs(ts: List<Spec>, c: ScCtx) => scTSpecLoop(chain(ts), c, List())
+fun scTSpecs(ts: List<Spec>, c: ScCtx) => scTSpecLoop(ts, c, List())
 
 fun scTSpecLoop(ts, c: ScCtx, acc: List<Spec>): List<Spec>
-  ret build(scTSpecLoopB(ts, c, builderFrom(acc)))
+  ret (scTSpecLoopB(ts, c, acc))
 
-fun [tail] scTSpecLoopB(ts: Chain<Spec>, c: ScCtx, [terminal] acc: ListBuilder<Spec>) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scTSpecLoopB(l.next, c, push(acc, scTSpec(l.value,
+fun [tail] scTSpecLoopB(ts: List<Spec>, c: ScCtx, acc: List<Spec>) => isEmpty(ts)
+  ? acc
+  : scTSpecLoopB(tail(ts), c, append(acc, scTSpec(first(ts),
                                                          c)))
 
 fun scTSpecsOpt(ss: List<Spec>|None, c: ScCtx) => match(ss)
   (l: List<Spec>) => scTSpecs(l, c)
   ()              => None
 
-fun scTStmts(ss: List<PStmt>, c: ScCtx, r): List<PStmt> => scTStmtLoop(chain(ss), c, r, List())
+fun scTStmts(ss: List<PStmt>, c: ScCtx, r): List<PStmt> => scTStmtLoop(ss, c, r, List())
 
 fun scTStmtLoop(ss, c: ScCtx, r,
-                       acc: List<PStmt>) => build(scTStmtLoopB(ss, c, r, builderFrom(acc)))
+                       acc: List<PStmt>) => (scTStmtLoopB(ss, c, r, acc))
 
-fun [tail] scTStmtLoopB(ss: Chain<PStmt>, c: ScCtx, r,
-                       [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scTStmtLoopB(l.next, c, r,
-                                 push(acc, scTStmt(l.value, c, r)))
+fun [tail] scTStmtLoopB(ss: List<PStmt>, c: ScCtx, r,
+                       acc: List<PStmt>) => isEmpty(ss)
+  ? acc
+  : scTStmtLoopB(tail(ss), c, r,
+                                 append(acc, scTStmt(first(ss), c, r)))
 
 fun scTStmt(st, c: ScCtx, r): PStmt => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, scTStmt(f.fParams, c, r),
@@ -983,7 +983,7 @@ fun scTKids(x, c: ScCtx, r): PExpr => match(x)
   (d: PeDot)     => PeDot(scTExpr(d.base, c, r), d.member, d.pedLine)
   (cc: PeCall)   => PeCall(scTExpr(cc.function, c, r),
                            scTExpr(cc.parameter, c, r), cc.pecLine)
-  (tp: PeTuple)  => PeTuple(scTEnts(chain(tp.exprs), c, r,
+  (tp: PeTuple)  => PeTuple(scTEnts(tp.exprs, c, r,
                                     List()),
                             tp.petLine)
   (te: PeTernary) => PeTernary(scTExpr(te.condition, c, r),
@@ -996,7 +996,7 @@ fun scTKids(x, c: ScCtx, r): PExpr => match(x)
                              lm.pelLine, scTSpecOpt(lm.lamRet, c))
   (bk: PeBlock)  => scTBlock(bk, c, blockScope(bk.blockStmts, r))
   (mt: PeMatch) => with mt(subject = scTExpr(mt.subject, c, r),
-                    arms    = scTArms(chain(mt.arms), c, r, List()))
+                    arms    = scTArms(mt.arms, c, r, List()))
   (op: PeBuiltinOp) => PeBuiltinOp(scTSpec(op.opType, c), op.opName,
                                    scTExpr(op.opParams, c, r), op.peboLine)
   (nw: PeNew)    => PeNew(scTSpec(nw.newType, c),
@@ -1015,10 +1015,10 @@ fun scTKids(x, c: ScCtx, r): PExpr => match(x)
                            scTExpr(wx.withRepls, c, r), wx.pewLine)
   (pl: PeParallel) => PeParallel(scTExpr(pl.parParams, c, r), pl.pepLine)
   (lp: PeLoop)   => PeLoop(scTExpr(lp.loopBody, c, r),
-                           scTExprs(chain(lp.loopParams), c, r,
+                           scTExprs(lp.loopParams, c, r,
                                     List()),
                            lp.pelpLine)
-  (rc: PeRecur)  => PeRecur(scTExprs(chain(rc.recArgs), c, r,
+  (rc: PeRecur)  => PeRecur(scTExprs(rc.recArgs, c, r,
                                      List()),
                             rc.recIndex, rc.percLine)
   (lz: PeLazy)   => PeLazy(lz.stubName, scTSpec(lz.lzTarget, c),
@@ -1036,58 +1036,58 @@ fun scTBlock(bk: PeBlock, c: ScCtx, blockR): PExpr
               scTExpr(bk.blockValue, c, blockR), bk.blockTag, bk.pebkLine)
 
 fun scTExprs(es, c: ScCtx, r,
-                    acc: List<PExpr>) => build(scTExprsB(es, c, r, builderFrom(acc)))
+                    acc: List<PExpr>) => (scTExprsB(es, c, r, acc))
 
-fun [tail] scTExprsB(es: Chain<PExpr>, c: ScCtx, r,
-                    [terminal] acc: ListBuilder<PExpr>) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scTExprsB(l.next, c, r,
-                              push(acc, scTExpr(l.value, c, r)))
+fun [tail] scTExprsB(es: List<PExpr>, c: ScCtx, r,
+                    acc: List<PExpr>) => isEmpty(es)
+  ? acc
+  : scTExprsB(tail(es), c, r,
+                              append(acc, scTExpr(first(es), c, r)))
 
-fun scTEnts(es: Chain<PTupEnt>, c: ScCtx, r,
-                   acc: List<PTupEnt>) => build(scTEntsB(es, c, r, builderFrom(acc)))
+fun scTEnts(es: List<PTupEnt>, c: ScCtx, r,
+                   acc: List<PTupEnt>) => (scTEntsB(es, c, r, acc))
 
-fun [tail] scTEntsB(es: Chain<PTupEnt>, c: ScCtx, r,
-                   [terminal] acc): ListBuilder<PTupEnt> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scTEntsB(l.next, c, r,
-      push(acc, PTupEnt(l.value.tupName, l.value.tupSpread,
-                scTExpr(l.value.tupValue, c, r))))
+fun [tail] scTEntsB(es: List<PTupEnt>, c: ScCtx, r,
+                   acc): List<PTupEnt> => isEmpty(es)
+  ? acc
+  : scTEntsB(tail(es), c, r,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+                scTExpr(first(es).tupValue, c, r))))
 
 fun scTArms(as2, c: ScCtx, r,
-                   acc: List<PArm>) => build(scTArmsB(as2, c, r, builderFrom(acc)))
+                   acc: List<PArm>) => (scTArmsB(as2, c, r, acc))
 
-fun [tail] scTArmsB(as2: Chain<PArm>, c: ScCtx, r,
-                   [terminal] acc: ListBuilder<PArm>) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scTArmsB(l.next, c, r,
-      push(acc, scTArmOne(l.value, c, r)))
+fun [tail] scTArmsB(as2: List<PArm>, c: ScCtx, r,
+                   acc: List<PArm>) => isEmpty(as2)
+  ? acc
+  : scTArmsB(tail(as2), c, r,
+      append(acc, scTArmOne(first(as2), c, r)))
 
 fun scTArmOne(a: PArm, c: ScCtx, r): PArm
   let bodyR = bindingScope(a, a.armType, r)
-  ret with a(armType = scTSpecOpt(a.armType, c), armBody = scTExpr(a.armBody, c, bodyR), armLiterals = scTLits(chain(a.armLiterals), c, r, List()), armGuard = scTExprOpt(a.armGuard, c, bodyR))
+  ret with a(armType = scTSpecOpt(a.armType, c), armBody = scTExpr(a.armBody, c, bodyR), armLiterals = scTLits(a.armLiterals, c, r, List()), armGuard = scTExprOpt(a.armGuard, c, bodyR))
 
 fun scTLits(ls, c: ScCtx, r,
-                   acc: List<PLit>): List<PLit> => build(scTLitsB(ls, c, r, builderFrom(acc)))
+                   acc: List<PLit>): List<PLit> => (scTLitsB(ls, c, r, acc))
 
-fun [tail] scTLitsB(ls: Chain<PLit>, c: ScCtx, r,
-                   [terminal] acc: ListBuilder<PLit>) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (le: PlExpr)  => scTLitsB(l.next, c, r,
-                             push(acc, PlExpr(scTExpr(le.litExpr, c,
+fun [tail] scTLitsB(ls: List<PLit>, c: ScCtx, r,
+                   acc: List<PLit>) => isEmpty(ls)
+  ? acc
+  : match(first(ls))
+    (le: PlExpr)  => scTLitsB(tail(ls), c, r,
+                             append(acc, PlExpr(scTExpr(le.litExpr, c,
                                                  r))))
-    (lr2: PlRange) => scTLitsB(l.next, c, r,
-        push(acc, PlRange(scTExpr(lr2.rangeLo, c, r),
+    (lr2: PlRange) => scTLitsB(tail(ls), c, r,
+        append(acc, PlRange(scTExpr(lr2.rangeLo, c, r),
                      scTExpr(lr2.rangeHi, c, r), lr2.plrLine)))
 
 fun scTTop(ss, cands: ScCands, c: ScCtx, r,
                   acc: List<PStmt>): List<PStmt>
-  ret build(scTTopB(ss, cands, c, r, builderFrom(acc)))
+  ret (scTTopB(ss, cands, c, r, acc))
 
-fun [tail] scTTopB(ss: Chain<PStmt>, cands: ScCands, c: ScCtx, r,
-                  [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scIsDroppedClass(l.value, cands)
-    ? scTTopB(l.next, cands, c, r, acc)
-    : scTTopB(l.next, cands, c, r, push(acc, scTStmt(l.value, c, r)))
+fun [tail] scTTopB(ss: List<PStmt>, cands: ScCands, c: ScCtx, r,
+                  acc: List<PStmt>) => isEmpty(ss)
+  ? acc
+  : scIsDroppedClass(first(ss), cands)
+    ? scTTopB(tail(ss), cands, c, r, acc)
+    : scTTopB(tail(ss), cands, c, r, append(acc, scTStmt(first(ss), c, r)))

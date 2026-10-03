@@ -853,7 +853,7 @@ def __test_registry_source(tests: list[s.FunctionStatement]) -> Input:
     tc = "System::Test::TestCase"
 
     # CHUNKED, and that is not cosmetic. A single `let b0 … let bN` chain
-    # threading one builder makes each binding's type depend on the previous,
+    # threading one list makes each binding's type depend on the previous,
     # and inference resolves exactly ONE link per convergence pass — so the
     # pass count grew with the test count and blew _MAX_COMPILE_ITERATIONS at
     # roughly ninety tests, with the loop reporting a non-idempotent compile
@@ -864,10 +864,10 @@ def __test_registry_source(tests: list[s.FunctionStatement]) -> Input:
               for i in range(0, len(tests), _TEST_REGISTRY_CHUNK)] or [[]]
     for n, chunk in enumerate(chunks):
         lines.append(f"fun _cases{n}(): System::List<{tc}>")
-        lines.append(f"  let b0 = System::builder<{tc}>()")
+        lines.append(f"  let b0 = System::List<{tc}>()")
         for i, fn in enumerate(chunk):
-            lines.append(f"  let b{i + 1} = System::push<{tc}>(b{i}, {case_expr(fn)})")
-        lines.append(f"  ret System::build<{tc}>(b{len(chunk)})")
+            lines.append(f"  let b{i + 1} = System::append<{tc}>(b{i}, {case_expr(fn)})")
+        lines.append(f"  ret b{len(chunk)}")
         lines.append("")
     # BALANCED concat, not right-nested: nesting the chunks linearly would
     # reintroduce the same one-link-per-pass dependency the chunking removes,

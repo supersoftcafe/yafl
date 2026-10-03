@@ -181,11 +181,11 @@ fun codepoints(s: System::String): List<System::Int32>
   # Front to back, and that order is the whole point of the function, so the
   # codepoints go into a builder as they are decoded.
   fun [tail] loop(off: System::Int,
-                  [terminal] acc: ListBuilder<System::Int32 >): ListBuilder<System::Int32 >
+                  acc: List<System::Int32 >): List<System::Int32 >
     ret match(decode(s, off))
-      (d: (cp: System::Int32, next: System::Int)) => loop(d.next, push<System::Int32 >(acc, d.cp))
+      (d: (cp: System::Int32, next: System::Int)) => loop(d.next, append<System::Int32 >(acc, d.cp))
       (n: System::None)                           => acc
-  ret build<System::Int32 >(loop(0, builder<System::Int32 >()))
+  ret (loop(0, List<System::Int32 >()))
 
 
 # Split a string into lines on '\n', dropping a trailing '\r' from each so both
@@ -201,13 +201,13 @@ fun splitLines(s: System::String): List<System::String>
   # Segments are produced left to right and that order IS the result, so the
   # accumulator is a builder: each line lands at the tail in O(1).
   fun [tail] loop(from: System::Int,
-                  [terminal] acc: ListBuilder<System::String >): ListBuilder<System::String >
+                  acc: List<System::String >): List<System::String >
     let len: System::Int = length(s)
     let nl: System::Int = findByte(s, '\n', from)
     ret nl < 0
-      ? push<System::String >(acc, slice(s, from, lineEnd(from, len)))
-      : loop(nl + 1, push<System::String >(acc, slice(s, from, lineEnd(from, nl))))
-  ret build<System::String >(loop(0, builder<System::String >()))
+      ? append<System::String >(acc, slice(s, from, lineEnd(from, len)))
+      : loop(nl + 1, append<System::String >(acc, slice(s, from, lineEnd(from, nl))))
+  ret (loop(0, List<System::String >()))
 
 
 # ── substring search & manipulation ───────────────────────────────────────
@@ -248,14 +248,14 @@ fun endsWith(s: System::String, suffix: System::String): System::Bool
 # degenerate and returns the whole string unsplit.
 fun split(s: System::String, sep: System::String): List<System::String>
   fun [tail] loop(from: System::Int,
-                  [terminal] acc: ListBuilder<System::String >): ListBuilder<System::String >
+                  acc: List<System::String >): List<System::String >
     let at = indexOf(s, sep, from)
     ret at < 0
-      ? push<System::String >(acc, slice(s, from, length(s)))
-      : loop(at + length(sep), push<System::String >(acc, slice(s, from, at)))
+      ? append<System::String >(acc, slice(s, from, length(s)))
+      : loop(at + length(sep), append<System::String >(acc, slice(s, from, at)))
   ret length(sep) == 0
     ? prepend(s, List<System::String>())
-    : build<System::String >(loop(0, builder<System::String >()))
+    : loop(0, List<System::String >())
 
 # Join `parts` into one string with `sep` between adjacent elements — linear in
 # the total size, the accumulator extending its own buffer in place.

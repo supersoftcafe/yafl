@@ -261,12 +261,16 @@ enum Col
   enum Red()
   enum Green()
 
-fun [tail] idxLoop(es: System::Chain<System::String>, name: System::String, i) => match(es)
-  (nil: System::ChainEnd) => None
-  (l: System::ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
+fun [tail] idxLoop(es: Chain<System::String>, name: System::String, i) => match(es)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
 
 fun main(): System::Int
-  ret match(idxLoop(System::chain(System::prepend("b", System::prepend("a", System::List<System::String>()))), "a", 0))
+  ret match(idxLoop(ChainLink<System::String>("b", ChainLink<System::String>("a", ChainEnd<System::String>())), "a", 0))
     (n: System::Int) => n + 7
     ()               => 3
 """

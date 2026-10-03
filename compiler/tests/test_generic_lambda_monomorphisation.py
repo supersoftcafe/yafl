@@ -16,7 +16,8 @@ must be named per instantiation or the copies collide onto one class and
 whichever `T` was lowered first wins.
 
 When they collide, `concat<A>` runs the lambda specialised for `B`: it calls
-`append<B>`, builds a `ChainEnd<B>`, and the resulting chain is matched against
+`append<B>`, builds a `ChainEnd<B>` (List was then a cons chain), and the
+resulting chain is matched against
 `ChainEnd<A>`/`ChainLink<A>` vtables — matching NEITHER, so codegen's fallback
 fires and the program aborts with no diagnostic. A SILENT MISCOMPILE.
 
@@ -47,20 +48,20 @@ fun addAll<T>(a: List<T>, b: List<T>): List<T>
   ret fold<T, List<T> >(b, a, (acc: List<T>, x: T) => prepend<T>(x, acc))
 
 fun countA(l: List<A2>): Int
-  ret walkA(chain(l), 0)
+  ret walkA(l, 0)
 
-fun [tail] walkA(c: Chain<A2>, n: Int): Int
-  ret match(c)
-    (nil: ChainEnd) => n
-    (x: ChainLink)  => walkA(x.next, n + 1)
+fun [tail] walkA(c: List<A2>, n: Int): Int
+  ret isEmpty(c)
+    ? n
+    : walkA(tail(c), n + 1)
 
 fun countB(l: List<B2>): Int
-  ret walkB(chain(l), 0)
+  ret walkB(l, 0)
 
-fun [tail] walkB(c: Chain<B2>, n: Int): Int
-  ret match(c)
-    (nil: ChainEnd) => n
-    (x: ChainLink)  => walkB(x.next, n + 1)
+fun [tail] walkB(c: List<B2>, n: Int): Int
+  ret isEmpty(c)
+    ? n
+    : walkB(tail(c), n + 1)
 
 fun main(): Int
   let a = addAll(prepend(A2("p"), List<A2>()), prepend(A2("q"), List<A2>()))

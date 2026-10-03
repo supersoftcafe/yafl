@@ -999,6 +999,140 @@ EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
     return true;
 }
 
+// ── List segments ────────────────────────────────────────────────────────────
+// stdlib List<T> is a by-value handle (first, start, last, end) onto a chain
+// of ListSeg<T> objects:
+//
+//     class [final] ListSeg<T>(lsClaim: Int64, lsOrd: Int32,
+//                              lsNext: ListSeg<T>|None, length: Int32,
+//                              array: T[length])
+//
+// A segment's live elements are array[lo..hi), and that range only ever
+// GROWS: lo moves down (prepend), hi moves up (append). Whoever claims a slot
+// first owns it; a list value that loses the claim copies instead. Every slot
+// is therefore written at most once, over the allocator's zero fill, and a
+// list value only ever reads slots that were written before it existed —
+// which is what keeps List pure: no program can tell which fork won.
+//
+// The claim word is the FIRST declared field and the ordinal the second, so
+// they sit at fixed offsets after the object header in every instantiation
+// (both compilers keep declaration order): claim holds lo in the low 32
+// bits, hi in the high 32. The ordinal is a segment's stable identity within
+// a list — appending a segment numbers it one up, prepending one down — and
+// is set once, at init. It is only ever read or
+// written here, under the object's late pin — the same mutex the compactor
+// takes to evacuate an object, so a claim and its element store can never
+// land in a copy that is then abandoned. (YAFL code never reads lsClaim.)
+//
+// `next` is the only pointer in the fixed part, so its slot is the highest
+// bit of the pointer mask (list_builder_slot's rule). It is write-once:
+// NULL -> segment, claimed exactly like an element slot.
+//
+// These are YAFL [foreign] functions: the compiler emits their prototypes
+// (so none live in yafl.h), passes a closure `self` first (unused), and
+// passes Bool as int8_t.
+
+#define LSEG_CLAIM(o)  ((uint64_t*)((char*)(o) + sizeof(object_t)))
+#define LSEG_ORD(o)    ((int32_t*)((char*)(o) + sizeof(object_t) + sizeof(uint64_t)))
+#define LSEG_LO(c)     ((int32_t)(uint32_t)(c))
+#define LSEG_HI(c)     ((int32_t)(uint32_t)((c) >> 32))
+#define LSEG_PACK(lo, hi) (((uint64_t)(uint32_t)(hi) << 32) | (uint64_t)(uint32_t)(lo))
+
+static inline int32_t lseg_cap(object_t *o) {
+    vtable_t *vt = vtable_untag(o->vtable);
+    return *(int32_t*)((char*)o + vt->array_len_offset);
+}
+
+static inline object_t **lseg_next_slot(object_t *o) {
+    vtable_t *vt = vtable_untag(o->vtable);
+    return &((object_t**)o)[63 - (unsigned)__builtin_clzll(vt->object_pointer_locations)];
+}
+
+// A FRESH segment, not yet reachable from any list: plain stores, no pin.
+// Its referent `next` (or NULL) is reachable from the caller's roots, so the
+// snapshot barrier owes nothing (the old value is the zero fill). `stored`
+// is the first element store's result, threaded so the store stays live and
+// ordered before the segment is handed out. Returns the segment.
+EXPORT object_t *list_seg_init(object_t *self, object_t *seg, int32_t lo, int32_t hi,
+                               object_t *next, int32_t ord, int8_t stored) {
+    (void)self; (void)stored;
+    *LSEG_CLAIM(seg) = LSEG_PACK(lo, hi);
+    *LSEG_ORD(seg) = ord;
+    *lseg_next_slot(seg) = next;
+    return seg;
+}
+
+// Claim slot `end` at the back. Succeeds only if nobody has claimed past
+// `end` (hi == end) and the segment has room. On success the CURRENT copy is
+// returned STILL PINNED: the caller stores the element into it, then calls
+// list_seg_release. On failure NULL (None), nothing held.
+EXPORT object_t *list_seg_claim_back(object_t *self, object_t *seg, int32_t end) {
+    (void)self;
+    object_t *o = object_pin_resolve(seg);
+    uint64_t c = *LSEG_CLAIM(o);
+    if (LSEG_HI(c) != end || end >= lseg_cap(o)) {
+        object_unpin(o);
+        return NULL;
+    }
+    // Say so BEFORE the store (once.c's order): a cycle that opens between
+    // here and the store already treats an old page as dirty.
+    gc_note_late_write(o);
+    *LSEG_CLAIM(o) = LSEG_PACK(LSEG_LO(c), end + 1);
+    return o;
+}
+
+// Claim slot `start - 1` at the front: the mirror of claim_back.
+EXPORT object_t *list_seg_claim_front(object_t *self, object_t *seg, int32_t start) {
+    (void)self;
+    object_t *o = object_pin_resolve(seg);
+    uint64_t c = *LSEG_CLAIM(o);
+    if (LSEG_LO(c) != start || start <= 0) {
+        object_unpin(o);
+        return NULL;
+    }
+    gc_note_late_write(o);
+    *LSEG_CLAIM(o) = LSEG_PACK(start - 1, LSEG_HI(c));
+    return o;
+}
+
+// Release a claim taken by claim_back/claim_front. `stored` is the element
+// store's result, threaded through so no pass can order the release first.
+// Returns the segment, so the new list value depends on the release.
+EXPORT object_t *list_seg_release(object_t *self, object_t *o, int8_t stored) {
+    (void)self; (void)stored;
+    object_unpin(o);
+    return o;
+}
+
+// Link `next` behind a FULL segment whose last claimed slot is `end - 1`.
+// Fails (NULL) if another list value has claimed past `end` or linked first;
+// returns `next` on success. `next` must already hold its first element
+// (published segments are never empty).
+EXPORT object_t *list_seg_link(object_t *self, object_t *seg, int32_t end, object_t *next) {
+    (void)self;
+    object_t *o = object_pin_resolve(seg);
+    uint64_t c = *LSEG_CLAIM(o);
+    object_t **slot = lseg_next_slot(o);
+    bool ok = LSEG_HI(c) == end && end == lseg_cap(o) && *slot == NULL;
+    if (ok) {
+        gc_note_late_write(o);
+        __atomic_store_n(slot, next, __ATOMIC_RELEASE);
+    }
+    object_unpin(o);
+    return ok ? next : NULL;
+}
+
+// The current copy of a segment reached through a `next` pointer. A list
+// value's own pointers are taken at or after every write it depends on, but
+// a `next` field is written once, when the segment it names is brand new —
+// later appends into that segment land on whatever copy is current then. So
+// a walk resolves each segment it ENTERS, once; every slot it then reads was
+// written before the list value existed, and so is in that copy.
+EXPORT object_t *list_seg_resolve(object_t *self, object_t *seg) {
+    (void)self;
+    return object_resolve(seg);
+}
+
 // ── late pinning ─────────────────────────────────────────────────────────────
 // Taking the pin on an object that is already published, so that a write-once
 // field can be filled in without the object being exiled from relocation and

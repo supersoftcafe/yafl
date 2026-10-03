@@ -82,22 +82,22 @@ fun wrapsWhole(r, source, target, su)
           : isUnion(ety) && hasMatchingVariant(r, source, ety))
     ()          => false
 
-fun isIdentityBinding(b: List<Int>) => identityLoop(chain(b), 0)
+fun isIdentityBinding(b: List<Int>) => identityLoop(b, 0)
 
-fun [tail] identityLoop(bs: Chain<Int>, i) => match(bs)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => l.value != i ? false : identityLoop(l.next, i + 1)
+fun [tail] identityLoop(bs: List<Int>, i) => isEmpty(bs)
+  ? true
+  : first(bs) != i ? false : identityLoop(tail(bs), i + 1)
 
 fun anyEntryConverts(r, ss: List<SEntry>, ts: List<SEntry>)
-  ret entryConvLoop(chain(ss), chain(ts), r)
+  ret entryConvLoop(ss, ts, r)
 
-fun [tail] entryConvLoop(ss: Chain<SEntry>, ts: Chain<SEntry>, r) => match(ss)
-  (nil: ChainEnd) => false
-  (a: ChainLink)  => match(ts)
-    (nil2: ChainEnd) => false
-    (b: ChainLink)   => needsConversion(r, a.value.seType, b.value.seType)
+fun [tail] entryConvLoop(ss: List<SEntry>, ts: List<SEntry>, r) => isEmpty(ss)
+  ? false
+  : isEmpty(ts)
+    ? false
+    : needsConversion(r, first(ss).seType, first(ts).seType)
       ? true
-      : entryConvLoop(a.next, b.next, r)
+      : entryConvLoop(tail(ss), tail(ts), r)
 
 # ── into a union ────────────────────────────────────────────────────────────
 
@@ -119,11 +119,11 @@ fun intoUnion(r, source, target,
   if isUnion(source)
     ret triTrue(assignableEq(r, target, source))
   # An ordinary value boxes in when it IS one of the members.
-  ret anyMemberIs(chain(reprMembersOf(unionMembers(target))), su)
+  ret anyMemberIs(reprMembersOf(unionMembers(target)), su)
 
-fun [tail] anyMemberIs(ms: Chain<Spec>, su) => match(ms)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => uid(l.value) == su ? true : anyMemberIs(l.next, su)
+fun [tail] anyMemberIs(ms: List<Spec>, su) => isEmpty(ms)
+  ? false
+  : uid(first(ms)) == su ? true : anyMemberIs(tail(ms), su)
 
 # ── the union's matching tuple variant ──────────────────────────────────────
 # THE single home for this match: the decision (here), the emission (coerce)
@@ -132,14 +132,14 @@ fun [tail] anyMemberIs(ms: Chain<Spec>, su) => match(ms)
 # union-collision pruning must prevent — so it is not silently tolerated.
 
 fun matchingTupleVariant(r, source, target)
-  ret variantLoop(chain(reprMembersOf(unionMembers(target))), r, source, None)
+  ret variantLoop(reprMembersOf(unionMembers(target)), r, source, None)
 
-fun [tail] variantLoop(vs: Chain<Spec>, r, source,
-                       found: Spec|None) => match(vs)
-  (nil: ChainEnd) => found
-  (l: ChainLink)  => variantFits(r, l.value, source)
-    ? variantLoop(l.next, r, source, l.value)
-    : variantLoop(l.next, r, source, found)
+fun [tail] variantLoop(vs: List<Spec>, r, source,
+                       found: Spec|None) => isEmpty(vs)
+  ? found
+  : variantFits(r, first(vs), source)
+    ? variantLoop(tail(vs), r, source, first(vs))
+    : variantLoop(tail(vs), r, source, found)
 
 fun variantFits(r, v, source)
   # A tuple variant matches structurally...
@@ -175,7 +175,7 @@ fun tupleEntries(sp) => match(sp)
   (o: Spec)    => List()
 
 # Single-entry test, structurally — arity is never counted, only probed.
-fun tupleSingle(sp) => exactly(chain(tupleEntries(sp)), 1)
+fun tupleSingle(sp) => exactly(tupleEntries(sp), 1)
 
 fun entryTypeAt(sp, i) => entryAt(tupleEntries(sp), i)
 

@@ -218,25 +218,25 @@ fun siSolve(a: CgApp): SiSolved
   let fromObjs = fold(appObjects(a), fromFns, (acc, o) => siForeignObject(flow, acc, o))
   let built = fold(appGlobals(a), fromObjs, (acc, g2) => siGlobalEdges(flow, acc, g2))
   ret SiSolved(flow, siPropagate(built.saDeps, flow.sfPinned,
-                                 chain(siSetList(built.saFallen)), built.saFallen))
+                                 siSetList(built.saFallen), built.saFallen))
 
 fun siSetList(s2: Set<String>) => fold(s2, List(), (acc, x) => prepend(x, acc))
 
 fun [tail] siPropagate(deps: Dict<String, List<String>>, pinned: Set<String>,
-                       work: Chain<String>, fallen: Set<String>): Set<String> => match(work)
-  (nil: ChainEnd) => fallen
-  (l: ChainLink)  => match(get(deps, l.value))
-    (dsts: List<String>) => siPropagateDsts(deps, pinned, l.next, fallen, chain(dsts))
-    ()                   => siPropagate(deps, pinned, l.next, fallen)
+                       work: List<String>, fallen: Set<String>): Set<String> => isEmpty(work)
+  ? fallen
+  : match(get(deps, first(work)))
+    (dsts: List<String>) => siPropagateDsts(deps, pinned, tail(work), fallen, dsts)
+    ()                   => siPropagate(deps, pinned, tail(work), fallen)
 
 fun [tail] siPropagateDsts(deps: Dict<String, List<String>>, pinned: Set<String>,
-                           work: Chain<String>, fallen: Set<String>,
-                           dsts: Chain<String>): Set<String> => match(dsts)
-  (nil: ChainEnd) => siPropagate(deps, pinned, work, fallen)
-  (l: ChainLink)  => contains(fallen, l.value) || contains(pinned, l.value)
-                       ? siPropagateDsts(deps, pinned, work, fallen, l.next)
-                       : siPropagateDsts(deps, pinned, ChainLink(l.value, work),
-                                         add(fallen, l.value), l.next)
+                           work: List<String>, fallen: Set<String>,
+                           dsts: List<String>): Set<String> => isEmpty(dsts)
+  ? siPropagate(deps, pinned, work, fallen)
+  : contains(fallen, first(dsts)) || contains(pinned, first(dsts))
+                       ? siPropagateDsts(deps, pinned, work, fallen, tail(dsts))
+                       : siPropagateDsts(deps, pinned, prepend(first(dsts), work),
+                                         add(fallen, first(dsts)), tail(dsts))
 
 fun siVirtualImpls(a: CgApp): Dict<String, List<String>>
   ret fold(appObjects(a), Dict(), (acc, o) => fold(o.objFunctions, acc, siImplAdd))
@@ -310,21 +310,21 @@ fun siFeedParams(flow: SiFlow, acc: SiAcc, callee: String, args, caller: String)
     (f: CgFunction) => tail(siParams(f))
     ()              => List()
   ret match(args)
-    (ns: RpNewStruct) => siFeedLoop(flow, acc, callee, caller, chain(ns.values), chain(params))
+    (ns: RpNewStruct) => siFeedLoop(flow, acc, callee, caller, ns.values, params)
     (o: RParam)       => fold(params, acc, (a, pf) =>
                            siFallAll(flow, a, pf.fieldType, (p) => siVarNode(callee, pf.fieldName, p)))
 
 # Arguments pair with parameters positionally (Python's zip: the shorter wins).
 fun [tail] siFeedLoop(flow: SiFlow, acc: SiAcc, callee: String, caller: String,
-                      args: Chain<RpNamedValue>, params: Chain<CgField>): SiAcc => match(args)
-  (nil: ChainEnd) => acc
-  (la: ChainLink) => match(params)
-    (nil2: ChainEnd) => acc
-    (lp: ChainLink)  => siFeedLoop(flow,
-                          fold(siFunPaths(lp.value.fieldType), acc, (a, p) =>
-                            siEdge(flow, a, siSources(flow, caller, la.value.value, p),
-                                   siVarNode(callee, lp.value.fieldName, p))),
-                          callee, caller, la.next, lp.next)
+                      args: List<RpNamedValue>, params: List<CgField>): SiAcc => isEmpty(args)
+  ? acc
+  : isEmpty(params)
+    ? acc
+    : siFeedLoop(flow,
+                          fold(siFunPaths(first(params).fieldType), acc, (a, p) =>
+                            siEdge(flow, a, siSources(flow, caller, first(args).value, p),
+                                   siVarNode(callee, first(params).fieldName, p))),
+                          callee, caller, tail(args), tail(params))
 
 fun siObjFields(o: CgObject): List<CgField> => match(cgFieldsOf(o.objFields))
   (fields: List<CgField>) => fields

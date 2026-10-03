@@ -175,36 +175,36 @@ fun trimRebuild(a: CgApp, toApp: ScanSets) => appOf(
 # The picked entities keep the (sorted) name order they were asked for — it
 # becomes their emission order.
 fun trimPick(names: List<String>, get: (:String): CgFunction|None)
-  ret build(trimPickLoop(chain(names), get,
-                         builder()))
+  ret (trimPickLoop(names, get,
+                         List()))
 
-fun [tail] trimPickLoop(ns: Chain<String>, get: (:String): CgFunction|None,
-                        [terminal] acc: ListBuilder<CgFunction>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(get(l.value))
-    (f2: CgFunction) => trimPickLoop(l.next, get,
-                                     push(acc, f2))
-    ()                => trimPickLoop(l.next, get, acc)
+fun [tail] trimPickLoop(ns: List<String>, get: (:String): CgFunction|None,
+                        acc: List<CgFunction>) => isEmpty(ns)
+  ? acc
+  : match(get(first(ns)))
+    (f2: CgFunction) => trimPickLoop(tail(ns), get,
+                                     append(acc, f2))
+    ()                => trimPickLoop(tail(ns), get, acc)
 
 fun trimPickObjects(names: List<String>, a: CgApp)
-  ret build(trimPickObjLoop(chain(names), a, builder()))
+  ret (trimPickObjLoop(names, a, List()))
 
-fun [tail] trimPickObjLoop(ns: Chain<String>, a: CgApp,
-                           [terminal] acc: ListBuilder<CgObject>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(appObject(a, l.value))
-    (o2: CgObject) => trimPickObjLoop(l.next, a, push(acc, o2))
-    ()              => trimPickObjLoop(l.next, a, acc)
+fun [tail] trimPickObjLoop(ns: List<String>, a: CgApp,
+                           acc: List<CgObject>) => isEmpty(ns)
+  ? acc
+  : match(appObject(a, first(ns)))
+    (o2: CgObject) => trimPickObjLoop(tail(ns), a, append(acc, o2))
+    ()              => trimPickObjLoop(tail(ns), a, acc)
 
 fun trimPickGlobals(names: List<String>, a: CgApp)
-  ret build(trimPickGlbLoop(chain(names), a, builder()))
+  ret (trimPickGlbLoop(names, a, List()))
 
-fun [tail] trimPickGlbLoop(ns: Chain<String>, a: CgApp,
-                           [terminal] acc: ListBuilder<CgGlobal>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(appGlobal(a, l.value))
-    (g3: CgGlobal) => trimPickGlbLoop(l.next, a, push(acc, g3))
-    ()              => trimPickGlbLoop(l.next, a, acc)
+fun [tail] trimPickGlbLoop(ns: List<String>, a: CgApp,
+                           acc: List<CgGlobal>) => isEmpty(ns)
+  ? acc
+  : match(appGlobal(a, first(ns)))
+    (g3: CgGlobal) => trimPickGlbLoop(tail(ns), a, append(acc, g3))
+    ()              => trimPickGlbLoop(tail(ns), a, acc)
 
 # ── addressTakenFunctions (trim.py address_taken_functions) ─────────────────
 # Internal functions whose ADDRESS escapes as a value: every reference except

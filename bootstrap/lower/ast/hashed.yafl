@@ -31,15 +31,15 @@ import Bootstrap::Types
 # The rewritten statements in program order, the errors as a set, and whether
 # anything changed. The statements are built: every statement that passes
 # through untouched used to copy the whole program so far.
-class [linear, final] LhAcc(lhStmts: ListBuilder<PStmt>, lhErrs: Set<PErr>,
+class [final] LhAcc(lhStmts: List<PStmt>, lhErrs: Set<PErr>,
                             lhChanged: Bool)
 
-fun lhKeep([terminal] acc: LhAcc, st) => LhAcc(push(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
+fun lhKeep(acc: LhAcc, st) => LhAcc(append(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
 
 fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PErr>, lhChanged: Bool)
-  let out = lhStmtsLoop(chain(statements), List(),
-                        LhAcc(builder(), Set(), false))
-  ret (build(out.lhStmts), out.lhErrs, out.lhChanged)
+  let out = lhStmtsLoop(statements, List(),
+                        LhAcc(List(), Set(), false))
+  ret (out.lhStmts, out.lhErrs, out.lhChanged)
 
 # ANY enum type: every boxed enum now carries the slot by default, and the
 # three internals are representation-aware at codegen, so a value-repr enum
@@ -51,13 +51,13 @@ fun lhIsHashedType(sp: Spec|None, roots: List<String>) => match(sp)
     (o: Spec)   => false
   ()         => false
 
-fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
-                       [terminal] acc: LhAcc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
+fun [tail] lhStmtsLoop(ss: List<PStmt>, roots: List<String>,
+                       acc: LhAcc) => isEmpty(ss)
+  ? acc
+  : lhStmtsLoop(tail(ss), roots, lhOne(first(ss), roots, acc))
 
 fun lhOne(st, roots: List<String>,
-          [terminal] acc: LhAcc) => match(st)
+          acc: LhAcc) => match(st)
   (f: PsFun) => hasAttr(f.fAttrs, "refeq")
     ? lhRefeqFun(f, roots, acc)
     : hasAttr(f.fAttrs, "hashed")
@@ -66,23 +66,23 @@ fun lhOne(st, roots: List<String>,
   (o: PStmt) => lhKeep(acc, st)
 
 fun lhFun(f: PsFun, roots: List<String>,
-          [terminal] acc: LhAcc): LhAcc
+          acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
-  if !exactly(chain(params), 1) || !lhFirstParamHashed(params, roots)
-    ret LhAcc(push(acc.lhStmts, f),
+  if !exactly(params, 1) || !lhFirstParamHashed(params, roots)
+    ret LhAcc(append(acc.lhStmts, f),
                add(acc.lhErrs, PErr(f.psfLine,
            "a [hashed] function must take exactly one parameter of an "
            + "enum type — the cache lives in that value when it is boxed")),
               acc.lhChanged)
   if !lhReturnsInt32(f.fRet)
-    ret LhAcc(push(acc.lhStmts, f),
+    ret LhAcc(append(acc.lhStmts, f),
                add(acc.lhErrs, PErr(f.psfLine,
            "a [hashed] function must return Int32 — the cache slot is "
            + "one machine word")),
               acc.lhChanged)
   let split = lhSplit(f, lhFirstParamName(params))
   # The wrapper precedes the raw body it delegates to.
-  ret LhAcc(push(push(acc.lhStmts, split.wrap), split.raw),
+  ret LhAcc(append(append(acc.lhStmts, split.wrap), split.raw),
             acc.lhErrs, true)
 
 fun lhFirstParamHashed(params: List<PStmt>, roots: List<String>) => match(head(params))
@@ -140,24 +140,24 @@ fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
 # deep compare short-circuits at SHARED SUBSTRUCTURE.
 
 fun lhRefeqFun(f: PsFun, roots: List<String>,
-               [terminal] acc: LhAcc): LhAcc
+               acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
-  if !exactly(chain(params), 2) || !lhRefeqParamsOk(params, roots)
-    ret LhAcc(push(acc.lhStmts, f),
+  if !exactly(params, 2) || !lhRefeqParamsOk(params, roots)
+    ret LhAcc(append(acc.lhStmts, f),
                add(acc.lhErrs, PErr(f.psfLine,
            "a [refeq] function must take two parameters of one enum "
            + "type — the shortcut is an identity compare, meaningful "
            + "when the representation is boxed")),
               acc.lhChanged)
   if !lhReturnsBool(f.fRet)
-    ret LhAcc(push(acc.lhStmts, f),
+    ret LhAcc(append(acc.lhStmts, f),
                add(acc.lhErrs, PErr(f.psfLine,
            "a [refeq] function must return Bool")),
               acc.lhChanged)
   let split = lhSplitRefeq(f, lhFirstParamName(params),
                            lhFirstParamName(tail(params)))
   # The wrapper precedes the raw body it delegates to.
-  ret LhAcc(push(push(acc.lhStmts, split.wrap), split.raw),
+  ret LhAcc(append(append(acc.lhStmts, split.wrap), split.raw),
             acc.lhErrs, true)
 
 fun lhRefeqParamsOk(params: List<PStmt>, roots: List<String>) => lhFirstParamHashed(params, roots)

@@ -35,16 +35,16 @@ import Bootstrap::StdlibCandidates
 
 
 fun resolvePinnableReads(a): CgApp
-  let names = prNames(chain(appObjects(a)), setEmpty())
+  let names = prNames(appObjects(a), setEmpty())
   ret isEmpty(names.setIx)
     ? a
     : appWithFunctions(a, map(appFunctions(a),
                               (f) => prFunction(f, names)))
 
-fun [tail] prNames(os: Chain<CgObject>, acc) => match(os)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => prNames(l.next, l.value.objIsPinnable
-                                       ? setAdd(acc, l.value.objName)
+fun [tail] prNames(os: List<CgObject>, acc) => isEmpty(os)
+  ? acc
+  : prNames(tail(os), first(os).objIsPinnable
+                                       ? setAdd(acc, first(os).objName)
                                        : acc)
 
 fun prFunction(f: CgFunction, names: StrSet)

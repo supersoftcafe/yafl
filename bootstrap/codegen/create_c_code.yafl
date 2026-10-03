@@ -127,7 +127,7 @@ fun lazyTypeAdd(acc, t2)
   let m2 = irMangle(t2)
   ret contains(acc.ltSeen, m2)
     ? acc
-    : LazyTypes(build(push(builderFrom(acc.ltList), t2)),
+    : LazyTypes(append(acc.ltList, t2),
                 put(acc.ltSeen, m2, true))
 
 fun ensureLazyMachinery(a, types2: List<CgType>)
@@ -161,24 +161,24 @@ fun multiSubjectPositionErrs(statements: List<PStmt>, r): List<String>
 fun msPosExpr(acc, x, r) => match(x)
   (mt: PeMatch) => isEmpty(mt.matchExtra)
     ? acc
-    : msPosArms(acc, chain(mt.arms), prepend(mt.subject, mt.matchExtra), r)
+    : msPosArms(acc, mt.arms, prepend(mt.subject, mt.matchExtra), r)
   (o: PExpr)    => acc
 
-fun [tail] msPosArms(acc, as2: Chain<PArm>, subs: List<PExpr>,
-                     r) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => msPosArms(
+fun [tail] msPosArms(acc, as2: List<PArm>, subs: List<PExpr>,
+                     r) => isEmpty(as2)
+  ? acc
+  : msPosArms(
       msPosOne(acc,
-               chain(prepend(l.value.armType,
-                             map(l.value.armExtra, (p) => p.posType))),
-               chain(subs), r),
-      l.next, subs, r)
+               prepend(first(as2).armType,
+                             map(first(as2).armExtra, (p) => p.posType)),
+               subs, r),
+      tail(as2), subs, r)
 
-fun [tail] msPosOne(acc, pats: Chain<Spec|None>,
-                    subs: Chain<PExpr>, r) => match(pats)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => msPosOne(msPosCheck(acc, l.value, msHeadExpr(subs), r),
-                              l.next, msRestExprs(subs), r)
+fun [tail] msPosOne(acc, pats: List<Spec|None>,
+                    subs: List<PExpr>, r) => isEmpty(pats)
+  ? acc
+  : msPosOne(msPosCheck(acc, first(pats), msHeadExpr(subs), r),
+                              tail(pats), msRestExprs(subs), r)
 
 fun msPosCheck(acc, pat: Spec|None, sub: PExpr|None,
                r) => match(pat)
@@ -195,7 +195,7 @@ fun msSupported(acc, rep, pat: Spec,
                 r): List<String>
   ret match(reprPositionGuards(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
     (g: List<RParam>) => acc
-    ()                => build(push(builderFrom(acc),
+    ()                => (append(acc,
                            "this pattern cannot serve a position of a "
                            + "multi-subject match"))
 
@@ -204,13 +204,13 @@ fun isEnumOrUnion2(sp) => match(sp)
   (cm: SCombination) => true
   (o: Spec)          => false
 
-fun msRestExprs(es): Chain<PExpr> => match(es)
-  (l: ChainLink)  => l.next
-  (nil: ChainEnd) => es
+fun msRestExprs(es): List<PExpr> => isEmpty(es)
+  ? es
+  : tail(es)
 
-fun msHeadExpr(es: Chain<PExpr>) => match(es)
-  (l: ChainLink)  => l.value
-  (nil: ChainEnd) => None
+fun msHeadExpr(es: List<PExpr>) => isEmpty(es)
+  ? None
+  : first(es)
 
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
@@ -438,7 +438,7 @@ fun ccFnsSame(a: List<CgFunction>, b: List<CgFunction>)
 fun ccObjsSame(a: List<CgObject>, b: List<CgObject>)
   ret eqBy(a, b, (x, y) =>
         x.objName == y.objName
-        && sameLen(chain(x.objFunctions), chain(y.objFunctions)))
+        && sameLen(x.objFunctions, y.objFunctions))
 
 fun ccSortObjs(os: List<CgObject>)
   # By name. This was an INSERTION SORT — each object walking the sorted

@@ -76,7 +76,7 @@ fun [test("map and filter over an empty sequence stay empty")] emptyCombinators(
      ?? assertTrue(isEmpty(filter(build(seqBuilder<Int>()), (x: Int) => true)), "filter")
 
 fun [test("pushAll appends an entire List in order")] pushAllList(): None|TestFailure
-    let l = build(push(push(builder<Int>(), 1), 2))
+    let l = append(append(List<Int>(), 1), 2)
     ret assertEqStr(_render(build(pushAll(seqBuilder<Int>(), l))), "1.2.", "appended")
 
 fun [test("head returns the FIRST element pushed")] headIsFirst(): None|TestFailure

@@ -798,21 +798,11 @@ Test coverage: `tests/test_runtime.py::TestListOps` (9 cases),
 ~18 min.
 
 
-# Another specific heap layout optimisation
+# Another specific heap layout optimisation — superseded
 
-```
-enum List<T>
-  enum ListEmpty()
-  enum ListFull(front: Chain<T>, rear: Chain<T>)
-```
-
-(`_ListNode`/`_Nil`/`_Cons` were renamed to the public `Chain`/`ChainEnd`/
-`ChainLink` on 2026-06-12 — List is the build structure, Chain the zero-
-allocation consumption view; see `chain`/`chainNext`/`chainLength` in
-`stdlib/list.yafl`.)
-
-Check if the ListEmpty() case uses runtime NULL in one of the fields as the signal, or if it
-uses an extra field to distinguish. There is an optimisation opportuntiy here.
+The ListEmpty/ListFull wrapper this asked about is gone: List is now an
+opaque by-value handle onto claimable segments (docs/list-design.md), and
+empty is two None segment pointers.
 
 # JsonValue is complex — resolved (note was stale)
 

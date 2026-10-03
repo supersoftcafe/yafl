@@ -20,7 +20,7 @@ fun _strsOf(xs: List<String>): String
 
 # Built with a ListBuilder: in-order and O(1) per push.
 fun _ints4(a: Int, b: Int, c: Int, d: Int): List<Int>
-    ret build(push(push(push(push(builder<Int>(), a), b), c), d))
+    ret (append(append(append(append(List<Int>(), a), b), c), d))
 
 
 # isEmpty, not a rendered comparison against "": routing an emptiness check
@@ -51,8 +51,8 @@ fun [test("negative values order below positive ones")] sortNegatives(): None|Te
     ret assertEqStr(_of(sort(_ints4(2, 0 - 5, 0, 0 - 1))), "-5.-1.0.2.", "negatives")
 
 fun [test("strings sort lexicographically")] sortStrings(): None|TestFailure
-    let l = build(push(push(push(push(builder<String>(),
-        "pear"), "apple"), "fig"), "banana"))
+    let l = append(append(append(append(List<String>(),
+        "pear"), "apple"), "fig"), "banana")
     ret assertEqStr(_strsOf(sort(l)), "apple.banana.fig.pear.", "strings")
 
 fun [test("sortBy orders by the supplied comparison, here descending")] sortByDescending(): None|TestFailure
@@ -71,7 +71,7 @@ fun [test("sortBy on an empty list yields an empty list")] sortByEmpty(): None|T
 class [final] Rec(key: Int, tag: String)
 
 fun _recs(): List<Rec>
-    ret build(push(push(push(push(push(builder<Rec>(), Rec(2, "a")), Rec(1, "b")), Rec(2, "c")),
+    ret (append(append(append(append(append(List<Rec>(), Rec(2, "a")), Rec(1, "b")), Rec(2, "c")),
         Rec(1, "d")), Rec(2, "e")))
 
 fun _recsOf(xs: List<Rec>): String

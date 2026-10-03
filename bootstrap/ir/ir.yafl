@@ -67,18 +67,18 @@ fun [tail] strCountGet(l: List<StrCount>, name) => match(head(l))
   (e: StrCount) => e.scName == name ? e.scCount : strCountGet(tail(l), name)
   ()             => 0
 
-# A bump REBUILDS the whole table, so the rebuild goes into a builder; a name
-# not already present is appended at the end.
-fun strCountIncr(l: List<StrCount>, name) => build(strCountIncrLoop(l, name, false, builder()))
+# A bump REBUILDS the whole table, appending as it goes; a name not already
+# present is appended at the end.
+fun strCountIncr(l: List<StrCount>, name) => (strCountIncrLoop(l, name, false, List()))
 
 fun [tail] strCountIncrLoop(l: List<StrCount>, name, found,
-                            [terminal] acc): ListBuilder<StrCount> => match(head(l))
+                            [terminal] acc): List<StrCount> => match(head(l))
   (e: StrCount) => strCountIncrLoop(tail(l), name,
                       found || e.scName == name,
-                      push(acc, e.scName == name
+                      append(acc, e.scName == name
                           ? StrCount(e.scName, e.scCount + 1)
                           : e))
-  ()             => found ? acc : push(acc, StrCount(name, 1))
+  ()             => found ? acc : append(acc, StrCount(name, 1))
 
 # ══════════════════════════════════════════════════════════════════════════
 # Function
@@ -131,13 +131,13 @@ fun cgOpsOf(ops: List<Op>): Segment<Op>|None => build(pushAll(seqBuilder(), ops)
 
 # The inverse boundary, for the one pass (async liveness) whose tuned
 # Dict-indexed fixpoint keeps List internals: copy out, iterate, copy back.
-fun cgOpsToList(s: Segment<Op>|None) => build(cgOtlLoop(s, 0i32, builder()))
+fun cgOpsToList(s: Segment<Op>|None) => (cgOtlLoop(s, 0i32, List()))
 
 fun [tail] cgOtlLoop(s: Segment<Op>|None, i,
-                     [terminal] acc): ListBuilder<Op> => match(s)
+                     [terminal] acc): List<Op> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => i < seg.length
-    ? cgOtlLoop(s, i + 1i32, push(acc, seg.array(i)))
+    ? cgOtlLoop(s, i + 1i32, append(acc, seg.array(i)))
     : cgOtlLoop(seg.next, 0i32, acc)
 
 fun cgFunctionWith(f: CgFunction, ops, stackVars)
@@ -189,7 +189,7 @@ fun cgCollectPhisStep(acc: (curLabel: String, phis: List<PhiAtEntry>), op): (cur
   ret match(op)
     (l: OpLabel) => (l.labelName, acc.phis)
     (p: OpPhi) => (acc.curLabel,
-                   build(push(builderFrom(acc.phis), PhiAtEntry(acc.curLabel, op))))
+                   (append(acc.phis, PhiAtEntry(acc.curLabel, op))))
     (o: Op) => (acc.curLabel, acc.phis)
 
 fun phisAtLabel(phis: List<PhiAtEntry>, label: String)
@@ -222,16 +222,16 @@ fun cgIsTerminatorForPhi(op) => match(op)
 class [linear, final] PhiAcc(paCur: String, paOut: SeqBuilder<Op>,
                              paFall: Bool)
 
-fun [tail] cgPhiMoves(ps: Chain<Op>, predLabel,
-                      [terminal] acc: SeqBuilder<Op>) => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cgPhiMoves(l.next, predLabel,
-                        push(acc, cgPhiToMove(l.value, predLabel)))
+fun [tail] cgPhiMoves(ps: List<Op>, predLabel,
+                      [terminal] acc: SeqBuilder<Op>) => isEmpty(ps)
+  ? acc
+  : cgPhiMoves(tail(ps), predLabel,
+                        push(acc, cgPhiToMove(first(ps), predLabel)))
 
 fun cgLowerPhisJump([terminal] acc: PhiAcc, j: OpJump,
                     phis: List<PhiAtEntry>)
   ret PhiAcc(acc.paCur,
-             push(cgPhiMoves(chain(phisAtLabel(phis, j.jumpName)),
+             push(cgPhiMoves(phisAtLabel(phis, j.jumpName),
                              acc.paCur, acc.paOut),
                   OpJump(j.jumpName, j.jumpSavedVars)),
              false)
@@ -241,7 +241,7 @@ fun cgLowerPhisLabel([terminal] acc: PhiAcc, l,
   let group = phisAtLabel(phis, l.labelName)
   ret PhiAcc(l.labelName,
              push(!isEmpty(group) && acc.paFall
-                    ? cgPhiMoves(chain(group), acc.paCur, acc.paOut)
+                    ? cgPhiMoves(group, acc.paCur, acc.paOut)
                     : acc.paOut,
                   l),
              true)
@@ -337,24 +337,24 @@ fun cgSuccessorsOf(op, ix: StripIx, fallthrough) => match(op)
   (o: Op) => fallthrough
 
 fun cgAddOneSuccessor(acc,
-                      s: Int): (seen: Dict<Int, Bool>, worklist: Chain<Int>)
+                      s: Int): (seen: Dict<Int, Bool>, worklist: List<Int>)
   ret get(acc.seen, s) is Bool
     ? acc
     : (put(acc.seen, s, true), chainPrependInt(s, acc.worklist))
 
-fun chainPrependInt(s: Int, c: Chain<Int>) => ChainLink(s, c)
+fun chainPrependInt(s: Int, c: List<Int>) => prepend(s, c)
 
-fun chainHeadIntOr(c: Chain<Int>, dflt: Int) => match(c)
-  (l: ChainLink) => l.value
-  (nil: ChainEnd) => dflt
+fun chainHeadIntOr(c: List<Int>, dflt: Int) => isEmpty(c)
+  ? dflt
+  : first(c)
 
-fun chainTailInt(c): Chain<Int> => match(c)
-  (l: ChainLink) => l.next
-  (nil: ChainEnd) => c
+fun chainTailInt(c): List<Int> => isEmpty(c)
+  ? c
+  : tail(c)
 
 fun [tail] cgReachableLoop(ix: StripIx, worklist,
                            seen: Dict<Int, Bool>): Dict<Int, Bool>
-  if worklist is ChainEnd
+  if isEmpty(worklist)
     ret seen
   let idx = chainHeadIntOr(worklist, 0)
   let added = fold(cgSuccessors(ix, idx), (seen, chainTailInt(worklist)),
@@ -362,7 +362,7 @@ fun [tail] cgReachableLoop(ix: StripIx, worklist,
           cgAddOneSuccessor(acc, s))
   ret cgReachableLoop(ix, added.worklist, added.seen)
 
-fun cgReachable(ix: StripIx) => cgReachableLoop(ix, chainPrependInt(0, chain(List())),
+fun cgReachable(ix: StripIx) => cgReachableLoop(ix, chainPrependInt(0, List()),
                                                 put(Dict(), 0, true))
 
 fun [tail] cgKeepSeenIndices(s: Segment<Op>|None, iSeg, i, seen: Dict<Int, Bool>,

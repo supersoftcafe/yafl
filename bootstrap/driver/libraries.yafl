@@ -126,16 +126,16 @@ fun sortByUnitName(root, paths: List<String>)
 # their unit name — the path relative to the library root — before reading them.
 fun yaflPaths(dir, acc): List<String>|String => match(listDir(dir))
   (e: IOError)         => dir + ": cannot be listed"
-  (names: Set<String>) => yaflEntries(chain(sort(names)), dir, acc)
+  (names: Set<String>) => yaflEntries(sort(names), dir, acc)
 
-fun yaflEntries(ns: Chain<String>, dir,
-                acc: List<String>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => isDotEntry(l.value)
-    ? yaflEntries(l.next, dir, acc)
-    : match(yaflEntry(dir + "/" + l.value, acc))
+fun yaflEntries(ns: List<String>, dir,
+                acc: List<String>) => isEmpty(ns)
+  ? acc
+  : isDotEntry(first(ns))
+    ? yaflEntries(tail(ns), dir, acc)
+    : match(yaflEntry(dir + "/" + first(ns), acc))
       (why: String)      => why
-      (a2: List<String>) => yaflEntries(l.next, dir, a2)
+      (a2: List<String>) => yaflEntries(tail(ns), dir, a2)
 
 # `listDir` is readdir: it hands back `.` and `..`, which `Path.iterdir` and
 # `Path.rglob` never do. Descending into `.` recurses for ever — the path grows
@@ -159,18 +159,18 @@ fun isRegularFile(path) => match(stat(path))
 # `SourceFile(unit_name(p, root), ...)`. The name is hashed into every
 # generated symbol, so two files of the same name in different sub-directories
 # are distinct sources that must report DISTINCT filenames.
-fun readSources(root, paths: List<String>) => srcLoop(root, chain(paths), builder())
+fun readSources(root, paths: List<String>) => srcLoop(root, paths, List())
 
-fun [tail] srcLoop(root, ps: Chain<String>,
-                   [terminal] b: ListBuilder<LibSource>) => match(ps)
-  (nil: ChainEnd) => build(b)
-  (l: ChainLink)  => match(readWholeFile(l.value))
-    (e: IOError)   => srcDiscard(b, l.value + ": cannot be read")
-    (t: String)    => srcLoop(root, l.next,
-                              push(b, LibSource(relativeTo(root, l.value), t)))
+fun [tail] srcLoop(root, ps: List<String>,
+                   b: List<LibSource>) => isEmpty(ps)
+  ? b
+  : match(readWholeFile(first(ps)))
+    (e: IOError)   => srcDiscard(b, first(ps) + ": cannot be read")
+    (t: String)    => srcLoop(root, tail(ps),
+                              append(b, LibSource(relativeTo(root, first(ps)), t)))
 
-fun srcDiscard([terminal] b: ListBuilder<LibSource>, why): List<LibSource>|String
-  ret build(b) |> (l) => why
+fun srcDiscard(b: List<LibSource>, why): List<LibSource>|String
+  ret b |> (l) => why
 
 # A `.yl` archive: the same manifest and sources, read out of the zip.
 fun readZipLibrary(path) => match(readWholeFile(path))
@@ -185,14 +185,14 @@ fun zipLibraryFrom(entries: List<ZipEntry>, path) => match(zipFind(entries, "yaf
     (m: LibManifest) => Library(m, path, true, zipSources(entries))
   ()              => path + ": .yl has no yafl.toml"
 
-fun zipSources(entries: List<ZipEntry>) => build(zipSrcLoop(chain(sortEntries(entries)), builder()))
+fun zipSources(entries: List<ZipEntry>) => (zipSrcLoop(sortEntries(entries), List()))
 
-fun [tail] zipSrcLoop(es: Chain<ZipEntry>,
-                      [terminal] b): ListBuilder<LibSource> => match(es)
-  (nil: ChainEnd) => b
-  (l: ChainLink)  => endsWith(l.value.zipName, ".yafl")
-    ? zipSrcLoop(l.next, push(b, LibSource(l.value.zipName, l.value.zipBody)))
-    : zipSrcLoop(l.next, b)
+fun [tail] zipSrcLoop(es: List<ZipEntry>,
+                      b): List<LibSource> => isEmpty(es)
+  ? b
+  : endsWith(first(es).zipName, ".yafl")
+    ? zipSrcLoop(tail(es), append(b, LibSource(first(es).zipName, first(es).zipBody)))
+    : zipSrcLoop(tail(es), b)
 
 fun sortEntries(entries: List<ZipEntry>) => sortBy(entries, (a, b) => a.zipName < b.zipName)
 
@@ -252,17 +252,17 @@ fun envPaths() => match(env("YAFL_PATH"))
 # is an ERROR rather than a silent shadow, because which copy you got would
 # otherwise depend on directory order.
 
-fun discoverLibraries(paths: List<String>) => discoverLoop(chain(paths), List(), builder())
+fun discoverLibraries(paths: List<String>) => discoverLoop(paths, List(), List())
 
-fun [tail] discoverLoop(ps: Chain<String>, seen: List<String>,
-                        [terminal] acc) => match(ps)
-  (nil: ChainEnd) => LibsOk(build(acc))
-  (l: ChainLink)  => !exists(l.value)
-    ? discoverLoop(l.next, seen, acc)
-    : match(listDir(l.value))
-      (e: IOError)         => discoverLoop(l.next, seen, acc)
-      (names: Set<String>) => discoverInto(l.next, l.value,
-                                           chain(sort(names)), seen, acc)
+fun [tail] discoverLoop(ps: List<String>, seen: List<String>,
+                        acc) => isEmpty(ps)
+  ? LibsOk(acc)
+  : !exists(first(ps))
+    ? discoverLoop(tail(ps), seen, acc)
+    : match(listDir(first(ps)))
+      (e: IOError)         => discoverLoop(tail(ps), seen, acc)
+      (names: Set<String>) => discoverInto(tail(ps), first(ps),
+                                           sort(names), seen, acc)
 
 # `seen` mirrors discover_libraries' seen_roots: the same directory reachable
 # from two search-path entries is ONE library, not two — and since two
@@ -273,18 +273,18 @@ fun [tail] discoverLoop(ps: Chain<String>, seen: List<String>,
 # runtime exposes no realpath. Identical entries and `.`-style repeats are
 # caught; two paths aliased through a SYMLINK are not, and would surface as
 # the duplicate-namespace error rather than being silently merged.
-fun [tail] discoverInto(rest: Chain<String>, base, ns: Chain<String>,
+fun [tail] discoverInto(rest: List<String>, base, ns: List<String>,
                         seen: List<String>,
-                        [terminal] acc) => match(ns)
-  (nil: ChainEnd) => discoverLoop(rest, seen, acc)
-  (l: ChainLink)  => isDotEntry(l.value) || contains(seen, base + "/" + l.value)
-    ? discoverInto(rest, base, l.next, seen, acc)
-    : match(readEntry(base + "/" + l.value))
+                        acc) => isEmpty(ns)
+  ? discoverLoop(rest, seen, acc)
+  : isDotEntry(first(ns)) || contains(seen, base + "/" + first(ns))
+    ? discoverInto(rest, base, tail(ns), seen, acc)
+    : match(readEntry(base + "/" + first(ns)))
       (why: String)  => libDiscard(acc, LibsErr(why))
-      (lib: Library) => discoverInto(rest, base, l.next,
-                                     concat(seen, list1(base + "/" + l.value)),
-                                     push(acc, lib))
-      ()             => discoverInto(rest, base, l.next, seen, acc)
+      (lib: Library) => discoverInto(rest, base, tail(ns),
+                                     concat(seen, list1(base + "/" + first(ns))),
+                                     append(acc, lib))
+      ()             => discoverInto(rest, base, tail(ns), seen, acc)
 
 # Dispatch on WHAT THE ENTRY IS, not on its name: `_read_library_at` tests
 # `is_dir()` first and requires `is_file()` for the `.yl` branch. Keying on the
@@ -296,7 +296,7 @@ fun readEntry(path) => isDirectory(path) ? readDirLibrary(path)
   : isRegularFile(path) && endsWith(path, ".yl") ? readZipLibrary(path)
   : None
 
-fun libDiscard([terminal] acc: ListBuilder<Library>, e): LibResult => build(acc) |> (l) => e
+fun libDiscard(acc: List<Library>, e): LibResult => acc |> (l) => e
 
 
 # ── namespace index ─────────────────────────────────────────────────────────
@@ -306,38 +306,37 @@ fun libDiscard([terminal] acc: ListBuilder<Library>, e): LibResult => build(acc)
 
 class [final] NsEntry(nsName: String, nsLib: Library)
 
-# A plain List accumulator, NOT a ListBuilder: the collision check has to READ
-# what has been indexed so far, and a builder is write-only. With a builder the
-# check was unwriteable, so it was simply absent — the banner above described a
-# rule the code did not enforce, `nsSeek` returned the first match, and the
-# result was the directory-order-dependent silent shadow it forbids.
-fun namespaceIndex(libs: List<Library>) => nsIndexLoop(chain(libs), List())
+# The collision check READS what has been indexed so far. (When lists were
+# built through a write-only builder the check was unwriteable, so it was
+# simply absent — the banner above described a rule the code did not enforce,
+# `nsSeek` returned the first match, and the result was the
+# directory-order-dependent silent shadow it forbids.)
+fun namespaceIndex(libs: List<Library>) => nsIndexLoop(libs, List())
 
-fun nsIndexLoop(ls: Chain<Library>, acc: List<NsEntry>) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  =>
-    match(nsAddAll(l.value, chain(l.value.libManifest.libNamespaces), acc))
+fun nsIndexLoop(ls: List<Library>, acc: List<NsEntry>) => isEmpty(ls)
+  ? acc
+  : match(nsAddAll(first(ls), first(ls).libManifest.libNamespaces, acc))
       (why: String)       => why
-      (a2: List<NsEntry>) => nsIndexLoop(l.next, a2)
+      (a2: List<NsEntry>) => nsIndexLoop(tail(ls), a2)
 
 # Compares libRoot, where namespace_index compares object identity: one library
 # is free to declare a namespace twice, two libraries are not.
-fun nsAddAll(lib, ns: Chain<String>,
-             acc: List<NsEntry>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(nsLookup(acc, l.value))
+fun nsAddAll(lib, ns: List<String>,
+             acc: List<NsEntry>) => isEmpty(ns)
+  ? acc
+  : match(nsLookup(acc, first(ns)))
     (other: Library) => other.libRoot == lib.libRoot
-      ? nsAddAll(lib, l.next, acc)
-      : "namespace '" + l.value + "' is declared by two libraries: '"
+      ? nsAddAll(lib, tail(ns), acc)
+      : "namespace '" + first(ns) + "' is declared by two libraries: '"
         + other.libManifest.libName + "' and '" + lib.libManifest.libName + "'"
-    ()               => nsAddAll(lib, l.next,
-                                 concat(acc, list1(NsEntry(l.value, lib))))
+    ()               => nsAddAll(lib, tail(ns),
+                                 concat(acc, list1(NsEntry(first(ns), lib))))
 
-fun nsLookup(index: List<NsEntry>, name: String) => nsSeek(chain(index), name)
+fun nsLookup(index: List<NsEntry>, name: String) => nsSeek(index, name)
 
-fun [tail] nsSeek(es: Chain<NsEntry>, name: String) => match(es)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.nsName == name ? l.value.nsLib : nsSeek(l.next, name)
+fun [tail] nsSeek(es: List<NsEntry>, name: String) => isEmpty(es)
+  ? None
+  : first(es).nsName == name ? first(es).nsLib : nsSeek(tail(es), name)
 
 
 # ── candidate namespaces ────────────────────────────────────────────────────
@@ -349,33 +348,33 @@ fun [tail] nsSeek(es: Chain<NsEntry>, name: String) => match(es)
 # A miss is harmless (it matches no library); a MISS THAT MATTERED would be a
 # library silently not loaded, which is why this errs wide.
 
-fun prefixesOf(qualified) => prefixWalk(chain(map(split(qualified, "::"), stripUnique)), "",
-                                        builder())
+fun prefixesOf(qualified) => prefixWalk(map(split(qualified, "::"), stripUnique), "",
+                                        List())
 
 fun stripUnique(part) => findByte(part, '@', 0) |> (at) => at < 0 ? part : slice(part, 0, at)
 
-fun [tail] prefixWalk(ps: Chain<String>, acc,
-                      [terminal] b: ListBuilder<String>) => match(ps)
-  (nil: ChainEnd) => build(b)
-  (l: ChainLink)  => (acc == "" ? l.value : acc + "::" + l.value)
-    |> (next) => prefixWalk(l.next, next, push(b, next))
+fun [tail] prefixWalk(ps: List<String>, acc,
+                      b: List<String>) => isEmpty(ps)
+  ? b
+  : (acc == "" ? first(ps) : acc + "::" + first(ps))
+    |> (next) => prefixWalk(tail(ps), next, append(b, next))
 
 fun candidateNamespaces(imports: List<String>, quals: List<String>)
-  let a = addAllPrefixes(chain(imports), builder())
-  let b = addAllPrefixes(chain(quals), a)
-  ret dedupe(build(composeAll(chain(imports), quals, b)))
+  let a = addAllPrefixes(imports, List())
+  let b = addAllPrefixes(quals, a)
+  ret dedupe(composeAll(imports, quals, b))
 
-fun [tail] addAllPrefixes(xs: Chain<String>,
-                          [terminal] b: ListBuilder<String>) => match(xs)
-  (nil: ChainEnd) => b
-  (l: ChainLink)  => addAllPrefixes(l.next, pushAll(b, prefixesOf(l.value)))
+fun [tail] addAllPrefixes(xs: List<String>,
+                          b: List<String>) => isEmpty(xs)
+  ? b
+  : addAllPrefixes(tail(xs), concat(b, prefixesOf(first(xs))))
 
 # Each import composed with each qualified reference: `P` + `A::B` -> `P::A::B`.
-fun [tail] composeAll(imps: Chain<String>, quals: List<String>,
-                      [terminal] b: ListBuilder<String>) => match(imps)
-  (nil: ChainEnd) => b
-  (l: ChainLink)  => composeAll(l.next, quals,
-      addAllPrefixes(chain(map(quals, (q) => l.value + "::" + q)), b))
+fun [tail] composeAll(imps: List<String>, quals: List<String>,
+                      b: List<String>) => isEmpty(imps)
+  ? b
+  : composeAll(tail(imps), quals,
+      addAllPrefixes(map(quals, (q) => first(imps) + "::" + q), b))
 
 fun dedupe(xs: List<String>): List<String> => sort(Set(xs))
 
@@ -394,20 +393,20 @@ class [final] LoadStep(stepSources: List<LibSource>, stepLibs: List<Library>)
 # them collided and the second library was never loaded. libRoot is the
 # discovered path, which is unique per library by construction.
 fun loadReferenced(index: List<NsEntry>, wanted: List<String>,
-                   already) => loadLoop(chain(wanted), index, already,
-                                        builder(), builder())
+                   already) => loadLoop(wanted, index, already,
+                                        List(), List())
 
-fun [tail] loadLoop(ns: Chain<String>, index: List<NsEntry>,
+fun [tail] loadLoop(ns: List<String>, index: List<NsEntry>,
                     already,
-                    [terminal] srcs,
-                    [terminal] libs) => match(ns)
-  (nil: ChainEnd) => LoadStep(build(srcs), build(libs))
-  (l: ChainLink)  => match(nsLookup(index, l.value))
+                    srcs,
+                    libs) => isEmpty(ns)
+  ? LoadStep(srcs, libs)
+  : match(nsLookup(index, first(ns)))
     (lib: Library) => contains(already, lib.libRoot)
-      ? loadLoop(l.next, index, already, srcs, libs)
-      : loadLoop(l.next, index, prepend(lib.libRoot, already),
-                 pushAll(srcs, lib.libSources), push(libs, lib))
-    ()             => loadLoop(l.next, index, already, srcs, libs)
+      ? loadLoop(tail(ns), index, already, srcs, libs)
+      : loadLoop(tail(ns), index, prepend(lib.libRoot, already),
+                 concat(srcs, lib.libSources), append(libs, lib))
+    ()             => loadLoop(tail(ns), index, already, srcs, libs)
 
 
 # ── native artefacts ────────────────────────────────────────────────────────
@@ -442,24 +441,24 @@ fun extractNative(lib: Library, bytes)
     (e: IOError) => NativeErr(dir + ": cannot be created")
     ()           => match(readZip(bytes))
       (e2: ZipErr) => NativeErr(lib.libRoot + ": " + e2.zipWhy)
-      (z: ZipOk)   => extractEach(chain(concat(lib.libManifest.libHeaders,
-                                               lib.libManifest.libStaticLibs)),
+      (z: ZipOk)   => extractEach(concat(lib.libManifest.libHeaders,
+                                               lib.libManifest.libStaticLibs),
                                   z.zipEntries, lib, dir)
 
 # `if not dest.exists()` — the cache is content-keyed, so an entry already
 # there is the same bytes, and a concurrent compile that got there first has
 # done our work for us.
-fun [tail] extractEach(rels: Chain<String>, entries: List<ZipEntry>,
-                       lib: Library, dir) => match(rels)
-  (nil: ChainEnd) => NativeOk(dir)
-  (l: ChainLink)  => (dir + "/" + l.value)
+fun [tail] extractEach(rels: List<String>, entries: List<ZipEntry>,
+                       lib: Library, dir) => isEmpty(rels)
+  ? NativeOk(dir)
+  : (dir + "/" + first(rels))
     |> (dest) => exists(dest)
-      ? extractEach(l.next, entries, lib, dir)
-      : match(zipFind(entries, l.value))
+      ? extractEach(tail(rels), entries, lib, dir)
+      : match(zipFind(entries, first(rels)))
         (e: ZipEntry)   => match(writeWholeFile(dest, e.zipBody))
           (why: String) => NativeErr(why)
-          ()            => extractEach(l.next, entries, lib, dir)
-        ()              => NativeErr(lib.libRoot + ": declares \"" + l.value
+          ()            => extractEach(tail(rels), entries, lib, dir)
+        ()              => NativeErr(lib.libRoot + ": declares \"" + first(rels)
                                      + "\" but the archive has no such entry")
 
 fun writeWholeFile(path, body) => match(makeDirs(dirOf(path)))
@@ -512,34 +511,34 @@ fun dirOf(p) => lastSlash(p, length(p) - 1)
 class [final] LinkSpec(specHeaders: List<String>, specIncludeDirs: List<String>,
                        specStaticLibs: List<String>)
 
-fun linkSpecFor(libs: List<Library>) => match(gatherNative(chain(libs), List(), List()))
+fun linkSpecFor(libs: List<Library>) => match(gatherNative(libs, List(), List()))
   (why: String)  => why
   (n: NativePaths) => LinkSpec(
-      dedupeStable(build(gatherHeaders(chain(libs), builder()))),
+      dedupeStable(gatherHeaders(libs, List())),
       dedupeStable(n.npIncludes), dedupeStable(n.npStatics))
 
 class [final] NativePaths(npIncludes: List<String>, npStatics: List<String>)
 
-fun [tail] gatherHeaders(ls: Chain<Library>,
-                         [terminal] b: ListBuilder<String>) => match(ls)
-  (nil: ChainEnd) => b
-  (l: ChainLink)  => gatherHeaders(l.next,
-      pushAll(b, map(l.value.libManifest.libHeaders,
+fun [tail] gatherHeaders(ls: List<Library>,
+                         b: List<String>) => isEmpty(ls)
+  ? b
+  : gatherHeaders(tail(ls),
+      concat(b, map(first(ls).libManifest.libHeaders,
                      (h) => baseName(h))))
 
 # Include dirs and archive paths both hang off the materialised directory, so
 # they are gathered together — one extraction per library, not two.
-fun [tail] gatherNative(ls: Chain<Library>, incs,
-                        statics) => match(ls)
-  (nil: ChainEnd) => NativePaths(incs, statics)
-  (l: ChainLink)  => isEmpty(l.value.libManifest.libHeaders)
-     && isEmpty(l.value.libManifest.libStaticLibs)
-    ? gatherNative(l.next, incs, statics)
-    : match(materialisedNativeDir(l.value))
+fun [tail] gatherNative(ls: List<Library>, incs,
+                        statics) => isEmpty(ls)
+  ? NativePaths(incs, statics)
+  : isEmpty(first(ls).libManifest.libHeaders)
+     && isEmpty(first(ls).libManifest.libStaticLibs)
+    ? gatherNative(tail(ls), incs, statics)
+    : match(materialisedNativeDir(first(ls)))
       (e: NativeErr) => e.ndWhy
-      (ok: NativeOk) => gatherNative(l.next,
-          concat(incs, includeDirsUnder(ok.ndPath, l.value)),
-          concat(statics, map(l.value.libManifest.libStaticLibs,
+      (ok: NativeOk) => gatherNative(tail(ls),
+          concat(incs, includeDirsUnder(ok.ndPath, first(ls))),
+          concat(statics, map(first(ls).libManifest.libStaticLibs,
                               (s) => ok.ndPath + "/" + s)))
 
 # `sorted({(base / h).parent for h in headers})` — a header may sit in a
@@ -551,10 +550,10 @@ fun includeDirsUnder(base, lib: Library): List<String> => isEmpty(lib.libManifes
                  (h) => dirOf(base + "/" + h))))
 
 # Order-preserving, unlike `dedupe`: see the banner above.
-fun dedupeStable(xs: List<String>) => stableLoop(chain(xs), List())
+fun dedupeStable(xs: List<String>) => stableLoop(xs, List())
 
-fun [tail] stableLoop(xs: Chain<String>, acc: List<String>) => match(xs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => contains(acc, l.value)
-    ? stableLoop(l.next, acc)
-    : stableLoop(l.next, concat(acc, list1(l.value)))
+fun [tail] stableLoop(xs: List<String>, acc: List<String>) => isEmpty(xs)
+  ? acc
+  : contains(acc, first(xs))
+    ? stableLoop(tail(xs), acc)
+    : stableLoop(tail(xs), concat(acc, list1(first(xs))))

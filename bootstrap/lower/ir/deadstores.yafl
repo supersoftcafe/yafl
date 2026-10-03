@@ -91,7 +91,7 @@ fun dsStepCall(c: OpCall, reads: Dict<String, Bool>): (op: Op|None, changed: Boo
 fun dsStepParallel(p: OpParallelCall,
                    reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
   let outputs = concat(dsOptList(p.parRegister), p.parResults)
-  ret !isEmpty(outputs) && dsAllUnread(chain(outputs), reads)
+  ret !isEmpty(outputs) && dsAllUnread(outputs, reads)
     ? (None, true)
     : (p, false)
 
@@ -99,10 +99,10 @@ fun dsOptList(r: RParam|None) => match(r)
   (x: RParam) => list1(x)
   ()          => List()
 
-fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>) => match(os)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(l.value)
+fun [tail] dsAllUnread(os: List<RParam>, reads: Dict<String, Bool>) => isEmpty(os)
+  ? true
+  : match(first(os))
     (sv: RpStackVar) => dsIsRead(reads, sv.name)
       ? false
-      : dsAllUnread(l.next, reads)
-    (o: RParam)      => dsAllUnread(l.next, reads)
+      : dsAllUnread(tail(os), reads)
+    (o: RParam)      => dsAllUnread(tail(os), reads)

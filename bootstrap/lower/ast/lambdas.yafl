@@ -75,8 +75,8 @@ fun cpPathFor(acc: ClPaths, lr: PLine) => match(get(acc.cpMap, lr))
 # One more step on the end of a structural path — the order IS the path.
 fun cpExtend(path, name) => name == ""
   ? path
-  : build(push(builderFrom(path),
-               name))
+  : append(path,
+               name)
 
 fun collectLambdaPaths(st) => cpStmt(st, List(), emptyClPaths())
 
@@ -124,25 +124,25 @@ fun cpIfStmt(i: PsIf, path, acc)
   let a2 = cpStmts(i.ifTrue, path, a1)
   ret cpStmts(i.ifFalse, path, a2)
 
-fun cpStmts(ss: List<PStmt>, path, acc) => cpStmtLoop(chain(ss), path, acc)
+fun cpStmts(ss: List<PStmt>, path, acc) => cpStmtLoop(ss, path, acc)
 
-fun [tail] cpStmtLoop(ss: Chain<PStmt>, path,
-                      acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cpStmtLoop(l.next, path, cpStmt(l.value, path, acc))
+fun [tail] cpStmtLoop(ss: List<PStmt>, path,
+                      acc) => isEmpty(ss)
+  ? acc
+  : cpStmtLoop(tail(ss), path, cpStmt(first(ss), path, acc))
 
 # ── expressions ──
 fun cpExpr(x, path, acc) => match(x)
   (nm: PeName)      => cpSpecs(nm.refTypeParams, path, acc)
   (d: PeDot)        => cpExpr(d.base, path, acc)
   (c: PeCall)       => cpExpr(c.parameter, path, cpExpr(c.function, path, acc))
-  (tp: PeTuple)     => cpTupEnts(chain(tp.exprs), path, acc)
+  (tp: PeTuple)     => cpTupEnts(tp.exprs, path, acc)
   (te: PeTernary)   => cpExpr(te.falseResult, path,
                               cpExpr(te.trueResult, path,
                                      cpExpr(te.condition, path, acc)))
   (lm: PeLambda)    => cpLambdaExpr(lm, path, acc)
   (bk: PeBlock)     => cpExpr(bk.blockValue, path, cpStmts(bk.blockStmts, path, acc))
-  (mt: PeMatch)     => cpArms(chain(mt.arms), path, cpExpr(mt.subject, path, acc))
+  (mt: PeMatch)     => cpArms(mt.arms, path, cpExpr(mt.subject, path, acc))
   (op: PeBuiltinOp) => cpExpr(op.opParams, path, cpSpec(op.opType, path, acc))
   (nw: PeNew)       => cpExpr(nw.newParam, path, cpSpec(nw.newType, path, acc))
   (ne: PeNewEnum)   => cpSpecs(ne.neTypeParams, path,
@@ -154,8 +154,8 @@ fun cpExpr(x, path, acc) => match(x)
   (wx: PeWith)      => cpExpr(wx.withRepls, path,
                               cpExpr(wx.withSubject, path, acc))
   (pl: PeParallel)  => cpExpr(pl.parParams, path, acc)
-  (lp: PeLoop)      => cpExprs(chain(lp.loopParams), path, cpExpr(lp.loopBody, path, acc))
-  (rc: PeRecur)     => cpExprs(chain(rc.recArgs), path, acc)
+  (lp: PeLoop)      => cpExprs(lp.loopParams, path, cpExpr(lp.loopBody, path, acc))
+  (rc: PeRecur)     => cpExprs(rc.recArgs, path, acc)
   (lz: PeLazy)      => cpSpec(lz.lzTarget, path, acc)
   (o: PeLiteral) => acc
 
@@ -169,30 +169,30 @@ fun cpExprOpt(x: PExpr|None, path, acc) => match(x)
   (e2: PExpr) => cpExpr(e2, path, acc)
   ()          => acc
 
-fun [tail] cpExprs(es: Chain<PExpr>, path, acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cpExprs(l.next, path, cpExpr(l.value, path, acc))
+fun [tail] cpExprs(es: List<PExpr>, path, acc) => isEmpty(es)
+  ? acc
+  : cpExprs(tail(es), path, cpExpr(first(es), path, acc))
 
-fun [tail] cpTupEnts(es: Chain<PTupEnt>, path,
-                     acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cpTupEnts(l.next, path, cpExpr(l.value.tupValue, path, acc))
+fun [tail] cpTupEnts(es: List<PTupEnt>, path,
+                     acc) => isEmpty(es)
+  ? acc
+  : cpTupEnts(tail(es), path, cpExpr(first(es).tupValue, path, acc))
 
-fun [tail] cpArms(as2: Chain<PArm>, path, acc: ClPaths) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cpArms(l.next, path, cpArmOne(l.value, path, acc))
+fun [tail] cpArms(as2: List<PArm>, path, acc: ClPaths) => isEmpty(as2)
+  ? acc
+  : cpArms(tail(as2), path, cpArmOne(first(as2), path, acc))
 
 fun cpArmOne(a: PArm, path, acc): ClPaths
   let a1 = cpSpecOpt(a.armType, path, acc)
   let a2 = cpExpr(a.armBody, path, a1)
-  let a3 = cpLits(chain(a.armLiterals), path, a2)
+  let a3 = cpLits(a.armLiterals, path, a2)
   ret cpExprOpt(a.armGuard, path, a3)
 
-fun [tail] cpLits(ls: Chain<PLit>, path, acc) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (le: PlExpr)   => cpLits(l.next, path, cpExpr(le.litExpr, path, acc))
-    (lr2: PlRange) => cpLits(l.next, path,
+fun [tail] cpLits(ls: List<PLit>, path, acc) => isEmpty(ls)
+  ? acc
+  : match(first(ls))
+    (le: PlExpr)   => cpLits(tail(ls), path, cpExpr(le.litExpr, path, acc))
+    (lr2: PlRange) => cpLits(tail(ls), path,
                              cpExpr(lr2.rangeHi, path,
                                     cpExpr(lr2.rangeLo, path, acc)))
 
@@ -202,7 +202,7 @@ fun cpSpec(sp, path, acc): ClPaths => match(sp)
   (cl2: SClass)      => cpSpecs(cl2.scParams, path, acc)
   (n: SNamed)        => acc
   (cm: SCombination) => cpSpecs(cm.scTypes, path, acc)
-  (t2: STuple)       => cpEntries(chain(t2.stEntries), path, acc)
+  (t2: STuple)       => cpEntries(t2.stEntries, path, acc)
   (cb: SCallable)    => cpSpecOpt(cb.scResult, path, cpSpec(cb.scParams2, path, acc))
   (af: SArrayField)  => cpSpec(af.safElem, path, acc)
   (ls: SLazyStub)    => cpSpecOpt(ls.slsTarget, path, acc)
@@ -212,17 +212,17 @@ fun cpSpecOpt(sp: Spec|None, path, acc): ClPaths => match(sp)
   (s2: Spec) => cpSpec(s2, path, acc)
   ()         => acc
 
-fun cpSpecs(ss: List<Spec>, path, acc): ClPaths => cpSpecLoop(chain(ss), path, acc)
+fun cpSpecs(ss: List<Spec>, path, acc): ClPaths => cpSpecLoop(ss, path, acc)
 
-fun [tail] cpSpecLoop(ss: Chain<Spec>, path, acc: ClPaths) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cpSpecLoop(l.next, path, cpSpec(l.value, path, acc))
+fun [tail] cpSpecLoop(ss: List<Spec>, path, acc: ClPaths) => isEmpty(ss)
+  ? acc
+  : cpSpecLoop(tail(ss), path, cpSpec(first(ss), path, acc))
 
-fun [tail] cpEntries(es: Chain<SEntry>, path,
-                     acc): ClPaths => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cpEntries(l.next, path,
-      cpExprOpt(l.value.seDefault, path, cpSpecOpt(l.value.seType, path, acc)))
+fun [tail] cpEntries(es: List<SEntry>, path,
+                     acc): ClPaths => isEmpty(es)
+  ? acc
+  : cpEntries(tail(es), path,
+      cpExprOpt(first(es).seDefault, path, cpSpecOpt(first(es).seType, path, acc)))
 
 # ── 2b. discoverCaptures (lambdas.py:81-113) ─────────────────────────────────
 # Walks the WHOLE lambda (parameters, then body) with the FIXED outer
@@ -259,7 +259,7 @@ fun discoverCaptures(outer, lam: PeLambda)
       (acc, x) => dcCheck(outer, acc, x), emptyClCaps())
   let afterBody = foldExpr(lam.lamBody, clIdStmt,
       (acc, x) => dcCheck(outer, acc, x), afterParams)
-  let paramNames = allStmtNames(chain(flattenParams(lam.lamParams)), List())
+  let paramNames = allStmtNames(flattenParams(lam.lamParams), List())
   ret dcRemoveParams(afterBody, paramNames)
 
 fun dcCheck(outer, acc, x) => match(x)
@@ -360,8 +360,8 @@ fun lambdaResultType(lamRet: Spec|None) => match(lamRet)
 fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
   let lr = lm.pelLine
   let names = ccNames(cpt)
-  let entries = clEntries(chain(names), cpt, lr, List())
-  let paramLets = clParamLets(chain(names), cpt, lr, List())
+  let entries = clEntries(names, cpt, lr, List())
+  let paramLets = clParamLets(names, cpt, lr, List())
   ret PsClass(nme, prepend(PAttr("final", PeInt(1, 32, lr)), List()),
              List(),
              PsDestructure("_", List(), STuple(entries, lr), paramLets,
@@ -370,26 +370,26 @@ fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
              List<Spec>(), List<Slot>(), List<PStmt>())
 
 fun clEntries(ns, cpt: ClCaps, lr: PLine,
-                     acc: List<SEntry>) => build(clEntriesB(ns, cpt, lr, builderFrom(acc)))
+                     acc: List<SEntry>) => (clEntriesB(ns, cpt, lr, acc))
 
-fun [tail] clEntriesB(ns: Chain<String>, cpt: ClCaps, lr: PLine,
-                     [terminal] acc: ListBuilder<SEntry>) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => clEntriesB(n.next, cpt, lr,
-                        push(acc, SEntry(capturedFieldName(n.value, lr),
-                                         ccTypeOf(cpt, n.value),
+fun [tail] clEntriesB(ns: List<String>, cpt: ClCaps, lr: PLine,
+                     acc: List<SEntry>) => isEmpty(ns)
+  ? acc
+  : clEntriesB(tail(ns), cpt, lr,
+                        append(acc, SEntry(capturedFieldName(first(ns), lr),
+                                         ccTypeOf(cpt, first(ns)),
                                          None)))
 
 fun clParamLets(ns, cpt: ClCaps, lr,
-                       acc: List<PStmt>) => build(clParamLetsB(ns, cpt, lr, builderFrom(acc)))
+                       acc: List<PStmt>) => (clParamLetsB(ns, cpt, lr, acc))
 
-fun [tail] clParamLetsB(ns: Chain<String>, cpt: ClCaps, lr,
-                       [terminal] acc: ListBuilder<PStmt>) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => clParamLetsB(n.next, cpt, lr,
-      push(acc, PsLet(capturedFieldName(n.value, lr), List(),
+fun [tail] clParamLetsB(ns: List<String>, cpt: ClCaps, lr,
+                       acc: List<PStmt>) => isEmpty(ns)
+  ? acc
+  : clParamLetsB(tail(ns), cpt, lr,
+      append(acc, PsLet(capturedFieldName(first(ns), lr), List(),
                 List(),
-                ccTypeOf(cpt, n.value), None, "", List(), lr,
+                ccTypeOf(cpt, first(ns)), None, "", List(), lr,
                 false, List<PStmt>())))
 
 fun captureRead(name, xtype: Spec|None, lr) => match(xtype)
@@ -406,21 +406,19 @@ fun clStubRead(name, ls: SLazyStub, lr) => match(ls.slsTarget)
   ()         => PeName(name, List(), lr, None)
 
 fun captureArgs(ns, cpt: ClCaps, lr,
-                       acc: List<PTupEnt>) => build(captureArgsB(ns, cpt, lr, builderFrom(acc)))
+                       acc: List<PTupEnt>) => (captureArgsB(ns, cpt, lr, acc))
 
-fun [tail] captureArgsB(ns: Chain<String>, cpt: ClCaps, lr,
-                       [terminal] acc: ListBuilder<PTupEnt>) => match(ns)
-  (nil: ChainEnd) => acc
-  # The entry NAME is the closure field; the value still reads the outer
-  # binding under the name it has here.
-  (n: ChainLink)  => captureArgsB(n.next, cpt, lr,
-      push(acc, PTupEnt(capturedFieldName(n.value, lr), false,
-                  captureRead(n.value, ccTypeOf(cpt, n.value),
+fun [tail] captureArgsB(ns: List<String>, cpt: ClCaps, lr,
+                       acc: List<PTupEnt>) => isEmpty(ns)
+  ? acc
+  : captureArgsB(tail(ns), cpt, lr,
+      append(acc, PTupEnt(capturedFieldName(first(ns), lr), false,
+                  captureRead(first(ns), ccTypeOf(cpt, first(ns)),
                               lr))))
 
 fun replacementExprFor(nme, cpt: ClCaps, lr)
   ret PeDot(PeNew(SClass(nme, List(), lr),
-                 PeTuple(captureArgs(chain(ccNames(cpt)), cpt, lr,
+                 PeTuple(captureArgs(ccNames(cpt), cpt, lr,
                                     List()), lr),
                  lr),
             nme, lr)
@@ -515,17 +513,17 @@ fun clIfStmt(i: PsIf, r, paths: ClPaths, exports): ClSt
            fb.clStsExports)
 
 fun clStmts(ss: List<PStmt>, r, paths: ClPaths,
-           exports): ClSts => clStmtLoop(chain(ss), r, paths, exports, builder())
+           exports): ClSts => clStmtLoop(ss, r, paths, exports, List())
 
 # Program order out. `exports` stays a plain List: it is READ, by clDedupName,
 # to keep lifted names unique.
-fun [tail] clStmtLoop(ss: Chain<PStmt>, r, paths: ClPaths,
+fun [tail] clStmtLoop(ss: List<PStmt>, r, paths: ClPaths,
                       exports,
-                      [terminal] acc) => match(ss)
-  (nil: ChainEnd) => ClSts(build(acc), exports)
-  (l: ChainLink)  => clStmt(l.value, r, paths, exports)
-    |> (o) => clStmtLoop(l.next, r, paths, o.clStExports,
-                         push(acc, o.clStStmt))
+                      acc) => isEmpty(ss)
+  ? ClSts(acc, exports)
+  : clStmt(first(ss), r, paths, exports)
+    |> (o) => clStmtLoop(tail(ss), r, paths, o.clStExports,
+                         append(acc, o.clStStmt))
 
 # ── expressions ──
 fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
@@ -542,7 +540,7 @@ fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
     |> (s2) => (s2, clExpr(wx.withRepls, r, paths, s2.clExExports))
     |> (s2, p) => ClEx(PeWith(s2.clExExpr, p.clExExpr, wx.pewLine),
                        p.clExExports)
-  (tp: PeTuple)     => clTupEnts(chain(tp.exprs), r, paths, exports, builder())
+  (tp: PeTuple)     => clTupEnts(tp.exprs, r, paths, exports, List())
     |> (es) => ClEx(PeTuple(es.clEntsEnts, tp.petLine), es.clEntsExports)
   (te: PeTernary)   => clExpr(te.condition, r, paths, exports)
     |> (cd) => (cd, clExpr(te.trueResult, r, paths, cd.clExExports))
@@ -567,11 +565,11 @@ fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
                    iv.clExExports)
   (pl: PeParallel)  => clExpr(pl.parParams, r, paths, exports)
     |> (p) => ClEx(PeParallel(p.clExExpr, pl.pepLine), p.clExExports)
-  (lp: PeLoop)      => clExprs(chain(lp.loopParams), r, paths, exports, builder())
+  (lp: PeLoop)      => clExprs(lp.loopParams, r, paths, exports, List())
     |> (ps) => (ps, clExpr(lp.loopBody, r, paths, ps.clExsExports))
     |> (ps, b) => ClEx(PeLoop(b.clExExpr, ps.clExsExprs, lp.pelpLine),
                       b.clExExports)
-  (rc: PeRecur)     => clExprs(chain(rc.recArgs), r, paths, exports, builder())
+  (rc: PeRecur)     => clExprs(rc.recArgs, r, paths, exports, List())
     |> (as3) => ClEx(PeRecur(as3.clExsExprs, rc.recIndex, rc.percLine),
                     as3.clExsExports)
   (o: PeLiteral) => ClEx(x, exports)
@@ -626,7 +624,7 @@ fun clExportLambda(lm: PeLambda, r, paths: ClPaths,
 # order, and the list is read back by clDedupName, so it stays a List and this
 # stays a copy — once per lifted lambda, not once per expression walked.
 fun clExport(exports: List<PStmt>, st: PStmt)
-  ret build(push(builderFrom(exports),
+  ret (append(exports,
                  st))
 
 fun clBlockExpr(bk: PeBlock, r, paths: ClPaths,
@@ -640,42 +638,42 @@ fun clBlockExpr(bk: PeBlock, r, paths: ClPaths,
 fun clMatchExpr(mt: PeMatch, r, paths: ClPaths,
                 exports)
   let subj = clExpr(mt.subject, r, paths, exports)
-  let arms = clArms(chain(mt.arms), r, paths, subj.clExExports,
-                    builder())
+  let arms = clArms(mt.arms, r, paths, subj.clExExports,
+                    List())
   ret ClEx(with mt(subject = subj.clExExpr, arms = arms.clArmsArms),
            arms.clArmsExports)
 
-fun [tail] clArms(as2: Chain<PArm>, r, paths: ClPaths,
+fun [tail] clArms(as2: List<PArm>, r, paths: ClPaths,
                   exports,
-                  [terminal] acc) => match(as2)
-  (nil: ChainEnd) => ClArmsOut(build(acc), exports)
-  (l: ChainLink)  => clArmOne(l.value, r, paths, exports)
-    |> (o) => clArms(l.next, r, paths, o.claoExports,
-                     push(acc, o.claoArm))
+                  acc) => isEmpty(as2)
+  ? ClArmsOut(acc, exports)
+  : clArmOne(first(as2), r, paths, exports)
+    |> (o) => clArms(tail(as2), r, paths, o.claoExports,
+                     append(acc, o.claoArm))
 
 class [final] ClArmOne(claoArm: PArm, claoExports: List<PStmt>)
 
 fun clArmOne(a: PArm, r, paths: ClPaths, exports): ClArmOne
   let bodyR = bindingScope(a, a.armType, r)
   let body = clExpr(a.armBody, bodyR, paths, exports)
-  let lits = clLits(chain(a.armLiterals), r, paths, body.clExExports,
-                    builder())
+  let lits = clLits(a.armLiterals, r, paths, body.clExExports,
+                    List())
   let guard = clExprOpt(a.armGuard, bodyR, paths, lits.clLitsExports)
   ret ClArmOne(with a(armBody = body.clExExpr, armLiterals = lits.clLitsLits, armGuard = guard.clExOExpr),
               guard.clExOExports)
 
-fun [tail] clLits(ls: Chain<PLit>, r, paths: ClPaths,
+fun [tail] clLits(ls: List<PLit>, r, paths: ClPaths,
                   exports,
-                  [terminal] acc) => match(ls)
-  (nil: ChainEnd) => ClLitsOut(build(acc), exports)
-  (l: ChainLink)  => match(l.value)
+                  acc) => isEmpty(ls)
+  ? ClLitsOut(acc, exports)
+  : match(first(ls))
     (le: PlExpr)   => clExpr(le.litExpr, r, paths, exports)
-      |> (o) => clLits(l.next, r, paths, o.clExExports,
-                       push(acc, PlExpr(o.clExExpr)))
+      |> (o) => clLits(tail(ls), r, paths, o.clExExports,
+                       append(acc, PlExpr(o.clExExpr)))
     (lr2: PlRange) => clExpr(lr2.rangeLo, r, paths, exports)
       |> (lo) => (lo, clExpr(lr2.rangeHi, r, paths, lo.clExExports))
-      |> (lo, hi) => clLits(l.next, r, paths, hi.clExExports,
-                            push(acc, PlRange(lo.clExExpr,
+      |> (lo, hi) => clLits(tail(ls), r, paths, hi.clExExports,
+                            append(acc, PlRange(lo.clExExpr,
                                               hi.clExExpr,
                                               lr2.plrLine)))
 
@@ -685,22 +683,22 @@ fun clExprOpt(x, r, paths: ClPaths,
     |> (o) => ClExO(o.clExExpr, o.clExExports)
   ()          => ClExO(x, exports)
 
-fun [tail] clExprs(es: Chain<PExpr>, r, paths: ClPaths,
+fun [tail] clExprs(es: List<PExpr>, r, paths: ClPaths,
                    exports,
-                   [terminal] acc) => match(es)
-  (nil: ChainEnd) => ClExsOut(build(acc), exports)
-  (l: ChainLink)  => clExpr(l.value, r, paths, exports)
-    |> (o) => clExprs(l.next, r, paths, o.clExExports,
-                      push(acc, o.clExExpr))
+                   acc) => isEmpty(es)
+  ? ClExsOut(acc, exports)
+  : clExpr(first(es), r, paths, exports)
+    |> (o) => clExprs(tail(es), r, paths, o.clExExports,
+                      append(acc, o.clExExpr))
 
-fun [tail] clTupEnts(es: Chain<PTupEnt>, r, paths: ClPaths,
+fun [tail] clTupEnts(es: List<PTupEnt>, r, paths: ClPaths,
                      exports,
-                     [terminal] acc) => match(es)
-  (nil: ChainEnd) => ClEntsOut(build(acc), exports)
-  (l: ChainLink)  => clExpr(l.value.tupValue, r, paths, exports)
-    |> (v) => clTupEnts(l.next, r, paths, v.clExExports,
-                        push(acc, PTupEnt(l.value.tupName,
-                                          l.value.tupSpread,
+                     acc) => isEmpty(es)
+  ? ClEntsOut(acc, exports)
+  : clExpr(first(es).tupValue, r, paths, exports)
+    |> (v) => clTupEnts(tail(es), r, paths, v.clExExports,
+                        append(acc, PTupEnt(first(es).tupName,
+                                          first(es).tupSpread,
                                           v.clExExpr)))
 
 # ── 3. the entry point (lambdas.py:226-240) ──────────────────────────────────
@@ -716,23 +714,23 @@ fun clScanTop(st, r)
 
 # Both outputs are ordered — the rewritten top-level statements and the
 # lifted ones that follow them — and neither is read back, so both are built.
-class [linear, final] ScanAcc(saStmts: ListBuilder<PStmt>,
-                              saExports: ListBuilder<PStmt>)
+class [final] ScanAcc(saStmts: List<PStmt>,
+                              saExports: List<PStmt>)
 
-fun [tail] clScanAll(ss: Chain<PStmt>, r: Resolver,
-                     [terminal] acc: ScanAcc): ClScanAll => match(ss)
-  (nil: ChainEnd) => ClScanAll(build(acc.saStmts),
-                               build(acc.saExports))
-  (l: ChainLink)  => clScanTop(l.value, r)
-    |> (o) => clScanAll(l.next, r,
-                  ScanAcc(push(acc.saStmts, o.clStStmt),
-                          pushAll(acc.saExports,
+fun [tail] clScanAll(ss: List<PStmt>, r: Resolver,
+                     acc: ScanAcc): ClScanAll => isEmpty(ss)
+  ? ClScanAll(acc.saStmts,
+                               acc.saExports)
+  : clScanTop(first(ss), r)
+    |> (o) => clScanAll(tail(ss), r,
+                  ScanAcc(append(acc.saStmts, o.clStStmt),
+                          concat(acc.saExports,
                               o.clStExports)))
 
 fun convertLambdasToFunctions(statements): List<PStmt>
   let r = rootResolver(statements)
-  let scanned = clScanAll(chain(statements), r,
-                          ScanAcc(builder(), builder()))
+  let scanned = clScanAll(statements, r,
+                          ScanAcc(List(), List()))
   ret isEmpty(scanned.csaExports)
     ? scanned.csaStmts
     : concat(scanned.csaStmts, convertLambdasToFunctions(scanned.csaExports))

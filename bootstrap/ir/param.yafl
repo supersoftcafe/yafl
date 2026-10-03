@@ -484,7 +484,7 @@ fun rpToCInitArrayStep(acc: (text: String, cache: List<CgCacheEntry>, first: Boo
 fun rpToCNewStruct(x: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let xtype = rpGetType(RpNewStruct(x.values))
   let declared = cgDeclare(xtype, cache0)
-  ret atMost(chain(x.values), 2)
+  ret atMost(x.values, 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
@@ -572,7 +572,7 @@ fun rpZeroOfInitText(vt) => match(vt)
 
 fun rpToCNewStructTyped(x: RpNewStructTyped, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.structType, cache0)
-  ret atMost(chain(x.values), 2)
+  ret atMost(x.values, 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
@@ -633,7 +633,7 @@ fun rpToCGlobalFunctionWithObject(fRef, o, cache0: List<CgCacheEntry>): (text: S
 
 fun rpToCVirtualFunction(x: RpVirtualFunction, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(x.object, cache0)
-  ret ("(vtable_lookup(" + sub.text + ", __FUNCTION_ID__" + mangleName(x.name) + "))", sub.cache)
+  ret ("vtable_lookup(" + sub.text + ", __FUNCTION_ID__" + mangleName(x.name) + ")", sub.cache)
 
 fun rpToCPointerTo(x: RpPointerTo, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(x.value, cache0)

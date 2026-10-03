@@ -55,10 +55,10 @@ fun any<T>(a: Array<T>, pred: (:T): Bool): Bool
   ret _anyFrom<T>(a, 0i32, pred)
 
 # Chain-into-builder push, the ListBuilder helper's Array overload.
-fun [tail] _pushChain<T>([terminal] b: ArrayBuilder<T>, c: Chain<T>): ArrayBuilder<T>
-  ret match(c)
-    (nil: ChainEnd) => b
-    (l: ChainLink)  => _pushChain<T>(push<T>(b, l.value), l.next)
+fun [tail] _pushChain<T>([terminal] b: ArrayBuilder<T>, c: List<T>): ArrayBuilder<T>
+  ret isEmpty(c)
+    ? b
+    : _pushChain<T>(push<T>(b, first(c)), tail(c))
 
 fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
   ret i < a.length && (pred(a[i]) || _anyFrom<T>(a, i + 1i32, pred))

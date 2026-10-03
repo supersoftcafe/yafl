@@ -1,7 +1,7 @@
 """Call-site binding for members of GENERIC ambient instances.
 
 A concrete call to a member of a generic `instance [ambient]` (e.g.
-`drop(b)` where the instance is `instance [ambient]<T> Drop<ListBuilder<T>>`)
+`drop(b)` where the instance is `instance [ambient]<T> Drop<SeqBuilder<T>>`)
 binds the INSTANCE's type parameters from the argument shape — the
 generic-function-candidate rule applied to instances. This was the original
 gap the drops pass routed around with a `dropIndirect` trampoline, both
@@ -13,12 +13,13 @@ from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 # The stdlib shape that motivated the gap: an explicit drop of a builder,
-# resolving through list.yafl's `instance [ambient]<T> Drop<ListBuilder<T>>`.
+# resolving through seq.yafl's `instance [ambient]<T> Drop<SeqBuilder<T>>`
+# (it was list.yafl's Drop<ListBuilder<T>> before ListBuilder was removed).
 _EXPLICIT_DROP = """namespace Test
 import System
 
 fun main(): Int
-  let b = push(builder<Int>(), 7)
+  let b = push(seqBuilder<Int>(), 7)
   let _ = drop(b)
   ret 0
 """
@@ -33,7 +34,7 @@ interface Sized<T>
 
 instance [ambient]<T> Sized<List<T>>
   fun sizeOf(v: List<T>): Int
-    ret chainLength(chain(v))
+    ret size(v)
 
 fun main(): Int
   let l = prepend(4, prepend(5, List<Int>()))

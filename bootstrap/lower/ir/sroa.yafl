@@ -41,18 +41,18 @@ fun sroaFindSplittable(f: CgFunction, done: List<String>)
   let svReads = sroaSvReads(f.fnOps)
   let projReads = sroaProjReads(f.fnOps)
   let defs = sroaDefs(f.fnOps)
-  ret build(sroaConsiderAll(
-      chain(sort(map(defs.sdEntries, (e2) => e2.sdName))),
-      done, svReads, projReads, defs, builder()))
+  ret (sroaConsiderAll(
+      sort(map(defs.sdEntries, (e2) => e2.sdName)),
+      done, svReads, projReads, defs, List()))
 
 # Candidates come out in the sorted name order they are considered in.
-fun [tail] sroaConsiderAll(ns: Chain<String>, done: List<String>,
+fun [tail] sroaConsiderAll(ns: List<String>, done: List<String>,
                            svReads: List<StrCount>,
                            projReads: List<ProjCount>, defs: SroaDefs,
-                           [terminal] acc: ListBuilder<Sroa>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => sroaConsiderAll(l.next, done, svReads, projReads, defs,
-                         sroaConsider(acc, l.value, done, svReads,
+                           acc: List<Sroa>) => isEmpty(ns)
+  ? acc
+  : sroaConsiderAll(tail(ns), done, svReads, projReads, defs,
+                         sroaConsider(acc, first(ns), done, svReads,
                                       projReads, defs))
 
 # Read occurrences: a projection StructField(StackVar v, f) flattens to BOTH
@@ -117,7 +117,7 @@ fun sroaConsider([terminal] acc, name: String,
     (d: SroaDef) => sroaConsiderDef(acc, name, d, svReads, projReads)
     ()            => acc
 
-fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name,
+fun sroaConsiderDef(acc: List<Sroa>, name,
                     d: SroaDef, svReads: List<StrCount>,
                     projReads: List<ProjCount>)
   # Only plain non-empty structs — never the async TaskWrapper ABI.
@@ -135,7 +135,7 @@ fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name,
   # once per read.
   let used = sort(fold(projReads, Set(),
                (u, e2) => e2.pjVar == name ? add(u, e2.pjField) : u))
-  ret push(acc, Sroa(name, d.sdVar, d.sdIndex,
+  ret append(acc, Sroa(name, d.sdVar, d.sdIndex,
                 map(used, (fld) => SroaField(fld,
                       RpStackVar(rpStructFieldLookup(fields, fld), name + "$" + fld)))))
 

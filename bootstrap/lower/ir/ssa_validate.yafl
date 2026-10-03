@@ -104,11 +104,11 @@ fun [tail] lastOp(s: Segment<Op>|None): Op|None => match(s)
     (n2: Segment<Op>) => lastOp(seg.next)
     (nil2: None)      => seg.length > 0i32 ? seg.array(seg.length - 1i32) : None
 
-fun [tail] lastOp(ops: Chain<Op>): Op|None => match(ops)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(l.next)
-    (nil2: ChainEnd) => l.value
-    (l2: ChainLink)  => lastOp(l.next)
+fun [tail] lastOp(ops: List<Op>): Op|None => isEmpty(ops)
+  ? None
+  : isEmpty(tail(ops))
+    ? first(ops)
+    : lastOp(tail(ops))
 
 fun ssavIsTerminator(op) => match(op)
   (r: OpReturn)      => true

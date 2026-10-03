@@ -53,11 +53,11 @@ class [final] RddCx(cxObj: Dict<String, Int>, cxFn: Dict<String, Int>,
 
 fun rddContext(objs: List<CgObject>, fns: List<CgFunction>,
                glbs: List<CgGlobal>): RddCx
-  let nO = rddIndex(chain(map(objs, (o) => o.objName)), 0, Dict())
-  let nF = rddIndex(chain(map(fns, (f) => f.fnName)), nO.next, Dict())
-  let nG = rddIndex(chain(map(glbs, (g2) => g2.globalName)), nF.next, Dict())
+  let nO = rddIndex(map(objs, (o) => o.objName), 0, Dict())
+  let nF = rddIndex(map(fns, (f) => f.fnName), nO.next, Dict())
+  let nG = rddIndex(map(glbs, (g2) => g2.globalName), nF.next, Dict())
   let n = nG.next
-  ret RddCx(nO.ix, nF.ix, nG.ix, rddLeaves(chain(objs), 0, Dict()),
+  ret RddCx(nO.ix, nF.ix, nG.ix, rddLeaves(objs, 0, Dict()),
             rddTable(map(objs, (o) => o.objName), map(fns, (f) => f.fnName),
                      map(glbs, (g2) => g2.globalName), n),
             rddTable(map(objs, (o) => 0), map(fns, (f) => 1), map(glbs, (g2) => 2), n),
@@ -71,24 +71,24 @@ fun rddContext(objs: List<CgObject>, fns: List<CgFunction>,
 
 # One value per node: objects', then functions', then globals'.
 fun rddTable<T>(os: List<T>, fs: List<T>, gs: List<T>, n: Int): Array<T>
-  ret build(rddPushAll(chain(gs), rddPushAll(chain(fs), rddPushAll(chain(os), arrayBuilder(n)))))
+  ret build(rddPushAll(gs, rddPushAll(fs, rddPushAll(os, arrayBuilder(n)))))
 
-fun [tail] rddPushAll<T>(c: Chain<T>, [terminal] b: ArrayBuilder<T>): ArrayBuilder<T> => match(c)
-  (nil: ChainEnd) => b
-  (l: ChainLink)  => rddPushAll(l.next, push(b, l.value))
+fun [tail] rddPushAll<T>(c: List<T>, [terminal] b: ArrayBuilder<T>): ArrayBuilder<T> => isEmpty(c)
+  ? b
+  : rddPushAll(tail(c), push(b, first(c)))
 
-fun rddArray<T>(c: Chain<T>, n: Int): Array<T> => build(rddPushAll(c, arrayBuilder(n)))
+fun rddArray<T>(c: List<T>, n: Int): Array<T> => build(rddPushAll(c, arrayBuilder(n)))
 
 # A leaf's discriminator id → its node.
-fun [tail] rddLeaves(c: Chain<CgObject>, i: Int, d: Dict<Int, Int>): Dict<Int, Int> => match(c)
-  (nil: ChainEnd) => d
-  (l: ChainLink)  => rddLeaves(l.next, i + 1,
-                               l.value.objDiscriminator != 0 ? put(d, l.value.objDiscriminator, i) : d)
+fun [tail] rddLeaves(c: List<CgObject>, i: Int, d: Dict<Int, Int>): Dict<Int, Int> => isEmpty(c)
+  ? d
+  : rddLeaves(tail(c), i + 1,
+                               first(c).objDiscriminator != 0 ? put(d, first(c).objDiscriminator, i) : d)
 
-fun [tail] rddIndex(c: Chain<String>, next: Int,
-                    ix: Dict<String, Int>): (ix: Dict<String, Int>, next: Int) => match(c)
-  (nil: ChainEnd) => (ix = ix, next = next)
-  (l: ChainLink)  => rddIndex(l.next, next + 1, put(ix, l.value, next))
+fun [tail] rddIndex(c: List<String>, next: Int,
+                    ix: Dict<String, Int>): (ix: Dict<String, Int>, next: Int) => isEmpty(c)
+  ? (ix = ix, next = next)
+  : rddIndex(tail(c), next + 1, put(ix, first(c), next))
 
 # The node a reference names, if it is one: role 0/1/2 = object/function/global.
 fun rddLookup(cx: RddCx, role: Int, name: String): Int|None
@@ -101,19 +101,19 @@ fun rddLookup(cx: RddCx, role: Int, name: String): Int|None
 
 class [final] RddSt(stVars: Dict<String, Int>, stVarN: Int,
                     stLabels: Dict<String, Int>, stLabelN: Int,
-                    stRefs: Chain<Int>, stSets: Chain<List<RParam>>, stSetN: Int,
+                    stRefs: List<Int>, stSets: List<List<RParam>>, stSetN: Int,
                     stPins: RddPins, stStray: Bool)
 
 # What the whole program's instance tests ask of the partition: the objects
 # they pin, and the sets of objects each must keep apart.
-class [final] RddPins(pnNames: Chain<String>, pnSeps: Chain<List<String>>)
+class [final] RddPins(pnNames: List<String>, pnSeps: List<List<String>>)
 
 class [final] RddEnc(eText: String, eSt: RddSt)
 
 # A fresh node: its own locals, labels and references; the pins and the
 # stray flag carry across the whole program.
 fun rddStart(pins: RddPins, stray: Bool) =>
-  RddEnc("", RddSt(Dict(), 0, Dict(), 0, ChainEnd(), ChainEnd(), 0, pins, stray))
+  RddEnc("", RddSt(Dict(), 0, Dict(), 0, List(), List(), 0, pins, stray))
 
 fun rddS(e: RddEnc, s: String): RddEnc => RddEnc((e.eText + s), e.eSt)
 
@@ -200,7 +200,7 @@ fun rddRef(e: RddEnc, node: Int): RddEnc
   let st = e.eSt
   ret RddEnc((e.eText + "R"),
              RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN,
-                   ChainLink(node, st.stRefs), st.stSets, st.stSetN, st.stPins, st.stStray))
+                   prepend(node, st.stRefs), st.stSets, st.stSetN, st.stPins, st.stStray))
 
 # A string in a reference role: the node it names, else as written.
 fun rddName(e: RddEnc, cx: RddCx, role: Int, name: String): RddEnc
@@ -217,14 +217,14 @@ fun rddPin(e: RddEnc, name: String): RddEnc
   let st = e.eSt
   ret RddEnc(e.eText, RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
                           st.stSets, st.stSetN,
-                          RddPins(ChainLink(name, st.stPins.pnNames), st.stPins.pnSeps),
+                          RddPins(prepend(name, st.stPins.pnNames), st.stPins.pnSeps),
                           st.stStray))
 
 fun rddSep(e: RddEnc, names: List<String>): RddEnc
   let st = e.eSt
   ret RddEnc(e.eText, RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
                           st.stSets, st.stSetN,
-                          RddPins(st.stPins.pnNames, ChainLink(names, st.stPins.pnSeps)),
+                          RddPins(st.stPins.pnNames, prepend(names, st.stPins.pnSeps)),
                           st.stStray))
 
 fun rddStray(e: RddEnc): RddEnc
@@ -238,27 +238,27 @@ fun rddSaved(e: RddEnc, vs: List<RParam>): RddEnc
   let st = e.eSt
   ret RddEnc((e.eText + "S" + String(st.stSetN) + ";"),
              RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
-                   ChainLink(vs, st.stSets), st.stSetN + 1, st.stPins, st.stStray))
+                   prepend(vs, st.stSets), st.stSetN + 1, st.stPins, st.stStray))
 
 # ── values ───────────────────────────────────────────────────────────────────
 
-fun [tail] rddParams(e: RddEnc, cx: RddCx, c: Chain<RParam>): RddEnc => match(c)
-  (nil: ChainEnd) => rddS(e, "]")
-  (l: ChainLink)  => rddParams(rddParam(e, cx, l.value), cx, l.next)
+fun [tail] rddParams(e: RddEnc, cx: RddCx, c: List<RParam>): RddEnc => isEmpty(c)
+  ? rddS(e, "]")
+  : rddParams(rddParam(e, cx, first(c)), cx, tail(c))
 
 fun rddParamList(e: RddEnc, cx: RddCx, xs: List<RParam>): RddEnc
-  ret rddParams(rddS(e, "["), cx, chain(xs))
+  ret rddParams(rddS(e, "["), cx, xs)
 
 fun rddParamOpt(e: RddEnc, cx: RddCx, x: RParam|None): RddEnc => match(x)
   (p: RParam) => rddParam(e, cx, p)
   ()          => rddS(e, "N")
 
-fun [tail] rddNamed(e: RddEnc, cx: RddCx, c: Chain<RpNamedValue>): RddEnc => match(c)
-  (nil: ChainEnd) => rddS(e, "]")
-  (l: ChainLink)  => rddNamed(rddParam(rddLit(e, l.value.name), cx, l.value.value), cx, l.next)
+fun [tail] rddNamed(e: RddEnc, cx: RddCx, c: List<RpNamedValue>): RddEnc => isEmpty(c)
+  ? rddS(e, "]")
+  : rddNamed(rddParam(rddLit(e, first(c).name), cx, first(c).value), cx, tail(c))
 
 fun rddNamedList(e: RddEnc, cx: RddCx, xs: List<RpNamedValue>): RddEnc
-  ret rddNamed(rddS(e, "["), cx, chain(xs))
+  ret rddNamed(rddS(e, "["), cx, xs)
 
 fun rddParam(e: RddEnc, cx: RddCx, r: RParam): RddEnc => match(r)
   (x: RpInitArray)           => rddParamList(rddTy(rddS(e, "IA;"), x.memberType), cx, x.values)
@@ -335,14 +335,14 @@ fun rddGlobalFunction(e: RddEnc, cx: RddCx, x: RpGlobalFunction): RddEnc
 
 # ── ops ──────────────────────────────────────────────────────────────────────
 
-fun [tail] rddCases(e: RddEnc, c: Chain<OpCase>): RddEnc => match(c)
-  (nil: ChainEnd) => rddS(e, "]")
-  (l: ChainLink)  => rddCases(rddLabel(rddInt(e, l.value.caseValue), l.value.caseLabel), l.next)
+fun [tail] rddCases(e: RddEnc, c: List<OpCase>): RddEnc => isEmpty(c)
+  ? rddS(e, "]")
+  : rddCases(rddLabel(rddInt(e, first(c).caseValue), first(c).caseLabel), tail(c))
 
-fun [tail] rddSources(e: RddEnc, cx: RddCx, c: Chain<OpPhiSource>): RddEnc => match(c)
-  (nil: ChainEnd) => rddS(e, "]")
-  (l: ChainLink)  => rddSources(rddParam(rddLabel(e, l.value.sourceLabel), cx, l.value.sourceValue),
-                                cx, l.next)
+fun [tail] rddSources(e: RddEnc, cx: RddCx, c: List<OpPhiSource>): RddEnc => isEmpty(c)
+  ? rddS(e, "]")
+  : rddSources(rddParam(rddLabel(e, first(c).sourceLabel), cx, first(c).sourceValue),
+                                cx, tail(c))
 
 fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
   (x: OpLabel)         => rddLabel(rddSaved(rddS(e, "oL;"), x.labelSavedVars), x.labelName)
@@ -362,7 +362,7 @@ fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
   (x: OpAssertNotTask) => rddParam(rddSaved(rddS(e, "oA;"), x.antSavedVars), cx, x.antCondition)
   (x: OpSwitchJump)    => rddCases(rddS(rddParam(rddSaved(rddS(e, "oS;"), x.switchSavedVars),
                                                  cx, x.switchCondition), "["),
-                                   chain(x.switchCases))
+                                   x.switchCases)
   (x: OpNewObject)     => rddParamOpt(rddParam(rddName(rddSaved(rddS(e, "oN;"), x.newObjSavedVars),
                                                        cx, 0, x.newObjName),
                                                cx, x.newObjRegister),
@@ -380,7 +380,7 @@ fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
                                       cx, x.parRegister)
   (x: OpPhi)           => rddSources(rddS(rddParam(rddSaved(rddS(e, "oH;"), x.phiSavedVars),
                                                    cx, x.phiTarget), "["),
-                                     cx, chain(x.phiSources))
+                                     cx, x.phiSources)
   (x: OpProfEnter)     => rddInt(rddSaved(rddS(e, "oE;"), x.profEnterSavedVars), x.profEnterFnId)
   (x: OpProfLeave)     => rddSaved(rddS(e, "oF;"), x.profLeaveSavedVars)
 
@@ -400,23 +400,23 @@ fun rddObject(e: RddEnc, cx: RddCx, o: CgObject): RddEnc
                                      o.objIsMutable),
                              o.objIsPinnable),
                      o.objDiscriminator != 0)
-  ret rddSlots(rddExtends(rddS(head, "["), cx, chain(o.objExtends)), cx, chain(o.objFunctions))
+  ret rddSlots(rddExtends(rddS(head, "["), cx, o.objExtends), cx, o.objFunctions)
 
-fun [tail] rddExtends(e: RddEnc, cx: RddCx, c: Chain<String>): RddEnc => match(c)
-  (nil: ChainEnd) => rddS(e, "][")
-  (l: ChainLink)  => rddExtends(rddName(e, cx, 0, l.value), cx, l.next)
+fun [tail] rddExtends(e: RddEnc, cx: RddCx, c: List<String>): RddEnc => isEmpty(c)
+  ? rddS(e, "][")
+  : rddExtends(rddName(e, cx, 0, first(c)), cx, tail(c))
 
-fun [tail] rddSlots(e: RddEnc, cx: RddCx, c: Chain<CgFuncSlot>): RddEnc => match(c)
-  (nil: ChainEnd) => rddS(e, "]")
-  (l: ChainLink)  => rddSlots(rddName(rddLit(e, l.value.slotVirtualName), cx, 1,
-                                      l.value.slotGlobalName),
-                              cx, l.next)
+fun [tail] rddSlots(e: RddEnc, cx: RddCx, c: List<CgFuncSlot>): RddEnc => isEmpty(c)
+  ? rddS(e, "]")
+  : rddSlots(rddName(rddLit(e, first(c).slotVirtualName), cx, 1,
+                                      first(c).slotGlobalName),
+                              cx, tail(c))
 
 # Parameters are positional; locals are numbered by first use, then any
 # declared-but-unused in declaration order, then any seen only in a saved set
 # by name; declarations compare as a set.
 fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
-  let withParams = rddDecls(rddS(e, "Fn;["), chain(rddFields(f.fnParams)))
+  let withParams = rddDecls(rddS(e, "Fn;["), rddFields(f.fnParams))
   let head = rddBool(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
                                                    f.fnResult),
                                              f.fnSync),
@@ -424,7 +424,7 @@ fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
                              f.fnBypassAsync),
                      f.fnAlwaysInline)
   let body = rddOps(rddS(head, "["), cx, f.fnOps, 0i32)
-  let declared = rddNumber(body, chain(map(rddFields(f.fnStackVars), (fd) => fd.fieldName)))
+  let declared = rddNumber(body, map(rddFields(f.fnStackVars), (fd) => fd.fieldName))
   ret rddLocals(rddCloseSets(declared), rddFields(f.fnStackVars))
 
 fun rddFields(t: CgType): List<CgField> => match(t)
@@ -432,14 +432,14 @@ fun rddFields(t: CgType): List<CgField> => match(t)
   (s: CgImmediateStruct) => s.fields
   (o: CgType)            => List()
 
-fun [tail] rddDecls(e: RddEnc, c: Chain<CgField>): RddEnc => match(c)
-  (nil: ChainEnd) => rddS(e, "]")
-  (l: ChainLink)  => rddDecls(rddTy(rddVar(e, l.value.fieldName), l.value.fieldType), l.next)
+fun [tail] rddDecls(e: RddEnc, c: List<CgField>): RddEnc => isEmpty(c)
+  ? rddS(e, "]")
+  : rddDecls(rddTy(rddVar(e, first(c).fieldName), first(c).fieldType), tail(c))
 
 # Assign numbers without encoding anything.
-fun [tail] rddNumber(e: RddEnc, c: Chain<String>): RddEnc => match(c)
-  (nil: ChainEnd) => e
-  (l: ChainLink)  => rddNumber(RddEnc(e.eText, rddVarSt(e.eSt, l.value).st), l.next)
+fun [tail] rddNumber(e: RddEnc, c: List<String>): RddEnc => isEmpty(c)
+  ? e
+  : rddNumber(RddEnc(e.eText, rddVarSt(e.eSt, first(c)).st), tail(c))
 
 # One local as (number, text), for the sorted set encodings.
 class [final] RddLocal(lcN: Int, lcText: String)
@@ -472,25 +472,25 @@ fun rddAddLocal(st: RddSt, acc: List<RddLocal>, v: RParam): List<RddLocal> => ma
   (o: RParam)      => acc
 
 fun rddCloseSets(e: RddEnc): RddEnc
-  let sets = rddReverse(e.eSt.stSets, ChainEnd())
+  let sets = rddReverse(e.eSt.stSets, List())
   let numbered = rddNumberSets(e, sets)
   let st = numbered.eSt
-  ret RddEnc((numbered.eText + fold(List(sets), "<",
+  ret RddEnc((numbered.eText + fold(sets, "<",
                                        (acc, vs) => acc + rddLocalSet(st, rddSetLocals(st, vs))) + ">"),
              st)
 
-fun [tail] rddNumberSets(e: RddEnc, c: Chain<List<RParam>>): RddEnc => match(c)
-  (nil: ChainEnd) => e
-  (l: ChainLink)  => rddNumberSets(rddNumber(e, chain(rddSetNames(l.value))), l.next)
+fun [tail] rddNumberSets(e: RddEnc, c: List<List<RParam>>): RddEnc => isEmpty(c)
+  ? e
+  : rddNumberSets(rddNumber(e, rddSetNames(first(c))), tail(c))
 
 fun rddLocals(e: RddEnc, decls: List<CgField>): RddEnc
   let st = e.eSt
   ret RddEnc((e.eText + rddLocalSet(st, map(decls, (d) => rddLocalOf(st, d.fieldName, d.fieldType)))),
              st)
 
-fun [tail] rddReverse<T>(c: Chain<T>, acc: Chain<T>): Chain<T> => match(c)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => rddReverse(l.next, ChainLink(l.value, acc))
+fun [tail] rddReverse<T>(c: List<T>, acc: List<T>): List<T> => isEmpty(c)
+  ? acc
+  : rddReverse(tail(c), prepend(first(c), acc))
 
 fun rddGlobal(e: RddEnc, cx: RddCx, g2: CgGlobal): RddEnc
   # Interned string literals are left out of the GC root set by name.
@@ -506,31 +506,31 @@ fun rddGlobal(e: RddEnc, cx: RddCx, g2: CgGlobal): RddEnc
 class [final] RddGraph(gShape: Array<Int>, gRefs: Array<List<Int>>, gPinned: Array<Bool>,
                        gConflicts: Dict<Int, List<Int>>)
 
-class [final] RddBuild(bIntern: Dict<String, Int>, bNext: Int, bShapes: Chain<Int>,
-                       bRefs: Chain<List<Int>>, bPins: RddPins, bStray: Bool)
+class [final] RddBuild(bIntern: Dict<String, Int>, bNext: Int, bShapes: List<Int>,
+                       bRefs: List<List<Int>>, bPins: RddPins, bStray: Bool)
 
 fun rddAdd(b: RddBuild, e: RddEnc): RddBuild
   let st = e.eSt
   let text = e.eText
-  let refs = List(rddReverse(st.stRefs, ChainEnd()))
+  let refs = rddReverse(st.stRefs, List())
   ret match(get(b.bIntern, text))
-    (id: Int) => RddBuild(b.bIntern, b.bNext, ChainLink(id, b.bShapes),
-                          ChainLink(refs, b.bRefs), st.stPins, st.stStray)
+    (id: Int) => RddBuild(b.bIntern, b.bNext, prepend(id, b.bShapes),
+                          prepend(refs, b.bRefs), st.stPins, st.stStray)
     ()        => RddBuild(put(b.bIntern, text, b.bNext), b.bNext + 1,
-                          ChainLink(b.bNext, b.bShapes), ChainLink(refs, b.bRefs),
+                          prepend(b.bNext, b.bShapes), prepend(refs, b.bRefs),
                           st.stPins, st.stStray)
 
 fun rddGraph(cx: RddCx, objs: List<CgObject>, fns: List<CgFunction>,
              glbs: List<CgGlobal>): RddGraph
-  let b0 = RddBuild(Dict(), 0, ChainEnd(), ChainEnd(), RddPins(ChainEnd(), ChainEnd()), false)
+  let b0 = RddBuild(Dict(), 0, List(), List(), RddPins(List(), List()), false)
   let b1 = fold(objs, b0, (b, o) => rddAdd(b, rddObject(rddStart(b.bPins, b.bStray), cx, o)))
   let b2 = fold(fns, b1, (b, f) => rddAdd(b, rddFunction(rddStart(b.bPins, b.bStray), cx, f)))
   let b3 = fold(glbs, b2, (b, g2) => rddAdd(b, rddGlobal(rddStart(b.bPins, b.bStray), cx, g2)))
-  let pinnedNames = fold(List(b3.bPins.pnNames), setEmpty(), (s2, n) => setAdd(s2, n))
-  ret RddGraph(rddArray(rddReverse(b3.bShapes, ChainEnd()), cx.cxCount),
-               rddArray(rddReverse(b3.bRefs, ChainEnd()), cx.cxCount),
+  let pinnedNames = fold(b3.bPins.pnNames, setEmpty(), (s2, n) => setAdd(s2, n))
+  ret RddGraph(rddArray(rddReverse(b3.bShapes, List()), cx.cxCount),
+               rddArray(rddReverse(b3.bRefs, List()), cx.cxCount),
                build(rddPinned(cx, pinnedNames, b3.bStray, 0, arrayBuilder(cx.cxCount))),
-               rddConflicts(cx, List(b3.bPins.pnSeps)))
+               rddConflicts(cx, b3.bPins.pnSeps))
 
 # Which nodes each node must never share a group with: the other leaves of its
 # enum (a dispatch compares their ids), and the other classes of any union an

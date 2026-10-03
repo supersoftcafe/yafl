@@ -109,21 +109,21 @@ fun main(): System::Int
 namespace Test
 import System
 
-fun [tail] pget(ns: Chain<String>, vs: Chain<List<String>>,
-                name: String) => match(ns)
-  (nil: ChainEnd) => List()
-  (n: ChainLink)  => match(vs)
-    (nil2: ChainEnd) => List()
-    (v: ChainLink)   => n.value == name
-      ? v.value
-      : pget(n.next, v.next, name)
+fun [tail] pget(ns: List<String>, vs: List<List<String>>,
+                name: String) => isEmpty(ns)
+  ? List()
+  : isEmpty(vs)
+    ? List()
+    : first(ns) == name
+      ? first(vs)
+      : pget(tail(ns), tail(vs), name)
 
 fun main(): System::Int
   let names = prepend("a", prepend("b", List<String>()))
   let values = prepend(List<String>(), prepend(prepend("hit", List<String>()), List<List<String>>()))
-  ret !isEmpty(pget(chain(names), chain(values), "b"))
-      && isEmpty(pget(chain(names), chain(values), "a"))
-      && isEmpty(pget(chain(names), chain(values), "zz")) ? 7 : 3
+  ret !isEmpty(pget(names, values, "b"))
+      && isEmpty(pget(names, values, "a"))
+      && isEmpty(pget(names, values, "zz")) ? 7 : 3
 """, timeout=120)
         self.assertEqual(7, rc)
 
@@ -215,10 +215,10 @@ import System
 fun pick(n: Int) => n > 0 ? prepend(1, List()) : prepend("hello", List())
 
 fun main(): System::Int
-  let h = chainNext(chain(pick(0))).head
+  let h = uncons(pick(0)).head
   ret match(h)
     (i: Int)  => i
     (z: None) => 7
 """)
         self.assertEqual("", c_code)
-        self.assertIn("test.yafl[8:21] - cannot infer the type arguments of generic function `chain`", errs)
+        self.assertIn("test.yafl[8:11] - cannot infer the type arguments of generic function `uncons`", errs)

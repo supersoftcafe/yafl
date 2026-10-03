@@ -11,7 +11,7 @@ let a = build<Int>(push(push(arrayBuilder<Int>(estimate), x), y))
 `class [linear,final] ArrayBuilder<T>(_arr, _at, _cap, _ok)` — every
 operation consumes the builder (`push`, `build`, `discard`), `_ok` threads
 the runtime results so no pass can discard the calls: both exactly as
-`ListBuilder`, which is this design's precedent throughout.
+the former `ListBuilder` (now removed — List appends in place without one), which was this design's precedent throughout.
 
 ## The construction window crosses safe points
 

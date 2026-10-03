@@ -195,32 +195,32 @@ fun sha1WordOf(msg, len, base, j): Int
 # 19% of a self-compile). The full schedule accumulates in a builder for
 # the sequential rounds walk.
 fun [tail] sha1Schedule(msg, len: Int, base, t,
-                        recent, acc: ListBuilder<Int>): List<Int>
+                        recent, acc: List<Int>): List<Int>
   if t == 80
-    ret build(acc)
+    ret acc
   let w = t < 16
     ? sha1WordOf(msg, len, base, t)
     : rotl32(tapAt(recent, 2) ^ tapAt(recent, 7)
              ^ tapAt(recent, 13) ^ tapAt(recent, 15), 1)
-  ret sha1Schedule(msg, len, base, t + 1, ChainLink(w, recent),
-                   push(acc, w))
+  ret sha1Schedule(msg, len, base, t + 1, prepend(w, recent),
+                   append(acc, w))
 
-fun [tail] tapAt(c: Chain<Int>, k): Int => match(c)
-  (l: ChainLink)  => k == 0 ? l.value : tapAt(l.next, k - 1)
-  (nil: ChainEnd) => 0
+fun [tail] tapAt(c: List<Int>, k): Int => isEmpty(c)
+  ? 0
+  : k == 0 ? first(c) : tapAt(tail(c), k - 1)
 
 class [final] Sha1State(h0: Int, h1: Int, h2: Int, h3: Int, h4: Int)
 
 # The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
-fun [tail] sha1Rounds(ws: Chain<Int>, i, a, b, c, d, e): Sha1State
+fun [tail] sha1Rounds(ws: List<Int>, i, a, b, c, d, e): Sha1State
   if i == 80
     ret Sha1State(a, b, c, d, e)
-  let wv = match(ws)
-    (l: ChainLink)  => l.value
-    (nil: ChainEnd) => 0
-  let rest = match(ws)
-    (l: ChainLink)  => l.next
-    (nil: ChainEnd) => ws
+  let wv = isEmpty(ws)
+    ? 0
+    : first(ws)
+  let rest = isEmpty(ws)
+    ? ws
+    : tail(ws)
   let f0 = i < 20 ? (b & c) | (not32(b) & d)
     : i < 40 ? b ^ c ^ d
     : i < 60 ? (b & c) | (b & d) | (c & d)
@@ -232,8 +232,8 @@ fun [tail] sha1Rounds(ws: Chain<Int>, i, a, b, c, d, e): Sha1State
 fun [tail] sha1Chunks(msg, len, base, total, st: Sha1State): Sha1State
   if base >= total
     ret st
-  let r = sha1Rounds(chain(sha1Schedule(msg, len, base, 0, ChainEnd(),
-                                        builder())),
+  let r = sha1Rounds(sha1Schedule(msg, len, base, 0, List(),
+                                        List()),
                      0, st.h0, st.h1, st.h2, st.h3, st.h4)
   ret sha1Chunks(msg, len, base + 64, total,
                  Sha1State(add32(st.h0, r.h0), add32(st.h1, r.h1), add32(st.h2, r.h2),
@@ -298,9 +298,9 @@ class [final] Sha256State(t0: Int, t1: Int, t2: Int, t3: Int,
 # the same shape sha1Schedule uses, and for the same reason (indexing into a
 # growing list re-materialises it per read).
 fun [tail] sha256Schedule(msg, len: Int, base, t,
-                          recent, acc: ListBuilder<Int>): List<Int>
+                          recent, acc: List<Int>): List<Int>
   if t == 64
-    ret build(acc)
+    ret acc
   let w15 = tapAt(recent, 14)
   let w2 = tapAt(recent, 1)
   let s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3)
@@ -308,20 +308,20 @@ fun [tail] sha256Schedule(msg, len: Int, base, t,
   let w = t < 16
     ? sha1WordOf(msg, len, base, t)
     : add32(add32(tapAt(recent, 15), s0), add32(tapAt(recent, 6), s1))
-  ret sha256Schedule(msg, len, base, t + 1, ChainLink(w, recent),
-                     push(acc, w))
+  ret sha256Schedule(msg, len, base, t + 1, prepend(w, recent),
+                     append(acc, w))
 
 # The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
-fun [tail] sha256Rounds(ws: Chain<Int>, i: Int, a: Int, b: Int, c: Int, d: Int,
+fun [tail] sha256Rounds(ws: List<Int>, i: Int, a: Int, b: Int, c: Int, d: Int,
                         e, f, g, h): Sha256State
   if i == 64
     ret Sha256State(a, b, c, d, e, f, g, h)
-  let wv = match(ws)
-    (l: ChainLink)  => l.value
-    (nil: ChainEnd) => 0
-  let rest = match(ws)
-    (l: ChainLink)  => l.next
-    (nil: ChainEnd) => ws
+  let wv = isEmpty(ws)
+    ? 0
+    : first(ws)
+  let rest = isEmpty(ws)
+    ? ws
+    : tail(ws)
   let bigS1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)
   let ch = (e & f) ^ (not32(e) & g)
   let temp1 = add32(add32(add32(h, bigS1), add32(ch, sha256K0f(i))), wv)
@@ -335,8 +335,8 @@ fun [tail] sha256Chunks(msg, len: Int, base, total: Int,
                         st: Sha256State): Sha256State
   if base >= total
     ret st
-  let r = sha256Rounds(chain(sha256Schedule(msg, len, base, 0, ChainEnd(),
-                                            builder())),
+  let r = sha256Rounds(sha256Schedule(msg, len, base, 0, List(),
+                                            List()),
                        0, st.t0, st.t1, st.t2, st.t3, st.t4, st.t5, st.t6, st.t7)
   ret sha256Chunks(msg, len, base + 64, total,
                    Sha256State(add32(st.t0, r.t0), add32(st.t1, r.t1),

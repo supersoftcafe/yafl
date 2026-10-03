@@ -31,7 +31,7 @@ fun gfSlotFuncs(a: CgApp) => fold(appObjects(a), List(),
 fun gfSlotAdd(acc, s2: CgFuncSlot) => any(acc, (e2) => e2.sfSlot == s2.slotVirtualName)
   ? map(acc, (e2) => e2.sfSlot == s2.slotVirtualName
                ? SlotFuncs(e2.sfSlot,
-                           build(push(builderFrom(e2.sfFuncs), s2.slotGlobalName)))
+                           append(e2.sfFuncs, s2.slotGlobalName))
                : e2)
   # A slot -> functions map, looked up by slot name: the entry order is not
   # observed, but the functions WITHIN a slot keep theirs.
@@ -123,7 +123,7 @@ fun gfOptimizeCall(c, slots: List<SlotFuncs>, vmap: FunValues) => match(c.callFu
 
 fun gfDevirtualise(c, vf: RpVirtualFunction, slots: List<SlotFuncs>)
   let globals2 = gfSlotLookup(slots, vf.name)
-  ret exactly(chain(globals2), 1)
+  ret exactly(globals2, 1)
     ? OpCall(RpGlobalFunction(forceHead(globals2), vf.object, false, None, false, false),
              c.callParameters, c.callRegister, c.callMusttail, c.callImpure,
              c.callResultType, c.callSavedVars)

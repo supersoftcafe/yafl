@@ -67,18 +67,18 @@ fun [tail] beEq(a, b: BeVal) => match(a)
 
 fun beArgsEq(a: List<BeVal>|None, b: List<BeVal>|None) => match(a)
   (la: List<BeVal>) => match(b)
-    (lb: List<BeVal>) => sameLen(chain(la), chain(lb))
-                         && beListEq(chain(la), chain(lb))
+    (lb: List<BeVal>) => sameLen(la, lb)
+                         && beListEq(la, lb)
     ()                => false
   ()                => b is None
 
-fun [tail] beListEq(a: Chain<BeVal>, b: Chain<BeVal>) => match(a)
-  (nil: ChainEnd) => true
-  (la: ChainLink) => match(b)
-    (lb: ChainLink) => beEq(la.value, lb.value)
-      ? beListEq(la.next, lb.next)
+fun [tail] beListEq(a: List<BeVal>, b: List<BeVal>) => isEmpty(a)
+  ? true
+  : isEmpty(b)
+    ? false
+    : beEq(first(a), first(b))
+      ? beListEq(tail(a), tail(b))
       : false
-    ()              => false
 
 fun beIsOpaque(v: BeVal) => v is BeOpaque
 
@@ -124,9 +124,9 @@ fun beSeen(acc, name, d) => any(acc, (e) => e.bdName == name)
   # name appears at most once, so which end it goes on is not observable.
   : prepend(BeDefEntry(name, d, 1), acc)
 
-fun [tail] beDefOf(es: Chain<BeDefEntry>, name: String) => match(es)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.bdName == name ? l.value.bdDef : beDefOf(l.next, name)
+fun [tail] beDefOf(es: List<BeDefEntry>, name: String) => isEmpty(es)
+  ? None
+  : first(es).bdName == name ? first(es).bdDef : beDefOf(tail(es), name)
 
 # ── the resolver ────────────────────────────────────────────────────────────
 
@@ -151,29 +151,29 @@ fun beInvokeArgs(params, defs: List<BeDefEntry>,
 
 fun beResolveStructField(sf: RpStructField, defs: List<BeDefEntry>,
                          visiting) => match(sf.structVal)
-  (sv: RpStackVar) => match(beDefOf(chain(defs), sv.name))
+  (sv: RpStackVar) => match(beDefOf(defs, sv.name))
     (d: BeDef) => match(d)
       (src: BdSource) => match(src.bdSource)
-        (ns: RpNewStruct) => beStructValue(chain(ns.values), sf.field,
+        (ns: RpNewStruct) => beStructValue(ns.values, sf.field,
                                            defs, visiting)
         (o: RParam)       => BeOpaque()
       (o: BeDef)      => BeOpaque()
     ()         => BeOpaque()
   (o: RParam)      => BeOpaque()
 
-fun [tail] beStructValue(vs: Chain<RpNamedValue>, field: String,
+fun [tail] beStructValue(vs: List<RpNamedValue>, field: String,
                          defs: List<BeDefEntry>,
-                         visiting) => match(vs)
-  (nil: ChainEnd) => BeOpaque()
-  (l: ChainLink)  => l.value.name == field
-    ? beResolve(l.value.value, defs, visiting)
-    : beStructValue(l.next, field, defs, visiting)
+                         visiting) => isEmpty(vs)
+  ? BeOpaque()
+  : first(vs).name == field
+    ? beResolve(first(vs).value, defs, visiting)
+    : beStructValue(tail(vs), field, defs, visiting)
 
 fun beResolveVar(name, defs: List<BeDefEntry>,
                  visiting)
   if contains2(visiting, name)
     ret BeCycle(name)
-  ret match(beDefOf(chain(defs), name))
+  ret match(beDefOf(defs, name))
     (d: BeDef) => match(d)
       # `visiting` is the cycle-detection SET on the path down.
       (src: BdSource) => beResolve(src.bdSource, defs,
@@ -185,7 +185,7 @@ fun beResolveVar(name, defs: List<BeDefEntry>,
 
 fun beResolvePhi(name, phi: OpPhi, defs: List<BeDefEntry>,
                  visiting)
-  if !exactly(chain(phi.phiSources), 2)
+  if !exactly(phi.phiSources, 2)
     ret BeOpaque()
   let id0 = bePhiSourceId(phi, 0, defs, visiting)
   let id1 = bePhiSourceId(phi, 1, defs, visiting)
@@ -213,13 +213,13 @@ fun beIsIncrement(back: BeVal, name) => match(back)
   (o)             => false
 
 fun beIncArgs(args0: List<BeVal>|None, name) => match(args0)
-  (args: List<BeVal>) => exactly(chain(args), 2)
+  (args: List<BeVal>) => exactly(args, 2)
                          && beContains(args, BeCycle(name))
                          && beContains(args, BeInt(1, 32))
   ()                  => false
 
 # The entry value of an induction variable, re-derived from its Phi.
-fun beEntryOf(name, defs: List<BeDefEntry>) => match(beDefOf(chain(defs), name))
+fun beEntryOf(name, defs: List<BeDefEntry>) => match(beDefOf(defs, name))
   (d: BeDef) => match(d)
     (ph: BdPhi) => beEntryFromPhi(name, ph.bdPhi, defs)
     (o: BeDef)  => None
@@ -227,7 +227,7 @@ fun beEntryOf(name, defs: List<BeDefEntry>) => match(beDefOf(chain(defs), name))
 
 fun beEntryFromPhi(name, phi: OpPhi,
                    defs: List<BeDefEntry>): BeVal|None
-  if !exactly(chain(phi.phiSources), 2)
+  if !exactly(phi.phiSources, 2)
     ret None
   let visiting = list1(name)
   let id0 = bePhiSourceId(phi, 0, defs, visiting)
@@ -281,37 +281,37 @@ fun beStoreLookup(stores: List<BeStore>, ptr: BeVal,
 class [final] BeRegion(brLo: Int, brHi: Int)
 class [final] BeLabelAt(blName: String, blIndex: Int)
 
-fun beLabelIndex(ops: Segment<Op>|None) => build(beLabelLoopB(ops, 0i32, 0, builder()))
+fun beLabelIndex(ops: Segment<Op>|None) => (beLabelLoopB(ops, 0i32, 0, List()))
 
 fun [tail] beLabelLoopB(s: Segment<Op>|None, iSeg, i,
-                       [terminal] acc): ListBuilder<BeLabelAt> => match(s)
+                       [terminal] acc): List<BeLabelAt> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg >= seg.length
     ? beLabelLoopB(seg.next, 0i32, i, acc)
     : match(seg.array(iSeg))
         (lb: OpLabel) => beLabelLoopB(s, iSeg + 1i32, i + 1,
-                                     push(acc, BeLabelAt(lb.labelName, i)))
+                                     append(acc, BeLabelAt(lb.labelName, i)))
         (o: Op)       => beLabelLoopB(s, iSeg + 1i32, i + 1, acc)
 
-fun [tail] beLabelAt(ls: Chain<BeLabelAt>, name: String) => match(ls)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.blName == name
-    ? l.value.blIndex
-    : beLabelAt(l.next, name)
+fun [tail] beLabelAt(ls: List<BeLabelAt>, name: String) => isEmpty(ls)
+  ? None
+  : first(ls).blName == name
+    ? first(ls).blIndex
+    : beLabelAt(tail(ls), name)
 
 fun beLoopRegions(ops: Segment<Op>|None, labels: List<BeLabelAt>)
-  ret build(beRegionLoopB(ops, 0i32, 0, labels, builder()))
+  ret (beRegionLoopB(ops, 0i32, 0, labels, List()))
 
 fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg, i, labels: List<BeLabelAt>,
-                        [terminal] acc): ListBuilder<BeRegion> => match(s)
+                        [terminal] acc): List<BeRegion> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg >= seg.length
     ? beRegionLoopB(seg.next, 0i32, i, labels, acc)
     : match(seg.array(iSeg))
-        (j: OpJump) => match(beLabelAt(chain(labels), j.jumpName))
+        (j: OpJump) => match(beLabelAt(labels, j.jumpName))
           (at: Int) => at < i
             ? beRegionLoopB(s, iSeg + 1i32, i + 1, labels,
-                           push(acc, BeRegion(at, i)))
+                           append(acc, BeRegion(at, i)))
             : beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
           ()        => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
         (o: Op)     => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
@@ -346,7 +346,7 @@ fun beGuardOne(op, i, ops: Segment<Op>|None, region: BeRegion,
   (ji: OpJumpIf) => match(beResolve(ji.jumpIfCondition, defs,
                                     List()))
     (inv: BeInvoke) => match(inv.beInvArgs)
-      (args: List<BeVal>) => exactly(chain(args), 2)
+      (args: List<BeVal>) => exactly(args, 2)
         ? beGuardWithTruth(inv.beInvFn, args, ji, i, ops, region, labels,
                            defs, acc)
         : acc
@@ -364,7 +364,7 @@ fun beGuardWithTruth(fnName, args: List<BeVal>, ji: OpJumpIf,
 # Which truth value of the condition ENTERS the body; None = not a guard.
 fun beGuardTruth(ji: OpJumpIf, i, ops: Segment<Op>|None, region: BeRegion,
                  labels: List<BeLabelAt>)
-  let target = beLabelAt(chain(labels), ji.jumpIfLabel)
+  let target = beLabelAt(labels, ji.jumpIfLabel)
   let inside = beInRegion(target, region)
   if !inside
     ret ji.jumpIfInvert          # body entered by FALLING THROUGH the exit
@@ -372,7 +372,7 @@ fun beGuardTruth(ji: OpJumpIf, i, ops: Segment<Op>|None, region: BeRegion,
   # immediately leaves the region.
   ret match(nthOf(ops, i + 1))
     (nxt: Op) => match(nxt)
-      (j: OpJump) => beInRegion(beLabelAt(chain(labels), j.jumpName), region)
+      (j: OpJump) => beInRegion(beLabelAt(labels, j.jumpName), region)
         ? None
         : !ji.jumpIfInvert
       (o: Op)     => None
@@ -422,15 +422,15 @@ fun beFunction(f)
   let defs = beSingleDefs(f.fnOps)
   let stores = beFieldStores(f.fnOps, defs)
   let labels = beLabelIndex(f.fnOps)
-  ret beRegionsLoop(chain(beLoopRegions(f.fnOps, labels)), f, defs, stores,
+  ret beRegionsLoop(beLoopRegions(f.fnOps, labels), f, defs, stores,
                     labels)
 
-fun [tail] beRegionsLoop(rs: Chain<BeRegion>, f,
+fun [tail] beRegionsLoop(rs: List<BeRegion>, f,
                          defs: List<BeDefEntry>, stores: List<BeStore>,
-                         labels: List<BeLabelAt>) => match(rs)
-  (nil: ChainEnd) => f
-  (l: ChainLink)  => beRegionsLoop(l.next,
-                                   beApplyRegion(f, l.value, defs, stores,
+                         labels: List<BeLabelAt>) => isEmpty(rs)
+  ? f
+  : beRegionsLoop(tail(rs),
+                                   beApplyRegion(f, first(rs), defs, stores,
                                                  labels),
                                    defs, stores, labels)
 
@@ -507,7 +507,7 @@ fun beFlipElement(ae, proven: List<BeProof>,
   # was created here — the value its length was stored from.
   let lengthIds = beWithStored(list1(BeField(ptr, ae.lengthField)),
                                stores, ptr, ae.lengthField)
-  ret beProofLoop(chain(proven), ae, idx, lengthIds, stores)
+  ret beProofLoop(proven, ae, idx, lengthIds, stores)
 
 fun beWithStored(acc, stores: List<BeStore>, ptr: BeVal,
                  field: String) => match(beStoreLookup(stores, ptr, field))
@@ -515,14 +515,14 @@ fun beWithStored(acc, stores: List<BeStore>, ptr: BeVal,
   (v: BeVal) => prepend(v, acc)
   ()         => acc
 
-fun [tail] beProofLoop(ps: Chain<BeProof>, ae, idx,
+fun [tail] beProofLoop(ps: List<BeProof>, ae, idx,
                        lengthIds: List<BeVal>,
-                       stores: List<BeStore>) => match(ps)
-  (nil: ChainEnd) => ae
-  (l: ChainLink)  => beProofMatches(l.value, idx, lengthIds, stores)
+                       stores: List<BeStore>) => isEmpty(ps)
+  ? ae
+  : beProofMatches(first(ps), idx, lengthIds, stores)
     ? RpArrayElement(ae.elementType, ae.pointer, ae.objectName, ae.field,
                      ae.lengthField, ae.index, false)
-    : beProofLoop(l.next, ae, idx, lengthIds, stores)
+    : beProofLoop(tail(ps), ae, idx, lengthIds, stores)
 
 fun beProofMatches(proof: BeProof, idx, lengthIds: List<BeVal>,
                    stores: List<BeStore>)

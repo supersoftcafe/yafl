@@ -36,8 +36,8 @@ fun checkStmtKind(st, r, retTy: Spec|None) => match(st)
 fun checkTraitInstance(inst: PsTraitInstance, r0): Set<PErr>
   let r = genScope(inst.tiGens, inst.tiWheres, r0)
   let e1 = checkSpecOpt(inst.tiPattern, r)
-  let e2 = checkSpecs(chain(inst.tiWheres), r, noErrs())
-  let e3 = branchChecks(chain(withOwnerWheres(inst.tiMembers, inst.tiWheres)),
+  let e2 = checkSpecs(inst.tiWheres, r, noErrs())
+  let e3 = branchChecks(withOwnerWheres(inst.tiMembers, inst.tiWheres),
                         r, None, noErrs())
   ret union(e1, union(e2, union(e3,
       union(instancePatternErrs(inst, r),
@@ -66,13 +66,13 @@ fun checkFun2(f: PsFun, r0): Set<PErr>
   let err3 = match(f.fBody)
     (b: PExpr) => checkExpr(b, bodyR, f.fRet)
     ()         => noErrs()
-  let err4 = checkSpecs(chain(f.fWheres), r, noErrs())
+  let err4 = checkSpecs(f.fWheres, r, noErrs())
   ret union(err1,
       union(err2,
       union(err3,
       union(err4,
       union(funAttrErrs(f),
-      union(paramDefaultErrs(chain(flattenParams(f.fParams)), r, noErrs()),
+      union(paramDefaultErrs(flattenParams(f.fParams), r, noErrs()),
       union(missingRetErrs(f, bodyR),
       # A top-level function's are reported before the check phase.
       union(f.fGlobal ? noErrs() : funUntypedErrors(f, bodyR, noErrs()),
@@ -99,7 +99,7 @@ fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
                              union(noArgAttr(f, "impure", "[impure] takes no arguments"),
                              union(noArgAttr(f, "sync", "[sync] takes no arguments"),
                              union(tailErrs(f),
-                             union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
+                             union(noArgAttr(f, "terminal", "takes no arguments"),
                              union(testErrs(f),
                                     innerWhereErrs(f)))))))
 
@@ -111,17 +111,17 @@ fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
 # so a declaration carrying two unknown attributes reports them in the same
 # order as the Python side (base.py `unknown_attribute_errors`).
 
-fun [tail] unknownAttrErrs(as2: Chain<PAttr>, known: (:String): Bool,
-                           lr, kind, acc): Set<PErr> => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => known(l.value.attrName)
-    ? unknownAttrErrs(l.next, known, lr, kind, acc)
-    : unknownAttrErrs(l.next, known, lr, kind,
-        add(acc, PErr(lr, "unknown attribute [" + l.value.attrName
+fun [tail] unknownAttrErrs(as2: List<PAttr>, known: (:String): Bool,
+                           lr, kind, acc): Set<PErr> => isEmpty(as2)
+  ? acc
+  : known(first(as2).attrName)
+    ? unknownAttrErrs(tail(as2), known, lr, kind, acc)
+    : unknownAttrErrs(tail(as2), known, lr, kind,
+        add(acc, PErr(lr, "unknown attribute [" + first(as2).attrName
                           + "] on " + kind)))
 
 fun attrErrs(attrs: List<PAttr>, known: (:String): Bool, lr,
-             kind): Set<PErr> => unknownAttrErrs(chain(attrs), known, lr, kind, noErrs())
+             kind): Set<PErr> => unknownAttrErrs(attrs, known, lr, kind, noErrs())
 
 fun isKnownFunAttr(n) => n == "foreign" || n == "impure" || n == "sync" || n == "tail"
  || n == "terminal" || n == "inline" || n == "hashed" || n == "refeq"
@@ -141,13 +141,13 @@ fun isKnownTypealiasAttr(n) => n == "linear"
 
 fun isKnownInstanceAttr(n) => n == "ambient" || n == "trait"
 
-fun attrValueOf(attrs: List<PAttr>, name: String) => avLoop(chain(attrs), name)
+fun attrValueOf(attrs: List<PAttr>, name: String) => avLoop(attrs, name)
 
-fun [tail] avLoop(as2: Chain<PAttr>, name: String) => match(as2)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.attrName == name
-    ? l.value.attrValue
-    : avLoop(l.next, name)
+fun [tail] avLoop(as2: List<PAttr>, name: String) => isEmpty(as2)
+  ? None
+  : first(as2).attrName == name
+    ? first(as2).attrValue
+    : avLoop(tail(as2), name)
 
 fun noArgAttr(f: PsFun, name: String, msg)
   if !hasAttr(f.fAttrs, name)
@@ -194,7 +194,7 @@ fun testArgErr(f: PsFun) => match(attrValueOf(f.fAttrs, "test"))
 
 fun isOneStringArg(v: PExpr|None) => match(v)
   (x: PExpr) => match(x)
-    (tp: PeTuple) => exactly(chain(tp.exprs), 1) && firstIsString(head(tp.exprs))
+    (tp: PeTuple) => exactly(tp.exprs, 1) && firstIsString(head(tp.exprs))
     (o: PExpr)    => false
   ()         => false
 
@@ -228,36 +228,36 @@ fun innerWhereErrs(f: PsFun) => union(!f.fGlobal && !isEmpty(f.fGens)
                                                  "`where` is not allowed on an inner function — move it to a top-level function")
                                         : noErrs())
 
-fun [tail] paramDefaultErrs(ls: Chain<PStmt>, r,
-                            acc: Set<PErr>) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => paramDefaultErrs(l.next, r,
+fun [tail] paramDefaultErrs(ls: List<PStmt>, r,
+                            acc: Set<PErr>) => isEmpty(ls)
+  ? acc
+  : match(first(ls))
+    (let2: PsLet) => paramDefaultErrs(tail(ls), r,
                        union(acc, defaultValueErrors(let2.lDefault, r,
                                                       let2.pslLine,
                                                       "parameter")))
-    (o: PStmt)    => paramDefaultErrs(l.next, r, acc)
+    (o: PStmt)    => paramDefaultErrs(tail(ls), r, acc)
 
 # No value vanishes silently: a parameter the body never reads. `this` is
-# implicit; a `_` prefix is the opt-out; [terminal] params are consumed on
+# implicit; a `_` prefix is the opt-out; params are consumed on
 # arrival.
 fun unusedParamWarns(f: PsFun): Set<PErr> => match(f.fBody)
-  (b: PExpr) => unusedParamLoop(chain(flattenParams(f.fParams)),
+  (b: PExpr) => unusedParamLoop(flattenParams(f.fParams),
                                 referencedNames(b, List()), noErrs())
   ()         => noErrs()
 
 
-fun [tail] unusedParamLoop(ls: Chain<PStmt>, referenced: List<String>,
-                           acc: Set<PErr>) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
+fun [tail] unusedParamLoop(ls: List<PStmt>, referenced: List<String>,
+                           acc: Set<PErr>) => isEmpty(ls)
+  ? acc
+  : match(first(ls))
     (let2: PsLet) => skipParamWarn(let2, referenced)
-      ? unusedParamLoop(l.next, referenced, acc)
-      : unusedParamLoop(l.next, referenced,
+      ? unusedParamLoop(tail(ls), referenced, acc)
+      : unusedParamLoop(tail(ls), referenced,
           add(acc, PErr(let2.pslLine,
                            "parameter '" + bareOfUnique(let2.lName)
                            + "' is never used", true, "unused-parameter")))
-    (o: PStmt)    => unusedParamLoop(l.next, referenced, acc)
+    (o: PStmt)    => unusedParamLoop(tail(ls), referenced, acc)
 
 fun skipParamWarn(let2: PsLet, referenced: List<String>)
   ret startsWith(bareOfUnique(let2.lName), "_")
@@ -286,7 +286,7 @@ fun letSubErrs(l: PsLet, r)
     (d: PExpr) => checkExpr(d, r, l.lType)
     ()         => noErrs()
   let err2 = checkSpecOpt(l.lType, r)
-  let whereErr = checkSpecs(chain(l.lWheres), r, noErrs())
+  let whereErr = checkSpecs(l.lWheres, r, noErrs())
   ret union(err1, union(err2, union(letAttrErrs(l, r), whereErr)))
 
 fun letAttrErrs(l: PsLet, r: Resolver)
@@ -389,16 +389,16 @@ fun checkIf2(i: PsIf, r, retTy: Spec|None): Set<PErr>
     ()         => noErrs()
   ret union(condErr,
       union(boolErr,
-      union(branchChecks(chain(i.ifTrue), blockScope(i.ifTrue, r), retTy,
+      union(branchChecks(i.ifTrue, blockScope(i.ifTrue, r), retTy,
                           noErrs()),
-             branchChecks(chain(i.ifFalse), blockScope(i.ifFalse, r), retTy,
+             branchChecks(i.ifFalse, blockScope(i.ifFalse, r), retTy,
                           noErrs()))))
 
-fun [tail] branchChecks(ss: Chain<PStmt>, r: Resolver, retTy: Spec|None,
-                        acc: Set<PErr>): Set<PErr> => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => branchChecks(l.next, r, retTy,
-                                  union(acc, checkStmt2(l.value, r, retTy)))
+fun [tail] branchChecks(ss: List<PStmt>, r: Resolver, retTy: Spec|None,
+                        acc: Set<PErr>): Set<PErr> => isEmpty(ss)
+  ? acc
+  : branchChecks(tail(ss), r, retTy,
+                                  union(acc, checkStmt2(first(ss), r, retTy)))
 
 # ── classes / enums / typealiases ───────────────────────────────────────────
 
@@ -411,16 +411,16 @@ fun checkClass2(c, r0) => match(c.cAllParents)
 # — the check contract's first-diff will demand them when a corpus case does.
 fun classChecks(c, r0): Set<PErr>
   let inh = findClassesOrError(c.cImplements, r0)
-  let implErr = implErrors(chain(c.cImplements), r0, noErrs())
-  let pureErr = allPureInterfaces(chain(inh))
+  let implErr = implErrors(c.cImplements, r0, noErrs())
+  let pureErr = allPureInterfaces(inh)
     ? noErrs()
     : oneErr(c.pscLine, "Must only inherit from pure interfaces")
-  let finalErr = finalParentErrs(c, chain(inh), noErrs())
+  let finalErr = finalParentErrs(c, inh, noErrs())
   let fragile = fragileWarns(c, inh, r0)
   let prmErr = checkStmt2(c.cParams, genScope(c.cGens, c.cWheres, r0), None)
   # Member fns CHECK under the same transient owner-wheres copy they
   # compiled under (compile_stmt withOwnerWheres).
-  let stmErr = branchChecks(chain(withOwnerWheres(c.cMembers, c.cWheres)),
+  let stmErr = branchChecks(withOwnerWheres(c.cMembers, c.cWheres),
                             genScope(c.cGens, c.cWheres, RClassBody(c, r0)), None,
                             noErrs())
   ret union(implErr,
@@ -437,49 +437,49 @@ fun classChecks(c, r0): Set<PErr>
 # field an Int32 sibling.
 fun arrayFieldErrs(c: PsClass, r: Resolver)
   let fields = classFields(c)
-  let arrays = arrayFieldsOf(chain(fields), List())
+  let arrays = arrayFieldsOf(fields, List())
   if isEmpty(arrays)
     ret noErrs()
-  let countErr = atLeast(chain(arrays), 2)
+  let countErr = atLeast(arrays, 2)
     ? oneErr(c.pscLine, "a class may have at most one array field")
     : noErrs()
   let finalErr2 = hasAttr(c.cAttrs, "final")
     ? noErrs()
     : oneErr(c.pscLine, "a class with an array field must be [final]")
   ret union(countErr,
-             union(finalErr2, lenFieldErrs(chain(arrays), fields, noErrs())))
+             union(finalErr2, lenFieldErrs(arrays, fields, noErrs())))
 
 fun classFields(c: PsClass)
-  ret concat(flattenParams(c.cParams), letMembers(chain(c.cMembers),
+  ret concat(flattenParams(c.cParams), letMembers(c.cMembers,
                                                   List()))
 
-fun letMembers(ms, acc: List<PStmt>): List<PStmt> => build(letMembersB(ms, builderFrom(acc)))
+fun letMembers(ms, acc: List<PStmt>): List<PStmt> => (letMembersB(ms, acc))
 
-fun [tail] letMembersB(ms: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>) => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => letMembersB(l.next, push(acc, l.value))
-    (o: PStmt)    => letMembersB(l.next, acc)
+fun [tail] letMembersB(ms: List<PStmt>, acc: List<PStmt>) => isEmpty(ms)
+  ? acc
+  : match(first(ms))
+    (let2: PsLet) => letMembersB(tail(ms), append(acc, first(ms)))
+    (o: PStmt)    => letMembersB(tail(ms), acc)
 
-fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt> => build(arrayFieldsOfB(fs, builderFrom(acc)))
+fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt> => (arrayFieldsOfB(fs, acc))
 
-fun [tail] arrayFieldsOfB(fs: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>) => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => isArrayStorage(l.value)
-    ? arrayFieldsOfB(l.next, push(acc, l.value))
-    : arrayFieldsOfB(l.next, acc)
+fun [tail] arrayFieldsOfB(fs: List<PStmt>, acc: List<PStmt>) => isEmpty(fs)
+  ? acc
+  : isArrayStorage(first(fs))
+    ? arrayFieldsOfB(tail(fs), append(acc, first(fs)))
+    : arrayFieldsOfB(tail(fs), acc)
 
-fun [tail] lenFieldErrs(as2: Chain<PStmt>, fields: List<PStmt>,
-                        acc: Set<PErr>) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (af: PsLet) => lenFieldErrs(l.next, fields,
+fun [tail] lenFieldErrs(as2: List<PStmt>, fields: List<PStmt>,
+                        acc: Set<PErr>) => isEmpty(as2)
+  ? acc
+  : match(first(as2))
+    (af: PsLet) => lenFieldErrs(tail(as2), fields,
                                 union(acc, oneLenErr(af, fields)))
-    (o: PStmt)  => lenFieldErrs(l.next, fields, acc)
+    (o: PStmt)  => lenFieldErrs(tail(as2), fields, acc)
 
 fun oneLenErr(af: PsLet, fields: List<PStmt>)
   let lenName = arrayLenName(af.lType)
-  ret match(fieldNamed2(chain(fields), lenName))
+  ret match(fieldNamed2(fields, lenName))
     (m: PsLet) => isInt32Field(m)
       ? noErrs()
       : oneErr(af.pslLine, "array length field '" + lenName
@@ -493,13 +493,13 @@ fun arrayLenName(ty: Spec|None) => match(ty)
     (o: Spec)         => ""
   ()         => ""
 
-fun [tail] fieldNamed2(fs: Chain<PStmt>, name) => match(fs)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(l.value)
+fun [tail] fieldNamed2(fs: List<PStmt>, name) => isEmpty(fs)
+  ? None
+  : match(first(fs))
     (let2: PsLet) => matchName(let2.lName, name)
       ? let2
-      : fieldNamed2(l.next, name)
-    (o: PStmt)    => fieldNamed2(l.next, name)
+      : fieldNamed2(tail(fs), name)
+    (o: PStmt)    => fieldNamed2(tail(fs), name)
 
 fun isInt32Field(m: PsLet) => match(m.lType)
   (t2: Spec) => match(t2)
@@ -508,10 +508,10 @@ fun isInt32Field(m: PsLet) => match(m.lType)
   ()         => false
 
 # find_classes_or_error's ERROR half, reconstructed with the same messages.
-fun [tail] implErrors(ts: Chain<Spec>, r,
-                      acc) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => implErrors(l.next, r, union(acc, implError(l.value, r)))
+fun [tail] implErrors(ts: List<Spec>, r,
+                      acc) => isEmpty(ts)
+  ? acc
+  : implErrors(tail(ts), r, union(acc, implError(first(ts), r)))
 
 fun implError(xtype, r) => match(xtype)
   (n: SNamed) => implNameError(n.snName, ctSpecLine(xtype), r)
@@ -523,7 +523,7 @@ fun implNameError(name, lr, r)
   let found = findType(r, name)
   if isEmpty(found.bItems)
     ret oneErr(lr, "Could not find class named \"" + name + "\"")
-  if atLeast(chain(found.bItems), 2)
+  if atLeast(found.bItems, 2)
     ret oneErr(lr, "Found too many classes named \"" + name + "\"")
   ret match(soleItem(found))
     (f: Found) => match(f.fStmt)
@@ -531,47 +531,47 @@ fun implNameError(name, lr, r)
       (o: PStmt)    => oneErr(lr, "Found non-class named \"" + name + "\"")
     ()         => noErrs()
 
-fun [tail] allPureInterfaces(fs: Chain<FoundClass>) => match(fs)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(l.value.fcClass)
-    (cs: PsClass) => cs.cIsInterface ? allPureInterfaces(l.next) : false
-    ()            => allPureInterfaces(l.next)
+fun [tail] allPureInterfaces(fs: List<FoundClass>) => isEmpty(fs)
+  ? true
+  : match(first(fs).fcClass)
+    (cs: PsClass) => cs.cIsInterface ? allPureInterfaces(tail(fs)) : false
+    ()            => allPureInterfaces(tail(fs))
 
 
-fun [tail] finalParentErrs(c: PsClass, fs: Chain<FoundClass>,
-                           acc): Set<PErr> => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value.fcClass)
+fun [tail] finalParentErrs(c: PsClass, fs: List<FoundClass>,
+                           acc): Set<PErr> => isEmpty(fs)
+  ? acc
+  : match(first(fs).fcClass)
     (cs: PsClass) => hasAttr(cs.cAttrs, "final")
-      ? finalParentErrs(c, l.next,
+      ? finalParentErrs(c, tail(fs),
           add(acc, PErr(c.pscLine,
                            "Cannot inherit from final class '" + cs.cName
                            + "'")))
-      : finalParentErrs(c, l.next, acc)
-    ()            => finalParentErrs(c, l.next, acc)
+      : finalParentErrs(c, tail(fs), acc)
+    ()            => finalParentErrs(c, tail(fs), acc)
 
 # Fragile-base warning: one method overriding several similar methods of a
 # SINGLE immediate parent.
 fun fragileWarns(c: PsClass, inh: List<FoundClass>, r)
-  ret fbLoop(chain(createSlotsFromMembers(c)), c, inh, r, noErrs())
+  ret fbLoop(createSlotsFromMembers(c), c, inh, r, noErrs())
 
-fun [tail] fbLoop(bs: Chain<Slot>, c: PsClass, inh: List<FoundClass>,
-                  r, acc: Set<PErr>) => match(bs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => fbLoop(l.next, c, inh, r,
-                            fbParents(l.value, chain(inh), c, r, acc))
+fun [tail] fbLoop(bs: List<Slot>, c: PsClass, inh: List<FoundClass>,
+                  r, acc: Set<PErr>) => isEmpty(bs)
+  ? acc
+  : fbLoop(tail(bs), c, inh, r,
+                            fbParents(first(bs), inh, c, r, acc))
 
-fun [tail] fbParents(slot: Slot, fs: Chain<FoundClass>, c: PsClass,
-                     r, acc): Set<PErr> => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value.fcClass)
-    (p: PsClass) => fbParents(slot, l.next, c, r,
+fun [tail] fbParents(slot: Slot, fs: List<FoundClass>, c: PsClass,
+                     r, acc): Set<PErr> => isEmpty(fs)
+  ? acc
+  : match(first(fs).fcClass)
+    (p: PsClass) => fbParents(slot, tail(fs), c, r,
                               fbOne(slot, p, c, r, acc))
-    ()           => fbParents(slot, l.next, c, r, acc)
+    ()           => fbParents(slot, tail(fs), c, r, acc)
 
 fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
           acc): Set<PErr>
-  let nCaptured = capturedCount(chain(createSlotsFromMembers(p)), slot, r,
+  let nCaptured = capturedCount(createSlotsFromMembers(p), slot, r,
                                 List(), 0)
   ret nCaptured > 1
     ? add(acc, PErr(c.pscLine,
@@ -585,39 +585,39 @@ fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
 
 # The deduped capture count, taken on the SAME walk that dedups — the names
 # exist only to dedup; the diagnostic needs the count (no-length ruling).
-fun [tail] capturedCount(ps: Chain<Slot>, slot: Slot, r,
-                         seen: List<String>, n) => match(ps)
-  (nil: ChainEnd) => n
-  (l: ChainLink)  => matchMemberName(slot.slotName, l.value.slotName)
-                     && triTrue(assignableEq(r, l.value.slotType,
+fun [tail] capturedCount(ps: List<Slot>, slot: Slot, r,
+                         seen: List<String>, n) => isEmpty(ps)
+  ? n
+  : matchMemberName(slot.slotName, first(ps).slotName)
+                     && triTrue(assignableEq(r, first(ps).slotType,
                                              slot.slotType))
-                     && !contains2(seen, l.value.slotName)
-    ? capturedCount(l.next, slot, r, prepend(l.value.slotName, seen), n + 1)
-    : capturedCount(l.next, slot, r, seen, n)
+                     && !contains2(seen, first(ps).slotName)
+    ? capturedCount(tail(ps), slot, r, prepend(first(ps).slotName, seen), n + 1)
+    : capturedCount(tail(ps), slot, r, seen, n)
 
 fun checkEnum2(e2: PsEnum, r) => match(e2.eSpec)
   (sp: Spec) => union(checkStmt2(e2.eParams, r, None),
-                union(branchChecks(chain(e2.eVariants), r, None, noErrs()),
-                union(linearGenErrs(e2, chain(e2.eGens), noErrs()),
+                union(branchChecks(e2.eVariants, r, None, noErrs()),
+                union(linearGenErrs(e2, e2.eGens, noErrs()),
                        attrErrs(e2.eAttrs, isKnownEnumAttr, e2.pseLine,
                                 "an enum"))))
   ()         => oneErr(e2.pseLine, "Missed compile step")
 
 
-fun [tail] linearGenErrs(e2: PsEnum, gs: Chain<PGen>,
-                         acc): Set<PErr> => match(gs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => hasAttr(l.value.genAttrs, "linear")
-    ? linearGenErrs(e2, l.next,
+fun [tail] linearGenErrs(e2: PsEnum, gs: List<PGen>,
+                         acc): Set<PErr> => isEmpty(gs)
+  ? acc
+  : hasAttr(first(gs).genAttrs, "linear")
+    ? linearGenErrs(e2, tail(gs),
         add(acc, PErr(e2.pseLine,
                          "[linear] type parameters are only supported on functions")))
-    : linearGenErrs(e2, l.next, acc)
+    : linearGenErrs(e2, tail(gs), acc)
 
 fun checkTypealias2(ta: PsTypealias, r0): Set<PErr>
   let r = isEmpty(ta.taGens) && isEmpty(ta.taWheres)
     ? r0
     : genScope(ta.taGens, ta.taWheres, r0)
   ret union(checkSpec(ta.taType, r),
-      union(checkSpecs(chain(ta.taWheres), r, noErrs()),
+      union(checkSpecs(ta.taWheres, r, noErrs()),
              attrErrs(ta.taAttrs, isKnownTypealiasAttr, ta.pstLine,
                       "a typealias")))

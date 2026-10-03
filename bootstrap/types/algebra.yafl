@@ -31,23 +31,23 @@ fun phAdd(acc, n): List<String> => any(acc, (y) => y == n) ? acc : prepend(n, ac
 
 fun phNames(sp, acc): List<String> => match(sp)
   (g: SGeneric)      => phAdd(acc, g.sgName)
-  (c: SClass)        => phList(chain(c.scParams), acc)
-  (e: SEnum)         => phList(chain(e.seParams), acc)
-  (n: SNamed)        => phList(chain(n.snParams), acc)
-  (cm: SCombination) => phList(chain(cm.scTypes), acc)
+  (c: SClass)        => phList(c.scParams, acc)
+  (e: SEnum)         => phList(e.seParams, acc)
+  (n: SNamed)        => phList(n.snParams, acc)
+  (cm: SCombination) => phList(cm.scTypes, acc)
   (cl: SCallable)    => phOpt(cl.scResult, phNames(cl.scParams2, acc))
-  (t2: STuple)       => phEntries(chain(t2.stEntries), acc)
+  (t2: STuple)       => phEntries(t2.stEntries, acc)
   (af: SArrayField)  => phNames(af.safElem, acc)
   (ls: SLazyStub)    => phOpt(ls.slsTarget, acc)
   (b: SBuiltin)      => acc
 
-fun [tail] phList(ts: Chain<Spec>, acc: List<String>) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => phList(l.next, phNames(l.value, acc))
+fun [tail] phList(ts: List<Spec>, acc: List<String>) => isEmpty(ts)
+  ? acc
+  : phList(tail(ts), phNames(first(ts), acc))
 
-fun [tail] phEntries(es: Chain<SEntry>, acc): List<String> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => phEntries(l.next, phOpt(l.value.seType, acc))
+fun [tail] phEntries(es: List<SEntry>, acc): List<String> => isEmpty(es)
+  ? acc
+  : phEntries(tail(es), phOpt(first(es).seType, acc))
 
 fun phOpt(sp: Spec|None, acc): List<String> => match(sp)
   (s2: Spec) => phNames(s2, acc)
@@ -84,35 +84,35 @@ fun substGeneric(sp, mapping: List<Binding>, name: String) => match(bindingOf(ma
   (b: Spec) => b
   ()        => sp
 
-fun substList(ts: List<Spec>, mapping: List<Binding>) => substLoop(chain(ts), mapping, builder())
+fun substList(ts: List<Spec>, mapping: List<Binding>) => substLoop(ts, mapping, List())
 
-fun [tail] substLoop(ts: Chain<Spec>, mapping: List<Binding>,
-                     acc: ListBuilder<Spec>) => match(ts)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => substLoop(l.next, mapping, push(acc, substitute(l.value, mapping)))
+fun [tail] substLoop(ts: List<Spec>, mapping: List<Binding>,
+                     acc: List<Spec>) => isEmpty(ts)
+  ? acc
+  : substLoop(tail(ts), mapping, append(acc, substitute(first(ts), mapping)))
 
 fun substOpt(sp: Spec|None, mapping: List<Binding>) => match(sp)
   (s2: Spec) => substitute(s2, mapping)
   ()         => None
 
 fun substEntries(es: List<SEntry>, mapping: List<Binding>)
-  ret substEntLoop(chain(es), mapping, List())
+  ret substEntLoop(es, mapping, List())
 
-fun substEntLoop(es: Chain<SEntry>, mapping: List<Binding>,
-                        acc: List<SEntry>) => build(substEntLoopB(es, mapping, builderFrom(acc)))
+fun substEntLoop(es: List<SEntry>, mapping: List<Binding>,
+                        acc: List<SEntry>) => (substEntLoopB(es, mapping, acc))
 
-fun [tail] substEntLoopB(es: Chain<SEntry>, mapping: List<Binding>,
-                        [terminal] acc): ListBuilder<SEntry> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => substEntLoopB(l.next, mapping,
-      push(acc, SEntry(l.value.seName, substOpt(l.value.seType, mapping),
-                l.value.seDefault)))
+fun [tail] substEntLoopB(es: List<SEntry>, mapping: List<Binding>,
+                        acc): List<SEntry> => isEmpty(es)
+  ? acc
+  : substEntLoopB(tail(es), mapping,
+      append(acc, SEntry(first(es).seName, substOpt(first(es).seType, mapping),
+                first(es).seDefault)))
 
-fun bindingOf(ms: List<Binding>, name: String) => bindingLoop(chain(ms), name)
+fun bindingOf(ms: List<Binding>, name: String) => bindingLoop(ms, name)
 
-fun [tail] bindingLoop(ms: Chain<Binding>, name: String) => match(ms)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.bName == name ? l.value.bSpec : bindingLoop(l.next, name)
+fun [tail] bindingLoop(ms: List<Binding>, name: String) => isEmpty(ms)
+  ? None
+  : first(ms).bName == name ? first(ms).bSpec : bindingLoop(tail(ms), name)
 
 # A union whose canonical members collapse to one IS that one type.
 fun canonUnion(sp) => match(sp)
@@ -178,13 +178,13 @@ fun specComplete(sp: Spec, r) => isConcrete(sp) && !hasFreePlaceholders(sp, r) &
 
 fun patternBinding(pattern: Spec, concrete: Spec, names: List<String>, r): List<Binding>|None
   let m = mergeSpecs(pattern, concrete, map(names, (n) => MBind(n, None)), r)
-  ret isEmpty(m.moErrs) ? learnedBindings(chain(m.moBinds), List()) : None
+  ret isEmpty(m.moErrs) ? learnedBindings(m.moBinds, List()) : None
 
-fun [tail] learnedBindings(bs: Chain<MBind>, acc: List<Binding>): List<Binding> => match(bs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value.mbSpec)
-    (sp: Spec) => learnedBindings(l.next, prepend(Binding(l.value.mbName, sp), acc))
-    ()         => learnedBindings(l.next, acc)
+fun [tail] learnedBindings(bs: List<MBind>, acc: List<Binding>): List<Binding> => isEmpty(bs)
+  ? acc
+  : match(first(bs).mbSpec)
+    (sp: Spec) => learnedBindings(tail(bs), prepend(Binding(first(bs).mbName, sp), acc))
+    ()         => learnedBindings(tail(bs), acc)
 
 fun mgBindable(binds: List<MBind>, name) => any(binds, (b) => b.mbName == name)
 
@@ -284,7 +284,7 @@ fun mgIsGeneric(x) => match(x)
 
 # A 1-tuple's element, or None when `x` is not a 1-tuple.
 fun mgSingle(x): SEntry|None => match(x)
-  (t2: STuple) => exactly(chain(t2.stEntries), 1) ? head(t2.stEntries) : None
+  (t2: STuple) => exactly(t2.stEntries, 1) ? head(t2.stEntries) : None
   (o: Spec)    => None
 
 fun mgShapes(l: Spec, rr: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
@@ -338,23 +338,23 @@ fun mgCallables(l: SCallable, rr: SCallable, binds: List<MBind>, inv: Bool, wv: 
 
 fun mgTuples(l: STuple, rr: STuple, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
   ret match(bindTupleEntries(l.stEntries, map(rr.stEntries, (e) => e.seName)))
-    (b: List<Int>) => mgEntries(chain(l.stEntries), chain(b), rr.stEntries, binds, inv, wv, cl, r,
-                                builder(), noErrs(), l)
+    (b: List<Int>) => mgEntries(l.stEntries, b, rr.stEntries, binds, inv, wv, cl, r,
+                                List(), noErrs(), l)
     ()             => mgConflict(l, rr, binds, "tuple shapes differ")
 
-fun [tail] mgEntries(ls: Chain<SEntry>, bs: Chain<Int>, rs: List<SEntry>, binds: List<MBind>,
-                     inv: Bool, wv: Bool, cl: Bool, r, [terminal] acc: ListBuilder<SEntry>, errs: Set<PErr>,
-                     l: STuple): MergeOut => match(ls)
-  (nil: ChainEnd) => mgEntriesDone(build(acc), binds, errs, l)
-  (le: ChainLink) => match(bs)
-    (nil2: ChainEnd) => mgEntriesDone(build(acc), binds, errs, l)
-    (bl: ChainLink)  => match(bl.value < 0 ? None : head(drop(rs, bl.value)))
-      (re2: SEntry) => mgGo(le.value.seType, re2.seType, binds, inv, wv, cl, r)
-        |> (m) => mgEntries(le.next, bl.next, rs, m.moBinds, inv, wv, cl, r,
-                            push(acc, SEntry(le.value.seName != "" ? le.value.seName : re2.seName,
-                                             m.moSpec, le.value.seDefault)),
+fun [tail] mgEntries(ls: List<SEntry>, bs: List<Int>, rs: List<SEntry>, binds: List<MBind>,
+                     inv: Bool, wv: Bool, cl: Bool, r, acc: List<SEntry>, errs: Set<PErr>,
+                     l: STuple): MergeOut => isEmpty(ls)
+  ? mgEntriesDone(acc, binds, errs, l)
+  : isEmpty(bs)
+    ? mgEntriesDone(acc, binds, errs, l)
+    : match(first(bs) < 0 ? None : head(drop(rs, first(bs))))
+      (re2: SEntry) => mgGo(first(ls).seType, re2.seType, binds, inv, wv, cl, r)
+        |> (m) => mgEntries(tail(ls), tail(bs), rs, m.moBinds, inv, wv, cl, r,
+                            append(acc, SEntry(first(ls).seName != "" ? first(ls).seName : re2.seName,
+                                             m.moSpec, first(ls).seDefault)),
                             union(errs, m.moErrs), l)
-      ()            => mgEntries(le.next, bl.next, rs, binds, inv, wv, cl, r, push(acc, le.value), errs, l)
+      ()            => mgEntries(tail(ls), tail(bs), rs, binds, inv, wv, cl, r, append(acc, first(ls)), errs, l)
 
 fun mgEntriesDone(es: List<SEntry>, binds: List<MBind>, errs: Set<PErr>, l: STuple) => isEmpty(errs)
   ? mgOk(STuple(es, l.stLine), binds)
@@ -363,9 +363,9 @@ fun mgEntriesDone(es: List<SEntry>, binds: List<MBind>, errs: Set<PErr>, l: STup
 fun mgEnums(l: SEnum, rr: SEnum, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
   if l.seRoot != rr.seRoot
     ret mgConflict(l, rr, binds, "different enums")
-  if !wv && inv && !(allIn(chain(l.seValidLeaves), rr.seValidLeaves) && allIn(chain(rr.seValidLeaves), l.seValidLeaves))
+  if !wv && inv && !(allIn(l.seValidLeaves, rr.seValidLeaves) && allIn(rr.seValidLeaves, l.seValidLeaves))
     ret mgConflict(l, rr, binds, "different views of one enum are different types")
-  if !wv && !allIn(chain(rr.seValidLeaves), l.seValidLeaves)
+  if !wv && !allIn(rr.seValidLeaves, l.seValidLeaves)
     ret mgConflict(l, rr, binds, "the receiver cannot hold every variant of the value")
   let leaves = wv ? unionLeaves(l.seValidLeaves, rr.seValidLeaves) : l.seValidLeaves
   let a = mgArgs(l.seParams, rr.seParams, binds, wv, cl, r)
@@ -386,7 +386,7 @@ fun mgClasses(l: SClass, rr: SClass, binds: List<MBind>, inv: Bool, wv: Bool, cl
     (f: Found) => match(f.fStmt)
       (cls: PsClass) => match(cls.cAllParents)
         (ps: List<Spec>) => match(head(filter(ps, (p) => mgNamesClass(p, l.scName))))
-          (anc: Spec) => mgGo(l, substitute(anc, mgOwn(chain(cls.cGens), chain(rr.scParams), List())),
+          (anc: Spec) => mgGo(l, substitute(anc, mgOwn(cls.cGens, rr.scParams, List())),
                               binds, false, wv, cl, r)
           ()          => mgConflict(l, rr, binds, "the value's class does not implement the receiver")
         # Not known yet is not a fit: the fixpoint asks again once it is.
@@ -402,11 +402,11 @@ fun mgNamesClass(p, name) => match(p)
   (c: SClass) => c.scName == name
   (o: Spec)   => false
 
-fun [tail] mgOwn(gs: Chain<PGen>, as2: Chain<Spec>, acc: List<Binding>): List<Binding> => match(gs)
-  (nil: ChainEnd) => acc
-  (g: ChainLink)  => match(as2)
-    (nil2: ChainEnd) => acc
-    (a: ChainLink)   => mgOwn(g.next, a.next, prepend(Binding(g.value.genName, a.value), acc))
+fun [tail] mgOwn(gs: List<PGen>, as2: List<Spec>, acc: List<Binding>): List<Binding> => isEmpty(gs)
+  ? acc
+  : isEmpty(as2)
+    ? acc
+    : mgOwn(tail(gs), tail(as2), prepend(Binding(first(gs).genName, first(as2)), acc))
 
 # Invariant generic arguments; an argument list left unspelled is all holes.
 fun mgArgs(la: List<Spec>, ra: List<Spec>, binds: List<MBind>, wv: Bool, cl: Bool, r): MergeArgs
@@ -414,21 +414,21 @@ fun mgArgs(la: List<Spec>, ra: List<Spec>, binds: List<MBind>, wv: Bool, cl: Boo
     ret MergeArgs(ra, binds, noErrs())
   if isEmpty(ra)
     ret MergeArgs(la, binds, noErrs())
-  if !sameLen(chain(la), chain(ra))
+  if !sameLen(la, ra)
     ret MergeArgs(None, binds, oneErr(mgLine(head(la)), "cannot merge: generic argument counts differ"))
-  ret mgArgLoop(chain(la), chain(ra), binds, wv, cl, r, builder(), noErrs())
+  ret mgArgLoop(la, ra, binds, wv, cl, r, List(), noErrs())
 
-fun [tail] mgArgLoop(ls: Chain<Spec>, rs: Chain<Spec>, binds: List<MBind>, wv: Bool, cl: Bool, r,
-                     [terminal] acc: ListBuilder<Spec>, errs: Set<PErr>): MergeArgs => match(ls)
-  (nil: ChainEnd) => mgArgsDone(build(acc), binds, errs)
-  (l: ChainLink)  => match(rs)
-    (nil2: ChainEnd) => mgArgsDone(build(acc), binds, errs)
-    (rl: ChainLink)  => mgGo(l.value, rl.value, binds, true, wv, cl, r)
-      |> (m) => mgArgLoop(l.next, rl.next, m.moBinds, wv, cl, r, mgPushOpt(acc, m.moSpec),
+fun [tail] mgArgLoop(ls: List<Spec>, rs: List<Spec>, binds: List<MBind>, wv: Bool, cl: Bool, r,
+                     acc: List<Spec>, errs: Set<PErr>): MergeArgs => isEmpty(ls)
+  ? mgArgsDone(acc, binds, errs)
+  : isEmpty(rs)
+    ? mgArgsDone(acc, binds, errs)
+    : mgGo(first(ls), first(rs), binds, true, wv, cl, r)
+      |> (m) => mgArgLoop(tail(ls), tail(rs), m.moBinds, wv, cl, r, mgPushOpt(acc, m.moSpec),
                           union(errs, m.moErrs))
 
-fun mgPushOpt([terminal] acc: ListBuilder<Spec>, sp: Spec|None): ListBuilder<Spec> => match(sp)
-  (s2: Spec) => push(acc, s2)
+fun mgPushOpt(acc: List<Spec>, sp: Spec|None): List<Spec> => match(sp)
+  (s2: Spec) => append(acc, s2)
   ()         => acc
 
 fun mgArgsDone(ps: List<Spec>, binds: List<MBind>, errs: Set<PErr>) => isEmpty(errs)
@@ -449,12 +449,12 @@ fun mgUnions(l: Spec, rr: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Boo
   let rMembers = mgExpanded(mgMembers(rr), binds, !cl)
   if !mgIsUnion(l)
     # Every member of the value must fit the one receiver.
-    ret mgAllInto(chain(rMembers), l, binds, inv, wv, cl, r, noErrs())
+    ret mgAllInto(rMembers, l, binds, inv, wv, cl, r, noErrs())
   let rHoles = filter(rMembers, (m) => mgBindableName(m, binds, !cl) != "")
   # A value member not known yet (an unresolved name) pairs with nothing,
   # and leaves the partition open (mgValueUnknown).
   let rGround = filter(rMembers, (m) => mgBindableName(m, binds, !cl) == "" && !mgIsHole(m, binds, !cl, r))
-  ret mgEachFinds(chain(rGround), lMembers, List<Int>(), List<Spec>(), binds, inv, wv, cl, r,
+  ret mgEachFinds(rGround, lMembers, List<Int>(), List<Spec>(), binds, inv, wv, cl, r,
                   noErrs(), l, rr, rHoles)
 
 fun mgExpanded(ms: List<Spec>, binds: List<MBind>, side: Bool): List<Spec>
@@ -469,7 +469,7 @@ fun mgSpelt(m: Spec, binds: List<MBind>, side: Bool): List<Spec>
     ()        => prepend(m, List<Spec>())
 
 fun mgAddNew(acc: List<Spec>, xs: List<Spec>): List<Spec>
-  ret fold(xs, acc, (a, x) => any(a, (o) => eqSpec(o, x)) ? a : build(push(builderFrom(a), x)))
+  ret fold(xs, acc, (a, x) => any(a, (o) => eqSpec(o, x)) ? a : append(a, x))
 
 # The value union holds a member not known yet: no set difference binds and
 # nothing is judged unmatched until it resolves.
@@ -486,29 +486,29 @@ fun mgMembers(x) => match(x)
   (cm: SCombination) => reprMembers(cm)
   (o: Spec)          => prepend(x, List<Spec>())
 
-fun [tail] mgAllInto(rs: Chain<Spec>, out: Spec|None, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r,
-                     errs: Set<PErr>): MergeOut => match(rs)
-  (nil: ChainEnd) => isEmpty(errs) ? mgOk(out, binds) : MergeOut(None, binds, errs)
-  (l: ChainLink)  => mgGo(out, l.value, binds, inv, wv, cl, r)
+fun [tail] mgAllInto(rs: List<Spec>, out: Spec|None, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r,
+                     errs: Set<PErr>): MergeOut => isEmpty(rs)
+  ? (isEmpty(errs) ? mgOk(out, binds) : MergeOut(None, binds, errs))
+  : mgGo(out, first(rs), binds, inv, wv, cl, r)
     |> (m) => match(m.moSpec)
-      (sp: Spec) => mgAllInto(l.next, sp, m.moBinds, inv, wv, cl, r, union(errs, m.moErrs))
+      (sp: Spec) => mgAllInto(tail(rs), sp, m.moBinds, inv, wv, cl, r, union(errs, m.moErrs))
       ()         => MergeOut(None, m.moBinds, union(errs, m.moErrs))
 
 # Each value member finds the receiver member that takes it; one no member
 # takes lands in a receiver HOLE.
-fun [tail] mgEachFinds(rs: Chain<Spec>, members: List<Spec>, matched: List<Int>,
+fun [tail] mgEachFinds(rs: List<Spec>, members: List<Spec>, matched: List<Int>,
                        absorbed: List<Spec>, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r,
-                       errs: Set<PErr>, l: Spec, rr: Spec, rHoles: List<Spec>): MergeOut => match(rs)
-  (nil: ChainEnd) => mgValueHole(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr, rHoles)
-  (x: ChainLink)  => match(mgFindMember(chain(members), 0, x.value, binds, inv, wv, cl, r))
-    (fm: MgFound) => mgEachFinds(x.next, mgSetAt(members, fm.mfIndex, fm.mfSpec),
+                       errs: Set<PErr>, l: Spec, rr: Spec, rHoles: List<Spec>): MergeOut => isEmpty(rs)
+  ? mgValueHole(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr, rHoles)
+  : match(mgFindMember(members, 0, first(rs), binds, inv, wv, cl, r))
+    (fm: MgFound) => mgEachFinds(tail(rs), mgSetAt(members, fm.mfIndex, fm.mfSpec),
                                  prepend(fm.mfIndex, matched), absorbed, fm.mfBinds, inv, wv, cl, r,
                                  errs, l, rr, rHoles)
     ()            => any(members, (m) => mgLeftHole(m, binds, cl, r))
-      ? mgEachFinds(x.next, members, matched, build(push(builderFrom(absorbed), x.value)),
+      ? mgEachFinds(tail(rs), members, matched, append(absorbed, first(rs)),
                     binds, inv, wv, cl, r, errs, l, rr, rHoles)
-      : mgEachFinds(x.next, members, matched, absorbed, binds, inv, wv, cl, r,
-                    union(errs, mgConflict(l, x.value, binds,
+      : mgEachFinds(tail(rs), members, matched, absorbed, binds, inv, wv, cl, r,
+                    union(errs, mgConflict(l, first(rs), binds,
                                            "the receiver has no member for it").moErrs),
                     l, rr, rHoles)
 
@@ -516,8 +516,8 @@ fun [tail] mgEachFinds(rs: Chain<Spec>, members: List<Spec>, matched: List<Int>,
 fun mgValueHole(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, binds: List<MBind>,
                 inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec,
                 rHoles: List<Spec>): MergeOut
-  let restIx = mgRestIndexes(chain(members), 0, matched, binds, cl, r, List<Int>())
-  if !exactly(chain(rHoles), 1) || isEmpty(restIx)
+  let restIx = mgRestIndexes(members, 0, matched, binds, cl, r, List<Int>())
+  if !exactly(rHoles, 1) || isEmpty(restIx)
     ret mgReceiverHole(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr)
   let m = mgNamed(mgBindableName(head(rHoles), binds, !cl), mgAsType(mgAtIndexes(members, restIx), l),
                   binds, false, inv, wv, cl, r)
@@ -528,68 +528,68 @@ fun mgValueHole(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, b
 fun mgReceiverHole(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, binds: List<MBind>,
                    inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec): MergeOut
   let lNamed = filter(members, (m) => mgUnboundNamed(m, binds, cl))
-  if isEmpty(absorbed) || !exactly(chain(lNamed), 1) || mgValueUnknown(rr, binds, cl, r)
+  if isEmpty(absorbed) || !exactly(lNamed, 1) || mgValueUnknown(rr, binds, cl, r)
      || any(members, (m) => mgIsHole(m, binds, cl, r))
     ret mgUnionDone(members, matched, absorbed, binds, inv, wv, cl, r, errs, l, rr)
   let name = mgBindableName(head(lNamed), binds, cl)
   let m = mgNamed(name, mgAsType(absorbed, l), binds, true, inv, wv, cl, r)
-  ret mgUnionDone(members, concat(matched, mgNamedAt(chain(members), 0, name, binds, cl, List<Int>())),
+  ret mgUnionDone(members, concat(matched, mgNamedAt(members, 0, name, binds, cl, List<Int>())),
                   absorbed, m.moBinds, inv, wv, cl, r, union(errs, m.moErrs), l, rr)
 
 # The index of the member spelled as the named hole `name` — it took the rest.
-fun [tail] mgNamedAt(ms: Chain<Spec>, i: Int, name: String, binds: List<MBind>, cl: Bool,
-                     acc: List<Int>): List<Int> => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => mgBindableName(l.value, binds, cl) == name
+fun [tail] mgNamedAt(ms: List<Spec>, i: Int, name: String, binds: List<MBind>, cl: Bool,
+                     acc: List<Int>): List<Int> => isEmpty(ms)
+  ? acc
+  : mgBindableName(first(ms), binds, cl) == name
     ? prepend(i, acc)
-    : mgNamedAt(l.next, i + 1, name, binds, cl, acc)
+    : mgNamedAt(tail(ms), i + 1, name, binds, cl, acc)
 
 fun mgAbsorb(members: List<Spec>, absorbed: List<Spec>, binds: List<MBind>, cl: Bool, r) => isEmpty(absorbed)
   ? members
   : concat(filter(members, (m) => !mgLeftHole(m, binds, cl, r)), absorbed)
 
 fun mgAsType(ms: List<Spec>, l: Spec) => match(head(ms))
-  (only: Spec) => exactly(chain(ms), 1) ? only : SCombination(ms, specLine(l))
+  (only: Spec) => exactly(ms, 1) ? only : SCombination(ms, specLine(l))
   ()           => l
 
-fun [tail] mgRestIndexes(ms: Chain<Spec>, i: Int, matched: List<Int>, binds: List<MBind>, cl: Bool,
-                         r, acc: List<Int>): List<Int> => match(ms)
-  (nil: ChainEnd) => acc
-  (x: ChainLink)  => !any(matched, (j) => j == i) && !mgLeftHole(x.value, binds, cl, r)
-    ? mgRestIndexes(x.next, i + 1, matched, binds, cl, r, build(push(builderFrom(acc), i)))
-    : mgRestIndexes(x.next, i + 1, matched, binds, cl, r, acc)
+fun [tail] mgRestIndexes(ms: List<Spec>, i: Int, matched: List<Int>, binds: List<MBind>, cl: Bool,
+                         r, acc: List<Int>): List<Int> => isEmpty(ms)
+  ? acc
+  : !any(matched, (j) => j == i) && !mgLeftHole(first(ms), binds, cl, r)
+    ? mgRestIndexes(tail(ms), i + 1, matched, binds, cl, r, append(acc, i))
+    : mgRestIndexes(tail(ms), i + 1, matched, binds, cl, r, acc)
 
 fun mgAtIndexes(ms: List<Spec>, ixs: List<Int>): List<Spec> => fold(ixs, List<Spec>(), (acc, i) => mgPushAt(acc, ms, i))
 
 fun mgPushAt(acc: List<Spec>, ms: List<Spec>, i: Int): List<Spec> => match(head(drop(ms, i)))
-  (sp: Spec) => build(push(builderFrom(acc), sp))
+  (sp: Spec) => (append(acc, sp))
   ()         => acc
 
 class [final] MgFound(mfIndex: Int, mfSpec: Spec|None, mfBinds: List<MBind>)
 
-fun [tail] mgFindMember(ms: Chain<Spec>, i: Int, v: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool,
-                        r): MgFound|None => match(ms)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => mgLeftHole(l.value, binds, cl, r)
-    ? mgFindMember(l.next, i + 1, v, binds, inv, wv, cl, r)
-    : mgGo(l.value, v, binds, inv, wv, cl, r)
+fun [tail] mgFindMember(ms: List<Spec>, i: Int, v: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool,
+                        r): MgFound|None => isEmpty(ms)
+  ? None
+  : mgLeftHole(first(ms), binds, cl, r)
+    ? mgFindMember(tail(ms), i + 1, v, binds, inv, wv, cl, r)
+    : mgGo(first(ms), v, binds, inv, wv, cl, r)
       |> (m) => isEmpty(m.moErrs)
         ? MgFound(i, m.moSpec, m.moBinds)
-        : mgFindMember(l.next, i + 1, v, binds, inv, wv, cl, r)
+        : mgFindMember(tail(ms), i + 1, v, binds, inv, wv, cl, r)
 
 fun mgSetAt(ms: List<Spec>, i: Int, v: Spec|None): List<Spec> => match(v)
-  (sp: Spec) => mgSetLoop(chain(ms), 0, i, sp, builder())
+  (sp: Spec) => mgSetLoop(ms, 0, i, sp, List())
   ()         => ms
 
-fun [tail] mgSetLoop(ms: Chain<Spec>, j: Int, i: Int, v: Spec,
-                     [terminal] acc: ListBuilder<Spec>): List<Spec> => match(ms)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => mgSetLoop(l.next, j + 1, i, v, push(acc, j == i ? v : l.value))
+fun [tail] mgSetLoop(ms: List<Spec>, j: Int, i: Int, v: Spec,
+                     acc: List<Spec>): List<Spec> => isEmpty(ms)
+  ? acc
+  : mgSetLoop(tail(ms), j + 1, i, v, append(acc, j == i ? v : first(ms)))
 
 fun mgUnionDone(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>,
                 binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r, errs: Set<PErr>, l: Spec, rr: Spec): MergeOut
   let unmatched = inv && isEmpty(errs) && !mgValueUnknown(rr, binds, cl, r)
-                  && mgAnyUnmatched(chain(members), 0, matched, binds, cl, r)
+                  && mgAnyUnmatched(members, 0, matched, binds, cl, r)
   let all = unmatched ? union(errs, mgConflict(l, rr, binds, "different unions").moErrs) : errs
   if !isEmpty(all)
     ret MergeOut(None, binds, all)
@@ -598,15 +598,15 @@ fun mgUnionDone(members: List<Spec>, matched: List<Int>, absorbed: List<Spec>,
     ret mgOk(l, binds)
   let out = reprMembersOf(mgAbsorb(members, absorbed, binds, cl, r))
   ret match(head(out))
-    (only: Spec) => mgOk(exactly(chain(out), 1) ? only : SCombination(out, specLine(l)), binds)
+    (only: Spec) => mgOk(exactly(out, 1) ? only : SCombination(out, specLine(l)), binds)
     ()           => mgOk(l, binds)
 
-fun [tail] mgAnyUnmatched(ms: Chain<Spec>, i: Int, matched: List<Int>, binds: List<MBind>, cl: Bool,
-                          r): Bool => match(ms)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => !any(matched, (m) => m == i) && !mgLeftHole(l.value, binds, cl, r)
+fun [tail] mgAnyUnmatched(ms: List<Spec>, i: Int, matched: List<Int>, binds: List<MBind>, cl: Bool,
+                          r): Bool => isEmpty(ms)
+  ? false
+  : !any(matched, (m) => m == i) && !mgLeftHole(first(ms), binds, cl, r)
     ? true
-    : mgAnyUnmatched(l.next, i + 1, matched, binds, cl, r)
+    : mgAnyUnmatched(tail(ms), i + 1, matched, binds, cl, r)
 
 # refine: the ONE rule for a stored inferred type (an untyped let's declared
 # type, an undeclared function's return type). Refinable only while `current`
@@ -684,7 +684,7 @@ fun isGenericDecl(name, r) => !contains(name, "$generic$") && match(soleItem(fin
 # wider view), and a widening merge joins views. The valid leaves are always a subset of
 # all leaves, so "narrower" is "fewer".
 fun isNarrowedView(sp) => match(sp)
-  (e: SEnum) => !sameLen(chain(e.seValidLeaves), chain(e.seAllLeaves))
+  (e: SEnum) => !sameLen(e.seValidLeaves, e.seAllLeaves)
   (o: Spec)  => false
 
 # A narrowed view anywhere in `sp` — `Circle` itself, or the `Op{Move}` inside
@@ -734,23 +734,23 @@ fun resolvesInScope(name, r) => !isEmpty(findType(r, name).bItems)
 # resolve and survives to the post-converge scan).
 fun containsNamedSpec(sp) => match(sp)
   (n: SNamed)        => true
-  (c: SClass)        => cnsList(chain(c.scParams))
-  (e: SEnum)         => cnsList(chain(e.seParams))
-  (cm: SCombination) => cnsList(chain(cm.scTypes))
+  (c: SClass)        => cnsList(c.scParams)
+  (e: SEnum)         => cnsList(e.seParams)
+  (cm: SCombination) => cnsList(cm.scTypes)
   (cl: SCallable)    => containsNamedSpec(cl.scParams2) || cnsOpt(cl.scResult)
-  (t2: STuple)       => cnsEntries(chain(t2.stEntries))
+  (t2: STuple)       => cnsEntries(t2.stEntries)
   (af: SArrayField)  => containsNamedSpec(af.safElem)
   (ls: SLazyStub)    => cnsOpt(ls.slsTarget)
   (g: SGeneric)      => false
   (b: SBuiltin)      => false
 
-fun [tail] cnsList(ts: Chain<Spec>) => match(ts)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => containsNamedSpec(l.value) ? true : cnsList(l.next)
+fun [tail] cnsList(ts: List<Spec>) => isEmpty(ts)
+  ? false
+  : containsNamedSpec(first(ts)) ? true : cnsList(tail(ts))
 
-fun [tail] cnsEntries(es: Chain<SEntry>) => match(es)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => cnsOpt(l.value.seType) ? true : cnsEntries(l.next)
+fun [tail] cnsEntries(es: List<SEntry>) => isEmpty(es)
+  ? false
+  : cnsOpt(first(es).seType) ? true : cnsEntries(tail(es))
 
 fun cnsOpt(sp: Spec|None) => match(sp)
   (s2: Spec) => containsNamedSpec(s2)
@@ -789,7 +789,7 @@ fun joinBoth(x, y)
   if eqSpec(x, y)
     ret x
   let members = reprMembersOf(prepend(x, prepend(y, List())))
-  ret exactly(chain(members), 1)
+  ret exactly(members, 1)
     ? soleMember(members, x)
     : SCombination(members, specLine(x))
 
@@ -851,33 +851,33 @@ class [final] TraitInst(tiParams: List<String>, tiIface: SClass)
 fun bindFromConstraintMatch(constraint: SClass, iface: SClass,
                             targets: List<String>): List<Binding>|None
   if constraint.scName != iface.scName
-     || !sameLen(chain(constraint.scParams), chain(iface.scParams))
+     || !sameLen(constraint.scParams, iface.scParams)
     ret None
-  ret match(bfcLoop(chain(constraint.scParams), chain(iface.scParams),
-                    targets, builder()))
+  ret match(bfcLoop(constraint.scParams, iface.scParams,
+                    targets, List()))
     (b: List<Binding>) => isEmpty(b) ? None : b
     ()                 => None
 
-fun [tail] bfcLoop(cs: Chain<Spec>, is2: Chain<Spec>, targets: List<String>,
-                   [terminal] acc: ListBuilder<Binding>) => match(cs)
-  (nil: ChainEnd) => build(acc)
-  (c: ChainLink)  => match(is2)
-    (nil2: ChainEnd) => build(acc)
-    (i: ChainLink)   => match(bfcOne(c.value, i.value, targets, acc))
-      (next2: ListBuilder<Binding>) => bfcLoop(c.next, i.next, targets, next2)
+fun [tail] bfcLoop(cs: List<Spec>, is2: List<Spec>, targets: List<String>,
+                   acc: List<Binding>) => isEmpty(cs)
+  ? acc
+  : isEmpty(is2)
+    ? acc
+    : match(bfcOne(first(cs), first(is2), targets, acc))
+      (next2: List<Binding>) => bfcLoop(tail(cs), tail(is2), targets, next2)
       ()                            => None
 
 fun bfcOne(cArg: Spec, iArg: Spec, targets: List<String>,
-           [terminal] acc: ListBuilder<Binding>) => match(cArg)
+           acc: List<Binding>) => match(cArg)
   (g2: SGeneric) => contains2(targets, g2.sgName)
-    ? (isConcrete(iArg) ? push(acc, Binding(g2.sgName, iArg)) : None)
+    ? (isConcrete(iArg) ? append(acc, Binding(g2.sgName, iArg)) : None)
     : anchorsEqual(cArg, iArg, acc)
   (o: Spec)      => anchorsEqual(cArg, iArg, acc)
 
-# Threads the builder through untouched when the two anchors agree, and fails
+# Threads the accumulator through untouched when the two anchors agree, and fails
 # the whole match otherwise — it adds no binding of its own.
 fun anchorsEqual(cArg, iArg,
-                 [terminal] acc): ListBuilder<Binding>|None
+                 acc): List<Binding>|None
   ret uid(cArg) != "" && uid(cArg) == uid(iArg) ? acc : None
 
 # Ground the `targets` placeholders of a trait constraint by matching it
@@ -889,7 +889,7 @@ fun solveTraitConstraint(constraint, targets: List<String>,
                          r: Resolver)
   if subjectIsPlaceholder(constraint)
     ret None
-  ret solveLoop(chain(instances), constraint, targets, r)
+  ret solveLoop(instances, constraint, targets, r)
 
 fun subjectIsPlaceholder(constraint: SClass) => match(head(constraint.scParams))
   (s2: Spec) => match(s2)
@@ -897,12 +897,12 @@ fun subjectIsPlaceholder(constraint: SClass) => match(head(constraint.scParams))
     (o: Spec)      => false
   ()         => false
 
-fun [tail] solveLoop(is2: Chain<TraitInst>, constraint,
-                     targets: List<String>, r: Resolver) => match(is2)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(tryInstance(l.value, constraint, targets, r))
+fun [tail] solveLoop(is2: List<TraitInst>, constraint,
+                     targets: List<String>, r: Resolver) => isEmpty(is2)
+  ? None
+  : match(tryInstance(first(is2), constraint, targets, r))
     (b: List<Binding>) => b
-    ()                 => solveLoop(l.next, constraint, targets, r)
+    ()                 => solveLoop(tail(is2), constraint, targets, r)
 
 fun tryInstance(inst: TraitInst, constraint, targets: List<String>,
                 r: Resolver)
@@ -913,13 +913,13 @@ fun tryInstance(inst: TraitInst, constraint, targets: List<String>,
 # The instance's OWN params must all be fixed by the constraint.
 fun instanceMapping(inst: TraitInst, constraint, r)
   ret match(patternBinding(inst.tiIface, constraint, inst.tiParams, r))
-    (m: List<Binding>) => allParamsBound(chain(inst.tiParams), m) ? m : None
+    (m: List<Binding>) => allParamsBound(inst.tiParams, m) ? m : None
     ()                 => None
 
-fun [tail] allParamsBound(ps: Chain<String>, m: List<Binding>) => match(ps)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(bindingOf(m, l.value))
-    (b: Spec) => allParamsBound(l.next, m)
+fun [tail] allParamsBound(ps: List<String>, m: List<Binding>) => isEmpty(ps)
+  ? true
+  : match(bindingOf(m, first(ps)))
+    (b: Spec) => allParamsBound(tail(ps), m)
     ()        => false
 
 fun groundedBinding(inst: TraitInst, m: List<Binding>, constraint: SClass,

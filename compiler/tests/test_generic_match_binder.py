@@ -1,11 +1,12 @@
 """Matching a CONCRETE generic-enum instantiation from non-generic code must
 substitute the subject's type arguments into the arm binder's field types.
 
-Regression: matching `Chain<String>` and binding `(link: ChainLink)` left
+Regression: matching `Chain<String>` (a generic cons enum the program declares)
+and binding `(link: ChainLink)` left
 `link.value` typed as the enum placeholder `T` instead of `String`, so using it
 where a `String` is expected failed with "Parameters are not assignment
-compatible". Matching in GENERIC context (the stdlib's own sort/chainNext)
-always worked, which hid this. See MatchExpression.compile.
+compatible". Matching in GENERIC context (the stdlib's own sort/chainNext, when
+List was such an enum) always worked, which hid this. See MatchExpression.compile.
 """
 from __future__ import annotations
 
@@ -18,6 +19,9 @@ class TestGenericMatchBinder(TestCase):
         src = """
 namespace Main
 import System
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
 fun probe(c: Chain<String>): Int
   ret match(c)
     (link: ChainLink) => length(link.value)
@@ -36,6 +40,9 @@ fun main(): System::Int
         src = """
 namespace Main
 import System
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
 fun sumFirst(c: Chain<Int>): Int
   ret match(c)
     (link: ChainLink) => link.value + 1

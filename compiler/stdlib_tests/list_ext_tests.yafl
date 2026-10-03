@@ -19,7 +19,7 @@ import System::Test
 
 
 fun _ints(a: Int, b: Int, c: Int, d: Int, e: Int): List<Int>
-    ret build(push(push(push(push(push(builder<Int>(), a), b), c), d), e))
+    ret (append(append(append(append(append(List<Int>(), a), b), c), d), e))
 
 fun _sum(l: List<Int>): Int
     ret fold(l, 0, (acc: Int, x: Int) => acc + x)

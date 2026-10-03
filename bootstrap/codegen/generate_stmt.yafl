@@ -72,18 +72,18 @@ fun genRetJump(rt: PsRet, frame, vb: GBundle): GBundle
     # This exit edge is the LAST phi source added so far, matching the label.
     ()            => GBundle(vb.gbStackVars, concat(vb.gbOps, tail), None,
                              vb.gbRecurSources,
-                             build(push(builderFrom(vb.gbExitSources), ExitSource(exitLabel, None))))
+                             append(vb.gbExitSources, ExitSource(exitLabel, None)))
 
 fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel,
                  tail, rv)
   let valvar = RpStackVar(rpGetType(rv), "blockval$" + frame.fbTag + "$" + String(rt.retIndex))
-  ret GBundle(build(push(builderFrom(vb.gbStackVars), valvar)),
-              build(pushAll(push(
-                  builderFrom(vb.gbOps),
+  ret GBundle(append(vb.gbStackVars, valvar),
+              concat(append(
+                  vb.gbOps,
                   OpMove(valvar, rv, false, List())),
-                  tail)),
+                  tail),
               None, vb.gbRecurSources,
-              build(push(builderFrom(vb.gbExitSources), ExitSource(exitLabel, valvar))))
+              append(vb.gbExitSources, ExitSource(exitLabel, valvar)))
 
 # ── IfStatement (control.py) ────────────────────────────────────────────────
 
@@ -104,13 +104,13 @@ fun genIfStmt(f2: PsIf, r, expected: Spec|None)
                  bundleOp1(OpLabel("if_end", List())))))))
 
 fun genIfBranch(stmts: List<PStmt>, r, expected: Spec|None, prefix): GBundle
-  ret genIfBranchLoop(chain(stmts), localScope(stmts, r), expected, prefix, 0, emptyBundle())
+  ret genIfBranchLoop(stmts, localScope(stmts, r), expected, prefix, 0, emptyBundle())
 
-fun [tail] genIfBranchLoop(ss: Chain<PStmt>, r: Resolver, expected: Spec|None,
-                           prefix: String, i: Int, acc: GBundle): GBundle => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => genIfBranchLoop(l.next, r, expected, prefix, i + 1,
-                       bundleJoin(acc, withPrefix(gsStmt(l.value, r, expected), prefix + "s" + String(i))))
+fun [tail] genIfBranchLoop(ss: List<PStmt>, r: Resolver, expected: Spec|None,
+                           prefix: String, i: Int, acc: GBundle): GBundle => isEmpty(ss)
+  ? acc
+  : genIfBranchLoop(tail(ss), r, expected, prefix, i + 1,
+                       bundleJoin(acc, withPrefix(gsStmt(first(ss), r, expected), prefix + "s" + String(i))))
 
 # ── LetStatement (lets.py) ──────────────────────────────────────────────────
 
@@ -217,12 +217,12 @@ fun dTargetEntry(st) => match(st)
 # to_c_destructure: leaf let → Move into a stack var named for the let;
 # destructure → per-target f{i} prefixed moves off `_i` struct fields.
 fun toCDestructureTargets(d: PsDestructure, root, r)
-  ret tcdLoop(chain(d.dTargets), root, r, 0, emptyBundle())
+  ret tcdLoop(d.dTargets, root, r, 0, emptyBundle())
 
-fun [tail] tcdLoop(ts: Chain<PStmt>, root, r, i, acc: GBundle) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => tcdLoop(l.next, root, r, i + 1,
-                       bundleJoin(acc, withPrefix(tcdTarget(l.value, RpStructField(root, "_" + String(i)), r),
+fun [tail] tcdLoop(ts: List<PStmt>, root, r, i, acc: GBundle) => isEmpty(ts)
+  ? acc
+  : tcdLoop(tail(ts), root, r, i + 1,
+                       bundleJoin(acc, withPrefix(tcdTarget(first(ts), RpStructField(root, "_" + String(i)), r),
                                                   "f" + String(i))))
 
 fun tcdTarget(st, root, r) => match(st)

@@ -70,5 +70,5 @@ fun [test("sets of strings work the same way")] stringSet(): None|TestFailure
      ?? assertEqInt(size(add(s, "a")), 2, "re-adding a string does not grow it")
 
 fun [test("a set built from a list drops the list's duplicates")] fromListDedupes(): None|TestFailure
-    let withDups = build(push(push(push(builder<Int>(), 1), 2), 1))
+    let withDups = append(append(append(List<Int>(), 1), 2), 1)
     ret assertEqInt(size(Set<Int>(withDups)), 2, "1,2,1 -> 2")

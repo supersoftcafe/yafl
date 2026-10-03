@@ -69,11 +69,11 @@ class [final] TestCase(id: System::String,
 # ── running ─────────────────────────────────────────────────────────────────
 
 fun [impure] run(cases: List<TestCase>, argv: List<System::String>): System::Int
-    let fmt = formatOf(chain(argv), "human")
+    let fmt = formatOf(argv, "human")
     ret isFormatError(fmt)
         ? badFormat(fmt)
         : isListMode(argv)
-            ? listCases(chain(cases), fmt, 0)
+            ? listCases(cases, fmt, 0)
             : runSelected(cases, argv, fmt)
 
 # ── output format ───────────────────────────────────────────────────────────
@@ -87,20 +87,20 @@ fun [impure] run(cases: List<TestCase>, argv: List<System::String>): System::Int
 # is killed still yields every event up to the kill. A final document gives you
 # neither.
 
-fun [tail] formatOf(a: Chain<System::String>,
+fun [tail] formatOf(a: List<System::String>,
                     acc: System::String): System::String
-    ret match(a)
-        (nil: ChainEnd) => acc
-        (l: ChainLink)  => l.value == "--format"
-            ? formatOf(l.next, nextFormat(l.next))
-            : formatOf(l.next, acc)
+    ret isEmpty(a)
+        ? acc
+        : first(a) == "--format"
+            ? formatOf(tail(a), nextFormat(tail(a)))
+            : formatOf(tail(a), acc)
 
-fun nextFormat(a: Chain<System::String>): System::String
-    ret match(a)
-        (nil: ChainEnd) => "?missing"
-        (l: ChainLink)  => l.value == "human" || l.value == "json"
-            ? l.value
-            : "?" + l.value
+fun nextFormat(a: List<System::String>): System::String
+    ret isEmpty(a)
+        ? "?missing"
+        : first(a) == "human" || first(a) == "json"
+            ? first(a)
+            : "?" + first(a)
 
 fun isFormatError(fmt: System::String): System::Bool
     ret startsWith(fmt, "?")
@@ -114,12 +114,12 @@ fun [impure] badFormat(fmt: System::String): System::Int
     ret 2
 
 fun isListMode(argv: List<System::String>): System::Bool
-    ret hasFlag(chain(argv), "--list")
+    ret hasFlag(argv, "--list")
 
-fun [tail] hasFlag(a: Chain<System::String>, flag: System::String): System::Bool
-    ret match(a)
-        (nil: ChainEnd) => false
-        (l: ChainLink)  => l.value == flag ? true : hasFlag(l.next, flag)
+fun [tail] hasFlag(a: List<System::String>, flag: System::String): System::Bool
+    ret isEmpty(a)
+        ? false
+        : first(a) == flag ? true : hasFlag(tail(a), flag)
 
 # ── JSON escaping ───────────────────────────────────────────────────────────
 # Backslash FIRST or the escaping escapes itself. Control bytes below 0x20 are
@@ -164,11 +164,11 @@ fun jsonNum(name: System::String, value: System::Int): System::String
 # The accumulator carries the count so the self-call stays in TAIL position —
 # `listOne(..) + listCases(..)` would recurse once per test down the C stack.
 
-fun [impure, tail] listCases(cs: Chain<TestCase>, fmt: System::String,
+fun [impure, tail] listCases(cs: List<TestCase>, fmt: System::String,
                              acc: System::Int): System::Int
-    ret match(cs)
-        (nil: ChainEnd) => acc
-        (l: ChainLink)  => listCases(l.next, fmt, acc + listOne(l.value, fmt))
+    ret isEmpty(cs)
+        ? acc
+        : listCases(tail(cs), fmt, acc + listOne(first(cs), fmt))
 
 fun [impure] listOne(c: TestCase, fmt: System::String): System::Int
     println(fmt == "json" ? listOneJson(c) : listOneHuman(c))
@@ -186,44 +186,43 @@ fun listOneJson(c: TestCase): System::String
 
 fun [impure] runSelected(cases: List<TestCase>, argv: List<System::String>,
                          fmt: System::String): System::Int
-    let wanted = build<System::String>(
-        nonFlags(builder<System::String>(), chain(argv)))
+    let wanted = nonFlags(List<System::String>(), argv)
     let chosen = isEmpty<System::String>(wanted)
         ? cases
-        : build<TestCase>(selectLoop(builder<TestCase>(), chain(cases), wanted))
+        : selectLoop(List<TestCase>(), cases, wanted)
     ret isEmpty<TestCase>(chosen) && !isEmpty<System::String>(wanted)
         ? noMatchError()
         : runChosen(chosen, fmt)
 
 fun [impure] runChosen(chosen: List<TestCase>, fmt: System::String): System::Int
-    let _ = emitRunStart(chainLength<TestCase>(chain(chosen)), fmt)
-    ret report(runAll(chain(chosen), fmt, 0, 0), fmt)
+    let _ = emitRunStart(size<TestCase>(chosen), fmt)
+    ret report(runAll(chosen, fmt, 0, 0), fmt)
 
 # `--format` and its VALUE are both flags, not test names: without dropping the
 # value, `--format json` would be read as a request to run a test called "json"
 # and match nothing.
-fun [tail] nonFlags([terminal] b: ListBuilder<System::String>,
-                    a: Chain<System::String>): ListBuilder<System::String>
-    ret match(a)
-        (nil: ChainEnd) => b
-        (l: ChainLink)  => l.value == "--format"
-            ? nonFlags(b, dropOne(l.next))
-            : startsWith(l.value, "-")
-                ? nonFlags(b, l.next)
-                : nonFlags(push<System::String>(b, l.value), l.next)
+fun [tail] nonFlags(b: List<System::String>,
+                    a: List<System::String>): List<System::String>
+    ret isEmpty(a)
+        ? b
+        : first(a) == "--format"
+            ? nonFlags(b, dropOne(tail(a)))
+            : startsWith(first(a), "-")
+                ? nonFlags(b, tail(a))
+                : nonFlags(append<System::String>(b, first(a)), tail(a))
 
-fun dropOne(a: Chain<System::String>): Chain<System::String>
-    ret match(a)
-        (nil: ChainEnd) => a
-        (l: ChainLink)  => l.next
+fun dropOne(a: List<System::String>): List<System::String>
+    ret isEmpty(a)
+        ? a
+        : tail(a)
 
-fun [tail] selectLoop([terminal] b: ListBuilder<TestCase>, cs: Chain<TestCase>,
-                      wanted: List<System::String>): ListBuilder<TestCase>
-    ret match(cs)
-        (nil: ChainEnd) => b
-        (l: ChainLink)  => contains<System::String>(wanted, l.value.id)
-            ? selectLoop(push<TestCase>(b, l.value), l.next, wanted)
-            : selectLoop(b, l.next, wanted)
+fun [tail] selectLoop(b: List<TestCase>, cs: List<TestCase>,
+                      wanted: List<System::String>): List<TestCase>
+    ret isEmpty(cs)
+        ? b
+        : contains<System::String>(wanted, first(cs).id)
+            ? selectLoop(append<TestCase>(b, first(cs)), tail(cs), wanted)
+            : selectLoop(b, tail(cs), wanted)
 
 # A filter that selects NOTHING is an error, not a green run of nothing: a
 # mistyped name would otherwise look exactly like success.
@@ -235,13 +234,13 @@ fun [impure] noMatchError(): System::Int
 
 class [final] Tally(passed: System::Int, failed: System::Int)
 
-fun [impure, tail] runAll(cs: Chain<TestCase>, fmt: System::String,
+fun [impure, tail] runAll(cs: List<TestCase>, fmt: System::String,
                           passed: System::Int, failed: System::Int): Tally
-    ret match(cs)
-        (nil: ChainEnd) => Tally(passed, failed)
-        (l: ChainLink)  => runOne(l.value, fmt)
-            ? runAll(l.next, fmt, passed + 1, failed)
-            : runAll(l.next, fmt, passed, failed + 1)
+    ret isEmpty(cs)
+        ? Tally(passed, failed)
+        : runOne(first(cs), fmt)
+            ? runAll(tail(cs), fmt, passed + 1, failed)
+            : runAll(tail(cs), fmt, passed, failed + 1)
 
 fun [impure] runOne(c: TestCase, fmt: System::String): System::Bool
     let _ = emitTestStart(c, fmt)

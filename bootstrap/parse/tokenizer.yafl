@@ -199,7 +199,7 @@ fun nextToken(ln, pos): (kind: TokKind, stop: System::Int)
   ret (KCrap(), pos + 1)
 
 fun [tail] scanLine(ln, lineNo, indent,
-                    pos, acc: ListBuilder<Token>): ListBuilder<Token>
+                    pos, acc: List<Token>): List<Token>
   let at = wsEnd(ln, pos)
   if at >= System::length(ln) || System::byteAt(ln, at) == '#'
     ret acc
@@ -209,13 +209,13 @@ fun [tail] scanLine(ln, lineNo, indent,
     (i: KIdent) => isKeyword(text) ? KSymbol() : t.kind
     (other)     => t.kind
   ret scanLine(ln, lineNo, indent, t.stop,
-               push(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
+               append(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
 
-fun [tail] scanLines(lines: Chain<System::String>, lineNo,
-                     acc: ListBuilder<Token>) => match(lines)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scanLines(l.next, lineNo + 1,
-                               scanLine(l.value, lineNo, wsEnd(l.value, 0), 0, acc))
+fun [tail] scanLines(lines: List<System::String>, lineNo,
+                     acc: List<Token>) => isEmpty(lines)
+  ? acc
+  : scanLines(tail(lines), lineNo + 1,
+                               scanLine(first(lines), lineNo, wsEnd(first(lines), 0), 0, acc))
 
 fun eofToken(toks: List<Token>) => match(last(toks))
   (t: Token) => Token(KEof(), "", 0, t.line,
@@ -224,7 +224,7 @@ fun eofToken(toks: List<Token>) => match(last(toks))
 
 fun tokenize(src)
   # The EOF token is derived from the LAST real token, so the stream is built
-  # first and the terminator pushed onto a builder seeded from it.
-  let toks = build(scanLines(chain(splitLines(src)), 1, builder()))
-  ret build(push(builderFrom(toks),
+  # first and the terminator appended to it.
+  let toks = scanLines(splitLines(src), 1, List())
+  ret (append(toks,
                  eofToken(toks)))

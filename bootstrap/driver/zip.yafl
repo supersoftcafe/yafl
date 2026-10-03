@@ -64,12 +64,12 @@ fun readZip(s)
   let start = u32At(s, eocd + 16)
   if count < 0 || start < 0 || start > length(s)
     ret ZipErr("malformed end-of-central-directory record")
-  ret centralWalk(s, start, count, builder())
+  ret centralWalk(s, start, count, List())
 
 fun [tail] centralWalk(s, at, left,
-                       [terminal] b)
+                       b)
   if left <= 0
-    ret ZipOk(build(b))
+    ret ZipOk(b)
   if u32At(s, at) != 33639248
     ret zipDiscard(b, ZipErr("malformed central directory header"))
   let method = u16At(s, at + 10)
@@ -91,11 +91,11 @@ fun [tail] centralWalk(s, at, left,
         + "\" is compressed; .yl archives must be written with ZIP_STORED"))
   ret match(storedBody(s, localAt, size))
     (body: String) => centralWalk(s, at + 46 + nameLen + extraLen + commentLen,
-                                  left - 1, push(b, ZipEntry(name, body)))
+                                  left - 1, append(b, ZipEntry(name, body)))
     ()             => zipDiscard(b, ZipErr("entry \"" + name
                                            + "\" has a malformed local header"))
 
-fun zipDiscard([terminal] b: ListBuilder<ZipEntry>, e): ZipResult => build(b) |> (l) => e
+fun zipDiscard(b: List<ZipEntry>, e): ZipResult => b |> (l) => e
 
 # The local header repeats the name and carries its OWN extra-field length,
 # which routinely differs from the central directory's — the data offset must
@@ -111,8 +111,8 @@ fun storedBody(s, localAt, size)
   ret from < 0 || from + size > length(s) ? None : slice(s, from, from + size)
 
 
-fun zipFind(entries: List<ZipEntry>, name: String) => zipSeek(chain(entries), name)
+fun zipFind(entries: List<ZipEntry>, name: String) => zipSeek(entries, name)
 
-fun [tail] zipSeek(es: Chain<ZipEntry>, name: String) => match(es)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.zipName == name ? l.value : zipSeek(l.next, name)
+fun [tail] zipSeek(es: List<ZipEntry>, name: String) => isEmpty(es)
+  ? None
+  : first(es).zipName == name ? first(es) : zipSeek(tail(es), name)

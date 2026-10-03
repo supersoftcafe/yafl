@@ -110,7 +110,7 @@ fun eqTypeId(a, b) => match(a)
     (y: TiEnum)    => x.tieRoot == y.tieRoot && eqTypeIds(x.tieArgs, y.tieArgs)
     (o: TypeId)    => false
   (x: TiTuple)       => match(b)
-    (y: TiTuple)   => eqTiEntries(chain(x.titEntries), chain(y.titEntries))
+    (y: TiTuple)   => eqTiEntries(x.titEntries, y.titEntries)
     (o: TypeId)    => false
   (x: TiCallable)    => match(b)
     (y: TiCallable) => eqTypeId(x.tcbParams, y.tcbParams)
@@ -132,14 +132,14 @@ fun eqTypeId(a, b) => match(a)
 
 fun eqTypeIds(a: List<TypeId>, b: List<TypeId>) => eqBy(a, b, (x, y) => eqTypeId(x, y))
 
-fun [tail] eqTiEntries(a: Chain<(tteName: String, tteId: TypeId)>,
-                       b: Chain<(tteName: String, tteId: TypeId)>) => match(a)
-  (nil: ChainEnd) => b is ChainEnd
-  (la: ChainLink) => match(b)
-    (nil2: ChainEnd) => false
-    (lb: ChainLink)  => (la.value.tteName == lb.value.tteName
-                         && eqTypeId(la.value.tteId, lb.value.tteId))
-      ? eqTiEntries(la.next, lb.next)
+fun [tail] eqTiEntries(a: List<(tteName: String, tteId: TypeId)>,
+                       b: List<(tteName: String, tteId: TypeId)>) => isEmpty(a)
+  ? isEmpty(b)
+  : isEmpty(b)
+    ? false
+    : (first(a).tteName == first(b).tteName
+                         && eqTypeId(first(a).tteId, first(b).tteId))
+      ? eqTiEntries(tail(a), tail(b))
       : false
 
 fun _tiMix(acc, h) => (acc * 31i32 + h) & 2147483647i32
@@ -149,27 +149,27 @@ fun _tiMix(acc, h) => (acc * 31i32 + h) & 2147483647i32
 fun [hashed] hashTypeId(v) => match(v)
   (x: TiNone)        => 11i32
   (b: TiBuiltin)     => _tiMix(13i32, hashOf(b.tibName))
-  (n: TiNamed)       => hashTiList(chain(n.tinArgs), _tiMix(17i32, hashOf(n.tinName)))
-  (c: TiClass)       => hashTiList(chain(c.ticArgs), _tiMix(19i32, hashOf(c.ticName)))
-  (e2: TiEnum)       => hashTiList(chain(e2.tieArgs), _tiMix(23i32, hashOf(e2.tieRoot)))
-  (tp: TiTuple)      => hashTiEntries(chain(tp.titEntries), 29i32)
+  (n: TiNamed)       => hashTiList(n.tinArgs, _tiMix(17i32, hashOf(n.tinName)))
+  (c: TiClass)       => hashTiList(c.ticArgs, _tiMix(19i32, hashOf(c.ticName)))
+  (e2: TiEnum)       => hashTiList(e2.tieArgs, _tiMix(23i32, hashOf(e2.tieRoot)))
+  (tp: TiTuple)      => hashTiEntries(tp.titEntries, 29i32)
   (cb: TiCallable)   => _tiMix(_tiMix(31i32, hashTypeId(cb.tcbParams)),
                                hashTypeId(cb.tcbResult))
-  (u: TiUnion)       => hashTiList(chain(u.tiuMembers), 37i32)
+  (u: TiUnion)       => hashTiList(u.tiuMembers, 37i32)
   (g2: TiPlaceholder) => _tiMix(41i32, hashOf(g2.tipName))
   (lz: TiLazy)       => _tiMix(43i32, hashTypeId(lz.tilTarget))
   (ar: TiArray)      => _tiMix(_tiMix(47i32, hashTypeId(ar.tiaElem)),
                                hashOf(ar.tiaLenField))
 
-fun [tail] hashTiList(ids: Chain<TypeId>, acc) => match(ids)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => hashTiList(l.next, _tiMix(acc, hashTypeId(l.value)))
+fun [tail] hashTiList(ids: List<TypeId>, acc) => isEmpty(ids)
+  ? acc
+  : hashTiList(tail(ids), _tiMix(acc, hashTypeId(first(ids))))
 
-fun [tail] hashTiEntries(es: Chain<(tteName: String, tteId: TypeId)>, acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => hashTiEntries(l.next,
-                                   _tiMix(_tiMix(acc, hashOf(l.value.tteName)),
-                                          hashTypeId(l.value.tteId)))
+fun [tail] hashTiEntries(es: List<(tteName: String, tteId: TypeId)>, acc) => isEmpty(es)
+  ? acc
+  : hashTiEntries(tail(es),
+                                   _tiMix(_tiMix(acc, hashOf(first(es).tteName)),
+                                          hashTypeId(first(es).tteId)))
 
 instance [ambient] BasicEquality<TypeId>
   fun `==`(left: TypeId, right: TypeId): Bool => eqTypeId(left, right)

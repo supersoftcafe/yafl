@@ -46,10 +46,10 @@ fun vtuObject(acc: (objs: List<CgObject>, changed: Bool), o: CgObject,
               used: StrSet): (objs: List<CgObject>, changed: Bool)
   let kept = filter(o.objFunctions,
                     (s2) => setHas(used, s2.slotVirtualName))
-  ret !sameLen(chain(kept), chain(o.objFunctions))
+  ret !sameLen(kept, o.objFunctions)
     # Objects keep their app order — it is their emission order.
-    ? (build(push(builderFrom(acc.objs), CgObject(o.objName, o.objExtends, kept, o.objFields,
+    ? (append(acc.objs, CgObject(o.objName, o.objExtends, kept, o.objFields,
              o.objLengthField, o.objComment, o.objIsForeign,
-             o.objIsMutable, o.objDiscriminator, o.objIsPinnable))),
+             o.objIsMutable, o.objDiscriminator, o.objIsPinnable)),
        true)
-    : (build(push(builderFrom(acc.objs), o)), acc.changed)
+    : (append(acc.objs, o), acc.changed)

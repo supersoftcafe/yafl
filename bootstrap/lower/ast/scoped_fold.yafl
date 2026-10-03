@@ -24,26 +24,26 @@ import Bootstrap::Resolve
 # Every expression under `ss`, pre-order, each with the resolver of its scope.
 fun foldExprsScoped<T>(ss: List<PStmt>, r: Resolver,
                        fx: (:T, :PExpr, :Resolver): T, acc: T): T
-  ret sfStmts(chain(ss), r, fx, acc)
+  ret sfStmts(ss, r, fx, acc)
 
 # ── statements ───────────────────────────────────────────────────────────────
 
-fun [tail] sfStmts<T>(ss: Chain<PStmt>, r: Resolver,
-                      fx: (:T, :PExpr, :Resolver): T, acc: T): T => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => sfStmts(l.next, r, fx, sfStmt(l.value, r, fx, acc))
+fun [tail] sfStmts<T>(ss: List<PStmt>, r: Resolver,
+                      fx: (:T, :PExpr, :Resolver): T, acc: T): T => isEmpty(ss)
+  ? acc
+  : sfStmts(tail(ss), r, fx, sfStmt(first(ss), r, fx, acc))
 
 fun sfStmt<T>(st: PStmt, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T => match(st)
   (f: PsFun)         => sfExprOpt(f.fBody, funBodyScope(f, r), fx, sfStmt(f.fParams, r, fx, acc))
   (l: PsLet)         => sfExprOpt(l.lDefault, r, fx, acc)
-  (d: PsDestructure) => sfExprOpt(d.dDefault, r, fx, sfStmts(chain(d.dTargets), r, fx, acc))
-  (cl: PsClass)      => sfStmts(chain(cl.cMembers), RClassBody(cl, r), fx,
+  (d: PsDestructure) => sfExprOpt(d.dDefault, r, fx, sfStmts(d.dTargets, r, fx, acc))
+  (cl: PsClass)      => sfStmts(cl.cMembers, RClassBody(cl, r), fx,
                                 sfStmt(cl.cParams, r, fx, acc))
-  (e2: PsEnum)       => sfStmts(chain(e2.eVariants), r, fx, sfStmt(e2.eParams, r, fx, acc))
+  (e2: PsEnum)       => sfStmts(e2.eVariants, r, fx, sfStmt(e2.eParams, r, fx, acc))
   (rt: PsRet)        => sfExpr(rt.retValue, r, fx, acc)
   (a: PsAction)      => sfExpr(a.action, r, fx, acc)
-  (i: PsIf)          => sfStmts(chain(i.ifFalse), localScope(i.ifFalse, r), fx,
-                                sfStmts(chain(i.ifTrue), localScope(i.ifTrue, r), fx,
+  (i: PsIf)          => sfStmts(i.ifFalse, localScope(i.ifFalse, r), fx,
+                                sfStmts(i.ifTrue, localScope(i.ifTrue, r), fx,
                                         sfExpr(i.ifCond, r, fx, acc)))
   (o: PStmt)         => acc
 
@@ -83,7 +83,7 @@ fun sfExprs<T>(es: List<PExpr>, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc
 
 # A block's lets are in scope for its later statements and its value.
 fun sfBlock<T>(bk: PeBlock, blockR: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
-  ret sfExpr(bk.blockValue, blockR, fx, sfStmts(chain(bk.blockStmts), blockR, fx, acc))
+  ret sfExpr(bk.blockValue, blockR, fx, sfStmts(bk.blockStmts, blockR, fx, acc))
 
 # An arm's binding is in scope for its body and guard; its literals are not.
 fun sfArm<T>(a: PArm, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T

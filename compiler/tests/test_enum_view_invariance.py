@@ -66,8 +66,8 @@ class TestEnumViewInvariance(TestCase):
         # the declared result asks for List<Shape>: a view binding is
         # provisional, so it widens to the root instead of latching Circle.
         errs = _errors(_PRELUDE + "fun shapes(): System::List<Shape>\n"
-                       "  ret System::build(System::push(System::push(System::builder(),"
-                       " Circle(1)), Square(2)))\n"
+                       "  ret System::append(System::append(System::List(),"
+                       " Circle(1)), Square(2))\n"
                        "fun main(): System::Int\n  ret System::isEmpty(shapes()) ? 0 : 1\n")
         diagnostics = [l for l in errs.splitlines() if "] - " in l and "warning:" not in l]
         self.assertEqual([], diagnostics)

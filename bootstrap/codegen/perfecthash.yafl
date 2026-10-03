@@ -58,19 +58,19 @@ fun phAllMethodNames(vtables: List<VtableEntry>)
 # re-assignment overwrites a value, so it never moves a key). Ids are handed
 # out along the same walk, so the builder and the counter stay in step and the
 # next free id rides out with them.
-class [linear, final] IdAcc(iaIds: ListBuilder<MethodId>, iaNext: Int)
+class [final] IdAcc(iaIds: List<MethodId>, iaNext: Int)
 
 fun phAssignIds(names: List<String>): (ids: List<MethodId>, next: Int)
-  ret phAssignIdsFinish(phAssignIdsLoop(chain(names),
-                                        IdAcc(builder(), 0)))
+  ret phAssignIdsFinish(phAssignIdsLoop(names,
+                                        IdAcc(List(), 0)))
 
 fun phAssignIdsFinish(acc: IdAcc): (ids: List<MethodId>, next: Int)
-  ret (build(acc.iaIds), acc.iaNext)
+  ret (acc.iaIds, acc.iaNext)
 
-fun [tail] phAssignIdsLoop(names: Chain<String>, [terminal] acc: IdAcc) => match(names)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => phAssignIdsLoop(l.next,
-      IdAcc(push(acc.iaIds, MethodId(l.value, acc.iaNext)),
+fun [tail] phAssignIdsLoop(names: List<String>, acc: IdAcc) => isEmpty(names)
+  ? acc
+  : phAssignIdsLoop(tail(names),
+      IdAcc(append(acc.iaIds, MethodId(first(names), acc.iaNext)),
             acc.iaNext + 1))
 
 fun phVtableSizes(vtables: List<VtableEntry>)
@@ -80,13 +80,13 @@ fun phVtableSizes(vtables: List<VtableEntry>)
 # dicts from the start; the port's Lists stay authoritative for emission
 # order, and these twins retire the linear per-query scans (vtableSizeGet
 # alone was 19.1s of a self-compile at ~116us per call).
-fun [tail] methodIdDict(ms: Chain<MethodId>, acc): Dict<String, Int> => match(ms)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => methodIdDict(l.next, put(acc, l.value.mName, l.value.mId))
+fun [tail] methodIdDict(ms: List<MethodId>, acc): Dict<String, Int> => isEmpty(ms)
+  ? acc
+  : methodIdDict(tail(ms), put(acc, first(ms).mName, first(ms).mId))
 
-fun [tail] vtableSizeDict(vs: Chain<VtableSize>, acc): Dict<String, Int> => match(vs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => vtableSizeDict(l.next, put(acc, l.value.vsClassName, l.value.vsSize))
+fun [tail] vtableSizeDict(vs: List<VtableSize>, acc): Dict<String, Int> => isEmpty(vs)
+  ? acc
+  : vtableSizeDict(tail(vs), put(acc, first(vs).vsClassName, first(vs).vsSize))
 
 fun methodIdGet(ids: Dict<String, Int>, name: String) => match(get(ids, name))
   (i: Int) => i
@@ -107,27 +107,27 @@ class [final] CollisionPair(pairA: String, pairB: String)
 #
 # `slots` is Python's per-class `slots = {}`, asked only "is this index
 # taken, and by whom" — a Dict, which also retires the linear scan that
-# answered that question. `pairs` is a builder: it is written and never read,
-# and its order IS observed, because buildConflictGraph replays it to
+# answered that question. `pairs` is appended to and never read here, and
+# its order IS observed, because buildConflictGraph replays it to
 # reproduce Python's key insertion order.
-fun [tail] phScanClassSlots(methods: Chain<String>, methodIds: Dict<String, Int>,
+fun [tail] phScanClassSlots(methods: List<String>, methodIds: Dict<String, Int>,
                             mask, slots: Dict<Int, String>,
-                            [terminal] pairs: ListBuilder<CollisionPair>) => match(methods)
-  (nil: ChainEnd) => pairs
-  (l: ChainLink)  => match(get(slots, methodIdGet(methodIds, l.value) & mask))
-    (existing: String) => phScanClassSlots(l.next, methodIds, mask, slots,
-                            push(pairs, CollisionPair(l.value, existing)))
-    ()                 => phScanClassSlots(l.next, methodIds, mask,
-                            put(slots, methodIdGet(methodIds, l.value) & mask, l.value),
+                            pairs: List<CollisionPair>) => isEmpty(methods)
+  ? pairs
+  : match(get(slots, methodIdGet(methodIds, first(methods)) & mask))
+    (existing: String) => phScanClassSlots(tail(methods), methodIds, mask, slots,
+                            append(pairs, CollisionPair(first(methods), existing)))
+    ()                 => phScanClassSlots(tail(methods), methodIds, mask,
+                            put(slots, methodIdGet(methodIds, first(methods)) & mask, first(methods)),
                             pairs)
 
-fun [tail] phScanAllSlots(vtables: Chain<VtableEntry>, methodIds: Dict<String, Int>,
+fun [tail] phScanAllSlots(vtables: List<VtableEntry>, methodIds: Dict<String, Int>,
                           vtableSizes: Dict<String, Int>,
-                          [terminal] pairs): ListBuilder<CollisionPair> => match(vtables)
-  (nil: ChainEnd) => pairs
-  (l: ChainLink)  => phScanAllSlots(l.next, methodIds, vtableSizes,
-      phScanClassSlots(chain(l.value.methods), methodIds,
-                       vtableSizeGet(vtableSizes, l.value.className) - 1,
+                          pairs): List<CollisionPair> => isEmpty(vtables)
+  ? pairs
+  : phScanAllSlots(tail(vtables), methodIds, vtableSizes,
+      phScanClassSlots(first(vtables).methods, methodIds,
+                       vtableSizeGet(vtableSizes, first(vtables).className) - 1,
                        Dict(), pairs))
 
 # ── conflict graph + greedy vertex cover ─────────────────────────────────────
@@ -141,28 +141,28 @@ fun [tail] phScanAllSlots(vtables: Chain<VtableEntry>, methodIds: Dict<String, I
 # the whole-graph rewrite that removing a single edge used to cost.
 class [final] ConflictGraph(cgOrder: List<String>, cgEdges: Dict<String, List<String>>)
 
-# cgOrder is only WRITTEN during the build — "have I met this method before"
-# is the Dict's question, not the list's — so it can be a builder.
-class [linear, final] CgAcc(caOrder: ListBuilder<String>,
+# cgOrder is only appended to during the build — "have I met this method
+# before" is the Dict's question, not the list's.
+class [final] CgAcc(caOrder: List<String>,
                             caEdges: Dict<String, List<String>>)
 
 fun buildConflictGraph(pairs: List<CollisionPair>)
-  ret cgFinish(bcgLoop(chain(pairs),
-                       CgAcc(builder(), Dict())))
+  ret cgFinish(bcgLoop(pairs,
+                       CgAcc(List(), Dict())))
 
-fun cgFinish(acc: CgAcc) => ConflictGraph(build(acc.caOrder), acc.caEdges)
+fun cgFinish(acc: CgAcc) => ConflictGraph(acc.caOrder, acc.caEdges)
 
-fun [tail] bcgLoop(ps: Chain<CollisionPair>, [terminal] acc): CgAcc => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => bcgLoop(l.next, cgAddEdge(acc, l.value.pairA, l.value.pairB))
+fun [tail] bcgLoop(ps: List<CollisionPair>, acc): CgAcc => isEmpty(ps)
+  ? acc
+  : bcgLoop(tail(ps), cgAddEdge(acc, first(ps).pairA, first(ps).pairB))
 
-fun cgAddEdge([terminal] acc: CgAcc, a, b) => cgAddDirected(cgAddDirected(acc, a, b), b, a)
+fun cgAddEdge(acc: CgAcc, a, b) => cgAddDirected(cgAddDirected(acc, a, b), b, a)
 
-fun cgAddDirected([terminal] acc: CgAcc, from2, to) => match(get(acc.caEdges, from2))
+fun cgAddDirected(acc: CgAcc, from2, to) => match(get(acc.caEdges, from2))
   (ns: List<String>) => CgAcc(acc.caOrder,
       put(acc.caEdges, from2,
         strListMember(ns, to) ? ns : prepend(to, ns)))
-  ()                 => CgAcc(push(acc.caOrder, from2),
+  ()                 => CgAcc(append(acc.caOrder, from2),
       put(acc.caEdges, from2, list1(to)))
 
 fun cgNeighbors(g: ConflictGraph, method: String) => match(get(g.cgEdges, method))
@@ -177,17 +177,17 @@ fun conflictGraphHasAnyEdges(g: ConflictGraph) => any(g.cgOrder, (m) => !isEmpty
 # Max-degree pick by CO-WALK: the previous best's neighbour list is the
 # yardstick (None = nothing picked yet); strictly-longer wins, exactly the
 # old `degree > bestDegree` with the -1 seed (no-length ruling).
-fun [tail] pickMaxDegreeLoop(ms: Chain<String>, g: ConflictGraph,
-                             bestMethod: String, bestNs: List<String>|None) => match(ms)
-  (nil: ChainEnd) => bestMethod
-  (l: ChainLink)  => match(bestNs)
-    (ns: List<String>) => shorterThan(chain(ns), chain(cgNeighbors(g, l.value)))
-      ? pickMaxDegreeLoop(l.next, g, l.value, cgNeighbors(g, l.value))
-      : pickMaxDegreeLoop(l.next, g, bestMethod, bestNs)
-    ()                 => pickMaxDegreeLoop(l.next, g, l.value,
-                                            cgNeighbors(g, l.value))
+fun [tail] pickMaxDegreeLoop(ms: List<String>, g: ConflictGraph,
+                             bestMethod: String, bestNs: List<String>|None) => isEmpty(ms)
+  ? bestMethod
+  : match(bestNs)
+    (ns: List<String>) => shorterThan(ns, cgNeighbors(g, first(ms)))
+      ? pickMaxDegreeLoop(tail(ms), g, first(ms), cgNeighbors(g, first(ms)))
+      : pickMaxDegreeLoop(tail(ms), g, bestMethod, bestNs)
+    ()                 => pickMaxDegreeLoop(tail(ms), g, first(ms),
+                                            cgNeighbors(g, first(ms)))
 
-fun pickMaxDegree(g: ConflictGraph) => pickMaxDegreeLoop(chain(g.cgOrder), g, "", None)
+fun pickMaxDegree(g: ConflictGraph) => pickMaxDegreeLoop(g.cgOrder, g, "", None)
 
 fun conflictGraphRemoveOne(g: ConflictGraph, from2, target)
   ret ConflictGraph(g.cgOrder,
@@ -233,10 +233,10 @@ fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, 
 fun phFixpointStep(vtables: List<VtableEntry>, methodIds0, vtableSizes: List<VtableSize>, iteration, nextId0: Int): List<MethodId>
   # The dict views are per ROUND (ids are reassigned between rounds); the
   # build is one walk, against millions of per-method linear scans inside.
-  let pairs = build(phScanAllSlots(chain(vtables),
-                                  methodIdDict(chain(methodIds0), Dict()),
-                                  vtableSizeDict(chain(vtableSizes), Dict()),
-                                  builder()))
+  let pairs = phScanAllSlots(vtables,
+                                  methodIdDict(methodIds0, Dict()),
+                                  vtableSizeDict(vtableSizes, Dict()),
+                                  List())
   ret isEmpty(pairs)
     ? methodIds0
     : phFixpointCollision(vtables, methodIds0, vtableSizes, iteration, nextId0, pairs)

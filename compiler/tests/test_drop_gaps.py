@@ -1,9 +1,10 @@
 """Two drops/linearity gaps found during ListBuilder adoption (07-29).
 
 1. GENERIC Drop instances don't discharge: a `[trait]` instance
-   `_DropListBuilder<T> : Drop<ListBuilder<T>>` exists in the stdlib, but an
-   implicitly-dropped ListBuilder<Int> fails to compile — the drops pass
-   only recognises CONCRETE instance targets.
+   `_DropListBuilder<T> : Drop<ListBuilder<T>>` existed in the stdlib, but an
+   implicitly-dropped ListBuilder<Int> failed to compile — the drops pass
+   only recognised CONCRETE instance targets. (ListBuilder is gone; the
+   tests now ride SeqBuilder, whose generic ambient Drop has the same shape.)
 
 2. A ternary whose branches mix implicit drop with consumption is rejected
    ("linear value ... used inconsistently across branches") instead of the
@@ -16,12 +17,12 @@ from tests.testutil import BatchedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 # An abandoned builder on an early-return path, no explicit discard: the
-# generic Drop<ListBuilder<T>> instance must fire (and unpin the cell).
+# generic Drop<SeqBuilder<T>> instance must fire (and unpin the segment).
 _GENERIC_DROP = """namespace Test
 import System
 
 fun f(flag: Bool): Int
-  let b = push(builder<Int>(), 7)
+  let b = push(seqBuilder<Int>(), 7)
   if flag
     ret 1
   ret match(head(build(b)))
@@ -38,8 +39,8 @@ _TERNARY_MIX = """namespace Test
 import System
 
 fun g(flag: Bool): Int
-  let b = push(builder<Int>(), 9)
-  ret flag ? 1 : chainLength(chain(build(b)))
+  let b = push(seqBuilder<Int>(), 9)
+  ret flag ? 1 : (isEmpty(build(b)) ? 0 : 1)
 
 fun main(): Int
   ret g(true) == 1 && g(false) == 1 ? 0 : 1

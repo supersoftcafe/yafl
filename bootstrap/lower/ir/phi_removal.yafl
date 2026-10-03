@@ -56,7 +56,7 @@ class [final] PrOut(proRemoved: List<Int>, proRenames: List<PrRename>)
 
 # `back` is the ops already scanned, most-recent FIRST — prFindDef's backward
 # walk reads it directly instead of re-indexing `ops` (prepend keeps the list
-# front-normal, so chain() over it is free).
+# front-normal, so  over it is free).
 fun [tail] prScan(cur: Op|None, st: SeqStream<Op>, back: List<Op>, counts: PrCounts, i,
                   removed, renames,
                   defs: List<StrCount>): PrOut
@@ -95,7 +95,7 @@ fun prTryCoalesce(op: Op, nxt: Op|None, st: SeqStream<Op>, back: List<Op>,
   let onwards = prepend(op, back)
   if strCountGet(defs, c.pcS) != 1 || strCountGet(counts.prReads, c.pcS) != 1
     ret prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
-  ret match(prFindDef(chain(back), i - 1, c))
+  ret match(prFindDef(back, i - 1, c))
     (di: Int) => prScan(nxt, st, onwards, counts, i + 1, prepend(i, removed),
                         prepend(PrRename(di, c.pcS, c.pcTVar), renames),
                         strCountIncr(defs, c.pcT))
@@ -104,15 +104,15 @@ fun prTryCoalesce(op: Op, nxt: Op|None, st: SeqStream<Op>, back: List<Op>,
 # Walk back within the block to src's definition; bail on a block boundary
 # (labels/jumps/returns — value flow beyond the block is invisible here) or
 # when T or S is touched in between.
-fun [tail] prFindDef(back: Chain<Op>, j, c: PrCand) => match(back)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => prBlockBoundary(l.value)
+fun [tail] prFindDef(back: List<Op>, j, c: PrCand) => isEmpty(back)
+  ? None
+  : prBlockBoundary(first(back))
     ? None
-    : prWritesName(l.value, c.pcS)
+    : prWritesName(first(back), c.pcS)
       ? j
-      : prTouches(l.value, c.pcT) || prTouches(l.value, c.pcS)
+      : prTouches(first(back), c.pcT) || prTouches(first(back), c.pcS)
         ? None
-        : prFindDef(l.next, j - 1, c)
+        : prFindDef(tail(back), j - 1, c)
 
 fun prBlockBoundary(op) => match(op)
   (lb: OpLabel)      => true
@@ -136,7 +136,7 @@ fun prTouches(op, name) => strListMember(opReadVarNames(op), name) || prWritesNa
 # ── rebuild: apply renames, drop removed ops and dead source stackvars ──────
 
 fun prRebuild(f: CgFunction, out: PrOut)
-  let removedSet = prRemovedSet(chain(out.proRemoved), Dict())
+  let removedSet = prRemovedSet(out.proRemoved, Dict())
   let newOps = prRebuildOps(f.fnOps, out, removedSet)
   let dead = prDeadSources(f.fnOps, 0i32, 0, removedSet, Set())
   ret cgFunctionWith(f, newOps,
@@ -148,9 +148,9 @@ fun prRebuildOps(ops: Segment<Op>|None, out: PrOut, removedSet: Dict<Int, Bool>)
 
 # Removed indices are a SET (Python's `removed: set[int]`) — the membership
 # test runs once per op, so a list scan made the rebuild quadratic.
-fun [tail] prRemovedSet(is2: Chain<Int>, acc: Dict<Int, Bool>) => match(is2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => prRemovedSet(l.next, put(acc, l.value, true))
+fun [tail] prRemovedSet(is2: List<Int>, acc: Dict<Int, Bool>) => isEmpty(is2)
+  ? acc
+  : prRemovedSet(tail(is2), put(acc, first(is2), true))
 
 fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int) => match(get(removedSet, i))
   (b: Bool) => b

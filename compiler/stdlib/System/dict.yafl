@@ -177,7 +177,7 @@ fun [tail] contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
 
 
 # Tree recursion, so NOT [tail] — the recursion depth is the tree's height
-# (O(log n)), which the C stack carries comfortably. The bucket walk IS an
+# O(log n), which the C stack carries comfortably. The bucket walk IS an
 # accumulator loop and keeps its marker.
 fun size<K,V>(d: Dict<K,V>): Int
   fun [tail] bucket_size(b: _DictBucket<K,V>, acc: Int): Int
@@ -208,37 +208,37 @@ fun keys<K,V>(d: Dict<K,V>): Set<K> where BasicEquality<K>
 # O(1): the chain becomes the bag's front as it lies. Nothing is ordered, so
 # nothing needs reordering.
 fun values<K,V>(d: Dict<K,V>): Bag<V>
-  ret Bag<V>(_dictValueChain<K,V>(d), ChainEnd<V>())
+  ret Bag<V>(_dictValueChain<K,V>(d), _ConsEnd<V>())
 
 
-fun [tail] _chainToSet<K>(c: Chain<K>, acc: Set<K>): Set<K> where BasicEquality<K>
+fun [tail] _chainToSet<K>(c: _Cons<K>, acc: Set<K>): Set<K> where BasicEquality<K>
   ret match(c)
-    (l: ChainLink) => _chainToSet<K>(l.next, add<K>(acc, l.value))
-    (e: ChainEnd)  => acc
+    (l: _ConsLink) => _chainToSet<K>(l.next, add<K>(acc, l.value))
+    (e: _ConsEnd)  => acc
 
 
 # Private walks. The chain order is whatever the tree yields — never exposed,
 # only fed to unordered containers.
-fun _dictKeyChain<K,V>(d: Dict<K,V>): Chain<K>
-  fun [tail] bucket_keys(b: _DictBucket<K,V>, acc: Chain<K>): Chain<K>
+fun _dictKeyChain<K,V>(d: Dict<K,V>): _Cons<K>
+  fun [tail] bucket_keys(b: _DictBucket<K,V>, acc: _Cons<K>): _Cons<K>
     ret match(b)
       (n: _BucketNil)  => acc
-      (c: _BucketCons) => bucket_keys(c.tail, ChainLink<K>(c.key, acc))
+      (c: _BucketCons) => bucket_keys(c.tail, _ConsLink<K>(c.key, acc))
   # NOT [tail]: the inner walk(n.left, acc) is an ARGUMENT, so this is tree
   # recursion (depth = tree height).
-  fun walk(d2: Dict<K,V>, acc: Chain<K>): Chain<K>
+  fun walk(d2: Dict<K,V>, acc: _Cons<K>): _Cons<K>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_keys(n.bucket, walk(n.left, acc)))
-  ret walk(d, ChainEnd<K>())
+  ret walk(d, _ConsEnd<K>())
 
-fun _dictValueChain<K,V>(d: Dict<K,V>): Chain<V>
-  fun [tail] bucket_values(b: _DictBucket<K,V>, acc: Chain<V>): Chain<V>
+fun _dictValueChain<K,V>(d: Dict<K,V>): _Cons<V>
+  fun [tail] bucket_values(b: _DictBucket<K,V>, acc: _Cons<V>): _Cons<V>
     ret match(b)
       (n: _BucketNil)  => acc
-      (c: _BucketCons) => bucket_values(c.tail, ChainLink<V>(c.value, acc))
-  fun walk(d2: Dict<K,V>, acc: Chain<V>): Chain<V>
+      (c: _BucketCons) => bucket_values(c.tail, _ConsLink<V>(c.value, acc))
+  fun walk(d2: Dict<K,V>, acc: _Cons<V>): _Cons<V>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_values(n.bucket, walk(n.left, acc)))
-  ret walk(d, ChainEnd<V>())
+  ret walk(d, _ConsEnd<V>())

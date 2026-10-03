@@ -31,23 +31,23 @@ fun hasStaticGlobalPlan(l: PsLet, r, chasing: List<String>)
 
 fun specHasNamed(sp) => match(sp)
   (n: SNamed)        => true
-  (c: SClass)        => sgAnyNamed(chain(c.scParams))
-  (e2: SEnum)        => sgAnyNamed(chain(e2.seParams))
-  (cm: SCombination) => sgAnyNamed(chain(cm.scTypes))
-  (t2: STuple)       => sgEntsNamed(chain(t2.stEntries))
+  (c: SClass)        => sgAnyNamed(c.scParams)
+  (e2: SEnum)        => sgAnyNamed(e2.seParams)
+  (cm: SCombination) => sgAnyNamed(cm.scTypes)
+  (t2: STuple)       => sgEntsNamed(t2.stEntries)
   (cb: SCallable)    => specHasNamed(cb.scParams2)
                         || sgOptNamed(cb.scResult)
   (af: SArrayField)  => specHasNamed(af.safElem)
   (ls: SLazyStub)    => sgOptNamed(ls.slsTarget)
   (o: Spec)          => false
 
-fun [tail] sgAnyNamed(ts: Chain<Spec>) => match(ts)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => specHasNamed(l.value) ? true : sgAnyNamed(l.next)
+fun [tail] sgAnyNamed(ts: List<Spec>) => isEmpty(ts)
+  ? false
+  : specHasNamed(first(ts)) ? true : sgAnyNamed(tail(ts))
 
-fun [tail] sgEntsNamed(es: Chain<SEntry>) => match(es)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => sgOptNamed(l.value.seType) ? true : sgEntsNamed(l.next)
+fun [tail] sgEntsNamed(es: List<SEntry>) => isEmpty(es)
+  ? false
+  : sgOptNamed(first(es).seType) ? true : sgEntsNamed(tail(es))
 
 fun sgOptNamed(sp: Spec|None) => match(sp)
   (s2: Spec) => specHasNamed(s2)
@@ -56,17 +56,17 @@ fun sgOptNamed(sp: Spec|None) => match(sp)
 # ── auto-promotion ───────────────────────────────────────────────────────────
 
 fun promoteNonTrivialGlobals(statements: List<PStmt>, r): List<PStmt>
-  ret pngLoop(chain(statements), r, List())
+  ret pngLoop(statements, r, List())
 
 fun pngLoop(ss, r,
-                   acc: List<PStmt>): List<PStmt> => build(pngLoopB(ss, r, builderFrom(acc)))
+                   acc: List<PStmt>): List<PStmt> => (pngLoopB(ss, r, acc))
 
-fun [tail] pngLoopB(ss: Chain<PStmt>, r,
-                   [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => pngLoopB(l.next, r, push(acc, pngOne(let2, r)))
-    (o: PStmt)    => pngLoopB(l.next, r, push(acc, l.value))
+fun [tail] pngLoopB(ss: List<PStmt>, r,
+                   acc: List<PStmt>) => isEmpty(ss)
+  ? acc
+  : match(first(ss))
+    (let2: PsLet) => pngLoopB(tail(ss), r, append(acc, pngOne(let2, r)))
+    (o: PStmt)    => pngLoopB(tail(ss), r, append(acc, first(ss)))
 
 fun pngOne(let2, r)
   if isDeferredInit(let2)
@@ -104,34 +104,34 @@ class [final] ClfDecl(cdIdx: Int, cdLazy: Bool)
 class [final] ClfDecls(cdMap: Dict<String, ClfDecl>)
 
 fun clfBlock(stmts: List<PStmt>, acc): Set<PErr>
-  let decls = clfDecls(chain(stmts), 0,
+  let decls = clfDecls(stmts, 0,
                        ClfDecls(Dict()))
-  ret clfScan(chain(stmts), 0, decls, acc)
+  ret clfScan(stmts, 0, decls, acc)
 
-fun [tail] clfDecls(ss: Chain<PStmt>, i, acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => clfDecls(l.next, i + 1,
+fun [tail] clfDecls(ss: List<PStmt>, i, acc) => isEmpty(ss)
+  ? acc
+  : match(first(ss))
+    (let2: PsLet) => clfDecls(tail(ss), i + 1,
         clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
-    (d: PsDestructure) => clfDecls(l.next, i + 1,
-        clfSubDecls(chain(d.dTargets), i, acc))
-    (o: PStmt)    => clfDecls(l.next, i + 1, acc)
+    (d: PsDestructure) => clfDecls(tail(ss), i + 1,
+        clfSubDecls(d.dTargets, i, acc))
+    (o: PStmt)    => clfDecls(tail(ss), i + 1, acc)
 
-fun [tail] clfSubDecls(ts: Chain<PStmt>, i, acc) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => clfSubDecls(l.next, i,
+fun [tail] clfSubDecls(ts: List<PStmt>, i, acc) => isEmpty(ts)
+  ? acc
+  : match(first(ts))
+    (let2: PsLet) => clfSubDecls(tail(ts), i,
         clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
-    (o: PStmt)    => clfSubDecls(l.next, i, acc)
+    (o: PStmt)    => clfSubDecls(tail(ts), i, acc)
 
-fun [tail] clfScan(ss: Chain<PStmt>, i, decls: ClfDecls,
-                   acc: Set<PErr>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
+fun [tail] clfScan(ss: List<PStmt>, i, decls: ClfDecls,
+                   acc: Set<PErr>) => isEmpty(ss)
+  ? acc
+  : match(first(ss))
     (let2: PsLet) => isDeferredInit(let2)
-      ? clfScan(l.next, i + 1, decls, clfLet(let2, i, decls, acc))
-      : clfScan(l.next, i + 1, decls, acc)
-    (o: PStmt)    => clfScan(l.next, i + 1, decls, acc)
+      ? clfScan(tail(ss), i + 1, decls, clfLet(let2, i, decls, acc))
+      : clfScan(tail(ss), i + 1, decls, acc)
+    (o: PStmt)    => clfScan(tail(ss), i + 1, decls, acc)
 
 fun clfLet(let2: PsLet, i, decls: ClfDecls,
            acc): Set<PErr> => match(let2.lDefault)

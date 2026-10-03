@@ -66,41 +66,41 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
       : line
 
   # Collect a matching line as `file:lineNo:line`; non-matches pass through.
-  fun step([terminal] found: ListBuilder<String|FileError>, path: String, lineNo: Int,
-           line: String): ListBuilder<String|FileError>
+  fun step(found: List<String|FileError>, path: String, lineNo: Int,
+           line: String): List<String|FileError>
     ret contains(line, needle)
-      ? push<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
+      ? append<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
       : found
 
   # End of file finishes a file cleanly; any other read error is collected
   # after the matches found before it.
-  fun readEnd([terminal] found: ListBuilder<String|FileError>, path: String,
-              e: IOError): ListBuilder<String|FileError>
+  fun readEnd(found: List<String|FileError>, path: String,
+              e: IOError): List<String|FileError>
     ret match(e)
       (eof: EOFError) => found
-      ()              => push<String|FileError>(found, FileError(path, e))
+      ()              => append<String|FileError>(found, FileError(path, e))
 
   # Stream the file a line at a time, collecting matches in order. `[tail]` so
   # the per-line loop is a loop, not C-stack recursion; `readLine` suspends on
   # buffer refills. The whole file is never held in memory, only its matches.
   fun [tail] scan(io: IO, path: String, lineNo: Int,
-                  [terminal] found: ListBuilder<String|FileError>):
-                  (io: IO, found: ListBuilder<String|FileError>)
+                  found: List<String|FileError>):
+                  (io: IO, found: List<String|FileError>)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => scan(r.io, path, lineNo + 1, step(found, path, lineNo, line))
       (e: IOError)   => (r.io, readEnd(found, path, e))
 
   # The close's error, if any, is collected last: the matches before it stand.
-  fun closeInto([terminal] found: ListBuilder<String|FileError>, path: String,
-                closed: IOError|None): ListBuilder<String|FileError>
+  fun closeInto(found: List<String|FileError>, path: String,
+                closed: IOError|None): List<String|FileError>
     ret match(closed)
-      (e: IOError) => push<String|FileError>(found, FileError(path, e))
+      (e: IOError) => append<String|FileError>(found, FileError(path, e))
       (n: None)    => found
 
   fun searchOpen(path: String, io: IO): List<String|FileError>
-    let r = scan(io, path, 1, builder<String|FileError>())
-    ret build<String|FileError>(closeInto(r.found, path, r.io.close()))
+    let r = scan(io, path, 1, List<String|FileError>())
+    ret (closeInto(r.found, path, r.io.close()))
 
   fun searchOneFile(path: String): List<String|FileError>
     ret match(open_read(path))
@@ -144,18 +144,18 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
 # read, or any write or close failed; otherwise 0.
 fun writeResults(results: List<String|FileError>): System::Int where Show<IOError>
   fun [tail] loop(out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError),
-                  failed: Bool, c: Chain<String|FileError>):
+                  failed: Bool, c: List<String|FileError>):
                   (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
-    ret match(c)
-      (nil: ChainEnd) => (out, err, failed)
-      (l: ChainLink)  => match(l.value)
+    ret isEmpty(c)
+      ? (out, err, failed)
+      : match(first(c))
         (line: String) =>
-            loop(out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err, failed, l.next)
+            loop(out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err, failed, tail(c))
         (fe: FileError) =>
             loop(out, err ?> (io: IO, n: Int) =>
                    writeAll(io, "findstr: " + fe.path + ": " + show(fe.error) + "\n"),
-                 true, l.next)
-  let r = loop((stdout(), 0), (stderr(), 0), false, chain<String|FileError>(results))
+                 true, tail(c))
+  let r = loop((stdout(), 0), (stderr(), 0), false, results)
   let outClosed = r.out.io.close()
   let errClosed = r.err.io.close()
   ret r.failed || r.out.v is IOError || r.err.v is IOError

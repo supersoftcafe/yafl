@@ -47,18 +47,18 @@ fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
     ret None
   ret match(param)
     (p: RParam) => match(p)
-      (sv: RpStackVar) => match(dfoLookup(chain(newobjs), sv.name))
+      (sv: RpStackVar) => match(dfoLookup(newobjs, sv.name))
         (cls: String) => cls
         ()            => dfoClassOf(sdGet(defs, sv.name), newobjs,
                                     defs, depth - 1)
       (o: RParam)      => None
     ()          => None
 
-fun [tail] dfoLookup(ns: Chain<DfoNewObj>, name: String) => match(ns)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.dfoVar == name
-    ? l.value.dfoClass
-    : dfoLookup(l.next, name)
+fun [tail] dfoLookup(ns: List<DfoNewObj>, name: String) => isEmpty(ns)
+  ? None
+  : first(ns).dfoVar == name
+    ? first(ns).dfoClass
+    : dfoLookup(tail(ns), name)
 
 fun dfoReplace(p, newobjs: List<DfoNewObj>, defs: SsaDefs,
                a: CgApp) => match(p)

@@ -1,0 +1,105 @@
+# Tests for List's construction semantics (stdlib/list.yafl): in-place
+# append/prepend into a segment's spare room, the copy taken when two list
+# values extend from the same point (a "fork"), and walks across segment
+# boundaries.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::ListForkTests
+
+import System
+import System::Test
+
+
+fun [tail] _upTo(l: List<Int>, i: Int, n: Int): List<Int>
+    ret i >= n ? l : _upTo(append(l, i), i + 1, n)
+
+fun [tail] _downFrom(l: List<Int>, i: Int, n: Int): List<Int>
+    ret i >= n ? l : _downFrom(prepend(i, l), i + 1, n)
+
+fun _show(l: List<Int>): String
+    ret fold(l, "", (acc: String, x: Int) => acc == "" ? String(x) : acc + "," + String(x))
+
+fun _sum(l: List<Int>): Int
+    ret fold(l, 0, (acc: Int, x: Int) => acc + x)
+
+fun _or(v: Int|None, fallback: Int): Int
+    ret match(v)
+        (x: Int)  => x
+        (n: None) => fallback
+
+
+fun [test("append keeps order across many segments")] appendOrder(): None|TestFailure
+    let l = _upTo(List<Int>(), 0, 100)
+    ret assertEqInt(size(l), 100, "size")
+     ?? assertEqInt(_sum(l), 4950, "sum")
+     ?? assertEqStr(_show(take(l, 5)), "0,1,2,3,4", "prefix")
+
+fun [test("prepend builds in reverse across many segments")] prependOrder(): None|TestFailure
+    let l = _downFrom(List<Int>(), 0, 50)
+    ret assertEqInt(size(l), 50, "size")
+     ?? assertEqStr(_show(take(l, 3)), "49,48,47", "front")
+     ?? assertEqInt(_or(last(l), -1), 0, "last")
+
+fun [test("two appends to one list value both see their own element")] appendFork(): None|TestFailure
+    let base = _upTo(List<Int>(), 0, 3)
+    let a = append(base, 10)
+    let b = append(base, 20)
+    ret assertEqStr(_show(base), "0,1,2", "base unchanged")
+     ?? assertEqStr(_show(a), "0,1,2,10", "first fork")
+     ?? assertEqStr(_show(b), "0,1,2,20", "second fork")
+
+fun [test("forks at a segment boundary each keep their own tail")] appendForkAtBoundary(): None|TestFailure
+    # 2 + 3 + 5 = 10 fills the first three segments exactly
+    let base = _upTo(List<Int>(), 0, 10)
+    let a = _upTo(base, 100, 104)
+    let b = _upTo(base, 200, 204)
+    ret assertEqStr(_show(drop(a, 8)), "8,9,100,101,102,103", "a")
+     ?? assertEqStr(_show(drop(b, 8)), "8,9,200,201,202,203", "b")
+     ?? assertEqInt(size(base), 10, "base size")
+
+fun [test("prepend after tail does not disturb the original")] prependAfterTail(): None|TestFailure
+    let base = _upTo(List<Int>(), 0, 6)
+    let t = tail(tail(base))
+    let a = prepend(-1, t)
+    let b = prepend(-2, t)
+    ret assertEqStr(_show(base), "0,1,2,3,4,5", "base")
+     ?? assertEqStr(_show(a), "-1,2,3,4,5", "a")
+     ?? assertEqStr(_show(b), "-2,2,3,4,5", "b")
+
+fun [test("a mixed prepend/append list walks in order")] mixed(): None|TestFailure
+    let l = append(append(prepend(-2, prepend(-1, _upTo(List<Int>(), 0, 3))), 3), 4)
+    ret assertEqStr(_show(l), "-2,-1,0,1,2,3,4", "order")
+     ?? assertEqInt(size(l), 7, "size")
+     ?? assertEqInt(_or(head(l), 99), -2, "head")
+     ?? assertEqInt(_or(last(l), 99), 4, "last")
+
+fun [test("concat appends the second list onto the first")] concatShares(): None|TestFailure
+    let a = _upTo(List<Int>(), 0, 4)
+    let b = _upTo(List<Int>(), 10, 13)
+    let ab = concat(a, b)
+    let ab2 = concat(a, b)
+    ret assertEqStr(_show(ab), "0,1,2,3,10,11,12", "ab")
+     ?? assertEqStr(_show(ab2), "0,1,2,3,10,11,12", "a second concat from the same a")
+     ?? assertEqStr(_show(a), "0,1,2,3", "a unchanged")
+
+fun [test("a list is a Stream of its elements")] streams(): None|TestFailure
+    let s1 = streamNext<List<Int>, Int, Never>(_upTo(List<Int>(), 5, 7))
+    let s2 = streamNext<List<Int>, Int, Never>(s1.stream)
+    let s3 = streamNext<List<Int>, Int, Never>(s2.stream)
+    ret assertEqInt(_okOr(s1.value), 5, "first")
+     ?? assertEqInt(_okOr(s2.value), 6, "second")
+     ?? assertEqInt(_okOr(s3.value), -1, "end")
+
+fun _okOr(r: Result<Int|None, Never>): Int
+    ret match(r)
+        (ok: Ok<Int|None, Never>) => _or(ok.value, -1)
+        (er: Error<Int|None, Never>) => -2
+
+fun [test("uncons yields the head and the rest")] unconsWalks(): None|TestFailure
+    let u1 = uncons(_upTo(List<Int>(), 1, 4))
+    let u2 = uncons(u1.rest)
+    ret assertEqInt(_or(u1.head, 0), 1, "first")
+     ?? assertEqInt(_or(u2.head, 0), 2, "second")
+     ?? assertEqInt(size(u2.rest), 1, "one left")
+     ?? assertTrue(uncons(List<Int>()).head is None, "empty has no head")

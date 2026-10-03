@@ -9,11 +9,9 @@ import System
 # DELETED. That reversal only ever existed to restore ORDER when draining the
 # rear of an ordered list; a Bag has no order to restore, so both chains are
 # walked as they lie and nothing is ever reversed. Two chains rather than one
-# because a List is then convertible in O(1) — its front becomes the front,
-# its rear the rear — and because a cheap merge has somewhere to land when we
-# come to it.
+# because a cheap merge has somewhere to land when we come to it.
 #
-# NO ITERATION. A Bag has no order, so it exposes none: there is no chain(),
+# NO ITERATION. A Bag has no order, so it exposes none: there is no stream,
 # no head, no fold. Exposing the order the elements happen to lie in would be
 # a lie callers would come to depend on. What a Bag offers is bulk transforms
 # whose result is also unordered (map, filter), questions whose answer does
@@ -23,12 +21,28 @@ import System
 # No `size` either, by the same rule that killed list length: ask the question
 # you actually have (isEmpty / singleOrNone / isMoreThanOne) instead of
 # counting to answer it.
-class Bag<T>(_front: Chain<T>, _rear: Chain<T>)
+class Bag<T>(_front: _Cons<T>, _rear: _Cons<T>)
+
+
+# A bare cons stack — the internal storage of the UNORDERED containers (Bag,
+# and the key/value walks of Dict and Set) and of regex's thread lists. Never
+# a public sequence: List is the ordered container, and it exposes no shape.
+enum _Cons<T>
+  enum _ConsEnd()
+  enum _ConsLink(value: T, next: _Cons<T>)
+
+fun [tail] _consFromList<T>(l: List<T>, acc: _Cons<T>): _Cons<T>
+  ret isEmpty<T>(l) ? acc : _consFromList<T>(tail<T>(l), _ConsLink<T>(first<T>(l), acc))
+
+fun [tail] _consIntoList<T>(acc: List<T>, c: _Cons<T>): List<T>
+  ret match(c)
+    (nil: _ConsEnd) => acc
+    (l: _ConsLink)  => _consIntoList<T>(append<T>(acc, l.value), l.next)
 
 
 # Public factory — an empty bag.
 fun Bag<T>(): Bag<T>
-  ret Bag<T>(ChainEnd<T>(), ChainEnd<T>())
+  ret Bag<T>(_ConsEnd<T>(), _ConsEnd<T>())
 
 
 # From a List, forgetting its order but KEEPING its duplicates — that is what
@@ -36,17 +50,17 @@ fun Bag<T>(): Bag<T>
 # equality on T. Like that one, it is the free direction: dropping an ordering
 # asks nothing of the caller, where recovering one makes them name it.
 fun Bag<T>(l: List<T>): Bag<T>
-  ret Bag<T>(chain<T>(l), ChainEnd<T>())
+  ret Bag<T>(_consFromList<T>(l, _ConsEnd<T>()), _ConsEnd<T>())
 
 
 # Add an element. O(1), and duplicates are kept — that is what distinguishes a
 # Bag from a Set.
 fun add<T>(b: Bag<T>, x: T): Bag<T>
-  ret Bag<T>(ChainLink<T>(x, b._front), b._rear)
+  ret Bag<T>(_ConsLink<T>(x, b._front), b._rear)
 
 
 fun isEmpty<T>(b: Bag<T>): Bool
-  ret b._front is ChainEnd && b._rear is ChainEnd
+  ret b._front is _ConsEnd && b._rear is _ConsEnd
 
 
 # How many elements. A count says nothing about order, so it is a fair
@@ -56,10 +70,10 @@ fun isEmpty<T>(b: Bag<T>): Bool
 fun size<T>(b: Bag<T>): Int
   ret _chainCount<T>(b._front, _chainCount<T>(b._rear, 0))
 
-fun [tail] _chainCount<T>(c: Chain<T>, acc: Int): Int
+fun [tail] _chainCount<T>(c: _Cons<T>, acc: Int): Int
   ret match(c)
-    (l: ChainLink) => _chainCount<T>(l.next, acc + 1)
-    (e: ChainEnd)  => acc
+    (l: _ConsLink) => _chainCount<T>(l.next, acc + 1)
+    (e: _ConsEnd)  => acc
 
 
 # The element of a one-element bag, else None — for the common shape where a
@@ -68,18 +82,18 @@ fun [tail] _chainCount<T>(c: Chain<T>, acc: Int): Int
 # is None whichever element came first.
 fun singleOrNone<T>(b: Bag<T>): T|None
   ret match(b._front)
-    (f: ChainLink)  => f.next is ChainEnd && b._rear is ChainEnd ? f.value : None
-    (e: ChainEnd)   => match(b._rear)
-      (r: ChainLink) => r.next is ChainEnd ? r.value : None
-      (e2: ChainEnd) => None
+    (f: _ConsLink)  => f.next is _ConsEnd && b._rear is _ConsEnd ? f.value : None
+    (e: _ConsEnd)   => match(b._rear)
+      (r: _ConsLink) => r.next is _ConsEnd ? r.value : None
+      (e2: _ConsEnd) => None
 
 
 fun isMoreThanOne<T>(b: Bag<T>): Bool
   ret match(b._front)
-    (f: ChainLink)  => f.next !is ChainEnd || b._rear !is ChainEnd
-    (e: ChainEnd)   => match(b._rear)
-      (r: ChainLink) => r.next !is ChainEnd
-      (e2: ChainEnd) => false
+    (f: _ConsLink)  => f.next !is _ConsEnd || b._rear !is _ConsEnd
+    (e: _ConsEnd)   => match(b._rear)
+      (r: _ConsLink) => r.next !is _ConsEnd
+      (e2: _ConsEnd) => false
 
 
 # ── bulk transforms — unordered in, unordered out ────────────────────────────
@@ -89,23 +103,23 @@ fun isMoreThanOne<T>(b: Bag<T>): Bool
 # for an unordered consumer — never reach for these when building a List.
 
 fun map<T,U>(b: Bag<T>, f: (:T): U): Bag<U>
-  ret Bag<U>(_chainMapRev<T,U>(b._front, f, ChainEnd<U>()),
-             _chainMapRev<T,U>(b._rear, f, ChainEnd<U>()))
+  ret Bag<U>(_chainMapRev<T,U>(b._front, f, _ConsEnd<U>()),
+             _chainMapRev<T,U>(b._rear, f, _ConsEnd<U>()))
 
-fun [tail] _chainMapRev<T,U>(c: Chain<T>, f: (:T): U, acc: Chain<U>): Chain<U>
+fun [tail] _chainMapRev<T,U>(c: _Cons<T>, f: (:T): U, acc: _Cons<U>): _Cons<U>
   ret match(c)
-    (l: ChainLink)  => _chainMapRev<T,U>(l.next, f, ChainLink<U>(f(l.value), acc))
-    (e: ChainEnd)   => acc
+    (l: _ConsLink)  => _chainMapRev<T,U>(l.next, f, _ConsLink<U>(f(l.value), acc))
+    (e: _ConsEnd)   => acc
 
 
 fun filter<T>(b: Bag<T>, f: (:T): Bool): Bag<T>
-  ret Bag<T>(_chainFilterRev<T>(b._front, f, ChainEnd<T>()),
-             _chainFilterRev<T>(b._rear, f, ChainEnd<T>()))
+  ret Bag<T>(_chainFilterRev<T>(b._front, f, _ConsEnd<T>()),
+             _chainFilterRev<T>(b._rear, f, _ConsEnd<T>()))
 
-fun [tail] _chainFilterRev<T>(c: Chain<T>, f: (:T): Bool, acc: Chain<T>): Chain<T>
+fun [tail] _chainFilterRev<T>(c: _Cons<T>, f: (:T): Bool, acc: _Cons<T>): _Cons<T>
   ret match(c)
-    (l: ChainLink)  => _chainFilterRev<T>(l.next, f, f(l.value) ? ChainLink<T>(l.value, acc) : acc)
-    (e: ChainEnd)   => acc
+    (l: _ConsLink)  => _chainFilterRev<T>(l.next, f, f(l.value) ? _ConsLink<T>(l.value, acc) : acc)
+    (e: _ConsEnd)   => acc
 
 
 # ── order-independent questions ──────────────────────────────────────────────
@@ -113,10 +127,10 @@ fun [tail] _chainFilterRev<T>(c: Chain<T>, f: (:T): Bool, acc: Chain<T>): Chain<
 fun any<T>(b: Bag<T>, f: (:T): Bool): Bool
   ret _chainAny<T>(b._front, f) || _chainAny<T>(b._rear, f)
 
-fun [tail] _chainAny<T>(c: Chain<T>, f: (:T): Bool): Bool
+fun [tail] _chainAny<T>(c: _Cons<T>, f: (:T): Bool): Bool
   ret match(c)
-    (l: ChainLink)  => f(l.value) ? true : _chainAny<T>(l.next, f)
-    (e: ChainEnd)   => false
+    (l: _ConsLink)  => f(l.value) ? true : _chainAny<T>(l.next, f)
+    (e: _ConsEnd)   => false
 
 
 fun all<T>(b: Bag<T>, f: (:T): Bool): Bool
@@ -134,10 +148,10 @@ fun contains<T>(b: Bag<T>, x: T): Bool where BasicEquality<T>
 fun maxOr<T>(b: Bag<T>, dflt: T): T where BasicCompare<T>
   ret _chainMaxOr<T>(b._rear, _chainMaxOr<T>(b._front, dflt))
 
-fun [tail] _chainMaxOr<T>(c: Chain<T>, best: T): T where BasicCompare<T>
+fun [tail] _chainMaxOr<T>(c: _Cons<T>, best: T): T where BasicCompare<T>
   ret match(c)
-    (l: ChainLink) => _chainMaxOr<T>(l.next, l.value > best ? l.value : best)
-    (e: ChainEnd)  => best
+    (l: _ConsLink) => _chainMaxOr<T>(l.next, l.value > best ? l.value : best)
+    (e: _ConsEnd)  => best
 
 
 # ── the one way out ──────────────────────────────────────────────────────────
@@ -156,7 +170,7 @@ fun sortBy<T>(b: Bag<T>, less: (:T, :T): Bool): List<T>
 # Private: the elements as a List in unspecified order. NOT public — handing
 # this out would be iteration on an unordered container by another name.
 fun _bagDrain<T>(b: Bag<T>): List<T>
-  ret build<T>(_pushChain<T>(_pushChain<T>(builder<T>(), b._front), b._rear))
+  ret _consIntoList<T>(_consIntoList<T>(List<T>(), b._front), b._rear)
 
 
 # fold — a REDUCTION, not a walk. `f` must be COMMUTATIVE and ASSOCIATIVE in

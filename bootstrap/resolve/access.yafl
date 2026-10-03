@@ -29,7 +29,7 @@ fun soleOf(datas: Bag<Found>) => singleOrNone(datas)
 
 fun resolveOverloads(r, expected: Spec|None,
                      candidates)
-  if atMost(chain(candidates), 1)
+  if atMost(candidates, 1)
     ret Bag(candidates)
   let survivors = partitionByVerdict(candidates, expected, r)
   if !isEmpty(survivors)
@@ -53,19 +53,19 @@ class [final] Verdicts(pvTrue: Bag<Found>, pvMaybe: Bag<Found>)
 
 fun partitionByVerdict(cands: List<Found>, expected: Spec|None,
                        r)
-  let v = verdictLoop(chain(cands), expected, r, Bag(), Bag())
+  let v = verdictLoop(cands, expected, r, Bag(), Bag())
   ret isEmpty(v.pvTrue) ? v.pvMaybe : v.pvTrue
 
-fun [tail] verdictLoop(cs: Chain<Found>, expected: Spec|None, r,
-                       yes, maybe) => match(cs)
-  (nil: ChainEnd) => Verdicts(yes, maybe)
-  (l: ChainLink)  => match(assignableEq(r, expected,
-                                        candidateType(l.value, r)))
+fun [tail] verdictLoop(cs: List<Found>, expected: Spec|None, r,
+                       yes, maybe) => isEmpty(cs)
+  ? Verdicts(yes, maybe)
+  : match(assignableEq(r, expected,
+                                        candidateType(first(cs), r)))
     (b: Bool) => b
-      ? verdictLoop(l.next, expected, r, add(yes, l.value), maybe)
-      : verdictLoop(l.next, expected, r, yes, maybe)
-    ()        => verdictLoop(l.next, expected, r, yes,
-                             add(maybe, l.value))
+      ? verdictLoop(tail(cs), expected, r, add(yes, first(cs)), maybe)
+      : verdictLoop(tail(cs), expected, r, yes, maybe)
+    ()        => verdictLoop(tail(cs), expected, r, yes,
+                             add(maybe, first(cs)))
 
 # The candidate's EFFECTIVE type: its declaration's, with a TRAIT find's
 # interface instantiation substituted through (Plus<Int>.+ compares as
@@ -95,19 +95,19 @@ fun candidateType(x: Found, r: Resolver) => match(candidateSignature(x))
 fun instanceWildcarded(ty, x: Found) => match(x.fInstanceParams)
   (ns: List<String>) => isEmpty(ns)
     ? ty
-    : substitute(ty, nameWildcards(chain(ns), stmtLine(x.fStmt),
+    : substitute(ty, nameWildcards(ns, stmtLine(x.fStmt),
                                    List()))
   ()                 => ty
 
 fun nameWildcards(ns, lr,
                          acc: List<Binding>): List<Binding>
-  ret build(nameWildcardsB(ns, lr, builderFrom(acc)))
+  ret (nameWildcardsB(ns, lr, acc))
 
-fun [tail] nameWildcardsB(ns: Chain<String>, lr,
-                         [terminal] acc: ListBuilder<Binding>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => nameWildcardsB(l.next, lr,
-                      push(acc, Binding(l.value,
+fun [tail] nameWildcardsB(ns: List<String>, lr,
+                         acc: List<Binding>) => isEmpty(ns)
+  ? acc
+  : nameWildcardsB(tail(ns), lr,
+                      append(acc, Binding(first(ns),
                                 SNamed("$overload$wildcard",
                                        List(), lr))))
 
@@ -130,21 +130,21 @@ fun solveInstanceScope(f: Found, own: List<String>, expected: Spec|None,
 # code states its own `where`).
 fun solveAgainst(effective, expected, ts, own: List<String>, r)
   let m = mgGo(expected, effective, map(own, (n) => MBind(n, None)), false, false, false, r)
-  let bound = learnedBindings(chain(m.moBinds), List())
-  ret isEmpty(m.moErrs) && bindsAll(chain(own), bound)
+  let bound = learnedBindings(m.moBinds, List())
+  ret isEmpty(m.moErrs) && bindsAll(own, bound)
       && !any(bound, (b) => !isEmpty(placeholderNames(b.bSpec)))
     ? substitute(ts, bound)
     : None
 
-fun [tail] bindsAll(ns: Chain<String>, bs: List<Binding>) => match(ns)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => hasBinding(chain(bs), l.value)
-    ? bindsAll(l.next, bs)
+fun [tail] bindsAll(ns: List<String>, bs: List<Binding>) => isEmpty(ns)
+  ? true
+  : hasBinding(bs, first(ns))
+    ? bindsAll(tail(ns), bs)
     : false
 
-fun [tail] hasBinding(bs: Chain<Binding>, name: String) => match(bs)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => l.value.bName == name ? true : hasBinding(l.next, name)
+fun [tail] hasBinding(bs: List<Binding>, name: String) => isEmpty(bs)
+  ? false
+  : first(bs).bName == name ? true : hasBinding(tail(bs), name)
 
 fun traitSubstituted(ty, x: Found) => match(traitMapping(x))
   (m: List<Binding>) => substitute(ty, m)
@@ -166,19 +166,19 @@ fun wildcarded(ty, x: Found)
   let gens = stmtGens(x.fStmt)
   ret isEmpty(gens)
     ? ty
-    : substitute(ty, wildcardBindings(chain(gens), stmtLine(x.fStmt),
+    : substitute(ty, wildcardBindings(gens, stmtLine(x.fStmt),
                                       List()))
 
-fun wildcardBindings(gs: Chain<PGen>, lr,
+fun wildcardBindings(gs: List<PGen>, lr,
                             acc: List<Binding>)
-  ret build(wildcardBindingsB(gs, lr, builderFrom(acc)))
+  ret (wildcardBindingsB(gs, lr, acc))
 
-fun [tail] wildcardBindingsB(gs: Chain<PGen>, lr,
-                            [terminal] acc): ListBuilder<Binding> => match(gs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => wildcardBindingsB(l.next, lr,
-                       push(acc,
-                              Binding(l.value.genName,
+fun [tail] wildcardBindingsB(gs: List<PGen>, lr,
+                            acc): List<Binding> => isEmpty(gs)
+  ? acc
+  : wildcardBindingsB(tail(gs), lr,
+                       append(acc,
+                              Binding(first(gs).genName,
                                       SNamed("$overload$wildcard",
                                              List(), lr))))
 

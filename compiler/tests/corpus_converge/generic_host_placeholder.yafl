@@ -1,28 +1,28 @@
 # A generic body calling generic helpers whose type arguments come ONLY from
 # the host's own type parameters.
 #
-# Inside `shorter<T, U>`, `isEnd(b)` with `b: Chain<U>` must bind isEnd's T to
+# Inside `shorter<T, U>`, `isEnd(b)` with `b: List<U>` must bind isEnd's T to
 # the host's U: an enclosing generic's parameter is a real type at the use
 # site, not a hole. Both compilers used to leave isEnd's own placeholder
 # unbound, and monomorphisation "completed" it by bare NAME — isEnd's T became
-# the host's T — so the Chain<String> argument was dispatched with
-# Chain<Int>'s tags and the program aborted at runtime, with no diagnostic.
+# the host's T — so the List<String> argument was dispatched with
+# List<Int>'s tags and the program aborted at runtime, with no diagnostic.
 # The C contracts diff the port's emitted C against Python's for this file.
 namespace GenericHostPlaceholder
 
 import System
 
-fun isEnd<T>(c: Chain<T>): Bool
-  ret match(c)
-    (nil: ChainEnd) => true
-    (l: ChainLink)  => false
+fun isEnd<T>(c: List<T>): Bool
+  ret isEmpty(c)
+    ? true
+    : false
 
-fun restOf<T>(c: Chain<T>): Chain<T>
-  ret match(c)
-    (nil: ChainEnd) => c
-    (l: ChainLink)  => l.next
+fun restOf<T>(c: List<T>): List<T>
+  ret isEmpty(c)
+    ? c
+    : tail(c)
 
-fun [tail] shorter<T, U>(a: Chain<T>, b: Chain<U>): Bool
+fun [tail] shorter<T, U>(a: List<T>, b: List<U>): Bool
   ret isEnd(b)
     ? false
     : (isEnd(a) ? true : shorter(restOf(a), restOf(b)))
@@ -30,4 +30,4 @@ fun [tail] shorter<T, U>(a: Chain<T>, b: Chain<U>): Bool
 fun main(): Int
   let ints = prepend(1, List<Int>())
   let strs = prepend("a", prepend("b", List<String>()))
-  ret shorter(chain(ints), chain(strs)) ? 7 : 3
+  ret shorter(ints, strs) ? 7 : 3
