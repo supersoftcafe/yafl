@@ -83,10 +83,16 @@ fun [foreign("list_seg_release"), impure, sync] _lsRelease<T>(seg: ListSeg<T>,
 fun [foreign("list_seg_link"), impure, sync] _lsLink<T>(seg: ListSeg<T>, end: Int32,
       next: ListSeg<T>): ListSeg<T>|None
 
-# The current copy of a segment reached through lsNext. A list value's own
-# segment pointers are always good for its own elements; a `next` pointer is
-# written once, when its target was brand new, so a walk resolves each
-# segment it ENTERS (once per ≤ 16 elements, never per element).
+# The current copy of a segment. A list value's segment pointers are always
+# good for its own ELEMENTS — every slot in its range was written before the
+# value existed. Not for `lsNext`: a segment is linked when it fills, which can
+# be after a list value took its pointer to it (a one-segment list keeps the
+# same `_first` across the append that links), and the GC may have moved it
+# in between, leaving that pointer at a copy whose `next` is still None. And
+# the segment `next` names was brand new when linked, so later appends into it
+# land on whatever copy is current then. So every read of lsNext resolves the
+# segment it reads from, and the walk resolves the segment it enters — twice
+# per ≤ 16 elements, never per element.
 fun [foreign("list_seg_resolve"), sync] _lsResolve<T>(seg: ListSeg<T>): ListSeg<T>
 
 
@@ -188,7 +194,7 @@ fun _prependCopy<T>(x: T, l: List<T>, f: ListSeg<T>): List<T>
   ret match(l._last)
     (last: ListSeg<T>) => _lsSame<T>(f, last)
       ? _prependCopied<T>(x, f, l._start, l._end, None, f.lsOrd, None, 0i32)
-      : _prependCopied<T>(x, f, l._start, f.length, f.lsNext, f.lsOrd, last, l._end)
+      : _prependCopied<T>(x, f, l._start, f.length, _lsResolve<T>(f).lsNext, f.lsOrd, last, l._end)
     (nil: None) => l
 
 # `last`/`end` are the list's own when the copy is not the last segment;
@@ -264,7 +270,7 @@ fun [inline(always)] tail<T>(l: List<T>): List<T>
 
 # Cross from a full segment into the next one, resolving it once.
 fun _lsHop<T>(f: ListSeg<T>, last: ListSeg<T>, end: Int32): List<T>
-  ret match(f.lsNext)
+  ret match(_lsResolve<T>(f).lsNext)
     (n: ListSeg<T>) => _lsEnter<T>(_lsResolve<T>(n), last, end)
     (nil: None)     => List<T>()     # unreachable: an interior segment is linked
 
@@ -293,7 +299,7 @@ fun size<T>(l: List<T>): Int
 
 fun [tail] _lsSizeFrom<T>(s: ListSeg<T>, from: Int32, last: ListSeg<T>, end: Int32,
                           acc: Int): Int
-  ret match(s.lsNext)
+  ret match(_lsResolve<T>(s).lsNext)
     (n: ListSeg<T>) => _lsSame<T>(n, last)
       ? acc + Int(s.length - from) + Int(end)
       : _lsSizeFrom<T>(_lsResolve<T>(n), 0i32, last, end, acc + Int(s.length - from))

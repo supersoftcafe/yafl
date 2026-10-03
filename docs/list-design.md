@@ -82,11 +82,16 @@ O(segments).
 * **Relocation.** A late store must land on the copy the world reads, so the
   claim resolves forwarding and holds the pin across the store
   (`object_pin_resolve`). A list value's own segment pointers are always
-  good for its own elements — every one was taken at or after the writes
-  the value depends on. A `next` pointer is not: it is written once, when
-  its target is brand new, and later appends land on whatever copy is
-  current then. So a walk resolves each segment it ENTERS (`list_seg_resolve`
-  in `tail`'s hop) — once per ≤ 16 elements, never per element read. This is
+  good for its own ELEMENTS — every slot in its range was written before
+  the value existed. Not for `next` links: a segment is linked when it
+  fills, which can be after a list value took its pointer to it (a
+  one-segment list keeps its `_first` across the append that links), and
+  if the GC moved the segment in between, that pointer names a copy whose
+  `next` is still empty. And the segment a link names was brand new when
+  linked, so later appends into it land on whatever copy is current then.
+  So every read of a `next` link resolves the segment it reads from, and a
+  walk resolves the segment it enters (`list_seg_resolve`, in `tail`'s hop)
+  — twice per ≤ 16 elements, never per element read. This is
   the difference from `[pinnable]`, which resolves every field access.
 * **Generations.** A late store can put a young pointer into a segment on an
   old page; `gc_note_late_write` runs before every claimed store, exactly as
