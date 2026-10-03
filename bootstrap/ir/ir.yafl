@@ -69,16 +69,16 @@ fun [tail] strCountGet(l: List<StrCount>, name) => match(head(l))
 
 # A bump REBUILDS the whole table, appending as it goes; a name not already
 # present is appended at the end.
-fun strCountIncr(l: List<StrCount>, name) => build(strCountIncrLoop(l, name, false, List()))
+fun strCountIncr(l: List<StrCount>, name) => (strCountIncrLoop(l, name, false, List()))
 
 fun [tail] strCountIncrLoop(l: List<StrCount>, name, found,
                             [terminal] acc): List<StrCount> => match(head(l))
   (e: StrCount) => strCountIncrLoop(tail(l), name,
                       found || e.scName == name,
-                      push(acc, e.scName == name
+                      append(acc, e.scName == name
                           ? StrCount(e.scName, e.scCount + 1)
                           : e))
-  ()             => found ? acc : push(acc, StrCount(name, 1))
+  ()             => found ? acc : append(acc, StrCount(name, 1))
 
 # ══════════════════════════════════════════════════════════════════════════
 # Function
@@ -131,13 +131,13 @@ fun cgOpsOf(ops: List<Op>): Segment<Op>|None => build(pushAll(seqBuilder(), ops)
 
 # The inverse boundary, for the one pass (async liveness) whose tuned
 # Dict-indexed fixpoint keeps List internals: copy out, iterate, copy back.
-fun cgOpsToList(s: Segment<Op>|None) => build(cgOtlLoop(s, 0i32, List()))
+fun cgOpsToList(s: Segment<Op>|None) => (cgOtlLoop(s, 0i32, List()))
 
 fun [tail] cgOtlLoop(s: Segment<Op>|None, i,
                      [terminal] acc): List<Op> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => i < seg.length
-    ? cgOtlLoop(s, i + 1i32, push(acc, seg.array(i)))
+    ? cgOtlLoop(s, i + 1i32, append(acc, seg.array(i)))
     : cgOtlLoop(seg.next, 0i32, acc)
 
 fun cgFunctionWith(f: CgFunction, ops, stackVars)
@@ -189,7 +189,7 @@ fun cgCollectPhisStep(acc: (curLabel: String, phis: List<PhiAtEntry>), op): (cur
   ret match(op)
     (l: OpLabel) => (l.labelName, acc.phis)
     (p: OpPhi) => (acc.curLabel,
-                   build(push(acc.phis, PhiAtEntry(acc.curLabel, op))))
+                   (append(acc.phis, PhiAtEntry(acc.curLabel, op))))
     (o: Op) => (acc.curLabel, acc.phis)
 
 fun phisAtLabel(phis: List<PhiAtEntry>, label: String)

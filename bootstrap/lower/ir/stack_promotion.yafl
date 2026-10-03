@@ -49,7 +49,7 @@ fun spZeroOf(ft) => match(ft)
 fun spCandidates(f: CgFunction, a: CgApp)
   # In op order: the candidates' order becomes the promoted locals' field
   # declaration order.
-  let news = build(spNewsLoop(f.fnOps, 0i32, a,
+  let news = (spNewsLoop(f.fnOps, 0i32, a,
                               List()))
   ret filter(news,
              (c) => spDefCount(f.fnOps, c.spReg) == 1
@@ -72,7 +72,7 @@ fun spNewsOp([terminal] acc, op, a: CgApp): List<SpCand> => match(op)
 fun spNewsRegister([terminal] acc, no: OpNewObject,
                    a: CgApp): List<SpCand> => match(no.newObjRegister)
   (sv: RpStackVar) => match(spPayloadFields(appObject(a, no.newObjName)))
-    (payload: List<CgField>) => push(acc, SpCand(sv.name, payload))
+    (payload: List<CgField>) => append(acc, SpCand(sv.name, payload))
     ()                       => acc
   (o: RParam)      => acc
 
@@ -187,7 +187,7 @@ fun spRestack(f: CgFunction, promoted: List<SpCand>)
                                        fld.fieldName) is None)
   # Declaration order: the locals that survive, then one field per promoted
   # object's payload.
-  ret CgStruct(build(spCandsFields(promoted,
+  ret CgStruct((spCandsFields(promoted,
                    kept)))
 
 fun [tail] spCandsFields(cs: List<SpCand>,
@@ -203,6 +203,6 @@ fun [tail] spCandFieldsLoop(fs: List<CgField>, cand: SpCand,
                             [terminal] acc): List<CgField> => isEmpty(fs)
   ? acc
   : spCandFieldsLoop(tail(fs), cand,
-                         push(acc,
+                         append(acc,
                              CgField(cand.spReg + "$" + first(fs).fieldName,
                                      first(fs).fieldType)))

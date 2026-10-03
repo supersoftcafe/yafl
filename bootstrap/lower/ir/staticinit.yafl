@@ -55,7 +55,7 @@ fun siResolveField(acc, nv: RpNamedValue, a: CgApp)
     ret acc
   ret match(siResolveConstants(nv.value, a))
     # Struct fields, in field order.
-    (r: RParam) => SiVals(build(push(acc.svVals, RpNamedValue(nv.name, r))), true)
+    (r: RParam) => SiVals((append(acc.svVals, RpNamedValue(nv.name, r))), true)
     ()           => SiVals(acc.svVals, false)
 
 # _trace_to_constant (the subset the -O0 path exercises: no function-local
@@ -85,7 +85,7 @@ fun siTraceStructField(acc, nv: RpNamedValue, vmap: FunValues, a: CgApp)
     ret acc
   ret match(siTraceToConstant(nv.value, vmap, a))
     # Struct fields, in field order.
-    (r: RParam) => SiVals(build(push(acc.svVals, RpNamedValue(nv.name, r))), true)
+    (r: RParam) => SiVals((append(acc.svVals, RpNamedValue(nv.name, r))), true)
     ()           => SiVals(acc.svVals, false)
 
 # Object-typed globals can't be C static initialiser values; lazy globals
@@ -125,7 +125,7 @@ class [final] SiNewObj(snIdx: Int, snClass: String, snReg: String)
 class [final] SiAssign(saReg: String, saField: String, saIdx: Int,
                        saSrc: RParam)
 
-fun siNewObjPositions(ops: Segment<Op>|None) => build(siNopLoop(ops, 0i32, 0, List()))
+fun siNewObjPositions(ops: Segment<Op>|None) => (siNopLoop(ops, 0i32, 0, List()))
 
 fun [tail] siNopLoop(s: Segment<Op>|None, iSeg, i,
                      [terminal] acc): List<SiNewObj> => match(s)
@@ -140,7 +140,7 @@ fun siNopOne([terminal] acc, op,
              i): List<SiNewObj> => match(op)
   (no: OpNewObject) => no.newObjSize is None
     ? match(no.newObjRegister)
-      (sv: RpStackVar) => push(acc,
+      (sv: RpStackVar) => append(acc,
                               SiNewObj(i, no.newObjName, sv.name))
       (o: RParam)      => acc
     : acc
@@ -245,11 +245,11 @@ fun [tail] siPromoLoop(ns: List<SiNewObj>, f: CgFunction, a: CgApp,
                        counter,
                        acc: List<SiPromo>): (promos: List<SiPromo>, counter: Int)
   ret isEmpty(ns)
-    ? (build(acc), counter)
+    ? (acc, counter)
     : siPromoTry(first(ns), f, a, assigns, vmap, counter)
       |> (t2) => match(t2.promo)
         (p2: SiPromo) => siPromoLoop(tail(ns), f, a, assigns, vmap,
-                                     t2.counter, push(acc, p2))
+                                     t2.counter, append(acc, p2))
         ()            => siPromoLoop(tail(ns), f, a, assigns, vmap,
                                      t2.counter, acc)
 
@@ -293,7 +293,7 @@ fun siInitValues(a: CgApp, className: String,
          List(),
          # In the object's own FIELD order — this is the static initialiser.
          (acc, fld) =>
-           build(push(acc, fld.fieldName == "$hash"
+           (append(acc, fld.fieldName == "$hash"
                  ? RpNamedValue(fld.fieldName, RpZeroOf(fld.fieldType))
                  : RpNamedValue(fld.fieldName,
                                 siTracedValue(traced, fld.fieldName)))))
@@ -308,11 +308,11 @@ fun [tail] siTracedValue(vs: List<RpNamedValue>, field: String) => isEmpty(vs)
 fun [tail] siTracedFields(fs: List<CgField>, own: List<SiAssign>,
                           vmap: FunValues, a: CgApp,
                           acc: List<RpNamedValue>) => isEmpty(fs)
-  ? build(acc)
+  ? acc
   : match(siAssignFor(own, first(fs).fieldName))
     (as2: SiAssign) => match(siTraceToConstant(as2.saSrc, vmap, a))
       (const: RParam) => siTracedFields(tail(fs), own, vmap, a,
-                             push(acc,
+                             append(acc,
                                  RpNamedValue(first(fs).fieldName, const)))
       ()              => None
     ()              => None
@@ -356,12 +356,12 @@ class [final] SiPsAcc(psFns: List<CgFunction>,
 fun [tail] siPsLoop(fs: List<CgFunction>, a: CgApp, counter,
                     acc: SiPsAcc): (fns: List<CgFunction>, globals: List<CgGlobal>, counter: Int)
   ret isEmpty(fs)
-    ? (build(acc.psFns),
-                        build(acc.psGlobals), counter)
+    ? (acc.psFns,
+                        acc.psGlobals, counter)
     : siPromoteOne(first(fs), a, counter)
       |> (out) => siPsLoop(tail(fs), a, out.counter,
-                      SiPsAcc(push(acc.psFns, out.fn),
-                              pushAll(acc.psGlobals,
+                      SiPsAcc(append(acc.psFns, out.fn),
+                              concat(acc.psGlobals,
                                   out.globals)))
 
 # ── inline_single_use_globals ───────────────────────────────────────────────

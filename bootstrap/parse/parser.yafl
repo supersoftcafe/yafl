@@ -146,16 +146,16 @@ fun parseType(ps): (v: Spec|PFail, rest: Ps)
 
 # ── failure-path helpers ─────────────────────────────────────────────────────
 # The failure tuple, typed as each loop's result.
-fun specsFail(rest: Ps): (v: List<Spec>|PFail, rest: Ps)
+fun specsFail(f: PFail, rest: Ps): (v: List<Spec>|PFail, rest: Ps)
   ret (f, rest)
 
-fun unionFail(rest: Ps): (v: Spec|PFail, rest: Ps)
+fun unionFail(f: PFail, rest: Ps): (v: Spec|PFail, rest: Ps)
   ret (f, rest)
 
-fun entriesFail(rest: Ps): (v: List<SEntry>|PFail, rest: Ps)
+fun entriesFail(f: PFail, rest: Ps): (v: List<SEntry>|PFail, rest: Ps)
   ret (f, rest)
 
-fun attrsFail(rest: Ps): (v: List<PAttr>|PFail, rest: Ps)
+fun attrsFail(f: PFail, rest: Ps): (v: List<PAttr>|PFail, rest: Ps)
   ret (f, rest)
 
 fun attrsClose(b: List<PAttr>, rest: Ps): (v: List<PAttr>|PFail, rest: Ps)
@@ -163,7 +163,7 @@ fun attrsClose(b: List<PAttr>, rest: Ps): (v: List<PAttr>|PFail, rest: Ps)
     ret (b, bump(rest))
   ret (hardFail("expected ',' or ']' in attributes", rest), rest)
 
-fun stmtsFail(rest: Ps): (v: List<PStmt>|PFail, rest: Ps)
+fun stmtsFail(f: PFail, rest: Ps): (v: List<PStmt>|PFail, rest: Ps)
   ret (f, rest)
 
 fun targetsClose(b: List<PStmt>, rest: Ps): (v: List<PStmt>|PFail, rest: Ps)
@@ -171,10 +171,10 @@ fun targetsClose(b: List<PStmt>, rest: Ps): (v: List<PStmt>|PFail, rest: Ps)
     ret (b, bump(rest))
   ret (hardFail("expected ',' or ')' in binding list", rest), rest)
 
-fun gensFail(rest: Ps): (v: List<PGen>|PFail, rest: Ps)
+fun gensFail(f: PFail, rest: Ps): (v: List<PGen>|PFail, rest: Ps)
   ret (f, rest)
 
-fun argsFail(rest: Ps): (v: List<PTupEnt>|PFail, rest: Ps)
+fun argsFail(f: PFail, rest: Ps): (v: List<PTupEnt>|PFail, rest: Ps)
   ret (f, rest)
 
 fun argsClose(b: List<PTupEnt>, rest: Ps): (v: List<PTupEnt>|PFail, rest: Ps)
@@ -182,10 +182,10 @@ fun argsClose(b: List<PTupEnt>, rest: Ps): (v: List<PTupEnt>|PFail, rest: Ps)
     ret (b, bump(rest))
   ret (hardFail("expected ',' or ')' in argument list", rest), rest)
 
-fun armsFail(rest: Ps): (v: PExpr|PFail, rest: Ps)
+fun armsFail(f: PFail, rest: Ps): (v: PExpr|PFail, rest: Ps)
   ret (f, rest)
 
-fun litsFail(rest: Ps): (v: List<PLit>|PFail, rest: Ps)
+fun litsFail(f: PFail, rest: Ps): (v: List<PLit>|PFail, rest: Ps)
   ret (f, rest)
 
 fun litsClose(b: List<PLit>, rest: Ps): (v: List<PLit>|PFail, rest: Ps)
@@ -933,7 +933,7 @@ fun [tail] parseSubjects(ps: Ps,
       ? parseSubjects(bump(e.rest), append(acc, x))
       : (append(acc, x), e.rest)
 
-fun subjectsFail(rest: Ps): (v: List<PExpr>|PFail, rest: Ps)
+fun subjectsFail(f: PFail, rest: Ps): (v: List<PExpr>|PFail, rest: Ps)
   ret (f, rest)
 
 fun matchWithSubjects(subs, lr, ps: Ps): (v: PExpr|PFail, rest: Ps) => match(head(subs))

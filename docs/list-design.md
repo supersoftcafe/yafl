@@ -31,8 +31,8 @@ fun [tail] walk(xs: List<T>, acc) => isEmpty(xs)
 class [final] ListSeg<T>(lsClaim: Int64, lsOrd: Int32, lsNext: ListSeg<T>|None,
                          length: Int32, array: T[length])
 
-class [final] List<T>(_first: ListSeg<T>|None, _start: Int32,
-                      _last: ListSeg<T>|None, _end: Int32)
+class [final] List<T>(_first: ListSeg<T>|None, _last: ListSeg<T>|None,
+                      _start: Int32, _end: Int32)
 ```
 
 A List value is four fields — it flattens to a by-value struct — onto a

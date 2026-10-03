@@ -56,8 +56,10 @@ import System
 class [final] ListSeg<T>(lsClaim: Int64, lsOrd: Int32, lsNext: ListSeg<T>|None,
                          length: Int32, array: T[length])
 
-class [final] List<T>(_first: ListSeg<T>|None, _start: Int32,
-                      _last: ListSeg<T>|None, _end: Int32)
+# Pointers first, then the two Int32s: no padding, so `yafl_same` (the `with`
+# guard and mapSame, a byte compare) sees only meaningful bytes.
+class [final] List<T>(_first: ListSeg<T>|None, _last: ListSeg<T>|None,
+                      _start: Int32, _end: Int32)
 
 
 # ─── Runtime primitives (yafllib object.c, "List segments") ──────────────────
@@ -112,13 +114,13 @@ fun _lsSame<T>(a: ListSeg<T>, b: ListSeg<T>): Bool
   ret a.lsOrd == b.lsOrd
 
 fun _lsWhole<T>(s: ListSeg<T>, start: Int32, end: Int32): List<T>
-  ret List<T>(s, start, s, end)
+  ret List<T>(s, s, start, end)
 
 
 # ─── Construction ────────────────────────────────────────────────────────────
 
 fun List<T>(): List<T>
-  ret List<T>(None, 0i32, None, 0i32)
+  ret List<T>(None, None, 0i32, 0i32)
 
 # Add an element at the back. O(1); see the header for forks.
 fun append<T>(l: List<T>, x: T): List<T>
@@ -142,14 +144,14 @@ fun _appendCopy<T>(l: List<T>, x: T): List<T>
 fun _appended<T>(l: List<T>, last: ListSeg<T>, o: ListSeg<T>): List<T>
   ret match(l._first)
     (f: ListSeg<T>) => _lsSame<T>(f, last)
-      ? List<T>(o, l._start, o, l._end + 1i32)
-      : List<T>(f, l._start, o, l._end + 1i32)
-    (nil: None)     => List<T>(o, l._start, o, l._end + 1i32)
+      ? List<T>(o, o, l._start, l._end + 1i32)
+      : List<T>(f, o, l._start, l._end + 1i32)
+    (nil: None)     => List<T>(o, o, l._start, l._end + 1i32)
 
 fun _appendGrow<T>(l: List<T>, last: ListSeg<T>, x: T): List<T>
   let seg = _lsFresh<T>(_lsNextCap(last.length), 0i32, x, None, last.lsOrd + 1i32)
   ret match(_lsLink<T>(last, l._end, seg))
-    (s2: ListSeg<T>) => List<T>(l._first, l._start, s2, 1i32)
+    (s2: ListSeg<T>) => List<T>(l._first, s2, l._start, 1i32)
     (nil: None)      => _appendCopy<T>(l, x)
 
 # Add an element at the front. O(1); a fork copies at most one segment.
@@ -168,16 +170,16 @@ fun _prependClaim<T>(x: T, l: List<T>, f: ListSeg<T>, claim: ListSeg<T>|None): L
 fun _prepended<T>(l: List<T>, f: ListSeg<T>, o: ListSeg<T>): List<T>
   ret match(l._last)
     (last: ListSeg<T>) => _lsSame<T>(f, last)
-      ? List<T>(o, l._start - 1i32, o, l._end)
-      : List<T>(o, l._start - 1i32, last, l._end)
-    (nil: None) => List<T>(o, l._start - 1i32, o, l._end)
+      ? List<T>(o, o, l._start - 1i32, l._end)
+      : List<T>(o, last, l._start - 1i32, l._end)
+    (nil: None) => List<T>(o, o, l._start - 1i32, l._end)
 
 # No room in front of the first element: a new segment ahead of it, filled
 # from its back so later prepends claim downwards.
 fun _prependGrow<T>(x: T, l: List<T>, f: ListSeg<T>): List<T>
   let cap = _lsNextCap(f.length)
   let seg = _lsFresh<T>(cap, cap - 1i32, x, f, f.lsOrd - 1i32)
-  ret List<T>(seg, cap - 1i32, l._last, l._end)
+  ret List<T>(seg, l._last, cap - 1i32, l._end)
 
 # The front slot is someone else's: copy the first segment's live part
 # behind x and keep the rest of the chain. The copy is full (no slack), so it
@@ -199,8 +201,8 @@ fun _prependCopied<T>(x: T, f: ListSeg<T>, start: Int32, lim: Int32,
   let s2 = _lsInit<T>(s, 0i32, n, next, ord,
                       _lsCopyInto<T>(s, 1i32, f, start, lim, _lsStore<T>(s, 0i32, x)))
   ret match(last)
-    (l2: ListSeg<T>) => List<T>(s2, 0i32, l2, end)
-    (nil: None)      => List<T>(s2, 0i32, s2, n)
+    (l2: ListSeg<T>) => List<T>(s2, l2, 0i32, end)
+    (nil: None)      => List<T>(s2, s2, 0i32, n)
 
 fun [tail] _lsCopyInto<T>(dst: ListSeg<T>, at: Int32, src: ListSeg<T>, i: Int32, lim: Int32,
                           ok: Bool): Bool
@@ -252,10 +254,10 @@ fun [inline(always)] tail<T>(l: List<T>): List<T>
     (f: ListSeg<T>) => match(l._last)
       (last: ListSeg<T>) => _lsSame<T>(f, last)
         ? (l._start + 1i32 < l._end
-            ? List<T>(f, l._start + 1i32, last, l._end)
+            ? List<T>(f, last, l._start + 1i32, l._end)
             : List<T>())
         : (l._start + 1i32 < f.length
-            ? List<T>(f, l._start + 1i32, last, l._end)
+            ? List<T>(f, last, l._start + 1i32, l._end)
             : _lsHop<T>(f, last, l._end))
       (nil: None) => l
     (nil: None) => l
@@ -269,7 +271,7 @@ fun _lsHop<T>(f: ListSeg<T>, last: ListSeg<T>, end: Int32): List<T>
 # Entering the last segment switches to the list's own pointer for it, so
 # first and last name the same copy (and its ordinal) from here on.
 fun _lsEnter<T>(n: ListSeg<T>, last: ListSeg<T>, end: Int32): List<T>
-  ret _lsSame<T>(n, last) ? List<T>(last, 0i32, last, end) : List<T>(n, 0i32, last, end)
+  ret _lsSame<T>(n, last) ? List<T>(last, last, 0i32, end) : List<T>(n, last, 0i32, end)
 
 # The last element, or None when empty. O(1).
 fun last<T>(l: List<T>): T|None

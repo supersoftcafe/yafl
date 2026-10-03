@@ -53,17 +53,17 @@ fun lazyRuntimeCall1(name, argName, argVal): Op
 # the marker. One gc_root_publish per pointer leaf, mirroring Python's
 # _publish_root_shades (DataPointer; FuncPointer's .o; struct leaves).
 fun lazyPublishRootShades(value, valueType): List<Op>
-  ret map(build(lazyPublishLeaves(value, valueType,
-                                  List())),
+  ret map(lazyPublishLeaves(value, valueType,
+                                  List()),
           (leaf) => lazyRuntimeCall1("gc_root_publish", "value", leaf))
 
 # The pointer leaves in FIELD order — each becomes a publish call in that
 # order.
 fun lazyPublishLeaves(v, t2,
                       [terminal] acc): List<RParam> => match(t2)
-  (d: CgDataPointer)      => push(acc, v)
-  (f2: CgFuncPointer)     => push(acc, RpStructField(v, "o"))
-  (st: CgStr)             => push(acc, RpStructField(v, "head"))
+  (d: CgDataPointer)      => append(acc, v)
+  (f2: CgFuncPointer)     => append(acc, RpStructField(v, "o"))
+  (st: CgStr)             => append(acc, RpStructField(v, "head"))
   (s2: CgStruct)          => lazyPublishLeavesFields(v, s2.fields, acc)
   (im: CgImmediateStruct) => lazyPublishLeavesFields(v, im.fields, acc)
   (o: CgType)              => acc
@@ -106,7 +106,7 @@ fun makeDrainFunction(valueType): CgFunction
   let value = RpStackVar(valueType, "value")
   let svHead = RpStackVar(CgDataPointer(), "$sv_head")
   let svNext = RpStackVar(CgDataPointer(), "$sv_next")
-  let ops = build(push(push(push(push(push(push(push(push(push(List(), OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
+  let ops = (append(append(append(append(append(append(append(append(append(List(), OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
                                      RpNewStruct(list1(RpNamedValue("flag", flagField))),
                                      CgDataPointer()), false, List())), OpLabel("$loop", List())), OpJumpIf("$done", svHead, true, List())), # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
       OpMove(RpObjectField(valueType, svHead, waiterTy, "result", None, false), value, false, List())), OpMove(svNext, RpRuntimeInvoke("lazy_chain_step",
@@ -153,14 +153,14 @@ fun makeFetchFunction(valueType): CgFunction
                  CgStruct(list1(CgField("this", CgDataPointer()))),
                  wrapped,
                  # Stack layout, in declaration order.
-                 CgStruct(build(push(push(
+                 CgStruct(append(append(
                      list5(CgField("waiter", CgDataPointer()),
                                        CgField("status", CgInt(32)),
                                        CgField("flag_addr", CgDataPointer()),
                                        CgField("closure", CgFuncPointer(false)),
                                        CgField("result_wrapped", wrapped)),
                      CgField("value", valueType)),
-                     CgField("$sv_lazy_discard", CgDataPointer())))),
+                     CgField("$sv_lazy_discard", CgDataPointer()))),
                  cgOpsOf(fetchOps(valueType, cls, waiterTy, wrapped, this, waiter, status, flagAddr,
                           closure, rwrapped, value, flagF, closureF, valueF, isComplete)),
                  "lazy fetch for " + irMangle(valueType),

@@ -281,7 +281,7 @@ fun beStoreLookup(stores: List<BeStore>, ptr: BeVal,
 class [final] BeRegion(brLo: Int, brHi: Int)
 class [final] BeLabelAt(blName: String, blIndex: Int)
 
-fun beLabelIndex(ops: Segment<Op>|None) => build(beLabelLoopB(ops, 0i32, 0, List()))
+fun beLabelIndex(ops: Segment<Op>|None) => (beLabelLoopB(ops, 0i32, 0, List()))
 
 fun [tail] beLabelLoopB(s: Segment<Op>|None, iSeg, i,
                        [terminal] acc): List<BeLabelAt> => match(s)
@@ -290,7 +290,7 @@ fun [tail] beLabelLoopB(s: Segment<Op>|None, iSeg, i,
     ? beLabelLoopB(seg.next, 0i32, i, acc)
     : match(seg.array(iSeg))
         (lb: OpLabel) => beLabelLoopB(s, iSeg + 1i32, i + 1,
-                                     push(acc, BeLabelAt(lb.labelName, i)))
+                                     append(acc, BeLabelAt(lb.labelName, i)))
         (o: Op)       => beLabelLoopB(s, iSeg + 1i32, i + 1, acc)
 
 fun [tail] beLabelAt(ls: List<BeLabelAt>, name: String) => isEmpty(ls)
@@ -300,7 +300,7 @@ fun [tail] beLabelAt(ls: List<BeLabelAt>, name: String) => isEmpty(ls)
     : beLabelAt(tail(ls), name)
 
 fun beLoopRegions(ops: Segment<Op>|None, labels: List<BeLabelAt>)
-  ret build(beRegionLoopB(ops, 0i32, 0, labels, List()))
+  ret (beRegionLoopB(ops, 0i32, 0, labels, List()))
 
 fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg, i, labels: List<BeLabelAt>,
                         [terminal] acc): List<BeRegion> => match(s)
@@ -311,7 +311,7 @@ fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg, i, labels: List<BeLabelAt>,
         (j: OpJump) => match(beLabelAt(labels, j.jumpName))
           (at: Int) => at < i
             ? beRegionLoopB(s, iSeg + 1i32, i + 1, labels,
-                           push(acc, BeRegion(at, i)))
+                           append(acc, BeRegion(at, i)))
             : beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
           ()        => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
         (o: Op)     => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
