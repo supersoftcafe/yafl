@@ -1,5 +1,6 @@
 
 #include "yafl.h"
+#include "tempdir.h"
 
 
 EXPORT enum log_level LOG_LEVEL = DEBUG;
@@ -40,6 +41,8 @@ EXPORT noreturn void log_error_and_exit(char const* format, ...) {
     log_error(format, argp);
     va_end(argp);
 
+    // abort() skips atexit, so the process temp folder is removed here.
+    yafl_tempdir_cleanup();
     abort();
     __builtin_unreachable();
 }

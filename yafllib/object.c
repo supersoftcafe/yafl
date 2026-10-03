@@ -3038,9 +3038,10 @@ EXPORT object_t* sys_argc(object_t* self) {
     return integer_from_int32(_yafl_argc);
 }
 
-// Read a process environment variable, returning `String|None`. Unset is None,
-// DISTINCT from set-to-empty — collapsing the two would make `YAFL_PATH=`
-// indistinguishable from an absent YAFL_PATH.
+// Read a process environment variable, returning `String|None`. Unset AND
+// set-to-empty are both None: the result is never the empty string, so a YAFL
+// caller supplies a default with `env("A") ?? "B"` and needs no separate
+// empty check.
 //
 // String|None shares the String value's representation, with None as word 0 =
 // NULL (str_word(NULL)). That is a property of THIS union's representation,
@@ -3056,7 +3057,7 @@ EXPORT str_t sys_getenv(object_t* self, str_t name) {
     char buf[256], *heap;
     const char* v = getenv(str_cstr(name, buf, (int32_t)sizeof buf, &heap));
     free(heap);
-    return v == NULL ? str_word(NULL) : str_from_cstr(v);
+    return v == NULL || *v == 0 ? str_word(NULL) : str_from_cstr(v);
 }
 
 EXPORT str_t sys_argv_at(object_t* self, object_t* o_index) {

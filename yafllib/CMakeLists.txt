@@ -24,6 +24,7 @@ set(SRC_FILES
     stackguard.c
     str.c
     task.c
+    tempdir.c
     thread.c
     yafl.c
     lazy.c
@@ -80,6 +81,7 @@ set(TEST_SRC_FILES
     stackguard.c
     str.c
     task.c
+    tempdir.c
     thread.c
     yafl.c
     lazy.c
@@ -138,6 +140,7 @@ add_yafl_test(test_prof)
 add_yafl_test(test_heapprof)
 add_yafl_test(test_heapprof2)
 add_yafl_test(test_heapprof3)
+add_yafl_test(test_tempdir)
 add_yafl_test(test_mmap)
 add_yafl_test(test_large_objects)
 add_yafl_test(test_pin)

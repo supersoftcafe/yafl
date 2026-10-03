@@ -63,3 +63,23 @@ class TestArgsContent(TestCase):
         """argv[0] is the program path, NOT included in args(). Verified
         by checking that args() with one user arg has length 1, not 2."""
         self.assertEqual(1, compile_and_run_stdlib(_LEN_PROG, args=["only"]))
+
+
+class TestEnv(TestCase):
+    """`System::env` is None when a variable is unset OR empty — never "" —
+    so `env(name) ?? default` is the whole idiom."""
+
+    _PROG = (
+        "import System\n"
+        "fun main(): System::Int\n"
+        "    ret System::length(System::env(\"YAFL_TEST_ENV\") ?? \"dflt\")\n"
+    )
+
+    def test_set_value_is_returned(self):
+        self.assertEqual(3, compile_and_run_stdlib(self._PROG, env={"YAFL_TEST_ENV": "abc"}))
+
+    def test_empty_value_is_none(self):
+        self.assertEqual(4, compile_and_run_stdlib(self._PROG, env={"YAFL_TEST_ENV": ""}))
+
+    def test_unset_value_is_none(self):
+        self.assertEqual(4, compile_and_run_stdlib(self._PROG))
