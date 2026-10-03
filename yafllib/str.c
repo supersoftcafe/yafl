@@ -331,9 +331,9 @@ EXPORT int32_t str_copy_cstr(str_t s, char* buf, int32_t size) {
 EXPORT object_t* print_string(object_t* self, str_t s) {
     (void)self;   // ABI receiver, unused here
     segs_t g = segs_of(&s);
-    int32_t n = (int32_t)fwrite(g.a, 1, (size_t)g.na, stdout);
-    if (g.nb) n += (int32_t)fwrite(g.b, 1, (size_t)g.nb, stdout);
-    return integer_from_int32(n);
+    fwrite(g.a, 1, (size_t)g.na, stdout);
+    if (g.nb) fwrite(g.b, 1, (size_t)g.nb, stdout);
+    return NULL;   // YAFL's None: the task pointer alone, NULL = complete
 }
 
 

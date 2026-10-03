@@ -23,7 +23,8 @@ from functools import reduce
 
 import langtools
 from lowering.task_abi import (
-    TASK_FIELDS, wrap_return_type, is_task_param, task_ptr_from,
+    TASK_FIELDS, wrap_return_type, wrap_value, unwrap_value, is_unit,
+    is_task_param, task_ptr_from,
     task_subtype_name, make_task_foreign_object, make_task_subtype_object,
     RUNTIME_TASK_SUBTYPES,
 )
@@ -36,7 +37,7 @@ from codegen.typedecl import (
 )
 from codegen.param import (
     ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer,
-    RParam, StructField, NullPointer, RuntimeInvoke, TagTask, IntEqConst, ZeroOf, SyncWrap,
+    RParam, StructField, NullPointer, RuntimeInvoke, TagTask, IntEqConst, ZeroOf,
 )
 
 
@@ -122,29 +123,21 @@ def __convert_returns_for_state_machine(
 
 def __convert_returns_for_hot_path(
         ops: Iterable[Op],
-        wrapped_result: Type) -> list[Op]:
-    """Wrap each Return's value in SyncWrap if the function's return type
-    was wrapped in a TaskWrapper (pure-primitive returns), and bring each
-    musttail Call's result_type into line with the function's wrapped result
-    so the emitted C cast `((wrapped_t(*)(…))callee)(…)` agrees with the
-    surrounding `return` statement's type.
+        fn_result: Type) -> list[Op]:
+    """Bring each Return's value into the function's task-carrying return
+    shape (`wrap_value`), and each musttail Call's result_type into line
+    with it so the emitted C cast `((wrapped_t(*)(…))callee)(…)` agrees with
+    the surrounding `return` statement's type.
 
-    Both adjustments are no-ops when the return type isn't TaskWrapper-
-    wrapped (pointer-typed returns pass through unchanged).
+    A no-op when the return type carries the task signal in-band.
     """
-    if not isinstance(wrapped_result, TaskWrapper):
+    wrapped_result = wrap_return_type(fn_result)
+    if wrapped_result == fn_result:
         return list(ops)
     out: list[Op] = []
     for op in ops:
         if isinstance(op, Return):
-            # Skip if the Return value is already shaped like the wrapped
-            # type (e.g. a TagTask constructing the async-pending form).
-            # Lets passes that hand-build wrapped-shape returns interoperate
-            # with the hot-path SyncWrap convention.
-            if op.value.get_type() == wrapped_result:
-                out.append(op)
-            else:
-                out.append(Return(SyncWrap(op.value, wrapped_result)))
+            out.append(Return(wrap_value(op.value, wrapped_result)))
         elif isinstance(op, Call) and op.musttail:
             out.append(dataclasses.replace(op, result_type=wrapped_result))
         else:
@@ -701,7 +694,7 @@ def __expand_sync_call(op: Call, wrap_name: str) -> tuple[list[Op], list[tuple[s
     ops: list[Op] = [dataclasses.replace(op, register=received),
                      AssertNotTask(is_task_param(received, wrapped))]
     if op.register is not None:
-        ops.append(Move(op.register, StructField(received, "value")))
+        ops.append(Move(op.register, unwrap_value(received, result_type)))
     return ops, [(wrap_name, wrapped)]
 
 
@@ -798,6 +791,8 @@ __task_subtype_name = task_subtype_name
 def __extract_from_task(completed_task: RParam, callee_result_type: Type,
                         task_subtype_name: str | None) -> RParam:
     """Read the result from a completed task object."""
+    if is_unit(callee_result_type):
+        return ZeroOf(callee_result_type)
     if task_subtype_name is None or isinstance(callee_result_type, Void):
         return NullPointer()
     return ObjectField(callee_result_type, completed_task, task_subtype_name, "result", None)
@@ -914,7 +909,7 @@ def __create_hot_path_func(fn: Function, state_name: str,
                 else NullPointer()
                 for call_ref in call_op.calls)
 
-            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], wrapped_result))
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], fn.result))
             hot_ops.extend(_emit_par_task_setup(__sv_par_task, par_task_name, closures))
             for k in range(len(call_op.calls)):
                 hot_ops.extend(_emit_post_launcher(__sv_launcher, __sv_par_task, fn.name, i, k))
@@ -933,14 +928,14 @@ def __create_hot_path_func(fn: Function, state_name: str,
             if discarded_type is None:
                 # Truly void-returning — cannot be a task; emit unchanged
                 # (only the Returns inside the body need conversion)
-                hot_ops.extend(__convert_returns_for_hot_path(bb.ops, wrapped_result))
+                hot_ops.extend(__convert_returns_for_hot_path(bb.ops, fn.result))
                 continue
             # Non-void async call with discarded result: still need the task check
             # so the C cast uses the correct wrapped return type (avoids sret ABI mismatch).
             discarded_wrapped = wrap_return_type(discarded_type)
             sv_discard_wrap = StackVar(discarded_wrapped, f"$wrap${i}")
             wrap_fields.append((f"$wrap${i}", discarded_wrapped))
-            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], wrapped_result))
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], fn.result))
             hot_ops.append(dataclasses.replace(call_op, register=sv_discard_wrap))
             task_ptr = task_ptr_from(sv_discard_wrap, discarded_wrapped)
             hot_ops.append(IfTask(
@@ -962,11 +957,11 @@ def __create_hot_path_func(fn: Function, state_name: str,
             # then unwrap on the sync path.
             sv_wrapped = StackVar(wrapped_type, f"$wrap${i}")
             wrap_fields.append((f"$wrap${i}", wrapped_type))
-            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], wrapped_result))
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], fn.result))
             hot_ops.append(dataclasses.replace(call_op, register=sv_wrapped))
             sv_for_check = sv_wrapped
         else:
-            hot_ops.extend(__convert_returns_for_hot_path(bb.ops, wrapped_result))
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops, fn.result))
             sv_for_check = result_var
 
         task_ptr = task_ptr_from(sv_for_check, wrapped_type)
@@ -981,12 +976,12 @@ def __create_hot_path_func(fn: Function, state_name: str,
 
         # Sync path: unwrap primitive if needed
         if needs_temp:
-            hot_ops.append(Move(result_var, StructField(sv_wrapped, "value")))
+            hot_ops.append(Move(result_var, unwrap_value(sv_wrapped, result_type)))
 
     # Terminal block: same Return + musttail conversion as the per-call-site
     # bodies above. The terminal block is just the block whose last op isn't
     # a non-tail Call; structurally it has no special status.
-    hot_ops.extend(__convert_returns_for_hot_path(basic_blocks[-1].ops, wrapped_result))
+    hot_ops.extend(__convert_returns_for_hot_path(basic_blocks[-1].ops, fn.result))
 
     # ── Shared $asynccommon block ─────────────────────────────────────────────
     # All Call sites jump here when IS_TASK fires. The label is the same in
@@ -1323,7 +1318,7 @@ def __create_state_machine_func(fn: Function, state_name: str,
             sv_check = StackVar(wrapped_type, f"$sm_wrap${i}")
             sm_wrap_fields.append((sv_check.name, wrapped_type))
             sm_ops.append(dataclasses.replace(call_subst, register=sv_check))
-            unwrap_op = Move(call_subst.register, StructField(sv_check, "value"))
+            unwrap_op = Move(call_subst.register, unwrap_value(sv_check, result_type))
         else:
             check_type = wrapped_type
             sv_check   = call_subst.register   # may be None for void calls
@@ -1524,27 +1519,9 @@ def __convert_function_to_task_convention(
     # Functions with at most one block (no non-tail calls) need only
     # their return type adjusted (or kept as-is if it stays pointer-typed).
     if len(basic_blocks) < 2:
-        wrapped = wrap_return_type(fn.result)
-        if isinstance(wrapped, TaskWrapper):
-            # Promote Return(v) → Return(SyncWrap(v, wrapped)) and update any
-            # musttail Call result_type so the C cast uses the wrapped typedef.
-            new_ops = []
-            for op in after_tail.ops:
-                if isinstance(op, Return):
-                    # Skip the wrap when the Return value already has the
-                    # wrapped shape (passes that hand-build async-pending
-                    # returns supply pre-wrapped values).
-                    if op.value.get_type() == wrapped:
-                        new_ops.append(op)
-                    else:
-                        new_ops.append(Return(SyncWrap(op.value, wrapped)))
-                elif isinstance(op, Call) and op.musttail:
-                    new_ops.append(dataclasses.replace(op, result_type=wrapped))
-                else:
-                    new_ops.append(op)
-            simple = dataclasses.replace(after_tail, result=wrapped, ops=tuple(new_ops))
-        else:
-            simple = dataclasses.replace(after_tail, result=wrapped)
+        simple = dataclasses.replace(
+            after_tail, result=wrap_return_type(fn.result),
+            ops=tuple(__convert_returns_for_hot_path(after_tail.ops, fn.result)))
         return {simple.name: simple}, {}
 
     task_subtype_name = __task_subtype_name(fn.result)
@@ -1737,7 +1714,6 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
     sv_par       = StackVar(DataPointer(), "$par_task")
     sv_closure   = StackVar(DataPointer(), "$launcher_closure")
     wrapped_type = wrap_return_type(result_type)
-    needs_temp   = wrapped_type is not result_type
     sv_result_w  = StackVar(wrapped_type, "$result_w")
     sv_discard_  = StackVar(DataPointer(), "$sv_discard_cb")
 
@@ -1754,7 +1730,7 @@ def _launcher_callback_function(fn_name: str, call_site: int, slot: int,
                   Int(32))
     ops.append(JumpIf("$launcher_async", cond))
     # Sync path: write result, decrement
-    unwrapped = StructField(sv_result_w, "value") if needs_temp else sv_result_w
+    unwrapped = unwrap_value(sv_result_w, result_type)
     ops.append(Move(
         ObjectField(result_type, sv_par, par_task_name, f"result_{slot}", None),
         unwrapped))

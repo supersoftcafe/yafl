@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 
-from codegen.param import RParam, StructField, RuntimeInvoke, NewStruct
+from codegen.param import RParam, StructField, RuntimeInvoke, NewStruct, NullPointer, SyncWrap, ZeroOf
 from codegen.ir import Object
 from codegen.typedecl import (
     Type, DataPointer, FuncPointer, Int, Str, Struct, TaskWrapper, Void,
@@ -33,20 +33,55 @@ TASK_FIELDS: tuple[tuple[str, Type], ...] = (
 )
 
 
+def is_unit(t: Type) -> bool:
+    """The empty value — YAFL's None. It carries nothing."""
+    return isinstance(t, Struct) and not t.fields
+
+
 def wrap_return_type(t: Type) -> Type:
     """Adjust a function's return type so it can carry the task-pending
-    signal. A pointer-shaped type carries the tag in-band; anything else
-    is wrapped in `TaskWrapper {value, task*}`."""
+    signal. A pointer-shaped type carries the tag in-band; the empty value
+    has nothing to carry, so its return is the task pointer alone (NULL
+    when complete); anything else is wrapped in `TaskWrapper {value, task*}`."""
     if isinstance(t, (Void, DataPointer, FuncPointer, Str)):
         return t
+    if is_unit(t):
+        return DataPointer()
     if isinstance(t, Struct) and first_pointer_field(t) is not None:
         return t
     return TaskWrapper(t)
 
 
+def wrap_value(value: RParam, wrapped: Type) -> RParam:
+    """A completed result `value` in its task-carrying return shape
+    `wrapped` (= wrap_return_type of the value's type). A value already in
+    that shape — e.g. a hand-built async-pending TagTask — passes through."""
+    if value.get_type() == wrapped:
+        return value
+    if isinstance(wrapped, TaskWrapper):
+        return SyncWrap(value, wrapped)
+    if is_unit(value.get_type()):
+        return NullPointer()
+    return value
+
+
+def unwrap_value(received: RParam, value_type: Type) -> RParam:
+    """The value of a completed result received in its task-carrying return
+    shape (wrap_return_type(value_type))."""
+    wrapped = wrap_return_type(value_type)
+    if wrapped is value_type or wrapped == value_type:
+        return received
+    if isinstance(wrapped, TaskWrapper):
+        return StructField(received, "value")
+    if is_unit(value_type):
+        return ZeroOf(value_type)
+    raise ValueError(f"Cannot unwrap {value_type} from {wrapped}")
+
+
 def task_subtype_name(result_type: Type) -> str | None:
     """Canonical name of the compiler-generated task subtype carrying
-    `result_type`, or None for Void (base task_t).
+    `result_type`, or None for Void and the empty value (base task_t —
+    there is no result to store).
 
     Shared between `async_lower` (which auto-emits the subtype Object
     while collecting per-function task subtypes) and any other pass that
@@ -59,7 +94,7 @@ def task_subtype_name(result_type: Type) -> str | None:
     subtype.  Distinct struct layouts get a unique name (hash collision
     is negligible within one compilation).
     """
-    if isinstance(result_type, Void):
+    if isinstance(result_type, Void) or is_unit(result_type):
         return None
     # DataPointer (bigint, class pointers) — stored as object_t*: yafllib's
     # pre-declared task_obj_t (yafl.h).

@@ -355,8 +355,9 @@ fun main(): Int
 
     def test_none_returning_function_with_state_machine_compiles(self):
         """A None-returning function (unit type ()) with non-tail calls generates
-        a state machine.  None maps to Struct(fields=()) at the IR level, so the
-        return type uses TaskWrapper(Struct(fields=())) for async signalling.
+        a state machine.  None maps to Struct(fields=()) at the IR level and
+        carries no value, so its return is the task pointer alone (NULL when
+        complete).
         Verifies that the generated C is accepted by clang."""
         import subprocess, tempfile, os
         src = """\

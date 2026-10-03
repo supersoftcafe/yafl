@@ -27,23 +27,49 @@ fun taskFields() => build(
       CgField("callback", CgFuncPointer(false))),    # fun_t
       CgField("next", CgDataPointer())))        # _Atomic(task_t*) — queue link
 
+# The empty value — YAFL's None. It carries nothing.
+fun isUnit(t2) => match(cgFieldsOf(t2))
+  (fields: List<CgField>) => isEmpty(fields)
+  ()                       => false
+
 # Adjust a function's return type so it can carry the task-pending signal: a
-# pointer-shaped type carries the tag in-band; anything else wraps in
-# CgTaskWrapper {value, task*}.
+# pointer-shaped type carries the tag in-band; the empty value has nothing to
+# carry, so its return is the task pointer alone (NULL when complete);
+# anything else wraps in CgTaskWrapper {value, task*}.
 fun wrapReturnType(t2) => match(t2)
   (v: CgVoid)         => t2
   (d: CgDataPointer)  => t2
   (fp: CgFuncPointer) => t2
   (st: CgStr)         => t2
-  (s2: CgStruct)      => wrapIfNoPointer(t2)
-  (o: CgType)         => CgTaskWrapper(t2)
+  (o: CgType)         => isUnit(t2) ? CgDataPointer() : wrapIfNoPointer(t2)
 
 fun wrapIfNoPointer(t2) => match(cgFirstPointerField(t2))
   (name: String) => t2
   ()              => CgTaskWrapper(t2)
 
+# A completed result `value` in its task-carrying return shape `wrapped`
+# (= wrapReturnType of the value's type). A value already in that shape —
+# e.g. a hand-built async-pending TagTask — passes through.
+fun wrapValue(value, wrapped): RParam
+  if eqCgType(rpGetType(value), wrapped)
+    ret value
+  ret match(wrapped)
+    (w: CgTaskWrapper) => RpSyncWrap(value, wrapped)
+    (o: CgType)        => isUnit(rpGetType(value)) ? RpNullPointer() : value
+
+# The value of a completed result received in its task-carrying return shape
+# (wrapReturnType(valueType)).
+fun unwrapValue(received, valueType): RParam
+  let wrapped = wrapReturnType(valueType)
+  if eqCgType(wrapped, valueType)
+    ret received
+  ret match(wrapped)
+    (w: CgTaskWrapper) => RpStructField(received, "value")
+    (o: CgType)        => isUnit(valueType) ? RpZeroOf(valueType) : received   # else unreachable (Python raises ValueError)
+
 # Canonical name of the compiler-generated task subtype carrying
-# `resultType`, or None for Void (base task_t). Types storing the same C
+# `resultType`, or None for Void and the empty value (base task_t — there is
+# no result to store). Types storing the same C
 # value in the result field share one subtype; distinct struct layouts get a
 # unique name — sha1 over the same structural signature _ir_mangle hashes
 # (taskTypeSig below), byte-identical to Python's task_abi._type_sig.
@@ -58,7 +84,7 @@ fun [tail] taskSubtypeName(resultType) => match(resultType)
   (st: CgStr)          => "task_str"
   (i: CgInt)           => "task$Int" + String(i.precision)
   (w: CgTaskWrapper)   => taskSubtypeName(w.inner)
-  (o: CgType)          => "task$T" + slice(sha1Hex(taskTypeSig(o)), 0, 16)
+  (o: CgType)          => isUnit(o) ? None : "task$T" + slice(sha1Hex(taskTypeSig(o)), 0, 16)
 
 # The structural signature taskSubtypeName hashes — Python task_abi._type_sig.
 fun [tail] taskTypeSig(t2) => match(t2)

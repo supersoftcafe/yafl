@@ -31,11 +31,12 @@ fun drainFunctionName(t2) => "lazy_drain$" + irMangle(t2)
 
 # The task subtype every [lazy] waiter is an instance of — shared with
 # async_lower's naming so reads of a completed task's `result` cast to the
-# actual emitted struct. Goes through wrapReturnType because async_lower
-# keys subtypes by unwrapped result types.
-fun waiterSubtypeName(t2) => match(taskSubtypeName(wrapReturnType(t2)))
+# actual emitted struct. Keyed by the value type itself, exactly as
+# async_lower names the subtype a function returning `t2` completes; the
+# empty value has no result to hold, so its waiter is the base task.
+fun waiterSubtypeName(t2) => match(taskSubtypeName(t2))
   (name: String) => name
-  ()              => ""   # unreachable: a lazy value type is never Void
+  ()              => "task"
 
 # ── shared helpers ───────────────────────────────────────────────────────────
 
@@ -76,18 +77,6 @@ fun lazyPublishLeavesFields(v, fields: Chain<CgField>,
       lazyPublishLeaves(RpStructField(v, l.value.fieldName),
                         l.value.fieldType, acc))
 
-# Recover the raw value from the wrapped form an async-ABI callee returns:
-# pass-through wraps ARE the value; CgTaskWrapper extracts `.value`.
-fun lazyExtractValue(svWrapped, valueType: CgType, wrapped) => match(wrapped)
-  (w: CgTaskWrapper) => RpStructField(svWrapped, "value")
-  (o: CgType)        => svWrapped
-
-# SyncWrap applies only to a CgTaskWrapper-promoted return; pass-through
-# wraps already have the correct ABI shape.
-fun lazySyncWrap(value, wrapped) => match(wrapped)
-  (w: CgTaskWrapper) => RpSyncWrap(value, wrapped)
-  (o: CgType)        => value
-
 # ── stub class ───────────────────────────────────────────────────────────────
 
 fun makeStubObject(valueType)
@@ -101,18 +90,35 @@ fun makeStubObject(valueType)
 
 # ── drain: walk the waiter chain, write value into each result, complete ────
 
+# Write `value` into a waiter's `result` slot — none for the empty value,
+# whose waiter is the base task.
+fun lazyStoreWaiterResult(waiter, valueType, value): List<Op>
+  if isUnit(valueType)
+    ret List()
+  ret list1<Op>(OpMove(RpObjectField(valueType, waiter, waiterSubtypeName(valueType), "result", None, false),
+                       value, false, List()))
+
 fun makeDrainFunction(valueType): CgFunction
-  let waiterTy = waiterSubtypeName(valueType)
   let flagField = RpStackVar(CgDataPointer(), "flag_field")
   let value = RpStackVar(valueType, "value")
   let svHead = RpStackVar(CgDataPointer(), "$sv_head")
   let svNext = RpStackVar(CgDataPointer(), "$sv_next")
-  let ops = build(push(push(push(push(push(push(push(push(push(builder(), OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
+  let head = list3<Op>(
+      OpMove(svHead, RpRuntimeInvoke("lazy_chain_swap_sentinel",
                                      RpNewStruct(list1(RpNamedValue("flag", flagField))),
-                                     CgDataPointer()), false, List())), OpLabel("$loop", List())), OpJumpIf("$done", svHead, true, List())), # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
-      OpMove(RpObjectField(valueType, svHead, waiterTy, "result", None, false), value, false, List())), OpMove(svNext, RpRuntimeInvoke("lazy_chain_step",
+                                     CgDataPointer()), false, List()),
+      OpLabel("$loop", List()),
+      OpJumpIf("$done", svHead, true, List()))
+  let tail2 = list5<Op>(
+      OpMove(svNext, RpRuntimeInvoke("lazy_chain_step",
                                      RpNewStruct(list1(RpNamedValue("head", svHead))),
-                                     CgDataPointer()), false, List())), lazyRuntimeCall1("task_complete_deferred", "self", svHead)), OpMove(svHead, svNext, false, List())), OpJump("$loop", List())), OpLabel("$done", List())))
+                                     CgDataPointer()), false, List()),
+      lazyRuntimeCall1("task_complete_deferred", "self", svHead),
+      OpMove(svHead, svNext, false, List()),
+      OpJump("$loop", List()),
+      OpLabel("$done", List()))
+  # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
+  let ops = concat(concat(head, lazyStoreWaiterResult(svHead, valueType, value)), tail2)
   ret CgFunction(drainFunctionName(valueType),
                  CgStruct(list3(CgField("this", CgDataPointer()),
                                 CgField("flag_field", CgDataPointer()),
@@ -174,7 +180,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
   let finisher = finisherFunctionName(valueType)
   let head = list5<Op>(
       OpJumpIf("$slow", isComplete, true, List()),
-      OpReturn(lazySyncWrap(valueF, wrapped), List()),
+      OpReturn(wrapValue(valueF, wrapped), List()),
       OpLabel("$slow", List()),
       OpNewObject(waiterTy, waiter, None, List()),
       lazyRuntimeCall1("task_init", "self", waiter))
@@ -195,13 +201,13 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
                RpRuntimeInvoke("UNLIKELY",
                                RpNewStruct(list1(RpNamedValue("x", isTaskParam(rwrapped, wrapped)))),
                                CgInt(32)), false, List()),
-      OpMove(value, lazyExtractValue(rwrapped, valueType, wrapped), false, List()),
+      OpMove(value, unwrapValue(rwrapped, valueType), false, List()),
       OpMove(valueF, value, false, List())),
     concat(lazyPublishRootShades(value, valueType),
            list1(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()))))
   let asyncTail = list4(
       emitDrainCall(valueType, RpPointerTo(flagF), value),
-      OpReturn(lazySyncWrap(value, wrapped), List()),
+      OpReturn(wrapValue(value, wrapped), List()),
       OpLabel("$async_init", List()),
       OpMove(svLazyDiscard(),
              RpRuntimeInvoke("task_on_complete",
@@ -215,7 +221,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
   let tail = list5<Op>(
       OpReturn(RpTagTask(waiter, wrapped), List()),
       OpLabel("$already_done", List()),
-      OpReturn(lazySyncWrap(valueF, wrapped), List()),
+      OpReturn(wrapValue(valueF, wrapped), List()),
       OpLabel("$return_waiter", List()),
       OpReturn(RpTagTask(waiter, wrapped), List()))
   ret concat(concat(concat(concat(head, enqueue), syncInit), asyncTail), tail)
@@ -252,7 +258,9 @@ fun makeFinisherFunction(valueType): CgFunction
   let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false)
   let valueF = RpObjectField(valueType, this, cls, "value", None, false)
   let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false)
-  let completedResult = RpObjectField(valueType, completed, waiterTy, "result", None, false)
+  let completedResult = isUnit(valueType)
+    ? RpZeroOf(valueType)
+    : RpObjectField(valueType, completed, waiterTy, "result", None, false)
   ret CgFunction(finisherFunctionName(valueType),
                  CgStruct(list2(CgField("this", CgDataPointer()),
                                 CgField("completed", CgDataPointer()))),

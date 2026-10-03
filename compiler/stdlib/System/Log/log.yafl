@@ -39,107 +39,51 @@ let logWarn:  System::Int32 = 40i32
 let logError: System::Int32 = 50i32
 
 
-# ─── Foreign entry points ────────────────────────────────────────────────────
+# ─── Logging ─────────────────────────────────────────────────────────────────
 # One C symbol per arity/type combination, because C has no overloading; the
 # suffix spells the signature. `sync` is load-bearing — logging must never
 # suspend, so it stays callable from inside the async machinery it measures.
+# Each returns None, so a call is a statement.
 
-fun [foreign("yafl_log"),     impure, sync] _log(l: System::Int32, c: System::String, f: System::String): System::Int
-fun [foreign("yafl_log_i"),   impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int): System::Int
-fun [foreign("yafl_log_s"),   impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String): System::Int
-fun [foreign("yafl_log_ii"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int): System::Int
-fun [foreign("yafl_log_is"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String): System::Int
-fun [foreign("yafl_log_si"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int): System::Int
-fun [foreign("yafl_log_ss"),  impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String): System::Int
-fun [foreign("yafl_log_iii"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int,    d: System::Int): System::Int
-fun [foreign("yafl_log_iis"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int,    d: System::String): System::Int
-fun [foreign("yafl_log_isi"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String, d: System::Int): System::Int
-fun [foreign("yafl_log_iss"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String, d: System::String): System::Int
-fun [foreign("yafl_log_sii"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int,    d: System::Int): System::Int
-fun [foreign("yafl_log_sis"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int,    d: System::String): System::Int
-fun [foreign("yafl_log_ssi"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::Int): System::Int
-fun [foreign("yafl_log_sss"), impure, sync] _log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::String): System::Int
-
-
-# ─── Public API ──────────────────────────────────────────────────────────────
-# Wrappers so a call is a statement rather than a value to bind away, mirroring
-# how `print` wraps `__print_string`.
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String): System::None
-  let _ = _log(l, c, f)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int): System::None
-  let _ = _log(l, c, f, a)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String): System::None
-  let _ = _log(l, c, f, a)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::Int): System::None
-  let _ = _log(l, c, f, a, b)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::String): System::None
-  let _ = _log(l, c, f, a, b)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int): System::None
-  let _ = _log(l, c, f, a, b)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String): System::None
-  let _ = _log(l, c, f, a, b)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::Int, d: System::Int): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::Int, d: System::String): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::String, d: System::Int): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::Int, b: System::String, d: System::String): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int, d: System::Int): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int, d: System::String): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::Int): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
-
-fun [impure] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::String): System::None
-  let _ = _log(l, c, f, a, b, d)
-  ret None
+fun [foreign("yafl_log"),     impure, sync] log(l: System::Int32, c: System::String, f: System::String): System::None
+fun [foreign("yafl_log_i"),   impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::Int): System::None
+fun [foreign("yafl_log_s"),   impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::String): System::None
+fun [foreign("yafl_log_ii"),  impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int): System::None
+fun [foreign("yafl_log_is"),  impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String): System::None
+fun [foreign("yafl_log_si"),  impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int): System::None
+fun [foreign("yafl_log_ss"),  impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String): System::None
+fun [foreign("yafl_log_iii"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int,    d: System::Int): System::None
+fun [foreign("yafl_log_iis"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::Int,    d: System::String): System::None
+fun [foreign("yafl_log_isi"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String, d: System::Int): System::None
+fun [foreign("yafl_log_iss"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::Int,    b: System::String, d: System::String): System::None
+fun [foreign("yafl_log_sii"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int,    d: System::Int): System::None
+fun [foreign("yafl_log_sis"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::Int,    d: System::String): System::None
+fun [foreign("yafl_log_ssi"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::Int): System::None
+fun [foreign("yafl_log_sss"), impure, sync] log(l: System::Int32, c: System::String, f: System::String, a: System::String, b: System::String, d: System::String): System::None
 
 
 # ─── Metrics ─────────────────────────────────────────────────────────────────
-# A span's start is kept by the runtime against the returned token; `spanEnd`
-# prints the elapsed. The token is opaque — it is NOT a time.
+# A span is kept by the runtime against the token `_spanOpen` returns;
+# `_spanStart` starts its clock and `_spanEnd` prints the elapsed. The token is
+# opaque — it is NOT a time.
 
-fun [foreign("yafl_log_span_begin"), impure, sync] spanBegin(c: System::String, name: System::String): System::Int
-fun [foreign("yafl_log_span_end"),   impure, sync] _spanEnd(span: System::Int): System::Int
-fun [foreign("yafl_log_count"),      impure, sync] _count(c: System::String, name: System::String, n: System::Int): System::Int
+fun [foreign("yafl_log_span_open"),  impure, sync] _spanOpen(c: System::String, name: System::String): System::Int
+fun [foreign("yafl_log_span_start"), impure, sync] _spanStart(span: System::Int): System::None
+fun [foreign("yafl_log_span_end"),   impure, sync] _spanEnd(span: System::Int): System::None
 
-fun [impure] spanEnd(span: System::Int): System::None
-  let _ = _spanEnd(span)
-  ret None
+# Run `f` inside span `name` of context `c`, returning its result. The clock
+# start and stop are statements, which `let`s are never reordered across, so
+# the span brackets exactly the work. As a pipeline stage:
+#
+#   let a = timed("codegen", "canonicalise", () => canonicaliseApp(x, profile))
+#     |> (y) => timed("codegen", "cleanup", () => cleanupApp(y))
+fun [impure] timed<R>(c: System::String, name: System::String, f: (): R): R
+  let span = _spanOpen(c, name)
+  _spanStart(span)
+  let r = f()
+  _spanEnd(span)
+  ret r
 
 # Counters aggregate in C and dump once at exit, so they are cheap enough for a
 # hot loop — the right tool where even a suppressed log call is too much.
-fun [impure] count(c: System::String, name: System::String, n: System::Int): System::None
-  let _ = _count(c, name, n)
-  ret None
+fun [foreign("yafl_log_count"), impure, sync] count(c: System::String, name: System::String, n: System::Int): System::None

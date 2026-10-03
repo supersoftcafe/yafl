@@ -75,14 +75,13 @@ from codegen.ops import Op, Move, Return, ReturnVoid, Call, JumpIf, Jump, Label,
 from codegen.param import (
     StackVar, ObjectField, StructField, GlobalFunction, NullPointer,
     NewStruct, RuntimeInvoke, TagTask, RParam, IntEqConst, ZeroOf, PointerTo,
-    SyncWrap,
 )
 from codegen.typedecl import (
     DataPointer, Float, Int, Struct, Type, FuncPointer, Str, ImmediateStruct,
-    TaskWrapper,
 )
 from lowering.task_abi import (
-    TASK_FIELDS, wrap_return_type, is_task_param, task_ptr_from,
+    TASK_FIELDS, wrap_return_type, wrap_value, unwrap_value, is_unit,
+    is_task_param, task_ptr_from,
     task_subtype_name, make_task_foreign_object, make_task_subtype_object,
 )
 
@@ -143,15 +142,12 @@ def waiter_subtype_name(t: Type) -> str:
     """Name of the task subtype every `[lazy]` waiter is an instance of.
     Shared with async_lower's task-subtype naming so reads of a
     completed task's `result` field cast to the actual emitted struct
-    (no cross-type punning of identical-layout structs).
-
-    Goes through `wrap_return_type` because async_lower emits subtypes
-    keyed by *unwrapped* result types, which is what we need for the
-    `result: T` field anyway."""
-    name = task_subtype_name(wrap_return_type(t))
-    if name is None:
-        raise ValueError(f"no task subtype for value type {t!r}")
-    return name
+    (no cross-type punning of identical-layout structs). Keyed by the
+    value type itself, exactly as async_lower names the subtype a
+    function returning `t` completes; the empty value has no result to
+    hold, so its waiter is the base task."""
+    name = task_subtype_name(t)
+    return "task" if name is None else name
 
 
 def ir_mangle_to_type(suffix: str) -> Type:
@@ -202,32 +198,19 @@ def _publish_root_shades(value: RParam, value_type: Type) -> tuple[Op, ...]:
                  for leaf in leaves(value, value_type))
 
 
+def _store_waiter_result(waiter: RParam, value_type: Type, value: RParam) -> tuple[Op, ...]:
+    """Write `value` into a waiter's `result` slot — none for the empty
+    value, whose waiter is the base task."""
+    if is_unit(value_type):
+        return ()
+    return (Move(ObjectField(value_type, waiter, waiter_subtype_name(value_type),
+                             "result", None), value),)
+
+
 def _runtime_call(name: str, **args: RParam) -> Op:
     return Move(_DISCARD,
                 RuntimeInvoke(name, NewStruct(tuple(args.items())), DataPointer()),
                 keep=True)
-
-
-def _extract_value(sv_wrapped: StackVar, value_type: Type, wrapped: Type) -> RParam:
-    """Recover the raw value from the wrapped form returned by an
-    async-ABI callee.  Pass-through wrap (DataPointer, FuncPointer,
-    Struct-with-pointer-first-field) → the wrapped form *is* the value.
-    `TaskWrapper(inner)` → extract via `.value`."""
-    if wrapped is value_type or wrapped == value_type:
-        return sv_wrapped
-    if isinstance(wrapped, TaskWrapper):
-        return StructField(sv_wrapped, "value")
-    raise NotImplementedError(
-        f"can't extract value from wrapped {wrapped!r}; add a case here.")
-
-
-def _sync_wrap(value: RParam, wrapped: Type) -> RParam:
-    """SyncWrap applies only when the return type was promoted to
-    `TaskWrapper(inner)`.  For pass-through wraps the raw value already
-    has the correct ABI shape."""
-    if isinstance(wrapped, TaskWrapper):
-        return SyncWrap(value, wrapped)
-    return value
 
 
 # ─── Stub class + waiter subtype ──────────────────────────────────────────
@@ -257,7 +240,6 @@ def make_drain_function(value_type: Type) -> Function:
     swap-with-sentinel happens up front so any threads that race to
     enqueue after this returns observe the (task_t*)1 sentinel and take
     the fast path on their next force."""
-    waiter_ty = waiter_subtype_name(value_type)
     fname     = drain_function_name(value_type)
 
     flag_field = StackVar(DataPointer(), "flag_field")
@@ -276,7 +258,7 @@ def make_drain_function(value_type: Type) -> Function:
 
         # head.result = value — per-IR-type write; ObjectField.to_c_store
         # emits GC_WRITE_BARRIER for pointer-containing field types.
-        Move(ObjectField(value_type, sv_head, waiter_ty, "result", None), value),
+        *_store_waiter_result(sv_head, value_type, value),
 
         Move(sv_next,
              RuntimeInvoke("lazy_chain_step",
@@ -350,11 +332,11 @@ def make_fetch_function(value_type: Type) -> Function:
                          NewStruct((("p", flag_f),)),
                          Int(32))
 
-    closure_value = _extract_value(rwrapped, value_type, wrapped)
+    closure_value = unwrap_value(rwrapped, value_type)
 
     ops: tuple[Op, ...] = (
         JumpIf("$slow", is_complete, invert=True),
-        Return(_sync_wrap(value_f, wrapped)),
+        Return(wrap_value(value_f, wrapped)),
 
         Label("$slow"),
         NewObject(waiter_ty, waiter),
@@ -385,7 +367,7 @@ def make_fetch_function(value_type: Type) -> Function:
         *_publish_root_shades(value, value_type),
         Move(closure_f, ZeroOf(FuncPointer())),
         _emit_drain_call(value_type, PointerTo(flag_f), value),
-        Return(_sync_wrap(value, wrapped)),
+        Return(wrap_value(value, wrapped)),
 
         Label("$async_init"),
         _runtime_call(
@@ -397,7 +379,7 @@ def make_fetch_function(value_type: Type) -> Function:
         Return(TagTask(waiter, wrapped)),
 
         Label("$already_done"),
-        Return(_sync_wrap(value_f, wrapped)),
+        Return(wrap_value(value_f, wrapped)),
 
         Label("$return_waiter"),
         Return(TagTask(waiter, wrapped)),
@@ -477,7 +459,8 @@ def make_finisher_function(value_type: Type) -> Function:
     closure_f = ObjectField(FuncPointer(), this, cls, "closure", None)
     value_f   = ObjectField(value_type,    this, cls, "value",   None)
     flag_f    = ObjectField(DataPointer(), this, cls, "flag",    None)
-    completed_result = ObjectField(value_type, completed, waiter_ty, "result", None)
+    completed_result = ZeroOf(value_type) if is_unit(value_type) \
+        else ObjectField(value_type, completed, waiter_ty, "result", None)
 
     ops: tuple[Op, ...] = (
         Move(value, completed_result),

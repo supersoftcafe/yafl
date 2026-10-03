@@ -315,6 +315,92 @@ fun main(): System::Int
         self.assertEqual(18, exit_code)
 
 
+class TestForeignNone(TestCase):
+    """A foreign function returning None is called as a plain statement. A None
+    result carries no value, so its task-carrying return is the task pointer
+    alone: the C side returns `object_t*`, NULL when it completed."""
+
+    _C_LIBRARY = r"""
+#include <yafl.h>
+
+static int32_t _total = 0;
+
+object_t* test_bump(object_t* _this, object_t* n) {
+    _total += int32_from_integer(n);
+    return NULL;
+}
+
+object_t* test_total(object_t* _this) {
+    return integer_from_int32(_total);
+}
+"""
+
+    _YAFL = """\
+namespace System
+typealias Int : __builtin_type__<bigint>
+typealias None : ()
+let None: None = ()
+
+fun [foreign("test_bump"), impure, sync] bumpSync(n: System::Int): System::None
+fun [foreign("test_bump"), impure] bumpMaySuspend(n: System::Int): System::None
+fun [foreign("test_total"), impure, sync] total(): System::Int
+
+fun main(): System::Int
+    bumpSync(5)
+    bumpMaySuspend(3)
+    bumpSync(4)
+    ret total()
+"""
+
+    def test_foreign_none_statements_run_in_order(self):
+        """Each statement runs exactly once: 5 + 3 + 4 = 12."""
+        exit_code = compile_and_run_with_c_library(self._YAFL, self._C_LIBRARY)
+        self.assertEqual(12, exit_code)
+
+    def test_foreign_none_matches_runtime_declaration(self):
+        """The generated extern for a None-returning foreign must agree with
+        the runtime's own declaration in yafl.h, which the generated C
+        includes — `print_string` is declared there returning `object_t*`."""
+        content = """\
+namespace System
+typealias Int : __builtin_type__<bigint>
+typealias String : __builtin_type__<str>
+typealias None : ()
+let None: None = ()
+
+fun [foreign("print_string"), impure, sync] printIt(s: System::String): System::None
+
+fun main(): System::Int
+    printIt("")
+    ret 7
+"""
+        exit_code = compile_and_run_with_c_library(content, "")
+        self.assertEqual(7, exit_code)
+
+    def test_lazy_and_future_none_lets(self):
+        """A None value has no task result to hold: its lazy waiter is the
+        base task. Forcing each let runs its effect exactly once."""
+        content = """\
+namespace System
+typealias Int : __builtin_type__<bigint>
+typealias None : ()
+let None: None = ()
+
+fun [foreign("test_bump"), impure] bump(n: System::Int): System::None
+fun [foreign("test_total"), impure, sync] total(): System::Int
+
+fun main(): System::Int
+    let [lazy] x: System::None = bump(5)
+    let [future] y: System::None = bump(3)
+    x
+    y
+    x
+    ret total()
+"""
+        exit_code = compile_and_run_with_c_library(content, self._C_LIBRARY)
+        self.assertEqual(8, exit_code)
+
+
 class TestSync(TestCase):
 
     def test_sync_function_compiles(self):
