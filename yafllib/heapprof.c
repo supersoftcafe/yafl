@@ -139,6 +139,8 @@ static int hp_row_cmp(const void *a, const void *b) {
                   ((const vtable_t *)rb->vt)->name);
 }
 
+static void hp2_dump(void);
+
 void yafl_heapprof_cycle_end(size_t in_use_bytes, size_t reserved_bytes) {
     if (!yafl_heapprof_enabled || hp_out == NULL)
         return;
@@ -188,6 +190,24 @@ void yafl_heapprof_cycle_end(size_t in_use_bytes, size_t reserved_bytes) {
     if (other)
         fprintf(hp_out, " n0: %" PRIu64 " 0x0: (other)\n", other);
     fflush(hp_out);
+
+    // YAFL_HEAPPROF_DUMP_AT_MB=N: write the allocation-site profile (layer
+    // 2) at the first cycle whose census reaches N MB — the live set near a
+    // peak — instead of at exit, where only the program's output survives.
+    // Records were swept against this cycle's survivors just before this
+    // call, so the dump is that cycle's live set. One-shot, like the exit
+    // dump it replaces.
+    static long dump_at_mb = -1;
+    if (dump_at_mb < 0) {
+        const char *e = getenv("YAFL_HEAPPROF_DUMP_AT_MB");
+        dump_at_mb = e ? atol(e) : 0;
+    }
+    if (dump_at_mb > 0 && census_total >= (uint64_t)dump_at_mb << 20) {
+        fprintf(stderr, "[HEAPPROF] census %" PRIu64 " MB >= %ld MB: dumping sites\n",
+                census_total >> 20, dump_at_mb);
+        hp2_dump();
+        dump_at_mb = 0;
+    }
 }
 
 // ═══ layer 2: allocation-site inuse_space → pprof ══════════════════════════
