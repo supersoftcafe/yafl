@@ -98,16 +98,18 @@ symbol, since C has no overloading; the suffix spells the signature.
 | 3 | `String, String, String` | `yafl_log_sss` |
 
 ```yafl
-fun [foreign("yafl_log"),     impure, sync] log(level: Int32, context: String, fmt: String): Int
-fun [foreign("yafl_log_i"),   impure, sync] log(level: Int32, context: String, fmt: String, a: Int): Int
-fun [foreign("yafl_log_s"),   impure, sync] log(level: Int32, context: String, fmt: String, a: String): Int
-fun [foreign("yafl_log_ii"),  impure, sync] log(level: Int32, context: String, fmt: String, a: Int, b: Int): Int
+fun [foreign("yafl_log"),     impure, sync] log(level: Int32, context: String, fmt: String): None
+fun [foreign("yafl_log_i"),   impure, sync] log(level: Int32, context: String, fmt: String, a: Int): None
+fun [foreign("yafl_log_s"),   impure, sync] log(level: Int32, context: String, fmt: String, a: String): None
+fun [foreign("yafl_log_ii"),  impure, sync] log(level: Int32, context: String, fmt: String, a: Int, b: Int): None
 …
 ```
 
 `sync` is load-bearing: logging must never suspend, so it stays callable from
-inside the async machinery it is measuring. Returns `Int` because that is the
-existing foreign convention (`print_string`); the result is discarded.
+inside the async machinery it is measuring. Returns `None`, so a call is a
+statement — never a value bound away with `let _ =`, which the language may
+drop. A `None` result's task-carrying return is the task pointer alone, so the
+C side returns `object_t*`: NULL, complete.
 
 **Arity stops at 3** (decided). Beyond that, format two values into one string
 at the call site and accept the cost, or emit two lines. The matrix can grow to
@@ -119,10 +121,24 @@ at the call site and accept the cost, or emit two lines. The matrix can grow to
 Neither takes a format, so neither needs the matrix.
 
 ```yafl
-fun [foreign("yafl_log_span_begin"), impure, sync] spanBegin(context: String, name: String): Int
-fun [foreign("yafl_log_span_end"),   impure, sync] spanEnd(span: Int): Int
-fun [foreign("yafl_log_count"),      impure, sync] count(context: String, name: String, n: Int): Int
+fun [impure] timed<R>(context: String, name: String, f: (): R): R
+fun [foreign("yafl_log_count"), impure, sync] count(context: String, name: String, n: Int): None
 ```
+
+`timed` runs `f` inside a span and returns its result, so a span is a pipeline
+stage:
+
+```yafl
+let a = timed("codegen", "canonicalise", () => canonicaliseApp(x, profile))
+  |> (y) => timed("codegen", "cleanup", () => cleanupApp(y))
+```
+
+Inside, the span is three runtime calls — `_spanOpen` returns an opaque token,
+`_spanStart` starts its clock, `_spanEnd` prints the elapsed. The start and end
+are statements: `let`s may be reordered among themselves but never across a
+statement, so the work bound by `let r = f()` cannot move outside the span.
+Opening is separate from starting because the token comes back through a
+`let`, which on its own would leave the work free to move above it.
 
 Counters aggregate in C and dump once at exit, so they are safe in a hot loop —
 the right tool for anything per-op or per-function, where even a suppressed log

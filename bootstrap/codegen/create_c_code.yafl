@@ -227,12 +227,7 @@ fun createCCode(statements, mainName, optLevel,
   let r = RRoot((root) => contains2(breakers, root), (name) => false,
                 st, discs, optLevel,
                 None, boxedLeaves, mergedMembersTable(st))
-  let spIr = spanBegin("codegen", "ir_build")
-  let a0 = fold(statements, emptyApp(), (a, st) => ccStmt(a, st, r))
-  let a1 = appPutFunction(a0, createEntryPoint(mainName))
-  let a2 = ensureLazyMachinery(a1, collectLazyTypes(statements, r))
-  # SSA + control-flow + Phi validation right after AST lowering.
-  let _ir = spanEnd(spIr)
+  let a2 = timed("codegen", "ir_build", () => ccBuildIr(statements, mainName, r))
   # Multi-subject POSITION support. This cannot live in the check phase: it
   # needs classifyRepr, and Bootstrap::Codegen imports Bootstrap::Frontend, so
   # asking from there would be a cycle. Python checks it in
@@ -244,14 +239,11 @@ fun createCCode(statements, mainName, optLevel,
   let posErrs = multiSubjectPositionErrs(statements, r)
   if !isEmpty(posErrs)
     ret CreateCOut(List(), posErrs)
-  let spV1 = spanBegin("codegen", "ssa_validate.1")
-  let v1 = ssaValidate(appFunctions(a2), true)
-  let _v1 = spanEnd(spV1)
+  # SSA + control-flow + Phi validation right after AST lowering.
+  let v1 = timed("codegen", "ssa_validate.1", () => ssaValidate(appFunctions(a2), true))
   if !isEmpty(v1)
     ret CreateCOut(List(), v1)
-  let spTrim = spanBegin("codegen", "trim+devirt")
-  let a3 = discoverGlobalFunctionCalls(removedUnusedStuff(a2))
-  let _trim = spanEnd(spTrim)
+  let a3 = timed("codegen", "trim+devirt", () => discoverGlobalFunctionCalls(removedUnusedStuff(a2)))
   # -O2: bounded small-function/[inline(always)] inline fixpoint;
   # -O3 adds the single-caller fold with vtable-slot trimming (compiler.py
   # optimization_level >= 2 / >= 3 blocks; shape compares mirror Python's
@@ -266,79 +258,63 @@ fun createCCode(statements, mainName, optLevel,
     : a3t
   let a3s = optLevel >= 3 && !profile ? ccO3Fixpoint(a3a, 0, None) : a3a
   let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
-  let spStatic = spanBegin("codegen", "staticinit")
-  let a4 = resolveFlatStructGlobalInits(a3b)
-  let _static = spanEnd(spStatic)
-  let spSync = spanBegin("codegen", "sync_inference")
-  let a5 = inferSync(a4)
-  let _sync = spanEnd(spSync)
-  let spFoldStart = spanBegin("codegen", "fold_fixpoint")
-  let a6 = optLevel >= 1
-    ? ccFoldFixpoint(a5, 0, None)
-    : propagateCopies(threadBranches(a5))
-  # Space correctness, every -O level (see sroa.yafl).
-  let spFold = spanEnd(spFoldStart)
-  let spSroa = spanBegin("codegen", "sroa")
-  let a7 = splitProjectedAggregates(a6)
-  let _sroa = spanEnd(spSroa)
+  let a7 = timed("codegen", "staticinit", () => resolveFlatStructGlobalInits(a3b))
+    |> (a4) => timed("codegen", "sync_inference", () => inferSync(a4))
+    |> (a5) => timed("codegen", "fold_fixpoint", () => ccFold(a5, optLevel))
+    # Space correctness, every -O level (see sroa.yafl).
+    |> (a6) => timed("codegen", "sroa", () => splitProjectedAggregates(a6))
   # Validate the SSA form every stage since AST lowering has relied on,
   # before leaving it.
   let vPrePhi = ssaValidate(appFunctions(a7), true)
   if !isEmpty(vPrePhi)
     ret CreateCOut(List(), vPrePhi)
-  let spPhi = spanBegin("codegen", "phi_removal")
-  let a8 = removePhis(a7)
-  let _phi = spanEnd(spPhi)
-  let a8b = optLevel >= 1 ? promoteToStack(a8) : a8
-  let spAsync = spanBegin("codegen", "async_lower")
-  let a9pre = removedUnusedStuff(lowerAsync(a8b))
-  let _async = spanEnd(spAsync)
-  # Reads of a [pinnable] object follow relocation first: it is immutable
-  # except inside a late pin, so a pointer taken before a relocation would see
-  # the pre-write copy. Last, so every RpObjectField the pipeline can produce
-  # is already in place.
-  let spPin = spanBegin("codegen", "pinnable_reads")
-  let a9pin = resolvePinnableReads(a9pre)
-  let _pin = spanEnd(spPin)
-  # Barrier elision, last of all: a store into an object that no safe point
-  # has been able to reach since its own allocation owes neither SATB shading
-  # nor a relocation resolve. Here because async lowering emits the biggest
-  # population of such stores, and because every RpObjectField must already
-  # be in its final shape — including the pinnable wraps above, which is what
-  # keeps [pinnable] objects out of the pass for free.
-  let spFast = spanBegin("codegen", "fast_stores")
-  let a9fast = optLevel >= 1 ? markFastStores(a9pin) : a9pin
-  let _fast = spanEnd(spFast)
-  # Positional object field names, then the one per-function cleanup chain
-  # (emission no longer runs it), so the merge below finds more equal code.
-  let spCanon = spanBegin("codegen", "canonicalise")
-  let a9canon = canonicaliseApp(a9fast, profile)
-  let _canon = spanEnd(spCanon)
-  let spClean = spanBegin("codegen", "cleanup")
-  let a9clean = cleanupApp(a9canon)
-  let _clean = spanEnd(spClean)
-  # Merge entities with identical representation (one instantiation's code
-  # under another's names). Last, so every function was optimised alone.
-  let spDedup = spanBegin("codegen", "representation_dedup")
-  let a9 = mergeIdenticalRepresentations(a9clean, profile)
-  let _dedup = spanEnd(spDedup)
-  let spCheck = spanBegin("codegen", "uninit_check")
-  let v2 = checkApplication(a9)
-  let _chk = spanEnd(spCheck)
+  let a9 = timed("codegen", "phi_removal", () => removePhis(a7))
+    |> (a8) => (optLevel >= 1 ? promoteToStack(a8) : a8)
+    |> (a8b) => timed("codegen", "async_lower", () => removedUnusedStuff(lowerAsync(a8b)))
+    # Reads of a [pinnable] object follow relocation first: it is immutable
+    # except inside a late pin, so a pointer taken before a relocation would
+    # see the pre-write copy. Last, so every RpObjectField the pipeline can
+    # produce is already in place.
+    |> (a9pre) => timed("codegen", "pinnable_reads", () => resolvePinnableReads(a9pre))
+    # Barrier elision, last of all: a store into an object that no safe point
+    # has been able to reach since its own allocation owes neither SATB
+    # shading nor a relocation resolve. Here because async lowering emits the
+    # biggest population of such stores, and because every RpObjectField must
+    # already be in its final shape — including the pinnable wraps above,
+    # which is what keeps [pinnable] objects out of the pass for free.
+    |> (a9pin) => timed("codegen", "fast_stores", () => (optLevel >= 1 ? markFastStores(a9pin) : a9pin))
+    # Positional object field names, then the one per-function cleanup chain
+    # (emission no longer runs it), so the merge below finds more equal code.
+    |> (a9fast) => timed("codegen", "canonicalise", () => canonicaliseApp(a9fast, profile))
+    |> (a9canon) => timed("codegen", "cleanup", () => cleanupApp(a9canon))
+    # Merge entities with identical representation (one instantiation's code
+    # under another's names). Last, so every function was optimised alone.
+    |> (a9clean) => timed("codegen", "representation_dedup", () => mergeIdenticalRepresentations(a9clean, profile))
+  let v2 = timed("codegen", "uninit_check", () => checkApplication(a9))
   if !isEmpty(v2)
     ret CreateCOut(List(), v2)
-  let spV3 = spanBegin("codegen", "ssa_validate.2")
-  let v3 = ssaValidate(appFunctions(a9), false)
-  let _v3 = spanEnd(spV3)
+  let v3 = timed("codegen", "ssa_validate.2", () => ssaValidate(appFunctions(a9), false))
   if !isEmpty(v3)
     ret CreateCOut(List(), v3)
   let v4 = ccValidateEntrypoint(a9)
   if !isEmpty(v4)
     ret CreateCOut(List(), v4)
-  let spGen = spanBegin("codegen", "gen_application")
-  let parts = genApplication(a9, headers, profile)
-  let _gen = spanEnd(spGen)
+  let parts = timed("codegen", "gen_application", () => genApplication(a9, headers, profile))
   ret CreateCOut(parts, List())
+
+# The IR as AST lowering builds it: every statement, the entry point, and the
+# lazy machinery the program's [lazy]/[future] value types need.
+fun ccBuildIr(statements, mainName, r): CgApp
+  let a0 = fold(statements, emptyApp(), (a, st) => ccStmt(a, st, r))
+  let a1 = appPutFunction(a0, createEntryPoint(mainName))
+  ret ensureLazyMachinery(a1, collectLazyTypes(statements, r))
+
+# The pre-async collapse: the full fixpoint at -O1+, one branch-threading and
+# copy-propagation pass at -O0.
+fun ccFold(a: CgApp, optLevel): CgApp
+  ret optLevel >= 1
+    ? ccFoldFixpoint(a, 0, None)
+    : propagateCopies(threadBranches(a))
 
 # ── the -O2/-O3 inline fixpoints ─────────────────────────────────────────────
 # Python compiler.py: `if optimization_level >= 2` — resolve indirect fun_t
@@ -376,28 +352,17 @@ fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
 # promotion, dead stores again. (The >=2 inlining and >=3 single-caller
 # blocks are NOT PORTED YET; at -O1 Python skips them too.)
 fun ccO1Block(a0: CgApp): CgApp
-  let spBounds = spanBegin("o1", "bounds_elim")
-  let a1 = eliminateProvableBoundsChecks(a0)
-  let _b = spanEnd(spBounds)
-  let spDead1 = spanBegin("o1", "deadstores.1")
-  let a2 = removedUnusedStuff(eliminateDeadStores(a1))
-  let _d1 = spanEnd(spDead1)
-  let spStatic = spanBegin("o1", "static_rounds")
-  let a3 = ccStaticRounds(a2, 0, 0)
-  let _s = spanEnd(spStatic)
-  let spDead2 = spanBegin("o1", "deadstores.2")
-  let out = removedUnusedStuff(eliminateDeadStores(a3))
-  let _d2 = spanEnd(spDead2)
-  ret out
+  ret timed("o1", "bounds_elim", () => eliminateProvableBoundsChecks(a0))
+    |> (a1) => timed("o1", "deadstores.1", () => removedUnusedStuff(eliminateDeadStores(a1)))
+    |> (a2) => timed("o1", "static_rounds", () => ccStaticRounds(a2, 0, 0))
+    |> (a3) => timed("o1", "deadstores.2", () => removedUnusedStuff(eliminateDeadStores(a3)))
 
 # Static init promotion runs FOUR rounds; the $si$N counter threads across
 # rounds AND functions (Python's module-level itertools.count).
 fun [tail] ccStaticRounds(a: CgApp, round2, counter): CgApp
   if round2 >= 4
     ret a
-  let sp = spanBegin("o1", "static_round")
-  let out = convertStaticObjectsPass(a, counter)
-  let _r = spanEnd(sp)
+  let out = timed("o1", "static_round", () => convertStaticObjectsPass(a, counter))
   ret ccStaticRounds(out.app, round2 + 1, out.counter)
 
 # The pre-async collapse fixpoint (Python compiler.py `optimization_level >=

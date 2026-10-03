@@ -97,17 +97,17 @@ fun alIsVoid(t2) => match(t2)
   (v: CgVoid) => true
   (o: CgType) => false
 
-# Hot path: only when the return type was TaskWrapper-promoted — SyncWrap
-# each Return (unless the value is already wrapped-shaped: hand-built
-# async-pending returns interoperate), and align musttail result_types.
-fun alConvertReturnsHot(ops, wrappedResult): List<Op> => match(wrappedResult)
-  (w: CgTaskWrapper) => map(ops, (op) => alHotReturnOne(op, wrappedResult))
-  (o: CgType)         => ops
+# Hot path: bring each Return's value into the function's task-carrying
+# return shape (wrapValue), and align musttail result_types with it. A no-op
+# when the return type carries the task signal in-band.
+fun alConvertReturnsHot(ops, fnResult): List<Op>
+  let wrappedResult = wrapReturnType(fnResult)
+  ret eqCgType(wrappedResult, fnResult)
+    ? ops
+    : map(ops, (op) => alHotReturnOne(op, wrappedResult))
 
 fun alHotReturnOne(op, wrapped) => match(op)
-  (r: OpReturn) => eqCgType(rpGetType(r.returnValue), wrapped)
-    ? op
-    : OpReturn(RpSyncWrap(r.returnValue, wrapped), r.returnSavedVars)
+  (r: OpReturn) => OpReturn(wrapValue(r.returnValue, wrapped), r.returnSavedVars)
   (c: OpCall)   => c.callMusttail
     ? OpCall(c.callFunction, c.callParameters, c.callRegister, true, c.callImpure,
              wrapped, c.callSavedVars)
@@ -1004,7 +1004,7 @@ fun alExpandSyncReceived(c: OpCall, reg: RParam|None, resultType, wrapName: Stri
                              c.callImpure, c.callResultType, c.callSavedVars),
                       OpAssertNotTask(isTaskParam(received, wrapped), List()))
   let ops = match(reg)
-    (r: RParam) => concat(checked, list1<Op>(OpMove(r, RpStructField(received, "value"), false, List())))
+    (r: RParam) => concat(checked, list1<Op>(OpMove(r, unwrapValue(received, resultType), false, List())))
     ()          => checked
   ret SyncExp(ops, list1(CgField(wrapName, wrapped)))
 
@@ -1148,12 +1148,12 @@ fun alCreateHotPathFunc(f: CgFunction, stateName, subtype: String|None,
   # close it.
   let prologue = alHotPrologue(chain(alAllStateVars(bbs)), paramNames,
                                builder())
-  let body = alHotSites(chain(alNonTerminal(bbs)), f, wrappedResult, 0,
+  let body = alHotSites(chain(alNonTerminal(bbs)), f, f.fnResult, 0,
                         HotAcc(prologue, builder()))
   let withTerminal = hotBuild(
       HotAcc(pushAll(body.haOps,
                  alConvertReturnsHot(alLastBlock(bbs).abOps,
-                                     wrappedResult)),
+                                     f.fnResult)),
              body.haWrapFields))
   let hasPar = any(alNonTerminal(bbs), (bb) => alBlockIsPar(bb))
   ret f.fnSync
@@ -1176,27 +1176,27 @@ fun alBlockIsPar(bb: ABlock) => match(lastOp(chain(bb.abOps)))
     (o: Op)               => false
   ()        => false
 
-fun [tail] alHotSites(bs: Chain<ABlock>, f: CgFunction, wrappedResult,
+fun [tail] alHotSites(bs: Chain<ABlock>, f: CgFunction, fnResult,
                       i, [terminal] acc) => match(bs)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => alHotSites(l.next, f, wrappedResult, i + 1,
-                                alHotSite(l.value, f, wrappedResult, i, acc))
+  (l: ChainLink)  => alHotSites(l.next, f, fnResult, i + 1,
+                                alHotSite(l.value, f, fnResult, i, acc))
 
-fun alHotSite(bb: ABlock, f: CgFunction, wrappedResult, i,
+fun alHotSite(bb: ABlock, f: CgFunction, fnResult, i,
               [terminal] acc) => match(lastOp(chain(bb.abOps)))
   (op: Op) => match(op)
-    (pc: OpParallelCall) => alHotPar(bb, pc, f, wrappedResult, i, acc)
-    (c: OpCall)          => alHotCall(bb, c, wrappedResult, i, acc)
+    (pc: OpParallelCall) => alHotPar(bb, pc, f, fnResult, i, acc)
+    (c: OpCall)          => alHotCall(bb, c, fnResult, i, acc)
     (o: Op)               => acc   # unreachable: non-terminal blocks end in a splitter
   ()        => acc
 
-fun alHotPar(bb: ABlock, pc: OpParallelCall, f: CgFunction, wrappedResult,
+fun alHotPar(bb: ABlock, pc: OpParallelCall, f: CgFunction, fnResult,
              i: Int, [terminal] acc: HotAcc): HotAcc
   let parTaskName = "task$par$" + String(i) + "$" + f.fnName
   let closures = alClosuresCounted(chain(pc.parCalls), 0, builder())
   let ops1 = pushAll(acc.haOps,
                  alConvertReturnsHot(alDropLast(bb.abOps),
-                                     wrappedResult))
+                                     fnResult))
   let ops2 = pushAll(ops1,
                  alEmitParTaskSetup(alSvParTask(), parTaskName,
                                     closures.cs, closures.n))
@@ -1232,28 +1232,28 @@ fun [tail] alClosuresCounted(ps: Chain<RParam>, n,
                                          push(acc,
                                               alClosureOf(l.value)))
 
-fun alHotCall(bb: ABlock, c: OpCall, wrappedResult, i,
+fun alHotCall(bb: ABlock, c: OpCall, fnResult, i,
               [terminal] acc: HotAcc) => match(c.callRegister)
-  (reg: RParam) => alHotValued(bb, c, reg, wrappedResult, i, acc)
-  ()             => alHotDiscarded(bb, c, wrappedResult, i, acc)
+  (reg: RParam) => alHotValued(bb, c, reg, fnResult, i, acc)
+  ()             => alHotDiscarded(bb, c, fnResult, i, acc)
 
 # register None + result_type None → pure void: emit unchanged. Non-void
 # discarded → $wrap$<i> temp + IfTask, no unwrap Move.
-fun alHotDiscarded(bb: ABlock, c: OpCall, wrappedResult, i,
+fun alHotDiscarded(bb: ABlock, c: OpCall, fnResult, i,
                    [terminal] acc: HotAcc) => match(c.callResultType)
-  (dt: CgType) => alHotDiscardedTyped(bb, c, dt, wrappedResult, i, acc)
+  (dt: CgType) => alHotDiscardedTyped(bb, c, dt, fnResult, i, acc)
   ()            => HotAcc(pushAll(acc.haOps,
                               alConvertReturnsHot(bb.abOps,
-                                                  wrappedResult)),
+                                                  fnResult)),
                           acc.haWrapFields)
 
-fun alHotDiscardedTyped(bb: ABlock, c: OpCall, dt, wrappedResult,
+fun alHotDiscardedTyped(bb: ABlock, c: OpCall, dt, fnResult,
                         i, [terminal] acc: HotAcc)
   let dw = wrapReturnType(dt)
   let svWrap = RpStackVar(dw, "$wrap$" + String(i))
   let ops1 = pushAll(acc.haOps,
                  alConvertReturnsHot(alDropLast(bb.abOps),
-                                     wrappedResult))
+                                     fnResult))
   let ops2 = push(ops1, OpCall(c.callFunction, c.callParameters, svWrap,
                                c.callMusttail, c.callImpure,
                                c.callResultType, c.callSavedVars))
@@ -1267,34 +1267,34 @@ fun alIfTaskOp(sv, wrapped, i) => OpIfTask(isTaskParam(sv, wrapped), taskPtrFrom
 # needs_temp: Python tests `wrapped is not result_type` — the wrap function
 # returns its input unchanged for pass-through shapes, so structural
 # inequality is the faithful port.
-fun alHotValued(bb: ABlock, c: OpCall, reg, wrappedResult,
+fun alHotValued(bb: ABlock, c: OpCall, reg, fnResult,
                 i, [terminal] acc: HotAcc)
   let resultType = rpGetType(reg)
   let wrappedType = wrapReturnType(resultType)
   ret eqCgType(wrappedType, resultType)
-    ? alHotValuedDirect(bb, c, reg, wrappedType, wrappedResult, i, acc)
-    : alHotValuedTemp(bb, c, reg, wrappedType, wrappedResult, i, acc)
+    ? alHotValuedDirect(bb, c, reg, wrappedType, fnResult, i, acc)
+    : alHotValuedTemp(bb, c, reg, wrappedType, fnResult, i, acc)
 
 fun alHotValuedDirect(bb: ABlock, c: OpCall, reg, wrappedType,
-                      wrappedResult, i,
+                      fnResult, i,
                       [terminal] acc: HotAcc)
   let ops1 = pushAll(acc.haOps,
-                 alConvertReturnsHot(bb.abOps, wrappedResult))
+                 alConvertReturnsHot(bb.abOps, fnResult))
   ret HotAcc(push(ops1, alIfTaskOp(reg, wrappedType, i)),
              acc.haWrapFields)
 
 fun alHotValuedTemp(bb: ABlock, c: OpCall, reg, wrappedType,
-                    wrappedResult, i,
+                    fnResult, i,
                     [terminal] acc: HotAcc)
   let svWrap = RpStackVar(wrappedType, "$wrap$" + String(i))
   let ops1 = pushAll(acc.haOps,
                  alConvertReturnsHot(alDropLast(bb.abOps),
-                                     wrappedResult))
+                                     fnResult))
   let ops2 = push(ops1, OpCall(c.callFunction, c.callParameters, svWrap,
                                c.callMusttail, c.callImpure,
                                c.callResultType, c.callSavedVars))
   let ops3 = push(ops2, alIfTaskOp(svWrap, wrappedType, i))
-  ret HotAcc(push(ops3, OpMove(reg, RpStructField(svWrap, "value"),
+  ret HotAcc(push(ops3, OpMove(reg, unwrapValue(svWrap, rpGetType(reg)),
                                false, List())),
              push(acc.haWrapFields,
                   CgField("$wrap$" + String(i), wrappedType)))
@@ -1650,7 +1650,7 @@ fun alSmValued(c, reg, f: CgFunction, idxField, i,
   ret eqCgType(wrappedType, resultType)
     ? alSmChecked(c, reg, wrappedType, None, false, f, idxField, i, acc, saveStores)
     : alSmChecked(c, RpStackVar(wrappedType, "$sm_wrap$" + String(i)), wrappedType,
-                  OpMove(reg, RpStructField(RpStackVar(wrappedType, "$sm_wrap$" + String(i)), "value"),
+                  OpMove(reg, unwrapValue(RpStackVar(wrappedType, "$sm_wrap$" + String(i)), resultType),
                          false, List()),
                   true, f, idxField, i, acc, saveStores)
 
@@ -1749,12 +1749,16 @@ fun [tail] alSmDtParFieldsB(rs: Chain<RParam>, parTaskName, k,
                       parTaskName, "result_" + String(k), None, false))))
 
 fun alSmDtResult(bb: ABlock): List<Op> => match(bb.abResult)
-  (reg: RParam) => match(taskSubtypeName(rpGetType(reg)))
-    (st: String) => list1(OpMove(reg,
-                      RpObjectField(rpGetType(reg), alCompletedParam(), st, "result", None, false),
-                      false, List()))
-    ()            => list1(OpMove(reg, RpNullPointer(), false, List()))
+  (reg: RParam) => isUnit(rpGetType(reg))
+    ? list1(OpMove(reg, RpZeroOf(rpGetType(reg)), false, List()))
+    : alSmDtTaskResult(reg)
   ()             => List()
+
+fun alSmDtTaskResult(reg: RParam): List<Op> => match(taskSubtypeName(rpGetType(reg)))
+  (st: String) => list1(OpMove(reg,
+                    RpObjectField(rpGetType(reg), alCompletedParam(), st, "result", None, false),
+                    false, List()))
+  ()            => list1(OpMove(reg, RpNullPointer(), false, List()))
 
 # Entry case (stub mode): load params, then every live var not yet loaded
 # (the zero-filled field equals the old field-addressed semantics).
@@ -1964,19 +1968,13 @@ fun alConvertFunction(f: CgFunction): AlOut
     ret AlOut(list1(alSimpleWrap(afterTail)), List())
   ret alConvertMulti(f, afterTail, stateName, built.bs, built.n)
 
-# <2 blocks: only the return type adjusts (SyncWrap promotion when wrapped).
+# <2 blocks: only the return type adjusts (Returns brought into its shape).
 fun alSimpleWrap(f: CgFunction)
-  let wrapped = wrapReturnType(f.fnResult)
-  ret match(wrapped)
-    (w: CgTaskWrapper) => CgFunction(f.fnName, f.fnParams, wrapped, f.fnStackVars,
-                                     cgOpsOf(alConvertReturnsHot(cgOpsToList(f.fnOps), wrapped)),
-                                     f.fnComment, f.fnForeignSymbol, f.fnSync,
-                                     f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                                     f.fnSourceFile, f.fnSourceLine)
-    (o: CgType)         => CgFunction(f.fnName, f.fnParams, wrapped, f.fnStackVars,
-                                     f.fnOps, f.fnComment, f.fnForeignSymbol,
-                                     f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                                     f.fnSourceFile, f.fnSourceLine)
+  ret CgFunction(f.fnName, f.fnParams, wrapReturnType(f.fnResult), f.fnStackVars,
+                 cgOpsOf(alConvertReturnsHot(cgOpsToList(f.fnOps), f.fnResult)),
+                 f.fnComment, f.fnForeignSymbol, f.fnSync,
+                 f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSourceFile, f.fnSourceLine)
 
 fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName,
                    bbs: List<ABlock>, nBbs: Int): AlOut
@@ -2146,10 +2144,9 @@ fun alLauncherCallback(fnName, site: Int, slot: Int, parTaskName,
   let svPar = RpStackVar(CgDataPointer(), "$par_task")
   let svClosure = RpStackVar(CgDataPointer(), "$launcher_closure")
   let wrappedType = wrapReturnType(resultType)
-  let needsTemp = !eqCgType(wrappedType, resultType)
   let svResultW = RpStackVar(wrappedType, "$result_w")
   let svDiscardCb = RpStackVar(CgDataPointer(), "$sv_discard_cb")
-  let unwrapped = needsTemp ? RpStructField(svResultW, "value") : svResultW
+  let unwrapped = unwrapValue(svResultW, resultType)
   let slotCb = RpGlobalFunction(fnName + "$par$" + String(site) + "$slot$" + String(slot),
                                 svPar, false, None, false, false)
   let untag = RpRuntimeInvoke("TASK_UNTAG",

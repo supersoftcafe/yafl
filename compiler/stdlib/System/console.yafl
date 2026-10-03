@@ -1,10 +1,6 @@
 namespace System
 
-fun [foreign("print_string"), impure, sync] __print_string(str: System::String): System::Int
-
-fun [impure] print(str: System::String): System::None
-    let _ = __print_string(str)
-    ret None
+fun [foreign("print_string"), impure, sync] print(str: System::String): System::None
 
 fun [impure] print(int: System::Int): System::None
     print(String(int))
