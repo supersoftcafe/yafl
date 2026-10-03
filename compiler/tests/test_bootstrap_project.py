@@ -466,8 +466,13 @@ class TestBootstrapProject(TestCase):
         archive holding the stdlib sources, `yafl.h` and `libyafl.a`. The port
         is given only the search path and a program. It has to discover the
         archive, read the sources out of it, emit C, extract yafl.h and
-        libyafl.a to the cache so the C compiler and linker can reach them,
-        and hand back the paths — and the binary that comes out has to run.
+        libyafl.a so the C compiler and linker can reach them, and hand back
+        the paths — and the binary that comes out has to run.
+
+        The port's extraction lives in ITS process temp folder, which is gone
+        by the time `linkspec` returns here. So the port's paths are checked
+        for shape, and the link uses the same `libs/<name>/...` layout under
+        THIS process's folder, extracted from the same archive.
         """
         system_yl = _REPO / "build" / "stage" / "system.yl"
         if not system_yl.is_file():
@@ -481,9 +486,15 @@ class TestBootstrapProject(TestCase):
 
         rc, port_c = self._port("project", src, stage)
         self.assertEqual(0, rc, port_c[:2000])
-        spec = self._spec(src, stage)
-        self.assertTrue(spec["statics"], "no archive to link")
-        self.assertTrue(spec["includes"], "no -I directory")
+        port_spec = self._spec(src, stage)
+        self.assertTrue(port_spec["statics"], "no archive to link")
+        self.assertTrue(port_spec["includes"], "no -I directory")
+        for path in port_spec["statics"] + port_spec["includes"]:
+            self.assertIn("/libs/system", path)
+            self.assertFalse(Path(path).exists(),
+                             f"{path} outlived the port's process")
+        spec = self._python_spec(src, stage)
+        self.assertEqual(port_spec["headers"], spec["headers"])
         for path in spec["statics"] + spec["includes"]:
             self.assertTrue(Path(path).exists(), f"{path} was not extracted")
 
