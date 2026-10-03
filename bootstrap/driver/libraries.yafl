@@ -413,13 +413,12 @@ fun [tail] loadLoop(ns: Chain<String>, index: List<NsEntry>,
 # ── native artefacts ────────────────────────────────────────────────────────
 # A directory library's header and archive are already on disk. A `.yl`'s are
 # INSIDE the zip, where no C compiler or linker can reach them, so
-# `_materialised_native_dir` extracts them to a cache directory keyed on the
-# archive's content hash and hands back paths into it.
+# `_materialised_native_dir` extracts them into this process's private temp
+# folder (System::tempDir) and hands back paths into it.
 #
-# The key is `sha256(archive bytes)[:16]` and the layout is
-# `<tmp>/yafl-lib-cache/<name>-<digest>/<rel>` — both matching libraries.py
-# exactly, so the two compilers SHARE one cache rather than each extracting the
-# same archive to a place the other never looks.
+# The layout is `<process temp folder>/libs/<name>/<rel>`, matching
+# libraries.py. The folder belongs to this process alone and is deleted when it
+# exits, so nothing is shared with, or cached for, any other compile.
 
 enum NativeDir
   enum NativeOk(ndPath: String)
@@ -435,20 +434,20 @@ fun materialisedNativeDir(lib: Library) => !lib.libIsZip
       (e: IOError)    => NativeErr(lib.libRoot + ": cannot be read")
       (bytes: String) => extractNative(lib, bytes)
 
-fun extractNative(lib: Library, bytes)
-  let dir = tempDir() + "/yafl-lib-cache/" + lib.libManifest.libName
-            + "-" + sha256Hex16(bytes)
-  ret match(makeDirs(dir))
-    (e: IOError) => NativeErr(dir + ": cannot be created")
-    ()           => match(readZip(bytes))
-      (e2: ZipErr) => NativeErr(lib.libRoot + ": " + e2.zipWhy)
-      (z: ZipOk)   => extractEach(chain(concat(lib.libManifest.libHeaders,
-                                               lib.libManifest.libStaticLibs)),
-                                  z.zipEntries, lib, dir)
+fun extractNative(lib: Library, bytes) => match(tempDir())
+  (base: String) => (base + "/libs/" + lib.libManifest.libName)
+    |> (dir) => match(makeDirs(dir))
+      (e: IOError) => NativeErr(dir + ": cannot be created")
+      ()           => match(readZip(bytes))
+        (e2: ZipErr) => NativeErr(lib.libRoot + ": " + e2.zipWhy)
+        (z: ZipOk)   => extractEach(chain(concat(lib.libManifest.libHeaders,
+                                                 lib.libManifest.libStaticLibs)),
+                                    z.zipEntries, lib, dir)
+  ()             => NativeErr(lib.libRoot
+                              + ": the process temp folder cannot be created")
 
-# `if not dest.exists()` — the cache is content-keyed, so an entry already
-# there is the same bytes, and a concurrent compile that got there first has
-# done our work for us.
+# `if not dest.exists()` — within one process an entry already extracted is not
+# written again (libraries.py reaches its extraction twice per library).
 fun [tail] extractEach(rels: Chain<String>, entries: List<ZipEntry>,
                        lib: Library, dir) => match(rels)
   (nil: ChainEnd) => NativeOk(dir)
@@ -479,16 +478,6 @@ fun finishWrite(path,
   (n: Int)     => match(w.io.close())
     (e2: IOError) => path + ": cannot be closed"
     ()            => None
-
-# tempfile.gettempdir(): TMPDIR, then TEMP, then TMP, then /tmp. Python also
-# probes /var/tmp and /usr/tmp before giving up on /tmp, but only when /tmp
-# itself is unusable — at which point extraction fails loudly here rather than
-# silently landing somewhere Python would not have looked.
-fun tempDir() => envOr("TMPDIR", envOr("TEMP", envOr("TMP", "/tmp")))
-
-fun envOr(name, fallback) => match(env(name))
-  (v: String) => v == "" ? fallback : v
-  ()          => fallback
 
 fun dirOf(p) => lastSlash(p, length(p) - 1)
   |> (i) => i <= 0 ? (i == 0 ? "/" : ".") : slice(p, 0, i)

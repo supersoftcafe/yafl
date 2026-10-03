@@ -367,15 +367,16 @@ class TestBootstrapProject(TestCase):
             self.assertEqual(self._python_spec(self._USES_GREET, root),
                              self._spec(self._USES_GREET, root))
 
-    def test_a_yl_s_NATIVE_FILES_ARE_EXTRACTED_to_the_same_cache_as_python(self):
-        """The point of the content-hash cache: a `.yl`'s header and archive
-        live inside the zip, where no linker can reach them. Both compilers
-        must extract them to the SAME directory, or each writes a copy the
-        other never looks at."""
-        import shutil
+    def test_a_yl_s_NATIVE_FILES_ARE_EXTRACTED_to_a_per_process_folder(self):
+        """A `.yl`'s header and archive live inside the zip, where no linker can
+        reach them. Each compiler extracts them into ITS OWN process's private
+        temp folder, `<tmp>/yafl-<pid>-*/libs/<name>/`, which is deleted when
+        that process exits — nothing is shared or cached between compiles."""
+        import re
         import zipfile
+        import tempdir
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = Path(td) / "libs"
             _stage_stdlib_library(root)
             yl = root / "greet.yl"
             with zipfile.ZipFile(yl, "w", zipfile.ZIP_STORED) as z:
@@ -388,23 +389,41 @@ class TestBootstrapProject(TestCase):
                 z.writestr("inc/greet.h", "/* greet */\n")
                 z.writestr("libgreet.a", b"!<arch>\n" + b"\0" * 64)
 
-            # A cold cache, so what appears is what the PORT extracted.
-            cache = Path(tempfile.gettempdir()) / "yafl-lib-cache"
-            expected = libraries._read_library_at(yl)._materialised_native_dir()
-            shutil.rmtree(expected, ignore_errors=True)
+            # The port runs with a private TMPDIR so its folder can be found,
+            # and shown to be gone, after it exits.
+            port_tmp = Path(td) / "tmp"
+            port_tmp.mkdir()
+            env = dict(os.environ)
+            env["YAFL_PATH"] = str(root)
+            env["TMPDIR"] = str(port_tmp)
+            p = subprocess.run([str(self.binary), "linkspec"],
+                               input=f"#FILE# prog.yafl\n{self._USES_GREET}",
+                               env=env, capture_output=True, text=True, timeout=900)
+            self.assertEqual(0, p.returncode, p.stdout[:800])
+            got = {}
+            for line in p.stdout.splitlines():
+                key, _, rest = line.partition("=")
+                got[key] = [v for v in rest.split(",") if v]
 
-            got = self._spec(self._USES_GREET, root)
-            self.assertEqual([str(expected / "inc")], got["includes"])
-            self.assertEqual([str(expected / "libgreet.a")], got["statics"])
+            folder = re.escape(str(port_tmp)) + r"/yafl-\d+-[^/]+/libs/greet"
+            self.assertEqual(1, len(got["includes"]), got)
+            self.assertRegex(got["includes"][0], "^" + folder + "/inc$")
+            self.assertEqual([got["includes"][0][:-len("/inc")] + "/libgreet.a"],
+                             got["statics"])
             self.assertEqual(["yafl.h", "greet.h"], got["headers"])
-            # Extracted by the PORT, byte for byte, into Python's directory.
-            self.assertTrue(expected.is_dir(), f"{expected} was not created")
+            # Deleted, with everything in it, when the port exited.
+            self.assertEqual([], list(port_tmp.iterdir()))
+
+            # Python: the same layout under this process's own folder, which
+            # is still alive here, so the extracted bytes can be checked.
+            expected = tempdir.process_temp_dir() / "libs" / "greet"
+            want = self._python_spec(self._USES_GREET, root)
+            self.assertEqual([str(expected / "inc")], want["includes"])
+            self.assertEqual([str(expected / "libgreet.a")], want["statics"])
+            self.assertEqual(got["headers"], want["headers"])
             self.assertEqual(b"/* greet */\n", (expected / "inc" / "greet.h").read_bytes())
             self.assertEqual(b"!<arch>\n" + b"\0" * 64,
                              (expected / "libgreet.a").read_bytes())
-            self.assertEqual(str(cache), str(expected.parent))
-            # ...and Python agrees on every path.
-            self.assertEqual(self._python_spec(self._USES_GREET, root), got)
 
     def test_a_library_with_no_native_files_contributes_no_paths(self):
         with tempfile.TemporaryDirectory() as td:

@@ -6,7 +6,8 @@ static native library and a C header. Because YAFL compiles whole-program and
 monomorphises, a library's YAFL is shipped as *source* and joins the program; only
 the foreign/runtime parts are native.
 
-This module is deliberately self-contained (it imports nothing from `compiler`): it
+This module is deliberately self-contained (it imports nothing from `compiler`
+beyond the equally standalone `tempdir`): it
 locates libraries on a search path, reads their manifests, and exposes their YAFL
 sources and native artifacts. See `docs/build-and-packaging.md` for the design.
 """
@@ -16,12 +17,12 @@ import os
 import sys
 import zipfile
 import tomllib
-import hashlib
-import tempfile
 import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from functools import cached_property
+
+from tempdir import process_temp_dir
 
 
 MANIFEST_NAME = "yafl.toml"
@@ -159,19 +160,20 @@ class Library:
 
     def _materialised_native_dir(self) -> Path:
         """For a directory library this is `root`. For a `.yl`, native artifacts are
-        extracted to a content-hash-keyed cache dir so the C compiler can reach them."""
+        extracted into this process's private temp folder (`tempdir`), under
+        `libs/<name>/`, so the C compiler can reach them. The folder is deleted when
+        the process exits; nothing is cached between compiles."""
         if not self.is_zip:
             return self.root
-        digest = hashlib.sha256(self.root.read_bytes()).hexdigest()[:16]
-        cache = Path(tempfile.gettempdir()) / "yafl-lib-cache" / f"{self.manifest.name}-{digest}"
-        cache.mkdir(parents=True, exist_ok=True)
+        dest_dir = process_temp_dir() / "libs" / self.manifest.name
         with zipfile.ZipFile(self.root) as zf:
             for rel in (*self.manifest.headers, *self.manifest.static_libs):
-                dest = cache / rel
+                dest = dest_dir / rel
+                # include_dirs() and static_libs() both land here; extract once.
                 if not dest.exists():
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(zf.read(rel))
-        return cache
+        return dest_dir
 
 
 def _read_library_at(path: Path) -> Library | None:

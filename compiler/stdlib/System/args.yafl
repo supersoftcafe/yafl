@@ -34,3 +34,11 @@ fun argv0(): System::String
 # compiler could not read at all — the runtime called getenv for its own knobs
 # but exposed nothing to YAFL.
 fun [foreign("sys_getenv"), impure, sync] env(name: System::String): System::String|System::None
+
+
+# This process's private temporary folder: a uniquely named sub-folder of the
+# host temp directory (TMPDIR, then TEMP, then TMP, then /tmp), created on the
+# first call and deleted — with everything in it — when the process exits. No
+# other process shares it, so what goes in needs no keying or locking. Every
+# call returns the same path. None if the folder could not be created.
+fun [foreign("sys_tempdir"), impure, sync] tempDir(): System::String|System::None

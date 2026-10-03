@@ -1708,6 +1708,9 @@ EXTERN object_t* print_string(object_t* self, str_t s);
 // The process arguments and environment (object.c).
 EXTERN str_t     sys_argv_at(object_t* self, object_t* o_index);
 EXTERN str_t     sys_getenv(object_t* self, str_t name);   // String|None
+// This process's private temp folder, created on first call and deleted at
+// exit (tempdir.c).
+EXTERN str_t     sys_tempdir(object_t* self);               // String|None
 
 // task_str_t: task subtype whose result is a String value, or a union that
 // shares its representation (the compiler's "task_str"). result.head sits at

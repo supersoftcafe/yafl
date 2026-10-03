@@ -274,19 +274,25 @@ fabricated path handed to the linker.
 ## 11. Native artefacts ARE extracted, and that needed three new primitives
 
 A `.yl`'s header and archive live inside the zip, where no C compiler or linker
-can reach them. `_materialised_native_dir` extracts them to
-`<tmp>/yafl-lib-cache/<name>-<sha256(archive)[:16]>` and returns paths into it.
-The port now does the same, into the **same directory** — so the two compilers
-share one cache rather than each extracting the same archive to a place the
-other never looks. Three things had to exist first:
+can reach them. `_materialised_native_dir` extracts them into the compiling
+process's **private temp folder**, `<tmp>/yafl-<pid>-XXXXXX/libs/<name>/`, and
+returns paths into it. The port does the same through `System::tempDir`
+(`yafllib/tempdir.c`); the Python compiler through `compiler/tempdir.py`. The
+folder is created on first use and deleted, with everything in it, when the
+process exits.
+
+This replaced an earlier shared cache, `<tmp>/yafl-lib-cache/<name>-<sha256[:16]>`,
+that both compilers wrote into and nothing ever cleaned. A per-process folder
+needs no content key, no cross-process races and no invalidation. Three things
+had to exist first:
 
 - **`fs_mkdir` in the runtime.** The port could not create a directory at all —
   `fs_exists`, `fs_stat`, `fs_open_dir` and `fs_remove`, but no mkdir. Added as
   one more IO-thread op, one directory per call with EEXIST as success;
   `System::IO::makeDirs` walks the components, so `mkdir -p` lives in YAFL and
   the runtime stays a single syscall.
-- **SHA-256 in the port.** The cache key is a sha256 of the archive bytes, and
-  the port had only MD5 and SHA-1. It shares SHA-1's padding wholesale — both
+- **SHA-256 in the port.** The (since removed) shared cache was keyed on a
+  sha256 of the archive bytes, and the port had only MD5 and SHA-1. It shares SHA-1's padding wholesale — both
   are Merkle–Damgård with a big-endian length — and is verified against
   `hashlib` on the empty string, `abc`, a multi-block input and the 16-char
   prefix.
