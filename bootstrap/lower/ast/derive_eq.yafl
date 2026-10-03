@@ -202,7 +202,7 @@ class [final] DeCands(dcNames: List<String>,
                               dcLeaves: List<DeLeaves>)
 
 fun [tail] deCandidates(ss: List<PStmt>, ps: List<DeProvider>, r,
-                        [terminal] acc: DeCands): (names: List<String>, leaves: List<DeLeaves>)
+                        acc: DeCands): (names: List<String>, leaves: List<DeLeaves>)
   ret isEmpty(ss)
     ? (acc.dcNames,
                         acc.dcLeaves)
@@ -269,7 +269,7 @@ fun deSurvivors(ns, ls, ok: List<String>, ps: List<DeProvider>, r,
 
 fun [tail] deSurvivorsB(ns: List<String>, ls: List<DeLeaves>,
                         ok: List<String>, ps: List<DeProvider>, r,
-                        [terminal] acc: List<String>) => isEmpty(ns)
+                        acc: List<String>) => isEmpty(ns)
   ? acc
   : isEmpty(ls)
     ? acc
@@ -355,7 +355,7 @@ fun deEqArms(ns, sets, i,
   ret (deEqArmsB(ns, sets, i, many, e2, acc))
 
 fun [tail] deEqArmsB(ns: List<String>, sets: List<List<PStmt>>, i,
-                    many, e2: PsEnum, [terminal] acc: List<PArm>) => isEmpty(ns)
+                    many, e2: PsEnum, acc: List<PArm>) => isEmpty(ns)
   ? acc
   : isEmpty(sets)
     ? acc
@@ -428,7 +428,7 @@ fun deHashArms(ns, sets, i,
   ret (deHashArmsB(ns, sets, i, e2, acc))
 
 fun [tail] deHashArmsB(ns: List<String>, sets: List<List<PStmt>>, i,
-                      e2: PsEnum, [terminal] acc: List<PArm>) => isEmpty(ns)
+                      e2: PsEnum, acc: List<PArm>) => isEmpty(ns)
   ? acc
   : isEmpty(sets)
     ? acc

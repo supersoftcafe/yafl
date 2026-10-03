@@ -55,7 +55,7 @@ fun genAccEmpty() => GenAcc(List(), List(), List(),
 
 # ── per-function: prototype + implement ──────────────────────────────────────
 
-fun genFunction([terminal] acc: GenAcc, f: CgFunction, profId: Int|None): GenAcc
+fun genFunction(acc: GenAcc, f: CgFunction, profId: Int|None): GenAcc
   # Functions arrive cleaned (lower/ir/cleanup.yafl: Phis lowered, the
   # cleanup chain applied). --profile instrumentation goes in here, after it,
   # so nothing can merge, move or delete the enter/leave pairing (gen.py
@@ -69,7 +69,7 @@ fun genFunction([terminal] acc: GenAcc, f: CgFunction, profId: Int|None): GenAcc
              append(acc.gaForwards, proto.text), acc.gaVariables,
              append(acc.gaFunctions, impl.text), acc.gaGcRoots)
 
-fun genExtern([terminal] acc: GenAcc, f: CgFunction)
+fun genExtern(acc: GenAcc, f: CgFunction)
   let ext = cgFunctionToCExtern(f, acc.gaCache)
   ret GenAcc(ext.cache, acc.gaTypedefs, append(acc.gaForwards, ext.text),
              acc.gaVariables, acc.gaFunctions, acc.gaGcRoots)
@@ -88,12 +88,12 @@ fun objectsInExtendsOrder(a: CgApp)
                          Set())).ooOrder)
 
 fun [tail] objVisitAll(os: List<CgObject>, a: CgApp,
-                       [terminal] acc) => isEmpty(os)
+                       acc) => isEmpty(os)
   ? acc
   : objVisitAll(tail(os), a,
                                  objVisit(acc, first(os).objName, a))
 
-fun objVisit([terminal] acc, name, a: CgApp)
+fun objVisit(acc, name, a: CgApp)
   if contains(acc.ooSeen, name)
     ret acc
   # Pre-mark: extends cycles terminate; foreign/extern parents not in the
@@ -103,12 +103,12 @@ fun objVisit([terminal] acc, name, a: CgApp)
     (o: CgObject) => objVisitParents(marked, o, a)
     ()             => marked
 
-fun objVisitParents([terminal] acc, o, a: CgApp) => objVisitOne(o.objExtends, a, acc)
+fun objVisitParents(acc, o, a: CgApp) => objVisitOne(o.objExtends, a, acc)
   |> (afterParents) => ObjOrder(append(afterParents.ooOrder, o),
                                 afterParents.ooSeen)
 
 fun [tail] objVisitOne(ps: List<String>, a: CgApp,
-                       [terminal] acc) => isEmpty(ps)
+                       acc) => isEmpty(ps)
   ? acc
   : objVisitOne(tail(ps), a, objVisit(acc, first(ps), a))
 
@@ -137,7 +137,7 @@ fun vtEntryOf(o: CgObject): VtableEntry
   ret VtableEntry(o.objName, ms.names, ms.n)
 
 fun [tail] vtMethodsOf(fs: List<CgFuncSlot>, n,
-                       [terminal] acc: List<String>): (names: List<String>, n: Int)
+                       acc: List<String>): (names: List<String>, n: Int)
   ret isEmpty(fs)
     ? (acc, n)
     : vtMethodsOf(tail(fs), n + 1,
@@ -147,7 +147,7 @@ fun vtDefaultRow() => VtRow("-1", "(void*)&abort_on_vtable_lookup")
 
 fun vtIsDefault(r: VtRow) => r.vtI == "-1"
 
-fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
+fun genObject(acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
               sizes: Dict<String, Int>): GenAcc
   let vtableSize = vtableSizeGet(sizes, o.objName)
   let rows0 = vtRows(vtableSize, List())
@@ -157,8 +157,8 @@ fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
   # The catch-all must be LAST, so when it is missing it is pushed on the end.
   let rows = vtLastIsDefault(rows1)
     ? rows1
-    : (append(rows1,
-                 vtDefaultRow()))
+    : append(rows1,
+                 vtDefaultRow())
   let mangled = mangleName(o.objName)
   # Counts ride the SAME walks that render the text (no-length ruling):
   # one pass produces both the joined C fragment and the number the macro
@@ -225,7 +225,7 @@ fun vtProbe(rows: List<VtRow>, index, row: VtRow)
 # The rows walked so far are re-emitted in place, so they go into a builder;
 # the table is index-addressed, so this order IS the table.
 fun [tail] vtProbeLoop(rest: List<VtRow>, index, row: VtRow,
-                       [terminal] seen: List<VtRow>) => isEmpty(rest)
+                       seen: List<VtRow>) => isEmpty(rest)
   ? append(seen, row)
   : index > 0
     ? vtProbeLoop(tail(rest), index - 1, row, append(seen, first(rest)))
@@ -246,8 +246,8 @@ fun genObjectMasks(o: CgObject, commentLine, mangled)
   if nwindows <= 1
     ret GenMasks(List(), "")
   let masksName = "pmasks_" + mangled
-  let windows = join((genMaskWindows(o, nwindows, 0,
-                                         List())),
+  let windows = join(genMaskWindows(o, nwindows, 0,
+                                         List()),
                      ",\n    ")
   ret GenMasks(list1(commentLine + "static const ptr_mask_t " + masksName + "[" + String(nwindows)
                      + "] = {\n    " + windows + "\n};\n"),
@@ -256,7 +256,7 @@ fun genObjectMasks(o: CgObject, commentLine, mangled)
 
 # Window w of the pointer mask, low word first — the order is the array's.
 fun [tail] genMaskWindows(o: CgObject, n, w,
-                          [terminal] acc: List<String>): List<String>
+                          acc: List<String>): List<String>
   if w >= n
     ret acc
   ret genMaskWindows(o, n, w + 1,
@@ -264,7 +264,7 @@ fun [tail] genMaskWindows(o: CgObject, n, w,
 
 # ── per-global: emission + GC roots ──────────────────────────────────────────
 
-fun genGlobal([terminal] acc: GenAcc, g2: CgGlobal, a: CgApp): GenAcc
+fun genGlobal(acc: GenAcc, g2: CgGlobal, a: CgApp): GenAcc
   # to_c_prototype: the FULL dispatch (static-object globals tentatively
   # declare their `<name>_data` struct too) plus the ";\n" terminator —
   # not the bare Plain form.
@@ -366,20 +366,20 @@ fun [tail] profTableRows(fs: List<CgFunction>, n,
 # ── the assembly ─────────────────────────────────────────────────────────────
 
 fun genDiagnostics()
-  ret join(map((append(append(append(append(List(), "-Wunused-variable"), "-Wunused-but-set-variable"), "-Wunused-parameter"), "-Wunused-const-variable")),
+  ret join(map(append(append(append(append(List(), "-Wunused-variable"), "-Wunused-but-set-variable"), "-Wunused-parameter"), "-Wunused-const-variable"),
         (w) => "#pragma GCC diagnostic ignored \"" + w + "\""), "\n")
       + "\n#pragma GCC diagnostic ignored \"-Wmissing-braces\""
 
 fun [tail] vtEntries(os: List<CgObject>,
-                     [terminal] acc: List<VtableEntry>) => isEmpty(os)
+                     acc: List<VtableEntry>) => isEmpty(os)
   ? acc
   : vtEntries(tail(os), first(os).objIsForeign
     ? acc
     : append(acc, vtEntryOf(first(os))))
 
 fun genApplication(a: CgApp, headers: List<String>, profile: Bool)
-  let vtables = (vtEntries(appObjects(a),
-                                List()))
+  let vtables = vtEntries(appObjects(a),
+                                List())
   let ph = createPerfectLookups(vtables)
   # Explicit walks rather than folds: the accumulator is linear, so it is
   # threaded through one call per element instead of riding a fold's lambda.
@@ -434,7 +434,7 @@ fun profIdOf(profile, id2): Int|None => profile ? id2 : None
 # the port's appFunctions order equals Python's sorted dict order by the
 # existing byte contract, so ids agree (gen.py's numbering comment).
 fun [tail] genFunctionsLoop(fs: List<CgFunction>, profile: Bool, nextId: Int,
-                            [terminal] acc: GenAcc): GenAcc => isEmpty(fs)
+                            acc: GenAcc): GenAcc => isEmpty(fs)
   ? acc
   : isNoneStr(first(fs).fnForeignSymbol)
     ? genFunctionsLoop(tail(fs), profile, nextId + 1,
@@ -443,13 +443,13 @@ fun [tail] genFunctionsLoop(fs: List<CgFunction>, profile: Bool, nextId: Int,
 
 fun [tail] genObjectsLoop(os: List<CgObject>, methodIds: Dict<String, Int>,
                           sizes: Dict<String, Int>,
-                          [terminal] acc: GenAcc) => isEmpty(os)
+                          acc: GenAcc) => isEmpty(os)
   ? acc
   : genObjectsLoop(tail(os), methodIds, sizes,
       first(os).objIsForeign ? acc : genObject(acc, first(os), methodIds, sizes))
 
 fun [tail] genGlobalsLoop(gs: List<CgGlobal>, a: CgApp,
-                          [terminal] acc: GenAcc) => isEmpty(gs)
+                          acc: GenAcc) => isEmpty(gs)
   ? acc
   : genGlobalsLoop(tail(gs), a, genGlobal(acc, first(gs), a))
 
@@ -459,14 +459,14 @@ fun [tail] genGlobalsLoop(gs: List<CgGlobal>, a: CgApp,
 fun genFlatten(sections: List<List<String>>) => (gfSections(sections, true, List()))
 
 fun [tail] gfSections(ss: List<List<String>>, isFirst,
-                      [terminal] acc: List<String>) => isEmpty(ss)
+                      acc: List<String>) => isEmpty(ss)
   ? acc
   : gfSections(tail(ss), false,
       gfItems(first(ss), true,
               isFirst ? acc : append(acc, "\n\n")))
 
 fun [tail] gfItems(is2: List<String>, isFirst,
-                   [terminal] acc: List<String>) => isEmpty(is2)
+                   acc: List<String>) => isEmpty(is2)
   ? acc
   : gfItems(tail(is2), false,
       append(isFirst ? acc : append(acc, "\n"), first(is2)))

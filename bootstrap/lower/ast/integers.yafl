@@ -39,7 +39,7 @@ fun giGlobals(vs, index,
   ret (giGlobalsB(vs, index, acc))
 
 fun [tail] giGlobalsB(vs: List<Int>, index,
-                     [terminal] acc: List<PStmt>) => isEmpty(vs)
+                     acc: List<PStmt>) => isEmpty(vs)
   ? acc
   : giGlobalsB(tail(vs), index + 1,
       append(acc, PsLet(giName(first(vs)), List(), List(),

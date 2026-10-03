@@ -36,7 +36,7 @@ fun insertDrops(statements: List<PStmt>, r)
 # with drop calls spliced in. The `changed` flag rides alongside as a plain
 # value — only the statement list is accumulated.
 fun [tail] drTop(ss: List<PStmt>, r, insts: List<TraitInst>,
-                 [terminal] acc, changed) => isEmpty(ss)
+                 acc, changed) => isEmpty(ss)
   ? DropsOut(acc, changed)
   : drToplevel(first(ss), r, insts)
     |> (o) => drTop(tail(ss), r, insts, append(acc, o.dsStmt),
@@ -73,7 +73,7 @@ fun drClassMembers(c, r, insts: List<TraitInst>)
     : DrS(c, false)
 
 fun [tail] drMembers(ms: List<PStmt>, r, insts: List<TraitInst>,
-                     [terminal] acc,
+                     acc,
                      changed) => isEmpty(ms)
   ? DrMembers(acc, changed)
   : match(first(ms))
@@ -98,8 +98,8 @@ fun drFnBody(f, b, r, insts: List<TraitInst>): DrS
   let body2 = isEmpty(drops)
     ? rewritten.deExpr
     : withDrops(rewritten.deExpr, drops)
-  let bal = drBalLoop((partiallyUsedDroppable(params, referenced,
-                                                   f.fWheres, r, insts)),
+  let bal = drBalLoop(partiallyUsedDroppable(params, referenced,
+                                                   f.fWheres, r, insts),
                       body2, false)
   let changed = rewritten.deChanged || !isEmpty(drops) || bal.deChanged
   ret changed
@@ -280,7 +280,7 @@ class [final] DrFa(dfArgs: List<PFieldArg>, dfChanged: Bool)
 
 fun [tail] drFaLoop(fas: List<PFieldArg>, wheres: List<Spec>, r,
                     insts: List<TraitInst>,
-                    [terminal] acc,
+                    acc,
                     changed) => isEmpty(fas)
   ? DrFa(acc, changed)
   : drExpr(first(fas).faValue, wheres, r, insts)
@@ -329,7 +329,7 @@ fun entriesOf3(x, orig) => match(x)
 
 fun [tail] drEntryLoop(es: List<PTupEnt>, wheres: List<Spec>, r,
                        insts: List<TraitInst>,
-                       [terminal] acc,
+                       acc,
                        changed) => isEmpty(es)
   ? DrE(PeTuple(acc, PLine("", 0, 0)),
                          changed)
@@ -364,7 +364,7 @@ fun drMatch(mt: PeMatch, wheres: List<Spec>, r,
 class [final] DrArms(daArms: List<PArm>, daChanged: Bool)
 
 fun [tail] drArms(as2: List<PArm>, wheres: List<Spec>, r,
-                  insts: List<TraitInst>, [terminal] acc,
+                  insts: List<TraitInst>, acc,
                   changed) => isEmpty(as2)
   ? DrArms(acc, changed)
   : drExpr(first(as2).armBody, wheres, r, insts)
@@ -382,13 +382,13 @@ fun drBlock(bk: PeBlock, wheres: List<Spec>, r,
     ? PeBlock(ss.dmStmts, ov.deExpr, bk.blockTag, bk.pebkLine)
     : bk
   # The block's OWN unused droppable lets drop at its exit.
-  let lets = (bindingLets(blockStmtsOf(rebuilt),
-                              List()))
+  let lets = bindingLets(blockStmtsOf(rebuilt),
+                              List())
   let referenced = blockReferenced(rebuilt)
   let drops = unusedDroppable(lets, referenced, wheres, r, insts)
   let dropped = isEmpty(drops) ? rebuilt : withDrops(rebuilt, drops)
-  let bal = drBalLoop((partiallyUsedDroppable(lets, referenced,
-                                                   wheres, r, insts)),
+  let bal = drBalLoop(partiallyUsedDroppable(lets, referenced,
+                                                   wheres, r, insts),
                       dropped, false)
   ret DrE(bal.deExpr,
           ss.dmChanged || ov.deChanged || !isEmpty(drops) || bal.deChanged)
@@ -401,7 +401,7 @@ fun blockReferenced(x) => referencedNames(x, List())
 
 fun [tail] drBlockStmts(ss: List<PStmt>, wheres: List<Spec>, r,
                         insts: List<TraitInst>,
-                        [terminal] acc,
+                        acc,
                         changed) => isEmpty(ss)
   ? DrMembers(acc, changed)
   : drStmt(first(ss), wheres, r, insts)
@@ -457,8 +457,8 @@ fun drLambda(lm: PeLambda, wheres: List<Spec>, r,
   let referenced = referencedNames(ob.deExpr, List())
   let drops = unusedDroppable(params, referenced, wheres, r, insts)
   let body2 = isEmpty(drops) ? ob.deExpr : withDrops(ob.deExpr, drops)
-  let bal = drBalLoop((partiallyUsedDroppable(params, referenced,
-                                                   wheres, r, insts)),
+  let bal = drBalLoop(partiallyUsedDroppable(params, referenced,
+                                                   wheres, r, insts),
                       body2, false)
   let changed = ob.deChanged || !isEmpty(drops) || bal.deChanged
   ret DrE(changed
@@ -479,7 +479,7 @@ fun udLoop(ls, referenced: List<String>,
 
 fun [tail] udLoopB(ls: List<PStmt>, referenced: List<String>,
                   wheres: List<Spec>, r, insts: List<TraitInst>,
-                  [terminal] acc: List<PStmt>) => isEmpty(ls)
+                  acc: List<PStmt>) => isEmpty(ls)
   ? acc
   : match(first(ls))
     (let2: PsLet) => isUnusedDroppable(let2, referenced, wheres, r, insts)
@@ -512,7 +512,7 @@ fun puLoop(ls, referenced: List<String>,
 
 fun [tail] puLoopB(ls: List<PStmt>, referenced: List<String>,
                   wheres: List<Spec>, r, insts: List<TraitInst>,
-                  [terminal] acc: List<PStmt>) => isEmpty(ls)
+                  acc: List<PStmt>) => isEmpty(ls)
   ? acc
   : match(first(ls))
     (let2: PsLet) => contains2(referenced, let2.lName)
@@ -531,11 +531,11 @@ fun withDrops(body, drops: List<PStmt>): PExpr
   let value0 = blockValueOf(body)
   # Order is the whole point here: the body's own statements, then the let
   # that saves its value, then the drop calls.
-  let stmts = (concat(
+  let stmts = concat(
       append(stmts0,
            PsLet(keep, List(), List(), None,
                  value0, "", List(), lr)),
-      dropCalls(drops, List())))
+      dropCalls(drops, List()))
   ret PeBlock(stmts, PeName(keep, List(), lr), "", lr)
 
 fun blockStmtsOf2(body) => match(body)
@@ -548,7 +548,7 @@ fun blockValueOf(body) => match(body)
 
 fun dropCalls(ds, acc: List<PStmt>): List<PStmt> => (dropCallsB(ds, acc))
 
-fun [tail] dropCallsB(ds: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ds)
+fun [tail] dropCallsB(ds: List<PStmt>, acc: List<PStmt>) => isEmpty(ds)
   ? acc
   : match(first(ds))
     (let2: PsLet) => dropCallsB(tail(ds), append(acc, dropCall(let2)))
@@ -579,8 +579,8 @@ fun [tail] drBalLoop(ls: List<PStmt>, body, changed) => isEmpty(ls)
 fun drBalance(body, let2: PsLet)
   let stmts = blockStmtsOf2(body)
   let start = drBindingEnd(stmts, let2.lName, 1)
-  let out = drEnsureStmts((drop(stmts, start)), blockValueOf(body),
-                          false, false, let2, (take(stmts, start)), false)
+  let out = drEnsureStmts(drop(stmts, start), blockValueOf(body),
+                          false, false, let2, take(stmts, start), false)
   if !out.bsOk || !out.bsDid
     ret DrE(body, false)
   ret match(out.bsValue)
@@ -592,7 +592,7 @@ fun drBail() => DrBs(List(), None, false, false)
 # One past the index of the statement that binds `name`, or 0 when none does.
 fun [tail] drBindingEnd(ss: List<PStmt>, name: String, at: Int): Int => isEmpty(ss)
   ? 0
-  : any((bindingLets(list1(first(ss)), List())),
+  : any(bindingLets(list1(first(ss)), List()),
                          (b) => drLetName(b) == name)
     ? at
     : drBindingEnd(tail(ss), name, at + 1)
@@ -621,7 +621,7 @@ fun oneDrop(let2: PsLet): List<PStmt> => prepend(let2, List())
 # continuation consumes on fall-through; every path must total exactly one.
 fun drEnsureStmts(ss: List<PStmt>, value, tail2,
                   consumed, let2: PsLet,
-                  [terminal] acc, did) => isEmpty(ss)
+                  acc, did) => isEmpty(ss)
   ? drEnsureEnd(value, tail2, consumed, let2, acc, did)
   : match(first(ss))
     (rt: PsRet) => drEnsureRet(rt, tail(ss), value, consumed, let2, acc, did)
@@ -632,7 +632,7 @@ fun drEnsureStmts(ss: List<PStmt>, value, tail2,
 
 fun drEnsurePlain(st, rest, value,
                   tail2: Bool, consumed: Bool, let2: PsLet,
-                  [terminal] acc: List<PStmt>, did): DrBs
+                  acc: List<PStmt>, did): DrBs
   if !drRefsStmt(st, let2.lName)
     ret drEnsureStmts(rest, value, tail2, consumed, let2,
                       append(acc, st), did)
@@ -648,7 +648,7 @@ fun drEnsurePlain(st, rest, value,
 # `ret` is unreachable and kept as-is.
 fun drEnsureRet(rt: PsRet, rest, value,
                 consumed: Bool, let2: PsLet,
-                [terminal] acc: List<PStmt>, did: Bool): DrBs
+                acc: List<PStmt>, did: Bool): DrBs
   let r2 = drRefs(rt.retValue, let2.lName)
   let need = 1 - (consumed ? 1 : 0) - (r2 ? 1 : 0)
   if need < 0
@@ -657,17 +657,17 @@ fun drEnsureRet(rt: PsRet, rest, value,
   if !fx.bxOk
     ret drBail()
   let nv = need == 1 ? withDrops(fx.bxExpr, oneDrop(let2)) : fx.bxExpr
-  ret DrBs((drCopyRestB(rest, append(acc,
-                                PsRet(nv, rt.psrLine)))),
+  ret DrBs(drCopyRestB(rest, append(acc,
+                                PsRet(nv, rt.psrLine))),
            value, did || fx.bxDid || need == 1, true)
 
-fun [tail] drCopyRestB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] drCopyRestB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : drCopyRestB(tail(ss), append(acc, first(ss)))
 
 fun drEnsureIfStep(i2, rest, value,
                    tail2: Bool, consumed: Bool, let2: PsLet,
-                   [terminal] acc: List<PStmt>, did: Bool): DrBs
+                   acc: List<PStmt>, did: Bool): DrBs
   let later = drRefsAny(rest, let2.lName) || drRefsOpt(value, let2.lName)
               || tail2
   let fi = drEnsureIf(i2, consumed, later, let2)
@@ -720,7 +720,7 @@ fun drEnsureBranch(blk, consumed, later,
                     false)
 
 fun drEnsureEnd(value: PExpr|None, tail2, consumed, let2: PsLet,
-                [terminal] acc, did)
+                acc, did)
   let vr = drRefsOpt(value, let2.lName)
   let need = 1 - (consumed ? 1 : 0) - (vr ? 1 : 0) - (tail2 ? 1 : 0)
   if need < 0
@@ -728,11 +728,11 @@ fun drEnsureEnd(value: PExpr|None, tail2, consumed, let2: PsLet,
   ret match(value)
     (v: PExpr) => drEnsureEndValue(v, vr, need, let2, acc, did)
     ()         => need == 1
-      ? DrBs((append(acc, dropCall(let2))), None, true, true)
+      ? DrBs(append(acc, dropCall(let2)), None, true, true)
       : DrBs(acc, None, did, true)
 
 fun drEnsureEndValue(v, vr: Bool, need, let2: PsLet,
-                     [terminal] acc: List<PStmt>, did: Bool): DrBs
+                     acc: List<PStmt>, did: Bool): DrBs
   let fx = vr ? drFixExpr(v, let2) : DrBx(v, false, true)
   if !fx.bxOk
     ret drBail()
@@ -806,7 +806,7 @@ fun drFixEntries(tp, let2: PsLet)
            true)
 
 fun [tail] drFixEntryLoop(es: List<PTupEnt>, let2: PsLet,
-                          [terminal] acc,
+                          acc,
                           did) => isEmpty(es)
   ? DrBx(PeTuple(acc, PLine("", 0, 0)),
                           did, true)
@@ -829,7 +829,7 @@ fun drFixFieldArgs(ne, let2: PsLet)
 class [final] DrFaB(faArgs: List<PFieldArg>, faDid: Bool, faOk: Bool)
 
 fun [tail] drFixFaLoop(fas: List<PFieldArg>, let2: PsLet,
-                       [terminal] acc,
+                       acc,
                        did) => isEmpty(fas)
   ? DrFaB(acc, did, true)
   : drFixExpr(first(fas).faValue, let2)
@@ -919,7 +919,7 @@ fun [tail] drArmRefsAll(as2: List<PArm>, name: String) => isEmpty(as2)
 class [final] DrArmB(abArms: List<PArm>, abDid: Bool, abOk: Bool)
 
 fun [tail] drFixArmLoop(as2: List<PArm>, let2: PsLet,
-                        [terminal] acc,
+                        acc,
                         did) => isEmpty(as2)
   ? DrArmB(acc, did, true)
   : drFixExpr(first(as2).armBody, let2)
@@ -933,7 +933,7 @@ fun drWrapArms(as2, name: String, let2: PsLet,
                       acc: List<PArm>) => (drWrapArmsB(as2, name, let2, acc))
 
 fun [tail] drWrapArmsB(as2: List<PArm>, name: String, let2: PsLet,
-                      [terminal] acc: List<PArm>): List<PArm> => isEmpty(as2)
+                      acc: List<PArm>): List<PArm> => isEmpty(as2)
   ? acc
   : drRefs(first(as2).armBody, name)
     ? drWrapArmsB(tail(as2), name, let2, append(acc, first(as2)))
@@ -952,7 +952,7 @@ fun drFixBlock(bk, let2: PsLet)
            ss.bsDid || ov.bxDid, true)
 
 fun [tail] drFixStmtLoop(ss: List<PStmt>, let2: PsLet,
-                         [terminal] acc,
+                         acc,
                          did) => isEmpty(ss)
   ? DrBs(acc, None, did, true)
   : drFixStmt(first(ss), let2)

@@ -67,8 +67,8 @@ fun [tail] strCountGet(l: List<StrCount>, name) => match(head(l))
   (e: StrCount) => e.scName == name ? e.scCount : strCountGet(tail(l), name)
   ()             => 0
 
-# A bump REBUILDS the whole table, so the rebuild goes into a builder; a name
-# not already present is appended at the end.
+# A bump REBUILDS the whole table, appending as it goes; a name not already
+# present is appended at the end.
 fun strCountIncr(l: List<StrCount>, name) => build(strCountIncrLoop(l, name, false, List()))
 
 fun [tail] strCountIncrLoop(l: List<StrCount>, name, found,
@@ -231,7 +231,7 @@ fun [tail] cgPhiMoves(ps: List<Op>, predLabel,
 fun cgLowerPhisJump([terminal] acc: PhiAcc, j: OpJump,
                     phis: List<PhiAtEntry>)
   ret PhiAcc(acc.paCur,
-             push(cgPhiMoves((phisAtLabel(phis, j.jumpName)),
+             push(cgPhiMoves(phisAtLabel(phis, j.jumpName),
                              acc.paCur, acc.paOut),
                   OpJump(j.jumpName, j.jumpSavedVars)),
              false)

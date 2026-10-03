@@ -154,7 +154,7 @@ fun suggest(dict: WordTree, word: String): List<String>
   let n = length(w)
   let alphabet = "abcdefghijklmnopqrstuvwxyz"
 
-  fun consider([terminal] acc: Sugg, cand: String): Sugg
+  fun consider(acc: Sugg, cand: String): Sugg
     ret hasWord(dict, cand)
       ? (contains<String>(acc.sgSeen, cand)
           ? acc
@@ -162,22 +162,22 @@ fun suggest(dict: WordTree, word: String): List<String>
                  add<String>(acc.sgSeen, cand)))
       : acc
 
-  fun [tail] deletions(i: Int, [terminal] acc: Sugg): Sugg
+  fun [tail] deletions(i: Int, acc: Sugg): Sugg
     ret i >= n ? acc
       : deletions(i + 1, consider(acc, slice(w, 0, i) + slice(w, i + 1, n)))
 
-  fun [tail] transposes(i: Int, [terminal] acc: Sugg): Sugg
+  fun [tail] transposes(i: Int, acc: Sugg): Sugg
     ret i + 1 >= n ? acc
       : transposes(i + 1, consider(acc,
           slice(w, 0, i) + asciiToString(byteAt(w, i + 1)) + asciiToString(byteAt(w, i)) + slice(w, i + 2, n)))
 
-  fun [tail] substitutions(i: Int, j: Int, [terminal] acc: Sugg): Sugg
+  fun [tail] substitutions(i: Int, j: Int, acc: Sugg): Sugg
     ret i >= n ? acc
       : j >= 26 ? substitutions(i + 1, 0, acc)
       : substitutions(i, j + 1, consider(acc,
           slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i + 1, n)))
 
-  fun [tail] insertions(i: Int, j: Int, [terminal] acc: Sugg): Sugg
+  fun [tail] insertions(i: Int, j: Int, acc: Sugg): Sugg
     ret i > n ? acc
       : j >= 26 ? insertions(i + 1, 0, acc)
       : insertions(i, j + 1, consider(acc,
@@ -217,12 +217,12 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
       ? path + ":" + String(lineNo) + ": '" + word + "' (no suggestions)"
       : path + ":" + String(lineNo) + ": '" + word + "' -> " + join(suggestions, ", ")
 
-  fun report(lineNo: Int, word: String, [terminal] a: Rep): Rep
+  fun report(lineNo: Int, word: String, a: Rep): Rep
     ret Rep(append<String|FileError>(a.rpReports,
                                    reportLine(lineNo, word, suggest(dict, word))),
             add<String>(a.rpReported, word), a.rpCount + 1)
 
-  fun checkWord(lineNo: Int, word: String, [terminal] a: Rep): Rep
+  fun checkWord(lineNo: Int, word: String, a: Rep): Rep
     ret length(word) < 2 || contains<String>(a.rpReported, word) || isKnown(dict, word)
       ? a
       : report(lineNo, word, a)
@@ -231,7 +231,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
     ret j < length(line) && isWordByte(byteAt(line, j)) ? wordEnd(line, j + 1) : j
 
   fun [tail] scanLine(lineNo: Int, line: String, i: Int,
-                      [terminal] a: Rep): Rep
+                      a: Rep): Rep
     ret i >= length(line) ? a
       : isWordByte(byteAt(line, i))
         ? scanLine(lineNo, line, wordEnd(line, i + 1),
@@ -241,21 +241,21 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
         : scanLine(lineNo, line, i + 1, a)
 
   # Record an IO error after the reports made so far.
-  fun failed([terminal] a: Rep, e: IOError): Rep
+  fun failed(a: Rep, e: IOError): Rep
     ret Rep(append<String|FileError>(a.rpReports, FileError(path, e)), a.rpReported, a.rpCount)
 
   # End of file finishes the file cleanly; any other read error is recorded.
-  fun readEnd([terminal] a: Rep, e: IOError): Rep
+  fun readEnd(a: Rep, e: IOError): Rep
     ret match(e)
       (eof: EOFError) => a
       ()              => failed(a, e)
 
-  fun closeInto([terminal] a: Rep, closed: IOError|None): Rep
+  fun closeInto(a: Rep, closed: IOError|None): Rep
     ret match(closed)
       (e: IOError) => failed(a, e)
       (n: None)    => a
 
-  fun [tail] perLine(io: IO, lineNo: Int, [terminal] acc: Rep): (io: IO, acc: Rep)
+  fun [tail] perLine(io: IO, lineNo: Int, acc: Rep): (io: IO, acc: Rep)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => perLine(r.io, lineNo + 1, scanLine(lineNo, chomp(line), 0, acc))

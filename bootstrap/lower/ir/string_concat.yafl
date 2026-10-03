@@ -161,7 +161,7 @@ fun scConcatBuild(operands: List<RParam>): RParam
 
 # The operand count rides the numbering walk (no-length ruling).
 fun [tail] scNumbered(os: List<RParam>, i,
-                      [terminal] acc: List<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
+                      acc: List<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
   ret isEmpty(os)
     ? (acc, i)
     : scNumbered(tail(os), i + 1,

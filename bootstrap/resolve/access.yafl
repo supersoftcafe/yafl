@@ -104,7 +104,7 @@ fun nameWildcards(ns, lr,
   ret (nameWildcardsB(ns, lr, acc))
 
 fun [tail] nameWildcardsB(ns: List<String>, lr,
-                         [terminal] acc: List<Binding>) => isEmpty(ns)
+                         acc: List<Binding>) => isEmpty(ns)
   ? acc
   : nameWildcardsB(tail(ns), lr,
                       append(acc, Binding(first(ns),
@@ -174,7 +174,7 @@ fun wildcardBindings(gs: List<PGen>, lr,
   ret (wildcardBindingsB(gs, lr, acc))
 
 fun [tail] wildcardBindingsB(gs: List<PGen>, lr,
-                            [terminal] acc): List<Binding> => isEmpty(gs)
+                            acc): List<Binding> => isEmpty(gs)
   ? acc
   : wildcardBindingsB(tail(gs), lr,
                        append(acc,

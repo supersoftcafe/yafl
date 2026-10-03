@@ -456,7 +456,7 @@ fun rwnArmScope(a: PArm, sc: Resolver|None) => match(sc)
 fun rwnStmts(ss: List<PStmt>, w: RwN, sc, n) => rwnStmtLoop(ss, w, sc, n, List())
 
 fun [tail] rwnStmtLoop(ss: List<PStmt>, w: RwN, sc, n,
-                       [terminal] acc) => isEmpty(ss)
+                       acc) => isEmpty(ss)
   ? RwNSs(n, acc)
   : rwnStmt(first(ss), w, sc, n)
     |> (o) => rwnStmtLoop(tail(ss), w, sc, o.rnsN, append(acc, o.rnsStmt))
@@ -621,7 +621,7 @@ fun rwnExprKids(x, w: RwN, sc, n) => match(x)
 class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
 
 fun [tail] rwnFieldArgs(fas: List<PFieldArg>, w: RwN, sc, n,
-                        [terminal] acc) => isEmpty(fas)
+                        acc) => isEmpty(fas)
   ? RwNFas(n, acc)
   : rwnExpr(first(fas).faValue, w, sc, n)
     |> (v) => rwnFieldArgs(tail(fas), w, sc, v.rneN,
@@ -629,13 +629,13 @@ fun [tail] rwnFieldArgs(fas: List<PFieldArg>, w: RwN, sc, n,
                                PFieldArg(first(fas).faName, v.rneExpr)))
 
 fun [tail] rwnExprs(es: List<PExpr>, w: RwN, sc, n,
-                    [terminal] acc) => isEmpty(es)
+                    acc) => isEmpty(es)
   ? RwNEs(n, acc)
   : rwnExpr(first(es), w, sc, n)
     |> (o) => rwnExprs(tail(es), w, sc, o.rneN, append(acc, o.rneExpr))
 
 fun [tail] rwnTupEnts(es: List<PTupEnt>, w: RwN, sc, n,
-                      [terminal] acc) => isEmpty(es)
+                      acc) => isEmpty(es)
   ? RwNTs(n, acc)
   : rwnExpr(first(es).tupValue, w, sc, n)
     |> (o) => rwnTupEnts(tail(es), w, sc, o.rneN,
@@ -645,7 +645,7 @@ fun [tail] rwnTupEnts(es: List<PTupEnt>, w: RwN, sc, n,
 
 # An arm's body and guard see its binding; its literals see the match's scope.
 fun [tail] rwnArms(as2: List<PArm>, w: RwN, sc, n,
-                   [terminal] acc) => isEmpty(as2)
+                   acc) => isEmpty(as2)
   ? RwNAs(n, acc)
   : rwnExpr(first(as2).armBody, w, rwnArmScope(first(as2), sc), n)
     |> (b) => (b, rwnLits(first(as2).armLiterals, w, sc, b.rneN,
@@ -659,7 +659,7 @@ fun [tail] rwnArms(as2: List<PArm>, w: RwN, sc, n,
 class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
 
 fun [tail] rwnLits(ls: List<PLit>, w: RwN, sc, n,
-                   [terminal] acc) => isEmpty(ls)
+                   acc) => isEmpty(ls)
   ? RwNLs(n, acc)
   : match(first(ls))
     (le: PlExpr)  => rwnExpr(le.litExpr, w, sc, n)

@@ -66,7 +66,7 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
       : line
 
   # Collect a matching line as `file:lineNo:line`; non-matches pass through.
-  fun step([terminal] found: List<String|FileError>, path: String, lineNo: Int,
+  fun step(found: List<String|FileError>, path: String, lineNo: Int,
            line: String): List<String|FileError>
     ret contains(line, needle)
       ? append<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
@@ -74,7 +74,7 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
 
   # End of file finishes a file cleanly; any other read error is collected
   # after the matches found before it.
-  fun readEnd([terminal] found: List<String|FileError>, path: String,
+  fun readEnd(found: List<String|FileError>, path: String,
               e: IOError): List<String|FileError>
     ret match(e)
       (eof: EOFError) => found
@@ -84,7 +84,7 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
   # the per-line loop is a loop, not C-stack recursion; `readLine` suspends on
   # buffer refills. The whole file is never held in memory, only its matches.
   fun [tail] scan(io: IO, path: String, lineNo: Int,
-                  [terminal] found: List<String|FileError>):
+                  found: List<String|FileError>):
                   (io: IO, found: List<String|FileError>)
     let r = readLine(io)
     ret match(r.v)
@@ -92,7 +92,7 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
       (e: IOError)   => (r.io, readEnd(found, path, e))
 
   # The close's error, if any, is collected last: the matches before it stand.
-  fun closeInto([terminal] found: List<String|FileError>, path: String,
+  fun closeInto(found: List<String|FileError>, path: String,
                 closed: IOError|None): List<String|FileError>
     ret match(closed)
       (e: IOError) => append<String|FileError>(found, FileError(path, e))

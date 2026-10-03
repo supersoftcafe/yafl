@@ -19,7 +19,7 @@ fun hashName(name, lr: PLine) => name + "@" + hash6(lr.plFile, lr.plLine, lr.plC
 fun oneEntryTuple(x, lr) => PeTuple(prepend(PTupEnt("", false, x), List()), lr)
 
 fun twoEntryTuple(a, b, lr)
-  ret PeTuple((append(append(List(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
+  ret PeTuple(append(append(List(), PTupEnt("", false, a)), PTupEnt("", false, b)), lr)
 
 fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr)
 
@@ -196,7 +196,7 @@ fun stmtLine(st) => match(st)
 fun withArrayAccessor(c) => match(accessorFor(paramsOf(c.cParams)))
   (acc: PStmt) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                           c.cWheres,
-                          (append(c.cMembers, acc)),
+                          append(c.cMembers, acc),
                           c.cIsInterface,
                           c.pscLine, c.cAllParents, c.cAllSlots, c.cImports)
   ()           => c
@@ -244,7 +244,7 @@ fun enumLeafConstructors(root: PsEnum, grp) => (leafWalk(root, root, List(), grp
                                                               List()))
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited,
-             grp, [terminal] acc): List<PStmt>
+             grp, acc): List<PStmt>
   let params = concat(inherited, paramsOf(node.eParams))
   if isEmpty(node.eVariants)
     # Leaf constructors come out in variant declaration order.
@@ -254,13 +254,13 @@ fun leafWalk(root: PsEnum, node: PsEnum, inherited,
   ret variantsWalk(root, node.eVariants, params, grp, acc)
 
 fun [tail] variantsWalk(root: PsEnum, vs: List<PStmt>, params,
-                        grp, [terminal] acc: List<PStmt>) => isEmpty(vs)
+                        grp, acc: List<PStmt>) => isEmpty(vs)
   ? acc
   : variantsWalk(root, tail(vs), params, grp,
                                   leafWalkOf(root, first(vs), params, grp, acc))
 
 fun leafWalkOf(root: PsEnum, v, params,
-               grp, [terminal] acc): List<PStmt> => match(v)
+               grp, acc): List<PStmt> => match(v)
   (e: PsEnum) => leafWalk(root, e, params, grp, acc)
   (o: PStmt)  => acc
 
@@ -370,8 +370,8 @@ fun fixupGroups(stmts: List<PStmt>, groups) => fixupLoop(stmts, "Main::", tail(g
 fun blockGroupsOf(ss): List<List<PStmt>> => bgLoop(ss, List(), List())
 
 fun [tail] bgLoop(ss: List<PStmt>, cur: List<PStmt>,
-                  [terminal] done: List<List<PStmt>>) => isEmpty(ss)
-  ? (append(done, cur))
+                  done: List<List<PStmt>>) => isEmpty(ss)
+  ? append(done, cur)
   : match(first(ss))
     (im: PsImport)    => bgLoop(tail(ss), concat(cur, list1(first(ss))), done)
     (n2: PsNamespace) => bgLoop(tail(ss),

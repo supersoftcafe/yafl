@@ -375,7 +375,7 @@ fun gsubCompleted(e2: SEnum, params2, sub: GSub): List<Spec>
 # POSITIONAL: these are the enum's type arguments, so the order they come out
 # in is the argument list.
 fun [tail] gsubFormalArgs(ns: List<String>, e2: SEnum, sub: GSub,
-                          [terminal] acc: List<Spec>) => isEmpty(ns)
+                          acc: List<Spec>) => isEmpty(ns)
   ? acc
   : match(resolveGp(first(ns), sub))
     (b: Spec) => gsubFormalArgs(tail(ns), e2, sub, append(acc, b))
@@ -413,7 +413,7 @@ fun gsubInFieldLoop(ts, sub: GSub, visited: List<String>,
   ret (gsubInFieldLoopB(ts, sub, visited, acc))
 
 fun [tail] gsubInFieldLoopB(ts: List<Spec>, sub: GSub, visited: List<String>,
-                           [terminal] acc: List<Spec>) => isEmpty(ts)
+                           acc: List<Spec>) => isEmpty(ts)
   ? acc
   : gsubInFieldLoopB(tail(ts), sub, visited,
                                      append(acc, gsubInField(first(ts), sub,
@@ -426,7 +426,7 @@ fun gsubListLoop(ts, sub: GSub, visited: List<String>,
                         acc: List<Spec>) => (gsubListLoopB(ts, sub, visited, acc))
 
 fun [tail] gsubListLoopB(ts: List<Spec>, sub: GSub, visited: List<String>,
-                        [terminal] acc: List<Spec>) => isEmpty(ts)
+                        acc: List<Spec>) => isEmpty(ts)
   ? acc
   : gsubListLoopB(tail(ts), sub, visited,
                                   append(acc, gsubSpec(first(ts), sub,
@@ -440,7 +440,7 @@ fun gsubEntries(es: List<SEntry>, sub: GSub, visited: List<String>,
                        acc: List<SEntry>) => (gsubEntriesB(es, sub, visited, acc))
 
 fun [tail] gsubEntriesB(es: List<SEntry>, sub: GSub, visited: List<String>,
-                       [terminal] acc): List<SEntry> => isEmpty(es)
+                       acc): List<SEntry> => isEmpty(es)
   ? acc
   : gsubEntriesB(tail(es), sub, visited,
       append(acc, SEntry(first(es).seName,
@@ -503,7 +503,7 @@ fun gsubStmts(ss, sub: GSub,
                      acc: List<PStmt>) => (gsubStmtsB(ss, sub, acc))
 
 fun [tail] gsubStmtsB(ss: List<PStmt>, sub: GSub,
-                     [terminal] acc: List<PStmt>) => isEmpty(ss)
+                     acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : gsubStmtsB(tail(ss), sub, append(acc, gsubStmt(first(ss),
                                                          sub)))
@@ -575,7 +575,7 @@ fun gsubTupEnts(es: List<PTupEnt>, sub: GSub, visited: List<String>,
   ret (gsubTupEntsB(es, sub, visited, acc))
 
 fun [tail] gsubTupEntsB(es: List<PTupEnt>, sub: GSub, visited: List<String>,
-                       [terminal] acc): List<PTupEnt> => isEmpty(es)
+                       acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : gsubTupEntsB(tail(es), sub, visited,
       append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
@@ -585,7 +585,7 @@ fun gsubArms(as2, sub: GSub, visited: List<String>,
                     acc: List<PArm>) => (gsubArmsB(as2, sub, visited, acc))
 
 fun [tail] gsubArmsB(as2: List<PArm>, sub: GSub, visited: List<String>,
-                    [terminal] acc: List<PArm>) => isEmpty(as2)
+                    acc: List<PArm>) => isEmpty(as2)
   ? acc
   : gsubArmsB(tail(as2), sub, visited,
       append(acc, with first(as2)(armType = gsubOpt(first(as2).armType, sub, visited), armBody = gsubExpr(first(as2).armBody, sub, visited), armLiterals = gsubLits(first(as2).armLiterals, sub, visited,
@@ -595,7 +595,7 @@ fun gsubLits(ls, sub: GSub, visited: List<String>,
                     acc: List<PLit>) => (gsubLitsB(ls, sub, visited, acc))
 
 fun [tail] gsubLitsB(ls: List<PLit>, sub: GSub, visited: List<String>,
-                    [terminal] acc: List<PLit>) => isEmpty(ls)
+                    acc: List<PLit>) => isEmpty(ls)
   ? acc
   : gsubLitsB(tail(ls), sub, visited, append(acc, first(ls)))
 
@@ -662,7 +662,7 @@ fun methodRenames(ms, sig,
   ret (methodRenamesB(ms, sig, acc))
 
 fun [tail] methodRenamesB(ms: List<PStmt>, sig,
-                         [terminal] acc: List<Binding2>) => isEmpty(ms)
+                         acc: List<Binding2>) => isEmpty(ms)
   ? acc
   : match(first(ms))
     (f: PsFun) => match(f.fBody)
@@ -683,7 +683,7 @@ fun renameMembers(ms, rn: List<Binding2>,
                          acc: List<PStmt>) => (renameMembersB(ms, rn, acc))
 
 fun [tail] renameMembersB(ms: List<PStmt>, rn: List<Binding2>,
-                         [terminal] acc: List<PStmt>) => isEmpty(ms)
+                         acc: List<PStmt>) => isEmpty(ms)
   ? acc
   : match(first(ms))
     (f: PsFun) => renameMembersB(tail(ms), rn,
@@ -704,7 +704,7 @@ fun renameSlotList(ss: List<Slot>, rn: List<Binding2>,
                           acc: List<Slot>) => (renameSlotListB(ss, rn, acc))
 
 fun [tail] renameSlotListB(ss: List<Slot>, rn: List<Binding2>,
-                          [terminal] acc): List<Slot> => isEmpty(ss)
+                          acc): List<Slot> => isEmpty(ss)
   ? acc
   : renameSlotListB(tail(ss), rn,
       append(acc, Slot(renamedTo(rn, first(ss).slotName), first(ss).slotType,
@@ -772,11 +772,11 @@ fun sortRefs(refs: List<GRef>) => sortBy(refs, refLess)
 # last source of whole-compiler C divergence. deepId is the serialised
 # TypeId spelling, the same spelling Python's __deep_id routes through.
 fun refLess(a: GRef, b: GRef) => a.grName != b.grName ? a.grName < b.grName
-  : strsLess((map(a.grArgs, refUid)), (map(b.grArgs, refUid)))
+  : strsLess(map(a.grArgs, refUid), map(b.grArgs, refUid))
     ? true
-    : strsLess((map(b.grArgs, refUid)), (map(a.grArgs, refUid)))
+    : strsLess(map(b.grArgs, refUid), map(a.grArgs, refUid))
       ? false
-      : strsLess((map(a.grArgs, deepId)), (map(b.grArgs, deepId)))
+      : strsLess(map(a.grArgs, deepId), map(b.grArgs, deepId))
 
 # Python's sort key uses `as_unique_id_str() or ""` — the EMPTY string for
 # an id-less spec (mangledName's "unknown" belongs to naming, not sorting).
@@ -828,8 +828,8 @@ fun cssOne(ref: GRef, st,
   let sp2 = match(sp)
     (e2: PsEnum) => layoutEnum(e2)      # rebuild _enum_spec post-substitution
     (o: PStmt)   => sp
-  ret CssState((append(acc,
-                          sp2)),
+  ret CssState(append(acc,
+                          sp2),
                add(keys, key))
 
 # ── the redirect ────────────────────────────────────────────────────────────
@@ -843,7 +843,7 @@ fun rcrStmts(ss, refs: GRefsIx,
                     acc: List<PStmt>) => (rcrStmtsB(ss, refs, acc))
 
 fun [tail] rcrStmtsB(ss: List<PStmt>, refs: GRefsIx,
-                    [terminal] acc: List<PStmt>) => isEmpty(ss)
+                    acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : rcrStmtsB(tail(ss), refs, append(acc, rcrStmt(first(ss),
                                                         refs)))
@@ -955,7 +955,7 @@ fun mlLoop(ls, args: List<Spec>,
                   acc: List<String>) => (mlLoopB(ls, args, acc))
 
 fun [tail] mlLoopB(ls: List<String>, args: List<Spec>,
-                  [terminal] acc: List<String>) => isEmpty(ls)
+                  acc: List<String>) => isEmpty(ls)
   ? acc
   : mlLoopB(tail(ls), args,
                             append(acc, mangledName(first(ls), args)))
@@ -966,7 +966,7 @@ fun rcrSpecLoop(ss, refs: GRefsIx,
                        acc: List<Spec>) => (rcrSpecLoopB(ss, refs, acc))
 
 fun [tail] rcrSpecLoopB(ss: List<Spec>, refs: GRefsIx,
-                       [terminal] acc: List<Spec>) => isEmpty(ss)
+                       acc: List<Spec>) => isEmpty(ss)
   ? acc
   : rcrSpecLoopB(tail(ss), refs, append(acc,
                                                       rcrSpec(first(ss),
@@ -980,7 +980,7 @@ fun rcrEntries(es: List<SEntry>, refs: GRefsIx,
                       acc: List<SEntry>) => (rcrEntriesB(es, refs, acc))
 
 fun [tail] rcrEntriesB(es: List<SEntry>, refs: GRefsIx,
-                      [terminal] acc): List<SEntry> => isEmpty(es)
+                      acc): List<SEntry> => isEmpty(es)
   ? acc
   : rcrEntriesB(tail(es), refs,
       append(acc, SEntry(first(es).seName, rcrSpecOpt(first(es).seType, refs),
@@ -1099,7 +1099,7 @@ fun rcrTupEnts(es: List<PTupEnt>, refs: GRefsIx,
                       acc: List<PTupEnt>) => (rcrTupEntsB(es, refs, acc))
 
 fun [tail] rcrTupEntsB(es: List<PTupEnt>, refs: GRefsIx,
-                      [terminal] acc): List<PTupEnt> => isEmpty(es)
+                      acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rcrTupEntsB(tail(es), refs,
       append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
@@ -1109,7 +1109,7 @@ fun rcrArms(as2, refs: GRefsIx,
                    acc: List<PArm>) => (rcrArmsB(as2, refs, acc))
 
 fun [tail] rcrArmsB(as2: List<PArm>, refs: GRefsIx,
-                   [terminal] acc: List<PArm>) => isEmpty(as2)
+                   acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rcrArmsB(tail(as2), refs,
       append(acc, with first(as2)(armType = rcrSpecOpt(first(as2).armType, refs), armBody = rcrExpr(first(as2).armBody, refs), armGuard = rcrExprOpt(first(as2).armGuard, refs))))
@@ -1120,7 +1120,7 @@ fun pruneUnusedGenerics(statements: List<PStmt>) => pugLoop(statements, List())
 
 fun pugLoop(ss, acc: List<PStmt>): List<PStmt> => (pugLoopB(ss, acc))
 
-fun [tail] pugLoopB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] pugLoopB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : isEmpty(stmtGens(first(ss)))
     ? pugLoopB(tail(ss), append(acc, first(ss)))
@@ -1135,7 +1135,7 @@ fun fseLoop(ss, specialized: List<String>,
                    acc: List<PStmt>) => (fseLoopB(ss, specialized, acc))
 
 fun [tail] fseLoopB(ss: List<PStmt>, specialized: List<String>,
-                   [terminal] acc: List<PStmt>) => isEmpty(ss)
+                   acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (e2: PsEnum) => isRootEnum(e2)
@@ -1188,7 +1188,7 @@ fun patternLoop(ps, remap: List<Binding>, let2,
   ret (patternLoopB(ps, remap, let2, acc))
 
 fun [tail] patternLoopB(ps: List<Spec>, remap: List<Binding>, let2,
-                       [terminal] acc: List<GProvider>) => isEmpty(ps)
+                       acc: List<GProvider>) => isEmpty(ps)
   ? acc
   : match(first(ps))
     (pc: SClass) => match(substitute(first(ps), remap))
@@ -1342,7 +1342,7 @@ fun sfmList(ss, mono: List<GRef>,
                    acc: List<Spec>) => (sfmListB(ss, mono, acc))
 
 fun [tail] sfmListB(ss: List<Spec>, mono: List<GRef>,
-                   [terminal] acc: List<Spec>) => isEmpty(ss)
+                   acc: List<Spec>) => isEmpty(ss)
   ? acc
   : sfmListB(tail(ss), mono,
                              append(acc, specFromMangled(first(ss), mono)))
@@ -1358,7 +1358,7 @@ fun mangledFromSpec(sp) => match(sp)
 
 fun mfsList(ss, acc: List<Spec>): List<Spec> => (mfsListB(ss, acc))
 
-fun [tail] mfsListB(ss: List<Spec>, [terminal] acc: List<Spec>) => isEmpty(ss)
+fun [tail] mfsListB(ss: List<Spec>, acc: List<Spec>) => isEmpty(ss)
   ? acc
   : mfsListB(tail(ss), append(acc, mangledFromSpec(first(ss))))
 
@@ -1370,7 +1370,7 @@ fun concreteInstanceInterfaces(statements: List<PStmt>,
 # per-instance step and the parent walk only ever WRITE to it, and the order
 # they write in is the declaration order Python's comprehension produces.
 fun [tail] ciiLoop(ss: List<PStmt>, r,
-                   [terminal] acc: List<Spec>) => isEmpty(ss)
+                   acc: List<Spec>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (let2: PsLet) => isEmpty(let2.lGens) && hasAttr(let2.lAttrs, "trait")
@@ -1379,7 +1379,7 @@ fun [tail] ciiLoop(ss: List<PStmt>, r,
     (o: PStmt)    => ciiLoop(tail(ss), r, acc)
 
 fun instanceIfaces(let2: PsLet, r,
-                   [terminal] acc): List<Spec> => match(let2.lType)
+                   acc): List<Spec> => match(let2.lType)
   (dt: Spec) => match(dt)
     (dc: SClass) => match(soleItem(findType(r, dc.scName)))
       (f: Found) => match(f.fStmt)
@@ -1395,7 +1395,7 @@ fun instanceIfaces(let2: PsLet, r,
   ()         => acc
 
 fun [tail] ifaceLoop(ps: List<Spec>, remap: List<Binding>,
-                     [terminal] acc: List<Spec>) => isEmpty(ps)
+                     acc: List<Spec>) => isEmpty(ps)
   ? acc
   : match(first(ps))
     (pc: SClass) => match(substitute(first(ps), remap))
@@ -1428,7 +1428,7 @@ fun unboundGens(gs: List<PGen>, mapping: List<Binding>,
                        acc: List<String>) => (unboundGensB(gs, mapping, acc))
 
 fun [tail] unboundGensB(gs: List<PGen>, mapping: List<Binding>,
-                       [terminal] acc): List<String> => isEmpty(gs)
+                       acc): List<String> => isEmpty(gs)
   ? acc
   : match(bindingOf(mapping, first(gs).genName))
     (b: Spec) => unboundGensB(tail(gs), mapping, acc)
@@ -1512,7 +1512,7 @@ fun mangledArgs(gs: List<PGen>, mapping: List<Binding>,
                        acc: List<Spec>) => (mangledArgsB(gs, mapping, acc))
 
 fun [tail] mangledArgsB(gs: List<PGen>, mapping: List<Binding>,
-                       [terminal] acc): List<Spec> => isEmpty(gs)
+                       acc): List<Spec> => isEmpty(gs)
   ? acc
   : match(bindingOf(mapping, first(gs).genName))
     (b: Spec) => mangledArgsB(tail(gs), mapping,
@@ -1539,7 +1539,7 @@ fun addNamesAll(ns: List<String>, acc: List<String>) => (addNamesAllB(ns,
                                                                             acc,
                                                                             Set(acc)))
 
-fun [tail] addNamesAllB(ns: List<String>, [terminal] out: List<String>,
+fun [tail] addNamesAllB(ns: List<String>, out: List<String>,
                         seen: Set<String>) => isEmpty(ns)
   ? out
   : contains(seen, first(ns))
@@ -1562,13 +1562,13 @@ fun [tail] monoRound(statements, round2,
   # by an explicit type-param reference. Discharge the constraints seen so far
   # against the generic instances, seeding witness-let refs.
   let r = rootResolver(statements)
-  let seenCons2 = addSpecsAll((collectConcreteConstraints(statements,
-                                                               List())),
+  let seenCons2 = addSpecsAll(collectConcreteConstraints(statements,
+                                                               List()),
                               seenCons)
   let dataRefs = addRefsAll(
-      (genericInstanceRefs(genericInstanceProviders(statements, r),
+      genericInstanceRefs(genericInstanceProviders(statements, r),
                                 seenCons2, seenMono2,
-                                concreteInstanceInterfaces(statements, r))),
+                                concreteInstanceInterfaces(statements, r)),
       found.gdData)
   if isEmpty(dataRefs) && isEmpty(found.gdTypes)
     ret GIter(pruneUnusedGenerics(statements), Set())
@@ -1601,18 +1601,18 @@ fun withExtraRefs(refs: GRefs, specialized: List<PStmt>,
                   statements: List<PStmt>)
   let extra = findConcreteInstantiations(specialized)
   let existing = allStmtNames(statements, List())
-  ret GRefs(addRefsAll((existingOnly(extra.gdData, existing,
-                                          List())),
+  ret GRefs(addRefsAll(existingOnly(extra.gdData, existing,
+                                          List()),
                        refs.gdData),
-            addRefsAll((existingOnly(extra.gdTypes, existing,
-                                          List())),
+            addRefsAll(existingOnly(extra.gdTypes, existing,
+                                          List()),
                        refs.gdTypes))
 
 fun existingOnly(rs, existing: List<String>,
                         acc: List<GRef>) => (existingOnlyB(rs, existing, acc))
 
 fun [tail] existingOnlyB(rs: List<GRef>, existing: List<String>,
-                        [terminal] acc: List<GRef>) => isEmpty(rs)
+                        acc: List<GRef>) => isEmpty(rs)
   ? acc
   : contains2(existing, refKey(first(rs)))
     ? existingOnlyB(tail(rs), existing, append(acc, first(rs)))
@@ -1620,7 +1620,7 @@ fun [tail] existingOnlyB(rs: List<GRef>, existing: List<String>,
 
 fun allStmtNames(ss, acc: List<String>): List<String> => (allStmtNamesB(ss, acc))
 
-fun [tail] allStmtNamesB(ss: List<PStmt>, [terminal] acc: List<String>) => isEmpty(ss)
+fun [tail] allStmtNamesB(ss: List<PStmt>, acc: List<String>) => isEmpty(ss)
   ? acc
   : allStmtNamesB(tail(ss), append(acc, stmtName(first(ss))))
 
@@ -1629,7 +1629,7 @@ fun enumNamesOf(ss): List<String> => enumNamesLoop(ss, List())
 fun enumNamesLoop(ss, acc: List<String>): List<String>
   ret (enumNamesLoopB(ss, acc))
 
-fun [tail] enumNamesLoopB(ss: List<PStmt>, [terminal] acc: List<String>) => isEmpty(ss)
+fun [tail] enumNamesLoopB(ss: List<PStmt>, acc: List<String>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (e2: PsEnum) => enumNamesLoopB(tail(ss), append(acc, e2.eName))
@@ -1700,7 +1700,7 @@ fun rtrStmts(ss, r, traits: List<PStmt>,
                     acc: List<PStmt>) => (rtrStmtsB(ss, r, traits, acc))
 
 fun [tail] rtrStmtsB(ss: List<PStmt>, r, traits: List<PStmt>,
-                    [terminal] acc: List<PStmt>) => isEmpty(ss)
+                    acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : rtrStmtsB(tail(ss), r, traits,
                               append(acc, rtrStmt(first(ss), r, traits)))
@@ -1789,7 +1789,7 @@ fun rtrTupEnts(es: List<PTupEnt>, r, traits: List<PStmt>,
                       acc: List<PTupEnt>) => (rtrTupEntsB(es, r, traits, acc))
 
 fun [tail] rtrTupEntsB(es: List<PTupEnt>, r, traits: List<PStmt>,
-                      [terminal] acc): List<PTupEnt> => isEmpty(es)
+                      acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rtrTupEntsB(tail(es), r, traits,
       append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
@@ -1799,7 +1799,7 @@ fun rtrArms(as2, r, traits: List<PStmt>,
                    acc: List<PArm>) => (rtrArmsB(as2, r, traits, acc))
 
 fun [tail] rtrArmsB(as2: List<PArm>, r, traits: List<PStmt>,
-                   [terminal] acc: List<PArm>) => isEmpty(as2)
+                   acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rtrArmsB(tail(as2), r, traits,
       append(acc, with first(as2)(armBody = rtrExpr(first(as2).armBody, r, traits), armGuard = rtrExprOpt(first(as2).armGuard, r, traits))))
@@ -1847,7 +1847,7 @@ fun traitProviders(ls, ts: SClass, r,
                           acc: List<PsLet>) => (traitProvidersB(ls, ts, r, acc))
 
 fun [tail] traitProvidersB(ls: List<PStmt>, ts: SClass, r,
-                          [terminal] acc: List<PsLet>) => isEmpty(ls)
+                          acc: List<PsLet>) => isEmpty(ls)
   ? acc
   : match(first(ls))
     (let2: PsLet) => implementsTrait(let2, ts, r)
@@ -1875,7 +1875,7 @@ fun implementsTrait(tr: PsLet, ts: SClass, r) => match(tr.lType)
 fun mangledSpecList(ss, acc: List<Spec>): List<Spec>
   ret (mangledSpecListB(ss, acc))
 
-fun [tail] mangledSpecListB(ss: List<Spec>, [terminal] acc: List<Spec>) => isEmpty(ss)
+fun [tail] mangledSpecListB(ss: List<Spec>, acc: List<Spec>) => isEmpty(ss)
   ? acc
   : mangledSpecListB(tail(ss),
                                      append(acc, mangledFromSpec(first(ss))))
@@ -1963,7 +1963,7 @@ fun matchingByType(ms, ifaceType: Spec, r,
   ret (matchingByTypeB(ms, ifaceType, r, acc))
 
 fun [tail] matchingByTypeB(ms: List<Found>, ifaceType: Spec, r,
-                          [terminal] acc: List<Found>) => isEmpty(ms)
+                          acc: List<Found>) => isEmpty(ms)
   ? acc
   : triTrue(assignableEq(r, ifaceType,
                                           stmtType(first(ms).fStmt)))
@@ -2033,7 +2033,7 @@ fun rfrStmts(ss, c: Canon,
                     acc: List<PStmt>) => (rfrStmtsB(ss, c, acc))
 
 fun [tail] rfrStmtsB(ss: List<PStmt>, c: Canon,
-                    [terminal] acc: List<PStmt>) => isEmpty(ss)
+                    acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : rfrStmtsB(tail(ss), c, append(acc, rfrStmt(first(ss), c)))
 
@@ -2124,7 +2124,7 @@ fun rfrTupEnts(es: List<PTupEnt>, c: Canon,
                       acc: List<PTupEnt>) => (rfrTupEntsB(es, c, acc))
 
 fun [tail] rfrTupEntsB(es: List<PTupEnt>, c: Canon,
-                      [terminal] acc): List<PTupEnt> => isEmpty(es)
+                      acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rfrTupEntsB(tail(es), c,
       append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
@@ -2132,7 +2132,7 @@ fun [tail] rfrTupEntsB(es: List<PTupEnt>, c: Canon,
 
 fun rfrArms(as2, c: Canon, acc: List<PArm>): List<PArm> => (rfrArmsB(as2, c, acc))
 
-fun [tail] rfrArmsB(as2: List<PArm>, c: Canon, [terminal] acc: List<PArm>) => isEmpty(as2)
+fun [tail] rfrArmsB(as2: List<PArm>, c: Canon, acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rfrArmsB(tail(as2), c,
       append(acc, with first(as2)(armType = rfrSpecOpt(first(as2).armType, c), armBody = rfrExpr(first(as2).armBody, c), armGuard = rfrExprOpt(first(as2).armGuard, c))))
@@ -2151,7 +2151,7 @@ fun rfrSpecLoop(ts, c: Canon,
                        acc: List<Spec>) => (rfrSpecLoopB(ts, c, acc))
 
 fun [tail] rfrSpecLoopB(ts: List<Spec>, c: Canon,
-                       [terminal] acc: List<Spec>) => isEmpty(ts)
+                       acc: List<Spec>) => isEmpty(ts)
   ? acc
   : rfrSpecLoopB(tail(ts), c, append(acc, rfrSpec(first(ts),
                                                          c)))
@@ -2179,7 +2179,7 @@ fun rfrEntries(es: List<SEntry>, c: Canon,
                       acc: List<SEntry>) => (rfrEntriesB(es, c, acc))
 
 fun [tail] rfrEntriesB(es: List<SEntry>, c: Canon,
-                      [terminal] acc): List<SEntry> => isEmpty(es)
+                      acc): List<SEntry> => isEmpty(es)
   ? acc
   : rfrEntriesB(tail(es), c,
       append(acc, SEntry(first(es).seName,

@@ -98,7 +98,7 @@ fun tokenize(src: System::String): List<Tok>|CompileError
   # Token order is the program — a builder. On the error path the builder is
   # simply not consumed; the affine drop releases it.
   fun [tail] scan(pos: System::Int,
-                  [terminal] acc: List<Tok >): List<Tok>|CompileError
+                  acc: List<Tok >): List<Tok>|CompileError
     let at = skipGap(pos)
     if at >= System::length(src)
       ret (append<Tok >(acc, TEnd()))
@@ -135,13 +135,13 @@ fun describe(t: Tok): System::String
     ()         => "end of input"
 
 fun parseProgram(ts: List<Tok>,
-                 [terminal] acc: List<FunDef >): List<FunDef>|CompileError
+                 acc: List<FunDef >): List<FunDef>|CompileError
   ret match(peekTok(ts))
     (e: TEnd) => acc
     ()        => parseNextFun(ts, acc)
 
 fun parseNextFun(ts: List<Tok>,
-                 [terminal] acc: List<FunDef >): List<FunDef>|CompileError
+                 acc: List<FunDef >): List<FunDef>|CompileError
   let f = parseFun(ts)
   ret match(f.v)
     (err: CompileError) => err
@@ -175,14 +175,14 @@ fun parseFun(ts: List<Tok>): (v: FunDef|CompileError, rest: List<Tok>)
       : fail("expected 'fun', found " + describe(peekTok(ts)))
     ()         => fail("expected 'fun', found " + describe(peekTok(ts)))
 
-fun parseParams(ts: List<Tok>, [terminal] acc: List<System::String >): (v: List<System::String>|CompileError, rest: List<Tok>)
+fun parseParams(ts: List<Tok>, acc: List<System::String >): (v: List<System::String>|CompileError, rest: List<Tok>)
   if isSym(peekTok(ts), ")")
     ret (acc, dropTok(ts))
   ret match(peekTok(ts))
     (n: TName) => paramsAfterName(dropTok(ts), append<System::String >(acc, n.tname))
     ()         => (CompileError("expected parameter name, found " + describe(peekTok(ts))), ts)
 
-fun paramsAfterName(ts: List<Tok>, [terminal] acc: List<System::String >): (v: List<System::String>|CompileError, rest: List<Tok>)
+fun paramsAfterName(ts: List<Tok>, acc: List<System::String >): (v: List<System::String>|CompileError, rest: List<Tok>)
   if isSym(peekTok(ts), ",")
     ret parseParams(dropTok(ts), acc)
   if isSym(peekTok(ts), ")")
@@ -272,13 +272,13 @@ fun parseCall(target: System::String, ts: List<Tok>): (v: Expr|CompileError, res
     ret (ECall(target, List<Expr>()), dropTok(ts))
   ret callArgs(target, ts, List<Expr >())
 
-fun callArgs(target: System::String, ts: List<Tok>, [terminal] acc: List<Expr >): (v: Expr|CompileError, rest: List<Tok>)
+fun callArgs(target: System::String, ts: List<Tok>, acc: List<Expr >): (v: Expr|CompileError, rest: List<Tok>)
   let a = parseExpr(ts)
   ret match(a.v)
     (err: CompileError) => a
     (arg: Expr)         => afterArg(target, a.rest, append<Expr >(acc, arg))
 
-fun afterArg(target: System::String, ts: List<Tok>, [terminal] acc: List<Expr >): (v: Expr|CompileError, rest: List<Tok>)
+fun afterArg(target: System::String, ts: List<Tok>, acc: List<Expr >): (v: Expr|CompileError, rest: List<Tok>)
   if isSym(peekTok(ts), ",")
     ret callArgs(target, dropTok(ts), acc)
   if isSym(peekTok(ts), ")")

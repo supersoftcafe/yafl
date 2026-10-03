@@ -72,7 +72,7 @@ fun doInlining(f, tag, a: CgApp,
 
 fun [tail] inlLoop(s: Segment<Op>|None, iSeg, index, tag, f: CgFunction,
                    a: CgApp, shouldInline,
-                   [terminal] acc): InlAcc => match(s)
+                   acc): InlAcc => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg < seg.length
     ? inlLoop(s, iSeg + 1i32, index + 1, tag, f, a, shouldInline,
@@ -83,7 +83,7 @@ fun [tail] inlLoop(s: Segment<Op>|None, iSeg, index, tag, f: CgFunction,
 # One op: splice the callee in when every guard passes, else keep the op.
 fun inlStep(op, uniqueId, f: CgFunction, a: CgApp,
             shouldInline,
-            [terminal] acc: InlAcc) => match(inlCandidate(op, f, a, shouldInline))
+            acc: InlAcc) => match(inlCandidate(op, f, a, shouldInline))
   (t2: InlTarget) => inlSplice(t2, uniqueId, acc)
   ()               => InlAcc(append(acc.inlOps, op), acc.inlVars)
 
@@ -126,7 +126,7 @@ fun inlIsParallel(op) => match(op)
 # reduces to this segment).
 
 fun inlSplice(t2: InlTarget, uniqueId,
-              [terminal] acc: InlAcc)
+              acc: InlAcc)
   let target = t2.itTarget
   let pFields = cgFieldsOfOrEmpty(target.fnParams)
   let allFields = concat(pFields, cgFieldsOfOrEmpty(target.fnStackVars))
@@ -143,14 +143,14 @@ fun inlSplice(t2: InlTarget, uniqueId,
   let ops2 = inlParamMovesB(t2.itArgs.values, tail(pFields),
                             uniqueId, allFields, ops1)
   let ops3 = inlBody(target.fnOps, 0i32, t2.itCall, renames, endLabel, ops2)
-  ret InlAcc((inlEndBookkeeping(ops3, endLabel)),
+  ret InlAcc(inlEndBookkeeping(ops3, endLabel),
              concat(acc.inlVars, newVars))
 
 fun inlLabelRenames(ops: Segment<Op>|None, uniqueId)
   ret (inlLabelRenamesB(ops, 0i32, uniqueId, List()))
 
 fun [tail] inlLabelRenamesB(s: Segment<Op>|None, i, uniqueId,
-                           [terminal] acc): List<RpRename> => match(s)
+                           acc): List<RpRename> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => i >= seg.length
     ? inlLabelRenamesB(seg.next, 0i32, uniqueId, acc)
@@ -169,7 +169,7 @@ fun inlMappedVar(fields: List<CgField>, name,
                     # unreachable: every param name is a field
 
 fun inlThisCapture(t2: InlTarget, uniqueId, allFields: List<CgField>,
-                   [terminal] ops): List<Op> => match(t2.itGf.object)
+                   ops): List<Op> => match(t2.itGf.object)
   (obj: RParam) => match(head(cgFieldsOfOrEmpty(t2.itTarget.fnParams)))
     (f2: CgField) => append(ops,
         OpMove(inlMappedVar(allFields, f2.fieldName, uniqueId), obj,
@@ -184,7 +184,7 @@ fun inlParamMoves(args: List<RpNamedValue>, params: List<CgField>,
 
 fun [tail] inlParamMovesB(args: List<RpNamedValue>, params: List<CgField>,
                          uniqueId, allFields: List<CgField>,
-                         [terminal] ops): List<Op> => isEmpty(args)
+                         ops): List<Op> => isEmpty(args)
   ? ops
   : isEmpty(params)
     ? ops
@@ -195,7 +195,7 @@ fun [tail] inlParamMovesB(args: List<RpNamedValue>, params: List<CgField>,
 
 fun [tail] inlBody(s: Segment<Op>|None, i, c: OpCall, renames: List<RpRename>,
                    endLabel,
-                   [terminal] acc): List<Op> => match(s)
+                   acc): List<Op> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => i < seg.length
     ? inlBody(s, i + 1i32, c, renames, endLabel,
@@ -203,7 +203,7 @@ fun [tail] inlBody(s: Segment<Op>|None, i, c: OpCall, renames: List<RpRename>,
     : inlBody(seg.next, 0i32, c, renames, endLabel, acc)
 
 fun inlBodyOp(op, c: OpCall, renames: List<RpRename>, endLabel,
-              [terminal] acc): List<Op> => match(op)
+              acc): List<Op> => match(op)
   (r: OpReturn)  => append(inlReturnMove(r, c, renames, acc),
                          OpJump(endLabel, List()))
   (cl: OpCall)   => cl.callMusttail
@@ -215,7 +215,7 @@ fun inlBodyOp(op, c: OpCall, renames: List<RpRename>, endLabel,
   (o: Op)        => append(acc, opRenameVars(op, renames))
 
 fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
-                  [terminal] acc): List<Op> => match(c.callRegister)
+                  acc): List<Op> => match(c.callRegister)
   (reg: RParam) => append(acc, OpMove(reg,
                                  rpRenameVars(r.returnValue, renames),
                                  false, List()))
@@ -227,8 +227,8 @@ fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
 fun inlEndBookkeeping(ops, endLabel) => match(inlFirstEndJumpIsLast(ops, endLabel))
   (isLast: Bool) => isLast
     ? inlDropLast(ops, List())
-    : (append(ops,
-                 OpLabel(endLabel, List())))
+    : append(ops,
+                 OpLabel(endLabel, List()))
   ()             => ops
 
 # None: no end-jump. true: the FIRST end-jump is the very last op (pop it).
@@ -244,7 +244,7 @@ fun [tail] inlFirstEndJumpIsLast(ops: List<Op>, endLabel) => isEmpty(ops)
 
 fun inlDropLast(ops, acc: List<Op>): List<Op> => (inlDropLastB(ops, acc))
 
-fun [tail] inlDropLastB(ops: List<Op>, [terminal] acc: List<Op>) => isEmpty(ops)
+fun [tail] inlDropLastB(ops: List<Op>, acc: List<Op>) => isEmpty(ops)
   ? acc
   : isEmpty(tail(ops))
     ? acc

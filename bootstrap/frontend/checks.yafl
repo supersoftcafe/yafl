@@ -288,7 +288,7 @@ fun nsSpecsOpt(ss: List<Spec>|None, acc): Set<PErr> => match(ss)
 # only step left is naming an ordering, exactly as Python's
 # `sorted(set(errors))` does. errLess matches Python's dataclass field order
 # (file, line, col, message, severity).
-fun printedDiagnostics(es: Set<PErr>) => printLoop((sortBy(es, errLess)), "")
+fun printedDiagnostics(es: Set<PErr>) => printLoop(sortBy(es, errLess), "")
 
 fun [tail] printLoop(es: List<PErr>, acc) => isEmpty(es)
   ? acc

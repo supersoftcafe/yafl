@@ -191,7 +191,7 @@ fun spRestack(f: CgFunction, promoted: List<SpCand>)
                    kept)))
 
 fun [tail] spCandsFields(cs: List<SpCand>,
-                         [terminal] acc: List<CgField>) => isEmpty(cs)
+                         acc: List<CgField>) => isEmpty(cs)
   ? acc
   : spCandsFields(tail(cs), spCandFields(acc, first(cs)))
 

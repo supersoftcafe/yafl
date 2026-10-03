@@ -71,7 +71,7 @@ fun icDropDecls(ss, c: IcConsts,
                        acc: List<PStmt>) => (icDropDeclsB(ss, c, acc))
 
 fun [tail] icDropDeclsB(ss: List<PStmt>, c: IcConsts,
-                       [terminal] acc: List<PStmt>) => isEmpty(ss)
+                       acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (let2: PsLet) => contains(c.icMap, let2.lName)

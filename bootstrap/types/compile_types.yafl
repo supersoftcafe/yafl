@@ -138,7 +138,7 @@ fun compileTuple(t2: STuple, r)
 
 class [final] EntriesOut(esEntries: List<SEntry>, esGlobals: List<PStmt>)
 
-fun [tail] compileEntries(es: List<SEntry>, r, [terminal] acc,
+fun [tail] compileEntries(es: List<SEntry>, r, acc,
                           glb) => isEmpty(es)
   ? EntriesOut(acc, glb)
   : compileEntry(first(es), r)
@@ -167,7 +167,7 @@ class [final] ParamsOut(psSpecs: List<Spec>, psGlobals: List<PStmt>)
 
 fun compileParams(ts: List<Spec>, r) => compileParamLoop(ts, r, List(), List())
 
-fun [tail] compileParamLoop(ts: List<Spec>, r, [terminal] acc,
+fun [tail] compileParamLoop(ts: List<Spec>, r, acc,
                             glb) => isEmpty(ts)
   ? ParamsOut(acc, glb)
   : compileSpec(first(ts), r)

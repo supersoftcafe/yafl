@@ -90,7 +90,7 @@ fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
 
 fun foundNames(ds: List<Found>, acc: List<String>) => (foundNamesB(ds, acc))
 
-fun [tail] foundNamesB(ds: List<Found>, [terminal] acc): List<String> => isEmpty(ds)
+fun [tail] foundNamesB(ds: List<Found>, acc): List<String> => isEmpty(ds)
   ? acc
   : foundNamesB(tail(ds), append(acc, first(ds).fName))
 
@@ -106,7 +106,7 @@ fun distinctFinds(ds: List<Found>) => dfLoop(ds, List(), List())
 fun dfLoop(ds, acc: List<Found>,
                   seen: List<String>) => (dfLoopB(ds, acc, seen))
 
-fun [tail] dfLoopB(ds: List<Found>, [terminal] acc: List<Found>,
+fun [tail] dfLoopB(ds: List<Found>, acc: List<Found>,
                   seen: List<String>) => isEmpty(ds)
   ? acc
   : contains2(seen, first(ds).fName)
@@ -145,7 +145,7 @@ fun classDotErrs(d: PeDot, datas: List<Found>)
   ret noErrs()
 
 fun checkEnumDot(d: PeDot, e2: SEnum, r)
-  if hasFieldNamed((enumFieldsVia(r, e2.seRoot)), d.member)
+  if hasFieldNamed(enumFieldsVia(r, e2.seRoot), d.member)
     ret noErrs()                       # already resolved to a unique field name
   ret match(narrowedEnumField(r, e2, d.member))
     (h: NfHit)       => noErrs()
@@ -256,7 +256,7 @@ fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
 fun candidateSigs(cs: List<Found>, acc: List<String>)
   ret (candidateSigsB(cs, acc))
 
-fun [tail] candidateSigsB(cs: List<Found>, [terminal] acc): List<String> => isEmpty(cs)
+fun [tail] candidateSigsB(cs: List<Found>, acc): List<String> => isEmpty(cs)
   ? acc
   : match(stmtType(first(cs).fStmt))
     (ty: Spec) => match(ty)
@@ -303,8 +303,8 @@ fun specName(name, params: List<Spec>)
   let gi = find(bare, "$generic$")
   let head2 = beforeHash(gi < 0 ? bare : slice(bare, 0, gi))
   let args = isEmpty(params)
-    ? (gi < 0 ? "" : joinMangledArgs((split(slice(bare, gi + 9,
-                                                       length(bare)), "_")), ""))
+    ? (gi < 0 ? "" : joinMangledArgs(split(slice(bare, gi + 9,
+                                                       length(bare)), "_"), ""))
     : joinArgStrs(params, "")
   ret args == "" ? head2 : head2 + "<" + args + ">"
 
@@ -423,8 +423,8 @@ fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
 # No value vanishes silently: a block-local binding never read discards its
 # value. A `_`-prefixed name is the explicit opt-out.
 fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
-  let declared = (bindingLets(bk.blockStmts,
-                                   List()))
+  let declared = bindingLets(bk.blockStmts,
+                                   List())
   if isEmpty(declared)
     ret noErrs()
   let referenced = referencedInStmts(bk.blockStmts,
@@ -434,7 +434,7 @@ fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
 
 # Declaration order, which is the order the shadowing check reports in.
 fun [tail] bindingLets(ss: List<PStmt>,
-                       [terminal] acc: List<PStmt>) => isEmpty(ss)
+                       acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (d: PsDestructure) => bindingLets(tail(ss),
@@ -754,7 +754,7 @@ fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
       ()         => List()
     (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
       (f: Found) => match(f.fStmt)
-        (en: PsEnum) => withCoverBares((coveringFields(en, e2.seValidLeaves)),
+        (en: PsEnum) => withCoverBares(coveringFields(en, e2.seValidLeaves),
                                        List())
         (o: PStmt)   => List()
       ()         => List()
@@ -764,7 +764,7 @@ fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
 fun withBareNames(fs, acc: List<String>): List<String>
   ret (withBareNamesB(fs, acc))
 
-fun [tail] withBareNamesB(fs: List<PStmt>, [terminal] acc: List<String>) => isEmpty(fs)
+fun [tail] withBareNamesB(fs: List<PStmt>, acc: List<String>) => isEmpty(fs)
   ? acc
   : match(first(fs))
     (p: PsLet) => withBareNamesB(tail(fs), append(acc, bareName(p.lName)))
@@ -773,6 +773,6 @@ fun [tail] withBareNamesB(fs: List<PStmt>, [terminal] acc: List<String>) => isEm
 fun withCoverBares(fs: List<SField>, acc: List<String>)
   ret (withCoverBaresB(fs, acc))
 
-fun [tail] withCoverBaresB(fs: List<SField>, [terminal] acc): List<String> => isEmpty(fs)
+fun [tail] withCoverBaresB(fs: List<SField>, acc): List<String> => isEmpty(fs)
   ? acc
   : withCoverBaresB(tail(fs), append(acc, bareName(first(fs).sfName)))

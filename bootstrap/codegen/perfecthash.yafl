@@ -67,7 +67,7 @@ fun phAssignIds(names: List<String>): (ids: List<MethodId>, next: Int)
 fun phAssignIdsFinish(acc: IdAcc): (ids: List<MethodId>, next: Int)
   ret (acc.iaIds, acc.iaNext)
 
-fun [tail] phAssignIdsLoop(names: List<String>, [terminal] acc: IdAcc) => isEmpty(names)
+fun [tail] phAssignIdsLoop(names: List<String>, acc: IdAcc) => isEmpty(names)
   ? acc
   : phAssignIdsLoop(tail(names),
       IdAcc(append(acc.iaIds, MethodId(first(names), acc.iaNext)),
@@ -107,12 +107,12 @@ class [final] CollisionPair(pairA: String, pairB: String)
 #
 # `slots` is Python's per-class `slots = {}`, asked only "is this index
 # taken, and by whom" — a Dict, which also retires the linear scan that
-# answered that question. `pairs` is a builder: it is written and never read,
-# and its order IS observed, because buildConflictGraph replays it to
+# answered that question. `pairs` is appended to and never read here, and
+# its order IS observed, because buildConflictGraph replays it to
 # reproduce Python's key insertion order.
 fun [tail] phScanClassSlots(methods: List<String>, methodIds: Dict<String, Int>,
                             mask, slots: Dict<Int, String>,
-                            [terminal] pairs: List<CollisionPair>) => isEmpty(methods)
+                            pairs: List<CollisionPair>) => isEmpty(methods)
   ? pairs
   : match(get(slots, methodIdGet(methodIds, first(methods)) & mask))
     (existing: String) => phScanClassSlots(tail(methods), methodIds, mask, slots,
@@ -123,7 +123,7 @@ fun [tail] phScanClassSlots(methods: List<String>, methodIds: Dict<String, Int>,
 
 fun [tail] phScanAllSlots(vtables: List<VtableEntry>, methodIds: Dict<String, Int>,
                           vtableSizes: Dict<String, Int>,
-                          [terminal] pairs): List<CollisionPair> => isEmpty(vtables)
+                          pairs): List<CollisionPair> => isEmpty(vtables)
   ? pairs
   : phScanAllSlots(tail(vtables), methodIds, vtableSizes,
       phScanClassSlots(first(vtables).methods, methodIds,
@@ -141,8 +141,8 @@ fun [tail] phScanAllSlots(vtables: List<VtableEntry>, methodIds: Dict<String, In
 # the whole-graph rewrite that removing a single edge used to cost.
 class [final] ConflictGraph(cgOrder: List<String>, cgEdges: Dict<String, List<String>>)
 
-# cgOrder is only WRITTEN during the build — "have I met this method before"
-# is the Dict's question, not the list's — so it can be a builder.
+# cgOrder is only appended to during the build — "have I met this method
+# before" is the Dict's question, not the list's.
 class [final] CgAcc(caOrder: List<String>,
                             caEdges: Dict<String, List<String>>)
 
@@ -152,13 +152,13 @@ fun buildConflictGraph(pairs: List<CollisionPair>)
 
 fun cgFinish(acc: CgAcc) => ConflictGraph(acc.caOrder, acc.caEdges)
 
-fun [tail] bcgLoop(ps: List<CollisionPair>, [terminal] acc): CgAcc => isEmpty(ps)
+fun [tail] bcgLoop(ps: List<CollisionPair>, acc): CgAcc => isEmpty(ps)
   ? acc
   : bcgLoop(tail(ps), cgAddEdge(acc, first(ps).pairA, first(ps).pairB))
 
-fun cgAddEdge([terminal] acc: CgAcc, a, b) => cgAddDirected(cgAddDirected(acc, a, b), b, a)
+fun cgAddEdge(acc: CgAcc, a, b) => cgAddDirected(cgAddDirected(acc, a, b), b, a)
 
-fun cgAddDirected([terminal] acc: CgAcc, from2, to) => match(get(acc.caEdges, from2))
+fun cgAddDirected(acc: CgAcc, from2, to) => match(get(acc.caEdges, from2))
   (ns: List<String>) => CgAcc(acc.caOrder,
       put(acc.caEdges, from2,
         strListMember(ns, to) ? ns : prepend(to, ns)))
@@ -181,7 +181,7 @@ fun [tail] pickMaxDegreeLoop(ms: List<String>, g: ConflictGraph,
                              bestMethod: String, bestNs: List<String>|None) => isEmpty(ms)
   ? bestMethod
   : match(bestNs)
-    (ns: List<String>) => shorterThan(ns, (cgNeighbors(g, first(ms))))
+    (ns: List<String>) => shorterThan(ns, cgNeighbors(g, first(ms)))
       ? pickMaxDegreeLoop(tail(ms), g, first(ms), cgNeighbors(g, first(ms)))
       : pickMaxDegreeLoop(tail(ms), g, bestMethod, bestNs)
     ()                 => pickMaxDegreeLoop(tail(ms), g, first(ms),
@@ -233,10 +233,10 @@ fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, 
 fun phFixpointStep(vtables: List<VtableEntry>, methodIds0, vtableSizes: List<VtableSize>, iteration, nextId0: Int): List<MethodId>
   # The dict views are per ROUND (ids are reassigned between rounds); the
   # build is one walk, against millions of per-method linear scans inside.
-  let pairs = (phScanAllSlots(vtables,
+  let pairs = phScanAllSlots(vtables,
                                   methodIdDict(methodIds0, Dict()),
                                   vtableSizeDict(vtableSizes, Dict()),
-                                  List()))
+                                  List())
   ret isEmpty(pairs)
     ? methodIds0
     : phFixpointCollision(vtables, methodIds0, vtableSizes, iteration, nextId0, pairs)

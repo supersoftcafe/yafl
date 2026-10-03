@@ -34,7 +34,7 @@ import Bootstrap::Types
 class [final] LhAcc(lhStmts: List<PStmt>, lhErrs: Set<PErr>,
                             lhChanged: Bool)
 
-fun lhKeep([terminal] acc: LhAcc, st) => LhAcc(append(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
+fun lhKeep(acc: LhAcc, st) => LhAcc(append(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
 
 fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PErr>, lhChanged: Bool)
   let out = lhStmtsLoop(statements, List(),
@@ -52,12 +52,12 @@ fun lhIsHashedType(sp: Spec|None, roots: List<String>) => match(sp)
   ()         => false
 
 fun [tail] lhStmtsLoop(ss: List<PStmt>, roots: List<String>,
-                       [terminal] acc: LhAcc) => isEmpty(ss)
+                       acc: LhAcc) => isEmpty(ss)
   ? acc
   : lhStmtsLoop(tail(ss), roots, lhOne(first(ss), roots, acc))
 
 fun lhOne(st, roots: List<String>,
-          [terminal] acc: LhAcc) => match(st)
+          acc: LhAcc) => match(st)
   (f: PsFun) => hasAttr(f.fAttrs, "refeq")
     ? lhRefeqFun(f, roots, acc)
     : hasAttr(f.fAttrs, "hashed")
@@ -66,7 +66,7 @@ fun lhOne(st, roots: List<String>,
   (o: PStmt) => lhKeep(acc, st)
 
 fun lhFun(f: PsFun, roots: List<String>,
-          [terminal] acc: LhAcc): LhAcc
+          acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
   if !exactly(params, 1) || !lhFirstParamHashed(params, roots)
     ret LhAcc(append(acc.lhStmts, f),
@@ -140,7 +140,7 @@ fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
 # deep compare short-circuits at SHARED SUBSTRUCTURE.
 
 fun lhRefeqFun(f: PsFun, roots: List<String>,
-               [terminal] acc: LhAcc): LhAcc
+               acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
   if !exactly(params, 2) || !lhRefeqParamsOk(params, roots)
     ret LhAcc(append(acc.lhStmts, f),

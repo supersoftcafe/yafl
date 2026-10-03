@@ -64,7 +64,7 @@ fun cntDrop(c: LinCnt, key) => LinCnt(remove(c.lcCounts, key))
 # Per-branch merge: counts must AGREE per obligation; result is c1 unless
 # empty (Python: `c1 if c1 else c2`).
 fun cntMerge(c1, c2, lr, acc): LinOut
-  let errs = mergeErrs((addNamesOnce(lcKeys(c1), lcKeys(c2))),
+  let errs = mergeErrs(addNamesOnce(lcKeys(c1), lcKeys(c2)),
                        c1, c2, lr, acc)
   ret LinOut(isEmpty(c1.lcCounts) ? c2 : c1, errs)
 
@@ -367,7 +367,7 @@ fun [tail] dischargeEnv(ns: List<String>, env: LinEnv,
       discharge(first(ns), linLeaves(envType(env, first(ns)), r), counts, lr,
                 isParam, acc))
 
-# Each obligation consumed exactly once. `isParam` adds the [terminal] hint.
+# Each obligation consumed exactly once. `isParam` adds the hint.
 fun discharge(name, leaves: List<String>, counts: Dict<String, Int>,
               lr, isParam: Bool, acc): Set<PErr>
   ret dischargeLoop(leaves, name, counts, lr, isParam, acc)
@@ -391,7 +391,7 @@ fun dischargeOne2(key: String, name, counts: Dict<String, Int>,
     ret add(acc, PErr(lr, "linear value '" + name
                              + "' is never used; it must be consumed once"
                              + (isParam
-                                ? " (mark the parameter [terminal] if this is its terminus)"
+                                ? " (mark the parameter if this is its terminus)"
                                 : "")))
   ret acc
 
@@ -499,7 +499,7 @@ fun oneArmCount(a: PArm, env, r, acc)
     ret o
   let errs = discharge(a.armName, linLeaves(a.armType, r), o.loCnt.lcCounts,
                        a.parmLine, false, o.loErrs)
-  ret LinOut(popObligations((linLeaves(a.armType, r)), a.armName,
+  ret LinOut(popObligations(linLeaves(a.armType, r), a.armName,
                             o.loCnt),
              errs)
 
@@ -538,7 +538,7 @@ fun [tail] dischargeLocals(bs: List<PStmt>, r, o: LinOut) => isEmpty(bs)
   ? o
   : match(first(bs))
     (let2: PsLet) => dischargeLocals(tail(bs), r,
-        LinOut(popObligations((linLeaves(let2.lType, r)), let2.lName,
+        LinOut(popObligations(linLeaves(let2.lType, r), let2.lName,
                               o.loCnt),
                discharge(let2.lName, linLeaves(let2.lType, r),
                          o.loCnt.lcCounts, let2.pslLine, false, o.loErrs)))
@@ -615,7 +615,7 @@ fun [tail] growEnv(ts: List<PStmt>, r, env,
       # Bindings keep declaration order: the drops they own are emitted in
       # it at scope exit.
       ? growEnv(tail(ts), r, putEnv(env, let2),
-                (append(bindings, first(ts))))
+                append(bindings, first(ts)))
       : growEnv(tail(ts), r, env, bindings)
     (o: PStmt)    => growEnv(tail(ts), r, env, bindings)
 
@@ -629,7 +629,7 @@ fun suffixLet(let2, stmts: List<PStmt>, i, env,
   let isLin = carriesLinearity(let2.lType, r0)
   ret countSuffix(stmts, i + 1, isLin ? putEnv(env, let2) : env, r, r0,
                   trailing,
-                  isLin ? (append(bindings, narrowLet(let2)))
+                  isLin ? append(bindings, narrowLet(let2))
                         : bindings,
                   o.loErrs)
     |> (rest) => ScopeOut(cntAdd(o.loCnt, rest.soCnt), rest.soErrs,
@@ -700,7 +700,7 @@ fun suffixIf(i2: PsIf, stmts: List<PStmt>, i, env, r,
 # past a leaf into a non-linear field moves nothing.
 fun countPath(x, env: LinEnv, r) => match(resolvePathRoot(x, List()))
   (rp: RootPath) => envHas(env, rp.rpRoot)
-    ? pathCounts((linLeaves(envType(env, rp.rpRoot), r)), rp,
+    ? pathCounts(linLeaves(envType(env, rp.rpRoot), r), rp,
                  emptyCnt())
     : emptyCnt()
   ()             => emptyCnt()
@@ -742,9 +742,9 @@ fun countParallel(pl: PeParallel, env, r,
 
 # A blind name scan — sound because bindings carry path-unique names.
 fun checkCapture(b, env: LinEnv, lr, r: Resolver,
-                 acc): Set<PErr> => captureErrs((sort(capturedIn(b, env))), lr, acc)
+                 acc): Set<PErr> => captureErrs(sort(capturedIn(b, env)), lr, acc)
 
-fun capturedIn(b, env: LinEnv): List<String> => capturedLoop((referencedNames(b, List())), env,
+fun capturedIn(b, env: LinEnv): List<String> => capturedLoop(referencedNames(b, List()), env,
                                                              List())
 
 fun [tail] capturedLoop(ns: List<String>, env: LinEnv,

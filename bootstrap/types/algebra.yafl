@@ -102,7 +102,7 @@ fun substEntLoop(es: List<SEntry>, mapping: List<Binding>,
                         acc: List<SEntry>) => (substEntLoopB(es, mapping, acc))
 
 fun [tail] substEntLoopB(es: List<SEntry>, mapping: List<Binding>,
-                        [terminal] acc): List<SEntry> => isEmpty(es)
+                        acc): List<SEntry> => isEmpty(es)
   ? acc
   : substEntLoopB(tail(es), mapping,
       append(acc, SEntry(first(es).seName, substOpt(first(es).seType, mapping),
@@ -343,7 +343,7 @@ fun mgTuples(l: STuple, rr: STuple, binds: List<MBind>, inv: Bool, wv: Bool, cl:
     ()             => mgConflict(l, rr, binds, "tuple shapes differ")
 
 fun [tail] mgEntries(ls: List<SEntry>, bs: List<Int>, rs: List<SEntry>, binds: List<MBind>,
-                     inv: Bool, wv: Bool, cl: Bool, r, [terminal] acc: List<SEntry>, errs: Set<PErr>,
+                     inv: Bool, wv: Bool, cl: Bool, r, acc: List<SEntry>, errs: Set<PErr>,
                      l: STuple): MergeOut => isEmpty(ls)
   ? mgEntriesDone(acc, binds, errs, l)
   : isEmpty(bs)
@@ -419,7 +419,7 @@ fun mgArgs(la: List<Spec>, ra: List<Spec>, binds: List<MBind>, wv: Bool, cl: Boo
   ret mgArgLoop(la, ra, binds, wv, cl, r, List(), noErrs())
 
 fun [tail] mgArgLoop(ls: List<Spec>, rs: List<Spec>, binds: List<MBind>, wv: Bool, cl: Bool, r,
-                     [terminal] acc: List<Spec>, errs: Set<PErr>): MergeArgs => isEmpty(ls)
+                     acc: List<Spec>, errs: Set<PErr>): MergeArgs => isEmpty(ls)
   ? mgArgsDone(acc, binds, errs)
   : isEmpty(rs)
     ? mgArgsDone(acc, binds, errs)
@@ -427,7 +427,7 @@ fun [tail] mgArgLoop(ls: List<Spec>, rs: List<Spec>, binds: List<MBind>, wv: Boo
       |> (m) => mgArgLoop(tail(ls), tail(rs), m.moBinds, wv, cl, r, mgPushOpt(acc, m.moSpec),
                           union(errs, m.moErrs))
 
-fun mgPushOpt([terminal] acc: List<Spec>, sp: Spec|None): List<Spec> => match(sp)
+fun mgPushOpt(acc: List<Spec>, sp: Spec|None): List<Spec> => match(sp)
   (s2: Spec) => append(acc, s2)
   ()         => acc
 
@@ -469,7 +469,7 @@ fun mgSpelt(m: Spec, binds: List<MBind>, side: Bool): List<Spec>
     ()        => prepend(m, List<Spec>())
 
 fun mgAddNew(acc: List<Spec>, xs: List<Spec>): List<Spec>
-  ret fold(xs, acc, (a, x) => any(a, (o) => eqSpec(o, x)) ? a : (append(a, x)))
+  ret fold(xs, acc, (a, x) => any(a, (o) => eqSpec(o, x)) ? a : append(a, x))
 
 # The value union holds a member not known yet: no set difference binds and
 # nothing is judged unmatched until it resolves.
@@ -505,7 +505,7 @@ fun [tail] mgEachFinds(rs: List<Spec>, members: List<Spec>, matched: List<Int>,
                                  prepend(fm.mfIndex, matched), absorbed, fm.mfBinds, inv, wv, cl, r,
                                  errs, l, rr, rHoles)
     ()            => any(members, (m) => mgLeftHole(m, binds, cl, r))
-      ? mgEachFinds(tail(rs), members, matched, (append(absorbed, first(rs))),
+      ? mgEachFinds(tail(rs), members, matched, append(absorbed, first(rs)),
                     binds, inv, wv, cl, r, errs, l, rr, rHoles)
       : mgEachFinds(tail(rs), members, matched, absorbed, binds, inv, wv, cl, r,
                     union(errs, mgConflict(l, first(rs), binds,
@@ -556,7 +556,7 @@ fun [tail] mgRestIndexes(ms: List<Spec>, i: Int, matched: List<Int>, binds: List
                          r, acc: List<Int>): List<Int> => isEmpty(ms)
   ? acc
   : !any(matched, (j) => j == i) && !mgLeftHole(first(ms), binds, cl, r)
-    ? mgRestIndexes(tail(ms), i + 1, matched, binds, cl, r, (append(acc, i)))
+    ? mgRestIndexes(tail(ms), i + 1, matched, binds, cl, r, append(acc, i))
     : mgRestIndexes(tail(ms), i + 1, matched, binds, cl, r, acc)
 
 fun mgAtIndexes(ms: List<Spec>, ixs: List<Int>): List<Spec> => fold(ixs, List<Spec>(), (acc, i) => mgPushAt(acc, ms, i))
@@ -582,7 +582,7 @@ fun mgSetAt(ms: List<Spec>, i: Int, v: Spec|None): List<Spec> => match(v)
   ()         => ms
 
 fun [tail] mgSetLoop(ms: List<Spec>, j: Int, i: Int, v: Spec,
-                     [terminal] acc: List<Spec>): List<Spec> => isEmpty(ms)
+                     acc: List<Spec>): List<Spec> => isEmpty(ms)
   ? acc
   : mgSetLoop(tail(ms), j + 1, i, v, append(acc, j == i ? v : first(ms)))
 
@@ -859,7 +859,7 @@ fun bindFromConstraintMatch(constraint: SClass, iface: SClass,
     ()                 => None
 
 fun [tail] bfcLoop(cs: List<Spec>, is2: List<Spec>, targets: List<String>,
-                   [terminal] acc: List<Binding>) => isEmpty(cs)
+                   acc: List<Binding>) => isEmpty(cs)
   ? acc
   : isEmpty(is2)
     ? acc
@@ -868,16 +868,16 @@ fun [tail] bfcLoop(cs: List<Spec>, is2: List<Spec>, targets: List<String>,
       ()                            => None
 
 fun bfcOne(cArg: Spec, iArg: Spec, targets: List<String>,
-           [terminal] acc: List<Binding>) => match(cArg)
+           acc: List<Binding>) => match(cArg)
   (g2: SGeneric) => contains2(targets, g2.sgName)
     ? (isConcrete(iArg) ? append(acc, Binding(g2.sgName, iArg)) : None)
     : anchorsEqual(cArg, iArg, acc)
   (o: Spec)      => anchorsEqual(cArg, iArg, acc)
 
-# Threads the builder through untouched when the two anchors agree, and fails
+# Threads the accumulator through untouched when the two anchors agree, and fails
 # the whole match otherwise — it adds no binding of its own.
 fun anchorsEqual(cArg, iArg,
-                 [terminal] acc): List<Binding>|None
+                 acc): List<Binding>|None
   ret uid(cArg) != "" && uid(cArg) == uid(iArg) ? acc : None
 
 # Ground the `targets` placeholders of a trait constraint by matching it

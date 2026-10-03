@@ -31,7 +31,7 @@ fun gfSlotFuncs(a: CgApp) => fold(appObjects(a), List(),
 fun gfSlotAdd(acc, s2: CgFuncSlot) => any(acc, (e2) => e2.sfSlot == s2.slotVirtualName)
   ? map(acc, (e2) => e2.sfSlot == s2.slotVirtualName
                ? SlotFuncs(e2.sfSlot,
-                           (append(e2.sfFuncs, s2.slotGlobalName)))
+                           append(e2.sfFuncs, s2.slotGlobalName))
                : e2)
   # A slot -> functions map, looked up by slot name: the entry order is not
   # observed, but the functions WITHIN a slot keep theirs.

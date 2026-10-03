@@ -422,7 +422,7 @@ fun beFunction(f)
   let defs = beSingleDefs(f.fnOps)
   let stores = beFieldStores(f.fnOps, defs)
   let labels = beLabelIndex(f.fnOps)
-  ret beRegionsLoop((beLoopRegions(f.fnOps, labels)), f, defs, stores,
+  ret beRegionsLoop(beLoopRegions(f.fnOps, labels), f, defs, stores,
                     labels)
 
 fun [tail] beRegionsLoop(rs: List<BeRegion>, f,

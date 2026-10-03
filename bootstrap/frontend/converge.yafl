@@ -186,9 +186,9 @@ fun compilePass(statements): List<PStmt>
   ret (passLoop(statements, r, List()))
 
 # Each statement's own output, then whatever it hoisted out beside itself:
-# this is the program's statement order, so a builder, not a set.
+# this is the program's statement order, so an appended List, not a set.
 fun [tail] passLoop(ss: List<PStmt>, r: Resolver,
-                    [terminal] acc: List<PStmt>): List<PStmt> => isEmpty(ss)
+                    acc: List<PStmt>): List<PStmt> => isEmpty(ss)
   ? acc
   : compileStmt(first(ss), scopeResolver(first(ss), r), None)
     |> (out) => passLoop(tail(ss), r,

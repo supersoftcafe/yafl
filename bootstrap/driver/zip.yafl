@@ -67,7 +67,7 @@ fun readZip(s)
   ret centralWalk(s, start, count, List())
 
 fun [tail] centralWalk(s, at, left,
-                       [terminal] b)
+                       b)
   if left <= 0
     ret ZipOk(b)
   if u32At(s, at) != 33639248
@@ -95,7 +95,7 @@ fun [tail] centralWalk(s, at, left,
     ()             => zipDiscard(b, ZipErr("entry \"" + name
                                            + "\" has a malformed local header"))
 
-fun zipDiscard([terminal] b: List<ZipEntry>, e): ZipResult => b |> (l) => e
+fun zipDiscard(b: List<ZipEntry>, e): ZipResult => b |> (l) => e
 
 # The local header repeats the name and carries its OWN extra-field length,
 # which routinely differs from the central directory's — the data offset must

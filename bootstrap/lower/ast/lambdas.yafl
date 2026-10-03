@@ -75,8 +75,8 @@ fun cpPathFor(acc: ClPaths, lr: PLine) => match(get(acc.cpMap, lr))
 # One more step on the end of a structural path — the order IS the path.
 fun cpExtend(path, name) => name == ""
   ? path
-  : (append(path,
-               name))
+  : append(path,
+               name)
 
 fun collectLambdaPaths(st) => cpStmt(st, List(), emptyClPaths())
 
@@ -373,7 +373,7 @@ fun clEntries(ns, cpt: ClCaps, lr: PLine,
                      acc: List<SEntry>) => (clEntriesB(ns, cpt, lr, acc))
 
 fun [tail] clEntriesB(ns: List<String>, cpt: ClCaps, lr: PLine,
-                     [terminal] acc: List<SEntry>) => isEmpty(ns)
+                     acc: List<SEntry>) => isEmpty(ns)
   ? acc
   : clEntriesB(tail(ns), cpt, lr,
                         append(acc, SEntry(capturedFieldName(first(ns), lr),
@@ -384,7 +384,7 @@ fun clParamLets(ns, cpt: ClCaps, lr,
                        acc: List<PStmt>) => (clParamLetsB(ns, cpt, lr, acc))
 
 fun [tail] clParamLetsB(ns: List<String>, cpt: ClCaps, lr,
-                       [terminal] acc: List<PStmt>) => isEmpty(ns)
+                       acc: List<PStmt>) => isEmpty(ns)
   ? acc
   : clParamLetsB(tail(ns), cpt, lr,
       append(acc, PsLet(capturedFieldName(first(ns), lr), List(),
@@ -409,7 +409,7 @@ fun captureArgs(ns, cpt: ClCaps, lr,
                        acc: List<PTupEnt>) => (captureArgsB(ns, cpt, lr, acc))
 
 fun [tail] captureArgsB(ns: List<String>, cpt: ClCaps, lr,
-                       [terminal] acc: List<PTupEnt>) => isEmpty(ns)
+                       acc: List<PTupEnt>) => isEmpty(ns)
   ? acc
   : captureArgsB(tail(ns), cpt, lr,
       append(acc, PTupEnt(capturedFieldName(first(ns), lr), false,
@@ -519,7 +519,7 @@ fun clStmts(ss: List<PStmt>, r, paths: ClPaths,
 # to keep lifted names unique.
 fun [tail] clStmtLoop(ss: List<PStmt>, r, paths: ClPaths,
                       exports,
-                      [terminal] acc) => isEmpty(ss)
+                      acc) => isEmpty(ss)
   ? ClSts(acc, exports)
   : clStmt(first(ss), r, paths, exports)
     |> (o) => clStmtLoop(tail(ss), r, paths, o.clStExports,
@@ -645,7 +645,7 @@ fun clMatchExpr(mt: PeMatch, r, paths: ClPaths,
 
 fun [tail] clArms(as2: List<PArm>, r, paths: ClPaths,
                   exports,
-                  [terminal] acc) => isEmpty(as2)
+                  acc) => isEmpty(as2)
   ? ClArmsOut(acc, exports)
   : clArmOne(first(as2), r, paths, exports)
     |> (o) => clArms(tail(as2), r, paths, o.claoExports,
@@ -664,7 +664,7 @@ fun clArmOne(a: PArm, r, paths: ClPaths, exports): ClArmOne
 
 fun [tail] clLits(ls: List<PLit>, r, paths: ClPaths,
                   exports,
-                  [terminal] acc) => isEmpty(ls)
+                  acc) => isEmpty(ls)
   ? ClLitsOut(acc, exports)
   : match(first(ls))
     (le: PlExpr)   => clExpr(le.litExpr, r, paths, exports)
@@ -685,7 +685,7 @@ fun clExprOpt(x, r, paths: ClPaths,
 
 fun [tail] clExprs(es: List<PExpr>, r, paths: ClPaths,
                    exports,
-                   [terminal] acc) => isEmpty(es)
+                   acc) => isEmpty(es)
   ? ClExsOut(acc, exports)
   : clExpr(first(es), r, paths, exports)
     |> (o) => clExprs(tail(es), r, paths, o.clExExports,
@@ -693,7 +693,7 @@ fun [tail] clExprs(es: List<PExpr>, r, paths: ClPaths,
 
 fun [tail] clTupEnts(es: List<PTupEnt>, r, paths: ClPaths,
                      exports,
-                     [terminal] acc) => isEmpty(es)
+                     acc) => isEmpty(es)
   ? ClEntsOut(acc, exports)
   : clExpr(first(es).tupValue, r, paths, exports)
     |> (v) => clTupEnts(tail(es), r, paths, v.clExExports,
@@ -718,7 +718,7 @@ class [final] ScanAcc(saStmts: List<PStmt>,
                               saExports: List<PStmt>)
 
 fun [tail] clScanAll(ss: List<PStmt>, r: Resolver,
-                     [terminal] acc: ScanAcc): ClScanAll => isEmpty(ss)
+                     acc: ScanAcc): ClScanAll => isEmpty(ss)
   ? ClScanAll(acc.saStmts,
                                acc.saExports)
   : clScanTop(first(ss), r)

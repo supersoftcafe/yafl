@@ -103,7 +103,7 @@ class [linear,final] Dir(_dir: _Dir)
 
   # Terminal — consumes the linear obligation.  Returns the error if any,
   # else None.
-  fun [terminal] close(): IOError|None
+  fun close(): IOError|None
     ret match(_dir._close())
       (c: Int)          => _error_from_code(c)
       (n: System::None) => None

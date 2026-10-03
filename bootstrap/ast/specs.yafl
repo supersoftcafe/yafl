@@ -82,7 +82,7 @@ fun instantiationUid(base, params: List<Spec>) => isEmpty(params)
     ()                  => ""
 
 fun [tail] argUidList(ps: List<Spec>,
-                      [terminal] acc: List<String>) => isEmpty(ps)
+                      acc: List<String>) => isEmpty(ps)
   ? acc
   : uid(first(ps))
     |> (u) => u == "" ? None : argUidList(tail(ps), append(acc, u))
@@ -97,7 +97,7 @@ fun uidTuple(t2: STuple) => match(entryUidList(t2.stEntries, List()))
 
 # POSITIONAL: a tuple's identity is its entry uids IN ORDER.
 fun [tail] entryUidList(es: List<SEntry>,
-                        [terminal] acc: List<String>) => isEmpty(es)
+                        acc: List<String>) => isEmpty(es)
   ? acc
   : match(first(es).seType)
     (t2: Spec) => uid(t2)
@@ -208,10 +208,10 @@ fun [tail] flattenMembers(ts: List<Spec>, acc: List<Spec>): List<Spec> => isEmpt
 fun addMember(acc, sp) => match(sp)
   (cm: SCombination) => flattenMembers(cm.scTypes, acc)
   # A member's POSITION is its variant index, so this grows at the end;
-  # `acc` is read just above for the dedup, so it cannot be a builder.
+  # `acc` is read just above for the dedup, then appended to.
   (o)                => uid(sp) != "" && hasUid(acc, uid(sp))
     ? acc
-    : (append(acc, sp))
+    : append(acc, sp)
 
 fun [tail] hasUidIn(ts: List<Spec>, u) => isEmpty(ts)
   ? false
@@ -225,7 +225,7 @@ fun keepUnsubsumed(ms, all2: List<Spec>,
                           acc: List<Spec>) => (keepUnsubsumedB(ms, all2, acc))
 
 fun [tail] keepUnsubsumedB(ms: List<Spec>, all2: List<Spec>,
-                          [terminal] acc: List<Spec>) => isEmpty(ms)
+                          acc: List<Spec>) => isEmpty(ms)
   ? acc
   : isSubsumed(first(ms), all2)
     ? keepUnsubsumedB(tail(ms), all2, acc)
@@ -287,7 +287,7 @@ fun bindTupleEntries(declared: List<SEntry>,
 
 fun bareNames(ds: List<SEntry>, acc: List<String>) => (bareNamesB(ds, acc))
 
-fun [tail] bareNamesB(ds: List<SEntry>, [terminal] acc): List<String> => isEmpty(ds)
+fun [tail] bareNamesB(ds: List<SEntry>, acc): List<String> => isEmpty(ds)
   ? acc
   : bareNamesB(tail(ds), append(acc, bareOfName(first(ds).seName)))
 
@@ -305,13 +305,13 @@ fun [tail] anyOverlap(ss: List<String>, bare: List<String>) => isEmpty(ss)
 fun identityBinding(ds: List<SEntry>, i, acc: List<Int>)
   ret (identityBindingB(ds, i, acc))
 
-fun [tail] identityBindingB(ds: List<SEntry>, i, [terminal] acc): List<Int> => isEmpty(ds)
+fun [tail] identityBindingB(ds: List<SEntry>, i, acc): List<Int> => isEmpty(ds)
   ? acc
   : identityBindingB(tail(ds), i + 1, append(acc, i))
 
 fun blankSlots(ds: List<SEntry>, acc: List<Int>) => (blankSlotsB(ds, acc))
 
-fun [tail] blankSlotsB(ds: List<SEntry>, [terminal] acc): List<Int> => isEmpty(ds)
+fun [tail] blankSlotsB(ds: List<SEntry>, acc): List<Int> => isEmpty(ds)
   ? acc
   : blankSlotsB(tail(ds), append(acc, -1))
 
@@ -345,7 +345,7 @@ fun [tail] slotAt(ss: List<Int>, i) => isEmpty(ss)
 
 # An unbound field is filled by its default, or the binding fails.
 fun [tail] fillDefaults(ds: List<SEntry>, ss: List<Int>, i,
-                 [terminal] acc: List<Int>) => isEmpty(ds)
+                 acc: List<Int>) => isEmpty(ds)
   ? acc
   : isEmpty(ss)
     ? None
@@ -373,7 +373,7 @@ fun setLoop(xs, i: Int, at: Int, v: Int,
                    acc: List<Int>) => (setLoopB(xs, i, at, v, acc))
 
 fun [tail] setLoopB(xs: List<Int>, i, at, v: Int,
-                   [terminal] acc: List<Int>) => isEmpty(xs)
+                   acc: List<Int>) => isEmpty(xs)
   ? acc
   : setLoopB(tail(xs), i + 1, at, v,
                              append(acc, i == at ? v : first(xs)))
@@ -441,10 +441,10 @@ fun withArgsText(body): (head: String, args: List<Spec>)
   ret o < 0 || byteAt(body, length(body) - 1) != '>'
     ? (head = body, args = List<Spec>())
     : (head = slice(body, 0, o),
-       args = argSpecs((split(slice(body, o + 1, length(body) - 1), "+")),
+       args = argSpecs(split(slice(body, o + 1, length(body) - 1), "+"),
                        List()))
 
-fun [tail] argSpecs(ps: List<String>, [terminal] acc: List<Spec>): List<Spec> => isEmpty(ps)
+fun [tail] argSpecs(ps: List<String>, acc: List<Spec>): List<Spec> => isEmpty(ps)
   ? acc
   : match(parseSpecText(first(ps)))
     (s2: Spec) => argSpecs(tail(ps), append(acc, s2))
@@ -455,7 +455,7 @@ fun parseUnionText(body) => unionParts(topLevelParts(body), List())
 # `_=spec,name=spec` — a tuple spelling; `_` is an unnamed entry.
 fun parseTupleText(body) => tupleParts(topLevelParts(body), List())
 
-fun [tail] tupleParts(ps: List<String>, [terminal] acc) => isEmpty(ps)
+fun [tail] tupleParts(ps: List<String>, acc) => isEmpty(ps)
   ? STuple(acc, noLine())
   : trim(first(ps)) == ""
     ? tupleParts(tail(ps), acc)
@@ -481,7 +481,7 @@ fun partLoop(body, at, start, depth,
   ret (partLoopB(body, at, start, depth, acc))
 
 fun [tail] partLoopB(body, at, start, depth,
-                    [terminal] acc: List<String>): List<String>
+                    acc: List<String>): List<String>
   if at >= length(body)
     ret append(acc, slice(body, start, length(body)))
   let c = byteAt(body, at)
@@ -492,7 +492,7 @@ fun [tail] partLoopB(body, at, start, depth,
                  append(acc, slice(body, start, at)))
       : partLoopB(body, at + 1, start, depth, acc)
 
-fun [tail] unionParts(ps: List<String>, [terminal] acc: List<Spec>): Spec|None => isEmpty(ps)
+fun [tail] unionParts(ps: List<String>, acc: List<Spec>): Spec|None => isEmpty(ps)
   ? SCombination(acc, noLine())
   : match(parseSpecText(first(ps)))
     (s2: Spec) => unionParts(tail(ps), append(acc, s2))
@@ -500,11 +500,11 @@ fun [tail] unionParts(ps: List<String>, [terminal] acc: List<Spec>): Spec|None =
 
 # `name=spec;name=spec` — declared tuple entries (a trailing `!` marks a
 # default). Semicolons separate entries so commas stay free for unions.
-fun parseEntriesText(s) => entryParts((split(s, ";")), List())
+fun parseEntriesText(s) => entryParts(split(s, ";"), List())
 
 fun entryParts(ps, acc: List<SEntry>): List<SEntry> => (entryPartsB(ps, acc))
 
-fun [tail] entryPartsB(ps: List<String>, [terminal] acc: List<SEntry>) => isEmpty(ps)
+fun [tail] entryPartsB(ps: List<String>, acc: List<SEntry>) => isEmpty(ps)
   ? acc
   : entryPartsB(tail(ps), append(acc, oneEntry(trim(first(ps)))))
 

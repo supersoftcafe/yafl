@@ -68,7 +68,6 @@ fun lazyPublishLeaves(v, t2,
   (im: CgImmediateStruct) => lazyPublishLeavesFields(v, im.fields, acc)
   (o: CgType)              => acc
 
-# A walk, not a fold: the builder is linear and cannot ride a fold's lambda.
 fun lazyPublishLeavesFields(v, fields: List<CgField>,
                             [terminal] acc): List<RParam> => isEmpty(fields)
   ? acc
@@ -155,11 +154,11 @@ fun makeFetchFunction(valueType): CgFunction
                  wrapped,
                  # Stack layout, in declaration order.
                  CgStruct(build(push(push(
-                     (list5(CgField("waiter", CgDataPointer()),
+                     list5(CgField("waiter", CgDataPointer()),
                                        CgField("status", CgInt(32)),
                                        CgField("flag_addr", CgDataPointer()),
                                        CgField("closure", CgFuncPointer(false)),
-                                       CgField("result_wrapped", wrapped))),
+                                       CgField("result_wrapped", wrapped)),
                      CgField("value", valueType)),
                      CgField("$sv_lazy_discard", CgDataPointer())))),
                  cgOpsOf(fetchOps(valueType, cls, waiterTy, wrapped, this, waiter, status, flagAddr,

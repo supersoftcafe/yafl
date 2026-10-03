@@ -64,14 +64,14 @@ fun [tail] lastIndexLoop(s, at, best, c): Int => at >= length(s)
 
 # Every prefix of a name at its `@` boundaries — the index keys, so a
 # prefix-match lookup is a plain hit rather than a scan.
-fun namePrefixes(name): List<String> => prefixLoop((split(name, "@")), "", List())
+fun namePrefixes(name): List<String> => prefixLoop(split(name, "@"), "", List())
 
 fun prefixLoop(ps, acc,
                       out: List<String>): List<String>
   ret (prefixLoopB(ps, acc, out))
 
 fun [tail] prefixLoopB(ps: List<String>, acc,
-                      [terminal] out: List<String>) => isEmpty(ps)
+                      out: List<String>) => isEmpty(ps)
   ? out
   : acc == ""
     ? prefixLoopB(tail(ps), first(ps), append(out, first(ps)))
@@ -204,8 +204,8 @@ fun [tail] memberIndex(ss: List<PStmt>,
   : match(first(ss))
     (cs: PsClass) => memberIndex(tail(ss),
         put(acc, cs.cName,
-            MemberIdx(cs, memberKeys((concat(flattenParams(cs.cParams),
-                                                  cs.cMembers)),
+            MemberIdx(cs, memberKeys(concat(flattenParams(cs.cParams),
+                                                  cs.cMembers),
                                      Dict()))))
     (o: PStmt)    => memberIndex(tail(ss), acc)
 
@@ -270,7 +270,7 @@ fun [tail] dedupeAmb(es: List<AmbEntry>, acc: List<AmbEntry>) => isEmpty(es)
 # Entries keep their order: it is the order the "Candidates:" message lists
 # them in. An unmerged entry goes on the end.
 fun [tail] mergeAmb(es: List<AmbEntry>, x: AmbEntry,
-                    [terminal] out: List<AmbEntry>,
+                    out: List<AmbEntry>,
                     merged) => isEmpty(es)
   ? ((merged
     ? out
@@ -339,7 +339,7 @@ fun putUnder(d: Dict<String, List<PStmt>>, key: String,
              st) => match(get(d, key))
   # Declaration order within a bucket: it is the candidate order overload
   # resolution and the "Candidates:" message both see.
-  (prev: List<PStmt>) => put(d, key, (append(prev, st)))
+  (prev: List<PStmt>) => put(d, key, append(prev, st))
   ()                  => put(d, key, prepend(st, List()))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
@@ -348,14 +348,14 @@ fun classify(acc, st, name: String) => match(st)
   (e: PsEnum) => indexVariants(acc, e.eVariants)
   (l: PsLet)  => hasAttr(l.lAttrs, "trait")
     ? Statements(acc.stOrdered, acc.stIndex,
-                 (append(acc.stTraits, st)),
+                 append(acc.stTraits, st),
                  acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
                  acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData,
                  acc.stMembers)
     : acc
   (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
                                       acc.stTraits,
-                                      (append(acc.stInstances, st)),
+                                      append(acc.stInstances, st),
                                       acc.stAmbient, acc.stAmbientBlocked,
                                       acc.stTypesIdx, acc.stDataIdx,
                                       acc.stBareTypes, acc.stBareData,
@@ -611,15 +611,14 @@ fun whereClauses(r): List<Spec> => match(r)
   (rg: RGen)       => whereClauses(rg.rgParent)
 
 # Dedupe preserving FIRST-SEEN order: a Set answers "have I seen this" in
-# O(log n) where scanning the accumulator was O(n) per element, and a builder
-# keeps the order the Set cannot. Reading a half-built list was the only
-# reason this loop could not simply push.
+# O(log n) where scanning the accumulator was O(n) per element, and the
+# appended List keeps the order the Set cannot.
 fun mergeNames(acc: List<String>, ns: List<String>)
   ret (mergeNamesB(acc,
                         Set(acc),
                         ns))
 
-fun [tail] mergeNamesB([terminal] out: List<String>, seen: Set<String>,
+fun [tail] mergeNamesB(out: List<String>, seen: Set<String>,
                        ns: List<String>) => isEmpty(ns)
   ? out
   : contains(seen, first(ns))
@@ -697,7 +696,7 @@ fun globalLoop(ss, wantType,
   ret (globalLoopB(ss, wantType, acc))
 
 fun [tail] globalLoopB(ss: List<PStmt>, wantType,
-                      [terminal] acc: List<Found>) => isEmpty(ss)
+                      acc: List<Found>) => isEmpty(ss)
   ? acc
   : !isNeitherStmt(first(ss))
                      && wantsThis(isTypeStmt(first(ss)), wantType)
@@ -739,7 +738,7 @@ fun matchLoop(fs, query: String,
   ret (matchLoopB(fs, query, acc))
 
 fun [tail] matchLoopB(fs: List<Found>, query,
-                     [terminal] acc: List<Found>) => isEmpty(fs)
+                     acc: List<Found>) => isEmpty(fs)
   ? acc
   : nameMatches(first(fs).fName, query)
     ? matchLoopB(tail(fs), query, append(acc, first(fs)))

@@ -127,7 +127,7 @@ fun lazyTypeAdd(acc, t2)
   let m2 = irMangle(t2)
   ret contains(acc.ltSeen, m2)
     ? acc
-    : LazyTypes((append(acc.ltList, t2)),
+    : LazyTypes(append(acc.ltList, t2),
                 put(acc.ltSeen, m2, true))
 
 fun ensureLazyMachinery(a, types2: List<CgType>)
@@ -169,8 +169,8 @@ fun [tail] msPosArms(acc, as2: List<PArm>, subs: List<PExpr>,
   ? acc
   : msPosArms(
       msPosOne(acc,
-               (prepend(first(as2).armType,
-                             map(first(as2).armExtra, (p) => p.posType))),
+               prepend(first(as2).armType,
+                             map(first(as2).armExtra, (p) => p.posType)),
                subs, r),
       tail(as2), subs, r)
 

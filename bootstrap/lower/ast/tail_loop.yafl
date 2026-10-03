@@ -25,7 +25,7 @@ class [final] TlRw(rwExpr: PExpr, rwN: Int)
 fun lowerTailLoops(statements: List<PStmt>) => tlLoop(statements, List(), Set())
 
 # Program order out; the errors are a set, so they ride alongside untouched.
-fun [tail] tlLoop(ss: List<PStmt>, [terminal] acc,
+fun [tail] tlLoop(ss: List<PStmt>, acc,
                   errs) => isEmpty(ss)
   ? TlOut(acc, errs)
   : tlTransform(first(ss))
@@ -45,7 +45,7 @@ fun tlTransform(st) => match(st)
                        out.tlErrs)
   (o: PStmt)   => TlStmt(st, Set())
 
-fun [tail] tlMembers(ss: List<PStmt>, [terminal] acc,
+fun [tail] tlMembers(ss: List<PStmt>, acc,
                      errs) => isEmpty(ss)
   ? TlOut(acc, errs)
   : tlTransform(first(ss))
@@ -100,7 +100,7 @@ fun tlParams(f: PsFun) => match(f.fParams)
   (o: PStmt)         => List()
 
 fun [tail] tlParamRefs(ts: List<PStmt>, lr,
-                       [terminal] acc: List<PExpr>) => isEmpty(ts)
+                       acc: List<PExpr>) => isEmpty(ts)
   ? acc
   : tlParamRefs(tail(ts), lr,
       append(acc, PeName(stmtName(first(ts)), List(), lr,
@@ -108,7 +108,7 @@ fun [tail] tlParamRefs(ts: List<PStmt>, lr,
 
 fun tlStripTail(as2, acc: List<PAttr>): List<PAttr> => (tlStripTailB(as2, acc))
 
-fun [tail] tlStripTailB(as2: List<PAttr>, [terminal] acc: List<PAttr>) => isEmpty(as2)
+fun [tail] tlStripTailB(as2: List<PAttr>, acc: List<PAttr>) => isEmpty(as2)
   ? acc
   : first(as2).attrName == "tail"
     ? tlStripTailB(tail(as2), acc)
@@ -241,7 +241,7 @@ fun tlToRecur(x, n) => match(x)
 
 fun tlEntValues(es: List<PTupEnt>, acc: List<PExpr>) => (tlEntValuesB(es, acc))
 
-fun [tail] tlEntValuesB(es: List<PTupEnt>, [terminal] acc): List<PExpr> => isEmpty(es)
+fun [tail] tlEntValuesB(es: List<PTupEnt>, acc): List<PExpr> => isEmpty(es)
   ? acc
   : tlEntValuesB(tail(es), append(acc, first(es).tupValue))
 
@@ -253,7 +253,7 @@ class [final] TlAo(aoArms: List<PArm>, aoN: Int)
 # statement kinds run BEFORE the block's result and are left alone.
 # (Not [tail]: the PsIf arm recurses into both branches.)
 fun tlStmtTails(ss: List<PStmt>, fName, n,
-                       [terminal] acc) => isEmpty(ss)
+                       acc) => isEmpty(ss)
   ? TlSo(acc, n)
   : match(first(ss))
     (rt: PsRet) => tlRewriteTail(rt.retValue, fName, n)
@@ -271,7 +271,7 @@ fun tlStmtTails(ss: List<PStmt>, fName, n,
                                append(acc, first(ss)))
 
 fun [tail] tlArmTails(as2: List<PArm>, fName, n,
-                      [terminal] acc) => isEmpty(as2)
+                      acc) => isEmpty(as2)
   ? TlAo(acc, n)
   : tlRewriteTail(first(as2).armBody, fName, n)
     |> (bo) => tlArmTails(tail(as2), fName, bo.rwN,

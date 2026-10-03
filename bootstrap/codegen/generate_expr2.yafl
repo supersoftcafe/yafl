@@ -143,7 +143,7 @@ fun phiSourcesOf(es: List<GEntry>, idx: Int) => phiSourcesLoop(es, idx, 0, List(
 fun phiSourcesLoop(es: List<GEntry>, idx: Int, k, acc: List<OpPhiSource>)
   ret (phiSourcesLoopB(es, idx, k, acc))
 
-fun [tail] phiSourcesLoopB(es: List<GEntry>, idx: Int, k, [terminal] acc): List<OpPhiSource>
+fun [tail] phiSourcesLoopB(es: List<GEntry>, idx: Int, k, acc): List<OpPhiSource>
   ret isEmpty(es)
     ? acc
     : phiSourcesLoopB(tail(es), idx, k + 1, append(acc, OpPhiSource(entryLabel(idx, k), first(es).geValue)))
@@ -220,7 +220,7 @@ fun emArmResult(st: GEmit, prefix, rv)
   let withLabel = emOp1(st, OpLabel(exitLabel, List()))
   # Arm order: these become the join Phi's sources, one per arm.
   ret GEmit(withLabel.geBundle,
-            (append(withLabel.geArmResults, ArmResult(exitLabel, rv))),
+            append(withLabel.geArmResults, ArmResult(exitLabel, rv)),
             withLabel.geCounter, withLabel.geFallbackLabel)
 
 # ── binding constructors (used by union_repr's generate_match implementations) ──
@@ -311,12 +311,12 @@ class [final] ReconstructFieldsOut(rfsValues: List<RpNamedValue>, rfsOffset: Int
 
 fun reconstructFields(fs: List<CgField>, slotAssignments: List<CgSlotEntry>,
                              slotFields: List<CgField>, sv, offset,
-                             [terminal] acc) => isEmpty(fs)
+                             acc) => isEmpty(fs)
   ? ReconstructFieldsOut(acc, offset)
   : reconstructFieldsStep(fs, slotAssignments, slotFields, sv, offset, acc)
 
 fun reconstructFieldsStep(l: List<CgField>, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>,
-                          sv, offset, [terminal] acc)
+                          sv, offset, acc)
   let sub = reconstructFromSlots(first(l).fieldType, slotAssignments, slotFields, sv, offset)
   ret reconstructFields(tail(l), slotAssignments, slotFields, sv, sub.rfOffset,
           append(acc,
@@ -380,7 +380,7 @@ fun literalAlternativeTests(items: List<PLit>, typeName, value, r, prefix)
                  List(), List())
 
 fun litAltLoop(items: List<PLit>, typeName, value, r, prefix,
-                      k, [terminal] bundles, tests) => isEmpty(items)
+                      k, bundles, tests) => isEmpty(items)
   ? LitTestsOut(bundles,
                                  tests)
   : match(first(items))
@@ -388,7 +388,7 @@ fun litAltLoop(items: List<PLit>, typeName, value, r, prefix,
     (le2: PlExpr) => litAltLit(items, items, le2, typeName, value, r, prefix, k, bundles, tests)
 
 fun litAltRange(items: List<PLit>, l: List<PLit>, rg: PlRange, typeName, value,
-               r, prefix, k, [terminal] bundles, tests)
+               r, prefix, k, bundles, tests)
   let loB = withPrefix(genExpr(rg.rangeLo, r), prefix + "_" + String(k) + "lo")
   let hiB = withPrefix(genExpr(rg.rangeHi, r), prefix + "_" + String(k) + "hi")
   ret litAltLoop(tail(l), typeName, value, r, prefix, k + 1,
@@ -398,7 +398,7 @@ fun litAltRange(items: List<PLit>, l: List<PLit>, rg: PlRange, typeName, value,
                                mustResult(hiB))))
 
 fun litAltLit(items: List<PLit>, l: List<PLit>, le2: PlExpr, typeName, value,
-             r, prefix, k, [terminal] bundles, tests)
+             r, prefix, k, bundles, tests)
   let b = withPrefix(genExpr(le2.litExpr, r), prefix + "_" + String(k))
   ret litAltLoop(tail(l), typeName, value, r, prefix, k + 1,
           append(bundles, b),
@@ -531,7 +531,7 @@ fun headBundle(bs: List<GBundle>): GBundle|None => isEmpty(bs)
 # and line, and posUniqueName built them the same way).
 fun positionBinds(a: PArm, subs, gens,
                   r): GBind|None
-  ret bindsLoop((prepend(posOfArm(a), a.armExtra)), subs, gens, r,
+  ret bindsLoop(prepend(posOfArm(a), a.armExtra), subs, gens, r,
                 None)
 
 fun posOfArm(a: PArm) => PPos(a.armName, a.armType, a.parmLine)

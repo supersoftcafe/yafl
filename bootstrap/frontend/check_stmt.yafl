@@ -37,7 +37,7 @@ fun checkTraitInstance(inst: PsTraitInstance, r0): Set<PErr>
   let r = genScope(inst.tiGens, inst.tiWheres, r0)
   let e1 = checkSpecOpt(inst.tiPattern, r)
   let e2 = checkSpecs(inst.tiWheres, r, noErrs())
-  let e3 = branchChecks((withOwnerWheres(inst.tiMembers, inst.tiWheres)),
+  let e3 = branchChecks(withOwnerWheres(inst.tiMembers, inst.tiWheres),
                         r, None, noErrs())
   ret union(e1, union(e2, union(e3,
       union(instancePatternErrs(inst, r),
@@ -99,7 +99,7 @@ fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
                              union(noArgAttr(f, "impure", "[impure] takes no arguments"),
                              union(noArgAttr(f, "sync", "[sync] takes no arguments"),
                              union(tailErrs(f),
-                             union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
+                             union(noArgAttr(f, "terminal", "takes no arguments"),
                              union(testErrs(f),
                                     innerWhereErrs(f)))))))
 
@@ -239,7 +239,7 @@ fun [tail] paramDefaultErrs(ls: List<PStmt>, r,
     (o: PStmt)    => paramDefaultErrs(tail(ls), r, acc)
 
 # No value vanishes silently: a parameter the body never reads. `this` is
-# implicit; a `_` prefix is the opt-out; [terminal] params are consumed on
+# implicit; a `_` prefix is the opt-out; params are consumed on
 # arrival.
 fun unusedParamWarns(f: PsFun): Set<PErr> => match(f.fBody)
   (b: PExpr) => unusedParamLoop(flattenParams(f.fParams),
@@ -420,7 +420,7 @@ fun classChecks(c, r0): Set<PErr>
   let prmErr = checkStmt2(c.cParams, genScope(c.cGens, c.cWheres, r0), None)
   # Member fns CHECK under the same transient owner-wheres copy they
   # compiled under (compile_stmt withOwnerWheres).
-  let stmErr = branchChecks((withOwnerWheres(c.cMembers, c.cWheres)),
+  let stmErr = branchChecks(withOwnerWheres(c.cMembers, c.cWheres),
                             genScope(c.cGens, c.cWheres, RClassBody(c, r0)), None,
                             noErrs())
   ret union(implErr,
@@ -455,7 +455,7 @@ fun classFields(c: PsClass)
 
 fun letMembers(ms, acc: List<PStmt>): List<PStmt> => (letMembersB(ms, acc))
 
-fun [tail] letMembersB(ms: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ms)
+fun [tail] letMembersB(ms: List<PStmt>, acc: List<PStmt>) => isEmpty(ms)
   ? acc
   : match(first(ms))
     (let2: PsLet) => letMembersB(tail(ms), append(acc, first(ms)))
@@ -463,7 +463,7 @@ fun [tail] letMembersB(ms: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(
 
 fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt> => (arrayFieldsOfB(fs, acc))
 
-fun [tail] arrayFieldsOfB(fs: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(fs)
+fun [tail] arrayFieldsOfB(fs: List<PStmt>, acc: List<PStmt>) => isEmpty(fs)
   ? acc
   : isArrayStorage(first(fs))
     ? arrayFieldsOfB(tail(fs), append(acc, first(fs)))

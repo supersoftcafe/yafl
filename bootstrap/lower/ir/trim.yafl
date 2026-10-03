@@ -179,7 +179,7 @@ fun trimPick(names: List<String>, get: (:String): CgFunction|None)
                          List()))
 
 fun [tail] trimPickLoop(ns: List<String>, get: (:String): CgFunction|None,
-                        [terminal] acc: List<CgFunction>) => isEmpty(ns)
+                        acc: List<CgFunction>) => isEmpty(ns)
   ? acc
   : match(get(first(ns)))
     (f2: CgFunction) => trimPickLoop(tail(ns), get,
@@ -190,7 +190,7 @@ fun trimPickObjects(names: List<String>, a: CgApp)
   ret (trimPickObjLoop(names, a, List()))
 
 fun [tail] trimPickObjLoop(ns: List<String>, a: CgApp,
-                           [terminal] acc: List<CgObject>) => isEmpty(ns)
+                           acc: List<CgObject>) => isEmpty(ns)
   ? acc
   : match(appObject(a, first(ns)))
     (o2: CgObject) => trimPickObjLoop(tail(ns), a, append(acc, o2))
@@ -200,7 +200,7 @@ fun trimPickGlobals(names: List<String>, a: CgApp)
   ret (trimPickGlbLoop(names, a, List()))
 
 fun [tail] trimPickGlbLoop(ns: List<String>, a: CgApp,
-                           [terminal] acc: List<CgGlobal>) => isEmpty(ns)
+                           acc: List<CgGlobal>) => isEmpty(ns)
   ? acc
   : match(appGlobal(a, first(ns)))
     (g3: CgGlobal) => trimPickGlbLoop(tail(ns), a, append(acc, g3))

@@ -820,14 +820,14 @@ fun parseLibrary(lib: Library) => parseSources(sortSources(lib.libSources), List
 fun sortSources(srcs: List<LibSource>) => sortBy(srcs, (a, b) => a.libFileName < b.libFileName)
 
 fun [tail] parseSources(ss: List<LibSource>,
-                        [terminal] b: List<PStmt>): List<PStmt>|String => isEmpty(ss)
+                        b: List<PStmt>): List<PStmt>|String => isEmpty(ss)
   ? b
   : match(parseProgram(first(ss).libText, first(ss).libFileName))
     (f: PFail)           => parseDiscard(b, first(ss).libFileName + "["
         + String(f.line) + ":" + String(f.col) + "] - " + f.msg)
     (stmts: List<PStmt>) => parseSources(tail(ss), concat(b, stmts))
 
-fun parseDiscard([terminal] b: List<PStmt>, why): List<PStmt>|String
+fun parseDiscard(b: List<PStmt>, why): List<PStmt>|String
   ret b |> (l) => why
 
 
@@ -876,7 +876,7 @@ fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel,
                                    List()), 1, "")
 
 fun [tail] testFunsOf(sts: List<PStmt>,
-                      [terminal] b: List<PsFun>) => isEmpty(sts)
+                      b: List<PsFun>) => isEmpty(sts)
   ? b
   : match(first(sts))
     (f: PsFun) => hasAttr(f.fAttrs, "test")
@@ -887,7 +887,7 @@ fun [tail] testFunsOf(sts: List<PStmt>,
 # The user's own main is IGNORED under --test, not an error: you want to test a
 # program that has one. Matched as WRITTEN, before types resolve.
 fun [tail] dropSourceMains(sts: List<PStmt>,
-                           [terminal] b: List<PStmt>) => isEmpty(sts)
+                           b: List<PStmt>) => isEmpty(sts)
   ? b
   : isSourceMain(first(sts))
     ? dropSourceMains(tail(sts), b)
@@ -899,7 +899,7 @@ fun isSourceMain(st) => match(st)
   (o: PStmt) => false
 
 # CHUNKED, mirroring compiler.py __test_registry_source. A single
-# `let b0 … let bN` chain threading one builder makes each binding's type
+# `let b0 … let bN` chain threading one list makes each binding's type
 # depend on the previous, and inference resolves ONE link per convergence
 # pass — the pass count then grew with the test count and blew the compile
 # loop's iteration limit at roughly ninety tests. Chunk size and the BALANCED

@@ -57,11 +57,11 @@ enum LineOut
 
 # `seen` answers membership only: a Set, so a many-key manifest stays linear.
 fun [tail] tomlLines(ls: List<String>, n, seen: Set<String>,
-                     [terminal] acc) => isEmpty(ls)
+                     acc) => isEmpty(ls)
   ? TomlOk(acc)
   : match(tomlLine(first(ls), tail(ls), seen))
     (s: LineSkip)   => tomlLines(tail(ls), n + 1, seen, acc)
-    (e: LineErr)    => discardOn(acc, TomlErr(e.loWhy, n))
+    (e: LineErr)    => TomlErr(e.loWhy, n)
     (en: LineEntry) => tomlLines(en.loRest, n + en.loCount,
                                  add(seen, en.loEntry.key),
                                  append(acc, en.loEntry))
@@ -119,9 +119,6 @@ fun [tail] bracketDepth(s, at, depth, inStr): Int
     : c == ']'  ? bracketDepth(s, at + 1, depth - 1, false)
     : bracketDepth(s, at + 1, depth, false)
 
-# The builder is [linear] and must be consumed on the error path too.
-fun discardOn([terminal] acc: List<TomlEntry>, e): TomlResult => acc |> (l) => e
-
 
 # A `#` inside a quoted string is DATA, not a comment. Scanning with a quote
 # flag rather than `indexOf("#")` — the naive version truncates
@@ -165,7 +162,7 @@ fun tomlArray(rhs) => arrayItems(rhs, 1, false, List())
 # divergence as rejecting valid input, just quieter. A TRAILING comma is legal
 # TOML and stays legal: `,` merely clears the flag.
 fun [tail] arrayItems(s, at, needSep,
-                      [terminal] b: List<String>)
+                      b: List<String>)
   let i = skipBlanks(s, at)
   if i >= length(s)
     ret discardStrs(b, TomlBad("unterminated array"))
@@ -183,7 +180,7 @@ fun [tail] arrayItems(s, at, needSep,
     (q: QuoteOk)  => arrayItems(s, q.qEnd, true, append(b, q.qText))
     (e: QuoteBad) => discardStrs(b, TomlBad(e.qWhy))
 
-fun discardStrs([terminal] b: List<String>, v): TomlValue => b |> (l) => v
+fun discardStrs(b: List<String>, v): TomlValue => b |> (l) => v
 
 fun [tail] skipBlanks(s, at) => at < length(s) && (byteAt(s, at) == ' ' || byteAt(s, at) == '\t')
   ? skipBlanks(s, at + 1)

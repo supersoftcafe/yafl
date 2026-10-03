@@ -23,7 +23,7 @@ fun liftCapturedCalls(statements: List<PStmt>) => llTop(statements, List())
 
 fun llTop(ss, acc: List<PStmt>): List<PStmt> => (llTopB(ss, acc))
 
-fun [tail] llTopB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] llTopB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (f: PsFun)   => llTopB(tail(ss), append(acc, liftInFunction(f)))
@@ -40,7 +40,7 @@ fun llInClass(c): PStmt => hoClassDeclaresNested(c)
 
 fun llMembers(ss, acc: List<PStmt>): List<PStmt> => (llMembersB(ss, acc))
 
-fun [tail] llMembersB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] llMembersB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (f: PsFun) => llMembersB(tail(ss), append(acc, liftInFunction(f)))
@@ -68,7 +68,7 @@ fun llInBlock(f0: PsFun, bk0: PeBlock)
 
 fun llDeepFirst(ss, acc: List<PStmt>): List<PStmt> => (llDeepFirstB(ss, acc))
 
-fun [tail] llDeepFirstB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] llDeepFirstB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (nf: PsFun) => llDeepFirstB(tail(ss), append(acc, liftInFunction(nf)))
@@ -78,7 +78,7 @@ fun [tail] llDeepFirstB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty
 # block-bodied ones like the hoist does).
 fun hoNestedFns2(ss, acc: List<PsFun>): List<PsFun> => (hoNestedFns2B(ss, acc))
 
-fun [tail] hoNestedFns2B(ss: List<PStmt>, [terminal] acc: List<PsFun>) => isEmpty(ss)
+fun [tail] hoNestedFns2B(ss: List<PStmt>, acc: List<PsFun>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (nf: PsFun) => hoNestedFns2B(tail(ss), append(acc, nf))
@@ -112,7 +112,7 @@ fun llCapturesOf(fs, siblingNames: List<String>,
 
 fun [tail] llCapturesOfB(fs: List<PsFun>, siblingNames: List<String>,
                         paramNames: List<String>,
-                        [terminal] acc: List<List<String>>) => isEmpty(fs)
+                        acc: List<List<String>>) => isEmpty(fs)
   ? acc
   : llCapturesOfB(tail(fs), siblingNames, paramNames,
       append(acc,
@@ -147,9 +147,9 @@ fun llSolveOne(scc, f: PsFun, nested: List<PsFun>,
             && llRefsOk(scc, f)
   let ok = ok0 && !llAnyLinear(want0, paramLets)
   # Three POSITIONALLY paired lists — one entry per SCC, looked up by index.
-  ret LlSolved((append(acc.lsSccs, scc)),
-               (append(acc.lsLiftable, ok)),
-               (append(acc.lsThreaded, want0)))
+  ret LlSolved(append(acc.lsSccs, scc),
+               append(acc.lsLiftable, ok),
+               append(acc.lsThreaded, want0))
 
 fun [tail] llWant(ns: List<String>, own: List<String>,
                   siblingNames: List<String>, captures: List<List<String>>,
@@ -158,13 +158,13 @@ fun [tail] llWant(ns: List<String>, own: List<String>,
   ? out
   : llWant(tail(ns), own, siblingNames, captures, edges,
                             acc,
-                            llCalleeWants((ceChildrenOf(edges,
-                                                             first(ns))),
+                            llCalleeWants(ceChildrenOf(edges,
+                                                             first(ns)),
                                           own, acc,
                                           addNamesAll(
-                                            (llCapturesFor(
+                                            llCapturesFor(
                                               siblingNames, captures,
-                                              first(ns))),
+                                              first(ns)),
                                             out)))
 
 fun [tail] llCalleeWants(cs: List<String>, own: List<String>, acc: LlSolved,
@@ -173,7 +173,7 @@ fun [tail] llCalleeWants(cs: List<String>, own: List<String>, acc: LlSolved,
   : contains2(own, first(cs))
     ? llCalleeWants(tail(cs), own, acc, out)
     : llCalleeWants(tail(cs), own, acc,
-                    addNamesAll((llThreadedFor(acc, first(cs))), out))
+                    addNamesAll(llThreadedFor(acc, first(cs)), out))
 
 fun llCapturesFor(siblingNames: List<String>,
                   captures: List<List<String>>,
@@ -203,7 +203,7 @@ fun [tail] llThreadLoop(ss: List<List<String>>, ts: List<List<String>>,
 fun [tail] llCalleesOk(ns: List<String>, own: List<String>, edges: EEdges,
                        acc: LlSolved) => isEmpty(ns)
   ? true
-  : llCalleeBad((ceChildrenOf(edges, first(ns))), own,
+  : llCalleeBad(ceChildrenOf(edges, first(ns)), own,
                                  acc)
     ? false
     : llCalleesOk(tail(ns), own, edges, acc)
@@ -274,8 +274,8 @@ fun [tail] llLiftScc(ns: List<String>, scc: List<String>, solved: LlSolved,
   ret isEmpty(ns)
     ? acc
     : llLiftScc(tail(ns), scc, solved,
-        LiftCtx((append(acc.lcNames, first(ns))),
-                (append(acc.lcExtras, sort(threaded)))))
+        LiftCtx(append(acc.lcNames, first(ns)),
+                append(acc.lcExtras, sort(threaded))))
 
 fun llFirstOf(scc: List<String>) => isEmpty(scc)
   ? ""
@@ -457,7 +457,7 @@ fun llParamCopies(ns, paramLets: List<PStmt>,
                          acc: List<PStmt>) => (llParamCopiesB(ns, paramLets, acc))
 
 fun [tail] llParamCopiesB(ns: List<String>, paramLets: List<PStmt>,
-                         [terminal] acc: List<PStmt>) => isEmpty(ns)
+                         acc: List<PStmt>) => isEmpty(ns)
   ? acc
   : match(llParamByName(paramLets, first(ns)))
     (p: PStmt) => llParamCopiesB(tail(ns), paramLets, append(acc, p))
@@ -473,7 +473,7 @@ fun llStmts(ss, ctx: LiftCtx, paramLets: List<PStmt>,
                    acc: List<PStmt>) => (llStmtsB(ss, ctx, paramLets, acc))
 
 fun [tail] llStmtsB(ss: List<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>,
-                   [terminal] acc: List<PStmt>) => isEmpty(ss)
+                   acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : llStmtsB(tail(ss), ctx, paramLets,
                              append(acc, llStmt(first(ss), ctx, paramLets)))
@@ -542,8 +542,8 @@ fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>)
       ? rebuilt
       : PeCall(rebuilt.function,
                PeTuple(concat(llCallArgs(rebuilt.parameter),
-                              llExtraEnts((llExtrasFor(ctx,
-                                                            nm.refName)),
+                              llExtraEnts(llExtrasFor(ctx,
+                                                            nm.refName),
                                           rebuilt.pecLine, List())),
                        rebuilt.pecLine),
                rebuilt.pecLine)
@@ -554,7 +554,7 @@ fun llExtraEnts(ns, lr,
   ret (llExtraEntsB(ns, lr, acc))
 
 fun [tail] llExtraEntsB(ns: List<String>, lr,
-                       [terminal] acc: List<PTupEnt>) => isEmpty(ns)
+                       acc: List<PTupEnt>) => isEmpty(ns)
   ? acc
   : llExtraEntsB(tail(ns), lr,
       append(acc, PTupEnt("", false,
@@ -564,7 +564,7 @@ fun llExprs(es, ctx: LiftCtx, paramLets: List<PStmt>,
                    acc: List<PExpr>) => (llExprsB(es, ctx, paramLets, acc))
 
 fun [tail] llExprsB(es: List<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>,
-                   [terminal] acc: List<PExpr>) => isEmpty(es)
+                   acc: List<PExpr>) => isEmpty(es)
   ? acc
   : llExprsB(tail(es), ctx, paramLets,
                              append(acc, llExpr(first(es), ctx, paramLets)))
@@ -573,7 +573,7 @@ fun llEnts(es: List<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
                   acc: List<PTupEnt>) => (llEntsB(es, ctx, paramLets, acc))
 
 fun [tail] llEntsB(es: List<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
-                  [terminal] acc): List<PTupEnt> => isEmpty(es)
+                  acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : llEntsB(tail(es), ctx, paramLets,
       append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
@@ -583,7 +583,7 @@ fun llArms(as2, ctx: LiftCtx, paramLets: List<PStmt>,
                   acc: List<PArm>) => (llArmsB(as2, ctx, paramLets, acc))
 
 fun [tail] llArmsB(as2: List<PArm>, ctx: LiftCtx, paramLets: List<PStmt>,
-                  [terminal] acc: List<PArm>) => isEmpty(as2)
+                  acc: List<PArm>) => isEmpty(as2)
   ? acc
   : llArmsB(tail(as2), ctx, paramLets,
       append(acc, with first(as2)(armBody = llExpr(first(as2).armBody, ctx, paramLets), armGuard = llExprOpt(first(as2).armGuard, ctx, paramLets))))

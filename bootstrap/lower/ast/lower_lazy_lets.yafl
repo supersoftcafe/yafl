@@ -62,7 +62,7 @@ fun pngLoop(ss, r,
                    acc: List<PStmt>): List<PStmt> => (pngLoopB(ss, r, acc))
 
 fun [tail] pngLoopB(ss: List<PStmt>, r,
-                   [terminal] acc: List<PStmt>) => isEmpty(ss)
+                   acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (let2: PsLet) => pngLoopB(tail(ss), r, append(acc, pngOne(let2, r)))

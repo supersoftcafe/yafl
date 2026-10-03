@@ -53,9 +53,9 @@ class [final] RddCx(cxObj: Dict<String, Int>, cxFn: Dict<String, Int>,
 
 fun rddContext(objs: List<CgObject>, fns: List<CgFunction>,
                glbs: List<CgGlobal>): RddCx
-  let nO = rddIndex((map(objs, (o) => o.objName)), 0, Dict())
-  let nF = rddIndex((map(fns, (f) => f.fnName)), nO.next, Dict())
-  let nG = rddIndex((map(glbs, (g2) => g2.globalName)), nF.next, Dict())
+  let nO = rddIndex(map(objs, (o) => o.objName), 0, Dict())
+  let nF = rddIndex(map(fns, (f) => f.fnName), nO.next, Dict())
+  let nG = rddIndex(map(glbs, (g2) => g2.globalName), nF.next, Dict())
   let n = nG.next
   ret RddCx(nO.ix, nF.ix, nG.ix, rddLeaves(objs, 0, Dict()),
             rddTable(map(objs, (o) => o.objName), map(fns, (f) => f.fnName),
@@ -424,7 +424,7 @@ fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
                              f.fnBypassAsync),
                      f.fnAlwaysInline)
   let body = rddOps(rddS(head, "["), cx, f.fnOps, 0i32)
-  let declared = rddNumber(body, (map(rddFields(f.fnStackVars), (fd) => fd.fieldName)))
+  let declared = rddNumber(body, map(rddFields(f.fnStackVars), (fd) => fd.fieldName))
   ret rddLocals(rddCloseSets(declared), rddFields(f.fnStackVars))
 
 fun rddFields(t: CgType): List<CgField> => match(t)

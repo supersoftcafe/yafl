@@ -382,7 +382,7 @@ fun narrowedName(n, fallback) => match(n)
 
 
 fun narrowedEnumField(r, e2: SEnum, bare)
-  let cands = fieldsMatching((enumFieldsVia(r, e2.seRoot)), bare,
+  let cands = fieldsMatching(enumFieldsVia(r, e2.seRoot), bare,
                              List())
   if exactly(cands, 1)
     ret hitOf(cands)
@@ -400,7 +400,7 @@ fun fieldsMatching(fs, bare,
   ret (fieldsMatchingB(fs, bare, acc))
 
 fun [tail] fieldsMatchingB(fs: List<SField>, bare,
-                          [terminal] acc: List<SField>) => isEmpty(fs)
+                          acc: List<SField>) => isEmpty(fs)
   ? acc
   : matchName(first(fs).sfName, bare)
     ? fieldsMatchingB(tail(fs), bare, append(acc, first(fs)))
@@ -418,7 +418,7 @@ fun fieldsCovered(cs, covering: List<SField>,
                          acc: List<SField>) => (fieldsCoveredB(cs, covering, acc))
 
 fun [tail] fieldsCoveredB(cs: List<SField>, covering: List<SField>,
-                         [terminal] acc: List<SField>) => isEmpty(cs)
+                         acc: List<SField>) => isEmpty(cs)
   ? acc
   : hasFieldNamed(covering, first(cs).sfName)
     ? fieldsCoveredB(tail(cs), covering, append(acc, first(cs)))
@@ -445,7 +445,7 @@ fun [tail] coverVariants(vs: List<PStmt>, valid: List<String>,
 fun typedFieldsOf(ls, acc: List<SField>): List<SField>
   ret (typedFieldsOfB(ls, acc))
 
-fun [tail] typedFieldsOfB(ls: List<PStmt>, [terminal] acc: List<SField>) => isEmpty(ls)
+fun [tail] typedFieldsOfB(ls: List<PStmt>, acc: List<SField>) => isEmpty(ls)
   ? acc
   : match(first(ls))
     (let2: PsLet) => match(let2.lType)
@@ -504,7 +504,7 @@ class [final] CneOut(cneFas: List<PFieldArg>, cneGlobals: List<PStmt>,
                      cneHints: Dict<String, List<Hint>>)
 
 fun [tail] cneArgs(fas: List<PFieldArg>, leafFields: List<PStmt>, r,
-                   [terminal] acc: List<PFieldArg>, globals2,
+                   acc: List<PFieldArg>, globals2,
                    hints: Dict<String, List<Hint>>): CneOut => isEmpty(fas)
   ? CneOut(acc, globals2, hints)
   : compileExpr(first(fas).faValue, r,
@@ -571,7 +571,7 @@ class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>,
                          teHints: Dict<String, List<Hint>>)
 
 fun [tail] compileTupEnts(es: List<PTupEnt>, r, slots: List<SEntry>,
-                          i, [terminal] acc,
+                          i, acc,
                           glb, hints) => isEmpty(es)
   ? TupEntsOut(acc, glb, hints)
   : compileExpr(first(es).tupValue, r, entryAt(slots, i))
@@ -608,7 +608,7 @@ fun tupNames(tp: PeTuple) => nameOfEnts(tp.exprs, List())
 
 fun nameOfEnts(es: List<PTupEnt>, acc: List<String>) => (nameOfEntsB(es, acc))
 
-fun [tail] nameOfEntsB(es: List<PTupEnt>, [terminal] acc): List<String> => isEmpty(es)
+fun [tail] nameOfEntsB(es: List<PTupEnt>, acc): List<String> => isEmpty(es)
   ? acc
   : nameOfEntsB(tail(es), append(acc, first(es).tupName))
 
@@ -622,7 +622,7 @@ fun slotsFor(declared: List<SEntry>, binding: List<Int>,
 # One blank slot per supplied entry — sized by the walk, never by a count.
 fun emptySlots(es: List<PTupEnt>, acc: List<SEntry>) => (emptySlotsB(es, acc))
 
-fun [tail] emptySlotsB(es: List<PTupEnt>, [terminal] acc): List<SEntry> => isEmpty(es)
+fun [tail] emptySlotsB(es: List<PTupEnt>, acc): List<SEntry> => isEmpty(es)
   ? acc
   : emptySlotsB(tail(es), append(acc, SEntry("", None, None)))
 
@@ -644,7 +644,7 @@ fun setLoop(es, i: Int, v: SEntry, at: Int,
                    acc: List<SEntry>) => (setLoopB(es, i, v, at, acc))
 
 fun [tail] setLoopB(es: List<SEntry>, i, v: SEntry, at,
-                   [terminal] acc: List<SEntry>) => isEmpty(es)
+                   acc: List<SEntry>) => isEmpty(es)
   ? acc
   : setLoopB(tail(es), i, v, at + 1,
                              append(acc, at == i ? v : first(es)))
@@ -671,7 +671,7 @@ fun compileTernary(te: PeTernary, r, expected: Spec|None)
 # are RESOLVED, they propagate onto each variant arm that didn't spell them
 # out. A concrete arg always qualifies; a placeholder arg qualifies when it
 # resolves in scope — the enclosing generic's own param passing through
-# (List<U> inside sameLen2<T, U> stamps its arms ChainEnd<U>/List<U>),
+# (Chain<U> inside sameLen2<T, U> stamps its arms ChainEnd<U>/ChainLink<U>),
 # which monomorphisation then substitutes exactly. Leaving such an arm BARE is
 # not an option: mono's identity completion falls back to matching the enum
 # template's formal names against the host's params, so both of a two-param
@@ -709,12 +709,12 @@ fun isBareElse(a: PArm) => a.armType is None && isEmpty(a.armLiterals)
 # Typed arms first, then every literal arm's literals.
 fun armLowerTypes(arms: List<PArm>, r)
   let typed = map(filter(arms, (a) => !(a.armType is None)), (a) => a.armType)
-  let lits = flatMapLits((filter(arms, (a) => a.armType is None)), r,
+  let lits = flatMapLits(filter(arms, (a) => a.armType is None), r,
                          List())
   ret concat(typed, lits)
 
 fun [tail] flatMapLits(as2: List<PArm>, r,
-                       [terminal] acc: List<Spec|None>) => isEmpty(as2)
+                       acc: List<Spec|None>) => isEmpty(as2)
   ? acc
   : flatMapLits(tail(as2), r,
                                  concat(acc, map(first(as2).armLiterals,
@@ -763,11 +763,11 @@ class [final] CompiledExprs(ceExprs: List<PExpr>, ceGlobals: List<PStmt>,
                             ceTypes: List<Spec|None>,
                             ceHints: Dict<String, List<Hint>>)
 
-fun compileExprs(es, r, [terminal] acc: List<PExpr>,
+fun compileExprs(es, r, acc: List<PExpr>,
                  glb) => compileExprsB(es, r, acc, glb, List(), noHints())
 
 fun [tail] compileExprsB(es: List<PExpr>, r,
-                         [terminal] acc, glb,
+                         acc, glb,
                          tys,
                          hints) => isEmpty(es)
   ? CompiledExprs(acc, glb, tys, hints)
@@ -783,7 +783,7 @@ class [final] ArmsOut(aoArms: List<PArm>, aoGlobals: List<PStmt>,
                       aoHints: Dict<String, List<Hint>>)
 
 fun [tail] compileArms(as2: List<PArm>, r, subjTy: Spec|None,
-                       expected, [terminal] acc,
+                       expected, acc,
                        glb, extraTys: List<Spec|None>,
                        hints) => isEmpty(as2)
   ? ArmsOut(acc, glb, hints)
@@ -943,7 +943,7 @@ class [final] LitsOut(loLits: List<PLit>, loGlobals: List<PStmt>,
 class [final] LitOut(l1Lit: PLit, l1Globals: List<PStmt>,
                      l1Hints: Dict<String, List<Hint>>)
 
-fun [tail] compileLits(ls: List<PLit>, r, [terminal] acc,
+fun [tail] compileLits(ls: List<PLit>, r, acc,
                        glb, hints) => isEmpty(ls)
   ? LitsOut(acc, glb, hints)
   : compileLit(first(ls), r)
@@ -985,7 +985,7 @@ fun compileBlock(bk: PeBlock, r0, expected): ExprOut
 
 fun markInner(ss): List<PStmt> => (markInnerB(ss, List()))
 
-fun [tail] markInnerB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] markInnerB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : markInnerB(tail(ss), append(acc, markOne(first(ss))))
 
@@ -1147,7 +1147,7 @@ fun withLets(wx: PeWith, tag, uniques: List<String>, r): List<PStmt>
 # Each replacement is typed as its FIELD, so the SAME guard compares like with like.
 fun [tail] withReplLets(es: List<PTupEnt>, i, tag, lr,
                         subjTy: Spec|None, uniques: List<String>, r,
-                        [terminal] acc): List<PStmt> => isEmpty(es)
+                        acc): List<PStmt> => isEmpty(es)
   ? acc
   : withReplLets(tail(es), i + 1, tag, lr, subjTy, uniques, r,
                       append(acc,
@@ -1207,7 +1207,7 @@ fun withCtorArgs(fs, repls: List<PTupEnt>,
 
 fun [tail] withCtorArgsB(fs: List<PStmt>, repls: List<PTupEnt>,
                         carrier, lr,
-                        [terminal] acc: List<PTupEnt>) => isEmpty(fs)
+                        acc: List<PTupEnt>) => isEmpty(fs)
   ? acc
   : match(first(fs))
     (p: PsLet) => withCtorArgsB(tail(fs), repls, carrier, lr,
@@ -1250,7 +1250,7 @@ fun [tail] withNamesOkLoop(es: List<PTupEnt>, visible: List<String>) => isEmpty(
 fun withExpandEnum(wx: PeWith, e2: SEnum, r) => match(soleItem(findType(r, e2.seRoot)))
   (f: Found) => match(f.fStmt)
     (en: PsEnum) => withNamesOk(wx,
-                      withCoverBares((coveringFields(en, e2.seValidLeaves)),
+                      withCoverBares(coveringFields(en, e2.seValidLeaves),
                                      List()))
       ? withEnumCopy(wx, en, e2,
                      map(coveringFields(en, e2.seValidLeaves), (fd) => fd.sfName), r)
@@ -1287,7 +1287,7 @@ fun withValidLoop(ns, valid: List<String>,
                          acc: List<String>) => (withValidLoopB(ns, valid, acc))
 
 fun [tail] withValidLoopB(ns: List<String>, valid: List<String>,
-                         [terminal] acc: List<String>) => isEmpty(ns)
+                         acc: List<String>) => isEmpty(ns)
   ? acc
   : contains2(valid, first(ns))
     ? withValidLoopB(tail(ns), valid, append(acc, first(ns)))
@@ -1308,7 +1308,7 @@ fun withArms(ns, sets, i: Int,
 
 fun [tail] withArmsB(ns: List<String>, sets: List<List<PStmt>>, i,
                     tag, wx: PeWith, e2: SEnum,
-                    [terminal] acc: List<PArm>) => isEmpty(ns)
+                    acc: List<PArm>) => isEmpty(ns)
   ? acc
   : isEmpty(sets)
     ? acc
@@ -1335,8 +1335,8 @@ fun withLeaves(st: PsEnum, inherited: List<PStmt>,
   if isEmpty(st.eVariants)
     # Leaf name and its field set, POSITIONALLY paired.
     ret st.eHasParams
-      ? ((append(acc.names, st.eName)),
-         (append(acc.sets, own)))
+      ? (append(acc.names, st.eName),
+         append(acc.sets, own))
       : acc
   ret withLeavesLoop(st.eVariants, own, acc)
 

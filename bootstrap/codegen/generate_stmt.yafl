@@ -72,18 +72,18 @@ fun genRetJump(rt: PsRet, frame, vb: GBundle): GBundle
     # This exit edge is the LAST phi source added so far, matching the label.
     ()            => GBundle(vb.gbStackVars, concat(vb.gbOps, tail), None,
                              vb.gbRecurSources,
-                             (append(vb.gbExitSources, ExitSource(exitLabel, None))))
+                             append(vb.gbExitSources, ExitSource(exitLabel, None)))
 
 fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel,
                  tail, rv)
   let valvar = RpStackVar(rpGetType(rv), "blockval$" + frame.fbTag + "$" + String(rt.retIndex))
-  ret GBundle((append(vb.gbStackVars, valvar)),
-              (concat(append(
+  ret GBundle(append(vb.gbStackVars, valvar),
+              concat(append(
                   vb.gbOps,
                   OpMove(valvar, rv, false, List())),
-                  tail)),
+                  tail),
               None, vb.gbRecurSources,
-              (append(vb.gbExitSources, ExitSource(exitLabel, valvar))))
+              append(vb.gbExitSources, ExitSource(exitLabel, valvar)))
 
 # ── IfStatement (control.py) ────────────────────────────────────────────────
 

@@ -224,7 +224,7 @@ fun eofToken(toks: List<Token>) => match(last(toks))
 
 fun tokenize(src)
   # The EOF token is derived from the LAST real token, so the stream is built
-  # first and the terminator pushed onto a builder seeded from it.
-  let toks = (scanLines(splitLines(src), 1, List()))
+  # first and the terminator appended to it.
+  let toks = scanLines(splitLines(src), 1, List())
   ret (append(toks,
                  eofToken(toks)))

@@ -192,7 +192,7 @@ fun lazyCapMark(c: String|None) => match(c)
 fun loopParamNames(ps, acc: List<String>): List<String>
   ret (loopParamNamesB(ps, acc))
 
-fun [tail] loopParamNamesB(ps: List<PExpr>, [terminal] acc: List<String>) => isEmpty(ps)
+fun [tail] loopParamNamesB(ps: List<PExpr>, acc: List<String>) => isEmpty(ps)
   ? acc
   : match(first(ps))
     (nm: PeName) => loopParamNamesB(tail(ps), append(acc, nm.refName))

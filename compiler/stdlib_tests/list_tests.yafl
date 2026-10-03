@@ -55,8 +55,8 @@ fun [test("concat joins two lists end to end")] concatJoins(): None|TestFailure
 
 fun [test("concat with an empty list is the identity")] concatEmptyIdentity(): None|TestFailure
     let empty = List<Int>()
-    ret assertEqInt(size((concat(_ints(), empty))), 3, "append empty")
-     ?? assertEqInt(size((concat(empty, _ints()))), 3, "prepend empty")
+    ret assertEqInt(size(concat(_ints(), empty)), 3, "append empty")
+     ?? assertEqInt(size(concat(empty, _ints())), 3, "prepend empty")
 
 fun [test("contains finds a present value and rejects an absent one")] containsWorks(): None|TestFailure
     ret assertTrue(contains(_ints(), 2), "2 is present")
@@ -85,10 +85,10 @@ fun [test("any and all agree with the predicate")] anyAndAll(): None|TestFailure
      ?? assertFalse(all(_ints(), (x: Int) => x > 1), "not all over 1")
 
 fun [test("take and drop split a list at the given count")] takeAndDrop(): None|TestFailure
-    ret assertEqInt(size((take(_ints(), 2))), 2, "take 2")
-     ?? assertEqInt(size((drop(_ints(), 2))), 1, "drop 2")
+    ret assertEqInt(size(take(_ints(), 2)), 2, "take 2")
+     ?? assertEqInt(size(drop(_ints(), 2)), 1, "drop 2")
      ?? assertEqInt(_headOr(drop(_ints(), 2), 0), 3, "drop 2 leaves 3")
 
 fun [test("take and drop past the end are clamped, not errors")] takeDropOverrun(): None|TestFailure
-    ret assertEqInt(size((take(_ints(), 99))), 3, "take more than exists")
+    ret assertEqInt(size(take(_ints(), 99)), 3, "take more than exists")
      ?? assertTrue(isEmpty(drop(_ints(), 99)), "drop more than exists")

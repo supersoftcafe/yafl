@@ -66,7 +66,7 @@ fun flattenParams(params): List<PStmt> => match(params)
 # (Not [tail]: the nested-destructure arm recurses into the inner targets
 # before it can step on, so that self-call is not in tail position.)
 fun flattenTargets(ts: List<PStmt>,
-                          [terminal] acc: List<PStmt>) => isEmpty(ts)
+                          acc: List<PStmt>) => isEmpty(ts)
   ? acc
   : match(first(ts))
     (d: PsDestructure) => flattenTargets(tail(ts),
@@ -91,7 +91,7 @@ fun fceLoop(ts, r,
   ret (fceLoopB(ts, r, acc))
 
 fun [tail] fceLoopB(ts: List<Spec>, r,
-                   [terminal] acc: List<FoundClass>) => isEmpty(ts)
+                   acc: List<FoundClass>) => isEmpty(ts)
   ? acc
   : fceLoopB(tail(ts), r,
                              append(acc, findClassOrError(first(ts), r)))
@@ -116,7 +116,7 @@ fun compileSpecsPlain(ps: List<Spec>, r) => cspLoop(ps, r, List())
 
 fun cspLoop(ps: List<Spec>, r, acc: List<Spec>) => (cspLoopB(ps, r, acc))
 
-fun [tail] cspLoopB(ps: List<Spec>, r, [terminal] acc): List<Spec> => isEmpty(ps)
+fun [tail] cspLoopB(ps: List<Spec>, r, acc): List<Spec> => isEmpty(ps)
   ? acc
   : cspLoopB(tail(ps), r,
                              append(acc, compileSpec(first(ps), r).soSpec))
@@ -127,12 +127,12 @@ fun [tail] cspLoopB(ps: List<Spec>, r, [terminal] acc): List<Spec> => isEmpty(ps
 # fun-typed field. An interface's bodiless fun provides nothing.
 
 fun createSlotsFromMembers(cs: PsClass)
-  ret slotLoop((concat(flattenParams(cs.cParams), cs.cMembers)),
+  ret slotLoop(concat(flattenParams(cs.cParams), cs.cMembers),
                List())
 
 fun slotLoop(ms, acc: List<Slot>): List<Slot> => (slotLoopB(ms, acc))
 
-fun [tail] slotLoopB(ms: List<PStmt>, [terminal] acc: List<Slot>) => isEmpty(ms)
+fun [tail] slotLoopB(ms: List<PStmt>, acc: List<Slot>) => isEmpty(ms)
   ? acc
   : isCallableMember(first(ms))
     ? slotLoopB(tail(ms), append(acc, toSlot(first(ms))))
@@ -169,7 +169,7 @@ fun enhanceLoop(bs, r, parents: List<Slot>,
                        acc: List<Slot>) => (enhanceLoopB(bs, r, parents, acc))
 
 fun [tail] enhanceLoopB(bs: List<Slot>, r, parents: List<Slot>,
-                       [terminal] acc: List<Slot>) => isEmpty(bs)
+                       acc: List<Slot>) => isEmpty(bs)
   ? acc
   : enhanceLoopB(tail(bs), r, parents,
                                  append(acc, absorbMatches(first(bs), r,
@@ -202,7 +202,7 @@ fun keepUnabsorbed(ps, exclusion: List<String>,
   ret (keepUnabsorbedB(ps, exclusion, acc))
 
 fun [tail] keepUnabsorbedB(ps: List<Slot>, exclusion: List<String>,
-                          [terminal] acc: List<Slot>) => isEmpty(ps)
+                          acc: List<Slot>) => isEmpty(ps)
   ? acc
   : contains2(exclusion, first(ps).slotName)
     ? keepUnabsorbedB(tail(ps), exclusion, acc)
@@ -211,16 +211,16 @@ fun [tail] keepUnabsorbedB(ps: List<Slot>, exclusion: List<String>,
 # ── set helpers (List with set semantics) ────────────────────────────────────
 
 # Set semantics, but the ORDER is kept: these lists become parent and slot
-# orders that reach generated code. `acc` is read by the dedup just above, so
-# it cannot be a builder — this is the copy the old append did, written out.
+# orders that reach generated code. `acc` is read by the dedup just above and
+# then appended to.
 fun addNameOnce(acc, n: String): List<String>
-  ret contains2(acc, n) ? acc : (append(acc, n))
+  ret contains2(acc, n) ? acc : append(acc, n)
 
 fun [tail] addNamesOnce(acc: List<String>, ns: List<String>) => isEmpty(ns)
   ? acc
   : addNamesOnce(addNameOnce(acc, first(ns)), tail(ns))
 
-fun addSpecOnce(acc, sp) => containsSpec(acc, sp) ? acc : (append(acc, sp))
+fun addSpecOnce(acc, sp) => containsSpec(acc, sp) ? acc : append(acc, sp)
 
 fun [tail] addSpecsOnce(acc, ss: List<Spec>) => isEmpty(ss)
   ? acc
@@ -234,10 +234,10 @@ fun [tail] addSpecsOnce(acc, ss: List<Spec>) => isEmpty(ss)
 # raw storage.
 
 fun classFindData(cs: PsClass, r, query)
-  let own = memberFinds((concat(nonArrayFields(cs), cs.cMembers)), query,
+  let own = memberFinds(concat(nonArrayFields(cs), cs.cMembers), query,
                         List())
   ret isEmpty(own)
-    ? parentFinds((findClassesOrError(cs.cImplements, r)), r, query,
+    ? parentFinds(findClassesOrError(cs.cImplements, r), r, query,
                   List())
     : own
 
@@ -246,7 +246,7 @@ fun nonArrayFields(cs: PsClass) => dropArrayField(flattenParams(cs.cParams), Lis
 fun dropArrayField(ls, acc: List<PStmt>): List<PStmt>
   ret (dropArrayFieldB(ls, acc))
 
-fun [tail] dropArrayFieldB(ls: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ls)
+fun [tail] dropArrayFieldB(ls: List<PStmt>, acc: List<PStmt>) => isEmpty(ls)
   ? acc
   : isArrayStorage(first(ls))
     ? dropArrayFieldB(tail(ls), acc)
@@ -262,7 +262,7 @@ fun memberFinds(ms, query: String,
                        acc: List<Found>) => (memberFindsB(ms, query, acc))
 
 fun [tail] memberFindsB(ms: List<PStmt>, query,
-                       [terminal] acc: List<Found>) => isEmpty(ms)
+                       acc: List<Found>) => isEmpty(ms)
   ? acc
   : nameMatches(stmtName(first(ms)), query)
     ? memberFindsB(tail(ms), query, append(acc, Found(stmtName(first(ms)),
@@ -373,7 +373,7 @@ fun [tail] shorterThan<T, U>(a: List<T>, b: List<U>) => isEnd(b)
 fun initOf<T>(l: List<T>): List<T> => (initLoop(l, List()))
 
 # Everything but the last element, in order.
-fun [tail] initLoop<T>(c: List<T>, [terminal] acc: List<T>): List<T> => isEmpty(c)
+fun [tail] initLoop<T>(c: List<T>, acc: List<T>): List<T> => isEmpty(c)
   ? acc
   : isEmpty(tail(c))
     ? acc

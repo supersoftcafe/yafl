@@ -94,7 +94,7 @@ fun isRuntimeTaskSubtype(name: String) => name == "task_obj" || name == "task_st
 fun makeTaskSubtypeObject(subtypeName, resultType)
   ret CgObject(subtypeName, list1("task"), List(),
                # The task_t prefix, then the result field LAST.
-               CgImmediateStruct((append(taskFields(), CgField("result", resultType)))),
+               CgImmediateStruct(append(taskFields(), CgField("result", resultType))),
                None, "task subtype for result type " + taskTypeSig(resultType),
                isRuntimeTaskSubtype(subtypeName), true, 0)
 

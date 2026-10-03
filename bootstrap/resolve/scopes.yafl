@@ -57,7 +57,7 @@ fun stmtScopes(st)
   # is the list's order.
   ret own == "" || contains2(grp, own)
     ? grp
-    : (append(grp, own))
+    : append(grp, own)
 
 fun stmtImports(st) => match(st)
   (f: PsFun)        => importsOr(f.fImports)
@@ -72,13 +72,13 @@ fun importsOr(grp: List<PStmt>|None) => match(grp)
   (g2: List<PStmt>) => g2
   ()                => List()
 
-# Same shape as mergeNames: Set for "seen", builder for order.
+# Same shape as mergeNames: Set for "seen", the appended List for order.
 fun importPaths(ss: List<PStmt>, acc: List<String>)
   ret (importPathsB(ss,
                          acc,
                          Set(acc)))
 
-fun [tail] importPathsB(ss: List<PStmt>, [terminal] out: List<String>,
+fun [tail] importPathsB(ss: List<PStmt>, out: List<String>,
                         seen: Set<String>) => isEmpty(ss)
   ? out
   : match(first(ss))
@@ -116,7 +116,7 @@ fun genScope(gens: List<PGen>, wheres: List<Spec>, r): Resolver
 
 fun genFounds(gs, acc: List<Found>): List<Found> => (genFoundsB(gs, acc))
 
-fun [tail] genFoundsB(gs: List<PGen>, [terminal] acc: List<Found>) => isEmpty(gs)
+fun [tail] genFoundsB(gs: List<PGen>, acc: List<Found>) => isEmpty(gs)
   ? acc
   : genFoundsB(tail(gs), append(acc, genFound(first(gs))))
 
@@ -133,14 +133,14 @@ fun isLinearGen(g: PGen) => hasAttr(g.genAttrs, "linear")
 
 fun localScope(lets: List<PStmt>, r): Resolver => isEmpty(lets)
   ? r
-  : RData((letFounds(lets, List())), r)
+  : RData(letFounds(lets, List()), r)
 
 fun [tail] letFounds(ls: List<PStmt>,
-                     [terminal] acc: List<Found>) => isEmpty(ls)
+                     acc: List<Found>) => isEmpty(ls)
   ? acc
   : letFounds(tail(ls), addLetFound(acc, first(ls)))
 
-fun addLetFound([terminal] acc, st): List<Found> => match(st)
+fun addLetFound(acc, st): List<Found> => match(st)
   (l: PsLet) => append(acc, Found(l.lName, st, ScLocal()))
   # A NESTED FUNCTION binds a name in its block, exactly as a let does — a
   # `[tail] loop` helper must be visible to its siblings and to the body.
@@ -293,7 +293,7 @@ fun membersViaMerged(mt: MergedTable, c, own,
 
 fun [tail] wrapMerged(es: List<MergedEntry>, mapping: List<Binding>,
                       c, own,
-                      [terminal] acc: List<Found>) => isEmpty(es)
+                      acc: List<Found>) => isEmpty(es)
   ? acc
   : wrapMerged(tail(es), mapping, c, own,
       append(acc, Found(stmtName(first(es).meStmt), first(es).meStmt,
@@ -316,7 +316,7 @@ fun membersViaIdx(mi: MemberIdx, c, own, query,
                   r)
   if !arityMatches(mi.miClass, c)
     ret emptyFindings()
-  let direct = wrapMembers((memberBucket(mi, query)), c, mi.miClass, own,
+  let direct = wrapMembers(memberBucket(mi, query), c, mi.miClass, own,
                            List())
   ret isEmpty(direct)
     ? parentMembers(mi.miClass, c, own, query, r)
@@ -328,7 +328,7 @@ fun memberBucket(mi: MemberIdx, query: String) => match(get(mi.miByKey, query))
 
 fun [tail] wrapMembers(ms: List<PStmt>, tp, owner,
                        own,
-                       [terminal] acc: List<Found>) => isEmpty(ms)
+                       acc: List<Found>) => isEmpty(ms)
   ? acc
   : wrapMembers(tail(ms), tp, owner, own,
                                  append(acc,
@@ -343,8 +343,8 @@ fun arityMatches(cs: PsClass, c: SClass) => sameLen(cs.cGens, c.scParams)
 # substitutes the instantiation's type args through the member's type.
 fun classMembers(cs, c, own, query,
                  r)
-  let direct = memberMatches((concat(flattenParams(cs.cParams),
-                                          cs.cMembers)),
+  let direct = memberMatches(concat(flattenParams(cs.cParams),
+                                          cs.cMembers),
                              query, c, cs, own, List())
   ret isEmpty(direct)
     ? parentMembers(cs, c, own, query, r)
@@ -357,7 +357,7 @@ fun memberMatches(ms, query: String, tp,
 
 fun [tail] memberMatchesB(ms: List<PStmt>, query, tp,
                          owner, own,
-                         [terminal] acc: List<Found>) => isEmpty(ms)
+                         acc: List<Found>) => isEmpty(ms)
   ? acc
   : nameMatches(stmtName(first(ms)), query)
     ? memberMatchesB(tail(ms), query, tp, owner, own,
@@ -396,7 +396,7 @@ fun mapLoop(gs, as2,
                    acc: List<Binding>): List<Binding> => (mapLoopB(gs, as2, acc))
 
 fun [tail] mapLoopB(gs: List<PGen>, as2: List<Spec>,
-                   [terminal] acc: List<Binding>) => isEmpty(gs)
+                   acc: List<Binding>) => isEmpty(gs)
   ? acc
   : isEmpty(as2)
     ? acc

@@ -256,9 +256,9 @@ fun cgDeclareCachedMiss(t, cache0: List<CgCacheEntry>): (text: String, cache: Li
   let name = "struct_anon_" + String(ord) + "_t"
   let typedefText = "typedef " + built.text + " " + name + ";\n"
   # The newest entry goes LAST: the ordinal above is taken from the tail.
-  ret (name, (append(
+  ret (name, append(
                  built.cache,
-                 CgCacheEntry(t, name, typedefText, ord))))
+                 CgCacheEntry(t, name, typedefText, ord)))
 
 fun [tail] cgCacheLookup(cache: List<CgCacheEntry>, t) => match(head(cache))
   (e: CgCacheEntry) => eqCgType(e.entryType, t) ? e.entryName : cgCacheLookup(tail(cache), t)
@@ -448,7 +448,7 @@ fun forceInt(x: Int|None) => match(x)
 
 # The 32-bit words, LOW word first — the order is the array's.
 fun [tail] bigintArrayLoop(value,
-                           [terminal] acc): List<Int> => value == 0
+                           acc): List<Int> => value == 0
   ? acc
   : bigintArrayLoop(value >> 32, append(acc, value & maskInt))
 
@@ -500,7 +500,7 @@ fun cgFlattenPrimitivesN(t): (ps: List<CgType>, n: Int) => match(cgFieldsOf(t))
         cgFlattenPrimitivesN(fld.fieldType)
           |> (sub) => (concat(acc.ps, sub.ps), acc.n + sub.n))
   () => match(t)
-    (fp: CgFuncPointer) => ((append(append(List(), CgIntPtr()), CgDataPointer())), 2)
+    (fp: CgFuncPointer) => (append(append(List(), CgIntPtr()), CgDataPointer()), 2)
     (o: CgType)         => (prepend(o, List()), 1)
 
 # Rank for laying out union slots, largest first. An IR fact, not a byte
@@ -540,7 +540,7 @@ fun cgUpdateSlotUsersLoop(slots: List<CgSlot>, idx, vi, i, acc: List<CgSlot>)
 
 # A slot's `users` is asked only for membership, disjointness and union, so a
 # new user goes on the front.
-fun [tail] cgUpdateSlotUsersLoopB(slots: List<CgSlot>, idx, vi, i, [terminal] acc): List<CgSlot>
+fun [tail] cgUpdateSlotUsersLoopB(slots: List<CgSlot>, idx, vi, i, acc): List<CgSlot>
   ret match(head(slots))
     (s: CgSlot) => cgUpdateSlotUsersLoopB(tail(slots), idx, vi, i + 1, append(acc, i == idx ? CgSlot(s.slotType, prepend(vi, s.users), s.active, s.sIdx) : s))
     ()          => acc
@@ -551,29 +551,28 @@ fun cgUpdateSlotUsers(slots: List<CgSlot>, idx, vi)
 # A slot's POSITION in this list is its position in the union struct, and the
 # variant map's entries are positional too — so both grow at the end. The slot
 # list is also READ while it is being built (cgFindSlotIndex scans it, `last`
-# takes its tail), so it cannot be a builder: the copy below is the same O(n)
-# the old append did, written out so it is visible.
+# takes its tail); appending to a List it has just read is fine.
 fun cgAddPrimitive(slots, vi, prim, vmapVi): (slots: List<CgSlot>, vmapVi: List<CgSlotEntry>)
   let found = cgFindSlotIndex(slots, 0, prim, vi)
   ret found >= 0
     ? (cgUpdateSlotUsers(slots, found, vi),
-       (append(
+       append(
            vmapVi,
-           CgSlotEntry(found, prim))))
+           CgSlotEntry(found, prim)))
     : match(last(slots))
-        (prev: CgSlot) => ((append(
+        (prev: CgSlot) => (append(
                                slots,
                                CgSlot(prim, prepend(vi, List()), true,
-                                      prev.sIdx + 1))),
-                           (append(
+                                      prev.sIdx + 1)),
+                           append(
                                vmapVi,
-                               CgSlotEntry(prev.sIdx + 1, prim))))
-        ()             => ((append(
+                               CgSlotEntry(prev.sIdx + 1, prim)))
+        ()             => (append(
                                slots,
-                               CgSlot(prim, prepend(vi, List()), true, 0))),
-                           (append(
+                               CgSlot(prim, prepend(vi, List()), true, 0)),
+                           append(
                                vmapVi,
-                               CgSlotEntry(0, prim))))
+                               CgSlotEntry(0, prim)))
 
 fun cgAddPrimitivesForVariant(slots, vi, prims: List<CgType>, vmapVi): (slots: List<CgSlot>, vmapVi: List<CgSlotEntry>)
   ret match(head(prims))
@@ -593,9 +592,9 @@ fun cgBuildInitialSlotsLoopHit(prims: List<CgType>, restVariants: List<List<CgTy
   let step = cgAddPrimitivesForVariant(slots, vi, prims, List())
   # One entry per variant, indexed by variant number.
   ret cgBuildInitialSlotsLoop(restVariants, vi + 1, step.slots,
-          (append(
+          append(
               vmap,
-              step.vmapVi)))
+              step.vmapVi))
 
 # Phase 2: repeatedly merge a smaller fixed-width int slot into a disjoint
 # larger int slot, restarting the scan from the beginning after every merge
@@ -624,7 +623,7 @@ fun cgFindMergeOuterActive(slots: List<CgSlot>, si, s: CgSlot): (si: Int, li: In
 fun cgMergeApplyLoop(slots: List<CgSlot>, si, li, newL: CgSlot, i, acc: List<CgSlot>)
   ret (cgMergeApplyLoopB(slots, si, li, newL, i, acc))
 
-fun [tail] cgMergeApplyLoopB(slots: List<CgSlot>, si, li, newL: CgSlot, i, [terminal] acc): List<CgSlot>
+fun [tail] cgMergeApplyLoopB(slots: List<CgSlot>, si, li, newL: CgSlot, i, acc): List<CgSlot>
   ret match(head(slots))
     (s: CgSlot) => cgMergeApplyLoopB(tail(slots), si, li, newL, i + 1,
         append(acc, i == si ? CgSlot(s.slotType, s.users, false, s.sIdx) : i == li ? newL : s))
@@ -664,7 +663,7 @@ fun forceSlot(x: CgSlot|None) => match(x)
 class [final] CgIdxSlot(isIndex: Int, isSlot: CgSlot)
 
 fun [tail] cgActiveWithIndicesLoop(slots: List<CgSlot>, i,
-                                   [terminal] acc: List<CgIdxSlot>) => isEmpty(slots)
+                                   acc: List<CgIdxSlot>) => isEmpty(slots)
   ? acc
   : cgActiveWithIndicesLoop(tail(slots), i + 1,
       first(slots).active ? append(acc, CgIdxSlot(i, first(slots))) : acc)
@@ -694,9 +693,9 @@ fun computeUnionSlots(variantTypes: List<CgType>, maxTag: Int|None): CgUnionLayo
   let renumber = cgBuildRenumber(active)
   let tagBound = maxOf(built.nVariants, orZero(maxTag) + 1)
   # The tag is the LAST field of the union struct.
-  let slotFields = (append(
-      (cgSlotFieldsOf(active, 0)),
-      CgField("$tag", cgTagType(tagBound))))
+  let slotFields = append(
+      cgSlotFieldsOf(active, 0),
+      CgField("$tag", cgTagType(tagBound)))
   let variantMap = map(merged.vmap, (vm) => cgRenumberVmapOne(vm, renumber))
   ret CgUnionLayout(CgStruct(slotFields), variantMap)
 
@@ -718,7 +717,7 @@ fun cgSlotFieldsOf(active: List<CgIdxSlot>, i) => match(head(active))
 class [final] CgRenumberEntry(oldIndex: Int, newIndex: Int)
 
 fun [tail] cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx,
-                               [terminal] acc): List<CgRenumberEntry> => isEmpty(active)
+                               acc): List<CgRenumberEntry> => isEmpty(active)
   ? acc
   : cgBuildRenumberLoop(tail(active), newIdx + 1,
       append(acc, CgRenumberEntry(first(active).isIndex, newIdx)))

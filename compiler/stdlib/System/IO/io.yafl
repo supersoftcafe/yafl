@@ -97,7 +97,7 @@ class [linear,final] IO(_io: _IO)
 
   # [terminal] — this method is the IO handle's terminus: it consumes
   # `this` (the linear obligation ends here) and returns no IO.
-  fun [terminal] close(): IOError|None
+  fun close(): IOError|None
     ret match(_io._close())
       (c: Int)          => _close_result(c)
       (n: System::None) => None

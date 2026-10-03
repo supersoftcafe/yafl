@@ -82,7 +82,7 @@ fun priorBindings(gs, ss,
   ret (priorBindingsB(gs, ss, acc))
 
 fun [tail] priorBindingsB(gs: List<PGen>, ss: List<Spec>,
-                         [terminal] acc: List<Binding>) => isEmpty(gs)
+                         acc: List<Binding>) => isEmpty(gs)
   ? acc
   : isEmpty(ss)
     ? acc
@@ -95,7 +95,7 @@ fun mergeLoop(gs, prior: List<Binding>,
   ret (mergeLoopB(gs, prior, mapping, r, acc))
 
 fun [tail] mergeLoopB(gs: List<PGen>, prior: List<Binding>,
-                     mapping: List<Binding>, r, [terminal] acc: List<Spec>) => isEmpty(gs)
+                     mapping: List<Binding>, r, acc: List<Spec>) => isEmpty(gs)
   ? acc
   : mergeLoopB(tail(gs), prior, mapping, r,
                                append(acc, boundParam(first(gs), prior, mapping, r)))
@@ -144,7 +144,7 @@ fun inferTypeParams(stmt, gens: List<PGen>, declared: SCallable,
 # mismatches.
 fun paramsMerged(declared: SCallable, want: SCallable, names: List<String>, r): List<Binding>|None
   let covariant = withoutCallableParams(declared.scParams2)
-  let fuel = (prepend("", names))   # one pass per name, and one more
+  let fuel = prepend("", names)   # one pass per name, and one more
   let first = settledMerge(covariant, want.scParams2, map(names, (n) => MBind(n, None)), r, fuel)
   if !isEmpty(first.moErrs)
     ret None
@@ -222,7 +222,7 @@ fun resultMerged(want, dr, names: List<String>, mapping: List<Binding>, r): List
 
 fun genNames(gs: List<PGen>, acc: List<String>) => (genNamesB(gs, acc))
 
-fun [tail] genNamesB(gs: List<PGen>, [terminal] acc): List<String> => isEmpty(gs)
+fun [tail] genNamesB(gs: List<PGen>, acc): List<String> => isEmpty(gs)
   ? acc
   : genNamesB(tail(gs), append(acc, first(gs).genName))
 
@@ -250,7 +250,7 @@ fun whereTargets(gs: List<PGen>, mapping: List<Binding>,
 
 fun [tail] whereTargetsB(gs: List<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
-                        [terminal] acc): List<String> => isEmpty(gs)
+                        acc): List<String> => isEmpty(gs)
   ? acc
   : isWhereTarget(first(gs).genName, mapping, argInferrable)
     ? whereTargetsB(tail(gs), mapping, argInferrable,
@@ -304,7 +304,7 @@ fun traitInstances(r) => sortByParamCount(
 fun tiStmtLoop(ts, acc: List<TraitInst>): List<TraitInst>
   ret (tiStmtLoopB(ts, acc))
 
-fun [tail] tiStmtLoopB(ts: List<PStmt>, [terminal] acc: List<TraitInst>) => isEmpty(ts)
+fun [tail] tiStmtLoopB(ts: List<PStmt>, acc: List<TraitInst>) => isEmpty(ts)
   ? acc
   : match(first(ts))
     (ti: PsTraitInstance) => match(ti.tiPattern)

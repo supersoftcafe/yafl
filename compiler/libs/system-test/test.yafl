@@ -186,11 +186,10 @@ fun listOneJson(c: TestCase): System::String
 
 fun [impure] runSelected(cases: List<TestCase>, argv: List<System::String>,
                          fmt: System::String): System::Int
-    let wanted = (
-        nonFlags(List<System::String>(), argv))
+    let wanted = nonFlags(List<System::String>(), argv)
     let chosen = isEmpty<System::String>(wanted)
         ? cases
-        : (selectLoop(List<TestCase>(), cases, wanted))
+        : selectLoop(List<TestCase>(), cases, wanted)
     ret isEmpty<TestCase>(chosen) && !isEmpty<System::String>(wanted)
         ? noMatchError()
         : runChosen(chosen, fmt)
@@ -202,7 +201,7 @@ fun [impure] runChosen(chosen: List<TestCase>, fmt: System::String): System::Int
 # `--format` and its VALUE are both flags, not test names: without dropping the
 # value, `--format json` would be read as a request to run a test called "json"
 # and match nothing.
-fun [tail] nonFlags([terminal] b: List<System::String>,
+fun [tail] nonFlags(b: List<System::String>,
                     a: List<System::String>): List<System::String>
     ret isEmpty(a)
         ? b
@@ -217,7 +216,7 @@ fun dropOne(a: List<System::String>): List<System::String>
         ? a
         : tail(a)
 
-fun [tail] selectLoop([terminal] b: List<TestCase>, cs: List<TestCase>,
+fun [tail] selectLoop(b: List<TestCase>, cs: List<TestCase>,
                       wanted: List<System::String>): List<TestCase>
     ret isEmpty(cs)
         ? b

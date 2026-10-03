@@ -34,7 +34,7 @@ fun unsettled() => put(noHints(), unsettledKey(), List())
 fun isUnsettled(hs: Dict<String, List<Hint>>) => contains(hs, unsettledKey())
 
 fun hintOf(name: String, spec, lower)
-  ret put(noHints(), name, (append(List(), Hint(spec, lower))))
+  ret put(noHints(), name, append(List(), Hint(spec, lower)))
 
 fun hintsFor(hs: Dict<String, List<Hint>>, name: String) => match(get(hs, name))
   (l: List<Hint>) => l
@@ -215,7 +215,7 @@ fun filledShape(arm, siblings: List<Spec>, r)
     ret arm
   let members = fold(siblings, List<Spec>(), (acc, x) => concat(acc, branchMembers(x)))
   let fitting = filter(members, (x) => fitsShape(arm, x, r))
-  let ground = addSpecsOnce(List<Spec>(), (filter(fitting, (x) => !hasFreePlaceholders(x, r))))
+  let ground = addSpecsOnce(List<Spec>(), filter(fitting, (x) => !hasFreePlaceholders(x, r)))
   ret match(head(ground))
     (g: Spec) => exactly(ground, 1) ? g : arm
     ()        => match(head(fitting))
@@ -233,7 +233,7 @@ fun fitsShape(arm, sibling, r) => match(mergeSpecs(arm, sibling, List(), r).moSp
   ()        => false
 
 fun [tail] knownSpecs(ts: List<Spec|None>,
-                      [terminal] acc: List<Spec>) => isEmpty(ts)
+                      acc: List<Spec>) => isEmpty(ts)
   ? acc
   : match(first(ts))
     (x: Spec) => knownSpecs(tail(ts), append(acc, x))

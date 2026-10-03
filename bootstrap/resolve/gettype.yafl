@@ -25,14 +25,14 @@ fun letType(l: PsLet) => l.lType
 # A destructure IS a tuple type — and this is where a parameter's `= literal`
 # default surfaces, into the CallableSpec that every call site sees.
 fun destructureType(d: PsDestructure)
-  ret STuple((targetEntries(d.dTargets,
-                                 List())), d.psdLine)
+  ret STuple(targetEntries(d.dTargets,
+                                 List()), d.psdLine)
 
-fun [tail] targetEntries(ts: List<PStmt>, [terminal] acc: List<SEntry>) => isEmpty(ts)
+fun [tail] targetEntries(ts: List<PStmt>, acc: List<SEntry>) => isEmpty(ts)
   ? acc
   : targetEntries(tail(ts), addTarget(acc, first(ts)))
 
-fun addTarget([terminal] acc, st): List<SEntry> => match(st)
+fun addTarget(acc, st): List<SEntry> => match(st)
   (l: PsLet) => append(acc, SEntry(l.lName, l.lType, l.lDefault))
   (o: PStmt) => acc
 
@@ -156,7 +156,7 @@ fun filterByPattern(ds, cache, r,
   ret (filterByPatternB(ds, cache, r, acc))
 
 fun [tail] filterByPatternB(ds: List<Found>, cache, r,
-                           [terminal] acc: List<Found>) => isEmpty(ds)
+                           acc: List<Found>) => isEmpty(ds)
   ? acc
   : patternMatches(first(ds), cache, r)
     ? filterByPatternB(tail(ds), cache, r, append(acc, first(ds)))
@@ -179,7 +179,7 @@ fun filterByScope(ds, cache,
   ret (filterByScopeB(ds, cache, acc))
 
 fun [tail] filterByScopeB(ds: List<Found>, cache,
-                         [terminal] acc: List<Found>) => isEmpty(ds)
+                         acc: List<Found>) => isEmpty(ds)
   ? acc
   : sameTraitScope(first(ds).fTraitScope, cache)
     ? filterByScopeB(tail(ds), cache, append(acc, first(ds)))
@@ -249,7 +249,7 @@ fun tupEntries(es: List<PTupEnt>, r,
                       acc: List<SEntry>) => (tupEntriesB(es, r, acc))
 
 fun [tail] tupEntriesB(es: List<PTupEnt>, r,
-                      [terminal] acc): List<SEntry> => isEmpty(es)
+                      acc): List<SEntry> => isEmpty(es)
   ? acc
   : tupEntriesB(tail(es), r,
                                 append(acc, SEntry(first(es).tupName,
@@ -263,7 +263,7 @@ fun parallelType(pl: PeParallel, r)
   ret parTypeLoop(exprsOfParallel(pl), r, List(),
                   pl.pepLine)
 
-fun [tail] parTypeLoop(es: List<PExpr>, r, [terminal] acc,
+fun [tail] parTypeLoop(es: List<PExpr>, r, acc,
                        lr) => isEmpty(es)
   ? STuple(acc, lr)
   : match(exprType(first(es), r))
@@ -334,7 +334,7 @@ fun [tail] fieldNamed(fs: List<SField>, name: String) => isEmpty(fs)
 # The field's declared type, mapped through the receiver's type arguments
 # when the enum is a concrete generic instantiation.
 fun enumFieldType(e: SEnum, name: String, r)
-  ret substituteEnumTypeParams(r, e, fieldNamed((enumFieldsVia(r, e.seRoot)),
+  ret substituteEnumTypeParams(r, e, fieldNamed(enumFieldsVia(r, e.seRoot),
                                                 name))
 
 # An array read yields the ELEMENT type of the array field it indexes.

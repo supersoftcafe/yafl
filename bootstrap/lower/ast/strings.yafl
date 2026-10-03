@@ -29,14 +29,14 @@ fun gsCollect(acc, x) => match(x)
   # part of the generated global names. `acc` is read by the dedup.
   (s2: PeStr) => contains2(acc, s2.strValue)
     ? acc
-    : (append(acc, s2.strValue))
+    : append(acc, s2.strValue)
   (o: PExpr)  => acc
 
 fun gsGlobals(vs, index: Int,
                      acc: List<PStmt>) => (gsGlobalsB(vs, index, acc))
 
 fun [tail] gsGlobalsB(vs: List<String>, index,
-                     [terminal] acc: List<PStmt>) => isEmpty(vs)
+                     acc: List<PStmt>) => isEmpty(vs)
   ? acc
   : gsGlobalsB(tail(vs), index + 1,
       append(acc, PsLet("$strings::string@" + String(index),

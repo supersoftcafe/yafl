@@ -232,8 +232,8 @@ fun [tail] sha1Rounds(ws: List<Int>, i, a, b, c, d, e): Sha1State
 fun [tail] sha1Chunks(msg, len, base, total, st: Sha1State): Sha1State
   if base >= total
     ret st
-  let r = sha1Rounds((sha1Schedule(msg, len, base, 0, List(),
-                                        List())),
+  let r = sha1Rounds(sha1Schedule(msg, len, base, 0, List(),
+                                        List()),
                      0, st.h0, st.h1, st.h2, st.h3, st.h4)
   ret sha1Chunks(msg, len, base + 64, total,
                  Sha1State(add32(st.h0, r.h0), add32(st.h1, r.h1), add32(st.h2, r.h2),
@@ -335,8 +335,8 @@ fun [tail] sha256Chunks(msg, len: Int, base, total: Int,
                         st: Sha256State): Sha256State
   if base >= total
     ret st
-  let r = sha256Rounds((sha256Schedule(msg, len, base, 0, List(),
-                                            List())),
+  let r = sha256Rounds(sha256Schedule(msg, len, base, 0, List(),
+                                            List()),
                        0, st.t0, st.t1, st.t2, st.t3, st.t4, st.t5, st.t6, st.t7)
   ret sha256Chunks(msg, len, base + 64, total,
                    Sha256State(add32(st.t0, r.t0), add32(st.t1, r.t1),

@@ -243,7 +243,7 @@ fun siPromoteOne(f: CgFunction, a: CgApp,
 fun [tail] siPromoLoop(ns: List<SiNewObj>, f: CgFunction, a: CgApp,
                        assigns: List<SiAssign>, vmap: FunValues,
                        counter,
-                       [terminal] acc: List<SiPromo>): (promos: List<SiPromo>, counter: Int)
+                       acc: List<SiPromo>): (promos: List<SiPromo>, counter: Int)
   ret isEmpty(ns)
     ? (build(acc), counter)
     : siPromoTry(first(ns), f, a, assigns, vmap, counter)
@@ -307,7 +307,7 @@ fun [tail] siTracedValue(vs: List<RpNamedValue>, field: String) => isEmpty(vs)
 # Trace each field IN dataFields ORDER to a compile-time constant.
 fun [tail] siTracedFields(fs: List<CgField>, own: List<SiAssign>,
                           vmap: FunValues, a: CgApp,
-                          [terminal] acc: List<RpNamedValue>) => isEmpty(fs)
+                          acc: List<RpNamedValue>) => isEmpty(fs)
   ? build(acc)
   : match(siAssignFor(own, first(fs).fieldName))
     (as2: SiAssign) => match(siTraceToConstant(as2.saSrc, vmap, a))
@@ -354,7 +354,7 @@ class [final] SiPsAcc(psFns: List<CgFunction>,
                               psGlobals: List<CgGlobal>)
 
 fun [tail] siPsLoop(fs: List<CgFunction>, a: CgApp, counter,
-                    [terminal] acc: SiPsAcc): (fns: List<CgFunction>, globals: List<CgGlobal>, counter: Int)
+                    acc: SiPsAcc): (fns: List<CgFunction>, globals: List<CgGlobal>, counter: Int)
   ret isEmpty(fs)
     ? (build(acc.psFns),
                         build(acc.psGlobals), counter)

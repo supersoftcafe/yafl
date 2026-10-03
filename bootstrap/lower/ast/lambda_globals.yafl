@@ -14,7 +14,7 @@ fun lowerLambdaGlobals(statements: List<PStmt>) => llgLoop(statements, List())
 
 fun llgLoop(ss, acc: List<PStmt>): List<PStmt> => (llgLoopB(ss, acc))
 
-fun [tail] llgLoopB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] llgLoopB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : llgLoopB(tail(ss), append(acc, llgOne(first(ss))))
 

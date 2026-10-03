@@ -146,7 +146,7 @@ fun propagateLoop(ts, es, r,
   ret (propagateLoopB(ts, es, r, acc))
 
 fun [tail] propagateLoopB(ts: List<PStmt>, es: List<SEntry>, r,
-                         [terminal] acc: List<PStmt>) => isEmpty(ts)
+                         acc: List<PStmt>) => isEmpty(ts)
   ? acc
   : isEmpty(es)
     ? acc
@@ -244,7 +244,7 @@ fun addLetName(acc: Set<String>, p) => match(p)
 
 fun withoutLocals(hints: Dict<String, List<Hint>>,
                   stmts: List<PStmt>)
-  ret hintsWithout(hints, letNames((bindingLets(stmts, List()))),
+  ret hintsWithout(hints, letNames(bindingLets(stmts, List())),
                    Set())
 
 fun hasDeclaredRet(f: PsFun) => match(f.fRet)
@@ -285,7 +285,7 @@ fun compileClass(c, r0): StmtOut
   # fn compiles under a TRANSIENT copy carrying the owner's `where` clause
   # (a member declares no generics/wheres of its own — vtable slots have
   # fixed signatures); the stored statement keeps none.
-  let members = compileStmts((withOwnerWheres(c.cMembers, c.cWheres)),
+  let members = compileStmts(withOwnerWheres(c.cMembers, c.cWheres),
                              genScope(c.cGens, c.cWheres, RClassBody(c, r0)), None,
                              List(), List())
   ret StmtOut(PsClass(c.cName, c.cAttrs, c.cGens, stmtOr(params, c.cParams),
@@ -304,8 +304,8 @@ fun compileTraitInstance(inst: PsTraitInstance, r0): StmtOut
   let r = genScope(inst.tiGens, inst.tiWheres, r0)
   let pat = compileSpecOpt(inst.tiPattern, r)
   let wheres = compileParams(inst.tiWheres, r)
-  let members = compileStmts((withOwnerWheres(inst.tiMembers,
-                                                   inst.tiWheres)),
+  let members = compileStmts(withOwnerWheres(inst.tiMembers,
+                                                   inst.tiWheres),
                              r, None, List(), List())
   ret StmtOut(PsTraitInstance(inst.tiName, inst.tiAttrs, inst.tiAmbient,
                               inst.tiGens,
@@ -347,7 +347,7 @@ fun strippedWhereFn(m) => match(m)
 fun resolvedImplements(fs: List<FoundClass>, acc: List<Spec>)
   ret (resolvedImplementsB(fs, acc))
 
-fun [tail] resolvedImplementsB(fs: List<FoundClass>, [terminal] acc): List<Spec>
+fun [tail] resolvedImplementsB(fs: List<FoundClass>, acc): List<Spec>
   ret isEmpty(fs)
     ? acc
     : resolvedImplementsB(tail(fs), append(acc, first(fs).fcSpec))
@@ -491,9 +491,10 @@ fun [tail] leafLoop(vs: List<PStmt>, acc: List<String>) => isEmpty(vs)
 
 # _collect_data_fields: every TYPED constructor field in the whole tree, first
 # declaration wins (deduplicated by name). Mirrors Python's seen-set + append
-# (types.py _collect_data_fields): the dedup reads the SET, so the fields ride
-# ONE builder in declaration order — the old per-add list rebuild cost 1.4e9
-# pushes per self-compile (fields are DERIVED per read, so this path is hot).
+# (types.py _collect_data_fields): the dedup reads the SET, and the fields are
+# appended to ONE list in declaration order — a per-add list rebuild once cost
+# 1.4e9 copies per self-compile (fields are DERIVED per read, so this path is
+# hot).
 class [final] FieldAcc(faSeen: Set<String>, faOut: List<SField>)
 
 fun collectDataFields(e: PsEnum)
@@ -501,7 +502,7 @@ fun collectDataFields(e: PsEnum)
             dfParams(flattenParams(e.eParams),
                      FieldAcc(Set(), List()))).faOut)
 
-fun dfVariants(vs: List<PStmt>, [terminal] acc: FieldAcc) => isEmpty(vs)
+fun dfVariants(vs: List<PStmt>, acc: FieldAcc) => isEmpty(vs)
   ? acc
   : match(first(vs))
     (v: PsEnum) => dfVariants(tail(vs),
@@ -510,7 +511,7 @@ fun dfVariants(vs: List<PStmt>, [terminal] acc: FieldAcc) => isEmpty(vs)
                                                   acc)))
     (o: PStmt)  => dfVariants(tail(vs), acc)
 
-fun [tail] dfParams(ls: List<PStmt>, [terminal] acc: FieldAcc) => isEmpty(ls)
+fun [tail] dfParams(ls: List<PStmt>, acc: FieldAcc) => isEmpty(ls)
   ? acc
   : match(first(ls))
     (let2: PsLet) => match(let2.lType)
@@ -518,7 +519,7 @@ fun [tail] dfParams(ls: List<PStmt>, [terminal] acc: FieldAcc) => isEmpty(ls)
       ()         => dfParams(tail(ls), acc)
     (o: PStmt)    => dfParams(tail(ls), acc)
 
-fun addFieldOnce([terminal] acc: FieldAcc, name, ty)
+fun addFieldOnce(acc: FieldAcc, name, ty)
   let seen = acc.faSeen
   let out = acc.faOut
   ret contains(seen, name)
@@ -548,7 +549,7 @@ fun assignAllSpecs(vs, root,
 
 fun [tail] assignAllSpecsB(vs: List<PStmt>, root,
                           allLeaves,
-                          [terminal] acc: List<PStmt>) => isEmpty(vs)
+                          acc: List<PStmt>) => isEmpty(vs)
   ? acc
   : match(first(vs))
     (v: PsEnum) => assignAllSpecsB(tail(vs), root, allLeaves,
@@ -597,7 +598,7 @@ fun collapseElseIf(stmts: List<PStmt>) => ceiLoop(stmts, List())
 
 fun ceiLoop(ss, acc: List<PStmt>): List<PStmt> => (ceiLoopB(ss, acc))
 
-fun [tail] ceiLoopB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
+fun [tail] ceiLoopB(ss: List<PStmt>, acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (i: PsIf)  => foldChain(i, tail(ss))
@@ -652,11 +653,11 @@ class [final] StmtsOut(slStmts: List<PStmt>, slGlobals: List<PStmt>,
                        slHints: Dict<String, List<Hint>>)
 
 fun compileStmts(ss: List<PStmt>, r: Resolver, retType: Spec|None,
-                 [terminal] acc: List<PStmt>,
+                 acc: List<PStmt>,
                  glb: List<PStmt>): StmtsOut => compileStmtsB(ss, r, retType, acc, glb, noHints())
 
 fun [tail] compileStmtsB(ss: List<PStmt>, r, retType,
-                         [terminal] acc,
+                         acc,
                          glb,
                          hints) => isEmpty(ss)
   ? StmtsOut(acc, glb, hints)
@@ -665,7 +666,7 @@ fun [tail] compileStmtsB(ss: List<PStmt>, r, retType,
                               concat(glb, one.soExtra),
                               mergeHints(hints, one.soHints))
 
-fun addStmt([terminal] acc, st: PStmt|None): List<PStmt> => match(st)
+fun addStmt(acc, st: PStmt|None): List<PStmt> => match(st)
   (x: PStmt) => append(acc, x)
   ()         => acc
 

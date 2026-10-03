@@ -493,19 +493,3 @@ fun [tail] _mergeInto<T>(out: List<T>, a: List<T>, b: List<T>,
     : less(first<T>(b), first<T>(a))
       ? _mergeInto<T>(append<T>(out, first<T>(b)), a, tail<T>(b), less)
       : _mergeInto<T>(append<T>(out, first<T>(a)), tail<T>(a), b, less)
-
-
-# ─── Migration shims — to be removed ─────────────────────────────────────────
-# The ListBuilder spellings, now plain List operations. Kept only while call
-# sites move over; nothing new should use them.
-fun push<T>(l: List<T>, x: T): List<T>
-  ret append<T>(l, x)
-
-fun build<T>(l: List<T>): List<T>
-  ret l
-
-fun pushAll<T>(l: List<T>, more: List<T>): List<T>
-  ret concat<T>(l, more)
-
-fun discard<T>(l: List<T>): None
-  ret None

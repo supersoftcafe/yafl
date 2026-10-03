@@ -148,7 +148,7 @@ fun stackVarName(sv): String => match(sv)
 fun opLabelRenames(ops, prefix, acc: List<RpRename>): List<RpRename>
   ret build(opLabelRenamesB(ops, prefix, acc))
 
-fun [tail] opLabelRenamesB(ops: List<Op>, prefix, [terminal] acc: List<RpRename>)
+fun [tail] opLabelRenamesB(ops: List<Op>, prefix, acc: List<RpRename>)
   ret isEmpty(ops)
     ? acc
     : match(first(ops))
@@ -920,7 +920,7 @@ fun swapLoop(cs, at: Int, i: Int, j: Int, vi: GBundle,
   ret build(swapLoopB(cs, at, i, j, vi, vj, acc))
 
 fun [tail] swapLoopB(cs: List<GBundle>, at, i, j, vi: GBundle,
-                    vj: GBundle, [terminal] acc: List<GBundle>) => isEmpty(cs)
+                    vj: GBundle, acc: List<GBundle>) => isEmpty(cs)
   ? acc
   : swapLoopB(tail(cs), at + 1, i, j, vi, vj,
                               push(acc, at == i ? vj
@@ -930,7 +930,7 @@ fun [tail] swapLoopB(cs: List<GBundle>, at, i, j, vi: GBundle,
 # Returns the bundles AND their count — idx already rides the walk, so the
 # count is free at the end (no-length ruling: counts are carried, not taken).
 fun [tail] genTupleEntryBundles(es: List<PTupEnt>, r, idx,
-                                [terminal] acc: List<GBundle>): (bs: List<GBundle>, n: Int)
+                                acc: List<GBundle>): (bs: List<GBundle>, n: Int)
   ret isEmpty(es)
     ? (build(acc), idx)
     : genTupleEntryBundles(tail(es), r, idx + 1,
@@ -943,7 +943,7 @@ fun namedValuesOf(bundles: List<GBundle>) => namedValuesLoop(bundles, 0, List())
 fun namedValuesLoop(bs, idx: Int, acc: List<RpNamedValue>): List<RpNamedValue>
   ret build(namedValuesLoopB(bs, idx, acc))
 
-fun [tail] namedValuesLoopB(bs: List<GBundle>, idx, [terminal] acc: List<RpNamedValue>)
+fun [tail] namedValuesLoopB(bs: List<GBundle>, idx, acc: List<RpNamedValue>)
   ret isEmpty(bs)
     ? acc
     : namedValuesLoopB(tail(bs), idx + 1, push(acc, RpNamedValue("_" + String(idx), mustResult(first(bs)))))
@@ -987,7 +987,7 @@ fun fieldMoveOps(fs, cname, resultVar, paramsVar,
   ret build(fieldMoveOpsB(fs, cname, resultVar, paramsVar, index, r, acc))
 
 fun [tail] fieldMoveOpsB(fs: List<PStmt>, cname, resultVar, paramsVar,
-                        index, r, [terminal] acc: List<Op>) => isEmpty(fs)
+                        index, r, acc: List<Op>) => isEmpty(fs)
   ? acc
   : fieldMoveOpsB(tail(fs), cname, resultVar, paramsVar, index + 1, r,
                       push(acc, fieldMoveOp(first(fs), cname, resultVar, paramsVar, index, r)))
@@ -1053,7 +1053,7 @@ fun [tail] indexWhereNamed(ps: List<PStmt>, name, i) => isEmpty(ps)
 
 fun [tail] scalarFieldMoveOps(ps: List<PStmt>, cname, resultVar, paramsVar,
                               arrIdx, i, r,
-                              [terminal] acc: List<Op>) => isEmpty(ps)
+                              acc: List<Op>) => isEmpty(ps)
   ? acc
   : scalarFieldMoveOps(tail(ps), cname, resultVar, paramsVar, arrIdx, i + 1, r,
                       i == arrIdx
@@ -1313,7 +1313,7 @@ fun map3<A, B, C, D>(as2: List<A>, bs: List<B>, cs: List<C>, f: (:A, :B, :C): D)
   ret build(map3Loop(as2, bs, cs,
                      f, List()))
 
-fun [tail] map3Loop<A, B, C, D>(as2: List<A>, bs: List<B>, cs: List<C>, f: (:A, :B, :C): D, [terminal] acc: List<D>): List<D>
+fun [tail] map3Loop<A, B, C, D>(as2: List<A>, bs: List<B>, cs: List<C>, f: (:A, :B, :C): D, acc: List<D>): List<D>
   ret isEmpty(as2)
     ? acc
     : isEmpty(bs)
@@ -1383,7 +1383,7 @@ class [final] RecurArgsOut(grBundle: GBundle, grPhiIns: List<RParam>)
 # The phi inputs are POSITIONAL — one per recur argument, in argument order.
 fun genRecurArgs(args: List<PExpr>, r, ctypes: List<CgType>, specs: List<Spec>,
                  tag, k: Int, i: Int, bundle,
-                 [terminal] phiIns: List<RParam>): RecurArgsOut => isEmpty(args)
+                 phiIns: List<RParam>): RecurArgsOut => isEmpty(args)
   ? RecurArgsOut(bundle, build(phiIns))
   : genRecurArgsStep(args, r, ctypes, specs, tag, k, i, bundle, phiIns)
 
@@ -1419,7 +1419,7 @@ fun genParallelExprs(pl: PeParallel, exprs: List<PExpr>, r): GBundle
 fun genParallelFnBundles(es, r, i: Int, acc: List<GBundle>): List<GBundle>
   ret build(genParallelFnBundlesB(es, r, i, acc))
 
-fun [tail] genParallelFnBundlesB(es: List<PExpr>, r, i, [terminal] acc: List<GBundle>)
+fun [tail] genParallelFnBundlesB(es: List<PExpr>, r, i, acc: List<GBundle>)
   ret isEmpty(es)
     ? acc
     : genParallelFnBundlesB(tail(es), r, i + 1, push(acc, withPrefix(genExpr(first(es), r), "par" + String(i))))

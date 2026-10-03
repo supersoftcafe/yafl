@@ -204,7 +204,7 @@ fun tjVisit(v, work: EEdges, st0: Tj)
   let st1 = Tj(put(st0.tjIndex, v, st0.tjN), put(st0.tjLow, v, st0.tjN),
                prepend(v, st0.tjStack), add(st0.tjOn, v),
                st0.tjSccs, st0.tjN + 1)
-  let st2 = tjNeighbours((sort(ceChildrenOf(work, v))),
+  let st2 = tjNeighbours(sort(ceChildrenOf(work, v)),
                          v, work, st1)
   ret tjIndexOf(st2, v) == tjLowOf(st2, v) ? tjPop(st2, v) : st2
 
@@ -262,9 +262,9 @@ fun tjPop(st: Tj, v: String)
          # the same shape (container, init, fn), so a fold whose container is
          # a List and whose accumulator is a Set can match either overload.
          tjOnDrop(scc, st.tjOn),
-         (append(
+         append(
              st.tjSccs,
-             scc)),
+             scc),
          st.tjN)
 
 # The stack is newest-first, so the MOST RECENT v is the FIRST match.
@@ -276,7 +276,7 @@ fun tjRemoveAll(ss, gone: List<String>,
                        acc: List<String>) => (tjRemoveAllB(ss, gone, acc))
 
 fun [tail] tjRemoveAllB(ss: List<String>, gone: List<String>,
-                       [terminal] acc: List<String>) => isEmpty(ss)
+                       acc: List<String>) => isEmpty(ss)
   ? acc
   : contains2(gone, first(ss))
     ? tjRemoveAllB(tail(ss), gone, acc)
@@ -305,7 +305,7 @@ fun ceCyclicSccs(ss, work: EEdges,
                         acc: List<List<String>>) => (ceCyclicSccsB(ss, work, acc))
 
 fun [tail] ceCyclicSccsB(ss: List<List<String>>, work: EEdges,
-                        [terminal] acc: List<List<String>>) => isEmpty(ss)
+                        acc: List<List<String>>) => isEmpty(ss)
   ? acc
   : ceIsCyclic(first(ss), work)
     ? ceCyclicSccsB(tail(ss), work, append(acc, first(ss)))
@@ -375,7 +375,7 @@ fun [tail] ceRemoveLoop(ns: List<String>, work: EEdges, v: String,
     ? ceRemoveLoop(tail(ns), work, v, acc)
     : ceRemoveLoop(tail(ns), work, v,
                    EEdges(put(acc.eeMap, first(ns),
-                              tjRemoveAll((ceChildrenOf(work, first(ns))),
+                              tjRemoveAll(ceChildrenOf(work, first(ns)),
                                           prepend(v, List()),
                                           List()))))
 
@@ -754,7 +754,7 @@ fun bxComputeRoot(ctx: BoxCtx, root, stack,
 fun bxRootPool(ctx: BoxCtx, root, e2: PsEnum, sp: SEnum,
                stack, st)
   let out = bxLeafLoop(ctx, root, sp.seAllLeaves,
-                       (collectLeafFieldSets(e2, List())),
+                       collectLeafFieldSets(e2, List()),
                        !bxHasInteriorFields(e2), concat(stack, list1(root)),
                        st, bxZero())
   ret BxOut(out.bxP,

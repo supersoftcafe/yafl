@@ -202,7 +202,7 @@ fun callerGenFounds(gs, cs,
   ret (callerGenFoundsB(gs, cs, acc))
 
 fun [tail] callerGenFoundsB(gs: List<PGen>, cs: List<Spec>,
-                           [terminal] acc: List<Found>) => isEmpty(gs)
+                           acc: List<Found>) => isEmpty(gs)
   ? acc
   : isEmpty(cs)
     ? acc

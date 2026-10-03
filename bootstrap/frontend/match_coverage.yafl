@@ -292,13 +292,11 @@ fun multiCoverageErrs(mt: PeMatch, r)
 fun positionTables(subjects: List<PExpr>, r) => tablesLoop(subjects, r, List())
 
 fun [tail] tablesLoop(ss: List<PExpr>, r,
-                      [terminal] acc: List<PosTable>) => isEmpty(ss)
+                      acc: List<PosTable>) => isEmpty(ss)
   ? acc
   : match(positionTable(exprType(first(ss), r), r))
     (t: PosTable) => tablesLoop(tail(ss), r, append(acc, t))
-    ()            => discardTables(acc)
-
-fun discardTables([terminal] acc: List<PosTable>) => None
+    ()            => None
 
 # One subject's variants as (key -> printable name), or None when the subject
 # is not resolved enough to enumerate.
@@ -322,7 +320,7 @@ fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r)
   let c = multiCovArms(mt.arms, tables, r, MultiCov(noErrs(), productSpace(tables)))
   if isEmpty(c.mcLeft)
     ret c.mcErrs
-  let shownTuples = firstN((sortBy(c.mcLeft, (x, y) => tupleLess(x, y))), 4,
+  let shownTuples = firstN(sortBy(c.mcLeft, (x, y) => tupleLess(x, y)), 4,
                            List())
   let n = fold(c.mcLeft, 0, (k, t) => k + 1)
   let shown = join(map(shownTuples, (tup) => tupleNames(tup, tables)), " | ")
@@ -362,7 +360,7 @@ fun multiCovArm(a: PArm, tables: List<PosTable>, r, c)
     : MultiCov(c.mcErrs, filter(c.mcLeft, (tup) => !tupleCovered(tup, perPos)))
 
 fun [tail] zipCovered(ts: List<PosTable>, ps: List<Spec|None>, r,
-                      [terminal] acc: List<List<String>>) => isEmpty(ts)
+                      acc: List<List<String>>) => isEmpty(ts)
   ? acc
   : isEmpty(ps)
     ? acc
@@ -411,7 +409,7 @@ fun tupleNames(tup: List<String>, tables: List<PosTable>)
   ret join(namesLoop(tup, tables, List()), ", ")
 
 fun [tail] namesLoop(ks: List<String>, ts: List<PosTable>,
-                     [terminal] acc: List<String>) => isEmpty(ks)
+                     acc: List<String>) => isEmpty(ks)
   ? acc
   : isEmpty(ts)
     ? acc
@@ -422,6 +420,6 @@ fun nameOf(t: PosTable, key) => match(get(t.ptNames, key))
   ()          => key
 
 fun [tail] firstN(ts: List<List<String>>, n,
-                  [terminal] acc: List<List<String>>) => isEmpty(ts)
+                  acc: List<List<String>>) => isEmpty(ts)
   ? acc
   : n <= 0 ? acc : firstN(tail(ts), n - 1, append(acc, first(ts)))

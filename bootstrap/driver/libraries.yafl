@@ -162,14 +162,14 @@ fun isRegularFile(path) => match(stat(path))
 fun readSources(root, paths: List<String>) => srcLoop(root, paths, List())
 
 fun [tail] srcLoop(root, ps: List<String>,
-                   [terminal] b: List<LibSource>) => isEmpty(ps)
+                   b: List<LibSource>) => isEmpty(ps)
   ? b
   : match(readWholeFile(first(ps)))
     (e: IOError)   => srcDiscard(b, first(ps) + ": cannot be read")
     (t: String)    => srcLoop(root, tail(ps),
                               append(b, LibSource(relativeTo(root, first(ps)), t)))
 
-fun srcDiscard([terminal] b: List<LibSource>, why): List<LibSource>|String
+fun srcDiscard(b: List<LibSource>, why): List<LibSource>|String
   ret b |> (l) => why
 
 # A `.yl` archive: the same manifest and sources, read out of the zip.
@@ -188,7 +188,7 @@ fun zipLibraryFrom(entries: List<ZipEntry>, path) => match(zipFind(entries, "yaf
 fun zipSources(entries: List<ZipEntry>) => (zipSrcLoop(sortEntries(entries), List()))
 
 fun [tail] zipSrcLoop(es: List<ZipEntry>,
-                      [terminal] b): List<LibSource> => isEmpty(es)
+                      b): List<LibSource> => isEmpty(es)
   ? b
   : endsWith(first(es).zipName, ".yafl")
     ? zipSrcLoop(tail(es), append(b, LibSource(first(es).zipName, first(es).zipBody)))
@@ -255,7 +255,7 @@ fun envPaths() => match(env("YAFL_PATH"))
 fun discoverLibraries(paths: List<String>) => discoverLoop(paths, List(), List())
 
 fun [tail] discoverLoop(ps: List<String>, seen: List<String>,
-                        [terminal] acc) => isEmpty(ps)
+                        acc) => isEmpty(ps)
   ? LibsOk(acc)
   : !exists(first(ps))
     ? discoverLoop(tail(ps), seen, acc)
@@ -275,7 +275,7 @@ fun [tail] discoverLoop(ps: List<String>, seen: List<String>,
 # the duplicate-namespace error rather than being silently merged.
 fun [tail] discoverInto(rest: List<String>, base, ns: List<String>,
                         seen: List<String>,
-                        [terminal] acc) => isEmpty(ns)
+                        acc) => isEmpty(ns)
   ? discoverLoop(rest, seen, acc)
   : isDotEntry(first(ns)) || contains(seen, base + "/" + first(ns))
     ? discoverInto(rest, base, tail(ns), seen, acc)
@@ -296,7 +296,7 @@ fun readEntry(path) => isDirectory(path) ? readDirLibrary(path)
   : isRegularFile(path) && endsWith(path, ".yl") ? readZipLibrary(path)
   : None
 
-fun libDiscard([terminal] acc: List<Library>, e): LibResult => acc |> (l) => e
+fun libDiscard(acc: List<Library>, e): LibResult => acc |> (l) => e
 
 
 # ── namespace index ─────────────────────────────────────────────────────────
@@ -306,11 +306,11 @@ fun libDiscard([terminal] acc: List<Library>, e): LibResult => acc |> (l) => e
 
 class [final] NsEntry(nsName: String, nsLib: Library)
 
-# A plain List accumulator, NOT a ListBuilder: the collision check has to READ
-# what has been indexed so far, and a builder is write-only. With a builder the
-# check was unwriteable, so it was simply absent — the banner above described a
-# rule the code did not enforce, `nsSeek` returned the first match, and the
-# result was the directory-order-dependent silent shadow it forbids.
+# The collision check READS what has been indexed so far. (When lists were
+# built through a write-only builder the check was unwriteable, so it was
+# simply absent — the banner above described a rule the code did not enforce,
+# `nsSeek` returned the first match, and the result was the
+# directory-order-dependent silent shadow it forbids.)
 fun namespaceIndex(libs: List<Library>) => nsIndexLoop(libs, List())
 
 fun nsIndexLoop(ls: List<Library>, acc: List<NsEntry>) => isEmpty(ls)
@@ -348,13 +348,13 @@ fun [tail] nsSeek(es: List<NsEntry>, name: String) => isEmpty(es)
 # A miss is harmless (it matches no library); a MISS THAT MATTERED would be a
 # library silently not loaded, which is why this errs wide.
 
-fun prefixesOf(qualified) => prefixWalk((map(split(qualified, "::"), stripUnique)), "",
+fun prefixesOf(qualified) => prefixWalk(map(split(qualified, "::"), stripUnique), "",
                                         List())
 
 fun stripUnique(part) => findByte(part, '@', 0) |> (at) => at < 0 ? part : slice(part, 0, at)
 
 fun [tail] prefixWalk(ps: List<String>, acc,
-                      [terminal] b: List<String>) => isEmpty(ps)
+                      b: List<String>) => isEmpty(ps)
   ? b
   : (acc == "" ? first(ps) : acc + "::" + first(ps))
     |> (next) => prefixWalk(tail(ps), next, append(b, next))
@@ -362,19 +362,19 @@ fun [tail] prefixWalk(ps: List<String>, acc,
 fun candidateNamespaces(imports: List<String>, quals: List<String>)
   let a = addAllPrefixes(imports, List())
   let b = addAllPrefixes(quals, a)
-  ret dedupe((composeAll(imports, quals, b)))
+  ret dedupe(composeAll(imports, quals, b))
 
 fun [tail] addAllPrefixes(xs: List<String>,
-                          [terminal] b: List<String>) => isEmpty(xs)
+                          b: List<String>) => isEmpty(xs)
   ? b
   : addAllPrefixes(tail(xs), concat(b, prefixesOf(first(xs))))
 
 # Each import composed with each qualified reference: `P` + `A::B` -> `P::A::B`.
 fun [tail] composeAll(imps: List<String>, quals: List<String>,
-                      [terminal] b: List<String>) => isEmpty(imps)
+                      b: List<String>) => isEmpty(imps)
   ? b
   : composeAll(tail(imps), quals,
-      addAllPrefixes((map(quals, (q) => first(imps) + "::" + q)), b))
+      addAllPrefixes(map(quals, (q) => first(imps) + "::" + q), b))
 
 fun dedupe(xs: List<String>): List<String> => sort(Set(xs))
 
@@ -398,8 +398,8 @@ fun loadReferenced(index: List<NsEntry>, wanted: List<String>,
 
 fun [tail] loadLoop(ns: List<String>, index: List<NsEntry>,
                     already,
-                    [terminal] srcs,
-                    [terminal] libs) => isEmpty(ns)
+                    srcs,
+                    libs) => isEmpty(ns)
   ? LoadStep(srcs, libs)
   : match(nsLookup(index, first(ns)))
     (lib: Library) => contains(already, lib.libRoot)
@@ -441,8 +441,8 @@ fun extractNative(lib: Library, bytes)
     (e: IOError) => NativeErr(dir + ": cannot be created")
     ()           => match(readZip(bytes))
       (e2: ZipErr) => NativeErr(lib.libRoot + ": " + e2.zipWhy)
-      (z: ZipOk)   => extractEach((concat(lib.libManifest.libHeaders,
-                                               lib.libManifest.libStaticLibs)),
+      (z: ZipOk)   => extractEach(concat(lib.libManifest.libHeaders,
+                                               lib.libManifest.libStaticLibs),
                                   z.zipEntries, lib, dir)
 
 # `if not dest.exists()` — the cache is content-keyed, so an entry already
@@ -514,13 +514,13 @@ class [final] LinkSpec(specHeaders: List<String>, specIncludeDirs: List<String>,
 fun linkSpecFor(libs: List<Library>) => match(gatherNative(libs, List(), List()))
   (why: String)  => why
   (n: NativePaths) => LinkSpec(
-      dedupeStable((gatherHeaders(libs, List()))),
+      dedupeStable(gatherHeaders(libs, List())),
       dedupeStable(n.npIncludes), dedupeStable(n.npStatics))
 
 class [final] NativePaths(npIncludes: List<String>, npStatics: List<String>)
 
 fun [tail] gatherHeaders(ls: List<Library>,
-                         [terminal] b: List<String>) => isEmpty(ls)
+                         b: List<String>) => isEmpty(ls)
   ? b
   : gatherHeaders(tail(ls),
       concat(b, map(first(ls).libManifest.libHeaders,

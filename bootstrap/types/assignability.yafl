@@ -285,7 +285,7 @@ fun entryNames(es: List<SEntry>) => nameLoop(es, List())
 
 fun nameLoop(es: List<SEntry>, acc: List<String>) => (nameLoopB(es, acc))
 
-fun [tail] nameLoopB(es: List<SEntry>, [terminal] acc): List<String> => isEmpty(es)
+fun [tail] nameLoopB(es: List<SEntry>, acc): List<String> => isEmpty(es)
   ? acc
   : nameLoopB(tail(es), append(acc, first(es).seName))
 
@@ -298,7 +298,7 @@ class [final] PairTally(ptStructFalse: Bool, ptAnyFalse: Bool,
 
 fun comparePairs(r, left: STuple, right: STuple,
                  binding: List<Int>)
-  let t2 = pairLoop((zipBinding(left.stEntries, binding)), r,
+  let t2 = pairLoop(zipBinding(left.stEntries, binding), r,
                     right.stEntries,
                     PairTally(false, false, true, false, 0))
   ret t2.ptStructFalse ? false
@@ -311,9 +311,9 @@ fun zipBinding(es: List<SEntry>, binding: List<Int>)
   ret zipLoop(es, binding, List())
 
 # Pairs an entry with the binding index it fills. Positional data — the pair
-# order mirrors the tuple's — so a threaded builder, O(1) per pair.
+# order mirrors the tuple's — so it is appended in order, O(1) per pair.
 fun [tail] zipLoop(es: List<SEntry>, bs: List<Int>,
-                   [terminal] acc: List<Pair>) => isEmpty(es)
+                   acc: List<Pair>) => isEmpty(es)
   ? acc
   : isEmpty(bs)
     ? acc
