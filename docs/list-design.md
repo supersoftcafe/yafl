@@ -101,5 +101,18 @@ O(segments).
 
 ## Measurements
 
-See the commit introducing this design for the before/after O3 self-compile
-timings (best-of-three, `full_protocol.py` `o3_timed`).
+O3 self-compile, `full_protocol.py --only o3_timed` (best-of-three legs, two
+runs each, mode c1, 6G heap), each tree compiling its own sources, run back to
+back on the same idle 4-core VM (2026-10-03):
+
+| | cons List + ListBuilder | segmented List | change |
+|---|---|---|---|
+| runs (s) | 293, 299, 298, 287, 288, 287 | 271, 276, 271, 275, 272, 265 | |
+| best single run | 287 s | 265 s | −7.7% |
+| best leg wall (2 runs) | 574.8 s | 537.6 s | −6.5% |
+| peak RSS per leg | 1.38–1.46 GB | 2.30–2.32 GB | **+60–67%** |
+| output | 6 runs byte-identical | 6 runs byte-identical, = Python compiler's output | |
+
+Faster, but the peak heap is markedly larger — not yet explained (candidates:
+per-segment header and slack on the many short lists, fork copies, mapSame
+copies). Profile before treating this as the successor.
