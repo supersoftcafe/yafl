@@ -79,25 +79,22 @@ fun sortWords(l: List<String>): List<String>
 # churn — hundreds of MB on a half-million-word dictionary); this allocates
 # only the tree nodes plus one walk. Recursion depth is log2(n): fine on the
 # C stack.
-fun buildAt(n: Int, c: Chain<String>): (tree: WordTree, rest: Chain<String>)
-  fun done(left: WordTree, mid: String, rt: (tree: WordTree, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
+fun buildAt(n: Int, c: List<String>): (tree: WordTree, rest: List<String>)
+  fun done(left: WordTree, mid: String, rt: (tree: WordTree, rest: List<String>)): (tree: WordTree, rest: List<String>)
     ret (tree=Word(mid, left, rt.tree), rest=rt.rest)
   # After the left subtree, the next chain element is this node's root; the
   # remainder feeds the right subtree. Match the chain directly.
-  fun root(lt: (tree: WordTree, rest: Chain<String>)): (tree: WordTree, rest: Chain<String>)
-    ret match(lt.rest)
-      (link: ChainLink) => done(lt.tree, link.value, buildAt(n - n / 2 - 1, link.next))
-      # Unreachable while n is honest (count and chain come from the same
-      # list); kept total so a broken count degrades to a short tree rather
-      # than a crash.
-      (e: ChainEnd)     => (tree=lt.tree, rest=lt.rest)
+  fun root(lt: (tree: WordTree, rest: List<String>)): (tree: WordTree, rest: List<String>)
+    ret isEmpty(lt.rest)
+      ? (tree=lt.tree, rest=lt.rest)
+      : done(lt.tree, first(lt.rest), buildAt(n - n / 2 - 1, tail(lt.rest)))
   ret n <= 0 ? (tree=NoWord(), rest=c) : root(buildAt(n / 2, c))
 
-fun buildTreeChain(c: Chain<String>): WordTree
-  ret buildAt(chainLength<String>(c), c).tree
+fun buildTreeChain(c: List<String>): WordTree
+  ret buildAt(size<String>(c), c).tree
 
 fun buildTree(sorted: List<String>): WordTree
-  ret buildTreeChain(chain<String>(sorted))
+  ret buildTreeChain(sorted)
 
 fun [tail] hasWord(t: WordTree, w: String): Bool
   ret match(t)
@@ -150,7 +147,7 @@ fun isKnown(dict: WordTree, word: String): Bool
 # five, so the order the edit classes are tried in (deletions, transposes,
 # substitutions, insertions) is the ranking — which makes it a builder.
 # `sgSeen` is pure membership, so it is a Set.
-class [linear, final] Sugg(sgFound: ListBuilder<String >, sgSeen: Set<String>)
+class [linear, final] Sugg(sgFound: List<String >, sgSeen: Set<String>)
 
 fun suggest(dict: WordTree, word: String): List<String>
   let w = toLower(word)
@@ -186,7 +183,7 @@ fun suggest(dict: WordTree, word: String): List<String>
       : insertions(i, j + 1, consider(acc,
           slice(w, 0, i) + asciiToString(byteAt(alphabet, j)) + slice(w, i, n)))
 
-  let start = Sugg(builder<String >(), Set<String>())
+  let start = Sugg(List<String >(), Set<String>())
   let result = insertions(0, 0, substitutions(0, 0, transposes(0, deletions(0, start))))
   ret take<String>(build<String >(result.sgFound), 5)
 
@@ -208,7 +205,7 @@ fun [tail] anyLetter(word: String, i: Int): Bool
 
 # Per-file report state. rpReports is ORDERED — the reports print in the order
 # the words were met — so it is a builder; rpReported is pure membership.
-class [linear, final] Rep(rpReports: ListBuilder<String|FileError>,
+class [linear, final] Rep(rpReports: List<String|FileError>,
                           rpReported: Set<String>, rpCount: Int)
 
 fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, misspelt: Int)
@@ -265,7 +262,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
       (e: IOError)   => (r.io, readEnd(acc, e))
 
   fun checkOpen(io: IO): (reports: List<String|FileError>, misspelt: Int)
-    let r = perLine(io, 1, Rep(builder<String|FileError>(), Set<String>(), 0))
+    let r = perLine(io, 1, Rep(List<String|FileError>(), Set<String>(), 0))
     let done = closeInto(r.acc, r.io.close())
     ret (build<String|FileError>(done.rpReports), done.rpCount)
 
@@ -318,18 +315,18 @@ fun complain(line: String): Int
 # if there were misspellings, else 0.
 fun writeReports(reports: List<String|FileError>, misspelt: Int): Int where Show<IOError>
   fun [tail] loop(out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError),
-                  failed: Bool, c: Chain<String|FileError>):
+                  failed: Bool, c: List<String|FileError>):
                   (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
-    ret match(c)
-      (nil: ChainEnd) => (out, err, failed)
-      (l: ChainLink)  => match(l.value)
+    ret isEmpty(c)
+      ? (out, err, failed)
+      : match(first(c))
         (line: String) =>
-            loop(out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err, failed, l.next)
+            loop(out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err, failed, tail(c))
         (fe: FileError) =>
             loop(out, err ?> (io: IO, n: Int) =>
                    writeAll(io, "yspell: " + fe.path + ": " + show(fe.error) + "\n"),
-                 true, l.next)
-  let r = loop((stdout(), 0), (stderr(), 0), false, chain<String|FileError>(reports))
+                 true, tail(c))
+  let r = loop((stdout(), 0), (stderr(), 0), false, reports)
   let status = r.failed ? 2 : misspelt > 0 ? 1 : 0
   let outStatus = ioStatus(status, r.out.v, r.out.io.close())
   ret ioStatus(outStatus, r.err.v, r.err.io.close())

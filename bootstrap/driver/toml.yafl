@@ -38,7 +38,7 @@ enum TomlResult
   enum TomlErr(tomlMessage: String, tomlLine: Int)
 
 
-fun parseToml(text) => tomlLines(chain(splitLines(text)), 1, Set(), builder())
+fun parseToml(text) => tomlLines(splitLines(text), 1, Set(), List())
 
 # One line's outcome, so the loop below can stay DIRECTLY self-recursive. The
 # per-line work needs a statement body (lets and early returns) and match arms
@@ -52,15 +52,15 @@ enum LineOut
   # GROUP of leaves (the PeLiteral/PeLowered shape), not a leaf, so matching it
   # covers nothing and constructing it does not resolve.
   enum LineSkip()                    # blank, or nothing but a comment
-  enum LineEntry(loEntry: TomlEntry, loRest: Chain<String>, loCount: Int)
+  enum LineEntry(loEntry: TomlEntry, loRest: List<String>, loCount: Int)
   enum LineErr(loWhy: String)
 
 # `seen` answers membership only: a Set, so a many-key manifest stays linear.
-fun [tail] tomlLines(ls: Chain<String>, n, seen: Set<String>,
-                     [terminal] acc) => match(ls)
-  (nil: ChainEnd) => TomlOk(build(acc))
-  (l: ChainLink)  => match(tomlLine(l.value, l.next, seen))
-    (s: LineSkip)   => tomlLines(l.next, n + 1, seen, acc)
+fun [tail] tomlLines(ls: List<String>, n, seen: Set<String>,
+                     [terminal] acc) => isEmpty(ls)
+  ? TomlOk(build(acc))
+  : match(tomlLine(first(ls), tail(ls), seen))
+    (s: LineSkip)   => tomlLines(tail(ls), n + 1, seen, acc)
     (e: LineErr)    => discardOn(acc, TomlErr(e.loWhy, n))
     (en: LineEntry) => tomlLines(en.loRest, n + en.loCount,
                                  add(seen, en.loEntry.key),
@@ -94,7 +94,7 @@ fun tomlKey(raw) => length(raw) >= 2 && byteAt(raw, 0) == '"' && byteAt(raw, len
   ? slice(raw, 1, length(raw) - 1)
   : raw
 
-class [final] LogicalLine(llText: String, llRest: Chain<String>, llCount: Int)
+class [final] LogicalLine(llText: String, llRest: List<String>, llCount: Int)
 
 # `namespaces = [\n  "A",\n]` is the commonest way to write a long array, and
 # rejecting it as "unterminated array" would have been a divergence from
@@ -103,10 +103,10 @@ class [final] LogicalLine(llText: String, llRest: Chain<String>, llCount: Int)
 # be split across the join.
 fun [tail] joinArray(text, rest, count) => bracketDepth(text, 0, 0, false) <= 0
   ? LogicalLine(text, rest, count)
-  : match(rest)
-    (nil: ChainEnd) => LogicalLine(text, rest, count)   # let the value parser report it
-    (l: ChainLink)  => joinArray(text + " " + stripComment(l.value),
-                                 l.next, count + 1)
+  : isEmpty(rest)
+    ? LogicalLine(text, rest, count)   # let the value parser report it
+    : joinArray(text + " " + stripComment(first(rest)),
+                                 tail(rest), count + 1)
 
 fun [tail] bracketDepth(s, at, depth, inStr): Int
   if at >= length(s)
@@ -120,7 +120,7 @@ fun [tail] bracketDepth(s, at, depth, inStr): Int
     : bracketDepth(s, at + 1, depth, false)
 
 # The builder is [linear] and must be consumed on the error path too.
-fun discardOn([terminal] acc: ListBuilder<TomlEntry>, e): TomlResult => build(acc) |> (l) => e
+fun discardOn([terminal] acc: List<TomlEntry>, e): TomlResult => build(acc) |> (l) => e
 
 
 # A `#` inside a quoted string is DATA, not a comment. Scanning with a quote
@@ -157,7 +157,7 @@ fun tomlScalar(rhs): TomlValue => match(quotedAt(rhs, 0))
     : TomlBad("trailing text after value")
   (b: QuoteBad) => TomlBad(b.qWhy)
 
-fun tomlArray(rhs) => arrayItems(rhs, 1, false, builder())
+fun tomlArray(rhs) => arrayItems(rhs, 1, false, List())
 
 # `needSep` is what makes `["a" "b"]` an error. Without it a missing comma was
 # simply not noticed and the array parsed as two values, so the port ACCEPTED
@@ -165,7 +165,7 @@ fun tomlArray(rhs) => arrayItems(rhs, 1, false, builder())
 # divergence as rejecting valid input, just quieter. A TRAILING comma is legal
 # TOML and stays legal: `,` merely clears the flag.
 fun [tail] arrayItems(s, at, needSep,
-                      [terminal] b: ListBuilder<String>)
+                      [terminal] b: List<String>)
   let i = skipBlanks(s, at)
   if i >= length(s)
     ret discardStrs(b, TomlBad("unterminated array"))
@@ -183,7 +183,7 @@ fun [tail] arrayItems(s, at, needSep,
     (q: QuoteOk)  => arrayItems(s, q.qEnd, true, push(b, q.qText))
     (e: QuoteBad) => discardStrs(b, TomlBad(e.qWhy))
 
-fun discardStrs([terminal] b: ListBuilder<String>, v): TomlValue => build(b) |> (l) => v
+fun discardStrs([terminal] b: List<String>, v): TomlValue => build(b) |> (l) => v
 
 fun [tail] skipBlanks(s, at) => at < length(s) && (byteAt(s, at) == ' ' || byteAt(s, at) == '\t')
   ? skipBlanks(s, at + 1)
@@ -229,11 +229,11 @@ fun [tail] quoteBody(s, at, acc): QuoteRes
 
 # ── lookup ──────────────────────────────────────────────────────────────────
 
-fun tomlGet(entries: List<TomlEntry>, key: String) => tomlFind(chain(entries), key)
+fun tomlGet(entries: List<TomlEntry>, key: String) => tomlFind(entries, key)
 
-fun [tail] tomlFind(es: Chain<TomlEntry>, key: String) => match(es)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.key == key ? l.value : tomlFind(l.next, key)
+fun [tail] tomlFind(es: List<TomlEntry>, key: String) => isEmpty(es)
+  ? None
+  : first(es).key == key ? first(es) : tomlFind(tail(es), key)
 
 # Mirrors `as_str_tuple`: absent is empty, a scalar is a one-element list, an
 # array is itself.

@@ -16,7 +16,7 @@ fun fixGlobalIntegers(statements): List<PStmt>
                               Set()))
   if isEmpty(values)
     ret statements
-  let globals2 = giGlobals(chain(values), 0, List())
+  let globals2 = giGlobals(values, 0, List())
   ret concat(globals2,
              rwStmts(statements, rwOnExpr((x) => giReplace(x,
                                                            values))))
@@ -36,16 +36,16 @@ fun giName(v) => v < 0 ? "$integers::integer@n" + String(0 - v)
 
 fun giGlobals(vs, index,
                      acc: List<PStmt>): List<PStmt>
-  ret build(giGlobalsB(vs, index, builderFrom(acc)))
+  ret build(giGlobalsB(vs, index, acc))
 
-fun [tail] giGlobalsB(vs: Chain<Int>, index,
-                     [terminal] acc: ListBuilder<PStmt>) => match(vs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => giGlobalsB(l.next, index + 1,
-      push(acc, PsLet(giName(l.value), List(), List(),
+fun [tail] giGlobalsB(vs: List<Int>, index,
+                     [terminal] acc: List<PStmt>) => isEmpty(vs)
+  ? acc
+  : giGlobalsB(tail(vs), index + 1,
+      push(acc, PsLet(giName(first(vs)), List(), List(),
                 SBuiltin("bigint",
                          PLine("$integers", index + 1, 1)),
-                PeInt(l.value, 0,
+                PeInt(first(vs), 0,
                       PLine("$integers", index + 1, 1)),
                 "", List(),
                 PLine("$integers", index + 1, 1), false,
@@ -54,12 +54,12 @@ fun [tail] giGlobalsB(vs: Chain<Int>, index,
 fun giReplace(x, values: List<Int>) => match(x)
   (i: PeInt) => i.precision == 0
     ? PeName(giName(i.value), List(),
-             PLine("$integers", giIndexOf(chain(values), i.value, 0) + 1,
+             PLine("$integers", giIndexOf(values, i.value, 0) + 1,
                    1),
              None)
     : None
   (o: PExpr) => None
 
-fun [tail] giIndexOf(vs: Chain<Int>, v: Int, i) => match(vs)
-  (nil: ChainEnd) => -1
-  (l: ChainLink)  => l.value == v ? i : giIndexOf(l.next, v, i + 1)
+fun [tail] giIndexOf(vs: List<Int>, v: Int, i) => isEmpty(vs)
+  ? -1
+  : first(vs) == v ? i : giIndexOf(tail(vs), v, i + 1)

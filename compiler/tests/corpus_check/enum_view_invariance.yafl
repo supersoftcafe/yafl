@@ -1,6 +1,6 @@
 # check-contract corpus: generic type arguments are INVARIANT over enum views.
 # A narrowed view (`Circle` of enum `Shape`) is a different type from the root
-# (user ruling: ListBuilder<Circle> != ListBuilder<Shape>), so a Box<Circle>
+# (user ruling: List<Circle> != List<Shape>), so a Box<Circle>
 # or Holder<Circle> must not pass where Box<Shape> / Holder<Shape> is
 # declared — for a generic ENUM argument and a generic CLASS argument alike.
 # Sharing a representation or a monomorphised instance is not a typing rule.

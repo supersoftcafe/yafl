@@ -16,16 +16,16 @@ import Bootstrap::StdlibCandidates
 
 class [final] LiOut(liStmts: List<PStmt>, liChanged: Bool)
 
-fun lowerTraitInstances(statements: List<PStmt>) => liLoop(chain(statements), builder(), false)
+fun lowerTraitInstances(statements: List<PStmt>) => liLoop(statements, List(), false)
 
-fun [tail] liLoop(ss: Chain<PStmt>, acc,
-                  changed) => match(ss)
-  (nil: ChainEnd) => LiOut(build(acc), changed)
-  (l: ChainLink)  => match(l.value)
-    (ti: PsTraitInstance) => liLoop(l.next, liLower(ti, acc), true)
-    (o: PStmt)            => liLoop(l.next, push(acc, l.value), changed)
+fun [tail] liLoop(ss: List<PStmt>, acc,
+                  changed) => isEmpty(ss)
+  ? LiOut(build(acc), changed)
+  : match(first(ss))
+    (ti: PsTraitInstance) => liLoop(tail(ss), liLower(ti, acc), true)
+    (o: PStmt)            => liLoop(tail(ss), push(acc, first(ss)), changed)
 
-fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>)
+fun liLower(ti: PsTraitInstance, acc: List<PStmt>)
   let lr = ti.pstiLine
   let tag = hash6(lr.plFile, lr.plLine, lr.plCol)
   let ns = namespacePart(ti.tiName)
@@ -35,11 +35,11 @@ fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>)
                         funParamsStmt(List(), lr),
                         prepend(ti.tiPattern, List()), ti.tiWheres,
                         ti.tiMembers, false, lr, None, None, ti.tiImports)
-  let ownArgs = liOwnArgs(chain(ti.tiGens), lr, builder())
+  let ownArgs = liOwnArgs(ti.tiGens, lr, List())
   let value = PeCall(PeName(wbare, ownArgs, lr),
                      PeTuple(List(), lr), lr)
   let attrs = ti.tiAmbient
-    ? build(push(push(builder(), PAttr("trait", None)), PAttr("ambient", None)))
+    ? build(push(push(List(), PAttr("trait", None)), PAttr("ambient", None)))
     : prepend(PAttr("trait", None), List())
   let record = PsLet(prefix + "_instance$" + tag + "@" + tag, attrs,
                      ti.tiGens, SNamed(wbare, ownArgs, lr), value, "",
@@ -48,9 +48,9 @@ fun liLower(ti: PsTraitInstance, acc: ListBuilder<PStmt>)
                 classConstructorOf(witness)),
            record)
 
-fun [tail] liOwnArgs(gs: Chain<PGen>, lr,
-                     acc: ListBuilder<Spec>) => match(gs)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => liOwnArgs(l.next, lr,
-                               push(acc, SNamed(bareOfUnique(l.value.genName),
+fun [tail] liOwnArgs(gs: List<PGen>, lr,
+                     acc: List<Spec>) => isEmpty(gs)
+  ? build(acc)
+  : liOwnArgs(tail(gs), lr,
+                               push(acc, SNamed(bareOfUnique(first(gs).genName),
                                                 List(), lr)))

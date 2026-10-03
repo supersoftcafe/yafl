@@ -26,8 +26,8 @@ fun _tagOf(j: JsonValue): String
         (s: JsonStr)   => "str:" + s.strValue
         (i: JsonInt)   => "int:" + String(i.intValue)
         (n: JsonNum)   => "num"
-        (a: JsonArr)   => "arr:" + String(chainLength(chain(a.elements)))
-        (o: JsonObj)   => "obj:" + String(chainLength(chain(o.pairs)))
+        (a: JsonArr)   => "arr:" + String(size(a.elements))
+        (o: JsonObj)   => "obj:" + String(size(o.pairs))
 
 
 fun [test("the three literals parse to their own variants")] literals(): None|TestFailure

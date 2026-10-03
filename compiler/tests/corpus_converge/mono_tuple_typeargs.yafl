@@ -23,4 +23,4 @@ fun main(): System::Int
   let fs = prepend(F(3), List<F>())
   let p1 = fold(fs, (List<System::String>(), List<System::Int>()), addPairS)
   let p2 = fold(fs, (List<System::Int>(), List<System::String>()), addPairI)
-  ret chainLength(chain(p1.a)) + chainLength(chain(p2.a))
+  ret size(p1.a) + size(p2.a)

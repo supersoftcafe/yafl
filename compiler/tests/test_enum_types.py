@@ -563,24 +563,31 @@ fun main(): System::Int
         self.assertEqual(3, compile_and_run_stdlib(src))
 
     def test_recursive_enum_object_typedef_emitted(self):
-        # System::Chain<T> is a recursive enum (its ChainLink variant
-        # references Chain<T> via `next`); its root must appear as a heap
-        # Object in the C output (typedef'd struct), not a flat anon struct.
-        # The empty constructor alone wouldn't materialise the chain (trim
-        # removes the unused typedef), so prepend an element to force a
-        # ChainLink allocation.
+        # Cons<T> is a recursive enum (its Cell variant references Cons<T>
+        # via `next`); its root must appear as a heap Object in the C output
+        # (typedef'd struct), not a flat anon struct. The empty constructor
+        # alone wouldn't materialise the chain (trim removes the unused
+        # typedef), so build a Cell to force an allocation.
         src = """namespace Test
 import System
 
+enum Cons<T>
+  enum Nil()
+  enum Cell(value: T, next: Cons<T>)
+
+fun depth<T>(c: Cons<T>): System::Int
+  ret match(c)
+    (n: Nil)  => 0
+    (l: Cell) => 1 + depth<T>(l.next)
+
 fun main(): System::Int
-  let empty: System::List<System::Int> = System::List<System::Int>()
-  let l: System::List<System::Int> = System::prepend<System::Int>(1, empty)
-  ret 0
+  let l: Cons<System::Int> = Cell<System::Int>(1, Nil<System::Int>())
+  ret depth<System::Int>(l) - 1
 """
         result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
         self.assertNotEqual("", result)
-        # The Object name 'Chain@hash' is mangled to a C identifier.
-        self.assertIn("Chain", result)
+        # The Object name 'Cons@hash' is mangled to a C identifier.
+        self.assertIn("Cons", result)
         # The heap allocator must be invoked (recursive enum allocates via the
         # inline bump fast path, object_new).
         self.assertIn("object_new", result)

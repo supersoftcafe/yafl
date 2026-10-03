@@ -22,9 +22,9 @@ import Bootstrap::Lower::Ast
 
 fun list1<T>(a: T): List<T> => prepend(a, List())
 
-fun list2<T>(a: T, b: T): List<T> => build(push(push(builder(), a), b))
+fun list2<T>(a: T, b: T): List<T> => build(push(push(List(), a), b))
 
-fun list3<T>(a: T, b: T, c: T): List<T> => build(push(push(push(builder(), a), b), c))
+fun list3<T>(a: T, b: T, c: T): List<T> => build(push(push(push(List(), a), b), c))
 
 
 # Membership in a genuine List — a name among an op's reads, a label among a

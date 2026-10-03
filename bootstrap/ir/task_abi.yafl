@@ -20,7 +20,7 @@ fun taskFields() => build(
     push(
     push(
     push(
-    push(builder(),
+    push(List(),
       CgField("type", CgDataPointer())),        # object_t vtable
       CgField("state", CgInt(32))),             # _Atomic(int32_t)
       CgField("thread_id", CgInt(32))),         # originating worker thread index
@@ -94,7 +94,7 @@ fun isRuntimeTaskSubtype(name: String) => name == "task_obj" || name == "task_st
 fun makeTaskSubtypeObject(subtypeName, resultType)
   ret CgObject(subtypeName, list1("task"), List(),
                # The task_t prefix, then the result field LAST.
-               CgImmediateStruct(build(push(builderFrom(taskFields()), CgField("result", resultType)))),
+               CgImmediateStruct(build(push(taskFields(), CgField("result", resultType)))),
                None, "task subtype for result type " + taskTypeSig(resultType),
                isRuntimeTaskSubtype(subtypeName), true, 0)
 

@@ -67,7 +67,7 @@ fun scAppendArgs(inv: RpRuntimeInvoke): (l: RParam, r: RParam)|None
   if inv.function != scAppendName()
     ret None
   ret match(inv.parameters)
-    (ns: RpNewStruct) => exactly(chain(ns.values), 2)
+    (ns: RpNewStruct) => exactly(ns.values, 2)
       ? scArgPair(ns.values)
       : None
     (o: RParam)       => None
@@ -147,33 +147,33 @@ fun scReadOnce(cs: Dict<String, Int>, name: String) => sdCountOf(cs, name) == 1
 fun scConcatOf(operands) => match(head(operands))
   (only: RParam) => isEmpty(tail(operands))
     ? only
-    : atLeast(chain(operands), scRuntimeCap() + 1)
+    : atLeast(operands, scRuntimeCap() + 1)
       ? scConcatOf(prepend(scConcatOf(take(operands, scRuntimeCap())),
                            drop(operands, scRuntimeCap())))
       : scConcatBuild(operands)
   ()             => RpNullPointer()   # unreachable: spine yields >= 1
 
 fun scConcatBuild(operands: List<RParam>): RParam
-  let numbered = scNumbered(chain(operands), 0, builder())
+  let numbered = scNumbered(operands, 0, List())
   let fields = prepend(RpNamedValue("count", RpInteger(numbered.n, 32)),
                        numbered.vals)
   ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgStr())
 
 # The operand count rides the numbering walk (no-length ruling).
-fun [tail] scNumbered(os: Chain<RParam>, i,
-                      [terminal] acc: ListBuilder<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
-  ret match(os)
-    (nil: ChainEnd) => (build(acc), i)
-    (l: ChainLink)  => scNumbered(l.next, i + 1,
+fun [tail] scNumbered(os: List<RParam>, i,
+                      [terminal] acc: List<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
+  ret isEmpty(os)
+    ? (build(acc), i)
+    : scNumbered(tail(os), i + 1,
                                   push(acc,
                                       RpNamedValue("s" + String(i),
-                                                   l.value)))
+                                                   first(os))))
 
 fun scReplace(p, defs: SsaDefs, reads: Dict<String, Int>,
               anchored: List<String>): RParam => match(p)
   (inv: RpRuntimeInvoke) => scIsAppend(inv)
     ? scSpine(p, defs, reads, anchored)
-      |> (sp) => atLeast(chain(sp.ops), 3) ? scConcatOf(sp.ops) : p
+      |> (sp) => atLeast(sp.ops, 3) ? scConcatOf(sp.ops) : p
     : p
   (o: RParam)            => p
 
@@ -188,7 +188,7 @@ fun scCollectRoot(acc, p, defs: SsaDefs,
                   reads: Dict<String, Int>, anchored: List<String>): Set<String> => match(p)
   (inv: RpRuntimeInvoke) => scIsAppend(inv)
     ? scSpine(p, defs, reads, anchored)
-      |> (sp) => atLeast(chain(sp.ops), 3)
+      |> (sp) => atLeast(sp.ops, 3)
         ? fold(sp.taking, acc, (s2, n) => add(s2, n))
         : acc
     : acc

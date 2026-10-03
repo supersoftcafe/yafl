@@ -257,7 +257,7 @@ fun cgDeclareCachedMiss(t, cache0: List<CgCacheEntry>): (text: String, cache: Li
   let typedefText = "typedef " + built.text + " " + name + ";\n"
   # The newest entry goes LAST: the ordinal above is taken from the tail.
   ret (name, build(push(
-                 builderFrom(built.cache),
+                 built.cache,
                  CgCacheEntry(t, name, typedefText, ord))))
 
 fun [tail] cgCacheLookup(cache: List<CgCacheEntry>, t) => match(head(cache))
@@ -391,20 +391,20 @@ fun [tail] cgLitFieldsGet(entries: List<CgLitField>, name) => match(head(entries
 fun cgInitArray(a: CgArray, data, fieldIndent, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let newIndent = fieldIndent + "    "
   let items = cgLitItemsOf(data)
-  let result = cgInitArrayItems(a.elemType, chain(items), 0, fieldIndent, newIndent, "", true, cache0)
+  let result = cgInitArrayItems(a.elemType, items, 0, fieldIndent, newIndent, "", true, cache0)
   ret ("{ " + result.text + " \n" + dedent4(fieldIndent) + "}", result.cache)
 
 fun cgLitItemsOf(data) => match(data)
   (li: CgLitItems) => li.items
   (o: CgLit)        => List()
 
-fun cgInitArrayItems(elemType, items: Chain<CgLit>, index, fieldIndent, newIndent, acc, first, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let step = chainNext(items)
+fun cgInitArrayItems(elemType, items: List<CgLit>, index, fieldIndent, newIndent, acc, first, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let step = uncons(items)
   ret match(step.head)
     (item: CgLit) => cgInitArrayItemsHit(elemType, item, step.rest, index, fieldIndent, newIndent, acc, first, cache)
     ()            => (acc, cache)
 
-fun cgInitArrayItemsHit(elemType, item, rest: Chain<CgLit>, index: Int, fieldIndent, newIndent, acc, first: Bool, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgInitArrayItemsHit(elemType, item, rest: List<CgLit>, index: Int, fieldIndent, newIndent, acc, first: Bool, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = cgInitialiseIndent(elemType, item, newIndent, cache)
   let piece = "\n" + fieldIndent + ".a[" + String(index) + "] = " + sub.text
   ret cgInitArrayItems(elemType, rest, index + 1, fieldIndent, newIndent, first ? piece : acc + "," + piece, false, sub.cache)
@@ -435,9 +435,9 @@ fun cgBigintLiteral(valueIn): String
   let array = bigintArray(value)
   ret isEmpty(array)
     ? "INTEGER_LITERAL_1(0, 0)"
-    : exactly(chain(array), 1)
+    : exactly(array, 1)
       ? "INTEGER_LITERAL_1(" + String(sign) + ", " + String(forceInt(head(array))) + ")"
-      : exactly(chain(array), 2)
+      : exactly(array, 2)
         ? "INTEGER_LITERAL_2(" + String(sign) + ", " + String(forceInt(head(array))) + ", " + String(forceInt(head(tail(array)))) + ")"
         : bigintGroupsText(array, 0, "")
           |> (g) => "INTEGER_LITERAL_N(" + String(sign) + ", " + String(g.n) + ", " + g.text + ")"
@@ -448,11 +448,11 @@ fun forceInt(x: Int|None) => match(x)
 
 # The 32-bit words, LOW word first — the order is the array's.
 fun [tail] bigintArrayLoop(value,
-                           [terminal] acc): ListBuilder<Int> => value == 0
+                           [terminal] acc): List<Int> => value == 0
   ? acc
   : bigintArrayLoop(value >> 32, push(acc, value & maskInt))
 
-fun bigintArray(value) => build(bigintArrayLoop(value, builder()))
+fun bigintArray(value) => build(bigintArrayLoop(value, List()))
 
 # The 32-bit WORD count (2 per pair group, 1 for a trailing single) rides
 # the same walk that renders the groups (no-length ruling).
@@ -500,7 +500,7 @@ fun cgFlattenPrimitivesN(t): (ps: List<CgType>, n: Int) => match(cgFieldsOf(t))
         cgFlattenPrimitivesN(fld.fieldType)
           |> (sub) => (concat(acc.ps, sub.ps), acc.n + sub.n))
   () => match(t)
-    (fp: CgFuncPointer) => (build(push(push(builder(), CgIntPtr()), CgDataPointer())), 2)
+    (fp: CgFuncPointer) => (build(push(push(List(), CgIntPtr()), CgDataPointer())), 2)
     (o: CgType)         => (prepend(o, List()), 1)
 
 # Rank for laying out union slots, largest first. An IR fact, not a byte
@@ -536,11 +536,11 @@ fun [tail] cgFindSlotIndex(slots: List<CgSlot>, idx, prim, vi) => match(head(slo
   ()          => -1
 
 fun cgUpdateSlotUsersLoop(slots: List<CgSlot>, idx, vi, i, acc: List<CgSlot>)
-  ret build(cgUpdateSlotUsersLoopB(slots, idx, vi, i, builderFrom(acc)))
+  ret build(cgUpdateSlotUsersLoopB(slots, idx, vi, i, acc))
 
 # A slot's `users` is asked only for membership, disjointness and union, so a
 # new user goes on the front.
-fun [tail] cgUpdateSlotUsersLoopB(slots: List<CgSlot>, idx, vi, i, [terminal] acc): ListBuilder<CgSlot>
+fun [tail] cgUpdateSlotUsersLoopB(slots: List<CgSlot>, idx, vi, i, [terminal] acc): List<CgSlot>
   ret match(head(slots))
     (s: CgSlot) => cgUpdateSlotUsersLoopB(tail(slots), idx, vi, i + 1, push(acc, i == idx ? CgSlot(s.slotType, prepend(vi, s.users), s.active, s.sIdx) : s))
     ()          => acc
@@ -558,21 +558,21 @@ fun cgAddPrimitive(slots, vi, prim, vmapVi): (slots: List<CgSlot>, vmapVi: List<
   ret found >= 0
     ? (cgUpdateSlotUsers(slots, found, vi),
        build(push(
-           builderFrom(vmapVi),
+           vmapVi,
            CgSlotEntry(found, prim))))
     : match(last(slots))
         (prev: CgSlot) => (build(push(
-                               builderFrom(slots),
+                               slots,
                                CgSlot(prim, prepend(vi, List()), true,
                                       prev.sIdx + 1))),
                            build(push(
-                               builderFrom(vmapVi),
+                               vmapVi,
                                CgSlotEntry(prev.sIdx + 1, prim))))
         ()             => (build(push(
-                               builderFrom(slots),
+                               slots,
                                CgSlot(prim, prepend(vi, List()), true, 0))),
                            build(push(
-                               builderFrom(vmapVi),
+                               vmapVi,
                                CgSlotEntry(0, prim))))
 
 fun cgAddPrimitivesForVariant(slots, vi, prims: List<CgType>, vmapVi): (slots: List<CgSlot>, vmapVi: List<CgSlotEntry>)
@@ -594,7 +594,7 @@ fun cgBuildInitialSlotsLoopHit(prims: List<CgType>, restVariants: List<List<CgTy
   # One entry per variant, indexed by variant number.
   ret cgBuildInitialSlotsLoop(restVariants, vi + 1, step.slots,
           build(push(
-              builderFrom(vmap),
+              vmap,
               step.vmapVi)))
 
 # Phase 2: repeatedly merge a smaller fixed-width int slot into a disjoint
@@ -622,9 +622,9 @@ fun cgFindMergeOuterActive(slots: List<CgSlot>, si, s: CgSlot): (si: Int, li: In
     ()        => cgFindMergeOuter(slots, si + 1)
 
 fun cgMergeApplyLoop(slots: List<CgSlot>, si, li, newL: CgSlot, i, acc: List<CgSlot>)
-  ret build(cgMergeApplyLoopB(slots, si, li, newL, i, builderFrom(acc)))
+  ret build(cgMergeApplyLoopB(slots, si, li, newL, i, acc))
 
-fun [tail] cgMergeApplyLoopB(slots: List<CgSlot>, si, li, newL: CgSlot, i, [terminal] acc): ListBuilder<CgSlot>
+fun [tail] cgMergeApplyLoopB(slots: List<CgSlot>, si, li, newL: CgSlot, i, [terminal] acc): List<CgSlot>
   ret match(head(slots))
     (s: CgSlot) => cgMergeApplyLoopB(tail(slots), si, li, newL, i + 1,
         push(acc, i == si ? CgSlot(s.slotType, s.users, false, s.sIdx) : i == li ? newL : s))
@@ -663,15 +663,15 @@ fun forceSlot(x: CgSlot|None) => match(x)
 # primitives of the same type produces exactly that).
 class [final] CgIdxSlot(isIndex: Int, isSlot: CgSlot)
 
-fun [tail] cgActiveWithIndicesLoop(slots: Chain<CgSlot>, i,
-                                   [terminal] acc: ListBuilder<CgIdxSlot>) => match(slots)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cgActiveWithIndicesLoop(l.next, i + 1,
-      l.value.active ? push(acc, CgIdxSlot(i, l.value)) : acc)
+fun [tail] cgActiveWithIndicesLoop(slots: List<CgSlot>, i,
+                                   [terminal] acc: List<CgIdxSlot>) => isEmpty(slots)
+  ? acc
+  : cgActiveWithIndicesLoop(tail(slots), i + 1,
+      first(slots).active ? push(acc, CgIdxSlot(i, first(slots))) : acc)
 
 fun cgActiveWithIndices(slots: List<CgSlot>)
-  ret build(cgActiveWithIndicesLoop(chain(slots), 0,
-                                    builder()))
+  ret build(cgActiveWithIndicesLoop(slots, 0,
+                                    List()))
 
 # Stable insertion sort, largest nominal size first (Python's list.sort is
 # stable; the active-slot lists here are small, so O(n^2) is not a concern).
@@ -695,7 +695,7 @@ fun computeUnionSlots(variantTypes: List<CgType>, maxTag: Int|None): CgUnionLayo
   let tagBound = maxOf(built.nVariants, orZero(maxTag) + 1)
   # The tag is the LAST field of the union struct.
   let slotFields = build(push(
-      builderFrom(cgSlotFieldsOf(active, 0)),
+      (cgSlotFieldsOf(active, 0)),
       CgField("$tag", cgTagType(tagBound))))
   let variantMap = map(merged.vmap, (vm) => cgRenumberVmapOne(vm, renumber))
   ret CgUnionLayout(CgStruct(slotFields), variantMap)
@@ -717,15 +717,15 @@ fun cgSlotFieldsOf(active: List<CgIdxSlot>, i) => match(head(active))
 # index (position in `active`, post sort).
 class [final] CgRenumberEntry(oldIndex: Int, newIndex: Int)
 
-fun [tail] cgBuildRenumberLoop(active: Chain<CgIdxSlot>, newIdx,
-                               [terminal] acc): ListBuilder<CgRenumberEntry> => match(active)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => cgBuildRenumberLoop(l.next, newIdx + 1,
-      push(acc, CgRenumberEntry(l.value.isIndex, newIdx)))
+fun [tail] cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx,
+                               [terminal] acc): List<CgRenumberEntry> => isEmpty(active)
+  ? acc
+  : cgBuildRenumberLoop(tail(active), newIdx + 1,
+      push(acc, CgRenumberEntry(first(active).isIndex, newIdx)))
 
 fun cgBuildRenumber(active: List<CgIdxSlot>)
-  ret build(cgBuildRenumberLoop(chain(active), 0,
-                               builder()))
+  ret build(cgBuildRenumberLoop(active, 0,
+                               List()))
 
 fun [tail] cgRenumberLookup(renumber: List<CgRenumberEntry>, oldIndex) => match(head(renumber))
   (e: CgRenumberEntry) => e.oldIndex == oldIndex ? e.newIndex : cgRenumberLookup(tail(renumber), oldIndex)

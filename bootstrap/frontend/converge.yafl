@@ -80,24 +80,24 @@ fun limitClue() => "Compile loop failed to converge after "
 # the compiler's own bug, reported as such.
 
 fun flipErrs(before: List<PStmt>, after: List<PStmt>, otherwise: String): Set<PErr>
-  let found = flipStmts(chain(before), chain(after), noErrs())
+  let found = flipStmts(before, after, noErrs())
   ret isEmpty(found)
-    ? oneErr(movedLine(chain(before), chain(after)), otherwise)
+    ? oneErr(movedLine(before, after), otherwise)
     : found
 
-fun [tail] movedLine(as2: Chain<PStmt>, bs: Chain<PStmt>): PLine => match(as2)
-  (nil: ChainEnd) => PLine("none", 0, 0)
-  (la: ChainLink) => match(bs)
-    (nilb: ChainEnd) => PLine("none", 0, 0)
-    (lb: ChainLink)  => eqStmt(la.value, lb.value)
-      ? movedLine(la.next, lb.next)
-      : stmtLine(la.value)
+fun [tail] movedLine(as2: List<PStmt>, bs: List<PStmt>): PLine => isEmpty(as2)
+  ? PLine("none", 0, 0)
+  : isEmpty(bs)
+    ? PLine("none", 0, 0)
+    : eqStmt(first(as2), first(bs))
+      ? movedLine(tail(as2), tail(bs))
+      : stmtLine(first(as2))
 
-fun [tail] flipStmts(as2: Chain<PStmt>, bs: Chain<PStmt>, acc: Set<PErr>): Set<PErr> => match(as2)
-  (nil: ChainEnd) => acc
-  (la: ChainLink) => match(bs)
-    (nilb: ChainEnd) => acc
-    (lb: ChainLink)  => flipStmts(la.next, lb.next, flipStmt(la.value, lb.value, acc))
+fun [tail] flipStmts(as2: List<PStmt>, bs: List<PStmt>, acc: Set<PErr>): Set<PErr> => isEmpty(as2)
+  ? acc
+  : isEmpty(bs)
+    ? acc
+    : flipStmts(tail(as2), tail(bs), flipStmt(first(as2), first(bs), acc))
 
 fun flipStmt(a: PStmt, b: PStmt, acc: Set<PErr>): Set<PErr>
   ret eqStmt(a, b) ? acc : match(a)
@@ -105,10 +105,10 @@ fun flipStmt(a: PStmt, b: PStmt, acc: Set<PErr>): Set<PErr>
       (fb: PsFun) => flipFun(fa, fb, acc)
       (o: PStmt)  => acc
     (ca: PsClass) => match(b)
-      (cb: PsClass) => flipStmts(chain(ca.cMembers), chain(cb.cMembers), acc)
+      (cb: PsClass) => flipStmts(ca.cMembers, cb.cMembers, acc)
       (o: PStmt)    => acc
     (ia: PsTraitInstance) => match(b)
-      (ib: PsTraitInstance) => flipStmts(chain(ia.tiMembers), chain(ib.tiMembers), acc)
+      (ib: PsTraitInstance) => flipStmts(ia.tiMembers, ib.tiMembers, acc)
       (o: PStmt)            => acc
     (o: PStmt) => acc
 
@@ -117,17 +117,17 @@ fun flipFun(a: PsFun, b: PsFun, acc: Set<PErr>): Set<PErr>
     ? flipSpec(a.psfLine, "Return type of '" + simpleName(a.fName) + "'",
                a.fRet, b.fRet, acc)
     : acc
-  let prms = flipParams(chain(flattenParams(a.fParams)), chain(flattenParams(b.fParams)),
+  let prms = flipParams(flattenParams(a.fParams), flattenParams(b.fParams),
                         simpleName(a.fName), rets)
-  ret flipStmts(chain(bodyStmts(a)), chain(bodyStmts(b)), prms)
+  ret flipStmts(bodyStmts(a), bodyStmts(b), prms)
 
-fun [tail] flipParams(as2: Chain<PStmt>, bs: Chain<PStmt>, owner: String,
-                      acc: Set<PErr>): Set<PErr> => match(as2)
-  (nil: ChainEnd) => acc
-  (la: ChainLink) => match(bs)
-    (nilb: ChainEnd) => acc
-    (lb: ChainLink)  => flipParams(la.next, lb.next, owner,
-                                   flipParam(la.value, lb.value, owner, acc))
+fun [tail] flipParams(as2: List<PStmt>, bs: List<PStmt>, owner: String,
+                      acc: Set<PErr>): Set<PErr> => isEmpty(as2)
+  ? acc
+  : isEmpty(bs)
+    ? acc
+    : flipParams(tail(as2), tail(bs), owner,
+                                   flipParam(first(as2), first(bs), owner, acc))
 
 fun flipParam(a: PStmt, b: PStmt, owner: String, acc: Set<PErr>): Set<PErr> => match(a)
   (pa: PsLet) => match(b)
@@ -157,7 +157,7 @@ fun flipErr(lr: PLine, what: String, a: String, b: String): Set<PErr>
 # flips — `typeStr` names both by the root, so name the leaves instead.
 fun typeView(sp: Spec): String => match(sp)
   (e2: SEnum) => isEnumView(e2)
-    ? joinLeaves(chain(e2.seAllLeaves), e2.seValidLeaves, "")
+    ? joinLeaves(e2.seAllLeaves, e2.seValidLeaves, "")
     : typeStr2(sp)
   (o: Spec)   => typeStr2(sp)
 
@@ -165,12 +165,12 @@ fun typeView(sp: Spec): String => match(sp)
 fun isEnumView(e2: SEnum) => any(e2.seAllLeaves,
                                  (l) => !any(e2.seValidLeaves, (v) => v == l))
 
-fun [tail] joinLeaves(ls: Chain<String>, valid: List<String>, acc: String): String => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => joinLeaves(l.next, valid,
-                                any(valid, (v) => v == l.value)
-                                  ? (acc == "" ? specName(l.value, List())
-                                               : acc + " | " + specName(l.value, List()))
+fun [tail] joinLeaves(ls: List<String>, valid: List<String>, acc: String): String => isEmpty(ls)
+  ? acc
+  : joinLeaves(tail(ls), valid,
+                                any(valid, (v) => v == first(ls))
+                                  ? (acc == "" ? specName(first(ls), List())
+                                               : acc + " | " + specName(first(ls), List()))
                                   : acc)
 
 fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
@@ -183,14 +183,14 @@ fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
 # and the extra statements it creates join the set for the next pass.
 fun compilePass(statements): List<PStmt>
   let r = rootResolver(statements)
-  ret build(passLoop(chain(statements), r, builder()))
+  ret build(passLoop(statements, r, List()))
 
 # Each statement's own output, then whatever it hoisted out beside itself:
 # this is the program's statement order, so a builder, not a set.
-fun [tail] passLoop(ss: Chain<PStmt>, r: Resolver,
-                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt> => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => compileStmt(l.value, scopeResolver(l.value, r), None)
-    |> (out) => passLoop(l.next, r,
+fun [tail] passLoop(ss: List<PStmt>, r: Resolver,
+                    [terminal] acc: List<PStmt>): List<PStmt> => isEmpty(ss)
+  ? acc
+  : compileStmt(first(ss), scopeResolver(first(ss), r), None)
+    |> (out) => passLoop(tail(ss), r,
                          pushAll(addStmt(acc, out.soStmt),
                                      out.soExtra))

@@ -26,26 +26,30 @@ _HOST_BINDING = """
 namespace Test
 import System
 
-fun isEnd<T>(c: System::Chain<T>): System::Bool
-  ret match(c)
-    (nil: System::ChainEnd) => true
-    (l: System::ChainLink)  => false
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
 
-fun restOf<T>(c: System::Chain<T>): System::Chain<T>
+fun isEnd<T>(c: Chain<T>): System::Bool
   ret match(c)
-    (nil: System::ChainEnd) => c
-    (l: System::ChainLink)  => l.next
+    (nil: ChainEnd) => true
+    (l: ChainLink)  => false
+
+fun restOf<T>(c: Chain<T>): Chain<T>
+  ret match(c)
+    (nil: ChainEnd) => c
+    (l: ChainLink)  => l.next
 
 # Two chains of DIFFERENT element types, no explicit type arguments inside.
-fun [tail] shorter<T, U>(a: System::Chain<T>, b: System::Chain<U>): System::Bool
+fun [tail] shorter<T, U>(a: Chain<T>, b: Chain<U>): System::Bool
   ret isEnd(b)
     ? false
     : (isEnd(a) ? true : shorter(restOf(a), restOf(b)))
 
 fun main(): System::Int
-  let ints = System::prepend(1, System::List<System::Int>())
-  let strs = System::prepend("a", System::prepend("b", System::List<System::String>()))
-  ret shorter(System::chain(ints), System::chain(strs)) ? 7 : 3
+  let ints = ChainLink(1, ChainEnd<System::Int>())
+  let strs = ChainLink("a", ChainLink("b", ChainEnd<System::String>()))
+  ret shorter(ints, strs) ? 7 : 3
 """
 
 

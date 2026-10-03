@@ -404,19 +404,19 @@ fun eqSpecSetOpt(a: List<Spec>|None, b: List<Spec>|None) => match(a)
     (y: List<Spec>) => false
     ()              => true
 
-fun eqSpecSet(a: List<Spec>, b: List<Spec>) => specsSubset(chain(a), b) && specsSubset(chain(b), a)
+fun eqSpecSet(a: List<Spec>, b: List<Spec>) => specsSubset(a, b) && specsSubset(b, a)
 
-fun [tail] specsSubset(xs: Chain<Spec>, ys: List<Spec>) => match(xs)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => containsSpec(ys, l.value)
-    ? specsSubset(l.next, ys)
+fun [tail] specsSubset(xs: List<Spec>, ys: List<Spec>) => isEmpty(xs)
+  ? true
+  : containsSpec(ys, first(xs))
+    ? specsSubset(tail(xs), ys)
     : false
 
-fun eqStrSet(a: List<String>, b: List<String>) => strsSubset(chain(a), b) && strsSubset(chain(b), a)
+fun eqStrSet(a: List<String>, b: List<String>) => strsSubset(a, b) && strsSubset(b, a)
 
-fun [tail] strsSubset(xs: Chain<String>, ys: List<String>) => match(xs)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => contains2(ys, l.value) ? strsSubset(l.next, ys) : false
+fun [tail] strsSubset(xs: List<String>, ys: List<String>) => isEmpty(xs)
+  ? true
+  : contains2(ys, first(xs)) ? strsSubset(tail(xs), ys) : false
 
 fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None) => match(a)
   (x: List<Slot>) => match(b)

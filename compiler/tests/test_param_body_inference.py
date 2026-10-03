@@ -159,12 +159,15 @@ class TestParamBodyInference(TestCase):
         # which monomorphisation cannot specialise — codegen then looks up a
         # root that no longer exists and crashes with no source location.
         errs = _errors("namespace Test\nimport System\n"
+                       "enum Chain<T>\n"
+                       "  enum ChainEnd()\n"
+                       "  enum ChainLink(value: T, next: Chain<T>)\n"
                        "fun walk(c): System::Int\n"
                        "  ret match(c)\n"
-                       "    (nil: System::ChainEnd)  => 0\n"
-                       "    (l: System::ChainLink)   => 1\n"
+                       "    (nil: ChainEnd)  => 0\n"
+                       "    (l: ChainLink)   => 1\n"
                        "fun main(): System::Int\n"
-                       "  ret walk(chain(List<System::Int>()))\n")
+                       "  ret walk(ChainEnd<System::Int>())\n")
         self.assertIn("'c'", errs)
         self.assertIn("could not be inferred", errs)
 
@@ -448,10 +451,10 @@ class TestIncompleteSearchIsUnsettled(TimedTestCase):
 
 class TestVerdictMergesItsBounds(TimedTestCase):
     """A parameter's upper bound RECEIVES its lower bound: the answer is their
-    merge (docs/type-merge-design.md). Matching `ss` on `ListEmpty` /
-    `ListFull` bounds it below by List spelled WITHOUT arguments — a shape —
-    and `ret ss` against `List<Int>` bounds it above; merged, that is
-    `List<Int>`. Before, nothing could say so, and `ss` was typed only on
+    merge (docs/type-merge-design.md). Matching `ss` on `BoxEmpty` /
+    `BoxFull` bounds it below by Box spelled WITHOUT arguments — a shape —
+    and `ret ss` against `Box<Int>` bounds it above; merged, that is
+    `Box<Int>`. Before, nothing could say so, and `ss` was typed only on
     passes where one of the bounds happened to be missing."""
 
     def test_a_shape_below_and_an_instantiation_above(self):
@@ -475,17 +478,30 @@ class TestVerdictMergesItsBounds(TimedTestCase):
 namespace Test
 import System
 
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
+# The shape List had when this was found: a generic wrapper over a chain.
+enum Box<T>
+  enum BoxEmpty()
+  enum BoxFull(front: Chain<T>)
+
 fun rwChain(c: Chain<Int>): Chain<Int> => match(c)
   (nil: ChainEnd) => c
   (l: ChainLink)  => with l(value = l.value + 1, next = rwChain(l.next))
 
-fun rw(ss): List<Int> => match(ss)
-  (le: ListEmpty) => ss
-  (lf: ListFull)  => with lf(front = rwChain(lf.front))
+fun rw(ss): Box<Int> => match(ss)
+  (le: BoxEmpty) => ss
+  (lf: BoxFull)  => with lf(front = rwChain(lf.front))
+
+fun headOf(b: Box<Int>): Int => match(b)
+  (lf: BoxFull)  => match(lf.front)
+    (l: ChainLink) => l.value
+    ()             => 3
+  ()             => 3
 
 fun main(): System::Int
-  ret match(chainNext(chain(rw(prepend(6, List<Int>())))).head)
-    (i: Int) => i
-    ()       => 3
+  ret headOf(rw(BoxFull(ChainLink(6, ChainEnd<Int>()))))
 """, timeout=120)
         self.assertEqual(7, rc)

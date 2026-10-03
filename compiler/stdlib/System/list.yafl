@@ -2,316 +2,399 @@ namespace System
 import System
 
 
-# A bare cons chain: the zero-overhead CONSUMPTION view of a sequence.
-# List<T> below is the BUILDING structure (O(1) at both ends, paid for with a
-# wrapper allocation per operation — element-at-a-time consumption through
-# head/tail churns one wrapper per step). Code that walks a sequence should
-# take a Chain once (see `chain` below) and match ChainLink/ChainEnd
-# directly: nothing is allocated per step, and whatever the walk builds packs
-# densely instead of interleaving with wrapper garbage. fold and sort already
-# work this way internally.
-enum Chain<T>
-  enum ChainEnd()
-  enum ChainLink(value: T, next: Chain<T>)
+# ─── List<T>: an ordered sequence ────────────────────────────────────────────
+#
+# A List is a set of functions, not a shape. Build with List() / append /
+# prepend / concat, take apart with isEmpty / first / head / tail, and walk
+# with fold / map / filter or as a Stream (List<T> is itself the Stream
+# state). Nothing outside this file knows how the elements are stored.
+#
+# HOW THEY ARE STORED. A list value is a by-value handle — four fields, so it
+# flattens to a register-passed struct — onto a forward chain of SEGMENTS,
+# each one heap object holding up to 16 elements inline:
+#
+#   * `_first` / `_start`: the first segment and the index of the first element
+#   * `_last`  / `_end`:   the last segment and one past the last element
+#
+# Empty is both segments None. A list lying in one segment has `_first` and
+# `_last` naming it (equal ordinals — see below). Between first and last,
+# every segment is FULL: a segment is only ever linked behind one whose
+# capacity is used up.
+#
+# A segment has spare room at the back (or, built by prepend, at the front).
+# Appending to a list whose last element is the last one CLAIMED in that
+# segment writes the next slot in place: O(1), no copy, no builder. The claim
+# is taken under the segment's late pin (yafllib object.c, "List segments"),
+# so of two list values sharing a segment only the FIRST to append extends
+# it; the other finds the slot taken and copies. Every slot is written once,
+# and a list value only ever reads slots written before it existed — so no
+# program can observe which fork won, and List stays a pure value.
+#
+#   append / prepend      O(1); a FORK (a second append to the same value)
+#                         copies — the whole list at the back, ≤ one segment
+#                         at the front
+#   head / first / tail   O(1), allocation-free
+#   last                  O(1)
+#   concat(a, b)          O(|b|): b's elements are appended onto a
+#
+# There is deliberately no indexing: a list is walked, not addressed (an Array
+# is the indexed container). `size` counts, at segment rather than element
+# granularity, but it is still a walk — ask isEmpty when that is the question.
 
 
-# Public list: ONE chain, in traversal order.
+# A segment. FIELD ORDER IS A RUNTIME CONTRACT: the claim word must be the
+# first field and the ordinal the second (object.c reads them at fixed
+# offsets), and lsNext must be the only pointer field before the array (its
+# slot is the top bit of the pointer mask). lsClaim is runtime-private —
+# YAFL code never reads it.
 #
-# There was a rear chain, holding appended elements in reverse. It made
-# append O(1), and it made every walk pay to put the elements back in order —
-# `chain()` materialised front ++ reverse(rear), and map/filter/fold each
-# reversed too. That normalisation was the ONLY reason _chainReverse existed.
-#
-# A List is now constructed in the order it will be walked, so walking it is
-# just walking it. Build with ListBuilder (in order, O(1) per push) or prepend
-# (the cons). `append` survives as a convenience and is O(n): it rebuilds.
-# Reach for a builder in a loop.
-enum List<T>
-  enum ListEmpty()
-  enum ListFull(front: Chain<T>)
+# lsOrd is a segment's identity within a list: appending a segment numbers it
+# one up from the last, prepending one down from the first. Two segments of
+# one list are the same segment exactly when their ordinals agree — which is
+# how a walk knows it has reached `_last`, whichever copy of it (the GC may
+# relocate a segment) it is holding.
+class [final] ListSeg<T>(lsClaim: Int64, lsOrd: Int32, lsNext: ListSeg<T>|None,
+                         length: Int32, array: T[length])
+
+class [final] List<T>(_first: ListSeg<T>|None, _start: Int32,
+                      _last: ListSeg<T>|None, _end: Int32)
+
+
+# ─── Runtime primitives (yafllib object.c, "List segments") ──────────────────
+
+# Fill in a FRESH segment's claim range, ordinal and next. `stored` threads
+# the first element's store so it stays live and ordered first.
+fun [foreign("list_seg_init"), impure, sync] _lsInit<T>(seg: ListSeg<T>, lo: Int32, hi: Int32,
+      next: ListSeg<T>|None, ord: Int32, stored: Bool): ListSeg<T>
+
+# Claim the slot after `end` / before `start`: the current copy, still pinned,
+# or None if another list value claimed it first. Release after the store.
+fun [foreign("list_seg_claim_back"), impure, sync] _lsClaimBack<T>(seg: ListSeg<T>,
+      end: Int32): ListSeg<T>|None
+fun [foreign("list_seg_claim_front"), impure, sync] _lsClaimFront<T>(seg: ListSeg<T>,
+      start: Int32): ListSeg<T>|None
+fun [foreign("list_seg_release"), impure, sync] _lsRelease<T>(seg: ListSeg<T>,
+      stored: Bool): ListSeg<T>
+
+# Link `next` behind a full segment: `next` on success, None if another list
+# value got there first.
+fun [foreign("list_seg_link"), impure, sync] _lsLink<T>(seg: ListSeg<T>, end: Int32,
+      next: ListSeg<T>): ListSeg<T>|None
+
+# The current copy of a segment reached through lsNext. A list value's own
+# segment pointers are always good for its own elements; a `next` pointer is
+# written once, when its target was brand new, so a walk resolves each
+# segment it ENTERS (once per ≤ 16 elements, never per element).
+fun [foreign("list_seg_resolve"), sync] _lsResolve<T>(seg: ListSeg<T>): ListSeg<T>
 
 
 # ─── Internal helpers ────────────────────────────────────────────────────────
 
-fun _chainHead<T>(n: Chain<T>): T|None
-  ret match(n)
-    (nil: ChainEnd) => None
-    (c: ChainLink)  => c.value
+fun _lsStore<T>(s: ListSeg<T>, at: Int32, x: T): Bool
+  ret __builtin_op__<bool>("array_builder_store", s, at, x)
+
+# A fresh segment of capacity `cap` holding x at `at`.
+fun _lsFresh<T>(cap: Int32, at: Int32, x: T, next: ListSeg<T>|None, ord: Int32): ListSeg<T>
+  let s = __builtin_op__<ListSeg<T> >("array_builder_alloc", cap)
+  ret _lsInit<T>(s, at, at + 1i32, next, ord, _lsStore<T>(s, at, x))
+
+# Capacity ramp: 2, 3, 5, 8, 13, then 16 for ever — small lists stay small,
+# long ones settle at the largest allocation unit that is still GC-friendly.
+fun _lsNextCap(cap: Int32): Int32
+  ret cap < 2i32 ? 2i32
+    : cap == 2i32 ? 3i32
+    : cap == 3i32 ? 5i32
+    : cap == 5i32 ? 8i32
+    : cap == 8i32 ? 13i32
+    : 16i32
+
+fun _lsSame<T>(a: ListSeg<T>, b: ListSeg<T>): Bool
+  ret a.lsOrd == b.lsOrd
+
+fun _lsWhole<T>(s: ListSeg<T>, start: Int32, end: Int32): List<T>
+  ret List<T>(s, start, s, end)
 
 
-# A chain as a List. O(1) — the chain IS the list.
-fun _listOf<T>(c: Chain<T>): List<T>
-  ret match(c)
-    (nil: ChainEnd) => ListEmpty<T>()
-    (l: ChainLink)  => ListFull<T>(c)
-
-
-# ─── Public API ──────────────────────────────────────────────────────────────
+# ─── Construction ────────────────────────────────────────────────────────────
 
 fun List<T>(): List<T>
-  ret ListEmpty<T>()
+  ret List<T>(None, 0i32, None, 0i32)
 
+# Add an element at the back. O(1); see the header for forks.
+fun append<T>(l: List<T>, x: T): List<T>
+  ret match(l._last)
+    (last: ListSeg<T>) => l._end < last.length
+      ? _appendClaim<T>(l, last, x, _lsClaimBack<T>(last, l._end))
+      : _appendGrow<T>(l, last, x)
+    (nil: None) => _lsWhole<T>(_lsFresh<T>(2i32, 0i32, x, None, 0i32), 0i32, 1i32)
 
-# The list's elements as a Chain, in traversal order. Zero-copy when no
-# appends are pending (the front IS the chain); otherwise materialised once —
-# the reversed rear becomes the tail and the front is copied onto it (≤ n
-# cells, one-off) — after which the walk itself allocates nothing.
-fun chain<T>(l: List<T>): Chain<T>
-  ret match(l)
-    (e: ListEmpty) => ChainEnd<T>()
-    (fl: ListFull) => fl.front
+fun _appendClaim<T>(l: List<T>, last: ListSeg<T>, x: T, claim: ListSeg<T>|None): List<T>
+  ret match(claim)
+    (o: ListSeg<T>) => _appended<T>(l, last, _lsRelease<T>(o, _lsStore<T>(o, l._end, x)))
+    (nil: None)     => _appendCopy<T>(l, x)
 
+# The slot is someone else's: rebuild, then append to the private copy.
+fun _appendCopy<T>(l: List<T>, x: T): List<T>
+  ret append<T>(_copy<T>(l), x)
 
-# A List over an existing chain: O(1), the chain becomes the front.
-fun List<T>(c: Chain<T>): List<T>
-  ret _listOf<T>(c)
+# `o` is the current copy of the last segment; a one-segment list's first
+# moves with it, so first and last keep naming the same copy.
+fun _appended<T>(l: List<T>, last: ListSeg<T>, o: ListSeg<T>): List<T>
+  ret match(l._first)
+    (f: ListSeg<T>) => _lsSame<T>(f, last)
+      ? List<T>(o, l._start, o, l._end + 1i32)
+      : List<T>(f, l._start, o, l._end + 1i32)
+    (nil: None)     => List<T>(o, l._start, o, l._end + 1i32)
 
+fun _appendGrow<T>(l: List<T>, last: ListSeg<T>, x: T): List<T>
+  let seg = _lsFresh<T>(_lsNextCap(last.length), 0i32, x, None, last.lsOrd + 1i32)
+  ret match(_lsLink<T>(last, l._end, seg))
+    (s2: ListSeg<T>) => List<T>(l._first, l._start, s2, 1i32)
+    (nil: None)      => _appendCopy<T>(l, x)
 
-# Allocation-free uncons: the first element (None when exhausted) and the
-# remaining chain, returned by value. The Chain itself can be matched
-# directly inside generic code; from non-generic code use this. (Matching a
-# CONCRETE Chain<X>'s variants from outside currently mistypes the binder's
-# fields as the enum's placeholders — a known generics gap.)
-fun chainNext<T>(c: Chain<T>): (head: T|None, rest: Chain<T>)
-  ret match(c)
-    (link: ChainLink) => (head=link.value, rest=link.next)
-    (e: ChainEnd)     => (head=None, rest=c)
-
-
-# Number of elements in a chain: O(n), allocation-free.
-fun chainLength<T>(c: Chain<T>): Int
-  fun [tail] walk(n: Chain<T>, acc: Int): Int
-    ret match(n)
-      (link: ChainLink) => walk(link.next, acc + 1)
-      (e: ChainEnd)     => acc
-  ret walk(c, 0)
-
-
-# Add element to the front: O(1)
+# Add an element at the front. O(1); a fork copies at most one segment.
 fun prepend<T>(x: T, l: List<T>): List<T>
-  ret ListFull<T>(ChainLink<T>(x, chain<T>(l)))
+  ret match(l._first)
+    (f: ListSeg<T>) => l._start > 0i32
+      ? _prependClaim<T>(x, l, f, _lsClaimFront<T>(f, l._start))
+      : _prependGrow<T>(x, l, f)
+    (nil: None) => _lsWhole<T>(_lsFresh<T>(2i32, 1i32, x, None, 0i32), 1i32, 2i32)
 
+fun _prependClaim<T>(x: T, l: List<T>, f: ListSeg<T>, claim: ListSeg<T>|None): List<T>
+  ret match(claim)
+    (o: ListSeg<T>) => _prepended<T>(l, f, _lsRelease<T>(o, _lsStore<T>(o, l._start - 1i32, x)))
+    (nil: None)     => _prependCopy<T>(x, l, f)
 
-# There is no `append`. This List is a CONS CHAIN, stored in the order it is
-# walked, so putting an element at the BACK means the last cell must point at
-# the new one — and mutating it would be visible to every sharer, so the spine
-# is copied. O(n) per call, O(n^2) in a loop.
-#
-# That is a property of THIS REPRESENTATION, not of immutability. A tree-backed
-# sequence (finger tree, 2-3 tree) gives O(1) amortised append AND prepend,
-# fully persistent, no mutation and no linearity proof. It is the standard
-# answer, and it is not the answer here: the compiler's dominant access pattern
-# is the sequential walk, where a cons chain is one pointer per step and a tree
-# is a descent plus per-node overhead on every element. We would be paying the
-# walk to speed up the build.
-#
-# ListBuilder escapes the copy a different way: [linear] PROVES there are no
-# sharers, so it writes the tail cell in place — O(1) push, and the result is
-# an ordinary immutable chain the moment build() hands it over.
-#
-# So: build with a ListBuilder (in order, O(1) per push), or prepend (the cons),
-# or ask whether the thing wants to be a List at all — a Bag or a Set has no
-# order to maintain and no end to append to.
+fun _prepended<T>(l: List<T>, f: ListSeg<T>, o: ListSeg<T>): List<T>
+  ret match(l._last)
+    (last: ListSeg<T>) => _lsSame<T>(f, last)
+      ? List<T>(o, l._start - 1i32, o, l._end)
+      : List<T>(o, l._start - 1i32, last, l._end)
+    (nil: None) => List<T>(o, l._start - 1i32, o, l._end)
 
+# No room in front of the first element: a new segment ahead of it, filled
+# from its back so later prepends claim downwards.
+fun _prependGrow<T>(x: T, l: List<T>, f: ListSeg<T>): List<T>
+  let cap = _lsNextCap(f.length)
+  let seg = _lsFresh<T>(cap, cap - 1i32, x, f, f.lsOrd - 1i32)
+  ret List<T>(seg, cap - 1i32, l._last, l._end)
 
-fun head<T>(l: List<T>): T|None
-  ret match(l)
-    (e: ListEmpty) => None
-    (fl: ListFull) => _chainHead<T>(fl.front)
+# The front slot is someone else's: copy the first segment's live part
+# behind x and keep the rest of the chain. The copy is full (no slack), so it
+# is a valid interior segment when the list grows past it.
+fun _prependCopy<T>(x: T, l: List<T>, f: ListSeg<T>): List<T>
+  ret match(l._last)
+    (last: ListSeg<T>) => _lsSame<T>(f, last)
+      ? _prependCopied<T>(x, f, l._start, l._end, None, f.lsOrd, None, 0i32)
+      : _prependCopied<T>(x, f, l._start, f.length, f.lsNext, f.lsOrd, last, l._end)
+    (nil: None) => l
 
+# `last`/`end` are the list's own when the copy is not the last segment;
+# None when it is (the copy then becomes the last too).
+fun _prependCopied<T>(x: T, f: ListSeg<T>, start: Int32, lim: Int32,
+                      next: ListSeg<T>|None, ord: Int32,
+                      last: ListSeg<T>|None, end: Int32): List<T>
+  let n = lim - start + 1i32
+  let s = __builtin_op__<ListSeg<T> >("array_builder_alloc", n)
+  let s2 = _lsInit<T>(s, 0i32, n, next, ord,
+                      _lsCopyInto<T>(s, 1i32, f, start, lim, _lsStore<T>(s, 0i32, x)))
+  ret match(last)
+    (l2: ListSeg<T>) => List<T>(s2, 0i32, l2, end)
+    (nil: None)      => List<T>(s2, 0i32, s2, n)
 
-fun tail<T>(l: List<T>): List<T>
-  ret match(chain<T>(l))
-    (nil: ChainEnd) => ListEmpty<T>()
-    (c: ChainLink)  => _listOf<T>(c.next)
+fun [tail] _lsCopyInto<T>(dst: ListSeg<T>, at: Int32, src: ListSeg<T>, i: Int32, lim: Int32,
+                          ok: Bool): Bool
+  ret i < lim
+    ? _lsCopyInto<T>(dst, at + 1i32, src, i + 1i32, lim, ok && _lsStore<T>(dst, at, src.array(i)))
+    : ok
 
+# A private copy: every claim on it is free.
+fun _copy<T>(l: List<T>): List<T>
+  ret concat<T>(List<T>(), l)
 
-# O(1) emptiness test. There is deliberately no `length`: a list is a sequence,
-# not an indexable buffer, and asking for its size invites the O(n) `length == 0`
-# / index-by-count patterns that walk the whole list. Match on the structure
-# (`head`/`tail`/`isEmpty`), fold to a count when you genuinely need one, or use
-# `splitHalf` to divide for parallel/recursive work.
-fun isEmpty<T>(l: List<T>): Bool
-  ret match(l)
-    (e: ListEmpty) => true
-    (fl: ListFull) => false
-
-
-# Last element, or None when empty. O(1) when the list has pending appends (the
-# rear holds them newest-first, so its head is the true last element); otherwise
-# O(n), walking to the end of the front.
-fun last<T>(l: List<T>): T|None
-  fun [tail] lastNode(n: Chain<T>): T|None
-    ret match(n)
-      (nil: ChainEnd) => None
-      (c: ChainLink)  => match(c.next)
-        (next: ChainLink) => lastNode(c.next)
-        (e: ChainEnd)     => c.value
-  ret lastNode(chain<T>(l))
-
-
-# Concatenate two lists, preserving order: every element of `a` then every
-# element of `b`. O(length b) — each of b's elements is appended onto `a`.
-# foldRev is GONE. It existed to walk a list newest-first without paying for
-# the rear's reversal; with one in-order chain there is no cheap reverse walk,
-# and a function whose whole purpose is "these elements, backwards" is the
-# thing this design set out to remove. Fold in order, or name an ordering
-# with sortBy.
-
+# Every element of `a` then every element of `b`. O(|b|): b's elements are
+# appended onto a (in place when a's spare room is unclaimed).
 fun concat<T>(a: List<T>, b: List<T>): List<T>
-  ret build<T>(_pushChain<T>(builderFrom<T>(a), chain<T>(b)))
+  fun [tail] go(acc: List<T>, c: List<T>): List<T>
+    ret isEmpty<T>(c) ? acc : go(append<T>(acc, first<T>(c)), tail<T>(c))
+  ret isEmpty<T>(a) ? (isEmpty<T>(b) ? a : go(a, b)) : go(a, b)
+
+# Push every element of `l` onto `acc`, in order. (concat, named for the
+# accumulate-loop call sites that read better as "add these".)
+fun appendAll<T>(acc: List<T>, l: List<T>): List<T>
+  ret concat<T>(acc, l)
 
 
-# First `n` elements (fewer if the list is shorter); `n <= 0` gives the empty
-# list. Counterpart `drop` discards them. Order is preserved.
-fun take<T>(l: List<T>, n: Int): List<T>
-  ret build<T>(_takeInto<T>(builder<T>(), chain<T>(l), n))
+# ─── Taking apart ────────────────────────────────────────────────────────────
 
-fun [tail] _takeInto<T>([terminal] b: ListBuilder<T>, c: Chain<T>, k: Int): ListBuilder<T>
-  ret k <= 0 ? b
-    : match(c)
-        (nil: ChainEnd) => b
-        (l2: ChainLink) => _takeInto<T>(push<T>(b, l2.value), l2.next, k - 1)
+fun [inline(always)] isEmpty<T>(l: List<T>): Bool
+  ret match(l._first)
+    (f: ListSeg<T>) => false
+    (nil: None)     => true
 
-fun [tail] drop<T>(l: List<T>, n: Int): List<T>
-  ret n <= 0 ? l
-    : match(head<T>(l))
-        (h: T)    => drop<T>(tail<T>(l), n - 1)
-        (e: None) => l
+# The first element, or None when empty.
+fun head<T>(l: List<T>): T|None
+  ret match(l._first)
+    (f: ListSeg<T>) => f.array(l._start)
+    (nil: None)     => None
+
+# The first element of a list KNOWN to be non-empty — test isEmpty first. On
+# an empty list it aborts (an array bounds failure): there is no T to return.
+fun [inline(always)] first<T>(l: List<T>): T
+  ret match(l._first)
+    (f: ListSeg<T>) => f.array(l._start)
+    (nil: None)     => __builtin_op__<ListSeg<T> >("array_builder_alloc", 0i32).array(0i32)
+
+# Everything after the first element. O(1), allocation-free; the empty list's
+# tail is the empty list.
+fun [inline(always)] tail<T>(l: List<T>): List<T>
+  ret match(l._first)
+    (f: ListSeg<T>) => match(l._last)
+      (last: ListSeg<T>) => _lsSame<T>(f, last)
+        ? (l._start + 1i32 < l._end
+            ? List<T>(f, l._start + 1i32, last, l._end)
+            : List<T>())
+        : (l._start + 1i32 < f.length
+            ? List<T>(f, l._start + 1i32, last, l._end)
+            : _lsHop<T>(f, last, l._end))
+      (nil: None) => l
+    (nil: None) => l
+
+# Cross from a full segment into the next one, resolving it once.
+fun _lsHop<T>(f: ListSeg<T>, last: ListSeg<T>, end: Int32): List<T>
+  ret match(f.lsNext)
+    (n: ListSeg<T>) => _lsEnter<T>(_lsResolve<T>(n), last, end)
+    (nil: None)     => List<T>()     # unreachable: an interior segment is linked
+
+# Entering the last segment switches to the list's own pointer for it, so
+# first and last name the same copy (and its ordinal) from here on.
+fun _lsEnter<T>(n: ListSeg<T>, last: ListSeg<T>, end: Int32): List<T>
+  ret _lsSame<T>(n, last) ? List<T>(last, 0i32, last, end) : List<T>(n, 0i32, last, end)
+
+# The last element, or None when empty. O(1).
+fun last<T>(l: List<T>): T|None
+  ret match(l._last)
+    (s: ListSeg<T>) => s.array(l._end - 1i32)
+    (nil: None)     => None
+
+# How many elements. O(segments) — it adds up segment fills rather than
+# stepping through elements — but still a walk: ask isEmpty when that is the
+# real question.
+fun size<T>(l: List<T>): Int
+  ret match(l._first)
+    (f: ListSeg<T>) => match(l._last)
+      (last: ListSeg<T>) => _lsSame<T>(f, last)
+        ? Int(l._end - l._start)
+        : _lsSizeFrom<T>(f, l._start, last, l._end, 0)
+      (nil: None) => 0
+    (nil: None) => 0
+
+fun [tail] _lsSizeFrom<T>(s: ListSeg<T>, from: Int32, last: ListSeg<T>, end: Int32,
+                          acc: Int): Int
+  ret match(s.lsNext)
+    (n: ListSeg<T>) => _lsSame<T>(n, last)
+      ? acc + Int(s.length - from) + Int(end)
+      : _lsSizeFrom<T>(_lsResolve<T>(n), 0i32, last, end, acc + Int(s.length - from))
+    (nil: None) => acc + Int(s.length - from)   # unreachable: interior segments link
+
+# Allocation-free uncons: the first element (None when empty) and the rest.
+fun uncons<T>(l: List<T>): (head: T|None, rest: List<T>)
+  ret (head = head<T>(l), rest = tail<T>(l))
 
 
-# Split a list into two near-equal halves in a single pass, WITHOUT computing a
-# length: a slow pointer advances one element for every two the fast pointer
-# takes, so when the fast pointer reaches the end the slow one is at the middle.
-# `left` keeps the leading elements in order, `right` the trailing ones. For a
-# list of n >= 2 both halves are non-empty (left = floor(n/2)); this is the
-# length-free way to divide work for recursion or `__parallel__`.
-# [tail]: the walk advances one element per step, so on a long list it MUST
-# lower to a loop — plain recursion here overflows the C stack via the async
-# hot path (found by sorting a half-million-word dictionary).
-fun [tail] _splitWalk<T>([terminal] acc: ListBuilder<T>, slow: List<T>,
-                         fast: List<T>): (left: ListBuilder<T>, right: List<T>)
-  ret match(head<T>(slow))
-    (s: T) => isEmpty<T>(fast) || isEmpty<T>(tail<T>(fast))
-        ? (left=acc, right=slow)
-        : _splitWalk<T>(push<T>(acc, s), tail<T>(slow), tail<T>(tail<T>(fast)))
-    (e: None) => (left=acc, right=slow)
+# ─── Iteration ───────────────────────────────────────────────────────────────
 
-fun splitHalf<T>(l: List<T>): (left: List<T>, right: List<T>)
-  ret _splitWalk<T>(builder<T>(), l, l)
-    |> (left, right) => (left = build<T>(left), right = right)
+# A List is its own Stream state: `next` is first + tail, and an empty list
+# is the end. E = Never — an in-memory source cannot fail.
+instance<T> Stream<List<T>, T, Never>
+  fun [inline(always)] next(self: List<T>): (stream: List<T>, value: Result<T | None, Never>)
+    ret isEmpty<T>(self)
+      ? (self, Ok<T | None, Never>(None))
+      : (tail<T>(self), Ok<T | None, Never>(first<T>(self)))
 
+fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
+  fun [tail] go(c: List<T>, acc: U): U
+    ret isEmpty<T>(c) ? acc : go(tail<T>(c), f(acc, first<T>(c)))
+  ret go(l, init)
 
-# True if any / every element satisfies `pred`. Both fold the whole list, but the
-# short-circuiting `||`/`&&` skip `pred` once the answer is settled.
+fun map<T,U>(l: List<T>, f: (:T): U): List<U>
+  fun [tail] go(acc: List<U>, c: List<T>): List<U>
+    ret isEmpty<T>(c) ? acc : go(append<U>(acc, f(first<T>(c))), tail<T>(c))
+  ret go(List<U>(), l)
+
+fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
+  fun [tail] go(acc: List<T>, c: List<T>): List<T>
+    ret isEmpty<T>(c) ? acc
+      : go(f(first<T>(c)) ? append<T>(acc, first<T>(c)) : acc, tail<T>(c))
+  ret go(List<T>(), l)
+
+# True if any / every element satisfies `pred`; both stop at the answer.
 fun any<T>(l: List<T>, pred: (:T): Bool): Bool
-  ret fold<T, Bool>(l, false, (acc: Bool, x: T) => acc || pred(x))
+  fun [tail] go(c: List<T>): Bool
+    ret isEmpty<T>(c) ? false : pred(first<T>(c)) ? true : go(tail<T>(c))
+  ret go(l)
 
 fun all<T>(l: List<T>, pred: (:T): Bool): Bool
-  ret fold<T, Bool>(l, true, (acc: Bool, x: T) => acc && pred(x))
-
+  fun [tail] go(c: List<T>): Bool
+    ret isEmpty<T>(c) ? true : pred(first<T>(c)) ? go(tail<T>(c)) : false
+  ret go(l)
 
 # Membership test, for any element type with an equality instance.
 fun contains<T>(l: List<T>, x: T): Bool where BasicEquality<T>
   ret any<T>(l, (y: T) => y == x)
 
-
-# Map each element to a list and concatenate the results, in order.
+# Map each element to a list and concatenate the results, in order. Linear:
+# each result is appended onto the accumulator in place.
 fun flatMap<T,U>(l: List<T>, f: (:T): List<U>): List<U>
   ret fold<T, List<U> >(l, List<U>(), (acc: List<U>, x: T) => concat<U>(acc, f(x)))
 
+# First `n` elements (fewer if the list is shorter); `n <= 0` gives the empty
+# list. Counterpart `drop` discards them. Order is preserved.
+fun take<T>(l: List<T>, n: Int): List<T>
+  fun [tail] go(acc: List<T>, c: List<T>, k: Int): List<T>
+    ret k <= 0 || isEmpty<T>(c) ? acc : go(append<T>(acc, first<T>(c)), tail<T>(c), k - 1)
+  ret go(List<T>(), l, n)
+
+fun [tail] drop<T>(l: List<T>, n: Int): List<T>
+  ret n <= 0 || isEmpty<T>(l) ? l : drop<T>(tail<T>(l), n - 1)
+
+# Split a list into two near-equal halves, `left` the leading elements and
+# `right` the trailing ones (left = floor(n/2)); for n >= 2 both are non-empty.
+# The length-free way to divide work for recursion or `__parallel__`: the
+# right half shares the list's own segments, only the left is copied.
+fun splitHalf<T>(l: List<T>): (left: List<T>, right: List<T>)
+  fun [tail] go(acc: List<T>, slow: List<T>, fast: List<T>): (left: List<T>, right: List<T>)
+    ret isEmpty<T>(fast) || isEmpty<T>(tail<T>(fast))
+      ? (left = acc, right = slow)
+      : go(append<T>(acc, first<T>(slow)), tail<T>(slow), tail<T>(tail<T>(fast)))
+  ret go(List<T>(), l, l)
+
 
 # ─── Co-walks: two lists advanced in step ────────────────────────────────────
-#
-# Neither of these computes a length. There is no `length` (see isEmpty), and
-# taking one would walk each list an extra time to answer a question the
-# co-walk already answers as it goes: whichever chain ends first says
-# everything about how the two compare.
 
 # Element-wise equality under a caller-supplied comparator: the same elements,
-# in the same order, and neither list longer than the other. Ragged is unequal
-# by construction — one chain ending while the other still holds an element
-# IS the inequality, not a separate case to test for.
-#
-# `&&` is the short-circuit ternary, so the recursive call stays in tail
-# position and the walk compiles to a loop.
+# in the same order, and neither list longer than the other.
 fun eqBy<T>(a: List<T>, b: List<T>, same: (:T, :T): Bool): Bool
-  fun [tail] walk(x: Chain<T>, y: Chain<T>): Bool
-    ret match(x)
-      (nil: ChainEnd) => y is ChainEnd
-      (lx: ChainLink) => match(y)
-        (ly: ChainLink) => same(lx.value, ly.value) && walk(lx.next, ly.next)
-        (e: ChainEnd)   => false
-  ret walk(chain<T>(a), chain<T>(b))
+  fun [tail] walk(x: List<T>, y: List<T>): Bool
+    ret isEmpty<T>(x) ? isEmpty<T>(y)
+      : isEmpty<T>(y) ? false
+      : same(first<T>(x), first<T>(y)) && walk(tail<T>(x), tail<T>(y))
+  ret walk(a, b)
 
-
-# Pairwise map, stopping at the shorter list. The ragged tail is DISCARDED,
-# not an error: a caller for whom running out MEANS something — a binding
-# whose declared entries outrun the supplied ones, say — is deciding something
-# this cannot express and should keep its own walk.
+# Pairwise map, stopping at the shorter list. The ragged tail is DISCARDED.
 fun zipMap<A, B, C>(a: List<A>, b: List<B>, f: (:A, :B): C): List<C>
-  fun [tail] walk([terminal] acc: ListBuilder<C>,
-                  x: Chain<A>, y: Chain<B>): ListBuilder<C>
-    ret match(x)
-      (lx: ChainLink) => match(y)
-        (ly: ChainLink) => walk(push<C>(acc, f(lx.value, ly.value)), lx.next, ly.next)
-        (e: ChainEnd)   => acc
-      (nil: ChainEnd) => acc
-  ret build<C>(walk(builder<C>(), chain<A>(a), chain<B>(b)))
-
-
-
-
-# map/filter walk FORWARD and push into a ListBuilder, so the result is built
-# in the order it will be read. They used to walk in reverse — rear as stored,
-# then the reversed front — and prepend, which arrived at forward order the
-# long way round; with one in-order chain there is no rear to walk and nothing
-# to reverse.
-#
-# Both are [tail] over the chain: per-element ChainLink recursion put one C
-# frame on the stack per element and overflowed a standard 8MB stack on
-# compiler-sized lists (an -O3 mega-function's label index).
-fun map<T,U>(l: List<T>, f: (:T): U): List<U>
-  ret build<U>(_mapInto<T,U>(builder<U>(), chain<T>(l), f))
-
-fun [tail] _mapInto<T,U>([terminal] b: ListBuilder<U>, c: Chain<T>,
-                         f: (:T): U): ListBuilder<U>
-  ret match(c)
-    (nil: ChainEnd) => b
-    (l: ChainLink)  => _mapInto<T,U>(push<U>(b, f(l.value)), l.next, f)
-
-
-fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
-  ret build<T>(_filterInto<T>(builder<T>(), chain<T>(l), f))
-
-fun [tail] _filterInto<T>([terminal] b: ListBuilder<T>, c: Chain<T>,
-                          f: (:T): Bool): ListBuilder<T>
-  ret match(c)
-    (nil: ChainEnd) => b
-    (l: ChainLink)  => _filterInto<T>(f(l.value) ? push<T>(b, l.value) : b,
-                                      l.next, f)
-
-
-fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
-  fun [tail] foldNode(n: Chain<T>, acc: U): U
-    ret match(n)
-      (nil: ChainEnd) => acc
-      (c: ChainLink)  => foldNode(c.next, f(acc, c.value))
-  ret foldNode(chain<T>(l), init)
+  fun [tail] walk(acc: List<C>, x: List<A>, y: List<B>): List<C>
+    ret isEmpty<A>(x) || isEmpty<B>(y) ? acc
+      : walk(append<C>(acc, f(first<A>(x), first<B>(y))), tail<A>(x), tail<B>(y))
+  ret walk(List<C>(), a, b)
 
 
 # Index of the first element satisfying `pred`, or None when no element
-# matches.  Always traverses the full list — once `found` is set the
-# step short-circuits to a pass-through.
+# matches.
 fun findIndex<T>(l: List<T>, pred: (:T): Bool): Int|None
-  fun step(acc: (idx: Int, found: Int|None), x: T): (idx: Int, found: Int|None)
-    ret match(acc.found)
-      (i: Int)  => acc
-      (n: None) => pred(x)
-        ? (idx=acc.idx + 1, found=acc.idx)
-        : (idx=acc.idx + 1, found=None)
-  let r = fold<T, (idx: Int, found: Int|None)>(l, (idx=0, found=None), step)
-  ret r.found
+  fun [tail] go(c: List<T>, i: Int): Int|None
+    ret isEmpty<T>(c) ? None : pred(first<T>(c)) ? i : go(tail<T>(c), i + 1)
+  ret go(l, 0)
 
 
 # Split `l` into `(yes, no)` by `pred`.  Order is preserved within each
@@ -321,17 +404,13 @@ fun partition<T>(l: List<T>, pred: (:T): Bool): (yes: List<T>, no: List<T>)
 
 
 # Group elements by `key(x)`.  Entries appear in original list order
-# within each group.
-# Each group is `filter`ed straight out of the original list, so it is in list
-# order BY CONSTRUCTION — no per-group accumulator to append to. A ListBuilder
-# cannot live in a Dict (it is [linear]) and prepending would need a reversal
-# at the end, which is precisely what this design removes.
+# within each group: each group is `filter`ed straight out of the list.
 fun _groupFor<K,T>(l: List<T>, key: (:T): K, k: K): List<T> where BasicEquality<K>
   ret filter<T>(l, (x: T) => key(x) == k)
 
 fun groupBy<T,K>(l: List<T>, key: (:T): K): Dict<K,List<T> > where BasicEquality<K>
   ret fold<K, Dict<K,List<T> > >(
-        _chainToSet<K>(chain<K>(map<T,K>(l, key)), Set<K>()),
+        fold<K, Set<K> >(map<T,K>(l, key), Set<K>(), (s: Set<K>, k: K) => add<K>(s, k)),
         Dict<K,List<T> >(),
         (acc: Dict<K,List<T> >, k: K) =>
           put<K,List<T> >(acc, k, _groupFor<K,T>(l, key, k)))
@@ -340,23 +419,12 @@ fun groupBy<T,K>(l: List<T>, key: (:T): K): Dict<K,List<T> > where BasicEquality
 # ─── Sort ───────────────────────────────────────────────────────────────────
 #
 # Stable natural mergesort in which every run and every merge is produced
-# ASCENDING, so there is no direction bookkeeping, no ping-pong, and nothing
-# is ever reversed.
-#
-#   * NATURAL RUNS: the seed pass still cuts the input into maximal ordered
-#     stretches, so sorted OR reverse-sorted input is ONE run and the merge
-#     phase vanishes. An ASCENDING stretch is collected with a ListBuilder
-#     (O(1) in-order push). A DESCENDING stretch is collected by PREPENDING,
-#     which yields it ascending for free — consing, not a reversal: there is
-#     no function here whose job is "these elements, backwards".
-#   * MERGES BUILD IN ORDER: the old design alternated direction every pass
-#     because a [tail] merge could only prepend, which reverses. ListBuilder
-#     gives O(1) append, so a merge emits ascending directly — and with that
-#     premise gone, so is the final flip.
+# ASCENDING, so there is no direction bookkeeping and nothing is reversed.
+# The seed pass cuts the input into maximal ordered stretches (sorted input is
+# ONE run and the merge phase vanishes); merges append in order.
 #
 # Stability: ties take from the EARLIER run. The merge pops `a` unless `b` is
-# STRICTLY less, and the run queue is built in order, so "earlier" keeps
-# meaning what it says.
+# STRICTLY less, and the run queue is built in order.
 
 fun sort<T>(l: List<T>): List<T> where BasicCompare<T>
   ret sortBy<T>(l, (a: T, b: T) => a < b)
@@ -364,154 +432,64 @@ fun sort<T>(l: List<T>): List<T> where BasicCompare<T>
 # `less` must be a STRICT ordering: true iff its first argument precedes its
 # second. Ties — neither less(a,b) nor less(b,a) — keep their original order.
 fun sortBy<T>(l: List<T>, less: (:T, :T): Bool): List<T>
-  ret _mergeUntilOne<T>(_seedAll<T>(chain<T>(l), less), less)
+  ret _mergeUntilOne<T>(_seedAll<T>(l, less), less)
 
+# A run continues while the next element is NOT strictly less than the
+# previous one — equal keeps it going, which is what makes a run of ties
+# stable — and a descent closes it.
+fun _seedAll<T>(l: List<T>, less: (:T, :T): Bool): List<List<T> >
+  ret isEmpty<T>(l) ? List<List<T> >()
+    : _seedLoop<T>(append<T>(List<T>(), first<T>(l)), List<List<T> >(),
+                   tail<T>(l), less, first<T>(l))
 
-# ── seed: cut into maximal ASCENDING stretches ───────────────────────────────
-# Runs are appended in encounter order, because "earlier run" is what makes
-# the merge stable. A run continues while the next element is NOT strictly
-# less than the previous one — equal keeps it going, which is what makes a run
-# of ties stable — and a descent closes it.
-#
-# ONE self-recursive function, because [tail] requires DIRECT self-recursion
-# and the seed must be [tail]: a long list would otherwise recurse on the C
-# stack. That constraint costs the old design's reverse-sorted special case.
-# It used to collect a descending stretch and reverse it, turning
-# reverse-sorted input into one run (O(n)); collecting it ascending instead
-# needs a different accumulator from the builder, which means a second
-# mutually-recursive function, which [tail] forbids. So a descent simply
-# starts a new run: already-sorted input is still ONE run and still O(n),
-# while reverse-sorted input is now n singleton runs and O(n log n). Paying
-# log n on the rarer input is the honest trade for never reversing anything.
-
-fun _seedAll<T>(c: Chain<T>, less: (:T, :T): Bool): List<List<T> >
-  ret match(c)
-    (e: ChainEnd)  => List<List<T> >()
-    (l: ChainLink) => build<List<T> >(
-        _seedLoop<T>(push<T>(builder<T>(), l.value), builder<List<T> >(),
-                     l.next, less, l.value))
-
-# TWO builders in flight: `run` collects the current stretch, `runs` collects
-# the finished ones. Both are linear and both are consumed exactly once on
-# every path, which is what lets the run queue be built in order too — the
-# order of runs is what makes the merge stable.
-fun [tail] _seedLoop<T>([terminal] run: ListBuilder<T>,
-                        [terminal] runs: ListBuilder<List<T> >,
-                        c: Chain<T>, less: (:T, :T): Bool,
-                        prev: T): ListBuilder<List<T> >
-  ret match(c)
-    (e: ChainEnd)  => push<List<T> >(runs, build<T>(run))
-    (l: ChainLink) => less(l.value, prev)
-      # descent: close this run and start the next at l.value
-      ? _seedLoop<T>(push<T>(builder<T>(), l.value),
-                     push<List<T> >(runs, build<T>(run)), l.next, less, l.value)
-      : _seedLoop<T>(push<T>(run, l.value), runs, l.next, less, l.value)
-
-
-# ── merge: pairwise passes until one run remains ─────────────────────────────
+fun [tail] _seedLoop<T>(run: List<T>, runs: List<List<T> >, c: List<T>,
+                        less: (:T, :T): Bool, prev: T): List<List<T> >
+  ret isEmpty<T>(c) ? append<List<T> >(runs, run)
+    : less(first<T>(c), prev)
+      # descent: close this run and start the next at first(c)
+      ? _seedLoop<T>(append<T>(List<T>(), first<T>(c)), append<List<T> >(runs, run),
+                     tail<T>(c), less, first<T>(c))
+      : _seedLoop<T>(append<T>(run, first<T>(c)), runs, tail<T>(c), less, first<T>(c))
 
 fun [tail] _mergeUntilOne<T>(runs: List<List<T> >, less: (:T, :T): Bool): List<T>
-  ret match(head<List<T> >(runs))
-    (e: None)     => List<T>()
-    (only: List<T>) => isEmpty<List<T> >(tail<List<T> >(runs))
-      ? only
-      : _mergeUntilOne<T>(build<List<T> >(_mergePairs<T>(builder<List<T> >(), runs, less)), less)
+  ret isEmpty<List<T> >(runs) ? List<T>()
+    : isEmpty<List<T> >(tail<List<T> >(runs)) ? first<List<T> >(runs)
+    : _mergeUntilOne<T>(_mergePairs<T>(List<List<T> >(), runs, less), less)
 
-# An odd trailing run passes through untouched — every run is ascending, so
-# there is no direction for it to be out of step with.
-fun [tail] _mergePairs<T>([terminal] acc: ListBuilder<List<T> >,
-                          runs: List<List<T> >,
-                          less: (:T, :T): Bool): ListBuilder<List<T> >
-  ret match(head<List<T> >(runs))
-    (e: None) => acc
-    (a: List<T>) => match(head<List<T> >(tail<List<T> >(runs)))
-      (e2: None) => push<List<T> >(acc, a)
-      (b: List<T>) => _mergePairs<T>(push<List<T> >(acc, _merge2<T>(a, b, less)),
-                                     tail<List<T> >(tail<List<T> >(runs)), less)
+# An odd trailing run passes through untouched.
+fun [tail] _mergePairs<T>(acc: List<List<T> >, runs: List<List<T> >,
+                          less: (:T, :T): Bool): List<List<T> >
+  ret isEmpty<List<T> >(runs) ? acc
+    : isEmpty<List<T> >(tail<List<T> >(runs)) ? append<List<T> >(acc, first<List<T> >(runs))
+    : _mergePairs<T>(append<List<T> >(acc, _merge2<T>(first<List<T> >(runs),
+                                                      first<List<T> >(tail<List<T> >(runs)), less)),
+                     tail<List<T> >(tail<List<T> >(runs)), less)
 
 fun _merge2<T>(a: List<T>, b: List<T>, less: (:T, :T): Bool): List<T>
-  ret build<T>(_mergeInto<T>(builder<T>(), chain<T>(a), chain<T>(b), less))
+  ret _mergeInto<T>(List<T>(), a, b, less)
 
 # Pops `a` unless `b` is STRICTLY less — so a tie takes the earlier run's
 # element first, which is the whole of stability.
-fun [tail] _mergeInto<T>([terminal] out: ListBuilder<T>, a: Chain<T>, b: Chain<T>,
-                         less: (:T, :T): Bool): ListBuilder<T>
-  ret match(a)
-    (ae: ChainEnd)  => _pushChain<T>(out, b)
-    (ac: ChainLink) => match(b)
-      (be: ChainEnd)  => _pushChain<T>(out, a)
-      (bc: ChainLink) => less(bc.value, ac.value)
-        ? _mergeInto<T>(push<T>(out, bc.value), a, bc.next, less)
-        : _mergeInto<T>(push<T>(out, ac.value), ac.next, b, less)
+fun [tail] _mergeInto<T>(out: List<T>, a: List<T>, b: List<T>,
+                         less: (:T, :T): Bool): List<T>
+  ret isEmpty<T>(a) ? concat<T>(out, b)
+    : isEmpty<T>(b) ? concat<T>(out, a)
+    : less(first<T>(b), first<T>(a))
+      ? _mergeInto<T>(append<T>(out, first<T>(b)), a, tail<T>(b), less)
+      : _mergeInto<T>(append<T>(out, first<T>(a)), tail<T>(a), b, less)
 
-# ── ListBuilder ──────────────────────────────────────────────────────────────
-# Linear in-order construction: O(1) push, natural order, no reversals, and
-# build() hands back a FRONT-NORMAL list whose chain() is free. The cells are
-# ordinary immutable ChainLinks; the one mutable step — writing the previous
-# tail's `next` — lives in the runtime, on a cell that is PINNED (compaction
-# never moves it: concurrent lazy relocation's "either copy is fine" contract
-# only covers immutable objects) and not yet published. Linearity certifies
-# the confinement: the builder is consumed by every operation, so no push can
-# race another or follow build. Exactly one cell is pinned per live builder.
-# The runtime calls' results thread through _ok so no pass can discard them.
-class [linear,final] ListBuilder<T>(_head: Chain<T>, _tail: Chain<T>,
-                                     _slot: Int64, _ok: Bool)
 
-fun builder<T>(): ListBuilder<T>
-  ret ListBuilder<T>(ChainEnd<T>(), ChainEnd<T>(), truncateToInt64(0), true)
+# ─── Migration shims — to be removed ─────────────────────────────────────────
+# The ListBuilder spellings, now plain List operations. Kept only while call
+# sites move over; nothing new should use them.
+fun push<T>(l: List<T>, x: T): List<T>
+  ret append<T>(l, x)
 
-fun push<T>([terminal] b: ListBuilder<T>, x: T): ListBuilder<T>
-  let cell = ChainLink<T>(x, ChainEnd<T>())
-  let pinned = __builtin_op__<bool>("list_builder_pin", cell)
-  ret match(b._tail)
-    (prev: ChainLink) => ListBuilder<T>(b._head, cell, b._slot,
-        pinned && __builtin_op__<bool>("list_builder_link", prev, cell, b._slot))
-    # First push: compute the cell layout's next-slot index ONCE; every later
-    # link is a single indexed store.
-    (nil: ChainEnd)   => ListBuilder<T>(cell, cell,
-        __builtin_op__<int64>("list_builder_slot", cell), pinned)
+fun build<T>(l: List<T>): List<T>
+  ret l
 
-fun build<T>([terminal] b: ListBuilder<T>): List<T>
-  ret match(b._tail)
-    (t2: ChainLink) => __builtin_op__<bool>("list_builder_seal", t2)
-      ? ListFull<T>(b._head)
-      : ListEmpty<T>()   # unreachable: seal always succeeds; keeps the call live
-    (nil: ChainEnd)  => ListEmpty<T>()
+fun pushAll<T>(l: List<T>, more: List<T>): List<T>
+  ret concat<T>(l, more)
 
-# Push every element of `l`, in order.
-fun pushAll<T>([terminal] b: ListBuilder<T>, l: List<T>): ListBuilder<T>
-  ret _pushChain<T>(b, chain(l))
-
-# A fresh builder already holding `l` — the seed for an accumulate loop that
-# must carry a list IN rather than start empty. Spelling this out at the call
-# site (`_pushChain<T>(builder<T>(), chain(l))`) buried the one thing the
-# reader wants, which list the loop starts from, under three nested calls and
-# three repetitions of the element type.
-fun builderFrom<T>(l: List<T>): ListBuilder<T>
-  ret pushAll<T>(builder<T>(), l)
-
-fun [tail] _pushChain<T>([terminal] b: ListBuilder<T>, c: Chain<T>): ListBuilder<T>
-  ret match(c)
-    (nil: ChainEnd) => b
-    (l: ChainLink)  => _pushChain<T>(push(b, l.value), l.next)
-
-# Explicitly consume a builder without keeping its list — the failure-path
-# counterpart of build. A ternary whose
-# branches mix implicit drop with consumption is rejected by the linearity
-# checker; route the failure branch through a helper that takes the builder
-# and lets the drop happen at statement level, or call discard directly.
-fun discard<T>([terminal] b: ListBuilder<T>): None
-  ret _discardBuilt(build(b))
-
-# Drop: an ABANDONED builder — a failed parse alternative, an early exit —
-# must still release its pinned tail cell (a leaked pin is a permanently
-# unmovable object). Dropping is building and discarding the result: build's
-# seal unpins, and the discarded cells are ordinary garbage. [ambient]: the
-# drops pass inserts plain `drop(x)` calls that must resolve in concrete
-# user code without a spelled `where`.
-instance [ambient]<T> Drop<ListBuilder<T>>
-  fun drop(self: ListBuilder<T>): None
-    ret _discardBuilt(build(self))
-
-fun _discardBuilt<T>(_l: List<T>): None
+fun discard<T>(l: List<T>): None
   ret None

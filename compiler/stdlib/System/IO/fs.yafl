@@ -71,20 +71,20 @@ fun makeDir(path: String): IOError|None
 # and creating "" would fail, so the walk carries the prefix rather than
 # rebuilding it from the parts.
 fun makeDirs(path: String): IOError|None
-  ret path == "" ? None : _mkDirsLoop(chain(split(path, "/")), "", true)
+  ret path == "" ? None : _mkDirsLoop(split(path, "/"), "", true)
 
-fun [tail] _mkDirsLoop(parts: Chain<String>, prefix: String,
-                       first: Bool): IOError|None
-  ret match(parts)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => (first ? l.value : prefix + "/" + l.value)
+fun [tail] _mkDirsLoop(parts: List<String>, prefix: String,
+                       atRoot: Bool): IOError|None
+  ret isEmpty(parts)
+    ? None
+    : (atRoot ? first(parts) : prefix + "/" + first(parts))
       |> (here: String) => here == ""
         # An empty component is either the root's leading "/" or a doubled
         # slash; neither names a directory to create.
-        ? _mkDirsLoop(l.next, here, false)
+        ? _mkDirsLoop(tail(parts), here, false)
         : match(makeDir(here))
           (e: IOError) => e
-          ()           => _mkDirsLoop(l.next, here, false)
+          ()           => _mkDirsLoop(tail(parts), here, false)
 
 
 # Public Dir handle.  [linear,final] — every Dir must be threaded through

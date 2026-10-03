@@ -57,7 +57,7 @@ interface Sized<T>
 
 instance [ambient]<T> Sized<List<T>>
   fun sizeOf(v: List<T>): Int
-    ret chainLength(chain(v))
+    ret size(v)
 
 fun main(): Int
   let l = prepend(4, prepend(5, List<Int>()))
@@ -151,7 +151,7 @@ interface Sized<T>
 
 instance [ambient]<T> Sized<List<T>>
   fun sizeOf(v: List<T>): Int
-    ret chainLength(chain(v))
+    ret size(v)
 
 fun measure<T>(l: List<T>): Int
   ret sizeOf(l)
@@ -168,7 +168,7 @@ interface Sized<T>
 
 instance<T> Sized<List<T>>
   fun sizeOf(v: List<T>): Int
-    ret chainLength(chain(v))
+    ret size(v)
 
 fun measure<T>(l: List<T>): Int where Sized<List<T>>
   ret sizeOf(l)

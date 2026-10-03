@@ -31,14 +31,14 @@ import Bootstrap::Types
 # The rewritten statements in program order, the errors as a set, and whether
 # anything changed. The statements are built: every statement that passes
 # through untouched used to copy the whole program so far.
-class [linear, final] LhAcc(lhStmts: ListBuilder<PStmt>, lhErrs: Set<PErr>,
+class [linear, final] LhAcc(lhStmts: List<PStmt>, lhErrs: Set<PErr>,
                             lhChanged: Bool)
 
 fun lhKeep([terminal] acc: LhAcc, st) => LhAcc(push(acc.lhStmts, st), acc.lhErrs, acc.lhChanged)
 
 fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PErr>, lhChanged: Bool)
-  let out = lhStmtsLoop(chain(statements), List(),
-                        LhAcc(builder(), Set(), false))
+  let out = lhStmtsLoop(statements, List(),
+                        LhAcc(List(), Set(), false))
   ret (build(out.lhStmts), out.lhErrs, out.lhChanged)
 
 # ANY enum type: every boxed enum now carries the slot by default, and the
@@ -51,10 +51,10 @@ fun lhIsHashedType(sp: Spec|None, roots: List<String>) => match(sp)
     (o: Spec)   => false
   ()         => false
 
-fun [tail] lhStmtsLoop(ss: Chain<PStmt>, roots: List<String>,
-                       [terminal] acc: LhAcc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => lhStmtsLoop(l.next, roots, lhOne(l.value, roots, acc))
+fun [tail] lhStmtsLoop(ss: List<PStmt>, roots: List<String>,
+                       [terminal] acc: LhAcc) => isEmpty(ss)
+  ? acc
+  : lhStmtsLoop(tail(ss), roots, lhOne(first(ss), roots, acc))
 
 fun lhOne(st, roots: List<String>,
           [terminal] acc: LhAcc) => match(st)
@@ -68,7 +68,7 @@ fun lhOne(st, roots: List<String>,
 fun lhFun(f: PsFun, roots: List<String>,
           [terminal] acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
-  if !exactly(chain(params), 1) || !lhFirstParamHashed(params, roots)
+  if !exactly(params, 1) || !lhFirstParamHashed(params, roots)
     ret LhAcc(push(acc.lhStmts, f),
                add(acc.lhErrs, PErr(f.psfLine,
            "a [hashed] function must take exactly one parameter of an "
@@ -142,7 +142,7 @@ fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
 fun lhRefeqFun(f: PsFun, roots: List<String>,
                [terminal] acc: LhAcc): LhAcc
   let params = flattenParams(f.fParams)
-  if !exactly(chain(params), 2) || !lhRefeqParamsOk(params, roots)
+  if !exactly(params, 2) || !lhRefeqParamsOk(params, roots)
     ret LhAcc(push(acc.lhStmts, f),
                add(acc.lhErrs, PErr(f.psfLine,
            "a [refeq] function must take two parameters of one enum "

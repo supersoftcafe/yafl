@@ -172,7 +172,7 @@ fun dumpExpr(x, depth, out) => match(x)
     |> (s2) => dumpExpr(qq.qqFallback, depth + 1, s2)
   # tail_loop lowering only — exercised by the tail-stage contract.
   (lp: PeLoop)      => dLine(out, depth, "Loop", lp.pelpLine,
-                             join(loopParamNames(chain(lp.loopParams),
+                             join(loopParamNames(lp.loopParams,
                                                  List()),
                                   ","))
     |> (s1) => dumpExpr(lp.loopBody, depth + 1, s1)
@@ -190,13 +190,13 @@ fun lazyCapMark(c: String|None) => match(c)
   ()          => ""
 
 fun loopParamNames(ps, acc: List<String>): List<String>
-  ret build(loopParamNamesB(ps, builderFrom(acc)))
+  ret build(loopParamNamesB(ps, acc))
 
-fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String>) => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (nm: PeName) => loopParamNamesB(l.next, push(acc, nm.refName))
-    (o: PExpr)   => loopParamNamesB(l.next, acc)
+fun [tail] loopParamNamesB(ps: List<PExpr>, [terminal] acc: List<String>) => isEmpty(ps)
+  ? acc
+  : match(first(ps))
+    (nm: PeName) => loopParamNamesB(tail(ps), push(acc, nm.refName))
+    (o: PExpr)   => loopParamNamesB(tail(ps), acc)
 
 fun [tail] dumpExprs(es: List<PExpr>, depth,
                      out) => match(head(es))

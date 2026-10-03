@@ -133,16 +133,16 @@ fun compileArray(af: SArrayField, r)
   ret SpecOut(SArrayField(el.soSpec, af.safLenField, af.safLine), el.soGlobals)
 
 fun compileTuple(t2: STuple, r)
-  let es = compileEntries(chain(t2.stEntries), r, builder(), List())
+  let es = compileEntries(t2.stEntries, r, List(), List())
   ret SpecOut(STuple(es.esEntries, t2.stLine), es.esGlobals)
 
 class [final] EntriesOut(esEntries: List<SEntry>, esGlobals: List<PStmt>)
 
-fun [tail] compileEntries(es: Chain<SEntry>, r, [terminal] acc,
-                          glb) => match(es)
-  (nil: ChainEnd) => EntriesOut(build(acc), glb)
-  (l: ChainLink)  => compileEntry(l.value, r)
-    |> (one) => compileEntries(l.next, r, push(acc, one.eoEntry),
+fun [tail] compileEntries(es: List<SEntry>, r, [terminal] acc,
+                          glb) => isEmpty(es)
+  ? EntriesOut(build(acc), glb)
+  : compileEntry(first(es), r)
+    |> (one) => compileEntries(tail(es), r, push(acc, one.eoEntry),
                                concat(glb, one.eoGlobals))
 
 class [final] EntryOut(eoEntry: SEntry, eoGlobals: List<PStmt>)
@@ -165,11 +165,11 @@ fun compileEntry(en: SEntry, r)
 
 class [final] ParamsOut(psSpecs: List<Spec>, psGlobals: List<PStmt>)
 
-fun compileParams(ts: List<Spec>, r) => compileParamLoop(chain(ts), r, builder(), List())
+fun compileParams(ts: List<Spec>, r) => compileParamLoop(ts, r, List(), List())
 
-fun [tail] compileParamLoop(ts: Chain<Spec>, r, [terminal] acc,
-                            glb) => match(ts)
-  (nil: ChainEnd) => ParamsOut(build(acc), glb)
-  (l: ChainLink)  => compileSpec(l.value, r)
-    |> (one) => compileParamLoop(l.next, r, push(acc, one.soSpec),
+fun [tail] compileParamLoop(ts: List<Spec>, r, [terminal] acc,
+                            glb) => isEmpty(ts)
+  ? ParamsOut(build(acc), glb)
+  : compileSpec(first(ts), r)
+    |> (one) => compileParamLoop(tail(ts), r, push(acc, one.soSpec),
                                  concat(glb, one.soGlobals))

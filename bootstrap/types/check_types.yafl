@@ -38,7 +38,7 @@ fun checkSpec(sp, r): Set<PErr> => match(sp)
   (g2: SGeneric)     => noErrs()
   (cl: SCallable)    => union(checkSpec(cl.scParams2, r),
                                checkSpecOpt(cl.scResult, r))
-  (cm: SCombination) => checkSpecs(chain(cm.scTypes), r, noErrs())
+  (cm: SCombination) => checkSpecs(cm.scTypes, r, noErrs())
   (t2: STuple)       => checkTuple(t2, r)
   (af: SArrayField)  => checkSpec(af.safElem, r)
   (ls: SLazyStub)    => checkSpecOpt(ls.slsTarget, r)
@@ -47,16 +47,16 @@ fun checkSpecOpt(sp: Spec|None, r): Set<PErr> => match(sp)
   (s2: Spec) => checkSpec(s2, r)
   ()         => noErrs()
 
-fun [tail] checkSpecs(ss: Chain<Spec>, r: Resolver,
-                      acc: Set<PErr>): Set<PErr> => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => checkSpecs(l.next, r, union(acc, checkSpec(l.value, r)))
+fun [tail] checkSpecs(ss: List<Spec>, r: Resolver,
+                      acc: Set<PErr>): Set<PErr> => isEmpty(ss)
+  ? acc
+  : checkSpecs(tail(ss), r, union(acc, checkSpec(first(ss), r)))
 
-fun [tail] checkFields(fs: Chain<SField>, r,
-                       acc): Set<PErr> => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => checkFields(l.next, r,
-                                 union(acc, checkSpec(l.value.sfType, r)))
+fun [tail] checkFields(fs: List<SField>, r,
+                       acc): Set<PErr> => isEmpty(fs)
+  ? acc
+  : checkFields(tail(fs), r,
+                                 union(acc, checkSpec(first(fs).sfType, r)))
 
 fun isKnownBuiltin(name) => name == "str" || name == "bigint" || name == "bool"
     || name == "int8" || name == "int16" || name == "int32"
@@ -64,18 +64,18 @@ fun isKnownBuiltin(name) => name == "str" || name == "bigint" || name == "bool"
 
 fun checkNamed(n: SNamed, r)
   let found = findType(r, n.snName)
-  if atLeast(chain(found.bItems), 2)
+  if atLeast(found.bItems, 2)
     ret oneErr(n.snLine, "Ambiguous reference to '" + n.snName + "'")
-  if exactly(chain(found.bItems), 1)
+  if exactly(found.bItems, 1)
     ret noErrs()
   ret oneErr(n.snLine, "Unresolved reference to '" + n.snName + "'")
 
 fun checkClassSpec(c: SClass, r)
-  let tpErrs = checkSpecs(chain(c.scParams), r, noErrs())
+  let tpErrs = checkSpecs(c.scParams, r, noErrs())
   let found = findType(r, c.scName)
   if isEmpty(found.bItems)
     ret union(oneErr(c.scLine, "Failed to resolve class " + c.scName), tpErrs)
-  if atLeast(chain(found.bItems), 2)
+  if atLeast(found.bItems, 2)
     ret union(oneErr(c.scLine, "Found too many classes named " + c.scName),
                tpErrs)
   ret match(soleItem(found))
@@ -91,22 +91,22 @@ fun checkTuple(t2: STuple, r)
   if namedBeforePositional(t2.stEntries)
     ret oneErr(t2.stLine,
                "Named parameters are not allowed before positional parameters")
-  ret checkEntries(chain(t2.stEntries), r, noErrs())
+  ret checkEntries(t2.stEntries, r, noErrs())
 
 # True iff an unnamed entry follows a named one — a single flag-carrying
 # walk (was last-unnamed-index > first-named-index; same relation).
-fun namedBeforePositional(es: List<SEntry>) => unnamedAfterNamed(chain(es), false)
+fun namedBeforePositional(es: List<SEntry>) => unnamedAfterNamed(es, false)
 
-fun [tail] unnamedAfterNamed(es: Chain<SEntry>, seenNamed) => match(es)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => l.value.seName == ""
-    ? (seenNamed ? true : unnamedAfterNamed(l.next, seenNamed))
-    : unnamedAfterNamed(l.next, true)
+fun [tail] unnamedAfterNamed(es: List<SEntry>, seenNamed) => isEmpty(es)
+  ? false
+  : first(es).seName == ""
+    ? (seenNamed ? true : unnamedAfterNamed(tail(es), seenNamed))
+    : unnamedAfterNamed(tail(es), true)
 
-fun [tail] checkEntries(es: Chain<SEntry>, r,
-                        acc: Set<PErr>) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => checkEntries(l.next, r, union(acc, checkEntry(l.value, r)))
+fun [tail] checkEntries(es: List<SEntry>, r,
+                        acc: Set<PErr>) => isEmpty(es)
+  ? acc
+  : checkEntries(tail(es), r, union(acc, checkEntry(first(es), r)))
 
 fun checkEntry(en: SEntry, r)
   let err1 = checkSpecOpt(en.seType, r)
@@ -138,13 +138,13 @@ fun isLiteralValue(x) => match(stripConversions(x))
   (s2: PeStr)    => true
   (b: PeBool)    => true
   (ng: PeNothing) => true
-  (tp: PeTuple)  => allLiteralEntries(chain(tp.exprs))
+  (tp: PeTuple)  => allLiteralEntries(tp.exprs)
   (o: PExpr)     => false
 
-fun [tail] allLiteralEntries(es: Chain<PTupEnt>) => match(es)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => !l.value.tupSpread && isLiteralValue(l.value.tupValue)
-    ? allLiteralEntries(l.next)
+fun [tail] allLiteralEntries(es: List<PTupEnt>) => isEmpty(es)
+  ? true
+  : !first(es).tupSpread && isLiteralValue(first(es).tupValue)
+    ? allLiteralEntries(tail(es))
     : false
 
 fun [tail] stripConversions(x) => match(x)
@@ -179,47 +179,47 @@ fun narrowClassStmt(st): PStmt => st
 fun callerTypeParamErrs(st, callerParams: List<Spec>, lr,
                         r)
   let gens = stmtGens(st)
-  if shorterThan(chain(gens), chain(callerParams))
+  if shorterThan(gens, callerParams)
     ret oneErr(lr, "Excess type parameters")
-  if shorterThan(chain(callerParams), chain(gens))
+  if shorterThan(callerParams, gens)
     ret oneErr(lr, "Not enough type parameters")
-  ret checkWheres(chain(stmtWheres(st)), instantiation(chain(gens), chain(callerParams), List()),
-                  RTypes(callerGenFounds(chain(gens), chain(callerParams),
+  ret checkWheres(stmtWheres(st), instantiation(gens, callerParams, List()),
+                  RTypes(callerGenFounds(gens, callerParams,
                                          List()),
                          r, List()),
                   lr)
 
 # The constraint compiles to the declaration's own placeholders; this use
 # instantiates them (`BasicCompare<TVal>` at `>=`<Int> is BasicCompare<Int>).
-fun [tail] instantiation(gs: Chain<PGen>, cs: Chain<Spec>, acc: List<Binding>): List<Binding> => match(gs)
-  (nil: ChainEnd) => acc
-  (g2: ChainLink) => match(cs)
-    (nil2: ChainEnd) => acc
-    (c: ChainLink)   => instantiation(g2.next, c.next, prepend(Binding(g2.value.genName, c.value), acc))
+fun [tail] instantiation(gs: List<PGen>, cs: List<Spec>, acc: List<Binding>): List<Binding> => isEmpty(gs)
+  ? acc
+  : isEmpty(cs)
+    ? acc
+    : instantiation(tail(gs), tail(cs), prepend(Binding(first(gs).genName, first(cs)), acc))
 
 fun callerGenFounds(gs, cs,
                            acc: List<Found>): List<Found>
-  ret build(callerGenFoundsB(gs, cs, builderFrom(acc)))
+  ret build(callerGenFoundsB(gs, cs, acc))
 
-fun [tail] callerGenFoundsB(gs: Chain<PGen>, cs: Chain<Spec>,
-                           [terminal] acc: ListBuilder<Found>) => match(gs)
-  (nil: ChainEnd) => acc
-  (g2: ChainLink) => match(cs)
-    (nil2: ChainEnd) => acc
-    (c: ChainLink)   => callerGenFoundsB(g2.next, c.next,
-        push(acc, Found(g2.value.genName,
-                  PsTypealias(g2.value.genName, List(),
-                              List(), c.value, List(),
-                              g2.value.pgLine),
+fun [tail] callerGenFoundsB(gs: List<PGen>, cs: List<Spec>,
+                           [terminal] acc: List<Found>) => isEmpty(gs)
+  ? acc
+  : isEmpty(cs)
+    ? acc
+    : callerGenFoundsB(tail(gs), tail(cs),
+        push(acc, Found(first(gs).genName,
+                  PsTypealias(first(gs).genName, List(),
+                              List(), first(cs), List(),
+                              first(gs).pgLine),
                   ScLocal())))
 
 # Each constraint, instantiated for this use, must be provided: by a `where`
 # in scope, a `[trait]` let, or an instance. The first that is not is the
 # error.
-fun [tail] checkWheres(ws: Chain<Spec>, inst: List<Binding>, r, lr): Set<PErr> => match(ws)
-  (nil: ChainEnd) => noErrs()
-  (l: ChainLink)  => checkOneWhere(l.value, inst, r, lr)
-    |> (errs) => isEmpty(errs) ? checkWheres(l.next, inst, r, lr) : errs
+fun [tail] checkWheres(ws: List<Spec>, inst: List<Binding>, r, lr): Set<PErr> => isEmpty(ws)
+  ? noErrs()
+  : checkOneWhere(first(ws), inst, r, lr)
+    |> (errs) => isEmpty(errs) ? checkWheres(tail(ws), inst, r, lr) : errs
 
 fun checkOneWhere(w, inst: List<Binding>, r, lr)
   let compiled = compileSpec(w, r)
@@ -249,7 +249,7 @@ fun letSatisfies(wanted, st: PStmt, r) => match(st)
 
 # PRE-LOWERING first-class instances: the pattern IS the interface.
 fun instanceSatisfies(wanted, st: PStmt, r) => match(st)
-  (ti: PsTraitInstance) => satisfies(wanted, ti.tiPattern, genNames(chain(ti.tiGens), List()), r)
+  (ti: PsTraitInstance) => satisfies(wanted, ti.tiPattern, genNames(ti.tiGens, List()), r)
   (o: PStmt)            => false
 
 fun ctWhereName(sp) => match(sp)

@@ -14,17 +14,17 @@ import System::Test
 
 
 fun _ints(): List<Int>
-    ret build(push(push(push(builder<Int>(), 1), 2), 3))
+    ret build(push(push(push(List<Int>(), 1), 2), 3))
 
 
 fun [test("an empty list reports empty and has no head")] emptyList(): None|TestFailure
     let empty = List<Int>()
     ret assertTrue(isEmpty(empty), "empty is empty")
      ?? assertTrue(head(empty) is None, "empty has no head")
-     ?? assertEqInt(chainLength(chain(empty)), 0, "empty length")
+     ?? assertEqInt(size(empty), 0, "empty length")
 
 fun [test("builder/push/build preserves insertion order")] builderKeepsOrder(): None|TestFailure
-    ret assertEqInt(chainLength(chain(_ints())), 3, "length")
+    ret assertEqInt(size(_ints()), 3, "length")
      ?? assertEqInt(_headOr(_ints(), 0), 1, "first is 1")
      ?? assertEqInt(_headOr(tail<Int>(_ints()), 0), 2, "second is 2")
 
@@ -36,7 +36,7 @@ fun _headOr(l: List<Int>, fallback: Int): Int
 fun [test("prepend puts the new element at the front")] prependFront(): None|TestFailure
     let l = prepend(0, _ints())
     ret assertEqInt(_headOr(l, -1), 0, "head is the prepended value")
-     ?? assertEqInt(chainLength(chain(l)), 4, "length grew by one")
+     ?? assertEqInt(size(l), 4, "length grew by one")
 
 fun [test("last returns the final element")] lastElement(): None|TestFailure
     ret assertEqInt(_lastOr(_ints(), 0), 3, "last of [1,2,3]")
@@ -49,14 +49,14 @@ fun _lastOr(l: List<Int>, fallback: Int): Int
 
 fun [test("concat joins two lists end to end")] concatJoins(): None|TestFailure
     let joined = concat(_ints(), _ints())
-    ret assertEqInt(chainLength(chain(joined)), 6, "6 elements")
+    ret assertEqInt(size(joined), 6, "6 elements")
      ?? assertEqInt(_headOr(joined, 0), 1, "starts with 1")
      ?? assertEqInt(_lastOr(joined, 0), 3, "ends with 3")
 
 fun [test("concat with an empty list is the identity")] concatEmptyIdentity(): None|TestFailure
     let empty = List<Int>()
-    ret assertEqInt(chainLength(chain(concat(_ints(), empty))), 3, "append empty")
-     ?? assertEqInt(chainLength(chain(concat(empty, _ints()))), 3, "prepend empty")
+    ret assertEqInt(size((concat(_ints(), empty))), 3, "append empty")
+     ?? assertEqInt(size((concat(empty, _ints()))), 3, "prepend empty")
 
 fun [test("contains finds a present value and rejects an absent one")] containsWorks(): None|TestFailure
     ret assertTrue(contains(_ints(), 2), "2 is present")
@@ -66,11 +66,11 @@ fun [test("map applies the function to every element in order")] mapInOrder(): N
     let doubled = map(_ints(), (x: Int) => x * 2)
     ret assertEqInt(_headOr(doubled, 0), 2, "first doubled")
      ?? assertEqInt(_lastOr(doubled, 0), 6, "last doubled")
-     ?? assertEqInt(chainLength(chain(doubled)), 3, "length unchanged")
+     ?? assertEqInt(size(doubled), 3, "length unchanged")
 
 fun [test("filter keeps only matching elements")] filterKeeps(): None|TestFailure
     let odd = filter(_ints(), (x: Int) => x % 2 == 1)
-    ret assertEqInt(chainLength(chain(odd)), 2, "two odd values")
+    ret assertEqInt(size(odd), 2, "two odd values")
      ?? assertEqInt(_headOr(odd, 0), 1, "first odd is 1")
      ?? assertEqInt(_lastOr(odd, 0), 3, "last odd is 3")
 
@@ -85,10 +85,10 @@ fun [test("any and all agree with the predicate")] anyAndAll(): None|TestFailure
      ?? assertFalse(all(_ints(), (x: Int) => x > 1), "not all over 1")
 
 fun [test("take and drop split a list at the given count")] takeAndDrop(): None|TestFailure
-    ret assertEqInt(chainLength(chain(take(_ints(), 2))), 2, "take 2")
-     ?? assertEqInt(chainLength(chain(drop(_ints(), 2))), 1, "drop 2")
+    ret assertEqInt(size((take(_ints(), 2))), 2, "take 2")
+     ?? assertEqInt(size((drop(_ints(), 2))), 1, "drop 2")
      ?? assertEqInt(_headOr(drop(_ints(), 2), 0), 3, "drop 2 leaves 3")
 
 fun [test("take and drop past the end are clamped, not errors")] takeDropOverrun(): None|TestFailure
-    ret assertEqInt(chainLength(chain(take(_ints(), 99))), 3, "take more than exists")
+    ret assertEqInt(size((take(_ints(), 99))), 3, "take more than exists")
      ?? assertTrue(isEmpty(drop(_ints(), 99)), "drop more than exists")

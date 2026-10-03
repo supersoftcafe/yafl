@@ -23,6 +23,10 @@ from tests.testutil import compile_and_run_stdlib
 _PROGRAM = """
 import System
 
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
 fun [tail] sameLen2<T, U>(a: Chain<T>, b: Chain<U>): Bool
   ret match(a)
     (nil: ChainEnd) => b is ChainEnd
@@ -31,9 +35,9 @@ fun [tail] sameLen2<T, U>(a: Chain<T>, b: Chain<U>): Bool
       (lb: ChainLink)  => sameLen2(la.next, lb.next)
 
 fun main(): Int
-  let xs = prepend(1, prepend(2, List<Int>()))
-  let ys = prepend("a", prepend("b", List<String>()))
-  ret sameLen2(chain(xs), chain(ys)) ? 0 : 1
+  let xs = ChainLink(1, ChainLink(2, ChainEnd<Int>()))
+  let ys = ChainLink("a", ChainLink("b", ChainEnd<String>()))
+  ret sameLen2(xs, ys) ? 0 : 1
 """
 
 

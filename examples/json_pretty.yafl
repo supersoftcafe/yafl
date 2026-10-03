@@ -88,7 +88,7 @@ fun runTree(dir: String): System::Int
     print("converted " + String(total - failed) + " ok, " + String(failed) + " failed\n")
     ret failed
   let files = gatherJson(dir)
-  let total = chainLength<String>(chain<String>(files))
+  let total = size<String>(files)
   ret report(total, convertAll(files))
 
 fun runSingle(path: String): System::Int

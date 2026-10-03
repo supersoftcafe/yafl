@@ -94,17 +94,17 @@ fun [tail] resolveValue(param, defs: SsaDefs, depth)
 fun sdResolveField(sf: RpStructField, defs: SsaDefs, depth)
   ret match(resolveValue(sf.structVal, defs, depth - 1))
     (base: RParam) => match(base)
-      (ns: RpNewStruct) => sdFieldValue(chain(ns.values), sf.field, defs, depth)
+      (ns: RpNewStruct) => sdFieldValue(ns.values, sf.field, defs, depth)
       (o: RParam)       => None
     ()             => None
 
 # `resolve_value(fval) or fval`: prefer the chased value, else the raw one.
-fun [tail] sdFieldValue(vs: Chain<RpNamedValue>, field: String,
-                        defs: SsaDefs, depth) => match(vs)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.name == field
-    ? sdPreferChased(l.value.value, defs, depth)
-    : sdFieldValue(l.next, field, defs, depth)
+fun [tail] sdFieldValue(vs: List<RpNamedValue>, field: String,
+                        defs: SsaDefs, depth) => isEmpty(vs)
+  ? None
+  : first(vs).name == field
+    ? sdPreferChased(first(vs).value, defs, depth)
+    : sdFieldValue(tail(vs), field, defs, depth)
 
 fun sdPreferChased(v, defs: SsaDefs, depth) => match(resolveValue(v, defs, depth - 1))
   (rv: RParam) => rv

@@ -22,26 +22,26 @@ import Bootstrap::Types
 import System::IO
 
 
-fun [tail] dumpTokens(ts: Chain<Token>, out) => match(ts)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => dumpTokens(l.next,
-      out + kindName(l.value.kind) + "|"
-        + String(l.value.indent) + "|"
-        + String(l.value.line) + "|"
-        + String(l.value.col) + "|"
-        + l.value.text + "\n")
+fun [tail] dumpTokens(ts: List<Token>, out) => isEmpty(ts)
+  ? out
+  : dumpTokens(tail(ts),
+      out + kindName(first(ts).kind) + "|"
+        + String(first(ts).indent) + "|"
+        + String(first(ts).line) + "|"
+        + String(first(ts).col) + "|"
+        + first(ts).text + "\n")
 
 fun tokensMode(text): (out: System::String, code: System::Int)
-  ret (dumpTokens(chain(tokenize(text)), ""), 0)
+  ret (dumpTokens(tokenize(text), ""), 0)
 
 # hash6 mode: each stdin line `file|line|col` prints its hash6 — diffed
 # against the Python LineRef.hash6 by tests/test_bootstrap_hash6.py.
 fun hash6Mode(text): (out: System::String, code: System::Int)
-  ret (hash6Lines(chain(splitLines(text)), ""), 0)
+  ret (hash6Lines(splitLines(text), ""), 0)
 
-fun [tail] hash6Lines(lines: Chain<System::String>, out) => match(lines)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => hash6Lines(l.next, hash6Line(l.value, out))
+fun [tail] hash6Lines(lines: List<System::String>, out) => isEmpty(lines)
+  ? out
+  : hash6Lines(tail(lines), hash6Line(first(lines), out))
 
 fun hash6Line(line, out)
   let p1 = System::findByte(line, '|', 0)
@@ -60,27 +60,27 @@ fun hash6Line(line, out)
 # sha1 mode: each stdin line prints its sha1 hexdigest — diffed against
 # hashlib.sha1 by tests/test_bootstrap_sha1.py (irMangle's struct hashing).
 fun sha1Mode(text): (out: System::String, code: System::Int)
-  ret (sha1Lines(chain(splitLines(text)), ""), 0)
+  ret (sha1Lines(splitLines(text), ""), 0)
 
 # Empty segments are skipped: splitLines yields a trailing one after the
 # final newline, which must not hash.
-fun [tail] sha1Lines(lines: Chain<System::String>, out) => match(lines)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => sha1Lines(l.next, length(l.value) == 0
+fun [tail] sha1Lines(lines: List<System::String>, out) => isEmpty(lines)
+  ? out
+  : sha1Lines(tail(lines), length(first(lines)) == 0
                                  ? out
-                                 : out + sha1Hex(l.value) + "\n")
+                                 : out + sha1Hex(first(lines)) + "\n")
 
 # toml mode: parse a manifest on stdin and print one normalised line per
 # entry — `key=v1,v2` — for diffing against Python's tomllib
 # (tests/test_bootstrap_toml.py). Errors print `error:<line>:<message>`.
 fun tomlMode(text): (out: String, code: Int) => match(parseToml(text))
-  (ok: TomlOk)   => (tomlDump(chain(ok.entries), ""), 0)
+  (ok: TomlOk)   => (tomlDump(ok.entries, ""), 0)
   (e: TomlErr)   => ("error:" + String(e.tomlLine) + ":" + e.tomlMessage + "\n", 1)
 
-fun [tail] tomlDump(es: Chain<TomlEntry>, out: String) => match(es)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => tomlDump(l.next,
-      out + l.value.key + "=" + join(l.value.values, ",") + "\n")
+fun [tail] tomlDump(es: List<TomlEntry>, out: String) => isEmpty(es)
+  ? out
+  : tomlDump(tail(es),
+      out + first(es).key + "=" + join(first(es).values, ",") + "\n")
 
 # libs mode: print every library discoverable on YAFL_PATH, one per line as
 # `name|ns,ns|headers|statics`, sorted — diffed against
@@ -92,18 +92,18 @@ fun [tail] tomlDump(es: Chain<TomlEntry>, out: String) => match(es)
 # shape a deleted use leaves behind.
 fun libsMode(): (out: String, code: Int) => match(discoverLibraries(searchPaths(List())))
   (e: LibsErr) => ("error:" + e.libsWhy + "\n", 1)
-  (ok: LibsOk) => (libsDump(chain(sortLibs(ok.libsFound)), ""), 0)
+  (ok: LibsOk) => (libsDump(sortLibs(ok.libsFound), ""), 0)
 
 fun sortLibs(ls: List<Library>) => sortBy(ls, (a, b) =>
                                      a.libManifest.libName < b.libManifest.libName)
 
-fun [tail] libsDump(ls: Chain<Library>, out: String) => match(ls)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => libsDump(l.next, out
-      + l.value.libManifest.libName + "|"
-      + join(l.value.libManifest.libNamespaces, ",") + "|"
-      + join(l.value.libManifest.libHeaders, ",") + "|"
-      + join(l.value.libManifest.libStaticLibs, ",") + "\n")
+fun [tail] libsDump(ls: List<Library>, out: String) => isEmpty(ls)
+  ? out
+  : libsDump(tail(ls), out
+      + first(ls).libManifest.libName + "|"
+      + join(first(ls).libManifest.libNamespaces, ",") + "|"
+      + join(first(ls).libManifest.libHeaders, ",") + "|"
+      + join(first(ls).libManifest.libStaticLibs, ",") + "\n")
 
 # libsfor mode: parse the source on stdin and print which libraries its
 # imports would pull in, one name per line. This is the end-to-end check that
@@ -123,7 +123,7 @@ fun libsForStmts(stmts: List<PStmt>): (out: String, code: Int)
 fun libsForIndex(stmts: List<PStmt>, idx: List<NsEntry>): (out: String, code: Int)
   ret match(libsFrontier(stmts, idx, List(), List()))
     (why: String)         => ("error:" + why + "\n", 1)
-    (found: List<Library>) => (libsDump(chain(sortLibs(found)), ""), 0)
+    (found: List<Library>) => (libsDump(sortLibs(found), ""), 0)
 
 # The worklist is a FIXPOINT, not one round: a library the program imports may
 # itself import a third, so what was just loaded becomes the next frontier.
@@ -143,7 +143,7 @@ fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
                             already)
   ret isEmpty(step.stepLibs)
     ? found
-    : match(parseLibraries(chain(step.stepLibs), List()))
+    : match(parseLibraries(step.stepLibs, List()))
       (why: String)          => why
       (next: List<PStmt>)    => libsFrontier(next, idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
@@ -154,19 +154,19 @@ fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
 # block, so a scan of the top-level list finds none. `stmtImports` is the
 # accessor, and reading it here is what compiler.py's `_candidate_namespaces`
 # does with `st.imports.imports`.
-fun declaredImports(stmts: List<PStmt>) => importsOfStmts(chain(stmts), List())
+fun declaredImports(stmts: List<PStmt>) => importsOfStmts(stmts, List())
 
-fun [tail] importsOfStmts(ss: Chain<PStmt>, acc: List<String>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => importsOfStmts(l.next,
-                                    importPaths(chain(stmtImports(l.value)), acc))
+fun [tail] importsOfStmts(ss: List<PStmt>, acc: List<String>) => isEmpty(ss)
+  ? acc
+  : importsOfStmts(tail(ss),
+                                    importPaths(stmtImports(first(ss)), acc))
 
 fun unescMode(text): (out: String, code: Int)
-  ret (unescDump(chain(splitLines(text)), ""), 0)
+  ret (unescDump(splitLines(text), ""), 0)
 
-fun [tail] unescDump(lines: Chain<String>, out) => match(lines)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => unescDump(l.next, unescLine(l.value, out))
+fun [tail] unescDump(lines: List<String>, out) => isEmpty(lines)
+  ? out
+  : unescDump(tail(lines), unescLine(first(lines), out))
 
 fun unescLine(line, out)
   let u = unescape(line)
@@ -179,11 +179,11 @@ fun unescLine(line, out)
 #   merge <spec> ;; <spec>
 #   bind <declared-entries> <supplied-names>
 fun specsMode(text): (out: String, code: Int)
-  ret (specLines(chain(splitLines(text)), ""), 0)
+  ret (specLines(splitLines(text), ""), 0)
 
-fun [tail] specLines(lines: Chain<String>, out) => match(lines)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => specLines(l.next, specLine(l.value, out))
+fun [tail] specLines(lines: List<String>, out) => isEmpty(lines)
+  ? out
+  : specLines(tail(lines), specLine(first(lines), out))
 
 fun specLine(line, out)
   if line == ""
@@ -230,12 +230,12 @@ fun bindCase(rest)
   let decl = parseEntriesText(slice(rest, 0, bar))
   let sup = splitNames(slice(rest, bar + 4, length(rest)))
   ret match(bindTupleEntries(decl, sup))
-    (b2: List<Int>) => joinInts(chain(b2), "")
+    (b2: List<Int>) => joinInts(b2, "")
     ()              => "NONE"
 
-fun [tail] joinInts(is: Chain<Int>, acc) => match(is)
-  (nil: ChainEnd) => acc == "" ? "()" : acc
-  (l: ChainLink)  => joinInts(l.next, acc + (acc == "" ? "" : ",") + String(l.value))
+fun [tail] joinInts(is: List<Int>, acc) => !isEmpty(is)
+  ? joinInts(tail(is), acc + (acc == "" ? "" : ",") + String(first(is)))
+  : acc == "" ? "()" : acc
 
 fun splitNames(s) => map(split(s, ","), (n) => n == "_" ? "" : n)
 
@@ -251,14 +251,14 @@ fun resolveMode(text): (out: String, code: Int)
   ret match(parseProgram(srcPart, "x"))
     (f: PFail)           => ("parse error\n", 1)
     (stmts: List<PStmt>) => (answerAll(buildStatements(stmts),
-                                       chain(splitLines(queries))), 0)
+                                       splitLines(queries)), 0)
 
 fun answerAll(idx, qs): String => answerLoop(idx, qs, "")
 
-fun [tail] answerLoop(idx, qs: Chain<String>,
-                      out) => match(qs)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => answerLoop(idx, l.next, answerOne(idx, l.value, out))
+fun [tail] answerLoop(idx, qs: List<String>,
+                      out) => isEmpty(qs)
+  ? out
+  : answerLoop(idx, tail(qs), answerOne(idx, first(qs), out))
 
 fun answerOne(idx, q, out)
   if q == ""
@@ -272,14 +272,14 @@ fun answerOne(idx, q, out)
   # asks the breaker or derived-equality analysis.
   let r = RRoot((root) => false, (name) => false, idx)
   let bag = kind == "type" ? findType(r, name) : findData(r, name)
-  ret out + foundLine(chain(bag.bItems), 0, "") + "\n"
+  ret out + foundLine(bag.bItems, 0, "") + "\n"
 
 # Count and names from ONE walk (the no-length ruling: the count rides the
 # traversal that already exists for the names).
-fun [tail] foundLine(fs: Chain<Found>, n, acc) => match(fs)
-  (nil: ChainEnd) => String(n) + "|" + acc
-  (l: ChainLink)  => foundLine(l.next, n + 1,
-                               acc + (acc == "" ? "" : ",") + l.value.fName)
+fun [tail] foundLine(fs: List<Found>, n, acc) => isEmpty(fs)
+  ? String(n) + "|" + acc
+  : foundLine(tail(fs), n + 1,
+                               acc + (acc == "" ? "" : ",") + first(fs).fName)
 
 fun convertMode(text): (out: String, code: Int)
   let cut = indexOf(text, "\n?\n", 0)
@@ -290,14 +290,14 @@ fun convertMode(text): (out: String, code: Int)
   ret match(parseProgram(srcPart, "x"))
     (f: PFail)           => ("parse error\n", 1)
     (stmts: List<PStmt>) => (convertAll(rootResolver(stmts),
-                                        chain(splitLines(cases))), 0)
+                                        splitLines(cases)), 0)
 
 fun convertAll(r, cs): String => convertLoop(r, cs, "")
 
-fun [tail] convertLoop(r, cs: Chain<String>,
-                       out) => match(cs)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => convertLoop(r, l.next, convertOne(r, l.value, out))
+fun [tail] convertLoop(r, cs: List<String>,
+                       out) => isEmpty(cs)
+  ? out
+  : convertLoop(r, tail(cs), convertOne(r, first(cs), out))
 
 # `SOURCE ;; TARGET` → Y when representing the source value as the target needs
 # a representation change, N when it does not.
@@ -320,14 +320,14 @@ fun assignMode(text): (out: String, code: Int)
   ret match(parseProgram(srcPart, "x"))
     (f: PFail)           => ("parse error\n", 1)
     (stmts: List<PStmt>) => (assignAll(rootResolver(stmts),
-                                       chain(splitLines(cases))), 0)
+                                       splitLines(cases)), 0)
 
 fun assignAll(r, cs): String => assignLoop(r, cs, "")
 
-fun [tail] assignLoop(r, cs: Chain<String>,
-                      out) => match(cs)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => assignLoop(r, l.next, assignOne(r, l.value, out))
+fun [tail] assignLoop(r, cs: List<String>,
+                      out) => isEmpty(cs)
+  ? out
+  : assignLoop(r, tail(cs), assignOne(r, first(cs), out))
 
 fun assignOne(r, c, out)
   if c == ""
@@ -795,7 +795,7 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
                             already)
   ret isEmpty(step.stepLibs)
     ? ProjectLoad(acc, libs)
-    : match(parseLibraries(chain(step.stepLibs), List()))
+    : match(parseLibraries(step.stepLibs, List()))
       (why: String)       => why
       (next: List<PStmt>) => projectRounds(next, idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
@@ -804,14 +804,14 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
 # ONE __tokenize_and_parse call PER LIBRARY, and that call SORTS ITS INPUTS BY
 # FILENAME. Sorting the round's sources as one flat list instead would
 # interleave two libraries' files, and statement order is emission order.
-fun [tail] parseLibraries(ls: Chain<Library>,
-                          acc: List<PStmt>) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(parseLibrary(l.value))
+fun [tail] parseLibraries(ls: List<Library>,
+                          acc: List<PStmt>) => isEmpty(ls)
+  ? acc
+  : match(parseLibrary(first(ls)))
     (why: String)        => why
-    (stmts: List<PStmt>) => parseLibraries(l.next, concat(acc, stmts))
+    (stmts: List<PStmt>) => parseLibraries(tail(ls), concat(acc, stmts))
 
-fun parseLibrary(lib: Library) => parseSources(chain(sortSources(lib.libSources)), builder())
+fun parseLibrary(lib: Library) => parseSources(sortSources(lib.libSources), List())
 
 # By UNIT NAME — the path relative to the library root, which is what
 # `Input.filename` holds and the sort key __tokenize_and_parse uses. Two
@@ -819,15 +819,15 @@ fun parseLibrary(lib: Library) => parseSources(chain(sortSources(lib.libSources)
 # they are.
 fun sortSources(srcs: List<LibSource>) => sortBy(srcs, (a, b) => a.libFileName < b.libFileName)
 
-fun [tail] parseSources(ss: Chain<LibSource>,
-                        [terminal] b: ListBuilder<PStmt>): List<PStmt>|String => match(ss)
-  (nil: ChainEnd) => build(b)
-  (l: ChainLink)  => match(parseProgram(l.value.libText, l.value.libFileName))
-    (f: PFail)           => parseDiscard(b, l.value.libFileName + "["
+fun [tail] parseSources(ss: List<LibSource>,
+                        [terminal] b: List<PStmt>): List<PStmt>|String => isEmpty(ss)
+  ? build(b)
+  : match(parseProgram(first(ss).libText, first(ss).libFileName))
+    (f: PFail)           => parseDiscard(b, first(ss).libFileName + "["
         + String(f.line) + ":" + String(f.col) + "] - " + f.msg)
-    (stmts: List<PStmt>) => parseSources(l.next, pushAll(b, stmts))
+    (stmts: List<PStmt>) => parseSources(tail(ss), pushAll(b, stmts))
 
-fun parseDiscard([terminal] b: ListBuilder<PStmt>, why): List<PStmt>|String
+fun parseDiscard([terminal] b: List<PStmt>, why): List<PStmt>|String
   ret build(b) |> (l) => why
 
 
@@ -850,7 +850,7 @@ fun cTestMode(text, optLevel, profile,
 
 fun cTestInject(stmts: List<PStmt>, optLevel, profile,
                 withLibs, enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
-  let tests = testFunsOf(chain(stmts), builder())
+  let tests = testFunsOf(stmts, List())
   ret isEmpty(tests)
     # A test binary with nothing in it must NOT be built and exit 0 — that is a
     # green run reporting coverage it does not have.
@@ -865,8 +865,8 @@ fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel,
   # names, which feed the emitted C. A different name here would make the two
   # compilers disagree byte-for-byte on identical input.
   ret match(parseProgram(testRegistrySource(tests), "$test_main.yafl"))
-    (gen: List<PStmt>) => concat(dropSourceMains(chain(stmts),
-                                                 builder()), gen)
+    (gen: List<PStmt>) => concat(dropSourceMains(stmts,
+                                                 List()), gen)
       # The registry is part of the USER statements before the worklist runs,
       # which is what makes its `System::Test::run` reference load the library.
       |> (user) => withLibs
@@ -875,23 +875,23 @@ fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel,
     (f: PFail)         => (prepend("--test: generated main failed to parse\n",
                                    List()), 1, "")
 
-fun [tail] testFunsOf(sts: Chain<PStmt>,
-                      [terminal] b: ListBuilder<PsFun>) => match(sts)
-  (nil: ChainEnd) => build(b)
-  (l: ChainLink)  => match(l.value)
+fun [tail] testFunsOf(sts: List<PStmt>,
+                      [terminal] b: List<PsFun>) => isEmpty(sts)
+  ? build(b)
+  : match(first(sts))
     (f: PsFun) => hasAttr(f.fAttrs, "test")
-      ? testFunsOf(l.next, push(b, f))
-      : testFunsOf(l.next, b)
-    (o: PStmt) => testFunsOf(l.next, b)
+      ? testFunsOf(tail(sts), push(b, f))
+      : testFunsOf(tail(sts), b)
+    (o: PStmt) => testFunsOf(tail(sts), b)
 
 # The user's own main is IGNORED under --test, not an error: you want to test a
 # program that has one. Matched as WRITTEN, before types resolve.
-fun [tail] dropSourceMains(sts: Chain<PStmt>,
-                           [terminal] b: ListBuilder<PStmt>) => match(sts)
-  (nil: ChainEnd) => build(b)
-  (l: ChainLink)  => isSourceMain(l.value)
-    ? dropSourceMains(l.next, b)
-    : dropSourceMains(l.next, push(b, l.value))
+fun [tail] dropSourceMains(sts: List<PStmt>,
+                           [terminal] b: List<PStmt>) => isEmpty(sts)
+  ? build(b)
+  : isSourceMain(first(sts))
+    ? dropSourceMains(tail(sts), b)
+    : dropSourceMains(tail(sts), push(b, first(sts)))
 
 fun isSourceMain(st) => match(st)
   (f: PsFun) => bareOfUnique(f.fName) == "main"
@@ -908,7 +908,7 @@ fun isSourceMain(st) => match(st)
 fun testRegistryChunk() => 16
 
 fun testRegistrySource(tests: List<PsFun>)
-  let n = chainLength(chain(tests))
+  let n = size(tests)
   let nChunks = n == 0 ? 1 : (n + testRegistryChunk() - 1) / testRegistryChunk()
   ret (emitChunks(tests, 0, "namespace Yafl::TestMain\n\n")
         + "fun main(): System::Int\n  ret System::Test::run("
@@ -925,16 +925,15 @@ fun [tail] emitChunks(ts: List<PsFun>, k,
 
 fun emitOneChunk(chunk: List<PsFun>, k: Int)
   ret "fun _cases" + String(k) + "(): System::List<System::Test::TestCase>\n"
-    + "  let b0 = System::builder<System::Test::TestCase>()\n"
-    + chunkRows(chain(chunk), 0, "")
-    + "  ret System::build<System::Test::TestCase>(b"
-    + String(chainLength(chain(chunk))) + ")\n\n"
+    + "  let b0 = System::List<System::Test::TestCase>()\n"
+    + chunkRows(chunk, 0, "")
+    + "  ret b" + String(size(chunk)) + "\n\n"
 
-fun [tail] chunkRows(ts: Chain<PsFun>, i,
-                     out: String) => match(ts)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => chunkRows(l.next, i + 1,
-                               out + testRegistryRow(l.value, i))
+fun [tail] chunkRows(ts: List<PsFun>, i,
+                     out: String) => isEmpty(ts)
+  ? out
+  : chunkRows(tail(ts), i + 1,
+                               out + testRegistryRow(first(ts), i))
 
 # BALANCED, not right-nested: a linear nest would reintroduce the same
 # one-link-per-pass dependency at chunk granularity.
@@ -947,7 +946,7 @@ fun joinChunks(lo, hi) => hi - lo == 1
 fun testRegistryRow(f: PsFun, i)
   let q = simpleName(f.fName)
   ret "  let b" + String(i + 1)
-    + " = System::push<System::Test::TestCase>(b" + String(i)
+    + " = System::append<System::Test::TestCase>(b" + String(i)
     + ", System::Test::TestCase(\"" + escapeForSource(q) + "\", \""
     + escapeForSource(testDescriptionOf(f)) + "\", \""
     + escapeForSource(f.psfLine.plFile) + "\", " + String(f.psfLine.plLine)
@@ -1003,14 +1002,14 @@ fun [tail] collectParts(text, at,
   ret nextMark < 0 ? acc2 : collectParts(text, nextMark + 1, acc2)
 
 fun parseSorted(parts: Dict<String, String>)
-  ret parseInOrder(chain(sort(keys(parts))), parts, List())
+  ret parseInOrder(sort(keys(parts)), parts, List())
 
-fun [tail] parseInOrder(ns: Chain<String>, parts: Dict<String, String>,
-                        acc: List<PStmt>): List<PStmt>|None => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(parseProgram(partText(parts, l.value), l.value))
+fun [tail] parseInOrder(ns: List<String>, parts: Dict<String, String>,
+                        acc: List<PStmt>): List<PStmt>|None => isEmpty(ns)
+  ? acc
+  : match(parseProgram(partText(parts, first(ns)), first(ns)))
     (fp: PFail)          => None
-    (stmts: List<PStmt>) => parseInOrder(l.next, parts, concat(acc, stmts))
+    (stmts: List<PStmt>) => parseInOrder(tail(ns), parts, concat(acc, stmts))
 
 fun partText(parts: Dict<String, String>, name: String) => match(get(parts, name))
   (t2: String) => t2
@@ -1041,18 +1040,18 @@ fun cStage(stmts: List<PStmt>, optLevel, profile,
   let spExits = spanBegin("lower", "block_exits")
   let final2 = assignBlockExits(low3)
   let _6 = spanEnd(spExits)
-  ret match(cFindMain(chain(final2)))
+  ret match(cFindMain(final2))
     (nm: System::String) => cEmit(final2, nm, optLevel, profile, headers)
     ()                    => (prepend("No main function found\n", List()), 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
 # `main` in no namespace is not a main), the return type must be the bigint
 # builtin, and the parameter tuple must be empty.
-fun [tail] cFindMain(ss: Chain<PStmt>) => match(ss)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(l.value)
-    (f: PsFun) => cIsMainFunction(f) ? f.fName : cFindMain(l.next)
-    (o: PStmt) => cFindMain(l.next)
+fun [tail] cFindMain(ss: List<PStmt>) => isEmpty(ss)
+  ? None
+  : match(first(ss))
+    (f: PsFun) => cIsMainFunction(f) ? f.fName : cFindMain(tail(ss))
+    (o: PStmt) => cFindMain(tail(ss))
 
 fun cIsMainFunction(f: PsFun): Bool
   if !contains(f.fName, "::main@")
@@ -1093,19 +1092,19 @@ fun eqMode(text): (out: String, code: Int) => match(parseProgram(text, "x"))
                            + ": " + f.msg + "\n", 1)
   (stmts: List<PStmt>) => (eqMatrix(stmts), 0)
 
-fun eqMatrix(stmts: List<PStmt>) => eqRows(stmts, chain(stmts), "")
+fun eqMatrix(stmts: List<PStmt>) => eqRows(stmts, stmts, "")
 
-fun [tail] eqRows(all: List<PStmt>, rows: Chain<PStmt>,
-                  out) => match(rows)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => eqRows(all, l.next,
-                            eqRow(l.value, chain(all), out) + "\n")
+fun [tail] eqRows(all: List<PStmt>, rows: List<PStmt>,
+                  out) => isEmpty(rows)
+  ? out
+  : eqRows(all, tail(rows),
+                            eqRow(first(rows), all, out) + "\n")
 
-fun [tail] eqRow(row, cols: Chain<PStmt>,
-                 out) => match(cols)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => eqRow(row, l.next,
-                           out + (eqStmt(row, l.value) ? "1" : "0"))
+fun [tail] eqRow(row, cols: List<PStmt>,
+                 out) => isEmpty(cols)
+  ? out
+  : eqRow(row, tail(cols),
+                           out + (eqStmt(row, first(cols)) ? "1" : "0"))
 
 # -1 for "not this family", so one lookup answers both "is it?" and "which
 # level?" without a second mode-string table to keep in step.
@@ -1191,14 +1190,14 @@ fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
 fun runCTest(text, optLevel, enabledWarnings: Set<String>, i: IO): System::Int
   let r = cTestMode(text, optLevel, false, enabledWarnings)
   let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), chain(r.outs), false)
+  let w = writeParts(stdout(), r.outs, false)
   let code = w.failed2 ? 1 : r.code
   ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
 
 fun runC(text, optLevel, profile, enabledWarnings: Set<String>, i: IO): System::Int
   let r = cMode(text, optLevel, profile, enabledWarnings)
   let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), chain(r.outs), false)
+  let w = writeParts(stdout(), r.outs, false)
   let code = w.failed2 ? 1 : r.code
   ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
 
@@ -1206,22 +1205,22 @@ fun runProject(text, optLevel, profile,
                enabledWarnings: Set<String>, i: IO): System::Int
   let r = projectMode(text, optLevel, profile, enabledWarnings)
   let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), chain(r.outs), false)
+  let w = writeParts(stdout(), r.outs, false)
   let code = w.failed2 ? 1 : r.code
   ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
 
 fun runProjectTest(text, optLevel, enabledWarnings: Set<String>, i: IO): System::Int
   let r = projectTestMode(text, optLevel, false, enabledWarnings)
   let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), chain(r.outs), false)
+  let w = writeParts(stdout(), r.outs, false)
   let code = w.failed2 ? 1 : r.code
   ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
 
-fun [tail] writeParts(io2, ps: Chain<String>,
-                      failed): (io3: IO, failed2: Bool) => match(ps)
-  (nil: ChainEnd) => (io2, failed)
-  (l: ChainLink)  => writeAll(io2, l.value)
-    |> (w) => writeParts(w.io, l.next, failed || w.v is IOError)
+fun [tail] writeParts(io2, ps: List<String>,
+                      failed): (io3: IO, failed2: Bool) => isEmpty(ps)
+  ? (io2, failed)
+  : writeAll(io2, first(ps))
+    |> (w) => writeParts(w.io, tail(ps), failed || w.v is IOError)
 
 fun main(): System::Int => stdin().asStream()
   |> (i, s) => (System::collect(s), i)

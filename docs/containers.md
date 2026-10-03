@@ -24,14 +24,13 @@ Permitted on an unordered container:
 | `Dict<K,V>` | no | `put` | keyed lookup |
 | `Set<T>` | no | `add` | membership; a `Dict<T,()>` behind a wrapper |
 | `Bag<T>` | no | `add` | accumulation when order does not matter |
-| `List<T>` | YES | `ListBuilder` / `prepend` | sequences whose order is meaningful |
+| `List<T>` | YES | `append` / `prepend` | sequences whose order is meaningful |
 | `Array<T>` | YES | ctor init fn / `ArrayBuilder` | O(1) indexed reads; ONE heap object per sequence |
 | `Seq<T>` | YES | `SeqBuilder` | build-then-walk sequences; one SMALL heap object per ≤16 elements |
 
 Pick the SIMPLEST container that does the job. A loop that reads its own
-accumulator wants a `Set`. Plain accumulation wants a `Bag`, or a
-`ListBuilder` when the result must be an ordered `List`. `ListBuilder` is an
-optimisation, not the default to reach for.
+accumulator wants a `Set`. Plain accumulation wants a `Bag`, or a `List`
+(append in a loop is O(1)) when the result must be ordered.
 
 ### Bag
 
@@ -42,18 +41,23 @@ and keeping two chains leaves room for a cheap `merge` later.
 
 ### List
 
-Ordered, so a cursor walk (`chain`) is legitimate — that is what "ordered"
-buys. Built ONLY front-normal, so there is no rear and nothing to reverse:
+Ordered, and OPAQUE: a List is a set of functions, not a shape. Nothing
+outside `list.yafl` knows how its elements are stored, and there is no cons
+view to match on — walk it with `fold`/`map`/`filter`/`any`, as a `Stream`
+(a `List<T>` is its own stream state), or take it apart with
+`isEmpty`/`first`/`head`/`tail`/`uncons`.
 
-* `ListBuilder` — in-order construction, O(1) push
-* `prepend` — the cons; O(1), yields reverse-of-insertion order
+* `List()`, `append` (back), `prepend` (front), `concat` — all O(1) per
+  element, no builder: a list value is a by-value handle onto a chain of
+  segments with spare room, and an append writes the next slot in place
+* a FORK — a second append to the same list value — finds that slot already
+  claimed and copies (the whole list at the back, at most one segment at the
+  front); results are identical either way, so List stays a pure value
+* `last` and `size` are cheap (O(1) and O(segments)); there is still no
+  indexing — an Array is the indexed container
 
-`append` is REMOVED. It is the sole reason the rear chain existed, and the
-rear is the sole reason `_chainReverse` existed.
-
-`reverse` is REMOVED. On a front-normal list it can only be implemented by
-building a reversed copy — `_chainReverse` under a new name, which is exactly
-what must not reappear. Order changes come from `sort`.
+`ListBuilder` and the public `Chain` type are REMOVED. See
+[List design](list-design.md).
 
 ### Array
 
@@ -106,8 +110,9 @@ cells would otherwise dominate the heap.
 | removed | why | replacement |
 |---|---|---|
 | `_chainReverse` | the whole point | nothing; no rear to drain |
-| `List.append` | requires the rear | `ListBuilder.push`, or `Bag.add` |
 | `List.reverse` | a disguised chain reversal | `sort` with the ordering you mean |
+| `ListBuilder` | List append is O(1) without one | `append` |
+| `Chain` / `chain()` | exposed List's storage | `Stream`, `fold`, `isEmpty`/`first`/`tail` |
 | `Dict.keys(): List<K>` | leaks hash-tree order | `keys(): Set<K>` (keys are unique) |
 | `Dict.values(): List<V>` | leaks hash-tree order | `values(): Bag<V>` (values may repeat) |
 

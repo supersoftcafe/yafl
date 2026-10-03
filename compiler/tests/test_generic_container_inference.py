@@ -22,7 +22,7 @@ fun sumRanks(l: List<Thing>, acc: System::Int): System::Int
 fun main(): System::Int
   let l: List<Thing> = prepend(Thing(4), prepend(Thing(5), List<Thing>()))
   let e = isEmpty(l) ? 100 : 0
-  let n = chainLength(chain(l))
+  let n = size(l)
   # 4+5 ranks, +0 for non-empty, +2 elements = 11
   ret sumRanks(l, 0) + e + n
 """
