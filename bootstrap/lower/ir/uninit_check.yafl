@@ -274,7 +274,7 @@ fun [tail] ucPhiBlocksLoop(s: Segment<Op>|None, i, current, acc) => match(s)
 # in that order.
 fun ucPhiBlockAdd(acc, label, ph) => any(acc, (b) => b.phbLabel == label)
   ? map(acc, (b) => b.phbLabel == label
-          ? PhiBlock(label, build(push(b.phbPhis, ph)))
+          ? PhiBlock(label, (append(b.phbPhis, ph)))
           : b)
   : prepend(PhiBlock(label, list1(ph)), acc)
 
@@ -318,7 +318,7 @@ fun ucFallEdgeOn(entry: Dict<Int, InitSet>, i, current,
                  prev, lb: OpLabel, acc) => match(ucEntryAt(entry, i - 1))
   (u: IsUnreached) => acc
   # Edge order is message order.
-  (pe: IsSet)      => build(push(acc, PhiEdge(current, lb.labelName,
+  (pe: IsSet)      => (append(acc, PhiEdge(current, lb.labelName,
                           fold(ucWrites(prev), pe.isNames, ucAddName))))
 
 fun ucPrevFallsIntoLabel(prev) => match(prev)
@@ -349,7 +349,7 @@ fun ucJumpEdgesOn(op, phiBlocks: List<PhiBlock>, current,
 
 fun ucAddEdgeIf(acc, phiBlocks: List<PhiBlock>, current,
                 target, exitHere) => ucIsPhiBlock(phiBlocks, target)
-  ? build(push(acc, PhiEdge(current, target, exitHere)))
+  ? (append(acc, PhiEdge(current, target, exitHere)))
   : acc
 
 fun ucCheckEdge(f: CgFunction, phiBlocks: List<PhiBlock>, ed: PhiEdge): List<String>

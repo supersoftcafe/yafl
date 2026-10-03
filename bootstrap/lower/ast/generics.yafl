@@ -368,7 +368,7 @@ fun gsubCompleted(e2: SEnum, params2, sub: GSub): List<Spec>
   if !isEmpty(params2)
     ret params2
   ret match(get(sub.gsFormals, e2.seRoot))
-    (names: List<String>) => build(gsubFormalArgs(names, e2,
+    (names: List<String>) => (gsubFormalArgs(names, e2,
                                        sub, List()))
     ()                    => params2
 
@@ -378,9 +378,9 @@ fun [tail] gsubFormalArgs(ns: List<String>, e2: SEnum, sub: GSub,
                           [terminal] acc: List<Spec>) => isEmpty(ns)
   ? acc
   : match(resolveGp(first(ns), sub))
-    (b: Spec) => gsubFormalArgs(tail(ns), e2, sub, push(acc, b))
+    (b: Spec) => gsubFormalArgs(tail(ns), e2, sub, append(acc, b))
     ()        => gsubFormalArgs(tail(ns), e2, sub,
-                                push(acc,
+                                append(acc,
                                      SGeneric(first(ns), false,
                                               e2.seLine)))
 
@@ -410,26 +410,26 @@ fun gsubInFieldList(ts: List<Spec>, sub: GSub,
 
 fun gsubInFieldLoop(ts, sub: GSub, visited: List<String>,
                            acc: List<Spec>)
-  ret build(gsubInFieldLoopB(ts, sub, visited, acc))
+  ret (gsubInFieldLoopB(ts, sub, visited, acc))
 
 fun [tail] gsubInFieldLoopB(ts: List<Spec>, sub: GSub, visited: List<String>,
                            [terminal] acc: List<Spec>) => isEmpty(ts)
   ? acc
   : gsubInFieldLoopB(tail(ts), sub, visited,
-                                     push(acc, gsubInField(first(ts), sub,
+                                     append(acc, gsubInField(first(ts), sub,
                                                       visited)))
 
 fun gsubList(ts: List<Spec>, sub: GSub, visited: List<String>)
   ret gsubListLoop(ts, sub, visited, List())
 
 fun gsubListLoop(ts, sub: GSub, visited: List<String>,
-                        acc: List<Spec>) => build(gsubListLoopB(ts, sub, visited, acc))
+                        acc: List<Spec>) => (gsubListLoopB(ts, sub, visited, acc))
 
 fun [tail] gsubListLoopB(ts: List<Spec>, sub: GSub, visited: List<String>,
                         [terminal] acc: List<Spec>) => isEmpty(ts)
   ? acc
   : gsubListLoopB(tail(ts), sub, visited,
-                                  push(acc, gsubSpec(first(ts), sub,
+                                  append(acc, gsubSpec(first(ts), sub,
                                                 visited)))
 
 fun gsubOpt(sp: Spec|None, sub: GSub, visited: List<String>) => match(sp)
@@ -437,13 +437,13 @@ fun gsubOpt(sp: Spec|None, sub: GSub, visited: List<String>) => match(sp)
   ()         => None
 
 fun gsubEntries(es: List<SEntry>, sub: GSub, visited: List<String>,
-                       acc: List<SEntry>) => build(gsubEntriesB(es, sub, visited, acc))
+                       acc: List<SEntry>) => (gsubEntriesB(es, sub, visited, acc))
 
 fun [tail] gsubEntriesB(es: List<SEntry>, sub: GSub, visited: List<String>,
                        [terminal] acc): List<SEntry> => isEmpty(es)
   ? acc
   : gsubEntriesB(tail(es), sub, visited,
-      push(acc, SEntry(first(es).seName,
+      append(acc, SEntry(first(es).seName,
                 gsubOpt(first(es).seType, sub, visited),
                 gsubExprOpt(first(es).seDefault, sub, visited))))
 
@@ -500,12 +500,12 @@ fun gsubStmt(st, sub: GSub) => match(st)
   (o: PStmt)   => st
 
 fun gsubStmts(ss, sub: GSub,
-                     acc: List<PStmt>) => build(gsubStmtsB(ss, sub, acc))
+                     acc: List<PStmt>) => (gsubStmtsB(ss, sub, acc))
 
 fun [tail] gsubStmtsB(ss: List<PStmt>, sub: GSub,
                      [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
-  : gsubStmtsB(tail(ss), sub, push(acc, gsubStmt(first(ss),
+  : gsubStmtsB(tail(ss), sub, append(acc, gsubStmt(first(ss),
                                                          sub)))
 
 fun gsubSpecsOpt(ss: List<Spec>|None, sub: GSub) => match(ss)
@@ -572,32 +572,32 @@ fun gsubExprOpt(x: PExpr|None, sub: GSub, visited: List<String>) => match(x)
 
 fun gsubTupEnts(es: List<PTupEnt>, sub: GSub, visited: List<String>,
                        acc: List<PTupEnt>)
-  ret build(gsubTupEntsB(es, sub, visited, acc))
+  ret (gsubTupEntsB(es, sub, visited, acc))
 
 fun [tail] gsubTupEntsB(es: List<PTupEnt>, sub: GSub, visited: List<String>,
                        [terminal] acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : gsubTupEntsB(tail(es), sub, visited,
-      push(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
                 gsubExpr(first(es).tupValue, sub, visited))))
 
 fun gsubArms(as2, sub: GSub, visited: List<String>,
-                    acc: List<PArm>) => build(gsubArmsB(as2, sub, visited, acc))
+                    acc: List<PArm>) => (gsubArmsB(as2, sub, visited, acc))
 
 fun [tail] gsubArmsB(as2: List<PArm>, sub: GSub, visited: List<String>,
                     [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : gsubArmsB(tail(as2), sub, visited,
-      push(acc, with first(as2)(armType = gsubOpt(first(as2).armType, sub, visited), armBody = gsubExpr(first(as2).armBody, sub, visited), armLiterals = gsubLits(first(as2).armLiterals, sub, visited,
+      append(acc, with first(as2)(armType = gsubOpt(first(as2).armType, sub, visited), armBody = gsubExpr(first(as2).armBody, sub, visited), armLiterals = gsubLits(first(as2).armLiterals, sub, visited,
                          List()), armGuard = gsubExprOpt(first(as2).armGuard, sub, visited))))
 
 fun gsubLits(ls, sub: GSub, visited: List<String>,
-                    acc: List<PLit>) => build(gsubLitsB(ls, sub, visited, acc))
+                    acc: List<PLit>) => (gsubLitsB(ls, sub, visited, acc))
 
 fun [tail] gsubLitsB(ls: List<PLit>, sub: GSub, visited: List<String>,
                     [terminal] acc: List<PLit>) => isEmpty(ls)
   ? acc
-  : gsubLitsB(tail(ls), sub, visited, push(acc, first(ls)))
+  : gsubLitsB(tail(ls), sub, visited, append(acc, first(ls)))
 
 # ── specialisation ──────────────────────────────────────────────────────────
 # Substitute, rename to the mangled name, clear the gens. A CLASS also renames
@@ -659,7 +659,7 @@ class [final] Binding2(b2From: String, b2To: String)
 
 fun methodRenames(ms, sig,
                          acc: List<Binding2>): List<Binding2>
-  ret build(methodRenamesB(ms, sig, acc))
+  ret (methodRenamesB(ms, sig, acc))
 
 fun [tail] methodRenamesB(ms: List<PStmt>, sig,
                          [terminal] acc: List<Binding2>) => isEmpty(ms)
@@ -667,7 +667,7 @@ fun [tail] methodRenamesB(ms: List<PStmt>, sig,
   : match(first(ms))
     (f: PsFun) => match(f.fBody)
       (b: PExpr) => methodRenamesB(tail(ms), sig,
-                                  push(acc, Binding2(f.fName,
+                                  append(acc, Binding2(f.fName,
                                             f.fName + "@" + sig)))
       ()         => methodRenamesB(tail(ms), sig, acc)
     (o: PStmt) => methodRenamesB(tail(ms), sig, acc)
@@ -680,20 +680,20 @@ fun [tail] rnLoop(rs: List<Binding2>, name: String) => isEmpty(rs)
                                                                    name)
 
 fun renameMembers(ms, rn: List<Binding2>,
-                         acc: List<PStmt>) => build(renameMembersB(ms, rn, acc))
+                         acc: List<PStmt>) => (renameMembersB(ms, rn, acc))
 
 fun [tail] renameMembersB(ms: List<PStmt>, rn: List<Binding2>,
                          [terminal] acc: List<PStmt>) => isEmpty(ms)
   ? acc
   : match(first(ms))
     (f: PsFun) => renameMembersB(tail(ms), rn,
-        push(acc, renamedTo(rn, f.fName) == f.fName
+        append(acc, renamedTo(rn, f.fName) == f.fName
               ? first(ms)
               : PsFun(renamedTo(rn, f.fName), f.fAttrs, f.fGens,
                       f.fParams, f.fBody, f.fRet, f.fWheres,
                       f.psfLine, f.fRetInferred, f.fNested,
                       f.fImports)))
-    (o: PStmt) => renameMembersB(tail(ms), rn, push(acc, first(ms)))
+    (o: PStmt) => renameMembersB(tail(ms), rn, append(acc, first(ms)))
 
 fun renameSlots(ss, rn: List<Binding2>) => match(ss)
   (l: List<Slot>) => isEmpty(rn) ? ss : renameSlotList(l, rn,
@@ -701,13 +701,13 @@ fun renameSlots(ss, rn: List<Binding2>) => match(ss)
   ()              => None
 
 fun renameSlotList(ss: List<Slot>, rn: List<Binding2>,
-                          acc: List<Slot>) => build(renameSlotListB(ss, rn, acc))
+                          acc: List<Slot>) => (renameSlotListB(ss, rn, acc))
 
 fun [tail] renameSlotListB(ss: List<Slot>, rn: List<Binding2>,
                           [terminal] acc): List<Slot> => isEmpty(ss)
   ? acc
   : renameSlotListB(tail(ss), rn,
-      push(acc, Slot(renamedTo(rn, first(ss).slotName), first(ss).slotType,
+      append(acc, Slot(renamedTo(rn, first(ss).slotName), first(ss).slotType,
                 renameProvides(first(ss).slotProvides, rn,
                                List()))))
 
@@ -828,7 +828,7 @@ fun cssOne(ref: GRef, st,
   let sp2 = match(sp)
     (e2: PsEnum) => layoutEnum(e2)      # rebuild _enum_spec post-substitution
     (o: PStmt)   => sp
-  ret CssState(build(push(acc,
+  ret CssState((append(acc,
                           sp2)),
                add(keys, key))
 
@@ -840,12 +840,12 @@ fun replaceConcreteReferences(statements: List<PStmt>,
                               refs: GRefsIx) => rcrStmts(statements, refs, List())
 
 fun rcrStmts(ss, refs: GRefsIx,
-                    acc: List<PStmt>) => build(rcrStmtsB(ss, refs, acc))
+                    acc: List<PStmt>) => (rcrStmtsB(ss, refs, acc))
 
 fun [tail] rcrStmtsB(ss: List<PStmt>, refs: GRefsIx,
                     [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
-  : rcrStmtsB(tail(ss), refs, push(acc, rcrStmt(first(ss),
+  : rcrStmtsB(tail(ss), refs, append(acc, rcrStmt(first(ss),
                                                         refs)))
 
 # The redirect's ref test is DICT-backed (user ruling 2026-07-22: lookups
@@ -952,23 +952,23 @@ fun rcrSpec(sp, refs: GRefsIx) => match(sp)
 fun mangleLeaves(leaves: List<String>, args: List<Spec>) => mlLoop(leaves, args, List())
 
 fun mlLoop(ls, args: List<Spec>,
-                  acc: List<String>) => build(mlLoopB(ls, args, acc))
+                  acc: List<String>) => (mlLoopB(ls, args, acc))
 
 fun [tail] mlLoopB(ls: List<String>, args: List<Spec>,
                   [terminal] acc: List<String>) => isEmpty(ls)
   ? acc
   : mlLoopB(tail(ls), args,
-                            push(acc, mangledName(first(ls), args)))
+                            append(acc, mangledName(first(ls), args)))
 
 fun rcrSpecs(ss: List<Spec>, refs: GRefsIx) => rcrSpecLoop(ss, refs, List())
 
 fun rcrSpecLoop(ss, refs: GRefsIx,
-                       acc: List<Spec>) => build(rcrSpecLoopB(ss, refs, acc))
+                       acc: List<Spec>) => (rcrSpecLoopB(ss, refs, acc))
 
 fun [tail] rcrSpecLoopB(ss: List<Spec>, refs: GRefsIx,
                        [terminal] acc: List<Spec>) => isEmpty(ss)
   ? acc
-  : rcrSpecLoopB(tail(ss), refs, push(acc,
+  : rcrSpecLoopB(tail(ss), refs, append(acc,
                                                       rcrSpec(first(ss),
                                                               refs)))
 
@@ -977,13 +977,13 @@ fun rcrSpecOpt(sp: Spec|None, refs: GRefsIx) => match(sp)
   ()         => None
 
 fun rcrEntries(es: List<SEntry>, refs: GRefsIx,
-                      acc: List<SEntry>) => build(rcrEntriesB(es, refs, acc))
+                      acc: List<SEntry>) => (rcrEntriesB(es, refs, acc))
 
 fun [tail] rcrEntriesB(es: List<SEntry>, refs: GRefsIx,
                       [terminal] acc): List<SEntry> => isEmpty(es)
   ? acc
   : rcrEntriesB(tail(es), refs,
-      push(acc, SEntry(first(es).seName, rcrSpecOpt(first(es).seType, refs),
+      append(acc, SEntry(first(es).seName, rcrSpecOpt(first(es).seType, refs),
                 rcrExprOpt(first(es).seDefault, refs))))
 
 fun rcrStmt(st, refs: GRefsIx) => match(st)
@@ -1096,34 +1096,34 @@ fun rcrExprOpt(x: PExpr|None, refs: GRefsIx) => match(x)
   ()          => None
 
 fun rcrTupEnts(es: List<PTupEnt>, refs: GRefsIx,
-                      acc: List<PTupEnt>) => build(rcrTupEntsB(es, refs, acc))
+                      acc: List<PTupEnt>) => (rcrTupEntsB(es, refs, acc))
 
 fun [tail] rcrTupEntsB(es: List<PTupEnt>, refs: GRefsIx,
                       [terminal] acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rcrTupEntsB(tail(es), refs,
-      push(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
                 rcrExpr(first(es).tupValue, refs))))
 
 fun rcrArms(as2, refs: GRefsIx,
-                   acc: List<PArm>) => build(rcrArmsB(as2, refs, acc))
+                   acc: List<PArm>) => (rcrArmsB(as2, refs, acc))
 
 fun [tail] rcrArmsB(as2: List<PArm>, refs: GRefsIx,
                    [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rcrArmsB(tail(as2), refs,
-      push(acc, with first(as2)(armType = rcrSpecOpt(first(as2).armType, refs), armBody = rcrExpr(first(as2).armBody, refs), armGuard = rcrExprOpt(first(as2).armGuard, refs))))
+      append(acc, with first(as2)(armType = rcrSpecOpt(first(as2).armType, refs), armBody = rcrExpr(first(as2).armBody, refs), armGuard = rcrExprOpt(first(as2).armGuard, refs))))
 
 # ── prune + finalize ────────────────────────────────────────────────────────
 
 fun pruneUnusedGenerics(statements: List<PStmt>) => pugLoop(statements, List())
 
-fun pugLoop(ss, acc: List<PStmt>): List<PStmt> => build(pugLoopB(ss, acc))
+fun pugLoop(ss, acc: List<PStmt>): List<PStmt> => (pugLoopB(ss, acc))
 
 fun [tail] pugLoopB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : isEmpty(stmtGens(first(ss)))
-    ? pugLoopB(tail(ss), push(acc, first(ss)))
+    ? pugLoopB(tail(ss), append(acc, first(ss)))
     : pugLoopB(tail(ss), acc)
 
 # Rebuild _enum_spec for specialized (or non-generic) ROOT enums every round.
@@ -1132,7 +1132,7 @@ fun finalizeSpecializedEnumSpecs(statements: List<PStmt>,
   ret fseLoop(statements, specialized, List())
 
 fun fseLoop(ss, specialized: List<String>,
-                   acc: List<PStmt>) => build(fseLoopB(ss, specialized, acc))
+                   acc: List<PStmt>) => (fseLoopB(ss, specialized, acc))
 
 fun [tail] fseLoopB(ss: List<PStmt>, specialized: List<String>,
                    [terminal] acc: List<PStmt>) => isEmpty(ss)
@@ -1141,9 +1141,9 @@ fun [tail] fseLoopB(ss: List<PStmt>, specialized: List<String>,
     (e2: PsEnum) => isRootEnum(e2)
                     && (contains2(specialized, e2.eName)
                         || isEmpty(e2.eGens))
-      ? fseLoopB(tail(ss), specialized, push(acc, layoutEnum(e2)))
-      : fseLoopB(tail(ss), specialized, push(acc, first(ss)))
-    (o: PStmt)   => fseLoopB(tail(ss), specialized, push(acc, first(ss)))
+      ? fseLoopB(tail(ss), specialized, append(acc, layoutEnum(e2)))
+      : fseLoopB(tail(ss), specialized, append(acc, first(ss)))
+    (o: PStmt)   => fseLoopB(tail(ss), specialized, append(acc, first(ss)))
 
 fun isRootEnum(e2: PsEnum) => match(e2.eRootName)
   (rn: String) => rn == e2.eName
@@ -1185,7 +1185,7 @@ fun providerPatterns(let2, r,
 
 fun patternLoop(ps, remap: List<Binding>, let2,
                        acc: List<GProvider>)
-  ret build(patternLoopB(ps, remap, let2, acc))
+  ret (patternLoopB(ps, remap, let2, acc))
 
 fun [tail] patternLoopB(ps: List<Spec>, remap: List<Binding>, let2,
                        [terminal] acc: List<GProvider>) => isEmpty(ps)
@@ -1193,7 +1193,7 @@ fun [tail] patternLoopB(ps: List<Spec>, remap: List<Binding>, let2,
   : match(first(ps))
     (pc: SClass) => match(substitute(first(ps), remap))
       (sub: SClass) => patternLoopB(tail(ps), remap, let2,
-                                   push(acc, GProvider(let2, sub)))
+                                   append(acc, GProvider(let2, sub)))
       (o: Spec)     => patternLoopB(tail(ps), remap, let2, acc)
     (o2: Spec)   => patternLoopB(tail(ps), remap, let2, acc)
 
@@ -1339,13 +1339,13 @@ fun sfmBare(c, mono: List<GRef>) => match(monoLookup(mono, c.scName))
   ()         => c
 
 fun sfmList(ss, mono: List<GRef>,
-                   acc: List<Spec>) => build(sfmListB(ss, mono, acc))
+                   acc: List<Spec>) => (sfmListB(ss, mono, acc))
 
 fun [tail] sfmListB(ss: List<Spec>, mono: List<GRef>,
                    [terminal] acc: List<Spec>) => isEmpty(ss)
   ? acc
   : sfmListB(tail(ss), mono,
-                             push(acc, specFromMangled(first(ss), mono)))
+                             append(acc, specFromMangled(first(ss), mono)))
 
 # Inverse: structural Wrap<Leaf,Int> → bare Wrap$generic$Leaf_Int.
 fun mangledFromSpec(sp) => match(sp)
@@ -1356,15 +1356,15 @@ fun mangledFromSpec(sp) => match(sp)
              List(), c.scLine)
   (o: Spec)   => sp
 
-fun mfsList(ss, acc: List<Spec>): List<Spec> => build(mfsListB(ss, acc))
+fun mfsList(ss, acc: List<Spec>): List<Spec> => (mfsListB(ss, acc))
 
 fun [tail] mfsListB(ss: List<Spec>, [terminal] acc: List<Spec>) => isEmpty(ss)
   ? acc
-  : mfsListB(tail(ss), push(acc, mangledFromSpec(first(ss))))
+  : mfsListB(tail(ss), append(acc, mangledFromSpec(first(ss))))
 
 # The concrete interfaces implemented by NON-generic [trait] instances.
 fun concreteInstanceInterfaces(statements: List<PStmt>,
-                               r) => build(ciiLoop(statements, r, List()))
+                               r) => (ciiLoop(statements, r, List()))
 
 # One builder threaded through all three levels: the statement walk, the
 # per-instance step and the parent walk only ever WRITE to it, and the order
@@ -1400,7 +1400,7 @@ fun [tail] ifaceLoop(ps: List<Spec>, remap: List<Binding>,
   : match(first(ps))
     (pc: SClass) => match(substitute(first(ps), remap))
       (sub: SClass) => isConcrete(sub)
-        ? ifaceLoop(tail(ps), remap, push(acc, sub))
+        ? ifaceLoop(tail(ps), remap, append(acc, sub))
         : ifaceLoop(tail(ps), remap, acc)
       (o: Spec)     => ifaceLoop(tail(ps), remap, acc)
     (o2: Spec)   => ifaceLoop(tail(ps), remap, acc)
@@ -1425,7 +1425,7 @@ fun [tail] bwpWheres(ws: List<Spec>, let2: PsLet, mapping,
                                  ifaces, mono)
 
 fun unboundGens(gs: List<PGen>, mapping: List<Binding>,
-                       acc: List<String>) => build(unboundGensB(gs, mapping, acc))
+                       acc: List<String>) => (unboundGensB(gs, mapping, acc))
 
 fun [tail] unboundGensB(gs: List<PGen>, mapping: List<Binding>,
                        [terminal] acc): List<String> => isEmpty(gs)
@@ -1433,7 +1433,7 @@ fun [tail] unboundGensB(gs: List<PGen>, mapping: List<Binding>,
   : match(bindingOf(mapping, first(gs).genName))
     (b: Spec) => unboundGensB(tail(gs), mapping, acc)
     ()        => unboundGensB(tail(gs), mapping,
-                             push(acc, first(gs).genName))
+                             append(acc, first(gs).genName))
 
 fun bwpOne(wc, mapping, targets: List<String>,
            ifaces: List<Spec>, mono: List<GRef>) => match(substitute(wc, mapping))
@@ -1509,14 +1509,14 @@ fun [tail] allUnionOnly(ns: List<String>, pattern) => isEmpty(ns)
     : allUnionOnly(tail(ns), pattern)
 
 fun mangledArgs(gs: List<PGen>, mapping: List<Binding>,
-                       acc: List<Spec>) => build(mangledArgsB(gs, mapping, acc))
+                       acc: List<Spec>) => (mangledArgsB(gs, mapping, acc))
 
 fun [tail] mangledArgsB(gs: List<PGen>, mapping: List<Binding>,
                        [terminal] acc): List<Spec> => isEmpty(gs)
   ? acc
   : match(bindingOf(mapping, first(gs).genName))
     (b: Spec) => mangledArgsB(tail(gs), mapping,
-                             push(acc, mangledFromSpec(b)))
+                             append(acc, mangledFromSpec(b)))
     ()        => mangledArgsB(tail(gs), mapping, acc)
 
 # ── the iterative driver ─────────────────────────────────────────────────────
@@ -1535,17 +1535,16 @@ fun [tail] addSpecsAll(ss: List<Spec>, acc) => isEmpty(ss)
   ? acc
   : addSpecsAll(tail(ss), addConstraintOnce(acc, first(ss)))
 
-fun addNamesAll(ns: List<String>, acc: List<String>) => build(addNamesAllB(ns,
+fun addNamesAll(ns: List<String>, acc: List<String>) => (addNamesAllB(ns,
                                                                             acc,
-                                                                            _chainToSet(acc,
-                                                                                        Set())))
+                                                                            Set(acc)))
 
 fun [tail] addNamesAllB(ns: List<String>, [terminal] out: List<String>,
                         seen: Set<String>) => isEmpty(ns)
   ? out
   : contains(seen, first(ns))
     ? addNamesAllB(tail(ns), out, seen)
-    : addNamesAllB(tail(ns), push(out, first(ns)),
+    : addNamesAllB(tail(ns), append(out, first(ns)),
                    add(seen, first(ns)))
 
 fun convertGenericsIterative(statements) => monoRound(statements, 0, List(), List(), List())
@@ -1610,30 +1609,30 @@ fun withExtraRefs(refs: GRefs, specialized: List<PStmt>,
                        refs.gdTypes))
 
 fun existingOnly(rs, existing: List<String>,
-                        acc: List<GRef>) => build(existingOnlyB(rs, existing, acc))
+                        acc: List<GRef>) => (existingOnlyB(rs, existing, acc))
 
 fun [tail] existingOnlyB(rs: List<GRef>, existing: List<String>,
                         [terminal] acc: List<GRef>) => isEmpty(rs)
   ? acc
   : contains2(existing, refKey(first(rs)))
-    ? existingOnlyB(tail(rs), existing, push(acc, first(rs)))
+    ? existingOnlyB(tail(rs), existing, append(acc, first(rs)))
     : existingOnlyB(tail(rs), existing, acc)
 
-fun allStmtNames(ss, acc: List<String>): List<String> => build(allStmtNamesB(ss, acc))
+fun allStmtNames(ss, acc: List<String>): List<String> => (allStmtNamesB(ss, acc))
 
 fun [tail] allStmtNamesB(ss: List<PStmt>, [terminal] acc: List<String>) => isEmpty(ss)
   ? acc
-  : allStmtNamesB(tail(ss), push(acc, stmtName(first(ss))))
+  : allStmtNamesB(tail(ss), append(acc, stmtName(first(ss))))
 
 fun enumNamesOf(ss): List<String> => enumNamesLoop(ss, List())
 
 fun enumNamesLoop(ss, acc: List<String>): List<String>
-  ret build(enumNamesLoopB(ss, acc))
+  ret (enumNamesLoopB(ss, acc))
 
 fun [tail] enumNamesLoopB(ss: List<PStmt>, [terminal] acc: List<String>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (e2: PsEnum) => enumNamesLoopB(tail(ss), push(acc, e2.eName))
+    (e2: PsEnum) => enumNamesLoopB(tail(ss), append(acc, e2.eName))
     (o: PStmt)   => enumNamesLoopB(tail(ss), acc)
 
 # Loop exhausted: blame the generics with runaway per-name instantiation
@@ -1698,13 +1697,13 @@ fun resolveTraitReferences(statements)
   ret rtrStmts(statements, r, traitLets(r), List())
 
 fun rtrStmts(ss, r, traits: List<PStmt>,
-                    acc: List<PStmt>) => build(rtrStmtsB(ss, r, traits, acc))
+                    acc: List<PStmt>) => (rtrStmtsB(ss, r, traits, acc))
 
 fun [tail] rtrStmtsB(ss: List<PStmt>, r, traits: List<PStmt>,
                     [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : rtrStmtsB(tail(ss), r, traits,
-                              push(acc, rtrStmt(first(ss), r, traits)))
+                              append(acc, rtrStmt(first(ss), r, traits)))
 
 fun rtrStmt(st, r, traits: List<PStmt>) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens,
@@ -1787,23 +1786,23 @@ fun rtrExpr(x, r, traits: List<PStmt>) => match(x)
   (o: PeNewEnum) => x
 
 fun rtrTupEnts(es: List<PTupEnt>, r, traits: List<PStmt>,
-                      acc: List<PTupEnt>) => build(rtrTupEntsB(es, r, traits, acc))
+                      acc: List<PTupEnt>) => (rtrTupEntsB(es, r, traits, acc))
 
 fun [tail] rtrTupEntsB(es: List<PTupEnt>, r, traits: List<PStmt>,
                       [terminal] acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rtrTupEntsB(tail(es), r, traits,
-      push(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
                 rtrExpr(first(es).tupValue, r, traits))))
 
 fun rtrArms(as2, r, traits: List<PStmt>,
-                   acc: List<PArm>) => build(rtrArmsB(as2, r, traits, acc))
+                   acc: List<PArm>) => (rtrArmsB(as2, r, traits, acc))
 
 fun [tail] rtrArmsB(as2: List<PArm>, r, traits: List<PStmt>,
                    [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rtrArmsB(tail(as2), r, traits,
-      push(acc, with first(as2)(armBody = rtrExpr(first(as2).armBody, r, traits), armGuard = rtrExprOpt(first(as2).armGuard, r, traits))))
+      append(acc, with first(as2)(armBody = rtrExpr(first(as2).armBody, r, traits), armGuard = rtrExprOpt(first(as2).armGuard, r, traits))))
 
 # Redirect one name: use the trait_scope recorded during compilation if
 # available, otherwise derive it from a TRAIT-scoped find.
@@ -1845,14 +1844,14 @@ fun [tail] traitProviderCount(ls: List<PStmt>, ts: SClass, r,
     (o: PStmt)    => traitProviderCount(tail(ls), ts, r, n)
 
 fun traitProviders(ls, ts: SClass, r,
-                          acc: List<PsLet>) => build(traitProvidersB(ls, ts, r, acc))
+                          acc: List<PsLet>) => (traitProvidersB(ls, ts, r, acc))
 
 fun [tail] traitProvidersB(ls: List<PStmt>, ts: SClass, r,
                           [terminal] acc: List<PsLet>) => isEmpty(ls)
   ? acc
   : match(first(ls))
     (let2: PsLet) => implementsTrait(let2, ts, r)
-      ? traitProvidersB(tail(ls), ts, r, push(acc, let2))
+      ? traitProvidersB(tail(ls), ts, r, append(acc, let2))
       : traitProvidersB(tail(ls), ts, r, acc)
     (o: PStmt)    => traitProvidersB(tail(ls), ts, r, acc)
 
@@ -1874,12 +1873,12 @@ fun implementsTrait(tr: PsLet, ts: SClass, r) => match(tr.lType)
 # (Sized<List$generic$Int>) while the demanded scope is structural
 # (Sized<List<Int>>): compare against both spellings.
 fun mangledSpecList(ss, acc: List<Spec>): List<Spec>
-  ret build(mangledSpecListB(ss, acc))
+  ret (mangledSpecListB(ss, acc))
 
 fun [tail] mangledSpecListB(ss: List<Spec>, [terminal] acc: List<Spec>) => isEmpty(ss)
   ? acc
   : mangledSpecListB(tail(ss),
-                                     push(acc, mangledFromSpec(first(ss))))
+                                     append(acc, mangledFromSpec(first(ss))))
 
 fun [tail] anyParentMatches(ps: List<Spec>, ts: SClass,
                             mangled: List<Spec>) => isEmpty(ps)
@@ -1961,14 +1960,14 @@ fun disambiguateByType(mds, ts: SClass, icls: PsClass,
 
 fun matchingByType(ms, ifaceType: Spec, r,
                           acc: List<Found>)
-  ret build(matchingByTypeB(ms, ifaceType, r, acc))
+  ret (matchingByTypeB(ms, ifaceType, r, acc))
 
 fun [tail] matchingByTypeB(ms: List<Found>, ifaceType: Spec, r,
                           [terminal] acc: List<Found>) => isEmpty(ms)
   ? acc
   : triTrue(assignableEq(r, ifaceType,
                                           stmtType(first(ms).fStmt)))
-    ? matchingByTypeB(tail(ms), ifaceType, r, push(acc, first(ms)))
+    ? matchingByTypeB(tail(ms), ifaceType, r, append(acc, first(ms)))
     : matchingByTypeB(tail(ms), ifaceType, r, acc)
 
 # ── refresh embedded EnumSpec.all_fields ─────────────────────────────────────
@@ -2031,12 +2030,12 @@ fun refreshedEnum(fe: SEnum, spec: SEnum)
             fe.seLine)
 
 fun rfrStmts(ss, c: Canon,
-                    acc: List<PStmt>) => build(rfrStmtsB(ss, c, acc))
+                    acc: List<PStmt>) => (rfrStmtsB(ss, c, acc))
 
 fun [tail] rfrStmtsB(ss: List<PStmt>, c: Canon,
                     [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
-  : rfrStmtsB(tail(ss), c, push(acc, rfrStmt(first(ss), c)))
+  : rfrStmtsB(tail(ss), c, append(acc, rfrStmt(first(ss), c)))
 
 fun rfrStmt(st, c: Canon) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rfrStmt(f.fParams, c),
@@ -2122,21 +2121,21 @@ fun rfrExpr(x, c: Canon) => match(x)
   (o: PeLowered) => x
 
 fun rfrTupEnts(es: List<PTupEnt>, c: Canon,
-                      acc: List<PTupEnt>) => build(rfrTupEntsB(es, c, acc))
+                      acc: List<PTupEnt>) => (rfrTupEntsB(es, c, acc))
 
 fun [tail] rfrTupEntsB(es: List<PTupEnt>, c: Canon,
                       [terminal] acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rfrTupEntsB(tail(es), c,
-      push(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
                 rfrExpr(first(es).tupValue, c))))
 
-fun rfrArms(as2, c: Canon, acc: List<PArm>): List<PArm> => build(rfrArmsB(as2, c, acc))
+fun rfrArms(as2, c: Canon, acc: List<PArm>): List<PArm> => (rfrArmsB(as2, c, acc))
 
 fun [tail] rfrArmsB(as2: List<PArm>, c: Canon, [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rfrArmsB(tail(as2), c,
-      push(acc, with first(as2)(armType = rfrSpecOpt(first(as2).armType, c), armBody = rfrExpr(first(as2).armBody, c), armGuard = rfrExprOpt(first(as2).armGuard, c))))
+      append(acc, with first(as2)(armType = rfrSpecOpt(first(as2).armType, c), armBody = rfrExpr(first(as2).armBody, c), armGuard = rfrExprOpt(first(as2).armGuard, c))))
 
 fun rfrSpecOpt(sp: Spec|None, c: Canon) => match(sp)
   (s2: Spec) => rfrSpec(s2, c)
@@ -2149,12 +2148,12 @@ fun rfrSpecsOpt(ss: List<Spec>|None, c: Canon) => match(ss)
 fun rfrSpecList(ts: List<Spec>, c: Canon) => rfrSpecLoop(ts, c, List())
 
 fun rfrSpecLoop(ts, c: Canon,
-                       acc: List<Spec>) => build(rfrSpecLoopB(ts, c, acc))
+                       acc: List<Spec>) => (rfrSpecLoopB(ts, c, acc))
 
 fun [tail] rfrSpecLoopB(ts: List<Spec>, c: Canon,
                        [terminal] acc: List<Spec>) => isEmpty(ts)
   ? acc
-  : rfrSpecLoopB(tail(ts), c, push(acc, rfrSpec(first(ts),
+  : rfrSpecLoopB(tail(ts), c, append(acc, rfrSpec(first(ts),
                                                          c)))
 
 # Children first, canonical refresh at the SEnum node itself. Never recurse
@@ -2177,13 +2176,13 @@ fun rfrSpec(sp, c: Canon) => match(sp)
   (o: Spec)          => sp
 
 fun rfrEntries(es: List<SEntry>, c: Canon,
-                      acc: List<SEntry>) => build(rfrEntriesB(es, c, acc))
+                      acc: List<SEntry>) => (rfrEntriesB(es, c, acc))
 
 fun [tail] rfrEntriesB(es: List<SEntry>, c: Canon,
                       [terminal] acc): List<SEntry> => isEmpty(es)
   ? acc
   : rfrEntriesB(tail(es), c,
-      push(acc, SEntry(first(es).seName,
+      append(acc, SEntry(first(es).seName,
                 rfrSpecOpt(first(es).seType, c),
                 first(es).seDefault)))
 

@@ -21,14 +21,14 @@ import Bootstrap::StdlibCandidates
 
 fun liftCapturedCalls(statements: List<PStmt>) => llTop(statements, List())
 
-fun llTop(ss, acc: List<PStmt>): List<PStmt> => build(llTopB(ss, acc))
+fun llTop(ss, acc: List<PStmt>): List<PStmt> => (llTopB(ss, acc))
 
 fun [tail] llTopB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (f: PsFun)   => llTopB(tail(ss), push(acc, liftInFunction(f)))
-    (c: PsClass) => llTopB(tail(ss), push(acc, llInClass(c)))
-    (o: PStmt)   => llTopB(tail(ss), push(acc, first(ss)))
+    (f: PsFun)   => llTopB(tail(ss), append(acc, liftInFunction(f)))
+    (c: PsClass) => llTopB(tail(ss), append(acc, llInClass(c)))
+    (o: PStmt)   => llTopB(tail(ss), append(acc, first(ss)))
 
 # A class member is a function with a receiver; a nested helper inside one
 # threads captured PARAMETERS exactly as it would inside a free function.
@@ -38,13 +38,13 @@ fun llInClass(c): PStmt => hoClassDeclaresNested(c)
   ? with c(cMembers = llMembers(c.cMembers, List()))
   : c
 
-fun llMembers(ss, acc: List<PStmt>): List<PStmt> => build(llMembersB(ss, acc))
+fun llMembers(ss, acc: List<PStmt>): List<PStmt> => (llMembersB(ss, acc))
 
 fun [tail] llMembersB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (f: PsFun) => llMembersB(tail(ss), push(acc, liftInFunction(f)))
-    (o: PStmt) => llMembersB(tail(ss), push(acc, first(ss)))
+    (f: PsFun) => llMembersB(tail(ss), append(acc, liftInFunction(f)))
+    (o: PStmt) => llMembersB(tail(ss), append(acc, first(ss)))
 
 # Lift what qualifies inside f's own body (deepest nesting first: a nested
 # function's own helpers lift before it is itself considered).
@@ -66,22 +66,22 @@ fun llInBlock(f0: PsFun, bk0: PeBlock)
     ret rebuilt
   ret llAnalyse(rebuilt, nested)
 
-fun llDeepFirst(ss, acc: List<PStmt>): List<PStmt> => build(llDeepFirstB(ss, acc))
+fun llDeepFirst(ss, acc: List<PStmt>): List<PStmt> => (llDeepFirstB(ss, acc))
 
 fun [tail] llDeepFirstB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (nf: PsFun) => llDeepFirstB(tail(ss), push(acc, liftInFunction(nf)))
-    (o: PStmt)  => llDeepFirstB(tail(ss), push(acc, first(ss)))
+    (nf: PsFun) => llDeepFirstB(tail(ss), append(acc, liftInFunction(nf)))
+    (o: PStmt)  => llDeepFirstB(tail(ss), append(acc, first(ss)))
 
 # ALL nested fns count here (Python gates on FunctionStatement only, not on
 # block-bodied ones like the hoist does).
-fun hoNestedFns2(ss, acc: List<PsFun>): List<PsFun> => build(hoNestedFns2B(ss, acc))
+fun hoNestedFns2(ss, acc: List<PsFun>): List<PsFun> => (hoNestedFns2B(ss, acc))
 
 fun [tail] hoNestedFns2B(ss: List<PStmt>, [terminal] acc: List<PsFun>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (nf: PsFun) => hoNestedFns2B(tail(ss), push(acc, nf))
+    (nf: PsFun) => hoNestedFns2B(tail(ss), append(acc, nf))
     (o: PStmt)  => hoNestedFns2B(tail(ss), acc)
 
 class [final] LiftCtx(lcNames: List<String>, lcExtras: List<List<String>>)
@@ -108,14 +108,14 @@ fun llAnalyse(f, nested: List<PsFun>)
 fun llCapturesOf(fs, siblingNames: List<String>,
                         paramNames: List<String>,
                         acc: List<List<String>>)
-  ret build(llCapturesOfB(fs, siblingNames, paramNames, acc))
+  ret (llCapturesOfB(fs, siblingNames, paramNames, acc))
 
 fun [tail] llCapturesOfB(fs: List<PsFun>, siblingNames: List<String>,
                         paramNames: List<String>,
                         [terminal] acc: List<List<String>>) => isEmpty(fs)
   ? acc
   : llCapturesOfB(tail(fs), siblingNames, paramNames,
-      push(acc,
+      append(acc,
           sort(filter(freeRefs(first(fs), siblingNames),
                       (n) => contains2(paramNames,
                                        n)))))
@@ -147,9 +147,9 @@ fun llSolveOne(scc, f: PsFun, nested: List<PsFun>,
             && llRefsOk(scc, f)
   let ok = ok0 && !llAnyLinear(want0, paramLets)
   # Three POSITIONALLY paired lists — one entry per SCC, looked up by index.
-  ret LlSolved(build(push(acc.lsSccs, scc)),
-               build(push(acc.lsLiftable, ok)),
-               build(push(acc.lsThreaded, want0)))
+  ret LlSolved((append(acc.lsSccs, scc)),
+               (append(acc.lsLiftable, ok)),
+               (append(acc.lsThreaded, want0)))
 
 fun [tail] llWant(ns: List<String>, own: List<String>,
                   siblingNames: List<String>, captures: List<List<String>>,
@@ -274,8 +274,8 @@ fun [tail] llLiftScc(ns: List<String>, scc: List<String>, solved: LlSolved,
   ret isEmpty(ns)
     ? acc
     : llLiftScc(tail(ns), scc, solved,
-        LiftCtx(build(push(acc.lcNames, first(ns))),
-                build(push(acc.lcExtras, sort(threaded)))))
+        LiftCtx((append(acc.lcNames, first(ns))),
+                (append(acc.lcExtras, sort(threaded)))))
 
 fun llFirstOf(scc: List<String>) => isEmpty(scc)
   ? ""
@@ -454,13 +454,13 @@ fun llWithParams(st, extras: List<String>,
   (o2: PStmt) => st
 
 fun llParamCopies(ns, paramLets: List<PStmt>,
-                         acc: List<PStmt>) => build(llParamCopiesB(ns, paramLets, acc))
+                         acc: List<PStmt>) => (llParamCopiesB(ns, paramLets, acc))
 
 fun [tail] llParamCopiesB(ns: List<String>, paramLets: List<PStmt>,
                          [terminal] acc: List<PStmt>) => isEmpty(ns)
   ? acc
   : match(llParamByName(paramLets, first(ns)))
-    (p: PStmt) => llParamCopiesB(tail(ns), paramLets, push(acc, p))
+    (p: PStmt) => llParamCopiesB(tail(ns), paramLets, append(acc, p))
     ()         => llParamCopiesB(tail(ns), paramLets, acc)
 
 fun [tail] llParamByName(ps: List<PStmt>, name) => isEmpty(ps)
@@ -470,13 +470,13 @@ fun [tail] llParamByName(ps: List<PStmt>, name) => isEmpty(ps)
     : llParamByName(tail(ps), name)
 
 fun llStmts(ss, ctx: LiftCtx, paramLets: List<PStmt>,
-                   acc: List<PStmt>) => build(llStmtsB(ss, ctx, paramLets, acc))
+                   acc: List<PStmt>) => (llStmtsB(ss, ctx, paramLets, acc))
 
 fun [tail] llStmtsB(ss: List<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>,
                    [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : llStmtsB(tail(ss), ctx, paramLets,
-                             push(acc, llStmt(first(ss), ctx, paramLets)))
+                             append(acc, llStmt(first(ss), ctx, paramLets)))
 
 fun llExprOpt(x: PExpr|None, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
   (e2: PExpr) => llExpr(e2, ctx, paramLets)
@@ -551,39 +551,39 @@ fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>)
 
 fun llExtraEnts(ns, lr,
                        acc: List<PTupEnt>): List<PTupEnt>
-  ret build(llExtraEntsB(ns, lr, acc))
+  ret (llExtraEntsB(ns, lr, acc))
 
 fun [tail] llExtraEntsB(ns: List<String>, lr,
                        [terminal] acc: List<PTupEnt>) => isEmpty(ns)
   ? acc
   : llExtraEntsB(tail(ns), lr,
-      push(acc, PTupEnt("", false,
+      append(acc, PTupEnt("", false,
                 PeName(first(ns), List(), lr, None))))
 
 fun llExprs(es, ctx: LiftCtx, paramLets: List<PStmt>,
-                   acc: List<PExpr>) => build(llExprsB(es, ctx, paramLets, acc))
+                   acc: List<PExpr>) => (llExprsB(es, ctx, paramLets, acc))
 
 fun [tail] llExprsB(es: List<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>,
                    [terminal] acc: List<PExpr>) => isEmpty(es)
   ? acc
   : llExprsB(tail(es), ctx, paramLets,
-                             push(acc, llExpr(first(es), ctx, paramLets)))
+                             append(acc, llExpr(first(es), ctx, paramLets)))
 
 fun llEnts(es: List<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
-                  acc: List<PTupEnt>) => build(llEntsB(es, ctx, paramLets, acc))
+                  acc: List<PTupEnt>) => (llEntsB(es, ctx, paramLets, acc))
 
 fun [tail] llEntsB(es: List<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
                   [terminal] acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : llEntsB(tail(es), ctx, paramLets,
-      push(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
                 llExpr(first(es).tupValue, ctx, paramLets))))
 
 fun llArms(as2, ctx: LiftCtx, paramLets: List<PStmt>,
-                  acc: List<PArm>) => build(llArmsB(as2, ctx, paramLets, acc))
+                  acc: List<PArm>) => (llArmsB(as2, ctx, paramLets, acc))
 
 fun [tail] llArmsB(as2: List<PArm>, ctx: LiftCtx, paramLets: List<PStmt>,
                   [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : llArmsB(tail(as2), ctx, paramLets,
-      push(acc, with first(as2)(armBody = llExpr(first(as2).armBody, ctx, paramLets), armGuard = llExprOpt(first(as2).armGuard, ctx, paramLets))))
+      append(acc, with first(as2)(armBody = llExpr(first(as2).armBody, ctx, paramLets), armGuard = llExprOpt(first(as2).armGuard, ctx, paramLets))))

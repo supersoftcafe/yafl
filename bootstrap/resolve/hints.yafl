@@ -34,7 +34,7 @@ fun unsettled() => put(noHints(), unsettledKey(), List())
 fun isUnsettled(hs: Dict<String, List<Hint>>) => contains(hs, unsettledKey())
 
 fun hintOf(name: String, spec, lower)
-  ret put(noHints(), name, build(push(List(), Hint(spec, lower))))
+  ret put(noHints(), name, (append(List(), Hint(spec, lower))))
 
 fun hintsFor(hs: Dict<String, List<Hint>>, name: String) => match(get(hs, name))
   (l: List<Hint>) => l
@@ -234,9 +234,9 @@ fun fitsShape(arm, sibling, r) => match(mergeSpecs(arm, sibling, List(), r).moSp
 
 fun [tail] knownSpecs(ts: List<Spec|None>,
                       [terminal] acc: List<Spec>) => isEmpty(ts)
-  ? build(acc)
+  ? acc
   : match(first(ts))
-    (x: Spec) => knownSpecs(tail(ts), push(acc, x))
+    (x: Spec) => knownSpecs(tail(ts), append(acc, x))
     ()        => knownSpecs(tail(ts), acc)
 
 # The interfaces every one of these classes implements, or None while an
@@ -247,7 +247,7 @@ fun [tail] sharedLoop(ss: List<Spec>, r,
                       acc: List<Spec>|None) => isEmpty(ss)
   ? match(acc)
     (l2: List<Spec>) => l2
-    ()               => List()
+    ()               => List<Spec>()
   : match(interfacesOf(first(ss), r))
     (ps2: List<Spec>) => sharedLoop(tail(ss), r, intersectSpecs(acc, ps2))
     ()                => None

@@ -143,7 +143,7 @@ fun propagate(parentTy: Spec|None, targets,
 
 fun propagateLoop(ts, es, r,
                          acc: List<PStmt>): List<PStmt>
-  ret build(propagateLoopB(ts, es, r, acc))
+  ret (propagateLoopB(ts, es, r, acc))
 
 fun [tail] propagateLoopB(ts: List<PStmt>, es: List<SEntry>, r,
                          [terminal] acc: List<PStmt>) => isEmpty(ts)
@@ -151,7 +151,7 @@ fun [tail] propagateLoopB(ts: List<PStmt>, es: List<SEntry>, r,
   : isEmpty(es)
     ? acc
     : propagateLoopB(tail(ts), tail(es), r,
-                                      push(acc, adopt(first(ts),
+                                      append(acc, adopt(first(ts),
                                                 first(es).seType, r)))
 
 fun adopt(target, entryTy: Spec|None, r) => match(target)
@@ -244,7 +244,7 @@ fun addLetName(acc: Set<String>, p) => match(p)
 
 fun withoutLocals(hints: Dict<String, List<Hint>>,
                   stmts: List<PStmt>)
-  ret hintsWithout(hints, letNames(build(bindingLets(stmts, List()))),
+  ret hintsWithout(hints, letNames((bindingLets(stmts, List()))),
                    Set())
 
 fun hasDeclaredRet(f: PsFun) => match(f.fRet)
@@ -345,12 +345,12 @@ fun strippedWhereFn(m) => match(m)
   (o: PStmt) => m
 
 fun resolvedImplements(fs: List<FoundClass>, acc: List<Spec>)
-  ret build(resolvedImplementsB(fs, acc))
+  ret (resolvedImplementsB(fs, acc))
 
 fun [tail] resolvedImplementsB(fs: List<FoundClass>, [terminal] acc): List<Spec>
   ret isEmpty(fs)
     ? acc
-    : resolvedImplementsB(tail(fs), push(acc, first(fs).fcSpec))
+    : resolvedImplementsB(tail(fs), append(acc, first(fs).fcSpec))
 
 fun [tail] parentSlotsOf(fs: List<FoundClass>, acc) => isEmpty(fs)
   ? acc
@@ -494,10 +494,10 @@ fun [tail] leafLoop(vs: List<PStmt>, acc: List<String>) => isEmpty(vs)
 # (types.py _collect_data_fields): the dedup reads the SET, so the fields ride
 # ONE builder in declaration order — the old per-add list rebuild cost 1.4e9
 # pushes per self-compile (fields are DERIVED per read, so this path is hot).
-class [linear, final] FieldAcc(faSeen: Set<String>, faOut: List<SField>)
+class [final] FieldAcc(faSeen: Set<String>, faOut: List<SField>)
 
 fun collectDataFields(e: PsEnum)
-  ret build(dfVariants(e.eVariants,
+  ret (dfVariants(e.eVariants,
             dfParams(flattenParams(e.eParams),
                      FieldAcc(Set(), List()))).faOut)
 
@@ -523,7 +523,7 @@ fun addFieldOnce([terminal] acc: FieldAcc, name, ty)
   let out = acc.faOut
   ret contains(seen, name)
     ? FieldAcc(seen, out)
-    : FieldAcc(add(seen, name), push(out, SField(name, ty)))
+    : FieldAcc(add(seen, name), append(out, SField(name, ty)))
 
 fun [tail] hasFieldNamed(fs: List<SField>, name: String) => isEmpty(fs)
   ? false
@@ -544,7 +544,7 @@ fun assignSpecs(e: PsEnum, root, allLeaves)
 fun assignAllSpecs(vs, root,
                           allLeaves,
                           acc: List<PStmt>): List<PStmt>
-  ret build(assignAllSpecsB(vs, root, allLeaves, acc))
+  ret (assignAllSpecsB(vs, root, allLeaves, acc))
 
 fun [tail] assignAllSpecsB(vs: List<PStmt>, root,
                           allLeaves,
@@ -552,10 +552,10 @@ fun [tail] assignAllSpecsB(vs: List<PStmt>, root,
   ? acc
   : match(first(vs))
     (v: PsEnum) => assignAllSpecsB(tail(vs), root, allLeaves,
-                                  push(acc, assignSpecs(v, root,
+                                  append(acc, assignSpecs(v, root,
                                                   allLeaves)))
     (o: PStmt)  => assignAllSpecsB(tail(vs), root, allLeaves,
-                                  push(acc, first(vs)))
+                                  append(acc, first(vs)))
 
 # ── control ─────────────────────────────────────────────────────────────────
 
@@ -595,14 +595,14 @@ fun compileIf(i: PsIf, r, retType): StmtOut
 
 fun collapseElseIf(stmts: List<PStmt>) => ceiLoop(stmts, List())
 
-fun ceiLoop(ss, acc: List<PStmt>): List<PStmt> => build(ceiLoopB(ss, acc))
+fun ceiLoop(ss, acc: List<PStmt>): List<PStmt> => (ceiLoopB(ss, acc))
 
 fun [tail] ceiLoopB(ss: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (i: PsIf)  => foldChain(i, tail(ss))
-      |> (fc) => ceiLoopB(fc.fcRest, push(acc, fc.fcIf))
-    (o: PStmt) => ceiLoopB(tail(ss), push(acc, first(ss)))
+      |> (fc) => ceiLoopB(fc.fcRest, append(acc, fc.fcIf))
+    (o: PStmt) => ceiLoopB(tail(ss), append(acc, first(ss)))
 
 class [final] FoldedChain(fcIf: PStmt, fcRest: List<PStmt>)
 
@@ -659,14 +659,14 @@ fun [tail] compileStmtsB(ss: List<PStmt>, r, retType,
                          [terminal] acc,
                          glb,
                          hints) => isEmpty(ss)
-  ? StmtsOut(build(acc), glb, hints)
+  ? StmtsOut(acc, glb, hints)
   : compileStmt(first(ss), r, retType)
     |> (one) => compileStmtsB(tail(ss), r, retType, addStmt(acc, one.soStmt),
                               concat(glb, one.soExtra),
                               mergeHints(hints, one.soHints))
 
 fun addStmt([terminal] acc, st: PStmt|None): List<PStmt> => match(st)
-  (x: PStmt) => push(acc, x)
+  (x: PStmt) => append(acc, x)
   ()         => acc
 
 # ── small helpers ───────────────────────────────────────────────────────────

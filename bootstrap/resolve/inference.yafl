@@ -79,7 +79,7 @@ fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
 
 fun priorBindings(gs, ss,
                          acc: List<Binding>): List<Binding>
-  ret build(priorBindingsB(gs, ss, acc))
+  ret (priorBindingsB(gs, ss, acc))
 
 fun [tail] priorBindingsB(gs: List<PGen>, ss: List<Spec>,
                          [terminal] acc: List<Binding>) => isEmpty(gs)
@@ -87,18 +87,18 @@ fun [tail] priorBindingsB(gs: List<PGen>, ss: List<Spec>,
   : isEmpty(ss)
     ? acc
     : priorBindingsB(tail(gs), tail(ss),
-                                      push(acc, Binding(first(gs).genName,
+                                      append(acc, Binding(first(gs).genName,
                                                 first(ss))))
 
 fun mergeLoop(gs, prior: List<Binding>,
                      mapping: List<Binding>, r, acc: List<Spec>)
-  ret build(mergeLoopB(gs, prior, mapping, r, acc))
+  ret (mergeLoopB(gs, prior, mapping, r, acc))
 
 fun [tail] mergeLoopB(gs: List<PGen>, prior: List<Binding>,
                      mapping: List<Binding>, r, [terminal] acc: List<Spec>) => isEmpty(gs)
   ? acc
   : mergeLoopB(tail(gs), prior, mapping, r,
-                               push(acc, boundParam(first(gs), prior, mapping, r)))
+                               append(acc, boundParam(first(gs), prior, mapping, r)))
 
 fun boundParam(g2: PGen, prior: List<Binding>, mapping: List<Binding>, r): Spec
   let fresh = match(bindingOf(mapping, g2.genName))
@@ -220,11 +220,11 @@ fun resultMerged(want, dr, names: List<String>, mapping: List<Binding>, r): List
   let m = mergeSpecsWidening(want, dr, binds, false, r)
   ret isEmpty(m.moErrs) ? learnedBindings(m.moBinds, List()) : mapping
 
-fun genNames(gs: List<PGen>, acc: List<String>) => build(genNamesB(gs, acc))
+fun genNames(gs: List<PGen>, acc: List<String>) => (genNamesB(gs, acc))
 
 fun [tail] genNamesB(gs: List<PGen>, [terminal] acc): List<String> => isEmpty(gs)
   ? acc
-  : genNamesB(tail(gs), push(acc, first(gs).genName))
+  : genNamesB(tail(gs), append(acc, first(gs).genName))
 
 # ── _infer_type_params_via_where ─────────────────────────────────────────────
 # Bind type params argument inference CANNOT determine — those appearing in no
@@ -246,7 +246,7 @@ fun viaWhere(stmt, gens: List<PGen>, mapping,
 fun whereTargets(gs: List<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
                         acc: List<String>)
-  ret build(whereTargetsB(gs, mapping, argInferrable, acc))
+  ret (whereTargetsB(gs, mapping, argInferrable, acc))
 
 fun [tail] whereTargetsB(gs: List<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
@@ -254,7 +254,7 @@ fun [tail] whereTargetsB(gs: List<PGen>, mapping: List<Binding>,
   ? acc
   : isWhereTarget(first(gs).genName, mapping, argInferrable)
     ? whereTargetsB(tail(gs), mapping, argInferrable,
-                   push(acc, first(gs).genName))
+                   append(acc, first(gs).genName))
     : whereTargetsB(tail(gs), mapping, argInferrable, acc)
 
 fun isWhereTarget(name: String, mapping: List<Binding>,
@@ -302,14 +302,14 @@ fun traitInstances(r) => sortByParamCount(
 # PRE-LOWERING first-class instances: the pattern IS the interface — no
 # witness lookup, no parent substitution (_trait_instances).
 fun tiStmtLoop(ts, acc: List<TraitInst>): List<TraitInst>
-  ret build(tiStmtLoopB(ts, acc))
+  ret (tiStmtLoopB(ts, acc))
 
 fun [tail] tiStmtLoopB(ts: List<PStmt>, [terminal] acc: List<TraitInst>) => isEmpty(ts)
   ? acc
   : match(first(ts))
     (ti: PsTraitInstance) => match(ti.tiPattern)
       (c: SClass) => tiStmtLoopB(tail(ts),
-                                push(acc, TraitInst(genNames(ti.tiGens,
+                                append(acc, TraitInst(genNames(ti.tiGens,
                                                    List()),
                                           c)))
       (o: Spec)   => tiStmtLoopB(tail(ts), acc)
@@ -360,7 +360,7 @@ fun addIface(iface, paramNames,
              acc) => match(iface)
   # Declaration order is kept: the sort is STABLE, so this order decides
   # ties between instances of equal param count.
-  (ic: SClass) => build(push(acc, TraitInst(paramNames, ic)))
+  (ic: SClass) => (append(acc, TraitInst(paramNames, ic)))
   (o: Spec)    => acc
 
 # Sorted by param count, STABLY — concrete (zero-param) instances win ties in

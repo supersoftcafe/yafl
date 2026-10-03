@@ -68,15 +68,15 @@ fun namePrefixes(name): List<String> => prefixLoop((split(name, "@")), "", List(
 
 fun prefixLoop(ps, acc,
                       out: List<String>): List<String>
-  ret build(prefixLoopB(ps, acc, out))
+  ret (prefixLoopB(ps, acc, out))
 
 fun [tail] prefixLoopB(ps: List<String>, acc,
                       [terminal] out: List<String>) => isEmpty(ps)
   ? out
   : acc == ""
-    ? prefixLoopB(tail(ps), first(ps), push(out, first(ps)))
+    ? prefixLoopB(tail(ps), first(ps), append(out, first(ps)))
     : prefixLoopB(tail(ps), acc + "@" + first(ps),
-                 push(out, acc + "@" + first(ps)))
+                 append(out, acc + "@" + first(ps)))
 
 # ── bags ────────────────────────────────────────────────────────────────────
 
@@ -272,24 +272,24 @@ fun [tail] dedupeAmb(es: List<AmbEntry>, acc: List<AmbEntry>) => isEmpty(es)
 fun [tail] mergeAmb(es: List<AmbEntry>, x: AmbEntry,
                     [terminal] out: List<AmbEntry>,
                     merged) => isEmpty(es)
-  ? (build(merged
+  ? ((merged
     ? out
-    : push(out, x)))
+    : append(out, x)))
   : eqSpec(first(es).amSpec, x.amSpec)
                      && eqNameList(first(es).amOwn, x.amOwn)
     ? mergeAmb(tail(es), x,
-               push(out, AmbEntry(mergeNames(first(es).amNs,
+               append(out, AmbEntry(mergeNames(first(es).amNs,
                                              x.amNs),
                                   first(es).amSpec,
                                   first(es).amOwn)),
                true)
-    : mergeAmb(tail(es), x, push(out, first(es)), merged)
+    : mergeAmb(tail(es), x, append(out, first(es)), merged)
 
 class [final] AmbBuilt(abEntries: List<AmbEntry>, abBlocked: Bool)
 
 fun buildAmbient(ts: List<PStmt>,
                  acc, blocked) => isEmpty(ts)
-  ? AmbBuilt(build(acc), blocked)
+  ? AmbBuilt(acc, blocked)
   : match(first(ts))
     (ti: PsTraitInstance) => ti.tiAmbient
       ? buildAmbientOne(ti, tail(ts), acc, blocked)
@@ -304,7 +304,7 @@ fun buildAmbientOne(ti: PsTraitInstance, rest,
   (c: SClass) => anyNamed(c.scParams)
     ? buildAmbient(rest, acc, true)
     : buildAmbient(rest,
-                   push(acc, AmbEntry(prepend(namespacePart(ti.tiName),
+                   append(acc, AmbEntry(prepend(namespacePart(ti.tiName),
                                               List()),
                                       ti.tiPattern,
                                       genNames(ti.tiGens,
@@ -339,7 +339,7 @@ fun putUnder(d: Dict<String, List<PStmt>>, key: String,
              st) => match(get(d, key))
   # Declaration order within a bucket: it is the candidate order overload
   # resolution and the "Candidates:" message both see.
-  (prev: List<PStmt>) => put(d, key, build(push(prev, st)))
+  (prev: List<PStmt>) => put(d, key, (append(prev, st)))
   ()                  => put(d, key, prepend(st, List()))
 
 # Enum VARIANTS are indexed too (a variant name resolves) but are not part of
@@ -348,14 +348,14 @@ fun classify(acc, st, name: String) => match(st)
   (e: PsEnum) => indexVariants(acc, e.eVariants)
   (l: PsLet)  => hasAttr(l.lAttrs, "trait")
     ? Statements(acc.stOrdered, acc.stIndex,
-                 build(push(acc.stTraits, st)),
+                 (append(acc.stTraits, st)),
                  acc.stInstances, acc.stAmbient, acc.stAmbientBlocked,
                  acc.stTypesIdx, acc.stDataIdx, acc.stBareTypes, acc.stBareData,
                  acc.stMembers)
     : acc
   (ti: PsTraitInstance) => Statements(acc.stOrdered, acc.stIndex,
                                       acc.stTraits,
-                                      build(push(acc.stInstances, st)),
+                                      (append(acc.stInstances, st)),
                                       acc.stAmbient, acc.stAmbientBlocked,
                                       acc.stTypesIdx, acc.stDataIdx,
                                       acc.stBareTypes, acc.stBareData,
@@ -552,10 +552,10 @@ fun [tail] ambEntryWalk(r, scopes: List<String>) => match(r)
 
 fun [tail] ambFilter(es: List<AmbEntry>, scopes: List<String>,
                      acc: List<TraitEntry>) => isEmpty(es)
-  ? build(acc)
+  ? acc
   : anyInScopes(first(es).amNs, scopes)
     ? ambFilter(tail(es), scopes,
-                push(acc, TraitEntry(first(es).amSpec, first(es).amOwn)))
+                append(acc, TraitEntry(first(es).amSpec, first(es).amOwn)))
     : ambFilter(tail(es), scopes, acc)
 
 fun [tail] anyInScopes(ns: List<String>, scopes: List<String>) => isEmpty(ns)
@@ -615,9 +615,8 @@ fun whereClauses(r): List<Spec> => match(r)
 # keeps the order the Set cannot. Reading a half-built list was the only
 # reason this loop could not simply push.
 fun mergeNames(acc: List<String>, ns: List<String>)
-  ret build(mergeNamesB(acc,
-                        _chainToSet(acc,
-                                    Set()),
+  ret (mergeNamesB(acc,
+                        Set(acc),
                         ns))
 
 fun [tail] mergeNamesB([terminal] out: List<String>, seen: Set<String>,
@@ -625,7 +624,7 @@ fun [tail] mergeNamesB([terminal] out: List<String>, seen: Set<String>,
   ? out
   : contains(seen, first(ns))
     ? mergeNamesB(out, seen, tail(ns))
-    : mergeNamesB(push(out, first(ns)), add(seen, first(ns)),
+    : mergeNamesB(append(out, first(ns)), add(seen, first(ns)),
                   tail(ns))
 
 # The parent's answer, PLUS the answer under each in-scope namespace — but only
@@ -695,7 +694,7 @@ fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
 
 fun globalLoop(ss, wantType,
                       acc: List<Found>): List<Found>
-  ret build(globalLoopB(ss, wantType, acc))
+  ret (globalLoopB(ss, wantType, acc))
 
 fun [tail] globalLoopB(ss: List<PStmt>, wantType,
                       [terminal] acc: List<Found>) => isEmpty(ss)
@@ -703,7 +702,7 @@ fun [tail] globalLoopB(ss: List<PStmt>, wantType,
   : !isNeitherStmt(first(ss))
                      && wantsThis(isTypeStmt(first(ss)), wantType)
     ? globalLoopB(tail(ss), wantType,
-                 push(acc, Found(stmtName(first(ss)), first(ss), ScGlobal())))
+                 append(acc, Found(stmtName(first(ss)), first(ss), ScGlobal())))
     : globalLoopB(tail(ss), wantType, acc)
 
 fun wantsThis(isType, wantType) => isType ? wantType : !wantType
@@ -737,13 +736,13 @@ fun matchingFound(names: List<Found>, query: String): Findings
 
 fun matchLoop(fs, query: String,
                      acc: List<Found>): List<Found>
-  ret build(matchLoopB(fs, query, acc))
+  ret (matchLoopB(fs, query, acc))
 
 fun [tail] matchLoopB(fs: List<Found>, query,
                      [terminal] acc: List<Found>) => isEmpty(fs)
   ? acc
   : nameMatches(first(fs).fName, query)
-    ? matchLoopB(tail(fs), query, push(acc, first(fs)))
+    ? matchLoopB(tail(fs), query, append(acc, first(fs)))
     : matchLoopB(tail(fs), query, acc)
 
 fun stmtName(st) => match(st)

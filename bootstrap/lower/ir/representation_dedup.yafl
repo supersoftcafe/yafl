@@ -475,7 +475,7 @@ fun rddCloseSets(e: RddEnc): RddEnc
   let sets = rddReverse(e.eSt.stSets, List())
   let numbered = rddNumberSets(e, sets)
   let st = numbered.eSt
-  ret RddEnc((numbered.eText + fold(List(sets), "<",
+  ret RddEnc((numbered.eText + fold(sets, "<",
                                        (acc, vs) => acc + rddLocalSet(st, rddSetLocals(st, vs))) + ">"),
              st)
 
@@ -512,7 +512,7 @@ class [final] RddBuild(bIntern: Dict<String, Int>, bNext: Int, bShapes: List<Int
 fun rddAdd(b: RddBuild, e: RddEnc): RddBuild
   let st = e.eSt
   let text = e.eText
-  let refs = List(rddReverse(st.stRefs, List()))
+  let refs = rddReverse(st.stRefs, List())
   ret match(get(b.bIntern, text))
     (id: Int) => RddBuild(b.bIntern, b.bNext, prepend(id, b.bShapes),
                           prepend(refs, b.bRefs), st.stPins, st.stStray)
@@ -526,11 +526,11 @@ fun rddGraph(cx: RddCx, objs: List<CgObject>, fns: List<CgFunction>,
   let b1 = fold(objs, b0, (b, o) => rddAdd(b, rddObject(rddStart(b.bPins, b.bStray), cx, o)))
   let b2 = fold(fns, b1, (b, f) => rddAdd(b, rddFunction(rddStart(b.bPins, b.bStray), cx, f)))
   let b3 = fold(glbs, b2, (b, g2) => rddAdd(b, rddGlobal(rddStart(b.bPins, b.bStray), cx, g2)))
-  let pinnedNames = fold(List(b3.bPins.pnNames), setEmpty(), (s2, n) => setAdd(s2, n))
+  let pinnedNames = fold(b3.bPins.pnNames, setEmpty(), (s2, n) => setAdd(s2, n))
   ret RddGraph(rddArray(rddReverse(b3.bShapes, List()), cx.cxCount),
                rddArray(rddReverse(b3.bRefs, List()), cx.cxCount),
                build(rddPinned(cx, pinnedNames, b3.bStray, 0, arrayBuilder(cx.cxCount))),
-               rddConflicts(cx, List(b3.bPins.pnSeps)))
+               rddConflicts(cx, b3.bPins.pnSeps))
 
 # Which nodes each node must never share a group with: the other leaves of its
 # enum (a dispatch compares their ids), and the other classes of any union an

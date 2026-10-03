@@ -322,6 +322,22 @@ fun map<T,U>(l: List<T>, f: (:T): U): List<U>
     ret isEmpty<T>(c) ? acc : go(append<U>(acc, f(first<T>(c))), tail<T>(c))
   ret go(List<U>(), l)
 
+# map, preserving identity: when every f(x) is bit-identical to x (yafl_same,
+# the `with` expression's guard), the result IS `l` — the same value, no
+# allocation — so an identity-preserving rewrite can propagate "nothing
+# changed" up through list fields. Otherwise the unchanged prefix is copied
+# once and the rest mapped; f runs exactly once per element either way.
+fun mapSame<T>(l: List<T>, f: (:T): T): List<T>
+  # `c` is non-empty and `y` is f of its first element.
+  fun [tail] scan(c: List<T>, i: Int, y: T): List<T>
+    ret __builtin_op__<bool>("yafl_same", y, first<T>(c))
+      ? (isEmpty<T>(tail<T>(c)) ? l : scan(tail<T>(c), i + 1, f(first<T>(tail<T>(c)))))
+      : _mapRest<T>(append<T>(take<T>(l, i), y), tail<T>(c), f)
+  ret isEmpty<T>(l) ? l : scan(l, 0, f(first<T>(l)))
+
+fun [tail] _mapRest<T>(acc: List<T>, c: List<T>, f: (:T): T): List<T>
+  ret isEmpty<T>(c) ? acc : _mapRest<T>(append<T>(acc, f(first<T>(c))), tail<T>(c), f)
+
 fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
   fun [tail] go(acc: List<T>, c: List<T>): List<T>
     ret isEmpty<T>(c) ? acc

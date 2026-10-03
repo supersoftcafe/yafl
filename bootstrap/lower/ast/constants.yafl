@@ -68,7 +68,7 @@ fun icRestamp(v, line) => match(v)
 
 # Top level: const declarations are DROPPED — they live only as inlined uses.
 fun icDropDecls(ss, c: IcConsts,
-                       acc: List<PStmt>) => build(icDropDeclsB(ss, c, acc))
+                       acc: List<PStmt>) => (icDropDeclsB(ss, c, acc))
 
 fun [tail] icDropDeclsB(ss: List<PStmt>, c: IcConsts,
                        [terminal] acc: List<PStmt>) => isEmpty(ss)
@@ -76,8 +76,8 @@ fun [tail] icDropDeclsB(ss: List<PStmt>, c: IcConsts,
   : match(first(ss))
     (let2: PsLet) => contains(c.icMap, let2.lName)
       ? icDropDeclsB(tail(ss), c, acc)
-      : icDropDeclsB(tail(ss), c, push(acc, first(ss)))
-    (o: PStmt)    => icDropDeclsB(tail(ss), c, push(acc, first(ss)))
+      : icDropDeclsB(tail(ss), c, append(acc, first(ss)))
+    (o: PStmt)    => icDropDeclsB(tail(ss), c, append(acc, first(ss)))
 
 # The walker callback: a bare name that aliases a const becomes the literal.
 fun icReplace(x, c: IcConsts): PExpr|None => match(x)

@@ -36,13 +36,13 @@ fun giName(v) => v < 0 ? "$integers::integer@n" + String(0 - v)
 
 fun giGlobals(vs, index,
                      acc: List<PStmt>): List<PStmt>
-  ret build(giGlobalsB(vs, index, acc))
+  ret (giGlobalsB(vs, index, acc))
 
 fun [tail] giGlobalsB(vs: List<Int>, index,
                      [terminal] acc: List<PStmt>) => isEmpty(vs)
   ? acc
   : giGlobalsB(tail(vs), index + 1,
-      push(acc, PsLet(giName(first(vs)), List(), List(),
+      append(acc, PsLet(giName(first(vs)), List(), List(),
                 SBuiltin("bigint",
                          PLine("$integers", index + 1, 1)),
                 PeInt(first(vs), 0,

@@ -72,7 +72,7 @@ enum WordTree
 fun sortWords(l: List<String>): List<String>
   ret sort<String>(l)
 
-# Balanced tree from a sorted list, BY COUNT: build(n) consumes the next n
+# Balanced tree from a sorted list, BY COUNT: n consumes the next n
 # elements — left subtree, then root, then right subtree — walking the list
 # linearly, once. The old splitHalf divide-and-conquer re-materialised half
 # the list at every level (~5 allocations per element per level, n·log n
@@ -147,7 +147,7 @@ fun isKnown(dict: WordTree, word: String): Bool
 # five, so the order the edit classes are tried in (deletions, transposes,
 # substitutions, insertions) is the ranking — which makes it a builder.
 # `sgSeen` is pure membership, so it is a Set.
-class [linear, final] Sugg(sgFound: List<String >, sgSeen: Set<String>)
+class [final] Sugg(sgFound: List<String >, sgSeen: Set<String>)
 
 fun suggest(dict: WordTree, word: String): List<String>
   let w = toLower(word)
@@ -158,7 +158,7 @@ fun suggest(dict: WordTree, word: String): List<String>
     ret hasWord(dict, cand)
       ? (contains<String>(acc.sgSeen, cand)
           ? acc
-          : Sugg(push<String >(acc.sgFound, cand),
+          : Sugg(append<String >(acc.sgFound, cand),
                  add<String>(acc.sgSeen, cand)))
       : acc
 
@@ -185,7 +185,7 @@ fun suggest(dict: WordTree, word: String): List<String>
 
   let start = Sugg(List<String >(), Set<String>())
   let result = insertions(0, 0, substitutions(0, 0, transposes(0, deletions(0, start))))
-  ret take<String>(build<String >(result.sgFound), 5)
+  ret take<String>(result.sgFound, 5)
 
 
 # ── checking one file ─────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ fun [tail] anyLetter(word: String, i: Int): Bool
 
 # Per-file report state. rpReports is ORDERED — the reports print in the order
 # the words were met — so it is a builder; rpReported is pure membership.
-class [linear, final] Rep(rpReports: List<String|FileError>,
+class [final] Rep(rpReports: List<String|FileError>,
                           rpReported: Set<String>, rpCount: Int)
 
 fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, misspelt: Int)
@@ -218,7 +218,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
       : path + ":" + String(lineNo) + ": '" + word + "' -> " + join(suggestions, ", ")
 
   fun report(lineNo: Int, word: String, [terminal] a: Rep): Rep
-    ret Rep(push<String|FileError>(a.rpReports,
+    ret Rep(append<String|FileError>(a.rpReports,
                                    reportLine(lineNo, word, suggest(dict, word))),
             add<String>(a.rpReported, word), a.rpCount + 1)
 
@@ -242,7 +242,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
 
   # Record an IO error after the reports made so far.
   fun failed([terminal] a: Rep, e: IOError): Rep
-    ret Rep(push<String|FileError>(a.rpReports, FileError(path, e)), a.rpReported, a.rpCount)
+    ret Rep(append<String|FileError>(a.rpReports, FileError(path, e)), a.rpReported, a.rpCount)
 
   # End of file finishes the file cleanly; any other read error is recorded.
   fun readEnd([terminal] a: Rep, e: IOError): Rep
@@ -264,7 +264,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
   fun checkOpen(io: IO): (reports: List<String|FileError>, misspelt: Int)
     let r = perLine(io, 1, Rep(List<String|FileError>(), Set<String>(), 0))
     let done = closeInto(r.acc, r.io.close())
-    ret (build<String|FileError>(done.rpReports), done.rpCount)
+    ret (done.rpReports, done.rpCount)
 
   ret match(open_read(path))
     (io: IO)     => checkOpen(io)

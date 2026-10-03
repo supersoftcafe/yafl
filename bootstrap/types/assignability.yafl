@@ -283,11 +283,11 @@ fun tupleFromTuple(r, left: STuple, right: STuple)
 
 fun entryNames(es: List<SEntry>) => nameLoop(es, List())
 
-fun nameLoop(es: List<SEntry>, acc: List<String>) => build(nameLoopB(es, acc))
+fun nameLoop(es: List<SEntry>, acc: List<String>) => (nameLoopB(es, acc))
 
 fun [tail] nameLoopB(es: List<SEntry>, [terminal] acc): List<String> => isEmpty(es)
   ? acc
-  : nameLoopB(tail(es), push(acc, first(es).seName))
+  : nameLoopB(tail(es), append(acc, first(es).seName))
 
 # The subtlety, transcribed rather than paraphrased: a false from a
 # PLACEHOLDER left is not structural — it may fit once bound — so it is
@@ -314,12 +314,12 @@ fun zipBinding(es: List<SEntry>, binding: List<Int>)
 # order mirrors the tuple's — so a threaded builder, O(1) per pair.
 fun [tail] zipLoop(es: List<SEntry>, bs: List<Int>,
                    [terminal] acc: List<Pair>) => isEmpty(es)
-  ? build(acc)
+  ? acc
   : isEmpty(bs)
-    ? build(acc)
+    ? acc
     : zipLoop(tail(es), tail(bs),
                                 first(bs) < 0 ? acc          # filled by default
-                                            : push(acc, Pair(first(es), first(bs))))
+                                            : append(acc, Pair(first(es), first(bs))))
 
 fun [tail] pairLoop(ps: List<Pair>, r, rights: List<SEntry>,
                     acc: PairTally) => isEmpty(ps)

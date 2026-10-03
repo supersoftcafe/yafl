@@ -53,7 +53,7 @@ fun inlineSingleCallerFunctions(a: CgApp, syncNames: Set<String>,
 # far. A splice still materialises the stream, because the end-label
 # bookkeeping inspects it, but that is once per inlined call rather than once
 # per instruction.
-class [linear, final] InlAcc(inlOps: List<Op>,
+class [final] InlAcc(inlOps: List<Op>,
                              inlVars: List<CgField>)
 
 # The inlined-name uniquifier is the fixpoint EPOCH, not the op count:
@@ -67,7 +67,7 @@ fun doInlining(f, tag, a: CgApp,
                     InlAcc(List(), List()))
   # The splice assembly stays a transient List (end-bookkeeping reads and
   # pops it); the retained result crosses to Segment storage here.
-  ret cgFunctionWith(f, cgOpsOf(build(out.inlOps)),
+  ret cgFunctionWith(f, cgOpsOf(out.inlOps),
         CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), out.inlVars)))
 
 fun [tail] inlLoop(s: Segment<Op>|None, iSeg, index, tag, f: CgFunction,
@@ -85,7 +85,7 @@ fun inlStep(op, uniqueId, f: CgFunction, a: CgApp,
             shouldInline,
             [terminal] acc: InlAcc) => match(inlCandidate(op, f, a, shouldInline))
   (t2: InlTarget) => inlSplice(t2, uniqueId, acc)
-  ()               => InlAcc(push(acc.inlOps, op), acc.inlVars)
+  ()               => InlAcc(append(acc.inlOps, op), acc.inlVars)
 
 class [final] InlTarget(itCall: OpCall, itGf: RpGlobalFunction,
                         itArgs: RpNewStruct, itTarget: CgFunction)
@@ -143,11 +143,11 @@ fun inlSplice(t2: InlTarget, uniqueId,
   let ops2 = inlParamMovesB(t2.itArgs.values, tail(pFields),
                             uniqueId, allFields, ops1)
   let ops3 = inlBody(target.fnOps, 0i32, t2.itCall, renames, endLabel, ops2)
-  ret InlAcc((inlEndBookkeeping(build(ops3), endLabel)),
+  ret InlAcc((inlEndBookkeeping(ops3, endLabel)),
              concat(acc.inlVars, newVars))
 
 fun inlLabelRenames(ops: Segment<Op>|None, uniqueId)
-  ret build(inlLabelRenamesB(ops, 0i32, uniqueId, List()))
+  ret (inlLabelRenamesB(ops, 0i32, uniqueId, List()))
 
 fun [tail] inlLabelRenamesB(s: Segment<Op>|None, i, uniqueId,
                            [terminal] acc): List<RpRename> => match(s)
@@ -156,7 +156,7 @@ fun [tail] inlLabelRenamesB(s: Segment<Op>|None, i, uniqueId,
     ? inlLabelRenamesB(seg.next, 0i32, uniqueId, acc)
     : match(seg.array(i))
         (lb: OpLabel) => inlLabelRenamesB(s, i + 1i32, uniqueId,
-            push(acc, RpRename(lb.labelName,
+            append(acc, RpRename(lb.labelName,
                       "inl" + uniqueId + "$" + lb.labelName)))
         (o: Op)       => inlLabelRenamesB(s, i + 1i32, uniqueId, acc)
 
@@ -171,7 +171,7 @@ fun inlMappedVar(fields: List<CgField>, name,
 fun inlThisCapture(t2: InlTarget, uniqueId, allFields: List<CgField>,
                    [terminal] ops): List<Op> => match(t2.itGf.object)
   (obj: RParam) => match(head(cgFieldsOfOrEmpty(t2.itTarget.fnParams)))
-    (f2: CgField) => push(ops,
+    (f2: CgField) => append(ops,
         OpMove(inlMappedVar(allFields, f2.fieldName, uniqueId), obj,
                false, List()))
     ()             => ops   # unreachable: object implies a this param
@@ -180,7 +180,7 @@ fun inlThisCapture(t2: InlTarget, uniqueId, allFields: List<CgField>,
 fun inlParamMoves(args: List<RpNamedValue>, params: List<CgField>,
                          uniqueId, allFields: List<CgField>,
                          ops: List<Op>)
-  ret build(inlParamMovesB(args, params, uniqueId, allFields, ops))
+  ret (inlParamMovesB(args, params, uniqueId, allFields, ops))
 
 fun [tail] inlParamMovesB(args: List<RpNamedValue>, params: List<CgField>,
                          uniqueId, allFields: List<CgField>,
@@ -189,7 +189,7 @@ fun [tail] inlParamMovesB(args: List<RpNamedValue>, params: List<CgField>,
   : isEmpty(params)
     ? ops
     : inlParamMovesB(tail(args), tail(params), uniqueId, allFields,
-        push(ops, OpMove(inlMappedVar(allFields, first(params).fieldName,
+        append(ops, OpMove(inlMappedVar(allFields, first(params).fieldName,
                                    uniqueId),
                       first(args).value, false, List())))
 
@@ -204,19 +204,19 @@ fun [tail] inlBody(s: Segment<Op>|None, i, c: OpCall, renames: List<RpRename>,
 
 fun inlBodyOp(op, c: OpCall, renames: List<RpRename>, endLabel,
               [terminal] acc): List<Op> => match(op)
-  (r: OpReturn)  => push(inlReturnMove(r, c, renames, acc),
+  (r: OpReturn)  => append(inlReturnMove(r, c, renames, acc),
                          OpJump(endLabel, List()))
   (cl: OpCall)   => cl.callMusttail
-    ? push(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
+    ? append(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
                                     cl.callRegister, false, cl.callImpure,
                                     cl.callResultType, cl.callSavedVars),
                              renames))
-    : push(acc, opRenameVars(op, renames))
-  (o: Op)        => push(acc, opRenameVars(op, renames))
+    : append(acc, opRenameVars(op, renames))
+  (o: Op)        => append(acc, opRenameVars(op, renames))
 
 fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
                   [terminal] acc): List<Op> => match(c.callRegister)
-  (reg: RParam) => push(acc, OpMove(reg,
+  (reg: RParam) => append(acc, OpMove(reg,
                                  rpRenameVars(r.returnValue, renames),
                                  false, List()))
   ()             => acc
@@ -227,7 +227,7 @@ fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
 fun inlEndBookkeeping(ops, endLabel) => match(inlFirstEndJumpIsLast(ops, endLabel))
   (isLast: Bool) => isLast
     ? inlDropLast(ops, List())
-    : build(push(ops,
+    : (append(ops,
                  OpLabel(endLabel, List())))
   ()             => ops
 
@@ -242,13 +242,13 @@ fun [tail] inlFirstEndJumpIsLast(ops: List<Op>, endLabel) => isEmpty(ops)
       : inlFirstEndJumpIsLast(tail(ops), endLabel)
     (o: Op)     => inlFirstEndJumpIsLast(tail(ops), endLabel)
 
-fun inlDropLast(ops, acc: List<Op>): List<Op> => build(inlDropLastB(ops, acc))
+fun inlDropLast(ops, acc: List<Op>): List<Op> => (inlDropLastB(ops, acc))
 
 fun [tail] inlDropLastB(ops: List<Op>, [terminal] acc: List<Op>) => isEmpty(ops)
   ? acc
   : isEmpty(tail(ops))
     ? acc
-    : inlDropLastB(tail(ops), push(acc, first(ops)))
+    : inlDropLastB(tail(ops), append(acc, first(ops)))
 
 # ── functionReferenceCounts (trim.py:176) ────────────────────────────────────
 # Multiplicity, on the same scan model as the dead-code pass: direct call

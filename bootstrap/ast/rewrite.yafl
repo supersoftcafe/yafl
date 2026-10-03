@@ -53,18 +53,10 @@ fun rwOnStmt(f): Rw => Rw(rwNoExpr, rwNoSpec, f)
 # ── statements ───────────────────────────────────────────────────────────────
 
 # Identity must propagate THROUGH list fields or every parent's SAME guard
-# fails: a rebuilt spine is a new pointer.  So the list walkers preserve too —
-# the ListFull skeleton and every chain cell rebuild through `with`, returning
-# the ORIGINAL when nothing beneath changed.  (Non-tail spine recursion:
-# depth = list length, small frames — fine at compiler scale.)
-fun rwStmts(ss, w: Rw): List<PStmt> => match(ss)
-  (le: ListEmpty) => ss
-  (lf: ListFull)  => with lf(front = rwStmtChain(lf.front, w))
-
-fun rwStmtChain(ss: List<PStmt>, w: Rw): List<PStmt> => isEmpty(ss)
-  ? ss
-  : with ss(value = rwStmt(first(ss), w),
-                            next  = rwStmtChain(tail(ss), w))
+# fails: a rebuilt list is a new value.  So the list walkers preserve too —
+# mapSame hands back the ORIGINAL list when every element came back
+# bit-identical, and copies only when something beneath changed.
+fun rwStmts(ss: List<PStmt>, w: Rw): List<PStmt> => mapSame(ss, (x: PStmt) => rwStmt(x, w))
 
 fun rwStmt(st, w: Rw)
   let rebuilt = rwStmtKids(st, w)
@@ -110,14 +102,7 @@ fun rwExprOpt(x: PExpr|None, w: Rw) => match(x)
   (e2: PExpr) => rwExpr(e2, w)
   ()          => None
 
-fun rwExprs(es, w: Rw): List<PExpr> => match(es)
-  (le: ListEmpty) => es
-  (lf: ListFull)  => with lf(front = rwExprChain(lf.front, w))
-
-fun rwExprChain(es: List<PExpr>, w: Rw): List<PExpr> => isEmpty(es)
-  ? es
-  : with es(value = rwExpr(first(es), w),
-                            next  = rwExprChain(tail(es), w))
+fun rwExprs(es: List<PExpr>, w: Rw): List<PExpr> => mapSame(es, (x: PExpr) => rwExpr(x, w))
 
 fun rwExprKids(x, w: Rw): PExpr => match(x)
   (nm: PeName)   => with nm(refTypeParams = rwSpecs(nm.refTypeParams, w),
@@ -168,25 +153,11 @@ fun rwTrait(sp: Spec|None, w: Rw) => match(sp)
     (o: Spec)   => None
   ()         => None
 
-fun rwTupEnts(es, w: Rw): List<PTupEnt> => match(es)
-  (le: ListEmpty) => es
-  (lf: ListFull)  => with lf(front = rwTupEntChain(lf.front, w))
-
-fun rwTupEntChain(es: List<PTupEnt>, w: Rw): List<PTupEnt> => isEmpty(es)
-  ? es
-  : with es(value = rwTupEnt(first(es), w),
-                            next  = rwTupEntChain(tail(es), w))
+fun rwTupEnts(es: List<PTupEnt>, w: Rw): List<PTupEnt> => mapSame(es, (x: PTupEnt) => rwTupEnt(x, w))
 
 fun rwTupEnt(te2: PTupEnt, w: Rw) => with te2(tupValue = rwExpr(te2.tupValue, w))
 
-fun rwArms(as2, w: Rw): List<PArm> => match(as2)
-  (le: ListEmpty) => as2
-  (lf: ListFull)  => with lf(front = rwArmChain(lf.front, w))
-
-fun rwArmChain(as2: List<PArm>, w: Rw): List<PArm> => isEmpty(as2)
-  ? as2
-  : with as2(value = rwArm(first(as2), w),
-                            next  = rwArmChain(tail(as2), w))
+fun rwArms(as2: List<PArm>, w: Rw): List<PArm> => mapSame(as2, (x: PArm) => rwArm(x, w))
 
 fun rwArm(a: PArm, w: Rw): PArm => with a(armType     = rwSpecOpt(a.armType, w),
                                           armBody     = rwExpr(a.armBody, w),
@@ -196,41 +167,20 @@ fun rwArm(a: PArm, w: Rw): PArm => with a(armType     = rwSpecOpt(a.armType, w),
 
 # An extra position carries a SPEC, and a spec position a walker does not
 # reach is a spec that never resolves or substitutes.
-fun rwPositions(ps, w: Rw): List<PPos> => match(ps)
-  (le: ListEmpty) => ps
-  (lf: ListFull)  => with lf(front = rwPosChain(lf.front, w))
-
-fun rwPosChain(ps: List<PPos>, w: Rw): List<PPos> => isEmpty(ps)
-  ? ps
-  : with ps(value = with first(ps)(posType = rwSpecOpt(first(ps).posType, w)),
-                            next  = rwPosChain(tail(ps), w))
+fun rwPositions(ps: List<PPos>, w: Rw): List<PPos> => mapSame(ps, (x: PPos) => with x(posType = rwSpecOpt(x.posType, w)))
 
 # Arm LITERALS are expressions and Python's MatchArm visits them
 # (match.py:181) — a fold or rewrite that skips them diverges (first seen as
 # _node_count undercounting literal-heavy functions below the inline
 # threshold).
-fun rwLits(ls, w: Rw): List<PLit> => match(ls)
-  (le: ListEmpty) => ls
-  (lf: ListFull)  => with lf(front = rwLitChain(lf.front, w))
-
-fun rwLitChain(ls: List<PLit>, w: Rw): List<PLit> => isEmpty(ls)
-  ? ls
-  : with ls(value = rwLit(first(ls), w),
-                            next  = rwLitChain(tail(ls), w))
+fun rwLits(ls: List<PLit>, w: Rw): List<PLit> => mapSame(ls, (x: PLit) => rwLit(x, w))
 
 fun rwLit(lt, w: Rw) => match(lt)
   (le: PlExpr)  => with le(litExpr = rwExpr(le.litExpr, w))
   (lr: PlRange) => with lr(rangeLo = rwExpr(lr.rangeLo, w),
                            rangeHi = rwExpr(lr.rangeHi, w))
 
-fun rwFieldArgs(fas, w: Rw): List<PFieldArg> => match(fas)
-  (le: ListEmpty) => fas
-  (lf: ListFull)  => with lf(front = rwFieldArgChain(lf.front, w))
-
-fun rwFieldArgChain(fas: List<PFieldArg>, w: Rw): List<PFieldArg> => isEmpty(fas)
-  ? fas
-  : with fas(value = rwFieldArg(first(fas), w),
-                            next  = rwFieldArgChain(tail(fas), w))
+fun rwFieldArgs(fas: List<PFieldArg>, w: Rw): List<PFieldArg> => mapSame(fas, (x: PFieldArg) => rwFieldArg(x, w))
 
 fun rwFieldArg(fa: PFieldArg, w: Rw) => with fa(faValue = rwExpr(fa.faValue, w))
 
@@ -246,14 +196,7 @@ fun rwSpecOpt(sp: Spec|None, w: Rw) => match(sp)
   (s2: Spec) => rwSpec(s2, w)
   ()         => None
 
-fun rwSpecs(ts, w: Rw): List<Spec> => match(ts)
-  (le: ListEmpty) => ts
-  (lf: ListFull)  => with lf(front = rwSpecChain(lf.front, w))
-
-fun rwSpecChain(ts: List<Spec>, w: Rw): List<Spec> => isEmpty(ts)
-  ? ts
-  : with ts(value = rwSpec(first(ts), w),
-                            next  = rwSpecChain(tail(ts), w))
+fun rwSpecs(ts: List<Spec>, w: Rw): List<Spec> => mapSame(ts, (x: Spec) => rwSpec(x, w))
 
 fun rwSpecsOpt(ss: List<Spec>|None, w: Rw): List<Spec>|None => match(ss)
   (l: List<Spec>) => rwSpecs(l, w)
@@ -271,14 +214,7 @@ fun rwSpecKids(sp, w: Rw): Spec => match(sp)
   (ls: SLazyStub)    => with ls(slsTarget = rwSpecOpt(ls.slsTarget, w))
   (o: Spec)          => sp
 
-fun rwEntries(es, w: Rw): List<SEntry> => match(es)
-  (le: ListEmpty) => es
-  (lf: ListFull)  => with lf(front = rwEntryChain(lf.front, w))
-
-fun rwEntryChain(es: List<SEntry>, w: Rw): List<SEntry> => isEmpty(es)
-  ? es
-  : with es(value = rwEntry(first(es), w),
-                            next  = rwEntryChain(tail(es), w))
+fun rwEntries(es: List<SEntry>, w: Rw): List<SEntry> => mapSame(es, (x: SEntry) => rwEntry(x, w))
 
 fun rwEntry(se: SEntry, w: Rw) => with se(seType    = rwSpecOpt(se.seType, w),
                                           seDefault = rwExprOpt(se.seDefault, w))
@@ -521,9 +457,9 @@ fun rwnStmts(ss: List<PStmt>, w: RwN, sc, n) => rwnStmtLoop(ss, w, sc, n, List()
 
 fun [tail] rwnStmtLoop(ss: List<PStmt>, w: RwN, sc, n,
                        [terminal] acc) => isEmpty(ss)
-  ? RwNSs(n, build(acc))
+  ? RwNSs(n, acc)
   : rwnStmt(first(ss), w, sc, n)
-    |> (o) => rwnStmtLoop(tail(ss), w, sc, o.rnsN, push(acc, o.rnsStmt))
+    |> (o) => rwnStmtLoop(tail(ss), w, sc, o.rnsN, append(acc, o.rnsStmt))
 
 fun rwnStmt(st, w: RwN, sc, n)
   let kids = rwnStmtKids(st, w, sc, n)
@@ -686,53 +622,53 @@ class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
 
 fun [tail] rwnFieldArgs(fas: List<PFieldArg>, w: RwN, sc, n,
                         [terminal] acc) => isEmpty(fas)
-  ? RwNFas(n, build(acc))
+  ? RwNFas(n, acc)
   : rwnExpr(first(fas).faValue, w, sc, n)
     |> (v) => rwnFieldArgs(tail(fas), w, sc, v.rneN,
-                           push(acc,
+                           append(acc,
                                PFieldArg(first(fas).faName, v.rneExpr)))
 
 fun [tail] rwnExprs(es: List<PExpr>, w: RwN, sc, n,
                     [terminal] acc) => isEmpty(es)
-  ? RwNEs(n, build(acc))
+  ? RwNEs(n, acc)
   : rwnExpr(first(es), w, sc, n)
-    |> (o) => rwnExprs(tail(es), w, sc, o.rneN, push(acc, o.rneExpr))
+    |> (o) => rwnExprs(tail(es), w, sc, o.rneN, append(acc, o.rneExpr))
 
 fun [tail] rwnTupEnts(es: List<PTupEnt>, w: RwN, sc, n,
                       [terminal] acc) => isEmpty(es)
-  ? RwNTs(n, build(acc))
+  ? RwNTs(n, acc)
   : rwnExpr(first(es).tupValue, w, sc, n)
     |> (o) => rwnTupEnts(tail(es), w, sc, o.rneN,
-                         push(acc,
+                         append(acc,
                              PTupEnt(first(es).tupName, first(es).tupSpread,
                                      o.rneExpr)))
 
 # An arm's body and guard see its binding; its literals see the match's scope.
 fun [tail] rwnArms(as2: List<PArm>, w: RwN, sc, n,
                    [terminal] acc) => isEmpty(as2)
-  ? RwNAs(n, build(acc))
+  ? RwNAs(n, acc)
   : rwnExpr(first(as2).armBody, w, rwnArmScope(first(as2), sc), n)
     |> (b) => (b, rwnLits(first(as2).armLiterals, w, sc, b.rneN,
                           List()))
     |> (b, ls) => (b, ls, rwnExprOpt(first(as2).armGuard, w,
                                      rwnArmScope(first(as2), sc), ls.rnlsN))
     |> (b, ls, gd) => rwnArms(tail(as2), w, sc, gd.rneN2,
-                              push(acc,
+                              append(acc,
                                   with first(as2)(armBody = b.rneExpr, armLiterals = ls.rnlsLits, armGuard = gd.rneExpr2)))
 
 class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
 
 fun [tail] rwnLits(ls: List<PLit>, w: RwN, sc, n,
                    [terminal] acc) => isEmpty(ls)
-  ? RwNLs(n, build(acc))
+  ? RwNLs(n, acc)
   : match(first(ls))
     (le: PlExpr)  => rwnExpr(le.litExpr, w, sc, n)
       |> (o) => rwnLits(tail(ls), w, sc, o.rneN,
-                        push(acc, PlExpr(o.rneExpr)))
+                        append(acc, PlExpr(o.rneExpr)))
     (lr: PlRange) => rwnExpr(lr.rangeLo, w, sc, n)
       |> (lo) => (lo, rwnExpr(lr.rangeHi, w, sc, lo.rneN))
       |> (lo, hi) => rwnLits(tail(ls), w, sc, hi.rneN,
-                             push(acc,
+                             append(acc,
                                  PlRange(lo.rneExpr, hi.rneExpr,
                                          lr.plrLine)))
 

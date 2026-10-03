@@ -83,9 +83,9 @@ fun instantiationUid(base, params: List<Spec>) => isEmpty(params)
 
 fun [tail] argUidList(ps: List<Spec>,
                       [terminal] acc: List<String>) => isEmpty(ps)
-  ? build(acc)
+  ? acc
   : uid(first(ps))
-    |> (u) => u == "" ? None : argUidList(tail(ps), push(acc, u))
+    |> (u) => u == "" ? None : argUidList(tail(ps), append(acc, u))
 
 fun uidCallable(cl: SCallable)
   let p = uid(cl.scParams2)
@@ -98,11 +98,11 @@ fun uidTuple(t2: STuple) => match(entryUidList(t2.stEntries, List()))
 # POSITIONAL: a tuple's identity is its entry uids IN ORDER.
 fun [tail] entryUidList(es: List<SEntry>,
                         [terminal] acc: List<String>) => isEmpty(es)
-  ? build(acc)
+  ? acc
   : match(first(es).seType)
     (t2: Spec) => uid(t2)
       |> (u) => u == "" ? None
-                        : entryUidList(tail(es), push(acc, u))
+                        : entryUidList(tail(es), append(acc, u))
     ()         => None
 
 # A union's identity is its SORTED member ids — set semantics, so `A|B` and
@@ -211,7 +211,7 @@ fun addMember(acc, sp) => match(sp)
   # `acc` is read just above for the dedup, so it cannot be a builder.
   (o)                => uid(sp) != "" && hasUid(acc, uid(sp))
     ? acc
-    : build(push(acc, sp))
+    : (append(acc, sp))
 
 fun [tail] hasUidIn(ts: List<Spec>, u) => isEmpty(ts)
   ? false
@@ -222,14 +222,14 @@ fun hasUid(ts: List<Spec>, u) => hasUidIn(ts, u)
 fun dropSubsumed(flat: List<Spec>): List<Spec> => keepUnsubsumed(flat, flat, List())
 
 fun keepUnsubsumed(ms, all2: List<Spec>,
-                          acc: List<Spec>) => build(keepUnsubsumedB(ms, all2, acc))
+                          acc: List<Spec>) => (keepUnsubsumedB(ms, all2, acc))
 
 fun [tail] keepUnsubsumedB(ms: List<Spec>, all2: List<Spec>,
                           [terminal] acc: List<Spec>) => isEmpty(ms)
   ? acc
   : isSubsumed(first(ms), all2)
     ? keepUnsubsumedB(tail(ms), all2, acc)
-    : keepUnsubsumedB(tail(ms), all2, push(acc, first(ms)))
+    : keepUnsubsumedB(tail(ms), all2, append(acc, first(ms)))
 
 # An enum member whose valid leaves are a STRICT subset of another member of
 # the same enum carries no values the wider member lacks.
@@ -285,11 +285,11 @@ fun bindTupleEntries(declared: List<SEntry>,
   ret bindLoop(supplied, 0, declared, bare,
                blankSlots(declared, List()), false)
 
-fun bareNames(ds: List<SEntry>, acc: List<String>) => build(bareNamesB(ds, acc))
+fun bareNames(ds: List<SEntry>, acc: List<String>) => (bareNamesB(ds, acc))
 
 fun [tail] bareNamesB(ds: List<SEntry>, [terminal] acc): List<String> => isEmpty(ds)
   ? acc
-  : bareNamesB(tail(ds), push(acc, bareOfName(first(ds).seName)))
+  : bareNamesB(tail(ds), append(acc, bareOfName(first(ds).seName)))
 
 fun bareOfName(name)
   let at = findByte(name, '@', 0)
@@ -303,17 +303,17 @@ fun [tail] anyOverlap(ss: List<String>, bare: List<String>) => isEmpty(ss)
 
 # One slot per declared entry, sized by the walk (no-length ruling).
 fun identityBinding(ds: List<SEntry>, i, acc: List<Int>)
-  ret build(identityBindingB(ds, i, acc))
+  ret (identityBindingB(ds, i, acc))
 
 fun [tail] identityBindingB(ds: List<SEntry>, i, [terminal] acc): List<Int> => isEmpty(ds)
   ? acc
-  : identityBindingB(tail(ds), i + 1, push(acc, i))
+  : identityBindingB(tail(ds), i + 1, append(acc, i))
 
-fun blankSlots(ds: List<SEntry>, acc: List<Int>) => build(blankSlotsB(ds, acc))
+fun blankSlots(ds: List<SEntry>, acc: List<Int>) => (blankSlotsB(ds, acc))
 
 fun [tail] blankSlotsB(ds: List<SEntry>, [terminal] acc): List<Int> => isEmpty(ds)
   ? acc
-  : blankSlotsB(tail(ds), push(acc, -1))
+  : blankSlotsB(tail(ds), append(acc, -1))
 
 # `slots` carries -1 for "unbound so far"; a field bound by name or position
 # takes the supplied index. seenName tracks the "bare positional after a
@@ -346,12 +346,12 @@ fun [tail] slotAt(ss: List<Int>, i) => isEmpty(ss)
 # An unbound field is filled by its default, or the binding fails.
 fun [tail] fillDefaults(ds: List<SEntry>, ss: List<Int>, i,
                  [terminal] acc: List<Int>) => isEmpty(ds)
-  ? build(acc)
+  ? acc
   : isEmpty(ss)
     ? None
     : first(ss) < 0 && !hasDefault(first(ds))
       ? None
-      : fillDefaults(tail(ds), tail(ss), i + 1, push(acc, first(ss)))
+      : fillDefaults(tail(ds), tail(ss), i + 1, append(acc, first(ss)))
 
 fun hasDefault(e: SEntry) => match(e.seDefault)
   (d: PExpr) => true
@@ -370,13 +370,13 @@ fun nth(xs: List<Int>, i) => match(head(drop(xs, i)))
 fun setSlot(xs: List<Int>, at: Int, v: Int) => setLoop(xs, 0, at, v, List())
 
 fun setLoop(xs, i: Int, at: Int, v: Int,
-                   acc: List<Int>) => build(setLoopB(xs, i, at, v, acc))
+                   acc: List<Int>) => (setLoopB(xs, i, at, v, acc))
 
 fun [tail] setLoopB(xs: List<Int>, i, at, v: Int,
                    [terminal] acc: List<Int>) => isEmpty(xs)
   ? acc
   : setLoopB(tail(xs), i + 1, at, v,
-                             push(acc, i == at ? v : first(xs)))
+                             append(acc, i == at ? v : first(xs)))
 
 # ══ spec text format (test harness only) ═════════════════════════════════════
 # A compact spelling so the Python side can drive both implementations over
@@ -445,9 +445,9 @@ fun withArgsText(body): (head: String, args: List<Spec>)
                        List()))
 
 fun [tail] argSpecs(ps: List<String>, [terminal] acc: List<Spec>): List<Spec> => isEmpty(ps)
-  ? build(acc)
+  ? acc
   : match(parseSpecText(first(ps)))
-    (s2: Spec) => argSpecs(tail(ps), push(acc, s2))
+    (s2: Spec) => argSpecs(tail(ps), append(acc, s2))
     ()         => argSpecs(tail(ps), acc)
 
 fun parseUnionText(body) => unionParts(topLevelParts(body), List())
@@ -456,12 +456,12 @@ fun parseUnionText(body) => unionParts(topLevelParts(body), List())
 fun parseTupleText(body) => tupleParts(topLevelParts(body), List())
 
 fun [tail] tupleParts(ps: List<String>, [terminal] acc) => isEmpty(ps)
-  ? STuple(build(acc), noLine())
+  ? STuple(acc, noLine())
   : trim(first(ps)) == ""
     ? tupleParts(tail(ps), acc)
     : tupleEntryText(first(ps))
       |> (en) => match(en)
-        (e: SEntry) => tupleParts(tail(ps), push(acc, e))
+        (e: SEntry) => tupleParts(tail(ps), append(acc, e))
         ()          => None
 
 fun tupleEntryText(part): SEntry|None
@@ -478,35 +478,35 @@ fun topLevelParts(body) => partLoop(body, 0, 0, 0, List())
 
 fun partLoop(body, at, start, depth,
                     acc: List<String>): List<String>
-  ret build(partLoopB(body, at, start, depth, acc))
+  ret (partLoopB(body, at, start, depth, acc))
 
 fun [tail] partLoopB(body, at, start, depth,
                     [terminal] acc: List<String>): List<String>
   if at >= length(body)
-    ret push(acc, slice(body, start, length(body)))
+    ret append(acc, slice(body, start, length(body)))
   let c = byteAt(body, at)
   ret c == '(' ? partLoopB(body, at + 1, start, depth + 1, acc)
     : c == ')' ? partLoopB(body, at + 1, start, depth - 1, acc)
     : c == ',' && depth == 0
       ? partLoopB(body, at + 1, at + 1, depth,
-                 push(acc, slice(body, start, at)))
+                 append(acc, slice(body, start, at)))
       : partLoopB(body, at + 1, start, depth, acc)
 
 fun [tail] unionParts(ps: List<String>, [terminal] acc: List<Spec>): Spec|None => isEmpty(ps)
-  ? SCombination(build(acc), noLine())
+  ? SCombination(acc, noLine())
   : match(parseSpecText(first(ps)))
-    (s2: Spec) => unionParts(tail(ps), push(acc, s2))
+    (s2: Spec) => unionParts(tail(ps), append(acc, s2))
     ()         => None
 
 # `name=spec;name=spec` — declared tuple entries (a trailing `!` marks a
 # default). Semicolons separate entries so commas stay free for unions.
 fun parseEntriesText(s) => entryParts((split(s, ";")), List())
 
-fun entryParts(ps, acc: List<SEntry>): List<SEntry> => build(entryPartsB(ps, acc))
+fun entryParts(ps, acc: List<SEntry>): List<SEntry> => (entryPartsB(ps, acc))
 
 fun [tail] entryPartsB(ps: List<String>, [terminal] acc: List<SEntry>) => isEmpty(ps)
   ? acc
-  : entryPartsB(tail(ps), push(acc, oneEntry(trim(first(ps)))))
+  : entryPartsB(tail(ps), append(acc, oneEntry(trim(first(ps)))))
 
 fun oneEntry(part)
   let hasDflt = endsWith(part, "!")

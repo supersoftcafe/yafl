@@ -14,7 +14,7 @@ import System::Test
 
 
 fun _ints(): List<Int>
-    ret build(push(push(push(List<Int>(), 1), 2), 3))
+    ret (append(append(append(List<Int>(), 1), 2), 3))
 
 
 fun [test("an empty list reports empty and has no head")] emptyList(): None|TestFailure

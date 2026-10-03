@@ -293,12 +293,12 @@ fun positionTables(subjects: List<PExpr>, r) => tablesLoop(subjects, r, List())
 
 fun [tail] tablesLoop(ss: List<PExpr>, r,
                       [terminal] acc: List<PosTable>) => isEmpty(ss)
-  ? build(acc)
+  ? acc
   : match(positionTable(exprType(first(ss), r), r))
-    (t: PosTable) => tablesLoop(tail(ss), r, push(acc, t))
+    (t: PosTable) => tablesLoop(tail(ss), r, append(acc, t))
     ()            => discardTables(acc)
 
-fun discardTables([terminal] acc: List<PosTable>) => discard(acc)
+fun discardTables([terminal] acc: List<PosTable>) => None
 
 # One subject's variants as (key -> printable name), or None when the subject
 # is not resolved enough to enumerate.
@@ -363,11 +363,11 @@ fun multiCovArm(a: PArm, tables: List<PosTable>, r, c)
 
 fun [tail] zipCovered(ts: List<PosTable>, ps: List<Spec|None>, r,
                       [terminal] acc: List<List<String>>) => isEmpty(ts)
-  ? build(acc)
+  ? acc
   : isEmpty(ps)
-    ? build(acc)
+    ? acc
     : zipCovered(tail(ts), tail(ps), r,
-                                   push(acc, coveredKeys(first(ts).ptSpec, first(ps),
+                                   append(acc, coveredKeys(first(ts).ptSpec, first(ps),
                                                          first(ts).ptKeys, r)))
 
 # Which of `keys` one arm pattern matches at one position.
@@ -412,10 +412,10 @@ fun tupleNames(tup: List<String>, tables: List<PosTable>)
 
 fun [tail] namesLoop(ks: List<String>, ts: List<PosTable>,
                      [terminal] acc: List<String>) => isEmpty(ks)
-  ? build(acc)
+  ? acc
   : isEmpty(ts)
-    ? build(acc)
-    : namesLoop(tail(ks), tail(ts), push(acc, nameOf(first(ts), first(ks))))
+    ? acc
+    : namesLoop(tail(ks), tail(ts), append(acc, nameOf(first(ts), first(ks))))
 
 fun nameOf(t: PosTable, key) => match(get(t.ptNames, key))
   (s: String) => s
@@ -423,5 +423,5 @@ fun nameOf(t: PosTable, key) => match(get(t.ptNames, key))
 
 fun [tail] firstN(ts: List<List<String>>, n,
                   [terminal] acc: List<List<String>>) => isEmpty(ts)
-  ? build(acc)
-  : n <= 0 ? build(acc) : firstN(tail(ts), n - 1, push(acc, first(ts)))
+  ? acc
+  : n <= 0 ? acc : firstN(tail(ts), n - 1, append(acc, first(ts)))

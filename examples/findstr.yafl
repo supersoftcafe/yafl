@@ -69,7 +69,7 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
   fun step([terminal] found: List<String|FileError>, path: String, lineNo: Int,
            line: String): List<String|FileError>
     ret contains(line, needle)
-      ? push<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
+      ? append<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
       : found
 
   # End of file finishes a file cleanly; any other read error is collected
@@ -78,7 +78,7 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
               e: IOError): List<String|FileError>
     ret match(e)
       (eof: EOFError) => found
-      ()              => push<String|FileError>(found, FileError(path, e))
+      ()              => append<String|FileError>(found, FileError(path, e))
 
   # Stream the file a line at a time, collecting matches in order. `[tail]` so
   # the per-line loop is a loop, not C-stack recursion; `readLine` suspends on
@@ -95,12 +95,12 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
   fun closeInto([terminal] found: List<String|FileError>, path: String,
                 closed: IOError|None): List<String|FileError>
     ret match(closed)
-      (e: IOError) => push<String|FileError>(found, FileError(path, e))
+      (e: IOError) => append<String|FileError>(found, FileError(path, e))
       (n: None)    => found
 
   fun searchOpen(path: String, io: IO): List<String|FileError>
     let r = scan(io, path, 1, List<String|FileError>())
-    ret build<String|FileError>(closeInto(r.found, path, r.io.close()))
+    ret (closeInto(r.found, path, r.io.close()))
 
   fun searchOneFile(path: String): List<String|FileError>
     ret match(open_read(path))

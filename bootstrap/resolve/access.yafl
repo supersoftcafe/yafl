@@ -101,13 +101,13 @@ fun instanceWildcarded(ty, x: Found) => match(x.fInstanceParams)
 
 fun nameWildcards(ns, lr,
                          acc: List<Binding>): List<Binding>
-  ret build(nameWildcardsB(ns, lr, acc))
+  ret (nameWildcardsB(ns, lr, acc))
 
 fun [tail] nameWildcardsB(ns: List<String>, lr,
                          [terminal] acc: List<Binding>) => isEmpty(ns)
   ? acc
   : nameWildcardsB(tail(ns), lr,
-                      push(acc, Binding(first(ns),
+                      append(acc, Binding(first(ns),
                                 SNamed("$overload$wildcard",
                                        List(), lr))))
 
@@ -171,13 +171,13 @@ fun wildcarded(ty, x: Found)
 
 fun wildcardBindings(gs: List<PGen>, lr,
                             acc: List<Binding>)
-  ret build(wildcardBindingsB(gs, lr, acc))
+  ret (wildcardBindingsB(gs, lr, acc))
 
 fun [tail] wildcardBindingsB(gs: List<PGen>, lr,
                             [terminal] acc): List<Binding> => isEmpty(gs)
   ? acc
   : wildcardBindingsB(tail(gs), lr,
-                       push(acc,
+                       append(acc,
                               Binding(first(gs).genName,
                                       SNamed("$overload$wildcard",
                                              List(), lr))))

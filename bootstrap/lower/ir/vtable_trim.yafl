@@ -48,8 +48,8 @@ fun vtuObject(acc: (objs: List<CgObject>, changed: Bool), o: CgObject,
                     (s2) => setHas(used, s2.slotVirtualName))
   ret !sameLen(kept, o.objFunctions)
     # Objects keep their app order — it is their emission order.
-    ? (build(push(acc.objs, CgObject(o.objName, o.objExtends, kept, o.objFields,
+    ? ((append(acc.objs, CgObject(o.objName, o.objExtends, kept, o.objFields,
              o.objLengthField, o.objComment, o.objIsForeign,
              o.objIsMutable, o.objDiscriminator, o.objIsPinnable))),
        true)
-    : (build(push(acc.objs, o)), acc.changed)
+    : ((append(acc.objs, o)), acc.changed)

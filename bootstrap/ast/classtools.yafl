@@ -57,7 +57,7 @@ fun occupiesSlot(cs: PsClass, memberName) => match(cs.cAllSlots)
 # The constructor's LEAF lets — a nested destructure flattens to its leaves.
 
 fun flattenParams(params): List<PStmt> => match(params)
-  (d: PsDestructure) => build(flattenTargets(d.dTargets,
+  (d: PsDestructure) => (flattenTargets(d.dTargets,
                                             List()))
   (l: PsLet)         => prepend(params, List())
   (o: PStmt)         => List()
@@ -72,7 +72,7 @@ fun flattenTargets(ts: List<PStmt>,
     (d: PsDestructure) => flattenTargets(tail(ts),
                               flattenTargets(d.dTargets, acc))
     (o: PStmt)         => flattenTargets(tail(ts),
-                                         push(acc, first(ts)))
+                                         append(acc, first(ts)))
 
 # ── find_classes_or_error ────────────────────────────────────────────────────
 # Resolve each inherited type to (resolved spec, class statement). A spec that
@@ -88,13 +88,13 @@ fun findClassesOrError(types: List<Spec>, r) => fceLoop(types, r, List())
 
 fun fceLoop(ts, r,
                    acc: List<FoundClass>): List<FoundClass>
-  ret build(fceLoopB(ts, r, acc))
+  ret (fceLoopB(ts, r, acc))
 
 fun [tail] fceLoopB(ts: List<Spec>, r,
                    [terminal] acc: List<FoundClass>) => isEmpty(ts)
   ? acc
   : fceLoopB(tail(ts), r,
-                             push(acc, findClassOrError(first(ts), r)))
+                             append(acc, findClassOrError(first(ts), r)))
 
 fun findClassOrError(xtype, r) => match(xtype)
   (n: SNamed) => resolveClassSpec(xtype, n.snName, n.snParams, n.snLine, r)
@@ -114,12 +114,12 @@ fun resolveClassSpec(xtype, name, params: List<Spec>,
 # discarded exactly as Python's `rp.compile(resolver)[0]` discards them.
 fun compileSpecsPlain(ps: List<Spec>, r) => cspLoop(ps, r, List())
 
-fun cspLoop(ps: List<Spec>, r, acc: List<Spec>) => build(cspLoopB(ps, r, acc))
+fun cspLoop(ps: List<Spec>, r, acc: List<Spec>) => (cspLoopB(ps, r, acc))
 
 fun [tail] cspLoopB(ps: List<Spec>, r, [terminal] acc): List<Spec> => isEmpty(ps)
   ? acc
   : cspLoopB(tail(ps), r,
-                             push(acc, compileSpec(first(ps), r).soSpec))
+                             append(acc, compileSpec(first(ps), r).soSpec))
 
 # ── create_slots_from_members ────────────────────────────────────────────────
 # One slot per CALLABLE member (constructor params + body statements). A slot
@@ -130,12 +130,12 @@ fun createSlotsFromMembers(cs: PsClass)
   ret slotLoop((concat(flattenParams(cs.cParams), cs.cMembers)),
                List())
 
-fun slotLoop(ms, acc: List<Slot>): List<Slot> => build(slotLoopB(ms, acc))
+fun slotLoop(ms, acc: List<Slot>): List<Slot> => (slotLoopB(ms, acc))
 
 fun [tail] slotLoopB(ms: List<PStmt>, [terminal] acc: List<Slot>) => isEmpty(ms)
   ? acc
   : isCallableMember(first(ms))
-    ? slotLoopB(tail(ms), push(acc, toSlot(first(ms))))
+    ? slotLoopB(tail(ms), append(acc, toSlot(first(ms))))
     : slotLoopB(tail(ms), acc)
 
 fun isCallableMember(st) => match(stmtType(st))
@@ -166,13 +166,13 @@ fun overrideInheritedSlots(r, base: List<Slot>,
   ret concat(enhanced, keepUnabsorbed(parents, exclusion, List()))
 
 fun enhanceLoop(bs, r, parents: List<Slot>,
-                       acc: List<Slot>) => build(enhanceLoopB(bs, r, parents, acc))
+                       acc: List<Slot>) => (enhanceLoopB(bs, r, parents, acc))
 
 fun [tail] enhanceLoopB(bs: List<Slot>, r, parents: List<Slot>,
                        [terminal] acc: List<Slot>) => isEmpty(bs)
   ? acc
   : enhanceLoopB(tail(bs), r, parents,
-                                 push(acc, absorbMatches(first(bs), r,
+                                 append(acc, absorbMatches(first(bs), r,
                                                     parents)))
 
 fun absorbMatches(slot: Slot, r, parents: List<Slot>)
@@ -199,14 +199,14 @@ fun [tail] allProvides(ss: List<Slot>, acc): List<String> => isEmpty(ss)
 
 fun keepUnabsorbed(ps, exclusion: List<String>,
                           acc: List<Slot>)
-  ret build(keepUnabsorbedB(ps, exclusion, acc))
+  ret (keepUnabsorbedB(ps, exclusion, acc))
 
 fun [tail] keepUnabsorbedB(ps: List<Slot>, exclusion: List<String>,
                           [terminal] acc: List<Slot>) => isEmpty(ps)
   ? acc
   : contains2(exclusion, first(ps).slotName)
     ? keepUnabsorbedB(tail(ps), exclusion, acc)
-    : keepUnabsorbedB(tail(ps), exclusion, push(acc, first(ps)))
+    : keepUnabsorbedB(tail(ps), exclusion, append(acc, first(ps)))
 
 # ── set helpers (List with set semantics) ────────────────────────────────────
 
@@ -214,13 +214,13 @@ fun [tail] keepUnabsorbedB(ps: List<Slot>, exclusion: List<String>,
 # orders that reach generated code. `acc` is read by the dedup just above, so
 # it cannot be a builder — this is the copy the old append did, written out.
 fun addNameOnce(acc, n: String): List<String>
-  ret contains2(acc, n) ? acc : build(push(acc, n))
+  ret contains2(acc, n) ? acc : (append(acc, n))
 
 fun [tail] addNamesOnce(acc: List<String>, ns: List<String>) => isEmpty(ns)
   ? acc
   : addNamesOnce(addNameOnce(acc, first(ns)), tail(ns))
 
-fun addSpecOnce(acc, sp) => containsSpec(acc, sp) ? acc : build(push(acc, sp))
+fun addSpecOnce(acc, sp) => containsSpec(acc, sp) ? acc : (append(acc, sp))
 
 fun [tail] addSpecsOnce(acc, ss: List<Spec>) => isEmpty(ss)
   ? acc
@@ -244,13 +244,13 @@ fun classFindData(cs: PsClass, r, query)
 fun nonArrayFields(cs: PsClass) => dropArrayField(flattenParams(cs.cParams), List())
 
 fun dropArrayField(ls, acc: List<PStmt>): List<PStmt>
-  ret build(dropArrayFieldB(ls, acc))
+  ret (dropArrayFieldB(ls, acc))
 
 fun [tail] dropArrayFieldB(ls: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ls)
   ? acc
   : isArrayStorage(first(ls))
     ? dropArrayFieldB(tail(ls), acc)
-    : dropArrayFieldB(tail(ls), push(acc, first(ls)))
+    : dropArrayFieldB(tail(ls), append(acc, first(ls)))
 
 fun isArrayStorage(st) => match(st)
   (l: PsLet) => match(arrayElem(l.lType))
@@ -259,13 +259,13 @@ fun isArrayStorage(st) => match(st)
   (o: PStmt) => false
 
 fun memberFinds(ms, query: String,
-                       acc: List<Found>) => build(memberFindsB(ms, query, acc))
+                       acc: List<Found>) => (memberFindsB(ms, query, acc))
 
 fun [tail] memberFindsB(ms: List<PStmt>, query,
                        [terminal] acc: List<Found>) => isEmpty(ms)
   ? acc
   : nameMatches(stmtName(first(ms)), query)
-    ? memberFindsB(tail(ms), query, push(acc, Found(stmtName(first(ms)),
+    ? memberFindsB(tail(ms), query, append(acc, Found(stmtName(first(ms)),
                                                    first(ms), ScMember())))
     : memberFindsB(tail(ms), query, acc)
 
@@ -370,11 +370,11 @@ fun [tail] shorterThan<T, U>(a: List<T>, b: List<U>) => isEnd(b)
   : (isEnd(a) ? true : shorterThan(restOf(a), restOf(b)))
 
 # All but the last element, structurally.
-fun initOf<T>(l: List<T>): List<T> => build(initLoop(l, List()))
+fun initOf<T>(l: List<T>): List<T> => (initLoop(l, List()))
 
 # Everything but the last element, in order.
 fun [tail] initLoop<T>(c: List<T>, [terminal] acc: List<T>): List<T> => isEmpty(c)
   ? acc
   : isEmpty(tail(c))
     ? acc
-    : initLoop(tail(c), push(acc, first(c)))
+    : initLoop(tail(c), append(acc, first(c)))

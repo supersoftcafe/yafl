@@ -27,9 +27,9 @@ fun lowerTailLoops(statements: List<PStmt>) => tlLoop(statements, List(), Set())
 # Program order out; the errors are a set, so they ride alongside untouched.
 fun [tail] tlLoop(ss: List<PStmt>, [terminal] acc,
                   errs) => isEmpty(ss)
-  ? TlOut(build(acc), errs)
+  ? TlOut(acc, errs)
   : tlTransform(first(ss))
-    |> (out) => tlLoop(tail(ss), push(acc, out.tsStmt),
+    |> (out) => tlLoop(tail(ss), append(acc, out.tsStmt),
                        union(errs, out.tsErrs))
 
 # Recurse into nested functions and class methods first (bottom-up), so a
@@ -47,9 +47,9 @@ fun tlTransform(st) => match(st)
 
 fun [tail] tlMembers(ss: List<PStmt>, [terminal] acc,
                      errs) => isEmpty(ss)
-  ? TlOut(build(acc), errs)
+  ? TlOut(acc, errs)
   : tlTransform(first(ss))
-    |> (out) => tlMembers(tail(ss), push(acc, out.tsStmt),
+    |> (out) => tlMembers(tail(ss), append(acc, out.tsStmt),
                           union(errs, out.tsErrs))
 
 fun tlAfterNested(out) => match(out.tsStmt)
@@ -95,7 +95,7 @@ fun tlLowerBody(f, body, errs0): TlStmt
 
 # The loop-carried params: NamedExpression references at the FUNCTION's line.
 fun tlParams(f: PsFun) => match(f.fParams)
-  (d: PsDestructure) => build(tlParamRefs(d.dTargets, f.psfLine,
+  (d: PsDestructure) => (tlParamRefs(d.dTargets, f.psfLine,
                                          List()))
   (o: PStmt)         => List()
 
@@ -103,16 +103,16 @@ fun [tail] tlParamRefs(ts: List<PStmt>, lr,
                        [terminal] acc: List<PExpr>) => isEmpty(ts)
   ? acc
   : tlParamRefs(tail(ts), lr,
-      push(acc, PeName(stmtName(first(ts)), List(), lr,
+      append(acc, PeName(stmtName(first(ts)), List(), lr,
                        None)))
 
-fun tlStripTail(as2, acc: List<PAttr>): List<PAttr> => build(tlStripTailB(as2, acc))
+fun tlStripTail(as2, acc: List<PAttr>): List<PAttr> => (tlStripTailB(as2, acc))
 
 fun [tail] tlStripTailB(as2: List<PAttr>, [terminal] acc: List<PAttr>) => isEmpty(as2)
   ? acc
   : first(as2).attrName == "tail"
     ? tlStripTailB(tail(as2), acc)
-    : tlStripTailB(tail(as2), push(acc, first(as2)))
+    : tlStripTailB(tail(as2), append(acc, first(as2)))
 
 fun tlIsSelfCall(x, fName) => match(x)
   (c: PeCall) => tlIsSelfRef(c.function, fName)
@@ -239,11 +239,11 @@ fun tlToRecur(x, n) => match(x)
     (o: PExpr)    => TlRw(x, n)
   (o2: PExpr) => TlRw(x, n)
 
-fun tlEntValues(es: List<PTupEnt>, acc: List<PExpr>) => build(tlEntValuesB(es, acc))
+fun tlEntValues(es: List<PTupEnt>, acc: List<PExpr>) => (tlEntValuesB(es, acc))
 
 fun [tail] tlEntValuesB(es: List<PTupEnt>, [terminal] acc): List<PExpr> => isEmpty(es)
   ? acc
-  : tlEntValuesB(tail(es), push(acc, first(es).tupValue))
+  : tlEntValuesB(tail(es), append(acc, first(es).tupValue))
 
 class [final] TlSo(soStmts: List<PStmt>, soN: Int)
 class [final] TlAo(aoArms: List<PArm>, aoN: Int)
@@ -254,26 +254,26 @@ class [final] TlAo(aoArms: List<PArm>, aoN: Int)
 # (Not [tail]: the PsIf arm recurses into both branches.)
 fun tlStmtTails(ss: List<PStmt>, fName, n,
                        [terminal] acc) => isEmpty(ss)
-  ? TlSo(build(acc), n)
+  ? TlSo(acc, n)
   : match(first(ss))
     (rt: PsRet) => tlRewriteTail(rt.retValue, fName, n)
       |> (vo) => tlStmtTails(tail(ss), fName, vo.rwN,
-                             push(acc,
+                             append(acc,
                                  PsRet(vo.rwExpr, rt.psrLine)))
     (i: PsIf)   => tlStmtTails(i.ifTrue, fName, n, List())
       |> (to) => (to, tlStmtTails(i.ifFalse, fName, to.soN,
                                   List()))
       |> (to, fo) => tlStmtTails(tail(ss), fName, fo.soN,
-                                 push(acc,
+                                 append(acc,
                                      PsIf(i.ifCond, to.soStmts,
                                           fo.soStmts, i.psifLine)))
     (o: PStmt)  => tlStmtTails(tail(ss), fName, n,
-                               push(acc, first(ss)))
+                               append(acc, first(ss)))
 
 fun [tail] tlArmTails(as2: List<PArm>, fName, n,
                       [terminal] acc) => isEmpty(as2)
-  ? TlAo(build(acc), n)
+  ? TlAo(acc, n)
   : tlRewriteTail(first(as2).armBody, fName, n)
     |> (bo) => tlArmTails(tail(as2), fName, bo.rwN,
-                          push(acc,
+                          append(acc,
                               with first(as2)(armBody = bo.rwExpr)))

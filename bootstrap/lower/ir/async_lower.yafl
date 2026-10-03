@@ -465,7 +465,7 @@ fun alCreateBasicBlocksN(f: CgFunction): (bs: List<ABlock>, n: Int)
 # ops of the block being filled, and the blocks finished so far. Both orders
 # are instruction order. The current block's builder is BUILT at each splitter
 # — that is what closes the block — and a fresh one starts the next.
-class [linear, final] PartAcc(paCur: List<Op>,
+class [final] PartAcc(paCur: List<Op>,
                               paBlocks: List<ABlock>)
 
 fun alPartition(st: SeqStream<Op>, n, cur,
@@ -703,7 +703,7 @@ fun alPtrLeaves(t2): (ls: List<String>, n: Int)|None => match(t2)
 # decomposed layout, so they are built at the tail. `ok` clears as soon as a
 # field is neither a pointer nor an all-pointer struct, and the part-built list
 # is then dropped unbuilt.
-class [linear, final] PlfAcc(plPaths: List<String>, plN: Int,
+class [final] PlfAcc(plPaths: List<String>, plN: Int,
                              plOk: Bool)
 
 fun alPtrLeavesFields(fields: List<CgField>): (ls: List<String>, n: Int)|None
@@ -1085,7 +1085,7 @@ fun alCreateStateObject(f: CgFunction, stateName, layout: AFrame)
 # this order (per block: live-sorted, then the block's result register). So it
 # is a builder with a separate membership set, not svSetAdd — svSetAdd puts
 # new members on the FRONT, which reversed the whole prologue.
-class [linear, final] AsvAcc(asOrder: List<RParam>, asSeen: Set<String>)
+class [final] AsvAcc(asOrder: List<RParam>, asSeen: Set<String>)
 
 fun alAllStateVars(bbs: List<ABlock>)
   ret asvBuild(alAsvLoop(alNonTerminal(bbs),
@@ -1122,7 +1122,7 @@ class [final] HotOut(hoOps: List<Op>, hoWrapFields: List<CgField>)
 # used to concat its ops onto everything emitted so far, so assembling a
 # function was quadratic in its own instruction count. HotOut stays a plain
 # record because the assembler reads it several times; only the walk is linear.
-class [linear, final] HotAcc(haOps: List<Op>,
+class [final] HotAcc(haOps: List<Op>,
                              haWrapFields: List<CgField>)
 
 fun hotBuild(acc: HotAcc) => HotOut(build(acc.haOps), build(acc.haWrapFields))
@@ -1539,7 +1539,7 @@ class [final] SmOut(smOps: List<Op>, smCold: List<Op>, smWrapFields: List<CgFiel
 # lowering a state machine was quadratic in its own instruction count. SmOut
 # stays plain because the assembler reads it repeatedly; only the walk is
 # linear.
-class [linear, final] SmAcc(saOps: List<Op>, saCold: List<Op>,
+class [final] SmAcc(saOps: List<Op>, saCold: List<Op>,
                             saWrapFields: List<CgField>)
 
 fun smBuild(acc: SmAcc) => SmOut(build(acc.saOps), build(acc.saCold),
@@ -1774,7 +1774,7 @@ fun alSmEntryCase(f: CgFunction, stateName, layout: AFrame,
 # occurrence wins and the loads come out in that order. `seen` is asked only
 # whether a name has been loaded, so it is a Set; the loads are ordered, so
 # they go into a builder, and the two travel together.
-class [linear, final] EntryAcc(eaOps: List<Op>, eaSeen: Set<String>)
+class [final] EntryAcc(eaOps: List<Op>, eaSeen: Set<String>)
 
 fun [tail] alSmEntryParams(ps: List<CgField>, stateName,
                            layout: AFrame,
@@ -1829,7 +1829,7 @@ fun alSmAssemble(f: CgFunction, allOps: List<Op>, bbs: List<ABlock>,
                                  prepend(CgField("$sv_discard", CgDataPointer()), wrapFields))),
                  cgOpsOf(allOps), f.fnComment, None, false, false, false, false)
 
-class [linear, final] DeclAcc(daFields: List<CgField>,
+class [final] DeclAcc(daFields: List<CgField>,
                              daSeen: Set<String>)
 
 fun [tail] alSmDeclareParams(ps: List<CgField>,
@@ -1940,7 +1940,7 @@ class [final] AlOut(aloFunctions: List<CgFunction>, aloObjects: List<CgObject>)
 # the program. Both are ordered — they become the app's emission order — and
 # merging used to concat the whole collection so far onto each function's small
 # contribution, once per function of the program.
-class [linear, final] AlAcc(aaFunctions: List<CgFunction>,
+class [final] AlAcc(aaFunctions: List<CgFunction>,
                             aaObjects: List<CgObject>)
 
 fun alAccEmpty() => AlAcc(List(), List())
@@ -2192,7 +2192,7 @@ fun alLauncherCallback(fnName, site: Int, slot: Int, parTaskName,
 # object last. The names are tracked in a Set: the old shape asked "have I
 # made this one already" by scanning every subtype collected so far, once per
 # function of the whole program.
-class [linear, final] CtsAcc(ctObjs: List<CgObject>,
+class [final] CtsAcc(ctObjs: List<CgObject>,
                              ctSeen: Set<String>)
 
 fun collectTaskSubtypes(a: CgApp)
@@ -2285,15 +2285,15 @@ fun alBuildOutline(pc: OpParallelCall, f: CgFunction, opIndex: Int): OutlineOne
   let seqCalls = alSeqCalls(helperCalls, pc.parResults, List())
   # The helper's body in emission order: the backpressure test, the sequential
   # fallback calls, the tuple build, then the fork path.
-  let ho0 = (list2(
+  let ho0: List<Op> = (list2(
       OpMove(svAccepting, RpRuntimeInvoke("thread_work_accepting",
                                           RpNewStruct(List()), CgInt(32)),
              false, List()),
       OpJumpIf("$fork", svAccepting, false, List())))
-  let ho1 = push(pushAll(ho0, seqCalls),
+  let ho1 = append(concat(ho0, seqCalls),
       OpMove(register, RpNewStruct(alTupleFields(pc.parResults, 0, List())),
              false, List()))
-  let helperOps = build(pushAll(ho1, 
+  let helperOps = (concat(ho1,
       list4(OpReturn(register, List()),
             OpLabel("$fork", List()),
             OpParallelCall(helperCalls, pc.parResults, pc.parRegister, List()),
@@ -2301,7 +2301,7 @@ fun alBuildOutline(pc: OpParallelCall, f: CgFunction, opIndex: Int): OutlineOne
   let helperParams = concat(list1(CgField("$unused_self", CgDataPointer())),
                             map(closureParams, (p) => CgField(stackVarName(p), CgDataPointer())))
   # Stack layout: the per-call results, the tuple register, then $accepting.
-  let helperStack = build(push(push(
+  let helperStack = (append(append(
       (map(pc.parResults,
                       (r) => CgField(stackVarName(r),
                                      rpGetType(r)))),
@@ -2442,7 +2442,7 @@ fun lowerAsync(a: CgApp)
 
 # The functions in app order, and every outlined helper after them — both
 # ordered, because they become the app's emission order.
-class [linear, final] OutAcc(otFns: List<CgFunction>,
+class [final] OutAcc(otFns: List<CgFunction>,
                              otHelpers: List<CgFunction>)
 
 fun [tail] alOutlineAll(fs: List<CgFunction>,

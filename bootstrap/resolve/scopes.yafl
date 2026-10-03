@@ -57,7 +57,7 @@ fun stmtScopes(st)
   # is the list's order.
   ret own == "" || contains2(grp, own)
     ? grp
-    : build(push(grp, own))
+    : (append(grp, own))
 
 fun stmtImports(st) => match(st)
   (f: PsFun)        => importsOr(f.fImports)
@@ -74,10 +74,9 @@ fun importsOr(grp: List<PStmt>|None) => match(grp)
 
 # Same shape as mergeNames: Set for "seen", builder for order.
 fun importPaths(ss: List<PStmt>, acc: List<String>)
-  ret build(importPathsB(ss,
+  ret (importPathsB(ss,
                          acc,
-                         _chainToSet(acc,
-                                     Set())))
+                         Set(acc)))
 
 fun [tail] importPathsB(ss: List<PStmt>, [terminal] out: List<String>,
                         seen: Set<String>) => isEmpty(ss)
@@ -85,7 +84,7 @@ fun [tail] importPathsB(ss: List<PStmt>, [terminal] out: List<String>,
   : match(first(ss))
     (im: PsImport) => contains(seen, im.importPath)
       ? importPathsB(tail(ss), out, seen)
-      : importPathsB(tail(ss), push(out, im.importPath),
+      : importPathsB(tail(ss), append(out, im.importPath),
                      add(seen, im.importPath))
     (o: PStmt)     => importPathsB(tail(ss), out, seen)
 
@@ -115,11 +114,11 @@ fun typealiasScope(ta: PsTypealias, r) => genScope(ta.taGens, ta.taWheres, r)
 fun genScope(gens: List<PGen>, wheres: List<Spec>, r): Resolver
   ret isEmpty(gens) && isEmpty(wheres) ? r : RTypes(genFounds(gens, List()), r, wheres)
 
-fun genFounds(gs, acc: List<Found>): List<Found> => build(genFoundsB(gs, acc))
+fun genFounds(gs, acc: List<Found>): List<Found> => (genFoundsB(gs, acc))
 
 fun [tail] genFoundsB(gs: List<PGen>, [terminal] acc: List<Found>) => isEmpty(gs)
   ? acc
-  : genFoundsB(tail(gs), push(acc, genFound(first(gs))))
+  : genFoundsB(tail(gs), append(acc, genFound(first(gs))))
 
 fun genFound(g: PGen) => Found(g.genName, genAlias(g), ScLocal())
 
@@ -134,7 +133,7 @@ fun isLinearGen(g: PGen) => hasAttr(g.genAttrs, "linear")
 
 fun localScope(lets: List<PStmt>, r): Resolver => isEmpty(lets)
   ? r
-  : RData(build(letFounds(lets, List())), r)
+  : RData((letFounds(lets, List())), r)
 
 fun [tail] letFounds(ls: List<PStmt>,
                      [terminal] acc: List<Found>) => isEmpty(ls)
@@ -142,10 +141,10 @@ fun [tail] letFounds(ls: List<PStmt>,
   : letFounds(tail(ls), addLetFound(acc, first(ls)))
 
 fun addLetFound([terminal] acc, st): List<Found> => match(st)
-  (l: PsLet) => push(acc, Found(l.lName, st, ScLocal()))
+  (l: PsLet) => append(acc, Found(l.lName, st, ScLocal()))
   # A NESTED FUNCTION binds a name in its block, exactly as a let does — a
   # `[tail] loop` helper must be visible to its siblings and to the body.
-  (f: PsFun) => push(acc, Found(f.fName, st, ScLocal()))
+  (f: PsFun) => append(acc, Found(f.fName, st, ScLocal()))
   (d: PsDestructure) => letFounds(d.dTargets, acc)
   (o: PStmt) => acc
 
@@ -199,10 +198,10 @@ fun traitScope(wheres, r): Resolver
 
 fun [tail] ambNotIn(es: List<TraitEntry>, plain: List<TraitEntry>,
                     acc: List<TraitEntry>) => isEmpty(es)
-  ? build(acc)
+  ? acc
   : entrySeen(plain, first(es))
     ? ambNotIn(tail(es), plain, acc)
-    : ambNotIn(tail(es), plain, push(acc, first(es)))
+    : ambNotIn(tail(es), plain, append(acc, first(es)))
 
 # _find_trait_data: the statement's own `where` specs PLUS the in-scope
 # `instance [ambient]` records. The entry filter is Python's exactly: a
@@ -223,16 +222,12 @@ fun traitFindings(tr: RTraits, query, r)
 
 fun [tail] plainEntries(ws: List<Spec>,
                         acc: List<TraitEntry>) => isEmpty(ws)
-  ? build(acc)
+  ? acc
   : match(first(ws))
     (c: SClass) => isConcrete(c)
-      ? plainEntries(tail(ws), push(acc, TraitEntry(first(ws), List())))
+      ? plainEntries(tail(ws), append(acc, TraitEntry(first(ws), List())))
       : plainEntries(tail(ws), acc)
     (o: Spec)   => plainEntries(tail(ws), acc)
-
-fun [tail] genNames(gs: List<PGen>, acc: List<String>) => isEmpty(gs)
-  ? build(acc)
-  : genNames(tail(gs), push(acc, first(gs).genName))
 
 fun [tail] anyNamed(ws: List<Spec>) => isEmpty(ws)
   ? false
@@ -299,9 +294,9 @@ fun membersViaMerged(mt: MergedTable, c, own,
 fun [tail] wrapMerged(es: List<MergedEntry>, mapping: List<Binding>,
                       c, own,
                       [terminal] acc: List<Found>) => isEmpty(es)
-  ? build(acc)
+  ? acc
   : wrapMerged(tail(es), mapping, c, own,
-      push(acc, Found(stmtName(first(es).meStmt), first(es).meStmt,
+      append(acc, Found(stmtName(first(es).meStmt), first(es).meStmt,
                       ScTrait(), mergedTp(first(es).mePattern, mapping, c),
                       first(es).meOwner, own)))
 
@@ -334,9 +329,9 @@ fun memberBucket(mi: MemberIdx, query: String) => match(get(mi.miByKey, query))
 fun [tail] wrapMembers(ms: List<PStmt>, tp, owner,
                        own,
                        [terminal] acc: List<Found>) => isEmpty(ms)
-  ? build(acc)
+  ? acc
   : wrapMembers(tail(ms), tp, owner, own,
-                                 push(acc,
+                                 append(acc,
                                      Found(stmtName(first(ms)), first(ms),
                                            ScTrait(), tp, owner, own)))
 
@@ -358,7 +353,7 @@ fun classMembers(cs, c, own, query,
 fun memberMatches(ms, query: String, tp,
                          owner, own,
                          acc: List<Found>)
-  ret build(memberMatchesB(ms, query, tp, owner, own, acc))
+  ret (memberMatchesB(ms, query, tp, owner, own, acc))
 
 fun [tail] memberMatchesB(ms: List<PStmt>, query, tp,
                          owner, own,
@@ -366,7 +361,7 @@ fun [tail] memberMatchesB(ms: List<PStmt>, query, tp,
   ? acc
   : nameMatches(stmtName(first(ms)), query)
     ? memberMatchesB(tail(ms), query, tp, owner, own,
-                    push(acc, Found(stmtName(first(ms)), first(ms),
+                    append(acc, Found(stmtName(first(ms)), first(ms),
                               ScTrait(), tp, owner, own)))
     : memberMatchesB(tail(ms), query, tp, owner, own, acc)
 
@@ -398,7 +393,7 @@ fun parentFindings(p, own, query, r) => match(p)
 fun paramMapping(gens: List<PGen>, args: List<Spec>) => mapLoop(gens, args, List())
 
 fun mapLoop(gs, as2,
-                   acc: List<Binding>): List<Binding> => build(mapLoopB(gs, as2, acc))
+                   acc: List<Binding>): List<Binding> => (mapLoopB(gs, as2, acc))
 
 fun [tail] mapLoopB(gs: List<PGen>, as2: List<Spec>,
                    [terminal] acc: List<Binding>) => isEmpty(gs)
@@ -406,4 +401,4 @@ fun [tail] mapLoopB(gs: List<PGen>, as2: List<Spec>,
   : isEmpty(as2)
     ? acc
     : mapLoopB(tail(gs), tail(as2),
-                                push(acc, Binding(first(gs).genName, first(as2))))
+                                append(acc, Binding(first(gs).genName, first(as2))))

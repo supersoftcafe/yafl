@@ -41,13 +41,13 @@ fun frOwnNames(f: PsFun, alsoExclude: List<String>)
       (o: PExpr)    => params
     ()         => params
 
-fun frBlockNames(ss, acc: List<String>): List<String> => build(frBlockNamesB(ss, acc))
+fun frBlockNames(ss, acc: List<String>): List<String> => (frBlockNamesB(ss, acc))
 
 fun [tail] frBlockNamesB(ss: List<PStmt>, [terminal] acc: List<String>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (let2: PsLet) => frBlockNamesB(tail(ss), push(acc, let2.lName))
-    (f: PsFun)    => frBlockNamesB(tail(ss), push(acc, f.fName))
+    (let2: PsLet) => frBlockNamesB(tail(ss), append(acc, let2.lName))
+    (f: PsFun)    => frBlockNamesB(tail(ss), append(acc, f.fName))
     (o: PStmt)    => frBlockNamesB(tail(ss), acc)
 
 # The free-reference accumulator is a SET: both consumers of freeRefs are set
@@ -272,42 +272,42 @@ fun rcmExpr(x, m: ThisMap) => match(x)
   (o: PeLazy) => x
 
 fun rcmExprs(es, m: ThisMap,
-                    acc: List<PExpr>) => build(rcmExprsB(es, m, acc))
+                    acc: List<PExpr>) => (rcmExprsB(es, m, acc))
 
 fun [tail] rcmExprsB(es: List<PExpr>, m: ThisMap,
                     [terminal] acc: List<PExpr>) => isEmpty(es)
   ? acc
-  : rcmExprsB(tail(es), m, push(acc, rcmExpr(first(es), m)))
+  : rcmExprsB(tail(es), m, append(acc, rcmExpr(first(es), m)))
 
 fun rcmEnts(es: List<PTupEnt>, m: ThisMap,
-                   acc: List<PTupEnt>) => build(rcmEntsB(es, m, acc))
+                   acc: List<PTupEnt>) => (rcmEntsB(es, m, acc))
 
 fun [tail] rcmEntsB(es: List<PTupEnt>, m: ThisMap,
                    [terminal] acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rcmEntsB(tail(es), m,
-      push(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
                 rcmExpr(first(es).tupValue, m))))
 
 fun rcmArms(as2, m: ThisMap, acc: List<PArm>): List<PArm>
-  ret build(rcmArmsB(as2, m, acc))
+  ret (rcmArmsB(as2, m, acc))
 
 fun [tail] rcmArmsB(as2: List<PArm>, m: ThisMap, [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rcmArmsB(tail(as2), m,
-      push(acc, with first(as2)(armBody = rcmExpr(first(as2).armBody, m), armGuard = rcmOpt(first(as2).armGuard, m))))
+      append(acc, with first(as2)(armBody = rcmExpr(first(as2).armBody, m), armGuard = rcmOpt(first(as2).armGuard, m))))
 
 fun rcmOpt(x: PExpr|None, m: ThisMap) => match(x)
   (e2: PExpr) => rcmExpr(e2, m)
   ()          => None
 
 fun rcmStmts(ss, m: ThisMap,
-                    acc: List<PStmt>) => build(rcmStmtsB(ss, m, acc))
+                    acc: List<PStmt>) => (rcmStmtsB(ss, m, acc))
 
 fun [tail] rcmStmtsB(ss: List<PStmt>, m: ThisMap,
                     [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
-  : rcmStmtsB(tail(ss), m, push(acc, rcmStmt(first(ss), m)))
+  : rcmStmtsB(tail(ss), m, append(acc, rcmStmt(first(ss), m)))
 
 fun rcmStmt(st, m: ThisMap) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rcmStmt(f.fParams, m),
@@ -429,13 +429,13 @@ fun [tail] coRenames(fs: List<PsFun>, lr: PLine, specSuffix,
                   + hash6(lr.plFile, lr.plLine, lr.plCol) + specSuffix)))
 
 fun coMethods(fs, renames: ThisMap, thisMap: ThisMap,
-                     acc: List<PStmt>) => build(coMethodsB(fs, renames, thisMap, acc))
+                     acc: List<PStmt>) => (coMethodsB(fs, renames, thisMap, acc))
 
 fun [tail] coMethodsB(fs: List<PsFun>, renames: ThisMap, thisMap: ThisMap,
                      [terminal] acc: List<PStmt>) => isEmpty(fs)
   ? acc
   : coMethodsB(tail(fs), renames, thisMap,
-                               push(acc, coMethod(first(fs), renames,
+                               append(acc, coMethod(first(fs), renames,
                                             thisMap)))
 
 fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap)
@@ -458,26 +458,26 @@ fun coClassParam(caps: OuterTypes, lr)
 # could, silently, by ending at different lengths. Names come from the map's
 # own keys, so the None arm is unreachable; it is there to make the match total.
 fun coEntries(ns, caps: OuterTypes, lr: PLine,
-                     acc: List<SEntry>) => build(coEntriesB(ns, caps, lr, acc))
+                     acc: List<SEntry>) => (coEntriesB(ns, caps, lr, acc))
 
 fun [tail] coEntriesB(ns: List<String>, caps: OuterTypes, lr: PLine,
                      [terminal] acc: List<SEntry>) => isEmpty(ns)
   ? acc
   : match(get(caps.otMap, first(ns)))
     (sp: Spec) => coEntriesB(tail(ns), caps, lr,
-                             push(acc, SEntry(capturedFieldName(first(ns), lr),
+                             append(acc, SEntry(capturedFieldName(first(ns), lr),
                                               sp, None)))
     ()         => coEntriesB(tail(ns), caps, lr, acc)
 
 fun coParamLets(ns, caps: OuterTypes, lr,
-                       acc: List<PStmt>) => build(coParamLetsB(ns, caps, lr, acc))
+                       acc: List<PStmt>) => (coParamLetsB(ns, caps, lr, acc))
 
 fun [tail] coParamLetsB(ns: List<String>, caps: OuterTypes, lr,
                        [terminal] acc: List<PStmt>) => isEmpty(ns)
   ? acc
   : match(get(caps.otMap, first(ns)))
     (sp: Spec) => coParamLetsB(tail(ns), caps, lr,
-        push(acc, PsLet(capturedFieldName(first(ns), lr), List(),
+        append(acc, PsLet(capturedFieldName(first(ns), lr), List(),
                   List(), sp,
                   None, "", List(), lr, false,
                   List<PStmt>())))
@@ -485,13 +485,13 @@ fun [tail] coParamLetsB(ns: List<String>, caps: OuterTypes, lr,
 
 fun coCaptureArgs(ns, lr,
                          acc: List<PTupEnt>): List<PTupEnt>
-  ret build(coCaptureArgsB(ns, lr, acc))
+  ret (coCaptureArgsB(ns, lr, acc))
 
 fun [tail] coCaptureArgsB(ns: List<String>, lr,
                          [terminal] acc: List<PTupEnt>) => isEmpty(ns)
   ? acc
   : coCaptureArgsB(tail(ns), lr,
-      push(acc, PTupEnt(capturedFieldName(first(ns), lr), false,
+      append(acc, PTupEnt(capturedFieldName(first(ns), lr), false,
                 PeName(first(ns), List(), lr, None))))
 
 # One shared instance, then one let per method exposing it under the
@@ -499,14 +499,14 @@ fun [tail] coCaptureArgsB(ns: List<String>, lr,
 fun coMethodLets(fs, renames: ThisMap,
                         sharedName, lr,
                         acc: List<PStmt>)
-  ret build(coMethodLetsB(fs, renames, sharedName, lr, acc))
+  ret (coMethodLetsB(fs, renames, sharedName, lr, acc))
 
 fun [tail] coMethodLetsB(fs: List<PsFun>, renames: ThisMap,
                         sharedName, lr,
                         [terminal] acc: List<PStmt>) => isEmpty(fs)
   ? acc
   : coMethodLetsB(tail(fs), renames, sharedName, lr,
-      push(acc, PsLet(first(fs).fName, List(), List(),
+      append(acc, PsLet(first(fs).fName, List(), List(),
                 funType(first(fs)),
                 PeDot(PeName(sharedName, List(), lr, None),
                       coRenameOf(renames, first(fs).fName), lr),
@@ -640,13 +640,13 @@ fun [tail] hoToMemberNames(ns: List<String>, specSuffix,
 fun hoOuterOnly(names: List<String>, siblingNames: List<String>)
   ret tjRemoveAll(names, siblingNames, List())
 
-fun hoNestedFns(ss, acc: List<PsFun>): List<PsFun> => build(hoNestedFnsB(ss, acc))
+fun hoNestedFns(ss, acc: List<PsFun>): List<PsFun> => (hoNestedFnsB(ss, acc))
 
 fun [tail] hoNestedFnsB(ss: List<PStmt>, [terminal] acc: List<PsFun>) => isEmpty(ss)
   ? acc
   : match(first(ss))
     (f: PsFun) => hoHasBlockBody(f)
-      ? hoNestedFnsB(tail(ss), push(acc, f))
+      ? hoNestedFnsB(tail(ss), append(acc, f))
       : hoNestedFnsB(tail(ss), acc)
     (o: PStmt) => hoNestedFnsB(tail(ss), acc)
 
@@ -656,11 +656,11 @@ fun hoHasBlockBody(f: PsFun) => match(f.fBody)
     (o: PExpr)    => false
   ()         => false
 
-fun hoFnNames(fs: List<PsFun>, acc: List<String>) => build(hoFnNamesB(fs, acc))
+fun hoFnNames(fs: List<PsFun>, acc: List<String>) => (hoFnNamesB(fs, acc))
 
 fun [tail] hoFnNamesB(fs: List<PsFun>, [terminal] acc): List<String> => isEmpty(fs)
   ? acc
-  : hoFnNamesB(tail(fs), push(acc, first(fs).fName))
+  : hoFnNamesB(tail(fs), append(acc, first(fs).fName))
 
 fun [tail] hoCallEdges(fs: List<PsFun>, siblingNames: List<String>,
                        acc: EEdges) => isEmpty(fs)
@@ -672,19 +672,19 @@ fun [tail] hoCallEdges(fs: List<PsFun>, siblingNames: List<String>,
                              siblingNames, List()))))
 
 fun hoIntersect(ns, keep: List<String>,
-                       acc: List<String>) => build(hoIntersectB(ns, keep, acc))
+                       acc: List<String>) => (hoIntersectB(ns, keep, acc))
 
 fun [tail] hoIntersectB(ns: List<String>, keep: List<String>,
                        [terminal] acc: List<String>) => isEmpty(ns)
   ? acc
   : contains2(keep, first(ns))
-    ? hoIntersectB(tail(ns), keep, push(acc, first(ns)))
+    ? hoIntersectB(tail(ns), keep, append(acc, first(ns)))
     : hoIntersectB(tail(ns), keep, acc)
 
 fun hoDirectCaptures(fs, siblingNames: List<String>,
                             outerVars: List<String>,
                             acc: List<String>)
-  ret build(hoDirectCapturesB(fs, siblingNames, outerVars, acc))
+  ret (hoDirectCapturesB(fs, siblingNames, outerVars, acc))
 
 fun [tail] hoDirectCapturesB(fs: List<PsFun>, siblingNames: List<String>,
                             outerVars: List<String>,
@@ -693,7 +693,7 @@ fun [tail] hoDirectCapturesB(fs: List<PsFun>, siblingNames: List<String>,
   : any(freeRefs(first(fs), siblingNames),
                          (n) => contains2(outerVars, n))
     ? hoDirectCapturesB(tail(fs), siblingNames, outerVars,
-                        push(acc, first(fs).fName))
+                        append(acc, first(fs).fName))
     : hoDirectCapturesB(tail(fs), siblingNames, outerVars, acc)
 
 # Reverse-topo order (callees first): one pass settles closure-need
@@ -765,18 +765,18 @@ fun [tail] hoSccOf(ss: List<List<String>>, name: String): List<String> => isEmpt
 # path. There is no longer a `keep` value prepared before the branch and
 # discarded by the branches that do not want it — hoKeep builds it where it is
 # used instead.
-class [linear, final] HoAcc(haBody: List<PStmt>, haRenames: ThisMap,
+class [final] HoAcc(haBody: List<PStmt>, haRenames: ThisMap,
                             haOut: List<PStmt>,
                             haClass: List<PStmt>,
                             haToMember: ThisMap)
 
 # Out of the builders and into the plain result, once the walk is over. The
 # result is read many times by the caller, which a linear value could not be.
-fun hoBuild(acc: HoAcc) => Hoisted(build(acc.haBody), acc.haRenames,
-                                   build(acc.haOut), build(acc.haClass),
+fun hoBuild(acc: HoAcc) => Hoisted(acc.haBody, acc.haRenames,
+                                   acc.haOut, acc.haClass,
                                    acc.haToMember)
 
-class [linear, final] HoStep(wsProcessed: Set<String>, wsAcc: HoAcc)
+class [final] HoStep(wsProcessed: Set<String>, wsAcc: HoAcc)
 
 fun [tail] hoWalkBody(ss: List<PStmt>, f: PsFun, sccs: List<List<String>>,
                       needy: Set<String>, needyThis: Set<String>,
@@ -805,7 +805,7 @@ fun hoStep(st, f: PsFun, sccs: List<List<String>>,
 # This statement stays where it is: push it to the body and move on.
 fun hoKeep(st, processed, acc: HoAcc)
   ret HoStep(processed,
-             HoAcc(push(acc.haBody, st), acc.haRenames, acc.haOut,
+             HoAcc(append(acc.haBody, st), acc.haRenames, acc.haOut,
                    acc.haClass, acc.haToMember))
 
 fun hoStepFn(fn: PsFun, f: PsFun, sccs: List<List<String>>,
@@ -841,7 +841,7 @@ fun hoScc(scc: List<String>, f: PsFun, needy,
     ? acc
     : isEmpty(tail(members))
       ? hoInsideOne(first(members), inner, specSuffix, acc)
-        |> (h) => HoAcc(push(h.hiAcc.haBody, toLetLambda(h.hiFn)),
+        |> (h) => HoAcc(append(h.hiAcc.haBody, toLetLambda(h.hiFn)),
                         h.hiAcc.haRenames, h.hiAcc.haOut, h.hiAcc.haClass,
                         h.hiAcc.haToMember)
       : hoInsideAll(members, inner, specSuffix,
@@ -869,23 +869,23 @@ fun otAddMissing(acc: OuterTypes, name: String, ty: Spec|None) => match(ty)
   (sp: Spec) => contains(acc.otMap, name) ? acc : OuterTypes(put(acc.otMap, name, sp))
   ()          => acc
 
-class [linear, final] HoInside(hiFn: PsFun, hiAcc: HoAcc)
-class [linear, final] HoInsideMany(hmFns: List<PsFun>, hmAcc: HoAcc)
+class [final] HoInside(hiFn: PsFun, hiAcc: HoAcc)
+class [final] HoInsideMany(hmFns: List<PsFun>, hmAcc: HoAcc)
 
 # Hoist inside one closure-bound helper; what it sends out joins this level's
 # lists, ahead of whatever this level adds for the helper itself.
 fun hoInsideOne(member: PsFun, inner: HoInner, specSuffix,
                 [terminal] acc: HoAcc): HoInside
   let r = hoFnIn(member, inner.hiThis, inner.hiEnv, specSuffix)
-  ret HoInside(r.hfFn, HoAcc(acc.haBody, acc.haRenames, pushAll(acc.haOut, r.hfOuts),
-                             pushAll(acc.haClass, r.hfSibs), acc.haToMember))
+  ret HoInside(r.hfFn, HoAcc(acc.haBody, acc.haRenames, concat(acc.haOut, r.hfOuts),
+                             concat(acc.haClass, r.hfSibs), acc.haToMember))
 
 fun [tail] hoInsideAll(ms: List<PsFun>, inner: HoInner, specSuffix,
                        [terminal] done: List<PsFun>,
                        [terminal] acc: HoAcc): HoInsideMany => isEmpty(ms)
-  ? HoInsideMany(build(done), acc)
+  ? HoInsideMany(done, acc)
   : hoInsideOne(first(ms), inner, specSuffix, acc)
-    |> (h) => hoInsideAll(tail(ms), inner, specSuffix, push(done, h.hiFn), h.hiAcc)
+    |> (h) => hoInsideAll(tail(ms), inner, specSuffix, append(done, h.hiFn), h.hiAcc)
 
 # A mutually recursive group: the shared class is hoisted out, and the per-
 # method lets take the group's place in the body, in the order the coalescer
@@ -894,9 +894,9 @@ fun hoCoalesce(members: List<PsFun>, outerTypes: OuterTypes,
                siblingNames: List<String>, specSuffix,
                acc: HoAcc)
   let co = coalesceMutualScc(members, outerTypes, siblingNames, specSuffix)
-  ret HoAcc(pushAll(acc.haBody, co.coLets),
+  ret HoAcc(concat(acc.haBody, co.coLets),
             acc.haRenames,
-            push(acc.haOut, co.coClass),
+            append(acc.haOut, co.coClass),
             acc.haClass, acc.haToMember)
 
 # Every member of an SCC shares its neediness, so one member answers for all.
@@ -905,13 +905,13 @@ fun hoSccIsNeedy(scc: List<String>, needy: Set<String>) => isEmpty(scc)
   : contains(needy, first(scc))
 
 fun hoMembersOf(ns, nested: List<PsFun>,
-                       acc: List<PsFun>) => build(hoMembersOfB(ns, nested, acc))
+                       acc: List<PsFun>) => (hoMembersOfB(ns, nested, acc))
 
 fun [tail] hoMembersOfB(ns: List<String>, nested: List<PsFun>,
                        [terminal] acc: List<PsFun>) => isEmpty(ns)
   ? acc
   : match(hoFnByName(nested, first(ns)))
-    (f: PsFun) => hoMembersOfB(tail(ns), nested, push(acc, f))
+    (f: PsFun) => hoMembersOfB(tail(ns), nested, append(acc, f))
     ()         => hoMembersOfB(tail(ns), nested, acc)
 
 fun [tail] hoFnByName(fs: List<PsFun>, name: String) => isEmpty(fs)
@@ -934,7 +934,7 @@ fun [tail] hoClassMembers(fs: List<PsFun>, [terminal] acc: HoAcc) => isEmpty(fs)
 
 fun hoClassMemberOne(member0: PsFun, acc: HoAcc)
   ret HoAcc(acc.haBody, acc.haRenames, acc.haOut,
-            push(acc.haClass,
+            append(acc.haClass,
                    PsFun(hoMemberName(acc.haToMember, member0.fName),
                          member0.fAttrs, member0.fGens,
                          member0.fParams, member0.fBody, member0.fRet,
@@ -963,7 +963,7 @@ fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix,
     ret HoAcc(acc.haBody,
               ThisMap(put(acc.haRenames.tmMap, member0.fName,
                           member0.fName + specSuffix)),
-              push(acc.haOut,
+              append(acc.haOut,
                      PsFun(member0.fName + specSuffix, member0.fAttrs,
                            member0.fGens, member0.fParams, member0.fBody,
                            member0.fRet, f.fWheres, member0.psfLine,
@@ -971,7 +971,7 @@ fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix,
                            member0.fImports)),
               acc.haClass, acc.haToMember)
   ret HoAcc(acc.haBody, acc.haRenames,
-            push(acc.haOut,
+            append(acc.haOut,
                    PsFun(member0.fName, member0.fAttrs, member0.fGens,
                          member0.fParams, member0.fBody, member0.fRet,
                          f.fWheres, member0.psfLine,
@@ -990,24 +990,24 @@ fun hoistNestedFnsToLambdas(statements: List<PStmt>)
 # tail. `extra` stays a plain List: the base case asks whether it is empty, and
 # a builder cannot be read — only pushed to and, once, built.
 fun hoDrive(ss, acc: List<PStmt>,
-            extra) => build(hoDriveB(ss, acc,
+            extra) => (hoDriveB(ss, acc,
                                      extra))
 
 fun [tail] hoDriveB(ss: List<PStmt>, [terminal] acc: List<PStmt>,
                     extra) => isEmpty(ss)
   ? (isEmpty(extra)
     ? acc
-    : pushAll(acc, hoistNestedFnsToLambdas(extra)))
+    : concat(acc, hoistNestedFnsToLambdas(extra)))
   : match(first(ss))
     (f: PsFun) => hoHasBlockBody(f)
       # A free function has no receiver, so nothing can be class-hoisted out
       # of it and hoClass comes back empty.
       ? hoDriveFnStep(f, None) |> (st, outs, sibs) =>
-          hoDriveB(tail(ss), push(acc, st), concat(extra, outs))
-      : hoDriveB(tail(ss), push(acc, first(ss)), extra)
+          hoDriveB(tail(ss), append(acc, st), concat(extra, outs))
+      : hoDriveB(tail(ss), append(acc, first(ss)), extra)
     (c: PsClass) => hoInClass(c) |> (cls, outs) =>
-        hoDriveB(tail(ss), push(acc, cls), concat(extra, outs))
-    (o: PStmt) => hoDriveB(tail(ss), push(acc, first(ss)), extra)
+        hoDriveB(tail(ss), append(acc, cls), concat(extra, outs))
+    (o: PStmt) => hoDriveB(tail(ss), append(acc, first(ss)), extra)
 
 # Hoist out of every member body of one class.
 #
@@ -1046,7 +1046,7 @@ class [final] HoClass(hcMembers: List<PStmt>, hcOut: List<PStmt>,
 
 # The three lists are all ordered and all built at the tail, so each round runs
 # on builders and materialises once — the HoAcc shape, for the same reason.
-class [linear, final] HcAcc(hcMembers: List<PStmt>,
+class [final] HcAcc(hcMembers: List<PStmt>,
                             hcOut: List<PStmt>,
                             hcPending: List<PStmt>)
 
@@ -1060,8 +1060,8 @@ fun hoClassRounds(pending, ths: Spec, members: List<PStmt>,
     ? r
     : hoClassRounds(r.hcPending, ths, r.hcMembers, r.hcOut)
 
-fun hoClassBuild(acc: HcAcc) => HoClass(build(acc.hcMembers), build(acc.hcOut),
-                                        build(acc.hcPending))
+fun hoClassBuild(acc: HcAcc) => HoClass(acc.hcMembers, acc.hcOut,
+                                        acc.hcPending)
 
 fun [tail] hoClassRound(ss: List<PStmt>, ths,
                         [terminal] acc: HcAcc) => isEmpty(ss)
@@ -1072,12 +1072,12 @@ fun [tail] hoClassRound(ss: List<PStmt>, ths,
       : hoClassRound(tail(ss), ths, hoClassKeep(first(ss), acc))
     (o: PStmt) => hoClassRound(tail(ss), ths, hoClassKeep(first(ss), acc))
 
-fun hoClassKeep(st, acc: HcAcc) => HcAcc(push(acc.hcMembers, st), acc.hcOut, acc.hcPending)
+fun hoClassKeep(st, acc: HcAcc) => HcAcc(append(acc.hcMembers, st), acc.hcOut, acc.hcPending)
 
 fun hoClassMemberStep(f, ths, acc: HcAcc) => hoDriveFnStep(f, ths) |> (st, outs, sibs) =>
-  HcAcc(push(acc.hcMembers, st),
-        pushAll(acc.hcOut, outs),
-        pushAll(acc.hcPending, sibs))
+  HcAcc(append(acc.hcMembers, st),
+        concat(acc.hcOut, outs),
+        concat(acc.hcPending, sibs))
 
 fun hoDriveFnStep(f: PsFun, ths: Spec|None): (stmt: PStmt, outs: List<PStmt>,
                                               sibs: List<PStmt>)
@@ -1131,12 +1131,12 @@ fun hoWithBody(f: PsFun, body)
 # ── rename application ───────────────────────────────────────────────────────
 
 fun rnmStmts(ss, m: ThisMap,
-                    acc: List<PStmt>) => build(rnmStmtsB(ss, m, acc))
+                    acc: List<PStmt>) => (rnmStmtsB(ss, m, acc))
 
 fun [tail] rnmStmtsB(ss: List<PStmt>, m: ThisMap,
                     [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
-  : rnmStmtsB(tail(ss), m, push(acc, rnmStmt(first(ss), m)))
+  : rnmStmtsB(tail(ss), m, append(acc, rnmStmt(first(ss), m)))
 
 fun rnmStmt(st, m: ThisMap) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rnmStmt(f.fParams, m),
@@ -1209,30 +1209,30 @@ fun rnmExpr(x, m: ThisMap) => match(x)
   (o: PeLazy) => x
 
 fun rnmExprs(es, m: ThisMap,
-                    acc: List<PExpr>) => build(rnmExprsB(es, m, acc))
+                    acc: List<PExpr>) => (rnmExprsB(es, m, acc))
 
 fun [tail] rnmExprsB(es: List<PExpr>, m: ThisMap,
                     [terminal] acc: List<PExpr>) => isEmpty(es)
   ? acc
-  : rnmExprsB(tail(es), m, push(acc, rnmExpr(first(es), m)))
+  : rnmExprsB(tail(es), m, append(acc, rnmExpr(first(es), m)))
 
 fun rnmEnts(es: List<PTupEnt>, m: ThisMap,
-                   acc: List<PTupEnt>) => build(rnmEntsB(es, m, acc))
+                   acc: List<PTupEnt>) => (rnmEntsB(es, m, acc))
 
 fun [tail] rnmEntsB(es: List<PTupEnt>, m: ThisMap,
                    [terminal] acc): List<PTupEnt> => isEmpty(es)
   ? acc
   : rnmEntsB(tail(es), m,
-      push(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
+      append(acc, PTupEnt(first(es).tupName, first(es).tupSpread,
                 rnmExpr(first(es).tupValue, m))))
 
 fun rnmArms(as2, m: ThisMap, acc: List<PArm>): List<PArm>
-  ret build(rnmArmsB(as2, m, acc))
+  ret (rnmArmsB(as2, m, acc))
 
 fun [tail] rnmArmsB(as2: List<PArm>, m: ThisMap, [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : rnmArmsB(tail(as2), m,
-      push(acc, with first(as2)(armBody = rnmExpr(first(as2).armBody, m), armGuard = rnmOpt(first(as2).armGuard, m))))
+      append(acc, with first(as2)(armBody = rnmExpr(first(as2).armBody, m), armGuard = rnmOpt(first(as2).armGuard, m))))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # The INLINER half (ast_inline.py:55-663): function inlining at statement
@@ -1314,10 +1314,9 @@ fun aiArmNameCb(acc, x) => match(x)
 # Set answers "seen this name" in O(log n) where scanning the accumulator was
 # O(n) per element; the builder keeps the order the Set does not.
 fun aiArmNameLoop(as2, acc: List<String>): List<String>
-  ret build(aiArmNameLoopB(as2,
+  ret (aiArmNameLoopB(as2,
                            acc,
-                           _chainToSet(acc,
-                                       Set())))
+                           Set(acc)))
 
 # Every POSITION binds — position 0 on the arm, the rest on its PPos entries.
 # Miss the extras and each inlined copy redefines the same stack var, which is
@@ -1331,11 +1330,11 @@ fun [tail] aiArmNameLoopB(as2: List<PArm>, [terminal] out,
 
 # Carries the builder THROUGH: it is linear, so the class holding it is
 # [linear] too, and each step consumes exactly one and yields the next.
-class [linear, final] AiNames(anOut: List<String>, anSeen: Set<String>)
+class [final] AiNames(anOut: List<String>, anSeen: Set<String>)
 
 fun aiOneName(n, [terminal] out,
               seen) => n != "" && n != "_" && !contains(seen, n)
-  ? AiNames(push(out, n), add(seen, n))
+  ? AiNames(append(out, n), add(seen, n))
   : AiNames(out, seen)
 
 fun [tail] aiPosNames(ps: List<PPos>, [terminal] out,
@@ -1368,13 +1367,13 @@ fun aiArmRenCb(x, bound: List<String>, suffix): PExpr|None => match(x)
 
 fun aiArmRenLoop(as2, bound: List<String>,
                         suffix: String, acc: List<PArm>)
-  ret build(aiArmRenLoopB(as2, bound, suffix, acc))
+  ret (aiArmRenLoopB(as2, bound, suffix, acc))
 
 fun [tail] aiArmRenLoopB(as2: List<PArm>, bound: List<String>,
                         suffix: String, [terminal] acc: List<PArm>) => isEmpty(as2)
   ? acc
   : aiArmRenLoopB(tail(as2), bound, suffix,
-      push(acc,
+      append(acc,
         with first(as2)(armName  = contains2(bound, first(as2).armName)
                                   ? first(as2).armName + suffix
                                   : first(as2).armName,
@@ -1386,7 +1385,7 @@ fun [tail] aiRenamePositions(ps: List<PPos>, bound: List<String>,
                              suffix: String, acc: List<PPos>) => isEmpty(ps)
   ? acc
   : aiRenamePositions(tail(ps), bound, suffix,
-      build(push(acc,
+      (append(acc,
         contains2(bound, first(ps).posName)
           ? with first(ps)(posName = first(ps).posName + suffix)
           : first(ps))))
@@ -1470,12 +1469,12 @@ fun [tail] aiCmnLoop(ss: List<PStmt>, acc: List<String>) => isEmpty(ss)
     (c: PsClass) => aiCmnLoop(tail(ss), hoFnNames2(c.cMembers, acc))
     (o: PStmt)   => aiCmnLoop(tail(ss), acc)
 
-fun hoFnNames2(ss, acc: List<String>): List<String> => build(hoFnNames2B(ss, acc))
+fun hoFnNames2(ss, acc: List<String>): List<String> => (hoFnNames2B(ss, acc))
 
 fun [tail] hoFnNames2B(ss: List<PStmt>, [terminal] acc: List<String>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (f: PsFun) => hoFnNames2B(tail(ss), push(acc, f.fName))
+    (f: PsFun) => hoFnNames2B(tail(ss), append(acc, f.fName))
     (o: PStmt) => hoFnNames2B(tail(ss), acc)
 
 # Map of inlinable name → PsFun; functions on a call-graph cycle (incl.
@@ -1553,9 +1552,9 @@ fun [tail] aiDfs(stack: List<String>, start: String, edges: EEdges,
   : first(stack) == start
     ? true
     : contains2(seen, first(stack))
-      ? aiDfs(List(tail(stack)), start, edges, seen)
+      ? aiDfs(tail(stack), start, edges, seen)
       : aiDfs(concat(ceChildrenOf(edges, first(stack)),
-                     List(tail(stack))),
+                     tail(stack)),
               start, edges, prepend(first(stack), seen))
 
 fun aiCatLookup(c: Catalog, name: String) => get(c.caMap, name)
@@ -1624,7 +1623,7 @@ fun aiRasTarget(m: ThisMap, n) => match(tmLookup(m, n))
 fun aiParamPrologue(ps, as2,
                            lineRef, suffix,
                            acc: List<PStmt>): List<PStmt>
-  ret build(aiParamPrologueB(ps, as2, lineRef, suffix, acc))
+  ret (aiParamPrologueB(ps, as2, lineRef, suffix, acc))
 
 fun [tail] aiParamPrologueB(ps: List<PStmt>, as2: List<PExpr>,
                            lineRef, suffix,
@@ -1633,7 +1632,7 @@ fun [tail] aiParamPrologueB(ps: List<PStmt>, as2: List<PExpr>,
   : isEmpty(as2)
     ? acc
     : aiParamPrologueB(tail(ps), tail(as2), lineRef, suffix,
-        push(acc, PsLet(stmtName(first(ps)) + suffix, List(),
+        append(acc, PsLet(stmtName(first(ps)) + suffix, List(),
                   List(), aiLetTypeOf(first(ps)), first(as2),
                   "", List(), lineRef, false,
                   List<PStmt>())))
@@ -1797,7 +1796,7 @@ fun aiIlbPrologue(ps, as2,
                   r: Resolver|None, suffix,
                   acc: List<PStmt>): List<PStmt>|None => match(aiIlbPrologueB(ps, as2, r, suffix,
                                                                               acc))
-  (b: List<PStmt>) => build(b)
+  (b: List<PStmt>) => b
   ()                       => None
 
 fun [tail] aiIlbPrologueB(ps: List<PStmt>, as2: List<PExpr>,
@@ -1808,7 +1807,7 @@ fun [tail] aiIlbPrologueB(ps: List<PStmt>, as2: List<PExpr>,
     ? acc
     : match(aiBindType(first(ps), first(as2), r))
       (bt: Spec) => aiIlbPrologueB(tail(ps), tail(as2), r, suffix,
-          push(acc, PsLet(stmtName(first(ps)) + suffix, List(),
+          append(acc, PsLet(stmtName(first(ps)) + suffix, List(),
                           List(), bt, first(as2), "",
                           List(), exprLine(first(as2)), false,
                           None)))
@@ -1939,7 +1938,7 @@ fun aiBetaCb(n, x, singles: Singles, catalog: Catalog,
 # A block flattened to statements: its value becomes a trailing `ret`, so the
 # whole body can be walked as a statement list and the value read back off the
 # end afterwards. Both of the passes that rewrite bodies start here.
-fun aiBlockAsStmts(bk: PeBlock) => build(push(
+fun aiBlockAsStmts(bk: PeBlock) => (append(
                                        bk.blockStmts,
                                        PsRet(bk.blockValue, exprLine(bk.blockValue))))
 
@@ -2002,14 +2001,14 @@ fun aiDropDeadLams(ss: List<PStmt>, singles: Singles)
 
 fun aiDdlLoop(cs, all: List<PStmt>, i,
                      singles: Singles, acc: List<PStmt>)
-  ret build(aiDdlLoopB(cs, all, i, singles, acc))
+  ret (aiDdlLoopB(cs, all, i, singles, acc))
 
 fun [tail] aiDdlLoopB(cs: List<PStmt>, all: List<PStmt>, i,
                      singles: Singles, [terminal] acc: List<PStmt>) => isEmpty(cs)
   ? acc
   : aiDdlDead(first(cs), all, i, singles)
     ? aiDdlLoopB(tail(cs), all, i + 1, singles, acc)
-    : aiDdlLoopB(tail(cs), all, i + 1, singles, push(acc, first(cs)))
+    : aiDdlLoopB(tail(cs), all, i + 1, singles, append(acc, first(cs)))
 
 fun aiDdlDead(st, all: List<PStmt>, i, singles: Singles) => match(st)
   (let2: PsLet) => contains(singles.sgMap, let2.lName)
@@ -2097,9 +2096,9 @@ fun aiPass1Changed(p: P1Out) => p.tiHits != 0
 fun aiPass1b(ss, catalog: Catalog, selfName,
              n, acc, hits) => aiPass1c(ss, catalog, selfName, n,
                                        acc, hits)
-  |> (out) => P1Out(out.tiN, build(out.tiStmts), out.tiHits)
+  |> (out) => P1Out(out.tiN, out.tiStmts, out.tiHits)
 
-class [linear, final] P1Acc(tiN: Int, tiStmts: List<PStmt>,
+class [final] P1Acc(tiN: Int, tiStmts: List<PStmt>,
                             tiHits: Int)
 
 fun [tail] aiPass1c(ss: List<PStmt>, catalog: Catalog, selfName,
@@ -2109,10 +2108,10 @@ fun [tail] aiPass1c(ss: List<PStmt>, catalog: Catalog, selfName,
   : match(aiTryInlineAtStmt(first(ss), catalog, selfName,
                                              n))
     (t2: TisOut) => aiPass1c(tail(ss), catalog, selfName, t2.tiN,
-                             pushAll(acc, t2.tiStmts),
+                             concat(acc, t2.tiStmts),
                              hits + 1)
     ()           => aiPass1c(tail(ss), catalog, selfName, n,
-                             push(acc, first(ss)), hits)
+                             append(acc, first(ss)), hits)
 
 # The fixpoint: counter reset per entry; catalog rebuilt per round; stop when
 # nothing is inlinable or a round changes nothing; then flatten.
@@ -2132,7 +2131,7 @@ fun [tail] aiRounds(current: List<PStmt>, round2, n): List<PStmt>
 
 class [final] ArOut(arN: Int, arStmts: List<PStmt>, arChanged: Bool)
 
-class [linear, final] ArAcc(araN: Int, araStmts: List<PStmt>,
+class [final] ArAcc(araN: Int, araStmts: List<PStmt>,
                             araChanged: Bool)
 
 # One round over the whole program: every statement comes out, in order, either
@@ -2141,7 +2140,7 @@ fun aiRound(ss, catalog: Catalog, r: Resolver, n,
             acc, changed) => aiRoundB(ss, catalog, r, n,
                                       acc,
                                       changed)
-  |> (out) => ArOut(out.araN, build(out.araStmts), out.araChanged)
+  |> (out) => ArOut(out.araN, out.araStmts, out.araChanged)
 
 fun [tail] aiRoundB(ss: List<PStmt>, catalog: Catalog, r, n,
                     [terminal] acc,
@@ -2150,7 +2149,7 @@ fun [tail] aiRoundB(ss: List<PStmt>, catalog: Catalog, r, n,
   : match(first(ss))
     (f: PsFun) => aiRewriteFunction(f, catalog, r, n)
       |> (out) => aiRoundB(tail(ss), catalog, r, out.rfN,
-                           push(acc, out.rfStmt),
+                           append(acc, out.rfStmt),
                            changed || out.rfChanged)
-    (o: PStmt) => aiRoundB(tail(ss), catalog, r, n, push(acc, first(ss)),
+    (o: PStmt) => aiRoundB(tail(ss), catalog, r, n, append(acc, first(ss)),
                            changed)

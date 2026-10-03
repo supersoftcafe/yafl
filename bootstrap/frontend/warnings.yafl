@@ -56,9 +56,9 @@ fun resolveEnabledWarningsFromArgv(argvTail: List<String>): WarnResolve =>
   stripLoop(argvTail, List<String>())
 
 fun [tail] stripLoop(ts: List<String>, acc: List<String>): WarnResolve => isEmpty(ts)
-  ? resolveEnabledWarnings(build(acc))
+  ? resolveEnabledWarnings(acc)
   : startsWith(first(ts), "-W")
-    ? stripLoop(tail(ts), push(acc, dropPrefix(first(ts), 2)))
+    ? stripLoop(tail(ts), append(acc, dropPrefix(first(ts), 2)))
     : WrErr("unrecognised argument '" + first(ts) + "'")
 
 enum WarnResolve

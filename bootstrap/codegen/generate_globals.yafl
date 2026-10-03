@@ -109,13 +109,13 @@ fun classGlobalCodegen(c, r0): ClassCodegenOut
         concat(genFunctions, thunks))
 
 fun classMemberFunctions(ms, r, acc: List<CgFunction>): List<CgFunction>
-  ret build(classMemberFunctionsB(ms, r, acc))
+  ret (classMemberFunctionsB(ms, r, acc))
 
 fun [tail] classMemberFunctionsB(ms: List<PStmt>, r, [terminal] acc: List<CgFunction>)
   ret isEmpty(ms)
     ? acc
     : match(first(ms))
-      (f2: PsFun) => classMemberFunctionsB(tail(ms), r, push(acc, funGlobalCodegen(f2, r)))
+      (f2: PsFun) => classMemberFunctionsB(tail(ms), r, append(acc, funGlobalCodegen(f2, r)))
       (o: PStmt)  => classMemberFunctionsB(tail(ms), r, acc)
 
 # extends: sorted unique-id strings of the transitive parent closure.
@@ -139,14 +139,14 @@ fun [tail] cseLoop(ss: List<Slot>, acc) => isEmpty(ss)
 # field off `this`, call it with the packed params, return the result.
 fun classFieldThunks(ps, className, functionNames: List<String>,
                             r, acc: List<CgFunction>)
-  ret build(classFieldThunksB(ps, className, functionNames, r, acc))
+  ret (classFieldThunksB(ps, className, functionNames, r, acc))
 
 fun [tail] classFieldThunksB(ps: List<PStmt>, className, functionNames: List<String>,
                             r, [terminal] acc: List<CgFunction>) => isEmpty(ps)
   ? acc
   : match(first(ps))
     (let2: PsLet) => contains2(functionNames, let2.lName)
-      ? classFieldThunksB(tail(ps), className, functionNames, r, push(acc, createThunk(className, let2, r)))
+      ? classFieldThunksB(tail(ps), className, functionNames, r, append(acc, createThunk(className, let2, r)))
       : classFieldThunksB(tail(ps), className, functionNames, r, acc)
     (o: PStmt)    => classFieldThunksB(tail(ps), className, functionNames, r, acc)
 
@@ -218,7 +218,7 @@ fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r)
   ret ClassObjFields(
         # Header, the scalar fields, then the trailing array LAST.
         CgImmediateStruct(concat(list1(CgField("type", CgDataPointer())),
-                                 build(push(scalarFields, arrayField)))),
+                                 (append(scalarFields, arrayField)))),
         arrayLengthFieldName(scalars, ap))
 
 fun isSameLet(p, ap: PsLet) => match(p)
@@ -299,7 +299,7 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r, isComplex: Bool)
 fun enumLeafObjects(names, sets, rootName,
                            discs: Dict<String, Int>, r,
                            prefix: List<CgField>, acc: List<CgObject>): List<CgObject>
-  ret build(enumLeafObjectsB(names, sets, rootName, discs, r, prefix, acc))
+  ret (enumLeafObjectsB(names, sets, rootName, discs, r, prefix, acc))
 
 fun [tail] enumLeafObjectsB(names: List<String>, sets: List<List<PStmt>>, rootName,
                            discs: Dict<String, Int>, r,
@@ -308,7 +308,7 @@ fun [tail] enumLeafObjectsB(names: List<String>, sets: List<List<PStmt>>, rootNa
   : isEmpty(sets)
     ? acc   # unreachable: leaf names and field sets zip 1:1
     : enumLeafObjectsB(tail(names), tail(sets), rootName, discs, r, prefix,
-                          push(acc, enumLeafObject(first(names), first(sets), rootName, discs, r, prefix)))
+                          append(acc, enumLeafObject(first(names), first(sets), rootName, discs, r, prefix)))
 
 fun enumLeafObject(leafName, leafFields: List<PStmt>, rootName,
                    discs: Dict<String, Int>, r, prefix)
@@ -404,7 +404,7 @@ fun staticGlobalPlan(l: PsLet, r, chasing: List<String>)
 fun sgpFinish(l: PsLet, r, out: SgpOut) => match(out.sgpRp)
   (rp: RParam) => sgpLeafOk(rp)
     # The let's own global comes after the ones its initialiser needed.
-    ? build(push(out.sgpGlobals, CgGlobal(l.lName, specGenerateOpt(l.lType, r), rp, None, None, None)))
+    ? (append(out.sgpGlobals, CgGlobal(l.lName, specGenerateOpt(l.lType, r), rp, None, None, None)))
     : None
   ()            => None
 
@@ -503,15 +503,15 @@ fun sgpEmitField(as2: List<PTupEnt>, fs: List<PStmt>, l: List<PTupEnt>, lf: List
   ret match(sub.sgpRp)
     (rp: RParam) if sgpLeafOk(rp) =>
         sgpEmitFields(tail(l), tail(lf), cls, r, chasing, hint, i + 1,
-                      build(
-                        push(pairs,
+                      (
+                        append(pairs,
                              RpNamedValue(stmtName2(first(lf)), rp))),
                       concat(globals, sub.sgpGlobals))
     ()            => sgpNo()
 
 fun sgpInstanceDone(cls: PsClass, hint, pairs,
                     globals) => SgpOut(RpStaticObjectRef(hint),
-                                       build(push(globals, CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None))))
+                                       (append(globals, CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None))))
 
 # A reference to another global let: chase its own plan. An integer/float
 # constant inlines its constant; a static class instance is referenced by

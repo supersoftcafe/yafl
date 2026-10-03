@@ -163,9 +163,9 @@ fun scConcatBuild(operands: List<RParam>): RParam
 fun [tail] scNumbered(os: List<RParam>, i,
                       [terminal] acc: List<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
   ret isEmpty(os)
-    ? (build(acc), i)
+    ? (acc, i)
     : scNumbered(tail(os), i + 1,
-                                  push(acc,
+                                  append(acc,
                                       RpNamedValue("s" + String(i),
                                                    first(os))))
 

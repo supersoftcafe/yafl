@@ -175,7 +175,7 @@ fun trimRebuild(a: CgApp, toApp: ScanSets) => appOf(
 # The picked entities keep the (sorted) name order they were asked for — it
 # becomes their emission order.
 fun trimPick(names: List<String>, get: (:String): CgFunction|None)
-  ret build(trimPickLoop(names, get,
+  ret (trimPickLoop(names, get,
                          List()))
 
 fun [tail] trimPickLoop(ns: List<String>, get: (:String): CgFunction|None,
@@ -183,27 +183,27 @@ fun [tail] trimPickLoop(ns: List<String>, get: (:String): CgFunction|None,
   ? acc
   : match(get(first(ns)))
     (f2: CgFunction) => trimPickLoop(tail(ns), get,
-                                     push(acc, f2))
+                                     append(acc, f2))
     ()                => trimPickLoop(tail(ns), get, acc)
 
 fun trimPickObjects(names: List<String>, a: CgApp)
-  ret build(trimPickObjLoop(names, a, List()))
+  ret (trimPickObjLoop(names, a, List()))
 
 fun [tail] trimPickObjLoop(ns: List<String>, a: CgApp,
                            [terminal] acc: List<CgObject>) => isEmpty(ns)
   ? acc
   : match(appObject(a, first(ns)))
-    (o2: CgObject) => trimPickObjLoop(tail(ns), a, push(acc, o2))
+    (o2: CgObject) => trimPickObjLoop(tail(ns), a, append(acc, o2))
     ()              => trimPickObjLoop(tail(ns), a, acc)
 
 fun trimPickGlobals(names: List<String>, a: CgApp)
-  ret build(trimPickGlbLoop(names, a, List()))
+  ret (trimPickGlbLoop(names, a, List()))
 
 fun [tail] trimPickGlbLoop(ns: List<String>, a: CgApp,
                            [terminal] acc: List<CgGlobal>) => isEmpty(ns)
   ? acc
   : match(appGlobal(a, first(ns)))
-    (g3: CgGlobal) => trimPickGlbLoop(tail(ns), a, push(acc, g3))
+    (g3: CgGlobal) => trimPickGlbLoop(tail(ns), a, append(acc, g3))
     ()              => trimPickGlbLoop(tail(ns), a, acc)
 
 # ── addressTakenFunctions (trim.py address_taken_functions) ─────────────────

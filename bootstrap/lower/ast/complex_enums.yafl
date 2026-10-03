@@ -262,7 +262,7 @@ fun tjPop(st: Tj, v: String)
          # the same shape (container, init, fn), so a fold whose container is
          # a List and whose accumulator is a Set can match either overload.
          tjOnDrop(scc, st.tjOn),
-         build(push(
+         (append(
              st.tjSccs,
              scc)),
          st.tjN)
@@ -273,14 +273,14 @@ fun [tail] tjFirstIndex(ss: List<String>, v: String, at) => isEmpty(ss)
   : first(ss) == v ? at : tjFirstIndex(tail(ss), v, at + 1)
 
 fun tjRemoveAll(ss, gone: List<String>,
-                       acc: List<String>) => build(tjRemoveAllB(ss, gone, acc))
+                       acc: List<String>) => (tjRemoveAllB(ss, gone, acc))
 
 fun [tail] tjRemoveAllB(ss: List<String>, gone: List<String>,
                        [terminal] acc: List<String>) => isEmpty(ss)
   ? acc
   : contains2(gone, first(ss))
     ? tjRemoveAllB(tail(ss), gone, acc)
-    : tjRemoveAllB(tail(ss), gone, push(acc, first(ss)))
+    : tjRemoveAllB(tail(ss), gone, append(acc, first(ss)))
 
 # ── cycle breakers ───────────────────────────────────────────────────────────
 # Iterate until no cycles remain; per round, every cyclic SCC contributes its
@@ -302,13 +302,13 @@ fun [tail] cePickLoop(work, roots: ERoots,
     |> (out) => cePickLoop(out.pbWork, roots, fieldsOf, out.pbChosen)
 
 fun ceCyclicSccs(ss, work: EEdges,
-                        acc: List<List<String>>) => build(ceCyclicSccsB(ss, work, acc))
+                        acc: List<List<String>>) => (ceCyclicSccsB(ss, work, acc))
 
 fun [tail] ceCyclicSccsB(ss: List<List<String>>, work: EEdges,
                         [terminal] acc: List<List<String>>) => isEmpty(ss)
   ? acc
   : ceIsCyclic(first(ss), work)
-    ? ceCyclicSccsB(tail(ss), work, push(acc, first(ss)))
+    ? ceCyclicSccsB(tail(ss), work, append(acc, first(ss)))
     : ceCyclicSccsB(tail(ss), work, acc)
 
 fun ceIsCyclic(scc: List<String>, work: EEdges)

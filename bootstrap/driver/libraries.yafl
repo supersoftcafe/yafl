@@ -163,14 +163,14 @@ fun readSources(root, paths: List<String>) => srcLoop(root, paths, List())
 
 fun [tail] srcLoop(root, ps: List<String>,
                    [terminal] b: List<LibSource>) => isEmpty(ps)
-  ? build(b)
+  ? b
   : match(readWholeFile(first(ps)))
     (e: IOError)   => srcDiscard(b, first(ps) + ": cannot be read")
     (t: String)    => srcLoop(root, tail(ps),
-                              push(b, LibSource(relativeTo(root, first(ps)), t)))
+                              append(b, LibSource(relativeTo(root, first(ps)), t)))
 
 fun srcDiscard([terminal] b: List<LibSource>, why): List<LibSource>|String
-  ret build(b) |> (l) => why
+  ret b |> (l) => why
 
 # A `.yl` archive: the same manifest and sources, read out of the zip.
 fun readZipLibrary(path) => match(readWholeFile(path))
@@ -185,13 +185,13 @@ fun zipLibraryFrom(entries: List<ZipEntry>, path) => match(zipFind(entries, "yaf
     (m: LibManifest) => Library(m, path, true, zipSources(entries))
   ()              => path + ": .yl has no yafl.toml"
 
-fun zipSources(entries: List<ZipEntry>) => build(zipSrcLoop(sortEntries(entries), List()))
+fun zipSources(entries: List<ZipEntry>) => (zipSrcLoop(sortEntries(entries), List()))
 
 fun [tail] zipSrcLoop(es: List<ZipEntry>,
                       [terminal] b): List<LibSource> => isEmpty(es)
   ? b
   : endsWith(first(es).zipName, ".yafl")
-    ? zipSrcLoop(tail(es), push(b, LibSource(first(es).zipName, first(es).zipBody)))
+    ? zipSrcLoop(tail(es), append(b, LibSource(first(es).zipName, first(es).zipBody)))
     : zipSrcLoop(tail(es), b)
 
 fun sortEntries(entries: List<ZipEntry>) => sortBy(entries, (a, b) => a.zipName < b.zipName)
@@ -256,7 +256,7 @@ fun discoverLibraries(paths: List<String>) => discoverLoop(paths, List(), List()
 
 fun [tail] discoverLoop(ps: List<String>, seen: List<String>,
                         [terminal] acc) => isEmpty(ps)
-  ? LibsOk(build(acc))
+  ? LibsOk(acc)
   : !exists(first(ps))
     ? discoverLoop(tail(ps), seen, acc)
     : match(listDir(first(ps)))
@@ -283,7 +283,7 @@ fun [tail] discoverInto(rest: List<String>, base, ns: List<String>,
       (why: String)  => libDiscard(acc, LibsErr(why))
       (lib: Library) => discoverInto(rest, base, tail(ns),
                                      concat(seen, list1(base + "/" + first(ns))),
-                                     push(acc, lib))
+                                     append(acc, lib))
       ()             => discoverInto(rest, base, tail(ns), seen, acc)
 
 # Dispatch on WHAT THE ENTRY IS, not on its name: `_read_library_at` tests
@@ -296,7 +296,7 @@ fun readEntry(path) => isDirectory(path) ? readDirLibrary(path)
   : isRegularFile(path) && endsWith(path, ".yl") ? readZipLibrary(path)
   : None
 
-fun libDiscard([terminal] acc: List<Library>, e): LibResult => build(acc) |> (l) => e
+fun libDiscard([terminal] acc: List<Library>, e): LibResult => acc |> (l) => e
 
 
 # ── namespace index ─────────────────────────────────────────────────────────
@@ -355,19 +355,19 @@ fun stripUnique(part) => findByte(part, '@', 0) |> (at) => at < 0 ? part : slice
 
 fun [tail] prefixWalk(ps: List<String>, acc,
                       [terminal] b: List<String>) => isEmpty(ps)
-  ? build(b)
+  ? b
   : (acc == "" ? first(ps) : acc + "::" + first(ps))
-    |> (next) => prefixWalk(tail(ps), next, push(b, next))
+    |> (next) => prefixWalk(tail(ps), next, append(b, next))
 
 fun candidateNamespaces(imports: List<String>, quals: List<String>)
   let a = addAllPrefixes(imports, List())
   let b = addAllPrefixes(quals, a)
-  ret dedupe(build(composeAll(imports, quals, b)))
+  ret dedupe((composeAll(imports, quals, b)))
 
 fun [tail] addAllPrefixes(xs: List<String>,
                           [terminal] b: List<String>) => isEmpty(xs)
   ? b
-  : addAllPrefixes(tail(xs), pushAll(b, prefixesOf(first(xs))))
+  : addAllPrefixes(tail(xs), concat(b, prefixesOf(first(xs))))
 
 # Each import composed with each qualified reference: `P` + `A::B` -> `P::A::B`.
 fun [tail] composeAll(imps: List<String>, quals: List<String>,
@@ -400,12 +400,12 @@ fun [tail] loadLoop(ns: List<String>, index: List<NsEntry>,
                     already,
                     [terminal] srcs,
                     [terminal] libs) => isEmpty(ns)
-  ? LoadStep(build(srcs), build(libs))
+  ? LoadStep(srcs, libs)
   : match(nsLookup(index, first(ns)))
     (lib: Library) => contains(already, lib.libRoot)
       ? loadLoop(tail(ns), index, already, srcs, libs)
       : loadLoop(tail(ns), index, prepend(lib.libRoot, already),
-                 pushAll(srcs, lib.libSources), push(libs, lib))
+                 concat(srcs, lib.libSources), append(libs, lib))
     ()             => loadLoop(tail(ns), index, already, srcs, libs)
 
 
@@ -514,7 +514,7 @@ class [final] LinkSpec(specHeaders: List<String>, specIncludeDirs: List<String>,
 fun linkSpecFor(libs: List<Library>) => match(gatherNative(libs, List(), List()))
   (why: String)  => why
   (n: NativePaths) => LinkSpec(
-      dedupeStable(build(gatherHeaders(libs, List()))),
+      dedupeStable((gatherHeaders(libs, List()))),
       dedupeStable(n.npIncludes), dedupeStable(n.npStatics))
 
 class [final] NativePaths(npIncludes: List<String>, npStatics: List<String>)
@@ -523,7 +523,7 @@ fun [tail] gatherHeaders(ls: List<Library>,
                          [terminal] b: List<String>) => isEmpty(ls)
   ? b
   : gatherHeaders(tail(ls),
-      pushAll(b, map(first(ls).libManifest.libHeaders,
+      concat(b, map(first(ls).libManifest.libHeaders,
                      (h) => baseName(h))))
 
 # Include dirs and archive paths both hang off the materialised directory, so

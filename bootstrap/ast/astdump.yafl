@@ -190,12 +190,12 @@ fun lazyCapMark(c: String|None) => match(c)
   ()          => ""
 
 fun loopParamNames(ps, acc: List<String>): List<String>
-  ret build(loopParamNamesB(ps, acc))
+  ret (loopParamNamesB(ps, acc))
 
 fun [tail] loopParamNamesB(ps: List<PExpr>, [terminal] acc: List<String>) => isEmpty(ps)
   ? acc
   : match(first(ps))
-    (nm: PeName) => loopParamNamesB(tail(ps), push(acc, nm.refName))
+    (nm: PeName) => loopParamNamesB(tail(ps), append(acc, nm.refName))
     (o: PExpr)   => loopParamNamesB(tail(ps), acc)
 
 fun [tail] dumpExprs(es: List<PExpr>, depth,

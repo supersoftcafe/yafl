@@ -186,11 +186,11 @@ fun listOneJson(c: TestCase): System::String
 
 fun [impure] runSelected(cases: List<TestCase>, argv: List<System::String>,
                          fmt: System::String): System::Int
-    let wanted = build<System::String>(
+    let wanted = (
         nonFlags(List<System::String>(), argv))
     let chosen = isEmpty<System::String>(wanted)
         ? cases
-        : build<TestCase>(selectLoop(List<TestCase>(), cases, wanted))
+        : (selectLoop(List<TestCase>(), cases, wanted))
     ret isEmpty<TestCase>(chosen) && !isEmpty<System::String>(wanted)
         ? noMatchError()
         : runChosen(chosen, fmt)
@@ -210,7 +210,7 @@ fun [tail] nonFlags([terminal] b: List<System::String>,
             ? nonFlags(b, dropOne(tail(a)))
             : startsWith(first(a), "-")
                 ? nonFlags(b, tail(a))
-                : nonFlags(push<System::String>(b, first(a)), tail(a))
+                : nonFlags(append<System::String>(b, first(a)), tail(a))
 
 fun dropOne(a: List<System::String>): List<System::String>
     ret isEmpty(a)
@@ -222,7 +222,7 @@ fun [tail] selectLoop([terminal] b: List<TestCase>, cs: List<TestCase>,
     ret isEmpty(cs)
         ? b
         : contains<System::String>(wanted, first(cs).id)
-            ? selectLoop(push<TestCase>(b, first(cs)), tail(cs), wanted)
+            ? selectLoop(append<TestCase>(b, first(cs)), tail(cs), wanted)
             : selectLoop(b, tail(cs), wanted)
 
 # A filter that selects NOTHING is an error, not a green run of nothing: a

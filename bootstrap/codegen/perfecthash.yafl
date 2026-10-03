@@ -58,19 +58,19 @@ fun phAllMethodNames(vtables: List<VtableEntry>)
 # re-assignment overwrites a value, so it never moves a key). Ids are handed
 # out along the same walk, so the builder and the counter stay in step and the
 # next free id rides out with them.
-class [linear, final] IdAcc(iaIds: List<MethodId>, iaNext: Int)
+class [final] IdAcc(iaIds: List<MethodId>, iaNext: Int)
 
 fun phAssignIds(names: List<String>): (ids: List<MethodId>, next: Int)
   ret phAssignIdsFinish(phAssignIdsLoop(names,
                                         IdAcc(List(), 0)))
 
 fun phAssignIdsFinish(acc: IdAcc): (ids: List<MethodId>, next: Int)
-  ret (build(acc.iaIds), acc.iaNext)
+  ret (acc.iaIds, acc.iaNext)
 
 fun [tail] phAssignIdsLoop(names: List<String>, [terminal] acc: IdAcc) => isEmpty(names)
   ? acc
   : phAssignIdsLoop(tail(names),
-      IdAcc(push(acc.iaIds, MethodId(first(names), acc.iaNext)),
+      IdAcc(append(acc.iaIds, MethodId(first(names), acc.iaNext)),
             acc.iaNext + 1))
 
 fun phVtableSizes(vtables: List<VtableEntry>)
@@ -116,7 +116,7 @@ fun [tail] phScanClassSlots(methods: List<String>, methodIds: Dict<String, Int>,
   ? pairs
   : match(get(slots, methodIdGet(methodIds, first(methods)) & mask))
     (existing: String) => phScanClassSlots(tail(methods), methodIds, mask, slots,
-                            push(pairs, CollisionPair(first(methods), existing)))
+                            append(pairs, CollisionPair(first(methods), existing)))
     ()                 => phScanClassSlots(tail(methods), methodIds, mask,
                             put(slots, methodIdGet(methodIds, first(methods)) & mask, first(methods)),
                             pairs)
@@ -143,14 +143,14 @@ class [final] ConflictGraph(cgOrder: List<String>, cgEdges: Dict<String, List<St
 
 # cgOrder is only WRITTEN during the build — "have I met this method before"
 # is the Dict's question, not the list's — so it can be a builder.
-class [linear, final] CgAcc(caOrder: List<String>,
+class [final] CgAcc(caOrder: List<String>,
                             caEdges: Dict<String, List<String>>)
 
 fun buildConflictGraph(pairs: List<CollisionPair>)
   ret cgFinish(bcgLoop(pairs,
                        CgAcc(List(), Dict())))
 
-fun cgFinish(acc: CgAcc) => ConflictGraph(build(acc.caOrder), acc.caEdges)
+fun cgFinish(acc: CgAcc) => ConflictGraph(acc.caOrder, acc.caEdges)
 
 fun [tail] bcgLoop(ps: List<CollisionPair>, [terminal] acc): CgAcc => isEmpty(ps)
   ? acc
@@ -162,7 +162,7 @@ fun cgAddDirected([terminal] acc: CgAcc, from2, to) => match(get(acc.caEdges, fr
   (ns: List<String>) => CgAcc(acc.caOrder,
       put(acc.caEdges, from2,
         strListMember(ns, to) ? ns : prepend(to, ns)))
-  ()                 => CgAcc(push(acc.caOrder, from2),
+  ()                 => CgAcc(append(acc.caOrder, from2),
       put(acc.caEdges, from2, list1(to)))
 
 fun cgNeighbors(g: ConflictGraph, method: String) => match(get(g.cgEdges, method))
@@ -233,7 +233,7 @@ fun phFixpointCollision(vtables: List<VtableEntry>, methodIds0: List<MethodId>, 
 fun phFixpointStep(vtables: List<VtableEntry>, methodIds0, vtableSizes: List<VtableSize>, iteration, nextId0: Int): List<MethodId>
   # The dict views are per ROUND (ids are reassigned between rounds); the
   # build is one walk, against millions of per-method linear scans inside.
-  let pairs = build(phScanAllSlots(vtables,
+  let pairs = (phScanAllSlots(vtables,
                                   methodIdDict(methodIds0, Dict()),
                                   vtableSizeDict(vtableSizes, Dict()),
                                   List()))

@@ -821,14 +821,14 @@ fun sortSources(srcs: List<LibSource>) => sortBy(srcs, (a, b) => a.libFileName <
 
 fun [tail] parseSources(ss: List<LibSource>,
                         [terminal] b: List<PStmt>): List<PStmt>|String => isEmpty(ss)
-  ? build(b)
+  ? b
   : match(parseProgram(first(ss).libText, first(ss).libFileName))
     (f: PFail)           => parseDiscard(b, first(ss).libFileName + "["
         + String(f.line) + ":" + String(f.col) + "] - " + f.msg)
-    (stmts: List<PStmt>) => parseSources(tail(ss), pushAll(b, stmts))
+    (stmts: List<PStmt>) => parseSources(tail(ss), concat(b, stmts))
 
 fun parseDiscard([terminal] b: List<PStmt>, why): List<PStmt>|String
-  ret build(b) |> (l) => why
+  ret b |> (l) => why
 
 
 # ── --test: build a TEST binary from the [test] functions ────────────────────
@@ -877,10 +877,10 @@ fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel,
 
 fun [tail] testFunsOf(sts: List<PStmt>,
                       [terminal] b: List<PsFun>) => isEmpty(sts)
-  ? build(b)
+  ? b
   : match(first(sts))
     (f: PsFun) => hasAttr(f.fAttrs, "test")
-      ? testFunsOf(tail(sts), push(b, f))
+      ? testFunsOf(tail(sts), append(b, f))
       : testFunsOf(tail(sts), b)
     (o: PStmt) => testFunsOf(tail(sts), b)
 
@@ -888,10 +888,10 @@ fun [tail] testFunsOf(sts: List<PStmt>,
 # program that has one. Matched as WRITTEN, before types resolve.
 fun [tail] dropSourceMains(sts: List<PStmt>,
                            [terminal] b: List<PStmt>) => isEmpty(sts)
-  ? build(b)
+  ? b
   : isSourceMain(first(sts))
     ? dropSourceMains(tail(sts), b)
-    : dropSourceMains(tail(sts), push(b, first(sts)))
+    : dropSourceMains(tail(sts), append(b, first(sts)))
 
 fun isSourceMain(st) => match(st)
   (f: PsFun) => bareOfUnique(f.fName) == "main"

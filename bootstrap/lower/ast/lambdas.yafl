@@ -75,7 +75,7 @@ fun cpPathFor(acc: ClPaths, lr: PLine) => match(get(acc.cpMap, lr))
 # One more step on the end of a structural path — the order IS the path.
 fun cpExtend(path, name) => name == ""
   ? path
-  : build(push(path,
+  : (append(path,
                name))
 
 fun collectLambdaPaths(st) => cpStmt(st, List(), emptyClPaths())
@@ -370,24 +370,24 @@ fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
              List<Spec>(), List<Slot>(), List<PStmt>())
 
 fun clEntries(ns, cpt: ClCaps, lr: PLine,
-                     acc: List<SEntry>) => build(clEntriesB(ns, cpt, lr, acc))
+                     acc: List<SEntry>) => (clEntriesB(ns, cpt, lr, acc))
 
 fun [tail] clEntriesB(ns: List<String>, cpt: ClCaps, lr: PLine,
                      [terminal] acc: List<SEntry>) => isEmpty(ns)
   ? acc
   : clEntriesB(tail(ns), cpt, lr,
-                        push(acc, SEntry(capturedFieldName(first(ns), lr),
+                        append(acc, SEntry(capturedFieldName(first(ns), lr),
                                          ccTypeOf(cpt, first(ns)),
                                          None)))
 
 fun clParamLets(ns, cpt: ClCaps, lr,
-                       acc: List<PStmt>) => build(clParamLetsB(ns, cpt, lr, acc))
+                       acc: List<PStmt>) => (clParamLetsB(ns, cpt, lr, acc))
 
 fun [tail] clParamLetsB(ns: List<String>, cpt: ClCaps, lr,
                        [terminal] acc: List<PStmt>) => isEmpty(ns)
   ? acc
   : clParamLetsB(tail(ns), cpt, lr,
-      push(acc, PsLet(capturedFieldName(first(ns), lr), List(),
+      append(acc, PsLet(capturedFieldName(first(ns), lr), List(),
                 List(),
                 ccTypeOf(cpt, first(ns)), None, "", List(), lr,
                 false, List<PStmt>())))
@@ -406,13 +406,13 @@ fun clStubRead(name, ls: SLazyStub, lr) => match(ls.slsTarget)
   ()         => PeName(name, List(), lr, None)
 
 fun captureArgs(ns, cpt: ClCaps, lr,
-                       acc: List<PTupEnt>) => build(captureArgsB(ns, cpt, lr, acc))
+                       acc: List<PTupEnt>) => (captureArgsB(ns, cpt, lr, acc))
 
 fun [tail] captureArgsB(ns: List<String>, cpt: ClCaps, lr,
                        [terminal] acc: List<PTupEnt>) => isEmpty(ns)
   ? acc
   : captureArgsB(tail(ns), cpt, lr,
-      push(acc, PTupEnt(capturedFieldName(first(ns), lr), false,
+      append(acc, PTupEnt(capturedFieldName(first(ns), lr), false,
                   captureRead(first(ns), ccTypeOf(cpt, first(ns)),
                               lr))))
 
@@ -520,10 +520,10 @@ fun clStmts(ss: List<PStmt>, r, paths: ClPaths,
 fun [tail] clStmtLoop(ss: List<PStmt>, r, paths: ClPaths,
                       exports,
                       [terminal] acc) => isEmpty(ss)
-  ? ClSts(build(acc), exports)
+  ? ClSts(acc, exports)
   : clStmt(first(ss), r, paths, exports)
     |> (o) => clStmtLoop(tail(ss), r, paths, o.clStExports,
-                         push(acc, o.clStStmt))
+                         append(acc, o.clStStmt))
 
 # ── expressions ──
 fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
@@ -624,7 +624,7 @@ fun clExportLambda(lm: PeLambda, r, paths: ClPaths,
 # order, and the list is read back by clDedupName, so it stays a List and this
 # stays a copy — once per lifted lambda, not once per expression walked.
 fun clExport(exports: List<PStmt>, st: PStmt)
-  ret build(push(exports,
+  ret (append(exports,
                  st))
 
 fun clBlockExpr(bk: PeBlock, r, paths: ClPaths,
@@ -646,10 +646,10 @@ fun clMatchExpr(mt: PeMatch, r, paths: ClPaths,
 fun [tail] clArms(as2: List<PArm>, r, paths: ClPaths,
                   exports,
                   [terminal] acc) => isEmpty(as2)
-  ? ClArmsOut(build(acc), exports)
+  ? ClArmsOut(acc, exports)
   : clArmOne(first(as2), r, paths, exports)
     |> (o) => clArms(tail(as2), r, paths, o.claoExports,
-                     push(acc, o.claoArm))
+                     append(acc, o.claoArm))
 
 class [final] ClArmOne(claoArm: PArm, claoExports: List<PStmt>)
 
@@ -665,15 +665,15 @@ fun clArmOne(a: PArm, r, paths: ClPaths, exports): ClArmOne
 fun [tail] clLits(ls: List<PLit>, r, paths: ClPaths,
                   exports,
                   [terminal] acc) => isEmpty(ls)
-  ? ClLitsOut(build(acc), exports)
+  ? ClLitsOut(acc, exports)
   : match(first(ls))
     (le: PlExpr)   => clExpr(le.litExpr, r, paths, exports)
       |> (o) => clLits(tail(ls), r, paths, o.clExExports,
-                       push(acc, PlExpr(o.clExExpr)))
+                       append(acc, PlExpr(o.clExExpr)))
     (lr2: PlRange) => clExpr(lr2.rangeLo, r, paths, exports)
       |> (lo) => (lo, clExpr(lr2.rangeHi, r, paths, lo.clExExports))
       |> (lo, hi) => clLits(tail(ls), r, paths, hi.clExExports,
-                            push(acc, PlRange(lo.clExExpr,
+                            append(acc, PlRange(lo.clExExpr,
                                               hi.clExExpr,
                                               lr2.plrLine)))
 
@@ -686,18 +686,18 @@ fun clExprOpt(x, r, paths: ClPaths,
 fun [tail] clExprs(es: List<PExpr>, r, paths: ClPaths,
                    exports,
                    [terminal] acc) => isEmpty(es)
-  ? ClExsOut(build(acc), exports)
+  ? ClExsOut(acc, exports)
   : clExpr(first(es), r, paths, exports)
     |> (o) => clExprs(tail(es), r, paths, o.clExExports,
-                      push(acc, o.clExExpr))
+                      append(acc, o.clExExpr))
 
 fun [tail] clTupEnts(es: List<PTupEnt>, r, paths: ClPaths,
                      exports,
                      [terminal] acc) => isEmpty(es)
-  ? ClEntsOut(build(acc), exports)
+  ? ClEntsOut(acc, exports)
   : clExpr(first(es).tupValue, r, paths, exports)
     |> (v) => clTupEnts(tail(es), r, paths, v.clExExports,
-                        push(acc, PTupEnt(first(es).tupName,
+                        append(acc, PTupEnt(first(es).tupName,
                                           first(es).tupSpread,
                                           v.clExExpr)))
 
@@ -714,17 +714,17 @@ fun clScanTop(st, r)
 
 # Both outputs are ordered — the rewritten top-level statements and the
 # lifted ones that follow them — and neither is read back, so both are built.
-class [linear, final] ScanAcc(saStmts: List<PStmt>,
+class [final] ScanAcc(saStmts: List<PStmt>,
                               saExports: List<PStmt>)
 
 fun [tail] clScanAll(ss: List<PStmt>, r: Resolver,
                      [terminal] acc: ScanAcc): ClScanAll => isEmpty(ss)
-  ? ClScanAll(build(acc.saStmts),
-                               build(acc.saExports))
+  ? ClScanAll(acc.saStmts,
+                               acc.saExports)
   : clScanTop(first(ss), r)
     |> (o) => clScanAll(tail(ss), r,
-                  ScanAcc(push(acc.saStmts, o.clStStmt),
-                          pushAll(acc.saExports,
+                  ScanAcc(append(acc.saStmts, o.clStStmt),
+                          concat(acc.saExports,
                               o.clStExports)))
 
 fun convertLambdasToFunctions(statements): List<PStmt>

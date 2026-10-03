@@ -59,14 +59,14 @@ fun promoteNonTrivialGlobals(statements: List<PStmt>, r): List<PStmt>
   ret pngLoop(statements, r, List())
 
 fun pngLoop(ss, r,
-                   acc: List<PStmt>): List<PStmt> => build(pngLoopB(ss, r, acc))
+                   acc: List<PStmt>): List<PStmt> => (pngLoopB(ss, r, acc))
 
 fun [tail] pngLoopB(ss: List<PStmt>, r,
                    [terminal] acc: List<PStmt>) => isEmpty(ss)
   ? acc
   : match(first(ss))
-    (let2: PsLet) => pngLoopB(tail(ss), r, push(acc, pngOne(let2, r)))
-    (o: PStmt)    => pngLoopB(tail(ss), r, push(acc, first(ss)))
+    (let2: PsLet) => pngLoopB(tail(ss), r, append(acc, pngOne(let2, r)))
+    (o: PStmt)    => pngLoopB(tail(ss), r, append(acc, first(ss)))
 
 fun pngOne(let2, r)
   if isDeferredInit(let2)

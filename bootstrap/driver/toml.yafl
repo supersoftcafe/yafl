@@ -58,13 +58,13 @@ enum LineOut
 # `seen` answers membership only: a Set, so a many-key manifest stays linear.
 fun [tail] tomlLines(ls: List<String>, n, seen: Set<String>,
                      [terminal] acc) => isEmpty(ls)
-  ? TomlOk(build(acc))
+  ? TomlOk(acc)
   : match(tomlLine(first(ls), tail(ls), seen))
     (s: LineSkip)   => tomlLines(tail(ls), n + 1, seen, acc)
     (e: LineErr)    => discardOn(acc, TomlErr(e.loWhy, n))
     (en: LineEntry) => tomlLines(en.loRest, n + en.loCount,
                                  add(seen, en.loEntry.key),
-                                 push(acc, en.loEntry))
+                                 append(acc, en.loEntry))
 
 fun tomlLine(line, rest, seen: Set<String>)
   let bare = trimEnd(trimStart(stripComment(line)))
@@ -120,7 +120,7 @@ fun [tail] bracketDepth(s, at, depth, inStr): Int
     : bracketDepth(s, at + 1, depth, false)
 
 # The builder is [linear] and must be consumed on the error path too.
-fun discardOn([terminal] acc: List<TomlEntry>, e): TomlResult => build(acc) |> (l) => e
+fun discardOn([terminal] acc: List<TomlEntry>, e): TomlResult => acc |> (l) => e
 
 
 # A `#` inside a quoted string is DATA, not a comment. Scanning with a quote
@@ -171,7 +171,7 @@ fun [tail] arrayItems(s, at, needSep,
     ret discardStrs(b, TomlBad("unterminated array"))
   if byteAt(s, i) == ']'
     ret trimStart(slice(s, i + 1, length(s))) == ""
-      ? TomlGood(build(b), true)
+      ? TomlGood(b, true)
       : discardStrs(b, TomlBad("trailing text after array"))
   if byteAt(s, i) == ','
     ret needSep
@@ -180,10 +180,10 @@ fun [tail] arrayItems(s, at, needSep,
   if needSep
     ret discardStrs(b, TomlBad("expected `,` between array values"))
   ret match(quotedAt(s, i))
-    (q: QuoteOk)  => arrayItems(s, q.qEnd, true, push(b, q.qText))
+    (q: QuoteOk)  => arrayItems(s, q.qEnd, true, append(b, q.qText))
     (e: QuoteBad) => discardStrs(b, TomlBad(e.qWhy))
 
-fun discardStrs([terminal] b: List<String>, v): TomlValue => build(b) |> (l) => v
+fun discardStrs([terminal] b: List<String>, v): TomlValue => b |> (l) => v
 
 fun [tail] skipBlanks(s, at) => at < length(s) && (byteAt(s, at) == ' ' || byteAt(s, at) == '\t')
   ? skipBlanks(s, at + 1)

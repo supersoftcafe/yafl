@@ -127,7 +127,7 @@ fun lazyTypeAdd(acc, t2)
   let m2 = irMangle(t2)
   ret contains(acc.ltSeen, m2)
     ? acc
-    : LazyTypes(build(push(acc.ltList, t2)),
+    : LazyTypes((append(acc.ltList, t2)),
                 put(acc.ltSeen, m2, true))
 
 fun ensureLazyMachinery(a, types2: List<CgType>)
@@ -195,7 +195,7 @@ fun msSupported(acc, rep, pat: Spec,
                 r): List<String>
   ret match(reprPositionGuards(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
     (g: List<RParam>) => acc
-    ()                => build(push(acc,
+    ()                => (append(acc,
                            "this pattern cannot serve a position of a "
                            + "multi-subject match"))
 

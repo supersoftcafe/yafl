@@ -270,7 +270,7 @@ fun [tail] idxLoop(es: Chain<System::String>, name: System::String, i) => match(
   (l: ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
 
 fun main(): System::Int
-  ret match(idxLoop(ChainLink<System::String>("a", ChainLink<System::String>("b", ChainEnd<System::String>())), "a", 0))
+  ret match(idxLoop(ChainLink<System::String>("b", ChainLink<System::String>("a", ChainEnd<System::String>())), "a", 0))
     (n: System::Int) => n + 7
     ()               => 3
 """

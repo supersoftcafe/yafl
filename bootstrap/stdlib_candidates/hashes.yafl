@@ -197,13 +197,13 @@ fun sha1WordOf(msg, len, base, j): Int
 fun [tail] sha1Schedule(msg, len: Int, base, t,
                         recent, acc: List<Int>): List<Int>
   if t == 80
-    ret build(acc)
+    ret acc
   let w = t < 16
     ? sha1WordOf(msg, len, base, t)
     : rotl32(tapAt(recent, 2) ^ tapAt(recent, 7)
              ^ tapAt(recent, 13) ^ tapAt(recent, 15), 1)
   ret sha1Schedule(msg, len, base, t + 1, prepend(w, recent),
-                   push(acc, w))
+                   append(acc, w))
 
 fun [tail] tapAt(c: List<Int>, k): Int => isEmpty(c)
   ? 0
@@ -300,7 +300,7 @@ class [final] Sha256State(t0: Int, t1: Int, t2: Int, t3: Int,
 fun [tail] sha256Schedule(msg, len: Int, base, t,
                           recent, acc: List<Int>): List<Int>
   if t == 64
-    ret build(acc)
+    ret acc
   let w15 = tapAt(recent, 14)
   let w2 = tapAt(recent, 1)
   let s0 = rotr32(w15, 7) ^ rotr32(w15, 18) ^ (w15 >> 3)
@@ -309,7 +309,7 @@ fun [tail] sha256Schedule(msg, len: Int, base, t,
     ? sha1WordOf(msg, len, base, t)
     : add32(add32(tapAt(recent, 15), s0), add32(tapAt(recent, 6), s1))
   ret sha256Schedule(msg, len, base, t + 1, prepend(w, recent),
-                     push(acc, w))
+                     append(acc, w))
 
 # The schedule walks SEQUENTIALLY — head/tail per round, never indexed.
 fun [tail] sha256Rounds(ws: List<Int>, i: Int, a: Int, b: Int, c: Int, d: Int,

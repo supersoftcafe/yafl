@@ -198,14 +198,14 @@ fun deBoundHasEquality(arg: Spec|None, bindings: List<Binding>, ok: List<String>
 
 # The candidate enums and their leaves, positionally paired. Both are built:
 # the consumers walk them in lockstep.
-class [linear, final] DeCands(dcNames: List<String>,
+class [final] DeCands(dcNames: List<String>,
                               dcLeaves: List<DeLeaves>)
 
 fun [tail] deCandidates(ss: List<PStmt>, ps: List<DeProvider>, r,
                         [terminal] acc: DeCands): (names: List<String>, leaves: List<DeLeaves>)
   ret isEmpty(ss)
-    ? (build(acc.dcNames),
-                        build(acc.dcLeaves))
+    ? (acc.dcNames,
+                        acc.dcLeaves)
     : match(first(ss))
       # Generic enums never derive — nor, after monomorphisation, their
       # instantiations (no type params left, still not a source enum).
@@ -215,8 +215,8 @@ fun [tail] deCandidates(ss: List<PStmt>, ps: List<DeProvider>, r,
           (dl: DeLeaves) => isEmpty(dl.dlNames)
             ? deCandidates(tail(ss), ps, r, acc)
             : deCandidates(tail(ss), ps, r,
-                           DeCands(push(acc.dcNames, e2.eName),
-                                   push(acc.dcLeaves, dl)))
+                           DeCands(append(acc.dcNames, e2.eName),
+                                   append(acc.dcLeaves, dl)))
           ()             => deCandidates(tail(ss), ps, r, acc)
         : deCandidates(tail(ss), ps, r, acc)
       (o: PStmt)   => deCandidates(tail(ss), ps, r, acc)
@@ -265,7 +265,7 @@ fun [tail] deFixpoint2(ok: List<String>, names: List<String>,
 
 fun deSurvivors(ns, ls, ok: List<String>, ps: List<DeProvider>, r,
                 acc: List<String>): List<String>
-  ret build(deSurvivorsB(ns, ls, ok, ps, r, acc))
+  ret (deSurvivorsB(ns, ls, ok, ps, r, acc))
 
 fun [tail] deSurvivorsB(ns: List<String>, ls: List<DeLeaves>,
                         ok: List<String>, ps: List<DeProvider>, r,
@@ -276,7 +276,7 @@ fun [tail] deSurvivorsB(ns: List<String>, ls: List<DeLeaves>,
     : !contains2(ok, first(ns))
       ? deSurvivorsB(tail(ns), tail(ls), ok, ps, r, acc)
       : deAllFieldsHave(first(ls).dlSets, ok, ps, r)
-        ? deSurvivorsB(tail(ns), tail(ls), ok, ps, r, push(acc, first(ns)))
+        ? deSurvivorsB(tail(ns), tail(ls), ok, ps, r, append(acc, first(ns)))
         : deSurvivorsB(tail(ns), tail(ls), ok, ps, r, acc)
 
 fun [tail] deAllFieldsHave(sets: List<List<PStmt>>, ok: List<String>,
@@ -352,7 +352,7 @@ fun deEqMember(e2: PsEnum, dl: DeLeaves)
 
 fun deEqArms(ns, sets, i,
                     many: Bool, e2: PsEnum, acc: List<PArm>): List<PArm>
-  ret build(deEqArmsB(ns, sets, i, many, e2, acc))
+  ret (deEqArmsB(ns, sets, i, many, e2, acc))
 
 fun [tail] deEqArmsB(ns: List<String>, sets: List<List<PStmt>>, i,
                     many, e2: PsEnum, [terminal] acc: List<PArm>) => isEmpty(ns)
@@ -360,7 +360,7 @@ fun [tail] deEqArmsB(ns: List<String>, sets: List<List<PStmt>>, i,
   : isEmpty(sets)
     ? acc
     : deEqArmsB(tail(ns), tail(sets), i + 1, many, e2,
-                                 push(acc, deEqArm(first(ns), first(sets), i,
+                                 append(acc, deEqArm(first(ns), first(sets), i,
                                               many, e2)))
 
 fun deEqArm(leafName, fields: List<PStmt>, i: Int, many,
@@ -425,7 +425,7 @@ fun deHashMember(e2: PsEnum, dl: DeLeaves)
 
 fun deHashArms(ns, sets, i,
                       e2: PsEnum, acc: List<PArm>): List<PArm>
-  ret build(deHashArmsB(ns, sets, i, e2, acc))
+  ret (deHashArmsB(ns, sets, i, e2, acc))
 
 fun [tail] deHashArmsB(ns: List<String>, sets: List<List<PStmt>>, i,
                       e2: PsEnum, [terminal] acc: List<PArm>) => isEmpty(ns)
@@ -433,7 +433,7 @@ fun [tail] deHashArmsB(ns: List<String>, sets: List<List<PStmt>>, i,
   : isEmpty(sets)
     ? acc
     : deHashArmsB(tail(ns), tail(sets), i + 1, e2,
-                                   push(acc, deHashArm(first(ns), first(sets),
+                                   append(acc, deHashArm(first(ns), first(sets),
                                                   i, e2)))
 
 fun deHashArm(leafName, fields: List<PStmt>, i,

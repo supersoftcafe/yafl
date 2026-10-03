@@ -453,20 +453,20 @@ fun classFields(c: PsClass)
   ret concat(flattenParams(c.cParams), letMembers(c.cMembers,
                                                   List()))
 
-fun letMembers(ms, acc: List<PStmt>): List<PStmt> => build(letMembersB(ms, acc))
+fun letMembers(ms, acc: List<PStmt>): List<PStmt> => (letMembersB(ms, acc))
 
 fun [tail] letMembersB(ms: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(ms)
   ? acc
   : match(first(ms))
-    (let2: PsLet) => letMembersB(tail(ms), push(acc, first(ms)))
+    (let2: PsLet) => letMembersB(tail(ms), append(acc, first(ms)))
     (o: PStmt)    => letMembersB(tail(ms), acc)
 
-fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt> => build(arrayFieldsOfB(fs, acc))
+fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt> => (arrayFieldsOfB(fs, acc))
 
 fun [tail] arrayFieldsOfB(fs: List<PStmt>, [terminal] acc: List<PStmt>) => isEmpty(fs)
   ? acc
   : isArrayStorage(first(fs))
-    ? arrayFieldsOfB(tail(fs), push(acc, first(fs)))
+    ? arrayFieldsOfB(tail(fs), append(acc, first(fs)))
     : arrayFieldsOfB(tail(fs), acc)
 
 fun [tail] lenFieldErrs(as2: List<PStmt>, fields: List<PStmt>,

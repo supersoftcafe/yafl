@@ -199,7 +199,7 @@ fun [tail] instantiation(gs: List<PGen>, cs: List<Spec>, acc: List<Binding>): Li
 
 fun callerGenFounds(gs, cs,
                            acc: List<Found>): List<Found>
-  ret build(callerGenFoundsB(gs, cs, acc))
+  ret (callerGenFoundsB(gs, cs, acc))
 
 fun [tail] callerGenFoundsB(gs: List<PGen>, cs: List<Spec>,
                            [terminal] acc: List<Found>) => isEmpty(gs)
@@ -207,7 +207,7 @@ fun [tail] callerGenFoundsB(gs: List<PGen>, cs: List<Spec>,
   : isEmpty(cs)
     ? acc
     : callerGenFoundsB(tail(gs), tail(cs),
-        push(acc, Found(first(gs).genName,
+        append(acc, Found(first(gs).genName,
                   PsTypealias(first(gs).genName, List(),
                               List(), first(cs), List(),
                               first(gs).pgLine),

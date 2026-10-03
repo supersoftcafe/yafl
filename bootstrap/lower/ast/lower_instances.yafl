@@ -20,10 +20,10 @@ fun lowerTraitInstances(statements: List<PStmt>) => liLoop(statements, List(), f
 
 fun [tail] liLoop(ss: List<PStmt>, acc,
                   changed) => isEmpty(ss)
-  ? LiOut(build(acc), changed)
+  ? LiOut(acc, changed)
   : match(first(ss))
     (ti: PsTraitInstance) => liLoop(tail(ss), liLower(ti, acc), true)
-    (o: PStmt)            => liLoop(tail(ss), push(acc, first(ss)), changed)
+    (o: PStmt)            => liLoop(tail(ss), append(acc, first(ss)), changed)
 
 fun liLower(ti: PsTraitInstance, acc: List<PStmt>)
   let lr = ti.pstiLine
@@ -39,18 +39,18 @@ fun liLower(ti: PsTraitInstance, acc: List<PStmt>)
   let value = PeCall(PeName(wbare, ownArgs, lr),
                      PeTuple(List(), lr), lr)
   let attrs = ti.tiAmbient
-    ? build(push(push(List(), PAttr("trait", None)), PAttr("ambient", None)))
+    ? (append(append(List(), PAttr("trait", None)), PAttr("ambient", None)))
     : prepend(PAttr("trait", None), List())
   let record = PsLet(prefix + "_instance$" + tag + "@" + tag, attrs,
                      ti.tiGens, SNamed(wbare, ownArgs, lr), value, "",
                      ti.tiWheres, lr, false, ti.tiImports)
-  ret push(push(push(acc, witness),
+  ret append(append(append(acc, witness),
                 classConstructorOf(witness)),
            record)
 
 fun [tail] liOwnArgs(gs: List<PGen>, lr,
                      acc: List<Spec>) => isEmpty(gs)
-  ? build(acc)
+  ? acc
   : liOwnArgs(tail(gs), lr,
-                               push(acc, SNamed(bareOfUnique(first(gs).genName),
+                               append(acc, SNamed(bareOfUnique(first(gs).genName),
                                                 List(), lr)))

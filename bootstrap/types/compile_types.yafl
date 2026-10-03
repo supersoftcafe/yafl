@@ -140,9 +140,9 @@ class [final] EntriesOut(esEntries: List<SEntry>, esGlobals: List<PStmt>)
 
 fun [tail] compileEntries(es: List<SEntry>, r, [terminal] acc,
                           glb) => isEmpty(es)
-  ? EntriesOut(build(acc), glb)
+  ? EntriesOut(acc, glb)
   : compileEntry(first(es), r)
-    |> (one) => compileEntries(tail(es), r, push(acc, one.eoEntry),
+    |> (one) => compileEntries(tail(es), r, append(acc, one.eoEntry),
                                concat(glb, one.eoGlobals))
 
 class [final] EntryOut(eoEntry: SEntry, eoGlobals: List<PStmt>)
@@ -169,7 +169,7 @@ fun compileParams(ts: List<Spec>, r) => compileParamLoop(ts, r, List(), List())
 
 fun [tail] compileParamLoop(ts: List<Spec>, r, [terminal] acc,
                             glb) => isEmpty(ts)
-  ? ParamsOut(build(acc), glb)
+  ? ParamsOut(acc, glb)
   : compileSpec(first(ts), r)
-    |> (one) => compileParamLoop(tail(ts), r, push(acc, one.soSpec),
+    |> (one) => compileParamLoop(tail(ts), r, append(acc, one.soSpec),
                                  concat(glb, one.soGlobals))

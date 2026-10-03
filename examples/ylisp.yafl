@@ -80,12 +80,12 @@ fun [tail] _readListLoop(s: System::String, pos: System::Int, build: (:Value): V
   if pos >= System::length(s)
     ret (pos, EvalError("unterminated list"))
   if System::byteAt(s, pos) == ')'
-    ret (pos + 1, build(VNil()))
+    ret (pos + 1, VNil())
   let r = readForm(s, pos)
   ret match(r.v)
     (e: EvalError) => (r.pos, e)
     (head: Value)  => _readListLoop(s, _skipWs(s, r.pos),
-                                    (rest: Value) => build(VPair(head, rest)))
+                                    (rest: Value) => (VPair(head, rest)))
 
 # ── printer ──────────────────────────────────────────────────────────────────
 

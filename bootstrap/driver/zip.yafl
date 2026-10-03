@@ -69,7 +69,7 @@ fun readZip(s)
 fun [tail] centralWalk(s, at, left,
                        [terminal] b)
   if left <= 0
-    ret ZipOk(build(b))
+    ret ZipOk(b)
   if u32At(s, at) != 33639248
     ret zipDiscard(b, ZipErr("malformed central directory header"))
   let method = u16At(s, at + 10)
@@ -91,11 +91,11 @@ fun [tail] centralWalk(s, at, left,
         + "\" is compressed; .yl archives must be written with ZIP_STORED"))
   ret match(storedBody(s, localAt, size))
     (body: String) => centralWalk(s, at + 46 + nameLen + extraLen + commentLen,
-                                  left - 1, push(b, ZipEntry(name, body)))
+                                  left - 1, append(b, ZipEntry(name, body)))
     ()             => zipDiscard(b, ZipErr("entry \"" + name
                                            + "\" has a malformed local header"))
 
-fun zipDiscard([terminal] b: List<ZipEntry>, e): ZipResult => build(b) |> (l) => e
+fun zipDiscard([terminal] b: List<ZipEntry>, e): ZipResult => b |> (l) => e
 
 # The local header repeats the name and carries its OWN extra-field length,
 # which routinely differs from the central directory's — the data offset must

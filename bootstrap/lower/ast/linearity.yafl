@@ -478,10 +478,10 @@ fun countMatch(mt: PeMatch, env, r,
                 mt.pemLine)
 
 fun [tail] armCounts(as2: List<PArm>, env, r, subj: LinOut,
-                     first, merged, lr) => isEmpty(as2)
+                     isFirst, merged, lr) => isEmpty(as2)
   ? LinOut(cntAdd(subj.loCnt, merged), subj.loErrs)
   : oneArmCount(first(as2), env, r, subj.loErrs)
-    |> (o) => first
+    |> (o) => isFirst
       ? armCounts(tail(as2), env, r, LinOut(subj.loCnt, o.loErrs), false,
                   o.loCnt, lr)
       : cntMerge(merged, o.loCnt, lr, o.loErrs)
@@ -615,7 +615,7 @@ fun [tail] growEnv(ts: List<PStmt>, r, env,
       # Bindings keep declaration order: the drops they own are emitted in
       # it at scope exit.
       ? growEnv(tail(ts), r, putEnv(env, let2),
-                build(push(bindings, first(ts))))
+                (append(bindings, first(ts))))
       : growEnv(tail(ts), r, env, bindings)
     (o: PStmt)    => growEnv(tail(ts), r, env, bindings)
 
@@ -629,7 +629,7 @@ fun suffixLet(let2, stmts: List<PStmt>, i, env,
   let isLin = carriesLinearity(let2.lType, r0)
   ret countSuffix(stmts, i + 1, isLin ? putEnv(env, let2) : env, r, r0,
                   trailing,
-                  isLin ? build(push(bindings, narrowLet(let2)))
+                  isLin ? (append(bindings, narrowLet(let2)))
                         : bindings,
                   o.loErrs)
     |> (rest) => ScopeOut(cntAdd(o.loCnt, rest.soCnt), rest.soErrs,

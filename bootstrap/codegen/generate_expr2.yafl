@@ -141,12 +141,12 @@ fun [tail] emEntryLabelJumps(st, es: List<GEntry>, idx: Int, k, bodyLabel): GEmi
 fun phiSourcesOf(es: List<GEntry>, idx: Int) => phiSourcesLoop(es, idx, 0, List())
 
 fun phiSourcesLoop(es: List<GEntry>, idx: Int, k, acc: List<OpPhiSource>)
-  ret build(phiSourcesLoopB(es, idx, k, acc))
+  ret (phiSourcesLoopB(es, idx, k, acc))
 
 fun [tail] phiSourcesLoopB(es: List<GEntry>, idx: Int, k, [terminal] acc): List<OpPhiSource>
   ret isEmpty(es)
     ? acc
-    : phiSourcesLoopB(tail(es), idx, k + 1, push(acc, OpPhiSource(entryLabel(idx, k), first(es).geValue)))
+    : phiSourcesLoopB(tail(es), idx, k + 1, append(acc, OpPhiSource(entryLabel(idx, k), first(es).geValue)))
 
 # ── the arm's own `if` guard (private in Python: `__guard`) ─────────────────
 # Evaluated after the binding: a False guard falls through to the next arm.
@@ -220,7 +220,7 @@ fun emArmResult(st: GEmit, prefix, rv)
   let withLabel = emOp1(st, OpLabel(exitLabel, List()))
   # Arm order: these become the join Phi's sources, one per arm.
   ret GEmit(withLabel.geBundle,
-            build(push(withLabel.geArmResults, ArmResult(exitLabel, rv))),
+            (append(withLabel.geArmResults, ArmResult(exitLabel, rv))),
             withLabel.geCounter, withLabel.geFallbackLabel)
 
 # ── binding constructors (used by union_repr's generate_match implementations) ──
@@ -312,14 +312,14 @@ class [final] ReconstructFieldsOut(rfsValues: List<RpNamedValue>, rfsOffset: Int
 fun reconstructFields(fs: List<CgField>, slotAssignments: List<CgSlotEntry>,
                              slotFields: List<CgField>, sv, offset,
                              [terminal] acc) => isEmpty(fs)
-  ? ReconstructFieldsOut(build(acc), offset)
+  ? ReconstructFieldsOut(acc, offset)
   : reconstructFieldsStep(fs, slotAssignments, slotFields, sv, offset, acc)
 
 fun reconstructFieldsStep(l: List<CgField>, slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>,
                           sv, offset, [terminal] acc)
   let sub = reconstructFromSlots(first(l).fieldType, slotAssignments, slotFields, sv, offset)
   ret reconstructFields(tail(l), slotAssignments, slotFields, sv, sub.rfOffset,
-          push(acc,
+          append(acc,
               RpNamedValue(first(l).fieldName, sub.rfValue)))
 
 # `finish(result_var)`: the join — a Phi collecting one source per arm, or a
@@ -381,8 +381,8 @@ fun literalAlternativeTests(items: List<PLit>, typeName, value, r, prefix)
 
 fun litAltLoop(items: List<PLit>, typeName, value, r, prefix,
                       k, [terminal] bundles, tests) => isEmpty(items)
-  ? LitTestsOut(build(bundles),
-                                 build(tests))
+  ? LitTestsOut(bundles,
+                                 tests)
   : match(first(items))
     (rg: PlRange) => litAltRange(items, items, rg, typeName, value, r, prefix, k, bundles, tests)
     (le2: PlExpr) => litAltLit(items, items, le2, typeName, value, r, prefix, k, bundles, tests)
@@ -392,8 +392,8 @@ fun litAltRange(items: List<PLit>, l: List<PLit>, rg: PlRange, typeName, value,
   let loB = withPrefix(genExpr(rg.rangeLo, r), prefix + "_" + String(k) + "lo")
   let hiB = withPrefix(genExpr(rg.rangeHi, r), prefix + "_" + String(k) + "hi")
   ret litAltLoop(tail(l), typeName, value, r, prefix, k + 1,
-          pushAll(bundles, list2(loB, hiB)),
-          push(tests,
+          concat(bundles, list2(loB, hiB)),
+          append(tests,
               literalRangeTest(typeName, value, mustResult(loB),
                                mustResult(hiB))))
 
@@ -401,8 +401,8 @@ fun litAltLit(items: List<PLit>, l: List<PLit>, le2: PlExpr, typeName, value,
              r, prefix, k, [terminal] bundles, tests)
   let b = withPrefix(genExpr(le2.litExpr, r), prefix + "_" + String(k))
   ret litAltLoop(tail(l), typeName, value, r, prefix, k + 1,
-          push(bundles, b),
-          push(tests,
+          append(bundles, b),
+          append(tests,
               literalEqTest(typeName, value, mustResult(b))))
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -440,7 +440,7 @@ fun [tail] genSubjects(ss: List<PExpr>, r, i,
                        appendBundle(acc, withPrefix(genExpr(first(ss), r),
                                                     "subj" + String(i))))
 
-fun appendBundle(acc: List<GBundle>, b: GBundle) => build(push(acc, b))
+fun appendBundle(acc: List<GBundle>, b: GBundle) => (append(acc, b))
 
 fun [tail] addAll(em: GEmit, bs: List<GBundle>) => isEmpty(bs)
   ? em
@@ -503,7 +503,7 @@ fun stageFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
 # divergence the contracts exist to catch.
 fun appendStage(acc,
                 st: List<RParam>|None): List<List<RParam>>
-  ret build(push(
+  ret (append(
         acc, stageOrNever(st)))
 
 fun stageOrNever(st: List<RParam>|None) => match(st)

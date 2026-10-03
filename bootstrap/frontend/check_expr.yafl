@@ -88,11 +88,11 @@ fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
     ()        => true
   ()                  => false
 
-fun foundNames(ds: List<Found>, acc: List<String>) => build(foundNamesB(ds, acc))
+fun foundNames(ds: List<Found>, acc: List<String>) => (foundNamesB(ds, acc))
 
 fun [tail] foundNamesB(ds: List<Found>, [terminal] acc): List<String> => isEmpty(ds)
   ? acc
-  : foundNamesB(tail(ds), push(acc, first(ds).fName))
+  : foundNamesB(tail(ds), append(acc, first(ds).fName))
 
 fun dedupeStrs(ss: List<String>) => ddsLoop(ss, List())
 
@@ -104,7 +104,7 @@ fun [tail] ddsLoop(ss: List<String>, acc: List<String>) => isEmpty(ss)
 fun distinctFinds(ds: List<Found>) => dfLoop(ds, List(), List())
 
 fun dfLoop(ds, acc: List<Found>,
-                  seen: List<String>) => build(dfLoopB(ds, acc, seen))
+                  seen: List<String>) => (dfLoopB(ds, acc, seen))
 
 fun [tail] dfLoopB(ds: List<Found>, [terminal] acc: List<Found>,
                   seen: List<String>) => isEmpty(ds)
@@ -112,7 +112,7 @@ fun [tail] dfLoopB(ds: List<Found>, [terminal] acc: List<Found>,
   : contains2(seen, first(ds).fName)
     ? dfLoopB(tail(ds), acc, seen)
     # `seen` is a dedup set — order not observed.
-    : dfLoopB(tail(ds), push(acc, first(ds)),
+    : dfLoopB(tail(ds), append(acc, first(ds)),
               prepend(first(ds).fName, seen))
 
 # ── DotExpression ───────────────────────────────────────────────────────────
@@ -254,13 +254,13 @@ fun namedCallError(c: PeCall, nm: PeName, ptype, r)
 fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
 
 fun candidateSigs(cs: List<Found>, acc: List<String>)
-  ret build(candidateSigsB(cs, acc))
+  ret (candidateSigsB(cs, acc))
 
 fun [tail] candidateSigsB(cs: List<Found>, [terminal] acc): List<String> => isEmpty(cs)
   ? acc
   : match(stmtType(first(cs).fStmt))
     (ty: Spec) => match(ty)
-      (cl: SCallable) => candidateSigsB(tail(cs), push(acc, typeStr(ty)))
+      (cl: SCallable) => candidateSigsB(tail(cs), append(acc, typeStr(ty)))
       (o: Spec)       => candidateSigsB(tail(cs), acc)
     ()         => candidateSigsB(tail(cs), acc)
 
@@ -423,7 +423,7 @@ fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
 # No value vanishes silently: a block-local binding never read discards its
 # value. A `_`-prefixed name is the explicit opt-out.
 fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
-  let declared = build(bindingLets(bk.blockStmts,
+  let declared = (bindingLets(bk.blockStmts,
                                    List()))
   if isEmpty(declared)
     ret noErrs()
@@ -438,9 +438,9 @@ fun [tail] bindingLets(ss: List<PStmt>,
   ? acc
   : match(first(ss))
     (d: PsDestructure) => bindingLets(tail(ss),
-                              pushAll(acc,
+                              concat(acc,
                                   flattenParams(first(ss))))
-    (let2: PsLet)      => bindingLets(tail(ss), push(acc, first(ss)))
+    (let2: PsLet)      => bindingLets(tail(ss), append(acc, first(ss)))
     (o: PStmt)         => bindingLets(tail(ss), acc)
 
 
@@ -762,17 +762,17 @@ fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
   ()         => List()
 
 fun withBareNames(fs, acc: List<String>): List<String>
-  ret build(withBareNamesB(fs, acc))
+  ret (withBareNamesB(fs, acc))
 
 fun [tail] withBareNamesB(fs: List<PStmt>, [terminal] acc: List<String>) => isEmpty(fs)
   ? acc
   : match(first(fs))
-    (p: PsLet) => withBareNamesB(tail(fs), push(acc, bareName(p.lName)))
+    (p: PsLet) => withBareNamesB(tail(fs), append(acc, bareName(p.lName)))
     (o: PStmt) => withBareNamesB(tail(fs), acc)
 
 fun withCoverBares(fs: List<SField>, acc: List<String>)
-  ret build(withCoverBaresB(fs, acc))
+  ret (withCoverBaresB(fs, acc))
 
 fun [tail] withCoverBaresB(fs: List<SField>, [terminal] acc): List<String> => isEmpty(fs)
   ? acc
-  : withCoverBaresB(tail(fs), push(acc, bareName(first(fs).sfName)))
+  : withCoverBaresB(tail(fs), append(acc, bareName(first(fs).sfName)))

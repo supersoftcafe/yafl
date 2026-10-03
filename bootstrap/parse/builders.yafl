@@ -19,7 +19,7 @@ fun hashName(name, lr: PLine) => name + "@" + hash6(lr.plFile, lr.plLine, lr.plC
 fun oneEntryTuple(x, lr) => PeTuple(prepend(PTupEnt("", false, x), List()), lr)
 
 fun twoEntryTuple(a, b, lr)
-  ret PeTuple(build(push(push(List(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
+  ret PeTuple((append(append(List(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
 
 fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr)
 
@@ -196,7 +196,7 @@ fun stmtLine(st) => match(st)
 fun withArrayAccessor(c) => match(accessorFor(paramsOf(c.cParams)))
   (acc: PStmt) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                           c.cWheres,
-                          build(push(c.cMembers, acc)),
+                          (append(c.cMembers, acc)),
                           c.cIsInterface,
                           c.pscLine, c.cAllParents, c.cAllSlots, c.cImports)
   ()           => c
@@ -240,7 +240,7 @@ fun bareName(name)
 # after the leaf, taking every field from the root down to it, returning the
 # ROOT enum type, its body a NewEnum expression.
 
-fun enumLeafConstructors(root: PsEnum, grp) => build(leafWalk(root, root, List(), grp,
+fun enumLeafConstructors(root: PsEnum, grp) => (leafWalk(root, root, List(), grp,
                                                               List()))
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited,
@@ -249,7 +249,7 @@ fun leafWalk(root: PsEnum, node: PsEnum, inherited,
   if isEmpty(node.eVariants)
     # Leaf constructors come out in variant declaration order.
     ret node.eHasParams
-      ? push(acc, leafConstructor(root, node, params, grp))
+      ? append(acc, leafConstructor(root, node, params, grp))
       : acc
   ret variantsWalk(root, node.eVariants, params, grp, acc)
 
@@ -371,22 +371,22 @@ fun blockGroupsOf(ss): List<List<PStmt>> => bgLoop(ss, List(), List())
 
 fun [tail] bgLoop(ss: List<PStmt>, cur: List<PStmt>,
                   [terminal] done: List<List<PStmt>>) => isEmpty(ss)
-  ? build(push(done, cur))
+  ? (append(done, cur))
   : match(first(ss))
     (im: PsImport)    => bgLoop(tail(ss), concat(cur, list1(first(ss))), done)
     (n2: PsNamespace) => bgLoop(tail(ss),
                                 list1(PsImport(n2.nsPath, n2.psnLine)),
-                                push(done, cur))
+                                append(done, cur))
     (o: PStmt)        => bgLoop(tail(ss), cur, done)
 
 fun [tail] fixupLoop(ss: List<PStmt>, ns: String, grps: List<List<PStmt>>,
                      grp: List<PStmt>, acc: List<PStmt>): List<PStmt> => isEmpty(ss)
-  ? build(acc)
+  ? acc
   : match(first(ss))
     (im: PsImport)    => fixupLoop(tail(ss), ns, grps, grp, acc)
     (n2: PsNamespace) => fixupNextBlock(tail(ss), n2, grps, acc)
     (e: PsEnum)       => fixupLoop(tail(ss), ns, grps, grp,
-                           pushAll(push(acc,
+                           concat(append(acc,
                                         withImports(addNamespace(e, ns), grp)),
                                    enumLeafConstructors(namespacedEnum(e, ns),
                                                         grp)))
@@ -396,7 +396,7 @@ fun [tail] fixupLoop(ss: List<PStmt>, ns: String, grps: List<List<PStmt>>,
     # lowers it AFTER checking.
     (other)           => fixupLoop(tail(ss), ns, grps, grp,
                                    withImports(addNamespace(first(ss), ns), grp)
-                                     |> (st) => push(acc, st))
+                                     |> (st) => append(acc, st))
 
 fun fixupNextBlock(rest: List<PStmt>, n2: PsNamespace, grps: List<List<PStmt>>,
                    acc: List<PStmt>) => isEmpty(grps)
@@ -431,9 +431,9 @@ fun classWithCtor(c, ns, grp,
                   acc: List<PStmt>)
   let named = importedClass(namespacedClass(c, ns), grp)
   ret c.cIsInterface
-    ? push(acc, named)
+    ? append(acc, named)
     : withArrayAccessor(named)
-      |> (full) => push(push(acc, full), classConstructorOf(full))
+      |> (full) => append(append(acc, full), classConstructorOf(full))
 
 fun importedClass(c, grp) => match(withImports(c, grp))
   (c2: PsClass) => c2

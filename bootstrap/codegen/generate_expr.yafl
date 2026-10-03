@@ -1205,7 +1205,7 @@ fun genBlockReturnsDead(stmtsBundle: GBundle, slotType, r, tag, endLabel, ftExit
 
 fun genBlockAssemble(slotType: Spec|None, r, tag, endLabel, ftExit,
                      ops0: List<Op>, stackVars0, recur0,
-                     sources0, ftValue: RParam|None, reachesEnd) => match(slotType)
+                     sources0: List<ExitSource>, ftValue: RParam|None, reachesEnd) => match(slotType)
   (st2: Spec) => genBlockAssembleValued(st2, r, tag, ops0, stackVars0, recur0, sources0, endLabel, ftExit, ftValue, reachesEnd)
   ()          => genBlockAssembleUnit(ops0, stackVars0, recur0, endLabel, ftExit, reachesEnd)
 
@@ -1224,7 +1224,7 @@ fun genBlockAssembleUnit(ops0: List<Op>, stackVars0, recur0,
               None, recur0, List())
 
 fun genBlockAssembleValued(slotType, r, tag, ops0: List<Op>, stackVars0,
-                          recur0, sources0, endLabel, ftExit,
+                          recur0, sources0: List<ExitSource>, endLabel, ftExit,
                           ftValue: RParam|None, reachesEnd)
   let resultVar = RpStackVar(specGenerate(slotType, r), "blockresult$" + tag)
   let fv = match(ftValue)

@@ -25,7 +25,7 @@ fun letType(l: PsLet) => l.lType
 # A destructure IS a tuple type — and this is where a parameter's `= literal`
 # default surfaces, into the CallableSpec that every call site sees.
 fun destructureType(d: PsDestructure)
-  ret STuple(build(targetEntries(d.dTargets,
+  ret STuple((targetEntries(d.dTargets,
                                  List())), d.psdLine)
 
 fun [tail] targetEntries(ts: List<PStmt>, [terminal] acc: List<SEntry>) => isEmpty(ts)
@@ -33,7 +33,7 @@ fun [tail] targetEntries(ts: List<PStmt>, [terminal] acc: List<SEntry>) => isEmp
   : targetEntries(tail(ts), addTarget(acc, first(ts)))
 
 fun addTarget([terminal] acc, st): List<SEntry> => match(st)
-  (l: PsLet) => push(acc, SEntry(l.lName, l.lType, l.lDefault))
+  (l: PsLet) => append(acc, SEntry(l.lName, l.lType, l.lDefault))
   (o: PStmt) => acc
 
 # A function is a callable over its parameter tuple.
@@ -153,13 +153,13 @@ fun scopeMatches(datas: List<Found>, c, r)
 
 fun filterByPattern(ds, cache, r,
                            acc: List<Found>): List<Found>
-  ret build(filterByPatternB(ds, cache, r, acc))
+  ret (filterByPatternB(ds, cache, r, acc))
 
 fun [tail] filterByPatternB(ds: List<Found>, cache, r,
                            [terminal] acc: List<Found>) => isEmpty(ds)
   ? acc
   : patternMatches(first(ds), cache, r)
-    ? filterByPatternB(tail(ds), cache, r, push(acc, first(ds)))
+    ? filterByPatternB(tail(ds), cache, r, append(acc, first(ds)))
     : filterByPatternB(tail(ds), cache, r, acc)
 
 # Every instance placeholder must bind: one left open says the scope never
@@ -176,13 +176,13 @@ fun preferScoped(scoped, datas): List<Found> => exactly(scoped, 1) ? scoped : da
 
 fun filterByScope(ds, cache,
                          acc: List<Found>): List<Found>
-  ret build(filterByScopeB(ds, cache, acc))
+  ret (filterByScopeB(ds, cache, acc))
 
 fun [tail] filterByScopeB(ds: List<Found>, cache,
                          [terminal] acc: List<Found>) => isEmpty(ds)
   ? acc
   : sameTraitScope(first(ds).fTraitScope, cache)
-    ? filterByScopeB(tail(ds), cache, push(acc, first(ds)))
+    ? filterByScopeB(tail(ds), cache, append(acc, first(ds)))
     : filterByScopeB(tail(ds), cache, acc)
 
 fun sameTraitScope(ts: Spec|None, cache) => match(ts)
@@ -233,7 +233,7 @@ fun matchType(mt: PeMatch, r) => branchType(map(mt.arms, (a) => armBodyType(a, r
 # compile, which knows the subject type, can bind it).
 fun armBodyType(a: PArm, r): Spec|None => exprType(a.armBody, bindingScope(a, a.armType, r))
 
-fun twoTypes(a: Spec|None, b: Spec|None) => build(push(push(List(), a), b))
+fun twoTypes(a: Spec|None, b: Spec|None) => (append(append(List(), a), b))
 
 # A call's type is its callee's RESULT — and nothing else. A callee that has
 # not resolved to a callable yet simply has no result yet.
@@ -246,13 +246,13 @@ fun callType(c: PeCall, r) => match(exprType(c.function, r))
 fun tupleType(tp: PeTuple, r) => STuple(tupEntries(tp.exprs, r, List()), tp.petLine)
 
 fun tupEntries(es: List<PTupEnt>, r,
-                      acc: List<SEntry>) => build(tupEntriesB(es, r, acc))
+                      acc: List<SEntry>) => (tupEntriesB(es, r, acc))
 
 fun [tail] tupEntriesB(es: List<PTupEnt>, r,
                       [terminal] acc): List<SEntry> => isEmpty(es)
   ? acc
   : tupEntriesB(tail(es), r,
-                                push(acc, SEntry(first(es).tupName,
+                                append(acc, SEntry(first(es).tupName,
                                           exprType(first(es).tupValue, r),
                                           None)))
 
@@ -265,12 +265,12 @@ fun parallelType(pl: PeParallel, r)
 
 fun [tail] parTypeLoop(es: List<PExpr>, r, [terminal] acc,
                        lr) => isEmpty(es)
-  ? STuple(build(acc), lr)
+  ? STuple(acc, lr)
   : match(exprType(first(es), r))
     (ft: Spec) => match(ft)
       (cl: SCallable) => match(cl.scResult)
         (res: Spec) => parTypeLoop(tail(es), r,
-                                   push(acc,
+                                   append(acc,
                                        SEntry("", res, None)), lr)
         ()           => None
       (o: Spec)       => None

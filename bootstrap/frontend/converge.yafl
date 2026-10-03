@@ -183,7 +183,7 @@ fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
 # and the extra statements it creates join the set for the next pass.
 fun compilePass(statements): List<PStmt>
   let r = rootResolver(statements)
-  ret build(passLoop(statements, r, List()))
+  ret (passLoop(statements, r, List()))
 
 # Each statement's own output, then whatever it hoisted out beside itself:
 # this is the program's statement order, so a builder, not a set.
@@ -192,5 +192,5 @@ fun [tail] passLoop(ss: List<PStmt>, r: Resolver,
   ? acc
   : compileStmt(first(ss), scopeResolver(first(ss), r), None)
     |> (out) => passLoop(tail(ss), r,
-                         pushAll(addStmt(acc, out.soStmt),
+                         concat(addStmt(acc, out.soStmt),
                                      out.soExtra))
