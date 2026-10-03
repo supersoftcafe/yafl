@@ -435,16 +435,19 @@ fun materialisedNativeDir(lib: Library) => !lib.libIsZip
       (bytes: String) => extractNative(lib, bytes)
 
 fun extractNative(lib: Library, bytes) => match(tempDir())
-  (base: String) => (base + "/libs/" + lib.libManifest.libName)
-    |> (dir) => match(makeDirs(dir))
-      (e: IOError) => NativeErr(dir + ": cannot be created")
-      ()           => match(readZip(bytes))
-        (e2: ZipErr) => NativeErr(lib.libRoot + ": " + e2.zipWhy)
-        (z: ZipOk)   => extractEach(chain(concat(lib.libManifest.libHeaders,
-                                                 lib.libManifest.libStaticLibs)),
-                                    z.zipEntries, lib, dir)
+  (base: String) => extractUnder(lib, bytes, base)
   ()             => NativeErr(lib.libRoot
                               + ": the process temp folder cannot be created")
+
+fun extractUnder(lib: Library, bytes, base: String)
+  let dir = base + "/libs/" + lib.libManifest.libName
+  ret match(makeDirs(dir))
+    (e: IOError) => NativeErr(dir + ": cannot be created")
+    ()           => match(readZip(bytes))
+      (e2: ZipErr) => NativeErr(lib.libRoot + ": " + e2.zipWhy)
+      (z: ZipOk)   => extractEach(chain(concat(lib.libManifest.libHeaders,
+                                               lib.libManifest.libStaticLibs)),
+                                  z.zipEntries, lib, dir)
 
 # `if not dest.exists()` — within one process an entry already extracted is not
 # written again (libraries.py reaches its extraction twice per library).

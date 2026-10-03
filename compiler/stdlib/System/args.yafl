@@ -28,11 +28,10 @@ fun argv0(): System::String
   ret _argc() > 0 ? _argvAt(0) : ""
 
 
-# Process environment. None when the variable is UNSET, which is distinct from
-# set-to-empty: `YAFL_PATH=` and an absent YAFL_PATH mean different things to a
-# search path. Added for the library search path, which the self-hosted
-# compiler could not read at all — the runtime called getenv for its own knobs
-# but exposed nothing to YAFL.
+# Process environment. None when the variable is unset OR set to empty — never
+# the empty string — so a default is just `env("A") ?? "B"`. Added for the
+# library search path, which the self-hosted compiler could not read at all —
+# the runtime called getenv for its own knobs but exposed nothing to YAFL.
 fun [foreign("sys_getenv"), impure, sync] env(name: System::String): System::String|System::None
 
 
