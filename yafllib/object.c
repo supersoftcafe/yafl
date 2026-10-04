@@ -159,7 +159,7 @@ static bool gc_gen_enabled    = true;
 static bool     gc_local_requested = false;
 static unsigned gc_local_trigger   = 32;        // the configured (minimum) trigger
 static thread_local unsigned gc_local_trigger_now = 0;   // adaptive, per thread
-enum { GC_LOCAL_TRIGGER_MAX = 1024 };
+static unsigned gc_local_trigger_max = 1024;   // adaptive ceiling (YAFL_LOCAL_GC_MAX_PAGES)
 EXPORT bool     gc_local_enabled   = false;
 // Threads whose nursery is collecting right now. The escape barrier runs
 // only while it is nonzero: with no nursery live, nothing needs escape bits.
@@ -188,6 +188,9 @@ static void gc_read_config(void) {
     gc_local_requested = (e = getenv("YAFL_LOCAL_GC")) && e[0] && e[0] != '0';
     if ((e = getenv("YAFL_LOCAL_GC_PAGES")) != NULL && atoi(e) > 0)
         gc_local_trigger = (unsigned)atoi(e);
+    if ((e = getenv("YAFL_LOCAL_GC_MAX_PAGES")) != NULL && atoi(e) > 0)
+        gc_local_trigger_max = (unsigned)atoi(e);
+    if (gc_local_trigger_max < gc_local_trigger) gc_local_trigger_max = gc_local_trigger;
 }
 
 
@@ -2052,7 +2055,7 @@ static NOINLINE void gc_local_collect(void) {
     // collect less often (a larger window also gives objects longer to die);
     // one that frees most of itself can afford to collect sooner again.
     if (np > 0) {
-        if (freed * 4 < np && gc_local_trigger_now < GC_LOCAL_TRIGGER_MAX)
+        if (freed * 4 < np && gc_local_trigger_now < gc_local_trigger_max)
             gc_local_trigger_now *= 2;
         else if (freed * 2 > np && gc_local_trigger_now > gc_local_trigger)
             gc_local_trigger_now /= 2;
@@ -2066,7 +2069,7 @@ static NOINLINE void gc_local_collect(void) {
     t->local_unproductive = (np > 0 && freed * 20 < np) ? t->local_unproductive + 1 : 0;
     if (np > 0 && freed * 4 >= np)
         t->local_backoff = 0;              // productive: forget past stand-downs
-    if (t->local_unproductive >= 4 && gc_local_trigger_now >= GC_LOCAL_TRIGGER_MAX) {
+    if (t->local_unproductive >= 4 && gc_local_trigger_now >= gc_local_trigger_max) {
         gc_local_set_epoch(t, 0);
         // 16, 32, 64 ... root scans: a program whose young data genuinely
         // survives stops paying for the nursery almost entirely.
