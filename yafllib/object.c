@@ -3823,6 +3823,10 @@ EXPORT void gc_start() {
     // Each worker starts its own nursery at its first refill after this
     // (object_alloc_slow_raw): an epoch is thread-private state.
     gc_local_enabled = gc_local_requested;
+    // DIAGNOSTIC: YAFL_LOCAL_GC_BARRIER_ONLY=1 runs the escape barrier on
+    // every store with no nursery at all — isolates the barrier's cost.
+    { const char *e = getenv("YAFL_LOCAL_GC_BARRIER_ONLY");
+      if (e && e[0] == '1' && !gc_local_enabled) gc_local_live = 1; }
     yafl_heapprof_init();
     if (gc_stats_enabled) {
         clock_gettime(CLOCK_MONOTONIC, &gc_stats_t0);
