@@ -153,14 +153,14 @@ bool gc_stats_enabled  = false;
 // single point — page promotion — so with it off no page ever becomes old and
 // the skip paths, dirty-old handling and major trigger are all inert.
 static bool gc_gen_enabled    = true;
-// Thread-local nursery (prototype): YAFL_LOCAL_GC=1 requests it; it is only
-// switched on when the program runs ONE worker (gc_start checks). Trigger:
-// every YAFL_LOCAL_GC_PAGES nursery pages taken since the last collection.
+// Thread-local nursery (prototype): YAFL_LOCAL_GC=1 requests it. Each thread
+// collects its nursery every YAFL_LOCAL_GC_PAGES pages it takes. The size is
+// FIXED: 64 pages (1 MiB) measured best or near best on every benchmark and
+// on the self-compile; larger sizes lose on allocation-heavy programs (the
+// nursery no longer fits in cache), and adapting it bought nothing measurable.
 static bool     gc_local_requested = false;
-static unsigned gc_local_trigger   = 32;        // the configured (minimum) trigger
-static thread_local unsigned gc_local_trigger_now = 0;   // adaptive, per thread
+static unsigned gc_local_trigger   = 64;
 static bool     gc_local_standdown = true;     // YAFL_LOCAL_GC_STANDDOWN=0 disables it
-static unsigned gc_local_trigger_max = 1024;   // adaptive ceiling (YAFL_LOCAL_GC_MAX_PAGES)
 EXPORT bool     gc_local_enabled   = false;
 // Threads whose nursery is collecting right now. The escape barrier runs
 // only while it is nonzero: with no nursery live, nothing needs escape bits.
@@ -190,9 +190,6 @@ static void gc_read_config(void) {
     if ((e = getenv("YAFL_LOCAL_GC_PAGES")) != NULL && atoi(e) > 0)
         gc_local_trigger = (unsigned)atoi(e);
     gc_local_standdown = !((e = getenv("YAFL_LOCAL_GC_STANDDOWN")) && e[0] == '0');
-    if ((e = getenv("YAFL_LOCAL_GC_MAX_PAGES")) != NULL && atoi(e) > 0)
-        gc_local_trigger_max = (unsigned)atoi(e);
-    if (gc_local_trigger_max < gc_local_trigger) gc_local_trigger_max = gc_local_trigger;
 }
 
 
@@ -944,14 +941,11 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
             gc_thread_info.local_debt--;   // repay one owed step per refill
             gc_fsa();
         }
-        if (gc_local_trigger_now == 0) gc_local_trigger_now = gc_local_trigger;
-        if (++gc_thread_info.local_pages_since >= gc_local_trigger_now)
+        if (++gc_thread_info.local_pages_since >= gc_local_trigger)
             gc_local_collect();
         new_page = gc_local_take_page();
-        if (new_page == NULL) {
+        if (new_page == NULL)
             new_page = gc_page_alloc_nursery();
-            gc_thread_info.local_fresh_pages++;
-        }
     }
     if (new_page == NULL)
         new_page = gc_page_alloc(1);
@@ -1505,15 +1499,10 @@ static inline long bitmap_prev_set(const bitmap_t* bm, long slot) {
 
 static _Atomic(uint64_t) gc_local_runs = 0, gc_local_pages_seen = 0, gc_local_pages_freed = 0,
                          gc_local_objs_marked = 0, gc_local_ns = 0, gc_local_cache_hits = 0,
-                         gc_local_remembered_max = 0, gc_local_mutable_objs = 0,
-                         gc_local_slots_noted = 0, gc_local_charged = 0,
-                         gc_local_promoted = 0, gc_local_trigger_max_seen = 0,
+                         gc_local_remembered_max = 0, gc_local_charged = 0,
+                         gc_local_promoted = 0,
                          gc_local_suspensions = 0, gc_local_stores_nursery = 0,
-                         gc_local_stores_mutable = 0, gc_local_escapes = 0,
-                         gc_local_stack_ns = 0, gc_local_charge_ns = 0,
-                         gc_local_roots_direct = 0, gc_local_roots_stack = 0,
-                         gc_local_pages_rooted = 0, gc_local_pages_survived = 0,
-                         gc_local_retired_uncollected = 0;
+                         gc_local_stores_mutable = 0, gc_local_escapes = 0;
 static _Atomic(uint32_t) gc_local_epoch_next = 1;
 
 // Freed nursery pages stay GC pages in this cache: another worker's marker or
@@ -1904,36 +1893,10 @@ static NOINLINE void gc_local_collect(void) {
         }
     }
     // Roots 2: this thread's stack and registers.
-    size_t stats_s0 = gc_local_stack_n;
-    struct timespec ts0, ts1;
-    if (UNLIKELY(gc_stats_enabled)) clock_gettime(CLOCK_MONOTONIC, &ts0);
     gc_update_stack_address_and_registers();
     gc_local_mark_range(t->stack_lower_ptr, t->stack_upper_ptr);
     gc_local_mark_range((object_t**)&t->saved_registers[0], (object_t**)&t->saved_registers[1]);
     gc_local_mark_range((object_t**)&t->saved_callee_regs[0], (object_t**)&t->saved_callee_regs[8]);
-    if (UNLIKELY(gc_stats_enabled)) {
-        clock_gettime(CLOCK_MONOTONIC, &ts1);
-        gc_local_stack_ns += (uint64_t)((ts1.tv_sec - ts0.tv_sec) * 1000000000LL + (ts1.tv_nsec - ts0.tv_nsec));
-        // DIAGNOSTIC: objects held directly (escaped/marked/pinned, then
-        // stack and registers) — what a copying nursery could NOT move —
-        // and how many distinct pages they sit on.
-        size_t s1 = gc_local_stack_n;
-        gc_local_roots_direct += s1;
-        gc_local_roots_stack += s1 - stats_s0;
-        uintptr_t *pg = malloc((s1 ? s1 : 1) * sizeof(uintptr_t));
-        if (pg) {
-            for (size_t k = 0; k < s1; ++k)
-                pg[k] = (uintptr_t)gc_local_stack[k] & ~(uintptr_t)(GC_PAGE_SIZE - 1);
-            size_t distinct = 0;
-            for (size_t k = 0; k < s1; ++k) {   // small n: quadratic is fine for a diagnostic
-                bool seen_before = false;
-                for (size_t j = 0; j < distinct && !seen_before; ++j) seen_before = pg[j] == pg[k];
-                if (!seen_before) pg[distinct++] = pg[k];
-            }
-            gc_local_pages_rooted += distinct;
-            free(pg);
-        }
-    }
     // Roots 3: declared roots, thread and global.
     t->thread_roots_declaration_func(t->thread_roots_context, gc_local_mark_slot);
     declare_roots_yafl(gc_local_mark_slot);
@@ -2021,11 +1984,6 @@ static NOINLINE void gc_local_collect(void) {
         }
     }
 
-    struct timespec tc0, tc1;
-    if (UNLIKELY(gc_stats_enabled)) {
-        clock_gettime(CLOCK_MONOTONIC, &tc0);
-        gc_local_pages_survived += np - freed;
-    }
     // Charge the global collector for what the nursery could NOT reclaim:
     // every page promoted out of it, once, when it leaves. (Charging fresh
     // pages net of freed ones missed survivors on REUSED cache pages: a
@@ -2044,11 +2002,6 @@ static NOINLINE void gc_local_collect(void) {
         atomic_fetch_add_explicit(&gc_alloc_clock, promoted, memory_order_relaxed);
         gc_local_charged += promoted;
         t->local_debt += promoted;
-    }
-    t->local_fresh_pages = 0;
-    if (UNLIKELY(gc_stats_enabled)) {
-        clock_gettime(CLOCK_MONOTONIC, &tc1);
-        gc_local_charge_ns += (uint64_t)((tc1.tv_sec - tc0.tv_sec) * 1000000000LL + (tc1.tv_nsec - tc0.tv_nsec));
     }
 
     // Trim the page cache back to mmap — only while no mark can be in flight.
@@ -2080,32 +2033,21 @@ static NOINLINE void gc_local_collect(void) {
         t->remembered_n = keep;
     }
 
-    // Adapt: a nursery that frees little is costing tracing for nothing —
-    // collect less often (a larger window also gives objects longer to die);
-    // one that frees most of itself can afford to collect sooner again.
-    if (np > 0) {
-        if (freed * 4 < np && gc_local_trigger_now < gc_local_trigger_max)
-            gc_local_trigger_now *= 2;
-        else if (freed * 2 > np && gc_local_trigger_now > gc_local_trigger)
-            gc_local_trigger_now /= 2;
-    }
-    if (gc_local_trigger_now > gc_local_trigger_max_seen) gc_local_trigger_max_seen = gc_local_trigger_now;
-
-    // Do no harm: a nursery that stays unproductive at its largest window is
-    // only adding tracing, and its escape barrier is taxing every thread's
-    // stores. Stand it down for a while — refills go back to the ordinary
+    // Do no harm: a nursery that stays unproductive is only adding tracing,
+    // and its escape barrier is taxing every thread's stores (json_pretty,
+    // whose objects all escape into async frames: 28 s without this, 17.6 s
+    // with it). Stand it down for a while — refills go back to the ordinary
     // collector-driving path — and try again later.
     t->local_unproductive = (np > 0 && freed * 20 < np) ? t->local_unproductive + 1 : 0;
     if (np > 0 && freed * 4 >= np)
         t->local_backoff = 0;              // productive: forget past stand-downs
-    if (gc_local_standdown && t->local_unproductive >= 4 && gc_local_trigger_now >= gc_local_trigger_max) {
+    if (gc_local_standdown && t->local_unproductive >= 4) {
         gc_local_set_epoch(t, 0);
         // 16, 32, 64 ... root scans: a program whose young data genuinely
         // survives stops paying for the nursery almost entirely.
         t->local_suspended = 16u << (t->local_backoff < 16 ? t->local_backoff : 16);
         t->local_backoff++;
         t->local_unproductive = 0;
-        gc_local_trigger_now = gc_local_trigger;
         gc_local_suspensions++;
     }
 
@@ -2135,7 +2077,6 @@ static void gc_local_on_root_scan(struct gc_thread_info *t) {
         atomic_fetch_add_explicit(&gc_alloc_clock, t->local_pages_since, memory_order_relaxed);
         gc_local_charged += t->local_pages_since;
         t->local_debt += t->local_pages_since;
-        gc_local_retired_uncollected += t->local_pages_since;
     }
     if (t->local_epoch != 0)
         gc_local_set_epoch(t, gc_local_new_epoch());
@@ -2143,7 +2084,6 @@ static void gc_local_on_root_scan(struct gc_thread_info *t) {
         gc_local_set_epoch(t, gc_local_new_epoch());   // stood down: resume
     t->remembered_n = 0;
     t->local_pages_since = 0;
-    t->local_fresh_pages = 0;
     t->reloc_bump = t->reloc_base = NULL;
 }
 
@@ -2170,28 +2110,20 @@ static void *gc_relocation_alloc(size_t size) {
 
 EXPORT void gc_local_report(FILE *out) {
     if (!gc_local_requested) return;
-    fprintf(out, "[GC LOCAL] enabled=%d runs=%llu pages_seen=%llu pages_freed=%llu (%.1f%%) "
+    fprintf(out, "[GC LOCAL] enabled=%d pages=%u runs=%llu pages_seen=%llu pages_freed=%llu (%.1f%%) "
                  "objs_marked=%llu cache_hits=%llu time=%.3fs remembered_max=%llu "
-                 "slots_noted=%llu mutable_objs_scanned=%llu charged_pages=%llu promoted=%llu trigger_max=%llu suspensions=%llu stores_private=%llu stores_shared=%llu escapes=%llu\n",
-            (int)gc_local_enabled,
+                 "charged_pages=%llu promoted=%llu suspensions=%llu "
+                 "stores_private=%llu stores_shared=%llu escapes=%llu\n",
+            (int)gc_local_enabled, gc_local_trigger,
             (unsigned long long)gc_local_runs, (unsigned long long)gc_local_pages_seen,
             (unsigned long long)gc_local_pages_freed,
             gc_local_pages_seen ? 100.0 * (double)gc_local_pages_freed / (double)gc_local_pages_seen : 0.0,
             (unsigned long long)gc_local_objs_marked, (unsigned long long)gc_local_cache_hits,
             (double)gc_local_ns / 1e9, (unsigned long long)gc_local_remembered_max,
-            (unsigned long long)gc_local_slots_noted, (unsigned long long)gc_local_mutable_objs,
             (unsigned long long)gc_local_charged, (unsigned long long)gc_local_promoted,
-            (unsigned long long)gc_local_trigger_max_seen, (unsigned long long)gc_local_suspensions,
+            (unsigned long long)gc_local_suspensions,
             (unsigned long long)gc_local_stores_nursery, (unsigned long long)gc_local_stores_mutable,
             (unsigned long long)gc_local_escapes);
-    fprintf(out, "[GC LOCAL2] own_time=%.3fs (of which stack_scan=%.3fs) charged_global_steps=%.3fs "
-                 "direct_roots=%llu (stack=%llu) pages_holding_direct_roots=%llu survivor_pages=%llu\n",
-            (double)(gc_local_ns - gc_local_charge_ns) / 1e9, (double)gc_local_stack_ns / 1e9,
-            (double)gc_local_charge_ns / 1e9,
-            (unsigned long long)gc_local_roots_direct, (unsigned long long)gc_local_roots_stack,
-            (unsigned long long)gc_local_pages_rooted, (unsigned long long)gc_local_pages_survived);
-    fprintf(out, "[GC LOCAL3] retired_uncollected_pages=%llu (charged at the root scan)\n",
-            (unsigned long long)gc_local_retired_uncollected);
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
@@ -3879,10 +3811,6 @@ EXPORT void gc_start() {
     // Each worker starts its own nursery at its first refill after this
     // (object_alloc_slow_raw): an epoch is thread-private state.
     gc_local_enabled = gc_local_requested;
-    // DIAGNOSTIC: YAFL_LOCAL_GC_BARRIER_ONLY=1 runs the escape barrier on
-    // every store with no nursery at all — isolates the barrier's cost.
-    { const char *e = getenv("YAFL_LOCAL_GC_BARRIER_ONLY");
-      if (e && e[0] == '1' && !gc_local_enabled) gc_local_live = 1; }
     yafl_heapprof_init();
     if (gc_stats_enabled) {
         clock_gettime(CLOCK_MONOTONIC, &gc_stats_t0);

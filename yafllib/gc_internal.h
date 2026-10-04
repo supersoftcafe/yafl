@@ -66,7 +66,6 @@ struct gc_thread_info {
     // ── thread-local nursery (prototype, YAFL_LOCAL_GC; see gc_local_collect) ──
     uint32_t local_epoch;          // stamp of this thread's nursery pages; 0 = off
     uint32_t local_pages_since;    // nursery pages taken since the last collection
-    uint64_t local_fresh_pages;    // ...of which came from the page allocator
     uint32_t local_unproductive;   // consecutive collections freeing < 5%
     uint32_t local_suspended;      // root scans left before the nursery resumes
     uint32_t local_backoff;        // consecutive stand-downs (exponential length)
