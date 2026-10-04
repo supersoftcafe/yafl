@@ -1816,16 +1816,18 @@ static NOINLINE void gc_local_collect(void) {
     uint64_t freed = 0, promoted = 0;
     for (size_t k = 0; k < np; ++k) {
         gc_page_t *page = gc_local_pages[k];
-        if (page->head.mutable || page->head.pages > 1) {
-            // Never freed here (a prototype simplification); promoted once
-            // traced. Stores into mutable objects escape what they store.
-            if (!gc_local_is_staying(page)) { page->head.local_epoch = 0; promoted++; }
-            continue;
-        }
+        // Mutable pages and multi-page objects are never freed here (a
+        // prototype simplification), but their dead objects ARE struck below
+        // like any other: a dead mutable frame left in the objects bitmap
+        // still holds pointers into pages this collection frees, and a stale
+        // stack word that resolves to it would lead the global marker
+        // straight into them. (A multi-page object struck here leaves its
+        // pages with nothing seen, which the global prune frees.)
+        bool keep_page = page->head.mutable || page->head.pages > 1;
         bool live = false;
         for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
             if (page->head.local_mark.a[i]) { live = true; break; }
-        if (!live && !gc_local_is_staying(page)) {
+        if (!live && !keep_page && !gc_local_is_staying(page)) {
             gc_local_release_page(page);
             freed++;
             continue;
