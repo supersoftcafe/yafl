@@ -220,6 +220,60 @@ warm instead of feeding the global collector. Most of the nursery's own time
 goes to tracing survivors before promoting them. That is the cost item 1 in
 §6 (evacuating survivors) would attack.
 
+### Nursery size, pacing, and two accounting faults
+
+A size sweep on the self-compile showed speed rising with nursery size, but
+so did peak memory: a fixed 64 MB nursery took 246 s at 2.85 GB. Re-pacing
+the baseline (nursery off) with `YAFL_GC_STEP_PAGES` puts that on the same
+speed/memory curve:
+
+| baseline scan ratio r | wall | peak RSS |
+|---|---|---|
+| 4 (default) | 315–321 s | 1.25–1.34 GB |
+| 3 | 261.5 s | 1.86 GB |
+| 2 | 203.8 s | 5.77 GB (runs to the heap limit) |
+
+So much of the large-nursery speed-up was the global collector running
+less often. Charging one step per page handed to the global heap is still
+the right rule. Two faults stopped the nursery from following it:
+
+1. **Pages retired uncollected were never charged.** A thread's root scan
+   hands every page taken since its last nursery collection to the global
+   pool. Only promoted pages advanced the clock. With the default nursery,
+   2.6M of 6.2M pages reached the global heap unfunded. These pages are now
+   charged when retired.
+2. **The old-generation promotion volume feeds back on itself.** It is set
+   to 8 × the young survivors, on the same clock. With long cycles it
+   climbed from 6,144 to 110k pages, and the young generation tripled.
+   `YAFL_GC_PROMOTE_CAP` (a diagnostic) caps it. Capping it at the floor,
+   6,144 pages, is what the measurements below use.
+
+Single runs, all with byte-identical output:
+
+| configuration | wall | peak RSS |
+|---|---|---|
+| baseline | 315–321 s | 1.25–1.34 GB |
+| default nursery, both fixes | 260.7 s | 1.54 GB |
+| fixed 16 MB nursery, retire charge only | 266.7 s | 1.43 GB |
+| **fixed 16 MB nursery, both fixes** | **246.3 s** | **1.33 GB** |
+| fixed 64 MB nursery, retire charge only | 238.2 s | 2.94 GB |
+
+With both fixes, a fixed 16 MB nursery is about 23% faster than the
+baseline at the same memory. It also beats the r = 3 baseline by 15 s while
+using 530 MB less, so the gain is the nursery's own, not a pacing trade.
+
+Still open:
+
+* **Large nurseries.** Neither fix explains most of the 64 MB nursery's
+  extra memory.
+* **r = 2 runs to the heap limit even with the nursery off.** The pacing
+  model's "a cycle over S pages completes within S/r allocations" doesn't
+  hold on this workload. Requeues and growth of the live set are the
+  suspects.
+* **The cap is a diagnostic, not a policy.** It must be checked against
+  yspell, whose churn the volume rule was written for. So must the adaptive
+  nursery size: starting at 32 pages, it spends most of the run growing.
+
 ### Soundness bugs found by the self-compile
 
 The first A/B run crashed in leg B. Poison runs on a stdlib-plus-`yaflc.yafl`
