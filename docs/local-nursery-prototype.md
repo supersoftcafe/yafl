@@ -159,9 +159,23 @@ In order:
    * precise referrers are known from the trace.
 
    This fixes sparse survival (json_pretty) and makes promoted pages dense.
-3. **More than one worker.** Another thread's marker could be mid-trace
-   through a pointer into a page freed here, so freed pages need a quarantine
-   until the current mark phase ends, or a handshake.
+3. **More than one worker.** Nursery collection stays on the owning thread,
+   while other workers keep running global slices *in parallel* (no
+   stop-the-world, no handshake). What that requires:
+   * **Other threads only write bits.** They never read nursery object
+     contents: a nursery page has `processed_by_epoch == 0`, so a remote mark
+     or root scan only sets `atomic_seen` (and `pinned`). Freed pages that
+     stay GC pages in the owner's cache make a stray bit harmless
+     over-retention. Only returning pages to `mmap` (cache overflow) must wait
+     until the current mark phase ends.
+   * **The lost-object race needs escape tracking (item 1).** With every
+     mutable object a root, another worker could move a nursery object from a
+     mutable object the owner has not scanned yet into one it already has.
+     Escape tracking makes it impossible: another thread can only obtain a
+     nursery object after its owner published it, and the owner's barrier
+     marks it escaped at that moment, so it is never freed locally. It also
+     drops the shared-mutable scan and its registry lock, which would
+     otherwise stall other workers' prune slices.
 4. **Stack watermarks**, so deep stacks aren't rescanned whole each time.
 5. **Pacing integration.** The global clock now sees only survivors, so
    volume-based promotion and the tests that drive it with throwaway filler
