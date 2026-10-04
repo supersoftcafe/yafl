@@ -177,6 +177,83 @@ about 24 µs (1,265 collections in 30 ms), mostly the stack scan.
 | yspell | 71k | 33k | 32k |
 | json_pretty | 0 | 4.4M while live | 0.97M |
 
+### The self-compile (A/B/A/B)
+
+* **Setup:** the port built at -O3 (`ybootstrap_O3`), mode `c1`, compiling
+  stdlib plus bootstrap (2.47 MB of source). Default worker count (4),
+  `YAFL_HEAP_SIZE=6G`.
+* **Legs:** A = nursery off, B = `YAFL_LOCAL_GC=1`. Same binary; the only
+  difference is the environment variable. Two runs per leg, legs in the
+  order A, B, A, B.
+* All 8 runs emit the same 49,548,133 bytes of C (sha256 prefix
+  `0f8909645930da34`).
+
+| leg | run 1 wall / CPU / peak RSS | run 2 wall / CPU / peak RSS |
+|---|---|---|
+| A | 311.5 s / 307.2 s / 1,470 MB | 316.4 s / 312.2 s / 1,388 MB |
+| B | 299.5 s / 295.9 s / 1,238 MB | 301.5 s / 297.6 s / 1,254 MB |
+| A | 439.5 s* / 429.6 s / 1,252 MB | 316.0 s / 312.1 s / 1,369 MB |
+| B | 297.5 s / 294.0 s / 1,238 MB | 298.6 s / 295.2 s / 1,249 MB |
+
+\* Outlier: system time 19.8 s against about 4 s for every other run.
+That points to interference on the machine; the next run was normal.
+
+* **Wall time:** median 316 s → **299 s (−5.4%)**. Every B run beats every
+  A run.
+* **Peak RSS:** A ranges 1,252–1,470 MB, B 1,238–1,254 MB. The nursery
+  removes the variance and lowers the worst case by about 15%.
+
+One extra run of each with `YAFL_GC_STATS=1` (slower: 368 s and 344 s):
+
+| | nursery off | nursery on |
+|---|---|---|
+| global GC cycles | 45,198 | **15,991** |
+| global GC time | 200 s | 163 s |
+| pages through the page allocator | 6.30M | 4.81M |
+| nursery collections | — | 40,067, freeing 40% of 3.46M pages |
+| nursery time | — | 93 s (80.7M objects marked) |
+| stores: private / shared | — | 238M / 3.7M |
+
+The self-compile is a survival-heavy workload (an AST and IR that live for
+whole passes), and the nursery still pays: about 1.4M pages are recycled
+warm instead of feeding the global collector. Most of the nursery's own time
+goes to tracing survivors before promoting them. That is the cost item 1 in
+§6 (evacuating survivors) would attack.
+
+### Soundness bugs found by the self-compile
+
+The first A/B run crashed in leg B. Poison runs on a stdlib-plus-`yaflc.yafl`
+input then reproduced it in seconds, and core dumps found four holes.
+Neither the C tests nor the six benchmark programs had caught any of them.
+
+1. **Dead mutable objects were never struck.** The sweep skipped mutable
+   pages and multi-page objects, so a dead mutable frame stayed in the
+   `objects` bitmap still pointing into freed pages. A stale stack word that
+   resolved to it led the global marker into a reclaimed object. Dead
+   objects there are now struck like any other.
+2. **Lazy waiters didn't escape.** `lazy_thunk_enqueue` links a fresh
+   waiter task into a shared `Lazy` by raw CAS, with no barrier. Fix 1
+   exposed this (raytracer, 4 workers). The waiter now escapes before the
+   CAS.
+3. **Array builders.** A pinned array under construction takes its elements
+   by plain stores across safe points, even across suspensions that resume
+   on another worker. Promoting its page hid those stores. Now:
+   * a page holding a live pinned object is marked to stay in the nursery
+     (`local_stay`) during the root pass, *before* the trace, so promoted
+     survivors' edges into it are remembered;
+   * every in-flight array builder is a root of every nursery collection,
+     from `array_builder_pin` until whichever primitive releases the pin;
+   * at that release, elements the releasing thread's nursery cannot trace
+     through the array escape.
+4. **List segments were released by a different primitive.** They are
+   pinned by `array_builder_pin` but unpinned by `list_builder_link` or
+   `list_builder_seal`. Unregistering only at `array_builder_seal` left
+   freed segments in the registry.
+
+After the fixes, all 24 poison runs of the small input pass (1 and 4 workers;
+nursery sizes 1, 4 and 32 pages), and two full poison self-compiles produce
+byte-identical C.
+
 ## 5. What the numbers say
 
 1. **Short-lived allocation is nearly free, and now on every worker.** The
@@ -238,6 +315,8 @@ In order:
   `test_large_objects`, `test_str`, `test_io_stress`.
 * **Multi-worker C tests:** 15 threaded tests pass with 4 workers at triggers
   of 1, 2 and 8 pages under poison (run by hand, not registered).
+* **Self-compile:** byte-identical C under poison with the nursery on
+  (4 workers / 32 pages; 1 worker / 4 pages), and in all 8 timed runs.
 * **Programs:** all six single-threaded benchmark programs give
   byte-identical output to the baseline at triggers of 1, 4 and 32 pages under
   `YAFL_GC_POISON`, with 1 and with 4 workers. `par` passed 30 of 30 poison
