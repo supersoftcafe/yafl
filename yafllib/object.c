@@ -3492,6 +3492,11 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
         size_t floor_ = memory_total_pages() / 64;
         size_t volume = young * 8;
         gc_promote_volume = volume > floor_ ? volume : floor_;
+        // DIAGNOSTIC: YAFL_GC_PROMOTE_CAP=<pages> caps the promotion volume
+        // (the 8x-young rule feeds back on itself when cycles are long).
+        { static long cap = -1;
+          if (cap < 0) { const char *e = getenv("YAFL_GC_PROMOTE_CAP"); cap = e ? atol(e) : 0; }
+          if (cap > 0 && gc_promote_volume > (size_t)cap) gc_promote_volume = (size_t)cap; }
 
         // Hand back the pages that went this whole cycle without any thread
         // wanting them, and rotate the pool's generations. This is the
