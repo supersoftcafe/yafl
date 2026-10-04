@@ -126,6 +126,10 @@ add_yafl_test(test_gc_gen)
 # and majors demoting DIRTY old pages (whose force-mark otherwise retains
 # their garbage forever — the bug that made yspell abort in any heap < 1 GiB).
 add_yafl_test(test_gc_pressure)
+# test_recycle: compiler-directed recycling — object_recycle's acceptance
+# rules, slot reuse by the YAFL_RECYCLE fast path, the flush at a thread's
+# root scan, poison mode, and a path-copying churn across automatic cycles.
+add_yafl_test(test_recycle)
 # test_gc_fwd_chain: compaction forwarding chains (A -> B -> C via a head stub
 # pinned by a conservative stack slot) must path-compress when scanned — the
 # head's forward word snaps to the tail and the bypassed middle stub's page

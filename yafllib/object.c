@@ -153,6 +153,7 @@ bool gc_stats_enabled  = false;
 // single point — page promotion — so with it off no page ever becomes old and
 // the skip paths, dirty-old handling and major trigger are all inert.
 static bool gc_gen_enabled    = true;
+static bool gc_recycle_enabled = true;   // YAFL_RECYCLE=0 disables recycling
 static void gc_read_config(void) {
     const char *e;
     if ((e = getenv("YAFL_GC_STEP_PAGES")) != NULL) {
@@ -365,6 +366,105 @@ static bool gc_fsa();
 // the collector's remote accesses (root-scan region reset, safe-point
 // requests) reach it through the `threads` chain.
 EXPORT thread_local gc_alloc_tl_t gc_alloc_tl = {0};
+
+// ── compiler-directed recycling (see yafl.h, above gc_recycle_tl) ───────────
+EXPORT thread_local gc_recycle_tl_t gc_recycle_tl = {0};
+EXPORT bool gc_recycle_poison = false;
+static _Atomic(uint32_t) gc_recycle_epoch_next = 1;
+static _Atomic(uint64_t) gc_recycle_pushed   = 0;    // stats: slots accepted
+static _Atomic(uint64_t) gc_recycle_leftover = 0;    // stats: flushed unused
+static _Atomic(uint64_t) gc_recycle_poisoned = 0;    // stats: poison-mode frees
+
+// A fresh, globally unique, non-zero epoch. Unique across threads, so a page
+// stamped by one thread can never match another thread's epoch.
+static uint32_t gc_recycle_new_epoch(void) {
+    uint32_t e;
+    do { e = atomic_fetch_add(&gc_recycle_epoch_next, 1); } while (e == 0);
+    return e;
+}
+
+// At a thread's root scan — the moment its bump pages join the collection
+// pool — every recycled slot it holds becomes visible to the collector, so
+// the lists are dropped (the slots are garbage; this cycle sweeps them) and
+// the epoch moves on, which retires every page stamped with the old one.
+// Runs on the scanned thread or, for a suspended thread, on its scanner.
+static void gc_recycle_flush(gc_recycle_tl_t *r) {
+    if (r == NULL)
+        return;
+    uint64_t left = 0;
+    for (unsigned c = 0; c < GC_RECYCLE_CLASSES; ++c) {
+        left += r->count[c];
+        r->count[c] = 0;
+    }
+    atomic_fetch_add(&gc_recycle_leftover, left);
+    atomic_fetch_add(&gc_recycle_pushed, r->pushed);
+    r->pushed = 0;
+    r->epoch = gc_recycle_new_epoch();
+}
+
+static void gc_recycle_thread_init(gc_recycle_tl_t *r) {
+    // The knobs are read at the FIRST registration: each thread's limit is
+    // fixed here, and thread 0 registers before anything else runs (before
+    // _thread_init, before gc_start reads the rest of the configuration), and
+    // before any other worker exists — so this is race-free.
+    static bool configured = false;
+    if (!configured) {
+        const char *e;
+        gc_recycle_enabled = !((e = getenv("YAFL_RECYCLE")) && e[0] == '0');
+        gc_recycle_poison  = (e = getenv("YAFL_RECYCLE_POISON")) && e[0] && e[0] != '0';
+        configured = true;
+    }
+    r->epoch = gc_recycle_new_epoch();
+    r->limit = (gc_recycle_enabled && !gc_recycle_poison) ? GC_RECYCLE_DEPTH : 0;
+}
+
+// YAFL_RECYCLE_POISON: a recycled object is never reused. Its header becomes
+// a poison vtable of the same size (no pointer fields, every dispatch aborts,
+// a discriminator no match arm carries) and every payload word a recognisable
+// wild address, so any later use — the compiler's proof having been wrong —
+// faults or aborts instead of silently reading a stranger's fields. The
+// collector traces nothing through it, so a stale conservative root is safe.
+#define GC_RECYCLE_POISON_VTABLE(SLOTS) { \
+    .object_size = (SLOTS) * GC_SLOT_SIZE, .array_el_size = 0, \
+    .functions_mask = 0, .object_pointer_locations = 0, \
+    .array_el_pointer_locations = 0, .array_len_offset = 0, .is_mutable = 0, \
+    .discriminator = 0x7ead0000 + (SLOTS), .name = "<recycled: use after free>", \
+    .lookup = { { .i = -1, .f = (void*)&abort_on_vtable_lookup } } }
+VTABLE_DECLARE_STRUCT(gc_recycle_poison_vt, 1);
+static struct gc_recycle_poison_vt gc_recycle_poison_vtables[GC_RECYCLE_CLASSES] = {
+    GC_RECYCLE_POISON_VTABLE(1), GC_RECYCLE_POISON_VTABLE(2),
+    GC_RECYCLE_POISON_VTABLE(3), GC_RECYCLE_POISON_VTABLE(4),
+    GC_RECYCLE_POISON_VTABLE(5), GC_RECYCLE_POISON_VTABLE(6),
+    GC_RECYCLE_POISON_VTABLE(7), GC_RECYCLE_POISON_VTABLE(8),
+};
+
+// object_recycle_unchecked's out-of-line arm: the list is full (the slot is
+// left to the collector), or the thread's limit is 0 because recycling is off
+// (YAFL_RECYCLE=0) or in poison mode.
+EXPORT void gc_recycle_slow(object_t *o, size_t actual_size) {
+    // epoch 0: a thread that never registered (its pages are stamped 0 too).
+    if (gc_recycle_poison && gc_recycle_enabled && gc_recycle_tl.epoch != 0)
+        gc_recycle_poison_object(o, actual_size);
+}
+
+EXPORT void gc_recycle_poison_object(object_t *o, size_t actual_size) {
+    unsigned c = (unsigned)(actual_size / sizeof(slot_t)) - 1;
+    uintptr_t *w = (uintptr_t*)o;
+    for (size_t k = 1; k < actual_size / sizeof(uintptr_t); ++k)
+        w[k] = (uintptr_t)0xDEADBEEF0ull;   // slot-aligned, untagged, unmapped
+    o->vtable = vtable_tag((vtable_t*)&gc_recycle_poison_vtables[c]);
+    atomic_fetch_add(&gc_recycle_poisoned, 1);
+}
+
+EXPORT void gc_recycle_report(FILE *out) {
+    gc_recycle_flush(&gc_recycle_tl);   // this thread's tail
+    uint64_t pushed = atomic_load(&gc_recycle_pushed);
+    uint64_t left   = atomic_load(&gc_recycle_leftover);
+    fprintf(out, "[GC RECYCLE] pushed=%llu reused=%llu flushed_unused=%llu poisoned=%llu\n",
+            (unsigned long long)pushed, (unsigned long long)(pushed - left),
+            (unsigned long long)left,
+            (unsigned long long)atomic_load(&gc_recycle_poisoned));
+}
 
 thread_local struct gc_thread_info gc_thread_info;   // type: gc_internal.h
 
@@ -838,6 +938,7 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         size_t page_count = (sizeof(page_head_t) + actual_size + GC_PAGE_SIZE - 1) / GC_PAGE_SIZE;
         gc_page_t* page = gc_page_alloc(page_count);
         page->head.mutable = is_mutable;
+        page->head.recycle_epoch = 0;   // a multi-page object is never recycled
         page->head.objects.a[0] = 1;
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
         // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
@@ -856,6 +957,11 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
 
     gc_page_t* new_page = gc_page_alloc(1);
     new_page->head.mutable = is_mutable;
+    // Recyclable while this thread's epoch stands (until its next root scan
+    // takes the page). Never a mutable page, never a relocation target —
+    // relocated copies are other objects' referents, not this code's.
+    new_page->head.recycle_epoch = (is_mutable || gc_thread_info.in_relocation || !gc_recycle_enabled)
+        ? 0 : gc_recycle_tl.epoch;
 
     bump_pointers_t *bp = is_mutable
         ? &gc_alloc_tl.region_mutable
@@ -1165,6 +1271,8 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     // Wire the collector's remote view of this thread's allocation state (the
     // public gc_alloc_tl thread-local the inline fast path uses).
     gc_thread_info.alloc = &gc_alloc_tl;
+    gc_thread_info.recycle = &gc_recycle_tl;
+    gc_recycle_thread_init(&gc_recycle_tl);
 
     gc_thread_info.new_pages.next = &gc_thread_info.new_pages;
     gc_thread_info.new_pages.prev = &gc_thread_info.new_pages;
@@ -1644,6 +1752,8 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         list_move(&pages_to_scan, &thread->new_pages);
         thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
         thread->alloc->region_immutable.bump = thread->alloc->region_mutable.bump = NULL;
+        // ...and with them every slot its recycle lists hold (see yafl.h).
+        gc_recycle_flush(thread->recycle);
         // Scan stack and registers
         gc_fsa_scan_roots$scan_range(thread->stack_lower_ptr, thread->stack_upper_ptr);
         gc_fsa_scan_roots$scan_range((object_t**)&thread->saved_registers[0], (object_t**)&thread->saved_registers[1]);

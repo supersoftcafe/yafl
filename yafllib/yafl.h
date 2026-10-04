@@ -514,6 +514,13 @@ typedef struct page_head {
                            // first prune is force-stable via birth
                            // protection, so it only STARTS the clock).
                            // Drives volume-based promotion.
+    uint32_t recycle_epoch; // The owning thread's recycle epoch when this page
+                            // became one of its bump pages, 0 = never
+                            // recyclable (mutable, multi-page, relocation
+                            // target). A slot may be recycled only while it
+                            // equals the thread's CURRENT epoch — i.e. the page
+                            // is still on that thread's new_pages, invisible to
+                            // the collector. See object_recycle.
 
 } __attribute__((aligned(GC_SLOT_SIZE))) page_head_t;
 
@@ -580,6 +587,40 @@ typedef struct {
 } gc_alloc_tl_t;
 EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
 
+// ── compiler-directed recycling ──────────────────────────────────────────────
+// The compiler (lowering/recycle.py, opt-in) proves that a freshly allocated
+// object is dead and was never published, and calls object_recycle on it.
+// The slot goes onto a per-thread LIFO keyed by size class, and the next
+// immutable allocation of that size (in code compiled with YAFL_RECYCLE)
+// takes it instead of moving the bump pointer — so a transient object never
+// spends page budget, and page budget is what paces the collector.
+//
+// Safety rests on two facts, one each side:
+//   * compiler: the object is unique and dead at the call (a use-after-free
+//     otherwise — YAFL_RECYCLE_POISON exists to catch exactly that);
+//   * runtime: the slot is on one of THIS thread's bump pages since its last
+//     root scan (page recycle_epoch == thread epoch). Those pages are birth-
+//     protected: no cycle scans or prunes them until the root scan that takes
+//     them, and that same root scan flushes these lists and moves the epoch
+//     on. So the collector never sees a slot change occupant.
+// Anything else (static, tagged, older page, another thread's page, pinned,
+// mutable, arrayed, too big) is simply left to the collector.
+enum { GC_RECYCLE_CLASSES = 8, GC_RECYCLE_DEPTH = 32 };
+enum { GC_RECYCLE_MAX = GC_RECYCLE_CLASSES * GC_SLOT_SIZE };
+typedef struct {
+    uint32_t epoch;                               // this thread's page stamp
+    uint8_t  limit;                               // list depth; 0 = every push
+                                                  // takes the slow path (disabled
+                                                  // or poison mode)
+    uint8_t  count[GC_RECYCLE_CLASSES];
+    uint64_t pushed;                              // stats: slots accepted
+    void*    slot[GC_RECYCLE_CLASSES][GC_RECYCLE_DEPTH];
+} gc_recycle_tl_t;
+EXTERN thread_local gc_recycle_tl_t gc_recycle_tl;
+EXTERN bool gc_recycle_poison;
+EXTERN void gc_recycle_poison_object(object_t *o, size_t actual_size);
+EXTERN void gc_recycle_slow(object_t *o, size_t actual_size);
+
 // The slow half: multi-page objects, and region refill — which is also where
 // the GC pacing clock ticks. RAW contract: the returned memory is NOT zeroed;
 // every caller goes through object_alloc_fast (which zeroes at the call site)
@@ -592,6 +633,24 @@ EXTERN void *object_alloc_slow_raw(size_t size, bool is_mutable);
 // load-bearing for nothing (a pointer-free array payload — see array_create).
 INLINE void *object_alloc_fast_raw(size_t size, bool is_mutable) {
     size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+#ifdef YAFL_RECYCLE
+    // A recycled slot first (see object_recycle). It is already published in
+    // the page's objects bitmap; only the snapshot-smear guard below is owed.
+    if (!is_mutable && actual_size <= (size_t)GC_RECYCLE_MAX) {
+        unsigned c = (unsigned)(actual_size / sizeof(slot_t)) - 1;
+        unsigned n = gc_recycle_tl.count[c];
+        if (n != 0) {
+            void *object = gc_recycle_tl.slot[c][--n];
+            gc_recycle_tl.count[c] = (uint8_t)n;
+            if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS)) {
+                gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(sizeof(gc_page_t)-1));
+                atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen,
+                                        (unsigned)((slot_t*)object - page->slots));
+            }
+            return object;
+        }
+    }
+#endif
     bump_pointers_t *bp = is_mutable
         ? &gc_alloc_tl.region_mutable
         : &gc_alloc_tl.region_immutable;
@@ -640,6 +699,84 @@ INLINE void *object_new(vtable_t *vtable) {
     object_t *object = (object_t*)object_alloc_fast(vtable->object_size, vtable->is_mutable);
     object->vtable = vtable_tag(vtable);
     return object;
+}
+
+// Hand a dead slot back. PRECONDITION (the caller's proof): `o` is an
+// untagged heap object of an immutable, non-arrayed class, never pinned, and
+// nothing else can reach it. What is checked here is only the COLLECTOR's
+// view: the slot must sit on one of this thread's pages since its last root
+// scan (page stamp == thread epoch). Anything else is left to the collector,
+// which is always correct. This is the form generated code calls — kept to a
+// page-header load, a header load and a TLS push, because it sits in hot
+// loops (no extern globals: their GOT pointers cost registers across calls).
+INLINE void object_recycle_unchecked(object_t *o) {
+    gc_page_t *page = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(sizeof(gc_page_t)-1));
+    if (page->head.recycle_epoch != gc_recycle_tl.epoch)
+        return;
+    size_t actual_size = ((size_t)vtable_untag(o->vtable)->object_size + sizeof(slot_t) - 1)
+                         / sizeof(slot_t) * sizeof(slot_t);
+    unsigned c = (unsigned)(actual_size / sizeof(slot_t)) - 1;
+    if (c >= GC_RECYCLE_CLASSES)
+        return;
+    unsigned n = gc_recycle_tl.count[c];
+    if (UNLIKELY(n >= gc_recycle_tl.limit)) {
+        gc_recycle_slow(o, actual_size);   // full list, disabled, or poison mode
+        return;
+    }
+    gc_recycle_tl.slot[c][n] = o;
+    gc_recycle_tl.count[c] = (uint8_t)(n + 1);
+    gc_recycle_tl.pushed++;
+}
+
+// The checked form, for runtime code and tests: rejects anything that is not
+// a plain immutable heap object first.
+INLINE void object_recycle(object_t *o) {
+    if (((uintptr_t)o & PTR_TAG_MASK) != 0
+            || (size_t)((char*)o - _memory_heap_base) >= _memory_heap_bytes)
+        return;   // tagged scalar, NULL, or static
+    vtable_t *vt = o->vtable;
+    if (vtable_is_pinned(vt))
+        return;
+    vt = vtable_untag(vt);
+    if (vt->array_el_size != 0 || vt->is_mutable)
+        return;
+    object_recycle_unchecked(o);
+}
+
+// The forms lowering/recycle.py emits. They return a dummy so the call can
+// sit in an ordinary kept Move. `owned` is the ownership flag carried through
+// a Phi that merges owned and unowned values (a loop seeded by a value this
+// function did not allocate).
+// Allocate `vt`, taking over the dead token's slot when that is safe — the
+// register form of recycling (Lean's reset/reuse): the token never touches
+// the free lists, so a loop that replaces one object with the next carries no
+// memory dependency through them. Same preconditions on `token` as
+// object_recycle_unchecked. A token of another class, on a page the collector
+// can see, or with recycling off goes the ordinary way (list or collector).
+INLINE void *yafl_reuse(object_t *token, int8_t owned, vtable_t *vt) {
+    if (owned) {
+        gc_page_t *page = (gc_page_t*)((uintptr_t)token & ~(uintptr_t)(sizeof(gc_page_t)-1));
+        if (vtable_untag(token->vtable) == vt && gc_recycle_tl.limit != 0
+                && page->head.recycle_epoch == gc_recycle_tl.epoch) {
+            // Snapshot-smear guard, as for any allocation (see object_alloc_fast_raw).
+            if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
+                atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen,
+                                        (unsigned)((slot_t*)token - page->slots));
+            size_t actual_size = ((size_t)vt->object_size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+            zero_object_slots(token, actual_size);
+            token->vtable = vtable_tag(vt);
+            gc_recycle_tl.pushed++;   // stats: counts as recycled and reused
+            return token;
+        }
+        object_recycle_unchecked(token);
+    }
+    return object_new(vt);
+}
+
+INLINE int8_t yafl_recycle(object_t *o) { object_recycle_unchecked(o); return 0; }
+INLINE int8_t yafl_recycle_if(object_t *o, int8_t owned) {
+    if (owned) object_recycle_unchecked(o);
+    return 0;
 }
 
 // ── profiling (--profile) ────────────────────────────────────────────────────

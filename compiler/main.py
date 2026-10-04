@@ -1,5 +1,6 @@
 
 import compiler as c
+import lowering.recycle
 from pathlib import Path
 import sys
 import subprocess
@@ -51,6 +52,13 @@ def main():
         help="Instrument for profiling; the binary writes callgrind.out.<pid> at exit"
     )
 
+    # Prototype: compiler-directed recycling of objects that die unpublished
+    # (lowering/recycle.py). Same switch as YAFL_RECYCLE=1 in the environment.
+    parser.add_argument(
+        "--recycle", action="store_true",
+        help="Recycle provably dead, never-published objects (prototype)"
+    )
+
     # Warning categories: -Wname enables, -Wno-name disables, -Wall enables
     # every optional one. Repeatable; applied left to right over the default
     # set (see warning_flags.py for the registry and semantics).
@@ -80,6 +88,8 @@ def main():
     except ValueError as e:
         parser.error(str(e))
 
+    if args.recycle:
+        lowering.recycle.ENABLED = True
     files = _gather_inputs(args.files)
     c_code, link_spec, warnings = c.compile_project(
         files, use_stdlib=True, just_testing=False,

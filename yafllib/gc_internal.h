@@ -36,6 +36,7 @@ enum thread_state {
 
 struct gc_thread_info {
     gc_alloc_tl_t *alloc;   // = &gc_alloc_tl of this thread (set at registration)
+    gc_recycle_tl_t *recycle; // = &gc_recycle_tl of this thread (flushed at its root scan)
     int_fast32_t lag_counter;
     bool in_relocation;  // set while compaction evacuates objects: its target
                          // allocations may use the relocation reserve
@@ -199,6 +200,7 @@ extern size_t gc_occ_sparse_fwd, gc_occ_sparse_pin, gc_occ_sparse_oth;
 extern size_t gc_snap_sparse_fwd, gc_snap_sparse_pin, gc_snap_sparse_oth;
 
 void gc_stats_tick(void);    // sampled [GC] progress line (called per 512 page allocs)
+void gc_recycle_report(FILE *out);  // [GC RECYCLE] line (object.c)
 void gc_stats_report(void);  // [GC TIME] exit summary (atexit when stats enabled)
 
 // ── Debug module (gc_debug.c) ────────────────────────────────────────────────

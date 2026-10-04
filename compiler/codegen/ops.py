@@ -237,9 +237,20 @@ class NewObject(Op): # Create a new blank instance of the named object
     name: str
     register: LParam
     size: RParam|None = None
+    # Reuse token (lowering/recycle.py, opt-in): a dead object this function
+    # owned, whose slot this allocation may take over — Lean's reset/reuse,
+    # with the token in a register instead of a runtime free list. `reuse_owned`
+    # is its Int(8) ownership flag; the runtime still checks the class and the
+    # collector's view (yafl_reuse) and falls back to a plain allocation.
+    reuse: RParam|None = None
+    reuse_owned: RParam|None = None
+
+    def __reuse_params(self) -> list[RParam]:
+        return [p for r in (self.reuse, self.reuse_owned) if r is not None for p in r.flatten()]
 
     def all_params(self) -> list[RParam]:
-        return self.register.flatten(is_reader=False) + (self.size.flatten() if self.size else [])
+        return (self.register.flatten(is_reader=False) + (self.size.flatten() if self.size else [])
+                + self.__reuse_params())
 
     def get_type(self) -> t.DataPointer:
         return t.DataPointer()
@@ -247,12 +258,16 @@ class NewObject(Op): # Create a new blank instance of the named object
     def rename_vars(self, renames: dict[str, str]) -> NewObject:
         return dataclasses.replace(self,
                 register=self.register.rename_vars(renames),
-                size=self.size and self.size.rename_vars(renames))
+                size=self.size and self.size.rename_vars(renames),
+                reuse=self.reuse and self.reuse.rename_vars(renames),
+                reuse_owned=self.reuse_owned and self.reuse_owned.rename_vars(renames))
 
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> NewObject:
         return dataclasses.replace(self,
                 register=self.register.replace_params(replacer),
-                size=self.size and self.size.replace_params(replacer))
+                size=self.size and self.size.replace_params(replacer),
+                reuse=self.reuse and self.reuse.replace_params(replacer),
+                reuse_owned=self.reuse_owned and self.reuse_owned.replace_params(replacer))
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         # Store through to_c_store so a pointer-bearing heap-slot register is
@@ -266,10 +281,16 @@ class NewObject(Op): # Create a new blank instance of the named object
             # is_mutable per site and elides whichever zero-fill stores the
             # immediate field writes below make dead.
             value = f"object_new(obj_{mangle_name(self.name)})"
+            if self.reuse is not None:
+                value = (f"yafl_reuse({self.reuse.to_c(type_cache)}, "
+                         f"{self.reuse_owned.to_c(type_cache)}, obj_{mangle_name(self.name)})")
         return self.register.to_c_store(type_cache, value)
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         live = self.size.get_live_vars() if self.size else frozenset()
+        for r in (self.reuse, self.reuse_owned):
+            if r is not None:
+                live = live | r.get_live_vars()
         return (live, frozenset({self.register})) if isinstance(self.register, StackVar) else (live | self.register.get_live_vars(), frozenset())
 
 

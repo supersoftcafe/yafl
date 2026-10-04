@@ -52,6 +52,7 @@ import lowering.phi_removal
 import lowering.pinnable_reads
 import lowering.sync_inference
 import lowering.sroa
+import lowering.recycle
 import lowering.tail_loop
 import lowering.trim
 import lowering.canonicalise
@@ -332,6 +333,12 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # no longer roots its other (dead) fields. Runs at every -O level — this is a
     # space-correctness fix (see lowering/sroa.py), not an optimisation.
     a = lowering.sroa.split_projected_aggregates(a)
+
+    # Prototype, opt-in (YAFL_RECYCLE=1 / --recycle): hand objects that die
+    # unpublished back to the runtime where they die. Needs SSA (web origins,
+    # the ownership-flag Phis) and must precede async lowering (a web live
+    # across a suspension is disqualified, not saved and freed).
+    a = lowering.recycle.recycle_dead_objects(a, optimization_level)
 
     # Leave SSA here: Phis → edge moves + copy-web coalescing shrinks the
     # local count (each survivor is a state field, boundary traffic and C

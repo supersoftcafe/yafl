@@ -124,7 +124,10 @@ def __scan_op(op: Op) -> _scan_sets:
 
         case NewObject():
             x = _scan_sets(objects=frozenset([op.name]))
-            return __scan_rparam(op.register) | ((x | __scan_rparam(op.size)) if op.size else x)
+            for r in (op.size, op.reuse, op.reuse_owned):
+                if r is not None:
+                    x = x | __scan_rparam(r)
+            return __scan_rparam(op.register) | x
 
         case IfTask():
             return __scan_rparam(op.condition) | __scan_rparam(op.task_source)

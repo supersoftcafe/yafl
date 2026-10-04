@@ -29,6 +29,7 @@ class Application:
     union_discriminators: dict[str, int] = field(default_factory=dict)  # as_unique_id_str() → global discriminator ID
     headers: tuple[str, ...] = ("yafl.h",)  # headers to #include; yafl.h is the runtime baseline, libraries append theirs
     profile: bool = False                   # --profile: instrument every function and emit the descriptor table
+    defines: tuple[str, ...] = ()           # `#define`s emitted ahead of the headers (e.g. YAFL_RECYCLE, which turns on the recycled-slot allocation fast path)
 
     def __post_init__(self):
         self.__type_cache: dict[Type, tuple[str, str]] = {}
@@ -279,7 +280,7 @@ class Application:
         # ~83MB contiguous allocation at the end of a compiler-sized run —
         # and the reference mirrors the shape per the parity rule.
         sections: list[list[str]] = [
-            [f"#include <{h}>" for h in self.headers],
+            [f"#define {d}" for d in self.defines] + [f"#include <{h}>" for h in self.headers],
             [diagnostics],
             [_gen_function_ids(global_ids)],
             [declaration for name, declaration in self.__type_cache.values()],
