@@ -70,6 +70,8 @@ struct gc_thread_info {
     uint32_t local_unproductive;   // consecutive collections freeing < 5%
     uint32_t local_suspended;      // root scans left before the nursery resumes
     uint32_t local_backoff;        // consecutive stand-downs (exponential length)
+    uint64_t local_debt;           // charged pages whose gc_fsa steps are still owed,
+                                   // repaid one per page refill (see gc_local_collect)
     bool     local_started;        // this worker has started its nursery
     // Slots in OLDER containers that received a pointer since the last root
     // scan (gc_local_note_slot): nursery roots until the next root scan.

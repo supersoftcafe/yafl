@@ -923,6 +923,25 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         gc_alloc_tl.region_mutable.base = gc_alloc_tl.region_mutable.bump = NULL;
     }
     if (gc_local_enabled && !gc_thread_info.in_relocation && gc_thread_info.local_epoch != 0) {
+        // Service a pending root-scan request NOW, as the ordinary refill
+        // path does (its gc_fsa step per page). Until this thread's roots are
+        // scanned every allocation is born marked (allocate-black), and the
+        // nursery must keep marked objects. Left to the next nursery
+        // collection, the window spans the whole nursery: with 1,024 pages,
+        // par kept 14M objects it should have freed and ran 2x slower than
+        // no nursery at all.
+        if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS)) {
+            // Collect the nursery BEFORE the root scan hands it to the global
+            // pool, so only its survivors go (and are charged). Retiring it
+            // uncollected passed young garbage to the global collector,
+            // whose extra cycles retired the next nursery sooner still.
+            if (gc_thread_info.local_pages_since != 0)
+                gc_local_collect();
+            gc_fsa();
+        } else if (gc_thread_info.local_debt != 0 && !gc_debug_manual_mode) {
+            gc_thread_info.local_debt--;   // repay one owed step per refill
+            gc_fsa();
+        }
         if (gc_local_trigger_now == 0) gc_local_trigger_now = gc_local_trigger;
         if (++gc_thread_info.local_pages_since >= gc_local_trigger_now)
             gc_local_collect();
@@ -2011,11 +2030,18 @@ static NOINLINE void gc_local_collect(void) {
     // program could promote thousands of pages and charge none, so the
     // global collector never ran.) Each charged page buys one paced step,
     // exactly as gc_page_alloc would.
+    //
+    // The STEPS are owed, not run here: they are repaid one per page refill
+    // (object_alloc_slow_raw), the same cadence as an ordinary allocation.
+    // Running them all in one burst left a global cycle open across a whole
+    // nursery's worth of mutator work in between, and an open SATB cycle
+    // keeps everything live at its start plus everything overwritten during
+    // it: json_pretty (async frames overwritten on every read) held 17k
+    // pages of floating garbage and ran 2x slower than with no nursery.
     if (promoted) {
         atomic_fetch_add_explicit(&gc_alloc_clock, promoted, memory_order_relaxed);
         gc_local_charged += promoted;
-        for (uint64_t k = 0; k < promoted && !gc_debug_manual_mode; ++k)
-            if (!gc_fsa()) break;
+        t->local_debt += promoted;
     }
     t->local_fresh_pages = 0;
     if (UNLIKELY(gc_stats_enabled)) {
@@ -2106,6 +2132,7 @@ static void gc_local_on_root_scan(struct gc_thread_info *t) {
     if (t->local_epoch != 0 && t->local_pages_since != 0) {
         atomic_fetch_add_explicit(&gc_alloc_clock, t->local_pages_since, memory_order_relaxed);
         gc_local_charged += t->local_pages_since;
+        t->local_debt += t->local_pages_since;
         gc_local_retired_uncollected += t->local_pages_since;
     }
     if (t->local_epoch != 0)
@@ -3794,6 +3821,10 @@ EXPORT int gc_debug_object_state(object_t* o) {
 
 EXPORT void _gc_safe_point2() {
     uint_fast32_t sp = gc_alloc_tl.safe_point_request;
+    // As at a nursery refill: collect the nursery before a root scan retires it.
+    if ((sp & GC_SAFE_POINT_SCAN_ROOTS) && gc_thread_info.local_epoch != 0
+            && gc_thread_info.local_pages_since != 0)
+        gc_local_collect();
     if (sp & (GC_SAFE_POINT_SCAN_ROOTS|GC_SAFE_POINT_CATCH_UP)) {
         if (gc_fsa() && gc_thread_info.lag_counter > 0) {
             gc_thread_info.lag_counter -= 1;
