@@ -1062,8 +1062,13 @@ EXPORT bool list_builder_seal(object_t *tail) {
 // CAPACITY, so the scanner traces every slot from birth (NULLs where
 // nothing is written yet). The pin also blocks page promotion, so element
 // stores stay young-generation writes.
+static void gc_local_builder_add(object_t *arr);
+static void gc_local_builder_remove(object_t *arr);
+static void gc_local_builder_seal_escape(object_t *arr);
+
 EXPORT bool array_builder_pin(object_t *arr) {
     object_pin(arr);
+    if (UNLIKELY(gc_local_enabled)) gc_local_builder_add(arr);
     return true;
 }
 
@@ -1073,6 +1078,10 @@ EXPORT bool array_builder_pin(object_t *arr) {
 EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
     vtable_t *vt = vtable_untag(arr->vtable);
     *((int32_t*)(((char*)arr) + vt->array_len_offset)) = length;
+    if (UNLIKELY(gc_local_enabled)) {
+        gc_local_builder_remove(arr);
+        gc_local_builder_seal_escape(arr);
+    }
     object_unpin(arr);
     return true;
 }
@@ -1717,6 +1726,75 @@ static void gc_local_release_page(gc_page_t *page) {
     gc_local_cache[gc_local_cache_n++] = page;
 }
 
+// ARRAY BUILDERS IN FLIGHT. A pinned array under construction takes its
+// elements by plain stores across safe points (even suspensions, resuming on
+// another worker). While its page is in the builder's nursery the pin roots
+// it, but once the page leaves (a root scan retires the epoch) nothing would
+// show a nursery those stores. So every in-flight builder, from any thread,
+// is a root of every nursery collection: its elements are traced, and only
+// the collecting thread's own nursery objects are marked by that. Few are
+// ever in flight; the list is short.
+static atomic_flag gc_local_builders_lock = ATOMIC_FLAG_INIT;
+static void gc_local_builders_acquire(void) {
+    while (atomic_flag_test_and_set_explicit(&gc_local_builders_lock, memory_order_acquire))
+        cpu_relax();
+}
+static void gc_local_builders_release(void) {
+    atomic_flag_clear_explicit(&gc_local_builders_lock, memory_order_release);
+}
+static object_t **gc_local_builders = NULL;
+static size_t gc_local_builders_n = 0, gc_local_builders_cap = 0;
+
+static void gc_local_builder_add(object_t *arr) {
+    gc_local_builders_acquire();
+    if (gc_local_builders_n == gc_local_builders_cap) {
+        gc_local_builders_cap = gc_local_builders_cap ? gc_local_builders_cap * 2 : 64;
+        gc_local_builders = realloc(gc_local_builders, gc_local_builders_cap * sizeof(object_t*));
+        if (!gc_local_builders) abort_on_out_of_memory();
+    }
+    gc_local_builders[gc_local_builders_n++] = arr;
+    gc_local_builders_release();
+}
+
+static void gc_local_builder_remove(object_t *arr) {
+    gc_local_builders_acquire();
+    for (size_t k = gc_local_builders_n; k-- > 0; )
+        if (gc_local_builders[k] == arr) {
+            gc_local_builders[k] = gc_local_builders[--gc_local_builders_n];
+            break;
+        }
+    gc_local_builders_release();
+}
+
+// At SEAL the array stops being a root of every nursery. Its elements stay
+// reachable through it only for a nursery that traces it: the sealing
+// thread's own, and only when the array sits in that nursery. Every other
+// element (the array is older, or the element came from another worker's
+// nursery while the fill was suspended there) ESCAPES.
+static void gc_local_builder_seal_escape(object_t *arr) {
+    if (!gc_local_live) return;
+    gc_page_t *apage = (gc_page_t*)((uintptr_t)arr & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    bool array_local = gc_local_page_is_nursery(apage);
+    vtable_t *vt = vtable_untag(arr->vtable);
+    if (!vt->array_el_pointer_locations) return;
+    uint32_t len = *(uint32_t*)&((char*)arr)[vt->array_len_offset];
+    char *el = ((char*)arr) + vt->object_size;
+    for (; len-- > 0; el += vt->array_el_size) {
+        ptr_mask_t am = vt->array_el_pointer_locations;
+        while (am) {
+            unsigned i = __builtin_ctzll(am); am &= am - 1;
+            object_t *v = ((object_t**)el)[i];
+            if (((uintptr_t)v & PTR_TAG_MASK) != 0
+                    || (size_t)((char*)v - _memory_heap_base) >= _memory_heap_bytes)
+                continue;
+            if (array_local
+                    && gc_local_page_is_nursery((gc_page_t*)((uintptr_t)v & ~(uintptr_t)(GC_PAGE_SIZE - 1))))
+                continue;   // both in this nursery: traced through the array
+            gc_local_escape(v);
+        }
+    }
+}
+
 static bool gc_in_fsa_now(void);
 
 static NOINLINE void gc_local_collect(void) {
@@ -1803,6 +1881,12 @@ static NOINLINE void gc_local_collect(void) {
         ? (gc_page_t*)((uintptr_t)t->alloc->region_mutable.base & ~(uintptr_t)(GC_PAGE_SIZE - 1)) : NULL;
     if (gc_local_staying_mut && !gc_local_page_is_nursery(gc_local_staying_mut))
         gc_local_staying_mut = NULL;
+    // Roots 5 (after the staying pages are known — the remembering rule
+    // in gc_local_trace_fields reads them): array builders in flight, from every thread.
+    gc_local_builders_acquire();
+    for (size_t k = 0; k < gc_local_builders_n; ++k)
+        gc_local_trace_fields(gc_local_builders[k]);
+    gc_local_builders_release();
     uint64_t marked = 0;
     while (gc_local_stack_n) {
         object_t *o = gc_local_stack[--gc_local_stack_n];
@@ -1832,6 +1916,23 @@ static NOINLINE void gc_local_collect(void) {
             freed++;
             continue;
         }
+        // A page holding a live PINNED object stays in the nursery: a pinned
+        // array or list cell is still under construction, and its builder
+        // goes on storing into it with plain stores across safe points.
+        // Promoted, those stores would hide new objects from the next
+        // collection; kept, the pin roots it every time until it is sealed.
+        bool holds_pinned = false;
+        for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t) && !holds_pinned; ++i) {
+            mask_bits_t lm = page->head.local_mark.a[i] & page->head.objects.a[i];
+            while (lm) {
+                unsigned b = __builtin_ctzll(lm); lm &= lm - 1;
+                object_t *o = (object_t*)&page->slots[b + i * GC_MASK_SIZE];
+                if (vtable_is_pinned(o->vtable)) {
+                    holds_pinned = true;
+                    break;
+                }
+            }
+        }
         // Survivors leave the nursery (PROMOTION): the next collection traces
         // only what is newer. Sound because a survivor can only point at
         // objects that existed before it — older survivors, promoted with it,
@@ -1839,7 +1940,7 @@ static NOINLINE void gc_local_collect(void) {
         // non-fresh store (a safe point has passed) and is noted by the
         // barrier. The page being bumped into stays: newer objects keep
         // landing on it.
-        if (!gc_local_is_staying(page)) {
+        if (!gc_local_is_staying(page) && !holds_pinned) {
             page->head.local_epoch = 0;
             promoted++;
         }
