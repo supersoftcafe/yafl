@@ -1491,7 +1491,8 @@ static _Atomic(uint64_t) gc_local_runs = 0, gc_local_pages_seen = 0, gc_local_pa
                          gc_local_stores_mutable = 0, gc_local_escapes = 0,
                          gc_local_stack_ns = 0, gc_local_charge_ns = 0,
                          gc_local_roots_direct = 0, gc_local_roots_stack = 0,
-                         gc_local_pages_rooted = 0, gc_local_pages_survived = 0;
+                         gc_local_pages_rooted = 0, gc_local_pages_survived = 0,
+                         gc_local_retired_uncollected = 0;
 static _Atomic(uint32_t) gc_local_epoch_next = 1;
 
 // Freed nursery pages stay GC pages in this cache: another worker's marker or
@@ -2095,6 +2096,18 @@ static NOINLINE void gc_local_collect(void) {
 // it (new epoch), drop the remembered slots (their containers and values are
 // all in the pool now) and the relocation region (its page was taken too).
 static void gc_local_on_root_scan(struct gc_thread_info *t) {
+    // The pages taken since the last nursery collection join the global pool
+    // HERE, uncollected: charge them, exactly as promotion would have. They
+    // never touched the clock on the way in, so without this a large share of
+    // the heap's growth (more than half, measured on the self-compile) funded
+    // no collector work at all. The books are cumulative (mark scans until
+    // pages_scanned reaches clock x r), so later gc_fsa calls repay it; none
+    // can run from here, inside the root scan.
+    if (t->local_epoch != 0 && t->local_pages_since != 0) {
+        atomic_fetch_add_explicit(&gc_alloc_clock, t->local_pages_since, memory_order_relaxed);
+        gc_local_charged += t->local_pages_since;
+        gc_local_retired_uncollected += t->local_pages_since;
+    }
     if (t->local_epoch != 0)
         gc_local_set_epoch(t, gc_local_new_epoch());
     else if (t->local_suspended != 0 && --t->local_suspended == 0)
@@ -2148,6 +2161,8 @@ EXPORT void gc_local_report(FILE *out) {
             (double)gc_local_charge_ns / 1e9,
             (unsigned long long)gc_local_roots_direct, (unsigned long long)gc_local_roots_stack,
             (unsigned long long)gc_local_pages_rooted, (unsigned long long)gc_local_pages_survived);
+    fprintf(out, "[GC LOCAL3] retired_uncollected_pages=%llu (charged at the root scan)\n",
+            (unsigned long long)gc_local_retired_uncollected);
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
