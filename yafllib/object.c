@@ -1485,7 +1485,10 @@ static _Atomic(uint64_t) gc_local_runs = 0, gc_local_pages_seen = 0, gc_local_pa
                          gc_local_slots_noted = 0, gc_local_charged = 0,
                          gc_local_promoted = 0, gc_local_trigger_max_seen = 0,
                          gc_local_suspensions = 0, gc_local_stores_nursery = 0,
-                         gc_local_stores_mutable = 0, gc_local_escapes = 0;
+                         gc_local_stores_mutable = 0, gc_local_escapes = 0,
+                         gc_local_stack_ns = 0, gc_local_charge_ns = 0,
+                         gc_local_roots_direct = 0, gc_local_roots_stack = 0,
+                         gc_local_pages_rooted = 0, gc_local_pages_survived = 0;
 static _Atomic(uint32_t) gc_local_epoch_next = 1;
 
 // Freed nursery pages stay GC pages in this cache: another worker's marker or
@@ -1876,10 +1879,36 @@ static NOINLINE void gc_local_collect(void) {
         }
     }
     // Roots 2: this thread's stack and registers.
+    size_t stats_s0 = gc_local_stack_n;
+    struct timespec ts0, ts1;
+    if (UNLIKELY(gc_stats_enabled)) clock_gettime(CLOCK_MONOTONIC, &ts0);
     gc_update_stack_address_and_registers();
     gc_local_mark_range(t->stack_lower_ptr, t->stack_upper_ptr);
     gc_local_mark_range((object_t**)&t->saved_registers[0], (object_t**)&t->saved_registers[1]);
     gc_local_mark_range((object_t**)&t->saved_callee_regs[0], (object_t**)&t->saved_callee_regs[8]);
+    if (UNLIKELY(gc_stats_enabled)) {
+        clock_gettime(CLOCK_MONOTONIC, &ts1);
+        gc_local_stack_ns += (uint64_t)((ts1.tv_sec - ts0.tv_sec) * 1000000000LL + (ts1.tv_nsec - ts0.tv_nsec));
+        // DIAGNOSTIC: objects held directly (escaped/marked/pinned, then
+        // stack and registers) — what a copying nursery could NOT move —
+        // and how many distinct pages they sit on.
+        size_t s1 = gc_local_stack_n;
+        gc_local_roots_direct += s1;
+        gc_local_roots_stack += s1 - stats_s0;
+        uintptr_t *pg = malloc((s1 ? s1 : 1) * sizeof(uintptr_t));
+        if (pg) {
+            for (size_t k = 0; k < s1; ++k)
+                pg[k] = (uintptr_t)gc_local_stack[k] & ~(uintptr_t)(GC_PAGE_SIZE - 1);
+            size_t distinct = 0;
+            for (size_t k = 0; k < s1; ++k) {   // small n: quadratic is fine for a diagnostic
+                bool seen_before = false;
+                for (size_t j = 0; j < distinct && !seen_before; ++j) seen_before = pg[j] == pg[k];
+                if (!seen_before) pg[distinct++] = pg[k];
+            }
+            gc_local_pages_rooted += distinct;
+            free(pg);
+        }
+    }
     // Roots 3: declared roots, thread and global.
     t->thread_roots_declaration_func(t->thread_roots_context, gc_local_mark_slot);
     declare_roots_yafl(gc_local_mark_slot);
@@ -1967,6 +1996,11 @@ static NOINLINE void gc_local_collect(void) {
         }
     }
 
+    struct timespec tc0, tc1;
+    if (UNLIKELY(gc_stats_enabled)) {
+        clock_gettime(CLOCK_MONOTONIC, &tc0);
+        gc_local_pages_survived += np - freed;
+    }
     // Charge the global collector for what the nursery could NOT reclaim:
     // every page promoted out of it, once, when it leaves. (Charging fresh
     // pages net of freed ones missed survivors on REUSED cache pages: a
@@ -1980,6 +2014,10 @@ static NOINLINE void gc_local_collect(void) {
             if (!gc_fsa()) break;
     }
     t->local_fresh_pages = 0;
+    if (UNLIKELY(gc_stats_enabled)) {
+        clock_gettime(CLOCK_MONOTONIC, &tc1);
+        gc_local_charge_ns += (uint64_t)((tc1.tv_sec - tc0.tv_sec) * 1000000000LL + (tc1.tv_nsec - tc0.tv_nsec));
+    }
 
     // Trim the page cache back to mmap — only while no mark can be in flight.
     if (gc_local_cache_n > GC_LOCAL_CACHE_KEEP
@@ -2101,6 +2139,12 @@ EXPORT void gc_local_report(FILE *out) {
             (unsigned long long)gc_local_trigger_max_seen, (unsigned long long)gc_local_suspensions,
             (unsigned long long)gc_local_stores_nursery, (unsigned long long)gc_local_stores_mutable,
             (unsigned long long)gc_local_escapes);
+    fprintf(out, "[GC LOCAL2] own_time=%.3fs (of which stack_scan=%.3fs) charged_global_steps=%.3fs "
+                 "direct_roots=%llu (stack=%llu) pages_holding_direct_roots=%llu survivor_pages=%llu\n",
+            (double)(gc_local_ns - gc_local_charge_ns) / 1e9, (double)gc_local_stack_ns / 1e9,
+            (double)gc_local_charge_ns / 1e9,
+            (unsigned long long)gc_local_roots_direct, (unsigned long long)gc_local_roots_stack,
+            (unsigned long long)gc_local_pages_rooted, (unsigned long long)gc_local_pages_survived);
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
