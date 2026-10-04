@@ -514,6 +514,14 @@ typedef struct page_head {
                            // first prune is force-stable via birth
                            // protection, so it only STARTS the clock).
                            // Drives volume-based promotion.
+    uint32_t local_epoch;  // Thread-local nursery (prototype, YAFL_LOCAL_GC):
+                           // the owning thread's nursery epoch while this page
+                           // is one of its birth-protected pages, 0 = not
+                           // nursery (relocation targets, pre-start pages).
+                           // A root scan retires every page by moving the
+                           // thread's epoch on. See gc_local_collect.
+    uint32_t mutable_index; // Slot in the mutable-page registry (mutable pages).
+    bitmap_t local_mark;   // Nursery collection's mark bits (owner-only).
 
 } __attribute__((aligned(GC_SLOT_SIZE))) page_head_t;
 
@@ -577,6 +585,7 @@ typedef struct {
     _Atomic(int_fast32_t) safe_point_request;   // GC_SAFE_POINT_* bits
     bump_pointers_t region_mutable;
     bump_pointers_t region_immutable;
+    bool local_active;   // thread-local nursery collecting right now (prototype)
 } gc_alloc_tl_t;
 EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
 
@@ -712,9 +721,16 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 
 #define GC_SAFE_POINT()\
     do { if (UNLIKELY(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed))) _gc_safe_point2(); } while (false)
+// Thread-local nursery (prototype): a non-fresh pointer store may install a
+// young pointer into an older container; the nursery must treat that slot as
+// a root (gc_local_note_slot filters to the containers that need it).
+EXTERN bool gc_local_enabled;
+EXTERN void gc_local_note_slot(object_t **slot, ptr_mask_t mask);
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
+        if (UNLIKELY(gc_alloc_tl.local_active))\
+            gc_local_note_slot((object_t**)&(field), (mask));\
     } while (false)
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value); } while (false)

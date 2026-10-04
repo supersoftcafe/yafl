@@ -126,6 +126,15 @@ add_yafl_test(test_gc_gen)
 # and majors demoting DIRTY old pages (whose force-mark otherwise retains
 # their garbage forever — the bug that made yspell abort in any heap < 1 GiB).
 add_yafl_test(test_gc_pressure)
+# The same GC tests with the thread-local nursery prototype collecting every
+# 2 pages (YAFL_LOCAL_GC; one worker only). test_gc_gen and
+# test_gc_late_pin_race are left out by design: they drive promotion with
+# throwaway filler, which the nursery reclaims without advancing the clock.
+foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_pressure test_pin test_large_objects test_str test_io_stress)
+    add_test(NAME ${t}_nursery COMMAND ${t})
+    set_tests_properties(${t}_nursery PROPERTIES ENVIRONMENT
+        "YAFL_GC_POISON=1;YAFL_LOCAL_GC=1;YAFL_LOCAL_GC_PAGES=2;YAFL_THREADS=1")
+endforeach()
 # test_gc_fwd_chain: compaction forwarding chains (A -> B -> C via a head stub
 # pinned by a conservative stack slot) must path-compress when scanned — the
 # head's forward word snaps to the tail and the bypassed middle stub's page

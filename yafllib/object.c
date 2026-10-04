@@ -153,6 +153,14 @@ bool gc_stats_enabled  = false;
 // single point — page promotion — so with it off no page ever becomes old and
 // the skip paths, dirty-old handling and major trigger are all inert.
 static bool gc_gen_enabled    = true;
+// Thread-local nursery (prototype): YAFL_LOCAL_GC=1 requests it; it is only
+// switched on when the program runs ONE worker (gc_start checks). Trigger:
+// every YAFL_LOCAL_GC_PAGES nursery pages taken since the last collection.
+static bool     gc_local_requested = false;
+static unsigned gc_local_trigger   = 32;        // the configured (minimum) trigger
+static thread_local unsigned gc_local_trigger_now = 0;   // adaptive, per thread
+enum { GC_LOCAL_TRIGGER_MAX = 1024 };
+EXPORT bool     gc_local_enabled   = false;
 static void gc_read_config(void) {
     const char *e;
     if ((e = getenv("YAFL_GC_STEP_PAGES")) != NULL) {
@@ -172,6 +180,9 @@ static void gc_read_config(void) {
     gc_poison_enabled = (e = getenv("YAFL_GC_POISON")) && e[0] && e[0] != '0';
     gc_stats_enabled  = getenv("YAFL_GC_STATS") != NULL;
     gc_gen_enabled    = !((e = getenv("YAFL_GC_GEN")) && e[0] == '0');
+    gc_local_requested = (e = getenv("YAFL_LOCAL_GC")) && e[0] && e[0] != '0';
+    if ((e = getenv("YAFL_LOCAL_GC_PAGES")) != NULL && atoi(e) > 0)
+        gc_local_trigger = (unsigned)atoi(e);
 }
 
 
@@ -692,9 +703,28 @@ static void gc_occupancy_account(gc_page_t *page) {
     }
 }
 
+static NOINLINE_DEBUG gc_page_t* gc_page_alloc_impl(unsigned page_count, bool drive);
 static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
+    return gc_page_alloc_impl(page_count, true);
+}
+
+// A page for the thread-local nursery: no pacing step and no clock tick —
+// nursery allocation is collected by its own thread, and only what SURVIVES
+// that (gc_local_collect's net growth) is charged to the global collector.
+// Near a full heap it falls back to the ordinary, collector-driving path.
+static gc_page_t* gc_page_alloc_nursery(void) {
+    if (stage != GC_STAGE_NOT_STARTED) {
+        size_t total = memory_total_pages();
+        size_t reserve = 4 * (total / 64 > 64 ? total / 64 : 64);
+        if (memory_count() + 1 > total - reserve)
+            return gc_page_alloc_impl(1, true);
+    }
+    return gc_page_alloc_impl(1, false);
+}
+
+static NOINLINE_DEBUG gc_page_t* gc_page_alloc_impl(unsigned page_count, bool drive) {
     gc_stats_tick();
-    if (!gc_debug_manual_mode) {
+    if (drive && !gc_debug_manual_mode) {
         // The collection rate is linked directly to the allocation rate:
         // one gc_fsa step per page allocated, its work drawn from the
         // allocation-clock credit (see the pacing comment at the top). Safe
@@ -754,7 +784,8 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
         }
     }
 
-    atomic_fetch_add_explicit(&gc_alloc_clock, page_count, memory_order_relaxed);
+    if (drive)
+        atomic_fetch_add_explicit(&gc_alloc_clock, page_count, memory_order_relaxed);
 
     // memory_pages_alloc hands back pages with UNDEFINED contents (see
     // claimed_run): the header must be zeroed here, and object slots are
@@ -776,8 +807,48 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc(unsigned page_count) {
     return page;
 }
 
+// ── mutable-page registry (thread-local nursery prototype) ──────────────────
+// Every live mutable page, so a nursery collection can treat every mutable
+// object as a root without walking the collector's page lists (which parallel
+// stages hold claimed). Mutable objects are where an older object can come to
+// point at a young one; registering them all is the conservative prototype
+// stand-in for an insertion barrier on runtime stores.
+static gc_page_t      **gc_mutable_pages = NULL;
+static size_t           gc_mutable_n = 0, gc_mutable_cap = 0;
+static _Atomic(bool)    gc_mutable_lock = false;
+static void gc_mutable_lock_take(void) {
+    for (;;) {
+        bool expected = false;
+        if (atomic_compare_exchange_weak(&gc_mutable_lock, &expected, true)) return;
+        cpu_relax();
+    }
+}
+static void gc_mutable_register(gc_page_t *page) {
+    gc_mutable_lock_take();
+    if (gc_mutable_n == gc_mutable_cap) {
+        gc_mutable_cap = gc_mutable_cap ? gc_mutable_cap * 2 : 256;
+        gc_mutable_pages = realloc(gc_mutable_pages, gc_mutable_cap * sizeof(gc_page_t*));
+        if (!gc_mutable_pages) abort_on_out_of_memory();
+    }
+    page->head.mutable_index = (uint32_t)gc_mutable_n;
+    gc_mutable_pages[gc_mutable_n++] = page;
+    atomic_store(&gc_mutable_lock, false);
+}
+static void gc_mutable_unregister(gc_page_t *page) {
+    gc_mutable_lock_take();
+    size_t i = page->head.mutable_index;
+    if (i < gc_mutable_n && gc_mutable_pages[i] == page) {
+        gc_page_t *last = gc_mutable_pages[--gc_mutable_n];
+        gc_mutable_pages[i] = last;
+        last->head.mutable_index = (uint32_t)i;
+    }
+    atomic_store(&gc_mutable_lock, false);
+}
+
 static NOINLINE_DEBUG void gc_page_free(gc_page_t* page) {
     GC_STAT_BUMP(gc_stat_pages_freed);
+    if (page->head.mutable)
+        gc_mutable_unregister(page);
     // DIAGNOSTIC: how long did an evacuated-from page outlive its evacuation?
     // It should die almost immediately — it holds only forwarding stubs, and
     // once every referrer has been snapped to the target nothing marks them.
@@ -827,6 +898,9 @@ EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_fun
 // fresh page's slot region is exactly MAX_OBJECT_SIZE). RAW: no zeroing here —
 // object_alloc_fast zeroes at its call site (where the C compiler can elide),
 // and array_create's pointer-free path zeroes the header slots alone.
+static void gc_local_collect(void);
+static gc_page_t *gc_local_take_page(void);
+
 EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
     size_t actual_size = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
 
@@ -838,6 +912,8 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         size_t page_count = (sizeof(page_head_t) + actual_size + GC_PAGE_SIZE - 1) / GC_PAGE_SIZE;
         gc_page_t* page = gc_page_alloc(page_count);
         page->head.mutable = is_mutable;
+        page->head.local_epoch = gc_thread_info.in_relocation ? 0 : gc_thread_info.local_epoch;
+        if (is_mutable) gc_mutable_register(page);
         page->head.objects.a[0] = 1;
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
         // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
@@ -854,8 +930,25 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         return page->slots;
     }
 
-    gc_page_t* new_page = gc_page_alloc(1);
+    // Thread-local nursery: every so many nursery pages, collect the nursery
+    // first — the pages it frees come straight back as this refill, still
+    // warm, and without touching the page allocator or the pacing clock.
+    gc_page_t* new_page = NULL;
+    if (gc_local_enabled && !gc_thread_info.in_relocation && gc_thread_info.local_epoch != 0) {
+        if (gc_local_trigger_now == 0) gc_local_trigger_now = gc_local_trigger;
+        if (++gc_thread_info.local_pages_since >= gc_local_trigger_now)
+            gc_local_collect();
+        new_page = gc_local_take_page();
+        if (new_page == NULL) {
+            new_page = gc_page_alloc_nursery();
+            gc_thread_info.local_fresh_pages++;
+        }
+    }
+    if (new_page == NULL)
+        new_page = gc_page_alloc(1);
     new_page->head.mutable = is_mutable;
+    new_page->head.local_epoch = gc_thread_info.in_relocation ? 0 : gc_thread_info.local_epoch;
+    if (is_mutable) gc_mutable_register(new_page);
 
     bump_pointers_t *bp = is_mutable
         ? &gc_alloc_tl.region_mutable
@@ -964,6 +1057,8 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
     ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
+    if (UNLIKELY(gc_alloc_tl.local_active))
+        gc_local_note_slot(&((object_t**)prev)[slot], 1);
     object_unpin(prev);                          // prev is now frozen
     return true;
 }
@@ -1172,6 +1267,8 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     while (!atomic_compare_exchange_weak(&threads, &gc_thread_info.next, &gc_thread_info));
 }
 
+static void *gc_relocation_alloc(size_t size);
+
 static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // Runtime threshold (YAFL_GC_COMPACT_PERCENT); 0 disables compaction.
     const unsigned pct = gc_compact_percent;
@@ -1258,7 +1355,9 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // it must contain no allocation. A target that goes unused because
         // the claim lost is ordinary garbage, collected next cycle; that only
         // happens under genuine contention, which is rare.
-        object_t *target = (object_t*)object_alloc_fast(size, false);
+        object_t *target = gc_alloc_tl.local_active
+            ? (object_t*)gc_relocation_alloc(size)
+            : (object_t*)object_alloc_fast(size, false);
 
         // Claim: CAS the vtable word to pinned. Fails if a mutator holds the
         // pin (mid-write — leave the object where it is, exactly as the
@@ -1331,6 +1430,529 @@ static bool gc_object_is_on_heap_fast(object_t *object) {
     // vtable word be an ordinary pointer: heap-vs-static needs no tag bit.
     return ((intptr_t)object & PTR_TAG_MASK) == 0          // No packed data: rejects PTR_TAG_TASK (0x1), PTR_TAG_INTEGER (0x2), and PTR_TAG_STRING (0x4)
         && (size_t)((char*)object - _memory_heap_base) < _memory_heap_bytes;
+}
+
+static inline long bitmap_prev_set(const bitmap_t* bm, long slot) {
+    long wi = slot / GC_MASK_SIZE;
+    long bi = slot % GC_MASK_SIZE;
+    mask_bits_t w = bm->a[wi];
+    if (bi != GC_MASK_SIZE - 1)
+        w &= (((mask_bits_t)1 << (bi + 1)) - 1);
+    for (;;) {
+        if (w) return wi * GC_MASK_SIZE + (GC_MASK_SIZE - 1 - (long)__builtin_clzll(w));
+        if (--wi < 0) return -1;
+        w = bm->a[wi];
+    }
+}
+
+// ═══ Thread-local nursery — PROTOTYPE (YAFL_LOCAL_GC=1, one worker only) ════
+//
+// The nursery is a thread's pages since its last root scan (its new_pages,
+// stamped with local_epoch). They are birth-protected: no cycle scans or
+// prunes them until that root scan takes them. So the owning thread may trace
+// them itself, at any safe point, and free every page holding nothing live —
+// with no handshake, at a cost proportional to what survives — and reuse those
+// pages for its next refills without touching the page allocator or the
+// pacing clock. The global collector only ever sees what survived.
+//
+// WHY A LOCAL TRACE IS ENOUGH. Objects are immutable once constructed, so an
+// object can only point at objects that existed before it. Everything that
+// can point INTO the nursery from outside is therefore one of:
+//   * this thread's stack and registers (conservative scan);
+//   * declared roots (global and thread);
+//   * a MUTABLE object — every one, wherever it lives (the registry above);
+//   * a slot written after a safe point into an OLDER container — a
+//     construction straddling a root scan, a late pin, a builder link:
+//     recorded by gc_local_note_slot from the write barrier and the runtime's
+//     late-write paths;
+//   * an object the GLOBAL collector has already marked (a root snapshot or
+//     the allocate-black window): it will be traced by that cycle, so its
+//     referents must survive whether or not the nursery finds them.
+// Compaction copies of older objects go to their own region (never nursery),
+// since their referrers are older objects.
+//
+// WHAT FREEING MUST GUARANTEE. Dead objects on surviving pages are struck out
+// of the page's `objects` bitmap: nothing (a stale conservative stack word, a
+// later global trace) can resolve to them again, so a pointer they hold into
+// a freed page is never followed.
+//
+// One worker only: with several, another thread's marker could be mid-trace
+// through a pointer into a page freed here. That needs a quarantine (or a
+// handshake) and is out of scope for this prototype.
+
+static _Atomic(uint64_t) gc_local_runs = 0, gc_local_pages_seen = 0, gc_local_pages_freed = 0,
+                         gc_local_objs_marked = 0, gc_local_ns = 0, gc_local_cache_hits = 0,
+                         gc_local_remembered_max = 0, gc_local_mutable_objs = 0,
+                         gc_local_slots_noted = 0, gc_local_charged = 0,
+                         gc_local_promoted = 0, gc_local_trigger_max_seen = 0,
+                         gc_local_suspensions = 0, gc_local_stores_nursery = 0,
+                         gc_local_stores_mutable = 0;
+static _Atomic(uint32_t) gc_local_epoch_next = 1;
+
+enum { GC_LOCAL_CACHE_MAX = 512 };
+static thread_local gc_page_t *gc_local_cache[GC_LOCAL_CACHE_MAX];
+static thread_local unsigned   gc_local_cache_n = 0;
+static thread_local object_t **gc_local_stack = NULL;     // mark worklist
+static thread_local size_t     gc_local_stack_n = 0, gc_local_stack_cap = 0;
+static thread_local gc_page_t **gc_local_pages = NULL;    // this collection's nursery
+static thread_local size_t     gc_local_pages_cap = 0;
+
+static uint32_t gc_local_new_epoch(void) {
+    uint32_t e;
+    do { e = atomic_fetch_add(&gc_local_epoch_next, 1); } while (e == 0);
+    return e;
+}
+
+static inline bool gc_local_page_is_nursery(gc_page_t *page) {
+    return page->head.tag == PAGE_MAGIC_NUMBER
+        && page->head.local_epoch != 0
+        && page->head.local_epoch == gc_thread_info.local_epoch;
+}
+
+static void gc_local_push(object_t *o) {
+    if (gc_local_stack_n == gc_local_stack_cap) {
+        gc_local_stack_cap = gc_local_stack_cap ? gc_local_stack_cap * 2 : 4096;
+        gc_local_stack = realloc(gc_local_stack, gc_local_stack_cap * sizeof(object_t*));
+        if (!gc_local_stack) abort_on_out_of_memory();
+    }
+    gc_local_stack[gc_local_stack_n++] = o;
+}
+
+// A candidate pointer (precise or conservative). Interior pointers resolve to
+// the nearest object start at or before them, exactly as the root scan does.
+static void gc_local_mark_candidate(object_t *object) {
+    if (object == NULL
+        || ((uintptr_t)object & (sizeof(void*) - 1)) != 0
+        || (size_t)((char*)object - _memory_heap_base) >= _memory_heap_bytes)
+        return;
+    // The page: a mask for any pointer into a page's own slots (the common
+    // case — every object start, and any interior pointer short of a run's
+    // body pages); the page map only when the masked page is no page head.
+    gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (page->head.tag != PAGE_MAGIC_NUMBER) {
+        page = (gc_page_t*)memory_pages_alloc_head_of(object);
+        if (page == NULL) return;
+    }
+    if (!gc_local_page_is_nursery(page))
+        return;
+    ptrdiff_t byte_off = (char*)object - (char*)page->slots;
+    if (byte_off < 0)
+        return;
+    long slot = byte_off / GC_SLOT_SIZE;
+    if (slot >= (long)SLOTS_PER_PAGE)
+        slot = SLOTS_PER_PAGE - 1;
+    long containing = bitmap_prev_set(&page->head.objects, slot);
+    if (containing < 0)
+        return;
+    if (bitmap_test(&page->head.local_mark, (unsigned)containing))
+        return;
+    bitmap_fetch_set(&page->head.local_mark, (unsigned)containing);
+    gc_local_push((object_t*)&page->slots[containing]);
+}
+
+static void gc_local_mark_range(object_t **p, object_t **end) {
+    for (; p < end; p++) gc_local_mark_candidate(*p);
+}
+
+static void gc_local_mark_slot(object_t **slot) {
+    gc_local_mark_candidate(*slot);
+}
+
+// Every pointer field of one object (fixed fields and array payload).
+static void gc_local_scan_fields(object_t *object) {
+    vtable_t *vt = vtable_untag(object->vtable);
+    if (vtable_is_forward(object->vtable))
+        return;   // a forwarded husk (never in the nursery): its copy is older
+    GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
+    while (m) {
+        unsigned i = __builtin_ctzll(m); m &= m - 1;
+        gc_local_mark_candidate(slots[i]);
+    }
+    if (vt->array_el_pointer_locations) {
+        uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
+        char *array = ((char*)object) + vt->object_size;
+        for (; len-- > 0; array += vt->array_el_size) {
+            ptr_mask_t am = vt->array_el_pointer_locations;
+            while (am) {
+                unsigned i = __builtin_ctzll(am); am &= am - 1;
+                gc_local_mark_candidate(((object_t**)array)[i]);
+            }
+        }
+    }
+}
+
+static void gc_local_scan_page_objects(gc_page_t *page) {
+    for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
+        mask_bits_t bits = page->head.objects.a[index];
+        while (bits) {
+            unsigned slot = __builtin_ctzll(bits) + index * GC_MASK_SIZE;
+            bits &= bits - 1;
+            gc_local_scan_fields((object_t*)&page->slots[slot]);
+            if (UNLIKELY(gc_stats_enabled)) gc_local_mutable_objs++;
+        }
+    }
+}
+
+static void gc_local_remember(object_t **slot, ptr_mask_t mask) {
+    struct gc_thread_info *t = &gc_thread_info;
+    if (t->remembered_n == t->remembered_cap) {
+        t->remembered_cap = t->remembered_cap ? t->remembered_cap * 2 : 256;
+        t->remembered = realloc(t->remembered, t->remembered_cap * sizeof(*t->remembered));
+        if (!t->remembered) abort_on_out_of_memory();
+    }
+    t->remembered[t->remembered_n].slot = slot;
+    t->remembered[t->remembered_n].mask = mask;
+    t->remembered_n++;
+}
+
+// The page that stays in the nursery across a collection (being bumped into)
+// while every other survivor is promoted; see gc_local_trace_fields.
+static thread_local gc_page_t *gc_local_staying = NULL;
+
+// Trace one survivor's fields. If the survivor is about to be PROMOTED and a
+// field points at an object that STAYS in the nursery, that edge must become
+// a remembered slot: it is old-to-new (a late write — a list-builder link,
+// a once-publication, a construction straddling a safe point — made while
+// both were nursery, so no barrier recorded it), and after promotion nothing
+// else would lead the next collection to its target.
+static void gc_local_trace_fields(object_t *object) {
+    // An object START: its own page head is at the mask (multi-page objects
+    // start on their head page too).
+    gc_page_t *opage = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    bool promoting = opage != gc_local_staying;
+    vtable_t *vt = vtable_untag(object->vtable);
+    GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
+    while (m) {
+        unsigned i = __builtin_ctzll(m); m &= m - 1;
+        object_t *child = slots[i];
+        gc_local_mark_candidate(child);
+        if (promoting && gc_local_staying != NULL
+                && (size_t)((char*)child - _memory_heap_base) < _memory_heap_bytes
+                && (gc_page_t*)((uintptr_t)child & ~(uintptr_t)(GC_PAGE_SIZE - 1)) == gc_local_staying)
+            gc_local_remember(&slots[i], 1);
+    }
+    if (vt->array_el_pointer_locations) {
+        uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
+        char *array = ((char*)object) + vt->object_size;
+        for (; len-- > 0; array += vt->array_el_size) {
+            ptr_mask_t am = vt->array_el_pointer_locations;
+            while (am) {
+                unsigned i = __builtin_ctzll(am); am &= am - 1;
+                object_t *child = ((object_t**)array)[i];
+                gc_local_mark_candidate(child);
+                if (promoting && gc_local_staying != NULL
+                        && (size_t)((char*)child - _memory_heap_base) < _memory_heap_bytes
+                        && (gc_page_t*)((uintptr_t)child & ~(uintptr_t)(GC_PAGE_SIZE - 1)) == gc_local_staying)
+                    gc_local_remember(&((object_t**)array)[i], 1);
+            }
+        }
+    }
+}
+
+EXPORT void gc_local_note_slot(object_t **slot, ptr_mask_t mask) {
+    if (!gc_local_enabled || gc_thread_info.local_epoch == 0)
+        return;
+    if ((size_t)((char*)slot - _memory_heap_base) >= _memory_heap_bytes)
+        return;   // static storage: reached through the declared roots
+    gc_page_t *page = (gc_page_t*)((uintptr_t)slot & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (page->head.tag == PAGE_MAGIC_NUMBER && page->head.local_epoch == gc_thread_info.local_epoch) {
+        if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;
+        return;   // nursery container: traced
+    }
+    if (page->head.tag == PAGE_MAGIC_NUMBER && page->head.mutable) {
+        if (UNLIKELY(gc_stats_enabled)) gc_local_stores_mutable++;
+        return;   // mutable: every mutable object is a root (prototype)
+    }
+    // An older (or multi-page body) container: remember the slot.
+    gc_local_remember(slot, mask);
+    if (UNLIKELY(gc_stats_enabled)) gc_local_slots_noted++;
+}
+
+static gc_page_t *gc_local_take_page(void) {
+    if (gc_local_cache_n == 0)
+        return NULL;
+    gc_page_t *page = gc_local_cache[--gc_local_cache_n];
+    memset(&page->head, 0, sizeof(page_head_t));
+    page->head.pages = 1;
+    page->head.stable_since = UINT64_MAX;
+    atomic_thread_fence(memory_order_release);
+    page->head.tag = PAGE_MAGIC_NUMBER;
+    gc_local_cache_hits++;
+    return page;
+}
+
+static void gc_local_release_page(gc_page_t *page) {
+    list_unlink((list_element_t*)&page->head.list);
+    if (gc_poison_enabled)
+        memset(page->slots, 0x42, sizeof(page->slots));
+    if (gc_local_cache_n < GC_LOCAL_CACHE_MAX) {
+        page->head.tag = 0;   // stale candidates must not resolve into it
+        gc_local_cache[gc_local_cache_n++] = page;
+    } else {
+        gc_page_free(page);
+    }
+}
+
+static bool gc_in_fsa_now(void);
+
+static NOINLINE void gc_local_collect(void) {
+    struct gc_thread_info *t = &gc_thread_info;
+    t->local_pages_since = 0;
+    if (gc_in_fsa_now() || t->local_epoch == 0)
+        return;
+    struct timespec t0, t1;
+    if (UNLIKELY(gc_stats_enabled)) clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    // The nursery: this thread's pages since its last root scan.
+    size_t np = 0;
+    for (list_element_t *node = t->new_pages.next; node != &t->new_pages; node = node->next) {
+        gc_page_t *page = (gc_page_t*)node;
+        if (!gc_local_page_is_nursery(page))
+            continue;
+        if (np == gc_local_pages_cap) {
+            gc_local_pages_cap = gc_local_pages_cap ? gc_local_pages_cap * 2 : 256;
+            gc_local_pages = realloc(gc_local_pages, gc_local_pages_cap * sizeof(gc_page_t*));
+            if (!gc_local_pages) abort_on_out_of_memory();
+        }
+        gc_local_pages[np++] = page;
+        bitmap_reset_all(&page->head.local_mark);
+    }
+    gc_local_stack_n = 0;
+
+    // Roots 1: objects the global collector already holds marked (they will
+    // be traced by its cycle), and pinned objects (a runtime primitive is
+    // mid-write through a raw pointer). Mutable nursery objects are roots too.
+    for (size_t k = 0; k < np; ++k) {
+        gc_page_t *page = gc_local_pages[k];
+        for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
+            mask_bits_t bits = page->head.objects.a[index]
+                & (page->head.mutable ? ~(mask_bits_t)0
+                   : (page->head.scanner.seen.a[index] | page->head.scanner.atomic_seen.a[index]));
+            mask_bits_t objs = page->head.objects.a[index];
+            while (objs) {
+                unsigned b = __builtin_ctzll(objs); objs &= objs - 1;
+                object_t *o = (object_t*)&page->slots[b + index * GC_MASK_SIZE];
+                if (vtable_is_pinned(o->vtable)) bits |= (mask_bits_t)1 << b;
+            }
+            while (bits) {
+                unsigned b = __builtin_ctzll(bits); bits &= bits - 1;
+                unsigned slot = b + index * GC_MASK_SIZE;
+                if (!bitmap_test(&page->head.local_mark, slot)) {
+                    bitmap_fetch_set(&page->head.local_mark, slot);
+                    gc_local_push((object_t*)&page->slots[slot]);
+                }
+            }
+        }
+    }
+    // Roots 2: this thread's stack and registers.
+    gc_update_stack_address_and_registers();
+    gc_local_mark_range(t->stack_lower_ptr, t->stack_upper_ptr);
+    gc_local_mark_range((object_t**)&t->saved_registers[0], (object_t**)&t->saved_registers[1]);
+    gc_local_mark_range((object_t**)&t->saved_callee_regs[0], (object_t**)&t->saved_callee_regs[8]);
+    // Roots 3: declared roots, thread and global.
+    t->thread_roots_declaration_func(t->thread_roots_context, gc_local_mark_slot);
+    declare_roots_yafl(gc_local_mark_slot);
+    // Roots 4: every mutable object outside the nursery.
+    gc_mutable_lock_take();
+    for (size_t k = 0; k < gc_mutable_n; ++k)
+        if (!gc_local_page_is_nursery(gc_mutable_pages[k]))
+            gc_local_scan_page_objects(gc_mutable_pages[k]);
+    atomic_store(&gc_mutable_lock, false);
+    // Roots 5: remembered slots in older containers.
+    for (size_t k = 0; k < t->remembered_n; ++k) {
+        ptr_mask_t m = t->remembered[k].mask;
+        while (m) {
+            unsigned i = __builtin_ctzll(m); m &= m - 1;
+            gc_local_mark_candidate(t->remembered[k].slot[i]);
+        }
+    }
+    if (t->remembered_n > gc_local_remembered_max) gc_local_remembered_max = t->remembered_n;
+
+    // Trace.
+    gc_local_staying = t->alloc->region_immutable.base
+        ? (gc_page_t*)((uintptr_t)t->alloc->region_immutable.base & ~(uintptr_t)(GC_PAGE_SIZE - 1)) : NULL;
+    if (gc_local_staying && !gc_local_page_is_nursery(gc_local_staying))
+        gc_local_staying = NULL;
+    uint64_t marked = 0;
+    while (gc_local_stack_n) {
+        object_t *o = gc_local_stack[--gc_local_stack_n];
+        gc_local_trace_fields(o);
+        marked++;
+    }
+
+    // Sweep: free every page with nothing live; on the rest, strike the dead
+    // out of the objects bitmap. Never the pages being bumped into, mutable
+    // pages or multi-page objects.
+    gc_page_t *bump_imm = t->alloc->region_immutable.base
+        ? (gc_page_t*)((uintptr_t)t->alloc->region_immutable.base & ~(uintptr_t)(GC_PAGE_SIZE - 1)) : NULL;
+    uint64_t freed = 0, promoted = 0;
+    for (size_t k = 0; k < np; ++k) {
+        gc_page_t *page = gc_local_pages[k];
+        if (page->head.mutable || page->head.pages > 1) {
+            // Never freed here; promoted once traced (mutable ones are roots
+            // regardless, so promotion only stops re-tracing them).
+            if (page != bump_imm) { page->head.local_epoch = 0; promoted++; }
+            continue;
+        }
+        bool live = false;
+        for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
+            if (page->head.local_mark.a[i]) { live = true; break; }
+        if (!live && page != bump_imm) {
+            gc_local_release_page(page);
+            freed++;
+            continue;
+        }
+        // Survivors leave the nursery (PROMOTION): the next collection traces
+        // only what is newer. Sound because a survivor can only point at
+        // objects that existed before it — older survivors, promoted with it,
+        // or older still — while anything stored into it from now on is a
+        // non-fresh store (a safe point has passed) and is noted by the
+        // barrier. The page being bumped into stays: newer objects keep
+        // landing on it.
+        if (page != bump_imm) {
+            page->head.local_epoch = 0;
+            promoted++;
+        }
+        for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i) {
+            mask_bits_t dead = page->head.objects.a[i] & ~page->head.local_mark.a[i];
+            if (dead && gc_poison_enabled) {
+                mask_bits_t d = dead;
+                while (d) {
+                    unsigned b = __builtin_ctzll(d); d &= d - 1;
+                    object_t *o = (object_t*)&page->slots[b + i * GC_MASK_SIZE];
+                    size_t sz = object_get_size(o);
+                    memset(o, 0x42, sz);
+                }
+            }
+            page->head.objects.a[i] &= page->head.local_mark.a[i];
+        }
+    }
+
+    // Charge the global collector for what the nursery could NOT reclaim:
+    // fresh pages taken since the last collection, net of pages freed now.
+    // Each charged page buys one paced step, exactly as gc_page_alloc would.
+    if (t->local_fresh_pages > freed) {
+        uint64_t net = t->local_fresh_pages - freed;
+        atomic_fetch_add_explicit(&gc_alloc_clock, net, memory_order_relaxed);
+        gc_local_charged += net;
+        for (uint64_t k = 0; k < net && !gc_debug_manual_mode; ++k)
+            if (!gc_fsa()) break;
+    }
+    t->local_fresh_pages = 0;
+
+    // After the sweep the only nursery page left is the one being bumped
+    // into; a remembered slot still matters only if it points there. Keep
+    // exactly those, so the list stays proportional to live old-to-new edges
+    // rather than growing between (now rare) root scans.
+    {
+        size_t keep = 0;
+        for (size_t k = 0; k < t->remembered_n; ++k) {
+            ptr_mask_t m = t->remembered[k].mask;
+            bool needed = false;
+            while (m && !needed) {
+                unsigned i = __builtin_ctzll(m); m &= m - 1;
+                object_t *v = t->remembered[k].slot[i];
+                needed = gc_local_staying != NULL
+                    && (size_t)((char*)v - _memory_heap_base) < _memory_heap_bytes
+                    && (gc_page_t*)((uintptr_t)v & ~(uintptr_t)(GC_PAGE_SIZE - 1)) == gc_local_staying;
+            }
+            if (needed) t->remembered[keep++] = t->remembered[k];
+        }
+        t->remembered_n = keep;
+    }
+
+    // Adapt: a nursery that frees little is costing tracing for nothing —
+    // collect less often (a larger window also gives objects longer to die);
+    // one that frees most of itself can afford to collect sooner again.
+    if (np > 0) {
+        if (freed * 4 < np && gc_local_trigger_now < GC_LOCAL_TRIGGER_MAX)
+            gc_local_trigger_now *= 2;
+        else if (freed * 2 > np && gc_local_trigger_now > gc_local_trigger)
+            gc_local_trigger_now /= 2;
+    }
+    if (gc_local_trigger_now > gc_local_trigger_max_seen) gc_local_trigger_max_seen = gc_local_trigger_now;
+
+    // Do no harm: a nursery that stays unproductive at its largest window is
+    // only adding tracing (and, in this prototype, a scan of every mutable
+    // object). Stand it down for a while — refills go back to the ordinary
+    // collector-driving path — and try again later.
+    t->local_unproductive = (np > 0 && freed * 20 < np) ? t->local_unproductive + 1 : 0;
+    if (np > 0 && freed * 4 >= np)
+        t->local_backoff = 0;              // productive: forget past stand-downs
+    if (t->local_unproductive >= 4 && gc_local_trigger_now >= GC_LOCAL_TRIGGER_MAX) {
+        t->local_epoch = 0;
+        t->alloc->local_active = false;
+        // 16, 32, 64 ... root scans: a program whose young data genuinely
+        // survives stops paying for the nursery almost entirely.
+        t->local_suspended = 16u << (t->local_backoff < 16 ? t->local_backoff : 16);
+        t->local_backoff++;
+        t->local_unproductive = 0;
+        gc_local_trigger_now = gc_local_trigger;
+        gc_local_suspensions++;
+    }
+
+    gc_local_runs++;
+    gc_local_pages_seen += np;
+    gc_local_pages_freed += freed;
+    gc_local_promoted += promoted;
+    gc_local_objs_marked += marked;
+    if (UNLIKELY(gc_stats_enabled)) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        gc_local_ns += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000LL + (t1.tv_nsec - t0.tv_nsec));
+    }
+}
+
+// At this thread's root scan its nursery joins the collection pool: retire
+// it (new epoch), drop the remembered slots (their containers and values are
+// all in the pool now) and the relocation region (its page was taken too).
+static void gc_local_on_root_scan(struct gc_thread_info *t) {
+    if (t->local_epoch != 0)
+        t->local_epoch = gc_local_new_epoch();
+    else if (t->local_suspended != 0 && --t->local_suspended == 0)
+        t->local_epoch = gc_local_new_epoch();   // stood down: resume
+    t->alloc->local_active = t->local_epoch != 0;
+    t->remembered_n = 0;
+    t->local_pages_since = 0;
+    t->local_fresh_pages = 0;
+    t->reloc_bump = t->reloc_base = NULL;
+}
+
+// Compaction's evacuation target when the nursery is on (see the header note).
+static void *gc_relocation_alloc(size_t size) {
+    struct gc_thread_info *t = &gc_thread_info;
+    size_t actual = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+    if (t->reloc_bump == NULL || (size_t)(t->reloc_bump - t->reloc_base) < actual) {
+        gc_page_t *page = gc_page_alloc(1);
+        page->head.local_epoch = 0;
+        list_link(&t->new_pages, (list_element_t*)&page->head.list);
+        t->reloc_base = (char*)page->slots;
+        t->reloc_bump = (char*)(page->slots + SLOTS_PER_PAGE);
+    }
+    t->reloc_bump -= actual;
+    void *object = t->reloc_bump;
+    gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    bitmap_fetch_set(&page->head.objects, (unsigned)((slot_t*)object - page->slots));
+    if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
+        atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, (unsigned)((slot_t*)object - page->slots));
+    zero_object_slots(object, actual);
+    return object;
+}
+
+EXPORT void gc_local_report(FILE *out) {
+    if (!gc_local_requested) return;
+    fprintf(out, "[GC LOCAL] enabled=%d runs=%llu pages_seen=%llu pages_freed=%llu (%.1f%%) "
+                 "objs_marked=%llu cache_hits=%llu time=%.3fs remembered_max=%llu "
+                 "slots_noted=%llu mutable_objs_scanned=%llu charged_pages=%llu promoted=%llu trigger_max=%llu suspensions=%llu stores_nursery=%llu stores_mutable=%llu\n",
+            (int)gc_local_enabled,
+            (unsigned long long)gc_local_runs, (unsigned long long)gc_local_pages_seen,
+            (unsigned long long)gc_local_pages_freed,
+            gc_local_pages_seen ? 100.0 * (double)gc_local_pages_freed / (double)gc_local_pages_seen : 0.0,
+            (unsigned long long)gc_local_objs_marked, (unsigned long long)gc_local_cache_hits,
+            (double)gc_local_ns / 1e9, (unsigned long long)gc_local_remembered_max,
+            (unsigned long long)gc_local_slots_noted, (unsigned long long)gc_local_mutable_objs,
+            (unsigned long long)gc_local_charged, (unsigned long long)gc_local_promoted,
+            (unsigned long long)gc_local_trigger_max_seen, (unsigned long long)gc_local_suspensions,
+            (unsigned long long)gc_local_stores_nursery, (unsigned long long)gc_local_stores_mutable);
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
@@ -1554,18 +2176,6 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
 // Highest set bit ≤ slot in `bm`, or -1. The conservative scan's
 // interior-pointer resolution: the containing object is the nearest object
 // START at or before the addressed slot.
-static inline long bitmap_prev_set(const bitmap_t* bm, long slot) {
-    long wi = slot / GC_MASK_SIZE;
-    long bi = slot % GC_MASK_SIZE;
-    mask_bits_t w = bm->a[wi];
-    if (bi != GC_MASK_SIZE - 1)
-        w &= (((mask_bits_t)1 << (bi + 1)) - 1);
-    for (;;) {
-        if (w) return wi * GC_MASK_SIZE + (GC_MASK_SIZE - 1 - (long)__builtin_clzll(w));
-        if (--wi < 0) return -1;
-        w = bm->a[wi];
-    }
-}
 
 static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, object_t **range_end) {
     for (; range_ptr != range_end; range_ptr++) {
@@ -1642,6 +2252,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         // so this cycle's objects land after it rather than straddling onto a
         // taken page.
         list_move(&pages_to_scan, &thread->new_pages);
+        gc_local_on_root_scan(thread);
         thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
         thread->alloc->region_immutable.bump = thread->alloc->region_mutable.bump = NULL;
         // Scan stack and registers
@@ -2779,6 +3390,7 @@ static void gc_fsa_try_transition(enum gc_stage from) {
 }
 
 static thread_local bool gc_in_fsa = false;
+static bool gc_in_fsa_now(void) { return gc_in_fsa; }
 
 static NOINLINE_DEBUG bool gc_fsa_impl() {
     assert(gc_thread_info.thread_state == THREAD_STATE_RUNNING);
@@ -3016,6 +3628,20 @@ EXPORT void _gc_write_barrier2(object_t **field, ptr_mask_t mask) {
 EXPORT void gc_start() {
     assert(stage == GC_STAGE_NOT_STARTED);
     gc_read_config();
+    if (gc_local_requested) {
+        unsigned workers = 0;
+        for (struct gc_thread_info *t = threads; t != NULL; t = t->next) workers++;
+        if (workers == 1) {
+            // gc_start runs on the last thread to register — with one worker,
+            // that is the worker itself.
+            gc_thread_info.local_epoch = gc_local_new_epoch();
+            gc_alloc_tl.local_active = true;
+            gc_local_enabled = true;
+        } else {
+            fprintf(stderr, "[GC LOCAL] YAFL_LOCAL_GC needs exactly one worker "
+                            "(YAFL_THREADS=1); running without it\n");
+        }
+    }
     yafl_heapprof_init();
     if (gc_stats_enabled) {
         clock_gettime(CLOCK_MONOTONIC, &gc_stats_t0);

@@ -41,8 +41,11 @@ EXPORT object_t* yafl_cas_once(object_t* self, object_t* obj, int32_t slot,
     // so whoever sees the pointer also sees the node behind it fully built,
     // and readers deliberately do not take the pin.
     bool ok = (*field == NULL);
-    if (ok)
+    if (ok) {
         __atomic_store_n((uintptr_t*)field, (uintptr_t)value, __ATOMIC_RELEASE);
+        if (UNLIKELY(gc_alloc_tl.local_active))
+            gc_local_note_slot(field, 1);
+    }
     object_unpin(owner);
     return integer_from_int32_noalloc(ok ? 1 : 0);
 }

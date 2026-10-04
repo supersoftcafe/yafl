@@ -62,6 +62,23 @@ struct gc_thread_info {
     // well; caller-saved registers are already spilled to the scanned stack
     // by the C ABI before any call into the runtime.
     void      *saved_callee_regs[8];
+
+    // ── thread-local nursery (prototype, YAFL_LOCAL_GC; see gc_local_collect) ──
+    uint32_t local_epoch;          // stamp of this thread's nursery pages; 0 = off
+    uint32_t local_pages_since;    // nursery pages taken since the last collection
+    uint64_t local_fresh_pages;    // ...of which came from the page allocator
+    uint32_t local_unproductive;   // consecutive collections freeing < 5%
+    uint32_t local_suspended;      // root scans left before the nursery resumes
+    uint32_t local_backoff;        // consecutive stand-downs (exponential length)
+    // Slots in OLDER containers that received a pointer since the last root
+    // scan (gc_local_note_slot): nursery roots until the next root scan.
+    struct { object_t **slot; ptr_mask_t mask; } *remembered;
+    size_t remembered_n, remembered_cap;
+    // Compaction's evacuation targets get their own bump region, so a copy of
+    // an older object never lands on a nursery page (where older referrers,
+    // snapped to the copy, would point at a page the nursery believes no
+    // older object can reach).
+    char *reloc_bump, *reloc_base;
 };
 
 extern thread_local struct gc_thread_info gc_thread_info;
@@ -199,6 +216,7 @@ extern size_t gc_occ_sparse_fwd, gc_occ_sparse_pin, gc_occ_sparse_oth;
 extern size_t gc_snap_sparse_fwd, gc_snap_sparse_pin, gc_snap_sparse_oth;
 
 void gc_stats_tick(void);    // sampled [GC] progress line (called per 512 page allocs)
+void gc_local_report(FILE *out);   // [GC LOCAL] line (object.c)
 void gc_stats_report(void);  // [GC TIME] exit summary (atexit when stats enabled)
 
 // ── Debug module (gc_debug.c) ────────────────────────────────────────────────
