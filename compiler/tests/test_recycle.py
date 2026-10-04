@@ -40,8 +40,12 @@ def _run(c_code: str, level: int, env: dict[str, str] | None = None) -> tuple[in
                             *static_link_for(level), "-o", binary],
                            input=c_code, text=True, capture_output=True, timeout=60)
         assert r.returncode == 0, f"clang failed:\n{r.stderr}"
+        # One worker: the collector (and with it the [GC RECYCLE] exit report)
+        # starts when the LAST worker registers, and a short program on a
+        # loaded machine can finish before the others ever come up.
         run = subprocess.run([binary], capture_output=True, timeout=60,
-                             env={**os.environ, **(env or {})}, stdin=subprocess.DEVNULL)
+                             env={**os.environ, "YAFL_THREADS": "1", **(env or {})},
+                             stdin=subprocess.DEVNULL)
         return run.returncode, run.stdout.decode(), run.stderr.decode()
     finally:
         os.unlink(binary)
