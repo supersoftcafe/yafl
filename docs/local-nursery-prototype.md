@@ -274,6 +274,48 @@ Still open:
   yspell, whose churn the volume rule was written for. So must the adaptive
   nursery size: starting at 32 pages, it spends most of the run growing.
 
+### Follow-up: confirming the self-compile gain, and checking it elsewhere
+
+**Self-compile A/D/A/D:** A = nursery off; D = fixed 16 MB nursery with
+`YAFL_GC_PROMOTE_CAP=6144`. Two runs per leg, same binary, all 8 outputs
+byte-identical.
+
+| leg | run 1 | run 2 |
+|---|---|---|
+| A | 319.0 s / 1,418 MB | 303.7 s / 1,316 MB |
+| D | 248.7 s / 1,290 MB | 245.6 s / 1,343 MB |
+| A | 300.8 s / 1,292 MB | 303.5 s / 1,492 MB |
+| D | 244.7 s / 1,345 MB | 242.9 s / 1,279 MB |
+
+The median goes from 303.6 s to **245.1 s (−19%)**, with lower and steadier
+peak memory. Every D run beats every A run.
+
+**The other programs:** one worker, median of 5 runs, all outputs identical.
+
+| program | baseline | default nursery | fixed 16 MB + cap |
+|---|---|---|---|
+| b1 | 132 ms / 10 MB | 81 ms / 10 MB | 122 ms / 18 MB |
+| ylisp | 112 ms / 10 MB | 98 ms / 10 MB | 90 ms / 22 MB |
+| raytracer | 174 ms / 10 MB | 185 ms / 12 MB | 215 ms / 41 MB |
+| yaflc | 100 ms / 26 MB | 97 ms / 26 MB | 112 ms / 23 MB |
+| json_pretty | 18.4 s / 10 MB | 18.4 s / 13 MB | **37.7 s / 643 MB** |
+| yspell | 2.23 s / 32 MB | 2.29 s / 34 MB | 2.19 s / 42 MB |
+| par | 469 ms / 10 MB | 283 ms / 10 MB | **952 ms / 36 MB** |
+
+**The fixed size causes the regression, not the cap.** Single runs:
+
+| configuration | json_pretty | par |
+|---|---|---|
+| fixed 16 MB, no cap | 45.3 s | 0.99 s |
+| default nursery + cap | 23.3 s | 0.43 s |
+
+(The json_pretty figures had stats on, which slows them.) So a fixed
+large nursery is a self-compile tuning, not a default. The default adaptive
+nursery, with the charge at retirement, is the configuration that is
+neutral or better everywhere. The open question is the adaptive policy
+itself: the self-compile wants to start large, while json_pretty and par
+want small or stood-down nurseries.
+
 ### Soundness bugs found by the self-compile
 
 The first A/B run crashed in leg B. Poison runs on a stdlib-plus-`yaflc.yafl`
