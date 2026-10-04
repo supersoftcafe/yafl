@@ -520,8 +520,11 @@ typedef struct page_head {
                            // nursery (relocation targets, pre-start pages).
                            // A root scan retires every page by moving the
                            // thread's epoch on. See gc_local_collect.
-    uint32_t mutable_index; // Slot in the mutable-page registry (mutable pages).
     bitmap_t local_mark;   // Nursery collection's mark bits (owner-only).
+    bitmap_t local_escaped; // ESCAPED objects (any thread may set, atomically):
+                           // reachable from somewhere the owner's nursery
+                           // collection cannot see, so never freed by it.
+                           // Monotone until the owner's next root scan.
 
 } __attribute__((aligned(GC_SLOT_SIZE))) page_head_t;
 
@@ -725,15 +728,23 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 // young pointer into an older container; the nursery must treat that slot as
 // a root (gc_local_note_slot filters to the containers that need it).
 EXTERN bool gc_local_enabled;
+EXTERN volatile int gc_local_live;
 EXTERN void gc_local_note_slot(object_t **slot, ptr_mask_t mask);
+EXTERN void gc_local_escape(object_t *value);
+// Runs on EVERY thread while any thread's nursery is live (gc_local_live):
+// the escape rules are about who else can reach an object, not whose store
+// it is.
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
-        if (UNLIKELY(gc_alloc_tl.local_active))\
+        if (UNLIKELY(gc_local_live))\
             gc_local_note_slot((object_t**)&(field), (mask));\
     } while (false)
+// A value handed to the runtime or another thread (queues, completions,
+// lazy publication): for a nursery it ESCAPES, whatever the marker is doing.
 #define GC_MARK_SEEN(value)\
-    do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value); } while (false)
+    do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value);\
+         if (UNLIKELY(gc_local_live)) gc_local_escape((object_t*)(value)); } while (false)
 
 // ── The mutable-root contract ────────────────────────────────────────────────
 // Declared roots are scanned ONCE, at cycle open (the SATB snapshot). Any
@@ -756,10 +767,12 @@ INLINE void gc_root_overwrite(object_t** slot) {
     // forwarder compaction left); the shade must follow the chain — and may
     // snap the slot — exactly as the root scan itself does.
     if (UNLIKELY(gc_write_barrier_requested)) _gc_root_overwrite2(slot);
+    if (UNLIKELY(gc_local_live)) gc_local_escape(*slot);   // may be held elsewhere
 }
 // Returns its argument so compiler-emitted code can use it in value position.
 INLINE object_t* gc_root_publish(object_t* value) {
     if (UNLIKELY(gc_write_barrier_requested)) _gc_root_publish2(value);
+    if (UNLIKELY(gc_local_live)) gc_local_escape(value);
     return value;
 }
 

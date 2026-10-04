@@ -70,6 +70,7 @@ struct gc_thread_info {
     uint32_t local_unproductive;   // consecutive collections freeing < 5%
     uint32_t local_suspended;      // root scans left before the nursery resumes
     uint32_t local_backoff;        // consecutive stand-downs (exponential length)
+    bool     local_started;        // this worker has started its nursery
     // Slots in OLDER containers that received a pointer since the last root
     // scan (gc_local_note_slot): nursery roots until the next root scan.
     struct { object_t **slot; ptr_mask_t mask; } *remembered;
