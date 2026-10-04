@@ -16,3 +16,4 @@ This folder contains design and reference documentation for YAFL. These document
 | [Heap profiling](heap-profiling-design.md) | Live census by type → massif; sampled inuse_space by allocation site → pprof; instrument the collection boundary, never allocation counts |
 | [ArrayBuilder](array-builder-design.md) | Linear incremental `Array<T>` construction: pinned from alloc to seal, length starts at capacity and seal shortens, element stores inlined at monomorphisation |
 | [Containers](containers.md) | The container design law: no iteration on unordered containers; the six containers and what each is for; what was removed and why |
+| [Heap recycling (parked)](heap-recycling-design.md) | Reusing provably dead objects without the collector: stream representations, the String trick vs overwrite, safe reuse on a thread's unscanned pages, the caller-releases design with escape summaries, and what the prototype on `claude/recycling-prototype` measured |
