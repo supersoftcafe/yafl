@@ -316,6 +316,52 @@ neutral or better everywhere. The open question is the adaptive policy
 itself: the self-compile wants to start large, while json_pretty and par
 want small or stood-down nurseries.
 
+### A large nursery must never be worse than none
+
+The fixed-size regressions above were three interactions with the global
+collector, not costs inherent to a large nursery. All three are fixed:
+
+1. **Root scans were serviced late.** A nursery refill never ran a
+   collector step, so a pending root-scan request waited for the next
+   nursery collection. Until a thread's roots are scanned, everything it
+   allocates is born marked (allocate-black), and the nursery must keep
+   marked objects. With 1,024 pages, par kept 14M objects instead of about
+   1k. Requests are now serviced at every refill.
+2. **Charged steps ran in one burst.** A global SATB cycle then stayed
+   open across a whole nursery of mutator work, keeping everything live at
+   its start plus everything overwritten during it. json_pretty, which
+   overwrites async-frame fields on every read, reached 643 MB. The steps
+   are now owed and repaid one per refill.
+3. **The nursery was handed over uncollected.** A root scan passed young
+   garbage to the global collector, whose extra cycles retired the next
+   nursery sooner still. Each root scan now collects the nursery first, at
+   a refill or a safe point.
+
+After the fixes (one worker):
+
+| | par | json_pretty |
+|---|---|---|
+| no nursery | 0.46 s / 11 MB | 17.5 s / 11 MB |
+| default | 0.29 s / 11 MB | 16.8 s / 11 MB |
+| fixed 16 MB | 0.41 s / 19 MB | 17.1 s / 19 MB |
+| fixed 64 MB | 0.78 s / 67 MB | 17.6 s / 69 MB |
+
+The one remaining loss is physical. A 64 MB nursery cycles par's allocation
+through memory far larger than the cache, whereas no nursery keeps par's
+heap under 1 MB.
+
+The self-compile with these fixes (single runs, all outputs identical):
+
+| | wall | peak RSS |
+|---|---|---|
+| baseline | 301.6 / 311.7 s | 1.34 / 1.26 GB |
+| default nursery | 285.0 s | 1.35 GB |
+| fixed 16 MB | 282.2 s | 1.43 GB |
+| fixed 16 MB + promotion cap | **247.2 s** | 1.31 GB |
+
+Part of the earlier fixed-size gain came from the late, bursty collection
+these fixes removed. The promotion cap carries most of what remains.
+
 ### Soundness bugs found by the self-compile
 
 The first A/B run crashed in leg B. Poison runs on a stdlib-plus-`yaflc.yafl`
