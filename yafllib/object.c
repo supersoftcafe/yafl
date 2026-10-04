@@ -159,6 +159,7 @@ static bool gc_gen_enabled    = true;
 static bool     gc_local_requested = false;
 static unsigned gc_local_trigger   = 32;        // the configured (minimum) trigger
 static thread_local unsigned gc_local_trigger_now = 0;   // adaptive, per thread
+static bool     gc_local_standdown = true;     // YAFL_LOCAL_GC_STANDDOWN=0 disables it
 static unsigned gc_local_trigger_max = 1024;   // adaptive ceiling (YAFL_LOCAL_GC_MAX_PAGES)
 EXPORT bool     gc_local_enabled   = false;
 // Threads whose nursery is collecting right now. The escape barrier runs
@@ -188,6 +189,7 @@ static void gc_read_config(void) {
     gc_local_requested = (e = getenv("YAFL_LOCAL_GC")) && e[0] && e[0] != '0';
     if ((e = getenv("YAFL_LOCAL_GC_PAGES")) != NULL && atoi(e) > 0)
         gc_local_trigger = (unsigned)atoi(e);
+    gc_local_standdown = !((e = getenv("YAFL_LOCAL_GC_STANDDOWN")) && e[0] == '0');
     if ((e = getenv("YAFL_LOCAL_GC_MAX_PAGES")) != NULL && atoi(e) > 0)
         gc_local_trigger_max = (unsigned)atoi(e);
     if (gc_local_trigger_max < gc_local_trigger) gc_local_trigger_max = gc_local_trigger;
@@ -2096,7 +2098,7 @@ static NOINLINE void gc_local_collect(void) {
     t->local_unproductive = (np > 0 && freed * 20 < np) ? t->local_unproductive + 1 : 0;
     if (np > 0 && freed * 4 >= np)
         t->local_backoff = 0;              // productive: forget past stand-downs
-    if (t->local_unproductive >= 4 && gc_local_trigger_now >= gc_local_trigger_max) {
+    if (gc_local_standdown && t->local_unproductive >= 4 && gc_local_trigger_now >= gc_local_trigger_max) {
         gc_local_set_epoch(t, 0);
         // 16, 32, 64 ... root scans: a program whose young data genuinely
         // survives stops paying for the nursery almost entirely.
