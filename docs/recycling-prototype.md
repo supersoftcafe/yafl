@@ -162,6 +162,18 @@ in shared constructor-like functions, and those objects are **returned** to the
 caller or stored. ylisp's disqualifications: Phi into a struct-packed union
 value 10, returned 4, closure environment 3, stored 2, call argument 2.
 
+**Bootstrap compiler (static census, -O3).** Of 2,927 `NewObject` webs, 11
+are freed and 2 are reuse-paired. The disqualifiers are:
+
+| reason | webs |
+|---|---|
+| passed as a direct call argument | 796 |
+| struct or union packs (`NewStructTyped`, struct-packed Phi, `NewStruct`, `StructField`) | about 580 |
+| closure environment | 298 |
+| stored into the heap | 237 |
+| returned | 173 |
+| live across a suspension | 64 |
+
 Dynamically, a small ylisp workload (fib 23 plus list building) spends about
 28% of its CPU in GC. Its allocations are 827k `VPair` (mostly evaluated
 argument lists), 142k `VInt`, 99k `EnvBind` and 96k `VBool`. Nearly all are
@@ -198,6 +210,14 @@ unit of work**. On the bootstrap self-compile it is the pacing input, so it
 predicts the CPU win directly.
 
 ## 6. Tests
+
+86 compiler test modules pass with the stage forced on (`YAFL_RECYCLE=1`)
+under both `YAFL_RECYCLE_POISON` and `YAFL_GC_POISON`. That is every module
+whose name touches classes, enums and `match`, closures, containers, streams,
+JSON, tail loops, lazy values and memoize, async and parallel code, unions,
+traits and the IR optimisations. The bootstrap and port parity modules were
+excluded: they compare the C text against the port's, which `--recycle`
+changes by design. The full suite has not been run with the stage on.
 
 * `yafllib/tests/test_recycle.c`, single-stepped:
   * acceptance and rejection rules;
