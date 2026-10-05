@@ -744,14 +744,14 @@ EXTERN void gc_local_escape(object_t *value);
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
-        if (UNLIKELY(gc_local_live))\
+        if (gc_local_live)\
             gc_local_note_slot((object_t**)&(field), (mask));\
     } while (false)
 // A value handed to the runtime or another thread (queues, completions,
 // lazy publication): for a nursery it ESCAPES, whatever the marker is doing.
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value);\
-         if (UNLIKELY(gc_local_live)) gc_local_escape((object_t*)(value)); } while (false)
+         if (gc_local_live) gc_local_escape((object_t*)(value)); } while (false)
 
 // ── The mutable-root contract ────────────────────────────────────────────────
 // Declared roots are scanned ONCE, at cycle open (the SATB snapshot). Any
@@ -774,12 +774,12 @@ INLINE void gc_root_overwrite(object_t** slot) {
     // forwarder compaction left); the shade must follow the chain — and may
     // snap the slot — exactly as the root scan itself does.
     if (UNLIKELY(gc_write_barrier_requested)) _gc_root_overwrite2(slot);
-    if (UNLIKELY(gc_local_live)) gc_local_escape(*slot);   // may be held elsewhere
+    if (gc_local_live) gc_local_escape(*slot);   // may be held elsewhere
 }
 // Returns its argument so compiler-emitted code can use it in value position.
 INLINE object_t* gc_root_publish(object_t* value) {
     if (UNLIKELY(gc_write_barrier_requested)) _gc_root_publish2(value);
-    if (UNLIKELY(gc_local_live)) gc_local_escape(value);
+    if (gc_local_live) gc_local_escape(value);
     return value;
 }
 

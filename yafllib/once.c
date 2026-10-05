@@ -43,7 +43,7 @@ EXPORT object_t* yafl_cas_once(object_t* self, object_t* obj, int32_t slot,
     bool ok = (*field == NULL);
     if (ok) {
         __atomic_store_n((uintptr_t*)field, (uintptr_t)value, __ATOMIC_RELEASE);
-        if (UNLIKELY(gc_local_live))
+        if (gc_local_live)
             gc_local_note_slot(field, 1);
     }
     object_unpin(owner);

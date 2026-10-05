@@ -153,12 +153,12 @@ bool gc_stats_enabled  = false;
 // single point — page promotion — so with it off no page ever becomes old and
 // the skip paths, dirty-old handling and major trigger are all inert.
 static bool gc_gen_enabled    = true;
-// Thread-local nursery (prototype): YAFL_LOCAL_GC=1 requests it. Each thread
+// Thread-local nursery: ON by default (YAFL_LOCAL_GC=0 turns it off). Each thread
 // collects its nursery every YAFL_LOCAL_GC_PAGES pages it takes. The size is
 // FIXED: 64 pages (1 MiB) measured best or near best on every benchmark and
 // on the self-compile; larger sizes lose on allocation-heavy programs (the
 // nursery no longer fits in cache), and adapting it bought nothing measurable.
-static bool     gc_local_requested = false;
+static bool     gc_local_requested = true;
 static unsigned gc_local_trigger   = 64;
 EXPORT bool     gc_local_enabled   = false;
 // Threads whose nursery is collecting right now. The escape barrier runs
@@ -188,7 +188,7 @@ static void gc_read_config(void) {
     gc_poison_enabled = (e = getenv("YAFL_GC_POISON")) && e[0] && e[0] != '0';
     gc_stats_enabled  = getenv("YAFL_GC_STATS") != NULL;
     gc_gen_enabled    = !((e = getenv("YAFL_GC_GEN")) && e[0] == '0');
-    gc_local_requested = (e = getenv("YAFL_LOCAL_GC")) && e[0] && e[0] != '0';
+    gc_local_requested = !((e = getenv("YAFL_LOCAL_GC")) && e[0] == '0');
     if ((e = getenv("YAFL_LOCAL_GC_PAGES")) != NULL && atoi(e) > 0)
         gc_local_trigger = (unsigned)atoi(e);
 }
@@ -1081,15 +1081,15 @@ static void gc_local_builder_seal_escape(object_t *arr);
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
     ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
-    if (UNLIKELY(gc_local_live))
+    if (gc_local_live)
         gc_local_note_slot(&((object_t**)prev)[slot], 1);
-    if (UNLIKELY(gc_local_enabled)) gc_local_builder_done(prev);
+    if (gc_local_enabled) gc_local_builder_done(prev);
     object_unpin(prev);                          // prev is now frozen
     return true;
 }
 
 EXPORT bool list_builder_seal(object_t *tail) {
-    if (UNLIKELY(gc_local_enabled)) gc_local_builder_done(tail);
+    if (gc_local_enabled) gc_local_builder_done(tail);
     object_unpin(tail);
     return true;
 }
@@ -1108,7 +1108,7 @@ EXPORT bool list_builder_seal(object_t *tail) {
 
 EXPORT bool array_builder_pin(object_t *arr) {
     object_pin(arr);
-    if (UNLIKELY(gc_local_enabled)) gc_local_builder_add(arr);
+    if (gc_local_enabled) gc_local_builder_add(arr);
     return true;
 }
 
@@ -1118,7 +1118,7 @@ EXPORT bool array_builder_pin(object_t *arr) {
 EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
     vtable_t *vt = vtable_untag(arr->vtable);
     *((int32_t*)(((char*)arr) + vt->array_len_offset)) = length;
-    if (UNLIKELY(gc_local_enabled)) gc_local_builder_done(arr);
+    if (gc_local_enabled) gc_local_builder_done(arr);
     object_unpin(arr);
     return true;
 }

@@ -126,14 +126,21 @@ add_yafl_test(test_gc_gen)
 # and majors demoting DIRTY old pages (whose force-mark otherwise retains
 # their garbage forever — the bug that made yspell abort in any heap < 1 GiB).
 add_yafl_test(test_gc_pressure)
-# The same GC tests with the thread-local nursery prototype collecting every
-# 2 pages (YAFL_LOCAL_GC; one worker only). test_gc_gen and
-# test_gc_late_pin_race are left out by design: they drive promotion with
-# throwaway filler, which the nursery reclaims without advancing the clock.
+# The thread-local nursery is ON by default, so the tests above run with it.
+# Two variants of the GC tests on top:
+#  * _nursery: the nursery under stress, collecting every 2 pages on one
+#    worker with poisoning, so a freed object that is still reachable fails
+#    loudly;
+#  * _global: the nursery off (YAFL_LOCAL_GC=0), keeping the global collector
+#    on its own covered.
 foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_pressure test_pin test_large_objects test_str test_io_stress)
     add_test(NAME ${t}_nursery COMMAND ${t})
     set_tests_properties(${t}_nursery PROPERTIES ENVIRONMENT
-        "YAFL_GC_POISON=1;YAFL_LOCAL_GC=1;YAFL_LOCAL_GC_PAGES=2;YAFL_THREADS=1")
+        "YAFL_GC_POISON=1;YAFL_LOCAL_GC_PAGES=2;YAFL_THREADS=1")
+endforeach()
+foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_min2 test_gc_pressure test_gc_gen test_gc_late_pin_race test_pin)
+    add_test(NAME ${t}_global COMMAND ${t})
+    set_tests_properties(${t}_global PROPERTIES ENVIRONMENT "YAFL_LOCAL_GC=0")
 endforeach()
 # test_gc_fwd_chain: compaction forwarding chains (A -> B -> C via a head stub
 # pinned by a conservative stack slot) must path-compress when scanned — the
