@@ -38,9 +38,23 @@
 >   hold no object. `test_gc_stale_mark` forces the race: under poison the
 >   unfixed runtime crashed in 152 to 169 of 200 runs, and the fixed one in
 >   0 of 600. ThreadSanitizer (gcc) found it.
-> * **The escape-barrier gate is constant** for the process, set before any
->   worker exists. A barrier that read a live-nursery count of zero and was
->   preempted could otherwise straddle a nursery start.
+> * **Escape barrier, cheap when nothing needs it.** A thread with an active
+>   nursery takes the full path. Any other thread only escapes an overwritten
+>   value sitting in an *active* nursery: it reads the old value first, then
+>   the live-nursery count, so the count can't go stale across a nursery
+>   start. A table of active epochs lets the escape return at once for pages
+>   whose nursery has retired (callgrind had shown that check at 16% of
+>   json_pretty's instructions). Measured on one VM:
+>
+>   | program (one worker, median) | nursery off | nursery on |
+>   |---|---|---|
+>   | b1 | 158 ms | 114 ms |
+>   | ylisp | 147 ms | 113 ms |
+>   | raytracer | 203 ms | 200 ms |
+>   | yaflc | 137 ms | 131 ms |
+>   | yspell | 2.72 s | 2.56 s |
+>   | par | 698 ms | 412 ms |
+>   | json_pretty | 22.7 s | 22.8 s |
 > * **Interactions with the global collector** that must hold, each found by
 >   measurement or a crash:
 >   * charge every page handed to the global heap;
