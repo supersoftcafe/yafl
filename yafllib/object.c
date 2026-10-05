@@ -887,7 +887,29 @@ EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_fun
 static void gc_local_collect(void);
 static gc_page_t *gc_local_take_page(void);
 static uint32_t gc_local_new_epoch(void);
+// ACTIVE EPOCHS. A page keeps its epoch stamp after that nursery retires
+// (stand-down, root scan), so a non-zero stamp alone does not mean anyone
+// will collect it; escaping its objects then is pure cost (on json_pretty,
+// which stands down, 16% of all instructions). A counter per epoch slot says
+// whether any epoch in that slot is active: raised before the nursery
+// allocates (so whoever is later handed one of its objects sees it raised),
+// lowered at retirement (after which nothing frees that epoch's objects, so
+// skipping their escape is safe). Counters, not flags: two epochs can share
+// a slot, and retiring one must not hide the other.
+enum { GC_LOCAL_EPOCH_SLOTS = 4096 };
+static _Atomic(uint16_t) gc_local_epoch_active[GC_LOCAL_EPOCH_SLOTS];
+static inline bool gc_local_epoch_is_active(uint32_t epoch) {
+    return atomic_load_explicit(&gc_local_epoch_active[epoch % GC_LOCAL_EPOCH_SLOTS],
+                                memory_order_acquire) != 0;
+}
+
 static void gc_local_set_epoch(struct gc_thread_info *t, uint32_t epoch) {
+    if (epoch != 0)
+        atomic_fetch_add_explicit(&gc_local_epoch_active[epoch % GC_LOCAL_EPOCH_SLOTS], 1,
+                                  memory_order_seq_cst);
+    if (t->local_epoch != 0)
+        atomic_fetch_sub_explicit(&gc_local_epoch_active[t->local_epoch % GC_LOCAL_EPOCH_SLOTS], 1,
+                                  memory_order_seq_cst);
     bool now = epoch != 0;
     t->local_epoch = epoch;
     t->alloc->local_active = now;
@@ -1673,8 +1695,9 @@ EXPORT void gc_local_escape(object_t *v) {
         page = (gc_page_t*)memory_pages_alloc_head_of(v);
         if (page == NULL || page->head.tag != PAGE_MAGIC_NUMBER) return;
     }
-    if (page->head.local_epoch == 0)
-        return;   // not a nursery page (stale stamps only over-retain)
+    uint32_t stamp = page->head.local_epoch;
+    if (stamp == 0 || !gc_local_epoch_is_active(stamp))
+        return;   // not in any active nursery: nothing will free it locally
     ptrdiff_t off = (char*)v - (char*)page->slots;
     if (off < 0) return;
     long slot = off / GC_SLOT_SIZE;
@@ -1737,6 +1760,16 @@ EXPORT void gc_local_note_slot(object_t **slot, ptr_mask_t mask) {
     }
     gc_local_pend_slot = slot;            // the value about to be stored
     gc_local_pend_mask = mask;
+}
+
+// The barrier of a thread with no active nursery (see GC_WRITE_BARRIER): only
+// the values being overwritten may need to escape, and only if they sit on a
+// nursery page (a stale stamp merely over-escapes).
+EXPORT void gc_local_escape_old(object_t **slot, ptr_mask_t mask) {
+    while (mask) {
+        unsigned i = __builtin_ctzll(mask); mask &= mask - 1;
+        gc_local_escape(slot[i]);
+    }
 }
 
 static gc_page_t *gc_local_take_page(void) {

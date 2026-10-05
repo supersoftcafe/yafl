@@ -738,15 +738,24 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 EXTERN bool gc_local_enabled;
 EXTERN volatile int gc_local_live;
 EXTERN void gc_local_note_slot(object_t **slot, ptr_mask_t mask);
+EXTERN void gc_local_escape_old(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
 // Runs on EVERY thread whenever the nursery is configured (gc_local_live,
 // constant for the process): the escape rules are about who else can reach
-// an object, not whose store it is.
+// an object, not whose store it is. A thread with no active nursery of its
+// own (not started, or stood down) owes less: the value it stores came from
+// elsewhere already escaped, or from its own pages, which no nursery will
+// collect; only an overwritten value sitting in SOMEONE's nursery must escape
+// (gc_local_escape_old, judged by that value's own page).
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
-        if (gc_local_live)\
-            gc_local_note_slot((object_t**)&(field), (mask));\
+        if (gc_local_live) {\
+            if (gc_alloc_tl.local_active)\
+                gc_local_note_slot((object_t**)&(field), (mask));\
+            else\
+                gc_local_escape_old((object_t**)&(field), (mask));\
+        }\
     } while (false)
 // A value handed to the runtime or another thread (queues, completions,
 // lazy publication): for a nursery it ESCAPES, whatever the marker is doing.
