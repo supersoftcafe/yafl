@@ -511,6 +511,10 @@ typedef struct page_head {
                            // mutator, or an old-generation referrer awaiting
                            // re-scan), and it is immortal until that reference
                            // dies. Age at death measures exactly that.
+    bool          was_old; // Demoted by a major cycle and not yet re-pruned:
+                           // deaths found at that prune mean its promotion was
+                           // premature (a promotion MISTAKE; see
+                           // gc_promote_volume). Sits in padding.
     uint64_t stable_since; // Allocation-clock reading (pages) at the last
                            // prune that found a death on this page — or
                            // UINT64_MAX before the first prune (a page's

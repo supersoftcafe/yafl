@@ -154,10 +154,11 @@ static void _entrypoint(object_t* self, fun_t cont) {
 }
 
 int main(void) {
-    // Small heap before any allocation: dwell floor = total/64 = 1 MiB, so
-    // the promotion volume (two dwell windows) is ~2 MiB — one churn_filler
-    // batch per cycle clears it quickly.
+    // Small heap, and a promotion floor of 64 pages (1 MiB) instead of the
+    // conservative default: one churn_filler batch (~2 MiB) per cycle then
+    // clears the promotion volume quickly. Set before any allocation.
     setenv("YAFL_HEAP_SIZE", "64m", 0);
+    setenv("YAFL_GC_PROMOTE_FLOOR", "64", 0);
     _prev = add_roots_declaration_func(_decl);
     thread_start(_entrypoint);
     return 0;

@@ -167,6 +167,7 @@ EXPORT bool     gc_local_enabled   = false;
 // A thread raises it (a full barrier) before any store it makes from a new
 // nursery, so a thread that later reads such a pointer also sees it raised.
 EXPORT volatile int gc_local_live  = 0;
+static size_t gc_promote_floor;   // defined with the generations (GC_PROMOTE_FLOOR_DEFAULT)
 static void gc_read_config(void) {
     const char *e;
     if ((e = getenv("YAFL_GC_STEP_PAGES")) != NULL) {
@@ -183,6 +184,8 @@ static void gc_read_config(void) {
         int pct = atoi(e);
         if (pct >= 0) gc_compact_percent = (unsigned)(pct > 100 ? 100 : pct);
     }
+    if ((e = getenv("YAFL_GC_PROMOTE_FLOOR")) != NULL && atol(e) > 0)
+        gc_promote_floor = (size_t)atol(e);
     gc_poison_enabled = (e = getenv("YAFL_GC_POISON")) && e[0] && e[0] != '0';
     gc_stats_enabled  = getenv("YAFL_GC_STATS") != NULL;
     gc_gen_enabled    = !((e = getenv("YAFL_GC_GEN")) && e[0] == '0');
@@ -544,9 +547,24 @@ alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &page
 #define GC_MAJOR_FLOOR   256   // pages: no majors until the old gen reaches this
 alignas(CACHE_LINE_SIZE) list_element_t old_pages = {&old_pages, &old_pages};
 _Atomic(uint64_t) gc_alloc_clock = 0; // cumulative pages ever allocated
-static size_t gc_promote_volume = 0;  // pages of allocation a page must stay
-                                      // stable across to promote: eight young
-                                      // turnovers, set at each prune's end.
+// PROMOTION VOLUME: pages of allocation a page must stay stable across to
+// promote. Steered by MISTAKES, not guessed from the young generation's size
+// (8x young survivors fed back on itself when cycles were long: a big young
+// generation raised the volume, which kept pages young longer, which grew the
+// young generation — 110k pages on the self-compile). A mistake is an old page
+// forced back: a late write demoting it (redirty), or a major's re-trace
+// finding deaths on it (it was promoted while still churning). Too many
+// mistakes per promotion doubles the volume; almost none halves it, down to a
+// conservative constant floor (YAFL_GC_PROMOTE_FLOOR).
+#define GC_PROMOTE_FLOOR_DEFAULT 4096   // pages (64 MiB of allocation)
+static size_t gc_promote_floor  = GC_PROMOTE_FLOOR_DEFAULT;
+static size_t gc_promote_volume = 0;
+static _Atomic(uint64_t) gc_promote_window_promoted = 0, gc_promote_window_mistakes = 0,
+                         gc_promote_mistakes_total = 0;
+static inline void gc_promote_mistake(void) {
+    atomic_fetch_add_explicit(&gc_promote_window_mistakes, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&gc_promote_mistakes_total, 1, memory_order_relaxed);
+}
 _Atomic(size_t) gc_old_page_count   = 0;
 _Atomic(size_t) gc_dirty_old_count  = 0;   // diagnostic: dirty-old pages this cycle
 static size_t gc_old_baseline   = 0;     // old-gen size right after the last major
@@ -2259,6 +2277,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
             p->head.old       = false;
             p->head.dirty_old = true;
             p->head.refs_defer = p->head.refs_backoff = 0;
+            gc_promote_mistake();            // forced back by a late write
             list_unlink((list_element_t*)&p->head.list);
             list_link(&pages_to_scan, (list_element_t*)&p->head.list);
             atomic_fetch_sub_explicit(&gc_old_page_count, 1, memory_order_relaxed);
@@ -2298,8 +2317,10 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
             // Flags are cleared BEFORE gc_write_barrier_requested goes up, so
             // no mark source can observe old=true on a page that is back in
             // the rotation and skip a mark it owes.
-            for (list_element_t *node = old_pages.next; node != &old_pages; node = node->next)
+            for (list_element_t *node = old_pages.next; node != &old_pages; node = node->next) {
                 ((gc_page_t*)node)->head.old = false;
+                ((gc_page_t*)node)->head.was_old = true;   // judged at its next prune
+            }
             list_move(&pages_to_scan, &old_pages);
             gc_old_page_count = 0;
         }
@@ -3325,6 +3346,10 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             // slots until a major (observed: ~190 MiB accreted on yspell).
             // After a major's honest trace reveals deaths, the reset makes
             // the demoted page re-earn the full volume before re-freezing.
+            if (page->head.was_old) {
+                page->head.was_old = false;
+                if (!page_stable) gc_promote_mistake();   // promoted while churning
+            }
             if (gc_gen_enabled
                     && !page->head.mutable && !page->head.compacted && page->head.pages == 1) {
                 uint64_t clock = atomic_load_explicit(&gc_alloc_clock, memory_order_relaxed);
@@ -3436,6 +3461,7 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
         gc_cycle_survivors      += batch_survivor_pages;
         gc_cycle_survivor_slots += batch_survivor_slots;
         gc_old_page_count       += batch_promoted;
+        atomic_fetch_add_explicit(&gc_promote_window_promoted, batch_promoted, memory_order_relaxed);
         // Release in-flight only AFTER publication: a transition that sees
         // zero in-flight must also see every batch page on its final list.
         atomic_fetch_sub_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
@@ -3456,23 +3482,25 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
              && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0;
     gc_pool_unlock();
     if (done) {
-        // Promotion volume for the next cycle: a page must stay stable across
-        // this many pages of allocation before it ages into the old
-        // generation — eight turnovers of the young live set (byte-honest:
-        // page counts over-state ~2x when live and dead interleave on pages),
-        // floored at 1/64th of the heap for tiny young sets. Deliberately
-        // conservative: with continuous cycles a churn page sees many prunes,
-        // and anything promoted too early has its garbage frozen by the
-        // dirty-old force-mark until a major.
-        size_t young = gc_cycle_survivor_slots / SLOTS_PER_PAGE;
-        size_t floor_ = memory_total_pages() / 64;
-        size_t volume = young * 8;
-        gc_promote_volume = volume > floor_ ? volume : floor_;
-        // DIAGNOSTIC: YAFL_GC_PROMOTE_CAP=<pages> caps the promotion volume
-        // (the 8x-young rule feeds back on itself when cycles are long).
-        { static long cap = -1;
-          if (cap < 0) { const char *e = getenv("YAFL_GC_PROMOTE_CAP"); cap = e ? atol(e) : 0; }
-          if (cap > 0 && gc_promote_volume > (size_t)cap) gc_promote_volume = (size_t)cap; }
+        size_t young = gc_cycle_survivor_slots / SLOTS_PER_PAGE;   // live young pages
+        // Promotion volume for the next cycle (see gc_promote_volume): judged
+        // once a window holds enough evidence — 64 promotions, or 8 mistakes
+        // so a burst of them reacts at once. Over 1 mistake in 8 promotions
+        // doubles it; under 1 in 64 halves it, never below the floor.
+        if (gc_promote_volume < gc_promote_floor) gc_promote_volume = gc_promote_floor;
+        {
+            uint64_t promoted = atomic_load_explicit(&gc_promote_window_promoted, memory_order_relaxed);
+            uint64_t mistakes = atomic_load_explicit(&gc_promote_window_mistakes, memory_order_relaxed);
+            if (promoted >= 64 || mistakes >= 8) {
+                if (mistakes * 8 > promoted) {
+                    if (gc_promote_volume < memory_total_pages()) gc_promote_volume *= 2;
+                } else if (mistakes * 64 < promoted && gc_promote_volume / 2 >= gc_promote_floor) {
+                    gc_promote_volume /= 2;
+                }
+                atomic_store_explicit(&gc_promote_window_promoted, 0, memory_order_relaxed);
+                atomic_store_explicit(&gc_promote_window_mistakes, 0, memory_order_relaxed);
+            }
+        }
 
         // Hand back the pages that went this whole cycle without any thread
         // wanting them, and rotate the pool's generations. This is the
@@ -3503,10 +3531,11 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
             yafl_heapprof_cycle_end(memory_count() * (size_t)GC_PAGE_SIZE,
                                     memory_total_pages() * (size_t)GC_PAGE_SIZE);
         if (UNLIKELY(gc_stats_enabled))
-            fprintf(stderr, "[GC CYCLE] survivors=%zu dirty=%zu old=%zu young=%zu promote_vol=%zu in_use=%zu cons_seeds=%llu (pages)\n",
+            fprintf(stderr, "[GC CYCLE] survivors=%zu dirty=%zu old=%zu young=%zu promote_vol=%zu promote_mistakes=%llu in_use=%zu cons_seeds=%llu (pages)\n",
                     gc_cycle_survivors, gc_dirty_old_count, gc_old_page_count,
-                    young, gc_promote_volume, memory_count(),
-                    (unsigned long long)atomic_load(&gc_stat_cons_seeds));
+                    young, gc_promote_volume,
+                    (unsigned long long)atomic_load(&gc_promote_mistakes_total),
+                    memory_count(), (unsigned long long)atomic_load(&gc_stat_cons_seeds));
 
         if (UNLIKELY(gc_stats_enabled)) {
             // Snapshot this cycle's page-occupancy survey for the exit report.
