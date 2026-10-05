@@ -161,13 +161,11 @@ static bool gc_gen_enabled    = true;
 static bool     gc_local_requested = true;
 static unsigned gc_local_trigger   = 64;
 EXPORT bool     gc_local_enabled   = false;
-// Gates the escape barrier: nonzero whenever the nursery is configured. It is
-// set ONCE, before any mutator thread exists (gc_configure, from
-// thread_start), and never changes. It used to count live nurseries and drop
-// to zero when every thread stood down, but a barrier that read zero and was
-// then preempted could complete its store after a nursery had started,
-// published an object and had it read: the overwritten value then never
-// escaped. A constant gate cannot straddle a transition.
+// The number of nurseries active right now. Raised (a full barrier) before a
+// nursery allocates and lowered when it retires. Barriers read it only AFTER
+// the value they judge (see gc_local_barrier in yafl.h): read first, a zero
+// could go stale across a preemption while another nursery started and
+// published the very value being overwritten.
 EXPORT volatile int gc_local_live  = 0;
 static size_t gc_promote_floor;   // defined with the generations (GC_PROMOTE_FLOOR_DEFAULT)
 static void gc_read_config(void) {
@@ -910,9 +908,13 @@ static void gc_local_set_epoch(struct gc_thread_info *t, uint32_t epoch) {
     if (t->local_epoch != 0)
         atomic_fetch_sub_explicit(&gc_local_epoch_active[t->local_epoch % GC_LOCAL_EPOCH_SLOTS], 1,
                                   memory_order_seq_cst);
-    bool now = epoch != 0;
+    bool was = t->local_epoch != 0, now = epoch != 0;
+    if (now && !was)
+        __atomic_fetch_add(&gc_local_live, 1, __ATOMIC_SEQ_CST);   // before it allocates
     t->local_epoch = epoch;
     t->alloc->local_active = now;
+    if (was && !now)
+        __atomic_fetch_sub(&gc_local_live, 1, __ATOMIC_SEQ_CST);
 }
 
 EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
@@ -3877,20 +3879,17 @@ EXPORT void _gc_write_barrier2(object_t **field, ptr_mask_t mask) {
 }
 
 
-// Read the configuration and set the escape-barrier gate. Called by
-// thread_start BEFORE any worker exists: thread 0 runs main() without waiting
-// for gc_start (the last worker to register calls that), so anything every
-// thread must agree on from its first instruction belongs here.
+// Read the configuration. Called by thread_start BEFORE any worker exists:
+// thread 0 runs main() without waiting for gc_start (the last worker to
+// register calls that), so anything every thread must agree on from its
+// first instruction belongs here.
 EXPORT void gc_configure(void) {
     gc_read_config();
-    gc_local_live = gc_local_requested;
 }
 
 EXPORT void gc_start() {
     assert(stage == GC_STAGE_NOT_STARTED);
     gc_read_config();
-    if (gc_local_requested && !gc_local_live)
-        gc_local_live = 1;   // embedders that skip thread_start (single-threaded until here)
     // Each worker starts its own nursery at its first refill after this
     // (object_alloc_slow_raw): an epoch is thread-private state.
     gc_local_enabled = gc_local_requested;

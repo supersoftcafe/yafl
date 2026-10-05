@@ -736,31 +736,48 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 // young pointer into an older container; the nursery must treat that slot as
 // a root (gc_local_note_slot filters to the containers that need it).
 EXTERN bool gc_local_enabled;
-EXTERN volatile int gc_local_live;
+EXTERN volatile int gc_local_live;   // number of nurseries active right now
 EXTERN void gc_local_note_slot(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape_old(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
-// Runs on EVERY thread whenever the nursery is configured (gc_local_live,
-// constant for the process): the escape rules are about who else can reach
-// an object, not whose store it is. A thread with no active nursery of its
-// own (not started, or stood down) owes less: the value it stores came from
-// elsewhere already escaped, or from its own pages, which no nursery will
-// collect; only an overwritten value sitting in SOMEONE's nursery must escape
-// (gc_local_escape_old, judged by that value's own page).
+// The escape rules are about who else can reach an object, not whose store it
+// is, so every thread runs them. A thread with an active nursery takes the
+// full path. Any other thread (no nursery, not started, stood down) owes
+// less: the value it stores came from elsewhere already escaped, or from its
+// own pages, which no nursery collects. Only an OVERWRITTEN value sitting in
+// someone's active nursery must escape, and only while any nursery is active.
+//
+// ORDER MATTERS: the old values are read BEFORE gc_local_live. A nursery
+// raises gc_local_live before it allocates, so a value read from a slot that
+// belongs to an active nursery guarantees a non-zero count on a later read.
+// Reading the count first could see zero, stall, and then overwrite a value
+// another nursery published meanwhile without escaping it.
+INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
+    if (gc_alloc_tl.local_active) {
+        gc_local_note_slot(slot, mask);
+        return;
+    }
+    // A FLAG, never the pointer: a local holding the value being dropped would
+    // sit in the caller's frame (always inlined; at -O0 on the stack), where
+    // the conservative scan would keep the dropped object alive.
+    bool any = false;
+    for (ptr_mask_t m = mask; m; m &= m - 1)
+        any |= slot[__builtin_ctzll(m)] != NULL;
+    atomic_signal_fence(memory_order_seq_cst);   // compiler order; x86 keeps load order
+    if (any && gc_local_live)
+        gc_local_escape_old(slot, mask);
+}
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
-        if (gc_local_live) {\
-            if (gc_alloc_tl.local_active)\
-                gc_local_note_slot((object_t**)&(field), (mask));\
-            else\
-                gc_local_escape_old((object_t**)&(field), (mask));\
-        }\
+        gc_local_barrier((object_t**)&(field), (mask));\
     } while (false)
 // A value handed to the runtime or another thread (queues, completions,
 // lazy publication): for a nursery it ESCAPES, whatever the marker is doing.
+// The value is in hand before gc_local_live is read (same order as above).
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value);\
+         atomic_signal_fence(memory_order_seq_cst);\
          if (gc_local_live) gc_local_escape((object_t*)(value)); } while (false)
 
 // ── The mutable-root contract ────────────────────────────────────────────────
@@ -784,11 +801,14 @@ INLINE void gc_root_overwrite(object_t** slot) {
     // forwarder compaction left); the shade must follow the chain — and may
     // snap the slot — exactly as the root scan itself does.
     if (UNLIKELY(gc_write_barrier_requested)) _gc_root_overwrite2(slot);
-    if (gc_local_live) gc_local_escape(*slot);   // may be held elsewhere
+    bool had = *slot != NULL;                      // a flag, not a copy (see gc_local_barrier)
+    atomic_signal_fence(memory_order_seq_cst);     // the value before the count
+    if (had && gc_local_live) gc_local_escape(*slot);   // may be held elsewhere
 }
 // Returns its argument so compiler-emitted code can use it in value position.
 INLINE object_t* gc_root_publish(object_t* value) {
     if (UNLIKELY(gc_write_barrier_requested)) _gc_root_publish2(value);
+    atomic_signal_fence(memory_order_seq_cst);
     if (gc_local_live) gc_local_escape(value);
     return value;
 }
