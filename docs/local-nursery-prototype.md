@@ -1,11 +1,12 @@
 # Thread-local nursery — minimal prototype and measurements
 
-> **STATUS 2026-10-05: runtime-only prototype, opt-in, any number of workers.**
+> **STATUS 2026-10-05: on by default, any number of workers.**
 > The compiler is untouched. The rest of this document is the history of how
 > the design got here. The **current state** is:
 >
-> * **Enable** with `YAFL_LOCAL_GC=1`. Each worker collects its own nursery on
->   its own thread; other workers keep running global slices in parallel.
+> * **On by default**; `YAFL_LOCAL_GC=0` turns it off. Each worker collects its
+>   own nursery on its own thread, while other workers keep running global
+>   slices in parallel.
 > * **Size: fixed, 64 pages (1 MiB),** set with `YAFL_LOCAL_GC_PAGES`. Measured
 >   best or near best on all seven programs and on the self-compile. Larger
 >   sizes lose on allocation-heavy programs once the nursery outgrows the
@@ -29,6 +30,9 @@
 >   Peak RSS is unchanged (1.28–1.46 GB), and all outputs are byte-identical.
 >   On the seven programs the new rule is neutral, and the nursery is neutral
 >   or better.
+> * **Open item:** `test_gc_min` segfaulted once, in the first ctest run with
+>   the nursery on by default. It has not recurred in about 2,300 runs: full
+>   ctest, sequential, parallel, and poison at 64 and at 2 pages.
 > * **Interactions with the global collector** that must hold, each found by
 >   measurement or a crash:
 >   * charge every page handed to the global heap;
