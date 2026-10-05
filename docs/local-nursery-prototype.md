@@ -1,13 +1,43 @@
 # Thread-local nursery — minimal prototype and measurements
 
-> **STATUS 2026-10-04: runtime-only prototype, opt-in, any number of workers.**
-> * Enable with `YAFL_LOCAL_GC=1`. Each worker runs its own nursery, collected
->   on that worker's thread only; other workers keep running global slices in
->   parallel. Nothing stops the world and nothing waits on a handshake.
-> * Off by default. The compiler is untouched and generated C is unchanged.
->   The runtime's only always-on cost is one extra global test inside
->   `GC_WRITE_BARRIER` and `GC_MARK_SEEN`.
-> * The background is `docs/heap-recycling-design.md` (on `main`).
+> **STATUS 2026-10-05: runtime-only prototype, opt-in, any number of workers.**
+> The compiler is untouched. The rest of this document is the history of how
+> the design got here. The **current state** is:
+>
+> * **Enable** with `YAFL_LOCAL_GC=1`. Each worker collects its own nursery on
+>   its own thread; other workers keep running global slices in parallel.
+> * **Size: fixed, 64 pages (1 MiB),** set with `YAFL_LOCAL_GC_PAGES`. Measured
+>   best or near best on all seven programs and on the self-compile. Larger
+>   sizes lose on allocation-heavy programs once the nursery outgrows the
+>   cache, and adaptive sizing bought nothing measurable, so it was removed.
+> * **Stand-down kept:** after four collections that free under 5%, the nursery
+>   switches off for 16, 32, 64… root scans. json_pretty takes 17.6 s with it
+>   and 28.3 s without.
+> * **Old-generation promotion volume** (a global-collector change that applies
+>   with or without the nursery) is now steered by **mistakes**: old pages
+>   forced back by late writes, or found churning by a major's re-trace. Over
+>   1 mistake per 8 promotions doubles it; under 1 per 64 halves it. Its floor
+>   is a constant 4,096 pages, set with `YAFL_GC_PROMOTE_FLOOR`. This replaces
+>   max(8 × young survivors, heap/64), which fed back on itself.
+> * **Self-compile, measured on one VM, 2 runs each:**
+>
+>   | promotion rule | no nursery | nursery |
+>   |---|---|---|
+>   | old | 269.0 s | 256.6 s (−5%) |
+>   | new | 250.0 s (−7%) | **224.7 s (−16%)** |
+>
+>   Peak RSS is unchanged (1.28–1.46 GB), and all outputs are byte-identical.
+>   On the seven programs the new rule is neutral, and the nursery is neutral
+>   or better.
+> * **Interactions with the global collector** that must hold, each found by
+>   measurement or a crash:
+>   * charge every page handed to the global heap;
+>   * repay the charged collector steps one per refill;
+>   * collect before a root scan hands the nursery over;
+>   * service root-scan requests at every refill;
+>   * strike dead objects on every page type;
+>   * escape lazy waiters and builder elements;
+>   * keep pinned pages in the nursery.
 
 ## 1. The idea
 
