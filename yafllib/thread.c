@@ -325,6 +325,7 @@ EXPORT object_t* thread_dispatch(fun_t action) {
 
 EXPORT void thread_start(void(*entrypoint)(object_t*, fun_t)) {
     yafl_log_init(_yafl_argv ? _yafl_argv[0] : NULL);
+    gc_configure();   // single-threaded here: no worker exists yet
     const char* dur = getenv("YAFL_DURATION");
     _print_duration = (dur != NULL && *dur != '\0');
     if (_print_duration) clock_gettime(CLOCK_MONOTONIC, &t_start);

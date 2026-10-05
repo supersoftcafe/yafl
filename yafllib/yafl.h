@@ -431,6 +431,7 @@ enum {
 #endif
 
 
+EXTERN void gc_configure(void);   // before any worker starts (thread_start)
 EXTERN void gc_start();
 
 // ── GC heap geometry + the inline allocation fast path ─────────────────────
@@ -738,9 +739,9 @@ EXTERN bool gc_local_enabled;
 EXTERN volatile int gc_local_live;
 EXTERN void gc_local_note_slot(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
-// Runs on EVERY thread while any thread's nursery is live (gc_local_live):
-// the escape rules are about who else can reach an object, not whose store
-// it is.
+// Runs on EVERY thread whenever the nursery is configured (gc_local_live,
+// constant for the process): the escape rules are about who else can reach
+// an object, not whose store it is.
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\

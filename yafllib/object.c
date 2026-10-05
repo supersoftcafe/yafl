@@ -161,10 +161,13 @@ static bool gc_gen_enabled    = true;
 static bool     gc_local_requested = true;
 static unsigned gc_local_trigger   = 64;
 EXPORT bool     gc_local_enabled   = false;
-// Threads whose nursery is collecting right now. The escape barrier runs
-// only while it is nonzero: with no nursery live, nothing needs escape bits.
-// A thread raises it (a full barrier) before any store it makes from a new
-// nursery, so a thread that later reads such a pointer also sees it raised.
+// Gates the escape barrier: nonzero whenever the nursery is configured. It is
+// set ONCE, before any mutator thread exists (gc_configure, from
+// thread_start), and never changes. It used to count live nurseries and drop
+// to zero when every thread stood down, but a barrier that read zero and was
+// then preempted could complete its store after a nursery had started,
+// published an object and had it read: the overwritten value then never
+// escaped. A constant gate cannot straddle a transition.
 EXPORT volatile int gc_local_live  = 0;
 static size_t gc_promote_floor;   // defined with the generations (GC_PROMOTE_FLOOR_DEFAULT)
 static void gc_read_config(void) {
@@ -885,11 +888,9 @@ static void gc_local_collect(void);
 static gc_page_t *gc_local_take_page(void);
 static uint32_t gc_local_new_epoch(void);
 static void gc_local_set_epoch(struct gc_thread_info *t, uint32_t epoch) {
-    bool was = t->local_epoch != 0, now = epoch != 0;
+    bool now = epoch != 0;
     t->local_epoch = epoch;
     t->alloc->local_active = now;
-    if (was != now)
-        __atomic_fetch_add(&gc_local_live, now ? 1 : -1, __ATOMIC_SEQ_CST);
 }
 
 EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
@@ -2822,7 +2823,13 @@ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
 static NOINLINE_DEBUG bool gc_fsa_mark_sweep$scan_page(gc_page_t *page) {
     mask_bits_t did_some = 0;
     for (unsigned index = 0; index < sizeof(bitmap_t)/sizeof(mask_bits_t); ++index) {
-        mask_bits_t seen_bits = page->head.scanner.seen.a[index];
+        // Only OBJECTS are scanned. A seen bit can sit on a slot that holds no
+        // object: a thread-local nursery strikes its dead objects out of
+        // `objects` while another thread's marker may still be setting a bit
+        // on one (a conservative root resolved a stale word to it, after the
+        // nursery had read the page's marks). That slot is dead — poisoned,
+        // or about to be reused — and must never be scanned.
+        mask_bits_t seen_bits = page->head.scanner.seen.a[index] & page->head.objects.a[index];
         mask_bits_t scan_bits = seen_bits &~ page->head.scanner.scanned.a[index];
         page->head.scanner.scanned.a[index] = seen_bits; // Mark all 'seen' as 'scanned' now
         did_some |= scan_bits;
@@ -3252,6 +3259,11 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
         // after a successful retire no mutator mark can land at all.
         bitmap_or_test_source_reset_all(&page->head.scanner.seen,
                                         &page->head.scanner.atomic_seen);
+        // Marks on slots that hold no object (see scan_page: a nursery strike
+        // racing a remote mark) mean nothing; without this the overwrite of
+        // `objects` with `seen` below would resurrect the dead slot.
+        for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
+            page->head.scanner.seen.a[i] &= page->head.objects.a[i];
 
         if (bitmap_test_all(&page->head.scanner.seen)) {
             if (UNLIKELY(gc_stats_enabled))
@@ -3832,9 +3844,20 @@ EXPORT void _gc_write_barrier2(object_t **field, ptr_mask_t mask) {
 }
 
 
+// Read the configuration and set the escape-barrier gate. Called by
+// thread_start BEFORE any worker exists: thread 0 runs main() without waiting
+// for gc_start (the last worker to register calls that), so anything every
+// thread must agree on from its first instruction belongs here.
+EXPORT void gc_configure(void) {
+    gc_read_config();
+    gc_local_live = gc_local_requested;
+}
+
 EXPORT void gc_start() {
     assert(stage == GC_STAGE_NOT_STARTED);
     gc_read_config();
+    if (gc_local_requested && !gc_local_live)
+        gc_local_live = 1;   // embedders that skip thread_start (single-threaded until here)
     // Each worker starts its own nursery at its first refill after this
     // (object_alloc_slow_raw): an epoch is thread-private state.
     gc_local_enabled = gc_local_requested;

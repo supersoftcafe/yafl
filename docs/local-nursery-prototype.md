@@ -30,9 +30,17 @@
 >   Peak RSS is unchanged (1.28–1.46 GB), and all outputs are byte-identical.
 >   On the seven programs the new rule is neutral, and the nursery is neutral
 >   or better.
-> * **Open item:** `test_gc_min` segfaulted once, in the first ctest run with
->   the nursery on by default. It has not recurred in about 2,300 runs: full
->   ctest, sequential, parallel, and poison at 64 and at 2 pages.
+> * **Resolved: `test_gc_min` segfault** (once in about 2,300 runs). The
+>   cause was another thread's conservative mark landing on an object while
+>   its nursery was striking it as dead: the slot was struck while carrying a
+>   mark bit, and the global marker later scanned it (or the prune
+>   resurrected it). The global collector now ignores marks on slots that
+>   hold no object. `test_gc_stale_mark` forces the race: under poison the
+>   unfixed runtime crashed in 152 to 169 of 200 runs, and the fixed one in
+>   0 of 600. ThreadSanitizer (gcc) found it.
+> * **The escape-barrier gate is constant** for the process, set before any
+>   worker exists. A barrier that read a live-nursery count of zero and was
+>   preempted could otherwise straddle a nursery start.
 > * **Interactions with the global collector** that must hold, each found by
 >   measurement or a crash:
 >   * charge every page handed to the global heap;
@@ -41,7 +49,8 @@
 >   * service root-scan requests at every refill;
 >   * strike dead objects on every page type;
 >   * escape lazy waiters and builder elements;
->   * keep pinned pages in the nursery.
+>   * keep pinned pages in the nursery;
+>   * the global collector ignores marks on slots that hold no object.
 
 ## 1. The idea
 

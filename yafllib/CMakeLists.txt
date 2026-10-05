@@ -126,6 +126,13 @@ add_yafl_test(test_gc_gen)
 # and majors demoting DIRTY old pages (whose force-mark otherwise retains
 # their garbage forever — the bug that made yspell abort in any heap < 1 GiB).
 add_yafl_test(test_gc_pressure)
+# test_gc_stale_mark: a remote conservative mark landing on an object a
+# thread-local nursery has just struck as dead. The global collector must
+# ignore marks on slots that hold no object; scanning one read a dead object.
+# Under poison the unfixed runtime crashed in ~80% of runs.
+add_yafl_test(test_gc_stale_mark)
+add_test(NAME test_gc_stale_mark_poison COMMAND test_gc_stale_mark)
+set_tests_properties(test_gc_stale_mark_poison PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1")
 # The thread-local nursery is ON by default, so the tests above run with it.
 # Two variants of the GC tests on top:
 #  * _nursery: the nursery under stress, collecting every 2 pages on one
