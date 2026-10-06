@@ -122,3 +122,39 @@ class TestFastStores(TestCase):
         body = _body(_emit(0), "Main__both")
         saves = [ln for ln in _barriers_on(body, "_sv_state") if "->array" in ln]
         self.assertNotEqual([], saves, body)
+
+
+# An array-class construction tabulates its storage by calling the init
+# function once per element, between the allocation and each store. The init
+# call runs safe points, so the array can leave the thread-local nursery
+# mid-fill (a root scan, a promotion) and the element just allocated is then a
+# new object stored into an older one: only the barrier reports that edge.
+# Elided, the nursery freed the element while the array held it (stdlib_tests,
+# RRBTree concat). `boxes` returns the array so the fill is not trimmed away.
+_TAB_SRC = """\
+import System
+
+class Box(v: System::Int)
+
+fun [impure] boxes(n: System::Int32): System::Array<Box>
+  ret System::Array<Box>(n, (i: System::Int32) => Box(System::Int(i)))
+
+fun main(): System::Int
+  ret boxes(4i32).length > 0i32 ? 0 : 1
+"""
+
+
+class TestTabulateFillKeepsItsBarrier(TestCase):
+    def _fill_stores(self, level: int) -> tuple[list[str], str]:
+        emitted = c.compile([c.Input(_TAB_SRC, "file.yafl")], use_stdlib=True,
+                            just_testing=False, optimization_level=level)
+        body = _body(emitted, "Main__boxes")
+        return [ln.strip() for ln in body.splitlines() if "->array.a[" in ln], body
+
+    def test_fill_store_is_barriered(self):
+        for level in (0, 2):
+            with self.subTest(level=level):
+                stores, body = self._fill_stores(level)
+                self.assertTrue(stores, body)
+                self.assertTrue(any("GC_WRITE_BARRIER" in ln for ln in stores),
+                                f"the tabulate fill store lost its barrier:\n{body}")
