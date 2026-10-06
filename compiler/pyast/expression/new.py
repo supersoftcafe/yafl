@@ -155,9 +155,14 @@ class NewExpression(Expression):
             cg_o.Jump(end),
             cg_o.Label(body),
             cg_o.Call(init_fn, cg_p.NewStruct((("_0", i_var),)), elem_var),
-            # fresh: each element is written exactly once and its prior value is the
-            # allocator's NULL — the SATB deletion barrier is provably a no-op.
-            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var, fresh=True), elem_var),
+            # NOT fresh, although each element is written once over the
+            # allocator's NULL: the init call runs safe points between the
+            # allocation and this store, so the array can leave its nursery
+            # (root scan, promotion) mid-fill, and an element allocated after
+            # that is a new object stored into an older one. Only the barrier
+            # tells the nursery about that edge; without it the element is
+            # freed while the array still holds it (stdlib_tests, RRBTree).
+            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var), elem_var),
             cg_o.Move(i_next, incr),
             cg_o.Label(back),
             cg_o.Jump(head),

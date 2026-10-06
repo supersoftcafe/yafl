@@ -1025,13 +1025,15 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   let incr = RpRuntimeInvoke("int32_add", RpNewStruct(list2(RpNamedValue("a", iVar), RpNamedValue("b", RpInteger(1, 32)))), CgInt(32))
   let loopOps = list2<Op>(OpLabel("fillentry", List()), OpLabel("fillhead", List()))
   let phiOp = OpPhi(iVar, list2(OpPhiSource("fillentry", RpInteger(0, 32)), OpPhiSource("fillback", iNext)), List())
+  # The element store is NOT fresh: initFn runs safe points between the
+  # allocation and the store (see pyast/expression/new.py).
   let restOps = concat<Op>(
     list3(OpJumpIf("fillbody", less, false, List()),
           OpJump("fillend", List()),
           OpLabel("fillbody", List())),
     concat(
       list3(OpCall(initFn, RpNewStruct(list1(RpNamedValue("_0", iVar))), elemVar, false, false, None, List()),
-            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, true), elemVar, false, List()),
+            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, false), elemVar, false, List()),
             OpMove(iNext, incr, false, List())),
       list3(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()))))
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))
