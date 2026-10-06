@@ -382,6 +382,23 @@ INLINE void object_unpin(object_t* o) {
                      __ATOMIC_RELEASE);
 }
 
+// Array tabulation, `Array<T>(n, init)`: the compiler pins the array from
+// allocation to the end of its fill loop. The init call may suspend, parking
+// the half-built array in a heap state object with no stack reference to keep
+// compaction off it; the resumed loop reloads that address and stores into
+// it, so the array must not move until the last element is in. Unlike
+// array_builder_pin it does not join the nursery's builder registry: the
+// fill's element stores are barriered, so the nursery hears of every edge.
+INLINE object_t* array_fill_pin(object_t* arr) {
+    object_pin(arr);
+    return arr;
+}
+
+INLINE object_t* array_fill_unpin(object_t* arr) {
+    object_unpin(arr);
+    return arr;
+}
+
 // Take a late pin on the CURRENT copy of `o`, following relocation and
 // retrying against whoever else wants it. Returns the object actually pinned,
 // which may differ from `o` if the collector moved it. Callers must write

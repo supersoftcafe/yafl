@@ -141,6 +141,17 @@ class NewExpression(Expression):
         # SSA-shaped — the counter is a head Phi over the entry value (0) and the
         # back-edge value (i+1); both labels live in this one bundle so codegen's
         # jump↔label pairing keeps them matched under the caller's prefixing.
+        # PINNED from here to the end of the loop. The init call may suspend,
+        # parking the half-built array in a heap state object where no stack
+        # reference keeps compaction off it; the resumed loop then reloads
+        # that address and stores into it, so a relocation would split the
+        # elements between the stale original and the copy. No safe point
+        # lies between the allocation and this pin.
+        pin_var = cg_p.StackVar(cg_t.DataPointer(), "fillpin")
+        unpin_var = cg_p.StackVar(cg_t.DataPointer(), "fillunpin")
+        ops.append(cg_o.Move(pin_var, cg_p.RuntimeInvoke(
+            "array_fill_pin", cg_p.NewStruct((("arr", result_var),)), cg_t.DataPointer()), keep=True))
+
         i_var = cg_p.StackVar(cg_t.Int(32), "filli")
         i_next = cg_p.StackVar(cg_t.Int(32), "fillinext")
         elem_var = cg_p.StackVar(elem_ctype, "fillelem")
@@ -167,9 +178,12 @@ class NewExpression(Expression):
             cg_o.Label(back),
             cg_o.Jump(head),
             cg_o.Label(end),
+            # Every element is in: the array may move from here on.
+            cg_o.Move(unpin_var, cg_p.RuntimeInvoke(
+                "array_fill_unpin", cg_p.NewStruct((("arr", result_var),)), cg_t.DataPointer()), keep=True),
         ]
         return g.OperationBundle(
-            stack_vars=(params_var, result_var, i_var, i_next, elem_var),
+            stack_vars=(params_var, result_var, pin_var, unpin_var, i_var, i_next, elem_var),
             operations=tuple(ops),
             result_var=result_var)
 

@@ -23,7 +23,6 @@ import os
 import re
 import subprocess
 import tempfile
-import unittest
 
 import compiler as c
 from tests.testutil import BatchedTestCase as TestCase
@@ -76,9 +75,6 @@ class TestArrayFillCompaction(TestCase):
             env={**_RUN_ENV, "YAFL_THREADS": "2", "YAFL_GC_COMPACT_PERCENT": compact_percent})
         return run.returncode
 
-    # KNOWN BUG, not yet fixed: the fill does not pin the array, so this
-    # fails (crashes) today. Remove the marker with the fix.
-    @unittest.expectedFailure
     def test_suspended_fill_survives_compaction(self):
         for level in (0, 2):
             binary, _ = self._build(level)

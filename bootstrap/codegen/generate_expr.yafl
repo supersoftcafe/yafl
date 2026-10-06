@@ -1015,9 +1015,16 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   let scalarOps = build(scalarFieldMoveOps(chain(params), cname,
                             resultVar, paramsVar, arrIdx, 0, r,
                             builder()))
+  # PINNED from allocation to the end of the loop: initFn may suspend and park
+  # the half-built array in a heap state object, where compaction could move
+  # it under the resumed loop (see pyast/expression/new.py).
+  let pinVar = RpStackVar(CgDataPointer(), "fillpin")
+  let unpinVar = RpStackVar(CgDataPointer(), "fillunpin")
+  let pinOp = OpMove(pinVar, RpRuntimeInvoke("array_fill_pin", RpNewStruct(list1(RpNamedValue("arr", resultVar))), CgDataPointer()), true, List())
+  let unpinOp = OpMove(unpinVar, RpRuntimeInvoke("array_fill_unpin", RpNewStruct(list1(RpNamedValue("arr", resultVar))), CgDataPointer()), true, List())
   let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, List()),
                              OpNewObject(cname, resultVar, length2, List())),
-                       scalarOps)
+                       concat(scalarOps, list1(pinOp)))
   let iVar = RpStackVar(CgInt(32), "filli")
   let iNext = RpStackVar(CgInt(32), "fillinext")
   let elemVar = RpStackVar(elemCtype, "fillelem")
@@ -1035,9 +1042,9 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
       list3(OpCall(initFn, RpNewStruct(list1(RpNamedValue("_0", iVar))), elemVar, false, false, None, List()),
             OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, false), elemVar, false, List()),
             OpMove(iNext, incr, false, List())),
-      list3(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()))))
+      list4(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()), unpinOp)))
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))
-  ret GBundle(list5(paramsVar, resultVar, iVar, iNext, elemVar), ops, resultVar, List(), List())
+  ret GBundle(prepend(paramsVar, prepend(resultVar, list5(pinVar, unpinVar, iVar, iNext, elemVar))), ops, resultVar, List(), List())
 
 fun [tail] indexWhereArrayField(ps: Chain<PStmt>, i) => match(ps)
   (nil: ChainEnd) => -1   # unreachable: classArrayField already found one
