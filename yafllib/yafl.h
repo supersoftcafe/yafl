@@ -553,6 +553,20 @@ enum {
     GC_SAFE_POINT_CATCH_UP   = 0x002
 };
 
+// The highest set bit at or below `slot`: the object containing that slot.
+INLINE long bitmap_prev_set(const bitmap_t* bm, long slot) {
+    long wi = slot / GC_MASK_SIZE;
+    long bi = slot % GC_MASK_SIZE;
+    mask_bits_t w = bm->a[wi];
+    if (bi != GC_MASK_SIZE - 1)
+        w &= (((mask_bits_t)1 << (bi + 1)) - 1);
+    for (;;) {
+        if (w) return wi * GC_MASK_SIZE + (GC_MASK_SIZE - 1 - (long)__builtin_clzll(w));
+        if (--wi < 0) return -1;
+        w = bm->a[wi];
+    }
+}
+
 INLINE bool bitmap_fetch_set(bitmap_t *bitmap, unsigned bit) {
     mask_bits_t mask = ((mask_bits_t)1) << (bit % GC_MASK_SIZE);
     mask_bits_t *ptr = &bitmap->a[bit / GC_MASK_SIZE];
@@ -599,6 +613,7 @@ typedef struct {
     bump_pointers_t region_mutable;
     bump_pointers_t region_immutable;
     bool local_active;   // thread-local nursery collecting right now (prototype)
+    uint32_t local_epoch; // its epoch (0 when none): the barrier's private test
 } gc_alloc_tl_t;
 EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
 
@@ -756,11 +771,47 @@ EXTERN void gc_local_escape(object_t *value);
 // belongs to an active nursery guarantees a non-zero count on a later read.
 // Reading the count first could see zero, stall, and then overwrite a value
 // another nursery published meanwhile without escaping it.
-INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
-    if (gc_alloc_tl.local_active) {
-        gc_local_note_slot(slot, mask);
-        return;
-    }
+// The store needs no record when its container is PRIVATE: an immutable
+// object on a page of this thread's current nursery that has not escaped
+// (gc_local_note_slot's first test, inline). Nothing outside the thread can
+// reach it, and the nursery traces it, so whatever it gains stays reachable.
+// The common case — construction, a builder still in its nursery — never
+// leaves the caller. Skipping gc_local_note_slot also defers its flush of the
+// previous pending store, which is allowed to wait for the next barrier call
+// or nursery collection (both flush first).
+// `obj` is the container itself (generated stores know it: ((T*)obj)->f),
+// so its index on its page is direct — no search for the containing object.
+INLINE bool gc_local_obj_private(object_t *obj) {
+    if ((size_t)((char*)obj - _memory_heap_base) >= _memory_heap_bytes)
+        return false;
+    gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (page->head.local_epoch != gc_alloc_tl.local_epoch || page->head.mutable
+            || page->head.tag != PAGE_MAGIC_NUMBER)
+        return false;
+    unsigned c = (unsigned)(((char*)obj - (char*)page->slots) / GC_SLOT_SIZE);
+    mask_bits_t esc = __atomic_load_n(&page->head.local_escaped.a[c / GC_MASK_SIZE], __ATOMIC_ACQUIRE);
+    return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
+}
+
+// The same test from a bare slot (runtime C stores): the container is found
+// by searching the objects bitmap back from the slot.
+INLINE bool gc_local_slot_private(object_t **slot) {
+    if ((size_t)((char*)slot - _memory_heap_base) >= _memory_heap_bytes)
+        return false;
+    gc_page_t *page = (gc_page_t*)((uintptr_t)slot & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (page->head.local_epoch != gc_alloc_tl.local_epoch || page->head.mutable
+            || page->head.tag != PAGE_MAGIC_NUMBER)
+        return false;
+    long c = bitmap_prev_set(&page->head.objects, (long)(((char*)slot - (char*)page->slots) / GC_SLOT_SIZE));
+    if (c < 0)
+        return false;
+    mask_bits_t esc = __atomic_load_n(&page->head.local_escaped.a[c / GC_MASK_SIZE], __ATOMIC_ACQUIRE);
+    return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
+}
+
+// The barrier of a thread with no active nursery: only the values being
+// overwritten may need to escape (see above).
+INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
     // A FLAG, never the pointer: a local holding the value being dropped would
     // sit in the caller's frame (always inlined; at -O0 on the stack), where
     // the conservative scan would keep the dropped object alive.
@@ -771,10 +822,36 @@ INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
     if (any && gc_local_live)
         gc_local_escape_old(slot, mask);
 }
+
+INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
+    if (gc_alloc_tl.local_active) {
+        if (!gc_local_slot_private(slot))
+            gc_local_note_slot(slot, mask);
+        return;
+    }
+    gc_local_barrier_inactive(slot, mask);
+}
+
+// Generated stores: the container `obj` is known.
+INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
+    if (gc_alloc_tl.local_active) {
+        if (!gc_local_obj_private(obj))
+            gc_local_note_slot(slot, mask);
+        return;
+    }
+    gc_local_barrier_inactive(slot, mask);
+}
+
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
         gc_local_barrier((object_t**)&(field), (mask));\
+    } while (false)
+// A store into a field of the object `obj` (what generated code emits).
+#define GC_WRITE_BARRIER_IN(obj, field, mask)\
+    do {if (UNLIKELY(gc_write_barrier_requested))\
+            _gc_write_barrier2((object_t**)&(field), (mask));\
+        gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
 // A value handed to the runtime or another thread (queues, completions,
 // lazy publication): for a nursery it ESCAPES, whatever the marker is doing.

@@ -797,7 +797,9 @@ class ObjectField(LParam):
             field_ref = f"{field_ref}.a[{self.index.to_c(type_cache)}]"
         if self.type.has_pointers and not self.fresh:
             mask = to_pointer_mask(self.type, self.type.declare(type_cache))
-            return f"    GC_WRITE_BARRIER({field_ref}, {mask});\n    {field_ref} = {value};\n"
+            # The container is known: the nursery barrier's private test reads
+            # its escaped bit directly instead of searching for it.
+            return f"    GC_WRITE_BARRIER_IN({pointer}, {field_ref}, {mask});\n    {field_ref} = {value};\n"
         else:
             return f"    {field_ref} = {value};\n"
 

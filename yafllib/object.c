@@ -913,6 +913,7 @@ static void gc_local_set_epoch(struct gc_thread_info *t, uint32_t epoch) {
         __atomic_fetch_add(&gc_local_live, 1, __ATOMIC_SEQ_CST);   // before it allocates
     t->local_epoch = epoch;
     t->alloc->local_active = now;
+    t->alloc->local_epoch = epoch;
     if (was && !now)
         __atomic_fetch_sub(&gc_local_live, 1, __ATOMIC_SEQ_CST);
 }
@@ -1487,18 +1488,6 @@ static bool gc_object_is_on_heap_fast(object_t *object) {
         && (size_t)((char*)object - _memory_heap_base) < _memory_heap_bytes;
 }
 
-static inline long bitmap_prev_set(const bitmap_t* bm, long slot) {
-    long wi = slot / GC_MASK_SIZE;
-    long bi = slot % GC_MASK_SIZE;
-    mask_bits_t w = bm->a[wi];
-    if (bi != GC_MASK_SIZE - 1)
-        w &= (((mask_bits_t)1 << (bi + 1)) - 1);
-    for (;;) {
-        if (w) return wi * GC_MASK_SIZE + (GC_MASK_SIZE - 1 - (long)__builtin_clzll(w));
-        if (--wi < 0) return -1;
-        w = bm->a[wi];
-    }
-}
 
 // ═══ Thread-local nursery — PROTOTYPE (YAFL_LOCAL_GC=1, any worker count) ═══
 //

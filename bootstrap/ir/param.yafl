@@ -681,22 +681,24 @@ fun rpToCStoreObjectField(x: RpObjectField, cache0: List<CgCacheEntry>, value): 
   let pointerC = rpToC(x.pointer, cache0)
   let fieldRefBase = "((" + mangleName(x.objectName) + "_t*)" + pointerC.text + ")->" + mangleName(x.field)
   ret match(x.index)
-    (idx: RParam) => rpToCStoreObjectFieldIndexed(x, fieldRefBase, idx, pointerC.cache, value)
-    ()             => rpToCStoreObjectFieldFinish(x, fieldRefBase, pointerC.cache, value)
+    (idx: RParam) => rpToCStoreObjectFieldIndexed(x, pointerC.text, fieldRefBase, idx, pointerC.cache, value)
+    ()             => rpToCStoreObjectFieldFinish(x, pointerC.text, fieldRefBase, pointerC.cache, value)
 
-fun rpToCStoreObjectFieldIndexed(x: RpObjectField, fieldRefBase, idx, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectFieldIndexed(x: RpObjectField, pointerText, fieldRefBase, idx, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let idxC = rpToC(idx, cache0)
-  ret rpToCStoreObjectFieldFinish(x, fieldRefBase + ".a[" + idxC.text + "]", idxC.cache, value)
+  ret rpToCStoreObjectFieldFinish(x, pointerText, fieldRefBase + ".a[" + idxC.text + "]", idxC.cache, value)
 
-fun rpToCStoreObjectFieldFinish(x: RpObjectField, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectFieldFinish(x: RpObjectField, pointerText, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   ret cgHasPointers(x.fieldType) && !x.fresh
-    ? rpToCStoreObjectFieldBarrier(x, fieldRef, cache0, value)
+    ? rpToCStoreObjectFieldBarrier(x, pointerText, fieldRef, cache0, value)
     : ("    " + fieldRef + " = " + value + ";\n", cache0)
 
-fun rpToCStoreObjectFieldBarrier(x: RpObjectField, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
+# The container is known: the nursery barrier's private test reads its
+# escaped bit directly (codegen/param.py).
+fun rpToCStoreObjectFieldBarrier(x: RpObjectField, pointerText, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.fieldType, cache0)
   let mask = toPointerMask(x.fieldType, declared.text)
-  ret ("    GC_WRITE_BARRIER(" + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
+  ret ("    GC_WRITE_BARRIER_IN(" + pointerText + ", " + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
 
 # ── `NewStruct.__add__` (used by lowering passes, not within this file) ────
 
