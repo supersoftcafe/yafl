@@ -156,5 +156,5 @@ class TestTabulateFillKeepsItsBarrier(TestCase):
             with self.subTest(level=level):
                 stores, body = self._fill_stores(level)
                 self.assertTrue(stores, body)
-                self.assertTrue(any("GC_WRITE_BARRIER" in ln for ln in stores),
+                self.assertTrue(any("GC_WRITE_BARRIER" in ln or "GC_FILL_BARRIER" in ln for ln in stores),
                                 f"the tabulate fill store lost its barrier:\n{body}")

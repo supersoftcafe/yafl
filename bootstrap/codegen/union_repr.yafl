@@ -1517,7 +1517,7 @@ fun [tail] complexReadFieldInLeaf(fields: Chain<PStmt>, leafName, rootName, base
   (nil: ChainEnd) => None
   (l: ChainLink)  => match(l.value)
     (let2: PsLet) => let2.lName == fieldName
-      ? RpObjectField(specGenerateOpt(let2.lType, r), baseValue, enumLeafObjectName(rootName, leafName), let2.lName, None, false)
+      ? RpObjectField(specGenerateOpt(let2.lType, r), baseValue, enumLeafObjectName(rootName, leafName), let2.lName, None, false, false)
       : complexReadFieldInLeaf(l.next, leafName, rootName, baseValue, fieldName, r)
     (o: PStmt)    => complexReadFieldInLeaf(l.next, leafName, rootName, baseValue, fieldName, r)
 
@@ -1684,7 +1684,7 @@ fun bxConstructField(let2: PsLet, rest, objName, resultVar,
     ()            => bxConstructFields(rest, objName, resultVar, fieldArgs, r,
                        CcAcc(push(acc.caOps,
                                  OpMove(RpObjectField(fieldType, resultVar,
-                                            objName, let2.lName, None, true),
+                                            objName, let2.lName, None, true, false),
                                         RpZeroOf(fieldType), false,
                                         List())),
                              acc.caBundles))
@@ -1694,7 +1694,7 @@ fun bxConstructFieldArg(pa: PunArg, let2: PsLet, fieldType, rest, objName,
   let argBundle = withPrefix(genExprTo(pa.paExpr, r, let2.lType), "arg_" + bareName(let2.lName))
   ret bxConstructFields(rest, objName, resultVar, fieldArgs, r,
           CcAcc(push(acc.caOps,
-                    OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true),
+                    OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true, false),
                            mustResult(argBundle), false, List())),
                 push(acc.caBundles, argBundle)))
 
@@ -1769,7 +1769,7 @@ fun complexConstructField(let2: PsLet, rest, objName, resultVar, fieldArgs: List
     ()            => complexConstructFields(rest, objName, resultVar, fieldArgs, r,
                        CcAcc(push(acc.caOps,
                                  OpMove(RpObjectField(fieldType, resultVar,
-                                            objName, let2.lName, None, true),
+                                            objName, let2.lName, None, true, false),
                                         RpZeroOf(fieldType), false,
                                         List())),
                              acc.caBundles))
@@ -1779,7 +1779,7 @@ fun complexConstructFieldWithArg(pa: PunArg, let2: PsLet, fieldType, rest, objNa
   let argBundle = withPrefix(genExpr(pa.paExpr, r), "arg_" + bareName(let2.lName))
   ret complexConstructFields(rest, objName, resultVar, fieldArgs, r,
           CcAcc(push(acc.caOps,
-                    OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true),
+                    OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true, false),
                            mustResult(argBundle), false, List())),
                 push(acc.caBundles, argBundle)))
 

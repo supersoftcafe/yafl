@@ -154,7 +154,7 @@ class BuiltinOpExpression(Expression):
         val_b = val_e.generate(resolver).with_prefix("absval")
         store = cg_o.Move(
             cg_p.ObjectField(elem_ctype, arr_b.result_var, cname, "array",
-                             idx_b.result_var),
+                             idx_b.result_var, fill=True),
             val_b.result_var)
         done = g.OperationBundle((), (store,), cg_p.Integer(1, 8))
         return arr_b + idx_b + val_b + done

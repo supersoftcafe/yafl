@@ -181,7 +181,7 @@ class NewExpression(Expression):
             # that is a new object stored into an older one. Only the barrier
             # tells the nursery about that edge; without it the element is
             # freed while the array still holds it (stdlib_tests, RRBTree).
-            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var), elem_var),
+            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var, fill=True), elem_var),
             cg_o.Move(i_next, incr),
             cg_o.Label(back),
             cg_o.Jump(head),

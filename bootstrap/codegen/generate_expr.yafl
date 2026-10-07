@@ -584,7 +584,7 @@ fun genDotClassMember(cs: PsClass, data, d: PeDot, baseBundle, r) => match(data)
 
 fun genDotField(cs: PsClass, l: PsLet, d: PeDot, baseBundle: GBundle, r)
   let xtype = specGenerateOpt(l.lType, r)
-  ret bundleJoin(baseBundle, bundleValue(RpObjectField(xtype, mustResult(baseBundle), cs.cName, d.member, None, false)))
+  ret bundleJoin(baseBundle, bundleValue(RpObjectField(xtype, mustResult(baseBundle), cs.cName, d.member, None, false, false)))
 
 fun genDotEnum(d: PeDot, e2, baseBundle: GBundle, r)
   ret bundleJoin(baseBundle, bundleValue(reprReadField(classifyRepr(e2, r), mustResult(baseBundle), d.member, r)))
@@ -690,7 +690,7 @@ fun fetchFunctionName(t) => "lazy_fetch$" + irMangle(t)
 fun genLazy(lz: PeLazy, r)
   let irT = specGenerate(lz.lzTarget, r)
   let stubRef = match(lz.lzCaptured)
-    (cls: String) => RpObjectField(CgDataPointer(), RpStackVar(CgDataPointer(), "this"), cls, lz.stubName, None, false)
+    (cls: String) => RpObjectField(CgDataPointer(), RpStackVar(CgDataPointer(), "this"), cls, lz.stubName, None, false, false)
     ()             => lazyStubRef(lz, r)
   ret lz.lzStubOnly ? bundleValue(stubRef) : genLazyForce(irT, stubRef)
 
@@ -830,7 +830,7 @@ fun genArrayBuilderStoreAll(cname, elem, arrE, idxE, valE, r)
   let idxB = withPrefix(genExpr(idxE, r), "absidx")
   let valB = withPrefix(genExpr(valE, r), "absval")
   let store = OpMove(RpObjectField(specGenerate(elem, r), mustResult(arrB), cname, "array",
-                                   mustResult(idxB), false),
+                                   mustResult(idxB), false, true),
                      mustResult(valB), false, List())
   ret bundleJoin(bundleJoin(bundleJoin(arrB, idxB), valB),
                  GBundle(List(), list1(store), RpInteger(1, 8),
@@ -1013,7 +1013,7 @@ fun [tail] fieldMoveOpsB(fs: Chain<PStmt>, cname, resultVar, paramsVar,
 
 fun fieldMoveOp(field, cname, resultVar, paramsVar, index: Int, r)
   let ftype = specGenerateOpt(stmtType(field), r)
-  ret OpMove(RpObjectField(ftype, resultVar, cname, stmtName(field), None, true),
+  ret OpMove(RpObjectField(ftype, resultVar, cname, stmtName(field), None, true, false),
              RpStructField(paramsVar, "_" + String(index)), false, List())
 
 # ── array-class construction: allocate trailing storage then tabulate it via
@@ -1057,7 +1057,7 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
           OpLabel("fillbody", List())),
     concat(
       list3(OpCall(initFn, RpNewStruct(list1(RpNamedValue("_0", iVar))), elemVar, false, false, None, List()),
-            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, false), elemVar, false, List()),
+            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, false, true), elemVar, false, List()),
             OpMove(iNext, incr, false, List())),
       list4(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()), unpinOp)))
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))

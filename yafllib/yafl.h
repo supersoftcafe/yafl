@@ -850,6 +850,25 @@ INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask)
             _gc_write_barrier2((object_t**)&(field), (mask));\
         gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
+// A FILL store (codegen's ObjectField.fill): NULL -> value into a slot of a
+// live, freshly allocated array, written once but across safe points — array
+// tabulation and builder pushes. Nothing is overwritten, so neither the
+// snapshot barrier nor a thread without an active nursery owes anything. With
+// a nursery active, the array is private to it unless it has left (a root
+// scan, a promotion) or escaped; only then is the slot noted. The container
+// is a live heap object, so no heap or page-tag check is needed.
+INLINE bool gc_local_fill_private(object_t *obj) {
+    gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (page->head.local_epoch != gc_alloc_tl.local_epoch || page->head.mutable)
+        return false;
+    unsigned c = (unsigned)(((uintptr_t)obj - (uintptr_t)page->slots) / GC_SLOT_SIZE);
+    mask_bits_t esc = __atomic_load_n(&page->head.local_escaped.a[c / GC_MASK_SIZE], __ATOMIC_ACQUIRE);
+    return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
+}
+#define GC_FILL_BARRIER(obj, field, mask)\
+    do {if (gc_alloc_tl.local_active && UNLIKELY(!gc_local_fill_private((object_t*)(obj))))\
+            gc_local_note_slot((object_t**)&(field), (mask));\
+    } while (false)
 // A value handed to the runtime or another thread (queues, completions,
 // lazy publication): for a nursery it ESCAPES, whatever the marker is doing.
 // The value is in hand before gc_local_live is read (same order as above).
