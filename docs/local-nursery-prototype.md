@@ -454,7 +454,11 @@ Neither the C tests nor the six benchmark programs had caught any of them.
    barrier reports each edge from a builder that has left the nursery, and
    builders are born pinned by their allocation (`array_create(…, true)`,
    `new_pinned` for list cells) rather than pinned by a separate call. The
-   registry's global spinlock on every builder went with it.
+   registry's global spinlock on every builder went with it. So did the
+   rule that made a pinned object a root of every nursery collection and
+   held its page in the nursery (`local_stay`): with every write into a
+   pinned object barriered, it is live exactly when something references
+   it, like any other object.
 
 After the fixes, all 24 poison runs of the small input pass (1 and 4 workers;
 nursery sizes 1, 4 and 32 pages), and two full poison self-compiles produce

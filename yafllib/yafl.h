@@ -494,9 +494,6 @@ typedef struct page_head {
                       // pruning, but force-marked as a root every cycle until
                       // its targets promote (then it graduates to `old`).
     uint8_t refs_defer;   // prunes left before re-walking gc_page_refs_are_old
-    bool  local_stay; // Thread-local nursery (prototype): this page holds a
-                      // live pinned object, so it stays in the nursery across
-                      // collections (set by the owner's root pass).
     uint8_t refs_backoff; // last defer length; doubles per failed walk up to
                           // GC_REFS_BACKOFF_CAP, so permanently-blocked pages
                           // stop costing a full object walk every prune.

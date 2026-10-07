@@ -930,7 +930,6 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         gc_page_t* page = gc_page_alloc(page_count);
         page->head.mutable = is_mutable;
         page->head.local_epoch = gc_thread_info.in_relocation ? 0 : gc_thread_info.local_epoch;
-        page->head.local_stay = false;
         page->head.objects.a[0] = 1;
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
         // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
@@ -993,7 +992,6 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         new_page = gc_page_alloc(1);
     new_page->head.mutable = is_mutable;
     new_page->head.local_epoch = gc_thread_info.in_relocation ? 0 : gc_thread_info.local_epoch;
-    new_page->head.local_stay = false;
 
     bump_pointers_t *bp = is_mutable
         ? &gc_alloc_tl.region_mutable
@@ -1629,8 +1627,7 @@ static thread_local gc_page_t *gc_local_staying_mut = NULL;  // mutable bump pag
 
 static inline bool gc_local_is_staying(gc_page_t *page) {
     return page != NULL
-        && (page == gc_local_staying || page == gc_local_staying_mut
-            || (page->head.local_stay && gc_local_page_is_nursery(page)));
+        && (page == gc_local_staying || page == gc_local_staying_mut);
 }
 static inline bool gc_local_points_at_staying(object_t *child) {
     return (size_t)((char*)child - _memory_heap_base) < _memory_heap_bytes
@@ -1816,13 +1813,14 @@ static NOINLINE void gc_local_collect(void) {
         }
         gc_local_pages[np++] = page;
         bitmap_reset_all(&page->head.local_mark);
-        page->head.local_stay = false;
     }
     gc_local_stack_n = 0;
 
-    // Roots 1: ESCAPED objects; objects the global collector already holds
-    // marked (its cycle will trace them); and pinned objects (a runtime
-    // primitive is mid-write through a raw pointer).
+    // Roots 1: ESCAPED objects, and objects the global collector already
+    // holds marked (its cycle will trace them). A PINNED object is not a root
+    // and does not hold its page back: every write into one — a builder's
+    // element stores, a list link, a late write — goes through the barrier,
+    // so it is live exactly when something references it, like any object.
     for (size_t k = 0; k < np; ++k) {
         gc_page_t *page = gc_local_pages[k];
         for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
@@ -1830,19 +1828,6 @@ static NOINLINE void gc_local_collect(void) {
                 & (page->head.scanner.seen.a[index] | page->head.scanner.atomic_seen.a[index]
                    | atomic_load_explicit((_Atomic(mask_bits_t)*)&page->head.local_escaped.a[index],
                                           memory_order_acquire));
-            mask_bits_t objs = page->head.objects.a[index];
-            while (objs) {
-                unsigned b = __builtin_ctzll(objs); objs &= objs - 1;
-                object_t *o = (object_t*)&page->slots[b + index * GC_MASK_SIZE];
-                if (vtable_is_pinned(o->vtable)) {
-                    bits |= (mask_bits_t)1 << b;
-                    // A pinned object is under construction: its builder
-                    // stores into it with plain stores across safe points,
-                    // so its page must not be promoted (and promoted
-                    // survivors' edges into it are remembered).
-                    page->head.local_stay = true;
-                }
-            }
             while (bits) {
                 unsigned b = __builtin_ctzll(bits); bits &= bits - 1;
                 unsigned slot = b + index * GC_MASK_SIZE;
@@ -1923,7 +1908,7 @@ static NOINLINE void gc_local_collect(void) {
         if (!gc_local_is_staying(page)) {
             page->head.local_epoch = 0;
             promoted++;
-        }   // (a page held back for a pin keeps local_stay until the next pass)
+        }
         for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i) {
             mask_bits_t dead = page->head.objects.a[i] & ~page->head.local_mark.a[i];
             if (dead && gc_poison_enabled) {
