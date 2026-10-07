@@ -31,7 +31,7 @@ EXPORT struct integer_vtable INTEGER_VTABLE = {
 };
 
 static integer_t* _integer_allocate(uint32_t length) {
-    return (integer_t*)array_create((vtable_t*)&INTEGER_VTABLE, length);
+    return (integer_t*)array_create((vtable_t*)&INTEGER_VTABLE, length, false);
 }
 
 #define _TAG_MASK PTR_TAG_INTEGER

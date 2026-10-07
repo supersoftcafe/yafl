@@ -22,8 +22,9 @@ between two pushes the program can suspend, allocate, and take any number of
 GC cycles, with the half-built array live the whole time. Three decisions
 make that sound:
 
-**Pinned from allocation to seal.** `array_builder_pin` pins the fresh run;
-until `build`/`discard` seals it, the array cannot be moved by compaction —
+**Pinned from allocation to seal.** `array_builder_alloc` allocates the run
+born pinned (`array_create(…, pinned=true)`: the pin bit rides the store that
+installs the vtable); until `build`/`discard` seals it, the array cannot be moved by compaction —
 so every push is a plain generated store at a stable address, and NO READER
 ANYWHERE pays a forwarding resolve. (The alternative — a momentary locking
 bracket per store, the `once.c` idiom — makes the cells relocatable while
@@ -40,9 +41,22 @@ traceable the moment it lands. `build` writes the true count (`_at`) as the
 LAST act: readers never see a length larger than what was pushed, and the
 trim only discards never-written zeros.
 
-**Stores are barrier-free (`fresh`).** Each slot is written at most once
-over the allocator's zero fill, so there is no old edge for the snapshot
-barrier to preserve; new edges are covered by SATB's allocation rules.
+**Stores are write-barriered.** Each slot is written at most once over the
+allocator's zero fill, so the snapshot barrier has no old edge to keep — but
+a build crosses safe points, so the run may have left the storing thread's
+nursery while the element is new. The barrier reports that edge to the
+nursery exactly as it does for any other heap store. (The stores used to be
+`fresh` and barrier-free, with every in-flight builder registered as a root
+of every nursery collection — a global spinlock on every builder — instead.)
+
+**Sealing shorter owes the snapshot barrier.** Shortening `length` deletes
+every reference past it. `build` trims only never-written zeros, but a grown
+or discarded run is sealed to 0 with all its elements in it, so
+`array_builder_seal` applies the deletion barrier to each element it cuts
+off while a cycle is marking. Without it, an element reachable at the
+snapshot only through the old run, and since copied into the new run
+(allocated during the cycle, so not traced in it), was freed under the new
+run (tests/test_builder_gc.py).
 
 Growth (`push` past `_cap`): fresh run at double capacity (pinned),
 `_copyInto`, the abandoned run sealed EMPTY — releasing its pin — then the
@@ -54,16 +68,16 @@ A C function cannot take a `T` by value — its width varies per
 instantiation (1 byte, a pointer, a multi-word struct). So the runtime
 primitives are representation-BLIND:
 
-* `array_builder_pin(arr)` — object-level pin, held to seal
-* `array_builder_seal(arr, len)` — writes an `int32` at
-  `vtable->array_len_offset`, then unpins
+* `array_builder_seal(arr, len)` — barriers the references past `len`
+  (during a cycle), writes an `int32` at `vtable->array_len_offset`, then
+  unpins
 
 Everything element-typed is a COMPILER special form, inlined after
 monomorphisation where the width is a static fact
 (`pyast/expression/builtin_op.py`, port `codegen/generate_expr.yafl`):
 
 * `array_builder_alloc` — the ctor's own sized-`NewObject` path
-  (`array_create` with this instantiation's vtable). The vtable carries the
+  (`array_create` with this instantiation's vtable, born pinned). The vtable carries the
   representation: `array_el_size` (stride) and `array_el_pointer_locations`
   (per-ELEMENT pointer mask — a struct element with pointers at words 2 and
   5 has bits 2 and 5).

@@ -69,7 +69,8 @@ fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
 # elements, and build() publishes by SHORTENING length from capacity to the
 # filled count.
 #
-# The array is PINNED from allocation to seal (array_builder_pin/seal): a
+# The array is PINNED from allocation to seal (born pinned by
+# array_builder_alloc, released by array_builder_seal): a
 # fill may suspend — an async producer parks in a heap frame — so the
 # half-built array crosses safe points, and pinned it never moves: every
 # push is an ordinary store at a stable address, and no reader anywhere
@@ -91,8 +92,7 @@ class [linear,final] ArrayBuilder<T>(_arr: Array<T>, _at: Int32, _cap: Int32,
 fun arrayBuilder<T>(estimate: Int): ArrayBuilder<T>
   let cap = truncateToInt32(estimate < 1 ? 1 : estimate)
   let arr = __builtin_op__<Array<T> >("array_builder_alloc", cap)
-  ret ArrayBuilder<T>(arr, 0i32, cap,
-                      __builtin_op__<bool>("array_builder_pin", arr))
+  ret ArrayBuilder<T>(arr, 0i32, cap, true)
 
 fun push<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
   ret b._at < b._cap
@@ -108,8 +108,7 @@ fun push<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
 fun _pushGrown<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
   let cap2 = b._cap + b._cap
   let arr2 = __builtin_op__<Array<T> >("array_builder_alloc", cap2)
-  let ok2 = b._ok && __builtin_op__<bool>("array_builder_pin", arr2)
-  let ok3 = ok2 && _copyInto<T>(b._arr, arr2, 0i32, b._at)
+  let ok3 = b._ok && _copyInto<T>(b._arr, arr2, 0i32, b._at)
   let ok4 = ok3 && __builtin_op__<bool>("array_builder_seal", b._arr, 0i32)
   ret push<T>(ArrayBuilder<T>(arr2, b._at, cap2, ok4), x)
 

@@ -1016,12 +1016,12 @@ EXPORT void* object_create(vtable_t *vtable) {
     // writes each pointer field through the GC write barrier, which marks the
     // field's PRIOR value, and a partially-initialised object may be scanned;
     // NULL is safe, garbage is not.
-    object_t *object = (object_t*)object_new(vtable);
+    object_t *object = (object_t*)object_new(vtable, false);
     LOG(ULTRA, "ALLOC(0x%lx) -> %s", (uintptr_t)object, vtable->name);
     return object;
 }
 
-EXPORT void* array_create(vtable_t *vtable, int32_t length) {
+EXPORT void* array_create(vtable_t *vtable, int32_t length, bool pinned) {
     assert(length >= 0);
     assert(vtable->array_el_size != 0);
     size_t total = vtable->object_size + (size_t)vtable->array_el_size * (size_t)length;
@@ -1045,7 +1045,7 @@ EXPORT void* array_create(vtable_t *vtable, int32_t length) {
         // and NULL is safe where garbage is not.
         object = (object_t*)object_alloc_fast(total, vtable->is_mutable);
     }
-    object->vtable = vtable_tag(vtable);
+    object->vtable = (vtable_t*)((uintptr_t)vtable_tag(vtable) | (pinned ? VTABLE_PIN_BIT : 0));
     *((int32_t*)(((char*)object)+(vtable->array_len_offset))) = length;
     LOG(ULTRA, "ALLOC(0x%lx) -> %s", (uintptr_t)object, vtable->name);
     return object;
@@ -1072,21 +1072,20 @@ EXPORT size_t object_get_size(object_t* ptr) {
 // ── ListBuilder support ──────────────────────────────────────────────────────
 // In-order list construction (stdlib ListBuilder): cells are ordinary
 // immutable ChainLinks; the ONE mutable step — writing the previous tail's
-// `next` — happens here, on a cell that is PINNED (compaction never moves
-// it) and not yet published (linearity: only the builder can reach it).
+// `next` — happens here, on a cell that is PINNED (born pinned through
+// `new_pinned`, so compaction never moves it) and not yet published
+// (linearity: only the builder can reach it).
 // Pinned-at-construction rather than the once.c locking bracket (ruling
 // 2026-08-25): the momentary bracket makes cells relocatable while
 // late-writable, which taxes EVERY reader with forwarding resolution —
 // a price Memoize pays happily and list construction must not.
 // `next` is the LAST field of every ChainLink<T> instantiation (the value's
 // representation varies, the trailing pointer slot does not), so the slot is
-// object_size - sizeof(void*) from the cell base. No write barrier: under
-// SATB the barrier snapshots the OLD value, and the old value here is the
-// ChainEnd terminator the cell was constructed with — a static.
-EXPORT bool list_builder_pin(object_t *cell) {
-    object_pin(cell);
-    return true;
-}
+// object_size - sizeof(void*) from the cell base. No SATB barrier: it
+// snapshots the OLD value, and the old value here is the ChainEnd terminator
+// the cell was constructed with — a static. The nursery's barrier
+// (gc_local_note_slot) does run: the builder crosses safe points, so `prev`
+// may have left this thread's nursery while `cell` is new.
 
 // The `next` slot index for this instantiation's cells: the TRAILING pointer
 // field = the highest set bit of the pointer mask (object_size is slot-
@@ -1099,28 +1098,22 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
     return (int64_t)(63 - (unsigned)__builtin_clzll(mask));
 }
 
-static void gc_local_builder_add(object_t *arr);
-static bool gc_local_builder_remove(object_t *arr);
-static void gc_local_builder_done(object_t *obj);
-static void gc_local_builder_seal_escape(object_t *arr);
-
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
     ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
     if (gc_local_live)
         gc_local_note_slot(&((object_t**)prev)[slot], 1);
-    if (gc_local_enabled) gc_local_builder_done(prev);
     object_unpin(prev);                          // prev is now frozen
     return true;
 }
 
 EXPORT bool list_builder_seal(object_t *tail) {
-    if (gc_local_enabled) gc_local_builder_done(tail);
     object_unpin(tail);
     return true;
 }
 
 // ── array builder ────────────────────────────────────────────────────────────
-// An Array<T> under construction is PINNED from allocation to seal: the fill
+// An Array<T> under construction is PINNED from allocation (array_builder_alloc
+// allocates it pinned) to seal: the fill
 // may suspend (an async producer parks in a heap frame), so the half-built
 // array crosses safe points — pinned, every element store is an ordinary
 // generated store at a stable address, and no reader anywhere pays a
@@ -1129,21 +1122,29 @@ EXPORT bool list_builder_seal(object_t *tail) {
 // array_create has already zero-filled the payload and stamped length =
 // CAPACITY, so the scanner traces every slot from birth (NULLs where
 // nothing is written yet). The pin also blocks page promotion, so element
-// stores stay young-generation writes.
-
-EXPORT bool array_builder_pin(object_t *arr) {
-    object_pin(arr);
-    if (gc_local_enabled) gc_local_builder_add(arr);
-    return true;
-}
+// stores stay young-generation writes. The element stores are write-
+// barriered like any other heap store, so the nursery needs no record of
+// builders in flight.
 
 // Publish: shorten length to the filled count — the field never UNDERSTATES
-// the traceable extent, and the trimmed tail is never-written zeros — then
-// release the pin. The array is immutable (and compactable) from here on.
+// the traceable extent — then release the pin. The array is immutable (and
+// compactable) from here on.
+//
+// Shortening the length DELETES every reference past it, so it owes the
+// snapshot barrier for each, exactly as an overwrite would. build() trims
+// only never-written zeros, but a grown or discarded run is sealed to 0 with
+// every element still in it: an element reachable at the snapshot only
+// through that run, and since copied into a run allocated during the cycle
+// (never traced this cycle), would otherwise be freed under the new run.
 EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
     vtable_t *vt = vtable_untag(arr->vtable);
-    *((int32_t*)(((char*)arr) + vt->array_len_offset)) = length;
-    if (gc_local_enabled) gc_local_builder_done(arr);
+    int32_t *len = (int32_t*)(((char*)arr) + vt->array_len_offset);
+    if (UNLIKELY(gc_write_barrier_requested) && vt->array_el_pointer_locations) {
+        char *el = ((char*)arr) + vt->object_size + (size_t)vt->array_el_size * (size_t)length;
+        for (int32_t i = length; i < *len; ++i, el += vt->array_el_size)
+            _gc_write_barrier2((object_t**)el, vt->array_el_pointer_locations);
+    }
+    *len = length;
     object_unpin(arr);
     return true;
 }
@@ -1800,87 +1801,6 @@ static void gc_local_release_page(gc_page_t *page) {
     gc_local_cache[gc_local_cache_n++] = page;
 }
 
-// ARRAY BUILDERS IN FLIGHT. A pinned array under construction takes its
-// elements by plain stores across safe points (even suspensions, resuming on
-// another worker). While its page is in the builder's nursery the pin roots
-// it, but once the page leaves (a root scan retires the epoch) nothing would
-// show a nursery those stores. So every in-flight builder, from any thread,
-// is a root of every nursery collection: its elements are traced, and only
-// the collecting thread's own nursery objects are marked by that. Few are
-// ever in flight; the list is short.
-static atomic_flag gc_local_builders_lock = ATOMIC_FLAG_INIT;
-static void gc_local_builders_acquire(void) {
-    while (atomic_flag_test_and_set_explicit(&gc_local_builders_lock, memory_order_acquire))
-        cpu_relax();
-}
-static void gc_local_builders_release(void) {
-    atomic_flag_clear_explicit(&gc_local_builders_lock, memory_order_release);
-}
-static object_t **gc_local_builders = NULL;
-static size_t gc_local_builders_n = 0, gc_local_builders_cap = 0;
-
-static void gc_local_builder_add(object_t *arr) {
-    gc_local_builders_acquire();
-    if (gc_local_builders_n == gc_local_builders_cap) {
-        gc_local_builders_cap = gc_local_builders_cap ? gc_local_builders_cap * 2 : 64;
-        gc_local_builders = realloc(gc_local_builders, gc_local_builders_cap * sizeof(object_t*));
-        if (!gc_local_builders) abort_on_out_of_memory();
-    }
-    gc_local_builders[gc_local_builders_n++] = arr;
-    gc_local_builders_release();
-}
-
-static bool gc_local_builder_remove(object_t *arr) {
-    bool found = false;
-    gc_local_builders_acquire();
-    for (size_t k = gc_local_builders_n; k-- > 0; )
-        if (gc_local_builders[k] == arr) {
-            gc_local_builders[k] = gc_local_builders[--gc_local_builders_n];
-            found = true;
-            break;
-        }
-    gc_local_builders_release();
-    return found;
-}
-
-// An array builder is finished when its pin is released, by whichever
-// primitive releases it: array_builder_seal, or list_builder_link /
-// list_builder_seal for a List's segments. Only arrays are ever registered.
-static void gc_local_builder_done(object_t *obj) {
-    if (vtable_untag(obj->vtable)->array_el_size == 0) return;
-    if (gc_local_builder_remove(obj))
-        gc_local_builder_seal_escape(obj);
-}
-
-// At SEAL the array stops being a root of every nursery. Its elements stay
-// reachable through it only for a nursery that traces it: the sealing
-// thread's own, and only when the array sits in that nursery. Every other
-// element (the array is older, or the element came from another worker's
-// nursery while the fill was suspended there) ESCAPES.
-static void gc_local_builder_seal_escape(object_t *arr) {
-    if (!gc_local_live) return;
-    gc_page_t *apage = (gc_page_t*)((uintptr_t)arr & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-    bool array_local = gc_local_page_is_nursery(apage);
-    vtable_t *vt = vtable_untag(arr->vtable);
-    if (!vt->array_el_pointer_locations) return;
-    uint32_t len = *(uint32_t*)&((char*)arr)[vt->array_len_offset];
-    char *el = ((char*)arr) + vt->object_size;
-    for (; len-- > 0; el += vt->array_el_size) {
-        ptr_mask_t am = vt->array_el_pointer_locations;
-        while (am) {
-            unsigned i = __builtin_ctzll(am); am &= am - 1;
-            object_t *v = ((object_t**)el)[i];
-            if (((uintptr_t)v & PTR_TAG_MASK) != 0
-                    || (size_t)((char*)v - _memory_heap_base) >= _memory_heap_bytes)
-                continue;
-            if (array_local
-                    && gc_local_page_is_nursery((gc_page_t*)((uintptr_t)v & ~(uintptr_t)(GC_PAGE_SIZE - 1))))
-                continue;   // both in this nursery: traced through the array
-            gc_local_escape(v);
-        }
-    }
-}
-
 static bool gc_in_fsa_now(void);
 
 static NOINLINE void gc_local_collect(void) {
@@ -1975,12 +1895,6 @@ static NOINLINE void gc_local_collect(void) {
         ? (gc_page_t*)((uintptr_t)t->alloc->region_mutable.base & ~(uintptr_t)(GC_PAGE_SIZE - 1)) : NULL;
     if (gc_local_staying_mut && !gc_local_page_is_nursery(gc_local_staying_mut))
         gc_local_staying_mut = NULL;
-    // Roots 5 (after the staying pages are known — the remembering rule
-    // in gc_local_trace_fields reads them): array builders in flight, from every thread.
-    gc_local_builders_acquire();
-    for (size_t k = 0; k < gc_local_builders_n; ++k)
-        gc_local_trace_fields(gc_local_builders[k]);
-    gc_local_builders_release();
     uint64_t marked = 0;
     while (gc_local_stack_n) {
         object_t *o = gc_local_stack[--gc_local_stack_n];

@@ -125,24 +125,26 @@ class BuiltinOpExpression(Expression):
         return arr_type.name, elem_ctype
 
     def __array_builder_alloc(self, resolver: g.Resolver) -> "g.OperationBundle":
-        """Sized, unfilled allocation for a builder: array_create zero-fills
-        pointer-bearing payloads and stamps length = CAPACITY, so the
-        scanner traces every slot from birth. The element type rides the
-        builtin's declared RESULT type; no init function runs."""
+        """Sized, unfilled allocation for a builder, born PINNED (held until
+        array_builder_seal): array_create zero-fills pointer-bearing payloads
+        and stamps length = CAPACITY, so the scanner traces every slot from
+        birth. The element type rides the builtin's declared RESULT type; no
+        init function runs."""
         cname, _ = self.__array_class_parts(resolver, self.type)
         cap_b = self.params.expressions[0].value.generate(resolver).with_prefix("abcap")
         rv = cg_p.StackVar(cg_t.DataPointer(), "abarr")
-        alloc = g.OperationBundle((rv,), (cg_o.NewObject(cname, rv, size=cap_b.result_var),), rv)
+        alloc = g.OperationBundle((rv,), (cg_o.NewObject(cname, rv, size=cap_b.result_var, pinned=True),), rv)
         return cap_b + alloc
 
     def __array_builder_store(self, resolver: g.Resolver) -> "g.OperationBundle":
         """Inline pinned-array element store: a Move into the indexed
         trailing array field. A runtime call cannot express this — the
         element's C type varies per instantiation — and the builder holds
-        the pin from allocation to seal, so a plain store at the stable
-        address is exactly right. fresh: each slot is written at most once
-        over the allocator's zero fill, so there is no old edge for the
-        snapshot barrier to keep."""
+        the pin from allocation to seal, so the address is stable. NOT fresh:
+        a builder crosses safe points (even suspensions, resuming on another
+        worker), so the array may have left the storing thread's nursery and
+        the element be newer than it. The barrier reports that edge, as it
+        does for every other heap store."""
         arr_e = self.params.expressions[0].value
         idx_e = self.params.expressions[1].value
         val_e = self.params.expressions[2].value
@@ -152,15 +154,28 @@ class BuiltinOpExpression(Expression):
         val_b = val_e.generate(resolver).with_prefix("absval")
         store = cg_o.Move(
             cg_p.ObjectField(elem_ctype, arr_b.result_var, cname, "array",
-                             idx_b.result_var, fresh=True),
+                             idx_b.result_var),
             val_b.result_var)
         done = g.OperationBundle((), (store,), cg_p.Integer(1, 8))
         return arr_b + idx_b + val_b + done
+
+    def __new_pinned(self, resolver: g.Resolver) -> "g.OperationBundle":
+        """`__builtin_op__<T>("new_pinned", C(...))`: the construction C, its
+        heap object born PINNED — for an object written after allocation,
+        across safe points (a list-builder cell's `next`). The owner releases
+        it with object_unpin."""
+        arg = self.params.expressions[0].value
+        gen = getattr(arg, "generate_pinned", None)
+        if gen is None:
+            raise AssertionError(f"new_pinned takes a construction, not {type(arg).__name__}")
+        return gen(resolver)
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         special = self.__repr_aware(resolver)
         if special is not None:
             return special
+        if self.op.value == "new_pinned":
+            return self.__new_pinned(resolver)
         if self.op.value == "array_builder_alloc":
             return self.__array_builder_alloc(resolver)
         if self.op.value == "array_builder_store":

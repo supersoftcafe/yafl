@@ -1525,9 +1525,11 @@ fun [tail] complexReadFieldInLeaf(fields: Chain<PStmt>, leafName, rootName, base
 # SECTION 9: construct_enum_value (SEnum targets only).
 # ══════════════════════════════════════════════════════════════════════════
 
-fun reprConstructEnumValue(rep, leafName, fieldArgs: List<PunArg>, r) => match(rep)
-  (gt: GTagged) => taggedConstructEnumValue(gt, leafName, fieldArgs, r)
-  (gc: GComplexEnum) => complexConstructEnumValue(gc, leafName, fieldArgs, r)
+# pinned: the variant's heap object is born pinned (`new_pinned`; only a
+# heap-held variant has one to pin).
+fun reprConstructEnumValue(rep, leafName, fieldArgs: List<PunArg>, r, pinned: Bool) => match(rep)
+  (gt: GTagged) => taggedConstructEnumValue(gt, leafName, fieldArgs, r, pinned)
+  (gc: GComplexEnum) => complexConstructEnumValue(gc, leafName, fieldArgs, r, pinned)
   (gp: GPointer) => emptyBundle()   # unreachable: Python raises NotImplementedError (not an enum union)
 
 fun [tail] indexOfString(xs: List<String>, target, i) => match(head(xs))
@@ -1606,18 +1608,18 @@ fun emitFlatStructStep(param, l: ChainLink<CgField>, variantSlots2: List<CgSlotE
   let sub = emitFlat(RpStructField(param, l.value.fieldName), l.value.fieldType, variantSlots2, slotFields, offset, slots)
   ret emitFlatStruct(param, l.next, variantSlots2, slotFields, sub.efOffset, sub.efSlots)
 
-fun taggedConstructEnumValue(gt: GTagged, leafName, fieldArgs: List<PunArg>, r) => match(gt.grtType)
-  (e2: SEnum) => taggedConstructEnumValueOn(gt, e2, leafName, fieldArgs, r)
+fun taggedConstructEnumValue(gt: GTagged, leafName, fieldArgs: List<PunArg>, r, pinned: Bool) => match(gt.grtType)
+  (e2: SEnum) => taggedConstructEnumValueOn(gt, e2, leafName, fieldArgs, r, pinned)
   (o: Spec)   => emptyBundle()   # unreachable: only ever classified from an SEnum
 
-fun taggedConstructEnumValueOn(gt: GTagged, e2: SEnum, leafName, fieldArgs: List<PunArg>, r)
+fun taggedConstructEnumValueOn(gt: GTagged, e2: SEnum, leafName, fieldArgs: List<PunArg>, r, pinned: Bool)
   ret match(soleItem(findType(r, e2.seRoot)))
     (found: Found) => match(found.fStmt)
-      (root: PsEnum) => taggedConstructEnumValueRoot(gt, e2, root, leafName, fieldArgs, r)
+      (root: PsEnum) => taggedConstructEnumValueRoot(gt, e2, root, leafName, fieldArgs, r, pinned)
       (o: PStmt)     => emptyBundle()   # unreachable
     ()                => emptyBundle()   # unreachable
 
-fun taggedConstructEnumValueRoot(gt: GTagged, e2: SEnum, root: PsEnum, leafName, fieldArgs: List<PunArg>, r)
+fun taggedConstructEnumValueRoot(gt: GTagged, e2: SEnum, root: PsEnum, leafName, fieldArgs: List<PunArg>, r, pinned: Bool)
   let leafIdx = indexOfString(e2.seAllLeaves, leafName, 0)
   let leafFields = forceNth(collectLeafFieldSets(root, List()), leafIdx)
   let container = gt.grtContainer
@@ -1628,7 +1630,7 @@ fun taggedConstructEnumValueRoot(gt: GTagged, e2: SEnum, root: PsEnum, leafName,
   if isBoxedLeaf(r, e2.seRoot, leafName)
     ret taggedConstructBoxed(e2, leafFields, leafName, fieldArgs,
                              forceNth(gt.grtVariantMap, leafIdx),
-                             slotFields, taggedSlots, container, r)
+                             slotFields, taggedSlots, container, r, pinned)
   let primStarts = primStartsOf(chain(leafFields), 0, r, List())
   let step = taggedConstructFields(chain(fieldArgs), leafFields, primStarts, forceNth(gt.grtVariantMap, leafIdx),
                                   slotFields, taggedSlots, r,
@@ -1644,12 +1646,12 @@ fun taggedConstructEnumValueRoot(gt: GTagged, e2: SEnum, root: PsEnum, leafName,
 fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName,
                          fieldArgs: List<PunArg>, variantSlots2: List<CgSlotEntry>,
                          slotFields: List<CgField>, taggedSlots: List<RpNamedValue>,
-                         container, r)
+                         container, r, pinned: Bool)
   let objName = enumLeafObjectName(e2.seRoot, leafName)
   let objVar = RpStackVar(CgDataPointer(), "boxed")
   let step = bxConstructFields(chain(leafFields), objName, objVar, fieldArgs, r,
                                CcAcc(builder(), builder()))
-  let ops = concat(list1(OpNewObject(objName, objVar, None, List())), step.ccOps)
+  let ops = concat(list1(OpNewObject(objName, objVar, None, pinned, List())), step.ccOps)
   let allocBundle = GBundle(list1(objVar), ops, objVar, List(), List())
   ret match(listAt(variantSlots2, 0))
     (se: CgSlotEntry) => bundleJoin(bundleJoinAll(step.ccBundles),
@@ -1716,19 +1718,19 @@ fun taggedConstructFieldsStep(l: ChainLink<PunArg>, leafFields: List<PStmt>, pri
                             slotFields, ef.efSlots, r,
                             push(bundles, argBundle))
 
-fun complexConstructEnumValue(gc: GComplexEnum, leafName, fieldArgs: List<PunArg>, r)
+fun complexConstructEnumValue(gc: GComplexEnum, leafName, fieldArgs: List<PunArg>, r, pinned: Bool)
   ret match(gc.grcType)
-    (e2: SEnum) => complexConstructEnumValueOn(e2, leafName, fieldArgs, r)
+    (e2: SEnum) => complexConstructEnumValueOn(e2, leafName, fieldArgs, r, pinned)
     (o: Spec)   => emptyBundle()   # unreachable
 
-fun complexConstructEnumValueOn(e2: SEnum, leafName, fieldArgs: List<PunArg>, r)
+fun complexConstructEnumValueOn(e2: SEnum, leafName, fieldArgs: List<PunArg>, r, pinned: Bool)
   ret match(soleItem(findType(r, e2.seRoot)))
     (found: Found) => match(found.fStmt)
-      (root: PsEnum) => complexConstructEnumValueRoot(e2, root, leafName, fieldArgs, r)
+      (root: PsEnum) => complexConstructEnumValueRoot(e2, root, leafName, fieldArgs, r, pinned)
       (o: PStmt)     => emptyBundle()   # unreachable
     ()                => emptyBundle()   # unreachable
 
-fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName, fieldArgs: List<PunArg>, r)
+fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName, fieldArgs: List<PunArg>, r, pinned: Bool)
   let leafIdx = indexOfString(e2.seAllLeaves, leafName, 0)
   let leafFields = forceNth(collectLeafFieldSets(root, List()), leafIdx)
   let objName = enumLeafObjectName(e2.seRoot, leafName)
@@ -1736,7 +1738,7 @@ fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName, fieldArgs: 
   let step = complexConstructFields(chain(leafFields), objName, resultVar,
                                     fieldArgs, r,
                                     CcAcc(builder(), builder()))
-  let ops = concat(list1(OpNewObject(objName, resultVar, None, List())), step.ccOps)
+  let ops = concat(list1(OpNewObject(objName, resultVar, None, pinned, List())), step.ccOps)
   let ctorBundle = GBundle(list1(resultVar), ops, resultVar, List(), List())
   ret bundleJoin(bundleJoinAll(step.ccBundles), ctorBundle)
 

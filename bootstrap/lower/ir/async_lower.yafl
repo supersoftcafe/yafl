@@ -125,7 +125,7 @@ fun alRuntimeDiscard(sv, name, args): Op
 # countdown is genuine runtime data, never a recalculated length.
 fun alEmitParTaskSetup(parTaskVar, parTaskName,
                        closures: List<RParam>, nClosures): List<Op>
-  let setup = list3(OpNewObject(parTaskName, parTaskVar, None, List()),
+  let setup = list3(OpNewObject(parTaskName, parTaskVar, None, false, List()),
                     alRuntimeDiscard(alSvDiscard(), "task_init",
                                      list1(RpNamedValue("task", parTaskVar))),
                     OpMove(RpObjectField(CgInt(32), parTaskVar, parTaskName, "remaining", None, false),
@@ -167,7 +167,7 @@ fun alEmitTaskAlloc(svTask, subtype: String|None): List<Op> => match(subtype)
                    RpRuntimeInvoke(st + "_create",
                                    RpNewStruct(list1(RpNamedValue("self", RpNullPointer()))),
                                    CgDataPointer()), false, List()))
-    : list2(OpNewObject(st, svTask, None, List()),
+    : list2(OpNewObject(st, svTask, None, false, List()),
             alRuntimeDiscard(alSvDiscard(), "task_init",
                              list1(RpNamedValue("task", svTask))))
   ()            => list1(OpMove(svTask,
@@ -1330,7 +1330,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
       list2(OpLabel("$asynccommon", List()),
             OpNewObject(stateName, alSvState(),
                         RpInteger(layout.afNArray, 32),
-                        List())))
+                        false, List())))
   # Save only the suspending site's live set — shared slots must not be
   # clobbered by dead locals — dispatched on the recorded call id (1-based).
   let common1 = push(common0,
@@ -1459,7 +1459,7 @@ fun alPlaced(acc: AFrame, name: String) => any(acc.afPtrSlots, (e2) => e2.niName
 fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
                            layout: AFrame, entryIdx): CgFunction
   let wrappedResult = wrapReturnType(f.fnResult)
-  let ops0 = list1<Op>(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), List()))
+  let ops0 = list1<Op>(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), false, List()))
   # Stub launch stores into its own fresh $sv_state (Python 1053).
   let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc, p) =>
                concat(acc, alStoreVar(RpStackVar(p.fieldType, p.fieldName), alSvState(), stateName, layout)))

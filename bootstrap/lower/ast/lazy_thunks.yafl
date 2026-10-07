@@ -182,7 +182,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
       OpJumpIf("$slow", isComplete, true, List()),
       OpReturn(wrapValue(valueF, wrapped), List()),
       OpLabel("$slow", List()),
-      OpNewObject(waiterTy, waiter, None, List()),
+      OpNewObject(waiterTy, waiter, None, false, List()),
       lazyRuntimeCall1("task_init", "self", waiter))
   let enqueue = list5<Op>(
       OpMove(flagAddr, RpPointerTo(flagF), false, List()),

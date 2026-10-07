@@ -351,8 +351,10 @@ class UnionRepr(ABC):
             f"{type(self).__name__} does not support read_field (not an enum union)")
 
     def construct_enum_value(self, leaf_name: str, field_args,
-                             resolver: g.Resolver) -> g.OperationBundle:
-        """Construct enum variant `leaf_name` from `field_args` in this repr."""
+                             resolver: g.Resolver, pinned: bool = False) -> g.OperationBundle:
+        """Construct enum variant `leaf_name` from `field_args` in this repr.
+        `pinned`: the variant's heap object is born pinned (only a heap-held
+        variant has one to pin)."""
         raise NotImplementedError(
             f"{type(self).__name__} does not support construct_enum_value (not an enum union)")
 
@@ -615,7 +617,7 @@ class TaggedRepr(UnionRepr):
         raise AssertionError(
             f"Field '{field_name}' not found in enum {self.union_type.root_name}")
 
-    def construct_enum_value(self, leaf_name, field_args, resolver):
+    def construct_enum_value(self, leaf_name, field_args, resolver, pinned=False):
         """Construct a flat enum variant: fill its slots from the field-arg
         expressions (generated here, in field-arg order) and set $tag to the
         positional leaf index. `field_args` maps field name -> Expression."""
@@ -639,7 +641,7 @@ class TaggedRepr(UnionRepr):
             # the pointer in the leaf's single slot, tagged as usual.
             obj_name = t.enum_leaf_object_name(self.union_type.root_name, leaf_name)
             obj_var = cg_p.StackVar(cg_t.DataPointer(), "boxed")
-            ops: list = [cg_o.NewObject(obj_name, obj_var)]
+            ops: list = [cg_o.NewObject(obj_name, obj_var, pinned=pinned)]
             bundles = []
             for let in leaf_fields:
                 field_type = let.declared_type.generate(resolver)
@@ -661,6 +663,8 @@ class TaggedRepr(UnionRepr):
             final = g.OperationBundle((), (), cg_p.union_struct(container, dict(slot_values)))
             return reduce(lambda a, b: a + b, bundles + [alloc_bundle, final])
 
+        if pinned:
+            raise AssertionError(f"new_pinned: {leaf_name} is a flat variant, not a heap object")
         prim_start: dict[str, int] = {}
         offset = 0
         for let in leaf_fields:
@@ -1240,7 +1244,7 @@ class ComplexEnumRepr(UnionRepr):
         raise AssertionError(
             f"Field '{field_name}' not found in enum {self.union_type.root_name}")
 
-    def construct_enum_value(self, leaf_name, field_args, resolver):
+    def construct_enum_value(self, leaf_name, field_args, resolver, pinned=False):
         """Construct a complex enum variant: allocate the variant's own heap
         object (its vtable carries the discriminator) and store each field.
         Unwritten fields get ZeroOf so staticinit can promote all-constant
@@ -1250,7 +1254,7 @@ class ComplexEnumRepr(UnionRepr):
         leaf_fields = t._collect_leaf_field_sets(root_stmt, [])[leaf_idx]
         obj_name = t.enum_leaf_object_name(self.union_type.root_name, leaf_name)
         result_var = cg_p.StackVar(cg_t.DataPointer(), "result")
-        ops = [cg_o.NewObject(obj_name, result_var)]
+        ops = [cg_o.NewObject(obj_name, result_var, pinned=pinned)]
         bundles = []
         for let in leaf_fields:
             field_name = let.name

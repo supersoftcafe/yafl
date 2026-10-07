@@ -145,7 +145,7 @@ fun genLazyAlloc(l: PsLet, r)
   let flagF = RpObjectField(CgDataPointer(), svStub, cls, "flag", None, true)
   let closureF = RpObjectField(CgFuncPointer(false), svStub, cls, "closure", None, true)
   ret GBundle(list1(svStub),
-              list3(OpNewObject(cls, svStub, None, List()),
+              list3(OpNewObject(cls, svStub, None, false, List()),
                     OpMove(flagF, RpNullPointer(), false, List()),
                     OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())),
               None, List(), List())

@@ -343,12 +343,11 @@ INLINE bool vtable_is_pinned(vtable_t* vt) {
     return ((uintptr_t)vt & VTABLE_PIN_BIT) != 0;
 }
 
-// Pin: DIRECTLY after allocation — the object is not yet shared, so a plain
-// store is enough. This is the ListBuilder case, one per list cell, and it
-// stays a plain store because it cannot contend with anything.
-INLINE void object_pin(object_t* o) {
-    o->vtable = (vtable_t*)((uintptr_t)o->vtable | VTABLE_PIN_BIT);
-}
+// EARLY pin — an object pinned from birth — is not a call: object_new and
+// array_create take `pinned` and install the vtable word with the bit already
+// set (free: it rides the store that installs the vtable). That is the
+// array-tabulation, array-builder and list-builder-cell case. Only a LATE pin,
+// on an object that may already be shared, needs the CAS below.
 
 // LATE pin: take the pin on an object that is already shared and may already
 // have aged, moved, or be moving. The bit doubles as a MUTEX — exactly one
@@ -373,30 +372,16 @@ INLINE bool object_try_pin(object_t* o) {
                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED);
 }
 
-// Unpin: any time, but only on a pinned object. Release order so every
-// initialising store (the whole point of the pin) is visible before the
-// object becomes movable/publishable.
-INLINE void object_unpin(object_t* o) {
+// Unpin: any time, but only on a pinned object — the one release for every
+// pin, early or late. Release order so every initialising store (the whole
+// point of the pin) is visible before the object becomes movable/publishable.
+// Returns `o` so generated code can emit it as a value (codegen has no void
+// call); C callers ignore it.
+INLINE object_t* object_unpin(object_t* o) {
     __atomic_store_n((uintptr_t*)&o->vtable,
                      (uintptr_t)o->vtable & ~(uintptr_t)VTABLE_PIN_BIT,
                      __ATOMIC_RELEASE);
-}
-
-// Array tabulation, `Array<T>(n, init)`: the compiler pins the array from
-// allocation to the end of its fill loop. The init call may suspend, parking
-// the half-built array in a heap state object with no stack reference to keep
-// compaction off it; the resumed loop reloads that address and stores into
-// it, so the array must not move until the last element is in. Unlike
-// array_builder_pin it does not join the nursery's builder registry: the
-// fill's element stores are barriered, so the nursery hears of every edge.
-INLINE object_t* array_fill_pin(object_t* arr) {
-    object_pin(arr);
-    return arr;
-}
-
-INLINE object_t* array_fill_unpin(object_t* arr) {
-    object_unpin(arr);
-    return arr;
+    return o;
 }
 
 // Take a late pin on the CURRENT copy of `o`, following relocation and
@@ -673,9 +658,11 @@ INLINE void *object_alloc_fast(size_t size, bool is_mutable) {
 // load-bearing for the write barrier and for scans of partially-initialised
 // objects), and each call site's immediate field stores let the C compiler
 // elide the redundant zeroes.
-INLINE void *object_new(vtable_t *vtable) {
+// `pinned`: born pinned (see object pinning) — constant at every call site,
+// so it folds into the vtable store.
+INLINE void *object_new(vtable_t *vtable, bool pinned) {
     object_t *object = (object_t*)object_alloc_fast(vtable->object_size, vtable->is_mutable);
-    object->vtable = vtable_tag(vtable);
+    object->vtable = (vtable_t*)((uintptr_t)vtable_tag(vtable) | (pinned ? VTABLE_PIN_BIT : 0));
     return object;
 }
 
@@ -845,11 +832,9 @@ INLINE vtable_t *object_get_vtable_inline(object_t *object) {
 }
 #define object_get_vtable object_get_vtable_inline
 
-EXTERN bool list_builder_pin(object_t *cell);
 EXTERN int64_t list_builder_slot(object_t *cell);
 EXTERN bool list_builder_link(object_t *prev, object_t *cell, int64_t slot);
 EXTERN bool list_builder_seal(object_t *tail);
-EXTERN bool array_builder_pin(object_t *arr);
 EXTERN bool array_builder_seal(object_t *arr, int32_t length);
 EXTERN bool gc_debug_major_now(object_t *ignored);
 EXTERN vtable_t *object_get_vtable(object_t *object);
@@ -923,7 +908,7 @@ extern char** _yafl_argv;
 EXTERN object_t* sys_argc(object_t* self);
 
 EXTERN void* object_create(vtable_t* vtable);
-EXTERN void* array_create(vtable_t* vtable, int32_t length);
+EXTERN void* array_create(vtable_t* vtable, int32_t length, bool pinned);
 
 EXTERN void abort_on_maths_error();
 EXTERN void abort_on_vtable_lookup();

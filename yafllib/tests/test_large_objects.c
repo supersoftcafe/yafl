@@ -60,7 +60,7 @@ static vtable_t root_vt = {
 
 
 static struct bytes_obj* alloc_bytes(uint32_t len, uint64_t base) {
-    struct bytes_obj* o = (struct bytes_obj*)array_create(&bytes_vt, (int32_t)len);
+    struct bytes_obj* o = (struct bytes_obj*)array_create(&bytes_vt, (int32_t)len, false);
     for (uint32_t i = 0; i < len; ++i)
         o->data[i] = base + i;
     return o;
@@ -108,7 +108,7 @@ static void run_test(object_t* _unused, fun_t continuation) {
     printf("  %-50s ", "mixed_sizes_survive_gc_churn");
     fflush(stdout);
 
-    struct root_obj* root = (struct root_obj*)array_create(&root_vt, N_SLOTS);
+    struct root_obj* root = (struct root_obj*)array_create(&root_vt, N_SLOTS, false);
 
     // Initial fill: interleaved small / medium / large across all slots.
     for (int i = 0; i < N_SLOTS; ++i) {

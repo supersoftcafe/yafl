@@ -165,7 +165,7 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
 
     for (int count = 0; count < 10; ++count) {
         GC_SAFE_POINT();
-        struct test_gc_allocations_o* obj = (struct test_gc_allocations_o*)array_create((vtable_t*)&test_gc_allocations_v, 3);
+        struct test_gc_allocations_o* obj = (struct test_gc_allocations_o*)array_create((vtable_t*)&test_gc_allocations_v, 3, false);
         array[count%10] = obj;
     }
 
@@ -206,7 +206,7 @@ void setup_allocation_test(object_t* _, fun_t continuation) {
     (void)_;   // ABI receiver, unused here
     int32_t count = 1000;
 
-    struct test_gc_allocations_o* o = (struct test_gc_allocations_o*)array_create(&test_gc_allocations_v, count);
+    struct test_gc_allocations_o* o = (struct test_gc_allocations_o*)array_create(&test_gc_allocations_v, count, false);
     o->continuation = continuation;
     o->result_counter = count;
 

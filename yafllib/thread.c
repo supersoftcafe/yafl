@@ -285,7 +285,7 @@ static void _thread_init() {
 
     object_gc_init();
 
-    _queues = array_create(_worker_queues_vt, thread_count);
+    _queues = array_create(_worker_queues_vt, thread_count, false);
 
     for (intptr_t index = 0; index < thread_count; ++index) {
         worker_queue_t* queue = &_queues->array[index];

@@ -449,6 +449,13 @@ Neither the C tests nor the six benchmark programs had caught any of them.
    `list_builder_seal`. Unregistering only at `array_builder_seal` left
    freed segments in the registry.
 
+   *Later (2026-10-07): the builder registry is gone.* Builder element
+   stores are now write-barriered like every other heap store, so the
+   barrier reports each edge from a builder that has left the nursery, and
+   builders are born pinned by their allocation (`array_create(…, true)`,
+   `new_pinned` for list cells) rather than pinned by a separate call. The
+   registry's global spinlock on every builder went with it.
+
 After the fixes, all 24 poison runs of the small input pass (1 and 4 workers;
 nursery sizes 1, 4 and 32 pages), and two full poison self-compiles produce
 byte-identical C.

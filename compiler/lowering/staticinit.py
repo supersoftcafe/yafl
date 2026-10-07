@@ -90,7 +90,8 @@ def _promote_one_function(fn: Function, app: Application) -> tuple[Function, lis
     # Collect NewObject ops (fixed-size only, no arrays)
     new_obj_positions: dict[str, tuple[int, str]] = {}  # sv_name -> (op_index, class_name)
     for i, op in enumerate(fn.ops):
-        if isinstance(op, NewObject) and op.size is None and isinstance(op.register, StackVar):
+        # A pinned object is filled in after allocation: never a static.
+        if isinstance(op, NewObject) and op.size is None and not op.pinned and isinstance(op.register, StackVar):
             new_obj_positions[op.register.name] = (i, op.name)
 
     if not new_obj_positions:
