@@ -92,8 +92,8 @@ static int Kstate(void) { return gc_debug_object_state((object_t*)g_K); }
 // entrypoint's stack slots, where the conservative scan would keep marking it.
 static void __attribute__((noinline)) create_and_root(void) {
     object_t* k = object_create(&leaf_vt);
-    GC_WRITE_BARRIER(_slots[0], 1);
-    _slots[0] = k;
+    gc_root_overwrite(&_slots[0]);
+    _slots[0] = gc_root_publish(k);
     g_K = (uintptr_t)k;
 }
 
@@ -133,7 +133,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     if (Kstate() != 1) fail("promoted object not live", Kstate());
 
     // (3) Drop the root; a MINOR cycle must NOT reclaim an old object.
-    GC_WRITE_BARRIER(_slots[0], 1);
+    gc_root_overwrite(&_slots[0]);
     _slots[0] = NULL;
     scrub();
     run_one_cycle();

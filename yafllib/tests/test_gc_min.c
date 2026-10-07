@@ -147,7 +147,7 @@ static void _finisher(task_obj_t* task) {
         GC_SAFE_POINT();   // loop backedge safe-point, as generated YAFL code has
         result = _do_alloc(i);
     }
-    GC_WRITE_BARRIER(task->result, 1);
+    GC_WRITE_BARRIER_IN(task, task->result, 1);
     task->result = result;
     task_complete((object_t*)task);
 }

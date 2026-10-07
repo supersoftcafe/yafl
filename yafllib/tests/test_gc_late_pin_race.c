@@ -104,7 +104,7 @@ void gc_test_race_probe(gc_page_t* page) {
     object_unpin(owner);
     // Drop C's root NOW: from here on the only path to C is P's slot, on the
     // page whose promotion decision is mid-flight around us.
-    GC_WRITE_BARRIER(_slots[1], 1);
+    gc_root_overwrite(&_slots[1]);
     _slots[1] = NULL;
     g_fired = 1;
     // Leave no copy of C's address in this frame or in callee-saved
@@ -132,13 +132,13 @@ static void __attribute__((noinline)) create_and_root(void) {
     object_t* p = object_create(&parent_vt);
     ((struct parent*)p)->slot = NULL;
     memset(((struct parent*)p)->pad, 0x5a, sizeof ((struct parent*)p)->pad);
-    GC_WRITE_BARRIER(_slots[0], 1);
-    _slots[0] = p;
+    gc_root_overwrite(&_slots[0]);
+    _slots[0] = gc_root_publish(p);
     g_P = (uintptr_t)p;
     object_t* c = object_create(&leaf_vt);
     memset(((struct leaf*)c)->pad, 0x5a, sizeof ((struct leaf*)c)->pad);
-    GC_WRITE_BARRIER(_slots[1], 1);
-    _slots[1] = c;
+    gc_root_overwrite(&_slots[1]);
+    _slots[1] = gc_root_publish(c);
     g_C = (uintptr_t)c;
 }
 

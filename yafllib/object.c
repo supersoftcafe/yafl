@@ -1100,7 +1100,7 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
     ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
     if (gc_local_live)
-        gc_local_note_slot_in(prev, &((object_t**)prev)[slot], 1);
+        gc_local_note_slot(prev, &((object_t**)prev)[slot], 1);
     object_unpin(prev);                          // prev is now frozen
     return true;
 }
@@ -1745,14 +1745,7 @@ static void gc_local_note_shared(object_t **slot, ptr_mask_t mask) {
 // of a multi-page object is array data whose "header" could read as
 // anything. Private only while this thread's nursery is active (a caller may
 // get here on gc_local_live alone).
-// A slot with no container to judge (a root slot, a C array outside the
-// heap): always SHARED. Never inferred from the slot's page.
-EXPORT void gc_local_note_slot(object_t **slot, ptr_mask_t mask) {
-    gc_local_flush_pending();
-    gc_local_note_shared(slot, mask);
-}
-
-EXPORT void gc_local_note_slot_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
+EXPORT void gc_local_note_slot(object_t *obj, object_t **slot, ptr_mask_t mask) {
     gc_local_flush_pending();
     if (gc_alloc_tl.local_active && gc_local_obj_private(obj)) {
         if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;

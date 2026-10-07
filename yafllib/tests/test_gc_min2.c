@@ -81,8 +81,8 @@ static void* _worker(void* arg) {
         // PRODUCE: a holder created on THIS thread, published to a rooted slot.
         GC_SAFE_POINT();
         struct holder* h = (struct holder*)object_create(&holder_vt);
-        GC_WRITE_BARRIER(_slots[sp], 1);
-        _slots[sp] = (object_t*)h;
+        gc_root_overwrite(&_slots[sp]);
+        _slots[sp] = gc_root_publish((object_t*)h);
 
         // CONSUME: read a holder (maybe created on another thread) and hang a
         // fresh child — created on THIS thread — off it.
@@ -91,7 +91,7 @@ static void* _worker(void* arg) {
             struct holder* hh = (struct holder*)o;
             GC_SAFE_POINT();
             object_t* c = str_from_bytes((uint8_t*)PAD, 24).head;   // a String's heap head
-            GC_WRITE_BARRIER(hh->child, 1);
+            GC_WRITE_BARRIER_IN(hh, hh->child, 1);
             hh->child = c;
         }
         burn(4);

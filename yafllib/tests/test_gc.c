@@ -81,7 +81,7 @@ static void _do_worker(struct gc_test_state* state) {
             struct gc_test_state* slot = slots[j];
             if (slot) {
                 int idx = (round ^ j) % 3;
-                GC_WRITE_BARRIER(slot->results[idx], 1);
+                GC_WRITE_BARRIER_IN(slot, slot->results[idx], 1);
                 slot->results[idx] = str;
             }
         }

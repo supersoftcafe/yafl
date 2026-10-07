@@ -44,7 +44,7 @@ EXPORT object_t* yafl_cas_once(object_t* self, object_t* obj, int32_t slot,
     if (ok) {
         __atomic_store_n((uintptr_t*)field, (uintptr_t)value, __ATOMIC_RELEASE);
         if (gc_local_live)
-            gc_local_note_slot_in(owner, field, 1);
+            gc_local_note_slot(owner, field, 1);
     }
     object_unpin(owner);
     return integer_from_int32_noalloc(ok ? 1 : 0);

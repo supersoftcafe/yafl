@@ -753,8 +753,7 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 // a root (gc_local_note_slot filters to the containers that need it).
 EXTERN bool gc_local_enabled;
 EXTERN volatile int gc_local_live;   // number of nurseries active right now
-EXTERN void gc_local_note_slot(object_t **slot, ptr_mask_t mask);
-EXTERN void gc_local_note_slot_in(object_t *obj, object_t **slot, ptr_mask_t mask);
+EXTERN void gc_local_note_slot(object_t *obj, object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape_old(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
 // The escape rules are about who else can reach an object, not whose store it
@@ -805,31 +804,16 @@ INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
         gc_local_escape_old(slot, mask);
 }
 
-INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
-    if (gc_alloc_tl.local_active) {   // no container: always shared (gc_local_note_slot)
-        gc_local_note_slot(slot, mask);
-        return;
-    }
-    gc_local_barrier_inactive(slot, mask);
-}
-
 // Generated stores: the container `obj` is known.
 INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
     if (gc_alloc_tl.local_active) {
         if (!gc_local_obj_private(obj))
-            gc_local_note_slot_in(obj, slot, mask);
+            gc_local_note_slot(obj, slot, mask);
         return;
     }
     gc_local_barrier_inactive(slot, mask);
 }
 
-// A store into a slot with NO container object (a root slot, a C array outside
-// the heap). Heap stores use GC_WRITE_BARRIER_IN, which knows the container.
-#define GC_WRITE_BARRIER(field, mask)\
-    do {if (UNLIKELY(gc_write_barrier_requested))\
-            _gc_write_barrier2((object_t**)&(field), (mask));\
-        gc_local_barrier((object_t**)&(field), (mask));\
-    } while (false)
 // A store into a field of the object `obj` (what generated code emits).
 #define GC_WRITE_BARRIER_IN(obj, field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
@@ -882,7 +866,7 @@ INLINE void gc_root_overwrite(object_t** slot) {
     // forwarder compaction left); the shade must follow the chain — and may
     // snap the slot — exactly as the root scan itself does.
     if (UNLIKELY(gc_write_barrier_requested)) _gc_root_overwrite2(slot);
-    bool had = *slot != NULL;                      // a flag, not a copy (see gc_local_barrier)
+    bool had = *slot != NULL;                      // a flag, not a copy (see gc_local_barrier_inactive)
     atomic_signal_fence(memory_order_seq_cst);     // the value before the count
     if (had && gc_local_live) gc_local_escape(*slot);   // may be held elsewhere
 }

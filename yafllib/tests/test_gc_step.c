@@ -54,8 +54,8 @@ static fun_t _exit_cont;
 // in its own frame and returns void, so O does not linger on the caller's stack.
 static void create_and_store(void) {
     object_t* o = object_create(&obj_vt);
-    GC_WRITE_BARRIER(_slots[0], 1);
-    _slots[0] = o;
+    gc_root_overwrite(&_slots[0]);
+    _slots[0] = gc_root_publish(o);
     g_O = (uintptr_t)o;
 }
 
