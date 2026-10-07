@@ -754,6 +754,7 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 EXTERN bool gc_local_enabled;
 EXTERN volatile int gc_local_live;   // number of nurseries active right now
 EXTERN void gc_local_note_slot(object_t **slot, ptr_mask_t mask);
+EXTERN void gc_local_note_slot_in(object_t *obj, object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape_old(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
 // The escape rules are about who else can reach an object, not whose store it
@@ -790,22 +791,6 @@ INLINE bool gc_local_obj_private(object_t *obj) {
     return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
 }
 
-// The same test from a bare slot (runtime C stores): the container is found
-// by searching the objects bitmap back from the slot.
-INLINE bool gc_local_slot_private(object_t **slot) {
-    if ((size_t)((char*)slot - _memory_heap_base) >= _memory_heap_bytes)
-        return false;
-    gc_page_t *page = (gc_page_t*)((uintptr_t)slot & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-    if (page->head.local_epoch != gc_alloc_tl.local_epoch || page->head.mutable
-            || page->head.tag != PAGE_MAGIC_NUMBER)
-        return false;
-    long c = bitmap_prev_set(&page->head.objects, (long)(((char*)slot - (char*)page->slots) / GC_SLOT_SIZE));
-    if (c < 0)
-        return false;
-    mask_bits_t esc = __atomic_load_n(&page->head.local_escaped.a[c / GC_MASK_SIZE], __ATOMIC_ACQUIRE);
-    return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
-}
-
 // The barrier of a thread with no active nursery: only the values being
 // overwritten may need to escape (see above).
 INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
@@ -821,9 +806,8 @@ INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
 }
 
 INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
-    if (gc_alloc_tl.local_active) {
-        if (!gc_local_slot_private(slot))
-            gc_local_note_slot(slot, mask);
+    if (gc_alloc_tl.local_active) {   // runtime C stores: not hot, decided out of line
+        gc_local_note_slot(slot, mask);
         return;
     }
     gc_local_barrier_inactive(slot, mask);
@@ -833,7 +817,7 @@ INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
 INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
     if (gc_alloc_tl.local_active) {
         if (!gc_local_obj_private(obj))
-            gc_local_note_slot(slot, mask);
+            gc_local_note_slot_in(obj, slot, mask);
         return;
     }
     gc_local_barrier_inactive(slot, mask);

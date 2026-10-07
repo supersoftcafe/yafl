@@ -1720,27 +1720,9 @@ static void gc_local_flush_pending(void) {
     }
 }
 
-EXPORT void gc_local_note_slot(object_t **slot, ptr_mask_t mask) {
-    gc_local_flush_pending();
-    // PRIVATE container: an immutable object in THIS thread's nursery that has
-    // not escaped. Nothing outside the thread can reach it, and an immutable
-    // field is never overwritten — what it gains stays reachable from it, so
-    // tracing (not escaping) keeps it. Everything else is SHARED, including
-    // every MUTABLE container: one reachable from an escaped object can be
-    // read by another worker before anything marks it escaped itself.
-    if ((size_t)((char*)slot - _memory_heap_base) < _memory_heap_bytes) {
-        gc_page_t *page = (gc_page_t*)((uintptr_t)slot & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-        if (page->head.tag == PAGE_MAGIC_NUMBER && !page->head.mutable
-                && page->head.local_epoch != 0
-                && page->head.local_epoch == gc_thread_info.local_epoch) {
-            long container = bitmap_prev_set(&page->head.objects,
-                                             (long)(((char*)slot - (char*)page->slots) / GC_SLOT_SIZE));
-            if (container >= 0 && !bitmap_test(&page->head.local_escaped, (unsigned)container)) {
-                if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;
-                return;
-            }
-        }
-    }
+// The store is SHARED: escape what it overwrites, and judge what it stores at
+// the next barrier call or nursery collection (gc_local_flush_pending).
+static void gc_local_note_shared(object_t **slot, ptr_mask_t mask) {
     if (UNLIKELY(gc_stats_enabled)) gc_local_stores_mutable++;
     ptr_mask_t m = mask;
     while (m) {
@@ -1749,6 +1731,45 @@ EXPORT void gc_local_note_slot(object_t **slot, ptr_mask_t mask) {
     }
     gc_local_pend_slot = slot;            // the value about to be stored
     gc_local_pend_mask = mask;
+}
+
+// PRIVATE container: an immutable object in THIS thread's nursery that has
+// not escaped. Nothing outside the thread can reach it, and an immutable
+// field is never overwritten — what it gains stays reachable from it, so
+// tracing (not escaping) keeps it. Everything else is SHARED, including every
+// MUTABLE container: one reachable from an escaped object can be read by
+// another worker before anything marks it escaped itself.
+//
+// From a bare SLOT (runtime C stores): the container is found from the
+// slot's run HEAD page — never from the slot's own page, which for an
+// element of a multi-page object is array data whose "header" could read as
+// anything. Every slot past the head page belongs to the run's one object.
+EXPORT void gc_local_note_slot(object_t **slot, ptr_mask_t mask) {
+    gc_local_flush_pending();
+    gc_page_t *page = (gc_page_t*)memory_pages_alloc_head_of(slot);
+    if (page != NULL && page->head.tag == PAGE_MAGIC_NUMBER && !page->head.mutable
+            && page->head.local_epoch != 0
+            && page->head.local_epoch == gc_thread_info.local_epoch) {
+        long s = (long)(((char*)slot - (char*)page->slots) / GC_SLOT_SIZE);
+        if (s >= (long)SLOTS_PER_PAGE)
+            s = SLOTS_PER_PAGE - 1;     // a run's body page: its one object
+        long container = s < 0 ? -1 : bitmap_prev_set(&page->head.objects, s);
+        if (container >= 0 && !bitmap_test(&page->head.local_escaped, (unsigned)container)) {
+            if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;
+            return;
+        }
+    }
+    gc_local_note_shared(slot, mask);
+}
+
+// From the CONTAINER (generated stores know it): its own header decides.
+EXPORT void gc_local_note_slot_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
+    gc_local_flush_pending();
+    if (gc_local_obj_private(obj)) {
+        if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;
+        return;
+    }
+    gc_local_note_shared(slot, mask);
 }
 
 // The barrier of a thread with no active nursery (see GC_WRITE_BARRIER): only
