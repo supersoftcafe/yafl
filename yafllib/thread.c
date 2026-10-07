@@ -127,7 +127,7 @@ static task_t* _queue_try_pop(worker_queue_t* queue) {
         // its only reference is queue->head. Erasing the edge unbarriered lets
         // the marker lose the rest of the queue if `task` is walked after the
         // clear — the successor is then pruned while still queued.
-        GC_WRITE_BARRIER(task->next, 1);
+        GC_WRITE_BARRIER_IN(task, task->next, 1);
         atomic_store(&task->next, (task_t*)NULL);
         atomic_fetch_sub_explicit(&_queued_count, 1, memory_order_relaxed);
     }

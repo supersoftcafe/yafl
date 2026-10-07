@@ -1100,7 +1100,7 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
     ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
     if (gc_local_live)
-        gc_local_note_slot(&((object_t**)prev)[slot], 1);
+        gc_local_note_slot_in(prev, &((object_t**)prev)[slot], 1);
     object_unpin(prev);                          // prev is now frozen
     return true;
 }
@@ -1740,32 +1740,21 @@ static void gc_local_note_shared(object_t **slot, ptr_mask_t mask) {
 // MUTABLE container: one reachable from an escaped object can be read by
 // another worker before anything marks it escaped itself.
 //
-// From a bare SLOT (runtime C stores): the container is found from the
-// slot's run HEAD page — never from the slot's own page, which for an
-// element of a multi-page object is array data whose "header" could read as
-// anything. Every slot past the head page belongs to the run's one object.
+// Every caller passes the CONTAINER — generated stores and runtime C alike —
+// and its own header decides: never the slot's page, which for an element
+// of a multi-page object is array data whose "header" could read as
+// anything. Private only while this thread's nursery is active (a caller may
+// get here on gc_local_live alone).
+// A slot with no container to judge (a root slot, a C array outside the
+// heap): always SHARED. Never inferred from the slot's page.
 EXPORT void gc_local_note_slot(object_t **slot, ptr_mask_t mask) {
     gc_local_flush_pending();
-    gc_page_t *page = (gc_page_t*)memory_pages_alloc_head_of(slot);
-    if (page != NULL && page->head.tag == PAGE_MAGIC_NUMBER && !page->head.mutable
-            && page->head.local_epoch != 0
-            && page->head.local_epoch == gc_thread_info.local_epoch) {
-        long s = (long)(((char*)slot - (char*)page->slots) / GC_SLOT_SIZE);
-        if (s >= (long)SLOTS_PER_PAGE)
-            s = SLOTS_PER_PAGE - 1;     // a run's body page: its one object
-        long container = s < 0 ? -1 : bitmap_prev_set(&page->head.objects, s);
-        if (container >= 0 && !bitmap_test(&page->head.local_escaped, (unsigned)container)) {
-            if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;
-            return;
-        }
-    }
     gc_local_note_shared(slot, mask);
 }
 
-// From the CONTAINER (generated stores know it): its own header decides.
 EXPORT void gc_local_note_slot_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
     gc_local_flush_pending();
-    if (gc_local_obj_private(obj)) {
+    if (gc_alloc_tl.local_active && gc_local_obj_private(obj)) {
         if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;
         return;
     }

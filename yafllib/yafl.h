@@ -806,7 +806,7 @@ INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
 }
 
 INLINE void gc_local_barrier(object_t **slot, ptr_mask_t mask) {
-    if (gc_alloc_tl.local_active) {   // runtime C stores: not hot, decided out of line
+    if (gc_alloc_tl.local_active) {   // no container: always shared (gc_local_note_slot)
         gc_local_note_slot(slot, mask);
         return;
     }
@@ -823,6 +823,8 @@ INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask)
     gc_local_barrier_inactive(slot, mask);
 }
 
+// A store into a slot with NO container object (a root slot, a C array outside
+// the heap). Heap stores use GC_WRITE_BARRIER_IN, which knows the container.
 #define GC_WRITE_BARRIER(field, mask)\
     do {if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
