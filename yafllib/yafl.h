@@ -850,24 +850,22 @@ INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask)
             _gc_write_barrier2((object_t**)&(field), (mask));\
         gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
-// A FILL store (codegen's ObjectField.fill): NULL -> value into a slot of a
-// live, freshly allocated array, written once but across safe points — array
-// tabulation and builder pushes. Nothing is overwritten, so neither the
-// snapshot barrier nor a thread without an active nursery owes anything. With
-// a nursery active, the array is private to it unless it has left (a root
-// scan, a promotion) or escaped; only then is the slot noted. The container
-// is a live heap object, so no heap or page-tag check is needed.
-INLINE bool gc_local_fill_private(object_t *obj) {
-    gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-    if (page->head.local_epoch != gc_alloc_tl.local_epoch || page->head.mutable)
-        return false;
-    unsigned c = (unsigned)(((uintptr_t)obj - (uintptr_t)page->slots) / GC_SLOT_SIZE);
-    mask_bits_t esc = __atomic_load_n(&page->head.local_escaped.a[c / GC_MASK_SIZE], __ATOMIC_ACQUIRE);
-    return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
-}
+// A FILL store (codegen's ObjectField.fill): NULL -> value into a slot of an
+// array not yet published, written once but across safe points — array
+// tabulation and builder pushes. Nothing is overwritten, so the snapshot
+// barrier owes nothing. The one question is whether the array's PAGE is in
+// this thread's current nursery: then the nursery traces the array (an
+// escaped one is a root), and the value stays reachable through it. If not —
+// the page was promoted or handed over at a root scan, or belongs to another
+// worker's nursery after a cross-worker resume — the pointer has left our
+// control: the value ESCAPES (permanently seen by its nursery). Emitted AFTER
+// the store, reading the slot back; no safe point falls between the two. A
+// thread with no active nursery has epoch 0, as has every page outside a
+// nursery, so it passes the test and owes nothing.
 #define GC_FILL_BARRIER(obj, field, mask)\
-    do {if (gc_alloc_tl.local_active && UNLIKELY(!gc_local_fill_private((object_t*)(obj))))\
-            gc_local_note_slot((object_t**)&(field), (mask));\
+    do {gc_page_t *gc_fill_page_ = (gc_page_t*)((uintptr_t)(obj) & ~(uintptr_t)(GC_PAGE_SIZE - 1));\
+        if (UNLIKELY(gc_fill_page_->head.local_epoch != gc_alloc_tl.local_epoch))\
+            gc_local_escape_old((object_t**)&(field), (mask));\
     } while (false)
 // A value handed to the runtime or another thread (queues, completions,
 // lazy publication): for a nursery it ESCAPES, whatever the marker is doing.

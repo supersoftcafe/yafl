@@ -700,8 +700,10 @@ fun rpToCStoreObjectFieldFinish(x: RpObjectField, pointerText, fieldRef, cache0:
 fun rpToCStoreObjectFieldBarrier(x: RpObjectField, pointerText, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.fieldType, cache0)
   let mask = toPointerMask(x.fieldType, declared.text)
-  let barrier = x.fill ? "GC_FILL_BARRIER" : "GC_WRITE_BARRIER_IN"
-  ret ("    " + barrier + "(" + pointerText + ", " + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
+  # A fill store's barrier follows it: it escapes the value just stored.
+  ret x.fill
+    ? ("    " + fieldRef + " = " + value + ";\n    GC_FILL_BARRIER(" + pointerText + ", " + fieldRef + ", " + mask + ");\n", declared.cache)
+    : ("    GC_WRITE_BARRIER_IN(" + pointerText + ", " + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
 
 # ── `NewStruct.__add__` (used by lowering passes, not within this file) ────
 
