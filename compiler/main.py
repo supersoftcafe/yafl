@@ -110,6 +110,7 @@ def main():
     debug = int(args.O) == 0
     common = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-ffunction-sections", "-fdata-sections"]
     common += ["-g"] if debug else []
+    common += ["-DNDEBUG"] if int(args.O) >= 2 else []   # -O2+: the asserts go
     release_link = [] if debug else ["-Wl,--gc-sections", "-Wl,-s"]
 
     if args.a:

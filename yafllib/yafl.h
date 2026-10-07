@@ -814,9 +814,31 @@ INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask)
     gc_local_barrier_inactive(slot, mask);
 }
 
+// ── Barrier argument checks: plain asserts, stripped by NDEBUG ──────────────
+// A heap store names its CONTAINER, and every nursery decision reads that
+// container's own page header and object bit, so `obj` must truly be the BASE
+// of an allocated heap object and `slot` must lie inside it. A ROOT slot, the
+// other way round, must not be in the heap at all.
+EXTERN size_t object_get_size(object_t* ptr);
+INLINE bool gc_in_heap(const void *p) {
+    return (size_t)((const char*)p - _memory_heap_base) < _memory_heap_bytes;
+}
+INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
+    if (((uintptr_t)obj & (GC_SLOT_SIZE - 1)) != 0 || !gc_in_heap(obj))
+        return false;                                             // aligned, in the heap
+    gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (page->head.tag != PAGE_MAGIC_NUMBER || (char*)obj < (char*)page->slots)
+        return false;                                             // a real page header, past it
+    uintptr_t c = ((uintptr_t)obj - (uintptr_t)page->slots) / GC_SLOT_SIZE;
+    if (c >= SLOTS_PER_PAGE || ((page->head.objects.a[c / GC_MASK_SIZE] >> (c % GC_MASK_SIZE)) & 1) == 0)
+        return false;                                             // an allocated object's base
+    return (char*)slot >= (char*)obj && (char*)slot < (char*)obj + object_get_size(obj);
+}
+
 // A store into a field of the object `obj` (what generated code emits).
 #define GC_WRITE_BARRIER_IN(obj, field, mask)\
-    do {if (UNLIKELY(gc_write_barrier_requested))\
+    do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
+        if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier2((object_t**)&(field), (mask));\
         gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
@@ -833,7 +855,8 @@ INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask)
 // thread with no active nursery has epoch 0, as has every page outside a
 // nursery, so it passes the test and owes nothing.
 #define GC_FILL_BARRIER(obj, field, mask)\
-    do {gc_page_t *gc_fill_page_ = (gc_page_t*)((uintptr_t)(obj) & ~(uintptr_t)(GC_PAGE_SIZE - 1));\
+    do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
+        gc_page_t *gc_fill_page_ = (gc_page_t*)((uintptr_t)(obj) & ~(uintptr_t)(GC_PAGE_SIZE - 1));\
         if (UNLIKELY(gc_fill_page_->head.local_epoch != gc_alloc_tl.local_epoch))\
             gc_local_escape_old((object_t**)&(field), (mask));\
     } while (false)
@@ -862,6 +885,7 @@ INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask)
 EXTERN void _gc_root_overwrite2(object_t** slot);
 EXTERN void _gc_root_publish2(object_t* value);
 INLINE void gc_root_overwrite(object_t** slot) {
+    assert(!gc_in_heap(slot));   // heap slots take GC_WRITE_BARRIER_IN
     // Field-based: a root slot can hold a pointer to a RELOCATED object (a
     // forwarder compaction left); the shade must follow the chain — and may
     // snap the slot — exactly as the root scan itself does.

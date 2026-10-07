@@ -1746,6 +1746,7 @@ static void gc_local_note_shared(object_t **slot, ptr_mask_t mask) {
 // anything. Private only while this thread's nursery is active (a caller may
 // get here on gc_local_live alone).
 EXPORT void gc_local_note_slot(object_t *obj, object_t **slot, ptr_mask_t mask) {
+    assert(gc_is_container_of(obj, slot));
     gc_local_flush_pending();
     if (gc_alloc_tl.local_active && gc_local_obj_private(obj)) {
         if (UNLIKELY(gc_stats_enabled)) gc_local_stores_nursery++;

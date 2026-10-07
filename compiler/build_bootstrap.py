@@ -62,7 +62,7 @@ def build(out: Path, optimization_level: int = 1) -> Path:
     # the binary's own speed differs, and measured on the self-compile that is
     # 1.9x (2031s at -O0 vs 1062s at -O2). Paying it once here is free
     # everywhere else. The runtime archive is already the release one.
-    r = subprocess.run(["clang", "-g", "-x", "c", "-", "-O2",
+    r = subprocess.run(["clang", "-g", "-x", "c", "-", "-O2", "-DNDEBUG",
                         *_CLANG_BUILD_FLAGS, *static_link_for(1), "-o", str(tmp)],
                        input=c_code, text=True, capture_output=True, timeout=1800)
     if r.returncode != 0:
