@@ -44,6 +44,8 @@ target_compile_options(yafl_static PRIVATE -Wall -Wextra -Werror)
 # The shipped runtime is optimised (-O3) so every program that links it is fast
 # and small, regardless of build type.
 target_compile_options(yafl_static PRIVATE -O3)
+# Optimised, so NDEBUG too: no asserts ship. A Debug configuration keeps them.
+target_compile_definitions(yafl_static PRIVATE $<$<NOT:$<CONFIG:Debug>>:NDEBUG>)
 # Per-function/data sections so a program linking the archive can drop the
 # runtime functions it never reaches (clang -Wl,--gc-sections at link time).
 target_compile_options(yafl_static PRIVATE -ffunction-sections -fdata-sections)
