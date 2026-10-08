@@ -823,20 +823,22 @@ EXTERN size_t object_get_size(object_t* ptr);
 INLINE bool gc_in_heap(const void *p) {
     return (size_t)((const char*)p - _memory_heap_base) < _memory_heap_bytes;
 }
+// `obj` is the base of an allocated heap object: slot-aligned, on a page with
+// the page magic, its allocation bit set. (A heap object's base is always on
+// its head page — multi-page objects start there too.)
+INLINE bool gc_is_object_base(object_t *obj) {
+    if (((uintptr_t)obj & (GC_SLOT_SIZE - 1)) != 0 || !gc_in_heap(obj))
+        return false;
+    gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (page->head.tag != PAGE_MAGIC_NUMBER || (char*)obj < (char*)page->slots)
+        return false;
+    uintptr_t c = ((uintptr_t)obj - (uintptr_t)page->slots) / GC_SLOT_SIZE;
+    return c < SLOTS_PER_PAGE && ((page->head.objects.a[c / GC_MASK_SIZE] >> (c % GC_MASK_SIZE)) & 1) != 0;
+}
 INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
-    if (!gc_in_heap(obj)) {                                       // a statically initialised object (.data)
-        if (((uintptr_t)obj & (sizeof(void*) - 1)) != 0)
-            return false;
-    } else {
-        if (((uintptr_t)obj & (GC_SLOT_SIZE - 1)) != 0)
-            return false;                                         // slot-aligned
-        gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-        if (page->head.tag != PAGE_MAGIC_NUMBER || (char*)obj < (char*)page->slots)
-            return false;                                         // a real page header, past it
-        uintptr_t c = ((uintptr_t)obj - (uintptr_t)page->slots) / GC_SLOT_SIZE;
-        if (c >= SLOTS_PER_PAGE || ((page->head.objects.a[c / GC_MASK_SIZE] >> (c % GC_MASK_SIZE)) & 1) == 0)
-            return false;                                         // an allocated object's base
-    }
+    if (gc_in_heap(obj) ? !gc_is_object_base(obj)
+                        : ((uintptr_t)obj & (sizeof(void*) - 1)) != 0)   // static (.data): aligned
+        return false;
     return (char*)slot >= (char*)obj && (char*)slot < (char*)obj + object_get_size(obj);
 }
 

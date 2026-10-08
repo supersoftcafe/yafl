@@ -76,6 +76,13 @@ struct gc_thread_info {
     // scan (gc_local_note_slot): nursery roots until the next root scan.
     struct { object_t **slot; ptr_mask_t mask; } *remembered;
     size_t remembered_n, remembered_cap;
+    // The slot of the last SHARED store, whose new value is escaped at the next
+    // barrier or nursery collection (gc_local_flush_pending). Cleared at root
+    // scan with the remembered set: the epoch turns there, so a value stored
+    // before it is no longer nursery — and after it the container may be
+    // compacted away or freed, leaving the raw slot address dangling.
+    object_t **pend_slot;
+    ptr_mask_t pend_mask;
     // Compaction's evacuation targets get their own bump region, so a copy of
     // an older object never lands on a nursery page (where older referrers,
     // snapped to the copy, would point at a page the nursery believes no

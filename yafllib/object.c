@@ -1567,8 +1567,30 @@ static void gc_local_push(object_t *o) {
     gc_local_stack[gc_local_stack_n++] = o;
 }
 
-// A candidate pointer (precise or conservative). Interior pointers resolve to
-// the nearest object start at or before them, exactly as the root scan does.
+// Mark one nursery object, given its BASE.
+static inline void gc_local_mark_base(gc_page_t *page, object_t *object) {
+    unsigned c = (unsigned)(((char*)object - (char*)page->slots) / GC_SLOT_SIZE);
+    if (bitmap_test(&page->head.local_mark, c))
+        return;
+    bitmap_fetch_set(&page->head.local_mark, c);
+    gc_local_push(object);
+}
+
+// A precise reference — an object field, a declared root, a remembered slot.
+// It holds NULL, a tagged scalar, a static object, or a heap object's BASE;
+// never an interior pointer, so there is nothing to search for.
+static void gc_local_mark_object(object_t *object) {
+    if (((uintptr_t)object & PTR_TAG_MASK) != 0 || !gc_in_heap(object))
+        return;
+    assert(gc_is_object_base(object));
+    gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (gc_local_page_is_nursery(page))
+        gc_local_mark_base(page, object);
+}
+
+// A CONSERVATIVE word from the stack or saved registers: it may point inside
+// an object, so it resolves to the nearest object start at or before it,
+// exactly as the global root scan does.
 static void gc_local_mark_candidate(object_t *object) {
     if (object == NULL
         || ((uintptr_t)object & (sizeof(void*) - 1)) != 0
@@ -1591,12 +1613,8 @@ static void gc_local_mark_candidate(object_t *object) {
     if (slot >= (long)SLOTS_PER_PAGE)
         slot = SLOTS_PER_PAGE - 1;
     long containing = bitmap_prev_set(&page->head.objects, slot);
-    if (containing < 0)
-        return;
-    if (bitmap_test(&page->head.local_mark, (unsigned)containing))
-        return;
-    bitmap_fetch_set(&page->head.local_mark, (unsigned)containing);
-    gc_local_push((object_t*)&page->slots[containing]);
+    if (containing >= 0)
+        gc_local_mark_base(page, (object_t*)&page->slots[containing]);
 }
 
 static void gc_local_mark_range(object_t **p, object_t **end) {
@@ -1604,7 +1622,7 @@ static void gc_local_mark_range(object_t **p, object_t **end) {
 }
 
 static void gc_local_mark_slot(object_t **slot) {
-    gc_local_mark_candidate(*slot);
+    gc_local_mark_object(*slot);
 }
 
 
@@ -1650,7 +1668,7 @@ static void gc_local_trace_fields(object_t *object) {
     while (m) {
         unsigned i = __builtin_ctzll(m); m &= m - 1;
         object_t *child = slots[i];
-        gc_local_mark_candidate(child);
+        gc_local_mark_object(child);
         if (promoting && gc_local_points_at_staying(child))
             gc_local_remember(&slots[i], 1);
     }
@@ -1662,7 +1680,7 @@ static void gc_local_trace_fields(object_t *object) {
             while (am) {
                 unsigned i = __builtin_ctzll(am); am &= am - 1;
                 object_t *child = ((object_t**)array)[i];
-                gc_local_mark_candidate(child);
+                gc_local_mark_object(child);
                 if (promoting && gc_local_points_at_staying(child))
                     gc_local_remember(&((object_t**)array)[i], 1);
             }
@@ -1676,25 +1694,18 @@ static void gc_local_trace_fields(object_t *object) {
 // next root scan. The bit is set by WHICHEVER thread performs the escaping
 // store (atomically), so collections never need to stop other workers.
 EXPORT void gc_local_escape(object_t *v) {
-    if (((uintptr_t)v & PTR_TAG_MASK) != 0
-            || (size_t)((char*)v - _memory_heap_base) >= _memory_heap_bytes)
+    // A stored VALUE: NULL, a tagged scalar, a static object, or a heap
+    // object's base — never interior, so its page head is at the mask.
+    if (((uintptr_t)v & PTR_TAG_MASK) != 0 || !gc_in_heap(v))
         return;
+    assert(gc_is_object_base(v));
     gc_page_t *page = (gc_page_t*)((uintptr_t)v & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-    if (page->head.tag != PAGE_MAGIC_NUMBER) {
-        page = (gc_page_t*)memory_pages_alloc_head_of(v);
-        if (page == NULL || page->head.tag != PAGE_MAGIC_NUMBER) return;
-    }
     uint32_t stamp = page->head.local_epoch;
     if (stamp == 0 || !gc_local_epoch_is_active(stamp))
         return;   // not in any active nursery: nothing will free it locally
-    ptrdiff_t off = (char*)v - (char*)page->slots;
-    if (off < 0) return;
-    long slot = off / GC_SLOT_SIZE;
-    if (slot >= (long)SLOTS_PER_PAGE) slot = SLOTS_PER_PAGE - 1;
-    long start = bitmap_prev_set(&page->head.objects, slot);
-    if (start < 0) return;
-    if (!bitmap_test(&page->head.local_escaped, (unsigned)start)) {
-        atomic_bitmap_fetch_set(&page->head.local_escaped, (unsigned)start);
+    unsigned c = (unsigned)(((char*)v - (char*)page->slots) / GC_SLOT_SIZE);
+    if (!bitmap_test(&page->head.local_escaped, c)) {
+        atomic_bitmap_fetch_set(&page->head.local_escaped, c);
         if (UNLIKELY(gc_stats_enabled)) gc_local_escapes++;
     }
 }
@@ -1706,14 +1717,12 @@ EXPORT void gc_local_escape(object_t *v) {
 // the race: another thread can only obtain a nursery object through a shared
 // slot; if the slot still holds it at the flush, the flush escapes it, and if
 // anyone overwrote it first, that overwrite escaped it as an old value.
-static thread_local object_t **gc_local_pend_slot = NULL;
-static thread_local ptr_mask_t gc_local_pend_mask = 0;
-
 static void gc_local_flush_pending(void) {
-    object_t **s = gc_local_pend_slot;
+    struct gc_thread_info *t = &gc_thread_info;
+    object_t **s = t->pend_slot;
     if (s == NULL) return;
-    ptr_mask_t m = gc_local_pend_mask;
-    gc_local_pend_slot = NULL;
+    ptr_mask_t m = t->pend_mask;
+    t->pend_slot = NULL;
     while (m) {
         unsigned i = __builtin_ctzll(m); m &= m - 1;
         gc_local_escape(s[i]);
@@ -1729,8 +1738,8 @@ static void gc_local_note_shared(object_t **slot, ptr_mask_t mask) {
         unsigned i = __builtin_ctzll(m); m &= m - 1;
         gc_local_escape(slot[i]);         // the value being overwritten
     }
-    gc_local_pend_slot = slot;            // the value about to be stored
-    gc_local_pend_mask = mask;
+    gc_thread_info.pend_slot = slot;      // the value about to be stored
+    gc_thread_info.pend_mask = mask;
 }
 
 // PRIVATE container: an immutable object in THIS thread's nursery that has
@@ -1855,7 +1864,7 @@ static NOINLINE void gc_local_collect(void) {
         ptr_mask_t m = t->remembered[k].mask;
         while (m) {
             unsigned i = __builtin_ctzll(m); m &= m - 1;
-            gc_local_mark_candidate(t->remembered[k].slot[i]);
+            gc_local_mark_object(t->remembered[k].slot[i]);
         }
     }
     if (t->remembered_n > gc_local_remembered_max) gc_local_remembered_max = t->remembered_n;
@@ -2027,6 +2036,7 @@ static void gc_local_on_root_scan(struct gc_thread_info *t) {
     else if (t->local_suspended != 0 && --t->local_suspended == 0)
         gc_local_set_epoch(t, gc_local_new_epoch());   // stood down: resume
     t->remembered_n = 0;
+    t->pend_slot = NULL;
     t->local_pages_since = 0;
     t->reloc_bump = t->reloc_base = NULL;
 }
