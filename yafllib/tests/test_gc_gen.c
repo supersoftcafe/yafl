@@ -105,6 +105,15 @@ static void __attribute__((noinline)) scrub(void) {
     __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
 }
 
+// Report K from its own frame: at -O0 the printf spills K's address to a stack
+// temporary across the Kgen()/Kstate() calls, and a temporary in the
+// entrypoint's frame stays live for the whole test — the conservative scan
+// would pin K through the major cycle. Here it dies with the frame, and the
+// scrub() calls overwrite it.
+static void __attribute__((noinline)) report_birth(void) {
+    printf("test_gc_gen: K=%p gen=%d state=%d\n", (void*)g_K, Kgen(), Kstate());
+}
+
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
     gc_debug_manual_mode = true;
@@ -117,7 +126,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     // (1) Allocate + root K.
     create_and_root();
     scrub();
-    printf("test_gc_gen: K=%p gen=%d state=%d\n", (void*)g_K, Kgen(), Kstate());
+    report_birth();
     if (Kgen() != 0) fail("expected young at birth", Kgen());
 
     // (2) Cycle until promoted (bounded), churning filler between cycles so
