@@ -80,7 +80,7 @@ fun alSmReturn(r: OpReturn, myTaskField, fnResult,
                subtype: String|None): List<Op> => match(subtype)
   (st: String) => alIsVoid(fnResult)
     ? alSmComplete(myTaskField)
-    : concat(list1(OpMove(RpObjectField(fnResult, myTaskField, st, "result", None, false),
+    : concat(list1(OpMove(RpObjectField(fnResult, myTaskField, st, "result", None, false, false),
                           r.returnValue, false, List())),
              alSmComplete(myTaskField))
   ()            => alSmComplete(myTaskField)
@@ -125,10 +125,10 @@ fun alRuntimeDiscard(sv, name, args): Op
 # countdown is genuine runtime data, never a recalculated length.
 fun alEmitParTaskSetup(parTaskVar, parTaskName,
                        closures: List<RParam>, nClosures): List<Op>
-  let setup = list3(OpNewObject(parTaskName, parTaskVar, None, List()),
+  let setup = list3(OpNewObject(parTaskName, parTaskVar, None, false, List()),
                     alRuntimeDiscard(alSvDiscard(), "task_init",
                                      list1(RpNamedValue("task", parTaskVar))),
-                    OpMove(RpObjectField(CgInt(32), parTaskVar, parTaskName, "remaining", None, false),
+                    OpMove(RpObjectField(CgInt(32), parTaskVar, parTaskName, "remaining", None, false, false),
                            RpInteger(nClosures, 32), false, List()))
   ret concat(setup, alClosureStores(chain(closures), parTaskVar, parTaskName, 0, List()))
 
@@ -141,7 +141,7 @@ fun [tail] alClosureStoresB(cs: Chain<RParam>, parTaskVar, parTaskName,
   (nil: ChainEnd) => acc
   (l: ChainLink)  => alClosureStoresB(l.next, parTaskVar, parTaskName, k + 1,
       push(acc, OpMove(RpObjectField(CgDataPointer(), parTaskVar, parTaskName,
-                                  "closure_" + String(k), None, false),
+                                  "closure_" + String(k), None, false, false),
                     l.value, false, List())))
 
 # One launcher task wired to fire slot K's lambda on a worker thread.
@@ -167,7 +167,7 @@ fun alEmitTaskAlloc(svTask, subtype: String|None): List<Op> => match(subtype)
                    RpRuntimeInvoke(st + "_create",
                                    RpNewStruct(list1(RpNamedValue("self", RpNullPointer()))),
                                    CgDataPointer()), false, List()))
-    : list2(OpNewObject(st, svTask, None, List()),
+    : list2(OpNewObject(st, svTask, None, false, List()),
             alRuntimeDiscard(alSvDiscard(), "task_init",
                              list1(RpNamedValue("task", svTask))))
   ()            => list1(OpMove(svTask,
@@ -842,15 +842,15 @@ fun [tail] alIoiLoop(ls: Chain<Int>, x: Int, i) => match(ls)
 # written $state in the hot path's save block (uninit_check caught it).
 fun alArrayElem(sp, stateName, index): RParam
   ret RpObjectField(CgDataPointer(), sp, stateName, "array",
-                    RpInteger(index, 32), false)
+                    RpInteger(index, 32), false, false)
 
 # Frame local reference: trailing-array slot | shared inline slot | named field.
 fun alStateField(name, t2, sp, stateName, layout: AFrame)
   ret match(niLookup(layout.afPtrSlots, name))
     (i: Int) => alArrayElem(sp, stateName, i)
     ()        => match(nsLookup(layout.afInlineSlots, name))
-      (slot: String) => RpObjectField(t2, sp, stateName, slot, None, false)
-      ()              => RpObjectField(t2, sp, stateName, name, None, false)
+      (slot: String) => RpObjectField(t2, sp, stateName, slot, None, false, false)
+      ()              => RpObjectField(t2, sp, stateName, name, None, false, false)
 
 # local → state; a decomposed struct stores one leaf per array element.
 fun alStoreVar(v, sp, stateName, layout: AFrame)
@@ -1330,7 +1330,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
       list2(OpLabel("$asynccommon", List()),
             OpNewObject(stateName, alSvState(),
                         RpInteger(layout.afNArray, 32),
-                        List())))
+                        false, List())))
   # Save only the suspending site's live set — shared slots must not be
   # clobbered by dead locals — dispatched on the recorded call id (1-based).
   let common1 = push(common0,
@@ -1341,15 +1341,15 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
   let common3 = alSaveBlocks(chain(nonTerminal), stateName, layout, 0, common2)
   let common4 = push(common3, OpLabel("$save$done", List()))
   let common5 = pushAll(common4, list2(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
+      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
              RpNullPointer(), false, List()),
-      OpMove(RpObjectField(CgInt(32), alSvState(), stateName, "idx", None, false),
+      OpMove(RpObjectField(CgInt(32), alSvState(), stateName, "idx", None, false, false),
              alSvCallId(), false, List())))
   let common6 = pushAll(common5,
                             alEmitTaskAlloc(alSvTask(), subtype))
   let callback = RpGlobalFunction(f.fnName + "$async", alSvState(), false, None, false, false)
   let common7 = pushAll(common6, list3(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
+      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
              alSvTask(), false, List()),
       alRuntimeDiscard(alSvDiscard(), "task_on_complete",
                        list2(RpNamedValue("task", alSvAsyncTask()),
@@ -1459,18 +1459,18 @@ fun alPlaced(acc: AFrame, name: String) => any(acc.afPtrSlots, (e2) => e2.niName
 fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
                            layout: AFrame, entryIdx): CgFunction
   let wrappedResult = wrapReturnType(f.fnResult)
-  let ops0 = list1<Op>(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), List()))
+  let ops0 = list1<Op>(OpNewObject(stateName, alSvState(), RpInteger(layout.afNArray, 32), false, List()))
   # Stub launch stores into its own fresh $sv_state (Python 1053).
   let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc, p) =>
                concat(acc, alStoreVar(RpStackVar(p.fieldType, p.fieldName), alSvState(), stateName, layout)))
   let ops2 = concat(ops1, list2(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
+      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
              RpNullPointer(), false, List()),
-      OpMove(RpObjectField(CgInt(32), alSvState(), stateName, "idx", None, false),
+      OpMove(RpObjectField(CgInt(32), alSvState(), stateName, "idx", None, false, false),
              RpInteger(entryIdx, 32), false, List())))
   let ops3 = concat(ops2, alEmitTaskAlloc(alSvTask(), subtype))
   let ops4 = concat(ops3, list3(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false),
+      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
              alSvTask(), false, List()),
       # The machine's C signature is ($state, $completed_task); the state
       # rides the callee-object slot.
@@ -1514,8 +1514,8 @@ fun alCreateStateMachineFunc(f: CgFunction, stateName: String, subtype: String|N
                    fold(bb.abOps, acc, (a, op) =>
                      fold(alWritesOf(op), a, (a2, w) =>
                        add(a2, stackVarName(w)))))
-  let idxField = RpObjectField(CgInt(32), alStateParam(), stateName, "idx", None, false)
-  let myTaskField = RpObjectField(CgDataPointer(), alStateParam(), stateName, "my_task", None, false)
+  let idxField = RpObjectField(CgInt(32), alStateParam(), stateName, "idx", None, false, false)
+  let myTaskField = RpObjectField(CgDataPointer(), alStateParam(), stateName, "my_task", None, false, false)
   let dispatch0 = alSmDispatchSwitch(n, withEntryCase, idxField)
   let body = alSmSites(chain(nonTerminal), f, stateName, subtype, layout, bodyDefs,
                        idxField, myTaskField, 0,
@@ -1746,7 +1746,7 @@ fun [tail] alSmDtParFieldsB(rs: Chain<RParam>, parTaskName, k,
   (l: ChainLink)  => alSmDtParFieldsB(l.next, parTaskName, k + 1,
       push(acc, RpNamedValue("_" + String(k),
         RpObjectField(rpGetType(l.value), alCompletedParam(),
-                      parTaskName, "result_" + String(k), None, false))))
+                      parTaskName, "result_" + String(k), None, false, false))))
 
 fun alSmDtResult(bb: ABlock): List<Op> => match(bb.abResult)
   (reg: RParam) => isUnit(rpGetType(reg))
@@ -1756,7 +1756,7 @@ fun alSmDtResult(bb: ABlock): List<Op> => match(bb.abResult)
 
 fun alSmDtTaskResult(reg: RParam): List<Op> => match(taskSubtypeName(rpGetType(reg)))
   (st: String) => list1(OpMove(reg,
-                    RpObjectField(rpGetType(reg), alCompletedParam(), st, "result", None, false),
+                    RpObjectField(rpGetType(reg), alCompletedParam(), st, "result", None, false, false),
                     false, List()))
   ()            => list1(OpMove(reg, RpNullPointer(), false, List()))
 
@@ -2123,8 +2123,8 @@ fun alSlotCallback(fnName, site: Int, slot: Int, parTaskName,
   let extract = match(taskSubtypeName(resultType))
     (st: String) => alIsVoid(resultType)
       ? List<Op>()
-      : list1(OpMove(RpObjectField(resultType, svPar, parTaskName, "result_" + String(slot), None, false),
-                     RpObjectField(resultType, svSub, st, "result", None, false),
+      : list1(OpMove(RpObjectField(resultType, svPar, parTaskName, "result_" + String(slot), None, false, false),
+                     RpObjectField(resultType, svSub, st, "result", None, false, false),
                      false, List()))
     ()            => List<Op>()
   let ops = concat(extract, list2(
@@ -2153,7 +2153,7 @@ fun alLauncherCallback(fnName, site: Int, slot: Int, parTaskName,
                               RpNewStruct(list1(RpNamedValue("p", taskPtrFrom(svResultW, wrappedType)))),
                               CgDataPointer())
   let ops = concat(concat(list5(
-      OpMove(svClosure, RpObjectField(CgDataPointer(), svPar, parTaskName, "closure_" + String(slot), None, false),
+      OpMove(svClosure, RpObjectField(CgDataPointer(), svPar, parTaskName, "closure_" + String(slot), None, false, false),
              false, List()),
       OpCall(RpGlobalFunction(lambdaName, svClosure, false, None, false, false),
              RpNewStruct(List()), svResultW, false, false, None, List()),
@@ -2161,7 +2161,7 @@ fun alLauncherCallback(fnName, site: Int, slot: Int, parTaskName,
                RpRuntimeInvoke("UNLIKELY",
                                RpNewStruct(list1(RpNamedValue("x", isTaskParam(svResultW, wrappedType)))),
                                CgInt(32)), false, List()),
-      OpMove(RpObjectField(resultType, svPar, parTaskName, "result_" + String(slot), None, false),
+      OpMove(RpObjectField(resultType, svPar, parTaskName, "result_" + String(slot), None, false, false),
              unwrapped, false, List()),
       alRuntimeDiscard(svDiscardCb, "task_par_decrement", list1(RpNamedValue("par_task", svPar)))),
     list3(

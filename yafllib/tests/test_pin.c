@@ -25,8 +25,10 @@ static void run_tests(object_t* _, fun_t continuation) {
     enum { CHURN = 200000 };
     printf("=== object pin test ===\n");
 
+    // Born pinned: the vtable word installed with the pin bit, as object_new /
+    // array_create(…, true) do.
     object_t* pinned = alloc_obj();
-    object_pin(pinned);
+    pinned->vtable = (vtable_t*)((uintptr_t)pinned->vtable | VTABLE_PIN_BIT);
     object_t* before = pinned;
 
     for (int i = 0; i < CHURN; ++i) {

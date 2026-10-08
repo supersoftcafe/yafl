@@ -461,15 +461,15 @@ fun builder<T>(): ListBuilder<T>
   ret ListBuilder<T>(ChainEnd<T>(), ChainEnd<T>(), truncateToInt64(0), true)
 
 fun push<T>([terminal] b: ListBuilder<T>, x: T): ListBuilder<T>
-  let cell = ChainLink<T>(x, ChainEnd<T>())
-  let pinned = __builtin_op__<bool>("list_builder_pin", cell)
+  # Born PINNED (held until list_builder_link or list_builder_seal).
+  let cell = __builtin_op__<Chain<T> >("new_pinned", ChainLink<T>(x, ChainEnd<T>()))
   ret match(b._tail)
     (prev: ChainLink) => ListBuilder<T>(b._head, cell, b._slot,
-        pinned && __builtin_op__<bool>("list_builder_link", prev, cell, b._slot))
+        __builtin_op__<bool>("list_builder_link", prev, cell, b._slot))
     # First push: compute the cell layout's next-slot index ONCE; every later
     # link is a single indexed store.
     (nil: ChainEnd)   => ListBuilder<T>(cell, cell,
-        __builtin_op__<int64>("list_builder_slot", cell), pinned)
+        __builtin_op__<int64>("list_builder_slot", cell), true)
 
 fun build<T>([terminal] b: ListBuilder<T>): List<T>
   ret match(b._tail)

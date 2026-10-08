@@ -59,7 +59,9 @@ enum RParam
   enum RpPointerTo(value: RParam)                      # `value` MUST be StackVar/GlobalVar/ObjectField (Python: LParam)
   enum RpStackVar(fieldType: CgType, name: String)
   enum RpGlobalVar(fieldType: CgType, name: String)
-  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool)
+  # fill: a NULL -> value store into a slot written once across safe points
+  # (codegen/param.py ObjectField.fill): GC_FILL_BARRIER.
+  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool, fill: Bool)
   enum RpArrayElement(elementType: CgType, pointer: RParam, objectName: String, field: String, lengthField: String, index: RParam, checked: Bool)
   # Union slotting of closures (param.py FunField/MakeFun — the enum-encoding
   # principle: a closure IS a struct). RpFunField projects one primitive out
@@ -224,7 +226,7 @@ fun rpRenameVars(r, renames: List<RpRename>) => match(r)
   (x: RpPointerTo) => RpPointerTo(rpRenameVars(x.value, renames))
   (x: RpStackVar) => RpStackVar(x.fieldType, renameLookup(renames, x.name))
   (x: RpGlobalVar) => r   # GlobalVar.rename_vars is identity in Python
-  (x: RpObjectField) => RpObjectField(x.fieldType, rpRenameVars(x.pointer, renames), x.objectName, x.field, rpRenameVarsOpt(x.index, renames), x.fresh)
+  (x: RpObjectField) => RpObjectField(x.fieldType, rpRenameVars(x.pointer, renames), x.objectName, x.field, rpRenameVarsOpt(x.index, renames), x.fresh, x.fill)
   (x: RpArrayElement) => RpArrayElement(x.elementType, rpRenameVars(x.pointer, renames), x.objectName, x.field, x.lengthField, rpRenameVars(x.index, renames), x.checked)
   (x: RpFunField) => RpFunField(rpRenameVars(x.ffFun, renames), x.ffPart)
   (x: RpMakeFun) => RpMakeFun(rpRenameVars(x.mfCode, renames), rpRenameVars(x.mfEnv, renames))
@@ -681,22 +683,27 @@ fun rpToCStoreObjectField(x: RpObjectField, cache0: List<CgCacheEntry>, value): 
   let pointerC = rpToC(x.pointer, cache0)
   let fieldRefBase = "((" + mangleName(x.objectName) + "_t*)" + pointerC.text + ")->" + mangleName(x.field)
   ret match(x.index)
-    (idx: RParam) => rpToCStoreObjectFieldIndexed(x, fieldRefBase, idx, pointerC.cache, value)
-    ()             => rpToCStoreObjectFieldFinish(x, fieldRefBase, pointerC.cache, value)
+    (idx: RParam) => rpToCStoreObjectFieldIndexed(x, pointerC.text, fieldRefBase, idx, pointerC.cache, value)
+    ()             => rpToCStoreObjectFieldFinish(x, pointerC.text, fieldRefBase, pointerC.cache, value)
 
-fun rpToCStoreObjectFieldIndexed(x: RpObjectField, fieldRefBase, idx, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectFieldIndexed(x: RpObjectField, pointerText, fieldRefBase, idx, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let idxC = rpToC(idx, cache0)
-  ret rpToCStoreObjectFieldFinish(x, fieldRefBase + ".a[" + idxC.text + "]", idxC.cache, value)
+  ret rpToCStoreObjectFieldFinish(x, pointerText, fieldRefBase + ".a[" + idxC.text + "]", idxC.cache, value)
 
-fun rpToCStoreObjectFieldFinish(x: RpObjectField, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
+fun rpToCStoreObjectFieldFinish(x: RpObjectField, pointerText, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   ret cgHasPointers(x.fieldType) && !x.fresh
-    ? rpToCStoreObjectFieldBarrier(x, fieldRef, cache0, value)
+    ? rpToCStoreObjectFieldBarrier(x, pointerText, fieldRef, cache0, value)
     : ("    " + fieldRef + " = " + value + ";\n", cache0)
 
-fun rpToCStoreObjectFieldBarrier(x: RpObjectField, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
+# The container is known: the nursery barrier's private test reads its
+# escaped bit directly (codegen/param.py).
+fun rpToCStoreObjectFieldBarrier(x: RpObjectField, pointerText, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.fieldType, cache0)
   let mask = toPointerMask(x.fieldType, declared.text)
-  ret ("    GC_WRITE_BARRIER(" + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
+  # A fill store's barrier follows it: it escapes the value just stored.
+  ret x.fill
+    ? ("    " + fieldRef + " = " + value + ";\n    GC_FILL_BARRIER(" + pointerText + ", " + fieldRef + ", " + mask + ");\n", declared.cache)
+    : ("    GC_WRITE_BARRIER_IN(" + pointerText + ", " + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
 
 # ── `NewStruct.__add__` (used by lowering passes, not within this file) ────
 

@@ -157,7 +157,7 @@ fun push<T>([terminal] b: SeqBuilder<T>, x: T): SeqBuilder<T>
 # _head stays None — the fresh segment is both first and tail.
 fun _pushFirst<T>([terminal] b: SeqBuilder<T>, x: T): SeqBuilder<T>
   let seg = __builtin_op__<Segment<T> >("array_builder_alloc", 1i32)
-  let ok2 = b._ok && __builtin_op__<bool>("array_builder_pin", seg)
+  let ok2 = b._ok
   ret SeqBuilder<T>(None, seg, 1i32,
                     ok2 && __builtin_op__<bool>("array_builder_store", seg, 0i32, x))
 
@@ -170,7 +170,7 @@ fun _pushGrown<T>([terminal] b: SeqBuilder<T>, prev: Segment<T>, x: T): SeqBuild
     (h: Segment<T>) => _nextCap(prev.length)
     (nil: None)     => 1i32
   let seg = __builtin_op__<Segment<T> >("array_builder_alloc", cap2)
-  let ok2 = b._ok && __builtin_op__<bool>("array_builder_pin", seg)
+  let ok2 = b._ok
   let ok3 = ok2 && __builtin_op__<bool>("array_builder_store", seg, 0i32, x)
   let ok4 = ok3 && __builtin_op__<bool>("list_builder_link", prev, seg,
                                         __builtin_op__<int64>("list_builder_slot", prev))

@@ -363,10 +363,11 @@ fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
   (x: OpSwitchJump)    => rddCases(rddS(rddParam(rddSaved(rddS(e, "oS;"), x.switchSavedVars),
                                                  cx, x.switchCondition), "["),
                                    chain(x.switchCases))
-  (x: OpNewObject)     => rddParamOpt(rddParam(rddName(rddSaved(rddS(e, "oN;"), x.newObjSavedVars),
-                                                       cx, 0, x.newObjName),
-                                               cx, x.newObjRegister),
-                                      cx, x.newObjSize)
+  (x: OpNewObject)     => rddBool(rddParamOpt(rddParam(rddName(rddSaved(rddS(e, "oN;"), x.newObjSavedVars),
+                                                               cx, 0, x.newObjName),
+                                                       cx, x.newObjRegister),
+                                              cx, x.newObjSize),
+                                  x.newObjPinned)
   (x: OpCall)          => rddTyOpt(rddBool(rddBool(rddParamOpt(rddParam(rddParam(
                             rddSaved(rddS(e, "oC;"), x.callSavedVars),
                             cx, x.callFunction), cx, x.callParameters), cx, x.callRegister),
@@ -726,7 +727,7 @@ fun rddRenameOp(rn: RddRenames, op: Op): Op
   let renamed = opReplaceParams(op, (p) => rddRenameParam(rn, p))
   ret match(renamed)
     (x: OpNewObject) => OpNewObject(rddTo(rn.rnObj, x.newObjName), x.newObjRegister,
-                                    x.newObjSize, x.newObjSavedVars)
+                                    x.newObjSize, x.newObjPinned, x.newObjSavedVars)
     (o: Op)          => renamed
 
 fun rddRenameGlobal(rn: RddRenames, g2: CgGlobal): CgGlobal
@@ -749,7 +750,7 @@ fun rddRenameParam(rn: RddRenames, p: RParam): RParam => match(p)
   (x: RpObjVtableEq)     => RpObjVtableEq(x.value, rddToOpt(rn.rnObj, x.className), x.externSymbol,
                                            x.among)
   (x: RpObjectField)     => RpObjectField(x.fieldType, x.pointer, rddTo(rn.rnObj, x.objectName),
-                                          x.field, x.index, x.fresh)
+                                          x.field, x.index, x.fresh, x.fill)
   (x: RpArrayElement)    => RpArrayElement(x.elementType, x.pointer, rddTo(rn.rnObj, x.objectName),
                                            x.field, x.lengthField, x.index, x.checked)
   (x: RpIntEqConst)      => match(x.value)

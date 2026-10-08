@@ -40,7 +40,8 @@ enum Op
   # debug build, compiled away in an optimised one (YAFL_ASSERT_NOT_TASK).
   enum OpAssertNotTask(antCondition: RParam, antSavedVars: List<RParam>)
   enum OpSwitchJump(switchCondition: RParam, switchCases: List<OpCase>, switchSavedVars: List<RParam>)
-  enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjSavedVars: List<RParam>)
+  # newObjPinned: born pinned (codegen/ops.py NewObject.pinned).
+  enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjPinned: Bool, newObjSavedVars: List<RParam>)
   enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: List<RParam>)
   enum OpReturnVoid(retVoidSavedVars: List<RParam>)
   enum OpAbort(abortReason: String, abortSavedVars: List<RParam>)
@@ -147,7 +148,7 @@ fun opRenameVars(op, renames: List<RpRename>) => match(op)
   (x: OpSwitchJump) => OpSwitchJump(rpRenameVars(x.switchCondition, renames),
                                     map(x.switchCases, (c) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
                                     x.switchSavedVars)
-  (x: OpNewObject) => OpNewObject(x.newObjName, rpRenameVars(x.newObjRegister, renames), rpRenameVarsOpt(x.newObjSize, renames), x.newObjSavedVars)
+  (x: OpNewObject) => OpNewObject(x.newObjName, rpRenameVars(x.newObjRegister, renames), rpRenameVarsOpt(x.newObjSize, renames), x.newObjPinned, x.newObjSavedVars)
   (x: OpCall) => OpCall(rpRenameVars(x.callFunction, renames), rpRenameVars(x.callParameters, renames),
                         opRenameVarsOpt(x.callRegister, renames), x.callMusttail, x.callImpure, x.callResultType, x.callSavedVars)
   (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
@@ -324,11 +325,13 @@ fun opToCSwitchJump(x: OpSwitchJump, cache0: List<CgCacheEntry>): (text: String,
 fun opToCNewObject(x: OpNewObject, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(x.newObjSize)
     (sz: RParam) => opToCNewObjectSized(x, sz, cache0)
-    ()            => rpToCStore(x.newObjRegister, cache0, "object_new(obj_" + mangleName(x.newObjName) + ")")
+    ()            => rpToCStore(x.newObjRegister, cache0, "object_new(obj_" + mangleName(x.newObjName) + ", " + opPinnedC(x) + ")")
 
 fun opToCNewObjectSized(x: OpNewObject, sz, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let szC = rpToC(sz, cache0)
-  ret rpToCStore(x.newObjRegister, szC.cache, "array_create(obj_" + mangleName(x.newObjName) + ", " + szC.text + ")")
+  ret rpToCStore(x.newObjRegister, szC.cache, "array_create(obj_" + mangleName(x.newObjName) + ", " + szC.text + ", " + opPinnedC(x) + ")")
+
+fun opPinnedC(x: OpNewObject): String => x.newObjPinned ? "true" : "false"
 
 fun opToCAbort(x: OpAbort, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let note = length(x.abortReason) == 0 ? "" : "  // " + x.abortReason
@@ -500,7 +503,7 @@ fun opWithSavedVars(op, sv) => match(op)
   (x: OpIfTask)       => OpIfTask(x.taskCondition, x.taskSource, x.taskLhs, x.callIdLhs, x.callId, x.taskTarget, sv)
   (x: OpAssertNotTask) => OpAssertNotTask(x.antCondition, sv)
   (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
-  (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, sv)
+  (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, x.newObjPinned, sv)
   (x: OpCall)         => OpCall(x.callFunction, x.callParameters, x.callRegister, x.callMusttail, x.callImpure, x.callResultType, sv)
   (x: OpReturnVoid)   => OpReturnVoid(sv)
   (x: OpAbort)        => OpAbort(x.abortReason, sv)

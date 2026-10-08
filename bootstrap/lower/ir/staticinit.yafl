@@ -138,7 +138,8 @@ fun [tail] siNopLoop(s: Segment<Op>|None, iSeg, i,
 # emitted in that order.
 fun siNopOne([terminal] acc, op,
              i): ListBuilder<SiNewObj> => match(op)
-  (no: OpNewObject) => no.newObjSize is None
+  # A pinned object is filled in after allocation: never a static.
+  (no: OpNewObject) => no.newObjSize is None && !no.newObjPinned
     ? match(no.newObjRegister)
       (sv: RpStackVar) => push(acc,
                               SiNewObj(i, no.newObjName, sv.name))

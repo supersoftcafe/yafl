@@ -92,8 +92,8 @@ static int Kstate(void) { return gc_debug_object_state((object_t*)g_K); }
 // entrypoint's stack slots, where the conservative scan would keep marking it.
 static void __attribute__((noinline)) create_and_root(void) {
     object_t* k = object_create(&leaf_vt);
-    GC_WRITE_BARRIER(_slots[0], 1);
-    _slots[0] = k;
+    gc_root_overwrite(&_slots[0]);
+    _slots[0] = gc_root_publish(k);
     g_K = (uintptr_t)k;
 }
 
@@ -133,7 +133,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     if (Kstate() != 1) fail("promoted object not live", Kstate());
 
     // (3) Drop the root; a MINOR cycle must NOT reclaim an old object.
-    GC_WRITE_BARRIER(_slots[0], 1);
+    gc_root_overwrite(&_slots[0]);
     _slots[0] = NULL;
     scrub();
     run_one_cycle();
@@ -154,10 +154,11 @@ static void _entrypoint(object_t* self, fun_t cont) {
 }
 
 int main(void) {
-    // Small heap before any allocation: dwell floor = total/64 = 1 MiB, so
-    // the promotion volume (two dwell windows) is ~2 MiB — one churn_filler
-    // batch per cycle clears it quickly.
+    // Small heap, and a promotion floor of 64 pages (1 MiB) instead of the
+    // conservative default: one churn_filler batch (~2 MiB) per cycle then
+    // clears the promotion volume quickly. Set before any allocation.
     setenv("YAFL_HEAP_SIZE", "64m", 0);
+    setenv("YAFL_GC_PROMOTE_FLOOR", "64", 0);
     _prev = add_roots_declaration_func(_decl);
     thread_start(_entrypoint);
     return 0;

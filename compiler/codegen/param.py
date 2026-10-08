@@ -767,6 +767,12 @@ class ObjectField(LParam):
     # barrier also makes this field's zero-fill store dead, so the C compiler
     # elides it. Provenance, not identity: compare-excluded.
     fresh: bool = dataclasses.field(default=False, compare=False)
+    # True for a FILL store: NULL -> value into a slot written exactly once, but
+    # across safe points (array tabulation, builder pushes), so not fresh. The
+    # snapshot barrier owes nothing (no old value) and neither does a thread
+    # with no active nursery; only the nursery's private-container test
+    # remains (GC_FILL_BARRIER). Provenance: compare-excluded.
+    fill: bool = dataclasses.field(default=False, compare=False)
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
         return ([self] if is_reader else []) + self.pointer.flatten() + (self.index.flatten() if self.index else [])
@@ -797,7 +803,11 @@ class ObjectField(LParam):
             field_ref = f"{field_ref}.a[{self.index.to_c(type_cache)}]"
         if self.type.has_pointers and not self.fresh:
             mask = to_pointer_mask(self.type, self.type.declare(type_cache))
-            return f"    GC_WRITE_BARRIER({field_ref}, {mask});\n    {field_ref} = {value};\n"
+            # The container is known: the nursery barrier's private test reads
+            # its escaped bit directly instead of searching for it.
+            if self.fill:   # after the store: it escapes the value just stored
+                return f"    {field_ref} = {value};\n    GC_FILL_BARRIER({pointer}, {field_ref}, {mask});\n"
+            return f"    GC_WRITE_BARRIER_IN({pointer}, {field_ref}, {mask});\n    {field_ref} = {value};\n"
         else:
             return f"    {field_ref} = {value};\n"
 

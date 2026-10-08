@@ -127,7 +127,7 @@ static task_t* _queue_try_pop(worker_queue_t* queue) {
         // its only reference is queue->head. Erasing the edge unbarriered lets
         // the marker lose the rest of the queue if `task` is walked after the
         // clear — the successor is then pruned while still queued.
-        GC_WRITE_BARRIER(task->next, 1);
+        GC_WRITE_BARRIER_IN(task, task->next, 1);
         atomic_store(&task->next, (task_t*)NULL);
         atomic_fetch_sub_explicit(&_queued_count, 1, memory_order_relaxed);
     }
@@ -285,7 +285,7 @@ static void _thread_init() {
 
     object_gc_init();
 
-    _queues = array_create(_worker_queues_vt, thread_count);
+    _queues = array_create(_worker_queues_vt, thread_count, false);
 
     for (intptr_t index = 0; index < thread_count; ++index) {
         worker_queue_t* queue = &_queues->array[index];
@@ -325,6 +325,7 @@ EXPORT object_t* thread_dispatch(fun_t action) {
 
 EXPORT void thread_start(void(*entrypoint)(object_t*, fun_t)) {
     yafl_log_init(_yafl_argv ? _yafl_argv[0] : NULL);
+    gc_configure();   // single-threaded here: no worker exists yet
     const char* dur = getenv("YAFL_DURATION");
     _print_duration = (dur != NULL && *dur != '\0');
     if (_print_duration) clock_gettime(CLOCK_MONOTONIC, &t_start);

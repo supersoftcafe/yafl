@@ -237,6 +237,11 @@ class NewObject(Op): # Create a new blank instance of the named object
     name: str
     register: LParam
     size: RParam|None = None
+    # Born PINNED: the vtable word is installed with the pin bit already set,
+    # so compaction leaves the object where it is until object_unpin. For an
+    # object filled in after allocation across safe points (array tabulation,
+    # builders, list-builder cells); the pin costs nothing at birth.
+    pinned: bool = False
 
     def all_params(self) -> list[RParam]:
         return self.register.flatten(is_reader=False) + (self.size.flatten() if self.size else [])
@@ -258,14 +263,15 @@ class NewObject(Op): # Create a new blank instance of the named object
         # Store through to_c_store so a pointer-bearing heap-slot register is
         # write-barriered (the freshly created object is a pointer; the slot's
         # prior value must be marked when it is a reused/coalesced slot).
+        pinned = "true" if self.pinned else "false"
         if self.size is not None:
-            value = f"array_create(obj_{mangle_name(self.name)}, {self.size.to_c(type_cache)})"
+            value = f"array_create(obj_{mangle_name(self.name)}, {self.size.to_c(type_cache)}, {pinned})"
         else:
             # object_new is the INLINE fast path (yafl.h): with the vtable
             # constant visible in this TU, the C compiler folds object_size and
             # is_mutable per site and elides whichever zero-fill stores the
             # immediate field writes below make dead.
-            value = f"object_new(obj_{mangle_name(self.name)})"
+            value = f"object_new(obj_{mangle_name(self.name)}, {pinned})"
         return self.register.to_c_store(type_cache, value)
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:

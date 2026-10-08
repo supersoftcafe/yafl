@@ -78,7 +78,7 @@ fun cnStaticInit(rn: Dict<String, Dict<String, String>>, objName: String|None, i
 fun cnAccess(rn: Dict<String, Dict<String, String>>, p: RParam): RParam => match(p)
   (x: RpObjectField)  => match(get(rn, x.objectName))
     (r: Dict<String, String>) => RpObjectField(x.fieldType, x.pointer, x.objectName,
-                                               cnRename(r, x.field), x.index, x.fresh)
+                                               cnRename(r, x.field), x.index, x.fresh, x.fill)
     ()                        => p
   (x: RpArrayElement) => match(get(rn, x.objectName))
     (r: Dict<String, String>) => RpArrayElement(x.elementType, x.pointer, x.objectName,

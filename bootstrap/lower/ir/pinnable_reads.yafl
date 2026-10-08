@@ -85,7 +85,7 @@ fun prRewriteField(x, names: StrSet)
                                     RpNewStruct(list1(
                                         RpNamedValue("o", x.pointer))),
                                     CgDataPointer()),
-                    x.objectName, x.field, x.index, x.fresh)
+                    x.objectName, x.field, x.index, x.fresh, x.fill)
 
 fun prAlreadyResolved(p) => match(p)
   (x: RpRuntimeInvoke) => x.function == "object_resolve"

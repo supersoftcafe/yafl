@@ -584,7 +584,7 @@ fun genDotClassMember(cs: PsClass, data, d: PeDot, baseBundle, r) => match(data)
 
 fun genDotField(cs: PsClass, l: PsLet, d: PeDot, baseBundle: GBundle, r)
   let xtype = specGenerateOpt(l.lType, r)
-  ret bundleJoin(baseBundle, bundleValue(RpObjectField(xtype, mustResult(baseBundle), cs.cName, d.member, None, false)))
+  ret bundleJoin(baseBundle, bundleValue(RpObjectField(xtype, mustResult(baseBundle), cs.cName, d.member, None, false, false)))
 
 fun genDotEnum(d: PeDot, e2, baseBundle: GBundle, r)
   ret bundleJoin(baseBundle, bundleValue(reprReadField(classifyRepr(e2, r), mustResult(baseBundle), d.member, r)))
@@ -690,7 +690,7 @@ fun fetchFunctionName(t) => "lazy_fetch$" + irMangle(t)
 fun genLazy(lz: PeLazy, r)
   let irT = specGenerate(lz.lzTarget, r)
   let stubRef = match(lz.lzCaptured)
-    (cls: String) => RpObjectField(CgDataPointer(), RpStackVar(CgDataPointer(), "this"), cls, lz.stubName, None, false)
+    (cls: String) => RpObjectField(CgDataPointer(), RpStackVar(CgDataPointer(), "this"), cls, lz.stubName, None, false, false)
     ()             => lazyStubRef(lz, r)
   ret lz.lzStubOnly ? bundleValue(stubRef) : genLazyForce(irT, stubRef)
 
@@ -719,11 +719,26 @@ fun genBuiltinOp(op: PeBuiltinOp, r)
   let nm = builtinOpName(op.opName)
   if isReprAwareOp(nm) && !builtinSubjectBoxed(op, r)
     ret genBuiltinValueRepr(op, nm, r)
+  if nm == "new_pinned"
+    ret genNewPinned(op, r)
   if nm == "array_builder_alloc"
     ret genArrayBuilderAlloc(op, r)
   if nm == "array_builder_store"
     ret genArrayBuilderStore(op, r)
   ret genBuiltinOpGeneric(op, r)
+
+# `__builtin_op__<T>("new_pinned", C(...))`: the construction C, its heap
+# object born PINNED (builtin_op.py __new_pinned). The argument may arrive
+# wrapped in an inlined block (statements, then the construction).
+fun genNewPinned(op: PeBuiltinOp, r) => match(firstBuiltinArg(op.opParams))
+  (e: PExpr) => genPinned(e, r)
+  ()         => emptyBundle()   # unreachable: stdlib-only op
+
+fun genPinned(e: PExpr, r): GBundle => match(e)
+  (nw: PeNew)     => genNewP(nw, r, true)
+  (ne: PeNewEnum) => genNewEnumP(ne, r, true)
+  (bk: PeBlock)   => genBlockPinned(bk, r)
+  (o: PExpr)      => emptyBundle()   # unreachable: Python asserts a construction
 
 fun genBuiltinOpGeneric(op: PeBuiltinOp, r)
   let paramsBundle = genExpr(op.opParams, r)
@@ -771,10 +786,10 @@ fun builtinOpName(nameExpr) => match(nameExpr)
   (o: PExpr)  => ""   # unreachable: op.opName is always a string literal
 
 # ── ArrayBuilder special forms (builtin_op.py __array_builder_alloc/store) ──
-# Sized, unfilled allocation for a builder: array_create zero-fills
-# pointer-bearing payloads and stamps length = CAPACITY, so the scanner
-# traces every slot from birth. The element type rides the builtin's
-# declared RESULT type; no init function runs.
+# Sized, unfilled allocation for a builder, born PINNED (held until
+# array_builder_seal): array_create zero-fills pointer-bearing payloads and
+# stamps length = CAPACITY, so the scanner traces every slot from birth. The
+# element type rides the builtin's declared RESULT type; no init function runs.
 fun genArrayBuilderAlloc(op: PeBuiltinOp, r) => match(arrayAllocParts(op, r))
   (p: (cname: String, capE: PExpr)) => genArrayBuilderAllocOn(p.cname, p.capE, r)
   ()                                 => emptyBundle()   # unreachable: stdlib-only op
@@ -792,15 +807,15 @@ fun genArrayBuilderAllocOn(cname, capE, r)
   let rv = RpStackVar(CgDataPointer(), "abarr")
   ret bundleJoin(capB,
                  GBundle(list1(rv),
-                         list1(OpNewObject(cname, rv, mustResult(capB), List())),
+                         list1(OpNewObject(cname, rv, mustResult(capB), true, List())),
                          rv, List(), List()))
 
 # Inline pinned-array element store: a Move into the indexed trailing array
 # field. A runtime call cannot express this — the element's C type varies
 # per instantiation — and the builder holds the pin from allocation to
-# seal, so a plain store at the stable address is exactly right. fresh:
-# each slot is written at most once over the allocator's zero fill, so
-# there is no old edge for the snapshot barrier to keep.
+# seal, so the address is stable. NOT fresh: a builder crosses safe points,
+# so the array may have left the storing thread's nursery and the element
+# be newer than it; the barrier reports that edge (builtin_op.py).
 fun genArrayBuilderStore(op: PeBuiltinOp, r) => match(threeBuiltinArgs(op.opParams))
   (a: (a0: PExpr, a1: PExpr, a2: PExpr)) => genArrayBuilderStoreOn(a.a0, a.a1, a.a2, r)
   ()                                      => emptyBundle()   # unreachable: stdlib-only op
@@ -815,7 +830,7 @@ fun genArrayBuilderStoreAll(cname, elem, arrE, idxE, valE, r)
   let idxB = withPrefix(genExpr(idxE, r), "absidx")
   let valB = withPrefix(genExpr(valE, r), "absval")
   let store = OpMove(RpObjectField(specGenerate(elem, r), mustResult(arrB), cname, "array",
-                                   mustResult(idxB), true),
+                                   mustResult(idxB), false, true),
                      mustResult(valB), false, List())
   ret bundleJoin(bundleJoin(bundleJoin(arrB, idxB), valB),
                  GBundle(List(), list1(store), RpInteger(1, 8),
@@ -952,32 +967,36 @@ fun [tail] namedValuesLoopB(bs: Chain<GBundle>, idx, [terminal] acc: ListBuilder
 # SECTION 9: NewExpression / NewEnumExpression (pyast/expression/new.py).
 # ══════════════════════════════════════════════════════════════════════════
 
-fun genNew(nw: PeNew, r) => match(exprType(nw.newParam, r))
-  (xtypeSpec: Spec) => genNewOn(nw, xtypeSpec, r)
+fun genNew(nw: PeNew, r) => genNewP(nw, r, false)
+
+# pinned: the object is born pinned (`new_pinned`).
+fun genNewP(nw: PeNew, r, pinned: Bool) => match(exprType(nw.newParam, r))
+  (xtypeSpec: Spec) => genNewOn(nw, xtypeSpec, r, pinned)
   ()                 => emptyBundle()   # unreachable: check() requires a tuple parameter
 
-fun genNewOn(nw: PeNew, xtypeSpec, r) => match(nw.newType)
-  (ctype: SClass) => genNewFindClass(nw, xtypeSpec, ctype, r)
+fun genNewOn(nw: PeNew, xtypeSpec, r, pinned: Bool) => match(nw.newType)
+  (ctype: SClass) => genNewFindClass(nw, xtypeSpec, ctype, r, pinned)
   (o: Spec)        => emptyBundle()   # unreachable: check() requires a ClassSpec
 
-fun genNewFindClass(nw: PeNew, xtypeSpec, ctype, r) => match(soleItem(findType(r, ctype.scName)))
+fun genNewFindClass(nw: PeNew, xtypeSpec, ctype, r, pinned: Bool) => match(soleItem(findType(r, ctype.scName)))
   (found: Found) => match(found.fStmt)
-    (cs: PsClass) => genNewClass(nw, xtypeSpec, ctype, cs, r)
+    (cs: PsClass) => genNewClass(nw, xtypeSpec, ctype, cs, r, pinned)
     (o: PStmt)    => emptyBundle()   # unreachable
   ()               => emptyBundle()   # unreachable
 
-fun genNewClass(nw: PeNew, xtypeSpec, ctype, cs: PsClass, r)
+# An array class pins itself for its fill (Python rejects new_pinned on one).
+fun genNewClass(nw: PeNew, xtypeSpec, ctype, cs: PsClass, r, pinned: Bool)
   let paramsBundle = withPrefix(genExpr(nw.newParam, r), "args")
   let paramsVar = RpStackVar(specGenerate(xtypeSpec, r), "params")
   let resultVar = RpStackVar(specGenerate(ctype, r), "result")
   ret match(asPsLetVariant(classArrayField(cs)))
     (af: PsLet) => bundleJoin(paramsBundle, genNewArray(cs, af, ctype.scName, paramsVar, mustResult(paramsBundle), resultVar, r))
-    ()           => genNewPlain(cs, ctype.scName, paramsBundle, paramsVar, resultVar, r)
+    ()           => genNewPlain(cs, ctype.scName, paramsBundle, paramsVar, resultVar, r, pinned)
 
-fun genNewPlain(cs: PsClass, cname, paramsBundle: GBundle, paramsVar, resultVar, r)
+fun genNewPlain(cs: PsClass, cname, paramsBundle: GBundle, paramsVar, resultVar, r, pinned: Bool)
   let moveOps = fieldMoveOps(chain(classFields(cs)), cname, resultVar, paramsVar, 0, r, List())
   let ops = concat(list2(OpMove(paramsVar, mustResult(paramsBundle), false, List()),
-                        OpNewObject(cname, resultVar, None, List())),
+                        OpNewObject(cname, resultVar, None, pinned, List())),
                    moveOps)
   let ctorBundle = GBundle(list2(paramsVar, resultVar), ops, resultVar, List(), List())
   ret bundleJoin(paramsBundle, ctorBundle)
@@ -994,7 +1013,7 @@ fun [tail] fieldMoveOpsB(fs: Chain<PStmt>, cname, resultVar, paramsVar,
 
 fun fieldMoveOp(field, cname, resultVar, paramsVar, index: Int, r)
   let ftype = specGenerateOpt(stmtType(field), r)
-  ret OpMove(RpObjectField(ftype, resultVar, cname, stmtName(field), None, true),
+  ret OpMove(RpObjectField(ftype, resultVar, cname, stmtName(field), None, true, false),
              RpStructField(paramsVar, "_" + String(index)), false, List())
 
 # ── array-class construction: allocate trailing storage then tabulate it via
@@ -1015,8 +1034,13 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   let scalarOps = build(scalarFieldMoveOps(chain(params), cname,
                             resultVar, paramsVar, arrIdx, 0, r,
                             builder()))
+  # Born PINNED, held to the end of the loop: initFn may suspend and park the
+  # half-built array in a heap state object, where compaction could move it
+  # under the resumed loop (see pyast/expression/new.py).
+  let unpinVar = RpStackVar(CgDataPointer(), "fillunpin")
+  let unpinOp = OpMove(unpinVar, RpRuntimeInvoke("object_unpin", RpNewStruct(list1(RpNamedValue("o", resultVar))), CgDataPointer()), true, List())
   let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, List()),
-                             OpNewObject(cname, resultVar, length2, List())),
+                             OpNewObject(cname, resultVar, length2, true, List())),
                        scalarOps)
   let iVar = RpStackVar(CgInt(32), "filli")
   let iNext = RpStackVar(CgInt(32), "fillinext")
@@ -1025,17 +1049,19 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   let incr = RpRuntimeInvoke("int32_add", RpNewStruct(list2(RpNamedValue("a", iVar), RpNamedValue("b", RpInteger(1, 32)))), CgInt(32))
   let loopOps = list2<Op>(OpLabel("fillentry", List()), OpLabel("fillhead", List()))
   let phiOp = OpPhi(iVar, list2(OpPhiSource("fillentry", RpInteger(0, 32)), OpPhiSource("fillback", iNext)), List())
+  # The element store is NOT fresh: initFn runs safe points between the
+  # allocation and the store (see pyast/expression/new.py).
   let restOps = concat<Op>(
     list3(OpJumpIf("fillbody", less, false, List()),
           OpJump("fillend", List()),
           OpLabel("fillbody", List())),
     concat(
       list3(OpCall(initFn, RpNewStruct(list1(RpNamedValue("_0", iVar))), elemVar, false, false, None, List()),
-            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, true), elemVar, false, List()),
+            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, false, true), elemVar, false, List()),
             OpMove(iNext, incr, false, List())),
-      list3(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()))))
+      list4(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()), unpinOp)))
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))
-  ret GBundle(list5(paramsVar, resultVar, iVar, iNext, elemVar), ops, resultVar, List(), List())
+  ret GBundle(prepend(paramsVar, prepend(resultVar, list4(unpinVar, iVar, iNext, elemVar))), ops, resultVar, List(), List())
 
 fun [tail] indexWhereArrayField(ps: Chain<PStmt>, i) => match(ps)
   (nil: ChainEnd) => -1   # unreachable: classArrayField already found one
@@ -1067,14 +1093,16 @@ fun [tail] scalarFieldMoveOps(ps: Chain<PStmt>, cname, resultVar, paramsVar,
 # so the names alone are lossless) — reconstruct the (name, PeName) pairs the
 # repr's construct_enum_value expects.
 
-fun genNewEnum(ne: PeNewEnum, r) => match(soleItem(findType(r, ne.rootName)))
+fun genNewEnum(ne: PeNewEnum, r) => genNewEnumP(ne, r, false)
+
+fun genNewEnumP(ne: PeNewEnum, r, pinned: Bool) => match(soleItem(findType(r, ne.rootName)))
   (found: Found) => match(found.fStmt)
-    (root: PsEnum) => genNewEnumOn(ne, root, r)
+    (root: PsEnum) => genNewEnumOn(ne, root, r, pinned)
     (o: PStmt)     => emptyBundle()   # unreachable
   ()                => emptyBundle()   # unreachable
 
-fun genNewEnumOn(ne: PeNewEnum, root: PsEnum, r) => match(root.eSpec)
-  (rootSpec: Spec) => reprConstructEnumValue(classifyRepr(rootSpec, r), ne.leafName, punFieldArgs(ne.fieldArgs, ne.penewLine), r)
+fun genNewEnumOn(ne: PeNewEnum, root: PsEnum, r, pinned: Bool) => match(root.eSpec)
+  (rootSpec: Spec) => reprConstructEnumValue(classifyRepr(rootSpec, r), ne.leafName, punFieldArgs(ne.fieldArgs, ne.penewLine), r, pinned)
   ()                => emptyBundle()   # unreachable: compile always fills eSpec before generate
 
 class [final] PunArg(paName: String, paExpr: PExpr)
@@ -1133,6 +1161,18 @@ fun genStmt(st, r, expected: Spec|None) => gsStmt(st, r, expected)
 fun genStmtLazyAlloc(st, r) => gsStmtLazyAlloc(st, r)
 
 fun genStmtLazyPopulate(st, r) => gsStmtLazyPopulate(st, r)
+
+# new_pinned through an inlined construction (block.py generate_pinned): the
+# statements, then the trailing construction born pinned — only the plain
+# statements-then-value shape.
+fun genBlockPinned(bk: PeBlock, r): GBundle
+  let tag = length(bk.blockTag) == 0 ? "blk@" + hash6(bk.pebkLine.plFile, bk.pebkLine.plLine, bk.pebkLine.plCol) : bk.blockTag
+  let frame = FrBlock(tag, exprType(bk.blockValue, r))
+  let nested = localScope(bk.blockStmts, RGen(frame, r))
+  let stmtsBundle = genBlockStmts(chain(bk.blockStmts), nested, 0)
+  ret isEmpty(stmtsBundle.gbExitSources)
+    ? bundleJoin(stmtsBundle, genPinned(bk.blockValue, nested))
+    : emptyBundle()   # unreachable: Python asserts
 
 fun genBlockTo(bk: PeBlock, r, expected: Spec|None): GBundle
   let slotType = match(expected)

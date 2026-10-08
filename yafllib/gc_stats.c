@@ -83,6 +83,7 @@ void gc_stats_report(void) {
         cpus > 0 ? 100.0 * gc / cpus : 0.0,
         (unsigned long long)atomic_load(&gc_stat_fsa_calls),
         (unsigned long long)atomic_load(&gc_cycle_count));
+    gc_local_report(stderr);
 
     // Per-call latency distribution by stage: percentile bounds read off the
     // log2 histogram (a bucket b means "< 2^(b+1) ns"). The spread between

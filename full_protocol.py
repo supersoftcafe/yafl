@@ -149,7 +149,7 @@ def stage_ctest(run_dir: Path) -> Result:
 
 
 def stage_o3_bootstrap(run_dir: Path) -> Result:
-    cmd = ["python3", "build_bootstrap.py", "-O", "3",
+    cmd = [sys.executable, "build_bootstrap.py", "-O", "3",
            "-o", str(BUILD / "ybootstrap_O3")]
     env = stage_env(YAFL_LIBYAFL_A=str(BUILD / "yafllib" / "libyafl.a"),
                     PYTHONHASHSEED="0")
@@ -253,7 +253,7 @@ def stage_o3_timed(run_dir: Path) -> Result:
         print(f"      leg {i}")
         rc = run_stream(
             ["/usr/bin/time", "-v", "-o", str(rusage),
-             "python3", "selfcompile.py", "--binary", str(binary), "--mode", "c1"],
+             sys.executable, "selfcompile.py", "--binary", str(binary), "--mode", "c1"],
             COMPILER, selflog)
         if rc != 0:
             return Result("o3 timed self-compile", False, f"leg {i} exited {rc}")

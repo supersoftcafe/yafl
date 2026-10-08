@@ -104,7 +104,7 @@ void gc_test_race_probe(gc_page_t* page) {
     object_unpin(owner);
     // Drop C's root NOW: from here on the only path to C is P's slot, on the
     // page whose promotion decision is mid-flight around us.
-    GC_WRITE_BARRIER(_slots[1], 1);
+    gc_root_overwrite(&_slots[1]);
     _slots[1] = NULL;
     g_fired = 1;
     // Leave no copy of C's address in this frame or in callee-saved
@@ -132,13 +132,13 @@ static void __attribute__((noinline)) create_and_root(void) {
     object_t* p = object_create(&parent_vt);
     ((struct parent*)p)->slot = NULL;
     memset(((struct parent*)p)->pad, 0x5a, sizeof ((struct parent*)p)->pad);
-    GC_WRITE_BARRIER(_slots[0], 1);
-    _slots[0] = p;
+    gc_root_overwrite(&_slots[0]);
+    _slots[0] = gc_root_publish(p);
     g_P = (uintptr_t)p;
     object_t* c = object_create(&leaf_vt);
     memset(((struct leaf*)c)->pad, 0x5a, sizeof ((struct leaf*)c)->pad);
-    GC_WRITE_BARRIER(_slots[1], 1);
-    _slots[1] = c;
+    gc_root_overwrite(&_slots[1]);
+    _slots[1] = gc_root_publish(c);
     g_C = (uintptr_t)c;
 }
 
@@ -202,10 +202,11 @@ static void _entrypoint(object_t* self, fun_t cont) {
 }
 
 int main(void) {
-    // Small heap before any allocation: dwell floor = total/64 = 1 MiB, so
-    // the promotion volume (two dwell windows) is ~2 MiB — one churn_filler
-    // batch per cycle clears it quickly.
+    // Small heap, and a promotion floor of 64 pages (1 MiB) instead of the
+    // conservative default: one churn_filler batch (~2 MiB) per cycle then
+    // clears the promotion volume quickly. Set before any allocation.
     setenv("YAFL_HEAP_SIZE", "64m", 0);
+    setenv("YAFL_GC_PROMOTE_FLOOR", "64", 0);
     _prev = add_roots_declaration_func(_decl);
     thread_start(_entrypoint);
     return 0;

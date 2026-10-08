@@ -95,7 +95,7 @@ fun makeStubObject(valueType)
 fun lazyStoreWaiterResult(waiter, valueType, value): List<Op>
   if isUnit(valueType)
     ret List()
-  ret list1<Op>(OpMove(RpObjectField(valueType, waiter, waiterSubtypeName(valueType), "result", None, false),
+  ret list1<Op>(OpMove(RpObjectField(valueType, waiter, waiterSubtypeName(valueType), "result", None, false, false),
                        value, false, List()))
 
 fun makeDrainFunction(valueType): CgFunction
@@ -151,9 +151,9 @@ fun makeFetchFunction(valueType): CgFunction
   let closure = RpStackVar(CgFuncPointer(false), "closure")
   let rwrapped = RpStackVar(wrapped, "result_wrapped")
   let value = RpStackVar(valueType, "value")
-  let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false)
-  let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false)
-  let valueF = RpObjectField(valueType, this, cls, "value", None, false)
+  let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false, false)
+  let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false, false)
+  let valueF = RpObjectField(valueType, this, cls, "value", None, false, false)
   let isComplete = RpRuntimeInvoke("lazy_global_init_complete",
                                    RpNewStruct(list1(RpNamedValue("p", flagF))), CgInt(32))
   ret CgFunction(fetchFunctionName(valueType),
@@ -182,7 +182,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
       OpJumpIf("$slow", isComplete, true, List()),
       OpReturn(wrapValue(valueF, wrapped), List()),
       OpLabel("$slow", List()),
-      OpNewObject(waiterTy, waiter, None, List()),
+      OpNewObject(waiterTy, waiter, None, false, List()),
       lazyRuntimeCall1("task_init", "self", waiter))
   let enqueue = list5<Op>(
       OpMove(flagAddr, RpPointerTo(flagF), false, List()),
@@ -255,12 +255,12 @@ fun makeFinisherFunction(valueType): CgFunction
   let this = RpStackVar(CgDataPointer(), "this")
   let completed = RpStackVar(CgDataPointer(), "completed")
   let value = RpStackVar(valueType, "value")
-  let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false)
-  let valueF = RpObjectField(valueType, this, cls, "value", None, false)
-  let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false)
+  let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false, false)
+  let valueF = RpObjectField(valueType, this, cls, "value", None, false, false)
+  let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false, false)
   let completedResult = isUnit(valueType)
     ? RpZeroOf(valueType)
-    : RpObjectField(valueType, completed, waiterTy, "result", None, false)
+    : RpObjectField(valueType, completed, waiterTy, "result", None, false, false)
   ret CgFunction(finisherFunctionName(valueType),
                  CgStruct(list2(CgField("this", CgDataPointer()),
                                 CgField("completed", CgDataPointer()))),

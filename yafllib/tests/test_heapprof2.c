@@ -63,7 +63,7 @@ static void _declare_roots(void (*declare)(object_t**)) {
 // A heap object of `n` bytes — a String head. What these tests measure is
 // sampled allocation SIZE, so any array object would do.
 static object_t* alloc_bytes(int32_t n) {
-    return array_create((vtable_t*)&STR_HEAD_VTABLE, n + 1);
+    return array_create((vtable_t*)&STR_HEAD_VTABLE, n + 1, false);
 }
 
 // Allocations happen in NOINLINE helpers so their frames (and any register

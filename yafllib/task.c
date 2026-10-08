@@ -68,7 +68,7 @@ HIDDEN void _task_fire(void* self) {
         // intermediate structure the suspended function ever held —
         // observed: a returned function's state object keeping two
         // 480k-cell lists alive for the process lifetime).
-        GC_WRITE_BARRIER(task->callback.o, 1);
+        GC_WRITE_BARRIER_IN(task, task->callback.o, 1);
         task->callback = (fun_t){ NULL, NULL };
         ((object_t*(*)(object_t*,object_t*))cb.f)(cb.o, (object_t*)task);
     }
@@ -97,7 +97,7 @@ EXPORT object_t* task_obj_create(object_t* self) {
     (void)self;
     task_obj_t* task = (task_obj_t*)object_create((vtable_t*)&TASK_OBJ_VTABLE);
     task_init((object_t*)task);
-    GC_WRITE_BARRIER(task->result, 1);   // object_create zeroed it; mark-old is a no-op but keeps every store uniform
+    GC_WRITE_BARRIER_IN(task, task->result, 1);   // object_create zeroed it; mark-old is a no-op but keeps every store uniform
     task->result = NULL;
     return (object_t*)task;
 }
@@ -145,7 +145,7 @@ EXPORT object_t* task_on_complete(object_t* self, fun_t callback) {
     task_t* task = (task_t*)self;
     // Deletion barrier: mark the callback we are overwriting (provably NULL on a
     // fresh task, but uniform with every other pointer-slot store).
-    GC_WRITE_BARRIER(task->callback.o, 1);
+    GC_WRITE_BARRIER_IN(task, task->callback.o, 1);
     task->callback = callback;
     // Insertion barrier: publish the continuation. Once the caller suspends, the
     // task's callback.o is the only reference to that continuation state, and the

@@ -68,7 +68,7 @@ static void _do_worker(struct gc_test_state* state) {
 
     for (int i = 0; i < 10; i++) {
         GC_SAFE_POINT();
-        slots[i] = (struct gc_test_state*)array_create(&gc_test_state_vt, 3);
+        slots[i] = (struct gc_test_state*)array_create(&gc_test_state_vt, 3, false);
     }
 
     for (int round = 0; round < 100; round++) {
@@ -81,7 +81,7 @@ static void _do_worker(struct gc_test_state* state) {
             struct gc_test_state* slot = slots[j];
             if (slot) {
                 int idx = (round ^ j) % 3;
-                GC_WRITE_BARRIER(slot->results[idx], 1);
+                GC_WRITE_BARRIER_IN(slot, slot->results[idx], 1);
                 slot->results[idx] = str;
             }
         }
@@ -105,7 +105,7 @@ static void setup_gc_test(object_t* _, fun_t continuation) {
     int32_t worker_count = 10;
 
     struct gc_test_state* state =
-        (struct gc_test_state*)array_create(&gc_test_state_vt, worker_count);
+        (struct gc_test_state*)array_create(&gc_test_state_vt, worker_count, false);
     state->continuation = continuation;
     atomic_store(&state->remaining, worker_count);
 

@@ -25,6 +25,9 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field) {
 EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
     _Atomic(task_t*)* flag = (_Atomic(task_t*)*)flag_field;
     task_t* waiter = (task_t*)waiter_obj;
+    // Thread-local nursery: the CAS below publishes `waiter` into a shared
+    // chain with no write barrier, so it ESCAPES here, before it is visible.
+    if (gc_local_live) gc_local_escape(waiter_obj);
     task_t* expected = atomic_load(flag);
     do {
         if (expected == (task_t*)1) return 2;

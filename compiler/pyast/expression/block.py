@@ -156,7 +156,26 @@ class BlockExpression(Expression):
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
         return self.generate_to(resolver, None)
 
+    def generate_pinned(self, resolver: g.Resolver) -> g.OperationBundle:
+        """`new_pinned` through an inlined construction: the statements, then the
+        trailing construction born pinned. Only the plain statements-then-value
+        shape — a pinned construction is never reached through a `return`."""
+        nested, stmts_bundle, _frame, _tag, _slot_type = self._generate_statements(resolver, None)
+        gen = getattr(self.value, "generate_pinned", None)
+        if stmts_bundle.exit_sources or gen is None:
+            raise AssertionError(f"new_pinned takes a construction, not {type(self.value).__name__}")
+        return stmts_bundle + gen(nested)
+
     def generate_to(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> g.OperationBundle:
+        nested, stmts_bundle, frame, tag, slot_type = self._generate_statements(resolver, expected_type)
+
+        # No `return` reached this block — generate exactly as a plain
+        # statements-then-value sequence (the overwhelmingly common case).
+        if not stmts_bundle.exit_sources:
+            return stmts_bundle + self.value.generate_to(nested, slot_type)
+        return self._generate_with_returns(resolver, nested, stmts_bundle, frame, tag, slot_type)
+
+    def _generate_statements(self, resolver: g.Resolver, expected_type: t.TypeSpec | None):
         # The block's value is in tail/value position, so the expected type flows
         # straight through to it (statements coerce themselves at their own sinks).
         # `slot_type` is the block's result type — shared by the trailing value
@@ -189,13 +208,9 @@ class BlockExpression(Expression):
                 bundle = bundle + stmt.generate_lazy_populate(nested).with_prefix(f"s{i}")
             else:
                 bundle = bundle + stmt.generate(nested, None).with_prefix(f"s{i}")
-        stmts_bundle = bundle
+        return nested, bundle, frame, tag, slot_type
 
-        # No `return` reached this block — generate exactly as a plain
-        # statements-then-value sequence (the overwhelmingly common case).
-        if not stmts_bundle.exit_sources:
-            return stmts_bundle + self.value.generate_to(nested, slot_type)
-
+    def _generate_with_returns(self, resolver, nested, stmts_bundle, frame, tag, slot_type):
         # `return`s are present: merge their values with the fall-through value
         # at the block's end label via a Phi. The end label and the fall-through
         # exit label carry the '@'-bearing tag so they survive with_prefix and

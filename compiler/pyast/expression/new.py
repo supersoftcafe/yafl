@@ -74,6 +74,13 @@ class NewExpression(Expression):
         return []
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        return self._generate(resolver, pinned=False)
+
+    def generate_pinned(self, resolver: g.Resolver) -> g.OperationBundle:
+        """This construction, its object born pinned (`__builtin_op__("new_pinned", …)`)."""
+        return self._generate(resolver, pinned=True)
+
+    def _generate(self, resolver: g.Resolver, pinned: bool) -> g.OperationBundle:
         xtype = checked_cast(t.TupleSpec, self.parameter.get_type(resolver))
         ctype = checked_cast(t.ClassSpec, self.type)
         found = resolver.find_type(ctype.name)
@@ -89,12 +96,16 @@ class NewExpression(Expression):
 
         array_param = classstmt.array_field(resolver)
         if array_param is not None:
+            # The fill pins the array itself and releases it when the last
+            # element is in; a caller-held pin would be released under it.
+            if pinned:
+                raise AssertionError(f"new_pinned: {cname} is an array class; its fill already pins it")
             return params_bundle + self.__generate_array(
                 resolver, classstmt, array_param, cname, params_var, params_bundle.result_var, result_var)
 
         fields = classstmt.get_fields(resolver)
         ops = ( ( cg_o.Move(params_var, params_bundle.result_var),
-                  cg_o.NewObject(cname, result_var) )
+                  cg_o.NewObject(cname, result_var, pinned=pinned) )
                + tuple(cg_o.Move(cg_p.ObjectField(x.get_type().generate(resolver), result_var, cname, x.name, None, fresh=True), cg_p.StructField(params_var, f"_{index}")) for index, x in enumerate(fields))
         )
 
@@ -127,7 +138,13 @@ class NewExpression(Expression):
 
         ops: list[cg_o.Op] = [
             cg_o.Move(params_var, params_value),
-            cg_o.NewObject(cname, result_var, size=length),   # array_create(vtable, length)
+            # Born PINNED, held to the end of the fill loop. The init call may
+            # suspend, parking the half-built array in a heap state object
+            # where no stack reference keeps compaction off it; the resumed
+            # loop then reloads that address and stores into it, so a
+            # relocation would split the elements between the stale original
+            # and the copy.
+            cg_o.NewObject(cname, result_var, size=length, pinned=True),
         ]
         # Scalar fields (everything except the array field itself).
         for i, p in enumerate(params):
@@ -141,6 +158,8 @@ class NewExpression(Expression):
         # SSA-shaped — the counter is a head Phi over the entry value (0) and the
         # back-edge value (i+1); both labels live in this one bundle so codegen's
         # jump↔label pairing keeps them matched under the caller's prefixing.
+        unpin_var = cg_p.StackVar(cg_t.DataPointer(), "fillunpin")
+
         i_var = cg_p.StackVar(cg_t.Int(32), "filli")
         i_next = cg_p.StackVar(cg_t.Int(32), "fillinext")
         elem_var = cg_p.StackVar(elem_ctype, "fillelem")
@@ -155,16 +174,24 @@ class NewExpression(Expression):
             cg_o.Jump(end),
             cg_o.Label(body),
             cg_o.Call(init_fn, cg_p.NewStruct((("_0", i_var),)), elem_var),
-            # fresh: each element is written exactly once and its prior value is the
-            # allocator's NULL — the SATB deletion barrier is provably a no-op.
-            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var, fresh=True), elem_var),
+            # NOT fresh, although each element is written once over the
+            # allocator's NULL: the init call runs safe points between the
+            # allocation and this store, so the array can leave its nursery
+            # (root scan, promotion) mid-fill, and an element allocated after
+            # that is a new object stored into an older one. Only the barrier
+            # tells the nursery about that edge; without it the element is
+            # freed while the array still holds it (stdlib_tests, RRBTree).
+            cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var, fill=True), elem_var),
             cg_o.Move(i_next, incr),
             cg_o.Label(back),
             cg_o.Jump(head),
             cg_o.Label(end),
+            # Every element is in: the array may move from here on.
+            cg_o.Move(unpin_var, cg_p.RuntimeInvoke(
+                "object_unpin", cg_p.NewStruct((("o", result_var),)), cg_t.DataPointer()), keep=True),
         ]
         return g.OperationBundle(
-            stack_vars=(params_var, result_var, i_var, i_next, elem_var),
+            stack_vars=(params_var, result_var, unpin_var, i_var, i_next, elem_var),
             operations=tuple(ops),
             result_var=result_var)
 
@@ -238,6 +265,13 @@ class NewEnumExpression(Expression):
             type_params=rw.seq(self.type_params, resolver, replace))
 
     def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        return self._generate(resolver, pinned=False)
+
+    def generate_pinned(self, resolver: g.Resolver) -> g.OperationBundle:
+        """This construction, its object born pinned (`__builtin_op__("new_pinned", …)`)."""
+        return self._generate(resolver, pinned=True)
+
+    def _generate(self, resolver: g.Resolver, pinned: bool) -> g.OperationBundle:
         types = resolver.find_type(self.root_spec_name)
         assert len(types) == 1
         root_stmt = checked_cast(s.EnumStatement, types[0].statement)
@@ -247,5 +281,5 @@ class NewEnumExpression(Expression):
         # owns the construction; it generates the field-arg expressions in its
         # own order, so the emitted C stays byte-identical.
         return union_repr.classify(root_spec, resolver).construct_enum_value(
-            self.leaf_name, self.field_args, resolver)
+            self.leaf_name, self.field_args, resolver, pinned=pinned)
 

@@ -165,7 +165,7 @@ static object_t* buf_alloc(int64_t used, bool grow) {
     total = (total + GC_ALLOC_GRANULE - 1) / GC_ALLOC_GRANULE * GC_ALLOC_GRANULE;
     int64_t cap = total - overhead;
     if (cap > (int64_t)STR_META_LEN_MASK) cap = STR_META_LEN_MASK;
-    str_head_t* b = (str_head_t*)array_create((vtable_t*)&STR_BUF_VTABLE, (int32_t)cap + 1);
+    str_head_t* b = (str_head_t*)array_create((vtable_t*)&STR_BUF_VTABLE, (int32_t)cap + 1, false);
     b->capacity = (uint32_t)cap + 1;      // array_cap_offset
     atomic_store_explicit(&b->hash, 0, memory_order_relaxed);
     b->length = (uint32_t)used + 1;       // used: the GC's view of the object
