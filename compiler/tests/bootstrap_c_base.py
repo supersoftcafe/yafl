@@ -151,7 +151,7 @@ def _terminated(p: Path) -> str:
 
 
 def _run_port_c(binary: str, text: str, mode: str = "c") -> str:
-    r = subprocess.run([binary, mode], input=text, capture_output=True,
+    r = subprocess.run([binary, "--stage", mode], input=text, capture_output=True,
                        timeout=600, text=True, env=_RUN_ENV)
     return r.stdout
 

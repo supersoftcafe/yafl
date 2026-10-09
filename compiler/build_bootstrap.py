@@ -31,17 +31,19 @@ _BOOT_DIR = _REPO / "bootstrap"
 DEFAULT_BINARY = _REPO / "build" / "ybootstrap"
 
 
-def build(out: Path, optimization_level: int = 1) -> Path:
-    """Compile the port to `out`. Returns the path written."""
+def build(out: Path, optimization_level: int = 1, c_output: Path | None = None) -> Path:
+    """Compile the port to `out`. Returns the path written. With `c_output`,
+    the emitted C is kept there too — the reference the self-compile at the
+    end of ctest must reproduce byte for byte."""
     sys.setrecursionlimit(5000)      # see compiler.py — the parser needs ~1.5k
     sys.path.insert(0, str(_HERE))
     import compiler as c
     from libraries import unit_name
     from tests.testutil import _CLANG_BUILD_FLAGS, static_link_for
 
-    # Named by path relative to bootstrap/ — `driver/main.yafl` — matching
-    # what selfcompile.py puts after each `#FILE#` marker. The two must agree
-    # or the self-compile stops comparing like with like.
+    # Named by path relative to bootstrap/ — `driver/main.yafl` — the names a
+    # compiler gives a project directory's units, so `ybootstrap bootstrap/`
+    # (selfcompile.py) compiles exactly these units under exactly these names.
     sources = sorted(_BOOT_DIR.rglob("*.yafl"),
                      key=lambda p: unit_name(p, _BOOT_DIR))
     if not sources:
@@ -54,6 +56,9 @@ def build(out: Path, optimization_level: int = 1) -> Path:
     if not c_code:
         raise SystemExit("bootstrap compilation produced no output (type errors?)")
     print(f"  {len(c_code):,} bytes of C; linking ...")
+    if c_output is not None:
+        c_output.parent.mkdir(parents=True, exist_ok=True)
+        c_output.write_text(c_code)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
@@ -100,6 +105,8 @@ def main(argv: list[str]) -> int:
                          "This selects WHICH COMPILER PIPELINE the port went "
                          "through, so it changes what is under test — unlike "
                          "the clang level it is not a free speed dial.")
+    ap.add_argument("--c-output", type=Path,
+                    help="also write the emitted C here")
     ap.add_argument("--refresh-references", action="store_true",
                     help="clear cached Python reference outputs and exit; the "
                          "reference cache is keyed on its input, not on a hash "
@@ -107,7 +114,7 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     if args.refresh_references:
         return refresh_references()
-    build(args.output, args.optimization_level)
+    build(args.output, args.optimization_level, args.c_output)
     return 0
 
 

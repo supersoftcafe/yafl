@@ -4,11 +4,12 @@ from __future__ import annotations
 import contextlib
 import io
 import subprocess
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import _YAFLLIB_DIR
 
 import compiler as c
 from tests.testutil import compile_and_run, compile_and_run_stdlib
+from tests.testutil import compile_c
 
 
 def _compile_capturing_errors(source: str) -> tuple[str, str]:
@@ -577,7 +578,7 @@ fun main(): System::Int
   let l: System::List<System::Int> = System::prepend<System::Int>(1, empty)
   ret 0
 """
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertNotEqual("", result)
         # The Object name 'Chain@hash' is mangled to a C identifier.
         self.assertIn("Chain", result)

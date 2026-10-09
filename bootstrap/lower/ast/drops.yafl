@@ -104,7 +104,7 @@ fun drFnBody(f, b, r, insts: List<TraitInst>): DrS
   let changed = rewritten.deChanged || !isEmpty(drops) || bal.deChanged
   ret changed
     ? DrS(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, bal.deExpr, f.fRet,
-                f.fWheres, f.psfLine, f.fRetInferred, f.fNested, f.fImports),
+                f.fWheres, f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
           true)
     : DrS(f, false)
 

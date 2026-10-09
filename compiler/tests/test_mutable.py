@@ -13,14 +13,13 @@ The second is not theoretical: MemoRoot was silently flattened to a
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 def _compile(content: str) -> str:
-    return c.compile([c.Input(content, "file.yafl")], use_stdlib=True,
-                     just_testing=False, optimization_level=1)
+    return compile_c(content, "file.yafl", optimization_level=1)
 
 
 def _is_mutable_of(emitted: str, class_name: str) -> bool | None:

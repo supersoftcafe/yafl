@@ -21,9 +21,9 @@ unreachable `Never` arm with an `()` else.
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 _SRC = """
@@ -68,7 +68,7 @@ class TestErrorGrowingStream(TestCase):
         # The `where`-directed discharge binds E=Never for the One source, so the
         # grown stream's error channel is `Never | Bool`; the driver names that
         # type exactly and codegen produces valid C.
-        result = c.compile([c.Input(_SRC, "test.yafl")], use_stdlib=True)
+        result = compile_c(_SRC)
         self.assertNotEqual("", result)
 
     def test_compiles_and_runs(self):

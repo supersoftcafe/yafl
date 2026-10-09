@@ -12,14 +12,14 @@ and the runtime behaviour (every arm dispatches to the right value).
 """
 from __future__ import annotations
 
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
-import compiler as c
+from tests.testutil import compile_c
 from pyast import union_repr
 
 
 def _c_for(source: str) -> str:
-    out = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    out = compile_c(source)
     assert out, "compilation produced no output"
     return out
 
@@ -458,8 +458,7 @@ fun probe(s: Shade): Int
 fun main(): System::Int
   ret probe(Dark(1))
 """
-        out = c.compile([c.Input(src, "rootleaf.yafl")], use_stdlib=True,
-                        just_testing=False)
+        out = compile_c(src, "rootleaf.yafl")
         self.assertFalse(bool(out),
                          "a root-typed value must not pass a leaf parameter")
 

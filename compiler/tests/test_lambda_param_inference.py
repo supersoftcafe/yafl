@@ -1,6 +1,6 @@
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
-import compiler as c
 
 
 # A lambda already receives its expected *return* type from the enclosing call
@@ -23,7 +23,7 @@ class Test(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret apply((n: System::Int) => n, 5)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     def test_untyped_lambda_param_from_callee(self):
@@ -35,7 +35,7 @@ class Test(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret apply((n) => n, 5)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     def test_untyped_lambda_param_in_generic_map(self):
@@ -47,7 +47,7 @@ class Test(TestCase):
                    "    let l = prepend<System::Int>(1, List<System::Int>())\n"
                    "    let m = map<System::Int, System::Int>(l, (x) => x + 1)\n"
                    "    ret 0\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     def test_untyped_multi_param_lambda_in_fold(self):
@@ -59,5 +59,5 @@ class Test(TestCase):
                    "    let l = prepend<System::Int>(1, List<System::Int>())\n"
                    "    let s = fold<System::Int, System::Int>(l, 0, (acc, x) => acc + x)\n"
                    "    ret s\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)

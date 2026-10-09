@@ -14,10 +14,10 @@ select") or an indirect `fun.f(fun.o, i)` call. So, at -O3:
 """
 from __future__ import annotations
 
-import compiler as c
 
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 _DOT = """namespace Test
 import System
@@ -50,8 +50,7 @@ fun main(): Int
 
 
 def _emit_c(src: str, level: int = 3) -> str:
-    code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                     just_testing=False, optimization_level=level)
+    code = compile_c(src, optimization_level=level)
     assert code, "compilation failed"
     return code
 

@@ -561,11 +561,74 @@ fun paramShapeOf(ft: Spec|None) => match(ft)
 # converges its second entry toward `bias`, not toward index 1), and the whole
 # tuple then owns any box into a union.
 fun compileTuple(tp, r, expected: Spec|None)
+  if any(tp.exprs, (en) => en.tupSpread)
+    ret expandSpreads(tp, r, expected)
   let slots = entrySlots(tp, r, expected)
   let es = compileTupEnts(chain(tp.exprs), r, slots, 0, builder(),
                           List(), noHints())
   let out = PeTuple(es.teEntries, tp.petLine)
   ret ExprOut(converted(out, expected, r), es.teGlobals, es.teHints)
+
+# `*x` splices a tuple's fields in, positionally (names never travel through a
+# spread). Each spread value binds ONCE through a destructure, and the rebuilt
+# literal lists the bound fields in its place:
+#
+#     (1, *pair)   =>   { let _ = pair -> ($spread1$f0, $spread1$f1); (1, $spread1$f0, $spread1$f1) }
+#
+# Deferred — returned with its entries compiled but the spread kept — until
+# every spread value's tuple arity is known; the fixpoint retries.
+fun expandSpreads(tp: PeTuple, r, expected: Spec|None): ExprOut
+  let es = compileTupEnts(chain(tp.exprs), r, List(), 0, builder(), List(), noHints())
+  if any(es.teEntries, (en) => en.tupSpread && !isTupleSpec(exprType(en.tupValue, r)))
+    ret ExprOut(PeTuple(es.teEntries, tp.petLine), es.teGlobals, es.teHints)
+  let sp = spreadParts(chain(es.teEntries), r, 0, builder(), builder())
+  let block = PeBlock(sp.spBinders, PeTuple(sp.spEntries, tp.petLine), "", tp.petLine)
+  let out = compileExpr(block, r, expected)
+  ret ExprOut(out.eoExpr, concat(es.teGlobals, out.eoGlobals), out.eoHints)
+
+# Two levels: a Spec VARIANT cannot be an arm of `Spec|None` directly.
+fun isTupleSpec(t2: Spec|None) => match(t2)
+  (sp: Spec) => match(sp)
+    (st: STuple) => true
+    (o: Spec)    => false
+  ()         => false
+
+fun tupleArity(t2: Spec|None): Int => match(t2)
+  (sp: Spec) => match(sp)
+    (st: STuple) => chainLength(chain(st.stEntries))
+    (o: Spec)    => 0
+  ()         => 0
+
+class [final] SpreadParts(spBinders: List<PStmt>, spEntries: List<PTupEnt>)
+
+fun [tail] spreadParts(es: Chain<PTupEnt>, r, idx: Int,
+                       [terminal] binders: ListBuilder<PStmt>,
+                       [terminal] entries: ListBuilder<PTupEnt>): SpreadParts => match(es)
+  (nil: ChainEnd) => SpreadParts(build(binders), build(entries))
+  (l: ChainLink)  => !l.value.tupSpread
+    ? spreadParts(l.next, r, idx + 1, binders, push(entries, l.value))
+    : spreadOne(l.value.tupValue, spreadNames(l.value.tupValue, r, idx))
+      |> (binder, refs) => spreadParts(l.next, r, idx + 1, push(binders, binder),
+                                       pushAll(entries, refs))
+
+# `$spread<idx>$f<i>@<hash6 of the value's line>` — one per field.
+fun spreadNames(v: PExpr, r, idx: Int): List<String>
+  let lr = exprLine(v)
+  # expandSpreads has checked every spread value is a tuple.
+  let n = tupleArity(exprType(v, r))
+  ret fieldNames("$spread" + String(idx) + "$f", "@" + hash6(lr.plFile, lr.plLine, lr.plCol),
+                  0, n, builder())
+
+fun [tail] fieldNames(prefix: String, suffix: String, i: Int, n: Int,
+                      [terminal] acc: ListBuilder<String>): List<String>
+  ret i >= n ? build(acc) : fieldNames(prefix, suffix, i + 1, n, push(acc, prefix + String(i) + suffix))
+
+fun spreadOne(v: PExpr, names: List<String>): (binder: PStmt, refs: List<PTupEnt>)
+  let lr = exprLine(v)
+  ret (PsDestructure("_", List(), None,
+                     map(names, (nm) => PsLet(nm, List(), List(), None, None, "", List(), lr)),
+                     v, lr),
+       map(names, (nm) => PTupEnt("", false, PeName(nm, List(), lr, None))))
 
 class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>,
                          teHints: Dict<String, List<Hint>>)

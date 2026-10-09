@@ -22,19 +22,14 @@ What each test pins, and why:
   * arity — the grammar cannot check it, since it does not know the subject
     count; the check phase does.
 """
-import contextlib
-import io
 
-import compiler as c
 from tests.testutil import TimedTestCase, compile_and_run_stdlib
+from tests.testutil import compile_errors
 
 
 def _errors(src: str) -> str:
     """Diagnostics only — the same helper test_match_extensions uses."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return buf.getvalue()
+    return compile_errors(src)
 
 _SHAPES = """
 namespace Main

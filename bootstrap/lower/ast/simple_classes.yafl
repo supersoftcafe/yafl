@@ -464,7 +464,9 @@ fun [tail] scCuArms(as2: Chain<PArm>, acc) => match(as2)
   (l: ChainLink)  => scCuArms(l.next,
       scCuExprOpt(l.value.armGuard,
         scCuLits(chain(l.value.armLiterals),
-          scCuExpr(l.value.armBody, scCuSpecOpt(l.value.armType, acc)))))
+          scCuExpr(l.value.armBody,
+            fold(l.value.armExtra, scCuSpecOpt(l.value.armType, acc),
+                 (a2, p) => scCuSpecOpt(p.posType, a2))))))
 
 fun [tail] scCuExprs(es: Chain<PExpr>, acc) => match(es)
   (nil: ChainEnd) => acc
@@ -682,7 +684,7 @@ fun scLiftMethod(clsName, tupleSpec, method: PsFun)
   ret PsFun(clsName + "__" + method.fName, method.fAttrs, method.fGens,
             scPrependThis(method.fParams, tupleSpec, method.psfLine),
             scRenameBody(method.fBody), method.fRet, method.fWheres, method.psfLine,
-            method.fRetInferred, method.fNested, method.fImports)
+            method.fRetInferred, method.fNested, method.fImports, method.fGlobal)
 
 fun scLiftMembers(ms, clsName, tupleSpec,
                          acc: List<PStmt>): List<PStmt>
@@ -935,7 +937,7 @@ fun scTStmt(st, c: ScCtx, r): PStmt => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, scTStmt(f.fParams, c, r),
                        scTExprOpt(f.fBody, c, clFunBodyResolver(f, r)),
                        scTSpecOpt(f.fRet, c), scTSpecs(f.fWheres, c),
-                       f.psfLine, f.fRetInferred, f.fNested, f.fImports)
+                       f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, scTSpecOpt(l.lType, c),
                        scTExprOpt(l.lDefault, c, r), l.lArrayLen,
                        l.lWheres, l.pslLine, l.lTypeInferred, l.lImports)
@@ -1063,9 +1065,12 @@ fun [tail] scTArmsB(as2: Chain<PArm>, c: ScCtx, r,
   (l: ChainLink)  => scTArmsB(l.next, c, r,
       push(acc, scTArmOne(l.value, c, r)))
 
+# Every POSITION of a multi-subject arm is a pattern like position 0: its type
+# is rewritten too, and the body sees every position's binding.
 fun scTArmOne(a: PArm, c: ScCtx, r): PArm
-  let bodyR = bindingScope(a, a.armType, r)
-  ret with a(armType = scTSpecOpt(a.armType, c), armBody = scTExpr(a.armBody, c, bodyR), armLiterals = scTLits(chain(a.armLiterals), c, r, List()), armGuard = scTExprOpt(a.armGuard, c, bodyR))
+  let bodyR = extraScope(chain(a.armExtra), chain2(List()), bindingScope(a, a.armType, r))
+  ret with a(armType = scTSpecOpt(a.armType, c), armBody = scTExpr(a.armBody, c, bodyR), armLiterals = scTLits(chain(a.armLiterals), c, r, List()), armGuard = scTExprOpt(a.armGuard, c, bodyR),
+             armExtra = map(a.armExtra, (p) => with p(posType = scTSpecOpt(p.posType, c))))
 
 fun scTLits(ls, c: ScCtx, r,
                    acc: List<PLit>): List<PLit> => build(scTLitsB(ls, c, r, builderFrom(acc)))

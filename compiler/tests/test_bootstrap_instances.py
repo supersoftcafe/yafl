@@ -26,10 +26,10 @@ import re
 import subprocess
 from pathlib import Path
 
-import compiler as c
 
 from tests.testutil import stdlib_files, stdlib_unit_name, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
+from tests.testutil import compile_c
 
 _REPO = Path(__file__).parent.parent.parent
 _STDLIB = stdlib_files()
@@ -67,9 +67,8 @@ class TestBootstrapInstances(TestCase):
                                 "in test_instance_stmt were renamed?")
         for name, src in sorted(cases.items()):
             with self.subTest(case=name):
-                py = c.compile([c.Input(src, "case.yafl")], use_stdlib=True,
-                               just_testing=False, optimization_level=1)
-                r = subprocess.run([self.binary, "c1"], input=_stream(src),
+                py = compile_c(src, "case.yafl", optimization_level=1)
+                r = subprocess.run([self.binary, "--stage", "c1"], input=_stream(src),
                                    capture_output=True, timeout=600, text=True,
                                    env=_RUN_ENV)
                 port_ok = r.returncode == 0
@@ -89,11 +88,10 @@ class TestBootstrapInstances(TestCase):
                               ("_NOT_AMBIENT_ERR", "tagOf")):
             with self.subTest(case=const):
                 src = getattr(m, const)
-                py = c.compile([c.Input(src, "case.yafl")], use_stdlib=True,
-                               just_testing=False, optimization_level=1)
+                py = compile_c(src, "case.yafl", optimization_level=1)
                 self.assertFalse(py, f"{const}: python accepted it")
 
-                r = subprocess.run([self.binary, "c1"], input=_stream(src),
+                r = subprocess.run([self.binary, "--stage", "c1"], input=_stream(src),
                                    capture_output=True, timeout=600, text=True,
                                    env=_RUN_ENV)
                 self.assertNotEqual(0, r.returncode, f"{const}: port accepted it")

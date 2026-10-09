@@ -7,11 +7,9 @@ Regression for that gap: `MatchExpression.check` didn't check `self.subject`.
 """
 from __future__ import annotations
 
-import io
-import contextlib
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c_result
 
 
 class TestMatchSubjectChecked(TestCase):
@@ -21,13 +19,11 @@ class TestMatchSubjectChecked(TestCase):
                "fun main(): System::Int\n"
                "  ret match(undefinedFunc(1))\n"
                "    (x: System::Int) => x\n")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            # Must NOT raise: the bug slipped an unresolved subject into codegen,
-            # where it crashed casting a None type to CallableSpec.
-            result = c.compile([c.Input(src, "t.yafl")], use_stdlib=True)
+        # Must NOT crash: the bug slipped an unresolved subject into codegen,
+        # where it crashed casting a None type to CallableSpec.
+        r = compile_c_result(src, "t.yafl")
         # Clean failure: no C emitted, and the diagnostic names the unresolved call.
-        self.assertEqual("", result)
-        out = buf.getvalue()
+        self.assertEqual((1, ""), (r.rc, r.c))
+        out = r.stdout
         self.assertIn("resolve", out.lower())
         self.assertIn("undefinedFunc", out)

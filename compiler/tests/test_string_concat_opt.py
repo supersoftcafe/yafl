@@ -7,9 +7,9 @@ long enough to exercise the 16-operand runtime-cap chunking.
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 class TestStringConcatFlattening(TestCase):
@@ -26,8 +26,7 @@ class TestStringConcatFlattening(TestCase):
         rc, out = compile_and_run_stdlib_capture(src, optimization_level=3)
         self.assertEqual("[alpha=42][beta=7]!", out)
         self.assertEqual(len("[alpha=42][beta=7]!"), rc)
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                           just_testing=True, optimization_level=3)
+        c_code = compile_c(src, optimization_level=3)
         self.assertIn("str_concat_n", c_code)
 
     def test_long_chain_chunks_past_runtime_cap(self):

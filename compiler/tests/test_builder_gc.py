@@ -29,9 +29,9 @@ import os
 import subprocess
 import tempfile
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV, static_link_for
+from tests.testutil import compile_c
 
 _LONG_SRC = (
     'import System\n'
@@ -107,8 +107,7 @@ _SUSPEND_SRC = (
 
 class TestBuilderGc(TestCase):
     def _build(self, src: str, level: int) -> str:
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                           just_testing=True, optimization_level=level)
+        c_code = compile_c(src, optimization_level=level)
         with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
             binary = tmp.name
         built = subprocess.run(

@@ -1,0 +1,170 @@
+# bootstrap/regexes.yafl — lowering/regexes.py: regex literal interning and
+# compile-time validation.
+#
+# Every `re"..."` literal is VALIDATED (a pattern syntax error is a build
+# error, naming the offending position) and rewritten to a reference to one
+# shared global per DISTINCT pattern:
+#
+#     let $regexes::regex@N: System::Regex = Regex("pattern")
+#
+# Identical literals dedup, and a literal inside a loop never reconstructs its
+# Regex: the global's non-trivial initialiser auto-promotes to `[lazy]`, so
+# each pattern compiles once per process, on first use. Runs BEFORE the
+# convergence loop — the created globals need typing like any other statement.
+#
+# The validator accepts exactly the v1 engine grammar (stdlib/regex.yafl).
+# Backreferences are rejected outright: the engine guarantees linear time,
+# which backreferences preclude.
+namespace Bootstrap::Lower::Ast
+
+import System
+
+import Bootstrap::Ast
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+class [final] RegexLowering(rlStmts: List<PStmt>, rlErrs: Set<PErr>)
+
+fun fixGlobalRegexes(statements: List<PStmt>): RegexLowering
+  let found = foldStmts(statements, rxIdNames, rxCollect, List<PeRegex>())
+  if isEmpty(found)
+    ret RegexLowering(statements, Set())
+  # Sorted before numbering, like $strings: discovery order must never reach
+  # the generated names.
+  let patterns = sort(Set(map(found, (r) => r.pattern)))
+  let errs = rxErrors(chain(patterns), found, Set())
+  if !isEmpty(errs)
+    ret RegexLowering(statements, errs)
+  ret RegexLowering(concat(rxGlobals(chain(patterns), 0, builder()),
+                           rwStmts(statements, rwOnExpr((x) => rxReplace(x, patterns)))),
+                    Set())
+
+fun rxIdNames(acc, st: PStmt): List<PeRegex> => acc
+
+# First-seen literal per pattern: its line is where an invalid pattern is
+# reported (`found.setdefault`).
+fun rxCollect(acc: List<PeRegex>, x) => match(x)
+  (r: PeRegex) => any(acc, (seen) => seen.pattern == r.pattern) ? acc : concat(acc, list1(r))
+  (o: PExpr)   => acc
+
+fun [tail] rxErrors(ps: Chain<String>, found: List<PeRegex>, acc: Set<PErr>): Set<PErr> => match(ps)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(validateRegex(l.value))
+    (msg: String) => rxErrors(l.next, found,
+        add(acc, PErr(firstLine(chain(found), l.value), "invalid regex: " + msg)))
+    ()            => rxErrors(l.next, found, acc)
+
+fun [tail] firstLine(rs: Chain<PeRegex>, pattern: String): PLine => match(rs)
+  (nil: ChainEnd) => PLine("", 0, 0)   # unreachable: every pattern came from `found`
+  (l: ChainLink)  => l.value.pattern == pattern ? l.value.perLine : firstLine(l.next, pattern)
+
+fun regexLine(index: Int) => PLine("$regexes", index + 1, 1)
+
+fun [tail] rxGlobals(ps: Chain<String>, index: Int,
+                     [terminal] acc: ListBuilder<PStmt>): List<PStmt> => match(ps)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => rxGlobals(l.next, index + 1, push(acc,
+      PsLet("$regexes::regex@" + String(index), List(), List(),
+            SNamed("System::Regex", List(), regexLine(index)),
+            PeCall(PeName("System::Regex", List(), regexLine(index), None),
+                   PeTuple(list1(PTupEnt("", false, PeStr(l.value, regexLine(index)))),
+                           regexLine(index)),
+                   regexLine(index)),
+            "", List(), regexLine(index), false, List<PStmt>())))
+
+fun rxReplace(x, patterns: List<String>) => match(x)
+  (r: PeRegex) => PeName("$regexes::regex@" + String(rxIndexOf(chain(patterns), r.pattern, 0)),
+                         List(), regexLine(rxIndexOf(chain(patterns), r.pattern, 0)), None)
+  (o: PExpr)   => None
+
+fun [tail] rxIndexOf(ps: Chain<String>, p: String, i: Int): Int => match(ps)
+  (nil: ChainEnd) => -1
+  (l: ChainLink)  => l.value == p ? i : rxIndexOf(l.next, p, i + 1)
+
+
+# ── the v1 grammar ───────────────────────────────────────────────────────────
+# None when `pattern` is valid, else the first problem. Positions are in
+# CHARACTERS from 0, as Python's `str` indexes them, so a pattern holding
+# non-ASCII text reports the same position from both compilers.
+
+fun validateRegex(pattern: String): String|None => rxScan(pattern, 0, 0, false)
+
+fun rxPos(pattern: String, at: Int) => String(codepointCount(slice(pattern, 0, at)))
+
+fun isDigitByte(c) => c >= '0' && c <= '9'
+
+fun isClassEscape(c) => c == 'd' || c == 'D' || c == 'w' || c == 'W' || c == 's' || c == 'S'
+
+fun isControlEscape(c) => c == 'n' || c == 'r' || c == 't' || c == '0'
+
+fun isPunctEscape(c) => containsByte("\\.^$|?*+()[]{}-/\"' ", c)
+
+# `depth`: open groups. `quantifiable`: a quantifier here has something to
+# repeat.
+fun [tail] rxScan(p: String, at: Int, depth: Int, quantifiable: Bool): String|None
+  if at >= length(p)
+    ret depth != 0 ? "unclosed group" : None
+  let c = byteAt(p, at)
+  if c == '\\'
+    ret rxEscape(p, at, depth)
+  if c == '['
+    ret rxClass(p, at, depth)
+  if c == '('
+    ret startsWith(slice(p, at, length(p)), "(?:") ? rxScan(p, at + 3, depth + 1, false)
+      : startsWith(slice(p, at, length(p)), "(?")
+        ? "unsupported group flavour at " + rxPos(p, at) + " (only capturing `(` and `(?:` exist)"
+        : rxScan(p, at + 1, depth + 1, false)
+  if c == ')'
+    ret depth == 0 ? "unbalanced ')' at " + rxPos(p, at) : rxScan(p, at + 1, depth - 1, true)
+  if c == '*' || c == '+' || c == '?'
+    ret !quantifiable
+      ? "quantifier '" + asciiToString(c) + "' at " + rxPos(p, at) + " has nothing to repeat"
+      : rxScan(p, at + 1 < length(p) && byteAt(p, at + 1) == '?' ? at + 2 : at + 1,
+               depth, false)
+  if c == '{'
+    ret "counted repetition at " + rxPos(p, at) + " is not supported in v1 (expand it, or use * + ?)"
+  if c == '|' || c == '^' || c == '$'
+    ret rxScan(p, at + 1, depth, false)
+  # One CHARACTER: its UTF-8 continuation bytes are part of it.
+  ret rxScan(p, nextChar(p, at + 1), depth, true)
+
+fun [tail] nextChar(p: String, at: Int): Int => at < length(p) && isContinuation(byteAt(p, at))
+  ? nextChar(p, at + 1) : at
+
+# 10xxxxxx: the second and later bytes of a UTF-8 sequence.
+fun isContinuation(c) => c >= 128i32 && c < 192i32
+
+fun rxEscape(p: String, at: Int, depth: Int): String|None
+  if at + 1 >= length(p)
+    ret "dangling backslash at " + rxPos(p, at)
+  let n = byteAt(p, at + 1)
+  if isDigitByte(n)
+    ret "backreference \\" + asciiToString(n) + " at " + rxPos(p, at)
+        + " — not supported: the engine guarantees linear-time matching, which backreferences preclude"
+  if !isClassEscape(n) && !isControlEscape(n) && !isPunctEscape(n)
+    ret "unknown escape \\" + slice(p, at + 1, nextChar(p, at + 2)) + " at " + rxPos(p, at)
+  ret rxScan(p, at + 2, depth, true)
+
+# `[...]`: optional `^`, a leading `]` is a literal, escapes skip a byte.
+fun rxClass(p: String, at: Int, depth: Int): String|None
+  let afterCaret = at + 1 < length(p) && byteAt(p, at + 1) == '^' ? at + 2 : at + 1
+  let bodyStart = afterCaret < length(p) && byteAt(p, afterCaret) == ']' ? afterCaret + 1 : afterCaret
+  ret match(classEnd(p, bodyStart))
+    (why: String) => why
+    (j: Int)      => j >= length(p)
+      ? "unclosed character class starting at " + rxPos(p, at)
+      : j == at + 1 || (byteAt(p, at + 1) == '^' && j == at + 2)
+        ? "empty character class at " + rxPos(p, at)
+        : rxScan(p, j + 1, depth, true)
+
+fun [tail] classEnd(p: String, j: Int): Int|String
+  if j >= length(p) || byteAt(p, j) == ']'
+    ret j
+  if byteAt(p, j) != '\\'
+    ret classEnd(p, j + 1)
+  if j + 1 >= length(p)
+    ret "dangling backslash at " + rxPos(p, j)
+  if isDigitByte(byteAt(p, j + 1))
+    ret "backreference in class at " + rxPos(p, j) + " — not supported"
+  ret classEnd(p, j + 2)

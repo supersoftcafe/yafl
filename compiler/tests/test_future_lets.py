@@ -8,12 +8,10 @@ timing overlaps. Structural tests only (no timing assertions — shared host).
 """
 from __future__ import annotations
 
-import io
-import contextlib
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib
+from tests.testutil import compile_c
 
 _HDR = "namespace Main\nimport System\n"
 
@@ -31,9 +29,7 @@ fun main(): System::Int
   let [future] a = double(21)
   ret a
 """
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            c_code = c.compile([c.Input(src, "t.yafl")], use_stdlib=True, just_testing=False)
+        c_code = compile_c(src, "t.yafl")
         self.assertIn("future_post", c_code)
 
     def test_basic_read(self):

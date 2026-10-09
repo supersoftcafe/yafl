@@ -121,7 +121,7 @@ class TestBootstrapSimple(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_simple(text).splitlines()
-                r = subprocess.run([self.binary, "simple"], input=text,
+                r = subprocess.run([self.binary, "--stage", "simple"], input=text,
                                    capture_output=True, timeout=240, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,

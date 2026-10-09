@@ -13,9 +13,9 @@ compile.
 """
 from __future__ import annotations
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 _MUTUAL = """
@@ -45,9 +45,7 @@ class TestInlineRecursionGuard(TestCase):
     def test_mutually_recursive_one_liners_compile(self):
         for level in (0, 1):
             with self.subTest(optimization_level=level):
-                self.assertNotEqual("", c.compile([c.Input(_MUTUAL, "test.yafl")],
-                                                  use_stdlib=True,
-                                                  optimization_level=level))
+                self.assertNotEqual("", compile_c(_MUTUAL, optimization_level=level))
 
     def test_mutual_recursion_still_computes(self):
         rc, out = compile_and_run_stdlib_capture(_MUTUAL)

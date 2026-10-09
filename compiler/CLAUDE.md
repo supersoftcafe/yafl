@@ -4,17 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-**Run every gate (build, ctest, -O3 port build, examples, timed self-compile):**
+**Run every correctness gate (build, ctest, examples):**
 ```bash
-python3 ../full_protocol.py          # ~2.5h; one line per stage, logs under build/protocol-runs/
+python3 ../full_protocol.py                   # against the port; logs under build/protocol-runs/
+python3 ../full_protocol.py --compiler python # against the Python compiler
 ```
 This is the full protocol, and what CI runs. Prefer it over running the pieces
-by hand before a commit.
+by hand before a commit. Speed is measured separately, afterwards:
+`python3 ../speed_protocol.py` (-O3 port build + timed self-compiles).
 
 **Run all tests:**
 ```bash
-python -m unittest discover
+YAFL_BOOTSTRAP_BIN=../build/ybootstrap YAFL_LIBYAFL_A=../build/yafllib/libyafl.a \
+PYTHONHASHSEED=0 unittest-parallel -j 0 -s tests -t .   # YAFL_COMPILER=python for the Python compiler
 ```
+Behaviour tests belong in a YAFL `[test]` folder (`yafl_tests/`, `stdlib_tests/`),
+built into one test binary per folder by the compiler under test.
 
 **Run a single test:**
 ```bash
@@ -22,9 +27,10 @@ python -m unittest test_compiler.Test.test_add
 python -m unittest test_parser.Test.test_parse_simple_named_type
 ```
 
-**Compile a yafl file:**
+**Compile a yafl file** — either compiler, the same command line:
 ```bash
-python main.py [-O 0|1|2|3] [--profile] [-c out.c] [-a out.s] [-o binary] input.yafl
+python main.py [-O 0|1|2|3] [--profile] [-c out.c] [-a out.s] [-o binary] [-L libdir] [--test] input.yafl|dir
+../build/ybootstrap [-O 0|1|2|3] ... (identical arguments; finds System via -L or YAFL_PATH, e.g. -L ../build/stage)
 ```
 Output is C code piped through `clang` (requires `libyafl` at link time). Use `-c` to emit C without linking. `--profile` instruments the whole program (exact call counters + sampled CPU time; the binary writes `callgrind.out.<pid>` + `.folded` at exit — see `docs/profiling-design.md`). Heap profiling: `YAFL_HEAPPROF=<path>` makes any binary write a live-heap census (massif format); adding `YAFL_HEAPPROF_SAMPLE=<bytes>` in a `--profile` binary also writes a pprof `inuse_space` profile by allocation site — see `docs/heap-profiling-design.md`.
 

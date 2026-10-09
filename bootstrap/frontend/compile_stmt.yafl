@@ -208,7 +208,7 @@ fun compileFun(f: PsFun, r0): StmtOut
     ()           => declaredRet
   ret StmtOut(PsFun(f.fName, f.fAttrs, f.fGens, finalParams,
                     exprOf(body), finalRet, wheres.psSpecs, f.psfLine,
-                    inferredNow, f.fNested, f.fImports),
+                    inferredNow, f.fNested, f.fImports, f.fGlobal),
               concat(globalsOf(body),
                      concat(globalsOfSpec(ret2),
                             concat(params.soExtra, wheres.psGlobals))),
@@ -341,7 +341,7 @@ fun stripOwnerWheres(ms, wheres: List<Spec>): List<PStmt>
 fun strippedWhereFn(m) => match(m)
   (f: PsFun) => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
                       f.fRet, List(), f.psfLine, f.fRetInferred,
-                      f.fNested, f.fImports)
+                      f.fNested, f.fImports, f.fGlobal)
   (o: PStmt) => m
 
 fun resolvedImplements(fs: Chain<FoundClass>, acc: List<Spec>)

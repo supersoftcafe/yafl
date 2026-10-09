@@ -72,7 +72,7 @@ class TestBootstrapProject(TestCase):
         env = dict(os.environ)
         env["YAFL_PATH"] = str(yafl_path)
         stream = f"#FILE# prog.yafl\n{source}"
-        p = subprocess.run([str(self.binary), mode], input=stream, env=env,
+        p = subprocess.run([str(self.binary), "--stage", mode], input=stream, env=env,
                            capture_output=True, text=True, timeout=900)
         return p.returncode, p.stdout
 
@@ -396,7 +396,7 @@ class TestBootstrapProject(TestCase):
             env = dict(os.environ)
             env["YAFL_PATH"] = str(root)
             env["TMPDIR"] = str(port_tmp)
-            p = subprocess.run([str(self.binary), "linkspec"],
+            p = subprocess.run([str(self.binary), "--stage", "linkspec"],
                                input=f"#FILE# prog.yafl\n{self._USES_GREET}",
                                env=env, capture_output=True, text=True, timeout=900)
             self.assertEqual(0, p.returncode, p.stdout[:800])

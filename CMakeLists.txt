@@ -39,6 +39,17 @@ add_custom_target(package_system_library ALL
 # Installed as a single .yl zip: ${prefix}/lib/yafl/system.yl
 install(FILES ${YAFL_SYSTEM_YL} DESTINATION lib/yafl)
 
+# System::Test — the `--test` runner — ships beside System, staged and installed
+# the same way. Before this an installed compiler could not build a test binary
+# at all: only the from-source Python compiler found it, through its dev
+# fallback into compiler/libs/.
+set(YAFL_STAGE_DIR ${CMAKE_BINARY_DIR}/stage)
+add_custom_target(stage_system_test ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/compiler/libs/system-test ${YAFL_STAGE_DIR}/system-test
+    COMMENT "Staging the System::Test library")
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/compiler/libs/system-test DESTINATION lib/yafl)
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # The Python compiler suite is registered as a CTest test, run against the
 # runtime archive THIS build produced (via YAFL_LIBYAFL_A) so it never picks up a
@@ -61,14 +72,36 @@ endif()
 # (~10 minutes) while the rest blocked on a lock serialised the parallel run.
 # It is produced once here, as a fixture the suite depends on.
 set(YAFL_BOOTSTRAP_BIN ${CMAKE_BINARY_DIR}/ybootstrap)
+# The C the Python compiler emitted for the port — kept for the self-compile
+# at the end, which must reproduce it byte for byte.
+set(YAFL_BOOTSTRAP_C ${CMAKE_BINARY_DIR}/ybootstrap.c)
 add_test(NAME bootstrap_binary
     COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
             PYTHONHASHSEED=0
             ${Python3_EXECUTABLE} build_bootstrap.py -o ${YAFL_BOOTSTRAP_BIN}
+            --c-output ${YAFL_BOOTSTRAP_C}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
 set_tests_properties(bootstrap_binary PROPERTIES
     TIMEOUT 3600
     FIXTURES_SETUP bootstrap_bin)
+
+# THE COMPILER UNDER TEST. The port and the Python compiler have parity, so
+# either is a drop-in replacement for the other: every behaviour test — the
+# Python suite's compile-and-run tests and the YAFL `[test]` folders — runs
+# against the one chosen here, through its command line.
+#
+#   cmake -B build -DYAFL_TEST_COMPILER=python
+set(YAFL_TEST_COMPILER port CACHE STRING
+    "Compiler the behaviour tests drive: port (build/ybootstrap) or python (main.py)")
+set_property(CACHE YAFL_TEST_COMPILER PROPERTY STRINGS port python)
+if(YAFL_TEST_COMPILER STREQUAL "port")
+    set(YAFL_TEST_COMPILER_CMD ${YAFL_BOOTSTRAP_BIN})
+elseif(YAFL_TEST_COMPILER STREQUAL "python")
+    set(YAFL_TEST_COMPILER_CMD ${CMAKE_COMMAND} -E env PYTHONHASHSEED=0
+                               ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/compiler/main.py)
+else()
+    message(FATAL_ERROR "YAFL_TEST_COMPILER must be port or python, not '${YAFL_TEST_COMPILER}'")
+endif()
 
 # PYTHONHASHSEED=0 is REQUIRED, not a nicety: the seven test_bootstrap_c_*
 # modules assert it in setUpClass and error out without it. Because that is a
@@ -79,6 +112,7 @@ set_tests_properties(bootstrap_binary PROPERTIES
 add_test(NAME compiler_suite
     COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
             YAFL_BOOTSTRAP_BIN=${YAFL_BOOTSTRAP_BIN}
+            YAFL_COMPILER=${YAFL_TEST_COMPILER}
             PYTHONHASHSEED=0 ${YAFL_SUITE_CMD}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
 # `unittest-parallel` exits 0 even when it discovers *zero* tests (printing
@@ -95,53 +129,62 @@ set_tests_properties(compiler_suite PROPERTIES
 
 set_tests_properties(compiler_suite PROPERTIES FIXTURES_REQUIRED bootstrap_bin)
 
-# THE SELF-COMPILE, LAST. The suite says the compiler is correct on small
-# programs; this says it survives the real one — its own sources, the hardest
-# input there is. It reaches codegen paths, GC behaviour under a compiler-sized
-# workload and any residual nondeterminism that small programs never touch, so
-# a failure here with a green suite means the problem only appears at scale.
-# RUN_SERIAL because it wants the machine (and a compiler-sized heap) to itself.
+
+# ── unit tests written in YAFL ───────────────────────────────────────────────
+# A folder of `.yafl` files holding `[test]` functions becomes ONE test binary
+# (`--test`), built by the compiler under test against the staged libraries.
+# Each file is its own unit with its own namespace: a compile error names its
+# file, and the runner runs — and can select — each test on its own.
+#
+#   compiler/stdlib_tests/  the stdlib. OUTSIDE compiler/stdlib/ deliberately:
+#                           the System library is every file in that directory,
+#                           so a test there would be carried by every program.
+#   compiler/yafl_tests/    the compiler: behaviour checked by running code.
+#
+# Two steps, because building the binary and running it fail for different
+# reasons and should be told apart: a compile error in the tests is not the
+# same event as a regression.
+function(yafl_test_folder name folder)
+    set(bin ${CMAKE_BINARY_DIR}/${name})
+    add_test(NAME ${name}_build
+        COMMAND ${YAFL_TEST_COMPILER_CMD} -O0 -L ${YAFL_STAGE_DIR} --test
+                -o ${bin} ${folder}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
+    set_tests_properties(${name}_build PROPERTIES
+        TIMEOUT 3600
+        FIXTURES_REQUIRED bootstrap_bin
+        FIXTURES_SETUP ${name}_bin)
+    add_test(NAME ${name} COMMAND ${bin})
+    set_tests_properties(${name} PROPERTIES
+        TIMEOUT 600
+        FIXTURES_REQUIRED ${name}_bin
+        # The runner exits 0 only when every test passed, but a binary that ran
+        # NOTHING would also exit 0 — the same hole the compiler_suite guard
+        # closes. Require at least ONE pass: `[0-9]+` would match "0 passed,
+        # 0 failed", which is precisely the case this is here to catch.
+        PASS_REGULAR_EXPRESSION "[1-9][0-9]* passed, 0 failed")
+endfunction()
+
+yafl_test_folder(stdlib_tests stdlib_tests)
+yafl_test_folder(yafl_tests yafl_tests)
+
+# ── THE SELF-COMPILE, LAST ───────────────────────────────────────────────────
+# ONE self-compile, after everything else. The suite says the compiler is
+# correct on small programs; this says it survives the real one — its own
+# sources, the hardest input there is — and the check is the strongest one
+# available: the port compiles its own sources through its command line and
+# must emit, byte for byte, the C the PYTHON compiler emitted for the same
+# sources when it built the port at the start. RUN_SERIAL because it wants the
+# machine (and a compiler-sized heap) to itself.
 add_test(NAME self_compile
-    COMMAND ${CMAKE_COMMAND} -E env YAFL_BOOTSTRAP_BIN=${YAFL_BOOTSTRAP_BIN}
-            ${Python3_EXECUTABLE} selfcompile.py
+    COMMAND ${Python3_EXECUTABLE} selfcompile.py --binary ${YAFL_BOOTSTRAP_BIN}
+            -L ${YAFL_STAGE_DIR} --expect ${YAFL_BOOTSTRAP_C}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
 set_tests_properties(self_compile PROPERTIES
     TIMEOUT 14400
     RUN_SERIAL TRUE
     FIXTURES_REQUIRED bootstrap_bin
-    DEPENDS compiler_suite)
-
-# ── stdlib unit tests, written in YAFL ───────────────────────────────────────
-# compiler/stdlib_tests/ holds `[test]` functions exercising the stdlib. They
-# live OUTSIDE compiler/stdlib/ deliberately: the System library is assembled
-# from every file in that directory as ONE library, so a test file there would
-# be parsed into every compilation in the tree — every application paying to
-# carry tests it never runs. APPLICATION code should keep its tests beside the
-# source they test, even in the same file; a library cannot, for this reason.
-#
-# Two steps, because building the binary and running it fail for different
-# reasons and should be told apart: a compile error in the tests is not the
-# same event as a stdlib regression.
-set(YAFL_STDLIB_TESTS_BIN ${CMAKE_BINARY_DIR}/stdlib_tests)
-add_test(NAME stdlib_tests_build
-    COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
-            PYTHONHASHSEED=0
-            ${Python3_EXECUTABLE} main.py -O0 --test
-            -o ${YAFL_STDLIB_TESTS_BIN} stdlib_tests
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
-set_tests_properties(stdlib_tests_build PROPERTIES
-    TIMEOUT 3600
-    FIXTURES_SETUP stdlib_tests_bin)
-
-add_test(NAME stdlib_tests COMMAND ${YAFL_STDLIB_TESTS_BIN})
-set_tests_properties(stdlib_tests PROPERTIES
-    TIMEOUT 600
-    FIXTURES_REQUIRED stdlib_tests_bin
-    # The runner exits 0 only when every test passed, but a binary that ran
-    # NOTHING would also exit 0 — the same hole the compiler_suite guard
-    # closes. Require at least ONE pass: `[0-9]+` would match "0 passed, 0
-    # failed", which is precisely the case this is here to catch.
-    PASS_REGULAR_EXPRESSION "[1-9][0-9]* passed, 0 failed")
+    DEPENDS "compiler_suite;stdlib_tests;yafl_tests")
 
 # Convenience: `cmake --build build --target check` builds everything (so the
 # runtime archive and the C test executables exist) then runs the whole CTest set.

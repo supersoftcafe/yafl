@@ -13,10 +13,10 @@ import tempfile
 import os
 from pathlib import Path
 
-import compiler as c
 
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 _CHAIN = """namespace Test
 import System
@@ -38,8 +38,7 @@ fun main(): Int
 
 
 def _emit_c(src: str) -> str:
-    code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                     just_testing=False, optimization_level=1)
+    code = compile_c(src, optimization_level=1)
     assert code, "compilation failed"
     return code
 

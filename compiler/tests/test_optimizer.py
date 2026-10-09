@@ -1,4 +1,5 @@
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
 import compiler as c
 
@@ -214,7 +215,7 @@ fun main(): System::Int
     io.close()
     ret 0
 """
-        result = c.compile([c.Input(content, "test.yafl")], use_stdlib=True, just_testing=False, optimization_level=3)
+        result = compile_c(content, optimization_level=3)
         self.assertNotEqual("", result)
         self.assertNotIn("_lambdas_", result,
                          "Lambdas in ?> chains should be fully inlined, not lifted to closures")
@@ -242,8 +243,7 @@ fun main(): System::Int
     let (a, b) = (count(3), count(3))
     ret (a + b) - (a + b - 1)
 """
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False,
-                           optimization_level=level)
+        result = compile_c(content, "file.yafl", optimization_level=level)
         self.assertNotEqual("", result, f"compilation failed at -O{level}")
         return result
 
@@ -281,6 +281,6 @@ fun main(): System::Int where BasicMath<System::Int>
 """
         for level in (1, 3):
             with self.subTest(optimization_level=level):
-                result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False, optimization_level=level)
+                result = compile_c(content, "file.yafl", optimization_level=level)
                 self.assertIn("print_string", result,
                               f"print_string call disappeared at -O{level}")

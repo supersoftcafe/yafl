@@ -7,14 +7,12 @@ shared `_done` helper closes a handle and yields an exit code.
 """
 from __future__ import annotations
 
-import io
 import os
 import tempfile
-import contextlib
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 
-import compiler as c
 from tests.testutil import compile_and_run_stdlib
+from tests.testutil import compile_c
 
 
 # Closes a handle on any path and yields the given exit code. Embedded into
@@ -115,10 +113,7 @@ fun main(): System::Int
     (h: IO) => tryReadClosed(h)
     (e: IOError) => 88
 """
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            result = c.compile([c.Input(src, "test.yafl")],
-                               use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertEqual("", result, "use-after-close must be a compile error")
 
     def test_write_then_read_via_monadic_chain(self):
@@ -329,7 +324,7 @@ fun main(): System::Int
     (n: System::Int) => 0
     (e: IOError)     => 1
 """
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        c_code = compile_c(src)
         self.assertTrue(c_code,
             "compile produced no output — `?>` chain in a `let` binding "
             "triggered a spurious type error (works fine in a `ret` position)")

@@ -9,9 +9,9 @@ json_pretty's allocations — is the pattern under test.
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 _CAPTURING_LOOP = (
     "namespace Main\n"
@@ -31,8 +31,7 @@ class TestLambdaLift(TestCase):
         rc, out = compile_and_run_stdlib_capture(_CAPTURING_LOOP)
         self.assertEqual(60, rc)
         self.assertEqual("abab", out)
-        c_code = c.compile([c.Input(_CAPTURING_LOOP, "test.yafl")],
-                           use_stdlib=True, just_testing=True)
+        c_code = compile_c(_CAPTURING_LOOP)
         # `go` captures `piece` but is only called → lifted, hoisted globally,
         # no closure class for it anywhere in the program.
         self.assertNotIn("lambda_Main__repeat", c_code)
@@ -51,8 +50,7 @@ class TestLambdaLift(TestCase):
             "  ret parity(7, 4) + parity(3, 3)\n")
         rc, _out = compile_and_run_stdlib_capture(src)
         self.assertEqual(4, rc)   # 7 + (-3)
-        c_code = c.compile([c.Input(src, "test.yafl")],
-                           use_stdlib=True, just_testing=True)
+        c_code = compile_c(src)
         self.assertNotIn("lambda_Main__parity", c_code)
 
     def test_value_position_reference_keeps_closure_semantics(self):

@@ -60,7 +60,7 @@ fun llInBlock(f0: PsFun, bk0: PeBlock)
                       PeBlock(bodyStmts, bk0.blockValue, bk0.blockTag,
                               bk0.pebkLine),
                       f0.fRet, f0.fWheres, f0.psfLine, f0.fRetInferred,
-                      f0.fNested, f0.fImports)
+                      f0.fNested, f0.fImports, f0.fGlobal)
   let nested = hoNestedFns2(chain(bodyStmts), List())
   if isEmpty(nested)
     ret rebuilt
@@ -438,7 +438,7 @@ fun llFnStmt(f: PsFun, ctx: LiftCtx, paramLets: List<PStmt>)
   let rebuilt = PsFun(f.fName, f.fAttrs, f.fGens,
                       llStmt(f.fParams, ctx, paramLets),
                       llExprOpt(f.fBody, ctx, paramLets), f.fRet, f.fWheres,
-                      f.psfLine, f.fRetInferred, f.fNested, f.fImports)
+                      f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   let extras = llExtrasFor(ctx, f.fName)
   if isEmpty(extras)
     ret rebuilt
@@ -454,7 +454,7 @@ fun llWithParams(st, extras: List<String>,
                                            List())),
                       d.dDefault, d.psdLine, d.dTypeInferred),
         f.fBody, f.fRet, f.fWheres, f.psfLine, f.fRetInferred, f.fNested,
-        f.fImports)
+        f.fImports, f.fGlobal)
     (o: PStmt)         => f
   (o2: PStmt) => st
 

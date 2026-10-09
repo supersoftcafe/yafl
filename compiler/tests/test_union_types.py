@@ -8,6 +8,7 @@ from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import compile_and_run, _YAFLLIB_DIR
+from tests.testutil import compile_c
 
 
 _PREAMBLE = """\
@@ -990,7 +991,7 @@ fun main():System::Int
     (x: System::Int) => x
     () => -1
 """
-        code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        code = compile_c(src)
         self.assertNotEqual("", code)
 
     def test_match_on_returned_union_typed_arm(self):

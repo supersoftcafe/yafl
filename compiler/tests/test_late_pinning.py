@@ -22,9 +22,9 @@ YAFL_GC_POISON turns a silent use-after-free into a loud abort.
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 _PROMOTE = """\
 namespace Promote
@@ -92,8 +92,7 @@ class TestLatePinning(TestCase):
         # The pass is keyed on the object registry, so a program that
         # monomorphises the [pinnable] trie must read through object_resolve
         # — and one with no pinnable class must not mention it at all.
-        with_memo = c.compile([c.Input(_PROMOTE, "file.yafl")], use_stdlib=True,
-                              just_testing=False, optimization_level=1)
+        with_memo = compile_c(_PROMOTE, "file.yafl", optimization_level=1)
         self.assertIn("object_resolve(", with_memo)
         plain = """\
 import System
@@ -103,6 +102,5 @@ fun main(): System::Int
     (v: System::Int)  => v - 3
     (e: System::None) => 1
 """
-        without = c.compile([c.Input(plain, "file.yafl")], use_stdlib=True,
-                            just_testing=False, optimization_level=1)
+        without = compile_c(plain, "file.yafl", optimization_level=1)
         self.assertNotIn("object_resolve(", without)

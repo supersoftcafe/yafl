@@ -10,12 +10,10 @@ compile error, not a silent garbage read. Found by the regex engine
 (worked around there with rNext/sNext/aNext); a compiler-sized AST would
 hit it constantly.
 """
-import contextlib
-import io
 
-import compiler as c
 
 from tests.testutil import TimedTestCase, compile_and_run_stdlib
+from tests.testutil import compile_errors
 
 _FLAT = """
 namespace Main
@@ -88,9 +86,6 @@ class TestEnumFieldAliasing(TimedTestCase):
         self.assertEqual(34, compile_and_run_stdlib(_COMPLEX))
 
     def test_unnarrowed_ambiguous_field_is_an_error(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            c.compile([c.Input(_AMBIGUOUS, "test.yafl")], use_stdlib=True, just_testing=True)
-        out = buf.getvalue().lower()
+        out = compile_errors(_AMBIGUOUS).lower()
         self.assertIn("nxt", out)
         self.assertIn("variant", out)

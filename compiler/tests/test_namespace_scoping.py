@@ -12,14 +12,12 @@ from __future__ import annotations
 
 import unittest
 
-import compiler as c
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 def _compiles(sources: "list[tuple[str, str]]") -> bool:
-    out = c.compile([c.Input(text, name) for name, text in sources],
-                    use_stdlib=True, just_testing=False)
-    return bool(out)
+    return bool(compile_c(list(sources)))
 
 
 class TestNamespaceScoping(unittest.TestCase):

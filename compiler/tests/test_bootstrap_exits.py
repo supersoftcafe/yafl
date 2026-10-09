@@ -123,7 +123,7 @@ class TestBootstrapExits(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_exits(text).splitlines()
-                r = subprocess.run([self.binary, "exits"], input=text,
+                r = subprocess.run([self.binary, "--stage", "exits"], input=text,
                                    capture_output=True, timeout=240, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,
@@ -146,7 +146,7 @@ class TestBootstrapExits(TestCase):
         text = "".join(p.read_text() for p in stdlib) \
             + (_REPO / "examples" / "linenumbers.yafl").read_text()
         expected = self._python_exits(text).splitlines()
-        r = subprocess.run([self.binary, "exits"], input=text,
+        r = subprocess.run([self.binary, "--stage", "exits"], input=text,
                            capture_output=True, timeout=300, text=True,
                            env=_RUN_ENV)
         self.assertEqual(0, r.returncode, r.stdout[:300])

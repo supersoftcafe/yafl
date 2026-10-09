@@ -11,9 +11,9 @@ Branches are pure scopes; lets inside a branch do not escape. Per YAFL's
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib
+from tests.testutil import compile_c
 
 
 # TestIfRuntime and TestIfElseRuntime are covered by
@@ -33,7 +33,7 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertEqual("", result)
 
     def test_orphan_else_rejected(self):
@@ -47,7 +47,7 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertEqual("", result)
 
     def test_orphan_else_if_rejected(self):
@@ -59,7 +59,7 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertEqual("", result)
 
     def test_else_separated_from_if_rejected(self):
@@ -75,7 +75,7 @@ class TestIfCompileErrors(TestCase):
             "        ret 2\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertEqual("", result)
 
 

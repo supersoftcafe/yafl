@@ -6,18 +6,13 @@ codegen died building `Return(None)` (ops.py Return.__post_init__ ValueError).
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_errors
 
 
 def _errors(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return buf.getvalue()
+    return compile_errors(src)
 
 
 class TestMissingReturn(TestCase):

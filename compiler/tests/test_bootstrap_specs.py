@@ -176,7 +176,7 @@ class TestBootstrapSpecs(TestCase):
     def test_specs_agree_with_python(self):
         lines, expected = _cases()
         self.assertGreater(len(lines), 200)
-        r = subprocess.run([self.binary, "specs"], input="\n".join(lines) + "\n",
+        r = subprocess.run([self.binary, "--stage", "specs"], input="\n".join(lines) + "\n",
                            capture_output=True, timeout=60, text=True, env=_RUN_ENV)
         self.assertEqual(0, r.returncode)
         got = r.stdout.splitlines()

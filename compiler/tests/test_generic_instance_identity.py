@@ -20,14 +20,12 @@ shape, the arm is that sibling's type — whatever the arm order.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
 import pyast.typespec as t
 from parsing.tokenizer import LineRef
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c_result
 
 
 _lr = LineRef("f", 0, 0)
@@ -42,10 +40,8 @@ def _list(arg: t.TypeSpec) -> t.EnumSpec:
 
 def _errors(src: str) -> tuple[str, str]:
     """(generated C, printed diagnostics) for a program expected to fail."""
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return c_code, buf.getvalue()
+    r = compile_c_result(src)
+    return r.c, r.stdout
 
 
 class TestInstantiationIdentity(TestCase):

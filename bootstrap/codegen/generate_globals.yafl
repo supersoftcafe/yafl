@@ -441,8 +441,15 @@ fun sgpEmit(x, r, chasing: List<String>, hint) => match(x)
       (o: PExpr)      => sgpNo()
     (o2: Spec)   => sgpNo()
   (cv: PeConvert) => sgpEmitConvert(cv, r, chasing, hint)
-  (nm2: PeName)   => sgpEmitChase(nm2.refName, r, chasing)
+  # A name borrows another global's constant or static address when it can;
+  # otherwise — `None`, a [const] unit, a plain read — it falls through to
+  # the generic emission like any other expression, exactly as rec() does.
+  (nm2: PeName)   => sgpOrFallback(sgpEmitChase(nm2.refName, r, chasing), x, r)
   (o: PExpr)      => sgpEmitFallback(x, r)
+
+fun sgpOrFallback(chased: SgpOut, x, r): SgpOut => match(chased.sgpRp)
+  (rp: RParam) => chased
+  ()           => sgpEmitFallback(x, r)
 
 fun sgpNo() => SgpOut(None, List())
 

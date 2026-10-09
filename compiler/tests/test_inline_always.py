@@ -11,8 +11,8 @@ inliner: it runs at -O2+ (small) and inlines `[inline(always)]` only at -O3.
 """
 from __future__ import annotations
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
 
 def _c(level: int) -> str:
@@ -26,7 +26,7 @@ def _c(level: int) -> str:
         "  ret big(x) + 1\n"
         "fun main(): System::Int\n"
         "  ret caller(3)\n")
-    return c.compile([c.Input(src, "test.yafl")], use_stdlib=True, optimization_level=level)
+    return compile_c(src, optimization_level=level)
 
 
 class TestInlineAlwaysLevel(TestCase):

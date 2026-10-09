@@ -14,11 +14,9 @@ and is reported there.
 """
 from __future__ import annotations
 
-import io
-import contextlib
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c_result
 
 
 _BAD = """
@@ -55,14 +53,10 @@ fun main(): Int
 
 class TestUnionReturnShape(TestCase):
     def test_wrong_shape_through_union_is_a_check_error(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            result = c.compile([c.Input(_BAD, "t.yafl")], use_stdlib=True)
-        self.assertEqual("", result)
-        self.assertIn("incorrect type", buf.getvalue().lower())
+        r = compile_c_result(_BAD, "t.yafl")
+        self.assertEqual("", r.c)
+        self.assertIn("incorrect type", r.stdout.lower())
 
     def test_genuine_union_widening_still_compiles(self):
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            result = c.compile([c.Input(_GOOD_WIDENING, "t.yafl")], use_stdlib=True)
-        self.assertNotEqual("", result, f"expected clean compile, got:\n{buf.getvalue()}")
+        r = compile_c_result(_GOOD_WIDENING, "t.yafl")
+        self.assertNotEqual("", r.c, f"expected clean compile, got:\n{r.describe()}")

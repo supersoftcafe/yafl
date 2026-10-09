@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""YAFL full test protocol: one command, every stage, a per-stage report.
+"""YAFL full test protocol: CORRECTNESS, one command, a per-stage report.
 
 Runs, in order:
-  1. build      — the whole toolchain (yafllib, PyInstaller `yafl`, system.yl)
-  2. ctest      — the CTest gate: yafllib C tests, bootstrap fixture, the full
-                  Python compiler suite (byte-parity -O0..-O3), stdlib YAFL
-                  tests, and the c1 self-compile gate
-  3. o3_bootstrap — build the PORT through the -O3 pipeline (build/ybootstrap_O3)
-  4. examples   — compile every examples/*.yafl with the FRESH compiler at
-                  -O2, then run each with its fixture input
-  5. o3_timed   — best-of-three c1 self-compile with /usr/bin/time: wall +
-                  peak RSS per leg, byte-identical across all six runs
+  1. build      — the whole toolchain (yafllib, PyInstaller `yafl`, system.yl,
+                  System::Test staged beside it)
+  2. ctest      — the CTest gate: yafllib C tests; the Python compiler builds
+                  the port; the compiler suite; the YAFL `[test]` folders; and
+                  LAST, one self-compile that must reproduce Python's C for the
+                  port byte for byte
+  3. examples   — compile every examples/*.yafl at -O2 with the compiler under
+                  test, then run each with its fixture input
+
+`--compiler port|python` picks the COMPILER UNDER TEST (default port): the two
+have parity, so either is a drop-in replacement, and every behaviour test and
+example runs against the one chosen.
+
+Speed is not measured here: speed_protocol.py is the separate post-suite step.
 
 Stops at the first failing stage unless --keep-going is given. Every stage's
 output is streamed to the terminal AND tee'd to build/protocol-runs/<ts>/; a
 one-line-per-stage report is printed at the end (and written to report.txt).
 
-Stages are sequential BY DESIGN: two bootstrap builds at once OOM this VM, and
-the timed legs want the machine to themselves.
-
-    python3 full_protocol.py               # the whole thing (~2.5h)
-    python3 full_protocol.py --keep-going  # run every stage, fail at the end
-    python3 full_protocol.py --only examples,o3_timed
+    python3 full_protocol.py                    # the whole thing
+    python3 full_protocol.py --compiler python  # same, against the Python compiler
+    python3 full_protocol.py --keep-going       # run every stage, fail at the end
+    python3 full_protocol.py --only ctest,examples
 """
 from __future__ import annotations
 
@@ -29,7 +32,6 @@ import argparse
 import datetime as _dt
 import os
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -91,26 +93,6 @@ def parse_rusage(path: Path) -> dict | None:
     return out if out else None
 
 
-def parse_leg(log_path: Path) -> dict | None:
-    """Per-leg self-compile numbers: run1/run2 seconds + C bytes emitted."""
-    if not log_path.is_file():
-        return None
-    out: dict = {"runs": []}
-    for line in log_path.read_text().splitlines():
-        m = re.match(r"\s+run (\d): ([0-9,]+) bytes of C in (\d+)s", line)
-        if m:
-            out["runs"].append((int(m.group(1)),
-                                int(m.group(2).replace(",", "")),
-                                int(m.group(3))))
-        if "identical output on both runs" in line:
-            out["identical"] = True
-        if "bytes of source" in line:
-            m2 = re.search(r"([0-9,]+) bytes of source", line)
-            if m2:
-                out["source_bytes"] = int(m2.group(1).replace(",", ""))
-    return out
-
-
 def stage_env(**extra) -> dict:
     env = dict(os.environ)
     env.update(extra)
@@ -126,18 +108,24 @@ class Result:
     detail: str = ""
 
 
-def stage_build(run_dir: Path) -> Result:
-    if not (BUILD / "CMakeCache.txt").is_file():
-        rc = run_stream(["cmake", "-B", str(BUILD)], HERE, run_dir / "build.log")
-        if rc != 0:
-            return Result("build", False, "cmake configure failed")
+def _configure(compiler: str, log: Path) -> int:
+    """(Re)configure with the compiler under test — cheap when nothing changed."""
+    return run_stream(["cmake", "-B", str(BUILD), f"-DYAFL_TEST_COMPILER={compiler}"],
+                      HERE, log)
+
+
+def stage_build(run_dir: Path, compiler: str) -> Result:
+    if _configure(compiler, run_dir / "configure.log") != 0:
+        return Result("build", False, "cmake configure failed")
     jobs = os.cpu_count() or 4
     rc = run_stream(["cmake", "--build", str(BUILD), f"-j{jobs}"],
                     HERE, run_dir / "build.log")
     return Result("build", rc == 0, "cmake --build")
 
 
-def stage_ctest(run_dir: Path) -> Result:
+def stage_ctest(run_dir: Path, compiler: str) -> Result:
+    if _configure(compiler, run_dir / "configure.log") != 0:
+        return Result("ctest gate", False, "cmake configure failed")
     rc = run_stream(["ctest", "--test-dir", str(BUILD), "--output-on-failure"],
                     HERE, run_dir / "ctest.log")
     total = parse_ctest_summary(run_dir / "ctest.log")
@@ -145,17 +133,7 @@ def stage_ctest(run_dir: Path) -> Result:
         return Result("ctest gate", False, "ctest printed no summary line")
     failed, n = total
     return Result("ctest gate", rc == 0 and failed == 0 and n > 0,
-                  f"{n - failed}/{n} tests passed")
-
-
-def stage_o3_bootstrap(run_dir: Path) -> Result:
-    cmd = [sys.executable, "build_bootstrap.py", "-O", "3",
-           "-o", str(BUILD / "ybootstrap_O3")]
-    env = stage_env(YAFL_LIBYAFL_A=str(BUILD / "yafllib" / "libyafl.a"),
-                    PYTHONHASHSEED="0")
-    rc = run_stream(cmd, COMPILER, run_dir / "o3_bootstrap.log", env=env)
-    return Result("o3 bootstrap build", rc == 0,
-                  "build/ybootstrap_O3" if rc == 0 else "see log")
+                  f"{n - failed}/{n} tests passed ({compiler} compiler)")
 
 
 # ── examples ─────────────────────────────────────────────────────────────────
@@ -191,11 +169,17 @@ def _build_example_specs(run_dir: Path) -> list[Example]:
     ]
 
 
-def stage_examples(run_dir: Path) -> Result:
-    compiler = COMPILER / "dist" / "yafl"
-    if not compiler.is_file():
+def _example_compiler(compiler: str) -> Path:
+    """The INSTALLABLE compiler of each kind: the port binary, or the
+    PyInstaller `yafl` — each finds System on YAFL_PATH as an install would."""
+    return BUILD / "ybootstrap" if compiler == "port" else COMPILER / "dist" / "yafl"
+
+
+def stage_examples(run_dir: Path, compiler: str) -> Result:
+    compiler_bin = _example_compiler(compiler)
+    if not compiler_bin.is_file():
         return Result("examples", False,
-                      f"{compiler} missing — run the build stage first")
+                      f"{compiler_bin} missing — run the build and ctest stages first")
     outdir = run_dir / "examples-bin"
     outdir.mkdir(parents=True, exist_ok=True)
     env = stage_env(YAFL_PATH=str(BUILD / "stage"))
@@ -211,7 +195,7 @@ def stage_examples(run_dir: Path) -> Result:
         line = f"===== [{i}/{len(specs)}] {ex.name} ====="
         print(line)
         log.write(line + "\n")
-        r = subprocess.run([str(compiler), "-O2", "-o", str(outdir / ex.name),
+        r = subprocess.run([str(compiler_bin), "-O2", "-o", str(outdir / ex.name),
                             str(src)],
                            capture_output=True, text=True, env=env,
                            timeout=1800, stdin=subprocess.DEVNULL)
@@ -230,76 +214,10 @@ def stage_examples(run_dir: Path) -> Result:
         if not ok:
             failed.append(f"{ex.name}: run rc={run.returncode}, expected {ex.rc}")
     log.close()
-    detail = f"{len(specs) - len(failed)}/{len(specs)} examples passed"
+    detail = f"{len(specs) - len(failed)}/{len(specs)} examples passed ({compiler} compiler)"
     if failed:
         detail += "; failed: " + ", ".join(failed)
     return Result("examples", not failed, detail)
-
-
-# ── timed O3 self-compile ────────────────────────────────────────────────────
-
-def stage_o3_timed(run_dir: Path) -> Result:
-    if not shutil.which("/usr/bin/time"):
-        return Result("o3 timed self-compile", False, "/usr/bin/time missing")
-    binary = BUILD / "ybootstrap_O3"
-    if not binary.is_file():
-        return Result("o3 timed self-compile", False,
-                      "build/ybootstrap_O3 missing — run the o3_bootstrap stage first")
-
-    legs: list[dict] = []
-    for i in range(1, 4):
-        rusage = run_dir / f"leg{i}.rusage"
-        selflog = run_dir / f"leg{i}.log"
-        print(f"      leg {i}")
-        rc = run_stream(
-            ["/usr/bin/time", "-v", "-o", str(rusage),
-             sys.executable, "selfcompile.py", "--binary", str(binary), "--mode", "c1"],
-            COMPILER, selflog)
-        if rc != 0:
-            return Result("o3 timed self-compile", False, f"leg {i} exited {rc}")
-        legs.append({"rusage": rusage, "log": selflog})
-
-    c_bytes: list[int] = []
-    rows = []
-    for i, leg in enumerate(legs, 1):
-        lg = parse_leg(leg["log"])
-        rs = parse_rusage(leg["rusage"])
-        runs = lg["runs"] if lg else []
-        c_bytes += [b for _, b, _ in runs]
-        rows.append({
-            "leg": i,
-            "wall_s": rs["wall_s"] if rs else None,
-            "rss_kb": rs["rss_kb"] if rs else None,
-            "user_s": rs["user_s"] if rs else None,
-            "runs_s": [t for _, _, t in runs],
-        })
-        print(f"      leg {i}: "
-              + (f"runs {rows[-1]['runs_s']}s  leg wall {rs['wall_s']:.1f}s  rss {rs['rss_kb']:,} KB"
-                 if rs else "no /usr/bin/time output"))
-
-    if not rows or any(r["wall_s"] is None for r in rows):
-        return Result("o3 timed self-compile", False, "could not parse legs")
-    if not c_bytes or len(set(c_bytes)) != 1:
-        return Result("o3 timed self-compile", False,
-                      "runs emitted differing C sizes — nondeterministic")
-    best_run = min((t for r in rows for t in r["runs_s"]), default=0)
-    best_wall = min(rows, key=lambda r: r["wall_s"])
-    best_rss = min(rows, key=lambda r: r["rss_kb"])
-    detail = (
-        f"best single self-compile {best_run}s; "
-        f"best leg wall {best_wall['wall_s']:.1f}s (leg {best_wall['leg']}, = 2 runs); "
-        f"peak RSS {best_rss['rss_kb']:,} KB (leg {best_rss['leg']}); "
-        f"6 runs byte-identical ({c_bytes[0]:,} B C)")
-    result = Result("o3 timed self-compile", True, detail)
-
-    report = (run_dir / "timed_report.txt").open("w")
-    report.write("O3 self-compile best-of-three (build/ybootstrap_O3, mode c1, 6G)\n")
-    for r in rows:
-        report.write(f"  leg {r['leg']}: runs {r['runs_s']}s  leg wall {r['wall_s']:.1f}s  "
-                     f"rss {r['rss_kb']:,} KB  user {r['user_s']:.1f}s\n")
-    report.write(f"  -> {detail}\n")
-    report.close()
-    return result
 
 
 # ── driver ───────────────────────────────────────────────────────────────────
@@ -307,24 +225,29 @@ def stage_o3_timed(run_dir: Path) -> Result:
 STAGES = {
     "build": stage_build,
     "ctest": stage_ctest,
-    "o3_bootstrap": stage_o3_bootstrap,
     "examples": stage_examples,
-    "o3_timed": stage_o3_timed,
 }
 
 
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--compiler", default="port", choices=["port", "python"],
+                    help="the compiler under test (default: port)")
     ap.add_argument("--only", default="",
-                    help="comma-separated subset of stages to run: "
-                         "build,ctest,o3_bootstrap,examples,o3_timed")
+                    help="comma-separated subset of stages to run: " + ",".join(STAGES))
     ap.add_argument("--keep-going", action="store_true",
                     help="run every stage even after a failure; exit reports them all")
     args = ap.parse_args(argv)
+    return run_stages("full protocol", STAGES, args.only, args.keep_going,
+                      lambda stage, run_dir: stage(run_dir, args.compiler))
 
-    wanted = STAGES.keys() if not args.only else [s.strip() for s in args.only.split(",")]
-    unknown = [s for s in wanted if s not in STAGES]
+
+def run_stages(title: str, stages: dict, only: str, keep_going: bool, call) -> int:
+    """Run `stages` (or the `only` subset) in order with `call(stage, run_dir)`,
+    stopping at the first failure unless `keep_going`; print and file a report."""
+    wanted = stages.keys() if not only else [s.strip() for s in only.split(",")]
+    unknown = [s for s in wanted if s not in stages]
     if unknown:
         print(f"unknown stage(s): {', '.join(unknown)}", file=sys.stderr)
         return 2
@@ -333,15 +256,15 @@ def main(argv: list[str]) -> int:
     run_dir = RUNS_DIR / ts
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"YAFL full protocol — {ts}")
+    print(f"YAFL {title} — {ts}")
     results: list[Result] = []
     wanted = list(wanted)
     for i, name in enumerate(wanted, 1):
         print(f"\n--- [{i}/{len(wanted)}] {name} ---")
-        res = STAGES[name](run_dir)
+        res = call(stages[name], run_dir)
         results.append(res)
         print(f"    {'DONE' if res.ok else 'FAILED'}: {res.detail}")
-        if not res.ok and not args.keep_going:
+        if not res.ok and not keep_going:
             break
 
     print("\n" + "=" * 60)
@@ -350,7 +273,7 @@ def main(argv: list[str]) -> int:
         mark = "PASS" if r.ok else "FAIL"
         print(f"  [{mark}] {r.name:<22} {r.detail}")
     report = (run_dir / "report.txt").open("w")
-    report.write(f"YAFL full protocol — {ts}\n")
+    report.write(f"YAFL {title} — {ts}\n")
     for r in results:
         mark = "PASS" if r.ok else "FAIL"
         report.write(f"  [{mark}] {r.name}: {r.detail}\n")

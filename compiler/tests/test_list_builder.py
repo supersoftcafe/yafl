@@ -3,7 +3,7 @@ tail-`next` write is a locking late init (runtime list_builder_link's
 pin-resolve/store/unpin bracket + the [linear] stdlib wrapper). Verifies
 order, scale (GC cycles + compaction run during construction), interleaved
 builders, and construction across GC pressure with poison enabled."""
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 
 

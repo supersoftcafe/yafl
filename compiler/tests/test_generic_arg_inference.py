@@ -1,6 +1,6 @@
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
-import compiler as c
 
 
 # These tests pin down the real, currently-failing inference gap uncovered
@@ -33,7 +33,7 @@ class Test(TestCase):
         content = (_INT32 +
                    "fun main(): System::Int\n"
                    "    ret takesI32(0i32)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     def test_bare_literal_into_int32_param(self):
@@ -42,12 +42,12 @@ class Test(TestCase):
         content = (_INT32 +
                    "fun main(): System::Int\n"
                    "    ret takesI32(0)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertEqual("", result or "")
         content = (_INT32 +
                    "fun main(): System::Int\n"
                    "    ret takesI32(0i32)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     def test_generic_inference_with_suffixed_width(self):
@@ -60,7 +60,7 @@ class Test(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret second(0i32, 99)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     def test_array_index_with_bare_literal(self):
@@ -74,7 +74,7 @@ class Test(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret 0\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     # ── Float literals: same context-typing, symmetric with integers ──────
@@ -88,7 +88,7 @@ class Test(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret takesF32(1.5f32)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
     def test_bare_float_into_float32_param(self):
@@ -101,10 +101,10 @@ class Test(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret takesF32(1.5)\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertEqual("", result or "")
         content = content.replace("takesF32(1.5)", "takesF32(1.5f32)")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
 
@@ -125,7 +125,7 @@ class TestSiblingVariantsBindOneParam(TestCase):
                    "\n"
                    "fun main(): System::Int\n"
                    "    ret pair(Circle(1), Square(2))\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
 
@@ -148,5 +148,5 @@ class TestACallableParameterBindsOnlyWhatNothingElseCan(TestCase):
                    "  ret match(best(prepend(3, prepend(4, List()))))\n"
                    "    (i: System::Int) => i\n"
                    "    ()               => 0\n")
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)

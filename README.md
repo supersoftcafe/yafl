@@ -161,39 +161,63 @@ This installs `yafl` to `<prefix>/bin` and the `System` library to
 
 ### The full protocol, one command
 
-`full_protocol.py` runs every gate in sequence — build, the CTest gate, the -O3
-port build, every example compiled and run against a fixture, and a timed
-best-of-three self-compile — and prints one line per stage:
+`full_protocol.py` is the correctness gate — build, the CTest gate, and every
+example compiled and run against a fixture — printing one line per stage:
 ```
-python3 full_protocol.py                 # the whole thing (~2.5h)
-python3 full_protocol.py --only examples,o3_timed
-python3 full_protocol.py --keep-going    # every stage, fail at the end
+python3 full_protocol.py                    # against the self-hosted compiler (the default)
+python3 full_protocol.py --compiler python  # against the Python compiler
+python3 full_protocol.py --only ctest,examples
+python3 full_protocol.py --keep-going       # every stage, fail at the end
 ```
-Stages are sequential by design: two bootstrap builds at once exhaust this
-machine, and the timed legs need it to themselves. Each run tees its output to
-`build/protocol-runs/<timestamp>/`. It is also what CI runs
-(`.github/workflows/full-gate.yml`).
+The two compilers have parity, so either is a drop-in replacement for the
+other: `--compiler` picks the one every behaviour test and example runs
+against. The CTest gate starts by having the Python compiler build the
+self-hosted one (`build/ybootstrap`, keeping the C it emitted), runs the
+compiler suite and the YAFL `[test]` folders, and ends with ONE self-compile:
+the port compiles its own sources and must reproduce that C byte for byte.
+Each run tees its output to `build/protocol-runs/<timestamp>/`. It is also what
+CI runs (`.github/workflows/full-gate.yml`).
+
+### Speed, separately
+
+`speed_protocol.py` is the measurement step, run after a green full protocol:
+the port built through the -O3 pipeline, then a timed best-of-three
+self-compile (wall time and peak RSS per leg, every run byte-identical).
+```
+python3 speed_protocol.py
+python3 speed_protocol.py --only o3_timed   # re-time an existing -O3 build
+```
 
 ### The test set alone
 
-The whole test set — the Python compiler suite plus the `yafllib` C unit tests —
-is wired into CTest. From a configured build, `--target check` builds everything
-(so the runtime archive and C test binaries exist) and runs it all:
+The whole test set is wired into CTest. From a configured build, `--target
+check` builds everything (so the runtime archive and C test binaries exist) and
+runs it all:
 ```
-cmake -B build
+cmake -B build                                  # -DYAFL_TEST_COMPILER=python to test that one
 cmake --build build --target check
 ```
 Or drive CTest directly after a build (`cmake --build build && ctest --test-dir build`).
-The compiler suite is run against the runtime archive *this* build produced (via
-the `YAFL_LIBYAFL_A` env var), so it never links a stale `libyafl.a`. It uses
-`unittest-parallel` if present (faster), otherwise stdlib `unittest`.
 
-To run just the Python suite by hand, build the runtime where the harness looks
-for it by default (`yafllib/build/debug-unix`) and run it from `compiler/`:
+Behaviour tests come in two kinds:
+
+* **YAFL `[test]` folders** — `compiler/stdlib_tests/` and `compiler/yafl_tests/`.
+  Each folder is built into one test binary with `--test` by the compiler under
+  test; each file is its own unit with its own namespace. Write new behaviour
+  tests here: one compile serves the whole folder.
+* **The Python suite** — `compiler/tests/`. Its compile-and-run tests drive the
+  compiler under test through its command line (`YAFL_COMPILER=port|python`,
+  default `port`); the tests that reach into `pyast`/`lowering`/… are unit
+  tests of the Python implementation itself.
+
+To run the Python suite by hand from `compiler/`, point it at a built port and
+runtime archive:
 ```
-cd yafllib && cmake --preset debug-unix && cmake --build --preset debug-unix
-cd ../compiler && unittest-parallel -j 3 -s tests -t .   # or: python -m unittest discover -s tests -t .
+cd compiler
+YAFL_BOOTSTRAP_BIN=../build/ybootstrap YAFL_LIBYAFL_A=../build/yafllib/libyafl.a \
+PYTHONHASHSEED=0 unittest-parallel -j 0 -s tests -t .
 ```
+`YAFL_COMPILER=python` runs the same tests against the Python compiler.
 
 Compiled programs are statically linked against the runtime, so they need no
 `LD_LIBRARY_PATH` or installed `libyafl.so` to run.

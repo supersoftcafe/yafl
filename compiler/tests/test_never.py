@@ -14,37 +14,35 @@ keep working — only the no-parens, no-variants form is empty.
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_and_run_stdlib
+from tests.testutil import compile_c, compile_c_result
 
 
 class TestNeverType(TestCase):
     def test_empty_enum_not_constructible(self):
         # `Empty` has no `()` and no variants → no constructor exists.
-        result = c.compile([c.Input(
+        result = compile_c(
             "namespace Test\n"
             "import System\n"
             "enum Empty\n"
             "fun mk(): Empty\n"
             "  ret Empty()\n"
             "fun main(): System::Int\n"
-            "  ret 0\n",
-            "test.yafl")], use_stdlib=True, just_testing=False)
+            "  ret 0\n")
         self.assertEqual("", result)  # rejected
 
     def test_unit_enum_still_constructible(self):
         # The `()` form is a real unit value and must keep compiling.
-        result = c.compile([c.Input(
+        result = compile_c(
             "namespace Test\n"
             "import System\n"
             "enum Unit()\n"
             "fun mk(): Unit\n"
             "  ret Unit()\n"
             "fun main(): System::Int\n"
-            "  ret 0\n",
-            "test.yafl")], use_stdlib=True, just_testing=False)
+            "  ret 0\n")
         self.assertNotEqual("", result)  # compiles
 
     def test_never_member_needs_no_constructed_value(self):
@@ -116,16 +114,13 @@ class TestInhabitedOnlyExhaustiveness(TestCase):
     def test_inhabited_members_still_required(self):
         # Relaxation applies ONLY to uninhabited members: dropping the String
         # arm must still be non-exhaustive.
-        import contextlib, io
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            code = c.compile([c.Input(
+        r = compile_c_result(
                 "namespace Main\n"
                 "import System\n"
                 "fun pick(v: System::Int | System::String | System::Never): System::Int\n"
                 "  ret match(v)\n"
                 "    (i: System::Int) => i\n"
                 "fun main(): System::Int\n"
-                "  ret pick(1)\n", "test.yafl")], use_stdlib=True, just_testing=True)
-        self.assertFalse(code)
-        self.assertIn("non-exhaustive", buf.getvalue())
+                "  ret pick(1)\n")
+        self.assertFalse(r.c)
+        self.assertIn("non-exhaustive", r.stdout)

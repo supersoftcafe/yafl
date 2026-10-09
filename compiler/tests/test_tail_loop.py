@@ -18,10 +18,10 @@ from __future__ import annotations
 import os
 import tempfile
 
-import compiler as c
 
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 _COUNTDOWN = """\
@@ -100,7 +100,7 @@ class TestTailLoop(TestCase):
     def test_tail_lowers_to_loop_no_trampoline(self):
         # Generated C: the loop head is present and no trampoline machinery
         # (tailcallback / tailimpl) is emitted anywhere.
-        ccode = c.compile([c.Input(_COUNTDOWN, "t.yafl")], use_stdlib=True, just_testing=False)
+        ccode = compile_c(_COUNTDOWN, "t.yafl")
         self.assertTrue(ccode, "compilation produced no output")
         self.assertIn("loophead", ccode, "expected a back-edge loop label")
         self.assertNotIn("tailcallback", ccode, "no [tail] trampoline machinery should remain")
@@ -116,7 +116,7 @@ class TestTailLoop(TestCase):
     def test_non_tail_self_call_is_an_error(self):
         # `[tail]` asserts a tail-recursive loop; a non-tail self-call must be
         # rejected at compile time rather than silently losing the guarantee.
-        ccode = c.compile([c.Input(_NON_TAIL, "t.yafl")], use_stdlib=True, just_testing=False)
+        ccode = compile_c(_NON_TAIL, "t.yafl")
         self.assertFalse(ccode, "a non-tail self-call under [tail] should fail to compile")
 
     def test_self_call_in_closure_is_not_a_non_tail_error(self):
@@ -177,7 +177,7 @@ fun main(): System::Int
 
     def test_nested_tail_lowers_to_loop(self):
         # The nested `[tail]` compiles to a back-edge loop with no trampoline.
-        ccode = c.compile([c.Input(_CAPTURING_NESTED_TAIL, "t.yafl")], use_stdlib=True, just_testing=False)
+        ccode = compile_c(_CAPTURING_NESTED_TAIL, "t.yafl")
         self.assertTrue(ccode, "nested [tail] should compile")
         self.assertIn("loophead", ccode, "expected a back-edge loop label")
         self.assertNotIn("tailcallback", ccode, "no [tail] trampoline machinery should remain")

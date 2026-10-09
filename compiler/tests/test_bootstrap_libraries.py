@@ -61,7 +61,7 @@ class TestBootstrapLibraries(TestCase):
         env.pop("YAFL_PATH", None)
         if env_extra:
             env.update(env_extra)
-        p = subprocess.run([str(self.binary), mode], input=stdin, env=env,
+        p = subprocess.run([str(self.binary), "--stage", mode], input=stdin, env=env,
                            capture_output=True, text=True, timeout=120)
         return p.returncode, p.stdout
 

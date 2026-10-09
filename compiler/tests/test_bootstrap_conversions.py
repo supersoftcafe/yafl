@@ -82,7 +82,7 @@ class TestBootstrapConversions(TestCase):
         self.assertIn("N", expected)
 
         stdin = _SOURCE + "\n?\n" + "\n".join(lines) + "\n"
-        r = subprocess.run([self.binary, "convert"], input=stdin, capture_output=True,
+        r = subprocess.run([self.binary, "--stage", "convert"], input=stdin, capture_output=True,
                            timeout=90, text=True, env=_RUN_ENV)
         self.assertEqual(0, r.returncode, r.stdout[:200])
         got = r.stdout.splitlines()

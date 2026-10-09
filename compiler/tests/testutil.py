@@ -1,6 +1,5 @@
 """Shared helpers for compiler integration tests."""
 import os
-import re
 import signal
 import subprocess
 import tempfile
@@ -123,12 +122,157 @@ def raise_stack_limit() -> None:
     pass
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# THE COMPILER UNDER TEST.
+#
+# Behaviour tests drive a compiler through its COMMAND LINE — the same words,
+# `-L <libs> [-O N] [--profile] -c out.c | -o out file.yafl`, whichever compiler
+# it is. YAFL_COMPILER picks which:
+#
+#     port    (default)  the self-hosted compiler, build/ybootstrap
+#                        (YAFL_BOOTSTRAP_BIN overrides — see shared_bootstrap_binary)
+#     python             compiler/main.py, under this interpreter
+#
+# The two have parity, so either is a drop-in replacement for the other and
+# every behaviour test means the same thing on both. Nothing here reaches into
+# a compiler's internals: tests that do (pyast, lowering, …) are unit tests of
+# the PYTHON implementation and call it directly.
+#
+# Both are handed the SAME libraries with -L: `test_libraries()`, built once
+# per process from the live sources, so an edit to the stdlib is seen at once
+# and neither compiler can pick up a stale package.
+# ─────────────────────────────────────────────────────────────────────────────
+
+import shutil
+import sys as _sys0
+
+_MAIN_PY = Path(__file__).parent.parent / "main.py"
+_SYSTEM_TEST_LIB = Path(__file__).parent.parent / "libs" / "system-test"
+
+
+def compiler_under_test() -> str:
+    """'port' or 'python' — YAFL_COMPILER, default port."""
+    name = os.environ.get("YAFL_COMPILER", "port")
+    if name not in ("port", "python"):
+        raise AssertionError(f"YAFL_COMPILER must be 'port' or 'python', not {name!r}")
+    return name
+
+
+def compiler_command() -> list[str]:
+    """argv[0..] of the compiler under test, before its arguments."""
+    if compiler_under_test() == "python":
+        return [_sys0.executable, str(_MAIN_PY)]
+    return [shared_bootstrap_binary()]
+
+
+_TEST_LIBS: "tempfile.TemporaryDirectory | None" = None
+
+
+def test_libraries() -> Path:
+    """A library search path holding System and System::Test, as directories.
+
+    `system/` is the System library exactly as `package_system_library`
+    describes it — the same generated manifest, the stdlib units under the same
+    relative names, `yafl.h` and the runtime archive beside them — taken from
+    the live sources when the process first asks, so it is never stale. The
+    units are COPIES: Python's `unit_name` resolves symlinks, and a linked unit
+    would resolve out of the library root. `system-test/` links the
+    System::Test library directory, which resolves inside itself."""
+    global _TEST_LIBS
+    if _TEST_LIBS is None:
+        import libraries
+        tmp = tempfile.TemporaryDirectory(prefix="yafl-test-libs-")
+        root = Path(tmp.name)
+        system = root / "system"
+        system.mkdir()
+        sources = stdlib_files()
+        names = libraries._scan_namespaces(sources) or ("System",)
+        (system / "yafl.toml").write_text(
+            'name = "system"\nnamespaces = [%s]\n'
+            'headers = ["yafl.h"]\nstatic_libs = ["libyafl.a"]\n'
+            % ", ".join(f'"{n}"' for n in names))
+        for src in sources:
+            dest = system / stdlib_unit_name(src)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+        (system / "yafl.h").symlink_to((_YAFLLIB_DIR / "yafl.h").resolve())
+        (system / "libyafl.a").symlink_to(Path(_LIBYAFL_A).resolve())
+        (root / "system-test").symlink_to(_SYSTEM_TEST_LIB.resolve())
+        _TEST_LIBS = tmp
+    return Path(_TEST_LIBS.name)
+
+
+class Compiled:
+    """One run of the compiler under test: exit code, its stdout (where both
+    compilers print diagnostics) and stderr (warnings), and — with `-c` — the C."""
+    def __init__(self, rc: int, stdout: str, stderr: str, c: str):
+        self.rc, self.stdout, self.stderr, self.c = rc, stdout, stderr, c
+
+    def describe(self) -> str:
+        return f"exit {self.rc}\n{self.stdout}{self.stderr}"
+
+
+def run_compiler(args: list[str], cwd: Path, timeout: int = 900) -> subprocess.CompletedProcess:
+    """The compiler under test with `-L <test libraries>` and `args`, in `cwd`.
+    YAFL_PATH is cleared so nothing but the test libraries is found."""
+    env = {k: v for k, v in os.environ.items() if k != "YAFL_PATH"}
+    return subprocess.run([*compiler_command(), "-L", str(test_libraries()), *args],
+                          cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+
+
+def _compile(source: "str | list[tuple[str, str]]", filename: str, out_args: list[str],
+             optimization_level: int, profile: bool,
+             warnings: "list[str] | tuple[str, ...]", test: bool, tmp: Path) -> subprocess.CompletedProcess:
+    """`source` is one program text (written as `filename`), or several
+    `(filename, text)` units compiled together."""
+    units = [(filename, source)] if isinstance(source, str) else source
+    for name, text in units:
+        (tmp / name).write_text(text)
+    args = [f"-O{optimization_level}", *(f"-W{w}" for w in warnings),
+            *(["--profile"] if profile else []), *(["--test"] if test else []),
+            *out_args, *(name for name, _ in units)]
+    return run_compiler(args, tmp)
+
+
+def compile_c_result(source: "str | list[tuple[str, str]]", filename: str = "test.yafl", *,
+                     optimization_level: int = 0, profile: bool = False,
+                     warnings: "list[str] | tuple[str, ...]" = (),
+                     test: bool = False) -> Compiled:
+    """Compile `source` (with the stdlib on the path) to C. `c` is "" on failure.
+    `source` is one program, or a list of `(filename, text)` units."""
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        r = _compile(source, filename, ["-c", "out.c"], optimization_level, profile,
+                     warnings, test, tmp)
+        c_path = tmp / "out.c"
+        c_text = c_path.read_text() if r.returncode == 0 and c_path.exists() else ""
+        return Compiled(r.returncode, r.stdout, r.stderr, c_text)
+
+
+def compile_c(source: str, filename: str = "test.yafl", **kw) -> str:
+    """The C for `source`, or "" if it does not compile."""
+    return compile_c_result(source, filename, **kw).c
+
+
+def compile_errors(source: str, filename: str = "test.yafl", **kw) -> str:
+    """What the compiler under test prints on stdout for `source` — its
+    diagnostics — and nothing if it compiles cleanly."""
+    return compile_c_result(source, filename, **kw).stdout
+
+
 def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
     """Assert that the yafl source compiles to C and clang accepts it with zero
     warnings, zero errors, and zero notes.  Fails the test if clang emits
-    anything on stderr."""
-    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=use_stdlib, just_testing=False)
-    assert c_code, "yafl compilation produced no output"
+    anything on stderr. `use_stdlib=False` sources declare their own System and
+    so use the Python compiler's API directly (neither command line has a
+    no-library mode)."""
+    if use_stdlib:
+        r = compile_c_result(source)
+        assert r.c, f"yafl compilation produced no output\n{r.describe()}"
+        c_code = r.c
+    else:
+        c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=False, just_testing=False)
+        assert c_code, "yafl compilation produced no output"
 
     result = subprocess.run(
         ["clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-x", "c", "-", "-O0", "-fsyntax-only",
@@ -140,7 +284,9 @@ def assert_clean_compile(source: str, *, use_stdlib: bool = True) -> None:
 
 
 def compile_and_run(source: str, timeout: int = 5) -> tuple[int, str]:
-    """Compile yafl source to a binary, run it, return (exit_code, clang_stderr).
+    """Compile a SELF-CONTAINED yafl source (it declares its own System, no
+    stdlib) to a binary, run it, return (exit_code, clang_stderr). Python's API:
+    neither command line has a no-library mode.
 
     Raises AssertionError if compilation to C fails or clang rejects the output.
     """
@@ -191,31 +337,12 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
                                    env: dict[str, str] | None = None,
                                    profile: bool = False) -> tuple[int, str]:
     """Same as compile_and_run_stdlib but also returns the program's stdout
-    (decoded as UTF-8). Used by tests that batch several checks into one
-    program and verify the printed output, sidestepping the per-test
-    compile+link wall-clock. `optimization_level` selects the yafl optimisation
-    level (>0 enables inlining etc.); `env` adds/overrides run environment."""
-    # Batched? Only the plain form can be served from a batch — per-test args,
-    # env, optimisation level or profiling mean the program cannot share a unit.
-    if args is None and env is None and optimization_level == 0 and not profile:
-        hit = _batch_lookup(source)
-        if hit is not None:
-            return hit
-    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False,
-                       optimization_level=optimization_level, profile=profile)
-    assert c_code, "yafl compilation produced no output (type errors?)"
-
-    with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
-        binary = tmp.name
+    (decoded as UTF-8)."""
+    binary = compile_to_binary(source, optimization_level=optimization_level, profile=profile)
     try:
-        result = subprocess.run(
-            ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS,
-             *static_link_for(optimization_level), "-o", binary],
-            input=c_code, text=True, capture_output=True, timeout=30,
-        )
-        assert result.returncode == 0, f"clang failed:\n{result.stderr}"
         run_env = {**_RUN_ENV, **env} if env else _RUN_ENV
-        run = subprocess.run([binary, *(args or [])], capture_output=True, timeout=timeout, env=run_env, stdin=subprocess.DEVNULL)
+        run = subprocess.run([binary, *(args or [])], capture_output=True, timeout=timeout,
+                             env=run_env, stdin=subprocess.DEVNULL)
         return run.returncode, run.stdout.decode("utf-8", errors="replace")
     finally:
         try:
@@ -225,22 +352,18 @@ def compile_and_run_stdlib_capture(source: str, timeout: int = 5,
 
 
 def compile_to_binary(source: str, optimization_level: int = 0, profile: bool = False) -> str:
-    """Compile yafl source (with stdlib) to a runnable binary and return its
-    path. The caller owns the file and must unlink it. For tests that need to
-    drive the process directly — e.g. an interactive stdin pipe held open — rather
-    than the one-shot compile_and_run helpers. `optimization_level` selects the
-    yafl optimisation level (>0 enables inlining etc.); `profile` instruments
-    for profiling (run with YAFL_PROF_FILE set to collect the output)."""
-    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False,
-                       optimization_level=optimization_level, profile=profile)
-    assert c_code, "yafl compilation produced no output (type errors?)"
+    """Compile yafl source (with stdlib) to a runnable binary with the compiler
+    under test (`-o`), and return its path. The caller owns the file and must
+    unlink it. For tests that need to drive the process directly — e.g. an
+    interactive stdin pipe held open — rather than the one-shot helpers."""
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
         binary = tmp.name
-    result = subprocess.run(
-        ["clang", "-g", "-x", "c", "-", "-O0", *_CLANG_BUILD_FLAGS, *_STATIC_LINK, "-o", binary],
-        input=c_code, text=True, capture_output=True, timeout=30,
-    )
-    assert result.returncode == 0, f"clang failed:\n{result.stderr}"
+    with tempfile.TemporaryDirectory() as td:
+        r = _compile(source, "test.yafl", ["-o", binary], optimization_level, profile,
+                     (), False, Path(td))
+    if r.returncode != 0:
+        os.unlink(binary)
+        raise AssertionError(f"compilation failed (exit {r.returncode}):\n{r.stdout}{r.stderr}")
     return binary
 
 
@@ -368,203 +491,3 @@ def shared_bootstrap_binary() -> str:
             f"Build it first:  python build_bootstrap.py\n"
             f"or point YAFL_BOOTSTRAP_BIN at one.")
     return str(binary)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Batched compile-and-run.
-#
-# MEASURED: compiling one trivial program with the stdlib takes ~37s; compiling
-# twenty-one programs with the stdlib takes ~35s. The marginal cost of an extra
-# program is ZERO — essentially all of it is the stdlib. So N tests that each
-# compile their own program pay N x 37s for work that costs 37s once.
-#
-# run_batch puts every program in its OWN namespace (so each may keep its own
-# `main` — no renaming, no textual surgery on user source) and generates a
-# driver that calls them in turn, printing a marker around each result. One
-# compile, one process.
-#
-# The markers do the attribution: the runner splits stdout on them, so a
-# program that aborts mid-batch is identified by the LAST marker printed.
-# ─────────────────────────────────────────────────────────────────────────────
-
-_BATCH_MARK = "##YAFLBATCH"
-_MAIN_DEF = re.compile(r"(?m)^(fun\s+)(\[[^\]]*\]\s*)?main\s*\(")
-_NS_DECL = re.compile(r"(?m)^namespace\s+\S+\s*$")
-
-
-def batch_program(sources: list[str]) -> "str | None":
-    """The single compilation unit for `sources`, each in namespace T<i>.
-
-    None if any program cannot be batched — one without a `fun main(` has no
-    entry point to call, and guessing would produce a unit that fails to
-    compile and takes every other program down with it.
-    """
-    parts, bodies = [], []
-    for i, src in enumerate(sources):
-        # `main` is THE entry point wherever it is declared — its own namespace
-        # is not enough ("Too many main functions defined"). Rename the
-        # DEFINITION only, anchored at line start, so `main` inside a string or
-        # comment is untouched.
-        body, n = _MAIN_DEF.subn(r"\1\2entry(", src, count=1)
-        if n != 1:
-            return None
-        bodies.append(body)
-    for i, body in enumerate(bodies):
-        # A source that declares its OWN namespace overrides a prepended one,
-        # so `entry` would land somewhere other than T<i> and the driver could
-        # not name it. Rewrite the declaration instead of prepending. More than
-        # one namespace in a single program cannot be placed at all.
-        decls = _NS_DECL.findall(body)
-        if len(decls) > 1:
-            return None
-        if decls:
-            body = _NS_DECL.sub(f"namespace T{i}", body, count=1)
-            parts.append(body.rstrip() + "\n")
-        else:
-            parts.append(f"namespace T{i}\n{body.rstrip()}\n")
-    driver = ["namespace Main", "import System"]
-    driver += [f"import T{i}" for i in range(len(bodies))]
-    driver.append("fun main(): System::Int")
-    for i in range(len(bodies)):
-        # Marker BEFORE the call: if the program aborts, the marker is already
-        # out, and that is how the runner knows WHICH one died.
-        driver.append(f'  let m{i} = System::print("{_BATCH_MARK} {i} start\\n")')
-        # Explicitly typed: `String(...)` is heavily overloaded, and an
-        # unannotated result left the call ambiguous.
-        driver.append(f'  let r{i}: System::Int = T{i}::entry()')
-        driver.append(f'  let d{i} = System::print("{_BATCH_MARK} {i} rc=" '
-                      f'+ System::String(r{i}) + "\\n")')
-    driver.append("  ret 0")
-    parts.append("\n".join(driver) + "\n")
-    return "".join(parts)
-
-
-_MARK_RE = re.compile(r"(?m)^" + re.escape(_BATCH_MARK) + r" (\d+) (start|rc=-?\d+)\n")
-
-
-def parse_batch_output(out: str, n: int) -> "list[tuple[int, str] | None]":
-    """Per-program (exit-code, stdout) from a batch run; None where a program
-    never reported.
-
-    The text between program i's `start` marker and its `rc=` marker is taken
-    RAW — sliced out of the stream, not split into lines and rejoined, because
-    rejoining silently dropped the trailing newline and every test comparing
-    against a literal ending in "\n" then failed by one character.
-    """
-    results: "list[tuple[int, str] | None]" = [None] * n
-    marks = [(m.start(), m.end(), int(m.group(1)), m.group(2))
-             for m in _MARK_RE.finditer(out)]
-    starts: "dict[int, int]" = {}
-    for _s, e, idx, kind in marks:
-        if kind == "start":
-            starts[idx] = e
-        elif idx in starts and 0 <= idx < n:
-            body_end = next(ms for ms, me, i2, k2 in marks
-                            if ms >= starts[idx] and i2 == idx and k2 != "start")
-            results[idx] = (int(kind[3:]), out[starts[idx]:body_end])
-    return results
-
-
-_COLLECTING: "list[str] | None" = None
-_BATCH_RESULTS: "dict[str, tuple[int, str]]" = {}
-
-
-def _batch_lookup(source: str):
-    """(rc, out) for `source` if a batch computed it, else None.
-
-    In COLLECT mode it instead records the program and hands back a benign
-    result — the test's assertions on that are meaningless and its exception is
-    discarded; only the program text matters.
-    """
-    if _COLLECTING is not None:
-        _COLLECTING.append(source)
-        return (0, "")
-    return _BATCH_RESULTS.get(source)
-
-
-def _batch_into(sources: "list[str]", results: dict, depth: int = 0) -> None:
-    """Compile `sources` as one unit and record each program's result.
-
-    A program that must FAIL to compile takes the whole unit with it, and
-    modules routinely mix those in with normal ones. On failure, binary-search
-    the LONGEST COMPILING PREFIX: everything before the first bad program
-    batches in one go, the bad one is isolated and left to compile alone, and
-    the remainder recurses. Each non-compiling program therefore costs
-    O(log n) compiles instead of forfeiting the batch — and if the bad ones sit
-    at the END, the very first prefix probe already covers all the good ones.
-    """
-    if not sources or depth > 16:
-        return
-    if _try_batch(sources, results):
-        return
-    if len(sources) == 1:
-        return                       # this one cannot batch; it compiles alone
-    lo, hi = 0, len(sources)          # largest k < hi with sources[:k] batchable
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if mid >= len(sources):
-            break
-        if _try_batch(sources[:mid], results):
-            lo = mid
-        else:
-            hi = mid - 1
-    _batch_into(sources[lo + 1:], results, depth + 1)   # skip the culprit
-
-
-def _try_batch(sources: "list[str]", results: dict) -> bool:
-    """Compile+run `sources` as one unit; record results. False if it failed."""
-    if not sources:
-        return True
-    unit = batch_program(sources)
-    if unit is None:
-        return False
-    try:
-        _rc, out = compile_and_run_stdlib_capture(unit, timeout=300)
-    except Exception:
-        return False
-    got = parse_batch_output(out, len(sources))
-    if not any(r is not None for r in got):
-        return False
-    for src, res in zip(sources, got):
-        if res is not None:
-            results[src] = res
-    return True
-
-
-class BatchedTestCase(TimedTestCase):
-    """TimedTestCase that compiles its class's programs in one unit.
-
-    Opt in by changing only the base class. Do NOT use where tests pass
-    per-test args/env/optimisation levels (they cannot share a unit), or where
-    a test expects compilation to FAIL.
-    """
-    _TIMEOUT = 600
-
-    @classmethod
-    def setUpClass(cls):
-        global _COLLECTING, _BATCH_RESULTS
-        names = [n for n in dir(cls) if n.startswith("test")]
-        _COLLECTING = []
-        for n in names:
-            try:
-                inst = cls(n)
-                inst.setUp()
-                getattr(inst, n)()
-            except Exception:
-                pass                      # collect mode: only the sources matter
-            finally:
-                try:
-                    inst.tearDown()
-                except Exception:
-                    pass
-        sources, _COLLECTING = _COLLECTING, None
-        seen, uniq = set(), []
-        for src in sources:
-            if src not in seen:
-                seen.add(src); uniq.append(src)
-        if not uniq:
-            return
-        _batch_into(uniq, _BATCH_RESULTS)
-
-    @classmethod
-    def tearDownClass(cls):
-        _BATCH_RESULTS.clear()

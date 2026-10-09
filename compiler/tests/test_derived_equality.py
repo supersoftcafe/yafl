@@ -15,22 +15,18 @@ from __future__ import annotations
 
 import unittest
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c_result
 
 
 def _errors(content: str) -> tuple[str, str]:
-    """(emitted, diagnostics). `compile` PRINTS diagnostics and returns an
-    empty string when it refuses, so the message has to be captured. A crash
+    """(emitted, diagnostics). The compiler PRINTS diagnostics and emits no C
+    when it refuses. A crash
     here is a failure of the test's premise: an undischarged constraint must be
     reported, not raised out of codegen."""
-    import io, contextlib
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        out = c.compile([c.Input(content, "file.yafl")], use_stdlib=True,
-                        just_testing=False, optimization_level=0)
-    return (out or ""), buf.getvalue()
+    r = compile_c_result(content, "file.yafl")
+    return r.c, r.stdout
 
 
 _TUPLE_KEY = """\

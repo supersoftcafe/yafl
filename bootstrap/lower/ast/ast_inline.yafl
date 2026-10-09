@@ -312,7 +312,7 @@ fun [tail] rcmStmtsB(ss: Chain<PStmt>, m: ThisMap,
 fun rcmStmt(st, m: ThisMap) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rcmStmt(f.fParams, m),
                        rcmOpt(f.fBody, m), f.fRet, f.fWheres, f.psfLine,
-                       f.fRetInferred, f.fNested, f.fImports)
+                       f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
                        rcmOpt(l.lDefault, m), l.lArrayLen, l.lWheres,
                        l.pslLine, l.lTypeInferred, l.lImports)
@@ -447,7 +447,7 @@ fun coMethod(f: PsFun, renames: ThisMap, thisMap: ThisMap)
     ()          => f.fName
   ret PsFun(newName, f.fAttrs, f.fGens, f.fParams,
             rcmOpt(f.fBody, thisMap), f.fRet, f.fWheres, f.psfLine,
-            f.fRetInferred, f.fNested, f.fImports)
+            f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
 
 fun coClassParam(caps: OuterTypes, lr)
   let ns = coCapNames(caps)
@@ -1138,7 +1138,7 @@ fun hoRebuiltBody(f: PsFun, body, value) => match(f.fBody)
 
 fun hoWithBody(f: PsFun, body)
   ret PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, body, f.fRet, f.fWheres,
-            f.psfLine, f.fRetInferred, f.fNested, f.fImports)
+            f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
 
 # ── rename application ───────────────────────────────────────────────────────
 
@@ -1153,7 +1153,7 @@ fun [tail] rnmStmtsB(ss: Chain<PStmt>, m: ThisMap,
 fun rnmStmt(st, m: ThisMap) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rnmStmt(f.fParams, m),
                        rnmOpt(f.fBody, m), f.fRet, f.fWheres, f.psfLine,
-                       f.fRetInferred, f.fNested, f.fImports)
+                       f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
                        rnmOpt(l.lDefault, m), l.lArrayLen, l.lWheres,
                        l.pslLine, l.lTypeInferred, l.lImports)
@@ -2095,7 +2095,7 @@ fun aiRwf2(f, bk: PeBlock, catalog: Catalog, r,
                                          rt.retValue, bk.blockTag,
                                          bk.pebkLine),
                                  f.fRet, f.fWheres, f.psfLine,
-                                 f.fRetInferred, f.fNested, f.fImports),
+                                 f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
                            true)
       (o: PStmt)  => RfOut(p2.rnssN, f, false)
     ()                => RfOut(p2.rnssN, f, false)

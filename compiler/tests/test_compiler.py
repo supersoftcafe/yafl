@@ -1,4 +1,5 @@
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 from unittest.mock import patch
 
 import re
@@ -174,7 +175,7 @@ class Test(TestCase):
                    "    System::print(\"Hello\")\n"
                    "    ret 0\n")
 
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertIn("print_string", result, "Missing print statement")
         print(result)
 

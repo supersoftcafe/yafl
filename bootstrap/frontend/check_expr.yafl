@@ -23,7 +23,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   (f: PeFloat)    => noErrs()
   (b: PeBool)     => noErrs()
   (s2: PeStr)     => noErrs()
-  (rx: PeRegex)   => noErrs()
+  (rx: PeRegex)   => oneErr(rx.perLine, "internal: regex literal was not lowered (lowering/regexes.py)")
   (ng: PeNothing) => noErrs()
   (nm: PeName)    => checkName(nm, r)
   (d: PeDot)      => union(checkExpr(d.base, r, None), checkDot(d, r))
@@ -375,7 +375,28 @@ fun checkNew(nw: PeNew, r)
     ()         => oneErr(nw.penwLine, "parameter expression must be of TupleType")
 
 fun checkTupleExpr(tp: PeTuple, r, expected: Spec|None)
-  ret checkTupEnts2(chain(tp.exprs), r, noErrs())
+  ret union(checkTupEnts2(chain(tp.exprs), r, noErrs()),
+      union(spreadErrs(tp, r), unknownFieldErrs(tp, expected)))
+
+# A spread surviving to check never resolved to a tuple: compile expands `*x`
+# only once x's tuple arity is known.
+fun spreadErrs(tp: PeTuple, r): Set<PErr>
+  ret any(tp.exprs, (en) => en.tupSpread && !isTupleSpec(exprType(en.tupValue, r)))
+    ? Set(map(filter(tp.exprs, (en) => en.tupSpread && !isTupleSpec(exprType(en.tupValue, r))),
+              (en) => PErr(tp.petLine, "can only spread a tuple value: `*x` needs x to be a tuple")))
+    : noErrs()
+
+# A WRITTEN entry name is a binding request against THIS receiver: a name that
+# matches none of its fields is a mistake, not a coincidence.
+fun unknownFieldErrs(tp: PeTuple, expected: Spec|None): Set<PErr> => match(expected)
+  (sp: Spec) => match(sp)
+    (st: STuple) => Set(map(filter(tp.exprs, (en) => en.tupName != ""
+                                      && !any(st.stEntries, (se) => se.seName != ""
+                                                && bareOfUnique(se.seName) == en.tupName)),
+                            (en) => PErr(tp.petLine, "the target tuple has no field named '"
+                                                     + en.tupName + "'")))
+    (o: Spec)    => noErrs()
+  ()         => noErrs()
 
 fun [tail] checkTupEnts2(es: Chain<PTupEnt>, r,
                          acc): Set<PErr> => match(es)
@@ -568,9 +589,45 @@ fun checkArm(a: PArm, st, r, expected: Spec|None): Set<PErr>
   let typeErr = checkSpecOpt(a.armType, r)
   let bodyErr = checkExpr(a.armBody, bodyR, expected)
   let guardErr = armGuardErrs(a, bodyR, r)
+  let litErr = fold(a.armLiterals, noErrs(), (acc, l) => union(acc, checkLiteral(l, r)))
   ret union(typeErr,
       union(bodyErr,
-      union(guardErr, union(elseGuardErr(a), mixedKindErr(a)))))
+      union(litErr,
+      union(guardErr, union(elseGuardErr(a), mixedKindErr(a))))))
+
+# Each literal of a literal arm checks as an expression; a RANGE also checks
+# its bounds (MatchRange.check): same width, not empty, and numeric.
+fun checkLiteral(l: PLit, r): Set<PErr> => match(l)
+  (e2: PlExpr)  => checkExpr(e2.litExpr, r, None)
+  (rg: PlRange) => union(checkExpr(rg.rangeLo, r, None),
+                   union(checkExpr(rg.rangeHi, r, None), rangeBoundErrs(rg)))
+
+fun rangeBoundErrs(rg: PlRange): Set<PErr> => match(rg.rangeLo)
+  (lo: PeInt)   => match(rg.rangeHi)
+    (hi: PeInt) => lo.precision != hi.precision
+      ? oneErr(rg.plrLine, "range bounds must be the same integer type")
+      : lo.value > hi.value
+        ? oneErr(rg.plrLine, emptyRange(String(lo.value), String(hi.value)))
+        : noErrs()
+    (o: PExpr)  => notNumericRange(rg)
+  (lo: PeFloat) => match(rg.rangeHi)
+    # Precision 0 is the unsuffixed literal — it narrows to context.
+    (hi: PeFloat) => lo.fPrecision != 0 && hi.fPrecision != 0 && lo.fPrecision != hi.fPrecision
+      ? oneErr(rg.plrLine, "range bounds must be the same float type")
+      : floatOf(lo.floatText) > floatOf(hi.floatText)
+        ? oneErr(rg.plrLine, emptyRange(Bootstrap::Ir::floatRepr(floatOf(lo.floatText)),
+                                        Bootstrap::Ir::floatRepr(floatOf(hi.floatText))))
+        : noErrs()
+    (o: PExpr)    => notNumericRange(rg)
+  (o: PExpr)    => notNumericRange(rg)
+
+fun emptyRange(lo: String, hi: String) => "empty range: " + lo + " .. " + hi + " matches nothing"
+
+fun notNumericRange(rg: PlRange) => oneErr(rg.plrLine,
+    "range bounds must both be integers (or chars) or both floats")
+
+# The literal's value as Python's `float(text)` reads it (`_` separators dropped).
+fun floatOf(text: String): Float => parseFloat(join(split(text, "_"), "")) ?? 0.0
 
 # The else arm must stay TOTAL — the match's coverage guarantee rests on it.
 fun elseGuardErr(a: PArm) => hasGuard(a) && armIsElse(a)

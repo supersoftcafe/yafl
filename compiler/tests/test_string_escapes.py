@@ -9,9 +9,9 @@ Char literals reuse the same decoder, so `'\\u{…}'` is an Int32 codepoint.
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 class TestEscapesRuntime(TestCase):
@@ -48,7 +48,7 @@ class TestEscapeErrors(TestCase):
             f'    print("{literal}")\n'
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertEqual("", result, f"expected {literal!r} to be rejected")
 
     def test_x_too_few_digits(self):

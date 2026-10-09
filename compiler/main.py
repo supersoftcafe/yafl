@@ -6,6 +6,7 @@ import subprocess
 import argparse
 import re
 
+import libraries
 import warning_flags
 
 
@@ -80,14 +81,23 @@ def main():
     except ValueError as e:
         parser.error(str(e))
 
-    files = _gather_inputs(args.files)
-    c_code, link_spec, warnings = c.compile_project(
-        files, use_stdlib=True, just_testing=False,
-        optimization_level=int(args.O),
-        lib_paths=args.lib_path,
-        profile=args.profile,
-        test_mode=args.test,
-        enabled_warnings=enabled_warnings)
+    try:
+        files = _gather_inputs(args.files)
+    except _Unreadable as e:
+        print(f"error: {e}: cannot be read", file=sys.stderr)
+        sys.exit(1)
+    try:
+        c_code, link_spec, warnings = c.compile_project(
+            files, use_stdlib=True, just_testing=False,
+            optimization_level=int(args.O),
+            lib_paths=args.lib_path,
+            profile=args.profile,
+            test_mode=args.test,
+            enabled_warnings=enabled_warnings)
+    except libraries.LibraryError as e:
+        # Printed where compile_project prints its diagnostics, as the port does.
+        print(f"error:{e}")
+        sys.exit(1)
     for w in sorted(set(warnings)):
         print(w, file=sys.stderr)
 
@@ -97,10 +107,14 @@ def main():
         sys.exit(1)
 
     if args.c:
-        with open(args.c, "w", encoding="utf-8") as f:
-            f.write(c_code)
+        try:
+            with open(args.c, "w", encoding="utf-8") as f:
+                f.write(c_code)
+        except OSError:
+            print(f"error: {args.c}: cannot be written", file=sys.stderr)
+            sys.exit(1)
 
-    link_args = _link_args(link_spec)
+    include_args, link_inputs = _include_args(link_spec), _link_inputs(link_spec)
 
     # -O0 (the default) is a debug build: full debug info, nothing stripped.
     # Any optimisation level is a release build: no debug info, dead runtime code
@@ -114,10 +128,15 @@ def main():
     release_link = [] if debug else ["-Wl,--gc-sections", "-Wl,-s"]
 
     if args.a:
-        _run_clang(["clang", *common, "-x", "c", "-", f"-O{args.O}", *link_args, "-S", "-o", args.a], c_code)
+        _run_clang(["clang", *common, "-x", "c", "-", f"-O{args.O}", *include_args, "-S", "-o", args.a], c_code)
 
     if args.o:
-        _run_clang(["clang", *common, "-x", "c", "-", f"-O{args.O}", *link_args, *release_link, "-o", args.o], c_code)
+        _run_clang(["clang", *common, "-x", "c", "-", f"-O{args.O}", *include_args, *link_inputs,
+                    *release_link, "-o", args.o], c_code)
+
+
+class _Unreadable(Exception):
+    """An input that could not be read; the message is its path."""
 
 
 def _gather_inputs(paths: list[str]) -> list:
@@ -125,24 +144,34 @@ def _gather_inputs(paths: list[str]) -> list:
     `.yafl` file under it (recursively) is compiled together."""
     if len(paths) == 1 and Path(paths[0]).is_dir():
         root = Path(paths[0])
-        return sorted((c._read_source(p, root) for p in root.rglob("*.yafl")),
+        return sorted((_read(p, root) for p in root.rglob("*.yafl")),
                       key=lambda i: i.filename)
     # Named files are their own roots: a unit's name is the path as given.
-    return [c._read_source(Path(p), Path(p).parent) for p in paths]
+    return [_read(Path(p), Path(p).parent) for p in paths]
 
 
-def _link_args(link_spec) -> list[str]:
-    """clang flags to build against the loaded libraries: each library's include
-    dir, its static archives, and the system libraries the runtime needs. Static
-    linking only (per the build design)."""
+def _read(path: Path, root: Path):
+    try:
+        return c._read_source(path, root)
+    except (OSError, UnicodeDecodeError) as e:
+        raise _Unreadable(str(path)) from e
+
+
+def _include_args(link_spec) -> list[str]:
+    """clang flags to COMPILE against the loaded libraries: each include dir."""
+    return [f"-I{d}" for d in link_spec.include_dirs] if link_spec is not None else []
+
+
+def _link_inputs(link_spec) -> list[str]:
+    """What to LINK: the libraries' static archives and the system libraries the
+    runtime needs. Static linking only (per the build design). Never passed with
+    -S: under -Werror every unused linker input is an error, which is how `-a`
+    failed on every program."""
     args: list[str] = []
-    if link_spec is not None:
-        for d in link_spec.include_dirs:
-            args.append(f"-I{d}")
-        if link_spec.static_libs:
-            # `-x c -` set the language to C for stdin; reset to "none" so the
-            # static archives are treated as libraries, not C source files.
-            args += ["-x", "none", *[str(p) for p in link_spec.static_libs]]
+    if link_spec is not None and link_spec.static_libs:
+        # `-x c -` set the language to C for stdin; reset to "none" so the
+        # static archives are treated as libraries, not C source files.
+        args += ["-x", "none", *[str(p) for p in link_spec.static_libs]]
     # System libraries the static runtime depends on (threads, math, dl).
     args += ["-lpthread", "-lm", "-ldl"]
     return args

@@ -18,10 +18,10 @@ import re
 import subprocess
 import tempfile
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV, static_link_for
+from tests.testutil import compile_c
 
 _NAIVE_LOOP = (
     "namespace Main\n"
@@ -40,8 +40,7 @@ class TestStringAccumulation(TestCase):
         rc, out = compile_and_run_stdlib_capture(src, optimization_level=3)
         self.assertEqual(0, rc)
         self.assertEqual("xabab", out)
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                           just_testing=True, optimization_level=3)
+        c_code = compile_c(src, optimization_level=3)
         # The loop appends String values directly.
         self.assertTrue("str_append" in c_code or "str_concat_n" in c_code)
 
@@ -104,8 +103,7 @@ class TestStringAccumulation(TestCase):
             "  ret rounds(k - 1, ok ? bad : bad + 1)\n"
             "fun main(): Int\n"
             "  ret rounds(40, 0)\n")
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                           just_testing=True, optimization_level=2)
+        c_code = compile_c(src, optimization_level=2)
         # The suspending loop itself must append to its String accumulator,
         # or the run below proves nothing about in-place extension.
         head = re.search(r"^(?:object_t\*|str_t) Main__suspending_\w+\(.*\)\n\{", c_code, re.MULTILINE)

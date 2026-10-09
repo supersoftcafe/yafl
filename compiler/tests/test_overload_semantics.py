@@ -19,20 +19,15 @@ ruling flips the test knowingly rather than silently.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c_result
 
 
 def _errors_of(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                         just_testing=True)
-    return "" if code else buf.getvalue()
+    r = compile_c_result(src)
+    return "" if r.c else r.stdout
 
 
 class TestSameNameValues(TestCase):
@@ -132,12 +127,8 @@ class TestStrictAmbiguity(TestCase):
 class TestFragileBaseWarning(TestCase):
     @staticmethod
     def __stderr_of(src: str) -> tuple[bool, str]:
-        import contextlib as _c, io as _io2
-        buf = _io2.StringIO()
-        with _c.redirect_stderr(buf):   # warnings print to stderr
-            code = c.compile([c.Input(src, "test.yafl")],
-                             use_stdlib=True, just_testing=True)
-        return bool(code), buf.getvalue()
+        r = compile_c_result(src)    # warnings print to stderr
+        return bool(r.c), r.stderr
 
     def test_multiple_overloads_of_one_parent_warns_and_names_it(self):
         # REFINED (2026-07-05): warn only when one override subsumes several

@@ -84,7 +84,7 @@ class TestBootstrapEscapes(TestCase):
 
     def test_unesc_matches_python(self):
         stdin = "\n".join(_CASES)          # deliberately unterminated
-        r = subprocess.run([self.binary, "unesc"], input=stdin,
+        r = subprocess.run([self.binary, "--stage", "unesc"], input=stdin,
                            capture_output=True, timeout=300, text=True,
                            env=_RUN_ENV)
         self.assertEqual(0, r.returncode, f"port unesc failed:\n{r.stdout[:800]}")

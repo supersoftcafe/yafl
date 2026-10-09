@@ -15,9 +15,9 @@ import pyast.typespec as t
 import pyast.statement as s
 import lowering.simple_classes as simple_classes
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 class TestArrayParsing(TestCase):
@@ -62,7 +62,7 @@ class TestArrayClassValidation(TestCase):
     """The structural rules are enforced at check time, before any codegen."""
 
     def _rejected(self, src: str) -> None:
-        out = c.compile([c.Input(src, "t.yafl")], use_stdlib=True, just_testing=False)
+        out = compile_c(src, "t.yafl")
         self.assertFalse(out, "expected this array class to be rejected")
 
     def test_non_final_array_class_is_rejected(self):

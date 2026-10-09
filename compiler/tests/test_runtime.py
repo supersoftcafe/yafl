@@ -11,8 +11,9 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import _CLANG_BUILD_FLAGS, _STATIC_LINK, _RUN_ENV
+from tests.testutil import compile_c
 
 import compiler as c
 
@@ -600,7 +601,7 @@ fun main(): Int
 
 
 def _compile_stdlib(source: str) -> str:
-    return c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    return compile_c(source)
 
 
 def _compile_and_run_stdlib(source: str, timeout: int = 10) -> int:

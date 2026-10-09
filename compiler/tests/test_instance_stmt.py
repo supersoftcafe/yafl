@@ -19,19 +19,14 @@ synthesized witness class + instance record. Semantics (user rulings
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_errors
 
 
 def _errors(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return buf.getvalue()
+    return compile_errors(src)
 
 # Concrete ambient instance: member callable unqualified, no witness class,
 # no trait let, no where alias.

@@ -8,17 +8,15 @@ diagnostic for a name that resolves more than one way.
 """
 from __future__ import annotations
 
-import io
 import os
 import subprocess
 import sys
-import contextlib
 import tempfile
 from pathlib import Path
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c_result
 
 _COMPILER_DIR = Path(__file__).resolve().parent.parent
 
@@ -50,11 +48,9 @@ import B
 fun main(): System::Int
   ret thing()
 """
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            out = c.compile([c.Input(src, "t.yafl")], use_stdlib=True)
-        self.assertFalse(out, "ambiguous reference should be rejected")
-        diag = buf.getvalue()
+        r = compile_c_result(src, "t.yafl")
+        self.assertFalse(r.c, "ambiguous reference should be rejected")
+        diag = r.stdout
         self.assertIn("Ambiguous reference 'thing'", diag)
         self.assertIn("A::thing", diag)
         self.assertIn("B::thing", diag)

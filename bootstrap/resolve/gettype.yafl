@@ -243,18 +243,27 @@ fun callType(c: PeCall, r) => match(exprType(c.function, r))
     (o: Spec)       => None
   ()         => None
 
-fun tupleType(tp: PeTuple, r) => STuple(tupEntries(chain(tp.exprs), r, List()), tp.petLine)
-
-fun tupEntries(es: Chain<PTupEnt>, r,
-                      acc: List<SEntry>) => build(tupEntriesB(es, r, builderFrom(acc)))
+# A spread contributes its value's fields, unnamed; until that value is known
+# to be a tuple the whole type is unknown (TupleExpression.get_type).
+fun tupleType(tp: PeTuple, r): Spec|None => match(tupEntriesB(chain(tp.exprs), r, builder()))
+  (es: List<SEntry>) => STuple(es, tp.petLine)
+  ()                 => None
 
 fun [tail] tupEntriesB(es: Chain<PTupEnt>, r,
-                      [terminal] acc): ListBuilder<SEntry> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => tupEntriesB(l.next, r,
-                                push(acc, SEntry(l.value.tupName,
-                                          exprType(l.value.tupValue, r),
-                                          None)))
+                       [terminal] acc: ListBuilder<SEntry>): List<SEntry>|None => match(es)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => !l.value.tupSpread
+    ? tupEntriesB(l.next, r, push(acc, SEntry(l.value.tupName,
+                                              exprType(l.value.tupValue, r), None)))
+    : match(exprType(l.value.tupValue, r))
+      (sp: Spec) => match(sp)
+        (st: STuple) => tupEntriesB(l.next, r, pushAll(acc, map(st.stEntries,
+                                                  (en) => SEntry("", en.seType, None))))
+        (o: Spec)    => discardEntries(acc)
+      ()         => discardEntries(acc)
+
+fun discardEntries([terminal] acc: ListBuilder<SEntry>): List<SEntry>|None
+  ret build(acc) |> (_built) => None
 
 # A __parallel__'s type is the TUPLE of its callables' results — None while
 # any callee has not resolved to a callable with a result yet

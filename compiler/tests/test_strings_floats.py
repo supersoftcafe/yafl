@@ -11,9 +11,9 @@ test_parse, test_string_ops). What remains:
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c
 
 
 _SRC = """\
@@ -80,5 +80,5 @@ let [const] BAD: System::Float = zero()
 fun main(): System::Int
   ret truncateToInt(BAD)
 """
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertEqual("", result)

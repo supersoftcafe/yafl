@@ -7,6 +7,7 @@ self-hosting prototype: every such call (head, tail, isEmpty, chain, ...)
 failed to monomorphise and CRASHED codegen instead of erroring.
 """
 from tests.testutil import TimedTestCase, compile_and_run_stdlib
+from tests.testutil import compile_errors
 
 _SRC = """
 namespace Main
@@ -52,11 +53,7 @@ class TestUninferableGenericCall(TimedTestCase):
         # T appears nowhere in the arguments and no expected type reaches the
         # call: inference CANNOT ground it. That must be a compile error at
         # the call site — not a checked_cast crash in codegen.
-        import io, contextlib
-        import compiler as c
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            c.compile([c.Input("""
+        out = compile_errors("""
 namespace Main
 import System
 
@@ -66,7 +63,6 @@ fun pick<T>(): T|None
 fun main(): System::Int
   ret match(pick())
     () => 0
-""", "test.yafl")], use_stdlib=True, just_testing=True)
-        out = buf.getvalue().lower()
+""").lower()
         self.assertIn("pick", out)
         self.assertIn("type argument", out)

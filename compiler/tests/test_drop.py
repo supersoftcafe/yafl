@@ -8,12 +8,10 @@ instance in scope, the old linearity error stands.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_c_result
 
 
 _PRELUDE = """namespace Main
@@ -92,11 +90,9 @@ class TestAffineDrop(TestCase):
                + "fun main(): System::Int\n"
                + "  let q = Res2(3)\n"
                + "  ret 0\n")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-        self.assertFalse(code, "an undroppable linear leak must still fail")
-        self.assertIn("never used; it must be consumed once", buf.getvalue())
+        r = compile_c_result(src)
+        self.assertFalse(r.c, "an undroppable linear leak must still fail")
+        self.assertIn("never used; it must be consumed once", r.stdout)
 
     def test_io_handle_drops_and_closes(self):
         # End-to-end over the real Drop<IO> instance: asStream splits handle

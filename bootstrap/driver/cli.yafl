@@ -1,0 +1,372 @@
+# bootstrap/driver/cli.yafl — the compiler's COMMAND LINE: compiler/main.py,
+# ported flag for flag.
+#
+#   ybootstrap [-h] [-O LEVEL] [-a OUTFILE] [-c OUTFILE] [-o OUTFILE] [-L DIR]
+#              [--profile] [-W WARNING] [--test] files [files ...]
+#
+# Same arguments, same errors, same exit codes, same C, same clang command. The
+# port used to have no command line at all — it read a pre-assembled `#FILE#`
+# stream on stdin and Python drove it, which is not a compiler. The stage modes
+# the test harness diffs live behind `--stage` (main.yafl), never here.
+#
+# argparse is mirrored down to its consumption rules, because they decide what
+# a command MEANS: a value is the next word unless that word looks like an
+# option; `files` takes the FIRST run of positionals and any later one is an
+# unrecognised argument; long options match by unique prefix; `-Ox`, `-O=x`,
+# `--lib-path=x` all carry their value inline.
+#
+# ONE deliberate difference: Python pipes the C to clang on stdin; the runtime's
+# spawn connects a child's stdin to /dev/null, so the port writes the C to a
+# file in its private temp folder and names that file instead.
+
+namespace Bootstrap::Driver
+
+import System
+import System::IO
+
+import Bootstrap::Ast
+import Bootstrap::Frontend
+import Bootstrap::Parse
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+# ── entry ────────────────────────────────────────────────────────────────────
+
+fun cliMain(argv: List<String>): Int => match(scanArgs(chain(argv), CliScan(0, None, None, None, List(), false, List(), false, List(), List(), false)))
+  (help: CliHelp)   => exitWithOut(helpText(), 0)
+  (err: CliError)   => usageError(err.ceWhy)
+  (s: CliScan)      => cliValidated(s)
+
+# The checks argparse makes AFTER consuming every word — required positional
+# first, then the leftovers — and then main.py's own -W resolution.
+fun cliValidated(s: CliScan): Int
+  if isEmpty(s.csFiles)
+    ret usageError("the following arguments are required: files")
+  if !isEmpty(s.csExtras)
+    ret usageError("unrecognized arguments: " + join(s.csExtras, " "))
+  ret match(resolveEnabledWarnings(s.csWarns))
+    (err: WrErr) => usageError(err.wrMessage)
+    (ok: WrOk)   => cliCompile(s, ok.wrEnabled)
+
+
+# ── argument scanning (argparse) ─────────────────────────────────────────────
+# The scan state. Repeated -O/-a/-c/-o: the last one wins; -L and -W append.
+# `csFilesDone` is set once the first run of positionals has ended.
+
+class [final] CliScan(csOpt: Int, csAsm: String|None, csC: String|None,
+                      csOut: String|None, csLibs: List<String>,
+                      csProfile: Bool, csWarns: List<String>, csTest: Bool,
+                      csFiles: List<String>, csExtras: List<String>,
+                      csFilesDone: Bool)
+
+# `-h` anywhere argparse reaches it: print the help, exit 0.
+class [final] CliHelp(chShown: Bool)
+class [final] CliError(ceWhy: String)
+
+# One word classified: an option (with the value it carried inline, if any),
+# a positional, or a word that looks like an option but names none.
+enum CliWord
+  enum CwOption(cwName: String, cwInline: String|None)
+  enum CwPositional(cwText: String)
+  enum CwUnknown(cwRaw: String)
+
+fun [tail] scanArgs(ws: Chain<String>, s: CliScan): CliScan|CliHelp|CliError => match(ws)
+  (nil: ChainEnd) => s
+  (l: ChainLink)  => l.value == "--"
+    # `--` ends the options: every later word is positional.
+    ? scanRest(l.next, s)
+    : match(classify(l.value))
+      (p: CwPositional) => scanArgs(l.next, positional(s, p.cwText))
+      (u: CwUnknown)    => scanArgs(l.next, extra(s, u.cwRaw))
+      (o: CwOption)     => o.cwName == "-h"
+        ? CliHelp(true)
+        : takesValue(o.cwName)
+          ? match(valueFor(o, l.next))
+            (why: CliError)  => why
+            (v: CliValue)    => match(applyValue(s, o.cwName, v.cvText))
+              (why2: CliError) => why2
+              (s2: CliScan)    => scanArgs(v.cvRest, s2)
+          : match(o.cwInline)
+            (x: String) => CliError("argument " + displayName(o.cwName)
+                                    + ": ignored explicit argument '" + x + "'")
+            ()          => scanArgs(l.next, applyFlag(s, o.cwName))
+
+fun [tail] scanRest(ws: Chain<String>, s: CliScan): CliScan|CliHelp|CliError => match(ws)
+  (nil: ChainEnd) => s
+  (l: ChainLink)  => scanRest(l.next, positional(s, l.value))
+
+# A value comes inline (`-O3`, `-O=3`, `--lib-path=x`) or is the NEXT word —
+# unless that word looks like an option, which argparse refuses to swallow.
+class [final] CliValue(cvText: String, cvRest: Chain<String>)
+
+fun valueFor(o: CwOption, rest: Chain<String>): CliValue|CliError => match(o.cwInline)
+  (x: String) => CliValue(x, rest)
+  ()          => match(rest)
+    (nil: ChainEnd) => expectedOne(o.cwName)
+    (l: ChainLink)  => looksLikeOption(l.value) ? expectedOne(o.cwName) : CliValue(l.value, l.next)
+
+fun expectedOne(name: String) => CliError("argument " + displayName(name) + ": expected one argument")
+
+# argparse's own test: a leading '-' makes an option, except '-' alone and
+# words that read as negative numbers (this parser declares no option that
+# does, so those are positional).
+fun looksLikeOption(w: String) => startsWith(w, "-") && w != "-" && !isNegativeNumber(w)
+
+fun isNegativeNumber(w: String) => length(w) >= 2 && allDigitsOrPoint(w, 1, false)
+
+fun [tail] allDigitsOrPoint(w: String, at: Int, sawDigit: Bool): Bool
+  if at >= length(w)
+    ret sawDigit
+  let c = byteAt(w, at)
+  ret c >= '0' && c <= '9' ? allDigitsOrPoint(w, at + 1, true)
+    : c == '.' ? allDigitsOrPoint(w, at + 1, sawDigit)
+    : false
+
+# ── word classification ──────────────────────────────────────────────────────
+
+fun classify(w: String): CliWord
+  if !looksLikeOption(w)
+    ret CwPositional(w)
+  if isOptionName(w)
+    ret CwOption(canonicalName(w), None)
+  ret startsWith(w, "--") ? classifyLong(w) : classifyShort(w)
+
+# `--name=value`, or a unique prefix of a long option, with or without `=`.
+fun classifyLong(w: String): CliWord
+  let eq = findByte(w, '=', 0)
+  let name = eq < 0 ? w : slice(w, 0, eq)
+  let inline: String|None = eq < 0 ? None : slice(w, eq + 1, length(w))
+  ret match(longNamed(name))
+    (full: String) => CwOption(canonicalName(full), inline)
+    ()             => CwUnknown(w)
+
+fun longNamed(prefix: String): String|None
+  let hits = filter(longOptions(), (o) => startsWith(o, prefix))
+  ret chainLength(chain(hits)) == 1 ? head(hits) : None
+
+# `-O3` / `-O=3`: the first two characters name the option and the rest is its
+# value. `-hx` is a CLUSTER of flags, and argparse acts on `-h` the moment it
+# reaches it — the help is printed whatever follows.
+fun classifyShort(w: String): CliWord
+  let name = slice(w, 0, 2)
+  let rest = slice(w, 2, length(w))
+  if name == "-h"
+    ret CwOption("-h", None)
+  if !isOptionName(name) || !takesValue(name)
+    ret CwUnknown(w)
+  ret CwOption(name, startsWith(rest, "=") ? slice(rest, 1, length(rest)) : rest)
+
+fun longOptions() => prepend("--help", prepend("--lib-path",
+                     prepend("--profile", prepend("--test", List()))))
+
+fun isOptionName(w: String) => w == "-h" || w == "--help" || w == "-O" || w == "-a"
+  || w == "-c" || w == "-o" || w == "-L" || w == "--lib-path" || w == "-W"
+  || w == "--profile" || w == "--test"
+
+fun canonicalName(w: String) => w == "--help" ? "-h" : w == "--lib-path" ? "-L" : w
+
+fun takesValue(name: String) => name == "-O" || name == "-a" || name == "-c"
+  || name == "-o" || name == "-L" || name == "-W"
+
+fun displayName(name: String) => name == "-L" ? "-L/--lib-path"
+  : name == "-h" ? "-h/--help" : name
+
+# ── applying a word ──────────────────────────────────────────────────────────
+
+fun applyValue(s: CliScan, name: String, v: String): CliScan|CliError
+  if name == "-O"
+    ret v == "0" || v == "1" || v == "2" || v == "3"
+      ? ended(CliScan(parseInt(v) ?? 0, s.csAsm, s.csC, s.csOut, s.csLibs, s.csProfile,
+                s.csWarns, s.csTest, s.csFiles, s.csExtras, s.csFilesDone))
+      : CliError("argument -O: invalid choice: '" + v
+                 + "' (choose from '0', '1', '2', '3')")
+  ret ended(name == "-a" ? CliScan(s.csOpt, v, s.csC, s.csOut, s.csLibs, s.csProfile, s.csWarns, s.csTest, s.csFiles, s.csExtras, s.csFilesDone)
+    : name == "-c" ? CliScan(s.csOpt, s.csAsm, v, s.csOut, s.csLibs, s.csProfile, s.csWarns, s.csTest, s.csFiles, s.csExtras, s.csFilesDone)
+    : name == "-o" ? CliScan(s.csOpt, s.csAsm, s.csC, v, s.csLibs, s.csProfile, s.csWarns, s.csTest, s.csFiles, s.csExtras, s.csFilesDone)
+    : name == "-L" ? CliScan(s.csOpt, s.csAsm, s.csC, s.csOut, concat(s.csLibs, list1(v)), s.csProfile, s.csWarns, s.csTest, s.csFiles, s.csExtras, s.csFilesDone)
+    : CliScan(s.csOpt, s.csAsm, s.csC, s.csOut, s.csLibs, s.csProfile, concat(s.csWarns, list1(v)), s.csTest, s.csFiles, s.csExtras, s.csFilesDone))
+
+fun applyFlag(s: CliScan, name: String): CliScan => ended(name == "--profile"
+  ? CliScan(s.csOpt, s.csAsm, s.csC, s.csOut, s.csLibs, true, s.csWarns, s.csTest, s.csFiles, s.csExtras, s.csFilesDone)
+  : CliScan(s.csOpt, s.csAsm, s.csC, s.csOut, s.csLibs, s.csProfile, s.csWarns, true, s.csFiles, s.csExtras, s.csFilesDone))
+
+# Any option after the first positional closes the `files` run.
+fun ended(s: CliScan): CliScan => isEmpty(s.csFiles) ? s
+  : CliScan(s.csOpt, s.csAsm, s.csC, s.csOut, s.csLibs, s.csProfile, s.csWarns, s.csTest, s.csFiles, s.csExtras, true)
+
+fun positional(s: CliScan, w: String): CliScan => s.csFilesDone
+  ? extra(s, w)
+  : CliScan(s.csOpt, s.csAsm, s.csC, s.csOut, s.csLibs, s.csProfile, s.csWarns, s.csTest, concat(s.csFiles, list1(w)), s.csExtras, false)
+
+fun extra(s: CliScan, w: String): CliScan =>
+  CliScan(s.csOpt, s.csAsm, s.csC, s.csOut, s.csLibs, s.csProfile, s.csWarns, s.csTest, s.csFiles, concat(s.csExtras, list1(w)), s.csFilesDone || !isEmpty(s.csFiles))
+
+
+# ── usage and help ───────────────────────────────────────────────────────────
+# argparse's text, with this program's name where argparse puts `main.py`.
+
+fun progName() => baseName(argv0())
+
+fun usageLine() => "usage: " + progName() + " [-h] [-O LEVEL] [-a OUTFILE] [-c OUTFILE]"
+  + " [-o OUTFILE] [-L DIR] [--profile] [-W WARNING] [--test] files [files ...]\n"
+
+fun usageError(why: String): Int => exitWithErr(usageLine() + progName() + ": error: " + why + "\n", 2)
+
+fun helpText() => usageLine()
+  + "\nMy compiler-like tool\n"
+  + "\npositional arguments:\n"
+  + "  files               Input .yafl file(s), or a project directory\n"
+  + "\noptions:\n"
+  + "  -h, --help          show this help message and exit\n"
+  + "  -O LEVEL            Optimisation level\n"
+  + "  -a OUTFILE          Assembly output\n"
+  + "  -c OUTFILE          C output\n"
+  + "  -o OUTFILE          Output file name\n"
+  + "  -L, --lib-path DIR  Additional library search path (repeatable)\n"
+  + "  --profile           Instrument for profiling; the binary writes callgrind.out.<pid> at exit\n"
+  + "  -W WARNING          Enable/disable a warning: -Wname, -Wall, -Wno-name\n"
+  + "  --test              Build a unit-test binary from the [test] functions\n"
+
+
+# ── compile (main.py's body) ─────────────────────────────────────────────────
+
+fun cliCompile(s: CliScan, enabled: Set<String>): Int => match(gatherInputs(s.csFiles))
+  (why: String)          => exitWithErr("error: " + why + "\n", 1)
+  (srcs: List<LibSource>) => match(parseUnits(srcs))
+    (pe: ParseErrors)    => exitWithOut(printedDiagnostics(pe.peErrs), 1)
+    (user: List<PStmt>)  => cliBuild(s, enabled, user)
+
+fun cliBuild(s: CliScan, enabled: Set<String>, parsed: List<PStmt>): Int
+  let user = s.csTest ? testProgram(parsed) : parsed
+  ret match(user)
+    (why: String)       => exitWithOut(why, 1)
+    (u: List<PStmt>)    => projectBuild(u, s.csLibs, s.csOpt, s.csProfile, enabled)
+      |> (b) => cliEmit(s, b)
+
+# `for w in sorted(set(warnings)): print(w, file=sys.stderr)`, then a failed
+# compile exits 1 with its diagnostics on stdout, as compile_project printed them.
+fun [impure] cliEmit(s: CliScan, b: ProjectBuild): Int
+  printErr(b.pbWarns)
+  ret b.pbCode != 0
+    ? exitWithOut(join(b.pbOuts, ""), 1)
+    : match(b.pbSpec)
+      (spec: LinkSpec) => cliOutputs(s, b.pbOuts, spec)
+      ()               => 1   # unreachable: a successful build carries its spec
+
+# -c writes the C as emitted; -a then -o run clang over it, in main.py's order.
+fun cliOutputs(s: CliScan, outs: List<String>, spec: LinkSpec): Int
+  let cWritten = match(s.csC)
+    (path: String) => writeParts(path, outs)
+    ()             => None
+  ret match(cWritten)
+    (why: String) => exitWithErr("error: " + why + "\n", 1)
+    ()            => cliClang(s, outs, spec)
+
+fun cliClang(s: CliScan, outs: List<String>, spec: LinkSpec): Int
+  if s.csAsm is None && s.csOut is None
+    ret 0
+  ret match(tempDir())
+    (tmp: String) => match(writeParts(tmp + "/out.c", outs))
+      (why: String) => exitWithErr("error: " + why + "\n", 1)
+      ()            => cliClangRuns(s, tmp + "/out.c", spec)
+    ()           => exitWithErr("error: the process temp folder cannot be created\n", 1)
+
+fun cliClangRuns(s: CliScan, cFile: String, spec: LinkSpec): Int
+  let asmCode = match(s.csAsm)
+    (a: String) => runClang(concat(clangCompileArgs(s, cFile, spec), prepend("-S", prepend("-o", list1(a)))))
+    ()          => 0
+  if asmCode != 0
+    ret asmCode
+  ret match(s.csOut)
+    (o: String) => runClang(concat(concat(concat(clangCompileArgs(s, cFile, spec), linkInputs(spec)),
+                                          releaseLink(s.csOpt)),
+                                   prepend("-o", list1(o))))
+    ()          => 0
+
+# `[*common, "-x", "c", "-", f"-O{O}", *include_args]` — `cFile` where Python
+# writes `-` for stdin.
+fun clangCompileArgs(s: CliScan, cFile: String, spec: LinkSpec): List<String>
+  ret concat(concat(commonFlags(s.csOpt), prepend("-x", prepend("c", prepend(cFile,
+         list1("-O" + String(s.csOpt)))))), map(spec.specIncludeDirs, (d) => "-I" + d))
+
+# -O0 is a debug build: full debug info, nothing stripped. Any optimisation
+# level is a release build. -O2+ drops the asserts.
+fun commonFlags(o: Int): List<String>
+  let base = prepend("-std=c11", prepend("-Wall", prepend("-Wextra", prepend("-Werror",
+             prepend("-ffunction-sections", list1("-fdata-sections"))))))
+  ret concat(concat(base, o == 0 ? list1("-g") : List()), o >= 2 ? list1("-DNDEBUG") : List())
+
+fun releaseLink(o: Int): List<String> => o == 0 ? List()
+  : prepend("-Wl,--gc-sections", list1("-Wl,-s"))
+
+# LINKING only — never with -S, where -Werror turns every unused linker input
+# into an error. The static archives go after `-x none` (so clang reads them as
+# libraries, not C), then the system libraries the runtime needs.
+fun linkInputs(spec: LinkSpec): List<String>
+  let statics = isEmpty(spec.specStaticLibs) ? List() : prepend("-x", prepend("none", spec.specStaticLibs))
+  ret concat(statics, prepend("-lpthread", prepend("-lm", list1("-ldl"))))
+
+# `_run_clang`: on failure, "Compilation failed:" and clang's stderr, on stdout.
+fun runClang(argv: List<String>): Int => match(System::IO::run("clang", argv))
+  (e: IOError)        => exitWithOut("Compilation failed:\nclang could not be started\n", 1)
+  (r: ProcessResult)  => r.exitCode == 0 ? 0
+    : exitWithOut("Compilation failed:\n" + r.err + "\n", 1)
+
+
+# ── inputs (main.py _gather_inputs) ──────────────────────────────────────────
+# ONE directory argument is a project: every `.yafl` under it, recursively,
+# named by its path relative to that directory. Otherwise each argument is a
+# file named by its BASENAME (`unit_name(p, p.parent)`).
+
+fun gatherInputs(paths: List<String>): List<LibSource>|String
+  ret chainLength(chain(paths)) == 1 && isDirectory(head(paths) ?? "")
+    ? projectInputs(head(paths) ?? "")
+    : fileInputs(chain(paths), builder())
+
+fun projectInputs(root: String): List<LibSource>|String => match(yaflPaths(root, List()))
+  (why: String)         => why
+  (ps: List<String>)    => readSources(root, sortByUnitName(root, ps))
+
+fun [tail] fileInputs(ps: Chain<String>,
+                      [terminal] b: ListBuilder<LibSource>): List<LibSource>|String => match(ps)
+  (nil: ChainEnd) => build(b)
+  (l: ChainLink)  => match(readWholeFile(l.value))
+    (e: IOError)  => srcDiscard(b, l.value + ": cannot be read")
+    (t: String)   => fileInputs(l.next, push(b, LibSource(baseName(l.value), t)))
+
+# ── output ───────────────────────────────────────────────────────────────────
+
+# Print, then finish with `code` — every exit path of the command line.
+fun [impure] exitWithOut(text: String, code: Int): Int
+  print(text)
+  ret code
+
+fun [impure] exitWithErr(text: String, code: Int): Int
+  printErr(text)
+  ret code
+
+fun [impure] printErr(text: String): None => closeQuietly(writeAll(stderr(), text).io)
+
+fun closeQuietly(io: IO): None => match(io.close())
+  (e: IOError) => None
+  ()           => None
+
+# A failed write still owns an open file: close it, and report `why`.
+fun closedWith(io: IO, why: String): String => match(io.close())
+  (e: IOError) => why
+  ()           => why
+
+# The C, fragment by fragment, into `path` (created or truncated, like
+# `open(path, "w")`). None on success, else why it failed.
+fun writeParts(path: String, parts: List<String>): String|None => match(create(path))
+  (e: IOError) => path + ": cannot be written"
+  (io: IO)     => writePartsChecked(io, chain(parts), path)
+
+fun [tail] writePartsChecked(io: IO, ps: Chain<String>, path: String): String|None => match(ps)
+  (nil: ChainEnd) => match(io.close())
+    (e: IOError) => path + ": cannot be written"
+    ()           => None
+  (l: ChainLink)  => writeAll(io, l.value) |> (w) => match(w.v)
+    (e2: IOError) => closedWith(w.io, path + ": cannot be written")
+    (n: Int)      => writePartsChecked(w.io, l.next, path)

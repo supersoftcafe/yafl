@@ -119,7 +119,7 @@ class TestBootstrapLambdas(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_lambdas(text).splitlines()
-                r = subprocess.run([self.binary, "lambdas"], input=text,
+                r = subprocess.run([self.binary, "--stage", "lambdas"], input=text,
                                    capture_output=True, timeout=240, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,

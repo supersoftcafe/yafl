@@ -110,7 +110,7 @@ fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
   # hash with a suffix nothing else generates.
   let rawName = hashName(simpleName(f.fName) + "$hraw", lr)
   let raw = PsFun(rawName, attrs2, f.fGens, f.fParams, f.fBody, f.fRet,
-                  f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports)
+                  f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   let int32Spec = SBuiltin("int32", lr)
   let vRef = PeName(paramName, List(), lr)
   let peek = PeBuiltinOp(int32Spec, PeStr("yafl_hash_peek", lr),
@@ -129,7 +129,7 @@ fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
                                PeName("$hcache", List(), lr), lr),
                      "", lr)
   ret (PsFun(f.fName, attrs2, f.fGens, f.fParams, body, f.fRet,
-             f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports),
+             f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
        raw)
 
 # ── [refeq] — plan §3c, the user's opt-in ruling ─────────────────────────────
@@ -192,7 +192,7 @@ fun lhSplitRefeq(f: PsFun, lName, rName): (wrap: PStmt, raw: PStmt)
   let attrs2 = filter(f.fAttrs, (a) => a.attrName != "refeq")
   let rawName = hashName(simpleName(f.fName) + "$reraw", lr)
   let raw = PsFun(rawName, attrs2, f.fGens, f.fParams, f.fBody, f.fRet,
-                  f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports)
+                  f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   let lRef = PeName(lName, List(), lr)
   let rRef = PeName(rName, List(), lr)
   let same = PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_ref_eq", lr),
@@ -202,5 +202,5 @@ fun lhSplitRefeq(f: PsFun, lName, rName): (wrap: PStmt, raw: PStmt)
   let body = PeBlock(List(),
                      PeTernary(same, PeBool(true, lr), rawCall, lr), "", lr)
   ret (PsFun(f.fName, attrs2, f.fGens, f.fParams, body, f.fRet,
-             f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports),
+             f.fWheres, lr, f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
        raw)

@@ -1,0 +1,26 @@
+# System::splitLines — split a String into lines on '\n', dropping a trailing
+# '\r' so both LF and CRLF work; the text after the final newline is the last
+# element.
+
+namespace CompilerTests::SplitLines
+
+import System
+import System::Test
+
+
+# Each element wrapped in [...] so the split is checked exactly.
+fun bracketed(text: String): String
+    ret fold<String, String>(splitLines(text), "",
+        (acc: String, s: String) => acc + "[" + s + "]")
+
+fun [test("a '\\r' before the '\\n' is stripped, so LF and CRLF both split")] lfAndCrlf(): None|TestFailure
+    ret assertEqStr(bracketed("a\nbb\r\nccc"), "[a][bb][ccc]", "mixed endings")
+
+fun [test("a trailing newline gives an empty last line")] trailingNewline(): None|TestFailure
+    ret assertEqStr(bracketed("a\n"), "[a][]", "trailing newline")
+
+fun [test("no newline gives a single element")] noNewline(): None|TestFailure
+    ret assertEqStr(bracketed("x"), "[x]", "single element")
+
+fun [test("the empty string is one empty line")] emptyString(): None|TestFailure
+    ret assertEqStr(bracketed(""), "[]", "empty input")
