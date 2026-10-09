@@ -1,0 +1,31 @@
+# Numeric string/char escapes: `\xNN`, `\uXXXX`, and `\u{…}`.
+#
+# All three denote a Unicode codepoint (decoded in `_unescape_string`,
+# `parsing/parser.py`) and are encoded to UTF-8 like any other source character.
+# `\xNN` is exactly two hex digits (U+0000–U+00FF); `\uXXXX` is exactly four;
+# `\u{…}` takes one to six and reaches the full scalar range. Out-of-range and
+# surrogate codepoints are rejected so a decoded literal is always valid UTF-8.
+# Char literals reuse the same decoder, so `'\u{…}'` is an Int32 codepoint.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::StringEscapes::CodepointsDecodeAndEncode
+
+import System
+import System::Test
+
+fun program(): System::Int
+  ret ("\x41" == "A")
+   && ("\u0042" == "B")
+   && ("\u{43}" == "C")
+   && ("\u{E9}" == "é")
+   && ("\u{1F389}" == "🎉")
+   && (System::length("\u{1F389}") == 4)
+   && (System::length("\u{E9}") == 2)
+   && ('\x41' == 65i32)
+   && ('\u{1F389}' == 0x1F389i32)
+   ? 0 : 1
+
+fun [test("codepoints decode and encode")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

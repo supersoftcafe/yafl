@@ -978,11 +978,12 @@ fun testRegistryRow(f: PsFun, i)
     + ", System::Test::TestCase(\"" + escapeForSource(q) + "\", \""
     + escapeForSource(testDescriptionOf(f)) + "\", \""
     + escapeForSource(Bootstrap::Driver::baseName(f.psfLine.plFile)) + "\", " + String(f.psfLine.plLine)
-    + ", () => " + q + "()))\n"
+    + ", " + expectedStdoutSource(f) + ", () => " + q + "()))\n"
 
-# Escape for embedding in a GENERATED YAFL string literal. Backslash first,
-# or the escaping escapes itself. Newline too: a description carrying one
-# would otherwise emit source with an unterminated literal.
+# Escape for embedding in a GENERATED YAFL string literal, byte by byte:
+# backslash and quote; newline, which would otherwise end the literal; and
+# every other control byte as \u{x}, since an expected stdout may hold tabs
+# or carriage returns. Mirrors compiler.py's esc.
 fun escapeForSource(s): String => escLoop(s, 0, "")
 
 fun [tail] escLoop(s, at, acc): String
@@ -997,19 +998,21 @@ fun escByte(c)
     ret "\\\""
   if c == '\n'
     ret "\\n"
+  if c < 32i32
+    ret "\\u{" + hexDigits(Int(c)) + "}"
   ret asciiToString(c)
 
-fun testDescriptionOf(f: PsFun) => match(attrValueOf(f.fAttrs, "test"))
-  (v: PExpr) => soleStringOf(v)
-  ()         => ""
+# A shape of `[test]` check() will reject still gets a row; its error is reported.
+fun testDescriptionOf(f: PsFun) => match(testAttrParts(attrValueOf(f.fAttrs, "test")))
+  (ta: TestAttr) => ta.taDescription
+  ()             => ""
 
-fun soleStringOf(x) => match(x)
-  (tp: PeTuple) => match(head(tp.exprs))
-    (en: PTupEnt) => match(en.tupValue)
-      (s2: PeStr) => s2.strValue
-      (o: PExpr)  => ""
-    ()            => ""
-  (o: PExpr)    => ""
+# The TestCase's `stdout`: the declared expectation as a string literal, or None.
+fun expectedStdoutSource(f: PsFun): String => match(testAttrParts(attrValueOf(f.fAttrs, "test")))
+  (ta: TestAttr) => match(ta.taStdout)
+    (out: String) => "\"" + escapeForSource(out) + "\""
+    ()            => "System::None"
+  ()             => "System::None"
 
 fun parseSingle(text): List<PStmt>|None => match(parseProgram(text, "x"))
   (fp: PFail)          => None

@@ -832,23 +832,22 @@ def __test_registry_source(tests: list[s.FunctionStatement]) -> Input:
     library in via the namespace worklist.
     """
     def esc(text: str) -> str:
-        # Backslash FIRST, or the escaping escapes itself. Newline too: a
-        # description carrying one would otherwise emit source with an
-        # unterminated string literal. Mirrored by the port's escapeForSource.
-        return (text.replace("\\", "\\\\").replace('"', '\\"')
-                    .replace("\n", "\\n"))
+        # Character by character, so nothing is escaped twice: backslash and
+        # quote; newline, which would otherwise end the literal; and every
+        # other control character as \u{x}, since an expected stdout may hold
+        # tabs or carriage returns. Mirrored by the port's escapeForSource.
+        return "".join("\\\\" if ch == "\\" else '\\"' if ch == '"' else "\\n" if ch == "\n"
+                       else f"\\u{{{ord(ch):x}}}" if ord(ch) < 32 else ch
+                       for ch in text)
 
     def case_expr(fn) -> str:
         qualified = g.simple_name(fn.name)
-        arg = fn.attributes.get("test")
-        description = ""
-        if isinstance(arg, e.TupleExpression) and len(arg.expressions) == 1:
-            value = arg.expressions[0].value
-            if isinstance(value, e.StringExpression):
-                description = value.value
+        # A shape check() will reject still gets a row; its error is reported.
+        description, stdout = s.test_attribute_parts(fn.attributes.get("test")) or ("", None)
+        expected = "System::None" if stdout is None else f'"{esc(stdout)}"'
         return (f'{tc}("{esc(qualified)}", "{esc(description)}", '
                 f'"{esc(Path(fn.line_ref.filename).name)}", {fn.line_ref.line}, '
-                f"() => {qualified}())")
+                f"{expected}, () => {qualified}())")
 
     tc = "System::Test::TestCase"
 

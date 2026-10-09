@@ -1,0 +1,46 @@
+# Inlining a body that CONTAINS a lambda must give each copy its own
+# closure class.
+#
+# ast_inline can duplicate an `[inline]` function's body within one host;
+# each copy's bindings are renamed with a distinct $inlN suffix — so the
+# copies' lambdas capture DIFFERENTLY-NAMED variables and need distinct
+# closure classes. But the lambda-path map is keyed by line_ref (clone-
+# stable, deliberately: search_and_replace hands the converter clones) with
+# first-occurrence-wins, so both copies minted ONE name: two classes
+# registered under it, find_type at the New site saw 2, and codegen died
+# with the misleading "Failed to resolve $lambdas::..." abort. The ledger's
+# inliner bug B.
+#
+# The fix suffixes later same-name occurrences $dup2, $dup3… in traversal
+# order — deterministic, and every previously-compiling program keeps its
+# historic names (first occurrence unsuffixed).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::InlineLambdaDup::InlinedLambdaCopiesGetDistinctClasses
+
+import System
+import System::Test
+
+fun [inline] withLam(l: List<Int>, s: Int): List<Int>
+  if s > 3
+    ret l
+  ret map(l, (v: Int) => v + s)
+
+fun outer(flag: Bool, l: List<Int>): List<Int>
+  let v = withLam(flag ? withLam(l, 1) : l, 2)
+  ret v
+
+fun program(): Int
+  # withLam(l,1) then withLam(.,2): 7+1+2 = 10; the else path skips both.
+  let a = match(head(outer(true, prepend(7, List<Int>()))))
+    (x: Int) => x
+    ()        => 0 - 1
+  let b = match(head(outer(false, prepend(7, List<Int>()))))
+    (x: Int) => x
+    ()        => 0 - 1
+  ret (a == 10 && b == 9) ? 0 : 1
+
+fun [test("inlined lambda copies get distinct classes")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

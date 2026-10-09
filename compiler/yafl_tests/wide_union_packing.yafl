@@ -1,0 +1,196 @@
+# Wide unions pack scalar and function members into one 16-byte str_t.
+#
+# A collapsing union with a String or function member is a String value:
+# scalar members ride as spare codes in word 0 with the payload in word 1, a
+# function stores its environment in word 0 and its code pointer in word 1.
+# The two programs live in the bootstrap parity corpus (corpus_converge/), so
+# the port's C for them is pinned against Python's too; here they run, at -O0
+# and -O2, against output checked by hand when the packing was introduced.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::WideUnionPacking::FunctionMembers
+
+import System
+import System::Test
+
+# Wide unions carrying FUNCTION members in 16 bytes: word 0 is the closure's
+# environment (a spare code when it has none), word 1 its code pointer.
+# Covers functions beside String, Int, None and a newtype, with and without
+# captured environments, matching and calling out of the union — and
+# Pair|Fun, which must stay a tagged struct (a bound method's environment is
+# a class instance, so word 0 could not tell them apart).
+# test_wide_union_packing pins the output.
+
+
+
+class [final] Wrap(w: Int)
+
+class [final] Pair(a: Int, b: Int)
+
+fun double(x: Int): Int => x * 2
+
+fun makeAdder(n: Int): (:Int): Int
+  ret (x: Int) => x + n
+
+fun pickF(k: Int): ((:Int): Int)|None
+  ret k % 3 == 0 ? makeAdder(k) : k % 3 == 1 ? double : None
+
+fun pickSF(k: Int): String|((:Int): Int)|None
+  ret k % 3 == 0 ? "str" + String(k) : k % 3 == 1 ? makeAdder(k * 100) : None
+
+fun pickIF(k: Int): Int|((:Int): Int)
+  ret k % 2 == 0 ? k * 7 : double
+
+fun pickWF(k: Int): Wrap|((:Int): Int)
+  ret k % 2 == 0 ? Wrap(k) : makeAdder(k)
+
+fun pickPF(k: Int): Pair|((:Int): Int)
+  ret k % 2 == 0 ? Pair(k, k + 1) : makeAdder(k)
+
+fun usePF(v: Pair|((:Int): Int)): String
+  ret match(v)
+    (p: Pair)        => "p" + String(p.a + p.b)
+    (f: (:Int): Int) => "f" + String(f(2))
+
+fun useF(v: ((:Int): Int)|None): String
+  ret match(v)
+    (f: (:Int): Int) => "f" + String(f(10))
+    (n: None)        => "none"
+
+fun useSF(v: String|((:Int): Int)|None): String
+  ret match(v)
+    (s: String)      => "s" + s
+    (f: (:Int): Int) => "f" + String(f(1))
+    (n: None)        => "n"
+
+fun useIF(v: Int|((:Int): Int)): String
+  ret match(v)
+    (i: Int)         => "i" + String(i)
+    (f: (:Int): Int) => "f" + String(f(3))
+
+fun useWF(v: Wrap|((:Int): Int)): String
+  ret match(v)
+    (w: Wrap)        => "w" + String(w.w)
+    (f: (:Int): Int) => "f" + String(f(5))
+
+fun widenF(k: Int): String|((:Int): Int)|None
+  ret pickF(k)
+
+fun [tail] loop(k: Int, n: Int, acc: String): String
+  if k >= n
+    ret acc
+  let line = useF(pickF(k)) + " " + useSF(pickSF(k)) + " " + useIF(pickIF(k))
+    + " " + useWF(pickWF(k)) + " " + useSF(widenF(k)) + " " + usePF(pickPF(k)) + "\n"
+  ret loop(k + 1, n, acc + line)
+
+fun program(): System::Int
+  let (pa, pb) = __parallel__(() => useF(pickF(3)), () => useSF(pickSF(4)))
+  print(loop(0, 9, "") + pa + " " + pb + "\n")
+  ret 0
+
+fun [test("function members", stdout = "f10 sstr0 i0 w0 f1 p1\nf20 f101 f6 f6 f2 f3\nnone n i14 w2 n p5\nf13 sstr3 f6 f8 f4 f5\nf20 f401 i28 w4 f2 p9\nnone n f6 f10 n f7\nf16 sstr6 i42 w6 f7 p13\nf20 f701 f6 f12 f2 f9\nnone n i56 w8 n p17\nf13 f401\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::WideUnionPacking::ScalarMembers
+
+import System
+import System::Test
+
+# Wide unions carrying SCALAR members in 16 bytes. A union with a String
+# member is a str_t; bool/int8..int64/float32/float64 members ride as spare
+# codes in word 0 with the payload in word 1. Covers boxing, typed and
+# literal arms, an arm narrowing to a tagged sub-union (Int32|None), widening
+# from a tagged union, from a narrow pointer union (String|None) and into a
+# wider wide union, and values crossing a __parallel__ boundary.
+# test_wide_union_packing pins the output.
+
+
+
+fun pick(k: Int): String|Int32|None
+  ret k % 3 == 0 ? "three" : k % 3 == 1 ? truncateToInt32(k * 10) : None
+
+fun pick2(k: Int): String|Float64|Bool|None
+  ret k % 4 == 0 ? "a much longer string than fifteen bytes"
+    : k % 4 == 1 ? Float(k) / 4.0
+    : k % 4 == 2 ? k > 5
+    : None
+
+fun pick3(k: Int): String|Int64
+  ret k % 2 == 0 ? "even" : truncateToInt64(k) * 1000000000000i64
+
+fun narrow(k: Int): Int32|None
+  ret k % 2 == 0 ? truncateToInt32(k) : None
+
+fun widenTagged(k: Int): String|Int32|None
+  ret narrow(k)
+
+fun widenPointer(k: Int): String|Int32|None
+  let s: String|None = k % 2 == 0 ? "p" + String(k) : None
+  ret s
+
+fun describe(v: String|Int32|None): String
+  ret match(v)
+    (s: String) => "S:" + s
+    (i: Int32)  => "I:" + String(i)
+    (n: None)   => "N"
+
+fun literalArms(v: String|Int32|None): String
+  ret match(v)
+    (5i32 | 10i32) => "five-or-ten"
+    ("three")     => "the-string-three"
+    (i: Int32)    => "other-int:" + String(i)
+    (s: String)   => "other-string:" + s
+    (n: None)     => "none"
+
+fun unionArm(v: String|Int32|None): String
+  ret match(v)
+    (x: Int32|None) => match(x)
+      (i: Int32) => "num " + String(i)
+      (n: None)  => "nothing"
+    (s: String) => "str " + s
+
+fun describe2(v: String|Float64|Bool|None): String
+  ret match(v)
+    (s: String)  => "S:" + s
+    (f: Float64) => "F:" + String(f)
+    (b: Bool)    => b ? "T" : "F"
+    (n: None)    => "N"
+
+fun describe3(v: String|Int64): String
+  ret match(v)
+    (s: String) => "S:" + s
+    (i: Int64)  => "L:" + String(i)
+
+fun toBig(v: String|Int32|None): String|Int32|Float64|None
+  ret v
+
+fun describeBig(v: String|Int32|Float64|None): String
+  ret match(v)
+    (s: String)  => "s" + s
+    (i: Int32)   => "i" + String(i)
+    (f: Float64) => "f" + String(f)
+    (n: None)    => "n"
+
+fun [tail] loop(k: Int, n: Int, acc: String): String
+  if k >= n
+    ret acc
+  let line = describe(pick(k)) + " " + literalArms(pick(k)) + " " + unionArm(pick(k))
+    + " " + describe2(pick2(k)) + " " + describe3(pick3(k))
+    + " " + describe(widenTagged(k)) + " " + describe(widenPointer(k))
+    + " " + describeBig(toBig(pick(k))) + "\n"
+  ret loop(k + 1, n, acc + line)
+
+fun [tail] joinPicks(k: Int, n: Int, acc: String): String
+  ret k >= n ? acc : joinPicks(k + 1, n, acc + describe(pick(k)) + ";")
+
+fun program(): System::Int
+  let joined = joinPicks(0, 8, "")
+  let (pa, pb) = __parallel__(() => describe(pick(4)), () => describe2(pick2(5)))
+  print(loop(0, 12, "") + joined + "\n" + pa + " " + pb + "\n")
+  ret 0
+
+fun [test("scalar members", stdout = "S:three the-string-three str three S:a much longer string than fifteen bytes S:even I:0 S:p0 sthree\nI:10 five-or-ten num 10 F:0.25 L:1000000000000 N N i10\nN none nothing F S:even I:2 S:p2 n\nS:three the-string-three str three N L:3000000000000 N N sthree\nI:40 other-int:40 num 40 S:a much longer string than fifteen bytes S:even I:4 S:p4 i40\nN none nothing F:1.25 L:5000000000000 N N n\nS:three the-string-three str three T S:even I:6 S:p6 sthree\nI:70 other-int:70 num 70 N L:7000000000000 N N i70\nN none nothing S:a much longer string than fifteen bytes S:even I:8 S:p8 n\nS:three the-string-three str three F:2.25 L:9000000000000 N N sthree\nI:100 other-int:100 num 100 T S:even I:10 S:p10 i100\nN none nothing N L:11000000000000 N N n\nS:three;I:10;N;S:three;I:40;N;S:three;I:70;\nI:40 F:1.25\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

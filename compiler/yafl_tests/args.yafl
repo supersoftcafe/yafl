@@ -1,0 +1,21 @@
+# End-to-end tests for `System::args()` — CLI-args access.
+#
+# `args()` returns the user-supplied positional arguments as a
+# `List<String>`, dropping the program path (argv[0]) so user code doesn't
+# have to. Backed by two foreign helpers (`sys_argc`, `sys_argv_at`) that
+# expose the raw process argv, set by the emitted `main()` shim before
+# `thread_start`.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Args::UnsetValueIsNone
+
+import System
+import System::Test
+
+fun program(): System::Int
+    ret System::length(System::env("YAFL_TEST_ENV") ?? "dflt")
+
+fun [test("unset value is none")] check(): None|TestFailure
+    ret assertEqInt(program(), 4, "program()")

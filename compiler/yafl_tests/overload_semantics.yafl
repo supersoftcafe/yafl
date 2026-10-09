@@ -1,0 +1,142 @@
+# The overload / dispatch semantics matrix.
+#
+# Pins the ruled semantics (2026-07-04):
+#
+#   - Multiple values may share a name, distinguished only by type; AMBIGUITY
+#     AT THE REFERRER is the error, never the coexistence itself.
+#   - Selection is EXCLUSIVELY by expected type: there is no call node, only a
+#     LOAD (disambiguated by its expected shape — for a call site, the callable
+#     shape assembled from arguments AND required result) followed by a call of
+#     the loaded value. `fun` and `let` are indistinguishable targets.
+#   - A subclass function overrides every parent function whose definition is
+#     trivially assignable to it.
+#   - Optimisation must be observationally invisible to dispatch: -O0 (real
+#     vtables) and -O3 (devirtualised, vtable-trimmed, fused) agree.
+#
+# Cases marked RULING-NEEDED probe corners the rules do not yet decide; their
+# assertions pin CURRENT behaviour and carry the open question, so a future
+# ruling flips the test knowingly rather than silently.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::OverloadSemantics::ArgumentShapeReachesTheLoad
+
+import System
+import System::Test
+
+fun f(n: System::Int): System::Int
+  ret 1
+fun f(s: System::String): System::Int
+  ret 2
+fun f(a: System::Int, b: System::Int): System::Int
+  ret 3
+fun program(): System::Int
+  ret f(0) * 100 + f("x") * 10 + f(0, 0)
+
+fun [test("argument shape reaches the load")] check(): None|TestFailure
+    ret assertEqInt(program(), 123, "program()")
+
+
+namespace CompilerTests::OverloadSemantics::ResultShapeAloneSelects
+
+import System
+import System::Test
+
+fun g(): System::Int
+  ret 7
+fun g(): System::String
+  ret "seven"
+fun wantStr(s: System::String): System::Int
+  ret System::length(s)
+fun wantInt(n: System::Int): System::Int
+  ret n
+fun program(): System::Int
+  ret wantInt(g()) * 10 + wantStr(g())
+
+fun [test("result shape alone selects")] check(): None|TestFailure
+    ret assertEqInt(program(), 75, "program()")
+
+
+namespace CompilerTests::OverloadSemantics::GlobalLetOfFunctionTypeNowWorks
+
+import System
+import System::Test
+
+let h: (:System::String): System::Int = (s: System::String) => System::length(s)
+fun program(): System::Int
+  ret h("abc")
+
+fun [test("global let of function type now works")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")
+
+
+namespace CompilerTests::OverloadSemantics::DuplicateRouteResolutionIsNotAmbiguous
+
+import System
+import System::IO
+import System::Test
+
+fun f(c: System::Int): System::Bool
+  ret c == 32
+fun program(): System::Int
+  ret f(32) ? 0 : 1
+
+fun [test("duplicate route resolution is not ambiguous")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::OverloadSemantics::LiteralSpellingIsItsType
+
+import System
+import System::Test
+
+fun isParen(c: System::Int32): System::Bool
+  ret c == 40i32
+fun isParenChar(c: System::Int32): System::Bool
+  ret c == '('
+fun program(): System::Int
+  ret isParen(System::byteAt("(", 0)) && isParenChar(System::byteAt("(", 0)) ? 0 : 1
+
+fun [test("literal spelling is its type")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::OverloadSemantics::VirtualDispatchO0AndO3Agree
+
+import System
+import System::Test
+
+interface Shape
+  fun describe(): System::Int
+class Circle() : Shape
+  fun describe(): System::Int
+    ret 10
+class Square() : Shape
+  fun describe(): System::Int
+    ret 20
+fun poke(s: Shape): System::Int
+  ret s.describe()
+fun program(): System::Int
+  ret poke(Circle()) + poke(Square())
+
+fun [test("virtual dispatch o0 and o3 agree")] check(): None|TestFailure
+    ret assertEqInt(program(), 30, "program()")
+
+
+namespace CompilerTests::OverloadSemantics::LetsShareANameRecipientTypeSelects
+
+import System
+import System::Test
+
+let v: System::Int = 41
+let v: System::String = "hi"
+fun wantStr(s: System::String): System::Int
+  ret System::length(s)
+fun wantInt(n: System::Int): System::Int
+  ret n + 1
+fun program(): System::Int
+  ret wantInt(v) + wantStr(v)
+
+fun [test("lets share a name recipient type selects")] check(): None|TestFailure
+    ret assertEqInt(program(), 44, "program()")

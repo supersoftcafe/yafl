@@ -1,0 +1,37 @@
+# Objects wider than the 64-word pointer mask.
+#
+# A vtable's pointer map used to be a single uint64 (one bit per word), so a
+# class whose pointer fields pass word 63 could not be described — clang died
+# with a shift-count overflow in `maskof`. The map is now windowed: the inline
+# word covers words 0..63 and `object_pointer_masks` extends it, so object
+# width is bounded only by `object_size` (uint16).
+#
+# The test builds a 70-pointer-field class whose children are HEAP strings
+# (built at runtime — static literals would survive a broken mask), churns the
+# allocator hard enough for several collections, then re-reads every field.
+# A missed mask bit means unmarked children: collected, compacted over, or
+# poisoned — any of which fails the equality sweep.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::WideObjects::WideClassSurvivesGc
+
+import System
+import System::Test
+
+class Wide(f0: String, f1: String, f2: String, f3: String, f4: String, f5: String, f6: String, f7: String, f8: String, f9: String, f10: String, f11: String, f12: String, f13: String, f14: String, f15: String, f16: String, f17: String, f18: String, f19: String, f20: String, f21: String, f22: String, f23: String, f24: String, f25: String, f26: String, f27: String, f28: String, f29: String, f30: String, f31: String, f32: String, f33: String, f34: String, f35: String, f36: String, f37: String, f38: String, f39: String, f40: String, f41: String, f42: String, f43: String, f44: String, f45: String, f46: String, f47: String, f48: String, f49: String, f50: String, f51: String, f52: String, f53: String, f54: String, f55: String, f56: String, f57: String, f58: String, f59: String, f60: String, f61: String, f62: String, f63: String, f64: String, f65: String, f66: String, f67: String, f68: String, f69: String)
+
+fun mk(i: Int): String
+  ret "value-" + String(i * 7)
+
+fun [tail] churn(n: Int, acc: Int): Int
+  ret n == 0 ? acc : churn(n - 1, acc + length("x" + String(n)))
+
+fun program(): System::Int
+  let w = Wide(mk(0), mk(1), mk(2), mk(3), mk(4), mk(5), mk(6), mk(7), mk(8), mk(9), mk(10), mk(11), mk(12), mk(13), mk(14), mk(15), mk(16), mk(17), mk(18), mk(19), mk(20), mk(21), mk(22), mk(23), mk(24), mk(25), mk(26), mk(27), mk(28), mk(29), mk(30), mk(31), mk(32), mk(33), mk(34), mk(35), mk(36), mk(37), mk(38), mk(39), mk(40), mk(41), mk(42), mk(43), mk(44), mk(45), mk(46), mk(47), mk(48), mk(49), mk(50), mk(51), mk(52), mk(53), mk(54), mk(55), mk(56), mk(57), mk(58), mk(59), mk(60), mk(61), mk(62), mk(63), mk(64), mk(65), mk(66), mk(67), mk(68), mk(69))
+  let g = churn(300000, 0)
+  ret (w.f0 == mk(0) && w.f1 == mk(1) && w.f2 == mk(2) && w.f3 == mk(3) && w.f4 == mk(4) && w.f5 == mk(5) && w.f6 == mk(6) && w.f7 == mk(7) && w.f8 == mk(8) && w.f9 == mk(9) && w.f10 == mk(10) && w.f11 == mk(11) && w.f12 == mk(12) && w.f13 == mk(13) && w.f14 == mk(14) && w.f15 == mk(15) && w.f16 == mk(16) && w.f17 == mk(17) && w.f18 == mk(18) && w.f19 == mk(19) && w.f20 == mk(20) && w.f21 == mk(21) && w.f22 == mk(22) && w.f23 == mk(23) && w.f24 == mk(24) && w.f25 == mk(25) && w.f26 == mk(26) && w.f27 == mk(27) && w.f28 == mk(28) && w.f29 == mk(29) && w.f30 == mk(30) && w.f31 == mk(31) && w.f32 == mk(32) && w.f33 == mk(33) && w.f34 == mk(34) && w.f35 == mk(35) && w.f36 == mk(36) && w.f37 == mk(37) && w.f38 == mk(38) && w.f39 == mk(39) && w.f40 == mk(40) && w.f41 == mk(41) && w.f42 == mk(42) && w.f43 == mk(43) && w.f44 == mk(44) && w.f45 == mk(45) && w.f46 == mk(46) && w.f47 == mk(47) && w.f48 == mk(48) && w.f49 == mk(49) && w.f50 == mk(50) && w.f51 == mk(51) && w.f52 == mk(52) && w.f53 == mk(53) && w.f54 == mk(54) && w.f55 == mk(55) && w.f56 == mk(56) && w.f57 == mk(57) && w.f58 == mk(58) && w.f59 == mk(59) && w.f60 == mk(60) && w.f61 == mk(61) && w.f62 == mk(62) && w.f63 == mk(63) && w.f64 == mk(64) && w.f65 == mk(65) && w.f66 == mk(66) && w.f67 == mk(67) && w.f68 == mk(68) && w.f69 == mk(69)) && g > 0 ? 0 : 1
+
+fun [test("wide class survives gc")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

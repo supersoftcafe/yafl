@@ -184,13 +184,40 @@ fun testErrs(f: PsFun)
     : oneErr(f.psfLine, "[test] functions take no parameters")
   ret union(argErr, union(bodyErr, paramErr))
 
-# Absent is fine (the description is optional); present must be one string.
-fun testArgErr(f: PsFun) => match(attrValueOf(f.fAttrs, "test"))
-  (v: PExpr) => isOneStringArg(v)
-    ? noErrs()
-    : oneErr(f.psfLine,
-             "[test] takes one optional string argument: [test(\"description\")]")
-  ()         => noErrs()
+fun testArgErr(f: PsFun) => match(testAttrParts(attrValueOf(f.fAttrs, "test")))
+  (ok: TestAttr) => noErrs()
+  ()             => oneErr(f.psfLine, testAttributeShape())
+
+fun testAttributeShape() => "[test] takes an optional description and an optional expected stdout: "
+  + "[test(\"description\", stdout = \"expected output\")]"
+
+# `[test]`'s argument as its description and expected stdout, or None when it
+# is not one of `[test]`, `[test("d")]`, `[test("d", stdout = "s")]`,
+# `[test(stdout = "s")]`: the description unnamed and first, every value a
+# string literal. Mirrors function.py's test_attribute_parts.
+class [final] TestAttr(taDescription: String, taStdout: String|None)
+
+fun testAttrParts(v: PExpr|None): TestAttr|None => match(v)
+  (x: PExpr) => match(x)
+    (tp: PeTuple) => testAttrEntries(tp.exprs)
+    (o: PExpr)    => None
+  ()         => TestAttr("", None)
+
+fun testAttrEntries(es: List<PTupEnt>): TestAttr|None => match(head(es))
+  (first: PTupEnt) => first.tupName == ""
+    ? match(first.tupValue)
+      (d: PeStr) => testAttrStdout(d.strValue, tail(es))
+      (o: PExpr) => None
+    : testAttrStdout("", es)
+  ()               => TestAttr("", None)
+
+fun testAttrStdout(description: String, rest: List<PTupEnt>): TestAttr|None => match(head(rest))
+  (en: PTupEnt) => !isEmpty(tail(rest)) || en.tupName != "stdout" || en.tupSpread
+    ? None
+    : match(en.tupValue)
+      (s2: PeStr) => TestAttr(description, s2.strValue)
+      (o: PExpr)  => None
+  ()            => TestAttr(description, None)
 
 fun isOneStringArg(v: PExpr|None) => match(v)
   (x: PExpr) => match(x)

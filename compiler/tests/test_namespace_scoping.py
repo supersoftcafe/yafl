@@ -7,12 +7,14 @@ file, and an `import` belongs to the namespace block it is written in.
 The bug these tests pin: parser.py's fix-up pooled one file-wide
 ImportGroup and converted every `namespace X` declaration into `import X`,
 so every block saw every other block in the file (and all of its imports).
+
+That an import, or a fully qualified name, grants access is a [test] in
+compiler/yafl_tests/namespace_scoping.yafl; these are the refusals.
 """
 from __future__ import annotations
 
 import unittest
 
-from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c
 
 
@@ -38,33 +40,6 @@ fun main(): System::Int
         self.assertFalse(_compiles([("ab.yafl", src)]),
                          "cross-namespace unqualified reference without an "
                          "import must not resolve (same file is not scope)")
-
-    def test_import_grants_access(self):
-        src = """namespace NsGrantA
-import System
-fun nsHelperB(x: Int): Int
-  ret x + 1
-namespace NsGrantB
-import System
-import NsGrantA
-fun main(): System::Int
-  ret nsHelperB(1) - 2
-"""
-        rc, _ = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc, "an explicit import must grant access")
-
-    def test_fully_qualified_needs_no_import(self):
-        src = """namespace NsQualA
-import System
-fun nsHelperC(x: Int): Int
-  ret x + 1
-namespace NsQualB
-import System
-fun main(): System::Int
-  ret NsQualA::nsHelperC(1) - 2
-"""
-        rc, _ = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc, "a fully qualified reference needs no import")
 
     def test_import_scopes_to_its_own_block(self):
         # The first block imports System; the second block imports nothing,

@@ -8,13 +8,12 @@ every cycle survived the prune: the inliner then substituted mutually
 recursive functions into each other until Python's stack gave out.
 
 The pair below calls each other — a cycle the prune must see — while still
-terminating at runtime, so the test can check the answer as well as the
-compile.
+terminating at runtime: the answer is checked by
+compiler/yafl_tests/inline_recursion_guard.yafl.
 """
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c
 
 
@@ -46,7 +45,3 @@ class TestInlineRecursionGuard(TestCase):
         for level in (0, 1):
             with self.subTest(optimization_level=level):
                 self.assertNotEqual("", compile_c(_MUTUAL, optimization_level=level))
-
-    def test_mutual_recursion_still_computes(self):
-        rc, out = compile_and_run_stdlib_capture(_MUTUAL)
-        self.assertEqual(3, rc, out)

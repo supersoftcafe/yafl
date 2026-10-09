@@ -1,0 +1,46 @@
+# Matching a CONCRETE generic-enum instantiation from non-generic code must
+# substitute the subject's type arguments into the arm binder's field types.
+#
+# Regression: matching `Chain<String>` and binding `(link: ChainLink)` left
+# `link.value` typed as the enum placeholder `T` instead of `String`, so using it
+# where a `String` is expected failed with "Parameters are not assignment
+# compatible". Matching in GENERIC context (the stdlib's own sort/chainNext)
+# always worked, which hid this. See MatchExpression.compile.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::GenericMatchBinder::ConcreteChainMatchBindsStringField
+
+import System
+import System::Test
+
+fun probe(c: Chain<String>): Int
+  ret match(c)
+    (link: ChainLink) => length(link.value)
+    (e: ChainEnd)     => 0
+fun program(): System::Int
+  let c = ChainLink<String>("hi", ChainEnd<String>())
+  System::print(String(probe(c)) + "\n")
+  ret 0
+
+fun [test("concrete chain match binds string field", stdout = "2\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::GenericMatchBinder::ConcreteChainMatchIntField
+
+import System
+import System::Test
+
+fun sumFirst(c: Chain<Int>): Int
+  ret match(c)
+    (link: ChainLink) => link.value + 1
+    (e: ChainEnd)     => 0
+fun program(): System::Int
+  System::print(String(sumFirst(ChainLink<Int>(41, ChainEnd<Int>()))) + " "
+              + String(sumFirst(ChainEnd<Int>())) + "\n")
+  ret 0
+
+fun [test("concrete chain match int field", stdout = "42 0\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

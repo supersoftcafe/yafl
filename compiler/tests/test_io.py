@@ -4,6 +4,8 @@ error-code mapping, and operation-after-close behaviour.
 `IO` is a linear type — every handle must be consumed exactly once. The
 sources below thread the handle through and close it on every path; the
 shared `_done` helper closes a handle and yields an exit code.
+
+Runtime behaviour is checked by compiler/yafl_tests/io.yafl.
 """
 from __future__ import annotations
 
@@ -26,23 +28,6 @@ _DONE = """fun _done(h: IO, code: System::Int): System::Int
 
 class TestIO(TestCase):
 
-    def test_file_not_found_returns_file_not_found_error(self):
-        """open_read on a missing path returns FileNotFoundError specifically."""
-        src = """namespace Main
-import System
-import System::IO
-
-""" + _DONE + """
-fun main(): System::Int
-  ret match(open_read("/nonexistent/yafl_test_ypr0qZ_987654321"))
-    (h: IO) => _done(h, 99)
-    (e: IOError) => match(e)
-      (x: FileNotFoundError) => 0
-      () => 1
-"""
-        code = compile_and_run_stdlib(src)
-        self.assertEqual(0, code,
-            "expected FileNotFoundError arm; got different exit code")
 
     def test_round_trip_write_then_read(self):
         """create/write/close followed by open_read/read round-trips the
@@ -205,8 +190,7 @@ fun main(): System::Int
         """readLine on an empty file returns EOFError."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "empty.txt")
-            with open(path, "w") as f:
-                pass
+            open(path, "w").close()
             src = f"""namespace Main
 import System
 import System::IO

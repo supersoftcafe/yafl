@@ -1,0 +1,40 @@
+# Namespace visibility (USER RULING 2026-08-23): referencing a declaration
+# in another namespace requires IMPORTING that namespace or using a FULLY
+# QUALIFIED name. In particular, declaring `namespace A` earlier in a file
+# must not make A's names visible to a later `namespace B` block in the same
+# file, and an `import` belongs to the namespace block it is written in.
+#
+# The bug these tests pin: parser.py's fix-up pooled one file-wide
+# ImportGroup and converted every `namespace X` declaration into `import X`,
+# so every block saw every other block in the file (and all of its imports).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::NamespaceScoping::NsQualA
+import System
+fun nsHelperC(x: Int): Int
+  ret x + 1
+namespace CompilerTests::NamespaceScoping::NsQualB
+import System
+import System::Test
+fun program(): System::Int
+  ret CompilerTests::NamespaceScoping::NsQualA::nsHelperC(1) - 2
+
+fun [test("fully qualified needs no import")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::NamespaceScoping::NsGrantA
+import System
+fun nsHelperB(x: Int): Int
+  ret x + 1
+namespace CompilerTests::NamespaceScoping::NsGrantB
+import System
+import CompilerTests::NamespaceScoping::NsGrantA
+import System::Test
+fun program(): System::Int
+  ret nsHelperB(1) - 2
+
+fun [test("import grants access")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

@@ -1,0 +1,49 @@
+# Operator/function calls in union-result positions must still resolve.
+#
+# `n / 2` inside an arm whose expected type is `Int|Oops` used to reject EVERY
+# `/` candidate: overload selection required the candidate's RESULT to be
+# bidirectionally equivalent to the expected `Int|Oops`, and `Int` is not.
+# That rule is correct for function VALUES (no implicit result thunks) but a
+# CALL owns its own result conversion — the argument types alone identify the
+# candidate, and the call's value then widens into the union like any other
+# expression. Found while adding the union `?>`; became visible with the
+# Complex64/32 overloads (before them the wrongly-rejected sole candidate
+# happened to still resolve by being alone).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::OverloadUnionResult::DivisionUnderUnionExpectedType
+
+import System
+import System::Test
+
+class [final] Oops(message: System::String)
+
+fun half(n: System::Int): System::Int|Oops
+  ret n % 2 == 0 ? n / 2 : Oops("odd: " + String(n))
+
+fun program(): System::Int
+  ret match(half(8))
+    (v: System::Int) => v
+    ()               => -1
+
+fun [test("division under union expected type")] check(): None|TestFailure
+    ret assertEqInt(program(), 4, "program()")
+
+
+namespace CompilerTests::OverloadUnionResult::FloatComparisonUnderUnion
+
+import System
+import System::Test
+
+fun capped(x: System::Float): System::Float|System::None
+  ret x < 10.0 ? x * 2.0 : None
+
+fun program(): System::Int
+  ret match(capped(0.5))
+    (v: System::Float) => 1
+    ()                 => 0
+
+fun [test("float comparison under union")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

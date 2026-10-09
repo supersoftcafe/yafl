@@ -985,8 +985,11 @@ fun [tail] parseArms(subj: PExpr, extra: List<PExpr>, lr: PLine, ps: Ps,
   let a = parseArm(armPs)
   ret match(a.v)
     (f: PFail) => armsFail(acc, f, a.rest)
-    (arm: PArm) => parseArms(subj, extra, lr, blockExit(a.rest, ps),
-                             push(acc, arm))
+    # An arm owns its whole line block (parselib.block): tokens left in it are
+    # an error, never the start of whatever encloses the match.
+    (arm: PArm) => !isEof(peek(a.rest))
+      ? armsFail(acc, hardFail("extra unexpected characters", a.rest), a.rest)
+      : parseArms(subj, extra, lr, blockExit(a.rest, ps), push(acc, arm))
 
 fun parseArm(ps): (v: PArm|PFail, rest: Ps)
   let lr = lineAt(ps)

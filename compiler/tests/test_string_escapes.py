@@ -6,36 +6,12 @@ All three denote a Unicode codepoint (decoded in `_unescape_string`,
 `\\u{…}` takes one to six and reaches the full scalar range. Out-of-range and
 surrogate codepoints are rejected so a decoded literal is always valid UTF-8.
 Char literals reuse the same decoder, so `'\\u{…}'` is an Int32 codepoint.
+The runtime checks are [test]s in compiler/yafl_tests/string_escapes.yafl.
 """
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c
-
-
-class TestEscapesRuntime(TestCase):
-    def test_codepoints_decode_and_encode(self):
-        # Each escape equals its literal spelling; byte lengths confirm UTF-8
-        # encoding (é = 2 bytes, 🎉 = 4 bytes). `&&` chains the checks; rc 0 = all
-        # passed.
-        src = """\
-import System
-
-fun main(): System::Int
-  ret ("\\x41" == "A")
-   && ("\\u0042" == "B")
-   && ("\\u{43}" == "C")
-   && ("\\u{E9}" == "é")
-   && ("\\u{1F389}" == "🎉")
-   && (System::length("\\u{1F389}") == 4)
-   && (System::length("\\u{E9}") == 2)
-   && ('\\x41' == 65i32)
-   && ('\\u{1F389}' == 0x1F389i32)
-   ? 0 : 1
-"""
-        rc, _ = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
 
 
 class TestEscapeErrors(TestCase):

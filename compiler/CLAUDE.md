@@ -6,10 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Run every correctness gate (build, ctest, examples):**
 ```bash
-python3 ../full_protocol.py                   # against the port; logs under build/protocol-runs/
+python3 ../full_protocol.py                   # fast: [test] folders at -O3 + self-compile
+python3 ../full_protocol.py --full            # the regression; logs under build/protocol-runs/
 python3 ../full_protocol.py --compiler python # against the Python compiler
 ```
-This is the full protocol, and what CI runs. Prefer it over running the pieces
+The fast path is the default (and what CI runs on pull requests and manual
+runs); it reuses the Python build of the port while the Python compiler is
+unchanged (build_bootstrap.py --reuse). `--full` is opt-in, and what CI runs
+on every commit to main. Prefer it over running the pieces
 by hand before a commit. Speed is measured separately, afterwards:
 `python3 ../speed_protocol.py` (-O3 port build + timed self-compiles).
 
@@ -18,8 +22,22 @@ by hand before a commit. Speed is measured separately, afterwards:
 YAFL_BOOTSTRAP_BIN=../build/ybootstrap YAFL_LIBYAFL_A=../build/yafllib/libyafl.a \
 PYTHONHASHSEED=0 unittest-parallel -j 0 -s tests -t .   # YAFL_COMPILER=python for the Python compiler
 ```
-Behaviour tests belong in a YAFL `[test]` folder (`yafl_tests/`, `stdlib_tests/`),
-built into one test binary per folder by the compiler under test.
+Behaviour tests belong in a YAFL `[test]` folder, not in Python: `yafl_tests/`
+(the compiler's behaviour; built and run at -O0, -O1, -O2 and -O3) and
+`stdlib_tests/` (the stdlib), each built into one test binary by the compiler
+under test. Python keeps only what a `[test]` cannot check: compile errors and
+warnings, the shape of the emitted C, and runs that need a particular
+environment. The runner executes every test in its own subprocess, capturing
+its stdout and stderr into the result, so a test that prints or crashes affects
+only itself.
+
+`yafl_tests/` layout — the standard: one file per topic, named after the Python
+module it replaced, and ONE NAMESPACE PER TEST, `CompilerTests::<Topic>::<Test>`.
+Each namespace holds a program exactly as written, its `main` renamed
+`program`, and the `[test]` that checks it:
+`ret assertEqInt(program(), <exit code>, "program()")`. A program that prints
+keeps printing: the test declares what it must print,
+`[test("…", stdout = "…")]`, and the runner compares the stdout it captured.
 
 **Run a single test:**
 ```bash

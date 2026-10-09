@@ -1,0 +1,265 @@
+# Pointer-word union representation (tag-elimination phase 2).
+#
+# A union whose members are all mutually-distinguishable pointer-words (heap
+# classes, tagged immediates, single-field newtype wrappers, complex enums) plus
+# at most one unit collapses to a single machine word — None is the NULL sentinel,
+# every other member dispatches by its pointer tag / vtable. Unions with a
+# multi-field/scalar payload, or two members sharing a runtime kind, stay a tagged
+# `{...,$tag}` struct.
+#
+# These tests pin both the representation (collapsed `object_t*` vs tagged struct)
+# and the runtime behaviour (every arm dispatches to the right value).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::UnionRepr::ConstructionFeedsLeafTypedPositions
+
+import System
+import System::Test
+
+enum Payload
+  enum Pay1(p0: String, p1: String)
+  enum Pay2(pTiny: Int)
+enum Host
+  enum Hold(hPay: Pay1)
+  enum Empty1()
+fun sizeOfPay(p: Pay1): Int
+  ret length(p.p0) + length(p.p1)
+fun mkHost(b: Bool): Host
+  ret b ? Hold(Pay1("a", "bb")) : Empty1()
+fun probeHost(b: Bool): Int
+  ret match(mkHost(b))
+    (h: Hold)   => sizeOfPay(h.hPay)
+    (e: Empty1) => 42
+fun program(): System::Int
+  println(String(probeHost(true)) + " " + String(probeHost(false)))
+  ret 0
+
+fun [test("construction feeds leaf typed positions", stdout = "3 42\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::LeafResultAcceptsConstructionAndWidensAtUse
+
+import System
+import System::Test
+
+enum Shade
+  enum Dark(dLevel: Int, dName: String)
+  enum Light(lLevel: Int)
+fun mkDark(): Dark
+  ret Dark(7, "deep")
+fun describeDark(d: Dark): Int
+  ret d.dLevel + length(d.dName)
+fun asShade(d: Dark): Shade
+  ret d
+fun probeShade(k: Int): Int
+  ret match(k == 0 ? asShade(mkDark()) : Light(3))
+    (d: Dark)  => describeDark(d) + 100
+    (l: Light) => l.lLevel
+fun program(): System::Int
+  println(String(probeShade(0)) + " " + String(probeShade(1)))
+  ret 0
+
+fun [test("leaf result accepts construction and widens at use", stdout = "111 3\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::ScalarAndFunctionMembersNarrowIntoWideArm
+
+import System
+import System::Test
+
+fun ntPick(k: Int): (a: Int, b: Int)|Int32|String
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? truncateToInt32(k * 10) : "s" + String(k)
+fun ntDescribe(x: Int32|String): String
+  ret match(x)
+    (i: Int32)  => "I:" + String(i)
+    (s: String) => "S:" + s
+fun ntArm(v: (a: Int, b: Int)|Int32|String): String
+  ret match(v)
+    (p: (a: Int, b: Int)) => "P:" + String(p.a) + "," + String(p.b)
+    (x: Int32|String)     => ntDescribe(x)
+fun ntPickF(k: Int): (a: Int, b: Int)|((:Int): Int)|String
+  let f: (:Int): Int = (x: Int) => x + k
+  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? f : "f" + String(k)
+fun ntDescribeF(x: ((:Int): Int)|String): String
+  ret match(x)
+    (f: (:Int): Int) => "F:" + String(f(100))
+    (s: String)      => "S:" + s
+fun ntArmF(v: (a: Int, b: Int)|((:Int): Int)|String): String
+  ret match(v)
+    (p: (a: Int, b: Int))     => "P:" + String(p.a)
+    (x: ((:Int): Int)|String) => ntDescribeF(x)
+fun [tail] ntLoop(k: Int, n: Int, acc: String): String
+  ret k >= n ? acc : ntLoop(k + 1, n, acc + ntArm(ntPick(k)) + " " + ntArmF(ntPickF(k)) + "|")
+fun program(): System::Int
+  println(ntLoop(0, 6, ""))
+  ret 0
+
+fun [test("scalar and function members narrow into wide arm", stdout = "P:0,1 P:0|I:10 F:101|S:s2 S:f2|P:3,4 P:3|I:40 F:104|S:s5 S:f5|\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::ImmediateUnionRoundtrips
+
+import System
+import System::Test
+
+fun pick(k: Int): Int|String|None
+  ret k == 0 ? 42 : (k == 1 ? "abc" : None)
+fun probe(k: Int): Int
+  ret match(pick(k))
+    (i: Int)    => i
+    (s: String) => length(s)
+    (n: None)   => 99
+fun program(): System::Int
+  println(String(probe(0)) + " " + String(probe(1)) + " " + String(probe(2)))
+  ret 0
+
+fun [test("immediate union roundtrips", stdout = "42 3 99\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::NewtypeMulticlassUnionRoundtrips
+
+import System
+import System::Test
+
+class A(x: Int)
+class B(s: String)
+fun pick(k: Int): A|B|None
+  ret k == 0 ? A(7) : (k == 1 ? B("hi") : None)
+fun probe(k: Int): Int
+  ret match(pick(k))
+    (a: A)    => a.x
+    (b: B)    => length(b.s)
+    (n: None) => 99
+fun program(): System::Int
+  println(String(probe(0)) + " " + String(probe(1)) + " " + String(probe(2)))
+  ret 0
+
+fun [test("newtype multiclass union roundtrips", stdout = "7 2 99\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::SameInnerNewtypesDispatchCorrectly
+
+import System
+import System::Test
+
+class Id(v: String)
+class Nm(v: String)
+fun pick(k: Int): Id|Nm|None
+  ret k == 0 ? Id("aa") : (k == 1 ? Nm("bbb") : None)
+fun probe(k: Int): Int
+  ret match(pick(k))
+    (i: Id)   => length(i.v)
+    (n: Nm)   => 0 - length(n.v)
+    (x: None) => 99
+fun program(): System::Int
+  println(String(probe(0)) + " " + String(probe(1)) + " " + String(probe(2)))
+  ret 0
+
+fun [test("same inner newtypes dispatch correctly", stdout = "2 -3 99\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::TupleAndScalarUnionsStayTaggedButWork
+
+import System
+import System::Test
+
+fun tup(b: Bool): (a: Int, b: Int)|None
+  ret b ? (1, 2) : None
+fun i32(b: Bool): Int32|None
+  ret b ? 5i32 : None
+fun probeTup(b: Bool): Int
+  ret match(tup(b))
+    (t: (a: Int, b: Int)) => t.a + t.b
+    (n: None)             => 0
+fun probeI32(b: Bool): Int
+  ret match(i32(b))
+    (v: Int32) => Int(v)
+    (n: None)  => 0
+fun program(): System::Int
+  println(String(probeTup(true)) + " " + String(probeTup(false)) + " " + String(probeI32(true)))
+  ret 0
+
+fun [test("tuple and scalar unions stay tagged but work", stdout = "3 0 5\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::BoxedVariantInCombinationRoundtrips
+
+import System
+import System::Test
+
+enum Load
+  enum Tiny(tVal: Int)
+  enum Cargo(c0: String, c1: String, c2: String, c3: String, c4: String,
+             c5: String, c6: String, c7: String, c8: String)
+fun mkLoad(k: Int): Load
+  ret k == 0
+    ? Tiny(5)
+    : Cargo("a", "bb", "ccc", "d", "ee", "fff", "g", "hh", "iii")
+fun maybeLoad(k: Int): Load|None
+  ret k < 0 ? None : mkLoad(k)
+fun probeLoad(k: Int): Int
+  ret match(maybeLoad(k))
+    (l: Load) => match(l)
+      (t: Tiny)  => t.tVal
+      (c: Cargo) => length(c.c1)
+    (n: None) => 0 - 1
+fun program(): System::Int
+  println(String(probeLoad(0 - 1)) + " " + String(probeLoad(0)) + " " + String(probeLoad(1)))
+  ret 0
+
+fun [test("boxed variant in combination roundtrips", stdout = "-1 5 2\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::VariantLessEnumOverThresholdBoxes
+
+import System
+import System::Test
+
+enum Big(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int)
+fun mk(k: Int): Big
+  ret Big(k, 2, 3, 4, 5, 6, 7, 8, 9)
+fun describe(v: Big|None): Int
+  ret match(v)
+    (b: Big)  => b.a + b.i
+    (n: None) => 0
+fun program(): System::Int
+  println(String(describe(mk(3))) + " " + String(describe(None)))
+  ret 0
+
+fun [test("variant less enum over threshold boxes", stdout = "12 0\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::WideAndSmallVariantsRoundtrip
+
+import System
+import System::Test
+
+enum Shape
+  enum Dot(dTag: Int)
+  enum BigBox(s0: String, s1: String, s2: String, s3: String, s4: String,
+              s5: String, s6: String, s7: String, s8: String)
+fun mkShape(k: Int): Shape
+  ret k == 0
+    ? Dot(7)
+    : BigBox("a", "bb", "ccc", "d", "ee", "fff", "g", "hh", "iii")
+fun probeShape(k: Int): Int
+  ret match(mkShape(k))
+    (d: Dot)    => d.dTag
+    (b: BigBox) => length(b.s0) + length(b.s2) + length(b.s8)
+fun program(): System::Int
+  println(String(probeShape(0)) + " " + String(probeShape(1)))
+  ret 0
+
+fun [test("wide and small variants roundtrip", stdout = "7 7\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

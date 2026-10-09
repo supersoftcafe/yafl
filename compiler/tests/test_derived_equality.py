@@ -10,13 +10,13 @@ Two properties, in order of how they land:
 The second is the point of the exercise: every pass that needs a compound key
 today hand-builds a string fingerprint instead, and those fingerprints are
 lossy.
+
+Runtime behaviour is checked by compiler/yafl_tests/derived_equality.yafl.
 """
 from __future__ import annotations
 
-import unittest
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c_result
 
 
@@ -27,18 +27,6 @@ def _errors(content: str) -> tuple[str, str]:
     reported, not raised out of codegen."""
     r = compile_c_result(content, "file.yafl")
     return r.c, r.stdout
-
-
-_TUPLE_KEY = """\
-import System
-
-fun main(): System::Int
-  let d = System::Dict<(:System::Int, :System::Int), System::Int>()
-  let d2 = System::put(d, (1, 2), 7)
-  ret match(System::get(d2, (1, 2)))
-    (v: System::Int) => v
-    ()               => 0
-"""
 
 
 class TestUndischargedIsADiagnostic(TestCase):
@@ -63,208 +51,3 @@ fun main(): System::Int
         self.assertIn("BasicEquality", diagnostics, diagnostics)
 
 
-class TestDerivedForCompoundKeys(TestCase):
-    def test_tuple_is_usable_as_a_dict_key(self):
-        code, out = compile_and_run_stdlib_capture(_TUPLE_KEY, timeout=30)
-        self.assertEqual(7, code, out)
-
-    def test_tuple_keys_distinguish_their_components(self):
-        """Guards against a derived hash/eq that ignores a field — the exact
-        failure mode of the hand-written fingerprints this replaces."""
-        src = """\
-import System
-
-fun main(): System::Int
-  let d0 = System::Dict<(:System::Int, :System::Int), System::Int>()
-  let d1 = System::put(d0, (1, 2), 10)
-  let d2 = System::put(d1, (2, 1), 20)
-  let a = match(System::get(d2, (1, 2)))
-    (v: System::Int) => v
-    ()               => 0
-  let b = match(System::get(d2, (2, 1)))
-    (v: System::Int) => v
-    ()               => 0
-  println(a + b * 100)
-  ret 0
-"""
-        # via println, not the exit status: an exit code is 8-bit and 2010
-        # comes back as 218.
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(0, code, out)
-        self.assertEqual("2010", out.strip())   # a=10, b=20
-
-    def test_enum_is_usable_as_a_dict_key(self):
-        src = """\
-import System
-
-enum Colour
-  enum Red()
-  enum Green(shade: System::Int)
-
-fun main(): System::Int
-  let d0 = System::Dict<Colour, System::Int>()
-  let d1 = System::put(d0, Red(), 3)
-  let d2 = System::put(d1, Green(7), 4)
-  let a = match(System::get(d2, Red()))
-    (v: System::Int) => v
-    ()               => 0
-  let b = match(System::get(d2, Green(7)))
-    (v: System::Int) => v
-    ()               => 0
-  let c = match(System::get(d2, Green(8)))
-    (v: System::Int) => v
-    ()               => 0
-  ret a + b * 10 + c * 100
-"""
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(43, code, out)   # a=3, b=4, Green(8) absent
-
-    def test_recursive_enum_key(self):
-        """Needs the recursive instance (phase 2): the derived `==` for a list
-        refers to itself for the tail."""
-        src = """\
-import System
-
-enum Chain2
-  enum Nil2()
-  enum Cons2(hd: System::Int, tl: Chain2)
-
-fun main(): System::Int
-  let d0 = System::Dict<Chain2, System::Int>()
-  let d1 = System::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
-  ret match(System::get(d1, Cons2(1, Cons2(2, Nil2()))))
-    (v: System::Int) => v
-    ()               => 0
-"""
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(5, code, out)
-
-
-class TestRecursionCapabilities(TestCase):
-    """Phase 2 of the plan turned out to need NO implementation — both of these
-    already work. They were untested, so they are pinned here: the derived-
-    equality design leans on both, and a regression would be silent."""
-
-    def test_lazy_let_may_reference_itself(self):
-        """The enabling rule for a recursive instance: a `[lazy]` let may
-        reference itself directly. A lazy expression can cycle; a strict one
-        cannot, and rejecting THAT is a separate check, deliberately deferred."""
-        src = """\
-import System
-
-fun main(): System::Int
-  let [lazy] f: (:System::Int): System::Int =
-    (n: System::Int) => n <= 0 ? 0 : n + f(n - 1)
-  ret f(3)
-"""
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(6, code, out)   # 3+2+1+0
-
-    def test_recursive_instance_on_a_recursive_enum(self):
-        """An instance whose members call back into the instance being defined,
-        for a type that contains itself. The cycle is in the INSTANCE — a
-        dictionary of functions — while the values it walks stay acyclic, so
-        neither `==` nor `hashOf` diverges."""
-        src = """\
-import System
-
-enum Chain2
-  enum Nil2()
-  enum Cons2(hd: System::Int, tl: Chain2)
-
-instance [ambient] System::BasicEquality<Chain2>
-  fun `==`(l: Chain2, r: Chain2): System::Bool
-    ret match(l)
-      (a: Cons2) => match(r)
-        (b: Cons2) => a.hd == b.hd && a.tl == b.tl
-        ()         => false
-      ()         => match(r)
-        (b2: Cons2) => false
-        ()          => true
-  fun hashOf(v: Chain2): System::Int32
-    ret match(v)
-      (c: Cons2) => (hashOf(c.hd) * 31i32 + hashOf(c.tl)) & 2147483647i32
-      ()         => 17i32
-
-fun main(): System::Int
-  let d0 = System::Dict<Chain2, System::Int>()
-  let d1 = System::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
-  ret match(System::get(d1, Cons2(1, Cons2(2, Nil2()))))
-    (v: System::Int) => v
-    ()               => 0
-"""
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(5, code, out)
-
-
-class TestDerivedEqualityIsVisibleToTheProgram(TestCase):
-    """Derivation happens inside the compile fixpoint, so a derived instance
-    is in scope like a written one: a direct `==` resolves, and the check
-    phase sees it. (When derivation was a sweep after the check phase, only
-    constraint discharge at monomorphisation could reach it, and a direct
-    `a == b` was rejected — "no `==` accepts arguments (Colour, Colour)".)"""
-
-    def test_direct_equality_on_a_derived_enum(self):
-        src = """\
-import System
-
-enum Colour
-  enum Red()
-  enum Green()
-  enum Rgb(r: System::Int, g: System::Int)
-
-fun main(): System::Int
-  let a: Colour = Rgb(1, 2)
-  let b: Colour = Rgb(1, 2)
-  ret a == b && !(a == Red()) && !(Rgb(1, 3) == b) ? 7 : 3
-"""
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(7, code, out)
-
-    def test_direct_equality_on_mutually_recursive_enums(self):
-        # Coinductive: each derives only because the other does.
-        src = """\
-import System
-
-enum Tree
-  enum Leaf(v: System::Int)
-  enum Node(kids: Forest)
-
-enum Forest
-  enum NoTrees()
-  enum Trees(first: Tree, rest: Forest)
-
-fun main(): System::Int
-  let x: Tree = Node(Trees(Leaf(1), NoTrees()))
-  let y: Tree = Node(Trees(Leaf(1), NoTrees()))
-  let z: Tree = Node(Trees(Leaf(2), NoTrees()))
-  ret x == y && !(x == z) ? 7 : 3
-"""
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(7, code, out)
-
-    def test_derivable_enum_alongside_ordering_code(self):
-        # Derivation is IDEMPOTENT: an enum with an instance never derives,
-        # whatever form the instance is in. After monomorphisation the
-        # lowered instance's witness names `BasicEquality$generic$enum(Col)`
-        # with no type argument; unrecognised, `Col` looked underived, a
-        # second instance appeared that nothing lowered, and codegen crashed
-        # in the stdlib's `<=` (a call with no callee type).
-        src = """\
-import System
-
-enum Col
-  enum Red()
-  enum Green()
-
-fun [tail] idxLoop(es: System::Chain<System::String>, name: System::String, i) => match(es)
-  (nil: System::ChainEnd) => None
-  (l: System::ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
-
-fun main(): System::Int
-  ret match(idxLoop(System::chain(System::prepend("b", System::prepend("a", System::List<System::String>()))), "a", 0))
-    (n: System::Int) => n + 7
-    ()               => 3
-"""
-        code, out = compile_and_run_stdlib_capture(src, timeout=30)
-        self.assertEqual(8, code, out)

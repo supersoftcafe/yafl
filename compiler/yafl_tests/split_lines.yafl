@@ -1,26 +1,65 @@
 # System::splitLines — split a String into lines on '\n', dropping a trailing
 # '\r' so both LF and CRLF work; the text after the final newline is the last
 # element.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
 
-namespace CompilerTests::SplitLines
+namespace CompilerTests::SplitLines::EmptyStringOneEmptyLine
 
 import System
 import System::Test
 
+fun program(): System::Int
+  let parts: List<System::String> = System::splitLines("")
+  print(fold<System::String, System::String>(parts, "",
+        (acc: System::String, s: System::String) => acc + "[" + s + "]"))
+  ret 0
 
-# Each element wrapped in [...] so the split is checked exactly.
-fun bracketed(text: String): String
-    ret fold<String, String>(splitLines(text), "",
-        (acc: String, s: String) => acc + "[" + s + "]")
+fun [test("empty string one empty line", stdout = "[]")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
 
-fun [test("a '\\r' before the '\\n' is stripped, so LF and CRLF both split")] lfAndCrlf(): None|TestFailure
-    ret assertEqStr(bracketed("a\nbb\r\nccc"), "[a][bb][ccc]", "mixed endings")
 
-fun [test("a trailing newline gives an empty last line")] trailingNewline(): None|TestFailure
-    ret assertEqStr(bracketed("a\n"), "[a][]", "trailing newline")
+namespace CompilerTests::SplitLines::LfAndCrlf
 
-fun [test("no newline gives a single element")] noNewline(): None|TestFailure
-    ret assertEqStr(bracketed("x"), "[x]", "single element")
+import System
+import System::Test
 
-fun [test("the empty string is one empty line")] emptyString(): None|TestFailure
-    ret assertEqStr(bracketed(""), "[]", "empty input")
+fun program(): System::Int
+  let parts: List<System::String> = System::splitLines("a\nbb\r\nccc")
+  print(fold<System::String, System::String>(parts, "",
+        (acc: System::String, s: System::String) => acc + "[" + s + "]"))
+  ret 0
+
+fun [test("lf and crlf", stdout = "[a][bb][ccc]")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::SplitLines::NoNewlineSingleElement
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let parts: List<System::String> = System::splitLines("x")
+  print(fold<System::String, System::String>(parts, "",
+        (acc: System::String, s: System::String) => acc + "[" + s + "]"))
+  ret 0
+
+fun [test("no newline single element", stdout = "[x]")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::SplitLines::TrailingNewlineGivesEmptyLast
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let parts: List<System::String> = System::splitLines("a\n")
+  print(fold<System::String, System::String>(parts, "",
+        (acc: System::String, s: System::String) => acc + "[" + s + "]"))
+  ret 0
+
+fun [test("trailing newline gives empty last", stdout = "[a][]")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

@@ -1,0 +1,70 @@
+# End-to-end tests for the System::IO filesystem ops: `exists`, `stat`,
+# and (in later patches) the `Dir` cursor + `listDir` convenience.
+#
+# Each test compiles a short YAFL program and runs it; the exit code carries
+# the assertion result.  `tempfile.TemporaryDirectory` gives every test its
+# own path namespace so the suite stays parallel-safe under `unittest-parallel`.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Fs::MissingPathReturnsFalse
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret exists("/nonexistent_yafl_fs_test_xyz_777") ? 1 : 0
+
+fun [test("missing path returns false")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Fs::ListdirOnMissingDirReturnsError
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret match(listDir("/nonexistent_yafl_fs_test_xyz_999"))
+    (l: Set<String>)          => 9
+    (e: IOError)              => match(e)
+      (n: FileNotFoundError)  => 0
+      ()                      => 7
+
+fun [test("listDir on missing dir returns error")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Fs::RemoveMissingPathIsError
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret match(remove("/nonexistent_yafl_fs_test_xyz_777"))
+    (e: IOError)      => 1
+    (n: System::None) => 0
+
+fun [test("remove missing path is error")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::Fs::MissingPathReturnsFileNotFoundError
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret match(stat("/nonexistent_yafl_fs_test_xyz_888"))
+    (fi: FileInfo)               => 9
+    (e: IOError)                 => match(e)
+      (n: FileNotFoundError)     => 0
+      ()                         => 7
+
+fun [test("missing path returns file not found error")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

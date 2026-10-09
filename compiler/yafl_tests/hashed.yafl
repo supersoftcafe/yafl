@@ -1,0 +1,129 @@
+# `[hashed]`/`[refeq]` on FUNCTIONS — representation-aware caching.
+#
+# Every BOXED enum carries a hidden `$hash: Int32` slot by default (no
+# annotation, no boxing force — the representation stays the compiler's
+# decision). A `[hashed]` function `(v: T): Int32` is wrapped: slot hit returns
+# it; miss computes, remaps 0 to 1, stores. A `[refeq]` function
+# `(l: T, r: T): Bool` gets the identity shortcut. On a VALUE-repr enum the
+# internals resolve to constants at codegen — no cache, no identity — and the
+# functions still compute correctly.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Hashed::ComputeRunsOncePerObject
+
+import System
+import System::Test
+
+enum Tree
+  enum Leaf2(val: System::Int)
+  enum Node2(left: Tree, right: Tree)
+
+fun [hashed, impure] treeHash(t: Tree): System::Int32
+  print("C")
+  ret match(t)
+    (l: Leaf2) => hashOf(l.val)
+    (n: Node2) => (treeHash(n.left) * 31i32 + treeHash(n.right)) & 2147483647i32
+
+fun program(): System::Int
+  let t = Node2(Leaf2(3), Leaf2(4))
+  let a = treeHash(t)
+  let b = treeHash(t)
+  ret a == b ? 0 : 1
+
+fun [test("The point of the feature. The compute body prints; hashing the same", stdout = "CCC")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Hashed::DistinctObjectsCacheIndependently
+
+import System
+import System::Test
+
+enum Box2
+  enum B2(v: System::Int)
+
+fun [hashed, impure] boxHash(b: Box2): System::Int32
+  print("C")
+  ret match(b)
+    (x: B2) => hashOf(x.v)
+
+fun program(): System::Int
+  let p = B2(7)
+  let q = B2(7)
+  ret boxHash(p) == boxHash(q) ? 0 : 1
+
+fun [test("distinct objects cache independently", stdout = "CC")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Hashed::HashValueIsCorrectAndStable
+
+import System
+import System::Test
+
+enum Tree
+  enum Leaf2(val: System::Int)
+  enum Node2(left: Tree, right: Tree)
+
+fun [hashed] treeHash(t: Tree): System::Int32
+  ret match(t)
+    (l: Leaf2) => hashOf(l.val)
+    (n: Node2) => (treeHash(n.left) * 31i32 + treeHash(n.right)) & 2147483647i32
+
+fun program(): System::Int
+  let t = Node2(Leaf2(3), Leaf2(4))
+  ret treeHash(t) == treeHash(t) && treeHash(t) >= 0i32 ? 1 : 0
+
+fun [test("hash value is correct and stable")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::Hashed::ZeroHashIsRemappedToOne
+
+import System
+import System::Test
+
+enum Z
+  enum Z0(v: System::Int)
+
+fun [hashed] zHash(z: Z): System::Int32
+  ret 0i32
+
+fun program(): System::Int
+  let z = Z0(1)
+  ret zHash(z) == 1i32 && zHash(z) == 1i32 ? 1 : 0
+
+fun [test("0 is reserved for 'not computed'; a compute returning 0 caches and")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::Hashed::SameObjectSkipsTheCompare
+
+import System
+import System::Test
+
+enum Box2
+  enum B2(v: System::Int)
+  enum BLink(inner: Box2)
+
+fun [refeq, impure] boxEq(l: Box2, r: Box2): System::Bool
+  print("E")
+  ret match(l)
+    (x: B2) => match(r)
+      (y: B2) => x.v == y.v
+      (o: Box2) => false
+    (bl: BLink) => false
+
+fun program(): System::Int
+  let p = B2(7)
+  # Built at run time: constant B2(7)s are one static object at -O1+.
+  let q = B2(System::parseInt("7") ?? 0)
+  let sameObject   = boxEq(p, p)     # no compute
+  let equalContent = boxEq(p, q)     # computes
+  let different    = boxEq(p, B2(8)) # computes
+  ret sameObject && equalContent && !different ? 0 : 1
+
+fun [test("same object skips the compare", stdout = "EE")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

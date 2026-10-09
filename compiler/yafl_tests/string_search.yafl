@@ -1,0 +1,77 @@
+# Runtime tests for the string additions: indexOf, contains, startsWith,
+# endsWith, split, join, trim / trimStart / trimEnd.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::StringSearch::AllStringSearch
+
+import System
+import System::Test
+
+fun emit(label: System::String, value: System::Int): System::None
+  System::print(label + "=" + System::String(value) + "\n")
+  ret None
+
+fun emitBool(label: System::String, value: System::Bool): System::None
+  ret emit(label, value ? 1 : 0)
+
+fun emitStr(label: System::String, value: System::String): System::None
+  System::print(label + "=" + value + "\n")
+  ret None
+
+fun count(l: List<String>): Int
+  ret fold<String,Int>(l, 0, (a: Int, x: String) => a + 1)
+
+fun firstOr(l: List<String>, dflt: String): String
+  ret match(head<String>(l))
+    (x: String) => x
+    (e: None)   => dflt
+
+fun program(): Int
+  let s = "hello, world"
+
+  # ─── indexOf ───────────────────────────────────────────────────────────
+  emit("indexOf_hit",   indexOf(s, "world", 0))
+  emit("indexOf_miss",  indexOf(s, "xyz", 0))
+  emit("indexOf_from",  indexOf("ababab", "ab", 1))
+  emit("indexOf_empty", indexOf(s, "", 3))
+  emit("indexOf_start", indexOf(s, "hello", 0))
+
+  # ─── contains / startsWith / endsWith ──────────────────────────────────
+  emitBool("contains_yes",   contains(s, "lo, w"))
+  emitBool("contains_no",    contains(s, "z"))
+  emitBool("contains_empty", contains(s, ""))
+  emitBool("starts_yes",     startsWith(s, "hello"))
+  emitBool("starts_no",      startsWith(s, "world"))
+  emitBool("starts_long",    startsWith("hi", "hippo"))
+  emitBool("ends_yes",       endsWith(s, "world"))
+  emitBool("ends_no",        endsWith(s, "hello"))
+
+  # ─── split ─────────────────────────────────────────────────────────────
+  emit("split_count",    count(split("a,b,c", ",")))
+  emit("split_empties",  count(split("a,,b", ",")))
+  emit("split_trailing", count(split("a,", ",")))
+  emit("split_nosep",    count(split("abc", ",")))
+  emit("split_emptysep", count(split("abc", "")))
+  emitStr("split_first", firstOr(split("x-y-z", "-"), "?"))
+  emitStr("split_multichar", firstOr(split("a::b", "::"), "?"))
+
+  # ─── join (and split/join round-trip) ──────────────────────────────────
+  emitStr("join_basic",  join(prepend<String>("a", prepend<String>("b", prepend<String>("c", List<String>()))), "-"))
+  emitStr("join_single", join(prepend<String>("solo", List<String>()), "-"))
+  emitStr("join_empty",  join(List<String>(), "-"))
+  emitStr("roundtrip",   join(split("a,b,c", ","), ","))
+
+  # ─── trim family ───────────────────────────────────────────────────────
+  emitStr("trim",          trim("  hi there  "))
+  emitStr("trimStart",     trimStart("  hi  "))
+  emitStr("trimEnd",       trimEnd("  hi  "))
+  emitStr("trim_tabs",     trim("\t\n x \r\n"))
+  emitStr("trim_none",     trim("abc"))
+  emitStr("trim_allspace", trim("   "))
+
+  ret 0
+
+fun [test("all string search", stdout = "indexOf_hit=7\nindexOf_miss=-1\nindexOf_from=2\nindexOf_empty=3\nindexOf_start=0\ncontains_yes=1\ncontains_no=0\ncontains_empty=1\nstarts_yes=1\nstarts_no=0\nstarts_long=0\nends_yes=1\nends_no=0\nsplit_count=3\nsplit_empties=3\nsplit_trailing=2\nsplit_nosep=1\nsplit_emptysep=1\nsplit_first=x\nsplit_multichar=a\njoin_basic=a-b-c\njoin_single=solo\njoin_empty=\nroundtrip=a,b,c\ntrim=hi there\ntrimStart=hi  \ntrimEnd=  hi\ntrim_tabs=x\ntrim_none=abc\ntrim_allspace=\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

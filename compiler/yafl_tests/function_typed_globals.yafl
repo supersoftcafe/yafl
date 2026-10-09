@@ -1,0 +1,72 @@
+# Function-typed global `let`s (the item-4 bug). A global whose value is a
+# `fun_t` reaches the lazy-init machinery unless it is a direct lambda (which
+# lowering/lambda_globals.py turns into a plain `fun`). Two root fixes make the
+# lazy path correct for callable values:
+#
+#   - lazy_thunks handles a FuncPointer value type (mangle + StructField on the
+#     fun_t's `.o` word, which the task ABI tags);
+#   - lower_lazy_lets wraps EVERY deferred-init RHS in a nullary thunk,
+#     uniformly — it no longer special-cases a lambda value. The old
+#     lambda-skip used a value-lambda directly as the init closure (called with
+#     no arguments → garbage fun_t → the caller's segfault) and would even have
+#     called a nullary lambda and memoised its result instead of the function.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::FunctionTypedGlobals::AliasOfNamedFunction
+
+import System
+import System::Test
+
+fun impl(s: System::String): System::Int
+  ret System::length(s)
+let h: (:System::String): System::Int = impl
+fun program(): System::Int
+  ret h("abc") + h("de")
+
+fun [test("alias of named function")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::FunctionTypedGlobals::NullaryFunctionValueIsStoredNotCalled
+
+import System
+import System::Test
+
+let g: (): System::Int = () => 5
+fun program(): System::Int
+  ret g() + g()
+
+fun [test("nullary function value is stored not called")] check(): None|TestFailure
+    ret assertEqInt(program(), 10, "program()")
+
+
+namespace CompilerTests::FunctionTypedGlobals::TernaryOfFunctions
+
+import System
+import System::Test
+
+fun f1(s: System::String): System::Int
+  ret System::length(s)
+fun f2(s: System::String): System::Int
+  ret System::length(s) * 2
+let h: (:System::String): System::Int = true ? f1 : f2
+fun program(): System::Int
+  ret h("abc")
+
+fun [test("ternary of functions")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")
+
+
+namespace CompilerTests::FunctionTypedGlobals::TernaryOfLambdasAtO0AndO3
+
+import System
+import System::Test
+
+let h: (:System::String): System::Int = true ? (s: System::String) => System::length(s) : (s: System::String) => 0
+fun program(): System::Int
+  ret h("abcd")
+
+fun [test("ternary of lambdas at o0 and o3")] check(): None|TestFailure
+    ret assertEqInt(program(), 4, "program()")

@@ -5,30 +5,23 @@ in `test_libraries.py`: compiling without an explicit import (discovery via a
 qualified reference), building a whole project directory through the real CLI
 (static-linked against the discovered System library), and the ambiguity
 diagnostic for a name that resolves more than one way.
+
+Runtime behaviour is checked by compiler/yafl_tests/project_build.yafl.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c_result
 
 _COMPILER_DIR = Path(__file__).resolve().parent.parent
 
 
 class TestDiscovery(TestCase):
-    def test_compiles_without_import_via_qualified_reference(self):
-        # No `import System` — only qualified references. The permissive worklist
-        # must still pull System in (from the `System::` candidates) and compile.
-        rc, out = compile_and_run_stdlib_capture("""fun main(): System::Int
-  ret System::length("abcd")
-""", timeout=30)
-        self.assertEqual(4, rc, f"discovery via qualified ref failed; stdout:\n{out}")
 
     def test_ambiguous_reference_lists_candidates(self):
         # `thing` is provided by both A and B (same signature, both imported), so

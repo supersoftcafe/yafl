@@ -1,0 +1,456 @@
+# Union tag fields must be wide enough for their GLOBAL discriminator values.
+#
+# compute_union_slots sized `$tag` by the union's own variant count (2 members
+# -> int8_t), but tagged combinations store globally-numbered discriminators —
+# in a program with >127 distinct union member types the stored value overflows
+# the comparison and clang (rightly, -Werror) rejects the generated C. Found
+# when the bootstrap compiler's enum count crossed the line.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::TagWidth::WideDiscriminatorsCompileAndRun
+
+import System
+import System::Test
+
+fun f0(n: System::Int): (a0: System::Int, b0: System::Int)|System::None
+  ret n > 0 ? (n, 0) : None
+
+fun f1(n: System::Int): (a1: System::Int, b1: System::Int)|System::None
+  ret n > 0 ? (n, 1) : None
+
+fun f2(n: System::Int): (a2: System::Int, b2: System::Int)|System::None
+  ret n > 0 ? (n, 2) : None
+
+fun f3(n: System::Int): (a3: System::Int, b3: System::Int)|System::None
+  ret n > 0 ? (n, 3) : None
+
+fun f4(n: System::Int): (a4: System::Int, b4: System::Int)|System::None
+  ret n > 0 ? (n, 4) : None
+
+fun f5(n: System::Int): (a5: System::Int, b5: System::Int)|System::None
+  ret n > 0 ? (n, 5) : None
+
+fun f6(n: System::Int): (a6: System::Int, b6: System::Int)|System::None
+  ret n > 0 ? (n, 6) : None
+
+fun f7(n: System::Int): (a7: System::Int, b7: System::Int)|System::None
+  ret n > 0 ? (n, 7) : None
+
+fun f8(n: System::Int): (a8: System::Int, b8: System::Int)|System::None
+  ret n > 0 ? (n, 8) : None
+
+fun f9(n: System::Int): (a9: System::Int, b9: System::Int)|System::None
+  ret n > 0 ? (n, 9) : None
+
+fun f10(n: System::Int): (a10: System::Int, b10: System::Int)|System::None
+  ret n > 0 ? (n, 10) : None
+
+fun f11(n: System::Int): (a11: System::Int, b11: System::Int)|System::None
+  ret n > 0 ? (n, 11) : None
+
+fun f12(n: System::Int): (a12: System::Int, b12: System::Int)|System::None
+  ret n > 0 ? (n, 12) : None
+
+fun f13(n: System::Int): (a13: System::Int, b13: System::Int)|System::None
+  ret n > 0 ? (n, 13) : None
+
+fun f14(n: System::Int): (a14: System::Int, b14: System::Int)|System::None
+  ret n > 0 ? (n, 14) : None
+
+fun f15(n: System::Int): (a15: System::Int, b15: System::Int)|System::None
+  ret n > 0 ? (n, 15) : None
+
+fun f16(n: System::Int): (a16: System::Int, b16: System::Int)|System::None
+  ret n > 0 ? (n, 16) : None
+
+fun f17(n: System::Int): (a17: System::Int, b17: System::Int)|System::None
+  ret n > 0 ? (n, 17) : None
+
+fun f18(n: System::Int): (a18: System::Int, b18: System::Int)|System::None
+  ret n > 0 ? (n, 18) : None
+
+fun f19(n: System::Int): (a19: System::Int, b19: System::Int)|System::None
+  ret n > 0 ? (n, 19) : None
+
+fun f20(n: System::Int): (a20: System::Int, b20: System::Int)|System::None
+  ret n > 0 ? (n, 20) : None
+
+fun f21(n: System::Int): (a21: System::Int, b21: System::Int)|System::None
+  ret n > 0 ? (n, 21) : None
+
+fun f22(n: System::Int): (a22: System::Int, b22: System::Int)|System::None
+  ret n > 0 ? (n, 22) : None
+
+fun f23(n: System::Int): (a23: System::Int, b23: System::Int)|System::None
+  ret n > 0 ? (n, 23) : None
+
+fun f24(n: System::Int): (a24: System::Int, b24: System::Int)|System::None
+  ret n > 0 ? (n, 24) : None
+
+fun f25(n: System::Int): (a25: System::Int, b25: System::Int)|System::None
+  ret n > 0 ? (n, 25) : None
+
+fun f26(n: System::Int): (a26: System::Int, b26: System::Int)|System::None
+  ret n > 0 ? (n, 26) : None
+
+fun f27(n: System::Int): (a27: System::Int, b27: System::Int)|System::None
+  ret n > 0 ? (n, 27) : None
+
+fun f28(n: System::Int): (a28: System::Int, b28: System::Int)|System::None
+  ret n > 0 ? (n, 28) : None
+
+fun f29(n: System::Int): (a29: System::Int, b29: System::Int)|System::None
+  ret n > 0 ? (n, 29) : None
+
+fun f30(n: System::Int): (a30: System::Int, b30: System::Int)|System::None
+  ret n > 0 ? (n, 30) : None
+
+fun f31(n: System::Int): (a31: System::Int, b31: System::Int)|System::None
+  ret n > 0 ? (n, 31) : None
+
+fun f32(n: System::Int): (a32: System::Int, b32: System::Int)|System::None
+  ret n > 0 ? (n, 32) : None
+
+fun f33(n: System::Int): (a33: System::Int, b33: System::Int)|System::None
+  ret n > 0 ? (n, 33) : None
+
+fun f34(n: System::Int): (a34: System::Int, b34: System::Int)|System::None
+  ret n > 0 ? (n, 34) : None
+
+fun f35(n: System::Int): (a35: System::Int, b35: System::Int)|System::None
+  ret n > 0 ? (n, 35) : None
+
+fun f36(n: System::Int): (a36: System::Int, b36: System::Int)|System::None
+  ret n > 0 ? (n, 36) : None
+
+fun f37(n: System::Int): (a37: System::Int, b37: System::Int)|System::None
+  ret n > 0 ? (n, 37) : None
+
+fun f38(n: System::Int): (a38: System::Int, b38: System::Int)|System::None
+  ret n > 0 ? (n, 38) : None
+
+fun f39(n: System::Int): (a39: System::Int, b39: System::Int)|System::None
+  ret n > 0 ? (n, 39) : None
+
+fun f40(n: System::Int): (a40: System::Int, b40: System::Int)|System::None
+  ret n > 0 ? (n, 40) : None
+
+fun f41(n: System::Int): (a41: System::Int, b41: System::Int)|System::None
+  ret n > 0 ? (n, 41) : None
+
+fun f42(n: System::Int): (a42: System::Int, b42: System::Int)|System::None
+  ret n > 0 ? (n, 42) : None
+
+fun f43(n: System::Int): (a43: System::Int, b43: System::Int)|System::None
+  ret n > 0 ? (n, 43) : None
+
+fun f44(n: System::Int): (a44: System::Int, b44: System::Int)|System::None
+  ret n > 0 ? (n, 44) : None
+
+fun f45(n: System::Int): (a45: System::Int, b45: System::Int)|System::None
+  ret n > 0 ? (n, 45) : None
+
+fun f46(n: System::Int): (a46: System::Int, b46: System::Int)|System::None
+  ret n > 0 ? (n, 46) : None
+
+fun f47(n: System::Int): (a47: System::Int, b47: System::Int)|System::None
+  ret n > 0 ? (n, 47) : None
+
+fun f48(n: System::Int): (a48: System::Int, b48: System::Int)|System::None
+  ret n > 0 ? (n, 48) : None
+
+fun f49(n: System::Int): (a49: System::Int, b49: System::Int)|System::None
+  ret n > 0 ? (n, 49) : None
+
+fun f50(n: System::Int): (a50: System::Int, b50: System::Int)|System::None
+  ret n > 0 ? (n, 50) : None
+
+fun f51(n: System::Int): (a51: System::Int, b51: System::Int)|System::None
+  ret n > 0 ? (n, 51) : None
+
+fun f52(n: System::Int): (a52: System::Int, b52: System::Int)|System::None
+  ret n > 0 ? (n, 52) : None
+
+fun f53(n: System::Int): (a53: System::Int, b53: System::Int)|System::None
+  ret n > 0 ? (n, 53) : None
+
+fun f54(n: System::Int): (a54: System::Int, b54: System::Int)|System::None
+  ret n > 0 ? (n, 54) : None
+
+fun f55(n: System::Int): (a55: System::Int, b55: System::Int)|System::None
+  ret n > 0 ? (n, 55) : None
+
+fun f56(n: System::Int): (a56: System::Int, b56: System::Int)|System::None
+  ret n > 0 ? (n, 56) : None
+
+fun f57(n: System::Int): (a57: System::Int, b57: System::Int)|System::None
+  ret n > 0 ? (n, 57) : None
+
+fun f58(n: System::Int): (a58: System::Int, b58: System::Int)|System::None
+  ret n > 0 ? (n, 58) : None
+
+fun f59(n: System::Int): (a59: System::Int, b59: System::Int)|System::None
+  ret n > 0 ? (n, 59) : None
+
+fun f60(n: System::Int): (a60: System::Int, b60: System::Int)|System::None
+  ret n > 0 ? (n, 60) : None
+
+fun f61(n: System::Int): (a61: System::Int, b61: System::Int)|System::None
+  ret n > 0 ? (n, 61) : None
+
+fun f62(n: System::Int): (a62: System::Int, b62: System::Int)|System::None
+  ret n > 0 ? (n, 62) : None
+
+fun f63(n: System::Int): (a63: System::Int, b63: System::Int)|System::None
+  ret n > 0 ? (n, 63) : None
+
+fun f64(n: System::Int): (a64: System::Int, b64: System::Int)|System::None
+  ret n > 0 ? (n, 64) : None
+
+fun f65(n: System::Int): (a65: System::Int, b65: System::Int)|System::None
+  ret n > 0 ? (n, 65) : None
+
+fun f66(n: System::Int): (a66: System::Int, b66: System::Int)|System::None
+  ret n > 0 ? (n, 66) : None
+
+fun f67(n: System::Int): (a67: System::Int, b67: System::Int)|System::None
+  ret n > 0 ? (n, 67) : None
+
+fun f68(n: System::Int): (a68: System::Int, b68: System::Int)|System::None
+  ret n > 0 ? (n, 68) : None
+
+fun f69(n: System::Int): (a69: System::Int, b69: System::Int)|System::None
+  ret n > 0 ? (n, 69) : None
+
+fun f70(n: System::Int): (a70: System::Int, b70: System::Int)|System::None
+  ret n > 0 ? (n, 70) : None
+
+fun f71(n: System::Int): (a71: System::Int, b71: System::Int)|System::None
+  ret n > 0 ? (n, 71) : None
+
+fun f72(n: System::Int): (a72: System::Int, b72: System::Int)|System::None
+  ret n > 0 ? (n, 72) : None
+
+fun f73(n: System::Int): (a73: System::Int, b73: System::Int)|System::None
+  ret n > 0 ? (n, 73) : None
+
+fun f74(n: System::Int): (a74: System::Int, b74: System::Int)|System::None
+  ret n > 0 ? (n, 74) : None
+
+fun f75(n: System::Int): (a75: System::Int, b75: System::Int)|System::None
+  ret n > 0 ? (n, 75) : None
+
+fun f76(n: System::Int): (a76: System::Int, b76: System::Int)|System::None
+  ret n > 0 ? (n, 76) : None
+
+fun f77(n: System::Int): (a77: System::Int, b77: System::Int)|System::None
+  ret n > 0 ? (n, 77) : None
+
+fun f78(n: System::Int): (a78: System::Int, b78: System::Int)|System::None
+  ret n > 0 ? (n, 78) : None
+
+fun f79(n: System::Int): (a79: System::Int, b79: System::Int)|System::None
+  ret n > 0 ? (n, 79) : None
+
+fun f80(n: System::Int): (a80: System::Int, b80: System::Int)|System::None
+  ret n > 0 ? (n, 80) : None
+
+fun f81(n: System::Int): (a81: System::Int, b81: System::Int)|System::None
+  ret n > 0 ? (n, 81) : None
+
+fun f82(n: System::Int): (a82: System::Int, b82: System::Int)|System::None
+  ret n > 0 ? (n, 82) : None
+
+fun f83(n: System::Int): (a83: System::Int, b83: System::Int)|System::None
+  ret n > 0 ? (n, 83) : None
+
+fun f84(n: System::Int): (a84: System::Int, b84: System::Int)|System::None
+  ret n > 0 ? (n, 84) : None
+
+fun f85(n: System::Int): (a85: System::Int, b85: System::Int)|System::None
+  ret n > 0 ? (n, 85) : None
+
+fun f86(n: System::Int): (a86: System::Int, b86: System::Int)|System::None
+  ret n > 0 ? (n, 86) : None
+
+fun f87(n: System::Int): (a87: System::Int, b87: System::Int)|System::None
+  ret n > 0 ? (n, 87) : None
+
+fun f88(n: System::Int): (a88: System::Int, b88: System::Int)|System::None
+  ret n > 0 ? (n, 88) : None
+
+fun f89(n: System::Int): (a89: System::Int, b89: System::Int)|System::None
+  ret n > 0 ? (n, 89) : None
+
+fun f90(n: System::Int): (a90: System::Int, b90: System::Int)|System::None
+  ret n > 0 ? (n, 90) : None
+
+fun f91(n: System::Int): (a91: System::Int, b91: System::Int)|System::None
+  ret n > 0 ? (n, 91) : None
+
+fun f92(n: System::Int): (a92: System::Int, b92: System::Int)|System::None
+  ret n > 0 ? (n, 92) : None
+
+fun f93(n: System::Int): (a93: System::Int, b93: System::Int)|System::None
+  ret n > 0 ? (n, 93) : None
+
+fun f94(n: System::Int): (a94: System::Int, b94: System::Int)|System::None
+  ret n > 0 ? (n, 94) : None
+
+fun f95(n: System::Int): (a95: System::Int, b95: System::Int)|System::None
+  ret n > 0 ? (n, 95) : None
+
+fun f96(n: System::Int): (a96: System::Int, b96: System::Int)|System::None
+  ret n > 0 ? (n, 96) : None
+
+fun f97(n: System::Int): (a97: System::Int, b97: System::Int)|System::None
+  ret n > 0 ? (n, 97) : None
+
+fun f98(n: System::Int): (a98: System::Int, b98: System::Int)|System::None
+  ret n > 0 ? (n, 98) : None
+
+fun f99(n: System::Int): (a99: System::Int, b99: System::Int)|System::None
+  ret n > 0 ? (n, 99) : None
+
+fun f100(n: System::Int): (a100: System::Int, b100: System::Int)|System::None
+  ret n > 0 ? (n, 100) : None
+
+fun f101(n: System::Int): (a101: System::Int, b101: System::Int)|System::None
+  ret n > 0 ? (n, 101) : None
+
+fun f102(n: System::Int): (a102: System::Int, b102: System::Int)|System::None
+  ret n > 0 ? (n, 102) : None
+
+fun f103(n: System::Int): (a103: System::Int, b103: System::Int)|System::None
+  ret n > 0 ? (n, 103) : None
+
+fun f104(n: System::Int): (a104: System::Int, b104: System::Int)|System::None
+  ret n > 0 ? (n, 104) : None
+
+fun f105(n: System::Int): (a105: System::Int, b105: System::Int)|System::None
+  ret n > 0 ? (n, 105) : None
+
+fun f106(n: System::Int): (a106: System::Int, b106: System::Int)|System::None
+  ret n > 0 ? (n, 106) : None
+
+fun f107(n: System::Int): (a107: System::Int, b107: System::Int)|System::None
+  ret n > 0 ? (n, 107) : None
+
+fun f108(n: System::Int): (a108: System::Int, b108: System::Int)|System::None
+  ret n > 0 ? (n, 108) : None
+
+fun f109(n: System::Int): (a109: System::Int, b109: System::Int)|System::None
+  ret n > 0 ? (n, 109) : None
+
+fun f110(n: System::Int): (a110: System::Int, b110: System::Int)|System::None
+  ret n > 0 ? (n, 110) : None
+
+fun f111(n: System::Int): (a111: System::Int, b111: System::Int)|System::None
+  ret n > 0 ? (n, 111) : None
+
+fun f112(n: System::Int): (a112: System::Int, b112: System::Int)|System::None
+  ret n > 0 ? (n, 112) : None
+
+fun f113(n: System::Int): (a113: System::Int, b113: System::Int)|System::None
+  ret n > 0 ? (n, 113) : None
+
+fun f114(n: System::Int): (a114: System::Int, b114: System::Int)|System::None
+  ret n > 0 ? (n, 114) : None
+
+fun f115(n: System::Int): (a115: System::Int, b115: System::Int)|System::None
+  ret n > 0 ? (n, 115) : None
+
+fun f116(n: System::Int): (a116: System::Int, b116: System::Int)|System::None
+  ret n > 0 ? (n, 116) : None
+
+fun f117(n: System::Int): (a117: System::Int, b117: System::Int)|System::None
+  ret n > 0 ? (n, 117) : None
+
+fun f118(n: System::Int): (a118: System::Int, b118: System::Int)|System::None
+  ret n > 0 ? (n, 118) : None
+
+fun f119(n: System::Int): (a119: System::Int, b119: System::Int)|System::None
+  ret n > 0 ? (n, 119) : None
+
+fun f120(n: System::Int): (a120: System::Int, b120: System::Int)|System::None
+  ret n > 0 ? (n, 120) : None
+
+fun f121(n: System::Int): (a121: System::Int, b121: System::Int)|System::None
+  ret n > 0 ? (n, 121) : None
+
+fun f122(n: System::Int): (a122: System::Int, b122: System::Int)|System::None
+  ret n > 0 ? (n, 122) : None
+
+fun f123(n: System::Int): (a123: System::Int, b123: System::Int)|System::None
+  ret n > 0 ? (n, 123) : None
+
+fun f124(n: System::Int): (a124: System::Int, b124: System::Int)|System::None
+  ret n > 0 ? (n, 124) : None
+
+fun f125(n: System::Int): (a125: System::Int, b125: System::Int)|System::None
+  ret n > 0 ? (n, 125) : None
+
+fun f126(n: System::Int): (a126: System::Int, b126: System::Int)|System::None
+  ret n > 0 ? (n, 126) : None
+
+fun f127(n: System::Int): (a127: System::Int, b127: System::Int)|System::None
+  ret n > 0 ? (n, 127) : None
+
+fun f128(n: System::Int): (a128: System::Int, b128: System::Int)|System::None
+  ret n > 0 ? (n, 128) : None
+
+fun f129(n: System::Int): (a129: System::Int, b129: System::Int)|System::None
+  ret n > 0 ? (n, 129) : None
+
+fun f130(n: System::Int): (a130: System::Int, b130: System::Int)|System::None
+  ret n > 0 ? (n, 130) : None
+
+fun f131(n: System::Int): (a131: System::Int, b131: System::Int)|System::None
+  ret n > 0 ? (n, 131) : None
+
+fun f132(n: System::Int): (a132: System::Int, b132: System::Int)|System::None
+  ret n > 0 ? (n, 132) : None
+
+fun f133(n: System::Int): (a133: System::Int, b133: System::Int)|System::None
+  ret n > 0 ? (n, 133) : None
+
+fun f134(n: System::Int): (a134: System::Int, b134: System::Int)|System::None
+  ret n > 0 ? (n, 134) : None
+
+fun f135(n: System::Int): (a135: System::Int, b135: System::Int)|System::None
+  ret n > 0 ? (n, 135) : None
+
+fun f136(n: System::Int): (a136: System::Int, b136: System::Int)|System::None
+  ret n > 0 ? (n, 136) : None
+
+fun f137(n: System::Int): (a137: System::Int, b137: System::Int)|System::None
+  ret n > 0 ? (n, 137) : None
+
+fun f138(n: System::Int): (a138: System::Int, b138: System::Int)|System::None
+  ret n > 0 ? (n, 138) : None
+
+fun f139(n: System::Int): (a139: System::Int, b139: System::Int)|System::None
+  ret n > 0 ? (n, 139) : None
+
+fun c0(): System::Int
+  ret match(f0(1))
+    (t: (a0: System::Int, b0: System::Int)) => t.a0
+    ()                                          => 0
+
+fun c77(): System::Int
+  ret match(f77(1))
+    (t: (a77: System::Int, b77: System::Int)) => t.a77
+    ()                                          => 0
+
+fun c139(): System::Int
+  ret match(f139(1))
+    (t: (a139: System::Int, b139: System::Int)) => t.a139
+    ()                                          => 0
+
+fun program(): System::Int
+  ret c0() + c77() + c139()
+
+fun [test("wide discriminators compile and run")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")

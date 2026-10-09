@@ -1,0 +1,444 @@
+# Function PARAMETER types inferred from the BODY, never from the callers.
+#
+# The implementer's "it's obvious, I shouldn't have to write it again": a
+# parameter's type comes from what the body DOES with it. Every use contributes
+# evidence, in one of two directions:
+#
+#   * UPPER bounds — "x must fit here": x passed where a type is declared, or
+#     `ret x` against a declared return type.
+#   * LOWER bounds — "x must accept these": the arm types of `match(x)`.
+#
+# The type is the generalisation of the lower bounds, checked against the upper
+# bounds. Variants of one enum generalise to the ROOT enum and classes to the
+# interface they share (deliberately unlike `join` for branch results, which is
+# set semantics) — a programmer who disagrees writes the type out.
+#
+# Candidates come from overload resolution, which is ASSIGNABILITY of the call
+# shape with holes, never arity: `3 * x` filters the `*` overloads by the known
+# first argument, one survives, and x is read off its second parameter.
+#
+# Several surviving candidates, or no use that determines the parameter at all,
+# are the SAME diagnostic: an ambiguity naming what was found.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::ParamBodyInference::ALambdaArgumentTakesTheExpectedSignature
+
+import System
+import System::Test
+
+fun label(s: String|None): Int
+  ret match(s)
+    (x: String) => length(x)
+    ()          => 0
+fun program(): System::Int
+  let words: List<String> = prepend("ab", List())
+  ret fold(map(words, (sp) => label(sp)), 0, (acc, n) => acc + n)
+
+fun [test("a lambda argument takes the expected signature")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::ALambdaBodyDoesNotBindItsCalleesTypeParameter
+
+import System
+import System::Test
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+  enum Tri(t: System::Int)
+
+interface Legged
+  fun legs(): System::Int
+
+class [final] Dog() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Cat() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Rock()
+  fun weight(): System::Int
+    ret 1
+
+class [final] Tree()
+  fun weight(): System::Int
+    ret 2
+fun area(sh: Shape): System::Int
+  ret match(sh)
+    (c: Circle) => c.r * c.r
+    (q: Square) => q.s * q.s
+    (t: Tri)    => t.t
+fun total(circles: List<Circle>): System::Int
+  ret fold(map(circles, (c) => area(c)), 0, (acc, n) => acc + n)
+fun program(): System::Int
+  let cs: List<Circle> = prepend(Circle(2), prepend(Circle(3), List()))
+  ret total(cs)
+
+fun [test("a lambda body does not bind its callees type parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::ALatePinningCallStillInforms
+
+import System
+import System::Test
+
+fun both(n: System::Int, s: System::String): System::Int
+  ret n + length(s)
+fun both(n: System::Int32, s: System::Int32): System::Int
+  ret 1
+fun late(a, b): System::Int
+  ret both(a, b) + 3 * a
+fun program(): System::Int
+  ret late(2, "abc")
+
+fun [test("a late pinning call still informs")] check(): None|TestFailure
+    ret assertEqInt(program(), 11, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::ANamedArgumentFindsItsOwnSlot
+
+import System
+import System::Test
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+  enum Tri(t: System::Int)
+
+interface Legged
+  fun legs(): System::Int
+
+class [final] Dog() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Cat() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Rock()
+  fun weight(): System::Int
+    ret 1
+
+class [final] Tree()
+  fun weight(): System::Int
+    ret 2
+fun pair(first: Circle, second: Square): System::Int
+  ret first.r + second.s
+fun viaNamed(x): System::Int
+  ret pair(second = x, first = Circle(1))
+fun program(): System::Int
+  ret viaNamed(Square(6))
+
+fun [test("a named argument finds its own slot")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::AUniquelyFittingCallPinsTheParameter
+
+import System
+import System::Test
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+  enum Tri(t: System::Int)
+
+interface Legged
+  fun legs(): System::Int
+
+class [final] Dog() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Cat() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Rock()
+  fun weight(): System::Int
+    ret 1
+
+class [final] Tree()
+  fun weight(): System::Int
+    ret 2
+fun ring(c: Circle): System::Int
+  ret c.r
+fun viaCall(x): System::Int
+  ret ring(x)
+fun program(): System::Int
+  ret viaCall(Circle(5))
+
+fun [test("a uniquely fitting call pins the parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::AnUnresolvedOperatorDoesNotLatchAWiderType
+
+import System
+import System::Test
+
+fun [tail] idxLoop(es: List<String>, name: String, i): Int|None
+  ret match(head(es))
+    (s: String) => s == name ? i : idxLoop(drop(es, 1), name, i + 1)
+    ()          => None
+fun program(): System::Int
+  let words: List<String> = prepend("a", prepend("bcd", List()))
+  ret idxLoop(words, "bcd", 0) ?? 99
+
+fun [test("an unresolved operator does not latch a wider type")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::ArithmeticPinsTheParameter
+
+import System
+import System::Test
+
+fun triple(x): System::Int
+  ret 3 * x
+fun program(): System::Int
+  ret triple(14)
+
+fun [test("arithmetic pins the parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::BranchesWithNoCommonParentAreTheUnion
+
+import System
+import System::Test
+
+fun maybe(flag: System::Bool)
+  ret flag ? 5 : None
+fun program(): System::Int
+  ret match(maybe(true))
+    (n: System::Int) => n
+    (z: System::None) => 0
+
+fun [test("branches with no common parent are the union")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::CallableParameterInfersWhenTheReturnIsDeclared
+
+import System
+import System::Test
+
+fun doSomething(callable): System::Int
+  ret callable(3)
+fun twice(n: System::Int): System::Int
+  ret n + n
+fun program(): System::Int
+  ret doSomething(twice)
+
+fun [test("callable parameter infers when the return is declared")] check(): None|TestFailure
+    ret assertEqInt(program(), 6, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::DeclaredResultPinsATraitOperator
+
+import System
+import System::Test
+
+fun addr(a, b): System::Int
+  ret a + b
+fun program(): System::Int
+  ret addr(3, 4)
+
+fun [test("declared result pins a trait operator")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::LambdaParameterInfersFromItsBody
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let triple = (x) => 3 * x
+  ret triple(14)
+
+fun [test("lambda parameter infers from its body")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::MatchArmsGiveTheRootEnum
+
+import System
+import System::Test
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+  enum Tri(t: System::Int)
+
+interface Legged
+  fun legs(): System::Int
+
+class [final] Dog() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Cat() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Rock()
+  fun weight(): System::Int
+    ret 1
+
+class [final] Tree()
+  fun weight(): System::Int
+    ret 2
+fun sides(s): System::Int
+  ret match(s)
+    (c: Circle) => 1
+    (q: Square) => 4
+    (t: Tri)    => 3
+fun program(): System::Int
+  ret sides(Tri(9)) + sides(Circle(1))
+
+fun [test("match arms give the root enum")] check(): None|TestFailure
+    ret assertEqInt(program(), 4, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::MatchBranchesConvergeOnTheRoot
+
+import System
+import System::Test
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+  enum Tri(t: System::Int)
+
+interface Legged
+  fun legs(): System::Int
+
+class [final] Dog() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Cat() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Rock()
+  fun weight(): System::Int
+    ret 1
+
+class [final] Tree()
+  fun weight(): System::Int
+    ret 2
+fun pick(n: System::Int)
+  ret match(n)
+    (0) => Circle(1)
+    ()  => Square(2)
+fun program(): System::Int
+  ret match(pick(0))
+    (c: Circle) => c.r
+    (q: Square) => q.s
+    (t: Tri)    => t.t
+
+fun [test("match branches converge on the root")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::ReturnTypePinsTheParameter
+
+import System
+import System::Test
+
+fun echo(x): System::Int
+  ret x
+fun program(): System::Int
+  ret echo(7)
+
+fun [test("return type pins the parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::TernaryBranchesConvergeOnTheRoot
+
+import System
+import System::Test
+
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+  enum Tri(t: System::Int)
+
+interface Legged
+  fun legs(): System::Int
+
+class [final] Dog() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Cat() : Legged
+  fun legs(): System::Int
+    ret 4
+
+class [final] Rock()
+  fun weight(): System::Int
+    ret 1
+
+class [final] Tree()
+  fun weight(): System::Int
+    ret 2
+fun pick(flag: System::Bool)
+  ret flag ? Circle(1) : Square(2)
+fun program(): System::Int
+  ret match(pick(false))
+    (c: Circle) => c.r
+    (q: Square) => q.s
+    (t: Tri)    => t.t
+
+fun [test("ternary branches converge on the root")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::TraitOperatorsTakeTheExpectedType
+
+import System
+import System::Test
+
+let mask32 = 4294967295
+fun add32(a, b)
+  ret (a + b) & mask32
+fun rotl32(x, c)
+  ret ((x << c) | (x >> (32 - c))) & mask32
+fun program(): System::Int
+  ret add32(1, rotl32(2, 3))
+
+fun [test("trait operators take the expected type")] check(): None|TestFailure
+    ret assertEqInt(program(), 17, "program()")
+
+
+namespace CompilerTests::ParamBodyInference::LeafPatternsAndADeclaredReturn
+
+import System
+import System::Test
+
+fun rwChain(c: Chain<Int>): Chain<Int> => match(c)
+  (nil: ChainEnd) => c
+  (l: ChainLink)  => with l(value = l.value + 1, next = rwChain(l.next))
+
+fun rw(ss): List<Int> => match(ss)
+  (le: ListEmpty) => ss
+  (lf: ListFull)  => with lf(front = rwChain(lf.front))
+
+fun program(): System::Int
+  ret match(chainNext(chain(rw(prepend(6, List<Int>())))).head)
+    (i: Int) => i
+    ()       => 3
+
+fun [test("leaf patterns and a declared return")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")

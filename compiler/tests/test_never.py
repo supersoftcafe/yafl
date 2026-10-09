@@ -11,12 +11,12 @@ runtime, but the type system does not exempt it.
 
 The `()` form (`enum Unit()`) is a distinct, constructible unit value and must
 keep working — only the no-parens, no-variants form is empty.
+
+The runtime behaviour is checked by compiler/yafl_tests/never.yafl.
 """
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
-from tests.testutil import compile_and_run_stdlib
 from tests.testutil import compile_c, compile_c_result
 
 
@@ -45,71 +45,12 @@ class TestNeverType(TestCase):
             "  ret 0\n")
         self.assertNotEqual("", result)  # compiles
 
-    def test_never_member_needs_no_constructed_value(self):
-        # A union may carry an uninhabited member: `pick` returns
-        # `Never | IOError | None` while only ever constructing the two inhabited
-        # members. The match covers `Never` with an `else` — it is never reached,
-        # but the type system requires the union to be covered like any other.
-        rc, out = compile_and_run_stdlib_capture("""
-import System
-import System::IO
-
-fun pick(flag: System::Bool): System::Never | IOError | System::None
-  ret flag ? EOFError(0) : None
-
-fun classify(v: System::Never | IOError | System::None): System::Int
-  ret match(v)
-    (e: IOError)      => 1
-    (n: System::None) => 0
-    ()                => 2
-
-fun main(): System::Int
-  ret classify(pick(true)) == 1 && classify(pick(false)) == 0 ? 0 : 9
-""", timeout=120)
-        self.assertEqual(0, rc)
-
-    def test_uninhabited_member_does_not_change_representation(self):
-        # `Never | X` and a richer error union must lay out X identically: an
-        # uninhabited member is never dropped, so a value built as `IOError` and
-        # carried through a `Never | IOError | None` channel round-trips. This
-        # guards against the representation collapsing when one member happens to
-        # be uninhabited.
-        rc, out = compile_and_run_stdlib_capture("""
-import System
-import System::IO
-
-fun box(e: IOError): System::Never | IOError | System::None
-  ret e
-
-fun unbox(v: System::Never | IOError | System::None): System::Int
-  ret match(v)
-    (e: IOError)      => 7
-    (n: System::None) => 0
-    ()                => 9
-
-fun main(): System::Int
-  ret unbox(box(EOFError(0))) == 7 ? 0 : 1
-""", timeout=120)
-        self.assertEqual(0, rc)
-
 
 class TestInhabitedOnlyExhaustiveness(TestCase):
     """Exhaustiveness counts inhabited members only (2026-07-03): an uncovered
     `Never` member owes no arm — dead code by construction — while an explicit
     arm for it stays legal. Narrowing a Never-carrying union therefore needs no
     fabricated unreachable value."""
-
-    def test_match_without_never_arm_is_exhaustive(self):
-        rc = compile_and_run_stdlib(
-            "namespace Main\n"
-            "import System\n"
-            "fun pick(v: System::Int | System::String | System::Never): System::Int\n"
-            "  ret match(v)\n"
-            "    (i: System::Int)    => i\n"
-            "    (s: System::String) => System::length(s)\n"
-            "fun main(): System::Int\n"
-            "  ret pick(41) + pick(\"x\")\n")
-        self.assertEqual(42, rc)
 
     def test_inhabited_members_still_required(self):
         # Relaxation applies ONLY to uninhabited members: dropping the String

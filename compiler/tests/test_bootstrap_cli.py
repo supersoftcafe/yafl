@@ -87,6 +87,21 @@ fun main(): System::Int
 fun good3(): System::Int => 3
 """
 
+# A match arm owns its whole line block: anything left after the arm body,
+# here the rest of the call the match sits in, is an error, not the call's
+# next argument.
+_ARM_LEFTOVERS = """\
+import System
+
+fun check(b: System::Bool, why: System::String): System::Int => b ? 0 : 1
+
+fun main(): System::Int
+  let e: System::Int|System::None = 3
+  ret check(match(e)
+    (i: System::Int) => true
+    ()               => false, "an Int")
+"""
+
 _TESTS = """\
 namespace Cli::Tests
 
@@ -252,6 +267,12 @@ class TestBootstrapCli(TimedTestCase):
         self._write("pa.yafl", _PARSE_ERROR_A)
         self._write("pb.yafl", _PARSE_ERROR_B)
         self._both("pa.yafl", "pb.yafl")
+
+    def test_match_arm_leftovers(self):
+        self._write("arm.yafl", _ARM_LEFTOVERS)
+        rc, out, _ = self._both("arm.yafl")
+        self.assertEqual(1, rc)
+        self.assertEqual(["arm.yafl[9:30] - extra unexpected characters"], out.splitlines())
 
     def _port(self, *args: str) -> tuple[int, str, str]:
         return self._run([self.binary, "-L", str(self.libs), *args], Path(self.binary).name)

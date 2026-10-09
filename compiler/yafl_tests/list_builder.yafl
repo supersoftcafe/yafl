@@ -1,0 +1,32 @@
+# ListBuilder: linear in-order construction on ordinary movable cells; the
+# tail-`next` write is a locking late init (runtime list_builder_link's
+# pin-resolve/store/unpin bracket + the [linear] stdlib wrapper). Verifies
+# order, scale (GC cycles + compaction run during construction), interleaved
+# builders, and construction across GC pressure with poison enabled.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::ListBuilder::FillAcrossPromotionThenMinors
+
+import System
+import System::Test
+
+fun gcNudge(x: Int): Int
+  ret __builtin_op__<bool>("gc_debug_major_now", x) ? x : x
+fun [tail] waste(k: Int, acc: Int): Int
+  ret k == 0 ? acc : waste(k - 1, acc + length(String(k + 1000000)))
+fun [tail] fill(b: ListBuilder<Int>, n: Int): ListBuilder<Int>
+  ret n == 0 ? b
+    : n == 19900 ? fill(push(b, gcNudge(n)), n - 1)
+    : fill(push(b, n + waste(40, 0) - 280), n - 1)
+fun [tail] check(c: Chain<Int>, expect: Int): Int
+  ret match(c)
+    (nil: ChainEnd) => expect == 0 ? 0 : 1
+    (l: ChainLink)  => l.value == expect ? check(l.next, expect - 1) : 2
+fun program(): System::Int
+  let xs = build(fill(builder<Int>(), 20000))
+  ret check(chain(xs), 20000)
+
+fun [test("fill across promotion then minors")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

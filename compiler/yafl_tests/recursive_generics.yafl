@@ -1,0 +1,103 @@
+# Self-referential generics that a compiler-sized AST needs, pinned green.
+#
+# These are the shapes the yaflc self-hosting assessment identified as
+# load-bearing: a generic enum containing collections of itself (the AST
+# shape), mutually recursive generic enums, a recursive generic class, and a
+# self-recursive generic function. Divergent POLYMORPHIC recursion is the one
+# self-referential shape that cannot work — tests/test_polymorphic_recursion.py
+# covers its error path.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::RecursiveGenerics::GenericEnumTreeWithListOfSelf
+
+import System
+import System::Test
+
+enum Tree<T>
+  enum Leaf(v: T)
+  enum Node(kids: List<Tree<T> >)
+
+fun total(t: Tree<System::Int>): System::Int
+  ret match(t)
+    (lf: Leaf) => lf.v
+    (nd: Node) => fold(nd.kids, 0, (acc: System::Int, k: Tree<System::Int>) => acc + total(k))
+
+fun program(): System::Int
+  let t = Node(prepend(Leaf(3), prepend(Node(prepend(Leaf(4), List<Tree<System::Int> >())), List<Tree<System::Int> >())))
+  ret total(t)
+
+fun [test("generic enum tree with list of self")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::RecursiveGenerics::MutuallyRecursiveGenericEnums
+
+import System
+import System::Test
+
+enum EvenL<T>
+  enum ENil()
+  enum ECons(ev: T, erest: OddL<T>)
+enum OddL<T>
+  enum OCons(ov: T, orest: EvenL<T>)
+
+fun program(): System::Int
+  let x = OCons(1, ECons(2, OCons(3, ENil())))
+  ret match(x)
+    (o: OCons) => o.ov
+
+fun [test("mutually recursive generic enums")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::RecursiveGenerics::RecursiveGenericClass
+
+import System
+import System::Test
+
+class [final] Box<T>(bv: T, bnext: Box<T>|System::None)
+
+fun sumBoxes(b: Box<System::Int>|System::None): System::Int
+  ret match(b)
+    (x: Box<System::Int>) => x.bv + sumBoxes(x.bnext)
+    ()                    => 0
+
+fun program(): System::Int
+  ret sumBoxes(Box(5, Box(6, None)))
+
+fun [test("recursive generic class")] check(): None|TestFailure
+    ret assertEqInt(program(), 11, "program()")
+
+
+namespace CompilerTests::RecursiveGenerics::SelfRecursiveGenericExplicitArgs
+
+import System
+import System::Test
+
+fun loop<T>(x: T, n: System::Int): T
+  ret n == 0 ? x : loop<T>(x, n - 1)
+
+fun program(): System::Int
+  ret loop<System::Int>(7, 3)
+
+fun [test("self recursive generic explicit args")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::RecursiveGenerics::SelfRecursiveGenericFunction
+
+import System
+import System::Test
+
+fun count<T>(l: List<T>): System::Int
+  ret match(head(l))
+    (x: T) => 1 + count(tail(l))
+    ()     => 0
+
+fun program(): System::Int
+  ret count(prepend(5, prepend(6, List<System::Int>())))
+
+fun [test("self recursive generic function")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")

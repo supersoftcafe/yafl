@@ -1461,9 +1461,9 @@ INLINE bool     int16_test_lt(int16_t a, int16_t b) { return a <  b; }
 INLINE bool     int16_test_eq(int16_t a, int16_t b) { return a == b; }
 INLINE bool     int16_test_gt(int16_t a, int16_t b) { return a >  b; }
 
-INLINE int32_t  int32_add(int32_t self, int32_t data) { return self + data; }
-INLINE int32_t  int32_sub(int32_t self, int32_t data) { return self - data; }
-INLINE int32_t  int32_mul(int32_t self, int32_t data) { return self * data; }
+INLINE int32_t  int32_add(int32_t self, int32_t data) { return (int32_t)((uint32_t)self + (uint32_t)data); }
+INLINE int32_t  int32_sub(int32_t self, int32_t data) { return (int32_t)((uint32_t)self - (uint32_t)data); }
+INLINE int32_t  int32_mul(int32_t self, int32_t data) { return (int32_t)((uint32_t)self * (uint32_t)data); }
 INLINE int32_t  int32_neg(int32_t self)                { return (int32_t)(0u - (uint32_t)self); }
 INLINE int32_t  int32_inv(int32_t self)                { return (int32_t)(~(uint32_t)self); }
 INLINE int32_t  int32_and(int32_t a, int32_t b)        { return (int32_t)((uint32_t)a & (uint32_t)b); }

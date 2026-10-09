@@ -37,6 +37,17 @@ _REPO = _HERE.parent
 _BOOT_DIR = _REPO / "bootstrap"
 
 
+def compile_port(binary: Path, level: str, lib_path: str, out: Path,
+                 heap: str = "6G") -> subprocess.CompletedProcess:
+    """`binary` compiles the port's sources to C at `out`, as a user compiles
+    a project. build_bootstrap.py --reuse builds the port this way too."""
+    env = dict(os.environ, YAFL_HEAP_SIZE=heap)
+    env.pop("YAFL_PATH", None)
+    return subprocess.run([str(binary), f"-O{level}", "-L", lib_path, "-c", str(out),
+                           str(_BOOT_DIR)],
+                          text=True, capture_output=True, env=env, timeout=4 * 3600)
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -60,16 +71,12 @@ def main(argv: list[str]) -> int:
         return 2
     expected = args.expect.read_text() if args.expect else None
 
-    env = dict(os.environ, YAFL_HEAP_SIZE=args.heap)
-    env.pop("YAFL_PATH", None)
     print(f"self-compile: {args.binary} -O{args.level}, heap {args.heap}, "
           f"{args.runs} run(s)")
 
     def run_once(label: str, out: Path) -> str:
         t = time.time()
-        r = subprocess.run([str(args.binary), f"-O{args.level}", "-L", args.lib_path,
-                            "-c", str(out), str(_BOOT_DIR)],
-                           text=True, capture_output=True, env=env, timeout=4 * 3600)
+        r = compile_port(args.binary, args.level, args.lib_path, out, args.heap)
         el = time.time() - t
         if r.returncode != 0:
             print(f"self-compile: port exited {r.returncode} after {el:.0f}s\n"

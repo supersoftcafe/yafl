@@ -14,6 +14,7 @@
 namespace System::Test
 
 import System
+import System::IO
 
 
 # ── outcome ─────────────────────────────────────────────────────────────────
@@ -59,22 +60,35 @@ fun assertEqStr(actual: System::String, expected: System::String,
 # handle an IDE re-runs; `file`/`line` come from the line_ref the compiler
 # already carries, and are what turn a failure into a clickable location.
 
+#
+# `stdout` is what the test must print, from `[test("…", stdout = "…")]`: the
+# runner compares it with what it captured, so a program that prints is
+# checked exactly as written. None when the test declares nothing.
+
 class [final] TestCase(id: System::String,
                        description: System::String,
                        file: System::String,
                        line: System::Int,
+                       stdout: System::String|System::None,
                        body: (): System::None|TestFailure)
 
 
 # ── running ─────────────────────────────────────────────────────────────────
 
+# Every test runs in a SUBPROCESS: the runner relaunches its own binary as
+# `<argv0> --run-raw <id>` for each one (docs/testing-proposal.md §7, user ruling:
+# there is no in-process path). A test that crashes is then that test's failure
+# alone, and what it writes to stdout and stderr is captured and reported with
+# its result.
 fun [impure] run(cases: List<TestCase>, argv: List<System::String>): System::Int
     let fmt = formatOf(chain(argv), "human")
-    ret isFormatError(fmt)
-        ? badFormat(fmt)
-        : isListMode(argv)
-            ? listCases(chain(cases), fmt, 0)
-            : runSelected(cases, argv, fmt)
+    ret match(caseOf(chain(argv)))
+        (id: System::String) => runChild(cases, id)
+        ()                   => isFormatError(fmt)
+            ? badFormat(fmt)
+            : isListMode(argv)
+                ? listCases(chain(cases), fmt, 0)
+                : runSelected(cases, argv, fmt)
 
 # ── output format ───────────────────────────────────────────────────────────
 # ONE event stream, TWO renderers. Every line of output goes through the emit*
@@ -206,7 +220,7 @@ fun [tail] nonFlags([terminal] b: ListBuilder<System::String>,
                     a: Chain<System::String>): ListBuilder<System::String>
     ret match(a)
         (nil: ChainEnd) => b
-        (l: ChainLink)  => l.value == "--format"
+        (l: ChainLink)  => l.value == "--format" || l.value == "--run-raw"
             ? nonFlags(b, dropOne(l.next))
             : startsWith(l.value, "-")
                 ? nonFlags(b, l.next)
@@ -243,9 +257,113 @@ fun [impure, tail] runAll(cs: Chain<TestCase>, fmt: System::String,
             ? runAll(l.next, fmt, passed + 1, failed)
             : runAll(l.next, fmt, passed, failed + 1)
 
+# The parent's side: launch the child for ONE test and report what it did. The
+# line is written once the child has exited, never before (user ruling: one
+# whole line, after the test completes).
 fun [impure] runOne(c: TestCase, fmt: System::String): System::Bool
-    let _ = emitTestStart(c, fmt)
-    ret emitTestEnd(c, c.body(), fmt)
+    ret System::IO::run(argv0(), childArgs(c))
+        |> (r) => checkedStdout(c, outcomeOf(r))
+        |> (o) => emitResult(c, o, fmt)
+
+fun childArgs(c: TestCase): List<System::String>
+    ret prepend<System::String>("--run-raw", prepend<System::String>(c.id, List<System::String>()))
+
+# What one child did. `message`/`detail` are the TestFailure's for a failed
+# assertion, or say how the process ended when it did not end normally.
+class [final] Outcome(passed: System::Bool, message: System::String,
+                      detail: System::String, out: System::String,
+                      err: System::String)
+
+# Exit 0 is a pass; exit 1 with a failure record is a failed assertion; any
+# other end — a signal (a negative code), another status, or 1 without a record
+# — is a crash, reported with whatever the child wrote before it died.
+fun outcomeOf(r: System::IO::ProcessResult|IOError): Outcome
+    ret match(r)
+        (e: IOError) => Outcome(false, "the test process could not be started",
+                                "IO error " + String(e.code), "", "")
+        (p: System::IO::ProcessResult) => p.exitCode == 0
+            ? Outcome(true, "", "", p.out, p.err)
+            : failedOrCrashed(p, lastIndexOf(p.err, RECORD, 0, -1))
+
+fun failedOrCrashed(p: System::IO::ProcessResult, at: System::Int): Outcome
+    ret p.exitCode == 1 && at >= 0
+        ? recordOutcome(slice(p.err, at + length(RECORD), length(p.err)),
+                        p.out, slice(p.err, 0, at))
+        : Outcome(false, crashMessage(p.exitCode), "", p.out, p.err)
+
+fun recordOutcome(record: System::String, out: System::String,
+                  err: System::String): Outcome
+    let line = trimEnd(record)
+    let cut = indexOf(line, FIELD, 0)
+    ret cut < 0
+        ? Outcome(false, line, "", out, err)
+        : Outcome(false, slice(line, 0, cut),
+                  slice(line, cut + length(FIELD), length(line)), out, err)
+
+# A test that passed its assertions still fails when it declared its stdout and
+# printed something else.
+fun checkedStdout(c: TestCase, o: Outcome): Outcome
+    ret match(c.stdout)
+        (want: System::String) => !o.passed || o.out == want
+            ? o
+            : Outcome(false, "stdout differs",
+                      "expected " + quoted(want) + ", got " + quoted(o.out), o.out, o.err)
+        ()                     => o
+
+fun quoted(s: System::String): System::String
+    ret "\"" + jsonEscape(s) + "\""
+
+fun crashMessage(code: System::Int): System::String
+    ret code < 0
+        ? "crashed: killed by signal " + String(0 - code)
+        : "crashed: exited with status " + String(code)
+
+fun [tail] lastIndexOf(s: System::String, needle: System::String,
+                       from: System::Int, found: System::Int): System::Int
+    let at = indexOf(s, needle, from)
+    ret at < 0 ? found : lastIndexOf(s, needle, at + 1, at)
+
+# ── the child: --run-raw <id> ───────────────────────────────────────────────
+# Runs exactly one test, immediately, its stdout and stderr untouched. A pass
+# exits 0. A failed assertion exits 1 after writing ONE final line to stderr:
+# RECORD, the message, FIELD, the detail. The ASCII record and unit separators
+# keep it apart from whatever the test wrote, and the parent takes the LAST
+# record, so the test's stdout is exactly what it printed.
+
+let [const] RECORD: System::String = "\u{1E}"
+let [const] FIELD: System::String = "\u{1F}"
+
+fun [tail] caseOf(a: Chain<System::String>): System::String|System::None
+    ret match(a)
+        (nil: ChainEnd) => None
+        (l: ChainLink)  => l.value == "--run-raw"
+            ? nextValue(l.next)
+            : caseOf(l.next)
+
+fun nextValue(a: Chain<System::String>): System::String|System::None
+    ret match(a)
+        (nil: ChainEnd) => None
+        (l: ChainLink)  => l.value
+
+fun [impure] runChild(cases: List<TestCase>, id: System::String): System::Int
+    ret match(findCase(chain(cases), id))
+        (c: TestCase) => childResult(c.body())
+        ()            => noMatchError()
+
+fun [tail] findCase(cs: Chain<TestCase>, id: System::String): TestCase|System::None
+    ret match(cs)
+        (nil: ChainEnd) => None
+        (l: ChainLink)  => l.value.id == id ? l.value : findCase(l.next, id)
+
+fun [impure] childResult(outcome: System::None|TestFailure): System::Int
+    ret match(outcome)
+        (f: TestFailure)  => failRecord(f)
+        (n: System::None) => 0
+
+fun [impure] failRecord(f: TestFailure): System::Int
+    ret match(writeAll(stderr(), RECORD + f.message + FIELD + f.detail + "\n").io.close())
+        (e: IOError) => 1
+        ()           => 1
 
 # ── the emitters — the only place the format is consulted ───────────────────
 
@@ -255,40 +373,35 @@ fun [impure] emitRunStart(count: System::Int, fmt: System::String): System::Int
                         + jsonNum("count", count) + "}")
         : 0
 
-fun [impure] emitTestStart(c: TestCase, fmt: System::String): System::Int
-    ret fmt == "json"
-        ? printLine("{" + jsonStr("event", "test_start") + ","
-                        + jsonStr("id", c.id) + "}")
-        : 0
+fun [impure] emitResult(c: TestCase, o: Outcome, fmt: System::String): System::Bool
+    let _ = printLine(fmt == "json" ? resultJson(c, o) : resultHuman(c, o))
+    ret o.passed
 
-fun [impure] emitTestEnd(c: TestCase, outcome: System::None|TestFailure,
-                         fmt: System::String): System::Bool
-    ret match(outcome)
-        (f: TestFailure) => emitFail(c, f, fmt)
-        (n: System::None) => emitPass(c, fmt)
-
-fun [impure] emitPass(c: TestCase, fmt: System::String): System::Bool
-    let _ = printLine(fmt == "json"
-        ? "{" + jsonStr("event", "test_end") + "," + jsonStr("id", c.id) + ","
-              + jsonStr("status", "pass") + "}"
-        : "  ok    " + c.id)
-    ret true
-
-fun [impure] emitFail(c: TestCase, f: TestFailure,
-                      fmt: System::String): System::Bool
-    let _ = printLine(fmt == "json" ? failJson(c, f) : failHuman(c, f))
-    ret false
-
-fun failJson(c: TestCase, f: TestFailure): System::String
+fun resultJson(c: TestCase, o: Outcome): System::String
     ret "{" + jsonStr("event", "test_end") + "," + jsonStr("id", c.id) + ","
-      + jsonStr("status", "fail") + "," + jsonStr("message", f.message) + ","
-      + jsonStr("detail", f.detail) + "," + jsonStr("file", c.file) + ","
-      + jsonNum("line", c.line) + "}"
+      + (o.passed
+          ? jsonStr("status", "pass")
+          : jsonStr("status", "fail") + "," + jsonStr("message", o.message) + ","
+            + jsonStr("detail", o.detail) + "," + jsonStr("file", c.file) + ","
+            + jsonNum("line", c.line))
+      + "," + jsonStr("stdout", o.out) + "," + jsonStr("stderr", o.err) + "}"
 
-fun failHuman(c: TestCase, f: TestFailure): System::String
-    ret "  FAIL  " + c.id + "\n        " + f.message
-      + (f.detail == "" ? "" : ": " + f.detail)
-      + "\n        at " + c.file + ":" + String(c.line)
+# A passing test's output is not shown: the human report stays a list of
+# results. A failure shows everything the test wrote.
+fun resultHuman(c: TestCase, o: Outcome): System::String
+    ret o.passed
+        ? "  ok    " + c.id
+        : "  FAIL  " + c.id + "\n        " + o.message
+          + (o.detail == "" ? "" : ": " + o.detail)
+          + "\n        at " + c.file + ":" + String(c.line)
+          + captured("stdout", o.out) + captured("stderr", o.err)
+
+fun captured(name: System::String, text: System::String): System::String
+    ret text == "" ? "" : "\n        " + name + ":" + indented(splitLines(trimEnd(text)))
+
+fun indented(lines: List<System::String>): System::String
+    ret fold<System::String, System::String>(lines, "",
+        (acc: System::String, l: System::String) => acc + (l == "" ? "\n" : "\n          " + l))
 
 # Exit code is 0 or 1, NEVER a count: exit codes are 8 bits, so a run with 256
 # failures would exit 0 — a red run reporting green. The totals go in the

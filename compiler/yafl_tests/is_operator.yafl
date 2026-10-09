@@ -1,0 +1,87 @@
+# The `is` / `!is` type-test operators.
+#
+# `L is R` is parse-time sugar for `match(L) (_: R) => true; () => false`, and
+# `L !is R` is its negation. R is a TYPE, so this is a runtime variant test over
+# any union the match machinery already supports (most commonly `T|None`).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::IsOperator::IsNoneFalse
+
+import System
+import System::Test
+
+fun pick(): System::Int|System::None
+  ret 7
+fun probe(): System::Bool
+  ret pick() is System::None
+fun program(): System::Int
+  ret probe() ? 1 : 0
+
+fun [test("is none false")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::IsOperator::IsNoneTrue
+
+import System
+import System::Test
+
+fun pick(): System::Int|System::None
+  ret None
+fun probe(): System::Bool
+  ret pick() is System::None
+fun program(): System::Int
+  ret probe() ? 1 : 0
+
+fun [test("is none true")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::IsOperator::IsSelectsNonNoneMember
+
+import System
+import System::Test
+
+fun pick(): System::String|System::Int
+  ret "hi"
+fun probe(): System::Bool
+  ret pick() is System::String
+fun program(): System::Int
+  ret probe() ? 1 : 0
+
+fun [test("is selects non none member")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::IsOperator::NotIsNoneFalseWhenNone
+
+import System
+import System::Test
+
+fun pick(): System::Int|System::None
+  ret None
+fun probe(): System::Bool
+  ret pick() !is System::None
+fun program(): System::Int
+  ret probe() ? 1 : 0
+
+fun [test("not is none false when none")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::IsOperator::NotIsNoneTrueWhenPresent
+
+import System
+import System::Test
+
+fun pick(): System::Int|System::None
+  ret 7
+fun probe(): System::Bool
+  ret pick() !is System::None
+fun program(): System::Int
+  ret probe() ? 1 : 0
+
+fun [test("not is none true when present")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

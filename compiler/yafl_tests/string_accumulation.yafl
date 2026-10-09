@@ -1,0 +1,63 @@
+# Loop-carried String accumulation: `acc + x` in a [tail] loop is linear.
+#
+# It used to be made linear by a compiler stage (lowering/string_accumulation.py,
+# now retired) that deforested the loop into in-place builder writes. A String
+# is now a VALUE that extends its own head buffer in place whenever it owns the
+# end of it (yafllib/str.c), so naive user code is linear with no rewrite: the
+# accumulator's appends ARE the builder.
+#
+# The scale test is the acceptance criterion: naive user code builds a 1MB
+# string in linear time — quadratic would blow the
+# harness timeout. The compaction test pins the in-place extension against a
+# buffer that compaction relocates while the loop is suspended.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::StringAccumulation::ChainStepMultiPush
+
+import System
+import System::Test
+
+fun [tail] go(n: System::Int, acc: System::String): System::String
+  ret n <= 0 ? acc : go(n - 1, acc + "abcdefgh" + "ij")
+fun program(): System::Int
+  let s = go(100000, "x")
+  System::print(System::slice(s, 0, 5))
+  ret System::length(s) == 1000001 ? 0 : 1
+
+fun [test("chain step multi push")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::StringAccumulation::MidLoopSnapshotRead
+
+import System
+import System::Test
+
+fun [tail] go(n: System::Int, acc: System::String): System::String
+  ret n <= 0 ? acc
+    : go(n - 1, acc + (System::length(acc) % 2 == 0 ? "a" : "bb"))
+fun program(): System::Int
+  let s = go(6, "")
+  System::print(s)
+  ret System::length(s)
+
+fun [test("mid loop snapshot read", stdout = "abbbbbbbbbb")] check(): None|TestFailure
+    ret assertEqInt(program(), 11, "program()")
+
+
+namespace CompilerTests::StringAccumulation::O0NaivePathStillCorrect
+
+import System
+import System::Test
+
+fun [tail] go(n: System::Int, acc: System::String): System::String
+  ret n <= 0 ? acc : go(n - 1, acc + "ab")
+fun program(): System::Int
+  let s = go(50, "x")
+  System::print(System::slice(s, 0, 5))
+  ret System::length(s) == 101 ? 0 : 1
+
+fun [test("o0 naive path still correct", stdout = "xabab")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

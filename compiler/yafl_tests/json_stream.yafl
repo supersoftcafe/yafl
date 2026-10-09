@@ -1,0 +1,91 @@
+# Streaming JSON tokenizer + serialiser (System::Json).
+#
+# A byte stream is tokenised into a `JsonToken` stream — whitespace preserved,
+# strings/numbers carrying raw text — and serialised back to a String stream. With
+# whitespace kept, tokenise→serialise is the identity on lexically-valid input, so
+# a round-trip is the cleanest test. The error channel is `Never | JsonParseError`
+# (collapsing to `JsonParseError`): the in-memory source can't fail, only the
+# lexer can — and only on LEXICAL errors (unterminated string, bad number,
+# unexpected byte); structural validity is the DOM builder's concern, not the
+# tokenizer's, so `"{"` is a valid lone token.
+#
+# Exercises the error-growing-union machinery end to end (the lexer's output error
+# is `E | JsonParseError` over the source's `E`).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::JsonStream::LexicalErrorsDetected
+
+import System
+import System::Json
+import System::Test
+
+fun rt(input: System::String): System::Int
+  ret match(System::Json::tokenStringRoundTrip(input))
+    (s: System::String)               => s == input ? 0 : 1
+    (e: System::Json::JsonParseError) => 2
+fun err(input: System::String): System::Int
+  ret match(System::Json::tokenStringRoundTrip(input))
+    (s: System::String)               => 0
+    (e: System::Json::JsonParseError) => 1
+fun program(): System::Int
+  ret err("\"abc") + err("@") * 10 + err("1.2.3") * 100
+
+fun [test("lexical errors detected")] check(): None|TestFailure
+    ret assertEqInt(program(), 111, "program()")
+
+
+namespace CompilerTests::JsonStream::PrettyPrinter
+
+import System
+import System::Json
+import System::Test
+
+let [const] EXPECTED: System::String = "{\n  \"a\": 1,\n  \"b\": [\n    true,\n    null\n  ],\n  \"c\": {},\n  \"d\": []\n}"
+fun program(): System::Int
+  ret match(System::Json::prettyString("{\"a\":1,\"b\":[true,null],\"c\":{},\"d\":[]}"))
+    (s: System::String)               => s == EXPECTED ? 0 : 1
+    (e: System::Json::JsonParseError) => 2
+
+fun [test("pretty printer")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::JsonStream::RoundtripPreservesInput
+
+import System
+import System::Json
+import System::Test
+
+fun rt(input: System::String): System::Int
+  ret match(System::Json::tokenStringRoundTrip(input))
+    (s: System::String)               => s == input ? 0 : 1
+    (e: System::Json::JsonParseError) => 2
+fun err(input: System::String): System::Int
+  ret match(System::Json::tokenStringRoundTrip(input))
+    (s: System::String)               => 0
+    (e: System::Json::JsonParseError) => 1
+fun program(): System::Int
+  ret rt("[]") + rt("  {  } ") + rt("[1, 2, 3.5]")
+    + rt("{ \"a\": 12, \"b\": [true, null], \"c\": \"x\\ny\" }")
+
+fun [test("roundtrip preserves input")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::JsonStream::TruncatedInputRejected
+
+import System
+import System::Json
+import System::Test
+
+fun chk(input: System::String): System::Int
+  ret match(System::Json::prettyString(input))
+    (s: System::String)               => 0
+    (e: System::Json::JsonParseError) => 1
+fun program(): System::Int
+  ret chk("{\"a\": [1,2") + chk("[") * 10 + chk("[]") * 100
+
+fun [test("truncated input rejected")] check(): None|TestFailure
+    ret assertEqInt(program(), 11, "program()")

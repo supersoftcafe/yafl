@@ -10,11 +10,12 @@ write-once scheme is unsound:
 
 The second is not theoretical: MemoRoot was silently flattened to a
 `struct_anon_*` and the emitted C failed to compile against the CAS primitive.
+
+System::memoize's behaviour is checked by compiler/yafl_tests/mutable.yafl.
 """
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c
 
 
@@ -94,80 +95,3 @@ fun main(): System::Int
         out = _compile(src)
         # None == no vtable at all == it was flattened, which is the point.
         self.assertIsNone(_is_mutable_of(out, "Main::Holder"))
-
-
-class TestMemoize(TestCase):
-    """The contract is (1) `f` may run more than once, but (2) every caller
-    gets the SAME answer. These check the caching actually happens — a memoize
-    that silently never caches would still return correct values."""
-
-    # Totals go out via println, not the exit status: an exit code is 8-bit and
-    # a sum over 255 comes back silently reduced (314 arrives as 58).
-
-    def test_arity1_repeated_and_distinct_keys(self):
-        src = """\
-import System
-
-fun main(): System::Int
-  let sq = memoize((n: System::Int) => n * n + 1)
-  println(sq(7) + sq(7) + sq(9) + sq(9) + sq(7))
-  ret 0
-"""
-        code, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, code, out)
-        self.assertEqual("314", out.strip())   # 50+50+82+82+50
-
-    def test_arity1_same_answer_for_repeated_key(self):
-        src = """\
-import System
-
-fun main(): System::Int
-  let f = memoize((n: System::Int) => n + 1000)
-  ret f(5) == f(5) && f(5) == 1005 ? 1 : 0
-"""
-        code, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(1, code, out)
-
-    def test_arity2_curries_and_caches(self):
-        src = """\
-import System
-
-fun main(): System::Int
-  let g = memoize((a: System::Int, b: System::Int) => a * 100 + b)
-  println(g(3, 4) + g(3, 4) + g(5, 6))
-  ret 0
-"""
-        code, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, code, out)
-        self.assertEqual("1114", out.strip())   # 304 + 304 + 506
-
-    def test_arity3_curries_and_caches(self):
-        src = """\
-import System
-
-fun main(): System::Int
-  let h = memoize((a: System::Int, b: System::Int, c: System::Int) => a + b + c)
-  ret h(1, 2, 3) + h(1, 2, 3) + h(4, 5, 6)
-"""
-        code, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(27, code, out)     # 6 + 6 + 15
-
-    def test_many_keys_exercise_the_trie_below_the_root(self):
-        """Enough distinct keys that the trie must branch past depth 1, so the
-        node-to-node publish path runs, not just the root slots."""
-        src = """\
-import System
-
-fun [tail] loop(f: (:System::Int): System::Int, i: System::Int,
-                acc: System::Int): System::Int
-  ret i <= 0 ? acc : loop(f, i - 1, acc + f(i))
-
-fun main(): System::Int
-  let f = memoize((n: System::Int) => n * 2)
-  # sum twice: the second pass must be all hits and give the same total
-  let a = loop(f, 200, 0)
-  let b = loop(f, 200, 0)
-  ret a == b && a == 40200 ? 1 : 0
-"""
-        code, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(1, code, out)

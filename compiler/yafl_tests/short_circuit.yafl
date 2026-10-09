@@ -1,0 +1,240 @@
+# Short-circuit logical operators `&&` and `||`.
+#
+# These are parse-time sugar for the ternary expression (`parser.py`):
+#     a && b   ->   a ? b : false
+#     a || b   ->   a ? true : b
+# so short-circuit is a *guaranteed* semantic — the right operand is not evaluated
+# when the left already decides the result — rather than an optimiser artefact.
+# The eager both-operands bool ops remain `&`/`|`.
+#
+# Precedence (tightest first among these): comparison/bind > `&&` > `||` > `?:`.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::ShortCircuit::AndBindsTighterThanOr
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret false && false || true ? 1 : 0
+
+fun [test("and binds tighter than or")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ShortCircuit::AndEvaluatesRightWhenLeftTrue
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret left(true) && right(true) ? 1 : 0
+
+fun [test("and evaluates right when left true", stdout = "LR")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ShortCircuit::AndFalseX
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret false && true ? 1 : 0
+
+fun [test("and false x")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::ShortCircuit::AndShortCircuitsRight
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret left(false) && right(true) ? 1 : 0
+
+fun [test("and short circuits right", stdout = "L")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::ShortCircuit::AndTrueFalse
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret true && false ? 1 : 0
+
+fun [test("and true false")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::ShortCircuit::AndTrueTrue
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret true && true ? 1 : 0
+
+fun [test("and true true")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ShortCircuit::ComparisonBindsTighterThanLogical
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret 1 > 0 && 2 > 3 ? 1 : 0
+
+fun [test("comparison binds tighter than logical")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::ShortCircuit::OrEvaluatesRightWhenLeftFalse
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret left(false) || right(true) ? 1 : 0
+
+fun [test("or evaluates right when left false", stdout = "LR")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ShortCircuit::OrFalseFalse
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret false || false ? 1 : 0
+
+fun [test("or false false")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::ShortCircuit::OrFalseTrue
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret false || true ? 1 : 0
+
+fun [test("or false true")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ShortCircuit::OrShortCircuitsRight
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret left(true) || right(false) ? 1 : 0
+
+fun [test("or short circuits right", stdout = "L")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::ShortCircuit::OrTrueX
+
+import System
+import System::Test
+
+fun left(v: System::Bool): System::Bool
+  System::print("L")
+  ret v
+
+fun right(v: System::Bool): System::Bool
+  System::print("R")
+  ret v
+fun program(): System::Int
+  ret true || false ? 1 : 0
+
+fun [test("or true x")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

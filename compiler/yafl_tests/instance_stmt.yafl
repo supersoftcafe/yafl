@@ -1,0 +1,147 @@
+# The `instance` statement: first-class trait instances.
+#
+#     instance [ambient]<T> Interface<Pattern> where Constraint<T>
+#       fun member(...): ...
+#
+# Replaces the witness-class + `let [trait]` two-step (and the `typealias
+# [where]` ambience twin). Anonymous; desugars during building into a
+# synthesized witness class + instance record. Semantics (user rulings
+# 2026-07-29):
+# - ambience is OPT-IN via [ambient]: a plain instance discharges where-clause
+#   constraints only; an ambient one additionally makes its members callable
+#   unqualified in importing scopes, WITHOUT constraining anything (an
+#   ambient where is availability, a fn where is a constraint).
+# - a GENERIC ambient instance's own type params bind from the use site
+#   (argument or expected type), like a generic function candidate's own
+#   params; the instance's own `where` filters candidacy.
+# - no coherence rule: multiple overlapping instances are legal to declare;
+#   ambiguity is an error at USE, same as same-signature open functions.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::InstanceStmt::ConcreteAmbient
+
+import System
+import System::Test
+
+class Point(x: Int, y: Int)
+
+instance [ambient] Show<Point>
+  fun show(value: Point): String
+    ret format("({1},{2})", value.x, value.y)
+
+fun program(): Int
+  ret show(Point(3, 4)) == "(3,4)" ? 0 : 1
+
+fun [test("concrete ambient")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::InstanceStmt::ConstrainedAmbient
+
+import System
+import System::Test
+
+instance [ambient]<T> Show<List<T>> where Show<T>
+  fun show(value: List<T>): String
+    ret fold(value, "", (acc: String, x: T) => acc + show(x))
+
+fun program(): Int
+  let l = prepend(1, prepend(2, List<Int>()))
+  ret show(l) == "12" ? 0 : 1
+
+fun [test("constrained ambient")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::InstanceStmt::DischargeOnly
+
+import System
+import System::Test
+
+interface Tagged<T>
+  fun tagOf(v: T): Int
+
+class Box(v: Int)
+
+instance Tagged<Box>
+  fun tagOf(v: Box): Int
+    ret v.v
+
+fun viaWhere<T>(x: T): Int where Tagged<T>
+  ret tagOf(x)
+
+fun program(): Int
+  ret viaWhere(Box(9)) == 9 ? 0 : 1
+
+fun [test("discharge only")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::InstanceStmt::GenericAmbientBindsFromArgument
+
+import System
+import System::Test
+
+interface Sized<T>
+  fun sizeOf(v: T): Int
+
+instance [ambient]<T> Sized<List<T>>
+  fun sizeOf(v: List<T>): Int
+    ret chainLength(chain(v))
+
+fun program(): Int
+  let l = prepend(4, prepend(5, List<Int>()))
+  ret sizeOf(l) == 2 ? 0 : 1
+
+fun [test("generic ambient binds from argument")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::InstanceStmt::GenericBodyUsesItsOwnWhere
+
+import System
+import System::Test
+
+interface Sized<T>
+  fun sizeOf(v: T): Int
+
+instance<T> Sized<List<T>>
+  fun sizeOf(v: List<T>): Int
+    ret chainLength(chain(v))
+
+fun measure<T>(l: List<T>): Int where Sized<List<T>>
+  ret sizeOf(l)
+
+fun program(): Int
+  ret measure(prepend(1, List<Int>())) == 1 ? 0 : 1
+
+fun [test("generic body uses its own where")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::InstanceStmt::TwoInstancesDistinctUses
+
+import System
+import System::Test
+
+interface Tagged<T>
+  fun tagOf(v: T): Int
+
+class Box(v: Int)
+class Crate(v: Int)
+
+instance [ambient] Tagged<Box>
+  fun tagOf(v: Box): Int
+    ret v.v
+
+instance [ambient] Tagged<Crate>
+  fun tagOf(v: Crate): Int
+    ret 0 - v.v
+
+fun program(): Int
+  ret tagOf(Box(5)) == 5 && tagOf(Crate(5)) == 0 - 5 ? 0 : 1
+
+fun [test("two instances distinct uses")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

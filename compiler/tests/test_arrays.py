@@ -6,6 +6,8 @@ the element count. This stage only covers parsing the syntax into an
 `ArrayFieldSpec`, recording it on the class, and validating the structural rules
 (`[final]`, a valid Int32 length field, at most one array field). Construction,
 the generated accessor, and codegen come in later stages.
+
+Runtime behaviour is checked by compiler/yafl_tests/arrays.yafl.
 """
 from __future__ import annotations
 
@@ -123,76 +125,10 @@ class TestArrayClassNeverFlattened(TestCase):
                          "a plain small class should be flattened to a struct")
 
 
-class TestArrayConstruction(TestCase):
-    """Construction: `Class(length, …, initFn)` allocates the trailing storage
-    with `array_create(vtable, length)` and tabulates it by calling the
-    `(Int32): Elem` init function for each index. Element read-back is a later
-    stage, so these verify allocation + fill completion via the length field."""
-
-    def test_value_element_array_constructs(self):
-        rc, out = compile_and_run_stdlib_capture("""import System
-class [final] IntArray(length: System::Int32, array: System::Int32[length])
-fun main(): System::Int
-  let a = IntArray(5i32, (i: System::Int32) => i)
-  ret System::Int(a.length)
-""", timeout=30)
-        self.assertEqual(5, rc, f"int array construction failed; stdout:\n{out}")
-
-    def test_pointer_element_array_constructs(self):
-        # String elements exercise the GC write barrier in the fill store.
-        rc, out = compile_and_run_stdlib_capture("""import System
-class [final] StrArray(length: System::Int32, array: System::String[length])
-fun main(): System::Int
-  let a = StrArray(4i32, (i: System::Int32) => "x")
-  ret System::Int(a.length)
-""", timeout=30)
-        self.assertEqual(4, rc, f"string array construction failed; stdout:\n{out}")
-
-    def test_generic_array_class_monomorphises_per_element(self):
-        # A generic array class must specialise per element type, each emitting
-        # its own vtable (constraint: generics must work).
-        rc, out = compile_and_run_stdlib_capture("""import System
-class [final] Arr<T>(length: System::Int32, array: T[length])
-fun main(): System::Int
-  let a = Arr<System::Int32>(3i32, (i: System::Int32) => i)
-  let b = Arr<System::String>(7i32, (i: System::Int32) => "y")
-  ret System::Int(a.length) + System::Int(b.length)
-""", timeout=30)
-        self.assertEqual(10, rc, f"generic array construction failed; stdout:\n{out}")
-
-
 class TestArrayAccess(TestCase):
     """Access: `obj.array(i)` reads element `i` (the "function out"), tabulated
     from the init function at construction, with a bounds check that aborts."""
 
-    def test_reads_back_tabulated_value(self):
-        rc, out = compile_and_run_stdlib_capture("""import System
-class [final] IntArray(length: System::Int32, array: System::Int32[length])
-fun main(): System::Int
-  let a = IntArray(5i32, (i: System::Int32) => i * 2i32)
-  ret System::Int(a.array(3i32))
-""", timeout=30)
-        self.assertEqual(6, rc, f"expected a.array(3) == 6; stdout:\n{out}")
-
-    def test_reads_pointer_element(self):
-        rc, out = compile_and_run_stdlib_capture("""import System
-class [final] Holder(length: System::Int32, array: System::String[length])
-fun main(): System::Int
-  let a = Holder(3i32, (i: System::Int32) => "ab")
-  ret System::length(a.array(1i32))
-""", timeout=30)
-        self.assertEqual(2, rc, f"expected length(a.array(1)) == 2; stdout:\n{out}")
-
-    def test_reads_back_when_array_field_is_not_last(self):
-        # The array field is declared before its length and a trailing scalar;
-        # construction and access must still work (codegen moves storage last).
-        rc, out = compile_and_run_stdlib_capture("""import System
-class [final] IntArray(array: System::Int32[length], length: System::Int32, tag: System::Int32)
-fun main(): System::Int
-  let a = IntArray((i: System::Int32) => i * 2i32, 5i32, 99i32)
-  ret System::Int(a.array(3i32)) + System::Int(a.tag)
-""", timeout=30)
-        self.assertEqual(105, rc, f"expected a.array(3) + a.tag == 6 + 99; stdout:\n{out}")
 
     def test_out_of_bounds_aborts(self):
         rc, out = compile_and_run_stdlib_capture("""import System

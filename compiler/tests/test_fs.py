@@ -4,6 +4,8 @@ and (in later patches) the `Dir` cursor + `listDir` convenience.
 Each test compiles a short YAFL program and runs it; the exit code carries
 the assertion result.  `tempfile.TemporaryDirectory` gives every test its
 own path namespace so the suite stays parallel-safe under `unittest-parallel`.
+
+Runtime behaviour is checked by compiler/yafl_tests/fs.yafl.
 """
 from __future__ import annotations
 
@@ -33,18 +35,6 @@ fun main(): System::Int
             self.assertEqual(0, compile_and_run_stdlib(src))
             self.assertFalse(os.path.exists(path))
 
-    def test_remove_missing_path_is_error(self):
-        src = """namespace Main
-import System
-import System::IO
-
-fun main(): System::Int
-  ret match(remove("/nonexistent_yafl_fs_test_xyz_777"))
-    (e: IOError)      => 1
-    (n: System::None) => 0
-"""
-        self.assertEqual(1, compile_and_run_stdlib(src))
-
 
 class TestExists(TestCase):
 
@@ -62,16 +52,6 @@ fun main(): System::Int
 """
             self.assertEqual(1, compile_and_run_stdlib(src))
 
-    def test_missing_path_returns_false(self):
-        # /nonexistent_yafl_fs_test_xyz is overwhelmingly unlikely to exist.
-        src = """namespace Main
-import System
-import System::IO
-
-fun main(): System::Int
-  ret exists("/nonexistent_yafl_fs_test_xyz_777") ? 1 : 0
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
 
     def test_existing_directory_returns_true(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -116,19 +96,6 @@ fun main(): System::Int
 """
             self.assertEqual(1, compile_and_run_stdlib(src))
 
-    def test_missing_path_returns_file_not_found_error(self):
-        src = """namespace Main
-import System
-import System::IO
-
-fun main(): System::Int
-  ret match(stat("/nonexistent_yafl_fs_test_xyz_888"))
-    (fi: FileInfo)               => 9
-    (e: IOError)                 => match(e)
-      (n: FileNotFoundError)     => 0
-      ()                         => 7
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
 
     def test_regular_file_size_matches(self):
         """stat returns the file's byte length in `size`."""
@@ -176,16 +143,3 @@ fun main(): System::Int
 """
             self.assertEqual(3, compile_and_run_stdlib(src))
 
-    def test_listDir_on_missing_dir_returns_error(self):
-        src = """namespace Main
-import System
-import System::IO
-
-fun main(): System::Int
-  ret match(listDir("/nonexistent_yafl_fs_test_xyz_999"))
-    (l: Set<String>)          => 9
-    (e: IOError)              => match(e)
-      (n: FileNotFoundError)  => 0
-      ()                      => 7
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))

@@ -12,17 +12,16 @@ port's C path ran no check phase at all (fixed alongside, see
 test_bootstrap_reject); lowering already knew about instances, checking did
 not.
 
-So this drives Python's own instance corpus — the ambient cases, the
-constrained and generic ones, and both cases that must be REJECTED — through
-each compiler's C path and requires them to agree. Rejection is checked as
-carefully as acceptance: a compiler that accepts
-`ambient-instance-for-a-caller-placeholder` is as broken as one that rejects
-a valid program, and only the error cases pin the USER RULING that ambience
-applies to concrete use sites only.
+Acceptance is gated by compiler/yafl_tests/instance_stmt.yafl — the ambient,
+constrained and generic cases — which the suite builds and runs at every
+level with whichever compiler it is given. This drives the cases that must be
+REJECTED through each compiler's C path. Rejection is checked as carefully as
+acceptance: a compiler that accepts `ambient-instance-for-a-caller-placeholder`
+is as broken as one that rejects a valid program, and only the error cases pin
+the USER RULING that ambience applies to concrete use sites only.
 """
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
@@ -33,15 +32,6 @@ from tests.testutil import compile_c
 
 _REPO = Path(__file__).parent.parent.parent
 _STDLIB = stdlib_files()
-
-
-def _cases() -> dict[str, str]:
-    """The source constants from the Python-side instance tests, so the corpus
-    cannot drift away from the feature's own tests."""
-    import tests.test_instance_stmt as m
-    return {k: v for k, v in vars(m).items()
-            if re.fullmatch(r"_[A-Z][A-Z0-9_]*", k) and isinstance(v, str)
-            and "instance " in v}
 
 
 def _stream(src: str) -> str:
@@ -59,24 +49,6 @@ class TestBootstrapInstances(TestCase):
     def setUpClass(cls):
         from tests.testutil import shared_bootstrap_binary
         cls.binary = shared_bootstrap_binary()
-
-    def test_instance_corpus_agrees(self):
-        cases = _cases()
-        self.assertGreaterEqual(len(cases), 6,
-                                "instance corpus went missing — the constants "
-                                "in test_instance_stmt were renamed?")
-        for name, src in sorted(cases.items()):
-            with self.subTest(case=name):
-                py = compile_c(src, "case.yafl", optimization_level=1)
-                r = subprocess.run([self.binary, "--stage", "c1"], input=_stream(src),
-                                   capture_output=True, timeout=600, text=True,
-                                   env=_RUN_ENV)
-                port_ok = r.returncode == 0
-                self.assertEqual(
-                    bool(py), port_ok,
-                    f"{name}: python {'accepted' if py else 'rejected'} but "
-                    f"port {'accepted' if port_ok else 'rejected'}\n"
-                    f"port output: {r.stdout[:1500]}")
 
     def test_both_reject_ambient_for_a_caller_placeholder(self):
         """USER RULING: ambience applies to CONCRETE use sites only — a caller

@@ -12,7 +12,7 @@ from pyast.statement.base import (
     ImportGroup, Statement, NamedStatement, TypeStatement, DataStatement,
     ImportStatement, NamespaceStatement)
 from pyast.statement.lets import LetStatement, DestructureStatement
-from pyast.statement.function import FunctionStatement
+from pyast.statement.function import FunctionStatement, test_attribute_parts
 from pyast.statement.types import TypeAliasStatement, EnumStatement
 from pyast.statement.classdef import ClassFunctionSlot, ClassStatement
 from pyast.statement.instances import TraitInstanceStatement

@@ -11,6 +11,11 @@ select") or an indirect `fun.f(fun.o, i)` call. So, at -O3:
 2. The array fill loop's init-closure call is resolved to a direct call
    (when the closure is a known captureless function) and inlined, leaving a
    straight-line loop body.
+
+That the dot kernel still computes correctly is a [test] in
+compiler/yafl_tests/bounds_elim.yafl, run at -O0 and -O3.
+
+Runtime behaviour is checked by compiler/yafl_tests/bounds_elim.yafl.
 """
 from __future__ import annotations
 
@@ -60,11 +65,6 @@ class TestBoundsElimination(TestCase):
         code = _emit_c(_DOT)
         self.assertEqual(0, code.count("array_bounds_check("),
                          "provably in-range reads should carry no bounds check")
-
-    def test_canonical_loop_still_computes_correctly(self):
-        rc, out = compile_and_run_stdlib_capture(_DOT, timeout=60,
-                                                 optimization_level=3)
-        self.assertEqual(0, rc, f"dot kernel failed; stdout:\n{out}")
 
     def test_unprovable_read_keeps_check_and_aborts(self):
         code = _emit_c(_UNPROVABLE)

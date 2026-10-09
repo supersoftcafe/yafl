@@ -1,0 +1,414 @@
+# Simple-class lowering tests.
+#
+# A "simple" class (no inheritance, not extended, ≤4 fields, all method
+# references immediately called) should be lowered to a flat struct + free
+# functions after the generics and lambda passes.  The tests here verify
+# correct runtime behaviour for the cases that drive the lowering design.
+#
+# Tests in TestSimpleClassLowering are expected to fail until the lowering
+# pass is implemented.  Tests in TestNonSimpleClassUnaffected verify that
+# classes which do NOT qualify are still handled correctly as heap objects.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::SimpleClasses::ClosureWrapperInUnionCompilesAndRuns
+
+import System
+import System::Test
+
+class [final] Wrap(get: (:Int): Int)
+
+fun pick(w: Wrap|None): Int
+    ret match(w)
+      (p: Wrap) => p.get(1)
+      ()        => 0
+
+fun program(): Int
+    ret pick(Wrap((x: Int) => x + 41)) - 42
+
+fun [test("closure wrapper in union compiles and runs")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::SimpleClasses::DirectFieldReadConcreteTyped
+
+import System
+import System::Test
+
+class Box<T>(value: T)
+fun program(): Int
+    let b = Box<Int>(42)
+    ret b.value
+
+fun [test("`Box<Int>.value` from a concrete-typed context must type-check and run")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::SimpleClasses::GenericHelperStillWorks
+
+import System
+import System::Test
+
+class Box<T>(value: T)
+fun unbox<T>(b: Box<T>): T
+    ret b.value
+fun program(): Int
+    ret unbox<Int>(Box<Int>(13))
+
+fun [test("The pre-existing `unbox` helper path must continue to work")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::TwoFieldGenericClass
+
+import System
+import System::Test
+
+class Pair<A, B>(left: A, right: B)
+fun program(): Int
+    let p = Pair<Int, Int>(5, 8)
+    ret p.left + p.right
+
+fun [test("Two-parameter generic class — both fields read directly")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::FiveFieldClassExcluded
+
+import System
+import System::Test
+
+class Big(a: Int, b: Int, c: Int, d: Int, e: Int)
+    fun sum(): Int
+        ret a + b + c + d + e
+
+fun program(): Int
+    let x: Big = Big(1, 2, 3, 3, 4)
+    ret x.sum()
+
+fun [test("5 fields exceeds the threshold; heap-object path must still work")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::SameShapeWithSameMethodName
+
+import System
+import System::Test
+
+class [final] Alpha(a: Int)
+    fun go(x: Int): Int
+        ret x + a
+
+class [final] Beta(b: Int)
+    fun go(x: Int): Int
+        ret x - b
+
+fun program(): Int
+    ret Alpha(10).go(5) + Beta(20).go(23)
+
+fun [test("The same collision where the two classes ALSO share a method name,")] check(): None|TestFailure
+    ret assertEqInt(program(), 18, "program()")
+
+
+namespace CompilerTests::SimpleClasses::TwoClassesWithIdenticalFieldTypes
+
+import System
+import System::Test
+
+class [final] Alpha(a: Int)
+    fun go(x: Int): Int
+        ret x + a
+
+class [final] Beta(b: Int)
+    fun go2(x: Int): Int
+        ret x - b
+
+fun program(): Int
+    ret Alpha(10).go(5) + Beta(20).go2(23)
+
+fun [test("two classes with identical field types")] check(): None|TestFailure
+    ret assertEqInt(program(), 18, "program()")
+
+
+namespace CompilerTests::SimpleClasses::GlobalSimpleClassRuntimeValue
+
+import System
+import System::Test
+
+class Config(value: Int)
+
+let defaultConfig: Config = Config(13)
+
+fun program(): Int
+    ret defaultConfig.value
+
+fun [test("Global let of a simple class: binary runs and returns the correct field value")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::ClassPassedToFunction
+
+import System
+import System::Test
+
+class Box(value: Int)
+    fun get(): Int
+        ret value
+
+fun unbox(b: Box): Int
+    ret b.get()
+
+fun program(): Int
+    ret unbox(Box(13))
+
+fun [test("Simple class instance passed to a free function")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::ClassReturnedFromFunction
+
+import System
+import System::Test
+
+class Box(value: Int)
+    fun get(): Int
+        ret value
+
+fun wrap(n: Int): Box
+    ret Box(n)
+
+fun program(): Int
+    let b: Box = wrap(13)
+    ret b.get()
+
+fun [test("Simple class instance returned from a function then used")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::FieldOrderNotSwapped
+
+import System
+import System::Test
+
+class Diff(a: Int, b: Int)
+    fun result(): Int
+        ret a - b
+
+fun program(): Int
+    let d: Diff = Diff(10, 3)
+    ret d.result()
+
+fun [test("Subtraction detects field-order corruption that addition would mask")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::SimpleClasses::FourFieldClass
+
+import System
+import System::Test
+
+class Quad(a: Int, b: Int, c: Int, d: Int)
+    fun sum(): Int
+        ret a + b + c + d
+
+fun program(): Int
+    let q: Quad = Quad(1, 2, 4, 6)
+    ret q.sum()
+
+fun [test("Class with exactly 4 fields still qualifies for lowering")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::LambdaAlongsideSimpleClass
+
+import System
+import System::Test
+
+fun apply(f: (:Int):Int, n: Int): Int
+    ret f(n)
+
+class Box(value: Int)
+    fun get(): Int
+        ret value
+
+fun program(): Int
+    let b: Box = Box(6)
+    let offset = b.get()
+    ret apply((x: Int) => x + offset, 7)
+
+fun [test("Lambda closure is not incorrectly lowered when a simple class is present")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::MethodWithParameter
+
+import System
+import System::Test
+
+class Counter(value: Int)
+    fun add(n: Int): Int
+        ret value + n
+
+fun program(): Int
+    let c: Counter = Counter(6)
+    ret c.add(7)
+
+fun [test("Method that takes an argument alongside a captured field")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::MultipleMethods
+
+import System
+import System::Test
+
+class Pair(x: Int, y: Int)
+    fun first(): Int
+        ret x
+    fun second(): Int
+        ret y
+
+fun program(): Int
+    let p: Pair = Pair(8, 5)
+    ret p.first() + p.second()
+
+fun [test("Class with two methods; both are exercised in the same run")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::NestedSimpleClasses
+
+import System
+import System::Test
+
+class Inner(value: Int)
+    fun get(): Int
+        ret value
+
+class Outer(inner: Inner, extra: Int)
+    fun total(): Int
+        ret inner.get() + extra
+
+fun program(): Int
+    let o: Outer = Outer(Inner(6), 7)
+    ret o.total()
+
+fun [test("Class whose field is itself a simple class; both get lowered")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::SimpleClassInUnion
+
+import System
+import System::Test
+
+class Box(value: Int)
+    fun get(): Int
+        ret value
+
+fun unwrap(b: Box|None): Int
+    ret match(b)
+        (x: Box) => x.get()
+        (x: None) => 0
+
+fun program(): Int
+    ret unwrap(Box(13))
+
+fun [test("Simple class as a non-null variant in a union; dispatched via match")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::SimpleClassInUnionNullArm
+
+import System
+import System::Test
+
+class Box(value: Int)
+    fun get(): Int
+        ret value
+
+fun unwrap(b: Box|None): Int
+    ret match(b)
+        (x: Box) => x.get()
+        (x: None) => 0
+
+fun program(): Int
+    ret unwrap(None)
+
+fun [test("Union match: the unit-variant (null) arm fires when None is passed")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::SimpleClasses::SingleFieldMethod
+
+import System
+import System::Test
+
+class Box(value: Int)
+    fun get(): Int
+        ret value
+
+fun program(): Int
+    let b: Box = Box(13)
+    ret b.get()
+
+fun [test("Method that returns its only field")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::StructReturningFunctionWithStateMachine
+
+import System
+import System::Test
+
+class Box(value: Int)
+
+fun bump(n: Int): Int
+    ret n
+
+fun make_box(n: Int): Box
+    let v: Int = bump(n)
+    ret Box(v)
+
+fun program(): Int
+    let b: Box = make_box(17)
+    ret b.value
+
+fun [test("make_box has a non-tail call before constructing and returning a Box")] check(): None|TestFailure
+    ret assertEqInt(program(), 17, "program()")
+
+
+namespace CompilerTests::SimpleClasses::TwoFieldMethodArithmetic
+
+import System
+import System::Test
+
+class Point(x: Int, y: Int)
+    fun sum(): Int
+        ret x + y
+
+fun program(): Int
+    let p: Point = Point(5, 8)
+    ret p.sum()
+
+fun [test("Method that combines two fields; value choice distinguishes field-swap corruption")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")
+
+
+namespace CompilerTests::SimpleClasses::TwoInstancesIndependent
+
+import System
+import System::Test
+
+class Box(value: Int)
+    fun get(): Int
+        ret value
+
+fun program(): Int
+    let a: Box = Box(9)
+    let b: Box = Box(4)
+    ret a.get() + b.get()
+
+fun [test("Two instances of the same simple class hold independent values")] check(): None|TestFailure
+    ret assertEqInt(program(), 13, "program()")

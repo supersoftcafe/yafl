@@ -15,14 +15,22 @@ Runs, in order:
 have parity, so either is a drop-in replacement, and every behaviour test and
 example runs against the one chosen.
 
+Two speeds; the slow one is opt-in. By default this is the FAST path, for PRs
+and the middle of a sequence of changes: build, then ctest's fast path
+(YAFL_TEST_SPEED in CMakeLists.txt — the [test] folders at -O3 only, no Python
+suite, the port's Python build reused while the Python compiler is unchanged,
+and the self-compile). `--full` is the regression: every level, the Python
+suite, a fresh Python build of the port, and the examples.
+
 Speed is not measured here: speed_protocol.py is the separate post-suite step.
 
 Stops at the first failing stage unless --keep-going is given. Every stage's
 output is streamed to the terminal AND tee'd to build/protocol-runs/<ts>/; a
 one-line-per-stage report is printed at the end (and written to report.txt).
 
-    python3 full_protocol.py                    # the whole thing
-    python3 full_protocol.py --compiler python  # same, against the Python compiler
+    python3 full_protocol.py                    # the fast path
+    python3 full_protocol.py --full             # the whole regression
+    python3 full_protocol.py --compiler python  # against the Python compiler
     python3 full_protocol.py --keep-going       # run every stage, fail at the end
     python3 full_protocol.py --only ctest,examples
 """
@@ -108,14 +116,17 @@ class Result:
     detail: str = ""
 
 
-def _configure(compiler: str, log: Path) -> int:
-    """(Re)configure with the compiler under test — cheap when nothing changed."""
-    return run_stream(["cmake", "-B", str(BUILD), f"-DYAFL_TEST_COMPILER={compiler}"],
+def _configure(compiler: str, speed: str, log: Path) -> int:
+    """(Re)configure with the compiler under test and the test path — cheap
+    when nothing changed. Both are always given, so a run never inherits the
+    last one's choice from the CMake cache."""
+    return run_stream(["cmake", "-B", str(BUILD), f"-DYAFL_TEST_COMPILER={compiler}",
+                       f"-DYAFL_TEST_SPEED={speed}"],
                       HERE, log)
 
 
-def stage_build(run_dir: Path, compiler: str) -> Result:
-    if _configure(compiler, run_dir / "configure.log") != 0:
+def stage_build(run_dir: Path, compiler: str, speed: str) -> Result:
+    if _configure(compiler, speed, run_dir / "configure.log") != 0:
         return Result("build", False, "cmake configure failed")
     jobs = os.cpu_count() or 4
     rc = run_stream(["cmake", "--build", str(BUILD), f"-j{jobs}"],
@@ -123,8 +134,8 @@ def stage_build(run_dir: Path, compiler: str) -> Result:
     return Result("build", rc == 0, "cmake --build")
 
 
-def stage_ctest(run_dir: Path, compiler: str) -> Result:
-    if _configure(compiler, run_dir / "configure.log") != 0:
+def stage_ctest(run_dir: Path, compiler: str, speed: str) -> Result:
+    if _configure(compiler, speed, run_dir / "configure.log") != 0:
         return Result("ctest gate", False, "cmake configure failed")
     rc = run_stream(["ctest", "--test-dir", str(BUILD), "--output-on-failure"],
                     HERE, run_dir / "ctest.log")
@@ -133,7 +144,7 @@ def stage_ctest(run_dir: Path, compiler: str) -> Result:
         return Result("ctest gate", False, "ctest printed no summary line")
     failed, n = total
     return Result("ctest gate", rc == 0 and failed == 0 and n > 0,
-                  f"{n - failed}/{n} tests passed ({compiler} compiler)")
+                  f"{n - failed}/{n} tests passed ({compiler} compiler, {speed} path)")
 
 
 # ── examples ─────────────────────────────────────────────────────────────────
@@ -175,7 +186,7 @@ def _example_compiler(compiler: str) -> Path:
     return BUILD / "ybootstrap" if compiler == "port" else COMPILER / "dist" / "yafl"
 
 
-def stage_examples(run_dir: Path, compiler: str) -> Result:
+def stage_examples(run_dir: Path, compiler: str, speed: str) -> Result:
     compiler_bin = _example_compiler(compiler)
     if not compiler_bin.is_file():
         return Result("examples", False,
@@ -227,6 +238,7 @@ STAGES = {
     "ctest": stage_ctest,
     "examples": stage_examples,
 }
+FAST_STAGES = ("build", "ctest")
 
 
 def main(argv: list[str]) -> int:
@@ -238,9 +250,14 @@ def main(argv: list[str]) -> int:
                     help="comma-separated subset of stages to run: " + ",".join(STAGES))
     ap.add_argument("--keep-going", action="store_true",
                     help="run every stage even after a failure; exit reports them all")
+    ap.add_argument("--full", action="store_true",
+                    help="the whole regression (default: the fast path — build "
+                         "and ctest's fast path, no examples)")
     args = ap.parse_args(argv)
-    return run_stages("full protocol", STAGES, args.only, args.keep_going,
-                      lambda stage, run_dir: stage(run_dir, args.compiler))
+    speed = "full" if args.full else "fast"
+    stages = {k: v for k, v in STAGES.items() if args.full or k in FAST_STAGES}
+    return run_stages(f"{speed} protocol", stages, args.only, args.keep_going,
+                      lambda stage, run_dir: stage(run_dir, args.compiler, speed))
 
 
 def run_stages(title: str, stages: dict, only: str, keep_going: bool, call) -> int:

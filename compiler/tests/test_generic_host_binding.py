@@ -11,40 +11,14 @@ became the host's `T`, so the `Chain<String>` argument was dispatched with
 A callee parameter with no source at all (nothing in the arguments or the
 expected type mentions it) is a "cannot infer" error, inside a generic body
 exactly as outside one; guessing a binding by name is never an option.
+
+The binding itself is a [test] in compiler/yafl_tests/generic_host_binding.yafl.
 """
 from __future__ import annotations
 
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_errors
-
-
-_HOST_BINDING = """
-namespace Test
-import System
-
-fun isEnd<T>(c: System::Chain<T>): System::Bool
-  ret match(c)
-    (nil: System::ChainEnd) => true
-    (l: System::ChainLink)  => false
-
-fun restOf<T>(c: System::Chain<T>): System::Chain<T>
-  ret match(c)
-    (nil: System::ChainEnd) => c
-    (l: System::ChainLink)  => l.next
-
-# Two chains of DIFFERENT element types, no explicit type arguments inside.
-fun [tail] shorter<T, U>(a: System::Chain<T>, b: System::Chain<U>): System::Bool
-  ret isEnd(b)
-    ? false
-    : (isEnd(a) ? true : shorter(restOf(a), restOf(b)))
-
-fun main(): System::Int
-  let ints = System::prepend(1, System::List<System::Int>())
-  let strs = System::prepend("a", System::prepend("b", System::List<System::String>()))
-  ret shorter(System::chain(ints), System::chain(strs)) ? 7 : 3
-"""
 
 
 _UNSOURCED = """
@@ -67,10 +41,6 @@ def _errors(src: str) -> str:
 
 
 class TestGenericHostBinding(TestCase):
-    def test_callee_param_binds_to_host_param(self):
-        rc, _out = compile_and_run_stdlib_capture(_HOST_BINDING, timeout=120)
-        self.assertEqual(7, rc)
-
     def test_unsourced_callee_param_in_generic_body_is_an_error(self):
         errs = _errors(_UNSOURCED)
         self.assertIn("cannot infer the type arguments of generic function `g`", errs)

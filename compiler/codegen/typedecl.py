@@ -105,9 +105,11 @@ def str_literal(value: str) -> str:
 
 
 def bigint_literal(value: int) -> str:
+    # integer_t.sign is 0 (positive) or 1 (negative): the heap form stores it
+    # as is, and the tagged form only tests it for truth.
     sign = 0
     if value < 0:
-        sign = -1
+        sign = 1
         value = -value
     array: list[int] = []
     while value != 0:

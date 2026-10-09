@@ -271,8 +271,9 @@ while the terminal shows a failure. So: the runner emits a single ordered
 event stream internally, and a renderer turns it into one of the formats.
 Human and machine cannot disagree, because there is one source of truth.
 
-Events, in order: `run_start`, then per test `test_start` / `test_end`, then
-`run_end`.
+Events, in order: `run_start`, then one `test_end` per test, written when the
+test has finished, then `run_end`. (An earlier `test_start` was dropped: see the
+isolation ruling in §7.)
 
 **`--format json` — JSON Lines, one object per event, flushed as it happens.**
 Streaming, not a document assembled at the end. IDEs want to mark a test green
@@ -281,11 +282,11 @@ UI dead until the run completes, and gives you nothing at all if the run is
 killed. Line-oriented also means it stays greppable and survives `tail -f`.
 
     {"event":"run_start","count":128}
-    {"event":"test_start","id":"Json::roundTripsAstral"}
-    {"event":"test_end","id":"Json::roundTripsAstral","status":"pass","cpu_ns":412000}
+    {"event":"test_end","id":"Json::roundTripsAstral","status":"pass","cpu_ns":412000,
+     "stdout":"","stderr":""}
     {"event":"test_end","id":"Json::roundTripsEmpty","status":"fail",
      "message":"content","detail":"expected \"\" got \"\\u0000\"",
-     "file":"tests/json.yafl","line":51,"cpu_ns":88000}
+     "file":"tests/json.yafl","line":51,"cpu_ns":88000,"stdout":"","stderr":""}
     {"event":"run_end","passed":127,"failed":1,"cpu_ns":9310000}
 
 `file` and `line` come from the `line_ref` the compiler already has on every
@@ -390,6 +391,21 @@ not a stable number.
   emitting nothing still gets a line written for it.
 
   Timeout belongs in the SPAWN API, not the framework.
+
+  **IMPLEMENTED (2026-10-09).** `System::Test::run` relaunches its binary as
+  `<argv0> --run-raw <id>` once per test and waits for it; tests run one at a
+  time, in registry order. `--run-raw` runs that one test immediately with its
+  stdout and stderr untouched: a pass exits 0, a failed assertion writes one
+  final line to stderr (ASCII RS, message, US, detail) and exits 1. The parent
+  writes the result line after the child exits, in the chosen format: the
+  test's stdout and stderr (minus that last record) are captured into JSON
+  `test_end` as `stdout`/`stderr`, and shown under a failure in the human
+  report. Any other end (a signal, another status) is the test's failure,
+  "crashed: …", and the run goes on. A test may declare the stdout it must
+  print, `[test("…", stdout = "…")]`; the parent compares it with what it
+  captured. The JSON `test_start` event is gone: it announced a test before it
+  ran. Still open: the timeout, which belongs in `System::IO::run`. Tests:
+  compiler/tests/test_test_runner.py.
 
   (a) needs a foreign clock regardless — the runtime calls `clock_gettime` at
   17 sites but exposes none — measured in CPU time rather than wall clock given
