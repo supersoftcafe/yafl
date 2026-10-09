@@ -5,9 +5,10 @@ Runs, in order:
   1. build      — the whole toolchain (yafllib, PyInstaller `yafl`, system.yl,
                   System::Test staged beside it)
   2. ctest      — the CTest gate: yafllib C tests; the Python compiler builds
-                  the port; the compiler suite; the YAFL `[test]` folders; and
-                  LAST, one self-compile that must reproduce Python's C for the
-                  port byte for byte
+                  the port at each test level; the compiler suite; the YAFL
+                  `[test]` folders, each level built by that level's port; and
+                  LAST, one self-compile per level that must reproduce
+                  Python's C for the port at that level byte for byte
   3. examples   — compile every examples/*.yafl at -O2 with the compiler under
                   test, then run each with its fixture input
 
@@ -17,10 +18,11 @@ example runs against the one chosen.
 
 Two speeds; the slow one is opt-in. By default this is the FAST path, for PRs
 and the middle of a sequence of changes: build, then ctest's fast path
-(YAFL_TEST_SPEED in CMakeLists.txt — the [test] folders at -O3 only, no Python
-suite, the port's Python build reused while the Python compiler is unchanged,
-and the self-compile). `--full` is the regression: every level, the Python
-suite, a fresh Python build of the port, and the examples.
+(YAFL_TEST_SPEED in CMakeLists.txt — the port built at -O3, the [test] folders
+at -O3, and the -O3 self-compile; no Python suite; the port's Python build
+reused while the Python compiler is unchanged). `--full` is the regression:
+-O0 to -O3, each level with its own fresh Python build of the port, folders and
+self-compile; the Python suite; and the examples.
 
 Speed is not measured here: speed_protocol.py is the separate post-suite step.
 

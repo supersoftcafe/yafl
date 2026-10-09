@@ -67,21 +67,14 @@ else()
     set(YAFL_SUITE_CMD ${Python3_EXECUTABLE} -m unittest discover -s tests -t .)
 endif()
 
-# The port binary is an INPUT to the suite, not something the tests build: ~25
-# modules execute it, and having the first one to ask for it compile the port
-# (~10 minutes) while the rest blocked on a lock serialised the parallel run.
-# It is produced once here, as a fixture the suite depends on.
-set(YAFL_BOOTSTRAP_BIN ${CMAKE_BINARY_DIR}/ybootstrap)
-# The C the port was linked from — kept for the self-compile at the end, which
-# must reproduce it byte for byte.
-set(YAFL_BOOTSTRAP_C ${CMAKE_BINARY_DIR}/ybootstrap.c)
-
-# TWO SPEEDS, the slow one opt-in. `full` is the regression: the Python compiler builds the port,
-# the Python suite runs, and every [test] folder is built and run at every
-# level. `fast` is for PRs and for the middle of a sequence of changes: the
-# folders at -O3 only, no Python suite, and the port's Python build is reused
-# while the Python compiler is unchanged (build_bootstrap.py --reuse). Both end
-# with the self-compile, which must reproduce the C the port was built from.
+# TWO SPEEDS, the slow one opt-in. The port is built — by the Python compiler,
+# through the pipeline at that level — at each level the [test] folders run at,
+# and each level ends with its own self-compile.
+#
+#   fast  (default) for PRs and the middle of a sequence of changes: -O3 only,
+#         no Python suite, and the port's Python build is reused while the
+#         Python compiler is unchanged (build_bootstrap.py --reuse).
+#   full  the regression: -O0 to -O3, the Python suite, fresh Python builds.
 #
 #   cmake -B build -DYAFL_TEST_SPEED=full
 set(YAFL_TEST_SPEED fast CACHE STRING "Test path: fast, or full (the regression)")
@@ -96,15 +89,36 @@ else()
     message(FATAL_ERROR "YAFL_TEST_SPEED must be full or fast, not '${YAFL_TEST_SPEED}'")
 endif()
 
-add_test(NAME bootstrap_binary
-    COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
-            PYTHONHASHSEED=0
-            ${Python3_EXECUTABLE} build_bootstrap.py -o ${YAFL_BOOTSTRAP_BIN}
-            --c-output ${YAFL_BOOTSTRAP_C} ${YAFL_BOOTSTRAP_REUSE}
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
-set_tests_properties(bootstrap_binary PROPERTIES
-    TIMEOUT 3600
-    FIXTURES_SETUP bootstrap_bin)
+# The port binary is an INPUT to the suite, not something the tests build: ~25
+# modules execute it, and having the first one to ask for it compile the port
+# (~10 minutes) while the rest blocked on a lock serialised the parallel run.
+# Each is produced once here, as a fixture the tests depend on.
+#
+# The -O3 port is build/ybootstrap — the compiler the Python suite, the
+# examples and a user run, on either path. The full path's other levels are
+# build/ybootstrap_o<N>. Each keeps the C it was linked from beside it
+# (<binary>.c), which its self-compile at the end must reproduce byte for byte.
+set(YAFL_BOOTSTRAP_BIN ${CMAKE_BINARY_DIR}/ybootstrap)
+function(yafl_port_binary opt out)
+    if(opt EQUAL 3)
+        set(${out} ${YAFL_BOOTSTRAP_BIN} PARENT_SCOPE)
+    else()
+        set(${out} ${CMAKE_BINARY_DIR}/ybootstrap_o${opt} PARENT_SCOPE)
+    endif()
+endfunction()
+
+foreach(opt ${YAFL_TEST_LEVELS})
+    yafl_port_binary(${opt} bin)
+    add_test(NAME bootstrap_binary_o${opt}
+        COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
+                PYTHONHASHSEED=0
+                ${Python3_EXECUTABLE} build_bootstrap.py -O ${opt} -o ${bin}
+                --c-output ${bin}.c ${YAFL_BOOTSTRAP_REUSE}
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
+    set_tests_properties(bootstrap_binary_o${opt} PROPERTIES
+        TIMEOUT 7200
+        FIXTURES_SETUP bootstrap_bin_o${opt})
+endforeach()
 
 # THE COMPILER UNDER TEST. The port and the Python compiler have parity, so
 # either is a drop-in replacement for the other: every behaviour test — the
@@ -115,14 +129,20 @@ set_tests_properties(bootstrap_binary PROPERTIES
 set(YAFL_TEST_COMPILER port CACHE STRING
     "Compiler the behaviour tests drive: port (build/ybootstrap) or python (main.py)")
 set_property(CACHE YAFL_TEST_COMPILER PROPERTY STRINGS port python)
-if(YAFL_TEST_COMPILER STREQUAL "port")
-    set(YAFL_TEST_COMPILER_CMD ${YAFL_BOOTSTRAP_BIN})
-elseif(YAFL_TEST_COMPILER STREQUAL "python")
-    set(YAFL_TEST_COMPILER_CMD ${CMAKE_COMMAND} -E env PYTHONHASHSEED=0
-                               ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/compiler/main.py)
-else()
+if(NOT YAFL_TEST_COMPILER MATCHES "^(port|python)$")
     message(FATAL_ERROR "YAFL_TEST_COMPILER must be port or python, not '${YAFL_TEST_COMPILER}'")
 endif()
+# The compiler under test at one level: the port built at that level, or
+# main.py.
+function(yafl_test_compiler opt out)
+    if(YAFL_TEST_COMPILER STREQUAL "port")
+        yafl_port_binary(${opt} bin)
+        set(${out} ${bin} PARENT_SCOPE)
+    else()
+        set(${out} ${CMAKE_COMMAND} -E env PYTHONHASHSEED=0
+                   ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/compiler/main.py PARENT_SCOPE)
+    endif()
+endfunction()
 
 if(YAFL_TEST_SPEED STREQUAL "full")
     # PYTHONHASHSEED=0 is REQUIRED, not a nicety: the seven test_bootstrap_c_*
@@ -149,7 +169,7 @@ if(YAFL_TEST_SPEED STREQUAL "full")
         TIMEOUT 21600
         FAIL_REGULAR_EXPRESSION "Ran 0 test;NO TESTS RAN;\\(0 total tests\\)")
 
-    set_tests_properties(compiler_suite PROPERTIES FIXTURES_REQUIRED bootstrap_bin)
+    set_tests_properties(compiler_suite PROPERTIES FIXTURES_REQUIRED bootstrap_bin_o3)
     set(YAFL_SUITE_TEST compiler_suite)
 endif()
 
@@ -170,13 +190,14 @@ endif()
 # same event as a regression.
 function(yafl_test_folder name folder opt)
     set(bin ${CMAKE_BINARY_DIR}/${name})
+    yafl_test_compiler(${opt} compiler)
     add_test(NAME ${name}_build
-        COMMAND ${YAFL_TEST_COMPILER_CMD} -O${opt} -L ${YAFL_STAGE_DIR} --test
+        COMMAND ${compiler} -O${opt} -L ${YAFL_STAGE_DIR} --test
                 -o ${bin} ${folder}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
     set_tests_properties(${name}_build PROPERTIES
         TIMEOUT 3600
-        FIXTURES_REQUIRED bootstrap_bin
+        FIXTURES_REQUIRED bootstrap_bin_o${opt}
         FIXTURES_SETUP ${name}_bin)
     add_test(NAME ${name} COMMAND ${bin})
     set_tests_properties(${name} PROPERTIES
@@ -189,10 +210,11 @@ function(yafl_test_folder name folder opt)
         PASS_REGULAR_EXPRESSION "[1-9][0-9]* passed, 0 failed")
 endfunction()
 
-# Each folder runs at every level of the path's YAFL_TEST_LEVELS: each level
-# switches passes on (inliner, small-function inlining, single-caller fold),
-# and -O0 keeps the runtime's asserts and poison hooks. The fast path's one
-# level is -O3, the level that transforms the most.
+# Each folder runs at every level of the path's YAFL_TEST_LEVELS, built by the
+# port built at that level: each level switches passes on (inliner,
+# small-function inlining, single-caller fold), and -O0 keeps the runtime's
+# asserts and poison hooks. The fast path's one level is -O3, the level that
+# transforms the most.
 set(YAFL_FOLDER_TESTS)
 foreach(folder stdlib_tests yafl_tests)
     foreach(opt ${YAFL_TEST_LEVELS})
@@ -201,26 +223,30 @@ foreach(folder stdlib_tests yafl_tests)
     endforeach()
 endforeach()
 
-# ── THE SELF-COMPILE, LAST ───────────────────────────────────────────────────
-# ONE self-compile, after everything else. The suite says the compiler is
-# correct on small programs; this says it survives the real one — its own
-# sources, the hardest input there is — and the check is the strongest one
-# available: the port compiles its own sources through its command line and
-# must emit, byte for byte, the C the PYTHON compiler emitted for the same
-# sources when it built the port at the start. On the fast path, when the
-# port's sources changed since the cached Python build, that C came from the
-# Python-built port instead: the new port must agree with it. RUN_SERIAL
-# because it wants the machine (and a compiler-sized heap) to itself.
+# ── THE SELF-COMPILES, LAST ──────────────────────────────────────────────────
+# One self-compile per level, after everything else. The suite says the
+# compiler is correct on small programs; this says it survives the real one —
+# its own sources, the hardest input there is — and the check is the strongest
+# one available: the port built at a level compiles its own sources at that
+# level through its command line and must emit, byte for byte, the C the
+# PYTHON compiler emitted for the same sources at the same level when it built
+# the port at the start. On the fast path, when the port's sources changed
+# since the cached Python build, that C came from the Python-built port
+# instead: the new port must agree with it. RUN_SERIAL because each wants the
+# machine (and a compiler-sized heap) to itself.
 set(YAFL_SELF_COMPILE_AFTER ${YAFL_SUITE_TEST} ${YAFL_FOLDER_TESTS})
-add_test(NAME self_compile
-    COMMAND ${Python3_EXECUTABLE} selfcompile.py --binary ${YAFL_BOOTSTRAP_BIN}
-            -L ${YAFL_STAGE_DIR} --expect ${YAFL_BOOTSTRAP_C}
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
-set_tests_properties(self_compile PROPERTIES
-    TIMEOUT 14400
-    RUN_SERIAL TRUE
-    FIXTURES_REQUIRED bootstrap_bin
-    DEPENDS "${YAFL_SELF_COMPILE_AFTER}")
+foreach(opt ${YAFL_TEST_LEVELS})
+    yafl_port_binary(${opt} bin)
+    add_test(NAME self_compile_o${opt}
+        COMMAND ${Python3_EXECUTABLE} selfcompile.py --binary ${bin} -O ${opt}
+                -L ${YAFL_STAGE_DIR} --expect ${bin}.c
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
+    set_tests_properties(self_compile_o${opt} PROPERTIES
+        TIMEOUT 14400
+        RUN_SERIAL TRUE
+        FIXTURES_REQUIRED bootstrap_bin_o${opt}
+        DEPENDS "${YAFL_SELF_COMPILE_AFTER}")
+endforeach()
 
 # Convenience: `cmake --build build --target check` builds everything (so the
 # runtime archive and the C test executables exist) then runs the whole CTest set.

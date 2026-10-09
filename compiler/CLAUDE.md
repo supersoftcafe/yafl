@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Run every correctness gate (build, ctest, examples):**
 ```bash
-python3 ../full_protocol.py                   # fast: [test] folders at -O3 + self-compile
+python3 ../full_protocol.py                   # fast: port, [test] folders, self-compile, all at -O3
 python3 ../full_protocol.py --full            # the regression; logs under build/protocol-runs/
 python3 ../full_protocol.py --compiler python # against the Python compiler
 ```
@@ -23,7 +23,7 @@ YAFL_BOOTSTRAP_BIN=../build/ybootstrap YAFL_LIBYAFL_A=../build/yafllib/libyafl.a
 PYTHONHASHSEED=0 unittest-parallel -j 0 -s tests -t .   # YAFL_COMPILER=python for the Python compiler
 ```
 Behaviour tests belong in a YAFL `[test]` folder, not in Python: `yafl_tests/`
-(the compiler's behaviour; built and run at -O0, -O1, -O2 and -O3) and
+(the compiler's behaviour; built and run at -O3, and at -O0 to -O3 on the full path) and
 `stdlib_tests/` (the stdlib), each built into one test binary by the compiler
 under test. Python keeps only what a `[test]` cannot check: compile errors and
 warnings, the shape of the emitted C, and runs that need a particular

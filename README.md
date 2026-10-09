@@ -173,20 +173,23 @@ python3 full_protocol.py --keep-going       # every stage, fail at the end
 The two compilers have parity, so either is a drop-in replacement for the
 other: `--compiler` picks the one every behaviour test and example runs
 against. The CTest gate starts by having the Python compiler build the
-self-hosted one (`build/ybootstrap`, keeping the C it emitted), runs the
-compiler suite and the YAFL `[test]` folders, and ends with ONE self-compile:
-the port compiles its own sources and must reproduce that C byte for byte.
+self-hosted one at each level the tests run at, keeping the C it emitted
+(`build/ybootstrap` is the -O3 one; `build/ybootstrap_o<N>` the others). It
+runs the compiler suite and the YAFL `[test]` folders — each level built by the
+port built at that level — and ends with one self-compile per level: the port
+compiles its own sources at its level and must reproduce that C byte for byte.
 Each run tees its output to `build/protocol-runs/<timestamp>/`. It is also what
 CI runs (`.github/workflows/full-gate.yml`).
 
 There are two speeds, and the slow one is opt-in. By default it is the FAST
-path, for pull requests and the middle of a sequence of changes: the `[test]`
-folders at -O3 only and the self-compile, no Python suite and no examples. It
-also reuses the Python build of the port (`build/bootstrap-cache/`) while the
+path, for pull requests and the middle of a sequence of changes: -O3 only —
+the port, the `[test]` folders and the self-compile — with no Python suite and
+no examples. It also reuses the Python build of the port (`build/bootstrap-cache/`) while the
 Python compiler is unchanged; if only the port's sources changed, the
 Python-built port compiles them, and the new port must reproduce that C when it
-compiles itself. `--full` is the regression: a fresh Python build of the port,
-every `[test]` folder at -O0 to -O3, the Python suite, and the examples. CI
+compiles itself. `--full` is the regression: -O0 to -O3, each level with a
+fresh Python build of the port, its `[test]` folders and its self-compile; the
+Python suite; and the examples. CI
 runs the fast path on pull requests and manual runs, and the full one on every
 commit to main. In CTest terms the speed is `-DYAFL_TEST_SPEED=fast|full`
 (default `fast`).

@@ -17,11 +17,11 @@ call, exactly as it is for the runtime archive.
 Point the suite at a binary with YAFL_BOOTSTRAP_BIN, which is how you test a
 release build or a worktree build without touching test code.
 
-    python build_bootstrap.py --reuse -L build/stage     # the fast test path
+    python build_bootstrap.py -O 3 --reuse -L build/stage   # the fast test path
 
-Every build by the Python compiler is cached beside the output
-(`bootstrap-cache/`): the binary and the C it was linked from, keyed on the
-Python compiler's sources. `--reuse` skips the Python build while that key
+Every build by the Python compiler is cached beside the output, one entry per
+level (`bootstrap-cache/O<N>/`): the binary and the C it was linked from, keyed
+on the Python compiler's sources. `--reuse` skips the Python build while that key
 still matches. If the port's sources (or the stdlib) changed since, the cached
 compiler compiles them instead, and that C is what the self-compile must
 reproduce: the new port has to emit what the Python-built one did. A change
@@ -54,7 +54,7 @@ def build(out: Path, optimization_level: int = 1, c_output: Path | None = None,
     System library's directory), the cached Python build stands in for a new
     one when the Python compiler has not changed — see the module docstring."""
     sys.path.insert(0, str(_HERE))
-    cache = _Cache(out.parent / "bootstrap-cache")
+    cache = _Cache(out.parent / "bootstrap-cache" / f"O{optimization_level}")
     keys = {"python": _python_key(optimization_level), "sources": _sources_key(),
             "link": _link_key()}
     held = cache.keys()
