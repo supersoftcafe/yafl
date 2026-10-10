@@ -105,8 +105,12 @@ static __attribute__((noinline)) void _work(int w) {
         // PRODUCE: a holder created on THIS thread, published to a rooted slot.
         GC_SAFE_POINT();
         struct holder* h = (struct holder*)object_create(&holder_vt);
+        // RELEASE/ACQUIRE: threads trade holders through plain shared memory,
+        // so the store must order h's header and allocation bit before the
+        // pointer. Plain accesses work on x86 (TSO); on aarch64 a reader can
+        // see the pointer first and fail `gc_is_container_of`.
         gc_root_overwrite(&_slots[sp], 1);
-        _slots[sp] = (object_t*)h;
+        __atomic_store_n(&_slots[sp], (object_t*)h, __ATOMIC_RELEASE);
         if (PUBLISH_WINDOW_NS) {
             struct timespec w = { 0, PUBLISH_WINDOW_NS };
             nanosleep(&w, NULL);
@@ -115,7 +119,7 @@ static __attribute__((noinline)) void _work(int w) {
 
         // CONSUME: read a holder (maybe created on another thread) and hang a
         // fresh child — created on THIS thread — off it.
-        object_t* o = _slots[sc];
+        object_t* o = __atomic_load_n(&_slots[sc], __ATOMIC_ACQUIRE);
         if (o && ((uintptr_t)o & PTR_TAG_MASK) == 0) {
             struct holder* hh = (struct holder*)o;
             GC_SAFE_POINT();
