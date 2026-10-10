@@ -878,36 +878,43 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
 // ── The mutable-root contract ────────────────────────────────────────────────
 // Declared roots are scanned ONCE, at cycle open (the SATB snapshot). Any
 // code that MUTATES a declared root after that must tell the marker, exactly
-// as the heap write barrier does for object fields:
-//   gc_root_overwrite(slot) — call BEFORE removing/overwriting a root slot's
-//       occupant: shades the outgoing value (SATB deletion). Without it, an
-//       object whose only path was this root slot is invisible to the cycle.
-//   gc_root_publish(value)  — call when storing into a root slot a value the
-//       thread might drop from its stack before its own root-scan safe
-//       point: shades the incoming value (the ragged-snapshot window).
-// YAFL global lets never need these (written once, NULL→value, and the lazy
-// machinery shades its own publication); they are for the runtime's mutable
-// roots — scheduler queues, IO continuation slots — and any C host code that
-// registers mutable roots.
-EXTERN void _gc_root_overwrite2(object_t** slot);
-EXTERN void _gc_root_publish2(object_t* value);
-INLINE void gc_root_overwrite(object_t** slot) {
+// as the heap write barrier does for object fields. Both calls name the root
+// field and the mask of its pointer slots, as heap stores do:
+//   gc_root_overwrite(slot, mask) — BEFORE the store: shades the outgoing
+//       occupants (SATB deletion). Without it, an object whose only path was
+//       this root slot is invisible to the cycle.
+//   gc_root_publish(slot, mask)   — AFTER the store: shades what the slots
+//       now hold, which the storing thread may drop from its stack before
+//       its own root-scan safe point (the ragged-snapshot window).
+// The publish reads the values back from the slots, so it cannot run before
+// the store. It used to take the value and run first, and a cycle opening
+// between its flag read and the store snapshotted the slot's previous
+// occupant and never saw the new one (test_gc_min2_window). Its fence pairs
+// with the one after the collector raises gc_write_barrier_requested: either
+// the snapshot reads the stored value, or the publish sees the flag up.
+// The compilers emit the publish after a lazy stub's value store
+// (GC_ROOT_PUBLISH_IN); the rest is for the runtime's mutable roots and any C
+// host code that registers mutable roots. Field-based shading follows, and may snap, a
+// forwarder that compaction left, exactly as the root scan itself does.
+INLINE void gc_root_overwrite(object_t **slot, ptr_mask_t mask) {
     assert(!gc_in_heap(slot));   // heap slots take GC_WRITE_BARRIER_IN
-    // Field-based: a root slot can hold a pointer to a RELOCATED object (a
-    // forwarder compaction left); the shade must follow the chain — and may
-    // snap the slot — exactly as the root scan itself does.
-    if (UNLIKELY(gc_write_barrier_requested)) _gc_root_overwrite2(slot);
-    bool had = *slot != NULL;                      // a flag, not a copy (see gc_local_barrier_inactive)
-    atomic_signal_fence(memory_order_seq_cst);     // the value before the count
-    if (had && gc_local_live) gc_local_escape(*slot);   // may be held elsewhere
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
+    gc_local_barrier_inactive(slot, mask);   // outgoing values may be held elsewhere
 }
-// Returns its argument so compiler-emitted code can use it in value position.
-INLINE object_t* gc_root_publish(object_t* value) {
-    if (UNLIKELY(gc_write_barrier_requested)) _gc_root_publish2(value);
-    atomic_signal_fence(memory_order_seq_cst);
-    if (gc_local_live) gc_local_escape(value);
-    return value;
+INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
+    assert(!gc_in_heap(slot));
+    atomic_thread_fence(memory_order_seq_cst);   // the store before the flag
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
+    atomic_signal_fence(memory_order_seq_cst);   // the values before the count
+    if (gc_local_live) gc_local_escape_old(slot, mask);
 }
+// AFTER a store into a field of `obj`, an object that may be a declared root:
+// a lazy stub is a static root for a global and a heap object for a local
+// `[lazy]`, and one fetch function serves both. A static container publishes;
+// a heap container's fields are traced, so it owes nothing more. The store
+// itself took GC_WRITE_BARRIER_IN, which accepts either container.
+#define GC_ROOT_PUBLISH_IN(obj, field, mask)\
+    do { if (!gc_in_heap(obj)) gc_root_publish((object_t**)&(field), (mask)); } while (false)
 
 
 EXTERN size_t object_get_size(object_t* ptr);

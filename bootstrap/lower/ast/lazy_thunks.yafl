@@ -47,35 +47,11 @@ fun lazyRuntimeCall1(name, argName, argVal): Op
              RpRuntimeInvoke(name, RpNewStruct(list1(RpNamedValue(argName, argVal))), CgDataPointer()),
              true, List())
 
-# Insertion shades for a value stored into a declared-root slot (the lazy
-# stub's `value` field is a declared root): with roots scanned ONCE at cycle
-# open, a value published into a root mid-cycle — and possibly dropped from
-# the publishing thread's stack before its take — is otherwise invisible to
-# the marker. One gc_root_publish per pointer leaf, mirroring Python's
-# _publish_root_shades (DataPointer; FuncPointer's .o; struct leaves).
-fun lazyPublishRootShades(value, valueType): List<Op>
-  ret map(build(lazyPublishLeaves(value, valueType,
-                                  builder())),
-          (leaf) => lazyRuntimeCall1("gc_root_publish", "value", leaf))
-
-# The pointer leaves in FIELD order — each becomes a publish call in that
-# order.
-fun lazyPublishLeaves(v, t2,
-                      [terminal] acc): ListBuilder<RParam> => match(t2)
-  (d: CgDataPointer)      => push(acc, v)
-  (f2: CgFuncPointer)     => push(acc, RpStructField(v, "o"))
-  (st: CgStr)             => push(acc, RpStructField(v, "head"))
-  (s2: CgStruct)          => lazyPublishLeavesFields(v, chain(s2.fields), acc)
-  (im: CgImmediateStruct) => lazyPublishLeavesFields(v, chain(im.fields), acc)
-  (o: CgType)              => acc
-
-# A walk, not a fold: the builder is linear and cannot ride a fold's lambda.
-fun lazyPublishLeavesFields(v, fields: Chain<CgField>,
-                            [terminal] acc): ListBuilder<RParam> => match(fields)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => lazyPublishLeavesFields(v, l.next,
-      lazyPublishLeaves(RpStructField(v, l.value.fieldName),
-                        l.value.fieldType, acc))
+# The stub's value store. A global's stub is a declared root, scanned once at
+# cycle open, so the store publishes what it wrote: a thread may drop the
+# value from its stack before its take (codegen/param.py ObjectField.root).
+fun storeValue(valueF: RpObjectField, value): Op
+  ret OpMove(with valueF(root = true), value, false, List())
 
 # ── stub class ───────────────────────────────────────────────────────────────
 
@@ -176,7 +152,7 @@ fun makeFetchFunction(valueType): CgFunction
 fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
              this: RParam, waiter: RParam, status: RParam, flagAddr: RParam,
              closure: RParam, rwrapped: RParam, value: RParam,
-             flagF: RParam, closureF: RParam, valueF: RParam, isComplete: RParam): List<Op>
+             flagF: RParam, closureF: RParam, valueF: RpObjectField, isComplete: RParam): List<Op>
   let finisher = finisherFunctionName(valueType)
   let head = list5<Op>(
       OpJumpIf("$slow", isComplete, true, List()),
@@ -194,7 +170,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
       OpJumpIf("$return_waiter", RpIntEqConst(status, 0), false, List()),
       # status == 1: won init race
       OpMove(closure, closureF, false, List()))
-  # Sync init: unwrap, store, publish (root shade), clear closure, drain
+  # Sync init: unwrap, store, clear closure, drain
   let syncInit = concat(list4(
       OpCall(closure, RpNewStruct(List()), rwrapped, false, false, None, List()),
       OpJumpIf("$async_init",
@@ -202,9 +178,8 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
                                RpNewStruct(list1(RpNamedValue("x", isTaskParam(rwrapped, wrapped)))),
                                CgInt(32)), false, List()),
       OpMove(value, unwrapValue(rwrapped, valueType), false, List()),
-      OpMove(valueF, value, false, List())),
-    concat(lazyPublishRootShades(value, valueType),
-           list1(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()))))
+      storeValue(valueF, value)),
+    list1(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())))
   let asyncTail = list4(
       emitDrainCall(valueType, RpPointerTo(flagF), value),
       OpReturn(wrapValue(value, wrapped), List()),
@@ -265,11 +240,9 @@ fun makeFinisherFunction(valueType): CgFunction
                  CgStruct(list2(CgField("this", CgDataPointer()),
                                 CgField("completed", CgDataPointer()))),
                  CgDataPointer(),
-                 CgStruct(list2(CgField("value", valueType),
-                                CgField("$sv_lazy_discard", CgDataPointer()))),
-                 cgOpsOf(concat(concat(list2(OpMove(value, completedResult, false, List()),
-                                     OpMove(valueF, value, false, List())),
-                               lazyPublishRootShades(value, valueType)),
+                 CgStruct(list1(CgField("value", valueType))),
+                 cgOpsOf(concat(list2(OpMove(value, completedResult, false, List()),
+                                     storeValue(valueF, value)),
                         list3(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()),
                               emitDrainCall(valueType, RpPointerTo(flagF), value),
                               OpReturn(RpNullPointer(), List())))),

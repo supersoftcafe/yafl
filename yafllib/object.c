@@ -2273,6 +2273,9 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     gc_occ_sparse_fwd = gc_occ_sparse_pin = gc_occ_sparse_oth = 0;
 
     gc_write_barrier_requested = true;
+    // Pairs with the fence in gc_root_publish: a store into a root slot is
+    // either read by the snapshot below or published under the flag.
+    atomic_thread_fence(memory_order_seq_cst);
     reprocess_page_head = reprocess_page_tail = 0;
     memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
 
@@ -2282,9 +2285,9 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     // thread's take and any later read, hiding the chain's tail on taken
     // pages: the test_gc_pressure DANGLE. From this point on, root
     // MUTATIONS carry an obligation, exactly as heap fields do:
-    // gc_root_overwrite shades a slot's outgoing occupant, gc_root_publish
-    // shades a value published into a root that its thread may drop before
-    // its take-time stack scan. See yafl.h, "The mutable-root contract".
+    // gc_root_overwrite shades a slot's outgoing occupant before a store,
+    // gc_root_publish what the slot holds after it, which its thread may drop
+    // before its take-time stack scan. See yafl.h, "The mutable-root contract".
     declare_roots_yafl(atomic_gc_object_seen_by_field);
     declare_roots_thread(atomic_gc_object_seen_by_field);
 
@@ -3748,19 +3751,6 @@ EXPORT void _gc_safe_point2() {
 // The mutable-root contract's slow halves (see yafl.h). Field-based so a
 // stale pointer to a relocated object follows (and snaps) the forwarding
 // chain, exactly like the root scan's own marking.
-EXPORT void _gc_root_overwrite2(object_t** slot) {
-    atomic_gc_object_seen_by_field(slot);
-}
-
-EXPORT void _gc_root_publish2(object_t* value) {
-    // Value position — follow forwarding without a slot to snap.
-    while (gc_object_is_on_heap_fast(value)) {
-        atomic_gc_object_mark_as_seen(value);
-        if (LIKELY(!vtable_is_forward(value->vtable))) break;
-        value = (object_t*)value->vtable;
-    }
-}
-
 EXPORT void _gc_mark_as_seen2(object_t *object) {
     if (gc_object_is_on_heap_fast(object)) {
         LOG(ULTRA, "MARK_AS_SEEN(0x%lx) -> %s", (uintptr_t)object, object_get_vtable(object)->name);

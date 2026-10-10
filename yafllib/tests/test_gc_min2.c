@@ -33,6 +33,11 @@
 #ifndef MAX_WORKERS_T
 #define MAX_WORKERS_T 32
 #endif
+// Nanoseconds to sleep between storing a holder into its root slot and
+// publishing it — the window in which a collection can open. 0 = none.
+#ifndef PUBLISH_WINDOW_NS
+#define PUBLISH_WINDOW_NS 0
+#endif
 
 static int NWORKERS = 4;
 
@@ -63,6 +68,14 @@ static fun_t        _exit_cont;
 
 static void _noop_roots(void* c, void(*d)(object_t**)) { (void)c; (void)d; }
 
+static void _work(void);
+
+// The stack anchor bounds this thread's conservative scan, so it must sit
+// ABOVE every frame that holds a heap pointer: the work runs in a frame of its
+// own, called from here. In one frame with the loop, the compiler may place
+// the loop's locals above the anchor, outside the scanned window. gcc did: a
+// holder read from a slot, then overwritten there, lived only in a local the
+// scan never saw, and was freed under its reader (about 1 run in 200).
 static void* _worker(void* arg) {
     (void)arg;
     object_t* stack_anchor = NULL;
@@ -71,7 +84,12 @@ static void* _worker(void* arg) {
     // the GC, so no thread starts sharing while the collector is unaware of it.
     atomic_fetch_add(&_registered, 1);
     while (atomic_load(&_registered) < NWORKERS) sched_yield();
+    _work();
+    while (1) sched_yield();   // never return: would dangle this thread's GC info
+    return NULL;
+}
 
+static __attribute__((noinline)) void _work(void) {
     while (!atomic_load(&_finished)) {
         GC_SAFE_POINT();   // loop backedge safe-point, as generated YAFL code has
         long long n = atomic_fetch_add(&_counter, 1);
@@ -81,8 +99,13 @@ static void* _worker(void* arg) {
         // PRODUCE: a holder created on THIS thread, published to a rooted slot.
         GC_SAFE_POINT();
         struct holder* h = (struct holder*)object_create(&holder_vt);
-        gc_root_overwrite(&_slots[sp]);
-        _slots[sp] = gc_root_publish((object_t*)h);
+        gc_root_overwrite(&_slots[sp], 1);
+        _slots[sp] = (object_t*)h;
+        if (PUBLISH_WINDOW_NS) {
+            struct timespec w = { 0, PUBLISH_WINDOW_NS };
+            nanosleep(&w, NULL);
+        }
+        gc_root_publish(&_slots[sp], 1);
 
         // CONSUME: read a holder (maybe created on another thread) and hang a
         // fresh child — created on THIS thread — off it.
@@ -96,8 +119,6 @@ static void* _worker(void* arg) {
         }
         burn(4);
     }
-    while (1) sched_yield();   // never return: would dangle this thread's GC info
-    return NULL;
 }
 
 static void* _watchdog(void* arg) {

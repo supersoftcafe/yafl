@@ -67,6 +67,7 @@ locals):
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 from codegen.gen import Application
@@ -176,26 +177,11 @@ def ir_mangle_to_type(suffix: str) -> Type:
 _DISCARD = StackVar(DataPointer(), "$sv_lazy_discard")
 
 
-def _publish_root_shades(value: RParam, value_type: Type) -> tuple[Op, ...]:
-    """Insertion shades for a value stored into a declared-root slot (the
-    lazy stub's `value` field is a declared root): with roots scanned ONCE
-    at cycle open, a value published into a root mid-cycle — and possibly
-    dropped from the publishing thread's stack before its take — is
-    otherwise invisible to the marker. One gc_root_publish per pointer leaf
-    (DataPointer is the only lazy value shape in practice; FuncPointer's .o
-    and struct pointer leaves are covered for completeness)."""
-    def leaves(v: RParam, t: Type):
-        if isinstance(t, DataPointer):
-            yield v
-        elif isinstance(t, FuncPointer):
-            yield StructField(v, "o")
-        elif isinstance(t, Str):
-            yield StructField(v, "head")
-        elif isinstance(t, Struct):
-            for fname, ft in t.fields:
-                yield from leaves(StructField(v, fname), ft)
-    return tuple(_runtime_call("gc_root_publish", value=leaf)
-                 for leaf in leaves(value, value_type))
+def _store_value(value_f: ObjectField, value: RParam) -> Op:
+    """The stub's value store. A global's stub is a declared root, scanned
+    once at cycle open, so the store publishes what it wrote: a thread may
+    drop the value from its stack before its take (ObjectField.root)."""
+    return Move(dataclasses.replace(value_f, root=True), value)
 
 
 def _store_waiter_result(waiter: RParam, value_type: Type, value: RParam) -> tuple[Op, ...]:
@@ -363,8 +349,7 @@ def make_fetch_function(value_type: Type) -> Function:
 
         # Sync init: unwrap, store, clear closure, drain.
         Move(value, closure_value),
-        Move(value_f, value),
-        *_publish_root_shades(value, value_type),
+        _store_value(value_f, value),
         Move(closure_f, ZeroOf(FuncPointer())),
         _emit_drain_call(value_type, PointerTo(flag_f), value),
         Return(wrap_value(value, wrapped)),
@@ -464,8 +449,7 @@ def make_finisher_function(value_type: Type) -> Function:
 
     ops: tuple[Op, ...] = (
         Move(value, completed_result),
-        Move(value_f, value),
-        *_publish_root_shades(value, value_type),
+        _store_value(value_f, value),
         Move(closure_f, ZeroOf(FuncPointer())),
         _emit_drain_call(value_type, PointerTo(flag_f), value),
         Return(NullPointer()),
@@ -477,7 +461,6 @@ def make_finisher_function(value_type: Type) -> Function:
         result=DataPointer(),
         stack_vars=Struct((
             ("value",       value_type),
-            (_DISCARD.name, DataPointer()),
         )),
         ops=ops,
         comment=f"lazy fetch async-finisher for {_ir_mangle(value_type)}",

@@ -62,8 +62,9 @@ static fun_t _exit_cont;
 // Keeper K -> _slots[1], then child C right after it (same page), hidden in g_C.
 static void make_keeper_and_child(void) {
     object_t* k = object_create(&leaf_vt);
-    gc_root_overwrite(&_slots[1]);
-    _slots[1] = gc_root_publish(k);
+    gc_root_overwrite(&_slots[1], 1);
+    _slots[1] = k;
+    gc_root_publish(&_slots[1], 1);
     object_t* c = object_create(&leaf_vt);
     g_C = (uintptr_t)c;
 }
@@ -72,8 +73,9 @@ static void make_holder_link_publish(void) {
     struct holder* h = (struct holder*)object_create(&holder_vt);
     GC_WRITE_BARRIER_IN(h, h->child, 1);
     h->child = (object_t*)g_C;
-    gc_root_overwrite(&_slots[0]);
-    _slots[0] = gc_root_publish((object_t*)h);
+    gc_root_overwrite(&_slots[0], 1);
+    _slots[0] = (object_t*)h;
+    gc_root_publish(&_slots[0], 1);
     g_H = (uintptr_t)h;
 }
 

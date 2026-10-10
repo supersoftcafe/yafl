@@ -77,15 +77,12 @@ fun prRewriteElement(x, names: StrSet)
 # A FRESH store needs no resolve: the object was allocated moments ago on a
 # thread-private page, straight-line before this store, so it cannot have been
 # relocated yet.
-fun prRewriteField(x, names: StrSet)
+fun prRewriteField(x: RpObjectField, names: StrSet)
   ret !setHas(names, x.objectName) || x.fresh || prAlreadyResolved(x.pointer)
     ? x
-    : RpObjectField(x.fieldType,
-                    RpRuntimeInvoke("object_resolve",
-                                    RpNewStruct(list1(
-                                        RpNamedValue("o", x.pointer))),
-                                    CgDataPointer()),
-                    x.objectName, x.field, x.index, x.fresh, x.fill)
+    : with x(pointer = RpRuntimeInvoke("object_resolve",
+                                       RpNewStruct(list1(RpNamedValue("o", x.pointer))),
+                                       CgDataPointer()))
 
 fun prAlreadyResolved(p) => match(p)
   (x: RpRuntimeInvoke) => x.function == "object_resolve"

@@ -773,6 +773,12 @@ class ObjectField(LParam):
     # with no active nursery; only the nursery's private-container test
     # remains (GC_FILL_BARRIER). Provenance: compare-excluded.
     fill: bool = dataclasses.field(default=False, compare=False)
+    # True for a store whose container may be a DECLARED ROOT — a lazy stub,
+    # static for a global and heap for a local `[lazy]`. Roots are scanned
+    # once, at cycle open, so after the ordinary barrier and the store, what
+    # the field now holds is published (GC_ROOT_PUBLISH_IN: a no-op for a heap
+    # container). Provenance: compare-excluded.
+    root: bool = dataclasses.field(default=False, compare=False)
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
         return ([self] if is_reader else []) + self.pointer.flatten() + (self.index.flatten() if self.index else [])
@@ -807,7 +813,8 @@ class ObjectField(LParam):
             # its escaped bit directly instead of searching for it.
             if self.fill:   # after the store: it escapes the value just stored
                 return f"    {field_ref} = {value};\n    GC_FILL_BARRIER({pointer}, {field_ref}, {mask});\n"
-            return f"    GC_WRITE_BARRIER_IN({pointer}, {field_ref}, {mask});\n    {field_ref} = {value};\n"
+            publish = f"    GC_ROOT_PUBLISH_IN({pointer}, {field_ref}, {mask});\n" if self.root else ""
+            return f"    GC_WRITE_BARRIER_IN({pointer}, {field_ref}, {mask});\n    {field_ref} = {value};\n{publish}"
         else:
             return f"    {field_ref} = {value};\n"
 

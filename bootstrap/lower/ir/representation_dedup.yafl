@@ -749,8 +749,7 @@ fun rddRenameParam(rn: RddRenames, p: RParam): RParam => match(p)
   (x: RpStaticObjectRef) => RpStaticObjectRef(rddTo(rn.rnGlb, x.name))
   (x: RpObjVtableEq)     => RpObjVtableEq(x.value, rddToOpt(rn.rnObj, x.className), x.externSymbol,
                                            x.among)
-  (x: RpObjectField)     => RpObjectField(x.fieldType, x.pointer, rddTo(rn.rnObj, x.objectName),
-                                          x.field, x.index, x.fresh, x.fill)
+  (x: RpObjectField)     => with x(objectName = rddTo(rn.rnObj, x.objectName))
   (x: RpArrayElement)    => RpArrayElement(x.elementType, x.pointer, rddTo(rn.rnObj, x.objectName),
                                            x.field, x.lengthField, x.index, x.checked)
   (x: RpIntEqConst)      => match(x.value)
