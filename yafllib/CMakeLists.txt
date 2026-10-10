@@ -179,6 +179,19 @@ foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_min2 test_gc_p
     add_test(NAME ${t}_global COMMAND ${t})
     set_tests_properties(${t}_global PROPERTIES ENVIRONMENT "YAFL_LOCAL_GC=0")
 endforeach()
+# test_gc_mesh: every worker mutates and reads one shared graph within the
+# sharing contract — mutable cells under their pin, immutable mailboxes read
+# lock-free and filled write-once (yafl_cas_once) — trading young chains
+# between nurseries. Aimed at weakly-ordered machines; the soak script
+# (tests/gc_soak.py) runs it long.
+add_yafl_test(test_gc_mesh)
+set_tests_properties(test_gc_mesh PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;MESH_STEPS=50000")
+add_test(NAME test_gc_mesh_nursery COMMAND test_gc_mesh)
+set_tests_properties(test_gc_mesh_nursery PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_LOCAL_GC_PAGES=2;MESH_STEPS=50000")
+add_test(NAME test_gc_mesh_global COMMAND test_gc_mesh)
+set_tests_properties(test_gc_mesh_global PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_LOCAL_GC=0;MESH_STEPS=50000")
 # test_gc_fwd_chain: compaction forwarding chains (A -> B -> C via a head stub
 # pinned by a conservative stack slot) must path-compress when scanned — the
 # head's forward word snaps to the tail and the bypassed middle stub's page
