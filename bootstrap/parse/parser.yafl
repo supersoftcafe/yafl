@@ -61,6 +61,9 @@ fun hardFail(msg, ps: Ps)
   let t = peek(ps)
   ret PFail(true, msg, t.line, t.col, List())
 
+# A hard failure at a node already parsed, rather than at the next token.
+fun failAt(msg, lr: PLine) => PFail(true, msg, lr.plLine, lr.plCol, List())
+
 # Escalate a soft failure after committing to a construct (parselib.requires).
 fun harden(f, msg) => f.hard ? f : PFail(true, msg, f.line, f.col, List())
 
@@ -602,8 +605,7 @@ fun [tail] bindPipeLoop(lhs, lr, ps): (v: PExpr|PFail, rest: Ps)
     (f: PFail)   => f.hard ? (f, r.rest) : (lhs, ps)
     # A stage has ONE hole for the piped value to fill (__pipe_stage).
     (rhs: PExpr) => op == "|>" && placeholderCount(rhs) > 1
-      ? (PFail(true, "at most one `_` placeholder per pipeline stage",
-               exprLine(rhs).plLine, exprLine(rhs).plCol, List()), r.rest)
+      ? (failAt("at most one `_` placeholder per pipeline stage", exprLine(rhs)), r.rest)
       : bindPipeLoop(op == "|>"
                        ? pipeStage(lhs, rhs)
                        : foldBinary("?>", lhs, rhs, lr),
@@ -764,8 +766,11 @@ fun isFloatLexeme(s)
 fun numberTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
   if isFloatLexeme(lexeme)
     let prec = endsWith(lexeme, "f32") ? 32 : endsWith(lexeme, "f64") ? 64 : 0
-    let cut = prec == 0 ? length(lexeme) : length(lexeme) - 3
-    ret (PeFloat(slice(lexeme, 0, cut), prec, lr), bump(ps))
+    let text = slice(lexeme, 0, prec == 0 ? length(lexeme) : length(lexeme) - 3)
+    # Underscores only group digits: the text that reaches parseFloat has none.
+    ret validFloat(text)
+      ? (PeFloat(join(split(text, "_"), ""), prec, lr), bump(ps))
+      : (hardFail("invalid float literal", ps), bump(ps))
   let d = decodeInt(lexeme)
   ret d.ilErr == ""
     ? (PeInt(d.ilValue, d.ilPrecision, lr), bump(ps))
@@ -929,8 +934,10 @@ fun builtinFromTuple(ty, tup: PExpr, lr,
     (first: PTupEnt) => match(first.tupValue)
       (op: PeStr) => (PeBuiltinOp(ty, first.tupValue,
                                   PeTuple(tail(t2.exprs), t2.petLine), lr), ps)
-      ()          => (hardFail("__builtin_op__ first parameter must be a string", ps), ps)
-    ()               => (hardFail("__builtin_op__ first parameter must be a string", ps), ps)
+      ()          => (failAt("__builtin_op__ first parameter must be a string",
+                             exprLine(first.tupValue)), ps)
+    ()               => (failAt("__builtin_op__ first parameter must be a string",
+                                  t2.petLine), ps)
   (other)       => (hardFail("invalid use of __builtin_op__", ps), ps)
 
 fun parseParallel(lr, ps): (v: PExpr|PFail, rest: Ps)
@@ -1186,7 +1193,7 @@ fun parseStmt(ps): (v: PStmt|PFail, rest: Ps)
   if kw == "else"
     ret atSym(bump(ps), "if")
       ? parseIf(lineAt(bump(bump(ps))), bump(bump(ps)), 1)
-      : parseElse(post, bump(ps))
+      : parseElse(lr, bump(ps))
   ret parseAction(lr, ps)
 
 # The statement expression's PARSE START. Python's productions carry the
@@ -1219,6 +1226,8 @@ fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine,
        ? (PsIf(cond, body, List(), lr), rest)
        : (PsElseIf(cond, body, lr), rest)
 
+# An `else` sits at its keyword: it has no condition to place it, as an `if`
+# or `else if` has, so an orphan is reported where it is written.
 fun parseElse(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps) => parseStmts(ps, builder())
   ?> (body: List<PStmt>, rest: Ps) => (PsElse(body, lr), rest)
 

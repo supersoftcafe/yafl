@@ -876,3 +876,19 @@ fun program(): Int
 
 fun [test("Widening String|None → String|Int|None with a None value (exercises the null branch of DataPointer widening)")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionTypes::LetAssignmentMatch
+
+import System
+import System::Test
+
+fun returnsUnion():System::Int|System::None
+  ret System::None
+fun program():System::Int
+  ret match(returnsUnion())
+    (x: System::Int) => x
+    () => -1
+
+fun [test("a match on a returned union picks the None arm")] check(): None|TestFailure
+    ret assertEqInt(program(), -1, "program()")

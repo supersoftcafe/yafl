@@ -194,15 +194,11 @@ runs the fast path on pull requests and manual runs, and the full one on every
 commit to main. In CTest terms the speed is `-DYAFL_TEST_SPEED=fast|full`
 (default `fast`).
 
-### Speed, separately
+### Speed
 
-`speed_protocol.py` is the measurement step, run after a green full protocol:
-the port built through the -O3 pipeline, then a timed best-of-three
-self-compile (wall time and peak RSS per leg, every run byte-identical).
-```
-python3 speed_protocol.py
-python3 speed_protocol.py --only o3_timed   # re-time an existing -O3 build
-```
+The speed figure is the self-compile's time, which every run reports on its
+ctest line (`self_compile_o3 570s`): the port compiling its own sources at its
+level, byte-identical to the C the Python compiler emitted for it.
 
 ### The test set alone
 

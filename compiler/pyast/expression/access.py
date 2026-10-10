@@ -607,8 +607,8 @@ class ArrayReadExpression(Expression):
             object=self.object.search_and_replace(resolver, replace),
             index=self.index.search_and_replace(resolver, replace))
 
-    def __array_info(self, resolver: g.Resolver):
-        """(class_name, element_spec, length_field_name) for `object`'s array
+    def __array_field(self, resolver: g.Resolver):
+        """(class_name, array field spec, class statement) for `object`'s array
         class, or None if its type isn't resolved/an array class yet."""
         otype = self.object.get_type(resolver)
         if not isinstance(otype, t.ClassSpec):
@@ -620,16 +620,26 @@ class ArrayReadExpression(Expression):
         af = classstmt.array_field(resolver)
         if af is None:
             return None
-        af_spec = checked_cast(t.ArrayFieldSpec, af.declared_type)
+        return otype.name, checked_cast(t.ArrayFieldSpec, af.declared_type), classstmt
+
+    def __array_info(self, resolver: g.Resolver):
+        """(class_name, element_spec, length_field_name) for codegen, which runs
+        only once check() has proved the length field exists."""
+        found = self.__array_field(resolver)
+        if found is None:
+            return None
+        cname, af_spec, classstmt = found
         len_name = next((f.name for f in classstmt.get_fields(resolver)
                          if g.name_matches(f.name, af_spec.length_field)), None)
         if len_name is None:
             return None
-        return otype.name, af_spec.element, len_name
+        return cname, af_spec.element, len_name
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        info = self.__array_info(resolver)
-        return info[1] if info is not None else None
+        # The element type, whether or not the length field exists: that is
+        # the class's own error, not every read's.
+        found = self.__array_field(resolver)
+        return found[1].element if found is not None else None
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         obj, oglb, oh = self.object.compile(resolver, None)

@@ -24,6 +24,7 @@ import tempfile
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c
+from tests.testutil import compile_errors
 
 
 _COUNTDOWN = """\
@@ -90,8 +91,10 @@ class TestTailLoop(TestCase):
     def test_non_tail_self_call_is_an_error(self):
         # `[tail]` asserts a tail-recursive loop; a non-tail self-call must be
         # rejected at compile time rather than silently losing the guarantee.
-        ccode = compile_c(_NON_TAIL, "t.yafl")
-        self.assertFalse(ccode, "a non-tail self-call under [tail] should fail to compile")
+        self.assertEqual(
+            "t.yafl[3:5] - [tail] function has a call to itself in a non-tail position; "
+            "[tail] requires every self-call to be in tail position\n",
+            compile_errors(_NON_TAIL, "t.yafl"))
 
 
     def test_async_tail_loop_runs_constant_stack(self):

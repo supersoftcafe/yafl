@@ -14,7 +14,7 @@ Runtime behaviour is checked by compiler/yafl_tests/conditionals.yafl.
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_c
+from tests.testutil import compile_errors
 
 
 # The runtime shapes are [test]s in compiler/yafl_tests/conditionals.yafl.
@@ -33,8 +33,9 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = compile_c(src)
-        self.assertEqual("", result)
+        self.assertEqual(
+            "test.yafl[3:8] - if condition must be Bool\n",
+            compile_errors(src))
 
     def test_orphan_else_rejected(self):
         """An `else` without a preceding `if` is reported by `check()`
@@ -47,8 +48,9 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = compile_c(src)
-        self.assertEqual("", result)
+        self.assertEqual(
+            "test.yafl[3:5] - `else` without a matching preceding `if`\n",
+            compile_errors(src))
 
     def test_orphan_else_if_rejected(self):
         """Same for an `else if` with no preceding `if`."""
@@ -59,8 +61,9 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = compile_c(src)
-        self.assertEqual("", result)
+        self.assertEqual(
+            "test.yafl[3:13] - `else if` without a matching preceding `if`\n",
+            compile_errors(src))
 
     def test_else_separated_from_if_rejected(self):
         """A non-if statement between `if` and `else` breaks the chain;
@@ -75,5 +78,7 @@ class TestIfCompileErrors(TestCase):
             "        ret 2\n"
             "    ret 0\n"
         )
-        result = compile_c(src)
-        self.assertEqual("", result)
+        self.assertEqual(
+            "test.yafl[5:9] - warning: 'x' is never used\n"
+            "test.yafl[6:5] - `else` without a matching preceding `if`\n",
+            compile_errors(src))

@@ -14,8 +14,8 @@ The fast path is the default (and what CI runs on pull requests and manual
 runs); it reuses the Python build of the port while the Python compiler is
 unchanged (build_bootstrap.py --reuse). `--full` is opt-in, and what CI runs
 on every commit to main. Prefer it over running the pieces
-by hand before a commit. Speed is measured separately, afterwards:
-`python3 ../speed_protocol.py` (-O3 port build + timed self-compiles).
+by hand before a commit. The speed figure is the self-compile time each run
+reports on its ctest line (`self_compile_o3 …s`).
 
 **Run all tests:**
 ```bash

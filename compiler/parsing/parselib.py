@@ -50,7 +50,7 @@ class Result(Generic[T]):
 
     @staticmethod
     def error(message: str, tokens: list[Token], line_ref: LineRef) -> Result[T]:
-        return Result(None, tokens, line_ref, [Error(tokens[-1].line_ref, message)])
+        return Result(None, tokens, line_ref, [Error(line_ref, message)])
 
 
 @dataclass(frozen=True)
@@ -269,6 +269,25 @@ def maybe(parser: Parser[T]) -> Parser[list[T]]:
         if not item:
             return Result([], tokens, item.line_ref, [])
         return Result([item.value], item.tokens, item.line_ref, item.errors)
+    return Parser(p)
+
+
+def maybe_requires(left: Parser[T], right: Parser[Y], message: str) -> Parser[list[Y]]:
+    """An optional part introduced by `left`: `maybe(requires(left, right,
+    message))`, except that once `left` matches the part is committed, so a
+    failure of `right` fails the parse rather than reading as an absent part.
+    `let f = 12x` reports the literal; under `maybe` it was dropped and the
+    statement failed later, somewhere else. Use it where `left` cannot begin
+    anything else (`=`, `:`, `where`); `<` is also less-than, so generics stay
+    under `maybe`."""
+    committed = requires(left, right, message)
+    def p(tokens: List[Token]) -> Result[list[Y]]:
+        if not left(tokens):
+            return Result([], tokens, tokens[0].line_ref, [])
+        r = committed(tokens)
+        if not r:
+            return r
+        return Result([r.value], r.tokens, r.line_ref, r.errors)
     return Parser(p)
 
 

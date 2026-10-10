@@ -19,7 +19,7 @@ import lowering.simple_classes as simple_classes
 
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
-from tests.testutil import compile_c
+from tests.testutil import compile_errors
 
 
 class TestArrayParsing(TestCase):
@@ -63,30 +63,29 @@ class TestArrayParsing(TestCase):
 class TestArrayClassValidation(TestCase):
     """The structural rules are enforced at check time, before any codegen."""
 
-    def _rejected(self, src: str) -> None:
-        out = compile_c(src, "t.yafl")
-        self.assertFalse(out, "expected this array class to be rejected")
+    def _rejected(self, src: str, diagnostic: str) -> None:
+        self.assertEqual(diagnostic + "\n", compile_errors(src, "t.yafl"))
 
     def test_non_final_array_class_is_rejected(self):
         self._rejected("""import System
 class CustomArray(length: System::Int32, array: System::Int32[length])
 fun main(): System::Int
   ret 0
-""")
+""", "t.yafl[2:7] - a class with an array field must be [final]")
 
     def test_missing_length_field_is_rejected(self):
         self._rejected("""import System
 class [final] CustomArray(label: System::String, array: System::Int32[length])
 fun main(): System::Int
   ret 0
-""")
+""", "t.yafl[2:50] - array length field 'length' is not a field of this class")
 
     def test_non_int32_length_field_is_rejected(self):
         self._rejected("""import System
 class [final] CustomArray(length: System::Int, array: System::Int32[length])
 fun main(): System::Int
   ret 0
-""")
+""", "t.yafl[2:48] - array length field 'length' must be of type Int32")
 
     def test_two_array_fields_is_a_compiler_error_not_a_parse_error(self):
         # Two array fields parse cleanly (each field is independently an array);
@@ -101,7 +100,7 @@ fun main(): System::Int
             "class [final] CustomArray(len1: Int32, a: Int32[len1], len2: Int32, b: Int32[len2])\n", "f"))
         self.assertEqual([], parsed.errors, "two array fields must parse without a parser error")
         self.assertIsInstance(parsed.value, s.ClassStatement)
-        self._rejected(src)
+        self._rejected(src, "t.yafl[2:7] - a class may have at most one array field")
 
 
 class TestArrayClassNeverFlattened(TestCase):

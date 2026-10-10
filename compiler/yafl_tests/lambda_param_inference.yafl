@@ -1,0 +1,67 @@
+# Lambda parameters take their types from the expected callable type, so
+# `(n) => n` needs no `(n: Int) =>`.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::LambdaParamInference::TypedLambdaParamBaseline
+
+import System
+import System::Test
+
+fun apply(f: (:System::Int):System::Int, x: System::Int): System::Int
+    ret f(x)
+
+fun program(): System::Int
+    ret apply((n: System::Int) => n, 5)
+
+fun [test("an explicitly typed lambda parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::LambdaParamInference::UntypedLambdaParamFromCallee
+
+import System
+import System::Test
+
+# `n` takes Int from the parameter's declared callable type.
+fun apply(f: (:System::Int):System::Int, x: System::Int): System::Int
+    ret f(x)
+
+fun program(): System::Int
+    ret apply((n) => n, 5)
+
+fun [test("an untyped lambda parameter takes its type from the callee")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::LambdaParamInference::UntypedLambdaParamInGenericMap
+
+import System
+import System::Test
+
+# The everyday case: `map(l, (x) => x + 1)`. With map<Int,Int> fixed, the
+# expected callable is `(Int): Int`, so `x` infers as Int.
+fun program(): System::Int
+    let l = prepend<System::Int>(1, List<System::Int>())
+    let m = map<System::Int, System::Int>(l, (x) => x + 1)
+    ret 0
+
+fun [test("an untyped lambda parameter in a generic map")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::LambdaParamInference::UntypedMultiParamLambdaInFold
+
+import System
+import System::Test
+
+# Two untyped params: `fold(l, 0, (acc, x) => acc + x)`. Both `acc` and `x`
+# are inferred from the expected `(Int, Int): Int` callable.
+fun program(): System::Int
+    let l = prepend<System::Int>(1, List<System::Int>())
+    let s = fold<System::Int, System::Int>(l, 0, (acc, x) => acc + x)
+    ret s
+
+fun [test("two untyped lambda parameters in a fold")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

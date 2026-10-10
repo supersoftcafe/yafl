@@ -17,6 +17,7 @@ from __future__ import annotations
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c
+from tests.testutil import compile_errors
 from pyast import union_repr
 
 
@@ -277,9 +278,8 @@ fun probe(s: Shade): Int
 fun main(): System::Int
   ret probe(Dark(1))
 """
-        out = compile_c(src, "rootleaf.yafl")
-        self.assertFalse(bool(out),
-                         "a root-typed value must not pass a leaf parameter")
+        self.assertEqual("rootleaf.yafl[10:17] - Parameters are not assignment compatible\n",
+                         compile_errors(src, "rootleaf.yafl"))
 
 
 class TestReprPartialOperationContract(TestCase):

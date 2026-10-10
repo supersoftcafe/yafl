@@ -24,7 +24,9 @@ reused while the Python compiler is unchanged). `--full` is the regression:
 -O0 to -O3, each level with its own fresh Python build of the port, folders and
 self-compile; the Python suite; and the examples.
 
-Speed is not measured here: speed_protocol.py is the separate post-suite step.
+Speed: the ctest line reports each self-compile's time — the port compiling
+its own sources at its level, byte-identical to Python's C — and that is the
+figure to track.
 
 Stops at the first failing stage unless --keep-going is given. Every stage's
 output is streamed to the terminal AND tee'd to build/protocol-runs/<ts>/; a
@@ -70,6 +72,13 @@ def run_stream(cmd: list[str], cwd: Path, log_path: Path, env=None) -> int:
     return proc.returncode
 
 
+def parse_self_compiles(log_path: Path) -> list[tuple[str, float]]:
+    """(name, seconds) for each passing self_compile_o<N> in a ctest run."""
+    return [(m.group(1), float(m.group(2))) for m in
+            re.finditer(r"Test +#\d+: (self_compile_o\d) \.+ +Passed +([0-9.]+) sec",
+                        log_path.read_text())]
+
+
 def parse_ctest_summary(log_path: Path) -> tuple[int, int] | None:
     """(failed, total) from a ctest run; None if the summary line never printed."""
     for line in log_path.read_text().splitlines():
@@ -77,30 +86,6 @@ def parse_ctest_summary(log_path: Path) -> tuple[int, int] | None:
         if m:
             return int(m.group(2)), int(m.group(3))
     return None
-
-
-def _hms_to_seconds(text: str) -> float:
-    parts = text.strip().split(":")
-    return sum(float(x) * 60 ** i for i, x in enumerate(reversed(parts)))
-
-
-def parse_rusage(path: Path) -> dict | None:
-    """Peak RSS (KB), wall (s), user CPU (s) from a /usr/bin/time -v file."""
-    if not path.is_file():
-        return None
-    out: dict = {}
-    for line in path.read_text().splitlines():
-        line = line.lstrip()
-        m = re.match(r"Maximum resident set size \(kbytes\): (\d+)", line)
-        if m:
-            out["rss_kb"] = int(m.group(1))
-        m = re.match(r"User time \(seconds\): ([0-9.]+)", line)
-        if m:
-            out["user_s"] = float(m.group(1))
-        mm = re.match(r"Elapsed \(wall clock\) time \(h:mm:ss or m:ss\): (.+)", line)
-        if mm:
-            out["wall_s"] = _hms_to_seconds(mm.group(1))
-    return out if out else None
 
 
 def stage_env(**extra) -> dict:
@@ -145,8 +130,11 @@ def stage_ctest(run_dir: Path, compiler: str, speed: str) -> Result:
     if total is None:
         return Result("ctest gate", False, "ctest printed no summary line")
     failed, n = total
+    timings = "".join(f"; {name} {secs:.0f}s"
+                      for name, secs in parse_self_compiles(run_dir / "ctest.log"))
     return Result("ctest gate", rc == 0 and failed == 0 and n > 0,
-                  f"{n - failed}/{n} tests passed ({compiler} compiler, {speed} path)")
+                  f"{n - failed}/{n} tests passed ({compiler} compiler, {speed} path)"
+                  f"{timings}")
 
 
 # ── examples ─────────────────────────────────────────────────────────────────

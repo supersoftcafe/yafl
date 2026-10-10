@@ -6,7 +6,7 @@ compiler/yafl_tests/strings_floats.yafl.
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_c
+from tests.testutil import compile_errors
 
 
 class TestConstWithNonLiteralRejected(TestCase):
@@ -23,5 +23,5 @@ let [const] BAD: System::Float = zero()
 fun main(): System::Int
   ret truncateToInt(BAD)
 """
-        result = compile_c(src)
-        self.assertEqual("", result)
+        self.assertEqual("test.yafl[5:5] - [const] requires a literal value\n",
+                         compile_errors(src))

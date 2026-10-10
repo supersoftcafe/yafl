@@ -11,7 +11,6 @@ from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 from tests.testutil import _YAFLLIB_DIR
-from tests.testutil import compile_c
 
 
 _PREAMBLE = """\
@@ -382,19 +381,6 @@ fun main():Int
 """
         code = _compile(src)
         self.assertEqual("", code)
-
-    def test_let_assignment_match(self):
-        src = """\
-import System
-fun returnsUnion():System::Int|System::None
-  ret System::None
-fun main():System::Int
-  ret match(returnsUnion())
-    (x: System::Int) => x
-    () => -1
-"""
-        code = compile_c(src)
-        self.assertNotEqual("", code)
 
 
 # ---------------------------------------------------------------------------

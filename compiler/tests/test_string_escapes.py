@@ -11,39 +11,46 @@ The runtime checks are [test]s in compiler/yafl_tests/string_escapes.yafl.
 from __future__ import annotations
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_c
+from tests.testutil import compile_errors
 
 
 class TestEscapeErrors(TestCase):
-    """Malformed escapes are rejected at parse time (compile returns "")."""
+    """Malformed escapes are rejected at parse time, at the literal."""
 
-    def _rejects(self, literal: str) -> None:
+    def _rejects(self, literal: str, message: str) -> None:
         src = (
             "import System\n"
             "fun main(): System::Int\n"
             f'    print("{literal}")\n'
             "    ret 0\n"
         )
-        result = compile_c(src)
-        self.assertEqual("", result, f"expected {literal!r} to be rejected")
+        # Reported at the literal: line 3, column 11.
+        self.assertEqual(f"test.yafl[3:11] - {message}\n", compile_errors(src))
 
     def test_x_too_few_digits(self):
-        self._rejects("\\x4")
+        self._rejects("\\x4",
+                      "\\x escape needs exactly two hex digits")
 
     def test_x_non_hex(self):
-        self._rejects("\\xG0")
+        self._rejects("\\xG0",
+                      "\\x escape needs exactly two hex digits")
 
     def test_u_too_few_digits(self):
-        self._rejects("\\u12")
+        self._rejects("\\u12",
+                      "\\u escape needs exactly four hex digits (or use \\u{…})")
 
     def test_u_braces_empty(self):
-        self._rejects("\\u{}")
+        self._rejects("\\u{}",
+                      "\\u{…} escape needs one to six hex digits")
 
     def test_u_braces_unterminated(self):
-        self._rejects("\\u{1F389")
+        self._rejects("\\u{1F389",
+                      "unterminated \\u{…} escape")
 
     def test_u_out_of_range(self):
-        self._rejects("\\u{110000}")
+        self._rejects("\\u{110000}",
+                      "codepoint U+110000 is out of range (max U+10FFFF)")
 
     def test_u_surrogate(self):
-        self._rejects("\\u{D800}")
+        self._rejects("\\u{D800}",
+                      "codepoint U+D800 is a UTF-16 surrogate, not a scalar value")

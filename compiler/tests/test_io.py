@@ -14,7 +14,7 @@ import tempfile
 from tests.testutil import TimedTestCase as TestCase
 
 from tests.testutil import compile_and_run_stdlib
-from tests.testutil import compile_c
+from tests.testutil import compile_errors
 
 
 # Closes a handle on any path and yields the given exit code. Embedded into
@@ -98,8 +98,11 @@ fun main(): System::Int
     (h: IO) => tryReadClosed(h)
     (e: IOError) => 88
 """
-        result = compile_c(src)
-        self.assertEqual("", result, "use-after-close must be a compile error")
+        self.assertEqual(
+            "test.yafl[6:7] - linear value 'r@qKDkMo' is never used; it must be consumed once\n"
+            "test.yafl[11:5] - linear value 'h@l4TT5Z' is used 2 times; must be used once\n"
+            "test.yafl[12:13] - linear value 'h@l4TT5Z' is used inconsistently across branches\n",
+            compile_errors(src))
 
     def test_write_then_read_via_monadic_chain(self):
         """The (io, v: T|IOError) pair shape composes through nested match
@@ -285,30 +288,3 @@ fun main(): System::Int
             code = compile_and_run_stdlib(src)
             self.assertEqual(0, code,
                 "readLine at EOF with partial data must return the partial line")
-
-    def test_pipe_chain_typechecks_in_let_binding(self):
-        """Regression: `let r = a ?> f` should typecheck identically to
-        `ret a ?> f`.  Bind chains used as a let's default value were
-        emitting a spurious "Incorrect type" diagnostic, which caused
-        compile() to return "" while the diagnostic was printed to
-        stdout — silently breaking any build that didn't re-check the
-        generated .c file."""
-        src = """namespace Main
-import System
-import System::IO
-
-fun emit(io: IO): (io: IO, v: Int|IOError)
-  let r = io.write("a") ?> (io: IO, _: Int) => io.write("b")
-  ret r
-
-fun main(): System::Int
-  let r = emit(stdout())
-  let closed = r.io.close()
-  ret match(r.v)
-    (n: System::Int) => 0
-    (e: IOError)     => 1
-"""
-        c_code = compile_c(src)
-        self.assertTrue(c_code,
-            "compile produced no output — `?>` chain in a `let` binding "
-            "triggered a spurious type error (works fine in a `ret` position)")

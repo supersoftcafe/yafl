@@ -1,0 +1,42 @@
+# Numeric literal spellings: radix prefixes in either case, and underscores
+# grouping digits. Malformed literals are rejected in
+# compiler/tests/test_literal_errors.py.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::NumericLiterals::UpperCaseRadixPrefixes
+
+import System
+import System::Test
+
+fun program(): System::Int
+  ret 0X1F + 0B101 + 0O17
+
+fun [test("radix prefixes in upper case")] check(): None|TestFailure
+    ret assertEqInt(program(), 51, "program()")
+
+
+namespace CompilerTests::NumericLiterals::UnderscoresInAnInteger
+
+import System
+import System::Test
+
+fun program(): System::Int
+  ret 1_000 + 0x_ff
+
+fun [test("underscores in an integer literal are ignored")] check(): None|TestFailure
+    ret assertEqInt(program(), 1255, "program()")
+
+
+namespace CompilerTests::NumericLiterals::UnderscoresInAFloat
+
+import System
+import System::Test
+
+# 1_000.25 is 1000.25, not a literal that quietly becomes 0.0.
+fun program(): System::Int
+  ret truncateToInt(1_000.25 * 4.0)
+
+fun [test("underscores in a float literal are ignored")] check(): None|TestFailure
+    ret assertEqInt(program(), 4001, "program()")

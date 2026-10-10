@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from functools import reduce
 
 from typing import Generic, TypeVar
@@ -13,22 +14,41 @@ import parsing.parselib as p
 import pyast.utils
 
 
+_INT_PREFIXES = {"0x": 16, "0X": 16, "0b": 2, "0B": 2, "0o": 8, "0O": 8}
+_INT_SUFFIXES = (("i8", 8), ("i16", 16), ("i32", 32), ("i64", 64))
+_DIGITS = "0123456789abcdef"
+
+
+def _decode_int(lexeme: str) -> tuple[int, int, str | None]:
+    """(value, precision, error) for an integer lexeme: the radix from a
+    `0x`/`0b`/`0o` prefix in either case, the precision from an i8/i16/i32/i64
+    suffix (0 = bigint), and underscores ignored. Every other character must
+    be a digit of the radix, and there must be at least one."""
+    radix = _INT_PREFIXES.get(lexeme[:2], 10)
+    size, suffix = next(((size, len(sfx)) for sfx, size in _INT_SUFFIXES
+                         if lexeme.endswith(sfx)), (0, 0))
+    digits = lexeme[0 if radix == 10 else 2:len(lexeme) - suffix].replace("_", "")
+    if any(_DIGITS.find(c.lower()) not in range(radix) for c in digits):
+        return 0, 0, "invalid digit in integer literal"
+    if not digits:
+        return 0, 0, "integer literal has no digits"
+    return int(digits, radix), size, None
+
+
+# A float lexeme with its f32/f64 suffix cut: the tokenizer lets any letters
+# follow a number, so this is where `1e5e5` and `1.5f16` stop.
+_FLOAT_LEXEME = re.compile(r"[0-9_]+(?:\.[0-9_]*)?(?:[eE][+-]?[0-9][0-9_]*)?")
+
+
 def __integer() -> p.Parser[e.Expression]:
     def _p(tokens: list[p.Token]) -> p.Result[e.IntegerExpression]:
         match tokens:
             case[head, *tail] if head.kind == p.TokenKind.NUMBER:
-                # Assume that head.value is an integer, check for format errors
-                # We can assume this, because 'parse_float' comes first, and so only integers remain
-                value = head.value
-                starts = lambda x: value.startswith(x)
-                ends = lambda x: value.endswith(x)
-                radix, triml = (2, 2) if starts("0b") else (8, 2) if starts("0o") else (16, 2) if starts("0x") else (10, 0)
-                size, trimr = (8, 2) if ends("i8") else (16, 3) if ends("i16") else (32, 3) if ends("i32") else (64, 3) if ends("i64") else (0, 0)
-                value = value[ triml : len(value) if not trimr else len(value)-trimr ].replace("_", "")
-                try:
-                    return p.Result.ok(e.IntegerExpression(head.line_ref, int(value, radix), size), tail, head.line_ref)
-                except ValueError as err:
-                    return p.Result.error(str(err), tail, head.line_ref)
+                # Only integers remain: `__float` is tried first.
+                value, size, err = _decode_int(head.value)
+                if err is not None:
+                    return p.Result.error(err, tail, head.line_ref)
+                return p.Result.ok(e.IntegerExpression(head.line_ref, value, size), tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
@@ -60,12 +80,11 @@ def __float() -> p.Parser[e.Expression]:
                     precision, num_str = 64, value[:-3]
                 else:
                     precision, num_str = 0, value
-                try:
-                    return p.Result.ok(
-                        e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision),
-                        tail, head.line_ref)
-                except ValueError as err:
-                    return p.Result.error(str(err), tail, head.line_ref)
+                if not _FLOAT_LEXEME.fullmatch(num_str):
+                    return p.Result.error("invalid float literal", tail, head.line_ref)
+                return p.Result.ok(
+                    e.FloatExpression(head.line_ref, float(num_str.replace("_", "")), precision),
+                    tail, head.line_ref)
         return p.Result.none(tokens, tokens[0].line_ref)
     return p.Parser(_p)
 
@@ -231,9 +250,13 @@ def __to_named_fully_qualified(value: tuple[e.NamedExpression, list[e.NamedExpre
 
 def __to_builtin_op(result, tokens: list[p.Token]) -> p.Result[e.Expression]:
     type_spec, params_tuple = result.value
-    op, *_ = params_tuple.expressions
+    if not params_tuple.expressions:
+        return p.Result.error("__builtin_op__ first parameter must be a string",
+                              tokens, params_tuple.line_ref)
+    op = params_tuple.expressions[0]
     if not isinstance(op.value, e.StringExpression):
-        return p.Result.error("__builtin_op__ first parameter must be a string", tokens, result.line_ref)
+        return p.Result.error("__builtin_op__ first parameter must be a string",
+                              tokens, op.value.line_ref)
     # A bare builtin name (`<bool>`, `<int64>`) stays a BuiltinSpec — those
     # identifiers are not YAFL-level names and must not resolve as such. Any
     # other spelling is an ordinary type: an op like array_builder_alloc
@@ -567,8 +590,11 @@ def __to_else_if_statement(value, line_ref: p.LineRef) -> s.ElseIfStatement:
     return s.ElseIfStatement(line_ref, cond, body)
 
 
-def __to_else_statement(value, line_ref: p.LineRef) -> s.ElseStatement:
-    return s.ElseStatement(line_ref, value)
+def __to_else_statement(result: p.Result[list[s.Statement]], tokens: list[p.Token]) -> p.Result[s.ElseStatement]:
+    """An `else` sits at its keyword: it has no condition to place it, as an
+    `if` or `else if` has, so an orphan is reported where it is written."""
+    return p.Result(s.ElseStatement(tokens[0].line_ref, result.value),
+                    result.tokens, result.line_ref, result.errors)
 
 
 def __to_let_statement(result: p.Result[tuple[dict[str, e.Expression|None], str|list[s.LetStatement], list[t.TypeSpec], list[str], list[e.Expression]]], tokens: list[p.Token]) -> p.Result[s.LetStatement]:
@@ -809,8 +835,8 @@ __parse_statement = p.Parser(parse_statement)
 ############
 ## TypeSpecs
 
-__parse_maybe_colon_type = p.maybe(p.requires(p.sym(":"), __parse_type, "missing type"))
-__parse_maybe_equal_expr = p.maybe(p.requires(p.sym("="), __parse_expression, "missing default value"))
+__parse_maybe_colon_type = p.maybe_requires(p.sym(":"), __parse_type, "missing type")
+__parse_maybe_equal_expr = p.maybe_requires(p.sym("="), __parse_expression, "missing default value")
 
 __parse_maybe_generic_spec = p.maybe(p.requires(
     p.sym("<"), p.delimited_list(__parse_type, ",") & p.close_angle(),
@@ -892,8 +918,8 @@ def __to_match_range(value: tuple[e.Expression, e.Expression], line_ref: p.LineR
 __parse_match_bound = __parse_signed_float | __parse_signed_integer | __char()
 __parse_match_range = (__parse_match_bound & p.discard_sym("..") & __parse_match_bound).build(__to_match_range)
 __parse_match_literal   = __parse_match_range | __parse_signed_float | __parse_signed_integer | __char() | __string()
-__parse_maybe_arm_guard = p.maybe(p.requires(
-    p.discard_sym("if"), __parse_expression, "missing guard expression"))
+__parse_maybe_arm_guard = p.maybe_requires(
+    p.discard_sym("if"), __parse_expression, "missing guard expression")
 # Any-of literals are separated by `|`, NOT by commas: a comma is POSITIONAL
 # everywhere, so `(0, 1)` is "position 0 is 0 and position 1 is 1" whatever the
 # subject count, and `('a' | 'b')` is "either literal, one subject".
@@ -971,9 +997,9 @@ __parse_ternery = (__parse_logor    & p.many(p.discard_sym("?") & __parse_logor 
 #############
 ## Statements
 
-__parse_maybe_where_constraints = p.maybe(p.requires(
+__parse_maybe_where_constraints = p.maybe_requires(
     p.sym("where"), __parse_type,
-    "missing type constraints")) >> __to_flat_type_list
+    "missing type constraints") >> __to_flat_type_list
 
 __parse_maybe_generic_statement = p.maybe(p.requires(
     p.sym("<"), p.delimited_list((__parse_attributes & p.ident()).build(__to_generic_placeholder), ",") & p.discard_sym(">"),
@@ -1056,8 +1082,8 @@ __parse_else_if = p.block(p.requires(
 
 __parse_else = p.block(p.requires(
     p.discard_sym("else"),
-    p.many(__parse_statement).build(__to_else_statement),
-    "invalid else statement"))
+    p.many(__parse_statement),
+    "invalid else statement")) >> __to_else_statement
 
 # Sentinel for "no constructor parameter list was written" (distinct from an
 # empty `()`, which is the empty list). Must be non-None so the Result stays
