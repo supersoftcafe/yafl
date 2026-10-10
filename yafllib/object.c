@@ -1251,11 +1251,15 @@ static NOINLINE void gc_update_stack_address_and_registers() {
     r[6] = r[7] = NULL;
 #elif defined(__aarch64__)
     void** r = gc_thread_info.saved_callee_regs;
-    register void* x19 __asm__("x19"); register void* x20 __asm__("x20");
-    register void* x21 __asm__("x21"); register void* x22 __asm__("x22");
-    register void* x23 __asm__("x23"); register void* x24 __asm__("x24");
-    register void* x25 __asm__("x25"); register void* x26 __asm__("x26");
-    r[0]=x19; r[1]=x20; r[2]=x21; r[3]=x22; r[4]=x23; r[5]=x24; r[6]=x25; r[7]=x26;
+    // Stored from asm, as on x86: reading an unassigned `register ... asm("x19")`
+    // variable is not a defined way to get a register's value (clang rejects
+    // it under -Werror=uninitialized; gcc happens to read the register).
+    __asm__ volatile(
+        "stp x19, x20, [%0]\n\t"
+        "stp x21, x22, [%0, #16]\n\t"
+        "stp x23, x24, [%0, #32]\n\t"
+        "stp x25, x26, [%0, #48]\n\t"
+        :: "r"(r) : "memory");
     // x27/x28/x29 arrive via the setjmp buffer (unmangled on aarch64 glibc).
 #else
     memset(gc_thread_info.saved_callee_regs, 0, sizeof gc_thread_info.saved_callee_regs);

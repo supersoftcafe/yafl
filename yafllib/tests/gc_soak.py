@@ -35,20 +35,11 @@ YAFLLIB = Path(__file__).resolve().parent.parent
 # Variant -> (C compiler, extra flags). Asserts stay on in every variant (no
 # NDEBUG): they are half the checking. The C tests compile the runtime sources
 # into each test binary, so the flags apply to the runtime as well.
-#
-# CLANG_AARCH64: on aarch64, clang rejects gc_update_stack_address_and_registers
-# (object.c) under -Werror: it reads uninitialised `register ... __asm__("x19")`
-# locals, which are not guaranteed to hold the hardware register outside an asm
-# operand. The capture is redundant there (glibc's aarch64 setjmp stores
-# x19-x28 unmangled in the scanned jmp_buf), so the soak demotes that one
-# diagnostic rather than skipping clang. Drop this once object.c is fixed.
-import platform
-CLANG_AARCH64 = " -Wno-error=uninitialized" if platform.machine() in ("aarch64", "arm64") else ""
 BUILDS = {
     "gcc-O0":   ("gcc",   "-O0 -g"),
     "gcc-O2":   ("gcc",   "-O2 -g"),
-    "clang-O0": ("clang", "-O0 -g" + CLANG_AARCH64),
-    "clang-O2": ("clang", "-O2 -g" + CLANG_AARCH64),
+    "clang-O0": ("clang", "-O0 -g"),
+    "clang-O2": ("clang", "-O2 -g"),
 }
 
 # The tests that exercise the collector, with a per-run timeout (seconds) and
