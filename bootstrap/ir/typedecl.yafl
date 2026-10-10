@@ -429,8 +429,10 @@ fun octByte(b: Int32)
   let n = Int(b)
   ret String(n / 64) + String((n / 8) % 8) + String(n % 8)
 
+# integer_t.sign is 0 (positive) or 1 (negative): the heap form stores it as
+# is, and the tagged form only tests it for truth.
 fun cgBigintLiteral(valueIn): String
-  let sign = valueIn < 0 ? -1 : 0
+  let sign = valueIn < 0 ? 1 : 0
   let value = valueIn < 0 ? (0 - valueIn) : valueIn
   let array = bigintArray(value)
   ret isEmpty(array)

@@ -223,6 +223,8 @@ enum PStmt
   # retIndex = block_exits' per-return ordinal (0 until that stage runs).
   enum PsRet(retValue: PExpr, psrLine: PLine, retIndex: Int = 0)
   enum PsIf(ifCond: PExpr, ifTrue: List<PStmt>, ifFalse: List<PStmt>, psifLine: PLine)
-  enum PsElseIf(eiCond: PExpr, eiStmts: List<PStmt>, pseiLine: PLine)
+  # pseiLine is the condition's, as PsIf's is (folding makes it one);
+  # eiKeyword is the `else`, where an orphan is reported (as PsElse is).
+  enum PsElseIf(eiCond: PExpr, eiStmts: List<PStmt>, pseiLine: PLine, eiKeyword: PLine)
   enum PsElse(elStmts: List<PStmt>, pselLine: PLine)
   enum PsAction(action: PExpr, psaLine: PLine)

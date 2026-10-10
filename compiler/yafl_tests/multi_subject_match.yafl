@@ -1,0 +1,136 @@
+# `match(a, b)` — dispatch on several subjects at once.
+#
+# An arm has one pattern per subject and ALL must match; a failing pattern falls
+# through to the next arm. That is a SEQUENCE of staged checks per arm, not a
+# decision tree: `_Emitter.arm` already ANDs stages and falls through on any
+# failure, which is first-match-wins across positions for free.
+#
+# What each test pins, and why:
+#
+#   * cross-position fall-through — an arm matching position 0 but FAILING
+#     position 1 must fall to a later arm whose position-0 pattern DIFFERS.
+#     Nesting on position 0 would enter the first arm's group and find nothing;
+#     this is the case that decides the whole design.
+#   * per-position bindings — every position binds its own name, and the
+#     INLINER must rename all of them: renaming only position 0 gave each
+#     inlined copy the same stack var ("y@arm…: defined 4 times").
+#   * both option representations — `Sp|None` is a DataPointer union but
+#     `Int32|None` is a TAGGED STRUCT. Guards AND binds differ per repr (a
+#     pointer binds at the arm's type, a tagged combination REASSEMBLES the
+#     variant from union slots, the enum reprs bind at the subject type), so
+#     the repr decides, not the caller.
+#   * arity — the grammar cannot check it, since it does not know the subject
+#     count; the check phase does.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::MultiSubjectMatch::FallsThroughAcrossPositions
+
+import System
+import System::Test
+
+enum Sh
+  enum Bx(bv: System::Int)
+  enum Dt()
+  enum Tri(tv: System::Int)
+
+fun pick(a: Sh, b: Sh): System::Int
+  ret match(a, b)
+    (x: Bx,  y: Bx) => 1
+    (x: Sh,  y: Dt) => 2
+    (x: Tri, y: Sh) => 3
+    ()              => 4
+
+fun program(): System::Int
+  ret pick(Bx(0), Bx(0)) + pick(Bx(0), Dt()) + pick(Tri(0), Bx(0)) + pick(Dt(), Bx(0))
+
+fun [test("falls through across positions")] check(): None|TestFailure
+    ret assertEqInt(program(), 10, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::GuardFallsThroughToALaterArm
+
+import System
+import System::Test
+
+enum Sh
+  enum Bx(bv: System::Int)
+  enum Dt()
+  enum Tri(tv: System::Int)
+
+fun g(a: Sh, b: Sh): System::Int
+  ret match(a, b)
+    (x: Bx, y: Bx) if x.bv > y.bv => 10
+    (x: Bx, y: Bx)                => 20
+    ()                            => 30
+
+fun program(): System::Int
+  ret g(Bx(5), Bx(1)) + g(Bx(1), Bx(5)) + g(Dt(), Dt())
+
+fun [test("guard falls through to a later arm")] check(): None|TestFailure
+    ret assertEqInt(program(), 60, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::PointerUnionPositions
+
+import System
+import System::Test
+
+class [final] Sp(sv: System::Int)
+
+fun eqOpt(a: Sp|System::None, b: Sp|System::None): System::Int
+  ret match(a, b)
+    (x: Sp, y: Sp)           => x.sv + y.sv
+    (x: Sp, y: System::None) => 1
+    (x: System::None, y: Sp) => 2
+    ()                       => 3
+
+fun program(): System::Int
+  ret eqOpt(Sp(4), Sp(5)) + eqOpt(Sp(1), None) + eqOpt(None, Sp(1)) + eqOpt(None, None)
+
+fun [test("pointer union positions")] check(): None|TestFailure
+    ret assertEqInt(program(), 15, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::TaggedStructOptionPositions
+
+import System
+import System::Test
+
+fun pick(a: System::Int32|System::None, b: System::Int32|System::None): System::Int32
+  ret match(a, b)
+    (x: System::Int32, y: System::Int32) => x + y
+    (x: System::Int32, y: System::None)  => x
+    (x: System::None,  y: System::Int32) => y
+    ()                                   => 0i32
+
+fun program(): System::Int
+  ret System::Int(pick(3i32, 4i32) + pick(5i32, None) + pick(None, 6i32) + pick(None, None))
+
+fun [test("tagged struct option positions")] check(): None|TestFailure
+    ret assertEqInt(program(), 18, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::TwoEnumSubjects
+
+import System
+import System::Test
+
+enum Sh
+  enum Bx(bv: System::Int)
+  enum Dt()
+  enum Tri(tv: System::Int)
+
+fun cmp(a: Sh, b: Sh): System::Int
+  ret match(a, b)
+    (x: Bx, y: Bx) => x.bv + y.bv
+    (x: Bx, y: Dt) => x.bv
+    (x: Dt, y: Bx) => y.bv
+    ()             => 0
+
+fun program(): System::Int
+  ret cmp(Bx(3), Bx(4)) + cmp(Bx(5), Dt()) + cmp(Dt(), Bx(6)) + cmp(Dt(), Dt())
+
+fun [test("two enum subjects")] check(): None|TestFailure
+    ret assertEqInt(program(), 18, "program()")

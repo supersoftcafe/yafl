@@ -19,23 +19,20 @@ first argument, one survives, and x is read off its second parameter.
 
 Several surviving candidates, or no use that determines the parameter at all,
 are the SAME diagnostic: an ambiguity naming what was found.
+
+Runtime behaviour is checked by compiler/yafl_tests/param_body_inference.yafl.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
 import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import TimedTestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import compile_errors
 
 
 def _errors(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return buf.getvalue()
+    return compile_errors(src)
 
 
 _SHAPES = """
@@ -69,25 +66,7 @@ class [final] Tree()
 
 
 class TestParamBodyInference(TestCase):
-    def test_arithmetic_pins_the_parameter(self):
-        # Only one `*` takes Int first, so x is read off its second parameter.
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun triple(x): System::Int\n  ret 3 * x\n"
-            "fun main(): System::Int\n  ret triple(14)\n", timeout=120)
-        self.assertEqual(42, rc)
 
-    def test_match_arms_give_the_root_enum(self):
-        # Lower bounds Circle and Square generalise to the ROOT, so a Tri is
-        # accepted too — the parameter is Shape, not Shape{Circle, Square}.
-        rc, _out = compile_and_run_stdlib_capture(
-            _SHAPES + "fun sides(s): System::Int\n"
-            "  ret match(s)\n"
-            "    (c: Circle) => 1\n"
-            "    (q: Square) => 4\n"
-            "    (t: Tri)    => 3\n"
-            "fun main(): System::Int\n  ret sides(Tri(9)) + sides(Circle(1))\n", timeout=120)
-        self.assertEqual(4, rc)
 
     def test_two_classes_give_their_shared_interface(self):
         # Classes may only inherit from pure interfaces, so the "common base"
@@ -114,30 +93,6 @@ class TestParamBodyInference(TestCase):
         self.assertIn("'a'", errs)
         self.assertIn("could not be inferred", errs)
 
-    def test_return_type_pins_the_parameter(self):
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun echo(x): System::Int\n  ret x\n"
-            "fun main(): System::Int\n  ret echo(7)\n", timeout=120)
-        self.assertEqual(7, rc)
-
-    def test_a_uniquely_fitting_call_pins_the_parameter(self):
-        rc, _out = compile_and_run_stdlib_capture(
-            _SHAPES + "fun ring(c: Circle): System::Int\n  ret c.r\n"
-            "fun viaCall(x): System::Int\n  ret ring(x)\n"
-            "fun main(): System::Int\n  ret viaCall(Circle(5))\n", timeout=120)
-        self.assertEqual(5, rc)
-
-    def test_a_named_argument_finds_its_own_slot(self):
-        # `second = x` binds by NAME, so x is a Square. Reading the callee's
-        # parameter at the ARGUMENT's index would have called it a Circle.
-        rc, _out = compile_and_run_stdlib_capture(
-            _SHAPES + "fun pair(first: Circle, second: Square): System::Int\n"
-            "  ret first.r + second.s\n"
-            "fun viaNamed(x): System::Int\n"
-            "  ret pair(second = x, first = Circle(1))\n"
-            "fun main(): System::Int\n  ret viaNamed(Square(6))\n", timeout=120)
-        self.assertEqual(7, rc)
 
     def test_an_else_arm_stops_the_match_determining_it(self):
         # The else arm proves there is a member the named arms do not cover,
@@ -193,119 +148,6 @@ class TestParamBodyInference(TestCase):
         self.assertIn("'x'", errs)
         self.assertIn("could not be inferred", errs)
 
-    def test_trait_operators_take_the_expected_type(self):
-        # `&` pins on mask32, `+` then pins on `&`'s Int, and a, b take it.
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "let mask32 = 4294967295\n"
-            "fun add32(a, b)\n  ret (a + b) & mask32\n"
-            "fun rotl32(x, c)\n  ret ((x << c) | (x >> (32 - c))) & mask32\n"
-            "fun main(): System::Int\n  ret add32(1, rotl32(2, 3))\n", timeout=120)
-        self.assertEqual(17, rc)
-
-    def test_declared_result_pins_a_trait_operator(self):
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun addr(a, b): System::Int\n  ret a + b\n"
-            "fun main(): System::Int\n  ret addr(3, 4)\n", timeout=120)
-        self.assertEqual(7, rc)
-
-    def test_lambda_parameter_infers_from_its_body(self):
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun main(): System::Int\n"
-            "  let triple = (x) => 3 * x\n"
-            "  ret triple(14)\n", timeout=120)
-        self.assertEqual(42, rc)
-
-    def test_a_late_pinning_call_still_informs(self):
-        # `3 * a` makes a an Int; only then does `both` pin, and b takes
-        # the String its second parameter expects.
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun both(n: System::Int, s: System::String): System::Int\n"
-            "  ret n + length(s)\n"
-            "fun both(n: System::Int32, s: System::Int32): System::Int\n"
-            "  ret 1\n"
-            "fun late(a, b): System::Int\n  ret both(a, b) + 3 * a\n"
-            "fun main(): System::Int\n  ret late(2, \"abc\")\n", timeout=120)
-        self.assertEqual(11, rc)
-
-    def test_ternary_branches_converge_on_the_root(self):
-        # Circle and Square branches give Shape, so the Tri arm is reachable.
-        rc, _out = compile_and_run_stdlib_capture(
-            _SHAPES + "fun pick(flag: System::Bool)\n"
-            "  ret flag ? Circle(1) : Square(2)\n"
-            "fun main(): System::Int\n"
-            "  ret match(pick(false))\n"
-            "    (c: Circle) => c.r\n"
-            "    (q: Square) => q.s\n"
-            "    (t: Tri)    => t.t\n", timeout=120)
-        self.assertEqual(2, rc)
-
-    def test_match_branches_converge_on_the_root(self):
-        rc, _out = compile_and_run_stdlib_capture(
-            _SHAPES + "fun pick(n: System::Int)\n"
-            "  ret match(n)\n"
-            "    (0) => Circle(1)\n"
-            "    ()  => Square(2)\n"
-            "fun main(): System::Int\n"
-            "  ret match(pick(0))\n"
-            "    (c: Circle) => c.r\n"
-            "    (q: Square) => q.s\n"
-            "    (t: Tri)    => t.t\n", timeout=120)
-        self.assertEqual(1, rc)
-
-    def test_branches_with_no_common_parent_are_the_union(self):
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun maybe(flag: System::Bool)\n  ret flag ? 5 : None\n"
-            "fun main(): System::Int\n"
-            "  ret match(maybe(true))\n"
-            "    (n: System::Int) => n\n"
-            "    (z: System::None) => 0\n", timeout=120)
-        self.assertEqual(5, rc)
-
-    def test_an_unresolved_operator_does_not_latch_a_wider_type(self):
-        # `+` resolves passes after `ret` says Int|None; i must still be Int.
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun [tail] idxLoop(es: List<String>, name: String, i): Int|None\n"
-            "  ret match(head(es))\n"
-            "    (s: String) => s == name ? i : idxLoop(drop(es, 1), name, i + 1)\n"
-            "    ()          => None\n"
-            "fun main(): System::Int\n"
-            "  let words: List<String> = prepend(\"a\", prepend(\"bcd\", List()))\n"
-            "  ret idxLoop(words, \"bcd\", 0) ?? 99\n", timeout=120)
-        self.assertEqual(1, rc)
-
-    def test_a_lambda_argument_takes_the_expected_signature(self):
-        # The body alone says String|None for sp; map's signature says String.
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun label(s: String|None): Int\n"
-            "  ret match(s)\n"
-            "    (x: String) => length(x)\n"
-            "    ()          => 0\n"
-            "fun main(): System::Int\n"
-            "  let words: List<String> = prepend(\"ab\", List())\n"
-            "  ret fold(map(words, (sp) => label(sp)), 0, (acc, n) => acc + n)\n", timeout=120)
-        self.assertEqual(2, rc)
-
-    def test_a_lambda_body_does_not_bind_its_callees_type_parameter(self):
-        # area(c) wants a Shape, but map's T comes from the List<Circle>.
-        rc, _out = compile_and_run_stdlib_capture(
-            _SHAPES + "fun area(sh: Shape): System::Int\n"
-            "  ret match(sh)\n"
-            "    (c: Circle) => c.r * c.r\n"
-            "    (q: Square) => q.s * q.s\n"
-            "    (t: Tri)    => t.t\n"
-            "fun total(circles: List<Circle>): System::Int\n"
-            "  ret fold(map(circles, (c) => area(c)), 0, (acc, n) => acc + n)\n"
-            "fun main(): System::Int\n"
-            "  let cs: List<Circle> = prepend(Circle(2), prepend(Circle(3), List()))\n"
-            "  ret total(cs)\n", timeout=120)
-        self.assertEqual(13, rc)
 
     def test_an_uninferable_return_type_is_an_error(self):
         # Recursion with no base case gives the body nothing to type.
@@ -346,13 +188,6 @@ class TestParamBodyInference(TestCase):
                        "fun main(): System::Int\n  ret doSomething(twice)\n")
         self.assertIn("'callable'", errs)
 
-    def test_callable_parameter_infers_when_the_return_is_declared(self):
-        rc, _out = compile_and_run_stdlib_capture(
-            "namespace Test\nimport System\n"
-            "fun doSomething(callable): System::Int\n  ret callable(3)\n"
-            "fun twice(n: System::Int): System::Int\n  ret n + n\n"
-            "fun main(): System::Int\n  ret doSomething(twice)\n", timeout=120)
-        self.assertEqual(6, rc)
 
     def test_callers_do_not_supply_parameter_types(self):
         # Callers never supply a parameter's type: a parameter no use inside
@@ -470,22 +305,3 @@ class TestVerdictMergesItsBounds(TimedTestCase):
         verdict = h.verdict((h.Hint(of_int), h.Hint(bare, lower=True)), resolver)
         self.assertEqual(of_int, verdict.type)
 
-    def test_leaf_patterns_and_a_declared_return(self):
-        rc, _ = compile_and_run_stdlib_capture("""
-namespace Test
-import System
-
-fun rwChain(c: Chain<Int>): Chain<Int> => match(c)
-  (nil: ChainEnd) => c
-  (l: ChainLink)  => with l(value = l.value + 1, next = rwChain(l.next))
-
-fun rw(ss): List<Int> => match(ss)
-  (le: ListEmpty) => ss
-  (lf: ListFull)  => with lf(front = rwChain(lf.front))
-
-fun main(): System::Int
-  ret match(chainNext(chain(rw(prepend(6, List<Int>())))).head)
-    (i: Int) => i
-    ()       => 3
-""", timeout=120)
-        self.assertEqual(7, rc)

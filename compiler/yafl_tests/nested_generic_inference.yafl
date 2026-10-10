@@ -1,0 +1,101 @@
+# Inferring a generic function's type param from a NESTED generic call whose
+# result is a generic-instance type.
+#
+# `c(wrap(x))` where `wrap<S>(x): Wrap<S>` and `c<S>(x: S): …` must infer c's S =
+# Wrap<...>. This used to fail: CallExpression compiled the function (and inferred
+# its params) before the argument, so the argument's type was still `Wrap<S_wrap>`
+# (placeholder) and c's S came out non-concrete, never instantiating. Compiling the
+# argument first fixes it. This is what lets generic stream transformers compose
+# through a `|>` chain.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::NestedGenericInference::DoubleNestedGenericCall
+
+import System
+import System::Test
+
+class [final] Leaf()
+class [final] Wrap<S>(inner: S)
+fun wrap<S>(x: S): Wrap<S>
+  ret Wrap<S>(x)
+fun unwrap<S>(w: Wrap<S>): S
+  ret w.inner
+fun c<S>(x: S): System::Int
+  ret 7
+fun program(): System::Int
+  ret c(wrap(wrap(Leaf())))
+
+fun [test("double nested generic call")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::NestedGenericInference::GenericResultIntoGenericParam
+
+import System
+import System::Test
+
+fun single<T>(a: T): List<T>
+  ret prepend(a, List<T>())
+fun outer<T>(a: T): List<T>
+  ret prepend(a, List<T>())
+fun program(): System::Int
+  let xs = outer(single(42))
+  ret isEmpty(xs) ? 0 : 9
+
+fun [test("generic result into generic param")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")
+
+
+namespace CompilerTests::NestedGenericInference::GenericResultIntoSameGeneric
+
+import System
+import System::Test
+
+fun list1<T>(a: T): List<T>
+  ret prepend(a, List<T>())
+fun program(): System::Int
+  let xs = list1(list1(42))
+  ret isEmpty(xs) ? 0 : 9
+
+fun [test("generic result into same generic")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")
+
+
+namespace CompilerTests::NestedGenericInference::InferParamFromNestedGenericCall
+
+import System
+import System::Test
+
+class [final] Leaf()
+class [final] Wrap<S>(inner: S)
+fun wrap<S>(x: S): Wrap<S>
+  ret Wrap<S>(x)
+fun unwrap<S>(w: Wrap<S>): S
+  ret w.inner
+fun c<S>(x: S): System::Int
+  ret 9
+fun program(): System::Int
+  ret c(wrap(Leaf()))
+
+fun [test("infer param from nested generic call")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")
+
+
+namespace CompilerTests::NestedGenericInference::NestedCallValueFlows
+
+import System
+import System::Test
+
+class [final] Box(n: System::Int)
+class [final] Wrap<S>(inner: S)
+fun wrap<S>(x: S): Wrap<S>
+  ret Wrap<S>(x)
+fun unwrap<S>(w: Wrap<S>): S
+  ret w.inner
+fun program(): System::Int
+  ret unwrap(wrap(Box(5))).n
+
+fun [test("nested call value flows")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")

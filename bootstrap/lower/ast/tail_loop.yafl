@@ -66,7 +66,7 @@ fun tlNested(f) => match(f.fBody)
                                PeBlock(out.tlStmts, bk.blockValue,
                                        bk.blockTag, bk.pebkLine),
                                f.fRet, f.fWheres, f.psfLine,
-                               f.fRetInferred, f.fNested, f.fImports),
+                               f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
                          out.tlErrs)
     (o: PExpr)    => TlStmt(f, Set())
   ()         => TlStmt(f, Set())
@@ -90,7 +90,7 @@ fun tlLowerBody(f, body, errs0): TlStmt
   let block = PeBlock(List(), loop, "", bodyLine)
   ret TlStmt(PsFun(f.fName, tlStripTail(chain(f.fAttrs), List()),
                    f.fGens, f.fParams, block, f.fRet, f.fWheres, f.psfLine,
-                   f.fRetInferred, f.fNested, f.fImports),
+                   f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
              errs0)
 
 # The loop-carried params: NamedExpression references at the FUNCTION's line.

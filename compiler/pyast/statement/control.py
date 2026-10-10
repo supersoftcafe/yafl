@@ -228,9 +228,12 @@ class IfStatement(Statement):
 class ElseIfStatement(Statement):
     """Parsed as a standalone statement; `collapse_else_if` folds proper
     `if`/`else if`/`else` sequences into nested `IfStatement`s. A surviving
-    ElseIfStatement is an orphan (no preceding `if`) and `check()` reports it."""
+    ElseIfStatement is an orphan (no preceding `if`) and `check()` reports it,
+    at `keyword`: the `else`, where an orphan `else` is reported too.
+    (`line_ref` is the condition's, which the folded `IfStatement` takes.)"""
     condition: e.Expression
     body: list[Statement]
+    keyword: LineRef = dataclasses.field(compare=False)
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return rw.rewrite(self, replace, resolver,
@@ -241,7 +244,7 @@ class ElseIfStatement(Statement):
         return self, [], {}
 
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
-        return [Error(self.line_ref, "`else if` without a matching preceding `if`")]
+        return [Error(self.keyword, "`else if` without a matching preceding `if`")]
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         raise AssertionError("ElseIfStatement reached generate(); check() should have rejected it")

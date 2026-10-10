@@ -1,0 +1,26 @@
+# Closure-class field names for captures (pyast/utils.py capture_field_name).
+#
+# A closure class stores each capture as a field. Name lookup matches by PREFIX
+# (`name_matches`), so a field whose name starts `this@` answers to the class's
+# own receiver `this` as well, and every `this` in the method then has two
+# candidates. The captured receiver has always been stored under a `$`-prefixed
+# field; a captured LOCAL named `this` — uniquified to `this@<hash>` — must be
+# too. (The bootstrap's own `makeFetchFunction` names a local `this`; it was
+# harmless only until some lambda captured it.)
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::ClosureCaptureNames::ACapturedLocalNamedThis
+
+import System
+import System::Test
+
+fun [tail] applyN(k: Int, f: (): Int, acc: Int): Int
+  ret k <= 0 ? acc : applyN(k - 1, f, acc + f())
+fun program(): Int
+  let this = 42
+  ret applyN(2, () => this + 1, 0) == 86 ? 0 : 1
+
+fun [test("a captured local named this")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

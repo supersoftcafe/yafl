@@ -10,11 +10,9 @@ question, never a typing rule. Values still subsume: a `Circle` value is a
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_errors
 
 
 _PRELUDE = """
@@ -40,10 +38,7 @@ fun takesHolder(h: Holder<Shape>): System::Int
 
 
 def _errors(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return buf.getvalue()
+    return compile_errors(src)
 
 
 class TestEnumViewInvariance(TestCase):

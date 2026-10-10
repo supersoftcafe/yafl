@@ -1,0 +1,187 @@
+# Union set semantics (2026-06-11).
+#
+# `|` builds a flat SET of member types:
+#
+# 1. Nesting is spelling, not structure — `(Word|None)|IOError` IS
+#    `Word|None|IOError` (exactly what a generic `T|E` produces when T is
+#    itself a union). Flattening happens once, in type resolution
+#    (`CombinationSpec._compile`) — never in the constructor, where it would
+#    also run on representation specs during lowering.
+#
+# 2. A duplicate member is the SAME member — a union is a set, so `Int|Int` is
+#    `Int` and `(Word|None)|(None|IOError)` is `Word|None|IOError`. Repetition
+#    carries no meaning: identity (`as_unique_id_str`) and the representation
+#    (`repr_members`) both fold it to one slot and one tag.
+#
+# 3. Lowering must preserve nominal identity: two same-shaped simple classes
+#    would flatten to the same structural tuple spec (same unique id, same
+#    discriminator tag) and become indistinguishable in a union. Such classes
+#    are excluded from simple-class flattening and stay heap classes
+#    (`__exclude_union_collisions` in lowering/simple_classes.py).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::UnionSemantics::ATernaryWithNoReceiverConvertsItsArms
+
+import System
+import System::Test
+
+class [final] Ent(name: System::String, kind: System::Int|None)
+
+fun pick(xs: System::List<Ent>, i: System::Int) => match(i < 0 ? None : System::head(System::drop(xs, i)))
+  (e: Ent) => 7
+  ()       => 3
+
+fun program(): System::Int
+  ret pick(System::prepend(Ent("a", None), System::List<Ent>()), 0)
+      + pick(System::List<Ent>(), -1)
+
+fun [test("a ternary with no receiver converts its arms")] check(): None|TestFailure
+    ret assertEqInt(program(), 10, "program()")
+
+
+namespace CompilerTests::UnionSemantics::DuplicateUnionMemberIsOneMember
+
+import System
+import System::Test
+
+fun f(ok: System::Bool): System::Int | System::Int
+  ret 1
+
+fun program(): System::Int
+  ret f(true) - 1
+
+fun [test("duplicate union member is one member")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionSemantics::DuplicateViaNestedSpellingCollapses
+
+import System
+import System::IO
+import System::Test
+
+class Word(text: String)
+
+fun f(ok: System::Bool): (Word|None)|(None|IOError)
+  ret None
+
+fun pick(v: Word|None|IOError): System::Int
+  ret match(v)
+    (w: Word)    => 0
+    (n: None)    => 1
+    (e: IOError) => 2
+
+fun program(): System::Int
+  ret pick(f(true)) == 1 ? 0 : 9
+
+fun [test("duplicate via nested spelling collapses")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionSemantics::EarlyReturnWidensToBlockUnion
+
+import System
+import System::IO
+import System::Test
+
+class Word(text: String)
+
+fun choose(n: System::Int): Word|None|IOError
+  if n == 0
+    ret Word("hi")             # single member widened at an early ret
+  if n == 1
+    let sub: Word|None = None
+    ret sub                    # subset union widened at an early ret
+  ret EOFError(0)              # trailing value (already coerced)
+
+fun pick(v: Word|None|IOError): System::Int
+  ret match(v)
+    (w: Word)    => 0
+    (n: None)    => 1
+    (e: IOError) => 2
+
+fun program(): System::Int
+  ret pick(choose(0)) == 0 && pick(choose(1)) == 1 && pick(choose(2)) == 2
+    ? 0 : 9
+
+fun [test("early return widens to block union")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionSemantics::GenericUnionInstantiationFlattens
+
+import System
+import System::IO
+import System::Test
+
+class Word(text: String)
+
+fun wrap<T>(v: T): T|IOError
+  ret v
+
+fun pick(v: Word|None|IOError): System::Int
+  ret match(v)
+    (w: Word)    => 0
+    (n: None)    => 1
+    (e: IOError) => 2
+
+fun load(ok: Bool): Word|None
+  ret ok ? Word("hi") : None
+
+fun program(): System::Int
+  ret pick(wrap<Word|None>(load(true))) == 0
+      && pick(wrap<Word|None>(load(false))) == 1 ? 0 : 9
+
+fun [test("generic union instantiation flattens")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionSemantics::NestedUnionSpellingsAreOneType
+
+import System
+import System::IO
+import System::Test
+
+class Word(text: String)
+
+fun load(ok: Bool): (Word|None)|IOError
+  ret ok ? Word("hi") : None
+
+fun pick(v: Word|None|IOError): System::Int
+  ret match(v)
+    (w: Word)    => 0
+    (n: None)    => 1
+    (e: IOError) => 2
+
+fun program(): System::Int
+  ret pick(load(true)) == 0 && pick(load(false)) == 1 ? 0 : 9
+
+fun [test("nested union spellings are one type")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionSemantics::SameShapeClassesKeepNominalIdentity
+
+import System
+import System::Test
+
+class Cat(name: String)
+class Dog(name: String)
+
+fun pick(n: Int): Cat|Dog|None
+  ret n == 0 ? Cat("c") : n == 1 ? Dog("d") : None
+
+fun classify(x: Cat|Dog|None): System::Int
+  ret match(x)
+    (c: Cat)  => 0
+    (d: Dog)  => 1
+    (n: None) => 2
+
+fun program(): System::Int
+  ret classify(pick(0)) == 0 && classify(pick(1)) == 1 && classify(pick(2)) == 2
+    ? 0 : 9
+
+fun [test("same shape classes keep nominal identity")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

@@ -1,0 +1,64 @@
+# Same bare field name on DIFFERENT enum variants must read the right slot.
+#
+# `DotExpression.compile` rewrites a bare field name to its @hash-unique form
+# by scanning the WHOLE enum's all_fields and taking the first bare-name match
+# — so `sv.nxt` inside a `(sv: Save)` arm resolved to Range's `nxt` and read
+# Range's slot. The narrowed subject type says exactly which variants are
+# possible; the lookup must prefer the field those variants actually declare,
+# and reading a name that several possible variants declare differently is a
+# compile error, not a silent garbage read. Found by the regex engine
+# (worked around there with rNext/sNext/aNext); a compiler-sized AST would
+# hit it constantly.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::EnumFieldAliasing::ComplexEnumReadsOwnVariantField
+
+import System
+import System::Test
+
+enum Node
+  enum Leaf(tag: System::Int, val: System::Int)
+  enum Pair(val: System::Int, rest: Node)
+
+fun program(): System::Int
+  # Annotated at the ROOT (see _FLAT).
+  let l: Node = Leaf(7, 3)
+  let p: Node = Pair(4, l)
+  let a = match(l)
+    (lf: Leaf) => lf.val
+    ()         => 99
+  let b = match(p)
+    (pr: Pair) => pr.val
+    ()         => 99
+  ret a * 10 + b
+
+fun [test("complex enum reads own variant field")] check(): None|TestFailure
+    ret assertEqInt(program(), 34, "program()")
+
+
+namespace CompilerTests::EnumFieldAliasing::FlatEnumReadsOwnVariantSlot
+
+import System
+import System::Test
+
+enum Inst
+  enum Range(lo: System::Int32, hi: System::Int32, nxt: System::Int32)
+  enum Save(slot: System::Int32, nxt: System::Int32)
+
+fun program(): System::Int
+  # Annotated at the ROOT: a bare construction is leaf-typed now, which
+  # would make the else arms provably dead and the field reads unambiguous.
+  let s: Inst = Save(0i32, 1i32)
+  let r: Inst = Range(7i32, 8i32, 9i32)
+  let a = match(s)
+    (sv: Save) => System::Int(sv.nxt)
+    ()         => 99
+  let b = match(r)
+    (rg: Range) => System::Int(rg.nxt)
+    ()          => 99
+  ret a * 10 + b
+
+fun [test("flat enum reads own variant slot")] check(): None|TestFailure
+    ret assertEqInt(program(), 19, "program()")

@@ -1,0 +1,75 @@
+# The empty type.
+#
+# An enum declared with no variants AND no constructor parameter list (no `()`)
+# is an ordinary type with one distinguishing fact: it has no constructor, so no
+# value of it can ever exist (`Never()` is an error).
+#
+# It gets no other special treatment. `Never | X` is a normal two-member union,
+# NOT `X`: it is not assignable to `X`, and a match over it must cover the `Never`
+# member like any other (with an arm or an `else`). That arm is unreachable at
+# runtime, but the type system does not exempt it.
+#
+# The `()` form (`enum Unit()`) is a distinct, constructible unit value and must
+# keep working — only the no-parens, no-variants form is empty.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Never::MatchWithoutNeverArmIsExhaustive
+
+import System
+import System::Test
+
+fun pick(v: System::Int | System::String | System::Never): System::Int
+  ret match(v)
+    (i: System::Int)    => i
+    (s: System::String) => System::length(s)
+fun program(): System::Int
+  ret pick(41) + pick("x")
+
+fun [test("match without never arm is exhaustive")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::Never::NeverMemberNeedsNoConstructedValue
+
+import System
+import System::IO
+import System::Test
+
+fun pick(flag: System::Bool): System::Never | IOError | System::None
+  ret flag ? EOFError(0) : None
+
+fun classify(v: System::Never | IOError | System::None): System::Int
+  ret match(v)
+    (e: IOError)      => 1
+    (n: System::None) => 0
+    ()                => 2
+
+fun program(): System::Int
+  ret classify(pick(true)) == 1 && classify(pick(false)) == 0 ? 0 : 9
+
+fun [test("never member needs no constructed value")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Never::UninhabitedMemberDoesNotChangeRepresentation
+
+import System
+import System::IO
+import System::Test
+
+fun box(e: IOError): System::Never | IOError | System::None
+  ret e
+
+fun unbox(v: System::Never | IOError | System::None): System::Int
+  ret match(v)
+    (e: IOError)      => 7
+    (n: System::None) => 0
+    ()                => 9
+
+fun program(): System::Int
+  ret unbox(box(EOFError(0))) == 7 ? 0 : 1
+
+fun [test("uninhabited member does not change representation")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

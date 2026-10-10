@@ -1,0 +1,95 @@
+# Array-as-final-class-attribute — step 1: parsing and representation.
+#
+# An array is a trailing variable-length field of a `[final]` class, declared
+# `name: ElemType[lengthField]`, where `lengthField` names the Int32 field giving
+# the element count. This stage only covers parsing the syntax into an
+# `ArrayFieldSpec`, recording it on the class, and validating the structural rules
+# (`[final]`, a valid Int32 length field, at most one array field). Construction,
+# the generated accessor, and codegen come in later stages.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Arrays::ReadsBackTabulatedValue
+
+import System
+import System::Test
+
+class [final] IntArray(length: System::Int32, array: System::Int32[length])
+fun program(): System::Int
+  let a = IntArray(5i32, (i: System::Int32) => i * 2i32)
+  ret System::Int(a.array(3i32))
+
+fun [test("reads back tabulated value")] check(): None|TestFailure
+    ret assertEqInt(program(), 6, "program()")
+
+
+namespace CompilerTests::Arrays::ReadsBackWhenArrayFieldIsNotLast
+
+import System
+import System::Test
+
+class [final] IntArray(array: System::Int32[length], length: System::Int32, tag: System::Int32)
+fun program(): System::Int
+  let a = IntArray((i: System::Int32) => i * 2i32, 5i32, 99i32)
+  ret System::Int(a.array(3i32)) + System::Int(a.tag)
+
+fun [test("reads back when array field is not last")] check(): None|TestFailure
+    ret assertEqInt(program(), 105, "program()")
+
+
+namespace CompilerTests::Arrays::ReadsPointerElement
+
+import System
+import System::Test
+
+class [final] Holder(length: System::Int32, array: System::String[length])
+fun program(): System::Int
+  let a = Holder(3i32, (i: System::Int32) => "ab")
+  ret System::length(a.array(1i32))
+
+fun [test("reads pointer element")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")
+
+
+namespace CompilerTests::Arrays::GenericArrayClassMonomorphisesPerElement
+
+import System
+import System::Test
+
+class [final] Arr<T>(length: System::Int32, array: T[length])
+fun program(): System::Int
+  let a = Arr<System::Int32>(3i32, (i: System::Int32) => i)
+  let b = Arr<System::String>(7i32, (i: System::Int32) => "y")
+  ret System::Int(a.length) + System::Int(b.length)
+
+fun [test("generic array class monomorphises per element")] check(): None|TestFailure
+    ret assertEqInt(program(), 10, "program()")
+
+
+namespace CompilerTests::Arrays::PointerElementArrayConstructs
+
+import System
+import System::Test
+
+class [final] StrArray(length: System::Int32, array: System::String[length])
+fun program(): System::Int
+  let a = StrArray(4i32, (i: System::Int32) => "x")
+  ret System::Int(a.length)
+
+fun [test("pointer element array constructs")] check(): None|TestFailure
+    ret assertEqInt(program(), 4, "program()")
+
+
+namespace CompilerTests::Arrays::ValueElementArrayConstructs
+
+import System
+import System::Test
+
+class [final] IntArray(length: System::Int32, array: System::Int32[length])
+fun program(): System::Int
+  let a = IntArray(5i32, (i: System::Int32) => i)
+  ret System::Int(a.length)
+
+fun [test("value element array constructs")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")

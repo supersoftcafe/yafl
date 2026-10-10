@@ -1,0 +1,212 @@
+# Derived `BasicEquality` for enums and tuples — see docs/derived-equality-plan.md.
+#
+# Two properties, in order of how they land:
+#
+#   * an UNDISCHARGED trait constraint is a compile error at the use site, not a
+#     ValueError out of codegen (the recorded open bug);
+#   * a tuple or enum used as a `Dict`/`memoize` key gets its `==`/`hashOf`
+#     synthesised, so it just works.
+#
+# The second is the point of the exercise: every pass that needs a compound key
+# today hand-builds a string fingerprint instead, and those fingerprints are
+# lossy.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::DerivedEquality::DerivableEnumAlongsideOrderingCode
+
+import System
+import System::Test
+
+enum Col
+  enum Red()
+  enum Green()
+
+fun [tail] idxLoop(es: System::Chain<System::String>, name: System::String, i) => match(es)
+  (nil: System::ChainEnd) => None
+  (l: System::ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
+
+fun program(): System::Int
+  ret match(idxLoop(System::chain(System::prepend("b", System::prepend("a", System::List<System::String>()))), "a", 0))
+    (n: System::Int) => n + 7
+    ()               => 3
+
+fun [test("derivable enum alongside ordering code")] check(): None|TestFailure
+    ret assertEqInt(program(), 8, "program()")
+
+
+namespace CompilerTests::DerivedEquality::DirectEqualityOnADerivedEnum
+
+import System
+import System::Test
+
+enum Colour
+  enum Red()
+  enum Green()
+  enum Rgb(r: System::Int, g: System::Int)
+
+fun program(): System::Int
+  let a: Colour = Rgb(1, 2)
+  let b: Colour = Rgb(1, 2)
+  ret a == b && !(a == Red()) && !(Rgb(1, 3) == b) ? 7 : 3
+
+fun [test("direct equality on a derived enum")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::DerivedEquality::DirectEqualityOnMutuallyRecursiveEnums
+
+import System
+import System::Test
+
+enum Tree
+  enum Leaf(v: System::Int)
+  enum Node(kids: Forest)
+
+enum Forest
+  enum NoTrees()
+  enum Trees(first: Tree, rest: Forest)
+
+fun program(): System::Int
+  let x: Tree = Node(Trees(Leaf(1), NoTrees()))
+  let y: Tree = Node(Trees(Leaf(1), NoTrees()))
+  let z: Tree = Node(Trees(Leaf(2), NoTrees()))
+  ret x == y && !(x == z) ? 7 : 3
+
+fun [test("direct equality on mutually recursive enums")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::DerivedEquality::EnumIsUsableAsADictKey
+
+import System
+import System::Test
+
+enum Colour
+  enum Red()
+  enum Green(shade: System::Int)
+
+fun program(): System::Int
+  let d0 = System::Dict<Colour, System::Int>()
+  let d1 = System::put(d0, Red(), 3)
+  let d2 = System::put(d1, Green(7), 4)
+  let a = match(System::get(d2, Red()))
+    (v: System::Int) => v
+    ()               => 0
+  let b = match(System::get(d2, Green(7)))
+    (v: System::Int) => v
+    ()               => 0
+  let c = match(System::get(d2, Green(8)))
+    (v: System::Int) => v
+    ()               => 0
+  ret a + b * 10 + c * 100
+
+fun [test("enum is usable as a dict key")] check(): None|TestFailure
+    ret assertEqInt(program(), 43, "program()")
+
+
+namespace CompilerTests::DerivedEquality::RecursiveEnumKey
+
+import System
+import System::Test
+
+enum Chain2
+  enum Nil2()
+  enum Cons2(hd: System::Int, tl: Chain2)
+
+fun program(): System::Int
+  let d0 = System::Dict<Chain2, System::Int>()
+  let d1 = System::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
+  ret match(System::get(d1, Cons2(1, Cons2(2, Nil2()))))
+    (v: System::Int) => v
+    ()               => 0
+
+fun [test("Needs the recursive instance (phase 2): the derived `==` for a list")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::DerivedEquality::TupleIsUsableAsADictKey
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let d = System::Dict<(:System::Int, :System::Int), System::Int>()
+  let d2 = System::put(d, (1, 2), 7)
+  ret match(System::get(d2, (1, 2)))
+    (v: System::Int) => v
+    ()               => 0
+
+fun [test("tuple is usable as a dict key")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::DerivedEquality::TupleKeysDistinguishTheirComponents
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let d0 = System::Dict<(:System::Int, :System::Int), System::Int>()
+  let d1 = System::put(d0, (1, 2), 10)
+  let d2 = System::put(d1, (2, 1), 20)
+  let a = match(System::get(d2, (1, 2)))
+    (v: System::Int) => v
+    ()               => 0
+  let b = match(System::get(d2, (2, 1)))
+    (v: System::Int) => v
+    ()               => 0
+  println(a + b * 100)
+  ret 0
+
+fun [test("Guards against a derived hash/eq that ignores a field — the exact", stdout = "2010\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::DerivedEquality::LazyLetMayReferenceItself
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let [lazy] f: (:System::Int): System::Int =
+    (n: System::Int) => n <= 0 ? 0 : n + f(n - 1)
+  ret f(3)
+
+fun [test("The enabling rule for a recursive instance: a `[lazy]` let may")] check(): None|TestFailure
+    ret assertEqInt(program(), 6, "program()")
+
+
+namespace CompilerTests::DerivedEquality::RecursiveInstanceOnARecursiveEnum
+
+import System
+import System::Test
+
+enum Chain2
+  enum Nil2()
+  enum Cons2(hd: System::Int, tl: Chain2)
+
+instance [ambient] System::BasicEquality<Chain2>
+  fun `==`(l: Chain2, r: Chain2): System::Bool
+    ret match(l)
+      (a: Cons2) => match(r)
+        (b: Cons2) => a.hd == b.hd && a.tl == b.tl
+        ()         => false
+      ()         => match(r)
+        (b2: Cons2) => false
+        ()          => true
+  fun hashOf(v: Chain2): System::Int32
+    ret match(v)
+      (c: Cons2) => (hashOf(c.hd) * 31i32 + hashOf(c.tl)) & 2147483647i32
+      ()         => 17i32
+
+fun program(): System::Int
+  let d0 = System::Dict<Chain2, System::Int>()
+  let d1 = System::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
+  ret match(System::get(d1, Cons2(1, Cons2(2, Nil2()))))
+    (v: System::Int) => v
+    ()               => 0
+
+fun [test("An instance whose members call back into the instance being defined,")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")

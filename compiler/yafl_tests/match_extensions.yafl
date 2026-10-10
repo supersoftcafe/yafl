@@ -1,0 +1,120 @@
+# Match extensions: multi-literal arms (any-of, separated by `|`) and arm guards.
+#
+# `(a, b, c) => body` — one arm matching any of several literals (all the same
+# kind: chars are Int32, so char classification lands here). `<arm> if cond =>
+# body` — a guard evaluated after the arm's binding; a failing guard falls
+# through to the NEXT arm. A guarded arm covers nothing for exhaustiveness, and
+# the else arm may not carry a guard (it must stay total).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::MatchExtensions::MultiLiteralsAndGuards
+
+import System
+import System::Test
+
+fun classify(c: Int32): Int
+  ret match(c)
+    (' ' | 9i32 | 10i32) => 0
+    ('0')              => 1
+    ()                 => 2
+
+fun bucket(n: Int): Int
+  ret match(n)
+    (0)       => 0
+    (1 | 2 | 3) => 1
+    ()        => 9
+
+fun kind(v: Int|String): Int
+  ret match(v)
+    (x: Int) if x < 0 => 0
+    (x: Int)          => 1
+    (s: String) if s == "" => 2
+    (s: String)       => 3
+
+fun choose(b: Bool): Int|String
+  ret b ? -5 : "hi"
+
+fun strpick(s: String): Int
+  ret match(s)
+    ("a" | "b") => 0
+    ()         => 1
+
+fun program(): Int
+  let ok1 = classify(' ') == 0 && classify(9i32) == 0 && classify('0') == 1 && classify('x') == 2
+  let ok2 = bucket(0) == 0 && bucket(2) == 1 && bucket(7) == 9
+  let ok3 = kind(choose(true)) == 0 && kind(choose(false)) == 3 && kind(7) == 1 && kind("") == 2
+  let ok4 = strpick("b") == 0 && strpick("z") == 1
+  ret ok1 && ok2 && ok3 && ok4 ? 0 : 1
+
+fun [test("multi literals and guards")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::MatchExtensions::FloatLiteralAndRangeArms
+
+import System
+import System::Test
+
+fun fb(x: Float): Int
+  ret match(x)
+    (0.0)        => 0
+    (1.0 .. 2.0) => 1
+    (-1.0)       => 3
+    ()           => 2
+
+fun fc(x: Float32): Int
+  ret match(x)
+    (0.5f32 .. 1.5f32) => 0
+    ()                 => 1
+
+fun program(): Int
+  let nan = 0.0 / 0.0
+  let ok1 = fb(0.0) == 0 && fb(1.5) == 1 && fb(1.0) == 1 && fb(2.0) == 1 && fb(3.0) == 2 && fb(-1.0) == 3
+  let ok2 = fb(nan) == 2
+  let ok3 = fc(1.0f32) == 0 && fc(2.0f32) == 1
+  ret ok1 && ok2 && ok3 ? 0 : 1
+
+fun [test("float literal and range arms")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::MatchExtensions::RangeArms
+
+import System
+import System::Test
+
+fun digit(c: Int32): Int
+  ret match(c)
+    ('0' .. '9')             => 0
+    ('a' .. 'z' | 'A' .. 'Z') => 1
+    (' ' | 9i32)              => 2
+    ()                       => 3
+
+fun bucket(n: Int): Int
+  ret match(n)
+    (0 | 5 .. 7) => 0
+    (1 .. 4)    => 1
+    ()          => 2
+
+# Unspaced `lo..hi` — the tokeniser's lookahead keeps `5.` from lexing as a
+# float when the dot is the range symbol, so spacing is a style choice.
+fun tight(n: Int): Int
+  ret match(n)
+    (5..7) => 0
+    ()     => 1
+
+fun tightc(c: Int32): Int
+  ret match(c)
+    ('a'..'z') => 0
+    ()         => 1
+
+fun program(): Int
+  let ok1 = digit('5') == 0 && digit('q') == 1 && digit('Z') == 1 && digit(' ') == 2 && digit('!') == 3
+  let ok2 = bucket(0) == 0 && bucket(6) == 0 && bucket(3) == 1 && bucket(9) == 2
+  let ok3 = tight(6) == 0 && tight(9) == 1 && tightc('k') == 0 && tightc('K') == 1
+  ret ok1 && ok2 && ok3 ? 0 : 1
+
+fun [test("range arms")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

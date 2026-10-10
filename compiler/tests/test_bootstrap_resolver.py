@@ -85,7 +85,7 @@ class TestBootstrapResolver(TestCase):
                 self.assertGreater(len(queries), 10)
                 expected = _python_answers(result.value, queries)
                 stdin = text + "\n?\n" + "\n".join(queries) + "\n"
-                r = subprocess.run([self.binary, "resolve"], input=stdin,
+                r = subprocess.run([self.binary, "--stage", "resolve"], input=stdin,
                                    capture_output=True, timeout=90, text=True, env=_RUN_ENV)
                 self.assertEqual(0, r.returncode, f"{path.name}: {r.stdout[:200]}")
                 got = r.stdout.splitlines()

@@ -58,7 +58,7 @@ class TestBootstrapCWarnings(TestCase):
         return "".join(f"{w}\n" for w in sorted(set(warns)))
 
     def _run_c(self, *w_args: str):
-        return subprocess.run([self.binary, "c", *w_args], input=self._stream,
+        return subprocess.run([self.binary, "--stage", "c", *w_args], input=self._stream,
                               capture_output=True, timeout=self._TIMEOUT, text=True,
                               env=_RUN_ENV)
 

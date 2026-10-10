@@ -1,0 +1,48 @@
+# Matching the VARIANTS of a generic enum at a CONCRETE instantiation.
+#
+# Matching `Chain<T>`'s variants inside a generic function works (the whole stdlib
+# relies on it); matching a generic enum's variants where the instantiation is
+# spelled concretely in a non-generic context used to crash codegen
+# (union_repr.leaf_id: the arm's leaf name was mangled `$generic$…` while the
+# subject's all_leaf_names were not, so the tag-index lookup missed). leaf_id now
+# compares leaves by base identity, so either spelling lines up.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::GenericEnumConcreteMatch::ConcreteVariantMatchEmpty
+
+import System
+import System::Test
+
+enum Box<T>
+  enum BoxEmpty()
+  enum BoxFull(value: T)
+fun classify(x: Box<System::Int>): System::Int
+  ret match(x)
+    (e: BoxEmpty) => 42
+    (f: BoxFull)  => f.value
+fun program(): System::Int
+  ret classify(BoxEmpty<System::Int>())
+
+fun [test("concrete variant match empty")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::GenericEnumConcreteMatch::ConcreteVariantMatchFull
+
+import System
+import System::Test
+
+enum Box<T>
+  enum BoxEmpty()
+  enum BoxFull(value: T)
+fun classify(x: Box<System::Int>): System::Int
+  ret match(x)
+    (e: BoxEmpty) => 0
+    (f: BoxFull)  => f.value
+fun program(): System::Int
+  ret classify(BoxFull<System::Int>(7))
+
+fun [test("concrete variant match full")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")

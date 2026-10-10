@@ -1,0 +1,58 @@
+# Single-quote char literals.
+#
+# A char literal is sugar for an Int32 codepoint: `'A'` is identical to `65i32`.
+# Escapes are decoded exactly like string escapes (`\n`, `\\`, `\'`, …), literal
+# non-ASCII works directly (source is UTF-8), and char literals are usable as
+# match-arm literals (dispatching on a character).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::CharLiterals::CharLiterals
+
+import System
+import System::Test
+
+fun emit(label: System::String, value: System::Int): System::None
+  print(label + "=" + String(value) + "\n")
+  ret None
+
+fun emitBool(label: System::String, value: System::Bool): System::None
+  print(label + "=" + (value ? "1" : "0") + "\n")
+  ret None
+
+# Classify a codepoint by matching char literals — char literals are Int32,
+# so they line up with an Int32 subject.
+fun classify(c: System::Int32): System::String
+  ret match(c)
+    ('\n') => "newline"
+    ('0')   => "zero"
+    ('A')   => "cap-A"
+    (other) => "other"
+
+fun program(): System::Int
+  # ─── codepoint values ────────────────────────────────────────────────
+  emit("cap_A",     Int('A'))      # 65
+  emit("digit_0",   Int('0'))      # 48
+  emit("newline",   Int('\n'))    # 10
+  emit("tab",       Int('\t'))    # 9
+  emit("nul",       Int('\0'))    # 0
+  emit("backslash", Int('\\'))   # 92
+  emit("squote",    Int('\''))    # 39
+  emit("dquote",    Int('"'))      # 34
+  emit("e_acute",   Int('é'))      # 233  (literal, source is UTF-8)
+  emit("party",     Int('🎉'))     # 127881
+
+  # ─── a char literal IS an Int32 literal ──────────────────────────────
+  emitBool("A_eq_65i32", 'A' == 65i32)
+  emit("A_plus_1", Int('A' + 1i32))   # 66
+
+  # ─── char literals as match-arm literals ─────────────────────────────
+  print("classify_A=" + classify('A') + "\n")
+  print("classify_nl=" + classify('\n') + "\n")
+  print("classify_other=" + classify('z') + "\n")
+
+  ret 0
+
+fun [test("char literals", stdout = "cap_A=65\ndigit_0=48\nnewline=10\ntab=9\nnul=0\nbackslash=92\nsquote=39\ndquote=34\ne_acute=233\nparty=127881\nA_eq_65i32=1\nA_plus_1=66\nclassify_A=cap-A\nclassify_nl=newline\nclassify_other=other\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

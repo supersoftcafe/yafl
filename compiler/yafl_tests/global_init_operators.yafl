@@ -1,0 +1,39 @@
+# Operators resolve inside global `let` initialisers.
+#
+# A global let's initialiser resolves like a function body, so trait/interface
+# methods — operators included — are in scope. This used to fail with "Failed to
+# resolve `==`" because trait-method resolution was wired into FunctionStatement
+# only; `__stmt_scope_resolver` now gives a top-level let the same trait scope.
+# Local lets (compiled via BlockExpression) keep the enclosing function's scope
+# and are exercised throughout the rest of the suite.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::GlobalInitOperators::ArithmeticOperatorsAndGlobalRef
+
+import System
+import System::Test
+
+let X: System::Int = 3
+let Y: System::Int = X * 2 + 1
+
+fun program(): System::Int
+  ret Y
+
+fun [test("arithmetic operators and global ref")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GlobalInitOperators::ComparisonOperatorInGlobal
+
+import System
+import System::Test
+
+let POSITIVE: System::Bool = 5 > 0
+
+fun program(): System::Int
+  ret POSITIVE ? 1 : 0
+
+fun [test("comparison operator in global")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

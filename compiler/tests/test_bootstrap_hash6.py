@@ -49,7 +49,7 @@ class TestBootstrapHash6(TestCase):
             fn = "".join(rng.choice("abcdefghijklmnopqrstuvwxyz_./") for _ in range(rng.randint(1, 90)))
             cases.append((fn + ".yafl", rng.randint(1, 99999), rng.randint(1, 500)))
         stdin = "".join(f"{f}|{l}|{c}\n" for f, l, c in cases)
-        r = subprocess.run([self.binary, "hash6"], input=stdin, capture_output=True,
+        r = subprocess.run([self.binary, "--stage", "hash6"], input=stdin, capture_output=True,
                            timeout=60, text=True, env=_RUN_ENV)
         self.assertEqual(0, r.returncode)
         got = r.stdout.splitlines()

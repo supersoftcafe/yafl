@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import re
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
 
 # `both` suspends at a `__parallel__` with two POINTER locals live across it,
@@ -52,8 +52,7 @@ _EMITTED: dict[int, str] = {}
 
 def _emit(level: int) -> str:
     if level not in _EMITTED:
-        _EMITTED[level] = c.compile([c.Input(_SRC, "file.yafl")], use_stdlib=True,
-                                    just_testing=False, optimization_level=level)
+        _EMITTED[level] = compile_c(_SRC, "file.yafl", optimization_level=level)
     return _EMITTED[level]
 
 
@@ -146,8 +145,7 @@ fun main(): System::Int
 
 class TestTabulateFillKeepsItsBarrier(TestCase):
     def _fill_stores(self, level: int) -> tuple[list[str], str]:
-        emitted = c.compile([c.Input(_TAB_SRC, "file.yafl")], use_stdlib=True,
-                            just_testing=False, optimization_level=level)
+        emitted = compile_c(_TAB_SRC, "file.yafl", optimization_level=level)
         body = _body(emitted, "Main__boxes")
         return [ln.strip() for ln in body.splitlines() if "->array.a[" in ln], body
 

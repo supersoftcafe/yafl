@@ -546,7 +546,7 @@ fun rwnStmtKids(st, w: RwN, sc, n) => match(st)
     |> (p, b) => RwNS(b.rneN2,
                       PsFun(f.fName, f.fAttrs, f.fGens, p.rnsStmt,
                             b.rneExpr2, f.fRet, f.fWheres, f.psfLine,
-                            f.fRetInferred, f.fNested, f.fImports))
+                            f.fRetInferred, f.fNested, f.fImports, f.fGlobal))
   (l: PsLet)  => rwnExprOpt(l.lDefault, w, sc, n)
     |> (d) => RwNS(d.rneN2,
                    PsLet(l.lName, l.lAttrs, l.lGens, l.lType, d.rneExpr2,

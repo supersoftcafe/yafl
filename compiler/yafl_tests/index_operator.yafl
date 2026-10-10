@@ -1,0 +1,23 @@
+# The `[]` index operator.
+#
+# `left[right]` lowers to ``[]``(left, right), exactly as `left + right` lowers
+# to `+`(left, right). The parser does the rewrite at the invoke tier (so it
+# chains and interleaves with calls); resolution then finds whatever ``[]`` is
+# in scope, like any other operator. Nothing is auto-generated for arrays yet —
+# these tests only confirm the operator itself works.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::IndexOperator::UserDefinedIndexOperatorIsCalled
+
+import System
+import System::Test
+
+fun `[]`(left: System::Int, right: System::Int): System::Int
+  ret left - right
+fun program(): System::Int
+  ret 10[3]
+
+fun [test("user defined index operator is called")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")

@@ -4,17 +4,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-**Run every gate (build, ctest, -O3 port build, examples, timed self-compile):**
+**Run every correctness gate (build, ctest, examples):**
 ```bash
-python3 ../full_protocol.py          # ~2.5h; one line per stage, logs under build/protocol-runs/
+python3 ../full_protocol.py                   # fast: port, [test] folders, self-compile, all at -O3
+python3 ../full_protocol.py --full            # the regression; logs under build/protocol-runs/
+python3 ../full_protocol.py --compiler python # against the Python compiler
 ```
-This is the full protocol, and what CI runs. Prefer it over running the pieces
-by hand before a commit.
+The fast path is the default (and what CI runs on pull requests and manual
+runs); it reuses the Python build of the port while the Python compiler is
+unchanged (build_bootstrap.py --reuse). `--full` is opt-in, and what CI runs
+on every commit to main. Prefer it over running the pieces
+by hand before a commit. The speed figure is the self-compile time each run
+reports on its ctest line (`self_compile_o3 …s`).
 
 **Run all tests:**
 ```bash
-python -m unittest discover
+YAFL_BOOTSTRAP_BIN=../build/ybootstrap YAFL_LIBYAFL_A=../build/yafllib/libyafl.a \
+PYTHONHASHSEED=0 unittest-parallel -j 0 -s tests -t .   # YAFL_COMPILER=python for the Python compiler
 ```
+Behaviour tests belong in a YAFL `[test]` folder, not in Python: `yafl_tests/`
+(the compiler's behaviour; built and run at -O3, and at -O0 to -O3 on the full path) and
+`stdlib_tests/` (the stdlib), each built into one test binary by the compiler
+under test. Python keeps only what a `[test]` cannot check: compile errors and
+warnings, the shape of the emitted C, and runs that need a particular
+environment. The runner executes every test in its own subprocess, capturing
+its stdout and stderr into the result, so a test that prints or crashes affects
+only itself.
+
+`yafl_tests/` layout — the standard: one file per topic, named after the Python
+module it replaced, and ONE NAMESPACE PER TEST, `CompilerTests::<Topic>::<Test>`.
+Each namespace holds a program exactly as written, its `main` renamed
+`program`, and the `[test]` that checks it:
+`ret assertEqInt(program(), <exit code>, "program()")`. A program that prints
+keeps printing: the test declares what it must print,
+`[test("…", stdout = "…")]`, and the runner compares the stdout it captured.
 
 **Run a single test:**
 ```bash
@@ -22,9 +45,10 @@ python -m unittest test_compiler.Test.test_add
 python -m unittest test_parser.Test.test_parse_simple_named_type
 ```
 
-**Compile a yafl file:**
+**Compile a yafl file** — either compiler, the same command line:
 ```bash
-python main.py [-O 0|1|2|3] [--profile] [-c out.c] [-a out.s] [-o binary] input.yafl
+python main.py [-O 0|1|2|3] [--profile] [-c out.c] [-a out.s] [-o binary] [-L libdir] [--test] input.yafl|dir
+../build/ybootstrap [-O 0|1|2|3] ... (identical arguments; finds System via -L or YAFL_PATH, e.g. -L ../build/stage)
 ```
 Output is C code piped through `clang` (requires `libyafl` at link time). Use `-c` to emit C without linking. `--profile` instruments the whole program (exact call counters + sampled CPU time; the binary writes `callgrind.out.<pid>` + `.folded` at exit — see `docs/profiling-design.md`). Heap profiling: `YAFL_HEAPPROF=<path>` makes any binary write a live-heap census (massif format); adding `YAFL_HEAPPROF_SAMPLE=<bytes>` in a `--profile` binary also writes a pprof `inuse_space` profile by allocation site — see `docs/heap-profiling-design.md`.
 

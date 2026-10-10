@@ -33,6 +33,11 @@
 #ifndef MAX_WORKERS_T
 #define MAX_WORKERS_T 32
 #endif
+// Nanoseconds to sleep between storing a holder into its root slot and
+// publishing it — the window in which a collection can open. 0 = none.
+#ifndef PUBLISH_WINDOW_NS
+#define PUBLISH_WINDOW_NS 0
+#endif
 
 static int NWORKERS = 4;
 
@@ -45,11 +50,17 @@ static vtable_t holder_vt = {
     .is_mutable = 1, .name = "m2_holder", .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
-static object_t*                _slots[NSLOTS];   // shared, rooted
+// Shared and rooted. Worker w PRODUCES only into its own block,
+// _slots[w*NSLOTS .. w*NSLOTS+NSLOTS-1]: a root slot has one writer, as the
+// publish contract requires (gc_root_publish shades what the slot holds, so a
+// second writer's store between another's store and publish would leave the
+// first value unshaded). Consumers read any slot, so holders still cross
+// threads.
+static object_t*                _slots[MAX_WORKERS_T * NSLOTS];
 static roots_declaration_func_t _prev;
 static void _decl(void(*declare)(object_t**)) {
     _prev(declare);
-    for (int i = 0; i < NSLOTS; ++i) declare(&_slots[i]);
+    for (int i = 0; i < MAX_WORKERS_T * NSLOTS; ++i) declare(&_slots[i]);
 }
 
 static const char PAD[64] = "the quick brown fox jumps over the lazy dog 01234567 ABCDEFG";
@@ -63,26 +74,44 @@ static fun_t        _exit_cont;
 
 static void _noop_roots(void* c, void(*d)(object_t**)) { (void)c; (void)d; }
 
+static void _work(int w);
+
+// The stack anchor bounds this thread's conservative scan, so it must sit
+// ABOVE every frame that holds a heap pointer: the work runs in a frame of its
+// own, called from here. In one frame with the loop, the compiler may place
+// the loop's locals above the anchor, outside the scanned window. gcc did: a
+// holder read from a slot, then overwritten there, lived only in a local the
+// scan never saw, and was freed under its reader (about 1 run in 200).
 static void* _worker(void* arg) {
-    (void)arg;
+    int w = (int)(intptr_t)arg;
     object_t* stack_anchor = NULL;
     gc_declare_thread(_noop_roots, NULL, &stack_anchor);
     // Barrier: do not touch shared objects until every mutator is registered with
     // the GC, so no thread starts sharing while the collector is unaware of it.
     atomic_fetch_add(&_registered, 1);
     while (atomic_load(&_registered) < NWORKERS) sched_yield();
+    _work(w);
+    while (1) sched_yield();   // never return: would dangle this thread's GC info
+    return NULL;
+}
 
-    while (!atomic_load(&_finished)) {
+static __attribute__((noinline)) void _work(int w) {
+    for (long long k = 0; !atomic_load(&_finished); ++k) {
         GC_SAFE_POINT();   // loop backedge safe-point, as generated YAFL code has
         long long n = atomic_fetch_add(&_counter, 1);
-        int sp = (int)(n % NSLOTS);
-        int sc = (int)((n + 1) % NSLOTS);
+        int sp = w * NSLOTS + (int)(k % NSLOTS);
+        int sc = (int)(n % (NWORKERS * NSLOTS));
 
         // PRODUCE: a holder created on THIS thread, published to a rooted slot.
         GC_SAFE_POINT();
         struct holder* h = (struct holder*)object_create(&holder_vt);
-        gc_root_overwrite(&_slots[sp]);
-        _slots[sp] = gc_root_publish((object_t*)h);
+        gc_root_overwrite(&_slots[sp], 1);
+        _slots[sp] = (object_t*)h;
+        if (PUBLISH_WINDOW_NS) {
+            struct timespec w = { 0, PUBLISH_WINDOW_NS };
+            nanosleep(&w, NULL);
+        }
+        gc_root_publish(&_slots[sp], 1);
 
         // CONSUME: read a holder (maybe created on another thread) and hang a
         // fresh child — created on THIS thread — off it.
@@ -96,8 +125,6 @@ static void* _worker(void* arg) {
         }
         burn(4);
     }
-    while (1) sched_yield();   // never return: would dangle this thread's GC info
-    return NULL;
 }
 
 static void* _watchdog(void* arg) {

@@ -92,7 +92,7 @@ class TestBootstrapPostmono(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_postmono(text).splitlines()
-                r = subprocess.run([self.binary, "postmono"], input=text,
+                r = subprocess.run([self.binary, "--stage", "postmono"], input=text,
                                    capture_output=True, timeout=240, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,
@@ -114,7 +114,7 @@ class TestBootstrapPostmono(TestCase):
         text = "".join(p.read_text() for p in stdlib) \
             + (_REPO / "examples" / "helloWorld.yafl").read_text()
         expected = self._python_postmono(text).splitlines()
-        r = subprocess.run([self.binary, "postmono"], input=text,
+        r = subprocess.run([self.binary, "--stage", "postmono"], input=text,
                            capture_output=True, timeout=300, text=True,
                            env=_RUN_ENV)
         self.assertEqual(0, r.returncode, r.stdout[:300])

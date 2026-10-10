@@ -1,0 +1,34 @@
+# A global `let` holding a lambda is lowered to a function
+# (lowering/lambda_globals.py): it compiles as an ordinary function — no lazy
+# stub, no fun_t through the async force path — and is transparent to callers
+# and to code that passes it as a value.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::LambdaGlobals::CalledDirectly
+
+import System
+import System::Test
+
+let h: (:System::String): System::Int = (s: System::String) => System::length(s)
+fun program(): System::Int
+  ret h("abc") + h("de")
+
+fun [test("called directly")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::LambdaGlobals::PassedAsAValue
+
+import System
+import System::Test
+
+let dbl: (:System::Int): System::Int = (n: System::Int) => n * 2
+fun apply(f: (:System::Int): System::Int, x: System::Int): System::Int
+  ret f(x)
+fun program(): System::Int
+  ret apply(dbl, 20) + dbl(1)
+
+fun [test("passed as a value")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")

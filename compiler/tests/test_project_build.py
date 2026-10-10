@@ -5,20 +5,18 @@ in `test_libraries.py`: compiling without an explicit import (discovery via a
 qualified reference), building a whole project directory through the real CLI
 (static-linked against the discovered System library), and the ambiguity
 diagnostic for a name that resolves more than one way.
+
+The no-import case stays here: a `[test]` folder imports System (and its test
+library) anyway, so a folder test could not tell discovery from the import.
 """
 from __future__ import annotations
 
-import io
-import os
 import subprocess
-import sys
-import contextlib
 import tempfile
 from pathlib import Path
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_and_run_stdlib_capture, compile_c_result, compiler_command
 
 _COMPILER_DIR = Path(__file__).resolve().parent.parent
 
@@ -50,11 +48,9 @@ import B
 fun main(): System::Int
   ret thing()
 """
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            out = c.compile([c.Input(src, "t.yafl")], use_stdlib=True)
-        self.assertFalse(out, "ambiguous reference should be rejected")
-        diag = buf.getvalue()
+        r = compile_c_result(src, "t.yafl")
+        self.assertFalse(r.c, "ambiguous reference should be rejected")
+        diag = r.stdout
         self.assertIn("Ambiguous reference 'thing'", diag)
         self.assertIn("A::thing", diag)
         self.assertIn("B::thing", diag)
@@ -62,7 +58,7 @@ fun main(): System::Int
 
 class TestProjectFolderBuild(TestCase):
     def test_builds_and_runs_a_multi_file_project(self):
-        # Drive the real CLI: point `main.py` at a project directory, which gathers
+        # Drive the real CLI: point the compiler at a project directory, which gathers
         # every .yafl under it, discovers System on the search path, and statically
         # links the resulting binary.
         with tempfile.TemporaryDirectory() as d:
@@ -77,9 +73,11 @@ class TestProjectFolderBuild(TestCase):
                 "import System\nfun helper(): System::Int\n  ret 100\n", encoding="utf-8")
 
             binary = proj / "out"
+            # No -L: the System library comes from the build tree, which both
+            # compilers fall back to when the search path has none.
             build = subprocess.run(
-                [sys.executable, "main.py", str(proj), "-o", str(binary)],
-                cwd=_COMPILER_DIR, capture_output=True, text=True, timeout=120)
+                [*compiler_command(), str(proj), "-o", str(binary)],
+                cwd=_COMPILER_DIR, capture_output=True, text=True, timeout=900)
             self.assertEqual(0, build.returncode,
                              f"project build failed:\n{build.stdout}\n{build.stderr}")
             self.assertTrue(binary.exists(), "expected an output binary")

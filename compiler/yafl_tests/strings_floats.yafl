@@ -1,0 +1,49 @@
+# Float + Constants residual tests.
+#
+# Most of the original test_strings_floats has been consolidated into
+# mega-tests (test_arithmetic, test_comparisons, test_conversions,
+# test_parse, test_string_ops). What remains:
+#
+#   * Float runtime: isNaN(real value) + literal-truncate round-trip,
+#     both rolled into one compile alongside the [const] inlining checks.
+#   * [const]-with-non-literal compile-error rejection: separate test
+#     because it asserts a *compile failure*, not a runtime value.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::StringsFloats::FloatAndConstantsRuntime
+
+import System
+import System::Test
+
+let [const] HALF: System::Float = 0.5
+
+fun emit(label: System::String, value: System::Int): System::None
+  System::print(label + "=" + System::String(value) + "\n")
+  ret None
+
+fun program(): System::Int
+  # ─── isNaN on a real value ─────────────────────────────────────────────
+  let a: System::Float = 1.0
+  emit("isNaN_real",   System::isNaN(a) ? 1 : 0)
+
+  # ─── Float literal → Int truncation ────────────────────────────────────
+  let f: System::Float = 3.5
+  emit("trunc_3_5",    System::truncateToInt(f))     # 3
+
+  # ─── User-defined [const] inlines ──────────────────────────────────────
+  let v: System::Float = HALF
+  emit("HALF_plus_HALF", System::truncateToInt(v + v))   # 1
+
+  # ─── Stdlib PI is reachable and has the expected value ────────────────
+  let r: System::Float = System::PI * 10.0
+  emit("PI_times_10",   System::truncateToInt(r))    # 31
+
+  # ─── TAU == 2*PI exactly (both [const] inlined literals) ──────────────
+  emit("TAU_eq_2_PI",   System::PI + System::PI == System::TAU ? 1 : 0)
+
+  ret 0
+
+fun [test("float and constants runtime", stdout = "isNaN_real=0\ntrunc_3_5=3\nHALF_plus_HALF=1\nPI_times_10=31\nTAU_eq_2_PI=1\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

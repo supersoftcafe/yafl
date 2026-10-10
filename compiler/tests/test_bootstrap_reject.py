@@ -24,10 +24,10 @@ from __future__ import annotations
 import os
 import subprocess
 
-import compiler as c
 
 from tests.testutil import stdlib_files, stdlib_unit_name, TimedTestCase as TestCase
 from tests.testutil import _RUN_ENV
+from tests.testutil import compile_c
 
 
 _PRELUDE = "namespace Test\nimport System\n\n"
@@ -74,7 +74,7 @@ class TestBootstrapReject(TestCase):
         cls.binary = shared_bootstrap_binary()
 
     def _port(self, text: str) -> subprocess.CompletedProcess:
-        return subprocess.run([self.binary, "c1"], input=_stream(text),
+        return subprocess.run([self.binary, "--stage", "c1"], input=_stream(text),
                               capture_output=True, timeout=300, text=True,
                               env=_RUN_ENV)
 
@@ -83,8 +83,7 @@ class TestBootstrapReject(TestCase):
             with self.subTest(case=name):
                 text = _program(body)
 
-                py = c.compile([c.Input(text, "case.yafl")], use_stdlib=True,
-                               just_testing=False, optimization_level=1)
+                py = compile_c(text, "case.yafl", optimization_level=1)
                 self.assertFalse(
                     py, f"{name}: PYTHON accepted a program it must reject")
 
@@ -102,8 +101,7 @@ class TestBootstrapReject(TestCase):
         a check phase that always failed would pass the test above."""
         text = _program("  let x = 1")
 
-        py = c.compile([c.Input(text, "case.yafl")], use_stdlib=True,
-                       just_testing=False, optimization_level=1)
+        py = compile_c(text, "case.yafl", optimization_level=1)
         self.assertTrue(py, "python rejected a valid program")
 
         r = self._port(text)

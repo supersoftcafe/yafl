@@ -5,10 +5,12 @@
 have to. Backed by two foreign helpers (`sys_argc`, `sys_argv_at`) that
 expose the raw process argv, set by the emitted `main()` shim before
 `thread_start`.
+
+Runtime behaviour is checked by compiler/yafl_tests/args.yafl.
 """
 from __future__ import annotations
 
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib
 
 
@@ -22,7 +24,8 @@ _LEN_PROG = (
 class TestArgsLength(TestCase):
 
     def test_no_args(self):
-        """Run with only the program path — args() is empty."""
+        """Run with only the program path — args() is empty. (Not a [test]: the
+        runner always gives its child `--run-raw <id>`.)"""
         self.assertEqual(0, compile_and_run_stdlib(_LEN_PROG))
 
     def test_single_arg(self):
@@ -81,5 +84,3 @@ class TestEnv(TestCase):
     def test_empty_value_is_none(self):
         self.assertEqual(4, compile_and_run_stdlib(self._PROG, env={"YAFL_TEST_ENV": ""}))
 
-    def test_unset_value_is_none(self):
-        self.assertEqual(4, compile_and_run_stdlib(self._PROG))

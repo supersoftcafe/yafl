@@ -1,0 +1,49 @@
+# A lambda flowing into a union-typed sink is converted into the union.
+#
+# Every expression's compile wraps itself in a ConvertExpression when its sink
+# needs a representation change (conversion.converted) — except the lambda,
+# which returned itself bare. A lambda returned from `fun f(): ((:Int): Int)|String`
+# (or taken as a ternary branch into that union) therefore reached generate
+# unconverted, and generate refuses to convert: "conversion required at
+# generate — compile failed to insert a ConvertExpression". The same lambda
+# bound by `let` first worked, since the let's name is converted at the sink.
+# (Top-level names are unique across this class: batched compiles share one flat
+# name pool.)
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::LambdaIntoUnion::LambdaAsTernaryBranchIntoUnion
+
+import System
+import System::Test
+
+fun ltPick(k: Int): ((:Int): Int)|String
+  ret k > 0 ? (x: Int) => x * k : "none"
+fun ltUse(v: ((:Int): Int)|String): Int
+  ret match(v)
+    (f: (:Int): Int) => f(7)
+    (s: String)      => length(s)
+fun program(): System::Int
+  ret ltUse(ltPick(3)) + ltUse(ltPick(0))
+
+fun [test("lambda as ternary branch into union")] check(): None|TestFailure
+    ret assertEqInt(program(), 25, "program()")
+
+
+namespace CompilerTests::LambdaIntoUnion::LambdaReturnedIntoUnion
+
+import System
+import System::Test
+
+fun luAdder(k: Int): ((:Int): Int)|String
+  ret (x: Int) => x + k
+fun luUse(v: ((:Int): Int)|String): Int
+  ret match(v)
+    (f: (:Int): Int) => f(1)
+    (s: String)      => 0
+fun program(): System::Int
+  ret luUse(luAdder(41))
+
+fun [test("lambda returned into union")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")

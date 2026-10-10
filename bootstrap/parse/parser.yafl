@@ -38,19 +38,34 @@ import Bootstrap::StdlibCandidates
 class [final] Ps(ts: Chain<Token>, fline: System::Int, findent: System::Int,
                  srcFile: System::String)
 
+# A parse failure, and — when a statement list RECOVERED past it — the
+# failures found after it (`later`, in source order). See parseStmts.
 class [final] PFail(hard: System::Bool, msg: System::String,
-                    line: System::Int, col: System::Int)
+                    line: System::Int, col: System::Int,
+                    later: List<PFail>)
+
+# Every failure a PFail carries: itself, then what was recovered after it.
+fun failuresOf(f: PFail): List<PFail> => prepend(PFail(f.hard, f.msg, f.line, f.col, List()), f.later)
+
+# Many failures as ONE: the first, carrying the rest. HARD — a block that
+# reported errors has committed, and must not be re-tried as an alternative.
+fun failureOf(fs: List<PFail>): PFail|None => match(head(fs))
+  (f: PFail) => PFail(true, f.msg, f.line, f.col, tail(fs))
+  ()         => None
 
 fun softFail(msg, ps: Ps)
   let t = peek(ps)
-  ret PFail(false, msg, t.line, t.col)
+  ret PFail(false, msg, t.line, t.col, List())
 
 fun hardFail(msg, ps: Ps)
   let t = peek(ps)
-  ret PFail(true, msg, t.line, t.col)
+  ret PFail(true, msg, t.line, t.col, List())
+
+# A hard failure at a node already parsed, rather than at the next token.
+fun failAt(msg, lr: PLine) => PFail(true, msg, lr.plLine, lr.plCol, List())
 
 # Escalate a soft failure after committing to a construct (parselib.requires).
-fun harden(f, msg) => f.hard ? f : PFail(true, msg, f.line, f.col)
+fun harden(f, msg) => f.hard ? f : PFail(true, msg, f.line, f.col, List())
 
 # ── stage threading ──────────────────────────────────────────────────────────
 # A parse stage is `(v: T|PFail, rest: Ps)` — the value or the failure, paired
@@ -318,7 +333,7 @@ fun [tail] typeNamedPath(path: System::String, lr: PLine, ps: Ps): (v: Spec|PFai
 fun [tail] parseTypeArgs(ps: Ps, acc: ListBuilder<Spec>): (v: List<Spec>|PFail, rest: Ps)
   let t = parseType(ps)
   ret match(t.v)
-    (f: PFail) => specsFail(acc, PFail(false, f.msg, f.line, f.col), t.rest)
+    (f: PFail) => specsFail(acc, PFail(false, f.msg, f.line, f.col, f.later), t.rest)
     (ty: Spec)   => atSym(t.rest, ",")
       ? parseTypeArgs(bump(t.rest), push(acc, ty))
       : typeArgsClose(build(push(acc, ty)), t.rest)
@@ -588,10 +603,13 @@ fun [tail] bindPipeLoop(lhs, lr, ps): (v: PExpr|PFail, rest: Ps)
   let r = parseIs(bump(ps))
   ret match(r.v)
     (f: PFail)   => f.hard ? (f, r.rest) : (lhs, ps)
-    (rhs: PExpr) => bindPipeLoop(op == "|>"
-                                   ? pipeStage(lhs, rhs)
-                                   : foldBinary("?>", lhs, rhs, lr),
-                                 lr, r.rest)
+    # A stage has ONE hole for the piped value to fill (__pipe_stage).
+    (rhs: PExpr) => op == "|>" && placeholderCount(rhs) > 1
+      ? (failAt("at most one `_` placeholder per pipeline stage", exprLine(rhs)), r.rest)
+      : bindPipeLoop(op == "|>"
+                       ? pipeStage(lhs, rhs)
+                       : foldBinary("?>", lhs, rhs, lr),
+                     lr, r.rest)
 
 # `L is R` / `L !is R` => match(L) (_: R) => Bool ; () => Bool — no Is node.
 fun parseIs(ps: Ps): (v: PExpr|PFail, rest: Ps)
@@ -748,8 +766,11 @@ fun isFloatLexeme(s)
 fun numberTerm(lexeme, lr, ps): (v: PExpr|PFail, rest: Ps)
   if isFloatLexeme(lexeme)
     let prec = endsWith(lexeme, "f32") ? 32 : endsWith(lexeme, "f64") ? 64 : 0
-    let cut = prec == 0 ? length(lexeme) : length(lexeme) - 3
-    ret (PeFloat(slice(lexeme, 0, cut), prec, lr), bump(ps))
+    let text = slice(lexeme, 0, prec == 0 ? length(lexeme) : length(lexeme) - 3)
+    # Underscores only group digits: the text that reaches parseFloat has none.
+    ret validFloat(text)
+      ? (PeFloat(join(split(text, "_"), ""), prec, lr), bump(ps))
+      : (hardFail("invalid float literal", ps), bump(ps))
   let d = decodeInt(lexeme)
   ret d.ilErr == ""
     ? (PeInt(d.ilValue, d.ilPrecision, lr), bump(ps))
@@ -913,8 +934,10 @@ fun builtinFromTuple(ty, tup: PExpr, lr,
     (first: PTupEnt) => match(first.tupValue)
       (op: PeStr) => (PeBuiltinOp(ty, first.tupValue,
                                   PeTuple(tail(t2.exprs), t2.petLine), lr), ps)
-      ()          => (hardFail("__builtin_op__ first parameter must be a string", ps), ps)
-    ()               => (hardFail("__builtin_op__ first parameter must be a string", ps), ps)
+      ()          => (failAt("__builtin_op__ first parameter must be a string",
+                             exprLine(first.tupValue)), ps)
+    ()               => (failAt("__builtin_op__ first parameter must be a string",
+                                  t2.petLine), ps)
   (other)       => (hardFail("invalid use of __builtin_op__", ps), ps)
 
 fun parseParallel(lr, ps): (v: PExpr|PFail, rest: Ps)
@@ -969,8 +992,11 @@ fun [tail] parseArms(subj: PExpr, extra: List<PExpr>, lr: PLine, ps: Ps,
   let a = parseArm(armPs)
   ret match(a.v)
     (f: PFail) => armsFail(acc, f, a.rest)
-    (arm: PArm) => parseArms(subj, extra, lr, blockExit(a.rest, ps),
-                             push(acc, arm))
+    # An arm owns its whole line block (parselib.block): tokens left in it are
+    # an error, never the start of whatever encloses the match.
+    (arm: PArm) => !isEof(peek(a.rest))
+      ? armsFail(acc, hardFail("extra unexpected characters", a.rest), a.rest)
+      : parseArms(subj, extra, lr, blockExit(a.rest, ps), push(acc, arm))
 
 fun parseArm(ps): (v: PArm|PFail, rest: Ps)
   let lr = lineAt(ps)
@@ -989,7 +1015,7 @@ fun parseLiteralArmHead(ps): (v: List<PLit>|PFail, rest: Ps)
 fun [tail] parseLiteralList(ps, acc: ListBuilder<PLit>): (v: List<PLit>|PFail, rest: Ps)
   let l = parseMatchLiteral(ps)
   ret match(l.v)
-    (f: PFail) => litsFail(acc, PFail(false, f.msg, f.line, f.col), l.rest)
+    (f: PFail) => litsFail(acc, PFail(false, f.msg, f.line, f.col, f.later), l.rest)
     # Any-of literals are separated by `|`, NOT `,`: a comma is POSITIONAL in
     # a match arm whatever the subject count, so `(0, 1)` means "position 0 is
     # 0 and position 1 is 1" and `('a' | 'b')` means "either, one subject".
@@ -1105,17 +1131,35 @@ fun armBodyNoGuard(name, ty, lits, lr,
 # Re-fence back to the enclosing block after a nested one.
 fun blockExit(inner: Ps, outer: Ps) => Ps(inner.ts, outer.fline, outer.findent, outer.srcFile)
 
-fun [tail] parseStmts(ps: Ps, acc: ListBuilder<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
+# ERROR RECOVERY. A statement that fails — or parses but leaves tokens in its
+# block — is recorded and SKIPPED: parsing resumes at the next statement, the
+# first token past the failed one's block fence. Indentation makes every
+# statement block a synchronisation point, so one mistake costs one statement,
+# not the rest of the file, and every error in the file is reported in one
+# pass. A list that recorded any failure fails as a whole, carrying them all
+# (`failureOf`); the enclosing list records that and recovers in turn, so a
+# broken line deep in a function body is reported without hiding the next
+# function.
+fun parseStmts(ps: Ps, acc: ListBuilder<PStmt>): (v: List<PStmt>|PFail, rest: Ps) => stmtsLoop(ps, acc, List())
+
+fun [tail] stmtsLoop(ps: Ps, acc: ListBuilder<PStmt>,
+                     errs: List<PFail>): (v: List<PStmt>|PFail, rest: Ps)
   let t = peek(ps)
   if isEof(t)
-    ret (build(acc), ps)
+    ret match(failureOf(errs))
+      (f: PFail) => stmtsFail(acc, f, ps)
+      ()         => (build(acc), ps)
   let inner = Ps(ps.ts, t.line, t.indent, ps.srcFile)
   let s = parseStmt(inner)
   ret match(s.v)
-    (f: PFail)  => stmtsFail(acc, f, s.rest)
+    (f: PFail)  => stmtsLoop(blockExit(skipBlock(inner), ps), acc, concat(errs, failuresOf(f)))
     (st: PStmt) => !isEof(peek(s.rest))
-      ? stmtsFail(acc, hardFail("extra unexpected characters", s.rest), s.rest)
-      : parseStmts(blockExit(s.rest, ps), push(acc, st))
+      ? stmtsLoop(blockExit(skipBlock(inner), ps), acc,
+                  concat(errs, list1(hardFail("extra unexpected characters", s.rest))))
+      : stmtsLoop(blockExit(s.rest, ps), push(acc, st), errs)
+
+# Past every token inside the block's fence: where the next statement starts.
+fun [tail] skipBlock(ps: Ps): Ps => isEof(peek(ps)) ? ps : skipBlock(bump(ps))
 
 fun parseStmt(ps): (v: PStmt|PFail, rest: Ps)
   let t = peek(ps)
@@ -1145,11 +1189,11 @@ fun parseStmt(ps): (v: PStmt|PFail, rest: Ps)
   if kw == "enum"
     ret parseEnum(post, bump(ps))
   if kw == "if"
-    ret parseIf(post, bump(ps), 0)
+    ret parseIf(lr, bump(ps), 0)
   if kw == "else"
     ret atSym(bump(ps), "if")
-      ? parseIf(lineAt(bump(bump(ps))), bump(bump(ps)), 1)
-      : parseElse(post, bump(ps))
+      ? parseIf(lr, bump(bump(ps)), 1)
+      : parseElse(lr, bump(ps))
   ret parseAction(lr, ps)
 
 # The statement expression's PARSE START. Python's productions carry the
@@ -1172,16 +1216,20 @@ fun parseRet(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   ret hardened(parseExpr(ps), "missing return value")
     ?> (a: PExpr, rest: Ps) => (PsRet(a, stmtExprStart(ps, a)), rest)
 
-fun parseIf(lr: PLine, ps: Ps, kindSel): (v: PStmt|PFail, rest: Ps)
+# `kw` is the statement's keyword (`if`, or the `else` of `else if`); the
+# statement itself sits at its condition.
+fun parseIf(kw: PLine, ps: Ps, kindSel): (v: PStmt|PFail, rest: Ps)
   ret hardened(parseExpr(ps), "invalid if statement")
-    ?> (cond: PExpr, rest: Ps) => parseIfBody(cond, kindSel, stmtExprStart(ps, cond), rest)
+    ?> (cond: PExpr, rest: Ps) => parseIfBody(cond, kindSel, stmtExprStart(ps, cond), kw, rest)
 
-fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine,
+fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine, kw: PLine,
                 ps: Ps): (v: PStmt|PFail, rest: Ps) => parseStmts(ps, builder())
   ?> (body: List<PStmt>, rest: Ps) => kindSel == 0
        ? (PsIf(cond, body, List(), lr), rest)
-       : (PsElseIf(cond, body, lr), rest)
+       : (PsElseIf(cond, body, lr, kw), rest)
 
+# An `else` sits at its keyword: it has no condition to place it, as an `if`
+# or `else if` has, so an orphan is reported where it is written.
 fun parseElse(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps) => parseStmts(ps, builder())
   ?> (body: List<PStmt>, rest: Ps) => (PsElse(body, lr), rest)
 
@@ -1427,26 +1475,35 @@ fun parseEnumVariants(attrs: List<PAttr>, name: String, gen: List<PGen>,
                vl, hasParams, lr),
         rest)
 
-fun [tail] parseVariantList(ps: Ps, acc: ListBuilder<PStmt>): (v: List<PStmt>|PFail, rest: Ps)
+# Variants recover exactly as statements do (see parseStmts).
+fun parseVariantList(ps: Ps, acc: ListBuilder<PStmt>): (v: List<PStmt>|PFail, rest: Ps) => variantsLoop(ps, acc, List())
+
+fun [tail] variantsLoop(ps: Ps, acc: ListBuilder<PStmt>,
+                        errs: List<PFail>): (v: List<PStmt>|PFail, rest: Ps)
   let t = peek(ps)
   if !isSymTok(t, "enum")
-    ret (build(acc), ps)
+    ret match(failureOf(errs))
+      (f: PFail) => stmtsFail(acc, f, ps)
+      ()         => (build(acc), ps)
   let inner = Ps(ps.ts, t.line, t.indent, ps.srcFile)
   let v = parseEnum(lineAt(bump(inner)), bump(inner))
   ret match(v.v)
-    (f: PFail)  => stmtsFail(acc, f, v.rest)
+    (f: PFail)  => variantsLoop(blockExit(skipBlock(inner), ps), acc, concat(errs, failuresOf(f)))
     (st: PStmt) => !isEof(peek(v.rest))
-      ? stmtsFail(acc, hardFail("extra unexpected characters", v.rest), v.rest)
-      : parseVariantList(blockExit(v.rest, ps), push(acc, st))
+      ? variantsLoop(blockExit(skipBlock(inner), ps), acc,
+                     concat(errs, list1(hardFail("extra unexpected characters", v.rest))))
+      : variantsLoop(blockExit(v.rest, ps), push(acc, st), errs)
 
 # ══ Top level ════════════════════════════════════════════════════════════════
 
+# Every failure in the file, or the program. A failure carries the rest in
+# `later` (failuresOf lists them all, in source order).
 fun parseProgram(src: String, filename: String): List<PStmt>|PFail
   let toks = tokenize(src)
   let r = parseStmts(Ps(chain(toks), 0, -1, filename), builder())
   ret match(r.v)
     (f: PFail)           => f
-    (stmts: List<PStmt>) => match(memberSignatureViolation(chain(stmts)))
+    (stmts: List<PStmt>) => match(failureOf(memberSignatureViolations(chain(stmts), builder())))
       (f2: PFail) => f2
       ()          => fixupProgram(stmts)
 
@@ -1455,25 +1512,24 @@ fun parseProgram(src: String, filename: String): List<PStmt>|PFail
 # clause (constraints belong on the class/instance). The TYPE PARAMETER half of
 # the rule is the function's own check, on fGlobal; a member's `where` cannot be
 # asked there because the owner grafts its clause on before that check runs.
-# (Python appends a parse error and continues; the port's single-failure
-# channel stops at the first violation — divergent only on invalid input.)
-fun [tail] memberSignatureViolation(ss: Chain<PStmt>) => match(ss)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(memberViolationOf(l.value))
-    (f: PFail) => f
-    ()         => memberSignatureViolation(l.next)
+# EVERY violation is reported, not just the first.
+fun [tail] memberSignatureViolations(ss: Chain<PStmt>,
+                                     [terminal] b: ListBuilder<PFail>): List<PFail> => match(ss)
+  (nil: ChainEnd) => build(b)
+  (l: ChainLink)  => memberSignatureViolations(l.next, pushAll(b, memberViolationsOf(l.value)))
 
-fun memberViolationOf(st) => match(st)
-  (c: PsClass)            => membersViolation(chain(c.cMembers))
-  (inst: PsTraitInstance) => membersViolation(chain(inst.tiMembers))
-  (o: PStmt)              => None
+fun memberViolationsOf(st): List<PFail> => match(st)
+  (c: PsClass)            => membersViolations(chain(c.cMembers), builder())
+  (inst: PsTraitInstance) => membersViolations(chain(inst.tiMembers), builder())
+  (o: PStmt)              => List()
 
-fun [tail] membersViolation(ms: Chain<PStmt>) => match(ms)
-  (nil: ChainEnd) => None
+fun [tail] membersViolations(ms: Chain<PStmt>,
+                             [terminal] b: ListBuilder<PFail>): List<PFail> => match(ms)
+  (nil: ChainEnd) => build(b)
   (l: ChainLink)  => match(l.value)
     (f: PsFun) => !isEmpty(f.fWheres)
-      ? PFail(true,
-              "a member function declares no `where` clause — constraints belong on the class or instance",
-              f.psfLine.plLine, f.psfLine.plCol)
-      : membersViolation(l.next)
-    (o: PStmt) => membersViolation(l.next)
+      ? membersViolations(l.next, push(b, PFail(true,
+            "a member function declares no `where` clause — constraints belong on the class or instance",
+            f.psfLine.plLine, f.psfLine.plCol, List())))
+      : membersViolations(l.next, b)
+    (o: PStmt) => membersViolations(l.next, b)

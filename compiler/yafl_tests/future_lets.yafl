@@ -1,0 +1,93 @@
+# `[future]` lets: the initialiser is posted to the worker pool at bind time;
+# the binding's slot holds the deferred stub (the `[lazy]` machinery), and every
+# read forces — parking on the completion if the worker hasn't finished, memoised
+# thereafter. When the pool isn't accepting (YAFL_TASK_BACKLOG exceeded) the post
+# is skipped and the binding degrades to plain lazy: first read evaluates.
+# Semantics are identical to the same program without the attribute — only the
+# timing overlaps. Structural tests only (no timing assertions — shared host).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::FutureLets::BasicRead
+
+import System
+import System::Test
+
+fun double(x: System::Int): System::Int
+  ret x * 2
+
+fun program(): System::Int
+  let [future] a = double(21)
+  ret a
+
+fun [test("basic read")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::FutureLets::ConcurrentForcers
+
+import System
+import System::Test
+
+fun double(x: System::Int): System::Int
+  ret x * 2
+
+fun program(): System::Int
+  let [future] a = double(10)
+  let (x, y) = __parallel__(() => a + 1, () => a + 2)
+  ret x + y
+
+fun [test("concurrent forcers")] check(): None|TestFailure
+    ret assertEqInt(program(), 43, "program()")
+
+
+namespace CompilerTests::FutureLets::FutureOfUnion
+
+import System
+import System::Test
+
+fun pick(b: System::Bool): System::Int | System::None
+  ret b ? 5 : None
+
+fun program(): System::Int
+  let [future] a = pick(true)
+  ret match(a)
+    (i: System::Int)  => i
+    (n: System::None) => 0
+
+fun [test("future of union")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::FutureLets::LinearPayloadSingleRead
+
+import System
+import System::Test
+
+class [linear,final] Tok(v: System::Int)
+  fun [terminal] consume(): System::Int
+    ret this.v
+
+fun program(): System::Int
+  let [future] r = Tok(9)
+  ret r.consume()
+
+fun [test("linear payload single read")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")
+
+
+namespace CompilerTests::FutureLets::MemoisedRereads
+
+import System
+import System::Test
+
+fun double(x: System::Int): System::Int
+  ret x * 2
+
+fun program(): System::Int
+  let [future] a = double(7)
+  ret a + a + a
+
+fun [test("memoised rereads")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")

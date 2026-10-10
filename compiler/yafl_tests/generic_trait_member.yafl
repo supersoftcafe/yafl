@@ -1,0 +1,44 @@
+# Call-site binding for members of GENERIC ambient instances.
+#
+# A concrete call to a member of a generic `instance [ambient]` (e.g.
+# `drop(b)` where the instance is `instance [ambient]<T> Drop<ListBuilder<T>>`)
+# binds the INSTANCE's type parameters from the argument shape — the
+# generic-function-candidate rule applied to instances. This was the original
+# gap the drops pass routed around with a `dropIndirect` trampoline, both
+# deleted once the instance statement and ambient resolution landed.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::GenericTraitMember::ExplicitDropOfBuilder
+
+import System
+import System::Test
+
+fun program(): Int
+  let b = push(builder<Int>(), 7)
+  let _ = drop(b)
+  ret 0
+
+fun [test("explicit drop of builder")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::GenericTraitMember::OwnGenericInstanceMember
+
+import System
+import System::Test
+
+interface Sized<T>
+  fun sizeOf(v: T): Int
+
+instance [ambient]<T> Sized<List<T>>
+  fun sizeOf(v: List<T>): Int
+    ret chainLength(chain(v))
+
+fun program(): Int
+  let l = prepend(4, prepend(5, List<Int>()))
+  ret sizeOf(l) == 2 ? 0 : 1
+
+fun [test("own generic instance member")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

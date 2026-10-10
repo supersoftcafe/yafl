@@ -1,0 +1,49 @@
+# Generic argument inference from container-typed arguments alone.
+#
+# A call like `head(l)` with `l: List<String>` must bind T=String by unifying
+# the declared `List<T>` parameter against the argument type — the same way
+# `contains(l, x)` binds T from the bare `x: T` argument. Found by the yaflc
+# self-hosting prototype: every such call (head, tail, isEmpty, chain, ...)
+# failed to monomorphise and CRASHED codegen instead of erroring.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::GenericContainerInference::ContainerOnlyCallsInfer
+
+import System
+import System::Test
+
+class [final] Thing(rank: System::Int)
+
+fun sumRanks(l: List<Thing>, acc: System::Int): System::Int
+  ret match(head(l))
+    (x: Thing) => sumRanks(tail(l), acc + x.rank)
+    ()         => acc
+
+fun program(): System::Int
+  let l: List<Thing> = prepend(Thing(4), prepend(Thing(5), List<Thing>()))
+  let e = isEmpty(l) ? 100 : 0
+  let n = chainLength(chain(l))
+  # 4+5 ranks, +0 for non-empty, +2 elements = 11
+  ret sumRanks(l, 0) + e + n
+
+fun [test("container only calls infer")] check(): None|TestFailure
+    ret assertEqInt(program(), 11, "program()")
+
+
+namespace CompilerTests::GenericContainerInference::StringElementType
+
+import System
+import System::Test
+
+fun peek(l: List<String>): System::Int
+  ret match(head(l))
+    (x: String) => length(x)
+    ()          => 0
+
+fun program(): System::Int
+  ret peek(prepend("x", List<String>()))
+
+fun [test("string element type")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

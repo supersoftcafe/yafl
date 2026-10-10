@@ -1,0 +1,88 @@
+# Subprocess spawn: System::IO::run.
+#
+# `run(program, args)` spawns an external program (resolved on PATH) through the
+# IO threadpool, with stdin = /dev/null, capturing stdout, stderr, and the exit
+# code into a ProcessResult. A non-zero child exit is a successful result (carried
+# in exitCode), not an IOError; only a failure to *start* the program is an
+# IOError. See yafllib/io.c (process_run) and stdlib/process.yafl.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Process::CapturesStderr
+
+import System
+import System::IO
+import System::Test
+
+fun _args(): List<System::String>
+  ret prepend<System::String>("-c",
+        prepend<System::String>("echo oops 1>&2", List<System::String>()))
+
+fun program(): System::Int
+  ret match(System::IO::run("/bin/sh", _args()))
+    (r: System::IO::ProcessResult) => r.err == "oops\n" ? (r.out == "" ? 0 : 1) : 2
+    (e: System::IO::IOError)        => 3
+
+fun [test("captures stderr")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Process::CapturesStdoutAndZeroExit
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret match(System::IO::run("/bin/echo", prepend<System::String>("hello", List<System::String>())))
+    (r: System::IO::ProcessResult) => r.out == "hello\n" ? (r.exitCode == 0 ? 0 : 1) : 2
+    (e: System::IO::IOError)        => 3
+
+fun [test("captures stdout and zero exit")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Process::LargeOutputExceedsBuffer
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret match(System::IO::run("/usr/bin/seq", prepend<System::String>("20000", List<System::String>())))
+    (r: System::IO::ProcessResult) => System::length(r.out) > 80000 ? 0 : 1
+    (e: System::IO::IOError)        => 2
+
+fun [test("large output exceeds buffer")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Process::MissingProgramIsIoerror
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret match(System::IO::run("/no/such/program/xyzzy", List<System::String>()))
+    (r: System::IO::ProcessResult) => 1
+    (e: System::IO::IOError)        => 0
+
+fun [test("missing program is ioerror")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Process::NonzeroExitIsSuccessNotError
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  ret match(System::IO::run("/bin/false", List<System::String>()))
+    (r: System::IO::ProcessResult) => r.exitCode == 1 ? 0 : 1
+    (e: System::IO::IOError)        => 2
+
+fun [test("nonzero exit is success not error")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

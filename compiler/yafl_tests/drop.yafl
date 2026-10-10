@@ -1,0 +1,163 @@
+# Affine drops: a never-referenced `[linear]` binding auto-releases at scope
+# exit through its `Drop` instance (lowering/drops.py inserts the call; the
+# linearity checker then sees ordinary consumption).
+#
+# The prelude defines a linear `Res` whose Drop instance prints "dropped", so a
+# test observes exactly when (and how many times) a drop fires. Without a Drop
+# instance in scope, the old linearity error stands.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Drop::EarlyReturnBeforeTheBindingDoesNotDrop
+
+import System
+import System::Test
+
+class [linear,final] Res(x: System::Int)
+  fun [terminal] fin(): System::None
+    ret None
+
+instance [ambient] System::Drop<Res>
+  fun drop(self: Res): System::None
+    System::print("dropped")
+    ret self.fin()
+
+fun sink(r: Res): System::Int
+  let _ = r.fin()
+  ret 4
+
+fun pick(early: System::Bool, use: System::Bool): System::Int
+  if early
+    ret 1
+  let r = Res(5)
+  ret use ? sink(r) : 2
+fun program(): System::Int
+  ret pick(true, true)
+
+fun [test("early return before the binding does not drop", stdout = "")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::Drop::ExplicitConsumptionDoesNotDrop
+
+import System
+import System::Test
+
+class [linear,final] Res(x: System::Int)
+  fun [terminal] fin(): System::None
+    ret None
+
+instance [ambient] System::Drop<Res>
+  fun drop(self: Res): System::None
+    System::print("dropped")
+    ret self.fin()
+
+fun sink(r: Res): System::Int
+  let _ = r.fin()
+  ret 4
+
+fun program(): System::Int
+  let r = Res(5)
+  ret sink(r)
+
+fun [test("explicit consumption does not drop", stdout = "")] check(): None|TestFailure
+    ret assertEqInt(program(), 4, "program()")
+
+
+namespace CompilerTests::Drop::IoHandleDropsAndCloses
+
+import System
+import System::IO
+import System::Test
+
+fun [tail] count(s: StreamIO, n: System::Int): System::Int
+  let r = System::streamNext<StreamIO, System::String, IOError>(s)
+  ret match(r.value)
+    (ok: System::Ok<System::String|System::None, IOError>) => match(ok.value)
+      (chunk: System::String) => count(r.stream, n + System::length(chunk))
+      (x: System::None)       => n
+    (er: System::Error<System::String|System::None, IOError>) => 0 - 1
+fun program(): System::Int
+  ret stdin().asStream() |> (i, s) => count(s, 0)
+
+fun [test("io handle drops and closes")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Drop::PipeLambdaParamDrops
+
+import System
+import System::Test
+
+class [linear,final] Res(x: System::Int)
+  fun [terminal] fin(): System::None
+    ret None
+
+instance [ambient] System::Drop<Res>
+  fun drop(self: Res): System::None
+    System::print("dropped")
+    ret self.fin()
+
+fun sink(r: Res): System::Int
+  let _ = r.fin()
+  ret 4
+
+fun program(): System::Int
+  ret (Res(1), 9) |> (r, v) => v
+
+fun [test("pipe lambda param drops", stdout = "dropped")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")
+
+
+namespace CompilerTests::Drop::UnusedLetDropsOnce
+
+import System
+import System::Test
+
+class [linear,final] Res(x: System::Int)
+  fun [terminal] fin(): System::None
+    ret None
+
+instance [ambient] System::Drop<Res>
+  fun drop(self: Res): System::None
+    System::print("dropped")
+    ret self.fin()
+
+fun sink(r: Res): System::Int
+  let _ = r.fin()
+  ret 4
+
+fun program(): System::Int
+  let r = Res(5)
+  ret 7
+
+fun [test("unused let drops once", stdout = "dropped")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::Drop::UnusedParamDrops
+
+import System
+import System::Test
+
+class [linear,final] Res(x: System::Int)
+  fun [terminal] fin(): System::None
+    ret None
+
+instance [ambient] System::Drop<Res>
+  fun drop(self: Res): System::None
+    System::print("dropped")
+    ret self.fin()
+
+fun sink(r: Res): System::Int
+  let _ = r.fin()
+  ret 4
+
+fun eat(r: Res): System::Int
+  ret 3
+fun program(): System::Int
+  ret eat(Res(1))
+
+fun [test("unused param drops", stdout = "dropped")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")

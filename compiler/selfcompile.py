@@ -1,20 +1,26 @@
-"""Self-compile gate: the port compiles the whole program (stdlib + bootstrap).
+"""Self-compile: the port compiles its own sources, through its command line.
 
 This is the hardest input the compiler has — itself — and it exercises paths
 nothing else reaches: codegen over the compiler's own sources, GC and runtime
 behaviour under a compiler-sized workload, and any residual nondeterminism.
 
-Run AFTER the test suite: the suite says the compiler is correct on small
-programs, this says it survives the real one. A failure here with a green suite
-means the problem only shows up at scale.
+    ybootstrap -O1 -L <libs> -c <out.c> bootstrap/
 
-    python selfcompile.py                      # uses build/ybootstrap
-    python selfcompile.py --binary /tmp/other
-    python selfcompile.py --mode c3            # -O3 pipeline
+exactly as a user compiles a project: `bootstrap/` is a project directory, its
+units named by their paths relative to it (`driver/main.yafl`) — the names
+build_bootstrap.py gives them — and the stdlib comes from the System library
+on the search path.
 
-Exits non-zero if the port fails, emits nothing, or emits a different result on
-a second run (that last check is cheap relative to the compile and is the only
-thing that catches nondeterminism).
+    python selfcompile.py -L build/stage --expect build/ybootstrap.c   # the gate
+    python selfcompile.py -L build/stage --runs 2                       # timing
+
+`--expect` is the correctness gate run LAST by ctest: the port must emit, byte
+for byte, the C the Python compiler emitted when it built the port. `--runs N`
+repeats the compile and requires every run to agree — the check for
+nondeterminism the speed protocol times.
+
+Exits non-zero if the port fails, emits nothing, disagrees with itself, or
+disagrees with `--expect`.
 """
 from __future__ import annotations
 
@@ -22,37 +28,26 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from libraries import unit_name          # noqa: E402  (after sys.path)
+from build_bootstrap import record_verified, reference_of
 
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent
+_BOOT_DIR = _REPO / "bootstrap"
 
 
-def _stream() -> str:
-    """The #FILE#-marked whole-program stream: stdlib, then the bootstrap.
-
-    Each part must END WITH A NEWLINE or the next `#FILE#` marker glues onto
-    the previous file's last line and the port misattributes it.
-    """
-    def part(p: Path, root: Path) -> str:
-        t = p.read_text()
-        name = unit_name(p, root)
-        return f"#FILE# {name}\n{t if t.endswith(chr(10)) else t + chr(10)}"
-
-    def units(root: Path) -> list[Path]:
-        return sorted(root.rglob("*.yafl"), key=lambda q: unit_name(q, root))
-
-    # Each unit is named by its path relative to its own root — `System/seq.yafl`,
-    # `driver/main.yafl` — the same name the Python compiler gives it, because
-    # the name feeds hash6 and hash6 feeds the emitted C.
-    stdlib, boot = _HERE / "stdlib", _REPO / "bootstrap"
-    parts = [part(p, stdlib) for p in units(stdlib)]
-    parts += [part(p, boot) for p in units(boot)]
-    return "".join(parts)
+def compile_port(binary: Path, level: str, lib_path: str, out: Path,
+                 heap: str = "6G") -> subprocess.CompletedProcess:
+    """`binary` compiles the port's sources to C at `out`, as a user compiles
+    a project. build_bootstrap.py --reuse builds the port this way too."""
+    env = dict(os.environ, YAFL_HEAP_SIZE=heap)
+    env.pop("YAFL_PATH", None)
+    return subprocess.run([str(binary), f"-O{level}", "-L", lib_path, "-c", str(out),
+                           str(_BOOT_DIR)],
+                          text=True, capture_output=True, env=env, timeout=4 * 3600)
 
 
 def main(argv: list[str]) -> int:
@@ -61,47 +56,68 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--binary", type=Path,
                     default=Path(os.environ.get("YAFL_BOOTSTRAP_BIN",
                                                 _REPO / "build" / "ybootstrap")))
-    ap.add_argument("--mode", default="c1",
-                    help="port mode: c, c1, c2, c3 (default c1)")
+    ap.add_argument("-L", "--lib-path", dest="lib_path", required=True, metavar="DIR",
+                    help="library search path holding the System library")
+    ap.add_argument("-O", dest="level", default="1", choices=["0", "1", "2", "3"],
+                    help="optimisation level (default 1, as build_bootstrap.py)")
+    ap.add_argument("--runs", type=int, default=1,
+                    help="compile this many times; every run must agree")
+    ap.add_argument("--expect", type=Path,
+                    help="C the output must equal byte for byte")
     ap.add_argument("--heap", default="6G", help="YAFL_HEAP_SIZE (default 6G)")
-    ap.add_argument("--skip-determinism", action="store_true",
-                    help="skip the second run (halves the time, loses the "
-                         "only check for nondeterminism)")
     args = ap.parse_args(argv)
 
     if not args.binary.is_file():
         print(f"self-compile: no binary at {args.binary} — build it first "
               f"(python build_bootstrap.py)", file=sys.stderr)
         return 2
+    expected = args.expect.read_text() if args.expect else None
 
-    text = _stream()
-    print(f"self-compile: {len(text):,} bytes of source, mode {args.mode}, "
-          f"heap {args.heap}")
-    env = dict(os.environ, YAFL_HEAP_SIZE=args.heap)
+    print(f"self-compile: {args.binary} -O{args.level}, heap {args.heap}, "
+          f"{args.runs} run(s)")
 
-    def run_once(label: str) -> str:
+    def run_once(label: str, out: Path) -> str:
         t = time.time()
-        r = subprocess.run([str(args.binary), args.mode], input=text, text=True,
-                           capture_output=True, env=env, timeout=4 * 3600)
+        r = compile_port(args.binary, args.level, args.lib_path, out, args.heap)
         el = time.time() - t
         if r.returncode != 0:
             print(f"self-compile: port exited {r.returncode} after {el:.0f}s\n"
-                  f"{r.stderr[-4000:]}", file=sys.stderr)
+                  f"{r.stdout[-4000:]}{r.stderr[-4000:]}", file=sys.stderr)
             raise SystemExit(1)
-        if not r.stdout:
+        c_text = out.read_text() if out.is_file() else ""
+        if not c_text:
             print(f"self-compile: port produced no output after {el:.0f}s",
                   file=sys.stderr)
             raise SystemExit(1)
-        print(f"  {label}: {len(r.stdout):,} bytes of C in {el:.0f}s")
-        return r.stdout
+        print(f"  {label}: {len(c_text):,} bytes of C in {el:.0f}s")
+        return c_text
 
-    first = run_once("run 1")
-    if not args.skip_determinism:
-        if run_once("run 2") != first:
-            print("self-compile: THE TWO RUNS DISAGREE — the compiler is "
-                  "nondeterministic on its own sources", file=sys.stderr)
+    with tempfile.TemporaryDirectory() as td:
+        first = run_once("run 1", Path(td) / "run1.c")
+        for i in range(2, args.runs + 1):
+            if run_once(f"run {i}", Path(td) / f"run{i}.c") != first:
+                print(f"self-compile: RUN {i} DISAGREES WITH RUN 1 — the compiler "
+                      f"is nondeterministic on its own sources", file=sys.stderr)
+                return 1
+        if args.runs > 1:
+            print(f"  identical output on all {args.runs} runs")
+
+    if expected is not None:
+        if first != expected:
+            line = next((i for i, (a, b) in enumerate(zip(first.splitlines(),
+                                                          expected.splitlines()), 1)
+                         if a != b), None)
+            print(f"self-compile: the port's C DIFFERS from {args.expect} "
+                  f"({len(first):,} vs {len(expected):,} bytes; first difference at "
+                  f"line {line})", file=sys.stderr)
+            if reference_of(args.expect).get("reference") == "port":
+                print("self-compile: that C came from the CACHED port, not from "
+                      "Python. If this change fixes the port's own code generation, "
+                      "only a Python build can confirm it: run the full path "
+                      "(full_protocol.py --full).", file=sys.stderr)
             return 1
-        print("  identical output on both runs")
+        print(f"  byte-identical to {args.expect}")
+        record_verified(args.expect)
     return 0
 
 

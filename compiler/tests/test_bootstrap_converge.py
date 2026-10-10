@@ -107,7 +107,7 @@ class TestBootstrapConverge(TestCase):
                 statements, _passes = self._python_converged(text)
                 expected = dump(statements).splitlines()
 
-                r = subprocess.run([self.binary, "converge"], input=text,
+                r = subprocess.run([self.binary, "--stage", "converge"], input=text,
                                    capture_output=True, timeout=120, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,
@@ -129,7 +129,7 @@ class TestBootstrapConverge(TestCase):
             with self.subTest(program=name):
                 statements, _passes = self._python_converged(text)
                 expected = dump(statements).splitlines()
-                r = subprocess.run([self.binary, "converge"], input=text,
+                r = subprocess.run([self.binary, "--stage", "converge"], input=text,
                                    capture_output=True, timeout=300, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode, f"{name}: {r.stdout[:300]}")
@@ -149,7 +149,7 @@ class TestBootstrapConverge(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 _statements, py_passes = self._python_converged(text)
-                r = subprocess.run([self.binary, "passes"], input=text,
+                r = subprocess.run([self.binary, "--stage", "passes"], input=text,
                                    capture_output=True, timeout=120, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,

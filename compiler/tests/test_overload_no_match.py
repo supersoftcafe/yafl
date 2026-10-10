@@ -14,18 +14,14 @@ here so the two paths stay distinct.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 import unittest
 
-import compiler as c
+from tests.testutil import compile_c_result
 
 
 def _diagnostics(src: str) -> tuple[object, str]:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        out = c.compile([c.Input(src, "t.yafl")], use_stdlib=True)
-    return out, buf.getvalue()
+    r = compile_c_result(src, "t.yafl")
+    return r.c, r.stdout
 
 
 class TestOverloadNoMatch(unittest.TestCase):

@@ -1,0 +1,61 @@
+# `?>` threads plain error unions: `value ?> (v: T) => next(v)`.
+#
+# The lambda's TYPED parameter picks the success member; every other member of
+# the subject union passes through unchanged. The stage's result type is the
+# lambda's result unioned with the passed-through members — set semantics
+# collapse the duplicates, so chains of `X|Err` stages stay `…|Err`. This is
+# the union analogue of the (io, v: T|IOError) overload; it exists so error
+# threading reads as a pipeline instead of a ladder of match expressions
+# (found writing the yaflc self-hosting prototype).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::BindUnion::ErrorUnionThreading
+
+import System
+import System::Test
+
+class [final] Oops(message: System::String)
+
+fun half(n: System::Int): System::Int|Oops
+  ret n % 2 == 0 ? n / 2 : Oops("odd " + String(n))
+
+fun run(n: System::Int): System::Int
+  let r = half(n)
+    ?> (a: System::Int) => half(a)
+    ?> (b: System::Int) => b + 100
+  ret match(r)
+    (v: System::Int) => v
+    (e: Oops)        => 0 - length(e.message)
+
+fun program(): System::Int
+  # 8 -> 4 -> 2 -> +100 = 102; 10 -> 5 -> Oops("odd 5") = len 5 -> -5.
+  # Exit codes are 8-bit: keep the encoding under 256.
+  ret run(8) + (0 - run(10))
+
+fun [test("error union threading")] check(): None|TestFailure
+    ret assertEqInt(program(), 107, "program()")
+
+
+namespace CompilerTests::BindUnion::NoneUnionThreading
+
+import System
+import System::Test
+
+fun evenOr(n: System::Int): System::Int|System::None
+  ret n % 2 == 0 ? n : None
+
+fun run(n: System::Int): System::Int
+  let r = evenOr(n)
+    ?> (v: System::Int) => v * 10
+  ret match(r)
+    (v: System::Int) => v
+    ()               => -1
+
+fun program(): System::Int
+  # 4 -> 40; 5 -> None -> -1; encode both.
+  ret run(4) + (0 - run(5))
+
+fun [test("none union threading")] check(): None|TestFailure
+    ret assertEqInt(program(), 41, "program()")

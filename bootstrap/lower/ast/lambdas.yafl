@@ -459,7 +459,7 @@ fun clFunStmt(f: PsFun, r, paths: ClPaths, exports): ClSt
   let bodyR = clFunBodyResolver(f, r)
   let b = clExprOpt(f.fBody, bodyR, paths, p.clStExports)
   ret ClSt(PsFun(f.fName, f.fAttrs, f.fGens, p.clStStmt, b.clExOExpr, f.fRet,
-                f.fWheres, f.psfLine, f.fRetInferred, f.fNested, f.fImports),
+                f.fWheres, f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
            b.clExOExports)
 
 fun clLetStmt(l: PsLet, r, paths: ClPaths, exports)

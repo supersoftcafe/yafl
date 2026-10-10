@@ -4,17 +4,17 @@ error-code mapping, and operation-after-close behaviour.
 `IO` is a linear type — every handle must be consumed exactly once. The
 sources below thread the handle through and close it on every path; the
 shared `_done` helper closes a handle and yields an exit code.
+
+Runtime behaviour is checked by compiler/yafl_tests/io.yafl.
 """
 from __future__ import annotations
 
-import io
 import os
 import tempfile
-import contextlib
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 
-import compiler as c
 from tests.testutil import compile_and_run_stdlib
+from tests.testutil import compile_errors
 
 
 # Closes a handle on any path and yields the given exit code. Embedded into
@@ -28,23 +28,6 @@ _DONE = """fun _done(h: IO, code: System::Int): System::Int
 
 class TestIO(TestCase):
 
-    def test_file_not_found_returns_file_not_found_error(self):
-        """open_read on a missing path returns FileNotFoundError specifically."""
-        src = """namespace Main
-import System
-import System::IO
-
-""" + _DONE + """
-fun main(): System::Int
-  ret match(open_read("/nonexistent/yafl_test_ypr0qZ_987654321"))
-    (h: IO) => _done(h, 99)
-    (e: IOError) => match(e)
-      (x: FileNotFoundError) => 0
-      () => 1
-"""
-        code = compile_and_run_stdlib(src)
-        self.assertEqual(0, code,
-            "expected FileNotFoundError arm; got different exit code")
 
     def test_round_trip_write_then_read(self):
         """create/write/close followed by open_read/read round-trips the
@@ -115,11 +98,11 @@ fun main(): System::Int
     (h: IO) => tryReadClosed(h)
     (e: IOError) => 88
 """
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            result = c.compile([c.Input(src, "test.yafl")],
-                               use_stdlib=True, just_testing=False)
-        self.assertEqual("", result, "use-after-close must be a compile error")
+        self.assertEqual(
+            "test.yafl[6:7] - linear value 'r' is never used; it must be consumed once\n"
+            "test.yafl[11:5] - linear value 'h' is used 2 times; must be used once\n"
+            "test.yafl[12:13] - linear value 'h' is used inconsistently across branches\n",
+            compile_errors(src))
 
     def test_write_then_read_via_monadic_chain(self):
         """The (io, v: T|IOError) pair shape composes through nested match
@@ -210,8 +193,7 @@ fun main(): System::Int
         """readLine on an empty file returns EOFError."""
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "empty.txt")
-            with open(path, "w") as f:
-                pass
+            open(path, "w").close()
             src = f"""namespace Main
 import System
 import System::IO
@@ -306,30 +288,3 @@ fun main(): System::Int
             code = compile_and_run_stdlib(src)
             self.assertEqual(0, code,
                 "readLine at EOF with partial data must return the partial line")
-
-    def test_pipe_chain_typechecks_in_let_binding(self):
-        """Regression: `let r = a ?> f` should typecheck identically to
-        `ret a ?> f`.  Bind chains used as a let's default value were
-        emitting a spurious "Incorrect type" diagnostic, which caused
-        compile() to return "" while the diagnostic was printed to
-        stdout — silently breaking any build that didn't re-check the
-        generated .c file."""
-        src = """namespace Main
-import System
-import System::IO
-
-fun emit(io: IO): (io: IO, v: Int|IOError)
-  let r = io.write("a") ?> (io: IO, _: Int) => io.write("b")
-  ret r
-
-fun main(): System::Int
-  let r = emit(stdout())
-  let closed = r.io.close()
-  ret match(r.v)
-    (n: System::Int) => 0
-    (e: IOError)     => 1
-"""
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertTrue(c_code,
-            "compile produced no output — `?>` chain in a `let` binding "
-            "triggered a spurious type error (works fine in a `ret` position)")

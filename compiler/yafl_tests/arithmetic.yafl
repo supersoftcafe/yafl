@@ -1,0 +1,141 @@
+# Consolidated arithmetic test: +  -  *  /  %  unary-neg across
+# Int8/Int16/Int32/Int64/Int/Float/Float32 — one compile, every op
+# exercised.
+#
+# Result rendering: each line prints the result as an integer string.
+# For float ops we round-trip through truncateToInt so the expected
+# output is platform-independent.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Arithmetic::AllArithmeticOpsProduceExpectedOutput
+
+import System
+import System::Test
+
+# Per-type emit helpers. Each one widens its operand back to Int and prints
+# a labelled line. Pinning every output to an integer string keeps the
+# expected text independent of float-formatting subtleties.
+
+fun emit(label: System::String, value: System::Int): System::None
+  print(label + "=" + String(value) + "\n")
+  ret None
+
+fun e8(label: System::String, value: System::Int8): System::None
+  emit(label, Int(value))
+  ret None
+fun e16(label: System::String, value: System::Int16): System::None
+  emit(label, Int(value))
+  ret None
+fun e32(label: System::String, value: System::Int32): System::None
+  emit(label, Int(value))
+  ret None
+fun e64(label: System::String, value: System::Int64): System::None
+  emit(label, Int(value))
+  ret None
+fun ef(label: System::String, value: System::Float): System::None
+  # truncate float to int for output stability.
+  emit(label, truncateToInt(value))
+  ret None
+fun ef32(label: System::String, value: System::Float32): System::None
+  emit(label, truncateToInt(value))
+  ret None
+
+fun program(): System::Int
+  # ─── Int (bigint) ──────────────────────────────────────────────────────
+  emit("Int_add",  40 + 2)
+  emit("Int_sub",  10 - 7)
+  emit("Int_mul",  6 * 7)
+  emit("Int_div",  20 / 3)
+  emit("Int_rem",  20 % 3)
+  emit("Int_neg",  -42 + 100)
+
+  # ─── Int8 ──────────────────────────────────────────────────────────────
+  e8("Int8_add",  40i8 + 2i8)
+  e8("Int8_sub",  10i8 - 7i8)
+  e8("Int8_mul",  6i8 * 7i8)
+  e8("Int8_div",  20i8 / 3i8)
+  e8("Int8_rem",  20i8 % 3i8)
+  e8("Int8_neg",  -42i8 + 100i8)
+
+  # ─── Int16 ─────────────────────────────────────────────────────────────
+  e16("Int16_add",  40i16 + 2i16)
+  e16("Int16_sub",  1000i16 - 234i16)
+  e16("Int16_mul",  6i16 * 7i16)
+  e16("Int16_div",  20i16 / 3i16)
+  e16("Int16_rem",  20i16 % 3i16)
+  e16("Int16_neg",  -42i16 + 100i16)
+
+  # ─── Int32 ─────────────────────────────────────────────────────────────
+  e32("Int32_add",  2i32 + 3i32)
+  e32("Int32_sub",  10i32 - 7i32)
+  e32("Int32_mul",  6i32 * 7i32)
+  e32("Int32_div",  20i32 / 3i32)
+  e32("Int32_rem",  20i32 % 3i32)
+  e32("Int32_neg",  -7i32 + 100i32)
+
+  # ─── Int64 ─────────────────────────────────────────────────────────────
+  e64("Int64_add",  40i64 + 2i64)
+  e64("Int64_sub",  10i64 - 7i64)
+  e64("Int64_mul",  6i64 * 7i64)
+  e64("Int64_div",  20i64 / 3i64)
+  e64("Int64_rem",  20i64 % 3i64)
+  e64("Int64_neg",  -42i64 + 100i64)
+
+  # ─── Float (Float64) ───────────────────────────────────────────────────
+  ef("Float_add",  1.5 + 2.25)        # 3.75 → trunc → 3
+  ef("Float_sub",  10.5 - 4.5)        # 6
+  ef("Float_mul",  2.5 * 4.0)         # 10
+  ef("Float_div",  7.0 / 2.0)         # 3.5 → 3
+  ef("Float_rem",  10.0 % 3.0)        # 1
+  ef("Float_neg",  -(7.5) + 100.0)    # 92.5 → 92
+
+  # ─── Float32 ───────────────────────────────────────────────────────────
+  ef32("Float32_add",  2.5f32 + 3.5f32)     # 6
+  ef32("Float32_sub",  10.5f32 - 4.5f32)    # 6
+  ef32("Float32_mul",  2.5f32 * 4.0f32)     # 10
+  ef32("Float32_div",  15.0f32 / 4.0f32)    # 3.75 → 3
+  ef32("Float32_rem",  10.0f32 % 3.0f32)    # 1
+  ef32("Float32_neg",  -(7.5f32) + 100.0f32) # 92.5 → 92
+
+  ret 0
+
+fun [test("all arithmetic ops produce expected output", stdout = "Int_add=42\nInt_sub=3\nInt_mul=42\nInt_div=6\nInt_rem=2\nInt_neg=58\nInt8_add=42\nInt8_sub=3\nInt8_mul=42\nInt8_div=6\nInt8_rem=2\nInt8_neg=58\nInt16_add=42\nInt16_sub=766\nInt16_mul=42\nInt16_div=6\nInt16_rem=2\nInt16_neg=58\nInt32_add=5\nInt32_sub=3\nInt32_mul=42\nInt32_div=6\nInt32_rem=2\nInt32_neg=93\nInt64_add=42\nInt64_sub=3\nInt64_mul=42\nInt64_div=6\nInt64_rem=2\nInt64_neg=58\nFloat_add=3\nFloat_sub=6\nFloat_mul=10\nFloat_div=3\nFloat_rem=1\nFloat_neg=92\nFloat32_add=6\nFloat32_sub=6\nFloat32_mul=10\nFloat32_div=3\nFloat32_rem=1\nFloat32_neg=92\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Arithmetic::FactorialCrossesTagBoundary
+
+import System
+import System::Test
+
+fun [tail] factInto(n: System::Int, acc: System::Int): System::Int
+  ret n < 2 ? acc : factInto(n - 1, acc * n)
+fun fact(n: System::Int): System::Int
+  ret factInto(n, 1)
+fun program(): System::Int
+  System::print(System::String(fact(20)) + "\n")
+  System::print(System::String(fact(25)) + "\n")
+  ret fact(20) > 0 && fact(25) > 0 ? 0 : 1
+
+fun [test("factorial crosses tag boundary", stdout = "2432902008176640000\n15511210043330985984000000\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+# Not from the Python suite: found while migrating it. A literal too large for
+# the tagged form is a static heap Int whose `sign` field is 0 (positive) or 1
+# (negative); the literal emitters wrote -1, so every negative heap literal
+# printed as positive.
+namespace CompilerTests::Arithmetic::NegativeHeapLiterals
+
+import System
+import System::Test
+
+fun [test("negative literals beyond the tagged range keep their sign")] check(): None|TestFailure
+    ret assertEqStr(String(-9223372036854775807), "-9223372036854775807", "-(2^63 - 1)")
+     ?? assertEqStr(String(-9223372036854775808), "-9223372036854775808", "-2^63")
+     ?? assertEqStr(String(-18446744073709551616), "-18446744073709551616", "-2^64, three limbs")
+     ?? assertTrue(-9223372036854775808 < 0, "below zero")
+     ?? assertTrue(-9223372036854775808 < -9223372036854775807, "ordered")
+     ?? assertEqInt(-9223372036854775808 + 9223372036854775808, 0, "cancels its positive")

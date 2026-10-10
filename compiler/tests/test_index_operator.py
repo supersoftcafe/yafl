@@ -4,7 +4,8 @@
 to `+`(left, right). The parser does the rewrite at the invoke tier (so it
 chains and interleaves with calls); resolution then finds whatever ``[]`` is
 in scope, like any other operator. Nothing is auto-generated for arrays yet —
-these tests only confirm the operator itself works.
+these tests only confirm the operator itself parses. That it runs is a [test]
+in compiler/yafl_tests/index_operator.yafl.
 """
 from __future__ import annotations
 
@@ -12,8 +13,7 @@ from parsing.tokenizer import tokenize
 import parsing.parser as parser
 import pyast.expression as e
 
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import TimedTestCase as TestCase
 
 
 class TestIndexOperatorParsing(TestCase):
@@ -34,17 +34,3 @@ class TestIndexOperatorParsing(TestCase):
         inner = x.parameter.expressions[0].value
         self.assertIsInstance(inner, e.CallExpression)
         self.assertEqual("`[]`", inner.function.name)
-
-
-class TestIndexOperatorRuntime(TestCase):
-    def test_user_defined_index_operator_is_called(self):
-        # A plain top-level ``[]`` resolves and runs. Subtraction is
-        # non-commutative, so 10[3] == 7 (not -7) confirms the operands map to
-        # (left, right) in order.
-        rc, out = compile_and_run_stdlib_capture("""import System
-fun `[]`(left: System::Int, right: System::Int): System::Int
-  ret left - right
-fun main(): System::Int
-  ret 10[3]
-""", timeout=30)
-        self.assertEqual(7, rc, f"expected 10[3] == 10 - 3 == 7; stdout:\n{out}")

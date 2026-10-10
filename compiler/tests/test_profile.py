@@ -26,6 +26,7 @@ import codegen.typedecl as t
 from codegen.ir import Function
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_to_binary, _RUN_ENV
+from tests.testutil import compile_c
 
 # ── the one profiled program ─────────────────────────────────────────────────
 # Counted fixtures are deliberately CHUNKY: big enough that the AST inliner's
@@ -349,8 +350,7 @@ fun main(): System::Int
 """
 
     def test_every_function_gets_exactly_one_enter_and_the_table_matches(self):
-        c_code = c.compile([c.Input(self._SMALL, "t.yafl")], use_stdlib=True,
-                           just_testing=False, profile=True)
+        c_code = compile_c(self._SMALL, "t.yafl", profile=True)
         n = int(re.search(r"yafl_prof_fns\[(\d+)\]", c_code).group(1))
         self.assertEqual(n, c_code.count("yafl_prof_enter("),
                          "one ProfEnter per instrumented function")

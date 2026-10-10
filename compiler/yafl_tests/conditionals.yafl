@@ -1,0 +1,43 @@
+# End-to-end tests for `if` / `else if` / `else`.
+#
+# `if`, `else if`, and `else` parse as independent sibling statements at the
+# same indent. `collapse_else_if` (`pyast/statement.py`) folds proper
+# sequences into a single right-nested `IfStatement` during compile;
+# orphan `else` / `else if` survive the collapse and their `check()`
+# reports a compile error.
+#
+# Branches are pure scopes; lets inside a branch do not escape. Per YAFL's
+# "only ambiguity is an error" principle, a branch may contain anything.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Conditionals::MatchAsTernaryBranch
+
+import System
+import System::Test
+
+fun pickFalse(x: System::Int|System::None, y: System::Int): System::Int
+  ret y == 0
+    ? y
+    : match(x)
+      (i: System::Int)  => i
+      (n: System::None) => 0 - 1
+
+fun pickTrue(x: System::Int|System::None, y: System::Int): System::Int
+  ret y == 0
+    ? match(x)
+      (i: System::Int)  => i + 100
+      (n: System::None) => 0 - 100
+    : y
+
+fun program(): System::Int
+  print(String(pickFalse(7, 1)) + "\n")
+  let none: System::Int|System::None = System::None
+  print(String(pickFalse(none, 1)) + "\n")
+  print(String(pickTrue(7, 0)) + "\n")
+  print(String(pickFalse(3, 0)) + "\n")
+  ret 0
+
+fun [test("match as ternary branch", stdout = "7\n-1\n107\n0\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

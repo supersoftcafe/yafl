@@ -24,9 +24,9 @@ import re
 import subprocess
 import tempfile
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV, static_link_for
+from tests.testutil import compile_c
 
 _SRC = (
     "import System\n"
@@ -53,8 +53,7 @@ _SRC = (
 
 class TestArrayFillCompaction(TestCase):
     def _build(self, level: int) -> tuple[str, str]:
-        c_code = c.compile([c.Input(_SRC, "test.yafl")], use_stdlib=True,
-                           just_testing=True, optimization_level=level)
+        c_code = compile_c(_SRC, optimization_level=level)
         # The suspending fill must really be a parked state machine, or the
         # run below proves nothing about a fill that outlives its stack frame.
         self.assertIsNotNone(

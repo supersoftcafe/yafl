@@ -108,7 +108,7 @@ class TestBootstrapInline(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_inline(text).splitlines()
-                r = subprocess.run([self.binary, "inline"], input=text,
+                r = subprocess.run([self.binary, "--stage", "inline"], input=text,
                                    capture_output=True, timeout=240, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,

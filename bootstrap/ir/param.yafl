@@ -61,7 +61,9 @@ enum RParam
   enum RpGlobalVar(fieldType: CgType, name: String)
   # fill: a NULL -> value store into a slot written once across safe points
   # (codegen/param.py ObjectField.fill): GC_FILL_BARRIER.
-  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool, fill: Bool)
+  # root: a store whose container may be a declared root, a lazy stub
+  # (ObjectField.root): GC_ROOT_PUBLISH_IN after it.
+  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool, fill: Bool, root: Bool = false)
   enum RpArrayElement(elementType: CgType, pointer: RParam, objectName: String, field: String, lengthField: String, index: RParam, checked: Bool)
   # Union slotting of closures (param.py FunField/MakeFun — the enum-encoding
   # principle: a closure IS a struct). RpFunField projects one primitive out
@@ -226,7 +228,7 @@ fun rpRenameVars(r, renames: List<RpRename>) => match(r)
   (x: RpPointerTo) => RpPointerTo(rpRenameVars(x.value, renames))
   (x: RpStackVar) => RpStackVar(x.fieldType, renameLookup(renames, x.name))
   (x: RpGlobalVar) => r   # GlobalVar.rename_vars is identity in Python
-  (x: RpObjectField) => RpObjectField(x.fieldType, rpRenameVars(x.pointer, renames), x.objectName, x.field, rpRenameVarsOpt(x.index, renames), x.fresh, x.fill)
+  (x: RpObjectField) => with x(pointer = rpRenameVars(x.pointer, renames), index = rpRenameVarsOpt(x.index, renames))
   (x: RpArrayElement) => RpArrayElement(x.elementType, rpRenameVars(x.pointer, renames), x.objectName, x.field, x.lengthField, rpRenameVars(x.index, renames), x.checked)
   (x: RpFunField) => RpFunField(rpRenameVars(x.ffFun, renames), x.ffPart)
   (x: RpMakeFun) => RpMakeFun(rpRenameVars(x.mfCode, renames), rpRenameVars(x.mfEnv, renames))
@@ -703,7 +705,12 @@ fun rpToCStoreObjectFieldBarrier(x: RpObjectField, pointerText, fieldRef, cache0
   # A fill store's barrier follows it: it escapes the value just stored.
   ret x.fill
     ? ("    " + fieldRef + " = " + value + ";\n    GC_FILL_BARRIER(" + pointerText + ", " + fieldRef + ", " + mask + ");\n", declared.cache)
-    : ("    GC_WRITE_BARRIER_IN(" + pointerText + ", " + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n", declared.cache)
+    : ("    GC_WRITE_BARRIER_IN(" + pointerText + ", " + fieldRef + ", " + mask + ");\n    " + fieldRef + " = " + value + ";\n"
+         + rootPublish(x, pointerText, fieldRef, mask), declared.cache)
+
+# After a store into a lazy stub, which may be a declared root (codegen/param.py).
+fun rootPublish(x: RpObjectField, pointerText, fieldRef, mask)
+  ret x.root ? "    GC_ROOT_PUBLISH_IN(" + pointerText + ", " + fieldRef + ", " + mask + ");\n" : ""
 
 # ── `NewStruct.__add__` (used by lowering passes, not within this file) ────
 

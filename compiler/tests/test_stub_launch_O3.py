@@ -15,7 +15,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-import compiler as c
+from tests.testutil import compile_c
 import lowering.async_lower as async_lower
 
 _YAFLLIB_DIR = Path(__file__).parent.parent.parent / "yafllib"
@@ -51,8 +51,7 @@ class TestStubLaunchO3(unittest.TestCase):
         saved = async_lower._STUB_THRESHOLD_OPS
         async_lower._STUB_THRESHOLD_OPS = 0
         try:
-            c_code = c.compile([c.Input(_SRC, "stub.yafl")], use_stdlib=True,
-                               just_testing=False, optimization_level=3)
+            c_code = compile_c(_SRC, "stub.yafl", optimization_level=3)
         finally:
             async_lower._STUB_THRESHOLD_OPS = saved
 

@@ -13,16 +13,14 @@ selects the set — see test_warning_flags.py for the flag-resolution rules.
 """
 from __future__ import annotations
 
-import warning_flags as wf
 from tests.testutil import TimedTestCase as TestCase
-import compiler as c
+from tests.testutil import compile_c_result
 
 
-def _compile(source: str, enabled_warnings=None) -> tuple[str, list[str]]:
-    kwargs = {} if enabled_warnings is None else {"enabled_warnings": enabled_warnings}
-    code, _link, warns = c.compile_project(
-        [c.Input(source, "test.yafl")], use_stdlib=True, just_testing=True, **kwargs)
-    return code, [str(w) for w in warns]
+def _compile(source: str, flags: "list[str]" = ()) -> tuple[str, list[str]]:
+    """The C, and the warnings printed on stderr, with `-W<flag>` for each flag."""
+    r = compile_c_result(source, warnings=flags)
+    return r.c, r.stderr.splitlines()
 
 
 _VANISHING_VALUES_SOURCE = (
@@ -50,13 +48,13 @@ class TestVanishedValueWarnings(TestCase):
         # Same program, with unused-parameter explicitly enabled: it now warns
         # too, alongside the two always-on ones.
         code, warns = _compile(_VANISHING_VALUES_SOURCE,
-            enabled_warnings=wf.resolve_enabled_warnings(["unused-parameter"]))
+            ["unused-parameter"])
         self.assertTrue(code)
         self.assertTrue(any("parameter 'b' is never used" in w for w in warns), warns)
 
     def test_wno_suppresses_a_default_on_warning(self):
         code, warns = _compile(_VANISHING_VALUES_SOURCE,
-            enabled_warnings=wf.resolve_enabled_warnings(["no-unused-variable"]))
+            ["no-unused-variable"])
         self.assertTrue(code)
         self.assertFalse(any("'x' is never used" in w for w in warns), warns)
         self.assertTrue(any("statement value is discarded" in w for w in warns), warns)
@@ -75,6 +73,6 @@ class TestVanishedValueWarnings(TestCase):
             "  let _ = System::length(\"ab\")\n"
             "  System::print(\"\")\n"
             "  ret f(x, 2)\n",
-            enabled_warnings=wf.resolve_enabled_warnings(["all"]))
+            ["all"])
         self.assertTrue(code)
         self.assertEqual([], warns)

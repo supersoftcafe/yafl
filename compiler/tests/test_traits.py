@@ -1,5 +1,7 @@
 
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
+from tests.testutil import compile_c_result
 
 import re
 
@@ -16,7 +18,7 @@ class TestTraits(TestCase):
                    "    System::print(\"Fred\")\n"
                    "    ret 0\n")
 
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertIn("print_string", result, "Missing print statement")
         print(result)
 
@@ -287,7 +289,7 @@ fun add<TVal>(l: TVal, r: TVal): TVal where Add<TVal>
 fun main(): System::Int
     ret add<System::Int>(3, 4)
 """
-        result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(content, "file.yafl")
         self.assertNotEqual("", result)
 
 
@@ -349,7 +351,6 @@ class TestWhereConstraintAtTheUse(TestCase):
 
     @staticmethod
     def _compile(body: str) -> tuple[str, str]:
-        import contextlib, io
         content = ("import System\n"
                    "\n"
                    "class [final] Plain(n: System::Int)\n"
@@ -358,10 +359,8 @@ class TestWhereConstraintAtTheUse(TestCase):
                    "    ret a < b ? a : b\n"
                    "\n"
                    "fun main(): System::Int\n" + body)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            result = c.compile([c.Input(content, "file.yafl")], use_stdlib=True, just_testing=False)
-        return result or "", buf.getvalue()
+        r = compile_c_result(content, "file.yafl")
+        return r.c, r.stdout
 
     def test_a_type_with_no_instance_does_not_satisfy_the_constraint(self):
         result, out = self._compile("    ret least(Plain(1), Plain(2)).n\n")

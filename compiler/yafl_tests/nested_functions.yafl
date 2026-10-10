@@ -1,0 +1,505 @@
+# Tests for nested function declarations inside function bodies.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::NestedFunctions::MutualRecursionInCapturingNestedFns
+
+import System
+import System::Test
+
+fun outer(limit: Int, n: Int): Int
+  fun isEven(x: Int): Int
+    ret x < 1 ? 1 : (x > limit ? 99 : isOdd(x - 1))
+  fun isOdd(x: Int): Int
+    ret x < 1 ? 0 : (x > limit ? 99 : isEven(x - 1))
+  ret isEven(n)
+
+fun program(): Int
+  ret outer(100, 4)
+
+fun [test("Two mutually-recursive nested fns that both capture an outer var")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::NestedFunctions::NestedCallsNested
+
+import System
+import System::Test
+
+fun program(): System::Int
+    fun double(x: System::Int): System::Int
+        ret x + x
+    fun quadruple(x: System::Int): System::Int
+        ret double(double(x))
+    ret quadruple(3)
+
+fun [test("A nested function can call another nested function defined before it")] check(): None|TestFailure
+    ret assertEqInt(program(), 12, "program()")
+
+
+namespace CompilerTests::NestedFunctions::NestedFunctionCapturesOuterLet
+
+import System
+import System::Test
+
+fun program(): System::Int
+    let base: System::Int = 40
+    fun add_base(x: System::Int): System::Int
+        ret x + base
+    ret add_base(2)
+
+fun [test("A nested function may reference a let declared earlier in the enclosing body")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::NestedFunctions::NestedFunctionMultipleCallSites
+
+import System
+import System::Test
+
+fun program(): System::Int
+    fun inc(n: System::Int): System::Int
+        ret n + 1
+    ret inc(inc(inc(inc(inc(5)))))
+
+fun [test("A nested function called at several sites produces the correct result")] check(): None|TestFailure
+    ret assertEqInt(program(), 10, "program()")
+
+
+namespace CompilerTests::NestedFunctions::SiblingCallsCapturingHelper
+
+import System
+import System::Test
+
+fun outer(f: String, pos: Int): Int
+  fun capLen(extra: Int): Int
+    ret length(f) + extra
+  fun caller(x: Int): Int
+    ret capLen(x)
+  ret caller(pos)
+
+fun program(): Int
+  ret outer("hi", 3)
+
+fun [test("A non-capturing nested fn that calls a capturing sibling must stay")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::NestedFunctions::SimpleNestedFunction
+
+import System
+import System::Test
+
+fun program(): System::Int
+    fun double(x: System::Int): System::Int
+        ret x + x
+    ret double(3) + 1
+
+fun [test("Non-recursive nested function compiles and produces the correct result")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::NestedFunctions::TwoIndependentNestedFunctions
+
+import System
+import System::Test
+
+fun program(): System::Int
+    fun double(x: System::Int): System::Int
+        ret x + x
+    fun triple(x: System::Int): System::Int
+        ret x + x + x
+    ret double(3) + triple(3)
+
+fun [test("Two independent nested functions both inline and produce the correct result")] check(): None|TestFailure
+    ret assertEqInt(program(), 15, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberHelperPerInstantiationOfAPhantomGeneric
+
+import System
+import System::Test
+
+class [final] Tag<T>(n: Int)
+  fun go(x: T|None): Int
+    fun helper(): Int
+      ret match(x)
+        (v: T) => n
+        () => 0
+    ret helper()
+
+fun program(): Int
+  ret Tag<Int>(1).go(5) + Tag<String>(10).go("s")
+
+fun [test("A helper hoisted to CLASS scope is a new own method, so like the")] check(): None|TestFailure
+    ret assertEqInt(program(), 11, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberLambdaCapturesThis
+
+import System
+import System::Test
+
+fun applyTo(f: (:Int): Int, v: Int): Int
+  ret f(v)
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    ret applyTo((y: Int) => y + base + x, 1)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("The same capture, spelled as a lambda. This is the shape the")] check(): None|TestFailure
+    ret assertEqInt(program(), 16, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedCallsSiblingMember
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun scaled(): Int
+    ret base + base
+  fun addTo(x: Int): Int
+    fun addScaled(y: Int): Int
+      ret y + scaled()
+    ret addScaled(x)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("A helper may call another member of its own class")] check(): None|TestFailure
+    ret assertEqInt(program(), 25, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedClosureCallsClassHoistedSibling
+
+import System
+import System::Test
+
+fun applyTo(f: (:Int): Int, v: Int): Int
+  ret f(v)
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    fun onlyField(y: Int): Int
+      ret y + base
+    fun escapes(z: Int): Int
+      ret onlyField(z) + x
+    ret applyTo(escapes, 1)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("A closure-bound helper that calls a sibling which became a class")] check(): None|TestFailure
+    ret assertEqInt(program(), 16, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedDeeplyNested
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    fun outerHelper(y: Int): Int
+      fun innerHelper(z: Int): Int
+        ret z + base
+      ret innerHelper(y) + innerHelper(y)
+    ret outerHelper(x)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("A helper inside a helper inside a member")] check(): None|TestFailure
+    ret assertEqInt(program(), 30, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedEscapesAsValue
+
+import System
+import System::Test
+
+fun applyTo(f: (:Int): Int, v: Int): Int
+  ret f(v)
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    fun combine(y: Int): Int
+      ret y + base + x
+    ret applyTo(combine, 1)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("The reference travels as a value, so the helper needs a real")] check(): None|TestFailure
+    ret assertEqInt(program(), 16, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedInGenericClass
+
+import System
+import System::Test
+
+class Box<T>(value: T)
+  fun pick(other: T, useOther: Bool): T
+    fun choose(flag: Bool): T
+      ret flag ? other : value
+    ret choose(useOther)
+
+fun program(): Int
+  ret Box<Int>(7).pick(9, false) + Box<Int>(1).pick(20, true)
+
+fun [test("Classes are monomorphised before the hoist, so `this` is concrete")] check(): None|TestFailure
+    ret assertEqInt(program(), 27, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedInNonFinalClass
+
+import System
+import System::Test
+
+interface Shape
+  fun area(): Int
+
+class Square(side: Int) : Shape
+  fun area(): Int
+    fun sq(n: Int): Int
+      ret n * side
+    ret sq(side)
+
+fun totalArea(s: Shape): Int
+  ret s.area()
+
+fun program(): Int
+  ret totalArea(Square(6))
+
+fun [test("A helper on a class that is used polymorphically. It gets no vtable")] check(): None|TestFailure
+    ret assertEqInt(program(), 36, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedMutualRecursionCapturingThis
+
+import System
+import System::Test
+
+class Counter(limit: Int)
+  fun classify(n: Int): Int
+    fun isEven(x: Int): Int
+      ret x < 1 ? 1 : (x > limit ? 99 : isOdd(x - 1))
+    fun isOdd(x: Int): Int
+      ret x < 1 ? 0 : (x > limit ? 99 : isEven(x - 1))
+    ret isEven(n)
+
+fun program(): Int
+  ret Counter(100).classify(4)
+
+fun [test("Mutually-recursive capturing helpers coalesce into one closure")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedNoCapture
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    fun twice(y: Int): Int
+      ret y + y
+    ret twice(x)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("A helper reaching for nothing hoists to global scope, as it would")] check(): None|TestFailure
+    ret assertEqInt(program(), 10, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedReadsField
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    fun addBase(y: Int): Int
+      ret y + base
+    ret addBase(x)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("A helper that reads a class field keeps `this` — it becomes a")] check(): None|TestFailure
+    ret assertEqInt(program(), 15, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedReadsFieldAndLet
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    let bump: Int = x + x
+    fun combine(y: Int): Int
+      ret y + base + bump
+    ret combine(1)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("A block let is not threadable, so this helper closes over both the")] check(): None|TestFailure
+    ret assertEqInt(program(), 21, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedReadsFieldAndLocal
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    fun combine(y: Int): Int
+      ret y + base + x
+    ret combine(1)
+
+fun program(): Int
+  ret Counter(10).addTo(5)
+
+fun [test("Fields plus enclosing parameters: the parameters thread through as")] check(): None|TestFailure
+    ret assertEqInt(program(), 16, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedTailRecursive
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun sumTo(n: Int): Int
+    fun [tail] go(i: Int, acc: Int): Int
+      ret i > n ? acc : go(i + 1, acc + base)
+    ret go(1, 0)
+
+fun program(): Int
+  ret Counter(10).sumTo(4)
+
+fun [test("A `[tail]` helper inside a member lowers to a loop like any other —")] check(): None|TestFailure
+    ret assertEqInt(program(), 40, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MemberNestedTwoMembersSameHelperName
+
+import System
+import System::Test
+
+class Counter(base: Int)
+  fun addTo(x: Int): Int
+    fun helper(y: Int): Int
+      ret y + base
+    ret helper(x)
+  fun subFrom(x: Int): Int
+    fun helper(y: Int): Int
+      ret base - y
+    ret helper(x)
+
+fun program(): Int
+  ret Counter(10).addTo(5) + Counter(10).subFrom(3)
+
+fun [test("Two members may each nest a helper of the same source name; they")] check(): None|TestFailure
+    ret assertEqInt(program(), 22, "program()")
+
+
+namespace CompilerTests::NestedFunctions::DeepCaptureThroughACalledHelper
+
+import System
+import System::Test
+
+fun outer(x: Int, k: Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun optimal(b: Int): Int
+        ret b + 1
+      ret c > 0 ? optimal(c) : x
+    ret rebalance(a) * 10
+  ret merge(k)
+
+fun program(): Int
+  ret outer(5, 1) + outer(5, 0)
+
+fun [test("deep capture through a called helper")] check(): None|TestFailure
+    ret assertEqInt(program(), 70, "program()")
+
+
+namespace CompilerTests::NestedFunctions::DeepCaptureThroughAHelperUsedAsAValue
+
+import System
+import System::Test
+
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+fun outer(x: Int, k: Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun optimal(b: Int): Int
+        ret b + 1
+      ret c > 0 ? optimal(c) : x
+    ret rebalance(a) * 10
+  ret apply(merge, k)
+
+fun program(): Int
+  ret apply((v: Int) => outer(5, v), 1) + outer(5, 0)
+
+fun [test("deep capture through a helper used as a value")] check(): None|TestFailure
+    ret assertEqInt(program(), 70, "program()")
+
+
+namespace CompilerTests::NestedFunctions::GenericHostKeepsInnerNamesApart
+
+import System
+import System::Test
+
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+fun outer<T>(x: T, k: Int, size: (:T): Int): Int
+  fun merge(a: Int): Int
+    fun rebalance(c: Int): Int
+      fun pick(b: Int): Int
+        ret b * 2
+      ret c > 0 ? pick(c) : size(x)
+    ret rebalance(a)
+  ret apply(merge, k)
+
+fun program(): Int
+  ret outer<Int>(4, 0, (v: Int) => v) + outer<String>("abc", 0, (v: String) => length(v))
+      + outer<Int>(4, 5, (v: Int) => v)
+
+fun [test("generic host keeps inner names apart")] check(): None|TestFailure
+    ret assertEqInt(program(), 17, "program()")
+
+
+namespace CompilerTests::NestedFunctions::MutualRecursionInsideAClosure
+
+import System
+import System::Test
+
+fun apply(f: (:Int): Int, v: Int): Int
+  ret f(v)
+fun outer(x: Int, n: Int): Int
+  fun walk(m: Int): Int
+    fun isEven(y: Int): Int
+      ret y < 1 ? x : isOdd(y - 1)
+    fun isOdd(y: Int): Int
+      ret y < 1 ? 0 : isEven(y - 1)
+    ret isEven(m)
+  ret apply(walk, n)
+
+fun program(): Int
+  ret outer(7, 4) + outer(7, 3)
+
+fun [test("mutual recursion inside a closure")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")

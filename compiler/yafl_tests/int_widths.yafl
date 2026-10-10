@@ -1,0 +1,40 @@
+# Width-specific extras for Int8/Int16/Int64 not already covered by the
+# mega-tests (arithmetic, wraparound, conversions, comparisons, parse,
+# hash). One compile checks: widening with a non-conversion-mega value,
+# String(INT<N>_MIN) byte counts, and Show via format dispatch.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::IntWidths::IntWidthExtras
+
+import System
+import System::Test
+
+fun emit(label: System::String, value: System::Int): System::None
+  print(label + "=" + String(value) + "\n")
+  ret None
+
+fun program(): System::Int
+  # ─── A widening case not pinned in test_conversions ────────────────────
+  emit("Int8_to_Int_100",  Int(100i8))
+
+  # ─── String(INT<N>_MIN) byte counts — exercises the snprintf paths ─────
+  emit("string_int8_min_len",  length(String(INT8_MIN)))    # "-128"
+  emit("string_int16_min_len", length(String(INT16_MIN)))   # "-32768"
+  emit("string_int64_min_len", length(String(INT64_MIN)))   # "-9223372036854775808"
+
+  # ─── format dispatch via Show<IntN> ────────────────────────────────────
+  emit("format_int8",  length(format<Int8>("v={1}",  -5i8)))    # "v=-5"
+  emit("format_int64", length(format<Int64>("v={1}", 42i64)))    # "v=42"
+
+  # ─── Cross-width chain Int8 → Int16 → Int32 → Int64 ────────────────────
+  let a: Int16 = Int16(-5i8)
+  let b: Int32 = Int32(a)
+  let c: Int64 = Int64(b)
+  emit("chain_widen_eq_neg5", c == -5i64 ? 1 : 0)
+
+  ret 0
+
+fun [test("int width extras", stdout = "Int8_to_Int_100=100\nstring_int8_min_len=4\nstring_int16_min_len=6\nstring_int64_min_len=20\nformat_int8=4\nformat_int64=4\nchain_widen_eq_neg5=1\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

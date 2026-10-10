@@ -1,7 +1,6 @@
-import unittest
 from io import StringIO
 from contextlib import redirect_stdout
-from tests.testutil import TimedTestCase as TestCase, compile_and_run
+from tests.testutil import TimedTestCase as TestCase
 
 import compiler as c
 
@@ -45,37 +44,6 @@ class TestLazyLets(TestCase):
         self.assertIn("lazy_fetch_ptr", result)
         self.assertIn("lazy_thunk_enqueue", result)
 
-    def test_lazy_let_returns_correct_value(self):
-        """Forcing a `[lazy]` let returns the closure's value."""
-        content = _PRELUDE + (
-            "fun main(): System::Int\n"
-            "    let [lazy] x: System::Int = 41 + 1\n"
-            "    ret x\n"
-        )
-        exit_code, _ = compile_and_run(content)
-        self.assertEqual(exit_code, 42)
-
-    def test_lazy_let_referenced_twice_memoises(self):
-        """Two references compute the value once (visible via correct result)."""
-        content = _PRELUDE + (
-            "fun main(): System::Int\n"
-            "    let [lazy] x: System::Int = 21\n"
-            "    ret x + x\n"
-        )
-        exit_code, _ = compile_and_run(content)
-        self.assertEqual(exit_code, 42)
-
-    def test_lazy_let_captures_normal_local(self):
-        """A `[lazy]` body that captures a preceding non-lazy let evaluates
-        correctly when forced."""
-        content = _PRELUDE + (
-            "fun main(): System::Int\n"
-            "    let y: System::Int = 40\n"
-            "    let [lazy] x: System::Int = y + 2\n"
-            "    ret x\n"
-        )
-        exit_code, _ = compile_and_run(content)
-        self.assertEqual(exit_code, 42)
 
     def test_lazy_let_takes_no_args(self):
         """`[lazy(foo)]` is an error."""
@@ -117,27 +85,6 @@ class TestLazyLets(TestCase):
         self.assertIn("_data = {",      result)
         self.assertIn("System__cached", result)
 
-    def test_lazy_let_global_returns_correct_value(self):
-        """Forcing a `[lazy]` global yields its initialiser's value."""
-        content = _PRELUDE + (
-            "let [lazy] answer: System::Int = 41 + 1\n"
-            "fun main(): System::Int\n"
-            "    ret answer\n"
-        )
-        exit_code, _ = compile_and_run(content)
-        self.assertEqual(exit_code, 42)
-
-    def test_lazy_let_global_memoises_across_calls(self):
-        """A `[lazy]` global referenced from two functions still inits once."""
-        content = _PRELUDE + (
-            "let [lazy] shared: System::Int = 20 + 1\n"
-            "fun double_it(): System::Int\n"
-            "    ret shared + shared\n"
-            "fun main(): System::Int\n"
-            "    ret double_it()\n"
-        )
-        exit_code, _ = compile_and_run(content)
-        self.assertEqual(exit_code, 42)
 
     def test_lazy_let_int32_compiles(self):
         """`[lazy]` of an Int32 value generates the Int32-shaped machinery.
@@ -227,19 +174,6 @@ class TestLazyLets(TestCase):
         self.assertIn("lazy_fetch_f64", result)
         self.assertIn("lazy_drain_f64", result)
 
-    def test_forward_reference_between_lazies(self):
-        """Two `[lazy]` lets in the same block; the first references
-        the second.  Stub allocations hoisted to block entry mean the
-        forward-referenced stub slot is bound before the referencing
-        lazy's closure is constructed."""
-        content = _PRELUDE + (
-            "fun main(): System::Int\n"
-            "    let [lazy] x: System::Int = y + 1\n"
-            "    let [lazy] y: System::Int = 2\n"
-            "    ret x\n"
-        )
-        exit_code, _ = compile_and_run(content)
-        self.assertEqual(exit_code, 3)
 
     def test_forward_reference_to_non_lazy_is_rejected_at_compile(self):
         """A `[lazy]` body that forward-references a *non-lazy* let

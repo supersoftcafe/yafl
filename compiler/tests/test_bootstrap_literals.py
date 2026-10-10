@@ -112,7 +112,7 @@ class TestBootstrapLiterals(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_literals(text).splitlines()
-                r = subprocess.run([self.binary, "literals"], input=text,
+                r = subprocess.run([self.binary, "--stage", "literals"], input=text,
                                    capture_output=True, timeout=240, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,

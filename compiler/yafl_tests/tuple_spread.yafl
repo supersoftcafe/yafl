@@ -1,0 +1,36 @@
+# Spread: `*expr` splices a tuple value's fields into a tuple literal.
+#
+# A tuple-literal feature, not a call feature — `f(*t)` works because a call's
+# argument list IS a tuple literal, and `(1, *t)` works in any tuple position.
+# Spliced fields are positional; written named entries may still follow, and the
+# receiver's defaults fill whatever remains unbound (the ordinary tuple binding).
+# Spreading a non-tuple value is an error.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::TupleSpread::SpreadForms
+
+import System
+import System::Test
+
+fun scale(x: Int, factor: Int = 10, bias: Int = 1): Int
+  ret x * factor + bias
+
+fun triple(): (:Int, :Int, :Int)
+  ret (5, 2, 3)
+
+fun program(): Int
+  let full = (5, 2, 3)
+  print(String(scale(*full)) + "\n")
+  let pair = (5, 2)
+  print(String(scale(*pair)) + "\n")
+  print(String(scale(*pair, bias = 7)) + "\n")
+  print(String(scale(4, *pair)) + "\n")
+  print(String(scale(*triple())) + "\n")
+  let q: (a: Int, b: Int, c: Int) = (1, *pair)
+  print(String(q.a * 100 + q.b * 10 + q.c) + "\n")
+  ret 0
+
+fun [test("spread forms", stdout = "13\n11\n17\n22\n13\n152\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

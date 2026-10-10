@@ -1,10 +1,11 @@
-# bootstrap/main.yafl — driver for the self-hosted compiler's pipeline stages.
+# bootstrap/main.yafl — driver for the self-hosted compiler.
 #
-#   ybootstrap tokens < src.yafl    token dump  (KIND|indent|line|col|text)
-#   ybootstrap census < src.yafl    declaration census (KIND|line|name)
+#   ybootstrap [-O LEVEL] [-o OUT] ... files       the compiler (cli.yafl)
+#   ybootstrap --stage tokens < src.yafl            token dump  (KIND|indent|line|col|text)
+#   ybootstrap --stage census < src.yafl            declaration census (KIND|line|name)
 #
-# Each mode reads one source file on stdin and prints a dump that the Python
-# test harnesses diff against the reference compiler's own output.
+# Each `--stage` mode reads a source stream on stdin and prints a dump that the
+# Python test harnesses diff against the reference compiler's own output.
 namespace Bootstrap::Driver
 
 import System
@@ -144,7 +145,7 @@ fun libsFrontier(frontier: List<PStmt>, idx: List<NsEntry>,
   ret isEmpty(step.stepLibs)
     ? found
     : match(parseLibraries(chain(step.stepLibs), List()))
-      (why: String)          => why
+      (pe: ParseErrors)      => printedDiagnostics(pe.peErrs)
       (next: List<PStmt>)    => libsFrontier(next, idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(found, step.stepLibs))
@@ -507,8 +508,8 @@ fun postmonoRes2Gated(stmts0: List<PStmt>, enabledWarnings: Set<String>): GatedR
 # `if failures: return failures`, and linearity right after on a clean check.
 # A failure is a REFUSAL — code 1, no C — matching main.py, which exits 1 when
 # compile_project hands back no code so a build system cannot pick up a stale
-# object file. On success the surviving warnings ride along in GatedResult
-# instead of being dropped (the fixed divergence — see GatedResult's comment).
+# object file. Once the diagnostics pass, their warnings ride along in
+# GatedResult whatever fails later, and are reported (compiler.py's _Failed).
 fun postmonoGate(stmts, enabledWarnings: Set<String>): GatedResult
   let r = rootResolver(stmts)
   # requireMain false: cStage reports a missing main itself, in the bare
@@ -518,7 +519,7 @@ fun postmonoGate(stmts, enabledWarnings: Set<String>): GatedResult
     ret GatedResult(PmText(printedDiagnostics(d.dFails), 1), noErrs())
   let lin = checkLinearity(stmts, r)
   if !isEmpty(lin)
-    ret GatedResult(PmText(printedDiagnostics(lin), 1), noErrs())
+    ret GatedResult(PmText(printedDiagnostics(lin), 1), d.dWarns)
   ret GatedResult(postmonoRes3(stmts), d.dWarns)
 
 fun postmonoRes3(stmts0: List<PStmt>): PmRes
@@ -690,11 +691,23 @@ fun cModeConverge(stmts, optLevel, profile,
   ret match(gr.grRes)
     (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers)
                     |> (outs, code) => (outs, code, warnsText)
-    (tx: PmText) => (prepend(tx.pmOut, List()), tx.pmCode, "")
+    (tx: PmText) => (prepend(tx.pmOut, List()), noProgramCode(tx.pmCode), warnsText)
 
-fun convergeToPostmono(stmts, enabledWarnings: Set<String>): GatedResult => match(converge(stmts))
-  (ok: CvOk)      => postmonoRes2Gated(ok.cvStatements, enabledWarnings)
-  (d: CvDiverged) => GatedResult(PmText(printedDiagnostics(d.cvErrs), 2), noErrs())
+# A C mode that ends in diagnostics produced no program, so it fails whatever
+# code the stage dumps give the same text: they compare it with compiler.py's
+# stage helpers, which return diagnostics as the dump. main.py exits 1 for any
+# compile error.
+fun noProgramCode(code: Int) => code == 0 ? 1 : code
+
+# Regex literals are validated and interned BEFORE convergence (__iterate_and_compile):
+# the globals they become need typing like any other statement.
+fun convergeToPostmono(stmts, enabledWarnings: Set<String>): GatedResult
+  let rx = fixGlobalRegexes(stmts)
+  if !isEmpty(rx.rlErrs)
+    ret GatedResult(PmText(printedDiagnostics(rx.rlErrs), 1), noErrs())
+  ret match(converge(rx.rlStmts))
+    (ok: CvOk)      => postmonoRes2Gated(ok.cvStatements, enabledWarnings)
+    (d: CvDiverged) => GatedResult(PmText(printedDiagnostics(d.cvErrs), 2), noErrs())
 
 # Parts are parsed in CANONICAL ORDER — sorted by file name — so the emitted C
 # cannot depend on the order the caller happened to feed them in. Python
@@ -730,16 +743,30 @@ fun projectTestMode(text, optLevel, profile,
 
 fun projectCompile(user, optLevel, profile,
                    enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
-  ret match(timed("compile", "libraries", () => loadProject(user)))
-    (why: String)      => (prepend("error:" + why + "\n", List()), 1, "")
+  ret projectBuild(user, List(), optLevel, profile, enabledWarnings)
+    |> (b) => (b.pbOuts, b.pbCode, b.pbWarns)
+
+# compile_project's whole result: the C (or the printed diagnostics), the exit
+# code, the warnings, and the LinkSpec the caller links against — None when the
+# compile failed before the libraries were settled.
+class [final] ProjectBuild(pbOuts: List<String>, pbCode: Int, pbWarns: String,
+                           pbSpec: LinkSpec|None)
+
+# `extra` is compile_project's `lib_paths`: searched BEFORE YAFL_PATH.
+fun projectBuild(user, extra: List<String>, optLevel, profile,
+                 enabledWarnings: Set<String>): ProjectBuild
+  ret match(timed("compile", "libraries", () => loadProject(user, extra)))
+    (why: String)      => ProjectBuild(list1("error:" + why + "\n"), 1, "", None)
+    (pe: ParseErrors)  => ProjectBuild(list1(printedDiagnostics(pe.peErrs)), 1, "", None)
     (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
-      (why2: String)   => (prepend("error:" + why2 + "\n", List()), 1, "")
+      (why2: String)   => ProjectBuild(list1("error:" + why2 + "\n"), 1, "", None)
       (spec: LinkSpec) =>
         # `lib_statements + user_statements`, in that order: statement order is
         # emission order, so the libraries come first exactly as they do in
         # compile_project.
         cModeConverge(concat(pr.plStmts, user), optLevel, profile,
                       projectHeaders(spec), enabledWarnings)
+          |> (outs, code, warns) => ProjectBuild(outs, code, warns, spec)
 
 # ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h") — yafl.h is
 # the ABI baseline and must lead, and must not appear twice if a manifest also
@@ -756,8 +783,9 @@ fun linkSpecMode(text): (out: String, code: Int) => match(parseMulti(text))
   (stmts: List<PStmt>) => linkSpecFor2(stmts)
   ()                   => ("parse error\n", 1)
 
-fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProject(user))
+fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProject(user, List()))
   (why: String)     => ("error:" + why + "\n", 1)
+  (pe: ParseErrors) => (printedDiagnostics(pe.peErrs), 1)
   (pr: ProjectLoad) => match(linkSpecFor(pr.plLibs))
     (why2: String)   => ("error:" + why2 + "\n", 1)
     (spec: LinkSpec) => (
@@ -767,7 +795,7 @@ fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProje
 
 class [final] ProjectLoad(plStmts: List<PStmt>, plLibs: List<Library>)
 
-fun loadProject(user: List<PStmt>) => match(discoverLibraries(searchPaths(List())))
+fun loadProject(user: List<PStmt>, extra: List<String>) => match(availableLibraries(extra))
   (e: LibsErr) => e.libsWhy
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
     (why: String)        => why
@@ -780,7 +808,7 @@ fun loadProject(user: List<PStmt>) => match(discoverLibraries(searchPaths(List()
 # loadReferenced tests, so each library is taken exactly once.
 fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
                   already: List<String>, acc: List<PStmt>,
-                  libs: List<Library>): ProjectLoad|String
+                  libs: List<Library>): ProjectLoad|String|ParseErrors
   let step = loadReferenced(idx,
                             candidateNamespaces(declaredImports(frontier),
                                                 qualifiedRefs(frontier)),
@@ -788,7 +816,7 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
   ret isEmpty(step.stepLibs)
     ? ProjectLoad(acc, libs)
     : match(parseLibraries(chain(step.stepLibs), List()))
-      (why: String)       => why
+      (pe: ParseErrors)   => pe
       (next: List<PStmt>) => projectRounds(next, idx,
           concat(already, map(step.stepLibs, (l) => l.libRoot)),
           concat(acc, next), concat(libs, step.stepLibs))
@@ -797,30 +825,30 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
 # FILENAME. Sorting the round's sources as one flat list instead would
 # interleave two libraries' files, and statement order is emission order.
 fun [tail] parseLibraries(ls: Chain<Library>,
-                          acc: List<PStmt>) => match(ls)
+                          acc: List<PStmt>): List<PStmt>|ParseErrors => match(ls)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(parseLibrary(l.value))
-    (why: String)        => why
+  (l: ChainLink)  => match(parseUnits(l.value.libSources))
+    (pe: ParseErrors)    => pe
     (stmts: List<PStmt>) => parseLibraries(l.next, concat(acc, stmts))
 
-fun parseLibrary(lib: Library) => parseSources(chain(sortSources(lib.libSources)), builder())
+# ── __tokenize_and_parse ─────────────────────────────────────────────────────
+# Units parse in UNIT-NAME order — the path relative to the root, which is what
+# `Input.filename` holds and the sort key __tokenize_and_parse uses; statement
+# order is emission order. EVERY unit is parsed and EVERY failure kept: one
+# broken file does not hide another's errors.
 
-# By UNIT NAME — the path relative to the library root, which is what
-# `Input.filename` holds and the sort key __tokenize_and_parse uses. Two
-# sub-directories holding the same basename now sort as the distinct units
-# they are.
-fun sortSources(srcs: List<LibSource>) => sortBy(srcs, (a, b) => a.libFileName < b.libFileName)
+class [final] ParseErrors(peErrs: Set<PErr>)
 
-fun [tail] parseSources(ss: Chain<LibSource>,
-                        [terminal] b: ListBuilder<PStmt>): List<PStmt>|String => match(ss)
-  (nil: ChainEnd) => build(b)
+fun parseUnits(srcs: List<LibSource>): List<PStmt>|ParseErrors
+  ret unitsLoop(chain(sortBy(srcs, (a, b) => a.libFileName < b.libFileName)), List(), Set())
+
+fun [tail] unitsLoop(ss: Chain<LibSource>, acc: List<PStmt>,
+                     errs: Set<PErr>): List<PStmt>|ParseErrors => match(ss)
+  (nil: ChainEnd) => isEmpty(errs) ? acc : ParseErrors(errs)
   (l: ChainLink)  => match(parseProgram(l.value.libText, l.value.libFileName))
-    (f: PFail)           => parseDiscard(b, l.value.libFileName + "["
-        + String(f.line) + ":" + String(f.col) + "] - " + f.msg)
-    (stmts: List<PStmt>) => parseSources(l.next, pushAll(b, stmts))
-
-fun parseDiscard([terminal] b: ListBuilder<PStmt>, why): List<PStmt>|String
-  ret build(b) |> (l) => why
+    (f: PFail)           => unitsLoop(l.next, acc, union(errs, Set(map(failuresOf(f),
+        (e) => PErr(PLine(l.value.libFileName, e.line, e.col), e.msg)))))
+    (stmts: List<PStmt>) => unitsLoop(l.next, concat(acc, stmts), errs)
 
 
 # ── --test: build a TEST binary from the [test] functions ────────────────────
@@ -842,30 +870,34 @@ fun cTestMode(text, optLevel, profile,
 
 fun cTestInject(stmts: List<PStmt>, optLevel, profile,
                 withLibs, enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
+  ret match(testProgram(stmts))
+    (why: String)        => (list1(why), 1, "")
+    # The registry is part of the USER statements before the worklist runs,
+    # which is what makes its `System::Test::run` reference load the library.
+    (user: List<PStmt>) => withLibs
+      ? projectCompile(user, optLevel, profile, enabledWarnings)
+      : cModeConverge(user, optLevel, profile, baseHeaders(), enabledWarnings)
+
+# compile_project's `if test_mode:` block: the user's statements minus any
+# source `main`, plus the synthesised registry main — or the printed failure.
+fun testProgram(stmts: List<PStmt>): List<PStmt>|String
   let tests = testFunsOf(chain(stmts), builder())
   ret isEmpty(tests)
     # A test binary with nothing in it must NOT be built and exit 0 — that is a
-    # green run reporting coverage it does not have.
-    ? (prepend("--test: no [test] functions found\n", List()), 1, "")
-    : cTestParsed(stmts, tests, optLevel, profile, withLibs, enabledWarnings)
+    # green run reporting coverage it does not have. Printed as Python prints
+    # its `Error(LineRef("", 0, 0), …)`: an empty file name, then `[0:0] - `.
+    ? "[0:0] - --test: no [test] functions found\n"
+    : testRegistered(stmts, tests)
 
-fun cTestParsed(stmts: List<PStmt>, tests: List<PsFun>, optLevel,
-                profile, withLibs: Bool,
-                enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
+fun testRegistered(stmts: List<PStmt>, tests: List<PsFun>): List<PStmt>|String
   # Parsed under the SAME filename Python gives it ($test_main.yafl), not
   # parseSingle's "x": the filename feeds hash6, which feeds the generated
   # names, which feed the emitted C. A different name here would make the two
   # compilers disagree byte-for-byte on identical input.
   ret match(parseProgram(testRegistrySource(tests), "$test_main.yafl"))
-    (gen: List<PStmt>) => concat(dropSourceMains(chain(stmts),
-                                                 builder()), gen)
-      # The registry is part of the USER statements before the worklist runs,
-      # which is what makes its `System::Test::run` reference load the library.
-      |> (user) => withLibs
-        ? projectCompile(user, optLevel, profile, enabledWarnings)
-        : cModeConverge(user, optLevel, profile, baseHeaders(), enabledWarnings)
-    (f: PFail)         => (prepend("--test: generated main failed to parse\n",
-                                   List()), 1, "")
+    (gen: List<PStmt>) => concat(dropSourceMains(chain(stmts), builder()), gen)
+    (f: PFail)         => printedDiagnostics(Set(list1(PErr(
+        PLine("$test_main.yafl", f.line, f.col), f.msg))))
 
 fun [tail] testFunsOf(sts: Chain<PStmt>,
                       [terminal] b: ListBuilder<PsFun>) => match(sts)
@@ -936,18 +968,22 @@ fun joinChunks(lo, hi) => hi - lo == 1
     + joinChunks(lo, lo + (hi - lo) / 2) + ", "
     + joinChunks(lo + (hi - lo) / 2, hi) + ")"
 
+# The file column is the unit's BASENAME, as Python's
+# `Path(fn.line_ref.filename).name` — the unit name is the path relative to the
+# project root, so in a sub-directory the two differ.
 fun testRegistryRow(f: PsFun, i)
   let q = simpleName(f.fName)
   ret "  let b" + String(i + 1)
     + " = System::push<System::Test::TestCase>(b" + String(i)
     + ", System::Test::TestCase(\"" + escapeForSource(q) + "\", \""
     + escapeForSource(testDescriptionOf(f)) + "\", \""
-    + escapeForSource(f.psfLine.plFile) + "\", " + String(f.psfLine.plLine)
-    + ", () => " + q + "()))\n"
+    + escapeForSource(Bootstrap::Driver::baseName(f.psfLine.plFile)) + "\", " + String(f.psfLine.plLine)
+    + ", " + expectedStdoutSource(f) + ", () => " + q + "()))\n"
 
-# Escape for embedding in a GENERATED YAFL string literal. Backslash first,
-# or the escaping escapes itself. Newline too: a description carrying one
-# would otherwise emit source with an unterminated literal.
+# Escape for embedding in a GENERATED YAFL string literal, byte by byte:
+# backslash and quote; newline, which would otherwise end the literal; and
+# every other control byte as \u{x}, since an expected stdout may hold tabs
+# or carriage returns. Mirrors compiler.py's esc.
 fun escapeForSource(s): String => escLoop(s, 0, "")
 
 fun [tail] escLoop(s, at, acc): String
@@ -962,19 +998,21 @@ fun escByte(c)
     ret "\\\""
   if c == '\n'
     ret "\\n"
+  if c < 32i32
+    ret "\\u{" + hexDigits(Int(c)) + "}"
   ret asciiToString(c)
 
-fun testDescriptionOf(f: PsFun) => match(attrValueOf(f.fAttrs, "test"))
-  (v: PExpr) => soleStringOf(v)
-  ()         => ""
+# A shape of `[test]` check() will reject still gets a row; its error is reported.
+fun testDescriptionOf(f: PsFun) => match(testAttrParts(attrValueOf(f.fAttrs, "test")))
+  (ta: TestAttr) => ta.taDescription
+  ()             => ""
 
-fun soleStringOf(x) => match(x)
-  (tp: PeTuple) => match(head(tp.exprs))
-    (en: PTupEnt) => match(en.tupValue)
-      (s2: PeStr) => s2.strValue
-      (o: PExpr)  => ""
-    ()            => ""
-  (o: PExpr)    => ""
+# The TestCase's `stdout`: the declared expectation as a string literal, or None.
+fun expectedStdoutSource(f: PsFun): String => match(testAttrParts(attrValueOf(f.fAttrs, "test")))
+  (ta: TestAttr) => match(ta.taStdout)
+    (out: String) => "\"" + escapeForSource(out) + "\""
+    ()            => "System::None"
+  ()             => "System::None"
 
 fun parseSingle(text): List<PStmt>|None => match(parseProgram(text, "x"))
   (fp: PFail)          => None
@@ -1103,8 +1141,7 @@ fun modeOf(argv: List<System::String>) => match(head(argv))
   (m: System::String) => m
   ()                  => "census"
 
-fun run(text, i: IO): System::Int
-  let argv = args()
+fun run(text, argv: List<System::String>, i: IO): System::Int
   let mode = modeOf(argv)
   # Everything after the mode word is this CLI's whole flag surface — -W
   # only, for now (see warnings.yafl). Validated up front, for every mode,
@@ -1207,8 +1244,17 @@ fun [tail] writeParts(io2, ps: Chain<String>,
   (l: ChainLink)  => writeAll(io2, l.value)
     |> (w) => writeParts(w.io, l.next, failed || w.v is IOError)
 
-fun main(): System::Int => stdin().asStream()
+# Two front doors. `--stage MODE` is the test harness's: one `#FILE#` stream on
+# stdin, one pipeline stage's output on stdout — the port's equivalent of the
+# Python suite calling a compiler.py function directly. Everything else is the
+# compiler's COMMAND LINE, main.py's flag for flag (cli.yafl). A bare mode word
+# is not accepted: `ybootstrap c` must mean the file `c`, never a stage.
+fun main(): System::Int => match(head(args()))
+  (m: System::String) => m == "--stage" ? stageMain(tail(args())) : cliMain(args())
+  ()                  => cliMain(args())
+
+fun stageMain(argv: List<System::String>): System::Int => stdin().asStream()
   |> (i, s) => (System::collect(s), i)
   |> (src, i) => match(src)
-    (text: System::String) => run(text, i)
+    (text: System::String) => run(text, argv, i)
     (e: IOError) => (i.close(), 1) |> (c, code) => code

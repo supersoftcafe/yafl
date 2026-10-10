@@ -1,0 +1,120 @@
+# Argument-driven inference for generic calls, and literal widths.
+#
+# RULED (2026-07-04): no conversion — a bare `0` is Int and a bare `1.5` is
+# Float64; neither takes a narrower type from the parameter. The suffixed
+# spellings below are the idiom. The rejections of the bare forms stay in
+# compiler/tests/test_generic_arg_inference.py.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::GenericArgInference::SuffixedLiteralBaseline
+
+import System
+import System::Test
+
+fun takesI32(i: System::Int32): System::Int
+    ret 0
+
+fun program(): System::Int
+    ret takesI32(0i32)
+
+fun [test("an i32-suffixed literal passes an Int32 parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::GenericArgInference::GenericInferenceWithSuffixedWidth
+
+import System
+import System::Test
+
+# Spelled 0i32, T infers from the second argument.
+fun second<T>(i: System::Int32, x: T): T
+    ret x
+
+fun program(): System::Int
+    ret second(0i32, 99)
+
+fun [test("T infers from the second argument once the first is spelled 0i32")] check(): None|TestFailure
+    ret assertEqInt(program(), 99, "program()")
+
+
+namespace CompilerTests::GenericArgInference::ArrayIndexWithBareLiteral
+
+import System
+import System::Test
+
+# `a[0]` works because the index API takes Int — 0 IS an Int under strict
+# literals (array.yafl converts internally; the Int32 overload remains for
+# byte-scanning code holding a sized index).
+fun get0(a: System::Array<System::Int>): System::Int
+    ret a[0]
+
+fun program(): System::Int
+    ret 0
+
+fun [test("an array indexed by a bare literal compiles")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::GenericArgInference::SuffixedFloatBaseline
+
+import System
+import System::Test
+
+fun takesF32(x: System::Float32): System::Int
+    ret 0
+
+fun program(): System::Int
+    ret takesF32(1.5f32)
+
+fun [test("an f32-suffixed literal passes a Float32 parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::GenericArgInference::TwoVariantsOfOneEnumBindTToBoth
+
+import System
+import System::Test
+
+# `pair(Circle(..), Square(..))`: the first argument binds T to the Circle
+# view, the second must widen it — an argument binding is a provisional view,
+# never a contradiction (list2(OpMove, OpNewObject) in the port).
+enum Shape
+  enum Circle(r: System::Int)
+  enum Square(s: System::Int)
+
+fun pair<T>(a: T, b: T): System::Int
+    ret 0
+
+fun program(): System::Int
+    ret pair(Circle(1), Square(2))
+
+fun [test("two variants of one enum bind T to both")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::GenericArgInference::ALambdaParameterWaitsForTheList
+
+import System
+import System::Test
+
+# fold(drop(known, 1), head(known), (acc, x) => pick(acc, x)): while `known` is
+# still untyped the lambda's `x` (pick takes Int|None) must not bind fold's T —
+# T also types the list, and waits for it.
+fun twice(i: System::Int): System::Int => i * 2
+fun pick(a: System::Int|System::None, b: System::Int|System::None): System::Int|System::None => match(a)
+  (x: System::Int) => match(b)
+    (y: System::Int) => x > y ? x : y
+    ()               => x
+  () => b
+fun best(xs: System::List<System::Int>): System::Int|System::None
+  let known = map(xs, (x) => twice(x))
+  ret fold(drop(known, 1), head(known), (acc, x) => pick(acc, x))
+fun program(): System::Int
+  ret match(best(prepend(3, prepend(4, List()))))
+    (i: System::Int) => i
+    ()               => 0
+
+fun [test("a lambda parameter waits for the list")] check(): None|TestFailure
+    ret assertEqInt(program(), 8, "program()")

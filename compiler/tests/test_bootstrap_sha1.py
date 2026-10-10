@@ -47,7 +47,7 @@ class TestBootstrapSha1(TestCase):
                                  for _ in range(rng.randint(1, 150))))
         cases = [c for c in cases if "\n" not in c]
         stdin = "".join(c + "\n" for c in cases)
-        r = subprocess.run([self.binary, "sha1"], input=stdin, capture_output=True,
+        r = subprocess.run([self.binary, "--stage", "sha1"], input=stdin, capture_output=True,
                            timeout=60, text=True, env=_RUN_ENV)
         self.assertEqual(0, r.returncode, r.stderr)
         got = r.stdout.splitlines()

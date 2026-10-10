@@ -22,15 +22,19 @@ fires and the program aborts with no diagnostic. A SILENT MISCOMPILE.
 
 Found by the self-hosted compiler port, which is the first program to call
 `concat` at many different element types.
+
+That both instantiations run correctly is a [test] in
+compiler/yafl_tests/generic_lambda_monomorphisation.yafl.
+
+Runtime behaviour is checked by compiler/yafl_tests/generic_lambda_monomorphisation.yafl.
 """
 from __future__ import annotations
 
 import re
 
-import compiler as c
 
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
 
 _TWO_INSTANTIATIONS = """namespace Test
@@ -71,16 +75,10 @@ fun main(): Int
 
 
 class TestGenericLambdaMonomorphisation(TestCase):
-    def test_two_instantiations_run_correctly(self):
-        self.assertEqual((0, "2|2\n"),
-                         compile_and_run_stdlib_capture(_TWO_INSTANTIATIONS))
-
     def test_each_instantiation_gets_its_own_lambda_class(self):
         """The direct check: two instantiations of a generic function holding a
         lambda must lift TWO lambda classes, not one."""
-        code = c.compile([c.Input(_TWO_INSTANTIATIONS, "t.yafl")],
-                         use_stdlib=True, just_testing=False,
-                         optimization_level=1)
+        code = compile_c(_TWO_INSTANTIATIONS, "t.yafl", optimization_level=1)
         self.assertTrue(code)
         classes = set(re.findall(r"_lambdas__lambda_[A-Za-z0-9_]+", code))
         self.assertGreaterEqual(

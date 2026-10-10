@@ -1,8 +1,9 @@
 # bootstrap/literals.yafl — literal decoding ported from parser.py: string
-# escape decoding (_unescape_string incl. \xNN, \uXXXX, \u{...} to UTF-8) and
+# escape decoding (_unescape_string incl. \xNN, \uXXXX, \u{...} to UTF-8),
 # integer lexeme decoding (radix prefixes, i8/i16/i32/i64 suffix precision,
-# underscore separators). Errors return the message; the builder turns them
-# into parse errors exactly where parser.py does.
+# underscore separators) and the float lexeme's grammar. Errors return the
+# message; the builder turns them into parse errors exactly where parser.py
+# does.
 namespace Bootstrap::Parse
 
 import System
@@ -134,18 +135,41 @@ fun decodeInt(lexeme)
     : endsWith(lexeme, "i64") ? 64
     : 0
   let trimr = prec == 8 ? 2 : prec == 0 ? 0 : 3
-  ret intLoop(lexeme, from, length(lexeme) - trimr, radix, 0)
+  ret intLoop(lexeme, from, length(lexeme) - trimr, radix, 0, false)
 
-fun [tail] intLoop(s, at, stop, radix, acc)
+fun [tail] intLoop(s, at, stop, radix, acc, anyDigit)
   if at >= stop
-    ret IntLex(acc, precOf(s), "")
+    ret anyDigit
+      ? IntLex(acc, precOf(s), "")
+      : IntLex(0, 0, "integer literal has no digits")
   let c = byteAt(s, at)
   if c == '_'
-    ret intLoop(s, at + 1, stop, radix, acc)
+    ret intLoop(s, at + 1, stop, radix, acc, anyDigit)
   let v = isHexByte(c) ? Int(hexVal(c)) : -1
   ret v < 0 || v >= radix
     ? IntLex(0, 0, "invalid digit in integer literal")
-    : intLoop(s, at + 1, stop, radix, acc * radix + v)
+    : intLoop(s, at + 1, stop, radix, acc * radix + v, true)
+
+# ── float lexeme ────────────────────────────────────────────────────────────
+# `digits[.digits][e[+-]digits]`, underscores among the digits, the f32/f64
+# suffix already cut — parser.py's _FLOAT_LEXEME. The tokenizer lets any
+# letters follow a number, so this is where `1e5e5` and `1.5f16` stop.
+
+fun validFloat(s)
+  let ints = digitRun(s, 0)
+  let frac = ints < length(s) && byteAt(s, ints) == '.' ? digitRun(s, ints + 1) : ints
+  ret ints > 0 && (frac == length(s) || validExponent(s, frac))
+
+fun validExponent(s, at)
+  let c = byteAt(s, at)
+  let sign = at + 1 < length(s) && (byteAt(s, at + 1) == '+' || byteAt(s, at + 1) == '-')
+  let digits = sign ? at + 2 : at + 1
+  ret (c == 'e' || c == 'E') && digits < length(s) && isDigit(byteAt(s, digits))
+    && digitRun(s, digits) == length(s)
+
+fun [tail] digitRun(s, at) => at < length(s) && isDigitOrUnderscore(byteAt(s, at))
+  ? digitRun(s, at + 1)
+  : at
 
 fun precOf(lexeme) => endsWith(lexeme, "i8") ? 8
   : endsWith(lexeme, "i16") ? 16

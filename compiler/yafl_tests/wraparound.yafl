@@ -1,0 +1,51 @@
+# Consolidated wrap-around test for Int8/16/32/64.
+#
+# Each width's INT_MAX+1, INT_MIN-1, -INT_MIN, INT_MIN/-1, INT_MIN%-1
+# behaviours. All operations use unsigned wrap (or the explicit b==-1
+# paper-over for div/rem so x86 idiv doesn't SIGFPE on INT_MIN/-1).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Wraparound::AllWraparoundInvariants
+
+import System
+import System::Test
+
+fun emit(label: System::String, value: System::Int): System::None
+  print(label + "=" + String(value) + "\n")
+  ret None
+
+fun program(): System::Int
+  # ─── Int8 ──────────────────────────────────────────────────────────────
+  emit("Int8_add_max_plus_1_is_min",   (INT8_MAX + 1i8) == INT8_MIN ? 1 : 0)
+  emit("Int8_sub_min_minus_1_is_max",  (INT8_MIN - 1i8) == INT8_MAX ? 1 : 0)
+  emit("Int8_neg_min_stays_min",       (-INT8_MIN) == INT8_MIN ? 1 : 0)
+  emit("Int8_div_min_by_neg1",         (INT8_MIN / -1i8) == INT8_MIN ? 1 : 0)
+  emit("Int8_rem_min_by_neg1",         Int(INT8_MIN % -1i8))
+
+  # ─── Int16 ─────────────────────────────────────────────────────────────
+  emit("Int16_add_max_plus_1_is_min",  (INT16_MAX + 1i16) == INT16_MIN ? 1 : 0)
+  emit("Int16_sub_min_minus_1_is_max", (INT16_MIN - 1i16) == INT16_MAX ? 1 : 0)
+  emit("Int16_neg_min_stays_min",      (-INT16_MIN) == INT16_MIN ? 1 : 0)
+  emit("Int16_div_min_by_neg1",        (INT16_MIN / -1i16) == INT16_MIN ? 1 : 0)
+  emit("Int16_rem_min_by_neg1",        Int(INT16_MIN % -1i16))
+
+  # ─── Int32 ─────────────────────────────────────────────────────────────
+  emit("Int32_add_max_plus_1_is_min",  (INT32_MAX + 1i32) == INT32_MIN ? 1 : 0)
+  emit("Int32_sub_min_minus_1_is_max", (INT32_MIN - 1i32) == INT32_MAX ? 1 : 0)
+  emit("Int32_neg_min_stays_min",      (-INT32_MIN) == INT32_MIN ? 1 : 0)
+  emit("Int32_div_min_by_neg1",        (INT32_MIN / -1i32) == INT32_MIN ? 1 : 0)
+  emit("Int32_rem_min_by_neg1",        Int(INT32_MIN % -1i32))
+
+  # ─── Int64 ─────────────────────────────────────────────────────────────
+  emit("Int64_add_max_plus_1_is_min",  (INT64_MAX + 1i64) == INT64_MIN ? 1 : 0)
+  emit("Int64_sub_min_minus_1_is_max", (INT64_MIN - 1i64) == INT64_MAX ? 1 : 0)
+  emit("Int64_neg_min_stays_min",      (-INT64_MIN) == INT64_MIN ? 1 : 0)
+  emit("Int64_div_min_by_neg1",        (INT64_MIN / -1i64) == INT64_MIN ? 1 : 0)
+  emit("Int64_rem_min_by_neg1",        Int(INT64_MIN % -1i64))
+
+  ret 0
+
+fun [test("all wraparound invariants", stdout = "Int8_add_max_plus_1_is_min=1\nInt8_sub_min_minus_1_is_max=1\nInt8_neg_min_stays_min=1\nInt8_div_min_by_neg1=1\nInt8_rem_min_by_neg1=0\nInt16_add_max_plus_1_is_min=1\nInt16_sub_min_minus_1_is_max=1\nInt16_neg_min_stays_min=1\nInt16_div_min_by_neg1=1\nInt16_rem_min_by_neg1=0\nInt32_add_max_plus_1_is_min=1\nInt32_sub_min_minus_1_is_max=1\nInt32_neg_min_stays_min=1\nInt32_div_min_by_neg1=1\nInt32_rem_min_by_neg1=0\nInt64_add_max_plus_1_is_min=1\nInt64_sub_min_minus_1_is_max=1\nInt64_neg_min_stays_min=1\nInt64_div_min_by_neg1=1\nInt64_rem_min_by_neg1=0\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

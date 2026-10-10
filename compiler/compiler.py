@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import sys
 
 # Parser combinators and AST walks recurse with expression depth; a few
@@ -610,16 +611,25 @@ def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Reso
         "This is a compiler bug — a compile() pass is not idempotent."))
 
 
+@dataclasses.dataclass(frozen=True)
+class _Failed:
+    """A compile that ended in errors. `warnings` are those the diagnostics
+    pass found before a LATER stage failed: they are reported all the same,
+    as the port does. (When the diagnostics themselves fail, `errors` already
+    holds their warnings — on that failure everything prints together.)"""
+    errors: list[Error]
+    warnings: list[Error]
+
+
 def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
-                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[str, list[Error]] | list[Error]:
-    """Returns (c_code, warnings) on success, or the diagnostic list on failure
-    (which may include warnings alongside the errors — all get printed)."""
+                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[str, list[Error]] | _Failed:
+    """Returns (c_code, warnings) on success, or _Failed on failure."""
     # Regex literals: validate at compile time and intern each distinct
     # pattern as one shared `$regexes::` global. Before convergence — the
     # created globals need typing like any other statement.
     statements, regex_errors = lowering.regexes.fix_global_regexes(statements)
     if regex_errors:
-        return regex_errors
+        return _Failed(regex_errors, [])
     new_statements, resolver, _passes = __converge(statements)
 
     # A global `let` holding a lambda is a function by another name — rewrite
@@ -639,21 +649,21 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
 
     failures, warnings = __collect_diagnostics(new_statements, resolver, enabled_warnings)
     if failures:
-        return failures
+        return _Failed(failures, [])
 
     # Linear-type check: runs on the converged, type-resolved templates
     # (pre-monomorphisation). Each `<[linear] T>` generic body is checked
     # once here; the instantiation-site kind check lives in generics.py.
     linearity_errors = lowering.linearity.check_linearity(new_statements, resolver)
     if linearity_errors:
-        return linearity_errors
+        return _Failed(linearity_errors, warnings)
 
     # [hashed] functions split into wrapper + $hraw sibling — needs converged
     # types (the parameter's EnumSpec), and must precede monomorphisation so
     # generic callers monomorphise against the WRAPPER.
     new_statements, hashed_errors, hashed_changed = lowering.hashed.lower_hashed(new_statements)
     if hashed_errors:
-        return hashed_errors
+        return _Failed(hashed_errors, warnings)
     if hashed_changed:
         new_statements, resolver, _passes = __converge(new_statements)
 
@@ -668,19 +678,19 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # All ok so let's create some C code
     new_statements, poly_errors = lowering.generics.convert_generic_to_concrete(new_statements)
     if poly_errors:
-        return poly_errors
+        return _Failed(poly_errors, warnings)
     # Any surviving reference from non-generic code to a generic template means
     # inference could not ground the call's type arguments: a compile error at
     # the use site, never a codegen crash.
     generic_call_errors = lowering.generics.report_unresolved_generic_calls(new_statements)
     if generic_call_errors:
-        return generic_call_errors
+        return _Failed(generic_call_errors, warnings)
     # Same guard for TRAIT scope: a constraint that found no single provider
     # is a compile error naming the constraint, never a codegen crash naming
     # one of its methods.
     trait_errors = lowering.generics.report_undischarged_traits(new_statements)
     if trait_errors:
-        return trait_errors
+        return _Failed(trait_errors, warnings)
     # Monomorphisation re-enters the compile fixpoint: a conversion inside a
     # generic template is undecidable (needs_conversion is conservative on
     # non-ground types), so each node of a freshly-instantiated body places its
@@ -693,7 +703,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # ambiguous suffix match is an error rather than first-insertion-wins.
     new_statements, enum_ref_errors = lowering.complex_enums.mark_complex_enums(new_statements)
     if enum_ref_errors:
-        return enum_ref_errors
+        return _Failed(enum_ref_errors, warnings)
     new_statements = lowering.constants.inline_constants(new_statements)
     # `[tail]` self-recursion → loop. Runs before inlining / closure conversion,
     # while every self-call is still a direct, name-resolved call so the
@@ -715,7 +725,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements = lowering.hoist_nested.hoist_nested_functions(new_statements)
     new_statements, tail_errors = lowering.tail_loop.lower_tail_loops(new_statements, resolver)
     if tail_errors:
-        return tail_errors
+        return _Failed(tail_errors, warnings)
     new_statements = lowering.ast_inline.inline_ast(new_statements, optimization_level)
     new_statements = lowering.strings.fix_global_strings(new_statements)
     new_statements = lowering.integers.fix_global_integers(new_statements)
@@ -724,7 +734,7 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # crashes at force time.  Block-local check.
     lazy_fwd_errors = lowering.lower_lazy_lets.check_lazy_forward_refs(new_statements)
     if lazy_fwd_errors:
-        return lazy_fwd_errors
+        return _Failed(lazy_fwd_errors, warnings)
     # [lazy] let lowering: wrap RHS in a lambda and rewrite reference sites
     # to LazyExpression.  Must run before lambdas so the synthesised
     # closure goes through normal closure conversion.
@@ -832,23 +842,22 @@ def __test_registry_source(tests: list[s.FunctionStatement]) -> Input:
     library in via the namespace worklist.
     """
     def esc(text: str) -> str:
-        # Backslash FIRST, or the escaping escapes itself. Newline too: a
-        # description carrying one would otherwise emit source with an
-        # unterminated string literal. Mirrored by the port's escapeForSource.
-        return (text.replace("\\", "\\\\").replace('"', '\\"')
-                    .replace("\n", "\\n"))
+        # Character by character, so nothing is escaped twice: backslash and
+        # quote; newline, which would otherwise end the literal; and every
+        # other control character as \u{x}, since an expected stdout may hold
+        # tabs or carriage returns. Mirrored by the port's escapeForSource.
+        return "".join("\\\\" if ch == "\\" else '\\"' if ch == '"' else "\\n" if ch == "\n"
+                       else f"\\u{{{ord(ch):x}}}" if ord(ch) < 32 else ch
+                       for ch in text)
 
     def case_expr(fn) -> str:
         qualified = g.simple_name(fn.name)
-        arg = fn.attributes.get("test")
-        description = ""
-        if isinstance(arg, e.TupleExpression) and len(arg.expressions) == 1:
-            value = arg.expressions[0].value
-            if isinstance(value, e.StringExpression):
-                description = value.value
+        # A shape check() will reject still gets a row; its error is reported.
+        description, stdout = s.test_attribute_parts(fn.attributes.get("test")) or ("", None)
+        expected = "System::None" if stdout is None else f'"{esc(stdout)}"'
         return (f'{tc}("{esc(qualified)}", "{esc(description)}", '
                 f'"{esc(Path(fn.line_ref.filename).name)}", {fn.line_ref.line}, '
-                f"() => {qualified}())")
+                f"{expected}, () => {qualified}())")
 
     tc = "System::Test::TestCase"
 
@@ -961,8 +970,8 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
             enabled_warnings=enabled_warnings)
     except ConvergenceError as unsettled:
         return __print_errors(unsettled.errors), None, []
-    if isinstance(compiled_result, list):
-        return __print_errors(compiled_result), None, []
+    if isinstance(compiled_result, _Failed):
+        return __print_errors(compiled_result.errors), None, compiled_result.warnings
 
     c_code, warnings = compiled_result
     return c_code, link_spec, warnings

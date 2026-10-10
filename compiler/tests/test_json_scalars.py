@@ -11,8 +11,8 @@ import subprocess
 import tempfile
 from tests.testutil import TimedTestCase as TestCase
 
-import compiler as c
 from tests.testutil import _CLANG_BUILD_FLAGS, _STATIC_LINK, _RUN_ENV
+from tests.testutil import compile_c
 
 
 # Each (label, json_text, expected) entry contributes one labelled line
@@ -80,7 +80,7 @@ fun main(): System::Int
 
 
 def _run_yafl(source: str, timeout: int = 15) -> tuple[int, str]:
-    c_code = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    c_code = compile_c(source)
     assert c_code, "yafl compilation produced no output (type errors?)"
     with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
         binary = tmp.name

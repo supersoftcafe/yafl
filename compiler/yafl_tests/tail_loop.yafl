@@ -1,0 +1,172 @@
+# [tail] self-recursion lowers to a back-edge loop — no trampoline.
+#
+# Every `[tail]` self-recursive function (sync or async, top-level or nested)
+# becomes a loop. A sync one is a plain synchronous C function; an async one is a
+# loop *inside* the async state machine, with the loop-carried vars promoted to
+# the task heap across suspensions. No worker-queue dispatch / task is generated
+# for the recursion. A nested `[tail]` function is lowered before closure
+# conversion (while its self-call is still direct); a capturing one then becomes a
+# loop inside its closure.
+#
+# A `[tail]` function whose self-call is not in tail position is a compile error.
+# A self-call captured in a surviving closure belongs to the closure (a normal
+# recursive call to this function), not to the tail recursion, so it is not
+# counted as a tail call and must not trip the non-tail-position error.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::TailLoop::CapturingHelperInTailHostSeesCurrentIteration
+
+import System
+import System::Test
+
+# The helper captures the [tail] host's CURRENT parameter: after the
+# tail-to-loop rewrite it must see each iteration's n (a per-iteration
+# closure), never a stale first-iteration snapshot.
+fun [tail] sumScaled(n: Int, acc: Int): Int
+  fun scaled(x: Int): Int
+    ret x * n
+  ret n == 0 ? acc : sumScaled(n - 1, acc + scaled(3))
+fun program(): System::Int
+  ret sumScaled(4, 0) == 30 ? 0 : 1
+
+fun [test("capturing helper in tail host sees current iteration")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TailLoop::PlainHelperInTailHost
+
+import System
+import System::Test
+
+fun [tail] countDown(n: Int, acc: Int): Int
+  fun double(x: Int): Int
+    ret x * 2
+  ret n == 0 ? acc : countDown(n - 1, acc + double(n))
+
+fun program(): System::Int
+  ret countDown(4, 0) == 20 ? 0 : 1
+
+fun [test("plain helper in tail host")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TailLoop::EarlyReturnSelfCallsAreTail
+
+import System
+import System::Test
+
+# Self-calls in tail position INSIDE early-return `if` statements — the
+# natural shape for a loop body with base cases first. Every `ret` here
+# supplies the function-body block's value, so each is a genuine tail call.
+fun [tail] count(n: System::Int, acc: System::Int): System::Int
+  if n == 0
+    ret acc
+  if n % 2 == 0
+    ret count(n - 1, acc + 2)
+  let bump = 1
+  ret count(n - 1, acc + bump)
+
+fun program(): System::Int
+  # 1_000_000 iterations: only a real loop survives; sum = 1.5 per pair.
+  print(String(count(10, 0)) + "\n")
+  print(String(count(1000000, 0)) + "\n")
+  ret 0
+
+fun [test("early return self calls are tail", stdout = "15\n1500000\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TailLoop::CapturingNestedTailRunsConstantStack
+
+import System
+import System::Test
+
+fun outer(s: System::String): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i == 0 ? acc : loop(i - 1, acc + System::length(s))
+  ret loop(1000000, 0)
+
+fun program(): System::Int
+  ret outer("xy") == 2000000 ? 0 : 1
+
+fun [test("capturing nested tail runs constant stack")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TailLoop::NoncapturingNestedTailRunsConstantStack
+
+import System
+import System::Test
+
+fun outer(n: System::Int): System::Int
+  fun [tail] inner(i: System::Int, acc: System::Int): System::Int
+    ret i == 0 ? acc : inner(i - 1, acc + 1)
+  ret inner(n, 0)
+
+fun program(): System::Int
+  ret outer(1000000) == 1000000 ? 0 : 1
+
+fun [test("noncapturing nested tail runs constant stack")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TailLoop::SelfCallInClosureIsNotANonTailError
+
+import System
+import System::Test
+
+fun [tail] countdown(n: System::Int, acc: System::Int): System::Int
+  let g: (:System::Int): System::Int = (x: System::Int) => countdown(x, x)
+  ret n == 0 ? acc : countdown(n - 1, acc + 1)
+
+fun program(): System::Int
+  ret countdown(5, 0)
+
+fun [test("self call in closure is not a non tail error")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::TailLoop::TailRunsConstantStack
+
+import System
+import System::Test
+
+fun [tail] count(n: System::Int, acc: System::Int): System::Int
+  ret n == 0 ? acc : count(n - 1, acc + 1)
+
+fun program(): System::Int
+  print(String(count(5, 0)) + "\n")
+  print(String(count(1000000, 0)) + "\n")
+  ret 0
+
+fun [test("tail runs constant stack", stdout = "5\n1000000\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TailLoop::TailSelfCallInPipelineLambdaRunsConstantStack
+
+import System
+import System::Test
+
+fun [tail] one(n: System::Int, acc: System::Int): System::Int
+  ret n == 0
+    ? acc
+    : n - 1
+      |> (m) => one(m, acc + 1)
+
+fun [tail] two(n: System::Int, acc: System::Int): System::Int
+  ret n == 0
+    ? acc
+    : (n, acc)
+      |> (a, b) => (a - 1, b + 1)
+      |> (a2, b2) => two(a2, b2)
+
+fun program(): System::Int
+  print(String(one(1000000, 0)) + "\n")
+  print(String(two(1000000, 0)) + "\n")
+  ret 0
+
+fun [test("tail self call in pipeline lambda runs constant stack", stdout = "1000000\n1000000\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

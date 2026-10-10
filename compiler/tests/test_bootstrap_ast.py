@@ -51,7 +51,7 @@ class TestBootstrapAst(TestCase):
                 result = parse(tokenize(text, "x"))
                 self.assertFalse(result.errors, f"{path.name}: python parse errors")
                 expected = dump(result.value)
-                r = subprocess.run([self.binary, "ast"], input=text, capture_output=True,
+                r = subprocess.run([self.binary, "--stage", "ast"], input=text, capture_output=True,
                                    timeout=90, text=True, env=_RUN_ENV)
                 self.assertEqual(0, r.returncode, f"{path.name}: bootstrap exited {r.returncode}")
                 if r.stdout != expected:

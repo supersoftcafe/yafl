@@ -1,0 +1,28 @@
+# Lambda lifting (lowering/lambda_lift.py): a nested function that captures
+# its parent's parameters but is only ever CALLED loses its closure — captures
+# become threaded parameters, and no closure object is ever allocated.
+#
+# The C-inspection assertions are the acceptance criterion: naive idiomatic
+# code (nested helper reading the parent's parameter) must compile to exactly
+# what hand-threading produces. writeAll's captured `data` — once 93% of
+# json_pretty's allocations — is the pattern under test.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::LambdaLift::ValuePositionReferenceKeepsClosureSemantics
+
+import System
+import System::Test
+
+fun apply(g: (:System::Int): System::Int, x: System::Int): System::Int
+  ret g(x)
+fun addTo(base: System::Int, x: System::Int): System::Int
+  fun f(k: System::Int): System::Int
+    ret k + base
+  ret apply(f, x) + f(1)
+fun program(): System::Int
+  ret addTo(10, 5)
+
+fun [test("value position reference keeps closure semantics")] check(): None|TestFailure
+    ret assertEqInt(program(), 26, "program()")

@@ -21,7 +21,7 @@ fun checkStmtKind(st, r, retTy: Spec|None) => match(st)
   (rt: PsRet)        => checkRet2(rt, r, retTy)
   (a: PsAction)      => checkAction2(a, r)
   (i: PsIf)          => checkIf2(i, r, retTy)
-  (ei: PsElseIf)     => oneErr(ei.pseiLine,
+  (ei: PsElseIf)     => oneErr(ei.eiKeyword,
                                "`else if` without a matching preceding `if`")
   (el: PsElse)       => oneErr(el.pselLine,
                                "`else` without a matching preceding `if`")
@@ -184,13 +184,40 @@ fun testErrs(f: PsFun)
     : oneErr(f.psfLine, "[test] functions take no parameters")
   ret union(argErr, union(bodyErr, paramErr))
 
-# Absent is fine (the description is optional); present must be one string.
-fun testArgErr(f: PsFun) => match(attrValueOf(f.fAttrs, "test"))
-  (v: PExpr) => isOneStringArg(v)
-    ? noErrs()
-    : oneErr(f.psfLine,
-             "[test] takes one optional string argument: [test(\"description\")]")
-  ()         => noErrs()
+fun testArgErr(f: PsFun) => match(testAttrParts(attrValueOf(f.fAttrs, "test")))
+  (ok: TestAttr) => noErrs()
+  ()             => oneErr(f.psfLine, testAttributeShape())
+
+fun testAttributeShape() => "[test] takes an optional description and an optional expected stdout: "
+  + "[test(\"description\", stdout = \"expected output\")]"
+
+# `[test]`'s argument as its description and expected stdout, or None when it
+# is not one of `[test]`, `[test("d")]`, `[test("d", stdout = "s")]`,
+# `[test(stdout = "s")]`: the description unnamed and first, every value a
+# string literal. Mirrors function.py's test_attribute_parts.
+class [final] TestAttr(taDescription: String, taStdout: String|None)
+
+fun testAttrParts(v: PExpr|None): TestAttr|None => match(v)
+  (x: PExpr) => match(x)
+    (tp: PeTuple) => testAttrEntries(tp.exprs)
+    (o: PExpr)    => None
+  ()         => TestAttr("", None)
+
+fun testAttrEntries(es: List<PTupEnt>): TestAttr|None => match(head(es))
+  (first: PTupEnt) => first.tupName == ""
+    ? match(first.tupValue)
+      (d: PeStr) => testAttrStdout(d.strValue, tail(es))
+      (o: PExpr) => None
+    : testAttrStdout("", es)
+  ()               => TestAttr("", None)
+
+fun testAttrStdout(description: String, rest: List<PTupEnt>): TestAttr|None => match(head(rest))
+  (en: PTupEnt) => !isEmpty(tail(rest)) || en.tupName != "stdout" || en.tupSpread
+    ? None
+    : match(en.tupValue)
+      (s2: PeStr) => TestAttr(description, s2.strValue)
+      (o: PExpr)  => None
+  ()            => TestAttr(description, None)
 
 fun isOneStringArg(v: PExpr|None) => match(v)
   (x: PExpr) => match(x)
@@ -289,24 +316,29 @@ fun letSubErrs(l: PsLet, r)
   let whereErr = checkSpecs(chain(l.lWheres), r, noErrs())
   ret union(err1, union(err2, union(letAttrErrs(l, r), whereErr)))
 
-fun letAttrErrs(l: PsLet, r: Resolver)
-  ret union(constErrs(l),
-      union(lazyFutureErrs(l),
-             attrErrs(l.lAttrs, isKnownLetAttr, l.pslLine, "a let")))
+fun letAttrErrs(l: PsLet, r: Resolver) => bindingAttrErrs(l.lAttrs, l.pslLine, l.lDefault)
 
-fun constErrs(l: PsLet)
-  if !hasAttr(l.lAttrs, "const")
+# The attribute rules every binding shares — a let, and a destructure, which
+# Python's DestructureStatement inherits from LetStatement.check.
+fun bindingAttrErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  ret union(constErrs(attrs, lr, init),
+      union(lazyErrs(attrs, lr, init),
+      union(futureErrs(attrs, lr, init),
+             attrErrs(attrs, isKnownLetAttr, lr, "a let"))))
+
+fun constErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  if !hasAttr(attrs, "const")
     ret noErrs()
-  let argErr = letAttrArgErr(l, "const", "[const] takes no arguments")
-  ret isConstLiteral(l.lDefault)
+  let argErr = attrArgErr(attrs, lr, "const", "[const] takes no arguments")
+  ret isConstLiteral(init)
     ? argErr
-    : union(argErr, oneErr(l.pslLine, "[const] requires a literal value"))
+    : union(argErr, oneErr(lr, "[const] requires a literal value"))
 
-fun letAttrArgErr(l: PsLet, name: String, msg) => match(attrValueOf(l.lAttrs, name))
-  (v: PExpr) => oneErr(l.pslLine, msg)
+fun attrArgErr(attrs: List<PAttr>, lr: PLine, name: String, msg) => match(attrValueOf(attrs, name))
+  (v: PExpr) => oneErr(lr, msg)
   ()         => noErrs()
 
-fun hasInit(l: PsLet) => match(l.lDefault)
+fun hasInit(init: PExpr|None) => match(init)
   (d: PExpr) => true
   ()         => false
 
@@ -314,25 +346,23 @@ fun isConstLiteral(d: PExpr|None) => match(d)
   (x: PExpr) => isLiteralValue(x)
   ()         => false
 
-fun lazyFutureErrs(l: PsLet) => union(lazyErrs(l), futureErrs(l))
-
-fun lazyErrs(l: PsLet)
-  if !hasAttr(l.lAttrs, "lazy")
+fun lazyErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  if !hasAttr(attrs, "lazy")
     ret noErrs()
-  let argErr = letAttrArgErr(l, "lazy", "[lazy] takes no arguments")
-  ret hasInit(l)
+  let argErr = attrArgErr(attrs, lr, "lazy", "[lazy] takes no arguments")
+  ret hasInit(init)
     ? argErr
-    : union(argErr, oneErr(l.pslLine, "[lazy] requires an initialiser"))
+    : union(argErr, oneErr(lr, "[lazy] requires an initialiser"))
 
-fun futureErrs(l: PsLet)
-  if !hasAttr(l.lAttrs, "future")
+fun futureErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  if !hasAttr(attrs, "future")
     ret noErrs()
-  let argErr = letAttrArgErr(l, "future", "[future] takes no arguments")
-  let initErr = hasInit(l)
+  let argErr = attrArgErr(attrs, lr, "future", "[future] takes no arguments")
+  let initErr = hasInit(init)
     ? noErrs()
-    : oneErr(l.pslLine, "[future] requires an initialiser")
-  let bothErr = hasAttr(l.lAttrs, "lazy")
-    ? oneErr(l.pslLine,
+    : oneErr(lr, "[future] requires an initialiser")
+  let bothErr = hasAttr(attrs, "lazy")
+    ? oneErr(lr,
              "[lazy] and [future] are mutually exclusive — a future IS "
              + "lazy when the worker pool is busy; pick one")
     : noErrs()
@@ -355,7 +385,11 @@ fun checkDestructure2(d: PsDestructure, r)
   let err1 = match(d.dDefault)
     (x: PExpr) => checkExpr(x, r, d.dType)
     ()         => noErrs()
-  ret union(err1, checkSpecOpt(d.dType, r))
+  let futureShape = hasAttr(d.dAttrs, "future")
+    ? oneErr(d.psdLine, "[future] applies to a simple let, not a destructuring binding")
+    : noErrs()
+  ret union(err1, union(checkSpecOpt(d.dType, r),
+         union(bindingAttrErrs(d.dAttrs, d.psdLine, d.dDefault), futureShape)))
 
 # ── control ─────────────────────────────────────────────────────────────────
 
@@ -406,9 +440,6 @@ fun checkClass2(c, r0) => match(c.cAllParents)
   (ps: List<Spec>) => classChecks(c, r0)
   ()               => oneErr(c.pscLine, "Missed compile step")
 
-# NOT PORTED YET: the [foreign]-class rules and the slot multi-override /
-# no-implementation checks (classdef.py:235-260, needs invert_and_merge_slots)
-# — the check contract's first-diff will demand them when a corpus case does.
 fun classChecks(c, r0): Set<PErr>
   let inh = findClassesOrError(c.cImplements, r0)
   let implErr = implErrors(chain(c.cImplements), r0, noErrs())
@@ -430,8 +461,79 @@ fun classChecks(c, r0): Set<PErr>
       union(prmErr,
       union(stmErr,
       union(arrayFieldErrs(c, r0),
+      union(foreignClassErrs(c),
+      union(linearClassErrs(c),
+      union(linearClassGenErrs(c, chain(c.cGens), noErrs()),
+      union(slotOverrideErrs(c),
              attrErrs(c.cAttrs, isKnownClassAttr, c.pscLine,
-                      c.cIsInterface ? "an interface" : "a class"))))))))
+                      c.cIsInterface ? "an interface" : "a class"))))))))))))
+
+# A [foreign] class is an opaque handle the runtime hands out: no argument, no
+# subclasses, no constructor parameters, and nothing but [foreign] methods.
+fun foreignClassErrs(c: PsClass): Set<PErr>
+  if !hasAttr(c.cAttrs, "foreign")
+    ret noErrs()
+  ret match(attrValueOf(c.cAttrs, "foreign"))
+    (v: PExpr) => oneErr(c.pscLine,
+        "[foreign] on a class takes no argument — instances are returned by foreign functions")
+    ()         => !hasAttr(c.cAttrs, "final")
+      ? oneErr(c.pscLine, "[foreign] classes must also be [final]")
+      : !isEmpty(flattenParams(c.cParams))
+        ? oneErr(c.pscLine, "[foreign] classes must have no parameters — instances are returned by foreign functions, not constructed directly")
+        : !all(c.cMembers, isForeignFun)
+          ? oneErr(c.pscLine, "[foreign] classes may only contain [foreign] methods")
+          : noErrs()
+
+fun isForeignFun(m: PStmt) => match(m)
+  (f: PsFun) => hasAttr(f.fAttrs, "foreign")
+  (o: PStmt) => false
+
+# Flow analysis follows a linear value through locals, not through an object
+# graph that may be subclassed: a [linear] class is [final], and takes no
+# argument.
+fun linearClassErrs(c: PsClass): Set<PErr>
+  if !hasAttr(c.cAttrs, "linear")
+    ret noErrs()
+  ret match(attrValueOf(c.cAttrs, "linear"))
+    (v: PExpr) => oneErr(c.pscLine, "[linear] takes no arguments")
+    ()         => hasAttr(c.cAttrs, "final")
+      ? noErrs()
+      : oneErr(c.pscLine, "[linear] classes must also be [final]")
+
+# `[linear] T` is allowed on an INTERFACE (Drop<[linear] T> may be instantiated
+# with a linear type) but not on a concrete class: flow analysis cannot trace a
+# linear value stored in a generic class field.
+fun [tail] linearClassGenErrs(c: PsClass, gs: Chain<PGen>, acc): Set<PErr> => match(gs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => !c.cIsInterface && hasAttr(l.value.genAttrs, "linear")
+    ? linearClassGenErrs(c, l.next, add(acc, PErr(c.pscLine,
+        "[linear] type parameters are only supported on functions")))
+    : linearClassGenErrs(c, l.next, acc)
+
+# invert_and_merge_slots: a member name provided by more than one slot is
+# overridden ambiguously. (Python also reports a slot with "no implementation",
+# but its inversion only ever builds non-empty sets, so that rule cannot fire.)
+fun slotOverrideErrs(c: PsClass): Set<PErr> => match(c.cAllSlots)
+  (slots: List<Slot>) => hasSharedProvide(chain(slots), Dict())
+    ? oneErr(c.pscLine, "One or more slots have multiple overrides")
+    : noErrs()
+  ()                  => noErrs()
+
+fun [tail] hasSharedProvide(ss: Chain<Slot>, owner: Dict<String, String>): Bool => match(ss)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => match(claimProvides(chain(l.value.slotProvides), l.value.slotName, owner))
+    (shared: Bool)              => true
+    (o2: Dict<String, String>)  => hasSharedProvide(l.next, o2)
+
+# Record `slot` as the provider of each name; `true` the moment a name already
+# has a DIFFERENT provider. A slot listing a name twice is still one provider
+# (slotProvides has set semantics).
+fun [tail] claimProvides(ns: Chain<String>, slot: String,
+                         owner: Dict<String, String>): Dict<String, String>|Bool => match(ns)
+  (nil: ChainEnd) => owner
+  (l: ChainLink)  => match(get(owner, l.value))
+    (prev: String) => prev != slot ? true : claimProvides(l.next, slot, owner)
+    ()             => claimProvides(l.next, slot, put(owner, l.value, slot))
 
 # The trailing array field: at most one, the class [final], and its length
 # field an Int32 sibling.

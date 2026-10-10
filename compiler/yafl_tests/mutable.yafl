@@ -1,0 +1,88 @@
+# [mutable] classes, the write-once CAS, and System::memoize.
+#
+# [mutable] says the collector must NOT relocate this object because fields are
+# published into it after construction. Two things have to hold or the whole
+# write-once scheme is unsound:
+#
+#   * the vtable must carry is_mutable, so the collector leaves it alone;
+#   * the class must NOT be lowered to an unboxed struct, because there would be
+#     no object identity left to publish into.
+#
+# The second is not theoretical: MemoRoot was silently flattened to a
+# `struct_anon_*` and the emitted C failed to compile against the CAS primitive.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Mutable::Arity1RepeatedAndDistinctKeys
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let sq = memoize((n: System::Int) => n * n + 1)
+  println(sq(7) + sq(7) + sq(9) + sq(9) + sq(7))
+  ret 0
+
+fun [test("arity1 repeated and distinct keys", stdout = "314\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Mutable::Arity1SameAnswerForRepeatedKey
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let f = memoize((n: System::Int) => n + 1000)
+  ret f(5) == f(5) && f(5) == 1005 ? 1 : 0
+
+fun [test("arity1 same answer for repeated key")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::Mutable::Arity2CurriesAndCaches
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let g = memoize((a: System::Int, b: System::Int) => a * 100 + b)
+  println(g(3, 4) + g(3, 4) + g(5, 6))
+  ret 0
+
+fun [test("arity2 curries and caches", stdout = "1114\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Mutable::Arity3CurriesAndCaches
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let h = memoize((a: System::Int, b: System::Int, c: System::Int) => a + b + c)
+  ret h(1, 2, 3) + h(1, 2, 3) + h(4, 5, 6)
+
+fun [test("arity3 curries and caches")] check(): None|TestFailure
+    ret assertEqInt(program(), 27, "program()")
+
+
+namespace CompilerTests::Mutable::ManyKeysExerciseTheTrieBelowTheRoot
+
+import System
+import System::Test
+
+fun [tail] loop(f: (:System::Int): System::Int, i: System::Int,
+                acc: System::Int): System::Int
+  ret i <= 0 ? acc : loop(f, i - 1, acc + f(i))
+
+fun program(): System::Int
+  let f = memoize((n: System::Int) => n * 2)
+  # sum twice: the second pass must be all hits and give the same total
+  let a = loop(f, 200, 0)
+  let b = loop(f, 200, 0)
+  ret a == b && a == 40200 ? 1 : 0
+
+fun [test("Enough distinct keys that the trie must branch past depth 1, so the")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")

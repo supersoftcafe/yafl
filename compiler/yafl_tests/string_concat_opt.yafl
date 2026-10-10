@@ -1,0 +1,39 @@
+# The string-concat flattening stage (lowering/string_concat.py, -O1+):
+# `a + b + c + …` chains fold into one `str_concat_n` call.
+#
+# Checks the values are byte-correct, including a chain long enough to
+# exercise the 16-operand runtime-cap chunking. That the rewrite fired — the
+# emitted C contains `str_concat_n` — is a C-shape check, so it stays in
+# tests/test_string_concat_opt.py.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::StringConcatOpt::ChainValuesCorrectAndFlattened
+
+import System
+import System::Test
+
+fun label(name: System::String, n: System::Int): System::String
+  ret "[" + name + "=" + System::String(n) + "]"
+fun program(): System::Int
+  let s = label("alpha", 42) + label("beta", 7) + "!"
+  System::print(s)
+  ret System::length(s)
+
+fun [test("chain values correct and flattened", stdout = "[alpha=42][beta=7]!")] check(): None|TestFailure
+    ret assertEqInt(program(), 19, "program()")
+
+
+namespace CompilerTests::StringConcatOpt::LongChainChunksPastRuntimeCap
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let s = "p00" + "p01" + "p02" + "p03" + "p04" + "p05" + "p06" + "p07" + "p08" + "p09" + "p10" + "p11" + "p12" + "p13" + "p14" + "p15" + "p16" + "p17" + "p18" + "p19"
+  System::print(s)
+  ret System::length(s)
+
+fun [test("long chain chunks past runtime cap", stdout = "p00p01p02p03p04p05p06p07p08p09p10p11p12p13p14p15p16p17p18p19")] check(): None|TestFailure
+    ret assertEqInt(program(), 60, "program()")

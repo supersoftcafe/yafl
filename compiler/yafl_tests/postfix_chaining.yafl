@@ -1,0 +1,59 @@
+# Postfix chaining: `.field` / `(...)` / `[...]` interleave freely.
+#
+# Previously the parser split dotting and calling into two non-interleaved layers,
+# so a postfix applied to the *result of a call or index* (`f().g()`, `a().b`,
+# `m()[0].x`) was rejected. They now form one left-associative chain
+# (`parsing/parser.py`, `__parse_invoke` / `__to_invokes`). Existing forms
+# (`a.b.c`, `io.read(5)`, `arr[0]`) are unchanged, and a non-identifier dot target
+# is still an error.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::PostfixChaining::FieldAccessOnCallResult
+
+import System
+import System::Test
+
+fun pair(): (a: System::Int, b: System::Int)
+  ret (a = 3, b = 4)
+
+fun program(): System::Int
+  ret pair().a + pair().b
+
+fun [test("field access on call result")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::PostfixChaining::MethodChainingOnMethodResult
+
+import System
+import System::Test
+
+class Box(v: System::Int)
+  fun inc(): Box
+    ret Box(v + 1)
+  fun get(): System::Int
+    ret v
+
+fun program(): System::Int
+  ret Box(0).inc().inc().get()
+
+fun [test("method chaining on method result")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")
+
+
+namespace CompilerTests::PostfixChaining::MethodOnConstructorResult
+
+import System
+import System::Test
+
+class Box(v: System::Int)
+  fun get(): System::Int
+    ret v
+
+fun program(): System::Int
+  ret Box(5).get()
+
+fun [test("method on constructor result")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")

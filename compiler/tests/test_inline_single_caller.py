@@ -14,8 +14,8 @@ survives even at -O3.
 """
 from __future__ import annotations
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
 
 def _solo(level: int) -> str:
@@ -26,7 +26,7 @@ def _solo(level: int) -> str:
         "  ret x==0?1:x==1?2:x==2?3:x==3?4:x==4?5:x==5?6:7\n"
         "fun main(): System::Int\n"
         "  ret solo(3) + 1\n")
-    return c.compile([c.Input(src, "test.yafl")], use_stdlib=True, optimization_level=level)
+    return compile_c(src, optimization_level=level)
 
 
 def _shared(level: int) -> str:
@@ -37,7 +37,7 @@ def _shared(level: int) -> str:
         "  ret x==0?1:x==1?2:x==2?3:x==3?4:x==4?5:x==5?6:7\n"
         "fun main(): System::Int\n"
         "  ret shared(3) + shared(4)\n")
-    return c.compile([c.Input(src, "test.yafl")], use_stdlib=True, optimization_level=level)
+    return compile_c(src, optimization_level=level)
 
 
 class TestSingleCallerFold(TestCase):

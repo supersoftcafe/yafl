@@ -8,16 +8,16 @@ reports a compile error.
 
 Branches are pure scopes; lets inside a branch do not escape. Per YAFL's
 "only ambiguity is an error" principle, a branch may contain anything.
+
+Runtime behaviour is checked by compiler/yafl_tests/conditionals.yafl.
 """
 from __future__ import annotations
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_errors
 
 
-# TestIfRuntime and TestIfElseRuntime are covered by
-# test_conditionals_runtime.TestAllConditionalsRuntime.
+# The runtime shapes are [test]s in compiler/yafl_tests/conditionals.yafl.
 
 
 class TestIfCompileErrors(TestCase):
@@ -33,8 +33,9 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertEqual("", result)
+        self.assertEqual(
+            "test.yafl[3:8] - if condition must be Bool\n",
+            compile_errors(src))
 
     def test_orphan_else_rejected(self):
         """An `else` without a preceding `if` is reported by `check()`
@@ -47,8 +48,9 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertEqual("", result)
+        self.assertEqual(
+            "test.yafl[3:5] - `else` without a matching preceding `if`\n",
+            compile_errors(src))
 
     def test_orphan_else_if_rejected(self):
         """Same for an `else if` with no preceding `if`."""
@@ -59,8 +61,9 @@ class TestIfCompileErrors(TestCase):
             "        ret 1\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertEqual("", result)
+        self.assertEqual(
+            "test.yafl[3:5] - `else if` without a matching preceding `if`\n",
+            compile_errors(src))
 
     def test_else_separated_from_if_rejected(self):
         """A non-if statement between `if` and `else` breaks the chain;
@@ -75,43 +78,7 @@ class TestIfCompileErrors(TestCase):
             "        ret 2\n"
             "    ret 0\n"
         )
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
-        self.assertEqual("", result)
-
-
-# A multi-line `match` as a ternary BRANCH: the arm block is indentation-
-# delimited, and the `? …` / `: …` continuation lines that follow must
-# terminate it cleanly — in either branch position, and nested.
-_MATCH_IN_TERNARY = """\
-import System
-
-fun pickFalse(x: System::Int|System::None, y: System::Int): System::Int
-  ret y == 0
-    ? y
-    : match(x)
-      (i: System::Int)  => i
-      (n: System::None) => 0 - 1
-
-fun pickTrue(x: System::Int|System::None, y: System::Int): System::Int
-  ret y == 0
-    ? match(x)
-      (i: System::Int)  => i + 100
-      (n: System::None) => 0 - 100
-    : y
-
-fun main(): System::Int
-  print(String(pickFalse(7, 1)) + "\\n")
-  let none: System::Int|System::None = System::None
-  print(String(pickFalse(none, 1)) + "\\n")
-  print(String(pickTrue(7, 0)) + "\\n")
-  print(String(pickFalse(3, 0)) + "\\n")
-  ret 0
-"""
-
-
-class TestMatchInTernary(TestCase):
-    def test_match_as_ternary_branch(self):
-        from tests.testutil import compile_and_run_stdlib_capture
-        rc, out = compile_and_run_stdlib_capture(_MATCH_IN_TERNARY, timeout=30)
-        self.assertEqual(0, rc, f"match-in-ternary failed; stdout:\n{out}")
-        self.assertEqual(["7", "-1", "107", "0"], out.splitlines())
+        self.assertEqual(
+            "test.yafl[5:9] - warning: 'x' is never used\n"
+            "test.yafl[6:5] - `else` without a matching preceding `if`\n",
+            compile_errors(src))

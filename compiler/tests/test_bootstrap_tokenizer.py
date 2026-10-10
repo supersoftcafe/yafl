@@ -50,7 +50,7 @@ class TestBootstrapTokenizer(TestCase):
         for path in _CORPUS:
             with self.subTest(file=path.name):
                 text = path.read_text()
-                r = subprocess.run([self.binary, "tokens"], input=text, capture_output=True,
+                r = subprocess.run([self.binary, "--stage", "tokens"], input=text, capture_output=True,
                                    timeout=30, text=True, env=_RUN_ENV)
                 self.assertEqual(0, r.returncode, f"{path.name}: tokenizer exited {r.returncode}")
                 expected = _python_dump(text)
@@ -72,7 +72,7 @@ class TestBootstrapTokenizer(TestCase):
             'let c = 1..9 ?? x??y @ $ ~n & ~m\n'
             'if x>=1 && y<=2 || z!=3 << 4 >> 5 :: w\n'
         )
-        r = subprocess.run([self.binary, "tokens"], input=tricky, capture_output=True,
+        r = subprocess.run([self.binary, "--stage", "tokens"], input=tricky, capture_output=True,
                            timeout=30, text=True, env=_RUN_ENV)
         self.assertEqual(0, r.returncode)
         self.assertEqual(_python_dump(tricky), r.stdout)

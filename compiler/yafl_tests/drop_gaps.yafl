@@ -1,0 +1,49 @@
+# Two drops/linearity gaps found during ListBuilder adoption (07-29).
+#
+# 1. GENERIC Drop instances don't discharge: a `[trait]` instance
+#    `_DropListBuilder<T> : Drop<ListBuilder<T>>` exists in the stdlib, but an
+#    implicitly-dropped ListBuilder<Int> fails to compile — the drops pass
+#    only recognises CONCRETE instance targets.
+#
+# 2. A ternary whose branches mix implicit drop with consumption is rejected
+#    ("linear value ... used inconsistently across branches") instead of the
+#    dropping branch receiving its drop, the way match arms and early returns
+#    do.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::DropGaps::GenericDropInstanceDischarges
+
+import System
+import System::Test
+
+fun f(flag: Bool): Int
+  let b = push(builder<Int>(), 7)
+  if flag
+    ret 1
+  ret match(head(build(b)))
+    (v: Int) => v
+    ()        => 0 - 1
+
+fun program(): Int
+  ret f(true) == 1 && f(false) == 7 ? 0 : 1
+
+fun [test("generic drop instance discharges")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::DropGaps::TernaryBranchGetsImplicitDrop
+
+import System
+import System::Test
+
+fun g(flag: Bool): Int
+  let b = push(builder<Int>(), 9)
+  ret flag ? 1 : chainLength(chain(build(b)))
+
+fun program(): Int
+  ret g(true) == 1 && g(false) == 1 ? 0 : 1
+
+fun [test("ternary branch gets implicit drop")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

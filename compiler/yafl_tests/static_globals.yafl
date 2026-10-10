@@ -1,0 +1,54 @@
+# Compile-time-constant object GRAPHS become C statics.
+#
+# Strings and flat simple-class globals already emit statically. This covers the
+# rest: a global whose initialiser is a tree of constant-field objects (union
+# typed, vtable'd, nested) must land in static storage with NO runtime
+# initialisation — every `$si$` object may reference other static objects in its
+# initialiser, the lazy-init thunk folds away, and reads are direct.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::StaticGlobals::BigintFieldsAndCrossReferenceRun
+
+import System
+import System::Test
+
+class [final] Node(value: Int, next: Node|None)
+
+let tail3: Node|None = Node(3, None)
+let nodes: Node|None = Node(1, Node(2, tail3))
+
+fun sum(n: Node|None): Int
+  ret match(n)
+    (x: Node)         => x.value + sum(x.next)
+    (e: System::None) => 0
+
+fun program(): Int
+  ret sum(nodes) == 6 ? 0 : 1
+
+fun [test("bigint fields and cross reference run")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::StaticGlobals::ConstantChainRuns
+
+import System
+import System::Test
+
+class [final] Node(value: Int32, next: Node|None)
+
+let nodes: Node|None = Node(1i32, Node(2i32, Node(3i32, None)))
+
+fun sum(n: Node|None): Int32
+  ret match(n)
+    (x: Node)         => x.value + sum(x.next)
+    (e: System::None) => 0i32
+
+fun program(): Int
+  ret match(nodes)
+    (x: Node)         => sum(nodes) == 6i32 ? 0 : 1
+    (e: System::None) => 1
+
+fun [test("constant chain runs")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

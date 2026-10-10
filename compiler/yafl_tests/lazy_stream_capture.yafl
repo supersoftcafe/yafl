@@ -1,0 +1,89 @@
+# Probe for the StreamIO design's load-bearing assumption.
+#
+# The proposed IO stream is encoded as a node holding a *zero-arg closure
+# that captures a `[lazy]` let*:
+#
+#     fun node(...):
+#         let [lazy] step: Step = pull(...)   # deferred
+#         ret Node(() => step)                  # closure captures the stub
+#
+# Everything depends on the lambda capturing the **unforced** `Lazy$` stub
+# (with the `lazy_fetch` happening inside the closure body), not forcing the
+# let at env-construction time. If capture forced eagerly, an infinite lazy
+# stream would diverge the instant it is built.
+#
+# `test_infinite_lazy_stream_terminates` builds exactly that pattern over
+# pure data (no IO, no generics): taking the 5th element of an infinite
+# `nats` stream terminates only because capture deferred the let. A
+# regression that forces at capture time turns `nats(0)` into unbounded
+# self-recursion -> timeout.
+#
+# `test_tuple_shaped_lazy_capture` is the regression for the root-cause fix:
+# capturing a *struct/tuple-shaped* `[lazy]` let in a closure used to
+# miscompile (the `Lazy$` stub is `object_t*` but the capture site read the
+# slot as the forced struct type). The capture site now reads the raw stub
+# pointer (`LazyExpression(stub_only=True)`), so a closure can capture an
+# unforced `[lazy]` value of *any* shape — tuple or class.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it. The programs' class `Stream` is
+# `NatStream` here: beside the real System, a local `Stream` is ambiguous with
+# System::Stream.
+
+namespace CompilerTests::LazyStreamCapture::DeeperIndexStillTerminates
+
+import System
+import System::Test
+
+class [final] Step(head: System::Int, tail: NatStream)
+class [final] NatStream(thunk: (): Step)
+fun nats(n: System::Int): NatStream
+    let [lazy] step: Step = Step(n, nats(n + 1))
+    ret NatStream(() => step)
+fun nth(s: NatStream, i: System::Int): System::Int
+    let step = s.thunk()
+    ret i > 0 ? nth(step.tail, i - 1) : step.head
+fun program(): System::Int
+    ret nth(nats(10), 7)
+
+fun [test("A larger index forces more nodes but each read happens once; the")] check(): None|TestFailure
+    ret assertEqInt(program(), 17, "program()")
+
+
+namespace CompilerTests::LazyStreamCapture::InfiniteLazyStreamTerminates
+
+import System
+import System::Test
+
+class [final] Step(head: System::Int, tail: NatStream)
+class [final] NatStream(thunk: (): Step)
+fun nats(n: System::Int): NatStream
+    let [lazy] step: Step = Step(n, nats(n + 1))
+    ret NatStream(() => step)
+fun nth(s: NatStream, i: System::Int): System::Int
+    let step = s.thunk()
+    ret i > 0 ? nth(step.tail, i - 1) : step.head
+fun program(): System::Int
+    ret nth(nats(0), 5)
+
+fun [test("Taking the 5th element of an infinite lazy stream terminates and")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::LazyStreamCapture::TupleShapedLazyCapture
+
+import System
+import System::Test
+
+class [final] NatStream(thunk: (): (head: System::Int, tail: NatStream))
+fun nats(n: System::Int): NatStream
+    let [lazy] step: (head: System::Int, tail: NatStream) = (head=n, tail=nats(n + 1))
+    ret NatStream(() => step)
+fun nth(s: NatStream, i: System::Int): System::Int
+    let step = s.thunk()
+    ret i > 0 ? nth(step.tail, i - 1) : step.head
+fun program(): System::Int
+    ret nth(nats(0), 5)
+
+fun [test("Regression: a `[lazy]` let of a *tuple* captured in a closure now")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")

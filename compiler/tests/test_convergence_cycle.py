@@ -11,11 +11,9 @@ reporting "this is a compiler bug" blames the wrong party.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_errors
 
 
 _OSCILLATOR = """
@@ -43,10 +41,7 @@ _SETTLED = _OSCILLATOR.replace("fun fa(x)", "fun fa(x: Sp)")
 
 
 def _errors(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return buf.getvalue()
+    return compile_errors(src)
 
 
 class TestConvergenceCycle(TestCase):

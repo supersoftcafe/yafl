@@ -1,0 +1,92 @@
+# Named fields and default values are TUPLE-type features.
+#
+# A tuple type may declare per-field defaults (`(x: Int, y: Int = 10)`); a tuple
+# value converging on such a receiver is transformed — positional entries bind
+# left to right, named entries bind by field name in any order after the
+# positionals, and every remaining unbound field fills from its default. Function
+# calling inherits all of this because parameters ARE a tuple: there is no
+# call-specific machinery.
+#
+# A default must be a literal (Integer/Float/String/Bool) or a reference to a
+# `[const]` global let — nothing with captures, effects, or evaluation order.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::TupleDefaults::NoneDefaultRuns
+
+import System
+import System::Test
+
+# `None` is a literal: no captures, no effects, no evaluation order — exactly
+# what a default is allowed to be. An optional field defaulting to None is the
+# single most natural default there is.
+class [final] Node(tag: String, parent: Node|None = None)
+
+fun label(x: String, note: String|None = None): String
+  ret match(note)
+    (n: String) => x + "/" + n
+    ()          => x
+
+fun parentTag(n: Node): String
+  ret match(n.parent)
+    (p: Node) => p.tag
+    ()        => "-"
+
+fun program(): Int
+  let root = Node("root")
+  let kid = Node("kid", root)
+  print(label("a") + "\n")
+  print(label("a", "b") + "\n")
+  print(parentTag(kid) + "\n")
+  print(parentTag(root) + "\n")
+  ret 0
+
+fun [test("none default runs", stdout = "a\na/b\nroot\n-\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TupleDefaults::DefaultsDoNotConfuseDistinctOverloads
+
+import System
+import System::Test
+
+fun tag(x: Int, pad: Int = 0): Int
+  ret x + pad
+fun tag(x: String, pad: Int = 0): Int
+  ret pad
+fun program(): Int
+  ret tag(7) == 7 ? 0 : 1
+
+fun [test("defaults do not confuse distinct overloads")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TupleDefaults::DefaultsNamedAndTupleReceivers
+
+import System
+import System::Test
+
+let [const] BIAS: Int = 100
+
+fun scale(x: Int, factor: Int = 10, bias: Int = 1): Int
+  ret x * factor + bias
+
+fun shift(x: Int, by: Int = BIAS): Int
+  ret x + by
+
+fun program(): Int
+  print(String(scale(5, 2, 3)) + "\n")
+  print(String(scale(5, 2)) + "\n")
+  print(String(scale(5)) + "\n")
+  print(String(scale(5, bias = 7)) + "\n")
+  print(String(scale(5, bias = 7, factor = 2)) + "\n")
+  print(String(shift(5)) + "\n")
+  let p: (x: Int, y: Int = 10) = (x = 5)
+  print(String(p.x + p.y) + "\n")
+  let q: (a: Int, b: Int) = (b = 2, a = 40)
+  print(String(q.a - q.b) + "\n")
+  ret 0
+
+fun [test("defaults named and tuple receivers", stdout = "13\n11\n51\n57\n17\n105\n15\n38\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

@@ -1,0 +1,47 @@
+# Member functions declare neither type parameters nor a `where` clause.
+#
+# A member is a vtable slot: its signature is the interface declaration with
+# the OWNER's type arguments substituted, fully determined by the class /
+# instance header. A member-level `<U>` would need a vtable row per call-site
+# instantiation (object-safety), and a member `where` constrains generics a
+# member cannot declare. Generics and constraints belong on the class or
+# instance; member bodies resolve through the owner's `where` clause.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::MemberSignatureRule::OwnerWhereReachesMemberBody
+
+import System
+import System::Test
+
+interface Sized<T>
+  fun sizeOf(v: T): Int
+
+instance [ambient]<T> Sized<List<T>> where Show<T>
+  fun sizeOf(v: List<T>): Int
+    ret length(fold(v, "", (acc: String, x: T) => acc + show(x)))
+
+fun program(): Int
+  let l = prepend(4, prepend(25, List<Int>()))
+  ret sizeOf(l) == 3 ? 0 : 1
+
+fun [test("owner where reaches member body")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::MemberSignatureRule::GlobalFunctionMayDeclareThem
+
+import System
+import System::Test
+
+fun pickOne<T>(a: T, b: T, first: Bool): T
+  fun choose(flag: Bool): T
+    ret flag ? a : b
+  ret choose(first)
+
+fun program(): Int
+  ret pickOne<Int>(7, 9, false)
+
+fun [test("The rule is about position, not about generics — a global function")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")

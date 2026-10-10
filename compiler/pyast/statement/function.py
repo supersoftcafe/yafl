@@ -47,6 +47,36 @@ def inferred_params(prms: DestructureStatement, hints: h.Hints,
     return dataclasses.replace(prms, targets=[infer(tgt) for tgt in prms.targets])
 
 
+
+TEST_ATTRIBUTE_SHAPE = ('[test] takes an optional description and an optional expected stdout: '
+                        '[test("description", stdout = "expected output")]')
+
+
+def test_attribute_parts(arg) -> "tuple[str, str | None] | None":
+    """`[test]`'s argument as (description, expected stdout), or None when it
+    is not one of `[test]`, `[test("d")]`, `[test("d", stdout = "s")]`,
+    `[test(stdout = "s")]` — the description unnamed and first, every value a
+    string literal. Mirrored by the port's testAttrParts."""
+    if arg is None:
+        return "", None
+    if not isinstance(arg, e.TupleExpression):
+        return None
+    entries = list(arg.expressions)
+    description, stdout = "", None
+    if entries and not entries[0].name:
+        if not isinstance(entries[0].value, e.StringExpression):
+            return None
+        description = entries[0].value.value
+        entries = entries[1:]
+    if len(entries) > 1:
+        return None
+    if entries:
+        named = entries[0]
+        if named.name != "stdout" or named.spread or not isinstance(named.value, e.StringExpression):
+            return None
+        stdout = named.value.value
+    return description, stdout
+
 @dataclass
 class FunctionStatement(DataStatement):
     _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({
@@ -209,13 +239,8 @@ class FunctionStatement(DataStatement):
         # a rule restated (and kept in parity) in two compilers.
         test_err: list[Error] = []
         if "test" in self.attributes:
-            test_attr = self.attributes.get("test")
-            if test_attr is not None and (
-                    not isinstance(test_attr, e.TupleExpression)
-                    or len(test_attr.expressions) != 1
-                    or not isinstance(test_attr.expressions[0].value, e.StringExpression)):
-                test_err.append(Error(self.line_ref,
-                    '[test] takes one optional string argument: [test("description")]'))
+            if test_attribute_parts(self.attributes.get("test")) is None:
+                test_err.append(Error(self.line_ref, TEST_ATTRIBUTE_SHAPE))
             if self.body is None:
                 test_err.append(Error(self.line_ref, "[test] cannot be applied to a foreign function"))
             if len(list(self.parameters.flatten())) != 0:

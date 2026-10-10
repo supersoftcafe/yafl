@@ -1,0 +1,147 @@
+# Two instantiations of one generic are two types — in a branch's union too.
+#
+# A type's identity is its name plus ALL its type arguments. The union
+# machinery reads identity through `as_unique_id_str`, which used to spell a
+# generic class/enum by its ROOT alone: `List<Int>` and `List<String>` shared
+# one id, so a branch joining them deduped to whichever arm came FIRST. That
+# made branch typing order-dependent and lossy:
+#
+# - `n > 0 ? List() : prepend("x", List())` settled on `List<T>` — List's own,
+#   out-of-scope parameter — and failed at monomorphisation, while the same
+#   function with its arms swapped compiled.
+# - `n > 0 ? prepend(1, List()) : prepend("hello", List())` settled on
+#   `List<Int>`, silently discarding the String arm; the binary read a String as
+#   an Int and aborted at runtime.
+#
+# The second rule these tests pin: an arm whose type still holds a placeholder
+# that is not in scope (a generic call that bound nothing, like `List()`) is
+# only a SHAPE. When exactly one grounded sibling is an instantiation of that
+# shape, the arm is that sibling's type — whatever the arm order.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::GenericInstanceIdentity::BothInstantiationsReachTheCaller
+
+import System
+import System::Test
+
+fun pick(n: Int) => n > 0 ? prepend(1, List()) : prepend("hello", List())
+
+fun kind(v: List<Int>|List<String>): System::Int => match(v)
+  (i: List<Int>)    => 1
+  (s: List<String>) => 2
+
+fun program(): System::Int
+  ret kind(pick(1)) == 1 && kind(pick(0)) == 2 ? 7 : 3
+
+fun [test("both instantiations reach the caller")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GenericInstanceIdentity::ArmsThatAreAllShapesCollapse
+
+import System
+import System::Test
+
+enum Node
+  enum Leaf(v: Int)
+  enum Pair(l: Node, r: Node)
+
+fun collect(n, keep: Bool) => match(n)
+  (p: Pair)  => concat(collect(p.l, keep), collect(p.r, keep))
+  (lf: Leaf) => keep ? prepend(n, List()) : List()
+
+fun program(): System::Int
+  let tree = Pair(Leaf(1), Pair(Leaf(2), Leaf(3)))
+  ret !isEmpty(collect(tree, true)) && isEmpty(collect(tree, false)) ? 7 : 3
+
+fun [test("arms that are all shapes collapse")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GenericInstanceIdentity::UnboundArmBesideRecursiveCallAndLocal
+
+import System
+import System::Test
+
+fun [tail] pget(ns: Chain<String>, vs: Chain<List<String>>,
+                name: String) => match(ns)
+  (nil: ChainEnd) => List()
+  (n: ChainLink)  => match(vs)
+    (nil2: ChainEnd) => List()
+    (v: ChainLink)   => n.value == name
+      ? v.value
+      : pget(n.next, v.next, name)
+
+fun program(): System::Int
+  let names = prepend("a", prepend("b", List<String>()))
+  let values = prepend(List<String>(), prepend(prepend("hit", List<String>()), List<List<String>>()))
+  ret !isEmpty(pget(chain(names), chain(values), "b"))
+      && isEmpty(pget(chain(names), chain(values), "a"))
+      && isEmpty(pget(chain(names), chain(values), "zz")) ? 7 : 3
+
+fun [test("unbound arm beside recursive call and local")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GenericInstanceIdentity::UnboundArmBesideTemplateParameter
+
+import System
+import System::Test
+
+fun orEmpty<U>(xs: List<U>, n: Int): List<U>
+  let picked = n > 0 ? List() : xs
+  ret picked
+
+fun program(): System::Int
+  let xs = prepend(1, List<Int>())
+  ret isEmpty(orEmpty(xs, 1)) && !isEmpty(orEmpty(xs, 0)) ? 7 : 3
+
+fun [test("unbound arm beside template parameter")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GenericInstanceIdentity::UnboundArmFirst
+
+import System
+import System::Test
+
+fun pick(n: Int) => n > 0 ? List() : prepend("x", List())
+
+fun program(): System::Int
+  ret isEmpty(pick(1)) && !isEmpty(pick(0)) ? 7 : 3
+
+fun [test("unbound arm first")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GenericInstanceIdentity::UnboundArmLast
+
+import System
+import System::Test
+
+fun pick(n: Int) => n > 0 ? prepend("x", List()) : List()
+
+fun program(): System::Int
+  ret !isEmpty(pick(1)) && isEmpty(pick(0)) ? 7 : 3
+
+fun [test("unbound arm last")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::GenericInstanceIdentity::UnboundCallAgainstAUnionExpectedType
+
+import System
+import System::Test
+
+fun pick(n: Int): List<Int>|None
+  ret n > 0 ? List() : None
+
+fun program(): System::Int
+  ret match(pick(1))
+    (l: List<Int>) => isEmpty(l) ? 7 : 3
+    ()             => 5
+
+fun [test("unbound call against a union expected type")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")

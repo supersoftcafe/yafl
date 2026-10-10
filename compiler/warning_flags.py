@@ -20,13 +20,14 @@ def resolve_enabled_warnings(flags: list[str]) -> frozenset[str]:
         if flag == "all":
             enabled |= set(KNOWN_WARNINGS)
         elif flag.startswith("no-"):
-            enabled.discard(_known(flag[len("no-"):]))
+            enabled.discard(_known(flag[len("no-"):], flag))
         else:
-            enabled.add(_known(flag))
+            enabled.add(_known(flag, flag))
     return frozenset(enabled)
 
 
-def _known(name: str) -> str:
+def _known(name: str, flag: str) -> str:
+    # The flag is quoted AS WRITTEN: `-Wno-bogus` was reported as '-Wbogus'.
     if name not in KNOWN_WARNINGS:
-        raise ValueError(f"unknown warning '-W{name}'")
+        raise ValueError(f"unknown warning '-W{flag}'")
     return name

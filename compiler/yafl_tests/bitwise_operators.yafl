@@ -1,0 +1,150 @@
+# Bitwise operators `~`, `&`, `|`, `^` and the `andNot` method.
+#
+# Provided by the `Bitwise<T>` interface (stdlib/traits.yafl) with an instance
+# per integer type (stdlib/integer.yafl); `&`/`^`/`|` parse at a precedence
+# between arithmetic and comparison (so `a & b == c` is `(a & b) == c`), and `~`
+# is unary complement. `andNot(a, b)` is `a & ~b` — the parser folds that
+# spelling onto the single-pass method. Float and String have no Bitwise instance.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::BitwiseOperators::Bigint
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let a: System::Int = 12
+  let b: System::Int = 10
+  let neg: System::Int = -1
+  ret ((a & b) == 8 ? 1 : 0)
+    + ((a | b) == 14 ? 2 : 0)
+    + ((a ^ b) == 6 ? 4 : 0)
+    + (andNot(a, b) == 4 ? 8 : 0)
+    + ((neg & 5) == 5 ? 16 : 0)
+    + ((neg ^ 5) == -6 ? 32 : 0)
+
+fun [test("bigint")] check(): None|TestFailure
+    ret assertEqInt(program(), 63, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::BigintHeapValue
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let big: System::Int = 123456789012345678901234567890
+  ret ((big & big) == big ? 1 : 0)
+    + ((big | 0) == big ? 2 : 0)
+    + ((big ^ big) == 0 ? 4 : 0)
+    + (andNot(big, big) == 0 ? 8 : 0)
+
+fun [test("bigint heap value")] check(): None|TestFailure
+    ret assertEqInt(program(), 15, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::Int32
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let x: System::Int32 = 0xF0F0i32
+  let y: System::Int32 = 0x0FF0i32
+  ret ((x & y) == 0x00F0i32 ? 1 : 0)
+    + ((x | y) == 0xFFF0i32 ? 2 : 0)
+    + ((x ^ y) == 0xFF00i32 ? 4 : 0)
+    + (andNot(x, y) == 0xF000i32 ? 8 : 0)
+
+fun [test("int32")] check(): None|TestFailure
+    ret assertEqInt(program(), 15, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::InvertAndAndnot
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let a: System::Int = 12
+  let b: System::Int = 10
+  let neg: System::Int = -1
+  ret (~a == -13 ? 1 : 0)
+    + (~neg == 0 ? 2 : 0)
+    + ((a & ~b) == andNot(a, b) ? 4 : 0)
+    + ((a & ~b) == 4 ? 8 : 0)
+    + ((~a & b) == 2 ? 16 : 0)
+
+fun [test("invert and andnot")] check(): None|TestFailure
+    ret assertEqInt(program(), 31, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::InvertInt32
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let x: System::Int32 = 0x0FF0i32
+  ret ~x == -4081i32 ? 1 : 0
+
+fun [test("invert int32")] check(): None|TestFailure
+    ret assertEqInt(program(), 1, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::PrecedenceBelowComparison
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let a: System::Int = 12
+  let b: System::Int = 10
+  ret a & b == 8 ? 100 : 0
+
+fun [test("precedence below comparison")] check(): None|TestFailure
+    ret assertEqInt(program(), 100, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::ShiftPrecedence
+
+import System
+import System::Test
+
+fun program(): System::Int
+  ret ((1 + 1 << 4) == 32 ? 1 : 0) + ((1 << 3 == 8) ? 2 : 0)
+
+fun [test("shift precedence")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::ShiftsBigint
+
+import System
+import System::Test
+
+fun program(): System::Int
+  ret ((1 << 10) == 1024 ? 1 : 0)
+    + ((1024 >> 3) == 128 ? 2 : 0)
+    + (((0 - 7) >> 1) == -4 ? 4 : 0)
+    + ((1 << 64) == 18446744073709551616 ? 8 : 0)
+
+fun [test("shifts bigint")] check(): None|TestFailure
+    ret assertEqInt(program(), 15, "program()")
+
+
+namespace CompilerTests::BitwiseOperators::ShiftsInt32
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let x: System::Int32 = 1i32
+  ret ((x << 4i32) == 16i32 ? 1 : 0)
+    + (((0i32 - 16i32) >> 2i32) == -4i32 ? 2 : 0)
+    + ((1i32 << 32i32) == 1i32 ? 4 : 0)
+
+fun [test("shifts int32")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")

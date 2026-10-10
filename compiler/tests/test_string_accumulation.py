@@ -6,10 +6,12 @@ is now a VALUE that extends its own head buffer in place whenever it owns the
 end of it (yafllib/str.c), so naive user code is linear with no rewrite: the
 accumulator's appends ARE the builder.
 
-The scale test is the acceptance criterion: naive user code builds a 1MB
-string in linear time — quadratic would blow the
-harness timeout. The compaction test pins the in-place extension against a
-buffer that compaction relocates while the loop is suspended.
+The runtime checks, the 1MB linear-time build included, are [test]s in
+compiler/yafl_tests/string_accumulation.yafl. Here: the loop appends in the C,
+and the in-place extension survives compaction relocating the buffer while the
+loop is suspended (which needs the GC environment set for the run).
+
+Runtime behaviour is checked by compiler/yafl_tests/string_accumulation.yafl.
 """
 from __future__ import annotations
 
@@ -18,10 +20,9 @@ import re
 import subprocess
 import tempfile
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import _CLANG_BUILD_FLAGS, _RUN_ENV, static_link_for
+from tests.testutil import compile_c
 
 _NAIVE_LOOP = (
     "namespace Main\n"
@@ -35,48 +36,11 @@ _NAIVE_LOOP = (
 
 
 class TestStringAccumulation(TestCase):
-    def test_single_append_accumulator(self):
+    def test_accumulator_appends_in_place(self):
         src = _NAIVE_LOOP % ('"ab"', 50, 101)
-        rc, out = compile_and_run_stdlib_capture(src, optimization_level=3)
-        self.assertEqual(0, rc)
-        self.assertEqual("xabab", out)
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                           just_testing=True, optimization_level=3)
+        c_code = compile_c(src, optimization_level=3)
         # The loop appends String values directly.
         self.assertTrue("str_append" in c_code or "str_concat_n" in c_code)
-
-    def test_chain_step_multi_push(self):
-        # `acc + a + b` — string_concat flattens the step to a concat_n rooted
-        # at the accumulator; the deforester must multi-push its operands.
-        src = _NAIVE_LOOP % ('"abcdefgh" + "ij"', 100000, 1000001)
-        rc, _out = compile_and_run_stdlib_capture(src, optimization_level=3)
-        self.assertEqual(0, rc)   # 1MB built linearly; quadratic would time out
-
-    def test_o0_naive_path_still_correct(self):
-        # The stage is -O1+ gated: -O0 keeps the naive appends and must agree.
-        src = _NAIVE_LOOP % ('"ab"', 50, 101)
-        rc, out = compile_and_run_stdlib_capture(src, optimization_level=0)
-        self.assertEqual(0, rc)
-        self.assertEqual("xabab", out)
-
-    def test_mid_loop_snapshot_read(self):
-        # A read of the accumulator inside the loop (here: a length check that
-        # varies the appended piece) becomes an exact-size snapshot copy — the
-        # value must equal the accumulated string at that point.
-        src = (
-            "namespace Main\n"
-            "import System\n"
-            "fun [tail] go(n: System::Int, acc: System::String): System::String\n"
-            "  ret n <= 0 ? acc\n"
-            "    : go(n - 1, acc + (System::length(acc) % 2 == 0 ? \"a\" : \"bb\"))\n"
-            "fun main(): System::Int\n"
-            "  let s = go(6, \"\")\n"
-            "  System::print(s)\n"
-            "  ret System::length(s)\n")
-        rc, out = compile_and_run_stdlib_capture(src, optimization_level=3)
-        # len 0→a, 1→bb, 3→bb, 5→bb, 7→bb, 9→bb: "a" + "bb"*5
-        self.assertEqual("abbbbbbbbbb", out)
-        self.assertEqual(11, rc)
 
     def test_buffer_survives_compaction_across_a_suspension(self):
         # The loop's piece comes from a function that forks, so the loop
@@ -104,8 +68,7 @@ class TestStringAccumulation(TestCase):
             "  ret rounds(k - 1, ok ? bad : bad + 1)\n"
             "fun main(): Int\n"
             "  ret rounds(40, 0)\n")
-        c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                           just_testing=True, optimization_level=2)
+        c_code = compile_c(src, optimization_level=2)
         # The suspending loop itself must append to its String accumulator,
         # or the run below proves nothing about in-place extension.
         head = re.search(r"^(?:object_t\*|str_t) Main__suspending_\w+\(.*\)\n\{", c_code, re.MULTILINE)

@@ -8,17 +8,13 @@ PsEnum arguments, found 2026-08-04).
 """
 from __future__ import annotations
 
-import compiler as c
 from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c_result
 
 
 def _diagnostics(content: str) -> str:
-    import io, contextlib
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        out = c.compile([c.Input(content, "file.yafl")], use_stdlib=True,
-                        just_testing=False, optimization_level=0)
-    return buf.getvalue() if not out else ""
+    r = compile_c_result(content, "file.yafl")
+    return r.stdout if not r.c else ""
 
 
 _PRELUDE = """\

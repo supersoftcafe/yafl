@@ -518,7 +518,7 @@ class _Checker:
             if c1.get(obl, 0) != c2.get(obl, 0):
                 name = obl[0]
                 self.errors.append(Error(line_ref,
-                    f"linear value '{name}' is used inconsistently across branches"))
+                    f"linear value '{g.bare_name(name)}' is used inconsistently across branches"))
         return c1 if c1 else c2
 
     def _discharge(self, name: str, leaves: set[Path], counts: Counter,
@@ -529,12 +529,12 @@ class _Checker:
             n = counts.get((name, leaf), 0)
             if n > 1:
                 self.errors.append(Error(line_ref,
-                    f"linear value '{name}' is used {n} times; must be used once"))
+                    f"linear value '{g.bare_name(name)}' is used {n} times; must be used once"))
             elif n == 0:
                 hint = (" (mark the parameter [terminal] if this is its terminus)"
                         if is_param else "")
                 self.errors.append(Error(line_ref,
-                    f"linear value '{name}' is never used; it must be consumed once"
+                    f"linear value '{g.bare_name(name)}' is never used; it must be consumed once"
                     + hint))
 
     def _params_finder(self, params: list[s.LetStatement]):
@@ -572,7 +572,7 @@ class _Checker:
         body.search_and_replace(self.resolver, visit)
         for name in sorted(captured):
             self.errors.append(Error(line_ref,
-                f"linear value '{name}' captured by a nested function or lambda"))
+                f"linear value '{g.bare_name(name)}' captured by a nested function or lambda"))
 
     # --- generic instantiation kind check -------------------------------
 

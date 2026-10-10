@@ -85,7 +85,7 @@ class TestBootstrapCheck(TestCase):
                 text = path.read_text()
                 expected = self._python_diagnostics(text)
                 self.assertTrue(expected, f"{path.name}: corpus file is not broken")
-                r = subprocess.run([self.binary, "check"], input=text,
+                r = subprocess.run([self.binary, "--stage", "check"], input=text,
                                    capture_output=True, timeout=120, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(expected, r.stdout,
@@ -101,7 +101,7 @@ class TestBootstrapCheck(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_diagnostics(text)
-                r = subprocess.run([self.binary, "check"], input=text,
+                r = subprocess.run([self.binary, "--stage", "check"], input=text,
                                    capture_output=True, timeout=120, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(expected, r.stdout,
@@ -127,7 +127,7 @@ class TestBootstrapCheck(TestCase):
             with self.subTest(flags=flags):
                 expected = self._python_diagnostics(text, flags)
                 r = subprocess.run(
-                    [self.binary, "check", *[f"-W{f}" for f in flags]],
+                    [self.binary, "--stage", "check", *[f"-W{f}" for f in flags]],
                     input=text, capture_output=True, timeout=120, text=True,
                     env=_RUN_ENV)
                 self.assertEqual(expected, r.stdout, f"flags={flags}: diagnostics differ")
@@ -139,7 +139,7 @@ class TestBootstrapCheck(TestCase):
         text = "namespace Main\nimport System\nfun main(): System::Int\n  ret 0\n"
         with self.assertRaises(ValueError):
             wf.resolve_enabled_warnings(["bogus"])
-        r = subprocess.run([self.binary, "check", "-Wbogus"], input=text,
+        r = subprocess.run([self.binary, "--stage", "check", "-Wbogus"], input=text,
                            capture_output=True, timeout=120, text=True,
                            env=_RUN_ENV)
         self.assertNotEqual(0, r.returncode)

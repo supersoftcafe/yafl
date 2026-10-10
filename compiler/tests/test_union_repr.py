@@ -9,17 +9,20 @@ multi-field/scalar payload, or two members sharing a runtime kind, stay a tagged
 
 These tests pin both the representation (collapsed `object_t*` vs tagged struct)
 and the runtime behaviour (every arm dispatches to the right value).
+
+Runtime behaviour is checked by compiler/yafl_tests/union_repr.yafl.
 """
 from __future__ import annotations
 
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
-import compiler as c
+from tests.testutil import compile_c
+from tests.testutil import compile_errors
 from pyast import union_repr
 
 
 def _c_for(source: str) -> str:
-    out = c.compile([c.Input(source, "test.yafl")], use_stdlib=True, just_testing=False)
+    out = compile_c(source)
     assert out, "compilation produced no output"
     return out
 
@@ -27,96 +30,6 @@ def _c_for(source: str) -> str:
 class TestUnionRepresentation(TestCase):
     # ── behaviour: every arm of a collapsed union dispatches correctly ────────
 
-    def test_newtype_multiclass_union_roundtrips(self):
-        # A|B|None with single-field newtype classes A(Int), B(String):
-        # collapses to one word, dispatched by INTEGER/STRING vtable + NULL.
-        src = """
-namespace Main
-import System
-class A(x: Int)
-class B(s: String)
-fun pick(k: Int): A|B|None
-  ret k == 0 ? A(7) : (k == 1 ? B("hi") : None)
-fun probe(k: Int): Int
-  ret match(pick(k))
-    (a: A)    => a.x
-    (b: B)    => length(b.s)
-    (n: None) => 99
-fun main(): System::Int
-  println(String(probe(0)) + " " + String(probe(1)) + " " + String(probe(2)))
-  ret 0
-"""
-        rc, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
-        self.assertEqual("7 2 99", out.strip())
-
-    def test_immediate_union_roundtrips(self):
-        src = """
-namespace Main
-import System
-fun pick(k: Int): Int|String|None
-  ret k == 0 ? 42 : (k == 1 ? "abc" : None)
-fun probe(k: Int): Int
-  ret match(pick(k))
-    (i: Int)    => i
-    (s: String) => length(s)
-    (n: None)   => 99
-fun main(): System::Int
-  println(String(probe(0)) + " " + String(probe(1)) + " " + String(probe(2)))
-  ret 0
-"""
-        rc, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
-        self.assertEqual("42 3 99", out.strip())
-
-    def test_same_inner_newtypes_dispatch_correctly(self):
-        # Id and Nm both wrap a String. Soundness: whatever the representation,
-        # the two arms must never be confused.
-        src = """
-namespace Main
-import System
-class Id(v: String)
-class Nm(v: String)
-fun pick(k: Int): Id|Nm|None
-  ret k == 0 ? Id("aa") : (k == 1 ? Nm("bbb") : None)
-fun probe(k: Int): Int
-  ret match(pick(k))
-    (i: Id)   => length(i.v)
-    (n: Nm)   => 0 - length(n.v)
-    (x: None) => 99
-fun main(): System::Int
-  println(String(probe(0)) + " " + String(probe(1)) + " " + String(probe(2)))
-  ret 0
-"""
-        rc, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
-        self.assertEqual("2 -3 99", out.strip())
-
-    def test_tuple_and_scalar_unions_stay_tagged_but_work(self):
-        # (a,b)|None (composite payload) and Int32|None (scalar) cannot collapse
-        # to one pointer word; they remain tagged structs and must still work.
-        src = """
-namespace Main
-import System
-fun tup(b: Bool): (a: Int, b: Int)|None
-  ret b ? (1, 2) : None
-fun i32(b: Bool): Int32|None
-  ret b ? 5i32 : None
-fun probeTup(b: Bool): Int
-  ret match(tup(b))
-    (t: (a: Int, b: Int)) => t.a + t.b
-    (n: None)             => 0
-fun probeI32(b: Bool): Int
-  ret match(i32(b))
-    (v: Int32) => Int(v)
-    (n: None)  => 0
-fun main(): System::Int
-  println(String(probeTup(true)) + " " + String(probeTup(false)) + " " + String(probeI32(true)))
-  ret 0
-"""
-        rc, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
-        self.assertEqual("3 0 5", out.strip())
 
     # ── representation: collapsed vs tagged in the generated C ────────────────
 
@@ -205,10 +118,6 @@ fun main(): System::Int
   ret 0
 """
 
-    def test_wide_and_small_variants_roundtrip(self):
-        rc, out = compile_and_run_stdlib_capture(self._WIDE_SRC)
-        self.assertEqual(0, rc)
-        self.assertEqual("7 7", out.strip())
 
     def test_wide_variant_boxes_to_heap_object(self):
         code = _c_for(self._WIDE_SRC)
@@ -319,63 +228,6 @@ fun main(): System::Int
         self.assertEqual(0, rc)
         self.assertEqual("1 3", out.strip())
 
-    def test_boxed_variant_in_combination_roundtrips(self):
-        # The enum (with its boxed variant) nested by value inside a
-        # combination: the pool's pointer slot rides through the outer
-        # union's slots, and reads go through the heap object.
-        src = """
-namespace Main
-import System
-enum Load
-  enum Tiny(tVal: Int)
-  enum Cargo(c0: String, c1: String, c2: String, c3: String, c4: String,
-             c5: String, c6: String, c7: String, c8: String)
-fun mkLoad(k: Int): Load
-  ret k == 0
-    ? Tiny(5)
-    : Cargo("a", "bb", "ccc", "d", "ee", "fff", "g", "hh", "iii")
-fun maybeLoad(k: Int): Load|None
-  ret k < 0 ? None : mkLoad(k)
-fun probeLoad(k: Int): Int
-  ret match(maybeLoad(k))
-    (l: Load) => match(l)
-      (t: Tiny)  => t.tVal
-      (c: Cargo) => length(c.c1)
-    (n: None) => 0 - 1
-fun main(): System::Int
-  println(String(probeLoad(0 - 1)) + " " + String(probeLoad(0)) + " " + String(probeLoad(1)))
-  ret 0
-"""
-        rc, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
-        self.assertEqual("-1 5 2", out.strip())
-
-
-    def test_variant_less_enum_over_threshold_boxes(self):
-        # An enum with NO variants is its own single leaf. Over the threshold
-        # that leaf boxes — and its object name is the root's own name, so it
-        # must not also emit a root marker it `extends`: the leaf would
-        # replace the marker and extend ITSELF, its vtable's implements_array
-        # reading its own obj_* inside its own initialiser (a C constant-
-        # expression error). 9 Ints = 72B > 64.
-        src = """
-namespace Main
-import System
-enum Big(a: Int, b: Int, c: Int, d: Int, e: Int, f: Int, g: Int, h: Int, i: Int)
-fun mk(k: Int): Big
-  ret Big(k, 2, 3, 4, 5, 6, 7, 8, 9)
-fun describe(v: Big|None): Int
-  ret match(v)
-    (b: Big)  => b.a + b.i
-    (n: None) => 0
-fun main(): System::Int
-  println(String(describe(mk(3))) + " " + String(describe(None)))
-  ret 0
-"""
-        rc, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
-        self.assertEqual("12 0", out.strip())
-
 
 class TestLeafConstructorTyping(TestCase):
     """A construction builds exactly one variant, so its TYPE is the leaf
@@ -409,38 +261,6 @@ fun main(): System::Int
   ret 0
 """
 
-    def test_construction_feeds_leaf_typed_positions(self):
-        rc, out = compile_and_run_stdlib_capture(self._HOLD_SRC)
-        self.assertEqual(0, rc, "a fresh construction IS a leaf value and "
-                                "must feed leaf-typed fields and parameters")
-        self.assertEqual("3 42", out.strip())
-
-    def test_leaf_result_accepts_construction_and_widens_at_use(self):
-        # `ret Dark(...)` where Dark is declared is exact; a Dark value
-        # widens into Shade contexts unchanged (same struct either way).
-        src = """
-namespace Main
-import System
-enum Shade
-  enum Dark(dLevel: Int, dName: String)
-  enum Light(lLevel: Int)
-fun mkDark(): Dark
-  ret Dark(7, "deep")
-fun describeDark(d: Dark): Int
-  ret d.dLevel + length(d.dName)
-fun asShade(d: Dark): Shade
-  ret d
-fun probeShade(k: Int): Int
-  ret match(k == 0 ? asShade(mkDark()) : Light(3))
-    (d: Dark)  => describeDark(d) + 100
-    (l: Light) => l.lLevel
-fun main(): System::Int
-  println(String(probeShade(0)) + " " + String(probeShade(1)))
-  ret 0
-"""
-        rc, out = compile_and_run_stdlib_capture(src)
-        self.assertEqual(0, rc)
-        self.assertEqual("111 3", out.strip())
 
     def test_root_still_rejected_where_leaf_declared(self):
         # The ruling types CONSTRUCTIONS as leaves; a root-typed VALUE is
@@ -458,10 +278,8 @@ fun probe(s: Shade): Int
 fun main(): System::Int
   ret probe(Dark(1))
 """
-        out = c.compile([c.Input(src, "rootleaf.yafl")], use_stdlib=True,
-                        just_testing=False)
-        self.assertFalse(bool(out),
-                         "a root-typed value must not pass a leaf parameter")
+        self.assertEqual("rootleaf.yafl[10:17] - Parameters are not assignment compatible\n",
+                         compile_errors(src, "rootleaf.yafl"))
 
 
 class TestReprPartialOperationContract(TestCase):
@@ -486,49 +304,3 @@ class TestReprPartialOperationContract(TestCase):
             rep.widen_from(None, None, None)
 
 
-class TestNarrowTaggedIntoWideArm(TestCase):
-    """A TAGGED subject (a two-field tuple member cannot share one word)
-    matched by a union arm that is itself a WIDE pointer union: the arm's
-    members are read out of the wide slots and boxed by the narrow union.
-    A scalar member needs its spare code (str_pack_*), a function member its
-    environment + code (str_from_fun) — wrapping every slot as a one-word
-    member (str_word) passed an Int32 / a code word where C wants object_t*.
-    (Top-level names are unique across this class: batched compiles share one
-    flat name pool.)"""
-
-    _SRC = """
-namespace Main
-import System
-fun ntPick(k: Int): (a: Int, b: Int)|Int32|String
-  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? truncateToInt32(k * 10) : "s" + String(k)
-fun ntDescribe(x: Int32|String): String
-  ret match(x)
-    (i: Int32)  => "I:" + String(i)
-    (s: String) => "S:" + s
-fun ntArm(v: (a: Int, b: Int)|Int32|String): String
-  ret match(v)
-    (p: (a: Int, b: Int)) => "P:" + String(p.a) + "," + String(p.b)
-    (x: Int32|String)     => ntDescribe(x)
-fun ntPickF(k: Int): (a: Int, b: Int)|((:Int): Int)|String
-  let f: (:Int): Int = (x: Int) => x + k
-  ret k % 3 == 0 ? (k, k + 1) : k % 3 == 1 ? f : "f" + String(k)
-fun ntDescribeF(x: ((:Int): Int)|String): String
-  ret match(x)
-    (f: (:Int): Int) => "F:" + String(f(100))
-    (s: String)      => "S:" + s
-fun ntArmF(v: (a: Int, b: Int)|((:Int): Int)|String): String
-  ret match(v)
-    (p: (a: Int, b: Int))     => "P:" + String(p.a)
-    (x: ((:Int): Int)|String) => ntDescribeF(x)
-fun [tail] ntLoop(k: Int, n: Int, acc: String): String
-  ret k >= n ? acc : ntLoop(k + 1, n, acc + ntArm(ntPick(k)) + " " + ntArmF(ntPickF(k)) + "|")
-fun main(): System::Int
-  println(ntLoop(0, 6, ""))
-  ret 0
-"""
-
-    def test_scalar_and_function_members_narrow_into_wide_arm(self):
-        rc, out = compile_and_run_stdlib_capture(self._SRC)
-        self.assertEqual(0, rc)
-        self.assertEqual("P:0,1 P:0|I:10 F:101|S:s2 S:f2|P:3,4 P:3|I:40 F:104|S:s5 S:f5|",
-                         out.strip())

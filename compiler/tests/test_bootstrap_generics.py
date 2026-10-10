@@ -106,7 +106,7 @@ class TestBootstrapGenerics(TestCase):
             with self.subTest(file=path.name):
                 text = path.read_text()
                 expected = self._python_generics(text).splitlines()
-                r = subprocess.run([self.binary, "generics"], input=text,
+                r = subprocess.run([self.binary, "--stage", "generics"], input=text,
                                    capture_output=True, timeout=240, text=True,
                                    env=_RUN_ENV)
                 self.assertEqual(0, r.returncode,

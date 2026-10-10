@@ -1,0 +1,114 @@
+# JSON of a String: the IO pipeline over a one-shot in-memory source.
+#
+# `System::once` (a `Never`-typed single-value stream — it cannot fail, and the
+# type says so) + `System::collect` (a String drain) make
+# `Json::prettyString` pure composition: once → tokenize → prettyEmit → collect.
+# The result carries the honest union `String | JsonParseError | Never`;
+# exhaustiveness counts inhabited members only, so consumers owe no arm for the
+# uninhabited member — two arms are a complete match.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::JsonString::PrettyStringAtO3
+
+import System
+import System::Json
+import System::Test
+
+fun show(v: System::String | JsonParseError | System::Never): System::Int
+  ret match(v)
+    (out: System::String)  => System::print(out) |> (n) => 0
+    (p: JsonParseError)    => 2
+
+fun program(): System::Int
+  ret show(prettyString("{\"a\":[1,2],\"b\":null}"))
+
+fun [test("pretty string at o3", stdout = "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": null\n}")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::JsonString::PrettyStringEscapesFlowThrough
+
+import System
+import System::Json
+import System::Test
+
+fun show(v: System::String | JsonParseError | System::Never): System::Int
+  ret match(v)
+    (out: System::String)  => System::print(out) |> (n) => 0
+    (p: JsonParseError)    => 2
+
+fun program(): System::Int
+  ret show(prettyString("{\"s\":\"x\\ny\"}"))
+
+fun [test("pretty string escapes flow through", stdout = "{\n  \"s\": \"x\\ny\"\n}")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::JsonString::PrettyStringExactOutput
+
+import System
+import System::Json
+import System::Test
+
+fun show(v: System::String | JsonParseError | System::Never): System::Int
+  ret match(v)
+    (out: System::String)  => System::print(out) |> (n) => 0
+    (p: JsonParseError)    => 2
+
+fun program(): System::Int
+  ret show(prettyString("{\"a\":[1,2],\"b\":null}"))
+
+fun [test("pretty string exact output", stdout = "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": null\n}")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::JsonString::PrettyStringParseError
+
+import System
+import System::Json
+import System::Test
+
+fun show(v: System::String | JsonParseError | System::Never): System::Int
+  ret match(v)
+    (out: System::String)  => System::print(out) |> (n) => 0
+    (p: JsonParseError)    => 2
+
+fun program(): System::Int
+  ret show(prettyString("{\"a\": nope}"))
+
+fun [test("pretty string parse error")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")
+
+
+namespace CompilerTests::JsonString::ValueParserStringBodyBuilder
+
+import System
+import System::Json
+import System::Test
+
+fun program(): System::Int
+  ret match(parse("\"a\\nb\""))
+    (v: JsonValue)      => match(v)
+      (s: JsonStr)      => System::length(s.strValue) == 3 ? 0 : 3
+      (other)           => 4
+    (p: JsonParseError) => 2
+
+fun [test("value parser string body builder")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::JsonString::ValueParserUnterminatedString
+
+import System
+import System::Json
+import System::Test
+
+fun program(): System::Int
+  ret match(parse("\"abc"))
+    (p: JsonParseError) => 2
+    (other)             => 4
+
+fun [test("value parser unterminated string")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")

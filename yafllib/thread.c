@@ -189,12 +189,21 @@ HIDDEN void _io_threadpool_init(void);   // forward decl from io_thread.c
 static atomic_intptr_t _thread_countdown_to_gc_start;
 
 static void(*__entrypoint__)(object_t*, fun_t);
+static NOINLINE void _thread_work(void* param);
 HIDDEN void* _thread_main_loop(void* param) {
-    // The anchor lives in THIS frame, above every dispatched callback's frame,
-    // so the conservative scan window covers them all.
+    // The anchor bounds this thread's conservative stack scan, [sp, anchor],
+    // so it must sit ABOVE every frame that holds a heap pointer. A local in
+    // the anchor's own frame is not guaranteed that: the compiler may place it
+    // below the anchor, outside the window (test_gc_min2 lost objects that
+    // way). So this frame holds nothing but the anchor, and all the work —
+    // the dispatch loop's locals included — runs in a callee.
     object_t* stack_anchor = NULL;
     gc_declare_thread((void*)declare_local_roots_thread, NULL, &stack_anchor);
+    _thread_work(param);
+    return NULL;
+}
 
+static NOINLINE void _thread_work(void* param) {
     if (param == (void*)0) {
         _thread_init();
     }
@@ -248,8 +257,6 @@ HIDDEN void* _thread_main_loop(void* param) {
         // Nothing to do.  Wait on our own queue.
         _queue_wait_for_work(queue);
     }
-
-    return NULL;
 }
 
 // Decide how many workers to spawn. YAFL_THREADS overrides; otherwise use

@@ -58,7 +58,7 @@ def _stream() -> str:
 
 
 def _compile_self(binary: str, text: str) -> str:
-    r = subprocess.run([binary, "c1"], input=text, capture_output=True,
+    r = subprocess.run([binary, "--stage", "c1"], input=text, capture_output=True,
                        timeout=_SELF_TIMEOUT, text=True, env=_SELF_ENV)
     assert r.returncode == 0, f"self-compile exited {r.returncode}: {r.stdout[:500]}"
     return r.stdout

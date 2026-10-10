@@ -5,111 +5,26 @@ kind: chars are Int32, so char classification lands here). `<arm> if cond =>
 body` — a guard evaluated after the arm's binding; a failing guard falls
 through to the NEXT arm. A guarded arm covers nothing for exhaustiveness, and
 the else arm may not carry a guard (it must stay total).
+
+The runtime behaviour is checked by compiler/yafl_tests/match_extensions.yafl;
+these are the forms that must be rejected.
+
+Runtime behaviour is checked by compiler/yafl_tests/match_extensions.yafl.
 """
 from __future__ import annotations
 
-import contextlib
-import io
-
-import compiler as c
-
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_errors
 
 
 def _errors(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=True)
-    return buf.getvalue()
+    return compile_errors(src)
 
 
-_RUNTIME = """namespace Test
-import System
-
-fun classify(c: Int32): Int
-  ret match(c)
-    (' ' | 9i32 | 10i32) => 0
-    ('0')              => 1
-    ()                 => 2
-
-fun bucket(n: Int): Int
-  ret match(n)
-    (0)       => 0
-    (1 | 2 | 3) => 1
-    ()        => 9
-
-fun kind(v: Int|String): Int
-  ret match(v)
-    (x: Int) if x < 0 => 0
-    (x: Int)          => 1
-    (s: String) if s == "" => 2
-    (s: String)       => 3
-
-fun choose(b: Bool): Int|String
-  ret b ? -5 : "hi"
-
-fun strpick(s: String): Int
-  ret match(s)
-    ("a" | "b") => 0
-    ()         => 1
-
-fun main(): Int
-  let ok1 = classify(' ') == 0 && classify(9i32) == 0 && classify('0') == 1 && classify('x') == 2
-  let ok2 = bucket(0) == 0 && bucket(2) == 1 && bucket(7) == 9
-  let ok3 = kind(choose(true)) == 0 && kind(choose(false)) == 3 && kind(7) == 1 && kind("") == 2
-  let ok4 = strpick("b") == 0 && strpick("z") == 1
-  ret ok1 && ok2 && ok3 && ok4 ? 0 : 1
-"""
+_PRELUDE = "namespace Test\nimport System\n"
 
 
-class TestMatchExtensionsRuntime(TestCase):
-    def test_multi_literals_and_guards(self):
-        rc, out = compile_and_run_stdlib_capture(_RUNTIME, timeout=60)
-        self.assertEqual(0, rc, f"program failed; stdout:\n{out}")
-
-
-_RANGES = """namespace Test
-import System
-
-fun digit(c: Int32): Int
-  ret match(c)
-    ('0' .. '9')             => 0
-    ('a' .. 'z' | 'A' .. 'Z') => 1
-    (' ' | 9i32)              => 2
-    ()                       => 3
-
-fun bucket(n: Int): Int
-  ret match(n)
-    (0 | 5 .. 7) => 0
-    (1 .. 4)    => 1
-    ()          => 2
-
-# Unspaced `lo..hi` — the tokeniser's lookahead keeps `5.` from lexing as a
-# float when the dot is the range symbol, so spacing is a style choice.
-fun tight(n: Int): Int
-  ret match(n)
-    (5..7) => 0
-    ()     => 1
-
-fun tightc(c: Int32): Int
-  ret match(c)
-    ('a'..'z') => 0
-    ()         => 1
-
-fun main(): Int
-  let ok1 = digit('5') == 0 && digit('q') == 1 && digit('Z') == 1 && digit(' ') == 2 && digit('!') == 3
-  let ok2 = bucket(0) == 0 && bucket(6) == 0 && bucket(3) == 1 && bucket(9) == 2
-  let ok3 = tight(6) == 0 && tight(9) == 1 && tightc('k') == 0 && tightc('K') == 1
-  ret ok1 && ok2 && ok3 ? 0 : 1
-"""
-
-
-class TestMatchRanges(TestCase):
-    def test_range_arms(self):
-        rc, out = compile_and_run_stdlib_capture(_RANGES, timeout=60)
-        self.assertEqual(0, rc, f"program failed; stdout:\n{out}")
-
+class TestMatchExtensionsErrors(TestCase):
     def test_range_on_string_subject_is_rejected(self):
         errs = _errors(_PRELUDE
             + "fun f(s: String): Int\n"
@@ -128,37 +43,6 @@ class TestMatchRanges(TestCase):
             + "fun main(): Int\n  ret f(3)\n")
         self.assertIn("range", errs.lower())
 
-
-_FLOATS = """namespace Test
-import System
-
-fun fb(x: Float): Int
-  ret match(x)
-    (0.0)        => 0
-    (1.0 .. 2.0) => 1
-    (-1.0)       => 3
-    ()           => 2
-
-fun fc(x: Float32): Int
-  ret match(x)
-    (0.5f32 .. 1.5f32) => 0
-    ()                 => 1
-
-fun main(): Int
-  let nan = 0.0 / 0.0
-  let ok1 = fb(0.0) == 0 && fb(1.5) == 1 && fb(1.0) == 1 && fb(2.0) == 1 && fb(3.0) == 2 && fb(-1.0) == 3
-  let ok2 = fb(nan) == 2
-  let ok3 = fc(1.0f32) == 0 && fc(2.0f32) == 1
-  ret ok1 && ok2 && ok3 ? 0 : 1
-"""
-
-
-class TestMatchFloats(TestCase):
-    def test_float_literal_and_range_arms(self):
-        # NaN matches no literal and no range — it lands in the else arm.
-        rc, out = compile_and_run_stdlib_capture(_FLOATS, timeout=60)
-        self.assertEqual(0, rc, f"program failed; stdout:\n{out}")
-
     def test_mixed_int_float_bounds_are_rejected(self):
         errs = _errors(_PRELUDE
             + "fun f(x: Float): Int\n"
@@ -168,11 +52,6 @@ class TestMatchFloats(TestCase):
             + "fun main(): Int\n  ret f(1.5)\n")
         self.assertTrue(errs.strip(), "expected an error for mixed int/float bounds")
 
-
-_PRELUDE = "namespace Test\nimport System\n"
-
-
-class TestMatchExtensionsErrors(TestCase):
     def test_guard_on_else_arm_is_rejected(self):
         errs = _errors(_PRELUDE
             + "fun f(n: Int): Int\n"

@@ -16,39 +16,22 @@ Pins the ruled semantics (2026-07-04):
 Cases marked RULING-NEEDED probe corners the rules do not yet decide; their
 assertions pin CURRENT behaviour and carry the open question, so a future
 ruling flips the test knowingly rather than silently.
+
+Runtime behaviour is checked by compiler/yafl_tests/overload_semantics.yafl.
 """
 from __future__ import annotations
 
-import contextlib
-import io
 
-import compiler as c
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c_result
 
 
 def _errors_of(src: str) -> str:
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                         just_testing=True)
-    return "" if code else buf.getvalue()
+    r = compile_c_result(src)
+    return "" if r.c else r.stdout
 
 
 class TestSameNameValues(TestCase):
-    def test_lets_share_a_name_recipient_type_selects(self):
-        # Two globals named `v`; each use site's expected type picks its own.
-        rc, out = compile_and_run_stdlib_capture(
-            "namespace Main\nimport System\n"
-            "let v: System::Int = 41\n"
-            "let v: System::String = \"hi\"\n"
-            "fun wantStr(s: System::String): System::Int\n"
-            "  ret System::length(s)\n"
-            "fun wantInt(n: System::Int): System::Int\n"
-            "  ret n + 1\n"
-            "fun main(): System::Int\n"
-            "  ret wantInt(v) + wantStr(v)\n")
-        self.assertEqual(44, rc)   # 42 + 2
 
     def test_ambiguous_referrer_is_the_error(self):
         # Same two globals; a use with no distinguishing expectation errors AT
@@ -68,30 +51,7 @@ class TestSameNameValues(TestCase):
 
 
 class TestExpectedShapeSelectsFunctions(TestCase):
-    def test_argument_shape_reaches_the_load(self):
-        rc, _ = compile_and_run_stdlib_capture(
-            "namespace Main\nimport System\n"
-            "fun f(n: System::Int): System::Int\n  ret 1\n"
-            "fun f(s: System::String): System::Int\n  ret 2\n"
-            "fun f(a: System::Int, b: System::Int): System::Int\n  ret 3\n"
-            "fun main(): System::Int\n"
-            "  ret f(0) * 100 + f(\"x\") * 10 + f(0, 0)\n")
-        self.assertEqual(123, rc)
 
-    def test_result_shape_alone_selects(self):
-        # The cornerstone: two nullary functions differing ONLY in result
-        # type; each recipient's expectation selects its function.
-        rc, _ = compile_and_run_stdlib_capture(
-            "namespace Main\nimport System\n"
-            "fun g(): System::Int\n  ret 7\n"
-            "fun g(): System::String\n  ret \"seven\"\n"
-            "fun wantStr(s: System::String): System::Int\n"
-            "  ret System::length(s)\n"
-            "fun wantInt(n: System::Int): System::Int\n"
-            "  ret n\n"
-            "fun main(): System::Int\n"
-            "  ret wantInt(g()) * 10 + wantStr(g())\n")
-        self.assertEqual(75, rc)   # 7*10 + 5
 
     def test_result_only_overloads_ambiguous_without_expectation(self):
         errs = _errors_of(
@@ -132,12 +92,8 @@ class TestStrictAmbiguity(TestCase):
 class TestFragileBaseWarning(TestCase):
     @staticmethod
     def __stderr_of(src: str) -> tuple[bool, str]:
-        import contextlib as _c, io as _io2
-        buf = _io2.StringIO()
-        with _c.redirect_stderr(buf):   # warnings print to stderr
-            code = c.compile([c.Input(src, "test.yafl")],
-                             use_stdlib=True, just_testing=True)
-        return bool(code), buf.getvalue()
+        r = compile_c_result(src)    # warnings print to stderr
+        return bool(r.c), r.stderr
 
     def test_multiple_overloads_of_one_parent_warns_and_names_it(self):
         # REFINED (2026-07-05): warn only when one override subsumes several
@@ -177,66 +133,9 @@ class TestFragileBaseWarning(TestCase):
         self.assertTrue(code)
         self.assertNotIn("overrides", out)
 
-    def test_global_let_of_function_type_now_works(self):
-        # Was a KNOWN_GAP (function-typed global crashed lazy init); fixed
-        # 2026-07-04 — see tests/test_function_typed_globals.py. Here just
-        # confirm it compiles and runs (a direct lambda lowers to a fun; the
-        # lazy path handles the rest).
-        rc, _ = compile_and_run_stdlib_capture(
-            "namespace Main\nimport System\n"
-            "let h: (:System::String): System::Int = (s: System::String) => System::length(s)\n"
-            "fun main(): System::Int\n"
-            "  ret h(\"abc\")\n")
-        self.assertEqual(3, rc)
-
-
-class TestOverrideByAssignability(TestCase):
-    _SHAPES = (
-        "namespace Main\nimport System\n"
-        "interface Shape\n"
-        "  fun describe(): System::Int\n"
-        "class Circle() : Shape\n"
-        "  fun describe(): System::Int\n"
-        "    ret 10\n"
-        "class Square() : Shape\n"
-        "  fun describe(): System::Int\n"
-        "    ret 20\n"
-        "fun poke(s: Shape): System::Int\n"
-        "  ret s.describe()\n")
-
-    def test_virtual_dispatch_o0_and_o3_agree(self):
-        src = self._SHAPES + (
-            "fun main(): System::Int\n"
-            "  ret poke(Circle()) + poke(Square())\n")
-        for level in (0, 3):
-            rc, _ = compile_and_run_stdlib_capture(src, optimization_level=level)
-            self.assertEqual(30, rc, f"dispatch diverged at -O{level}")
-
 
 class TestKnownGaps(TestCase):
-    def test_duplicate_route_resolution_is_not_ambiguous(self):
-        # Regression: the same statement reachable via root scope and import
-        # scope must count as ONE candidate (was: "Ambiguous — candidates: X"
-        # listing a single name).
-        rc, _ = compile_and_run_stdlib_capture(
-            "namespace Main\nimport System\nimport System::IO\n"
-            "fun f(c: System::Int): System::Bool\n  ret c == 32\n"
-            "fun main(): System::Int\n  ret f(32) ? 0 : 1\n")
-        self.assertEqual(0, rc)
 
-    def test_literal_spelling_is_its_type(self):
-        # RULED (2026-07-04, final): 37 is Int, 37i32 is Int32, a char
-        # literal IS an Int32 literal, 12.5 is Float64, 12.5f32 is Float32.
-        # No conversion in any direction: type what you mean.
-        rc, _ = compile_and_run_stdlib_capture(
-            "namespace Main\nimport System\n"
-            "fun isParen(c: System::Int32): System::Bool\n"
-            "  ret c == 40i32\n"
-            "fun isParenChar(c: System::Int32): System::Bool\n"
-            "  ret c == '('\n"
-            "fun main(): System::Int\n"
-            "  ret isParen(System::byteAt(\"(\", 0)) && isParenChar(System::byteAt(\"(\", 0)) ? 0 : 1\n")
-        self.assertEqual(0, rc)
 
     def test_bare_int_literal_does_not_convert_to_int32(self):
         # `c == 40` with c: Int32 is an ERROR — spell it 40i32.

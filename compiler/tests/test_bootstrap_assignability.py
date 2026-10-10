@@ -172,7 +172,7 @@ class TestBootstrapAssignability(TestCase):
             self.assertIn(verdict, expected, f"corpus never produces {verdict}")
 
         stdin = _SOURCE + "\n?\n" + "\n".join(lines) + "\n"
-        r = subprocess.run([self.binary, "assign"], input=stdin,
+        r = subprocess.run([self.binary, "--stage", "assign"], input=stdin,
                            capture_output=True, timeout=90, text=True, env=_RUN_ENV)
         self.assertEqual(0, r.returncode)
         got = r.stdout.splitlines()

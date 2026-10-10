@@ -1,0 +1,102 @@
+# Tests for hierarchical enum types.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::EnumTypes::LinkedListSum
+
+import System
+import System::Test
+
+fun program(): System::Int
+  let l = System::prepend<System::Int>(1, System::prepend<System::Int>(2, System::prepend<System::Int>(3, System::prepend<System::Int>(4, System::prepend<System::Int>(5, System::List<System::Int>())))))
+  ret System::fold<System::Int, System::Int>(l, 0, (acc: System::Int, x: System::Int) => acc + x)
+
+fun [test("linked list sum")] check(): None|TestFailure
+    ret assertEqInt(program(), 15, "program()")
+
+
+namespace CompilerTests::EnumTypes::MutualRecursion
+
+import System
+import System::Test
+
+enum A
+  enum A1(b: B)
+  enum A2()
+
+enum B
+  enum B1(a: A)
+  enum B2()
+
+fun depthA(x: A): System::Int
+  ret match(x)
+    (a: A2) => 0
+    (a: A1) => 1 + depthB(a.b)
+
+fun depthB(x: B): System::Int
+  ret match(x)
+    (b: B2) => 0
+    (b: B1) => 1 + depthA(b.a)
+
+fun program(): System::Int
+  let v: A = A1(B1(A1(B1(A2()))))
+  ret depthA(v)
+
+fun [test("mutual recursion")] check(): None|TestFailure
+    ret assertEqInt(program(), 4, "program()")
+
+
+namespace CompilerTests::EnumTypes::NonRecursiveEnumRemainsFlat
+
+import System
+import System::IO
+import System::Test
+
+fun program(): System::Int
+  let e: System::IO::IOError = System::IO::EOFError(0)
+  ret match(e)
+    (eof: System::IO::EOFError) => 0
+    () => 99
+
+fun [test("non recursive enum remains flat")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::EnumTypes::TreeNodeCount
+
+import System
+import System::Test
+
+enum Tree
+  enum Node(left: Tree, value: System::Int, right: Tree)
+  enum Leaf()
+
+fun countNodes(t: Tree): System::Int
+  ret match(t)
+    (l: Leaf) => 0
+    (n: Node) => 1 + countNodes(n.left) + countNodes(n.right)
+
+fun program(): System::Int
+  let t: Tree = Node(Node(Leaf(), 1, Leaf()), 2, Node(Leaf(), 3, Leaf()))
+  ret countNodes(t)
+
+fun [test("tree node count")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")
+
+
+namespace CompilerTests::EnumTypes::WideNonRecursiveEnumRemainsFlat
+
+import System
+import System::Test
+
+enum Wide
+  enum One(a: System::Int, b: System::Int, c: System::Int, d: System::Int, e: System::Int, f: System::Int, g: System::Int, h: System::Int, i: System::Int, j: System::Int)
+
+fun program(): System::Int
+  let w: Wide = One(0, 0, 0, 0, 0, 0, 0, 0, 0, 42)
+  ret match(w)
+    (one: One) => one.j
+
+fun [test("wide non recursive enum remains flat")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")

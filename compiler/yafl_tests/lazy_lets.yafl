@@ -1,0 +1,84 @@
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::LazyLets::ForwardReferenceBetweenLazies
+
+import System
+import System::Test
+
+fun program(): System::Int
+    let [lazy] x: System::Int = y + 1
+    let [lazy] y: System::Int = 2
+    ret x
+
+fun [test("Two `[lazy]` lets in the same block; the first references")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")
+
+
+namespace CompilerTests::LazyLets::LazyLetCapturesNormalLocal
+
+import System
+import System::Test
+
+fun program(): System::Int
+    let y: System::Int = 40
+    let [lazy] x: System::Int = y + 2
+    ret x
+
+fun [test("A `[lazy]` body that captures a preceding non-lazy let evaluates")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::LazyLets::LazyLetGlobalMemoisesAcrossCalls
+
+import System
+import System::Test
+
+let [lazy] shared: System::Int = 20 + 1
+fun double_it(): System::Int
+    ret shared + shared
+fun program(): System::Int
+    ret double_it()
+
+fun [test("A `[lazy]` global referenced from two functions still inits once")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::LazyLets::LazyLetGlobalReturnsCorrectValue
+
+import System
+import System::Test
+
+let [lazy] answer: System::Int = 41 + 1
+fun program(): System::Int
+    ret answer
+
+fun [test("Forcing a `[lazy]` global yields its initialiser's value")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::LazyLets::LazyLetReferencedTwiceMemoises
+
+import System
+import System::Test
+
+fun program(): System::Int
+    let [lazy] x: System::Int = 21
+    ret x + x
+
+fun [test("Two references compute the value once (visible via correct result)")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::LazyLets::LazyLetReturnsCorrectValue
+
+import System
+import System::Test
+
+fun program(): System::Int
+    let [lazy] x: System::Int = 41 + 1
+    ret x
+
+fun [test("Forcing a `[lazy]` let returns the closure's value")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")

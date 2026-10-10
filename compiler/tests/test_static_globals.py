@@ -4,19 +4,15 @@ Strings and flat simple-class globals already emit statically. This covers the
 rest: a global whose initialiser is a tree of constant-field objects (union
 typed, vtable'd, nested) must land in static storage with NO runtime
 initialisation — every `$si$` object may reference other static objects in its
-initialiser, the lazy-init thunk folds away, and reads are direct.
+initialiser, the lazy-init thunk folds away, and reads are direct. That the
+values read back is checked by compiler/yafl_tests/static_globals.yafl.
+
+Runtime behaviour is checked by compiler/yafl_tests/static_globals.yafl.
 """
 from __future__ import annotations
 
-import subprocess
-import tempfile
-import os
-from pathlib import Path
-
-import compiler as c
-
-from tests.testutil import BatchedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib_capture
+from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import compile_c
 
 _CHAIN = """namespace Test
 import System
@@ -38,8 +34,7 @@ fun main(): Int
 
 
 def _emit_c(src: str) -> str:
-    code = c.compile([c.Input(src, "test.yafl")], use_stdlib=True,
-                     just_testing=False, optimization_level=1)
+    code = compile_c(src, optimization_level=1)
     assert code, "compilation failed"
     return code
 
@@ -66,11 +61,6 @@ fun main(): Int
 
 
 class TestStaticObjectGraphs(TestCase):
-    def test_constant_chain_runs(self):
-        rc, out = compile_and_run_stdlib_capture(_CHAIN, timeout=30,
-                                                 optimization_level=1)
-        self.assertEqual(0, rc, f"chain program failed; stdout:\n{out}")
-
     def test_constant_chain_is_fully_static(self):
         code = _emit_c(_CHAIN)
         # No runtime initialisation survives: the global's lazy-init thunk is
@@ -83,11 +73,6 @@ class TestStaticObjectGraphs(TestCase):
         self.assertGreaterEqual(
             code.count("(object_t*)((char*)obj_Test__Node"), 3,
             "expected three static Node instances")
-
-    def test_bigint_fields_and_cross_reference_run(self):
-        rc, out = compile_and_run_stdlib_capture(_CHAIN_BIGINT, timeout=30,
-                                                 optimization_level=1)
-        self.assertEqual(0, rc, f"bigint chain program failed; stdout:\n{out}")
 
     def test_bigint_fields_and_cross_reference_are_static(self):
         code = _emit_c(_CHAIN_BIGINT)

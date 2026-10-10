@@ -125,8 +125,11 @@ therefore one of:
     nursery object through a shared slot. If the slot still holds it at the
     flush, the flush escapes it; if anyone overwrote it first, that overwrite
     escaped it as an old value.
-  * `GC_MARK_SEEN` (queues, completions, lazy publication), `gc_root_publish`
-    and `gc_root_overwrite` escape their values too.
+  * `GC_MARK_SEEN` (queues, completions, lazy publication) escapes its value
+    too. The root-publish pair takes the root slot and a pointer mask, like
+    the heap barriers: `gc_root_overwrite(slot, mask)` before the store
+    escapes the old values, and `gc_root_publish(slot, mask)` after it
+    escapes the new ones.
   * The barrier is gated on `gc_local_live`, a count of threads whose nursery
     is collecting right now. With every nursery stood down, the escape barrier
     costs one load and a not-taken branch.

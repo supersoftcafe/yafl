@@ -1,0 +1,54 @@
+# End-to-end tests for the System::IO stdlib: real file read/write, close,
+# error-code mapping, and operation-after-close behaviour.
+#
+# `IO` is a linear type — every handle must be consumed exactly once. The
+# sources below thread the handle through and close it on every path; the
+# shared `_done` helper closes a handle and yields an exit code.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Io::FileNotFoundReturnsFileNotFoundError
+
+import System
+import System::IO
+import System::Test
+
+fun _done(h: IO, code: System::Int): System::Int
+  ret match(h.close())
+    (e: IOError)      => code
+    (n: System::None) => code
+
+fun program(): System::Int
+  ret match(open_read("/nonexistent/yafl_test_ypr0qZ_987654321"))
+    (h: IO) => _done(h, 99)
+    (e: IOError) => match(e)
+      (x: FileNotFoundError) => 0
+      () => 1
+
+fun [test("open_read on a missing path returns FileNotFoundError specifically")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::Io::PipeChainTypechecksInLetBinding
+
+import System
+import System::IO
+import System::Test
+
+# Regression: `let r = a ?> f` typechecks identically to `ret a ?> f`. Bind
+# chains used as a let's default value emitted a spurious "Incorrect type"
+# diagnostic.
+fun emit(io: IO): (io: IO, v: Int|IOError)
+  let r = io.write("a") ?> (io: IO, _: Int) => io.write("b")
+  ret r
+
+fun program(): System::Int
+  let r = emit(stdout())
+  let closed = r.io.close()
+  ret match(r.v)
+    (n: System::Int) => 0
+    (e: IOError)     => 1
+
+fun [test("a ?> chain in a let binding typechecks")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

@@ -1,9 +1,20 @@
 name: full-gate
 
+# Two speeds (full_protocol.py, CMakeLists.txt YAFL_TEST_SPEED), the slow one
+# opt-in: pull requests and manual runs take the fast path; every commit to
+# main, or a manual run with `full` ticked, runs the full regression. A newer
+# commit cancels a run still in progress for the same ref.
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      full:
+        description: Run the full regression instead of the fast path
+        type: boolean
+        default: false
 
 concurrency:
   group: full-gate-${{ github.ref }}
@@ -28,5 +39,18 @@ jobs:
       - name: Install build and test tooling
         run: pip install pyinstaller unittest-parallel
 
-      - name: Run the full protocol
-        run: python3 full_protocol.py
+      # The Python build of the port, reused by the fast path while the Python
+      # compiler is unchanged. build_bootstrap.py checks its own keys, so any
+      # earlier entry is a safe start; the full runs on main keep it fresh
+      # for every PR.
+      - uses: actions/cache@v4
+        with:
+          path: build/bootstrap-cache
+          # Everything build_bootstrap.py keys an entry on — the Python compiler,
+          # the port's sources and stdlib, and the runtime it links — so an
+          # entry it would relink or rebuild is saved afresh, not hit exactly.
+          key: bootstrap-${{ hashFiles('compiler/**/*.py', '!compiler/tests/**', 'bootstrap/**/*.yafl', 'compiler/stdlib/**', 'yafllib/**') }}
+          restore-keys: bootstrap-
+
+      - name: Run the protocol
+        run: python3 full_protocol.py ${{ (github.event_name == 'push' || inputs.full) && '--full' || '' }}

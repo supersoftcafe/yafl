@@ -4,11 +4,12 @@ from __future__ import annotations
 import contextlib
 import io
 import subprocess
-from tests.testutil import BatchedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import _YAFLLIB_DIR
 
 import compiler as c
-from tests.testutil import compile_and_run, compile_and_run_stdlib
+from tests.testutil import compile_and_run
+from tests.testutil import compile_c
 
 
 def _compile_capturing_errors(source: str) -> tuple[str, str]:
@@ -527,40 +528,8 @@ fun main(): Int
 
 class TestRecursiveEnums(TestCase):
     """Recursive enums (variant fields reference the enum's own root)
-    must compile to heap-allocated objects rather than flat structs."""
-
-    def test_linked_list_sum(self):
-        # Uses System::List from list.yafl. Sum of [1,2,3,4,5] via fold = 15.
-        src = """namespace Test
-import System
-
-fun main(): System::Int
-  let l = System::prepend<System::Int>(1, System::prepend<System::Int>(2, System::prepend<System::Int>(3, System::prepend<System::Int>(4, System::prepend<System::Int>(5, System::List<System::Int>())))))
-  ret System::fold<System::Int, System::Int>(l, 0, (acc: System::Int, x: System::Int) => acc + x)
-"""
-        self.assertEqual(15, compile_and_run_stdlib(src))
-
-    def test_tree_node_count(self):
-        # Three nodes: root + 2 leaves' worth of structure.
-        # count(Node(Leaf, _, Leaf)) = 1 + count(Leaf) + count(Leaf) = 1.
-        # Build a 3-deep node chain on the right and count.
-        src = """namespace Test
-import System
-
-enum Tree
-  enum Node(left: Tree, value: System::Int, right: Tree)
-  enum Leaf()
-
-fun countNodes(t: Tree): System::Int
-  ret match(t)
-    (l: Leaf) => 0
-    (n: Node) => 1 + countNodes(n.left) + countNodes(n.right)
-
-fun main(): System::Int
-  let t: Tree = Node(Node(Leaf(), 1, Leaf()), 2, Node(Leaf(), 3, Leaf()))
-  ret countNodes(t)
-"""
-        self.assertEqual(3, compile_and_run_stdlib(src))
+    must compile to heap-allocated objects rather than flat structs. The
+    runtime behaviour is checked by compiler/yafl_tests/enum_types.yafl."""
 
     def test_recursive_enum_object_typedef_emitted(self):
         # System::Chain<T> is a recursive enum (its ChainLink variant
@@ -577,76 +546,10 @@ fun main(): System::Int
   let l: System::List<System::Int> = System::prepend<System::Int>(1, empty)
   ret 0
 """
-        result = c.compile([c.Input(src, "test.yafl")], use_stdlib=True, just_testing=False)
+        result = compile_c(src)
         self.assertNotEqual("", result)
         # The Object name 'Chain@hash' is mangled to a C identifier.
         self.assertIn("Chain", result)
         # The heap allocator must be invoked (recursive enum allocates via the
         # inline bump fast path, object_new).
         self.assertIn("object_new", result)
-
-    def test_non_recursive_enum_remains_flat(self):
-        # A regression check: IOError is non-recursive — its Variant
-        # leaves carry a primitive int and unit, no self-reference. The
-        # flat-struct codegen must remain unchanged. We assert by
-        # checking that the program compiles and runs (uses match-on-flat-
-        # struct semantics throughout) and returns the expected value.
-        src = """namespace Test
-import System
-import System::IO
-
-fun main(): System::Int
-  let e: System::IO::IOError = System::IO::EOFError(0)
-  ret match(e)
-    (eof: System::IO::EOFError) => 0
-    () => 99
-"""
-        self.assertEqual(0, compile_and_run_stdlib(src))
-
-    def test_wide_non_recursive_enum_remains_flat(self):
-        # A wide enum with no cycle is NOT marked complex — only cycles
-        # require heap allocation. Build a 10-data-field enum, store it,
-        # read a field back via flat-struct codegen.
-        src = """namespace Test
-import System
-
-enum Wide
-  enum One(a: System::Int, b: System::Int, c: System::Int, d: System::Int, e: System::Int, f: System::Int, g: System::Int, h: System::Int, i: System::Int, j: System::Int)
-
-fun main(): System::Int
-  let w: Wide = One(0, 0, 0, 0, 0, 0, 0, 0, 0, 42)
-  ret match(w)
-    (one: One) => one.j
-"""
-        self.assertEqual(42, compile_and_run_stdlib(src))
-
-    def test_mutual_recursion(self):
-        # enum A's variant references B; enum B's variant references A.
-        # Exactly one of A/B is marked complex to break the cycle; the
-        # other stays flat. Walk a 3-deep alternation and assert depth.
-        src = """namespace Test
-import System
-
-enum A
-  enum A1(b: B)
-  enum A2()
-
-enum B
-  enum B1(a: A)
-  enum B2()
-
-fun depthA(x: A): System::Int
-  ret match(x)
-    (a: A2) => 0
-    (a: A1) => 1 + depthB(a.b)
-
-fun depthB(x: B): System::Int
-  ret match(x)
-    (b: B2) => 0
-    (b: B1) => 1 + depthA(b.a)
-
-fun main(): System::Int
-  let v: A = A1(B1(A1(B1(A2()))))
-  ret depthA(v)
-"""
-        self.assertEqual(4, compile_and_run_stdlib(src))

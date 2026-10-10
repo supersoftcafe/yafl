@@ -1,0 +1,28 @@
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::Newfeatures::PipeParamShadowsBodyNotArgument
+
+import System
+import System::Test
+
+fun program(): System::Int
+  ret 5 |> (x) => ((x + 1) |> (x) => x * 2)
+
+fun [test("pipe param shadows body not argument")] check(): None|TestFailure
+    ret assertEqInt(program(), 12, "program()")
+
+
+namespace CompilerTests::Newfeatures::PipeTupleParamsShadowBodyNotArgument
+
+import System
+import System::Test
+
+fun program(): System::Int
+  ret (1, 2)
+    |> (a, b) => (a + b, b)
+    |> (a, b) => a * b
+
+fun [test("pipe tuple params shadow body not argument")] check(): None|TestFailure
+    ret assertEqInt(program(), 6, "program()")

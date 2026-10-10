@@ -457,7 +457,7 @@ fun gsubStmt(st, sub: GSub) => match(st)
                        gsubExprOpt(f.fBody, sub, List()),
                        gsubOpt(f.fRet, sub, List()),
                        gsubList(f.fWheres, sub, List()),
-                       f.psfLine, f.fRetInferred, f.fNested, f.fImports)
+                       f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   # Wheres untouched: LetStatement.search_and_replace visits only
   # default_value + declared_type (lets.py:42).
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens,
@@ -620,7 +620,7 @@ fun createSpecializedVersion(st, args: List<Spec>,
 fun renameSpecialized(st, newName, args: List<Spec>) => match(st)
   (f: PsFun)  => PsFun(newName, f.fAttrs, List(), f.fParams, f.fBody,
                        f.fRet, f.fWheres, f.psfLine, f.fRetInferred,
-                       f.fNested, f.fImports)
+                       f.fNested, f.fImports, f.fGlobal)
   (l: PsLet)  => PsLet(newName, l.lAttrs, List(), l.lType, l.lDefault,
                        l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
                        l.lImports)
@@ -695,7 +695,7 @@ fun [tail] renameMembersB(ms: Chain<PStmt>, rn: List<Binding2>,
               : PsFun(renamedTo(rn, f.fName), f.fAttrs, f.fGens,
                       f.fParams, f.fBody, f.fRet, f.fWheres,
                       f.psfLine, f.fRetInferred, f.fNested,
-                      f.fImports)))
+                      f.fImports, f.fGlobal)))
     (o: PStmt) => renameMembersB(l.next, rn, push(acc, l.value))
 
 fun renameSlots(ss, rn: List<Binding2>) => match(ss)
@@ -993,7 +993,7 @@ fun rcrStmt(st, refs: GRefsIx) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rcrStmt(f.fParams, refs),
                        rcrExprOpt(f.fBody, refs), rcrSpecOpt(f.fRet, refs),
                        rcrSpecs(f.fWheres, refs), f.psfLine, f.fRetInferred,
-                       f.fNested, f.fImports)
+                       f.fNested, f.fImports, f.fGlobal)
   # Wheres NOT redirected (LetStatement.search_and_replace skips them);
   # __generic_instance_refs re-inflates mangled forms instead.
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, rcrSpecOpt(l.lType, refs),
@@ -1713,7 +1713,7 @@ fun rtrStmt(st, r, traits: List<PStmt>) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens,
                        rtrStmt(f.fParams, r, traits),
                        rtrExprOpt(f.fBody, r, traits), f.fRet, f.fWheres,
-                       f.psfLine, f.fRetInferred, f.fNested, f.fImports)
+                       f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
                        rtrExprOpt(l.lDefault, r, traits), l.lArrayLen,
                        l.lWheres, l.pslLine, l.lTypeInferred, l.lImports)
@@ -2045,7 +2045,7 @@ fun rfrStmt(st, c: Canon) => match(st)
   (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rfrStmt(f.fParams, c),
                        rfrExprOpt(f.fBody, c), rfrSpecOpt(f.fRet, c),
                        rfrSpecList(f.fWheres, c), f.psfLine,
-                       f.fRetInferred, f.fNested, f.fImports)
+                       f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, rfrSpecOpt(l.lType, c),
                        rfrExprOpt(l.lDefault, c), l.lArrayLen, l.lWheres,
                        l.pslLine, l.lTypeInferred, l.lImports)

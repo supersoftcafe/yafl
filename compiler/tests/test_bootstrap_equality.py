@@ -63,7 +63,7 @@ class TestBootstrapEquality(TestCase):
                 self.assertGreater(len(stmts), 0)
                 expected = ["".join("1" if a == b else "0" for b in stmts) for a in stmts]
 
-                r = subprocess.run([self.binary, "eq"], input=text, capture_output=True,
+                r = subprocess.run([self.binary, "--stage", "eq"], input=text, capture_output=True,
                                    timeout=90, text=True, env=_RUN_ENV)
                 self.assertEqual(0, r.returncode, r.stdout[:200])
                 got = r.stdout.splitlines()
