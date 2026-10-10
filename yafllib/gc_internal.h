@@ -232,5 +232,15 @@ void gc_stats_report(void);  // [GC TIME] exit summary (atexit when stats enable
 
 void gc_dbg_dangle_check(object_t *object);  // poison-mode UAF edge verifier
 void gc_hunt_run(void);                      // YAFL_GC_HUNT exit-time heap census
+void gc_oom_report(FILE *out);               // collector state, printed at an OOM abort
+// YAFL_GC_TRACE page history (see gc_debug.c). Record through GC_TRACE_PAGE.
+enum gc_trace_kind { GCT_ALLOC = 1, GCT_LOCAL_TAKE, GCT_LOCAL_SWEEP, GCT_LOCAL_PROMOTE,
+                     GCT_LOCAL_RELEASE, GCT_PRUNE, GCT_EVACUATE, GCT_FREE };
+extern bool gc_trace_enabled;
+void gc_trace_init(void);
+void gc_trace_page_event(void *page, enum gc_trace_kind kind, const bitmap_t *slots,
+                         uint32_t epoch);
+#define GC_TRACE_PAGE(page, kind, slots, epoch)\
+    do { if (UNLIKELY(gc_trace_enabled)) gc_trace_page_event((page), (kind), (slots), (epoch)); } while (0)
 
 #endif

@@ -129,18 +129,44 @@ static inline uint32_t rnd(uint64_t* s) {
     return (uint32_t)(*s >> 16);
 }
 
-static NOINLINE void die(const char* what, int worker, object_t* root, object_t* at, int depth) {
-    vtable_t* vt = at ? object_get_vtable(at) : NULL;
-    fprintf(stderr, "test_gc_mesh: CORRUPT %s worker=%d root=%p node=%p depth=%d vtable=%p(%s)\n",
-            what, worker, (void*)root, (void*)at, depth, (void*)vt,
-            vt == &node_vt || vt == &fat_vt || vt == &mail_vt ? vt->name : "?");
-    abort();
-}
-
 static inline bool is_node(object_t* p) {
     vtable_t* vt = p ? object_get_vtable(p) : NULL;
     return vt == &node_vt || vt == &fat_vt;
 }
+
+static NOINLINE void die(const char* what, int worker, object_t* root, object_t* at, int depth) {
+    gc_trace_report_begin();
+    vtable_t* vt = at ? object_get_vtable(at) : NULL;
+    fprintf(stderr, "test_gc_mesh: CORRUPT %s worker=%d root=%p node=%p depth=%d vtable=%p(%s)\n",
+            what, worker, (void*)root, (void*)at, depth, (void*)vt,
+            vt == &node_vt || vt == &fat_vt || vt == &mail_vt ? vt->name : "?");
+    // The evidence, for a run with YAFL_GC_TRACE=1: the node, what it links
+    // to, and what the collector last did to both pages.
+    if (at && (vt == &node_vt || vt == &fat_vt)) {
+        struct node* n = (struct node*)at;
+        struct node* nx = (struct node*)n->next;
+        fprintf(stderr, "  node: id=%016llx check=%016llx next=%p want mix(id^next.check)=%016llx\n",
+                (unsigned long long)n->id, (unsigned long long)n->check, (void*)nx,
+                (unsigned long long)mix(n->id ^ (nx ? nx->check : 0)));
+        if (nx)
+            fprintf(stderr, "  next: word0=%p vtable=%s id=%016llx check=%016llx next=%p\n",
+                    *(void**)nx, is_node((object_t*)nx) ? object_get_vtable((object_t*)nx)->name : "?",
+                    (unsigned long long)nx->id, (unsigned long long)nx->check, (void*)nx->next);
+        gc_trace_explain("node", at);
+        if (object_resolve(at) != at) {
+            struct node* c = (struct node*)object_resolve(at);
+            fprintf(stderr, "  node's copy %p: next=%p check=%016llx\n", (void*)c, (void*)c->next,
+                    (unsigned long long)c->check);
+            gc_trace_explain("node's copy", c);
+        }
+        if (nx) gc_trace_explain("next", nx);
+        if (nx && nx->next) gc_trace_explain("next.next", nx->next);
+    }
+    if (root && root != at) gc_trace_explain("root", root);
+    fflush(stderr);
+    abort();
+}
+
 
 // Walk a chain end to end; every link must be a live node whose checksum
 // agrees with its successor's.

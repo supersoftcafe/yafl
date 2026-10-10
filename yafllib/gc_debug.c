@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <pthread.h>
 
 // --- Heap hunt (YAFL_GC_HUNT, diagnostics only) ------------------------------
 //
@@ -239,10 +241,154 @@ void gc_dbg_dangle_check(object_t* object) {
             gc_page_t* cpg = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE-1));
             if (!memory_pages_is_alloc_head(cpg) || cpg->head.tag != PAGE_MAGIC_NUMBER) continue;
             if (*(uint64_t*)child != 0x4242424242424242ULL) continue;
+            gc_trace_report_begin();
             fprintf(stderr, "\nDANGLE cycle=%llu: live %p (vt=%s) field#%u -> reclaimed %p\n",
                     (unsigned long long)atomic_load(&gc_cycle_count),
                     (void*)object, vt->name, _w * 64 + i, (void*)child);
+            gc_trace_explain("live", object);
+            if (vtable_is_forward(object->vtable))
+                gc_trace_explain("live's copy", object_resolve(object));
+            gc_trace_explain("reclaimed", child);
             fflush(stderr);
             abort();
         }
+}
+
+// --- Page history (YAFL_GC_TRACE, diagnostics only) --------------------------
+//
+// A short ring of collector events per heap page — allocated, nursery-swept,
+// promoted, pruned, evacuated, freed — each with the slots it concerned, so a
+// test that finds a corrupt object can ask what the collector last did to it
+// (gc_trace_explain). Rings are written racily by any thread; good enough to
+// read after the fact. Off: one predictable branch per recorded event.
+bool gc_trace_enabled = false;
+
+enum { GC_TRACE_DEPTH = 32 };
+struct gc_trace_event {
+    uint64_t seq;
+    uint32_t cycle;
+    uint32_t epoch;      // "aux": the page's local_epoch (alloc: its page count)
+    uint16_t tid;
+    uint8_t  kind;
+    bitmap_t slots;      // the slots the event concerned (kind-specific)
+};
+struct gc_trace_page {
+    _Atomic(uint32_t) n;
+    struct gc_trace_event ev[GC_TRACE_DEPTH];
+};
+static struct gc_trace_page *gc_trace_pages;
+static size_t                gc_trace_npages;
+static _Atomic(uint64_t)     gc_trace_seq;
+static _Atomic(uint16_t)     gc_trace_next_tid;
+static thread_local uint16_t gc_trace_tid;
+
+static int gc_trace_bit(const bitmap_t *b, size_t bit) {
+    return (int)((b->a[bit / GC_MASK_SIZE] >> (bit % GC_MASK_SIZE)) & 1);
+}
+
+static const char *const gc_trace_names[] = {
+    [GCT_ALLOC] = "alloc", [GCT_LOCAL_TAKE] = "nursery-take",
+    [GCT_LOCAL_SWEEP] = "nursery-sweep", [GCT_LOCAL_PROMOTE] = "nursery-promote",
+    [GCT_LOCAL_RELEASE] = "nursery-release", [GCT_PRUNE] = "prune",
+    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free",
+};
+
+// One failure report at a time: whoever reports first holds this until it
+// aborts, so a second detector (the collector's DANGLE check racing a
+// mutator's own) cannot cut the first report short with its abort.
+static pthread_mutex_t gc_trace_report_mu = PTHREAD_MUTEX_INITIALIZER;
+EXPORT void gc_trace_report_begin(void) {
+    pthread_mutex_lock(&gc_trace_report_mu);   // never released: abort follows
+}
+
+// Called at env parse, before the heap exists: the rings are reserved on the
+// first event, once the heap's size is known.
+void gc_trace_init(void) {
+    const char *e = getenv("YAFL_GC_TRACE");
+    gc_trace_enabled = e && e[0] && e[0] != '0';
+}
+static pthread_once_t gc_trace_once = PTHREAD_ONCE_INIT;
+static void gc_trace_reserve(void) {
+    size_t n = _memory_heap_bytes / GC_PAGE_SIZE;
+    // Virtual reservation: only the rings of pages actually used are touched.
+    void *p = mmap(NULL, n * sizeof *gc_trace_pages, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (p == MAP_FAILED) { perror("YAFL_GC_TRACE"); gc_trace_enabled = false; return; }
+    gc_trace_npages = n;
+    gc_trace_pages = p;
+}
+
+void gc_trace_page_event(void *page_addr, enum gc_trace_kind kind, const bitmap_t *slots,
+                         uint32_t epoch) {
+    pthread_once(&gc_trace_once, gc_trace_reserve);
+    size_t pi = (size_t)((char*)page_addr - _memory_heap_base) / GC_PAGE_SIZE;
+    if (!gc_trace_pages || pi >= gc_trace_npages) return;
+    if (!gc_trace_tid) gc_trace_tid = (uint16_t)(atomic_fetch_add(&gc_trace_next_tid, 1) + 1);
+    struct gc_trace_page *tp = &gc_trace_pages[pi];
+    uint32_t k = atomic_fetch_add_explicit(&tp->n, 1, memory_order_relaxed) % GC_TRACE_DEPTH;
+    struct gc_trace_event *ev = &tp->ev[k];
+    ev->seq   = atomic_fetch_add_explicit(&gc_trace_seq, 1, memory_order_relaxed) + 1;
+    ev->cycle = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
+    ev->epoch = epoch;
+    ev->tid   = gc_trace_tid;
+    ev->kind  = (uint8_t)kind;
+    if (slots) ev->slots = *slots; else memset(&ev->slots, 0, sizeof ev->slots);
+}
+
+// What the collector last did to the object at `p`: its page's header now,
+// then the page's history, oldest first, marking the events that named its
+// slot. Prints nothing useful without YAFL_GC_TRACE beyond the header.
+EXPORT void gc_trace_explain(const char *label, const void *p) {
+    uintptr_t a = (uintptr_t)p;
+    if (!p || (size_t)((char*)p - _memory_heap_base) >= _memory_heap_bytes) {
+        fprintf(stderr, "  [trace] %s %p: not in the heap\n", label, p);
+        return;
+    }
+    gc_page_t *page = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    long slot = (long)(((char*)p - (char*)page->slots) / GC_SLOT_SIZE);
+    bool in_slots = (char*)p >= (char*)page->slots && slot < SLOTS_PER_PAGE;
+    fprintf(stderr, "  [trace] %s %p: page %p slot %ld cycle-now %llu thread-tid %u\n",
+            label, p, (void*)page, slot,
+            (unsigned long long)atomic_load(&gc_cycle_count), (unsigned)gc_trace_tid);
+    fprintf(stderr, "          head: tag=%s pages=%u mutable=%d compacted=%d(cycle %u) old=%d "
+            "dirty_old=%d local_epoch=%u pinned=%d object-bit=%d escaped-bit=%d word0=%p\n",
+            page->head.tag == PAGE_MAGIC_NUMBER ? "ok" : "BAD", page->head.pages,
+            page->head.mutable, page->head.compacted, page->head.compacted_cycle,
+            page->head.old, page->head.dirty_old, page->head.local_epoch,
+            page->head.scanner.pinned,
+            in_slots ? (int)gc_trace_bit(&page->head.objects, (size_t)slot) : -1,
+            in_slots ? (int)gc_trace_bit(&page->head.local_escaped, (size_t)slot) : -1,
+            *(void**)p);
+    if (!gc_trace_pages) return;
+    size_t pi = (size_t)((char*)page - _memory_heap_base) / GC_PAGE_SIZE;
+    struct gc_trace_page *tp = &gc_trace_pages[pi];
+    uint32_t n = atomic_load(&tp->n);
+    uint32_t first = n > GC_TRACE_DEPTH ? n - GC_TRACE_DEPTH : 0;
+    if (first) fprintf(stderr, "          (%u older events dropped)\n", first);
+    for (uint32_t i = first; i < n; ++i) {
+        struct gc_trace_event *ev = &tp->ev[i % GC_TRACE_DEPTH];
+        unsigned kind = ev->kind;
+        int hit = in_slots ? (int)gc_trace_bit(&ev->slots, (size_t)slot) : 0;
+        fprintf(stderr, "          #%-10llu cycle %-5u tid %-3u %-16s aux %-6u%s\n",
+                (unsigned long long)ev->seq, ev->cycle, ev->tid,
+                kind < sizeof gc_trace_names / sizeof *gc_trace_names && gc_trace_names[kind]
+                    ? gc_trace_names[kind] : "?",
+                ev->epoch, hit ? "  <-- this slot" : "");
+    }
+}
+
+// Out of memory: say what the collector was doing, so a genuinely full heap
+// (live data at the limit) can be told from a collector that stopped freeing.
+void gc_oom_report(FILE *out) {
+    static const char *const stages[] = { "not-started", "idle", "start", "scan-roots",
+                                          "mark-sweep", "prune" };
+    unsigned st = (unsigned)atomic_load(&stage);
+    fprintf(out, "[GC OOM] heap pages used %zu of %zu; cycle %llu, stage %s; "
+            "old pages %zu, dirty-old %zu; this thread's nursery epoch %u\n",
+            memory_count(), memory_total_pages(),
+            (unsigned long long)atomic_load(&gc_cycle_count),
+            st < sizeof stages / sizeof *stages ? stages[st] : "?",
+            atomic_load(&gc_old_page_count), atomic_load(&gc_dirty_old_count),
+            gc_thread_info.local_epoch);
+    fflush(out);
 }

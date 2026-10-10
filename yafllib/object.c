@@ -148,6 +148,11 @@ static unsigned gc_compact_percent = COMPACT_THRESHOLD_PERCENT;
 //
 // YAFL_GC_HUNT (with YAFL_GC_STATS): exit-time heap census and retention
 // hunt — see the heap-hunt comment further down.
+//
+// YAFL_GC_TRACE: a short history per heap page — allocated, nursery-swept,
+// promoted, pruned, evacuated, freed, with the slots each concerned — that
+// gc_trace_explain prints for an address (gc_debug.c). Poison mode's DANGLE
+// report and test_gc_mesh's corruption report call it.
 EXPORT bool gc_debug_manual_mode = false;
 bool gc_poison_enabled = false;
 bool gc_stats_enabled  = false;
@@ -189,6 +194,7 @@ static void gc_read_config(void) {
     if ((e = getenv("YAFL_GC_PROMOTE_FLOOR")) != NULL && atol(e) > 0)
         gc_promote_floor = (size_t)atol(e);
     gc_poison_enabled = (e = getenv("YAFL_GC_POISON")) && e[0] && e[0] != '0';
+    gc_trace_init();
     gc_stats_enabled  = getenv("YAFL_GC_STATS") != NULL;
     gc_gen_enabled    = !((e = getenv("YAFL_GC_GEN")) && e[0] == '0');
     gc_local_requested = !((e = getenv("YAFL_LOCAL_GC")) && e[0] == '0');
@@ -827,6 +833,7 @@ static NOINLINE_DEBUG gc_page_t* gc_page_alloc_impl(unsigned page_count, bool dr
                                             // starts the stability clock
     atomic_thread_fence(memory_order_release);
     page->head.tag = PAGE_MAGIC_NUMBER;
+    GC_TRACE_PAGE(page, GCT_ALLOC, NULL, page_count);
 
     LOG(TRACE, "gc_page_alloc(%d) = 0x%lx", page_count, (uintptr_t)page);
 
@@ -850,6 +857,7 @@ static NOINLINE_DEBUG void gc_page_free(gc_page_t* page) {
         gc_fwd_freed  += 1;
     }
     assert(page->head.tag == PAGE_MAGIC_NUMBER);
+    GC_TRACE_PAGE(page, GCT_FREE, &page->head.objects, page->head.local_epoch);
     LOG(TRACE, "gc_page_free(%d) = 0x%lx", page->head.pages, (uintptr_t)page);
 
     // Straight back to mmap. A stale conservative stack slot that still
@@ -1411,6 +1419,7 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     page->head.compacted_cycle = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
     bool was_in_relocation = gc_thread_info.in_relocation;
     gc_thread_info.in_relocation = true;
+    bitmap_t moved = {0};
     for (unsigned index = 0; index < object_count; ++index) {
         object_t *object = (object_t*)&page->slots[objects[index].o];
         size_t      size = objects[index].s;
@@ -1460,10 +1469,12 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // the object over to the lazy-fixup protocol.
         __atomic_store_n((uintptr_t*)&object->vtable, (uintptr_t)target,
                          __ATOMIC_RELEASE);
+        moved.a[objects[index].o / GC_MASK_SIZE] |= (mask_bits_t)1 << (objects[index].o % GC_MASK_SIZE);
         if (UNLIKELY(yafl_heapprof_sample_enabled))
             yafl_heapprof_sample_forwarded(object, target);
     }
     gc_thread_info.in_relocation = was_in_relocation;
+    GC_TRACE_PAGE(page, GCT_EVACUATE, &moved, page->head.local_epoch);
 }
 
 
@@ -1795,11 +1806,13 @@ static gc_page_t *gc_local_take_page(void) {
     page->head.stable_since = UINT64_MAX;
     atomic_thread_fence(memory_order_release);
     page->head.tag = PAGE_MAGIC_NUMBER;
+    GC_TRACE_PAGE(page, GCT_LOCAL_TAKE, NULL, 0);
     gc_local_cache_hits++;
     return page;
 }
 
 static void gc_local_release_page(gc_page_t *page) {
+    GC_TRACE_PAGE(page, GCT_LOCAL_RELEASE, &page->head.objects, page->head.local_epoch);
     list_unlink((list_element_t*)&page->head.list);
     if (gc_poison_enabled)
         memset(page->slots, 0x42, sizeof(page->slots));
@@ -1930,7 +1943,14 @@ static NOINLINE void gc_local_collect(void) {
         // non-fresh store (a safe point has passed) and is noted by the
         // barrier. The page being bumped into stays: newer objects keep
         // landing on it.
+        if (UNLIKELY(gc_trace_enabled)) {
+            bitmap_t dead;
+            for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
+                dead.a[i] = page->head.objects.a[i] & ~page->head.local_mark.a[i];
+            GC_TRACE_PAGE(page, GCT_LOCAL_SWEEP, &dead, page->head.local_epoch);
+        }
         if (!gc_local_is_staying(page)) {
+            GC_TRACE_PAGE(page, GCT_LOCAL_PROMOTE, &page->head.local_mark, page->head.local_epoch);
             page->head.local_epoch = 0;
             promoted++;
         }
@@ -3280,6 +3300,12 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                 ? (size_t)page->head.pages * SLOTS_PER_PAGE
                 : gc_page_live_slots(page);
             GC_PROF_LAP(gc_prof_t_live, _tp0);
+            if (UNLIKELY(gc_trace_enabled)) {
+                bitmap_t dead;
+                for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
+                    dead.a[i] = page->head.objects.a[i] & ~page->head.scanner.seen.a[i];
+                GC_TRACE_PAGE(page, GCT_PRUNE, &dead, page->head.local_epoch);
+            }
             page->head.objects = page->head.scanner.seen;
             bitmap_reset_all(&page->head.scanner.seen);
             bitmap_reset_all(&page->head.scanner.scanned);

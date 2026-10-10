@@ -7,7 +7,10 @@
 #include <string.h>
 
 
+void gc_oom_report(FILE *out);   // gc_debug.c
+
 EXPORT noreturn void abort_on_out_of_memory() {
+    gc_oom_report(stderr);
     log_error_and_exit("Aborting due to memory allocation failure", stderr);
 }
 

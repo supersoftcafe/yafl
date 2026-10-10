@@ -942,6 +942,9 @@ EXTERN bool list_builder_link(object_t *prev, object_t *cell, int64_t slot);
 EXTERN bool list_builder_seal(object_t *tail);
 EXTERN bool array_builder_seal(object_t *arr, int32_t length);
 EXTERN bool gc_debug_major_now(object_t *ignored);
+// YAFL_GC_TRACE: print what the collector last did to the page holding `p`.
+EXTERN void gc_trace_explain(const char *label, const void *p);
+EXTERN void gc_trace_report_begin(void);   // serialise failure reports; abort after
 EXTERN vtable_t *object_get_vtable(object_t *object);
 
 // TRUE virtual dispatch: probe the hashed function table. The pre-rotated
