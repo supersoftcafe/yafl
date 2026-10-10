@@ -911,8 +911,14 @@ static void gc_local_set_epoch(struct gc_thread_info *t, uint32_t epoch) {
         atomic_fetch_sub_explicit(&gc_local_epoch_active[t->local_epoch % GC_LOCAL_EPOCH_SLOTS], 1,
                                   memory_order_seq_cst);
     bool was = t->local_epoch != 0, now = epoch != 0;
-    if (now && !was)
+    if (now && !was) {
         __atomic_fetch_add(&gc_local_live, 1, __ATOMIC_SEQ_CST);   // before it allocates
+        // A full fence: on aarch64 the RMW above (an ldaxr/stlxr loop
+        // without LSE) does not keep this thread's later stores — the
+        // nursery's first publications — from becoming visible before the
+        // count. Pairs with gc_local_live_now()'s fence in the readers.
+        atomic_thread_fence(memory_order_seq_cst);
+    }
     t->local_epoch = epoch;
     t->alloc->local_active = now;
     t->alloc->local_epoch = epoch;
@@ -1101,7 +1107,7 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
     ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
-    if (gc_local_live)
+    if (gc_local_live_now())
         gc_local_note_slot(prev, &((object_t**)prev)[slot], 1);
     object_unpin(prev);                          // prev is now frozen
     return true;

@@ -753,6 +753,15 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 // a root (gc_local_note_slot filters to the containers that need it).
 EXTERN bool gc_local_enabled;
 EXTERN volatile int gc_local_live;   // number of nurseries active right now
+// Read gc_local_live AFTER every load before it — the ORDER below. An
+// acquire fence: free on x86 (TSO keeps load order; this is only a compiler
+// barrier there), a `dmb ishld` on aarch64, which otherwise may satisfy the
+// count's load before the slot's (an A72 did, 22 times in 75M reads).
+// gc_local_set_epoch's full fence after raising the count is the other half.
+INLINE int gc_local_live_now(void) {
+    atomic_thread_fence(memory_order_acquire);
+    return gc_local_live;
+}
 EXTERN void gc_local_note_slot(object_t *obj, object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape_old(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
@@ -799,8 +808,7 @@ INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
     bool any = false;
     for (ptr_mask_t m = mask; m; m &= m - 1)
         any |= slot[__builtin_ctzll(m)] != NULL;
-    atomic_signal_fence(memory_order_seq_cst);   // compiler order; x86 keeps load order
-    if (any && gc_local_live)
+    if (any && gc_local_live_now())
         gc_local_escape_old(slot, mask);
 }
 
@@ -872,8 +880,7 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
 // The value is in hand before gc_local_live is read (same order as above).
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value);\
-         atomic_signal_fence(memory_order_seq_cst);\
-         if (gc_local_live) gc_local_escape((object_t*)(value)); } while (false)
+         if (gc_local_live_now()) gc_local_escape((object_t*)(value)); } while (false)
 
 // ── The mutable-root contract ────────────────────────────────────────────────
 // Declared roots are scanned ONCE, at cycle open (the SATB snapshot). Any
@@ -905,8 +912,7 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
     assert(!gc_in_heap(slot));
     atomic_thread_fence(memory_order_seq_cst);   // the store before the flag
     if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
-    atomic_signal_fence(memory_order_seq_cst);   // the values before the count
-    if (gc_local_live) gc_local_escape_old(slot, mask);
+    if (gc_local_live_now()) gc_local_escape_old(slot, mask);   // the values before the count
 }
 // AFTER a store into a field of `obj`, an object that may be a declared root:
 // a lazy stub is a static root for a global and a heap object for a local
