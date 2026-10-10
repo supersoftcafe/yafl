@@ -6,22 +6,29 @@ qualified reference), building a whole project directory through the real CLI
 (static-linked against the discovered System library), and the ambiguity
 diagnostic for a name that resolves more than one way.
 
-Runtime behaviour is checked by compiler/yafl_tests/project_build.yafl.
+The no-import case stays here: a `[test]` folder imports System (and its test
+library) anyway, so a folder test could not tell discovery from the import.
 """
 from __future__ import annotations
 
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_c_result
+from tests.testutil import compile_and_run_stdlib_capture, compile_c_result, compiler_command
 
 _COMPILER_DIR = Path(__file__).resolve().parent.parent
 
 
 class TestDiscovery(TestCase):
+    def test_compiles_without_import_via_qualified_reference(self):
+        # No `import System` — only qualified references. The permissive worklist
+        # must still pull System in (from the `System::` candidates) and compile.
+        rc, out = compile_and_run_stdlib_capture("""fun main(): System::Int
+  ret System::length("abcd")
+""", timeout=30)
+        self.assertEqual(4, rc, f"discovery via qualified ref failed; stdout:\n{out}")
 
     def test_ambiguous_reference_lists_candidates(self):
         # `thing` is provided by both A and B (same signature, both imported), so
@@ -51,7 +58,7 @@ fun main(): System::Int
 
 class TestProjectFolderBuild(TestCase):
     def test_builds_and_runs_a_multi_file_project(self):
-        # Drive the real CLI: point `main.py` at a project directory, which gathers
+        # Drive the real CLI: point the compiler at a project directory, which gathers
         # every .yafl under it, discovers System on the search path, and statically
         # links the resulting binary.
         with tempfile.TemporaryDirectory() as d:
@@ -66,9 +73,11 @@ class TestProjectFolderBuild(TestCase):
                 "import System\nfun helper(): System::Int\n  ret 100\n", encoding="utf-8")
 
             binary = proj / "out"
+            # No -L: the System library comes from the build tree, which both
+            # compilers fall back to when the search path has none.
             build = subprocess.run(
-                [sys.executable, "main.py", str(proj), "-o", str(binary)],
-                cwd=_COMPILER_DIR, capture_output=True, text=True, timeout=120)
+                [*compiler_command(), str(proj), "-o", str(binary)],
+                cwd=_COMPILER_DIR, capture_output=True, text=True, timeout=900)
             self.assertEqual(0, build.returncode,
                              f"project build failed:\n{build.stdout}\n{build.stderr}")
             self.assertTrue(binary.exists(), "expected an output binary")

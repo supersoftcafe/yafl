@@ -70,6 +70,31 @@ fun main(): System::Int
   ret "not an int"
 """
 
+# Passes the diagnostics (one warning) and fails LATER, at the [tail] check:
+# the warning must still be reported.
+_WARNING_THEN_TAIL_ERROR = """\
+import System
+
+fun [tail] f(n: System::Int): System::Int
+  ret 1 + f(n - 1)
+
+fun main(): System::Int
+  let unused = 5
+  ret f(3)
+"""
+
+# The same, failing at the linearity check instead.
+_WARNING_THEN_LINEARITY_ERROR = """\
+import System
+
+class [linear,final] Res(y: System::Int)
+
+fun main(): System::Int
+  let unused = 5
+  let q = Res(3)
+  ret 0
+"""
+
 _PARSE_ERROR_A = "fun broken(: System::Int\n"
 _PARSE_ERROR_B = "import System\n\nfun main(): System::Int\n  ret (1 +\n"
 
@@ -161,6 +186,9 @@ class TestBootstrapCli(TimedTestCase):
         env = dict(os.environ)
         env.pop("YAFL_PATH", None)
         env["COLUMNS"] = "1000"    # argparse wraps usage at the terminal width
+        # ...and colours it by these: none may leak in from the caller.
+        for k in ("FORCE_COLOR", "NO_COLOR", "PYTHON_COLORS"):
+            env.pop(k, None)
         return env
 
     def _run(self, argv: list[str], prog: str) -> tuple[int, str, str]:
@@ -217,10 +245,78 @@ class TestBootstrapCli(TimedTestCase):
             with self.subTest(args=args):
                 self._both(*args, libs=False)
 
+    def test_argparse_word_rules(self):
+        # Python 3.14 argparse's classification and consumption: explicit
+        # arguments on flags, short-flag clusters, `--` placement, negative-
+        # number and space-containing words, ambiguous prefixes, and repr().
+        for args in (["--help=x"], ["-h=x"], ["-hc"], ["-hc", "x"], ["-hO3"], ["-hxyz"],
+                     ["a", "-O0", "--", "b"], ["a", "-O0", "b", "--"], ["--", "a"],
+                     ["-O1", "--", "a", "-x"], ["-1abc"], ["-1_0"], ["-.5"],
+                     ["-o", "-x y", "a"], ["--=x", "a"], ["-o", "--", "a"], ["--pro", "a"],
+                     ["--l=d", "a"], ["-W", "-Wall"], ["-"], ["a", "--bogus=1"], ["-Ox"],
+                     ["--profile=it's"], ["--test=a\\b"], ["-o=x", "-hx"], ["-O", "--", "a"],
+                     ["-hO9"], ["-O9h"], ["a", "-", "-O1", "b"]):
+            with self.subTest(args=args):
+                self._both(*args, libs=False)
+
+    def _both_as_main_py(self, *args: str, env: dict) -> None:
+        """Both compilers, run under the SAME program name (the port through a
+        `main.py` symlink): argparse's usage wraps at a width that depends on
+        the name, so only equal names give comparable text."""
+        alias = self.dir / "main.py"
+        if not alias.exists():
+            alias.symlink_to(self.binary)
+        full = {**self._env(), **env}
+        for k in [k for k, v in env.items() if v is None]:
+            full.pop(k)
+        runs = [subprocess.run(argv, cwd=self.dir, env=full, capture_output=True,
+                               text=True, timeout=600)
+                for argv in ([sys.executable, str(_MAIN), *args], [str(alias), *args])]
+        self.assertEqual((runs[0].returncode, runs[0].stdout, runs[0].stderr),
+                         (runs[1].returncode, runs[1].stdout, runs[1].stderr))
+
+    def test_usage_and_help_wrap_like_argparse(self):
+        # COLUMNS unset: not a terminal, so argparse falls back to 80.
+        for columns in ("1000", "80", "60", "45", "30", "20", "12", "1", None):
+            for colour in ({}, {"FORCE_COLOR": "1"}):
+                for args in (["-h"], ["-O9", "a"]):
+                    with self.subTest(columns=columns, colour=colour, args=args):
+                        self._both_as_main_py(*args, env={"COLUMNS": columns, **colour})
+
+    def test_colour_rules_like_argparse(self):
+        for colour in ({"FORCE_COLOR": "1", "NO_COLOR": "1"}, {"PYTHON_COLORS": "1"},
+                       {"PYTHON_COLORS": "0", "FORCE_COLOR": "1"},
+                       {"FORCE_COLOR": "1", "TERM": "dumb"}, {"TERM": "dumb"},
+                       {"PYTHON_COLORS": "1", "NO_COLOR": "1"}):
+            with self.subTest(colour=colour):
+                self._both_as_main_py("-h", env=colour)
+
+    def test_builds_from_the_build_tree_without_a_search_path(self):
+        # No -L, no YAFL_PATH, no YAFL_LIBYAFL_A: both compilers fall back to
+        # the build tree's System library — its stdlib sources, yafl.h, and the
+        # runtime archive CMake built (build/yafllib/libyafl.a).
+        self._write("hello.yafl", _HELLO)
+        env = {**self._env()}
+        env.pop("YAFL_LIBYAFL_A", None)
+        runs = [subprocess.run([*argv, "-o", out, "hello.yafl"], cwd=self.dir, env=env,
+                               capture_output=True, text=True, timeout=1800)
+                for argv, out in (([sys.executable, str(_MAIN)], "py.bin"),
+                                  ([self.binary], "port.bin"))]
+        for r in runs:
+            self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+        ran = [subprocess.run([str(self.dir / b)], capture_output=True, text=True, timeout=60)
+               for b in ("py.bin", "port.bin")]
+        self.assertEqual((ran[0].returncode, ran[0].stdout), (ran[1].returncode, ran[1].stdout))
+
     def test_unreadable_input(self):
         self._both("missing.yafl")
         self._write("real.yafl", _HELLO)
         self._both("real.yafl", "missing.yafl")
+        # Reported as pathlib spells the path: `.` parts and doubled or
+        # trailing slashes go.
+        self._both("./missing.yafl")
+        self._both("sub//./missing.yafl")
+        self._both("./real.yafl", "./missing.yafl")
 
     # ── compiling: the same C ───────────────────────────────────────────────
 
@@ -243,6 +339,8 @@ class TestBootstrapCli(TimedTestCase):
         self._write("proj/deep/a.yafl", _TWO_A)
         self._write("proj/main.yafl", _TWO_MAIN)
         self._both_c("proj")
+        self._both_c("proj/")
+        self._both_c("./proj")
 
     def test_warnings_on_stderr(self):
         self._write("unused.yafl", _UNUSED)
@@ -255,6 +353,18 @@ class TestBootstrapCli(TimedTestCase):
         rc, out, _ = self._both("bad.yafl")
         self.assertEqual(1, rc)
         self.assertTrue(out)
+
+    def test_warnings_survive_a_later_failure(self):
+        self._write("wt.yafl", _WARNING_THEN_TAIL_ERROR)
+        rc, out, err = self._both("wt.yafl")
+        self.assertEqual(1, rc)
+        self.assertIn("[tail] function has a call to itself", out)
+        self.assertIn("warning: 'unused' is never used", err)
+        self._write("wl.yafl", _WARNING_THEN_LINEARITY_ERROR)
+        rc, out, err = self._both("wl.yafl")
+        self.assertEqual(1, rc)
+        self.assertIn("it must be consumed once", out)
+        self.assertIn("warning: 'unused' is never used", err)
 
     # The port's parser RECOVERS: a broken statement is reported and skipped,
     # and parsing resumes at the next statement block. Python's combinator

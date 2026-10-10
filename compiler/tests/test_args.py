@@ -23,6 +23,10 @@ _LEN_PROG = (
 
 class TestArgsLength(TestCase):
 
+    def test_no_args(self):
+        """Run with only the program path — args() is empty. (Not a [test]: the
+        runner always gives its child `--run-raw <id>`.)"""
+        self.assertEqual(0, compile_and_run_stdlib(_LEN_PROG))
 
     def test_single_arg(self):
         self.assertEqual(1, compile_and_run_stdlib(_LEN_PROG, args=["x"]))

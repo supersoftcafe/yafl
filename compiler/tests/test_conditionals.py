@@ -62,7 +62,7 @@ class TestIfCompileErrors(TestCase):
             "    ret 0\n"
         )
         self.assertEqual(
-            "test.yafl[3:13] - `else if` without a matching preceding `if`\n",
+            "test.yafl[3:5] - `else if` without a matching preceding `if`\n",
             compile_errors(src))
 
     def test_else_separated_from_if_rejected(self):

@@ -76,7 +76,7 @@ fun [tail] mergeErrs(ks: Chain<String>, c1: LinCnt, c2: LinCnt, lr,
                      == countOf(c2.lcCounts, l.value)
     ? mergeErrs(l.next, c1, c2, lr, acc)
     : mergeErrs(l.next, c1, c2, lr,
-                add(acc, PErr(lr, "linear value '" + rootOf(l.value)
+                add(acc, PErr(lr, "linear value '" + bareOfUnique(rootOf(l.value))
                                      + "' is used inconsistently across branches")))
 
 fun rootOf(key)
@@ -385,10 +385,10 @@ fun dischargeOne2(key: String, name, counts: Dict<String, Int>,
                   lr, isParam, acc): Set<PErr>
   let n = countOf(counts, key)
   if n > 1
-    ret add(acc, PErr(lr, "linear value '" + name + "' is used "
+    ret add(acc, PErr(lr, "linear value '" + bareOfUnique(name) + "' is used "
                              + String(n) + " times; must be used once"))
   if n == 0
-    ret add(acc, PErr(lr, "linear value '" + name
+    ret add(acc, PErr(lr, "linear value '" + bareOfUnique(name)
                              + "' is never used; it must be consumed once"
                              + (isParam
                                 ? " (mark the parameter [terminal] if this is its terminus)"
@@ -759,7 +759,7 @@ fun [tail] captureErrs(ns: Chain<String>, lr,
                        acc: Set<PErr>) => match(ns)
   (nil: ChainEnd) => acc
   (l: ChainLink)  => captureErrs(l.next, lr,
-      add(acc, PErr(lr, "linear value '" + l.value
+      add(acc, PErr(lr, "linear value '" + bareOfUnique(l.value)
                            + "' captured by a nested function or lambda")))
 
 # ── generic instantiation kind check ────────────────────────────────────────

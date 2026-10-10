@@ -28,8 +28,12 @@ class [final] LibSource(libFileName: String, libText: String)
 class [final] LibManifest(libName: String, libNamespaces: List<String>,
                           libHeaders: List<String>, libStaticLibs: List<String>)
 
+# `libNative`: the include directories and archives, given outright, for a
+# library whose pieces do not sit under one root — the build tree's System
+# library (devSystemLibrary). None: they are found under `libRoot`.
 class [final] Library(libManifest: LibManifest, libRoot: String,
-                      libIsZip: Bool, libSources: List<LibSource>)
+                      libIsZip: Bool, libSources: List<LibSource>,
+                      libNative: NativePaths|None = None)
 
 enum LibResult
   enum LibsOk(libsFound: List<Library>)
@@ -224,7 +228,8 @@ fun [tail] lastSlash(p, at) => at < 0 ? -1 : byteAt(p, at) == '/' ? at : lastSla
 # same. The port is always a native binary, so an INSTALLED port will not find
 # an installed `system.yl` until it learns its own executable path.
 
-fun searchPaths(extra) => concat(concat(extra, envPaths()), installPaths())
+fun searchPaths(extra: List<String>) => concat(concat(map(extra, (p: String) => pathStr(p)), envPaths()),
+                                installPaths())
 
 # `${prefix}/lib/yafl`, from `${prefix}/bin/<exe>` — LOWEST precedence, after
 # the explicit paths and YAFL_PATH, exactly where `_default_install_path` puts
@@ -242,8 +247,140 @@ fun installPaths(): List<String>
     : list1(dirOf(dirOf(exe)) + "/lib/yafl")
 
 fun envPaths() => match(env("YAFL_PATH"))
-  (v: String) => filter(split(v, ":"), (p) => p != "")
+  (v: String) => map(filter(split(v, ":"), (p) => p != ""), (p: String) => pathStr(p))
   ()          => List()
+
+# A path as Python's `str(Path(p))` spells it on POSIX: `.` parts and empty
+# ones (doubled or trailing slashes) dropped, a leading `//` kept as it is
+# but three or more slashes read as one, and nothing at all as `.`. Paths in
+# messages, and the search path, are spelled this way in both compilers.
+fun pathStr(p: String): String
+  let lead = startsWith(p, "//") && !startsWith(p, "///") ? "//"
+    : startsWith(p, "/") ? "/" : ""
+  let body = join(filter(split(p, "/"), (c: String) => c != "" && c != "."), "/")
+  ret (lead + body) == "" ? "." : lead + body
+
+
+# ── the build tree's libraries (libraries.py available_libraries) ──────────
+# Run from the build tree, un-installed, a compile finds System and the
+# compiler's own libraries there when the search path has none:
+#
+#   * System, assembled from the tree's stdlib sources, `yafl.h` and the built
+#     runtime archive — only when no library on the search path owns System;
+#   * every library under `compiler/libs/` (System::Test), each only when no
+#     library already loaded owns one of its namespaces.
+#
+# The tree is the directory above this binary's own (`build/ybootstrap` sits
+# in `build/`), as Python finds it above its source file. A binary named
+# without a directory (found on PATH) has no tree.
+
+fun availableLibraries(extra: List<String>): LibResult => match(discoverLibraries(searchPaths(extra)))
+  (e: LibsErr) => e
+  (ok: LibsOk) => match(devRoot())
+    (root: String) => withDevLibraries(root, ok.libsFound)
+    ()             => ok
+
+fun devRoot(): String|None
+  let exe = argv0()
+  ret contains(exe, "/") ? dirOf(exe) + "/.." : None
+
+fun withDevLibraries(root: String, found: List<Library>): LibResult
+  let owned = fold<Library, List<String>>(found, List(),
+    (acc: List<String>, l: Library) => concat(acc, l.libManifest.libNamespaces))
+  ret match(contains(owned, "System") ? None : devSystemLibrary(root))
+    (why: String)   => LibsErr(why)
+    (sys: Library)  => withDevLibs(root, concat(found, list1(sys)), owned)
+    ()              => withDevLibs(root, found, owned)
+
+# `owned` is NOT widened by the synthesised System, exactly as in
+# available_libraries; each dev library added widens it.
+fun withDevLibs(root: String, libs: List<Library>, owned: List<String>): LibResult =>
+  match(discoverLibraries(list1(root + "/compiler/libs")))
+    (e: LibsErr) => e
+    (ok: LibsOk) => LibsOk(devLibsLoop(chain(ok.libsFound), libs, owned))
+
+fun [tail] devLibsLoop(ds: Chain<Library>, libs: List<Library>, owned: List<String>): List<Library> => match(ds)
+  (nil: ChainEnd) => libs
+  (l: ChainLink)  => any(l.value.libManifest.libNamespaces, (n: String) => contains(owned, n))
+    ? devLibsLoop(l.next, libs, owned)
+    : devLibsLoop(l.next, concat(libs, list1(l.value)),
+                  concat(owned, l.value.libManifest.libNamespaces))
+
+# `dev_system_library`: every `.yafl` under `compiler/stdlib`, named relative to
+# it; namespaces scanned from their `namespace` lines; `yafl.h` from yafllib;
+# the archive from devStaticLib. None when any piece is missing.
+fun devSystemLibrary(root: String): Library|String|None
+  let stdlib = root + "/compiler/stdlib"
+  if !isDirectory(stdlib) || !isRegularFile(root + "/yafllib/yafl.h")
+    ret None
+  ret match(devStaticLib(root))
+    (archive: String) => match(yaflPaths(stdlib, List()))
+      (why: String)          => why
+      (ps: List<String>)     => match(readSources(stdlib, sortByUnitName(stdlib, ps)))
+        (why2: String)          => why2
+        (srcs: List<LibSource>) => Library(
+            LibManifest("system", sourceNamespaces(srcs), list1("yafl.h"), list1("libyafl.a")),
+            stdlib, false, srcs,
+            NativePaths(list1(root + "/yafllib"), list1(archive)))
+    ()                => None
+
+# `_find_dev_static_lib`: YAFL_LIBYAFL_A when set (and only then); else the
+# top-level CMake build's archive; else the first `libyafl.a` under
+# `yafllib/build/`, in pathlib's order (path components compared in turn).
+fun devStaticLib(root: String): String|None => match(env("YAFL_LIBYAFL_A"))
+  (given: String) => isRegularFile(given) ? given : None
+  ()              => isRegularFile(root + "/build/yafllib/libyafl.a")
+    ? root + "/build/yafllib/libyafl.a"
+    : head(sortBy(filesNamed(root + "/yafllib/build", "libyafl.a", List()),
+                  (a: String, b: String) => partsLess(split(a, "/"), split(b, "/"))))
+
+fun filesNamed(dir: String, name: String, acc: List<String>): List<String> => match(listDir(dir))
+  (e: IOError)         => acc
+  (names: Set<String>) => fold<String, List<String>>(sort(names), acc,
+    (a: List<String>, n: String) => isDotEntry(n) ? a
+      : isDirectory(dir + "/" + n) ? filesNamed(dir + "/" + n, name, a)
+      : n == name && isRegularFile(dir + "/" + n) ? concat(a, list1(dir + "/" + n))
+      : a)
+
+fun partsLess(a: List<String>, b: List<String>): Bool => match(head(a))
+  (x: String) => match(head(b))
+    (y: String) => x < y ? true : y < x ? false : partsLess(tail(a), tail(b))
+    ()          => false
+  ()          => !isEmpty(b)
+
+# `(?m)^namespace\s+(.+?)\s*$`, over every source: sorted, distinct; System
+# when there are none.
+fun sourceNamespaces(srcs: List<LibSource>): List<String>
+  let found = sort(Set(fold<LibSource, List<String>>(srcs, List(),
+    (acc: List<String>, src: LibSource) => concat(acc, textNamespaces(src.libText)))))
+  ret isEmpty(found) ? list1("System") : found
+
+fun textNamespaces(text: String): List<String> =>
+  fold<String, List<String>>(splitLines(text), List(),
+    (a: List<String>, line: String) => withNamespace(a, lineNamespace(line)))
+
+fun withNamespace(a: List<String>, n: String|None): List<String> => match(n)
+  (name: String) => concat(a, list1(name))
+  ()             => a
+
+fun lineNamespace(line: String): String|None
+  if !startsWith(line, "namespace") || length(line) < 10
+    ret None
+  let c = byteAt(line, 9)
+  if c != ' ' && c != '\t'
+    ret None
+  let name = trimSpaces(slice(line, 10, length(line)))
+  ret name == "" ? None : name
+
+fun trimSpaces(s: String) => slice(s, spacesFrom(s, 0), spacesBefore(s, length(s)))
+
+fun [tail] spacesFrom(s: String, at: Int): Int
+  ret at < length(s) && (byteAt(s, at) == ' ' || byteAt(s, at) == '\t' || byteAt(s, at) == '\r')
+    ? spacesFrom(s, at + 1) : at
+
+fun [tail] spacesBefore(s: String, end: Int): Int
+  ret end > 0 && (byteAt(s, end - 1) == ' ' || byteAt(s, end - 1) == '\t' || byteAt(s, end - 1) == '\r')
+    ? spacesBefore(s, end - 1) : end
 
 
 # ── discovery ───────────────────────────────────────────────────────────────
@@ -527,12 +664,18 @@ fun [tail] gatherNative(ls: Chain<Library>, incs,
   (l: ChainLink)  => isEmpty(l.value.libManifest.libHeaders)
      && isEmpty(l.value.libManifest.libStaticLibs)
     ? gatherNative(l.next, incs, statics)
-    : match(materialisedNativeDir(l.value))
-      (e: NativeErr) => e.ndWhy
-      (ok: NativeOk) => gatherNative(l.next,
-          concat(incs, includeDirsUnder(ok.ndPath, l.value)),
-          concat(statics, map(l.value.libManifest.libStaticLibs,
-                              (s) => ok.ndPath + "/" + s)))
+    : match(l.value.libNative)
+      (np: NativePaths) => gatherNative(l.next, concat(incs, np.npIncludes),
+                                        concat(statics, np.npStatics))
+      ()                => gatherNativeUnder(l.next, l.value, incs, statics)
+
+fun gatherNativeUnder(rest: Chain<Library>, lib: Library, incs, statics) =>
+  match(materialisedNativeDir(lib))
+    (e: NativeErr) => e.ndWhy
+    (ok: NativeOk) => gatherNative(rest,
+        concat(incs, includeDirsUnder(ok.ndPath, lib)),
+        concat(statics, map(lib.libManifest.libStaticLibs,
+                            (s) => ok.ndPath + "/" + s)))
 
 # `sorted({(base / h).parent for h in headers})` — a header may sit in a
 # sub-directory, and it is that directory the C compiler needs on -I, not the

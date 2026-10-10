@@ -36,7 +36,7 @@ one-line-per-stage report is printed at the end (and written to report.txt).
     python3 full_protocol.py --full             # the whole regression
     python3 full_protocol.py --compiler python  # against the Python compiler
     python3 full_protocol.py --keep-going       # run every stage, fail at the end
-    python3 full_protocol.py --only ctest,examples
+    python3 full_protocol.py --full --only ctest,examples
 """
 from __future__ import annotations
 
@@ -246,6 +246,11 @@ def main(argv: list[str]) -> int:
     args = ap.parse_args(argv)
     speed = "full" if args.full else "fast"
     stages = {k: v for k, v in STAGES.items() if args.full or k in FAST_STAGES}
+    full_only = [s.strip() for s in args.only.split(",")
+                 if s.strip() in STAGES and s.strip() not in stages]
+    if full_only:
+        print(f"{', '.join(full_only)}: on the full path only (add --full)", file=sys.stderr)
+        return 2
     return run_stages(f"{speed} protocol", stages, args.only, args.keep_going,
                       lambda stage, run_dir: stage(run_dir, args.compiler, speed))
 

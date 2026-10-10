@@ -99,9 +99,9 @@ fun main(): System::Int
     (e: IOError) => 88
 """
         self.assertEqual(
-            "test.yafl[6:7] - linear value 'r@qKDkMo' is never used; it must be consumed once\n"
-            "test.yafl[11:5] - linear value 'h@l4TT5Z' is used 2 times; must be used once\n"
-            "test.yafl[12:13] - linear value 'h@l4TT5Z' is used inconsistently across branches\n",
+            "test.yafl[6:7] - linear value 'r' is never used; it must be consumed once\n"
+            "test.yafl[11:5] - linear value 'h' is used 2 times; must be used once\n"
+            "test.yafl[12:13] - linear value 'h' is used inconsistently across branches\n",
             compile_errors(src))
 
     def test_write_then_read_via_monadic_chain(self):

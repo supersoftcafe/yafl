@@ -282,12 +282,15 @@ UI dead until the run completes, and gives you nothing at all if the run is
 killed. Line-oriented also means it stays greppable and survives `tail -f`.
 
     {"event":"run_start","count":128}
-    {"event":"test_end","id":"Json::roundTripsAstral","status":"pass","cpu_ns":412000,
+    {"event":"test_end","id":"Json::roundTripsAstral","status":"pass",
      "stdout":"","stderr":""}
     {"event":"test_end","id":"Json::roundTripsEmpty","status":"fail",
      "message":"content","detail":"expected \"\" got \"\\u0000\"",
-     "file":"tests/json.yafl","line":51,"cpu_ns":88000,"stdout":"","stderr":""}
-    {"event":"run_end","passed":127,"failed":1,"cpu_ns":9310000}
+     "file":"tests/json.yafl","line":51,"stdout":"","stderr":""}
+    {"event":"run_end","passed":127,"failed":1}
+
+(Per-test `cpu_ns` is planned, not emitted yet: see §6 and the status at the
+end.)
 
 `file` and `line` come from the `line_ref` the compiler already has on every
 statement, and are what let an IDE turn a failure into a clickable location.
@@ -329,7 +332,7 @@ not a stable number.
   suite gets its parallelism from sharding *across processes*, which works the
   same way here — run several test binaries, or the same one with disjoint
   filters — without the runner needing to be concurrent at all.
-- **`cpu_ns` per test**, from `CLOCK_PROCESS_CPUTIME_ID`. The runtime already
+- **`cpu_ns` per test** (planned; not yet implemented), from `CLOCK_PROCESS_CPUTIME_ID`. The runtime already
   calls `clock_gettime` at 17 sites across five files but exposes no clock to
   YAFL at all, so this needs one small foreign function. CPU time also makes a `--timeout` (§7)
   meaningful under co-load, where a wall-clock timeout would fire on a busy

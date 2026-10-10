@@ -404,9 +404,7 @@ fun fixupNextBlock(rest: Chain<PStmt>, n2: PsNamespace, grps: Chain<List<PStmt>>
 
 # Attach the ImportGroup to a NAMED statement (the kinds parse() attaches to).
 fun withImports(st, grp) => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody,
-                       f.fRet, f.fWheres, f.psfLine, f.fRetInferred,
-                       f.fNested, grp)
+  (f: PsFun)  => with f(fImports = grp)
   (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType, l.lDefault,
                        l.lArrayLen, l.lWheres, l.pslLine, l.lTypeInferred,
                        grp)

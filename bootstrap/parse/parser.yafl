@@ -1189,10 +1189,10 @@ fun parseStmt(ps): (v: PStmt|PFail, rest: Ps)
   if kw == "enum"
     ret parseEnum(post, bump(ps))
   if kw == "if"
-    ret parseIf(post, bump(ps), 0)
+    ret parseIf(lr, bump(ps), 0)
   if kw == "else"
     ret atSym(bump(ps), "if")
-      ? parseIf(lineAt(bump(bump(ps))), bump(bump(ps)), 1)
+      ? parseIf(lr, bump(bump(ps)), 1)
       : parseElse(lr, bump(ps))
   ret parseAction(lr, ps)
 
@@ -1216,15 +1216,17 @@ fun parseRet(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   ret hardened(parseExpr(ps), "missing return value")
     ?> (a: PExpr, rest: Ps) => (PsRet(a, stmtExprStart(ps, a)), rest)
 
-fun parseIf(lr: PLine, ps: Ps, kindSel): (v: PStmt|PFail, rest: Ps)
+# `kw` is the statement's keyword (`if`, or the `else` of `else if`); the
+# statement itself sits at its condition.
+fun parseIf(kw: PLine, ps: Ps, kindSel): (v: PStmt|PFail, rest: Ps)
   ret hardened(parseExpr(ps), "invalid if statement")
-    ?> (cond: PExpr, rest: Ps) => parseIfBody(cond, kindSel, stmtExprStart(ps, cond), rest)
+    ?> (cond: PExpr, rest: Ps) => parseIfBody(cond, kindSel, stmtExprStart(ps, cond), kw, rest)
 
-fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine,
+fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine, kw: PLine,
                 ps: Ps): (v: PStmt|PFail, rest: Ps) => parseStmts(ps, builder())
   ?> (body: List<PStmt>, rest: Ps) => kindSel == 0
        ? (PsIf(cond, body, List(), lr), rest)
-       : (PsElseIf(cond, body, lr), rest)
+       : (PsElseIf(cond, body, lr, kw), rest)
 
 # An `else` sits at its keyword: it has no condition to place it, as an `if`
 # or `else if` has, so an orphan is reported where it is written.

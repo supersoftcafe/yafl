@@ -943,11 +943,8 @@ fun [tail] hoClassMembers(fs: Chain<PsFun>, [terminal] acc: HoAcc) => match(fs)
 fun hoClassMemberOne(member0: PsFun, acc: HoAcc)
   ret HoAcc(acc.haBody, acc.haRenames, acc.haOut,
             push(acc.haClass,
-                   PsFun(hoMemberName(acc.haToMember, member0.fName),
-                         member0.fAttrs, member0.fGens,
-                         member0.fParams, member0.fBody, member0.fRet,
-                         List(), member0.psfLine,
-                         member0.fRetInferred, false, member0.fImports)),
+                   with member0(fName = hoMemberName(acc.haToMember, member0.fName),
+                                fWheres = List(), fNested = false)),
             acc.haToMember)
 
 fun hoMemberName(m: ThisMap, name) => match(tmLookup(m, name))
@@ -972,19 +969,12 @@ fun hoGlobalOne(member0: PsFun, f: PsFun, specSuffix,
               ThisMap(put(acc.haRenames.tmMap, member0.fName,
                           member0.fName + specSuffix)),
               push(acc.haOut,
-                     PsFun(member0.fName + specSuffix, member0.fAttrs,
-                           member0.fGens, member0.fParams, member0.fBody,
-                           member0.fRet, f.fWheres, member0.psfLine,
-                           member0.fRetInferred, false,
-                           member0.fImports)),
+                     with member0(fName = member0.fName + specSuffix,
+                                  fWheres = f.fWheres, fNested = false)),
               acc.haClass, acc.haToMember)
   ret HoAcc(acc.haBody, acc.haRenames,
             push(acc.haOut,
-                   PsFun(member0.fName, member0.fAttrs, member0.fGens,
-                         member0.fParams, member0.fBody, member0.fRet,
-                         f.fWheres, member0.psfLine,
-                         member0.fRetInferred, false,
-                         member0.fImports)),
+                   with member0(fWheres = f.fWheres, fNested = false)),
             acc.haClass, acc.haToMember)
 
 # ── the recursive driver ─────────────────────────────────────────────────────

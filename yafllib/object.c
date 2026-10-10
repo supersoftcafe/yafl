@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 
 // Occupancy at or below which a survivor page is evacuated. Pages fuller than
@@ -2113,11 +2115,20 @@ static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
 }
 
 static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) {
-    object_t *object = *field_ptr;
+    _Atomic(object_t*)* slot = (_Atomic(object_t*)*)field_ptr;
+    object_t *object = atomic_load_explicit(slot, memory_order_relaxed);
     while (gc_object_is_on_heap_fast(object)) {
         atomic_gc_object_mark_as_seen(object);
         if (LIKELY(!vtable_is_forward(object->vtable))) break;
-        *field_ptr = object = (object_t*)object->vtable;
+        // Snap the slot past the forwarder only if it still holds it. Roots
+        // and fields are written by mutators while this runs (the snapshot,
+        // and every thread's barriers and publishes, come through here), and
+        // a plain store would put the forwarder's copy back over a value just
+        // stored. A failed CAS means the slot moved on; its new value is the
+        // writer's to publish.
+        object_t* stale = object;
+        object = (object_t*)object->vtable;
+        atomic_compare_exchange_strong(slot, &stale, object);
     }
 }
 
@@ -3748,9 +3759,10 @@ EXPORT void _gc_safe_point2() {
 }
 
 
-// The mutable-root contract's slow halves (see yafl.h). Field-based so a
+// Barrier slow paths (see yafl.h). _gc_write_barrier2 is field-based so a
 // stale pointer to a relocated object follows (and snaps) the forwarding
-// chain, exactly like the root scan's own marking.
+// chain, exactly like the root scan's own marking; the root-publish contract
+// (gc_root_publish, gc_root_overwrite) uses it too.
 EXPORT void _gc_mark_as_seen2(object_t *object) {
     if (gc_object_is_on_heap_fast(object)) {
         LOG(ULTRA, "MARK_AS_SEEN(0x%lx) -> %s", (uintptr_t)object, object_get_vtable(object)->name);
@@ -3827,6 +3839,21 @@ EXPORT str_t sys_getenv(object_t* self, str_t name) {
     const char* v = getenv(str_cstr(name, buf, (int32_t)sizeof buf, &heap));
     free(heap);
     return v == NULL || *v == 0 ? str_word(NULL) : str_from_cstr(v);
+}
+
+// The terminal on stdout, for a command line that formats its help as
+// Python's argparse does: whether stdout is a terminal (argparse colours only
+// then), and its width in columns, 0 when stdout is not a terminal or reports
+// no size (argparse then falls back to 80).
+EXPORT object_t* sys_stdout_is_terminal(object_t* self) {
+    (void)self;
+    return integer_from_int32(isatty(STDOUT_FILENO) ? 1 : 0);
+}
+
+EXPORT object_t* sys_terminal_columns(object_t* self) {
+    (void)self;
+    struct winsize ws;
+    return integer_from_int32(ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 ? ws.ws_col : 0);
 }
 
 EXPORT str_t sys_argv_at(object_t* self, object_t* o_index) {

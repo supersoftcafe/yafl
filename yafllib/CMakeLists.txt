@@ -121,7 +121,7 @@ add_yafl_test(test_gc_ring)
 add_yafl_test(test_gc_min2)
 # test_gc_min2_window: the same, with a 20 us sleep between storing a holder
 # into its root slot and publishing it, so collections open inside that
-# window. Publishing BEFORE the store, the old contract, failed 20 runs in 20:
+# window. Publishing BEFORE the store, the old contract, failed every run:
 # a cycle opening between the barrier's flag read and the store snapshotted
 # the slot's previous occupant, and the holder — dropped from its thread's
 # stack before that thread's take — was never marked. gc_root_publish now
@@ -140,6 +140,13 @@ set_tests_properties(test_gc_min2_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=
 # publish.) With the publish's shading removed, it reports the object
 # reclaimed.
 add_yafl_test(test_gc_publish_step)
+# test_gc_lazy_step: the same window for a waiter CASed into a global lazy
+# stub's flag root by lazy_thunk_enqueue. Unpublished, it is reclaimed while
+# the flag still points at it.
+add_yafl_test(test_gc_lazy_step)
+# Both drive the collector by hand on one thread.
+set_tests_properties(test_gc_publish_step test_gc_lazy_step PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_gen: stepped test of immutability-based generations — promotion after
 # GC_PROMOTE_AFTER prunes, exemption from minors, reclamation by a major.
 add_yafl_test(test_gc_gen)

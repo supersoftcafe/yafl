@@ -1,0 +1,391 @@
+# bootstrap/driver/cli_format.yafl — the command line's usage and help text,
+# as Python 3.14's argparse formats compiler/main.py's: the same wrapping at
+# the same width, the same colours under the same conditions.
+#
+#   width   COLUMNS when it is a positive integer, else the width of the
+#           terminal on stdout, else 80 (shutil.get_terminal_size); minus 2.
+#   colour  PYTHON_COLORS=0 off, =1 on; then NO_COLOR off; FORCE_COLOR on;
+#           TERM=dumb off; else on exactly when stdout is a terminal
+#           (_colorize.can_colorize). Error usage, on stderr, is coloured by
+#           the same test — stdout's — as argparse's is.
+#
+# The parser is fixed, so its actions are written out here; the formatting
+# rules (HelpFormatter, textwrap) are the general ones.
+
+namespace Bootstrap::Driver
+
+import System
+
+import Bootstrap::StdlibCandidates
+
+
+# ── the formatter's settings ─────────────────────────────────────────────────
+
+class [final] CliFormat(cfProg: String, cfWidth: Int, cfTheme: CliTheme)
+
+# argparse's colour theme (_colorize.Argparse), or every field "" for none.
+class [final] CliTheme(thUsage: String, thProg: String, thHeading: String,
+                       thSumLong: String, thSumShort: String, thSumLabel: String,
+                       thSumAction: String, thLong: String, thShort: String,
+                       thLabel: String, thAction: String, thReset: String)
+
+fun [impure] cliFormat(prog: String): CliFormat
+  ret CliFormat(prog, terminalWidth() - 2, wantColour() ? colourTheme() : plainTheme())
+
+fun [impure] terminalWidth(): Int
+  let fromEnv = pyIntOrZero(env("COLUMNS") ?? "")
+  if fromEnv > 0
+    ret fromEnv
+  let fromTerminal = terminalColumns()
+  ret fromTerminal > 0 ? fromTerminal : 80
+
+fun [impure] wantColour(): Bool
+  let pc = env("PYTHON_COLORS") ?? ""
+  if pc == "0"
+    ret false
+  if pc == "1"
+    ret true
+  if !(env("NO_COLOR") is None)
+    ret false
+  if !(env("FORCE_COLOR") is None)
+    ret true
+  if (env("TERM") ?? "") == "dumb"
+    ret false
+  ret stdoutIsTerminal()
+
+fun plainTheme() => CliTheme("", "", "", "", "", "", "", "", "", "", "", "")
+
+fun colourTheme() => CliTheme(
+  "\u{1B}[1;34m",   # usage:   bold blue
+  "\u{1B}[1;35m",   # prog:    bold magenta
+  "\u{1B}[1;34m",   # heading: bold blue
+  "\u{1B}[36m",     # summary long option:  cyan
+  "\u{1B}[32m",     # summary short option: green
+  "\u{1B}[33m",     # summary label:        yellow
+  "\u{1B}[32m",     # summary action:       green
+  "\u{1B}[1;36m",   # long option:  bold cyan
+  "\u{1B}[1;32m",   # short option: bold green
+  "\u{1B}[1;33m",   # label:        bold yellow
+  "\u{1B}[1;32m",   # action:       bold green
+  "\u{1B}[0m")      # reset
+
+# `int(s)` as Python reads it — surrounding whitespace, a sign, digits with
+# single underscores between them — or 0 when it is not an integer.
+fun pyIntOrZero(raw: String): Int
+  let s = stripWs(raw)
+  let neg = startsWith(s, "-")
+  let body = startsWith(s, "-") || startsWith(s, "+") ? slice(s, 1, length(s)) : s
+  ret match(pyDigits(body, 0, 0, false))
+    (n: Int) => neg ? 0 - n : n
+    ()       => 0
+
+fun [tail] pyDigits(s: String, at: Int, acc: Int, lastUnderscore: Bool): Int|None
+  if at >= length(s)
+    ret at == 0 || lastUnderscore ? None : acc
+  let c = byteAt(s, at)
+  if c == '_' && at > 0 && !lastUnderscore
+    ret pyDigits(s, at + 1, acc, true)
+  ret c >= '0' && c <= '9' ? pyDigits(s, at + 1, acc * 10 + Int(c - '0'), false) : None
+
+fun stripWs(s: String) => stripRight(s, stripLeft(s, 0))
+
+fun [tail] stripLeft(s: String, at: Int): Int
+  ret at < length(s) && isWsByte(byteAt(s, at)) ? stripLeft(s, at + 1) : at
+
+fun stripRight(s: String, from: Int) => slice(s, from, lastNonWs(s, length(s), from))
+
+fun [tail] lastNonWs(s: String, end: Int, from: Int): Int
+  ret end > from && isWsByte(byteAt(s, end - 1)) ? lastNonWs(s, end - 1, from) : end
+
+fun isWsByte(c: Int32) => c == ' ' || c == '\t' || c == '\n' || c == '\r'
+  || c == 11i32 || c == 12i32
+
+
+# ── the parser's actions ─────────────────────────────────────────────────────
+# A piece of text both bare (for measuring) and as shown (with colour).
+
+class [final] Shown(swPlain: String, swText: String)
+
+fun shown(plain: String, colour: String, t: CliTheme) => Shown(plain, colour + plain + t.thReset)
+
+fun joinShown(a: Shown, sep: String, b: Shown) => Shown(a.swPlain + sep + b.swPlain,
+                                                        a.swText + sep + b.swText)
+
+# An action as the usage shows it: `[-O LEVEL]`, `[--profile]`, `files [files ...]`.
+fun usageFlag(t: CliTheme, o: String) => Shown("[" + o + "]",
+  "[" + (length(o) > 2 ? t.thSumLong : t.thSumShort) + o + t.thReset + "]")
+
+fun usageValued(t: CliTheme, o: String, label: String) => Shown("[" + o + " " + label + "]",
+  "[" + (length(o) > 2 ? t.thSumLong : t.thSumShort) + o + " "
+      + t.thSumLabel + label + t.thReset + "]")
+
+fun usageOptionals(t: CliTheme): List<Shown> => prepend(usageFlag(t, "-h"),
+  prepend(usageValued(t, "-O", "LEVEL"), prepend(usageValued(t, "-a", "OUTFILE"),
+  prepend(usageValued(t, "-c", "OUTFILE"), prepend(usageValued(t, "-o", "OUTFILE"),
+  prepend(usageValued(t, "-L", "DIR"), prepend(usageFlag(t, "--profile"),
+  prepend(usageValued(t, "-W", "WARNING"), list1(usageFlag(t, "--test"))))))))))
+
+fun usagePositionals(t: CliTheme): List<Shown> =>
+  list1(shown("files [files ...]", t.thSumAction, t))
+
+# An action as the help lists it: `-L, --lib-path DIR`, with its help text.
+class [final] HelpEntry(heInvocation: Shown, heHelp: String)
+
+fun optionString(t: CliTheme, o: String) => shown(o, length(o) > 2 ? t.thLong : t.thShort, t)
+
+fun withLabel(t: CliTheme, inv: Shown, label: String) =>
+  joinShown(inv, " ", shown(label, t.thLabel, t))
+
+fun helpPositionals(t: CliTheme): List<HelpEntry> =>
+  list1(HelpEntry(shown("files", t.thAction, t), "Input .yafl file(s), or a project directory"))
+
+fun helpOptionals(t: CliTheme): List<HelpEntry> => prepend(
+  HelpEntry(joinShown(optionString(t, "-h"), ", ", optionString(t, "--help")),
+            "show this help message and exit"), prepend(
+  HelpEntry(withLabel(t, optionString(t, "-O"), "LEVEL"), "Optimisation level"), prepend(
+  HelpEntry(withLabel(t, optionString(t, "-a"), "OUTFILE"), "Assembly output"), prepend(
+  HelpEntry(withLabel(t, optionString(t, "-c"), "OUTFILE"), "C output"), prepend(
+  HelpEntry(withLabel(t, optionString(t, "-o"), "OUTFILE"), "Output file name"), prepend(
+  HelpEntry(withLabel(t, joinShown(optionString(t, "-L"), ", ", optionString(t, "--lib-path")), "DIR"),
+            "Additional library search path (repeatable)"), prepend(
+  HelpEntry(optionString(t, "--profile"),
+            "Instrument for profiling; the binary writes callgrind.out.<pid> at exit"), prepend(
+  HelpEntry(withLabel(t, optionString(t, "-W"), "WARNING"),
+            "Enable/disable a warning: -Wname, -Wall, -Wno-name"),
+  list1(HelpEntry(optionString(t, "--test"),
+                  "Build a unit-test binary from the [test] functions"))))))))))
+
+let [const] DESCRIPTION: System::String = "My compiler-like tool"
+
+
+# ── usage (HelpFormatter._format_usage) ──────────────────────────────────────
+
+# `print_usage`: the usage section alone, as format_help trims it.
+fun usageText(f: CliFormat) => usageSection(f) + "\n"
+
+# `usage: PROG [-h] …`, wrapped to the width without its trailing newline.
+fun usageSection(f: CliFormat): String
+  let t = f.cfTheme
+  let prog = Shown(f.cfProg, f.cfProg)
+  let opts = usageOptionals(t)
+  let poss = usagePositionals(t)
+  let all = concat(opts, poss)
+  let oneLine = join(prepend(f.cfProg, map(all, (p: Shown) => p.swPlain)), " ")
+  let body = 7 + length(oneLine) > f.cfWidth
+    ? join(wrappedUsage(f.cfWidth, prog, opts, poss), "\n")
+    : join(prepend(f.cfProg, map(all, (p: Shown) => p.swText)), " ")
+  ret t.thUsage + "usage: " + t.thReset + t.thProg + f.cfProg + t.thReset
+    + slice(body, length(f.cfProg), length(body))
+
+# A short program name is followed by the optionals, the positionals on lines
+# of their own beneath; a long one sits on a line by itself.
+fun wrappedUsage(width: Int, prog: Shown, opts: List<Shown>, poss: List<Shown>): List<String>
+  let progLen = length(prog.swPlain)
+  if 4 * (7 + progLen) <= 3 * width
+    ret concat(usageLines(width, prepend(prog, opts), 7 + progLen + 1, true),
+               usageLines(width, poss, 7 + progLen + 1, false))
+  let together = usageLines(width, concat(opts, poss), 7, false)
+  ret prepend(prog.swText, chainLength(chain(together)) > 1
+    ? concat(usageLines(width, opts, 7, false), usageLines(width, poss, 7, false))
+    : together)
+
+# `get_lines`: parts joined by spaces, a new line (indented) when the next part
+# would pass the width. With the `usage: ` prefix, the first line is measured
+# from it and carries no indent.
+fun usageLines(width: Int, parts: List<Shown>, indent: Int, prefixed: Bool): List<String>
+  let lines = usageLoop(chain(parts), width, indent, spaces(indent),
+                        prefixed ? 7 - 1 : indent - 1, List(), builder())
+  ret prefixed ? mapFirst(lines, (l: String) => slice(l, indent, length(l))) : lines
+
+fun [tail] usageLoop(ps: Chain<Shown>, width: Int, indent: Int, pad: String, lineLen: Int,
+                     line: List<String>, [terminal] out: ListBuilder<String>): List<String> => match(ps)
+  (nil: ChainEnd) => build(isEmpty(line) ? out : push(out, pad + join(line, " ")))
+  (l: ChainLink)  => lineLen + 1 + length(l.value.swPlain) > width && !isEmpty(line)
+    ? usageLoop(l.next, width, indent, pad, indent - 1 + length(l.value.swPlain) + 1,
+                list1(l.value.swText), push(out, pad + join(line, " ")))
+    : usageLoop(l.next, width, indent, pad, lineLen + length(l.value.swPlain) + 1,
+                concat(line, list1(l.value.swText)), out)
+
+fun mapFirst(l: List<String>, f: (:String): String): List<String> => match(head(l))
+  (x: String) => prepend(f(x), tail(l))
+  ()          => l
+
+
+# ── help (ArgumentParser.format_help) ────────────────────────────────────────
+
+fun helpText(f: CliFormat): String
+  let t = f.cfTheme
+  let entries = concat(helpPositionals(t), helpOptionals(t))
+  let maxLen = 2 + fold<HelpEntry, Int>(entries, 0,
+    (m: Int, e: HelpEntry) => greater(m, length(e.heInvocation.swPlain)))
+  let raw = usageSection(f) + "\n\n"
+    + join(twWrap(DESCRIPTION, greater(f.cfWidth, 11)), "\n") + "\n\n"
+    + helpSection(f, maxLen, "positional arguments", helpPositionals(t))
+    + helpSection(f, maxLen, "options", helpOptionals(t))
+  ret trimNewlines(collapseNewlines(raw, 0, "")) + "\n"
+
+fun helpSection(f: CliFormat, maxLen: Int, heading: String, es: List<HelpEntry>): String
+  ret "\n" + f.cfTheme.thHeading + heading + ":" + f.cfTheme.thReset + "\n"
+    + join(map(es, (e: HelpEntry) => helpEntry(f.cfWidth, maxLen, e)), "") + "\n"
+
+# `_format_action`, at indent 2: the invocation padded to the help column, or
+# on a line of its own when it does not fit; then the help, wrapped.
+fun helpEntry(width: Int, maxLen: Int, e: HelpEntry): String
+  let helpPos = lesser(maxLen + 2, lesser(24, greater(width - 20, 4)))
+  let actionWidth = helpPos - 4
+  let inv = e.heInvocation
+  let fits = length(inv.swPlain) <= actionWidth
+  let header = fits
+    ? "  " + inv.swText + spaces(actionWidth - length(inv.swPlain)) + "  "
+    : "  " + inv.swText + "\n"
+  let lines = twWrap(e.heHelp, greater(width - helpPos, 11))
+  ret header + spaces(fits ? 0 : helpPos) + (head(lines) ?? "") + "\n"
+    + join(map(tail(lines), (l: String) => spaces(helpPos) + l + "\n"), "")
+
+# Runs of three or more newlines become two (`_long_break_matcher`).
+fun [tail] collapseNewlines(s: String, at: Int, acc: String): String
+  if at >= length(s)
+    ret acc
+  let run = newlineEnd(s, at) - at
+  ret run > 0
+    ? collapseNewlines(s, at + run, acc + (run >= 3 ? "\n\n" : slice(s, at, at + run)))
+    : collapseNewlines(s, nextNewline(s, at), acc + slice(s, at, nextNewline(s, at)))
+
+fun [tail] newlineEnd(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == '\n' ? newlineEnd(s, at + 1) : at
+
+fun nextNewline(s: String, at: Int) => findByte(s, '\n', at) < 0 ? length(s) : findByte(s, '\n', at)
+
+fun trimNewlines(s: String) => slice(s, leadingNewlines(s, 0), trailingEnd(s, length(s)))
+
+fun [tail] leadingNewlines(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == '\n' ? leadingNewlines(s, at + 1) : at
+
+fun [tail] trailingEnd(s: String, end: Int): Int
+  ret end > 0 && byteAt(s, end - 1) == '\n' ? trailingEnd(s, end - 1) : end
+
+fun spaces(n: Int) => spacesLoop(n, "")
+
+fun [tail] spacesLoop(n: Int, acc: String): String => n <= 0 ? acc : spacesLoop(n - 1, acc + " ")
+
+fun lesser(a: Int, b: Int) => a < b ? a : b
+
+fun greater(a: Int, b: Int) => a > b ? a : b
+
+
+# ── textwrap.wrap (break_long_words, break_on_hyphens) ───────────────────────
+# Over text that is single-spaced already, as every help text here is.
+
+fun twWrap(text: String, width: Int): List<String> =>
+  twLines(chain(twChunks(text, 0, builder())), width, true, builder())
+
+# `wordsep_re`: runs of spaces; words, split after a hyphen that has two
+# letters (or letter-hyphen-letter) before it and a letter, an optional hyphen
+# and a letter after; and an em-dash (`--`) between words. Letters are `\w`
+# without the digits — ASCII here, and every byte of a non-ASCII character.
+fun [tail] twChunks(s: String, at: Int, [terminal] b: ListBuilder<String>): List<String>
+  if at >= length(s)
+    ret build(b)
+  if byteAt(s, at) == ' '
+    ret twChunks(s, spaceEnd(s, at), push(b, slice(s, at, spaceEnd(s, at))))
+  if isEmDash(s, at)
+    ret twChunks(s, dashEnd(s, at), push(b, slice(s, at, dashEnd(s, at))))
+  let end = twWordEnd(s, at + 1)
+  ret twChunks(s, end, push(b, slice(s, at, end)))
+
+fun [tail] spaceEnd(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == ' ' ? spaceEnd(s, at + 1) : at
+
+fun [tail] dashEnd(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == '-' ? dashEnd(s, at + 1) : at
+
+# `(?<=wp) -{2,} (?=\w)`
+fun isEmDash(s: String, at: Int) => at > 0 && twWordPunct(byteAt(s, at - 1))
+  && dashEnd(s, at) - at >= 2 && dashEnd(s, at) < length(s) && twWordChar(byteAt(s, dashEnd(s, at)))
+
+# The word's end, checked after each character it takes (`nws+?`): a breaking
+# hyphen (taken with the word), a space or the end, or an em-dash ahead.
+fun [tail] twWordEnd(s: String, at: Int): Int
+  if at >= length(s) || byteAt(s, at) == ' '
+    ret at
+  if byteAt(s, at) == '-' && hyphenBreaks(s, at)
+    ret at + 1
+  if twWordPunct(byteAt(s, at - 1)) && dashEnd(s, at) - at >= 2
+       && dashEnd(s, at) < length(s) && twWordChar(byteAt(s, dashEnd(s, at)))
+    ret at
+  ret twWordEnd(s, at + 1)
+
+fun hyphenBreaks(s: String, at: Int) => (twoLettersBefore(s, at) || letterHyphenLetterBefore(s, at))
+  && twLetterAt(s, at + 1)
+  && (twLetterAt(s, at + 2) || (at + 2 < length(s) && byteAt(s, at + 2) == '-' && twLetterAt(s, at + 3)))
+
+fun twoLettersBefore(s: String, at: Int) => at >= 2 && twLetterAt(s, at - 1) && twLetterAt(s, at - 2)
+
+fun letterHyphenLetterBefore(s: String, at: Int) => at >= 3 && twLetterAt(s, at - 1)
+  && byteAt(s, at - 2) == '-' && twLetterAt(s, at - 3)
+
+fun twLetterAt(s: String, at: Int) => at < length(s) && twLetter(byteAt(s, at))
+
+fun twLetter(c: Int32) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 128i32
+
+fun twWordChar(c: Int32) => twLetter(c) || (c >= '0' && c <= '9')
+
+fun twWordPunct(c: Int32) => twWordChar(c) || c == '!' || c == '"' || c == '\'' || c == '&'
+  || c == '.' || c == ',' || c == '?'
+
+# `_wrap_chunks`: fill each line with whole chunks; a chunk wider than a whole
+# line is broken (after its last hyphen that fits, if any); spaces at a line's
+# end, and at the start of any line but the first, are dropped.
+fun twLines(cs: Chain<String>, width: Int, first: Bool,
+            [terminal] out: ListBuilder<String>): List<String> => match(cs)
+  (nil: ChainEnd) => build(out)
+  (l: ChainLink)  => twNext(twLongWord(twFill(skipLeading(cs, first), width, List(), 0), width),
+                            width, first, out)
+
+# `first`: no line has been emitted yet.
+fun twNext(f: Filled, width: Int, first: Bool, [terminal] out: ListBuilder<String>): List<String>
+  let line = dropBlankEnd(f.flLine)
+  ret twLines(f.flRest, width, first && isEmpty(line),
+              isEmpty(line) ? out : push(out, join(line, "")))
+
+fun skipLeading(cs: Chain<String>, first: Bool): Chain<String> => match(cs)
+  (l: ChainLink)  => !first && isBlank(l.value) ? l.next : cs
+  (nil: ChainEnd) => cs
+
+class [final] Filled(flLine: List<String>, flLen: Int, flRest: Chain<String>)
+
+fun [tail] twFill(cs: Chain<String>, width: Int, line: List<String>, len: Int): Filled => match(cs)
+  (nil: ChainEnd) => Filled(line, len, cs)
+  (l: ChainLink)  => len + length(l.value) <= width
+    ? twFill(l.next, width, concat(line, list1(l.value)), len + length(l.value))
+    : Filled(line, len, cs)
+
+fun twLongWord(f: Filled, width: Int): Filled => match(f.flRest)
+  (nil: ChainEnd) => f
+  (l: ChainLink)  => length(l.value) <= width ? f : twBreak(f, l.value, l.next, width)
+
+fun twBreak(f: Filled, chunk: String, rest: Chain<String>, width: Int): Filled
+  let spaceLeft = width < 1 ? 1 : width - f.flLen
+  if spaceLeft <= 0
+    ret isEmpty(f.flLine) ? Filled(list1(chunk), length(chunk), rest) : f
+  let hyphen = lastHyphenBefore(chunk, spaceLeft)
+  let end = length(chunk) > spaceLeft && hyphen > 0 && hasNonHyphen(chunk, hyphen)
+    ? hyphen + 1 : spaceLeft
+  ret Filled(concat(f.flLine, list1(slice(chunk, 0, end))), f.flLen + end,
+             ChainLink(slice(chunk, end, length(chunk)), rest))
+
+fun [tail] lastHyphenBefore(s: String, end: Int): Int
+  ret end <= 0 ? 0 - 1 : byteAt(s, end - 1) == '-' ? end - 1 : lastHyphenBefore(s, end - 1)
+
+fun [tail] hasNonHyphen(s: String, end: Int): Bool
+  ret end <= 0 ? false : byteAt(s, end - 1) != '-' ? true : hasNonHyphen(s, end - 1)
+
+fun dropBlankEnd(line: List<String>): List<String> => match(last(line))
+  (x: String) => isBlank(x) ? take(line, chainLength(chain(line)) - 1) : line
+  ()          => line
+
+# All spaces — or empty, as a broken word's remainder can be.
+fun isBlank(c: String) => blankFrom(c, 0)
+
+fun [tail] blankFrom(c: String, at: Int): Bool
+  ret at >= length(c) ? true : byteAt(c, at) != ' ' ? false : blankFrom(c, at + 1)

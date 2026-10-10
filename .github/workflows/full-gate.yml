@@ -46,7 +46,10 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: build/bootstrap-cache
-          key: bootstrap-${{ hashFiles('compiler/**/*.py', '!compiler/tests/**', 'bootstrap/**/*.yafl', 'compiler/stdlib/**') }}
+          # Everything build_bootstrap.py keys an entry on — the Python compiler,
+          # the port's sources and stdlib, and the runtime it links — so an
+          # entry it would relink or rebuild is saved afresh, not hit exactly.
+          key: bootstrap-${{ hashFiles('compiler/**/*.py', '!compiler/tests/**', 'bootstrap/**/*.yafl', 'compiler/stdlib/**', 'yafllib/**') }}
           restore-keys: bootstrap-
 
       - name: Run the protocol

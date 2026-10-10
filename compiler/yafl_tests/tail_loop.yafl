@@ -74,7 +74,7 @@ fun program(): System::Int
   print(String(count(1000000, 0)) + "\n")
   ret 0
 
-fun [test("early return self calls are tail")] check(): None|TestFailure
+fun [test("early return self calls are tail", stdout = "15\n1500000\n")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
 
 

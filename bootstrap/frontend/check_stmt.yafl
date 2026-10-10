@@ -21,7 +21,7 @@ fun checkStmtKind(st, r, retTy: Spec|None) => match(st)
   (rt: PsRet)        => checkRet2(rt, r, retTy)
   (a: PsAction)      => checkAction2(a, r)
   (i: PsIf)          => checkIf2(i, r, retTy)
-  (ei: PsElseIf)     => oneErr(ei.pseiLine,
+  (ei: PsElseIf)     => oneErr(ei.eiKeyword,
                                "`else if` without a matching preceding `if`")
   (el: PsElse)       => oneErr(el.pselLine,
                                "`else` without a matching preceding `if`")

@@ -117,6 +117,9 @@ foreach(opt ${YAFL_TEST_LEVELS})
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
     set_tests_properties(bootstrap_binary_o${opt} PROPERTIES
         TIMEOUT 7200
+        # One Python build of the port at a time: each takes ~3 GB, and four at
+        # once (a hand-run `ctest -j` on the full path) run out of memory.
+        RESOURCE_LOCK bootstrap_build
         FIXTURES_SETUP bootstrap_bin_o${opt})
 endforeach()
 
@@ -202,19 +205,20 @@ function(yafl_test_folder name folder opt)
     add_test(NAME ${name} COMMAND ${bin})
     set_tests_properties(${name} PROPERTIES
         TIMEOUT 600
-        FIXTURES_REQUIRED ${name}_bin
-        # The runner exits 0 only when every test passed, but a binary that ran
-        # NOTHING would also exit 0 — the same hole the compiler_suite guard
-        # closes. Require at least ONE pass: `[0-9]+` would match "0 passed,
-        # 0 failed", which is precisely the case this is here to catch.
-        PASS_REGULAR_EXPRESSION "[1-9][0-9]* passed, 0 failed")
+        # The runner's exit code is the verdict: 0 only when no test failed AND
+        # at least one passed (test.yafl `report`), so a binary that ran nothing
+        # is red. No PASS_REGULAR_EXPRESSION: setting one makes ctest IGNORE the
+        # exit code, so a runner that printed its summary and then crashed would
+        # pass, as would a failure whose captured output quoted a passing summary.
+        FIXTURES_REQUIRED ${name}_bin)
 endfunction()
 
 # Each folder runs at every level of the path's YAFL_TEST_LEVELS, built by the
 # port built at that level: each level switches passes on (inliner,
-# small-function inlining, single-caller fold), and -O0 keeps the runtime's
-# asserts and poison hooks. The fast path's one level is -O3, the level that
-# transforms the most.
+# small-function inlining, single-caller fold). (Every level links the same
+# runtime archive, the one packaged into the stage's System library: the
+# runtime's asserts and poisoning are the C tests' business, not these.) The
+# fast path's one level is -O3, the level that transforms the most.
 set(YAFL_FOLDER_TESTS)
 foreach(folder stdlib_tests yafl_tests)
     foreach(opt ${YAFL_TEST_LEVELS})

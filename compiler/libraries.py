@@ -299,11 +299,17 @@ _DEV_LIBS_DIR = _THIS_DIR / "libs"
 
 def _find_dev_static_lib() -> Path | None:
     """Locate a built `libyafl.a`. `YAFL_LIBYAFL_A` (set by the CMake test target)
-    points at a specific archive; otherwise search the yafllib build tree."""
+    points at a specific archive; otherwise the archive the top-level CMake build
+    makes, `build/yafllib/libyafl.a`; otherwise a stand-alone runtime build under
+    `yafllib/build/` (the first, as pathlib sorts them). The port looks in the
+    same places (libraries.yafl devStaticLib)."""
     env = os.environ.get("YAFL_LIBYAFL_A")
     if env:
         p = Path(env)
         return p if p.is_file() else None
+    built = _REPO_ROOT / "build" / "yafllib" / "libyafl.a"
+    if built.is_file():
+        return built
     candidates = sorted(_YAFLLIB_DIR.glob("build/**/libyafl.a"))
     return candidates[0] if candidates else None
 

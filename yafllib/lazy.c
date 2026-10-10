@@ -33,15 +33,22 @@ EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
         if (expected == (task_t*)1) return 2;
         atomic_store(&waiter->next, expected);
     } while (!atomic_compare_exchange_weak(flag, &expected, waiter));
+    // A GLOBAL stub's flag is a declared root, and the CAS was a root store:
+    // publish it (see gc_root_publish). When this thread wins the init race
+    // the caller drops `waiter` at once, leaving the flag its only reference;
+    // a cycle whose snapshot read the flag before the CAS would otherwise
+    // never mark it (test_gc_lazy_step). A heap stub's flag needs nothing: the
+    // stub is scanned after every thread's take, and finds `waiter` there.
+    if (!gc_in_heap(flag_field)) gc_root_publish((object_t**)flag, 1);
     // Deletion barrier (same hazard as _queue_try_pop): the CAS moved the
     // displaced head's only edge from the stub's flag — which this cycle may
-    // already have scanned — onto `waiter->next`, and `waiter` is a fresh
-    // in-window allocation (black: marked but never SCANNED), so the marker
-    // would never find the old head down that edge. Tell it directly, or a
-    // parked waiter chained behind this one is collected while parked and
-    // the drain later walks a freed chain. Exposed by `[future]`'s cross-
-    // thread forcers under real GC pressure; latent for concurrent `[lazy]`
-    // forcers all along.
+    // already have scanned — onto `waiter->next`, and `waiter` may already be
+    // marked without ever being SCANNED (allocated black, or just published),
+    // so the marker would never find the old head down that edge. Tell it
+    // directly, or a parked waiter chained behind this one is collected while
+    // parked and the drain later walks a freed chain. Exposed by `[future]`'s
+    // cross-thread forcers under real GC pressure; latent for concurrent
+    // `[lazy]` forcers all along.
     if (expected != NULL) {
         GC_MARK_SEEN((object_t*)expected);
     }

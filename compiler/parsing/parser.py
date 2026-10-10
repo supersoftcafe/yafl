@@ -585,9 +585,13 @@ def __to_if_statement(value, line_ref: p.LineRef) -> s.IfStatement:
     return s.IfStatement(line_ref, cond, body, [])
 
 
-def __to_else_if_statement(value, line_ref: p.LineRef) -> s.ElseIfStatement:
-    cond, body = value
-    return s.ElseIfStatement(line_ref, cond, body)
+def __to_else_if_statement(result: p.Result, tokens: list[p.Token]) -> p.Result[s.ElseIfStatement]:
+    """An `else if` sits at its condition, as an `if` does (folding makes it
+    one), but also keeps its `else` keyword: an orphan is reported there, where
+    an orphan `else` is."""
+    (cond, body), line_ref = result.value
+    return p.Result(s.ElseIfStatement(line_ref, cond, body, tokens[0].line_ref),
+                    result.tokens, result.line_ref, result.errors)
 
 
 def __to_else_statement(result: p.Result[list[s.Statement]], tokens: list[p.Token]) -> p.Result[s.ElseStatement]:
@@ -1077,8 +1081,8 @@ __parse_if = p.block(p.requires(
 
 __parse_else_if = p.block(p.requires(
     p.discard_sym("else") & p.discard_sym("if"),
-    (__parse_expression & p.many(__parse_statement)).build(__to_else_if_statement),
-    "invalid else-if statement"))
+    (__parse_expression & p.many(__parse_statement)).build(lambda value, line_ref: (value, line_ref)),
+    "invalid else-if statement")) >> __to_else_if_statement
 
 __parse_else = p.block(p.requires(
     p.discard_sym("else"),

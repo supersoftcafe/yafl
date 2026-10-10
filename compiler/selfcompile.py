@@ -32,6 +32,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from build_bootstrap import record_verified, reference_of
+
 _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent
 _BOOT_DIR = _REPO / "bootstrap"
@@ -108,8 +110,14 @@ def main(argv: list[str]) -> int:
             print(f"self-compile: the port's C DIFFERS from {args.expect} "
                   f"({len(first):,} vs {len(expected):,} bytes; first difference at "
                   f"line {line})", file=sys.stderr)
+            if reference_of(args.expect).get("reference") == "port":
+                print("self-compile: that C came from the CACHED port, not from "
+                      "Python. If this change fixes the port's own code generation, "
+                      "only a Python build can confirm it: run the full path "
+                      "(full_protocol.py --full).", file=sys.stderr)
             return 1
         print(f"  byte-identical to {args.expect}")
+        record_verified(args.expect)
     return 0
 
 

@@ -27,12 +27,23 @@ compiler compiles them instead, and that C is what the self-compile must
 reproduce: the new port has to emit what the Python-built one did. A change
 to the Python compiler always means a Python build; the full test path never
 reuses.
+
+The cached compiler stands in for Python only once it has been VERIFIED: a
+self-compile has passed against the C Python emitted for that entry
+(selfcompile.py records it, keyed on the Python compiler and the port's
+sources). An entry whose self-compile failed — or never ran — would otherwise
+carry a divergence from Python into every later port build, where a port that
+reproduces its own bug passes. Beside `--c-output` goes `<c>.reference.json`,
+saying where that reference C came from: `python` (it can verify the entry) or
+`port` (it cannot — and when a port change fixes the port's own code
+generation, only a Python build, `--full`, can show it).
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -58,9 +69,15 @@ def build(out: Path, optimization_level: int = 1, c_output: Path | None = None,
     keys = {"python": _python_key(optimization_level), "sources": _sources_key(),
             "link": _link_key()}
     held = cache.keys()
-    if reuse_lib_path is None or held.get("python") != keys["python"]:
-        if reuse_lib_path is not None:
-            print("the Python compiler changed since the cached build: building with it")
+    reusable = reuse_lib_path is not None and held.get("python") == keys["python"]
+    if reuse_lib_path is not None and not reusable:
+        print("the Python compiler changed since the cached build: building with it")
+    if reusable and held.get("sources") != keys["sources"] and not cache.verified(held):
+        print("the cached Python build has not passed a self-compile: building with "
+              "the Python compiler")
+        reusable = False
+    reference = "python"
+    if not reusable:
         c_code = _python_emit(optimization_level)
         _link(c_code, out)
         cache.store(keys, out, c_code)
@@ -78,9 +95,13 @@ def build(out: Path, optimization_level: int = 1, c_output: Path | None = None,
               "the cached compiler compiles them")
         c_code = _port_emit(cache.binary_path, optimization_level, reuse_lib_path)
         _link(c_code, out)
+        reference = "port"
     if c_output is not None:
         c_output.parent.mkdir(parents=True, exist_ok=True)
         c_output.write_text(c_code)
+        _reference_path(c_output).write_text(json.dumps({
+            "reference": reference, "cache": str(cache.root),
+            "python": keys["python"], "sources": keys["sources"]}))
     print(f"  wrote {out}")
     return out
 
@@ -173,12 +194,15 @@ def _digest(paths: list[Path], *extra: str) -> str:
 
 
 def _python_key(optimization_level: int) -> str:
-    """Every Python source of the compiler, tracked or new, but not its tests."""
+    """Every Python source of the compiler, tracked or new, but not its tests;
+    and what else decides the C it emits from them: the interpreter, and
+    PYTHONHASHSEED (ctest pins it, but a hand-run --reuse may not)."""
     listed = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard",
                              "--", "*.py", ":!tests/"],
                             cwd=_HERE, capture_output=True, text=True, check=True).stdout
     paths = [_HERE / line for line in listed.splitlines() if (_HERE / line).is_file()]
-    return _digest(paths, f"-O{optimization_level}")
+    return _digest(paths, f"-O{optimization_level}", sys.version,
+                   f"PYTHONHASHSEED={os.environ.get('PYTHONHASHSEED', '')}")
 
 
 def _sources_key() -> str:
@@ -198,6 +222,14 @@ class _Cache:
         self.binary_path = root / "ybootstrap"
         self.c_path = root / "ybootstrap.c"
         self.keys_path = root / "keys.json"
+        self.verified_path = root / "verified.json"
+
+    def verified(self, keys: dict) -> bool:
+        """A self-compile passed against Python's C for these keys' entry."""
+        try:
+            return json.loads(self.verified_path.read_text()) == _verified_keys(keys)
+        except (OSError, ValueError):
+            return False
 
     def keys(self) -> dict:
         try:
@@ -212,6 +244,32 @@ class _Cache:
         _copy(binary, self.binary_path)
         self.c_path.write_text(c_code)
         self.keys_path.write_text(json.dumps(keys))
+
+
+def _verified_keys(keys: dict) -> dict:
+    """What decides the C: the Python compiler and the port's sources (a relink
+    for a new runtime changes neither)."""
+    return {"python": keys.get("python"), "sources": keys.get("sources")}
+
+
+def _reference_path(c_output: Path) -> Path:
+    return c_output.with_name(c_output.name + ".reference.json")
+
+
+def reference_of(c_output: Path) -> dict:
+    """Where the reference C at `c_output` came from (see the module docstring)."""
+    try:
+        return json.loads(_reference_path(c_output).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def record_verified(c_output: Path) -> None:
+    """A self-compile reproduced `c_output`: when Python emitted it, the cache
+    entry it came from is verified."""
+    ref = reference_of(c_output)
+    if ref.get("reference") == "python":
+        _Cache(Path(ref["cache"])).verified_path.write_text(json.dumps(_verified_keys(ref)))
 
 
 def refresh_references() -> int:

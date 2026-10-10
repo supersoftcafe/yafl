@@ -374,7 +374,7 @@ fun [impure] emitRunStart(count: System::Int, fmt: System::String): System::Int
         : 0
 
 fun [impure] emitResult(c: TestCase, o: Outcome, fmt: System::String): System::Bool
-    let _ = printLine(fmt == "json" ? resultJson(c, o) : resultHuman(c, o))
+    println(fmt == "json" ? resultJson(c, o) : resultHuman(c, o))
     ret o.passed
 
 fun resultJson(c: TestCase, o: Outcome): System::String
@@ -405,14 +405,18 @@ fun indented(lines: List<System::String>): System::String
 
 # Exit code is 0 or 1, NEVER a count: exit codes are 8 bits, so a run with 256
 # failures would exit 0 — a red run reporting green. The totals go in the
-# report, where they cannot wrap.
+# report, where they cannot wrap. Exit 0 also needs at least one PASS, so the
+# exit code alone says the run proved something: callers (ctest) read it and
+# nothing else. (The compiler refuses a --test build with no [test]s, and a
+# filter that selects nothing exits 2, so this holds already; it is stated
+# here so it does not rest on them.)
 fun [impure] report(t: Tally, fmt: System::String): System::Int
-    let _ = printLine(fmt == "json"
+    println(fmt == "json"
         ? "{" + jsonStr("event", "run_end") + ","
               + jsonNum("passed", t.passed) + ","
               + jsonNum("failed", t.failed) + "}"
         : "\n" + String(t.passed) + " passed, " + String(t.failed) + " failed")
-    ret t.failed == 0 ? 0 : 1
+    ret t.failed == 0 && t.passed > 0 ? 0 : 1
 
 fun [impure] printLine(s: System::String): System::Int
     println(s)

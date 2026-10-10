@@ -508,8 +508,8 @@ fun postmonoRes2Gated(stmts0: List<PStmt>, enabledWarnings: Set<String>): GatedR
 # `if failures: return failures`, and linearity right after on a clean check.
 # A failure is a REFUSAL — code 1, no C — matching main.py, which exits 1 when
 # compile_project hands back no code so a build system cannot pick up a stale
-# object file. On success the surviving warnings ride along in GatedResult
-# instead of being dropped (the fixed divergence — see GatedResult's comment).
+# object file. Once the diagnostics pass, their warnings ride along in
+# GatedResult whatever fails later, and are reported (compiler.py's _Failed).
 fun postmonoGate(stmts, enabledWarnings: Set<String>): GatedResult
   let r = rootResolver(stmts)
   # requireMain false: cStage reports a missing main itself, in the bare
@@ -519,7 +519,7 @@ fun postmonoGate(stmts, enabledWarnings: Set<String>): GatedResult
     ret GatedResult(PmText(printedDiagnostics(d.dFails), 1), noErrs())
   let lin = checkLinearity(stmts, r)
   if !isEmpty(lin)
-    ret GatedResult(PmText(printedDiagnostics(lin), 1), noErrs())
+    ret GatedResult(PmText(printedDiagnostics(lin), 1), d.dWarns)
   ret GatedResult(postmonoRes3(stmts), d.dWarns)
 
 fun postmonoRes3(stmts0: List<PStmt>): PmRes
@@ -691,7 +691,7 @@ fun cModeConverge(stmts, optLevel, profile,
   ret match(gr.grRes)
     (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers)
                     |> (outs, code) => (outs, code, warnsText)
-    (tx: PmText) => (prepend(tx.pmOut, List()), noProgramCode(tx.pmCode), "")
+    (tx: PmText) => (prepend(tx.pmOut, List()), noProgramCode(tx.pmCode), warnsText)
 
 # A C mode that ends in diagnostics produced no program, so it fails whatever
 # code the stage dumps give the same text: they compare it with compiler.py's
@@ -795,7 +795,7 @@ fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProje
 
 class [final] ProjectLoad(plStmts: List<PStmt>, plLibs: List<Library>)
 
-fun loadProject(user: List<PStmt>, extra: List<String>) => match(discoverLibraries(searchPaths(extra)))
+fun loadProject(user: List<PStmt>, extra: List<String>) => match(availableLibraries(extra))
   (e: LibsErr) => e.libsWhy
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
     (why: String)        => why
