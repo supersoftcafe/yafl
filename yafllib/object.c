@@ -2987,6 +2987,16 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         }
 
         page->head.scanner.processed_by_epoch = epoch;
+        // A store then loads, against markers that do the mirror image (set
+        // the atomic_seen bit, then read processed_by_epoch): each side must
+        // see the other's store, or a mark that lands now is pushed by
+        // neither — kept live by prune's residue merge but never scanned, its
+        // children freed under it. The markers' side is ordered (a seq_cst
+        // RMW, then a seq_cst load); this one is a seq_cst store followed by
+        // the drain's and the re-merge's RELAXED loads, which aarch64 may
+        // satisfy before the store is visible (x86's xchg store is a full
+        // barrier, so it never showed there). Once per page.
+        atomic_thread_fence(memory_order_seq_cst);
         GC_PROF_LAP(gc_prof_t_pages, _t0);
 
         // Finish the page: drain its whole back-edge closure now, so it (and
