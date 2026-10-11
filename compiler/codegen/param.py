@@ -776,8 +776,9 @@ class ObjectField(LParam):
     # True for a store whose container may be a DECLARED ROOT — a lazy stub,
     # static for a global and heap for a local `[lazy]`. Roots are scanned
     # once, at cycle open, so after the ordinary barrier and the store, what
-    # the field now holds is published (GC_ROOT_PUBLISH_IN: a no-op for a heap
-    # container). Provenance: compare-excluded.
+    # the field now holds is published (GC_ROOT_PUBLISH_IN; a heap stub
+    # publishes too, as one born after its thread's root scan is not traced
+    # that cycle). Provenance: compare-excluded.
     root: bool = dataclasses.field(default=False, compare=False)
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:

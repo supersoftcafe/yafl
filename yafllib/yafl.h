@@ -945,11 +945,15 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
          gc_publish_slots((object_t**)&(field), (mask)); } while (false)
 // AFTER a store into a field of `obj`, an object that may be a declared root:
 // a lazy stub is a static root for a global and a heap object for a local
-// `[lazy]`, and one fetch function serves both. A static container publishes;
-// a heap container's fields are traced, so it owes nothing more. The store
-// itself took GC_WRITE_BARRIER_IN, which accepts either container.
+// `[lazy]`, and one fetch function serves both. Both publish, and with one
+// body (gc_publish_slots): a static stub is a root scanned once at cycle
+// open, and a heap stub's fields are traced only if its page is in the
+// cycle's pool — one born after its thread's root scan is not (see
+// GC_PUBLISH_IN). It used to publish the static case alone, on the
+// assumption that a heap container is always traced. The store itself took
+// GC_WRITE_BARRIER_IN, which accepts either container.
 #define GC_ROOT_PUBLISH_IN(obj, field, mask)\
-    do { if (!gc_in_heap(obj)) gc_root_publish((object_t**)&(field), (mask)); } while (false)
+    do { (void)(obj); gc_publish_slots((object_t**)&(field), (mask)); } while (false)
 
 
 EXTERN size_t object_get_size(object_t* ptr);
