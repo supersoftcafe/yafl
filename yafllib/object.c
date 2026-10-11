@@ -2965,8 +2965,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         gc_pool_unlock();
         if (n == 0) break;
         count += n;
-        list_element_t requeue = {&requeue, &requeue};   // -> pages_to_scan
-        list_element_t done    = {&done,    &done};      // -> pages_to_prune
+        bool requeue_now[MARK_CLAIM_BATCH];   // per page: back to pages_to_scan
         for (unsigned bi = 0; bi < n; ++bi) {
         gc_page_t *page = batch[bi];
         GC_STAT_BUMP(gc_stat_pages_popped);
@@ -3036,23 +3035,32 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         // did NOT self-enqueue on the reprocess ring (this is their only catch
         // point); marks after epoch was set are also caught here, redundantly
         // with the ring. Re-queue the page so the merged bits get scanned.
-        // The page is linked onward only HERE, after the owner's last touch
-        // of its bitmaps — while claimed (on no list) it is invisible to
-        // concurrent requeues, so no other executor can claim or splice it.
         bool late_bits = bitmap_or_test_source_reset_all(&page->head.scanner.seen, &page->head.scanner.atomic_seen);
         bool deferred  = atomic_exchange(&page->head.scanner.requeue_pending, false);
-        if (late_bits || deferred) {
-            GC_STAT_BUMP(gc_stat_rq_drain);
-            GC_STAT_BUMP(gc_stat_requeued);
-            page->head.scanner.processed_by_epoch = 0;
-            list_link(&requeue, (list_element_t*)&page->head.list);
-        } else {
-            list_link(&done, (list_element_t*)&page->head.list);
+        requeue_now[bi] = late_bits || deferred;
         }
-        }
+        // Publish the batch. Every page stays UNLINKED until here — claimed,
+        // on no list — so a concurrent requeue (page_needs_scan, pool-locked)
+        // sees NULL links and defers to the owner through requeue_pending,
+        // which is consumed below under the same lock. Pages used to wait on
+        // executor-local lists linked without the lock; a requeue then took
+        // the linked page for one on a global list and unlinked it from the
+        // local list while the executor was still appending to it: the next
+        // append wrote through the moved page into pages_to_scan, threading a
+        // finished page (and the local list's stack root) onto it — the
+        // [DOUBLE-CLAIM] abort, gcc -O3, test_gc_min2_window.
         gc_pool_lock();
-        list_move(&pages_to_scan,  &requeue);
-        list_move(&pages_to_prune, &done);
+        for (unsigned bi = 0; bi < n; ++bi) {
+            gc_page_t *page = batch[bi];
+            if (requeue_now[bi] || atomic_exchange(&page->head.scanner.requeue_pending, false)) {
+                GC_STAT_BUMP(gc_stat_rq_drain);
+                GC_STAT_BUMP(gc_stat_requeued);
+                page->head.scanner.processed_by_epoch = 0;
+                list_link(&pages_to_scan, (list_element_t*)&page->head.list);
+            } else {
+                list_link(&pages_to_prune, (list_element_t*)&page->head.list);
+            }
+        }
         gc_pool_unlock();
         // Release in-flight only AFTER publication (see prune).
         atomic_fetch_sub_explicit(&gc_pages_in_flight, (int)n, memory_order_acq_rel);
