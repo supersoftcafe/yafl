@@ -10,11 +10,9 @@
 // framework itself uses the per-type drain).
 
 EXPORT object_t* lazy_drain_waiters(object_t* flag_field) {
-    _Atomic(task_t*)* flag = (_Atomic(task_t*)*)flag_field;
-    task_t* head = atomic_exchange(flag, (task_t*)1);
+    task_t* head = (task_t*)lazy_chain_swap_sentinel(flag_field);   // barriered, see yafl.h
     while (head) {
-        task_t* next = atomic_load(&head->next);
-        atomic_store(&head->next, NULL);
+        task_t* next = (task_t*)lazy_chain_step((object_t*)head);
         task_complete_deferred((object_t*)head);
         head = next;
     }
@@ -52,7 +50,15 @@ EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
     if (expected != NULL) {
         GC_MARK_SEEN((object_t*)expected);
     }
-    return (atomic_load(&waiter->next) == NULL) ? 1 : 0;
+    // The runner is whoever found the chain EMPTY — `expected`, the head the
+    // CAS replaced. Not a re-read of waiter->next: once the CAS publishes
+    // `waiter`, the runner already in flight can finish and drain the chain,
+    // and the drain clears each waiter's next as it completes it
+    // (lazy_chain_step). A re-read then sees NULL, and this caller — already
+    // completed as a waiter — runs the initialiser a second time, through the
+    // closure the first run has cleared: a call through NULL (gc_stress's
+    // release build on aarch64 segfaulted there about one run in six).
+    return expected == NULL ? 1 : 0;
 }
 
 

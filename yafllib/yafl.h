@@ -1213,10 +1213,22 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
 // per-IR-type waiter subtype, so the runtime only needs to manage the
 // chain itself.
 //
+// Both primitives DELETE a reference — the stub's edge to the chain, a
+// waiter's edge to the next — so both owe the snapshot barrier, as any
+// overwrite does: during a cycle, a chain reachable at the snapshot through a
+// stub not yet scanned would otherwise live on only in the draining thread's
+// locals, which its root scan may already have passed, and be freed mid-drain
+// (gc_stress: the drain completing a reclaimed waiter). The shade comes after
+// the act, as in lazy_thunk_enqueue: a cycle opening between the two finds
+// the value in this thread's locals at its root scan. Waiters escaped when
+// they were enqueued, so the nursery owes nothing here.
+//
 // Swap the waiter-chain root with the "init complete" sentinel and
 // return the previous head.  The loop body iterates from there.
 INLINE object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
-    return (object_t*)atomic_exchange((_Atomic(object_t*)*)flag_field, (object_t*)1);
+    object_t* head = (object_t*)atomic_exchange((_Atomic(object_t*)*)flag_field, (object_t*)1);
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(head);
+    return head;
 }
 
 // Atomically read head->next and clear it; returns the next chain link
@@ -1225,6 +1237,7 @@ INLINE object_t* lazy_chain_step(object_t* head) {
     _Atomic(struct task_s*)* p = &((task_t*)head)->next;
     task_t* next = (task_t*)atomic_load(p);
     atomic_store(p, NULL);
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2((object_t*)next);
     return (object_t*)next;
 }
 
