@@ -32,15 +32,26 @@ from pathlib import Path
 
 YAFLLIB = Path(__file__).resolve().parent.parent
 
-# Variant -> (C compiler, extra flags). Asserts stay on in every variant (no
-# NDEBUG): they are half the checking. The C tests compile the runtime sources
+# Variant -> (C compiler, extra flags). Asserts stay on in every variant but
+# the -ndebug ones: they are half the checking. The C tests compile the runtime sources
 # into each test binary, so the flags apply to the runtime as well.
 BUILDS = {
     "gcc-O0":   ("gcc",   "-O0 -g"),
     "gcc-O2":   ("gcc",   "-O2 -g"),
     "clang-O0": ("clang", "-O0 -g"),
     "clang-O2": ("clang", "-O2 -g"),
+    # -O3 is what ships (yafl_static, and programs from the full protocol):
+    # more inlining across the barrier helpers, vectorised bitmap loops,
+    # values that live only in registers. With asserts, and without (NDEBUG,
+    # exactly the shipped runtime's flags).
+    "gcc-O3":          ("gcc",   "-O3 -g"),
+    "clang-O3":        ("clang", "-O3 -g"),
+    "gcc-O3-ndebug":   ("gcc",   "-O3 -g -DNDEBUG"),
+    "clang-O3-ndebug": ("clang", "-O3 -g -DNDEBUG"),
 }
+# The default matrix; the -O3 variants are opt-in (--builds), as they double
+# the run time.
+DEFAULT_BUILDS = ["gcc-O0", "gcc-O2", "clang-O0", "clang-O2"]
 
 # The tests that exercise the collector, with a per-run timeout (seconds) and
 # any test-specific environment.
@@ -179,7 +190,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-n", "--runs", type=int, default=20, help="runs per (build, test, profile)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4, help="runs at once")
-    ap.add_argument("--builds", default=",".join(BUILDS), help="comma-separated build variants")
+    ap.add_argument("--builds", default=",".join(DEFAULT_BUILDS), help="comma-separated build variants")
     ap.add_argument("--tests", default=",".join(TESTS), help="comma-separated tests")
     ap.add_argument("--profiles", default=",".join(DEFAULT_PROFILES), help="comma-separated profiles")
     ap.add_argument("--stop-on-fail", action="store_true", help="stop a combination at its first failure")
