@@ -908,12 +908,41 @@ INLINE void gc_root_overwrite(object_t **slot, ptr_mask_t mask) {
     if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
     gc_local_barrier_inactive(slot, mask);   // outgoing values may be held elsewhere
 }
-INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
-    assert(!gc_in_heap(slot));
+// The shared body of every PUBLISH: shade what the slots now hold, and
+// escape it from any nursery. AFTER the store; reads the values back.
+INLINE void gc_publish_slots(object_t **slot, ptr_mask_t mask) {
     atomic_thread_fence(memory_order_seq_cst);   // the store before the flag
     if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
     if (gc_local_live_now()) gc_local_escape_old(slot, mask);   // the values before the count
 }
+INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
+    assert(!gc_in_heap(slot));
+    gc_publish_slots(slot, mask);
+}
+// ── Publishing into the heap: GC_PUBLISH_IN ─────────────────────────────────
+// AFTER a store that hands a value to another thread through a field of the
+// heap object `obj` — a queue link, a task's continuation. The heap twin of
+// gc_root_publish, for runtime code that publishes values (generated stores
+// take GC_WRITE_BARRIER_IN alone).
+//
+// Why heap stores need it at all: the ragged snapshot finds whatever a thread
+// moved from its stack into the heap before its own root scan by tracing the
+// heap afterwards — but not every container is traced. One allocated after
+// ITS thread's root scan sits on a birth-protected page this cycle never
+// scans. A thread not yet scanned that links an older value into such a
+// container (a fresh task at a queue's tail, a fresh task's callback) and
+// then drops it leaves the value reachable through nothing the cycle sees:
+// pruned while queued or parked (gc_stress, traced). So the value is shaded.
+//
+// Why AFTER the store, through the field: a barrier that takes the value and
+// runs first can read the flag down before the cycle opens, then store into
+// a container born after it opened. Run after the store, the fence orders the
+// flag read after it, and after however this thread obtained the container;
+// a container born during the cycle implies the flag reads up. Reading the
+// value back from the field means the call cannot be placed before the store.
+#define GC_PUBLISH_IN(obj, field, mask)\
+    do { assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
+         gc_publish_slots((object_t**)&(field), (mask)); } while (false)
 // AFTER a store into a field of `obj`, an object that may be a declared root:
 // a lazy stub is a static root for a global and a heap object for a local
 // `[lazy]`, and one fetch function serves both. A static container publishes;

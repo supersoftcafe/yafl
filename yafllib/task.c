@@ -147,11 +147,13 @@ EXPORT object_t* task_on_complete(object_t* self, fun_t callback) {
     // fresh task, but uniform with every other pointer-slot store).
     GC_WRITE_BARRIER_IN(task, task->callback.o, 1);
     task->callback = callback;
-    // Insertion barrier: publish the continuation. Once the caller suspends, the
-    // task's callback.o is the only reference to that continuation state, and the
-    // caller's stack copy is gone — so an incremental collector that has already
-    // scanned the caller's roots must be told about it.
-    GC_MARK_SEEN(callback.o);
+    // Publish the continuation. Once the caller suspends, the task's callback.o
+    // is the only reference to that continuation state, and the caller's stack
+    // copy is gone — while the task itself may be one this cycle never scans
+    // (born after its thread's root scan). AFTER the store (GC_PUBLISH_IN,
+    // yafl.h); this was a GC_MARK_SEEN of the value with no fence, whose flag
+    // read could be satisfied before the store.
+    GC_PUBLISH_IN(task, task->callback.o, 1);
     int32_t expected = TASK_PENDING;
     if (atomic_compare_exchange_strong(&task->state, &expected, TASK_CALLBACK))
         return NULL;

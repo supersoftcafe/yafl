@@ -86,18 +86,21 @@ EXPORT bool thread_work_accepting(void) {
 
 // Push `task` onto `queue` and wake any consumer waiting on it.
 static void _queue_push(worker_queue_t* queue, task_t* task) {
-    // Insertion barrier (same hazard as task_on_complete): once pushed, the
-    // queue linkage may be this task's only reference, and the poster's stack
-    // — the marker's only other way to see it — may already have been scanned
-    // this cycle. Tell the marker directly or it prunes a queued task.
-    GC_MARK_SEEN((object_t*)task);
     atomic_store(&task->next, (task_t*)NULL);
     atomic_fetch_add_explicit(&_queued_count, 1, memory_order_relaxed);
     pthread_mutex_lock(&queue->lock);
+    // Once linked, the queue may be this task's only reference: the poster's
+    // stack, the marker's other way to see it, may already have been scanned
+    // this cycle — and the tail it is linked behind may be one this cycle
+    // never scans. Publish it AFTER the link (GC_PUBLISH_IN, yafl.h); run
+    // before it, as this used to, an unscanned poster could read the barrier
+    // flag down and leave the task to be pruned while queued.
     if (queue->tail) {
         atomic_store(&queue->tail->next, task);
+        GC_PUBLISH_IN(queue->tail, queue->tail->next, 1);
     } else {
         queue->head = task;
+        GC_PUBLISH_IN(_queues, queue->head, 1);
     }
     queue->tail = task;
     pthread_cond_signal(&queue->cond);
