@@ -2232,16 +2232,25 @@ static void gc_validate_old_pages(void) {
 }
 #endif
 
-static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
-    if (++epoch == 0)
-        epoch = 1;
-
-    // Pages a late write touched while they were `old`: return them to the
-    // rotation BEFORE this cycle's decisions, so the young objects those
-    // writes installed are traced from here on. Marked dirty_old rather than
-    // merely young, because the referent is young by definition and the page
-    // must be force-marked as a root until it has caught up. Gated on the
-    // global so the common case — no late writes — costs one atomic read.
+// Pages a late write touched while they were `old` (gc_note_late_write):
+// return them to the rotation, so the young objects those writes installed
+// are traced. Marked dirty_old rather than merely young, because the referent
+// is young by definition and the page must be force-marked as a root until it
+// has caught up. Gated on the global so the common case — no late writes —
+// costs one atomic read.
+//
+// Runs at START and AGAIN at the end of SCAN_ROOTS, before the dirty_old
+// force-mark. The ragged snapshot rests on this: whatever a thread moves from
+// its stack into the heap before its own root scan is found by tracing the
+// heap afterwards. An `old` page is not traced, so a late write landing on one
+// between START and its writer's scan — the writer having dropped the value —
+// was invisible to the cycle until the next START demoted the page, and a
+// referent allocated before the cycle opened was freed under it (gc_stress: a
+// memoize child). gc_note_late_write raises the flag before the store, and
+// every writer's root scan precedes this transition, so each such write is
+// seen here. A write after its writer's scan needs nothing this cycle: the
+// writer held the value at the scan, or it was born marked.
+static void gc_demote_redirtied(void) {
     if (UNLIKELY(atomic_exchange_explicit(&gc_redirty_requested, false,
                                           memory_order_acquire))) {
         gc_pool_lock();
@@ -2261,6 +2270,16 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
         }
         gc_pool_unlock();
     }
+}
+
+static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
+    if (++epoch == 0)
+        epoch = 1;
+
+    // Late writes into `old` pages since the last pass: back into the
+    // rotation before this cycle's decisions (and again at the end of
+    // SCAN_ROOTS — see gc_demote_redirtied).
+    gc_demote_redirtied();
 
 #ifdef YAFL_GC_VALIDATE_OLD
     // Diagnostic (test builds only): the old-generation purity invariant,
@@ -2471,6 +2490,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
     // genuinely live. They are still COUNTED this cycle: the end-of-major
     // baseline must reflect the set that existed before collection, else the
     // doubling trigger re-arms at the floor and majors thrash.
+    gc_demote_redirtied();   // late writes made before their writer's scan
     gc_dirty_old_count = 0;
     for (list_element_t *node = pages_to_scan.next; node != &pages_to_scan; node = node->next) {
         gc_page_t *page = (gc_page_t*)node;
