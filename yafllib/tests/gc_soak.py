@@ -77,7 +77,13 @@ TESTS = {
     "test_io_stress":        (300, {}),
     "test_parallel":         (60,  {}),
     "test_str":              (60,  {}),
+    # Compiled YAFL (tests/gc_stress.yafl): the builders, futures and memoize
+    # that generated code uses. Linked against the variant's libyafl.a, which
+    # takes the variant's COMPILER but is always the shipped -O3 NDEBUG build.
+    "gc_stress":             (300, {}),
 }
+# Tests that are YAFL programs, not C test targets: source, then arguments.
+YAFL_TESTS = {"gc_stress": ("tests/gc_stress.yafl", ["500"])}
 
 # Collector settings. Every profile poisons reclaimed memory, so a
 # use-after-free aborts instead of reading stale data.
@@ -106,6 +112,23 @@ PROFILES = {
 DEFAULT_PROFILES = list(PROFILES)
 
 
+def build_yafl(bdir, name):
+    """Compile a YAFL test program with the Python compiler against this
+    variant's runtime archive. Slow (minutes); rebuilt only when stale."""
+    src, _ = YAFL_TESTS[name]
+    src = YAFLLIB / src
+    out = bdir / name
+    lib = bdir / "libyafl.a"
+    if out.exists() and out.stat().st_mtime > max(src.stat().st_mtime, lib.stat().st_mtime):
+        return
+    main_py = YAFLLIB.parent / "compiler" / "main.py"
+    r = subprocess.run([sys.executable, str(main_py), "-O2", str(src), "-o", str(out)],
+                       env={**os.environ, "YAFL_LIBYAFL_A": str(lib)},
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"gc_soak: compiling {src.name} failed:\n{r.stdout[-4000:]}{r.stderr[-4000:]}")
+
+
 def build(variant, tests, jobs):
     cc, flags = BUILDS[variant]
     if shutil.which(cc) is None:
@@ -115,17 +138,22 @@ def build(variant, tests, jobs):
         subprocess.run(["cmake", "-S", str(YAFLLIB), "-B", str(bdir),
                         f"-DCMAKE_C_COMPILER={cc}", f"-DCMAKE_C_FLAGS={flags}"],
                        check=True, stdout=subprocess.DEVNULL)
-    r = subprocess.run(["cmake", "--build", str(bdir), "-j", str(jobs), "--target", *tests],
+    yafl = [t for t in tests if t in YAFL_TESTS]
+    targets = [t for t in tests if t not in YAFL_TESTS] + (["yafl_static"] if yafl else [])
+    r = subprocess.run(["cmake", "--build", str(bdir), "-j", str(jobs), "--target", *targets],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"gc_soak: build {variant} failed:\n{r.stdout[-4000:]}{r.stderr[-4000:]}")
+    for t in yafl:
+        print(f"  compiling {t} for {variant} ...", flush=True)
+        build_yafl(bdir, t)
     return bdir
 
 
-def run_one(binary, env, timeout):
+def run_one(binary, env, timeout, args=()):
     t0 = time.monotonic()
     try:
-        r = subprocess.run([str(binary)], env=env, capture_output=True, text=True,
+        r = subprocess.run([str(binary), *args], env=env, capture_output=True, text=True,
                            timeout=timeout, errors="replace")
         rc, out = r.returncode, r.stdout + r.stderr
     except subprocess.TimeoutExpired as e:
@@ -217,7 +245,8 @@ def main():
                 if c in stopped:
                     continue
                 b, t, p = c
-                f = ex.submit(run_one, dirs[b] / t, env_for(t, p), TESTS[t][0])
+                f = ex.submit(run_one, dirs[b] / t, env_for(t, p), TESTS[t][0],
+                              YAFL_TESTS.get(t, (None, []))[1])
                 pending[f] = (c, i)
                 return True
             return False
