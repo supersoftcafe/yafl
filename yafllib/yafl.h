@@ -486,10 +486,10 @@ typedef struct page_head {
     _Atomic(bool) redirty; // A late pin wrote an object on this page while it
                       // was `old`. Set by the MUTATOR (gc_note_late_write),
                       // consumed at the next cycle's start, which demotes the
-                      // page back into the rotation. One cycle of latency is
-                      // sound: the referent the write installed was allocated
-                      // on a birth-protected page, so the in-flight cycle
-                      // cannot free it before the demotion takes effect.
+                      // page back into the rotation — and at the end of
+                      // root scanning, so a write made before its writer's
+                      // scan is traced by the cycle in flight (see
+                      // gc_demote_redirtied in object.c).
     bool   dirty_old; // Aged page still holding young references: exempt from
                       // pruning, but force-marked as a root every cycle until
                       // its targets promote (then it graduates to `old`).
@@ -1218,26 +1218,30 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
 // overwrite does: during a cycle, a chain reachable at the snapshot through a
 // stub not yet scanned would otherwise live on only in the draining thread's
 // locals, which its root scan may already have passed, and be freed mid-drain
-// (gc_stress: the drain completing a reclaimed waiter). The shade comes after
-// the act, as in lazy_thunk_enqueue: a cycle opening between the two finds
-// the value in this thread's locals at its root scan. Waiters escaped when
-// they were enqueued, so the nursery owes nothing here.
+// (gc_stress: the drain completing a reclaimed waiter). The shade comes BEFORE
+// the delete, as in _queue_try_pop: a thread whose root scan is done holds
+// up nothing, so if it is preempted between deleting and shading, the cycle
+// can finish marking — and prune the value — in between (observed: the
+// exchange, then the stub's scan finding the sentinel, then the prune).
 //
 // Swap the waiter-chain root with the "init complete" sentinel and
 // return the previous head.  The loop body iterates from there.
 INLINE object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
-    object_t* head = (object_t*)atomic_exchange((_Atomic(object_t*)*)flag_field, (object_t*)1);
-    if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(head);
+    _Atomic(object_t*)* flag = (_Atomic(object_t*)*)flag_field;
+    object_t* head = atomic_load(flag);
+    do {
+        if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(head);
+    } while (!atomic_compare_exchange_weak(flag, &head, (object_t*)1));
     return head;
 }
 
-// Atomically read head->next and clear it; returns the next chain link
-// (NULL when this is the last waiter).
+// Read head->next and clear it; returns the next chain link (NULL when
+// this is the last waiter). Only the drain writes a published waiter's next.
 INLINE object_t* lazy_chain_step(object_t* head) {
     _Atomic(struct task_s*)* p = &((task_t*)head)->next;
     task_t* next = (task_t*)atomic_load(p);
-    atomic_store(p, NULL);
     if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2((object_t*)next);
+    atomic_store(p, NULL);
     return (object_t*)next;
 }
 
