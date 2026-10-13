@@ -2528,6 +2528,21 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
 
 static void gc_fsa_mark_sweep$page_needs_scan(gc_page_t *page) {
     gc_pool_lock();
+    // Marking only. A mark executor pumps the ring after its page loop with
+    // no stage check, so it can get here after the tail has retired the
+    // stage to PRUNE. The page is then on pages_to_prune, and moving it back
+    // to pages_to_scan took it out of this cycle's prune: its seen/scanned/
+    // atomic_seen bitmaps were never reset, and in the next cycle the page
+    // pass (seen & ~scanned) skipped every object scanned this cycle, so their
+    // children were never traced and were freed under them (test_gc_mesh,
+    // nursery off: a mailbox scanned, not pruned, then not rescanned). The
+    // tail retires the stage under this same lock, so the check is exact. A
+    // request dropped here is for a mark that landed after marking ended:
+    // prune's residue merge keeps that object, as before.
+    if (atomic_load_explicit(&stage, memory_order_relaxed) != GC_STAGE_MARK_SWEEP) {
+        gc_pool_unlock();
+        return;
+    }
     // CLAIMED page (popped by an executor, on no list): do NOT touch it — its
     // links are stale-nulled and its bitmaps are owner-exclusive. Skipping is
     // sound: the marks this requeue is signalling live in atomic_seen, and
