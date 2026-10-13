@@ -79,8 +79,12 @@ C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
    were not checked for regressions.
 2. **Cost check before merging**: `GC_PUBLISH_IN` adds a seq_cst fence per queue push and per
    `task_on_complete`; 2662195 adds two seq_cst RMWs on one shared counter per mutator mark while
-   marking. x86 is timing self-compiles at 2662195 vs each reverted (release -O3). If the counter
-   costs, a per-thread flag read by the tail is the uncontended alternative (same argument).
+   marking. x86 timing at 2662195 (release -O3 runtime, self-compile, interleaved, 3 runs each,
+   CPU-s): head 569.0, without GC_PUBLISH_IN 560.6, without the counter 560.7. The ~1.5% gap is
+   below the ~20 s spread within an arm, so neither change is resolved as a cost at this size;
+   ~10 runs per arm (~5 h on x86) would resolve <2%. Output C byte-identical in all arms. If
+   the counter turns out to cost, a per-thread flag read by the tail is the uncontended
+   alternative (same argument).
 3. Barrier-free publishing stores left as they are, believed safe because the published object is
    allocated immediately before: `lazy_thunk_enqueue` (waiter CAS) and `list_builder_link`. Worth a
    comment or a check.
