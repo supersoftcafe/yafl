@@ -42,38 +42,21 @@ and how to reproduce it. Each fix's commit message has the full reasoning and nu
 | 9c64e6b | `GC_ROOT_PUBLISH_IN` publishes heap lazy stubs too. | reasoning only |
 | 0e1755f | Mark executors keep claimed pages unlinked until they publish them (executor-local lists were spliced by `page_needs_scan` -> `pages_to_scan` corruption, `[DOUBLE-CLAIM]`). | 3/~1660 -> 0/1314 at gcc -O3 |
 | ae1c529 | **Hybrid write barrier**: while a thread is unscanned, `GC_WRITE_BARRIER_IN` also shades the NEW value (Go design 17503), read back later via `gc_thread_info.grey_slot`. Generated code unchanged. | gc_stress 2/2000 -> 0/2000 |
+| 960c34d | **`page_needs_scan` does nothing once marking has ended.** Mark executors pumped the reprocess ring after the tail retired the stage to PRUNE, pulling a page off `pages_to_prune`: it skipped that prune, kept stale `seen`/`scanned` bits, and the next cycle's page pass (`seen & ~scanned`) skipped its objects, whose children were freed. This was the nursery-off `test_gc_mesh` corruption. Not aarch64-specific. | diag build, Pi: 3 corruptions / 300 -> 0 / 300; x86: 6 / 1000 -> 0 / 1000 |
+| 3f95ab1 | `test_gc_mesh` reads mailbox slots through `object_resolve`, as generated code does for write-once fields. | test fidelity |
 
 Last full results on the branch head (ae1c529): -O3 soak (gcc-O3, clang-O3, gcc-O3-ndebug; every
 C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
 
 ## Open
 
-1. **`test_gc_mesh` with the nursery off fails about 1 in 1500-2000** (`CORRUPT bad checksum` or
-   `DANGLE ... mesh_node field#1 -> reclaimed`): a live node whose `next` (or a cell's value) was
-   freed. Seen on both sides of every recent change, so it predates them. Not root-caused.
-   Reproduce: `YAFL_GC_POISON=1 YAFL_LOCAL_GC=0 MESH_STEPS=50000 ./test_gc_mesh` in a loop (CTest's
-   `test_gc_mesh_global` environment), ideally two loops side by side. An x86 session found 0 in
-   4000 so far (TSO); that points at aarch64 ordering but isn't conclusive.
-
-   What the diagnostic hooks have established (2026-10-13), with the corrected detectors:
-   - **Shape A: marked but never scanned.** The end-of-mark check (below) flags it in the cycle
-     where it happens, before the prune that frees the child. Validation over 400 log-only runs:
-     7 runs flagged, 1 real failure, and that failure was flagged, naming the exact parent -> child
-     pair that later corrupted, and was the only flag whose parent had `page-pass scanned=0`. The
-     `scanned=1` flags (6 of 7) never led to a failure: treat them as harmless (husk pointers,
-     floating garbage). So `scanned=0` is the signature. A known way to produce it: the comment
-     in `gc_fsa_mark_sweep_tail` says a mutator barrier that read the flag true just before the
-     mark->prune transition can land a late reprocess-ring entry. That entry is dropped at the next
-     START's ring reset, so the object survives (prune's residue merge) but is never scanned. Why
-     the trace missed the object in the first place is not known.
-   - **Shape B: a live object's slot holds an object freed in an earlier cycle**, with no
-     `scanned=0` flag before it (seen once: `CORRUPT bad vtable`, a mailbox traced every cycle
-     whose slot points at a poisoned node). Not explained.
-   - Ruled out by captures: `yafl_cas_once` storing a value without a barrier (an experimental
-     change making it take `_gc_write_barrier_in2` is in the working tree on the Pi but NOT
-     committed; a 300-run A/B with the end-of-mark detector showed no difference, 8 vs 9); and
-     "the barrier flag read stale-off during a deletion" (a `DELETED-FLAG-OFF` probe never fired
-     in a failing run).
+1. **Resolved by 960c34d:** the nursery-off `test_gc_mesh` corruption (about 1 in 1500 plain runs).
+   How it was found, for reuse: the end-of-mark check (see the patch) flags the state in the cycle
+   it occurs; per-child "mailbox scanned" events showed a mailbox marked `scanned=1` that was never
+   scanned that cycle, and its page's history showed it had skipped the previous prune. The x86
+   session reproduced it with the diagnostic build (plain x86 builds never showed it in 16,000
+   runs), so it is a timing-dependent race, not an ARM ordering issue. Still worth a long A/B of
+   the PLAIN test (no diag build) on the Pi, where it failed about 1 in 1500.
 5. **x86 oversub OOMs** (from the x86 session): `test_gc_mesh` under gc_soak's `oversub`
    (`YAFL_THREADS=8 YAFL_LOCAL_GC_PAGES=4`) aborts with `[GC OOM] heap pages used 4096 of 4096`
    about 2 s in (cycles 7-18, stage prune, no old pages), 4 in the first 2250 runs on x86. Seen
