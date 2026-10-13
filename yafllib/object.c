@@ -425,6 +425,9 @@ _Atomic(uint64_t)            gc_cycle_count = 0;
 static _Atomic(gc_page_t*) reprocess_page_list[REPROCESS_PAGE_COUNT];
 static atomic_size_t       reprocess_page_head;
 static atomic_size_t       reprocess_page_tail;
+// Mutator barriers between setting a mark bit and (maybe) pushing its page on
+// the ring: atomic_gc_object_mark_as_seen. See gc_fsa_mark_sweep_tail.
+static _Atomic(int)        gc_ring_writers;
 static atomic_bool         reprocess_overflow_flag;
 
 // Mark worklist: a GROWABLE LIFO stack of objects discovered on an
@@ -2114,7 +2117,25 @@ EXPORT void gc_local_report(FILE *out) {
             (unsigned long long)gc_local_escapes);
 }
 
+static void atomic_gc_object_mark_as_seen$body(object_t *object);
+// A mutator's mark is two steps: set the object's atomic_seen bit, then, if
+// its page was already processed this epoch, push the page on the reprocess
+// ring so the object gets scanned. A marker that meets the object between
+// the two sees the bit and leaves the object to that push (mark_object's
+// pre-filter: "the setter made the worklist decision"). If the mark stage
+// could retire in between, the push landed after it and was dropped: the
+// object was kept by prune's residue merge but never scanned, and its
+// children were freed under it (test_gc_mesh, nursery off, after 960c34d).
+// So the mutator is counted across both steps, and the tail retires only
+// with no writer in the window and the ring empty. Exact: a marker that saw
+// the bit read it after the increment, and before the retire.
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
+    atomic_fetch_add_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
+    atomic_gc_object_mark_as_seen$body(object);
+    atomic_fetch_sub_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
+}
+
+static void atomic_gc_object_mark_as_seen$body(object_t *object) {
     gc_page_t* page; ptrdiff_t slot;
     object_get_page_and_slot(object, &page, &slot);
     assert(bitmap_test(&page->head.objects, slot));
@@ -3114,7 +3135,9 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     // worked; try again on a later step.
     gc_pool_lock();
     bool busy = !list_empty(&pages_to_scan)
-             || atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) != 0;
+             || atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) != 0
+             || atomic_load(&gc_ring_writers) != 0
+             || atomic_load(&reprocess_page_head) != atomic_load(&reprocess_page_tail);
     gc_pool_unlock();
     if (busy)
         return;
@@ -3147,7 +3170,9 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     // merge. Pre-existing window, unchanged shape.)
     gc_pool_lock();
     if (list_empty(&pages_to_scan)
-            && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0) {
+            && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0
+            && atomic_load(&gc_ring_writers) == 0
+            && atomic_load(&reprocess_page_head) == atomic_load(&reprocess_page_tail)) {
         gc_write_barrier_requested = false;
         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
     }
