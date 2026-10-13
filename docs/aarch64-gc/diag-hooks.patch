@@ -1,0 +1,199 @@
+--- a/yafllib/object.c
++++ b/yafllib/object.c
+@@ -2120,6 +2120,20 @@
+     assert(bitmap_test(&page->head.objects, slot));
+     if (page->head.old) return;   // old generation: implicitly live in minor cycles
+     bool is_seen = bitmap_test(&page->head.scanner.seen, slot);
++    if (!is_seen && atomic_load(&stage) == GC_STAGE_PRUNE && !page->head.dirty_old
++            && page->head.scanner.processed_by_epoch == epoch
++            && !bitmap_test(&page->head.scanner.atomic_seen, slot)) {
++        // Re-read the stamp AFTER the bitmaps: prune stamps the page before it
++        // resets them, so a still-current stamp means the bits were genuine.
++        atomic_thread_fence(memory_order_acquire);
++        if (page->head.scanner.processed_by_epoch == epoch
++                && !bitmap_test(&page->head.scanner.seen, slot)
++                && !bitmap_test(&page->head.scanner.atomic_seen, slot))
++            gc_diag_bad("LATE MARK (missed by trace)", object, __builtin_return_address(0));
++    }
++    if (!is_seen && gc_trace_enabled && !bitmap_test(&page->head.scanner.atomic_seen, slot)
++            && object_get_vtable(object)->name[5] == 'm')
++        gc_diag_obj_event(object, 31, (uint32_t)atomic_load(&stage));
+     if (!is_seen) {
+         if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot)
+ 
+@@ -2445,6 +2459,9 @@
+         // so this cycle's objects land after it rather than straddling onto a
+         // taken page.
+         gc_grey_flush(thread);   // the hybrid barrier's last pending store
++        if (UNLIKELY(gc_trace_enabled))
++            for (list_element_t *n = thread->new_pages.next; n != &thread->new_pages; n = n->next)
++                GC_TRACE_PAGE(n, GCT_ALLOC, NULL, 0xA5A5);   // DIAG: page joins the pool at a root scan
+         list_move(&pages_to_scan, &thread->new_pages);
+         gc_local_on_root_scan(thread);
+         thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
+@@ -2574,6 +2591,8 @@
+     // has warmed the exact line the RMW then needs.
+     if (bitmap_test(&page->head.scanner.atomic_seen, slot)) return;
+     bool was_set = atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
++    if (!was_set && gc_trace_enabled && object_get_vtable(object)->name[5] == 'm')   // "mesh_mail"
++        gc_diag_obj_event(object, 30, page->head.scanner.processed_by_epoch == epoch);
+     // Heap census: exactly once per live object per cycle, on the winning
+     // first-mark (docs/heap-profiling-design.md).
+     if (UNLIKELY(yafl_heapprof_enabled) && !was_set)
+@@ -2721,6 +2740,11 @@
+ 
+ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
+     if (UNLIKELY(gc_stats_enabled)) gc_prof_objs++;
++    if (gc_trace_enabled && !vtable_is_forward(object->vtable)
++            && strcmp(vtable_untag(object->vtable)->name, "mesh_cell") == 0) {
++        object_t *child = ((object_t**)object)[1];
++        if (child && gc_in_heap(child)) gc_diag_obj_event(child, 32, (uint32_t)epoch);
++    }
+     if (UNLIKELY(gc_poison_enabled))
+         gc_dbg_dangle_check(object);
+     // Find the real vtable pointer (forwarding-aware; targets get marked too:
+@@ -3263,6 +3287,8 @@
+         for (unsigned bi = 0; bi < n; ++bi) {
+         gc_page_t *page = batch[bi];
+         assert(page->head.scanner.processed_by_epoch == epoch);
++        page->head.scanner.processed_by_epoch = 0xFFFFFFFEu;   // DIAG: being pruned (before any reset)
++        atomic_thread_fence(memory_order_release);
+         // (flag cleared under the claim lock above)   // stale by now:
+         // during PRUNE the barrier is off and mark executors are gone, so a
+         // lingering flag can only be a consumed mark-stage duplicate whose
+@@ -3874,6 +3900,7 @@
+     object_t **s = t->grey_slot;
+     if (s == NULL) return;
+     t->grey_slot = NULL;
++    gc_diag_obj_event(s[0], 24, (uint32_t)atomic_load(&stage));
+     _gc_write_barrier2(s, t->grey_mask);
+ }
+ 
+@@ -3883,6 +3910,7 @@
+     _gc_write_barrier2(field, mask);       // this store's old value
+     if (atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
+             & GC_SAFE_POINT_SCAN_ROOTS) {
++        gc_diag_obj_event(field[0], 25, (uint32_t)atomic_load(&stage));
+         t->grey_slot = field;              // this store's new value, later
+         t->grey_mask = mask;
+     }
+--- a/yafllib/gc_debug.c
++++ b/yafllib/gc_debug.c
+@@ -6,6 +6,7 @@
+ #include <string.h>
+ #include <sys/mman.h>
+ #include <pthread.h>
++#include <execinfo.h>
+ 
+ // --- Heap hunt (YAFL_GC_HUNT, diagnostics only) ------------------------------
+ //
+@@ -263,7 +264,7 @@
+ // read after the fact. Off: one predictable branch per recorded event.
+ bool gc_trace_enabled = false;
+ 
+-enum { GC_TRACE_DEPTH = 32 };
++enum { GC_TRACE_DEPTH = 512 };
+ struct gc_trace_event {
+     uint64_t seq;
+     uint32_t cycle;
+@@ -290,7 +291,7 @@
+     [GCT_ALLOC] = "alloc", [GCT_LOCAL_TAKE] = "nursery-take",
+     [GCT_LOCAL_SWEEP] = "nursery-sweep", [GCT_LOCAL_PROMOTE] = "nursery-promote",
+     [GCT_LOCAL_RELEASE] = "nursery-release", [GCT_PRUNE] = "prune",
+-    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free",
++    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free", [23] = "cell-store(value)", [24] = "grey-flush(value)", [25] = "grey-record(old)", [26] = "barrier-shade-old", [27] = "cas-once(value)", [28] = "cas-once(owner)", [29] = "DELETED-FLAG-OFF", [30] = "marked(by marker)", [31] = "marked(by mutator)", [32] = "seen-in-scanned-cell",
+ };
+ 
+ // One failure report at a time: whoever reports first holds this until it
+@@ -327,7 +328,8 @@
+     struct gc_trace_page *tp = &gc_trace_pages[pi];
+     uint32_t k = atomic_fetch_add_explicit(&tp->n, 1, memory_order_relaxed) % GC_TRACE_DEPTH;
+     struct gc_trace_event *ev = &tp->ev[k];
+-    ev->seq   = atomic_fetch_add_explicit(&gc_trace_seq, 1, memory_order_relaxed) + 1;
++    uint64_t ts; __asm__ volatile("mrs %0, cntvct_el0" : "=r"(ts));
++    ev->seq   = ts;
+     ev->cycle = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
+     ev->epoch = epoch;
+     ev->tid   = gc_trace_tid;
+@@ -392,3 +394,29 @@
+             gc_thread_info.local_epoch);
+     fflush(out);
+ }
++
++EXPORT void gc_diag_bad(const char* what, object_t* bad, const void* via) {
++    gc_trace_report_begin();
++    fprintf(stderr, "\nDIAG %s: %p (via %p) cycle-now %llu\n", what, (void*)bad, via,
++            (unsigned long long)atomic_load(&gc_cycle_count));
++    gc_trace_explain("bad", bad);
++    if (via && gc_in_heap(via)) gc_trace_explain("via", via);
++    void* bt[40]; int n = backtrace(bt, 40);
++    fprintf(stderr, "  backtrace:");
++    for (int i = 0; i < n; ++i) fprintf(stderr, " %p", bt[i]);
++    fprintf(stderr, "\n");
++    FILE* m = fopen("/proc/self/maps", "r"); char line[512];
++    while (m && fgets(line, sizeof line, m)) if (strstr(line, "r-xp") && strstr(line, "mesh")) fputs(line, stderr);
++    if (m) fclose(m);
++    fflush(stderr);
++    abort();
++}
++
++EXPORT void gc_diag_obj_event(const void* obj, int kind, uint32_t aux) {
++    if (!gc_trace_enabled || !obj || ((uintptr_t)obj & 7) || !gc_in_heap(obj)) return;
++    gc_page_t* page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
++    bitmap_t b; memset(&b, 0, sizeof b);
++    long slot = ((char*)obj - (char*)page->slots) / GC_SLOT_SIZE;
++    if (slot >= 0 && slot < SLOTS_PER_PAGE) b.a[slot / GC_MASK_SIZE] |= (mask_bits_t)1 << (slot % GC_MASK_SIZE);
++    gc_trace_page_event(page, (enum gc_trace_kind)kind, &b, aux);
++}
+--- a/yafllib/yafl.h
++++ b/yafllib/yafl.h
+@@ -980,7 +980,9 @@
+ EXTERN bool gc_debug_major_now(object_t *ignored);
+ // YAFL_GC_TRACE: print what the collector last did to the page holding `p`.
+ EXTERN void gc_trace_explain(const char *label, const void *p);
+-EXTERN void gc_trace_report_begin(void);   // serialise failure reports; abort after
++EXTERN void gc_trace_report_begin(void);
++EXTERN void gc_diag_bad(const char* what, object_t* bad, const void* via);
++EXTERN void gc_diag_obj_event(const void* obj, int kind, uint32_t aux);   // serialise failure reports; abort after
+ EXTERN vtable_t *object_get_vtable(object_t *object);
+ 
+ // TRUE virtual dispatch: probe the hashed function table. The pre-rotated
+--- a/yafllib/once.c
++++ b/yafllib/once.c
+@@ -43,6 +43,9 @@
+     bool ok = (*field == NULL);
+     if (ok) {
+         __atomic_store_n((uintptr_t*)field, (uintptr_t)value, __ATOMIC_RELEASE);
++        gc_diag_obj_event(value, 27, (uint32_t)(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed) & 1) * 16
++                                     + (uint32_t)gc_write_barrier_requested * 8);
++        gc_diag_obj_event(owner, 28, 0);
+         if (gc_local_live_now())
+             gc_local_note_slot(owner, field, 1);
+     }
+--- a/yafllib/tests/test_gc_mesh.c
++++ b/yafllib/tests/test_gc_mesh.c
+@@ -34,6 +34,7 @@
+ // every YAFL_GC_* / YAFL_LOCAL_GC* setting. Run under YAFL_GC_POISON=1.
+ 
+ #include "../yafl.h"
++#include "../gc_internal.h"
+ #include "../once.h"
+ #include <pthread.h>
+ #include <stdatomic.h>
+@@ -223,8 +224,16 @@
+ // are never relocated, so the pinned copy is the cell itself.
+ static void publish(int cell, object_t* value) {
+     struct cell* c = (struct cell*)object_pin_resolve(_cells[cell]);
++    bool diag_flag = gc_write_barrier_requested;
++    unsigned diag_stage = (unsigned)atomic_load(&stage);
++    object_t* diag_old = c->val;
+     GC_WRITE_BARRIER_IN(c, c->val, 1);
+     c->val = value;
++    if (!diag_flag && diag_stage >= GC_STAGE_START && diag_stage <= GC_STAGE_MARK_SWEEP)
++        gc_diag_obj_event(diag_old, 29, diag_stage);   // deleted with the flag read OFF mid-cycle
++    if (!(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed) & 1)) {} else
++    gc_diag_obj_event(value, 23, (uint32_t)(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed) & 1) * 16
++                                 + (uint32_t)gc_write_barrier_requested * 8 + (uint32_t)atomic_load(&stage));
+     object_unpin((object_t*)c);
+ }
+ static object_t* take(int cell) {
