@@ -185,11 +185,15 @@ static void verify_chain(object_t* chain, int worker, object_t* root) {
 }
 
 // A value held in a cell, stash or carry slot: a chain or a mailbox. Mailbox
-// slots are read lock-free (acquire pairs with yafl_cas_once's release).
+// slots are read lock-free (acquire pairs with yafl_cas_once's release), on
+// the CURRENT copy: a mailbox's slots are write-once (pinnable) fields, and a
+// fill lands only on the live copy, so a reader holding a pre-relocation
+// address resolves first — as generated code does for [pinnable] reads
+// (object_resolve, yafl.h).
 static void verify(object_t* v, int worker) {
     if (v == NULL) return;
     if (object_get_vtable(v) == &mail_vt) {
-        struct mailbox* m = (struct mailbox*)v;
+        struct mailbox* m = (struct mailbox*)object_resolve(v);
         if (m->magic != MAIL_MAGIC) die("bad mailbox", worker, v, v, 0);
         for (int k = 0; k < MAILSLOTS; ++k)
             verify_chain(__atomic_load_n(&m->slot[k], __ATOMIC_ACQUIRE), worker, v);
