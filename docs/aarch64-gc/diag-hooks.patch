@@ -21,7 +21,18 @@
      if (!is_seen) {
          if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot)
  
-@@ -2445,6 +2459,9 @@
+@@ -2338,6 +2352,10 @@
+     // Pairs with the fence in gc_root_publish: a store into a root slot is
+     // either read by the snapshot below or published under the flag.
+     atomic_thread_fence(memory_order_seq_cst);
++    for (size_t k = reprocess_page_head; k < reprocess_page_tail; ++k) {   // DIAG: dropped entries
++        gc_page_t *dp = reprocess_page_list[k % REPROCESS_PAGE_COUNT];
++        if (dp) GC_TRACE_PAGE(dp, (enum gc_trace_kind)33, NULL, (uint32_t)(reprocess_page_tail - reprocess_page_head));
++    }
+     reprocess_page_head = reprocess_page_tail = 0;
+     memset(reprocess_page_list, 0, sizeof(reprocess_page_list));
+ 
+@@ -2445,6 +2463,9 @@
          // so this cycle's objects land after it rather than straddling onto a
          // taken page.
          gc_grey_flush(thread);   // the hybrid barrier's last pending store
@@ -31,7 +42,7 @@
          list_move(&pages_to_scan, &thread->new_pages);
          gc_local_on_root_scan(thread);
          thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
-@@ -2574,6 +2591,8 @@
+@@ -2574,6 +2595,8 @@
      // has warmed the exact line the RMW then needs.
      if (bitmap_test(&page->head.scanner.atomic_seen, slot)) return;
      bool was_set = atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
@@ -40,7 +51,7 @@
      // Heap census: exactly once per live object per cycle, on the winning
      // first-mark (docs/heap-profiling-design.md).
      if (UNLIKELY(yafl_heapprof_enabled) && !was_set)
-@@ -2721,6 +2740,11 @@
+@@ -2721,6 +2744,11 @@
  
  static void gc_fsa_mark_sweep$scan_object(object_t *object) {
      if (UNLIKELY(gc_stats_enabled)) gc_prof_objs++;
@@ -52,7 +63,62 @@
      if (UNLIKELY(gc_poison_enabled))
          gc_dbg_dangle_check(object);
      // Find the real vtable pointer (forwarding-aware; targets get marked too:
-@@ -3263,6 +3287,8 @@
+@@ -3089,6 +3117,46 @@
+ // The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock with
+ // zero concurrent executors, re-verifies completion, and either requeues work
+ // (overflow re-scan) or retires the stage. Returns the stage to store.
++
++// DIAG: at the instant marking ends there are no grey objects, so no marked
++// object may point at an unmarked object on a page this cycle collects.
++static bool diag_marked(gc_page_t *pg, unsigned slot) {
++    return bitmap_test(&pg->head.scanner.seen, slot) || bitmap_test(&pg->head.scanner.atomic_seen, slot);
++}
++static void diag_check_end_of_mark(void) {
++    if (!gc_trace_enabled) return;
++    for (list_element_t *node = pages_to_prune.next; node != &pages_to_prune; node = node->next) {
++        gc_page_t *page = (gc_page_t*)node;
++        if (page->head.pages != 1 || page->head.mutable) continue;
++        for (unsigned slot = 0; slot < SLOTS_PER_PAGE; ++slot) {
++            if (!bitmap_test(&page->head.objects, slot) || !diag_marked(page, slot)) continue;
++            object_t *obj = (object_t*)&page->slots[slot];
++            vtable_t *vt = obj->vtable;
++            if (vtable_is_forward(vt)) continue;
++            vt = vtable_untag(vt);
++            if (vt->object_pointer_masks != NULL || vt->array_el_pointer_locations) continue;
++            ptr_mask_t m = vt->object_pointer_locations;
++            while (m) {
++                unsigned i = __builtin_ctzll(m); m &= m - 1;
++                object_t *c = ((object_t**)obj)[i];
++                if (!gc_object_is_on_heap_fast(c)) continue;
++                gc_page_t *cp = (gc_page_t*)((uintptr_t)c & ~(uintptr_t)(GC_PAGE_SIZE - 1));
++                if (cp->head.tag != PAGE_MAGIC_NUMBER || cp->head.old || cp->head.pages != 1) continue;
++                if (cp->head.scanner.processed_by_epoch != epoch) continue;   // not collected this cycle
++                long cs = (long)((slot_t*)c - cp->slots);
++                if (cs < 0 || cs >= SLOTS_PER_PAGE || !bitmap_test(&cp->head.objects, (unsigned)cs)) continue;
++                if (diag_marked(cp, (unsigned)cs)) continue;
++                bool scanned_by_pass = bitmap_test(&page->head.scanner.scanned, slot);
++                fprintf(stderr, "\nEND-OF-MARK VIOLATION cycle %llu: marked %p (%s, page-pass scanned=%d) field %u -> unmarked %p\n",
++                        (unsigned long long)atomic_load(&gc_cycle_count), (void*)obj, vt->name,
++                        (int)bitmap_test(&page->head.scanner.scanned, slot), i, (void*)c);
++                fflush(stderr);
++                if (!scanned_by_pass) gc_diag_bad("end-of-mark violation (never scanned)", c, obj);
++                return;   // scanned parents: log only, keep running
++            }
++        }
++    }
++}
+ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
+     // Late ring entries (and any page they requeue) keep the stage alive.
+     gc_fsa_mark_sweep$pump_ring();
+@@ -3133,6 +3201,7 @@
+     gc_pool_lock();
+     if (list_empty(&pages_to_scan)
+             && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0) {
++        diag_check_end_of_mark();
+         gc_write_barrier_requested = false;
+         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
+     }
+@@ -3263,6 +3332,8 @@
          for (unsigned bi = 0; bi < n; ++bi) {
          gc_page_t *page = batch[bi];
          assert(page->head.scanner.processed_by_epoch == epoch);
@@ -61,7 +127,7 @@
          // (flag cleared under the claim lock above)   // stale by now:
          // during PRUNE the barrier is off and mark executors are gone, so a
          // lingering flag can only be a consumed mark-stage duplicate whose
-@@ -3874,6 +3900,7 @@
+@@ -3874,6 +3945,7 @@
      object_t **s = t->grey_slot;
      if (s == NULL) return;
      t->grey_slot = NULL;
@@ -69,7 +135,7 @@
      _gc_write_barrier2(s, t->grey_mask);
  }
  
-@@ -3883,6 +3910,7 @@
+@@ -3883,6 +3955,7 @@
      _gc_write_barrier2(field, mask);       // this store's old value
      if (atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
              & GC_SAFE_POINT_SCAN_ROOTS) {
@@ -101,7 +167,7 @@
      [GCT_LOCAL_SWEEP] = "nursery-sweep", [GCT_LOCAL_PROMOTE] = "nursery-promote",
      [GCT_LOCAL_RELEASE] = "nursery-release", [GCT_PRUNE] = "prune",
 -    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free",
-+    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free", [23] = "cell-store(value)", [24] = "grey-flush(value)", [25] = "grey-record(old)", [26] = "barrier-shade-old", [27] = "cas-once(value)", [28] = "cas-once(owner)", [29] = "DELETED-FLAG-OFF", [30] = "marked(by marker)", [31] = "marked(by mutator)", [32] = "seen-in-scanned-cell",
++    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free", [23] = "cell-store(value)", [24] = "grey-flush(value)", [25] = "grey-record(old)", [26] = "barrier-shade-old", [27] = "cas-once(value)", [28] = "cas-once(owner)", [29] = "DELETED-FLAG-OFF", [30] = "marked(by marker)", [31] = "marked(by mutator)", [32] = "seen-in-scanned-cell", [33] = "RING ENTRY DROPPED",
  };
  
  // One failure report at a time: whoever reports first holds this until it
@@ -160,9 +226,20 @@
  // TRUE virtual dispatch: probe the hashed function table. The pre-rotated
 --- a/yafllib/once.c
 +++ b/yafllib/once.c
-@@ -43,6 +43,9 @@
+@@ -42,7 +42,20 @@
+     // and readers deliberately do not take the pin.
      bool ok = (*field == NULL);
      if (ok) {
++        // The store takes the write barrier like any other pointer store: it
++        // bypassed it, so the hybrid barrier's insertion half never saw it. A
++        // thread not yet root-scanned that fills a slot of an object this
++        // cycle has already scanned (or never will: born after its thread's
++        // scan) and then drops the value hid it from the cycle — caught at
++        // the end of mark as a scanned mailbox pointing at an unmarked chain
++        // (test_gc_mesh, nursery off). The deletion half shades the NULL being
++        // replaced, a no-op; the nursery's note follows the store as before.
++        if (UNLIKELY(gc_write_barrier_requested))
++            _gc_write_barrier_in2(field, 1);
          __atomic_store_n((uintptr_t*)field, (uintptr_t)value, __ATOMIC_RELEASE);
 +        gc_diag_obj_event(value, 27, (uint32_t)(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed) & 1) * 16
 +                                     + (uint32_t)gc_write_barrier_requested * 8);

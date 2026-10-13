@@ -52,7 +52,33 @@ C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
    `DANGLE ... mesh_node field#1 -> reclaimed`): a live node whose `next` (or a cell's value) was
    freed. Seen on both sides of every recent change, so it predates them. Not root-caused.
    Reproduce: `YAFL_GC_POISON=1 YAFL_LOCAL_GC=0 MESH_STEPS=50000 ./test_gc_mesh` in a loop (CTest's
-   `test_gc_mesh_global` environment), ideally two loops side by side.
+   `test_gc_mesh_global` environment), ideally two loops side by side. An x86 session found 0 in
+   4000 so far (TSO); that points at aarch64 ordering but isn't conclusive.
+
+   What the diagnostic hooks have established (2026-10-13), with the corrected detectors:
+   - **Shape A: marked but never scanned.** The end-of-mark check (below) flags it in the cycle
+     where it happens, before the prune that frees the child. Validation over 400 log-only runs:
+     7 runs flagged, 1 real failure, and that failure was flagged, naming the exact parent -> child
+     pair that later corrupted, and was the only flag whose parent had `page-pass scanned=0`. The
+     `scanned=1` flags (6 of 7) never led to a failure: treat them as harmless (husk pointers,
+     floating garbage). So `scanned=0` is the signature. A known way to produce it: the comment
+     in `gc_fsa_mark_sweep_tail` says a mutator barrier that read the flag true just before the
+     mark->prune transition can land a late reprocess-ring entry. That entry is dropped at the next
+     START's ring reset, so the object survives (prune's residue merge) but is never scanned. Why
+     the trace missed the object in the first place is not known.
+   - **Shape B: a live object's slot holds an object freed in an earlier cycle**, with no
+     `scanned=0` flag before it (seen once: `CORRUPT bad vtable`, a mailbox traced every cycle
+     whose slot points at a poisoned node). Not explained.
+   - Ruled out by captures: `yafl_cas_once` storing a value without a barrier (an experimental
+     change making it take `_gc_write_barrier_in2` is in the working tree on the Pi but NOT
+     committed; a 300-run A/B with the end-of-mark detector showed no difference, 8 vs 9); and
+     "the barrier flag read stale-off during a deletion" (a `DELETED-FLAG-OFF` probe never fired
+     in a failing run).
+5. **x86 oversub OOMs** (from the x86 session): `test_gc_mesh` under gc_soak's `oversub`
+   (`YAFL_THREADS=8 YAFL_LOCAL_GC_PAGES=4`) aborts with `[GC OOM] heap pages used 4096 of 4096`
+   about 2 s in (cycles 7-18, stage prune, no old pages), 4 in the first 2250 runs on x86. Seen
+   once in 1000 on the Pi (main, gcc -O2). Looks like garbage outrunning the collector, or the
+   allocator stall (`gc_page_alloc_impl`) not holding; not investigated.
 2. **Cost check before merging**: `GC_PUBLISH_IN` adds a seq_cst fence per queue push and per
    `task_on_complete`. Needs an x86 self-compile timing.
 3. Barrier-free publishing stores left as they are, believed safe because the published object is
@@ -78,7 +104,8 @@ C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
 
 ## Diagnostic hooks (not committed to the runtime): `diag-hooks.patch`
 
-`docs/aarch64-gc/diag-hooks.patch` applies to ae1c529 with `git apply`. It adds:
+`docs/aarch64-gc/diag-hooks.patch` applies to the branch head with `git apply`. Its `once.c` part also
+carries the experimental `yafl_cas_once` barrier change (see Open item 1). It adds:
 
 - `gc_diag_bad(what, obj, via)`: prints the trace for obj and via, plus a raw backtrace and the
   executable's load address (decode with `addr2line -e <bin> -f -i -p` on `addr - base`).
@@ -91,6 +118,12 @@ C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
   (`0xFFFFFFFE`) BEFORE resetting anything, with a release fence, and the detector re-reads the
   stamp after the bitmaps behind an acquire fence. The late-mark captures taken before that fix (all
   on 2026-10-13) should be treated as unreliable.
+- **The end-of-mark check** (`diag_check_end_of_mark`, called in `gc_fsa_mark_sweep_tail` just
+  before the stage becomes PRUNE): walks `pages_to_prune`, and for every marked object checks that
+  each child on a page collected this cycle is marked. It prints every violation with the parent's
+  `page-pass scanned` bit, and aborts only when that bit is 0 (shape A above). Validated as
+  described under Open.
+- A dropped-ring-entry event at the START ring reset (`RING ENTRY DROPPED`, on the page).
 - Extra trace events: page joins the pool at a root scan (`alloc` with aux 0xA5A5 = 42405),
   hybrid-barrier record/flush, `yafl_cas_once` fills, mesh cell stores (with the storing thread's
   grey bit, the barrier flag, and the stage packed into aux), `DELETED-FLAG-OFF`, and mailbox mark
