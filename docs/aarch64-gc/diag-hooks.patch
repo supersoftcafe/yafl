@@ -63,7 +63,7 @@
      if (UNLIKELY(gc_poison_enabled))
          gc_dbg_dangle_check(object);
      // Find the real vtable pointer (forwarding-aware; targets get marked too:
-@@ -3089,6 +3117,46 @@
+@@ -3089,6 +3117,59 @@
  // The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock with
  // zero concurrent executors, re-verifies completion, and either requeues work
  // (overflow re-scan) or retires the stage. Returns the stage to store.
@@ -75,6 +75,7 @@
 +}
 +static void diag_check_end_of_mark(void) {
 +    if (!gc_trace_enabled) return;
++    unsigned diag_violations = 0;
 +    for (list_element_t *node = pages_to_prune.next; node != &pages_to_prune; node = node->next) {
 +        gc_page_t *page = (gc_page_t*)node;
 +        if (page->head.pages != 1 || page->head.mutable) continue;
@@ -100,17 +101,29 @@
 +                fprintf(stderr, "\nEND-OF-MARK VIOLATION cycle %llu: marked %p (%s, page-pass scanned=%d) field %u -> unmarked %p\n",
 +                        (unsigned long long)atomic_load(&gc_cycle_count), (void*)obj, vt->name,
 +                        (int)bitmap_test(&page->head.scanner.scanned, slot), i, (void*)c);
++                fprintf(stderr, "  parent page %p slot %u: pinned=%d compacted=%d processed=%u seen=%d atomic=%d; child page %p: compacted=%d(cycle %u) child-word0=%p\n",
++                        (void*)page, slot, page->head.scanner.pinned, page->head.compacted,
++                        page->head.scanner.processed_by_epoch,
++                        (int)bitmap_test(&page->head.scanner.seen, slot), (int)bitmap_test(&page->head.scanner.atomic_seen, slot),
++                        (void*)cp, cp->head.compacted, cp->head.compacted_cycle, *(void**)c);
 +                fflush(stderr);
-+                if (!scanned_by_pass) gc_diag_bad("end-of-mark violation (never scanned)", c, obj);
-+                return;   // scanned parents: log only, keep running
++                if (++diag_violations >= 40) goto done;
++                continue;
 +            }
 +        }
 +    }
++done:
++    if (diag_violations) {
++        fprintf(stderr, "END-OF-MARK cycle %llu: %u violation(s)\n",
++                (unsigned long long)atomic_load(&gc_cycle_count), diag_violations);
++        fflush(stderr);
++    }
 +}
++
  static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
      // Late ring entries (and any page they requeue) keep the stage alive.
      gc_fsa_mark_sweep$pump_ring();
-@@ -3133,6 +3201,7 @@
+@@ -3133,6 +3214,7 @@
      gc_pool_lock();
      if (list_empty(&pages_to_scan)
              && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0) {
@@ -118,7 +131,7 @@
          gc_write_barrier_requested = false;
          atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
      }
-@@ -3263,6 +3332,8 @@
+@@ -3263,6 +3345,8 @@
          for (unsigned bi = 0; bi < n; ++bi) {
          gc_page_t *page = batch[bi];
          assert(page->head.scanner.processed_by_epoch == epoch);
@@ -127,7 +140,7 @@
          // (flag cleared under the claim lock above)   // stale by now:
          // during PRUNE the barrier is off and mark executors are gone, so a
          // lingering flag can only be a consumed mark-stage duplicate whose
-@@ -3874,6 +3945,7 @@
+@@ -3874,6 +3958,7 @@
      object_t **s = t->grey_slot;
      if (s == NULL) return;
      t->grey_slot = NULL;
@@ -135,7 +148,7 @@
      _gc_write_barrier2(s, t->grey_mask);
  }
  
-@@ -3883,6 +3955,7 @@
+@@ -3883,6 +3968,7 @@
      _gc_write_barrier2(field, mask);       // this store's old value
      if (atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
              & GC_SAFE_POINT_SCAN_ROOTS) {
@@ -171,17 +184,16 @@
  };
  
  // One failure report at a time: whoever reports first holds this until it
-@@ -327,7 +328,8 @@
+@@ -327,7 +328,7 @@
      struct gc_trace_page *tp = &gc_trace_pages[pi];
      uint32_t k = atomic_fetch_add_explicit(&tp->n, 1, memory_order_relaxed) % GC_TRACE_DEPTH;
      struct gc_trace_event *ev = &tp->ev[k];
 -    ev->seq   = atomic_fetch_add_explicit(&gc_trace_seq, 1, memory_order_relaxed) + 1;
-+    uint64_t ts; __asm__ volatile("mrs %0, cntvct_el0" : "=r"(ts));
-+    ev->seq   = ts;
++    ev->seq   = gc_tsc();   // DIAG: a shared clock (cntvct_el0 / rdtsc), not a contended global counter
      ev->cycle = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
      ev->epoch = epoch;
      ev->tid   = gc_trace_tid;
-@@ -392,3 +394,29 @@
+@@ -392,3 +393,29 @@
              gc_thread_info.local_epoch);
      fflush(out);
  }
@@ -257,6 +269,15 @@
  #include "../once.h"
  #include <pthread.h>
  #include <stdatomic.h>
+@@ -189,7 +190,7 @@
+ static void verify(object_t* v, int worker) {
+     if (v == NULL) return;
+     if (object_get_vtable(v) == &mail_vt) {
+-        struct mailbox* m = (struct mailbox*)v;
++        struct mailbox* m = (struct mailbox*)object_resolve(v);
+         if (m->magic != MAIL_MAGIC) die("bad mailbox", worker, v, v, 0);
+         for (int k = 0; k < MAILSLOTS; ++k)
+             verify_chain(__atomic_load_n(&m->slot[k], __ATOMIC_ACQUIRE), worker, v);
 @@ -223,8 +224,16 @@
  // are never relocated, so the pinned copy is the cell itself.
  static void publish(int cell, object_t* value) {
