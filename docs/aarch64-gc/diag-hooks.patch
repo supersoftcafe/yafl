@@ -42,7 +42,7 @@
          list_move(&pages_to_scan, &thread->new_pages);
          gc_local_on_root_scan(thread);
          thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
-@@ -2574,6 +2595,8 @@
+@@ -2589,6 +2610,8 @@
      // has warmed the exact line the RMW then needs.
      if (bitmap_test(&page->head.scanner.atomic_seen, slot)) return;
      bool was_set = atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
@@ -51,10 +51,28 @@
      // Heap census: exactly once per live object per cycle, on the winning
      // first-mark (docs/heap-profiling-design.md).
      if (UNLIKELY(yafl_heapprof_enabled) && !was_set)
-@@ -2721,6 +2744,11 @@
+@@ -2736,6 +2759,29 @@
  
  static void gc_fsa_mark_sweep$scan_object(object_t *object) {
      if (UNLIKELY(gc_stats_enabled)) gc_prof_objs++;
++    if (gc_trace_enabled && !vtable_is_forward(object->vtable)
++            && strcmp(vtable_untag(object->vtable)->name, "mesh_mailbox") == 0) {
++        for (unsigned k = 2; k < 6; ++k) {   // the four slots (words 2..5)
++            object_t *c = ((object_t**)object)[k];
++            uint32_t code;
++            if (!gc_object_is_on_heap_fast(c)) code = c ? 5 : 0;
++            else {
++                gc_page_t *cp = (gc_page_t*)((uintptr_t)c & ~(uintptr_t)(GC_PAGE_SIZE - 1));
++                unsigned cs = (unsigned)((slot_t*)c - cp->slots);
++                code = cp->head.old ? 1 : bitmap_test(&cp->head.scanner.seen, cs) ? 2
++                     : bitmap_test(&cp->head.scanner.atomic_seen, cs) ? 3 : 4;
++            }
++            if (code) {
++                gc_diag_obj_event(c, 34, code * 1000 + (uint32_t)epoch % 1000);
++                gc_diag_obj_event(object, 35, k * 1000 + code);
++            }
++        }
++    }
 +    if (gc_trace_enabled && !vtable_is_forward(object->vtable)
 +            && strcmp(vtable_untag(object->vtable)->name, "mesh_cell") == 0) {
 +        object_t *child = ((object_t**)object)[1];
@@ -63,7 +81,7 @@
      if (UNLIKELY(gc_poison_enabled))
          gc_dbg_dangle_check(object);
      // Find the real vtable pointer (forwarding-aware; targets get marked too:
-@@ -3089,6 +3117,59 @@
+@@ -3104,6 +3150,65 @@
  // The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock with
  // zero concurrent executors, re-verifies completion, and either requeues work
  // (overflow re-scan) or retires the stage. Returns the stage to store.
@@ -106,6 +124,12 @@
 +                        page->head.scanner.processed_by_epoch,
 +                        (int)bitmap_test(&page->head.scanner.seen, slot), (int)bitmap_test(&page->head.scanner.atomic_seen, slot),
 +                        (void*)cp, cp->head.compacted, cp->head.compacted_cycle, *(void**)c);
++                if (diag_violations == 0) {   // history of the first pair
++                    fprintf(stderr, "  child old=%d dirty_old=%d seen-bit=%d atomic-bit=%d\n", cp->head.old, cp->head.dirty_old,
++                            (int)bitmap_test(&cp->head.scanner.seen, (unsigned)cs), (int)bitmap_test(&cp->head.scanner.atomic_seen, (unsigned)cs));
++                    gc_trace_explain("violating child", c);
++                    gc_trace_explain("violating parent", obj);
++                }
 +                fflush(stderr);
 +                if (++diag_violations >= 40) goto done;
 +                continue;
@@ -123,7 +147,7 @@
  static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
      // Late ring entries (and any page they requeue) keep the stage alive.
      gc_fsa_mark_sweep$pump_ring();
-@@ -3133,6 +3214,7 @@
+@@ -3148,6 +3253,7 @@
      gc_pool_lock();
      if (list_empty(&pages_to_scan)
              && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0) {
@@ -131,7 +155,7 @@
          gc_write_barrier_requested = false;
          atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
      }
-@@ -3263,6 +3345,8 @@
+@@ -3278,6 +3384,8 @@
          for (unsigned bi = 0; bi < n; ++bi) {
          gc_page_t *page = batch[bi];
          assert(page->head.scanner.processed_by_epoch == epoch);
@@ -140,7 +164,7 @@
          // (flag cleared under the claim lock above)   // stale by now:
          // during PRUNE the barrier is off and mark executors are gone, so a
          // lingering flag can only be a consumed mark-stage duplicate whose
-@@ -3874,6 +3958,7 @@
+@@ -3889,6 +3997,7 @@
      object_t **s = t->grey_slot;
      if (s == NULL) return;
      t->grey_slot = NULL;
@@ -148,7 +172,7 @@
      _gc_write_barrier2(s, t->grey_mask);
  }
  
-@@ -3883,6 +3968,7 @@
+@@ -3898,6 +4007,7 @@
      _gc_write_barrier2(field, mask);       // this store's old value
      if (atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
              & GC_SAFE_POINT_SCAN_ROOTS) {
@@ -180,7 +204,7 @@
      [GCT_LOCAL_SWEEP] = "nursery-sweep", [GCT_LOCAL_PROMOTE] = "nursery-promote",
      [GCT_LOCAL_RELEASE] = "nursery-release", [GCT_PRUNE] = "prune",
 -    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free",
-+    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free", [23] = "cell-store(value)", [24] = "grey-flush(value)", [25] = "grey-record(old)", [26] = "barrier-shade-old", [27] = "cas-once(value)", [28] = "cas-once(owner)", [29] = "DELETED-FLAG-OFF", [30] = "marked(by marker)", [31] = "marked(by mutator)", [32] = "seen-in-scanned-cell", [33] = "RING ENTRY DROPPED",
++    [GCT_EVACUATE] = "evacuate", [GCT_FREE] = "free", [23] = "cell-store(value)", [24] = "grey-flush(value)", [25] = "grey-record(old)", [26] = "barrier-shade-old", [27] = "cas-once(value)", [28] = "cas-once(owner)", [29] = "DELETED-FLAG-OFF", [30] = "marked(by marker)", [31] = "marked(by mutator)", [32] = "seen-in-scanned-cell", [33] = "RING ENTRY DROPPED", [34] = "child-of-scanned-mailbox", [35] = "mailbox-scanned(slot*1000+code)",
  };
  
  // One failure report at a time: whoever reports first holds this until it
@@ -238,20 +262,9 @@
  // TRUE virtual dispatch: probe the hashed function table. The pre-rotated
 --- a/yafllib/once.c
 +++ b/yafllib/once.c
-@@ -42,7 +42,20 @@
-     // and readers deliberately do not take the pin.
+@@ -43,6 +43,9 @@
      bool ok = (*field == NULL);
      if (ok) {
-+        // The store takes the write barrier like any other pointer store: it
-+        // bypassed it, so the hybrid barrier's insertion half never saw it. A
-+        // thread not yet root-scanned that fills a slot of an object this
-+        // cycle has already scanned (or never will: born after its thread's
-+        // scan) and then drops the value hid it from the cycle — caught at
-+        // the end of mark as a scanned mailbox pointing at an unmarked chain
-+        // (test_gc_mesh, nursery off). The deletion half shades the NULL being
-+        // replaced, a no-op; the nursery's note follows the store as before.
-+        if (UNLIKELY(gc_write_barrier_requested))
-+            _gc_write_barrier_in2(field, 1);
          __atomic_store_n((uintptr_t*)field, (uintptr_t)value, __ATOMIC_RELEASE);
 +        gc_diag_obj_event(value, 27, (uint32_t)(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed) & 1) * 16
 +                                     + (uint32_t)gc_write_barrier_requested * 8);
@@ -269,16 +282,28 @@
  #include "../once.h"
  #include <pthread.h>
  #include <stdatomic.h>
-@@ -189,7 +190,7 @@
+@@ -162,6 +163,7 @@
+         if (nx) gc_trace_explain("next", nx);
+         if (nx && nx->next) gc_trace_explain("next.next", nx->next);
+     }
++    if (at && !(vt == &node_vt || vt == &fat_vt)) gc_trace_explain("node (bad vtable)", at);
+     if (root && root != at) gc_trace_explain("root", root);
+     fflush(stderr);
+     abort();
+@@ -185,11 +187,7 @@
+ }
+ 
+ // A value held in a cell, stash or carry slot: a chain or a mailbox. Mailbox
+-// slots are read lock-free (acquire pairs with yafl_cas_once's release), on
+-// the CURRENT copy: a mailbox's slots are write-once (pinnable) fields, and a
+-// fill lands only on the live copy, so a reader holding a pre-relocation
+-// address resolves first — as generated code does for [pinnable] reads
+-// (object_resolve, yafl.h).
++// slots are read lock-free (acquire pairs with yafl_cas_once's release).
  static void verify(object_t* v, int worker) {
      if (v == NULL) return;
      if (object_get_vtable(v) == &mail_vt) {
--        struct mailbox* m = (struct mailbox*)v;
-+        struct mailbox* m = (struct mailbox*)object_resolve(v);
-         if (m->magic != MAIL_MAGIC) die("bad mailbox", worker, v, v, 0);
-         for (int k = 0; k < MAILSLOTS; ++k)
-             verify_chain(__atomic_load_n(&m->slot[k], __ATOMIC_ACQUIRE), worker, v);
-@@ -223,8 +224,16 @@
+@@ -227,8 +225,16 @@
  // are never relocated, so the pinned copy is the cell itself.
  static void publish(int cell, object_t* value) {
      struct cell* c = (struct cell*)object_pin_resolve(_cells[cell]);

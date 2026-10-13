@@ -55,13 +55,21 @@ C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
    it occurs; per-child "mailbox scanned" events showed a mailbox marked `scanned=1` that was never
    scanned that cycle, and its page's history showed it had skipped the previous prune. The x86
    session reproduced it with the diagnostic build (plain x86 builds never showed it in 16,000
-   runs), so it is a timing-dependent race, not an ARM ordering issue. Still worth a long A/B of
-   the PLAIN test (no diag build) on the Pi, where it failed about 1 in 1500.
+   runs), so it is a timing-dependent race, not an ARM ordering issue.
+   **A residual remains**: the plain test (no diag hooks), 3000 vs 3000 on the Pi, failed once on
+   each side after the fix (`DANGLE`, a live node's `next` freed, adjacent slot). Being hunted.
+   Hypothesis: the mark tail retires with the reprocess ring non-empty (it pumps, then checks the
+   scan list and in-flight count, never the ring), so a mutator mark landing between the pump and
+   the retire is kept by prune's residue merge but never scanned.
 5. **x86 oversub OOMs** (from the x86 session): `test_gc_mesh` under gc_soak's `oversub`
    (`YAFL_THREADS=8 YAFL_LOCAL_GC_PAGES=4`) aborts with `[GC OOM] heap pages used 4096 of 4096`
    about 2 s in (cycles 7-18, stage prune, no old pages), 4 in the first 2250 runs on x86. Seen
-   once in 1000 on the Pi (main, gcc -O2). Looks like garbage outrunning the collector, or the
-   allocator stall (`gc_page_alloc_impl`) not holding; not investigated.
+   once in 1000 on the Pi (main, gcc -O2). **Out of scope (user direction: safety only).** The x86
+   session found the cause: compaction during prune allocates its targets past the allocator stall
+   (`in_relocation`) before the evacuated pages come back, so near full it consumes the reserve.
+   A local guard (`gc_compact_page` returns early when `memory_count()+1 > total - max(total/64,64)`)
+   gave oversub OOM 0/1000 vs 20/1000; not committed, and `test_gc_pressure`/`test_large_objects`
+   were not checked for regressions.
 2. **Cost check before merging**: `GC_PUBLISH_IN` adds a seq_cst fence per queue push and per
    `task_on_complete`. Needs an x86 self-compile timing.
 3. Barrier-free publishing stores left as they are, believed safe because the published object is
