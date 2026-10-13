@@ -44,6 +44,7 @@ and how to reproduce it. Each fix's commit message has the full reasoning and nu
 | ae1c529 | **Hybrid write barrier**: while a thread is unscanned, `GC_WRITE_BARRIER_IN` also shades the NEW value (Go design 17503), read back later via `gc_thread_info.grey_slot`. Generated code unchanged. | gc_stress 2/2000 -> 0/2000 |
 | 960c34d | **`page_needs_scan` does nothing once marking has ended.** Mark executors pumped the reprocess ring after the tail retired the stage to PRUNE, pulling a page off `pages_to_prune`: it skipped that prune, kept stale `seen`/`scanned` bits, and the next cycle's page pass (`seen & ~scanned`) skipped its objects, whose children were freed. This was the nursery-off `test_gc_mesh` corruption. Not aarch64-specific. | diag build, Pi: 3 corruptions / 300 -> 0 / 300; x86: 6 / 1000 -> 0 / 1000 |
 | 3f95ab1 | `test_gc_mesh` reads mailbox slots through `object_resolve`, as generated code does for write-once fields. | test fidelity |
+| 2662195 | **Mark tail waits for mutator marks caught between bit and ring push.** A mutator mark sets `atomic_seen`, then pushes a processed page on the ring; a marker meeting the object in between leaves it to the push. Preempted there, the tail retired, the push was dropped, and the object was kept but never scanned. Mutators are now counted across both steps (`gc_ring_writers`); the tail retires only with the count zero and the ring empty. | capture + argument (checked by x86); A/B inconclusive: clean both sides, Pi diag 2000/2000, Pi plain 5000/5000, x86 diag 2000/2000 |
 
 Last full results on the branch head (ae1c529): -O3 soak (gcc-O3, clang-O3, gcc-O3-ndebug; every
 C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
@@ -56,11 +57,17 @@ C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
    scanned that cycle, and its page's history showed it had skipped the previous prune. The x86
    session reproduced it with the diagnostic build (plain x86 builds never showed it in 16,000
    runs), so it is a timing-dependent race, not an ARM ordering issue.
-   **A residual remains**: the plain test (no diag hooks), 3000 vs 3000 on the Pi, failed once on
-   each side after the fix (`DANGLE`, a live node's `next` freed, adjacent slot). Being hunted.
-   Hypothesis: the mark tail retires with the reprocess ring non-empty (it pumps, then checks the
-   scan list and in-flight count, never the ring), so a mutator mark landing between the pump and
-   the retire is kept by prune's residue merge but never scanned.
+   **The residual is addressed by 2662195** (not proven by A/B). Plain test on the Pi, 3000 vs 3000
+   after 960c34d, failed once on each side (`DANGLE`, a live node's `next` freed). The diag build
+   caught it (run 792 of ~1600): end of mark, a node with page-pass `scanned=0`, `seen=0`,
+   `atomic=1` on a page processed this epoch, met twice by the marker via cells, child unmarked.
+   Mechanism and fix: see the 2662195 row. Exactness: a marker that saw the bit read it after the
+   writer's increment and finished its page (in-flight release/acquire) before the tail ran, so
+   the tail sees the count or the ring entry. A writer that increments after the tail's check
+   marks an object no marker met: the documented late case, harmless under SATB.
+   After the fix, no A/B has shown the bug on either side (counts in the row), so the window is
+   rare enough that only a much longer run could separate them. A much longer plain run is the
+   remaining evidence to collect.
 5. **x86 oversub OOMs** (from the x86 session): `test_gc_mesh` under gc_soak's `oversub`
    (`YAFL_THREADS=8 YAFL_LOCAL_GC_PAGES=4`) aborts with `[GC OOM] heap pages used 4096 of 4096`
    about 2 s in (cycles 7-18, stage prune, no old pages), 4 in the first 2250 runs on x86. Seen
@@ -71,7 +78,9 @@ C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
    gave oversub OOM 0/1000 vs 20/1000; not committed, and `test_gc_pressure`/`test_large_objects`
    were not checked for regressions.
 2. **Cost check before merging**: `GC_PUBLISH_IN` adds a seq_cst fence per queue push and per
-   `task_on_complete`. Needs an x86 self-compile timing.
+   `task_on_complete`; 2662195 adds two seq_cst RMWs on one shared counter per mutator mark while
+   marking. x86 is timing self-compiles at 2662195 vs each reverted (release -O3). If the counter
+   costs, a per-thread flag read by the tail is the uncontended alternative (same argument).
 3. Barrier-free publishing stores left as they are, believed safe because the published object is
    allocated immediately before: `lazy_thunk_enqueue` (waiter CAS) and `list_builder_link`. Worth a
    comment or a check.
