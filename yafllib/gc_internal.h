@@ -83,6 +83,12 @@ struct gc_thread_info {
     // compacted away or freed, leaving the raw slot address dangling.
     object_t **pend_slot;
     ptr_mask_t pend_mask;
+    // The insertion half of the hybrid barrier (_gc_write_barrier_in2): the
+    // field this thread stored into last while its root scan was pending,
+    // shaded — read back — at its next barrier, its root scan, or its nursery
+    // collection, whichever comes first.
+    object_t **grey_slot;
+    ptr_mask_t grey_mask;
     // Compaction's evacuation targets get their own bump region, so a copy of
     // an older object never lands on a nursery page (where older referrers,
     // snapped to the copy, would point at a page the nursery believes no

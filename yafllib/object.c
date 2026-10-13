@@ -893,6 +893,7 @@ EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_fun
 // object_alloc_fast zeroes at its call site (where the C compiler can elide),
 // and array_create's pointer-free path zeroes the header slots alone.
 static void gc_local_collect(void);
+static inline void gc_grey_flush(struct gc_thread_info *t);   // the hybrid barrier (below)
 static gc_page_t *gc_local_take_page(void);
 static uint32_t gc_local_new_epoch(void);
 // ACTIVE EPOCHS. A page keeps its epoch stamp after that nursery retires
@@ -1837,6 +1838,7 @@ static NOINLINE void gc_local_collect(void) {
 
     // This thread's own last store must be judged before anything is freed.
     gc_local_flush_pending();
+    gc_grey_flush(t);
 
     // The nursery: this thread's pages since its last root scan.
     size_t np = 0;
@@ -2442,6 +2444,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         // prompt — it rides on GC_SAFE_POINT and gc_page_alloc driving the FSA —
         // so this cycle's objects land after it rather than straddling onto a
         // taken page.
+        gc_grey_flush(thread);   // the hybrid barrier's last pending store
         list_move(&pages_to_scan, &thread->new_pages);
         gc_local_on_root_scan(thread);
         thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
@@ -3844,6 +3847,46 @@ EXPORT void _gc_mark_as_seen2(object_t *object) {
     }
 }
 
+
+// THE HYBRID BARRIER. GC_WRITE_BARRIER_IN is a deletion (Yuasa) barrier: it
+// shades what a store overwrites, which is the snapshot-at-the-beginning
+// obligation of a thread whose root scan is done. A thread whose scan is
+// still to come owes the insertion (Dijkstra) half as well, as in Go's
+// hybrid barrier (golang.org/design/17503-eliminate-rescan): its stack may
+// hold the only reference to an older object, and storing that into an
+// object the cycle never scans — one born after its own thread's root scan,
+// on a birth-protected page — then dropping it before this thread's scan,
+// hides it from the cycle. (Observed with gc_stress: a lazy waiter linked
+// behind a fresh queue tail, a loop state stored into a fresh task, each
+// freed while reachable.) Once the thread is scanned it is black, and
+// whatever it can still reach is protected by the heap; the shade stops.
+//
+// The barrier runs BEFORE its store and is not given the value, so the new
+// value is shaded later, read back from the field: at this thread's next
+// barrier call, its root scan, or its nursery collection. Marking proper
+// starts only after every thread's scan, so shading by the thread's own scan
+// is in time. The container cannot die in between: no prune runs before this
+// thread's scan, this thread's nursery collection flushes first, and a
+// container in another nursery that this thread can reach has escaped.
+// Cost: nothing outside the root-scan window (a thread-local test), a branch
+// and two stores within it. The generated code is unchanged.
+static inline void gc_grey_flush(struct gc_thread_info *t) {
+    object_t **s = t->grey_slot;
+    if (s == NULL) return;
+    t->grey_slot = NULL;
+    _gc_write_barrier2(s, t->grey_mask);
+}
+
+EXPORT void _gc_write_barrier_in2(object_t **field, ptr_mask_t mask) {
+    struct gc_thread_info *t = &gc_thread_info;
+    gc_grey_flush(t);                      // the last store's new value
+    _gc_write_barrier2(field, mask);       // this store's old value
+    if (atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
+            & GC_SAFE_POINT_SCAN_ROOTS) {
+        t->grey_slot = field;              // this store's new value, later
+        t->grey_mask = mask;
+    }
+}
 
 EXPORT void _gc_write_barrier2(object_t **field, ptr_mask_t mask) {
     while (mask) {

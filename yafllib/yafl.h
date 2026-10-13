@@ -744,6 +744,9 @@ EXTERN volatile bool gc_write_barrier_requested;
 
 EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 EXTERN void _gc_write_barrier2(object_t **field, ptr_mask_t mask);
+// GC_WRITE_BARRIER_IN's slow path: the deletion shade, plus — while this
+// thread's root scan is still to come — the insertion half (see object.c).
+EXTERN void _gc_write_barrier_in2(object_t **field, ptr_mask_t mask);
 EXTERN void _gc_mark_as_seen2(object_t *object);
 
 #define GC_SAFE_POINT()\
@@ -854,7 +857,7 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
 #define GC_WRITE_BARRIER_IN(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
         if (UNLIKELY(gc_write_barrier_requested))\
-            _gc_write_barrier2((object_t**)&(field), (mask));\
+            _gc_write_barrier_in2((object_t**)&(field), (mask));\
         gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
 // A FILL store (codegen's ObjectField.fill): NULL -> value into a slot of an
