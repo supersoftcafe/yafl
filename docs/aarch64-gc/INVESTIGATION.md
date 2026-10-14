@@ -46,8 +46,23 @@ and how to reproduce it. Each fix's commit message has the full reasoning and nu
 | 3f95ab1 | `test_gc_mesh` reads mailbox slots through `object_resolve`, as generated code does for write-once fields. | test fidelity |
 | 2662195 | **Mark tail waits for mutator marks caught between bit and ring push.** A mutator mark sets `atomic_seen`, then pushes a processed page on the ring; a marker meeting the object in between leaves it to the push. Preempted there, the tail retired, the push was dropped, and the object was kept but never scanned. Mutators are now counted across both steps (`gc_ring_writers`); the tail retires only with the count zero and the ring empty. | capture + argument (checked by x86); A/B inconclusive: clean both sides, Pi diag 2000/2000, Pi plain 5000/5000, x86 diag 2000/2000 |
 
-Last full results on the branch head (ae1c529): -O3 soak (gcc-O3, clang-O3, gcc-O3-ndebug; every
-C GC test + gc_stress; 7 profiles; 10 runs) 0 of 3570. CTest 52/52.
+Last full results on the branch head (2662195; 411b92f adds docs only), 2026-10-13/14:
+- `full_protocol.py --full --keep-going` on a fresh worktree, both boxes. Build PASS, examples 9/9,
+  CTest 76/77; all four fresh port builds, every `[test]` folder at -O0..-O3, all four
+  self-compiles byte-identical (Pi 821-1382 s, x86 363-577 s), every runtime C test PASS. The one
+  failing CTest test is `compiler_suite`, and none of its failures involve the runtime:
+  - 22 AST parity failures (`if (` statement column, Python vs port): from PR #42, reproduce on
+    main 226a4bc. Both boxes.
+  - Pi only, 38 `test_bootstrap_cli` failures: the port copies Python 3.14's argparse (x86 has
+    3.14.7, the Pi 3.13.5), so the parity test needs 3.14. Main issue.
+  - Pi only, 9 per-test CPU-budget timeouts, with references computed cold. All pass on re-run
+    (the C-parity tests with warm references; `test_off_is_byte_identical_and_clean` needed 184 s
+    against its 120 s budget, run with the budget raised).
+  - x86 only, 31 `test_bootstrap_c_o2` failures from stale Python references in the shared
+    `/tmp/yafl-bootstrap-cache-<uid>` (keyed on input, not compiler). Pass with a private TMPDIR.
+    The Pi's stale cache (2026-10-08) was moved aside before its run.
+- -O3 soak on the Pi (gcc-O3, clang-O3, gcc-O3-ndebug; every C GC test + gc_stress; 7 profiles;
+  10 runs): 0 of 3570. x86 gc_stress soak (gcc -O0/-O2, 4 profiles, 100 each): 0 of 800.
 
 ## Open
 
