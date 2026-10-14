@@ -14,6 +14,7 @@ inside critical windows.
     python3 tests/gc_soak.py -n 200 -j 4            # longer
     python3 tests/gc_soak.py --builds clang-O2 --tests test_gc_mesh --profiles hot -n 1000
     python3 tests/gc_soak.py --list                 # show builds/tests/profiles
+    python3 tests/gc_soak.py --minutes 120          # whole rounds until the time is up (CI)
 
 Builds go to yafllib/build/soak-<variant>/, failure logs to
 yafllib/build/soak-logs/<timestamp>/. Exit status is the number of failing
@@ -189,6 +190,9 @@ def describe(rc):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-n", "--runs", type=int, default=20, help="runs per (build, test, profile)")
+    ap.add_argument("--minutes", type=float, default=None,
+                    help="instead of -n: keep starting rounds (one run of every combination) "
+                         "until this much time has passed since the builds finished")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4, help="runs at once")
     ap.add_argument("--builds", default=",".join(DEFAULT_BUILDS), help="comma-separated build variants")
     ap.add_argument("--tests", default=",".join(TESTS), help="comma-separated tests")
@@ -225,9 +229,14 @@ def main():
 
     combos = [(b, t, p) for b in builds for t in tests for p in profiles
               if p in ONLY_PROFILES.get(t, PROFILES)]
-    total = len(combos) * a.runs
-    print(f"{len(combos)} combinations x {a.runs} runs = {total} runs, {a.jobs} at a time; "
-          f"failure logs -> {logdir}", flush=True)
+    if a.minutes is None:
+        total = len(combos) * a.runs
+        print(f"{len(combos)} combinations x {a.runs} runs = {total} runs, {a.jobs} at a time; "
+              f"failure logs -> {logdir}", flush=True)
+    else:
+        total = None
+        print(f"{len(combos)} combinations, rounds for {a.minutes:g} min, {a.jobs} at a time; "
+              f"failure logs -> {logdir}", flush=True)
 
     fails = {c: [] for c in combos}
     runs_done = {c: 0 for c in combos}
@@ -244,8 +253,20 @@ def main():
         e.update(PROFILES[p])
         return e
 
-    # Interleave combinations so concurrent runs are of different tests.
-    work = [(c, i) for i in range(a.runs) for c in combos]
+    # Interleave combinations so concurrent runs are of different tests. With
+    # --minutes, a new round starts only while there is time left, and a round
+    # in progress finishes, so every combination ends with the same run count
+    # give or take one.
+    deadline = None if a.minutes is None else t_start + a.minutes * 60
+
+    def rounds():
+        i = 0
+        while (i < a.runs) if deadline is None else (time.monotonic() < deadline):
+            for c in combos:
+                yield c, i
+            i += 1
+
+    work = rounds()
     done = 0
     with cf.ThreadPoolExecutor(max_workers=a.jobs) as ex:
         pending = {}
@@ -287,7 +308,7 @@ def main():
                         stopped.add(c)
                 if done % 50 == 0:
                     el = time.monotonic() - t_start
-                    print(f"  {done}/{total} runs, {sum(len(v) for v in fails.values())} failures, "
+                    print(f"  {done}/{total or '?'} runs, {sum(len(v) for v in fails.values())} failures, "
                           f"{el / 60:.1f} min", flush=True)
                 submit_next()
 

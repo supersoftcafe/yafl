@@ -1,0 +1,113 @@
+name: gc-soak
+
+# Nightly soak of the collector (yafllib/tests/gc_soak.py): its C tests and
+# compiled-YAFL gc_stress, run over and over under every collector profile for
+# a fixed time. The races it hunts show up once in hundreds or thousands of
+# runs, and which ones are possible depends on the CPU's memory ordering, so
+# it runs on several aarch64 implementations (Neoverse N2, Apple M) as well as
+# x86. A failure uploads the logs and opens (or comments on) a `gc-soak` issue.
+#
+# A pull request or push to main that edits this file or the soak script runs
+# a short soak, so a broken workflow shows before the night.
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  push:
+    branches: [main]
+    paths: [.github/workflows/gc-soak.yml, yafllib/tests/gc_soak.py]
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/gc-soak.yml, yafllib/tests/gc_soak.py]
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Soak time per job, in minutes
+        type: number
+        default: 120
+
+concurrency:
+  group: gc-soak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The shipped flags (-O3 NDEBUG) and asserts-on builds, both compilers.
+          - { runner: ubuntu-24.04-arm, builds: gcc-O3-ndebug }
+          - { runner: ubuntu-24.04-arm, builds: clang-O3 }
+          - { runner: ubuntu-24.04-arm, builds: gcc-O2 }
+          - { runner: ubuntu-24.04-arm, builds: clang-O2 }
+          # macOS's gcc is clang, so clang builds only.
+          - { runner: macos-15, builds: clang-O3 }
+          - { runner: macos-15, builds: clang-O2 }
+          - { runner: ubuntu-latest, builds: gcc-O3-ndebug }
+          - { runner: ubuntu-latest, builds: clang-O2 }
+    name: soak (${{ matrix.runner }}, ${{ matrix.builds }})
+    runs-on: ${{ matrix.runner }}
+    # The soak time plus builds (gc_stress compiles with the Python compiler)
+    # and slack for the last round to finish.
+    timeout-minutes: 240
+    env:
+      MINUTES: ${{ (github.event_name == 'push' || github.event_name == 'pull_request') && 10 || inputs.minutes || 120 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake
+
+      - name: Soak
+        working-directory: yafllib
+        run: |
+          set -o pipefail
+          rc=0
+          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --minutes "$MINUTES" | tee soak.log || rc=$?
+          {
+            echo '### gc-soak (${{ matrix.runner }}, ${{ matrix.builds }})'
+            echo '```'
+            sed -n '/^build /,$p' soak.log | grep -v '  0 *[0-9.]*$' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-logs-${{ matrix.runner }}-${{ matrix.builds }}
+          path: |
+            yafllib/soak.log
+            yafllib/build/soak-logs/
+          retention-days: 90
+
+  # One open issue collects failures: a new one only when none is open.
+  report:
+    needs: soak
+    if: failure() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the gc-soak issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="Soak failed at ${GITHUB_SHA::7}: $RUN (failing jobs' summaries list the combinations; logs are the run's artifacts)."
+          gh label create gc-soak --color B60205 --description "Nightly GC soak failures" 2>/dev/null || true
+          n=$(gh issue list --label gc-soak --state open --json number --jq '.[0].number')
+          if [ -n "$n" ]; then
+            gh issue comment "$n" --body "$body"
+          else
+            gh issue create --label gc-soak --title "gc-soak failure" --body "$body"
+          fi
