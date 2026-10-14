@@ -21,8 +21,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # x86-64 and aarch64 both: the runtime's GC is lock-free, and aarch64's
+  # weaker memory ordering exposes races x86 hides (docs/aarch64-gc/).
   full-protocol:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    name: full-protocol (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +56,9 @@ jobs:
           # Everything build_bootstrap.py keys an entry on — the Python compiler,
           # the port's sources and stdlib, and the runtime it links — so an
           # entry it would relink or rebuild is saved afresh, not hit exactly.
-          key: bootstrap-${{ hashFiles('compiler/**/*.py', '!compiler/tests/**', 'bootstrap/**/*.yafl', 'compiler/stdlib/**', 'yafllib/**') }}
-          restore-keys: bootstrap-
+          # The architecture too: the entry holds a native binary.
+          key: bootstrap-${{ runner.arch }}-${{ hashFiles('compiler/**/*.py', '!compiler/tests/**', 'bootstrap/**/*.yafl', 'compiler/stdlib/**', 'yafllib/**') }}
+          restore-keys: bootstrap-${{ runner.arch }}-
 
       - name: Run the protocol
         run: python3 full_protocol.py ${{ (github.event_name == 'push' || inputs.full) && '--full' || '' }}

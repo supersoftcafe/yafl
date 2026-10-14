@@ -27,15 +27,6 @@ from tests.testutil import TimedTestCase, shared_bootstrap_binary
 
 _HERE = Path(__file__).resolve().parent.parent            # .../compiler
 
-# The port's command line reproduces Python 3.14's argparse: its two-pass
-# classification of words (`-1abc` is a positional), its coloured help
-# (PYTHON_COLORS, NO_COLOR, FORCE_COLOR, TERM) and its message texts (choices
-# shown with repr()). Older argparse differs in all three, so the cases that
-# compare argparse's own wording with the port's only hold under 3.14+.
-_ARGPARSE_314 = unittest.skipUnless(
-    sys.version_info >= (3, 14),
-    "the port's command line matches Python 3.14's argparse; "
-    f"this is Python {sys.version_info.major}.{sys.version_info.minor}")
 _REPO = _HERE.parent
 _MAIN = _HERE / "main.py"
 
@@ -243,67 +234,87 @@ class TestBootstrapCli(TimedTestCase):
                          (ran[1].returncode, ran[1].stdout))
         return ran[0].returncode, ran[0].stdout
 
-    # ── argparse: the same words mean the same thing ────────────────────────
+    # ── the command line: the same words mean the same thing ────────────────
+    #
+    # Each case's OUTCOME, for both compilers: the exit code (0 help, 1 an
+    # input that cannot be read, 2 a usage error), the stream it writes, and
+    # the word the error names. Not argparse's wording, which changes between
+    # Python releases (quoting, colour, wrapping) and is not the contract.
 
-    @_ARGPARSE_314
-    def test_argument_errors_and_help(self):
-        for args in ([], ["-O5", "x"], ["-O"], ["x", "-o"], ["--lib-path"], ["-L"],
-                     ["a.yafl", "-O1", "b.yafl"], ["--bogus", "a.yafl"],
-                     ["a.yafl", "--bogus", "b.yafl"], ["-Wbogus", "a.yafl"],
-                     ["-Wno-bogus", "a.yafl"], ["-h"], ["--he"], ["-O=7", "a.yafl"],
-                     ["--profile=1", "a.yafl"], ["--test=x", "a.yafl"],
-                     ["-O3", "-h", "-O9"], ["-O9", "-h"], ["-hx"]):
+    _CASES = (
+        # (args, exit code, a word stderr must contain; None for help)
+        ([], 2, "files"),
+        (["-O5", "x"], 2, "-O"), (["-O=7", "a.yafl"], 2, "-O"), (["-Ox"], 2, "-O"),
+        (["-O9h"], 2, "-O"), (["-O9", "-h"], 2, "-O"),
+        (["-O"], 2, "-O"), (["-O", "--", "a"], 2, "-O"),
+        (["x", "-o"], 2, "-o"), (["-o", "--", "a"], 2, "-o"),
+        (["--lib-path"], 2, "--lib-path"), (["-L"], 2, "--lib-path"),
+        (["-W", "-Wall"], 2, "-W"), (["-hc"], 2, "-c"),
+        (["a.yafl", "-O1", "b.yafl"], 2, "b.yafl"), (["a", "-", "-O1", "stray.yafl"], 2, "stray.yafl"),
+        (["--bogus", "a.yafl"], 2, "--bogus"), (["a.yafl", "--bogus", "b.yafl"], 2, "--bogus"),
+        (["a", "--bogus=1"], 2, "--bogus=1"),
+        (["a", "-O0", "--", "b"], 2, "--"), (["a", "-O0", "b", "--"], 2, "--"),
+        (["-Wbogus", "a.yafl"], 2, "-Wbogus"), (["-Wno-bogus", "a.yafl"], 2, "-Wno-bogus"),
+        (["--profile=1", "a.yafl"], 2, "--profile"), (["--profile=it's"], 2, "--profile"),
+        (["--test=x", "a.yafl"], 2, "--test"), (["--test=a\\b"], 2, "--test"),
+        (["--help=x"], 2, "--help"), (["-h=x"], 2, "--help"),
+        (["--=x", "a"], 2, "--=x"),
+        (["-h"], 0, None), (["--he"], 0, None), (["-hx"], 0, None), (["-hxyz"], 0, None),
+        (["-hO3"], 0, None), (["-hO9"], 0, None), (["-hc", "x"], 0, None),
+        (["-O3", "-h", "-O9"], 0, None), (["-o=x", "-hx"], 0, None),
+        (["--", "a"], 1, "a"), (["-O1", "--", "a", "-x"], 1, "a"), (["-o", "-x y", "a"], 1, "a"),
+        (["--pro", "a"], 1, "a"), (["--l=d", "a"], 1, "a"), (["-"], 1, "-"), (["-.5"], 1, "-.5"),
+    )
+
+    def _run_plain(self, argv: list[str], env: dict | None = None):
+        r = subprocess.run(argv, cwd=self.dir, env=env or self._env(), capture_output=True,
+                           text=True, timeout=600)
+        return r.returncode, r.stdout, r.stderr
+
+    def test_command_line_outcomes(self):
+        for args, code, word in self._CASES:
             with self.subTest(args=args):
-                self._both(*args, libs=False)
+                for name, argv in (("python", [sys.executable, str(_MAIN), *args]),
+                                   ("port", [self.binary, *args])):
+                    rc, out, err = self._run_plain(argv)
+                    self.assertEqual(code, rc, f"{name}: exit code\n{out}{err}")
+                    if code == 0:
+                        self.assertTrue(out.startswith("usage:"), f"{name}: help on stdout\n{out}")
+                        self.assertEqual("", err, f"{name}: help writes no stderr")
+                    else:
+                        self.assertEqual("", out, f"{name}: an error writes no stdout")
+                        # An unreadable input is named as the file it is.
+                        named = f"{word}: cannot be read" if code == 1 else word
+                        self.assertIn(named, err, f"{name}: the error names {word!r}")
 
-    @_ARGPARSE_314
-    def test_argparse_word_rules(self):
-        # Python 3.14 argparse's classification and consumption: explicit
-        # arguments on flags, short-flag clusters, `--` placement, negative-
-        # number and space-containing words, ambiguous prefixes, and repr().
-        for args in (["--help=x"], ["-h=x"], ["-hc"], ["-hc", "x"], ["-hO3"], ["-hxyz"],
-                     ["a", "-O0", "--", "b"], ["a", "-O0", "b", "--"], ["--", "a"],
-                     ["-O1", "--", "a", "-x"], ["-1abc"], ["-1_0"], ["-.5"],
-                     ["-o", "-x y", "a"], ["--=x", "a"], ["-o", "--", "a"], ["--pro", "a"],
-                     ["--l=d", "a"], ["-W", "-Wall"], ["-"], ["a", "--bogus=1"], ["-Ox"],
-                     ["--profile=it's"], ["--test=a\\b"], ["-o=x", "-hx"], ["-O", "--", "a"],
-                     ["-hO9"], ["-O9h"], ["a", "-", "-O1", "b"]):
-            with self.subTest(args=args):
-                self._both(*args, libs=False)
+    _OPTIONS = ("-h", "-O", "-a", "-c", "-o", "-L", "--lib-path", "--profile", "-W", "--test")
 
-    def _both_as_main_py(self, *args: str, env: dict) -> None:
-        """Both compilers, run under the SAME program name (the port through a
-        `main.py` symlink): argparse's usage wraps at a width that depends on
-        the name, so only equal names give comparable text."""
-        alias = self.dir / "main.py"
-        if not alias.exists():
-            alias.symlink_to(self.binary)
-        full = {**self._env(), **env}
-        for k in [k for k, v in env.items() if v is None]:
-            full.pop(k)
-        runs = [subprocess.run(argv, cwd=self.dir, env=full, capture_output=True,
-                               text=True, timeout=600)
-                for argv in ([sys.executable, str(_MAIN), *args], [str(alias), *args])]
-        self.assertEqual((runs[0].returncode, runs[0].stdout, runs[0].stderr),
-                         (runs[1].returncode, runs[1].stdout, runs[1].stderr))
+    def test_help_lists_every_option_at_any_width(self):
+        # COLUMNS unset: not a terminal, so the help falls back to 80 columns.
+        for columns in ("1000", "80", "20", "1", None):
+            env = self._env()
+            env.pop("COLUMNS")
+            if columns is not None:
+                env["COLUMNS"] = columns
+            with self.subTest(columns=columns):
+                for name, argv in (("python", [sys.executable, str(_MAIN), "-h"]),
+                                   ("port", [self.binary, "-h"])):
+                    rc, out, err = self._run_plain(argv, env)
+                    self.assertEqual((0, ""), (rc, err), name)
+                    for option in self._OPTIONS:
+                        self.assertIn(option, out, f"{name}: -h lists {option}")
 
-    @_ARGPARSE_314
-    def test_usage_and_help_wrap_like_argparse(self):
-        # COLUMNS unset: not a terminal, so argparse falls back to 80.
-        for columns in ("1000", "80", "60", "45", "30", "20", "12", "1", None):
-            for colour in ({}, {"FORCE_COLOR": "1"}):
-                for args in (["-h"], ["-O9", "a"]):
-                    with self.subTest(columns=columns, colour=colour, args=args):
-                        self._both_as_main_py(*args, env={"COLUMNS": columns, **colour})
-
-    @_ARGPARSE_314
-    def test_colour_rules_like_argparse(self):
-        for colour in ({"FORCE_COLOR": "1", "NO_COLOR": "1"}, {"PYTHON_COLORS": "1"},
-                       {"PYTHON_COLORS": "0", "FORCE_COLOR": "1"},
-                       {"FORCE_COLOR": "1", "TERM": "dumb"}, {"TERM": "dumb"},
-                       {"PYTHON_COLORS": "1", "NO_COLOR": "1"}):
+    def test_no_colour_unless_asked(self):
+        # Output to a pipe is plain, and NO_COLOR keeps it plain even when
+        # colour is forced. (Python before 3.14 never colours its help.)
+        for colour in ({}, {"NO_COLOR": "1"}, {"NO_COLOR": "1", "FORCE_COLOR": "1"},
+                       {"TERM": "dumb"}, {"PYTHON_COLORS": "0", "FORCE_COLOR": "1"}):
             with self.subTest(colour=colour):
-                self._both_as_main_py("-h", env=colour)
+                for name, argv in (("python", [sys.executable, str(_MAIN), "-h"]),
+                                   ("port", [self.binary, "-h"])):
+                    rc, out, err = self._run_plain(argv, {**self._env(), **colour})
+                    self.assertEqual(0, rc, name)
+                    self.assertNotIn("\x1b", out + err, f"{name}: no escape codes")
 
     def test_builds_from_the_build_tree_without_a_search_path(self):
         # No -L, no YAFL_PATH, no YAFL_LIBYAFL_A: both compilers fall back to
