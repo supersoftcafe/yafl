@@ -572,17 +572,65 @@ def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]]
     return p.Result(e.LambdaExpression(tokens[0].line_ref, params2, expression, None), result.tokens, result.line_ref, result.errors)
 
 
-def __to_ret_statement(value: e.Expression, line_ref: p.LineRef) -> s.ReturnStatement:
-    return s.ReturnStatement(line_ref, value)
+def __expression_start(x: e.Expression) -> p.LineRef:
+    """Where an expression starts, read from its shape: a call at its callee, a
+    dot at its base, a ternary at its condition, a pipeline's block at the piped
+    value, a match at its subject; anything else at its own position. The port
+    has the same rule (startLine, bootstrap/parse/builders.yafl)."""
+    while True:
+        match x:
+            case e.CallExpression():
+                x = x.function
+            case e.DotExpression():
+                x = x.base
+            case e.TernaryExpression():
+                x = x.condition
+            case m.MatchExpression():
+                x = x.subject
+            case e.BlockExpression() if (x.statements
+                                         and isinstance(x.statements[0], s.LetStatement)
+                                         and x.statements[0].name.startswith("$pipe@")
+                                         and x.statements[0].default_value is not None):
+                x = x.statements[0].default_value
+            case _:
+                return x.line_ref
 
 
-def __to_action_statement(value: e.Expression, line_ref: p.LineRef) -> s.ReturnStatement:
-    return s.ActionStatement(line_ref, value)
+def __statement_start(x: e.Expression, tokens: list[p.Token], parse_start: p.LineRef) -> p.LineRef:
+    """Where a statement placed at its expression sits (`ret`, a bare
+    expression, `if` and `else if` at their condition): at a leading unary
+    operator's own token — a folded `-1` keeps only its digit's position — and
+    otherwise at the expression's start (__expression_start). Not the parse's
+    first kept token: a bracketed group drops its `(`, so `if (a) == b` sat at
+    the `a`, inside the bracket, while its own `==` sat at the bracket. The
+    port's stmtExprStart is the same rule (bootstrap/parse/parser.yafl)."""
+    first = tokens[0] if tokens else None
+    if first is not None and first.kind == p.TokenKind.SYMBOLS and first.value in ("-", "!", "~"):
+        return parse_start
+    return __expression_start(x)
 
 
-def __to_if_statement(value, line_ref: p.LineRef) -> s.IfStatement:
-    cond, body = value
-    return s.IfStatement(line_ref, cond, body, [])
+def __to_ret_statement(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[s.ReturnStatement]:
+    start = __statement_start(result.value, tokens, result.line_ref)
+    return p.Result(s.ReturnStatement(start, result.value), result.tokens, result.line_ref, result.errors)
+
+
+def __to_action_statement(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[s.ActionStatement]:
+    start = __statement_start(result.value, tokens, result.line_ref)
+    return p.Result(s.ActionStatement(start, result.value), result.tokens, result.line_ref, result.errors)
+
+
+def __to_if_statement(result: p.Result, tokens: list[p.Token]) -> p.Result[s.IfStatement]:
+    cond, body = result.value
+    start = __statement_start(cond, tokens, result.line_ref)
+    return p.Result(s.IfStatement(start, cond, body, []), result.tokens, result.line_ref, result.errors)
+
+
+def __with_condition_start(result: p.Result, tokens: list[p.Token]) -> p.Result:
+    """An `else if`'s condition and body, with the position it sits at."""
+    cond, _body = result.value
+    return p.Result((result.value, __statement_start(cond, tokens, result.line_ref)),
+                    result.tokens, result.line_ref, result.errors)
 
 
 def __to_else_if_statement(result: p.Result, tokens: list[p.Token]) -> p.Result[s.ElseIfStatement]:
@@ -1010,11 +1058,11 @@ __parse_maybe_generic_statement = p.maybe(p.requires(
     "missing generics")).map(__to_flat_list)
 
 __parse_action = p.block(
-    __parse_expression.build(__to_action_statement))
+    __parse_expression >> __to_action_statement)
 
 __parse_ret = p.block(p.requires(
     p.discard_sym("ret"),
-    __parse_expression.build(__to_ret_statement),
+    __parse_expression >> __to_ret_statement,
     "missing return value"))
 
 __parse_fun = p.block(p.requires(
@@ -1076,12 +1124,12 @@ __parse_namespace = p.block(p.requires(
 # orphan `else`/`else if` are reported by their `check()`.
 __parse_if = p.block(p.requires(
     p.discard_sym("if"),
-    (__parse_expression & p.many(__parse_statement)).build(__to_if_statement),
+    (__parse_expression & p.many(__parse_statement)) >> __to_if_statement,
     "invalid if statement"))
 
 __parse_else_if = p.block(p.requires(
     p.discard_sym("else") & p.discard_sym("if"),
-    (__parse_expression & p.many(__parse_statement)).build(lambda value, line_ref: (value, line_ref)),
+    (__parse_expression & p.many(__parse_statement)) >> __with_condition_start,
     "invalid else-if statement")) >> __to_else_if_statement
 
 __parse_else = p.block(p.requires(

@@ -292,10 +292,13 @@ fun letName(p) => match(p)
   (l: PsLet) => l.lName
   (o: PStmt) => "_"
 
-# The line_ref Python's combinators give a whole expression PARSE: the first
-# token of the expression — which for a call is its callee's start and for a
-# dot/ternary its left/condition start — except a parenthesised tuple, whose
-# own line is already the post-paren position (requires(sym("("), ...)).
+# Where an expression starts, read from its shape: a call at its callee, a
+# dot/ternary at its left/condition, a pipeline's block at the piped value, a
+# match at its subject; anything else at its own position. parser.py's
+# __expression_start is the same rule. (It used to be modelled on the first
+# token Python's combinators keep, which is NOT the same where a bracketed
+# group leads a binary expression — `(a) == b`: the combinators drop the `(`
+# — so Python now uses this rule instead.)
 fun [tail] startLine(x) => match(x)
   (c: PeCall)     => startLine(c.function)
   (d: PeDot)      => startLine(d.base)
