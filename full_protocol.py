@@ -23,6 +23,9 @@ at -O3, and the -O3 self-compile; no Python suite; the port's Python build
 reused while the Python compiler is unchanged). `--full` is the regression:
 -O0 to -O3, each level with its own fresh Python build of the port, folders and
 self-compile; the Python suite; and the examples.
+The Python suite on the full path compares against references it computes
+afresh (its own reference cache per run), and `--cpu-scale N` widens every
+Python test's CPU budget on a slower machine.
 
 Speed: the ctest line reports each self-compile's time — the port compiling
 its own sources at its level, byte-identical to Python's C — and that is the
@@ -124,8 +127,14 @@ def stage_build(run_dir: Path, compiler: str, speed: str) -> Result:
 def stage_ctest(run_dir: Path, compiler: str, speed: str) -> Result:
     if _configure(compiler, speed, run_dir / "configure.log") != 0:
         return Result("ctest gate", False, "cmake configure failed")
+    # The Python suite caches Python's reference outputs keyed on their INPUT,
+    # not on the compiler (tests/testutil.py), in a directory every checkout
+    # shares: references from an older compiler would be compared as if
+    # current. The regression starts from an empty cache of its own.
+    env = (stage_env(YAFL_REFERENCE_CACHE=str(run_dir / "reference-cache"))
+           if speed == "full" else stage_env())
     rc = run_stream(["ctest", "--test-dir", str(BUILD), "--output-on-failure"],
-                    HERE, run_dir / "ctest.log")
+                    HERE, run_dir / "ctest.log", env=env)
     total = parse_ctest_summary(run_dir / "ctest.log")
     if total is None:
         return Result("ctest gate", False, "ctest printed no summary line")
@@ -243,7 +252,15 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--full", action="store_true",
                     help="the whole regression (default: the fast path — build "
                          "and ctest's fast path, no examples)")
+    ap.add_argument("--cpu-scale", type=float, default=None, metavar="N",
+                    help="multiply every Python test's CPU budget by N, for a "
+                         "slower machine (sets YAFL_TEST_CPU_SCALE; a Raspberry Pi "
+                         "needs about 4)")
     args = ap.parse_args(argv)
+    if args.cpu_scale is not None:
+        if args.cpu_scale <= 0:
+            ap.error("--cpu-scale must be positive")
+        os.environ["YAFL_TEST_CPU_SCALE"] = f"{args.cpu_scale:g}"
     speed = "full" if args.full else "fast"
     stages = {k: v for k, v in STAGES.items() if args.full or k in FAST_STAGES}
     full_only = [s.strip() for s in args.only.split(",")

@@ -26,6 +26,16 @@ import libraries
 from tests.testutil import TimedTestCase, shared_bootstrap_binary
 
 _HERE = Path(__file__).resolve().parent.parent            # .../compiler
+
+# The port's command line reproduces Python 3.14's argparse: its two-pass
+# classification of words (`-1abc` is a positional), its coloured help
+# (PYTHON_COLORS, NO_COLOR, FORCE_COLOR, TERM) and its message texts (choices
+# shown with repr()). Older argparse differs in all three, so the cases that
+# compare argparse's own wording with the port's only hold under 3.14+.
+_ARGPARSE_314 = unittest.skipUnless(
+    sys.version_info >= (3, 14),
+    "the port's command line matches Python 3.14's argparse; "
+    f"this is Python {sys.version_info.major}.{sys.version_info.minor}")
 _REPO = _HERE.parent
 _MAIN = _HERE / "main.py"
 
@@ -235,6 +245,7 @@ class TestBootstrapCli(TimedTestCase):
 
     # ── argparse: the same words mean the same thing ────────────────────────
 
+    @_ARGPARSE_314
     def test_argument_errors_and_help(self):
         for args in ([], ["-O5", "x"], ["-O"], ["x", "-o"], ["--lib-path"], ["-L"],
                      ["a.yafl", "-O1", "b.yafl"], ["--bogus", "a.yafl"],
@@ -245,6 +256,7 @@ class TestBootstrapCli(TimedTestCase):
             with self.subTest(args=args):
                 self._both(*args, libs=False)
 
+    @_ARGPARSE_314
     def test_argparse_word_rules(self):
         # Python 3.14 argparse's classification and consumption: explicit
         # arguments on flags, short-flag clusters, `--` placement, negative-
@@ -275,6 +287,7 @@ class TestBootstrapCli(TimedTestCase):
         self.assertEqual((runs[0].returncode, runs[0].stdout, runs[0].stderr),
                          (runs[1].returncode, runs[1].stdout, runs[1].stderr))
 
+    @_ARGPARSE_314
     def test_usage_and_help_wrap_like_argparse(self):
         # COLUMNS unset: not a terminal, so argparse falls back to 80.
         for columns in ("1000", "80", "60", "45", "30", "20", "12", "1", None):
@@ -283,6 +296,7 @@ class TestBootstrapCli(TimedTestCase):
                     with self.subTest(columns=columns, colour=colour, args=args):
                         self._both_as_main_py(*args, env={"COLUMNS": columns, **colour})
 
+    @_ARGPARSE_314
     def test_colour_rules_like_argparse(self):
         for colour in ({"FORCE_COLOR": "1", "NO_COLOR": "1"}, {"PYTHON_COLORS": "1"},
                        {"PYTHON_COLORS": "0", "FORCE_COLOR": "1"},

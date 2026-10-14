@@ -280,8 +280,9 @@ def refresh_references() -> int:
     source hash meant the cache never hit during a fix/test loop). Discarding
     them is therefore an explicit act, like rebuilding the binary.
     """
-    import getpass
-    cache = Path(tempfile.gettempdir()) / f"yafl-bootstrap-cache-{__import__('os').getuid()}"
+    # The same directory as tests/testutil.py's reference_cache_dir().
+    cache = (Path(os.environ["YAFL_REFERENCE_CACHE"]) if os.environ.get("YAFL_REFERENCE_CACHE")
+             else Path(tempfile.gettempdir()) / f"yafl-bootstrap-cache-{os.getuid()}")
     n = 0
     for stale in cache.glob("ref-*"):
         stale.unlink(missing_ok=True)
