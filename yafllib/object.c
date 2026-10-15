@@ -2558,9 +2558,9 @@ static void gc_fsa_mark_sweep$page_needs_scan(gc_page_t *page) {
     // scanned/atomic_seen bitmaps never reset, the next cycle's page pass
     // (seen & ~scanned) would skip every object scanned this cycle, and their
     // children would be freed under them. The tail retires the stage under
-    // this same lock, so the check is exact. A
-    // request dropped here is for a mark that landed after marking ended:
-    // prune's residue merge keeps that object, as before.
+    // this same lock, so the check is exact. A request dropped here is for a
+    // mark that landed after marking ended: prune's residue merge keeps that
+    // object.
     if (atomic_load_explicit(&stage, memory_order_relaxed) != GC_STAGE_MARK_SWEEP) {
         gc_pool_unlock();
         return;
@@ -2584,6 +2584,11 @@ static void gc_fsa_mark_sweep$page_needs_scan(gc_page_t *page) {
     list_link(&pages_to_scan, (list_element_t*)&page->head.list);
     gc_pool_unlock();
 }
+#ifdef YAFL_GC_RETIRE_PROBE
+// tests/test_gc_late_requeue.c: a ring pump's rescan request, made by hand.
+void gc_test_page_needs_scan(void *page);
+void gc_test_page_needs_scan(void *page) { gc_fsa_mark_sweep$page_needs_scan((gc_page_t*)page); }
+#endif
 
 static void gc_fsa_mark_sweep$mark_object(object_t *object) {
     if (UNLIKELY(gc_stats_enabled)) gc_prof_ptrs++;
@@ -3174,6 +3179,15 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
     }
     gc_pool_unlock();
+#ifdef YAFL_GC_RETIRE_PROBE
+    // Test-only hook (tests/test_gc_late_requeue.c), compiled into that target
+    // alone: called once marking has retired, where a mark executor still
+    // pumping the reprocess ring can ask for a page to be rescanned.
+    if (atomic_load(&stage) == GC_STAGE_PRUNE) {
+        extern void gc_test_retire_probe(void);
+        gc_test_retire_probe();
+    }
+#endif
 }
 
 

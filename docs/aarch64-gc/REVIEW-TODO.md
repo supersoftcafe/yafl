@@ -22,7 +22,7 @@ From the maintainability review of the aarch64-gc branch. Ticked when committed.
 - [x] 7. Codegen shape test: every pointer store goes through a store macro.
 - [x] 8. `gc_stress` in CTest (one short run).
 - [x] 9. The soak runs on PRs that touch `yafllib/**`, `compiler/codegen/**`, `bootstrap/ir/**`.
-- [ ] 10. Step tests: the lazy double run; `page_needs_scan` after PRUNE; a late write to an
+- [x] 10. Step tests: the lazy double run; `page_needs_scan` after PRUNE; a late write to an
       `old` page before its writer's root scan.
 
 ## Tidy-ups

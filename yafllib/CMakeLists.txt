@@ -150,6 +150,12 @@ set_tests_properties(test_gc_publish_step test_gc_lazy_step PROPERTIES ENVIRONME
 # test_gc_gen: stepped test of immutability-based generations — promotion after
 # GC_PROMOTE_AFTER prunes, exemption from minors, reclamation by a major.
 add_yafl_test(test_gc_gen)
+# test_gc_old_late_write: stepped. A late write into an old page between the
+# cycle's START and the writer's own root scan is traced only because the end
+# of SCAN_ROOTS demotes the pages late writes touched; without that the value
+# is reclaimed while the old object points at it.
+add_yafl_test(test_gc_old_late_write)
+set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_pressure: a ratcheting live set plus churn whose objects live a few
 # cycles before dying, in a deliberately small heap. Guards the near-full
 # machinery: the pressure backstop in gc_page_alloc, the relocation reserve,
@@ -219,4 +225,16 @@ add_yafl_test(test_vtable_lookup)
 # the next minor reclaims the referent.
 add_yafl_test(test_gc_late_pin_race)
 target_compile_definitions(test_gc_late_pin_race PRIVATE YAFL_GC_RACE_PROBE=1)
+# test_lazy_runner: exactly one caller of lazy_thunk_enqueue runs the
+# initialiser, even when the chain is drained between the enqueue's CAS and
+# its return. Builds its own lazy.c with YAFL_LAZY_RACE_PROBE, which hooks
+# that window.
+add_yafl_test(test_lazy_runner)
+target_compile_definitions(test_lazy_runner PRIVATE YAFL_LAZY_RACE_PROBE=1)
+# test_gc_late_requeue: stepped. A rescan request that arrives after marking
+# has retired must not take its page out of the cycle's prune. Builds its own
+# object.c with YAFL_GC_RETIRE_PROBE, which hooks the moment marking retires.
+add_yafl_test(test_gc_late_requeue)
+target_compile_definitions(test_gc_late_requeue PRIVATE YAFL_GC_RETIRE_PROBE=1)
+set_tests_properties(test_gc_late_requeue PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 

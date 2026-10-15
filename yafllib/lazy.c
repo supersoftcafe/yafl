@@ -41,6 +41,12 @@ EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
         if (expected != NULL) GC_MARK_SEEN((object_t*)expected);
         atomic_store(&waiter->next, expected);
     } while (!atomic_compare_exchange_weak(flag, &expected, waiter));
+#ifdef YAFL_LAZY_RACE_PROBE
+    // Test-only hook (tests/test_lazy_runner.c), compiled into that target
+    // alone: called once `waiter` is published, where the runner already in
+    // flight can drain the chain before this caller decides whether it runs.
+    { extern void lazy_test_race_probe(object_t*); lazy_test_race_probe(flag_field); }
+#endif
     // A GLOBAL stub's flag is a declared root, and the CAS was a root store:
     // publish it (see gc_root_publish). When this thread wins the init race
     // the caller drops `waiter` at once, leaving the flag its only reference;
