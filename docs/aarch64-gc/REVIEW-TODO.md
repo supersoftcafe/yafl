@@ -15,7 +15,7 @@ From the maintainability review of the aarch64-gc branch. Ticked when committed.
 - [x] 4. One helper for "does this store need the publication fence" (`gc_local_barrier_in`,
       `GC_FILL_FENCE`, `list_builder_link`).
 - [x] 5. Comments state the invariant; investigation history moves to INVESTIGATION.md.
-- [ ] 6. Fold or delete the diagnostic patches (`diag-hooks.patch`, `n2-diag.patch`).
+- [x] 6. Fold or delete the diagnostic patches (`diag-hooks.patch`, `n2-diag.patch`). Deleted; INVESTIGATION.md says how to recover them from b6600d5.
 
 ## Tests
 

@@ -46,7 +46,7 @@ and how to reproduce it. Each fix's commit message has the full reasoning and nu
 | 3f95ab1 | `test_gc_mesh` reads mailbox slots through `object_resolve`, as generated code does for write-once fields. | test fidelity |
 | 2662195 | **Mark tail waits for mutator marks caught between bit and ring push.** A mutator mark sets `atomic_seen`, then pushes a processed page on the ring; a marker meeting the object in between leaves it to the push. Preempted there, the tail retired, the push was dropped, and the object was kept but never scanned. Mutators are now counted across both steps (`gc_ring_writers`); the tail retires only with the count zero and the ring empty. | capture + argument (checked by x86); A/B inconclusive: clean both sides, Pi diag 2000/2000, Pi plain 5000/5000, x86 diag 2000/2000 |
 | da8a3d9 | `test_gc_min2`: the consume path writes the shared holder's field under the pin (it was a plain unpinned write, against the sharing contract). | test fidelity |
-| 1b7e830 | **Publication fence**: a store-store fence (`GC_PUBLISH_FENCE`: `dmb ishst` on aarch64, a compiler fence on x86) between initialising an object and the store that makes it reachable from a shared object. Placed in `gc_local_barrier_in` (non-private target), `gc_root_overwrite`, fill stores of non-private objects (`GC_FILL_FENCE`, both compilers), `list_builder_link`, `_queue_push`. Without it a collector that reaches the object through the field (it takes no pin) can read the pointer and then the object's not-yet-visible header. Found on GitHub's Neoverse N2 runners: `gc_local_mark_object` assert `gc_is_object_base`, 76 captures with `n2-diag.patch`, all `via=field` on `m2_holder`, all "late-visible" (the header became valid within 0-4 spins). | N2 A/B, 6 jobs x 75 min per side (about 3,200 `test_gc_min2` runs each): before 5 asserts, after 0. Mesh OOMs (item 5) 32 vs 30. Cost on the Pi, self-compile -O1, interleaved, 3 runs each: before 762.6 s, after 762.4 s (spread about 20 s) |
+| 1b7e830 | **Publication fence**: a store-store fence (`GC_PUBLISH_FENCE`: `dmb ishst` on aarch64, a compiler fence on x86) between initialising an object and the store that makes it reachable from a shared object. Placed in `gc_local_barrier_in` (non-private target), `gc_root_overwrite`, fill stores of non-private objects (`GC_FILL_FENCE`, both compilers), `list_builder_link`, `_queue_push`. Without it a collector that reaches the object through the field (it takes no pin) can read the pointer and then the object's not-yet-visible header. Found on GitHub's Neoverse N2 runners: `gc_local_mark_object` assert `gc_is_object_base`, 76 captures with `n2-diag.patch` (see Diagnostic hooks), all `via=field` on `m2_holder`, all "late-visible" (the header became valid within 0-4 spins). | N2 A/B, 6 jobs x 75 min per side (about 3,200 `test_gc_min2` runs each): before 5 asserts, after 0. Mesh OOMs (item 5) 32 vs 30. Cost on the Pi, self-compile -O1, interleaved, 3 runs each: before 762.6 s, after 762.4 s (spread about 20 s) |
 
 Final results at 0a6d915 (later commits: docs and CI only), 2026-10-14/15: `full_protocol.py
 --full --keep-going` on a fresh worktree, **ALL STAGES PASSED on both boxes**. CTest 77/77
@@ -79,7 +79,7 @@ Earlier full results (2662195), 2026-10-13/14:
 ## Open
 
 1. **Resolved by 960c34d:** the nursery-off `test_gc_mesh` corruption (about 1 in 1500 plain runs).
-   How it was found, for reuse: the end-of-mark check (see the patch) flags the state in the cycle
+   How it was found, for reuse: the end-of-mark check (see Diagnostic hooks) flags the state in the cycle
    it occurs; per-child "mailbox scanned" events showed a mailbox marked `scanned=1` that was never
    scanned that cycle, and its page's history showed it had skipped the previous prune. The x86
    session reproduced it with the diagnostic build (plain x86 builds never showed it in 16,000
@@ -136,8 +136,17 @@ Earlier full results (2662195), 2026-10-13/14:
 
 ## Diagnostic hooks (not committed to the runtime): `diag-hooks.patch`
 
-`docs/aarch64-gc/diag-hooks.patch` applies to the branch head with `git apply`. Its `once.c` part also
-carries the experimental `yafl_cas_once` barrier change (see Open item 1). It adds:
+The patch was removed from the tree once the work it served was done: patches against `object.c`
+stop applying as the file changes. It applies to b6600d5, the last commit before the store macros:
+
+```
+git show b6600d5:docs/aarch64-gc/diag-hooks.patch > diag-hooks.patch   # likewise n2-diag.patch
+git worktree add --detach ../yafl-diag b6600d5 && cd ../yafl-diag && git apply ../yafl/diag-hooks.patch
+```
+
+Its `once.c` part also carries the experimental `yafl_cas_once` barrier change (see Open item 1).
+`n2-diag.patch` (the N2 publication-order capture) replaced `gc_local_mark_object`'s base assert with
+a report of the path that reached the object and a spin re-checking it. `diag-hooks.patch` adds:
 
 - `gc_diag_bad(what, obj, via)`: prints the trace for obj and via, plus a raw backtrace and the
   executable's load address (decode with `addr2line -e <bin> -f -i -p` on `addr - base`).
@@ -162,10 +171,9 @@ carries the experimental `yafl_cas_once` barrier change (see Open item 1). It ad
   events.
 - Trace timestamps from `cntvct_el0` instead of the global atomic sequence counter.
 
-Build it like CTest does (all runtime sources compiled into the test):
+Build it like CTest does (all runtime sources compiled into the test), in that worktree:
 
 ```
-git apply docs/aarch64-gc/diag-hooks.patch
 cd yafllib
 SRCS=$(sed -n '/set(TEST_SRC_FILES/,/)/p' CMakeLists.txt | grep -oE '[A-Za-z0-9_/]+\.c' | tr '\n' ' ')
 gcc -std=gnu11 -O0 -g -I. -I.. -o mesh_diag tests/test_gc_mesh.c $SRCS -lm -lpthread -ldl
