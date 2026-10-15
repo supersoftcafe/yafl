@@ -4,8 +4,8 @@ name: gc-soak
 # compiled-YAFL gc_stress, run over and over under every collector profile for
 # a fixed time. The races it hunts show up once in hundreds or thousands of
 # runs, and which ones are possible depends on the CPU's memory ordering, so
-# it runs on several aarch64 implementations (Neoverse N2, Apple M) as well as
-# x86. A failure uploads the logs and opens (or comments on) a `gc-soak` issue.
+# it runs on aarch64 (Neoverse N2) as well as x86. (macOS is left out until
+# the runtime builds there: it includes <threads.h>, which macOS lacks.) A failure uploads the logs and opens (or comments on) a `gc-soak` issue.
 #
 # A pull request or push to main that edits this file or the soak script runs
 # a short soak, so a broken workflow shows before the night.
@@ -40,9 +40,6 @@ jobs:
           - { runner: ubuntu-24.04-arm, builds: clang-O3 }
           - { runner: ubuntu-24.04-arm, builds: gcc-O2 }
           - { runner: ubuntu-24.04-arm, builds: clang-O2 }
-          # macOS's gcc is clang, so clang builds only.
-          - { runner: macos-15, builds: clang-O3 }
-          - { runner: macos-15, builds: clang-O2 }
           - { runner: ubuntu-latest, builds: gcc-O3-ndebug }
           - { runner: ubuntu-latest, builds: clang-O2 }
     name: soak (${{ matrix.runner }}, ${{ matrix.builds }})

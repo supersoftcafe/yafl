@@ -1,0 +1,95 @@
+diff --git a/yafllib/object.c b/yafllib/object.c
+index 325c364..d3e9923 100644
+--- a/yafllib/object.c
++++ b/yafllib/object.c
+@@ -1606,10 +1606,41 @@ static inline void gc_local_mark_base(gc_page_t *page, object_t *object) {
+ // A precise reference — an object field, a declared root, a remembered slot.
+ // It holds NULL, a tagged scalar, a static object, or a heap object's BASE;
+ // never an interior pointer, so there is nothing to search for.
++// N2 DIAG: who handed over a non-base, and is it late visibility or real?
++static thread_local const char *n2_via = "?";
++static thread_local object_t **n2_slot = NULL;
++static thread_local object_t *n2_parent = NULL;
++static void n2_bad(object_t *object) {
++    gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
++    uintptr_t c = ((uintptr_t)object - (uintptr_t)page->slots) / GC_SLOT_SIZE;
++    unsigned long tag0 = page->head.tag; uint32_t ep0 = page->head.local_epoch;
++    int bit0 = c < SLOTS_PER_PAGE ? (int)((page->head.objects.a[c / GC_MASK_SIZE] >> (c % GC_MASK_SIZE)) & 1) : -1;
++    object_t *slotnow = n2_slot ? __atomic_load_n(n2_slot, __ATOMIC_ACQUIRE) : NULL;
++    long spins = -1;
++    for (long i = 0; i < 2000000; ++i) {
++        atomic_thread_fence(memory_order_seq_cst);
++        if (gc_is_object_base(object)) { spins = i; break; }
++    }
++    fprintf(stderr, "N2DIAG via=%s obj=%p slot=%p slot_now=%p parent=%p parent_vt=%s "
++            "slot_in_heap=%d off=%ld cidx=%lu tag0=%lx epoch0=%u bit0=%d | my_epoch=%u "
++            "page_mut=%d page_pages=%u tag=%lx epoch=%u bit=%d -> %s (spins=%ld)\n",
++            n2_via, (void*)object, (void*)n2_slot, (void*)slotnow, (void*)n2_parent,
++            n2_parent ? vtable_untag(n2_parent->vtable)->name : "-",
++            n2_slot ? gc_in_heap(n2_slot) : -1,
++            (long)((uintptr_t)object & (GC_SLOT_SIZE - 1)), (unsigned long)c, tag0, ep0, bit0,
++            gc_thread_info.local_epoch, (int)page->head.mutable, (unsigned)page->head.pages,
++            (unsigned long)page->head.tag, page->head.local_epoch,
++            c < SLOTS_PER_PAGE ? (int)((page->head.objects.a[c / GC_MASK_SIZE] >> (c % GC_MASK_SIZE)) & 1) : -1,
++            spins >= 0 ? "LATE-VISIBLE" : "STILL-BAD", spins);
++    gc_trace_explain("n2 obj", object);
++    if (n2_parent) gc_trace_explain("n2 parent", n2_parent);
++    fflush(stderr);
++    abort();
++}
+ static void gc_local_mark_object(object_t *object) {
+     if (((uintptr_t)object & PTR_TAG_MASK) != 0 || !gc_in_heap(object))
+         return;
+-    assert(gc_is_object_base(object));
++    if (!gc_is_object_base(object)) n2_bad(object);
+     gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+     if (gc_local_page_is_nursery(page))
+         gc_local_mark_base(page, object);
+@@ -1649,6 +1680,7 @@ static void gc_local_mark_range(object_t **p, object_t **end) {
+ }
+ 
+ static void gc_local_mark_slot(object_t **slot) {
++    n2_via = "root"; n2_slot = slot; n2_parent = NULL;
+     gc_local_mark_object(*slot);
+ }
+ 
+@@ -1695,6 +1727,7 @@ static void gc_local_trace_fields(object_t *object) {
+     while (m) {
+         unsigned i = __builtin_ctzll(m); m &= m - 1;
+         object_t *child = slots[i];
++        n2_via = "field"; n2_slot = &slots[i]; n2_parent = object;
+         gc_local_mark_object(child);
+         if (promoting && gc_local_points_at_staying(child))
+             gc_local_remember(&slots[i], 1);
+@@ -1707,6 +1740,7 @@ static void gc_local_trace_fields(object_t *object) {
+             while (am) {
+                 unsigned i = __builtin_ctzll(am); am &= am - 1;
+                 object_t *child = ((object_t**)array)[i];
++                n2_via = "elem"; n2_slot = &((object_t**)array)[i]; n2_parent = object;
+                 gc_local_mark_object(child);
+                 if (promoting && gc_local_points_at_staying(child))
+                     gc_local_remember(&((object_t**)array)[i], 1);
+@@ -1894,6 +1928,7 @@ static NOINLINE void gc_local_collect(void) {
+         ptr_mask_t m = t->remembered[k].mask;
+         while (m) {
+             unsigned i = __builtin_ctzll(m); m &= m - 1;
++            n2_via = "remembered"; n2_slot = &t->remembered[k].slot[i]; n2_parent = NULL;
+             gc_local_mark_object(t->remembered[k].slot[i]);
+         }
+     }
+diff --git a/yafllib/tests/gc_soak.py b/yafllib/tests/gc_soak.py
+index ded590d..21c2f93 100755
+--- a/yafllib/tests/gc_soak.py
++++ b/yafllib/tests/gc_soak.py
+@@ -119,6 +119,11 @@ PROFILES = {
+     # Twice as many workers as cores: preemption lands inside the collector's
+     # check-then-act windows.
+     "oversub":   {**P, "YAFL_THREADS": "8", "YAFL_LOCAL_GC_PAGES": "4"},
++    # N2 DIAG: the per-page event trace on, for gc_trace_explain.
++    "hottrace":  {**P, "YAFL_GC_TRACE": "1", "YAFL_GC_STEP_PAGES": "64", "YAFL_GC_PRUNE_PAGES": "1024",
++                  "YAFL_GC_COMPACT_PERCENT": "100", "YAFL_GC_PROMOTE_FLOOR": "16",
++                  "YAFL_LOCAL_GC_PAGES": "4"},
++    "deftrace":  {**P, "YAFL_GC_TRACE": "1"},
+ }
+ 
+ DEFAULT_PROFILES = list(PROFILES)
