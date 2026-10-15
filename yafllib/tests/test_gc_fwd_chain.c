@@ -77,9 +77,7 @@ static void run_one_cycle(void) {
  * compactor skips it. */
 static void __attribute__((noinline)) create_and_bury(void) {
     object_t* k = object_create(&leaf_vt);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = k;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, k);
     g_A = (uintptr_t)k;
     for (int i = 0; i < 460; ++i) {
         volatile object_t* f = object_create(&leaf_vt);

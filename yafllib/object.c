@@ -1119,10 +1119,8 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
     // prev may be on a page the marker scans (the builder crosses safe
-    // points), so `cell` must be visible before the link to it (yafl.h,
-    // GC_PUBLISH_FENCE).
-    if (!(gc_alloc_tl.local_active && gc_local_obj_private(prev)))
-        GC_PUBLISH_FENCE();
+    // points), so `cell` must be visible before the link to it.
+    GC_PUBLISH_FENCE_IF_SHARED(prev);
     ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
     if (gc_local_live_now())
         gc_local_note_slot(prev, &((object_t**)prev)[slot], 1);

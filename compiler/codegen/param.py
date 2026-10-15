@@ -771,14 +771,13 @@ class ObjectField(LParam):
     # across safe points (array tabulation, builder pushes), so not fresh. The
     # snapshot barrier owes nothing (no old value) and neither does a thread
     # with no active nursery; only the nursery's private-container test
-    # remains (GC_FILL_BARRIER). Provenance: compare-excluded.
+    # remains (GC_FILL_STORE_IN). Provenance: compare-excluded.
     fill: bool = dataclasses.field(default=False, compare=False)
     # True for a store whose container may be a DECLARED ROOT — a lazy stub,
     # static for a global and heap for a local `[lazy]`. Roots are scanned
-    # once, at cycle open, so after the ordinary barrier and the store, what
-    # the field now holds is published (GC_ROOT_PUBLISH_IN; a heap stub
-    # publishes too, as one born after its thread's root scan is not traced
-    # that cycle). Provenance: compare-excluded.
+    # once, at cycle open, so what the field now holds is published
+    # (GC_STORE_PUBLISH_IN; a heap stub publishes too, as one born after its
+    # thread's root scan is not traced that cycle). Provenance: compare-excluded.
     root: bool = dataclasses.field(default=False, compare=False)
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
@@ -810,16 +809,12 @@ class ObjectField(LParam):
             field_ref = f"{field_ref}.a[{self.index.to_c(type_cache)}]"
         if self.type.has_pointers and not self.fresh:
             mask = to_pointer_mask(self.type, self.type.declare(type_cache))
-            # The container is known: the nursery barrier's private test reads
-            # its escaped bit directly instead of searching for it.
-            # A fill store: GC_FILL_FENCE before it orders the value's
-            # initialisation first (the container may be one the marker scans,
-            # yafl.h GC_PUBLISH_FENCE); GC_FILL_BARRIER after it escapes the
-            # value just stored.
-            if self.fill:
-                return f"    GC_FILL_FENCE({pointer});\n    {field_ref} = {value};\n    GC_FILL_BARRIER({pointer}, {field_ref}, {mask});\n"
-            publish = f"    GC_ROOT_PUBLISH_IN({pointer}, {field_ref}, {mask});\n" if self.root else ""
-            return f"    GC_WRITE_BARRIER_IN({pointer}, {field_ref}, {mask});\n    {field_ref} = {value};\n{publish}"
+            # The store macro does the store (yafl.h, "Pointer stores"); the
+            # container is known, so the nursery's private test reads its
+            # escaped bit directly.
+            macro = ("GC_FILL_STORE_IN" if self.fill else
+                     "GC_STORE_PUBLISH_IN" if self.root else "GC_STORE_IN")
+            return f"    {macro}({pointer}, {field_ref}, {mask}, {value});\n"
         else:
             return f"    {field_ref} = {value};\n"
 

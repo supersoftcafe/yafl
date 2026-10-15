@@ -132,15 +132,11 @@ static void __attribute__((noinline)) create_and_root(void) {
     object_t* p = object_create(&parent_vt);
     ((struct parent*)p)->slot = NULL;
     memset(((struct parent*)p)->pad, 0x5a, sizeof ((struct parent*)p)->pad);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = p;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, p);
     g_P = (uintptr_t)p;
     object_t* c = object_create(&leaf_vt);
     memset(((struct leaf*)c)->pad, 0x5a, sizeof ((struct leaf*)c)->pad);
-    gc_root_overwrite(&_slots[1], 1);
-    _slots[1] = c;
-    gc_root_publish(&_slots[1], 1);
+    GC_ROOT_STORE(_slots[1], 1, c);
     g_C = (uintptr_t)c;
 }
 

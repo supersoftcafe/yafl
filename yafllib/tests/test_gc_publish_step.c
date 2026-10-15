@@ -58,9 +58,7 @@ static __attribute__((noinline)) void allocate(void) {
 }
 
 static __attribute__((noinline)) void store_and_publish(void) {
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = (object_t*)g_O;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, (object_t*)g_O);
 }
 
 static __attribute__((noinline)) void scrub(void) {

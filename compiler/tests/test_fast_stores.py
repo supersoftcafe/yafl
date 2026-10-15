@@ -69,10 +69,15 @@ def _body(emitted: str, name_prefix: str) -> str:
     raise AssertionError(f"no definition of {name_prefix}* in the emitted C")
 
 
+# The barriered stores (yafl.h, "Pointer stores"); a store without a barrier is
+# a plain assignment.
+_STORE_MACROS = ("GC_STORE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN(")
+
+
 def _barriers_on(body: str, pointer: str) -> list[str]:
-    """Every GC_WRITE_BARRIER in `body` taken through the local `pointer`."""
+    """Every barriered store in `body` taken through the local `pointer`."""
     return [ln.strip() for ln in body.splitlines()
-            if "GC_WRITE_BARRIER" in ln and f"){pointer})->" in ln]
+            if ln.strip().startswith(_STORE_MACROS) and f"){pointer})->" in ln]
 
 
 class TestFastStores(TestCase):
@@ -91,7 +96,7 @@ class TestFastStores(TestCase):
         found by what is stored in it: its name is positional after
         lowering/canonicalise.py."""
         body = _body(_emit(2), "Main__both")
-        field = re.search(r"_sv_state\)->(\w+) = _sv_task;", body)
+        field = re.search(r"_sv_state\)->(\w+), [^;]*, _sv_task\);", body)
         self.assertIsNotNone(field, body)
         my_task = [ln for ln in _barriers_on(body, "_sv_state")
                    if re.search(rf"->{field.group(1)}\b", ln)]
@@ -154,5 +159,42 @@ class TestTabulateFillKeepsItsBarrier(TestCase):
             with self.subTest(level=level):
                 stores, body = self._fill_stores(level)
                 self.assertTrue(stores, body)
-                self.assertTrue(any("GC_WRITE_BARRIER" in ln or "GC_FILL_BARRIER" in ln for ln in stores),
+                self.assertTrue(any(ln.startswith(_STORE_MACROS) for ln in stores),
                                 f"the tabulate fill store lost its barrier:\n{body}")
+
+
+# Every barriered store the compilers emit goes through one of yafl.h's store
+# macros, which order the fence, the barriers and the store themselves
+# ("Pointer stores"). Generated code naming a part directly would bypass that
+# order — and on x86 nothing else would notice, as the fence compiles to
+# nothing there. The port emits the same C (the self-compile), so this covers
+# both compilers.
+_SHAPE_SRC = """\
+import System
+
+class Box(v: System::Int)
+
+fun [impure] boxes(n: System::Int32): System::Array<Box>
+  ret System::Array<Box>(n, (i: System::Int32) => Box(System::Int(i)))
+
+fun [impure] pick(n: System::Int): Box
+  let [lazy] b: Box = Box(n + 1)
+  ret n > 0 ? b : Box(0)
+
+fun main(): System::Int
+  ret boxes(4i32).length > 0i32 && pick(3).v > 0 ? 0 : 1
+"""
+_BARRIER_PARTS = re.compile(r"\b(GC_WRITE_BARRIER_IN|GC_PUBLISH_IN|GC_FILL_BARRIER|GC_MARK_SEEN"
+                            r"|GC_PUBLISH_FENCE\w*|gc_root_overwrite|gc_root_publish)\(")
+
+
+class TestStoresGoThroughTheStoreMacros(TestCase):
+    def test_every_kind_of_store_uses_its_macro(self):
+        for level in (0, 2):
+            with self.subTest(level=level):
+                emitted = compile_c(_SHAPE_SRC, "file.yafl", optimization_level=level)
+                self.assertEqual([], [m.group(0) for m in _BARRIER_PARTS.finditer(emitted)])
+                # The program reaches each kind: an ordinary store, a lazy
+                # stub's value (publishes), an array tabulation (fill).
+                for macro in _STORE_MACROS:
+                    self.assertIn(macro, emitted)

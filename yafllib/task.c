@@ -68,8 +68,7 @@ HIDDEN void _task_fire(void* self) {
         // intermediate structure the suspended function ever held —
         // observed: a returned function's state object keeping two
         // 480k-cell lists alive for the process lifetime).
-        GC_WRITE_BARRIER_IN(task, task->callback.o, 1);
-        task->callback = (fun_t){ NULL, NULL };
+        GC_STORE_IN(task, task->callback, 1, (fun_t){ NULL, NULL });
         ((object_t*(*)(object_t*,object_t*))cb.f)(cb.o, (object_t*)task);
     }
 }
@@ -97,8 +96,7 @@ EXPORT object_t* task_obj_create(object_t* self) {
     (void)self;
     task_obj_t* task = (task_obj_t*)object_create((vtable_t*)&TASK_OBJ_VTABLE);
     task_init((object_t*)task);
-    GC_WRITE_BARRIER_IN(task, task->result, 1);   // object_create zeroed it; mark-old is a no-op but keeps every store uniform
-    task->result = NULL;
+    GC_STORE_IN(task, task->result, 1, NULL);   // object_create zeroed it; mark-old is a no-op but keeps every store uniform
     return (object_t*)task;
 }
 
@@ -143,17 +141,10 @@ EXPORT object_t* task_complete_deferred(object_t* self) {
 
 EXPORT object_t* task_on_complete(object_t* self, fun_t callback) {
     task_t* task = (task_t*)self;
-    // Deletion barrier: mark the callback we are overwriting (provably NULL on a
-    // fresh task, but uniform with every other pointer-slot store).
-    GC_WRITE_BARRIER_IN(task, task->callback.o, 1);
-    task->callback = callback;
-    // Publish the continuation. Once the caller suspends, the task's callback.o
-    // is the only reference to that continuation state, and the caller's stack
-    // copy is gone — while the task itself may be one this cycle never scans
-    // (born after its thread's root scan). AFTER the store (GC_PUBLISH_IN,
-    // yafl.h); this was a GC_MARK_SEEN of the value with no fence, whose flag
-    // read could be satisfied before the store.
-    GC_PUBLISH_IN(task, task->callback.o, 1);
+    // Publishes the continuation: once the caller suspends, the task's
+    // callback.o is the only reference to that continuation state, and the
+    // task may be one this cycle never scans (born after its thread's root scan).
+    GC_STORE_PUBLISH_IN(task, task->callback, 1, callback);
     int32_t expected = TASK_PENDING;
     if (atomic_compare_exchange_strong(&task->state, &expected, TASK_CALLBACK))
         return NULL;

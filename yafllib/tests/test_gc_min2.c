@@ -128,8 +128,7 @@ static __attribute__((noinline)) void _work(int w) {
             GC_SAFE_POINT();
             object_t* c = str_from_bytes((uint8_t*)PAD, 24).head;   // a String's heap head
             struct holder* hh = (struct holder*)object_pin_resolve(o);
-            GC_WRITE_BARRIER_IN(hh, hh->child, 1);
-            hh->child = c;
+            GC_STORE_IN(hh, hh->child, 1, c);
             object_unpin((object_t*)hh);
         }
         burn(4);

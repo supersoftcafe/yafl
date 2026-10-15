@@ -227,8 +227,7 @@ static object_t* new_mailbox(void) {
 // are never relocated, so the pinned copy is the cell itself.
 static void publish(int cell, object_t* value) {
     struct cell* c = (struct cell*)object_pin_resolve(_cells[cell]);
-    GC_WRITE_BARRIER_IN(c, c->val, 1);
-    c->val = value;
+    GC_STORE_IN(c, c->val, 1, value);
     object_unpin((object_t*)c);
 }
 static object_t* take(int cell) {
@@ -296,8 +295,7 @@ static object_t* _worker(object_t* self, object_t* task) {
         } else if (r < 85) {                                 // STASH
             int k = (int)(rnd(&seed) % STASH);
             object_t* v = carried[rnd(&seed) % CARRY];
-            GC_WRITE_BARRIER_IN(st, st->s[k], 1);
-            st->s[k] = v;
+            GC_STORE_IN(st, st->s[k], 1, v);
         } else {                                             // ADOPT
             object_t* v = st->s[rnd(&seed) % STASH];
             verify(v, w);

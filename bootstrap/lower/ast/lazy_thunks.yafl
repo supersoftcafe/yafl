@@ -93,7 +93,7 @@ fun makeDrainFunction(valueType): CgFunction
       OpMove(svHead, svNext, false, List()),
       OpJump("$loop", List()),
       OpLabel("$done", List()))
-  # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
+  # head.result = value — per-IR-type write (a barriered field store, GC_STORE_IN)
   let ops = concat(concat(head, lazyStoreWaiterResult(svHead, valueType, value)), tail2)
   ret CgFunction(drainFunctionName(valueType),
                  CgStruct(list3(CgField("this", CgDataPointer()),

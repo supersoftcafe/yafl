@@ -114,8 +114,7 @@ static void run_test(object_t* _unused, fun_t continuation) {
     for (int i = 0; i < N_SLOTS; ++i) {
         GC_SAFE_POINT();
         struct bytes_obj* o = alloc_bytes(size_for_index(i), pattern_for(i, 0));
-        GC_WRITE_BARRIER_IN(root, root->items[i], 1);
-        root->items[i] = (object_t*)o;
+        GC_STORE_IN(root, root->items[i], 1, (object_t*)o);
     }
 
     // Churn waves: each wave drops every other reference, then refills with a
@@ -123,15 +122,13 @@ static void run_test(object_t* _unused, fun_t continuation) {
     // multi-page allocator to land objects in churn-pattern holes.
     for (int wave = 1; wave <= CHURN_WAVES; ++wave) {
         for (int i = 0; i < N_SLOTS; i += 2) {
-            GC_WRITE_BARRIER_IN(root, root->items[i], 1);
-            root->items[i] = NULL;
+            GC_STORE_IN(root, root->items[i], 1, NULL);
         }
 
         for (int i = 0; i < N_SLOTS; i += 2) {
             GC_SAFE_POINT();
             struct bytes_obj* o = alloc_bytes(size_for_index(i + wave), pattern_for(i, wave));
-            GC_WRITE_BARRIER_IN(root, root->items[i], 1);
-            root->items[i] = (object_t*)o;
+            GC_STORE_IN(root, root->items[i], 1, (object_t*)o);
         }
     }
 

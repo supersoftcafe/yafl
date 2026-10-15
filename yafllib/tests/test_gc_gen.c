@@ -92,9 +92,7 @@ static int Kstate(void) { return gc_debug_object_state((object_t*)g_K); }
 // entrypoint's stack slots, where the conservative scan would keep marking it.
 static void __attribute__((noinline)) create_and_root(void) {
     object_t* k = object_create(&leaf_vt);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = k;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, k);
     g_K = (uintptr_t)k;
 }
 
