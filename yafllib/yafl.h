@@ -755,6 +755,10 @@ EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 // may contain commas.
 //
 //   GC_STORE_IN(obj, field, mask, value)          a field of the object `obj`
+//   GC_STORE_MUTABLE_IN(obj, field, mask, value)  the same, where the caller
+//       knows `obj` is MUTABLE (its class's is_mutable): a mutable object is
+//       never private, so the private test — a read of its page header — is
+//       skipped. GC_STORE_IN is correct for a mutable object too, only slower.
 //   GC_STORE_PUBLISH_IN(obj, field, mask, value)  the same, where the store
 //       hands `value` to another thread (a queue link, a task's continuation,
 //       an IO result) or `obj` may be a declared root (a lazy stub)
@@ -772,6 +776,7 @@ EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 //   part                    when    does
 //   GC_WRITE_BARRIER_IN     before  snapshot: shades the value overwritten;
 //                                   nursery: notes the slot; publication fence
+//   GC_WRITE_BARRIER_MUTABLE_IN     the same, for a container known mutable
 //   GC_PUBLISH_IN           after   shades and escapes the value now stored,
 //                                   read back from the field
 //   GC_FILL_BARRIER         after   escapes the value if the array has left
@@ -828,6 +833,8 @@ INLINE int gc_local_live_now(void) {
     return gc_local_live;
 }
 EXTERN void gc_local_note_slot(object_t *obj, object_t **slot, ptr_mask_t mask);
+// gc_local_note_slot for a container known not to be private (a mutable one).
+EXTERN void gc_local_note_shared_slot(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape_old(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
 // A thread with an active nursery takes the full path. Any other thread (no
@@ -899,6 +906,15 @@ INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask)
     GC_PUBLISH_FENCE();
 }
 
+// The same for a container known to be mutable, so never private.
+INLINE void gc_local_barrier_mutable(object_t **slot, ptr_mask_t mask) {
+    if (gc_alloc_tl.local_active)
+        gc_local_note_shared_slot(slot, mask);
+    else
+        gc_local_barrier_inactive(slot, mask);
+    GC_PUBLISH_FENCE();
+}
+
 // ── Argument checks: plain asserts, stripped by NDEBUG ───────────────────────
 // A heap store names its CONTAINER, and every nursery decision reads that
 // container's own page header and object bit, so `obj` must truly be the BASE
@@ -935,6 +951,13 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
         if (UNLIKELY(gc_write_barrier_requested))\
             _gc_write_barrier_in2((object_t**)&(field), (mask));\
         gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
+    } while (false)
+// The same for a container known to be mutable.
+#define GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask)\
+    do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
+        if (UNLIKELY(gc_write_barrier_requested))\
+            _gc_write_barrier_in2((object_t**)&(field), (mask));\
+        gc_local_barrier_mutable((object_t**)&(field), (mask));\
     } while (false)
 
 // AFTER a store that publishes (the ragged-snapshot and escape rules above):
@@ -991,6 +1014,9 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
 // ── The stores ───────────────────────────────────────────────────────────────
 #define GC_STORE_IN(obj, field, mask, ...)\
     do { GC_WRITE_BARRIER_IN(obj, field, mask);\
+         (field) = (__VA_ARGS__); } while (false)
+#define GC_STORE_MUTABLE_IN(obj, field, mask, ...)\
+    do { GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask);\
          (field) = (__VA_ARGS__); } while (false)
 #define GC_STORE_PUBLISH_IN(obj, field, mask, ...)\
     do { GC_WRITE_BARRIER_IN(obj, field, mask);\

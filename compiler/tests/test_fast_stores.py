@@ -71,7 +71,7 @@ def _body(emitted: str, name_prefix: str) -> str:
 
 # The barriered stores (yafl.h, "Pointer stores"); a store without a barrier is
 # a plain assignment.
-_STORE_MACROS = ("GC_STORE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN(")
+_STORE_MACROS = ("GC_STORE_IN(", "GC_STORE_MUTABLE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN(")
 
 
 def _barriers_on(body: str, pointer: str) -> list[str]:
@@ -194,7 +194,10 @@ class TestStoresGoThroughTheStoreMacros(TestCase):
             with self.subTest(level=level):
                 emitted = compile_c(_SHAPE_SRC, "file.yafl", optimization_level=level)
                 self.assertEqual([], [m.group(0) for m in _BARRIER_PARTS.finditer(emitted)])
-                # The program reaches each kind: an ordinary store, a lazy
-                # stub's value (publishes), an array tabulation (fill).
-                for macro in _STORE_MACROS:
+                # The program reaches each kind generated code makes: a store
+                # into a mutable object (a closure's or a state machine's), a
+                # lazy stub's value (publishes), an array tabulation (fill).
+                # Not GC_STORE_IN: an immutable object is written only while
+                # it is fresh, or by a fill.
+                for macro in ("GC_STORE_MUTABLE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN("):
                     self.assertIn(macro, emitted)

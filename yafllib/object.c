@@ -1794,6 +1794,11 @@ EXPORT void gc_local_note_slot(object_t *obj, object_t **slot, ptr_mask_t mask) 
     gc_local_note_shared(slot, mask);
 }
 
+EXPORT void gc_local_note_shared_slot(object_t **slot, ptr_mask_t mask) {
+    gc_local_flush_pending();
+    gc_local_note_shared(slot, mask);
+}
+
 // The barrier of a thread with no active nursery (see GC_WRITE_BARRIER): only
 // the values being overwritten may need to escape, and only if they sit on a
 // nursery page (a stale stamp merely over-escapes).

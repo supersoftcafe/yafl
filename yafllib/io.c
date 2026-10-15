@@ -175,7 +175,7 @@ static io_job_t* _io_job_alloc(io_op_t op,
     // job is freshly object_create'd (all fields zeroed → NULL), so each store's
     // overwritten value is NULL; the barriers are uniform no-ops here.
     job->task.result     = str_word(NULL);
-    GC_STORE_IN(job, job->io, 1, io);
+    GC_STORE_MUTABLE_IN(job, job->io, 1, io);
     job->fs_aux          = NULL;
     job->dir             = NULL;
     job->finisher        = finisher;
@@ -191,7 +191,7 @@ static io_job_t* _io_job_alloc(io_op_t op,
     // reachable from the completion_task's pointer mask.
     task_t* ct = (task_t*)task_create(NULL);
     task_on_complete((object_t*)ct, (fun_t){.f = (void*)_io_finisher_dispatcher, .o = (object_t*)job});
-    GC_STORE_IN(job, job->completion_task, 1, ct);
+    GC_STORE_MUTABLE_IN(job, job->completion_task, 1, ct);
 
     // Root the job for its whole in-flight lifetime (until the finisher above
     // runs). Done last so the job is fully constructed first. Worker thread.
@@ -207,7 +207,7 @@ static io_job_t* _io_job_alloc(io_op_t op,
 // store.  Per design we never explicitly clear `in_flight`; it is simply
 // overwritten by the next dispatch (or the handle becomes unreachable).
 static void _io_anchor_in_flight(io_t* io, io_job_t* job) {
-    GC_STORE_IN(io, io->in_flight, 1, job);
+    GC_STORE_MUTABLE_IN(io, io->in_flight, 1, job);
 }
 
 
@@ -568,7 +568,7 @@ static object_t* _fs_dispatch_meta(str_t path, io_op_t op,
 
     io_job_t* job = _io_job_alloc(op, io, finisher);
     if (aux) {
-        GC_STORE_IN(job, job->fs_aux, 1, aux);
+        GC_STORE_MUTABLE_IN(job, job->fs_aux, 1, aux);
     }
     _io_anchor_in_flight(io, job);
     _io_enqueue(job);
@@ -670,7 +670,7 @@ static void _fs_finish_dir_close(io_job_t* job);
 
 
 static void _dir_anchor_in_flight(dir_t* dir, io_job_t* job) {
-    GC_STORE_IN(dir, dir->in_flight, 1, job);
+    GC_STORE_MUTABLE_IN(dir, dir->in_flight, 1, job);
 }
 
 
@@ -682,7 +682,7 @@ EXPORT object_t* fs_open_dir(object_t* self, str_t path) {
     str_copy_cstr(path, dir->path_buf, (int32_t)sizeof(dir->path_buf));
 
     io_job_t* job = _io_job_alloc(IO_OP_DIR_OPEN, NULL, _fs_finish_dir_open);
-    GC_STORE_IN(job, job->dir, 1, dir);
+    GC_STORE_MUTABLE_IN(job, job->dir, 1, dir);
     _dir_anchor_in_flight(dir, job);
     _io_enqueue(job);
     return _io_as_task(job);
@@ -694,7 +694,7 @@ EXPORT str_t fs_dir_next(object_t* self) {
     if (dir == NULL || dir->dirp == NULL) return str_word(NULL);
 
     io_job_t* job = _io_job_alloc(IO_OP_DIR_NEXT, NULL, _fs_finish_dir_next);
-    GC_STORE_IN(job, job->dir, 1, dir);
+    GC_STORE_MUTABLE_IN(job, job->dir, 1, dir);
     _dir_anchor_in_flight(dir, job);
     _io_enqueue(job);
     return str_word(_io_as_task(job));
@@ -706,7 +706,7 @@ EXPORT object_t* fs_dir_close(object_t* self) {
     if (dir == NULL || dir->dirp == NULL) return NULL;
 
     io_job_t* job = _io_job_alloc(IO_OP_DIR_CLOSE, NULL, _fs_finish_dir_close);
-    GC_STORE_IN(job, job->dir, 1, dir);
+    GC_STORE_MUTABLE_IN(job, job->dir, 1, dir);
     _dir_anchor_in_flight(dir, job);
     _io_enqueue(job);
     return _io_as_task(job);
@@ -773,7 +773,7 @@ static void _spawn_finish(io_job_t* job) {
     } else {
         spawn_result_t* sr = (spawn_result_t*)object_create((vtable_t*)&SPAWN_RESULT_VTABLE);
         sr->exit_code = sx->exit_code;
-        GC_STORE_IN(job, job->task.result, 1, str_word((object_t*)sr));   // root sr before allocating Strings
+        GC_STORE_MUTABLE_IN(job, job->task.result, 1, str_word((object_t*)sr));   // root sr before allocating Strings
         str_t out = str_from_bytes((uint8_t*)sx->out, sx->out_len);
         // Publish: sr is marked-seen but not necessarily WALKED this cycle.
         GC_STORE_PUBLISH_IN(sr, sr->out, 1, out);

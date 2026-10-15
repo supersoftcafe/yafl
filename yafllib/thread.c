@@ -111,9 +111,9 @@ static task_t* _queue_try_pop(worker_queue_t* queue) {
         // locals, while the queues may be scanned after this thread's stack),
         // and the task's to its successor (afterwards held only by the head,
         // if `task` is walked after the clear).
-        GC_STORE_IN(_queues, queue->head, 1, atomic_load(&task->next));
+        GC_STORE_MUTABLE_IN(_queues, queue->head, 1, atomic_load(&task->next));
         if (queue->head == NULL) queue->tail = NULL;
-        GC_STORE_IN(task, task->next, 1, (task_t*)NULL);
+        GC_STORE_MUTABLE_IN(task, task->next, 1, (task_t*)NULL);
         atomic_fetch_sub_explicit(&_queued_count, 1, memory_order_relaxed);
     }
     pthread_mutex_unlock(&queue->lock);
