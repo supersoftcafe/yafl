@@ -1,0 +1,63 @@
+name: ab-fence
+
+# TEMPORARY A/B for the publication fence (1b7e830) on Neoverse N2. Each job
+# builds BEFORE (da8a3d9: test_gc_min2 under the pin, no fence) and AFTER
+# (1b7e830) and soaks both at once on the same runner, so both see the same
+# load. Remove once the result is recorded in docs/aarch64-gc/INVESTIGATION.md.
+on:
+  pull_request:
+    branches: [main]
+    paths: [.github/workflows/ab-fence.yml]
+
+jobs:
+  ab:
+    strategy:
+      fail-fast: false
+      matrix:
+        builds: [clang-O2, gcc-O2, clang-O3]
+        shard: [1, 2]
+    name: ab-fence (${{ matrix.builds }}, ${{ matrix.shard }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang cmake
+          lscpu | grep -E "Model name|^CPU\(s\)"
+      - name: Worktrees
+        run: |
+          git worktree add ../before da8a3d9
+          git worktree add ../after 1b7e830
+      - name: Soak both at once
+        run: |
+          for side in before after; do
+            (cd ../$side/yafllib && python3 tests/gc_soak.py --builds ${{ matrix.builds }} \
+               --tests test_gc,test_gc_stress,test_gc_min,test_gc_min2,test_gc_min2_window,test_gc_mesh,test_pin,test_parallel \
+               -j 2 --minutes 75 > soak.log 2>&1; echo "exit $?" >> soak.log) &
+          done
+          wait
+          {
+            echo '### ab-fence (${{ matrix.builds }}, ${{ matrix.shard }})'
+            for side in before after; do
+              echo "#### $side"; echo '```'
+              sed -n '/^build /,$p' ../$side/yafllib/soak.log | grep -v '  0 *[0-9.]*$' || true
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p ab; for side in before after; do
+            cp ../$side/yafllib/soak.log ab/$side.soak.log
+            cp -r ../$side/yafllib/build/soak-logs ab/$side.logs 2>/dev/null || true
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ab-fence-${{ matrix.builds }}-${{ matrix.shard }}
+          path: ab/
+          if-no-files-found: ignore
