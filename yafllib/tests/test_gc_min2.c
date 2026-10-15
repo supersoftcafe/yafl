@@ -118,14 +118,19 @@ static __attribute__((noinline)) void _work(int w) {
         gc_root_publish(&_slots[sp], 1);
 
         // CONSUME: read a holder (maybe created on another thread) and hang a
-        // fresh child — created on THIS thread — off it.
+        // fresh child — created on THIS thread — off it. The holder is shared
+        // and mutable, so its field is written under the pin, as the sharing
+        // contract requires: a plain unlocked store here let a second writer's
+        // barrier read the previous child before its allocation bit was
+        // visible (Neoverse N2).
         object_t* o = __atomic_load_n(&_slots[sc], __ATOMIC_ACQUIRE);
         if (o && ((uintptr_t)o & PTR_TAG_MASK) == 0) {
-            struct holder* hh = (struct holder*)o;
             GC_SAFE_POINT();
             object_t* c = str_from_bytes((uint8_t*)PAD, 24).head;   // a String's heap head
+            struct holder* hh = (struct holder*)object_pin_resolve(o);
             GC_WRITE_BARRIER_IN(hh, hh->child, 1);
             hh->child = c;
+            object_unpin((object_t*)hh);
         }
         burn(4);
     }
