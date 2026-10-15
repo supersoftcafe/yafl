@@ -1951,12 +1951,7 @@ static NOINLINE void gc_local_collect(void) {
         // non-fresh store (a safe point has passed) and is noted by the
         // barrier. The page being bumped into stays: newer objects keep
         // landing on it.
-        if (UNLIKELY(gc_trace_enabled)) {
-            bitmap_t dead;
-            for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
-                dead.a[i] = page->head.objects.a[i] & ~page->head.local_mark.a[i];
-            GC_TRACE_PAGE(page, GCT_LOCAL_SWEEP, &dead, page->head.local_epoch);
-        }
+        GC_TRACE_PAGE_DROPPED(page, GCT_LOCAL_SWEEP, &page->head.local_mark);
         if (!gc_local_is_staying(page)) {
             GC_TRACE_PAGE(page, GCT_LOCAL_PROMOTE, &page->head.local_mark, page->head.local_epoch);
             page->head.local_epoch = 0;
@@ -3392,12 +3387,7 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                 ? (size_t)page->head.pages * SLOTS_PER_PAGE
                 : gc_page_live_slots(page);
             GC_PROF_LAP(gc_prof_t_live, _tp0);
-            if (UNLIKELY(gc_trace_enabled)) {
-                bitmap_t dead;
-                for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
-                    dead.a[i] = page->head.objects.a[i] & ~page->head.scanner.seen.a[i];
-                GC_TRACE_PAGE(page, GCT_PRUNE, &dead, page->head.local_epoch);
-            }
+            GC_TRACE_PAGE_DROPPED(page, GCT_PRUNE, &page->head.scanner.seen);
             page->head.objects = page->head.scanner.seen;
             bitmap_reset_all(&page->head.scanner.seen);
             bitmap_reset_all(&page->head.scanner.scanned);

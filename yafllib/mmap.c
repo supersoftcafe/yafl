@@ -5,9 +5,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <string.h>
-
-
-void gc_oom_report(FILE *out);   // gc_debug.c
+#include "gc_internal.h"   // gc_oom_report
 
 EXPORT noreturn void abort_on_out_of_memory() {
     gc_oom_report(stderr);

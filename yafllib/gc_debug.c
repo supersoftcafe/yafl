@@ -267,7 +267,7 @@ enum { GC_TRACE_DEPTH = 32 };
 struct gc_trace_event {
     uint64_t seq;
     uint32_t cycle;
-    uint32_t epoch;      // "aux": the page's local_epoch (alloc: its page count)
+    uint32_t aux;        // the page's local_epoch (alloc: its page count)
     uint16_t tid;
     uint8_t  kind;
     bitmap_t slots;      // the slots the event concerned (kind-specific)
@@ -319,7 +319,7 @@ static void gc_trace_reserve(void) {
 }
 
 void gc_trace_page_event(void *page_addr, enum gc_trace_kind kind, const bitmap_t *slots,
-                         uint32_t epoch) {
+                         uint32_t aux) {
     pthread_once(&gc_trace_once, gc_trace_reserve);
     size_t pi = (size_t)((char*)page_addr - _memory_heap_base) / GC_PAGE_SIZE;
     if (!gc_trace_pages || pi >= gc_trace_npages) return;
@@ -329,10 +329,17 @@ void gc_trace_page_event(void *page_addr, enum gc_trace_kind kind, const bitmap_
     struct gc_trace_event *ev = &tp->ev[k];
     ev->seq   = atomic_fetch_add_explicit(&gc_trace_seq, 1, memory_order_relaxed) + 1;
     ev->cycle = (uint32_t)atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
-    ev->epoch = epoch;
+    ev->aux   = aux;
     ev->tid   = gc_trace_tid;
     ev->kind  = (uint8_t)kind;
     if (slots) ev->slots = *slots; else memset(&ev->slots, 0, sizeof ev->slots);
+}
+
+void gc_trace_page_dropped(gc_page_t *page, enum gc_trace_kind kind, const bitmap_t *kept) {
+    bitmap_t dropped;
+    for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
+        dropped.a[i] = page->head.objects.a[i] & ~kept->a[i];
+    gc_trace_page_event(page, kind, &dropped, page->head.local_epoch);
 }
 
 // What the collector last did to the object at `p`: its page's header now,
@@ -373,21 +380,18 @@ EXPORT void gc_trace_explain(const char *label, const void *p) {
                 (unsigned long long)ev->seq, ev->cycle, ev->tid,
                 kind < sizeof gc_trace_names / sizeof *gc_trace_names && gc_trace_names[kind]
                     ? gc_trace_names[kind] : "?",
-                ev->epoch, hit ? "  <-- this slot" : "");
+                ev->aux, hit ? "  <-- this slot" : "");
     }
 }
 
 // Out of memory: say what the collector was doing, so a genuinely full heap
 // (live data at the limit) can be told from a collector that stopped freeing.
 void gc_oom_report(FILE *out) {
-    static const char *const stages[] = { "not-started", "idle", "start", "scan-roots",
-                                          "mark-sweep", "prune" };
-    unsigned st = (unsigned)atomic_load(&stage);
     fprintf(out, "[GC OOM] heap pages used %zu of %zu; cycle %llu, stage %s; "
             "old pages %zu, dirty-old %zu; this thread's nursery epoch %u\n",
             memory_count(), memory_total_pages(),
             (unsigned long long)atomic_load(&gc_cycle_count),
-            st < sizeof stages / sizeof *stages ? stages[st] : "?",
+            gc_stage_name(atomic_load(&stage)),
             atomic_load(&gc_old_page_count), atomic_load(&gc_dirty_old_count),
             gc_thread_info.local_epoch);
     fflush(out);

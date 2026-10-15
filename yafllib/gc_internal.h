@@ -26,6 +26,18 @@ enum gc_stage {
     GC_STAGE_MARK_SWEEP, // Walk the graph, mark things as seen and scan as we go
     GC_STAGE_PRUNE
 };
+// For reports. A switch, so a stage added without a name is a -Wswitch warning.
+static inline const char *gc_stage_name(enum gc_stage s) {
+    switch (s) {
+    case GC_STAGE_NOT_STARTED: return "not-started";
+    case GC_STAGE_IDLE:        return "idle";
+    case GC_STAGE_START:       return "start";
+    case GC_STAGE_SCAN_ROOTS:  return "scan-roots";
+    case GC_STAGE_MARK_SWEEP:  return "mark-sweep";
+    case GC_STAGE_PRUNE:       return "prune";
+    }
+    return "?";
+}
 
 enum thread_state {
     THREAD_STATE_RUNNING,               // Busy running, don't interrupt
@@ -244,9 +256,14 @@ enum gc_trace_kind { GCT_ALLOC = 1, GCT_LOCAL_TAKE, GCT_LOCAL_SWEEP, GCT_LOCAL_P
                      GCT_LOCAL_RELEASE, GCT_PRUNE, GCT_EVACUATE, GCT_FREE };
 extern bool gc_trace_enabled;
 void gc_trace_init(void);
+// `aux`: the page's local_epoch (alloc: its page count).
 void gc_trace_page_event(void *page, enum gc_trace_kind kind, const bitmap_t *slots,
-                         uint32_t epoch);
-#define GC_TRACE_PAGE(page, kind, slots, epoch)\
-    do { if (UNLIKELY(gc_trace_enabled)) gc_trace_page_event((page), (kind), (slots), (epoch)); } while (0)
+                         uint32_t aux);
+#define GC_TRACE_PAGE(page, kind, slots, aux)\
+    do { if (UNLIKELY(gc_trace_enabled)) gc_trace_page_event((page), (kind), (slots), (aux)); } while (0)
+// The objects a sweep or prune of `page` drops: allocated, and not in `kept`.
+void gc_trace_page_dropped(gc_page_t *page, enum gc_trace_kind kind, const bitmap_t *kept);
+#define GC_TRACE_PAGE_DROPPED(page, kind, kept)\
+    do { if (UNLIKELY(gc_trace_enabled)) gc_trace_page_dropped((page), (kind), (kept)); } while (0)
 
 #endif
