@@ -315,6 +315,12 @@ def __placeholder_entries(function: e.Expression) -> list[int]:
             if isinstance(entry.value, e.NamedExpression) and entry.value.name == "_"]
 
 
+# The name of a pipeline's intermediate: `$pipe@<position hash>`. A name no
+# source can spell, so nothing in the piped value can resolve to it; the
+# statement-start rule below recognises a pipeline's block by it.
+_PIPE_TEMP_PREFIX = "$pipe@"
+
+
 def __pipe_stage(last_result: e.Expression, function: e.Expression,
              pipeline_errors: list[p.Error]) -> e.Expression:
     # `l |> f(a, _)`: the `_` placeholder receives the piped value — a
@@ -328,7 +334,7 @@ def __pipe_stage(last_result: e.Expression, function: e.Expression,
         return last_result
     if len(holes) == 1:
         lr = function.line_ref
-        tmp = f"$pipe@{lr.hash6()}"
+        tmp = f"{_PIPE_TEMP_PREFIX}{lr.hash6()}"
         entries = list(function.parameter.expressions)
         entries[holes[0]] = dataclasses.replace(
             entries[holes[0]], value=e.NamedExpression(lr, tmp))
@@ -351,7 +357,7 @@ def __pipe_stage(last_result: e.Expression, function: e.Expression,
     # it), the inner binds the parameters from that intermediate.
     if isinstance(function, e.LambdaExpression):
         lr = function.line_ref
-        tmp = f"$pipe@{lr.hash6()}"
+        tmp = f"{_PIPE_TEMP_PREFIX}{lr.hash6()}"
         targets = function.parameters.targets
         binder: s.Statement = (
             dataclasses.replace(targets[0], default_value=e.NamedExpression(lr, tmp))
@@ -589,7 +595,7 @@ def __expression_start(x: e.Expression) -> p.LineRef:
                 x = x.subject
             case e.BlockExpression() if (x.statements
                                          and isinstance(x.statements[0], s.LetStatement)
-                                         and x.statements[0].name.startswith("$pipe@")
+                                         and x.statements[0].name.startswith(_PIPE_TEMP_PREFIX)
                                          and x.statements[0].default_value is not None):
                 x = x.statements[0].default_value
             case _:
@@ -610,27 +616,26 @@ def __statement_start(x: e.Expression, tokens: list[p.Token], parse_start: p.Lin
     return __expression_start(x)
 
 
-def __to_ret_statement(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[s.ReturnStatement]:
-    start = __statement_start(result.value, tokens, result.line_ref)
-    return p.Result(s.ReturnStatement(start, result.value), result.tokens, result.line_ref, result.errors)
+def __placed_at_its_expression(build, expression=lambda value: value):
+    """A parse action: `build(value, start)`, where `start` is the statement
+    start (__statement_start) of `expression(value)` — the parsed value itself,
+    or the condition of a (condition, body) pair."""
+    def action(result: p.Result, tokens: list[p.Token]) -> p.Result:
+        start = __statement_start(expression(result.value), tokens, result.line_ref)
+        return p.Result(build(result.value, start), result.tokens, result.line_ref, result.errors)
+    return action
 
 
-def __to_action_statement(result: p.Result[e.Expression], tokens: list[p.Token]) -> p.Result[s.ActionStatement]:
-    start = __statement_start(result.value, tokens, result.line_ref)
-    return p.Result(s.ActionStatement(start, result.value), result.tokens, result.line_ref, result.errors)
+def __condition(value):
+    return value[0]
 
 
-def __to_if_statement(result: p.Result, tokens: list[p.Token]) -> p.Result[s.IfStatement]:
-    cond, body = result.value
-    start = __statement_start(cond, tokens, result.line_ref)
-    return p.Result(s.IfStatement(start, cond, body, []), result.tokens, result.line_ref, result.errors)
-
-
-def __with_condition_start(result: p.Result, tokens: list[p.Token]) -> p.Result:
-    """An `else if`'s condition and body, with the position it sits at."""
-    cond, _body = result.value
-    return p.Result((result.value, __statement_start(cond, tokens, result.line_ref)),
-                    result.tokens, result.line_ref, result.errors)
+__to_ret_statement = __placed_at_its_expression(lambda value, at: s.ReturnStatement(at, value))
+__to_action_statement = __placed_at_its_expression(lambda value, at: s.ActionStatement(at, value))
+__to_if_statement = __placed_at_its_expression(
+    lambda value, at: s.IfStatement(at, value[0], value[1], []), __condition)
+# An `else if`'s condition and body, with the position it sits at.
+__with_condition_start = __placed_at_its_expression(lambda value, at: (value, at), __condition)
 
 
 def __to_else_if_statement(result: p.Result, tokens: list[p.Token]) -> p.Result[s.ElseIfStatement]:
