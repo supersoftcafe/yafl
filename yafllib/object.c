@@ -2125,13 +2125,12 @@ static void atomic_gc_object_mark_as_seen$body(object_t *object);
 // its page was already processed this epoch, push the page on the reprocess
 // ring so the object gets scanned. A marker that meets the object between
 // the two sees the bit and leaves the object to that push (mark_object's
-// pre-filter: "the setter made the worklist decision"). If the mark stage
-// could retire in between, the push landed after it and was dropped: the
-// object was kept by prune's residue merge but never scanned, and its
-// children were freed under it (test_gc_mesh, nursery off, after 960c34d).
-// So the mutator is counted across both steps, and the tail retires only
-// with no writer in the window and the ring empty. Exact: a marker that saw
-// the bit read it after the increment, and before the retire.
+// pre-filter: "the setter made the worklist decision"). Were the mark stage
+// to retire in between, the push would land after it and be dropped: the
+// object kept by prune's residue merge but never scanned, its children freed
+// under it. So the mutator is counted across both steps, and the tail retires
+// only with no writer in the window and the ring empty. Exact: a marker that
+// saw the bit read it after the increment, and before the retire.
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
     atomic_fetch_add_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
     atomic_gc_object_mark_as_seen$body(object);
@@ -2270,9 +2269,9 @@ static void gc_validate_old_pages(void) {
 // its stack into the heap before its own root scan is found by tracing the
 // heap afterwards. An `old` page is not traced, so a late write landing on one
 // between START and its writer's scan — the writer having dropped the value —
-// was invisible to the cycle until the next START demoted the page, and a
-// referent allocated before the cycle opened was freed under it (gc_stress: a
-// memoize child). gc_note_late_write raises the flag before the store, and
+// would be invisible to the cycle until the next START demoted the page, and a
+// referent allocated before the cycle opened could be freed under it.
+// gc_note_late_write raises the flag before the store, and
 // every writer's root scan precedes this transition, so each such write is
 // seen here. A write after its writer's scan needs nothing this cycle: the
 // writer held the value at the scan, or it was born marked.
@@ -2555,12 +2554,11 @@ static void gc_fsa_mark_sweep$page_needs_scan(gc_page_t *page) {
     // Marking only. A mark executor pumps the ring after its page loop with
     // no stage check, so it can get here after the tail has retired the
     // stage to PRUNE. The page is then on pages_to_prune, and moving it back
-    // to pages_to_scan took it out of this cycle's prune: its seen/scanned/
-    // atomic_seen bitmaps were never reset, and in the next cycle the page
-    // pass (seen & ~scanned) skipped every object scanned this cycle, so their
-    // children were never traced and were freed under them (test_gc_mesh,
-    // nursery off: a mailbox scanned, not pruned, then not rescanned). The
-    // tail retires the stage under this same lock, so the check is exact. A
+    // to pages_to_scan would take it out of this cycle's prune: its seen/
+    // scanned/atomic_seen bitmaps never reset, the next cycle's page pass
+    // (seen & ~scanned) would skip every object scanned this cycle, and their
+    // children would be freed under them. The tail retires the stage under
+    // this same lock, so the check is exact. A
     // request dropped here is for a mark that landed after marking ended:
     // prune's residue merge keeps that object, as before.
     if (atomic_load_explicit(&stage, memory_order_relaxed) != GC_STAGE_MARK_SWEEP) {
@@ -3056,7 +3054,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         // RMW, then a seq_cst load); this one is a seq_cst store followed by
         // the drain's and the re-merge's RELAXED loads, which aarch64 may
         // satisfy before the store is visible (x86's xchg store is a full
-        // barrier, so it never showed there). Once per page.
+        // barrier already). Once per page.
         atomic_thread_fence(memory_order_seq_cst);
         GC_PROF_LAP(gc_prof_t_pages, _t0);
 
@@ -3084,13 +3082,9 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         // Publish the batch. Every page stays UNLINKED until here — claimed,
         // on no list — so a concurrent requeue (page_needs_scan, pool-locked)
         // sees NULL links and defers to the owner through requeue_pending,
-        // which is consumed below under the same lock. Pages used to wait on
-        // executor-local lists linked without the lock; a requeue then took
-        // the linked page for one on a global list and unlinked it from the
-        // local list while the executor was still appending to it: the next
-        // append wrote through the moved page into pages_to_scan, threading a
-        // finished page (and the local list's stack root) onto it — the
-        // [DOUBLE-CLAIM] abort, gcc -O3, test_gc_min2_window.
+        // which is consumed below under the same lock. No executor-local list:
+        // a requeue would take a page linked on one for a page on a global
+        // list and unlink it while the executor was still appending to it.
         gc_pool_lock();
         for (unsigned bi = 0; bi < n; ++bi) {
             gc_page_t *page = batch[bi];
@@ -3899,9 +3893,8 @@ EXPORT void _gc_mark_as_seen2(object_t *object) {
 // hold the only reference to an older object, and storing that into an
 // object the cycle never scans — one born after its own thread's root scan,
 // on a birth-protected page — then dropping it before this thread's scan,
-// hides it from the cycle. (Observed with gc_stress: a lazy waiter linked
-// behind a fresh queue tail, a loop state stored into a fresh task, each
-// freed while reachable.) Once the thread is scanned it is black, and
+// hides it from the cycle (a lazy waiter linked behind a fresh queue tail, a
+// loop state stored into a fresh task). Once the thread is scanned it is black, and
 // whatever it can still reach is protected by the heap; the shade stops.
 //
 // The barrier runs BEFORE its store and is not given the value, so the new

@@ -1300,12 +1300,10 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
 // waiter's edge to the next — so both owe the snapshot barrier, as any
 // overwrite does: during a cycle, a chain reachable at the snapshot through a
 // stub not yet scanned would otherwise live on only in the draining thread's
-// locals, which its root scan may already have passed, and be freed mid-drain
-// (gc_stress: the drain completing a reclaimed waiter). The shade comes BEFORE
-// the delete, as in _queue_try_pop: a thread whose root scan is done holds
+// locals, which its root scan may already have passed, and be freed mid-drain.
+// The shade comes BEFORE the delete: a thread whose root scan is done holds
 // up nothing, so if it is preempted between deleting and shading, the cycle
-// can finish marking — and prune the value — in between (observed: the
-// exchange, then the stub's scan finding the sentinel, then the prune).
+// can finish marking — and prune the value — in between.
 //
 // Swap the waiter-chain root with the "init complete" sentinel and
 // return the previous head.  The loop body iterates from there.

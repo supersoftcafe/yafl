@@ -38,8 +38,6 @@ EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
         // while parked. Shade it BEFORE the CAS, not after: a thread whose
         // root scan is done holds the cycle up for nothing, so preempted
         // between the two it can see the head pruned before it shades it.
-        // Exposed by `[future]`'s cross-thread forcers under real GC
-        // pressure; latent for concurrent `[lazy]` forcers all along.
         if (expected != NULL) GC_MARK_SEEN((object_t*)expected);
         atomic_store(&waiter->next, expected);
     } while (!atomic_compare_exchange_weak(flag, &expected, waiter));
@@ -55,9 +53,8 @@ EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
     // `waiter`, the runner already in flight can finish and drain the chain,
     // and the drain clears each waiter's next as it completes it
     // (lazy_chain_step). A re-read then sees NULL, and this caller — already
-    // completed as a waiter — runs the initialiser a second time, through the
-    // closure the first run has cleared: a call through NULL (gc_stress's
-    // release build on aarch64 segfaulted there about one run in six).
+    // completed as a waiter — would run the initialiser a second time, through
+    // the closure the first run has cleared.
     return expected == NULL ? 1 : 0;
 }
 
