@@ -812,8 +812,12 @@ class ObjectField(LParam):
             mask = to_pointer_mask(self.type, self.type.declare(type_cache))
             # The container is known: the nursery barrier's private test reads
             # its escaped bit directly instead of searching for it.
-            if self.fill:   # after the store: it escapes the value just stored
-                return f"    {field_ref} = {value};\n    GC_FILL_BARRIER({pointer}, {field_ref}, {mask});\n"
+            # A fill store: GC_FILL_FENCE before it orders the value's
+            # initialisation first (the container may be one the marker scans,
+            # yafl.h GC_PUBLISH_FENCE); GC_FILL_BARRIER after it escapes the
+            # value just stored.
+            if self.fill:
+                return f"    GC_FILL_FENCE({pointer});\n    {field_ref} = {value};\n    GC_FILL_BARRIER({pointer}, {field_ref}, {mask});\n"
             publish = f"    GC_ROOT_PUBLISH_IN({pointer}, {field_ref}, {mask});\n" if self.root else ""
             return f"    GC_WRITE_BARRIER_IN({pointer}, {field_ref}, {mask});\n    {field_ref} = {value};\n{publish}"
         else:

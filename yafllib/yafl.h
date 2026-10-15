@@ -802,6 +802,35 @@ INLINE bool gc_local_obj_private(object_t *obj) {
     return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
 }
 
+// ── Publication order: GC_PUBLISH_FENCE ─────────────────────────────────────
+// A pointer stored where another thread can read it must not become visible
+// before the object it points to: its header, its fields and its allocation
+// bit. Other threads read shared fields with no lock — the global markers,
+// another thread's nursery collection tracing a container it owns, a peer's
+// barrier reading the value it overwrites — and on a weakly-ordered machine
+// they can otherwise see the pointer first (Neoverse N2 did, test_gc_min2:
+// the allocation bit not yet visible, then visible a few cycles later). The
+// pin does not cover it: object_unpin's release keeps the initialisation and
+// the pointer store before the unpin, but not in order with each other.
+// So every store that can publish takes a store-store fence BEFORE it, after
+// everything the thread has written so far (HotSpot's StoreStore after
+// allocation, placed on the publishing store instead): the heap barrier for
+// any container that is not private (gc_local_barrier_in), and the root
+// barrier (gc_root_overwrite). Private stores — construction, a builder in
+// its nursery — skip it: nothing else can reach the container, and the store
+// that later publishes it is fenced after them. Objects handed over at a
+// root scan need nothing: they travel under fsa_lock and gc_pool_lock.
+// Readers rely on address dependency (they load the pointer, then through
+// it), which aarch64 and every target here order; the pin's acquire covers
+// mutator readers anyway. x86 (TSO) keeps stores in order: a compiler fence.
+#if defined(__aarch64__)
+#  define GC_PUBLISH_FENCE() __asm__ __volatile__("dmb ishst" ::: "memory")
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64)
+#  define GC_PUBLISH_FENCE() atomic_signal_fence(memory_order_release)
+#else
+#  define GC_PUBLISH_FENCE() atomic_thread_fence(memory_order_release)
+#endif
+
 // The barrier of a thread with no active nursery: only the values being
 // overwritten may need to escape (see above).
 INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
@@ -816,13 +845,16 @@ INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
 }
 
 // Generated stores: the container `obj` is known.
+// Every store that is not private is fenced (GC_PUBLISH_FENCE).
 INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
     if (gc_alloc_tl.local_active) {
-        if (!gc_local_obj_private(obj))
-            gc_local_note_slot(obj, slot, mask);
-        return;
+        if (gc_local_obj_private(obj))
+            return;
+        gc_local_note_slot(obj, slot, mask);
+    } else {
+        gc_local_barrier_inactive(slot, mask);
     }
-    gc_local_barrier_inactive(slot, mask);
+    GC_PUBLISH_FENCE();
 }
 
 // ── Barrier argument checks: plain asserts, stripped by NDEBUG ──────────────
@@ -872,6 +904,12 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
 // the store, reading the slot back; no safe point falls between the two. A
 // thread with no active nursery has epoch 0, as has every page outside a
 // nursery, so it passes the test and owes nothing.
+// BEFORE a fill store (GC_PUBLISH_FENCE): the array may be on a page the
+// marker scans — promoted, handed over at a root scan — so the value must be
+// visible before the pointer to it. A private container skips it.
+#define GC_FILL_FENCE(obj)\
+    do { if (!(gc_alloc_tl.local_active && gc_local_obj_private((object_t*)(obj))))\
+             GC_PUBLISH_FENCE(); } while (false)
 #define GC_FILL_BARRIER(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
         gc_page_t *gc_fill_page_ = (gc_page_t*)((uintptr_t)(obj) & ~(uintptr_t)(GC_PAGE_SIZE - 1));\
@@ -910,6 +948,7 @@ INLINE void gc_root_overwrite(object_t **slot, ptr_mask_t mask) {
     assert(!gc_in_heap(slot));   // heap slots take GC_WRITE_BARRIER_IN
     if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
     gc_local_barrier_inactive(slot, mask);   // outgoing values may be held elsewhere
+    GC_PUBLISH_FENCE();                       // a root is shared: see GC_PUBLISH_FENCE
 }
 // The shared body of every PUBLISH: shade what the slots now hold, and
 // escape it from any nursery. AFTER the store; reads the values back.

@@ -99,6 +99,10 @@ static void _queue_push(worker_queue_t* queue, task_t* task) {
         atomic_store(&queue->tail->next, task);
         GC_PUBLISH_IN(queue->tail, queue->tail->next, 1);
     } else {
+        // A plain store under the lock, but the markers read the head without
+        // it: order the task's initialisation first (GC_PUBLISH_FENCE, yafl.h).
+        // The tail link above is a seq_cst store, which already does.
+        GC_PUBLISH_FENCE();
         queue->head = task;
         GC_PUBLISH_IN(_queues, queue->head, 1);
     }
