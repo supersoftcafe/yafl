@@ -27,7 +27,7 @@ From the maintainability review of the aarch64-gc branch. Ticked when committed.
 
 ## Tidy-ups
 
-- [ ] 11. `gc_soak.py`: split `main()`, real names; the script writes the CI summary itself.
+- [x] 11. `gc_soak.py`: split `main()`, real names; the script writes the CI summary itself.
 - [ ] 12. Small duplicates: reference-cache path in `build_bootstrap.py`, the prototype in
       `mmap.c`, stage names in `gc_debug.c`, the dead-slots loop in `object.c`.
 - [ ] 13. `parser.py`: merge the three `__to_*` wrappers; a shared constant for `"$pipe@"`.

@@ -26,10 +26,14 @@ import concurrent.futures as cf
 import datetime
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 YAFLLIB = Path(__file__).resolve().parent.parent
 
@@ -60,13 +64,16 @@ DEFAULT_BUILDS = ["gcc-O0", "gcc-O2", "clang-O0", "clang-O2"]
 # ONLY_PROFILES: tests that step the collector to an exact state depend on its
 # settings, and fail by design under other profiles. test_gc_gen and
 # test_gc_late_pin_race need generations at their default floor (the nursery
-# knobs change which cycle promotes); the other stepped tests stay with them. test_gc_pressure under `hot` does 16x the
-# collector work and outlasts any sane timeout on a small machine.
+# knobs change which cycle promotes); the other stepped tests are limited the
+# same way. test_gc_pressure under `hot` does 16x the collector work and
+# outlasts any sane timeout on a small machine.
 ONLY_PROFILES = {
     "test_gc_gen":           {"default", "global"},
     "test_gc_late_pin_race": {"default", "global"},
     "test_gc_publish_step":  {"default", "global"},
     "test_gc_lazy_step":     {"default", "global"},
+    "test_gc_old_late_write": {"default", "global"},
+    "test_gc_late_requeue":  {"default", "global"},
     "test_gc_pressure":      {"default", "nursery1", "nursery4", "global", "nogen", "oversub"},
 }
 TESTS = {
@@ -83,6 +90,9 @@ TESTS = {
     "test_gc_stale_mark":    (120, {}),
     "test_gc_fwd_chain":     (60,  {}),
     "test_gc_late_pin_race": (60,  {}),
+    "test_gc_old_late_write": (60, {}),
+    "test_gc_late_requeue":  (60,  {}),
+    "test_lazy_runner":      (60,  {}),
     # test_gc_mesh picks a 64 MB heap for itself (4 workers, collector always
     # busy). Under oversub (8 workers) and hot (every survivor page compacted)
     # that runs out, by design rather than by a collector bug, so the soak
@@ -150,10 +160,11 @@ def build(variant, tests, jobs):
     if shutil.which(cc) is None:
         sys.exit(f"gc_soak: {cc} not found (needed for {variant})")
     bdir = YAFLLIB / "build" / f"soak-{variant}"
-    if not (bdir / "CMakeCache.txt").exists():
-        subprocess.run(["cmake", "-S", str(YAFLLIB), "-B", str(bdir),
-                        f"-DCMAKE_C_COMPILER={cc}", f"-DCMAKE_C_FLAGS={flags}"],
-                       check=True, stdout=subprocess.DEVNULL)
+    # Configured every time (cheap), so a test added since the last soak has
+    # a target.
+    subprocess.run(["cmake", "-S", str(YAFLLIB), "-B", str(bdir),
+                    f"-DCMAKE_C_COMPILER={cc}", f"-DCMAKE_C_FLAGS={flags}"],
+                   check=True, stdout=subprocess.DEVNULL)
     yafl = [t for t in tests if t in YAFL_TESTS]
     targets = [t for t in tests if t not in YAFL_TESTS] + (["yafl_static"] if yafl else [])
     r = subprocess.run(["cmake", "--build", str(bdir), "-j", str(jobs), "--target", *targets],
@@ -166,6 +177,20 @@ def build(variant, tests, jobs):
     return bdir
 
 
+class Combo(NamedTuple):
+    build: str
+    test: str
+    profile: str
+
+
+@dataclass
+class Tally:
+    """What one combination's runs came to."""
+    runs: int = 0
+    seconds: float = 0.0
+    failures: list[str] = field(default_factory=list)
+
+
 def run_one(binary, env, timeout, args=()):
     t0 = time.monotonic()
     try:
@@ -173,17 +198,20 @@ def run_one(binary, env, timeout, args=()):
                            timeout=timeout, errors="replace")
         rc, out = r.returncode, r.stdout + r.stderr
     except subprocess.TimeoutExpired as e:
-        rc = "timeout"
-        out = ((e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")) + \
-              ((e.stderr or b"").decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or ""))
+        rc, out = "timeout", _text(e.stdout) + _text(e.stderr)
     return rc, out, time.monotonic() - t0
+
+
+def _text(stream):
+    if isinstance(stream, bytes):
+        return stream.decode(errors="replace")
+    return stream or ""
 
 
 def describe(rc):
     if rc == "timeout":
         return "timeout"
     if isinstance(rc, int) and rc < 0:
-        import signal
         try:
             return signal.Signals(-rc).name
         except ValueError:
@@ -191,7 +219,7 @@ def describe(rc):
     return f"rc={rc}"
 
 
-def main():
+def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-n", "--runs", type=int, default=20, help="runs per (build, test, profile)")
     ap.add_argument("--minutes", type=float, default=None,
@@ -202,140 +230,168 @@ def main():
     ap.add_argument("--tests", default=",".join(TESTS), help="comma-separated tests")
     ap.add_argument("--profiles", default=",".join(DEFAULT_PROFILES), help="comma-separated profiles")
     ap.add_argument("--stop-on-fail", action="store_true", help="stop a combination at its first failure")
+    ap.add_argument("--summary", type=Path, default=None, metavar="FILE",
+                    help="append a Markdown summary (the failing combinations) to FILE, "
+                         "e.g. $GITHUB_STEP_SUMMARY")
     ap.add_argument("--list", action="store_true", help="list builds, tests and profiles, then exit")
-    a = ap.parse_args()
+    return ap.parse_args()
 
-    if a.list:
-        print("builds:  ", " ".join(BUILDS))
-        print("tests:   ", " ".join(TESTS))
-        for k, v in PROFILES.items():
-            print(f"profile {k:9} {' '.join(f'{x}={y}' for x, y in v.items())}")
-        return 0
 
-    def pick(arg, table, what):
-        names = [s for s in arg.split(",") if s]
-        bad = [s for s in names if s not in table]
-        if bad:
-            sys.exit(f"gc_soak: unknown {what}: {', '.join(bad)}")
-        return names
+def pick(arg, table, what):
+    names = [s for s in arg.split(",") if s]
+    unknown = [s for s in names if s not in table]
+    if unknown:
+        sys.exit(f"gc_soak: unknown {what}: {', '.join(unknown)}")
+    return names
 
-    builds = pick(a.builds, BUILDS, "build")
-    tests = pick(a.tests, TESTS, "test")
-    profiles = pick(a.profiles, PROFILES, "profile")
 
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    logdir = YAFLLIB / "build" / "soak-logs" / stamp
+def env_for(combo):
+    """The environment one run gets: ours without any collector setting, then
+    the test's own, then the profile's."""
+    env = {k: v for k, v in os.environ.items() if not (k.startswith("YAFL_") or k == "MESH_STEPS")}
+    env.update(TESTS[combo.test][1])
+    env.update(PROFILES[combo.profile])
+    return env
 
-    dirs = {}
-    for b in builds:
-        print(f"building {b} ...", flush=True)
-        dirs[b] = build(b, tests, a.jobs)
 
-    combos = [(b, t, p) for b in builds for t in tests for p in profiles
-              if p in ONLY_PROFILES.get(t, PROFILES)]
-    if a.minutes is None:
-        total = len(combos) * a.runs
-        print(f"{len(combos)} combinations x {a.runs} runs = {total} runs, {a.jobs} at a time; "
-              f"failure logs -> {logdir}", flush=True)
-    else:
-        total = None
-        print(f"{len(combos)} combinations, rounds for {a.minutes:g} min, {a.jobs} at a time; "
-              f"failure logs -> {logdir}", flush=True)
+def schedule(combos, runs, deadline):
+    """Round after round of every combination, interleaved so concurrent runs
+    are of different tests. With a deadline, a new round starts only while
+    there is time left, so every combination ends with the same run count give
+    or take one."""
+    run = 0
+    while (run < runs) if deadline is None else (time.monotonic() < deadline):
+        for combo in combos:
+            yield combo, run
+        run += 1
 
-    fails = {c: [] for c in combos}
-    runs_done = {c: 0 for c in combos}
-    secs = {c: 0.0 for c in combos}
+
+def soak(combos, binaries, args, logdir, total):
+    """Run the schedule, `args.jobs` at a time; tally every combination."""
+    tallies = {combo: Tally() for combo in combos}
     stopped = set()
-    t_start = time.monotonic()
-
-    def env_for(t, p):
-        e = dict(os.environ)
-        for k in list(e):
-            if k.startswith("YAFL_") or k == "MESH_STEPS":
-                del e[k]
-        e.update(TESTS[t][1])
-        e.update(PROFILES[p])
-        return e
-
-    # Interleave combinations so concurrent runs are of different tests. With
-    # --minutes, a new round starts only while there is time left, and a round
-    # in progress finishes, so every combination ends with the same run count
-    # give or take one.
-    deadline = None if a.minutes is None else t_start + a.minutes * 60
-
-    def rounds():
-        i = 0
-        while (i < a.runs) if deadline is None else (time.monotonic() < deadline):
-            for c in combos:
-                yield c, i
-            i += 1
-
-    work = rounds()
+    started = time.monotonic()
+    deadline = None if args.minutes is None else started + args.minutes * 60
+    work = schedule(combos, args.runs, deadline)
     done = 0
-    with cf.ThreadPoolExecutor(max_workers=a.jobs) as ex:
+
+    def record_failure(combo, run, rc, out, seconds):
+        tallies[combo].failures.append(describe(rc))
+        logdir.mkdir(parents=True, exist_ok=True)
+        settings = " ".join(f"{k}={v}" for k, v in {**TESTS[combo.test][1], **PROFILES[combo.profile]}.items())
+        (logdir / f"{combo.build}.{combo.test}.{combo.profile}.run{run}.log").write_text(
+            f"# {combo.build} {combo.test} {combo.profile} run {run}: {describe(rc)} after {seconds:.1f}s\n"
+            f"# env: {settings}\n" + out[-20000:])
+        last_line = (out.strip().splitlines() or [""])[-1][:160]
+        print(f"FAIL {combo.build} {combo.test} {combo.profile} run {run}: {describe(rc)} "
+              f"({seconds:.1f}s) {last_line}", flush=True)
+        if args.stop_on_fail:
+            stopped.add(combo)
+
+    with cf.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         pending = {}
-        it = iter(work)
 
         def submit_next():
-            for c, i in it:
-                if c in stopped:
+            for combo, run in work:
+                if combo in stopped:
                     continue
-                b, t, p = c
-                f = ex.submit(run_one, dirs[b] / t, env_for(t, p), TESTS[t][0],
-                              YAFL_TESTS.get(t, (None, []))[1])
-                pending[f] = (c, i)
+                future = pool.submit(run_one, binaries[combo.build] / combo.test, env_for(combo),
+                                     TESTS[combo.test][0], YAFL_TESTS.get(combo.test, (None, []))[1])
+                pending[future] = (combo, run)
                 return True
             return False
 
-        for _ in range(a.jobs):
+        for _ in range(args.jobs):
             if not submit_next():
                 break
         while pending:
             finished, _ = cf.wait(pending, return_when=cf.FIRST_COMPLETED)
-            for f in finished:
-                c, i = pending.pop(f)
-                rc, out, dt = f.result()
-                runs_done[c] += 1
-                secs[c] += dt
+            for future in finished:
+                combo, run = pending.pop(future)
+                rc, out, seconds = future.result()
+                tallies[combo].runs += 1
+                tallies[combo].seconds += seconds
                 done += 1
                 if rc != 0:
-                    fails[c].append(describe(rc))
-                    logdir.mkdir(parents=True, exist_ok=True)
-                    b, t, p = c
-                    (logdir / f"{b}.{t}.{p}.run{i}.log").write_text(
-                        f"# {b} {t} {p} run {i}: {describe(rc)} after {dt:.1f}s\n"
-                        f"# env: {' '.join(f'{k}={v}' for k, v in {**TESTS[t][1], **PROFILES[p]}.items())}\n"
-                        + out[-20000:])
-                    print(f"FAIL {b} {t} {p} run {i}: {describe(rc)} ({dt:.1f}s) "
-                          f"{(out.strip().splitlines() or [''])[-1][:160]}", flush=True)
-                    if a.stop_on_fail:
-                        stopped.add(c)
+                    record_failure(combo, run, rc, out, seconds)
                 if done % 50 == 0:
-                    el = time.monotonic() - t_start
-                    print(f"  {done}/{total or '?'} runs, {sum(len(v) for v in fails.values())} failures, "
-                          f"{el / 60:.1f} min", flush=True)
+                    failures = sum(len(t.failures) for t in tallies.values())
+                    print(f"  {done}/{total or '?'} runs, {failures} failures, "
+                          f"{(time.monotonic() - started) / 60:.1f} min", flush=True)
                 submit_next()
+    return tallies, done, time.monotonic() - started
 
+
+def kinds(failures):
+    return ", ".join(f"{n}x {kind}" for kind, n in Counter(failures).items())
+
+
+def report(tallies, done, seconds, logdir):
     print()
     print(f"{'build':9} {'test':22} {'profile':9} {'runs':>5} {'fail':>5} {'avg s':>7}  failures")
-    bad = 0
-    for c in combos:
-        b, t, p = c
-        n, fl = runs_done[c], fails[c]
-        if fl:
-            bad += 1
-        kinds = {}
-        for k in fl:
-            kinds[k] = kinds.get(k, 0) + 1
-        avg = secs[c] / n if n else 0
-        mark = "  " + ", ".join(f"{v}x {k}" for k, v in kinds.items()) if fl else ""
-        print(f"{b:9} {t:22} {p:9} {n:5} {len(fl):5} {avg:7.2f}{mark}")
-    print(f"\n{bad} of {len(combos)} combinations failed; "
-          f"{sum(len(v) for v in fails.values())} failing runs of {done}; "
-          f"{(time.monotonic() - t_start) / 60:.1f} min")
-    if bad:
+    for combo, tally in tallies.items():
+        average = tally.seconds / tally.runs if tally.runs else 0
+        mark = f"  {kinds(tally.failures)}" if tally.failures else ""
+        print(f"{combo.build:9} {combo.test:22} {combo.profile:9} {tally.runs:5} "
+              f"{len(tally.failures):5} {average:7.2f}{mark}")
+    failed = [combo for combo, tally in tallies.items() if tally.failures]
+    print(f"\n{len(failed)} of {len(tallies)} combinations failed; "
+          f"{sum(len(t.failures) for t in tallies.values())} failing runs of {done}; "
+          f"{seconds / 60:.1f} min")
+    if failed:
         print(f"logs: {logdir}")
-    return min(bad, 255)
+    return failed
+
+
+def write_summary(path, title, tallies, failed, done, seconds):
+    lines = [f"### {title}", ""]
+    if failed:
+        lines += ["| build | test | profile | runs | failures |", "|---|---|---|---|---|"]
+        lines += [f"| {c.build} | {c.test} | {c.profile} | {tallies[c].runs} | {kinds(tallies[c].failures)} |"
+                  for c in failed]
+    else:
+        lines.append("No failures.")
+    lines += ["", f"{len(failed)} of {len(tallies)} combinations failed; {done} runs; "
+                  f"{seconds / 60:.1f} min", ""]
+    with open(path, "a") as out:
+        out.write("\n".join(lines))
+
+
+def main():
+    args = parse_args()
+    if args.list:
+        print("builds:  ", " ".join(BUILDS))
+        print("tests:   ", " ".join(TESTS))
+        for name, settings in PROFILES.items():
+            print(f"profile {name:9} {' '.join(f'{k}={v}' for k, v in settings.items())}")
+        return 0
+
+    builds = pick(args.builds, BUILDS, "build")
+    tests = pick(args.tests, TESTS, "test")
+    profiles = pick(args.profiles, PROFILES, "profile")
+    logdir = YAFLLIB / "build" / "soak-logs" / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    binaries = {}
+    for b in builds:
+        print(f"building {b} ...", flush=True)
+        binaries[b] = build(b, tests, args.jobs)
+
+    combos = [Combo(b, t, p) for b in builds for t in tests for p in profiles
+              if p in ONLY_PROFILES.get(t, PROFILES)]
+    if args.minutes is None:
+        total = len(combos) * args.runs
+        print(f"{len(combos)} combinations x {args.runs} runs = {total} runs, {args.jobs} at a time; "
+              f"failure logs -> {logdir}", flush=True)
+    else:
+        total = None
+        print(f"{len(combos)} combinations, rounds for {args.minutes:g} min, {args.jobs} at a time; "
+              f"failure logs -> {logdir}", flush=True)
+
+    tallies, done, seconds = soak(combos, binaries, args, logdir, total)
+    failed = report(tallies, done, seconds, logdir)
+    if args.summary is not None:
+        write_summary(args.summary, f"gc-soak ({', '.join(builds)})", tallies, failed, done, seconds)
+    return min(len(failed), 255)
 
 
 if __name__ == "__main__":

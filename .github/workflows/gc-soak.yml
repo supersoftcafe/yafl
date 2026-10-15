@@ -73,15 +73,9 @@ jobs:
         working-directory: yafllib
         run: |
           set -o pipefail
-          rc=0
-          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --minutes "$MINUTES" | tee soak.log || rc=$?
-          {
-            echo '### gc-soak (${{ matrix.runner }}, ${{ matrix.builds }})'
-            echo '```'
-            sed -n '/^build /,$p' soak.log | grep -v '  0 *[0-9.]*$' || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          exit $rc
+          echo '## ${{ matrix.runner }}' >> "$GITHUB_STEP_SUMMARY"
+          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --minutes "$MINUTES" \
+              --summary "$GITHUB_STEP_SUMMARY" | tee soak.log
 
       - name: Upload failure logs
         if: failure()
