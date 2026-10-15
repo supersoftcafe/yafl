@@ -45,6 +45,8 @@ and how to reproduce it. Each fix's commit message has the full reasoning and nu
 | 960c34d | **`page_needs_scan` does nothing once marking has ended.** Mark executors pumped the reprocess ring after the tail retired the stage to PRUNE, pulling a page off `pages_to_prune`: it skipped that prune, kept stale `seen`/`scanned` bits, and the next cycle's page pass (`seen & ~scanned`) skipped its objects, whose children were freed. This was the nursery-off `test_gc_mesh` corruption. Not aarch64-specific. | diag build, Pi: 3 corruptions / 300 -> 0 / 300; x86: 6 / 1000 -> 0 / 1000 |
 | 3f95ab1 | `test_gc_mesh` reads mailbox slots through `object_resolve`, as generated code does for write-once fields. | test fidelity |
 | 2662195 | **Mark tail waits for mutator marks caught between bit and ring push.** A mutator mark sets `atomic_seen`, then pushes a processed page on the ring; a marker meeting the object in between leaves it to the push. Preempted there, the tail retired, the push was dropped, and the object was kept but never scanned. Mutators are now counted across both steps (`gc_ring_writers`); the tail retires only with the count zero and the ring empty. | capture + argument (checked by x86); A/B inconclusive: clean both sides, Pi diag 2000/2000, Pi plain 5000/5000, x86 diag 2000/2000 |
+| da8a3d9 | `test_gc_min2`: the consume path writes the shared holder's field under the pin (it was a plain unpinned write, against the sharing contract). | test fidelity |
+| 1b7e830 | **Publication fence**: a store-store fence (`GC_PUBLISH_FENCE`: `dmb ishst` on aarch64, a compiler fence on x86) between initialising an object and the store that makes it reachable from a shared object. Placed in `gc_local_barrier_in` (non-private target), `gc_root_overwrite`, fill stores of non-private objects (`GC_FILL_FENCE`, both compilers), `list_builder_link`, `_queue_push`. Without it a collector that reaches the object through the field (it takes no pin) can read the pointer and then the object's not-yet-visible header. Found on GitHub's Neoverse N2 runners: `gc_local_mark_object` assert `gc_is_object_base`, 76 captures with `n2-diag.patch`, all `via=field` on `m2_holder`, all "late-visible" (the header became valid within 0-4 spins). | N2 A/B, 6 jobs x 75 min per side (about 3,200 `test_gc_min2` runs each): before 5 asserts, after 0. Mesh OOMs (item 5) 32 vs 30. Cost on the Pi, self-compile -O1, interleaved, 3 runs each: before 762.6 s, after 762.4 s (spread about 20 s) |
 
 Final results at 0a6d915 (later commits: docs and CI only), 2026-10-14/15: `full_protocol.py
 --full --keep-going` on a fresh worktree, **ALL STAGES PASSED on both boxes**. CTest 77/77
@@ -110,9 +112,10 @@ Earlier full results (2662195), 2026-10-13/14:
    ~10 runs per arm (~5 h on x86) would resolve <2%. Output C byte-identical in all arms. If
    the counter turns out to cost, a per-thread flag read by the tail is the uncontended
    alternative (same argument).
-3. Barrier-free publishing stores left as they are, believed safe because the published object is
-   allocated immediately before: `lazy_thunk_enqueue` (waiter CAS) and `list_builder_link`. Worth a
-   comment or a check.
+3. **Resolved by 1b7e830:** barrier-free publishing stores. `list_builder_link` now has the
+   publication fence; `lazy_thunk_enqueue` publishes by a seq_cst CAS, which already orders the
+   initialisation. Objects handed over at a root scan need no fence: they travel under `fsa_lock`
+   and `gc_pool_lock` (release/acquire).
 4. Hypothesis considered and NOT supported by a capture: the barrier flag is raised without a
    handshake (Go enables its barrier at a stop-the-world point with a fence), so an unscanned thread
    could read it as off and skip a deletion shade while an already-scanned thread holds the old
