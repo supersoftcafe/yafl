@@ -16,8 +16,8 @@ Runs, in order:
 have parity, so either is a drop-in replacement, and every behaviour test and
 example runs against the one chosen.
 
-Two speeds; the slow one is opt-in. By default this is the FAST path, for PRs
-and the middle of a sequence of changes: build, then ctest's fast path
+Two speeds; the slow one is opt-in. By default this is the FAST path, for the
+middle of a sequence of changes: build, then ctest's fast path
 (YAFL_TEST_SPEED in CMakeLists.txt — the port built at -O3, the [test] folders
 at -O3, and the -O3 self-compile; no Python suite; the port's Python build
 reused while the Python compiler is unchanged). `--full` is the regression:

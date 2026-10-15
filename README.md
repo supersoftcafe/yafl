@@ -190,8 +190,8 @@ Python-built port compiles them, and the new port must reproduce that C when it
 compiles itself. `--full` is the regression: -O0 to -O3, each level with a
 fresh Python build of the port, its `[test]` folders and its self-compile; the
 Python suite; and the examples. CI
-runs the fast path on pull requests and manual runs, and the full one on every
-commit to main. In CTest terms the speed is `-DYAFL_TEST_SPEED=fast|full`
+runs the full one on pull requests and every commit to main, and the fast path
+on manual runs unless `full` is ticked. In CTest terms the speed is `-DYAFL_TEST_SPEED=fast|full`
 (default `fast`).
 
 ### Speed
