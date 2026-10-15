@@ -1100,11 +1100,9 @@ EXPORT size_t object_get_size(object_t* ptr) {
 // a price Memoize pays happily and list construction must not.
 // `next` is the LAST field of every ChainLink<T> instantiation (the value's
 // representation varies, the trailing pointer slot does not), so the slot is
-// object_size - sizeof(void*) from the cell base. No SATB barrier: it
-// snapshots the OLD value, and the old value here is the ChainEnd terminator
-// the cell was constructed with — a static. The nursery's barrier
-// (gc_local_note_slot) does run: the builder crosses safe points, so `prev`
-// may have left this thread's nursery while `cell` is new.
+// object_size - sizeof(void*) from the cell base. The link is an ordinary
+// object store (GC_STORE_IN): the value it overwrites is the static ChainEnd
+// terminator the cell was constructed with.
 
 // The `next` slot index for this instantiation's cells: the TRAILING pointer
 // field = the highest set bit of the pointer mask (object_size is slot-
@@ -1118,12 +1116,10 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 }
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
-    // prev may be on a page the marker scans (the builder crosses safe
-    // points), so `cell` must be visible before the link to it.
-    GC_PUBLISH_FENCE_IF_SHARED(prev);
-    ((object_t**)prev)[slot] = cell;             // prev pinned ⇒ address stable
-    if (gc_local_live_now())
-        gc_local_note_slot(prev, &((object_t**)prev)[slot], 1);
+    // prev pinned => address stable. An ordinary object store: prev may have
+    // left this thread's nursery, or be on a page the marker scans, since the
+    // builder crosses safe points.
+    GC_STORE_IN(prev, ((object_t**)prev)[slot], 1, cell);
     object_unpin(prev);                          // prev is now frozen
     return true;
 }
@@ -1195,8 +1191,15 @@ EXPORT object_t* object_pin_resolve(object_t* o) {
             o  = (object_t*)vt;
             vt = o->vtable;
         }
-        if (object_try_pin(o))
+        if (object_try_pin(o)) {
+            // The owner is about to write an object that may sit on an old
+            // page, which minor cycles skip: return the page to the rotation
+            // first (gc_note_late_write). A mutable object never does — its
+            // pages never promote — so it owes nothing.
+            if (!vtable_untag(vt)->is_mutable)
+                gc_note_late_write(o);
             return o;
+        }
         // Every possible holder releases after a bounded, allocation-free
         // section, so spinning is right and back-off would only add latency.
         cpu_relax();

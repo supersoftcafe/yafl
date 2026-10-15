@@ -389,24 +389,15 @@ INLINE object_t* object_unpin(object_t* o) {
 // which may differ from `o` if the collector moved it. Callers must write
 // through the returned pointer, never through their original.
 //
+// It also tells the collector the object is about to be written, which an
+// object on an old page needs (gc_note_late_write, gc_internal.h).
+//
 // The wait is bounded: the only other holders are a peer writer doing one
 // field store, or the compactor doing one memcpy — neither allocates or
 // suspends while holding it (see gc_compact_page, which allocates its target
 // BEFORE claiming for exactly this reason), so no back-off is needed.
 EXTERN object_t* object_pin_resolve(object_t* o);
 
-// Announce that a late pin is about to write `o`. The store may install a
-// reference to a YOUNG object, and minor cycles skip old pages, so a page
-// that has aged into the old generation must return to the collection
-// rotation — otherwise nothing would ever trace the new referent and prune
-// would free it while the writer still holds it. The page's flag is set
-// UNCONDITIONALLY (young pages included) and only then is `old` read: the
-// promotion decision writes `old` before re-reading the flag, so whichever
-// way the race falls, one side sees the other (a Dekker handshake — see
-// gc_note_late_write and the promotion site in object.c). Cost is paid per
-// WRITE, not per object per cycle, which is what makes a write-once
-// structure cheap to keep.
-EXTERN void gc_note_late_write(object_t* o);
 
 enum {
     PTR_TAG_OBJECT  = 0x0,  // Just an ordinary object pointer.

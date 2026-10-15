@@ -250,6 +250,18 @@ void gc_stats_report(void);  // [GC TIME] exit summary (atexit when stats enable
 
 void gc_dbg_dangle_check(object_t *object);  // poison-mode UAF edge verifier
 void gc_hunt_run(void);                      // YAFL_GC_HUNT exit-time heap census
+// Announce that a late pin is about to write `o` (object_pin_resolve calls it). The store may install a
+// reference to a YOUNG object, and minor cycles skip old pages, so a page
+// that has aged into the old generation must return to the collection
+// rotation — otherwise nothing would ever trace the new referent and prune
+// would free it while the writer still holds it. The page's flag is set
+// UNCONDITIONALLY (young pages included) and only then is `old` read: the
+// promotion decision writes `old` before re-reading the flag, so whichever
+// way the race falls, one side sees the other (a Dekker handshake — see
+// gc_note_late_write and the promotion site in object.c). Cost is paid per
+// WRITE, not per object per cycle, which is what makes a write-once
+// structure cheap to keep.
+void gc_note_late_write(object_t* o);
 void gc_oom_report(FILE *out);               // collector state, printed at an OOM abort
 // YAFL_GC_TRACE page history (see gc_debug.c). Record through GC_TRACE_PAGE.
 enum gc_trace_kind { GCT_ALLOC = 1, GCT_LOCAL_TAKE, GCT_LOCAL_SWEEP, GCT_LOCAL_PROMOTE,

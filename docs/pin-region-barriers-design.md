@@ -39,7 +39,7 @@ per store.
 | Used for | array tabulation, array and list builders | `yafl_cas_once` (memoize, write-once fields), the growable-string append, the compactor's claim |
 | Object | fresh, not yet published | already shared |
 | Region | spans safe points and nursery collections | short: no safe point, no allocation (`object_pin_resolve`'s contract) |
-| Stores today | `GC_FILL_STORE_IN` per element; `list_builder_link` | one store (`yafl_cas_once`), byte copies (`str.c`) |
+| Stores today | `GC_FILL_STORE_IN` per element; `GC_STORE_IN` in `list_builder_link` | one `GC_STORE_IN` (`yafl_cas_once`), byte copies (`str.c`) |
 
 **Early pins cannot move their bookkeeping to the unpin.** The region crosses nursery collections.
 A nursery collection in the middle of a build can promote the array off the nursery. After that,
@@ -58,7 +58,8 @@ At the **pin**, after the CAS succeeds:
   before the pin (the initialisation of the values about to be stored) before every store inside
   the region. That covers publication order (5) for all of them at once, so the stores need no
   fence. Late pins allocate nothing inside, so no value is initialised inside the region.
-- `gc_note_late_write(o)` (3), once. `yafl_cas_once` already calls it once per pin.
+- `gc_note_late_write(o)` (3), once. `object_pin_resolve` already does this, for every late pin
+  of an immutable object.
 - While a cycle marks (`gc_write_barrier_requested`): shade every pointer field the object holds
   now (1). This is object-granular SATB. Every value the region can overwrite is in the object at
   the pin. A value the region stores and then overwrites again came from this thread, which holds

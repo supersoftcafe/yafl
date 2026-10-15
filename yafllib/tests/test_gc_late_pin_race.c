@@ -11,7 +11,7 @@
 // The window is a few instructions inside gc_fsa_prune_body, so this test
 // target compiles its own object.c with YAFL_GC_RACE_PROBE, which inserts a
 // hook exactly between the refs walk and the old-claim. The hook (below)
-// performs a late write — pin, note, store a rooted-until-now YOUNG child
+// performs a late write — pin (which notes it), store a rooted-until-now YOUNG child
 // into the aging parent's slot, unpin — inside the window, deterministically.
 //
 //   Without the handshake: the note reads `old` == false and sets nothing,
@@ -97,8 +97,7 @@ void gc_test_race_probe(gc_page_t* page) {
     if (!g_armed) return;
     if (((uintptr_t)g_P & ~(uintptr_t)(GC_PAGE_SIZE-1)) != (uintptr_t)page) return;
     g_armed = 0;
-    object_t* owner = object_pin_resolve((object_t*)g_P);
-    gc_note_late_write(owner);
+    object_t* owner = object_pin_resolve((object_t*)g_P);   // notes the late write
     __atomic_store_n((uintptr_t*)&((struct parent*)owner)->slot, (uintptr_t)g_C,
                      __ATOMIC_RELEASE);
     object_unpin(owner);

@@ -14,8 +14,10 @@
 //      look.
 //   3. The cycle opens; stepping stops on entering SCAN_ROOTS, before this
 //      thread's scan.
-//   4. C is late-written into P's slot (pin, gc_note_late_write, store,
-//      unpin), and dropped from the stack.
+//   4. C is late-written into P's slot under the pin, and dropped from the
+//      stack. The store is a raw one, not a store macro: the macro's hybrid
+//      barrier would shade C at this thread's root scan and hide whether the
+//      demotion works.
 //   5. The cycle finishes. P's slot is C's only reference: C must be live.
 //
 // Without the demotion at the end of SCAN_ROOTS, P's page stays old for the
@@ -111,8 +113,7 @@ static void __attribute__((noinline)) allocate_child(void) {
 
 // The late write, as once.c makes one.
 static void __attribute__((noinline)) late_write(void) {
-    object_t* owner = object_pin_resolve((object_t*)g_P);
-    gc_note_late_write(owner);
+    object_t* owner = object_pin_resolve((object_t*)g_P);   // notes the late write
     __atomic_store_n((uintptr_t*)&((struct parent*)owner)->slot, (uintptr_t)g_C, __ATOMIC_RELEASE);
     object_unpin(owner);
 }
