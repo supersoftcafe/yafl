@@ -83,7 +83,11 @@ TESTS = {
     "test_gc_stale_mark":    (120, {}),
     "test_gc_fwd_chain":     (60,  {}),
     "test_gc_late_pin_race": (60,  {}),
-    "test_gc_mesh":          (300, {"MESH_STEPS": "100000"}),
+    # test_gc_mesh picks a 64 MB heap for itself (4 workers, collector always
+    # busy). Under oversub (8 workers) and hot (every survivor page compacted)
+    # that runs out, by design rather than by a collector bug, so the soak
+    # gives it room: it hunts safety failures, not out-of-memory.
+    "test_gc_mesh":          (300, {"MESH_STEPS": "100000", "YAFL_HEAP_SIZE": "256m"}),
     "test_pin":              (60,  {}),
     "test_large_objects":    (120, {}),
     "test_io_stress":        (300, {}),
