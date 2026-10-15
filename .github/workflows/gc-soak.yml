@@ -7,8 +7,11 @@ name: gc-soak
 # it runs on aarch64 (Neoverse N2) as well as x86. (macOS is left out until
 # the runtime builds there: it includes <threads.h>, which macOS lacks.) A failure uploads the logs and opens (or comments on) a `gc-soak` issue.
 #
-# A pull request or push to main that edits this file or the soak script runs
-# a short soak, so a broken workflow shows before the night.
+# A pull request that touches the runtime, either compiler's code generator or
+# the soak itself runs a short soak: ordering mistakes pass on x86, where the
+# publication fence compiles to nothing, so this is their only check before
+# merge. A push to main that edits the soak runs it too, so a broken workflow
+# shows before the night.
 on:
   schedule:
     - cron: "17 2 * * *"
@@ -17,7 +20,11 @@ on:
     paths: [.github/workflows/gc-soak.yml, yafllib/tests/gc_soak.py]
   pull_request:
     branches: [main]
-    paths: [.github/workflows/gc-soak.yml, yafllib/tests/gc_soak.py]
+    paths:
+      - .github/workflows/gc-soak.yml
+      - yafllib/**
+      - compiler/codegen/**
+      - bootstrap/ir/**
   workflow_dispatch:
     inputs:
       minutes:
