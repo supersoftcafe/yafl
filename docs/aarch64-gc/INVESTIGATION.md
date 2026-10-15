@@ -46,7 +46,17 @@ and how to reproduce it. Each fix's commit message has the full reasoning and nu
 | 3f95ab1 | `test_gc_mesh` reads mailbox slots through `object_resolve`, as generated code does for write-once fields. | test fidelity |
 | 2662195 | **Mark tail waits for mutator marks caught between bit and ring push.** A mutator mark sets `atomic_seen`, then pushes a processed page on the ring; a marker meeting the object in between leaves it to the push. Preempted there, the tail retired, the push was dropped, and the object was kept but never scanned. Mutators are now counted across both steps (`gc_ring_writers`); the tail retires only with the count zero and the ring empty. | capture + argument (checked by x86); A/B inconclusive: clean both sides, Pi diag 2000/2000, Pi plain 5000/5000, x86 diag 2000/2000 |
 
-Last full results on the branch head (2662195; 411b92f adds docs only), 2026-10-13/14:
+Final results at 0a6d915 (later commits: docs and CI only), 2026-10-14/15: `full_protocol.py
+--full --keep-going` on a fresh worktree, **ALL STAGES PASSED on both boxes**. CTest 77/77
+(`compiler_suite` included), examples 9/9, all four self-compiles byte-identical.
+- x86 (Python 3.14.7): 3 h 37 min; self-compiles 350-570 s; compiler_suite 882 tests OK in 5,645 s.
+- Pi (Python 3.13.5, `--cpu-scale 4`): 8 h 49 min; self-compiles 796-1399 s; compiler_suite
+  12,826 s.
+The earlier failures below were all test infrastructure. The fixes were: 0315a8c (a fresh reference
+cache per --full run, CPU scale), a83db45 (statement columns), and 0a6d915 (CLI tests check
+outcomes, so they pass on any Python version).
+
+Earlier full results (2662195), 2026-10-13/14:
 - `full_protocol.py --full --keep-going` on a fresh worktree, both boxes. Build PASS, examples 9/9,
   CTest 76/77; all four fresh port builds, every `[test]` folder at -O0..-O3, all four
   self-compiles byte-identical (Pi 821-1382 s, x86 363-577 s), every runtime C test PASS. The one
