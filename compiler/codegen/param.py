@@ -773,12 +773,6 @@ class ObjectField(LParam):
     # with no active nursery; only the nursery's private-container test
     # remains (GC_FILL_STORE_IN). Provenance: compare-excluded.
     fill: bool = dataclasses.field(default=False, compare=False)
-    # True for a store whose container may be a DECLARED ROOT — a lazy stub,
-    # static for a global and heap for a local `[lazy]`. Roots are scanned
-    # once, at cycle open, so what the field now holds is published
-    # (GC_STORE_PUBLISH_IN; a heap stub publishes too, as one born after its
-    # thread's root scan is not traced that cycle). Provenance: compare-excluded.
-    root: bool = dataclasses.field(default=False, compare=False)
     # True when the container's class is MUTABLE (Object.is_mutable), set by
     # lowering/mutable_stores.py: the store takes GC_STORE_MUTABLE_IN, which
     # skips the nursery's private test (a mutable object is never private).
@@ -818,7 +812,6 @@ class ObjectField(LParam):
             # container is known, so the nursery's private test reads its
             # escaped bit directly.
             macro = ("GC_FILL_STORE_IN" if self.fill else
-                     "GC_STORE_PUBLISH_IN" if self.root else
                      "GC_STORE_MUTABLE_IN" if self.mutable else "GC_STORE_IN")
             return f"    {macro}({pointer}, {field_ref}, {mask}, {value});\n"
         else:

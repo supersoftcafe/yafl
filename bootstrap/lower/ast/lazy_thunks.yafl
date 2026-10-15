@@ -47,12 +47,6 @@ fun lazyRuntimeCall1(name, argName, argVal): Op
              RpRuntimeInvoke(name, RpNewStruct(list1(RpNamedValue(argName, argVal))), CgDataPointer()),
              true, List())
 
-# The stub's value store. A global's stub is a declared root, scanned once at
-# cycle open, so the store publishes what it wrote: a thread may drop the
-# value from its stack before its take (codegen/param.py ObjectField.root).
-fun storeValue(valueF: RpObjectField, value): Op
-  ret OpMove(with valueF(root = true), value, false, List())
-
 # ── stub class ───────────────────────────────────────────────────────────────
 
 fun makeStubObject(valueType)
@@ -178,7 +172,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
                                RpNewStruct(list1(RpNamedValue("x", isTaskParam(rwrapped, wrapped)))),
                                CgInt(32)), false, List()),
       OpMove(value, unwrapValue(rwrapped, valueType), false, List()),
-      storeValue(valueF, value)),
+      OpMove(valueF, value, false, List())),
     list1(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())))
   let asyncTail = list4(
       emitDrainCall(valueType, RpPointerTo(flagF), value),
@@ -242,7 +236,7 @@ fun makeFinisherFunction(valueType): CgFunction
                  CgDataPointer(),
                  CgStruct(list1(CgField("value", valueType))),
                  cgOpsOf(concat(list2(OpMove(value, completedResult, false, List()),
-                                     storeValue(valueF, value)),
+                                     OpMove(valueF, value, false, List())),
                         list3(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()),
                               emitDrainCall(valueType, RpPointerTo(flagF), value),
                               OpReturn(RpNullPointer(), List())))),

@@ -195,9 +195,12 @@ class TestStoresGoThroughTheStoreMacros(TestCase):
                 emitted = compile_c(_SHAPE_SRC, "file.yafl", optimization_level=level)
                 self.assertEqual([], [m.group(0) for m in _BARRIER_PARTS.finditer(emitted)])
                 # The program reaches each kind generated code makes: a store
-                # into a mutable object (a closure's or a state machine's), a
-                # lazy stub's value (publishes), an array tabulation (fill).
-                # Not GC_STORE_IN: an immutable object is written only while
-                # it is fresh, or by a fill.
-                for macro in ("GC_STORE_MUTABLE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN("):
+                # into a mutable object (a closure's, a state machine's, a lazy
+                # stub's value) and an array tabulation (fill). Not GC_STORE_IN:
+                # an immutable object is written only while it is fresh, or by
+                # a fill. Not GC_STORE_PUBLISH_IN: that is the runtime's, for
+                # handing values between threads; a static container (a
+                # global's stub) is detected inside the object store macros.
+                for macro in ("GC_STORE_MUTABLE_IN(", "GC_FILL_STORE_IN("):
                     self.assertIn(macro, emitted)
+                self.assertNotIn("GC_STORE_PUBLISH_IN(", emitted)

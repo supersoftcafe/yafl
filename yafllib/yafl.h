@@ -754,14 +754,16 @@ EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 // pointer word of it (bit 0: the field's first word); `value` is last, so it
 // may contain commas.
 //
-//   GC_STORE_IN(obj, field, mask, value)          a field of the object `obj`
+//   GC_STORE_IN(obj, field, mask, value)          a field of the object `obj`,
+//       on the heap or static (an object with a vtable outside the heap, such
+//       as a global's lazy stub, which the macro detects and publishes after)
 //   GC_STORE_MUTABLE_IN(obj, field, mask, value)  the same, where the caller
 //       knows `obj` is MUTABLE (its class's is_mutable): a mutable object is
 //       never private, so the private test — a read of its page header — is
 //       skipped. GC_STORE_IN is correct for a mutable object too, only slower.
-//   GC_STORE_PUBLISH_IN(obj, field, mask, value)  the same, where the store
+//   GC_STORE_PUBLISH_IN(obj, field, mask, value)  the same, where runtime code
 //       hands `value` to another thread (a queue link, a task's continuation,
-//       an IO result) or `obj` may be a declared root (a lazy stub)
+//       an IO result)
 //   GC_FILL_STORE_IN(obj, field, mask, value)     NULL -> value into a slot of
 //       an array not yet published (tabulation, builder pushes)
 //   GC_ROOT_STORE(field, mask, value)             a declared root (outside the
@@ -779,6 +781,8 @@ EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 //   GC_WRITE_BARRIER_MUTABLE_IN     the same, for a container known mutable
 //   GC_PUBLISH_IN           after   shades and escapes the value now stored,
 //                                   read back from the field
+//   GC_PUBLISH_IF_STATIC_IN after   GC_PUBLISH_IN when `obj` is outside the
+//                                   heap (every object store ends with it)
 //   GC_FILL_BARRIER         after   escapes the value if the array has left
 //                                   this thread's nursery
 //   GC_PUBLISH_FENCE_IF_SHARED before  publication fence unless the container
@@ -975,6 +979,17 @@ INLINE void gc_publish_slots(object_t **slot, ptr_mask_t mask) {
     do { assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
          gc_publish_slots((object_t**)&(field), (mask)); } while (false)
 
+// AFTER every object store: publish when `obj` is STATIC — an object with a
+// vtable outside the heap, such as a global's lazy stub, whose fields are
+// declared roots read once, at cycle open. Its barrier ran before the store
+// and may have read the flag down just before the cycle opened; the
+// snapshot then read the slot's old value, and the stored one would be seen
+// by nothing (test_gc_static_store). A heap container needs nothing more: the
+// cycle traces it, or it was born during the cycle, so its barrier saw the
+// flag up and the hybrid barrier shades the stored value.
+#define GC_PUBLISH_IF_STATIC_IN(obj, field, mask)\
+    do { if (UNLIKELY(!gc_in_heap(obj))) gc_publish_slots((object_t**)&(field), (mask)); } while (false)
+
 // AFTER a fill store. Nothing is overwritten, so the snapshot owes nothing.
 // The one question is whether the array's PAGE is in this thread's current
 // nursery: then the nursery traces the array and the value stays reachable
@@ -1014,10 +1029,12 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
 // ── The stores ───────────────────────────────────────────────────────────────
 #define GC_STORE_IN(obj, field, mask, ...)\
     do { GC_WRITE_BARRIER_IN(obj, field, mask);\
-         (field) = (__VA_ARGS__); } while (false)
+         (field) = (__VA_ARGS__);\
+         GC_PUBLISH_IF_STATIC_IN(obj, field, mask); } while (false)
 #define GC_STORE_MUTABLE_IN(obj, field, mask, ...)\
     do { GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask);\
-         (field) = (__VA_ARGS__); } while (false)
+         (field) = (__VA_ARGS__);\
+         GC_PUBLISH_IF_STATIC_IN(obj, field, mask); } while (false)
 #define GC_STORE_PUBLISH_IN(obj, field, mask, ...)\
     do { GC_WRITE_BARRIER_IN(obj, field, mask);\
          (field) = (__VA_ARGS__);\
