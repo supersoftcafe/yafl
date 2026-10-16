@@ -165,7 +165,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
       # status == 1: won init race
       OpMove(closure, closureF, false, List()))
   # Sync init: unwrap, store, clear closure, drain
-  let syncInit = concat(list4(
+  let syncInit = concat(list4<Op>(
       OpCall(closure, RpNewStruct(List()), rwrapped, false, false, None, List()),
       OpJumpIf("$async_init",
                RpRuntimeInvoke("UNLIKELY",
@@ -173,7 +173,7 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
                                CgInt(32)), false, List()),
       OpMove(value, unwrapValue(rwrapped, valueType), false, List()),
       OpMove(valueF, value, false, List())),
-    list1(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())))
+    list1<Op>(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())))
   let asyncTail = list4(
       emitDrainCall(valueType, RpPointerTo(flagF), value),
       OpReturn(wrapValue(value, wrapped), List()),
@@ -235,8 +235,8 @@ fun makeFinisherFunction(valueType): CgFunction
                                 CgField("completed", CgDataPointer()))),
                  CgDataPointer(),
                  CgStruct(list1(CgField("value", valueType))),
-                 cgOpsOf(concat(list2(OpMove(value, completedResult, false, List()),
-                                     OpMove(valueF, value, false, List())),
+                 cgOpsOf(concat(list2<Op>(OpMove(value, completedResult, false, List()),
+                                         OpMove(valueF, value, false, List())),
                         list3(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()),
                               emitDrainCall(valueType, RpPointerTo(flagF), value),
                               OpReturn(RpNullPointer(), List())))),
