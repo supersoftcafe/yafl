@@ -16,6 +16,9 @@
 #include "../once.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
+
+extern int gc_debug_stage(void);
 
 // One write-once pointer field, as a memoizing class has.
 struct node { object_t parent; object_t* once; };
@@ -40,7 +43,11 @@ static void fail(const char* what) {
 static void _entrypoint(object_t* self, fun_t cont) {
     (void)self; _exit_cont = cont;
 
-    // (1) The nursery starts at this thread's first refill.
+    // (1) The nursery is enabled when the collector starts, which waits for
+    // every worker to register; this thread may get here first (a loaded
+    // machine: tens of thousands of allocations). Then it starts at this
+    // thread's next refill.
+    while (gc_debug_stage() == 0) usleep(1000);
     for (int i = 0; !gc_alloc_tl.local_active; ++i) {
         if (i > 100000) fail("the nursery never started");
         volatile object_t* f = object_create(&node_vt);
