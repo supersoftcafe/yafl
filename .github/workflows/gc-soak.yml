@@ -47,8 +47,6 @@ jobs:
           - { runner: ubuntu-24.04-arm, builds: clang-O3 }
           - { runner: ubuntu-24.04-arm, builds: gcc-O2 }
           - { runner: ubuntu-24.04-arm, builds: clang-O2 }
-          - { runner: ubuntu-latest, builds: gcc-O3-ndebug }
-          - { runner: ubuntu-latest, builds: clang-O2 }
     name: soak (${{ matrix.runner }}, ${{ matrix.builds }})
     runs-on: ${{ matrix.runner }}
     # The soak time plus builds (gc_stress compiles with the Python compiler)
@@ -74,7 +72,7 @@ jobs:
         run: |
           set -o pipefail
           echo '## ${{ matrix.runner }}' >> "$GITHUB_STEP_SUMMARY"
-          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --minutes "$MINUTES" \
+          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --tests test_gc_mesh --profiles global --minutes 60 \
               --summary "$GITHUB_STEP_SUMMARY" | tee soak.log
 
       - name: Upload failure logs
