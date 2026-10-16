@@ -6,10 +6,6 @@ name: full-gate
 # the fast path unless `full` is ticked. A newer commit cancels a run still in
 # progress for the same ref.
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       full:
