@@ -75,6 +75,8 @@ ONLY_PROFILES = {
     "test_gc_old_late_write": {"default", "global"},
     "test_gc_late_requeue":  {"default", "global"},
     "test_gc_static_store":  {"default", "global"},
+    "test_gc_builder_idle":  {"default"},
+    "test_gc_once_escape":   {"default"},
     "test_gc_pressure":      {"default", "nursery1", "nursery4", "global", "nogen", "oversub"},
 }
 TESTS = {
@@ -94,6 +96,8 @@ TESTS = {
     "test_gc_old_late_write": (60, {}),
     "test_gc_late_requeue":  (60,  {}),
     "test_gc_static_store":  (60,  {}),
+    "test_gc_builder_idle":  (60,  {}),
+    "test_gc_once_escape":   (60,  {}),
     "test_lazy_runner":      (60,  {}),
     # test_gc_mesh picks a 64 MB heap for itself (4 workers, collector always
     # busy). Under oversub (8 workers) and hot (every survivor page compacted)

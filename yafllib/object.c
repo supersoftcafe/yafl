@@ -896,6 +896,7 @@ EXPORT roots_declaration_func_t add_roots_declaration_func(roots_declaration_fun
 // object_alloc_fast zeroes at its call site (where the C compiler can elide),
 // and array_create's pointer-free path zeroes the header slots alone.
 static void gc_local_collect(void);
+static void gc_local_flush_pending(void);
 static inline void gc_grey_flush(struct gc_thread_info *t);   // the hybrid barrier (below)
 static gc_page_t *gc_local_take_page(void);
 static uint32_t gc_local_new_epoch(void);
@@ -1100,9 +1101,8 @@ EXPORT size_t object_get_size(object_t* ptr) {
 // a price Memoize pays happily and list construction must not.
 // `next` is the LAST field of every ChainLink<T> instantiation (the value's
 // representation varies, the trailing pointer slot does not), so the slot is
-// object_size - sizeof(void*) from the cell base. The link is an ordinary
-// object store (GC_STORE_IN): the value it overwrites is the static ChainEnd
-// terminator the cell was constructed with.
+// object_size - sizeof(void*) from the cell base. The value the link
+// overwrites is the static ChainEnd terminator the cell was constructed with.
 
 // The `next` slot index for this instantiation's cells: the TRAILING pointer
 // field = the highest set bit of the pointer mask (object_size is slot-
@@ -1116,10 +1116,32 @@ EXPORT int64_t list_builder_slot(object_t *cell) {
 }
 
 EXPORT bool list_builder_link(object_t *prev, object_t *cell, int64_t slot) {
-    // prev pinned => address stable. An ordinary object store: prev may have
-    // left this thread's nursery, or be on a page the marker scans, since the
-    // builder crosses safe points.
-    GC_STORE_IN(prev, ((object_t**)prev)[slot], 1, cell);
+    // prev pinned => address stable. prev may have left this thread's
+    // nursery, or be on a page the marker scans, since the builder crosses
+    // safe points.
+    //
+    // Not GC_STORE_IN: its nursery note runs BEFORE the store, so the cell
+    // escapes only at the next flush, and until then still tests private.
+    // The cell is the next link's prev, so that link would then skip its
+    // barrier into a cell that is no longer private. Noting AFTER the store
+    // escapes the cell at once whenever prev is shared, so every link into a
+    // chain that has left the nursery takes the shared path. That is also
+    // what keeps the nursery cheap: an escaped chain is a root, not retraced
+    // at every nursery collection (gc_stress 39.8 s against 41.8 s). A thread
+    // with no active nursery owes nothing: the overwritten value is static.
+    //
+    // No marking barrier either. The snapshot half shades the overwritten
+    // value, the static ChainEnd. The hybrid half protects an OLDER object
+    // stored into a container the cycle does not scan; the cell is always
+    // newer than prev, and prev, pinned since birth, is never on an old page.
+    // A cell born during a cycle is shaded at birth or on a page no prune of
+    // that cycle touches. Calling it costs gc_stress 6%: the collector marks
+    // most of the time, so the flag is usually up.
+    object_t **link = &((object_t**)prev)[slot];
+    GC_PUBLISH_FENCE_IF_SHARED(prev);
+    *link = cell;
+    if (gc_alloc_tl.local_active)
+        gc_local_note_slot(prev, link, 1);
     object_unpin(prev);                          // prev is now frozen
     return true;
 }
@@ -1198,6 +1220,15 @@ EXPORT object_t* object_pin_resolve(object_t* o) {
             // pages never promote — so it owes nothing.
             if (!vtable_untag(vt)->is_mutable)
                 gc_note_late_write(o);
+            // An object tests private until its escape is set, and a value
+            // stored into a shared slot escapes only when the pending slot
+            // is flushed. The owner may have stored `o` just now (a nested
+            // yafl_cas_once), so other threads may already read it while it
+            // still tests private, and the stores about to be made would skip
+            // their publication fence. Flush first: `o` then tests private
+            // only if nothing shared reaches it.
+            if (gc_alloc_tl.local_active)
+                gc_local_flush_pending();
             return o;
         }
         // Every possible holder releases after a bounded, allocation-free

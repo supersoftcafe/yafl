@@ -156,6 +156,17 @@ add_yafl_test(test_gc_gen)
 # is reclaimed while the old object points at it.
 add_yafl_test(test_gc_old_late_write)
 set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_builder_idle: stepped. List-builder links around a nursery
+# stand-down: a link made stood down owes no escape, and a cell born in the
+# resumed nursery, linked into a cell born stood down, must escape or the
+# nursery frees it while the older cell points at it.
+add_yafl_test(test_gc_builder_idle)
+set_tests_properties(test_gc_builder_idle PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_once_escape: a value yafl_cas_once installs in a shared object is
+# readable by other threads at once, so under its own late pin it must test
+# shared; the late pin flushes the nursery's pending slot to make it so.
+add_yafl_test(test_gc_once_escape)
+set_tests_properties(test_gc_once_escape PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_pressure: a ratcheting live set plus churn whose objects live a few
 # cycles before dying, in a deliberately small heap. Guards the near-full
 # machinery: the pressure backstop in gc_page_alloc, the relocation reserve,
