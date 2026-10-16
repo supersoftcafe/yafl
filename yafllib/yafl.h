@@ -938,21 +938,24 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
     return (char*)slot >= (char*)obj && (char*)slot < (char*)obj + object_get_size(obj);
 }
 
+// The out-of-line halves of the object stores: everything a store owes
+// besides the store itself, so each site inlines a call, the store and a
+// range check (object.c).
+EXTERN void gc_store_before(object_t *obj, object_t **slot, ptr_mask_t mask);
+EXTERN void gc_store_mutable_before(object_t **slot, ptr_mask_t mask);
+EXTERN void gc_store_static_after(object_t **slot, ptr_mask_t mask);
+
 // ── The parts ────────────────────────────────────────────────────────────────
 // BEFORE a store into a field of `obj` (a heap object, or a static one such as
 // a global lazy stub).
 #define GC_WRITE_BARRIER_IN(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
-        if (UNLIKELY(gc_write_barrier_requested))\
-            _gc_write_barrier_in2((object_t**)&(field), (mask));\
-        gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
+        gc_store_before((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
 // The same for a container known to be mutable.
 #define GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
-        if (UNLIKELY(gc_write_barrier_requested))\
-            _gc_write_barrier_in2((object_t**)&(field), (mask));\
-        gc_local_barrier_mutable((object_t**)&(field), (mask));\
+        gc_store_mutable_before((object_t**)&(field), (mask));\
     } while (false)
 
 // AFTER a store that publishes (the ragged-snapshot and escape rules above):
@@ -979,7 +982,7 @@ INLINE void gc_publish_slots(object_t **slot, ptr_mask_t mask) {
 // cycle traces it, or it was born during the cycle, so its barrier saw the
 // flag up and the hybrid barrier shades the stored value.
 #define GC_PUBLISH_IF_STATIC_IN(obj, field, mask)\
-    do { if (UNLIKELY(!gc_in_heap(obj))) gc_publish_slots((object_t**)&(field), (mask)); } while (false)
+    do { if (UNLIKELY(!gc_in_heap(obj))) gc_store_static_after((object_t**)&(field), (mask)); } while (false)
 
 // AFTER a fill store. Nothing is overwritten, so the snapshot owes nothing.
 // The one question is whether the array's PAGE is in this thread's current

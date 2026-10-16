@@ -1833,6 +1833,19 @@ EXPORT void gc_local_note_shared_slot(object_t **slot, ptr_mask_t mask) {
     gc_local_note_shared(slot, mask);
 }
 
+// The object stores' out-of-line halves (yafl.h, "The parts").
+EXPORT void gc_store_before(object_t *obj, object_t **slot, ptr_mask_t mask) {
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier_in2(slot, mask);
+    gc_local_barrier_in(obj, slot, mask);
+}
+EXPORT void gc_store_mutable_before(object_t **slot, ptr_mask_t mask) {
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier_in2(slot, mask);
+    gc_local_barrier_mutable(slot, mask);
+}
+EXPORT void gc_store_static_after(object_t **slot, ptr_mask_t mask) {
+    gc_publish_slots(slot, mask);
+}
+
 // The barrier of a thread with no active nursery (see GC_WRITE_BARRIER): only
 // the values being overwritten may need to escape, and only if they sit on a
 // nursery page (a stale stamp merely over-escapes).
