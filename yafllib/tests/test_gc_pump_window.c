@@ -36,6 +36,7 @@ extern int  gc_debug_object_state(object_t* o);   // 0 not-heap, 1 live, 2 recla
 extern void gc_test_mutator_mark(object_t* o);
 extern void gc_test_mark_tail(void);
 extern bool gc_test_page_done(void* page);
+extern bool gc_test_object_seen(object_t* o);
 
 enum { ST_IDLE = 1 };
 
@@ -60,11 +61,14 @@ static volatile uintptr_t g_A, g_B;
 static bool  g_marking, g_in_window;
 static int   g_marked, g_second_tail;
 static fun_t _exit_cont;
+static void fail(const char* what, int got);
 
 void gc_test_tail_probe(void) {
     if (!g_marking || g_in_window) return;
     if (!gc_test_page_done((void*)(g_A & ~(uintptr_t)(GC_PAGE_SIZE - 1)))) return;
     g_marking = false;
+    if (gc_test_object_seen((object_t*)g_A))
+        fail("setup: A was marked before the probe (a stale copy of its address reached the scan)", 0);
     gc_test_mutator_mark((object_t*)g_A);   // P is processed: onto the ring
     g_marked = 1;
     g_in_window = true;                     // the tail's own pump takes it next
@@ -96,7 +100,10 @@ static void run_one_cycle(void) {
 }
 
 // In a frame of its own, so no copy of an address lingers for the
-// conservative stack scan; scrub() overwrites what the frame left.
+// conservative stack scan; scrub() overwrites what the frame left. Built
+// below a gap: scrub()'s array lies at the bottom of its frame, and the slots
+// above it (saved registers, padding) are not written, so a build() frame at
+// the same depth would leave A's address there (clang -O0 does).
 static void __attribute__((noinline)) build(void) {
     object_t* a = object_create(&holder_vt);
     object_t* b = object_create(&leaf_vt);
@@ -106,10 +113,17 @@ static void __attribute__((noinline)) build(void) {
     g_B = (uintptr_t)b;
 }
 
+static void __attribute__((noinline)) build_below(void) {
+    volatile char gap[1024];
+    gap[0] = 0;
+    build();
+    __asm__ volatile("" :: "r"(gap) : "memory");
+}
+
 static void __attribute__((noinline)) scrub(void) {
-    volatile uintptr_t junk[512];
-    for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
+    volatile uintptr_t junk[2048];
+    for (int i = 0; i < 2048; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[2047]) : CALLEE_SAVED_CLOBBERS);
 }
 
 static void _entrypoint(object_t* self, fun_t cont) {
@@ -118,7 +132,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector
     while (gc_debug_stage() != ST_IDLE) gc_debug_step();
 
-    build();
+    build_below();
     scrub();
 
     g_marking = true;

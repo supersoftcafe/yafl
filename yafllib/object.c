@@ -3267,6 +3267,12 @@ void gc_test_mutator_mark(object_t *object);
 void gc_test_mutator_mark(object_t *object) { atomic_gc_object_mark_as_seen(object); }
 void gc_test_mark_tail(void);
 void gc_test_mark_tail(void) { gc_fsa_mark_sweep_tail(); }
+bool gc_test_object_seen(object_t *object);
+bool gc_test_object_seen(object_t *object) {
+    gc_page_t* page; ptrdiff_t slot;
+    object_get_page_and_slot(object, &page, &slot);
+    return bitmap_test(&page->head.scanner.seen, slot) || bitmap_test(&page->head.scanner.atomic_seen, slot);
+}
 bool gc_test_page_done(void *page);
 bool gc_test_page_done(void *page) {   // processed this epoch, and nothing left to scan
     gc_pool_lock();
