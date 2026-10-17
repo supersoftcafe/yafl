@@ -422,6 +422,46 @@ uint32_t                     epoch = 0; // Must never be 0, except now
 // GC cycle has completed). Diagnostic only.
 _Atomic(uint64_t)            gc_cycle_count = 0;
 
+// DIAG (scratch branch): per slot, the setter of its atomic_seen bit's 0->1
+// transition; per page, when it was last claimed, stamped and re-merged.
+typedef struct { uint64_t info; uint64_t ts; } diag_rec_t;
+typedef struct { uint64_t claim, stamp, late, publish; uint32_t claims, requeues; } diag_page_t;
+EXPORT void *diag_who = NULL;
+static diag_page_t *diag_pages = NULL;
+static _Atomic int diag_tid_next = 1;
+static thread_local int diag_tid = 0;
+static inline uint64_t diag_ts(void) {
+#if defined(__aarch64__)
+    uint64_t t; __asm__ volatile("isb; mrs %0, cntvct_el0" : "=r"(t)); return t;
+#else
+    return __builtin_ia32_rdtsc();
+#endif
+}
+static diag_page_t *diag_page(void *p) {
+    return &diag_pages[((char*)p - _memory_heap_base) / GC_PAGE_SIZE];
+}
+static void diag_note_full(void *obj, unsigned kind, unsigned flags, uint32_t pe, uint32_t ep) {
+    if (diag_tid == 0) diag_tid = atomic_fetch_add(&diag_tid_next, 1);
+    diag_rec_t *r = &((diag_rec_t*)diag_who)[((char*)obj - _memory_heap_base) / sizeof(slot_t)];
+    uint64_t info = (uint64_t)(kind & 0xff) | (uint64_t)(atomic_load_explicit(&stage, memory_order_relaxed) & 0xff) << 8
+                  | (uint64_t)(diag_tid & 0xff) << 16 | (uint64_t)(flags & 0xff) << 24
+                  | (uint64_t)(pe & 0xffff) << 32 | (uint64_t)(ep & 0xffff) << 48;
+    __atomic_store_n(&r->ts, diag_ts(), __ATOMIC_RELAXED);
+    __atomic_store_n(&r->info, info, __ATOMIC_RELAXED);
+}
+EXPORT void diag_note(void *obj, unsigned kind, unsigned flags) {
+    gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    diag_note_full(obj, kind, flags, page->head.scanner.processed_by_epoch, epoch);
+}
+static void diag_init(void) {
+    const char *e = getenv("YAFL_GC_DIAG_EOM");
+    if (!e || e[0] == '0' || diag_who) return;
+    diag_pages = calloc(_memory_heap_bytes / GC_PAGE_SIZE + 1, sizeof(diag_page_t));
+    diag_who = calloc(_memory_heap_bytes / sizeof(slot_t) + 1, sizeof(diag_rec_t));
+}
+#define DIAG_NOTE(obj, kind, flags) do { if (UNLIKELY(diag_who != NULL)) diag_note((obj), (kind), (flags)); } while (0)
+#define DIAG_PAGE(page, field) do { if (UNLIKELY(diag_who != NULL)) diag_page(page)->field = diag_ts(); } while (0)
+
 static _Atomic(gc_page_t*) reprocess_page_list[REPROCESS_PAGE_COUNT];
 static atomic_size_t       reprocess_page_head;
 static atomic_size_t       reprocess_page_tail;
@@ -954,8 +994,10 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         page->head.objects.a[0] = 1;
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
         // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
-        if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
+        if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS)) {
             atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, 0);
+            DIAG_NOTE(page->slots, 2, 0);
+        }
         // Never sample relocation allocations: compaction targets are
         // GC-internal copies of objects that were already sampled at birth
         // (the forward hook re-keys the original record onto the copy) — a
@@ -2143,8 +2185,10 @@ static void *gc_relocation_alloc(size_t size) {
     void *object = t->reloc_bump;
     gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
     bitmap_fetch_set(&page->head.objects, (unsigned)((slot_t*)object - page->slots));
-    if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
+    if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS)) {
         atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, (unsigned)((slot_t*)object - page->slots));
+        DIAG_NOTE(object, 3, 0);
+    }
     zero_object_slots(object, actual);
     return object;
 }
@@ -2191,27 +2235,27 @@ static void atomic_gc_object_mark_as_seen$body(object_t *object) {
     if (page->head.old) return;   // old generation: implicitly live in minor cycles
     bool is_seen = bitmap_test(&page->head.scanner.seen, slot);
     if (!is_seen) {
-        if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot)
-
-            // If it's not "processsed" we don't need to do anything
-            // If it's not in the scanning list at all, definately don't do anything
-
-            // New pages have 'processsed_by_epoch==0', as do pages relocated to the to_scan list
-            // After a bulk move, the epoch is incremented, so it won't match historicaly processed pages anyway
-
-            && page->head.scanner.processed_by_epoch == epoch) {
+        if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot)) {
+            uint32_t pe = page->head.scanner.processed_by_epoch;
+            uint32_t ep = epoch;
+            if (UNLIKELY(diag_who != NULL)) diag_note_full(object, 4, 0, pe, ep);
+            if (pe != ep) return;
 
             for (size_t scan_index = 0; scan_index < sizeof(reprocess_page_list) / sizeof(gc_page_t*); ++scan_index)
-                if (reprocess_page_list[scan_index] == page)
+                if (reprocess_page_list[scan_index] == page) {
+                    if (UNLIKELY(diag_who != NULL)) diag_note_full(object, 4, 1, pe, ep);
                     return;
+                }
 
             size_t tail = reprocess_page_tail;
             do {if (tail - reprocess_page_head >= sizeof(reprocess_page_list) / sizeof(gc_page_t*)) {
                     atomic_store(&reprocess_overflow_flag, true);
+                    if (UNLIKELY(diag_who != NULL)) diag_note_full(object, 4, 2, pe, ep);
                     return;
                 }
             } while (!atomic_compare_exchange_strong(&reprocess_page_tail, &tail, tail+1));
             atomic_store(&reprocess_page_list[tail % REPROCESS_PAGE_COUNT], page);
+            if (UNLIKELY(diag_who != NULL)) diag_note_full(object, 4, 3, pe, ep);
         }
     }
 }
@@ -2485,8 +2529,10 @@ static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, ob
         // counter is the residual class, and a husk outliving a couple of
         // cycles should be traceable to it or to a CAS that lost.
         if (UNLIKELY(gc_stats_enabled) && page->head.compacted) gc_prof_stack_held_husk++;
-        if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, containing))
+        if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, containing)) {
             GC_STAT_BUMP(gc_stat_cons_seeds);   // diagnostic: conservative root seeds
+            DIAG_NOTE(&page->slots[containing], 5, 0);
+        }
     }
 }
 
@@ -2674,8 +2720,12 @@ static void gc_fsa_mark_sweep$mark_object(object_t *object) {
     // gc_fsa_mark_sweep resolves it (and anything it reaches) before the page
     // that found it is considered done. The mark set above keeps it live for
     // prune (which merges residual atomic bits) regardless of where it sits.
-    if (!was_set && page->head.scanner.processed_by_epoch == epoch)
-        mark_worklist_push(object);
+    if (!was_set) {
+        uint32_t pe = page->head.scanner.processed_by_epoch;
+        uint32_t ep = epoch;
+        if (UNLIKELY(diag_who != NULL)) diag_note_full(object, 6, pe == ep, pe, ep);
+        if (pe == ep) mark_worklist_push(object);
+    }
 }
 
 // Snap a MUTABLE container's slot to the forwarding tail — by COMPARE-EXCHANGE,
@@ -3061,6 +3111,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         for (unsigned bi = 0; bi < n; ++bi) {
         gc_page_t *page = batch[bi];
         GC_STAT_BUMP(gc_stat_pages_popped);
+        if (UNLIKELY(diag_who != NULL)) { diag_page(page)->claim = diag_ts(); diag_page(page)->claims++; }
         if (page->head.scanner.processed_by_epoch == epoch) {   // instrumented assert
             fprintf(stderr, "[DOUBLE-CLAIM] page=%p epoch=%u links=%p/%p pending=%d cycle=%llu\n",
                     (void*)page, epoch, (void*)page->head.list.next, (void*)page->head.list.prev,
@@ -3108,6 +3159,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         // satisfy before the store is visible (x86's xchg store is a full
         // barrier already). Once per page.
         atomic_thread_fence(memory_order_seq_cst);
+        DIAG_PAGE(page, stamp);
         GC_PROF_LAP(gc_prof_t_pages, _t0);
 
         // Finish the page: drain its whole back-edge closure now, so it (and
@@ -3128,6 +3180,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
         // point); marks after epoch was set are also caught here, redundantly
         // with the ring. Re-queue the page so the merged bits get scanned.
         bool late_bits = bitmap_or_test_source_reset_all(&page->head.scanner.seen, &page->head.scanner.atomic_seen);
+        DIAG_PAGE(page, late);
         bool deferred  = atomic_exchange(&page->head.scanner.requeue_pending, false);
         requeue_now[bi] = late_bits || deferred;
         }
@@ -3144,9 +3197,11 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
                 GC_STAT_BUMP(gc_stat_rq_drain);
                 GC_STAT_BUMP(gc_stat_requeued);
                 page->head.scanner.processed_by_epoch = 0;
+                if (UNLIKELY(diag_who != NULL)) diag_page(page)->requeues++;
                 list_link(&pages_to_scan, (list_element_t*)&page->head.list);
             } else {
                 list_link(&pages_to_prune, (list_element_t*)&page->head.list);
+                DIAG_PAGE(page, publish);
             }
         }
         gc_pool_unlock();
@@ -3181,6 +3236,17 @@ static int diag_eom = -1;
 static bool diag_marked(gc_page_t *pg, unsigned slot) {
     return bitmap_test(&pg->head.scanner.seen, slot) || bitmap_test(&pg->head.scanner.atomic_seen, slot);
 }
+static const char *diag_kind_name(unsigned k) {
+    static const char *n[] = {"none","alloc-black","alloc-black-multi","alloc-black-reloc","mutator-mark","conservative-root","mark_object"};
+    return k < 7 ? n[k] : "?";
+}
+static void diag_print_rec(const char *label, void *obj, uint64_t now) {
+    diag_rec_t r = ((diag_rec_t*)diag_who)[((char*)obj - _memory_heap_base) / sizeof(slot_t)];
+    fprintf(stderr, "  %s %p: setter=%s stage=%u tid=%u flags=%u pe=%u ep=%u at=-%lld\n", label, obj,
+            diag_kind_name(r.info & 0xff), (unsigned)(r.info >> 8 & 0xff), (unsigned)(r.info >> 16 & 0xff),
+            (unsigned)(r.info >> 24 & 0xff), (unsigned)(r.info >> 32 & 0xffff), (unsigned)(r.info >> 48),
+            r.ts ? (long long)(now - r.ts) : -1LL);
+}
 static void diag_check_end_of_mark(void) {
     if (diag_eom < 0) { const char *e = getenv("YAFL_GC_DIAG_EOM"); diag_eom = e ? e[0] - '0' : 0; }
     if (diag_eom <= 0) return;
@@ -3206,6 +3272,11 @@ static void diag_check_end_of_mark(void) {
                 long cs = (long)((slot_t*)c - cp->slots);
                 if (cs < 0 || cs >= SLOTS_PER_PAGE || !bitmap_test(&cp->head.objects, (unsigned)cs)) continue;
                 edges++;
+                if (diag_eom == 3 && edges == 1 && diag_who) {
+                    uint64_t now = diag_ts();
+                    fprintf(stderr, "SAMPLE epoch=%u\n", epoch);
+                    diag_print_rec("sample-parent", obj, now); diag_print_rec("sample-child", c, now);
+                }
                 if (diag_marked(cp, (unsigned)cs)) continue;
                 fprintf(stderr, "END-OF-MARK VIOLATION cycle %llu: marked %p (%s) slot %u page-pass-scanned=%d seen=%d atomic=%d "
                         "pinned=%d dirty_old=%d compacted=%d | field %u -> unmarked %p (%s) child page same=%d dirty_old=%d pinned=%d compacted=%d scanned-bit=%d\n",
@@ -3216,6 +3287,23 @@ static void diag_check_end_of_mark(void) {
                         i, (void*)c, vtable_is_forward(c->vtable) ? "fwd" : vtable_untag(c->vtable)->name,
                         cp == page, cp->head.dirty_old, cp->head.scanner.pinned, cp->head.compacted,
                         (int)bitmap_test(&cp->head.scanner.scanned, (unsigned)cs));
+                if (diag_who) {
+                    uint64_t now = diag_ts();
+                    diag_page_t *dp = diag_page(page);
+                    fprintf(stderr, "  epoch=%u now=%llu page: claims=%u requeues=%u claim=-%lld stamp=-%lld late=-%lld publish=-%lld\n",
+                            epoch, (unsigned long long)now, dp->claims, dp->requeues,
+                            (long long)(now - dp->claim), (long long)(now - dp->stamp),
+                            (long long)(now - dp->late), (long long)(now - dp->publish));
+                    diag_print_rec("parent", obj, now);
+                    diag_print_rec("child", c, now);
+                    unsigned shown = 0;
+                    for (unsigned k = 0; k < SLOTS_PER_PAGE && shown < 12; ++k)
+                        if (bitmap_test(&page->head.objects, k) && !bitmap_test(&page->head.scanner.seen, k)
+                                && bitmap_test(&page->head.scanner.atomic_seen, k) && k != slot) {
+                            char lab[32]; snprintf(lab, sizeof lab, "other-atomic-only slot %u", k);
+                            diag_print_rec(lab, &page->slots[k], now); shown++;
+                        }
+                }
                 if (++v >= 20) goto done;
             }
         }
@@ -4055,6 +4143,7 @@ EXPORT void gc_configure(void) {
 EXPORT void gc_start() {
     assert(stage == GC_STAGE_NOT_STARTED);
     gc_read_config();
+    diag_init();
     // Each worker starts its own nursery at its first refill after this
     // (object_alloc_slow_raw): an epoch is thread-private state.
     gc_local_enabled = gc_local_requested;

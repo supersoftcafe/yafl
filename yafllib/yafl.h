@@ -278,6 +278,9 @@ typedef struct {
 // pointer (lowering/pinnable_reads.py emits 3-6 per function).
 EXTERN char*  _memory_heap_base;    // set once at heap init (mmap.c)
 EXTERN size_t _memory_heap_bytes;
+// DIAG (scratch branch): who set each atomic_seen bit (YAFL_GC_DIAG_EOM).
+EXTERN void *diag_who;
+EXTERN void diag_note(void *obj, unsigned kind, unsigned flags);
 
 // Bit 0 is the PIN (see object pinning below); bit 1 marks "this word is a
 // vtable, not a forwarding address". Both are stripped by vtable_untag.
@@ -640,8 +643,10 @@ INLINE void *object_alloc_fast_raw(size_t size, bool is_mutable) {
     // Allocate BLACK for exactly that window: mark the object seen at birth.
     // The window closes when this thread's scan clears the flag, so the cost
     // outside it is one thread-local load and a not-taken branch.
-    if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS))
-        atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot);
+    if (UNLIKELY(gc_alloc_tl.safe_point_request & GC_SAFE_POINT_SCAN_ROOTS)) {
+        if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot) && UNLIKELY(diag_who != NULL))
+            diag_note(object, 1, 0);
+    }
 
     return object;
 }
