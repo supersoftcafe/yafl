@@ -72,7 +72,7 @@ jobs:
         run: |
           set -o pipefail
           echo '## ${{ matrix.runner }}' >> "$GITHUB_STEP_SUMMARY"
-          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --tests test_gc_mesh --profiles hotglobal,compactglobal --minutes 30 \
+          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --tests test_gc_mesh --profiles globaleom --minutes 60 \
               --summary "$GITHUB_STEP_SUMMARY" | tee soak.log
 
       - name: Upload failure logs

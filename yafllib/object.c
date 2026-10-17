@@ -3174,6 +3174,57 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
 // The EXCLUSIVE transition tail of the mark stage: runs under fsa_lock with
 // zero concurrent executors, re-verifies completion, and either requeues work
 // (overflow re-scan) or retires the stage. Returns the stage to store.
+// DIAG (scratch branch): at the instant marking ends there are no grey
+// objects, so no marked object may point at an unmarked object on a page this
+// cycle collects. YAFL_GC_DIAG_EOM=1 checks that and aborts on a violation.
+static int diag_eom = -1;
+static bool diag_marked(gc_page_t *pg, unsigned slot) {
+    return bitmap_test(&pg->head.scanner.seen, slot) || bitmap_test(&pg->head.scanner.atomic_seen, slot);
+}
+static void diag_check_end_of_mark(void) {
+    if (diag_eom < 0) { const char *e = getenv("YAFL_GC_DIAG_EOM"); diag_eom = e ? e[0] - '0' : 0; }
+    if (diag_eom <= 0) return;
+    unsigned v = 0; unsigned long edges = 0;
+    for (list_element_t *node = pages_to_prune.next; node != &pages_to_prune; node = node->next) {
+        gc_page_t *page = (gc_page_t*)node;
+        if (page->head.pages != 1 || page->head.mutable) continue;
+        for (unsigned slot = 0; slot < SLOTS_PER_PAGE; ++slot) {
+            if (!bitmap_test(&page->head.objects, slot) || !diag_marked(page, slot)) continue;
+            object_t *obj = (object_t*)&page->slots[slot];
+            vtable_t *vt = obj->vtable;
+            if (vtable_is_forward(vt)) continue;
+            vt = vtable_untag(vt);
+            if (vt->object_pointer_masks != NULL || vt->array_el_pointer_locations) continue;
+            ptr_mask_t m = vt->object_pointer_locations;
+            while (m) {
+                unsigned i = __builtin_ctzll(m); m &= m - 1;
+                object_t *c = ((object_t**)obj)[i];
+                if (!gc_object_is_on_heap_fast(c)) continue;
+                gc_page_t *cp = (gc_page_t*)((uintptr_t)c & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+                if (cp->head.tag != PAGE_MAGIC_NUMBER || cp->head.old || cp->head.pages != 1) continue;
+                if (cp->head.scanner.processed_by_epoch != epoch) continue;
+                long cs = (long)((slot_t*)c - cp->slots);
+                if (cs < 0 || cs >= SLOTS_PER_PAGE || !bitmap_test(&cp->head.objects, (unsigned)cs)) continue;
+                edges++;
+                if (diag_marked(cp, (unsigned)cs)) continue;
+                fprintf(stderr, "END-OF-MARK VIOLATION cycle %llu: marked %p (%s) slot %u page-pass-scanned=%d seen=%d atomic=%d "
+                        "pinned=%d dirty_old=%d compacted=%d | field %u -> unmarked %p (%s) child page same=%d dirty_old=%d pinned=%d compacted=%d scanned-bit=%d\n",
+                        (unsigned long long)atomic_load(&gc_cycle_count), (void*)obj, vt->name, slot,
+                        (int)bitmap_test(&page->head.scanner.scanned, slot),
+                        (int)bitmap_test(&page->head.scanner.seen, slot), (int)bitmap_test(&page->head.scanner.atomic_seen, slot),
+                        page->head.scanner.pinned, page->head.dirty_old, page->head.compacted,
+                        i, (void*)c, vtable_is_forward(c->vtable) ? "fwd" : vtable_untag(c->vtable)->name,
+                        cp == page, cp->head.dirty_old, cp->head.scanner.pinned, cp->head.compacted,
+                        (int)bitmap_test(&cp->head.scanner.scanned, (unsigned)cs));
+                if (++v >= 20) goto done;
+            }
+        }
+    }
+done:
+    if (diag_eom == 2) fprintf(stderr, "EOM cycle %llu: %lu edges checked\n", (unsigned long long)atomic_load(&gc_cycle_count), edges);
+    if (v) { fprintf(stderr, "END-OF-MARK: %u violation(s), major=%d\n", v, (int)gc_major_cycle); fflush(stderr); abort(); }
+}
+
 static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     // Late ring entries (and any page they requeue) keep the stage alive.
     gc_fsa_mark_sweep$pump_ring();
@@ -3222,6 +3273,7 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
             && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0
             && atomic_load(&gc_ring_writers) == 0
             && atomic_load(&reprocess_page_head) == atomic_load(&reprocess_page_tail)) {
+        diag_check_end_of_mark();
         gc_write_barrier_requested = false;
         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
     }

@@ -139,6 +139,7 @@ PROFILES = {
     "hotglobal": {**P, "YAFL_GC_STEP_PAGES": "64", "YAFL_GC_PRUNE_PAGES": "1024",
                   "YAFL_GC_COMPACT_PERCENT": "100", "YAFL_GC_PROMOTE_FLOOR": "16",
                   "YAFL_LOCAL_GC": "0"},
+    "globaleom": {**P, "YAFL_LOCAL_GC": "0", "YAFL_GC_DIAG_EOM": "1"},
     "compactglobal": {**P, "YAFL_GC_COMPACT_PERCENT": "100", "YAFL_LOCAL_GC": "0"},
     # Twice as many workers as cores: preemption lands inside the collector's
     # check-then-act windows.
