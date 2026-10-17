@@ -254,4 +254,10 @@ set_tests_properties(test_gc_static_store PROPERTIES ENVIRONMENT "YAFL_GC_POISON
 add_yafl_test(test_gc_late_requeue)
 target_compile_definitions(test_gc_late_requeue PRIVATE YAFL_GC_RETIRE_PROBE=1)
 set_tests_properties(test_gc_late_requeue PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_pump_window: stepped. A rescan request a pump has taken off the
+# reprocess ring, but not yet delivered, must keep marking from retiring.
+# Builds its own object.c with YAFL_GC_PUMP_PROBE, which hooks that window.
+add_yafl_test(test_gc_pump_window)
+target_compile_definitions(test_gc_pump_window PRIVATE YAFL_GC_PUMP_PROBE=1)
+set_tests_properties(test_gc_pump_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 
