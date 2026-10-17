@@ -67,7 +67,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang cmake
+          sudo apt-get install -y --no-install-recommends clang cmake gdb
 
       - name: Soak
         working-directory: yafllib
