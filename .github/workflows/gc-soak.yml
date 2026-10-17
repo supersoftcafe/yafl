@@ -62,14 +62,14 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang cmake
+          sudo apt-get install -y --no-install-recommends clang cmake gdb
 
       - name: Soak
         working-directory: yafllib
         run: |
           set -o pipefail
           echo '## ${{ matrix.runner }}' >> "$GITHUB_STEP_SUMMARY"
-          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --tests test_gc_mesh --profiles globaleom --minutes 60 \
+          python3 tests/gc_soak.py --builds ${{ matrix.builds }} --tests test_gc_mesh --profiles globaleom --minutes 180 \
               --summary "$GITHUB_STEP_SUMMARY" | tee soak.log
 
       - name: Upload failure logs

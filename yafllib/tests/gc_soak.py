@@ -202,14 +202,39 @@ class Tally:
     failures: list[str] = field(default_factory=list)
 
 
+# On a timeout, before the kill: every thread's backtrace and the mark
+# stage's bookkeeping, from gdb (sudo: ptrace_scope stops a non-parent attach).
+HANG_GDB = ["-ex", "set pagination off", "-ex", "info threads", "-ex", "thread apply all bt 30",
+            "-ex", "p stage", "-ex", "p gc_stage_executors", "-ex", "p gc_pages_in_flight",
+            "-ex", "p gc_ring_writers", "-ex", "p reprocess_page_head", "-ex", "p reprocess_page_tail",
+            "-ex", "p reprocess_overflow_flag", "-ex", "p epoch",
+            "-ex", "p pages_to_scan", "-ex", "p pages_to_prune"]
+
+
+def hang_dump(pid):
+    gdb = shutil.which("gdb")
+    if not gdb:
+        return "\n[hang dump: no gdb]\n"
+    cmd = ([] if os.geteuid() == 0 else ["sudo", "-n"]) + [gdb, "-p", str(pid), "-batch", "-nx", *HANG_GDB]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, errors="replace")
+        return "\n===== hang dump =====\n" + r.stdout + r.stderr
+    except Exception as e:  # the dump is best effort; the timeout is reported regardless
+        return f"\n[hang dump failed: {e}]\n"
+
+
 def run_one(binary, env, timeout, args=()):
     t0 = time.monotonic()
+    p = subprocess.Popen([str(binary), *args], env=env, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, errors="replace")
     try:
-        r = subprocess.run([str(binary), *args], env=env, capture_output=True, text=True,
-                           timeout=timeout, errors="replace")
-        rc, out = r.returncode, r.stdout + r.stderr
-    except subprocess.TimeoutExpired as e:
-        rc, out = "timeout", _text(e.stdout) + _text(e.stderr)
+        out, _ = p.communicate(timeout=timeout)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        dump = hang_dump(p.pid)
+        p.kill()
+        out, _ = p.communicate()
+        rc, out = "timeout", (out or "") + dump
     return rc, out, time.monotonic() - t0
 
 
