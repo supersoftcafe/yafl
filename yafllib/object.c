@@ -3044,20 +3044,42 @@ static void gc_fsa_mark_sweep$pump_ring(void) {
         size_t head = atomic_load(&reprocess_page_head);
         if (head >= atomic_load(&reprocess_page_tail))
             break;
-        if (!atomic_compare_exchange_weak(&reprocess_page_head, &head, head + 1))
+        // The entry is IN FLIGHT from before it leaves the ring until its
+        // requeue (or deferral to the claiming owner) lands — the transition
+        // tail must not declare the stage done while an entry is between the
+        // ring and the lists. Counted BEFORE the claim: counted after it, a
+        // tail checking in between saw an empty ring and nothing in flight,
+        // retired the stage, and the requeue was then dropped (page_needs_scan
+        // does nothing once marking ends) — the mutator's mark kept by prune's
+        // residue merge but never scanned, its children freed under it.
+        atomic_fetch_add_explicit(&gc_pages_in_flight, 1, memory_order_seq_cst);
+        if (!atomic_compare_exchange_weak(&reprocess_page_head, &head, head + 1)) {
+            atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_seq_cst);
             continue;
-        diag_pump_delay();   // DIAG: widen the claim -> count window
-        // The consumed entry is IN FLIGHT until its requeue (or deferral to
-        // the claiming owner) lands — the transition tail must not declare
-        // the stage done while an entry is between the ring and the lists.
-        atomic_fetch_add_explicit(&gc_pages_in_flight, 1, memory_order_acq_rel);
+        }
+        diag_pump_delay();   // DIAG: the same delay, now inside the counted window
         gc_page_t *page;
         do {page = atomic_exchange(&reprocess_page_list[head % REPROCESS_PAGE_COUNT], NULL);
         } while (page == NULL);
         GC_STAT_BUMP(gc_stat_rq_repro);
         gc_fsa_mark_sweep$page_needs_scan(page);
-        atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_acq_rel);
+        atomic_fetch_sub_explicit(&gc_pages_in_flight, 1, memory_order_seq_cst);
     }
+}
+
+// Is any marking still outstanding? Under the pool lock. Work moves forward
+// through four places — a mutator's push in progress (gc_ring_writers), the
+// ring, in flight, the scan list — and each is entered before the previous is
+// left. So they are read in that order: work that moves on between two reads
+// is then seen in the later place. Read backwards, it can move from a place
+// not yet read into one already read, and be missed at both. (A claim takes a
+// page from the scan list into flight, and a publish puts it back or retires
+// it, under the pool lock this holds: neither moves while it reads.)
+static bool gc_mark_work_outstanding(void) {
+    if (atomic_load(&gc_ring_writers) != 0) return true;
+    if (atomic_load(&reprocess_page_head) != atomic_load(&reprocess_page_tail)) return true;
+    if (atomic_load(&gc_pages_in_flight) != 0) return true;
+    return !list_empty(&pages_to_scan);
 }
 
 // The PARALLEL BODY of the mark stage: any number of executors run this
@@ -3331,10 +3353,7 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     // in-flight count means a page (or a pumped ring entry) is still being
     // worked; try again on a later step.
     gc_pool_lock();
-    bool busy = !list_empty(&pages_to_scan)
-             || atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) != 0
-             || atomic_load(&gc_ring_writers) != 0
-             || atomic_load(&reprocess_page_head) != atomic_load(&reprocess_page_tail);
+    bool busy = gc_mark_work_outstanding();
     gc_pool_unlock();
     if (busy)
         return;
@@ -3366,10 +3385,7 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     // ring reset and the object's liveness is covered by prune's residue
     // merge. Pre-existing window, unchanged shape.)
     gc_pool_lock();
-    if (list_empty(&pages_to_scan)
-            && atomic_load_explicit(&gc_pages_in_flight, memory_order_acquire) == 0
-            && atomic_load(&gc_ring_writers) == 0
-            && atomic_load(&reprocess_page_head) == atomic_load(&reprocess_page_tail)) {
+    if (!gc_mark_work_outstanding()) {
         diag_check_end_of_mark();
         gc_write_barrier_requested = false;
         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
