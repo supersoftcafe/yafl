@@ -41,13 +41,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # The shipped flags (-O3 NDEBUG) and asserts-on builds, both compilers.
-          - { runner: ubuntu-24.04-arm, builds: gcc-O3-ndebug }
-          - { runner: ubuntu-24.04-arm, builds: clang-O3 }
-          - { runner: ubuntu-24.04-arm, builds: gcc-O2 }
-          - { runner: ubuntu-24.04-arm, builds: clang-O2 }
-    name: soak (${{ matrix.runner }}, ${{ matrix.builds }})
+        runner: [ubuntu-24.04-arm]
+        builds: [gcc-O3-ndebug, clang-O3, gcc-O2, clang-O2]
+        rep: [1, 2, 3]
+    name: soak (${{ matrix.runner }}, ${{ matrix.builds }}, ${{ matrix.rep }})
     runs-on: ${{ matrix.runner }}
     # The soak time plus builds (gc_stress compiles with the Python compiler)
     # and slack for the last round to finish.
@@ -79,7 +76,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: soak-logs-${{ matrix.runner }}-${{ matrix.builds }}
+          name: soak-logs-${{ matrix.runner }}-${{ matrix.builds }}-${{ matrix.rep }}
           path: |
             yafllib/soak.log
             yafllib/build/soak-logs/
