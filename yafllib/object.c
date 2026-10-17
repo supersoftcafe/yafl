@@ -3031,6 +3031,14 @@ static void gc_fsa_mark_sweep$drain_worklist(void) {
 // Multi-consumer reprocess-ring pump. Head is claimed by CAS (an
 // unconditional fetch_add could pass `tail` when two pumpers race one entry,
 // leaving the loser spinning on an empty slot forever).
+static int diag_pump_us = -1;
+static void diag_pump_delay(void) {
+    if (diag_pump_us < 0) { const char *e = getenv("YAFL_GC_DIAG_PUMP_DELAY"); diag_pump_us = e ? atoi(e) : 0; }
+    if (diag_pump_us <= 0) return;
+    struct timespec t0, t; clock_gettime(CLOCK_MONOTONIC, &t0);
+    do clock_gettime(CLOCK_MONOTONIC, &t);
+    while ((t.tv_sec - t0.tv_sec) * 1000000000L + (t.tv_nsec - t0.tv_nsec) < diag_pump_us * 1000L);
+}
 static void gc_fsa_mark_sweep$pump_ring(void) {
     for (;;) {
         size_t head = atomic_load(&reprocess_page_head);
@@ -3038,6 +3046,7 @@ static void gc_fsa_mark_sweep$pump_ring(void) {
             break;
         if (!atomic_compare_exchange_weak(&reprocess_page_head, &head, head + 1))
             continue;
+        diag_pump_delay();   // DIAG: widen the claim -> count window
         // The consumed entry is IN FLIGHT until its requeue (or deferral to
         // the claiming owner) lands — the transition tail must not declare
         // the stage done while an entry is between the ring and the lists.
