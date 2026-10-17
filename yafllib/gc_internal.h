@@ -26,6 +26,18 @@ enum gc_stage {
     GC_STAGE_MARK_SWEEP, // Walk the graph, mark things as seen and scan as we go
     GC_STAGE_PRUNE
 };
+// For reports. A switch, so a stage added without a name is a -Wswitch warning.
+static inline const char *gc_stage_name(enum gc_stage s) {
+    switch (s) {
+    case GC_STAGE_NOT_STARTED: return "not-started";
+    case GC_STAGE_IDLE:        return "idle";
+    case GC_STAGE_START:       return "start";
+    case GC_STAGE_SCAN_ROOTS:  return "scan-roots";
+    case GC_STAGE_MARK_SWEEP:  return "mark-sweep";
+    case GC_STAGE_PRUNE:       return "prune";
+    }
+    return "?";
+}
 
 enum thread_state {
     THREAD_STATE_RUNNING,               // Busy running, don't interrupt
@@ -59,9 +71,9 @@ struct gc_thread_info {
     // callee-saved register — an object referenced ONLY from rbp at a safe
     // point scans as garbage and gets swept live (test_large_objects SEGV,
     // test_gc_pressure DANGLE). The callee-saved set is dumped RAW here as
-    // well; caller-saved registers are already spilled to the scanned stack
-    // by the C ABI before any call into the runtime.
-    void      *saved_callee_regs[8];
+    // well (ARCH_SAVE_CALLEE_REGS, yafl.h "Target specifics"); caller-saved registers are already
+    // spilled to the scanned stack by the C ABI before any call into the runtime.
+    void      *saved_callee_regs[ARCH_CALLEE_REGS];
 
     // ── thread-local nursery (prototype, YAFL_LOCAL_GC; see gc_local_collect) ──
     uint32_t local_epoch;          // stamp of this thread's nursery pages; 0 = off
@@ -83,6 +95,12 @@ struct gc_thread_info {
     // compacted away or freed, leaving the raw slot address dangling.
     object_t **pend_slot;
     ptr_mask_t pend_mask;
+    // The insertion half of the hybrid barrier (_gc_write_barrier_in2): the
+    // field this thread stored into last while its root scan was pending,
+    // shaded — read back — at its next barrier, its root scan, or its nursery
+    // collection, whichever comes first.
+    object_t **grey_slot;
+    ptr_mask_t grey_mask;
     // Compaction's evacuation targets get their own bump region, so a copy of
     // an older object never lands on a nursery page (where older referrers,
     // snapped to the copy, would point at a page the nursery believes no
@@ -185,21 +203,7 @@ extern struct timespec   gc_stats_t0;
 
 // A cheap monotonic tick for the stats-gated profile laps: only differences
 // are used, so each target reads its own counter.
-static inline uint64_t gc_tsc(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    unsigned lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-#elif defined(__aarch64__)
-    uint64_t t;
-    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
-    return t;
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
-#endif
-}
+static inline uint64_t gc_tsc(void) { return arch_ticks(); }
 #define GC_STAT_BUMP(c)\
     do { if (UNLIKELY(gc_stats_enabled))\
              atomic_fetch_add_explicit(&(c), 1, memory_order_relaxed);\
@@ -232,5 +236,32 @@ void gc_stats_report(void);  // [GC TIME] exit summary (atexit when stats enable
 
 void gc_dbg_dangle_check(object_t *object);  // poison-mode UAF edge verifier
 void gc_hunt_run(void);                      // YAFL_GC_HUNT exit-time heap census
+// Announce that a late pin is about to write `o` (object_pin_resolve calls it). The store may install a
+// reference to a YOUNG object, and minor cycles skip old pages, so a page
+// that has aged into the old generation must return to the collection
+// rotation — otherwise nothing would ever trace the new referent and prune
+// would free it while the writer still holds it. The page's flag is set
+// UNCONDITIONALLY (young pages included) and only then is `old` read: the
+// promotion decision writes `old` before re-reading the flag, so whichever
+// way the race falls, one side sees the other (a Dekker handshake — see
+// gc_note_late_write and the promotion site in object.c). Cost is paid per
+// WRITE, not per object per cycle, which is what makes a write-once
+// structure cheap to keep.
+void gc_note_late_write(object_t* o);
+void gc_oom_report(FILE *out);               // collector state, printed at an OOM abort
+// YAFL_GC_TRACE page history (see gc_debug.c). Record through GC_TRACE_PAGE.
+enum gc_trace_kind { GCT_ALLOC = 1, GCT_LOCAL_TAKE, GCT_LOCAL_SWEEP, GCT_LOCAL_PROMOTE,
+                     GCT_LOCAL_RELEASE, GCT_PRUNE, GCT_EVACUATE, GCT_FREE };
+extern bool gc_trace_enabled;
+void gc_trace_init(void);
+// `aux`: the page's local_epoch (alloc: its page count).
+void gc_trace_page_event(void *page, enum gc_trace_kind kind, const bitmap_t *slots,
+                         uint32_t aux);
+#define GC_TRACE_PAGE(page, kind, slots, aux)\
+    do { if (UNLIKELY(gc_trace_enabled)) gc_trace_page_event((page), (kind), (slots), (aux)); } while (0)
+// The objects a sweep or prune of `page` drops: allocated, and not in `kept`.
+void gc_trace_page_dropped(gc_page_t *page, enum gc_trace_kind kind, const bitmap_t *kept);
+#define GC_TRACE_PAGE_DROPPED(page, kind, kept)\
+    do { if (UNLIKELY(gc_trace_enabled)) gc_trace_page_dropped((page), (kind), (kept)); } while (0)
 
 #endif

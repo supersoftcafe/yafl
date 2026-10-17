@@ -15,7 +15,6 @@
 // stays a few MiB of filler.
 
 #include "../yafl.h"
-#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -92,9 +91,7 @@ static int Kstate(void) { return gc_debug_object_state((object_t*)g_K); }
 // entrypoint's stack slots, where the conservative scan would keep marking it.
 static void __attribute__((noinline)) create_and_root(void) {
     object_t* k = object_create(&leaf_vt);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = k;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, k);
     g_K = (uintptr_t)k;
 }
 
@@ -103,7 +100,7 @@ static void __attribute__((noinline)) create_and_root(void) {
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 // Report K from its own frame: at -O0 the printf spills K's address to a stack

@@ -24,7 +24,6 @@
  */
 
 #include "../yafl.h"
-#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -77,9 +76,7 @@ static void run_one_cycle(void) {
  * compactor skips it. */
 static void __attribute__((noinline)) create_and_bury(void) {
     object_t* k = object_create(&leaf_vt);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = k;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, k);
     g_A = (uintptr_t)k;
     for (int i = 0; i < 460; ++i) {
         volatile object_t* f = object_create(&leaf_vt);
@@ -98,7 +95,7 @@ static void __attribute__((noinline)) bury_copy_page(void) {
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 /* Each inspection runs in its OWN frame: at -O0 the compiler parks raw

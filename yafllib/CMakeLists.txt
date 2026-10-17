@@ -150,6 +150,23 @@ set_tests_properties(test_gc_publish_step test_gc_lazy_step PROPERTIES ENVIRONME
 # test_gc_gen: stepped test of immutability-based generations — promotion after
 # GC_PROMOTE_AFTER prunes, exemption from minors, reclamation by a major.
 add_yafl_test(test_gc_gen)
+# test_gc_old_late_write: stepped. A late write into an old page between the
+# cycle's START and the writer's own root scan is traced only because the end
+# of SCAN_ROOTS demotes the pages late writes touched; without that the value
+# is reclaimed while the old object points at it.
+add_yafl_test(test_gc_old_late_write)
+set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_builder_idle: stepped. List-builder links around a nursery
+# stand-down: a link made stood down owes no escape, and a cell born in the
+# resumed nursery, linked into a cell born stood down, must escape or the
+# nursery frees it while the older cell points at it.
+add_yafl_test(test_gc_builder_idle)
+set_tests_properties(test_gc_builder_idle PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_once_escape: a value yafl_cas_once installs in a shared object is
+# readable by other threads at once, so under its own late pin it must test
+# shared; the late pin flushes the nursery's pending slot to make it so.
+add_yafl_test(test_gc_once_escape)
+set_tests_properties(test_gc_once_escape PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_pressure: a ratcheting live set plus churn whose objects live a few
 # cycles before dying, in a deliberately small heap. Guards the near-full
 # machinery: the pressure backstop in gc_page_alloc, the relocation reserve,
@@ -179,6 +196,19 @@ foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_min2 test_gc_p
     add_test(NAME ${t}_global COMMAND ${t})
     set_tests_properties(${t}_global PROPERTIES ENVIRONMENT "YAFL_LOCAL_GC=0")
 endforeach()
+# test_gc_mesh: every worker mutates and reads one shared graph within the
+# sharing contract — mutable cells under their pin, immutable mailboxes read
+# lock-free and filled write-once (yafl_cas_once) — trading young chains
+# between nurseries. Aimed at weakly-ordered machines; the soak script
+# (tests/gc_soak.py) runs it long.
+add_yafl_test(test_gc_mesh)
+set_tests_properties(test_gc_mesh PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;MESH_STEPS=50000")
+add_test(NAME test_gc_mesh_nursery COMMAND test_gc_mesh)
+set_tests_properties(test_gc_mesh_nursery PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_LOCAL_GC_PAGES=2;MESH_STEPS=50000")
+add_test(NAME test_gc_mesh_global COMMAND test_gc_mesh)
+set_tests_properties(test_gc_mesh_global PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_LOCAL_GC=0;MESH_STEPS=50000")
 # test_gc_fwd_chain: compaction forwarding chains (A -> B -> C via a head stub
 # pinned by a conservative stack slot) must path-compress when scanned — the
 # head's forward word snaps to the tail and the bypassed middle stub's page
@@ -206,4 +236,28 @@ add_yafl_test(test_vtable_lookup)
 # the next minor reclaims the referent.
 add_yafl_test(test_gc_late_pin_race)
 target_compile_definitions(test_gc_late_pin_race PRIVATE YAFL_GC_RACE_PROBE=1)
+# test_lazy_runner: exactly one caller of lazy_thunk_enqueue runs the
+# initialiser, even when the chain is drained between the enqueue's CAS and
+# its return. Builds its own lazy.c with YAFL_LAZY_RACE_PROBE, which hooks
+# that window.
+add_yafl_test(test_lazy_runner)
+target_compile_definitions(test_lazy_runner PRIVATE YAFL_LAZY_RACE_PROBE=1)
+# test_gc_late_requeue: stepped. A rescan request that arrives after marking
+# has retired must not take its page out of the cycle's prune. Builds its own
+# object.c with YAFL_GC_RETIRE_PROBE, which hooks the moment marking retires.
+# test_gc_static_store: stepped. A store into a static object (a global's lazy
+# stub) whose barrier ran before the cycle opened is seen only because the
+# object store macros publish after the store when the container is outside
+# the heap.
+add_yafl_test(test_gc_static_store)
+set_tests_properties(test_gc_static_store PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+add_yafl_test(test_gc_late_requeue)
+target_compile_definitions(test_gc_late_requeue PRIVATE YAFL_GC_RETIRE_PROBE=1)
+set_tests_properties(test_gc_late_requeue PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_pump_window: stepped. A rescan request a pump has taken off the
+# reprocess ring, but not yet delivered, must keep marking from retiring.
+# Builds its own object.c with YAFL_GC_PUMP_PROBE, which hooks that window.
+add_yafl_test(test_gc_pump_window)
+target_compile_definitions(test_gc_pump_window PRIVATE YAFL_GC_PUMP_PROBE=1)
+set_tests_properties(test_gc_pump_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 

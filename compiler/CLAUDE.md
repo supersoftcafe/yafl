@@ -10,10 +10,10 @@ python3 ../full_protocol.py                   # fast: port, [test] folders, self
 python3 ../full_protocol.py --full            # the regression; logs under build/protocol-runs/
 python3 ../full_protocol.py --compiler python # against the Python compiler
 ```
-The fast path is the default (and what CI runs on pull requests and manual
-runs); it reuses the Python build of the port while the Python compiler is
-unchanged (build_bootstrap.py --reuse). `--full` is opt-in, and what CI runs
-on every commit to main. Prefer it over running the pieces
+The fast path is the default (and what CI's manual runs use); it reuses the
+Python build of the port while the Python compiler is unchanged
+(build_bootstrap.py --reuse). `--full` is opt-in, and what CI runs on pull
+requests and every commit to main. Prefer it over running the pieces
 by hand before a commit. The speed figure is the self-compile time each run
 reports on its ctest line (`self_compile_o3 …s`).
 

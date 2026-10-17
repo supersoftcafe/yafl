@@ -1,0 +1,154 @@
+# gc_stress — the collector under compiled YAFL, many workers at once.
+#
+#   gc_stress [rounds]
+#
+# test_gc_mesh drives the runtime from hand-written C; this drives it through
+# what the compiler emits: list and array builders, map/filter/fold, `[future]`
+# lets forced from two workers, a memoize cache that every worker fills at
+# once (write-once slots under the pin), and a long-lived list that every
+# worker walks while the heap turns over around it. Four workers (nested
+# __parallel__) each run every workload, every round.
+#
+# Every workload computes its answer twice — once through the heap and once by
+# plain arithmetic that allocates nothing — and a disagreement is counted. The
+# program prints `gc_stress OK` or `gc_stress MISMATCH <count>` and exits
+# non-zero on a mismatch. A freed-while-reachable object usually shows up as a
+# mismatch; under YAFL_GC_POISON=1 it more often aborts with DANGLE.
+#
+# gc_soak.py builds and soaks it with the C tests when a YAFL compiler is
+# available.
+namespace GcStress
+
+import System
+
+
+let modulus:  System::Int = 1000000007
+let listLen:  System::Int = 3000
+let arrayLen: System::Int = 2000
+let memoKeys: System::Int = 20000
+let sharedLen: System::Int = 50000
+
+
+fun mix(k: System::Int): System::Int
+  let a = (k * 2654435761) % modulus
+  ret (a + k * 40503) % modulus
+
+
+# ── lists: builder, map, filter, fold ────────────────────────────────────────
+
+fun [tail] _uptoInto([terminal] b: ListBuilder<System::Int>, i: System::Int,
+                     n: System::Int): ListBuilder<System::Int>
+  ret i >= n ? b : _uptoInto(push<System::Int>(b, i), i + 1, n)
+
+fun upto(n: System::Int): List<System::Int>
+  ret build<System::Int>(_uptoInto(builder<System::Int>(), 0, n))
+
+fun listRound(seed: System::Int): System::Int
+  let l = upto(listLen)
+  let m = map<System::Int, System::Int>(l, (x: System::Int) => mix(x + seed))
+  let f = filter<System::Int>(m, (x: System::Int) => x % 2 == 0)
+  ret fold<System::Int, System::Int>(f, 0, (acc: System::Int, x: System::Int) => (acc + x) % modulus)
+
+fun listExpected(seed: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    let v = mix(i + seed)
+    ret i >= listLen ? acc : loop(i + 1, v % 2 == 0 ? (acc + v) % modulus : acc)
+  ret loop(0, 0)
+
+
+# ── arrays: builder, fold ────────────────────────────────────────────────────
+
+fun [tail] _arrayInto([terminal] b: ArrayBuilder<System::Int>, i: System::Int,
+                      n: System::Int, seed: System::Int): ArrayBuilder<System::Int>
+  ret i >= n ? b : _arrayInto(push<System::Int>(b, mix(i * 7 + seed)), i + 1, n, seed)
+
+fun arrayRound(seed: System::Int): System::Int
+  # A small estimate, so the builder grows (and copies) many times.
+  let a = build<System::Int>(_arrayInto(arrayBuilder<System::Int>(8), 0, arrayLen, seed))
+  ret fold<System::Int, System::Int>(a, 0, (acc: System::Int, x: System::Int) => (acc + x) % modulus)
+
+fun arrayExpected(seed: System::Int): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= arrayLen ? acc : loop(i + 1, (acc + mix(i * 7 + seed)) % modulus)
+  ret loop(0, 0)
+
+
+# ── futures: forced from two workers at once ─────────────────────────────────
+
+fun futureRound(seed: System::Int): System::Int
+  let [future] a = listRound(seed)
+  let [future] b = arrayRound(seed + 1)
+  let (x, y) = __parallel__(() => (a + b) % modulus, () => (b + a) % modulus)
+  ret x == y ? x : -1
+
+fun futureExpected(seed: System::Int): System::Int
+  ret (listExpected(seed) + arrayExpected(seed + 1)) % modulus
+
+
+# ── memoize: every worker publishing into one cache ──────────────────────────
+
+fun memoRange(memo: (:System::Int): System::Int, base: System::Int, count: System::Int): System::Int
+  fun [tail] loop(i: System::Int, bad: System::Int): System::Int
+    let k = (base + i * 13) % memoKeys
+    ret i >= count ? bad : loop(i + 1, memo(k) == mix(k) ? bad : bad + 1)
+  ret loop(0, 0)
+
+
+# ── a long-lived list, walked while the heap turns over ──────────────────────
+
+fun sharedSum(l: List<System::Int>): System::Int
+  ret fold<System::Int, System::Int>(l, 0, (acc: System::Int, x: System::Int) => (acc + mix(x)) % modulus)
+
+fun sharedExpected(): System::Int
+  fun [tail] loop(i: System::Int, acc: System::Int): System::Int
+    ret i >= sharedLen ? acc : loop(i + 1, (acc + mix(i)) % modulus)
+  ret loop(0, 0)
+
+
+# ── one worker: every workload, `rounds` times; returns its mismatch count ───
+
+fun worker(id: System::Int, rounds: System::Int, memo: (:System::Int): System::Int,
+           shared: List<System::Int>, sharedWant: System::Int): System::Int
+  fun one(r: System::Int): System::Int
+    let seed = id * 100003 + r
+    let e1 = listRound(seed)   == listExpected(seed)   ? 0 : 1
+    let e2 = arrayRound(seed)  == arrayExpected(seed)  ? 0 : 1
+    let e3 = futureRound(seed) == futureExpected(seed) ? 0 : 1
+    let e4 = memoRange(memo, id * 977 + r, 500)
+    let e5 = r % 8 == 0 ? (sharedSum(shared) == sharedWant ? 0 : 1) : 0
+    ret e1 + e2 + e3 + e4 + e5
+  fun [tail] loop(r: System::Int, bad: System::Int): System::Int
+    ret r >= rounds ? bad : loop(r + 1, bad + one(r))
+  ret loop(0, 0)
+
+fun pair(a: System::Int, b: System::Int, rounds: System::Int, memo: (:System::Int): System::Int,
+         shared: List<System::Int>, sharedWant: System::Int): System::Int
+  let (x, y) = __parallel__(
+        () => worker(a, rounds, memo, shared, sharedWant),
+        () => worker(b, rounds, memo, shared, sharedWant))
+  ret x + y
+
+fun runAll(rounds: System::Int): System::Int
+  let memo = memoize<System::Int, System::Int>(mix)
+  let shared = upto(sharedLen)
+  let want = sharedExpected()
+  let (l, r) = __parallel__(
+        () => pair(0, 1, rounds, memo, shared, want),
+        () => pair(2, 3, rounds, memo, shared, want))
+  ret l + r + (sharedSum(shared) == want ? 0 : 1)
+
+
+fun roundsOf(s: System::String): System::Int
+  ret match(parseInt32(s))
+    (n: System::Int32) => Int(n)
+    (e: System::None)  => 200
+
+fun main(): System::Int
+  fun run(rounds: System::Int): System::Int
+    let bad = runAll(rounds)
+    println(bad == 0 ? "gc_stress OK rounds " + String(rounds)
+                     : "gc_stress MISMATCH " + String(bad))
+    ret bad == 0 ? 0 : 1
+  ret match(head<System::String>(args()))
+    (s: System::String) => run(roundsOf(s))
+    (e: System::None)   => run(200)

@@ -164,13 +164,11 @@ static void do_step(struct ctx* ctx) {
     // Drop the carried big into the gap, then pick up the next big from the
     // following holder — that big is now "in transit", reachable only via the
     // task ctx we build below until it lands in a holder again.
-    GC_WRITE_BARRIER_IN(gap, gap->held, 1);
-    gap->held = carried;
+    GC_STORE_IN(gap, gap->held, 1, carried);
 
     struct holder* nextgap = (struct holder*)gap->next;
     object_t* picked = nextgap->held;
-    GC_WRITE_BARRIER_IN(nextgap, nextgap->held, 1);
-    nextgap->held = NULL;
+    GC_STORE_IN(nextgap, nextgap->held, 1, NULL);
 
     burn_strings();                         // force the collector to run
     atomic_fetch_add(&_total_steps, 1);
@@ -178,8 +176,7 @@ static void do_step(struct ctx* ctx) {
     if (ctx->steps <= 1) {
         // Put the last carried big back so the whole population sits in the ring,
         // then verify all BIGS_PER_CHAIN are present exactly once.
-        GC_WRITE_BARRIER_IN(nextgap, nextgap->held, 1);
-        nextgap->held = picked;
+        GC_STORE_IN(nextgap, nextgap->held, 1, picked);
         char seen[BIGS_PER_CHAIN]; memset(seen, 0, sizeof seen);
         struct holder* h = (struct holder*)nextgap; int n = 0;
         for (int i = 0; i < HOLDERS; ++i, h = (struct holder*)h->next) {
@@ -202,8 +199,8 @@ static void do_step(struct ctx* ctx) {
     }
 
     struct ctx* next = (struct ctx*)object_create(&ctx_vt);
-    GC_WRITE_BARRIER_IN(next, next->cursor, 1);  next->cursor  = (object_t*)nextgap;  // the new gap
-    GC_WRITE_BARRIER_IN(next, next->carried, 1); next->carried = picked;             // in transit
+    GC_STORE_IN(next, next->cursor, 1, (object_t*)nextgap);   // the new gap
+    GC_STORE_IN(next, next->carried, 1, picked);   // in transit
     next->steps = ctx->steps - 1;
     verify_group(next);                     // full population still present?
     post_step(next);
@@ -257,8 +254,8 @@ static void _entrypoint(object_t* self, fun_t continuation) {
         struct big* b0 = (struct big*)object_create(&big_vt);   // big id 0 starts in transit
         b0->id = 0; b0->magic = MAGIC ^ 0;
         struct ctx* ctx = (struct ctx*)object_create(&ctx_vt);
-        GC_WRITE_BARRIER_IN(ctx, ctx->cursor, 1);  ctx->cursor  = _heads[c];   // holders[0] is the gap
-        GC_WRITE_BARRIER_IN(ctx, ctx->carried, 1); ctx->carried = (object_t*)b0;
+        GC_STORE_IN(ctx, ctx->cursor, 1, _heads[c]);   // holders[0] is the gap
+        GC_STORE_IN(ctx, ctx->carried, 1, (object_t*)b0);
         ctx->steps = STEPS_PER_CHAIN;
         post_step(ctx);
     }

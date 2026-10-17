@@ -61,3 +61,36 @@ class TestBootstrapAst(TestCase):
                     self.fail(f"{path.name}: AST differs at line {i}:\n"
                               f"  python    {el[i] if i < len(el) else '<eof>'!r}\n"
                               f"  bootstrap {gl[i] if i < len(gl) else '<eof>'!r}")
+
+    def test_statements_sit_where_their_expression_starts(self):
+        # `ret`, a bare expression, `if` and `else if` sit where their
+        # expression starts. A bracketed group leading a binary expression
+        # used to split the compilers: Python's parse dropped the `(` (the
+        # statement sat inside the bracket) while the port, like the `==`
+        # node itself, placed it at the bracket. A leading unary op stays at
+        # its own token, folded literal or not; `else if` is dumped too.
+        text = (
+            "fun f(a: System::Int, b: System::Int): System::Int\n"
+            "  if (a) == b\n"
+            "    ret (a) + b\n"
+            "  else if (b) == a\n"
+            "    ret -1\n"
+            "  else\n"
+            "    ret 0\n"
+            "  if a == (b)\n"
+            "    ret !(a == b) ? 1 : 2\n"
+            "  (a) + b\n"
+            "  print((a) + b)\n"
+            "  ret (a) |> (x) => x + b\n")
+        result = parse(tokenize(text, "x"))
+        self.assertFalse(result.errors)
+        expected = dump(result.value)
+        r = subprocess.run([self.binary, "--stage", "ast"], input=text, capture_output=True,
+                           timeout=90, text=True, env=_RUN_ENV)
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertEqual(expected.splitlines(), r.stdout.splitlines())
+        # And the positions are the bracket's, not the first token inside it.
+        starts = [l.strip() for l in expected.splitlines()
+                  if l.strip().split("|")[0] in ("If", "ElseIf", "Ret", "Action")]
+        self.assertEqual(["If|2:6|", "Ret|3:9|0", "ElseIf|4:11|", "Ret|5:9|0", "Ret|7:9|0",
+                          "If|8:6|", "Ret|9:9|0", "Action|10:3|", "Action|11:3|"], starts)

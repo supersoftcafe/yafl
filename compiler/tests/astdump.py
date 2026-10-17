@@ -244,11 +244,11 @@ def dump(statements) -> str:
         elif isinstance(st, s.ElseIfStatement):
             line(depth, "ElseIf", st, "")
             walk_expr(st.condition, depth + 1)
-            for b in st.statements:
+            for b in st.body:
                 walk_stmt(b, depth + 1)
         elif isinstance(st, s.ElseStatement):
             line(depth, "Else", st, "")
-            for b in st.statements:
+            for b in st.body:
                 walk_stmt(b, depth + 1)
         elif isinstance(st, s.ActionStatement):
             line(depth, "Action", st, "")

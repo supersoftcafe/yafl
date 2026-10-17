@@ -47,12 +47,6 @@ fun lazyRuntimeCall1(name, argName, argVal): Op
              RpRuntimeInvoke(name, RpNewStruct(list1(RpNamedValue(argName, argVal))), CgDataPointer()),
              true, List())
 
-# The stub's value store. A global's stub is a declared root, scanned once at
-# cycle open, so the store publishes what it wrote: a thread may drop the
-# value from its stack before its take (codegen/param.py ObjectField.root).
-fun storeValue(valueF: RpObjectField, value): Op
-  ret OpMove(with valueF(root = true), value, false, List())
-
 # ── stub class ───────────────────────────────────────────────────────────────
 
 fun makeStubObject(valueType)
@@ -93,7 +87,7 @@ fun makeDrainFunction(valueType): CgFunction
       OpMove(svHead, svNext, false, List()),
       OpJump("$loop", List()),
       OpLabel("$done", List()))
-  # head.result = value — per-IR-type write (GC_WRITE_BARRIER via field store)
+  # head.result = value — per-IR-type write (a barriered field store, GC_STORE_IN)
   let ops = concat(concat(head, lazyStoreWaiterResult(svHead, valueType, value)), tail2)
   ret CgFunction(drainFunctionName(valueType),
                  CgStruct(list3(CgField("this", CgDataPointer()),
@@ -171,15 +165,15 @@ fun fetchOps(valueType: CgType, cls: String, waiterTy: String, wrapped: CgType,
       # status == 1: won init race
       OpMove(closure, closureF, false, List()))
   # Sync init: unwrap, store, clear closure, drain
-  let syncInit = concat(list4(
+  let syncInit = concat(list4<Op>(
       OpCall(closure, RpNewStruct(List()), rwrapped, false, false, None, List()),
       OpJumpIf("$async_init",
                RpRuntimeInvoke("UNLIKELY",
                                RpNewStruct(list1(RpNamedValue("x", isTaskParam(rwrapped, wrapped)))),
                                CgInt(32)), false, List()),
       OpMove(value, unwrapValue(rwrapped, valueType), false, List()),
-      storeValue(valueF, value)),
-    list1(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())))
+      OpMove(valueF, value, false, List())),
+    list1<Op>(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())))
   let asyncTail = list4(
       emitDrainCall(valueType, RpPointerTo(flagF), value),
       OpReturn(wrapValue(value, wrapped), List()),
@@ -241,8 +235,8 @@ fun makeFinisherFunction(valueType): CgFunction
                                 CgField("completed", CgDataPointer()))),
                  CgDataPointer(),
                  CgStruct(list1(CgField("value", valueType))),
-                 cgOpsOf(concat(list2(OpMove(value, completedResult, false, List()),
-                                     storeValue(valueF, value)),
+                 cgOpsOf(concat(list2<Op>(OpMove(value, completedResult, false, List()),
+                                         OpMove(valueF, value, false, List())),
                         list3(OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List()),
                               emitDrainCall(valueType, RpPointerTo(flagF), value),
                               OpReturn(RpNullPointer(), List())))),

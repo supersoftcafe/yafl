@@ -67,7 +67,6 @@ locals):
 """
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 
 from codegen.gen import Application
@@ -175,13 +174,6 @@ def ir_mangle_to_type(suffix: str) -> Type:
 # ─── Shared helpers ───────────────────────────────────────────────────────
 
 _DISCARD = StackVar(DataPointer(), "$sv_lazy_discard")
-
-
-def _store_value(value_f: ObjectField, value: RParam) -> Op:
-    """The stub's value store. A global's stub is a declared root, scanned
-    once at cycle open, so the store publishes what it wrote: a thread may
-    drop the value from its stack before its take (ObjectField.root)."""
-    return Move(dataclasses.replace(value_f, root=True), value)
 
 
 def _store_waiter_result(waiter: RParam, value_type: Type, value: RParam) -> tuple[Op, ...]:
@@ -349,7 +341,7 @@ def make_fetch_function(value_type: Type) -> Function:
 
         # Sync init: unwrap, store, clear closure, drain.
         Move(value, closure_value),
-        _store_value(value_f, value),
+        Move(value_f, value),
         Move(closure_f, ZeroOf(FuncPointer())),
         _emit_drain_call(value_type, PointerTo(flag_f), value),
         Return(wrap_value(value, wrapped)),
@@ -449,7 +441,7 @@ def make_finisher_function(value_type: Type) -> Function:
 
     ops: tuple[Op, ...] = (
         Move(value, completed_result),
-        _store_value(value_f, value),
+        Move(value_f, value),
         Move(closure_f, ZeroOf(FuncPointer())),
         _emit_drain_call(value_type, PointerTo(flag_f), value),
         Return(NullPointer()),
