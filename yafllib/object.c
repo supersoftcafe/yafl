@@ -1845,6 +1845,15 @@ EXPORT void gc_store_mutable_before(object_t **slot, ptr_mask_t mask) {
 EXPORT void gc_store_static_after(object_t **slot, ptr_mask_t mask) {
     gc_publish_slots(slot, mask);
 }
+// Before each attempt of a CAS (yafl.h, "The atomic stores").
+EXPORT void gc_cas_before(object_t **slot, object_t *expected, object_t *desired) {
+    gc_store_mutable_before(slot, 1);
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(expected);
+    if (gc_local_live_now()) {
+        gc_local_escape(expected);
+        gc_local_escape(desired);
+    }
+}
 
 // The barrier of a thread with no active nursery (see GC_WRITE_BARRIER): only
 // the values being overwritten may need to escape, and only if they sit on a

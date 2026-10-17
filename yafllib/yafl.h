@@ -1042,6 +1042,49 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
          (field) = (__VA_ARGS__);\
          gc_root_publish((object_t**)&(field), (mask)); } while (false)
 
+// ── The atomic stores ────────────────────────────────────────────────────────
+// A compare-and-swap of one pointer slot, and an exchange built on it: the
+// stores of lock-free runtime code, owing everything a store does. A CAS
+// target is SHARED by definition (another thread writes it, or no CAS would
+// be needed), so the container is not asked, and a heap slot and a static
+// one (a global stub's flag) take the same call. Each attempt owes, BEFORE it
+// (gc_cas_before):
+//   * the overwrite's barrier, as a mutable store's: the deletion shade of
+//     what the slot holds, the hybrid barrier's insertion half, the nursery
+//     escape of the outgoing value, and the publication fence;
+//   * the shade and escape of `expected` itself — the value the CAS replaces
+//     if it lands, which the slot may no longer hold when the barrier reads it;
+//   * the ESCAPE of `desired`, at once: the CAS makes it visible to every
+//     thread the moment it lands, and nothing later (a plain store's pending
+//     slot, a pin's release) judges it in time.
+// All of it before the CAS, never after: a thread whose root scan is done
+// holds up nothing, so preempted between a CAS and its shade it can see the
+// cycle finish marking, and prune the displaced value, in between.
+// AFTER a CAS that lands in a static slot: publish, as GC_PUBLISH_IF_STATIC_IN
+// does for a store — a static slot is a declared root, read once at cycle open.
+//
+// An exchange is a CAS loop, never atomic_exchange: an exchange learns the
+// value it displaced only after displacing it, too late to shade it first.
+// On failure GC_CAS leaves the slot's current value in *expected, as
+// atomic_compare_exchange does; on success *expected is the displaced value.
+EXTERN void gc_cas_before(object_t **slot, object_t *expected, object_t *desired);
+INLINE bool gc_cas(_Atomic(object_t*) *slot, object_t **expected, object_t *desired) {
+    gc_cas_before((object_t**)slot, *expected, desired);
+    if (!atomic_compare_exchange_strong(slot, expected, desired))
+        return false;
+    if (UNLIKELY(!gc_in_heap((void*)slot))) gc_store_static_after((object_t**)slot, 1);
+    return true;
+}
+INLINE object_t *gc_exchange(_Atomic(object_t*) *slot, object_t *desired) {
+    object_t *old = atomic_load(slot);
+    while (!gc_cas(slot, &old, desired)) {}
+    return old;
+}
+#define GC_CAS(field, expected_ptr, desired)\
+    gc_cas((_Atomic(object_t*)*)&(field), (object_t**)(expected_ptr), (object_t*)(desired))
+#define GC_EXCHANGE(field, desired)\
+    gc_exchange((_Atomic(object_t*)*)&(field), (object_t*)(desired))
+
 
 EXTERN size_t object_get_size(object_t* ptr);
 // The hottest accessor in the system — 1.96e9 calls per compiler run when
@@ -1338,29 +1381,18 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
 // overwrite does: during a cycle, a chain reachable at the snapshot through a
 // stub not yet scanned would otherwise live on only in the draining thread's
 // locals, which its root scan may already have passed, and be freed mid-drain.
-// The shade comes BEFORE the delete: a thread whose root scan is done holds
-// up nothing, so if it is preempted between deleting and shading, the cycle
-// can finish marking — and prune the value — in between.
+// GC_EXCHANGE pays it, shading before the delete ("The atomic stores").
 //
 // Swap the waiter-chain root with the "init complete" sentinel and
 // return the previous head.  The loop body iterates from there.
 INLINE object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
-    _Atomic(object_t*)* flag = (_Atomic(object_t*)*)flag_field;
-    object_t* head = atomic_load(flag);
-    do {
-        if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(head);
-    } while (!atomic_compare_exchange_weak(flag, &head, (object_t*)1));
-    return head;
+    return GC_EXCHANGE(*(_Atomic(object_t*)*)flag_field, (object_t*)1);
 }
 
 // Read head->next and clear it; returns the next chain link (NULL when
 // this is the last waiter). Only the drain writes a published waiter's next.
 INLINE object_t* lazy_chain_step(object_t* head) {
-    _Atomic(struct task_s*)* p = &((task_t*)head)->next;
-    task_t* next = (task_t*)atomic_load(p);
-    if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2((object_t*)next);
-    atomic_store(p, NULL);
-    return (object_t*)next;
+    return GC_EXCHANGE(((task_t*)head)->next, NULL);
 }
 
 // Atomically append `waiter` to the chain at *flag_field.  Returns:

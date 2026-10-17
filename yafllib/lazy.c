@@ -21,39 +21,29 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field) {
 
 
 EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
-    _Atomic(task_t*)* flag = (_Atomic(task_t*)*)flag_field;
+    _Atomic(object_t*)* flag = (_Atomic(object_t*)*)flag_field;
     task_t* waiter = (task_t*)waiter_obj;
-    // Thread-local nursery: the CAS below publishes `waiter` into a shared
-    // chain with no write barrier, so it ESCAPES here, before it is visible.
-    if (gc_local_live) gc_local_escape(waiter_obj);
-    task_t* expected = atomic_load(flag);
+    object_t* expected = atomic_load(flag);
     do {
-        if (expected == (task_t*)1) return 2;
-        // Deletion barrier (same hazard as _queue_try_pop): the CAS moves the
-        // displaced head's only edge from the stub's flag — which this cycle
-        // may already have scanned — onto `waiter->next`, and `waiter` may
-        // already be marked without ever being SCANNED (allocated black, or
-        // just published), so the marker would never find the old head down
-        // that edge, and a parked waiter chained behind this one is collected
-        // while parked. Shade it BEFORE the CAS, not after: a thread whose
-        // root scan is done holds the cycle up for nothing, so preempted
-        // between the two it can see the head pruned before it shades it.
-        if (expected != NULL) GC_MARK_SEEN((object_t*)expected);
-        atomic_store(&waiter->next, expected);
-    } while (!atomic_compare_exchange_weak(flag, &expected, waiter));
+        if (expected == (object_t*)1) return 2;
+        // `waiter` is not yet visible, so its link is a plain store; what it
+        // links, the head the CAS displaces, GC_CAS shades before the CAS:
+        // the displaced head's only edge moves from the stub's flag — which
+        // this cycle may already have scanned — onto `waiter->next`, and
+        // `waiter` may already be marked without ever being SCANNED
+        // (allocated black, or just published). GC_CAS also escapes `waiter`
+        // from this thread's nursery before it is visible, and publishes a
+        // GLOBAL stub's flag, a declared root, once the CAS lands: when this
+        // thread wins the init race the caller drops `waiter` at once, leaving
+        // the flag its only reference (test_gc_lazy_step).
+        atomic_store(&waiter->next, (task_t*)expected);
+    } while (!GC_CAS(*flag, &expected, waiter_obj));
 #ifdef YAFL_LAZY_RACE_PROBE
     // Test-only hook (tests/test_lazy_runner.c), compiled into that target
     // alone: called once `waiter` is published, where the runner already in
     // flight can drain the chain before this caller decides whether it runs.
     { extern void lazy_test_race_probe(object_t*); lazy_test_race_probe(flag_field); }
 #endif
-    // A GLOBAL stub's flag is a declared root, and the CAS was a root store:
-    // publish it (see gc_root_publish). When this thread wins the init race
-    // the caller drops `waiter` at once, leaving the flag its only reference;
-    // a cycle whose snapshot read the flag before the CAS would otherwise
-    // never mark it (test_gc_lazy_step). A heap stub's flag needs nothing: the
-    // stub is scanned after every thread's take, and finds `waiter` there.
-    if (!gc_in_heap(flag_field)) gc_root_publish((object_t**)flag, 1);
     // The runner is whoever found the chain EMPTY — `expected`, the head the
     // CAS replaced. Not a re-read of waiter->next: once the CAS publishes
     // `waiter`, the runner already in flight can finish and drain the chain,
