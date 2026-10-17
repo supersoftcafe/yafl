@@ -872,6 +872,23 @@ INLINE bool gc_store_is_private(object_t *obj) {
 #else
 #  define GC_PUBLISH_FENCE() atomic_thread_fence(memory_order_release)
 #endif
+// The reader's half: a load-load fence. A load after it is satisfied after
+// every load before it. A reader that follows a POINTER it loaded needs
+// nothing (the address dependency orders the two on both architectures),
+// which is why the generated code's field reads take no fence: what the
+// sharing contract lets another thread publish without a lock is reached only
+// through the pointer to it. The exception is a runtime protocol that tests a
+// FLAG and then reads data unrelated to it by address (lazy_global_init_complete):
+// aarch64 may satisfy the data load first, a branch on the flag notwithstanding.
+// `dmb ishld` there; x86 (TSO) keeps loads in order, so only the compiler is
+// fenced.
+#if defined(__aarch64__)
+#  define GC_ACQUIRE_FENCE() __asm__ __volatile__("dmb ishld" ::: "memory")
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64)
+#  define GC_ACQUIRE_FENCE() atomic_signal_fence(memory_order_acquire)
+#else
+#  define GC_ACQUIRE_FENCE() atomic_thread_fence(memory_order_acquire)
+#endif
 // BEFORE a store into `obj`, unless `obj` is private: the container may be one
 // another thread reads.
 #define GC_PUBLISH_FENCE_IF_SHARED(obj)\
@@ -1349,7 +1366,15 @@ EXTERN object_t* future_post(fun_t cb);
 // compiler's `Invoke` declares the call's return type as `Int(8)`, so
 // the C signature uses `int32_t` (not `_Bool`) to make the high-bit
 // state explicit and platform-independent.
-INLINE int32_t lazy_global_init_complete(object_t* flag_ptr) {return 1==(intptr_t)flag_ptr;}
+// On 1 the caller reads the stub's value, stored before the sentinel's CAS
+// and unrelated to the flag by address: the read must not be satisfied
+// before the flag's (GC_ACQUIRE_FENCE). The fence is here, not in the
+// generated code, so both compilers emit the call unchanged.
+INLINE int32_t lazy_global_init_complete(object_t* flag_ptr) {
+    if (1 != (intptr_t)flag_ptr) return 0;
+    GC_ACQUIRE_FENCE();
+    return 1;
+}
 
 
 // Shared waiter-chain protocol: lazy_thunk_t is the layout prefix every
