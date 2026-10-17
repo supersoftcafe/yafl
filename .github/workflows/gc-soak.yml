@@ -24,7 +24,10 @@ on:
       - .github/workflows/gc-soak.yml
       - yafllib/**
       - compiler/codegen/**
+      - compiler/lowering/**
       - bootstrap/ir/**
+      - bootstrap/lower/**
+      - bootstrap/codegen/**
   workflow_dispatch:
     inputs:
       minutes:

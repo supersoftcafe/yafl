@@ -963,7 +963,8 @@ EXTERN void gc_local_escape(object_t *value);
 // PRIVATE: an immutable object on a page of this thread's current nursery that
 // has not escaped. Nothing outside the thread can reach it and the nursery
 // traces it, so a store into it owes nothing — the common case, construction
-// or a builder still in its nursery, never leaves the caller. Skipping
+// or a builder still in its nursery, returns from gc_store_before at once (the
+// store macros call out for their barriers: see GC_WRITE_BARRIER_IN). Skipping
 // gc_local_note_slot also defers its flush of the previous pending store, to
 // the next barrier call or nursery collection (both flush first).
 // `obj` is the container itself, so its index on its page is direct.
