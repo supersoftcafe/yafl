@@ -106,7 +106,7 @@ static int _hunt_scan_pins(object_t* target) {
                 hits++;
             }
         }
-        for (int k = 0; k < 8; k++) {
+        for (int k = 0; k < ARCH_CALLEE_REGS; k++) {
             if ((object_t*)t->saved_callee_regs[k] == target) {
                 fprintf(stderr, "[HUNT]     PIN callee-reg thread=%p slot=%d\n", (void*)t, k);
                 hits++;

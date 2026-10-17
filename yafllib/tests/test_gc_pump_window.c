@@ -23,7 +23,6 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
-#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -123,7 +122,7 @@ static void __attribute__((noinline)) build_below(void) {
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[2048];
     for (int i = 0; i < 2048; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[2047]) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[2047]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 static void _entrypoint(object_t* self, fun_t cont) {

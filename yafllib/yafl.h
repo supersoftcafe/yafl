@@ -40,7 +40,150 @@
 #include <stdatomic.h>
 #endif
 
-#define STACK_GROWS_DOWN    1
+/**********************************************************
+ *  Target specifics: every place the runtime differs between targets, and
+ *  only that — nothing outside this section tests __x86_64__ or __aarch64__
+ *  or holds target asm. What the hardware needs is here; when the runtime
+ *  needs it is said where it is used (GC_PUBLISH_FENCE and GC_ACQUIRE_FENCE
+ *  below, the register capture in object.c). In this header, not one of its
+ *  own, so it inlines everywhere and ships inside system.yl with yafl.h.
+ **********************************************************/
+//
+// Supported: x86-64 and aarch64. Elsewhere a portable fallback is used where
+// one exists (C11 fences, clock_gettime), and the build fails where none does
+// (the register capture).
+#include <time.h>
+
+// ── Stack ────────────────────────────────────────────────────────────────────
+// Both targets' ABIs grow the stack down.
+#define STACK_GROWS_DOWN 1
+
+// ── Stack pointer ────────────────────────────────────────────────────────────
+// ARCH_READ_SP(p) sets p to the current stack pointer: the low end of a
+// conservative stack scan. Expand it in the capturing function itself.
+// Everything that function's prologue saved (callee-saved registers it then
+// reuses, e.g. rbx borrowed for a thread-local base) lies above it, whatever
+// the frame layout; the address of a local promises no such thing.
+#if defined(__x86_64__)
+#  define ARCH_READ_SP(p) __asm__ volatile("mov %%rsp, %0" : "=r"(p))
+#elif defined(__aarch64__)
+#  define ARCH_READ_SP(p) __asm__ volatile("mov %0, sp" : "=r"(p))
+#else
+#  error "yafllib: no stack-pointer read for this target (yafl.h, Target specifics)"
+#endif
+
+// ── Cache line ───────────────────────────────────────────────────────────────
+// The unit of false sharing, for alignas on hot shared counters. Apple's
+// aarch64 cores have 128-byte lines; Linux aarch64 parts and x86 have 64.
+#if defined(__aarch64__) && defined(__APPLE__)
+#  define CACHE_LINE_SIZE 128
+#else
+#  define CACHE_LINE_SIZE 64
+#endif
+
+// ── Spin-wait hint ───────────────────────────────────────────────────────────
+// For a waiter on a busy lock: lets an SMT sibling (often the holder) run.
+static inline void cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ volatile("yield" ::: "memory");
+#else
+    __asm__ volatile("" ::: "memory");
+#endif
+}
+
+// ── Fences ───────────────────────────────────────────────────────────────────
+// Store-store: every store before it is visible to other threads before any
+// store after it. Load-load: every load after it is satisfied after every
+// load before it. x86 (TSO) keeps both orders itself, so there only the
+// compiler is fenced; aarch64 needs the instruction.
+#if defined(__aarch64__)
+#  define ARCH_STORE_STORE_FENCE() __asm__ __volatile__("dmb ishst" ::: "memory")
+#  define ARCH_LOAD_LOAD_FENCE()   __asm__ __volatile__("dmb ishld" ::: "memory")
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64)
+#  define ARCH_STORE_STORE_FENCE() atomic_signal_fence(memory_order_release)
+#  define ARCH_LOAD_LOAD_FENCE()   atomic_signal_fence(memory_order_acquire)
+#else
+#  define ARCH_STORE_STORE_FENCE() atomic_thread_fence(memory_order_release)
+#  define ARCH_LOAD_LOAD_FENCE()   atomic_thread_fence(memory_order_acquire)
+#endif
+
+// ── Cycle counter ────────────────────────────────────────────────────────────
+// A cheap monotonic tick. Only differences are meaningful, and the unit is
+// the target's own (TSC cycles, the generic timer's ticks, or nanoseconds).
+static inline uint64_t arch_ticks(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+#elif defined(__aarch64__)
+    uint64_t t;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+    return t;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+#endif
+}
+
+// ── Callee-saved registers ───────────────────────────────────────────────────
+// The conservative scan must see every pointer a thread holds. Caller-saved
+// registers are spilled to the (scanned) stack by the ABI before any call
+// into the runtime; the callee-saved ones may hold a pointer that is nowhere
+// else, so the capture stores them RAW. setjmp is no substitute: glibc
+// pointer-mangles some of what it saves (rbp on x86-64, among others).
+//
+// ARCH_SAVE_CALLEE_REGS(r) stores them into r[0 .. ARCH_CALLEE_REGS), zero
+// filled; expand it in the capturing (non-inlined) function itself, so the
+// registers are that function's caller's.
+#define ARCH_CALLEE_REGS 12
+#if defined(__x86_64__)
+#  define ARCH_SAVE_CALLEE_REGS(r)\
+    do { void **r_ = (r);\
+         memset(r_, 0, ARCH_CALLEE_REGS * sizeof(void*));\
+         __asm__ volatile(\
+             "mov %%rbx,  0(%0)\n\t"\
+             "mov %%rbp,  8(%0)\n\t"\
+             "mov %%r12, 16(%0)\n\t"\
+             "mov %%r13, 24(%0)\n\t"\
+             "mov %%r14, 32(%0)\n\t"\
+             "mov %%r15, 40(%0)\n\t"\
+             :: "r"(r_) : "memory"); } while (0)
+#elif defined(__aarch64__)
+// x19-x28, and x29 (the frame pointer, a general register when frame
+// pointers are omitted). Stored from asm: reading an unassigned
+// `register ... asm("x19")` variable is not a defined way to get a
+// register's value (clang rejects it under -Werror=uninitialized).
+#  define ARCH_SAVE_CALLEE_REGS(r)\
+    do { void **r_ = (r);\
+         memset(r_, 0, ARCH_CALLEE_REGS * sizeof(void*));\
+         __asm__ volatile(\
+             "stp x19, x20, [%0]\n\t"\
+             "stp x21, x22, [%0, #16]\n\t"\
+             "stp x23, x24, [%0, #32]\n\t"\
+             "stp x25, x26, [%0, #48]\n\t"\
+             "stp x27, x28, [%0, #64]\n\t"\
+             "str x29,      [%0, #80]\n\t"\
+             :: "r"(r_) : "memory"); } while (0)
+#else
+#  error "yafllib: no callee-saved register capture for this target (yafl.h, Target specifics)"
+#endif
+
+// For tests that scrub a pointer from the registers: an empty asm with this
+// clobber list makes the compiler treat every callee-saved register as
+// overwritten. The frame and stack pointers are never listed.
+#if defined(__x86_64__)
+#  define ARCH_CALLEE_SAVED_CLOBBERS "memory", "rbx", "r12", "r13", "r14", "r15"
+#elif defined(__aarch64__)
+#  define ARCH_CALLEE_SAVED_CLOBBERS "memory", "x19", "x20", "x21", "x22", "x23", \
+    "x24", "x25", "x26", "x27", "x28"
+#else
+#  define ARCH_CALLEE_SAVED_CLOBBERS "memory"
+#endif
+// ── End of target specifics ──────────────────────────────────────────────────
+
 enum { GC_PAGE_SIZE = 16384 };
 
 
@@ -113,19 +256,6 @@ enum { GC_PAGE_SIZE = 16384 };
 #define ALIGNED     __attribute__((aligned(GC_ALLOC_GRANULE)))
 
 
-// Spin-wait hint for a waiter on a busy lock: lets an SMT sibling (often the
-// holder) run. Targets without an instruction for it get a compiler barrier.
-static inline void cpu_relax(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__) || defined(__arm__)
-    __asm__ volatile("yield" ::: "memory");
-#else
-    __asm__ volatile("" ::: "memory");
-#endif
-}
-
-
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #  define IS_LITTLE_ENDIAN 1
 #elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -136,14 +266,6 @@ static inline void cpu_relax(void) {
 #  error "Cannot determine endianness"
 #endif
 
-
-#if defined(__aarch64__) && defined(__APPLE__)
-#  define CACHE_LINE_SIZE 128
-#elif defined(__x86_64__) || defined(_M_X64)
-#  define CACHE_LINE_SIZE 64
-#else
-#  define CACHE_LINE_SIZE 64
-#endif
 
 enum log_level {
     ULTRA, TRACE, DEBUG, INFO, WARN, ERROR, FATAL
@@ -862,16 +984,10 @@ INLINE bool gc_store_is_private(object_t *obj) {
 }
 
 // ── Publication order ────────────────────────────────────────────────────────
-// A store-store fence: everything this thread wrote before it is visible to
-// other threads before anything it writes after it. A full `dmb ishst` on
-// aarch64; x86 (TSO) keeps stores in order, so only the compiler is fenced.
-#if defined(__aarch64__)
-#  define GC_PUBLISH_FENCE() __asm__ __volatile__("dmb ishst" ::: "memory")
-#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64)
-#  define GC_PUBLISH_FENCE() atomic_signal_fence(memory_order_release)
-#else
-#  define GC_PUBLISH_FENCE() atomic_thread_fence(memory_order_release)
-#endif
+// The writer's half: a store-store fence ("Target specifics"). Everything this thread
+// wrote before it is visible to other threads before anything it writes after
+// it: an object's initialisation before the pointer that publishes it.
+#define GC_PUBLISH_FENCE() ARCH_STORE_STORE_FENCE()
 // The reader's half: a load-load fence. A load after it is satisfied after
 // every load before it. A reader that follows a POINTER it loaded needs
 // nothing (the address dependency orders the two on both architectures),
@@ -879,16 +995,9 @@ INLINE bool gc_store_is_private(object_t *obj) {
 // sharing contract lets another thread publish without a lock is reached only
 // through the pointer to it. The exception is a runtime protocol that tests a
 // FLAG and then reads data unrelated to it by address (lazy_global_init_complete):
-// aarch64 may satisfy the data load first, a branch on the flag notwithstanding.
-// `dmb ishld` there; x86 (TSO) keeps loads in order, so only the compiler is
-// fenced.
-#if defined(__aarch64__)
-#  define GC_ACQUIRE_FENCE() __asm__ __volatile__("dmb ishld" ::: "memory")
-#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64)
-#  define GC_ACQUIRE_FENCE() atomic_signal_fence(memory_order_acquire)
-#else
-#  define GC_ACQUIRE_FENCE() atomic_thread_fence(memory_order_acquire)
-#endif
+// aarch64 may satisfy the data load first, a branch on the flag notwithstanding
+// (x86 may not).
+#define GC_ACQUIRE_FENCE() ARCH_LOAD_LOAD_FENCE()
 // BEFORE a store into `obj`, unless `obj` is private: the container may be one
 // another thread reads.
 #define GC_PUBLISH_FENCE_IF_SHARED(obj)\

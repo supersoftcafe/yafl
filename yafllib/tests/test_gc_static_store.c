@@ -25,7 +25,6 @@
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode.
 
 #include "../yafl.h"
-#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -96,7 +95,7 @@ static void __attribute__((noinline)) store_half(void) {
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 static int V_state(void) { return gc_debug_object_state((object_t*)g_V); }

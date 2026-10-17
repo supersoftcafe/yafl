@@ -1284,41 +1284,18 @@ static bool gc_change_thread_state(struct gc_thread_info *thread_info, enum thre
 }
 
 static NOINLINE void gc_update_stack_address_and_registers() {
-    object_t* some_random_var = NULL;
-#ifdef STACK_GROWS_DOWN
-    gc_thread_info.stack_lower_ptr = &some_random_var;
-#else
-    thread->stack_upper_ptr = &some_random_var;
-#endif
+    // The scan starts at the stack pointer, so the callee-saved registers this
+    // function's own prologue spilled are inside it: the asm below runs after
+    // the compiler may already have reused one of them (clang borrows rbx for
+    // the thread-local base on x86), whose slot then holds that, and the
+    // caller's value survives only in the spill.
+    void *sp;
+    ARCH_READ_SP(sp);
+    gc_thread_info.stack_lower_ptr = (object_t**)sp;
     setjmp(gc_thread_info.saved_registers);
     // setjmp pointer-mangles rbp (see gc_internal.h): dump the callee-saved
     // set raw so an object referenced only from a register still pins.
-#if defined(__x86_64__)
-    void** r = gc_thread_info.saved_callee_regs;
-    __asm__ volatile(
-        "mov %%rbx,  0(%0)\n\t"
-        "mov %%rbp,  8(%0)\n\t"
-        "mov %%r12, 16(%0)\n\t"
-        "mov %%r13, 24(%0)\n\t"
-        "mov %%r14, 32(%0)\n\t"
-        "mov %%r15, 40(%0)\n\t"
-        :: "r"(r) : "memory");
-    r[6] = r[7] = NULL;
-#elif defined(__aarch64__)
-    void** r = gc_thread_info.saved_callee_regs;
-    // Stored from asm, as on x86: reading an unassigned `register ... asm("x19")`
-    // variable is not a defined way to get a register's value (clang rejects
-    // it under -Werror=uninitialized; gcc happens to read the register).
-    __asm__ volatile(
-        "stp x19, x20, [%0]\n\t"
-        "stp x21, x22, [%0, #16]\n\t"
-        "stp x23, x24, [%0, #32]\n\t"
-        "stp x25, x26, [%0, #48]\n\t"
-        :: "r"(r) : "memory");
-    // x27/x28/x29 arrive via the setjmp buffer (unmangled on aarch64 glibc).
-#else
-    memset(gc_thread_info.saved_callee_regs, 0, sizeof gc_thread_info.saved_callee_regs);
-#endif
+    ARCH_SAVE_CALLEE_REGS(gc_thread_info.saved_callee_regs);
 }
 
 // Start of potentially thread pausing IO
@@ -1949,7 +1926,7 @@ static NOINLINE void gc_local_collect(void) {
     gc_update_stack_address_and_registers();
     gc_local_mark_range(t->stack_lower_ptr, t->stack_upper_ptr);
     gc_local_mark_range((object_t**)&t->saved_registers[0], (object_t**)&t->saved_registers[1]);
-    gc_local_mark_range((object_t**)&t->saved_callee_regs[0], (object_t**)&t->saved_callee_regs[8]);
+    gc_local_mark_range((object_t**)&t->saved_callee_regs[0], (object_t**)&t->saved_callee_regs[ARCH_CALLEE_REGS]);
     // Roots 3: declared roots, thread and global.
     t->thread_roots_declaration_func(t->thread_roots_context, gc_local_mark_slot);
     declare_roots_yafl(gc_local_mark_slot);
@@ -2532,7 +2509,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         gc_fsa_scan_roots$scan_range(thread->stack_lower_ptr, thread->stack_upper_ptr);
         gc_fsa_scan_roots$scan_range((object_t**)&thread->saved_registers[0], (object_t**)&thread->saved_registers[1]);
         gc_fsa_scan_roots$scan_range((object_t**)&thread->saved_callee_regs[0],
-                                     (object_t**)&thread->saved_callee_regs[8]);
+                                     (object_t**)&thread->saved_callee_regs[ARCH_CALLEE_REGS]);
         // Thread library has some stuff
         thread->thread_roots_declaration_func(thread->thread_roots_context, atomic_gc_object_seen_by_field);
         // Release the thread state

@@ -15,7 +15,6 @@
 // stays a few MiB of filler.
 
 #include "../yafl.h"
-#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -101,7 +100,7 @@ static void __attribute__((noinline)) create_and_root(void) {
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 // Report K from its own frame: at -O0 the printf spills K's address to a stack

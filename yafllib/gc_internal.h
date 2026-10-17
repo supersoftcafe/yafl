@@ -71,9 +71,9 @@ struct gc_thread_info {
     // callee-saved register — an object referenced ONLY from rbp at a safe
     // point scans as garbage and gets swept live (test_large_objects SEGV,
     // test_gc_pressure DANGLE). The callee-saved set is dumped RAW here as
-    // well; caller-saved registers are already spilled to the scanned stack
-    // by the C ABI before any call into the runtime.
-    void      *saved_callee_regs[8];
+    // well (ARCH_SAVE_CALLEE_REGS, yafl.h "Target specifics"); caller-saved registers are already
+    // spilled to the scanned stack by the C ABI before any call into the runtime.
+    void      *saved_callee_regs[ARCH_CALLEE_REGS];
 
     // ── thread-local nursery (prototype, YAFL_LOCAL_GC; see gc_local_collect) ──
     uint32_t local_epoch;          // stamp of this thread's nursery pages; 0 = off
@@ -203,21 +203,7 @@ extern struct timespec   gc_stats_t0;
 
 // A cheap monotonic tick for the stats-gated profile laps: only differences
 // are used, so each target reads its own counter.
-static inline uint64_t gc_tsc(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    unsigned lo, hi;
-    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-#elif defined(__aarch64__)
-    uint64_t t;
-    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
-    return t;
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
-#endif
-}
+static inline uint64_t gc_tsc(void) { return arch_ticks(); }
 #define GC_STAT_BUMP(c)\
     do { if (UNLIKELY(gc_stats_enabled))\
              atomic_fetch_add_explicit(&(c), 1, memory_order_relaxed);\

@@ -26,7 +26,6 @@
 // sparse (the compactor leaves them alone and addresses stay stable).
 
 #include "../yafl.h"
-#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -110,7 +109,7 @@ void gc_test_race_probe(gc_page_t* page) {
     // registers for the conservative scan to find — a leaked copy would
     // root C and mask the very reclaim the test exists to detect.
     owner = NULL;
-    __asm__ volatile("" :: "r"(owner) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(owner) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 static void run_one_cycle(void) {
@@ -142,7 +141,7 @@ static void __attribute__((noinline)) create_and_root(void) {
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 static void __attribute__((noinline)) churn_filler(void) {
