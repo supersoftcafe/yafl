@@ -2153,7 +2153,7 @@ EXPORT void gc_local_report(FILE *out) {
             (unsigned long long)gc_local_escapes);
 }
 
-static void atomic_gc_object_mark_as_seen$body(object_t *object);
+static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot);
 // A mutator's mark is two steps: set the object's atomic_seen bit, then, if
 // its page was already processed this epoch, push the page on the reprocess
 // ring so the object gets scanned. A marker that meets the object between
@@ -2164,41 +2164,48 @@ static void atomic_gc_object_mark_as_seen$body(object_t *object);
 // under it. So the mutator is counted across both steps, and the tail retires
 // only with no writer in the window and the ring empty. Exact: a marker that
 // saw the bit read it after the increment, and before the retire.
+//
+// Only a mark that may set the bit is counted. An old page, or a bit already
+// set, pushes nothing (the bit's setter, counted, made the decision), and the
+// count is one shared line every barrier would otherwise bounce: so marking
+// can retire under a busy mutator, each object entering the window about
+// once a cycle.
 static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
-    atomic_fetch_add_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
-    atomic_gc_object_mark_as_seen$body(object);
-    atomic_fetch_sub_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
-}
-
-static void atomic_gc_object_mark_as_seen$body(object_t *object) {
     gc_page_t* page; ptrdiff_t slot;
     object_get_page_and_slot(object, &page, &slot);
     assert(bitmap_test(&page->head.objects, slot));
     if (page->head.old) return;   // old generation: implicitly live in minor cycles
-    bool is_seen = bitmap_test(&page->head.scanner.seen, slot);
-    if (!is_seen) {
-        if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot)
+    if (bitmap_test(&page->head.scanner.seen, slot)) return;
+    mask_bits_t bit = ((mask_bits_t)1) << (slot % GC_MASK_SIZE);
+    if (atomic_load_explicit((_Atomic(mask_bits_t)*)&page->head.scanner.atomic_seen.a[slot / GC_MASK_SIZE],
+                             memory_order_relaxed) & bit) return;
+    atomic_fetch_add_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
+    atomic_gc_object_mark_as_seen$push(page, slot);
+    atomic_fetch_sub_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
+}
 
-            // If it's not "processsed" we don't need to do anything
-            // If it's not in the scanning list at all, definately don't do anything
+static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) {
+    if (!atomic_bitmap_fetch_set(&page->head.scanner.atomic_seen, slot)
 
-            // New pages have 'processsed_by_epoch==0', as do pages relocated to the to_scan list
-            // After a bulk move, the epoch is incremented, so it won't match historicaly processed pages anyway
+        // If it's not "processsed" we don't need to do anything
+        // If it's not in the scanning list at all, definately don't do anything
 
-            && page->head.scanner.processed_by_epoch == epoch) {
+        // New pages have 'processsed_by_epoch==0', as do pages relocated to the to_scan list
+        // After a bulk move, the epoch is incremented, so it won't match historicaly processed pages anyway
 
-            for (size_t scan_index = 0; scan_index < sizeof(reprocess_page_list) / sizeof(gc_page_t*); ++scan_index)
-                if (reprocess_page_list[scan_index] == page)
-                    return;
+        && page->head.scanner.processed_by_epoch == epoch) {
 
-            size_t tail = reprocess_page_tail;
-            do {if (tail - reprocess_page_head >= sizeof(reprocess_page_list) / sizeof(gc_page_t*)) {
-                    atomic_store(&reprocess_overflow_flag, true);
-                    return;
-                }
-            } while (!atomic_compare_exchange_strong(&reprocess_page_tail, &tail, tail+1));
-            atomic_store(&reprocess_page_list[tail % REPROCESS_PAGE_COUNT], page);
-        }
+        for (size_t scan_index = 0; scan_index < sizeof(reprocess_page_list) / sizeof(gc_page_t*); ++scan_index)
+            if (reprocess_page_list[scan_index] == page)
+                return;
+
+        size_t tail = reprocess_page_tail;
+        do {if (tail - reprocess_page_head >= sizeof(reprocess_page_list) / sizeof(gc_page_t*)) {
+                atomic_store(&reprocess_overflow_flag, true);
+                return;
+            }
+        } while (!atomic_compare_exchange_strong(&reprocess_page_tail, &tail, tail+1));
+        atomic_store(&reprocess_page_list[tail % REPROCESS_PAGE_COUNT], page);
     }
 }
 
@@ -3223,15 +3230,24 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
         gc_pool_unlock();
         return;   // stage stays MARK_SWEEP for the re-scan
     }
+#ifdef YAFL_GC_OVERFLOW_PROBE
+    // Test-only hook (tests/test_gc_overflow_window.c): the flag is read and
+    // the final check not yet made, where a mutator's push can overflow.
+    { extern void gc_test_overflow_probe(void); gc_test_overflow_probe(); }
+#endif
 
     // All done — verify emptiness and retire the stage in ONE pool-locked
     // breath, so no claim can slip between the verdict and the store. (A
     // mutator barrier that loaded `requested==true` before the store below
     // can still land one late ring entry; it is dropped at the next cycle's
     // ring reset and the object's liveness is covered by prune's residue
-    // merge. Pre-existing window, unchanged shape.)
+    // merge. Pre-existing window, unchanged shape.) The overflow flag is read
+    // again, after the writer count: a push dropped since the read above, its
+    // ring entries drained since, leaves only the flag behind. Its writer set
+    // the flag inside the window, so with the count read as zero the flag is
+    // seen; the next attempt answers it with the re-scan.
     gc_pool_lock();
-    if (!gc_mark_work_outstanding()) {
+    if (!gc_mark_work_outstanding() && !atomic_load(&reprocess_overflow_flag)) {
         gc_write_barrier_requested = false;
         atomic_store_explicit(&stage, GC_STAGE_PRUNE, memory_order_release);
     }
@@ -3246,9 +3262,21 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     }
 #endif
 }
-#ifdef YAFL_GC_PUMP_PROBE
-// tests/test_gc_pump_window.c: a mutator's mark, a second executor's tail,
-// and the state the probe waits for, by hand.
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE)
+// tests/test_gc_pump_window.c, tests/test_gc_overflow_window.c: a mutator's
+// mark, a second executor's tail, other executors' marking, and the state the
+// probes wait for, by hand.
+void gc_test_drain_marking(void);
+void gc_test_drain_marking(void) {   // pump and scan until nothing is outstanding
+    for (;;) {
+        gc_fsa_mark_sweep$pump_ring();
+        while (!gc_fsa_mark_sweep_body()) {}
+        gc_pool_lock();
+        bool busy = gc_mark_work_outstanding();
+        gc_pool_unlock();
+        if (!busy) return;
+    }
+}
 void gc_test_mutator_mark(object_t *object);
 void gc_test_mutator_mark(object_t *object) { atomic_gc_object_mark_as_seen(object); }
 void gc_test_mark_tail(void);

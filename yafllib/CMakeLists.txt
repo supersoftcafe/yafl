@@ -242,15 +242,15 @@ target_compile_definitions(test_gc_late_pin_race PRIVATE YAFL_GC_RACE_PROBE=1)
 # that window.
 add_yafl_test(test_lazy_runner)
 target_compile_definitions(test_lazy_runner PRIVATE YAFL_LAZY_RACE_PROBE=1)
-# test_gc_late_requeue: stepped. A rescan request that arrives after marking
-# has retired must not take its page out of the cycle's prune. Builds its own
-# object.c with YAFL_GC_RETIRE_PROBE, which hooks the moment marking retires.
 # test_gc_static_store: stepped. A store into a static object (a global's lazy
 # stub) whose barrier ran before the cycle opened is seen only because the
 # object store macros publish after the store when the container is outside
 # the heap.
 add_yafl_test(test_gc_static_store)
 set_tests_properties(test_gc_static_store PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_late_requeue: stepped. A rescan request that arrives after marking
+# has retired must not take its page out of the cycle's prune. Builds its own
+# object.c with YAFL_GC_RETIRE_PROBE, which hooks the moment marking retires.
 add_yafl_test(test_gc_late_requeue)
 target_compile_definitions(test_gc_late_requeue PRIVATE YAFL_GC_RETIRE_PROBE=1)
 set_tests_properties(test_gc_late_requeue PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
@@ -260,4 +260,10 @@ set_tests_properties(test_gc_late_requeue PROPERTIES ENVIRONMENT "YAFL_GC_POISON
 add_yafl_test(test_gc_pump_window)
 target_compile_definitions(test_gc_pump_window PRIVATE YAFL_GC_PUMP_PROBE=1)
 set_tests_properties(test_gc_pump_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_overflow_window: stepped. A mark the full reprocess ring drops after
+# the tail has read the overflow flag must keep marking from retiring. Builds
+# its own object.c with YAFL_GC_OVERFLOW_PROBE, which hooks that window.
+add_yafl_test(test_gc_overflow_window)
+target_compile_definitions(test_gc_overflow_window PRIVATE YAFL_GC_OVERFLOW_PROBE=1)
+set_tests_properties(test_gc_overflow_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 
