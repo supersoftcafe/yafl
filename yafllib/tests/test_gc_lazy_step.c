@@ -15,6 +15,11 @@
 //
 // Unpublished, W is reclaimed while the flag still points at it, and the
 // drain later walks a freed task. Same shape as test_gc_publish_step.
+//
+// Run twice, on two stubs. Enqueued during SCAN_ROOTS, before this thread's
+// own scan, the hybrid barrier's insertion half also shades W (GC_CAS runs the
+// mutable store's barrier); enqueued at MARK_SWEEP, after the scan, only the
+// publish does — that case fails without it.
 
 #include "../yafl.h"
 #include <stdio.h>
@@ -31,12 +36,13 @@ enum { ST_NOT_STARTED = 0, ST_IDLE = 1, ST_START = 2,
        ST_SCAN_ROOTS = 3, ST_MARK_SWEEP = 4, ST_PRUNE = 5 };
 
 // The global stub's flag field, declared as a root as the compilers declare it.
-static object_t*                _flag[1];
+static object_t*                _flag[2];
 static roots_declaration_func_t _prev;
-static void _decl(void(*declare)(object_t**)) { _prev(declare); declare(&_flag[0]); }
+static void _decl(void(*declare)(object_t**)) { _prev(declare); declare(&_flag[0]); declare(&_flag[1]); }
 
 // W's address, where the collector does not look.
 static volatile uintptr_t g_W;
+static int                g_case;
 static int32_t            g_status;
 
 static fun_t _exit_cont;
@@ -48,7 +54,7 @@ static __attribute__((noinline)) void allocate(void) {
 }
 
 static __attribute__((noinline)) void enqueue(void) {
-    g_status = lazy_thunk_enqueue((object_t*)&_flag[0], (object_t*)g_W);
+    g_status = lazy_thunk_enqueue((object_t*)&_flag[g_case], (object_t*)g_W);
 }
 
 static __attribute__((noinline)) void scrub(void) {
@@ -63,19 +69,17 @@ static void step_to(int target) {
     }
 }
 
-static void _entrypoint(object_t* self, fun_t cont) {
-    (void)self;
-    _exit_cont = cont;
-    gc_debug_manual_mode = true;
-    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector to exist
+// One cycle: W allocated before it opens, enqueued at `stage`, then dropped.
+static int one_case(int which, int stage, const char* name) {
+    g_case = which;
     step_to(ST_IDLE);
 
     // (1) Before the cycle opens.
     allocate();
     scrub();
 
-    // (2) Open the cycle: the snapshot reads _flag[0] while it is NULL.
-    step_to(ST_SCAN_ROOTS);
+    // (2) Open the cycle: the snapshot reads the flag while it is NULL.
+    step_to(stage);
 
     // (3) Enqueue as the first waiter (this thread would now run the thunk),
     // then drop W.
@@ -86,19 +90,30 @@ static void _entrypoint(object_t* self, fun_t cont) {
         abort();
     }
 
-    // (4) The take, marking and prune.
-    step_to(ST_MARK_SWEEP);
+    // (4) The rest of the cycle.
+    if (stage < ST_MARK_SWEEP) step_to(ST_MARK_SWEEP);
     step_to(ST_PRUNE);
     step_to(ST_IDLE);
 
     int st = gc_debug_object_state((object_t*)g_W);
-    printf("test_gc_lazy_step: after prune W_state=%d (1=live, 2=reclaimed); _flag[0]=%p\n",
-           st, (void*)_flag[0]);
-    if (st == 2)
+    printf("test_gc_lazy_step: enqueued at %s: after prune W_state=%d (1=live, 2=reclaimed, 0=page released); flag=%p\n",
+           name, st, (void*)_flag[which]);
+    if (st != 1)   // 2: its slot freed; 0: its whole page released
         printf("test_gc_lazy_step: *** BUG: an enqueued lazy waiter was reclaimed ***\n");
     fflush(stdout);
+    return st == 1;
+}
 
-    ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, integer_from_int32(st == 1 ? 0 : 7));
+static void _entrypoint(object_t* self, fun_t cont) {
+    (void)self;
+    _exit_cont = cont;
+    gc_debug_manual_mode = true;
+    while (gc_debug_stage() == 0) usleep(1000);   // wait for the collector to exist
+
+    int ok = one_case(0, ST_SCAN_ROOTS, "SCAN_ROOTS");
+    ok &= one_case(1, ST_MARK_SWEEP, "MARK_SWEEP");
+
+    ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, integer_from_int32(ok ? 0 : 7));
 }
 
 int main(void) {

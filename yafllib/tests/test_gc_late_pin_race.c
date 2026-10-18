@@ -11,7 +11,7 @@
 // The window is a few instructions inside gc_fsa_prune_body, so this test
 // target compiles its own object.c with YAFL_GC_RACE_PROBE, which inserts a
 // hook exactly between the refs walk and the old-claim. The hook (below)
-// performs a late write — pin, note, store a rooted-until-now YOUNG child
+// performs a late write — pin (which notes it), store a rooted-until-now YOUNG child
 // into the aging parent's slot, unpin — inside the window, deterministically.
 //
 //   Without the handshake: the note reads `old` == false and sets nothing,
@@ -26,7 +26,6 @@
 // sparse (the compactor leaves them alone and addresses stay stable).
 
 #include "../yafl.h"
-#include "callee_saved.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,8 +96,7 @@ void gc_test_race_probe(gc_page_t* page) {
     if (!g_armed) return;
     if (((uintptr_t)g_P & ~(uintptr_t)(GC_PAGE_SIZE-1)) != (uintptr_t)page) return;
     g_armed = 0;
-    object_t* owner = object_pin_resolve((object_t*)g_P);
-    gc_note_late_write(owner);
+    object_t* owner = object_pin_resolve((object_t*)g_P);   // notes the late write
     __atomic_store_n((uintptr_t*)&((struct parent*)owner)->slot, (uintptr_t)g_C,
                      __ATOMIC_RELEASE);
     object_unpin(owner);
@@ -111,7 +109,7 @@ void gc_test_race_probe(gc_page_t* page) {
     // registers for the conservative scan to find — a leaked copy would
     // root C and mask the very reclaim the test exists to detect.
     owner = NULL;
-    __asm__ volatile("" :: "r"(owner) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(owner) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 static void run_one_cycle(void) {
@@ -132,22 +130,18 @@ static void __attribute__((noinline)) create_and_root(void) {
     object_t* p = object_create(&parent_vt);
     ((struct parent*)p)->slot = NULL;
     memset(((struct parent*)p)->pad, 0x5a, sizeof ((struct parent*)p)->pad);
-    gc_root_overwrite(&_slots[0], 1);
-    _slots[0] = p;
-    gc_root_publish(&_slots[0], 1);
+    GC_ROOT_STORE(_slots[0], 1, p);
     g_P = (uintptr_t)p;
     object_t* c = object_create(&leaf_vt);
     memset(((struct leaf*)c)->pad, 0x5a, sizeof ((struct leaf*)c)->pad);
-    gc_root_overwrite(&_slots[1], 1);
-    _slots[1] = c;
-    gc_root_publish(&_slots[1], 1);
+    GC_ROOT_STORE(_slots[1], 1, c);
     g_C = (uintptr_t)c;
 }
 
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
-    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : CALLEE_SAVED_CLOBBERS);
+    __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
 static void __attribute__((noinline)) churn_filler(void) {

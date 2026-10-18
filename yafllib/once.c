@@ -14,11 +14,6 @@ EXPORT object_t* yafl_cas_once(object_t* self, object_t* obj, int32_t slot,
     // young rotation.
     object_t* owner = object_pin_resolve(obj);
 
-    // The page may have aged into the old generation. Say so BEFORE writing:
-    // a cycle that opens between here and the store then already treats the
-    // page as dirty, rather than skipping it and losing the young referent.
-    gc_note_late_write(owner);
-
     // Highest set bit = the LAST pointer field = the last child slot. The
     // slots are declared consecutively, so slot i sits nslots-1-i words below
     // it. Deriving this from the mask rather than from object_size is what
@@ -34,18 +29,15 @@ EXPORT object_t* yafl_cas_once(object_t* self, object_t* obj, int32_t slot,
 
     object_t** field = (object_t**)owner + (hi - (nslots - 1) + slot);
 
-    // Write-once: NULL -> value, never value -> value. The PIN is now the
-    // mutual exclusion, so a plain read and a plain store replace the
+    // Write-once: NULL -> value, never value -> value. The PIN is the mutual
+    // exclusion, so a plain read and an ordinary object store replace the
     // compare-and-swap this needed when any thread could be writing at any
-    // time. The store keeps RELEASE order: it pairs with the reader's acquire
-    // so whoever sees the pointer also sees the node behind it fully built,
-    // and readers deliberately do not take the pin.
+    // time. Readers deliberately do not take the pin; the store macro's
+    // publication fence orders the value's initialisation before the pointer
+    // to it, and they read through the pointer.
     bool ok = (*field == NULL);
-    if (ok) {
-        __atomic_store_n((uintptr_t*)field, (uintptr_t)value, __ATOMIC_RELEASE);
-        if (gc_local_live)
-            gc_local_note_slot(owner, field, 1);
-    }
+    if (ok)
+        GC_STORE_IN(owner, *field, 1, value);
     object_unpin(owner);
     return integer_from_int32_noalloc(ok ? 1 : 0);
 }

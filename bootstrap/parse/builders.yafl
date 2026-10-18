@@ -84,9 +84,14 @@ fun isHole(x: PExpr) => match(x)
   (n: PeName) => n.refName == "_"
   ()          => false
 
+# The name of a pipeline's intermediate: `$pipe@<position hash>`, which no
+# source can spell; blockStart recognises a pipeline's block by it
+# (parser.py's _PIPE_TEMP_PREFIX).
+fun pipeTempPrefix() => "$pipe@"
+
 fun pipePlaceholder(last, stage): PExpr
   let lr = exprLine(stage)
-  let tmp = "$pipe@" + hash6(lr.plFile, lr.plLine, lr.plCol)
+  let tmp = pipeTempPrefix() + hash6(lr.plFile, lr.plLine, lr.plCol)
   let filled = match(stage)
     (c: PeCall) => PeCall(c.function, fillHole(c.parameter, tmp, lr), c.pecLine)
     (other)     => stage
@@ -106,7 +111,7 @@ fun fillHole(param, tmp, lr): PExpr => match(param)
 # from that name — one target binds it directly, several destructure it.
 fun pipeBeta(last, lm: PeLambda)
   let lr = lm.pelLine
-  let tmp = "$pipe@" + hash6(lr.plFile, lr.plLine, lr.plCol)
+  let tmp = pipeTempPrefix() + hash6(lr.plFile, lr.plLine, lr.plCol)
   let ref = PeName(tmp, List(), lr)
   let binder = betaBinder(lm.lamParams, ref, lr)
   let inner = PeBlock(prepend(binder, List()), lm.lamBody, "", lr)
@@ -292,10 +297,13 @@ fun letName(p) => match(p)
   (l: PsLet) => l.lName
   (o: PStmt) => "_"
 
-# The line_ref Python's combinators give a whole expression PARSE: the first
-# token of the expression — which for a call is its callee's start and for a
-# dot/ternary its left/condition start — except a parenthesised tuple, whose
-# own line is already the post-paren position (requires(sym("("), ...)).
+# Where an expression starts, read from its shape: a call at its callee, a
+# dot/ternary at its left/condition, a pipeline's block at the piped value, a
+# match at its subject; anything else at its own position. parser.py's
+# __expression_start is the same rule. (It used to be modelled on the first
+# token Python's combinators keep, which is NOT the same where a bracketed
+# group leads a binary expression — `(a) == b`: the combinators drop the `(`
+# — so Python now uses this rule instead.)
 fun [tail] startLine(x) => match(x)
   (c: PeCall)     => startLine(c.function)
   (d: PeDot)      => startLine(d.base)
@@ -313,7 +321,7 @@ fun [tail] startLine(x) => match(x)
 # see through the block the pipeline built.
 fun blockStart(bk: PeBlock) => match(head(bk.blockStmts))
   (st: PStmt) => match(st)
-    (l: PsLet) => startsWith(l.lName, "$pipe@") ? letStart(l, bk) : bk.pebkLine
+    (l: PsLet) => startsWith(l.lName, pipeTempPrefix()) ? letStart(l, bk) : bk.pebkLine
     (o: PStmt) => bk.pebkLine
   ()          => bk.pebkLine
 

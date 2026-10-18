@@ -46,9 +46,23 @@ def stdlib_files() -> list[Path]:
     return sorted(_STDLIB_ROOT.rglob("*.yafl"), key=stdlib_unit_name)
 
 
+def cpu_scale() -> float:
+    """YAFL_TEST_CPU_SCALE: every TimedTestCase budget is multiplied by this
+    (default 1). The budgets are sized for an x86 development box; a slower
+    machine (a Raspberry Pi needs about 4) sets it rather than having every
+    heavy test's budget raised for everyone."""
+    try:
+        scale = float(os.environ.get("YAFL_TEST_CPU_SCALE", "1"))
+    except ValueError:
+        raise ValueError("YAFL_TEST_CPU_SCALE must be a number") from None
+    if scale <= 0:
+        raise ValueError("YAFL_TEST_CPU_SCALE must be positive")
+    return scale
+
+
 class TimedTestCase(unittest.TestCase):
     """TestCase that fails any individual test exceeding _TIMEOUT seconds of
-    CPU time.
+    CPU time, times cpu_scale().
 
     CPU time (ITIMER_PROF: user + system), NOT wall clock: the guard exists to
     catch infinite loops in the compiler itself, and those burn CPU no matter
@@ -62,10 +76,12 @@ class TimedTestCase(unittest.TestCase):
     _TIMEOUT = 120
 
     def run(self, result=None):
+        budget = self._TIMEOUT * cpu_scale()
         def _handler(signum, frame):
-            raise TimeoutError(f"test exceeded {self._TIMEOUT}s of CPU time")
+            raise TimeoutError(f"test exceeded {budget:g}s of CPU time"
+                               " (scale with YAFL_TEST_CPU_SCALE on a slow machine)")
         old_handler = signal.signal(signal.SIGPROF, _handler)
-        signal.setitimer(signal.ITIMER_PROF, self._TIMEOUT)
+        signal.setitimer(signal.ITIMER_PROF, budget)
         try:
             super().run(result)
         finally:
@@ -421,6 +437,16 @@ _DEFAULT_BOOTSTRAP_BIN = (_Path(__file__).parent.parent.parent
                           / "build" / "ybootstrap")
 
 
+def reference_cache_dir() -> _Path:
+    """Where cached_reference keeps its entries: YAFL_REFERENCE_CACHE when set
+    (full_protocol.py --full points it at a fresh directory per run), else one
+    directory per user under the system temp dir, shared by every checkout."""
+    explicit = os.environ.get("YAFL_REFERENCE_CACHE")
+    if explicit:
+        return _Path(explicit)
+    return _Path(_tf.gettempdir()) / f"yafl-bootstrap-cache-{os.getuid()}"
+
+
 # NO SOURCE-TREE HASHING. Reference outputs are an ARTEFACT, like the
 # bootstrap binary: generated from the current tree, reused until you decide
 # to regenerate them. Hashing the compiler on every call meant any edit —
@@ -429,6 +455,10 @@ _DEFAULT_BOOTSTRAP_BIN = (_Path(__file__).parent.parent.parent
 #
 #     python build_bootstrap.py --refresh-references     (clears the cache)
 #     rm -rf ${TMPDIR:-/tmp}/yafl-bootstrap-cache-$(id -u)
+#
+# Because the cache outlives compiler changes, and is shared across checkouts,
+# a regression run must not trust it: full_protocol.py --full gives each run
+# its own empty cache through YAFL_REFERENCE_CACHE (reference_cache_dir).
 #
 # The key below is the INPUT to the reference — file text, kind, and the
 # PYTHONHASHSEED the Python compiler's determinism depends on. Nothing about
@@ -446,8 +476,8 @@ def cached_reference(kind: str, text: str, compute, extra: str = "") -> str:
     key = hashlib.sha256(
         f"{os.environ.get('PYTHONHASHSEED','')}|{kind}|{extra}|"
         f"{hashlib.sha256(text.encode()).hexdigest()}".encode()).hexdigest()[:24]
-    cache_dir = _Path(_tf.gettempdir()) / f"yafl-bootstrap-cache-{os.getuid()}"
-    cache_dir.mkdir(exist_ok=True)
+    cache_dir = reference_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"ref-{kind}-{key}"
     try:
         return path.read_text()

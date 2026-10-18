@@ -1196,13 +1196,11 @@ fun parseStmt(ps): (v: PStmt|PFail, rest: Ps)
       : parseElse(lr, bump(ps))
   ret parseAction(lr, ps)
 
-# The statement expression's PARSE START. Python's productions carry the
-# LEFT-most consumed token's line_ref (parselib `&` keeps left.line_ref, and
-# discard keeps the symbol's) — so a leading unary op token IS the start. The
-# structural startLine agrees everywhere EXCEPT a folded negative literal
-# (`ret -1`): the folded node keeps the DIGIT's line, losing the minus. Peek
-# the first token instead when it is a unary op; identical to startLine in
-# every other case.
+# Where a statement placed at its expression sits (`ret`, a bare expression,
+# `if` and `else if` at their condition): a leading unary op's own token —
+# a folded negative literal (`ret -1`) keeps only the DIGIT's line, losing the
+# minus — and otherwise the expression's start (startLine). parser.py's
+# __statement_start is the same rule.
 fun stmtExprStart(ps: Ps, x)
   let t = peek(ps)
   ret match(t.kind)

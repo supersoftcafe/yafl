@@ -86,19 +86,16 @@ EXPORT bool thread_work_accepting(void) {
 
 // Push `task` onto `queue` and wake any consumer waiting on it.
 static void _queue_push(worker_queue_t* queue, task_t* task) {
-    // Insertion barrier (same hazard as task_on_complete): once pushed, the
-    // queue linkage may be this task's only reference, and the poster's stack
-    // — the marker's only other way to see it — may already have been scanned
-    // this cycle. Tell the marker directly or it prunes a queued task.
-    GC_MARK_SEEN((object_t*)task);
     atomic_store(&task->next, (task_t*)NULL);
     atomic_fetch_add_explicit(&_queued_count, 1, memory_order_relaxed);
     pthread_mutex_lock(&queue->lock);
-    if (queue->tail) {
-        atomic_store(&queue->tail->next, task);
-    } else {
-        queue->head = task;
-    }
+    // Both links publish: once linked, the queue may be this task's only
+    // reference, and the tail it is linked behind may be one this cycle never
+    // scans. A queue's head lives in the heap object `_queues`.
+    if (queue->tail)
+        GC_STORE_PUBLISH_IN(queue->tail, queue->tail->next, 1, task);
+    else
+        GC_STORE_PUBLISH_IN(_queues, queue->head, 1, task);
     queue->tail = task;
     pthread_cond_signal(&queue->cond);
     pthread_mutex_unlock(&queue->lock);
@@ -109,26 +106,14 @@ static task_t* _queue_try_pop(worker_queue_t* queue) {
     pthread_mutex_lock(&queue->lock);
     task_t* task = queue->head;
     if (task) {
-        // Deletion barrier for the POPPED TASK ITSELF: the store below
-        // deletes the queue->head edge to it, after which its only
-        // references are C locals in the dispatch path. The current cycle's
-        // snapshot can pre-date both of those: the per-thread stack scan may
-        // already have run, and the global roots scan (which walks the
-        // queues) runs after it — a pop landing between the two hides the
-        // task, and its context, from the whole cycle. Shade it so the
-        // snapshot keeps it. Under continuous collection that window recurs
-        // thousands of times a second. (Found by test_gc_ring: a live
-        // in-flight ctx was pruned and poison-wiped mid-step.)
-        GC_MARK_SEEN((object_t*)task);
-        queue->head = atomic_load(&task->next);
+        // Both stores delete an edge the snapshot may still need, so both are
+        // barriered: the head's to the popped task (afterwards held only by C
+        // locals, while the queues may be scanned after this thread's stack),
+        // and the task's to its successor (afterwards held only by the head,
+        // if `task` is walked after the clear).
+        GC_STORE_MUTABLE_IN(_queues, queue->head, 1, atomic_load(&task->next));
         if (queue->head == NULL) queue->tail = NULL;
-        // Deletion barrier before clearing the chain link: the successor's
-        // snapshot reachability runs through task->next, and after this store
-        // its only reference is queue->head. Erasing the edge unbarriered lets
-        // the marker lose the rest of the queue if `task` is walked after the
-        // clear — the successor is then pruned while still queued.
-        GC_WRITE_BARRIER_IN(task, task->next, 1);
-        atomic_store(&task->next, (task_t*)NULL);
+        GC_STORE_MUTABLE_IN(task, task->next, 1, (task_t*)NULL);
         atomic_fetch_sub_explicit(&_queued_count, 1, memory_order_relaxed);
     }
     pthread_mutex_unlock(&queue->lock);

@@ -182,8 +182,7 @@ static void do_allocation_test(struct test_gc_allocations_o* self) {
             obj = (struct test_gc_allocations_o*)array[count2%10];
             if (obj != NULL) {
                 int i = (count ^ count2) % 3;
-                GC_WRITE_BARRIER_IN(obj, obj->results[i], 1);
-                obj->results[i] = (str_head_t*)str;
+                GC_STORE_IN(obj, obj->results[i], 1, (str_head_t*)str);
             }
         }
 

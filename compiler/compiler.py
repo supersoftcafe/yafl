@@ -41,6 +41,7 @@ import lowering.string_concat
 import lowering.struct_folding
 import lowering.deadstores
 import lowering.fast_stores
+import lowering.mutable_stores
 import lowering.discriminator_folding
 import lowering.drops
 import lowering.unions
@@ -369,6 +370,9 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Merge entities with identical representation (one instantiation's code
     # under another's names). Last, so every function was optimised alone.
     a = lowering.representation_dedup.merge_identical_representations(a)
+    # Which stores land in a mutable object: a fact of its class, so the
+    # runtime need not read it from the page (lowering/mutable_stores.py).
+    a = lowering.mutable_stores.mark_mutable_stores(a)
     lowering.uninit_check.check_application(a)
 
     # Final SSA validation, just before C emission. The IR is still SSA at

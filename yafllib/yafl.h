@@ -40,7 +40,150 @@
 #include <stdatomic.h>
 #endif
 
-#define STACK_GROWS_DOWN    1
+/**********************************************************
+ *  Target specifics: every place the runtime differs between targets, and
+ *  only that — nothing outside this section tests __x86_64__ or __aarch64__
+ *  or holds target asm. What the hardware needs is here; when the runtime
+ *  needs it is said where it is used (GC_PUBLISH_FENCE and GC_ACQUIRE_FENCE
+ *  below, the register capture in object.c). In this header, not one of its
+ *  own, so it inlines everywhere and ships inside system.yl with yafl.h.
+ **********************************************************/
+//
+// Supported: x86-64 and aarch64. Elsewhere a portable fallback is used where
+// one exists (C11 fences, clock_gettime), and the build fails where none does
+// (the register capture).
+#include <time.h>
+
+// ── Stack ────────────────────────────────────────────────────────────────────
+// Both targets' ABIs grow the stack down.
+#define STACK_GROWS_DOWN 1
+
+// ── Stack pointer ────────────────────────────────────────────────────────────
+// ARCH_READ_SP(p) sets p to the current stack pointer: the low end of a
+// conservative stack scan. Expand it in the capturing function itself.
+// Everything that function's prologue saved (callee-saved registers it then
+// reuses, e.g. rbx borrowed for a thread-local base) lies above it, whatever
+// the frame layout; the address of a local promises no such thing.
+#if defined(__x86_64__)
+#  define ARCH_READ_SP(p) __asm__ volatile("mov %%rsp, %0" : "=r"(p))
+#elif defined(__aarch64__)
+#  define ARCH_READ_SP(p) __asm__ volatile("mov %0, sp" : "=r"(p))
+#else
+#  error "yafllib: no stack-pointer read for this target (yafl.h, Target specifics)"
+#endif
+
+// ── Cache line ───────────────────────────────────────────────────────────────
+// The unit of false sharing, for alignas on hot shared counters. Apple's
+// aarch64 cores have 128-byte lines; Linux aarch64 parts and x86 have 64.
+#if defined(__aarch64__) && defined(__APPLE__)
+#  define CACHE_LINE_SIZE 128
+#else
+#  define CACHE_LINE_SIZE 64
+#endif
+
+// ── Spin-wait hint ───────────────────────────────────────────────────────────
+// For a waiter on a busy lock: lets an SMT sibling (often the holder) run.
+static inline void cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(__arm__)
+    __asm__ volatile("yield" ::: "memory");
+#else
+    __asm__ volatile("" ::: "memory");
+#endif
+}
+
+// ── Fences ───────────────────────────────────────────────────────────────────
+// Store-store: every store before it is visible to other threads before any
+// store after it. Load-load: every load after it is satisfied after every
+// load before it. x86 (TSO) keeps both orders itself, so there only the
+// compiler is fenced; aarch64 needs the instruction.
+#if defined(__aarch64__)
+#  define ARCH_STORE_STORE_FENCE() __asm__ __volatile__("dmb ishst" ::: "memory")
+#  define ARCH_LOAD_LOAD_FENCE()   __asm__ __volatile__("dmb ishld" ::: "memory")
+#elif defined(__x86_64__) || defined(__i386__) || defined(_M_X64)
+#  define ARCH_STORE_STORE_FENCE() atomic_signal_fence(memory_order_release)
+#  define ARCH_LOAD_LOAD_FENCE()   atomic_signal_fence(memory_order_acquire)
+#else
+#  define ARCH_STORE_STORE_FENCE() atomic_thread_fence(memory_order_release)
+#  define ARCH_LOAD_LOAD_FENCE()   atomic_thread_fence(memory_order_acquire)
+#endif
+
+// ── Cycle counter ────────────────────────────────────────────────────────────
+// A cheap monotonic tick. Only differences are meaningful, and the unit is
+// the target's own (TSC cycles, the generic timer's ticks, or nanoseconds).
+static inline uint64_t arch_ticks(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    unsigned lo, hi;
+    __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t)hi << 32) | lo;
+#elif defined(__aarch64__)
+    uint64_t t;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t));
+    return t;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+#endif
+}
+
+// ── Callee-saved registers ───────────────────────────────────────────────────
+// The conservative scan must see every pointer a thread holds. Caller-saved
+// registers are spilled to the (scanned) stack by the ABI before any call
+// into the runtime; the callee-saved ones may hold a pointer that is nowhere
+// else, so the capture stores them RAW. setjmp is no substitute: glibc
+// pointer-mangles some of what it saves (rbp on x86-64, among others).
+//
+// ARCH_SAVE_CALLEE_REGS(r) stores all ARCH_CALLEE_REGS of them into r[];
+// expand it in the capturing (non-inlined) function itself, so the registers
+// are that function's caller's.
+#if defined(__x86_64__)
+// rbx, rbp, r12-r15.
+#  define ARCH_CALLEE_REGS 6
+#  define ARCH_SAVE_CALLEE_REGS(r)\
+    do { void **r_ = (r);\
+         __asm__ volatile(\
+             "mov %%rbx,  0(%0)\n\t"\
+             "mov %%rbp,  8(%0)\n\t"\
+             "mov %%r12, 16(%0)\n\t"\
+             "mov %%r13, 24(%0)\n\t"\
+             "mov %%r14, 32(%0)\n\t"\
+             "mov %%r15, 40(%0)\n\t"\
+             :: "r"(r_) : "memory"); } while (0)
+#elif defined(__aarch64__)
+// x19-x28, and x29 (the frame pointer, a general register when frame
+// pointers are omitted). Stored from asm: reading an unassigned
+// `register ... asm("x19")` variable is not a defined way to get a
+// register's value (clang rejects it under -Werror=uninitialized).
+#  define ARCH_CALLEE_REGS 11
+#  define ARCH_SAVE_CALLEE_REGS(r)\
+    do { void **r_ = (r);\
+         __asm__ volatile(\
+             "stp x19, x20, [%0]\n\t"\
+             "stp x21, x22, [%0, #16]\n\t"\
+             "stp x23, x24, [%0, #32]\n\t"\
+             "stp x25, x26, [%0, #48]\n\t"\
+             "stp x27, x28, [%0, #64]\n\t"\
+             "str x29,      [%0, #80]\n\t"\
+             :: "r"(r_) : "memory"); } while (0)
+#else
+#  error "yafllib: no callee-saved register capture for this target (yafl.h, Target specifics)"
+#endif
+
+// For tests that scrub a pointer from the registers: an empty asm with this
+// clobber list makes the compiler treat every callee-saved register as
+// overwritten. The frame and stack pointers are never listed.
+#if defined(__x86_64__)
+#  define ARCH_CALLEE_SAVED_CLOBBERS "memory", "rbx", "r12", "r13", "r14", "r15"
+#elif defined(__aarch64__)
+#  define ARCH_CALLEE_SAVED_CLOBBERS "memory", "x19", "x20", "x21", "x22", "x23", \
+    "x24", "x25", "x26", "x27", "x28"
+#else
+#  define ARCH_CALLEE_SAVED_CLOBBERS "memory"
+#endif
+// ── End of target specifics ──────────────────────────────────────────────────
+
 enum { GC_PAGE_SIZE = 16384 };
 
 
@@ -113,19 +256,6 @@ enum { GC_PAGE_SIZE = 16384 };
 #define ALIGNED     __attribute__((aligned(GC_ALLOC_GRANULE)))
 
 
-// Spin-wait hint for a waiter on a busy lock: lets an SMT sibling (often the
-// holder) run. Targets without an instruction for it get a compiler barrier.
-static inline void cpu_relax(void) {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__) || defined(__arm__)
-    __asm__ volatile("yield" ::: "memory");
-#else
-    __asm__ volatile("" ::: "memory");
-#endif
-}
-
-
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #  define IS_LITTLE_ENDIAN 1
 #elif defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -136,14 +266,6 @@ static inline void cpu_relax(void) {
 #  error "Cannot determine endianness"
 #endif
 
-
-#if defined(__aarch64__) && defined(__APPLE__)
-#  define CACHE_LINE_SIZE 128
-#elif defined(__x86_64__) || defined(_M_X64)
-#  define CACHE_LINE_SIZE 64
-#else
-#  define CACHE_LINE_SIZE 64
-#endif
 
 enum log_level {
     ULTRA, TRACE, DEBUG, INFO, WARN, ERROR, FATAL
@@ -389,24 +511,15 @@ INLINE object_t* object_unpin(object_t* o) {
 // which may differ from `o` if the collector moved it. Callers must write
 // through the returned pointer, never through their original.
 //
+// It also tells the collector the object is about to be written, which an
+// object on an old page needs (gc_note_late_write, gc_internal.h).
+//
 // The wait is bounded: the only other holders are a peer writer doing one
 // field store, or the compactor doing one memcpy — neither allocates or
 // suspends while holding it (see gc_compact_page, which allocates its target
 // BEFORE claiming for exactly this reason), so no back-off is needed.
 EXTERN object_t* object_pin_resolve(object_t* o);
 
-// Announce that a late pin is about to write `o`. The store may install a
-// reference to a YOUNG object, and minor cycles skip old pages, so a page
-// that has aged into the old generation must return to the collection
-// rotation — otherwise nothing would ever trace the new referent and prune
-// would free it while the writer still holds it. The page's flag is set
-// UNCONDITIONALLY (young pages included) and only then is `old` read: the
-// promotion decision writes `old` before re-reading the flag, so whichever
-// way the race falls, one side sees the other (a Dekker handshake — see
-// gc_note_late_write and the promotion site in object.c). Cost is paid per
-// WRITE, not per object per cycle, which is what makes a write-once
-// structure cheap to keep.
-EXTERN void gc_note_late_write(object_t* o);
 
 enum {
     PTR_TAG_OBJECT  = 0x0,  // Just an ordinary object pointer.
@@ -486,10 +599,10 @@ typedef struct page_head {
     _Atomic(bool) redirty; // A late pin wrote an object on this page while it
                       // was `old`. Set by the MUTATOR (gc_note_late_write),
                       // consumed at the next cycle's start, which demotes the
-                      // page back into the rotation. One cycle of latency is
-                      // sound: the referent the write installed was allocated
-                      // on a birth-protected page, so the in-flight cycle
-                      // cannot free it before the demotion takes effect.
+                      // page back into the rotation — and at the end of
+                      // root scanning, so a write made before its writer's
+                      // scan is traced by the cycle in flight (see
+                      // gc_demote_redirtied in object.c).
     bool   dirty_old; // Aged page still holding young references: exempt from
                       // pruning, but force-marked as a root every cycle until
                       // its targets promote (then it graduates to `old`).
@@ -739,45 +852,120 @@ INLINE void yafl_prof_leave(void) {
     atomic_store_explicit(&t->sp, sp - 1, memory_order_relaxed);
 }
 
-EXTERN volatile bool gc_write_barrier_requested;
-
-
 EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
-EXTERN void _gc_write_barrier2(object_t **field, ptr_mask_t mask);
-EXTERN void _gc_mark_as_seen2(object_t *object);
 
 #define GC_SAFE_POINT()\
     do { if (UNLIKELY(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed))) _gc_safe_point2(); } while (false)
-// Thread-local nursery (prototype): a non-fresh pointer store may install a
-// young pointer into an older container; the nursery must treat that slot as
-// a root (gc_local_note_slot filters to the containers that need it).
+
+
+// ═══ Pointer stores: the barrier family ══════════════════════════════════════
+//
+// Every store of a heap pointer into memory another thread or the collector
+// can read goes through ONE of these four macros. Each does the store itself,
+// so the fence, the barriers and their order around the store are decided
+// here and nowhere else. `field` is the lvalue stored to; `mask` has a bit per
+// pointer word of it (bit 0: the field's first word); `value` is last, so it
+// may contain commas.
+//
+//   GC_STORE_IN(obj, field, mask, value)          a field of the object `obj`,
+//       on the heap or static (an object with a vtable outside the heap, such
+//       as a global's lazy stub, which the macro detects and publishes after)
+//   GC_STORE_MUTABLE_IN(obj, field, mask, value)  the same, where the caller
+//       knows `obj` is MUTABLE (its class's is_mutable): a mutable object is
+//       never private, so the private test — a read of its page header — is
+//       skipped. GC_STORE_IN is correct for a mutable object too, only slower.
+//   GC_STORE_PUBLISH_IN(obj, field, mask, value)  the same, where runtime code
+//       hands `value` to another thread (a queue link, a task's continuation,
+//       an IO result)
+//   GC_FILL_STORE_IN(obj, field, mask, value)     NULL -> value into a slot of
+//       an array not yet published (tabulation, builder pushes)
+//   GC_ROOT_STORE(field, mask, value)             a declared root (outside the
+//       heap)
+//
+// A store needs none of them when nothing else can have seen the container
+// since it was allocated (codegen's `fresh` stores), or it holds no pointer.
+//
+// The parts, for code that cannot store through a macro (a CAS) and for the
+// step tests that stop the collector between them:
+//
+//   part                    when    does
+//   GC_WRITE_BARRIER_IN     before  snapshot: shades the value overwritten;
+//                                   nursery: notes the slot; publication fence
+//   GC_WRITE_BARRIER_MUTABLE_IN     the same, for a container known mutable
+//   GC_PUBLISH_IN           after   shades and escapes the value now stored,
+//                                   read back from the field
+//   GC_PUBLISH_IF_STATIC_IN after   GC_PUBLISH_IN when `obj` is outside the
+//                                   heap (every object store ends with it)
+//   GC_FILL_BARRIER         after   escapes the value if the array has left
+//                                   this thread's nursery
+//   GC_PUBLISH_FENCE_IF_SHARED before  publication fence unless the container
+//                                   is private
+//   gc_root_overwrite       before  GC_WRITE_BARRIER_IN for a root slot
+//   gc_root_publish         after   GC_PUBLISH_IN for a root slot
+//   GC_MARK_SEEN(value)     any     shades and escapes a value handed over
+//                                   other than by a plain store
+//
+// The rules they keep:
+//   * SNAPSHOT (SATB, deletion barrier): while a cycle marks, a value a store
+//     overwrites is shaded first — the snapshot keeps everything reachable at
+//     cycle open.
+//   * RAGGED SNAPSHOT (insertion half): a thread whose own root scan is still
+//     to come may move a value from its stack into a container the cycle never
+//     traces (one born after its thread's scan) and then drop it. A store that
+//     publishes shades the stored value, AFTER the store (GC_PUBLISH_IN), so
+//     the flag read cannot be satisfied before it; GC_WRITE_BARRIER_IN does
+//     the same for generated stores through the per-thread grey slot
+//     (_gc_write_barrier_in2, object.c).
+//   * ESCAPE (nursery): a value stored where another thread can reach it, or
+//     overwritten while another thread's nursery may own it, leaves the
+//     nursery for good. Old values are read BEFORE gc_local_live
+//     (gc_local_live_now): a nursery raises the count before it allocates.
+//   * PUBLICATION ORDER: a pointer must not become visible to another thread
+//     before the object it points to — header, fields, allocation bit. Every
+//     store into a container that is not private takes a store-store fence
+//     BEFORE it (GC_PUBLISH_FENCE). Readers (the markers, a peer's nursery or
+//     barrier) take no lock: they rely on ADDRESS DEPENDENCY — the address
+//     they read through comes from the pointer they loaded — which every
+//     target here orders in hardware but C11 does not promise. A reader that
+//     loads a pointer and then reads memory at an address NOT computed from it
+//     needs an acquire.
+
+EXTERN volatile bool gc_write_barrier_requested;
+EXTERN void _gc_write_barrier2(object_t **field, ptr_mask_t mask);
+// GC_WRITE_BARRIER_IN's slow path: the deletion shade, plus — while this
+// thread's root scan is still to come — the insertion half (see object.c).
+EXTERN void _gc_write_barrier_in2(object_t **field, ptr_mask_t mask);
+EXTERN void _gc_mark_as_seen2(object_t *object);
+
+// ── Nursery: who else can reach a container ──────────────────────────────────
 EXTERN bool gc_local_enabled;
 EXTERN volatile int gc_local_live;   // number of nurseries active right now
+// Read gc_local_live AFTER every load before it. An acquire fence: a compiler
+// barrier on x86 (TSO keeps load order), `dmb ishld` on aarch64.
+// gc_local_set_epoch's full fence after raising the count is the other half.
+INLINE int gc_local_live_now(void) {
+    atomic_thread_fence(memory_order_acquire);
+    return gc_local_live;
+}
 EXTERN void gc_local_note_slot(object_t *obj, object_t **slot, ptr_mask_t mask);
+// gc_local_note_slot for a container known not to be private (a mutable one).
+EXTERN void gc_local_note_shared_slot(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape_old(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_local_escape(object_t *value);
-// The escape rules are about who else can reach an object, not whose store it
-// is, so every thread runs them. A thread with an active nursery takes the
-// full path. Any other thread (no nursery, not started, stood down) owes
-// less: the value it stores came from elsewhere already escaped, or from its
-// own pages, which no nursery collects. Only an OVERWRITTEN value sitting in
-// someone's active nursery must escape, and only while any nursery is active.
+// A thread with an active nursery takes the full path. Any other thread (no
+// nursery, not started, stood down) owes less: the value it stores came from
+// elsewhere already escaped, or from its own pages, which no nursery collects.
+// Only an OVERWRITTEN value sitting in someone's active nursery must escape,
+// and only while any nursery is active.
 //
-// ORDER MATTERS: the old values are read BEFORE gc_local_live. A nursery
-// raises gc_local_live before it allocates, so a value read from a slot that
-// belongs to an active nursery guarantees a non-zero count on a later read.
-// Reading the count first could see zero, stall, and then overwrite a value
-// another nursery published meanwhile without escaping it.
-// The store needs no record when its container is PRIVATE: an immutable
-// object on a page of this thread's current nursery that has not escaped
-// (gc_local_note_slot's first test, inline). Nothing outside the thread can
-// reach it, and the nursery traces it, so whatever it gains stays reachable.
-// The common case — construction, a builder still in its nursery — never
-// leaves the caller. Skipping gc_local_note_slot also defers its flush of the
-// previous pending store, which is allowed to wait for the next barrier call
-// or nursery collection (both flush first).
-// `obj` is the container itself (generated stores know it: ((T*)obj)->f),
-// so its index on its page is direct — no search for the containing object.
+// PRIVATE: an immutable object on a page of this thread's current nursery that
+// has not escaped. Nothing outside the thread can reach it and the nursery
+// traces it, so a store into it owes nothing — the common case, construction
+// or a builder still in its nursery, returns from gc_store_before at once (the
+// store macros call out for their barriers: see GC_WRITE_BARRIER_IN). Skipping
+// gc_local_note_slot also defers its flush of the previous pending store, to
+// the next barrier call or nursery collection (both flush first).
+// `obj` is the container itself, so its index on its page is direct.
 INLINE bool gc_local_obj_private(object_t *obj) {
     if ((size_t)((char*)obj - _memory_heap_base) >= _memory_heap_bytes)
         return false;
@@ -789,9 +977,33 @@ INLINE bool gc_local_obj_private(object_t *obj) {
     mask_bits_t esc = __atomic_load_n(&page->head.local_escaped.a[c / GC_MASK_SIZE], __ATOMIC_ACQUIRE);
     return ((esc >> (c % GC_MASK_SIZE)) & 1) == 0;
 }
+// Private to this thread's active nursery: the one test every store makes.
+INLINE bool gc_store_is_private(object_t *obj) {
+    return gc_alloc_tl.local_active && gc_local_obj_private(obj);
+}
 
-// The barrier of a thread with no active nursery: only the values being
-// overwritten may need to escape (see above).
+// ── Publication order ────────────────────────────────────────────────────────
+// The writer's half: a store-store fence ("Target specifics"). Everything this thread
+// wrote before it is visible to other threads before anything it writes after
+// it: an object's initialisation before the pointer that publishes it.
+#define GC_PUBLISH_FENCE() ARCH_STORE_STORE_FENCE()
+// The reader's half: a load-load fence. A load after it is satisfied after
+// every load before it. A reader that follows a POINTER it loaded needs
+// nothing (the address dependency orders the two on both architectures),
+// which is why the generated code's field reads take no fence: what the
+// sharing contract lets another thread publish without a lock is reached only
+// through the pointer to it. The exception is a runtime protocol that tests a
+// FLAG and then reads data unrelated to it by address (lazy_global_init_complete):
+// aarch64 may satisfy the data load first, a branch on the flag notwithstanding
+// (x86 may not).
+#define GC_ACQUIRE_FENCE() ARCH_LOAD_LOAD_FENCE()
+// BEFORE a store into `obj`, unless `obj` is private: the container may be one
+// another thread reads.
+#define GC_PUBLISH_FENCE_IF_SHARED(obj)\
+    do { if (!gc_store_is_private((object_t*)(obj))) GC_PUBLISH_FENCE(); } while (false)
+
+// The nursery part of a store by a thread with no active nursery: only the
+// values being overwritten may need to escape.
 INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
     // A FLAG, never the pointer: a local holding the value being dropped would
     // sit in the caller's frame (always inlined; at -O0 on the stack), where
@@ -799,26 +1011,35 @@ INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
     bool any = false;
     for (ptr_mask_t m = mask; m; m &= m - 1)
         any |= slot[__builtin_ctzll(m)] != NULL;
-    atomic_signal_fence(memory_order_seq_cst);   // compiler order; x86 keeps load order
-    if (any && gc_local_live)
+    if (any && gc_local_live_now())
         gc_local_escape_old(slot, mask);
 }
-
-// Generated stores: the container `obj` is known.
+// The nursery part and the publication fence of a store into `obj`, BEFORE it.
 INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
     if (gc_alloc_tl.local_active) {
-        if (!gc_local_obj_private(obj))
-            gc_local_note_slot(obj, slot, mask);
-        return;
+        if (gc_local_obj_private(obj))
+            return;
+        gc_local_note_slot(obj, slot, mask);
+    } else {
+        gc_local_barrier_inactive(slot, mask);
     }
-    gc_local_barrier_inactive(slot, mask);
+    GC_PUBLISH_FENCE();
 }
 
-// ── Barrier argument checks: plain asserts, stripped by NDEBUG ──────────────
+// The same for a container known to be mutable, so never private.
+INLINE void gc_local_barrier_mutable(object_t **slot, ptr_mask_t mask) {
+    if (gc_alloc_tl.local_active)
+        gc_local_note_shared_slot(slot, mask);
+    else
+        gc_local_barrier_inactive(slot, mask);
+    GC_PUBLISH_FENCE();
+}
+
+// ── Argument checks: plain asserts, stripped by NDEBUG ───────────────────────
 // A heap store names its CONTAINER, and every nursery decision reads that
 // container's own page header and object bit, so `obj` must truly be the BASE
-// of an allocated heap object and `slot` must lie inside it. A ROOT slot, the
-// other way round, must not be in the heap at all.
+// of an allocated object and `slot` must lie inside it. A ROOT slot, the other
+// way round, must not be in the heap at all.
 EXTERN size_t object_get_size(object_t* ptr);
 INLINE bool gc_in_heap(const void *p) {
     return (size_t)((const char*)p - _memory_heap_base) < _memory_heap_bytes;
@@ -842,79 +1063,148 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
     return (char*)slot >= (char*)obj && (char*)slot < (char*)obj + object_get_size(obj);
 }
 
-// A store into a field of the object `obj` (what generated code emits).
+// The out-of-line halves of the object stores: everything a store owes
+// besides the store itself (object.c). A site inlines only the fast path
+// that needs no call, the store, and a range check.
+EXTERN void gc_store_before(object_t *obj, object_t **slot, ptr_mask_t mask);
+EXTERN void gc_store_mutable_before(object_t **slot, ptr_mask_t mask);
+EXTERN void gc_store_static_after(object_t **slot, ptr_mask_t mask);
+
+// ── The parts ────────────────────────────────────────────────────────────────
+// BEFORE a store into a field of `obj` (a heap object, or a static one such as
+// a global lazy stub). Inline: with no cycle marking and `obj` private, the
+// store owes nothing, the common case (construction, a builder still in its
+// nursery). Anything else calls out.
 #define GC_WRITE_BARRIER_IN(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
-        if (UNLIKELY(gc_write_barrier_requested))\
-            _gc_write_barrier2((object_t**)&(field), (mask));\
-        gc_local_barrier_in((object_t*)(obj), (object_t**)&(field), (mask));\
+        if (UNLIKELY(gc_write_barrier_requested) || !gc_store_is_private((object_t*)(obj)))\
+            gc_store_before((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
-// A FILL store (codegen's ObjectField.fill): NULL -> value into a slot of an
-// array not yet published, written once but across safe points — array
-// tabulation and builder pushes. Nothing is overwritten, so the snapshot
-// barrier owes nothing. The one question is whether the array's PAGE is in
-// this thread's current nursery: then the nursery traces the array (an
-// escaped one is a root), and the value stays reachable through it. If not —
-// the page was promoted or handed over at a root scan, or belongs to another
-// worker's nursery after a cross-worker resume — the pointer has left our
-// control: the value ESCAPES (permanently seen by its nursery). Emitted AFTER
-// the store, reading the slot back; no safe point falls between the two. A
-// thread with no active nursery has epoch 0, as has every page outside a
-// nursery, so it passes the test and owes nothing.
+// The same for a container known to be mutable. Always a call: a mutable
+// container is never private, so the store owes the nursery its note and the
+// publication fence whatever the collector is doing.
+#define GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask)\
+    do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
+        gc_store_mutable_before((object_t**)&(field), (mask));\
+    } while (false)
+
+// AFTER a store that publishes (the ragged-snapshot and escape rules above):
+// shade what the slots now hold, and escape it from any nursery. Reads the
+// values back, so it cannot be placed before the store; its fence orders the
+// store before the flag read, and pairs with the one after the collector
+// raises gc_write_barrier_requested: either the snapshot reads the stored
+// value, or the publish sees the flag up.
+INLINE void gc_publish_slots(object_t **slot, ptr_mask_t mask) {
+    atomic_thread_fence(memory_order_seq_cst);   // the store before the flag
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
+    if (gc_local_live_now()) gc_local_escape_old(slot, mask);   // the values before the count
+}
+#define GC_PUBLISH_IN(obj, field, mask)\
+    do { assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
+         gc_publish_slots((object_t**)&(field), (mask)); } while (false)
+
+// AFTER every object store: publish when `obj` is STATIC — an object with a
+// vtable outside the heap, such as a global's lazy stub, whose fields are
+// declared roots read once, at cycle open. Its barrier ran before the store
+// and may have read the flag down just before the cycle opened; the
+// snapshot then read the slot's old value, and the stored one would be seen
+// by nothing (test_gc_static_store). A heap container needs nothing more: the
+// cycle traces it, or it was born during the cycle, so its barrier saw the
+// flag up and the hybrid barrier shades the stored value.
+#define GC_PUBLISH_IF_STATIC_IN(obj, field, mask)\
+    do { if (UNLIKELY(!gc_in_heap(obj))) gc_store_static_after((object_t**)&(field), (mask)); } while (false)
+
+// AFTER a fill store. Nothing is overwritten, so the snapshot owes nothing.
+// The one question is whether the array's PAGE is in this thread's current
+// nursery: then the nursery traces the array and the value stays reachable
+// through it. If not — the page was promoted or handed over at a root scan,
+// or belongs to another worker's nursery after a cross-worker resume — the
+// value ESCAPES. A thread with no active nursery has epoch 0, as has every
+// page outside a nursery, so it passes the test and owes nothing.
 #define GC_FILL_BARRIER(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
         gc_page_t *gc_fill_page_ = (gc_page_t*)((uintptr_t)(obj) & ~(uintptr_t)(GC_PAGE_SIZE - 1));\
         if (UNLIKELY(gc_fill_page_->head.local_epoch != gc_alloc_tl.local_epoch))\
             gc_local_escape_old((object_t**)&(field), (mask));\
     } while (false)
-// A value handed to the runtime or another thread (queues, completions,
-// lazy publication): for a nursery it ESCAPES, whatever the marker is doing.
-// The value is in hand before gc_local_live is read (same order as above).
+
+// A value handed to the runtime or another thread other than by a plain store
+// (a CAS, a swap): shaded while a cycle marks, and escaped from any nursery.
+// The value is in hand before gc_local_live is read.
 #define GC_MARK_SEEN(value)\
     do { if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(value);\
-         atomic_signal_fence(memory_order_seq_cst);\
-         if (gc_local_live) gc_local_escape((object_t*)(value)); } while (false)
+         if (gc_local_live_now()) gc_local_escape((object_t*)(value)); } while (false)
 
-// ── The mutable-root contract ────────────────────────────────────────────────
-// Declared roots are scanned ONCE, at cycle open (the SATB snapshot). Any
-// code that MUTATES a declared root after that must tell the marker, exactly
-// as the heap write barrier does for object fields. Both calls name the root
-// field and the mask of its pointer slots, as heap stores do:
-//   gc_root_overwrite(slot, mask) — BEFORE the store: shades the outgoing
-//       occupants (SATB deletion). Without it, an object whose only path was
-//       this root slot is invisible to the cycle.
-//   gc_root_publish(slot, mask)   — AFTER the store: shades what the slots
-//       now hold, which the storing thread may drop from its stack before
-//       its own root-scan safe point (the ragged-snapshot window).
-// The publish reads the values back from the slots, so it cannot run before
-// the store. It used to take the value and run first, and a cycle opening
-// between its flag read and the store snapshotted the slot's previous
-// occupant and never saw the new one (test_gc_min2_window). Its fence pairs
-// with the one after the collector raises gc_write_barrier_requested: either
-// the snapshot reads the stored value, or the publish sees the flag up.
-// The compilers emit the publish after a lazy stub's value store
-// (GC_ROOT_PUBLISH_IN); the rest is for the runtime's mutable roots and any C
-// host code that registers mutable roots. Field-based shading follows, and may snap, a
+// Declared roots are scanned ONCE, at cycle open (the snapshot), so a store
+// into one owes the marker what a heap store does. A root is shared, so the
+// publication fence too. Field-based shading follows, and may snap, a
 // forwarder that compaction left, exactly as the root scan itself does.
 INLINE void gc_root_overwrite(object_t **slot, ptr_mask_t mask) {
     assert(!gc_in_heap(slot));   // heap slots take GC_WRITE_BARRIER_IN
     if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
     gc_local_barrier_inactive(slot, mask);   // outgoing values may be held elsewhere
+    GC_PUBLISH_FENCE();
 }
 INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
     assert(!gc_in_heap(slot));
-    atomic_thread_fence(memory_order_seq_cst);   // the store before the flag
-    if (UNLIKELY(gc_write_barrier_requested)) _gc_write_barrier2(slot, mask);
-    atomic_signal_fence(memory_order_seq_cst);   // the values before the count
-    if (gc_local_live) gc_local_escape_old(slot, mask);
+    gc_publish_slots(slot, mask);
 }
-// AFTER a store into a field of `obj`, an object that may be a declared root:
-// a lazy stub is a static root for a global and a heap object for a local
-// `[lazy]`, and one fetch function serves both. A static container publishes;
-// a heap container's fields are traced, so it owes nothing more. The store
-// itself took GC_WRITE_BARRIER_IN, which accepts either container.
-#define GC_ROOT_PUBLISH_IN(obj, field, mask)\
-    do { if (!gc_in_heap(obj)) gc_root_publish((object_t**)&(field), (mask)); } while (false)
+
+// ── The stores ───────────────────────────────────────────────────────────────
+#define GC_STORE_IN(obj, field, mask, ...)\
+    do { GC_WRITE_BARRIER_IN(obj, field, mask);\
+         (field) = (__VA_ARGS__);\
+         GC_PUBLISH_IF_STATIC_IN(obj, field, mask); } while (false)
+#define GC_STORE_MUTABLE_IN(obj, field, mask, ...)\
+    do { GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask);\
+         (field) = (__VA_ARGS__);\
+         GC_PUBLISH_IF_STATIC_IN(obj, field, mask); } while (false)
+#define GC_STORE_PUBLISH_IN(obj, field, mask, ...)\
+    do { GC_WRITE_BARRIER_IN(obj, field, mask);\
+         (field) = (__VA_ARGS__);\
+         GC_PUBLISH_IN(obj, field, mask); } while (false)
+#define GC_FILL_STORE_IN(obj, field, mask, ...)\
+    do { GC_PUBLISH_FENCE_IF_SHARED(obj);\
+         (field) = (__VA_ARGS__);\
+         GC_FILL_BARRIER(obj, field, mask); } while (false)
+#define GC_ROOT_STORE(field, mask, ...)\
+    do { gc_root_overwrite((object_t**)&(field), (mask));\
+         (field) = (__VA_ARGS__);\
+         gc_root_publish((object_t**)&(field), (mask)); } while (false)
+
+// ── The atomic stores ────────────────────────────────────────────────────────
+// A compare-and-swap of one pointer slot, and an exchange built on it: the
+// stores of lock-free runtime code, owing everything a store does. A CAS
+// target is SHARED by definition (another thread writes it, or no CAS would
+// be needed), so the container is not asked, and a heap slot and a static
+// one (a global stub's flag) take the same call. Each attempt owes, BEFORE it
+// (gc_cas, object.c):
+//   * the overwrite's barrier, as a mutable store's: the deletion shade of
+//     what the slot holds, the hybrid barrier's insertion half, the nursery
+//     escape of the outgoing value, and the publication fence;
+//   * the shade and escape of `expected` itself — the value the CAS replaces
+//     if it lands, which the slot may no longer hold when the barrier reads it;
+//   * the ESCAPE of `desired`, at once: the CAS makes it visible to every
+//     thread the moment it lands, and nothing later (a plain store's pending
+//     slot, a pin's release) judges it in time.
+// All of it before the CAS, never after: a thread whose root scan is done
+// holds up nothing, so preempted between a CAS and its shade it can see the
+// cycle finish marking, and prune the displaced value, in between.
+// AFTER a CAS that lands in a static slot: publish, as GC_PUBLISH_IF_STATIC_IN
+// does for a store — a static slot is a declared root, read once at cycle open.
+//
+// An exchange is a CAS loop, never atomic_exchange: an exchange learns the
+// value it displaced only after displacing it, too late to shade it first.
+// On failure GC_CAS leaves the slot's current value in *expected, as
+// atomic_compare_exchange does; on success *expected is the displaced value.
+// Out of line (object.c): the nursery's part has work on every attempt, so
+// there is no fast path to inline.
+EXTERN bool gc_cas(_Atomic(object_t*) *slot, object_t **expected, object_t *desired);
+EXTERN object_t *gc_exchange(_Atomic(object_t*) *slot, object_t *desired);
+#define GC_CAS(field, expected_ptr, desired)\
+    gc_cas((_Atomic(object_t*)*)&(field), (object_t**)(expected_ptr), (object_t*)(desired))
+#define GC_EXCHANGE(field, desired)\
+    gc_exchange((_Atomic(object_t*)*)&(field), (object_t*)(desired))
 
 
 EXTERN size_t object_get_size(object_t* ptr);
@@ -936,6 +1226,9 @@ EXTERN bool list_builder_link(object_t *prev, object_t *cell, int64_t slot);
 EXTERN bool list_builder_seal(object_t *tail);
 EXTERN bool array_builder_seal(object_t *arr, int32_t length);
 EXTERN bool gc_debug_major_now(object_t *ignored);
+// YAFL_GC_TRACE: print what the collector last did to the page holding `p`.
+EXTERN void gc_trace_explain(const char *label, const void *p);
+EXTERN void gc_trace_report_begin(void);   // serialise failure reports; abort after
 EXTERN vtable_t *object_get_vtable(object_t *object);
 
 // TRUE virtual dispatch: probe the hashed function table. The pre-rotated
@@ -1177,7 +1470,15 @@ EXTERN object_t* future_post(fun_t cb);
 // compiler's `Invoke` declares the call's return type as `Int(8)`, so
 // the C signature uses `int32_t` (not `_Bool`) to make the high-bit
 // state explicit and platform-independent.
-INLINE int32_t lazy_global_init_complete(object_t* flag_ptr) {return 1==(intptr_t)flag_ptr;}
+// On 1 the caller reads the stub's value, stored before the sentinel's CAS
+// and unrelated to the flag by address: the read must not be satisfied
+// before the flag's (GC_ACQUIRE_FENCE). The fence is here, not in the
+// generated code, so both compilers emit the call unchanged.
+INLINE int32_t lazy_global_init_complete(object_t* flag_ptr) {
+    if (1 != (intptr_t)flag_ptr) return 0;
+    GC_ACQUIRE_FENCE();
+    return 1;
+}
 
 
 // Shared waiter-chain protocol: lazy_thunk_t is the layout prefix every
@@ -1204,20 +1505,21 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
 // per-IR-type waiter subtype, so the runtime only needs to manage the
 // chain itself.
 //
+// Both primitives DELETE a reference — the stub's edge to the chain, a
+// waiter's edge to the next — so both owe the snapshot barrier, as any
+// overwrite does: during a cycle, a chain reachable at the snapshot through a
+// stub not yet scanned would otherwise live on only in the draining thread's
+// locals, which its root scan may already have passed, and be freed mid-drain.
+// GC_EXCHANGE pays it, shading before the delete ("The atomic stores").
+//
 // Swap the waiter-chain root with the "init complete" sentinel and
-// return the previous head.  The loop body iterates from there.
-INLINE object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
-    return (object_t*)atomic_exchange((_Atomic(object_t*)*)flag_field, (object_t*)1);
-}
+// return the previous head.  The loop body iterates from there. (lazy.c)
+EXTERN object_t* lazy_chain_swap_sentinel(object_t* flag_field);
 
-// Atomically read head->next and clear it; returns the next chain link
-// (NULL when this is the last waiter).
-INLINE object_t* lazy_chain_step(object_t* head) {
-    _Atomic(struct task_s*)* p = &((task_t*)head)->next;
-    task_t* next = (task_t*)atomic_load(p);
-    atomic_store(p, NULL);
-    return (object_t*)next;
-}
+// Read head->next and clear it; returns the next chain link (NULL when
+// this is the last waiter). Only the drain writes a published waiter's next.
+// (lazy.c)
+EXTERN object_t* lazy_chain_step(object_t* head);
 
 // Atomically append `waiter` to the chain at *flag_field.  Returns:
 //   0 — appended (init in flight on another thread)
