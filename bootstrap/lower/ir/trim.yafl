@@ -14,30 +14,32 @@ import Bootstrap::StdlibCandidates
 
 
 
-# Name SETS with dict membership (user ruling 2026-07-22) — the ordered
-# lists feed trim's sorted rebuild; the dicts make union/difference linear
+# Name SETS with hashed membership (user ruling 2026-07-22) — the ordered
+# lists feed trim's sorted rebuild; hashing makes union/difference linear
 # (the old list-membership algebra was quadratic in the reachable set).
-# Just the index. The name list beside it was exactly its keys, kept only to
-# iterate — and every walk over it either folds (order-free) or sorts first.
-class [final] StrSet(setIx: Dict<String, Bool>)
+# Union and difference FOLD the Set — order-free, so no ordering is built
+# for them; only trim's rebuild sorts (setNames). Sorting to get a walk cost
+# a fresh key Set and a sort per union, and trim unions once per IR op.
+class [final] StrSet(setIx: Set<String>)
 
-fun setNames(s2: StrSet) => sort(keys(s2.setIx))
+fun setNames(s2: StrSet) => sort(s2.setIx)
 
-fun setEmpty() => StrSet(Dict())
+fun setEmpty() => StrSet(Set())
 
-fun set1(name) => StrSet(put(Dict(), name, true))
+fun set1(name) => StrSet(add(Set(), name))
 
-fun setHas(s2: StrSet, name: String) => !(get(s2.setIx, name) is None)
+fun setHas(s2: StrSet, name: String) => contains(s2.setIx, name)
 
 fun setAdd(s2, name) => setHas(s2, name)
   ? s2
-  : StrSet(put(s2.setIx, name, true))
+  : StrSet(add(s2.setIx, name))
 
 fun setOfList(names: List<String>) => fold(names, setEmpty(), setAdd)
 
-fun setUnion(a, b: StrSet) => fold(setNames(b), a, setAdd)
+fun setUnion(a, b: StrSet) => fold(b.setIx, a, setAdd)
 
-fun setSub(a: StrSet, b: StrSet) => setOfList(filter(setNames(a), (x) => !setHas(b, x)))
+fun setSub(a: StrSet, b: StrSet) => fold(a.setIx, setEmpty(),
+                                         (acc, x) => setHas(b, x) ? acc : setAdd(acc, x))
 
 fun setIsEmpty(s2: StrSet) => isEmpty(s2.setIx)
 
