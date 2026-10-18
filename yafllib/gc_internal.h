@@ -58,6 +58,12 @@ struct gc_thread_info {
     void* thread_roots_context;
 
     bool roots_scanned;
+    // A mark between setting an object's bit and pushing its page on the
+    // reprocess ring (atomic_gc_object_mark_as_seen): written by this thread
+    // alone, summed by the mark tail. `listed` once the thread is on the
+    // `threads` chain, where the tail can see the count.
+    _Atomic(uint32_t) ring_writing;
+    bool listed;
     _Atomic(enum thread_state) thread_state;
 
     list_element_t  new_pages; // Circular list of pages waiting for next GC

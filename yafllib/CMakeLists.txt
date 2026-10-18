@@ -266,4 +266,10 @@ set_tests_properties(test_gc_pump_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=
 add_yafl_test(test_gc_overflow_window)
 target_compile_definitions(test_gc_overflow_window PRIVATE YAFL_GC_OVERFLOW_PROBE=1)
 set_tests_properties(test_gc_overflow_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_writer_window: stepped. A mutator between setting a mark bit and
+# pushing the page on the reprocess ring must keep marking from retiring.
+# Builds its own object.c with YAFL_GC_WRITER_PROBE, which hooks that window.
+add_yafl_test(test_gc_writer_window)
+target_compile_definitions(test_gc_writer_window PRIVATE YAFL_GC_WRITER_PROBE=1)
+set_tests_properties(test_gc_writer_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 

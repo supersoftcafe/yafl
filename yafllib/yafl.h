@@ -135,14 +135,14 @@ static inline uint64_t arch_ticks(void) {
 // else, so the capture stores them RAW. setjmp is no substitute: glibc
 // pointer-mangles some of what it saves (rbp on x86-64, among others).
 //
-// ARCH_SAVE_CALLEE_REGS(r) stores them into r[0 .. ARCH_CALLEE_REGS), zero
-// filled; expand it in the capturing (non-inlined) function itself, so the
-// registers are that function's caller's.
-#define ARCH_CALLEE_REGS 12
+// ARCH_SAVE_CALLEE_REGS(r) stores all ARCH_CALLEE_REGS of them into r[];
+// expand it in the capturing (non-inlined) function itself, so the registers
+// are that function's caller's.
 #if defined(__x86_64__)
+// rbx, rbp, r12-r15.
+#  define ARCH_CALLEE_REGS 6
 #  define ARCH_SAVE_CALLEE_REGS(r)\
     do { void **r_ = (r);\
-         memset(r_, 0, ARCH_CALLEE_REGS * sizeof(void*));\
          __asm__ volatile(\
              "mov %%rbx,  0(%0)\n\t"\
              "mov %%rbp,  8(%0)\n\t"\
@@ -156,9 +156,9 @@ static inline uint64_t arch_ticks(void) {
 // pointers are omitted). Stored from asm: reading an unassigned
 // `register ... asm("x19")` variable is not a defined way to get a
 // register's value (clang rejects it under -Werror=uninitialized).
+#  define ARCH_CALLEE_REGS 11
 #  define ARCH_SAVE_CALLEE_REGS(r)\
     do { void **r_ = (r);\
-         memset(r_, 0, ARCH_CALLEE_REGS * sizeof(void*));\
          __asm__ volatile(\
              "stp x19, x20, [%0]\n\t"\
              "stp x21, x22, [%0, #16]\n\t"\
@@ -929,8 +929,6 @@ EXTERN void _gc_safe_point2(); // Arbitary safe point for GC magic to happen
 //     target here orders in hardware but C11 does not promise. A reader that
 //     loads a pointer and then reads memory at an address NOT computed from it
 //     needs an acquire.
-//
-// History: docs/aarch64-gc/INVESTIGATION.md.
 
 EXTERN volatile bool gc_write_barrier_requested;
 EXTERN void _gc_write_barrier2(object_t **field, ptr_mask_t mask);
@@ -1066,20 +1064,25 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
 }
 
 // The out-of-line halves of the object stores: everything a store owes
-// besides the store itself, so each site inlines a call, the store and a
-// range check (object.c).
+// besides the store itself (object.c). A site inlines only the fast path
+// that needs no call, the store, and a range check.
 EXTERN void gc_store_before(object_t *obj, object_t **slot, ptr_mask_t mask);
 EXTERN void gc_store_mutable_before(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_store_static_after(object_t **slot, ptr_mask_t mask);
 
 // ── The parts ────────────────────────────────────────────────────────────────
 // BEFORE a store into a field of `obj` (a heap object, or a static one such as
-// a global lazy stub).
+// a global lazy stub). Inline: with no cycle marking and `obj` private, the
+// store owes nothing, the common case (construction, a builder still in its
+// nursery). Anything else calls out.
 #define GC_WRITE_BARRIER_IN(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
-        gc_store_before((object_t*)(obj), (object_t**)&(field), (mask));\
+        if (UNLIKELY(gc_write_barrier_requested) || !gc_store_is_private((object_t*)(obj)))\
+            gc_store_before((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
-// The same for a container known to be mutable.
+// The same for a container known to be mutable. Always a call: a mutable
+// container is never private, so the store owes the nursery its note and the
+// publication fence whatever the collector is doing.
 #define GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
         gc_store_mutable_before((object_t**)&(field), (mask));\
@@ -1175,7 +1178,7 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
 // target is SHARED by definition (another thread writes it, or no CAS would
 // be needed), so the container is not asked, and a heap slot and a static
 // one (a global stub's flag) take the same call. Each attempt owes, BEFORE it
-// (gc_cas_before):
+// (gc_cas, object.c):
 //   * the overwrite's barrier, as a mutable store's: the deletion shade of
 //     what the slot holds, the hybrid barrier's insertion half, the nursery
 //     escape of the outgoing value, and the publication fence;
@@ -1194,19 +1197,10 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
 // value it displaced only after displacing it, too late to shade it first.
 // On failure GC_CAS leaves the slot's current value in *expected, as
 // atomic_compare_exchange does; on success *expected is the displaced value.
-EXTERN void gc_cas_before(object_t **slot, object_t *expected, object_t *desired);
-INLINE bool gc_cas(_Atomic(object_t*) *slot, object_t **expected, object_t *desired) {
-    gc_cas_before((object_t**)slot, *expected, desired);
-    if (!atomic_compare_exchange_strong(slot, expected, desired))
-        return false;
-    if (UNLIKELY(!gc_in_heap((void*)slot))) gc_store_static_after((object_t**)slot, 1);
-    return true;
-}
-INLINE object_t *gc_exchange(_Atomic(object_t*) *slot, object_t *desired) {
-    object_t *old = atomic_load(slot);
-    while (!gc_cas(slot, &old, desired)) {}
-    return old;
-}
+// Out of line (object.c): the nursery's part has work on every attempt, so
+// there is no fast path to inline.
+EXTERN bool gc_cas(_Atomic(object_t*) *slot, object_t **expected, object_t *desired);
+EXTERN object_t *gc_exchange(_Atomic(object_t*) *slot, object_t *desired);
 #define GC_CAS(field, expected_ptr, desired)\
     gc_cas((_Atomic(object_t*)*)&(field), (object_t**)(expected_ptr), (object_t*)(desired))
 #define GC_EXCHANGE(field, desired)\
@@ -1519,16 +1513,13 @@ EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
 // GC_EXCHANGE pays it, shading before the delete ("The atomic stores").
 //
 // Swap the waiter-chain root with the "init complete" sentinel and
-// return the previous head.  The loop body iterates from there.
-INLINE object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
-    return GC_EXCHANGE(*(_Atomic(object_t*)*)flag_field, (object_t*)1);
-}
+// return the previous head.  The loop body iterates from there. (lazy.c)
+EXTERN object_t* lazy_chain_swap_sentinel(object_t* flag_field);
 
 // Read head->next and clear it; returns the next chain link (NULL when
 // this is the last waiter). Only the drain writes a published waiter's next.
-INLINE object_t* lazy_chain_step(object_t* head) {
-    return GC_EXCHANGE(((task_t*)head)->next, NULL);
-}
+// (lazy.c)
+EXTERN object_t* lazy_chain_step(object_t* head);
 
 // Atomically append `waiter` to the chain at *flag_field.  Returns:
 //   0 — appended (init in flight on another thread)

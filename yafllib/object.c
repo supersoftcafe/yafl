@@ -427,7 +427,7 @@ static atomic_size_t       reprocess_page_head;
 static atomic_size_t       reprocess_page_tail;
 // Mutator barriers between setting a mark bit and (maybe) pushing its page on
 // the ring: atomic_gc_object_mark_as_seen. See gc_fsa_mark_sweep_tail.
-static _Atomic(int)        gc_ring_writers;
+static _Atomic(int)        gc_ring_writers;   // unlisted threads' ring_writing (rare)
 static atomic_bool         reprocess_overflow_flag;
 
 // Mark worklist: a GROWABLE LIFO stack of objects discovered on an
@@ -1357,6 +1357,7 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     gc_thread_info.new_pages.prev = &gc_thread_info.new_pages;
 
     while (!atomic_compare_exchange_weak(&threads, &gc_thread_info.next, &gc_thread_info));
+    gc_thread_info.listed = true;
 }
 
 static void *gc_relocation_alloc(size_t size);
@@ -1822,14 +1823,25 @@ EXPORT void gc_store_mutable_before(object_t **slot, ptr_mask_t mask) {
 EXPORT void gc_store_static_after(object_t **slot, ptr_mask_t mask) {
     gc_publish_slots(slot, mask);
 }
-// Before each attempt of a CAS (yafl.h, "The atomic stores").
-EXPORT void gc_cas_before(object_t **slot, object_t *expected, object_t *desired) {
-    gc_store_mutable_before(slot, 1);
-    if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(expected);
+// The atomic stores (yafl.h, "The atomic stores"). Before each attempt: the
+// overwrite's barrier, the shade and escape of `expected`, the escape of
+// `desired`. After a landed CAS into a static slot: publish.
+EXPORT bool gc_cas(_Atomic(object_t*) *slot, object_t **expected, object_t *desired) {
+    gc_store_mutable_before((object_t**)slot, 1);
+    if (UNLIKELY(gc_write_barrier_requested)) _gc_mark_as_seen2(*expected);
     if (gc_local_live_now()) {
-        gc_local_escape(expected);
+        gc_local_escape(*expected);
         gc_local_escape(desired);
     }
+    if (!atomic_compare_exchange_strong(slot, expected, desired))
+        return false;
+    if (UNLIKELY(!gc_in_heap((void*)slot))) gc_store_static_after((object_t**)slot, 1);
+    return true;
+}
+EXPORT object_t *gc_exchange(_Atomic(object_t*) *slot, object_t *desired) {
+    object_t *old = atomic_load(slot);
+    while (!gc_cas(slot, &old, desired)) {}
+    return old;
 }
 
 // The barrier of a thread with no active nursery (see GC_WRITE_BARRIER): only
@@ -2162,8 +2174,22 @@ static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot);
 // to retire in between, the push would land after it and be dropped: the
 // object kept by prune's residue merge but never scanned, its children freed
 // under it. So the mutator is counted across both steps, and the tail retires
-// only with no writer in the window and the ring empty. Exact: a marker that
-// saw the bit read it after the increment, and before the retire.
+// only with no writer in the window and the ring empty (test_gc_writer_window).
+// Exact: a marker that saw the bit read it after the increment, and before
+// the retire.
+//
+// The count is per thread (ring_writing), on the thread's own line, so marks
+// on different threads share nothing; the tail reads each over the `threads`
+// chain. A thread not yet on the chain counts in gc_ring_writers instead.
+// Reading the counts one after another misses nothing one shared count
+// would see. The case that matters is a marker that saw a writer's bit and
+// finished its page: that finish goes through the pool lock, and the tail
+// takes the lock before it loads the chain and every count, so the chain
+// (count up -> bit -> marker's unlock -> tail's lock -> its reads) orders the
+// writer's count, and the writer's own push onto the chain, before the
+// tail's reads, whatever their order. A writer whose count rises only after
+// the tail read it has a bit no marker has seen yet: the late entry
+// gc_fsa_mark_sweep_tail describes, harmless under SATB.
 //
 // Only a mark that may set the bit is counted. An old page, or a bit already
 // set, pushes nothing (the bit's setter, counted, made the decision), and the
@@ -2179,9 +2205,19 @@ static NOINLINE_DEBUG void atomic_gc_object_mark_as_seen(object_t *object) {
     mask_bits_t bit = ((mask_bits_t)1) << (slot % GC_MASK_SIZE);
     if (atomic_load_explicit((_Atomic(mask_bits_t)*)&page->head.scanner.atomic_seen.a[slot / GC_MASK_SIZE],
                              memory_order_relaxed) & bit) return;
-    atomic_fetch_add_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
-    atomic_gc_object_mark_as_seen$push(page, slot);
-    atomic_fetch_sub_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
+    struct gc_thread_info *t = &gc_thread_info;
+    if (LIKELY(t->listed)) {
+        // Only this thread writes it: the increment is a load and a store.
+        // seq_cst: the count is up before the bit can be seen.
+        uint32_t n = atomic_load_explicit(&t->ring_writing, memory_order_relaxed);
+        atomic_store_explicit(&t->ring_writing, n + 1, memory_order_seq_cst);
+        atomic_gc_object_mark_as_seen$push(page, slot);
+        atomic_store_explicit(&t->ring_writing, n, memory_order_seq_cst);
+    } else {
+        atomic_fetch_add_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
+        atomic_gc_object_mark_as_seen$push(page, slot);
+        atomic_fetch_sub_explicit(&gc_ring_writers, 1, memory_order_seq_cst);
+    }
 }
 
 static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) {
@@ -2194,6 +2230,11 @@ static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) 
         // After a bulk move, the epoch is incremented, so it won't match historicaly processed pages anyway
 
         && page->head.scanner.processed_by_epoch == epoch) {
+#ifdef YAFL_GC_WRITER_PROBE
+        // Test-only hook (tests/test_gc_writer_window.c): the bit is set and
+        // the page not yet pushed, where another executor may run the tail.
+        { extern void gc_test_writer_probe(void); gc_test_writer_probe(); }
+#endif
 
         for (size_t scan_index = 0; scan_index < sizeof(reprocess_page_list) / sizeof(gc_page_t*); ++scan_index)
             if (reprocess_page_list[scan_index] == page)
@@ -3007,15 +3048,21 @@ static void gc_fsa_mark_sweep$pump_ring(void) {
 }
 
 // Is any marking still outstanding? Under the pool lock. Work moves forward
-// through four places — a mutator's push in progress (gc_ring_writers), the
+// through four places — a mutator's push in progress (ring_writing), the
 // ring, in flight, the scan list — and each is entered before the previous is
 // left. So they are read in that order: work that moves on between two reads
 // is then seen in the later place. Read backwards, it can move from a place
 // not yet read into one already read, and be missed at both. (A claim takes a
 // page from the scan list into flight, and a publish puts it back or retires
 // it, under the pool lock this holds: neither moves while it reads.)
-static bool gc_mark_work_outstanding(void) {
+static bool gc_ring_writer_active(void) {
     if (atomic_load(&gc_ring_writers) != 0) return true;
+    for (struct gc_thread_info *t = atomic_load(&threads); t != NULL; t = t->next)
+        if (atomic_load(&t->ring_writing) != 0) return true;
+    return false;
+}
+static bool gc_mark_work_outstanding(void) {
+    if (gc_ring_writer_active()) return true;
     if (atomic_load(&reprocess_page_head) != atomic_load(&reprocess_page_tail)) return true;
     if (atomic_load(&gc_pages_in_flight) != 0) return true;
     return !list_empty(&pages_to_scan);
@@ -3195,7 +3242,7 @@ static NOINLINE_DEBUG bool gc_fsa_mark_sweep_body() {
 // zero concurrent executors, re-verifies completion, and either requeues work
 // (overflow re-scan) or retires the stage. Returns the stage to store.
 static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
-#ifdef YAFL_GC_PUMP_PROBE
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_WRITER_PROBE)
     { extern void gc_test_tail_probe(void); gc_test_tail_probe(); }
 #endif
     // Late ring entries (and any page they requeue) keep the stage alive.
@@ -3262,8 +3309,8 @@ static NOINLINE_DEBUG void gc_fsa_mark_sweep_tail() {
     }
 #endif
 }
-#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE)
-// tests/test_gc_pump_window.c, tests/test_gc_overflow_window.c: a mutator's
+#if defined(YAFL_GC_PUMP_PROBE) || defined(YAFL_GC_OVERFLOW_PROBE) || defined(YAFL_GC_WRITER_PROBE)
+// tests/test_gc_pump_window.c, test_gc_overflow_window.c, test_gc_writer_window.c: a mutator's
 // mark, a second executor's tail, other executors' marking, and the state the
 // probes wait for, by hand.
 void gc_test_drain_marking(void);

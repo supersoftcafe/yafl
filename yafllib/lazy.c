@@ -5,9 +5,17 @@
 // Atomic chain helpers shared by every compiler-emitted `lazy_fetch$<T>`.
 // Per-IR-type chain drain is compiler-generated (see
 // lowering/lazy_thunks.py); the runtime side is just the two atomic
-// primitives `lazy_chain_swap_sentinel` and `lazy_chain_step` in
-// yafl.h, plus this no-result drain (kept for symmetry — the lazy
-// framework itself uses the per-type drain).
+// primitives `lazy_chain_swap_sentinel` and `lazy_chain_step` (declared,
+// and their barrier explained, in yafl.h), plus this no-result drain (kept
+// for symmetry — the lazy framework itself uses the per-type drain).
+
+EXPORT object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
+    return GC_EXCHANGE(*(_Atomic(object_t*)*)flag_field, (object_t*)1);
+}
+
+EXPORT object_t* lazy_chain_step(object_t* head) {
+    return GC_EXCHANGE(((task_t*)head)->next, NULL);
+}
 
 EXPORT object_t* lazy_drain_waiters(object_t* flag_field) {
     task_t* head = (task_t*)lazy_chain_swap_sentinel(flag_field);   // barriered, see yafl.h
