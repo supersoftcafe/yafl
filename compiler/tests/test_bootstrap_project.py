@@ -179,6 +179,86 @@ class TestBootstrapProject(TestCase):
             self.assertEqual(self._python(src, root).splitlines(),
                              port_c.splitlines())
 
+    def test_an_UNREFERENCED_namespace_never_reaches_the_compile_loop(self):
+        """Pruning is by NAMESPACE, not by file or library: one file holds
+        three. `Shapes` is imported; `Shapes::Helper` is reached only through
+        a qualified reference from inside `Shapes`; `Unused` is named by
+        nothing, so it is dropped before the compile loop — its type error
+        is never seen."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _stage_stdlib_library(root)
+            shapes = root / "shapes"
+            shapes.mkdir()
+            (shapes / "yafl.toml").write_text(
+                'name = "shapes"\nnamespaces = ["Shapes", "Shapes::Helper", "Unused"]\n')
+            (shapes / "shapes.yafl").write_text(
+                "namespace Shapes\n"
+                "import System\n"
+                "\n"
+                "fun area(): System::Int\n"
+                "  ret Shapes::Helper::square(6) + 6\n"
+                "\n"
+                "namespace Unused\n"
+                "import System\n"
+                "\n"
+                "fun broken(): System::Int\n"
+                "  ret \"not an Int\"\n"
+                "\n"
+                "namespace Shapes::Helper\n"
+                "import System\n"
+                "\n"
+                "fun square(x: System::Int): System::Int\n"
+                "  ret x * x\n")
+            src = ("namespace Main\n"
+                   "import System\n"
+                   "import Shapes\n"
+                   "\n"
+                   "fun main(): System::Int\n"
+                   "  ret area()\n")
+
+            rc, port_c = self._port("project", src, root)
+            self.assertEqual(0, rc, port_c[:2000])
+            python_c = self._python(src, root)
+            self.assertTrue(python_c, "python produced no C")
+            self.assertEqual(python_c.splitlines(), port_c.splitlines())
+
+    def test_a_qualified_reference_is_NOT_relative_to_an_import(self):
+        """A qualified name resolves as written, never under an import: with
+        `import Shapes`, `System::Int` is the root's System, so it does not
+        reach `Shapes::System`. Nothing else names that namespace, so it is
+        pruned and its type error is never seen."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _stage_stdlib_library(root)
+            shapes = root / "shapes"
+            shapes.mkdir()
+            (shapes / "yafl.toml").write_text(
+                'name = "shapes"\nnamespaces = ["Shapes", "Shapes::System"]\n')
+            (shapes / "shapes.yafl").write_text(
+                "namespace Shapes\n"
+                "import System\n"
+                "\n"
+                "fun six(): System::Int\n"
+                "  ret 6\n"
+                "\n"
+                "namespace Shapes::System\n"
+                "import System\n"
+                "\n"
+                "fun broken(): System::Int\n"
+                "  ret \"not an Int\"\n")
+            src = ("namespace Main\n"
+                   "import Shapes\n"
+                   "\n"
+                   "fun main(): System::Int\n"
+                   "  ret six()\n")
+
+            rc, port_c = self._port("project", src, root)
+            self.assertEqual(0, rc, port_c[:2000])
+            python_c = self._python(src, root)
+            self.assertTrue(python_c, "python produced no C")
+            self.assertEqual(python_c.splitlines(), port_c.splitlines())
+
     def test_a_STORED_yl_library_compiles_the_same_as_a_directory(self):
         """The shipped shape: a library read out of a `.yl` archive."""
         import zipfile

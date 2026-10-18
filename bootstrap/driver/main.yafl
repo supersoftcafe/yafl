@@ -459,14 +459,13 @@ enum PmRes
 # alongside the C code, printed by main.py after the fact. Fixes a
 # divergence: this driver used to compute warnings in postmonoGate and drop
 # them on success, while main.py always printed them. GatedResult is used
-# only by the c/project/ctest modes, never by the dump modes that share
-# plain PmRes/PmOk.
+# only by the compile path (the CLI and the project modes), never by the dump
+# modes that share plain PmRes/PmOk.
 class [final] GatedResult(grRes: PmRes, grWarns: Set<PErr>)
 
 # parseMulti, not parseProgram: a `#FILE#`-marked stream parses per part in
-# canonical (name-sorted) order exactly as mode c does — so every telescoping
-# dump mode can compare the SAME framing the C contract runs under. A plain
-# single file is unchanged (parseMulti falls back to one-part parse).
+# canonical (name-sorted) order, as compiler.py's __tokenize_and_parse does. A
+# plain single file is unchanged (parseMulti falls back to one-part parse).
 fun postmonoRes(text): PmRes => match(parseMulti(text))
   (stmts: List<PStmt>) => match(converge(stmts))
     (ok: CvOk)      => postmonoRes2(ok.cvStatements)
@@ -474,7 +473,7 @@ fun postmonoRes(text): PmRes => match(parseMulti(text))
   ()                   => PmText("parse error\n", 1)
 
 # Dump-mode telescoping only: never runs the check phase, so it never needs
-# warnings carried forward. The C/project/ctest path goes through
+# warnings carried forward. The compile path goes through
 # postmonoRes2Gated instead — see the comment there for why the two split.
 fun postmonoRes2(stmts0: List<PStmt>): PmRes
   let lowered = lowerLambdaGlobals(stmts0)
@@ -512,9 +511,7 @@ fun postmonoRes2Gated(stmts0: List<PStmt>, enabledWarnings: Set<String>): GatedR
 # GatedResult whatever fails later, and are reported (compiler.py's _Failed).
 fun postmonoGate(stmts, enabledWarnings: Set<String>): GatedResult
   let r = rootResolver(stmts)
-  # requireMain false: cStage reports a missing main itself, in the bare
-  # spelling the byte-parity contract pins.
-  let d = collectDiagnostics2(stmts, r, false, enabledWarnings)
+  let d = collectDiagnostics(stmts, r, enabledWarnings)
   if !isEmpty(d.dFails)
     ret GatedResult(PmText(printedDiagnostics(d.dFails), 1), noErrs())
   let lin = checkLinearity(stmts, r)
@@ -664,25 +661,12 @@ fun exitsStageDump(stmts: List<PStmt>): (out: String, code: Int)
     ? (dumpProgram(assignBlockExits(lowerSimpleClasses(convertLambdasToFunctions(lowerLazyLets(lowered))))), 0)
     : (printedDiagnostics(fwd), 0)
 
-# `c` mode: the full -O0 pipeline to C text — the byte contract diffs it
-# against Python __create_c_code output (PYTHONHASHSEED=0) per corpus file.
-# stdin may be a MULTI-FILE stream — each part preceded by a `#FILE# <name>`
-# line — so the contract compiles stdlib + target as a whole program; a
-# stream without markers is a single file named "x" (the stage convention).
-# Per-phase spans: System::Log::timed runs each phase inside its span, so the
-# timing brackets exactly the phase it names. With YAFL_LOG unset every span is
-# a foreign call and an integer compare — see System::Log on why the level test
-# is inside the call rather than at the site.
-fun cMode(text, optLevel, profile,
-         enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
-  ret match(timed("compile", "parse", () => parseMulti(text)))
-    (stmts: List<PStmt>) => cModeConverge(stmts, optLevel, profile, baseHeaders(), enabledWarnings)
-    ()                   => (prepend("parse error\n", List()), 1, "")
-
 # yafl.h is the runtime ABI baseline — the entrypoint references it — so it is
 # always included and loaded libraries append their own.
 fun baseHeaders() => prepend("yafl.h", List())
 
+# The pipeline over an assembled statement set — compile_project's
+# __iterate_and_compile — to C text, or the printed diagnostics.
 fun cModeConverge(stmts, optLevel, profile,
                   headers: List<System::String>,
                   enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
@@ -693,7 +677,7 @@ fun cModeConverge(stmts, optLevel, profile,
                     |> (outs, code) => (outs, code, warnsText)
     (tx: PmText) => (prepend(tx.pmOut, List()), noProgramCode(tx.pmCode), warnsText)
 
-# A C mode that ends in diagnostics produced no program, so it fails whatever
+# A compile that ends in diagnostics produced no program, so it fails whatever
 # code the stage dumps give the same text: they compare it with compiler.py's
 # stage helpers, which return diagnostics as the dump. main.py exits 1 for any
 # compile error.
@@ -720,16 +704,9 @@ fun parseMulti(text)
   ret parseSorted(collectParts(text, 0, Dict()))
 
 # ── project mode: COMPILE WITH LIBRARIES ─────────────────────────────────────
-# The mirror of compiler.py `compile_project`, and the point of all the
-# discovery machinery: `c` mode compiles a statement set the caller assembled,
-# so every library had to be concatenated into the stream by hand. `project`
-# takes the USER's program and resolves `import Some::Library` itself.
-#
-# The two modes are the same layering Python has — `c` is the pipeline over a
-# given statement set, `project` is that plus the loader — which is why `c` is
-# left exactly as it was: ~25 test modules pin it as the byte contract, and
-# giving it a second, environment-dependent input would make that contract
-# depend on YAFL_PATH.
+# The mirror of compiler.py `compile_project`: the USER's program, with every
+# library it references discovered on the search path, loaded and pruned to
+# the namespaces it reaches.
 
 fun projectMode(text, optLevel, profile,
                 enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String) => match(parseMulti(text))
@@ -738,7 +715,7 @@ fun projectMode(text, optLevel, profile,
 
 fun projectTestMode(text, optLevel, profile,
                     enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String) => match(parseMulti(text))
-  (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, true, enabledWarnings)
+  (stmts: List<PStmt>) => testCompile(stmts, optLevel, profile, enabledWarnings)
   ()                   => (prepend("parse error\n", List()), 1, "")
 
 fun projectCompile(user, optLevel, profile,
@@ -795,12 +772,51 @@ fun linkSpecFor2(user: List<PStmt>): (out: String, code: Int) => match(loadProje
 
 class [final] ProjectLoad(plStmts: List<PStmt>, plLibs: List<Library>)
 
-fun loadProject(user: List<PStmt>, extra: List<String>) => match(availableLibraries(extra))
+fun loadProject(user: List<PStmt>, extra: List<String>): ProjectLoad|String|ParseErrors => match(availableLibraries(extra))
   (e: LibsErr) => e.libsWhy
   (ok: LibsOk) => match(namespaceIndex(ok.libsFound))
     (why: String)        => why
-    (idx: List<NsEntry>) => projectRounds(user, idx, List(),
-                                          List(), List())
+    (idx: List<NsEntry>) => match(projectRounds(user, idx, List(), List(), List()))
+      (why2: String)      => why2
+      (pe: ParseErrors)   => pe
+      (pr: ProjectLoad)   => ProjectLoad(referencedNamespacesOnly(pr.plStmts, user,
+                                           flatMap(pr.plLibs, (l) => l.libManifest.libNamespaces)),
+                                         pr.plLibs)
+
+# ── namespace pruning ────────────────────────────────────────────────────────
+# Ported from compiler.py `_referenced_namespaces_only`: the library statements
+# whose namespace the program reaches, in their original order (statement
+# order is emission order). The worklist above loads WHOLE libraries; this is
+# the same candidate fixpoint at NAMESPACE granularity, from the user's
+# statements through each namespace as it is reached. A statement's home is
+# the longest owned namespace prefixing its qualified name — not its file,
+# which may declare several. A statement with no home is always kept.
+
+class [final] Homed(hStmt: PStmt, hNs: String)
+
+fun referencedNamespacesOnly(lib: List<PStmt>, user: List<PStmt>,
+                             owned: List<String>): List<PStmt>
+  let homed = map(lib, (st) => Homed(st, homeOf(stmtName(st), owned)))
+  let homeless = filter(homed, (h) => h.hNs == "") |> (hs) => map(hs, (h) => h.hStmt)
+  let reached = reachNamespaces(concat(user, homeless), homed, Set(owned), Set())
+  ret filter(homed, (h) => h.hNs == "" || contains(reached, h.hNs))
+    |> (hs) => map(hs, (h) => h.hStmt)
+
+# Of two owned namespaces both prefixing a name, one prefixes the other: the
+# longer is the one that starts with the shorter.
+fun homeOf(name, owned: List<String>) => fold(owned, "", (best, ns) =>
+  startsWith(name, ns + "::") && (best == "" || startsWith(ns, best + "::")) ? ns : best)
+
+# NOT [tail]: the recursion sits under a ternary, and the depth is a chain of
+# namespaces each reached only through the previous — a handful of frames.
+fun reachNamespaces(frontier: List<PStmt>, homed: List<Homed>,
+                    owned: Set<String>, reached: Set<String>): Set<String>
+  let fresh = candidateNamespaces(declaredImports(frontier), qualifiedRefs(frontier))
+    |> (ns) => Set(filter(ns, (n) => contains(owned, n) && !contains(reached, n)))
+  ret isEmpty(fresh)
+    ? reached
+    : reachNamespaces(filter(homed, (h) => contains(fresh, h.hNs)) |> (hs) => map(hs, (h) => h.hStmt),
+                      homed, owned, union(reached, fresh))
 
 # `while frontier:` — each round loads the libraries the CURRENT statements
 # reference, and what was just loaded becomes the next frontier, so a library
@@ -857,26 +873,17 @@ fun [tail] unitsLoop(ss: Chain<LibSource>, acc: List<PStmt>,
 # downstream then treats it as ordinary code (monomorphisation, async lowering
 # — so a test that suspends sequences with no special handling — and trim).
 #
-# Every name is FULLY QUALIFIED so it resolves without imports — and in
-# `projecttest` mode, referencing `System::Test::run` is itself what pulls the
-# System::Test library in through the namespace worklist, exactly as it does in
-# Python. In plain `ctest` mode there is no discovery and the caller's stream
-# must already contain System::Test, as it already contains the stdlib.
+# Every name is FULLY QUALIFIED so it resolves without imports — and
+# referencing `System::Test::run` is itself what pulls the System::Test library
+# in through the namespace worklist, exactly as it does in Python.
 
-fun cTestMode(text, optLevel, profile,
-             enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String) => match(parseMulti(text))
-  (stmts: List<PStmt>) => cTestInject(stmts, optLevel, profile, false, enabledWarnings)
-  ()                   => (prepend("parse error\n", List()), 1, "")
-
-fun cTestInject(stmts: List<PStmt>, optLevel, profile,
-                withLibs, enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
+fun testCompile(stmts: List<PStmt>, optLevel, profile,
+                enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
   ret match(testProgram(stmts))
     (why: String)        => (list1(why), 1, "")
     # The registry is part of the USER statements before the worklist runs,
     # which is what makes its `System::Test::run` reference load the library.
-    (user: List<PStmt>) => withLibs
-      ? projectCompile(user, optLevel, profile, enabledWarnings)
-      : cModeConverge(user, optLevel, profile, baseHeaders(), enabledWarnings)
+    (user: List<PStmt>) => projectCompile(user, optLevel, profile, enabledWarnings)
 
 # compile_project's `if test_mode:` block: the user's statements minus any
 # source `main`, plus the synthesised registry main — or the printed failure.
@@ -1155,20 +1162,8 @@ fun runWarnError(err: WrErr, i: IO): System::Int
   ret (w.io.close(), i.close(), 2) |> (c1, c2, result) => result
 
 fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
-  if mode == "c" || mode == "c1" || mode == "c2" || mode == "c3"
-    ret runC(text, mode == "c" ? 0 : mode == "c1" ? 1 : mode == "c2" ? 2 : 3, false, enabledWarnings, i)
-  # --test twins of the C modes: same pipeline, but the [test] functions
-  # are collected into a registry and a main is synthesised to drive them.
-  if mode == "ctest" || mode == "c1test" || mode == "c2test" || mode == "c3test"
-    ret runCTest(text, mode == "ctest" ? 0 : mode == "c1test" ? 1
-                     : mode == "c2test" ? 2 : 3, enabledWarnings, i)
-  # --profile twins of the C modes (Python's `--profile` flag; the mode
-  # string IS the port's option surface).
-  if mode == "cp" || mode == "c1p" || mode == "c2p" || mode == "c3p"
-    ret runC(text, mode == "cp" ? 0 : mode == "c1p" ? 1 : mode == "c2p" ? 2 : 3, true, enabledWarnings, i)
-  # `project` twins: the same pipeline, but libraries are DISCOVERED from the
-  # search path and prepended, instead of the caller concatenating them into
-  # the stream. This is compile_project; `c` above is __create_c_code.
+  # compile_project: libraries are DISCOVERED from the search path. The --test
+  # twins collect the [test] functions into a registry and synthesise a main.
   if projectLevel(mode) >= 0
     ret runProject(text, projectLevel(mode), false, enabledWarnings, i)
   if projectTestLevel(mode) >= 0
@@ -1203,26 +1198,12 @@ fun runMode(mode, text, enabledWarnings: Set<String>, i: IO): System::Int
   let code = w.v is IOError ? 1 : r.code
   ret (w.io.close(), i.close(), code) |> (c1, c2, result) => result
 
-# The C modes emit a LIST of fragments streamed to stdout in order — the
+# The project modes emit a LIST of fragments streamed to stdout in order — the
 # joined text was the compiler's one giant contiguous allocation (~83MB on a
 # self-host) and the only consumer is this write loop. Surviving warnings go
 # to STDERR, same channel and same point (after compilation, before any
 # other output) as main.py's own `for w in sorted(set(warnings)): print(w,
 # file=sys.stderr)` — this driver used to drop them (see GatedResult).
-fun runCTest(text, optLevel, enabledWarnings: Set<String>, i: IO): System::Int
-  let r = cTestMode(text, optLevel, false, enabledWarnings)
-  let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), chain(r.outs), false)
-  let code = w.failed2 ? 1 : r.code
-  ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
-
-fun runC(text, optLevel, profile, enabledWarnings: Set<String>, i: IO): System::Int
-  let r = cMode(text, optLevel, profile, enabledWarnings)
-  let wErr = writeAll(stderr(), r.warns)
-  let w = writeParts(stdout(), chain(r.outs), false)
-  let code = w.failed2 ? 1 : r.code
-  ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
-
 fun runProject(text, optLevel, profile,
                enabledWarnings: Set<String>, i: IO): System::Int
   let r = projectMode(text, optLevel, profile, enabledWarnings)

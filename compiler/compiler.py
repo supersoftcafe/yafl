@@ -785,13 +785,13 @@ def __print_errors(errors: list[Error]) -> str:
 
 def _candidate_namespaces(statements: list[s.Statement]) -> set[str]:
     """Namespaces a set of parsed statements might reference, as an
-    over-approximation used to decide which libraries to load.
+    over-approximation used to decide which libraries and namespaces to load.
 
     `import` is not mandatory, so we look at both the declared imports and every
-    namespace-qualified (`::`) reference in the AST, take every prefix of each, and
-    also compose each qualified reference under each import (a `A::B` reference may
-    be top-level or relative to an import `P`, giving `P::A::B`). Misses are
-    harmless — they simply match no library. See `docs/build-and-packaging.md`.
+    namespace-qualified (`::`) reference in the AST, and take every prefix of
+    each. A qualified reference resolves as written, never relative to an
+    import (the resolver applies imports to bare names only), so the two are
+    never composed. Prefixes that are not namespaces simply match nothing.
     """
     imports: set[str] = set()
     quals: set[str] = set()
@@ -814,14 +814,46 @@ def _candidate_namespaces(statements: list[s.Statement]) -> set[str]:
         return {"::".join(parts[:i]) for i in range(1, len(parts) + 1)}
 
     candidates: set[str] = set()
-    for p in imports:
-        candidates |= prefixes(p)
-    for q in quals:
-        candidates |= prefixes(q)
-    for p in imports:
-        for q in quals:
-            candidates |= prefixes(f"{p}::{q}")
+    for name in imports | quals:
+        candidates |= prefixes(name)
     return candidates
+
+
+def _referenced_namespaces_only(lib_statements: list[s.Statement],
+                                user_statements: list[s.Statement],
+                                owned: set[str]) -> list[s.Statement]:
+    """The library statements whose namespace the program reaches, in their
+    original order (statement order is emission order).
+
+    The library worklist loads WHOLE libraries, but most of a library is
+    usually unreferenced, and every statement loaded costs every pass of the
+    compile loop. So the same `_candidate_namespaces` fixpoint runs again at
+    namespace granularity: from the user's statements, through each namespace
+    as it is reached, until nothing new is named. A statement belongs to the
+    LONGEST owned namespace prefixing its qualified name — not to its file,
+    since one file may declare several namespaces. One that belongs to none is
+    always kept, and its references count.
+
+    Names the compiler itself introduces (regex globals, lazy machinery, the
+    drops' `Drop`, …) are not in the source, so they are not seen here: they
+    must live in a namespace every program reaches — today, `System`."""
+    def namespace_of(st: s.Statement) -> str | None:
+        name = getattr(st, "name", "")
+        return max((ns for ns in owned if name.startswith(f"{ns}::")), key=len, default=None)
+
+    homes = [namespace_of(st) for st in lib_statements]
+    members: dict[str, list[s.Statement]] = {}
+    for st, ns in zip(lib_statements, homes):
+        if ns is not None:
+            members.setdefault(ns, []).append(st)
+
+    reached: set[str] = set()
+    frontier = list(user_statements) + [st for st, ns in zip(lib_statements, homes) if ns is None]
+    while frontier:
+        new = (_candidate_namespaces(frontier) & members.keys()) - reached
+        reached |= new
+        frontier = [st for ns in sorted(new) for st in members[ns]]
+    return [st for st, ns in zip(lib_statements, homes) if ns is None or ns in reached]
 
 
 def _gather_libraries(use_stdlib: bool, lib_paths: list[str] | None):
@@ -958,10 +990,11 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
             next_frontier += stmts
         frontier = next_frontier
 
-    statements = lib_statements + list(user_statements)
     seen: set[int] = set()
     loaded_libs = [lib for lib in index.values()
                    if id(lib) in loaded_ids and not (id(lib) in seen or seen.add(id(lib)))]
+    owned = {ns for lib in loaded_libs for ns in lib.namespaces}
+    statements = _referenced_namespaces_only(lib_statements, user_statements, owned) + list(user_statements)
     link_spec = libraries.link_spec_for(loaded_libs)
 
     # yafl.h is the runtime ABI baseline (the entrypoint references it), so it is

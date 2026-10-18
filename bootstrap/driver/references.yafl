@@ -4,7 +4,7 @@
 # WHY THIS EXISTS: `import` is not mandatory, so a file may write `A::B::c`
 # with no import at all. compiler.py's `_candidate_namespaces` therefore feeds
 # the library loader BOTH halves — the declared imports and every qualified
-# reference in the AST — and composes them. Collecting only the imports makes
+# reference in the AST. Collecting only the imports makes
 # the port load a strictly narrower set than the reference compiler, and since
 # the loaded statements ARE the program, a difference there is a difference in
 # the emitted C. This file is the second half.

@@ -11,8 +11,8 @@ existing contracts could not see it: test_bootstrap_check drives the port's
 `check` mode directly, so it proved the check phase WORKS while saying nothing
 about whether the C path ever calls it.
 
-So this test deliberately goes through the C path on both sides — Python's
-`compile()`, the port's `c1` — and asserts refusal, not just a diagnostic.
+So this test deliberately goes through the C path on both sides — each
+compiler's command line, at -O1 — and asserts refusal, not just a diagnostic.
 
 Both compilers print errors to STDOUT and exit non-zero (compiler.py's
 __print_errors uses plain print; main.py exits 1 when compile_project returns
@@ -21,13 +21,8 @@ compared too, since a refusal for the wrong reason is its own bug.
 """
 from __future__ import annotations
 
-import os
-import subprocess
-
-
-from tests.testutil import stdlib_files, stdlib_unit_name, TimedTestCase as TestCase
-from tests.testutil import _RUN_ENV
-from tests.testutil import compile_c
+from tests.testutil import (compile_c_result, port_compiler_command, python_c_result,
+                            TimedTestCase as TestCase)
 
 
 _PRELUDE = "namespace Test\nimport System\n\n"
@@ -50,61 +45,41 @@ def _program(body: str) -> str:
     return f"{_PRELUDE}fun main(): System::Int\n{body}\n  ret 0\n"
 
 
-def _stream(text: str) -> str:
-    """stdlib + the case, as the `#FILE#`-marked stream mode c1 expects.
-
-    Python loads the stdlib itself via use_stdlib; the port is handed a whole
-    program, so the two see the same sources either way — under the same unit
-    NAMES, which is what makes a diagnostic naming a stdlib file compare
-    equal on both sides."""
-    def terminated(t: str) -> str:
-        return t if t.endswith("\n") else t + "\n"
-    parts = [f"#FILE# {stdlib_unit_name(p)}\n{terminated(p.read_text())}"
-             for p in stdlib_files()]
-    parts.append(f"#FILE# case.yafl\n{terminated(text)}")
-    return "".join(parts)
-
-
 class TestBootstrapReject(TestCase):
     _TIMEOUT = 1800
 
     @classmethod
     def setUpClass(cls):
-        from tests.testutil import shared_bootstrap_binary
-        cls.binary = shared_bootstrap_binary()
+        cls.port = port_compiler_command()
 
-    def _port(self, text: str) -> subprocess.CompletedProcess:
-        return subprocess.run([self.binary, "--stage", "c1"], input=_stream(text),
-                              capture_output=True, timeout=300, text=True,
-                              env=_RUN_ENV)
+    def _port(self, text: str):
+        return compile_c_result(text, "case.yafl", optimization_level=1, command=self.port)
 
     def test_both_reject_invalid_programs(self):
         for name, body in _INVALID:
             with self.subTest(case=name):
                 text = _program(body)
 
-                py = compile_c(text, "case.yafl", optimization_level=1)
+                py = python_c_result(text, "case.yafl", optimization_level=1).c
                 self.assertFalse(
                     py, f"{name}: PYTHON accepted a program it must reject")
 
                 r = self._port(text)
                 self.assertNotEqual(
-                    0, r.returncode,
+                    0, r.rc,
                     f"{name}: PORT exited 0 on a program Python rejects\n"
-                    f"  emitted {len(r.stdout)} bytes of C")
-                self.assertNotIn(
-                    "#include", r.stdout,
-                    f"{name}: PORT emitted C for a rejected program")
+                    f"  emitted {len(r.c)} bytes of C")
+                self.assertEqual(
+                    "", r.c, f"{name}: PORT emitted C for a rejected program")
 
     def test_valid_program_still_compiles(self):
         """The gate must refuse invalid programs, not everything — without this
         a check phase that always failed would pass the test above."""
         text = _program("  let x = 1")
 
-        py = compile_c(text, "case.yafl", optimization_level=1)
+        py = python_c_result(text, "case.yafl", optimization_level=1).c
         self.assertTrue(py, "python rejected a valid program")
 
         r = self._port(text)
-        self.assertEqual(0, r.returncode,
-                         f"port rejected a valid program:\n{r.stdout[:2000]}")
-        self.assertIn("#include", r.stdout, "port emitted no C for a valid program")
+        self.assertEqual(0, r.rc, f"port rejected a valid program:\n{r.describe()[:2000]}")
+        self.assertIn("#include", r.c, "port emitted no C for a valid program")

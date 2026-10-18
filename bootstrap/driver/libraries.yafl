@@ -479,12 +479,11 @@ fun [tail] nsSeek(es: Chain<NsEntry>, name: String) => match(es)
 
 # ── candidate namespaces ────────────────────────────────────────────────────
 # Ported from compiler.py `_candidate_namespaces`. `import` is NOT mandatory —
-# a qualified `A::B::c` may be written with no import at all, and may equally
-# be top-level or relative to one of the file's imports. So the candidate set
-# is an over-approximation: every prefix of every import, every prefix of every
-# qualified reference, and every prefix of each composition `import::qualified`.
-# A miss is harmless (it matches no library); a MISS THAT MATTERED would be a
-# library silently not loaded, which is why this errs wide.
+# a qualified `A::B::c` may be written with no import at all. So the candidate
+# set is every prefix of every import and of every qualified reference. A
+# qualified reference resolves as written, never relative to an import (the
+# resolver applies imports to bare names only), so the two are never composed.
+# A prefix that is not a namespace simply matches nothing.
 
 fun prefixesOf(qualified) => prefixWalk(chain(map(split(qualified, "::"), stripUnique)), "",
                                         builder())
@@ -499,20 +498,12 @@ fun [tail] prefixWalk(ps: Chain<String>, acc,
 
 fun candidateNamespaces(imports: List<String>, quals: List<String>)
   let a = addAllPrefixes(chain(imports), builder())
-  let b = addAllPrefixes(chain(quals), a)
-  ret dedupe(build(composeAll(chain(imports), quals, b)))
+  ret dedupe(build(addAllPrefixes(chain(quals), a)))
 
 fun [tail] addAllPrefixes(xs: Chain<String>,
                           [terminal] b: ListBuilder<String>) => match(xs)
   (nil: ChainEnd) => b
   (l: ChainLink)  => addAllPrefixes(l.next, pushAll(b, prefixesOf(l.value)))
-
-# Each import composed with each qualified reference: `P` + `A::B` -> `P::A::B`.
-fun [tail] composeAll(imps: Chain<String>, quals: List<String>,
-                      [terminal] b: ListBuilder<String>) => match(imps)
-  (nil: ChainEnd) => b
-  (l: ChainLink)  => composeAll(l.next, quals,
-      addAllPrefixes(chain(map(quals, (q) => l.value + "::" + q)), b))
 
 fun dedupe(xs: List<String>): List<String> => sort(Set(xs))
 

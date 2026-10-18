@@ -13,5 +13,5 @@ class TestBootstrapCO2(BootstrapCBase):
     def test_c_matches_python_O2(self):
         # -O2 adds the bounded small-function inline fixpoint (IR inliner
         # + trim to shape stability) on both sides.
-        self._compare_corpus(2, "c2")
+        self._compare_corpus(2)
 
