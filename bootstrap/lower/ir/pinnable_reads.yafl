@@ -36,7 +36,7 @@ import Bootstrap::StdlibCandidates
 
 fun resolvePinnableReads(a): CgApp
   let names = prNames(chain(appObjects(a)), setEmpty())
-  ret isEmpty(names.setIx)
+  ret setIsEmpty(names)
     ? a
     : appWithFunctions(a, map(appFunctions(a),
                               (f) => prFunction(f, names)))
