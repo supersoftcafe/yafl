@@ -158,11 +158,19 @@ def compiler_under_test() -> str:
     return name
 
 
+def python_compiler_command() -> list[str]:
+    """argv[0..] of the Python compiler, whichever compiler is under test."""
+    return [_sys0.executable, str(_MAIN_PY)]
+
+
+def port_compiler_command() -> list[str]:
+    """argv[0..] of the port, whichever compiler is under test."""
+    return [shared_bootstrap_binary()]
+
+
 def compiler_command() -> list[str]:
     """argv[0..] of the compiler under test, before its arguments."""
-    if compiler_under_test() == "python":
-        return [_sys0.executable, str(_MAIN_PY)]
-    return [shared_bootstrap_binary()]
+    return python_compiler_command() if compiler_under_test() == "python" else port_compiler_command()
 
 
 _TEST_LIBS: "tempfile.TemporaryDirectory | None" = None
@@ -180,26 +188,30 @@ def test_libraries() -> Path:
     System::Test library directory, which resolves inside itself."""
     global _TEST_LIBS
     if _TEST_LIBS is None:
-        import libraries
-        tmp = tempfile.TemporaryDirectory(prefix="yafl-test-libs-")
-        root = Path(tmp.name)
-        system = root / "system"
-        system.mkdir()
-        sources = stdlib_files()
-        names = libraries._scan_namespaces(sources) or ("System",)
-        (system / "yafl.toml").write_text(
-            'name = "system"\nnamespaces = [%s]\n'
-            'headers = ["yafl.h"]\nstatic_libs = ["libyafl.a"]\n'
-            % ", ".join(f'"{n}"' for n in names))
-        for src in sources:
-            dest = system / stdlib_unit_name(src)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dest)
-        (system / "yafl.h").symlink_to((_YAFLLIB_DIR / "yafl.h").resolve())
-        (system / "libyafl.a").symlink_to(Path(_LIBYAFL_A).resolve())
-        (root / "system-test").symlink_to(_SYSTEM_TEST_LIB.resolve())
-        _TEST_LIBS = tmp
+        _TEST_LIBS = _build_test_libraries()
     return Path(_TEST_LIBS.name)
+
+
+def _build_test_libraries() -> "tempfile.TemporaryDirectory":
+    import libraries
+    tmp = tempfile.TemporaryDirectory(prefix="yafl-test-libs-")
+    root = Path(tmp.name)
+    system = root / "system"
+    system.mkdir()
+    sources = stdlib_files()
+    names = libraries._scan_namespaces(sources) or ("System",)
+    (system / "yafl.toml").write_text(
+        'name = "system"\nnamespaces = [%s]\n'
+        'headers = ["yafl.h"]\nstatic_libs = ["libyafl.a"]\n'
+        % ", ".join(f'"{n}"' for n in names))
+    for src in sources:
+        dest = system / stdlib_unit_name(src)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+    (system / "yafl.h").symlink_to((_YAFLLIB_DIR / "yafl.h").resolve())
+    (system / "libyafl.a").symlink_to(Path(_LIBYAFL_A).resolve())
+    (root / "system-test").symlink_to(_SYSTEM_TEST_LIB.resolve())
+    return tmp
 
 
 class Compiled:
@@ -212,17 +224,20 @@ class Compiled:
         return f"exit {self.rc}\n{self.stdout}{self.stderr}"
 
 
-def run_compiler(args: list[str], cwd: Path, timeout: int = 900) -> subprocess.CompletedProcess:
-    """The compiler under test with `-L <test libraries>` and `args`, in `cwd`.
-    YAFL_PATH is cleared so nothing but the test libraries is found."""
+def run_compiler(args: list[str], cwd: Path, timeout: int = 900,
+                 command: "list[str] | None" = None) -> subprocess.CompletedProcess:
+    """`command` (default: the compiler under test) with `-L <test libraries>`
+    and `args`, in `cwd`. YAFL_PATH is cleared so nothing but the test
+    libraries is found."""
     env = {k: v for k, v in os.environ.items() if k != "YAFL_PATH"}
-    return subprocess.run([*compiler_command(), "-L", str(test_libraries()), *args],
+    return subprocess.run([*(command or compiler_command()), "-L", str(test_libraries()), *args],
                           cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
 
 
 def _compile(source: "str | list[tuple[str, str]]", filename: str, out_args: list[str],
              optimization_level: int, profile: bool,
-             warnings: "list[str] | tuple[str, ...]", test: bool, tmp: Path) -> subprocess.CompletedProcess:
+             warnings: "list[str] | tuple[str, ...]", test: bool, tmp: Path,
+             command: "list[str] | None" = None) -> subprocess.CompletedProcess:
     """`source` is one program text (written as `filename`), or several
     `(filename, text)` units compiled together."""
     units = [(filename, source)] if isinstance(source, str) else source
@@ -231,19 +246,20 @@ def _compile(source: "str | list[tuple[str, str]]", filename: str, out_args: lis
     args = [f"-O{optimization_level}", *(f"-W{w}" for w in warnings),
             *(["--profile"] if profile else []), *(["--test"] if test else []),
             *out_args, *(name for name, _ in units)]
-    return run_compiler(args, tmp)
+    return run_compiler(args, tmp, command=command)
 
 
 def compile_c_result(source: "str | list[tuple[str, str]]", filename: str = "test.yafl", *,
                      optimization_level: int = 0, profile: bool = False,
                      warnings: "list[str] | tuple[str, ...]" = (),
-                     test: bool = False) -> Compiled:
+                     test: bool = False, command: "list[str] | None" = None) -> Compiled:
     """Compile `source` (with the stdlib on the path) to C. `c` is "" on failure.
-    `source` is one program, or a list of `(filename, text)` units."""
+    `source` is one program, or a list of `(filename, text)` units. `command`
+    picks the compiler (default: the one under test)."""
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         r = _compile(source, filename, ["-c", "out.c"], optimization_level, profile,
-                     warnings, test, tmp)
+                     warnings, test, tmp, command)
         c_path = tmp / "out.c"
         c_text = c_path.read_text() if r.returncode == 0 and c_path.exists() else ""
         return Compiled(r.returncode, r.stdout, r.stderr, c_text)
@@ -466,6 +482,23 @@ def cached_reference(kind: str, text: str, compute, extra: str = "") -> str:
     except OSError:
         pass    # cache is best-effort; never fail the test over it
     return out
+
+
+def python_c_result(source: "str | list[tuple[str, str]]", filename: str = "test.yafl",
+                    **kw) -> Compiled:
+    """`compile_c_result` on the PYTHON compiler — the parity reference the
+    port is held to — from the reference cache when it has one. Both sides are
+    the compilers' own command lines over `test_libraries()`, so a parity test
+    runs the real loader, never a hand-assembled statement set."""
+    import json
+    units = [(filename, source)] if isinstance(source, str) else source
+
+    def compute() -> str:
+        r = compile_c_result(source, filename, command=python_compiler_command(), **kw)
+        return json.dumps([r.rc, r.stdout, r.stderr, r.c])
+    text = "\0".join(f"{name}\0{body}" for name, body in units)
+    return Compiled(*json.loads(cached_reference("cli", text, compute,
+                                                 extra=repr(sorted(kw.items())))))
 
 
 def shared_bootstrap_binary() -> str:

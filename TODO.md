@@ -56,10 +56,9 @@ Remedies to design (BOTH compilers, in preference order):
      ledgered memo traps (d61ffd5: value-keyed memos that pay a deep walk
      per hit made things WORSE; key by the uid STRINGS, not specs).
 
-Gate for any change here: whole-stream c1 byte parity MUST stay green
-(port c1 vs the _python_c_text MIRROR framing — sorted per-file parse,
-just_testing=True, yafl.h; NEVER compare against c.compile output), plus
-the full suite, plus a re-measured A/B pair. Success = peak RSS back
+Gate for any change here: the self-compile's byte parity MUST stay green
+(selfcompile.py --expect, the ctest gate), plus the full suite, plus a
+re-measured A/B pair. Success = peak RSS back
 toward ~1.2-1.4 GB with wall no worse.
 
 (Fixed 2026-08-12, for context: the two-generic-match silent abort — a bare
@@ -90,7 +89,7 @@ A `corpus_converge/*.yafl` file with no `namespace` + `import System` (and no
 self-contained prelude of its own) resolves NOTHING — `Int`, `String`, `+` all
 fail — so the port emits a few hundred bytes of error text where it should emit
 tens of thousands of bytes of C. The parity test still passes, because
-`_python_c_text` produces the SAME error text: a dud test is indistinguishable
+the Python compiler prints the SAME error text: a dud test is indistinguishable
 from a green one.
 
 Known duds, each carrying a comment claiming to pin a specific codegen
@@ -109,10 +108,10 @@ port-vs-Python differences may be hiding behind them.
 Verify any corpus file is real before believing it:
 
     from tests import bootstrap_c_base as b
-    from tests.testutil import shared_bootstrap_binary
+    from tests.testutil import compile_c_result, port_compiler_command
     t = next(p for p in b._CORPUS if p.name == NAME)
-    print(len(b._run_port_c(shared_bootstrap_binary(), b._port_stream(t), 'c1')))
-    # hundreds = dud; tens of thousands = real
+    print(len(compile_c_result(t.read_text(), t.name, command=port_compiler_command()).c))
+    # 0 = dud (it does not compile); tens of thousands = real
 
 (Found 2026-08-29 when `bind_parse_state.yafl` shipped in f32c8c1 as a dud and
 was fixed the same session.)

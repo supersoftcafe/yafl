@@ -12,4 +12,4 @@ from tests.bootstrap_c_base import BootstrapCBase
 
 class TestBootstrapCO2P(BootstrapCBase):
     def test_c_matches_python(self):
-        self._compare_corpus(2, "c2p", profile=True)
+        self._compare_corpus(2, profile=True)

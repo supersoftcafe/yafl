@@ -6,10 +6,15 @@ tests/bootstrap_c_base.py for the shared fixture.
 from __future__ import annotations
 
 import random
+from pathlib import Path
 
-from tests.bootstrap_c_base import (BootstrapCBase, _CORPUS, _STDLIB,
-                                    _port_stream, _python_c_text,
-                                    _run_port_c, _terminated, _unit_name)
+from tests.bootstrap_c_base import BootstrapCBase
+from tests.testutil import compile_c_result, python_c_result
+
+# Several units of ONE program — small [test] files, built as a test binary.
+_UNITS = [Path(__file__).parent.parent / "yafl_tests" / name
+          for name in ("args.yafl", "closure_capture_names.yafl",
+                       "index_operator.yafl", "lambda_lift.yafl")]
 
 
 class TestBootstrapCOrder(BootstrapCBase):
@@ -19,24 +24,23 @@ class TestBootstrapCOrder(BootstrapCBase):
         different order used to emit different C — which made the byte
         contract depend on every caller ordering its inputs by hand. Both
         compilers now sort by unit NAME — the path relative to the unit's
-        root, which is the only key the port has: it sees `#FILE# <name>`.
-        This guards that.
+        root. A library's units are ordered by the loader; this guards the
+        program's own, handed over in whatever order the command line lists
+        them.
 
-        The shuffled stream must name each unit EXACTLY as the canonical one
-        does: the name feeds hash6 and so feeds the emitted C, and renaming
-        the inputs would make this test fail for a reason that has nothing to
-        do with their order."""
-        target = _CORPUS[0]
-        canonical = _run_port_c(self.binary, _port_stream(target), "c")
-        self.assertTrue(canonical, "port produced no C for the canonical order")
-        files = _STDLIB + [target]
+        Every ordering names each unit EXACTLY as the canonical one does: the
+        name feeds hash6 and so feeds the emitted C, and renaming the inputs
+        would make this test fail for a reason that has nothing to do with
+        their order."""
+        units = [(p.name, p.read_text()) for p in _UNITS]
+        canonical = compile_c_result(units, test=True, command=self.port)
+        self.assertTrue(canonical.c, f"port produced no C for the canonical order\n"
+                                     f"{canonical.describe()}")
         for seed in (1, 2):
-            shuffled = list(files)
+            shuffled = list(units)
             random.Random(seed).shuffle(shuffled)
-            stream = "".join(f"#FILE# {_unit_name(q)}\n{_terminated(q)}"
-                             for q in shuffled)
-            self.assertEqual(canonical, _run_port_c(self.binary, stream, "c"),
+            self.assertEqual(canonical.c,
+                             compile_c_result(shuffled, test=True, command=self.port).c,
                              f"port C changed when inputs were shuffled (seed {seed})")
-        self.assertEqual(canonical.splitlines(),
-                         _python_c_text(target.name, 0).splitlines(),
-                         "port and Python disagree on the canonical order")
+        self.assert_same_compile(python_c_result(units, test=True), canonical,
+                                 "canonical order")

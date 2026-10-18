@@ -22,24 +22,8 @@ the USER RULING that ambience applies to concrete use sites only.
 """
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
-
-from tests.testutil import stdlib_files, stdlib_unit_name, TimedTestCase as TestCase
-from tests.testutil import _RUN_ENV
-from tests.testutil import compile_c
-
-_REPO = Path(__file__).parent.parent.parent
-_STDLIB = stdlib_files()
-
-
-def _stream(src: str) -> str:
-    def terminated(t: str) -> str:
-        return t if t.endswith("\n") else t + "\n"
-    parts = [f"#FILE# {stdlib_unit_name(p)}\n{terminated(p.read_text())}" for p in _STDLIB]
-    parts.append(f"#FILE# case.yafl\n{terminated(src)}")
-    return "".join(parts)
+from tests.testutil import (compile_c_result, port_compiler_command, python_c_result,
+                            TimedTestCase as TestCase)
 
 
 class TestBootstrapInstances(TestCase):
@@ -47,8 +31,7 @@ class TestBootstrapInstances(TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from tests.testutil import shared_bootstrap_binary
-        cls.binary = shared_bootstrap_binary()
+        cls.port = port_compiler_command()
 
     def test_both_reject_ambient_for_a_caller_placeholder(self):
         """USER RULING: ambience applies to CONCRETE use sites only — a caller
@@ -60,13 +43,11 @@ class TestBootstrapInstances(TestCase):
                               ("_NOT_AMBIENT_ERR", "tagOf")):
             with self.subTest(case=const):
                 src = getattr(m, const)
-                py = compile_c(src, "case.yafl", optimization_level=1)
-                self.assertFalse(py, f"{const}: python accepted it")
+                py = python_c_result(src, "case.yafl", optimization_level=1)
+                self.assertNotEqual(0, py.rc, f"{const}: python accepted it")
 
-                r = subprocess.run([self.binary, "--stage", "c1"], input=_stream(src),
-                                   capture_output=True, timeout=600, text=True,
-                                   env=_RUN_ENV)
-                self.assertNotEqual(0, r.returncode, f"{const}: port accepted it")
+                r = compile_c_result(src, "case.yafl", optimization_level=1, command=self.port)
+                self.assertNotEqual(0, r.rc, f"{const}: port accepted it")
                 self.assertIn(wanted, r.stdout,
                               f"{const}: port rejected it, but its diagnostic "
                               f"never mentions '{wanted}'")

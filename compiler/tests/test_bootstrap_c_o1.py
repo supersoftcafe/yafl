@@ -14,5 +14,5 @@ class TestBootstrapCO1(BootstrapCBase):
         # bounds_elim, dead stores, static-object promotion, and the
         # pre-async collapse fixpoint (struct/tag/discriminator folds,
         # string concat/accumulation) plus stack promotion, both sides.
-        self._compare_corpus(1, "c1")
+        self._compare_corpus(1)
 

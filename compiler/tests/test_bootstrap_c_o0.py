@@ -11,5 +11,5 @@ from tests.bootstrap_c_base import BootstrapCBase
 
 class TestBootstrapCO0(BootstrapCBase):
     def test_c_matches_python(self):
-        self._compare_corpus(0, "c")
+        self._compare_corpus(0)
 

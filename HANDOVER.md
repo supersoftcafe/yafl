@@ -49,8 +49,8 @@ record, kept deliberately.
 - Never edit sources under a running suite. Kill workers by PROCESS TREE
   (`spawn_main` cmdlines dodge pkill -f; orphans burned a day).
 - A new pipeline pass goes into compiler.py, port postmonoRes3 AND
-  genericsDump, and ALL TEN hand-rolled harnesses (the tenth is
-  _python_c_text inside test_bootstrap_c.py).
+  genericsDump, and every hand-rolled stage harness (the test_bootstrap_*
+  stage modes). The C-parity modules run both CLIs, so they need nothing.
 - Positional AST-node construction: enumerate sites TREE-WIDE first
   (PsEnum had 17); new fields go at the END with defaults.
 - Port YAFL pitfalls: variant arms can't sit under `X|None` (two-level

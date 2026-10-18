@@ -2,7 +2,7 @@
 
   stage1: the PYTHON compiler compiles bootstrap/*.yafl at -O1 → ybootstrap₁
           (this is exactly the cached shared_bootstrap_binary).
-  stage2: ybootstrap₁ compiles the SAME sources (mode c1) → C₂ → clang → ybootstrap₂.
+  stage2: ybootstrap₁ compiles the SAME sources at -O1 → C₂ → clang → ybootstrap₂.
   stage3: ybootstrap₂ compiles the same sources again        → C₃.
 
 C₂ == C₃ proves the compiler reached a FIXED POINT: the binary built by the
@@ -28,40 +28,27 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.testutil import (stdlib_files, stdlib_unit_name, bootstrap_files,
-                            bootstrap_unit_name, TimedTestCase as TestCase)
-from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, static_link_for
+from selfcompile import compile_port
+from tests.testutil import test_libraries, TimedTestCase as TestCase
+from tests.testutil import _CLANG_BUILD_FLAGS, static_link_for
 
 _REPO = Path(__file__).parent.parent.parent
 _SELF_TIMEOUT = 8 * 3600   # a self-compile stage is GC-bound; be generous
 
-# A compiler-sized workload needs a big managed heap; the C-stack raise is
-# shared (testutil.raise_stack_limit). The heap was 6 GiB until the final
-# output-assembly append (one ~83 MB contiguous run) flaked on fragmentation;
-# the banded allocator fixed that, 12 GiB is belt-and-braces.
-_SELF_ENV = dict(_RUN_ENV, YAFL_HEAP_SIZE="12G")
+# A compiler-sized workload needs a big managed heap. It was 6 GiB until the
+# final output-assembly append (one ~83 MB contiguous run) flaked on
+# fragmentation; the banded allocator fixed that, 12 GiB is belt-and-braces.
+_SELF_HEAP = "12G"
 
 
-def _stream() -> str:
-    """The #FILE#-marked whole-program stream: stdlib then the bootstrap.
-    Every part is newline-terminated — a file without a final newline would
-    otherwise glue the next #FILE# marker onto its last line and the port
-    would misattribute that whole file's statements."""
-    def terminated(p: Path) -> str:
-        text = p.read_text()
-        return text if text.endswith("\n") else text + "\n"
-    parts = [f"#FILE# {stdlib_unit_name(p)}\n{terminated(p)}"
-             for p in stdlib_files()]
-    parts += [f"#FILE# {bootstrap_unit_name(p)}\n{terminated(p)}"
-              for p in bootstrap_files()]
-    return "".join(parts)
-
-
-def _compile_self(binary: str, text: str) -> str:
-    r = subprocess.run([binary, "--stage", "c1"], input=text, capture_output=True,
-                       timeout=_SELF_TIMEOUT, text=True, env=_SELF_ENV)
-    assert r.returncode == 0, f"self-compile exited {r.returncode}: {r.stdout[:500]}"
-    return r.stdout
+def _compile_self(binary: str) -> str:
+    """The port's sources compiled by `binary`, as a user compiles a project —
+    the same command line the self-compile gate uses (selfcompile.py)."""
+    with tempfile.TemporaryDirectory() as td:
+        out = Path(td) / "self.c"
+        r = compile_port(Path(binary), "1", str(test_libraries()), out, heap=_SELF_HEAP)
+        assert r.returncode == 0, f"self-compile exited {r.returncode}: {r.stdout[:500]}"
+        return out.read_text()
 
 
 @unittest.skipUnless(os.environ.get("YAFL_SELFHOST") == "1",
@@ -77,8 +64,7 @@ class TestBootstrapSelfhost(TestCase):
         cls.stage1 = shared_bootstrap_binary()
 
     def test_stage2_equals_stage3(self):
-        text = _stream()
-        c2 = _compile_self(self.stage1, text)
+        c2 = _compile_self(self.stage1)
 
         with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
             stage2 = tmp.name
@@ -89,7 +75,7 @@ class TestBootstrapSelfhost(TestCase):
                 input=c2, text=True, capture_output=True, timeout=600)
             self.assertEqual(0, r.returncode, f"clang on stage2 C failed:\n{r.stderr[:2000]}")
 
-            c3 = _compile_self(stage2, text)
+            c3 = _compile_self(stage2)
         finally:
             os.unlink(stage2)
 
