@@ -781,13 +781,13 @@ def __print_errors(errors: list[Error]) -> str:
 
 def _candidate_namespaces(statements: list[s.Statement]) -> set[str]:
     """Namespaces a set of parsed statements might reference, as an
-    over-approximation used to decide which libraries to load.
+    over-approximation used to decide which libraries and namespaces to load.
 
     `import` is not mandatory, so we look at both the declared imports and every
-    namespace-qualified (`::`) reference in the AST, take every prefix of each, and
-    also compose each qualified reference under each import (a `A::B` reference may
-    be top-level or relative to an import `P`, giving `P::A::B`). Misses are
-    harmless — they simply match no library. See `docs/build-and-packaging.md`.
+    namespace-qualified (`::`) reference in the AST, and take every prefix of
+    each. A qualified reference resolves as written, never relative to an
+    import (the resolver applies imports to bare names only), so the two are
+    never composed. Prefixes that are not namespaces simply match nothing.
     """
     imports: set[str] = set()
     quals: set[str] = set()
@@ -810,13 +810,8 @@ def _candidate_namespaces(statements: list[s.Statement]) -> set[str]:
         return {"::".join(parts[:i]) for i in range(1, len(parts) + 1)}
 
     candidates: set[str] = set()
-    for p in imports:
-        candidates |= prefixes(p)
-    for q in quals:
-        candidates |= prefixes(q)
-    for p in imports:
-        for q in quals:
-            candidates |= prefixes(f"{p}::{q}")
+    for name in imports | quals:
+        candidates |= prefixes(name)
     return candidates
 
 
