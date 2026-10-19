@@ -210,12 +210,14 @@ fun ucJoinInto(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
                          prepend(succ, worklist))
     (s2: IsSet)      => ucJoinExisting(entry, worklist, succ, s2.isNames, incoming)
 
+# The set only SHRINKS, so "unchanged" is "every old name is incoming" — asked
+# directly, with nothing built: comparing sizes walked both sets on every join.
 fun ucJoinExisting(entry: Dict<Int, InitSet>, worklist: List<Int>, succ: Int,
                    old: Set<String>, incoming: Set<String>): (e: Dict<Int, InitSet>, w: List<Int>)
-  let met = filter(old, (n) => contains(incoming, n))
-  ret size(met) == size(old)
+  ret all(old, (n) => contains(incoming, n))
     ? (entry, worklist)
-    : (put(entry, succ, IsSet(met)), prepend(succ, worklist))
+    : (put(entry, succ, IsSet(filter(old, (n) => contains(incoming, n)))),
+       prepend(succ, worklist))
 
 # ── verification ─────────────────────────────────────────────────────────────
 
