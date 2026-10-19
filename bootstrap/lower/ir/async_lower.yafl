@@ -602,17 +602,21 @@ fun alBuildInterference(opSeqs: List<List<Op>>,
   let frameIx = fold(frameNames, Dict(),
                      (ix, n) => put(ix, n, true))
   ret fold(opSeqs, alEmptyGraph(),
-           (acc, ops) => fold(ops, acc,
-             (a, op) => alInterfereOp(a, op, frameIx)))
+           (acc, ops) => fold(ops, IfAcc(acc, Set(), Set()),
+             (a, op) => alInterfereOp(a, op, frameIx)).ifGraph)
+
+# The graph so far, and the previous op's live-out and live-in names: every
+# pair within those is already linked (alLinkAllPairs).
+class [final] IfAcc(ifGraph: IGraph, ifPrevOut: Set<String>, ifPrevIn: Set<String>)
 
 fun alInFrame(frameIx: Dict<String, Bool>, n: String): Bool => !(get(frameIx, n) is None)
 
-fun alInterfereOp(acc, op,
-                  frameIx: Dict<String, Bool>): IGraph
+fun alInterfereOp(st: IfAcc, op,
+                  frameIx: Dict<String, Bool>): IfAcc
   let liveOut = filter(map(opSavedVars(op), stackVarName),
                        (n) => alInFrame(frameIx, n))
   let writes = map(alWritesOf(op), stackVarName)
-  let acc1 = alLinkAllPairs(acc, liveOut)
+  let acc1 = alLinkAllPairs(st.ifGraph, liveOut, st.ifPrevOut)
   let acc2 = fold(writes, acc1, (a, w) =>
                alInFrame(frameIx, w)
                  ? fold(liveOut, a, (a2, n) => alLink(a2, w, n))
@@ -621,7 +625,7 @@ fun alInterfereOp(acc, op,
                              (n) => alInFrame(frameIx, n)),
                       filter(liveOut,
                              (n) => !strListMember(writes, n)))
-  ret alLinkAllPairs(acc2, liveIn)
+  ret IfAcc(alLinkAllPairs(acc2, liveIn, st.ifPrevIn), Set(liveOut), Set(liveIn))
 
 # Python's link: both directions into each node's neighbour SET.
 fun alLink(acc: IGraph, a: String, b: String): IGraph
@@ -633,15 +637,15 @@ fun alAdjAdd(adj: Dict<String, Set<String>>, from2: String, to2: String) => matc
   (prev: Set<String>) => put(adj, from2, add(prev, to2))
   ()                  => put(adj, from2, add(Set(), to2))
 
-fun alLinkAllPairs(acc, names: List<String>) => alLapLoop(acc, chain(names))
-
-fun [tail] alLapLoop(acc, ns: Chain<String>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alLapLoop(alLapInner(acc, l.value, l.next), l.next)
-
-fun [tail] alLapInner(acc, a, ns: Chain<String>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alLapInner(alLink(acc, a, l.value), a, l.next)
+# Every pair in `names`, given that every pair in `prev` is already linked: a
+# pair of two names both in `prev` is, so only the names new since `prev` need
+# linking — against the whole set. Neighbouring ops' live sets are nearly
+# equal, so this is O(new·L), not O(L²), per op, and the edge set is exactly
+# the all-pairs one.
+fun alLinkAllPairs(acc: IGraph, names: List<String>, prev: Set<String>): IGraph
+  ret fold(names, acc, (a, x) => contains(prev, x)
+                                   ? a
+                                   : fold(names, a, (a2, y) => alLink(a2, x, y)))
 
 fun alNeighbours(graph: IGraph, name: String): Set<String> => match(get(graph.igAdj, name))
   (ns: Set<String>) => ns

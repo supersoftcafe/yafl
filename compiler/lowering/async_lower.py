@@ -507,23 +507,32 @@ def __build_interference(op_sequences: list[tuple[Op, ...]],
             graph[a].add(b)
             graph[b].add(a)
 
-    def link_all_pairs(names: list[str]) -> None:
-        for i in range(len(names)):
-            for j in range(i + 1, len(names)):
-                link(names[i], names[j])
+    def link_all_pairs(names: list[str], prev: set[str]) -> None:
+        """Every pair in `names`, given that every pair in `prev` is already
+        linked: a pair of two names both in `prev` is, so only the names new
+        since `prev` need linking — against the whole set. Neighbouring ops'
+        live sets are nearly equal, so this is O(new·L), not O(L²), per op,
+        and the edge set is exactly the all-pairs one."""
+        for a in names:
+            if a not in prev:
+                for b in names:
+                    link(a, b)
 
     for ops in op_sequences:
+        prev_out: set[str] = set()
+        prev_in: set[str] = set()
         for op in ops:
             live_out = [v.name for v in op.saved_vars if v.name in graph]
             writes = {w.name for w in __op_writes(op)}
-            link_all_pairs(live_out)
+            link_all_pairs(live_out, prev_out)
             for w in writes:
                 if w in graph:
                     for n in live_out:
                         link(w, n)
             live_in = [v.name for v in __op_reads(op) if v.name in graph]
             live_in += [n for n in live_out if n not in writes]
-            link_all_pairs(live_in)
+            link_all_pairs(live_in, prev_in)
+            prev_out, prev_in = set(live_out), set(live_in)
     return graph
 
 
