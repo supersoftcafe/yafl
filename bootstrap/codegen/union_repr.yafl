@@ -1274,7 +1274,7 @@ fun pointerWidenFromTagged(gp: GPointer, src: GTagged, value, r): GBundle
   let result = RpStackVar(reprCtype(gp), "widen_result")
   ret GBundle(list1(result),
               concat(concat(acc.wtJumps, acc.wtBodies),
-                     list2(OpLabel("widen_end", List()), OpPhi(result, acc.wtResults, List()))),
+                     list2(OpLabel("widen_end", Dict()), OpPhi(result, acc.wtResults, Dict()))),
               result, List(), List())
 
 fun [tail] widenTLoop(gp: GPointer, src: GTagged, ms: Chain<Spec>, k, value,
@@ -1286,12 +1286,12 @@ fun [tail] widenTLoop(gp: GPointer, src: GTagged, ms: Chain<Spec>, k, value,
 fun widenTStep(gp: GPointer, src: GTagged, member, last: Bool, k, value,
                discs: Dict<String, Int>, r, acc: WidenTAcc): WidenTAcc
   let label = "widen_t" + String(k)
-  let jumpIf = OpJumpIf(label, RpIntEqConst(RpStructField(value, "$tag"), getOr0(discs, uid(member))), false, List())
+  let jumpIf = OpJumpIf(label, RpIntEqConst(RpStructField(value, "$tag"), getOr0(discs, uid(member))), false, Dict())
   let leaf = leafFromSlots(member, forceNth(src.grtVariantMap, k), forceFields(src.grtContainer), value, r)
   let boxed = pointerBoxLeaf(gp, leaf, member, r)
-  ret WidenTAcc(concat(acc.wtJumps, last ? list2(jumpIf, OpJump(label, List())) : list1(jumpIf)),
-                concat(acc.wtBodies, last ? list1(OpLabel(label, List()))
-                                          : list2(OpLabel(label, List()), OpJump("widen_end", List()))),
+  ret WidenTAcc(concat(acc.wtJumps, last ? list2(jumpIf, OpJump(label, Dict())) : list1(jumpIf)),
+                concat(acc.wtBodies, last ? list1(OpLabel(label, Dict()))
+                                          : list2(OpLabel(label, Dict()), OpJump("widen_end", Dict()))),
                 build(push(builderFrom(acc.wtResults), OpPhiSource(label, boxed))))
 
 fun isChainEnd<T>(c: Chain<T>) => match(c)
@@ -1304,7 +1304,7 @@ fun taggedWidenFrom(gt: GTagged, srcRep, value, r)
     (gp: GPointer) => widenFromPointer(value, gp, gt, endLabel, r)
     (o: GRepr)      => widenFromTagged(value, forceTagged(srcRep), gt, endLabel, r)
   let resultVar = RpStackVar(gt.grtContainer, "wide_result")
-  let joinBundle = GBundle(list1(resultVar), list2(OpLabel(endLabel, List()), OpPhi(resultVar, wo.woSources, List())), resultVar, List(), List())
+  let joinBundle = GBundle(list1(resultVar), list2(OpLabel(endLabel, Dict()), OpPhi(resultVar, wo.woSources, Dict())), resultVar, List(), List())
   ret bundleJoin(bundleJoinAll(wo.woBundles), joinBundle)
 
 fun forceTagged(rep) => match(rep)
@@ -1350,11 +1350,11 @@ fun widenPStep(gp: GPointer, gt: GTagged, member, last: Bool, k: Int, sv, word, 
                                    forceFields(gt.grtContainer)),
                       (p) => RpNamedValue(p.svpName, p.svpValue))
     ()         => List()
-  let jump = last ? OpJump(label, List())
-                  : OpJumpIf(label, guardOrNever(ptrGuard(gp, member, word, r)), false, List())
+  let jump = last ? OpJump(label, Dict())
+                  : OpJumpIf(label, guardOrNever(ptrGuard(gp, member, word, r)), false, Dict())
   ret WidenPAcc(build(push(builderFrom(acc.wpJumps), jump)),
-                concat(acc.wpBodies, last ? list1(OpLabel(label, List()))
-                                          : list2(OpLabel(label, List()), OpJump(endLabel, List()))),
+                concat(acc.wpBodies, last ? list1(OpLabel(label, Dict()))
+                                          : list2(OpLabel(label, Dict()), OpJump(endLabel, Dict()))),
                 build(push(builderFrom(acc.wpSources),
                            OpPhiSource(label, unionStruct(gt.grtContainer,
                                                           withTagField(slotValues, getOr0(discs, u)))))))
@@ -1372,7 +1372,7 @@ fun widenFromTagged(sv, srcRep: GTagged, gt: GTagged, endLabel, r)
                                 WidenAcc(builder(),
                                          builder()))
   ret WidenOut(build(push(step.waBundles,
-                   bundleOp1(OpAbort("container-widening fell through all source variants", List())))),
+                   bundleOp1(OpAbort("container-widening fell through all source variants", Dict())))),
                build(step.waSources))
 
 # One bundle group and one phi source per source variant, in variant order.
@@ -1414,9 +1414,9 @@ fun widenFromTaggedOne(srcVar, i, sv, srcRep: GTagged, gt: GTagged, targetMember
         varTag)
     ()          => list1(RpNamedValue("$tag", RpInteger(varTag, 32)))
   let bundles = list3(
-    bundleOps(list3(OpJumpIf(armLabel, RpIntEqConst(srcTagField, varTag), false, List()), OpJump(nextLabel, List()), OpLabel(armLabel, List()))),
-    bundleOps(list2(OpLabel(exitLabel, List()), OpJump(endLabel, List()))),
-    bundleOps(list1(OpLabel(nextLabel, List()))))
+    bundleOps(list3(OpJumpIf(armLabel, RpIntEqConst(srcTagField, varTag), false, Dict()), OpJump(nextLabel, Dict()), OpLabel(armLabel, Dict()))),
+    bundleOps(list2(OpLabel(exitLabel, Dict()), OpJump(endLabel, Dict()))),
+    bundleOps(list1(OpLabel(nextLabel, Dict()))))
   ret OneWidenOut(bundles, OpPhiSource(exitLabel, unionStruct(gt.grtContainer, slotValues)))
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1651,7 +1651,7 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName,
   let objVar = RpStackVar(CgDataPointer(), "boxed")
   let step = bxConstructFields(chain(leafFields), objName, objVar, fieldArgs, r,
                                CcAcc(builder(), builder()))
-  let ops = concat(list1(OpNewObject(objName, objVar, None, pinned, List())), step.ccOps)
+  let ops = concat(list1(OpNewObject(objName, objVar, None, pinned, Dict())), step.ccOps)
   let allocBundle = GBundle(list1(objVar), ops, objVar, List(), List())
   ret match(listAt(variantSlots2, 0))
     (se: CgSlotEntry) => bundleJoin(bundleJoinAll(step.ccBundles),
@@ -1686,7 +1686,7 @@ fun bxConstructField(let2: PsLet, rest, objName, resultVar,
                                  OpMove(RpObjectField(fieldType, resultVar,
                                             objName, let2.lName, None, true, false),
                                         RpZeroOf(fieldType), false,
-                                        List())),
+                                        Dict())),
                              acc.caBundles))
 
 fun bxConstructFieldArg(pa: PunArg, let2: PsLet, fieldType, rest, objName,
@@ -1695,7 +1695,7 @@ fun bxConstructFieldArg(pa: PunArg, let2: PsLet, fieldType, rest, objName,
   ret bxConstructFields(rest, objName, resultVar, fieldArgs, r,
           CcAcc(push(acc.caOps,
                     OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true, false),
-                           mustResult(argBundle), false, List())),
+                           mustResult(argBundle), false, Dict())),
                 push(acc.caBundles, argBundle)))
 
 class [final] TaggedConstructOut(tcBundles: List<GBundle>, tcSlots: List<RpNamedValue>)
@@ -1738,7 +1738,7 @@ fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName, fieldArgs: 
   let step = complexConstructFields(chain(leafFields), objName, resultVar,
                                     fieldArgs, r,
                                     CcAcc(builder(), builder()))
-  let ops = concat(list1(OpNewObject(objName, resultVar, None, pinned, List())), step.ccOps)
+  let ops = concat(list1(OpNewObject(objName, resultVar, None, pinned, Dict())), step.ccOps)
   let ctorBundle = GBundle(list1(resultVar), ops, resultVar, List(), List())
   ret bundleJoin(bundleJoinAll(step.ccBundles), ctorBundle)
 
@@ -1771,7 +1771,7 @@ fun complexConstructField(let2: PsLet, rest, objName, resultVar, fieldArgs: List
                                  OpMove(RpObjectField(fieldType, resultVar,
                                             objName, let2.lName, None, true, false),
                                         RpZeroOf(fieldType), false,
-                                        List())),
+                                        Dict())),
                              acc.caBundles))
 
 fun complexConstructFieldWithArg(pa: PunArg, let2: PsLet, fieldType, rest, objName,
@@ -1780,7 +1780,7 @@ fun complexConstructFieldWithArg(pa: PunArg, let2: PsLet, fieldType, rest, objNa
   ret complexConstructFields(rest, objName, resultVar, fieldArgs, r,
           CcAcc(push(acc.caOps,
                     OpMove(RpObjectField(fieldType, resultVar, objName, let2.lName, None, true, false),
-                           mustResult(argBundle), false, List())),
+                           mustResult(argBundle), false, Dict())),
                 push(acc.caBundles, argBundle)))
 
 fun [tail] punArgNamed(args: List<PunArg>, name) => match(head(args))

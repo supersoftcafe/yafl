@@ -39,7 +39,7 @@ fun funGlobalCodegen(f: PsFun, r0): CgFunction
 
 fun fgcBodyBundle(b, bodyR, fRet: Spec|None): GBundle
   let bodyBundle = genExprTo(b, bodyR, fRet)
-  ret bundleJoin(bodyBundle, bundleOp1(OpReturn(mustResult(bodyBundle), List())))
+  ret bundleJoin(bodyBundle, bundleOp1(OpReturn(mustResult(bodyBundle), Dict())))
 
 # Python: `for index, parameter in enumerate(self.parameters.targets):
 #   bundle += parameter.to_c_destructure(None).with_prefix(f"p{index}")`.
@@ -157,12 +157,12 @@ fun createThunk(className, let2: PsLet, r)
   let resultVar = RpStackVar(resultType, "result")
   let opCall = OpCall(RpObjectField(CgFuncPointer(false), RpStackVar(CgDataPointer(), "this"), className, let2.lName, None, false, false),
                       RpNewStruct(map(paramVars, (sv) => RpNamedValue(stackVarName(sv), sv))),
-                      resultVar, false, false, None, List())
+                      resultVar, false, false, None, Dict())
   ret CgFunction(let2.lName,
                  CgStruct(concat(list1(CgField("this", CgDataPointer())), cgStructFields(paramStruct))),
                  resultType,
                  CgStruct(list1(CgField("result", resultType))),
-                 cgOpsOf(list2(opCall, OpReturn(resultVar, List()))),
+                 cgOpsOf(list2(opCall, OpReturn(resultVar, Dict()))),
                  "", None, false, false, false, false)
 
 fun thunkParamStruct(sp: Spec|None, r) => match(sp)

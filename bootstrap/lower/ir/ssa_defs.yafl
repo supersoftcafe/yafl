@@ -57,7 +57,7 @@ fun sdGet(defs: SsaDefs, name: String) => match(get(defs.sdMap, name))
 fun sdReadCounts(f: CgFunction) => fold(f.fnOps, Dict(), sdCountOp)
 
 fun sdCountOp(acc: Dict<String, Int>, op): Dict<String, Int>
-  ret fold(opSavedVars(op),
+  ret fold(values(opSavedVars(op)),
            fold(opGetLiveVars(op).reads, acc, sdCountVar), sdCountVar)
 
 fun sdCountVar(acc, rp): Dict<String, Int> => match(rp)

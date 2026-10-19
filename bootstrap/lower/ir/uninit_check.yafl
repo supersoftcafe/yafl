@@ -50,7 +50,7 @@ fun [tail] ucIxLoop(s: Segment<Op>|None, iSeg, i, acc): (d: Dict<Int, Op>, n: In
 
 fun ucIxOp(ix: UcIx, i: Int) => match(get(ix.uiOps, i))
   (op: Op) => op
-  ()       => OpReturnVoid(List())   # unreachable: 0 <= i < uiN
+  ()       => OpReturnVoid(Dict())   # unreachable: 0 <= i < uiN
 
 fun ucEntryAt(entry: Dict<Int, InitSet>, i: Int) => match(get(entry, i))
   (s2: InitSet) => s2

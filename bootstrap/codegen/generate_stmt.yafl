@@ -34,7 +34,7 @@ fun gsStmt(st, r, expected: Spec|None) => match(st)
   (f2: PsIf)          => genIfStmt(f2, r, expected)
   (d: PsDestructure)  => genDestructureStmt(d, r)
   (l: PsLet)          => genLetStmt(l, r)
-  (o: PStmt)          => bundleOp1(OpAbort("generate: statement kind cannot appear in a lowered block", List()))
+  (o: PStmt)          => bundleOp1(OpAbort("generate: statement kind cannot appear in a lowered block", Dict()))
 
 # ── ReturnStatement (control.py) ────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ fun gsStmt(st, r, expected: Spec|None) => match(st)
 # (exit-label, value) pair flows up via exit_sources.
 fun genRetStmt(rt: PsRet, r) => match(asFrBlock(getBlockFrame(r)))
   (f2: FrBlock) => genRetInFrame(rt, r, f2)
-  ()             => bundleOp1(OpAbort("ReturnStatement generated outside any BlockExpression", List()))
+  ()             => bundleOp1(OpAbort("ReturnStatement generated outside any BlockExpression", Dict()))
 
 # asFrLoop's twin (a two-step narrow: union member first, then variant).
 fun asFrBlock(f: GenFrame|None) => match(f)
@@ -66,7 +66,7 @@ fun genRetInFrame(rt: PsRet, r, frame)
 
 fun genRetJump(rt: PsRet, frame, vb: GBundle): GBundle
   let exitLabel = "blockexit$" + frame.fbTag + "$" + String(rt.retIndex)
-  let tail = list2<Op>(OpLabel(exitLabel, List()), OpJump(blockEndLabel(frame), List()))
+  let tail = list2<Op>(OpLabel(exitLabel, Dict()), OpJump(blockEndLabel(frame), Dict()))
   ret match(vb.gbResult)
     (rv: RParam) => genRetValued(rt, frame, vb, exitLabel, tail, rv)
     # This exit edge is the LAST phi source added so far, matching the label.
@@ -80,7 +80,7 @@ fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel,
   ret GBundle(build(push(builderFrom(vb.gbStackVars), valvar)),
               build(pushAll(push(
                   builderFrom(vb.gbOps),
-                  OpMove(valvar, rv, false, List())),
+                  OpMove(valvar, rv, false, Dict())),
                   tail)),
               None, vb.gbRecurSources,
               build(push(builderFrom(vb.gbExitSources), ExitSource(exitLabel, valvar))))
@@ -95,13 +95,13 @@ fun genIfStmt(f2: PsIf, r, expected: Spec|None)
   let trueBundle = genIfBranch(f2.ifTrue, r, expected, "T")
   let falseBundle = genIfBranch(f2.ifFalse, r, expected, "F")
   ret bundleJoin(condBundle,
-      bundleJoin(bundleOps(list2(OpJumpIf("T_branch", mustResult(condBundle), false, List()),
-                                 OpLabel("F_branch", List()))),
+      bundleJoin(bundleOps(list2(OpJumpIf("T_branch", mustResult(condBundle), false, Dict()),
+                                 OpLabel("F_branch", Dict()))),
       bundleJoin(falseBundle,
-      bundleJoin(bundleOps(list2(OpJump("if_end", List()),
-                                 OpLabel("T_branch", List()))),
+      bundleJoin(bundleOps(list2(OpJump("if_end", Dict()),
+                                 OpLabel("T_branch", Dict()))),
       bundleJoin(trueBundle,
-                 bundleOp1(OpLabel("if_end", List())))))))
+                 bundleOp1(OpLabel("if_end", Dict())))))))
 
 fun genIfBranch(stmts: List<PStmt>, r, expected: Spec|None, prefix): GBundle
   ret genIfBranchLoop(chain(stmts), localScope(stmts, r), expected, prefix, 0, emptyBundle())
@@ -118,12 +118,12 @@ fun [tail] genIfBranchLoop(ss: Chain<PStmt>, r: Resolver, expected: Spec|None,
 # any other call site is a bug (Python raises RuntimeError).
 fun genLetStmt(l: PsLet, r)
   if isDeferredInit(l)
-    ret bundleOp1(OpAbort("[lazy] let reached LetStatement.generate directly — only genBlockTo's two-phase emission may generate it", List()))
+    ret bundleOp1(OpAbort("[lazy] let reached LetStatement.generate directly — only genBlockTo's two-phase emission may generate it", Dict()))
   let exprBundle = withPrefix(genExprToOpt(l.lDefault, r, l.lType), "expr")
   let sv = RpStackVar(specGenerateOpt(l.lType, r), l.lName)
   # Leaf to_c_destructure(None) is empty in Python — expr + init only.
   ret bundleJoin(exprBundle,
-                 GBundle(list1(sv), list1(OpMove(sv, mustResult(exprBundle), false, List())),
+                 GBundle(list1(sv), list1(OpMove(sv, mustResult(exprBundle), false, Dict())),
                          None, List(), List()))
 
 fun genExprToOpt(x: PExpr|None, r, expected) => match(x)
@@ -134,7 +134,7 @@ fun genExprToOpt(x: PExpr|None, r, expected) => match(x)
 
 fun gsStmtLazyAlloc(st, r) => match(st)
   (l: PsLet) => genLazyAlloc(l, r)
-  (o: PStmt) => bundleOp1(OpAbort("generate_lazy_alloc on a non-let", List()))
+  (o: PStmt) => bundleOp1(OpAbort("generate_lazy_alloc on a non-let", Dict()))
 
 # Stub allocation half — at block entry, so forward references inside other
 # lazies see the stub slot pointing at a real heap object.
@@ -145,14 +145,14 @@ fun genLazyAlloc(l: PsLet, r)
   let flagF = RpObjectField(CgDataPointer(), svStub, cls, "flag", None, true, false)
   let closureF = RpObjectField(CgFuncPointer(false), svStub, cls, "closure", None, true, false)
   ret GBundle(list1(svStub),
-              list3(OpNewObject(cls, svStub, None, false, List()),
-                    OpMove(flagF, RpNullPointer(), false, List()),
-                    OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, List())),
+              list3(OpNewObject(cls, svStub, None, false, Dict()),
+                    OpMove(flagF, RpNullPointer(), false, Dict()),
+                    OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, Dict())),
               None, List(), List())
 
 fun gsStmtLazyPopulate(st, r) => match(st)
   (l: PsLet) => genLazyPopulate(l, r)
-  (o: PStmt) => bundleOp1(OpAbort("generate_lazy_populate on a non-let", List()))
+  (o: PStmt) => bundleOp1(OpAbort("generate_lazy_populate on a non-let", Dict()))
 
 # Closure-population half — at the let's original textual position. The
 # lambdas pass has already turned the RHS into a fun_t-valued expression and
@@ -163,7 +163,7 @@ fun genLazyPopulate(l: PsLet, r)
   let closureBundle = withPrefix(genExprToOpt(l.lDefault, r, None), "closure")
   let svStub = RpStackVar(CgDataPointer(), l.lName)
   let closureF = RpObjectField(CgFuncPointer(false), svStub, cls, "closure", None, false, false)
-  let moveOp = OpMove(closureF, mustResult(closureBundle), false, List())
+  let moveOp = OpMove(closureF, mustResult(closureBundle), false, Dict())
   ret hasAttr(l.lAttrs, "future")
     ? bundleJoin(closureBundle, genFuturePost(irT, svStub, moveOp))
     : bundleJoin(closureBundle,
@@ -177,7 +177,7 @@ fun genFuturePost(irT, svStub, moveOp)
                              RpNewStruct(list1(RpNamedValue("cb", RpGlobalFunction(futureRunnerName(irT), svStub, false, None, false, false)))),
                              CgDataPointer())
   ret GBundle(list1(svDiscard),
-              list2(moveOp, OpMove(svDiscard, post, true, List())),
+              list2(moveOp, OpMove(svDiscard, post, true, Dict())),
               None, List(), List())
 
 fun stubClassName(t2) => "Lazy$" + irMangle(t2)
@@ -192,7 +192,7 @@ fun genDestructureStmt(d: PsDestructure, r)
   let slotType = destructureSlotType(d)
   let exprBundle = withPrefix(genExprToOpt(d.dDefault, r, slotType), "expr")
   let sv = RpStackVar(specGenerateOpt(slotType, r), d.dName)
-  let initBundle = GBundle(list1(sv), list1(OpMove(sv, mustResult(exprBundle), false, List())),
+  let initBundle = GBundle(list1(sv), list1(OpMove(sv, mustResult(exprBundle), false, Dict())),
                            None, List(), List())
   # sv is at the un-prefixed root of initBundle; pass it directly as the
   # destructure root rather than predicting a renamed name.
@@ -232,5 +232,5 @@ fun tcdTarget(st, root, r) => match(st)
 
 fun tcdLeaf(l: PsLet, root, r)
   let sv = RpStackVar(specGenerateOpt(l.lType, r), l.lName)
-  ret GBundle(list1(sv), list1(OpMove(sv, root, false, List())),
+  ret GBundle(list1(sv), list1(OpMove(sv, root, false, Dict())),
               None, List(), List())

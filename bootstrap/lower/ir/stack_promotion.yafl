@@ -161,7 +161,7 @@ fun [tail] spZeroFillsLoop(fs: Chain<CgField>, cand: SpCand,
                          push(acc,
                              OpMove(spFieldLocal(cand, l.value.fieldName),
                                     spZeroOf(l.value.fieldType), false,
-                                    List())))
+                                    Dict())))
 
 fun spPromotedStore(m: OpMove, promoted: List<SpCand>) => match(m.moveTarget)
   (of: RpObjectField) => of.index is None
@@ -178,7 +178,7 @@ fun spStoreMove(m: OpMove, cand: SpCand, promoted: List<SpCand>)
   ret OpMove(spFieldLocal(cand, field),
              rpReplaceParams(m.moveSource,
                              (p) => spRewrite(p, promoted)),
-             false, List())
+             false, Dict())
 
 # Declare the field locals; retire the promoted registers.
 fun spRestack(f: CgFunction, promoted: List<SpCand>)

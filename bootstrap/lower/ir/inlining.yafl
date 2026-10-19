@@ -173,7 +173,7 @@ fun inlThisCapture(t2: InlTarget, uniqueId, allFields: List<CgField>,
   (obj: RParam) => match(head(cgFieldsOfOrEmpty(t2.itTarget.fnParams)))
     (f2: CgField) => push(ops,
         OpMove(inlMappedVar(allFields, f2.fieldName, uniqueId), obj,
-               false, List()))
+               false, Dict()))
     ()             => ops   # unreachable: object implies a this param
   ()             => ops
 
@@ -191,7 +191,7 @@ fun [tail] inlParamMovesB(args: Chain<RpNamedValue>, params: Chain<CgField>,
     (pf: ChainLink)  => inlParamMovesB(av.next, pf.next, uniqueId, allFields,
         push(ops, OpMove(inlMappedVar(allFields, pf.value.fieldName,
                                    uniqueId),
-                      av.value.value, false, List())))
+                      av.value.value, false, Dict())))
 
 fun [tail] inlBody(s: Segment<Op>|None, i, c: OpCall, renames: List<RpRename>,
                    endLabel,
@@ -205,7 +205,7 @@ fun [tail] inlBody(s: Segment<Op>|None, i, c: OpCall, renames: List<RpRename>,
 fun inlBodyOp(op, c: OpCall, renames: List<RpRename>, endLabel,
               [terminal] acc): ListBuilder<Op> => match(op)
   (r: OpReturn)  => push(inlReturnMove(r, c, renames, acc),
-                         OpJump(endLabel, List()))
+                         OpJump(endLabel, Dict()))
   (cl: OpCall)   => cl.callMusttail
     ? push(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
                                     cl.callRegister, false, cl.callImpure,
@@ -218,7 +218,7 @@ fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
                   [terminal] acc): ListBuilder<Op> => match(c.callRegister)
   (reg: RParam) => push(acc, OpMove(reg,
                                  rpRenameVars(r.returnValue, renames),
-                                 false, List()))
+                                 false, Dict()))
   ()             => acc
 
 # Python: `if end_jump in new_ops` (any Return was seen), then FIRST index —
@@ -228,7 +228,7 @@ fun inlEndBookkeeping(ops, endLabel) => match(inlFirstEndJumpIsLast(chain(ops), 
   (isLast: Bool) => isLast
     ? inlDropLast(chain(ops), List())
     : build(push(builderFrom(ops),
-                 OpLabel(endLabel, List())))
+                 OpLabel(endLabel, Dict())))
   ()             => ops
 
 # None: no end-jump. true: the FIRST end-jump is the very last op (pop it).

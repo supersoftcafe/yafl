@@ -75,16 +75,16 @@ fun createEntryPoint(mainName): CgFunction
                                    CgDataPointer())
   let ops = concat<Op>(list5(
       OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
-             RpNewStruct(List()), svResult, false, false, None, List()),
-      OpJumpIf("$async_entry", unlikelyChk, false, List()),
+             RpNewStruct(List()), svResult, false, false, None, Dict()),
+      OpJumpIf("$async_entry", unlikelyChk, false, Dict()),
       # Sync path: invoke the completion callback with main's result.
       OpCall(continuation, RpNewStruct(list1(RpNamedValue("result", svResult))),
-             None, false, false, None, List()),
-      OpReturnVoid(List()),
+             None, false, false, None, Dict()),
+      OpReturnVoid(Dict()),
       # Async path: register the continuation as task callback.
-      OpLabel("$async_entry", List())),
-    list2(OpMove(svDiscard, onComplete, true, List()),
-          OpReturnVoid(List())))
+      OpLabel("$async_entry", Dict())),
+    list2(OpMove(svDiscard, onComplete, true, Dict()),
+          OpReturnVoid(Dict())))
   ret CgFunction("__entrypoint__",
                  CgStruct(list2(CgField("this", CgDataPointer()),
                                 CgField("$continuation", CgFuncPointer(false)))),
