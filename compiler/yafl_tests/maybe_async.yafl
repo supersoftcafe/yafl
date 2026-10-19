@@ -1,0 +1,49 @@
+# maybe_async: a function whose only suspending calls are calls of its own
+# function parameters keeps its suspension points, but a call of it whose
+# function arguments are all sync cannot suspend, so the caller treats that
+# call as sync. The same function is called both ways here: the sync call
+# site must return its value directly and the async one must still resume.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::MaybeAsync::SyncAndAsyncArguments
+
+import System
+import System::Test
+
+fun applyTwice(f: (:System::Int): System::Int, x: System::Int): System::Int
+  ret f(f(x))
+
+# Suspends: __parallel__ forks onto the worker pool.
+fun parAdd(y: System::Int): System::Int
+  let (p, q) = __parallel__(() => y, () => 1)
+  ret p + q
+
+fun program(): System::Int
+  let a = applyTwice((y: System::Int) => y + 1, 1)
+  let b = applyTwice(parAdd, 1)
+  ret a * 10 + b
+
+fun [test("sync and async arguments to one function")] check(): None|TestFailure
+    ret assertEqInt(program(), 33, "program()")
+
+
+namespace CompilerTests::MaybeAsync::TailLoopHigherOrder
+
+import System
+import System::Test
+
+fun parAdd(acc: System::Int, x: System::Int): System::Int
+  let (p, q) = __parallel__(() => acc, () => x)
+  ret p + q
+
+fun program(): System::Int
+  let xs = prepend<System::Int>(1, prepend<System::Int>(2, prepend<System::Int>(3,
+             prepend<System::Int>(4, List<System::Int>()))))
+  let s = fold(xs, 0, (acc: System::Int, x: System::Int) => acc + x)
+  let t = fold(xs, 0, parAdd)
+  ret s * 100 + t
+
+fun [test("stdlib fold with a sync and an async function")] check(): None|TestFailure
+    ret assertEqInt(program(), 1010, "program()")
