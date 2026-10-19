@@ -1,3 +1,6 @@
+<p align="center">
+  <img src="docs/images/yafl-banner.png" alt="yafl: yet another functional language" width="100%">
+</p>
 
 # Type inference
 
