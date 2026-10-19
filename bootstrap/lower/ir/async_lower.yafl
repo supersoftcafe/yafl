@@ -252,29 +252,17 @@ fun alResultTypeVoidish(t2: CgType|None) => match(t2)
 
 # ── StackVar sets (keyed by name; SSA names are unique per function) ─────────
 
-# A new member goes on the FRONT. The order of one of these sets is never
-# observed: every consumer that turns one into output runs it through
-# svSortedByName first, and the others ask only membership, union, difference
-# or equality — none of which can see the order. The ONE consumer that did
-# observe it, alAllStateVars, now keeps its own ordered builder.
+# A new member goes on the FRONT; the order of one of these sets is never
+# observed — every consumer that turns one into output runs it through
+# svSortedByName first. (Liveness itself works on name Sets: alLive.)
 fun svSetAdd(acc, v) => alSvMember(acc, v) ? acc : prepend(v, acc)
 
 fun alSvMember(acc: List<RParam>, v) => any(acc, (x) => stackVarName(x) == stackVarName(v))
 
-fun svSetUnion(a: List<RParam>, b: List<RParam>): List<RParam> => fold(b, a, svSetAdd)
-
-fun svSetSub(a: List<RParam>, b: List<RParam>) => filter(a, (x) => !alSvMember(b, x))
-
-fun svSetEq(a: List<RParam>, b: List<RParam>)
-  ret sameLen(chain(a), chain(b)) && !any(a, (x) => !alSvMember(b, x))
-
+# Python's sorted(…, key=name). Names are unique within a set (SSA), so the
+# order by name is the order.
 fun svSortedByName(a: List<RParam>): List<RParam>
-  ret map(sort(map(a, stackVarName)),
-          (n) => alSvNamed(a, n))
-
-fun alSvNamed(a: List<RParam>, n) => match(head(filter(a, (x) => stackVarName(x) == n)))
-  (x: RParam) => x
-  ()           => RpNullPointer()   # unreachable: name came from the same list
+  ret sortBy(a, (x, y) => stackVarName(x) < stackVarName(y))
 
 # ── liveness: __calculate_saved_vars ─────────────────────────────────────────
 
@@ -288,23 +276,143 @@ fun alReadsOf(op): List<RParam> => match(op)
 fun alWritesOf(op) => fold(ssavOpWrites(op), List(), rpTakeStackVar)
 
 fun alCalculateSavedVars(f: CgFunction)
-  ret cgFunctionWith(f, cgOpsOf(alLivenessIterate(cgOpsToList(f.fnOps),
-                                                  alInvariants(f.fnOps))),
+  let ops = cgOpsToList(f.fnOps)
+  let st = alLiveState(ops, f.fnOps)
+  let saved = alLivenessFix(st, alInitialSaved(chain(ops), 0, Dict()))
+  ret cgFunctionWith(f, cgOpsOf(build(alWriteSaved(chain(ops), 0, st, saved, builder()))),
                      f.fnStackVars)
 
-# The label index and the enclosing block label per op: fixed across
-# generations, so built ONCE rather than per pass.
-#
-# Per-op reads/writes are deliberately NOT cached here. Measured: a
-# Dict<Int,_> get costs ~2400 instructions at 10k entries against ~900 for the
-# two-element fold it would replace, and with the backward sweep the fixpoint
-# runs ~3 passes, so a cache cannot repay building itself.
-class [final] AlInv(avLabels: Dict<String, Int>, avBlocks: Dict<Int, String>,
-                    avN: Int)
+# __calculate_saved_vars, structure for structure. Everything that does not
+# change between passes is built ONCE: the op index, the label index, the
+# enclosing block of each op, each op's reads and writes (Python's rw_cache),
+# and the name -> variable map the result is written back through. The
+# fixpoint itself works on NAME SETS keyed by op index — Python's frozenset
+# per op — and a pass reads the freshest successor value, as Python's `cur`
+# does. (This used lists scanned by name, |a|·|b| per union, difference and
+# equality: the bulk of an -O3 self-compile once functions grew large.)
+class [final] AlRw(rwReads: Set<String>, rwWrites: Set<String>)
 
-fun alInvariants(ops: Segment<Op>|None): AlInv
-  let bi = alBlockIndex(ops)
-  ret AlInv(ucLabelIndex(ops), bi.d, bi.n)
+class [final] AlLive(lsOps: Dict<Int, Op>, lsLabels: Dict<String, Int>,
+                     lsBlocks: Dict<Int, String>, lsRw: Dict<Int, AlRw>,
+                     lsVars: Dict<String, RParam>, lsN: Int)
+
+fun alLiveState(ops: List<Op>, seg: Segment<Op>|None): AlLive
+  let bi = alBlockIndex(seg)
+  ret alLiveIndex(chain(ops), 0, AlLive(Dict(), ucLabelIndex(seg), bi.d, Dict(), Dict(), bi.n))
+
+fun [tail] alLiveIndex(os: Chain<Op>, i, acc: AlLive): AlLive => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => alLiveIndex(l.next, i + 1, alLiveIndexOne(acc, i, l.value))
+
+fun alLiveIndexOne(acc: AlLive, i, op): AlLive
+  let reads = alReadsOf(op)
+  let writes = alWritesOf(op)
+  let vars = fold(concat(concat(reads, writes), concat(opSavedVars(op), alPhiReads(op))),
+                  acc.lsVars, alVarPut)
+  ret AlLive(put(acc.lsOps, i, op), acc.lsLabels, acc.lsBlocks,
+             put(acc.lsRw, i, AlRw(alNameSet(reads), alNameSet(writes))), vars, acc.lsN)
+
+fun alPhiReads(op): List<RParam> => match(op)
+  (ph: OpPhi) => flatMap(ph.phiSources, (s2) => rpReadStackVars(s2.sourceValue))
+  (o: Op)     => List()
+
+fun alVarPut(vars: Dict<String, RParam>, v) => contains(vars, stackVarName(v)) ? vars : put(vars, stackVarName(v), v)
+
+fun alNameSet(vs: List<RParam>): Set<String> => fold(vs, Set(), (s2, v) => add(s2, stackVarName(v)))
+
+fun [tail] alInitialSaved(os: Chain<Op>, i,
+                          acc: Dict<Int, Set<String>>): Dict<Int, Set<String>> => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => alInitialSaved(l.next, i + 1, isEmpty(opSavedVars(l.value))
+                                                     ? acc : put(acc, i, alNameSet(opSavedVars(l.value))))
+
+fun alSavedAt(saved: Dict<Int, Set<String>>, i: Int): Set<String> => match(get(saved, i))
+  (s2: Set<String>) => s2
+  ()                => Set()
+
+fun alRwAt(st: AlLive, i: Int): AlRw => match(get(st.lsRw, i))
+  (rw: AlRw) => rw
+  ()         => AlRw(Set(), Set())   # unreachable: 0 <= i < lsN
+
+fun alOpAt(st: AlLive, i: Int) => match(get(st.lsOps, i))
+  (op: Op) => op
+  ()       => OpReturnVoid(List())   # unreachable: 0 <= i < lsN
+
+fun alBlockAt(st: AlLive, i: Int) => match(get(st.lsBlocks, i))
+  (s2: String) => s2
+  ()           => ""
+
+# Python's `iterate`: passes until one changes nothing.
+fun alLivenessFix(st: AlLive, saved: Dict<Int, Set<String>>): Dict<Int, Set<String>>
+  let pass = alLivePass(st, saved, st.lsN - 1, false)
+  ret pass.changed ? alLivenessFix(st, pass.saved) : pass.saved
+
+# Liveness is a BACKWARD analysis, so the sweep runs BACKWARD: a successor's
+# set is the one this pass just computed. Sweeping forward moved information
+# back one op per pass, O(ops^2) op-visits. Same monotone transfer functions,
+# same least fixed point.
+fun [tail] alLivePass(st: AlLive, saved: Dict<Int, Set<String>>, i,
+                      changed: Bool): (saved: Dict<Int, Set<String>>, changed: Bool)
+  if i < 0
+    ret (saved, changed)
+  let now = alCalc(st, saved, i)
+  let same = alSameNames(alSavedAt(saved, i), now)
+  ret alLivePass(st, same ? saved : put(saved, i, now), i - 1, changed || !same)
+
+fun alSameNames(a: Set<String>, b: Set<String>) => all(a, (n) => contains(b, n)) && all(b, (n) => contains(a, n))
+
+# saved(op) = (edge-in of the fall-through/Jump successor ∪ edge-in of the
+# JumpIf target) − op's own writes. A Jump's successor is its label WHEREVER
+# the op sits — testing last-op first severed the back edge of a loop whose
+# back-edge Jump is the function's final op (the array-ctor fill inlined into a
+# tail position), so nothing loop-carried was saved across a park inside it.
+fun alCalc(st: AlLive, saved: Dict<Int, Set<String>>, i: Int): Set<String>
+  let op = alOpAt(st, i)
+  let ss1 = match(op)
+    (j: OpJump) => match(ucLabelAt(st.lsLabels, j.jumpName))
+      (t2: Int) => alEdgeIn(st, saved, i, t2)
+      ()         => Set<String>()
+    (o: Op)     => i >= st.lsN - 1 ? Set<String>() : alEdgeIn(st, saved, i, i + 1)
+  let ss2 = match(op)
+    (ji: OpJumpIf) => match(ucLabelAt(st.lsLabels, ji.jumpIfLabel))
+      (t2: Int) => alEdgeIn(st, saved, i, t2)
+      ()         => Set<String>()
+    (o: Op)        => Set<String>()
+  ret fold(alRwAt(st, i).rwWrites, union(ss1, ss2), (s2, w) => remove(s2, w))
+
+fun alEdgeIn(st: AlLive, saved: Dict<Int, Set<String>>, fromIdx: Int, targetIdx: Int): Set<String>
+  ret union(alSavedSetAt(st, saved, targetIdx), alPhiSourcesInto(st, targetIdx, alBlockAt(st, fromIdx)))
+
+# Python's saved_set_at: the target's reads ∪ its saved set — the small reads
+# go INTO the large saved set.
+fun alSavedSetAt(st: AlLive, saved: Dict<Int, Set<String>>, index: Int): Set<String>
+  ret union(alSavedAt(saved, index), alRwAt(st, index).rwReads)
+
+# Phi sources arriving on the edge from `pred`: scan the run of Phis at the
+# target.
+fun alPhiSourcesInto(st: AlLive, j: Int, pred: String) => alPhiSourcesLoop(st, j + 1, pred, Set())
+
+fun [tail] alPhiSourcesLoop(st: AlLive, j: Int, pred: String, acc: Set<String>): Set<String>
+  if j >= st.lsN
+    ret acc
+  ret match(alOpAt(st, j))
+    (ph: OpPhi) => alPhiSourcesLoop(st, j + 1, pred,
+                     fold(ph.phiSources, acc, (a, s2) =>
+                       s2.sourceLabel == pred
+                         ? fold(rpReadStackVars(s2.sourceValue), a, (a2, v) => add(a2, stackVarName(v)))
+                         : a))
+    (o: Op)     => acc
+
+# Each op's saved set written back as its variables in NAME order.
+fun [tail] alWriteSaved(os: Chain<Op>, i, st: AlLive, saved: Dict<Int, Set<String>>,
+                        [terminal] acc: ListBuilder<Op>): ListBuilder<Op> => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => alWriteSaved(l.next, i + 1, st, saved,
+      push(acc, opWithSavedVars(l.value, map(sort(alSavedAt(saved, i)), (n) => alVarNamed(st, n)))))
+
+fun alVarNamed(st: AlLive, n: String) => match(get(st.lsVars, n))
+  (v: RParam) => v
+  ()          => RpNullPointer()   # unreachable: every saved name was read somewhere
 
 # Enclosing block label per op index (nearest preceding Label; "" before any).
 fun alBlockIndex(ops: Segment<Op>|None): (d: Dict<Int, String>, n: Int)
@@ -321,127 +429,6 @@ fun [tail] alBlockIndexLoop(s: Segment<Op>|None, iSeg, i, cur,
 fun alLabelNameOr(op, cur) => match(op)
   (lb: OpLabel) => lb.labelName
   (o: Op)       => cur
-
-fun [tail] alLivenessIterate(ops: List<Op>, inv)
-  let newOps = alLivenessPass(ops, inv)
-  ret alOpsSavedEq(ops, newOps) ? newOps : alLivenessIterate(newOps, inv)
-
-fun alOpsSavedEq(a: List<Op>, b: List<Op>) => alOpsSavedEqLoop(chain(a), chain(b))
-
-fun [tail] alOpsSavedEqLoop(a: Chain<Op>, b: Chain<Op>) => match(a)
-  (nil: ChainEnd) => true
-  (la: ChainLink) => match(b)
-    (lb: ChainLink) => svSetEq(opSavedVars(la.value), opSavedVars(lb.value))
-      ? alOpsSavedEqLoop(la.next, lb.next)
-      : false
-    ()              => true
-
-# Per-pass O(1)-indexed snapshot (user ruling 2026-07-22): the old forceNth
-# walk was O(i) per read, O(n^2) per pass, times the fixpoint iterations —
-# async liveness ran 79+ minutes at self-host scale without completing. ONLY
-# the ops move between generations; AlInv carries everything that does not.
-class [final] AlIx(aiOps: Dict<Int, Op>, aiInv: AlInv)
-
-# The index scan walks the ops once. Prepending each op as it goes yields the
-# BACKWARD order for free, so the backward liveness sweep below needs no
-# reverse function: a function whose job is "these elements, backwards" is
-# exactly what the container rules forbid, and one is not needed here — the
-# scan that was already happening produces it as a by-product.
-fun alIndexPass(ops: List<Op>, inv): (ix: AlIx, back: List<Op>)
-  ret alIxLoop(chain(ops), 0, Dict(), List())
-    |> (byIndex, back) => (ix = AlIx(byIndex, inv), back = back)
-
-fun [tail] alIxLoop(os: Chain<Op>, i, acc: Dict<Int, Op>,
-                    back: List<Op>): (byIndex: Dict<Int, Op>, back: List<Op>) => match(os)
-  (nil: ChainEnd) => (byIndex = acc, back = back)
-  (l: ChainLink)  => alIxLoop(l.next, i + 1, put(acc, i, l.value),
-                              prepend(l.value, back))
-
-fun alIxOp(ix: AlIx, i: Int) => match(get(ix.aiOps, i))
-  (op: Op) => op
-  ()       => OpReturnVoid(List())   # unreachable: 0 <= i < avN
-
-fun alIxBlock(ix: AlIx, i: Int) => match(get(ix.aiInv.avBlocks, i))
-  (s2: String) => s2
-  ()           => ""
-
-# Liveness is a BACKWARD analysis, so the sweep runs BACKWARD and the
-# fall-through successor is the op just computed — carried as `nxt`, not read
-# out of the previous generation. Sweeping forward moved information backward
-# exactly one op per pass, so the pass count grew with function length and the
-# fixpoint cost O(ops^2) op-visits (measured on the findstr proxy: an 82-op
-# function took 46 passes; backward it takes 3, and the emitted C is
-# byte-identical). Reading the freshest available value is ordinary chaotic
-# iteration — same monotone transfer functions, same least fixed point.
-fun alLivenessPass(ops: List<Op>, inv) => alIndexPass(ops, inv)
-  |> (ix, back) => alLivenessCalc(chain(back), ix, inv.avN - 1, None,
-                                  List())
-
-# `acc` is prepended to, so walking backward still yields forward order.
-fun [tail] alLivenessCalc(os: Chain<Op>, ix: AlIx, i, nxt: Op|None,
-                          acc) => match(os)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alLivenessOne(l.value, ix, i, nxt)
-    |> (o) => alLivenessCalc(l.next, ix, i - 1, o, prepend(o, acc))
-
-# saved(op) = (edge-in of the fall-through/Jump successor ∪ edge-in of the
-# JumpIf target) − op's own writes. A Jump's successor is its label WHEREVER
-# the op sits — testing last-op first severed the back edge of a loop whose
-# back-edge Jump is the function's final op (the array-ctor fill inlined
-# into a tail position), so nothing loop-carried was saved across a park
-# inside that loop (async_lower.py calc).
-fun alLivenessOne(op, ix: AlIx, i, nxt: Op|None)
-  let ss1 = alIsJumpOp(op) || i < ix.aiInv.avN - 1
-    ? alSs1(ix, i, op, nxt)
-    : List()
-  let ss2 = alSs2(ix, i, op)
-  ret opWithSavedVars(op, svSetSub(svSetUnion(ss1, ss2), alWritesOf(op)))
-
-fun alIsJumpOp(op) => match(op)
-  (j: OpJump) => true
-  (o: Op)     => false
-
-fun alSs1(ix: AlIx, i, op, nxt: Op|None) => match(op)
-  (j: OpJump) => match(ucLabelAt(ix.aiInv.avLabels, j.jumpName))
-    (t2: Int) => alEdgeIn(ix, i, t2)
-    ()         => List()
-  (o: Op)     => alEdgeInNext(ix, i, nxt)
-
-# Fall-through edge: the successor's saved set is the one just computed.
-fun alEdgeInNext(ix: AlIx, i, nxt: Op|None) => match(nxt)
-  (o: Op) => svSetUnion(alSavedSetOf(o),
-                        alPhiSourcesInto(ix, i + 1, alIxBlock(ix, i)))
-  ()      => alEdgeIn(ix, i, i + 1)   # unreachable: i < avN - 1 implies a successor
-
-fun alSs2(ix: AlIx, i: Int, op) => match(op)
-  (ji: OpJumpIf) => match(ucLabelAt(ix.aiInv.avLabels, ji.jumpIfLabel))
-    (t2: Int) => alEdgeIn(ix, i, t2)
-    ()         => List()
-  (o: Op)        => List()
-
-fun alEdgeIn(ix: AlIx, fromIdx: Int, targetIdx)
-  ret svSetUnion(alSavedSetAt(ix, targetIdx),
-                 alPhiSourcesInto(ix, targetIdx, alIxBlock(ix, fromIdx)))
-
-fun alSavedSetAt(ix: AlIx, index: Int) => alSavedSetOf(alIxOp(ix, index))
-
-fun alSavedSetOf(op): List<RParam>
-  ret svSetUnion(fold(alReadsOf(op), List(), svSetAdd), opSavedVars(op))
-
-# Phi sources arriving on the edge from `pred`: scan the run of Phis at the
-# target.
-fun alPhiSourcesInto(ix: AlIx, j, pred) => alPhiSourcesLoop(ix, j + 1, pred, List())
-
-fun [tail] alPhiSourcesLoop(ix: AlIx, j, pred, acc)
-  if j >= ix.aiInv.avN
-    ret acc
-  ret match(alIxOp(ix, j))
-    (ph: OpPhi) => alPhiSourcesLoop(ix, j + 1, pred,
-                     fold(ph.phiSources, acc, (a, s2) =>
-                       s2.sourceLabel == pred
-                         ? fold(rpReadStackVars(s2.sourceValue), a, svSetAdd)
-                         : a))
-    (o: Op)     => acc
 
 # ── basic blocks ─────────────────────────────────────────────────────────────
 
@@ -507,19 +494,16 @@ fun alBlockResult(op) => match(op)
 
 # ── heap-frame layout ────────────────────────────────────────────────────────
 
-class [final] AFrame(afPtrSlots: List<NameIdx>, afInlineSlots: List<NameStr>,
+# Python's FrameLayout: the frame locals by NAME — strict object_t* locals to
+# their array index, other locals to their shared inline field, all-pointer
+# structs to their decomposed base — and the slot fields, the one ORDERED part
+# (they become struct fields).
+class [final] AFrame(afPtrSlots: Dict<String, Int>, afInlineSlots: Dict<String, String>,
                      afSlotFields: List<CgField>, afNArray: Int,
-                     afDecomposed: List<NameIdx>)
+                     afDecomposed: Dict<String, Int>)
 class [final] NameIdx(niName: String, niIdx: Int)
-class [final] NameStr(nsName: String, nsStr: String)
 
-fun niLookup(l: List<NameIdx>, name: String) => match(head(filter(l, (e2) => e2.niName == name)))
-  (e2: NameIdx) => e2.niIdx
-  ()             => None
-
-fun nsLookup(l: List<NameStr>, name: String) => match(head(filter(l, (e2) => e2.nsName == name)))
-  (e2: NameStr) => e2.nsStr
-  ()             => None
+fun afEmpty() => AFrame(Dict(), Dict(), List(), 0, Dict())
 
 # Frame-resident locals: saved live vars (SORTED by name — reproducibility)
 # + call-result registers over bbs[:-1]; first-seen order, last-seen type.
@@ -609,10 +593,9 @@ fun alFftPutR(acc, v) => match(v)
 # 79+ min without completing). Both directed keys are stored so presence is
 # one get; adjacency lists keep first-seen order, which is the edge-list
 # order alNeighbours used to produce per node.
-class [final] IGraph(igEdges: Dict<String, Bool>,
-                     igAdj: Dict<String, List<String>>)
+class [final] IGraph(igAdj: Dict<String, Set<String>>)
 
-fun alEmptyGraph() => IGraph(Dict(), Dict())
+fun alEmptyGraph() => IGraph(Dict())
 
 fun alBuildInterference(opSeqs: List<List<Op>>,
                         frameNames: List<String>)
@@ -640,23 +623,15 @@ fun alInterfereOp(acc, op,
                              (n) => !strListMember(writes, n)))
   ret alLinkAllPairs(acc2, liveIn)
 
-fun alLink(acc, a, b)
-  if a == b
+# Python's link: both directions into each node's neighbour SET.
+fun alLink(acc: IGraph, a: String, b: String): IGraph
+  if a == b || contains(alNeighbours(acc, a), b)
     ret acc
-  if !(get(acc.igEdges, a + "\u{a7}" + b) is None)
-    ret acc
-  ret IGraph(put(put(acc.igEdges, a + "\u{a7}" + b, true),
-                 b + "\u{a7}" + a, true),
-             alAdjAdd(alAdjAdd(acc.igAdj, a, b), b, a))
+  ret IGraph(alAdjAdd(alAdjAdd(acc.igAdj, a, b), b, a))
 
-# The neighbour goes on the FRONT of the adjacency list. The only reader is
-# the colouring, which folds the neighbours into the SET of colours already
-# taken and then picks the lowest free one — the set is the same whichever
-# order its members arrive in, so no colour assignment can change.
-fun alAdjAdd(adj: Dict<String, List<String>>, from2: String,
-             to2) => match(get(adj, from2))
-  (prev: List<String>) => put(adj, from2, prepend(to2, prev))
-  ()                   => put(adj, from2, list1(to2))
+fun alAdjAdd(adj: Dict<String, Set<String>>, from2: String, to2: String) => match(get(adj, from2))
+  (prev: Set<String>) => put(adj, from2, add(prev, to2))
+  ()                  => put(adj, from2, add(Set(), to2))
 
 fun alLinkAllPairs(acc, names: List<String>) => alLapLoop(acc, chain(names))
 
@@ -668,26 +643,28 @@ fun [tail] alLapInner(acc, a, ns: Chain<String>) => match(ns)
   (nil: ChainEnd) => acc
   (l: ChainLink)  => alLapInner(alLink(acc, a, l.value), a, l.next)
 
-fun alNeighbours(graph: IGraph, name: String) => match(get(graph.igAdj, name))
-  (ns: List<String>) => ns
-  ()                 => List()
+fun alNeighbours(graph: IGraph, name: String): Set<String> => match(get(graph.igAdj, name))
+  (ns: Set<String>) => ns
+  ()                => Set()
 
-# Greedy colouring in the given name order.
-fun alColour(names: List<String>, graph: IGraph)
-  ret fold(names, List(), (acc, n) => alColourOne(acc, n, graph))
+# Greedy colouring in the given name order — Python's __colour, a name → colour
+# map. The colours already taken by a name's neighbours form a SET: alFirstFree
+# asks nothing of it but membership.
+fun alColour(names: List<String>, graph: IGraph): List<NameIdx>
+  let colours = fold(names, Dict(), (acc, n) => alColourOne(acc, n, graph))
+  ret map(names, (n) => NameIdx(n, alColourOf(colours, n)))
 
-# The colours already taken by this name's neighbours form a SET — alFirstFree
-# asks nothing of it but membership. The new entry goes on the FRONT of the
-# accumulator, which is a name→colour map read by niLookup: each name is
-# coloured exactly once, so no lookup can find a different entry.
-fun alColourOne(acc, name, graph: IGraph)
-  let used = fold(alNeighbours(graph, name), Set(),
-                  (u, nb) => alUsedColour(u, acc, nb))
-  ret prepend(NameIdx(name, alFirstFree(used, 0)), acc)
+fun alColourOne(acc: Dict<String, Int>, name: String, graph: IGraph): Dict<String, Int>
+  let used = fold(alNeighbours(graph, name), Set(), (u, nb) => alUsedColour(u, acc, nb))
+  ret put(acc, name, alFirstFree(used, 0))
 
-fun alUsedColour(u, acc: List<NameIdx>, nb: String): Set<Int> => match(niLookup(acc, nb))
+fun alUsedColour(u: Set<Int>, acc: Dict<String, Int>, nb: String): Set<Int> => match(get(acc, nb))
   (c: Int) => add(u, c)
   ()        => u
+
+fun alColourOf(colours: Dict<String, Int>, name: String) => match(get(colours, name))
+  (c: Int) => c
+  ()        => 0   # unreachable: every name was coloured
 
 fun [tail] alFirstFree(used: Set<Int>, c) => contains(used, c) ? alFirstFree(used, c + 1) : c
 
@@ -743,11 +720,14 @@ fun alComputeFrameLayout(smBbs: List<ABlock>, hotBbs: List<ABlock>,
                          livenessOps: List<Op>)
   let fieldTypes = alFrameFieldTypes(smBbs)
   let frameNames = map(fieldTypes, (f2) => f2.fieldName)
-  let hotOps = fold(hotBbs, List(), (acc, bb) => concat(acc, bb.abOps))
+  let hotOps = build(alBlockOps(chain(hotBbs), builder()))
   let graph = alBuildInterference(list2(livenessOps, hotOps), frameNames)
   let byType = alGroupByType(fieldTypes)
-  ret alLayoutLoop(chain(byType), graph, 0, AFrame(List(), List(),
-                                                   List(), 0, List()))
+  ret alLayoutLoop(chain(byType), graph, 0, afEmpty())
+
+fun [tail] alBlockOps(bs: Chain<ABlock>, [terminal] acc: ListBuilder<Op>): ListBuilder<Op> => match(bs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => alBlockOps(l.next, pushAll(acc, l.value.abOps))
 
 class [final] TypeGroup(tgType: CgType, tgNames: List<String>)
 
@@ -789,7 +769,7 @@ fun alLayoutGroup(g2: TypeGroup, graph: IGraph, ti: Int, acc: AFrame)
   let nColours = alDistinctColourCount(colour)
   ret match(g2.tgType)
     (d: CgDataPointer) => AFrame(
-        concat(acc.afPtrSlots, map(colour, (e2) => NameIdx(e2.niName, acc.afNArray + e2.niIdx))),
+        fold(colour, acc.afPtrSlots, (d2, e2) => put(d2, e2.niName, acc.afNArray + e2.niIdx)),
         acc.afInlineSlots, acc.afSlotFields, acc.afNArray + nColours, acc.afDecomposed)
     (o: CgType) => alLayoutNonPtr(g2, colour, nColours, ti, acc)
 
@@ -801,18 +781,17 @@ fun alLayoutNonPtr(g2: TypeGroup, colour: List<NameIdx>, nColours: Int, ti: Int,
 # colour_base maps each distinct colour (sorted) to array base indices.
 fun alLayoutDecomposed(colour: List<NameIdx>, width, acc: AFrame): AFrame
   let sorted2 = alSortedColours(colour)
-  let entries = map(colour, (e2) => NameIdx(e2.niName,
-                      acc.afNArray + alIndexOfInt(sorted2.cs, e2.niIdx) * width))
   ret AFrame(acc.afPtrSlots, acc.afInlineSlots, acc.afSlotFields,
              acc.afNArray + width * sorted2.n,
-             concat(acc.afDecomposed, entries))
+             fold(colour, acc.afDecomposed, (d2, e2) =>
+               put(d2, e2.niName, acc.afNArray + alIndexOfInt(sorted2.cs, e2.niIdx) * width)))
 
 fun alLayoutInline(g2: TypeGroup, colour: List<NameIdx>, ti: Int, acc: AFrame): AFrame
   let sortedColours = alSortedColours(colour).cs
   let newFields = map(sortedColours, (c) => CgField("$slot$" + String(ti) + "$" + String(c), g2.tgType))
   ret AFrame(acc.afPtrSlots,
-             concat(acc.afInlineSlots, map(colour, (e2) =>
-               NameStr(e2.niName, "$slot$" + String(ti) + "$" + String(e2.niIdx)))),
+             fold(colour, acc.afInlineSlots, (d2, e2) =>
+               put(d2, e2.niName, "$slot$" + String(ti) + "$" + String(e2.niIdx))),
              concat(acc.afSlotFields, newFields), acc.afNArray, acc.afDecomposed)
 
 fun alDistinctColourCount(colour: List<NameIdx>): Int => alSortedColours(colour).n
@@ -846,15 +825,15 @@ fun alArrayElem(sp, stateName, index): RParam
 
 # Frame local reference: trailing-array slot | shared inline slot | named field.
 fun alStateField(name, t2, sp, stateName, layout: AFrame)
-  ret match(niLookup(layout.afPtrSlots, name))
+  ret match(get(layout.afPtrSlots, name))
     (i: Int) => alArrayElem(sp, stateName, i)
-    ()        => match(nsLookup(layout.afInlineSlots, name))
+    ()        => match(get(layout.afInlineSlots, name))
       (slot: String) => RpObjectField(t2, sp, stateName, slot, None, false, false)
       ()              => RpObjectField(t2, sp, stateName, name, None, false, false)
 
 # local → state; a decomposed struct stores one leaf per array element.
 fun alStoreVar(v, sp, stateName, layout: AFrame)
-  ret match(niLookup(layout.afDecomposed, stackVarName(v)))
+  ret match(get(layout.afDecomposed, stackVarName(v)))
     (base: Int) => alStoreDecomposed(v, sp, stateName, base)
     ()           => list1(OpMove(alStateField(stackVarName(v), rpGetType(v), sp, stateName, layout),
                                  v, false, List()))
@@ -892,7 +871,7 @@ fun [tail] splitPathLoopB(path, start, i, [terminal] acc: ListBuilder<String>): 
 # state → local; a decomposed struct is rebuilt from its array elements via
 # nested NewStructs (index walk in leaf order).
 fun alLoadVar(v, sp, stateName, layout: AFrame): List<Op>
-  ret match(niLookup(layout.afDecomposed, stackVarName(v)))
+  ret match(get(layout.afDecomposed, stackVarName(v)))
     (base: Int) => list1(OpMove(v, alRebuild(rpGetType(v), sp, stateName, base).rbValue,
                                 false, List()))
     ()           => list1(OpMove(v, alStateField(stackVarName(v), rpGetType(v), sp, stateName, layout),
@@ -1409,10 +1388,8 @@ fun alStubThresholdOps() => 256
 
 # Stub mode: every UNPLACED param gains a state field (stub stores, entry
 # case reloads).
-# Of the four lists in a frame layout, only afSlotFields is ORDER-bearing — it
-# becomes struct fields. The other three are name-keyed lookups (niLookup,
-# nsLookup, alPlaced) whose entries carry their own array index, so a new one
-# goes on the front. The slot fields are SELECTED from the parameters in
+# Of the four parts of a frame layout, only afSlotFields is ORDER-bearing — it
+# becomes struct fields. The other three are keyed by name. The slot fields are SELECTED from the parameters in
 # parameter order rather than appended one at a time.
 #
 # alPlaced is asked of the ORIGINAL layout throughout: parameter names are
@@ -1435,8 +1412,7 @@ fun alAugOne(layout: AFrame, acc, p: CgField)
   if alPlaced(layout, p.fieldName)
     ret acc
   ret match(p.fieldType)
-    (d: CgDataPointer) => AFrame(prepend(NameIdx(p.fieldName, acc.afNArray),
-                                         acc.afPtrSlots),
+    (d: CgDataPointer) => AFrame(put(acc.afPtrSlots, p.fieldName, acc.afNArray),
                                  acc.afInlineSlots, acc.afSlotFields,
                                  acc.afNArray + 1, acc.afDecomposed)
     (o: CgType)        => alAugNonPtr(acc, p)
@@ -1445,15 +1421,14 @@ fun alAugNonPtr(acc: AFrame, p: CgField) => match(alPtrLeaves(p.fieldType))
   (leaves: (ls: List<String>, n: Int)) =>
       AFrame(acc.afPtrSlots, acc.afInlineSlots, acc.afSlotFields,
              acc.afNArray + leaves.n,
-             prepend(NameIdx(p.fieldName, acc.afNArray), acc.afDecomposed))
+             put(acc.afDecomposed, p.fieldName, acc.afNArray))
   ()  => AFrame(acc.afPtrSlots,
-                prepend(NameStr(p.fieldName, p.fieldName),
-                        acc.afInlineSlots),
+                put(acc.afInlineSlots, p.fieldName, p.fieldName),
                 acc.afSlotFields, acc.afNArray, acc.afDecomposed)
 
-fun alPlaced(acc: AFrame, name: String) => any(acc.afPtrSlots, (e2) => e2.niName == name)
-    || any(acc.afInlineSlots, (e2) => e2.nsName == name)
-    || any(acc.afDecomposed, (e2) => e2.niName == name)
+fun alPlaced(acc: AFrame, name: String) => contains(acc.afPtrSlots, name)
+    || contains(acc.afInlineSlots, name)
+    || contains(acc.afDecomposed, name)
     || any(acc.afSlotFields, (f2) => f2.fieldName == name)
 
 fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
