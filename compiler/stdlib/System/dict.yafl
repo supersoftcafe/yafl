@@ -212,8 +212,23 @@ fun isEmpty<K,V>(d: Dict<K,V>): Bool
   ret d is DictEmpty
 
 
+# The keys have the same hashes, so the Set is the same tree: copied node for
+# node with each value replaced by (), nothing hashed or rebalanced. (Inserting
+# every key again was O(n log n) to rebuild what was already there.)
 fun keys<K,V>(d: Dict<K,V>): Set<K> where BasicEquality<K>
-  ret _chainToSet<K>(_dictKeyChain<K,V>(d), Set<K>())
+  ret Set<K>(_dictUnitMap<K,V>(d))
+
+# NOT [tail]: tree recursion, depth = the tree's height. A bucket is an
+# unordered collision chain, so reversing it on the way is free.
+fun _dictUnitMap<K,V>(d: Dict<K,V>): Dict<K,()>
+  fun [tail] unit_bucket(b: _DictBucket<K,V>, acc: _DictBucket<K,()>): _DictBucket<K,()>
+    ret match(b)
+      (n: _BucketNil)  => acc
+      (c: _BucketCons) => unit_bucket(c.tail, _BucketCons<K,()>(c.key, (), acc))
+  ret match(d)
+    (e: DictEmpty) => DictEmpty<K,()>()
+    (n: DictNode)  => DictNode<K,()>(n.hash, unit_bucket(n.bucket, _BucketNil<K,()>()), n.height,
+                                     _dictUnitMap<K,V>(n.left), _dictUnitMap<K,V>(n.right))
 
 # O(1): the chain becomes the bag's front as it lies. Nothing is ordered, so
 # nothing needs reordering.

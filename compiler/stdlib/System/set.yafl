@@ -88,15 +88,50 @@ fun map<T,U>(s: Set<T>, f: (:T): U): Set<U> where BasicEquality<U>
                      Set<U>())
 
 
+# One walk splits the members. Nothing rejected: the set itself, shared. Fewer
+# rejected than kept: those few removed from it. Otherwise the kept ones,
+# inserted into an empty set. (It used to rebuild by insertion every time.)
 fun filter<T>(s: Set<T>, f: (:T): Bool): Set<T> where BasicEquality<T>
-  ret _chainToSet<T>(_chainFilterRev<T>(_dictKeyChain<T,()>(s._d), f, ChainEnd<T>()),
-                     Set<T>())
+  let parts = _chainPartition<T>(_dictKeyChain<T,()>(s._d), f, ChainEnd<T>(), ChainEnd<T>())
+  ret parts.rejected is ChainEnd
+    ? s
+    : _chainNoLonger<T>(parts.rejected, parts.kept)
+      ? Set<T>(_chainRemoveAll<T>(parts.rejected, s._d))
+      : _chainToSet<T>(parts.kept, Set<T>())
+
+fun [tail] _chainPartition<T>(c: Chain<T>, f: (:T): Bool, kept: Chain<T>,
+                              rejected: Chain<T>): (kept: Chain<T>, rejected: Chain<T>)
+  ret match(c)
+    (l: ChainLink) => f(l.value)
+      ? _chainPartition<T>(l.next, f, ChainLink<T>(l.value, kept), rejected)
+      : _chainPartition<T>(l.next, f, kept, ChainLink<T>(l.value, rejected))
+    (e: ChainEnd)  => (kept, rejected)
+
+# `a` has no more members than `b` — walked in step, nothing counted.
+fun [tail] _chainNoLonger<T>(a: Chain<T>, b: Chain<T>): Bool
+  ret match(a)
+    (e: ChainEnd)  => true
+    (la: ChainLink) => match(b)
+      (e2: ChainEnd)  => false
+      (lb: ChainLink) => _chainNoLonger<T>(la.next, lb.next)
+
+fun [tail] _chainRemoveAll<T>(c: Chain<T>, d: Dict<T,()>): Dict<T,()> where BasicEquality<T>
+  ret match(c)
+    (l: ChainLink) => _chainRemoveAll<T>(l.next, remove<T,()>(d, l.value))
+    (e: ChainEnd)  => d
 
 
-# Every member of both. Done the SLOW way for now — one insert per member of
-# `b` — which is the standing position on merging two containers.
+# Every member of both: one insert per member of the SMALLER set, into the
+# larger, skipping a member already there so its structure is kept.
 fun union<T>(a: Set<T>, b: Set<T>): Set<T> where BasicEquality<T>
-  ret _chainToSet<T>(_dictKeyChain<T,()>(b._d), a)
+  ret size<T>(b) <= size<T>(a)
+    ? _setAddAbsent<T>(a, _dictKeyChain<T,()>(b._d))
+    : _setAddAbsent<T>(b, _dictKeyChain<T,()>(a._d))
+
+fun [tail] _setAddAbsent<T>(acc: Set<T>, c: Chain<T>): Set<T> where BasicEquality<T>
+  ret match(c)
+    (l: ChainLink) => _setAddAbsent<T>(contains<T>(acc, l.value) ? acc : add<T>(acc, l.value), l.next)
+    (e: ChainEnd)  => acc
 
 
 # ── the one way out ──────────────────────────────────────────────────────────
