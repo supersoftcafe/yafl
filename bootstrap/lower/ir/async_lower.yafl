@@ -897,11 +897,11 @@ fun alRebuildNested(f2: CgField, rest: List<CgField>, sp, stateName, idx,
 # block, so no block result declares its temp — the unroll declares it (and
 # any wrap local) itself, as Python's does.
 fun alUnrollMusttail(f: CgFunction)
-  let um = alUmLoop(f.fnOps, 0i32, 0, UmAcc(seqBuilder(), List()))
+  let um = alUmLoop(f.fnOps, 0i32, 0, UmAcc(seqBuilder(), builder()))
   ret cgFunctionWith(f, build(um.uaOps),
-                     cgStructAdd(f.fnStackVars, CgStruct(um.uaVars)))
+                     cgStructAdd(f.fnStackVars, CgStruct(build(um.uaVars))))
 
-class [linear, final] UmAcc(uaOps: SeqBuilder<Op>, uaVars: List<CgField>)
+class [linear, final] UmAcc(uaOps: SeqBuilder<Op>, uaVars: ListBuilder<CgField>)
 
 fun [tail] alUmLoop(s: Segment<Op>|None, iSeg, counter,
                     [terminal] acc: UmAcc): UmAcc => match(s)
@@ -910,7 +910,7 @@ fun [tail] alUmLoop(s: Segment<Op>|None, iSeg, counter,
     ? alUmLoop(seg.next, 0i32, counter, acc)
     : match(alUmOne(seg.array(iSeg), counter))
         (u: UmOut) => alUmLoop(s, iSeg + 1i32, u.umCounter,
-                               UmAcc(pushAll(acc.uaOps, u.umOps), concat(acc.uaVars, u.umVars)))
+                               UmAcc(pushAll(acc.uaOps, u.umOps), pushAll(acc.uaVars, u.umVars)))
         ()          => alUmLoop(s, iSeg + 1i32, counter,
                                 UmAcc(push(acc.uaOps, seg.array(iSeg)), acc.uaVars))
 
@@ -976,15 +976,15 @@ fun alIsSyncNontailCall(op) => match(op)
   (c: OpCall) => !c.callMusttail && opCallIsSync(c)
   (o: Op)     => false
 
-class [linear, final] EscAcc(ecOps: SeqBuilder<Op>, ecVars: List<CgField>, ecGrew: Bool)
+class [linear, final] EscAcc(ecOps: SeqBuilder<Op>, ecVars: ListBuilder<CgField>, ecGrew: Bool)
 
 # Expand every non-tail sync call. Runs after tail discovery, so a sync call
 # in tail position stays a musttail passing its callee's result straight
 # through. Unchanged (Python returns fn itself) unless an expansion grew.
 fun alExpandSyncCalls(f: CgFunction)
-  let acc = alEscLoop(f.fnOps, 0i32, 0, EscAcc(seqBuilder(), List(), false))
+  let acc = alEscLoop(f.fnOps, 0i32, 0, EscAcc(seqBuilder(), builder(), false))
   let grew = acc.ecGrew
-  let vars = acc.ecVars
+  let vars = build(acc.ecVars)
   let ops = build(acc.ecOps)
   ret grew ? cgFunctionWith(f, ops, cgStructAdd(f.fnStackVars, CgStruct(vars))) : f
 
@@ -1002,7 +1002,7 @@ fun alEscOne(op, index: Int, [terminal] acc: EscAcc): EscAcc => match(op)
   (o: Op)     => EscAcc(push(acc.ecOps, op), acc.ecVars, acc.ecGrew)
 
 fun alEscPush(se: SyncExp, [terminal] acc: EscAcc): EscAcc
-  ret EscAcc(pushAll(acc.ecOps, se.seOps), concat(acc.ecVars, se.seVars),
+  ret EscAcc(pushAll(acc.ecOps, se.seOps), pushAll(acc.ecVars, se.seVars),
              acc.ecGrew || atLeast(chain(se.seOps), 2))
 
 fun alSyncWrapName(reg: RParam|None, index: Int) => match(reg)
@@ -1533,15 +1533,23 @@ fun [tail] alSmSites(bs: Chain<ABlock>, f: CgFunction, stateName,
                                alSmSite(l.value, f, stateName, subtype, layout, bodyDefs,
                                         idxField, myTaskField, i, acc))
 
+# The state saves for one site, in live order: one builder, not a concat per
+# variable.
+fun [tail] alSmSaves(vs: Chain<RParam>, bodyDefs: Set<String>, stateName, layout: AFrame,
+                     [terminal] acc: ListBuilder<Op>): ListBuilder<Op> => match(vs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => alSmSaves(l.next, bodyDefs, stateName, layout,
+                               contains(bodyDefs, stackVarName(l.value))
+                                 ? pushAll(acc, alStoreVar(l.value, alStateParam(), stateName, layout))
+                                 : acc)
+
 fun alSmSite(bb: ABlock, f: CgFunction, stateName, subtype: String|None,
              layout: AFrame, bodyDefs: Set<String>, idxField,
              myTaskField, i, [terminal] acc)
   let bodyOps = alConvertReturnsSm(alDropLast(bb.abOps), myTaskField, f.fnResult, subtype)
   # SM saves address the $state parameter (Python 1179).
-  let saveStores = fold(vsSorted(bb.abLive), List(), (a, v) =>
-                     contains(bodyDefs, stackVarName(v))
-                       ? concat(a, alStoreVar(v, alStateParam(), stateName, layout))
-                       : a)
+  let saveStores = build(alSmSaves(chain(vsSorted(bb.abLive)), bodyDefs, stateName, layout,
+                                   builder()))
   ret match(lastOp(chain(bb.abOps)))
     (op: Op) => match(op)
       (pc: OpParallelCall) => alSmPar(pc, f, stateName, layout, idxField, i,
