@@ -144,7 +144,6 @@ class _SyncFlow:
     virtual_impls: dict[str, tuple[str, ...]]
     field_class: dict[tuple[str, str], tuple[str, str]]
     pinned: frozenset[Node]
-    site_sync: bool
     dependents: dict[Node, list[Node]] = dataclasses.field(default_factory=dict)
     fallen: set[Node] = dataclasses.field(default_factory=set)
     aliases: dict[str, set[str]] = dataclasses.field(default_factory=dict)
@@ -212,7 +211,7 @@ class _SyncFlow:
         maybe_async node — a group that is just the caller's own parameter
         does not."""
         targets = self.callees(op.function)
-        if targets is None or not self.site_sync:
+        if targets is None:
             return [(self.sources(fn_name, op.function, ()),
                      not self.own_param(fn_name, op.function))]
         groups: list[tuple[list[Node] | None, bool]] = [([("mfn", t)], True) for t in targets]
@@ -318,7 +317,7 @@ def _field_classes(objects: dict[str, Object]) -> dict[tuple[str, str], tuple[st
     return {k: find(k) for k in parent}
 
 
-def _build_flow(a: Application, site_sync: bool = True) -> _SyncFlow:
+def _build_flow(a: Application) -> _SyncFlow:
     virtual_impls: dict[str, set[str]] = {}
     for obj in a.objects.values():
         for virtual_name, global_name in obj.functions:
@@ -327,7 +326,7 @@ def _build_flow(a: Application, site_sync: bool = True) -> _SyncFlow:
     pinned = frozenset(node for name, fn in a.functions.items() if fn.sync
                        for node in (("fn", name), ("mfn", name)))
     flow = _SyncFlow(a, {v: tuple(sorted(i)) for v, i in virtual_impls.items()},
-                     _field_classes(a.objects), pinned, site_sync)
+                     _field_classes(a.objects), pinned)
     address_taken = trim.address_taken_functions(a)
 
     def fall_all(t: Type, node_of) -> None:
@@ -412,19 +411,19 @@ def _build_flow(a: Application, site_sync: bool = True) -> _SyncFlow:
     return flow
 
 
-def compute_sync_names(a: Application) -> set[str]:
-    """The names of the functions provably unable to suspend, without
-    materialising anything, for the inline gates — inlining a suspending
-    callee into its caller merges the two live sets, so every suspension in
-    the merged body saves the combined frame.
-
-    Decided WITHOUT per-site sync (`site_sync=False`): a call counts by its
-    function value alone, as before maybe_async. With it, far more callers
-    prove sync and the -O3 single-caller inliner folds them into functions
-    large enough that the lowerings after it, which grow faster than
-    linearly with function size, dominated the self-compile (+55%)."""
-    flow = _build_flow(a, site_sync=False)
-    return {name for name in a.functions if flow.is_sync(("fn", name))}
+def compute_sync_call_targets(a: Application) -> set[str]:
+    """The functions called DIRECTLY at a call site that provably cannot
+    suspend, without materialising anything — for the single-caller inline
+    gate. Inlining a callee whose call can suspend merges its live set with
+    the caller's, so every suspension in the merged body saves the combined
+    frame; a sync SITE has no suspension to save across. For a function with
+    one reference, membership says its one call site is sync — including a
+    function sync only through the maybe_async calls it makes."""
+    flow = _build_flow(a)
+    return {op.function.name
+            for name, fn in a.functions.items() for op in fn.ops
+            if isinstance(op, Call) and isinstance(op.function, GlobalFunction)
+            and op.function.name in a.functions and flow.call_is_sync(name, op)}
 
 
 def infer_sync(a: Application) -> Application:

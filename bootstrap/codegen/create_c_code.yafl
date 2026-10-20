@@ -344,7 +344,7 @@ fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
   let a1 = discoverGlobalFunctionCalls(trimUnusedVtableSlots(a0))
   # Recomputed each round: folding a callee away can newly prove its caller
   # sync, unlocking the next fold in the chain.
-  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1, computeSyncNames(a1), round2))
+  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1, computeSyncCallTargets(a1), round2))
   ret ccSameShape(prev, a2, true)
     ? a2
     : ccO3Fixpoint(a2, round2 + 1, a2)

@@ -252,10 +252,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 a = lowering.vtable_trim.trim_unused_vtable_slots(a)
                 a = lowering.globalfuncs.discover_global_function_calls(a)
                 # Recomputed each round: folding a callee away can newly prove
-                # its caller sync, unlocking the next fold in the chain.
-                sync_names = lowering.sync_inference.compute_sync_names(a)
+                # a call site sync, unlocking the next fold in the chain.
+                sync_targets = lowering.sync_inference.compute_sync_call_targets(a)
                 a = lowering.trim.removed_unused_stuff(
-                    lowering.inlining.inline_single_caller_functions(a, sync_names, sc_round))
+                    lowering.inlining.inline_single_caller_functions(a, sync_targets, sc_round))
                 shape = (tuple((n, len(f.ops)) for n, f in a.functions.items()),
                          tuple(sorted((n, len(o.functions)) for n, o in a.objects.items())))
                 if shape == prev_shape:

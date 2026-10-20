@@ -64,23 +64,27 @@ import Bootstrap::StdlibCandidates
 
 # ── public entry points ──────────────────────────────────────────────────────
 
-# The names of the functions provably unable to suspend, without
-# materialising anything. Shared by inferSync and the inline gates —
-# inlining a suspending callee into its caller merges the two live sets, so
-# every suspension in the merged body saves the combined frame.
-#
-# Decided WITHOUT per-site sync: a call counts by its function value alone,
-# as before maybe_async. With it, far more callers prove sync and the -O3
-# single-caller inliner folds them into functions large enough that the
-# lowerings after it, which grow faster than linearly with function size,
-# dominated the self-compile (+55%).
-fun computeSyncNames(a: CgApp)
-  let solved = siSolve(a, false)
+# The functions called DIRECTLY at a call site that provably cannot
+# suspend, without materialising anything — for the single-caller inline
+# gate. Inlining a callee whose call can suspend merges its live set with the
+# caller's, so every suspension in the merged body saves the combined frame;
+# a sync SITE has no suspension to save across. For a function with one
+# reference, membership says its one call site is sync — including a
+# function sync only through the maybe_async calls it makes.
+fun computeSyncCallTargets(a: CgApp): Set<String>
+  let solved = siSolve(a)
   ret fold(appFunctions(a), Set(), (acc, f) =>
-        siIsSync(solved, siFnNode(f.fnName)) ? add(acc, f.fnName) : acc)
+        fold(f.fnOps, acc, (acc2, op) => siSyncTarget(solved, f.fnName, op, acc2)))
+
+fun siSyncTarget(solved: SiSolved, fnName: String, op: Op, acc: Set<String>): Set<String> => match(op)
+  (c: OpCall) => match(c.callFunction)
+    (gf: RpGlobalFunction) => appHasFunction(solved.ssFlow.sfApp, gf.name) && siCallIsSync(solved, fnName, c)
+                                ? add(acc, gf.name) : acc
+    (o: RParam)            => acc
+  (o: Op)     => acc
 
 fun inferSync(a: CgApp)
-  let solved = siSolve(a, true)
+  let solved = siSolve(a)
   let fns = map(appFunctions(a), (f) => siMaterialise(solved, f))
   ret appWithObjects(appWithFunctions(a, fns),
                      map(appObjects(a), (o) => siMaterialiseObject(solved, o)))
@@ -141,7 +145,7 @@ fun siRetypeFields(fields: List<CgField>, isSync: (:List<String>): Bool)
 # The lookup tables the edge builder needs.
 class [final] SiFlow(sfApp: CgApp, sfImpls: Dict<String, List<String>>,
                      sfFieldRep: Dict<String, String>, sfPinned: Set<String>,
-                     sfAddressTaken: StrSet, sfSiteSync: Bool)
+                     sfAddressTaken: StrSet)
 
 # Dependency edges (source → dependents) and the fallen set.
 class [final] SiAcc(saDeps: Dict<String, List<String>>, saFallen: Set<String>)
@@ -227,11 +231,11 @@ fun siAssign(flow: SiFlow, acc: SiAcc, fnName: String, target, value): SiAcc
 
 # ── building the flow ────────────────────────────────────────────────────────
 
-fun siSolve(a: CgApp, siteSync: Bool): SiSolved
+fun siSolve(a: CgApp): SiSolved
   let flow = SiFlow(a, siVirtualImpls(a), siFieldClasses(appObjects(a)),
                     fold(appFunctions(a), Set(), (acc, f) =>
                       f.fnSync ? add(add(acc, siFnNode(f.fnName)), siMfnNode(f.fnName)) : acc),
-                    addressTakenFunctions(a), siteSync)
+                    addressTakenFunctions(a))
   let fromFns = fold(appFunctions(a), SiAcc(Dict(), Set()), (acc, f) => siFunctionEdges(flow, acc, f))
   let fromObjs = fold(appObjects(a), fromFns, (acc, o) => siForeignObject(flow, acc, o))
   let built = fold(appGlobals(a), fromObjs, (acc, g2) => siGlobalEdges(flow, acc, g2))
@@ -335,7 +339,7 @@ fun siGroupEdges(flow: SiFlow, acc: SiAcc, fnName: String, g: SiGroup): SiAcc
   ret g.sgMaybe ? siEdge(flow, a1, g.sgSrcs, siMfnNode(fnName)) : a1
 
 fun siCallGroups(flow: SiFlow, fnName: String, c: OpCall,
-                 isOwn: (:RParam): Bool): List<SiGroup> => match(flow.sfSiteSync ? siCallees(flow, c.callFunction) : None)
+                 isOwn: (:RParam): Bool): List<SiGroup> => match(siCallees(flow, c.callFunction))
   (ts: List<String>) => concat(map(ts, (t) => SiGroup(list1(siMfnNode(t)), true)),
                                flatMap(ts, (t) => siArgGroups(flow, fnName, c.callParameters, t, isOwn)))
   ()                 => list1(SiGroup(siSources(flow, fnName, c.callFunction, List()),

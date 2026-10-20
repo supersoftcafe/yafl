@@ -226,3 +226,45 @@ class TestMaybeAsync(TestCase):
         self.assertFalse(_fn("loopG").sync)
         self.assertTrue(_fn("callerSyncG").sync)
         self.assertFalse(_fn("callerAsyncG").sync)
+
+
+_O3_PROGRAM = f"""namespace Main
+import System
+fun [foreign("suspendy"),impure] suspendy(x: {_INT}): {_INT}
+
+# maybe_async: two call sites, one handing it an async function.
+fun applyH(f: {_FN}, x: {_INT}): {_INT}
+  ret f(x) + {_PAD} + {_PAD}
+
+# Used once, and sync only through its maybe_async call: the call site is sync.
+fun helperH(x: {_INT}): {_INT}
+  ret applyH((y: {_INT}) => y + 1, x) + {_PAD} + {_PAD} + {_PAD}
+
+fun main(): {_INT}
+  ret helperH(3) + applyH((y: {_INT}) => suspendy(y), 4)
+"""
+
+
+@functools.cache
+def _lowered_o3() -> Application:
+    """The Application `lower_async` produced for `_O3_PROGRAM` at -O3."""
+    captured: list[Application] = []
+    real = lowering.async_lower.lower_async
+
+    def capture(a: Application) -> Application:
+        result = real(a)
+        captured.append(result)
+        return result
+
+    with mock.patch.object(lowering.async_lower, "lower_async", capture):
+        c.compile([c.Input(_O3_PROGRAM, "test.yafl")], use_stdlib=True, optimization_level=3)
+    return captured[-1]
+
+
+class TestSingleCallerInlining(TestCase):
+    def test_a_sync_call_site_is_folded_even_through_a_maybe_async_callee(self):
+        """-O3 folds a single-use function into its only call site when that
+        site cannot suspend — here because the function's own call of the
+        maybe_async applyH passes only a sync function."""
+        names = list(_lowered_o3().functions)
+        self.assertFalse(any(n.startswith("Main::helperH@") for n in names), names)

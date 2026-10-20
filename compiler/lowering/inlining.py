@@ -118,9 +118,9 @@ def inline_small_functions(app: Application, inline_always: bool = True, epoch: 
     return dataclasses.replace(app, functions=functions)
 
 
-def inline_single_caller_functions(app: Application, sync_names: set[str], epoch: int = 0) -> Application:
-    """Inline every SYNC function referenced exactly once into that sole call
-    site, regardless of its size — folding it away costs no code growth (the
+def inline_single_caller_functions(app: Application, sync_targets: set[str], epoch: int = 0) -> Application:
+    """Inline every function referenced exactly once into that sole call site,
+    when that site is SYNC, regardless of its size — folding it away costs no code growth (the
     original becomes unreferenced and is removed by the next trim). Runs after
     the small/always passes (-O3) so it collapses the residual one-shot helpers
     a pipeline leaves behind. The `== 1` count already guarantees the single
@@ -128,17 +128,19 @@ def inline_single_caller_functions(app: Application, sync_names: set[str], epoch
     have a count above one (or no call site at all) and are left alone by the
     engine.
 
-    `sync_names` restricts the fold to callees that provably never suspend:
-    folding a suspending callee merges its live set with the caller's, so every
-    suspension in the merged body must save the COMBINED frame into the task
-    state object. Unrestricted, that turned a 7-field state frame into a
+    `sync_targets` restricts the fold to callees whose call site provably
+    cannot suspend (sync_inference.compute_sync_call_targets — per SITE, so a
+    callee sync there only through the maybe_async calls it makes qualifies):
+    folding a callee whose call can suspend merges its live set with the
+    caller's, so every suspension in the merged body must save the COMBINED
+    frame into the task state object. Unrestricted, that turned a 7-field state frame into a
     137-field one and doubled whole-program wall time in allocator and GC
     pressure. A suspending helper keeps its call: its own small frame is all a
     suspension inside it ever saves."""
     refcounts = trim.function_reference_counts(app)
 
     def policy(target: Function) -> bool:
-        return refcounts[target.name] == 1 and target.name in sync_names
+        return refcounts[target.name] == 1 and target.name in sync_targets
 
     functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"c{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)

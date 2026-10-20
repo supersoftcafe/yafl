@@ -31,19 +31,21 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int)
           !atLeast(target.fnOps, inlCutoffComplexity())
           || (inlineAlways && target.fnAlwaysInline))))
 
-# `syncNames` restricts the fold to callees that provably never suspend:
-# folding a suspending callee merges its live set with the caller's, so every
+# `syncTargets` restricts the fold to callees whose call site provably cannot
+# suspend (computeSyncCallTargets — per SITE, so a callee sync there only
+# through the maybe_async calls it makes qualifies): folding a callee whose
+# call can suspend merges its live set with the caller's, so every
 # suspension in the merged body must save the COMBINED frame into the task
 # state object (unrestricted, a 7-field frame became 137 fields and doubled
 # wall time). A suspending helper keeps its call: its own small frame is all
 # a suspension inside it ever saves.
-fun inlineSingleCallerFunctions(a: CgApp, syncNames: Set<String>,
+fun inlineSingleCallerFunctions(a: CgApp, syncTargets: Set<String>,
                                 epoch: Int)
   let refcounts = functionReferenceCounts(a)
   ret appWithFunctions(a, map(appFunctions(a), (f) =>
         doInlining(f, "c" + String(epoch), a, (target) =>
           sdCountOf(refcounts, target.fnName) == 1
-          && contains(syncNames, target.fnName))))
+          && contains(syncTargets, target.fnName))))
 
 # ── the engine ───────────────────────────────────────────────────────────────
 
