@@ -164,7 +164,17 @@ def __ensure_lazy_machinery(a: Application) -> None:
         lowering.lazy_thunks.ensure_lazy_machinery(a, ir_type)
 
 
-def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False) -> list[str]:
+@dataclasses.dataclass(frozen=True)
+class InlineOptions:
+    """The IR inliners' knobs (main.py --inline-threshold /
+    --no-single-use-inline): the small-function cutoff, in ops (-O2 and up),
+    and whether -O3 folds a function into its only call site at any size."""
+    threshold: int = lowering.inlining.CUTOFF_COMPLEXITY
+    single_use: bool = True
+
+
+def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
+                    inline: InlineOptions = InlineOptions()) -> list[str]:
     a = Application(headers=headers, profile=profile)
     resolver = g.ResolverDiscriminators(g.ResolverRoot(statements), union_discriminators or {}, optimization_level=optimization_level)
     for stmt in statements:
@@ -230,7 +240,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 # fill loop's init call is the motivating case).
                 a = lowering.globalfuncs.discover_global_function_calls(a)
                 a = lowering.trim.removed_unused_stuff(
-                    lowering.inlining.inline_small_functions(a, inline_always, inl_round))
+                    lowering.inlining.inline_small_functions(a, inline_always, inl_round, inline.threshold))
                 shape = tuple((n, len(f.ops)) for n, f in a.functions.items())
                 if shape == prev_shape:
                     break
@@ -246,7 +256,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
         # in turn kill an object whose removal makes another slot single-
         # implementation — the cascade that fuses a stream pipeline into its
         # drain with no [inline(always)] annotations.
-        if optimization_level >= 3 and not profile:
+        if optimization_level >= 3 and not profile and inline.single_use:
             prev_shape = None
             for sc_round in range(16):  # bounded; recount each round as chains collapse
                 a = lowering.vtable_trim.trim_unused_vtable_slots(a)
@@ -626,7 +636,8 @@ class _Failed:
 
 
 def __iterate_and_compile(statements: list[s.Statement], just_testing = False, optimization_level: int = 0, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
-                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[str, list[Error]] | _Failed:
+                          enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([]),
+                          inline: "InlineOptions" = None) -> tuple[str, list[Error]] | _Failed:
     """Returns (c_code, warnings) on success, or _Failed on failure."""
     # Regex literals: validate at compile time and intern each distinct
     # pattern as one shared `$regexes::` global. Before convergence — the
@@ -749,7 +760,8 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # pass that can create or copy blocks — so each block instance is unique.
     new_statements = lowering.block_exits.assign_block_exits(new_statements)
     union_discriminators = lowering.unions.collect_discriminator_ids(new_statements)
-    c_parts = __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers, profile=profile)
+    c_parts = __create_c_code(new_statements, mains[0], just_testing=just_testing, optimization_level=optimization_level, union_discriminators=union_discriminators, headers=headers, profile=profile,
+                              inline=inline or InlineOptions())
     return "".join(c_parts), warnings
 
 
@@ -943,7 +955,8 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
                     lib_paths: list[str] | None = None,
                     profile: bool = False,
                     test_mode: bool = False,
-                    enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([])) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
+                    enabled_warnings: frozenset[str] = warning_flags.resolve_enabled_warnings([]),
+                    inline: "InlineOptions | None" = None) -> tuple[str, libraries.LinkSpec | None, list[Error]]:
     """Compile `source` together with every library it (transitively) references,
     discovered on the search path. Returns the generated C, the `LinkSpec`
     describing the headers/static libraries the loaded libraries need at link
@@ -1004,7 +1017,7 @@ def compile_project(source: list[Input], use_stdlib = False, just_testing = Fals
     try:
         compiled_result = __iterate_and_compile(statements, just_testing=just_testing,
             optimization_level=optimization_level, headers=headers, profile=profile,
-            enabled_warnings=enabled_warnings)
+            enabled_warnings=enabled_warnings, inline=inline)
     except ConvergenceError as unsettled:
         return __print_errors(unsettled.errors), None, []
     if isinstance(compiled_result, _Failed):

@@ -669,11 +669,11 @@ fun baseHeaders() => prepend("yafl.h", List())
 # __iterate_and_compile — to C text, or the printed diagnostics.
 fun cModeConverge(stmts, optLevel, profile,
                   headers: List<System::String>,
-                  enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
+                  enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int, warns: String)
   let gr = timed("compile", "converge+mono", () => convergeToPostmono(stmts, enabledWarnings))
   let warnsText = printedDiagnostics(gr.grWarns)
   ret match(gr.grRes)
-    (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers)
+    (ok: PmOk)   => cStage(ok.pmStmts, optLevel, profile, headers, inl)
                     |> (outs, code) => (outs, code, warnsText)
     (tx: PmText) => (prepend(tx.pmOut, List()), noProgramCode(tx.pmCode), warnsText)
 
@@ -720,7 +720,7 @@ fun projectTestMode(text, optLevel, profile,
 
 fun projectCompile(user, optLevel, profile,
                    enabledWarnings: Set<String>): (outs: List<String>, code: Int, warns: String)
-  ret projectBuild(user, List(), optLevel, profile, enabledWarnings)
+  ret projectBuild(user, List(), optLevel, profile, enabledWarnings, Bootstrap::Lower::Ir::inlineDefaults())
     |> (b) => (b.pbOuts, b.pbCode, b.pbWarns)
 
 # compile_project's whole result: the C (or the printed diagnostics), the exit
@@ -731,7 +731,7 @@ class [final] ProjectBuild(pbOuts: List<String>, pbCode: Int, pbWarns: String,
 
 # `extra` is compile_project's `lib_paths`: searched BEFORE YAFL_PATH.
 fun projectBuild(user, extra: List<String>, optLevel, profile,
-                 enabledWarnings: Set<String>): ProjectBuild
+                 enabledWarnings: Set<String>, inl: Bootstrap::Lower::Ir::InlineOpts): ProjectBuild
   ret match(timed("compile", "libraries", () => loadProject(user, extra)))
     (why: String)      => ProjectBuild(list1("error:" + why + "\n"), 1, "", None)
     (pe: ParseErrors)  => ProjectBuild(list1(printedDiagnostics(pe.peErrs)), 1, "", None)
@@ -742,7 +742,7 @@ fun projectBuild(user, extra: List<String>, optLevel, profile,
         # emission order, so the libraries come first exactly as they do in
         # compile_project.
         cModeConverge(concat(pr.plStmts, user), optLevel, profile,
-                      projectHeaders(spec), enabledWarnings)
+                      projectHeaders(spec), enabledWarnings, inl)
           |> (outs, code, warns) => ProjectBuild(outs, code, warns, spec)
 
 # ("yafl.h",) + tuple(h for h in link_spec.headers if h != "yafl.h") — yafl.h is
@@ -1054,7 +1054,7 @@ fun partText(parts: Dict<String, String>, name: String) => match(get(parts, name
   ()           => ""   # unreachable: the name came from keys(parts)
 
 fun cStage(stmts: List<PStmt>, optLevel, profile,
-           headers: List<System::String>): (outs: List<String>, code: Int)
+           headers: List<System::String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int)
   let tl = timed("lower", "lift+hoist+tail", () => stmts
     |> liftCapturedCalls
     |> hoistNestedFunctions
@@ -1073,7 +1073,7 @@ fun cStage(stmts: List<PStmt>, optLevel, profile,
     |> (low2) => timed("lower", "simple_classes", () => lowerSimpleClasses(low2))
     |> (low3) => timed("lower", "block_exits", () => assignBlockExits(low3))
   ret match(cFindMain(chain(final2)))
-    (nm: System::String) => cEmit(final2, nm, optLevel, profile, headers)
+    (nm: System::String) => cEmit(final2, nm, optLevel, profile, headers, inl)
     ()                    => (prepend("No main function found\n", List()), 1)
 
 # __is_main_function: the name must contain a NAMESPACED "::main@" (a bare
@@ -1102,8 +1102,8 @@ fun cIsBigintRet(ret2: Spec|None) => match(ret2)
 
 fun cEmit(stmts, mainName, optLevel,
           profile,
-          headers: List<System::String>): (outs: List<String>, code: Int)
-  let out = timed("codegen", "create_c_code", () => createCCode(stmts, mainName, optLevel, profile, headers))
+          headers: List<System::String>, inl: Bootstrap::Lower::Ir::InlineOpts): (outs: List<String>, code: Int)
+  let out = timed("codegen", "create_c_code", () => createCCode(stmts, mainName, optLevel, profile, headers, inl))
   ret isEmpty(out.ccErrors)
     ? (out.ccParts, 0)
     : (prepend(join(out.ccErrors, "\n") + "\n", List()), 1)

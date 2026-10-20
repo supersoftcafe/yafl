@@ -215,7 +215,7 @@ fun msHeadExpr(es: Chain<PExpr>) => match(es)
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
 fun createCCode(statements, mainName, optLevel,
-                profile, headers: List<String>): CreateCOut
+                profile, headers: List<String>, inl: InlineOpts): CreateCOut
   let discs = collectDiscriminatorIds(statements)
   let [lazy] breakers: List<String> = computeBreakers(statements)
   # Per-leaf value-struct-threshold analysis (the enum-encoding principle):
@@ -254,9 +254,9 @@ fun createCCode(statements, mainName, optLevel,
   # declares. The AST inliner still runs — see compiler.py's comment.
   let a3t = optLevel > 0 ? trimUnusedVtableSlots(a3) : a3
   let a3a = optLevel >= 2 && !profile
-    ? ccO2Fixpoint(a3t, 0, None, optLevel >= 3)
+    ? ccO2Fixpoint(a3t, 0, None, optLevel >= 3, inl.ioThreshold)
     : a3t
-  let a3s = optLevel >= 3 && !profile ? ccO3Fixpoint(a3a, 0, None) : a3a
+  let a3s = optLevel >= 3 && !profile && inl.ioSingleUse ? ccO3Fixpoint(a3a, 0, None) : a3a
   let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
   let a7 = timed("codegen", "staticinit", () => resolveFlatStructGlobalInits(a3b))
     |> (a4) => timed("codegen", "sync_inference", () => inferSync(a4))
@@ -324,14 +324,14 @@ fun ccFold(a: CgApp, optLevel): CgApp
 # calls to known targets first (a direct call is what makes the closure
 # inlinable), inline + trim, stop on shape stability; 16-round bound.
 fun [tail] ccO2Fixpoint(a0: CgApp, round2, prev: CgApp|None,
-                        inlineAlways: Bool): CgApp
+                        inlineAlways: Bool, cutoff: Int): CgApp
   if round2 >= 16
     ret a0
   let a1 = discoverGlobalFunctionCalls(a0)
-  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways, round2))
+  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways, round2, cutoff))
   ret ccSameShape(prev, a2, false)
     ? a2
-    : ccO2Fixpoint(a2, round2 + 1, a2, inlineAlways)
+    : ccO2Fixpoint(a2, round2 + 1, a2, inlineAlways, cutoff)
 
 # The -O3 single-caller fold: drop undispatched vtable entries, re-derive
 # direct calls, inline every function referenced exactly once, trim; the

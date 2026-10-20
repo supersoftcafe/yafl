@@ -23,12 +23,19 @@ import Bootstrap::StdlibCandidates
 
 fun inlCutoffComplexity() => 10
 
+# The IR inliners' knobs (--inline-threshold / --no-single-use-inline):
+# compiler.py's InlineOptions. The small-function cutoff, in ops (-O2 and up),
+# and whether -O3 folds a function into its only call site at any size.
+class [final] InlineOpts(ioThreshold: Int, ioSingleUse: Bool)
+
+fun inlineDefaults() => InlineOpts(inlCutoffComplexity(), true)
+
 # ── the two passes ───────────────────────────────────────────────────────────
 
-fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int)
+fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int, cutoff: Int)
   ret appWithFunctions(a, map(appFunctions(a), (f) =>
         doInlining(f, "s" + String(epoch), a, (target) =>
-          !atLeast(target.fnOps, inlCutoffComplexity())
+          !atLeast(target.fnOps, cutoff)
           || (inlineAlways && target.fnAlwaysInline))))
 
 # `syncTargets` restricts the fold to callees whose call site provably cannot

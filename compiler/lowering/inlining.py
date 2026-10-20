@@ -19,9 +19,7 @@ from langtools import checked_cast
 from pyast.statement import ImportGroup
 
 
-__CUTOFF_COMPLEXITY = 10
-
-
+CUTOFF_COMPLEXITY = 10
 
 
 def __do_inlining(fn: Function, others: dict[str, Function],
@@ -105,14 +103,15 @@ def __do_inlining(fn: Function, others: dict[str, Function],
     return dataclasses.replace(fn, ops=tuple(new_ops), stack_vars=stack_vars)
 
 
-def inline_small_functions(app: Application, inline_always: bool = True, epoch: int = 0) -> Application:
+def inline_small_functions(app: Application, inline_always: bool = True, epoch: int = 0,
+                           cutoff: int = CUTOFF_COMPLEXITY) -> Application:
     # Inline a small function (under the cutoff) always; inline an
     # `[inline(always)]` target regardless of size only when `inline_always` is
     # set (-O3), so a chain of marked stream `next` stages fuses into its
     # consumer. The self-recursion/musttail guards in the engine still apply
     # (loops/tail back-edges preserved, not unrolled).
     def policy(target: Function) -> bool:
-        return (len(target.ops) < __CUTOFF_COMPLEXITY
+        return (len(target.ops) < cutoff
                 or (inline_always and target.always_inline))
     functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"s{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)

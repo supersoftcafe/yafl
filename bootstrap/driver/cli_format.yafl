@@ -71,13 +71,16 @@ fun colourTheme() => CliTheme(
 
 # `int(s)` as Python reads it — surrounding whitespace, a sign, digits with
 # single underscores between them — or 0 when it is not an integer.
-fun pyIntOrZero(raw: String): Int
+fun pyIntOrZero(raw: String): Int => pyInt(raw) ?? 0
+
+# `int(s)` as Python reads it, or None when it is not an integer.
+fun pyInt(raw: String): Int|None
   let s = stripWs(raw)
   let neg = startsWith(s, "-")
   let body = startsWith(s, "-") || startsWith(s, "+") ? slice(s, 1, length(s)) : s
   ret match(pyDigits(body, 0, 0, false))
     (n: Int) => neg ? 0 - n : n
-    ()       => 0
+    ()       => None
 
 fun [tail] pyDigits(s: String, at: Int, acc: Int, lastUnderscore: Bool): Int|None
   if at >= length(s)
@@ -123,7 +126,9 @@ fun usageOptionals(t: CliTheme): List<Shown> => prepend(usageFlag(t, "-h"),
   prepend(usageValued(t, "-O", "LEVEL"), prepend(usageValued(t, "-a", "OUTFILE"),
   prepend(usageValued(t, "-c", "OUTFILE"), prepend(usageValued(t, "-o", "OUTFILE"),
   prepend(usageValued(t, "-L", "DIR"), prepend(usageFlag(t, "--profile"),
-  prepend(usageValued(t, "-W", "WARNING"), list1(usageFlag(t, "--test"))))))))))
+  prepend(usageValued(t, "-W", "WARNING"), prepend(usageFlag(t, "--test"),
+  prepend(usageValued(t, "--inline-threshold", "OPS"),
+  list1(usageFlag(t, "--no-single-use-inline"))))))))))))
 
 fun usagePositionals(t: CliTheme): List<Shown> =>
   list1(shown("files [files ...]", t.thSumAction, t))
@@ -152,8 +157,12 @@ fun helpOptionals(t: CliTheme): List<HelpEntry> => prepend(
             "Instrument for profiling; the binary writes callgrind.out.<pid> at exit"), prepend(
   HelpEntry(withLabel(t, optionString(t, "-W"), "WARNING"),
             "Enable/disable a warning: -Wname, -Wall, -Wno-name"),
-  list1(HelpEntry(optionString(t, "--test"),
-                  "Build a unit-test binary from the [test] functions"))))))))))
+  prepend(HelpEntry(optionString(t, "--test"),
+                    "Build a unit-test binary from the [test] functions"), prepend(
+  HelpEntry(withLabel(t, optionString(t, "--inline-threshold"), "OPS"),
+            "Inline functions of fewer than OPS ops at -O2 and above (default 10)"),
+  list1(HelpEntry(optionString(t, "--no-single-use-inline"),
+                  "At -O3, do not fold a function into its only call site"))))))))))))
 
 let [const] DESCRIPTION: System::String = "My compiler-like tool"
 
