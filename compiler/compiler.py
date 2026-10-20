@@ -148,8 +148,8 @@ def __ensure_lazy_machinery(a: Application) -> None:
     """Find every Lazy$<irmangle> class referenced in `a` — either by a
     NewObject op (local `[lazy]`) or by a Global's `object_name`
     (`[lazy]` global, statically initialised stub instance) — and
-    register the stub class + waiter subtype + fetch + finisher + drain
-    for the matching IR type."""
+    register the stub class, fetch and [future] runner for the matching IR
+    type, and the runtime's gate functions."""
     referenced: set[str] = set()
     for fn in a.functions.values():
         for op in fn.ops:

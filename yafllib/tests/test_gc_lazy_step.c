@@ -1,20 +1,21 @@
 // Deterministic, single-threaded test: a waiter enqueued on a GLOBAL lazy
 // stub must survive the cycle it was enqueued in.
 //
-// A global stub's `flag` field is a declared root. lazy_thunk_enqueue CASes
-// the waiter into it, and on the path where this thread wins the init race
-// (status 1) the caller drops its `waiter` local at once: the flag is then
-// the waiter's only reference. That is a root store like any other, so it
-// needs the root-publish contract (see gc_root_publish in yafl.h):
+// A global stub's `flag` field is a declared root. lazy_enqueue_waiter CASes
+// the waiter into it, and lazy_acquire's caller keeps only the TAGGED waiter,
+// which the collector does not see: the flag is then the waiter's only
+// reference. That is a root store like any other, so it needs the
+// root-publish contract (see gc_root_publish in yafl.h):
 //
-//   1. W is allocated before the cycle opens, so it is not allocated black.
-//   2. The cycle opens: the root snapshot reads the flag while it is NULL.
-//   3. W is enqueued (status 1), then dropped. Its address is parked in a
-//      plain global the collector never scans.
+//   1. The gate is taken (LAZY_HELD); W is allocated before the cycle opens,
+//      so it is not allocated black.
+//   2. The cycle opens: the root snapshot reads the flag while it is HELD.
+//   3. W is enqueued, then dropped. Its address is parked in a plain global
+//      the collector never scans.
 //   4. The take, marking and prune run. Only a publish of the flag marks W.
 //
 // Unpublished, W is reclaimed while the flag still points at it, and the
-// drain later walks a freed task. Same shape as test_gc_publish_step.
+// release later walks a freed task. Same shape as test_gc_publish_step.
 //
 // Run twice, on two stubs. Enqueued during SCAN_ROOTS, before this thread's
 // own scan, the hybrid barrier's insertion half also shades W (GC_CAS runs the
@@ -43,7 +44,7 @@ static void _decl(void(*declare)(object_t**)) { _prev(declare); declare(&_flag[0
 // W's address, where the collector does not look.
 static volatile uintptr_t g_W;
 static int                g_case;
-static int32_t            g_status;
+static bool               g_queued;
 
 static fun_t _exit_cont;
 
@@ -54,7 +55,7 @@ static __attribute__((noinline)) void allocate(void) {
 }
 
 static __attribute__((noinline)) void enqueue(void) {
-    g_status = lazy_thunk_enqueue((object_t*)&_flag[g_case], (object_t*)g_W);
+    g_queued = lazy_enqueue_waiter((object_t*)&_flag[g_case], (object_t*)g_W);
 }
 
 static __attribute__((noinline)) void scrub(void) {
@@ -74,19 +75,22 @@ static int one_case(int which, int stage, const char* name) {
     g_case = which;
     step_to(ST_IDLE);
 
-    // (1) Before the cycle opens.
+    // (1) Before the cycle opens: this thread holds the gate.
+    if (lazy_acquire(NULL, (object_t*)&_flag[which]) != NULL) {
+        fprintf(stderr, "test_gc_lazy_step: the first acquire of a free gate did not hold it\n");
+        abort();
+    }
     allocate();
     scrub();
 
-    // (2) Open the cycle: the snapshot reads the flag while it is NULL.
+    // (2) Open the cycle: the snapshot reads the flag while it is HELD.
     step_to(stage);
 
-    // (3) Enqueue as the first waiter (this thread would now run the thunk),
-    // then drop W.
+    // (3) Enqueue as the first waiter, then drop W.
     enqueue();
     scrub();
-    if (g_status != 1) {
-        fprintf(stderr, "test_gc_lazy_step: expected status 1, got %d\n", g_status);
+    if (!g_queued) {
+        fprintf(stderr, "test_gc_lazy_step: a waiter was not queued on a held gate\n");
         abort();
     }
 

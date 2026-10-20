@@ -1939,10 +1939,7 @@ def lower_async(app: Application) -> Application:
 
     # Add task-subtype objects (after conversion so return types are finalised).
     # The dict union `task_subtypes | tmp_app.objects` lets `tmp_app.objects`
-    # win on key collisions — important because `lazy_thunks.ensure_lazy_machinery`
-    # pre-registers task subtypes under the same canonical names, and we must
-    # not clobber them.  Don't switch this to `.update()` or reversed-union
-    # without also updating lazy_thunks.
+    # win on key collisions.
     tmp_app = dataclasses.replace(app, functions=new_functions, objects=new_objects)
     task_subtypes = collect_task_subtypes(tmp_app)
 

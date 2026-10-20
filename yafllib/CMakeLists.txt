@@ -141,7 +141,7 @@ set_tests_properties(test_gc_min2_window PROPERTIES ENVIRONMENT "YAFL_GC_POISON=
 # reclaimed.
 add_yafl_test(test_gc_publish_step)
 # test_gc_lazy_step: the same window for a waiter CASed into a global lazy
-# stub's flag root by lazy_thunk_enqueue. Unpublished, it is reclaimed while
+# stub's flag root by lazy_enqueue_waiter. Unpublished, it is reclaimed while
 # the flag still points at it.
 add_yafl_test(test_gc_lazy_step)
 # Both drive the collector by hand on one thread.
@@ -236,10 +236,10 @@ add_yafl_test(test_vtable_lookup)
 # the next minor reclaims the referent.
 add_yafl_test(test_gc_late_pin_race)
 target_compile_definitions(test_gc_late_pin_race PRIVATE YAFL_GC_RACE_PROBE=1)
-# test_lazy_runner: exactly one caller of lazy_thunk_enqueue runs the
-# initialiser, even when the chain is drained between the enqueue's CAS and
-# its return. Builds its own lazy.c with YAFL_LAZY_RACE_PROBE, which hooks
-# that window.
+# test_lazy_runner: exactly one caller of lazy_acquire holds the gate, and
+# every waiter is completed, even when the holder releases between a waiter's
+# enqueue and its return. Builds its own lazy.c with YAFL_LAZY_RACE_PROBE,
+# which hooks that window.
 add_yafl_test(test_lazy_runner)
 target_compile_definitions(test_lazy_runner PRIVATE YAFL_LAZY_RACE_PROBE=1)
 # test_gc_static_store: stepped. A store into a static object (a global's lazy

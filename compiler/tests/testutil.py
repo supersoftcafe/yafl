@@ -253,7 +253,8 @@ def run_compiler(args: list[str], cwd: Path, timeout: int = 900,
 def _compile(source: "str | list[tuple[str, str]]", filename: str, out_args: list[str],
              optimization_level: int, profile: bool,
              warnings: "list[str] | tuple[str, ...]", test: bool, tmp: Path,
-             command: "list[str] | None" = None) -> subprocess.CompletedProcess:
+             command: "list[str] | None" = None,
+             args: "list[str] | tuple[str, ...]" = ()) -> subprocess.CompletedProcess:
     """`source` is one program text (written as `filename`), or several
     `(filename, text)` units compiled together."""
     units = [(filename, source)] if isinstance(source, str) else source
@@ -261,21 +262,23 @@ def _compile(source: "str | list[tuple[str, str]]", filename: str, out_args: lis
         (tmp / name).write_text(text)
     args = [f"-O{optimization_level}", *(f"-W{w}" for w in warnings),
             *(["--profile"] if profile else []), *(["--test"] if test else []),
-            *out_args, *(name for name, _ in units)]
+            *args, *out_args, *(name for name, _ in units)]
     return run_compiler(args, tmp, command=command)
 
 
 def compile_c_result(source: "str | list[tuple[str, str]]", filename: str = "test.yafl", *,
                      optimization_level: int = 0, profile: bool = False,
                      warnings: "list[str] | tuple[str, ...]" = (),
-                     test: bool = False, command: "list[str] | None" = None) -> Compiled:
+                     test: bool = False, command: "list[str] | None" = None,
+                     args: "list[str] | tuple[str, ...]" = ()) -> Compiled:
     """Compile `source` (with the stdlib on the path) to C. `c` is "" on failure.
     `source` is one program, or a list of `(filename, text)` units. `command`
-    picks the compiler (default: the one under test)."""
+    picks the compiler (default: the one under test); `args` are further
+    options for it."""
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         r = _compile(source, filename, ["-c", "out.c"], optimization_level, profile,
-                     warnings, test, tmp, command)
+                     warnings, test, tmp, command, args)
         c_path = tmp / "out.c"
         c_text = c_path.read_text() if r.returncode == 0 and c_path.exists() else ""
         return Compiled(r.returncode, r.stdout, r.stderr, c_text)

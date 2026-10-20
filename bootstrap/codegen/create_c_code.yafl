@@ -130,11 +130,7 @@ fun lazyTypeAdd(acc, t2)
     : LazyTypes(build(push(builderFrom(acc.ltList), t2)),
                 put(acc.ltSeen, m2, true))
 
-fun ensureLazyMachinery(a, types2: List<CgType>)
-  if isEmpty(types2)
-    ret a
-  let withTask = appHasObject(a, "task") ? a : appPutObject(a, makeTaskForeignObject())
-  ret fold(types2, withTask, ensureLazyOne)
+fun ensureLazyMachinery(a, types2: List<CgType>) => fold(types2, a, ensureLazyOne)
 
 fun ensureLazyOne(a, t2)
   if appHasObject(a, stubClassName(t2))

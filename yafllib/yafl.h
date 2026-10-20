@@ -1470,7 +1470,7 @@ EXTERN object_t* future_post(fun_t cb);
 // compiler's `Invoke` declares the call's return type as `Int(8)`, so
 // the C signature uses `int32_t` (not `_Bool`) to make the high-bit
 // state explicit and platform-independent.
-// On 1 the caller reads the stub's value, stored before the sentinel's CAS
+// On 1 the caller reads the stub's value, stored before lazy_release's exchange
 // and unrelated to the flag by address: the read must not be satisfied
 // before the flag's (GC_ACQUIRE_FENCE). The fence is here, not in the
 // generated code, so both compilers emit the call unchanged.
@@ -1481,52 +1481,39 @@ INLINE int32_t lazy_global_init_complete(object_t* flag_ptr) {
 }
 
 
-// Shared waiter-chain protocol: lazy_thunk_t is the layout prefix every
-// compiler-generated lazy stub extends with a `value: <T>` field whose
-// IR type varies per stub class.  `flag` follows the lazy_global_init
-// convention: NULL = uninitialised, task_t* chain = init in flight with
-// waiters queued, (task_t*)1 = initialised.  `closure` carries the init
-// fun_t; the compiler-emitted fetch function clears it (.f = .o = NULL)
-// after the value is stored so the GC doesn't pin the captured env.
+// lazy_thunk_t is the layout prefix every compiler-generated lazy stub
+// extends with a `value: <T>` field whose IR type varies per stub class.
+// `closure` carries the init fun_t; the compiler-emitted fetch function clears
+// it (.f = .o = NULL) after the value is stored so the GC doesn't pin the
+// captured env. `flag` is a one-shot gate around the initialiser:
+//   NULL          free: nobody has started
+//   LAZY_HELD     held: an initialiser is running, nobody waiting
+//   task_t*       held, with this NULL-terminated chain of waiters
+//   (task_t*)1    complete: the value is stored (lazy_global_init_complete)
+// LAZY_HELD is the integer-tagged scalar 0, which the collector skips in a
+// pointer field as it does any tagged scalar.
 typedef struct {
     vtable_t*               type;
     _Atomic(task_t*)        flag;
     fun_t                   closure;
 } lazy_thunk_t;
 
-// Atomically swap the waiter chain at *flag_field with the (task_t*)1
-// "init complete" sentinel; resume each waiter via task_complete_deferred.
-// Each waiter is a task_t with no result slot (used by lazy_global_init —
-// awaiters re-read the global slot themselves).
-EXPORT object_t* lazy_drain_waiters(object_t* flag_field);
+#define LAZY_HELD ((object_t*)PTR_TAG_INTEGER)
 
-// Atomic chain primitives used by compiler-emitted `lazy_drain$<mangle>`
-// — the type-aware write happens in IR via `ObjectField` on the
-// per-IR-type waiter subtype, so the runtime only needs to manage the
-// chain itself.
-//
-// Both primitives DELETE a reference — the stub's edge to the chain, a
-// waiter's edge to the next — so both owe the snapshot barrier, as any
-// overwrite does: during a cycle, a chain reachable at the snapshot through a
-// stub not yet scanned would otherwise live on only in the draining thread's
-// locals, which its root scan may already have passed, and be freed mid-drain.
-// GC_EXCHANGE pays it, shading before the delete ("The atomic stores").
-//
-// Swap the waiter-chain root with the "init complete" sentinel and
-// return the previous head.  The loop body iterates from there. (lazy.c)
-EXTERN object_t* lazy_chain_swap_sentinel(object_t* flag_field);
+// Take the gate at *flag_field (lazy.c). Returns NULL when the caller holds it
+// — and must run the initialiser and release — or when it is complete; either
+// way the caller re-tests the flag. Otherwise queues a waiter and returns it
+// tagged: the caller suspends until the holder releases.
+EXPORT object_t* lazy_acquire(object_t* self, object_t* flag_field);
 
-// Read head->next and clear it; returns the next chain link (NULL when
-// this is the last waiter). Only the drain writes a published waiter's next.
-// (lazy.c)
-EXTERN object_t* lazy_chain_step(object_t* head);
+// lazy_acquire's queueing step: link `waiter` into the chain at the HELD gate
+// *flag_field. Returns false, queueing nothing, when the gate is free or
+// complete — lazy_acquire then re-tests. (lazy.c)
+EXPORT bool lazy_enqueue_waiter(object_t* flag_field, object_t* waiter);
 
-// Atomically append `waiter` to the chain at *flag_field.  Returns:
-//   0 — appended (init in flight on another thread)
-//   1 — this thread won the init race; caller must run init
-//   2 — flag was already (task_t*)1 by the time we tried; caller should
-//       task_complete(waiter) so a chained on_complete still fires
-EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter);
+// Mark the gate at *flag_field complete and complete every queued waiter
+// (lazy.c). Called by the holder once the value is stored.
+EXPORT object_t* lazy_release(object_t* self, object_t* flag_field);
 
 
 /**********************************************************
