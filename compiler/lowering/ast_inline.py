@@ -231,6 +231,8 @@ def _is_inlinable_function(fn: s.FunctionStatement, class_members: set[str], opt
         return False
     if "foreign" in fn.attributes:
         return False
+    if "future" in fn.attributes:
+        return False  # the body is the unit a worker runs (lowering/future_functions.py)
     if not isinstance(fn.body, e.BlockExpression):
         return False
     if fn.type_params:

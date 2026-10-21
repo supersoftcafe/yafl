@@ -48,6 +48,7 @@ import lowering.unions
 import lowering.async_lower
 import lowering.branch_threading
 import lowering.copy_propagation
+import lowering.future_functions
 import lowering.ssa_validate
 import lowering.linearity
 import lowering.phi_removal
@@ -210,6 +211,9 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Register per-IR-type lazy thunk machinery for every Lazy$<irmangle>
     # class referenced by a NewObject op.  Idempotent and order-independent.
     __ensure_lazy_machinery(a)
+
+    # `[future]` functions open with the runtime's `future_yield`.
+    a = lowering.future_functions.add_future_entries(a)
 
     # SSA + control-flow + Phi validation right after AST lowering, before
     # any IR-level transformations. Catches generator bugs at the source.

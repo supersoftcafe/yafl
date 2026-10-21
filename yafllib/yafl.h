@@ -1418,6 +1418,11 @@ EXTERN void _task_fire(void* self); // worker-loop entry: fire a queued task's c
 // this so a long completion chain doesn't recurse on the C stack.
 EXTERN object_t* task_complete_deferred(object_t* self);
 
+// A `[future]` function's entry: a complete task, TASK-tagged, whose
+// continuation is posted to another worker when registered — or NULL, when
+// the pool is not accepting, to run the body in place.
+EXTERN object_t* future_yield(object_t* self);
+
 // Fixed-prefix layout for compiler-generated parallel join tasks.  Mirrors
 // task_t through `next`, then adds `remaining` for the join counter.  Each
 // per-callsite par_task struct (emitted by async_lower._par_task_object) is a

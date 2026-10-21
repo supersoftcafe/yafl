@@ -29,10 +29,13 @@ class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 # objIsPinnable pattern: fresh-construction sites (entrypoint, $async, lazy
 # thunks, par callbacks) stay untouched and match Python's fresh Function()
 # defaults; every dataclasses.replace-mirroring copy site passes them through.
+# fnFuture: [future] — the body runs on a worker, a call answers with a task
+# (lower/ir/future_functions.yafl); never inlined. Same pattern.
 class [final] CgFunction(fnName: String, fnParams: CgType, fnResult: CgType, fnStackVars: CgType,
                           fnOps: Segment<Op>|None, fnComment: String, fnForeignSymbol: String|None,
                           fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnAlwaysInline: Bool,
-                          fnSourceFile: String = "", fnSourceLine: Int = 0)
+                          fnSourceFile: String = "", fnSourceLine: Int = 0,
+                          fnFuture: Bool = false)
 
 # objIsPinnable: [pinnable] — immutable EXCEPT inside a late pin, which
 # publishes into a write-once field. Unlike objIsMutable the object still
@@ -143,7 +146,7 @@ fun [tail] cgOtlLoop(s: Segment<Op>|None, i,
 fun cgFunctionWith(f: CgFunction, ops, stackVars)
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, stackVars, ops, f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 # ── --profile instrumentation (ir.py instrument_profile) ─────────────────────
 # ProfEnter first, ProfLeave before every exit — Return, ReturnVoid, and

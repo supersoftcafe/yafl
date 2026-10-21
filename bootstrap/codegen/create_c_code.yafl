@@ -299,12 +299,13 @@ fun createCCode(statements, mainName, optLevel,
   let parts = timed("codegen", "gen_application", () => genApplication(a9, headers, profile))
   ret CreateCOut(parts, List())
 
-# The IR as AST lowering builds it: every statement, the entry point, and the
-# lazy machinery the program's [lazy]/[future] value types need.
+# The IR as AST lowering builds it: every statement, the entry point, the
+# lazy machinery the program's [lazy]/[future] value types need, and the
+# entry yield of every [future] function.
 fun ccBuildIr(statements, mainName, r): CgApp
   let a0 = fold(statements, emptyApp(), (a, st) => ccStmt(a, st, r))
   let a1 = appPutFunction(a0, createEntryPoint(mainName))
-  ret ensureLazyMachinery(a1, collectLazyTypes(statements, r))
+  ret addFutureEntries(ensureLazyMachinery(a1, collectLazyTypes(statements, r)))
 
 # The pre-async collapse: the full fixpoint at -O1+, one branch-threading and
 # copy-propagation pass at -O0.

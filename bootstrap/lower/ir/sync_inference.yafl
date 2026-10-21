@@ -508,7 +508,7 @@ fun siMaterialise(solved: SiSolved, f: CgFunction)
                  f.fnComment, f.fnForeignSymbol,
                  siIsSync(solved, siFnNode(name)),
                  f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 # A direct or virtual callee answers for THIS call site: a maybe_async callee
 # handed only sync functions returns a value.

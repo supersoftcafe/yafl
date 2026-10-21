@@ -24,6 +24,8 @@ class Function:
     bypass_async: bool = False  # Skip async_lower; ops are already in their final hand-crafted form.
     always_inline: bool = False # `[inline(always)]`: inline at every call site regardless of size,
                                 # so a chain of marked functions fuses into its consumer (pre-async).
+    future: bool = False        # `[future]`: the body runs on a worker; a call answers with a task
+                                # (lowering/future_functions.py). Never inlined: the body is the unit.
     source_file: str = ""       # --profile descriptors; "" / 0 for synthesised functions
     source_line: int = 0        # (their names self-describe: $async, lazy_*, __entrypoint__).
 

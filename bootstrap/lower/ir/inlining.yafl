@@ -101,7 +101,10 @@ fun inlCandidateChecked(c, gf, ns, a: CgApp,
   if c.callMusttail
     ret None
   ret match(appFunction(a, gf.name))
+    # A [future] body is the unit a worker runs: inlined, its entry yield
+    # would hand the rest of the CALLER over instead.
     (target: CgFunction) => !isEmpty(target.fnOps)
+                            && !target.fnFuture
                             && shouldInline(target)
                             && !any(target.fnOps, inlIsParallel)
       ? InlTarget(c, gf, ns, target)

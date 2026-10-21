@@ -4,6 +4,9 @@
 #define TASK_PENDING  0
 #define TASK_CALLBACK 1
 #define TASK_COMPLETE 2
+// Complete, and registering a continuation posts it to ANOTHER worker's queue
+// (future_yield) instead of this one's.
+#define TASK_YIELDED  3
 
 VTABLE_DECLARE_STRUCT(task_vtable, 0);
 EXPORT struct task_vtable TASK_VTABLE = {
@@ -151,6 +154,29 @@ EXPORT object_t* task_on_complete(object_t* self, fun_t callback) {
     // Task already complete: defer all the same — running the continuation
     // here would nest it in the REGISTRANT's frames with the same pinned
     // ancestry problem as a completion-side cascade.
-    thread_work_post(self);
+    if (expected == TASK_YIELDED) {
+        atomic_store(&task->state, TASK_COMPLETE);
+        thread_work_post_parallel(self);
+    } else {
+        thread_work_post(self);
+    }
     return NULL;
+}
+
+
+// A `[future]` function's first step: hand the rest of the body to a worker.
+// The returned task is already complete, so the caller suspends on it and
+// returns its own task; registering the continuation (task_on_complete) is
+// what posts it, round-robin like any spawn — idle workers sleep on their own
+// queues, so this thread's queue would wake nobody. Registering BEFORE posting
+// is the point: a task posted first could fire while its continuation is
+// still being stored, and run it twice. When the pool is not accepting, the
+// body runs in place: NULL is an ordinary sync None.
+EXPORT object_t* future_yield(object_t* self) {
+    (void)self;
+    if (!thread_work_accepting())
+        return NULL;
+    object_t* task = task_create(NULL);
+    atomic_store(&((task_t*)task)->state, TASK_YIELDED);
+    return (object_t*)((uintptr_t)task | PTR_TAG_TASK);
 }

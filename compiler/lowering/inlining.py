@@ -48,6 +48,9 @@ def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozense
                 op.function.name in recursive or op.musttail or
                 op.function.name not in others or
                 not (target := others[op.function.name]).ops or
+                # A [future] body is the unit a worker runs: inlined, its
+                # entry yield would hand the rest of the CALLER over instead.
+                target.future or
                 # The size cutoff / `[inline(always)]` decision.
                 not should_inline(target) or
                 # __entrypoint__ is hand-built and skipped by async_lower;

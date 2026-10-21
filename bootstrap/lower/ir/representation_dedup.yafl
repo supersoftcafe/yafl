@@ -418,12 +418,13 @@ fun [tail] rddSlots(e: RddEnc, cx: RddCx, c: Chain<CgFuncSlot>): RddEnc => match
 # by name; declarations compare as a set.
 fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
   let withParams = rddDecls(rddS(e, "Fn;["), chain(rddFields(f.fnParams)))
-  let head = rddBool(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
-                                                   f.fnResult),
-                                             f.fnSync),
-                                     f.fnTail),
-                             f.fnBypassAsync),
-                     f.fnAlwaysInline)
+  let head = rddBool(rddBool(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
+                                                           f.fnResult),
+                                                     f.fnSync),
+                                             f.fnTail),
+                                     f.fnBypassAsync),
+                             f.fnAlwaysInline),
+                     f.fnFuture)
   let body = rddOps(rddS(head, "["), cx, f.fnOps, 0i32)
   let declared = rddNumber(body, chain(map(rddFields(f.fnStackVars), (fd) => fd.fieldName)))
   ret rddLocals(rddCloseSets(declared), rddFields(f.fnStackVars))

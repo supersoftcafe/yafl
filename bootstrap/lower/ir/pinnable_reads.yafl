@@ -53,7 +53,7 @@ fun prFunction(f: CgFunction, names: StrSet)
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, f.fnStackVars,
                  ops, f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun prRewrite(p, names: StrSet) => match(p)
   (x: RpObjectField)  => prRewriteField(x, names)

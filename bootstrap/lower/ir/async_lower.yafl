@@ -1279,7 +1279,7 @@ fun alHotAssembleSync(f: CgFunction, wrappedResult, body: HotOut, hasPar: Bool):
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  cgOpsOf(concat(body.hoOps, commonOps)), f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
                        bbs: List<ABlock>, layout: AFrame, wrappedResult,
@@ -1332,7 +1332,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  cgOpsOf(build(common7)), f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alSaveCases(bs: Chain<ABlock>, i, acc: List<OpCase>)
   ret build(alSaveCasesB(bs, i, builderFrom(acc)))
@@ -1446,7 +1446,7 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
   ret CgFunction(f.fnName, f.fnParams, wrappedResult, CgStruct(svFields), cgOpsOf(ops4),
                  f.fnComment, f.fnForeignSymbol, f.fnSync, f.fnTail,
                  f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alOpsWriteDiscard(ops: List<Op>) => any(ops, (op) => alWritesDiscard(op))
 
@@ -1941,7 +1941,7 @@ fun alSimpleWrap(f: CgFunction)
                  cgOpsOf(alConvertReturnsHot(cgOpsToList(f.fnOps), f.fnResult)),
                  f.fnComment, f.fnForeignSymbol, f.fnSync,
                  f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName,
                    bbs: List<ABlock>, nBbs: Int): AlOut

@@ -1441,7 +1441,8 @@ fun [tail] aiIsCheap(x) => match(x)
 let aiSizeThreshold = 10
 
 fun aiIsInlinable(f: PsFun, classMembers: List<String>)
-  if contains2(classMembers, f.fName) || hasAttr(f.fAttrs, "foreign")
+  # A [future] body is the unit a worker runs (lower/ir/future_functions.yafl).
+  if contains2(classMembers, f.fName) || hasAttr(f.fAttrs, "foreign") || hasAttr(f.fAttrs, "future")
      || !hoHasBlockBody(f) || !isEmpty(f.fGens)
     ret false
   if hasAttr(f.fAttrs, "inline")
