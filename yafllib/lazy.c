@@ -2,38 +2,21 @@
 #include "yafl.h"
 
 
-// Atomic chain helpers shared by every compiler-emitted `lazy_fetch$<T>`.
-// Per-IR-type chain drain is compiler-generated (see
-// lowering/lazy_thunks.py); the runtime side is just the two atomic
-// primitives `lazy_chain_swap_sentinel` and `lazy_chain_step` (declared,
-// and their barrier explained, in yafl.h), plus this no-result drain (kept
-// for symmetry — the lazy framework itself uses the per-type drain).
+// The gate every compiler-emitted `lazy_fetch$<T>` takes before running a
+// stub's initialiser (the flag's states are in yafl.h, lazy_thunk_t). Both are
+// foreign functions to the compilers: lazy_acquire may suspend — its None result
+// is the task pointer alone, NULL when the caller may go on — and lazy_release
+// is [sync].
 
-EXPORT object_t* lazy_chain_swap_sentinel(object_t* flag_field) {
-    return GC_EXCHANGE(*(_Atomic(object_t*)*)flag_field, (object_t*)1);
-}
+#define LAZY_DONE ((object_t*)1)
 
-EXPORT object_t* lazy_chain_step(object_t* head) {
-    return GC_EXCHANGE(((task_t*)head)->next, NULL);
-}
-
-EXPORT object_t* lazy_drain_waiters(object_t* flag_field) {
-    task_t* head = (task_t*)lazy_chain_swap_sentinel(flag_field);   // barriered, see yafl.h
-    while (head) {
-        task_t* next = (task_t*)lazy_chain_step((object_t*)head);
-        task_complete_deferred((object_t*)head);
-        head = next;
-    }
-    return NULL;
-}
-
-
-EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
+EXPORT bool lazy_enqueue_waiter(object_t* flag_field, object_t* waiter_obj) {
     _Atomic(object_t*)* flag = (_Atomic(object_t*)*)flag_field;
     task_t* waiter = (task_t*)waiter_obj;
     object_t* expected = atomic_load(flag);
     do {
-        if (expected == (object_t*)1) return 2;
+        if (expected == NULL || expected == LAZY_DONE)
+            return false;
         // `waiter` is not yet visible, so its link is a plain store; what it
         // links, the head the CAS displaces, GC_CAS shades before the CAS:
         // the displaced head's only edge moves from the stub's flag — which
@@ -41,34 +24,76 @@ EXPORT int32_t lazy_thunk_enqueue(object_t* flag_field, object_t* waiter_obj) {
         // `waiter` may already be marked without ever being SCANNED
         // (allocated black, or just published). GC_CAS also escapes `waiter`
         // from this thread's nursery before it is visible, and publishes a
-        // GLOBAL stub's flag, a declared root, once the CAS lands: when this
-        // thread wins the init race the caller drops `waiter` at once, leaving
-        // the flag its only reference (test_gc_lazy_step).
-        atomic_store(&waiter->next, (task_t*)expected);
+        // GLOBAL stub's flag, a declared root, once the CAS lands: the
+        // caller keeps only the tagged task, which the collector does not
+        // see, leaving the flag the waiter's only reference (test_gc_lazy_step).
+        atomic_store(&waiter->next, expected == LAZY_HELD ? NULL : (task_t*)expected);
     } while (!GC_CAS(*flag, &expected, waiter_obj));
 #ifdef YAFL_LAZY_RACE_PROBE
     // Test-only hook (tests/test_lazy_runner.c), compiled into that target
-    // alone: called once `waiter` is published, where the runner already in
-    // flight can drain the chain before this caller decides whether it runs.
+    // alone: called once `waiter` is published, where the holder can release
+    // — completing it — before this caller returns.
     { extern void lazy_test_race_probe(object_t*); lazy_test_race_probe(flag_field); }
 #endif
-    // The runner is whoever found the chain EMPTY — `expected`, the head the
-    // CAS replaced. Not a re-read of waiter->next: once the CAS publishes
-    // `waiter`, the runner already in flight can finish and drain the chain,
-    // and the drain clears each waiter's next as it completes it
-    // (lazy_chain_step). A re-read then sees NULL, and this caller — already
-    // completed as a waiter — would run the initialiser a second time, through
-    // the closure the first run has cleared.
-    return expected == NULL ? 1 : 0;
+    return true;
+}
+
+
+EXPORT object_t* lazy_acquire(object_t* self, object_t* flag_field) {
+    (void)self;
+    _Atomic(object_t*)* flag = (_Atomic(object_t*)*)flag_field;
+    object_t* waiter = NULL;
+    for (;;) {
+        object_t* expected = atomic_load(flag);
+        if (expected == LAZY_DONE)
+            return NULL;
+        // Free: this caller holds the gate and runs the initialiser. The
+        // marker is a scalar, so the CAS owes the collector nothing.
+        if (expected == NULL) {
+            if (atomic_compare_exchange_weak(flag, &expected, LAZY_HELD))
+                return NULL;
+            continue;
+        }
+        // Held: queue a waiter and suspend on it. Allocated once, on the first
+        // pass that needs it; one left over when the gate completes meanwhile
+        // is garbage like any other. Completed already, by a release since the
+        // enqueue, its continuation is simply queued at once (task_on_complete).
+        if (waiter == NULL)
+            waiter = task_create(NULL);
+        if (lazy_enqueue_waiter(flag_field, waiter))
+            return (object_t*)((uintptr_t)waiter | PTR_TAG_TASK);
+    }
+}
+
+
+EXPORT object_t* lazy_release(object_t* self, object_t* flag_field) {
+    (void)self;
+    // The value is stored before this exchange, which publishes it: a reader
+    // that sees LAZY_DONE (lazy_global_init_complete, with its acquire fence)
+    // reads the value after. Both exchanges DELETE a reference — the stub's
+    // edge to the chain, a waiter's edge to the next — so both owe the
+    // snapshot barrier, as any overwrite does: during a cycle, a chain
+    // reachable at the snapshot through a stub not yet scanned would otherwise
+    // live on only in this thread's locals, which its root scan may already
+    // have passed, and be freed mid-walk. GC_EXCHANGE pays it.
+    object_t* head = GC_EXCHANGE(*(_Atomic(object_t*)*)flag_field, LAZY_DONE);
+    task_t*   w    = head == LAZY_HELD ? NULL : (task_t*)head;
+    while (w) {
+        task_t* next = (task_t*)GC_EXCHANGE(w->next, NULL);
+        task_complete_deferred((object_t*)w);
+        w = next;
+    }
+    return NULL;
 }
 
 
 // `[future]` bind-time spawn: post a worker task whose callback is the
 // compiler-emitted per-type runner (`future_run$<T>`) bound to the stub —
-// the runner calls `lazy_fetch$<T>` and discards, so winning the init race
-// evaluates the thunk on the worker and drains waiters, while losing it is
-// harmless (the readers own the protocol either way). Round-robin across
-// workers like __parallel__, since the point is running elsewhere. When the
+// the runner calls `lazy_fetch$<T>` and discards, so taking the gate
+// evaluates the thunk on the worker and releases the waiters, while finding
+// it held or done is harmless (the readers own the protocol either way).
+// Round-robin across workers like __parallel__, since the point is running
+// elsewhere. When the
 // pool is not accepting, do nothing: the binding degrades to exactly [lazy]
 // — the first reader evaluates in place.
 EXPORT object_t* future_post(fun_t cb) {

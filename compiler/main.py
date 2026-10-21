@@ -68,6 +68,12 @@ def main():
         help="Build a unit-test binary from the [test] functions"
     )
 
+    # The IR inliner's knob, for measuring what inlining costs and buys.
+    parser.add_argument(
+        "--inline-threshold", type=int, default=5, metavar="OPS",
+        help="Inline functions of fewer than OPS ops at -O2 and above (default 5)"
+    )
+
     # Input: one or more .yafl files, or a project directory (compiled whole).
     parser.add_argument(
         "files", nargs="+",
@@ -93,7 +99,8 @@ def main():
             lib_paths=args.lib_path,
             profile=args.profile,
             test_mode=args.test,
-            enabled_warnings=enabled_warnings)
+            enabled_warnings=enabled_warnings,
+            inline=c.InlineOptions(args.inline_threshold))
     except libraries.LibraryError as e:
         # Printed where compile_project prints its diagnostics, as the port does.
         print(f"error:{e}")

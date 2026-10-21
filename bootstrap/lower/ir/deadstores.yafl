@@ -29,7 +29,7 @@ fun [tail] dsFunction(f): CgFunction
 fun dsCollectReads(ops: Segment<Op>|None) => fold(ops, Dict(), dsOpReads)
 
 fun dsOpReads(acc: Dict<String, Bool>, op): Dict<String, Bool>
-  ret fold(opSavedVars(op),
+  ret fold(values(opSavedVars(op)),
            fold(opGetLiveVars(op).reads, acc, dsAddStackVarName),
            dsAddStackVarName)
 

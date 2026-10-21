@@ -45,5 +45,5 @@ fun [tail] ktWalk<S>(s: S, defs: SsaDefs,
 # Taken: `Jump(label)`; never taken: the guard evaporates.
 fun ktHarden([terminal] acc, ji: OpJumpIf,
              cond: Int): SeqBuilder<Op> => (cond != 0) != ji.jumpIfInvert
-  ? push(acc, OpJump(ji.jumpIfLabel, List()))
+  ? push(acc, OpJump(ji.jumpIfLabel, Dict()))
   : acc

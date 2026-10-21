@@ -234,11 +234,11 @@ fun rddStray(e: RddEnc): RddEnc
 
 # saved_vars is a SET in Python, so it may not number a local: it is recorded
 # here and encoded by rddCloseSets, once every local has its number.
-fun rddSaved(e: RddEnc, vs: List<RParam>): RddEnc
+fun rddSaved(e: RddEnc, vs: Dict<String, RParam>): RddEnc
   let st = e.eSt
   ret RddEnc((e.eText + "S" + String(st.stSetN) + ";"),
              RddSt(st.stVars, st.stVarN, st.stLabels, st.stLabelN, st.stRefs,
-                   ChainLink(vs, st.stSets), st.stSetN + 1, st.stPins, st.stStray))
+                   ChainLink(vsSorted(vs), st.stSets), st.stSetN + 1, st.stPins, st.stStray))
 
 # ── values ───────────────────────────────────────────────────────────────────
 

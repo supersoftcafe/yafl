@@ -21,9 +21,9 @@ import Bootstrap::Types
 # "covering field" resolution; every read narrows via match first.
 #
 # `saved_vars` (Python: a kw-only frozenset[StackVar] field on the shared Op
-# base, default empty) becomes an explicit `<prefix>SavedVars: List<RParam>`
-# field on every variant — constructor calls are not legal defaults in YAFL,
-# so every construction site must pass it explicitly (usually `List<RParam>()`).
+# base, default empty) becomes an explicit `<prefix>SavedVars` field on every
+# variant, a Dict of the variables by name — constructor calls are not legal defaults in YAFL, so
+# every construction site must pass it explicitly (usually `Dict()`).
 #
 # LParam-typed Python fields (Move.target, IfTask.task_lhs/call_id_lhs,
 # NewObject.register, Call.register, Phi.target) are typed `RParam` here —
@@ -31,34 +31,34 @@ import Bootstrap::Types
 # RpStackVar/RpGlobalVar/RpObjectField there.
 
 enum Op
-  enum OpLabel(labelName: String, labelSavedVars: List<RParam>)
-  enum OpMove(moveTarget: RParam, moveSource: RParam, moveKeep: Bool, moveSavedVars: List<RParam>)
-  enum OpJump(jumpName: String, jumpSavedVars: List<RParam>)
-  enum OpJumpIf(jumpIfLabel: String, jumpIfCondition: RParam, jumpIfInvert: Bool, jumpIfSavedVars: List<RParam>)
-  enum OpIfTask(taskCondition: RParam, taskSource: RParam, taskLhs: RParam, callIdLhs: RParam, callId: Int, taskTarget: String, taskSavedVars: List<RParam>)
+  enum OpLabel(labelName: String, labelSavedVars: Dict<String, RParam>)
+  enum OpMove(moveTarget: RParam, moveSource: RParam, moveKeep: Bool, moveSavedVars: Dict<String, RParam>)
+  enum OpJump(jumpName: String, jumpSavedVars: Dict<String, RParam>)
+  enum OpJumpIf(jumpIfLabel: String, jumpIfCondition: RParam, jumpIfInvert: Bool, jumpIfSavedVars: Dict<String, RParam>)
+  enum OpIfTask(taskCondition: RParam, taskSource: RParam, taskLhs: RParam, callIdLhs: RParam, callId: Int, taskTarget: String, taskSavedVars: Dict<String, RParam>)
   # Follows a call proven sync: its result must not be a task. Aborts in a
   # debug build, compiled away in an optimised one (YAFL_ASSERT_NOT_TASK).
-  enum OpAssertNotTask(antCondition: RParam, antSavedVars: List<RParam>)
-  enum OpSwitchJump(switchCondition: RParam, switchCases: List<OpCase>, switchSavedVars: List<RParam>)
+  enum OpAssertNotTask(antCondition: RParam, antSavedVars: Dict<String, RParam>)
+  enum OpSwitchJump(switchCondition: RParam, switchCases: List<OpCase>, switchSavedVars: Dict<String, RParam>)
   # newObjPinned: born pinned (codegen/ops.py NewObject.pinned).
-  enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjPinned: Bool, newObjSavedVars: List<RParam>)
-  enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: List<RParam>)
-  enum OpReturnVoid(retVoidSavedVars: List<RParam>)
-  enum OpAbort(abortReason: String, abortSavedVars: List<RParam>)
-  enum OpReturn(returnValue: RParam, returnSavedVars: List<RParam>)
-  enum OpParallelCall(parCalls: List<RParam>, parResults: List<RParam>, parRegister: RParam|None, parSavedVars: List<RParam>)
-  enum OpPhi(phiTarget: RParam, phiSources: List<OpPhiSource>, phiSavedVars: List<RParam>)
+  enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjPinned: Bool, newObjSavedVars: Dict<String, RParam>)
+  enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: Dict<String, RParam>)
+  enum OpReturnVoid(retVoidSavedVars: Dict<String, RParam>)
+  enum OpAbort(abortReason: String, abortSavedVars: Dict<String, RParam>)
+  enum OpReturn(returnValue: RParam, returnSavedVars: Dict<String, RParam>)
+  enum OpParallelCall(parCalls: List<RParam>, parResults: List<RParam>, parRegister: RParam|None, parSavedVars: Dict<String, RParam>)
+  enum OpPhi(phiTarget: RParam, phiSources: List<OpPhiSource>, phiSavedVars: Dict<String, RParam>)
   # --profile instrumentation (ops.py ProfEnter/ProfLeave). Injected by
   # cgFunctionInstrumentProfile AFTER the emission cleanup chain, so no
   # optimisation pass ever sees them — they exist only between injection
   # and opToC.
-  enum OpProfEnter(profEnterFnId: Int, profEnterSavedVars: List<RParam>)
-  enum OpProfLeave(profLeaveSavedVars: List<RParam>)
+  enum OpProfEnter(profEnterFnId: Int, profEnterSavedVars: Dict<String, RParam>)
+  enum OpProfLeave(profLeaveSavedVars: Dict<String, RParam>)
 
 class [final] OpCase(caseValue: Int, caseLabel: String)
 class [final] OpPhiSource(sourceLabel: String, sourceValue: RParam)
 
-fun opSavedVars(op): List<RParam> => match(op)
+fun opSavedVars(op): Dict<String, RParam> => match(op)
   (x: OpLabel) => x.labelSavedVars
   (x: OpMove) => x.moveSavedVars
   (x: OpJump) => x.jumpSavedVars
@@ -493,9 +493,28 @@ fun rpOptTargetReadNames(r: RParam|None): List<String> => match(r)
   (x: RParam) => rpTargetReadNames(x)
   ()           => List()
 
+# ── saved_vars: a set of stack variables ─────────────────────────────────────
+
+# Python's frozenset[StackVar], keyed by what identifies a stack variable in a
+# function: its NAME (SSA names are unique within one). Unordered: a consumer
+# that needs an order sorts by name (vsSorted).
+fun vsOf(vs: List<RParam>): Dict<String, RParam> => fold(vs, Dict(), (d, v) => put(d, vsKey(v), v))
+
+# Saved vars are stack variables; the name is the key.
+fun vsKey(v: RParam): String => match(v)
+  (sv: RpStackVar) => sv.name
+  (o: RParam)      => ""
+
+fun vsSorted(s2: Dict<String, RParam>): List<RParam>
+  ret map(sort(keys(s2)), (n) => vsGet(s2, n))
+
+fun vsGet(s2: Dict<String, RParam>, name: String): RParam => match(get(s2, name))
+  (v: RParam) => v
+  ()          => RpNullPointer()   # unreachable: the name came from the dict
+
 # ── saved_vars setter (async_lower's liveness fixpoint rewrites them) ────────
 
-fun opWithSavedVars(op, sv) => match(op)
+fun opWithSavedVars(op, sv: Dict<String, RParam>) => match(op)
   (x: OpLabel)        => OpLabel(x.labelName, sv)
   (x: OpMove)         => OpMove(x.moveTarget, x.moveSource, x.moveKeep, sv)
   (x: OpJump)         => OpJump(x.jumpName, sv)

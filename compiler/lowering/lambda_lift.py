@@ -38,8 +38,8 @@ import dataclasses
 import pyast.statement as s
 import pyast.expression as e
 import pyast.resolver as g
-from langtools import checked_cast
-from lowering.ast_inline import _free_refs, _tarjan_sccs, _class_declares_nested_fns
+from langtools import checked_cast, strongly_connected_components
+from lowering.ast_inline import _free_refs, _class_declares_nested_fns
 
 
 def __call_args(call: e.CallExpression) -> list[e.TupleEntryExpression]:
@@ -94,7 +94,7 @@ def __lift_in_function(fn: s.FunctionStatement) -> s.FunctionStatement:
              for name, nf in nested.items()}
     total_refs, call_refs = __reference_counts(fn.body, sibling_names)
 
-    sccs = _tarjan_sccs(list(nested), calls)
+    sccs = strongly_connected_components(list(nested), calls)
     scc_of = {n: i for i, scc in enumerate(sccs) for n in scc}
 
     # An SCC's threaded set is its members' captures plus whatever its

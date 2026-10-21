@@ -11,7 +11,6 @@ from tests.bootstrap_c_base import BootstrapCBase
 
 class TestBootstrapCO3(BootstrapCBase):
     def test_c_matches_python_O3(self):
-        # -O3 adds [inline(always)] fusion and the single-caller fold with
-        # vtable-slot trimming.
+        # -O3 adds [inline(always)] fusion.
         self._compare_corpus(3)
 

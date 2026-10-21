@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from itertools import chain, groupby
-from typing import Iterable, Callable, Iterator
+from typing import Iterable, Callable, Iterator, Mapping
 
 
 def flatten(lst):
@@ -38,4 +38,55 @@ def partition[_T](items: Iterable[_T], predicate: Callable[[_T], bool]) -> list[
     if group:
         result.append(group)
 
+    return result
+
+def strongly_connected_components(nodes: Iterable[str], edges: Mapping[str, Iterable[str]]) -> list[list[str]]:
+    """Tarjan's SCC algorithm. Roots are tried in `nodes` order and
+    neighbours in sorted order, so the result never depends on string
+    hashing (the bootstrap reproduces it byte for byte). SCCs come out in
+    reverse topological order (callees before callers), each listing its
+    members in pop order: latest-discovered first, the SCC's root last.
+
+    Iterative: a whole program's call graph runs deeper than Python's stack.
+    Each work entry is a node and the iterator over its remaining
+    neighbours; a child's lowlink folds into its parent when the child's
+    entry is popped, exactly where the recursive form would return."""
+    index: dict[str, int] = {}
+    lowlink: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    result: list[list[str]] = []
+
+    def discover(v: str) -> tuple[str, Iterator[str]]:
+        index[v] = lowlink[v] = len(index)
+        stack.append(v)
+        on_stack.add(v)
+        return v, iter(sorted(edges.get(v, ())))
+
+    for root in nodes:
+        if root in index:
+            continue
+        work = [discover(root)]
+        while work:
+            v, neighbours = work[-1]
+            for w in neighbours:
+                if w not in index:
+                    work.append(discover(w))
+                    break
+                if w in on_stack:
+                    lowlink[v] = min(lowlink[v], index[w])
+            else:
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    lowlink[parent] = min(lowlink[parent], lowlink[v])
+                if lowlink[v] == index[v]:
+                    scc: list[str] = []
+                    while True:
+                        w = stack.pop()
+                        on_stack.discard(w)
+                        scc.append(w)
+                        if w == v:
+                            break
+                    result.append(scc)
     return result

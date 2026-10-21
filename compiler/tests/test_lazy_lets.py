@@ -1,6 +1,6 @@
 from io import StringIO
 from contextlib import redirect_stdout
-from tests.testutil import TimedTestCase as TestCase
+from tests.testutil import TimedTestCase as TestCase, compile_c_result
 
 import compiler as c
 
@@ -42,7 +42,8 @@ class TestLazyLets(TestCase):
         self.assertNotEqual("", result, "compilation produced no output")
         self.assertIn("Lazy_ptr_t", result)
         self.assertIn("lazy_fetch_ptr", result)
-        self.assertIn("lazy_thunk_enqueue", result)
+        self.assertIn("lazy_acquire", result)
+        self.assertIn("lazy_release", result)
 
 
     def test_lazy_let_takes_no_args(self):
@@ -118,15 +119,11 @@ class TestLazyLets(TestCase):
                            use_stdlib=False, just_testing=True, optimization_level=0)
         self.assertNotEqual("", result)
         self.assertIn("Lazy_i32_t",     result)
-        # Waiter task subtype shares its name with async_lower's
-        # canonical naming: task$Int32 (C-mangled to task_Int32).
-        self.assertIn("task_Int32",     result)
         self.assertIn("lazy_fetch_i32", result)
-        self.assertIn("lazy_drain_i32", result)
 
     def test_lazy_let_tuple_compiles(self):
         """`[lazy]` of a tuple type lowers to a struct-shaped Lazy$s_<hash>
-        with the per-shape drain function emitted by the compiler."""
+        with its own fetch."""
         content = (
             "namespace System\n"
             "typealias Int  : __builtin_type__<bigint>\n"
@@ -141,17 +138,11 @@ class TestLazyLets(TestCase):
         result = c.compile([c.Input(content, "file.yafl")],
                            use_stdlib=False, just_testing=True, optimization_level=0)
         self.assertNotEqual("", result)
-        # Stub + per-shape drain + fetch all present.
+        # Stub + per-shape fetch, which takes the runtime's gate.
         self.assertIn("Lazy_s_",          result)
         self.assertIn("lazy_fetch_s_",    result)
-        self.assertIn("lazy_drain_s_",    result)
-        # The waiter task subtype shares its name with async_lower's
-        # struct-result task subtype (task$T<hash>) so casts hit the
-        # actual emitted struct.
-        self.assertIn("task_T",           result)
-        # The chain primitives are referenced by the per-IR-type drain.
-        self.assertIn("lazy_chain_swap_sentinel", result)
-        self.assertIn("lazy_chain_step",          result)
+        self.assertIn("lazy_acquire",     result)
+        self.assertIn("lazy_release",     result)
 
     def test_lazy_let_float64_compiles(self):
         """`[lazy]` of a Float64 value emits the f64 machinery."""
@@ -169,10 +160,7 @@ class TestLazyLets(TestCase):
                            use_stdlib=False, just_testing=True, optimization_level=0)
         self.assertNotEqual("", result)
         self.assertIn("Lazy_f64_t",     result)
-        # task$Float64 canonical name shared with async_lower.
-        self.assertIn("task_T",         result)
         self.assertIn("lazy_fetch_f64", result)
-        self.assertIn("lazy_drain_f64", result)
 
 
     def test_forward_reference_to_non_lazy_is_rejected_at_compile(self):
@@ -192,3 +180,27 @@ class TestLazyLets(TestCase):
         self.assertIn("forward-references non-lazy let",                  captured)
         self.assertIn("Mark",                                             captured)
         self.assertIn("as [lazy], or move its declaration before",       captured)
+
+
+# A function forcing one lazy value twice: each force calls the fetch.
+_TWO_FORCES = """\
+namespace Main
+
+import System
+
+fun twice(n: Int): Int
+  let [lazy] x = n * 7 + 1
+  ret x + x
+
+fun main(): Int => twice(5) % 100
+"""
+
+
+class TestLazyFetchInlines(TestCase):
+    """The fetch is ordinary pre-async code, so the inliner may fold it into
+    its callers like any other function: the caller stays in SSA form."""
+
+    def test_fetch_inlined_into_caller(self):
+        r = compile_c_result(_TWO_FORCES, optimization_level=3,
+                             args=("--inline-threshold", "30"))
+        self.assertEqual(0, r.rc, r.describe())

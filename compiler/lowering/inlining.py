@@ -19,19 +19,17 @@ from langtools import checked_cast
 from pyast.statement import ImportGroup
 
 
-__CUTOFF_COMPLEXITY = 10
+CUTOFF_COMPLEXITY = 5
 
 
-
-
-def __do_inlining(fn: Function, others: dict[str, Function],
+def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozenset[str],
                   should_inline: Callable[[Function], bool], tag: str) -> Function:
     """Inline eligible call sites within `fn`. The structural guards (must be a
-    direct call to an internal global function with struct args, not a self-call,
-    not musttail, target non-empty and ParallelCall-free) are fixed; the policy
-    `should_inline(target)` decides *which* eligible targets to pull in — size
-    cutoff / `[inline(always)]` for the general pass, single-caller for the
-    fold-away pass. `fn` is never an inlining SINK if it is `__entrypoint__` or
+    direct call to an internal global function with struct args, not
+    `recursive` — trim.recursive_functions, which covers a self-call — not
+    musttail, target non-empty and ParallelCall-free) are fixed; the policy
+    `should_inline(target)` decides *which* eligible targets to pull in — the
+    size cutoff, or `[inline(always)]`. `fn` is never an inlining SINK if it is `__entrypoint__` or
     `bypass_async`: async_lower passes those through untouched, so a suspending
     body inlined into them would never get its state machine."""
     new_ops: list[Op] = []
@@ -47,10 +45,10 @@ def __do_inlining(fn: Function, others: dict[str, Function],
         if (not isinstance(op, Call) or
                 not isinstance(op.function, GlobalFunction) or
                 not isinstance(op.parameters, NewStruct) or
-                fn.name == op.function.name or op.musttail or
+                op.function.name in recursive or op.musttail or
                 op.function.name not in others or
                 not (target := others[op.function.name]).ops or
-                # The size cutoff / `[inline(always)]` / single-caller decision.
+                # The size cutoff / `[inline(always)]` decision.
                 not should_inline(target) or
                 # __entrypoint__ is hand-built and skipped by async_lower;
                 # inlining a body with ParallelCall here would leave that op
@@ -105,41 +103,17 @@ def __do_inlining(fn: Function, others: dict[str, Function],
     return dataclasses.replace(fn, ops=tuple(new_ops), stack_vars=stack_vars)
 
 
-def inline_small_functions(app: Application, inline_always: bool = True, epoch: int = 0) -> Application:
+def inline_small_functions(app: Application, inline_always: bool = True, epoch: int = 0,
+                           cutoff: int = CUTOFF_COMPLEXITY) -> Application:
     # Inline a small function (under the cutoff) always; inline an
     # `[inline(always)]` target regardless of size only when `inline_always` is
     # set (-O3), so a chain of marked stream `next` stages fuses into its
-    # consumer. The self-recursion/musttail guards in the engine still apply
+    # consumer. The recursion/musttail guards in the engine still apply
     # (loops/tail back-edges preserved, not unrolled).
     def policy(target: Function) -> bool:
-        return (len(target.ops) < __CUTOFF_COMPLEXITY
+        return (len(target.ops) < cutoff
                 or (inline_always and target.always_inline))
-    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"s{epoch}") for name, func in app.functions.items()}
-    return dataclasses.replace(app, functions=functions)
-
-
-def inline_single_caller_functions(app: Application, sync_names: set[str], epoch: int = 0) -> Application:
-    """Inline every SYNC function referenced exactly once into that sole call
-    site, regardless of its size — folding it away costs no code growth (the
-    original becomes unreferenced and is removed by the next trim). Runs after
-    the small/always passes (-O3) so it collapses the residual one-shot helpers
-    a pipeline leaves behind. The `== 1` count already guarantees the single
-    reference IS the call being inlined; address-taken or vtable-bound functions
-    have a count above one (or no call site at all) and are left alone by the
-    engine.
-
-    `sync_names` restricts the fold to callees that provably never suspend:
-    folding a suspending callee merges its live set with the caller's, so every
-    suspension in the merged body must save the COMBINED frame into the task
-    state object. Unrestricted, that turned a 7-field state frame into a
-    137-field one and doubled whole-program wall time in allocator and GC
-    pressure. A suspending helper keeps its call: its own small frame is all a
-    suspension inside it ever saves."""
-    refcounts = trim.function_reference_counts(app)
-
-    def policy(target: Function) -> bool:
-        return refcounts[target.name] == 1 and target.name in sync_names
-
-    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"c{epoch}") for name, func in app.functions.items()}
+    recursive = trim.recursive_functions(app)
+    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, recursive, policy, f"s{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)
 

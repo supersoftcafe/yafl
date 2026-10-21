@@ -16,17 +16,23 @@ The flow
 --------
 One optimistic dataflow over two kinds of node:
 
-  * a FUNCTION — "may suspend";
+  * a FUNCTION — "may suspend" — and its MAYBE_ASYNC twin: "may suspend
+    other than by calling its own function parameters";
   * a function-typed LOCATION — an SSA variable, a parameter (a variable
     fed by its callers), a function result, an object field, a global.
 
 Every node starts sync and can only FALL; a node falls when any of its
 sources falls:
 
-  function F     every call's function value (tail calls too: F returns the
-                 callee's task); ParallelCall, a `TagTask` return, being
-                 foreign or hand-built (`bypass_async`) without `sync`, make
-                 F fall outright
+  function F     every call's sources (tail calls too: F returns the
+                 callee's task); ParallelCall, or being foreign or
+                 hand-built (`bypass_async`) without `sync`, makes F fall
+                 outright
+  maybe_async F  the same, except a call of one of F's own function
+                 parameters — called, or handed on to a callee — does not
+                 count. F is MAYBE_ASYNC when this holds but F falls: it keeps
+                 its suspension points, yet a call of it whose function
+                 arguments are all sync returns a value
   GlobalFunction the function it names
   VirtualFunction every implementation (none known = unknown)
   SSA variable   its definitions: Move source, Phi = AND of every incoming
@@ -38,6 +44,13 @@ sources falls:
   object field   every store into it program-wide, static initialisers
                  included; base- and derived-class views of one field are
                  one node
+
+A call's sources: for a direct or virtual call, every callee's maybe_async
+node and the function arguments handed to it; for any other call, its
+function value. A call is sync when all of its sources are — decided per
+SITE, so one maybe_async function is sync at some call sites and not others.
+"Its own parameter" includes a variable that only ever holds one: the loop
+variable a [tail] lowering carries the parameter round in.
 
 Anything the flow cannot see is UNKNOWN and makes its dependent fall
 outright: the parameters of an address-taken function (called from sites
@@ -70,19 +83,10 @@ from codegen.ir import Function, Object
 from codegen.ops import Call, Move, Op, ParallelCall, Phi, Return
 from codegen.param import (
     GlobalFunction, GlobalVar, NewStruct, NewStructTyped, NullPointer,
-    ObjectField, RParam, StackVar, StructField, TagTask, VirtualFunction,
+    ObjectField, RParam, StackVar, StructField, VirtualFunction,
     ZeroOf,
 )
 from codegen.typedecl import FuncPointer, Struct, Type
-
-
-def _returns_tagged_task(fn: Function) -> bool:
-    """A function whose body returns `TagTask(...)` produces a tagged
-    task pointer — its callers' `PTR_IS_TASK` check will fire and they
-    must enter the async path.  Such a function cannot be sync,
-    regardless of whether its ops contain `Call` nodes."""
-    return any(isinstance(op, Return) and isinstance(op.value, TagTask)
-               for op in fn.ops)
 
 
 def _is_fun(t: Type) -> bool:
@@ -133,6 +137,7 @@ class _SyncFlow:
     pinned: frozenset[Node]
     dependents: dict[Node, list[Node]] = dataclasses.field(default_factory=dict)
     fallen: set[Node] = dataclasses.field(default_factory=set)
+    aliases: dict[str, set[str]] = dataclasses.field(default_factory=dict)
 
     # ── Node naming ──────────────────────────────────────────────────────
     def field_node(self, object_name: str, field: str, path: Path) -> Node:
@@ -185,6 +190,42 @@ class _SyncFlow:
                 return ("global", name, path)
         return None
 
+    def own_param(self, fn_name: str, value: RParam) -> bool:
+        """`value` is one of `fn_name`'s own function parameters."""
+        if fn_name not in self.aliases:
+            self.aliases[fn_name] = _param_aliases(self.app.functions[fn_name])
+        return isinstance(value, StackVar) and value.name in self.aliases[fn_name]
+
+    def call_sources(self, fn_name: str, op: Call) -> list[tuple[list[Node] | None, bool]]:
+        """What `op` suspends through: groups of sources (None = unknown),
+        each paired with whether it counts against the caller's
+        maybe_async node — a group that is just the caller's own parameter
+        does not."""
+        targets = self.callees(op.function)
+        if targets is None:
+            return [(self.sources(fn_name, op.function, ()),
+                     not self.own_param(fn_name, op.function))]
+        groups: list[tuple[list[Node] | None, bool]] = [([("mfn", t)], True) for t in targets]
+        for t in targets:
+            target = self.app.functions[t]
+            if target.sync:
+                continue          # trusted: no argument can make it suspend
+            params = target.params.fields[1:]
+            fun_params = [(p, path) for p, pt in params for path in _fun_paths(pt)]
+            if fun_params and not isinstance(op.parameters, NewStruct):
+                groups.append((None, True))
+                continue
+            args = {p: arg for (_, arg), (p, _) in zip(op.parameters.values, params)} if fun_params else {}
+            for p, path in fun_params:
+                arg = args.get(p)
+                groups.append((None if arg is None else self.sources(fn_name, arg, path),
+                               not (path == () and arg is not None and self.own_param(fn_name, arg))))
+        return groups
+
+    def call_is_sync(self, fn_name: str, op: Call) -> bool:
+        return all(srcs is not None and all(self.is_sync(s) for s in srcs)
+                   for srcs, _ in self.call_sources(fn_name, op))
+
     # ── Edges ────────────────────────────────────────────────────────────
     def fall(self, node: Node) -> None:
         if node not in self.pinned:
@@ -218,6 +259,31 @@ class _SyncFlow:
         return node not in self.fallen
 
 
+def _param_aliases(fn: Function) -> set[str]:
+    """The function-typed parameters of `fn`, and every variable whose every
+    definition is a Move or Phi from one of them — the greatest such set, so
+    a loop variable fed by the parameter and by itself qualifies."""
+    defs: dict[str, list[RParam | None]] = {}
+    for op in fn.ops:
+        match op:
+            case Move(target=StackVar(name=name), source=source):
+                defs.setdefault(name, []).append(source)
+            case Phi(target=StackVar(name=name), sources=srcs):
+                defs.setdefault(name, []).extend(v for _, v in srcs)
+            case _:
+                for w in op.get_live_vars()[1]:
+                    defs.setdefault(w.name, []).append(None)
+    alias = {p for p, pt in fn.params.fields if isinstance(pt, FuncPointer) and p not in defs} | set(defs)
+    changed = True
+    while changed:
+        changed = False
+        for name, srcs in defs.items():
+            if name in alias and not all(isinstance(s, StackVar) and s.name in alias for s in srcs):
+                alias.discard(name)
+                changed = True
+    return alias
+
+
 def _field_classes(objects: dict[str, Object]) -> dict[tuple[str, str], tuple[str, str]]:
     """Union the base- and derived-class views of every field holding a
     function — an `ObjectField` may name either class for the same slot —
@@ -248,7 +314,8 @@ def _build_flow(a: Application) -> _SyncFlow:
         for virtual_name, global_name in obj.functions:
             virtual_impls.setdefault(virtual_name, set()).add(global_name)
 
-    pinned = frozenset(("fn", name) for name, fn in a.functions.items() if fn.sync)
+    pinned = frozenset(node for name, fn in a.functions.items() if fn.sync
+                       for node in (("fn", name), ("mfn", name)))
     flow = _SyncFlow(a, {v: tuple(sorted(i)) for v, i in virtual_impls.items()},
                      _field_classes(a.objects), pinned)
     address_taken = trim.address_taken_functions(a)
@@ -268,8 +335,11 @@ def _build_flow(a: Application) -> _SyncFlow:
                 flow.flow(flow.sources(caller, arg, path), ("var", callee, p, path))
 
     def call_edges(fn_name: str, op: Call) -> None:
-        # The call can suspend iff its function value can.
-        flow.flow(flow.sources(fn_name, op.function, ()), ("fn", fn_name))
+        # The function can suspend iff one of its calls can.
+        for srcs, counts_against_maybe in flow.call_sources(fn_name, op):
+            flow.flow(srcs, ("fn", fn_name))
+            if counts_against_maybe:
+                flow.flow(srcs, ("mfn", fn_name))
         targets = flow.callees(op.function)
         if targets is not None:
             for t in targets:
@@ -299,9 +369,10 @@ def _build_flow(a: Application) -> _SyncFlow:
 
     for name, fn in a.functions.items():
         if (fn.foreign_symbol is not None or fn.bypass_async
-                or name == "__entrypoint__" or _returns_tagged_task(fn)
+                or name == "__entrypoint__"
                 or any(isinstance(op, ParallelCall) for op in fn.ops)):
             flow.fall(("fn", name))
+            flow.fall(("mfn", name))
         if fn.foreign_symbol is not None:
             fall_all(fn.result, lambda path, name=name: ("result", name, path))
         if name in address_taken or fn.foreign_symbol is not None or name == "__entrypoint__":
@@ -329,15 +400,6 @@ def _build_flow(a: Application) -> _SyncFlow:
 
     flow.solve()
     return flow
-
-
-def compute_sync_names(a: Application) -> set[str]:
-    """The names of the functions provably unable to suspend, without
-    materialising anything. Shared by infer_sync and the inline gates —
-    inlining a suspending callee into its caller merges the two live sets,
-    so every suspension in the merged body saves the combined frame."""
-    flow = _build_flow(a)
-    return {name for name in a.functions if flow.is_sync(("fn", name))}
 
 
 def infer_sync(a: Application) -> Application:
@@ -370,12 +432,21 @@ def infer_sync(a: Application) -> Application:
         def var_node(name: str, path: Path) -> Node:
             return ("var", fn.name, name, path)
 
+        def materialise_op(op: Op) -> Op:
+            new = op.replace_params(replacer)
+            # A direct or virtual callee answers for THIS call site: a
+            # maybe_async callee handed only sync functions returns a value.
+            if isinstance(op, Call) and isinstance(new.function, (GlobalFunction, VirtualFunction)):
+                new = dataclasses.replace(new, function=dataclasses.replace(
+                    new.function, sync=flow.call_is_sync(fn.name, op)))
+            return new
+
         return dataclasses.replace(
             fn,
             sync=flow.is_sync(("fn", fn.name)),
             params=retype_struct(fn.params, var_node),
             stack_vars=retype_struct(fn.stack_vars, var_node),
-            ops=tuple(op.replace_params(replacer) for op in fn.ops))
+            ops=tuple(materialise_op(op) for op in fn.ops))
 
     def materialise_object(obj: Object) -> Object:
         return dataclasses.replace(obj, fields=retype_struct(

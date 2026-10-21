@@ -192,5 +192,5 @@ fun sroaFieldLocal(sp: List<Sroa>, v: String, f, orig): RParam
 fun sroaSeedMoves(sp: List<Sroa>, i: Int): List<Op>
   ret fold(sp, List(), (acc, s2) => s2.srDefIndex == i
              ? concat(acc, map(s2.srFields, (fl) =>
-                 OpMove(fl.sfLocal, RpStructField(s2.srVar, fl.sfField), false, List())))
+                 OpMove(fl.sfLocal, RpStructField(s2.srVar, fl.sfField), false, Dict())))
              : acc)

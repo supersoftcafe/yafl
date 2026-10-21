@@ -49,7 +49,7 @@ fun esIsVarNamed(q, name) => match(q)
 # exclusively own: a callee, a heap field, a struct pack, a return value, a
 # Phi merge, or the async state saved across a suspension.
 fun esOpPublishes(op: Op, name)
-  if any(opSavedVars(op), (sv) => esIsVarNamed(sv, name))
+  if contains(opSavedVars(op), name)
     ret true
   ret match(op)
     (c: OpCall)          => esReadsName(op, name)

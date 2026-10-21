@@ -29,6 +29,7 @@ from parsing.parselib import Error
 import pyast.statement as s
 import pyast.typespec as t
 import pyast.resolver as g
+from langtools import strongly_connected_components
 
 
 
@@ -109,42 +110,6 @@ def _build_name_to_root(roots: dict[str, t.EnumSpec]) -> dict[str, str]:
     return out
 
 
-def _find_sccs(edges: dict[str, set[str]]) -> list[set[str]]:
-    """Tarjan's SCC algorithm. Returns one set per strongly-connected component."""
-    index: dict[str, int] = {}
-    lowlink: dict[str, int] = {}
-    on_stack: set[str] = set()
-    stack: list[str] = []
-    sccs: list[set[str]] = []
-    counter = [0]
-
-    def visit(v: str) -> None:
-        index[v] = lowlink[v] = counter[0]
-        counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        for w in sorted(edges.get(v, ())):
-            if w not in index:
-                visit(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
-            elif w in on_stack:
-                lowlink[v] = min(lowlink[v], index[w])
-        if lowlink[v] == index[v]:
-            scc: set[str] = set()
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                scc.add(w)
-                if w == v:
-                    break
-            sccs.append(scc)
-
-    for v in sorted(edges):
-        if v not in index:
-            visit(v)
-    return sccs
-
-
 def _pick_cycle_breakers(edges: dict[str, set[str]], roots: dict[str, t.EnumSpec],
                          fields_of=None) -> set[str]:
     """Return the minimal set of nodes to mark complex to break all cycles.
@@ -168,7 +133,7 @@ def _pick_cycle_breakers(edges: dict[str, set[str]], roots: dict[str, t.EnumSpec
     work: dict[str, set[str]] = {k: set(v) for k, v in edges.items()}
 
     while True:
-        cyclic = [s for s in _find_sccs(work)
+        cyclic = [s for s in strongly_connected_components(sorted(work), work)
                   if len(s) > 1 or any(n in work.get(n, ()) for n in s)]
         if not cyclic:
             break

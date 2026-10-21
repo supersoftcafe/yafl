@@ -41,6 +41,7 @@ import pyast.statement as s
 import pyast.typespec as t
 import pyast.utils as u
 
+from langtools import strongly_connected_components
 from parsing.tokenizer import LineRef
 
 
@@ -759,50 +760,6 @@ def _member_specialization_suffix(member_name: str) -> str:
     return '@' + parts[2] if len(parts) == 3 else ''
 
 
-def _tarjan_sccs(nodes: list[str], edges: dict[str, set[str]]) -> list[list[str]]:
-    """Tarjan's SCC algorithm.  Returns SCCs in reverse topological order
-    (callees before callers).  Each SCC is a list of node names in
-    discovery order; node order across SCCs preserves the input ordering
-    of `nodes` as the tiebreak."""
-    index_of: dict[str, int] = {}
-    lowlink: dict[str, int] = {}
-    stack: list[str] = []
-    on_stack: set[str] = set()
-    counter = [0]
-    result: list[list[str]] = []
-
-    def strongconnect(v: str) -> None:
-        index_of[v] = counter[0]
-        lowlink[v] = counter[0]
-        counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        # Sorted: neighbour order decides SCC member (discovery) order, which
-        # is observable in hoisted-statement order — set iteration order would
-        # make the output depend on string hashing (and be unportable to the
-        # bootstrap, which must reproduce this byte for byte).
-        for w in sorted(edges.get(v, set())):
-            if w not in index_of:
-                strongconnect(w)
-                lowlink[v] = min(lowlink[v], lowlink[w])
-            elif w in on_stack:
-                lowlink[v] = min(lowlink[v], index_of[w])
-        if lowlink[v] == index_of[v]:
-            scc: list[str] = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                scc.append(w)
-                if w == v:
-                    break
-            result.append(scc)
-
-    for n in nodes:
-        if n not in index_of:
-            strongconnect(n)
-    return result
-
-
 def _rewrite_for_class_method(body: e.Expression, this_target: dict[str, str]) -> e.Expression:
     """Rewrite NamedExpression(`name`) inside a class method body to
     `this.<this_target[name]>` for any `name` in the map — used to expose
@@ -1031,7 +988,7 @@ def _hoist_from_body(fn: s.FunctionStatement,
     direct_this = {nf.name for nf in nested_fns} if this_type is not None else set()
 
     # SCCs in reverse topological order (callees first).
-    sccs = _tarjan_sccs([nf.name for nf in nested_fns], sibling_calls)
+    sccs = strongly_connected_components([nf.name for nf in nested_fns], sibling_calls)
     scc_index = {n: i for i, scc in enumerate(sccs) for n in scc}
 
     # Propagate "needs closure" along sibling-call edges: an SCC needs a

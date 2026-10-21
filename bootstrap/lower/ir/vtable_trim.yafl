@@ -2,11 +2,9 @@
 # vtable entries whose slot no surviving virtual call dispatches. After
 # devirtualisation a single-implementation slot is only ever called directly;
 # its vtable entry is dead weight yet still counts as a function reference,
-# blocking the single-caller fold. Dropping it lets fold + trim collapse
-# witness objects whose every method went direct: entry gone → refcount 1 →
-# fold → the witness `this` goes dead → deadstores + trim remove the
-# instance, its object and its whole vtable. Instance/`implements` checks are
-# untouched (they use implements_array, not the function table).
+# so trim keeps the function after the inliner has taken every direct call
+# of it. Dropping the entry lets trim remove it. Instance/`implements` checks
+# are untouched (they use implements_array, not the function table).
 namespace Bootstrap::Lower::Ir
 
 import System

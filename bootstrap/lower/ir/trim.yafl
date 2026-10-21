@@ -3,8 +3,6 @@
 # __entrypoint__, via the _scan_sets reference model (worklist to a fixpoint;
 # the survivors rebuild in SORTED name order, exactly like Python's
 # `sorted(to_app.*)` — C emission order depends on it).
-# function_reference_counts (the -O3 single-caller fold's multiplicity twin)
-# ports with the O-blocks, not here.
 namespace Bootstrap::Lower::Ir
 
 import System
@@ -214,7 +212,7 @@ fun [tail] trimPickGlbLoop(ns: Chain<String>, a: CgApp,
 # enumerate those). Such a function can be called from a site the IR cannot
 # enumerate — through a closure, a union slot, the runtime — so nothing may
 # be assumed about the arguments it receives. Same scan model as the
-# dead-code pass and functionReferenceCounts.
+# dead-code pass.
 
 fun addressTakenFunctions(a: CgApp): StrSet
   let fromOps = fold(appFunctions(a), setEmpty(), (acc, f) => fold(f.fnOps, acc, atfOp))

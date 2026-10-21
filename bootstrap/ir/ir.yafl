@@ -53,7 +53,7 @@ class [final] CgGlobal(globalName: String, globalType: CgType, globalInit: RPara
 
 fun forceOp(x: Op|None) => match(x)
   (o: Op) => o
-  ()      => OpAbort("", List())   # unreachable: only used at in-bounds indices
+  ()      => OpAbort("", Dict())   # unreachable: only used at in-bounds indices
 
 fun pyStrOpt(o: String|None)
   # Mirrors Python's f"{value}" on a str|None: None interpolates as "None".
@@ -154,7 +154,7 @@ fun cgFunctionWith(f: CgFunction, ops, stackVars)
 
 fun cgFunctionInstrumentProfile(f: CgFunction, fnId)
   let ops = build(cgInstrumentOps(f.fnOps, 0i32,
-              push(seqBuilder(), OpProfEnter(fnId, List()))))
+              push(seqBuilder(), OpProfEnter(fnId, Dict()))))
   ret cgFunctionWith(f, ops, f.fnStackVars)
 
 fun [tail] cgInstrumentOps(s: Segment<Op>|None, i,
@@ -163,7 +163,7 @@ fun [tail] cgInstrumentOps(s: Segment<Op>|None, i,
   (seg: Segment<Op>) => i < seg.length
     ? cgInstrumentOps(s, i + 1i32,
         push(cgIsProfExit(seg.array(i))
-               ? push(acc, OpProfLeave(List()))
+               ? push(acc, OpProfLeave(Dict()))
                : acc,
              seg.array(i)))
     : cgInstrumentOps(seg.next, 0i32, acc)
@@ -204,7 +204,7 @@ fun [tail] phiSourceForSources(sources: List<OpPhiSource>, predLabel) => match(h
   ()                => RpNullPointer()   # unreachable (Python raises AssertionError)
 
 fun cgPhiToMove(phi, predLabel) => match(phi)
-  (p: OpPhi) => OpMove(p.phiTarget, phiSourceFor(phi, predLabel), false, List())
+  (p: OpPhi) => OpMove(p.phiTarget, phiSourceFor(phi, predLabel), false, Dict())
   (o: Op)    => o   # unreachable
 
 fun cgIsTerminatorForPhi(op) => match(op)
@@ -313,7 +313,7 @@ fun cgStripLabelPut(labels, op, i: Int): Dict<String, Int> => match(op)
 
 fun sxOpAt(ix: StripIx, i: Int) => match(get(ix.sxOps, i))
   (op: Op) => op
-  ()        => OpReturnVoid(List())   # unreachable: 0 <= i < sxN
+  ()        => OpReturnVoid(Dict())   # unreachable: 0 <= i < sxN
 
 fun labelIndexLookup(ix: StripIx, name: String) => match(get(ix.sxLabels, name))
   (i: Int) => i

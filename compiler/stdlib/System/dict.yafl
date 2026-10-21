@@ -128,51 +128,61 @@ fun Dict<K,V>(): Dict<K,V>
   ret DictEmpty<K,V>()
 
 
-fun [tail] get<K,V>(d: Dict<K,V>, k: K): V|None where BasicEquality<K>
-  let h = hashOf(k)
+# The key is hashed ONCE per operation; the walk down the tree carries the
+# hash. (Each of these used to re-hash the key at every level it descended.)
+fun get<K,V>(d: Dict<K,V>, k: K): V|None where BasicEquality<K>
+  ret _dict_get<K,V>(d, hashOf(k), k)
+
+fun [tail] _dict_get<K,V>(d: Dict<K,V>, h: Int32, k: K): V|None where BasicEquality<K>
   ret match(d)
     (e: DictEmpty) => None
     (n: DictNode)  => h < n.hash
-      ? get<K,V>(n.left, k)
+      ? _dict_get<K,V>(n.left, h, k)
       : h > n.hash
-        ? get<K,V>(n.right, k)
+        ? _dict_get<K,V>(n.right, h, k)
         : _bucket_get<K,V>(n.bucket, k)
 
 
 fun put<K,V>(d: Dict<K,V>, k: K, v: V): Dict<K,V> where BasicEquality<K>
-  let h = hashOf(k)
+  ret _dict_put<K,V>(d, hashOf(k), k, v)
+
+fun _dict_put<K,V>(d: Dict<K,V>, h: Int32, k: K, v: V): Dict<K,V> where BasicEquality<K>
   ret match(d)
     (e: DictEmpty) => DictNode<K,V>(h, _BucketCons<K,V>(k, v, _BucketNil<K,V>()), 1, DictEmpty<K,V>(), DictEmpty<K,V>())
     (n: DictNode)  => h < n.hash
-      ? _dict_balance<K,V>(n.hash, n.bucket, put<K,V>(n.left, k, v), n.right)
+      ? _dict_balance<K,V>(n.hash, n.bucket, _dict_put<K,V>(n.left, h, k, v), n.right)
       : h > n.hash
-        ? _dict_balance<K,V>(n.hash, n.bucket, n.left, put<K,V>(n.right, k, v))
+        ? _dict_balance<K,V>(n.hash, n.bucket, n.left, _dict_put<K,V>(n.right, h, k, v))
         : _dict_node<K,V>(n.hash, _bucket_put<K,V>(n.bucket, k, v), n.left, n.right)
 
 
 fun remove<K,V>(d: Dict<K,V>, k: K): Dict<K,V> where BasicEquality<K>
+  ret _dict_remove<K,V>(d, hashOf(k), k)
+
+fun _dict_remove<K,V>(d: Dict<K,V>, h: Int32, k: K): Dict<K,V> where BasicEquality<K>
   fun remove_here(nh: Int32, new_b: _DictBucket<K,V>, l: Dict<K,V>, r: Dict<K,V>): Dict<K,V>
     ret match(new_b)
       (n: _BucketNil)  => _dict_merge<K,V>(l, r)
       (c: _BucketCons) => _dict_balance<K,V>(nh, new_b, l, r)
-  let h = hashOf(k)
   ret match(d)
     (e: DictEmpty) => DictEmpty<K,V>()
     (n: DictNode)  => h < n.hash
-      ? _dict_balance<K,V>(n.hash, n.bucket, remove<K,V>(n.left, k), n.right)
+      ? _dict_balance<K,V>(n.hash, n.bucket, _dict_remove<K,V>(n.left, h, k), n.right)
       : h > n.hash
-        ? _dict_balance<K,V>(n.hash, n.bucket, n.left, remove<K,V>(n.right, k))
+        ? _dict_balance<K,V>(n.hash, n.bucket, n.left, _dict_remove<K,V>(n.right, h, k))
         : remove_here(n.hash, _bucket_remove<K,V>(n.bucket, k), n.left, n.right)
 
 
-fun [tail] contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
-  let h = hashOf(k)
+fun contains<K,V>(d: Dict<K,V>, k: K): Bool where BasicEquality<K>
+  ret _dict_contains<K,V>(d, hashOf(k), k)
+
+fun [tail] _dict_contains<K,V>(d: Dict<K,V>, h: Int32, k: K): Bool where BasicEquality<K>
   ret match(d)
     (e: DictEmpty) => 0 == 1
     (n: DictNode)  => h < n.hash
-      ? contains<K,V>(n.left, k)
+      ? _dict_contains<K,V>(n.left, h, k)
       : h > n.hash
-        ? contains<K,V>(n.right, k)
+        ? _dict_contains<K,V>(n.right, h, k)
         : _bucket_has<K,V>(n.bucket, k)
 
 
@@ -202,8 +212,23 @@ fun isEmpty<K,V>(d: Dict<K,V>): Bool
   ret d is DictEmpty
 
 
+# The keys have the same hashes, so the Set is the same tree: copied node for
+# node with each value replaced by (), nothing hashed or rebalanced. (Inserting
+# every key again was O(n log n) to rebuild what was already there.)
 fun keys<K,V>(d: Dict<K,V>): Set<K> where BasicEquality<K>
-  ret _chainToSet<K>(_dictKeyChain<K,V>(d), Set<K>())
+  ret Set<K>(_dictUnitMap<K,V>(d))
+
+# NOT [tail]: tree recursion, depth = the tree's height. A bucket is an
+# unordered collision chain, so reversing it on the way is free.
+fun _dictUnitMap<K,V>(d: Dict<K,V>): Dict<K,()>
+  fun [tail] unit_bucket(b: _DictBucket<K,V>, acc: _DictBucket<K,()>): _DictBucket<K,()>
+    ret match(b)
+      (n: _BucketNil)  => acc
+      (c: _BucketCons) => unit_bucket(c.tail, _BucketCons<K,()>(c.key, (), acc))
+  ret match(d)
+    (e: DictEmpty) => DictEmpty<K,()>()
+    (n: DictNode)  => DictNode<K,()>(n.hash, unit_bucket(n.bucket, _BucketNil<K,()>()), n.height,
+                                     _dictUnitMap<K,V>(n.left), _dictUnitMap<K,V>(n.right))
 
 # O(1): the chain becomes the bag's front as it lies. Nothing is ordered, so
 # nothing needs reordering.

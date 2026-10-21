@@ -296,7 +296,7 @@ this is the collected summary. **AST-level**, after the fixpoint and checks:
 |---|---|
 | `ssa_validate` | immediately, to catch generator bugs at the source. |
 | `trim` → `globalfuncs` | dead-code removal runs between most passes; reachability from the entrypoint. |
-| `inlining` (+`deadstores`, `staticinit`) | -O2/-O3 only, iterated to a shape fixpoint with trim in between. The -O3 single-caller round also runs `vtable_trim` and re-devirtualises: a devirtualised slot's dead vtable entry is what pins a trait witness's method above refcount 1 — removing it lets the fold cascade fuse a whole stream pipeline into its drain, no `[inline(always)]` needed. |
+| `inlining` (+`deadstores`, `staticinit`) | -O2/-O3 only, iterated to a shape fixpoint with trim in between: functions under the size threshold (`--inline-threshold`, default 5 ops), and at -O3 `[inline(always)]` ones at any size. A function on a call-graph cycle (`trim.recursive_functions`) is never inlined. |
 | `sync_inference` | proves which functions can never suspend (they keep the C stack convention). |
 | `branch_threading` + `copy_propagation` | collapse ternary/match residue so tail calls become recognisable to async lowering. At -O1+ these iterate to a fixpoint with the three known-value stages below — each unlocks the next, and everything deleted here is a slot the state machine never saves. |
 | `struct_folding` | fold field reads of locally-built structs (case-of-known-field); the bypassed pack falls to deadstores. |

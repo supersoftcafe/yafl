@@ -26,7 +26,7 @@ fun prCountVars(ops: Segment<Op>|None) => fold(ops, PrCounts(List(), List()), pr
 
 fun prCountOp(acc: PrCounts, op)
   let reads1 = fold(opReadVarNames(op), acc.prReads, strCountIncr)
-  let reads2 = fold(opSavedVars(op), reads1,
+  let reads2 = fold(values(opSavedVars(op)), reads1,
                     (r, sv) => prIncrIfStackVar(r, sv))
   let defs1 = fold(ssavOpWrites(op), acc.prDefs,
                    (d, sv) => prIncrIfStackVar(d, sv))

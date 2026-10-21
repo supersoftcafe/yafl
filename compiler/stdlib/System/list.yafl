@@ -216,9 +216,16 @@ fun contains<T>(l: List<T>, x: T): Bool where BasicEquality<T>
   ret any<T>(l, (y: T) => y == x)
 
 
-# Map each element to a list and concatenate the results, in order.
+# Map each element to a list and concatenate the results, in order — built
+# once, from empty: a concat per element copied the whole result so far.
 fun flatMap<T,U>(l: List<T>, f: (:T): List<U>): List<U>
-  ret fold<T, List<U> >(l, List<U>(), (acc: List<U>, x: T) => concat<U>(acc, f(x)))
+  ret build<U>(_flatMapInto<T,U>(builder<U>(), chain<T>(l), f))
+
+fun [tail] _flatMapInto<T,U>([terminal] b: ListBuilder<U>, c: Chain<T>,
+                             f: (:T): List<U>): ListBuilder<U>
+  ret match(c)
+    (nil: ChainEnd) => b
+    (l: ChainLink)  => _flatMapInto<T,U>(pushAll<U>(b, f(l.value)), l.next, f)
 
 
 # ─── Co-walks: two lists advanced in step ────────────────────────────────────

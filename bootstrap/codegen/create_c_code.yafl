@@ -75,16 +75,16 @@ fun createEntryPoint(mainName): CgFunction
                                    CgDataPointer())
   let ops = concat<Op>(list5(
       OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
-             RpNewStruct(List()), svResult, false, false, None, List()),
-      OpJumpIf("$async_entry", unlikelyChk, false, List()),
+             RpNewStruct(List()), svResult, false, false, None, Dict()),
+      OpJumpIf("$async_entry", unlikelyChk, false, Dict()),
       # Sync path: invoke the completion callback with main's result.
       OpCall(continuation, RpNewStruct(list1(RpNamedValue("result", svResult))),
-             None, false, false, None, List()),
-      OpReturnVoid(List()),
+             None, false, false, None, Dict()),
+      OpReturnVoid(Dict()),
       # Async path: register the continuation as task callback.
-      OpLabel("$async_entry", List())),
-    list2(OpMove(svDiscard, onComplete, true, List()),
-          OpReturnVoid(List())))
+      OpLabel("$async_entry", Dict())),
+    list2(OpMove(svDiscard, onComplete, true, Dict()),
+          OpReturnVoid(Dict())))
   ret CgFunction("__entrypoint__",
                  CgStruct(list2(CgField("this", CgDataPointer()),
                                 CgField("$continuation", CgFuncPointer(false)))),
@@ -130,11 +130,7 @@ fun lazyTypeAdd(acc, t2)
     : LazyTypes(build(push(builderFrom(acc.ltList), t2)),
                 put(acc.ltSeen, m2, true))
 
-fun ensureLazyMachinery(a, types2: List<CgType>)
-  if isEmpty(types2)
-    ret a
-  let withTask = appHasObject(a, "task") ? a : appPutObject(a, makeTaskForeignObject())
-  ret fold(types2, withTask, ensureLazyOne)
+fun ensureLazyMachinery(a, types2: List<CgType>) => fold(types2, a, ensureLazyOne)
 
 fun ensureLazyOne(a, t2)
   if appHasObject(a, stubClassName(t2))
@@ -215,7 +211,7 @@ fun msHeadExpr(es: Chain<PExpr>) => match(es)
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
 fun createCCode(statements, mainName, optLevel,
-                profile, headers: List<String>): CreateCOut
+                profile, headers: List<String>, inl: InlineOpts): CreateCOut
   let discs = collectDiscriminatorIds(statements)
   let [lazy] breakers: List<String> = computeBreakers(statements)
   # Per-leaf value-struct-threshold analysis (the enum-encoding principle):
@@ -244,20 +240,18 @@ fun createCCode(statements, mainName, optLevel,
   if !isEmpty(v1)
     ret CreateCOut(List(), v1)
   let a3 = timed("codegen", "trim+devirt", () => discoverGlobalFunctionCalls(removedUnusedStuff(a2)))
-  # -O2: bounded small-function/[inline(always)] inline fixpoint;
-  # -O3 adds the single-caller fold with vtable-slot trimming (compiler.py
-  # optimization_level >= 2 / >= 3 blocks; shape compares mirror Python's
-  # tuples exactly).
-  # Under --profile both IR inliners are disabled (compiler.py's `and not
-  # profile` gates): they are the only passes that ERASE whole functions, and
+  # -O2: bounded small-function inline fixpoint; -O3 adds [inline(always)]
+  # (compiler.py's optimization_level >= 2 block; the shape compare mirrors
+  # Python's tuple exactly).
+  # Under --profile the IR inliner is disabled (compiler.py's `and not
+  # profile` gate): its rounds are the only passes that ERASE whole functions, and
   # a profile must attribute counts and time to the functions the source
   # declares. The AST inliner still runs — see compiler.py's comment.
   let a3t = optLevel > 0 ? trimUnusedVtableSlots(a3) : a3
   let a3a = optLevel >= 2 && !profile
-    ? ccO2Fixpoint(a3t, 0, None, optLevel >= 3)
+    ? ccO2Fixpoint(a3t, 0, None, optLevel >= 3, inl.ioThreshold)
     : a3t
-  let a3s = optLevel >= 3 && !profile ? ccO3Fixpoint(a3a, 0, None) : a3a
-  let a3b = optLevel > 0 ? ccO1Block(a3s) : a3s
+  let a3b = optLevel > 0 ? ccO1Block(a3a) : a3a
   let a7 = timed("codegen", "staticinit", () => resolveFlatStructGlobalInits(a3b))
     |> (a4) => timed("codegen", "sync_inference", () => inferSync(a4))
     |> (a5) => timed("codegen", "fold_fixpoint", () => ccFold(a5, optLevel))
@@ -324,36 +318,20 @@ fun ccFold(a: CgApp, optLevel): CgApp
 # calls to known targets first (a direct call is what makes the closure
 # inlinable), inline + trim, stop on shape stability; 16-round bound.
 fun [tail] ccO2Fixpoint(a0: CgApp, round2, prev: CgApp|None,
-                        inlineAlways: Bool): CgApp
+                        inlineAlways: Bool, cutoff: Int): CgApp
   if round2 >= 16
     ret a0
   let a1 = discoverGlobalFunctionCalls(a0)
-  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways, round2))
-  ret ccSameShape(prev, a2, false)
+  let a2 = removedUnusedStuff(inlineSmallFunctions(a1, inlineAlways, round2, cutoff))
+  ret ccSameShape(prev, a2)
     ? a2
-    : ccO2Fixpoint(a2, round2 + 1, a2, inlineAlways)
-
-# The -O3 single-caller fold: drop undispatched vtable entries, re-derive
-# direct calls, inline every function referenced exactly once, trim; the
-# shape adds the SORTED per-object slot counts so a cascade that only sheds
-# vtable entries still iterates.
-fun [tail] ccO3Fixpoint(a0: CgApp, round2: Int,
-                        prev: CgApp|None): CgApp
-  if round2 >= 16
-    ret a0
-  let a1 = discoverGlobalFunctionCalls(trimUnusedVtableSlots(a0))
-  # Recomputed each round: folding a callee away can newly prove its caller
-  # sync, unlocking the next fold in the chain.
-  let a2 = removedUnusedStuff(inlineSingleCallerFunctions(a1, computeSyncNames(a1), round2))
-  ret ccSameShape(prev, a2, true)
-    ? a2
-    : ccO3Fixpoint(a2, round2 + 1, a2)
+    : ccO2Fixpoint(a2, round2 + 1, a2, inlineAlways, cutoff)
 
 # ── the -O1+ pass blocks ─────────────────────────────────────────────────────
 # Python compiler.py: inside `if optimization_level > 0` — bounds-check
 # elimination, dead-store elimination, four rounds of static-object
-# promotion, dead stores again. (The >=2 inlining and >=3 single-caller
-# blocks are NOT PORTED YET; at -O1 Python skips them too.)
+# promotion, dead stores again. (The >=2 inlining block is ccO2Fixpoint
+# above; at -O1 Python skips it too.)
 fun ccO1Block(a0: CgApp): CgApp
   ret timed("o1", "bounds_elim", () => eliminateProvableBoundsChecks(a0))
     |> (a1) => timed("o1", "deadstores.1", () => removedUnusedStuff(eliminateDeadStores(a1)))
@@ -385,33 +363,18 @@ fun [tail] ccFoldFixpoint(a0: CgApp, round2,
   # string_accumulation (builder deforestation) is retired: a String value
   # extends its own head in place (yafllib/str.c).
   let a7 = eliminateDeadStores(a6)
-  ret ccSameShape(prev, a7, false) ? a7 : ccFoldFixpoint(a7, round2 + 1, a7)
+  ret ccSameShape(prev, a7) ? a7 : ccFoldFixpoint(a7, round2 + 1, a7)
 
 # Structural shape compare against the PREVIOUS round's app — Python
 # compares tuples of (name, len(ops)); equal names plus sameLen op-lists is
-# the identical predicate with no length ever taken (no-length ruling). O3
-# additionally compares per-object slot lists, sorted by object name (names
-# are unique, so Python's (name, count) sort order IS name order).
-fun ccSameShape(prev: CgApp|None, cur: CgApp, withObjects) => match(prev)
+# the identical predicate with no length ever taken (no-length ruling).
+fun ccSameShape(prev: CgApp|None, cur: CgApp) => match(prev)
   (p: CgApp) => ccFnsSame(appFunctions(p), appFunctions(cur))
-                && (!withObjects
-                    || ccObjsSame(ccSortObjs(appObjects(p)),
-                                  ccSortObjs(appObjects(cur))))
   ()         => false
 
 fun ccFnsSame(a: List<CgFunction>, b: List<CgFunction>)
   ret eqBy(a, b, (x, y) =>
         x.fnName == y.fnName && sameLen(x.fnOps, y.fnOps))
-
-fun ccObjsSame(a: List<CgObject>, b: List<CgObject>)
-  ret eqBy(a, b, (x, y) =>
-        x.objName == y.objName
-        && sameLen(chain(x.objFunctions), chain(y.objFunctions)))
-
-fun ccSortObjs(os: List<CgObject>)
-  # By name. This was an INSERTION SORT — each object walking the sorted
-  # prefix and rebuilding it as it went.
-  ret sortBy(os, (a, b) => a.objName < b.objName)
 
 fun ccStmt(a, st, r): CgApp
   let r2 = scopeResolver(st, r)

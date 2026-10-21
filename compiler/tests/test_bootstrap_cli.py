@@ -39,6 +39,31 @@ fun main(): System::Int
   ret 0
 """
 
+# Something for each inline option to change: a mid-sized helper called
+# twice, and a function called once.
+_INLINED = """\
+namespace Main
+
+import System
+
+# Called twice: inlined only under a generous threshold.
+fun mix(a: Int, b: Int): Int
+  let c = a * 3 + b
+  let d = c * c - a
+  let e = d / 7 + c
+  ret e % 1000 + a * b - d
+
+# Called once, and too big for the small-function inliner.
+fun report(n: Int): Int
+  let m = mix(n, 2) + mix(n, 5)
+  let a = m * 31 + n
+  let b = a / 3 - m
+  let c = b * b % 977 + a
+  ret c - b + a * 2
+
+fun main(): Int => report(41) % 100
+"""
+
 _TWO_A = """\
 namespace Two::A
 
@@ -259,6 +284,10 @@ class TestBootstrapCli(TimedTestCase):
         (["--test=x", "a.yafl"], 2, "--test"), (["--test=a\\b"], 2, "--test"),
         (["--help=x"], 2, "--help"), (["-h=x"], 2, "--help"),
         (["--=x", "a"], 2, "--=x"),
+        (["--inline-threshold", "x", "a"], 2, "--inline-threshold"),
+        (["--inline-threshold=1.5", "a"], 2, "--inline-threshold"),
+        (["--inline-threshold"], 2, "--inline-threshold"),
+        (["--inline-threshold", " 1_0 ", "a"], 1, "a"), (["--no", "a"], 2, "--no"),
         (["-h"], 0, None), (["--he"], 0, None), (["-hx"], 0, None), (["-hxyz"], 0, None),
         (["-hO3"], 0, None), (["-hO9"], 0, None), (["-hc", "x"], 0, None),
         (["-O3", "-h", "-O9"], 0, None), (["-o=x", "-hx"], 0, None),
@@ -287,7 +316,8 @@ class TestBootstrapCli(TimedTestCase):
                         named = f"{word}: cannot be read" if code == 1 else word
                         self.assertIn(named, err, f"{name}: the error names {word!r}")
 
-    _OPTIONS = ("-h", "-O", "-a", "-c", "-o", "-L", "--lib-path", "--profile", "-W", "--test")
+    _OPTIONS = ("-h", "-O", "-a", "-c", "-o", "-L", "--lib-path", "--profile", "-W", "--test",
+                "--inline-threshold")
 
     def test_help_lists_every_option_at_any_width(self):
         # COLUMNS unset: not a terminal, so the help falls back to 80 columns.
@@ -354,6 +384,13 @@ class TestBootstrapCli(TimedTestCase):
     def test_profile_c(self):
         self._write("hello.yafl", _HELLO)
         self._both_c("--profile", "hello.yafl")
+
+    def test_inline_options_c(self):
+        self._write("inl.yafl", _INLINED)
+        default = self._both_c("-O3", "inl.yafl")
+        for opts in (("--inline-threshold", "0"), ("--inline-threshold=40",)):
+            with self.subTest(opts=opts):
+                self.assertNotEqual(default, self._both_c("-O3", *opts, "inl.yafl"))
 
     def test_files_named_by_basename(self):
         self._write("sub/a.yafl", _TWO_A)

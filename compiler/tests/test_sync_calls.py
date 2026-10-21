@@ -76,6 +76,30 @@ fun pure(x: {_INT}): {_INT}
   let a = helper(x)
   ret helper(a) + 1
 
+# maybe_async: the only calls that can suspend are calls of a parameter.
+fun applyE(f: {_FN}, x: {_INT}): {_INT}
+  ret f(x) + {_PAD}
+fun callerSyncE(x: {_INT}): {_INT}
+  ret applyE((y: {_INT}) => y + 1, x) + {_PAD}
+fun callerAsyncE(x: {_INT}): {_INT}
+  ret applyE((y: {_INT}) => suspendy(y), x) + {_PAD}
+
+# Recursion passing its own parameter on stays maybe_async.
+fun recurF(x: {_INT}, f: {_FN}): {_INT}
+  ret x == 0 ? 0 : f(x) + recurF(x - 1, f) + {_PAD}
+fun callerSyncF(x: {_INT}): {_INT}
+  ret recurF(x, (y: {_INT}) => y + 1) + {_PAD}
+fun callerAsyncF(x: {_INT}): {_INT}
+  ret recurF(x, (y: {_INT}) => suspendy(y)) + {_PAD}
+
+# A [tail] loop calls the loop variable that carries its parameter round.
+fun [tail] loopG(n: {_INT}, acc: {_INT}, f: {_FN}): {_INT}
+  ret n == 0 ? acc : loopG(n - 1, f(acc), f)
+fun callerSyncG(x: {_INT}): {_INT}
+  ret loopG(x, 0, (y: {_INT}) => y + 1) + {_PAD}
+fun callerAsyncG(x: {_INT}): {_INT}
+  ret loopG(x, 0, (y: {_INT}) => suspendy(y)) + {_PAD}
+
 fun main(): {_INT}
   ret count(10)
     + loopA(10, 0, (x: {_INT}) => x + 1)
@@ -90,6 +114,12 @@ fun main(): {_INT}
     + use(twice)
     + mixed(3)
     + pure(3)
+    + callerSyncE(3)
+    + callerAsyncE(3)
+    + callerSyncF(3)
+    + callerAsyncF(3)
+    + callerSyncG(3)
+    + callerAsyncG(3)
 """
 
 
@@ -167,3 +197,33 @@ class TestSyncCallSites(TestCase):
         self.assertTrue(pure.sync)
         self.assertEqual(0, _task_checks(pure))
         self.assertTrue(any(isinstance(op, Call) for op in pure.ops))
+
+
+class TestMaybeAsync(TestCase):
+    """A function whose only suspending calls are calls of its own function
+    parameters is maybe_async: it keeps its suspension points, but a call to
+    it whose function arguments are all sync cannot suspend, so the CALLER
+    treats that call as sync."""
+
+    def test_maybe_async_function_keeps_its_suspension_points(self):
+        # One caller passes an async lambda, so applyE itself is not sync.
+        self.assertFalse(_fn("applyE").sync)
+
+    def test_call_with_sync_arguments_is_sync(self):
+        caller = _fn("callerSyncE")
+        self.assertTrue(caller.sync)
+        self.assertEqual(0, _task_checks(caller))
+
+    def test_call_with_an_async_argument_is_async(self):
+        self.assertFalse(_fn("callerAsyncE").sync)
+
+    def test_recursion_through_its_own_parameter_stays_maybe_async(self):
+        self.assertFalse(_fn("recurF").sync)
+        self.assertTrue(_fn("callerSyncF").sync)
+        self.assertFalse(_fn("callerAsyncF").sync)
+
+    def test_a_tail_loop_calling_its_carried_parameter_is_maybe_async(self):
+        self.assertFalse(_fn("loopG").sync)
+        self.assertTrue(_fn("callerSyncG").sync)
+        self.assertFalse(_fn("callerAsyncG").sync)
+

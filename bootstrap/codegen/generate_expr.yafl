@@ -660,8 +660,8 @@ fun genArrayReadOn(ar: PeArrayRead, info: (cname: String, elem: Spec, lenName: S
   let objVar = RpStackVar(CgDataPointer(), "aobj")
   let idxVar = RpStackVar(CgInt(32), "aidx")
   let elem = RpArrayElement(specGenerate(info.elem, r), objVar, info.cname, "array", info.lenName, idxVar, true)
-  let moveOps = list2<Op>(OpMove(objVar, mustResult(objB), false, List()),
-                      OpMove(idxVar, mustResult(idxB), false, List()))
+  let moveOps = list2<Op>(OpMove(objVar, mustResult(objB), false, Dict()),
+                      OpMove(idxVar, mustResult(idxB), false, Dict()))
   ret bundleJoin(bundleJoin(objB, idxB), GBundle(list2(objVar, idxVar), moveOps, elem, List(), List()))
 
 # ── LazyExpression ───────────────────────────────────────────────────────────
@@ -708,7 +708,7 @@ fun foundIsGlobalScope(f: Found|None) => match(f)
 fun genLazyForce(irT, stubRef)
   let svResult = RpStackVar(irT, "$force_result")
   let call = OpCall(RpGlobalFunction(fetchFunctionName(irT), stubRef, false, None, false, false),
-                    RpNewStruct(List()), svResult, false, false, None, List())
+                    RpNewStruct(List()), svResult, false, false, None, Dict())
   ret GBundle(list1(svResult), list1(call), svResult, List(), List())
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -807,7 +807,7 @@ fun genArrayBuilderAllocOn(cname, capE, r)
   let rv = RpStackVar(CgDataPointer(), "abarr")
   ret bundleJoin(capB,
                  GBundle(list1(rv),
-                         list1(OpNewObject(cname, rv, mustResult(capB), true, List())),
+                         list1(OpNewObject(cname, rv, mustResult(capB), true, Dict())),
                          rv, List(), List()))
 
 # Inline pinned-array element store: a Move into the indexed trailing array
@@ -831,7 +831,7 @@ fun genArrayBuilderStoreAll(cname, elem, arrE, idxE, valE, r)
   let valB = withPrefix(genExpr(valE, r), "absval")
   let store = OpMove(RpObjectField(specGenerate(elem, r), mustResult(arrB), cname, "array",
                                    mustResult(idxB), false, true),
-                     mustResult(valB), false, List())
+                     mustResult(valB), false, Dict())
   ret bundleJoin(bundleJoin(bundleJoin(arrB, idxB), valB),
                  GBundle(List(), list1(store), RpInteger(1, 8),
                          List(), List()))
@@ -868,7 +868,7 @@ fun genCallOn(c: PeCall, cl: SCallable, r)
   let funRef = mustResult(funBundle)
   let resultType = specGenerateOpt(cl.scResult, r)
   let resultVar = RpStackVar(resultType, "result")
-  let callOp = OpCall(funRef, mustResult(prmBundle), resultVar, false, isImpureCall(funRef), None, List())
+  let callOp = OpCall(funRef, mustResult(prmBundle), resultVar, false, isImpureCall(funRef), None, Dict())
   let callBundle = GBundle(list1(resultVar), list1(callOp), resultVar, List(), List())
   ret bundleJoin(bundleJoin(funBundle, prmBundle), callBundle)
 
@@ -995,8 +995,8 @@ fun genNewClass(nw: PeNew, xtypeSpec, ctype, cs: PsClass, r, pinned: Bool)
 
 fun genNewPlain(cs: PsClass, cname, paramsBundle: GBundle, paramsVar, resultVar, r, pinned: Bool)
   let moveOps = fieldMoveOps(chain(classFields(cs)), cname, resultVar, paramsVar, 0, r, List())
-  let ops = concat(list2(OpMove(paramsVar, mustResult(paramsBundle), false, List()),
-                        OpNewObject(cname, resultVar, None, pinned, List())),
+  let ops = concat(list2(OpMove(paramsVar, mustResult(paramsBundle), false, Dict()),
+                        OpNewObject(cname, resultVar, None, pinned, Dict())),
                    moveOps)
   let ctorBundle = GBundle(list2(paramsVar, resultVar), ops, resultVar, List(), List())
   ret bundleJoin(paramsBundle, ctorBundle)
@@ -1014,7 +1014,7 @@ fun [tail] fieldMoveOpsB(fs: Chain<PStmt>, cname, resultVar, paramsVar,
 fun fieldMoveOp(field, cname, resultVar, paramsVar, index: Int, r)
   let ftype = specGenerateOpt(stmtType(field), r)
   ret OpMove(RpObjectField(ftype, resultVar, cname, stmtName(field), None, true, false),
-             RpStructField(paramsVar, "_" + String(index)), false, List())
+             RpStructField(paramsVar, "_" + String(index)), false, Dict())
 
 # ── array-class construction: allocate trailing storage then tabulate it via
 # an SSA counter loop (entry -> head Phi -> back-edge). ────────────────────
@@ -1038,28 +1038,28 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   # half-built array in a heap state object, where compaction could move it
   # under the resumed loop (see pyast/expression/new.py).
   let unpinVar = RpStackVar(CgDataPointer(), "fillunpin")
-  let unpinOp = OpMove(unpinVar, RpRuntimeInvoke("object_unpin", RpNewStruct(list1(RpNamedValue("o", resultVar))), CgDataPointer()), true, List())
-  let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, List()),
-                             OpNewObject(cname, resultVar, length2, true, List())),
+  let unpinOp = OpMove(unpinVar, RpRuntimeInvoke("object_unpin", RpNewStruct(list1(RpNamedValue("o", resultVar))), CgDataPointer()), true, Dict())
+  let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, Dict()),
+                             OpNewObject(cname, resultVar, length2, true, Dict())),
                        scalarOps)
   let iVar = RpStackVar(CgInt(32), "filli")
   let iNext = RpStackVar(CgInt(32), "fillinext")
   let elemVar = RpStackVar(elemCtype, "fillelem")
   let less = RpRuntimeInvoke("int32_test_lt", RpNewStruct(list2(RpNamedValue("a", iVar), RpNamedValue("b", length2))), CgInt(8))
   let incr = RpRuntimeInvoke("int32_add", RpNewStruct(list2(RpNamedValue("a", iVar), RpNamedValue("b", RpInteger(1, 32)))), CgInt(32))
-  let loopOps = list2<Op>(OpLabel("fillentry", List()), OpLabel("fillhead", List()))
-  let phiOp = OpPhi(iVar, list2(OpPhiSource("fillentry", RpInteger(0, 32)), OpPhiSource("fillback", iNext)), List())
+  let loopOps = list2<Op>(OpLabel("fillentry", Dict()), OpLabel("fillhead", Dict()))
+  let phiOp = OpPhi(iVar, list2(OpPhiSource("fillentry", RpInteger(0, 32)), OpPhiSource("fillback", iNext)), Dict())
   # The element store is NOT fresh: initFn runs safe points between the
   # allocation and the store (see pyast/expression/new.py).
   let restOps = concat<Op>(
-    list3(OpJumpIf("fillbody", less, false, List()),
-          OpJump("fillend", List()),
-          OpLabel("fillbody", List())),
+    list3(OpJumpIf("fillbody", less, false, Dict()),
+          OpJump("fillend", Dict()),
+          OpLabel("fillbody", Dict())),
     concat(
-      list3(OpCall(initFn, RpNewStruct(list1(RpNamedValue("_0", iVar))), elemVar, false, false, None, List()),
-            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, false, true), elemVar, false, List()),
-            OpMove(iNext, incr, false, List())),
-      list4(OpLabel("fillback", List()), OpJump("fillhead", List()), OpLabel("fillend", List()), unpinOp)))
+      list3(OpCall(initFn, RpNewStruct(list1(RpNamedValue("_0", iVar))), elemVar, false, false, None, Dict()),
+            OpMove(RpObjectField(elemCtype, resultVar, cname, "array", iVar, false, true), elemVar, false, Dict()),
+            OpMove(iNext, incr, false, Dict())),
+      list4(OpLabel("fillback", Dict()), OpJump("fillhead", Dict()), OpLabel("fillend", Dict()), unpinOp)))
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))
   ret GBundle(prepend(paramsVar, prepend(resultVar, list4(unpinVar, iVar, iNext, elemVar))), ops, resultVar, List(), List())
 
@@ -1133,22 +1133,22 @@ fun genTernary(te, r, expected)
 
 fun genTernaryBottom(condBundle: GBundle, falseBundle: GBundle, trueBundle: GBundle, fBottom, tBottom: Bool)
   let head2 = bundleJoin(condBundle, bundleOps(list2(
-    OpJumpIf("T_branch", mustResult(condBundle), false, List()),
-    OpLabel("F_branch", List()))))
+    OpJumpIf("T_branch", mustResult(condBundle), false, Dict()),
+    OpLabel("F_branch", Dict()))))
   ret fBottom
-    ? bundleJoin(bundleJoin(head2, falseBundle), bundleJoin(bundleOp1(OpLabel("T_branch", List())), trueBundle))
+    ? bundleJoin(bundleJoin(head2, falseBundle), bundleJoin(bundleOp1(OpLabel("T_branch", Dict())), trueBundle))
     : bundleJoin(bundleJoin(head2, falseBundle),
-                bundleJoin(bundleOps(list2(OpJump("join", List()), OpLabel("T_branch", List()))),
-                          bundleJoin(trueBundle, bundleFull(List(), list1(OpLabel("join", List())), falseBundle.gbResult))))
+                bundleJoin(bundleOps(list2(OpJump("join", Dict()), OpLabel("T_branch", Dict()))),
+                          bundleJoin(trueBundle, bundleFull(List(), list1(OpLabel("join", Dict())), falseBundle.gbResult))))
 
 fun genTernaryJoin(condBundle: GBundle, falseBundle: GBundle, trueBundle: GBundle, slotType: Spec|None, r)
   let resultVar = RpStackVar(specGenerateOpt(slotType, r), "result")
-  let phi = OpPhi(resultVar, list2(OpPhiSource("F_exit", mustResult(falseBundle)), OpPhiSource("T_exit", mustResult(trueBundle))), List())
+  let phi = OpPhi(resultVar, list2(OpPhiSource("F_exit", mustResult(falseBundle)), OpPhiSource("T_exit", mustResult(trueBundle))), Dict())
   ret bundleJoin(
-    bundleJoin(condBundle, bundleOps(list2(OpJumpIf("T_branch", mustResult(condBundle), false, List()), OpLabel("F_branch", List())))),
+    bundleJoin(condBundle, bundleOps(list2(OpJumpIf("T_branch", mustResult(condBundle), false, Dict()), OpLabel("F_branch", Dict())))),
     bundleJoin(falseBundle,
-      bundleJoin(bundleOps(list3(OpLabel("F_exit", List()), OpJump("join", List()), OpLabel("T_branch", List()))),
-        bundleJoin(trueBundle, bundleFull(list1(resultVar), list3(OpLabel("T_exit", List()), OpLabel("join", List()), phi), resultVar)))))
+      bundleJoin(bundleOps(list3(OpLabel("F_exit", Dict()), OpJump("join", Dict()), OpLabel("T_branch", Dict()))),
+        bundleJoin(trueBundle, bundleFull(list1(resultVar), list3(OpLabel("T_exit", Dict()), OpLabel("join", Dict()), phi), resultVar)))))
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 11: BlockExpression (pyast/expression/block.py).
@@ -1239,7 +1239,7 @@ fun genBlockReturnsFallThrough(bk: PeBlock, stmtsBundle: GBundle, r, slotType,
 
 fun genBlockReturnsDead(stmtsBundle: GBundle, slotType, r, tag, endLabel, ftExit)
   let ops0 = build(push(builderFrom(stmtsBundle.gbOps),
-                   OpAbort("unreachable: every path through the block returned", List())))
+                   OpAbort("unreachable: every path through the block returned", Dict())))
   ret genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stmtsBundle.gbStackVars, stmtsBundle.gbRecurSources,
                       stmtsBundle.gbExitSources, None, false)
 
@@ -1253,14 +1253,14 @@ fun genBlockAssemble(slotType: Spec|None, r, tag, endLabel, ftExit,
 # label — both after everything the block emitted.
 fun genBlockFtLabel([terminal] b, ftExit,
                     reachesEnd: Bool): ListBuilder<Op>
-  ret reachesEnd ? push(b, OpLabel(ftExit, List())) : b
+  ret reachesEnd ? push(b, OpLabel(ftExit, Dict())) : b
 
 fun genBlockAssembleUnit(ops0: List<Op>, stackVars0, recur0,
                          endLabel, ftExit, reachesEnd)
   let ops1 = genBlockFtLabel(builderFrom(ops0),
                              ftExit, reachesEnd)
   ret GBundle(stackVars0,
-              build(push(ops1, OpLabel(endLabel, List()))),
+              build(push(ops1, OpLabel(endLabel, Dict()))),
               None, recur0, List())
 
 fun genBlockAssembleValued(slotType, r, tag, ops0: List<Op>, stackVars0,
@@ -1279,9 +1279,9 @@ fun genBlockAssembleValued(slotType, r, tag, ops0: List<Op>, stackVars0,
           ExitSource(ftExit, fv)))
     : sources0
   let ops2 = build(pushAll(ops1,
-                 list2(OpLabel(endLabel, List()),
+                 list2(OpLabel(endLabel, Dict()),
                        OpPhi(resultVar, exitSourcesToPhi(sources1),
-                             List()))))
+                             Dict()))))
   ret GBundle(build(push(
                   builderFrom(stackVars0),
                   resultVar)),
@@ -1338,7 +1338,7 @@ fun genLoop(lp: PeLoop, r, expected: Spec|None): GBundle
   let entry = "loopentry$" + tag
   let lvStackVars: List<RParam> = map3(lp.loopParams, paramCTypes, lv, (p, ct, pr) => RpStackVar(ct, pr.lrNew))
   let phis = buildLoopPhis(chain(lp.loopParams), paramCTypes, paramRefs, lv, entry, bodyBundle.gbRecurSources, 0)
-  let ops = concat(list2(OpLabel(entry, List()), OpLabel(loopHead(frame), List())), concat(phis, bodyRenamed.gbOps))
+  let ops = concat(list2(OpLabel(entry, Dict()), OpLabel(loopHead(frame), Dict())), concat(phis, bodyRenamed.gbOps))
   ret GBundle(concat(lvStackVars, bodyRenamed.gbStackVars), ops, bodyRenamed.gbResult, List(), List())
 
 fun exprTypeForceSpec(p, r) => match(exprType(p, r))
@@ -1373,7 +1373,7 @@ fun buildLoopPhi(ctypes, refs, lv: List<LoopRename>,
   let lvsv = RpStackVar(forceNth(ctypes, i), forceNthRename(lv, i).lrNew)
   let sources = concat(list1(OpPhiSource(entry, forceNth(refs, i))),
                        recurSourcesAt(recurSources, i))
-  ret OpPhi(lvsv, sources, List())
+  ret OpPhi(lvsv, sources, Dict())
 
 fun recurSourcesAt(recurSources: List<RecurSource>, i)
   ret map(recurSources, (rs) => OpPhiSource(rs.rsLabel, forceNth(rs.rsPhiIns, i)))
@@ -1411,7 +1411,7 @@ fun genRecurOn(rc: PeRecur, fl: FrLoop, r): GBundle
   # ported exactly (flagged in the report as a candidate suspected bug,
   # not fixed).
   ret GBundle(step.grBundle.gbStackVars,
-             concat(step.grBundle.gbOps, list2(OpLabel(exitLabel, List()), OpJump("loophead$" + tag, List()))),
+             concat(step.grBundle.gbOps, list2(OpLabel(exitLabel, Dict()), OpJump("loophead$" + tag, Dict()))),
              None,
              build(push(
                  builderFrom(step.grBundle.gbRecurSources),
@@ -1432,7 +1432,7 @@ fun genRecurArgsStep(l: ChainLink<PExpr>, r, ctypes, specs,
                      [terminal] phiIns)
   let ab = withPrefix(genExprTo(l.value, r, forceNth<Spec>(specs, i)), "recur" + String(i))
   let phiin = RpStackVar(forceNth(ctypes, i), "phiin$" + tag + "$" + String(k) + "$" + String(i))
-  let withMove = bundleJoin(bundle, bundleJoin(ab, bundleFull(list1(phiin), list1(OpMove(phiin, mustResult(ab), false, List())), None)))
+  let withMove = bundleJoin(bundle, bundleJoin(ab, bundleFull(list1(phiin), list1(OpMove(phiin, mustResult(ab), false, Dict())), None)))
   ret genRecurArgs(l.next, r, ctypes, specs, tag, k, i + 1, withMove,
                    push(phiIns, phiin))
 
@@ -1452,7 +1452,7 @@ fun genParallelExprs(pl: PeParallel, exprs: List<PExpr>, r): GBundle
   let resultVars = indexedStackVars(resultTypes, r, 0)
   let registerType = specGenerate(parallelResultTuple(resultTypes), r)
   let register = RpStackVar(registerType, "$par_result")
-  let parallelOp = OpParallelCall(map(fnBundles, (b) => mustResult(b)), resultVars, register, List())
+  let parallelOp = OpParallelCall(map(fnBundles, (b) => mustResult(b)), resultVars, register, Dict())
   let parallelBundle = GBundle(concat(list1(register), resultVars), list1(parallelOp), register, List(), List())
   ret bundleJoin(bundleJoinAll(fnBundles), parallelBundle)
 

@@ -49,7 +49,7 @@ fun cuNames(acc: StrSet, names: List<String>): StrSet => fold(names, acc, (s2, n
 fun cuOpLocals(acc: StrSet, op: Op): StrSet
   let reads = fold(opAllParams(op), acc,
                    (s2, q) => fold(rpFlatten(q, true), s2, cuAddLocal))
-  let saved = fold(opSavedVars(op), reads, cuAddLocal)
+  let saved = fold(values(opSavedVars(op)), reads, cuAddLocal)
   ret fold(cuWrites(op), saved, cuAddLocal)
 
 fun cuAddLocal(acc: StrSet, r: RParam): StrSet => match(r)
