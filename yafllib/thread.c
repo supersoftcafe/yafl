@@ -74,14 +74,16 @@ EXPORT int32_t thread_current_id(void) {
 static _Atomic(int_fast32_t) _queued_count = 0;
 static int_fast32_t          _backlog_limit = 0;   // set in _thread_init
 
-// Advisory backpressure signal for __parallel__ call sites: true while the
-// runnable backlog is below ~YAFL_TASK_BACKLOG (default 4) tasks per worker.
+// Advisory backpressure signal for __parallel__ call sites and [future]s: true
+// while the runnable backlog is below YAFL_TASK_BACKLOG (default 4) tasks per
+// worker — room for one more. YAFL_TASK_BACKLOG=0 never accepts: every fork
+// evaluates in place.
 // Callers fork new parallel work when it returns true and fall back to plain
 // chained evaluation when it returns false. Purely advisory — a stale answer
 // costs one extra fork or one extra sequential step, and recursive call sites
 // re-ask at every level.
 EXPORT bool thread_work_accepting(void) {
-    return atomic_load_explicit(&_queued_count, memory_order_relaxed) <= _backlog_limit;
+    return atomic_load_explicit(&_queued_count, memory_order_relaxed) < _backlog_limit;
 }
 
 // Push `task` onto `queue` and wake any consumer waiting on it.
@@ -263,14 +265,15 @@ static void _thread_init() {
     _thread_countdown_to_gc_start = thread_count;
 
     // Backpressure threshold: YAFL_TASK_BACKLOG (default 4) queued tasks per
-    // worker. Above this, thread_work_accepting() asks __parallel__ sites to
-    // evaluate sequentially instead of forking.
+    // worker. At this, thread_work_accepting() asks __parallel__ sites and
+    // [future]s to evaluate in place instead of forking; 0 means always.
     {
         int_fast32_t per_worker = 4;
         const char* env = getenv("YAFL_TASK_BACKLOG");
         if (env && *env) {
-            long n = strtol(env, NULL, 10);
-            if (n >= 1) per_worker = (int_fast32_t)n;
+            char* end;
+            long n = strtol(env, &end, 10);
+            if (*end == '\0' && n >= 0) per_worker = (int_fast32_t)n;
         }
         _backlog_limit = per_worker * (int_fast32_t)thread_count;
     }

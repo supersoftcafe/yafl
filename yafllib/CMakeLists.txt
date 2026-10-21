@@ -109,6 +109,10 @@ add_yafl_test(test_once)
 add_yafl_test(test_gc)
 add_yafl_test(test_io)
 add_yafl_test(test_task)
+# test_backlog_zero: YAFL_TASK_BACKLOG=0 closes the pool to new work — the
+# compilers' run-in-place / degrade-to-lazy tests rely on it.
+add_yafl_test(test_backlog_zero)
+set_tests_properties(test_backlog_zero PROPERTIES ENVIRONMENT "YAFL_TASK_BACKLOG=0")
 add_yafl_test(test_io_stress)
 add_yafl_test(test_gc_stress)
 add_yafl_test(test_gc_min)
