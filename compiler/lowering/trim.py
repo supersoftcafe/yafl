@@ -223,6 +223,19 @@ def function_reference_counts(app: Application) -> Counter[str]:
     return counts
 
 
+def recursive_functions(app: Application) -> frozenset[str]:
+    """Internal functions on a cycle of the reference graph: each reaches
+    itself, directly or through other functions, closures among them.
+    Inlining one only unrolls the recursion, a level per round, so no IR
+    inlining policy takes them. Built on the same `__scan_*` reference model
+    as the dead-code pass. Inlining a function that is on no cycle cannot
+    make one (each edge it adds was already a path through it), but the
+    graph changes between inlining rounds, so each round recomputes this."""
+    edges = {name: __scan_function(fn).functions for name, fn in app.functions.items()}
+    return frozenset(v for scc in langtools.strongly_connected_components(sorted(edges), edges)
+                     for v in scc if len(scc) > 1 or v in edges[v])
+
+
 def address_taken_functions(app: Application) -> frozenset[str]:
     """Internal functions whose ADDRESS escapes as a value: every reference
     except the callee slot of a direct call and a vtable slot (the virtual

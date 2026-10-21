@@ -22,11 +22,12 @@ from pyast.statement import ImportGroup
 CUTOFF_COMPLEXITY = 10
 
 
-def __do_inlining(fn: Function, others: dict[str, Function],
+def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozenset[str],
                   should_inline: Callable[[Function], bool], tag: str) -> Function:
     """Inline eligible call sites within `fn`. The structural guards (must be a
-    direct call to an internal global function with struct args, not a self-call,
-    not musttail, target non-empty and ParallelCall-free) are fixed; the policy
+    direct call to an internal global function with struct args, not
+    `recursive` — trim.recursive_functions, which covers a self-call — not
+    musttail, target non-empty and ParallelCall-free) are fixed; the policy
     `should_inline(target)` decides *which* eligible targets to pull in — size
     cutoff / `[inline(always)]` for the general pass, single-caller for the
     fold-away pass. `fn` is never an inlining SINK if it is `__entrypoint__` or
@@ -45,7 +46,7 @@ def __do_inlining(fn: Function, others: dict[str, Function],
         if (not isinstance(op, Call) or
                 not isinstance(op.function, GlobalFunction) or
                 not isinstance(op.parameters, NewStruct) or
-                fn.name == op.function.name or op.musttail or
+                op.function.name in recursive or op.musttail or
                 op.function.name not in others or
                 not (target := others[op.function.name]).ops or
                 # The size cutoff / `[inline(always)]` / single-caller decision.
@@ -108,12 +109,13 @@ def inline_small_functions(app: Application, inline_always: bool = True, epoch: 
     # Inline a small function (under the cutoff) always; inline an
     # `[inline(always)]` target regardless of size only when `inline_always` is
     # set (-O3), so a chain of marked stream `next` stages fuses into its
-    # consumer. The self-recursion/musttail guards in the engine still apply
+    # consumer. The recursion/musttail guards in the engine still apply
     # (loops/tail back-edges preserved, not unrolled).
     def policy(target: Function) -> bool:
         return (len(target.ops) < cutoff
                 or (inline_always and target.always_inline))
-    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"s{epoch}") for name, func in app.functions.items()}
+    recursive = trim.recursive_functions(app)
+    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, recursive, policy, f"s{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)
 
 
@@ -141,6 +143,7 @@ def inline_single_caller_functions(app: Application, sync_targets: set[str], epo
     def policy(target: Function) -> bool:
         return refcounts[target.name] == 1 and target.name in sync_targets
 
-    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, policy, f"c{epoch}") for name, func in app.functions.items()}
+    recursive = trim.recursive_functions(app)
+    functions: dict[str, Function] = {name: __do_inlining(func, app.functions, recursive, policy, f"c{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)
 
