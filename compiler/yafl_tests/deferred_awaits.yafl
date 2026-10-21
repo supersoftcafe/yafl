@@ -1,0 +1,40 @@
+# Deferred awaits: a call that may suspend is awaited where its result is
+# used, not where it is made — so calls whose results are not yet needed run
+# at the same time. Ordering, not timing, proves it here: each program can only
+# finish if an earlier call is still in flight when a later one starts.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::DeferredAwaits::FifoOpensMeet
+
+import System
+import System::IO
+import System::Test
+
+# Opening a FIFO for reading blocks until a writer opens it, and the other way
+# round. Both opens complete only if the read's open is still in flight when
+# the write's starts: its await is deferred to the match below. Awaited at the
+# call, it would wait for a writer that never comes.
+fun fifo(): System::String
+  let path = match(tempDir())
+    (d: System::String) => d + "/fifo"
+    (n: System::None)   => "/tmp/yafl-deferred-awaits-fifo"
+  ret match(System::IO::run("mkfifo", prepend<System::String>(path, List<System::String>())))
+    (made: System::IO::ProcessResult) => path
+    (e: IOError)                      => path
+
+fun program(): System::Int
+  let path = fifo()
+  let r = open_read(path)
+  let w = open_write(path, true)
+  ret match(r)
+    (ri: IO) => match(w)
+      (wi: IO)      => (ri.close(), wi.close()) |> (_c1, _c2) => 0
+      (e: IOError)  => ri.close() |> (_c) => 2
+    (e: IOError) => match(w)
+      (wi: IO)      => wi.close() |> (_c) => 1
+      (e2: IOError) => 3
+
+fun [test("fifo opens meet")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
