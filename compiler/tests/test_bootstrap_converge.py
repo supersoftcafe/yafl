@@ -63,8 +63,7 @@ _WHOLE_PROGRAMS = [
     ("stdlib+helloWorld",
      "".join(p.read_text() for p in stdlib_files()
              ) + (_REPO / "examples" / "helloWorld.yafl").read_text()),
-    # __parallel__ coverage: its type is the tuple of the callables' results,
-    # which only grounds when the callees resolve — i.e. whole-program.
+    # `[future]` functions and deferred awaits in a real program.
     ("stdlib+findstr",
      "".join(p.read_text() for p in stdlib_files()
              ) + (_REPO / "examples" / "findstr.yafl").read_text()),

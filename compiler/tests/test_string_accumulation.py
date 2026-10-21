@@ -43,7 +43,7 @@ class TestStringAccumulation(TestCase):
         self.assertTrue("str_append" in c_code or "str_concat_n" in c_code)
 
     def test_buffer_survives_compaction_across_a_suspension(self):
-        # The loop's piece comes from a function that forks, so the loop
+        # The loop's piece comes from [future] calls, so the loop
         # suspends between appends and its buffer is parked in a heap frame,
         # reachable from no stack. Compaction may relocate anything parked
         # like that — unless it is pinned — and the next in-place append then
@@ -52,8 +52,11 @@ class TestStringAccumulation(TestCase):
         # every cycle so the window is hit rather than hoped for.
         src = (
             "import System\n"
+            "fun [future] shown(i: Int): String\n"
+            "  ret String(i)\n"
             "fun piece(i: Int): String\n"
-            "  let (a, b) = __parallel__(() => String(i), () => String(i + 1))\n"
+            "  let a = shown(i)\n"
+            "  let b = shown(i + 1)\n"
             "  ret a + \",\" + b + \";\"\n"
             "fun plain(i: Int): String\n"
             "  ret String(i) + \",\" + String(i + 1) + \";\"\n"

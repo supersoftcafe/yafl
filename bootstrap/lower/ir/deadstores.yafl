@@ -2,8 +2,7 @@
 # StackVar assignments whose value is never read. A Move to an unread
 # StackVar drops entirely (unless keep — the side-effect flag); a Call whose
 # unread register would otherwise force a store keeps the call but clears the
-# register (recording the result type for emission); a ParallelCall whose
-# EVERY output is unread drops whole. Per-function fixpoint (dropping one
+# register (recording the result type for emission). Per-function fixpoint (dropping one
 # store can orphan another), then stack_var declarations no longer mentioned
 # in any op are pruned (cpPruneStackVars — Python's two passes share the same
 # reads-or-writes rule). Reads INCLUDE saved_vars — a var alive across a
@@ -68,7 +67,6 @@ fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
 fun dsStep(op, reads: Dict<String, Bool>): (op: Op|None, changed: Bool) => match(op)
   (m: OpMove)         => dsStepMove(m, reads)
   (c: OpCall)         => dsStepCall(c, reads)
-  (p: OpParallelCall) => dsStepParallel(p, reads)
   (o: Op)             => (op, false)
 
 fun dsStepMove(m: OpMove, reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
@@ -87,22 +85,3 @@ fun dsStepCall(c: OpCall, reads: Dict<String, Bool>): (op: Op|None, changed: Boo
         : (c, false)
       (o: RParam)      => (c, false)
     ()           => (c, false)
-
-fun dsStepParallel(p: OpParallelCall,
-                   reads: Dict<String, Bool>): (op: Op|None, changed: Bool)
-  let outputs = concat(dsOptList(p.parRegister), p.parResults)
-  ret !isEmpty(outputs) && dsAllUnread(chain(outputs), reads)
-    ? (None, true)
-    : (p, false)
-
-fun dsOptList(r: RParam|None) => match(r)
-  (x: RParam) => list1(x)
-  ()          => List()
-
-fun [tail] dsAllUnread(os: Chain<RParam>, reads: Dict<String, Bool>) => match(os)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(l.value)
-    (sv: RpStackVar) => dsIsRead(reads, sv.name)
-      ? false
-      : dsAllUnread(l.next, reads)
-    (o: RParam)      => dsAllUnread(l.next, reads)

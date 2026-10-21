@@ -17,7 +17,7 @@ either side of the SSA boundary.
 from __future__ import annotations
 
 from codegen.ops import (
-    Op, Move, Call, ParallelCall, NewObject, Return, Phi, JumpIf, SwitchJump,
+    Op, Move, Call, NewObject, Return, Phi, JumpIf, SwitchJump,
 )
 from codegen.param import RParam, StackVar, ObjectField
 
@@ -48,7 +48,7 @@ def op_publishes(op: Op, name: str) -> bool:
     Phi merge, or the async state saved across a suspension."""
     if any(sv.name == name for sv in op.saved_vars):
         return True
-    if isinstance(op, (Call, ParallelCall, Return, Phi)):
+    if isinstance(op, (Call, Return, Phi)):
         return any(sv.name == name for sv in op.get_live_vars()[0])
     if isinstance(op, Move):
         if bare_pointer_in(op.source, name):

@@ -17,7 +17,6 @@ set(SRC_FILES
     object.c
     gc_stats.c
     gc_debug.c
-    parallel.c
     primitive.c
     prof.c
     heapprof.c
@@ -76,7 +75,6 @@ set(TEST_SRC_FILES
     object.c
     gc_stats.c
     gc_debug.c
-    parallel.c
     primitive.c
     prof.c
     heapprof.c

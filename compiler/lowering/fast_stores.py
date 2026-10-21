@@ -22,7 +22,7 @@ bulk of the barriers in a self-compile.
 THE PROOF, per store `Move(ObjectField(pointer=StackVar n, …), src)`: on every
 path reaching it, `n` holds an object created by a `NewObject` in this function,
 and since that allocation nothing has run a safe point (any `Call`,
-`ParallelCall`, `NewObject` or `RuntimeInvoke`) and nothing has published the
+`NewObject` or `RuntimeInvoke`) and nothing has published the
 pointer (`lowering/escapes.py`).
 
 Runs LAST, after `async_lower` — which is what creates the state stores — and
@@ -58,7 +58,7 @@ import dataclasses
 from codegen.gen import Application
 from codegen.ir import Function
 from codegen.ops import (
-    Op, Move, Call, ParallelCall, NewObject, Return, ReturnVoid, Abort,
+    Op, Move, Call, NewObject, Return, ReturnVoid, Abort,
     Label, Jump, JumpIf, IfTask, AssertNotTask, SwitchJump, Phi,
 )
 from codegen.param import StackVar, ObjectField, RuntimeInvoke
@@ -81,7 +81,7 @@ def __kills_everything(op: Op) -> bool:
     """Can this op reach a GC safe point? An allocation polls, a call may
     allocate inside the callee, and a runtime helper is opaque. Any of them
     can open a cycle or relocate, which ends every window at once."""
-    if isinstance(op, (Call, ParallelCall, NewObject)):
+    if isinstance(op, (Call, NewObject)):
         return True
     if any(isinstance(p, RuntimeInvoke) for p in op.all_params()):
         return True

@@ -375,10 +375,6 @@ fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
   (x: OpReturnVoid)    => rddSaved(rddS(e, "oV;"), x.retVoidSavedVars)
   (x: OpAbort)         => rddLit(rddSaved(rddS(e, "oX;"), x.abortSavedVars), x.abortReason)
   (x: OpReturn)        => rddParam(rddSaved(rddS(e, "oR;"), x.returnSavedVars), cx, x.returnValue)
-  (x: OpParallelCall)  => rddParamOpt(rddParamList(rddParamList(rddSaved(rddS(e, "oP;"), x.parSavedVars),
-                                                                cx, x.parCalls),
-                                                   cx, x.parResults),
-                                      cx, x.parRegister)
   (x: OpPhi)           => rddSources(rddS(rddParam(rddSaved(rddS(e, "oH;"), x.phiSavedVars),
                                                    cx, x.phiTarget), "["),
                                      cx, chain(x.phiSources))

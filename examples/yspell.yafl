@@ -14,7 +14,7 @@
 # and queried millions of times — it promotes into the collector's old
 # generation and is never traced again by minor cycles — while candidate
 # generation allocates dozens of short-lived strings per unknown word, all of
-# which die young. Files are checked in parallel (`__parallel__`,
+# which die young. Files are checked in parallel (a `[future]` function,
 # divide-and-conquer over the file list) with reports collected and printed in
 # file order, so output stays deterministic.
 #
@@ -276,7 +276,7 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
 
 # ── parallel check over the file list ─────────────────────────────────────────
 
-fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String|FileError>, misspelt: Int)
+fun [future] checkFiles(dict: WordTree, files: List<String>): (reports: List<String|FileError>, misspelt: Int)
   fun joinResults(l: (reports: List<String|FileError>, misspelt: Int),
                   r: (reports: List<String|FileError>, misspelt: Int))
       : (reports: List<String|FileError>, misspelt: Int)
@@ -284,9 +284,8 @@ fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String|FileE
 
   fun checkSplit(): (reports: List<String|FileError>, misspelt: Int)
     let parts = splitHalf<String>(files)
-    let (left, right) = __parallel__(
-          () => checkFiles(dict, parts.left),
-          () => checkFiles(dict, parts.right))
+    let left = checkFiles(dict, parts.left)
+    let right = checkFiles(dict, parts.right)
     ret joinResults(left, right)
 
   fun checkFrom(first: String): (reports: List<String|FileError>, misspelt: Int)

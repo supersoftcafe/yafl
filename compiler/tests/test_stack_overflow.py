@@ -41,12 +41,13 @@ class TestStackOverflow(TestCase):
         self.assertIn("stack overflow", err)
 
     def test_worker_thread_overflow_reports_cleanly(self):
-        # The recursion runs inside a __parallel__ branch, i.e. on a worker
+        # The recursion runs inside a [future] function, i.e. on a worker
         # thread — the original findstr crash site.
         src = _DEEP + (
+            "fun [future] deepLater(n: System::Int): System::Int\n"
+            "  ret deep(n)\n"
             "fun main(): System::Int\n"
-            "  let (a, b) = __parallel__(() => deep(100000000), () => 0)\n"
-            "  ret a + b\n"
+            "  ret deepLater(100000000)\n"
         )
         rc, err = self._run(src)
         self.assertEqual(134, rc, f"expected clean overflow exit; stderr:\n{err}")

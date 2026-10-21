@@ -10,7 +10,7 @@ import pyast.resolver as g
 import pyast.typespec as t
 import lowering.trim as trim
 from codegen.typedecl import Type, Struct
-from codegen.ops import Call, Op, Move, Label, Return, Jump, ParallelCall
+from codegen.ops import Call, Op, Move, Label, Return, Jump
 from codegen.gen import Application
 from codegen.param import GlobalFunction, NewStruct, StackVar
 from codegen.ir import Function
@@ -27,7 +27,7 @@ def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozense
     """Inline eligible call sites within `fn`. The structural guards (must be a
     direct call to an internal global function with struct args, not
     `recursive` — trim.recursive_functions, which covers a self-call — not
-    musttail, target non-empty and ParallelCall-free) are fixed; the policy
+    musttail, target non-empty and not `[future]`) are fixed; the policy
     `should_inline(target)` decides *which* eligible targets to pull in — the
     size cutoff, or `[inline(always)]`. `fn` is never an inlining SINK if it is `__entrypoint__` or
     `bypass_async`: async_lower passes those through untouched, so a suspending
@@ -52,12 +52,7 @@ def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozense
                 # entry yield would hand the rest of the CALLER over instead.
                 target.future or
                 # The size cutoff / `[inline(always)]` decision.
-                not should_inline(target) or
-                # __entrypoint__ is hand-built and skipped by async_lower;
-                # inlining a body with ParallelCall here would leave that op
-                # un-lowered at codegen. Refuse inlining of any body that
-                # contains ParallelCall to keep the lowering pipeline coherent.
-                any(isinstance(o, ParallelCall) for o in target.ops)):
+                not should_inline(target)):
             new_ops.append(op)
             return # Not a candidate for inlining
 

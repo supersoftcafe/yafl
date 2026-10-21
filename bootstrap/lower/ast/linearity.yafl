@@ -439,7 +439,6 @@ fun [tail] linCount(x, env, r, acc): LinOut => match(x)
   (mt: PeMatch)  => countMatch(mt, env, r, acc)
   (bk: PeBlock)  => countBlock(bk, env, r, acc)
   (lm: PeLambda) => countLambda(lm, env, r, acc)
-  (pl: PeParallel) => countParallel(pl, env, r, acc)
   (o: PeLiteral) => linZero(acc)       # literals carry no linear value
   (o: PeLowered) => linZero(acc)       # literals carry no linear value
 
@@ -816,12 +815,6 @@ fun checkLambdaScopeIn(lm: PeLambda, captured: LinEnv, r, acc)
   ret analyzeScope(lm.lamBody, env, lm.pelLine,
                    localScope(params, r), r, acc)
 
-fun countParallel(pl: PeParallel, env, r,
-                  acc): LinOut
-  let acc2 = checkCapture(pl.parParams, env, pl.pepLine, r, acc)
-  let o = linCount(pl.parParams, env, r, acc2)
-  ret linZero(o.loErrs)
-
 # A blind name scan — sound because bindings carry path-unique names.
 fun checkCapture(b, env: LinEnv, lr, r: Resolver,
                  acc): Set<PErr> => captureErrs(chain(sort(capturedIn(b, env))), lr, acc)
@@ -900,7 +893,6 @@ fun instExpr(x, r, acc): Set<PErr> => match(x)
                               instSpecOpt(cv.convTarget, r, acc))
   (wx: PeWith)   => instExpr(wx.withRepls, r,
                              instExpr(wx.withSubject, r, acc))
-  (pl: PeParallel) => instExpr(pl.parParams, r, acc)
   (o: PeLiteral) => acc
   (o: PeLowered) => acc
   (o: PeNewEnum) => acc

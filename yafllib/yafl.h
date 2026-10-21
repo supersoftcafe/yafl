@@ -1445,28 +1445,12 @@ EXTERN object_t* task_complete_deferred(object_t* self);
 // the pool is not accepting, to run the body in place.
 EXTERN object_t* future_yield(object_t* self);
 
-// Fixed-prefix layout for compiler-generated parallel join tasks.  Mirrors
-// task_t through `next`, then adds `remaining` for the join counter.  Each
-// per-callsite par_task struct (emitted by async_lower._par_task_object) is a
-// flat extension of this prefix.
-typedef struct {
-    vtable_t*               type;
-    _Atomic(int32_t)        state;
-    int32_t                 thread_id;
-    fun_t                   callback;
-    _Atomic(struct task_s*) next;
-    _Atomic(int32_t)        remaining;
-} task_par_base_t;
-
-// Atomically decrement remaining; call task_complete when it reaches 0.
-EXTERN object_t* task_par_decrement(object_t* par_task);
-
 // Post task to its designated worker thread (task->thread_id).
 EXTERN void thread_work_post(object_t* task);
 // Round-robin post across workers — use when spreading parallel work.
 EXTERN object_t* thread_work_post_parallel(object_t* task);
 // Advisory backpressure: true while the runnable backlog is small enough that
-// __parallel__ sites should fork; false asks them to evaluate sequentially.
+// [future]s should fork; false asks them to evaluate in place.
 // Threshold = YAFL_TASK_BACKLOG (default 4) queued tasks per worker.
 EXTERN bool thread_work_accepting(void);
 // Create an ad-hoc dispatch task from a fun_t and post it to the current thread.

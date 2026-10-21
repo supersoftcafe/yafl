@@ -11,10 +11,10 @@
 # in its place in the walk, and the search carries on. Exit status is 0 when
 # everything was read and written, 1 when anything failed, 2 for usage.
 #
-# The point of the example is to give `__parallel__` a real workout: the list of
-# files is searched divide-and-conquer, with the two halves handed to separate
-# workers at every level of the split. (Later, once automatic parallelisation
-# lands, the explicit `__parallel__` here can be removed.)
+# The point of the example is to give `[future]` functions a real workout: the
+# list of files is searched divide-and-conquer, and `searchFiles` is a
+# `[future]`, so the two halves are handed to separate workers at every level
+# of the split.
 #
 import System
 import System::IO
@@ -56,7 +56,7 @@ fun gatherFiles(path: String): List<String|FileError>
 
 # ── search (parallel divide-and-conquer over the file list) ───────────────────
 
-fun searchFiles(needle: String, files: List<String|FileError>): List<String|FileError>
+fun [future] searchFiles(needle: String, files: List<String|FileError>): List<String|FileError>
   # Strip a trailing line terminator: readLine returns lines verbatim (with their
   # '\n'/'\r\n'), and the output adds its own.
   fun chomp(line: String): String
@@ -115,13 +115,13 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
       (err: FileError) => prepend<String|FileError>(err, List<String|FileError>())
 
   # Divide the list (`splitHalf` finds the midpoint without a length) and search
-  # the halves in parallel. Concatenating left before right keeps walk order,
-  # whichever half finishes first.
+  # the halves in parallel: both calls start before either result is used.
+  # Concatenating left before right keeps walk order, whichever half finishes
+  # first.
   fun searchSplit(): List<String|FileError>
     let parts = splitHalf<String|FileError>(files)
-    let (left, right) = __parallel__(
-          () => searchFiles(needle, parts.left),
-          () => searchFiles(needle, parts.right))
+    let left = searchFiles(needle, parts.left)
+    let right = searchFiles(needle, parts.right)
     ret concat<String|FileError>(left, right)
 
   # At least one entry: with a second, split and recurse; otherwise search it.

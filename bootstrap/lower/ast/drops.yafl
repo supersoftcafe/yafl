@@ -258,9 +258,6 @@ fun drExpr(x, wheres: List<Spec>, r,
                     ? PeConvert(o.deExpr, cv.convTarget, cv.pecvLine)
                     : x,
                   o.deChanged)
-  (pl: PeParallel) => drExpr(pl.parParams, wheres, r, insts)
-    |> (o) => DrE(o.deChanged ? PeParallel(o.deExpr, pl.pepLine) : x,
-                  o.deChanged)
   (ne: PeNewEnum) => drFieldArgs(ne, wheres, r, insts)
   (o: PeLiteral) => DrE(x, false)
   (o: PeLowered) => DrE(x, false)
@@ -778,8 +775,6 @@ fun drFixExpr(x, let2: PsLet)
     (cv: PeConvert) => drFixExpr(cv.convInner, let2)
       |> (o) => DrBx(PeConvert(o.bxExpr, cv.convTarget, cv.pecvLine),
                      o.bxDid, o.bxOk)
-    (pl: PeParallel) => drFixExpr(pl.parParams, let2)
-      |> (o) => DrBx(PeParallel(o.bxExpr, pl.pepLine), o.bxDid, o.bxOk)
     (ne: PeNewEnum) => drFixFieldArgs(ne, let2)
     (o: PeLiteral) => DrBx(x, false, true)
     (o: PeLowered) => DrBx(x, false, true)

@@ -152,7 +152,6 @@ fun rwExprKids(x, w: Rw): PExpr => match(x)
                               qqFallback = rwExpr(qq.qqFallback, w))
   (wx: PeWith)   => with wx(withSubject = rwExpr(wx.withSubject, w),
                             withRepls   = rwExpr(wx.withRepls, w))
-  (pl: PeParallel) => with pl(parParams = rwExpr(pl.parParams, w))
   (lp: PeLoop)   => with lp(loopBody   = rwExpr(lp.loopBody, w),
                             loopParams = rwExprs(lp.loopParams, w))
   (rc: PeRecur)  => with rc(recArgs = rwExprs(rc.recArgs, w))
@@ -367,7 +366,6 @@ fun foldExpr<T>(x, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                                  foldExpr(qq.qqSubject, f, fx, acc2))
     (wx: PeWith)   => foldExpr(wx.withRepls, f, fx,
                                foldExpr(wx.withSubject, f, fx, acc2))
-    (pl: PeParallel) => foldExpr(pl.parParams, f, fx, acc2)
     (ne: PeNewEnum) => foldSpecs(chain(ne.neTypeParams), f, fx,
                          fold(ne.fieldArgs, acc2, (a3, fa) =>
                             foldExpr(fa.faValue, f, fx, a3)))
@@ -664,8 +662,6 @@ fun rwnExprKids(x, w: RwN, sc, n) => match(x)
     |> (sv) => (sv, rwnExpr(wx.withRepls, w, sc, sv.rneN))
     |> (sv, rv) => RwNE(rv.rneN, PeWith(sv.rneExpr, rv.rneExpr,
                                         wx.pewLine))
-  (pl: PeParallel) => rwnExpr(pl.parParams, w, sc, n)
-    |> (p) => RwNE(p.rneN, PeParallel(p.rneExpr, pl.pepLine))
   (ne: PeNewEnum) => rwnFieldArgs(chain(ne.fieldArgs), w, sc, n, builder())
     |> (fas) => RwNE(fas.rnfN, PeNewEnum(ne.rootName, ne.leafName,
                                          fas.rnfArgs, ne.neTypeParams,
@@ -806,7 +802,6 @@ fun fasExpr<T>(x, f: (:T, :Spec): T, acc: T): T => match(x)
   (cv: PeConvert) => fasSpec(cv.convTarget, f, fasExpr(cv.convInner, f, acc))
   (qq: PeCoalesce) => fasExpr(qq.qqFallback, f, fasExpr(qq.qqSubject, f, acc))
   (wx: PeWith)   => fasExpr(wx.withRepls, f, fasExpr(wx.withSubject, f, acc))
-  (pl: PeParallel) => fasExpr(pl.parParams, f, acc)
   (lp: PeLoop)    => fasExprs(chain(lp.loopParams), f, fasExpr(lp.loopBody, f, acc))
   (rc: PeRecur)   => fasExprs(chain(rc.recArgs), f, acc)
   (lz: PeLazy)    => fasSpec(lz.lzTarget, f, acc)

@@ -72,8 +72,6 @@ def _mentioned_locals(fn: Function) -> set[str]:
                         getattr(op, "task_lhs", None), getattr(op, "call_id_lhs", None)):
             if isinstance(written, p.StackVar):
                 names.add(written.name)
-        if isinstance(op, o.ParallelCall):
-            names |= {v.name for v in op.results}
     return names
 
 

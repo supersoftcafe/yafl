@@ -62,7 +62,6 @@ fun cuWrites(op: Op): List<RParam> => match(op)
   (x: OpNewObject)    => prepend(x.newObjRegister, List())
   (x: OpCall)         => cuOpt(x.callRegister, List())
   (x: OpIfTask)       => prepend(x.taskLhs, prepend(x.callIdLhs, List()))
-  (x: OpParallelCall) => cuOpt(x.parRegister, x.parResults)
   (o: Op)             => List()
 
 fun cuOpt(r: RParam|None, rest: List<RParam>): List<RParam> => match(r)

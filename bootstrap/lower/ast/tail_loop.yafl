@@ -163,7 +163,6 @@ fun tlCountSelf(x, fName, n): Int
     (ar: PeArrayRead) => tlCountSelf(ar.arrIndex, fName,
                                      tlCountSelf(ar.arrObj, fName, n2))
     (cv: PeConvert) => tlCountSelf(cv.convInner, fName, n2)
-    (pl: PeParallel) => tlCountSelf(pl.parParams, fName, n2)
     (ne: PeNewEnum) => fold(ne.fieldArgs, n2, (a2, fa) =>
                             tlCountSelf(fa.faValue, fName, a2))
     (o: PeLiteral) => n2

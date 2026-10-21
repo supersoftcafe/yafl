@@ -81,7 +81,6 @@ fun frExpr(x, exclude: List<String>, acc): Set<String> => match(x)
   (cv: PeConvert) => frExpr(cv.convInner, exclude, acc)
   (wx: PeWith)   => frExpr(wx.withRepls, exclude,
                            frExpr(wx.withSubject, exclude, acc))
-  (pl: PeParallel) => frExpr(pl.parParams, exclude, acc)
   (lp: PeLoop)   => frExpr(lp.loopBody, exclude,
                            frExprs(chain(lp.loopParams), exclude, acc))
   (rc: PeRecur)  => frExprs(chain(rc.recArgs), exclude, acc)
@@ -257,7 +256,6 @@ fun rcmExpr(x, m: ThisMap) => match(x)
                                cv.pecvLine)
   (wx: PeWith)   => PeWith(rcmExpr(wx.withSubject, m),
                            rcmExpr(wx.withRepls, m), wx.pewLine)
-  (pl: PeParallel) => PeParallel(rcmExpr(pl.parParams, m), pl.pepLine)
   (lp: PeLoop)   => PeLoop(rcmExpr(lp.loopBody, m),
                            rcmExprs(chain(lp.loopParams), m,
                                     List()),
@@ -1196,7 +1194,6 @@ fun rnmExpr(x, m: ThisMap) => match(x)
                                cv.pecvLine)
   (wx: PeWith)   => PeWith(rnmExpr(wx.withSubject, m),
                            rnmExpr(wx.withRepls, m), wx.pewLine)
-  (pl: PeParallel) => PeParallel(rnmExpr(pl.parParams, m), pl.pepLine)
   (lp: PeLoop)   => PeLoop(rnmExpr(lp.loopBody, m),
                            rnmExprs(chain(lp.loopParams), m,
                                     List()),

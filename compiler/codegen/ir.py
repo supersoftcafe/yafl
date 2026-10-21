@@ -270,7 +270,7 @@ class Object:
     comment: str = ""
     is_foreign: bool = False
     # True for objects MUTATED after construction (state machines, task
-    # subtypes, par_tasks, lazy stubs). The GC places them on mutable pages,
+    # subtypes, lazy stubs). The GC places them on mutable pages,
     # which are exempt from compaction — relocating an object that is still
     # being written loses the writes that land in the stale copy. Ordinary
     # YAFL objects are immutable after construction and stay compactable.

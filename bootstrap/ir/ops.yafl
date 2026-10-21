@@ -56,7 +56,6 @@ enum Op
   enum OpReturnVoid(retVoidSavedVars: Dict<String, RParam>)
   enum OpAbort(abortReason: String, abortSavedVars: Dict<String, RParam>)
   enum OpReturn(returnValue: RParam, returnSavedVars: Dict<String, RParam>)
-  enum OpParallelCall(parCalls: List<RParam>, parResults: List<RParam>, parRegister: RParam|None, parSavedVars: Dict<String, RParam>)
   enum OpPhi(phiTarget: RParam, phiSources: List<OpPhiSource>, phiSavedVars: Dict<String, RParam>)
   # --profile instrumentation (ops.py ProfEnter/ProfLeave). Injected by
   # cgFunctionInstrumentProfile AFTER the emission cleanup chain, so no
@@ -82,7 +81,6 @@ fun opSavedVars(op): Dict<String, RParam> => match(op)
   (x: OpReturnVoid) => x.retVoidSavedVars
   (x: OpAbort) => x.abortSavedVars
   (x: OpReturn) => x.returnSavedVars
-  (x: OpParallelCall) => x.parSavedVars
   (x: OpPhi) => x.phiSavedVars
   (x: OpProfEnter) => x.profEnterSavedVars
   (x: OpProfLeave) => x.profLeaveSavedVars
@@ -103,7 +101,6 @@ fun opTestParams(op, pred) => match(op)
   (x: OpNewObject)    => false
   (x: OpReturnVoid)   => false
   (x: OpAbort)        => false
-  (x: OpParallelCall) => false
   (x: OpPhi)          => false
   (x: OpProfEnter)    => false
   (x: OpProfLeave)    => false
@@ -126,7 +123,6 @@ fun opAllParams(op) => match(op)
   (x: OpNewObject) => opAllParamsNewObject(x)
   (x: OpCall) => opAllParamsCall(x)
   (x: OpReturn) => rpFlatten(x.returnValue, true)
-  (x: OpParallelCall) => opAllParamsParallel(x)
   (x: OpPhi) => opAllParamsPhi(x)
   (x: OpAwait) => concat(rpFlatten(x.awaitRegister, false), rpFlatten(x.awaitSource, true))
   (x: OpLabel)      => List()
@@ -150,11 +146,6 @@ fun opAllParamsCall(x: OpCall)
 fun opAllParamsCallRegister(register: RParam|None) => match(register)
   (r: RParam) => rpFlatten(r, false)
   ()          => List()
-
-fun opAllParamsParallel(x: OpParallelCall)
-  let reads = fold(x.parCalls, List(), (acc, c) => concat(acc, rpFlatten(c, true)))
-  let writes = fold(x.parResults, List(), (acc, r) => concat(acc, rpFlatten(r, false)))
-  ret concat(reads, concat(writes, opAllParamsCallRegister(x.parRegister)))
 
 fun opAllParamsPhi(x: OpPhi)
   let sourceParams = fold(x.phiSources, List(), (acc, s) => concat(acc, rpFlatten(s.sourceValue, true)))
@@ -181,9 +172,6 @@ fun opRenameVars(op, renames: List<RpRename>) => match(op)
   (x: OpAwait) => OpAwait(rpRenameVars(x.awaitRegister, renames), rpRenameVars(x.awaitSource, renames),
                           x.awaitSavedVars)
   (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
-  (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c) => rpRenameVars(c, renames)),
-                                        map(x.parResults, (r) => rpRenameVars(r, renames)),
-                                        opRenameVarsOpt(x.parRegister, renames), x.parSavedVars)
   (x: OpPhi) => OpPhi(rpRenameVars(x.phiTarget, renames),
                       map(x.phiSources, (s) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
                       x.phiSavedVars)
@@ -216,9 +204,6 @@ fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op => match(op)
   (x: OpReturn) => with x(returnValue = rpReplaceParams(x.returnValue, replacer))
   (x: OpAwait) => with x(awaitRegister = rpReplaceParams(x.awaitRegister, replacer),
                          awaitSource   = rpReplaceParams(x.awaitSource, replacer))
-  (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c) => replacer(c)),
-                                parResults = map(x.parResults, (r) => replacer(r)),
-                                parRegister = opReplaceParamsRegisterDirect(x.parRegister, replacer))
   (x: OpPhi) => with x(phiTarget = replacer(x.phiTarget),
                        phiSources = map(x.phiSources,
                                         (s) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
@@ -233,13 +218,6 @@ fun opReplaceParamsOpt(o: RParam|None, replacer): RParam|None => match(o)
   (v: RParam) => rpReplaceParams(v, replacer)
   ()          => None
 
-# ParallelCall.replace_params calls `replacer(r)` DIRECTLY on each element
-# (NOT `r.replace_params(replacer)`) — matches Python exactly.
-fun opReplaceParamsRegisterDirect(o: RParam|None, replacer: (:RParam): RParam): RParam|None
-  ret match(o)
-    (v: RParam) => replacer(v)
-    ()          => None
-
 # ── get_live_vars() -> (reads, writes) ──────────────────────────────────────
 
 fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>) => match(op)
@@ -251,7 +229,6 @@ fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>) => match(op)
   (x: OpNewObject) => opGetLiveVarsNewObject(x)
   (x: OpCall) => opGetLiveVarsCall(x)
   (x: OpReturn) => (rpGetLiveVars(x.returnValue), List())
-  (x: OpParallelCall) => opGetLiveVarsParallel(x)
   (x: OpPhi) => opGetLiveVarsPhi(x)
   (x: OpAwait) => (list1(x.awaitSource), list1(x.awaitRegister))
   (x: OpLabel)      => (List(), List())
@@ -284,13 +261,6 @@ fun opGetLiveVarsCallRegister(live: List<RParam>, r): (reads: List<RParam>, writ
   ret match(r)
     (sv: RpStackVar) => (live, dead)
     (o: RParam)       => (rpStackVarUnion(live, dead), List())
-
-fun opGetLiveVarsParallel(x: OpParallelCall): (reads: List<RParam>, writes: List<RParam>)
-  let reads = fold(x.parCalls, List(), (acc, c) => rpStackVarUnion(acc, rpGetLiveVars(c)))
-  let writes = fold(x.parResults, List(), (acc, r) => rpStackVarUnion(acc, list1(r)))
-  ret match(x.parRegister)
-    (r: RParam) => (reads, rpStackVarUnion(writes, list1(r)))
-    ()           => (reads, writes)
 
 fun opGetLiveVarsPhi(x: OpPhi): (reads: List<RParam>, writes: List<RParam>)
   let reads = fold(x.phiSources, List(), (acc, s) => rpStackVarUnion(acc, rpGetLiveVars(s.sourceValue)))
@@ -331,7 +301,6 @@ fun opToC(op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntr
   (x: OpReturnVoid) => ("    return;\n", cache)
   (x: OpAbort) => opToCAbort(x, cache)
   (x: OpReturn) => opToCReturn(x, cache)
-  (x: OpParallelCall) => ("", cache)   # unreachable: async_lower must remove ParallelCall before codegen
   (x: OpPhi) => ("", cache)            # unreachable: from_ssa must lower Phi to Moves before codegen
   (x: OpAwait) => ("", cache)          # unreachable: async_lower replaces every Await
   (x: OpProfEnter) => ("    yafl_prof_enter(" + String(x.profEnterFnId) + "u);\n", cache)
@@ -531,7 +500,6 @@ fun opReadVarNames(op) => match(op)
   (c: OpCall)          => concat(concat(rpReadVarNames(c.callFunction), rpReadVarNames(c.callParameters)),
                                  rpOptTargetReadNames(c.callRegister))
   (r: OpReturn)        => rpReadVarNames(r.returnValue)
-  (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadVarNames(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadVarNames(s2.sourceValue)))
   (aw: OpAwait)        => rpReadVarNames(aw.awaitSource)
   (x: OpLabel)      => List()
@@ -580,7 +548,6 @@ fun opWithSavedVars(op, sv: Dict<String, RParam>) => match(op)
   (x: OpReturnVoid)   => OpReturnVoid(sv)
   (x: OpAbort)        => OpAbort(x.abortReason, sv)
   (x: OpReturn)       => OpReturn(x.returnValue, sv)
-  (x: OpParallelCall) => OpParallelCall(x.parCalls, x.parResults, x.parRegister, sv)
   (x: OpPhi)          => OpPhi(x.phiTarget, x.phiSources, sv)
   (x: OpProfEnter)    => OpProfEnter(x.profEnterFnId, sv)
   (x: OpProfLeave)    => OpProfLeave(sv)
@@ -615,7 +582,6 @@ fun opReadStackVars(op) => match(op)
   (c: OpCall)          => concat(concat(rpReadStackVars(c.callFunction), rpReadStackVars(c.callParameters)),
                                  rpOptTargetReadStackVars(c.callRegister))
   (r: OpReturn)        => rpReadStackVars(r.returnValue)
-  (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadStackVars(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadStackVars(s2.sourceValue)))
   (aw: OpAwait)        => rpReadStackVars(aw.awaitSource)
   (x: OpLabel)      => List()

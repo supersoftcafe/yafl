@@ -10,7 +10,7 @@ from typing import Iterable
 
 import langtools
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, AssertNotTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, AssertNotTask, Jump, NewObject, SwitchJump, Abort, Phi
 from codegen.ir import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, Float, RParam, \
@@ -136,9 +136,6 @@ def __scan_op(op: Op) -> _scan_sets:
 
         case Abort():
             return _scan_sets()
-
-        case ParallelCall():
-            return reduce(lambda a, b: a | b, (__scan_rparam(c) for c in op.calls), _scan_sets())
 
         case Phi():
             return reduce(lambda a, b: a | b, (__scan_rparam(v) for _, v in op.sources), __scan_rparam(op.target))

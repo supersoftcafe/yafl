@@ -340,12 +340,6 @@ class _Checker:
             self._check_lambda(expr, resolver)
             return Counter()
 
-        if isinstance(expr, e.ParallelExpression):
-            for sub in expr.exprs:
-                self._check_capture(sub, env, expr.line_ref)
-                self._count(sub, env, resolver)
-            return Counter()
-
         # Literals carry no linear value. Any other node is unexpected —
         # fail loudly rather than silently miss a possible consumption.
         if isinstance(expr, (e.StringExpression, e.IntegerExpression,

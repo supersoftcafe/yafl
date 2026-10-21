@@ -566,12 +566,6 @@ def __to_paren_expr(value: e.Expression) -> e.Expression:
     return value
 
 
-def __to_parallel_expr(value: e.Expression, line_ref: p.LineRef) -> e.Expression:
-    assert isinstance(value, e.TupleExpression)
-    exprs = [entry.value for entry in value.expressions]
-    return e.ParallelExpression(line_ref, exprs)
-
-
 def __to_expr_lambda(result: p.Result[tuple[list[s.LetStatement], e.Expression]], tokens: list[p.Token]) -> p.Result[e.Expression]:
     params, expression = result.value
     params2 = s.DestructureStatement(result.line_ref, '_', None, {}, (), None, None, params)
@@ -988,10 +982,8 @@ __parse_match_arm = __parse_match_arm_literal | __parse_match_arm_destructure
 __parse_match_subject = p.requires(p.sym("("), p.delimited_list(__parse_expression, ",") & p.discard_sym(")"), "invalid match subject")
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression").build(__to_match_expression)
 
-__parse_parallel = p.requires(p.sym("__parallel__"), __parse_expr_tuple, "invalid use of __parallel__").build(__to_parallel_expr)
-
 __parse_paren_expr = __parse_expr_tuple.map(__to_paren_expr)
-__parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_match | __parse_parallel | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
+__parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 # Postfix operators form ONE left-associative chain so dot/call/index interleave
 # freely: `f().g()`, `a().b`, `m()[0].x`. `.` is only ever member access (floats

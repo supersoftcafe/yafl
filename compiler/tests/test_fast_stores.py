@@ -23,8 +23,15 @@ import re
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_c
 
+from codegen.gen import Application
+from codegen.ir import Function
+from codegen.ops import Move, NewObject, ReturnVoid
+from codegen.param import Integer, NewStruct, ObjectField, RuntimeInvoke, StackVar
+from codegen.typedecl import DataPointer, Int, Struct, Void
+from lowering.fast_stores import mark_fast_stores
 
-# `both` suspends at a `__parallel__` with two POINTER locals live across it,
+
+# `both` suspends on two `[future]` calls with two POINTER locals live across it,
 # so its state object is allocated at `$asynccommon` and then filled with
 # `prefix`/`suffix` (trailing array slots) and `my_task` (an inline field).
 # The locals are Int — a single pointer word (bigint). A String is a two-word
@@ -36,10 +43,14 @@ import System
 fun [impure] work(s: System::Int, n: System::Int32): System::Int
   ret n <= 0i32 ? s : work(s + 1, n - 1i32)
 
+fun [impure, future] later(s: System::Int): System::Int
+  ret work(s, 3i32)
+
 fun [impure] both(a: System::Int, b: System::Int): System::Int
   let prefix = work(a, 2i32)
   let suffix = work(b, 2i32)
-  let (l, r) = __parallel__(() => work(a, 3i32), () => work(b, 3i32))
+  let l = later(a)
+  let r = later(b)
   ret prefix + l + r + suffix
 
 fun main(): System::Int
@@ -113,13 +124,24 @@ class TestFastStores(TestCase):
                         "the resume path lost a barrier it must keep")
 
     def test_an_escaping_object_keeps_its_barrier(self):
-        """`task_init(_sv_par_task)` takes the fresh object as an argument, so
-        the callee may retain it and the call is a safe point. The closure
-        stores after it keep their barriers."""
-        fork = [blk for blk in _emit(2).split("\n}\n") if "_sv_par_task" in blk]
-        self.assertTrue(fork, "no parallel fork block in the emitted C")
-        self.assertTrue(any(_barriers_on(blk, "_sv_par_task") for blk in fork),
-                        "a store after a call that took the pointer lost its barrier")
+        """A runtime call that takes the fresh object as an argument may retain
+        it, and is a safe point: the store after it keeps its barrier, while
+        the one before it loses it."""
+        box = StackVar(DataPointer(), "$box")
+        def store(value: int) -> Move:
+            return Move(ObjectField(Int(32), box, "Box", "v", None), Integer(value, 32))
+        ops = (NewObject("Box", box),
+               store(1),
+               Move(StackVar(DataPointer(), "$discard"),
+                    RuntimeInvoke("task_init", NewStruct((("task", box),)), DataPointer())),
+               store(2),
+               ReturnVoid())
+        fn = Function(name="f", params=Struct((("this", DataPointer()),)), result=Void(),
+                      stack_vars=Struct((("$box", DataPointer()), ("$discard", DataPointer()))),
+                      ops=ops)
+        marked = mark_fast_stores(Application(functions={"f": fn})).functions["f"].ops
+        self.assertEqual([True, False], [op.target.fresh for op in marked
+                                         if isinstance(op, Move) and isinstance(op.target, ObjectField)])
 
     def test_o0_is_unchanged(self):
         """The pass is gated at -O1; -O0 keeps today's codegen exactly."""

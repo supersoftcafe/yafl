@@ -74,7 +74,7 @@ EXPORT int32_t thread_current_id(void) {
 static _Atomic(int_fast32_t) _queued_count = 0;
 static int_fast32_t          _backlog_limit = 0;   // set in _thread_init
 
-// Advisory backpressure signal for __parallel__ call sites and [future]s: true
+// Advisory backpressure signal for [future] functions and lets: true
 // while the runnable backlog is below YAFL_TASK_BACKLOG (default 4) tasks per
 // worker — room for one more. YAFL_TASK_BACKLOG=0 never accepts: every fork
 // evaluates in place.
@@ -265,8 +265,8 @@ static void _thread_init() {
     _thread_countdown_to_gc_start = thread_count;
 
     // Backpressure threshold: YAFL_TASK_BACKLOG (default 4) queued tasks per
-    // worker. At this, thread_work_accepting() asks __parallel__ sites and
-    // [future]s to evaluate in place instead of forking; 0 means always.
+    // worker. At this, thread_work_accepting() asks [future]s to evaluate in
+    // place instead of forking; 0 means always.
     {
         int_fast32_t per_worker = 4;
         const char* env = getenv("YAFL_TASK_BACKLOG");

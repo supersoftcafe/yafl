@@ -29,7 +29,6 @@ from pyast.expression.builtin_op import BuiltinOpExpression
 from pyast.expression.call import CallExpression
 from pyast.expression.new import NewExpression, NewEnumExpression
 from pyast.expression.lambda_expr import LambdaExpression
-from pyast.expression.parallel import ParallelExpression
 from pyast.expression.block import BlockExpression
 from pyast.expression.ternary import TernaryExpression
 from pyast.expression.with_expr import WithExpression

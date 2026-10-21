@@ -135,9 +135,9 @@ fun runChurn(): System::Int
 # ── par: four workers on one cache ───────────────────────────────────────────
 # One memo shared by every worker, each sweeping the key space from a
 # different offset with a stride that keeps them colliding in the upper
-# levels of the trie. Nested __parallel__ gives four-way work.
+# levels of the trie. Nested [future] calls give four-way work.
 
-fun parWorker(memo: (:System::Int): System::Int, base: System::Int,
+fun [future] parWorker(memo: (:System::Int): System::Int, base: System::Int,
               rounds: System::Int): System::Int
   fun [tail] loop(i: System::Int, acc: System::Int): System::Int
     ret i >= rounds
@@ -145,19 +145,17 @@ fun parWorker(memo: (:System::Int): System::Int, base: System::Int,
       : loop(i + 1, (acc + memo((base + i * 7) % parKeys)) % modulus)
   ret loop(0, 0)
 
-fun parPair(memo: (:System::Int): System::Int, a: System::Int,
+fun [future] parPair(memo: (:System::Int): System::Int, a: System::Int,
             b: System::Int, rounds: System::Int): System::Int
-  let (l, r) = __parallel__(
-        () => parWorker(memo, a, rounds),
-        () => parWorker(memo, b, rounds))
+  let l = parWorker(memo, a, rounds)
+  let r = parWorker(memo, b, rounds)
   ret (l + r) % modulus
 
 fun runPar(): System::Int
   let memo = memoize<System::Int, System::Int>(payload)
   let quarter = parRounds / 4
-  let (left, right) = __parallel__(
-        () => parPair(memo, 0, 61, quarter),
-        () => parPair(memo, 1237, 55001, quarter))
+  let left = parPair(memo, 0, 61, quarter)
+  let right = parPair(memo, 1237, 55001, quarter)
   ret (left + right) % modulus
 
 
@@ -168,22 +166,20 @@ fun runPar(): System::Int
 # disjoint ranges would have the workers publishing into mostly separate
 # subtrees and barely meeting at all.
 
-fun parInsWorker(memo: (:System::Int): System::Int, count: System::Int): System::Int
+fun [future] parInsWorker(memo: (:System::Int): System::Int, count: System::Int): System::Int
   fun [tail] loop(i: System::Int, acc: System::Int): System::Int
     ret i >= count ? acc : loop(i + 1, (acc + memo(i * 3)) % modulus)
   ret loop(0, 0)
 
-fun parInsPair(memo: (:System::Int): System::Int, count: System::Int): System::Int
-  let (l, r) = __parallel__(
-        () => parInsWorker(memo, count),
-        () => parInsWorker(memo, count))
+fun [future] parInsPair(memo: (:System::Int): System::Int, count: System::Int): System::Int
+  let l = parInsWorker(memo, count)
+  let r = parInsWorker(memo, count)
   ret (l + r) % modulus
 
 fun parInsOnce(seed: System::Int): System::Int
   let memo = memoize<System::Int, System::Int>(payload)
-  let (a, b) = __parallel__(
-        () => parInsPair(memo, parInsKeys),
-        () => parInsPair(memo, parInsKeys))
+  let a = parInsPair(memo, parInsKeys)
+  let b = parInsPair(memo, parInsKeys)
   ret (seed + a + b) % modulus
 
 fun runParIns(): System::Int

@@ -72,7 +72,6 @@ fun sfExpr<T>(x: PExpr, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
     (cv: PeConvert)   => sfExpr(cv.convInner, r, fx, acc2)
     (qq: PeCoalesce)  => sfExpr(qq.qqFallback, r, fx, sfExpr(qq.qqSubject, r, fx, acc2))
     (wx: PeWith)      => sfExpr(wx.withRepls, r, fx, sfExpr(wx.withSubject, r, fx, acc2))
-    (pl: PeParallel)  => sfExpr(pl.parParams, r, fx, acc2)
     (ne: PeNewEnum)   => fold(ne.fieldArgs, acc2, (a2, fa) => sfExpr(fa.faValue, r, fx, a2))
     (lp: PeLoop)      => sfExpr(lp.loopBody, r, fx, sfExprs(lp.loopParams, r, fx, acc2))
     (rc: PeRecur)     => sfExprs(rc.recArgs, r, fx, acc2)

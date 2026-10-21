@@ -85,9 +85,16 @@ fun [tail] loop(k: Int, n: Int, acc: String): String
     + " " + useWF(pickWF(k)) + " " + useSF(widenF(k)) + " " + usePF(pickPF(k)) + "\n"
   ret loop(k + 1, n, acc + line)
 
+fun [future] laterF(k: Int): ((:Int): Int)|None
+  ret pickF(k)
+
+fun [future] laterSF(k: Int): String|((:Int): Int)|None
+  ret pickSF(k)
+
 fun program(): System::Int
-  let (pa, pb) = __parallel__(() => useF(pickF(3)), () => useSF(pickSF(4)))
-  print(loop(0, 9, "") + pa + " " + pb + "\n")
+  let fa = laterF(3)
+  let fb = laterSF(4)
+  print(loop(0, 9, "") + useF(fa) + " " + useSF(fb) + "\n")
   ret 0
 
 fun [test("function members", stdout = "f10 sstr0 i0 w0 f1 p1\nf20 f101 f6 f6 f2 f3\nnone n i14 w2 n p5\nf13 sstr3 f6 f8 f4 f5\nf20 f401 i28 w4 f2 p9\nnone n f6 f10 n f7\nf16 sstr6 i42 w6 f7 p13\nf20 f701 f6 f12 f2 f9\nnone n i56 w8 n p17\nf13 f401\n")] check(): None|TestFailure
@@ -104,7 +111,7 @@ import System::Test
 # codes in word 0 with the payload in word 1. Covers boxing, typed and
 # literal arms, an arm narrowing to a tagged sub-union (Int32|None), widening
 # from a tagged union, from a narrow pointer union (String|None) and into a
-# wider wide union, and values crossing a __parallel__ boundary.
+# wider wide union, and values crossing a `[future]` boundary.
 # test_wide_union_packing pins the output.
 
 
@@ -186,10 +193,17 @@ fun [tail] loop(k: Int, n: Int, acc: String): String
 fun [tail] joinPicks(k: Int, n: Int, acc: String): String
   ret k >= n ? acc : joinPicks(k + 1, n, acc + describe(pick(k)) + ";")
 
+fun [future] later(k: Int): String|Int32|None
+  ret pick(k)
+
+fun [future] later2(k: Int): String|Float64|Bool|None
+  ret pick2(k)
+
 fun program(): System::Int
   let joined = joinPicks(0, 8, "")
-  let (pa, pb) = __parallel__(() => describe(pick(4)), () => describe2(pick2(5)))
-  print(loop(0, 12, "") + joined + "\n" + pa + " " + pb + "\n")
+  let pa = later(4)
+  let pb = later2(5)
+  print(loop(0, 12, "") + joined + "\n" + describe(pa) + " " + describe2(pb) + "\n")
   ret 0
 
 fun [test("scalar members", stdout = "S:three the-string-three str three S:a much longer string than fifteen bytes S:even I:0 S:p0 sthree\nI:10 five-or-ten num 10 F:0.25 L:1000000000000 N N i10\nN none nothing F S:even I:2 S:p2 n\nS:three the-string-three str three N L:3000000000000 N N sthree\nI:40 other-int:40 num 40 S:a much longer string than fifteen bytes S:even I:4 S:p4 i40\nN none nothing F:1.25 L:5000000000000 N N n\nS:three the-string-three str three T S:even I:6 S:p6 sthree\nI:70 other-int:70 num 70 N L:7000000000000 N N i70\nN none nothing S:a much longer string than fifteen bytes S:even I:8 S:p8 n\nS:three the-string-three str three F:2.25 L:9000000000000 N N sthree\nI:100 other-int:100 num 100 T S:even I:10 S:p10 i100\nN none nothing N L:11000000000000 N N n\nS:three;I:10;N;S:three;I:40;N;S:three;I:70;\nI:40 F:1.25\n")] check(): None|TestFailure

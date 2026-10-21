@@ -5,7 +5,7 @@ emission:
 
   1. **Single definition per StackVar.** Every locally-named value is
      defined exactly once. Function parameters count as their own
-     definitions. Phi targets count once. Move/Call/NewObject/ParallelCall
+     definitions. Phi targets count once. Move/Call/NewObject
      writes count once each.
 
   2. **All paths reach a Return / ReturnVoid.** No control-flow path falls
@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Op, Move, Call, NewObject, ParallelCall, Phi, Label, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Abort
+from codegen.ops import Op, Move, Call, NewObject, Phi, Label, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Abort
 from codegen.param import StackVar, NullPointer, Integer, Float, ZeroOf
 
 

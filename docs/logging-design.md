@@ -161,7 +161,7 @@ Rules the implementation must hold to:
    in a log.
 3. **One `write(2)` per fully-formatted line**, to a dedicated fd — never
    through the async IO path, since `io_t` is single-threaded with one task per
-   handle and logging must work from GC workers and `__parallel__` tasks.
+   handle and logging must work from GC workers and `[future]` tasks.
 4. **Timestamp inside the emit**: `CLOCK_REALTIME` for the line; spans use
    `CLOCK_MONOTONIC` so they are immune to clock adjustment.
 5. **Context resolution is cached** — a context string interns to a small id

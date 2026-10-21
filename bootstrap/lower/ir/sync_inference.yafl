@@ -17,7 +17,7 @@
 # so a closure riding in a tuple or a flattened class is still tracked. Every
 # node starts sync and can only FALL; a node falls when any of its sources
 # falls:
-#   function F      every call's sources (tail calls too); ParallelCall,
+#   function F      every call's sources (tail calls too);
 #                   foreign/hand-built without sync: outright
 #   maybe_async F   the same, except a call of one of F's own function
 #                   parameters — called, or handed on to a callee — does not
@@ -252,10 +252,6 @@ fun siParams(f: CgFunction): List<CgField> => match(cgFieldsOf(f.fnParams))
   (fields: List<CgField>) => fields
   ()                      => List()
 
-fun siIsParallelCall(op) => match(op)
-  (pc: OpParallelCall) => true
-  (o: Op)              => false
-
 fun isNoneStr(s2: String|None) => match(s2)
   (x: String) => false
   ()           => true
@@ -264,7 +260,6 @@ fun siFunctionEdges(flow: SiFlow, acc0: SiAcc, f: CgFunction): SiAcc
   let name = f.fnName
   let foreign = !isNoneStr(f.fnForeignSymbol)
   let acc1 = foreign || f.fnBypassAsync || name == "__entrypoint__"
-             || any(f.fnOps, siIsParallelCall)
     ? siFall(flow, siFall(flow, acc0, siFnNode(name)), siMfnNode(name)) : acc0
   let acc2 = foreign ? siFallAll(flow, acc1, f.fnResult, (p) => siResultNode(name, p)) : acc1
   let acc3 = setHas(flow.sfAddressTaken, name) || foreign || name == "__entrypoint__"
@@ -281,8 +276,8 @@ fun siOpEdges(flow: SiFlow, acc: SiAcc, fnName: String, aliases: Set<String>,
   (ph: OpPhi)   => fold(ph.phiSources, acc, (a, s2) => siAssign(flow, a, fnName, ph.phiTarget, s2.sourceValue))
   (r: OpReturn) => fold(siFunPaths(rpGetType(r.returnValue)), acc, (a, p) =>
                      siEdge(flow, a, siSources(flow, fnName, r.returnValue, p), siResultNode(fnName, p)))
-  # Any other op that defines a variable holding a function (a ParallelCall
-  # slot result, …) is not modelled: unknown.
+  # Any other op that defines a variable holding a function is not
+  # modelled: unknown.
   (o: Op)       => fold(opGetLiveVars(op).writes, acc, (a, w) =>
                      siFallAll(flow, a, rpGetType(w), (p) => siVarNode(fnName, stackVarName(w), p)))
 

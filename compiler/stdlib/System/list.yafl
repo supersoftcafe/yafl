@@ -185,7 +185,7 @@ fun [tail] drop<T>(l: List<T>, n: Int): List<T>
 # takes, so when the fast pointer reaches the end the slow one is at the middle.
 # `left` keeps the leading elements in order, `right` the trailing ones. For a
 # list of n >= 2 both halves are non-empty (left = floor(n/2)); this is the
-# length-free way to divide work for recursion or `__parallel__`.
+# length-free way to divide work for recursion or `[future]` calls.
 # [tail]: the walk advances one element per step, so on a long list it MUST
 # lower to a loop — plain recursion here overflows the C stack via the async
 # hot path (found by sorting a half-million-word dictionary).

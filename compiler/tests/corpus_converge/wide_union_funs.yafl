@@ -70,7 +70,14 @@ fun [tail] loop(k: Int, n: Int, acc: String): String
     + " " + useWF(pickWF(k)) + " " + useSF(widenF(k)) + " " + usePF(pickPF(k)) + "\n"
   ret loop(k + 1, n, acc + line)
 
+fun [future] laterF(k: Int): ((:Int): Int)|None
+  ret pickF(k)
+
+fun [future] laterSF(k: Int): String|((:Int): Int)|None
+  ret pickSF(k)
+
 fun main(): System::Int
-  let (pa, pb) = __parallel__(() => useF(pickF(3)), () => useSF(pickSF(4)))
-  print(loop(0, 9, "") + pa + " " + pb + "\n")
+  let fa = laterF(3)
+  let fb = laterSF(4)
+  print(loop(0, 9, "") + useF(fa) + " " + useSF(fb) + "\n")
   ret 0

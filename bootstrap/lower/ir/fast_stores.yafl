@@ -56,7 +56,7 @@ fun fsKillsEverything(op: Op)
     ret true
   ret !fsIsModelled(op)
 
-fun fsIsSafePoint(op: Op) => op is OpCall || op is OpParallelCall || op is OpNewObject
+fun fsIsSafePoint(op: Op) => op is OpCall || op is OpNewObject
 
 fun fsHasRuntimeInvoke(op: Op) => any(opAllParams(op), (p) => p is RpRuntimeInvoke)
 

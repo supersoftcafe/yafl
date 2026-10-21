@@ -7,7 +7,7 @@
 # lets forced from two workers, a memoize cache that every worker fills at
 # once (write-once slots under the pin), and a long-lived list that every
 # worker walks while the heap turns over around it. Four workers (nested
-# __parallel__) each run every workload, every round.
+# `[future]` calls) each run every workload, every round.
 #
 # Every workload computes its answer twice — once through the heap and once by
 # plain arithmetic that allocates nothing — and a disagreement is counted. The
@@ -78,7 +78,12 @@ fun arrayExpected(seed: System::Int): System::Int
 fun futureRound(seed: System::Int): System::Int
   let [future] a = listRound(seed)
   let [future] b = arrayRound(seed + 1)
-  let (x, y) = __parallel__(() => (a + b) % modulus, () => (b + a) % modulus)
+  fun [future] left(): System::Int
+    ret (a + b) % modulus
+  fun [future] right(): System::Int
+    ret (b + a) % modulus
+  let x = left()
+  let y = right()
   ret x == y ? x : -1
 
 fun futureExpected(seed: System::Int): System::Int
@@ -107,7 +112,7 @@ fun sharedExpected(): System::Int
 
 # ── one worker: every workload, `rounds` times; returns its mismatch count ───
 
-fun worker(id: System::Int, rounds: System::Int, memo: (:System::Int): System::Int,
+fun [future] worker(id: System::Int, rounds: System::Int, memo: (:System::Int): System::Int,
            shared: List<System::Int>, sharedWant: System::Int): System::Int
   fun one(r: System::Int): System::Int
     let seed = id * 100003 + r
@@ -121,20 +126,18 @@ fun worker(id: System::Int, rounds: System::Int, memo: (:System::Int): System::I
     ret r >= rounds ? bad : loop(r + 1, bad + one(r))
   ret loop(0, 0)
 
-fun pair(a: System::Int, b: System::Int, rounds: System::Int, memo: (:System::Int): System::Int,
+fun [future] pair(a: System::Int, b: System::Int, rounds: System::Int, memo: (:System::Int): System::Int,
          shared: List<System::Int>, sharedWant: System::Int): System::Int
-  let (x, y) = __parallel__(
-        () => worker(a, rounds, memo, shared, sharedWant),
-        () => worker(b, rounds, memo, shared, sharedWant))
+  let x = worker(a, rounds, memo, shared, sharedWant)
+  let y = worker(b, rounds, memo, shared, sharedWant)
   ret x + y
 
 fun runAll(rounds: System::Int): System::Int
   let memo = memoize<System::Int, System::Int>(mix)
   let shared = upto(sharedLen)
   let want = sharedExpected()
-  let (l, r) = __parallel__(
-        () => pair(0, 1, rounds, memo, shared, want),
-        () => pair(2, 3, rounds, memo, shared, want))
+  let l = pair(0, 1, rounds, memo, shared, want)
+  let r = pair(2, 3, rounds, memo, shared, want)
   ret l + r + (sharedSum(shared) == want ? 0 : 1)
 
 

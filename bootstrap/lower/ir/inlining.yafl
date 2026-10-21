@@ -1,7 +1,7 @@
 # bootstrap/inlining.yafl — ported from lowering/inlining.py: the IR inliner.
 # Structural guards are fixed (direct call to an internal global function with
 # NewStruct args, not recursive — recursiveFunctions, which covers a self-call
-# — not musttail, target non-empty and ParallelCall-free); the POLICY decides
+# — not musttail, target non-empty and not [future]); the POLICY decides
 # which eligible targets to pull in — the size cutoff, or [inline(always)]. A
 # fn is never an inlining SINK if it is __entrypoint__ or bypass_async
 # (async_lower passes those through untouched, so a suspending body inlined
@@ -106,14 +106,9 @@ fun inlCandidateChecked(c, gf, ns, a: CgApp,
     (target: CgFunction) => !isEmpty(target.fnOps)
                             && !target.fnFuture
                             && shouldInline(target)
-                            && !any(target.fnOps, inlIsParallel)
       ? InlTarget(c, gf, ns, target)
       : None
     ()                    => None
-
-fun inlIsParallel(op) => match(op)
-  (p: OpParallelCall) => true
-  (o: Op)             => false
 
 # ── the splice ───────────────────────────────────────────────────────────────
 # Fresh inl<id>$-prefixed stack vars for the callee's params + locals, label

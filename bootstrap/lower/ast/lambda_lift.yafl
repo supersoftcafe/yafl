@@ -336,7 +336,6 @@ fun llFold(x, name, n, calls: Bool): Int => match(x)
                                   llCountOne(ar.arrObj, name, n, calls),
                                   calls)
   (cv: PeConvert) => llCountOne(cv.convInner, name, n, calls)
-  (pl: PeParallel) => llCountOne(pl.parParams, name, n, calls)
   (lp: PeLoop)   => llCountOne(lp.loopBody, name,
                                llFoldExprs(chain(lp.loopParams), name, n,
                                            calls),
@@ -524,8 +523,6 @@ fun llExpr(x, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
   (wx: PeWith)   => PeWith(llExpr(wx.withSubject, ctx, paramLets),
                            llExpr(wx.withRepls, ctx, paramLets),
                            wx.pewLine)
-  (pl: PeParallel) => PeParallel(llExpr(pl.parParams, ctx, paramLets),
-                                 pl.pepLine)
   (lp: PeLoop)   => PeLoop(llExpr(lp.loopBody, ctx, paramLets),
                            lp.loopParams, lp.pelpLine)
   (rc: PeRecur)  => PeRecur(llExprs(chain(rc.recArgs), ctx, paramLets,

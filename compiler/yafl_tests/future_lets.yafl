@@ -35,8 +35,11 @@ fun double(x: System::Int): System::Int
 
 fun program(): System::Int
   let [future] a = double(10)
-  let (x, y) = __parallel__(() => a + 1, () => a + 2)
-  ret x + y
+  fun [future] left(): System::Int
+    ret a + 1
+  fun [future] right(): System::Int
+    ret a + 2
+  ret left() + right()
 
 fun [test("concurrent forcers")] check(): None|TestFailure
     ret assertEqInt(program(), 43, "program()")
