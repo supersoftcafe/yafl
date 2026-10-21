@@ -11,7 +11,7 @@ import System::Json
 # formatter needs them and written to stdout as they are produced, so an
 # arbitrarily large document never has to be held in memory at once.
 #
-#   stdin → asStream → tokenize → prettyEmit → writeStream → stdout
+#   stdin → asStream(tokenize → prettyEmit → writeStream → stdout)
 #
 # No type argument is written anywhere, and no `let`: each pipe stage binds the
 # previous stage's tuple positionally. The stdin handle `i` is never referenced,
@@ -54,9 +54,8 @@ fun gatherJson(path: String): List<String>
 # within this call, so a conversion is safe inside its own [future] worker.
 fun convertOne(path: String): Int
   fun pipe(i: IO, o: IO): Int
-    ret i.asStream()
-      |> (i2, s) => writeStream(o, prettyEmit(tokenize(s)))
-      |> (o2, v) => (o2.close(), i2.close(), v)
+    ret asStream(i, (s: StreamIO) => writeStream(o, prettyEmit(tokenize(s))))
+      |> (i2, w) => (w.io.close(), i2.close(), w.v)
       |> (c1, c2, v) => match(v)
         (e: IOError)        => 1
         (p: JsonParseError) => 1
@@ -99,9 +98,8 @@ fun runSingle(path: String): System::Int
     (e: IOError) => print("cannot stat " + path + "\n") |> (u) => 2
 
 fun runStdio(): System::Int
-  ret stdin().asStream()
-    |> (i, s) => writeStream(stdout(), prettyEmit(tokenize(s)))
-    |> (o, v) => (o.close(), v)
+  ret asStream(stdin(), (s: StreamIO) => writeStream(stdout(), prettyEmit(tokenize(s))))
+    |> (i, w) => (w.io.close(), w.v)
     |> (c, v) => match(v)
       (e: IOError)        => 1
       (p: JsonParseError) => 2

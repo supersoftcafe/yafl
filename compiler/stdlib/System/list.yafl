@@ -299,7 +299,7 @@ fun [tail] _filterInto<T>([terminal] b: ListBuilder<T>, c: Chain<T>,
                                       l.next, f)
 
 
-fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
+fun fold<T, [linear] U>(l: List<T>, init: U, f: (:U, :T): U): U
   fun [tail] foldNode(n: Chain<T>, acc: U): U
     ret match(n)
       (nil: ChainEnd) => acc

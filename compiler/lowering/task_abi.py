@@ -205,6 +205,17 @@ def is_task_param(result_var: RParam, wrapped_type: Type) -> RParam:
     raise ValueError(f"Cannot emit IS_TASK check for type {wrapped_type}")
 
 
+def pending_task_of(result_var: RParam, wrapped_type: Type) -> RParam:
+    """The task a task-carrying result holds, UNTAGGED, or NULL when it holds
+    a value. A deferred await keeps this beside the result: the GC ignores a
+    tagged word and may move the task, but traces, pins and updates this."""
+    if isinstance(wrapped_type, TaskWrapper):
+        return StructField(result_var, "task")   # carried untagged already
+    return RuntimeInvoke("TASK_PENDING_OF",
+                         NewStruct((("p", task_ptr_from(result_var, wrapped_type)),)),
+                         DataPointer())
+
+
 def task_ptr_from(result_var: RParam, wrapped_type: Type) -> RParam:
     """Return the pointer-to-task (suitable for TASK_UNTAG) from a
     task-carrying result."""

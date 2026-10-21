@@ -227,6 +227,13 @@ class FunctionStatement(DataStatement):
             if self.body is None:
                 tail_err.append(Error(self.line_ref, "[tail] cannot be applied to a foreign function"))
 
+        # [linear] on a parameter: a promise to call it exactly once (checked by
+        # lowering/linearity.py) — meaningful only for a function.
+        linear_param_err = [Error(prm.line_ref, "[linear] applies only to a function-typed parameter")
+                            for prm in self.parameters.flatten()
+                            if "linear" in prm.attributes
+                            and not isinstance(prm.declared_type, t.CallableSpec)]
+
         # [future]: a call hands the body to a worker and answers later, with a
         # task — so the function cannot also promise [sync], and a foreign one
         # has no body to hand over.
@@ -296,7 +303,7 @@ class FunctionStatement(DataStatement):
         untyped_err = [] if self.is_global else h.untyped_param_errors(self, body_resolver)
 
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
-                + tail_err + future_err + terminal_err + inner_where_err + default_err
+                + tail_err + future_err + linear_param_err + terminal_err + inner_where_err + default_err
                 + missing_ret_err + untyped_err + test_err
                 + self.unknown_attribute_errors("a function")
                 + self.__unused_param_warnings())

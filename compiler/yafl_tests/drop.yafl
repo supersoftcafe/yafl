@@ -79,7 +79,7 @@ fun [tail] count(s: StreamIO, n: System::Int): System::Int
       (x: System::None)       => n
     (er: System::Error<System::String|System::None, IOError>) => 0 - 1
 fun program(): System::Int
-  ret stdin().asStream() |> (i, s) => count(s, 0)
+  ret asStream(stdin(), (s) => count(s, 0)) |> (i, n) => n
 
 fun [test("io handle drops and closes")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")

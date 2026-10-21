@@ -71,6 +71,7 @@ fun ssavOpWrites(op) => match(op)
   (p: OpParallelCall) => concat(p.parResults, ssavOptWrite(p.parRegister))
   (ph: OpPhi)         => list1(ph.phiTarget)
   (t2: OpIfTask)      => list2(t2.taskLhs, t2.callIdLhs)
+  (aw: OpAwait)       => list1(aw.awaitRegister)
   (o: Op)             => List()
 
 fun ssavOptWrite(r: RParam|None) => match(r)

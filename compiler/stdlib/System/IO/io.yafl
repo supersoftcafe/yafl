@@ -113,12 +113,20 @@ class [linear,final] IO(_io: _IO)
   fun refill(): (io: IO, v: Int|System::None)
     ret (this, _io._refill())
 
-  # Open a non-linear StreamIO view over this handle. `this` is threaded back
-  # out unchanged and still owns close(); the returned StreamIO aliases the same
-  # underlying handle (a deliberate escape from linearity), so once `this` is
-  # closed any not-yet-realised stream read yields an IOError.
-  fun asStream(): (io: IO, stream: StreamIO)
-    ret (this, _streamNode(_io._asStream()))
+  # The non-linear alias over this handle that a StreamIO reads through — for
+  # asStream only, which keeps the stream's use inside its processor.
+  fun _rawStream(): (io: IO, raw: _StreamIO)
+    ret (this, _io._asStream())
+
+
+# Hand this handle's stream to `process` — called exactly once, so it may
+# capture linear values, and answer with the IO and process's result. The stream aliases the same underlying handle (a deliberate escape
+# from linearity), so finish with it before `process` returns: the IO comes
+# back only with the result — anything done with it, a close included, waits
+# for process to finish — and after that, no guarantees.
+fun asStream<[linear] R>(io: IO, [linear] process: (:StreamIO): R): (io: IO, result: R)
+  let (io2, raw) = io._rawStream()
+  ret (io2, process(_streamNode(raw)))
 
 
 # Read one line, returned VERBATIM — the trailing '\n' (and any '\r') are kept,

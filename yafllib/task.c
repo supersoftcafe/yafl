@@ -1,12 +1,7 @@
 
 #include "yafl.h"
 
-#define TASK_PENDING  0
-#define TASK_CALLBACK 1
-#define TASK_COMPLETE 2
-// Complete, and registering a continuation posts it to ANOTHER worker's queue
-// (future_yield) instead of this one's.
-#define TASK_YIELDED  3
+// Task states (TASK_PENDING … TASK_YIELDED) are in yafl.h.
 
 VTABLE_DECLARE_STRUCT(task_vtable, 0);
 EXPORT struct task_vtable TASK_VTABLE = {

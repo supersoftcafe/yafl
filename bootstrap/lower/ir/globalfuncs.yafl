@@ -121,18 +121,14 @@ fun gfOptimizeCall(c, slots: List<SlotFuncs>, vmap: FunValues) => match(c.callFu
   (sf: RpStructField)     => gfDirectify(c, sf, vmap)
   (o: RParam)             => c
 
-fun gfDevirtualise(c, vf: RpVirtualFunction, slots: List<SlotFuncs>)
+fun gfDevirtualise(c: OpCall, vf: RpVirtualFunction, slots: List<SlotFuncs>)
   let globals2 = gfSlotLookup(slots, vf.name)
   ret exactly(chain(globals2), 1)
-    ? OpCall(RpGlobalFunction(forceHead(globals2), vf.object, false, None, false, false),
-             c.callParameters, c.callRegister, c.callMusttail, c.callImpure,
-             c.callResultType, c.callSavedVars)
+    ? with c(callFunction = RpGlobalFunction(forceHead(globals2), vf.object, false, None, false, false))
     : c
 
-fun gfDirectify(c, expr, vmap: FunValues) => match(gfResolveFun(expr, vmap, 16))
-  (gf: RpGlobalFunction) => OpCall(gf, c.callParameters, c.callRegister,
-                                   c.callMusttail, c.callImpure,
-                                   c.callResultType, c.callSavedVars)
+fun gfDirectify(c: OpCall, expr, vmap: FunValues) => match(gfResolveFun(expr, vmap, 16))
+  (gf: RpGlobalFunction) => with c(callFunction = gf)
   ()                      => c
 
 fun forceHead(ss: List<String>) => match(head(ss))

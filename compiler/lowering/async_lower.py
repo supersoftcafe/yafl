@@ -24,12 +24,12 @@ from functools import reduce
 import langtools
 from lowering.task_abi import (
     TASK_FIELDS, wrap_return_type, wrap_value, unwrap_value, is_unit,
-    is_task_param, task_ptr_from,
+    is_task_param, task_ptr_from, pending_task_of,
     task_subtype_name, make_task_foreign_object, make_task_subtype_object,
     RUNTIME_TASK_SUBTYPES,
 )
 from codegen.gen import Application
-from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, AssertNotTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi
+from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTask, AssertNotTask, Jump, NewObject, SwitchJump, Abort, ParallelCall, Phi, Await
 from codegen.ir import Function, Object
 from codegen.typedecl import (
     FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type, Array,
@@ -728,6 +728,119 @@ def __expand_sync_calls(fn: Function) -> Function:
                                stack_vars=fn.stack_vars + Struct(tuple(new_vars)))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Deferred awaits
+#
+# A call that may suspend is not waited for where it is made, but where its
+# result is used. Its result is MARKED: kept in the task-carrying shape the
+# callee returned, beside that task untagged (pending_task_of — the handle the
+# GC sees). A copy or field read of a marked variable is VIRTUAL — the root
+# plus a field path — and costs nothing, so destructuring a pending tuple waits
+# for nothing. Every op that reads a marked variable is preceded by an `Await`
+# of its root, which re-defines the root under its own name (this IR is past
+# phi_removal, so names may be written more than once), and by the projection
+# of each virtual variable it reads. An `Await` parks only on a task still
+# running: a completed one is read in place, so every later use is a test.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def __task_running(task: StackVar) -> RParam:
+    return RuntimeInvoke("TASK_RUNNING", NewStruct((("task", task),)), Int(32))
+
+
+def __await_value(op: Await, label: str) -> list[Op]:
+    """An Await that did not park: the value from the completed task when
+    there was one, else as the call returned it."""
+    result_type = op.register.get_type()
+    return [JumpIf(f"{label}$done", op.task),
+            Move(op.register, unwrap_value(op.source, result_type)),
+            Jump(f"{label}$end"),
+            Label(f"{label}$done"),
+            Move(op.register, __extract_from_task(op.task, result_type,
+                                                  __task_subtype_name(result_type))),
+            Label(f"{label}$end")]
+
+
+def __defer_awaits(fn: Function) -> Function:
+    """Defer the await of every non-tail call that may suspend whose result
+    is read (see the section comment)."""
+    ops = fn.ops
+    definitions: dict[str, int] = {}
+    reads: dict[str, int] = {}
+    for op in ops:
+        r, w = op.get_live_vars()
+        for v in w:
+            definitions[v.name] = definitions.get(v.name, 0) + 1
+        for v in r:
+            reads[v.name] = reads.get(v.name, 0) + 1
+
+    def single(v: LParam | None) -> bool:
+        return isinstance(v, StackVar) and definitions.get(v.name) == 1
+
+    # root name -> (pending source, untagged task);
+    # marked name -> (its variable, root, field path under the root)
+    roots: dict[str, tuple[StackVar, StackVar]] = {}
+    marked: dict[str, tuple[StackVar, StackVar, tuple[str, ...]]] = {}
+    for op in ops:
+        if (isinstance(op, Call) and op.may_suspend and single(op.register)
+                and reads.get(op.register.name, 0) > 0):
+            r = op.register
+            wrapped = wrap_return_type(r.get_type())
+            roots[r.name] = (StackVar(wrapped, f"{r.name}$pending"),
+                             StackVar(DataPointer(), f"{r.name}$ptask"))
+            marked[r.name] = (r, r, ())
+    if not roots:
+        return fn
+
+    def projection(value: RParam) -> tuple[str, tuple[str, ...]] | None:
+        path: tuple[str, ...] = ()
+        while isinstance(value, StructField):
+            path = (value.field,) + path
+            value = value.struct
+        return (value.name, path) if isinstance(value, StackVar) else None
+
+    virtual: set[int] = set()
+    changed = True
+    while changed:   # a copy may sit textually before its source's definition
+        changed = False
+        for k, op in enumerate(ops):
+            if (k not in virtual and isinstance(op, Move) and not op.keep and single(op.target)
+                    and (pr := projection(op.source)) is not None and pr[0] in marked):
+                _, root, path = marked[pr[0]]
+                marked[op.target.name] = (op.target, root, path + pr[1])
+                virtual.add(k)
+                changed = True
+
+    def project(root: StackVar, path: tuple[str, ...]) -> RParam:
+        value: RParam = root
+        for f in path:
+            value = StructField(value, f)
+        return value
+
+    new_ops: list[Op] = []
+    for k, op in enumerate(ops):
+        if k in virtual:
+            continue
+        used = sorted({v.name for v in op.get_live_vars()[0] if v.name in marked})
+        awaited: set[str] = set()
+        for name in used:
+            var, root, path = marked[name]
+            if root.name not in awaited:
+                awaited.add(root.name)
+                source, task = roots[root.name]
+                new_ops.append(Await(root, source, task))
+            if var is not root:
+                new_ops.append(Move(var, project(root, path)))
+        if isinstance(op, Call) and isinstance(op.register, StackVar) and op.register.name in roots:
+            source, task = roots[op.register.name]
+            new_ops.append(dataclasses.replace(op, register=source, deferred=True))
+            new_ops.append(Move(task, pending_task_of(source, source.get_type())))
+        else:
+            new_ops.append(op)
+    new_vars = tuple(field for source, task in roots.values()
+                     for field in ((source.name, source.get_type()), (task.name, DataPointer())))
+    return dataclasses.replace(fn, ops=tuple(new_ops), stack_vars=fn.stack_vars + Struct(new_vars))
+
+
 def __unroll_musttail_for_state_machine(fn: Function) -> Function:
     """Re-expand `Call(musttail=True)` back into `Call(register=tmp) + Return(tmp)`
     (or `Call + ReturnVoid` for void calls) so the state-machine code generation
@@ -775,12 +888,13 @@ def __create_basic_blocks(fn: Function, state_name: str) -> list[BasicBlock]:
     liveness_fn = __calculate_saved_vars(fn)
     partitions = langtools.partition(liveness_fn.ops,
                                      lambda op: (isinstance(op, Call) and op.may_suspend)
+                                                 or isinstance(op, Await)
                                                  or isinstance(op, ParallelCall))
 
     def make_block(index: int, ops: list[Op]) -> BasicBlock:
         name = f"cont${index}"
         last_op = ops[-1]
-        result = last_op.register if isinstance(last_op, (Call, ParallelCall)) else None
+        result = last_op.register if isinstance(last_op, (Call, ParallelCall, Await)) else None
         augmented = ops
         return BasicBlock(name, augmented, last_op.saved_vars, result)
 
@@ -927,6 +1041,20 @@ def __create_hot_path_func(fn: Function, state_name: str,
             hot_ops.append(Move(__sv_async_task, __sv_par_task))
             hot_ops.append(Move(__sv_call_id, Integer(i + 1, 32)))
             hot_ops.append(Jump("$asynccommon"))
+            continue
+
+        if isinstance(call_op, Await):
+            # The deferred call ran earlier; park on its task if it is still
+            # running, else take the value: from the task, or as returned.
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], fn.result))
+            hot_ops.append(IfTask(
+                condition=__task_running(call_op.task),
+                task_source=call_op.task,
+                task_lhs=__sv_async_task,
+                call_id_lhs=__sv_call_id,
+                call_id=i + 1,
+                target="$asynccommon"))
+            hot_ops.extend(__await_value(call_op, f"$await${i}"))
             continue
 
         assert isinstance(call_op, Call) and call_op.may_suspend
@@ -1294,6 +1422,19 @@ def __create_state_machine_func(fn: Function, state_name: str,
             # No cold_ops entry needed — always takes the launcher path
             continue
 
+        if isinstance(call_op_orig, Await):
+            # The deferred call ran earlier: park on its task if still
+            # running; on the sync edge, take the value.
+            async_sm_label = f"$async_sm${i}"
+            sm_ops.append(JumpIf(async_sm_label, RuntimeInvoke(
+                "UNLIKELY", NewStruct((("x", __task_running(call_op_orig.task)),)), Int(32))))
+            sm_ops.extend(__await_value(call_op_orig, f"$await_sm${i}"))
+            sm_ops.append(Label(f"$resume${i}"))
+            cold_ops.append(Label(async_sm_label))
+            cold_ops.extend(save_stores)
+            cold_ops.extend(_emit_suspend_to_async(idx_field, i + 1, call_op_orig.task, fn.name))
+            continue
+
         result_type     = call_op_orig.register.get_type() if call_op_orig.register else None
         discarded_type  = None if result_type is not None else call_op_orig.result_type
         wrapped_type    = wrap_return_type(result_type)  if result_type else None
@@ -1521,7 +1662,7 @@ def __convert_function_to_task_convention(
     if fn.bypass_async:
         return {fn.name: fn}, {}
 
-    after_tail = __expand_sync_calls(__discover_tail_calls(fn))
+    after_tail = __defer_awaits(__expand_sync_calls(__discover_tail_calls(fn)))
     state_name = f"{fn.name}$state"
     basic_blocks = __create_basic_blocks(after_tail, state_name)
 
@@ -1563,6 +1704,7 @@ def __convert_function_to_task_convention(
         park_prefix = [0]
         for op in ops:
             is_park = ((isinstance(op, Call) and op.may_suspend)
+                       or isinstance(op, Await)
                        or isinstance(op, ParallelCall))
             park_prefix.append(park_prefix[-1] + (1 if is_park else 0))
         label_at: dict[str, int] = {}

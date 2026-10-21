@@ -42,7 +42,17 @@ enum Op
   enum OpSwitchJump(switchCondition: RParam, switchCases: List<OpCase>, switchSavedVars: Dict<String, RParam>)
   # newObjPinned: born pinned (codegen/ops.py NewObject.pinned).
   enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjPinned: Bool, newObjSavedVars: Dict<String, RParam>)
-  enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: Dict<String, RParam>)
+  # callDeferred: its await is deferred (async_lower alDeferAwaits) — the
+  # register holds the result in its task-carrying shape and an OpAwait
+  # realises it later. Last, with a default, so fresh constructions are untouched.
+  enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: Dict<String, RParam>,
+              callDeferred: Bool = false)
+  # Realises a deferred call's result: the suspension point the call no longer
+  # is. awaitSource holds the result as returned (task-carrying shape),
+  # awaitTask that task UNTAGGED or NULL once complete — the handle the GC sees.
+  # Parks on awaitTask when set, else unwraps awaitSource into awaitRegister.
+  # Lives only inside async_lower; never reaches C.
+  enum OpAwait(awaitRegister: RParam, awaitSource: RParam, awaitTask: RParam, awaitSavedVars: Dict<String, RParam>)
   enum OpReturnVoid(retVoidSavedVars: Dict<String, RParam>)
   enum OpAbort(abortReason: String, abortSavedVars: Dict<String, RParam>)
   enum OpReturn(returnValue: RParam, returnSavedVars: Dict<String, RParam>)
@@ -68,6 +78,7 @@ fun opSavedVars(op): Dict<String, RParam> => match(op)
   (x: OpSwitchJump) => x.switchSavedVars
   (x: OpNewObject) => x.newObjSavedVars
   (x: OpCall) => x.callSavedVars
+  (x: OpAwait) => x.awaitSavedVars
   (x: OpReturnVoid) => x.retVoidSavedVars
   (x: OpAbort) => x.abortSavedVars
   (x: OpReturn) => x.returnSavedVars
@@ -86,6 +97,7 @@ fun opTestParams(op, pred) => match(op)
   (x: OpSwitchJump) => pred(x.switchCondition)
   (x: OpCall) => opTestParamsCall(x, pred)
   (x: OpReturn) => pred(x.returnValue)
+  (x: OpAwait) => pred(x.awaitRegister) || pred(x.awaitSource) || pred(x.awaitTask)
   (o: Op) => false   # base default: False (Label/Jump/NewObject/ReturnVoid/Abort/ParallelCall/Phi don't override)
 
 fun opTestParamsCall(x: OpCall, pred)
@@ -108,6 +120,8 @@ fun opAllParams(op) => match(op)
   (x: OpReturn) => rpFlatten(x.returnValue, true)
   (x: OpParallelCall) => opAllParamsParallel(x)
   (x: OpPhi) => opAllParamsPhi(x)
+  (x: OpAwait) => concat(rpFlatten(x.awaitRegister, false),
+                         concat(rpFlatten(x.awaitSource, true), rpFlatten(x.awaitTask, true)))
   (o: Op) => List()   # base default: [] (Label/Jump/ReturnVoid/Abort don't override)
 
 fun opAllParamsIfTask(x: OpIfTask)
@@ -149,8 +163,11 @@ fun opRenameVars(op, renames: List<RpRename>) => match(op)
                                     map(x.switchCases, (c) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
                                     x.switchSavedVars)
   (x: OpNewObject) => OpNewObject(x.newObjName, rpRenameVars(x.newObjRegister, renames), rpRenameVarsOpt(x.newObjSize, renames), x.newObjPinned, x.newObjSavedVars)
-  (x: OpCall) => OpCall(rpRenameVars(x.callFunction, renames), rpRenameVars(x.callParameters, renames),
-                        opRenameVarsOpt(x.callRegister, renames), x.callMusttail, x.callImpure, x.callResultType, x.callSavedVars)
+  (x: OpCall) => with x(callFunction = rpRenameVars(x.callFunction, renames),
+                        callParameters = rpRenameVars(x.callParameters, renames),
+                        callRegister = opRenameVarsOpt(x.callRegister, renames))
+  (x: OpAwait) => OpAwait(rpRenameVars(x.awaitRegister, renames), rpRenameVars(x.awaitSource, renames),
+                          rpRenameVars(x.awaitTask, renames), x.awaitSavedVars)
   (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
   (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c) => rpRenameVars(c, renames)),
                                         map(x.parResults, (r) => rpRenameVars(r, renames)),
@@ -182,6 +199,9 @@ fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op => match(op)
                         callParameters = rpReplaceParams(x.callParameters, replacer),
                         callRegister   = opReplaceParamsOpt(x.callRegister, replacer))
   (x: OpReturn) => with x(returnValue = rpReplaceParams(x.returnValue, replacer))
+  (x: OpAwait) => with x(awaitRegister = rpReplaceParams(x.awaitRegister, replacer),
+                         awaitSource   = rpReplaceParams(x.awaitSource, replacer),
+                         awaitTask     = rpReplaceParams(x.awaitTask, replacer))
   (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c) => replacer(c)),
                                 parResults = map(x.parResults, (r) => replacer(r)),
                                 parRegister = opReplaceParamsRegisterDirect(x.parRegister, replacer))
@@ -214,6 +234,7 @@ fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>) => match(op)
   (x: OpReturn) => (rpGetLiveVars(x.returnValue), List())
   (x: OpParallelCall) => opGetLiveVarsParallel(x)
   (x: OpPhi) => opGetLiveVarsPhi(x)
+  (x: OpAwait) => (rpStackVarUnion(list1(x.awaitSource), list1(x.awaitTask)), list1(x.awaitRegister))
   (o: Op) => (List(), List())   # base default: (set(), set()) (Label/Jump/ReturnVoid/Abort don't override)
 
 fun opGetLiveVarsMove(x: OpMove): (reads: List<RParam>, writes: List<RParam>)
@@ -268,8 +289,8 @@ fun opCallIsSync(x: OpCall) => match(rpGetType(x.callFunction))
   (o: CgType)         => false
 
 # A suspension point for the task lowering: a non-tail call through a
-# function value not proven sync.
-fun opCallMaySuspend(x: OpCall) => !x.callMusttail && !opCallIsSync(x)
+# function value not proven sync, whose await is not deferred.
+fun opCallMaySuspend(x: OpCall) => !x.callMusttail && !opCallIsSync(x) && !x.callDeferred
 
 # ── to_c ─────────────────────────────────────────────────────────────────────
 
@@ -288,6 +309,7 @@ fun opToC(op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntr
   (x: OpReturn) => opToCReturn(x, cache)
   (x: OpParallelCall) => ("", cache)   # unreachable: async_lower must remove ParallelCall before codegen
   (x: OpPhi) => ("", cache)            # unreachable: from_ssa must lower Phi to Moves before codegen
+  (x: OpAwait) => ("", cache)          # unreachable: async_lower replaces every Await
   (x: OpProfEnter) => ("    yafl_prof_enter(" + String(x.profEnterFnId) + "u);\n", cache)
   (x: OpProfLeave) => ("    yafl_prof_leave();\n", cache)
 
@@ -487,6 +509,7 @@ fun opReadVarNames(op) => match(op)
   (r: OpReturn)        => rpReadVarNames(r.returnValue)
   (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadVarNames(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadVarNames(s2.sourceValue)))
+  (aw: OpAwait)        => concat(rpReadVarNames(aw.awaitSource), rpReadVarNames(aw.awaitTask))
   (o: Op)              => List()
 
 fun rpOptTargetReadNames(r: RParam|None): List<String> => match(r)
@@ -523,7 +546,8 @@ fun opWithSavedVars(op, sv: Dict<String, RParam>) => match(op)
   (x: OpAssertNotTask) => OpAssertNotTask(x.antCondition, sv)
   (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
   (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, x.newObjPinned, sv)
-  (x: OpCall)         => OpCall(x.callFunction, x.callParameters, x.callRegister, x.callMusttail, x.callImpure, x.callResultType, sv)
+  (x: OpCall)         => with x(callSavedVars = sv)
+  (x: OpAwait)        => OpAwait(x.awaitRegister, x.awaitSource, x.awaitTask, sv)
   (x: OpReturnVoid)   => OpReturnVoid(sv)
   (x: OpAbort)        => OpAbort(x.abortReason, sv)
   (x: OpReturn)       => OpReturn(x.returnValue, sv)
@@ -564,4 +588,5 @@ fun opReadStackVars(op) => match(op)
   (r: OpReturn)        => rpReadStackVars(r.returnValue)
   (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadStackVars(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadStackVars(s2.sourceValue)))
+  (aw: OpAwait)        => concat(rpReadStackVars(aw.awaitSource), rpReadStackVars(aw.awaitTask))
   (o: Op)              => List()

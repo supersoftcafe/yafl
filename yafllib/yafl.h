@@ -1376,9 +1376,35 @@ typedef struct task_s {
     _Atomic(struct task_s*) next;          // intrusive queue link
 } task_t;
 
+// task_t.state. TASK_YIELDED: complete, and registering a continuation posts
+// it to ANOTHER worker's queue instead of this one's (future_yield).
+#define TASK_PENDING  0
+#define TASK_CALLBACK 1
+#define TASK_COMPLETE 2
+#define TASK_YIELDED  3
+
 // Strip the PTR_TAG_TASK bit and yield a YAFL object pointer.  Callers that
 // need task-specific fields cast to (task_t*) themselves.
 #define TASK_UNTAG(ptr) ((object_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
+// The task a task-carrying result word holds, UNTAGGED, or NULL when it holds
+// a value. A deferred await keeps this beside the result: the collector
+// ignores tagged words and may move the task, but traces, pins and updates
+// this one.
+#define TASK_PENDING_OF(ptr) task_pending_of((object_t*)(ptr))
+// Laundered: the C optimiser may not recompute the copy from the tagged word
+// (it would keep only the word the collector ignores alive across a call), so
+// the untagged pointer itself is what stays live — on the stack or in a
+// register, where the conservative scan sees it.
+INLINE object_t* task_pending_of(object_t* ptr) {
+    object_t* task = PTR_IS_TASK(ptr) ? TASK_UNTAG(ptr) : (object_t*)NULL;
+    __asm__("" : "+r"(task));
+    return task;
+}
+// A deferred await's test: TASK_PENDING_OF's task is set and still running.
+// Acquire pairs with the completer's exchange, so a complete task's result is
+// readable after it.
+#define TASK_RUNNING(task) ((task) != NULL\
+    && atomic_load_explicit(&((task_t*)(task))->state, memory_order_acquire) != TASK_COMPLETE)
 
 // task_obj_t: task subtype whose result is an object_t* (the compiler's
 // "task$DataPointer" layout — used for YAFL return types String, Int (bigint),

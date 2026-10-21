@@ -194,6 +194,39 @@ class AssertNotTask(Op):
 
 
 @dataclass(frozen=True)
+class Await(Op):
+    """Realises a deferred call's result (async_lower `__defer_awaits`): the
+    suspension point the call no longer is. `source` holds the result as the
+    call returned it, in its task-carrying shape; `task` holds that task
+    UNTAGGED, or NULL once the call has completed — the handle the GC sees
+    (it ignores tagged words, and may move the task). Parks on `task` when
+    it is set, else unwraps `source` into `register`. Lives only inside
+    async_lower; never reaches C."""
+    register: StackVar
+    source: StackVar
+    task: StackVar
+
+    def all_params(self) -> list[RParam]:
+        return self.register.flatten(is_reader=False) + self.source.flatten() + self.task.flatten()
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.register) or predicate(self.source) or predicate(self.task)
+
+    def rename_vars(self, renames: dict[str, str]) -> Await:
+        return dataclasses.replace(self, register=self.register.rename_vars(renames),
+                                   source=self.source.rename_vars(renames),
+                                   task=self.task.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> Await:
+        return dataclasses.replace(self, register=self.register.replace_params(replacer),
+                                   source=self.source.replace_params(replacer),
+                                   task=self.task.replace_params(replacer))
+
+    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        return frozenset({self.source, self.task}), frozenset({self.register})
+
+
+@dataclass(frozen=True)
 class SwitchJump(Op):
     """Dispatch to labeled targets based on an integer condition value.
 
@@ -287,6 +320,9 @@ class Call(Op):
     musttail: bool = False # Current function will end here and the return value is the return of this call
     impure: bool = False   # If True, this call must never be eliminated even if the result is unused
     result_type: t.Type|None = None # Actual return type when register is None (preserves ABI on sret platforms)
+    # Its await is deferred (async_lower `__defer_awaits`): `register` holds the
+    # result in its task-carrying shape, and an `Await` realises it later.
+    deferred: bool = False
 
     def all_params(self) -> list[RParam]:
         return self.function.flatten() + self.parameters.flatten() + (self.register.flatten(is_reader=False) if self.register else [])
@@ -307,8 +343,8 @@ class Call(Op):
     @property
     def may_suspend(self) -> bool:
         """A suspension point for the task lowering: a non-tail call through
-        a function value not proven sync."""
-        return not self.musttail and not self.is_sync
+        a function value not proven sync, whose await is not deferred."""
+        return not self.musttail and not self.is_sync and not self.deferred
 
     def rename_vars(self, renames: dict[str, str]) -> Call:
         return dataclasses.replace(self,

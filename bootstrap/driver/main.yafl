@@ -1234,8 +1234,8 @@ fun main(): System::Int => match(head(args()))
   (m: System::String) => m == "--stage" ? stageMain(tail(args())) : cliMain(args())
   ()                  => cliMain(args())
 
-fun stageMain(argv: List<System::String>): System::Int => stdin().asStream()
-  |> (i, s) => (System::collect(s), i)
-  |> (src, i) => match(src)
-    (text: System::String) => run(text, argv, i)
-    (e: IOError) => (i.close(), 1) |> (c, code) => code
+fun stageMain(argv: List<System::String>): System::Int
+  ret asStream(stdin(), (s: StreamIO) => System::collect(s))
+    |> (i, src) => match(src)
+      (text: System::String) => run(text, argv, i)
+      (e: IOError) => (i.close(), 1) |> (c, code) => code

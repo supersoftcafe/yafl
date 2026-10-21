@@ -16,7 +16,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define TASK_COMPLETE 2   // must match task.c
 
 static object_t*                _flag[1];   // a global lazy stub's flag: a declared root
 static roots_declaration_func_t _prev;

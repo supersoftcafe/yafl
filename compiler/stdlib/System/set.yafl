@@ -166,10 +166,10 @@ fun _setDrain<T>(s: Set<T>): List<T>
 # sort() purely to get a walk, imposing an ordering they do not need and paying
 # O(n log n) to do it. Nothing enforces commutativity — this comment is the
 # contract.
-fun fold<T,U>(s: Set<T>, init: U, f: (:U, :T): U): U
+fun fold<T, [linear] U>(s: Set<T>, init: U, f: (:U, :T): U): U
   ret _chainFold<T,U>(_dictKeyChain<T,()>(s._d), init, f)
 
-fun [tail] _chainFold<T,U>(c: Chain<T>, acc: U, f: (:U, :T): U): U
+fun [tail] _chainFold<T, [linear] U>(c: Chain<T>, acc: U, f: (:U, :T): U): U
   ret match(c)
     (l: ChainLink) => _chainFold<T,U>(l.next, f(acc, l.value), f)
     (e: ChainEnd)  => acc

@@ -142,6 +142,15 @@ fun isTaskParamStruct(resultVar, wrappedType) => match(cgFirstPointerField(wrapp
   ()              => RpNullPointer()   # unreachable (Python raises ValueError)
 
 # The pointer-to-task (suitable for TASK_UNTAG) from a task-carrying result.
+# The task a task-carrying result holds, UNTAGGED, or NULL when it holds a
+# value. A deferred await keeps this beside the result: the GC ignores a
+# tagged word and may move the task, but traces, pins and updates this.
+fun pendingTaskOf(resultVar, wrappedType: CgType): RParam => match(wrappedType)
+  (w: CgTaskWrapper) => RpStructField(resultVar, "task")   # carried untagged already
+  (o: CgType)        => RpRuntimeInvoke("TASK_PENDING_OF",
+                                        RpNewStruct(list1(RpNamedValue("p", taskPtrFrom(resultVar, wrappedType)))),
+                                        CgDataPointer())
+
 fun taskPtrFrom(resultVar, wrappedType) => match(wrappedType)
   (d: CgDataPointer)  => resultVar
   (fp: CgFuncPointer) => RpStructField(resultVar, "o")
