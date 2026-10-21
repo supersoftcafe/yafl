@@ -215,7 +215,7 @@ endfunction()
 
 # Each folder runs at every level of the path's YAFL_TEST_LEVELS, built by the
 # port built at that level: each level switches passes on (inliner,
-# small-function inlining, single-caller fold). (Every level links the same
+# small-function inlining, [inline(always)] fusion). (Every level links the same
 # runtime archive, the one packaged into the stage's System library: the
 # runtime's asserts and poisoning are the C tests' business, not these.) The
 # fast path's one level is -O3, the level that transforms the most.

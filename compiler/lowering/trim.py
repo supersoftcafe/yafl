@@ -4,7 +4,6 @@ from __future__ import annotations
 # from the entrypoint (run between lowering passes).
 import dataclasses
 from dataclasses import dataclass
-from collections import Counter
 from collections.abc import Iterator
 from itertools import chain
 from typing import Iterable
@@ -180,49 +179,6 @@ def removed_unused_stuff(app: Application) -> Application:
     return __removed_unused_stuff(app, _scan_sets(functions=frozenset(["__entrypoint__"])), _scan_sets())
 
 
-def function_reference_counts(app: Application) -> Counter[str]:
-    """How many times each internal function is referenced across the whole
-    program — direct call sites, taken-address function pointers (closures,
-    callbacks), vtable slots and global lazy-init hooks alike. Unlike the
-    dead-code scan above (which only needs set membership), this keeps
-    multiplicity: a function referenced exactly once can be inlined into that
-    sole site and then trimmed with no code-size growth. Built on the same
-    `__scan_*` reference model as the dead-code pass, so the two can never
-    disagree about what references what.
-
-    Call sites are counted directly (the call itself is one reference); the
-    remaining `__scan_rparam` reach (call arguments, the receiver object, the
-    register, global initialisers) is set-deduplicated per node, which is
-    sound for the `== 1` test: a second reference always lives in a separate
-    op or table entry and so is still counted."""
-    counts: Counter[str] = Counter()
-
-    def bump(names: Iterable[str]) -> None:
-        for name in names:
-            counts[name] += 1
-
-    for fn in app.functions.values():
-        for op in fn.ops:
-            if (isinstance(op, Call) and isinstance(op.function, GlobalFunction)
-                    and not op.function.external):
-                counts[op.function.name] += 1   # the call site itself
-                bump(__scan_rparam(op.parameters).functions)
-                if op.register:
-                    bump(__scan_rparam(op.register).functions)
-                if op.function.object:
-                    bump(__scan_rparam(op.function.object).functions)
-            else:
-                bump(__scan_op(op).functions)
-    for o in app.objects.values():
-        bump(rn for _, rn in o.functions)
-    for gl in app.globals.values():
-        if gl.lazy_init_function:
-            counts[gl.lazy_init_function] += 1
-        if gl.init:
-            bump(__scan_rparam(gl.init).functions)
-    return counts
-
-
 def recursive_functions(app: Application) -> frozenset[str]:
     """Internal functions on a cycle of the reference graph: each reaches
     itself, directly or through other functions, closures among them.
@@ -242,8 +198,7 @@ def address_taken_functions(app: Application) -> frozenset[str]:
     call sites enumerate those). Such a function can be called from a site
     the IR cannot enumerate — through a closure, a union slot, the runtime —
     so nothing may be assumed about the arguments it receives. Built on the
-    same `__scan_*` reference model as the dead-code pass and
-    `function_reference_counts`."""
+    same `__scan_*` reference model as the dead-code pass."""
     taken: set[str] = set()
     for fn in app.functions.values():
         for op in fn.ops:

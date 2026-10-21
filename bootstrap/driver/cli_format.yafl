@@ -127,8 +127,7 @@ fun usageOptionals(t: CliTheme): List<Shown> => prepend(usageFlag(t, "-h"),
   prepend(usageValued(t, "-c", "OUTFILE"), prepend(usageValued(t, "-o", "OUTFILE"),
   prepend(usageValued(t, "-L", "DIR"), prepend(usageFlag(t, "--profile"),
   prepend(usageValued(t, "-W", "WARNING"), prepend(usageFlag(t, "--test"),
-  prepend(usageValued(t, "--inline-threshold", "OPS"),
-  list1(usageFlag(t, "--no-single-use-inline"))))))))))))
+  list1(usageValued(t, "--inline-threshold", "OPS")))))))))))
 
 fun usagePositionals(t: CliTheme): List<Shown> =>
   list1(shown("files [files ...]", t.thSumAction, t))
@@ -158,11 +157,9 @@ fun helpOptionals(t: CliTheme): List<HelpEntry> => prepend(
   HelpEntry(withLabel(t, optionString(t, "-W"), "WARNING"),
             "Enable/disable a warning: -Wname, -Wall, -Wno-name"),
   prepend(HelpEntry(optionString(t, "--test"),
-                    "Build a unit-test binary from the [test] functions"), prepend(
-  HelpEntry(withLabel(t, optionString(t, "--inline-threshold"), "OPS"),
-            "Inline functions of fewer than OPS ops at -O2 and above (default 10)"),
-  list1(HelpEntry(optionString(t, "--no-single-use-inline"),
-                  "At -O3, do not fold a function into its only call site"))))))))))))
+                    "Build a unit-test binary from the [test] functions"),
+  list1(HelpEntry(withLabel(t, optionString(t, "--inline-threshold"), "OPS"),
+                  "Inline functions of fewer than OPS ops at -O2 and above (default 5)")))))))))))
 
 let [const] DESCRIPTION: System::String = "My compiler-like tool"
 

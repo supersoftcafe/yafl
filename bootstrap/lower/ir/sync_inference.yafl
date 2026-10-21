@@ -64,25 +64,6 @@ import Bootstrap::StdlibCandidates
 
 # ── public entry points ──────────────────────────────────────────────────────
 
-# The functions called DIRECTLY at a call site that provably cannot
-# suspend, without materialising anything — for the single-caller inline
-# gate. Inlining a callee whose call can suspend merges its live set with the
-# caller's, so every suspension in the merged body saves the combined frame;
-# a sync SITE has no suspension to save across. For a function with one
-# reference, membership says its one call site is sync — including a
-# function sync only through the maybe_async calls it makes.
-fun computeSyncCallTargets(a: CgApp): Set<String>
-  let solved = siSolve(a)
-  ret fold(appFunctions(a), Set(), (acc, f) =>
-        fold(f.fnOps, acc, (acc2, op) => siSyncTarget(solved, f.fnName, op, acc2)))
-
-fun siSyncTarget(solved: SiSolved, fnName: String, op: Op, acc: Set<String>): Set<String> => match(op)
-  (c: OpCall) => match(c.callFunction)
-    (gf: RpGlobalFunction) => appHasFunction(solved.ssFlow.sfApp, gf.name) && siCallIsSync(solved, fnName, c)
-                                ? add(acc, gf.name) : acc
-    (o: RParam)            => acc
-  (o: Op)     => acc
-
 fun inferSync(a: CgApp)
   let solved = siSolve(a)
   let fns = map(appFunctions(a), (f) => siMaterialise(solved, f))

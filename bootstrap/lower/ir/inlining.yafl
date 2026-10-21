@@ -1,14 +1,13 @@
 # bootstrap/inlining.yafl — ported from lowering/inlining.py: the IR inliner.
 # Structural guards are fixed (direct call to an internal global function with
 # NewStruct args, not recursive — recursiveFunctions, which covers a self-call
-# — not musttail, target non-empty and ParallelCall-free); the POLICY decides which eligible targets to pull in —
-# size cutoff / [inline(always)] for the general pass, single-caller for the
-# -O3 fold. A fn is never an inlining SINK if it is __entrypoint__ or
-# bypass_async (async_lower passes those through untouched, so a suspending
-# body inlined into them would never get its state machine). Also here:
-# functionReferenceCounts and recursiveFunctions (trim.py — same __scan model
-# as the dead-code pass, so they can never disagree about what references
-# what).
+# — not musttail, target non-empty and ParallelCall-free); the POLICY decides
+# which eligible targets to pull in — the size cutoff, or [inline(always)]. A
+# fn is never an inlining SINK if it is __entrypoint__ or bypass_async
+# (async_lower passes those through untouched, so a suspending body inlined
+# into them would never get its state machine). Also here: recursiveFunctions
+# (trim.py — same __scan model as the dead-code pass, so they can never
+# disagree about what references what).
 namespace Bootstrap::Lower::Ir
 
 import System
@@ -23,16 +22,15 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun inlCutoffComplexity() => 10
+fun inlCutoffComplexity() => 5
 
-# The IR inliners' knobs (--inline-threshold / --no-single-use-inline):
-# compiler.py's InlineOptions. The small-function cutoff, in ops (-O2 and up),
-# and whether -O3 folds a function into its only call site at any size.
-class [final] InlineOpts(ioThreshold: Int, ioSingleUse: Bool)
+# The IR inliner's knob (--inline-threshold): compiler.py's InlineOptions.
+# The small-function cutoff, in ops (-O2 and up).
+class [final] InlineOpts(ioThreshold: Int)
 
-fun inlineDefaults() => InlineOpts(inlCutoffComplexity(), true)
+fun inlineDefaults() => InlineOpts(inlCutoffComplexity())
 
-# ── the two passes ───────────────────────────────────────────────────────────
+# ── the pass ─────────────────────────────────────────────────────────────────
 
 fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int, cutoff: Int)
   let recursive = recursiveFunctions(a)
@@ -40,23 +38,6 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int, cutoff: Int)
         doInlining(f, "s" + String(epoch), a, recursive, (target) =>
           !atLeast(target.fnOps, cutoff)
           || (inlineAlways && target.fnAlwaysInline))))
-
-# `syncTargets` restricts the fold to callees whose call site provably cannot
-# suspend (computeSyncCallTargets — per SITE, so a callee sync there only
-# through the maybe_async calls it makes qualifies): folding a callee whose
-# call can suspend merges its live set with the caller's, so every
-# suspension in the merged body must save the COMBINED frame into the task
-# state object (unrestricted, a 7-field frame became 137 fields and doubled
-# wall time). A suspending helper keeps its call: its own small frame is all
-# a suspension inside it ever saves.
-fun inlineSingleCallerFunctions(a: CgApp, syncTargets: Set<String>,
-                                epoch: Int)
-  let refcounts = functionReferenceCounts(a)
-  let recursive = recursiveFunctions(a)
-  ret appWithFunctions(a, map(appFunctions(a), (f) =>
-        doInlining(f, "c" + String(epoch), a, recursive, (target) =>
-          sdCountOf(refcounts, target.fnName) == 1
-          && contains(syncTargets, target.fnName))))
 
 # ── the engine ───────────────────────────────────────────────────────────────
 
@@ -264,52 +245,6 @@ fun [tail] inlDropLastB(ops: Chain<Op>, [terminal] acc: ListBuilder<Op>) => matc
   (l: ChainLink)  => match(l.next)
     (nil2: ChainEnd) => acc
     (o: ChainLink)   => inlDropLastB(l.next, push(acc, l.value))
-
-# ── functionReferenceCounts (trim.py:176) ────────────────────────────────────
-# Multiplicity, on the same scan model as the dead-code pass: direct call
-# sites count the call itself plus set-deduplicated scans of the arguments,
-# receiver and register; every other op counts its scan set; vtable slots and
-# global lazy-init hooks count one each; global initialisers count their scan
-# set. Set-dedup per node is sound for the == 1 test: a second reference
-# always lives in a separate op or table entry.
-
-fun functionReferenceCounts(a: CgApp)
-  let c1 = fold(appFunctions(a), Dict(), frcFunction)
-  let c2 = fold(appObjects(a), c1, (acc, o) =>
-        fold(o.objFunctions, acc, (a2, s2) =>
-          sdBump(a2, s2.slotGlobalName)))
-  ret fold(appGlobals(a), c2, frcGlobal)
-
-fun frcFunction(acc: Dict<String, Int>, f: CgFunction) => fold(f.fnOps, acc, frcOp)
-
-fun frcOp(acc: Dict<String, Int>, op) => match(op)
-  (c: OpCall) => match(c.callFunction)
-    (gf: RpGlobalFunction) => gf.external
-      ? frcBumpSet(acc, scanOp(op).ssFunctions)
-      : frcCallSite(acc, c, gf)
-    (o: RParam)             => frcBumpSet(acc, scanOp(op).ssFunctions)
-  (o2: Op)    => frcBumpSet(acc, scanOp(op).ssFunctions)
-
-fun frcCallSite(acc: Dict<String, Int>, c: OpCall,
-                gf: RpGlobalFunction)
-  let c1 = frcBumpSet(sdBump(acc, gf.name),
-                      scanRParam(c.callParameters).ssFunctions)
-  let c2 = match(c.callRegister)
-    (reg: RParam) => frcBumpSet(c1, scanRParam(reg).ssFunctions)
-    ()             => c1
-  ret match(gf.object)
-    (obj: RParam) => frcBumpSet(c2, scanRParam(obj).ssFunctions)
-    ()             => c2
-
-fun frcGlobal(acc: Dict<String, Int>, g2: CgGlobal)
-  let c1 = match(g2.globalLazyInitFunction)
-    (name: String) => sdBump(acc, name)
-    ()              => acc
-  ret match(g2.globalInit)
-    (init: RParam) => frcBumpSet(c1, scanRParam(init).ssFunctions)
-    ()              => c1
-
-fun frcBumpSet(acc: Dict<String, Int>, names: StrSet) => fold(setNames(names), acc, sdBump)
 
 # ── recursiveFunctions (trim.py recursive_functions) ────────────────────────
 # Internal functions on a cycle of the reference graph: each reaches itself,

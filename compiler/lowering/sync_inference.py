@@ -402,21 +402,6 @@ def _build_flow(a: Application) -> _SyncFlow:
     return flow
 
 
-def compute_sync_call_targets(a: Application) -> set[str]:
-    """The functions called DIRECTLY at a call site that provably cannot
-    suspend, without materialising anything — for the single-caller inline
-    gate. Inlining a callee whose call can suspend merges its live set with
-    the caller's, so every suspension in the merged body saves the combined
-    frame; a sync SITE has no suspension to save across. For a function with
-    one reference, membership says its one call site is sync — including a
-    function sync only through the maybe_async calls it makes."""
-    flow = _build_flow(a)
-    return {op.function.name
-            for name, fn in a.functions.items() for op in fn.ops
-            if isinstance(op, Call) and isinstance(op.function, GlobalFunction)
-            and op.function.name in a.functions and flow.call_is_sync(name, op)}
-
-
 def infer_sync(a: Application) -> Application:
     flow = _build_flow(a)
 

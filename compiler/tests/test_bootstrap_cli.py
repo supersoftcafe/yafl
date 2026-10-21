@@ -287,8 +287,7 @@ class TestBootstrapCli(TimedTestCase):
         (["--inline-threshold", "x", "a"], 2, "--inline-threshold"),
         (["--inline-threshold=1.5", "a"], 2, "--inline-threshold"),
         (["--inline-threshold"], 2, "--inline-threshold"),
-        (["--no-single-use-inline=1", "a"], 2, "--no-single-use-inline"),
-        (["--inline-threshold", " 1_0 ", "a"], 1, "a"), (["--no", "a"], 1, "a"),
+        (["--inline-threshold", " 1_0 ", "a"], 1, "a"), (["--no", "a"], 2, "--no"),
         (["-h"], 0, None), (["--he"], 0, None), (["-hx"], 0, None), (["-hxyz"], 0, None),
         (["-hO3"], 0, None), (["-hO9"], 0, None), (["-hc", "x"], 0, None),
         (["-O3", "-h", "-O9"], 0, None), (["-o=x", "-hx"], 0, None),
@@ -318,7 +317,7 @@ class TestBootstrapCli(TimedTestCase):
                         self.assertIn(named, err, f"{name}: the error names {word!r}")
 
     _OPTIONS = ("-h", "-O", "-a", "-c", "-o", "-L", "--lib-path", "--profile", "-W", "--test",
-                "--inline-threshold", "--no-single-use-inline")
+                "--inline-threshold")
 
     def test_help_lists_every_option_at_any_width(self):
         # COLUMNS unset: not a terminal, so the help falls back to 80 columns.
@@ -389,9 +388,7 @@ class TestBootstrapCli(TimedTestCase):
     def test_inline_options_c(self):
         self._write("inl.yafl", _INLINED)
         default = self._both_c("-O3", "inl.yafl")
-        for opts in (("--inline-threshold", "0"), ("--inline-threshold", "40"),
-                     ("--no-single-use-inline",),
-                     ("--inline-threshold=5", "--no-single-use-inline")):
+        for opts in (("--inline-threshold", "0"), ("--inline-threshold=40",)):
             with self.subTest(opts=opts):
                 self.assertNotEqual(default, self._both_c("-O3", *opts, "inl.yafl"))
 

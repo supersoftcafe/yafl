@@ -38,6 +38,11 @@ maybe-suspends protocol (tag check, continuation registration, frame
 allocation, resume hop). Merging a mid-size async callee deletes a frame and
 a hop from every await chain.
 
+(10-21: the single-caller fold has since been REMOVED. Measured on the port,
+it bought no self-build speed at thresholds 5 and 10, cost ~5.5 MB of C and
+~5% .text — a folded helper lands in BOTH copies of a caller that async
+lowering splits into hot path + state machine.)
+
 The O3 regression (137-field frames from the single-caller fold merging
 suspending helpers) is not evidence against this — it is evidence against
 doing it UNBUDGETED. The current blanket sync-only gate over-corrects.

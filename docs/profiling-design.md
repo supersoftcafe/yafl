@@ -69,8 +69,8 @@ and profile mode has its own byte gates (`test_bootstrap_c_o0p`/`_o2p`).
 
 ## Inlining policy
 
-Under `--profile` the two IR inliner blocks (-O2 small-function, -O3
-single-caller) are DISABLED: they are the only passes that erase whole
+Under `--profile` the IR inliner (-O2 small-function, -O3
+`[inline(always)]`) is DISABLED: its rounds are the only passes that erase whole
 functions, and a profile must attribute counts and time to the functions the
 source declares. Every other pass runs, at every -O level.
 
@@ -81,7 +81,7 @@ functions exist in NO binary at any -O level today: the profiler honestly
 reports the binary. Consequence: a tiny helper below the inline threshold
 will not appear as a row; its cost lands in its callers. Everything of
 measurable weight — above-threshold functions, `[inline(always)]` chains
-(which only fuse at -O3, now gated off), O3 single-caller folds — is visible
+(which only fuse at -O3, now gated off) — is visible
 under `--profile`.
 
 ## Attribution semantics

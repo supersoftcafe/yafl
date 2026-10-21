@@ -166,11 +166,9 @@ def __ensure_lazy_machinery(a: Application) -> None:
 
 @dataclasses.dataclass(frozen=True)
 class InlineOptions:
-    """The IR inliners' knobs (main.py --inline-threshold /
-    --no-single-use-inline): the small-function cutoff, in ops (-O2 and up),
-    and whether -O3 folds a function into its only call site at any size."""
+    """The IR inliner's knob (main.py --inline-threshold): the small-function
+    cutoff, in ops (-O2 and up)."""
     threshold: int = lowering.inlining.CUTOFF_COMPLEXITY
-    single_use: bool = True
 
 
 def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, just_testing = False, optimization_level: int = 0, union_discriminators: dict[str, int] | None = None, headers: tuple[str, ...] = ("yafl.h",), profile: bool = False,
@@ -223,7 +221,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # Inlining (skipped at -O0/-O1): -O2 inlines small functions only; -O3 also
     # inlines `[inline(always)]` functions regardless of size, recursively (to a
     # fixpoint) so a chain of marked stages fuses fully into its consumer.
-    # Under --profile both IR inliners are disabled: they are the only passes
+    # Under --profile the IR inliner is disabled: its rounds are the only passes
     # that ERASE whole functions, and a profile must attribute counts and time
     # to the functions the source declares. (The AST inliner still runs — its
     # sub-threshold/bare-[inline] inlining is structurally load-bearing at all
@@ -242,32 +240,6 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
                 a = lowering.trim.removed_unused_stuff(
                     lowering.inlining.inline_small_functions(a, inline_always, inl_round, inline.threshold))
                 shape = tuple((n, len(f.ops)) for n, f in a.functions.items())
-                if shape == prev_shape:
-                    break
-                prev_shape = shape
-
-        # Single-caller fold (-O3): inline any function referenced exactly once
-        # into its sole call site regardless of size — no code growth — then
-        # trim the now-unreferenced original. Runs after the small/always passes
-        # so it mops up the residual one-shot helpers a fused pipeline leaves.
-        # Each round first drops vtable entries no virtual call dispatches and
-        # re-devirtualises: a devirtualised slot's dead entry is what pins a
-        # trait witness's method above refcount 1, and folding that method can
-        # in turn kill an object whose removal makes another slot single-
-        # implementation — the cascade that fuses a stream pipeline into its
-        # drain with no [inline(always)] annotations.
-        if optimization_level >= 3 and not profile and inline.single_use:
-            prev_shape = None
-            for sc_round in range(16):  # bounded; recount each round as chains collapse
-                a = lowering.vtable_trim.trim_unused_vtable_slots(a)
-                a = lowering.globalfuncs.discover_global_function_calls(a)
-                # Recomputed each round: folding a callee away can newly prove
-                # a call site sync, unlocking the next fold in the chain.
-                sync_targets = lowering.sync_inference.compute_sync_call_targets(a)
-                a = lowering.trim.removed_unused_stuff(
-                    lowering.inlining.inline_single_caller_functions(a, sync_targets, sc_round))
-                shape = (tuple((n, len(f.ops)) for n, f in a.functions.items()),
-                         tuple(sorted((n, len(o.functions)) for n, o in a.objects.items())))
                 if shape == prev_shape:
                     break
                 prev_shape = shape
