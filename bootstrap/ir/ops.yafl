@@ -98,7 +98,15 @@ fun opTestParams(op, pred) => match(op)
   (x: OpCall) => opTestParamsCall(x, pred)
   (x: OpReturn) => pred(x.returnValue)
   (x: OpAwait) => pred(x.awaitRegister) || pred(x.awaitSource)
-  (o: Op) => false   # base default: False (Label/Jump/NewObject/ReturnVoid/Abort/ParallelCall/Phi don't override)
+  (x: OpLabel)        => false
+  (x: OpJump)         => false
+  (x: OpNewObject)    => false
+  (x: OpReturnVoid)   => false
+  (x: OpAbort)        => false
+  (x: OpParallelCall) => false
+  (x: OpPhi)          => false
+  (x: OpProfEnter)    => false
+  (x: OpProfLeave)    => false
 
 fun opTestParamsCall(x: OpCall, pred)
   ret pred(x.callFunction) || pred(x.callParameters) || opTestParamsCallRegister(x.callRegister, pred)
@@ -121,7 +129,12 @@ fun opAllParams(op) => match(op)
   (x: OpParallelCall) => opAllParamsParallel(x)
   (x: OpPhi) => opAllParamsPhi(x)
   (x: OpAwait) => concat(rpFlatten(x.awaitRegister, false), rpFlatten(x.awaitSource, true))
-  (o: Op) => List()   # base default: [] (Label/Jump/ReturnVoid/Abort don't override)
+  (x: OpLabel)      => List()
+  (x: OpJump)       => List()
+  (x: OpReturnVoid) => List()
+  (x: OpAbort)      => List()
+  (x: OpProfEnter)  => List()
+  (x: OpProfLeave)  => List()
 
 fun opAllParamsIfTask(x: OpIfTask)
   ret concat(concat(rpFlatten(x.taskCondition, true), rpFlatten(x.taskSource, true)),
@@ -174,7 +187,10 @@ fun opRenameVars(op, renames: List<RpRename>) => match(op)
   (x: OpPhi) => OpPhi(rpRenameVars(x.phiTarget, renames),
                       map(x.phiSources, (s) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
                       x.phiSavedVars)
-  (o: Op) => op   # base default: self (ReturnVoid/Abort don't override)
+  (x: OpReturnVoid) => op
+  (x: OpAbort)      => op
+  (x: OpProfEnter)  => op
+  (x: OpProfLeave)  => op
 
 fun opRenameVarsOpt(o: RParam|None, renames: List<RpRename>) => match(o)
   (v: RParam) => rpRenameVars(v, renames)
@@ -206,7 +222,12 @@ fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op => match(op)
   (x: OpPhi) => with x(phiTarget = replacer(x.phiTarget),
                        phiSources = map(x.phiSources,
                                         (s) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
-  (o: Op) => op   # base default: self (Label/Jump/ReturnVoid/Abort don't override)
+  (x: OpLabel)      => op
+  (x: OpJump)       => op
+  (x: OpReturnVoid) => op
+  (x: OpAbort)      => op
+  (x: OpProfEnter)  => op
+  (x: OpProfLeave)  => op
 
 fun opReplaceParamsOpt(o: RParam|None, replacer): RParam|None => match(o)
   (v: RParam) => rpReplaceParams(v, replacer)
@@ -233,7 +254,12 @@ fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>) => match(op)
   (x: OpParallelCall) => opGetLiveVarsParallel(x)
   (x: OpPhi) => opGetLiveVarsPhi(x)
   (x: OpAwait) => (list1(x.awaitSource), list1(x.awaitRegister))
-  (o: Op) => (List(), List())   # base default: (set(), set()) (Label/Jump/ReturnVoid/Abort don't override)
+  (x: OpLabel)      => (List(), List())
+  (x: OpJump)       => (List(), List())
+  (x: OpReturnVoid) => (List(), List())
+  (x: OpAbort)      => (List(), List())
+  (x: OpProfEnter)  => (List(), List())
+  (x: OpProfLeave)  => (List(), List())
 
 fun opGetLiveVarsMove(x: OpMove): (reads: List<RParam>, writes: List<RParam>)
   let live = rpGetLiveVars(x.moveSource)
@@ -508,7 +534,12 @@ fun opReadVarNames(op) => match(op)
   (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadVarNames(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadVarNames(s2.sourceValue)))
   (aw: OpAwait)        => rpReadVarNames(aw.awaitSource)
-  (o: Op)              => List()
+  (x: OpLabel)      => List()
+  (x: OpJump)       => List()
+  (x: OpReturnVoid) => List()
+  (x: OpAbort)      => List()
+  (x: OpProfEnter)  => List()
+  (x: OpProfLeave)  => List()
 
 fun rpOptTargetReadNames(r: RParam|None): List<String> => match(r)
   (x: RParam) => rpTargetReadNames(x)
@@ -587,4 +618,9 @@ fun opReadStackVars(op) => match(op)
   (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadStackVars(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadStackVars(s2.sourceValue)))
   (aw: OpAwait)        => rpReadStackVars(aw.awaitSource)
-  (o: Op)              => List()
+  (x: OpLabel)      => List()
+  (x: OpJump)       => List()
+  (x: OpReturnVoid) => List()
+  (x: OpAbort)      => List()
+  (x: OpProfEnter)  => List()
+  (x: OpProfLeave)  => List()
