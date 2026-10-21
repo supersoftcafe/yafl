@@ -943,8 +943,8 @@ fun alUmValued(c: OpCall, n)
 # ── deferred awaits (async_lower.py __defer_awaits) ─────────────────────────
 # A call that may suspend is not waited for where it is made, but where its
 # result is used. Its result is MARKED: kept in the task-carrying shape the
-# callee returned, beside that task untagged (pendingTaskOf — the handle the
-# GC sees). A copy or field read of a marked variable is VIRTUAL — the root
+# callee returned, which the collector reads as a reference to the task
+# (gc_ref, yafl.h). A copy or field read of a marked variable is VIRTUAL — the root
 # plus a field path — and costs nothing, so destructuring a pending tuple waits
 # for nothing. Every op that reads a marked variable is preceded by an OpAwait
 # of its root, which re-defines the root under its own name (this IR is past
@@ -952,7 +952,7 @@ fun alUmValued(c: OpCall, n)
 # of each virtual variable it reads. An OpAwait parks only on a task still
 # running: a completed one is read in place, so every later use is a test.
 
-class [final] DaRoot(drVar: RParam, drSource: RParam, drTask: RParam)
+class [final] DaRoot(drVar: RParam, drSource: RParam)
 class [final] DaMark(dmVar: RParam, dmRoot: RParam, dmPath: List<String>)
 class [final] DaCounts(dcDefs: Dict<String, Int>, dcReads: Dict<String, Int>)
 
@@ -967,10 +967,8 @@ fun alDeferAwaits(f: CgFunction): CgFunction
                                                          DaMark(r.drVar, r.drVar, List())))
   let virtuals = daVirtuals(ops, counts, marked0, Set())
   let out = daEmit(chain(ops), 0, virtuals.dvSkip, virtuals.dvMarked, rootIx, seqBuilder())
-  let vars = fold(roots, builder(), (acc, r: DaRoot) =>
-        push(push(acc, CgField(stackVarName(r.drSource), rpGetType(r.drSource))),
-             CgField(stackVarName(r.drTask), CgDataPointer())))
-  ret cgFunctionWith(f, build(out), cgStructAdd(f.fnStackVars, CgStruct(build(vars))))
+  let vars = map(roots, (r: DaRoot) => CgField(stackVarName(r.drSource), rpGetType(r.drSource)))
+  ret cgFunctionWith(f, build(out), cgStructAdd(f.fnStackVars, CgStruct(vars)))
 
 fun daCount(acc: DaCounts, op): DaCounts
   let lv = opGetLiveVars(op)
@@ -998,8 +996,7 @@ fun daRootOf(op, counts: DaCounts): DaRoot|None => match(op)
 
 fun daRootOfRegister(reg: RParam, counts: DaCounts): DaRoot|None => match(reg)
   (r: RpStackVar) => daSingle(counts, r) && sdCountOf(counts.dcReads, r.name) > 0
-    ? DaRoot(r, RpStackVar(wrapReturnType(r.fieldType), r.name + "$pending"),
-             RpStackVar(CgDataPointer(), r.name + "$ptask"))
+    ? DaRoot(r, RpStackVar(wrapReturnType(r.fieldType), r.name + "$pending"))
     : None
   (o: RParam)     => None
 
@@ -1081,32 +1078,33 @@ fun daUse(rest: Chain<String>, m: DaMark, marked: Dict<String, DaMark>,
   ret daUses(rest, marked, rootIx, fresh ? add(awaited, rootName) : awaited, acc2)
 
 fun daAwaitRoot(r: DaRoot|None, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(r)
-  (dr: DaRoot) => push(acc, OpAwait(dr.drVar, dr.drSource, dr.drTask, Dict()))
+  (dr: DaRoot) => push(acc, OpAwait(dr.drVar, dr.drSource, Dict()))
   ()            => acc
 
 fun daEmitOp(op, rootIx: Dict<String, DaRoot>, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(op)
   (c: OpCall) => match(c.callRegister)
     (reg: RParam) => match(get(rootIx, stackVarName(reg)))
-      (dr: DaRoot) => push(push(acc, with c(callRegister = dr.drSource, callDeferred = true)),
-                           OpMove(dr.drTask, pendingTaskOf(dr.drSource, rpGetType(dr.drSource)),
-                                  false, Dict()))
+      (dr: DaRoot) => push(acc, with c(callRegister = dr.drSource, callDeferred = true))
       ()            => push(acc, op)
     ()             => push(acc, op)
   (o: Op)     => push(acc, op)
 
 # A deferred await's test, and the value of one that did not park: from the
 # completed task when there was one, else as the call returned it.
-fun alTaskRunning(task: RParam) => RpRuntimeInvoke("TASK_RUNNING",
-                                                   RpNewStruct(list1(RpNamedValue("task", task))),
-                                                   CgInt(32))
+# The task an Await's pending value holds, untagged, or NULL.
+fun alAwaitTask(aw: OpAwait) => pendingTaskOf(aw.awaitSource, rpGetType(aw.awaitSource))
+
+fun alTaskRunning(aw: OpAwait) => RpRuntimeInvoke("TASK_RUNNING",
+                                                  RpNewStruct(list1(RpNamedValue("task", alAwaitTask(aw)))),
+                                                  CgInt(32))
 
 fun alAwaitValue(aw: OpAwait, label: String): List<Op>
   let resultType = rpGetType(aw.awaitRegister)
-  ret concat(list3<Op>(OpJumpIf(label + "$done", aw.awaitTask, false, Dict()),
+  ret concat(list3<Op>(OpJumpIf(label + "$done", alAwaitTask(aw), false, Dict()),
                        OpMove(aw.awaitRegister, unwrapValue(aw.awaitSource, resultType), false, Dict()),
                        OpJump(label + "$end", Dict())),
              list3<Op>(OpLabel(label + "$done", Dict()),
-                       OpMove(aw.awaitRegister, alTaskResultOf(aw.awaitTask, resultType), false, Dict()),
+                       OpMove(aw.awaitRegister, alTaskResultOf(alAwaitTask(aw), resultType), false, Dict()),
                        OpLabel(label + "$end", Dict())))
 
 # __extract_from_task: the result a completed task carries.
@@ -1382,7 +1380,7 @@ fun alHotAwait(bb: ABlock, aw: OpAwait, fnResult, i,
   let ops1 = pushAll(acc.haOps,
                  alConvertReturnsHot(alDropLast(bb.abOps),
                                      fnResult))
-  let ops2 = push(ops1, OpIfTask(alTaskRunning(aw.awaitTask), aw.awaitTask, alSvAsyncTask(), alSvCallId(),
+  let ops2 = push(ops1, OpIfTask(alTaskRunning(aw), alAwaitTask(aw), alSvAsyncTask(), alSvCallId(),
                                  i + 1, "$asynccommon", Dict()))
   ret HotAcc(pushAll(ops2, alAwaitValue(aw, "$await$" + String(i))),
              acc.haWrapFields)
@@ -1798,13 +1796,13 @@ fun alSmAwait(aw: OpAwait, f: CgFunction, idxField, i,
               [terminal] acc: SmAcc, saveStores: List<Op>): SmAcc
   let asyncLabel = "$async_sm$" + String(i)
   let check = RpRuntimeInvoke("UNLIKELY",
-                              RpNewStruct(list1(RpNamedValue("x", alTaskRunning(aw.awaitTask)))),
+                              RpNewStruct(list1(RpNamedValue("x", alTaskRunning(aw)))),
                               CgInt(32))
   let ops1 = pushAll(push(acc.saOps, OpJumpIf(asyncLabel, check, false, Dict())),
                      alAwaitValue(aw, "$await_sm$" + String(i)))
   let cold1 = pushAll(push(acc.saCold, OpLabel(asyncLabel, Dict())), saveStores)
   ret SmAcc(push(ops1, OpLabel("$resume$" + String(i), Dict())),
-            pushAll(cold1, alEmitSuspendToAsync(idxField, i + 1, aw.awaitTask, f.fnName)),
+            pushAll(cold1, alEmitSuspendToAsync(idxField, i + 1, alAwaitTask(aw), f.fnName)),
             acc.saWrapFields)
 
 fun alSmCall(c, f: CgFunction, idxField, i,

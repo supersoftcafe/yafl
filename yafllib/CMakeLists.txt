@@ -144,8 +144,11 @@ add_yafl_test(test_gc_publish_step)
 # stub's flag root by lazy_enqueue_waiter. Unpublished, it is reclaimed while
 # the flag still points at it.
 add_yafl_test(test_gc_lazy_step)
-# Both drive the collector by hand on one thread.
-set_tests_properties(test_gc_publish_step test_gc_lazy_step PROPERTIES ENVIRONMENT
+# test_gc_tagged_task: a task referenced only by a TASK-tagged word — a pending
+# result, in a heap field or a stack slot — survives a cycle.
+add_yafl_test(test_gc_tagged_task)
+# All three drive the collector by hand on one thread.
+set_tests_properties(test_gc_publish_step test_gc_lazy_step test_gc_tagged_task PROPERTIES ENVIRONMENT
     "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_gen: stepped test of immutability-based generations — promotion after
 # GC_PROMOTE_AFTER prunes, exemption from minors, reclamation by a major.

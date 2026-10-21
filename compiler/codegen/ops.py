@@ -197,33 +197,30 @@ class AssertNotTask(Op):
 class Await(Op):
     """Realises a deferred call's result (async_lower `__defer_awaits`): the
     suspension point the call no longer is. `source` holds the result as the
-    call returned it, in its task-carrying shape; `task` holds that task
-    UNTAGGED, or NULL once the call has completed — the handle the GC sees
-    (it ignores tagged words, and may move the task). Parks on `task` when
-    it is set, else unwraps `source` into `register`. Lives only inside
+    call returned it, in its task-carrying shape — the collector reads a
+    task-tagged word as a reference to its task (`gc_ref`, yafl.h). Parks on
+    the task while it is still running; otherwise takes the value, from the
+    completed task or as returned, into `register`. Lives only inside
     async_lower; never reaches C."""
     register: StackVar
     source: StackVar
-    task: StackVar
 
     def all_params(self) -> list[RParam]:
-        return self.register.flatten(is_reader=False) + self.source.flatten() + self.task.flatten()
+        return self.register.flatten(is_reader=False) + self.source.flatten()
 
     def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
-        return predicate(self.register) or predicate(self.source) or predicate(self.task)
+        return predicate(self.register) or predicate(self.source)
 
     def rename_vars(self, renames: dict[str, str]) -> Await:
         return dataclasses.replace(self, register=self.register.rename_vars(renames),
-                                   source=self.source.rename_vars(renames),
-                                   task=self.task.rename_vars(renames))
+                                   source=self.source.rename_vars(renames))
 
     def replace_params(self, replacer: Callable[[RParam], RParam]) -> Await:
         return dataclasses.replace(self, register=self.register.replace_params(replacer),
-                                   source=self.source.replace_params(replacer),
-                                   task=self.task.replace_params(replacer))
+                                   source=self.source.replace_params(replacer))
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
-        return frozenset({self.source, self.task}), frozenset({self.register})
+        return frozenset({self.source}), frozenset({self.register})
 
 
 @dataclass(frozen=True)

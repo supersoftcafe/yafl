@@ -206,9 +206,8 @@ def is_task_param(result_var: RParam, wrapped_type: Type) -> RParam:
 
 
 def pending_task_of(result_var: RParam, wrapped_type: Type) -> RParam:
-    """The task a task-carrying result holds, UNTAGGED, or NULL when it holds
-    a value. A deferred await keeps this beside the result: the GC ignores a
-    tagged word and may move the task, but traces, pins and updates this."""
+    """The task a task-carrying result holds, untagged, or NULL when it holds
+    a value — what a deferred await tests and parks on."""
     if isinstance(wrapped_type, TaskWrapper):
         return StructField(result_var, "task")   # carried untagged already
     return RuntimeInvoke("TASK_PENDING_OF",

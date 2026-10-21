@@ -530,6 +530,13 @@ enum {
 };
 
 #define PTR_IS_OBJECT(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == 0)
+// A reference word as the COLLECTOR reads it. A TASK-tagged word is a pending
+// result — a call's task-carrying return, which the compilers keep as
+// returned in C locals and async frames until its use awaits it — and refers
+// to its task. Tasks are mutable, so they never move and the tag never needs
+// care when a reference is updated. Every other tagged word is a scalar.
+#define gc_ref(word) ((object_t*)((((uintptr_t)(word)) & PTR_TAG_MASK) == PTR_TAG_TASK\
+    ? ((uintptr_t)(word) & ~(uintptr_t)PTR_TAG_TASK) : (uintptr_t)(word)))
 #define PTR_IS_TASK(ptr)    (((uintptr_t)(ptr)&PTR_TAG_TASK) != 0)
 #define PTR_IS_INTEGER(ptr) (((uintptr_t)(ptr)&PTR_TAG_INTEGER) != 0)
 #define PTR_IS_STRING(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == PTR_TAG_STRING)
@@ -1386,20 +1393,9 @@ typedef struct task_s {
 // Strip the PTR_TAG_TASK bit and yield a YAFL object pointer.  Callers that
 // need task-specific fields cast to (task_t*) themselves.
 #define TASK_UNTAG(ptr) ((object_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
-// The task a task-carrying result word holds, UNTAGGED, or NULL when it holds
-// a value. A deferred await keeps this beside the result: the collector
-// ignores tagged words and may move the task, but traces, pins and updates
-// this one.
-#define TASK_PENDING_OF(ptr) task_pending_of((object_t*)(ptr))
-// Laundered: the C optimiser may not recompute the copy from the tagged word
-// (it would keep only the word the collector ignores alive across a call), so
-// the untagged pointer itself is what stays live — on the stack or in a
-// register, where the conservative scan sees it.
-INLINE object_t* task_pending_of(object_t* ptr) {
-    object_t* task = PTR_IS_TASK(ptr) ? TASK_UNTAG(ptr) : (object_t*)NULL;
-    __asm__("" : "+r"(task));
-    return task;
-}
+// The task a task-carrying result word holds, untagged, or NULL when it holds
+// a value — what a deferred await tests and parks on.
+#define TASK_PENDING_OF(ptr) (PTR_IS_TASK(ptr) ? TASK_UNTAG(ptr) : (object_t*)NULL)
 // A deferred await's test: TASK_PENDING_OF's task is set and still running.
 // Acquire pairs with the completer's exchange, so a complete task's result is
 // readable after it.

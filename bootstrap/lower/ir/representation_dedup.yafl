@@ -385,10 +385,9 @@ fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
   (x: OpProfEnter)     => rddInt(rddSaved(rddS(e, "oE;"), x.profEnterSavedVars), x.profEnterFnId)
   (x: OpProfLeave)     => rddSaved(rddS(e, "oF;"), x.profLeaveSavedVars)
   # Unreachable: an Await exists only inside async_lower, after dedup.
-  (x: OpAwait)         => rddParam(rddParam(rddParam(rddSaved(rddS(e, "oW;"), x.awaitSavedVars),
-                                                     cx, x.awaitRegister),
-                                            cx, x.awaitSource),
-                                   cx, x.awaitTask)
+  (x: OpAwait)         => rddParam(rddParam(rddSaved(rddS(e, "oW;"), x.awaitSavedVars),
+                                            cx, x.awaitRegister),
+                                   cx, x.awaitSource)
 
 fun [tail] rddOps(e: RddEnc, cx: RddCx, s: Segment<Op>|None, i: Int32): RddEnc => match(s)
   (nil: None)        => rddS(e, "]")

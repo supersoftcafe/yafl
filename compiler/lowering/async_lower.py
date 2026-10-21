@@ -733,8 +733,8 @@ def __expand_sync_calls(fn: Function) -> Function:
 #
 # A call that may suspend is not waited for where it is made, but where its
 # result is used. Its result is MARKED: kept in the task-carrying shape the
-# callee returned, beside that task untagged (pending_task_of — the handle the
-# GC sees). A copy or field read of a marked variable is VIRTUAL — the root
+# callee returned, which the collector reads as a reference to the task
+# (`gc_ref`, yafl.h). A copy or field read of a marked variable is VIRTUAL — the root
 # plus a field path — and costs nothing, so destructuring a pending tuple waits
 # for nothing. Every op that reads a marked variable is preceded by an `Await`
 # of its root, which re-defines the root under its own name (this IR is past
@@ -743,19 +743,24 @@ def __expand_sync_calls(fn: Function) -> Function:
 # running: a completed one is read in place, so every later use is a test.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def __task_running(task: StackVar) -> RParam:
-    return RuntimeInvoke("TASK_RUNNING", NewStruct((("task", task),)), Int(32))
+def __await_task(op: Await) -> RParam:
+    """The task an Await's pending value holds, untagged, or NULL."""
+    return pending_task_of(op.source, op.source.get_type())
+
+
+def __task_running(op: Await) -> RParam:
+    return RuntimeInvoke("TASK_RUNNING", NewStruct((("task", __await_task(op)),)), Int(32))
 
 
 def __await_value(op: Await, label: str) -> list[Op]:
     """An Await that did not park: the value from the completed task when
     there was one, else as the call returned it."""
     result_type = op.register.get_type()
-    return [JumpIf(f"{label}$done", op.task),
+    return [JumpIf(f"{label}$done", __await_task(op)),
             Move(op.register, unwrap_value(op.source, result_type)),
             Jump(f"{label}$end"),
             Label(f"{label}$done"),
-            Move(op.register, __extract_from_task(op.task, result_type,
+            Move(op.register, __extract_from_task(__await_task(op), result_type,
                                                   __task_subtype_name(result_type))),
             Label(f"{label}$end")]
 
@@ -776,17 +781,15 @@ def __defer_awaits(fn: Function) -> Function:
     def single(v: LParam | None) -> bool:
         return isinstance(v, StackVar) and definitions.get(v.name) == 1
 
-    # root name -> (pending source, untagged task);
-    # marked name -> (its variable, root, field path under the root)
-    roots: dict[str, tuple[StackVar, StackVar]] = {}
+    # root name -> pending source; marked name -> (its variable, root, field path)
+    roots: dict[str, StackVar] = {}
     marked: dict[str, tuple[StackVar, StackVar, tuple[str, ...]]] = {}
     for op in ops:
         if (isinstance(op, Call) and op.may_suspend and single(op.register)
                 and reads.get(op.register.name, 0) > 0):
             r = op.register
             wrapped = wrap_return_type(r.get_type())
-            roots[r.name] = (StackVar(wrapped, f"{r.name}$pending"),
-                             StackVar(DataPointer(), f"{r.name}$ptask"))
+            roots[r.name] = StackVar(wrapped, f"{r.name}$pending")
             marked[r.name] = (r, r, ())
     if not roots:
         return fn
@@ -826,18 +829,14 @@ def __defer_awaits(fn: Function) -> Function:
             var, root, path = marked[name]
             if root.name not in awaited:
                 awaited.add(root.name)
-                source, task = roots[root.name]
-                new_ops.append(Await(root, source, task))
+                new_ops.append(Await(root, roots[root.name]))
             if var is not root:
                 new_ops.append(Move(var, project(root, path)))
         if isinstance(op, Call) and isinstance(op.register, StackVar) and op.register.name in roots:
-            source, task = roots[op.register.name]
-            new_ops.append(dataclasses.replace(op, register=source, deferred=True))
-            new_ops.append(Move(task, pending_task_of(source, source.get_type())))
+            new_ops.append(dataclasses.replace(op, register=roots[op.register.name], deferred=True))
         else:
             new_ops.append(op)
-    new_vars = tuple(field for source, task in roots.values()
-                     for field in ((source.name, source.get_type()), (task.name, DataPointer())))
+    new_vars = tuple((source.name, source.get_type()) for source in roots.values())
     return dataclasses.replace(fn, ops=tuple(new_ops), stack_vars=fn.stack_vars + Struct(new_vars))
 
 
@@ -1048,8 +1047,8 @@ def __create_hot_path_func(fn: Function, state_name: str,
             # running, else take the value: from the task, or as returned.
             hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], fn.result))
             hot_ops.append(IfTask(
-                condition=__task_running(call_op.task),
-                task_source=call_op.task,
+                condition=__task_running(call_op),
+                task_source=__await_task(call_op),
                 task_lhs=__sv_async_task,
                 call_id_lhs=__sv_call_id,
                 call_id=i + 1,
@@ -1427,12 +1426,12 @@ def __create_state_machine_func(fn: Function, state_name: str,
             # running; on the sync edge, take the value.
             async_sm_label = f"$async_sm${i}"
             sm_ops.append(JumpIf(async_sm_label, RuntimeInvoke(
-                "UNLIKELY", NewStruct((("x", __task_running(call_op_orig.task)),)), Int(32))))
+                "UNLIKELY", NewStruct((("x", __task_running(call_op_orig)),)), Int(32))))
             sm_ops.extend(__await_value(call_op_orig, f"$await_sm${i}"))
             sm_ops.append(Label(f"$resume${i}"))
             cold_ops.append(Label(async_sm_label))
             cold_ops.extend(save_stores)
-            cold_ops.extend(_emit_suspend_to_async(idx_field, i + 1, call_op_orig.task, fn.name))
+            cold_ops.extend(_emit_suspend_to_async(idx_field, i + 1, __await_task(call_op_orig), fn.name))
             continue
 
         result_type     = call_op_orig.register.get_type() if call_op_orig.register else None
