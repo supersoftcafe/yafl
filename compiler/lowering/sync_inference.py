@@ -25,9 +25,9 @@ Every node starts sync and can only FALL; a node falls when any of its
 sources falls:
 
   function F     every call's sources (tail calls too: F returns the
-                 callee's task); ParallelCall, a `TagTask` return, being
-                 foreign or hand-built (`bypass_async`) without `sync`, make
-                 F fall outright
+                 callee's task); ParallelCall, or being foreign or
+                 hand-built (`bypass_async`) without `sync`, makes F fall
+                 outright
   maybe_async F  the same, except a call of one of F's own function
                  parameters — called, or handed on to a callee — does not
                  count. F is MAYBE_ASYNC when this holds but F falls: it keeps
@@ -83,19 +83,10 @@ from codegen.ir import Function, Object
 from codegen.ops import Call, Move, Op, ParallelCall, Phi, Return
 from codegen.param import (
     GlobalFunction, GlobalVar, NewStruct, NewStructTyped, NullPointer,
-    ObjectField, RParam, StackVar, StructField, TagTask, VirtualFunction,
+    ObjectField, RParam, StackVar, StructField, VirtualFunction,
     ZeroOf,
 )
 from codegen.typedecl import FuncPointer, Struct, Type
-
-
-def _returns_tagged_task(fn: Function) -> bool:
-    """A function whose body returns `TagTask(...)` produces a tagged
-    task pointer — its callers' `PTR_IS_TASK` check will fire and they
-    must enter the async path.  Such a function cannot be sync,
-    regardless of whether its ops contain `Call` nodes."""
-    return any(isinstance(op, Return) and isinstance(op.value, TagTask)
-               for op in fn.ops)
 
 
 def _is_fun(t: Type) -> bool:
@@ -378,7 +369,7 @@ def _build_flow(a: Application) -> _SyncFlow:
 
     for name, fn in a.functions.items():
         if (fn.foreign_symbol is not None or fn.bypass_async
-                or name == "__entrypoint__" or _returns_tagged_task(fn)
+                or name == "__entrypoint__"
                 or any(isinstance(op, ParallelCall) for op in fn.ops)):
             flow.fall(("fn", name))
             flow.fall(("mfn", name))
