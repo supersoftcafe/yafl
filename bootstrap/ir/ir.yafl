@@ -54,9 +54,8 @@ class [final] CgGlobal(globalName: String, globalType: CgType, globalInit: RPara
 
 # ── small shared helpers ─────────────────────────────────────────────────────
 
-fun forceOp(x: Op|None) => match(x)
-  (o: Op) => o
-  ()      => OpAbort("", Dict())   # unreachable: only used at in-bounds indices
+# The default is unreachable: only used at in-bounds indices.
+fun forceOp(x: Op|None): Op => x ?? OpAbort("", Dict())
 
 fun pyStrOpt(o: String|None)
   # Mirrors Python's f"{value}" on a str|None: None interpolates as "None".
@@ -320,9 +319,8 @@ fun cgStripLabelPut(labels, op, i: Int): Dict<String, Int> => match(op)
   (l: OpLabel) => put(labels, l.labelName, i)
   (o: Op)       => labels
 
-fun sxOpAt(ix: StripIx, i: Int) => match(get(ix.sxOps, i))
-  (op: Op) => op
-  ()        => OpReturnVoid(Dict())   # unreachable: 0 <= i < sxN
+# The default is unreachable: 0 <= i < sxN.
+fun sxOpAt(ix: StripIx, i: Int): Op => get(ix.sxOps, i) ?? OpReturnVoid(Dict())
 
 fun labelIndexLookup(ix: StripIx, name: String) => match(get(ix.sxLabels, name))
   (i: Int) => i

@@ -290,9 +290,8 @@ fun alRwAt(st: AlLive, i: Int): AlRw => match(get(st.lsRw, i))
   (rw: AlRw) => rw
   ()         => AlRw(Dict(), List())   # unreachable: 0 <= i < lsN
 
-fun alOpAt(st: AlLive, i: Int) => match(get(st.lsOps, i))
-  (op: Op) => op
-  ()       => OpReturnVoid(Dict())   # unreachable: 0 <= i < lsN
+# The default is unreachable: 0 <= i < lsN.
+fun alOpAt(st: AlLive, i: Int): Op => get(st.lsOps, i) ?? OpReturnVoid(Dict())
 
 fun alBlockAt(st: AlLive, i: Int) => match(get(st.lsBlocks, i))
   (s2: String) => s2

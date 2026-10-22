@@ -48,9 +48,8 @@ fun [tail] ucIxLoop(s: Segment<Op>|None, iSeg, i, acc): (d: Dict<Int, Op>, n: In
     ? ucIxLoop(s, iSeg + 1i32, i + 1, put(acc, i, seg.array(iSeg)))
     : ucIxLoop(seg.next, 0i32, i, acc)
 
-fun ucIxOp(ix: UcIx, i: Int) => match(get(ix.uiOps, i))
-  (op: Op) => op
-  ()       => OpReturnVoid(Dict())   # unreachable: 0 <= i < uiN
+# The default is unreachable: 0 <= i < uiN.
+fun ucIxOp(ix: UcIx, i: Int): Op => get(ix.uiOps, i) ?? OpReturnVoid(Dict())
 
 fun ucEntryAt(entry: Dict<Int, InitSet>, i: Int) => match(get(entry, i))
   (s2: InitSet) => s2
