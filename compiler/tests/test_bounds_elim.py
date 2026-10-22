@@ -27,7 +27,9 @@ from tests.testutil import compile_c
 _DOT = """namespace Test
 import System
 
-fun [tail] dotLoop(a: Array<Float>, b: Array<Float>, i: Int32, n: Int32, acc: Float): Float
+# The proof needs the counter's entry value (0), which only the caller has:
+# inlined, the loop sits beside it.
+fun [tail, inline(always)] dotLoop(a: Array<Float>, b: Array<Float>, i: Int32, n: Int32, acc: Float): Float
   ret i == n ? acc : dotLoop(a, b, i + 1i32, n, acc + a[i] * b[i])
 
 fun dot(a: Array<Float>, b: Array<Float>): Float
