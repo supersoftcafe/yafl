@@ -367,60 +367,33 @@ fun [tail] siPsLoop(fs: Chain<CgFunction>, a: CgApp, counter,
 
 # ── inline_single_use_globals ───────────────────────────────────────────────
 
-fun [tail] siGlobalNamesInRp(val) => match(val)
-  (gv: RpGlobalVar)   => list1(gv.name)
-  (ns: RpNewStruct)   => fold(ns.values, List(),
-                              (acc, v) =>
-                                concat(acc, siGlobalNamesInRp(v.value)))
-  (sf: RpStructField) => siGlobalNamesInRp(sf.structVal)
-  (o: RParam)         => List()
+# The globals a value or an op reads. Writes are not counted: a static object
+# is a constant, so no op writes one, and single use is about its readers.
+fun siGlobalsReadByRp(val) => siGlobalNames(rpFlatten(val, true))
 
-# Mirror Python's per-op SET exactly: each name counts once per op.
-fun siGlobalNamesInOp(op)
-  let raw = match(op)
-    (m: OpMove)       => concat(siMoveTargetNames(m.moveTarget),
-                                siGlobalNamesInRp(m.moveSource))
-    (no: OpNewObject) => match(no.newObjSize)
-      (sz: RParam) => siGlobalNamesInRp(sz)
-      ()           => List()
-    (c: OpCall)       => concat(concat(siGlobalNamesInRp(c.callFunction),
-                                       siGlobalNamesInRp(c.callParameters)),
-                                siCallRegisterName(c.callRegister))
-    (r: OpReturn)     => siGlobalNamesInRp(r.returnValue)
-    (ji: OpJumpIf)    => siGlobalNamesInRp(ji.jumpIfCondition)
-    (o: Op)           => List()
-  ret siDedup(raw)
+fun siGlobalsReadByOp(op) => siGlobalNames(opAllParams(op))
 
-fun siMoveTargetNames(target) => match(target)
-  (gv: RpGlobalVar)   => list1(gv.name)
-  (of: RpObjectField) => siGlobalNamesInRp(of.pointer)
-  (o: RParam)         => List()
+fun siGlobalNames(params: List<RParam>) => fold(params, List(), siAddGlobal)
 
-fun siCallRegisterName(r: RParam|None) => match(r)
-  (p2: RParam) => match(p2)
-    (gv: RpGlobalVar) => list1(gv.name)
-    (o: RParam)       => List()
-  ()           => List()
+fun siAddGlobal(acc: List<String>, p: RParam) => match(p)
+  (gv: RpGlobalVar) => siAddName(acc, gv.name)
+  (o: RParam)       => acc
 
-# The names an op mentions, deduped.
-#
-# Deduped ON THE LIST, deliberately — NOT by building a Set. An op mentions a
-# handful of globals at most, and this runs for every op of every function on
-# every static round: four sweeps of the whole program. A Set here is a
+# Names are deduped ON THE LIST, deliberately — NOT by building a Set. An op
+# mentions a handful of globals at most, and this runs for every op of every
+# function on every static round: four sweeps of the whole program. A Set is a
 # hash-tree allocation per op, which is precisely the per-op allocation the
 # srFirstFn sweep below was introduced to remove. A linear scan over three or
 # four names allocates nothing but the cons cells, and the order is not
 # observed — both consumers fold these into Dicts.
 fun siAddName(acc, n): List<String> => any(acc, (y) => y == n) ? acc : prepend(n, acc)
 
-fun siDedup(names: List<String>) => fold(names, List(), siAddName)
-
 # Reference counts per global name, AND the first function whose ops mention
 # each name — both from ONE sweep.
 #
 # The first-referencing map exists so siTryFold does not re-scan the whole
 # application per candidate global. That search was globals x functions x ops,
-# allocating a fresh List<String> per op in siGlobalNamesInOp, and it dominated
+# allocating a fresh List<String> per op in siGlobalsReadByOp, and it dominated
 # compilation: measured on the self-host, the four convertStaticObjectsPass
 # rounds were 1777s of a 2586s compile (69%). This sweep already visits every
 # op, so recording the first function costs nothing and makes the lookup
@@ -438,7 +411,7 @@ fun siCountFn(acc: SiRefs, f: CgFunction)
   ret fold(f.fnOps, acc, (a2, op) => siCountOp(a2, op, f.fnName))
 
 fun siCountOp(acc: SiRefs, op, fnName: String)
-  ret fold(siGlobalNamesInOp(op), acc,
+  ret fold(siGlobalsReadByOp(op), acc,
            (a3, n) =>
              SiRefs(sdBump(a3.srCounts, n), siFirstSeen(a3.srFirstFn, n, fnName)))
 
@@ -451,7 +424,7 @@ fun siFirstSeen(m, name: String,
 
 fun siCountGlobal(acc: Dict<String, Int>, g2: CgGlobal)
   let withInit = match(g2.globalInit)
-    (init: RParam) => fold(siGlobalNamesInRp(init), acc, sdBump)
+    (init: RParam) => fold(siGlobalsReadByRp(init), acc, sdBump)
     ()             => acc
   ret match(g2.globalLazyInitFlag)
     (flag: String) => sdBump(withInit, flag)

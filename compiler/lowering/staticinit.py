@@ -6,8 +6,8 @@ import itertools
 import lowering.trim
 from codegen.gen import Application
 from codegen.ir import Function, Global
-from codegen.ops import Op, NewObject, Move, Return, Label, Jump, JumpIf, Call
-from codegen.param import RParam, LParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String, StructField, ZeroOf
+from codegen.ops import Op, NewObject, Move, JumpIf, Call
+from codegen.param import RParam, StackVar, GlobalVar, ObjectField, NewStruct, Integer, String, StructField, ZeroOf
 from codegen.typedecl import DataPointer
 
 
@@ -209,43 +209,15 @@ def promote_static_objects(app: Application) -> Application:
 
 # ── Single-use global inlining ────────────────────────────────────────────────
 
-def _global_names_in_rparam(val: RParam) -> set[str]:
-    """Return set of global names referenced in an RParam."""
-    if isinstance(val, GlobalVar):
-        return {val.name}
-    if isinstance(val, NewStruct):
-        result: set[str] = set()
-        for _, v in val.values:
-            result |= _global_names_in_rparam(v)
-        return result
-    if isinstance(val, StructField):
-        return _global_names_in_rparam(val.struct)
-    return set()
+def _globals_read_by_rparam(val: RParam) -> set[str]:
+    """The globals `val` reads."""
+    return {p.name for p in val.flatten() if isinstance(p, GlobalVar)}
 
 
-def _global_names_in_op(op: Op) -> set[str]:
-    """Return set of global names referenced in an Op."""
-    result: set[str] = set()
-    if isinstance(op, Move):
-        if isinstance(op.target, GlobalVar):
-            result.add(op.target.name)
-        elif isinstance(op.target, ObjectField):
-            result |= _global_names_in_rparam(op.target.pointer)
-        result |= _global_names_in_rparam(op.source)
-    elif isinstance(op, NewObject):
-        if op.size:
-            result |= _global_names_in_rparam(op.size)
-    elif isinstance(op, Call):
-        result |= _global_names_in_rparam(op.function)
-        result |= _global_names_in_rparam(op.parameters)
-        if op.register:
-            if isinstance(op.register, GlobalVar):
-                result.add(op.register.name)
-    elif isinstance(op, Return):
-        result |= _global_names_in_rparam(op.value)
-    elif isinstance(op, JumpIf):
-        result |= _global_names_in_rparam(op.condition)
-    return result
+def _globals_read_by_op(op: Op) -> set[str]:
+    """The globals `op` reads. Writes are not counted: a static object is a
+    constant, so no op writes one, and single use is about its readers."""
+    return {p.name for p in op.all_params() if isinstance(p, GlobalVar)}
 
 
 def _count_global_refs(app: Application) -> tuple[dict[str, int], dict[str, str]]:
@@ -255,7 +227,7 @@ def _count_global_refs(app: Application) -> tuple[dict[str, int], dict[str, str]
     The first-referencing map exists so `inline_single_use_globals` does not have
     to re-scan the whole application per candidate global. That search was
     `globals x functions x ops`, with a fresh set built per op by
-    `_global_names_in_op`, and it dominated compilation: measured on the
+    `_globals_read_by_op`, and it dominated compilation: measured on the
     self-host, the four `convert_static_objects_pass` rounds were 1777s of a
     2586s compile (69%). This sweep already visits every op, so recording the
     first function costs nothing extra and makes the lookup O(1).
@@ -268,7 +240,7 @@ def _count_global_refs(app: Application) -> tuple[dict[str, int], dict[str, str]
 
     for fn_name, fn in app.functions.items():
         for op in fn.ops:
-            for name in _global_names_in_op(op):
+            for name in _globals_read_by_op(op):
                 _add(name)
                 # FIRST in iteration order — the same function the old
                 # per-candidate scan would have stopped at.
@@ -277,7 +249,7 @@ def _count_global_refs(app: Application) -> tuple[dict[str, int], dict[str, str]
 
     for g in app.globals.values():
         if g.init:
-            for name in _global_names_in_rparam(g.init):
+            for name in _globals_read_by_rparam(g.init):
                 _add(name)
         if g.lazy_init_flag:
             _add(g.lazy_init_flag)
