@@ -50,26 +50,48 @@ fun ssavIsZeroSource(src) => match(src)
   (f: RpFloat)        => f.value == 0.0
   (o: RParam)         => false
 
-fun ssavCollectWriteCounts(f: CgFunction)
-  let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), List(),
-                        (acc, fld) => strCountIncr(acc, fld.fieldName))
+# Each parameter is defined once, on entry; each op defines what it writes.
+fun ssavCollectWriteCounts(f: CgFunction): Dict<String, Int>
+  let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), Dict(),
+                        (acc, fld) => put(acc, fld.fieldName, 1))
   ret fold(f.fnOps, fromParams, ssavCountOp)
 
-fun ssavCountOp(acc, op): List<StrCount> => ssavIsZeroInit(op)
+fun ssavCountOp(acc: Dict<String, Int>, op): Dict<String, Int> => ssavIsZeroInit(op)
   ? acc
-  : fold(opTargets(op), acc, ssavCountTarget)
+  : fold(opGetLiveVars(op).writes, acc, ssavCountTarget)
 
-fun ssavCountTarget(acc, target): List<StrCount> => match(target)
-  (sv: RpStackVar) => strCountIncr(acc, sv.name)
+fun ssavCountTarget(acc: Dict<String, Int>, target): Dict<String, Int> => match(target)
+  (sv: RpStackVar) => sdBump(acc, sv.name)
   (o: RParam)       => acc
 
 fun ssavSingleDefinition(f: CgFunction): List<String>
-  let violations = filter(ssavCollectWriteCounts(f),
-                          (e2) => e2.scCount > 1 && !ssavIsScratchSlot(e2.scName))
-  ret isEmpty(violations)
-    ? List()
-    : list1(f.fnName + ": SSA single-definition invariant violated: "
-            + join(map(violations, (e2) => e2.scName + " defined " + String(e2.scCount) + " times"), "; "))
+  let counts = ssavCollectWriteCounts(f)
+  let multi = filter(keys(counts), (name) => ssavCount(counts, name) > 1 && !ssavIsScratchSlot(name))
+  if isEmpty(multi)
+    ret List()
+  # In order of first definition, as Python reports its dict.
+  let first = ssavFirstDefinitions(f)
+  let violations = sortBy(multi, (x, y) => ssavCount(first, x) < ssavCount(first, y))
+  ret list1(f.fnName + ": SSA single-definition invariant violated: "
+            + join(map(violations, (name) => name + " defined " + String(ssavCount(counts, name)) + " times"), "; "))
+
+fun ssavCount(counts: Dict<String, Int>, name: String): Int => get(counts, name) ?? 0
+
+# Each defined name -> the position of its first definition: parameters
+# first, then the ops' writes in order.
+fun ssavFirstDefinitions(f: CgFunction): Dict<String, Int>
+  let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), (Dict(), 0),
+                        (acc: (at: Dict<String, Int>, n: Int), fld) => (ssavFirstAt(acc.at, fld.fieldName, acc.n), acc.n + 1))
+  ret fold(f.fnOps, fromParams,
+           (acc: (at: Dict<String, Int>, n: Int), op) =>
+             (fold(opGetLiveVars(op).writes, acc.at, (d, w) => ssavFirstAtVar(d, w, acc.n)), acc.n + 1)).at
+
+fun ssavFirstAtVar(at: Dict<String, Int>, w, n: Int): Dict<String, Int> => match(w)
+  (sv: RpStackVar) => ssavFirstAt(at, sv.name, n)
+  (o: RParam)      => at
+
+fun ssavFirstAt(at: Dict<String, Int>, name: String, n: Int): Dict<String, Int>
+  ret contains(at, name) ? at : put(at, name, n)
 
 # ── all paths return ─────────────────────────────────────────────────────────
 

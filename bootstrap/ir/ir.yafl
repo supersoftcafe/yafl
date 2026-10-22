@@ -63,25 +63,6 @@ fun pyStrOpt(o: String|None)
     (s: String) => s
     ()          => "None"
 
-class [final] StrCount(scName: String, scCount: Int)
-
-fun [tail] strCountGet(l: List<StrCount>, name) => match(head(l))
-  (e: StrCount) => e.scName == name ? e.scCount : strCountGet(tail(l), name)
-  ()             => 0
-
-# A bump REBUILDS the whole table, so the rebuild goes into a builder; a name
-# not already present is appended at the end.
-fun strCountIncr(l: List<StrCount>, name) => build(strCountIncrLoop(l, name, false, builder()))
-
-fun [tail] strCountIncrLoop(l: List<StrCount>, name, found,
-                            [terminal] acc): ListBuilder<StrCount> => match(head(l))
-  (e: StrCount) => strCountIncrLoop(tail(l), name,
-                      found || e.scName == name,
-                      push(acc, e.scName == name
-                          ? StrCount(e.scName, e.scCount + 1)
-                          : e))
-  ()             => found ? acc : push(acc, StrCount(name, 1))
-
 # ══════════════════════════════════════════════════════════════════════════
 # Function
 # ══════════════════════════════════════════════════════════════════════════
