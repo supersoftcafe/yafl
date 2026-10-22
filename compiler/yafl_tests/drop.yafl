@@ -71,15 +71,10 @@ import System
 import System::IO
 import System::Test
 
-fun [tail] count(s: StreamIO, n: System::Int): System::Int
-  let r = System::streamNext<StreamIO, System::String, IOError>(s)
-  ret match(r.value)
-    (ok: System::Ok<System::String|System::None, IOError>) => match(ok.value)
-      (chunk: System::String) => count(r.stream, n + System::length(chunk))
-      (x: System::None)       => n
-    (er: System::Error<System::String|System::None, IOError>) => 0 - 1
 fun program(): System::Int
-  ret asStream(stdin(), (s) => count(s, 0)) |> (i, n) => n
+  ret readAll(stdin()) |> (i, v) => match(v)
+    (text: System::String) => System::length(text)
+    (e: IOError)           => 0 - 1
 
 fun [test("io handle drops and closes")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")

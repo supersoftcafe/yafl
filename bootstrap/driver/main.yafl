@@ -1235,7 +1235,7 @@ fun main(): System::Int => match(head(args()))
   ()                  => cliMain(args())
 
 fun stageMain(argv: List<System::String>): System::Int
-  ret asStream(stdin(), (s: StreamIO) => System::collect(s))
+  ret readAll(stdin())
     |> (i, src) => match(src)
       (text: System::String) => run(text, argv, i)
       (e: IOError) => (i.close(), 1) |> (c, code) => code

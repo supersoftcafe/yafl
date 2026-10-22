@@ -5,23 +5,25 @@ import System::IO
 
 # Copy stdin to stdout, prefixing each line with its 1-based line number.
 #
-# The whole job is one streaming pipeline: view stdin as a byte stream, split it
-# into lines, number them, and drain the result to stdout. No buffering of the
-# whole input, no hand-written read loop — `toLines` and `prependLineNumbers` are
-# the stream transformers; `writeToFile` drains a string stream into any IO.
+# Read stdin whole, then run one stream pipeline over its text: split it into
+# lines, number them, and drain the result to stdout. No hand-written loop —
+# `toLines` and `prependLineNumbers` are the stream transformers; `writeStream`
+# drains a string stream into any IO.
 #
 # Exit codes:
 #   0  ok
 #   1  IO error
 
 fun main(): System::Int
-  let src = asStream(stdin(), (stream: StreamIO) =>
-    writeToFile(stdout(), stream |> toLines |> prependLineNumbers))
-  ret shutdown(src.io, src.result.io, src.result.v)
+  let input = readAll(stdin())
+  let inClosed = input.io.close()
+  ret match(input.v)
+    (text: String) => number(text, inClosed)
+    (e: IOError)   => 1
 
-# Close both linear handles (stdin and stdout), then report the outcome: the
-# pipeline's own error wins, otherwise a failed close, otherwise success.
-fun shutdown(inp: IO, out: IO, v: IOError|None): System::Int
-  let inClosed = inp.close()
-  let outClosed = out.close()
-  ret v !is None || inClosed !is None || outClosed !is None ? 1 : 0
+# Number the lines of `text` onto stdout, then report the outcome: a write
+# error wins, otherwise a failed close (of stdin or stdout), otherwise success.
+fun number(text: String, inClosed: IOError|None): System::Int
+  let out = writeStream(stdout(), once(text) |> toLines |> prependLineNumbers)
+  let outClosed = out.io.close()
+  ret out.v !is None || inClosed !is None || outClosed !is None ? 1 : 0

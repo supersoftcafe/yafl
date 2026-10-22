@@ -5,21 +5,20 @@ import System::IO
 import System::Json
 
 
-# Pretty-print JSON read from stdin to stdout, in constant memory.
+# Pretty-print JSON read from stdin to stdout.
 #
-# The whole pipeline is a lazy stream: bytes are pulled from stdin only as the
-# formatter needs them and written to stdout as they are produced, so an
-# arbitrarily large document never has to be held in memory at once.
+# The input is read whole, then formatted as a stream over its text, written to
+# stdout as it is produced:
 #
-#   stdin → asStream(tokenize → prettyEmit → writeStream → stdout)
+#   readAll(stdin) → once → tokenize → prettyEmit → writeStream → stdout
 #
 # No type argument is written anywhere, and no `let`: each pipe stage binds the
 # previous stage's tuple positionally. The stdin handle `i` is never referenced,
-# so it auto-closes at scope exit through the `Drop<IO>` instance — AFTER the
-# stream is drained (scope-exit timing) — and a read-side close error is
-# discarded by that instance's declared policy. The stdout handle's close is
-# the final flush, so ITS error matters: `o` is consumed explicitly on every
-# path, and a close failure turns an otherwise clean run into an IO error.
+# so it auto-closes at scope exit through the `Drop<IO>` instance, and a
+# read-side close error is discarded by that instance's declared policy. The
+# stdout handle's close is the final flush, so ITS error matters: `o` is
+# consumed explicitly on every path, and a close failure turns an otherwise
+# clean run into an IO error.
 # Exit codes:
 #   0  ok
 #   1  IO error (including a failed output flush/close)
@@ -53,13 +52,19 @@ fun gatherJson(path: String): List<String>
 # One file: both linear handles are opened, threaded and closed entirely
 # within this call, so a conversion is safe inside its own [future] worker.
 fun convertOne(path: String): Int
-  fun pipe(i: IO, o: IO): Int
-    ret asStream(i, (s: StreamIO) => writeStream(o, prettyEmit(tokenize(s))))
-      |> (i2, w) => (w.io.close(), i2.close(), w.v)
-      |> (c1, c2, v) => match(v)
+  fun emit(o: IO, text: String): Int
+    ret writeStream(o, prettyEmit(tokenize(once(text))))
+      |> (o2, v) => (o2.close(), v)
+      |> (c, v) => match(v)
         (e: IOError)        => 1
         (p: JsonParseError) => 1
-        (n: System::None)   => (c1 !is None || c2 !is None) ? 1 : 0
+        (n: System::None)   => c !is None ? 1 : 0
+  fun pipe(i: IO, o: IO): Int
+    ret readAll(i)
+      |> (i2, v) => (i2.close(), v)
+      |> (c, v) => match(v)
+        (text: String) => c !is None ? (o.close() |> (oc) => 1) : emit(o, text)
+        (e: IOError)   => o.close() |> (oc) => 1
   fun failCleanup(): Int
     ret remove(path + ".pretty") |> (r) => 1
   fun run(i: IO, o: IO): Int
@@ -98,12 +103,17 @@ fun runSingle(path: String): System::Int
     (e: IOError) => print("cannot stat " + path + "\n") |> (u) => 2
 
 fun runStdio(): System::Int
-  ret asStream(stdin(), (s: StreamIO) => writeStream(stdout(), prettyEmit(tokenize(s))))
-    |> (i, w) => (w.io.close(), w.v)
-    |> (c, v) => match(v)
-      (e: IOError)        => 1
-      (p: JsonParseError) => 2
-      (n: System::None)   => c !is None ? 1 : 0
+  fun emit(text: String): System::Int
+    ret writeStream(stdout(), prettyEmit(tokenize(once(text))))
+      |> (o, v) => (o.close(), v)
+      |> (c, v) => match(v)
+        (e: IOError)        => 1
+        (p: JsonParseError) => 2
+        (n: System::None)   => c !is None ? 1 : 0
+  ret readAll(stdin())
+    |> (i, v) => match(v)
+      (text: String) => emit(text)
+      (e: IOError)   => 1
 
 fun main(): System::Int
   fun runFlagged(a: List<String>): System::Int

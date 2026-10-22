@@ -4,8 +4,7 @@ The callee must call a `[linear]` parameter exactly once on every path — not
 zero times, not twice — and may do nothing else with it (passing it on or
 capturing it could run it any number of times). In exchange a lambda written
 directly as that argument may capture linear values: it runs once, so each
-captured value is consumed once, inside its body. `System::IO::asStream`
-takes its stream processor this way.
+captured value is consumed once, inside its body.
 """
 from __future__ import annotations
 

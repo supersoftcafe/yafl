@@ -23,15 +23,6 @@ class [foreign,final] _IO
   # Write data[offset .. offset+length) without slicing — used by writeAll's loop.
   fun [foreign("io_write_range"),impure] _write_range(data: String, offset: Int, length: Int): Int
   fun [foreign("io_close"),impure] _close(): Int|None
-  # Returns the same handle typed as the non-linear stream alias (see
-  # io_as_stream in io.c). Sync — it does no IO, just retypes the pointer.
-  fun [foreign("io_as_stream"),sync] _asStream(): _StreamIO
-
-# Non-linear alias over an open _IO handle, backing the monadic StreamIO. Its
-# `_read` shares the underlying handle and buffer; a closed backing handle
-# yields a negative errno (mapped to IOError) rather than None.
-class [foreign,final] _StreamIO
-  fun [foreign("stream_read"),impure] _read(length: Int): String|Int|None
 
 
 # Errors. IOError carries the raw errno as `code`; specific variants name the
@@ -113,20 +104,19 @@ class [linear,final] IO(_io: _IO)
   fun refill(): (io: IO, v: Int|System::None)
     ret (this, _io._refill())
 
-  # The non-linear alias over this handle that a StreamIO reads through — for
-  # asStream only, which keeps the stream's use inside its processor.
-  fun _rawStream(): (io: IO, raw: _StreamIO)
-    ret (this, _io._asStream())
 
 
-# Hand this handle's stream to `process` — called exactly once, so it may
-# capture linear values, and answer with the IO and process's result. The stream aliases the same underlying handle (a deliberate escape
-# from linearity), so finish with it before `process` returns: the IO comes
-# back only with the result — anything done with it, a close included, waits
-# for process to finish — and after that, no guarantees.
-fun asStream<[linear] R>(io: IO, [linear] process: (:StreamIO): R): (io: IO, result: R)
-  let (io2, raw) = io._rawStream()
-  ret (io2, process(_streamNode(raw)))
+# Read everything left in `io` into one String. End of file is the normal end;
+# a read error drops what was read and is returned instead. To parse a file,
+# read it whole and stream the text: `tokenize(once(text))`.
+fun readAll(io: IO): (io: IO, v: String|IOError)
+  ret _readAllInto(io, "")
+
+fun [tail] _readAllInto(io: IO, acc: String): (io: IO, v: String|IOError)
+  let r = io.read(65536)
+  ret match(r.v)
+    (s: String)  => _readAllInto(r.io, acc + s)
+    (e: IOError) => e is EOFError ? (r.io, acc) : (r.io, e)
 
 
 # Read one line, returned VERBATIM — the trailing '\n' (and any '\r') are kept,
@@ -193,59 +183,10 @@ fun create(path: String): IO|IOError
     (c: Int)  => _error_from_code(c)
 
 
-# ── Streaming reads ──────────────────────────────────────────────────────────
-#
-# StreamIO is a pure, monadic view over a byte source. `next()` yields the next
-# chunk together with the successor stream, memoised via a `[lazy]` thunk so a
-# node, once realised, returns the same result without re-touching the handle —
-# an already-read prefix can be revisited without re-reading. Reads happen on
-# demand as nodes are forced. `None` marks end of stream; an `IOError` element
-# (including the case where the backing IO has been closed) is terminal.
-#
-# Built over the non-linear `_StreamIO` alias (see `asStream` / io_as_stream),
-# so the stream itself carries no linear obligation and can be freely captured,
-# returned, and shared.
-
-class [final] _Step(value: Result<String|None, IOError>, next: StreamIO)
-
-# StreamIO is the IO-backed leaf of the generic stream world: a
-# `System::Stream<StreamIO, String, IOError>` whose elements are
-# `Result<String|None, IOError>` — Ok(chunk) | Ok(None) (end) | Error (terminal).
-# The memoised successor lives behind the `[lazy]` thunk; `_streamStep` forces it.
-# There is no `next` method — the trait instance below provides `next`, and the
-# io-internal transformers step via `_streamStep` directly.
-class [final] StreamIO(_thunk: (): _Step)
-
-fun [inline(always)] _streamStep(s: StreamIO): (stream: StreamIO, value: Result<String|None, IOError>)
-  let step = s._thunk()
-  ret (step.next, step.value)
-
-instance Stream<StreamIO, String, IOError>
-  fun [inline(always)] next(self: StreamIO): (stream: StreamIO, value: Result<String|None, IOError>)
-    ret _streamStep(self)
-# Wrap one pending read as a memoised node. `_streamPull` is deferred behind the
-# `[lazy]` let and captured (unforced) by the thunk, so building a node performs
-# no IO and the successor chain stays lazy.
-fun _streamNode(raw: _StreamIO): StreamIO
-  let [lazy] step: _Step = _streamPull(raw)
-  ret StreamIO(() => step)
-
-fun _streamPull(raw: _StreamIO): _Step
-  ret match(raw._read(4096))
-    (s: String) => _Step(Ok<String|None, IOError>(s), _streamNode(raw))
-    (n: None)   => _Step(Ok<String|None, IOError>(None), _streamEnd())
-    (c: Int)    => _Step(Error<String|None, IOError>(_error_from_code(c)), _streamEnd())
-
-# Sticky terminal: every step on an ended stream yields (terminal, Ok(None)).
-fun _streamEnd(): StreamIO
-  let [lazy] step: _Step = _Step(Ok<String|None, IOError>(None), _streamEnd())
-  ret StreamIO(() => step)
-
-
 # ── Stream sink ──────────────────────────────────────────────────────────────
 #
 # `writeToFile` drains any String stream whose error type is IOError into a
-# handle — including the generic System combinators over an IO source.
+# handle; `writeStream` drains one with any error type.
 
 # Drain a String stream into `io`, writing each value in order. Stops at the first
 # Error (from the stream or a write) and returns it; otherwise None at end of
@@ -255,11 +196,11 @@ fun _streamEnd(): StreamIO
 # `E`: the result error is `E | IOError` (the stream's own errors, forwarded,
 # unioned with write IOErrors). A source that can't fail (`E = Never`) drains to
 # just `IOError`; one carrying its own errors (a JSON tokenizer,
-# `E = IOError | JsonParseError`) surfaces them at the end; `E = IOError` dedups
-# back to `IOError`. `E` appears only in the `where` constraint, so a caller
-# whose source is a generic combinator chain must spell it — call-site inference
-# can derive `E` from a concrete stream instance but not yet from a combinator
-# chain. `writeToFile` fixes `E = IOError` for plain IO sources.
+# `E = JsonParseError`) surfaces them at the end; `E = IOError` dedups back to
+# `IOError`. `E` appears only in the `where` constraint, so a caller whose
+# source is a generic combinator chain must spell it — call-site inference can
+# derive `E` from a concrete stream instance but not yet from a combinator
+# chain. `writeToFile` fixes `E = IOError`.
 fun writeToFile<S>(io: IO, source: S): (io: IO, v: IOError|System::None) where System::Stream<S, System::String, IOError>
   ret writeStream<S, IOError>(io, source)
 

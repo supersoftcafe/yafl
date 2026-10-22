@@ -254,7 +254,7 @@ fun _renderScene(o: IO, text: String, w: Int, h: Int): (io: IO, code: Int)
 fun main(): Int
   let w = 400
   let h = 300
-  ret asStream(stdin(), (st: StreamIO) => collect(st))
+  ret readAll(stdin())
     |> (i, src) => match(src)
       (text: String) => stdout()
         |> (o) => _renderScene(o, text, w, h)

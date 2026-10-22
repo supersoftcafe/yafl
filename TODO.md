@@ -957,6 +957,11 @@ a top-level helper that threads state through parameters.
 
 ## Fusible stream transformers via generic trait instances
 
+STATUS 2026-10-22: StreamIO and asStream REMOVED (user: more trouble than they
+are worth). File contents are read whole (`System::IO::readAll`) and streamed
+from the text (`once(text) |> toLines …`). Everything below that mentions
+StreamIO is history.
+
 STATUS 2026-06-25: DELIVERED end to end. Generic trait instances + `Stream<S,T,E>`
 = `Result<T|None,E>` + StreamIO folded onto the trait + generic Lines/Numbered +
 nested-generic-call inference + `[inline(always)]` fusion. examples/linenumbers

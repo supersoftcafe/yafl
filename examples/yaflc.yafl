@@ -394,7 +394,7 @@ fun report(out: System::String, code: System::Int, i: IO): System::Int
   ret (r.io.close(), i.close(), final) |> (c1, c2, result) => result
 
 fun main(): System::Int
-  ret asStream(stdin(), (s: StreamIO) => System::collect(s))
+  ret readAll(stdin())
     |> (i, src) => match(src)
       (text: System::String) => emitOrFail(text, i)
       (e: IOError) => (i.close(), 1) |> (c, code) => code

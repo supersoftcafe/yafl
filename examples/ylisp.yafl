@@ -290,7 +290,7 @@ fun _fail(io: IO, e: EvalError): (io: IO, v: System::Int)
   ret (r.io, 1)
 
 fun main(): System::Int
-  ret asStream(stdin(), (s: StreamIO) => System::collect(s))
+  ret readAll(stdin())
     |> (i, src) => match(src)
       (text: System::String) => stdout()
         |> (o) => runAll(o, _builtins(), text, 0)
