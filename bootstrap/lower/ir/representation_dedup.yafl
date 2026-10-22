@@ -300,6 +300,7 @@ fun rddParam(e: RddEnc, cx: RddCx, r: RParam): RddEnc => match(r)
                                         x.checked)
   (x: RpFunField)            => rddLit(rddParam(rddS(e, "FF;"), cx, x.ffFun), x.ffPart)
   (x: RpMakeFun)             => rddParam(rddParam(rddS(e, "MF;"), cx, x.mfCode), cx, x.mfEnv)
+  (x: RpNarrowInt)           => rddTy(rddParam(rddS(e, "NI;"), cx, x.niValue), x.niType)
 
 # `v->vtable->discriminator == id`: the id names a leaf, so it is a reference
 # to that object. Tagged apart from a plain `v == id`, which it is not.

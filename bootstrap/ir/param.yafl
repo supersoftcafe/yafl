@@ -72,6 +72,10 @@ enum RParam
   # two slot reads.
   enum RpFunField(ffFun: RParam, ffPart: String)
   enum RpMakeFun(mfCode: RParam, mfEnv: RParam)
+  # A small integer read back out of the larger union slot it was merged into
+  # (param.py NarrowInt; cgComputeUnionSlots: truncate on read), typed as the
+  # integer itself.
+  enum RpNarrowInt(niValue: RParam, niType: CgType)
 
 class [final] RpNamedValue(name: String, value: RParam)
 
@@ -125,6 +129,7 @@ fun rpGetType(r) => match(r)
   (x: RpInitArray) => CgVoid()   # unreachable: Python's InitArray never overrides get_type()
   (x: RpFunField) => x.ffPart == "f" ? CgIntPtr() : CgDataPointer()
   (x: RpMakeFun) => CgFuncPointer(false)
+  (x: RpNarrowInt) => x.niType
 
 fun rpStructFieldType(x: RpStructField) => match(cgFieldsOf(rpGetType(x.structVal)))
   (fields: List<CgField>) => rpStructFieldLookup(fields, x.field)
@@ -162,6 +167,7 @@ fun rpFlatten(r, isReader) => match(r)
   (x: RpArrayElement) => concat(prepend(r, rpFlatten(x.pointer, true)), rpFlatten(x.index, true))
   (x: RpFunField) => prepend(r, rpFlatten(x.ffFun, true))
   (x: RpMakeFun) => prepend(r, concat(rpFlatten(x.mfCode, true), rpFlatten(x.mfEnv, true)))
+  (x: RpNarrowInt) => prepend(r, rpFlatten(x.niValue, true))
   (o: RParam) => list1(r)   # base default: [self]
 
 fun rpFlattenObjectField(r: RParam, x: RpObjectField, isReader)
@@ -203,6 +209,7 @@ fun rpTestChildren(r, pred) => match(r)
   (x: RpArrayElement) => rpTest(x.pointer, pred) || rpTest(x.index, pred)
   (x: RpFunField) => rpTest(x.ffFun, pred)
   (x: RpMakeFun) => rpTest(x.mfCode, pred) || rpTest(x.mfEnv, pred)
+  (x: RpNarrowInt) => rpTest(x.niValue, pred)
   (o: RParam) => false
 
 fun rpTestOpt(o: RParam|None, pred) => match(o)
@@ -232,6 +239,7 @@ fun rpRenameVars(r, renames: List<RpRename>) => match(r)
   (x: RpArrayElement) => RpArrayElement(x.elementType, rpRenameVars(x.pointer, renames), x.objectName, x.field, x.lengthField, rpRenameVars(x.index, renames), x.checked)
   (x: RpFunField) => RpFunField(rpRenameVars(x.ffFun, renames), x.ffPart)
   (x: RpMakeFun) => RpMakeFun(rpRenameVars(x.mfCode, renames), rpRenameVars(x.mfEnv, renames))
+  (x: RpNarrowInt) => RpNarrowInt(rpRenameVars(x.niValue, renames), x.niType)
   (o: RParam) => r   # base default: self
 
 fun rpRenameVarsOpt(o: RParam|None, renames: List<RpRename>) => match(o)
@@ -271,6 +279,7 @@ fun rpReplaceParams(r, replacer): RParam => match(r)
   (x: RpFunField) => replacer(with x(ffFun = rpReplaceParams(x.ffFun, replacer)))
   (x: RpMakeFun) => replacer(with x(mfCode = rpReplaceParams(x.mfCode, replacer),
                                     mfEnv  = rpReplaceParams(x.mfEnv, replacer)))
+  (x: RpNarrowInt) => replacer(with x(niValue = rpReplaceParams(x.niValue, replacer)))
   (o: RParam) => replacer(r)   # base default: replacer(self)
 
 fun rpReplaceParamsOpt(o: RParam|None, replacer): RParam|None => match(o)
@@ -320,6 +329,7 @@ fun rpGetLiveVars(r) => match(r)
   (x: RpArrayElement) => rpStackVarUnion(rpGetLiveVars(x.pointer), rpGetLiveVars(x.index))
   (x: RpFunField) => rpGetLiveVars(x.ffFun)
   (x: RpMakeFun) => rpStackVarUnion(rpGetLiveVars(x.mfCode), rpGetLiveVars(x.mfEnv))
+  (x: RpNarrowInt) => rpGetLiveVars(x.niValue)
   (o: RParam) => List()   # base default: empty set
 
 fun rpGetLiveVarsOpt(o: RParam|None) => match(o)
@@ -436,6 +446,9 @@ fun eqRParam(a, b) => match(a)
   (x: RpMakeFun) => match(b)
     (y: RpMakeFun) => eqRParam(x.mfCode, y.mfCode) && eqRParam(x.mfEnv, y.mfEnv)
     (o: RParam) => false
+  (x: RpNarrowInt) => match(b)
+    (y: RpNarrowInt) => eqRParam(x.niValue, y.niValue) && eqCgType(x.niType, y.niType)
+    (o: RParam) => false
 
 # ── to_c ─────────────────────────────────────────────────────────────────────
 
@@ -444,6 +457,11 @@ fun rpToCFunField(x: RpFunField, cache0: List<CgCacheEntry>): (text: String, cac
   let sub = rpToC(x.ffFun, cache0)
   ret (x.ffPart == "f" ? "((intptr_t)(" + sub.text + ").f)"
                        : "((" + sub.text + ").o)", sub.cache)
+
+fun rpToCNarrowInt(x: RpNarrowInt, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let declared = cgDeclare(x.niType, cache0)
+  let sub = rpToC(x.niValue, declared.cache)
+  ret ("((" + declared.text + ")(" + sub.text + "))", sub.cache)
 
 fun rpToCMakeFun(x: RpMakeFun, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let codeC = rpToC(x.mfCode, cache0)
@@ -470,6 +488,7 @@ fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry
   (x: RpGlobalFunction) => rpToCGlobalFunction(x, cache)
   (x: RpFunField) => rpToCFunField(x, cache)
   (x: RpMakeFun) => rpToCMakeFun(x, cache)
+  (x: RpNarrowInt) => rpToCNarrowInt(x, cache)
   (x: RpVirtualFunction) => rpToCVirtualFunction(x, cache)
   (x: RpPointerTo) => rpToCPointerTo(x, cache)
   (x: RpStackVar) => (mangleName(x.name), cache)

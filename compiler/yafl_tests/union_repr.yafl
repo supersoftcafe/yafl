@@ -263,3 +263,32 @@ fun program(): System::Int
 
 fun [test("wide and small variants roundtrip", stdout = "7 7\n")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::WithReadsAFieldFromAMergedSlot
+
+import System
+import System::Test
+
+# Wide's Int16 and Flag's first Bool share one slot (no variant uses both, so
+# the smaller int merges into the larger). Rebuilding Flag with `with` passes
+# its unchanged fields straight to the constructor: each must be read at its
+# own type, not the slot's.
+enum Shape
+  enum Wide(w: System::Int16, x: System::Int)
+  enum Flag(f1: System::Int, f2: System::Int, f3: System::Int, on: System::Bool,
+            im: System::Bool, f4: System::Int, f5: System::Int, d: System::Bool)
+
+fun flip(v: Shape): Shape => match(v)
+  (f: Flag) => with f(f1 = 9)
+  (w: Wide) => v
+
+fun use(v: Shape): System::Int => match(v)
+  (f: Flag) => (f.on ? 1 : 0) + f.f1
+  (w: Wide) => System::Int(w.w)
+
+fun program(): System::Int
+  ret use(flip(Flag(1, 2, 3, true, false, 4, 5, true)))
+
+fun [test("with reads a field from a merged slot")] check(): None|TestFailure
+    ret assertEqInt(program(), 10, "program()")

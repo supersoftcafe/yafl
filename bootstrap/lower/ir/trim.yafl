@@ -92,6 +92,7 @@ fun scanRParam(p): ScanSets => match(p)
   (sw: RpSyncWrap)       => scanRParam(sw.value)
   (ff: RpFunField)       => scanRParam(ff.ffFun)
   (mf: RpMakeFun)        => ssUnion(scanRParam(mf.mfCode), scanRParam(mf.mfEnv))
+  (ni: RpNarrowInt)      => scanRParam(ni.niValue)
   (o: RParam)            => ssEmpty()   # String/Integer/Float/StackVar/NullPointer/ZeroOf/…
 
 fun scanOptRParam(p: RParam|None) => match(p)

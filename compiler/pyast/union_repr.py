@@ -486,8 +486,8 @@ class TaggedRepr(UnionRepr):
                 if vi is None:
                     continue  # check() prevents this; skip to be safe
                 tag_value = discriminators.get(subj_type.repr_members()[vi].as_unique_id_str(), 0)
-                si, _ = variant_map[vi][0]
-                slot_val = cg_p.StructField(sv, slot_fields[si][0])
+                si, orig = variant_map[vi][0]
+                slot_val = slot_read(sv, slot_fields, si, orig)
                 bundles, tests = literal_alternative_tests(
                     arm.literals, lit_type_name, slot_val, resolver, f"lit{em.counter}")
                 em.arm(arm,
@@ -588,8 +588,8 @@ class TaggedRepr(UnionRepr):
                 si_f, _ = slot_assigns[off]
                 si_o, _ = slot_assigns[off + 1]
                 return cg_p.MakeFun(read_slot(si_f), read_slot(si_o)), off + 2
-            si, _ = slot_assigns[off]
-            return read_slot(si), off + 1
+            si, orig = slot_assigns[off]
+            return slot_read(base_value, container.fields, si, orig), off + 1
 
         all_leaf_names = self.union_type.all_leaf_names
         for leaf_idx, leaf_fields in enumerate(leaf_field_sets):
@@ -1172,6 +1172,15 @@ class PointerRepr(UnionRepr):
             result_var=result)
 
 
+def slot_read(sv, slot_fields, si: int, orig: cg_t.Type) -> cg_p.RParam:
+    """The primitive of type `orig` held in slot `si` of the union value `sv`:
+    the slot itself, or — where a smaller integer was merged into a larger
+    slot (compute_union_slots) — the slot narrowed back to it."""
+    slot_name, slot_type = slot_fields[si]
+    read = cg_p.StructField(sv, slot_name)
+    return read if orig == slot_type else cg_p.NarrowInt(read, orig)
+
+
 def _leaf_from_slots(member, slot_assignments, slot_fields, sv, resolver):
     """A pointer-union member's LEAF (newtype nesting peeled) read out of a
     tagged union's slots: a function from its two slots (code, environment),
@@ -1184,8 +1193,8 @@ def _leaf_from_slots(member, slot_assignments, slot_fields, sv, resolver):
         si_o, _ = slot_assignments[1]
         return cg_p.MakeFun(cg_p.StructField(sv, slot_fields[si_f][0]),
                             cg_p.StructField(sv, slot_fields[si_o][0]))
-    si, _ = slot_assignments[0]
-    return cg_p.StructField(sv, slot_fields[si][0])
+    si, orig = slot_assignments[0]
+    return slot_read(sv, slot_fields, si, orig)
 
 
 @dataclasses.dataclass(frozen=True)

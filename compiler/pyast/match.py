@@ -493,8 +493,8 @@ class _Emitter:
                     cg_p.StructField(sv, slot_fields[si_f][0]),
                     cg_p.StructField(sv, slot_fields[si_o][0])), offset + 2
             if not isinstance(ctype, cg_t.Struct):
-                si, _ = slot_assignments[offset]
-                return cg_p.StructField(sv, slot_fields[si][0]), offset + 1
+                si, orig = slot_assignments[offset]
+                return union_repr.slot_read(sv, slot_fields, si, orig), offset + 1
             fvs = {}
             for fname, ftype in ctype.fields:
                 fvs[fname], offset = reconstruct(ftype, offset)

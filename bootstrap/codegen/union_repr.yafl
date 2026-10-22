@@ -762,14 +762,13 @@ fun combinationLiteralArmAt(em: GEmit, arm: PArm, sv, tag, members,
                             variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                             discs: Dict<String, Int>, litTypeName, vi, resultType, r)
   let tagValue = getOr0(discs, uid(forceNth(members, vi)))
-  let si = forceSlotIndex(forceNth(variantMap, vi))
-  let slotVal = RpStructField(sv, fieldNameAt(slotFields, si))
+  let slotVal = forceSlotRead(forceNth(variantMap, vi), slotFields, sv)
   let lt = literalAlternativeTests(arm.armLiterals, litTypeName, slotVal, r, "lit" + String(em.geCounter))
   ret emArm(em, r, resultType, arm, list2(list1(RpIntEqConst(tag, tagValue)), lt.ltoTests), None, lt.ltoBundles)
 
-fun forceSlotIndex(entries: List<CgSlotEntry>) => match(head(entries))
-  (e2: CgSlotEntry) => e2.slotIndex
-  ()                 => 0   # unreachable: a literal-typed variant always occupies exactly one slot
+fun forceSlotRead(entries: List<CgSlotEntry>, slotFields: List<CgField>, sv) => match(head(entries))
+  (e2: CgSlotEntry) => slotRead(sv, slotFields, e2.slotIndex, e2.origType)
+  ()                 => RpNullPointer()   # unreachable: a literal-typed variant always occupies exactly one slot
 
 fun isStructLike(t) => match(cgFieldsOf(t))
   (fields: List<CgField>) => true
