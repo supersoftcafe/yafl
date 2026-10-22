@@ -1439,25 +1439,12 @@ def _prune_unreachable_phi_sources(ops: tuple[Op, ...]) -> tuple[Op, ...]:
     for i, op in enumerate(ops):
         if isinstance(op, Label):
             # Fall-through edge from the previous op's block (if any).
-            if i > 0 and current_block is not None:
-                prev = ops[i - 1]
-                if not isinstance(prev, (Jump, Return, ReturnVoid, Abort)):
-                    if not (isinstance(prev, Call) and prev.musttail):
-                        block_predecessors.setdefault(op.name, set()).add(current_block)
-            current_block = op.name
-        elif isinstance(op, Jump):
-            if current_block is not None:
+            if i > 0 and current_block is not None and ops[i - 1].falls_through():
                 block_predecessors.setdefault(op.name, set()).add(current_block)
-        elif isinstance(op, JumpIf):
-            if current_block is not None:
-                block_predecessors.setdefault(op.label, set()).add(current_block)
-        elif isinstance(op, IfTask):
-            if current_block is not None:
-                block_predecessors.setdefault(op.target, set()).add(current_block)
-        elif isinstance(op, SwitchJump):
-            if current_block is not None:
-                for _, lbl in op.cases:
-                    block_predecessors.setdefault(lbl, set()).add(current_block)
+            current_block = op.name
+        elif current_block is not None:
+            for target in op.branch_targets():
+                block_predecessors.setdefault(target, set()).add(current_block)
 
     out: list[Op] = []
     current_block = None
@@ -1554,15 +1541,7 @@ def __convert_function_to_task_convention(
             if isinstance(op, Label):
                 label_at[op.name] = i
                 continue
-            if isinstance(op, Jump):
-                targets = [op.name]
-            elif isinstance(op, JumpIf):
-                targets = [op.label]
-            elif isinstance(op, SwitchJump):
-                targets = [l for _, l in op.cases]
-            else:
-                continue
-            for tname in targets:
+            for tname in op.branch_targets():
                 j = label_at.get(tname)
                 # Back edge (target already seen) whose span contains a park.
                 if j is not None and park_prefix[i + 1] - park_prefix[j] > 0:

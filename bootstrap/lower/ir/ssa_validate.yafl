@@ -96,14 +96,12 @@ fun ssavSingleDefinition(f: CgFunction): List<String>
 
 # ── all paths return ─────────────────────────────────────────────────────────
 
-# A function with no ops is an extern declaration. Only the fall-off-the-end
-# failure is checked: the last op must be a terminator (Return/ReturnVoid/
-# Abort/Jump, a musttail Call, or a conditional whose fall-through is the
-# not-taken path).
+# No path may fall off the end of the function: its last op must not fall
+# through. A function with no ops is an extern declaration.
 fun ssavAllPathsReturn(f: CgFunction): List<String> => match(lastOp(f.fnOps))
-  (op: Op) => ssavIsTerminator(op)
-    ? List()
-    : list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
+  (op: Op) => opFallsThrough(op)
+    ? list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
+    : List()
   ()        => List()
 
 # Seq twin: hop to the last segment, read its final element.
@@ -118,16 +116,6 @@ fun [tail] lastOp(ops: Chain<Op>): Op|None => match(ops)
   (l: ChainLink)  => match(l.next)
     (nil2: ChainEnd) => l.value
     (l2: ChainLink)  => lastOp(l.next)
-
-fun ssavIsTerminator(op) => match(op)
-  (r: OpReturn)      => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort)       => true
-  (j: OpJump)        => true
-  (c: OpCall)        => c.callMusttail
-  (t2: OpIfTask)     => true
-  (sw: OpSwitchJump) => true
-  (o: Op)            => false
 
 # ── Phi well-formedness ──────────────────────────────────────────────────────
 

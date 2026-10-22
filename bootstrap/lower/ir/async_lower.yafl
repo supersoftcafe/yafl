@@ -1785,21 +1785,14 @@ fun alBpFall(prev: Op|None, cur, label: String,
   if length(cur) == 0
     ret acc
   ret match(prev)
-    (p: Op) => ucPrevFallsIntoLabel(p) ? alBpAdd(acc, label, cur) : acc
+    (p: Op) => opFallsThrough(p) ? alBpAdd(acc, label, cur) : acc
     ()      => acc
 
 fun alBpJumps(op, cur,
               acc): Dict<String, Set<String>>
   if length(cur) == 0
     ret acc
-  ret match(op)
-    (j: OpJump)        => alBpAdd(acc, j.jumpName, cur)
-    (ji: OpJumpIf)     => alBpAdd(acc, ji.jumpIfLabel, cur)
-    (t2: OpIfTask)     => alBpAdd(acc, t2.taskTarget, cur)
-    (sw: OpSwitchJump) => fold(sw.switchCases, acc,
-                               (a, cs) =>
-                                 alBpAdd(a, cs.caseLabel, cur))
-    (o: Op)            => acc
+  ret fold(opBranchTargets(op), acc, (a, target) => alBpAdd(a, target, cur))
 
 fun alBpAdd(acc: Dict<String, Set<String>>, label: String,
             pred) => put(acc, label,
@@ -1913,21 +1906,14 @@ fun [tail] alHplLoop(s: Segment<Op>|None, i, labelParks,
   (nil: None)        => false
   (seg: Segment<Op>) => i >= seg.length
     ? alHplLoop(seg.next, 0i32, labelParks, parks)
-    : match(seg.array(i))
-        (lb: OpLabel)        => alHplLoop(s, i + 1i32,
-                                          put(labelParks, lb.labelName, parks),
-                                          parks)
-        (c: OpCall)          => alHplLoop(s, i + 1i32, labelParks,
-                                          opCallMaySuspend(c) ? parks + 1 : parks)
-        (aw: OpAwait)        => alHplLoop(s, i + 1i32, labelParks, parks + 1)
-        (j: OpJump)          => alHplHit(labelParks, j.jumpName, parks)
-          ? true : alHplLoop(s, i + 1i32, labelParks, parks)
-        (ji: OpJumpIf)       => alHplHit(labelParks, ji.jumpIfLabel, parks)
-          ? true : alHplLoop(s, i + 1i32, labelParks, parks)
-        (sw: OpSwitchJump)   => any(sw.switchCases, (cs) =>
-                                      alHplHit(labelParks, cs.caseLabel, parks))
-          ? true : alHplLoop(s, i + 1i32, labelParks, parks)
-        (o: Op)              => alHplLoop(s, i + 1i32, labelParks, parks)
+    : any(opBranchTargets(seg.array(i)), (name) => alHplHit(labelParks, name, parks))
+      ? true
+      : alHplLoop(s, i + 1i32, alHplLabelParks(seg.array(i), labelParks, parks),
+                  alIsSplitter(seg.array(i)) ? parks + 1 : parks)
+
+fun alHplLabelParks(op, labelParks: Dict<String, Int>, parks) => match(op)
+  (lb: OpLabel) => put(labelParks, lb.labelName, parks)
+  (o: Op)       => labelParks
 
 fun alHplHit(labelParks: Dict<String, Int>, name: String, parks) => match(get(labelParks, name))
   (atLabel: Int) => parks > atLabel

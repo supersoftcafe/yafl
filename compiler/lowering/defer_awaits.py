@@ -27,15 +27,10 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Op, Call, Move, Phi, Return, Await, Label, Jump, ReturnVoid, Abort
+from codegen.ops import Op, Call, Move, Phi, Return, Await, Label, Jump
 from codegen.param import RParam, StackVar, StructField
 from codegen.typedecl import Struct
 from lowering.task_abi import wrap_return_type, wrap_value
-
-
-# Control does not fall through past these into a following label
-# (Function.lower_phis's edge rule, applied to the ops it is handed).
-_TERMINATORS = (Jump, Return, ReturnVoid, Abort)
 
 
 def defer_awaits(app: Application) -> Application:
@@ -185,7 +180,7 @@ def _defer(fn: Function) -> Function:
             new_ops.append(None)
             continue
         if isinstance(op, Label):
-            if op.name in phis_at and last is not None and not isinstance(last, _TERMINATORS):
+            if op.name in phis_at and last is not None and last.falls_through():
                 new_ops.extend(edge(op.name, current))
             current = op.name
         elif isinstance(op, Jump) and op.name in phis_at:

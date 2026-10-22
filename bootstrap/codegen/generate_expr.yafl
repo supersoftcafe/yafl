@@ -165,16 +165,8 @@ fun opsEndInTransfer(ops: List<Op>) => opsEndInTransferChain(chain(ops))
 fun [tail] opsEndInTransferChain(ops: Chain<Op>) => match(ops)
   (nil: ChainEnd) => false
   (l: ChainLink)  => match(l.next)
-    (nil2: ChainEnd) => opIsControlTransfer(l.value)
+    (nil2: ChainEnd) => !opFallsThrough(l.value)
     (l2: ChainLink)  => opsEndInTransferChain(l.next)
-
-fun opIsControlTransfer(op) => match(op)
-  (j: OpJump) => true
-  (r: OpReturn) => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort) => true
-  (sw: OpSwitchJump) => true
-  (o: Op) => false
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 1: generation-time Resolver frame carriers (ResolverLoop/

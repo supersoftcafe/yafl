@@ -140,12 +140,7 @@ fun [tail] cgSimplifyControlFlowFixpoint(ops: Segment<Op>|None): Segment<Op>|Non
   let pass2 = cgSimplifyLoop(p0.op, p1.op, p2.op, p2.stream, seqBuilder(), false)
   ret pass2.changed ? cgSimplifyControlFlowFixpoint(pass2.ops) : pass2.ops
 
-fun cgCollectReferencedLabelsStep(acc, op) => match(op)
-  (j: OpJump) => setAdd(acc, j.jumpName)
-  (ji: OpJumpIf) => setAdd(acc, ji.jumpIfLabel)
-  (it: OpIfTask) => setAdd(acc, it.taskTarget)
-  (sj: OpSwitchJump) => fold(sj.switchCases, acc, (acc2, c) => setAdd(acc2, c.caseLabel))
-  (o: Op) => acc
+fun cgCollectReferencedLabelsStep(acc, op) => fold(opBranchTargets(op), acc, (acc2, target) => setAdd(acc2, target))
 
 fun cgCollectReferencedLabels(ops: Segment<Op>|None)
   ret fold(ops, setEmpty(), (acc, op) => cgCollectReferencedLabelsStep(acc, op))

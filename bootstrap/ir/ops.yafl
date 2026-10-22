@@ -42,7 +42,7 @@ enum Op
   enum OpSwitchJump(switchCondition: RParam, switchCases: List<OpCase>, switchSavedVars: Dict<String, RParam>)
   # newObjPinned: born pinned (codegen/ops.py NewObject.pinned).
   enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjPinned: Bool, newObjSavedVars: Dict<String, RParam>)
-  # callDeferred: its await is deferred (async_lower alDeferAwaits) — the
+  # callDeferred: its await is deferred (lower/ir/defer_awaits.yafl) — the
   # register holds the result in its task-carrying shape and an OpAwait
   # realises it later. Last, with a default, so fresh constructions are untouched.
   enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: Dict<String, RParam>,
@@ -271,6 +271,48 @@ fun opGetLiveVarsPhi(x: OpPhi): (reads: List<RParam>, writes: List<RParam>)
   ret match(x.phiTarget)
     (sv: RpStackVar) => (reads, list1(x.phiTarget))
     (o: RParam)      => (rpStackVarUnion(reads, rpGetLiveVars(x.phiTarget)), List())
+
+# ── falls_through() / branch_targets() ──────────────────────────────────────
+
+# Control can pass from this op to the next op in the stream.
+fun opFallsThrough(op): Bool => match(op)
+  (x: OpLabel)         => true
+  (x: OpMove)          => true
+  (x: OpJump)          => false
+  (x: OpJumpIf)        => true
+  (x: OpIfTask)        => true
+  (x: OpAssertNotTask) => true
+  # Its C ends `default: abort()`: an unlisted value never falls through.
+  (x: OpSwitchJump)    => false
+  (x: OpNewObject)     => true
+  # A musttail call is emitted as `return f(...)`: the frame is replaced.
+  (x: OpCall)          => !x.callMusttail
+  (x: OpAwait)         => true
+  (x: OpReturnVoid)    => false
+  (x: OpAbort)         => false
+  (x: OpReturn)        => false
+  (x: OpPhi)           => true
+  (x: OpProfEnter)     => true
+  (x: OpProfLeave)     => true
+
+# The labels this op can transfer control to, besides falling through.
+fun opBranchTargets(op): List<String> => match(op)
+  (x: OpLabel)         => List()
+  (x: OpMove)          => List()
+  (x: OpJump)          => list1(x.jumpName)
+  (x: OpJumpIf)        => list1(x.jumpIfLabel)
+  (x: OpIfTask)        => list1(x.taskTarget)
+  (x: OpAssertNotTask) => List()
+  (x: OpSwitchJump)    => map(x.switchCases, (c) => c.caseLabel)
+  (x: OpNewObject)     => List()
+  (x: OpCall)          => List()
+  (x: OpAwait)         => List()
+  (x: OpReturnVoid)    => List()
+  (x: OpAbort)         => List()
+  (x: OpReturn)        => List()
+  (x: OpPhi)           => List()
+  (x: OpProfEnter)     => List()
+  (x: OpProfLeave)     => List()
 
 # ── is_direct_call() (Call only) ────────────────────────────────────────────
 

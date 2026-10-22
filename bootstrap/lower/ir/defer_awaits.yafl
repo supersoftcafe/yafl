@@ -204,18 +204,11 @@ fun dfEmitOne(op, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(op)
 
 fun dfLabelEdge(lb: OpLabel, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
   let falls = match(acc.daLast)
-    (last: Op) => !dfIsTerminator(last)
+    (last: Op) => opFallsThrough(last)
     ()          => false
   ret falls ? dfEdge(lb.labelName, ctx, acc) : acc
 
 fun dfJumpEdge(j: OpJump, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => dfEdge(j.jumpName, ctx, acc)
-
-fun dfIsTerminator(op) => match(op)
-  (j: OpJump)        => true
-  (r: OpReturn)      => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort)       => true
-  (o: Op)            => false
 
 # Realise, on the edge current -> join, the Phi sources that need it.
 fun dfEdge(join: String, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc

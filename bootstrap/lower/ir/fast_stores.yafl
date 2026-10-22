@@ -65,22 +65,6 @@ fun fsIsModelled(op: Op)
       || op is OpIfTask || op is OpAssertNotTask || op is OpSwitchJump
       || op is OpReturn || op is OpReturnVoid || op is OpAbort || op is OpPhi
 
-# Control does not fall through past these.
-fun fsIsTerminal(op: Op)
-  ret op is OpJump || op is OpReturn || op is OpReturnVoid || op is OpAbort
-      || fsIsMusttail(op)
-
-fun fsIsMusttail(op: Op) => match(op)
-  (c: OpCall) => c.callMusttail
-  (o: Op)     => false
-
-fun fsJumpTargets(op: Op): List<String> => match(op)
-  (j: OpJump)        => list1(j.jumpName)
-  (ji: OpJumpIf)     => list1(ji.jumpIfLabel)
-  (it: OpIfTask)     => list1(it.taskTarget)
-  (sw: OpSwitchJump) => map(sw.switchCases, (c) => c.caseLabel)
-  (o: Op)            => List()
-
 # ── the transfer function ───────────────────────────────────────────────────
 
 fun fsStep(op: Op, fresh: Set<String>): Set<String>
@@ -160,7 +144,7 @@ fun fsEnteredLabel(fact: Set<String>, known: Set<String>|None): Set<String> => m
   (s: Set<String>) => fsIntersect(fact, s)
   ()               => fact
 
-fun fsCarry(op: Op, after: Set<String>, universe: Set<String>) => fsIsTerminal(op)
+fun fsCarry(op: Op, after: Set<String>, universe: Set<String>) => !opFallsThrough(op)
   ? universe                        # unreachable until the next Label
   : after
 
@@ -188,7 +172,7 @@ fun fsSweepStep(w: FsWalk, op: Op, universe: Set<String>)
   # carry the post-kill fact.
   let after = fsStep(op, entered)
   ret FsWalk(fsCarry(op, after, universe),
-             fsRecordJumps(w.fwArr, fsJumpTargets(op), after))
+             fsRecordJumps(w.fwArr, opBranchTargets(op), after))
 
 # Not converging inside the budget must fall back to the safe BOTTOM, not to
 # the last sweep: this is a greatest fixpoint, so the sets are still too

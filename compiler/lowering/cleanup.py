@@ -27,7 +27,7 @@ import codegen.param as p
 import codegen.typedecl as t
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Label
+from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, Label
 
 
 # ---------------------------------------------------------------------------
@@ -136,17 +136,7 @@ def _simplify_control_flow(fn: Function) -> Function:
         ops = new_ops
 
     # Remove labels that no jump targets any more
-    referenced: set[str] = set()
-    for op in ops:
-        if isinstance(op, Jump):
-            referenced.add(op.name)
-        elif isinstance(op, JumpIf):
-            referenced.add(op.label)
-        elif isinstance(op, IfTask):
-            referenced.add(op.target)
-        elif isinstance(op, SwitchJump):
-            for _, lbl in op.cases:
-                referenced.add(lbl)
+    referenced = {target for op in ops for target in op.branch_targets()}
     ops = [op for op in ops if not (isinstance(op, Label) and op.name not in referenced)]
 
     return dataclasses.replace(fn, ops=tuple(ops))

@@ -210,13 +210,6 @@ fun cgPhiToMove(phi, predLabel) => match(phi)
   (p: OpPhi) => OpMove(p.phiTarget, phiSourceFor(phi, predLabel), false, Dict())
   (o: Op)    => o   # unreachable
 
-fun cgIsTerminatorForPhi(op) => match(op)
-  (j: OpJump) => true
-  (r: OpReturn) => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort) => true
-  (o: Op) => false
-
 # The emitted op stream, plus the two facts the walk needs about what it has
 # already emitted: the label currently open, and whether the last op falls
 # through into the next. `paFall` is MAINTAINED as ops are pushed — deriving it
@@ -257,7 +250,7 @@ fun cgLowerPhisStep([terminal] acc, op,
   (ji: OpJumpIf) => PhiAcc(acc.paCur, push(acc.paOut, op), true)
   (l: OpLabel)   => cgLowerPhisLabel(acc, l, phis)
   (o: Op)        => PhiAcc(acc.paCur, push(acc.paOut, op),
-                           !cgIsTerminatorForPhi(op))
+                           opFallsThrough(op))
 
 fun cgLowerPhisPass2(ops: Segment<Op>|None, phis: List<PhiAtEntry>)
   ret build(cgLowerPhisLoop(ops, 0i32, phis,
@@ -329,15 +322,9 @@ fun cgSuccessors(ix: StripIx, index): List<Int>
     : List()
   ret cgSuccessorsOf(op, ix, fallthrough)
 
-fun cgSuccessorsOf(op, ix: StripIx, fallthrough) => match(op)
-  (r: OpReturn) => List()
-  (rv: OpReturnVoid) => List()
-  (c: OpCall) => c.callMusttail ? List() : fallthrough
-  (j: OpJump) => prepend(labelIndexLookup(ix, j.jumpName), List())
-  (ji: OpJumpIf) => prepend(labelIndexLookup(ix, ji.jumpIfLabel), fallthrough)
-  (it: OpIfTask) => prepend(labelIndexLookup(ix, it.taskTarget), fallthrough)
-  (sj: OpSwitchJump) => map(sj.switchCases, (c) => labelIndexLookup(ix, c.caseLabel))
-  (o: Op) => fallthrough
+fun cgSuccessorsOf(op, ix: StripIx, fallthrough)
+  ret concat(map(opBranchTargets(op), (name) => labelIndexLookup(ix, name)),
+             opFallsThrough(op) ? fallthrough : List())
 
 fun cgAddOneSuccessor(acc,
                       s: Int): (seen: Dict<Int, Bool>, worklist: Chain<Int>)
@@ -427,29 +414,19 @@ fun cgPredNextCurrent(op, current) => match(op)
   (lb: OpLabel) => lb.labelName
   (o: Op)       => current
 
-fun cgPredStep(op, prev: Op|None, current,
-                 acc) => match(op)
-  (lb: OpLabel)      => cgPredFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
-  (j: OpJump)        => predAdd(acc, j.jumpName, current)
-  (ji: OpJumpIf)     => predAdd(acc, ji.jumpIfLabel, current)
-  (t2: OpIfTask)     => predAdd(acc, t2.taskTarget, current)
-  (sw: OpSwitchJump) => fold(sw.switchCases, acc,
-                             (a, c) => predAdd(a, c.caseLabel, current))
-  (o: Op)            => acc
+fun cgPredStep(op, prev: Op|None, current, acc)
+  ret fold(opBranchTargets(op), cgPredLabelStep(op, prev, current, acc),
+           (a, target) => predAdd(a, target, current))
 
-# Fall-through edge from the previous block unless the previous op was an
-# unconditional terminator (Abort included — abort() does not return).
+fun cgPredLabelStep(op, prev: Op|None, current, acc) => match(op)
+  (lb: OpLabel) => cgPredFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
+  (o: Op)       => acc
+
+# Fall-through edge from the previous block, if control falls out of it.
 fun cgPredFallThroughEdge(lb: OpLabel, prev: Op|None, current,
                         acc) => match(prev)
-  (p: Op) => cgPredPrevFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
+  (p: Op) => opFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
   ()       => acc
-
-fun cgPredPrevFallsThrough(p) => match(p)
-  (j: OpJump)        => false
-  (r: OpReturn)      => false
-  (rv: OpReturnVoid) => false
-  (a: OpAbort)       => false
-  (o: Op)            => true
 
 fun predEnsure(acc, label) => any(acc, (e2) => e2.peLabel == label)
   ? acc

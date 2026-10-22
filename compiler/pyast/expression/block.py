@@ -25,9 +25,7 @@ from pyast.expression.base import Expression
 def _bottom(b: g.OperationBundle) -> bool:
     """True if `b` ends by transferring control elsewhere and so never falls
     through to what follows (mirrors TernaryExpression's bottom test)."""
-    return bool(b.operations) and isinstance(
-        b.operations[-1],
-        (cg_o.Jump, cg_o.Return, cg_o.ReturnVoid, cg_o.Abort, cg_o.SwitchJump))
+    return bool(b.operations) and not b.operations[-1].falls_through()
 
 
 def _stmts_fall_through(statements: list[s.Statement]) -> bool:

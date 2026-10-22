@@ -30,6 +30,16 @@ class Op:
     def all_params(self) -> list[RParam]:
         return []
 
+    # Control flow. Every op answers for itself; there is no default, so a
+    # new op cannot inherit a wrong answer.
+    def falls_through(self) -> bool:
+        """Control can pass from this op to the next op in the stream."""
+        raise NotImplementedError()
+
+    def branch_targets(self) -> tuple[str, ...]:
+        """The labels this op can transfer control to, besides falling through."""
+        raise NotImplementedError()
+
 
 @dataclass(frozen=True)
 class Label(Op):
@@ -40,6 +50,12 @@ class Label(Op):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"{mangle_name(self.name)}:\n"
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +89,12 @@ class Move(Op):
         live = self.source.get_live_vars()
         return (live, frozenset({self.target})) if isinstance(self.target, StackVar) else (live | self.target.get_live_vars(), frozenset())
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class Jump(Op):
@@ -83,6 +105,12 @@ class Jump(Op):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    goto {mangle_name(self.name)};\n"
+
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return (self.name,)
 
 
 @dataclass(frozen=True)
@@ -110,6 +138,12 @@ class JumpIf(Op):
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.condition.get_live_vars(), frozenset()
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return (self.label,)
 
 
 @dataclass(frozen=True)
@@ -165,6 +199,12 @@ class IfTask(Op):
                 f"        goto {mangle_name(self.target)};\n"
                 f"    }}\n")
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return (self.target,)
+
 
 @dataclass(frozen=True)
 class AssertNotTask(Op):
@@ -192,10 +232,16 @@ class AssertNotTask(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    YAFL_ASSERT_NOT_TASK({self.condition.to_c(type_cache)});\n"
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class Await(Op):
-    """Realises a deferred call's result (async_lower `__defer_awaits`): the
+    """Realises a deferred call's result (lowering/defer_awaits.py): the
     suspension point the call no longer is. `source` holds the result as the
     call returned it, in its task-carrying shape — the collector reads a
     task-tagged word as a reference to its task (`gc_ref`, yafl.h). Parks on
@@ -226,14 +272,19 @@ class Await(Op):
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return frozenset({self.source}), frozenset({self.register})
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class SwitchJump(Op):
     """Dispatch to labeled targets based on an integer condition value.
 
-    `cases` is a tuple of (int_value, label_name) pairs.  Any value not
-    listed falls through to the next instruction (the idx==0 fall-through
-    in the state-machine dispatch is the canonical use-case).
+    `cases` is a tuple of (int_value, label_name) pairs. A value not listed
+    aborts, so control never falls through to the next instruction.
     """
     condition: RParam
     cases: tuple[tuple[int, str], ...]
@@ -261,9 +312,15 @@ class SwitchJump(Op):
         # Default aborts: idx==0 must never reach this dispatch (heap memory
         # is zero-initialised, so idx==0 would be uninitialised state). Every
         # valid resume point must have a case; anything else is a compiler
-        # bug that we want to fail fast on. Cases that need to fall through
-        # to the next instruction emit `case V: break;` explicitly.
+        # bug that we want to fail fast on.
         return f"    switch ({cond}) {{\n{cases}\n        default: abort();\n    }}\n"
+
+    def falls_through(self) -> bool:
+        # Its C ends `default: abort()`: an unlisted value never falls through.
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return tuple(lbl for _, lbl in self.cases)
 
 
 @dataclass(frozen=True)
@@ -312,6 +369,12 @@ class NewObject(Op): # Create a new blank instance of the named object
         live = self.size.get_live_vars() if self.size else frozenset()
         return (live, frozenset({self.register})) if isinstance(self.register, StackVar) else (live | self.register.get_live_vars(), frozenset())
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class Call(Op):
@@ -321,7 +384,7 @@ class Call(Op):
     musttail: bool = False # Current function will end here and the return value is the return of this call
     impure: bool = False   # If True, this call must never be eliminated even if the result is unused
     result_type: t.Type|None = None # Actual return type when register is None (preserves ABI on sret platforms)
-    # Its await is deferred (async_lower `__defer_awaits`): `register` holds the
+    # Its await is deferred (lowering/defer_awaits.py): `register` holds the
     # result in its task-carrying shape, and an `Await` realises it later.
     deferred: bool = False
 
@@ -412,12 +475,25 @@ class Call(Op):
         dead = self.register.get_live_vars() if self.register else set()
         return (live, dead) if isinstance(self.register, StackVar) else (live | dead, frozenset())
 
+    def falls_through(self) -> bool:
+        # A musttail call is emitted as `return f(...)`: the frame is replaced.
+        return not self.musttail
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class ReturnVoid(Op):
     """Emit a bare 'return;' for void functions (e.g. the async state machine)."""
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return "    return;\n"
+
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -434,6 +510,12 @@ class Abort(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         note = f"  // {self.reason}" if self.reason else ""
         return f"    abort();{note}\n"
+
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -462,6 +544,12 @@ class Return(Op):
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.value.get_live_vars(), frozenset()
 
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class ProfEnter(Op):
@@ -474,12 +562,24 @@ class ProfEnter(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    yafl_prof_enter({self.fn_id}u);\n"
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class ProfLeave(Op):
     """--profile: pop the shadow stack. Injected before every function exit."""
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return "    yafl_prof_leave();\n"
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
 
 
 
@@ -541,3 +641,9 @@ class Phi(Op):
         raise AssertionError(
             f"Phi op reached codegen for target {self.target.name!r} — "
             f"from_ssa must lower all Phis to per-edge Moves before codegen.")
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()

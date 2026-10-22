@@ -71,9 +71,6 @@ from lowering.escapes import op_publishes
 _MODELLED = (Move, Label, Jump, JumpIf, IfTask, AssertNotTask, SwitchJump,
              Return, ReturnVoid, Abort, Phi)
 
-# Control does not fall through past these.
-_TERMINAL = (Jump, Return, ReturnVoid, Abort)
-
 _MAX_SWEEPS = 8     # bounded; the sets are finite and shrink monotonically
 
 
@@ -116,18 +113,6 @@ def __step(op: Op, fresh: frozenset[str]) -> frozenset[str]:
     return frozenset(survivors - written)
 
 
-def __jump_targets(op: Op) -> list[str]:
-    if isinstance(op, Jump):
-        return [op.name]
-    if isinstance(op, JumpIf):
-        return [op.label]
-    if isinstance(op, IfTask):
-        return [op.target]
-    if isinstance(op, SwitchJump):
-        return [lbl for _v, lbl in op.cases]
-    return []
-
-
 def __arriving(ops: tuple[Op, ...], universe: frozenset[str]) -> dict[str, frozenset[str]]:
     """label → the intersection of the facts on every jump edge into it."""
     arriving = {op.name: universe for op in ops if isinstance(op, Label)}
@@ -141,10 +126,10 @@ def __arriving(ops: tuple[Op, ...], universe: frozenset[str]) -> dict[str, froze
             # the bare pointer publishes it before control transfers, so the
             # taken edge must carry the post-kill fact.
             fact = __step(op, fact)
-            for target in __jump_targets(op):
+            for target in op.branch_targets():
                 if target in arriving:
                     arriving[target] &= fact
-            if isinstance(op, _TERMINAL) or (isinstance(op, Call) and op.musttail):
+            if not op.falls_through():
                 fact = universe                 # unreachable until the next Label
         if arriving == before:
             return arriving
@@ -178,7 +163,7 @@ def __rewrite(fn: Function) -> Function:
                 op, target=dataclasses.replace(op.target, fresh=True))
             changed = True
         fact = __step(op, fact)
-        if isinstance(op, _TERMINAL) or (isinstance(op, Call) and op.musttail):
+        if not op.falls_through():
             fact = universe
     return dataclasses.replace(fn, ops=tuple(new_ops)) if changed else fn
 

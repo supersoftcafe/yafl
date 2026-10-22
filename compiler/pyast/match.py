@@ -446,8 +446,7 @@ class _Emitter:
             self.ops(cg_o.Label(exit_label))
             self.arm_results.append((exit_label, body_bundle.result_var))
         last = self.bundles[-1].operations
-        if not (last and isinstance(last[-1],
-                (cg_o.Jump, cg_o.Return, cg_o.ReturnVoid, cg_o.Abort, cg_o.SwitchJump))):
+        if not (last and not last[-1].falls_through()):
             self.ops(cg_o.Jump(self.end_label))
 
     # -- binding constructors (used by the generators) -------------------------
