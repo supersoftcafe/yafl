@@ -133,7 +133,7 @@ fun ucReads(op): List<String> => match(op)
   (ph: OpPhi) => List()
   (o: Op)     => fold(opReadStackVars(op), List(), ucTakeKey)
 
-fun ucWrites(op) => fold(ssavOpWrites(op), List(), ucTakeKey)
+fun ucWrites(op) => fold(opTargets(op), List(), ucTakeKey)
 
 fun ucBranchOnlyWrites(op) => match(op)
   (t2: OpIfTask) => fold(list2(t2.taskLhs, t2.callIdLhs), List(), ucTakeKey)

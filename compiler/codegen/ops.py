@@ -40,6 +40,10 @@ class Op:
         """The labels this op can transfer control to, besides falling through."""
         raise NotImplementedError()
 
+    def targets(self) -> tuple[LParam, ...]:
+        """Every place this op writes: locals, globals and heap fields alike."""
+        raise NotImplementedError()
+
 
 @dataclass(frozen=True)
 class Label(Op):
@@ -55,6 +59,9 @@ class Label(Op):
         return True
 
     def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
         return ()
 
 
@@ -95,6 +102,9 @@ class Move(Op):
     def branch_targets(self) -> tuple[str, ...]:
         return ()
 
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.target,)
+
 
 @dataclass(frozen=True)
 class Jump(Op):
@@ -111,6 +121,9 @@ class Jump(Op):
 
     def branch_targets(self) -> tuple[str, ...]:
         return (self.name,)
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -144,6 +157,9 @@ class JumpIf(Op):
 
     def branch_targets(self) -> tuple[str, ...]:
         return (self.label,)
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -205,6 +221,9 @@ class IfTask(Op):
     def branch_targets(self) -> tuple[str, ...]:
         return (self.target,)
 
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.task_lhs, self.call_id_lhs)
+
 
 @dataclass(frozen=True)
 class AssertNotTask(Op):
@@ -236,6 +255,9 @@ class AssertNotTask(Op):
         return True
 
     def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
         return ()
 
 
@@ -277,6 +299,9 @@ class Await(Op):
 
     def branch_targets(self) -> tuple[str, ...]:
         return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.register,)
 
 
 @dataclass(frozen=True)
@@ -321,6 +346,9 @@ class SwitchJump(Op):
 
     def branch_targets(self) -> tuple[str, ...]:
         return tuple(lbl for _, lbl in self.cases)
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -374,6 +402,9 @@ class NewObject(Op): # Create a new blank instance of the named object
 
     def branch_targets(self) -> tuple[str, ...]:
         return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.register,)
 
 
 @dataclass(frozen=True)
@@ -482,6 +513,9 @@ class Call(Op):
     def branch_targets(self) -> tuple[str, ...]:
         return ()
 
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.register,) if self.register is not None else ()
+
 
 @dataclass(frozen=True)
 class ReturnVoid(Op):
@@ -493,6 +527,9 @@ class ReturnVoid(Op):
         return False
 
     def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
         return ()
 
 
@@ -515,6 +552,9 @@ class Abort(Op):
         return False
 
     def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
         return ()
 
 
@@ -550,6 +590,9 @@ class Return(Op):
     def branch_targets(self) -> tuple[str, ...]:
         return ()
 
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class ProfEnter(Op):
@@ -568,6 +611,9 @@ class ProfEnter(Op):
     def branch_targets(self) -> tuple[str, ...]:
         return ()
 
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class ProfLeave(Op):
@@ -579,6 +625,9 @@ class ProfLeave(Op):
         return True
 
     def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
         return ()
 
 
@@ -647,3 +696,6 @@ class Phi(Op):
 
     def branch_targets(self) -> tuple[str, ...]:
         return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.target,)

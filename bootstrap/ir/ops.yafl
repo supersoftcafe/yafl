@@ -314,6 +314,31 @@ fun opBranchTargets(op): List<String> => match(op)
   (x: OpProfEnter)     => List()
   (x: OpProfLeave)     => List()
 
+# ── targets() ───────────────────────────────────────────────────────────────
+
+# Every place this op writes: locals, globals and heap fields alike.
+fun opTargets(op): List<RParam> => match(op)
+  (x: OpLabel)         => List()
+  (x: OpMove)          => list1(x.moveTarget)
+  (x: OpJump)          => List()
+  (x: OpJumpIf)        => List()
+  (x: OpIfTask)        => list2(x.taskLhs, x.callIdLhs)
+  (x: OpAssertNotTask) => List()
+  (x: OpSwitchJump)    => List()
+  (x: OpNewObject)     => list1(x.newObjRegister)
+  (x: OpCall)          => opTargetsCall(x.callRegister)
+  (x: OpAwait)         => list1(x.awaitRegister)
+  (x: OpReturnVoid)    => List()
+  (x: OpAbort)         => List()
+  (x: OpReturn)        => List()
+  (x: OpPhi)           => list1(x.phiTarget)
+  (x: OpProfEnter)     => List()
+  (x: OpProfLeave)     => List()
+
+fun opTargetsCall(register: RParam|None): List<RParam> => match(register)
+  (r: RParam) => list1(r)
+  ()          => List()
+
 # ── is_direct_call() (Call only) ────────────────────────────────────────────
 
 fun opIsDirectCall(x: OpCall) => match(x.callFunction)

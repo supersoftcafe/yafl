@@ -93,7 +93,7 @@ fun [tail] sroaDefsLoop(s: Segment<Op>|None, iSeg, i, acc) => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg < seg.length
     ? sroaDefsLoop(s, iSeg + 1i32, i + 1,
-        fold(ssavOpWrites(seg.array(iSeg)), acc,
+        fold(opTargets(seg.array(iSeg)), acc,
              (a, w) => sroaDef1(a, w, i, seg.array(iSeg))))
     : sroaDefsLoop(seg.next, 0i32, i, acc)
 

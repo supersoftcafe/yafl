@@ -133,4 +133,4 @@ fun cpPruneStackVars(f: CgFunction, newOps)
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
                         (fld) => contains(mentioned, fld.fieldName))))
 
-fun cpWriteNames(op) => fold(ssavOpWrites(op), List(), rpTakeStackVarName)
+fun cpWriteNames(op) => fold(opTargets(op), List(), rpTakeStackVarName)

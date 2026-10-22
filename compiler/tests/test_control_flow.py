@@ -1,5 +1,6 @@
-"""Control flow — what each op says about it (`Op.falls_through`,
-`Op.branch_targets`), and the function-level CFG built from those answers.
+"""What each op says about itself — its control flow (`Op.falls_through`,
+`Op.branch_targets`) and what it writes (`Op.targets`) — and the
+function-level CFG built from those answers.
 
 Built by hand like tests/test_cleanup.py.
 """
@@ -30,12 +31,12 @@ def musttail() -> Call:
 class TestOpsAnswer(unittest.TestCase):
 
     def test_every_op_answers_both_questions_itself(self):
-        """No op inherits an answer: a new variant must decide for itself."""
+        """No op inherits an answer: a new op must decide for itself."""
         def leaves(cls):
             subs = cls.__subclasses__()
             return [c for s in subs for c in leaves(s)] if subs else [cls]
         for cls in leaves(Op):
-            for name in ("falls_through", "branch_targets"):
+            for name in ("falls_through", "branch_targets", "targets"):
                 self.assertIn(name, cls.__dict__, f"{cls.__name__}.{name}")
 
     def test_a_switch_never_falls_through(self):

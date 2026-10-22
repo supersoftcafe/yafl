@@ -50,23 +50,11 @@ fun cuOpLocals(acc: StrSet, op: Op): StrSet
   let reads = fold(opAllParams(op), acc,
                    (s2, q) => fold(rpFlatten(q, true), s2, cuAddLocal))
   let saved = fold(values(opSavedVars(op)), reads, cuAddLocal)
-  ret fold(cuWrites(op), saved, cuAddLocal)
+  ret fold(opTargets(op), saved, cuAddLocal)
 
 fun cuAddLocal(acc: StrSet, r: RParam): StrSet => match(r)
   (sv: RpStackVar) => setAdd(acc, sv.name)
   (o: RParam)      => acc
-
-fun cuWrites(op: Op): List<RParam> => match(op)
-  (x: OpMove)         => prepend(x.moveTarget, List())
-  (x: OpPhi)          => prepend(x.phiTarget, List())
-  (x: OpNewObject)    => prepend(x.newObjRegister, List())
-  (x: OpCall)         => cuOpt(x.callRegister, List())
-  (x: OpIfTask)       => prepend(x.taskLhs, prepend(x.callIdLhs, List()))
-  (o: Op)             => List()
-
-fun cuOpt(r: RParam|None, rest: List<RParam>): List<RParam> => match(r)
-  (x: RParam) => prepend(x, rest)
-  ()          => rest
 
 # ══ the chain's own transforms ══════════════════════════════════════════════
 
@@ -198,16 +186,13 @@ fun cgCPWriteCountsReq(acc, register): (writes: List<StrCount>, zeroInit: Set<St
     (sv: RpStackVar) => (strCountIncr(acc.writes, sv.name), acc.zeroInit)
     (o: RParam)       => acc
 
-fun cgCPWriteCountsOpt(acc, register: RParam|None): (writes: List<StrCount>, zeroInit: Set<String>)
-  ret match(register)
-    (r: RParam) => cgCPWriteCountsReq(acc, r)
-    ()           => acc
+fun cgCPWriteCountsStep(acc, op): (writes: List<StrCount>, zeroInit: Set<String>)
+  ret fold(opGetLiveVars(op).writes, acc, (a, w) => cgCPWriteCountsWritten(a, w, op))
 
-fun cgCPWriteCountsStep(acc, op): (writes: List<StrCount>, zeroInit: Set<String>) => match(op)
+# A Move of ZeroOf is a null-init, not a real write.
+fun cgCPWriteCountsWritten(acc, w, op): (writes: List<StrCount>, zeroInit: Set<String>) => match(op)
   (m: OpMove) => cgCPWriteCountsMove(acc, m)
-  (c: OpCall) => cgCPWriteCountsOpt(acc, c.callRegister)
-  (n: OpNewObject) => cgCPWriteCountsReq(acc, n.newObjRegister)
-  (o: Op) => acc
+  (o: Op)     => cgCPWriteCountsReq(acc, w)
 
 fun cgCollectWrites(ops: Segment<Op>|None): (writes: List<StrCount>, zeroInit: Set<String>)
   ret fold(ops, (List(), Set()), (acc, op) => cgCPWriteCountsStep(acc, op))
@@ -311,15 +296,7 @@ fun cgCSEWriteCountsTarget(acc, target): List<StrCount> => match(target)
   (sv: RpStackVar) => strCountIncr(acc, sv.name)
   (o: RParam)       => acc
 
-fun cgCSEWriteCountsCallRegister(acc, register: RParam|None): List<StrCount> => match(register)
-  (r: RParam) => cgCSEWriteCountsTarget(acc, r)
-  ()           => acc
-
-fun cgCSEWriteCountsStep(acc, op): List<StrCount> => match(op)
-  (m: OpMove) => cgCSEWriteCountsTarget(acc, m.moveTarget)
-  (c: OpCall) => cgCSEWriteCountsCallRegister(acc, c.callRegister)
-  (n: OpNewObject) => cgCSEWriteCountsTarget(acc, n.newObjRegister)
-  (o: Op) => acc
+fun cgCSEWriteCountsStep(acc, op): List<StrCount> => fold(opGetLiveVars(op).writes, acc, cgCSEWriteCountsTarget)
 
 fun cgCSEWriteCounts(ops: Segment<Op>|None)
   ret fold(ops, List(), (acc, op) => cgCSEWriteCountsStep(acc, op))

@@ -116,7 +116,13 @@ fun scanOp(op): ScanSets => match(op)
   (sw: OpSwitchJump)  => scanRParam(sw.switchCondition)
   (ph: OpPhi)         => fold(ph.phiSources, scanRParam(ph.phiTarget),
                               (a, s2) => ssUnion(a, scanRParam(s2.sourceValue)))
-  (o: Op)             => ssEmpty()   # Label/Jump/ReturnVoid/Abort
+  (aw: OpAwait)       => ssUnion(scanRParam(aw.awaitRegister), scanRParam(aw.awaitSource))
+  (x: OpLabel)        => ssEmpty()
+  (x: OpJump)         => ssEmpty()
+  (x: OpReturnVoid)   => ssEmpty()
+  (x: OpAbort)        => ssEmpty()
+  (x: OpProfEnter)    => ssEmpty()
+  (x: OpProfLeave)    => ssEmpty()
 
 fun scanGlobal(g2: CgGlobal): ScanSets
   ret ssUnion(ssUnion(scanOptRParam(g2.globalInit), scanOptFunction(g2.globalLazyInitFunction)),

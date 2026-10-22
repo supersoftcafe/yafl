@@ -26,7 +26,7 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Move, Label, Jump, JumpIf, SwitchJump, IfTask, Return, ReturnVoid, Abort
+from codegen.ops import Move, Label
 from codegen.param import StackVar, RParam
 
 
@@ -63,8 +63,7 @@ def __coalesce_copies(fn: Function) -> Function:
         def_idx = None
         while j >= 0 and def_idx is None:
             prev = ops[j]
-            if isinstance(prev, (Label, Jump, JumpIf, SwitchJump, IfTask,
-                                 Return, ReturnVoid, Abort)):
+            if isinstance(prev, Label) or not prev.falls_through() or prev.branch_targets():
                 break
             p_reads, p_writes = prev.get_live_vars()
             if any(sv.name == s_name for sv in p_writes):

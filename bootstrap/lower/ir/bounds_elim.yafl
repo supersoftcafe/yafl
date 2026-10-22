@@ -99,22 +99,16 @@ class [final] BeDefEntry(bdName: String, bdDef: BeDef, bdCount: Int)
 fun beSingleDefs(ops: Segment<Op>|None) => filter(fold(ops, List(), beDefOp),
                                                   (e) => e.bdCount == 1)
 
-fun beDefOp(acc, op) => match(op)
-  (m: OpMove)       => match(m.moveTarget)
-    (sv: RpStackVar) => beSeen(acc, sv.name, BdSource(m.moveSource))
-    (o: RParam)      => acc
-  (ph: OpPhi)       => match(ph.phiTarget)
-    (sv: RpStackVar) => beSeen(acc, sv.name, BdPhi(ph))
-    (o: RParam)      => acc
-  (c: OpCall)       => match(c.callRegister)
-    (r0: RParam) => match(r0)
-      (sv: RpStackVar) => beSeen(acc, sv.name, BdOpaque())
-      (o: RParam)      => acc
-    ()           => acc
-  (no: OpNewObject) => match(no.newObjRegister)
-    (sv: RpStackVar) => beSeen(acc, sv.name, BdOpaque())
-    (o: RParam)      => acc
-  (o: Op)           => acc
+fun beDefOp(acc, op) => fold(opGetLiveVars(op).writes, acc, (a, w) => beDefWritten(a, w, op))
+
+fun beDefWritten(acc, w, op) => match(w)
+  (sv: RpStackVar) => beSeen(acc, sv.name, beDefinitionOf(op))
+  (o: RParam)      => acc   # unreachable: only locals are written
+
+fun beDefinitionOf(op): BeDef => match(op)
+  (m: OpMove)  => BdSource(m.moveSource)
+  (ph: OpPhi)  => BdPhi(ph)
+  (o: Op)      => BdOpaque()
 
 fun beSeen(acc, name, d) => any(acc, (e) => e.bdName == name)
   ? map(acc, (e) => e.bdName == name

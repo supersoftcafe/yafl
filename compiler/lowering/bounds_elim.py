@@ -29,7 +29,7 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Op, Call, Return, Move, Label, Jump, JumpIf, Phi, NewObject
+from codegen.ops import Op, Call, Return, Move, Label, Jump, JumpIf, Phi
 from codegen.param import (RParam, StackVar, ObjectField, ArrayElement,
                            Integer, RuntimeInvoke, NewStruct, StructField)
 
@@ -48,14 +48,9 @@ def _single_defs(ops: tuple[Op, ...]) -> dict[str, RParam | Phi]:
         defs[name] = value
 
     for op in ops:
-        if isinstance(op, Move) and isinstance(op.target, StackVar):
-            seen(op.target.name, op.source)
-        elif isinstance(op, Phi) and isinstance(op.target, StackVar):
-            seen(op.target.name, op)
-        elif isinstance(op, Call) and isinstance(op.register, StackVar):
-            seen(op.register.name, _OPAQUE)
-        elif isinstance(op, NewObject) and isinstance(op.register, StackVar):
-            seen(op.register.name, _OPAQUE)
+        for written in op.get_live_vars()[1]:
+            seen(written.name, op.source if isinstance(op, Move)
+                 else op if isinstance(op, Phi) else _OPAQUE)
     return {n: v for n, v in defs.items() if counts[n] == 1}
 
 

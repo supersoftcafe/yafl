@@ -171,11 +171,24 @@ fun [tail] cgInstrumentOps(s: Segment<Op>|None, i,
              seg.array(i)))
     : cgInstrumentOps(seg.next, 0i32, acc)
 
+# Leaves the function: a return, or a musttail call (its frame is replaced).
 fun cgIsProfExit(op) => match(op)
-  (x: OpReturn)     => true
-  (x: OpReturnVoid) => true
-  (x: OpCall)       => x.callMusttail
-  (o: Op)           => false
+  (x: OpReturn)            => true
+  (x: OpReturnVoid)        => true
+  (x: OpCall)              => x.callMusttail
+  (x: OpLabel)             => false
+  (x: OpMove)              => false
+  (x: OpJump)              => false
+  (x: OpJumpIf)            => false
+  (x: OpIfTask)            => false
+  (x: OpAssertNotTask)     => false
+  (x: OpSwitchJump)        => false
+  (x: OpNewObject)         => false
+  (x: OpAwait)             => false
+  (x: OpAbort)             => false
+  (x: OpPhi)               => false
+  (x: OpProfEnter)         => false
+  (x: OpProfLeave)         => false
 
 fun cgFunctionReplaceParams(f: CgFunction, replacer)
   ret cgFunctionWith(f, map(f.fnOps, (op) => opReplaceParams(op, replacer)), f.fnStackVars)

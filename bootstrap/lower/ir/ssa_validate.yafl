@@ -57,34 +57,11 @@ fun ssavCollectWriteCounts(f: CgFunction)
 
 fun ssavCountOp(acc, op): List<StrCount> => ssavIsZeroInit(op)
   ? acc
-  : fold(ssavOpWrites(op), acc, ssavCountTarget)
+  : fold(opTargets(op), acc, ssavCountTarget)
 
 fun ssavCountTarget(acc, target): List<StrCount> => match(target)
   (sv: RpStackVar) => strCountIncr(acc, sv.name)
   (o: RParam)       => acc
-
-# The write set per op kind — Python's op.get_live_vars() writes half.
-fun ssavOpWrites(op) => match(op)
-  (m: OpMove)         => list1(m.moveTarget)
-  (c: OpCall)         => ssavOptWrite(c.callRegister)
-  (n: OpNewObject)    => list1(n.newObjRegister)
-  (ph: OpPhi)         => list1(ph.phiTarget)
-  (t2: OpIfTask)      => list2(t2.taskLhs, t2.callIdLhs)
-  (aw: OpAwait)       => list1(aw.awaitRegister)
-  (x: OpLabel)         => List()
-  (x: OpJump)          => List()
-  (x: OpJumpIf)        => List()
-  (x: OpAssertNotTask) => List()
-  (x: OpSwitchJump)    => List()
-  (x: OpReturnVoid)    => List()
-  (x: OpAbort)         => List()
-  (x: OpReturn)        => List()
-  (x: OpProfEnter)     => List()
-  (x: OpProfLeave)     => List()
-
-fun ssavOptWrite(r: RParam|None) => match(r)
-  (x: RParam) => list1(x)
-  ()           => List()
 
 fun ssavSingleDefinition(f: CgFunction): List<String>
   let violations = filter(ssavCollectWriteCounts(f),

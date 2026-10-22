@@ -9,7 +9,7 @@ Nothing here rewrites anything: pure queries, safe to call from any stage.
 from __future__ import annotations
 
 from codegen.ir import Function
-from codegen.ops import Move, Call, Phi
+from codegen.ops import Move
 from codegen.param import (
     RParam, StackVar, StructField, NewStruct, Integer, IntEqConst, String,
     Float, NullPointer, GlobalVar, GlobalFunction,
@@ -32,12 +32,8 @@ def single_defs(fn: Function) -> dict[str, RParam | None]:
         defs[name] = None if name in defs else source
 
     for op in fn.ops:
-        if isinstance(op, Move) and isinstance(op.target, StackVar):
-            define(op.target.name, op.source)
-        elif isinstance(op, Call) and isinstance(op.register, StackVar):
-            define(op.register.name, None)
-        elif isinstance(op, Phi) and isinstance(op.target, StackVar):
-            define(op.target.name, None)
+        for written in op.get_live_vars()[1]:
+            define(written.name, op.source if isinstance(op, Move) else None)
     return defs
 
 

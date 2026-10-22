@@ -55,15 +55,14 @@ class [final] FunValues(fvMap: Dict<String, FunValue>)
 
 fun gfFunValueMap(f: CgFunction) => fold(f.fnOps, FunValues(Dict()), gfFvStep)
 
-fun gfFvStep(acc, op) => match(op)
-  (m: OpMove) => match(m.moveTarget)
+fun gfFvStep(acc, op) => fold(opGetLiveVars(op).writes, acc, (a, w) => gfFvWritten(a, w, op))
+
+# A Move's source is known; any other definition is opaque.
+fun gfFvWritten(acc, w, op) => match(op)
+  (m: OpMove) => match(w)
     (sv: RpStackVar) => gfFvAdd(acc, sv.name, m.moveSource, 1)
-    (o: RParam)       => acc
-  (ph: OpPhi) => gfFvOpaque(acc, ph.phiTarget)
-  (c: OpCall) => match(c.callRegister)
-    (r: RParam) => gfFvOpaque(acc, r)
-    ()           => acc
-  (o: Op)      => acc
+    (o: RParam)      => acc   # unreachable: only locals are written
+  (o: Op)     => gfFvOpaque(acc, w)
 
 fun gfFvOpaque(acc, target) => match(target)
   (sv: RpStackVar) => gfFvAdd(acc, sv.name, RpNullPointer(), 2)

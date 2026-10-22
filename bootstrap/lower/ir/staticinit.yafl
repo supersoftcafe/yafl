@@ -452,11 +452,24 @@ fun siIsTrivialCopyFn(f: CgFunction, source, target)
       (o: Op)     => false
     ()      => false
 
+# Rules out a trivial copy function: it calls, allocates or branches.
 fun siHardOp(op) => match(op)
-  (c: OpCall)       => true
-  (no: OpNewObject) => true
-  (ji: OpJumpIf)    => true
-  (o: Op)           => false
+  (c: OpCall)              => true
+  (no: OpNewObject)        => true
+  (ji: OpJumpIf)           => true
+  (x: OpLabel)             => false
+  (x: OpMove)              => false
+  (x: OpJump)              => false
+  (x: OpIfTask)            => false
+  (x: OpAssertNotTask)     => false
+  (x: OpSwitchJump)        => false
+  (x: OpAwait)             => false
+  (x: OpReturnVoid)        => false
+  (x: OpAbort)             => false
+  (x: OpReturn)            => false
+  (x: OpPhi)               => false
+  (x: OpProfEnter)         => false
+  (x: OpProfLeave)         => false
 
 fun siWritesGlobal(op, name) => match(op)
   (m: OpMove) => match(m.moveTarget)

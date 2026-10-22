@@ -63,12 +63,25 @@ fun [tail] alConvertReturnsSmB(ops: Chain<Op>, myTaskField,
 fun alConvertReturnSmOne([terminal] acc: ListBuilder<Op>, op,
                          myTaskField, fnResult,
                          subtype: String|None): ListBuilder<Op> => match(op)
-  (r: OpReturn)      => pushAll(acc,
+  (r: OpReturn)        => pushAll(acc,
                             alSmReturn(r, myTaskField, fnResult,
                                        subtype))
-  (rv: OpReturnVoid) => pushAll(acc,
+  (rv: OpReturnVoid)   => pushAll(acc,
                             alSmComplete(myTaskField))
-  (o: Op)            => push(acc, op)
+  (x: OpLabel)         => push(acc, op)
+  (x: OpMove)          => push(acc, op)
+  (x: OpJump)          => push(acc, op)
+  (x: OpJumpIf)        => push(acc, op)
+  (x: OpIfTask)        => push(acc, op)
+  (x: OpAssertNotTask) => push(acc, op)
+  (x: OpSwitchJump)    => push(acc, op)
+  (x: OpNewObject)     => push(acc, op)
+  (x: OpCall)          => push(acc, op)
+  (x: OpAwait)         => push(acc, op)
+  (x: OpAbort)         => push(acc, op)
+  (x: OpPhi)           => push(acc, op)
+  (x: OpProfEnter)     => push(acc, op)
+  (x: OpProfLeave)     => push(acc, op)
 
 fun alSmReturn(r: OpReturn, myTaskField, fnResult,
                subtype: String|None): List<Op> => match(subtype)
@@ -101,12 +114,25 @@ fun alConvertReturnsHot(ops, fnResult): List<Op>
     : map(ops, (op) => alHotReturnOne(op, wrappedResult))
 
 fun alHotReturnOne(op, wrapped) => match(op)
-  (r: OpReturn) => OpReturn(wrapValue(r.returnValue, wrapped), r.returnSavedVars)
-  (c: OpCall)   => c.callMusttail
+  (r: OpReturn)        => OpReturn(wrapValue(r.returnValue, wrapped), r.returnSavedVars)
+  (c: OpCall)          => c.callMusttail
     ? OpCall(c.callFunction, c.callParameters, c.callRegister, true, c.callImpure,
              wrapped, c.callSavedVars)
     : op
-  (o: Op)       => op
+  (x: OpLabel)         => op
+  (x: OpMove)          => op
+  (x: OpJump)          => op
+  (x: OpJumpIf)        => op
+  (x: OpIfTask)        => op
+  (x: OpAssertNotTask) => op
+  (x: OpSwitchJump)    => op
+  (x: OpNewObject)     => op
+  (x: OpAwait)         => op
+  (x: OpReturnVoid)    => op
+  (x: OpAbort)         => op
+  (x: OpPhi)           => op
+  (x: OpProfEnter)     => op
+  (x: OpProfLeave)     => op
 
 # ── per-pattern emit helpers ─────────────────────────────────────────────────
 
@@ -214,7 +240,7 @@ fun alReadsOf(op): List<RParam> => match(op)
   (ph: OpPhi) => List()
   (o: Op)     => opReadStackVars(op)
 
-fun alWritesOf(op) => fold(ssavOpWrites(op), List(), rpTakeStackVar)
+fun alWritesOf(op) => fold(opTargets(op), List(), rpTakeStackVar)
 
 fun alCalculateSavedVars(f: CgFunction)
   let ops = cgOpsToList(f.fnOps)
@@ -414,19 +440,46 @@ fun [tail] alPartitionB(st: SeqStream<Op>, n,
       : alPartitionB(p.stream, n, PartAcc(push(acc.paCur, op2),
                                         acc.paBlocks))
 
+# Parks: a call that may suspend, or an Await.
 fun alIsSplitter(op) => match(op)
-  (c: OpCall)          => opCallMaySuspend(c)
-  (aw: OpAwait)        => true
-  (o: Op)              => false
+  (c: OpCall)              => opCallMaySuspend(c)
+  (aw: OpAwait)            => true
+  (x: OpLabel)             => false
+  (x: OpMove)              => false
+  (x: OpJump)              => false
+  (x: OpJumpIf)            => false
+  (x: OpIfTask)            => false
+  (x: OpAssertNotTask)     => false
+  (x: OpSwitchJump)        => false
+  (x: OpNewObject)         => false
+  (x: OpReturnVoid)        => false
+  (x: OpAbort)             => false
+  (x: OpReturn)            => false
+  (x: OpPhi)               => false
+  (x: OpProfEnter)         => false
+  (x: OpProfLeave)         => false
 
 fun alMakeBlock(index: Int, ops) => match(lastOp(chain(ops)))
   (op: Op) => ABlock("cont$" + String(index), ops, opSavedVars(op), alBlockResult(op))
   ()        => ABlock("cont$" + String(index), ops, Dict(), None)
 
 fun alBlockResult(op) => match(op)
-  (c: OpCall)          => c.callRegister
-  (aw: OpAwait)        => aw.awaitRegister
-  (o: Op)              => None
+  (c: OpCall)              => c.callRegister
+  (aw: OpAwait)            => aw.awaitRegister
+  (x: OpLabel)             => None
+  (x: OpMove)              => None
+  (x: OpJump)              => None
+  (x: OpJumpIf)            => None
+  (x: OpIfTask)            => None
+  (x: OpAssertNotTask)     => None
+  (x: OpSwitchJump)        => None
+  (x: OpNewObject)         => None
+  (x: OpReturnVoid)        => None
+  (x: OpAbort)             => None
+  (x: OpReturn)            => None
+  (x: OpPhi)               => None
+  (x: OpProfEnter)         => None
+  (x: OpProfLeave)         => None
 
 # ── heap-frame layout ────────────────────────────────────────────────────────
 
@@ -913,10 +966,7 @@ fun alIsReturnedAwait(op) => match(op)
   (aw: OpAwait) => aw.awaitReturned
   (o: Op)       => false
 
-fun alParksUnreturned(op) => match(op)
-  (c: OpCall)   => opCallMaySuspend(c)
-  (aw: OpAwait) => !aw.awaitReturned
-  (o: Op)       => false
+fun alParksUnreturned(op) => alIsSplitter(op) && !alIsReturnedAwait(op)
 
 fun [tail] alRuLoop(os: Chain<Op>, skipping: Bool,
                     [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(os)
@@ -1156,9 +1206,23 @@ fun [tail] alHotSites(bs: Chain<ABlock>, f: CgFunction, fnResult,
 fun alHotSite(bb: ABlock, f: CgFunction, fnResult, i,
               [terminal] acc) => match(lastOp(chain(bb.abOps)))
   (op: Op) => match(op)
-    (c: OpCall)          => alHotCall(bb, c, fnResult, i, acc)
-    (aw: OpAwait)        => alHotAwait(bb, aw, fnResult, i, acc)
-    (o: Op)               => acc   # unreachable: non-terminal blocks end in a splitter
+    (c: OpCall)              => alHotCall(bb, c, fnResult, i, acc)
+    (aw: OpAwait)            => alHotAwait(bb, aw, fnResult, i, acc)
+    # The last block ends in its own terminator; every other ends in a splitter.
+    (x: OpLabel)             => acc
+    (x: OpMove)              => acc
+    (x: OpJump)              => acc
+    (x: OpJumpIf)            => acc
+    (x: OpIfTask)            => acc
+    (x: OpAssertNotTask)     => acc
+    (x: OpSwitchJump)        => acc
+    (x: OpNewObject)         => acc
+    (x: OpReturnVoid)        => acc
+    (x: OpAbort)             => acc
+    (x: OpReturn)            => acc
+    (x: OpPhi)               => acc
+    (x: OpProfEnter)         => acc
+    (x: OpProfLeave)         => acc
   ()        => acc
 
 # The deferred call ran earlier: park on its task if it is still running, else
@@ -1533,7 +1597,21 @@ fun alSmSite(bb: ABlock, f: CgFunction, stateName, subtype: String|None,
                                             bodyOps),
                                 acc.saCold, acc.saWrapFields),
                           saveStores)
-      (o: Op)               => acc   # unreachable
+      # The last block ends in its own terminator; every other ends in a splitter.
+      (x: OpLabel)         => acc
+      (x: OpMove)          => acc
+      (x: OpJump)          => acc
+      (x: OpJumpIf)        => acc
+      (x: OpIfTask)        => acc
+      (x: OpAssertNotTask) => acc
+      (x: OpSwitchJump)    => acc
+      (x: OpNewObject)     => acc
+      (x: OpReturnVoid)    => acc
+      (x: OpAbort)         => acc
+      (x: OpReturn)        => acc
+      (x: OpPhi)           => acc
+      (x: OpProfEnter)     => acc
+      (x: OpProfLeave)     => acc
     ()        => acc
 
 # The deferred call ran earlier: park on its task if still running; on the

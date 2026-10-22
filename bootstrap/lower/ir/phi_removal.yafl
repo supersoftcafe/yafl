@@ -28,7 +28,7 @@ fun prCountOp(acc: PrCounts, op)
   let reads1 = fold(opReadVarNames(op), acc.prReads, strCountIncr)
   let reads2 = fold(values(opSavedVars(op)), reads1,
                     (r, sv) => prIncrIfStackVar(r, sv))
-  let defs1 = fold(ssavOpWrites(op), acc.prDefs,
+  let defs1 = fold(opTargets(op), acc.prDefs,
                    (d, sv) => prIncrIfStackVar(d, sv))
   ret PrCounts(defs1, reads2)
 
@@ -114,18 +114,9 @@ fun [tail] prFindDef(back: Chain<Op>, j, c: PrCand) => match(back)
         ? None
         : prFindDef(l.next, j - 1, c)
 
-fun prBlockBoundary(op) => match(op)
-  (lb: OpLabel)      => true
-  (j: OpJump)        => true
-  (ji: OpJumpIf)     => true
-  (sw: OpSwitchJump) => true
-  (t2: OpIfTask)     => true
-  (r: OpReturn)      => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort)       => true
-  (o: Op)            => false
+fun prBlockBoundary(op) => op is OpLabel || !opFallsThrough(op) || !isEmpty(opBranchTargets(op))
 
-fun prWritesName(op, name) => any(ssavOpWrites(op), (sv) => prIsNamed(sv, name))
+fun prWritesName(op, name) => any(opTargets(op), (sv) => prIsNamed(sv, name))
 
 fun prIsNamed(sv, name) => match(sv)
   (s2: RpStackVar) => s2.name == name

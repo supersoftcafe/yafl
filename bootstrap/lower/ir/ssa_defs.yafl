@@ -25,19 +25,16 @@ fun sdMaxChase() => 8   # def-chain depth bound (copies of copies of packs)
 
 fun singleDefs(f: CgFunction) => fold(f.fnOps, SsaDefs(Dict()), sdCollectOp)
 
-fun sdCollectOp(acc, op) => match(op)
-  (m: OpMove)  => match(m.moveTarget)
-    (sv: RpStackVar) => sdDefine(acc, sv.name, m.moveSource)
-    (o: RParam)      => acc
-  (c: OpCall)  => match(c.callRegister)
-    (r0: RParam) => match(r0)
-      (sv: RpStackVar) => sdDefine(acc, sv.name, None)
-      (o: RParam)      => acc
-    ()           => acc
-  (ph: OpPhi)  => match(ph.phiTarget)
-    (sv: RpStackVar) => sdDefine(acc, sv.name, None)
-    (o: RParam)      => acc
-  (o: Op)      => acc
+fun sdCollectOp(acc, op) => fold(opGetLiveVars(op).writes, acc, (a, w) => sdDefineWritten(a, w, op))
+
+fun sdDefineWritten(acc, w, op) => match(w)
+  (sv: RpStackVar) => sdDefine(acc, sv.name, sdSourceOf(op))
+  (o: RParam)      => acc   # unreachable: only locals are written
+
+# A Move's source; anything else (a call result, a Phi merge) is unknowable.
+fun sdSourceOf(op): RParam|None => match(op)
+  (m: OpMove) => m.moveSource
+  (o: Op)     => None
 
 # A REPEATED definition poisons to None (defensive — ssa_validate should
 # forbid it pre-async).
