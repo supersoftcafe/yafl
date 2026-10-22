@@ -92,7 +92,9 @@ fun compileCoalesce(qq: PeCoalesce, r, expected)
   # which is what decides whether the node can dissolve yet.
   let subj = compileExpr(qq.qqSubject, r, None)
   ret match(exprType(subj.eoExpr, r))
-    (st: Spec) => isConcrete(st)
+    # A placeholder from outside this scope is a hole, not a type: a partly
+    # bound generic call reads `V|None` until V is bound.
+    (st: Spec) => isConcrete(st) && !hasFreePlaceholders(st, r)
       ? coalesceOn(qq, subj, st, r, expected)
       : coalesceStay(qq, subj, r, expected)
     ()         => coalesceStay(qq, subj, r, expected)
