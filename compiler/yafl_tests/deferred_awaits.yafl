@@ -38,3 +38,61 @@ fun program(): System::Int
 
 fun [test("fifo opens meet")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::DeferredAwaits::ReturnsPassPendingResults
+
+import System
+import System::Test
+
+fun [future] square(x: System::Int): System::Int
+  ret x * x
+
+# Both calls are pending when `pick` answers: the ternary and the early return
+# hand a pending result to the caller unawaited, which realises it on use.
+fun pick(b: System::Bool): System::Int
+  let a = square(3)
+  let c = square(4)
+  ret b ? a : c
+
+fun early(b: System::Bool): System::Int
+  let a = square(5)
+  let c = square(6)
+  if b
+    ret a
+  ret c
+
+# Waits on `a` first, which may park; the returned value is then awaited in
+# the state machine, whose task the caller already holds.
+fun afterPark(x: System::Int, b: System::Bool): System::Int
+  let a = square(x)
+  let c = square(a + 1)
+  let d = square(a + 2)
+  ret b ? c : d
+
+fun program(): System::Int
+  ret pick(true) + pick(false) * 100 + early(true) * 10000 + early(false) * 1000000
+    + afterPark(2, true) * 100000000 + afterPark(2, false) * 10000000000
+
+fun [test("returns pass pending results")] check(): None|TestFailure
+    ret assertEqInt(program(), 9 + 1600 + 250000 + 36000000 + 2500000000 + 360000000000, "program()")
+
+
+namespace CompilerTests::DeferredAwaits::PendingAroundALoop
+
+import System
+import System::Test
+
+fun [future] square(x: System::Int): System::Int
+  ret x * x
+
+# Each turn of the loop carries `keep` round unchanged and `last` as a call
+# still pending; the result reads both only once the loop ends.
+fun [tail] spin(n: System::Int, keep: System::Int, last: System::Int): System::Int
+  ret n <= 0 ? keep + last : spin(n - 1, keep, square(n))
+
+fun program(): System::Int
+  ret spin(5, square(10), 0)
+
+fun [test("pending around a loop")] check(): None|TestFailure
+    ret assertEqInt(program(), 101, "program()")

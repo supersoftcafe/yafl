@@ -52,7 +52,11 @@ enum Op
   # the collector reads as a reference to its task (gc_ref, yafl.h). Parks on
   # the task while still running, else takes the value into awaitRegister.
   # Lives only inside async_lower; never reaches C.
-  enum OpAwait(awaitRegister: RParam, awaitSource: RParam, awaitSavedVars: Dict<String, RParam>)
+  # awaitReturned: it realises for a Return of the whole value, so the hot path
+  # hands awaitSource to the caller unawaited (the state machine, whose task
+  # the caller already holds, parks as usual).
+  enum OpAwait(awaitRegister: RParam, awaitSource: RParam, awaitReturned: Bool,
+               awaitSavedVars: Dict<String, RParam>)
   enum OpReturnVoid(retVoidSavedVars: Dict<String, RParam>)
   enum OpAbort(abortReason: String, abortSavedVars: Dict<String, RParam>)
   enum OpReturn(returnValue: RParam, returnSavedVars: Dict<String, RParam>)
@@ -169,8 +173,8 @@ fun opRenameVars(op, renames: List<RpRename>) => match(op)
   (x: OpCall) => with x(callFunction = rpRenameVars(x.callFunction, renames),
                         callParameters = rpRenameVars(x.callParameters, renames),
                         callRegister = opRenameVarsOpt(x.callRegister, renames))
-  (x: OpAwait) => OpAwait(rpRenameVars(x.awaitRegister, renames), rpRenameVars(x.awaitSource, renames),
-                          x.awaitSavedVars)
+  (x: OpAwait) => with x(awaitRegister = rpRenameVars(x.awaitRegister, renames),
+                         awaitSource   = rpRenameVars(x.awaitSource, renames))
   (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
   (x: OpPhi) => OpPhi(rpRenameVars(x.phiTarget, renames),
                       map(x.phiSources, (s) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
@@ -544,7 +548,7 @@ fun opWithSavedVars(op, sv: Dict<String, RParam>) => match(op)
   (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
   (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, x.newObjPinned, sv)
   (x: OpCall)         => with x(callSavedVars = sv)
-  (x: OpAwait)        => OpAwait(x.awaitRegister, x.awaitSource, sv)
+  (x: OpAwait)        => with x(awaitSavedVars = sv)
   (x: OpReturnVoid)   => OpReturnVoid(sv)
   (x: OpAbort)        => OpAbort(x.abortReason, sv)
   (x: OpReturn)       => OpReturn(x.returnValue, sv)

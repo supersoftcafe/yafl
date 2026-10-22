@@ -201,9 +201,13 @@ class Await(Op):
     task-tagged word as a reference to its task (`gc_ref`, yafl.h). Parks on
     the task while it is still running; otherwise takes the value, from the
     completed task or as returned, into `register`. Lives only inside
-    async_lower; never reaches C."""
+    async_lower; never reaches C. `returned`: the op it realises for is a
+    Return of the whole value, so the hot path hands `source` to the caller
+    unawaited (the state machine, whose task the caller already holds, parks
+    as usual)."""
     register: StackVar
     source: StackVar
+    returned: bool = False
 
     def all_params(self) -> list[RParam]:
         return self.register.flatten(is_reader=False) + self.source.flatten()

@@ -257,6 +257,10 @@ fun createCCode(statements, mainName, optLevel,
     |> (a5) => timed("codegen", "fold_fixpoint", () => ccFold(a5, optLevel))
     # Space correctness, every -O level (see sroa.yafl).
     |> (a6) => timed("codegen", "sroa", () => splitProjectedAggregates(a6))
+    # A call that may suspend is awaited where its result is used (see
+    # defer_awaits.yafl). In SSA: a join is a Phi, and every copy or field
+    # read of a pending value names the one value its root was given.
+    |> (a6b) => timed("codegen", "defer_awaits", () => deferAwaits(a6b))
   # Validate the SSA form every stage since AST lowering has relied on,
   # before leaving it.
   let vPrePhi = ssaValidate(appFunctions(a7), true)

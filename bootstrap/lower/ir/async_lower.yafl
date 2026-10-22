@@ -893,154 +893,39 @@ fun alUmValued(c: OpCall, n)
               prepend(CgField(tmpName, tmpType), se.seVars))
   ret UmOut(list2<Op>(call, OpReturn(tmp, Dict())), n, List())
 
-# ── deferred awaits (async_lower.py __defer_awaits) ─────────────────────────
-# A call that may suspend is not waited for where it is made, but where its
-# result is used. Its result is MARKED: kept in the task-carrying shape the
-# callee returned, which the collector reads as a reference to the task
-# (gc_ref, yafl.h). A copy or field read of a marked variable is VIRTUAL — the root
-# plus a field path — and costs nothing, so destructuring a pending tuple waits
-# for nothing. Every op that reads a marked variable is preceded by an OpAwait
-# of its root, which re-defines the root under its own name (this IR is past
-# phi_removal, so names may be written more than once), and by the projection
-# of each virtual variable it reads. An OpAwait parks only on a task still
-# running: a completed one is read in place, so every later use is a test.
+# ── deferred awaits (defer_awaits.yafl places them) ─────────────────────────
+# An OpAwait realises a deferred call's result where it is used: it parks only
+# on a task still running; a completed one is read in place, so every later use
+# is a test. A returned OpAwait is for a Return of the whole value: the hot path
+# hands the pending value to the caller as it stands.
 
-class [final] DaRoot(drVar: RParam, drSource: RParam)
-class [final] DaMark(dmVar: RParam, dmRoot: RParam, dmPath: List<String>)
-class [final] DaCounts(dcDefs: Dict<String, Int>, dcReads: Dict<String, Int>)
-
-fun alDeferAwaits(f: CgFunction): CgFunction
-  let ops = cgOpsToList(f.fnOps)
-  let counts = fold(ops, DaCounts(Dict(), Dict()), daCount)
-  let roots = daRoots(chain(ops), counts, builder())
-  if isEmpty(roots)
+# When a function's only suspension points are returned OpAwaits it never
+# parks: each such OpAwait, with the projection and Return that follow it,
+# becomes the Return of the pending value itself, and the function needs no
+# state machine.
+fun alReturnUnparked(f: CgFunction): CgFunction
+  if !any(f.fnOps, alIsReturnedAwait) || any(f.fnOps, alParksUnreturned)
     ret f
-  let rootIx = fold(roots, Dict(), (d, r: DaRoot) => put(d, stackVarName(r.drVar), r))
-  let marked0 = fold(roots, Dict(), (d, r: DaRoot) => put(d, stackVarName(r.drVar),
-                                                         DaMark(r.drVar, r.drVar, List())))
-  let virtuals = daVirtuals(ops, counts, marked0, Set())
-  let out = daEmit(chain(ops), 0, virtuals.dvSkip, virtuals.dvMarked, rootIx, seqBuilder())
-  let vars = map(roots, (r: DaRoot) => CgField(stackVarName(r.drSource), rpGetType(r.drSource)))
-  ret cgFunctionWith(f, build(out), cgStructAdd(f.fnStackVars, CgStruct(vars)))
+  ret cgFunctionWith(f, build(alRuLoop(chain(cgOpsToList(f.fnOps)), false, seqBuilder())),
+                     f.fnStackVars)
 
-fun daCount(acc: DaCounts, op): DaCounts
-  let lv = opGetLiveVars(op)
-  ret DaCounts(fold(lv.writes, acc.dcDefs, daBumpVar), fold(lv.reads, acc.dcReads, daBumpVar))
+fun alIsReturnedAwait(op) => match(op)
+  (aw: OpAwait) => aw.awaitReturned
+  (o: Op)       => false
 
-fun daBumpVar(d: Dict<String, Int>, v: RParam) => sdBump(d, stackVarName(v))
+fun alParksUnreturned(op) => match(op)
+  (c: OpCall)   => opCallMaySuspend(c)
+  (aw: OpAwait) => !aw.awaitReturned
+  (o: Op)       => false
 
-fun daSingle(counts: DaCounts, v: RParam): Bool => match(v)
-  (sv: RpStackVar) => sdCountOf(counts.dcDefs, sv.name) == 1
-  (o: RParam)      => false
-
-# Roots in op order — their frame variables are declared in that order.
-fun [tail] daRoots(os: Chain<Op>, counts: DaCounts,
-                   [terminal] acc: ListBuilder<DaRoot>): List<DaRoot> => match(os)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => match(daRootOf(l.value, counts))
-    (r: DaRoot) => daRoots(l.next, counts, push(acc, r))
-    ()           => daRoots(l.next, counts, acc)
-
-fun daRootOf(op, counts: DaCounts): DaRoot|None => match(op)
-  (c: OpCall) => match(c.callRegister)
-    (reg: RParam) => opCallMaySuspend(c) ? daRootOfRegister(reg, counts) : None
-    ()             => None
-  (o: Op)     => None
-
-fun daRootOfRegister(reg: RParam, counts: DaCounts): DaRoot|None => match(reg)
-  (r: RpStackVar) => daSingle(counts, r) && sdCountOf(counts.dcReads, r.name) > 0
-    ? DaRoot(r, RpStackVar(wrapReturnType(r.fieldType), r.name + "$pending"))
-    : None
-  (o: RParam)     => None
-
-# A copy or field read of a marked variable into a variable it alone defines
-# is virtual. To a fixpoint: a copy may sit textually before its source's
-# definition.
-class [final] DaVirtuals(dvSkip: Set<Int>, dvMarked: Dict<String, DaMark>)
-
-fun [tail] daVirtuals(ops: List<Op>, counts: DaCounts, marked: Dict<String, DaMark>,
-                      skip: Set<Int>): DaVirtuals
-  let next = daVirtualPass(chain(ops), 0, counts, DaVirtuals(skip, marked))
-  ret fold(next.dvSkip, true, (same, k) => same && contains(skip, k))
-    ? next
-    : daVirtuals(ops, counts, next.dvMarked, next.dvSkip)
-
-fun [tail] daVirtualPass(os: Chain<Op>, k, counts: DaCounts, acc: DaVirtuals): DaVirtuals => match(os)
+fun [tail] alRuLoop(os: Chain<Op>, skipping: Bool,
+                    [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(os)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => daVirtualPass(l.next, k + 1, counts, daVirtualOne(l.value, k, counts, acc))
-
-fun daVirtualOne(op, k: Int, counts: DaCounts, acc: DaVirtuals): DaVirtuals => match(op)
-  (m: OpMove) => !contains(acc.dvSkip, k) && !m.moveKeep && daSingle(counts, m.moveTarget)
-    ? match(daProjection(m.moveSource, List()))
-        (pr: DaProj) => match(get(acc.dvMarked, pr.dpName))
-          (src: DaMark) => DaVirtuals(add(acc.dvSkip, k),
-                                      put(acc.dvMarked, stackVarName(m.moveTarget),
-                                          DaMark(m.moveTarget, src.dmRoot, concat(src.dmPath, pr.dpPath))))
-          ()             => acc
-        ()           => acc
-    : acc
-  (o: Op)     => acc
-
-class [final] DaProj(dpName: String, dpPath: List<String>)
-
-fun daProjection(value, path: List<String>): DaProj|None => match(value)
-  (sf: RpStructField) => daProjection(sf.structVal, prepend(sf.field, path))
-  (sv: RpStackVar)    => DaProj(sv.name, path)
-  (o: RParam)         => None
-
-fun daProject(root: RParam, path: List<String>): RParam
-  ret fold(path, root, (v, fld) => RpStructField(v, fld))
-
-# Before each op: an Await per root it reads (once), then the projection of
-# each virtual it reads; a root call itself becomes deferred.
-fun [tail] daEmit(os: Chain<Op>, k, skip: Set<Int>, marked: Dict<String, DaMark>,
-                  rootIx: Dict<String, DaRoot>,
-                  [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(os)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => daEmit(l.next, k + 1, skip, marked, rootIx,
-      contains(skip, k) ? acc : daEmitOne(l.value, marked, rootIx, acc))
-
-fun daEmitOne(op, marked: Dict<String, DaMark>, rootIx: Dict<String, DaRoot>,
-              [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
-  let used = sort(fold(opGetLiveVars(op).reads, Set(), (st, v) => daMarkedRead(marked, st, v)))
-  let pre = daUses(chain(used), marked, rootIx, Set(), acc)
-  ret daEmitOp(op, rootIx, pre)
-
-fun daMarkedRead(marked: Dict<String, DaMark>, acc: Set<String>, v: RParam): Set<String>
-  let name = stackVarName(v)
-  ret match(get(marked, name))
-    (m: DaMark) => add(acc, name)
-    ()           => acc
-
-fun [tail] daUses(ns: Chain<String>, marked: Dict<String, DaMark>, rootIx: Dict<String, DaRoot>,
-                  awaited: Set<String>, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(get(marked, l.value))
-    (m: DaMark) => daUse(l.next, m, marked, rootIx, awaited, acc)
-    ()           => daUses(l.next, marked, rootIx, awaited, acc)
-
-fun daUse(rest: Chain<String>, m: DaMark, marked: Dict<String, DaMark>,
-          rootIx: Dict<String, DaRoot>, awaited: Set<String>,
-          [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
-  let rootName = stackVarName(m.dmRoot)
-  let fresh = !contains(awaited, rootName)
-  let acc1 = fresh ? daAwaitRoot(get(rootIx, rootName), acc) : acc
-  let acc2 = stackVarName(m.dmVar) == rootName
-    ? acc1
-    : push(acc1, OpMove(m.dmVar, daProject(m.dmRoot, m.dmPath), false, Dict()))
-  ret daUses(rest, marked, rootIx, fresh ? add(awaited, rootName) : awaited, acc2)
-
-fun daAwaitRoot(r: DaRoot|None, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(r)
-  (dr: DaRoot) => push(acc, OpAwait(dr.drVar, dr.drSource, Dict()))
-  ()            => acc
-
-fun daEmitOp(op, rootIx: Dict<String, DaRoot>, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(op)
-  (c: OpCall) => match(c.callRegister)
-    (reg: RParam) => match(get(rootIx, stackVarName(reg)))
-      (dr: DaRoot) => push(acc, with c(callRegister = dr.drSource, callDeferred = true))
-      ()            => push(acc, op)
-    ()             => push(acc, op)
-  (o: Op)     => push(acc, op)
+  (l: ChainLink)  => skipping
+    ? alRuLoop(l.next, !(l.value is OpReturn), acc)
+    : match(l.value)
+        (aw: OpAwait) => alRuLoop(l.next, true, push(acc, OpReturn(aw.awaitSource, Dict())))
+        (o: Op)       => alRuLoop(l.next, false, push(acc, o))
 
 # A deferred await's test, and the value of one that did not park: from the
 # completed task when there was one, else as the call returned it.
@@ -1277,12 +1162,15 @@ fun alHotSite(bb: ABlock, f: CgFunction, fnResult, i,
   ()        => acc
 
 # The deferred call ran earlier: park on its task if it is still running, else
-# take the value — from the task, or as returned.
+# take the value — from the task, or as returned. Returned whole, the caller
+# takes the pending value as it stands.
 fun alHotAwait(bb: ABlock, aw: OpAwait, fnResult, i,
                [terminal] acc: HotAcc)
   let ops1 = pushAll(acc.haOps,
                  alConvertReturnsHot(alDropLast(bb.abOps),
                                      fnResult))
+  if aw.awaitReturned
+    ret HotAcc(push(ops1, OpReturn(aw.awaitSource, Dict())), acc.haWrapFields)
   let ops2 = push(ops1, OpIfTask(alTaskRunning(aw), alAwaitTask(aw), alSvAsyncTask(), alSvCallId(),
                                  i + 1, "$asynccommon", Dict()))
   ret HotAcc(pushAll(ops2, alAwaitValue(aw, "$await$" + String(i))),
@@ -1971,7 +1859,7 @@ fun alMergeOne([terminal] acc: AlAcc, out: AlOut)
 fun alConvertFunction(f: CgFunction): AlOut
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
     ret AlOut(list1(f), List())
-  let afterTail = alDeferAwaits(alExpandSyncCalls(alDiscoverTailCalls(f)))
+  let afterTail = alReturnUnparked(alExpandSyncCalls(alDiscoverTailCalls(f)))
   let stateName = f.fnName + "$state"
   let built = alCreateBasicBlocksN(afterTail)
   if !atLeast(chain(built.bs), 2)

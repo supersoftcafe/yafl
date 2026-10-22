@@ -685,18 +685,12 @@ def __expand_sync_calls(fn: Function) -> Function:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Deferred awaits
+# Deferred awaits (lowering/defer_awaits.py places them)
 #
-# A call that may suspend is not waited for where it is made, but where its
-# result is used. Its result is MARKED: kept in the task-carrying shape the
-# callee returned, which the collector reads as a reference to the task
-# (`gc_ref`, yafl.h). A copy or field read of a marked variable is VIRTUAL — the root
-# plus a field path — and costs nothing, so destructuring a pending tuple waits
-# for nothing. Every op that reads a marked variable is preceded by an `Await`
-# of its root, which re-defines the root under its own name (this IR is past
-# phi_removal, so names may be written more than once), and by the projection
-# of each virtual variable it reads. An `Await` parks only on a task still
-# running: a completed one is read in place, so every later use is a test.
+# An `Await` realises a deferred call's result where it is used: it parks only
+# on a task still running; a completed one is read in place, so every later
+# use is a test. A `returned` Await is for a Return of the whole value: the hot
+# path hands the pending value to the caller as it stands.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def __await_task(op: Await) -> RParam:
@@ -721,79 +715,27 @@ def __await_value(op: Await, label: str) -> list[Op]:
             Label(f"{label}$end")]
 
 
-def __defer_awaits(fn: Function) -> Function:
-    """Defer the await of every non-tail call that may suspend whose result
-    is read (see the section comment)."""
-    ops = fn.ops
-    definitions: dict[str, int] = {}
-    reads: dict[str, int] = {}
-    for op in ops:
-        r, w = op.get_live_vars()
-        for v in w:
-            definitions[v.name] = definitions.get(v.name, 0) + 1
-        for v in r:
-            reads[v.name] = reads.get(v.name, 0) + 1
-
-    def single(v: LParam | None) -> bool:
-        return isinstance(v, StackVar) and definitions.get(v.name) == 1
-
-    # root name -> pending source; marked name -> (its variable, root, field path)
-    roots: dict[str, StackVar] = {}
-    marked: dict[str, tuple[StackVar, StackVar, tuple[str, ...]]] = {}
-    for op in ops:
-        if (isinstance(op, Call) and op.may_suspend and single(op.register)
-                and reads.get(op.register.name, 0) > 0):
-            r = op.register
-            wrapped = wrap_return_type(r.get_type())
-            roots[r.name] = StackVar(wrapped, f"{r.name}$pending")
-            marked[r.name] = (r, r, ())
-    if not roots:
+def __return_unparked(fn: Function) -> Function:
+    """When a function's only suspension points are `returned` Awaits it never
+    parks: each such Await, with the projection and Return that follow it,
+    becomes the Return of the pending value itself, and the function needs
+    no state machine."""
+    if not any(isinstance(op, Await) and op.returned for op in fn.ops):
         return fn
-
-    def projection(value: RParam) -> tuple[str, tuple[str, ...]] | None:
-        path: tuple[str, ...] = ()
-        while isinstance(value, StructField):
-            path = (value.field,) + path
-            value = value.struct
-        return (value.name, path) if isinstance(value, StackVar) else None
-
-    virtual: set[int] = set()
-    changed = True
-    while changed:   # a copy may sit textually before its source's definition
-        changed = False
-        for k, op in enumerate(ops):
-            if (k not in virtual and isinstance(op, Move) and not op.keep and single(op.target)
-                    and (pr := projection(op.source)) is not None and pr[0] in marked):
-                _, root, path = marked[pr[0]]
-                marked[op.target.name] = (op.target, root, path + pr[1])
-                virtual.add(k)
-                changed = True
-
-    def project(root: StackVar, path: tuple[str, ...]) -> RParam:
-        value: RParam = root
-        for f in path:
-            value = StructField(value, f)
-        return value
-
+    if any((isinstance(op, Call) and op.may_suspend) or (isinstance(op, Await) and not op.returned)
+           for op in fn.ops):
+        return fn
     new_ops: list[Op] = []
-    for k, op in enumerate(ops):
-        if k in virtual:
-            continue
-        used = sorted({v.name for v in op.get_live_vars()[0] if v.name in marked})
-        awaited: set[str] = set()
-        for name in used:
-            var, root, path = marked[name]
-            if root.name not in awaited:
-                awaited.add(root.name)
-                new_ops.append(Await(root, roots[root.name]))
-            if var is not root:
-                new_ops.append(Move(var, project(root, path)))
-        if isinstance(op, Call) and isinstance(op.register, StackVar) and op.register.name in roots:
-            new_ops.append(dataclasses.replace(op, register=roots[op.register.name], deferred=True))
+    skipping = False
+    for op in fn.ops:
+        if skipping:
+            skipping = not isinstance(op, Return)
+        elif isinstance(op, Await):
+            new_ops.append(Return(op.source))
+            skipping = True
         else:
             new_ops.append(op)
-    new_vars = tuple((source.name, source.get_type()) for source in roots.values())
-    return dataclasses.replace(fn, ops=tuple(new_ops), stack_vars=fn.stack_vars + Struct(new_vars))
+    return dataclasses.replace(fn, ops=tuple(new_ops))
 
 
 def __unroll_musttail_for_state_machine(fn: Function) -> Function:
@@ -978,6 +920,12 @@ def __create_hot_path_func(fn: Function, state_name: str,
 
     for i, bb in enumerate(basic_blocks[:-1]):
         call_op = bb.ops[-1]
+
+        if isinstance(call_op, Await) and call_op.returned:
+            # Returned whole: the caller takes the pending value as it stands.
+            hot_ops.extend(__convert_returns_for_hot_path(bb.ops[:-1], fn.result))
+            hot_ops.append(Return(call_op.source))
+            continue
 
         if isinstance(call_op, Await):
             # The deferred call ran earlier; park on its task if it is still
@@ -1557,7 +1505,7 @@ def __convert_function_to_task_convention(
     if fn.bypass_async:
         return {fn.name: fn}, {}
 
-    after_tail = __defer_awaits(__expand_sync_calls(__discover_tail_calls(fn)))
+    after_tail = __return_unparked(__expand_sync_calls(__discover_tail_calls(fn)))
     state_name = f"{fn.name}$state"
     basic_blocks = __create_basic_blocks(after_tail, state_name)
 

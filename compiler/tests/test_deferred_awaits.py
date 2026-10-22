@@ -9,6 +9,8 @@ compiler/yafl_tests/deferred_awaits.yafl.
 """
 from __future__ import annotations
 
+import re
+
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_c
 
@@ -54,3 +56,47 @@ fun main(): System::Int
         before = body[:first_await]
         self.assertIn("Main__pair_", before, body)
         self.assertIn("Main__square_", before, body)
+
+    def _hot_path_until_return(self, src: str, function: str) -> str:
+        """The hot path of `function` up to its first `return`: the code a
+        caller runs before it is handed the result."""
+        c_code = compile_c(src)
+        definition = re.search(r"^\S.*\b" + function + r"_\w+\(object_t\* this.*\)\n\{\n", c_code, re.MULTILINE)
+        body = c_code[definition.end():c_code.index("\n}\n", definition.end())]
+        return body[:body.index("return ")]
+
+    def test_a_ternary_of_pending_results_returns_without_awaiting(self):
+        src = _HDR + """\
+fun [future] square(x: System::Int): System::Int
+  ret x * x
+
+fun pick(b: System::Bool): System::Int
+  let a = square(3)
+  let c = square(4)
+  ret b ? a : c
+
+fun main(): System::Int
+  ret pick(true) - 9
+"""
+        head = self._hot_path_until_return(src, "Main__pick")
+        self.assertEqual(2, head.count("Main__square_"), head)
+        self.assertNotIn("TASK_RUNNING", head)
+
+    def test_an_early_return_of_a_pending_result_returns_without_awaiting(self):
+        src = _HDR + """\
+fun [future] square(x: System::Int): System::Int
+  ret x * x
+
+fun pick(b: System::Bool): System::Int
+  let a = square(3)
+  let c = square(4)
+  if b
+    ret a
+  ret c
+
+fun main(): System::Int
+  ret pick(true) - 9
+"""
+        head = self._hot_path_until_return(src, "Main__pick")
+        self.assertEqual(2, head.count("Main__square_"), head)
+        self.assertNotIn("TASK_RUNNING", head)

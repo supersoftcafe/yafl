@@ -52,6 +52,7 @@ import lowering.future_functions
 import lowering.ssa_validate
 import lowering.linearity
 import lowering.phi_removal
+import lowering.defer_awaits
 import lowering.pinnable_reads
 import lowering.sync_inference
 import lowering.sroa
@@ -320,6 +321,11 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # no longer roots its other (dead) fields. Runs at every -O level — this is a
     # space-correctness fix (see lowering/sroa.py), not an optimisation.
     a = lowering.sroa.split_projected_aggregates(a)
+
+    # A call that may suspend is awaited where its result is used (see
+    # lowering/defer_awaits.py). In SSA: a join is a Phi, and every copy or
+    # field read of a pending value names the one value its root was given.
+    a = lowering.defer_awaits.defer_awaits(a)
 
     # Leave SSA here: Phis → edge moves + copy-web coalescing shrinks the
     # local count (each survivor is a state field, boundary traffic and C

@@ -1,0 +1,352 @@
+# bootstrap/defer_awaits.yafl — ported from lowering/defer_awaits.py: a call
+# that may suspend is awaited where its result is used, not where it is made.
+#
+# The call's result is MARKED: kept in the task-carrying shape the callee
+# returned, which the collector reads as a reference to the task (gc_ref,
+# yafl.h). A copy or field read of a marked variable is VIRTUAL — the root plus
+# a field path — and costs nothing, so destructuring a pending tuple waits for
+# nothing. A Phi with a whole marked value among its sources is a PENDING join:
+# it joins the pending values, so the join waits for nothing either; its other
+# sources are wrapped into the same shape. Every other op that reads a marked
+# variable is preceded by an OpAwait of its root, under a fresh name, and by
+# the projection of each virtual variable it reads, also fresh; the op reads
+# those. A Phi source that must be realised is realised on its edge, where
+# phi_removal will place the edge's copy. A Return of a whole marked value of
+# the function's own result type is not a use: its OpAwait is returned, and
+# async lowering's hot path hands the pending value to the caller as it stands.
+#
+# Runs in SSA, after sroa and before phi_removal: every name has one
+# definition, so a virtual variable always stands for the one value its root
+# was given, and a join is a Phi. A call in literal tail position
+# (Call(R); Return(R)) is left alone — async lowering makes it a tail call,
+# which is better than passing its task through.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Codegen
+import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
+
+
+
+fun deferAwaits(a: CgApp) => appWithFunctions(a, map(appFunctions(a),
+    (f) => f.fnBypassAsync || f.fnName == "__entrypoint__" ? f : dfDefer(f)))
+
+class [final] DfRoot(drVar: RParam, drSource: RParam)
+class [final] DfMark(dmVar: RParam, dmRoot: RParam, dmPath: List<String>)
+
+fun dfDefer(f: CgFunction): CgFunction
+  let ops = cgOpsToList(f.fnOps)
+  let reads = fold(ops, Dict(), (d, op) => fold(opGetLiveVars(op).reads, d,
+                                               (d2, v) => sdBump(d2, stackVarName(v))))
+  let roots0 = dfRoots(chain(ops), reads, f.fnResult, builder())
+  if isEmpty(roots0)
+    ret f
+  let phis = filter(ops, dfIsStackPhi)
+  let st = dfMarks(ops, phis, reads,
+                   DfState(fold(roots0, Dict(), (d, r: DfRoot) => put(d, stackVarName(r.drVar), DfMark(r.drVar, r.drVar, List()))),
+                           Set(), builderFrom(roots0),
+                           fold(roots0, Dict(), (d, r: DfRoot) => put(d, stackVarName(r.drVar), r)),
+                           false))
+  let roots = build(st.dsRoots)
+  let ctx = DfCtx(st.dsMarked, st.dsRootIx, st.dsSkip, dfPhisAt(chain(ops), "", Dict()), f.fnResult)
+  let out = dfEmit(chain(ops), 0, ctx, DfAcc(seqBuilder(), builder(), Dict(), 0, "", None))
+  let emitted = dfFillPhis(chain(cgOpsToList(build(out.daOps))), "", 0, out.daEdges, ctx, seqBuilder())
+  let kept = filter(cgFieldsOfOrEmpty(f.fnStackVars), (fld: CgField) => get(ctx.dcMarked, fld.fieldName) is None)
+  let pendings = map(roots, (r: DfRoot) => CgField(stackVarName(r.drSource), rpGetType(r.drSource)))
+  let fresh = map(build(out.daFresh), (v) => CgField(stackVarName(v), rpGetType(v)))
+  ret cgFunctionWith(f, build(emitted), CgStruct(concat(concat(kept, pendings), fresh)))
+
+fun dfIsStackPhi(op) => match(op)
+  (p: OpPhi) => p.phiTarget is RpStackVar
+  (o: Op)    => false
+
+# ── roots: may-suspend calls whose result is read, not in tail position ──────
+
+fun [tail] dfRoots(os: Chain<Op>, reads: Dict<String, Int>, fnResult: CgType,
+                   [terminal] acc: ListBuilder<DfRoot>): List<DfRoot> => match(os)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => match(dfRootOf(l.value, l.next, reads, fnResult))
+    (r: DfRoot) => dfRoots(l.next, reads, fnResult, push(acc, r))
+    ()           => dfRoots(l.next, reads, fnResult, acc)
+
+fun dfRootOf(op, rest: Chain<Op>, reads: Dict<String, Int>, fnResult: CgType): DfRoot|None => match(op)
+  (c: OpCall) => match(c.callRegister)
+    (reg: RParam) => match(reg)
+      (sv: RpStackVar) => opCallMaySuspend(c) && sdCountOf(reads, sv.name) > 0
+                          && !dfTailCalled(sv, rest, fnResult)
+        ? dfRootFor(sv)
+        : None
+      (o: RParam)      => None
+    ()             => None
+  (o: Op)     => None
+
+# Call(R); Return(R) — async_lower's alTailValued pattern.
+fun dfTailCalled(reg: RpStackVar, rest: Chain<Op>, fnResult: CgType) => match(rest)
+  (nil: ChainEnd) => false
+  (l: ChainLink)  => match(l.value)
+    (r: OpReturn) => match(r.returnValue)
+      (sv: RpStackVar) => sv.name == reg.name && eqCgType(reg.fieldType, fnResult)
+      (o: RParam)      => false
+    (o: Op)       => false
+
+fun dfRootFor(r: RpStackVar) => DfRoot(r, RpStackVar(wrapReturnType(r.fieldType), r.name + "$pending"))
+
+# ── marking: virtual copies and pending joins, to a fixpoint ─────────────────
+# A copy may sit textually before its source's definition, and a join may join
+# another join.
+
+class [linear, final] DfState(dsMarked: Dict<String, DfMark>, dsSkip: Set<Int>,
+                              dsRoots: ListBuilder<DfRoot>, dsRootIx: Dict<String, DfRoot>,
+                              dsChanged: Bool)
+
+fun [tail] dfMarks(ops: List<Op>, phis: List<Op>, reads: Dict<String, Int>,
+                   [terminal] st: DfState): DfState
+  let v = dfVirtualPass(chain(ops), 0, st)
+  let h = dfPhiPass(chain(phis), reads, v)
+  ret h.dsChanged
+    ? dfMarks(ops, phis, reads, DfState(h.dsMarked, h.dsSkip, h.dsRoots, h.dsRootIx, false))
+    : h
+
+fun [tail] dfVirtualPass(os: Chain<Op>, k, [terminal] st: DfState): DfState => match(os)
+  (nil: ChainEnd) => st
+  (l: ChainLink)  => dfVirtualPass(l.next, k + 1, dfVirtualOne(l.value, k, st))
+
+fun dfVirtualOne(op, k: Int, [terminal] st: DfState): DfState => match(op)
+  (m: OpMove) => !contains(st.dsSkip, k) && !m.moveKeep && m.moveTarget is RpStackVar
+    ? dfVirtualMove(m, k, st)
+    : st
+  (o: Op)     => st
+
+fun dfVirtualMove(m: OpMove, k: Int, [terminal] st: DfState): DfState
+  let marked = st.dsMarked
+  ret match(dfProjection(m.moveSource, List()))
+    (pr: DfProj) => match(get(marked, pr.dpName))
+      (src: DfMark) => DfState(put(st.dsMarked, stackVarName(m.moveTarget),
+                                   DfMark(m.moveTarget, src.dmRoot, concat(src.dmPath, pr.dpPath))),
+                               add(st.dsSkip, k), st.dsRoots, st.dsRootIx, true)
+      ()             => st
+    ()           => st
+
+fun [tail] dfPhiPass(ps: Chain<Op>, reads: Dict<String, Int>, [terminal] st: DfState): DfState => match(ps)
+  (nil: ChainEnd) => st
+  (l: ChainLink)  => dfPhiPass(l.next, reads, dfPhiOne(l.value, reads, st))
+
+fun dfPhiOne(op, reads: Dict<String, Int>, [terminal] st: DfState): DfState => match(op)
+  (p: OpPhi) => match(p.phiTarget)
+    (t: RpStackVar) => dfPhiTarget(p, t, reads, st)
+    (o: RParam)     => st
+  (o: Op)    => st
+
+fun dfPhiTarget(p: OpPhi, t: RpStackVar, reads: Dict<String, Int>, [terminal] st: DfState): DfState
+  let marked = st.dsMarked
+  ret get(marked, t.name) is None && sdCountOf(reads, t.name) > 0
+      && any(p.phiSources, (s: OpPhiSource) => dfWhole(marked, s.sourceValue, t))
+    ? DfState(put(st.dsMarked, t.name, DfMark(t, t, List())), st.dsSkip,
+              push(st.dsRoots, dfRootFor(t)), put(st.dsRootIx, t.name, dfRootFor(t)), true)
+    : st
+
+class [final] DfProj(dpName: String, dpPath: List<String>)
+
+fun dfProjection(value, path: List<String>): DfProj|None => match(value)
+  (sf: RpStructField) => dfProjection(sf.structVal, prepend(sf.field, path))
+  (sv: RpStackVar)    => DfProj(sv.name, path)
+  (o: RParam)         => None
+
+fun dfProject(root: RParam, path: List<String>): RParam
+  ret fold(path, root, (v, fld) => RpStructField(v, fld))
+
+# `value` is a whole marked value, of the type of its root and of `of`.
+fun dfWhole(marked: Dict<String, DfMark>, value: RParam, of: RParam): Bool => match(value)
+  (sv: RpStackVar) => match(get(marked, sv.name))
+    (m: DfMark) => isEmpty(m.dmPath) && eqCgType(sv.fieldType, rpGetType(m.dmRoot))
+                   && eqCgType(sv.fieldType, rpGetType(of))
+    ()           => false
+  (o: RParam)      => false
+
+# ── emission ────────────────────────────────────────────────────────────────
+
+# label -> its Phis, in order (Function.lower_phis's phis_at).
+fun [tail] dfPhisAt(os: Chain<Op>, current: String, [terminal] acc: Dict<String, List<Op>>): Dict<String, List<Op>> => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (lb: OpLabel) => dfPhisAt(l.next, lb.labelName, acc)
+    (p: OpPhi)    => dfPhisAt(l.next, current, put(acc, current, concat(dfPhisOf(acc, current), list1(l.value))))
+    (o: Op)       => dfPhisAt(l.next, current, acc)
+
+fun dfPhisOf(at: Dict<String, List<Op>>, label: String): List<Op> => match(get(at, label))
+  (ps: List<Op>) => ps
+  ()              => List()
+
+class [final] DfCtx(dcMarked: Dict<String, DfMark>, dcRootIx: Dict<String, DfRoot>, dcSkip: Set<Int>,
+                    dcPhisAt: Dict<String, List<Op>>, dcResult: CgType)
+
+# The ops emitted so far, the fresh variables declared, each realised Phi
+# source (by join, predecessor and position), the next fresh number, the open
+# label, and the last op emitted other than a Phi.
+class [linear, final] DfAcc(daOps: SeqBuilder<Op>, daFresh: ListBuilder<RParam>,
+                            daEdges: Dict<String, RParam>, daNext: Int, daCurrent: String,
+                            daLast: Op|None)
+
+fun dfEdgeKey(join: String, pred: String, i: Int) => join + "|" + pred + "|" + String(i)
+
+fun [tail] dfEmit(os: Chain<Op>, k, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => dfEmit(l.next, k + 1, ctx,
+      contains(ctx.dcSkip, k) ? acc : dfEmitOne(l.value, ctx, acc))
+
+fun dfEmitOne(op, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(op)
+  (p: OpPhi)   => DfAcc(push(acc.daOps, op), acc.daFresh, acc.daEdges, acc.daNext, acc.daCurrent, acc.daLast)
+  (lb: OpLabel) => dfEmitPlain(op, ctx, dfLabelEdge(lb, ctx, acc), lb.labelName)
+  (j: OpJump)  => dfEmitPlain(op, ctx, dfJumpEdge(j, ctx, acc), "")
+  (o: Op)      => dfEmitPlain(op, ctx, acc, "")
+
+fun dfLabelEdge(lb: OpLabel, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+  let falls = match(acc.daLast)
+    (last: Op) => !dfIsTerminator(last)
+    ()          => false
+  ret falls ? dfEdge(lb.labelName, ctx, acc) : acc
+
+fun dfJumpEdge(j: OpJump, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => dfEdge(j.jumpName, ctx, acc)
+
+fun dfIsTerminator(op) => match(op)
+  (j: OpJump)        => true
+  (r: OpReturn)      => true
+  (rv: OpReturnVoid) => true
+  (a: OpAbort)       => true
+  (o: Op)            => false
+
+# Realise, on the edge current -> join, the Phi sources that need it.
+fun dfEdge(join: String, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+  ret dfEdgeSources(chain(dfPhisOf(ctx.dcPhisAt, join)), join, 0, ctx, acc)
+
+fun [tail] dfEdgeSources(ps: Chain<Op>, join: String, i: Int, ctx: DfCtx,
+                         [terminal] acc: DfAcc): DfAcc => match(ps)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => dfEdgeSources(l.next, join, i + 1, ctx, dfEdgeSource(l.value, join, i, ctx, acc))
+
+fun dfEdgeSource(op, join: String, i: Int, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(op)
+  (p: OpPhi) => dfEdgeValue(p, phiSourceFor(op, acc.daCurrent), join, i, ctx, acc)
+  (o: Op)    => acc   # unreachable: dcPhisAt holds Phis
+
+fun dfEdgeValue(p: OpPhi, value: RParam, join: String, i: Int, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+  let key = dfEdgeKey(join, acc.daCurrent, i)
+  ret match(dfPendingTarget(p, ctx))
+    (dr: DfRoot) => dfWhole(ctx.dcMarked, value, p.phiTarget)
+      ? DfAcc(acc.daOps, acc.daFresh, put(acc.daEdges, key, dfPendingOf(ctx, value)),
+              acc.daNext, acc.daCurrent, acc.daLast)
+      : dfEdgeRealised(value, key, rpGetType(dr.drSource), true, ctx, acc)
+    ()            => dfEdgeRealised(value, key, rpGetType(value), false, ctx, acc)
+
+fun dfEdgeRealised(value: RParam, key: String, wrapped: CgType, pending: Bool, ctx: DfCtx,
+                   [terminal] acc: DfAcc): DfAcc
+  let r = dfRealise(list1(value), false, ctx, acc)
+  let renamed = rpRenameVars(value, r.drRenames)
+  let source = pending ? wrapValue(renamed, wrapped) : renamed
+  let a = r.drAcc
+  ret DfAcc(a.daOps, a.daFresh, put(a.daEdges, key, source), a.daNext, a.daCurrent, a.daLast)
+
+fun dfPendingTarget(p: OpPhi, ctx: DfCtx): DfRoot|None => match(p.phiTarget)
+  (t: RpStackVar) => get(ctx.dcRootIx, t.name)
+  (o: RParam)     => None
+
+fun dfPendingOf(ctx: DfCtx, value: RParam): RParam
+  ret match(get(ctx.dcMarked, stackVarName(value)))
+    (m: DfMark) => match(get(ctx.dcRootIx, stackVarName(m.dmRoot)))
+      (dr: DfRoot) => dr.drSource
+      ()            => value   # unreachable: every mark's root is a root
+    ()           => value      # unreachable: dfWhole held
+
+fun dfEmitPlain(op, ctx: DfCtx, [terminal] acc: DfAcc, label: String): DfAcc
+  let r = dfRealise(opGetLiveVars(op).reads, dfReturned(op, ctx), ctx, acc)
+  let renamed = isEmpty(r.drRenames) ? op : opRenameVars(op, r.drRenames)
+  let emitted = dfDeferCall(renamed, ctx)
+  let a = r.drAcc
+  ret DfAcc(push(a.daOps, emitted), a.daFresh, a.daEdges, a.daNext,
+            label == "" ? a.daCurrent : label, emitted)
+
+fun dfDeferCall(op, ctx: DfCtx) => match(op)
+  (c: OpCall) => match(c.callRegister)
+    (reg: RParam) => match(get(ctx.dcRootIx, stackVarName(reg)))
+      (dr: DfRoot) => with c(callRegister = dr.drSource, callDeferred = true)
+      ()            => op
+    ()             => op
+  (o: Op)     => op
+
+# A Return of a whole marked value of the function's own result type.
+fun dfReturned(op, ctx: DfCtx): Bool => match(op)
+  (r: OpReturn) => dfWhole(ctx.dcMarked, r.returnValue, r.returnValue)
+                   && eqCgType(rpGetType(r.returnValue), ctx.dcResult)
+  (o: Op)       => false
+
+# The awaits and projections for the marked variables `params` read, and the
+# renaming that points the reads at them.
+class [linear, final] DfRealised(drAcc: DfAcc, drRenames: List<RpRename>)
+
+class [final] DfAwaited(daVar: RParam, daNumber: Int)
+
+fun dfRealise(params: List<RParam>, returned: Bool, ctx: DfCtx, [terminal] acc: DfAcc): DfRealised
+  let used = sort(fold(params, Set(), (st, p) => fold(rpGetLiveVars(p), st,
+                       (st2, v) => get(ctx.dcMarked, stackVarName(v)) is None ? st2 : add(st2, stackVarName(v)))))
+  ret dfUses(chain(used), returned, ctx, Dict(), builder(), acc)
+
+fun [tail] dfUses(ns: Chain<String>, returned: Bool, ctx: DfCtx, awaited: Dict<String, DfAwaited>,
+                  [terminal] renames: ListBuilder<RpRename>, [terminal] acc: DfAcc): DfRealised => match(ns)
+  (nil: ChainEnd) => DfRealised(acc, build(renames))
+  (l: ChainLink)  => match(get(ctx.dcMarked, l.value))
+    (m: DfMark) => dfUse(l.next, m, returned, ctx, awaited, renames, acc)
+    ()           => dfUses(l.next, returned, ctx, awaited, renames, acc)
+
+fun dfUse(rest: Chain<String>, m: DfMark, returned: Bool, ctx: DfCtx, awaited: Dict<String, DfAwaited>,
+          [terminal] renames: ListBuilder<RpRename>, [terminal] acc: DfAcc): DfRealised
+  let rootName = stackVarName(m.dmRoot)
+  ret match(get(awaited, rootName))
+    (aw: DfAwaited) => dfProjectUse(rest, m, aw, returned, ctx, awaited, renames, acc)
+    ()               => dfAwaitRoot(rest, m, returned, ctx, awaited, renames, acc)
+
+fun dfAwaitRoot(rest: Chain<String>, m: DfMark, returned: Bool, ctx: DfCtx, awaited: Dict<String, DfAwaited>,
+                [terminal] renames: ListBuilder<RpRename>, [terminal] acc: DfAcc): DfRealised
+  let rootName = stackVarName(m.dmRoot)
+  let fresh = RpStackVar(rpGetType(m.dmRoot), rootName + "$aw" + String(acc.daNext))
+  let aw = DfAwaited(fresh, acc.daNext)
+  let source = match(get(ctx.dcRootIx, rootName))
+    (dr: DfRoot) => dr.drSource
+    ()            => m.dmRoot   # unreachable: every mark's root is a root
+  ret dfProjectUse(rest, m, aw, returned, ctx, put(awaited, rootName, aw),
+                   push(renames, RpRename(rootName, stackVarName(fresh))),
+                   DfAcc(push(acc.daOps, OpAwait(fresh, source, returned, Dict())),
+                         push(acc.daFresh, fresh), acc.daEdges, acc.daNext + 1, acc.daCurrent, acc.daLast))
+
+fun dfProjectUse(rest: Chain<String>, m: DfMark, aw: DfAwaited, returned: Bool, ctx: DfCtx,
+                 awaited: Dict<String, DfAwaited>,
+                 [terminal] renames: ListBuilder<RpRename>, [terminal] acc: DfAcc): DfRealised
+  if stackVarName(m.dmVar) == stackVarName(m.dmRoot)
+    ret dfUses(rest, returned, ctx, awaited, renames, acc)
+  let fresh = RpStackVar(rpGetType(m.dmVar), stackVarName(m.dmVar) + "$aw" + String(aw.daNumber))
+  ret dfUses(rest, returned, ctx, awaited,
+             push(renames, RpRename(stackVarName(m.dmVar), stackVarName(fresh))),
+             DfAcc(push(acc.daOps, OpMove(fresh, dfProject(aw.daVar, m.dmPath), false, Dict())),
+                   push(acc.daFresh, fresh), acc.daEdges, acc.daNext, acc.daCurrent, acc.daLast))
+
+# Second walk: each Phi takes its realised sources, and a pending join writes
+# its pending value.
+fun [tail] dfFillPhis(os: Chain<Op>, current: String, i: Int, edges: Dict<String, RParam>, ctx: DfCtx,
+                      [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => match(l.value)
+    (lb: OpLabel) => dfFillPhis(l.next, lb.labelName, 0, edges, ctx, push(acc, l.value))
+    (p: OpPhi)    => dfFillPhis(l.next, current, i + 1, edges, ctx, push(acc, dfFilledPhi(p, current, i, edges, ctx)))
+    (o: Op)       => dfFillPhis(l.next, current, i, edges, ctx, push(acc, l.value))
+
+fun dfFilledPhi(p: OpPhi, join: String, i: Int, edges: Dict<String, RParam>, ctx: DfCtx): Op
+  let target = match(dfPendingTarget(p, ctx))
+    (dr: DfRoot) => dr.drSource
+    ()            => p.phiTarget
+  ret with p(phiTarget = target,
+             phiSources = map(p.phiSources, (s: OpPhiSource) => OpPhiSource(s.sourceLabel,
+                              dfEdgeOf(edges, dfEdgeKey(join, s.sourceLabel, i), s.sourceValue))))
+
+fun dfEdgeOf(edges: Dict<String, RParam>, key: String, fallback: RParam): RParam => match(get(edges, key))
+  (v: RParam) => v
+  ()           => fallback   # unreachable: every edge into a Phi block was walked
