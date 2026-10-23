@@ -1,4 +1,4 @@
-"""Deferred awaits (async_lower `__defer_awaits`): a call that may suspend is
+"""Deferred awaits (lowering/defer_awaits.py): a call that may suspend is
 awaited where its result is used, not where it is made. Its result is kept as
 returned; a copy or field read of it is virtual; every use is preceded by an
 Await, which parks only on a task still running.
@@ -100,3 +100,38 @@ fun main(): System::Int
         head = self._hot_path_until_return(src, "Main__pick")
         self.assertEqual(2, head.count("Main__square_"), head)
         self.assertNotIn("TASK_RUNNING", head)
+
+    def test_a_pending_result_saved_across_a_park_keeps_its_value_traced(self):
+        # `g` is still pending when `use` parks on `total`, so it is saved in
+        # the state object in its task-carrying shape. G has no pointer at the
+        # top level, so that shape is `{value, task}` — but its value holds
+        # heap pointers (a String, a Set), and when `compute` finished
+        # synchronously they are the live result. The collector must see them:
+        # a save that marks only `.task` leaves them to be moved or freed.
+        src = _HDR + """\
+enum Res
+  enum ResOk(items: List<Int>)
+  enum ResText(text: String, code: Int)
+
+class [final] G(res: Res, warns: Set<String>)
+
+fun [future] compute(n: Int): G
+  ret G(ResText("t", n), add(Set<String>(), "w"))
+
+fun [future] total(n: Int): Int
+  ret n + 1
+
+fun use(n: Int): Int
+  let g = compute(n)
+  let m = total(n) * 2
+  ret contains(g.warns, "w") ? m : 0
+
+fun main(): Int
+  ret use(2) == 6 ? 0 : 1
+"""
+        code = compile_c(src)
+        saves = [line for line in code.splitlines()
+                 if "GC_STORE_MUTABLE_IN" in line and ".task)" in line]
+        self.assertTrue(saves, "no {value, task} result is saved across a park")
+        for line in saves:
+            self.assertIn(".value.", line, line)
