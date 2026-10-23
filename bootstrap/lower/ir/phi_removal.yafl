@@ -15,7 +15,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun removePhis(a: CgApp) => appWithFunctions(a, map(appFunctions(a),
+fun removePhis(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a),
                               (f) => prCoalesceCopies(cgFunctionLowerPhis(f))))
 
 # ── def/read counts (saved_vars are reads) ──────────────────────────────────

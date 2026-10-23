@@ -66,7 +66,7 @@ import Bootstrap::StdlibCandidates
 
 fun inferSync(a: CgApp)
   let solved = siSolve(a)
-  let fns = map(appFunctions(a), (f) => siMaterialise(solved, f))
+  let fns = powerMap(appFunctions(a), (f) => siMaterialise(solved, f))
   ret appWithObjects(appWithFunctions(a, fns),
                      map(appObjects(a), (o) => siMaterialiseObject(solved, o)))
 

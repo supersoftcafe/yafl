@@ -12,7 +12,7 @@ import Bootstrap::Ir
 
 
 
-fun threadBranches(a: CgApp) => appWithFunctions(a, map(appFunctions(a), btFunction))
+fun threadBranches(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a), btFunction))
 
 fun [tail] btFunction(f): CgFunction
   let out = btOnce(f.fnOps)

@@ -34,7 +34,7 @@ fun inlineDefaults() => InlineOpts(inlCutoffComplexity())
 
 fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int, cutoff: Int)
   let recursive = recursiveFunctions(a)
-  ret appWithFunctions(a, map(appFunctions(a), (f) =>
+  ret appWithFunctions(a, powerMap(appFunctions(a), (f) =>
         doInlining(f, "s" + String(epoch), a, recursive, (target) =>
           !atLeast(target.fnOps, cutoff)
           || (inlineAlways && target.fnAlwaysInline))))

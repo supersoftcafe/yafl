@@ -16,7 +16,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun propagateCopies(a: CgApp) => appWithFunctions(a, map(appFunctions(a), cpFunction))
+fun propagateCopies(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a), cpFunction))
 
 fun [tail] cpFunction(f)
   let out = cpOnce(f)

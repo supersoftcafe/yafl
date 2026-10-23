@@ -21,7 +21,7 @@ import Bootstrap::Ir
 class [final] DfoNewObj(dfoVar: String, dfoClass: String)
 
 fun resolveKnownDiscriminators(a: CgApp)
-  ret appWithFunctions(a, map(appFunctions(a),
+  ret appWithFunctions(a, powerMap(appFunctions(a),
                               (f) => dfoFunction(f, a)))
 
 fun dfoFunction(f, a: CgApp)

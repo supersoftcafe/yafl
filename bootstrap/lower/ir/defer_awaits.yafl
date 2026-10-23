@@ -30,7 +30,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun deferAwaits(a: CgApp) => appWithFunctions(a, map(appFunctions(a),
+fun deferAwaits(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a),
     (f) => f.fnBypassAsync || f.fnName == "__entrypoint__" ? f : dfDefer(f)))
 
 class [final] DfRoot(drVar: RParam, drSource: RParam)

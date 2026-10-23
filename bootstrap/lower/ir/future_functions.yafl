@@ -41,5 +41,5 @@ fun fyWithEntryYield(f: CgFunction)
 fun addFutureEntries(a: CgApp): CgApp
   if !any(appFunctions(a), (f) => f.fnFuture)
     ret a
-  let a2 = appWithFunctions(a, map(appFunctions(a), (f) => f.fnFuture ? fyWithEntryYield(f) : f))
+  let a2 = appWithFunctions(a, powerMap(appFunctions(a), (f) => f.fnFuture ? fyWithEntryYield(f) : f))
   ret appHasFunction(a2, futureYield()) ? a2 : appPutFunction(a2, fyYieldFunction())

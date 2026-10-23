@@ -16,7 +16,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun eliminateDeadStores(a: CgApp): CgApp => appWithFunctions(a, map(appFunctions(a), dsFunction))
+fun eliminateDeadStores(a: CgApp): CgApp => appWithFunctions(a, powerMap(appFunctions(a), dsFunction))
 
 fun [tail] dsFunction(f): CgFunction
   let out = dsOnce(f)

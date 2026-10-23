@@ -19,7 +19,7 @@ import Bootstrap::StdlibCandidates
 
 fun discoverGlobalFunctionCalls(a: CgApp)
   let slots = gfSlotFuncs(a)
-  ret appWithFunctions(a, map(appFunctions(a),
+  ret appWithFunctions(a, powerMap(appFunctions(a),
         (f) => gfOptimizeFunctionCalls(f, slots)))
 
 # slot name → implementing function names, across every object.

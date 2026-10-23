@@ -412,7 +412,7 @@ fun beEntryIsZero(name, defs: Dict<String, BeDefEntry>): Bool => match(beEntryOf
 
 # ── the flip + rewrite ──────────────────────────────────────────────────────
 
-fun eliminateProvableBoundsChecks(a: CgApp) => appWithFunctions(a, map(appFunctions(a), beFunction))
+fun eliminateProvableBoundsChecks(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a), beFunction))
 
 fun beFunction(f)
   let defs = beSingleDefs(f.fnOps)

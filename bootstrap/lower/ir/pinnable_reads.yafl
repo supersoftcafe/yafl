@@ -38,7 +38,7 @@ fun resolvePinnableReads(a): CgApp
   let names = prNames(chain(appObjects(a)), setEmpty())
   ret setIsEmpty(names)
     ? a
-    : appWithFunctions(a, map(appFunctions(a),
+    : appWithFunctions(a, powerMap(appFunctions(a),
                               (f) => prFunction(f, names)))
 
 fun [tail] prNames(os: Chain<CgObject>, acc) => match(os)

@@ -32,7 +32,7 @@ fun scAppendName(): String   ret "str_append"
 fun scConcatName(): String   ret "str_concat_n"
 fun scRuntimeCap(): Int      ret 16   # str_concat_n's fixed operand arrays
 
-fun flattenStringAppends(a: CgApp) => appWithFunctions(a, map(appFunctions(a), scFunction))
+fun flattenStringAppends(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a), scFunction))
 
 fun scFunction(f: CgFunction)
   let defs = singleDefs(f)

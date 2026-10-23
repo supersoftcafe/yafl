@@ -18,7 +18,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun splitProjectedAggregates(a: CgApp) => appWithFunctions(a, map(appFunctions(a),
+fun splitProjectedAggregates(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a),
                                             (f) => sroaFix(f, Set(), 8)))
 
 fun [tail] sroaFix(f, done: Set<String>, left): CgFunction

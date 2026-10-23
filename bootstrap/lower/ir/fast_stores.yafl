@@ -197,7 +197,7 @@ fun fsBottom(arr: Dict<String, Set<String>>): Dict<String, Set<String>>
 # ── the rewrite ─────────────────────────────────────────────────────────────
 
 fun markFastStores(a: CgApp)
-  ret appWithFunctions(a, map(appFunctions(a), (f) => fsFunction(f)))
+  ret appWithFunctions(a, powerMap(appFunctions(a), (f) => fsFunction(f)))
 
 fun fsFunction(f: CgFunction)
   let universe = fsUniverse(f.fnOps)
