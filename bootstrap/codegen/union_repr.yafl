@@ -937,6 +937,17 @@ fun combinationUnionValueTagged(narrowCtype, narrowSlots: List<CgSlotEntry>, wid
                                  memberTag)
   ret unionStruct(narrowCtype, namedValues)
 
+# The primitive of type `orig` held in slot `si` of the union value `sv`: the
+# slot itself, or — where a smaller integer was merged into a larger slot
+# (cgComputeUnionSlots) — the slot narrowed back to it (union_repr.py
+# slot_read). Every read of a union slot goes through here; only integers
+# merge, so any other primitive is always read from a slot of its own type.
+fun slotRead(sv, slotFields: List<CgField>, si: Int, orig: CgType): RParam => match(listAt(slotFields, si))
+  (f: CgField) => eqCgType(orig, f.fieldType)
+    ? RpStructField(sv, f.fieldName)
+    : RpNarrowInt(RpStructField(sv, f.fieldName), orig)
+  ()            => RpNullPointer()   # unreachable: every slot index names a slot
+
 fun zipSlotFields(narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>, narrowFields: List<CgField>,
                   wideSlotFields: List<CgField>, sv)
   ret zipSlotFieldsLoop(chain(narrowSlots), chain(wideSlots), narrowFields, wideSlotFields, sv, List())
@@ -953,7 +964,7 @@ fun [tail] zipSlotFieldsLoopB(ns: Chain<CgSlotEntry>, ws: Chain<CgSlotEntry>, na
       (nil2: ChainEnd) => acc
       (w: ChainLink)   => zipSlotFieldsLoopB(l.next, w.next, narrowFields, wideSlotFields, sv,
                             push(acc, RpNamedValue(fieldNameAt(narrowFields, l.value.slotIndex),
-                                      RpStructField(sv, fieldNameAt(wideSlotFields, w.value.slotIndex)))))
+                                      slotRead(sv, wideSlotFields, w.value.slotIndex, w.value.origType))))
 
 fun [tail] indexWhereCgType(types2: List<CgType>, target, i) => match(head(types2))
   (t2: CgType) => eqCgType(t2, target) ? i : indexWhereCgType(tail(types2), target, i + 1)

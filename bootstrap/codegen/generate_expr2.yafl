@@ -315,8 +315,8 @@ fun reconstructFun(slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>
                    sv, offset) => match(listAt(slotAssignments, offset))
   (ef: CgSlotEntry) => match(listAt(slotAssignments, offset + 1))
     (eo: CgSlotEntry) => ReconstructOut(
-        RpMakeFun(RpStructField(sv, fieldNameAt(slotFields, ef.slotIndex)),
-                  RpStructField(sv, fieldNameAt(slotFields, eo.slotIndex))),
+        RpMakeFun(slotRead(sv, slotFields, ef.slotIndex, ef.origType),
+                  slotRead(sv, slotFields, eo.slotIndex, eo.origType)),
         offset + 2)
     ()                 => ReconstructOut(RpNullPointer(), offset + 2)   # unreachable
   ()                 => ReconstructOut(RpNullPointer(), offset + 2)   # unreachable
@@ -325,16 +325,6 @@ fun reconstructLeaf(slotAssignments: List<CgSlotEntry>, slotFields: List<CgField
   ret match(listAt(slotAssignments, offset))
     (e2: CgSlotEntry) => ReconstructOut(slotRead(sv, slotFields, e2.slotIndex, e2.origType), offset + 1)
     ()                 => ReconstructOut(RpNullPointer(), offset + 1)   # unreachable
-
-# The primitive of type `orig` held in slot `si` of the union value `sv`: the
-# slot itself, or — where a smaller integer was merged into a larger slot
-# (cgComputeUnionSlots) — the slot narrowed back to it (union_repr.py
-# slot_read).
-fun slotRead(sv, slotFields: List<CgField>, si: Int, orig: CgType): RParam => match(listAt(slotFields, si))
-  (f: CgField) => eqCgType(orig, f.fieldType)
-    ? RpStructField(sv, f.fieldName)
-    : RpNarrowInt(RpStructField(sv, f.fieldName), orig)
-  ()            => RpNullPointer()   # unreachable: every slot index names a slot
 
 fun fieldNameAt(fields: List<CgField>, idx) => match(listAt(fields, idx))
   (f: CgField) => f.fieldName

@@ -563,8 +563,8 @@ class TaggedRepr(UnionRepr):
                             member, resolver)
                     else:
                         fields = {"$tag": cg_p.Integer(member_tag, 32)}
-                        for (nsi, _nt), (wsi, _wt) in zip(narrow_map[k], variant_map[vi]):
-                            fields[narrow_ctype.fields[nsi][0]] = cg_p.StructField(sv, slot_fields[wsi][0])
+                        for (nsi, _nt), (wsi, wt) in zip(narrow_map[k], variant_map[vi]):
+                            fields[narrow_ctype.fields[nsi][0]] = slot_read(sv, slot_fields, wsi, wt)
                         value = cg_p.union_struct(narrow_ctype, fields)
                     entries.append((stages, value))
                 em.multi_entry_arm(arm, entries, narrow_ctype)
@@ -853,8 +853,9 @@ class TaggedRepr(UnionRepr):
             if tgt_var_idx is not None:
                 for pi in range(len(cg_t._flatten_primitives(src_var.generate(resolver)))):
                     tgt_si, _ = tgt_variant_map[tgt_var_idx][pi]
-                    src_si, _ = src_variant_map[i][pi]
-                    slot_values.append((tgt_slot_fields[tgt_si][0], cg_p.StructField(sv, src_ctype.fields[src_si][0])))
+                    src_si, src_orig = src_variant_map[i][pi]
+                    slot_values.append((tgt_slot_fields[tgt_si][0],
+                                        slot_read(sv, src_ctype.fields, src_si, src_orig)))
             slot_values.append(("$tag", cg_p.Integer(var_tag, 32)))
 
             wide_results.append((exit_label, cg_p.union_struct(tgt_ctype, dict(slot_values))))
@@ -1262,7 +1263,9 @@ class PointerRepr(UnionRepr):
 def slot_read(sv, slot_fields, si: int, orig: cg_t.Type) -> cg_p.RParam:
     """The primitive of type `orig` held in slot `si` of the union value `sv`:
     the slot itself, or — where a smaller integer was merged into a larger
-    slot (compute_union_slots) — the slot narrowed back to it."""
+    slot (compute_union_slots) — the slot narrowed back to it. Every read of a
+    union slot goes through here; only integers merge, so any other primitive
+    is always read from a slot of its own type."""
     slot_name, slot_type = slot_fields[si]
     read = cg_p.StructField(sv, slot_name)
     return read if orig == slot_type else cg_p.NarrowInt(read, orig)
@@ -1276,10 +1279,10 @@ def _leaf_from_slots(member, slot_assignments, slot_fields, sv, resolver):
     if leaf_ctype == cg_t.Struct(()):
         return None
     if isinstance(leaf_ctype, cg_t.FuncPointer):
-        si_f, _ = slot_assignments[0]
-        si_o, _ = slot_assignments[1]
-        return cg_p.MakeFun(cg_p.StructField(sv, slot_fields[si_f][0]),
-                            cg_p.StructField(sv, slot_fields[si_o][0]))
+        si_f, of = slot_assignments[0]
+        si_o, oo = slot_assignments[1]
+        return cg_p.MakeFun(slot_read(sv, slot_fields, si_f, of),
+                            slot_read(sv, slot_fields, si_o, oo))
     si, orig = slot_assignments[0]
     return slot_read(sv, slot_fields, si, orig)
 

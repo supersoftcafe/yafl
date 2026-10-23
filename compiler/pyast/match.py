@@ -498,11 +498,11 @@ class _Emitter:
                 # Reassemble the closure from its two slots — a closure IS a
                 # struct (the enum-encoding principle), deconstructed on write
                 # by union_repr._variant_slots.
-                si_f, _ = slot_assignments[offset]
-                si_o, _ = slot_assignments[offset + 1]
+                si_f, of = slot_assignments[offset]
+                si_o, oo = slot_assignments[offset + 1]
                 return cg_p.MakeFun(
-                    cg_p.StructField(sv, slot_fields[si_f][0]),
-                    cg_p.StructField(sv, slot_fields[si_o][0])), offset + 2
+                    union_repr.slot_read(sv, slot_fields, si_f, of),
+                    union_repr.slot_read(sv, slot_fields, si_o, oo)), offset + 2
             if not isinstance(ctype, cg_t.Struct):
                 si, orig = slot_assignments[offset]
                 return union_repr.slot_read(sv, slot_fields, si, orig), offset + 1
