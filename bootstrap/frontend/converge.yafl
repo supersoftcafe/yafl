@@ -180,17 +180,16 @@ fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
   ()         => List()
 
 # One pass: every statement compiles against a resolver over the CURRENT set,
-# and the extra statements it creates join the set for the next pass.
+# and the extra statements it creates join the set for the next pass. No
+# statement sees another's output within a pass, so they compile in parallel.
 fun compilePass(statements): List<PStmt>
   let r = rootResolver(statements)
-  ret build(passLoop(chain(statements), r, builder()))
+  ret powerMap(statements, (st: PStmt) => compileStmt(st, scopeResolver(st, r), None))
+    |> (outs) => build(passLoop(chain(outs), builder()))
 
 # Each statement's own output, then whatever it hoisted out beside itself:
 # this is the program's statement order, so a builder, not a set.
-fun [tail] passLoop(ss: Chain<PStmt>, r: Resolver,
-                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt> => match(ss)
+fun [tail] passLoop(os: Chain<StmtOut>,
+                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt> => match(os)
   (nil: ChainEnd) => acc
-  (l: ChainLink)  => compileStmt(l.value, scopeResolver(l.value, r), None)
-    |> (out) => passLoop(l.next, r,
-                         pushAll(addStmt(acc, out.soStmt),
-                                     out.soExtra))
+  (l: ChainLink)  => passLoop(l.next, pushAll(addStmt(acc, l.value.soStmt), l.value.soExtra))
