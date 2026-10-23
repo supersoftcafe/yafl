@@ -44,15 +44,9 @@ fun main(): System::Int
 """
 
 
-import unittest
-
 
 class TestUnionVariantSubsume(TimedTestCase):
-    # The union now CANONICALISES correctly (E3|W|EU folds to E3|W), but the
-    # match still needs per-VARIANT arms through the union subject, and the
-    # union reprs cannot dispatch those yet (see the bootstrap task list:
-    # "variant arms through union subjects"). The checker stays conservative
-    # to guard the codegen hole; this pins the target behaviour.
-    @unittest.expectedFailure
+    # E3|W|EU folds to E3|W, and the match's arms name E3's variants through
+    # the union subject.
     def test_variant_folds_into_its_enum(self):
         self.assertEqual(70, compile_and_run_stdlib(_SRC))
