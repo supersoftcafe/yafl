@@ -534,9 +534,9 @@ enum {
 // result — a call's task-carrying return, which the compilers keep as
 // returned in C locals and async frames until its use awaits it — and refers
 // to its task. Tasks are mutable, so they never move and the tag never needs
-// care when a reference is updated. Every other tagged word is a scalar.
-#define gc_ref(word) ((object_t*)((((uintptr_t)(word)) & PTR_TAG_MASK) == PTR_TAG_TASK\
-    ? ((uintptr_t)(word) & ~(uintptr_t)PTR_TAG_TASK) : (uintptr_t)(word)))
+// care when a reference is updated. Every other tagged word is a scalar, and
+// none sets the task bit, so clearing it leaves them as they are.
+#define gc_ref(word) ((object_t*)((uintptr_t)(word) & ~(uintptr_t)PTR_TAG_TASK))
 #define PTR_IS_TASK(ptr)    (((uintptr_t)(ptr)&PTR_TAG_TASK) != 0)
 #define PTR_IS_INTEGER(ptr) (((uintptr_t)(ptr)&PTR_TAG_INTEGER) != 0)
 #define PTR_IS_STRING(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == PTR_TAG_STRING)
