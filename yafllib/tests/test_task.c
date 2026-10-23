@@ -85,11 +85,31 @@ static void _check_stage(const char* name, object_t* task_arg) {
     }
 }
 
-/* Stage 3: verify the idempotent-complete fire, then finish. */
+/* Stage 4: verify the yielded task's continuation fired — once (a second
+ * fire would double-finish loudly) — then finish. */
+static object_t* _stage_future_yield_done(object_t* self, object_t* task_arg) {
+    (void)self;
+    _check_stage("future_yield_continuation_fires_once", task_arg);
+    _finish();
+    return NULL;
+}
+
+/* Stage 3: verify the idempotent-complete fire, then run future_yield: it
+ * must hand back a TASK-tagged task, and registering a continuation on it
+ * must post that continuation (to some worker's queue). */
 static object_t* _stage_idempotent_done(object_t* self, object_t* task_arg) {
     (void)self;
     _check_stage("task_complete_idempotent", task_arg);
-    _finish();
+
+    object_t* y = future_yield(NULL);
+    if (!PTR_IS_TASK(y)) {
+        printf("  future_yield did not return a tagged task\n");
+        _async_r.failed++;
+        _finish();
+        return NULL;
+    }
+    _async_expected_task = TASK_UNTAG(y);
+    task_on_complete(TASK_UNTAG(y), (fun_t){.f=_stage_future_yield_done, .o=NULL});
     return NULL;
 }
 

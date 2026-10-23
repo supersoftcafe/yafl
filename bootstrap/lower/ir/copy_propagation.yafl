@@ -16,7 +16,7 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun propagateCopies(a: CgApp) => appWithFunctions(a, map(appFunctions(a), cpFunction))
+fun propagateCopies(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a), cpFunction))
 
 fun [tail] cpFunction(f)
   let out = cpOnce(f)
@@ -133,4 +133,4 @@ fun cpPruneStackVars(f: CgFunction, newOps)
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
                         (fld) => contains(mentioned, fld.fieldName))))
 
-fun cpWriteNames(op) => fold(ssavOpWrites(op), List(), rpTakeStackVarName)
+fun cpWriteNames(op) => fold(opTargets(op), List(), rpTakeStackVarName)

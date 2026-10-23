@@ -1,7 +1,7 @@
-# Probe for the StreamIO design's load-bearing assumption.
+# A closure must capture a `[lazy]` let UNFORCED.
 #
-# The proposed IO stream is encoded as a node holding a *zero-arg closure
-# that captures a `[lazy]` let*:
+# A lazy stream can be encoded as a node holding a *zero-arg closure that
+# captures a `[lazy]` let*:
 #
 #     fun node(...):
 #         let [lazy] step: Step = pull(...)   # deferred

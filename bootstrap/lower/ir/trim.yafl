@@ -92,6 +92,7 @@ fun scanRParam(p): ScanSets => match(p)
   (sw: RpSyncWrap)       => scanRParam(sw.value)
   (ff: RpFunField)       => scanRParam(ff.ffFun)
   (mf: RpMakeFun)        => ssUnion(scanRParam(mf.mfCode), scanRParam(mf.mfEnv))
+  (ni: RpNarrowInt)      => scanRParam(ni.niValue)
   (o: RParam)            => ssEmpty()   # String/Integer/Float/StackVar/NullPointer/ZeroOf/…
 
 fun scanOptRParam(p: RParam|None) => match(p)
@@ -113,10 +114,15 @@ fun scanOp(op): ScanSets => match(op)
   (t2: OpIfTask)      => ssUnion(scanRParam(t2.taskCondition), scanRParam(t2.taskSource))
   (an: OpAssertNotTask) => scanRParam(an.antCondition)
   (sw: OpSwitchJump)  => scanRParam(sw.switchCondition)
-  (pc: OpParallelCall) => fold(pc.parCalls, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x)))
   (ph: OpPhi)         => fold(ph.phiSources, scanRParam(ph.phiTarget),
                               (a, s2) => ssUnion(a, scanRParam(s2.sourceValue)))
-  (o: Op)             => ssEmpty()   # Label/Jump/ReturnVoid/Abort
+  (aw: OpAwait)       => ssUnion(scanRParam(aw.awaitRegister), scanRParam(aw.awaitSource))
+  (x: OpLabel)        => ssEmpty()
+  (x: OpJump)         => ssEmpty()
+  (x: OpReturnVoid)   => ssEmpty()
+  (x: OpAbort)        => ssEmpty()
+  (x: OpProfEnter)    => ssEmpty()
+  (x: OpProfLeave)    => ssEmpty()
 
 fun scanGlobal(g2: CgGlobal): ScanSets
   ret ssUnion(ssUnion(scanOptRParam(g2.globalInit), scanOptFunction(g2.globalLazyInitFunction)),

@@ -402,7 +402,7 @@ and the heavy work overlaps on a worker thread; forcing the lazy value later
 blocks only if the work hasn't finished. This turns `[lazy]` from
 compute-on-first-force into compute-eagerly-in-background — a form of
 automatic futures. Investigate: which heavy ops to auto-wrap (cost model?),
-interaction with `__parallel__` and the task backpressure machinery, and
+interaction with `[future]` functions and the task backpressure machinery, and
 whether it's opt-in (an attribute) or inferred.
 
 ## "findstr integer overflow" — ROOT-CAUSED & FIXED 2026-06-13 (two bugs, both fixed)
@@ -828,11 +828,10 @@ deliberately deferred, not a bug. Don't conflate it with this stale note.
 # Parallel grep — done (as `examples/findstr`)
 
 `examples/findstr.yafl`: substring search (no regex yet) over a folder hierarchy,
-giving `__parallel__` a real workout — the file list is searched divide-and-conquer,
-each half on a separate worker. Walks the tree with `fs.stat`/`listDir`, reads each
+giving `[future]` functions a real workout — the file list is searched
+divide-and-conquer, each half on a separate worker. Walks the tree with `fs.stat`/`listDir`, reads each
 file, and prints `file:lineNo:line` for matching lines. Built by `examples/CMakeLists.txt`;
-guarded by `tests/test_findstr.py`. Future: regex instead of substring, and once auto
-parallelisation lands, drop the explicit `__parallel__`.
+guarded by `tests/test_findstr.py`. Future: regex instead of substring.
 
 # Build system, libraries & examples — done
 
@@ -957,6 +956,11 @@ a top-level helper that threads state through parameters.
 
 
 ## Fusible stream transformers via generic trait instances
+
+STATUS 2026-10-22: StreamIO and asStream REMOVED (user: more trouble than they
+are worth). File contents are read whole (`System::IO::readAll`) and streamed
+from the text (`once(text) |> toLines …`). Everything below that mentions
+StreamIO is history.
 
 STATUS 2026-06-25: DELIVERED end to end. Generic trait instances + `Stream<S,T,E>`
 = `Result<T|None,E>` + StreamIO folded onto the trait + generic Lines/Numbered +

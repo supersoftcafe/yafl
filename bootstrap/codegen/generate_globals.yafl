@@ -35,7 +35,7 @@ fun funGlobalCodegen(f: PsFun, r0): CgFunction
                  cgOpsOf(bundle.gbOps), f.fName, foreignSymbolOf(f),
                  hasAttr(f.fAttrs, "sync"), hasAttr(f.fAttrs, "tail"), false,
                  inlineAlways(f),
-                 f.psfLine.plFile, f.psfLine.plLine)
+                 f.psfLine.plFile, f.psfLine.plLine, hasAttr(f.fAttrs, "future"))
 
 fun fgcBodyBundle(b, bodyR, fRet: Spec|None): GBundle
   let bodyBundle = genExprTo(b, bodyR, fRet)

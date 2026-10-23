@@ -1,0 +1,45 @@
+# bootstrap/future_functions.yafl — ported from lowering/future_functions.py:
+# [future] functions, whose body runs on a worker while a call answers later.
+# The body opens with the runtime's future_yield (yafllib task.c), a foreign
+# call that may suspend: it hands back a task already complete, so async_lower
+# suspends on it like any latent await — the function returns its own task to
+# the caller, and registering the continuation posts it to another worker,
+# which runs the body and completes that task with the result. When the pool
+# is not accepting, future_yield answers None at once and the body runs in
+# place. The inliners leave [future] functions alone (fnFuture): inlined, the
+# yield would hand the rest of the CALLER to the worker instead.
+namespace Bootstrap::Lower::Ir
+
+import System
+
+import Bootstrap::Codegen
+import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
+
+
+
+fun futureYield() => "future_yield"
+
+fun fyNone() => CgStruct(List())
+
+fun fyRegister() => "$future_yield"
+
+fun fyYieldFunction() => CgFunction(futureYield(),
+                                    CgStruct(list1(CgField("this", CgDataPointer()))),
+                                    fyNone(), CgStruct(List()), cgOpsOf(List()),
+                                    futureYield(), futureYield(), false, false, false, false)
+
+fun fyWithEntryYield(f: CgFunction)
+  let call = OpCall(RpGlobalFunction(futureYield(), None, false, futureYield(), true, false),
+                    RpNewStruct(List()), RpStackVar(fyNone(), fyRegister()),
+                    false, true, None, Dict())
+  ret cgFunctionWith(f, cgOpsOf(prepend(call, cgOpsToList(f.fnOps))),
+        CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), list1(CgField(fyRegister(), fyNone())))))
+
+# Open every [future] function with the call to future_yield, and declare the
+# runtime function when any does.
+fun addFutureEntries(a: CgApp): CgApp
+  if !any(appFunctions(a), (f) => f.fnFuture)
+    ret a
+  let a2 = appWithFunctions(a, powerMap(appFunctions(a), (f) => f.fnFuture ? fyWithEntryYield(f) : f))
+  ret appHasFunction(a2, futureYield()) ? a2 : appPutFunction(a2, fyYieldFunction())

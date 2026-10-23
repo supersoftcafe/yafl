@@ -704,7 +704,7 @@ def solve_trait_constraint(constraint: "ClassSpec", target_names: set[str],
                            instances: "list[TraitInstance]",
                            resolver: g.Resolver) -> dict[str, "TypeSpec"] | None:
     """Ground the `target_names` placeholders of a trait `constraint` — e.g.
-    `Stream<Pretty<Lexer<StreamIO, IOError>, IOError|JsonParseError>, String, E>` —
+    `Stream<Pretty<Lexer<Once<String>, Never>, JsonParseError>, String, E>` —
     by matching it against the `[trait]` instances in scope, in a SINGLE step.
 
     Each stream combinator type carries its element and error params

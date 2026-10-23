@@ -99,9 +99,11 @@ fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
                              union(noArgAttr(f, "impure", "[impure] takes no arguments"),
                              union(noArgAttr(f, "sync", "[sync] takes no arguments"),
                              union(tailErrs(f),
+                             union(futureFunErrs(f),
+                             union(linearParamErrs(f),
                              union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
                              union(testErrs(f),
-                                    innerWhereErrs(f)))))))
+                                    innerWhereErrs(f)))))))))
 
 # ── unknown attributes ──────────────────────────────────────────────────────
 # Attributes parse as an OPEN `[name]` / `[name(expr)]` list, so without this
@@ -240,6 +242,39 @@ fun tailErrs(f: PsFun)
     ()         => union(argErr,
                          oneErr(f.psfLine,
                                 "[tail] cannot be applied to a foreign function"))
+
+# [linear] on a parameter: a promise to call it exactly once (checked by
+# lower/ast/linearity.yafl) — meaningful only for a function.
+fun linearParamErrs(f: PsFun) => fold(flattenParams(f.fParams), noErrs(), linearParamErr)
+
+fun linearParamErr(acc: Set<PErr>, p: PStmt) => match(p)
+  (let2: PsLet) => hasAttr(let2.lAttrs, "linear") && !isCallableSpec(let2.lType)
+    ? union(acc, oneErr(let2.pslLine, "[linear] applies only to a function-typed parameter"))
+    : acc
+  (o: PStmt)    => acc
+
+fun isCallableSpec(sp: Spec|None) => match(sp)
+  (s2: Spec) => isCallableKind(s2)
+  ()         => false
+
+fun isCallableKind(s2: Spec) => match(s2)
+  (c: SCallable) => true
+  (o: Spec)      => false
+
+# [future]: a call hands the body to a worker and answers later, with a task —
+# so the function cannot also promise [sync], and a foreign one has no body to
+# hand over.
+fun futureFunErrs(f: PsFun)
+  if !hasAttr(f.fAttrs, "future")
+    ret noErrs()
+  let argErr = noArgAttr(f, "future", "[future] takes no arguments")
+  let foreignErr = match(f.fBody)
+    (b: PExpr) => noErrs()
+    ()         => oneErr(f.psfLine, "[future] cannot be applied to a foreign function")
+  let syncErr = hasAttr(f.fAttrs, "sync")
+    ? oneErr(f.psfLine, "[future] and [sync] contradict: a [future] function answers with a task")
+    : noErrs()
+  ret union(argErr, union(foreignErr, syncErr))
 
 # An inner function declares neither a `where` nor type parameters: it has no
 # scope of its own but inherits its owner's, so a `where` here would silently do

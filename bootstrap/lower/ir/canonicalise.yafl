@@ -20,7 +20,7 @@ fun canonicaliseApp(a: CgApp, profile: Bool): CgApp
   if profile
     ret a
   let rn = cnRenames(appObjects(a))
-  ret appOf(map(appFunctions(a), (f) => cnFunctionFields(rn, f)),
+  ret appOf(powerMap(appFunctions(a), (f) => cnFunctionFields(rn, f)),
             map(appObjects(a), (o) => cnObject(rn, o)),
             map(appGlobals(a), (g2) => cnGlobal(rn, g2)))
 

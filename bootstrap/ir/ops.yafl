@@ -42,11 +42,24 @@ enum Op
   enum OpSwitchJump(switchCondition: RParam, switchCases: List<OpCase>, switchSavedVars: Dict<String, RParam>)
   # newObjPinned: born pinned (codegen/ops.py NewObject.pinned).
   enum OpNewObject(newObjName: String, newObjRegister: RParam, newObjSize: RParam|None, newObjPinned: Bool, newObjSavedVars: Dict<String, RParam>)
-  enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: Dict<String, RParam>)
+  # callDeferred: its await is deferred (lower/ir/defer_awaits.yafl) — the
+  # register holds the result in its task-carrying shape and an OpAwait
+  # realises it later. Last, with a default, so fresh constructions are untouched.
+  enum OpCall(callFunction: RParam, callParameters: RParam, callRegister: RParam|None, callMusttail: Bool, callImpure: Bool, callResultType: CgType|None, callSavedVars: Dict<String, RParam>,
+              callDeferred: Bool = false)
+  # Realises a deferred call's result: the suspension point the call no longer
+  # is. awaitSource holds the result as returned (task-carrying shape), which
+  # the collector reads as a reference to its task (gc_ref, yafl.h). Parks on
+  # the task while still running, else takes the value into awaitRegister.
+  # Lives only inside async_lower; never reaches C.
+  # awaitReturned: it realises for a Return of the whole value, so the hot path
+  # hands awaitSource to the caller unawaited (the state machine, whose task
+  # the caller already holds, parks as usual).
+  enum OpAwait(awaitRegister: RParam, awaitSource: RParam, awaitReturned: Bool,
+               awaitSavedVars: Dict<String, RParam>)
   enum OpReturnVoid(retVoidSavedVars: Dict<String, RParam>)
   enum OpAbort(abortReason: String, abortSavedVars: Dict<String, RParam>)
   enum OpReturn(returnValue: RParam, returnSavedVars: Dict<String, RParam>)
-  enum OpParallelCall(parCalls: List<RParam>, parResults: List<RParam>, parRegister: RParam|None, parSavedVars: Dict<String, RParam>)
   enum OpPhi(phiTarget: RParam, phiSources: List<OpPhiSource>, phiSavedVars: Dict<String, RParam>)
   # --profile instrumentation (ops.py ProfEnter/ProfLeave). Injected by
   # cgFunctionInstrumentProfile AFTER the emission cleanup chain, so no
@@ -68,10 +81,10 @@ fun opSavedVars(op): Dict<String, RParam> => match(op)
   (x: OpSwitchJump) => x.switchSavedVars
   (x: OpNewObject) => x.newObjSavedVars
   (x: OpCall) => x.callSavedVars
+  (x: OpAwait) => x.awaitSavedVars
   (x: OpReturnVoid) => x.retVoidSavedVars
   (x: OpAbort) => x.abortSavedVars
   (x: OpReturn) => x.returnSavedVars
-  (x: OpParallelCall) => x.parSavedVars
   (x: OpPhi) => x.phiSavedVars
   (x: OpProfEnter) => x.profEnterSavedVars
   (x: OpProfLeave) => x.profLeaveSavedVars
@@ -86,7 +99,15 @@ fun opTestParams(op, pred) => match(op)
   (x: OpSwitchJump) => pred(x.switchCondition)
   (x: OpCall) => opTestParamsCall(x, pred)
   (x: OpReturn) => pred(x.returnValue)
-  (o: Op) => false   # base default: False (Label/Jump/NewObject/ReturnVoid/Abort/ParallelCall/Phi don't override)
+  (x: OpAwait) => pred(x.awaitRegister) || pred(x.awaitSource)
+  (x: OpLabel)        => false
+  (x: OpJump)         => false
+  (x: OpNewObject)    => false
+  (x: OpReturnVoid)   => false
+  (x: OpAbort)        => false
+  (x: OpPhi)          => false
+  (x: OpProfEnter)    => false
+  (x: OpProfLeave)    => false
 
 fun opTestParamsCall(x: OpCall, pred)
   ret pred(x.callFunction) || pred(x.callParameters) || opTestParamsCallRegister(x.callRegister, pred)
@@ -106,9 +127,14 @@ fun opAllParams(op) => match(op)
   (x: OpNewObject) => opAllParamsNewObject(x)
   (x: OpCall) => opAllParamsCall(x)
   (x: OpReturn) => rpFlatten(x.returnValue, true)
-  (x: OpParallelCall) => opAllParamsParallel(x)
   (x: OpPhi) => opAllParamsPhi(x)
-  (o: Op) => List()   # base default: [] (Label/Jump/ReturnVoid/Abort don't override)
+  (x: OpAwait) => concat(rpFlatten(x.awaitRegister, false), rpFlatten(x.awaitSource, true))
+  (x: OpLabel)      => List()
+  (x: OpJump)       => List()
+  (x: OpReturnVoid) => List()
+  (x: OpAbort)      => List()
+  (x: OpProfEnter)  => List()
+  (x: OpProfLeave)  => List()
 
 fun opAllParamsIfTask(x: OpIfTask)
   ret concat(concat(rpFlatten(x.taskCondition, true), rpFlatten(x.taskSource, true)),
@@ -124,11 +150,6 @@ fun opAllParamsCall(x: OpCall)
 fun opAllParamsCallRegister(register: RParam|None) => match(register)
   (r: RParam) => rpFlatten(r, false)
   ()          => List()
-
-fun opAllParamsParallel(x: OpParallelCall)
-  let reads = fold(x.parCalls, List(), (acc, c) => concat(acc, rpFlatten(c, true)))
-  let writes = fold(x.parResults, List(), (acc, r) => concat(acc, rpFlatten(r, false)))
-  ret concat(reads, concat(writes, opAllParamsCallRegister(x.parRegister)))
 
 fun opAllParamsPhi(x: OpPhi)
   let sourceParams = fold(x.phiSources, List(), (acc, s) => concat(acc, rpFlatten(s.sourceValue, true)))
@@ -149,16 +170,19 @@ fun opRenameVars(op, renames: List<RpRename>) => match(op)
                                     map(x.switchCases, (c) => OpCase(c.caseValue, renameLookup(renames, c.caseLabel))),
                                     x.switchSavedVars)
   (x: OpNewObject) => OpNewObject(x.newObjName, rpRenameVars(x.newObjRegister, renames), rpRenameVarsOpt(x.newObjSize, renames), x.newObjPinned, x.newObjSavedVars)
-  (x: OpCall) => OpCall(rpRenameVars(x.callFunction, renames), rpRenameVars(x.callParameters, renames),
-                        opRenameVarsOpt(x.callRegister, renames), x.callMusttail, x.callImpure, x.callResultType, x.callSavedVars)
+  (x: OpCall) => with x(callFunction = rpRenameVars(x.callFunction, renames),
+                        callParameters = rpRenameVars(x.callParameters, renames),
+                        callRegister = opRenameVarsOpt(x.callRegister, renames))
+  (x: OpAwait) => with x(awaitRegister = rpRenameVars(x.awaitRegister, renames),
+                         awaitSource   = rpRenameVars(x.awaitSource, renames))
   (x: OpReturn) => OpReturn(rpRenameVars(x.returnValue, renames), x.returnSavedVars)
-  (x: OpParallelCall) => OpParallelCall(map(x.parCalls, (c) => rpRenameVars(c, renames)),
-                                        map(x.parResults, (r) => rpRenameVars(r, renames)),
-                                        opRenameVarsOpt(x.parRegister, renames), x.parSavedVars)
   (x: OpPhi) => OpPhi(rpRenameVars(x.phiTarget, renames),
                       map(x.phiSources, (s) => OpPhiSource(renameLookup(renames, s.sourceLabel), rpRenameVars(s.sourceValue, renames))),
                       x.phiSavedVars)
-  (o: Op) => op   # base default: self (ReturnVoid/Abort don't override)
+  (x: OpReturnVoid) => op
+  (x: OpAbort)      => op
+  (x: OpProfEnter)  => op
+  (x: OpProfLeave)  => op
 
 fun opRenameVarsOpt(o: RParam|None, renames: List<RpRename>) => match(o)
   (v: RParam) => rpRenameVars(v, renames)
@@ -182,24 +206,21 @@ fun opReplaceParams(op: Op, replacer: (:RParam): RParam): Op => match(op)
                         callParameters = rpReplaceParams(x.callParameters, replacer),
                         callRegister   = opReplaceParamsOpt(x.callRegister, replacer))
   (x: OpReturn) => with x(returnValue = rpReplaceParams(x.returnValue, replacer))
-  (x: OpParallelCall) => with x(parCalls   = map(x.parCalls, (c) => replacer(c)),
-                                parResults = map(x.parResults, (r) => replacer(r)),
-                                parRegister = opReplaceParamsRegisterDirect(x.parRegister, replacer))
+  (x: OpAwait) => with x(awaitRegister = rpReplaceParams(x.awaitRegister, replacer),
+                         awaitSource   = rpReplaceParams(x.awaitSource, replacer))
   (x: OpPhi) => with x(phiTarget = replacer(x.phiTarget),
                        phiSources = map(x.phiSources,
                                         (s) => with s(sourceValue = rpReplaceParams(s.sourceValue, replacer))))
-  (o: Op) => op   # base default: self (Label/Jump/ReturnVoid/Abort don't override)
+  (x: OpLabel)      => op
+  (x: OpJump)       => op
+  (x: OpReturnVoid) => op
+  (x: OpAbort)      => op
+  (x: OpProfEnter)  => op
+  (x: OpProfLeave)  => op
 
 fun opReplaceParamsOpt(o: RParam|None, replacer): RParam|None => match(o)
   (v: RParam) => rpReplaceParams(v, replacer)
   ()          => None
-
-# ParallelCall.replace_params calls `replacer(r)` DIRECTLY on each element
-# (NOT `r.replace_params(replacer)`) — matches Python exactly.
-fun opReplaceParamsRegisterDirect(o: RParam|None, replacer: (:RParam): RParam): RParam|None
-  ret match(o)
-    (v: RParam) => replacer(v)
-    ()          => None
 
 # ── get_live_vars() -> (reads, writes) ──────────────────────────────────────
 
@@ -212,9 +233,14 @@ fun opGetLiveVars(op): (reads: List<RParam>, writes: List<RParam>) => match(op)
   (x: OpNewObject) => opGetLiveVarsNewObject(x)
   (x: OpCall) => opGetLiveVarsCall(x)
   (x: OpReturn) => (rpGetLiveVars(x.returnValue), List())
-  (x: OpParallelCall) => opGetLiveVarsParallel(x)
   (x: OpPhi) => opGetLiveVarsPhi(x)
-  (o: Op) => (List(), List())   # base default: (set(), set()) (Label/Jump/ReturnVoid/Abort don't override)
+  (x: OpAwait) => (list1(x.awaitSource), list1(x.awaitRegister))
+  (x: OpLabel)      => (List(), List())
+  (x: OpJump)       => (List(), List())
+  (x: OpReturnVoid) => (List(), List())
+  (x: OpAbort)      => (List(), List())
+  (x: OpProfEnter)  => (List(), List())
+  (x: OpProfLeave)  => (List(), List())
 
 fun opGetLiveVarsMove(x: OpMove): (reads: List<RParam>, writes: List<RParam>)
   let live = rpGetLiveVars(x.moveSource)
@@ -240,18 +266,78 @@ fun opGetLiveVarsCallRegister(live: List<RParam>, r): (reads: List<RParam>, writ
     (sv: RpStackVar) => (live, dead)
     (o: RParam)       => (rpStackVarUnion(live, dead), List())
 
-fun opGetLiveVarsParallel(x: OpParallelCall): (reads: List<RParam>, writes: List<RParam>)
-  let reads = fold(x.parCalls, List(), (acc, c) => rpStackVarUnion(acc, rpGetLiveVars(c)))
-  let writes = fold(x.parResults, List(), (acc, r) => rpStackVarUnion(acc, list1(r)))
-  ret match(x.parRegister)
-    (r: RParam) => (reads, rpStackVarUnion(writes, list1(r)))
-    ()           => (reads, writes)
-
 fun opGetLiveVarsPhi(x: OpPhi): (reads: List<RParam>, writes: List<RParam>)
   let reads = fold(x.phiSources, List(), (acc, s) => rpStackVarUnion(acc, rpGetLiveVars(s.sourceValue)))
   ret match(x.phiTarget)
     (sv: RpStackVar) => (reads, list1(x.phiTarget))
     (o: RParam)      => (rpStackVarUnion(reads, rpGetLiveVars(x.phiTarget)), List())
+
+# ── falls_through() / branch_targets() ──────────────────────────────────────
+
+# Control can pass from this op to the next op in the stream.
+fun opFallsThrough(op): Bool => match(op)
+  (x: OpLabel)         => true
+  (x: OpMove)          => true
+  (x: OpJump)          => false
+  (x: OpJumpIf)        => true
+  (x: OpIfTask)        => true
+  (x: OpAssertNotTask) => true
+  # Its C ends `default: abort()`: an unlisted value never falls through.
+  (x: OpSwitchJump)    => false
+  (x: OpNewObject)     => true
+  # A musttail call is emitted as `return f(...)`: the frame is replaced.
+  (x: OpCall)          => !x.callMusttail
+  (x: OpAwait)         => true
+  (x: OpReturnVoid)    => false
+  (x: OpAbort)         => false
+  (x: OpReturn)        => false
+  (x: OpPhi)           => true
+  (x: OpProfEnter)     => true
+  (x: OpProfLeave)     => true
+
+# The labels this op can transfer control to, besides falling through.
+fun opBranchTargets(op): List<String> => match(op)
+  (x: OpLabel)         => List()
+  (x: OpMove)          => List()
+  (x: OpJump)          => list1(x.jumpName)
+  (x: OpJumpIf)        => list1(x.jumpIfLabel)
+  (x: OpIfTask)        => list1(x.taskTarget)
+  (x: OpAssertNotTask) => List()
+  (x: OpSwitchJump)    => map(x.switchCases, (c) => c.caseLabel)
+  (x: OpNewObject)     => List()
+  (x: OpCall)          => List()
+  (x: OpAwait)         => List()
+  (x: OpReturnVoid)    => List()
+  (x: OpAbort)         => List()
+  (x: OpReturn)        => List()
+  (x: OpPhi)           => List()
+  (x: OpProfEnter)     => List()
+  (x: OpProfLeave)     => List()
+
+# ── targets() ───────────────────────────────────────────────────────────────
+
+# Every place this op writes: locals, globals and heap fields alike.
+fun opTargets(op): List<RParam> => match(op)
+  (x: OpLabel)         => List()
+  (x: OpMove)          => list1(x.moveTarget)
+  (x: OpJump)          => List()
+  (x: OpJumpIf)        => List()
+  (x: OpIfTask)        => list2(x.taskLhs, x.callIdLhs)
+  (x: OpAssertNotTask) => List()
+  (x: OpSwitchJump)    => List()
+  (x: OpNewObject)     => list1(x.newObjRegister)
+  (x: OpCall)          => opTargetsCall(x.callRegister)
+  (x: OpAwait)         => list1(x.awaitRegister)
+  (x: OpReturnVoid)    => List()
+  (x: OpAbort)         => List()
+  (x: OpReturn)        => List()
+  (x: OpPhi)           => list1(x.phiTarget)
+  (x: OpProfEnter)     => List()
+  (x: OpProfLeave)     => List()
+
+fun opTargetsCall(register: RParam|None): List<RParam> => match(register)
+  (r: RParam) => list1(r)
+  ()          => List()
 
 # ── is_direct_call() (Call only) ────────────────────────────────────────────
 
@@ -268,8 +354,8 @@ fun opCallIsSync(x: OpCall) => match(rpGetType(x.callFunction))
   (o: CgType)         => false
 
 # A suspension point for the task lowering: a non-tail call through a
-# function value not proven sync.
-fun opCallMaySuspend(x: OpCall) => !x.callMusttail && !opCallIsSync(x)
+# function value not proven sync, whose await is not deferred.
+fun opCallMaySuspend(x: OpCall) => !x.callMusttail && !opCallIsSync(x) && !x.callDeferred
 
 # ── to_c ─────────────────────────────────────────────────────────────────────
 
@@ -286,8 +372,8 @@ fun opToC(op, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntr
   (x: OpReturnVoid) => ("    return;\n", cache)
   (x: OpAbort) => opToCAbort(x, cache)
   (x: OpReturn) => opToCReturn(x, cache)
-  (x: OpParallelCall) => ("", cache)   # unreachable: async_lower must remove ParallelCall before codegen
   (x: OpPhi) => ("", cache)            # unreachable: from_ssa must lower Phi to Moves before codegen
+  (x: OpAwait) => ("", cache)          # unreachable: async_lower replaces every Await
   (x: OpProfEnter) => ("    yafl_prof_enter(" + String(x.profEnterFnId) + "u);\n", cache)
   (x: OpProfLeave) => ("    yafl_prof_leave();\n", cache)
 
@@ -485,9 +571,14 @@ fun opReadVarNames(op) => match(op)
   (c: OpCall)          => concat(concat(rpReadVarNames(c.callFunction), rpReadVarNames(c.callParameters)),
                                  rpOptTargetReadNames(c.callRegister))
   (r: OpReturn)        => rpReadVarNames(r.returnValue)
-  (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadVarNames(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadVarNames(s2.sourceValue)))
-  (o: Op)              => List()
+  (aw: OpAwait)        => rpReadVarNames(aw.awaitSource)
+  (x: OpLabel)      => List()
+  (x: OpJump)       => List()
+  (x: OpReturnVoid) => List()
+  (x: OpAbort)      => List()
+  (x: OpProfEnter)  => List()
+  (x: OpProfLeave)  => List()
 
 fun rpOptTargetReadNames(r: RParam|None): List<String> => match(r)
   (x: RParam) => rpTargetReadNames(x)
@@ -523,11 +614,11 @@ fun opWithSavedVars(op, sv: Dict<String, RParam>) => match(op)
   (x: OpAssertNotTask) => OpAssertNotTask(x.antCondition, sv)
   (x: OpSwitchJump)   => OpSwitchJump(x.switchCondition, x.switchCases, sv)
   (x: OpNewObject)    => OpNewObject(x.newObjName, x.newObjRegister, x.newObjSize, x.newObjPinned, sv)
-  (x: OpCall)         => OpCall(x.callFunction, x.callParameters, x.callRegister, x.callMusttail, x.callImpure, x.callResultType, sv)
+  (x: OpCall)         => with x(callSavedVars = sv)
+  (x: OpAwait)        => with x(awaitSavedVars = sv)
   (x: OpReturnVoid)   => OpReturnVoid(sv)
   (x: OpAbort)        => OpAbort(x.abortReason, sv)
   (x: OpReturn)       => OpReturn(x.returnValue, sv)
-  (x: OpParallelCall) => OpParallelCall(x.parCalls, x.parResults, x.parRegister, sv)
   (x: OpPhi)          => OpPhi(x.phiTarget, x.phiSources, sv)
   (x: OpProfEnter)    => OpProfEnter(x.profEnterFnId, sv)
   (x: OpProfLeave)    => OpProfLeave(sv)
@@ -562,6 +653,11 @@ fun opReadStackVars(op) => match(op)
   (c: OpCall)          => concat(concat(rpReadStackVars(c.callFunction), rpReadStackVars(c.callParameters)),
                                  rpOptTargetReadStackVars(c.callRegister))
   (r: OpReturn)        => rpReadStackVars(r.returnValue)
-  (pc: OpParallelCall) => fold(pc.parCalls, List(), (acc, x) => concat(acc, rpReadStackVars(x)))
   (ph: OpPhi)          => fold(ph.phiSources, List(), (acc, s2) => concat(acc, rpReadStackVars(s2.sourceValue)))
-  (o: Op)              => List()
+  (aw: OpAwait)        => rpReadStackVars(aw.awaitSource)
+  (x: OpLabel)      => List()
+  (x: OpJump)       => List()
+  (x: OpReturnVoid) => List()
+  (x: OpAbort)      => List()
+  (x: OpProfEnter)  => List()
+  (x: OpProfLeave)  => List()

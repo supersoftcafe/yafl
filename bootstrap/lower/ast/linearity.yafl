@@ -15,6 +15,7 @@ import Bootstrap::Ast
 import Bootstrap::Frontend
 import Bootstrap::Parse
 import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
 import Bootstrap::Types
 
 
@@ -30,21 +31,30 @@ fun lcKeys(c: LinCnt) => sort(keys(c.lcCounts))
 class [final] LinOut(loCnt: LinCnt, loErrs: Set<PErr>)
 # The env likewise: binding names (insertion order — discharge order matches
 # Python's dict iteration) plus their types.
-class [final] LinEnv(leTypes: Dict<String, Spec>)
+# leFns: the [linear] function parameters in scope — bindings whose ONE leaf
+# is themselves; calling one is its single use (Python's _LINEAR_FN entries).
+class [final] LinEnv(leTypes: Dict<String, Spec>, leFns: Set<String>)
 
-fun leNames(env: LinEnv) => sort(keys(env.leTypes))
+fun leNames(env: LinEnv) => sort(fold(env.leFns, keys(env.leTypes), (ks, n) => add(ks, n)))
 
 fun emptyCnt() => LinCnt(Dict())
 
 fun linZero(errs): LinOut => LinOut(emptyCnt(), errs)
 
-fun emptyEnv() => LinEnv(Dict())
+fun emptyEnv() => LinEnv(Dict(), Set())
 
-fun envPut(env: LinEnv, name, ty) => LinEnv(put(env.leTypes, name, ty))
+fun envPut(env: LinEnv, name, ty) => LinEnv(put(env.leTypes, name, ty), env.leFns)
+
+fun envPutFn(env: LinEnv, name: String) => LinEnv(env.leTypes, add(env.leFns, name))
+
+fun envIsFn(env: LinEnv, name: String) => contains(env.leFns, name)
+
+fun envLeaves(env: LinEnv, name: String, r): List<String>
+  ret envIsFn(env, name) ? list1("") : linLeaves(envType(env, name), r)
 
 fun envType(env: LinEnv, name: String) => get(env.leTypes, name)
 
-fun envHas(env: LinEnv, name: String) => contains(env.leTypes, name)
+fun envHas(env: LinEnv, name: String) => contains(env.leTypes, name) || envIsFn(env, name)
 
 fun cntAdd(a, b: LinCnt) => addKeys2(chain(lcKeys(b)), b.lcCounts, a)
 
@@ -342,7 +352,11 @@ fun [tail] paramEnv(ps: Chain<PStmt>, r, env) => match(ps)
   (l: ChainLink)  => match(l.value)
     (let2: PsLet) => linearParam(let2, r)
       ? paramEnv(l.next, r, putEnv(env, let2))
-      : paramEnv(l.next, r, env)
+      # [linear] function parameter: a promise to call it exactly once —
+      # which lets a caller's lambda capture linear values.
+      : hasAttr(let2.lAttrs, "linear")
+        ? paramEnv(l.next, r, envPutFn(env, let2.lName))
+        : paramEnv(l.next, r, env)
     (o: PStmt)    => paramEnv(l.next, r, env)
 
 fun putEnv(env, let2: PsLet) => match(let2.lType)
@@ -364,7 +378,7 @@ fun [tail] dischargeEnv(ns: Chain<String>, env: LinEnv,
                         isParam, acc: Set<PErr>) => match(ns)
   (nil: ChainEnd) => acc
   (l: ChainLink)  => dischargeEnv(l.next, env, counts, lr, r, isParam,
-      discharge(l.value, linLeaves(envType(env, l.value), r), counts, lr,
+      discharge(l.value, envLeaves(env, l.value, r), counts, lr,
                 isParam, acc))
 
 # Each obligation consumed exactly once. `isParam` adds the [terminal] hint.
@@ -407,7 +421,10 @@ fun countOf(counts: Dict<String, Int>, key: String) => match(get(counts, key))
 # Per-execution-path consumption of the env's obligations by an expression.
 
 fun [tail] linCount(x, env, r, acc): LinOut => match(x)
-  (nm: PeName)   => LinOut(countPath(x, env, r), acc)
+  (nm: PeName)   => LinOut(countPath(x, env, r), envIsFn(env, nm.refName)
+    # Anything but calling it could run it zero or many times.
+    ? add(acc, PErr(nm.penLine, "[linear] function '" + bareOfUnique(nm.refName) + "' may only be called"))
+    : acc)
   (d: PeDot)     => LinOut(countPath(x, env, r), acc)
   (c: PeCall)    => countCall(c, env, r, acc)
   (tp: PeTuple)  => countEntries(chain(tp.exprs), env, r, linZero(acc))
@@ -422,15 +439,69 @@ fun [tail] linCount(x, env, r, acc): LinOut => match(x)
   (mt: PeMatch)  => countMatch(mt, env, r, acc)
   (bk: PeBlock)  => countBlock(bk, env, r, acc)
   (lm: PeLambda) => countLambda(lm, env, r, acc)
-  (pl: PeParallel) => countParallel(pl, env, r, acc)
   (o: PeLiteral) => linZero(acc)       # literals carry no linear value
   (o: PeLowered) => linZero(acc)       # literals carry no linear value
 
 # A method call `recv.method(args)` passes `recv` as `this`: count the
 # RECEIVER itself (counting the method-access dot would read as a borrow).
 fun countCall(c: PeCall, env, r, acc) => match(c.function)
-  (d: PeDot) => linPair(d.base, c.parameter, env, r, acc)
-  (o: PExpr) => linPair(c.function, c.parameter, env, r, acc)
+  (d: PeDot)   => linPair(d.base, c.parameter, env, r, acc)
+  (nm: PeName) => countNamedCall(nm, c.parameter, env, r, acc)
+  (o: PExpr)   => linPair(c.function, c.parameter, env, r, acc)
+
+# Calling a [linear] function parameter is its one use; any other named call
+# counts the callee, then its arguments.
+fun countNamedCall(nm: PeName, args, env: LinEnv, r, acc): LinOut
+  if envIsFn(env, nm.refName)
+    let o = linCount(args, env, r, acc)
+    ret LinOut(cntAdd(countPath(nm, env, r), o.loCnt), o.loErrs)
+  ret countArguments(nm, args, env, r, linCount(nm, env, r, acc))
+
+# A call's arguments. A lambda written directly as the argument of a [linear]
+# function parameter runs exactly once, so it may capture linear values:
+# creating it moves them, and its body must consume each exactly once.
+fun countArguments(fn: PeName, args, env: LinEnv, r, acc: LinOut): LinOut
+  let linearAt = linearParameterPositions(fn, r)
+  ret match(args)
+    (tp: PeTuple) => isEmpty(linearAt)
+      ? argCount(args, env, r, acc)
+      : argEntries(chain(tp.exprs), 0, linearAt, env, r, acc)
+    (o: PExpr)    => argCount(args, env, r, acc)
+
+fun linearParameterPositions(fn: PeName, r): Set<Int> => match(soleItem(findData(r, fn.refName)))
+  (f: Found) => match(f.fStmt)
+    (pf: PsFun) => linearPositions(chain(flattenParams(pf.fParams)), 0, Set())
+    (o: PStmt)  => Set()
+  ()         => Set()
+
+fun [tail] linearPositions(ps: Chain<PStmt>, k, acc: Set<Int>): Set<Int> => match(ps)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => linearPositions(l.next, k + 1, linearPositionAt(l.value, k, acc))
+
+fun linearPositionAt(p: PStmt, k: Int, acc: Set<Int>): Set<Int> => match(p)
+  (let2: PsLet) => hasAttr(let2.lAttrs, "linear") ? add(acc, k) : acc
+  (o: PStmt)    => acc
+
+fun [tail] argEntries(es: Chain<PTupEnt>, k, linearAt: Set<Int>, env: LinEnv, r,
+                      acc: LinOut): LinOut => match(es)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => argEntries(l.next, k + 1, linearAt, env, r,
+                                argEntry(l.value.tupValue, contains(linearAt, k), env, r, acc))
+
+fun argEntry(value, linear: Bool, env: LinEnv, r, acc: LinOut): LinOut => match(value)
+  (lm: PeLambda) => linear ? linearLambdaArg(lm, env, r, acc) : argCount(value, env, r, acc)
+  (o: PExpr)     => argCount(value, env, r, acc)
+
+fun argCount(value, env, r, acc: LinOut): LinOut
+  let o = linCount(value, env, r, acc.loErrs)
+  ret LinOut(cntAdd(acc.loCnt, o.loCnt), o.loErrs)
+
+fun linearLambdaArg(lm: PeLambda, env: LinEnv, r, acc: LinOut): LinOut
+  let captured = sort(capturedIn(lm.lamBody, env))
+  let moved = fold(captured, acc.loCnt, (c, name) =>
+        fold(envLeaves(env, name, r), c, (c2, leaf) => cntBump(c2, oblKey(name, leaf), 1)))
+  let inner = fold(captured, emptyEnv(), (e2, name) => capturedInto(env, e2, name))
+  ret LinOut(moved, checkLambdaScopeIn(lm, inner, r, acc.loErrs))
 
 fun linPair(a, b, env, r,
             acc)
@@ -700,7 +771,7 @@ fun suffixIf(i2: PsIf, stmts: List<PStmt>, i, env, r,
 # past a leaf into a non-linear field moves nothing.
 fun countPath(x, env: LinEnv, r) => match(resolvePathRoot(x, List()))
   (rp: RootPath) => envHas(env, rp.rpRoot)
-    ? pathCounts(chain(linLeaves(envType(env, rp.rpRoot), r)), rp,
+    ? pathCounts(chain(envLeaves(env, rp.rpRoot, r)), rp,
                  emptyCnt())
     : emptyCnt()
   ()             => emptyCnt()
@@ -728,17 +799,21 @@ fun countLambda(lm: PeLambda, env: LinEnv, r,
   let acc2 = checkCapture(lm.lamBody, env, lm.pelLine, r, acc)
   ret linZero(checkLambdaScope(lm, r, acc2))
 
-fun checkLambdaScope(lm: PeLambda, r, acc)
+# A captured binding, carried from the enclosing env into the lambda's own.
+fun capturedInto(env: LinEnv, inner: LinEnv, name: String): LinEnv
+  if envIsFn(env, name)
+    ret envPutFn(inner, name)
+  ret match(envType(env, name))
+    (ty: Spec) => envPut(inner, name, ty)
+    ()          => inner
+
+fun checkLambdaScope(lm: PeLambda, r, acc) => checkLambdaScopeIn(lm, emptyEnv(), r, acc)
+
+fun checkLambdaScopeIn(lm: PeLambda, captured: LinEnv, r, acc)
   let params = flattenParams(lm.lamParams)
-  let env = paramEnv(chain(params), r, emptyEnv())
+  let env = paramEnv(chain(params), r, captured)
   ret analyzeScope(lm.lamBody, env, lm.pelLine,
                    localScope(params, r), r, acc)
-
-fun countParallel(pl: PeParallel, env, r,
-                  acc): LinOut
-  let acc2 = checkCapture(pl.parParams, env, pl.pepLine, r, acc)
-  let o = linCount(pl.parParams, env, r, acc2)
-  ret linZero(o.loErrs)
 
 # A blind name scan — sound because bindings carry path-unique names.
 fun checkCapture(b, env: LinEnv, lr, r: Resolver,
@@ -818,7 +893,6 @@ fun instExpr(x, r, acc): Set<PErr> => match(x)
                               instSpecOpt(cv.convTarget, r, acc))
   (wx: PeWith)   => instExpr(wx.withRepls, r,
                              instExpr(wx.withSubject, r, acc))
-  (pl: PeParallel) => instExpr(pl.parParams, r, acc)
   (o: PeLiteral) => acc
   (o: PeLowered) => acc
   (o: PeNewEnum) => acc

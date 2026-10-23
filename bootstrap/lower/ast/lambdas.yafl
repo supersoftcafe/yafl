@@ -153,7 +153,6 @@ fun cpExpr(x, path, acc) => match(x)
   (cv: PeConvert)   => cpSpec(cv.convTarget, path, cpExpr(cv.convInner, path, acc))
   (wx: PeWith)      => cpExpr(wx.withRepls, path,
                               cpExpr(wx.withSubject, path, acc))
-  (pl: PeParallel)  => cpExpr(pl.parParams, path, acc)
   (lp: PeLoop)      => cpExprs(chain(lp.loopParams), path, cpExpr(lp.loopBody, path, acc))
   (rc: PeRecur)     => cpExprs(chain(rc.recArgs), path, acc)
   (lz: PeLazy)      => cpSpec(lz.lzTarget, path, acc)
@@ -565,8 +564,6 @@ fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
   (cv: PeConvert)   => clExpr(cv.convInner, r, paths, exports)
     |> (iv) => ClEx(PeConvert(iv.clExExpr, cv.convTarget, cv.pecvLine),
                    iv.clExExports)
-  (pl: PeParallel)  => clExpr(pl.parParams, r, paths, exports)
-    |> (p) => ClEx(PeParallel(p.clExExpr, pl.pepLine), p.clExExports)
   (lp: PeLoop)      => clExprs(chain(lp.loopParams), r, paths, exports, builder())
     |> (ps) => (ps, clExpr(lp.loopBody, r, paths, ps.clExsExports))
     |> (ps, b) => ClEx(PeLoop(b.clExExpr, ps.clExsExprs, lp.pelpLine),

@@ -227,6 +227,25 @@ class FunctionStatement(DataStatement):
             if self.body is None:
                 tail_err.append(Error(self.line_ref, "[tail] cannot be applied to a foreign function"))
 
+        # [linear] on a parameter: a promise to call it exactly once (checked by
+        # lowering/linearity.py) — meaningful only for a function.
+        linear_param_err = [Error(prm.line_ref, "[linear] applies only to a function-typed parameter")
+                            for prm in self.parameters.flatten()
+                            if "linear" in prm.attributes
+                            and not isinstance(prm.declared_type, t.CallableSpec)]
+
+        # [future]: a call hands the body to a worker and answers later, with a
+        # task — so the function cannot also promise [sync], and a foreign one
+        # has no body to hand over.
+        future_err: list[Error] = []
+        if "future" in self.attributes:
+            if self.attributes.get("future") is not None:
+                future_err.append(Error(self.line_ref, "[future] takes no arguments"))
+            if self.body is None:
+                future_err.append(Error(self.line_ref, "[future] cannot be applied to a foreign function"))
+            if "sync" in self.attributes:
+                future_err.append(Error(self.line_ref, "[future] and [sync] contradict: a [future] function answers with a task"))
+
         terminal_err: list[Error] = []
         if "terminal" in self.attributes and self.attributes.get("terminal") is not None:
             terminal_err.append(Error(self.line_ref, "[terminal] takes no arguments"))
@@ -284,7 +303,7 @@ class FunctionStatement(DataStatement):
         untyped_err = [] if self.is_global else h.untyped_param_errors(self, body_resolver)
 
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
-                + tail_err + terminal_err + inner_where_err + default_err
+                + tail_err + future_err + linear_param_err + terminal_err + inner_where_err + default_err
                 + missing_ret_err + untyped_err + test_err
                 + self.unknown_attribute_errors("a function")
                 + self.__unused_param_warnings())
@@ -346,6 +365,7 @@ class FunctionStatement(DataStatement):
             foreign_symbol = foreign_symbol,
             sync = "sync" in self.attributes,
             tail = "tail" in self.attributes,
+            future = "future" in self.attributes,
             # `[inline(always)]` — the inline attribute carrying an argument (vs the
             # bare `[inline]` hint). Forces inlining regardless of size.
             always_inline = self.attributes.get("inline") is not None,

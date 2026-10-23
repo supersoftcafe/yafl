@@ -108,7 +108,7 @@
         },
         "keyword_other": {
             "name": "keyword.other.yafl",
-            "match": "\\b(__builtin_type__|__builtin_op__|__parallel__)\\b"
+            "match": "\\b(__builtin_type__|__builtin_op__)\\b"
         },
         "word_operator": {
             "name": "keyword.operator.word.yafl",

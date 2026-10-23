@@ -2,7 +2,7 @@
 
 `Array<T>(n, (i) => f(i))` allocates the array, then calls the init function
 once per element and stores the result. When the init function suspends (here
-it forks with `__parallel__`), the fill loop's frame — the half-built array
+it calls a `[future]` function), the fill loop's frame — the half-built array
 among it — is parked in a heap state object, reachable from no stack. Nothing
 stops compaction from relocating the array then, and on resume the loop
 reloads the OLD address from its state and keeps storing into it: the
@@ -31,8 +31,11 @@ from tests.testutil import compile_c
 _SRC = (
     "import System\n"
     "class Box(v: Int)\n"
+    "fun [future] boxed(x: Int): Box\n"
+    "  ret Box(x)\n"
     "fun piece(i: Int32): Box\n"
-    "  let (a, b) = __parallel__(() => Box(Int(i)), () => Box(Int(i) * 3))\n"
+    "  let a = boxed(Int(i))\n"
+    "  let b = boxed(Int(i) * 3)\n"
     "  ret Box(a.v + b.v)\n"
     "fun plain(i: Int32): Box\n"
     "  ret Box(Int(i) + Int(i) * 3)\n"

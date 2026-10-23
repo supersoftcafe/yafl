@@ -14,9 +14,8 @@
 # and queried millions of times — it promotes into the collector's old
 # generation and is never traced again by minor cycles — while candidate
 # generation allocates dozens of short-lived strings per unknown word, all of
-# which die young. Files are checked in parallel (`__parallel__`,
-# divide-and-conquer over the file list) with reports collected and printed in
-# file order, so output stays deterministic.
+# which die young. Files are checked in parallel (`powerMap`) with reports
+# collected and printed in file order, so output stays deterministic.
 #
 import System
 import System::IO
@@ -276,27 +275,14 @@ fun checkFile(dict: WordTree, path: String): (reports: List<String|FileError>, m
 
 # ── parallel check over the file list ─────────────────────────────────────────
 
+# Each file is checked on its own worker; the reports join in file order.
 fun checkFiles(dict: WordTree, files: List<String>): (reports: List<String|FileError>, misspelt: Int)
-  fun joinResults(l: (reports: List<String|FileError>, misspelt: Int),
-                  r: (reports: List<String|FileError>, misspelt: Int))
+  fun joinResults(results: List<(reports: List<String|FileError>, misspelt: Int)>)
       : (reports: List<String|FileError>, misspelt: Int)
-    ret (concat<String|FileError>(l.reports, r.reports), l.misspelt + r.misspelt)
+    ret (flatMap(results, (r) => r.reports), fold(results, 0, (n, r) => n + r.misspelt))
 
-  fun checkSplit(): (reports: List<String|FileError>, misspelt: Int)
-    let parts = splitHalf<String>(files)
-    let (left, right) = __parallel__(
-          () => checkFiles(dict, parts.left),
-          () => checkFiles(dict, parts.right))
-    ret joinResults(left, right)
-
-  fun checkFrom(first: String): (reports: List<String|FileError>, misspelt: Int)
-    ret match(head<String>(tail<String>(files)))
-      (second: String) => checkSplit()
-      (e: None)        => checkFile(dict, first)
-
-  ret match(head<String>(files))
-    (first: String) => checkFrom(first)
-    (e: None)       => (List<String|FileError>(), 0)
+  ret powerMap(files, (f: String) => checkFile(dict, f))
+    |> joinResults
 
 
 # ── output ────────────────────────────────────────────────────────────────────

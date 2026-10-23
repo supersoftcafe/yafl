@@ -7,8 +7,7 @@
 # non-sync functions, a STATE MACHINE fn$async($state, $completed_task)
 # dispatching on $state->idx — running on ordinary C locals, touching state
 # fields only at the two suspension boundaries. Oversized looping bodies take
-# the STUB launch instead of a duplicated hot path. __parallel__ sites are
-# first OUTLINED behind the runtime backpressure choice.
+# the STUB launch instead of a duplicated hot path.
 namespace Bootstrap::Lower::Ir
 
 import System
@@ -24,8 +23,7 @@ import Bootstrap::Types
 
 
 
-# ── module scratch vars (hot path shares ONE set; the SM allocates per-site
-#    $sv_par_sm$i / $sv_launcher_sm$i) ────────────────────────────────────────
+# ── module scratch vars (the hot path shares ONE set) ────────────────────────
 
 fun alSvState() => RpStackVar(CgDataPointer(), "$sv_state")
 
@@ -36,10 +34,6 @@ fun alSvDiscard(): RParam => RpStackVar(CgDataPointer(), "$sv_discard")
 fun alSvCallId() => RpStackVar(CgInt(32), "$sv_call_id")
 
 fun alSvAsyncTask() => RpStackVar(CgDataPointer(), "$sv_async_task")
-
-fun alSvParTask() => RpStackVar(CgDataPointer(), "$sv_par_task")
-
-fun alSvLauncher() => RpStackVar(CgDataPointer(), "$sv_launcher")
 
 fun alStateParam(): RParam => RpStackVar(CgDataPointer(), "$state")
 
@@ -69,12 +63,25 @@ fun [tail] alConvertReturnsSmB(ops: Chain<Op>, myTaskField,
 fun alConvertReturnSmOne([terminal] acc: ListBuilder<Op>, op,
                          myTaskField, fnResult,
                          subtype: String|None): ListBuilder<Op> => match(op)
-  (r: OpReturn)      => pushAll(acc,
+  (r: OpReturn)        => pushAll(acc,
                             alSmReturn(r, myTaskField, fnResult,
                                        subtype))
-  (rv: OpReturnVoid) => pushAll(acc,
+  (rv: OpReturnVoid)   => pushAll(acc,
                             alSmComplete(myTaskField))
-  (o: Op)            => push(acc, op)
+  (x: OpLabel)         => push(acc, op)
+  (x: OpMove)          => push(acc, op)
+  (x: OpJump)          => push(acc, op)
+  (x: OpJumpIf)        => push(acc, op)
+  (x: OpIfTask)        => push(acc, op)
+  (x: OpAssertNotTask) => push(acc, op)
+  (x: OpSwitchJump)    => push(acc, op)
+  (x: OpNewObject)     => push(acc, op)
+  (x: OpCall)          => push(acc, op)
+  (x: OpAwait)         => push(acc, op)
+  (x: OpAbort)         => push(acc, op)
+  (x: OpPhi)           => push(acc, op)
+  (x: OpProfEnter)     => push(acc, op)
+  (x: OpProfLeave)     => push(acc, op)
 
 fun alSmReturn(r: OpReturn, myTaskField, fnResult,
                subtype: String|None): List<Op> => match(subtype)
@@ -107,57 +114,31 @@ fun alConvertReturnsHot(ops, fnResult): List<Op>
     : map(ops, (op) => alHotReturnOne(op, wrappedResult))
 
 fun alHotReturnOne(op, wrapped) => match(op)
-  (r: OpReturn) => OpReturn(wrapValue(r.returnValue, wrapped), r.returnSavedVars)
-  (c: OpCall)   => c.callMusttail
+  (r: OpReturn)        => OpReturn(wrapValue(r.returnValue, wrapped), r.returnSavedVars)
+  (c: OpCall)          => c.callMusttail
     ? OpCall(c.callFunction, c.callParameters, c.callRegister, true, c.callImpure,
              wrapped, c.callSavedVars)
     : op
-  (o: Op)       => op
+  (x: OpLabel)         => op
+  (x: OpMove)          => op
+  (x: OpJump)          => op
+  (x: OpJumpIf)        => op
+  (x: OpIfTask)        => op
+  (x: OpAssertNotTask) => op
+  (x: OpSwitchJump)    => op
+  (x: OpNewObject)     => op
+  (x: OpAwait)         => op
+  (x: OpReturnVoid)    => op
+  (x: OpAbort)         => op
+  (x: OpPhi)           => op
+  (x: OpProfEnter)     => op
+  (x: OpProfLeave)     => op
 
 # ── per-pattern emit helpers ─────────────────────────────────────────────────
 
 fun alRuntimeDiscard(sv, name, args): Op
   ret OpMove(sv, RpRuntimeInvoke(name, RpNewStruct(args), CgDataPointer()),
              true, Dict())
-
-# par_task alloc + init + remaining + per-slot closures.
-# nClosures is CARRIED from the walk that built `closures` — the par-join
-# countdown is genuine runtime data, never a recalculated length.
-fun alEmitParTaskSetup(parTaskVar, parTaskName,
-                       closures: List<RParam>, nClosures): List<Op>
-  let setup = list3(OpNewObject(parTaskName, parTaskVar, None, false, Dict()),
-                    alRuntimeDiscard(alSvDiscard(), "task_init",
-                                     list1(RpNamedValue("task", parTaskVar))),
-                    OpMove(RpObjectField(CgInt(32), parTaskVar, parTaskName, "remaining", None, false, false),
-                           RpInteger(nClosures, 32), false, Dict()))
-  ret concat(setup, alClosureStores(chain(closures), parTaskVar, parTaskName, 0, List()))
-
-fun alClosureStores(cs, parTaskVar, parTaskName,
-                           k: Int, acc: List<Op>): List<Op>
-  ret build(alClosureStoresB(cs, parTaskVar, parTaskName, k, builderFrom(acc)))
-
-fun [tail] alClosureStoresB(cs: Chain<RParam>, parTaskVar, parTaskName,
-                           k, [terminal] acc: ListBuilder<Op>) => match(cs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alClosureStoresB(l.next, parTaskVar, parTaskName, k + 1,
-      push(acc, OpMove(RpObjectField(CgDataPointer(), parTaskVar, parTaskName,
-                                  "closure_" + String(k), None, false, false),
-                    l.value, false, Dict())))
-
-# One launcher task wired to fire slot K's lambda on a worker thread.
-fun alEmitPostLauncher(launcherVar, parTaskVar,
-                       fnName, callSite: Int, slot: Int): List<Op>
-  let launcherCb = RpGlobalFunction(fnName + "$par$" + String(callSite) + "$launcher$" + String(slot),
-                                    parTaskVar, false, None, false, false)
-  ret list3(OpMove(launcherVar,
-                   RpRuntimeInvoke("task_create",
-                                   RpNewStruct(list1(RpNamedValue("self", RpNullPointer()))),
-                                   CgDataPointer()), false, Dict()),
-            alRuntimeDiscard(alSvDiscard(), "task_on_complete",
-                             list2(RpNamedValue("task", launcherVar),
-                                   RpNamedValue("cb", launcherCb))),
-            alRuntimeDiscard(alSvDiscard(), "thread_work_post_parallel",
-                             list1(RpNamedValue("task", launcherVar))))
 
 # Task alloc: None → base task_t via task_create; a runtime subtype (task_obj,
 # task_str) → its `<name>_create`; else NewObject + task_init.
@@ -259,7 +240,7 @@ fun alReadsOf(op): List<RParam> => match(op)
   (ph: OpPhi) => List()
   (o: Op)     => opReadStackVars(op)
 
-fun alWritesOf(op) => fold(ssavOpWrites(op), List(), rpTakeStackVar)
+fun alWritesOf(op) => fold(opTargets(op), List(), rpTakeStackVar)
 
 fun alCalculateSavedVars(f: CgFunction)
   let ops = cgOpsToList(f.fnOps)
@@ -309,9 +290,8 @@ fun alRwAt(st: AlLive, i: Int): AlRw => match(get(st.lsRw, i))
   (rw: AlRw) => rw
   ()         => AlRw(Dict(), List())   # unreachable: 0 <= i < lsN
 
-fun alOpAt(st: AlLive, i: Int) => match(get(st.lsOps, i))
-  (op: Op) => op
-  ()       => OpReturnVoid(Dict())   # unreachable: 0 <= i < lsN
+# The default is unreachable: 0 <= i < lsN.
+fun alOpAt(st: AlLive, i: Int): Op => get(st.lsOps, i) ?? OpReturnVoid(Dict())
 
 fun alBlockAt(st: AlLive, i: Int) => match(get(st.lsBlocks, i))
   (s2: String) => s2
@@ -416,7 +396,7 @@ fun alLabelNameOr(op, cur) => match(op)
 class [final] ABlock(abName: String, abOps: List<Op>, abLive: Dict<String, RParam>,
                      abResult: RParam|None)
 
-# Partition liveness-annotated ops on may-suspend Call | ParallelCall (the
+# Partition liveness-annotated ops on may-suspend Call | Await (the
 # splitter is the LAST op of its block); block name cont$<i>; live = last
 # op's saved_vars; result = last op's register.
 fun alCreateBasicBlocks(f: CgFunction): List<ABlock> => alCreateBasicBlocksN(f).bs
@@ -459,19 +439,46 @@ fun [tail] alPartitionB(st: SeqStream<Op>, n,
       : alPartitionB(p.stream, n, PartAcc(push(acc.paCur, op2),
                                         acc.paBlocks))
 
+# Parks: a call that may suspend, or an Await.
 fun alIsSplitter(op) => match(op)
-  (c: OpCall)          => opCallMaySuspend(c)
-  (pc: OpParallelCall) => true
-  (o: Op)              => false
+  (c: OpCall)              => opCallMaySuspend(c)
+  (aw: OpAwait)            => true
+  (x: OpLabel)             => false
+  (x: OpMove)              => false
+  (x: OpJump)              => false
+  (x: OpJumpIf)            => false
+  (x: OpIfTask)            => false
+  (x: OpAssertNotTask)     => false
+  (x: OpSwitchJump)        => false
+  (x: OpNewObject)         => false
+  (x: OpReturnVoid)        => false
+  (x: OpAbort)             => false
+  (x: OpReturn)            => false
+  (x: OpPhi)               => false
+  (x: OpProfEnter)         => false
+  (x: OpProfLeave)         => false
 
 fun alMakeBlock(index: Int, ops) => match(lastOp(chain(ops)))
   (op: Op) => ABlock("cont$" + String(index), ops, opSavedVars(op), alBlockResult(op))
   ()        => ABlock("cont$" + String(index), ops, Dict(), None)
 
 fun alBlockResult(op) => match(op)
-  (c: OpCall)          => c.callRegister
-  (pc: OpParallelCall) => pc.parRegister
-  (o: Op)              => None
+  (c: OpCall)              => c.callRegister
+  (aw: OpAwait)            => aw.awaitRegister
+  (x: OpLabel)             => None
+  (x: OpMove)              => None
+  (x: OpJump)              => None
+  (x: OpJumpIf)            => None
+  (x: OpIfTask)            => None
+  (x: OpAssertNotTask)     => None
+  (x: OpSwitchJump)        => None
+  (x: OpNewObject)         => None
+  (x: OpReturnVoid)        => None
+  (x: OpAbort)             => None
+  (x: OpReturn)            => None
+  (x: OpPhi)               => None
+  (x: OpProfEnter)         => None
+  (x: OpProfLeave)         => None
 
 # ── heap-frame layout ────────────────────────────────────────────────────────
 
@@ -938,6 +945,63 @@ fun alUmValued(c: OpCall, n)
               prepend(CgField(tmpName, tmpType), se.seVars))
   ret UmOut(list2<Op>(call, OpReturn(tmp, Dict())), n, List())
 
+# ── deferred awaits (defer_awaits.yafl places them) ─────────────────────────
+# An OpAwait realises a deferred call's result where it is used: it parks only
+# on a task still running; a completed one is read in place, so every later use
+# is a test. A returned OpAwait is for a Return of the whole value: the hot path
+# hands the pending value to the caller as it stands.
+
+# When a function's only suspension points are returned OpAwaits it never
+# parks: each such OpAwait, with the projection and Return that follow it,
+# becomes the Return of the pending value itself, and the function needs no
+# state machine.
+fun alReturnUnparked(f: CgFunction): CgFunction
+  if !any(f.fnOps, alIsReturnedAwait) || any(f.fnOps, alParksUnreturned)
+    ret f
+  ret cgFunctionWith(f, build(alRuLoop(chain(cgOpsToList(f.fnOps)), false, seqBuilder())),
+                     f.fnStackVars)
+
+fun alIsReturnedAwait(op) => match(op)
+  (aw: OpAwait) => aw.awaitReturned
+  (o: Op)       => false
+
+fun alParksUnreturned(op) => alIsSplitter(op) && !alIsReturnedAwait(op)
+
+fun [tail] alRuLoop(os: Chain<Op>, skipping: Bool,
+                    [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => skipping
+    ? alRuLoop(l.next, !(l.value is OpReturn), acc)
+    : match(l.value)
+        (aw: OpAwait) => alRuLoop(l.next, true, push(acc, OpReturn(aw.awaitSource, Dict())))
+        (o: Op)       => alRuLoop(l.next, false, push(acc, o))
+
+# A deferred await's test, and the value of one that did not park: from the
+# completed task when there was one, else as the call returned it.
+# The task an Await's pending value holds, untagged, or NULL.
+fun alAwaitTask(aw: OpAwait) => pendingTaskOf(aw.awaitSource, rpGetType(aw.awaitSource))
+
+fun alTaskRunning(aw: OpAwait) => RpRuntimeInvoke("TASK_RUNNING",
+                                                  RpNewStruct(list1(RpNamedValue("task", alAwaitTask(aw)))),
+                                                  CgInt(32))
+
+fun alAwaitValue(aw: OpAwait, label: String): List<Op>
+  let resultType = rpGetType(aw.awaitRegister)
+  ret concat(list3<Op>(OpJumpIf(label + "$done", alAwaitTask(aw), false, Dict()),
+                       OpMove(aw.awaitRegister, unwrapValue(aw.awaitSource, resultType), false, Dict()),
+                       OpJump(label + "$end", Dict())),
+             list3<Op>(OpLabel(label + "$done", Dict()),
+                       OpMove(aw.awaitRegister, alTaskResultOf(alAwaitTask(aw), resultType), false, Dict()),
+                       OpLabel(label + "$end", Dict())))
+
+# __extract_from_task: the result a completed task carries.
+fun alTaskResultOf(task: RParam, resultType: CgType): RParam
+  if isUnit(resultType)
+    ret RpZeroOf(resultType)
+  ret match(taskSubtypeName(resultType))
+    (st: String) => RpObjectField(resultType, task, st, "result", None, false, false)
+    ()            => RpNullPointer()
+
 # ── sync calls (async_lower.py __expand_sync_call / __expand_sync_calls) ────
 # A call proven sync is a plain call: no block split, no IfTask. It keeps the
 # uniform task-carrying return ABI — its callee may also be reached from a
@@ -1118,10 +1182,9 @@ fun alCreateHotPathFunc(f: CgFunction, stateName, subtype: String|None,
                  alConvertReturnsHot(alLastBlock(bbs).abOps,
                                      f.fnResult)),
              body.haWrapFields))
-  let hasPar = any(alNonTerminal(bbs), (bb) => alBlockIsPar(bb))
   ret f.fnSync
-    ? alHotAssembleSync(f, wrappedResult, withTerminal, hasPar)
-    : alHotAssembleAsync(f, stateName, subtype, bbs, layout, wrappedResult, withTerminal, hasPar)
+    ? alHotAssembleSync(f, wrappedResult, withTerminal)
+    : alHotAssembleAsync(f, stateName, subtype, bbs, layout, wrappedResult, withTerminal)
 
 fun alLastBlock(bbs: List<ABlock>) => match(lastOp2(chain(bbs)))
   (bb: ABlock) => bb
@@ -1133,12 +1196,6 @@ fun [tail] lastOp2(bbs: Chain<ABlock>) => match(bbs)
     (nil2: ChainEnd) => l.value
     (l2: ChainLink)  => lastOp2(l.next)
 
-fun alBlockIsPar(bb: ABlock) => match(lastOp(chain(bb.abOps)))
-  (op: Op) => match(op)
-    (pc: OpParallelCall) => true
-    (o: Op)               => false
-  ()        => false
-
 fun [tail] alHotSites(bs: Chain<ABlock>, f: CgFunction, fnResult,
                       i, [terminal] acc) => match(bs)
   (nil: ChainEnd) => acc
@@ -1148,52 +1205,39 @@ fun [tail] alHotSites(bs: Chain<ABlock>, f: CgFunction, fnResult,
 fun alHotSite(bb: ABlock, f: CgFunction, fnResult, i,
               [terminal] acc) => match(lastOp(chain(bb.abOps)))
   (op: Op) => match(op)
-    (pc: OpParallelCall) => alHotPar(bb, pc, f, fnResult, i, acc)
-    (c: OpCall)          => alHotCall(bb, c, fnResult, i, acc)
-    (o: Op)               => acc   # unreachable: non-terminal blocks end in a splitter
+    (c: OpCall)              => alHotCall(bb, c, fnResult, i, acc)
+    (aw: OpAwait)            => alHotAwait(bb, aw, fnResult, i, acc)
+    # The last block ends in its own terminator; every other ends in a splitter.
+    (x: OpLabel)             => acc
+    (x: OpMove)              => acc
+    (x: OpJump)              => acc
+    (x: OpJumpIf)            => acc
+    (x: OpIfTask)            => acc
+    (x: OpAssertNotTask)     => acc
+    (x: OpSwitchJump)        => acc
+    (x: OpNewObject)         => acc
+    (x: OpReturnVoid)        => acc
+    (x: OpAbort)             => acc
+    (x: OpReturn)            => acc
+    (x: OpPhi)               => acc
+    (x: OpProfEnter)         => acc
+    (x: OpProfLeave)         => acc
   ()        => acc
 
-fun alHotPar(bb: ABlock, pc: OpParallelCall, f: CgFunction, fnResult,
-             i: Int, [terminal] acc: HotAcc): HotAcc
-  let parTaskName = "task$par$" + String(i) + "$" + f.fnName
-  let closures = alClosuresCounted(chain(pc.parCalls), 0, builder())
+# The deferred call ran earlier: park on its task if it is still running, else
+# take the value — from the task, or as returned. Returned whole, the caller
+# takes the pending value as it stands.
+fun alHotAwait(bb: ABlock, aw: OpAwait, fnResult, i,
+               [terminal] acc: HotAcc)
   let ops1 = pushAll(acc.haOps,
                  alConvertReturnsHot(alDropLast(bb.abOps),
                                      fnResult))
-  let ops2 = pushAll(ops1,
-                 alEmitParTaskSetup(alSvParTask(), parTaskName,
-                                    closures.cs, closures.n))
-  let ops3 = alHotParLaunchers(ops2, f.fnName, i, chain(pc.parCalls), 0)
-  ret HotAcc(pushAll(ops3,
-                 list3(OpMove(alSvAsyncTask(), alSvParTask(), false, Dict()),
-                       OpMove(alSvCallId(), RpInteger(i + 1, 32), false, Dict()),
-                       OpJump("$asynccommon", Dict()))),
+  if aw.awaitReturned
+    ret HotAcc(push(ops1, OpReturn(aw.awaitSource, Dict())), acc.haWrapFields)
+  let ops2 = push(ops1, OpIfTask(alTaskRunning(aw), alAwaitTask(aw), alSvAsyncTask(), alSvCallId(),
+                                 i + 1, "$asynccommon", Dict()))
+  ret HotAcc(pushAll(ops2, alAwaitValue(aw, "$await$" + String(i))),
              acc.haWrapFields)
-
-fun alClosureOf(callRef) => match(callRef)
-  (gf: RpGlobalFunction) => match(gf.object)
-    (obj: RParam) => obj
-    ()             => RpNullPointer()
-  (o: RParam)             => RpNullPointer()
-
-fun [tail] alHotParLaunchers([terminal] acc, fnName,
-                             site: Int, calls: Chain<RParam>,
-                             k): ListBuilder<Op> => match(calls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alHotParLaunchers(
-      pushAll(acc,
-          alEmitPostLauncher(alSvLauncher(), alSvParTask(),
-                             fnName, site, k)),
-      fnName, site, l.next, k + 1)
-
-# One closure per parallel call, its count riding the walk (no-length ruling).
-fun [tail] alClosuresCounted(ps: Chain<RParam>, n,
-                             [terminal] acc: ListBuilder<RParam>): (cs: List<RParam>, n: Int)
-  ret match(ps)
-    (nil: ChainEnd) => (build(acc), n)
-    (l: ChainLink)  => alClosuresCounted(l.next, n + 1,
-                                         push(acc,
-                                              alClosureOf(l.value)))
 
 fun alHotCall(bb: ABlock, c: OpCall, fnResult, i,
               [terminal] acc: HotAcc) => match(c.callRegister)
@@ -1263,27 +1307,21 @@ fun alHotValuedTemp(bb: ABlock, c: OpCall, reg, wrappedType,
                   CgField("$wrap$" + String(i), wrappedType)))
 
 # sync: $asynccommon aborts (a proven-sync fn reached it = broken contract).
-fun alHotAssembleSync(f: CgFunction, wrappedResult, body: HotOut, hasPar: Bool): CgFunction
+fun alHotAssembleSync(f: CgFunction, wrappedResult, body: HotOut): CgFunction
   let commonOps = list2<Op>(OpLabel("$asynccommon", Dict()),
                         OpAbort("sync function reached $asynccommon", Dict()))
-  let parFields = hasPar
-    ? list3(CgField("$sv_par_task", CgDataPointer()),
-            CgField("$sv_launcher", CgDataPointer()),
-            CgField("$sv_discard", CgDataPointer()))
-    : List()
-  let extra = concat(concat(list2(CgField("$sv_call_id", CgInt(32)),
-                                  CgField("$sv_async_task", CgDataPointer())),
-                            parFields),
+  let extra = concat(list2(CgField("$sv_call_id", CgInt(32)),
+                           CgField("$sv_async_task", CgDataPointer())),
                      body.hoWrapFields)
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  cgOpsOf(concat(body.hoOps, commonOps)), f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
                        bbs: List<ABlock>, layout: AFrame, wrappedResult,
-                       body: HotOut, hasPar: Bool): CgFunction
+                       body: HotOut): CgFunction
   let nonTerminal = alNonTerminal(bbs)
   # One builder for the whole function body: the hot-path ops it was handed,
   # then the async-common epilogue pushed on in emission order. Every step
@@ -1318,21 +1356,17 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
                        list2(RpNamedValue("task", alSvAsyncTask()),
                              RpNamedValue("cb", callback))),
       OpReturn(RpTagTask(alSvTask(), wrappedResult), Dict())))
-  let parFields = hasPar
-    ? list2(CgField("$sv_par_task", CgDataPointer()), CgField("$sv_launcher", CgDataPointer()))
-    : List()
-  let extra = concat(concat(list5(CgField("$sv_state", CgDataPointer()),
-                                  CgField("$sv_task", CgDataPointer()),
-                                  CgField("$sv_discard", CgDataPointer()),
-                                  CgField("$sv_call_id", CgInt(32)),
-                                  CgField("$sv_async_task", CgDataPointer())),
-                            parFields),
+  let extra = concat(list5(CgField("$sv_state", CgDataPointer()),
+                           CgField("$sv_task", CgDataPointer()),
+                           CgField("$sv_discard", CgDataPointer()),
+                           CgField("$sv_call_id", CgInt(32)),
+                           CgField("$sv_async_task", CgDataPointer())),
                      body.hoWrapFields)
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  cgOpsOf(build(common7)), f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alSaveCases(bs: Chain<ABlock>, i, acc: List<OpCase>)
   ret build(alSaveCasesB(bs, i, builderFrom(acc)))
@@ -1446,7 +1480,7 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
   ret CgFunction(f.fnName, f.fnParams, wrappedResult, CgStruct(svFields), cgOpsOf(ops4),
                  f.fnComment, f.fnForeignSymbol, f.fnSync, f.fnTail,
                  f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alOpsWriteDiscard(ops: List<Op>) => any(ops, (op) => alWritesDiscard(op))
 
@@ -1552,48 +1586,47 @@ fun alSmSite(bb: ABlock, f: CgFunction, stateName, subtype: String|None,
                                    builder()))
   ret match(lastOp(chain(bb.abOps)))
     (op: Op) => match(op)
-      (pc: OpParallelCall) => alSmPar(pc, f, stateName, layout, idxField, i,
-                          SmAcc(pushAll(acc.saOps,
-                                            bodyOps),
-                                acc.saCold, acc.saWrapFields),
-                          saveStores)
       (c: OpCall)          => alSmCall(c, f, idxField, i,
                           SmAcc(pushAll(acc.saOps,
                                             bodyOps),
                                 acc.saCold, acc.saWrapFields),
                           saveStores)
-      (o: Op)               => acc   # unreachable
+      (aw: OpAwait)        => alSmAwait(aw, f, idxField, i,
+                          SmAcc(pushAll(acc.saOps,
+                                            bodyOps),
+                                acc.saCold, acc.saWrapFields),
+                          saveStores)
+      # The last block ends in its own terminator; every other ends in a splitter.
+      (x: OpLabel)         => acc
+      (x: OpMove)          => acc
+      (x: OpJump)          => acc
+      (x: OpJumpIf)        => acc
+      (x: OpIfTask)        => acc
+      (x: OpAssertNotTask) => acc
+      (x: OpSwitchJump)    => acc
+      (x: OpNewObject)     => acc
+      (x: OpReturnVoid)    => acc
+      (x: OpAbort)         => acc
+      (x: OpReturn)        => acc
+      (x: OpPhi)           => acc
+      (x: OpProfEnter)     => acc
+      (x: OpProfLeave)     => acc
     ()        => acc
 
-# A ParallelCall always parks.
-fun alSmPar(pc: OpParallelCall, f: CgFunction, stateName: String, layout: AFrame,
-            idxField, i: Int, [terminal] acc: SmAcc,
-            saveStores: List<Op>): SmAcc
-  let parTaskName = "task$par$" + String(i) + "$" + f.fnName
-  let svParSm = RpStackVar(CgDataPointer(), "$sv_par_sm$" + String(i))
-  let svLauncherSm = RpStackVar(CgDataPointer(), "$sv_launcher_sm$" + String(i))
-  let closures = alClosuresCounted(chain(pc.parCalls), 0, builder())
-  let ops1 = pushAll(acc.saOps,
-                 alEmitParTaskSetup(svParSm, parTaskName,
-                                    closures.cs, closures.n))
-  let ops2 = alSmParLaunchers(ops1, svLauncherSm, svParSm, f.fnName, i, chain(pc.parCalls), 0)
-  let ops3 = pushAll(pushAll(ops2, saveStores),
-                 alEmitSuspendToAsync(idxField, i + 1, svParSm,
-                                      f.fnName))
-  ret SmAcc(push(ops3, OpLabel("$resume$" + String(i), Dict())),
-            acc.saCold,
-            pushAll(acc.saWrapFields,
-                list2(CgField("$sv_par_sm$" + String(i), CgDataPointer()),
-                      CgField("$sv_launcher_sm$" + String(i), CgDataPointer()))))
-
-fun [tail] alSmParLaunchers([terminal] acc, launcherVar,
-                            parVar, fnName, site: Int,
-                            calls: Chain<RParam>, k): ListBuilder<Op> => match(calls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alSmParLaunchers(
-      pushAll(acc, alEmitPostLauncher(launcherVar, parVar,
-                                      fnName, site, k)),
-      launcherVar, parVar, fnName, site, l.next, k + 1)
+# The deferred call ran earlier: park on its task if still running; on the
+# sync edge, take the value.
+fun alSmAwait(aw: OpAwait, f: CgFunction, idxField, i,
+              [terminal] acc: SmAcc, saveStores: List<Op>): SmAcc
+  let asyncLabel = "$async_sm$" + String(i)
+  let check = RpRuntimeInvoke("UNLIKELY",
+                              RpNewStruct(list1(RpNamedValue("x", alTaskRunning(aw)))),
+                              CgInt(32))
+  let ops1 = pushAll(push(acc.saOps, OpJumpIf(asyncLabel, check, false, Dict())),
+                     alAwaitValue(aw, "$await_sm$" + String(i)))
+  let cold1 = pushAll(push(acc.saCold, OpLabel(asyncLabel, Dict())), saveStores)
+  ret SmAcc(push(ops1, OpLabel("$resume$" + String(i), Dict())),
+            pushAll(cold1, alEmitSuspendToAsync(idxField, i + 1, alAwaitTask(aw), f.fnName)),
+            acc.saWrapFields)
 
 fun alSmCall(c, f: CgFunction, idxField, i,
              [terminal] acc: SmAcc, saveStores: List<Op>) => match(c.callRegister)
@@ -1680,7 +1713,7 @@ fun alSmDtCase(bb: ABlock, f: CgFunction, stateName, layout: AFrame,
   let ops1 = alSmDtLoads(chain(vsSorted(bb.abLive)), stateName, layout,
                  push(acc, OpLabel("$case$" + String(i + 1),
                                    Dict())))
-  let ops2 = pushAll(ops1, alSmDtExtract(bb, f, i))
+  let ops2 = pushAll(ops1, alSmDtResult(bb))
   ret push(ops2, OpJump("$resume$" + String(i), Dict()))
 
 fun [tail] alSmDtLoads(vs: Chain<RParam>, stateName: String, layout: AFrame,
@@ -1689,31 +1722,6 @@ fun [tail] alSmDtLoads(vs: Chain<RParam>, stateName: String, layout: AFrame,
   (l: ChainLink)  => alSmDtLoads(l.next, stateName, layout,
       pushAll(acc, alLoadVar(l.value, alStateParam(),
                              stateName, layout)))
-
-fun alSmDtExtract(bb: ABlock, f: CgFunction, i: Int): List<Op> => match(lastOp(chain(bb.abOps)))
-  (op: Op) => match(op)
-    (pc: OpParallelCall) => alSmDtPar(pc, f, i)
-    (o: Op)               => alSmDtResult(bb)
-  ()        => List()
-
-# Completed par_task: assemble the result tuple from its result_k fields.
-fun alSmDtPar(pc: OpParallelCall, f: CgFunction, i: Int): List<Op> => match(pc.parRegister)
-  (reg: RParam) => list1(OpMove(reg,
-      RpNewStruct(alSmDtParFields(chain(pc.parResults), "task$par$" + String(i) + "$" + f.fnName, 0, List())),
-      false, Dict()))
-  ()             => List()
-
-fun alSmDtParFields(rs, parTaskName, k: Int,
-                           acc: List<RpNamedValue>)
-  ret build(alSmDtParFieldsB(rs, parTaskName, k, builderFrom(acc)))
-
-fun [tail] alSmDtParFieldsB(rs: Chain<RParam>, parTaskName, k,
-                           [terminal] acc: ListBuilder<RpNamedValue>) => match(rs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alSmDtParFieldsB(l.next, parTaskName, k + 1,
-      push(acc, RpNamedValue("_" + String(k),
-        RpObjectField(rpGetType(l.value), alCompletedParam(),
-                      parTaskName, "result_" + String(k), None, false, false))))
 
 fun alSmDtResult(bb: ABlock): List<Op> => match(bb.abResult)
   (reg: RParam) => isUnit(rpGetType(reg))
@@ -1854,21 +1862,14 @@ fun alBpFall(prev: Op|None, cur, label: String,
   if length(cur) == 0
     ret acc
   ret match(prev)
-    (p: Op) => ucPrevFallsIntoLabel(p) ? alBpAdd(acc, label, cur) : acc
+    (p: Op) => opFallsThrough(p) ? alBpAdd(acc, label, cur) : acc
     ()      => acc
 
 fun alBpJumps(op, cur,
               acc): Dict<String, Set<String>>
   if length(cur) == 0
     ret acc
-  ret match(op)
-    (j: OpJump)        => alBpAdd(acc, j.jumpName, cur)
-    (ji: OpJumpIf)     => alBpAdd(acc, ji.jumpIfLabel, cur)
-    (t2: OpIfTask)     => alBpAdd(acc, t2.taskTarget, cur)
-    (sw: OpSwitchJump) => fold(sw.switchCases, acc,
-                               (a, cs) =>
-                                 alBpAdd(a, cs.caseLabel, cur))
-    (o: Op)            => acc
+  ret fold(opBranchTargets(op), acc, (a, target) => alBpAdd(a, target, cur))
 
 fun alBpAdd(acc: Dict<String, Set<String>>, label: String,
             pred) => put(acc, label,
@@ -1928,7 +1929,7 @@ fun alMergeOne([terminal] acc: AlAcc, out: AlOut)
 fun alConvertFunction(f: CgFunction): AlOut
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
     ret AlOut(list1(f), List())
-  let afterTail = alExpandSyncCalls(alDiscoverTailCalls(f))
+  let afterTail = alReturnUnparked(alExpandSyncCalls(alDiscoverTailCalls(f)))
   let stateName = f.fnName + "$state"
   let built = alCreateBasicBlocksN(afterTail)
   if !atLeast(chain(built.bs), 2)
@@ -1941,7 +1942,7 @@ fun alSimpleWrap(f: CgFunction)
                  cgOpsOf(alConvertReturnsHot(cgOpsToList(f.fnOps), f.fnResult)),
                  f.fnComment, f.fnForeignSymbol, f.fnSync,
                  f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName,
                    bbs: List<ABlock>, nBbs: Int): AlOut
@@ -1958,13 +1959,11 @@ fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName,
   let hotFn = useStub
     ? alCreateStubLaunchFunc(afterTail, stateName, subtype, layout, smBuilt.n)
     : alCreateHotPathFunc(afterTail, stateName, subtype, bbs, layout)
-  let par = alParMachinery(f, bbs)
   if f.fnSync
-    ret AlOut(concat(list1(hotFn), par.aloFunctions), par.aloObjects)
+    ret AlOut(list1(hotFn), List())
   let stateObj = alCreateStateObject(smFn, stateName, layout)
   let machineFn = alCreateStateMachineFunc(smFn, stateName, subtype, smBbs, layout, useStub)
-  ret AlOut(concat(list2(hotFn, machineFn), par.aloFunctions),
-            concat(list1(stateObj), par.aloObjects))
+  ret AlOut(list2(hotFn, machineFn), list1(stateObj))
 
 fun alIsMusttailCall(op) => match(op)
   (c: OpCall) => c.callMusttail
@@ -1976,7 +1975,7 @@ fun alIsMusttailCall(op) => match(op)
 # and stubbing it turns a zero-allocation call into a heap state allocation
 # per call. Walk once, recording the park count at each label; a jump back to
 # a seen label with parks accrued since is a parking loop. Park ops = exactly
-# what the basic-block builder splits on (a may-suspend Call, ParallelCall).
+# what the basic-block builder splits on (a may-suspend Call, Await).
 fun alHasParkingLoop(ops: Segment<Op>|None) => alHplLoop(ops, 0i32, Dict(), 0)
 
 fun [tail] alHplLoop(s: Segment<Op>|None, i, labelParks,
@@ -1984,168 +1983,18 @@ fun [tail] alHplLoop(s: Segment<Op>|None, i, labelParks,
   (nil: None)        => false
   (seg: Segment<Op>) => i >= seg.length
     ? alHplLoop(seg.next, 0i32, labelParks, parks)
-    : match(seg.array(i))
-        (lb: OpLabel)        => alHplLoop(s, i + 1i32,
-                                          put(labelParks, lb.labelName, parks),
-                                          parks)
-        (c: OpCall)          => alHplLoop(s, i + 1i32, labelParks,
-                                          opCallMaySuspend(c) ? parks + 1 : parks)
-        (pc: OpParallelCall) => alHplLoop(s, i + 1i32, labelParks, parks + 1)
-        (j: OpJump)          => alHplHit(labelParks, j.jumpName, parks)
-          ? true : alHplLoop(s, i + 1i32, labelParks, parks)
-        (ji: OpJumpIf)       => alHplHit(labelParks, ji.jumpIfLabel, parks)
-          ? true : alHplLoop(s, i + 1i32, labelParks, parks)
-        (sw: OpSwitchJump)   => any(sw.switchCases, (cs) =>
-                                      alHplHit(labelParks, cs.caseLabel, parks))
-          ? true : alHplLoop(s, i + 1i32, labelParks, parks)
-        (o: Op)              => alHplLoop(s, i + 1i32, labelParks, parks)
+    : any(opBranchTargets(seg.array(i)), (name) => alHplHit(labelParks, name, parks))
+      ? true
+      : alHplLoop(s, i + 1i32, alHplLabelParks(seg.array(i), labelParks, parks),
+                  alIsSplitter(seg.array(i)) ? parks + 1 : parks)
+
+fun alHplLabelParks(op, labelParks: Dict<String, Int>, parks) => match(op)
+  (lb: OpLabel) => put(labelParks, lb.labelName, parks)
+  (o: Op)       => labelParks
 
 fun alHplHit(labelParks: Dict<String, Int>, name: String, parks) => match(get(labelParks, name))
   (atLabel: Int) => parks > atLabel
   ()              => false
-
-# ── parallel machinery ───────────────────────────────────────────────────────
-
-fun alParMachinery(f: CgFunction, bbs: List<ABlock>)
-  ret alAccBuild(alPmLoop(chain(alNonTerminal(bbs)), f, 0, alAccEmpty()))
-
-fun [tail] alPmLoop(bs: Chain<ABlock>, f: CgFunction, i,
-                    [terminal] acc: AlAcc) => match(bs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alPmLoop(l.next, f, i + 1, alPmOne(l.value, f, i, acc))
-
-fun alPmOne(bb: ABlock, f: CgFunction, i: Int, [terminal] acc): AlAcc
-  ret match(lastOp(chain(bb.abOps)))
-    (op: Op) => match(op)
-      (pc: OpParallelCall) => alPmSite(pc, f, i, acc)
-      (o: Op)               => acc
-    ()        => acc
-
-fun alPmSite(pc: OpParallelCall, f: CgFunction, i: Int,
-             [terminal] acc: AlAcc)
-  let parTaskName = "task$par$" + String(i) + "$" + f.fnName
-  let resTypes = map(pc.parResults, rpGetType)
-  let obj = alParTaskObject(parTaskName, resTypes)
-  ret alPmSlots(chain(resTypes), chain(pc.parCalls), f, i, parTaskName, 0,
-                AlAcc(acc.aaFunctions, push(acc.aaObjects, obj)))
-
-# The result types and the call refs are walked in lockstep — one slot per
-# pair, as many slots as the ParallelCall has (the two are equal by
-# construction: resTypes IS map(pc.parResults, rpGetType)).
-fun [tail] alPmSlots(ts: Chain<CgType>, cs: Chain<RParam>, f: CgFunction, site: Int,
-                     parTaskName, k,
-                     [terminal] acc: AlAcc) => match(ts)
-  (nil: ChainEnd) => acc
-  (lt: ChainLink) => match(cs)
-    (lc: ChainLink)  => alPmSlots(lt.next, lc.next, f, site, parTaskName, k + 1,
-                          alPmSlot(lt.value, lc.value, f, site, parTaskName, k, acc))
-    (nil2: ChainEnd) => acc
-
-fun alPmSlot(rt, callRef, f: CgFunction, site: Int,
-             parTaskName, k: Int, [terminal] acc: AlAcc)
-  let cb = alSlotCallback(f.fnName, site, k, parTaskName, rt)
-  let launcher = alLauncherCallback(f.fnName, site, k, parTaskName,
-                                    alLambdaNameOf(callRef, k), rt)
-  ret AlAcc(push(push(acc.aaFunctions, cb), launcher),
-            acc.aaObjects)
-
-fun alLambdaNameOf(callRef, k: Int) => match(callRef)
-  (gf: RpGlobalFunction) => gf.name
-  (o: RParam)             => "__unknown_" + String(k) + "__"
-
-# par_task: task_t prefix + remaining + closure_k + result_k.
-fun alParTaskObject(parTaskName, resultTypes: List<CgType>): CgObject
-  # Field order IS struct layout: the task_t prefix, `remaining`, one closure
-  # slot per parallel call, then one result slot per call — one builder end to
-  # end, so no stage rebuilds what the previous one produced.
-  let fields0 = push(
-      builderFrom(taskFields()),
-      CgField("remaining", CgInt(32)))
-  let fields1 = alPtoClosuresB(fields0, chain(resultTypes), 0)
-  let fields2 = alPtoResults(fields1, chain(resultTypes), 0, 0)
-  ret CgObject(parTaskName, list1("task"), List(),
-               CgImmediateStruct(fields2.fs),
-               None, "parallel join task with " + String(fields2.n) + " slots",
-               false, true, 0)
-
-fun [tail] alPtoClosuresB([terminal] acc, ts: Chain<CgType>, k: Int): ListBuilder<CgField>
-  ret match(ts)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => alPtoClosuresB(push(acc, CgField("closure_" + String(k), CgDataPointer())), l.next, k + 1)
-
-fun [tail] alPtoResults([terminal] acc: ListBuilder<CgField>, ts: Chain<CgType>,
-                        k, n): (fs: List<CgField>, n: Int) => match(ts)
-  (nil: ChainEnd) => (build(acc), n)
-  (l: ChainLink)  => alPtoResults(push(acc,
-                                      CgField("result_" + String(k),
-                                              l.value)),
-                                  l.next, k + 1, n + 1)
-
-# Slot callback: result_k = extract(completed sub-task) + task_par_decrement.
-fun alSlotCallback(fnName, site: Int, slot: Int, parTaskName,
-                   resultType): CgFunction
-  let svPar = RpStackVar(CgDataPointer(), "$par_task")
-  let svSub = RpStackVar(CgDataPointer(), "$completed_sub_task")
-  let svDiscardCb = RpStackVar(CgDataPointer(), "$sv_discard_cb")
-  let extract = match(taskSubtypeName(resultType))
-    (st: String) => alIsVoid(resultType)
-      ? List<Op>()
-      : list1(OpMove(RpObjectField(resultType, svPar, parTaskName, "result_" + String(slot), None, false, false),
-                     RpObjectField(resultType, svSub, st, "result", None, false, false),
-                     false, Dict()))
-    ()            => List<Op>()
-  let ops = concat(extract, list2(
-      alRuntimeDiscard(svDiscardCb, "task_par_decrement", list1(RpNamedValue("par_task", svPar))),
-      OpReturn(RpNullPointer(), Dict())))
-  ret CgFunction(fnName + "$par$" + String(site) + "$slot$" + String(slot),
-                 CgStruct(list2(CgField("$par_task", CgDataPointer()),
-                                CgField("$completed_sub_task", CgDataPointer()))),
-                 CgDataPointer(),
-                 CgStruct(list1(CgField("$sv_discard_cb", CgDataPointer()))),
-                 cgOpsOf(ops), "", None, false, false, false, false)
-
-# Launcher: read closure_k, call the lambda; sync → write result + decrement;
-# async → register the slot callback on the returned task.
-fun alLauncherCallback(fnName, site: Int, slot: Int, parTaskName,
-                       lambdaName, resultType): CgFunction
-  let svPar = RpStackVar(CgDataPointer(), "$par_task")
-  let svClosure = RpStackVar(CgDataPointer(), "$launcher_closure")
-  let wrappedType = wrapReturnType(resultType)
-  let svResultW = RpStackVar(wrappedType, "$result_w")
-  let svDiscardCb = RpStackVar(CgDataPointer(), "$sv_discard_cb")
-  let unwrapped = unwrapValue(svResultW, resultType)
-  let slotCb = RpGlobalFunction(fnName + "$par$" + String(site) + "$slot$" + String(slot),
-                                svPar, false, None, false, false)
-  let untag = RpRuntimeInvoke("TASK_UNTAG",
-                              RpNewStruct(list1(RpNamedValue("p", taskPtrFrom(svResultW, wrappedType)))),
-                              CgDataPointer())
-  let ops = concat(concat(list5(
-      OpMove(svClosure, RpObjectField(CgDataPointer(), svPar, parTaskName, "closure_" + String(slot), None, false, false),
-             false, Dict()),
-      OpCall(RpGlobalFunction(lambdaName, svClosure, false, None, false, false),
-             RpNewStruct(List()), svResultW, false, false, None, Dict()),
-      OpJumpIf("$launcher_async",
-               RpRuntimeInvoke("UNLIKELY",
-                               RpNewStruct(list1(RpNamedValue("x", isTaskParam(svResultW, wrappedType)))),
-                               CgInt(32)), false, Dict()),
-      OpMove(RpObjectField(resultType, svPar, parTaskName, "result_" + String(slot), None, false, false),
-             unwrapped, false, Dict()),
-      alRuntimeDiscard(svDiscardCb, "task_par_decrement", list1(RpNamedValue("par_task", svPar)))),
-    list3(
-      OpJump("$launcher_done", Dict()),
-      OpLabel("$launcher_async", Dict()),
-      alRuntimeDiscard(svDiscardCb, "task_on_complete",
-                       list2(RpNamedValue("task", untag), RpNamedValue("cb", slotCb))))),
-    list2(OpLabel("$launcher_done", Dict()),
-          OpReturn(RpNullPointer(), Dict())))
-  ret CgFunction(fnName + "$par$" + String(site) + "$launcher$" + String(slot),
-                 CgStruct(list2(CgField("$par_task", CgDataPointer()),
-                                CgField("$launched_task", CgDataPointer()))),
-                 CgDataPointer(),
-                 CgStruct(list3(CgField("$launcher_closure", CgDataPointer()),
-                                CgField("$result_w", wrappedType),
-                                CgField("$sv_discard_cb", CgDataPointer()))),
-                 cgOpsOf(ops), "", None, false, false, false, false)
 
 # ── task-subtype collection ──────────────────────────────────────────────────
 
@@ -2183,157 +2032,6 @@ fun alCtsOne([terminal] acc, f: CgFunction)
 fun alCtsInner(t2) => match(t2)
   (w: CgTaskWrapper) => w.inner
   (o: CgType)         => t2
-
-# ── __parallel__ backpressure outlining ──────────────────────────────────────
-
-# Each well-formed ParallelCall (register present, every call a
-# GlobalFunction) is replaced by a call to a synthesised fn$par_site$<opidx>
-# helper: sequential arm when the pool is saturated, the original
-# ParallelCall otherwise — same tuple either way.
-fun alOutlineParallelSites(f)
-  if !any(f.fnOps, alOpIsParallel)
-    ret AlOut2(f, List())
-  ret alOpsLoop(f.fnOps, 0i32, f, 0,
-                OpsAcc(seqBuilder(), builder()))
-
-class [final] AlOut2(alo2Fn: CgFunction, alo2Helpers: List<CgFunction>)
-
-fun alOpIsParallel(op) => match(op)
-  (pc: OpParallelCall) => true
-  (o: Op)               => false
-
-# Two ordered outputs: the rewritten op stream, and the outlined helper
-# functions in the order their sites appear.
-class [linear, final] OpsAcc(oaOps: SeqBuilder<Op>,
-                             oaHelpers: ListBuilder<CgFunction>)
-
-fun [tail] alOpsLoop(s: Segment<Op>|None, iSeg, f: CgFunction, i,
-                     [terminal] acc: OpsAcc) => match(s)
-  (nil: None)        => AlOut2(cgFunctionWith(f, build(acc.oaOps),
-                                           f.fnStackVars),
-                            build(acc.oaHelpers))
-  (seg: Segment<Op>) => iSeg >= seg.length
-    ? alOpsLoop(seg.next, 0i32, f, i, acc)
-    : match(alOutlineOne(seg.array(iSeg), f, i))
-        (o2: OutlineOne) => alOpsLoop(s, iSeg + 1i32, f, i + 1,
-                                OpsAcc(push(acc.oaOps, o2.ooSiteCall),
-                                       push(acc.oaHelpers,
-                                            o2.ooHelper)))
-        ()                => alOpsLoop(s, iSeg + 1i32, f, i + 1,
-                                OpsAcc(push(acc.oaOps, seg.array(iSeg)),
-                                       acc.oaHelpers))
-
-class [final] OutlineOne(ooSiteCall: Op, ooHelper: CgFunction)
-
-fun alOutlineOne(op, f: CgFunction, opIndex: Int) => match(op)
-  (pc: OpParallelCall) => alWellFormedPc(pc) ? alBuildOutline(pc, f, opIndex) : None
-  (o: Op)               => None
-
-fun alWellFormedPc(pc: OpParallelCall)
-  ret !isNoneR(pc.parRegister) && !any(pc.parCalls, (c) => !alIsGlobalFn(c))
-
-fun isNoneR(r: RParam|None) => match(r)
-  (x: RParam) => false
-  ()           => true
-
-fun alIsGlobalFn(c) => match(c)
-  (gf: RpGlobalFunction) => true
-  (o: RParam)             => false
-
-fun alBuildOutline(pc: OpParallelCall, f: CgFunction, opIndex: Int): OutlineOne
-  let helperName = f.fnName + "$par_site$" + String(opIndex)
-  let closureParams = alCpList(chain(pc.parCalls), 0, List())
-  let helperCalls = alHcList(chain(pc.parCalls), chain(closureParams), List())
-  let svAccepting = RpStackVar(CgInt(32), "$accepting")
-  let register = alForceRegister(pc.parRegister)
-  let seqCalls = alSeqCalls(chain(helperCalls), chain(pc.parResults), List())
-  # The helper's body in emission order: the backpressure test, the sequential
-  # fallback calls, the tuple build, then the fork path.
-  let ho0 = builderFrom<Op>(list2(
-      OpMove(svAccepting, RpRuntimeInvoke("thread_work_accepting",
-                                          RpNewStruct(List()), CgInt(32)),
-             false, Dict()),
-      OpJumpIf("$fork", svAccepting, false, Dict())))
-  let ho1 = push(pushAll(ho0, seqCalls),
-      OpMove(register, RpNewStruct(alTupleFields(chain(pc.parResults), 0, List())),
-             false, Dict()))
-  let helperOps = build(pushAll(ho1, 
-      list4(OpReturn(register, Dict()),
-            OpLabel("$fork", Dict()),
-            OpParallelCall(helperCalls, pc.parResults, pc.parRegister, Dict()),
-            OpReturn(register, Dict()))))
-  let helperParams = concat(list1(CgField("$unused_self", CgDataPointer())),
-                            map(closureParams, (p) => CgField(stackVarName(p), CgDataPointer())))
-  # Stack layout: the per-call results, the tuple register, then $accepting.
-  let helperStack = build(push(push(
-      builderFrom(map(pc.parResults,
-                      (r) => CgField(stackVarName(r),
-                                     rpGetType(r)))),
-      CgField(stackVarName(register), rpGetType(register))),
-      CgField("$accepting", CgInt(32))))
-  let helper = CgFunction(helperName, CgStruct(helperParams), rpGetType(register),
-                          CgStruct(helperStack), cgOpsOf(helperOps),
-                          "__parallel__ backpressure dispatch for " + f.fnName + " site " + String(opIndex),
-                          None, false, false, false, false)
-  let siteCall = OpCall(RpGlobalFunction(helperName, None, false, None, false, false),
-                        RpNewStruct(alSiteArgs(chain(pc.parCalls), 0, List())),
-                        pc.parRegister, false, false, None, Dict())
-  ret OutlineOne(siteCall, helper)
-
-fun alForceRegister(r: RParam|None) => match(r)
-  (x: RParam) => x
-  ()           => RpNullPointer()   # unreachable: well-formedness checked
-
-fun alCpList(ps: Chain<RParam>, k, acc: List<RParam>) => build(alCpListB(ps, k, builderFrom(acc)))
-
-fun [tail] alCpListB(ps: Chain<RParam>, k, [terminal] acc): ListBuilder<RParam> => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alCpListB(l.next, k + 1, push(acc, RpStackVar(CgDataPointer(), "$c" + String(k))))
-
-fun alHcList(calls, cps, acc: List<RParam>): List<RParam>
-  ret build(alHcListB(calls, cps, builderFrom(acc)))
-
-fun [tail] alHcListB(calls: Chain<RParam>, cps: Chain<RParam>, [terminal] acc: ListBuilder<RParam>)
-  ret match(calls)
-    (nil: ChainEnd) => acc
-    (lc: ChainLink) => match(cps)
-      (lp: ChainLink)  => alHcListB(lc.next, lp.next,
-                                   push(acc, alRebindObject(lc.value, lp.value)))
-      (nil2: ChainEnd) => acc
-
-fun alRebindObject(c, obj) => match(c)
-  (gf: RpGlobalFunction) => RpGlobalFunction(gf.name, obj, gf.external, gf.cSymbol, gf.impure, gf.sync)
-  (o: RParam)             => c
-
-fun alSeqCalls(calls, results, acc: List<Op>): List<Op>
-  ret build(alSeqCallsB(calls, results, builderFrom(acc)))
-
-fun [tail] alSeqCallsB(calls: Chain<RParam>, results: Chain<RParam>, [terminal] acc: ListBuilder<Op>)
-  ret match(calls)
-    (nil: ChainEnd) => acc
-    (lc: ChainLink) => match(results)
-      (lr: ChainLink)  => alSeqCallsB(lc.next, lr.next,
-                            push(acc, OpCall(lc.value, RpNewStruct(List()),
-                                          lr.value, false, false, None, Dict())))
-      (nil2: ChainEnd) => acc
-
-fun alTupleFields(rs, k: Int, acc: List<RpNamedValue>): List<RpNamedValue>
-  ret build(alTupleFieldsB(rs, k, builderFrom(acc)))
-
-fun [tail] alTupleFieldsB(rs: Chain<RParam>, k, [terminal] acc: ListBuilder<RpNamedValue>)
-  ret match(rs)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => alTupleFieldsB(l.next, k + 1,
-                         push(acc, RpNamedValue("_" + String(k), l.value)))
-
-fun alSiteArgs(calls, k: Int, acc: List<RpNamedValue>): List<RpNamedValue>
-  ret build(alSiteArgsB(calls, k, builderFrom(acc)))
-
-fun [tail] alSiteArgsB(calls: Chain<RParam>, k, [terminal] acc: ListBuilder<RpNamedValue>)
-  ret match(calls)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => alSiteArgsB(l.next, k + 1,
-                         push(acc, RpNamedValue("$c" + String(k), alClosureOf(l.value))))
 
 # ── zero-init repair for state-saves ─────────────────────────────────────────
 
@@ -2390,37 +2088,13 @@ fun alZiusSource(src, names: Set<String>, acc) => match(src)
 # ── the driver ───────────────────────────────────────────────────────────────
 
 fun lowerAsync(a: CgApp)
-  # Outline first, so the helpers are converted by the same pass below.
-  let outlined = alOutlineAll(chain(appFunctions(a)),
-                              OutAcc(builder(),
-                                     builder()))
-  let all = concat(build(outlined.otFns),
-                   build(outlined.otHelpers))
-  let converted = alAccBuild(alConvertAll(chain(all), alAccEmpty()))
+  let converted = alAccBuild(alConvertAll(chain(appFunctions(a)), alAccEmpty()))
   let repaired = map(converted.aloFunctions, alZeroInitUnwrittenSaves)
   let withObjs = fold(converted.aloObjects,
                       appOf(repaired, appObjects(a), appGlobals(a)),
                       appPutObject)
   # Subtypes union: APP WINS on collisions (lazy_thunks pre-registrations).
   ret fold(collectTaskSubtypes(withObjs), withObjs, alPutIfAbsent)
-
-# The functions in app order, and every outlined helper after them — both
-# ordered, because they become the app's emission order.
-class [linear, final] OutAcc(otFns: ListBuilder<CgFunction>,
-                             otHelpers: ListBuilder<CgFunction>)
-
-fun [tail] alOutlineAll(fs: Chain<CgFunction>,
-                        [terminal] acc: OutAcc) => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => alOutlineAll(l.next, alOutlineStep(acc, l.value))
-
-fun alOutlineStep([terminal] acc: OutAcc, f)
-  if f.fnBypassAsync || f.fnName == "__entrypoint__"
-    ret OutAcc(push(acc.otFns, f), acc.otHelpers)
-  let out = alOutlineParallelSites(f)
-  ret OutAcc(push(acc.otFns, out.alo2Fn),
-             pushAll(acc.otHelpers,
-                         out.alo2Helpers))
 
 fun [tail] alConvertAll(fs: Chain<CgFunction>,
                         [terminal] acc: AlAcc) => match(fs)

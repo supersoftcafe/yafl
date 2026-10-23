@@ -5,7 +5,7 @@ emission:
 
   1. **Single definition per StackVar.** Every locally-named value is
      defined exactly once. Function parameters count as their own
-     definitions. Phi targets count once. Move/Call/NewObject/ParallelCall
+     definitions. Phi targets count once. Move/Call/NewObject
      writes count once each.
 
   2. **All paths reach a Return / ReturnVoid.** No control-flow path falls
@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Op, Move, Call, NewObject, ParallelCall, Phi, Label, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Abort
+from codegen.ops import Op, Move, NewObject, Phi, Label, JumpIf
 from codegen.param import StackVar, NullPointer, Integer, Float, ZeroOf
 
 
@@ -93,23 +93,12 @@ def __check_single_definition(fn: Function) -> None:
 
 
 def __check_all_paths_return(fn: Function) -> None:
-    """Every control-flow path must end in Return / ReturnVoid (or a musttail
-    Call, which codegen emits as `return foo(...)`). A function with no ops
-    is allowed (extern declarations). A `Jump` to a label always reaches
-    that label's ops, so it's fine. The only failure mode we check for is
-    a fall-through past the last op — i.e., the last op is not a terminator
-    AND control could reach it."""
+    """No path may fall off the end of the function: its last op must not
+    fall through. A function with no ops is allowed (extern declarations)."""
     if not fn.ops:
         return
     last = fn.ops[-1]
-    terminator = (
-        isinstance(last, (Return, ReturnVoid, Abort))
-        or (isinstance(last, Call) and last.musttail)
-        or isinstance(last, Jump)
-        or isinstance(last, IfTask)        # IfTask is conditional; the fall-through is the non-taken path
-        or isinstance(last, SwitchJump)
-    )
-    if not terminator:
+    if last.falls_through():
         raise SSAValidationError(
             f"{fn.name}: function does not end in a terminator op; last op is "
             f"{type(last).__name__} — control would fall off the end.")

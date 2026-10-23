@@ -8,7 +8,7 @@
 //      never interleave mid-line.
 //   3. The destination is a FILE, opened lazily on first record. Never the
 //      async IO path: io_t is single-threaded with one task per handle, and
-//      logging has to work from GC workers and __parallel__ tasks.
+//      logging has to work from GC workers and [future] tasks.
 //   4. Failure is silent-ish and never fatal: on open failure we fall back to
 //      stderr and say so once.
 #define _GNU_SOURCE

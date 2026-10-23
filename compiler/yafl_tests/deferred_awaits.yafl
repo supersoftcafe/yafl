@@ -1,0 +1,98 @@
+# Deferred awaits: a call that may suspend is awaited where its result is
+# used, not where it is made — so calls whose results are not yet needed run
+# at the same time. Ordering, not timing, proves it here: each program can only
+# finish if an earlier call is still in flight when a later one starts.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::DeferredAwaits::FifoOpensMeet
+
+import System
+import System::IO
+import System::Test
+
+# Opening a FIFO for reading blocks until a writer opens it, and the other way
+# round. Both opens complete only if the read's open is still in flight when
+# the write's starts: its await is deferred to the match below. Awaited at the
+# call, it would wait for a writer that never comes.
+fun fifo(): System::String
+  let path = match(tempDir())
+    (d: System::String) => d + "/fifo"
+    (n: System::None)   => "/tmp/yafl-deferred-awaits-fifo"
+  ret match(System::IO::run("mkfifo", prepend<System::String>(path, List<System::String>())))
+    (made: System::IO::ProcessResult) => path
+    (e: IOError)                      => path
+
+fun program(): System::Int
+  let path = fifo()
+  let r = open_read(path)
+  let w = open_write(path, true)
+  ret match(r)
+    (ri: IO) => match(w)
+      (wi: IO)      => (ri.close(), wi.close()) |> (_c1, _c2) => 0
+      (e: IOError)  => ri.close() |> (_c) => 2
+    (e: IOError) => match(w)
+      (wi: IO)      => wi.close() |> (_c) => 1
+      (e2: IOError) => 3
+
+fun [test("fifo opens meet")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::DeferredAwaits::ReturnsPassPendingResults
+
+import System
+import System::Test
+
+fun [future] square(x: System::Int): System::Int
+  ret x * x
+
+# Both calls are pending when `pick` answers: the ternary and the early return
+# hand a pending result to the caller unawaited, which realises it on use.
+fun pick(b: System::Bool): System::Int
+  let a = square(3)
+  let c = square(4)
+  ret b ? a : c
+
+fun early(b: System::Bool): System::Int
+  let a = square(5)
+  let c = square(6)
+  if b
+    ret a
+  ret c
+
+# Waits on `a` first, which may park; the returned value is then awaited in
+# the state machine, whose task the caller already holds.
+fun afterPark(x: System::Int, b: System::Bool): System::Int
+  let a = square(x)
+  let c = square(a + 1)
+  let d = square(a + 2)
+  ret b ? c : d
+
+fun program(): System::Int
+  ret pick(true) + pick(false) * 100 + early(true) * 10000 + early(false) * 1000000
+    + afterPark(2, true) * 100000000 + afterPark(2, false) * 10000000000
+
+fun [test("returns pass pending results")] check(): None|TestFailure
+    ret assertEqInt(program(), 9 + 1600 + 250000 + 36000000 + 2500000000 + 360000000000, "program()")
+
+
+namespace CompilerTests::DeferredAwaits::PendingAroundALoop
+
+import System
+import System::Test
+
+fun [future] square(x: System::Int): System::Int
+  ret x * x
+
+# Each turn of the loop carries `keep` round unchanged and `last` as a call
+# still pending; the result reads both only once the loop ends.
+fun [tail] spin(n: System::Int, keep: System::Int, last: System::Int): System::Int
+  ret n <= 0 ? keep + last : spin(n - 1, keep, square(n))
+
+fun program(): System::Int
+  ret spin(5, square(10), 0)
+
+fun [test("pending around a loop")] check(): None|TestFailure
+    ret assertEqInt(program(), 101, "program()")

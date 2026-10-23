@@ -195,7 +195,9 @@ fun cgGetPointerPaths(t, path): List<String> => match(t)
   (s: CgStruct) => cgStructPointerPaths(s.fields, path)
   (m: CgImmediateStruct) => cgStructPointerPaths(m.fields, path)
   (a: CgArray) => cgArrayPointerPaths(a.elemType, a.arrLength, path, 0)
-  (w: CgTaskWrapper) => prepend(path + ".task", List())
+  # The value's own pointers, then the task: a result that completed
+  # synchronously is live in `value`, and is traced from there.
+  (w: CgTaskWrapper) => concat(cgGetPointerPaths(w.inner, path + ".value"), list1(path + ".task"))
 
 fun cgStructPointerPaths(fields: List<CgField>, path) => fold(fields, List(), (acc, fld) =>
     concat(acc, cgGetPointerPaths(fld.fieldType, path + "." + mangleName(fld.fieldName))))

@@ -2,8 +2,9 @@
 
 Builds the example and runs it against a small temp tree, checking it finds
 matches across files and recurses into subdirectories. The point of the example
-is to exercise `__parallel__` (the file list is searched divide-and-conquer), so
-this is also light end-to-end coverage of parallel evaluation.
+is to exercise `[future]` functions (the file list is searched
+divide-and-conquer), so this is also light end-to-end coverage of parallel
+evaluation.
 """
 from __future__ import annotations
 

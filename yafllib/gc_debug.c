@@ -235,7 +235,7 @@ void gc_dbg_dangle_check(object_t* object) {
     GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
         while (m) {
             unsigned i = (unsigned)__builtin_ctzll(m); m &= m-1;
-            object_t* child = slots[i];
+            object_t* child = gc_ref(slots[i]);
             uintptr_t a = (uintptr_t)child;
             if (!a || (a & (GC_SLOT_SIZE-1)) || (a & PTR_TAG_MASK)) continue;
             gc_page_t* cpg = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE-1));

@@ -50,51 +50,57 @@ fun ssavIsZeroSource(src) => match(src)
   (f: RpFloat)        => f.value == 0.0
   (o: RParam)         => false
 
-fun ssavCollectWriteCounts(f: CgFunction)
-  let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), List(),
-                        (acc, fld) => strCountIncr(acc, fld.fieldName))
+# Each parameter is defined once, on entry; each op defines what it writes.
+fun ssavCollectWriteCounts(f: CgFunction): Dict<String, Int>
+  let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), Dict(),
+                        (acc, fld) => put(acc, fld.fieldName, 1))
   ret fold(f.fnOps, fromParams, ssavCountOp)
 
-fun ssavCountOp(acc, op): List<StrCount> => ssavIsZeroInit(op)
+fun ssavCountOp(acc: Dict<String, Int>, op): Dict<String, Int> => ssavIsZeroInit(op)
   ? acc
-  : fold(ssavOpWrites(op), acc, ssavCountTarget)
+  : fold(opGetLiveVars(op).writes, acc, ssavCountTarget)
 
-fun ssavCountTarget(acc, target): List<StrCount> => match(target)
-  (sv: RpStackVar) => strCountIncr(acc, sv.name)
+fun ssavCountTarget(acc: Dict<String, Int>, target): Dict<String, Int> => match(target)
+  (sv: RpStackVar) => sdBump(acc, sv.name)
   (o: RParam)       => acc
 
-# The write set per op kind — Python's op.get_live_vars() writes half.
-fun ssavOpWrites(op) => match(op)
-  (m: OpMove)         => list1(m.moveTarget)
-  (c: OpCall)         => ssavOptWrite(c.callRegister)
-  (n: OpNewObject)    => list1(n.newObjRegister)
-  (p: OpParallelCall) => concat(p.parResults, ssavOptWrite(p.parRegister))
-  (ph: OpPhi)         => list1(ph.phiTarget)
-  (t2: OpIfTask)      => list2(t2.taskLhs, t2.callIdLhs)
-  (o: Op)             => List()
-
-fun ssavOptWrite(r: RParam|None) => match(r)
-  (x: RParam) => list1(x)
-  ()           => List()
-
 fun ssavSingleDefinition(f: CgFunction): List<String>
-  let violations = filter(ssavCollectWriteCounts(f),
-                          (e2) => e2.scCount > 1 && !ssavIsScratchSlot(e2.scName))
-  ret isEmpty(violations)
-    ? List()
-    : list1(f.fnName + ": SSA single-definition invariant violated: "
-            + join(map(violations, (e2) => e2.scName + " defined " + String(e2.scCount) + " times"), "; "))
+  let counts = ssavCollectWriteCounts(f)
+  let multi = filter(keys(counts), (name) => ssavCount(counts, name) > 1 && !ssavIsScratchSlot(name))
+  if isEmpty(multi)
+    ret List()
+  # In order of first definition, as Python reports its dict.
+  let first = ssavFirstDefinitions(f)
+  let violations = sortBy(multi, (x, y) => ssavCount(first, x) < ssavCount(first, y))
+  ret list1(f.fnName + ": SSA single-definition invariant violated: "
+            + join(map(violations, (name) => name + " defined " + String(ssavCount(counts, name)) + " times"), "; "))
+
+fun ssavCount(counts: Dict<String, Int>, name: String): Int => get(counts, name) ?? 0
+
+# Each defined name -> the position of its first definition: parameters
+# first, then the ops' writes in order.
+fun ssavFirstDefinitions(f: CgFunction): Dict<String, Int>
+  let fromParams = fold(cgFieldsOfOrEmpty(f.fnParams), (Dict(), 0),
+                        (acc: (at: Dict<String, Int>, n: Int), fld) => (ssavFirstAt(acc.at, fld.fieldName, acc.n), acc.n + 1))
+  ret fold(f.fnOps, fromParams,
+           (acc: (at: Dict<String, Int>, n: Int), op) =>
+             (fold(opGetLiveVars(op).writes, acc.at, (d, w) => ssavFirstAtVar(d, w, acc.n)), acc.n + 1)).at
+
+fun ssavFirstAtVar(at: Dict<String, Int>, w, n: Int): Dict<String, Int> => match(w)
+  (sv: RpStackVar) => ssavFirstAt(at, sv.name, n)
+  (o: RParam)      => at
+
+fun ssavFirstAt(at: Dict<String, Int>, name: String, n: Int): Dict<String, Int>
+  ret contains(at, name) ? at : put(at, name, n)
 
 # ── all paths return ─────────────────────────────────────────────────────────
 
-# A function with no ops is an extern declaration. Only the fall-off-the-end
-# failure is checked: the last op must be a terminator (Return/ReturnVoid/
-# Abort/Jump, a musttail Call, or a conditional whose fall-through is the
-# not-taken path).
+# No path may fall off the end of the function: its last op must not fall
+# through. A function with no ops is an extern declaration.
 fun ssavAllPathsReturn(f: CgFunction): List<String> => match(lastOp(f.fnOps))
-  (op: Op) => ssavIsTerminator(op)
-    ? List()
-    : list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
+  (op: Op) => opFallsThrough(op)
+    ? list1(f.fnName + ": function does not end in a terminator op — control would fall off the end")
+    : List()
   ()        => List()
 
 # Seq twin: hop to the last segment, read its final element.
@@ -109,16 +115,6 @@ fun [tail] lastOp(ops: Chain<Op>): Op|None => match(ops)
   (l: ChainLink)  => match(l.next)
     (nil2: ChainEnd) => l.value
     (l2: ChainLink)  => lastOp(l.next)
-
-fun ssavIsTerminator(op) => match(op)
-  (r: OpReturn)      => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort)       => true
-  (j: OpJump)        => true
-  (c: OpCall)        => c.callMusttail
-  (t2: OpIfTask)     => true
-  (sw: OpSwitchJump) => true
-  (o: Op)            => false
 
 # ── Phi well-formedness ──────────────────────────────────────────────────────
 

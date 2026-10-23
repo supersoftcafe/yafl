@@ -39,7 +39,6 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
                           union(a2, checkExpr(fa.faValue, r, None)))
   (ar: PeArrayRead) => union(checkExpr(ar.arrObj, r, None),
                               checkExpr(ar.arrIndex, r, None))
-  (pl: PeParallel) => checkExpr(pl.parParams, r, None)
   (wx: PeWith)   => checkWith(wx, r)
   (cv: PeConvert) => checkExpr(cv.convInner, r, None)
   (qq: PeCoalesce) => union(checkExpr(qq.qqSubject, r, None),
@@ -711,7 +710,6 @@ fun referencedNames(x, acc): List<String> => match(x)
                                     referencedNames(wx.withSubject, acc))
   (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
                           referencedNames(fa.faValue, a2))
-  (pl: PeParallel) => referencedNames(pl.parParams, acc)
   (o: PeLiteral) => acc
   (o: PeLowered) => acc
 

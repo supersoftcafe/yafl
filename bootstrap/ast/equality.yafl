@@ -154,10 +154,6 @@ fun eqExpr(a, b) => match(a)
                         && eqExpr(x.opParams, y.opParams)
                         && eqLine(x.peboLine, y.peboLine)
     (o: PExpr)       => false
-  (x: PeParallel) => match(b)
-    (y: PeParallel) => eqExpr(x.parParams, y.parParams)
-                       && eqLine(x.pepLine, y.pepLine)
-    (o: PExpr)      => false
   (x: PeNothing) => match(b)
     (y: PeNothing) => eqLine(x.pengLine, y.pengLine)
     (o: PExpr)     => false

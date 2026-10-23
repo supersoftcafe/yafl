@@ -222,7 +222,6 @@ fun nsExpr(x, acc): Set<PErr> => match(x)
                                 nsExpr(fa.faValue, a2)))
   (o: PeLiteral) => acc
   (o: PeLowered) => acc
-  (o: PeParallel) => acc
 
 fun [tail] nsEntries(es: Chain<PTupEnt>, acc): Set<PErr> => match(es)
   (nil: ChainEnd) => acc

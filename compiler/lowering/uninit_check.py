@@ -12,10 +12,7 @@ produced the IR, or in this pass's CFG model.
 
 from __future__ import annotations
 
-from codegen.ops import (
-    Op, Label, Move, Jump, JumpIf, SwitchJump, IfTask, NewObject,
-    Call, Return, ReturnVoid, Abort, Phi,
-)
+from codegen.ops import Op, Label, IfTask, Phi
 from codegen.param import StackVar
 from codegen.ir import Function
 from codegen.gen import Application
@@ -31,34 +28,10 @@ def _build_label_index(ops: tuple[Op, ...]) -> dict[str, int]:
 
 
 def _successors(ops: tuple[Op, ...], labels: dict[str, int], i: int) -> list[int]:
+    """The branch targets first, then the fall-through."""
     op = ops[i]
-    n = len(ops)
-    if isinstance(op, (Return, ReturnVoid, Abort)):
-        return []
-    if isinstance(op, Call) and op.musttail:
-        return []
-    if isinstance(op, Jump):
-        return [labels[op.name]] if op.name in labels else []
-    if isinstance(op, JumpIf):
-        succs: list[int] = []
-        if op.label in labels:
-            succs.append(labels[op.label])
-        if i + 1 < n:
-            succs.append(i + 1)
-        return succs
-    if isinstance(op, IfTask):
-        succs = []
-        if op.target in labels:
-            succs.append(labels[op.target])
-        if i + 1 < n:
-            succs.append(i + 1)
-        return succs
-    if isinstance(op, SwitchJump):
-        # Codegen emits `default: abort()` so unlisted values never fall
-        # through.  Successors are exactly the labelled cases.
-        return [labels[lbl] for _, lbl in op.cases if lbl in labels]
-    # All other ops fall through to the next index.
-    return [i + 1] if i + 1 < n else []
+    fallthrough = [i + 1] if i + 1 < len(ops) and op.falls_through() else []
+    return [labels[target] for target in op.branch_targets() if target in labels] + fallthrough
 
 
 def _names(vars_) -> frozenset[str]:
@@ -145,17 +118,7 @@ def compute_entry_sets(fn: Function) -> "list[frozenset[str] | None]":
         exit_branch = e | branch_writes
 
         for succ in _successors(ops, labels, i):
-            # JumpIf/IfTask: first successor listed is the taken label;
-            # then fall-through.  SwitchJump: every listed case is a
-            # "branch", fall-through is the trailing unmatched case.
-            is_branch_target = False
-            if isinstance(op, (JumpIf, IfTask)):
-                target_label = op.label if isinstance(op, JumpIf) else op.target
-                is_branch_target = (target_label in labels
-                                    and labels[target_label] == succ)
-            elif isinstance(op, SwitchJump):
-                is_branch_target = any(labels.get(lbl) == succ for _, lbl in op.cases)
-
+            is_branch_target = any(labels.get(target) == succ for target in op.branch_targets())
             incoming = exit_branch if is_branch_target else exit_fallthrough
 
             old = entry[succ]
@@ -244,28 +207,20 @@ def _check_phi_sources(
             # exit set at that transfer is entry[i-1] | writes(prev).
             if op.name in phi_ops_by_block and current_block is not None and i > 0:
                 prev = ops[i - 1]
-                if not isinstance(prev, (Jump, Return, ReturnVoid, Abort)):
-                    if not (isinstance(prev, Call) and prev.musttail):
-                        prev_e = entry[i - 1]
-                        if prev_e is not None:
-                            _, prev_writes = _reads_writes(prev)
-                            edges.append((current_block, op.name, prev_e | prev_writes))
+                if prev.falls_through():
+                    prev_e = entry[i - 1]
+                    if prev_e is not None:
+                        _, prev_writes = _reads_writes(prev)
+                        edges.append((current_block, op.name, prev_e | prev_writes))
             current_block = op.name
             continue
         if e is None or current_block is None:
             continue
         _, writes = _reads_writes(op)
         exit_here = e | writes
-        if isinstance(op, Jump) and op.name in phi_ops_by_block:
-            edges.append((current_block, op.name, exit_here))
-        elif isinstance(op, JumpIf) and op.label in phi_ops_by_block:
-            edges.append((current_block, op.label, exit_here))
-        elif isinstance(op, IfTask) and op.target in phi_ops_by_block:
-            edges.append((current_block, op.target, exit_here))
-        elif isinstance(op, SwitchJump):
-            for _, lbl in op.cases:
-                if lbl in phi_ops_by_block:
-                    edges.append((current_block, lbl, exit_here))
+        for target in op.branch_targets():
+            if target in phi_ops_by_block:
+                edges.append((current_block, target, exit_here))
 
     # For every edge into a Phi block, check the Phi source whose label
     # matches this predecessor is fully defined.

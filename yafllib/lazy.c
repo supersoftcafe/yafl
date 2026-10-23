@@ -92,7 +92,7 @@ EXPORT object_t* lazy_release(object_t* self, object_t* flag_field) {
 // the runner calls `lazy_fetch$<T>` and discards, so taking the gate
 // evaluates the thunk on the worker and releases the waiters, while finding
 // it held or done is harmless (the readers own the protocol either way).
-// Round-robin across workers like __parallel__, since the point is running
+// Round-robin across workers like future_yield, since the point is running
 // elsewhere. When the
 // pool is not accepting, do nothing: the binding degrades to exactly [lazy]
 // — the first reader evaluates in place.

@@ -30,10 +30,10 @@ fun isEmpty<T>(a: Array<T>): Bool
   ret a.length == 0i32
 
 # In-order left fold over the elements.
-fun fold<T, TAcc>(a: Array<T>, acc: TAcc, f: (acc: TAcc, x: T): TAcc): TAcc
+fun fold<T, [linear] TAcc>(a: Array<T>, acc: TAcc, f: (acc: TAcc, x: T): TAcc): TAcc
   ret _foldFrom<T, TAcc>(a, 0i32, acc, f)
 
-fun [tail] _foldFrom<T, TAcc>(a: Array<T>, i: Int32, acc: TAcc,
+fun [tail] _foldFrom<T, [linear] TAcc>(a: Array<T>, i: Int32, acc: TAcc,
                               f: (acc: TAcc, x: T): TAcc): TAcc
   ret i < a.length ? _foldFrom<T, TAcc>(a, i + 1i32, f(acc, a[i]), f) : acc
 

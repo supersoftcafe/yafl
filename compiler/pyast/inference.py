@@ -76,7 +76,7 @@ def _infer_type_params_via_where(stmt: s.Statement, mapping: dict[str, t.TypeSpe
     must come from the arguments, and binding it from an arbitrary instance would
     pick the wrong one. Discharge handles both a direct concrete instance
     (`Stream<One, Int, Never>` → `E = Never`) and a generic combinator chain
-    (`Stream<Pretty<Lexer<StreamIO>>, String, E>` → `E = IOError | JsonParseError`)
+    (`Stream<Pretty<Lexer<Once<String>>>, String, E>` → `E = JsonParseError`)
     via t.solve_trait_constraint. Additive: leaves the mapping untouched if
     nothing grounds."""
     type_params = getattr(stmt, "type_params", None) or ()

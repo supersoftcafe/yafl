@@ -15,25 +15,27 @@ import Bootstrap::StdlibCandidates
 
 
 
-fun removePhis(a: CgApp) => appWithFunctions(a, map(appFunctions(a),
+fun removePhis(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a),
                               (f) => prCoalesceCopies(cgFunctionLowerPhis(f))))
 
 # ── def/read counts (saved_vars are reads) ──────────────────────────────────
 
-class [final] PrCounts(prDefs: List<StrCount>, prReads: List<StrCount>)
+class [final] PrCounts(prDefs: Dict<String, Int>, prReads: Dict<String, Int>)
 
-fun prCountVars(ops: Segment<Op>|None) => fold(ops, PrCounts(List(), List()), prCountOp)
+fun prCountVars(ops: Segment<Op>|None) => fold(ops, PrCounts(Dict(), Dict()), prCountOp)
 
 fun prCountOp(acc: PrCounts, op)
-  let reads1 = fold(opReadVarNames(op), acc.prReads, strCountIncr)
+  let reads1 = fold(opReadVarNames(op), acc.prReads, sdBump)
   let reads2 = fold(values(opSavedVars(op)), reads1,
                     (r, sv) => prIncrIfStackVar(r, sv))
-  let defs1 = fold(ssavOpWrites(op), acc.prDefs,
+  let defs1 = fold(opGetLiveVars(op).writes, acc.prDefs,
                    (d, sv) => prIncrIfStackVar(d, sv))
   ret PrCounts(defs1, reads2)
 
-fun prIncrIfStackVar(acc, sv): List<StrCount> => match(sv)
-  (s2: RpStackVar) => strCountIncr(acc, s2.name)
+fun prCount(counts: Dict<String, Int>, name: String): Int => get(counts, name) ?? 0
+
+fun prIncrIfStackVar(acc: Dict<String, Int>, sv): Dict<String, Int> => match(sv)
+  (s2: RpStackVar) => sdBump(acc, s2.name)
   (o: RParam)       => acc
 
 # ── the coalescer ────────────────────────────────────────────────────────────
@@ -59,7 +61,7 @@ class [final] PrOut(proRemoved: List<Int>, proRenames: List<PrRename>)
 # front-normal, so chain() over it is free).
 fun [tail] prScan(cur: Op|None, st: SeqStream<Op>, back: List<Op>, counts: PrCounts, i,
                   removed, renames,
-                  defs: List<StrCount>): PrOut
+                  defs: Dict<String, Int>): PrOut
   if cur is None
     ret PrOut(removed, renames)
   let op = forceOp(cur)
@@ -91,14 +93,14 @@ fun prCandTargets(m: OpMove) => match(m.moveTarget)
 fun prTryCoalesce(op: Op, nxt: Op|None, st: SeqStream<Op>, back: List<Op>,
                   counts: PrCounts, i,
                   c: PrCand, removed, renames,
-                  defs: List<StrCount>)
+                  defs: Dict<String, Int>)
   let onwards = prepend(op, back)
-  if strCountGet(defs, c.pcS) != 1 || strCountGet(counts.prReads, c.pcS) != 1
+  if prCount(defs, c.pcS) != 1 || prCount(counts.prReads, c.pcS) != 1
     ret prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
   ret match(prFindDef(chain(back), i - 1, c))
     (di: Int) => prScan(nxt, st, onwards, counts, i + 1, prepend(i, removed),
                         prepend(PrRename(di, c.pcS, c.pcTVar), renames),
-                        strCountIncr(defs, c.pcT))
+                        sdBump(defs, c.pcT))
     ()         => prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
 
 # Walk back within the block to src's definition; bail on a block boundary
@@ -114,18 +116,9 @@ fun [tail] prFindDef(back: Chain<Op>, j, c: PrCand) => match(back)
         ? None
         : prFindDef(l.next, j - 1, c)
 
-fun prBlockBoundary(op) => match(op)
-  (lb: OpLabel)      => true
-  (j: OpJump)        => true
-  (ji: OpJumpIf)     => true
-  (sw: OpSwitchJump) => true
-  (t2: OpIfTask)     => true
-  (r: OpReturn)      => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort)       => true
-  (o: Op)            => false
+fun prBlockBoundary(op) => op is OpLabel || !opFallsThrough(op) || !isEmpty(opBranchTargets(op))
 
-fun prWritesName(op, name) => any(ssavOpWrites(op), (sv) => prIsNamed(sv, name))
+fun prWritesName(op, name) => any(opTargets(op), (sv) => prIsNamed(sv, name))
 
 fun prIsNamed(sv, name) => match(sv)
   (s2: RpStackVar) => s2.name == name

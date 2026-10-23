@@ -27,7 +27,7 @@ import codegen.param as p
 import codegen.typedecl as t
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Label
+from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, Label
 
 
 # ---------------------------------------------------------------------------
@@ -62,18 +62,13 @@ def _without_unused_locals(fn: Function) -> Function:
 
 def _mentioned_locals(fn: Function) -> set[str]:
     """Every local the body reads, writes or saves. flatten() leaves out a
-    local being written, so writes are collected from the ops themselves."""
+    local being written, so writes are collected from the ops' targets."""
     names = {n for n, _ in fn.params.fields}
     for op in fn.ops:
         names |= {v.name for v in op.saved_vars}
         for q in op.all_params():
             names |= {r.name for r in q.flatten() if isinstance(r, p.StackVar)}
-        for written in (getattr(op, "target", None), getattr(op, "register", None),
-                        getattr(op, "task_lhs", None), getattr(op, "call_id_lhs", None)):
-            if isinstance(written, p.StackVar):
-                names.add(written.name)
-        if isinstance(op, o.ParallelCall):
-            names |= {v.name for v in op.results}
+        names |= {w.name for w in op.targets() if isinstance(w, p.StackVar)}
     return names
 
 
@@ -138,17 +133,7 @@ def _simplify_control_flow(fn: Function) -> Function:
         ops = new_ops
 
     # Remove labels that no jump targets any more
-    referenced: set[str] = set()
-    for op in ops:
-        if isinstance(op, Jump):
-            referenced.add(op.name)
-        elif isinstance(op, JumpIf):
-            referenced.add(op.label)
-        elif isinstance(op, IfTask):
-            referenced.add(op.target)
-        elif isinstance(op, SwitchJump):
-            for _, lbl in op.cases:
-                referenced.add(lbl)
+    referenced = {target for op in ops for target in op.branch_targets()}
     ops = [op for op in ops if not (isinstance(op, Label) and op.name not in referenced)]
 
     return dataclasses.replace(fn, ops=tuple(ops))
@@ -173,16 +158,11 @@ def _copy_propagate(fn: Function) -> Function:
     real_writes: dict[str, int] = {}
     zero_init_vars: set[str] = set()
     for op in fn.ops:
-        if isinstance(op, Move) and isinstance(op.target, p.StackVar):
-            name = op.target.name
-            if isinstance(op.source, p.ZeroOf):
-                zero_init_vars.add(name)
+        for written in op.get_live_vars()[1]:
+            if isinstance(op, Move) and isinstance(op.source, p.ZeroOf):
+                zero_init_vars.add(written.name)
             else:
-                real_writes[name] = real_writes.get(name, 0) + 1
-        elif isinstance(op, (Call, NewObject)):
-            reg = op.register
-            if isinstance(reg, p.StackVar):
-                real_writes[reg.name] = real_writes.get(reg.name, 0) + 1
+                real_writes[written.name] = real_writes.get(written.name, 0) + 1
 
     # GC-safe vars: always hold a valid (possibly null) pointer at function entry.
     gc_safe: set[str] = param_names | zero_init_vars
@@ -245,13 +225,8 @@ def _eliminate_common_subexpressions(fn: Function) -> Function:
     # excluded from caching.
     write_counts: dict[str, int] = {}
     for op in fn.ops:
-        if isinstance(op, Move) and isinstance(op.target, p.StackVar):
-            n = op.target.name
-            write_counts[n] = write_counts.get(n, 0) + 1
-        elif isinstance(op, (Call, NewObject)):
-            reg = op.register
-            if isinstance(reg, p.StackVar):
-                write_counts[reg.name] = write_counts.get(reg.name, 0) + 1
+        for written in op.get_live_vars()[1]:
+            write_counts[written.name] = write_counts.get(written.name, 0) + 1
     multi_write: set[str] = {n for n, c in write_counts.items() if c > 1}
 
     def is_eligible(rparam: p.RParam) -> bool:

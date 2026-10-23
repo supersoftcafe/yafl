@@ -19,7 +19,7 @@ import Bootstrap::StdlibCandidates
 
 fun markMutableStores(a: CgApp): CgApp
   let mutableClasses = msMutableNames(chain(appObjects(a)), setEmpty())
-  ret appWithFunctions(a, map(appFunctions(a), (f) => msFunction(f, mutableClasses)))
+  ret appWithFunctions(a, powerMap(appFunctions(a), (f) => msFunction(f, mutableClasses)))
 
 fun [tail] msMutableNames(os: Chain<CgObject>, acc) => match(os)
   (nil: ChainEnd) => acc

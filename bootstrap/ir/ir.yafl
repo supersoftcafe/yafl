@@ -29,10 +29,13 @@ class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 # objIsPinnable pattern: fresh-construction sites (entrypoint, $async, lazy
 # thunks, par callbacks) stay untouched and match Python's fresh Function()
 # defaults; every dataclasses.replace-mirroring copy site passes them through.
+# fnFuture: [future] — the body runs on a worker, a call answers with a task
+# (lower/ir/future_functions.yafl); never inlined. Same pattern.
 class [final] CgFunction(fnName: String, fnParams: CgType, fnResult: CgType, fnStackVars: CgType,
                           fnOps: Segment<Op>|None, fnComment: String, fnForeignSymbol: String|None,
                           fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnAlwaysInline: Bool,
-                          fnSourceFile: String = "", fnSourceLine: Int = 0)
+                          fnSourceFile: String = "", fnSourceLine: Int = 0,
+                          fnFuture: Bool = false)
 
 # objIsPinnable: [pinnable] — immutable EXCEPT inside a late pin, which
 # publishes into a write-once field. Unlike objIsMutable the object still
@@ -51,34 +54,14 @@ class [final] CgGlobal(globalName: String, globalType: CgType, globalInit: RPara
 
 # ── small shared helpers ─────────────────────────────────────────────────────
 
-fun forceOp(x: Op|None) => match(x)
-  (o: Op) => o
-  ()      => OpAbort("", Dict())   # unreachable: only used at in-bounds indices
+# The default is unreachable: only used at in-bounds indices.
+fun forceOp(x: Op|None): Op => x ?? OpAbort("", Dict())
 
 fun pyStrOpt(o: String|None)
   # Mirrors Python's f"{value}" on a str|None: None interpolates as "None".
   ret match(o)
     (s: String) => s
     ()          => "None"
-
-class [final] StrCount(scName: String, scCount: Int)
-
-fun [tail] strCountGet(l: List<StrCount>, name) => match(head(l))
-  (e: StrCount) => e.scName == name ? e.scCount : strCountGet(tail(l), name)
-  ()             => 0
-
-# A bump REBUILDS the whole table, so the rebuild goes into a builder; a name
-# not already present is appended at the end.
-fun strCountIncr(l: List<StrCount>, name) => build(strCountIncrLoop(l, name, false, builder()))
-
-fun [tail] strCountIncrLoop(l: List<StrCount>, name, found,
-                            [terminal] acc): ListBuilder<StrCount> => match(head(l))
-  (e: StrCount) => strCountIncrLoop(tail(l), name,
-                      found || e.scName == name,
-                      push(acc, e.scName == name
-                          ? StrCount(e.scName, e.scCount + 1)
-                          : e))
-  ()             => found ? acc : push(acc, StrCount(name, 1))
 
 # ══════════════════════════════════════════════════════════════════════════
 # Function
@@ -143,7 +126,7 @@ fun [tail] cgOtlLoop(s: Segment<Op>|None, i,
 fun cgFunctionWith(f: CgFunction, ops, stackVars)
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, stackVars, ops, f.fnComment, f.fnForeignSymbol,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
-                 f.fnSourceFile, f.fnSourceLine)
+                 f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 # ── --profile instrumentation (ir.py instrument_profile) ─────────────────────
 # ProfEnter first, ProfLeave before every exit — Return, ReturnVoid, and
@@ -168,11 +151,24 @@ fun [tail] cgInstrumentOps(s: Segment<Op>|None, i,
              seg.array(i)))
     : cgInstrumentOps(seg.next, 0i32, acc)
 
+# Leaves the function: a return, or a musttail call (its frame is replaced).
 fun cgIsProfExit(op) => match(op)
-  (x: OpReturn)     => true
-  (x: OpReturnVoid) => true
-  (x: OpCall)       => x.callMusttail
-  (o: Op)           => false
+  (x: OpReturn)            => true
+  (x: OpReturnVoid)        => true
+  (x: OpCall)              => x.callMusttail
+  (x: OpLabel)             => false
+  (x: OpMove)              => false
+  (x: OpJump)              => false
+  (x: OpJumpIf)            => false
+  (x: OpIfTask)            => false
+  (x: OpAssertNotTask)     => false
+  (x: OpSwitchJump)        => false
+  (x: OpNewObject)         => false
+  (x: OpAwait)             => false
+  (x: OpAbort)             => false
+  (x: OpPhi)               => false
+  (x: OpProfEnter)         => false
+  (x: OpProfLeave)         => false
 
 fun cgFunctionReplaceParams(f: CgFunction, replacer)
   ret cgFunctionWith(f, map(f.fnOps, (op) => opReplaceParams(op, replacer)), f.fnStackVars)
@@ -206,13 +202,6 @@ fun [tail] phiSourceForSources(sources: List<OpPhiSource>, predLabel) => match(h
 fun cgPhiToMove(phi, predLabel) => match(phi)
   (p: OpPhi) => OpMove(p.phiTarget, phiSourceFor(phi, predLabel), false, Dict())
   (o: Op)    => o   # unreachable
-
-fun cgIsTerminatorForPhi(op) => match(op)
-  (j: OpJump) => true
-  (r: OpReturn) => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort) => true
-  (o: Op) => false
 
 # The emitted op stream, plus the two facts the walk needs about what it has
 # already emitted: the label currently open, and whether the last op falls
@@ -254,7 +243,7 @@ fun cgLowerPhisStep([terminal] acc, op,
   (ji: OpJumpIf) => PhiAcc(acc.paCur, push(acc.paOut, op), true)
   (l: OpLabel)   => cgLowerPhisLabel(acc, l, phis)
   (o: Op)        => PhiAcc(acc.paCur, push(acc.paOut, op),
-                           !cgIsTerminatorForPhi(op))
+                           opFallsThrough(op))
 
 fun cgLowerPhisPass2(ops: Segment<Op>|None, phis: List<PhiAtEntry>)
   ret build(cgLowerPhisLoop(ops, 0i32, phis,
@@ -311,9 +300,8 @@ fun cgStripLabelPut(labels, op, i: Int): Dict<String, Int> => match(op)
   (l: OpLabel) => put(labels, l.labelName, i)
   (o: Op)       => labels
 
-fun sxOpAt(ix: StripIx, i: Int) => match(get(ix.sxOps, i))
-  (op: Op) => op
-  ()        => OpReturnVoid(Dict())   # unreachable: 0 <= i < sxN
+# The default is unreachable: 0 <= i < sxN.
+fun sxOpAt(ix: StripIx, i: Int): Op => get(ix.sxOps, i) ?? OpReturnVoid(Dict())
 
 fun labelIndexLookup(ix: StripIx, name: String) => match(get(ix.sxLabels, name))
   (i: Int) => i
@@ -326,15 +314,9 @@ fun cgSuccessors(ix: StripIx, index): List<Int>
     : List()
   ret cgSuccessorsOf(op, ix, fallthrough)
 
-fun cgSuccessorsOf(op, ix: StripIx, fallthrough) => match(op)
-  (r: OpReturn) => List()
-  (rv: OpReturnVoid) => List()
-  (c: OpCall) => c.callMusttail ? List() : fallthrough
-  (j: OpJump) => prepend(labelIndexLookup(ix, j.jumpName), List())
-  (ji: OpJumpIf) => prepend(labelIndexLookup(ix, ji.jumpIfLabel), fallthrough)
-  (it: OpIfTask) => prepend(labelIndexLookup(ix, it.taskTarget), fallthrough)
-  (sj: OpSwitchJump) => map(sj.switchCases, (c) => labelIndexLookup(ix, c.caseLabel))
-  (o: Op) => fallthrough
+fun cgSuccessorsOf(op, ix: StripIx, fallthrough)
+  ret concat(map(opBranchTargets(op), (name) => labelIndexLookup(ix, name)),
+             opFallsThrough(op) ? fallthrough : List())
 
 fun cgAddOneSuccessor(acc,
                       s: Int): (seen: Dict<Int, Bool>, worklist: Chain<Int>)
@@ -424,29 +406,19 @@ fun cgPredNextCurrent(op, current) => match(op)
   (lb: OpLabel) => lb.labelName
   (o: Op)       => current
 
-fun cgPredStep(op, prev: Op|None, current,
-                 acc) => match(op)
-  (lb: OpLabel)      => cgPredFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
-  (j: OpJump)        => predAdd(acc, j.jumpName, current)
-  (ji: OpJumpIf)     => predAdd(acc, ji.jumpIfLabel, current)
-  (t2: OpIfTask)     => predAdd(acc, t2.taskTarget, current)
-  (sw: OpSwitchJump) => fold(sw.switchCases, acc,
-                             (a, c) => predAdd(a, c.caseLabel, current))
-  (o: Op)            => acc
+fun cgPredStep(op, prev: Op|None, current, acc)
+  ret fold(opBranchTargets(op), cgPredLabelStep(op, prev, current, acc),
+           (a, target) => predAdd(a, target, current))
 
-# Fall-through edge from the previous block unless the previous op was an
-# unconditional terminator (Abort included — abort() does not return).
+fun cgPredLabelStep(op, prev: Op|None, current, acc) => match(op)
+  (lb: OpLabel) => cgPredFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
+  (o: Op)       => acc
+
+# Fall-through edge from the previous block, if control falls out of it.
 fun cgPredFallThroughEdge(lb: OpLabel, prev: Op|None, current,
                         acc) => match(prev)
-  (p: Op) => cgPredPrevFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
+  (p: Op) => opFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
   ()       => acc
-
-fun cgPredPrevFallsThrough(p) => match(p)
-  (j: OpJump)        => false
-  (r: OpReturn)      => false
-  (rv: OpReturnVoid) => false
-  (a: OpAbort)       => false
-  (o: Op)            => true
 
 fun predEnsure(acc, label) => any(acc, (e2) => e2.peLabel == label)
   ? acc

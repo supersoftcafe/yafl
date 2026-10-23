@@ -3,7 +3,7 @@
 # codes in word 0 with the payload in word 1. Covers boxing, typed and
 # literal arms, an arm narrowing to a tagged sub-union (Int32|None), widening
 # from a tagged union, from a narrow pointer union (String|None) and into a
-# wider wide union, and values crossing a __parallel__ boundary.
+# wider wide union, and values crossing a `[future]` boundary.
 # test_wide_union_packing pins the output.
 
 namespace Scalars
@@ -87,8 +87,15 @@ fun [tail] loop(k: Int, n: Int, acc: String): String
 fun [tail] joinPicks(k: Int, n: Int, acc: String): String
   ret k >= n ? acc : joinPicks(k + 1, n, acc + describe(pick(k)) + ";")
 
+fun [future] later(k: Int): String|Int32|None
+  ret pick(k)
+
+fun [future] later2(k: Int): String|Float64|Bool|None
+  ret pick2(k)
+
 fun main(): System::Int
   let joined = joinPicks(0, 8, "")
-  let (pa, pb) = __parallel__(() => describe(pick(4)), () => describe2(pick2(5)))
-  print(loop(0, 12, "") + joined + "\n" + pa + " " + pb + "\n")
+  let pa = later(4)
+  let pb = later2(5)
+  print(loop(0, 12, "") + joined + "\n" + describe(pa) + " " + describe2(pb) + "\n")
   ret 0

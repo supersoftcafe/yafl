@@ -1238,6 +1238,7 @@ EXPORT object_t* object_pin_resolve(object_t* o) {
 }
 
 EXPORT void gc_note_late_write(object_t* o) {
+    o = gc_ref(o);
     if (!gc_object_is_on_heap_fast(o))
         return;                                  // static or tagged: not ours
     gc_page_t *page = (gc_page_t*)((uintptr_t)o &~ (uintptr_t)(GC_PAGE_SIZE-1));
@@ -1524,7 +1525,7 @@ static bool gc_object_is_on_heap_fast(object_t *object) {
     // (outside the mmap region) and wild values — WITHOUT touching the
     // candidate object's memory. This range check is also what lets the
     // vtable word be an ordinary pointer: heap-vs-static needs no tag bit.
-    return ((intptr_t)object & PTR_TAG_MASK) == 0          // No packed data: rejects PTR_TAG_TASK (0x1), PTR_TAG_INTEGER (0x2), and PTR_TAG_STRING (0x4)
+    return ((intptr_t)object & PTR_TAG_MASK) == 0          // No packed data: rejects PTR_TAG_INTEGER (0x2) and PTR_TAG_STRING (0x4); callers pass gc_ref(word), so a TASK-tagged word arrives untagged
         && (size_t)((char*)object - _memory_heap_base) < _memory_heap_bytes;
 }
 
@@ -1622,6 +1623,7 @@ static inline void gc_local_mark_base(gc_page_t *page, object_t *object) {
 // It holds NULL, a tagged scalar, a static object, or a heap object's BASE;
 // never an interior pointer, so there is nothing to search for.
 static void gc_local_mark_object(object_t *object) {
+    object = gc_ref(object);
     if (((uintptr_t)object & PTR_TAG_MASK) != 0 || !gc_in_heap(object))
         return;
     assert(gc_is_object_base(object));
@@ -1634,6 +1636,7 @@ static void gc_local_mark_object(object_t *object) {
 // an object, so it resolves to the nearest object start at or before it,
 // exactly as the global root scan does.
 static void gc_local_mark_candidate(object_t *object) {
+    object = gc_ref(object);
     if (object == NULL
         || ((uintptr_t)object & (sizeof(void*) - 1)) != 0
         || (size_t)((char*)object - _memory_heap_base) >= _memory_heap_bytes)
@@ -1738,6 +1741,7 @@ static void gc_local_trace_fields(object_t *object) {
 EXPORT void gc_local_escape(object_t *v) {
     // A stored VALUE: NULL, a tagged scalar, a static object, or a heap
     // object's base — never interior, so its page head is at the mask.
+    v = gc_ref(v);
     if (((uintptr_t)v & PTR_TAG_MASK) != 0 || !gc_in_heap(v))
         return;
     assert(gc_is_object_base(v));
@@ -2252,7 +2256,7 @@ static void atomic_gc_object_mark_as_seen$push(gc_page_t *page, ptrdiff_t slot) 
 
 static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) {
     _Atomic(object_t*)* slot = (_Atomic(object_t*)*)field_ptr;
-    object_t *object = atomic_load_explicit(slot, memory_order_relaxed);
+    object_t *object = gc_ref(atomic_load_explicit(slot, memory_order_relaxed));
     while (gc_object_is_on_heap_fast(object)) {
         atomic_gc_object_mark_as_seen(object);
         if (LIKELY(!vtable_is_forward(object->vtable))) break;
@@ -2277,6 +2281,7 @@ static NOINLINE_DEBUG void atomic_gc_object_seen_by_field(object_t **field_ptr) 
 // Diagnostic walk (test builds): see the call site in gc_fsa_start.
 static void gc_validate_old_edge(gc_page_t *page, object_t *object,
                                  object_t *child) {
+    child = gc_ref(child);
     if (!gc_object_is_on_heap_fast(child)) return;
     gc_page_t *cp = (gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1));
     // Liveness first: the child's slot bit must be set in its page's object
@@ -2476,7 +2481,7 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
 
 static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, object_t **range_end) {
     for (; range_ptr != range_end; range_ptr++) {
-        object_t *object = *range_ptr;
+        object_t *object = gc_ref(*range_ptr);
         // Conservative candidate — INTERIOR POINTERS INCLUDED. An optimising
         // C compiler may keep only a derived pointer live (a rolling
         // &obj->items[i] in a register) while the base pointer is dead; the
@@ -2797,7 +2802,7 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
     if ((pointer_locations & (pointer_locations - 1)) == 0) {
         unsigned index = (unsigned)__builtin_ctzll(pointer_locations);
         object_t **ptr_ptr = &base_ptr[index];
-        object_t *object = *ptr_ptr;
+        object_t *object = gc_ref(*ptr_ptr);   // a task never forwards: no snap
         object_t *loaded = object;   // the CAS's expected value, see scan_flush
         // One range test on entry; forward targets are always on-heap, so
         // the hop loop needs no re-test.
@@ -2826,7 +2831,7 @@ static void gc_fsa_mark_sweep$scan_elements(object_t **base_ptr, ptr_mask_t poin
     unsigned   count = 0;
     for (ptr_mask_t m = pointer_locations; m; m &= m - 1) {
         unsigned index = __builtin_ctzll(m);
-        object_t *object = base_ptr[index];
+        object_t *object = gc_ref(base_ptr[index]);
         if (gc_object_is_on_heap_fast(object)) {
             __builtin_prefetch(&((gc_page_t*)((uintptr_t)object &~ (uintptr_t)(GC_PAGE_SIZE-1)))->head.scanner, 1);
             __builtin_prefetch(object, 0);   // child body (vtable + first fields) —
@@ -2928,7 +2933,7 @@ static void gc_fsa_mark_sweep$scan_object(object_t *object) {
             __builtin_prefetch(array + 2u * stride, 0);
             for (ptr_mask_t m = am; m; m &= m - 1) {
                 object_t **pp = &((object_t**)array)[__builtin_ctzll(m)];
-                object_t *child = *pp;
+                object_t *child = gc_ref(*pp);
                 if (gc_object_is_on_heap_fast(child)) {
                     __builtin_prefetch(&((gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1)))->head.scanner, 1);
                     __builtin_prefetch(child, 0);
@@ -3386,7 +3391,7 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
             GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
             while (m) {
                 unsigned i = __builtin_ctzll(m); m &= m-1;
-                object_t *child = slots[i];
+                object_t *child = gc_ref(slots[i]);
                 if (!gc_object_is_on_heap_fast(child)) continue;
                 gc_page_t *cp = (gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1));
                 // A reference is acceptable if it points within this page, or
@@ -3408,7 +3413,7 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
                     ptr_mask_t am = vt->array_el_pointer_locations;
                     while (am) {
                         unsigned i = __builtin_ctzll(am); am &= am-1;
-                        object_t *child = ((object_t**)array)[i];
+                        object_t *child = gc_ref(((object_t**)array)[i]);
                         if (!gc_object_is_on_heap_fast(child)) continue;
                         gc_page_t *cp = (gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1));
                         // Same acceptance rule as the object-field branch above.
@@ -3998,6 +4003,7 @@ EXPORT bool gc_debug_major_now(object_t *ignored) {
 // DEBUG: which generation holds this object? 0 = young, 1 = old,
 // -1 = not a managed-heap object.
 EXPORT int gc_debug_object_generation(object_t* o) {
+    o = gc_ref(o);
     uintptr_t a = (uintptr_t)o;
     if (!o || (a & PTR_TAG_MASK) || (a & (GC_SLOT_SIZE - 1))) return -1;
     gc_page_t* pg = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE - 1));
@@ -4009,6 +4015,7 @@ EXPORT int gc_debug_object_generation(object_t* o) {
 // 1 = live (present in its page's objects bitmap), 2 = reclaimed (slot exists
 // but no longer in objects — i.e. pruned this/last cycle).
 EXPORT int gc_debug_object_state(object_t* o) {
+    o = gc_ref(o);
     uintptr_t a = (uintptr_t)o;
     if (!o || (a & PTR_TAG_MASK) || (a & (GC_SLOT_SIZE - 1))) return 0;
     gc_page_t* pg = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE - 1));
@@ -4040,6 +4047,7 @@ EXPORT void _gc_safe_point2() {
 // chain, exactly like the root scan's own marking; the root-publish contract
 // (gc_root_publish, gc_root_overwrite) uses it too.
 EXPORT void _gc_mark_as_seen2(object_t *object) {
+    object = gc_ref(object);
     if (gc_object_is_on_heap_fast(object)) {
         LOG(ULTRA, "MARK_AS_SEEN(0x%lx) -> %s", (uintptr_t)object, object_get_vtable(object)->name);
         atomic_gc_object_mark_as_seen(object);

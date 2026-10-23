@@ -4,8 +4,8 @@ A `[linear]` binding that is never referenced in its scope would fail the
 linearity check ("never used; must be consumed once"). When the binding's type
 has a `Drop` instance in scope, this pass consumes it by policy instead: the
 scope's result is bound to a temporary, a `drop(x)` call is appended for each
-such binding (scope-EXIT timing — after the value is computed, so a derived
-view like `asStream`'s StreamIO is fully drained first), and the temporary is
+such binding (scope-EXIT timing — after the value is computed, so anything
+read through the handle is complete first), and the temporary is
 returned. The rewritten calls then resolve through the ordinary compile
 fixpoint (the caller re-converges), and the linearity checker sees plain
 consumption — it needs no knowledge of drops at all.

@@ -92,7 +92,9 @@ fun compileCoalesce(qq: PeCoalesce, r, expected)
   # which is what decides whether the node can dissolve yet.
   let subj = compileExpr(qq.qqSubject, r, None)
   ret match(exprType(subj.eoExpr, r))
-    (st: Spec) => isConcrete(st)
+    # A placeholder from outside this scope is a hole, not a type: a partly
+    # bound generic call reads `V|None` until V is bound.
+    (st: Spec) => isConcrete(st) && !hasFreePlaceholders(st, r)
       ? coalesceOn(qq, subj, st, r, expected)
       : coalesceStay(qq, subj, r, expected)
     ()         => coalesceStay(qq, subj, r, expected)
@@ -169,7 +171,6 @@ fun compileExpr(x, r, expected): ExprOut => match(x)
   (nw: PeNew)    => compileNew(nw, r, expected)
   (ne: PeNewEnum) => compileNewEnum(ne, r, expected)
   (ar: PeArrayRead) => compileArrayRead(ar, r, expected)
-  (pl: PeParallel) => compileParallel(pl, r)
   (lm: PeLambda) => compileLambda(lm, r, expected)
   (wx: PeWith)   => compileWith(wx, r, expected)
   (cv: PeConvert) => compileConvert(cv, r, expected)
@@ -1151,10 +1152,6 @@ fun compileArrayRead(ar: PeArrayRead, r, expected: Spec|None)
   ret ExprOut(converted(out, expected, r),
               concat(obj.eoGlobals, idx.eoGlobals),
               mergeHints(obj.eoHints, idx.eoHints))
-
-fun compileParallel(pl: PeParallel, r)
-  let ps = compileExpr(pl.parParams, r, None)
-  ret ExprOut(PeParallel(ps.eoExpr, pl.pepLine), ps.eoGlobals, ps.eoHints)
 
 
 # ── `with subject(name = value, …)` — EXPANDS here once types resolve ───────

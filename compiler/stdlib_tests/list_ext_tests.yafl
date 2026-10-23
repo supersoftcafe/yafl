@@ -55,6 +55,20 @@ fun [test("fold is LEFT to right, shown with a non-commutative operator")] foldI
             (acc: Int, x: Int) => acc - x), 0 - 15, "left fold")
 
 
+# ── powerMap ────────────────────────────────────────────────────────────────
+
+fun [test("powerMap maps every element, in order")] powerMapInOrder(): None|TestFailure
+    let out = powerMap(_ints(1, 2, 3, 4, 5), (x: Int) => x * 10)
+    ret assertEqInt(_count(out), 5, "count")
+     ?? assertEqInt(_headOr(out, 0), 10, "first")
+     ?? assertEqInt(_lastOr(out, 0), 50, "last")
+     ?? assertEqInt(fold(out, 0, (acc: Int, x: Int) => acc * 100 + x / 10), 102030405, "order")
+
+fun [test("powerMap of an empty or single-element list")] powerMapSmall(): None|TestFailure
+    ret assertTrue(isEmpty(powerMap(List<Int>(), (x: Int) => x + 1)), "empty")
+     ?? assertEqInt(_headOr(powerMap(prepend(7, List<Int>()), (x: Int) => x + 1), 0), 8, "single")
+
+
 # ── splitHalf ───────────────────────────────────────────────────────────────
 
 fun [test("splitHalf divides a list, the extra element going right")] splitHalfDivides(): None|TestFailure

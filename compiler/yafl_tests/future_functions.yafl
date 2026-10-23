@@ -1,0 +1,109 @@
+# `[future]` functions: a call hands the body to a worker and answers later,
+# with a task, like any async call; when the pool isn't accepting
+# (YAFL_TASK_BACKLOG exceeded) the body runs in place. Semantics are identical
+# to the same program without the attribute — only the timing overlaps.
+# Structural tests only (no timing assertions — shared host).
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::FutureFunctions::BasicCall
+
+import System
+import System::Test
+
+fun [future] double(x: System::Int): System::Int
+  ret x * 2
+
+fun program(): System::Int
+  ret double(21)
+
+fun [test("basic call")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::FutureFunctions::TwoCalls
+
+import System
+import System::Test
+
+fun [future] square(x: System::Int): System::Int
+  ret x * x
+
+fun program(): System::Int
+  let a = square(3)
+  let b = square(4)
+  ret a + b
+
+fun [test("two calls")] check(): None|TestFailure
+    ret assertEqInt(program(), 25, "program()")
+
+
+namespace CompilerTests::FutureFunctions::PrimitiveResult
+
+import System
+import System::Test
+
+fun [future] half(x: System::Int32): System::Int32
+  ret x / 2i32
+
+fun program(): System::Int
+  ret System::Int(half(84i32))
+
+fun [test("primitive result")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::FutureFunctions::UnionResult
+
+import System
+import System::Test
+
+fun [future] pick(b: System::Bool): System::Int | System::None
+  ret b ? 5 : None
+
+fun program(): System::Int
+  ret match(pick(true))
+    (i: System::Int)  => i
+    (n: System::None) => 0
+
+fun [test("union result")] check(): None|TestFailure
+    ret assertEqInt(program(), 5, "program()")
+
+
+namespace CompilerTests::FutureFunctions::FanOut
+
+import System
+import System::Test
+
+# Each level hands both halves to workers: a tree of futures.
+fun [future] total(lo: System::Int, hi: System::Int): System::Int
+  if hi - lo < 4
+    ret sumRange(lo, hi, 0)
+  let mid = (lo + hi) / 2
+  ret total(lo, mid) + total(mid, hi)
+
+fun [tail] sumRange(lo: System::Int, hi: System::Int, acc: System::Int): System::Int
+  ret lo >= hi ? acc : sumRange(lo + 1, hi, acc + lo)
+
+fun program(): System::Int
+  ret total(0, 100)
+
+fun [test("fan out")] check(): None|TestFailure
+    ret assertEqInt(program(), 4950, "program()")
+
+
+namespace CompilerTests::FutureFunctions::Method
+
+import System
+import System::Test
+
+class Scale(k: System::Int)
+  fun [future] apply(x: System::Int): System::Int
+    ret x * k
+
+fun program(): System::Int
+  ret Scale(6).apply(7)
+
+fun [test("method")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")

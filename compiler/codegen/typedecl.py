@@ -433,10 +433,11 @@ class Array(Type):
 
 @dataclass(frozen=True)
 class TaskWrapper(Type):
-    """Wraps a non-pointer primitive return type in a struct so it can carry a task signal.
+    """Wraps a return type with no top-level pointer in a struct so it can carry a task signal.
 
     Emits: struct { <inner> value; object_t* task; }
-    task == NULL means a real value; task != NULL means the result is a pending task.
+    task == NULL means a real value; task != NULL means the result is a pending task
+    (and `value` is zeroed).
     """
     inner: Type
 
@@ -452,7 +453,9 @@ class TaskWrapper(Type):
         return f"struct {{\n{field_indent}{inner_decl} value;\n{field_indent}object_t* task;\n{field_indent[:-4]}}}"
 
     def get_pointer_paths(self, path: str) -> list[str]:
-        return [f"{path}.task"]
+        # The value's own pointers, then the task: a result that completed
+        # synchronously is live in `value`, and is traced from there.
+        return self.inner.get_pointer_paths(f"{path}.value") + [f"{path}.task"]
 
 
 def first_pointer_field(t: Type) -> str | None:

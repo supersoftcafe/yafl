@@ -350,7 +350,6 @@ static void _io_finish_open(io_job_t* job) {
 
 static void _io_finish_close(io_job_t* job) {
     io_t* io = job->io;
-    atomic_store_explicit(&io->closed, 1, memory_order_release);  // publish before file=NULL
     io->file = NULL;          // handle is now closed whether or not there was an error
     io->buf_tail = 0;
     io->buf_head = 0;
@@ -370,8 +369,7 @@ EXPORT object_t* io_open_write(object_t* self, str_t path, int8_t truncate)  { (
 
 // Buffer-first read of an OPEN handle: return whatever is already buffered
 // (clamped to IO_READ_MAX, like OS read()), or dispatch an async refill when the
-// buffer is empty.  Shared by io_read and stream_read — the two differ only in
-// how they treat an unusable handle, which they check before calling here.
+// buffer is empty.  The caller checks the handle is usable first.
 static str_t _io_read_open(io_t* io, object_t* o_length) {
     int overflow = 0;
     int32_t length = int32_from_integer_with_overflow(o_length, &overflow);
@@ -396,51 +394,6 @@ EXPORT str_t io_read(object_t* self, object_t* o_length) {
     io_t* io = (io_t*)self;
     if (io == NULL || io->file == NULL)
         return str_word(NULL);
-    return _io_read_open(io, o_length);
-}
-
-
-// ─── StreamIO: a non-linear alias over an open IO handle ──────────────────────
-//
-// `io_as_stream` hands the same io_t back, typed as the YAFL `_StreamIO` foreign
-// class.  This is a deliberate side-step of the linear-type discipline: the
-// linear `IO` is threaded back out unchanged (and still owns the close), while
-// the returned alias is non-linear so the lazy monadic `StreamIO` wrapper can
-// capture it.  Both faces share one io_t, so when the linear owner closes the
-// handle, `stream_read` observes `closed` and reports an IOError for any
-// not-yet-realised read.
-//
-// Single-handle discipline still applies (one outstanding op per handle): after
-// `asStream`, reads go through the stream OR the linear face, not both at once.
-//
-// On closing: a stream read that runs *after* close returns IOError and never
-// touches the FILE* (the `closed` atomic is checked first), so the ordinary and
-// escape cases are safe.  What is NOT safe — and what the discipline forbids —
-// is pulling the stream *concurrently* with close on another thread: a refill
-// already dispatched to the IO thread would fread a FILE* that close fclose()s
-// out from under it (use-after-free).  The linear type system already forbids
-// concurrent use of a handle; the stream alias inherits that contract.  Making
-// that case memory-safe under misuse would need serialising FILE* access (a
-// per-handle lock, or routing close through the IO queue) against the otherwise
-// lock-free IO threads — deliberately not done here.
-EXPORT object_t* io_as_stream(object_t* self) {
-    return self;   // the _StreamIO handle *is* the io_t
-}
-
-// Pull the next chunk for a StreamIO.  Identical to io_read on an open handle,
-// but a closed backing handle surfaces as an IOError (negative errno) rather
-// than EOF.  Returns a String (data), None (genuine EOF), or a negative Int
-// (errno → IOError in YAFL).
-//
-// Closed-ness is read through the `closed` atomic rather than `io->file`: the
-// linear owner may close on another task/thread, and a plain read of the
-// non-atomic `io->file` from here would be a data race.
-EXPORT str_t stream_read(object_t* self, object_t* o_length) {
-    io_t* io = (io_t*)self;
-    if (io == NULL)
-        return str_word(integer_from_int32_noalloc(-EBADF));
-    if (atomic_load_explicit(&io->closed, memory_order_acquire))
-        return str_word(integer_from_int32_noalloc(-EBADF));
     return _io_read_open(io, o_length);
 }
 
@@ -654,7 +607,6 @@ EXPORT object_t* io_close(object_t* self) {
 
     errno = 0;
     int32_t rc = (io->owned && fclose(io->file) != 0) ? -errno : 0;
-    atomic_store_explicit(&io->closed, 1, memory_order_release);  // publish before file=NULL
     io->file = NULL;          // handle is now closed whether or not there was an error
     io->buf_tail = 0;
     io->buf_head = 0;

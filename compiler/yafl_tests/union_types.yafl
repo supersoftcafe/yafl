@@ -892,3 +892,153 @@ fun program():System::Int
 
 fun [test("a match on a returned union picks the None arm")] check(): None|TestFailure
     ret assertEqInt(program(), -1, "program()")
+
+
+namespace CompilerTests::UnionTypes::VariantArmOfAnEnumMember
+
+import System
+import System::Test
+
+# An arm naming one variant of an enum member matches that variant only; the
+# arms after it, in order, take the member's other variants.
+enum Err(code: Int)
+  enum Eof()
+  enum Busy(retries: Int)
+  enum Other()
+
+fun classify(v: String|Err): Int
+  ret match(v)
+    (s: String) => 1
+    (e: Eof)    => 2
+    (b: Busy)   => 10 + b.retries
+    (e: Err)    => 3
+
+fun program(): Int
+  ret classify("x") * 10000 + classify(Eof(0)) * 1000 + classify(Busy(0, 4)) * 10 + classify(Other(5))
+
+fun [test("a variant arm of an enum member matches that variant only")] check(): None|TestFailure
+    ret assertEqInt(program(), 12143, "program()")
+
+
+namespace CompilerTests::UnionTypes::VariantArmOfAnOptionalEnum
+
+import System
+import System::Test
+
+enum Err(code: Int)
+  enum Eof()
+  enum Busy(retries: Int)
+  enum Other()
+
+fun classify(v: Err|None): Int
+  ret match(v)
+    (b: Busy) => 10 + b.retries
+    (e: Eof)  => 2
+    (e: Err)  => 3
+    ()        => 0
+
+fun program(): Int
+  ret classify(None) * 1000 + classify(Eof(0)) * 100 + classify(Busy(0, 4)) * 10 + classify(Other(5))
+
+fun [test("a variant arm of an optional enum matches that variant only")] check(): None|TestFailure
+    ret assertEqInt(program(), 343, "program()")
+
+
+namespace CompilerTests::UnionTypes::VariantArmBesideAnInt
+
+import System
+import System::Test
+
+enum Err(code: Int)
+  enum Eof()
+  enum Busy(retries: Int)
+  enum Other()
+
+fun classify(v: Int|Err): Int
+  ret match(v)
+    (n: Int)  => n
+    (e: Eof)  => 2
+    (b: Busy) => 10 + b.retries
+    (e: Err)  => 3
+
+fun program(): Int
+  ret classify(1) * 10000 + classify(Eof(0)) * 1000 + classify(Busy(0, 4)) * 10 + classify(Other(5))
+
+fun [test("a variant arm beside an Int matches that variant only")] check(): None|TestFailure
+    ret assertEqInt(program(), 12143, "program()")
+
+
+namespace CompilerTests::UnionTypes::VariantArmOfAComplexEnum
+
+import System
+import System::Test
+
+# Tree is recursive, so a complex enum: a heap object per variant, and the
+# union of it with String and None is one pointer word.
+enum Tree
+  enum Leaf(v: Int)
+  enum Node(l: Tree, r: Tree)
+
+fun size(t: Tree): Int
+  ret match(t)
+    (l: Leaf) => 1
+    (n: Node) => size(n.l) + size(n.r)
+
+fun classify(v: Tree|String|None): Int
+  ret match(v)
+    (n: Node)   => 100 + size(n)
+    (s: String) => 1
+    (l: Leaf)   => 10 + l.v
+    ()          => 0
+
+fun program(): Int
+  ret classify(Node(Leaf(1), Node(Leaf(2), Leaf(3)))) * 10000 + classify(Leaf(5)) * 10 + classify("x") + classify(None)
+
+fun [test("a variant arm of a complex enum member matches that variant only")] check(): None|TestFailure
+    ret assertEqInt(program(), 1030151, "program()")
+
+
+namespace CompilerTests::UnionTypes::UnionArmNamingAVariant
+
+import System
+import System::Test
+
+enum Err(code: Int)
+  enum Eof()
+  enum Busy(retries: Int)
+
+# A union arm may name a variant of an enum member: it matches that variant,
+# not the whole member.
+fun classify(v: String|Err|None): Int
+  ret match(v)
+    (x: Eof|None) => 1
+    (s: String)   => 2
+    (e: Err)      => 3
+
+fun program(): Int
+  ret classify(Eof(0)) * 1000 + classify(None) * 100 + classify("x") * 10 + classify(Busy(0, 1))
+
+fun [test("a union arm naming a variant matches that variant only")] check(): None|TestFailure
+    ret assertEqInt(program(), 1123, "program()")
+
+
+namespace CompilerTests::UnionTypes::UnionArmNamingAComplexVariant
+
+import System
+import System::Test
+
+enum Tree
+  enum Leaf(v: Int)
+  enum Node(l: Tree, r: Tree)
+
+fun classify(v: Tree|String|None): Int
+  ret match(v)
+    (x: Leaf|None) => 1
+    (s: String)    => 2
+    (t: Tree)      => 3
+
+fun program(): Int
+  ret classify(Leaf(1)) * 1000 + classify(None) * 100 + classify("x") * 10 + classify(Node(Leaf(1), Leaf(2)))
+
+fun [test("a union arm naming a complex variant matches that variant only")] check(): None|TestFailure
+    ret assertEqInt(program(), 1123, "program()")

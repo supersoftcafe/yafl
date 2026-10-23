@@ -17,7 +17,7 @@ import Bootstrap::Ir
 
 
 
-fun resolveKnownTags(a: CgApp) => appWithFunctions(a, map(appFunctions(a), ktFunction))
+fun resolveKnownTags(a: CgApp) => appWithFunctions(a, powerMap(appFunctions(a), ktFunction))
 
 fun ktFunction(f)
   let defs = singleDefs(f)

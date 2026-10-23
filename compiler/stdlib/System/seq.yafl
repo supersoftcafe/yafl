@@ -64,10 +64,10 @@ fun head<T>(s: Segment<T>|None): T|None
 
 # In-order left fold: an indexed walk within each segment, one pointer hop
 # between segments.
-fun fold<T, TAcc>(s: Segment<T>|None, acc: TAcc, f: (acc: TAcc, x: T): TAcc): TAcc
+fun fold<T, [linear] TAcc>(s: Segment<T>|None, acc: TAcc, f: (acc: TAcc, x: T): TAcc): TAcc
   ret _foldSeg<T, TAcc>(s, 0i32, acc, f)
 
-fun [tail] _foldSeg<T, TAcc>(s: Segment<T>|None, i: Int32, acc: TAcc,
+fun [tail] _foldSeg<T, [linear] TAcc>(s: Segment<T>|None, i: Int32, acc: TAcc,
                              f: (acc: TAcc, x: T): TAcc): TAcc
   ret match(s)
     (nil: None)       => acc

@@ -348,7 +348,6 @@ fun exprLine(x) => match(x)
   (rc: PeRecur) => rc.percLine
   (lz: PeLazy) => lz.pelzLine
   (bo: PeBuiltinOp) => bo.peboLine
-  (pl: PeParallel) => pl.pepLine
   (ng: PeNothing) => ng.pengLine
   (ne: PeNewEnum) => ne.penewLine
   (nw: PeNew) => nw.penwLine

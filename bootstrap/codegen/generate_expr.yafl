@@ -165,16 +165,8 @@ fun opsEndInTransfer(ops: List<Op>) => opsEndInTransferChain(chain(ops))
 fun [tail] opsEndInTransferChain(ops: Chain<Op>) => match(ops)
   (nil: ChainEnd) => false
   (l: ChainLink)  => match(l.next)
-    (nil2: ChainEnd) => opIsControlTransfer(l.value)
+    (nil2: ChainEnd) => !opFallsThrough(l.value)
     (l2: ChainLink)  => opsEndInTransferChain(l.next)
-
-fun opIsControlTransfer(op) => match(op)
-  (j: OpJump) => true
-  (r: OpReturn) => true
-  (rv: OpReturnVoid) => true
-  (a: OpAbort) => true
-  (sw: OpSwitchJump) => true
-  (o: Op) => false
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 1: generation-time Resolver frame carriers (ResolverLoop/
@@ -1437,50 +1429,7 @@ fun genRecurArgsStep(l: ChainLink<PExpr>, r, ctypes, specs,
                    push(phiIns, phiin))
 
 # ══════════════════════════════════════════════════════════════════════════
-# SECTION 13: ParallelExpression (pyast/expression/parallel.py).
-# ══════════════════════════════════════════════════════════════════════════
-
-fun genParallel(pl: PeParallel, r) => genParallelExprs(pl, exprsOfParallel(pl), r)
-
-fun exprsOfParallel(pl: PeParallel) => match(pl.parParams)
-  (tp: PeTuple) => map(tp.exprs, (e2) => e2.tupValue)
-  (o: PExpr)    => list1(pl.parParams)
-
-fun genParallelExprs(pl: PeParallel, exprs: List<PExpr>, r): GBundle
-  let fnBundles = genParallelFnBundles(chain(exprs), r, 0, List())
-  let resultTypes = map(exprs, (e2) => callableResultSpec(e2, r))
-  let resultVars = indexedStackVars(resultTypes, r, 0)
-  let registerType = specGenerate(parallelResultTuple(resultTypes), r)
-  let register = RpStackVar(registerType, "$par_result")
-  let parallelOp = OpParallelCall(map(fnBundles, (b) => mustResult(b)), resultVars, register, Dict())
-  let parallelBundle = GBundle(concat(list1(register), resultVars), list1(parallelOp), register, List(), List())
-  ret bundleJoin(bundleJoinAll(fnBundles), parallelBundle)
-
-fun genParallelFnBundles(es, r, i: Int, acc: List<GBundle>): List<GBundle>
-  ret build(genParallelFnBundlesB(es, r, i, builderFrom(acc)))
-
-fun [tail] genParallelFnBundlesB(es: Chain<PExpr>, r, i, [terminal] acc: ListBuilder<GBundle>)
-  ret match(es)
-    (nil: ChainEnd) => acc
-    (l: ChainLink)  => genParallelFnBundlesB(l.next, r, i + 1, push(acc, withPrefix(genExpr(l.value, r), "par" + String(i))))
-
-fun callableResultSpec(e2, r) => match(exprType(e2, r))
-  (ft: Spec) => match(ft)
-    (cl: SCallable) => match(cl.scResult)
-      (rt: Spec) => rt
-      ()          => SBuiltin("bool", noLine())   # unreachable
-    (o: Spec)       => SBuiltin("bool", noLine())   # unreachable
-  ()          => SBuiltin("bool", noLine())          # unreachable: check() requires every arg callable
-
-fun indexedStackVars(specs2: List<Spec>, r, i): List<RParam> => match(head(specs2))
-  (sp: Spec) => concat(list1(RpStackVar(specGenerate(sp, r), "$par" + String(i))), indexedStackVars(tail(specs2), r, i + 1))
-  ()          => List()
-
-fun parallelResultTuple(resultTypes: List<Spec>)
-  ret STuple(map(resultTypes, (sp) => SEntry("", sp, None)), noLine())
-
-# ══════════════════════════════════════════════════════════════════════════
-# SECTION 14: top-level dispatch — genExpr/genExprTo (Expression.generate/
+# SECTION 13: top-level dispatch — genExpr/genExprTo (Expression.generate/
 # generate_to, pyast/expression/base.py). PeMatch routes to genMatch/
 # genMatchTo in generate_expr2.yafl (forward reference — same one-namespace
 # program, order-independent, exactly like every other bootstrap/*.yafl file).
@@ -1504,7 +1453,6 @@ fun genExpr(x, r) => match(x)
   (mt: PeMatch)     => genMatch(mt, r, None)
   (op: PeBuiltinOp) => genBuiltinOp(op, r)
   (wx: PeWith)      => emptyBundle()   # unreachable: withExpand runs during compile
-  (pl: PeParallel)  => genParallel(pl, r)
   (ne: PeNewEnum)   => genNewEnum(ne, r)
   (nw: PeNew)       => genNew(nw, r)
   (ar: PeArrayRead) => genArrayRead(ar, r)

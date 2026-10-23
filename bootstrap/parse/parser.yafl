@@ -807,8 +807,6 @@ fun parseSymbolTerminal(sym, ps): (v: PExpr|PFail, rest: Ps)
     ret parseMatch(lineAt(ps), bump(ps))
   if sym == "__builtin_op__"
     ret parseBuiltinOp(lineAt(ps), bump(ps))
-  if sym == "__parallel__"
-    ret parseParallel(lineAt(ps), bump(ps))
   if sym == "("
     ret parseLambdaOrParen(ps)
   ret (softFail("expected expression", ps), ps)
@@ -838,7 +836,7 @@ fun parseLambdaOrParen(ps): (v: PExpr|PFail, rest: Ps)
 
 # `( expr )` as a PRIMARY: a single un-named, non-spread entry collapses to the
 # expression itself (parser.py __to_paren_expr); `()`, `(a, b)`, `(n = v)` stay
-# tuples. Call/builtin/parallel argument lists never collapse.
+# tuples. Call/builtin argument lists never collapse.
 fun parenTerm(ps): (v: PExpr|PFail, rest: Ps)
   let t = parseTupleTerm(ps)
   ret match(t.v)
@@ -939,10 +937,6 @@ fun builtinFromTuple(ty, tup: PExpr, lr,
     ()               => (failAt("__builtin_op__ first parameter must be a string",
                                   t2.petLine), ps)
   (other)       => (hardFail("invalid use of __builtin_op__", ps), ps)
-
-fun parseParallel(lr, ps): (v: PExpr|PFail, rest: Ps)
-  ret hardened(parseTupleTerm(ps), "invalid use of __parallel__")
-    ?> (tup: PExpr, rest: Ps) => (PeParallel(tup, lr), rest)
 
 # ══ Match ════════════════════════════════════════════════════════════════════
 # Arms mirror MatchArm: a binder arm's name is the destructure target's bare

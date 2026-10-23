@@ -172,5 +172,5 @@ fun _bagDrain<T>(b: Bag<T>): List<T>
 # sort() purely to get a walk, imposing an ordering they do not need and paying
 # O(n log n) to do it. Nothing enforces commutativity — this comment is the
 # contract.
-fun fold<T,U>(b: Bag<T>, init: U, f: (:U, :T): U): U
+fun fold<T, [linear] U>(b: Bag<T>, init: U, f: (:U, :T): U): U
   ret _chainFold<T,U>(b._rear, _chainFold<T,U>(b._front, init, f), f)

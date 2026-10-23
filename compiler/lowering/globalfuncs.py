@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 
 from codegen.param import GlobalFunction, VirtualFunction, StackVar, StructField, NewStruct, RParam
-from codegen.ops import Call, Move, Phi
+from codegen.ops import Call, Move
 from codegen.gen import Application
 from codegen.ir import Object, Function
 from langtools import group_by_key
@@ -15,13 +15,12 @@ def _fun_value_map(func: Function) -> dict[str, RParam]:
     counts: dict[str, int] = {}
     values: dict[str, RParam] = {}
     for op in func.ops:
-        if isinstance(op, Move) and isinstance(op.target, StackVar):
-            counts[op.target.name] = counts.get(op.target.name, 0) + 1
-            values[op.target.name] = op.source
-        elif isinstance(op, (Phi, Call)):
-            tgt = op.target if isinstance(op, Phi) else op.register
-            if isinstance(tgt, StackVar):
-                counts[tgt.name] = counts.get(tgt.name, 0) + 2  # opaque
+        for written in op.get_live_vars()[1]:
+            if isinstance(op, Move):
+                counts[written.name] = counts.get(written.name, 0) + 1
+                values[written.name] = op.source
+            else:
+                counts[written.name] = counts.get(written.name, 0) + 2  # opaque
     return {n: v for n, v in values.items() if counts[n] == 1}
 
 

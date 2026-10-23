@@ -47,3 +47,24 @@ fun missingMember(x: Apple|Pear): Int
 
 fun main(): Int
   ret 0
+
+# A union's enum member may be covered variant by variant; Tri is never
+# matched, so it is named on its own.
+fun missingVariantOfAMember(v: Apple|Shape): Int
+  ret match(v)
+    (a: Apple)  => 1
+    (c: Circle) => 2
+    (q: Square) => 3
+
+# The second Circle arm can never run.
+fun repeatedVariantOfAMember(v: Apple|Shape): Int
+  ret match(v)
+    (a: Apple)   => 1
+    (c: Circle)  => 2
+    (c2: Circle) => 3
+    (s: Shape)   => 4
+
+# None of Shape's variants is matched: the member is named whole.
+fun missingWholeMember(v: Apple|Shape): Int
+  ret match(v)
+    (a: Apple) => 1

@@ -300,6 +300,7 @@ fun rddParam(e: RddEnc, cx: RddCx, r: RParam): RddEnc => match(r)
                                         x.checked)
   (x: RpFunField)            => rddLit(rddParam(rddS(e, "FF;"), cx, x.ffFun), x.ffPart)
   (x: RpMakeFun)             => rddParam(rddParam(rddS(e, "MF;"), cx, x.mfCode), cx, x.mfEnv)
+  (x: RpNarrowInt)           => rddTy(rddParam(rddS(e, "NI;"), cx, x.niValue), x.niType)
 
 # `v->vtable->discriminator == id`: the id names a leaf, so it is a reference
 # to that object. Tagged apart from a plain `v == id`, which it is not.
@@ -375,15 +376,15 @@ fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
   (x: OpReturnVoid)    => rddSaved(rddS(e, "oV;"), x.retVoidSavedVars)
   (x: OpAbort)         => rddLit(rddSaved(rddS(e, "oX;"), x.abortSavedVars), x.abortReason)
   (x: OpReturn)        => rddParam(rddSaved(rddS(e, "oR;"), x.returnSavedVars), cx, x.returnValue)
-  (x: OpParallelCall)  => rddParamOpt(rddParamList(rddParamList(rddSaved(rddS(e, "oP;"), x.parSavedVars),
-                                                                cx, x.parCalls),
-                                                   cx, x.parResults),
-                                      cx, x.parRegister)
   (x: OpPhi)           => rddSources(rddS(rddParam(rddSaved(rddS(e, "oH;"), x.phiSavedVars),
                                                    cx, x.phiTarget), "["),
                                      cx, chain(x.phiSources))
   (x: OpProfEnter)     => rddInt(rddSaved(rddS(e, "oE;"), x.profEnterSavedVars), x.profEnterFnId)
   (x: OpProfLeave)     => rddSaved(rddS(e, "oF;"), x.profLeaveSavedVars)
+  # Unreachable: an Await exists only inside async_lower, after dedup.
+  (x: OpAwait)         => rddParam(rddParam(rddSaved(rddS(e, "oW;"), x.awaitSavedVars),
+                                            cx, x.awaitRegister),
+                                   cx, x.awaitSource)
 
 fun [tail] rddOps(e: RddEnc, cx: RddCx, s: Segment<Op>|None, i: Int32): RddEnc => match(s)
   (nil: None)        => rddS(e, "]")
@@ -418,12 +419,13 @@ fun [tail] rddSlots(e: RddEnc, cx: RddCx, c: Chain<CgFuncSlot>): RddEnc => match
 # by name; declarations compare as a set.
 fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
   let withParams = rddDecls(rddS(e, "Fn;["), chain(rddFields(f.fnParams)))
-  let head = rddBool(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
-                                                   f.fnResult),
-                                             f.fnSync),
-                                     f.fnTail),
-                             f.fnBypassAsync),
-                     f.fnAlwaysInline)
+  let head = rddBool(rddBool(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
+                                                           f.fnResult),
+                                                     f.fnSync),
+                                             f.fnTail),
+                                     f.fnBypassAsync),
+                             f.fnAlwaysInline),
+                     f.fnFuture)
   let body = rddOps(rddS(head, "["), cx, f.fnOps, 0i32)
   let declared = rddNumber(body, chain(map(rddFields(f.fnStackVars), (fd) => fd.fieldName)))
   ret rddLocals(rddCloseSets(declared), rddFields(f.fnStackVars))

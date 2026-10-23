@@ -226,7 +226,7 @@ class _Graph:
         c = _Canon(self)
         c.tokens.append(tuple((c.var(n), c.ty(ty)) for n, ty in fn.params.fields))
         c.emit(fn.foreign_symbol, LIT)
-        c.emit((fn.result, fn.sync, fn.tail, fn.bypass_async, fn.always_inline))
+        c.emit((fn.result, fn.sync, fn.tail, fn.bypass_async, fn.always_inline, fn.future))
         c.emit(fn.ops)
         for n, _ in fn.stack_vars.fields:
             c.var(n)

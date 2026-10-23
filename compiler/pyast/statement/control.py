@@ -69,9 +69,7 @@ class ReturnStatement(Statement):
         # A narrow value or a subset union flowing into a wider union is widened
         # here — `return` is not special.
         vb = self.value.generate_to(resolver, frame.result_type)
-        if vb.operations and isinstance(
-                vb.operations[-1],
-                (cg_o.Jump, cg_o.Return, cg_o.ReturnVoid, cg_o.Abort, cg_o.SwitchJump)):
+        if vb.operations and not vb.operations[-1].falls_through():
             # The value itself transferred control away (a [tail] recur, an
             # inner return): there is no fall-through to jump from, and the
             # block Phi must not receive a source for this dead edge — the

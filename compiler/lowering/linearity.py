@@ -37,6 +37,11 @@ import pyast.rewrite as rw
 Path = tuple[str, ...]
 Obligation = tuple[str, Path]
 
+# The env entry of a `[linear]` function parameter: a binding whose ONE leaf
+# is itself — calling it is its single use. Its function type carries no
+# linearity of its own; the parameter's promise does.
+_LINEAR_FN: Any = object()
+
 
 def check_linearity(statements: list[s.Statement], resolver: g.Resolver) -> list[Error]:
     """Entry point — return a list of linearity errors (empty if clean)."""
@@ -72,6 +77,8 @@ class _Checker:
         """Field-paths from a value of `spec` to its linear leaves."""
         if spec is None:
             return set()
+        if spec is _LINEAR_FN:
+            return {()}
         if isinstance(spec, t.GenericPlaceholderSpec):
             return {()} if spec.is_linear else set()
         if isinstance(spec, t.ClassSpec):
@@ -225,6 +232,10 @@ class _Checker:
                     and self.carries_linearity(prm.declared_type)
                     and "terminal" not in prm.attributes):
                 env[prm.name] = prm.declared_type
+            elif "linear" in prm.attributes:
+                # `[linear]` function parameter: a promise to call it exactly
+                # once — which lets a caller's lambda capture linear values.
+                env[prm.name] = _LINEAR_FN
 
         body_resolver = g.ResolverData(
             fn._generic_scope(self.resolver),
@@ -244,6 +255,10 @@ class _Checker:
                resolver: g.Resolver) -> Counter:
         """Per-execution-path consumption of `env`'s obligations by `expr`."""
         if isinstance(expr, (e.NamedExpression, e.DotExpression)):
+            if isinstance(expr, e.NamedExpression) and env.get(expr.name) is _LINEAR_FN:
+                # Anything but calling it could run it zero or many times.
+                self.errors.append(Error(expr.line_ref,
+                    f"[linear] function '{g.bare_name(expr.name)}' may only be called"))
             return self._count_path(expr, env)
 
         if isinstance(expr, e.CallExpression):
@@ -253,7 +268,10 @@ class _Checker:
             # the receiver as a borrow; count the receiver itself instead.
             if isinstance(fn, e.DotExpression):
                 return self._count(fn.base, env, resolver) + self._count(expr.parameter, env, resolver)
-            return self._count(fn, env, resolver) + self._count(expr.parameter, env, resolver)
+            if isinstance(fn, e.NamedExpression) and env.get(fn.name) is _LINEAR_FN:
+                return self._count_path(fn, env) + self._count(expr.parameter, env, resolver)
+            return (self._count(fn, env, resolver)
+                    + self._count_arguments(fn, expr.parameter, env, resolver))
 
         if isinstance(expr, e.TupleExpression):
             total: Counter = Counter()
@@ -322,12 +340,6 @@ class _Checker:
             self._check_lambda(expr, resolver)
             return Counter()
 
-        if isinstance(expr, e.ParallelExpression):
-            for sub in expr.exprs:
-                self._check_capture(sub, env, expr.line_ref)
-                self._count(sub, env, resolver)
-            return Counter()
-
         # Literals carry no linear value. Any other node is unexpected —
         # fail loudly rather than silently miss a possible consumption.
         if isinstance(expr, (e.StringExpression, e.IntegerExpression,
@@ -335,6 +347,36 @@ class _Checker:
             return Counter()
         raise AssertionError(
             f"linearity: unhandled expression node {type(expr).__name__}")
+
+    def _count_arguments(self, fn: e.Expression, args: e.Expression,
+                         env: dict[str, t.TypeSpec], resolver: g.Resolver) -> Counter:
+        """A call's arguments. A lambda written directly as the argument of a
+        `[linear]` function parameter runs exactly once, so it may capture
+        linear values: creating it moves them, and its body must consume each
+        exactly once."""
+        linear_at = self._linear_parameter_positions(fn)
+        if not linear_at or not isinstance(args, e.TupleExpression):
+            return self._count(args, env, resolver)
+        total: Counter = Counter()
+        for k, entry in enumerate(args.expressions):
+            lam = entry.value
+            if k in linear_at and isinstance(lam, e.LambdaExpression):
+                captured = self._captured(lam.expression, env)
+                for name in captured:
+                    total += Counter((name, leaf) for leaf in self.leaves(env[name]))
+                self._check_lambda(lam, resolver, {name: env[name] for name in captured})
+            else:
+                total += self._count(lam, env, resolver)
+        return total
+
+    def _linear_parameter_positions(self, fn: e.Expression) -> set[int]:
+        if not isinstance(fn, e.NamedExpression):
+            return set()
+        found = self.resolver.find_data(fn.name)
+        if len(found) != 1 or not isinstance(found[0].statement, s.FunctionStatement):
+            return set()
+        return {k for k, prm in enumerate(found[0].statement.parameters.flatten())
+                if "linear" in prm.attributes}
 
     def _count_block(self, block: e.BlockExpression, env: dict[str, t.TypeSpec],
                      resolver: g.Resolver) -> Counter:
@@ -560,9 +602,17 @@ class _Checker:
         """A lambda / nested function must not reference an enclosing linear
         binding — it may run zero or many times, which would break linearity.
 
-        This is a blind name scan; it is sound only because every binding is
-        given a path-unique name before this pass runs, so an inner parameter
-        can never collide with an outer linear binding's name."""
+        A lambda passed to a `[linear]` parameter is the exception
+        (`_count_arguments`)."""
+        for name in self._captured(body, env):
+            self.errors.append(Error(line_ref,
+                f"linear value '{g.bare_name(name)}' captured by a nested function or lambda"))
+
+    def _captured(self, body: e.Expression, env: dict[str, t.TypeSpec]) -> list[str]:
+        """The enclosing linear bindings `body` references. A blind name scan:
+        sound only because every binding is given a path-unique name before
+        this pass runs, so an inner parameter can never collide with an outer
+        linear binding's name."""
         captured: set[str] = set()
 
         def visit(_, thing):
@@ -570,9 +620,7 @@ class _Checker:
                 captured.add(thing.name)
             return rw.UNCHANGED
         body.search_and_replace(self.resolver, visit)
-        for name in sorted(captured):
-            self.errors.append(Error(line_ref,
-                f"linear value '{g.bare_name(name)}' captured by a nested function or lambda"))
+        return sorted(captured)
 
     # --- generic instantiation kind check -------------------------------
 
@@ -606,8 +654,9 @@ class _Checker:
                 self.errors.append(Error(line_ref,
                     "linear type cannot be passed to an unrestricted type parameter"))
 
-    def _check_lambda(self, lam: e.LambdaExpression, resolver: g.Resolver) -> None:
-        env: dict[str, t.TypeSpec] = {}
+    def _check_lambda(self, lam: e.LambdaExpression, resolver: g.Resolver,
+                      captured: dict[str, t.TypeSpec] | None = None) -> None:
+        env: dict[str, t.TypeSpec] = dict(captured or {})
         for prm in lam.parameters.flatten():
             if (prm.declared_type is not None
                     and self.carries_linearity(prm.declared_type)

@@ -112,7 +112,9 @@ class CoalesceExpression(Expression):
         subject, s1, sh = self.subject.compile(resolver, None)
         st = subject.get_type(resolver)
         narrowed = without_none(st) if st is not None else None
-        if narrowed is not None and st.is_concrete():
+        # A placeholder from outside this scope is a hole, not a type: a
+        # partly bound generic call reads `V|None` until V is bound.
+        if narrowed is not None and st.is_concrete() and not t.has_free_placeholders(st, resolver):
             # Desugar from the ORIGINAL children, and drop `s1`. The match
             # compiles its own subject and arms, so passing the already-compiled
             # ones would compile each twice — and a compile is not idempotent

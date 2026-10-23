@@ -22,7 +22,7 @@ bulk of the barriers in a self-compile.
 THE PROOF, per store `Move(ObjectField(pointer=StackVar n, …), src)`: on every
 path reaching it, `n` holds an object created by a `NewObject` in this function,
 and since that allocation nothing has run a safe point (any `Call`,
-`ParallelCall`, `NewObject` or `RuntimeInvoke`) and nothing has published the
+`NewObject` or `RuntimeInvoke`) and nothing has published the
 pointer (`lowering/escapes.py`).
 
 Runs LAST, after `async_lower` — which is what creates the state stores — and
@@ -58,7 +58,7 @@ import dataclasses
 from codegen.gen import Application
 from codegen.ir import Function
 from codegen.ops import (
-    Op, Move, Call, ParallelCall, NewObject, Return, ReturnVoid, Abort,
+    Op, Move, Call, NewObject, Return, ReturnVoid, Abort,
     Label, Jump, JumpIf, IfTask, AssertNotTask, SwitchJump, Phi,
 )
 from codegen.param import StackVar, ObjectField, RuntimeInvoke
@@ -71,9 +71,6 @@ from lowering.escapes import op_publishes
 _MODELLED = (Move, Label, Jump, JumpIf, IfTask, AssertNotTask, SwitchJump,
              Return, ReturnVoid, Abort, Phi)
 
-# Control does not fall through past these.
-_TERMINAL = (Jump, Return, ReturnVoid, Abort)
-
 _MAX_SWEEPS = 8     # bounded; the sets are finite and shrink monotonically
 
 
@@ -81,7 +78,7 @@ def __kills_everything(op: Op) -> bool:
     """Can this op reach a GC safe point? An allocation polls, a call may
     allocate inside the callee, and a runtime helper is opaque. Any of them
     can open a cycle or relocate, which ends every window at once."""
-    if isinstance(op, (Call, ParallelCall, NewObject)):
+    if isinstance(op, (Call, NewObject)):
         return True
     if any(isinstance(p, RuntimeInvoke) for p in op.all_params()):
         return True
@@ -116,18 +113,6 @@ def __step(op: Op, fresh: frozenset[str]) -> frozenset[str]:
     return frozenset(survivors - written)
 
 
-def __jump_targets(op: Op) -> list[str]:
-    if isinstance(op, Jump):
-        return [op.name]
-    if isinstance(op, JumpIf):
-        return [op.label]
-    if isinstance(op, IfTask):
-        return [op.target]
-    if isinstance(op, SwitchJump):
-        return [lbl for _v, lbl in op.cases]
-    return []
-
-
 def __arriving(ops: tuple[Op, ...], universe: frozenset[str]) -> dict[str, frozenset[str]]:
     """label → the intersection of the facts on every jump edge into it."""
     arriving = {op.name: universe for op in ops if isinstance(op, Label)}
@@ -141,10 +126,10 @@ def __arriving(ops: tuple[Op, ...], universe: frozenset[str]) -> dict[str, froze
             # the bare pointer publishes it before control transfers, so the
             # taken edge must carry the post-kill fact.
             fact = __step(op, fact)
-            for target in __jump_targets(op):
+            for target in op.branch_targets():
                 if target in arriving:
                     arriving[target] &= fact
-            if isinstance(op, _TERMINAL) or (isinstance(op, Call) and op.musttail):
+            if not op.falls_through():
                 fact = universe                 # unreachable until the next Label
         if arriving == before:
             return arriving
@@ -178,7 +163,7 @@ def __rewrite(fn: Function) -> Function:
                 op, target=dataclasses.replace(op.target, fresh=True))
             changed = True
         fact = __step(op, fact)
-        if isinstance(op, _TERMINAL) or (isinstance(op, Call) and op.musttail):
+        if not op.falls_through():
             fact = universe
     return dataclasses.replace(fn, ops=tuple(new_ops)) if changed else fn
 

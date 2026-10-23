@@ -530,6 +530,13 @@ enum {
 };
 
 #define PTR_IS_OBJECT(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == 0)
+// A reference word as the COLLECTOR reads it. A TASK-tagged word is a pending
+// result — a call's task-carrying return, which the compilers keep as
+// returned in C locals and async frames until its use awaits it — and refers
+// to its task. Tasks are mutable, so they never move and the tag never needs
+// care when a reference is updated. Every other tagged word is a scalar, and
+// none sets the task bit, so clearing it leaves them as they are.
+#define gc_ref(word) ((object_t*)((uintptr_t)(word) & ~(uintptr_t)PTR_TAG_TASK))
 #define PTR_IS_TASK(ptr)    (((uintptr_t)(ptr)&PTR_TAG_TASK) != 0)
 #define PTR_IS_INTEGER(ptr) (((uintptr_t)(ptr)&PTR_TAG_INTEGER) != 0)
 #define PTR_IS_STRING(ptr)  (((uintptr_t)(ptr)&PTR_TAG_MASK) == PTR_TAG_STRING)
@@ -1376,9 +1383,24 @@ typedef struct task_s {
     _Atomic(struct task_s*) next;          // intrusive queue link
 } task_t;
 
+// task_t.state. TASK_YIELDED: complete, and registering a continuation posts
+// it to ANOTHER worker's queue instead of this one's (future_yield).
+#define TASK_PENDING  0
+#define TASK_CALLBACK 1
+#define TASK_COMPLETE 2
+#define TASK_YIELDED  3
+
 // Strip the PTR_TAG_TASK bit and yield a YAFL object pointer.  Callers that
 // need task-specific fields cast to (task_t*) themselves.
 #define TASK_UNTAG(ptr) ((object_t*)((uintptr_t)(ptr) & ~(uintptr_t)PTR_TAG_MASK))
+// The task a task-carrying result word holds, untagged, or NULL when it holds
+// a value — what a deferred await tests and parks on.
+#define TASK_PENDING_OF(ptr) (PTR_IS_TASK(ptr) ? TASK_UNTAG(ptr) : (object_t*)NULL)
+// A deferred await's test: TASK_PENDING_OF's task is set and still running.
+// Acquire pairs with the completer's exchange, so a complete task's result is
+// readable after it.
+#define TASK_RUNNING(task) ((task) != NULL\
+    && atomic_load_explicit(&((task_t*)(task))->state, memory_order_acquire) != TASK_COMPLETE)
 
 // task_obj_t: task subtype whose result is an object_t* (the compiler's
 // "task$DataPointer" layout — used for YAFL return types String, Int (bigint),
@@ -1418,28 +1440,17 @@ EXTERN void _task_fire(void* self); // worker-loop entry: fire a queued task's c
 // this so a long completion chain doesn't recurse on the C stack.
 EXTERN object_t* task_complete_deferred(object_t* self);
 
-// Fixed-prefix layout for compiler-generated parallel join tasks.  Mirrors
-// task_t through `next`, then adds `remaining` for the join counter.  Each
-// per-callsite par_task struct (emitted by async_lower._par_task_object) is a
-// flat extension of this prefix.
-typedef struct {
-    vtable_t*               type;
-    _Atomic(int32_t)        state;
-    int32_t                 thread_id;
-    fun_t                   callback;
-    _Atomic(struct task_s*) next;
-    _Atomic(int32_t)        remaining;
-} task_par_base_t;
-
-// Atomically decrement remaining; call task_complete when it reaches 0.
-EXTERN object_t* task_par_decrement(object_t* par_task);
+// A `[future]` function's entry: a complete task, TASK-tagged, whose
+// continuation is posted to another worker when registered — or NULL, when
+// the pool is not accepting, to run the body in place.
+EXTERN object_t* future_yield(object_t* self);
 
 // Post task to its designated worker thread (task->thread_id).
 EXTERN void thread_work_post(object_t* task);
 // Round-robin post across workers — use when spreading parallel work.
 EXTERN object_t* thread_work_post_parallel(object_t* task);
 // Advisory backpressure: true while the runnable backlog is small enough that
-// __parallel__ sites should fork; false asks them to evaluate sequentially.
+// [future]s should fork; false asks them to evaluate in place.
 // Threshold = YAFL_TASK_BACKLOG (default 4) queued tasks per worker.
 EXTERN bool thread_work_accepting(void);
 // Create an ad-hoc dispatch task from a fun_t and post it to the current thread.

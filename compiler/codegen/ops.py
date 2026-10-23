@@ -30,6 +30,20 @@ class Op:
     def all_params(self) -> list[RParam]:
         return []
 
+    # Control flow. Every op answers for itself; there is no default, so a
+    # new op cannot inherit a wrong answer.
+    def falls_through(self) -> bool:
+        """Control can pass from this op to the next op in the stream."""
+        raise NotImplementedError()
+
+    def branch_targets(self) -> tuple[str, ...]:
+        """The labels this op can transfer control to, besides falling through."""
+        raise NotImplementedError()
+
+    def targets(self) -> tuple[LParam, ...]:
+        """Every place this op writes: locals, globals and heap fields alike."""
+        raise NotImplementedError()
+
 
 @dataclass(frozen=True)
 class Label(Op):
@@ -40,6 +54,15 @@ class Label(Op):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"{mangle_name(self.name)}:\n"
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +96,15 @@ class Move(Op):
         live = self.source.get_live_vars()
         return (live, frozenset({self.target})) if isinstance(self.target, StackVar) else (live | self.target.get_live_vars(), frozenset())
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.target,)
+
 
 @dataclass(frozen=True)
 class Jump(Op):
@@ -83,6 +115,15 @@ class Jump(Op):
 
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    goto {mangle_name(self.name)};\n"
+
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return (self.name,)
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -110,6 +151,15 @@ class JumpIf(Op):
 
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.condition.get_live_vars(), frozenset()
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return (self.label,)
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -165,6 +215,15 @@ class IfTask(Op):
                 f"        goto {mangle_name(self.target)};\n"
                 f"    }}\n")
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return (self.target,)
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.task_lhs, self.call_id_lhs)
+
 
 @dataclass(frozen=True)
 class AssertNotTask(Op):
@@ -192,14 +251,65 @@ class AssertNotTask(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    YAFL_ASSERT_NOT_TASK({self.condition.to_c(type_cache)});\n"
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class Await(Op):
+    """Realises a deferred call's result (lowering/defer_awaits.py): the
+    suspension point the call no longer is. `source` holds the result as the
+    call returned it, in its task-carrying shape — the collector reads a
+    task-tagged word as a reference to its task (`gc_ref`, yafl.h). Parks on
+    the task while it is still running; otherwise takes the value, from the
+    completed task or as returned, into `register`. Lives only inside
+    async_lower; never reaches C. `returned`: the op it realises for is a
+    Return of the whole value, so the hot path hands `source` to the caller
+    unawaited (the state machine, whose task the caller already holds, parks
+    as usual)."""
+    register: StackVar
+    source: StackVar
+    returned: bool = False
+
+    def all_params(self) -> list[RParam]:
+        return self.register.flatten(is_reader=False) + self.source.flatten()
+
+    def test_params(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self.register) or predicate(self.source)
+
+    def rename_vars(self, renames: dict[str, str]) -> Await:
+        return dataclasses.replace(self, register=self.register.rename_vars(renames),
+                                   source=self.source.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> Await:
+        return dataclasses.replace(self, register=self.register.replace_params(replacer),
+                                   source=self.source.replace_params(replacer))
+
+    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
+        return frozenset({self.source}), frozenset({self.register})
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.register,)
+
 
 @dataclass(frozen=True)
 class SwitchJump(Op):
     """Dispatch to labeled targets based on an integer condition value.
 
-    `cases` is a tuple of (int_value, label_name) pairs.  Any value not
-    listed falls through to the next instruction (the idx==0 fall-through
-    in the state-machine dispatch is the canonical use-case).
+    `cases` is a tuple of (int_value, label_name) pairs. A value not listed
+    aborts, so control never falls through to the next instruction.
     """
     condition: RParam
     cases: tuple[tuple[int, str], ...]
@@ -227,9 +337,18 @@ class SwitchJump(Op):
         # Default aborts: idx==0 must never reach this dispatch (heap memory
         # is zero-initialised, so idx==0 would be uninitialised state). Every
         # valid resume point must have a case; anything else is a compiler
-        # bug that we want to fail fast on. Cases that need to fall through
-        # to the next instruction emit `case V: break;` explicitly.
+        # bug that we want to fail fast on.
         return f"    switch ({cond}) {{\n{cases}\n        default: abort();\n    }}\n"
+
+    def falls_through(self) -> bool:
+        # Its C ends `default: abort()`: an unlisted value never falls through.
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return tuple(lbl for _, lbl in self.cases)
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -278,6 +397,15 @@ class NewObject(Op): # Create a new blank instance of the named object
         live = self.size.get_live_vars() if self.size else frozenset()
         return (live, frozenset({self.register})) if isinstance(self.register, StackVar) else (live | self.register.get_live_vars(), frozenset())
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.register,)
+
 
 @dataclass(frozen=True)
 class Call(Op):
@@ -287,6 +415,9 @@ class Call(Op):
     musttail: bool = False # Current function will end here and the return value is the return of this call
     impure: bool = False   # If True, this call must never be eliminated even if the result is unused
     result_type: t.Type|None = None # Actual return type when register is None (preserves ABI on sret platforms)
+    # Its await is deferred (lowering/defer_awaits.py): `register` holds the
+    # result in its task-carrying shape, and an `Await` realises it later.
+    deferred: bool = False
 
     def all_params(self) -> list[RParam]:
         return self.function.flatten() + self.parameters.flatten() + (self.register.flatten(is_reader=False) if self.register else [])
@@ -307,8 +438,8 @@ class Call(Op):
     @property
     def may_suspend(self) -> bool:
         """A suspension point for the task lowering: a non-tail call through
-        a function value not proven sync."""
-        return not self.musttail and not self.is_sync
+        a function value not proven sync, whose await is not deferred."""
+        return not self.musttail and not self.is_sync and not self.deferred
 
     def rename_vars(self, renames: dict[str, str]) -> Call:
         return dataclasses.replace(self,
@@ -375,12 +506,31 @@ class Call(Op):
         dead = self.register.get_live_vars() if self.register else set()
         return (live, dead) if isinstance(self.register, StackVar) else (live | dead, frozenset())
 
+    def falls_through(self) -> bool:
+        # A musttail call is emitted as `return f(...)`: the frame is replaced.
+        return not self.musttail
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.register,) if self.register is not None else ()
+
 
 @dataclass(frozen=True)
 class ReturnVoid(Op):
     """Emit a bare 'return;' for void functions (e.g. the async state machine)."""
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return "    return;\n"
+
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -397,6 +547,15 @@ class Abort(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         note = f"  // {self.reason}" if self.reason else ""
         return f"    abort();{note}\n"
+
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -425,6 +584,15 @@ class Return(Op):
     def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
         return self.value.get_live_vars(), frozenset()
 
+    def falls_through(self) -> bool:
+        return False
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class ProfEnter(Op):
@@ -437,6 +605,15 @@ class ProfEnter(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return f"    yafl_prof_enter({self.fn_id}u);\n"
 
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
+
 
 @dataclass(frozen=True)
 class ProfLeave(Op):
@@ -444,49 +621,17 @@ class ProfLeave(Op):
     def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         return "    yafl_prof_leave();\n"
 
+    def falls_through(self) -> bool:
+        return True
 
-@dataclass(frozen=True)
-class ParallelCall(Op):
-    """N concurrent zero-param function calls — lowered by async_lower into a parallel join.
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
 
-    Each call in `calls` is a fun_t reference (zero-param, so no args tuple).
-    `results` holds one unwrapped result StackVar per slot.
-    `register` holds the assembled tuple StackVar (the value seen by subsequent code).
+    def targets(self) -> tuple[LParam, ...]:
+        return ()
 
-    No to_c() — async_lower transforms this entirely before codegen.
-    """
-    calls:    tuple[RParam, ...]         # one fun_t reference per slot
-    results:  tuple[StackVar, ...]       # per-slot unwrapped result vars
-    register: StackVar | None = None     # assembled tuple result var
 
-    def all_params(self) -> list[RParam]:
-        reads = [p for fn_ref in self.calls for p in fn_ref.flatten()]
-        writes = [p for r in self.results for p in r.flatten(is_reader=False)]
-        if self.register:
-            writes += self.register.flatten(is_reader=False)
-        return reads + writes
 
-    def rename_vars(self, renames: dict[str, str]) -> ParallelCall:
-        return dataclasses.replace(self,
-            calls=tuple(r.rename_vars(renames) for r in self.calls),
-            results=tuple(r.rename_vars(renames) for r in self.results),
-            register=self.register and self.register.rename_vars(renames))
-
-    def replace_params(self, replacer: Callable[[RParam], RParam]) -> ParallelCall:
-        return dataclasses.replace(self,
-            calls=tuple(replacer(r) for r in self.calls),
-            results=tuple(replacer(r) for r in self.results),
-            register=self.register and replacer(self.register))
-
-    def get_live_vars(self) -> tuple[frozenset[StackVar], frozenset[StackVar]]:
-        reads = frozenset().union(*(r.get_live_vars() for r in self.calls))
-        writes: frozenset[StackVar] = frozenset(self.results)
-        if self.register:
-            writes = writes | frozenset({self.register})
-        return reads, writes
-
-    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        raise NotImplementedError("ParallelCall must be lowered by async_lower before codegen")
 
 
 
@@ -545,3 +690,12 @@ class Phi(Op):
         raise AssertionError(
             f"Phi op reached codegen for target {self.target.name!r} — "
             f"from_ssa must lower all Phis to per-edge Moves before codegen.")
+
+    def falls_through(self) -> bool:
+        return True
+
+    def branch_targets(self) -> tuple[str, ...]:
+        return ()
+
+    def targets(self) -> tuple[LParam, ...]:
+        return (self.target,)

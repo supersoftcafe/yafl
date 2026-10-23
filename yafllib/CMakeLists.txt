@@ -17,7 +17,6 @@ set(SRC_FILES
     object.c
     gc_stats.c
     gc_debug.c
-    parallel.c
     primitive.c
     prof.c
     heapprof.c
@@ -76,7 +75,6 @@ set(TEST_SRC_FILES
     object.c
     gc_stats.c
     gc_debug.c
-    parallel.c
     primitive.c
     prof.c
     heapprof.c
@@ -109,6 +107,10 @@ add_yafl_test(test_once)
 add_yafl_test(test_gc)
 add_yafl_test(test_io)
 add_yafl_test(test_task)
+# test_backlog_zero: YAFL_TASK_BACKLOG=0 closes the pool to new work — the
+# compilers' run-in-place / degrade-to-lazy tests rely on it.
+add_yafl_test(test_backlog_zero)
+set_tests_properties(test_backlog_zero PROPERTIES ENVIRONMENT "YAFL_TASK_BACKLOG=0")
 add_yafl_test(test_io_stress)
 add_yafl_test(test_gc_stress)
 add_yafl_test(test_gc_min)
@@ -144,8 +146,11 @@ add_yafl_test(test_gc_publish_step)
 # stub's flag root by lazy_enqueue_waiter. Unpublished, it is reclaimed while
 # the flag still points at it.
 add_yafl_test(test_gc_lazy_step)
-# Both drive the collector by hand on one thread.
-set_tests_properties(test_gc_publish_step test_gc_lazy_step PROPERTIES ENVIRONMENT
+# test_gc_tagged_task: a task referenced only by a TASK-tagged word — a pending
+# result, in a heap field or a stack slot — survives a cycle.
+add_yafl_test(test_gc_tagged_task)
+# All three drive the collector by hand on one thread.
+set_tests_properties(test_gc_publish_step test_gc_lazy_step test_gc_tagged_task PROPERTIES ENVIRONMENT
     "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_gen: stepped test of immutability-based generations — promotion after
 # GC_PROMOTE_AFTER prunes, exemption from minors, reclamation by a major.

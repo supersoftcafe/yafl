@@ -371,7 +371,7 @@ fun [foreign("yafl_test_sideeffect"),impure] sideeffect(x: Int): Int
 
 fun effect(a: Int, b: Int): None
     let ra: Int = sideeffect(a)
-    let rb: Int = sideeffect(b)
+    let rb: Int = sideeffect(ra)
     ret None
 
 fun main(): Int
@@ -380,9 +380,11 @@ fun main(): Int
 """
         c_code = c.compile([c.Input(src, "test.yafl")], use_stdlib=False, just_testing=False)
         self.assertTrue(c_code, "compilation produced no output")
-        # `sideeffect` is foreign without [sync], so both calls in effect may
-        # suspend → effect gets a state machine, effect$async. (A sync callee
-        # would make them plain calls and there would be no machine to test.)
+        # `sideeffect` is foreign without [sync], so its calls may suspend, and
+        # the second reads the first's result: effect awaits between them and
+        # gets a state machine, effect$async. (A result never read is never
+        # awaited, and a sync callee would make them plain calls; either way
+        # there would be no machine to test.)
         self.assertRegex(c_code, r"void System__effect_\w+_async\(object_t\* _state")
 
         with tempfile.NamedTemporaryFile(suffix=".o", delete=False) as tmp:

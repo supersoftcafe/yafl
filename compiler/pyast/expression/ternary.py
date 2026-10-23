@@ -98,9 +98,7 @@ class TernaryExpression(Expression):
         # None result_var, which a unit-valued branch also has. A bottom branch
         # contributes no Phi source; the ternary's value is the other branch's.
         def _bottom(b: g.OperationBundle) -> bool:
-            return bool(b.operations) and isinstance(
-                b.operations[-1],
-                (cg_o.Jump, cg_o.Return, cg_o.ReturnVoid, cg_o.Abort, cg_o.SwitchJump))
+            return bool(b.operations) and not b.operations[-1].falls_through()
         f_bottom = _bottom(false_bundle)
         t_bottom = _bottom(true_bundle)
         if f_bottom or t_bottom:

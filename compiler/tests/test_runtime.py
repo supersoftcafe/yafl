@@ -539,65 +539,54 @@ fun main(): System::Int
 
 
 # ---------------------------------------------------------------------------
-# __parallel__ — explicit concurrent fan-out with join
+# [future] functions — calls that run on workers, awaited where used
 # ---------------------------------------------------------------------------
 
-class TestParallel(TestCase):
+class TestFutureCalls(TestCase):
 
-    def test_parallel_two_sync_lambdas(self):
-        """Two-slot parallel; both lambdas are trivially sync arithmetic."""
+    def test_future_two_calls(self):
+        """Two calls of a sync-bodied [future]; both start before either is used."""
         src = _PREAMBLE + _ARITH + """\
+fun [future] sum(x: Int, y: Int): Int
+    ret x + y
 fun main(): Int
-    let (a, b) = __parallel__(() => 3 + 4, () => 5 + 6)
+    let a = sum(3, 4)
+    let b = sum(5, 6)
     ret a + b
 """
         self.assertEqual(18, _compile_and_run(src))   # 7 + 11 = 18
 
-    def test_parallel_three_slots(self):
-        """Three-slot parallel join."""
+    def test_future_three_calls(self):
+        """Three calls, each body calling on."""
         src = _PREAMBLE + _ARITH + """\
 fun add3(x: Int): Int
     ret x + 3
-fun inner(x: Int): Int
+fun [future] inner(x: Int): Int
     let a: Int = add3(x)
     ret a
 fun main(): Int
-    let (a, b, c) = __parallel__(() => inner(10), () => inner(20), () => inner(30))
+    let a = inner(10)
+    let b = inner(20)
+    let c = inner(30)
     ret a - b + c
 """
         self.assertEqual(23, _compile_and_run(src))   # 13 - 23 + 33 = 23
 
-    def test_parallel_two_with_state_machines(self):
-        """Lambdas call functions that have state machines; results combined correctly."""
+    def test_future_captures_scope(self):
+        """A nested [future] captures a variable from the enclosing scope."""
         src = _PREAMBLE + _ARITH + """\
 fun add3(x: Int): Int
     ret x + 3
-
-fun inner(x: Int): Int
-    let a: Int = add3(x)
-    ret a
-
-fun main(): Int
-    let (a, b) = __parallel__(() => inner(10), () => inner(20))
-    ret a + b
-"""
-        self.assertEqual(36, _compile_and_run(src))   # 13 + 23 = 36
-
-    def test_parallel_captures_scope(self):
-        """Lambdas capture a variable from the enclosing scope."""
-        src = _PREAMBLE + _ARITH + """\
-fun add3(x: Int): Int
-    ret x + 3
-fun inner(x: Int): Int
-    let a: Int = add3(x)
-    ret a
 fun compute(base: Int): Int
-    let (a, b) = __parallel__(() => inner(base), () => inner(base + 10))
+    fun [future] from(offset: Int): Int
+        ret add3(base + offset)
+    let a = from(0)
+    let b = from(10)
     ret a + b
 fun main(): Int
     ret compute(7)
 """
-        self.assertEqual(30, _compile_and_run(src))   # inner(7)=10, inner(17)=20; 10+20=30
+        self.assertEqual(30, _compile_and_run(src))   # 10 + 20 = 30
 
 
 def _compile_stdlib(source: str) -> str:
@@ -624,11 +613,11 @@ def _compile_and_run_stdlib(source: str, timeout: int = 10) -> int:
             pass
 
 
-class TestParallelIO(TestCase):
-    """Tests that exercise real IO suspension in parallel slots."""
+class TestFutureIO(TestCase):
+    """[future] calls whose bodies really suspend on IO."""
 
-    def test_parallel_open_read_close(self):
-        """Two slots each open /etc/hostname, read it, close it; genuine async suspension."""
+    def test_future_open_read_close(self):
+        """Two calls each open /etc/hostname, read it, close it; genuine async suspension."""
         src = """\
 namespace System
 import System::IO
@@ -641,22 +630,21 @@ fun read_and_close(io: IO): Int
     let r = io.read(4096)
     ret close_io(r.io)
 
-fun read_file(path: String): Int
+fun [future] read_file(path: String): Int
     let x = open_read(path)
     ret match(x)
         (io: IO) => read_and_close(io)
         (e: IOError) => 0
 
 fun main(): Int
-    let (a, b) = __parallel__(
-        () => read_file("/etc/hostname"),
-        () => read_file("/etc/hostname"))
+    let a = read_file("/etc/hostname")
+    let b = read_file("/etc/hostname")
     ret a + b
 """
         self.assertEqual(2, _compile_and_run_stdlib(src))
 
-    def test_parallel_three_io(self):
-        """Three-slot parallel IO."""
+    def test_future_three_io(self):
+        """Three [future] IO calls."""
         src = """\
 namespace System
 import System::IO
@@ -669,17 +657,16 @@ fun read_and_close(io: IO): Int
     let r = io.read(4096)
     ret close_io(r.io)
 
-fun read_file(path: String): Int
+fun [future] read_file(path: String): Int
     let x = open_read(path)
     ret match(x)
         (io: IO) => read_and_close(io)
         (e: IOError) => 0
 
 fun main(): Int
-    let (a, b, c) = __parallel__(
-        () => read_file("/etc/hostname"),
-        () => read_file("/etc/hostname"),
-        () => read_file("/etc/hostname"))
+    let a = read_file("/etc/hostname")
+    let b = read_file("/etc/hostname")
+    let c = read_file("/etc/hostname")
     ret a + b + c
 """
         self.assertEqual(3, _compile_and_run_stdlib(src))

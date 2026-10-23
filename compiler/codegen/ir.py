@@ -5,7 +5,7 @@ from typing import Callable, Any
 from dataclasses import dataclass, field
 from codegen.tools import mangle_name, to_pointer_mask, to_pointer_mask_window
 
-from codegen.ops import Op, Move, Call, NewObject, Jump, JumpIf, IfTask, SwitchJump, Return, ReturnVoid, Label, Phi, Abort, ProfEnter, ProfLeave
+from codegen.ops import Op, Move, Call, Jump, JumpIf, Return, ReturnVoid, Label, Phi, ProfEnter, ProfLeave
 
 import codegen.typedecl as t
 import codegen.param as p
@@ -24,6 +24,8 @@ class Function:
     bypass_async: bool = False  # Skip async_lower; ops are already in their final hand-crafted form.
     always_inline: bool = False # `[inline(always)]`: inline at every call site regardless of size,
                                 # so a chain of marked functions fuses into its consumer (pre-async).
+    future: bool = False        # `[future]`: the body runs on a worker; a call answers with a task
+                                # (lowering/future_functions.py). Never inlined: the body is the unit.
     source_file: str = ""       # --profile descriptors; "" / 0 for synthesised functions
     source_line: int = 0        # (their names self-describe: $async, lazy_*, __entrypoint__).
 
@@ -155,7 +157,7 @@ class Function:
                 out.append(op)
 
             elif isinstance(op, Label):
-                if op.name in phis_at and out and not isinstance(out[-1], (Jump, Return, ReturnVoid, Abort)):
+                if op.name in phis_at and out and out[-1].falls_through():
                     for phi in phis_at[op.name]:
                         out.append(Move(phi.target, source_for(phi, cur)))
                 out.append(op)
@@ -179,23 +181,8 @@ class Function:
 
         def successors(index: int) -> list[int]:
             op = self.ops[index]
-            fallthrough = [index + 1] if index + 1 < n else []
-            if isinstance(op, (Return, ReturnVoid)):
-                return []
-            if isinstance(op, Call) and op.musttail:
-                return []  # codegen emits `return foo(...)` — no successor
-            if isinstance(op, Jump):
-                return [labels[op.name]]
-            if isinstance(op, JumpIf):
-                return [labels[op.label]] + fallthrough
-            if isinstance(op, IfTask):
-                return [labels[op.target]] + fallthrough
-            if isinstance(op, SwitchJump):
-                # Codegen emits `default: abort()`, so an unmatched value never
-                # falls through — the successors are exactly the labelled cases.
-                # (Matches uninit_check's CFG model.)
-                return [labels[lbl] for _, lbl in op.cases]
-            return fallthrough
+            fallthrough = [index + 1] if index + 1 < n and op.falls_through() else []
+            return [labels[target] for target in op.branch_targets()] + fallthrough
 
         seen: set[int] = {0}
         worklist: list[int] = [0]
@@ -230,8 +217,7 @@ class Function:
 
     def block_predecessors(self) -> dict[str, set[str | None]]:
         """For each labelled block, the labels of the blocks (None for the
-        implicit entry block) that reach it by a Jump, JumpIf, IfTask,
-        SwitchJump or fall-through."""
+        implicit entry block) that reach it by a branch or by falling through."""
         preds: dict[str, set[str | None]] = {}
         current: str | None = None
 
@@ -240,22 +226,13 @@ class Function:
 
         for i, op in enumerate(self.ops):
             if isinstance(op, Label):
-                # Fall-through edge from the previous block, unless the
-                # previous op was a terminator (abort() does not return).
                 prev = self.ops[i - 1] if i > 0 else None
-                if prev is not None and not isinstance(prev, (Jump, Return, ReturnVoid, Abort)):
+                if prev is not None and prev.falls_through():
                     add(op.name, current)
                 current = op.name
                 preds.setdefault(op.name, set())
-            elif isinstance(op, Jump):
-                add(op.name, current)
-            elif isinstance(op, JumpIf):
-                add(op.label, current)
-            elif isinstance(op, IfTask):
-                add(op.target, current)
-            elif isinstance(op, SwitchJump):
-                for _, lbl in op.cases:
-                    add(lbl, current)
+            for target in op.branch_targets():
+                add(target, current)
         return preds
 
 @dataclass(frozen=True)
@@ -268,7 +245,7 @@ class Object:
     comment: str = ""
     is_foreign: bool = False
     # True for objects MUTATED after construction (state machines, task
-    # subtypes, par_tasks, lazy stubs). The GC places them on mutable pages,
+    # subtypes, lazy stubs). The GC places them on mutable pages,
     # which are exempt from compaction — relocating an object that is still
     # being written loses the writes that land in the stale copy. Ordinary
     # YAFL objects are immutable after construction and stay compactable.

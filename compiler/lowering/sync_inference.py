@@ -25,9 +25,8 @@ Every node starts sync and can only FALL; a node falls when any of its
 sources falls:
 
   function F     every call's sources (tail calls too: F returns the
-                 callee's task); ParallelCall, or being foreign or
-                 hand-built (`bypass_async`) without `sync`, makes F fall
-                 outright
+                 callee's task); being foreign or hand-built
+                 (`bypass_async`) without `sync` makes F fall outright
   maybe_async F  the same, except a call of one of F's own function
                  parameters — called, or handed on to a callee — does not
                  count. F is MAYBE_ASYNC when this holds but F falls: it keeps
@@ -80,7 +79,7 @@ import dataclasses
 import lowering.trim as trim
 from codegen.gen import Application
 from codegen.ir import Function, Object
-from codegen.ops import Call, Move, Op, ParallelCall, Phi, Return
+from codegen.ops import Call, Move, Op, Phi, Return
 from codegen.param import (
     GlobalFunction, GlobalVar, NewStruct, NewStructTyped, NullPointer,
     ObjectField, RParam, StackVar, StructField, VirtualFunction,
@@ -363,14 +362,13 @@ def _build_flow(a: Application) -> _SyncFlow:
                     flow.flow(flow.sources(fn_name, value, path), ("result", fn_name, path))
             case _:
                 # Any other op that defines a variable holding a function
-                # (a ParallelCall slot result, …) is not modelled: unknown.
+                # is not modelled: unknown.
                 for w in op.get_live_vars()[1]:
                     fall_all(w.get_type(), lambda path, w=w: ("var", fn_name, w.name, path))
 
     for name, fn in a.functions.items():
         if (fn.foreign_symbol is not None or fn.bypass_async
-                or name == "__entrypoint__"
-                or any(isinstance(op, ParallelCall) for op in fn.ops)):
+                or name == "__entrypoint__"):
             flow.fall(("fn", name))
             flow.fall(("mfn", name))
         if fn.foreign_symbol is not None:

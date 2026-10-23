@@ -15,10 +15,9 @@ import System::Test
 fun applyTwice(f: (:System::Int): System::Int, x: System::Int): System::Int
   ret f(f(x))
 
-# Suspends: __parallel__ forks onto the worker pool.
-fun parAdd(y: System::Int): System::Int
-  let (p, q) = __parallel__(() => y, () => 1)
-  ret p + q
+# Suspends: a [future] hands its body to the worker pool.
+fun [future] parAdd(y: System::Int): System::Int
+  ret y + 1
 
 fun program(): System::Int
   let a = applyTwice((y: System::Int) => y + 1, 1)
@@ -34,9 +33,8 @@ namespace CompilerTests::MaybeAsync::TailLoopHigherOrder
 import System
 import System::Test
 
-fun parAdd(acc: System::Int, x: System::Int): System::Int
-  let (p, q) = __parallel__(() => acc, () => x)
-  ret p + q
+fun [future] parAdd(acc: System::Int, x: System::Int): System::Int
+  ret acc + x
 
 fun program(): System::Int
   let xs = prepend<System::Int>(1, prepend<System::Int>(2, prepend<System::Int>(3,

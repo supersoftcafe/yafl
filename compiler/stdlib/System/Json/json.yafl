@@ -585,7 +585,7 @@ fun prettyEmit<S, E>(source: S): Pretty<S, E> where System::Stream<S, JsonToken,
 
 # Writing a token/String stream to IO is not done here: this library stays free
 # of any IO dependency. Use `System::IO::writeStream<S, E>` directly, spelling the
-# error type (e.g. `IOError | JsonParseError` for a tokenizer over an IO source).
+# error type (e.g. `JsonParseError` for a tokenizer over `once(text)`).
 
 
 # ── JSON of a String ─────────────────────────────────────────────────────────

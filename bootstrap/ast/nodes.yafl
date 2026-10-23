@@ -83,7 +83,6 @@ enum PExpr
   # frontend expands it during compile once its subject type resolves
   # (compile_expr.yafl); post-converge trees never contain one.
   enum PeWith(withSubject: PExpr, withRepls: PExpr, pewLine: PLine)
-  enum PeParallel(parParams: PExpr, pepLine: PLine)
   enum PeNewEnum(rootName: String, leafName: String, fieldArgs: List<PFieldArg>,
                  neTypeParams: List<Spec>, penewLine: PLine)
   enum PeNew(newType: Spec, newParam: PExpr, penwLine: PLine)

@@ -87,7 +87,7 @@ fun countIf<T>(l: List<T>, pred: (:T): Bool) => fold(l, 0, (n, x) => pred(x) ? n
 # ── the rewrite ─────────────────────────────────────────────────────────────
 
 fun promoteToStack(a: CgApp)
-  ret appWithFunctions(a, map(appFunctions(a),
+  ret appWithFunctions(a, powerMap(appFunctions(a),
                               (f) => spFunction(f, a)))
 
 fun spFunction(f, a: CgApp)

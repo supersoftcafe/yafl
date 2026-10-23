@@ -185,7 +185,7 @@ fun [tail] drop<T>(l: List<T>, n: Int): List<T>
 # takes, so when the fast pointer reaches the end the slow one is at the middle.
 # `left` keeps the leading elements in order, `right` the trailing ones. For a
 # list of n >= 2 both halves are non-empty (left = floor(n/2)); this is the
-# length-free way to divide work for recursion or `__parallel__`.
+# length-free way to divide work for recursion or `[future]` calls.
 # [tail]: the walk advances one element per step, so on a long list it MUST
 # lower to a loop — plain recursion here overflows the C stack via the async
 # hot path (found by sorting a half-million-word dictionary).
@@ -288,6 +288,21 @@ fun [tail] _mapInto<T,U>([terminal] b: ListBuilder<U>, c: Chain<T>,
     (l: ChainLink)  => _mapInto<T,U>(push<U>(b, f(l.value)), l.next, f)
 
 
+# map, processing the elements in PARALLEL: the list splits in halves, each
+# half is mapped on a worker of its own, and the results join in order — the
+# same list `map` gives. Both halves are called before either is read, so the
+# calls overlap; every split posts a task, so it pays only when `f` is costly.
+fun [future] powerMap<T,U>(l: List<T>, f: (:T): U): List<U>
+  ret match(head<T>(l))
+    (x: T)    => isEmpty<T>(tail<T>(l))
+      ? prepend<U>(f(x), List<U>())
+      : _powerMapHalves<T,U>(splitHalf<T>(l), f)
+    (e: None) => List<U>()
+
+fun _powerMapHalves<T,U>(h: (left: List<T>, right: List<T>), f: (:T): U): List<U>
+  ret concat<U>(powerMap<T,U>(h.left, f), powerMap<T,U>(h.right, f))
+
+
 fun filter<T>(l: List<T>, f: (:T): Bool): List<T>
   ret build<T>(_filterInto<T>(builder<T>(), chain<T>(l), f))
 
@@ -299,7 +314,7 @@ fun [tail] _filterInto<T>([terminal] b: ListBuilder<T>, c: Chain<T>,
                                       l.next, f)
 
 
-fun fold<T,U>(l: List<T>, init: U, f: (:U, :T): U): U
+fun fold<T, [linear] U>(l: List<T>, init: U, f: (:U, :T): U): U
   fun [tail] foldNode(n: Chain<T>, acc: U): U
     ret match(n)
       (nil: ChainEnd) => acc

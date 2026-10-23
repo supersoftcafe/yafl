@@ -204,6 +204,37 @@ class FunField(RParam):
 
 
 @dataclass(frozen=True)
+class NarrowInt(RParam):
+    """A small integer read back out of the larger union slot it was merged
+    into (codegen.typedecl.compute_union_slots: truncate on read). Typed as
+    the integer itself, so it is a value of that width wherever it goes — a
+    call argument included, where no typed local would narrow it."""
+    value: RParam
+    value_type: t.Int
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + self.value.flatten()
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or self.value.test(predicate)
+
+    def get_type(self) -> t.Type:
+        return self.value_type
+
+    def rename_vars(self, renames: dict[str, str]) -> NarrowInt:
+        return dataclasses.replace(self, value=self.value.rename_vars(renames))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, value=self.value.replace_params(replacer)))
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return f"(({self.value_type.declare(type_cache)})({self.value.to_c(type_cache)}))"
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return self.value.get_live_vars()
+
+
+@dataclass(frozen=True)
 class MakeFun(RParam):
     """Reassemble a closure from its two union-slot primitives (the inverse
     of FunField): the non-GC code word and the GC environment pointer."""
