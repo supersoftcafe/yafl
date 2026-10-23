@@ -273,6 +273,35 @@ def _variant_slots(value, inner_ctype, slot_assignments, slot_fields):
     return result
 
 
+def _leaf_base(name: str) -> str:
+    """A leaf's identity within its enum: its name before any `$generic$…`
+    monomorphisation suffix (uniform across one instantiation's leaves)."""
+    return name.split("$generic$", 1)[0]
+
+
+def narrowed_member(union_type: t.TypeSpec, arm_type: t.TypeSpec) -> t.TypeSpec:
+    """The enum member of `union_type` that `arm_type` names only SOME of the
+    variants of — `EOFError` within `String|IOError` — else `arm_type`
+    itself. An arm whose pattern is narrower than the member it selects must
+    test the variant as well as the member."""
+    if isinstance(arm_type, t.EnumSpec) and isinstance(union_type, t.CombinationSpec):
+        wanted = {_leaf_base(n) for n in arm_type.valid_leaf_names}
+        for member in union_type.repr_members():
+            if (isinstance(member, t.EnumSpec) and member.root_name == arm_type.root_name
+                    and wanted < {_leaf_base(n) for n in member.valid_leaf_names}):
+                return member
+    return arm_type
+
+
+def _flat_leaf_guards(enum_type: t.EnumSpec, tag: cg_p.RParam, arm_type: t.EnumSpec) -> list:
+    """OR-alternatives testing that a flat enum's `tag` (a leaf's position in
+    its leaf list) is one of `arm_type`'s leaves, in ascending tag order — set
+    iteration is hash-seeded."""
+    leaf_index = {_leaf_base(n): i for i, n in enumerate(enum_type.all_leaf_names)}
+    return [cg_p.IntEqConst(tag, leaf_index[_leaf_base(leaf)])
+            for leaf in sorted(arm_type.valid_leaf_names, key=lambda l: leaf_index[_leaf_base(l)])]
+
+
 class UnionRepr(ABC):
     """Base for the three union representations. Obtain one via `classify`."""
 
@@ -304,15 +333,17 @@ class UnionRepr(ABC):
     # matches the operation (CombinationSpec target -> box/widen; EnumSpec ->
     # read/construct), so these defaults guard against future miswiring.
 
-    def position_guards(self, sv, arm_type: t.TypeSpec, resolver: g.Resolver) -> list:
-        """OR-alternatives testing that `sv` matches `arm_type`, for ONE
-        position of a MULTI-SUBJECT match.
+    def position_stages(self, sv, arm_type: t.TypeSpec, resolver: g.Resolver) -> list:
+        """The STAGES testing that `sv` matches `arm_type`, for ONE position of
+        a MULTI-SUBJECT match: each stage a list of OR-alternatives, the stages
+        ANDed in order.
 
         `generate_match` above drives the whole dispatch for a single subject;
-        with several subjects each position contributes one STAGE of checks to
-        each arm instead, and `_Emitter.arm` ANDs the stages and falls through
-        to the next arm when any fails — which is first-match-wins across
-        positions, with no decision tree.
+        with several subjects each position contributes its stages to each arm
+        instead, and `_Emitter.arm` ANDs them and falls through to the next arm
+        when any fails — which is first-match-wins across positions, with no
+        decision tree. A position usually takes one stage; one that names some
+        variants of an enum member takes two: the member, then the variant.
 
         Only the enum reprs implement this so far. The others raise, and
         MatchExpression.check reports it as a diagnostic rather than letting it
@@ -382,25 +413,15 @@ class TaggedRepr(UnionRepr):
         subj_type = self.union_type
         sv = subj_bundle.result_var
         tag = cg_p.StructField(sv, "$tag")
-        # A leaf's tag is its position in the subject's leaf list. Match by BASE
-        # identity (name before any `$generic$…` monomorphisation suffix): when a
-        # generic enum is matched at a concrete instantiation, the subject's
-        # all_leaf_names and an arm's valid_leaf_names can be specialised through
-        # different passes and disagree only on that suffix — but a leaf's
-        # identity within its enum is its base name, and the suffix is uniform
-        # across all leaves of one instantiation, so base names stay unique.
-        def _base(name: str) -> str:
-            return name.split("$generic$", 1)[0]
-        leaf_index = {_base(n): i for i, n in enumerate(subj_type.all_leaf_names)}
-        def leaf_id(leaf: str) -> int:
-            return leaf_index[_base(leaf)]
+        # A leaf's tag is its position in the subject's leaf list, matched by
+        # BASE identity (_leaf_base): when a generic enum is matched at a
+        # concrete instantiation, the subject's all_leaf_names and an arm's
+        # valid_leaf_names can be specialised through different passes and
+        # disagree only on the `$generic$` suffix.
         for arm in (a for a in arms if a.type_spec is not None):
             arm_type = arm.type_spec
             assert isinstance(arm_type, t.EnumSpec)
-            # valid_leaf_names is a frozenset; sort by discriminant for a fixed
-            # (ascending) OR-guard order — set iteration is hash-seeded.
-            guards = [cg_p.IntEqConst(tag, leaf_id(leaf))
-                      for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
+            guards = _flat_leaf_guards(subj_type, tag, arm_type)
             # Bind at subj_type (always concrete): an EnumSpec arm_type may point
             # at a pruned generic spec with stale all_fields; only leaf identity
             # matters for the guards above.
@@ -430,31 +451,43 @@ class TaggedRepr(UnionRepr):
     def position_bind(self, em, holder, sv, arm_type, subj_type, resolver):
         if isinstance(self.union_type, t.EnumSpec):
             return em.bind_subject(holder, subj_type, sv)
-        found = self.__combination_variant(arm_type, resolver)
+        found = self.__combination_variant(narrowed_member(self.union_type, arm_type), resolver)
         if found is None:
             return None
         vi, _tag, member = found
         return em.bind_from_slots(holder, member.generate(resolver),
                                   self.variant_map[vi], self.container.fields, sv)
 
-    def position_guards(self, sv, arm_type, resolver):
+    def position_stages(self, sv, arm_type, resolver):
         subj_type = self.union_type
         if not isinstance(subj_type, t.EnumSpec):
-            # Tagged COMBINATION: one tag comparison per position.
-            found = self.__combination_variant(arm_type, resolver)
+            # Tagged COMBINATION: the member's tag, then — for a pattern naming
+            # only some of an enum member's variants — the variant.
+            member = narrowed_member(subj_type, arm_type)
+            found = self.__combination_variant(member, resolver)
             if found is None:
-                return super().position_guards(sv, arm_type, resolver)
-            _vi, tag_value, _member = found
-            return [cg_p.IntEqConst(cg_p.StructField(sv, "$tag"), tag_value)]
+                return super().position_stages(sv, arm_type, resolver)
+            vi, tag_value, _member = found
+            stages = [[cg_p.IntEqConst(cg_p.StructField(sv, "$tag"), tag_value)]]
+            if member is not arm_type:
+                stages.append(self._variant_guards(member, vi, arm_type, sv, resolver))
+            return stages
         if not isinstance(arm_type, t.EnumSpec):
-            return super().position_guards(sv, arm_type, resolver)
-        def _base(name: str) -> str:
-            return name.split("$generic$", 1)[0]
-        leaf_index = {_base(n): i for i, n in enumerate(subj_type.all_leaf_names)}
-        tag = cg_p.StructField(sv, "$tag")
-        return [cg_p.IntEqConst(tag, leaf_index[_base(leaf)])
-                for leaf in sorted(arm_type.valid_leaf_names,
-                                   key=lambda l: leaf_index[_base(l)])]
+            return super().position_stages(sv, arm_type, resolver)
+        return [_flat_leaf_guards(subj_type, cg_p.StructField(sv, "$tag"), arm_type)]
+
+    def _variant_guards(self, member, vi, arm_type, sv, resolver) -> list:
+        """OR-alternatives testing that the enum `member` held in this union's
+        slots is one of `arm_type`'s variants: a complex enum by its variant's
+        vtable, a flat one by its own `$tag` — its last primitive, so its last
+        slot."""
+        member_repr = classify(member, resolver)
+        slots = self.variant_map[vi]
+        si, orig = slots[0] if isinstance(member_repr, ComplexEnumRepr) else slots[-1]
+        value = slot_read(sv, self.container.fields, si, orig)
+        if isinstance(member_repr, ComplexEnumRepr):
+            return member_repr.position_stages(value, arm_type, resolver)[0]
+        return _flat_leaf_guards(member, value, arm_type)
 
     def _generate_combination_match(self, em, subj_bundle, arms, else_arm, resolver):
         subj_type = self.union_type
@@ -506,13 +539,19 @@ class TaggedRepr(UnionRepr):
                     _, narrow_map = cg_t.compute_union_slots(
                         [m.generate(resolver) for m in arm.type_spec.repr_members()])
 
-                entries: list[tuple[cg_p.RParam, cg_p.RParam]] = []
+                entries: list[tuple[list, cg_p.RParam]] = []
                 for k, member in enumerate(arm.type_spec.repr_members()):
-                    uid = member.as_unique_id_str()
+                    # A member named by some of its variants: its own tag,
+                    # then the variant.
+                    whole = narrowed_member(subj_type, member)
+                    uid = whole.as_unique_id_str()
                     vi = variant_index(uid)
                     if vi is None or uid not in discriminators:
                         continue  # check() validated coverage; skip defensively
                     member_tag = discriminators[uid]
+                    stages = [[cg_p.IntEqConst(tag, member_tag)]]
+                    if whole is not member:
+                        stages.append(self._variant_guards(whole, vi, member, sv, resolver))
                     if narrow_map is None:
                         # Pointer narrow union: the member's LEAF, read out of
                         # its wide slots and boxed by the narrow union itself
@@ -527,16 +566,22 @@ class TaggedRepr(UnionRepr):
                         for (nsi, _nt), (wsi, _wt) in zip(narrow_map[k], variant_map[vi]):
                             fields[narrow_ctype.fields[nsi][0]] = cg_p.StructField(sv, slot_fields[wsi][0])
                         value = cg_p.union_struct(narrow_ctype, fields)
-                    entries.append((cg_p.IntEqConst(tag, member_tag), value))
+                    entries.append((stages, value))
                 em.multi_entry_arm(arm, entries, narrow_ctype)
 
             else:
-                arm_ctype = arm.type_spec.generate(resolver)
-                tag_value = discriminators.get(arm.type_spec.as_unique_id_str(), 0)
+                # A pattern naming only some of an enum member's variants tests
+                # the member, then the variant.
+                member = narrowed_member(subj_type, arm.type_spec)
+                arm_ctype = member.generate(resolver)
+                tag_value = discriminators.get(member.as_unique_id_str(), 0)
                 vi = next((i for i, vt in enumerate(variant_types) if vt == arm_ctype), None)
                 bind = (em.bind_from_slots(arm, arm_ctype, variant_map[vi], slot_fields, sv)
                         if vi is not None else None)
-                em.arm(arm, [[cg_p.IntEqConst(tag, tag_value)]], bind=bind)
+                stages = [[cg_p.IntEqConst(tag, tag_value)]]
+                if member is not arm.type_spec and vi is not None:
+                    stages.append(self._variant_guards(member, vi, arm.type_spec, sv, resolver))
+                em.arm(arm, stages, bind=bind)
 
         em.fallback(else_arm,
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
@@ -930,23 +975,51 @@ class PointerRepr(UnionRepr):
         bound = arm_type if arm_type is not None else subj_type
         return em.bind_subject(holder, bound, self._as(sv, bound, resolver))
 
-    def position_guards(self, sv, arm_type, resolver):
-        """NULL for the unit member, vtable identity for the rest.
+    def position_stages(self, sv, arm_type, resolver):
+        """NULL for the unit member, vtable identity for the rest — then, for a
+        pattern naming only some of an enum member's variants, the variant.
 
         A FOREIGN class is untestable from generated code — in a single-subject
         match it can be the implicit fallback, but a POSITION has no fallback
         to be, so it is refused and MatchExpression.check reports it."""
-        unit_type = cg_t.Struct(())
-        members = (arm_type.repr_members()
-                   if isinstance(arm_type, t.CombinationSpec) else [arm_type])
+        member = narrowed_member(self.union_type, arm_type)
+        members = (member.repr_members()
+                   if isinstance(member, t.CombinationSpec) else [member])
+        if any(narrowed_member(self.union_type, m) is not m for m in members):
+            # "Variant and member, or another member" is not one stage per
+            # position; refused, and MatchExpression.check reports it.
+            return super().position_stages(sv, arm_type, resolver)
         guards = []
         word = self._word(sv)
-        for member in members:
-            guard = self._guard(member, word, resolver)
+        for m in members:
+            guard = self._guard(m, word, resolver)
             if guard is None:
-                return super().position_guards(sv, arm_type, resolver)
+                return super().position_stages(sv, arm_type, resolver)
             guards.append(guard)
-        return guards
+        if member is not arm_type:
+            return [guards, self._variant_guards(member, sv, arm_type, resolver)]
+        return [guards]
+
+    def _member_stages(self, pattern, value, resolver) -> list:
+        """The stages testing that this union's `value` holds `pattern`, one
+        member of an arm's union pattern: NULL for the unit member, else the
+        member's guard — then, when `pattern` names only some of an enum
+        member's variants, the variant."""
+        word = self._word(value)
+        if pattern.generate(resolver) == cg_t.Struct(()):
+            return [[cg_p.IntEqConst(word, 0)]]
+        whole = narrowed_member(self.union_type, pattern)
+        stages = [[self._guard(whole, word, resolver)]]
+        if whole is not pattern:
+            stages.append(self._variant_guards(whole, value, pattern, resolver))
+        return stages
+
+    def _variant_guards(self, member, value, arm_type, resolver) -> list:
+        """OR-alternatives testing that the enum `member` this union holds is
+        one of `arm_type`'s variants. A pointer union's enum member is a
+        complex enum, told apart by its variant's vtable."""
+        return classify(member, resolver).position_stages(
+            self._member_value(member, value, resolver), arm_type, resolver)[0]
 
     def generate_match(self, em, subj_bundle, arms, else_arm, resolver):
         """DataPointer union dispatch: sv==NULL → the None arm; typed arms test
@@ -1026,13 +1099,21 @@ class PointerRepr(UnionRepr):
                     # per member, each narrowed into the arm's own repr.
                     entries = []
                     for member in arm.type_spec.repr_members():
-                        guard = self._guard(member, sv, resolver)
                         boxed = narrow.box_value(self._member_value(member, value, resolver),
                                                  member, resolver)
                         assert not boxed.operations and not boxed.stack_vars, \
                             "narrowing into a tagged arm must be a pure value"
-                        entries.append((guard, boxed.result_var))
+                        entries.append((self._member_stages(member, value, resolver),
+                                        boxed.result_var))
                     em.multi_entry_arm(arm, entries, arm.type_spec.generate(resolver))
+                    continue
+                if any(narrowed_member(subj_type, m) is not m for m in arm.type_spec.repr_members()):
+                    # A member named by some of its variants takes two stages,
+                    # so each member is its own entry; the value is the same.
+                    seen = self._as(value, arm.type_spec, resolver)
+                    em.multi_entry_arm(arm, [(self._member_stages(m, value, resolver), seen)
+                                             for m in arm.type_spec.repr_members()],
+                                       arm.type_spec.generate(resolver))
                     continue
                 guards = []
                 for member in arm.type_spec.repr_members():
@@ -1044,10 +1125,16 @@ class PointerRepr(UnionRepr):
                             guards.append(guard)
                 em.arm(arm, [guards], bind=bind(arm, arm.type_spec))
             else:
-                guard = member_guard(arm.type_spec)
+                # A pattern naming only some of an enum member's variants tests
+                # the member, then the variant.
+                member = narrowed_member(subj_type, arm.type_spec)
+                guard = member_guard(member)
                 if guard is None:
                     continue  # untestable arm kind; check() rejects these
-                em.arm(arm, [[guard]], bind=bind(arm, arm.type_spec))
+                stages = [[guard]]
+                if member is not arm.type_spec:
+                    stages.append(self._variant_guards(member, value, arm.type_spec, resolver))
+                em.arm(arm, stages, bind=bind(arm, arm.type_spec))
 
         final_fallback = (implied if implied is not None
                           else foreign_fallback if foreign_fallback is not None else else_arm)
@@ -1225,17 +1312,17 @@ class ComplexEnumRepr(UnionRepr):
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
                     "enum match fell through all arms")
 
-    def position_guards(self, sv, arm_type, resolver):
+    def position_stages(self, sv, arm_type, resolver):
         if not isinstance(arm_type, t.EnumSpec):
-            return super().position_guards(sv, arm_type, resolver)
+            return super().position_stages(sv, arm_type, resolver)
         subj_type = self.union_type
         tag = cg_p.VtableDiscriminator(sv)
         discriminators = resolver.get_discriminators()
         def leaf_id(leaf: str) -> int:
             key = f"enumleaf({t.enum_leaf_object_name(subj_type.root_name, leaf)})"
             return discriminators[key]
-        return [cg_p.IntEqConst(tag, leaf_id(leaf))
-                for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
+        return [[cg_p.IntEqConst(tag, leaf_id(leaf))
+                 for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]]
 
     def read_field(self, base_value, field_name, resolver):
         """Read a field off a complex-enum value. Field names are @hash-unique

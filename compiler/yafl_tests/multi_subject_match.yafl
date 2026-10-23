@@ -134,3 +134,28 @@ fun program(): System::Int
 
 fun [test("two enum subjects")] check(): None|TestFailure
     ret assertEqInt(program(), 18, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::VariantPatternOfAnEnumMember
+
+import System
+import System::Test
+
+enum Err(code: Int)
+  enum Eof()
+  enum Busy(retries: Int)
+
+# A position naming one variant of a union's enum member matches that variant
+# only; a failing position falls through to the next arm.
+fun pair(a: String|Err, b: String|Err): Int
+  ret match(a, b)
+    (x: Eof,    y: String) => 1
+    (x: Busy,   y: Busy)   => 10 + x.retries + y.retries
+    (x: Err,    y: Err)    => 3
+    ()                     => 4
+
+fun program(): Int
+  ret pair(Eof(0), "y") * 1000 + pair(Busy(0, 2), Busy(0, 5)) * 10 + pair(Eof(0), Busy(0, 1)) + pair("x", "y") * 0
+
+fun [test("a variant pattern of an enum member matches that variant only")] check(): None|TestFailure
+    ret assertEqInt(program(), 1173, "program()")

@@ -189,8 +189,8 @@ fun msPosCheck(acc, pat: Spec|None, sub: PExpr|None,
 
 fun msSupported(acc, rep, pat: Spec,
                 r): List<String>
-  ret match(reprPositionGuards(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
-    (g: List<RParam>) => acc
+  ret match(reprPositionStages(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
+    (g: List<List<RParam>>) => acc
     ()                => build(push(builderFrom(acc),
                            "this pattern cannot serve a position of a "
                            + "multi-subject match"))

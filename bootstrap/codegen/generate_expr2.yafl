@@ -42,7 +42,10 @@ class [final] GBind(gbdBundle: GBundle, gbdResolver: Resolver)
 
 # One entry of a tagged-union narrow arm: a per-member tag guard and the
 # value narrowed/reslotted for that member (Python: `entries: list[tuple[RParam, RParam]]`).
-class [final] GEntry(geGuard: RParam, geValue: RParam)
+# One entry edge of a multi-entry arm: its stages (as for emArm — a member
+# named by some of its variants has two, the member then the variant) and the
+# value it binds.
+class [final] GEntry(geStages: List<List<RParam>>, geValue: RParam)
 
 class [final] GEmit(geBundle: GBundle, geArmResults: List<ArmResult>,
                     geCounter: Int, geFallbackLabel: String|None)
@@ -106,8 +109,9 @@ fun emStagesStep(st: GEmit, l: ChainLink<List<RParam>>, stageNo,
 
 # ── multi_entry_arm(arm, entries, bound_ctype) ──────────────────────────────
 # One arm with several entry edges, each binding a DIFFERENT value — the
-# tagged-union narrow arm: per member, a tag guard and the value narrowed for
-# that member. The bound variable is defined once, by a Phi over the entries.
+# tagged-union narrow arm: per member, its stages and the value narrowed for
+# that member. A failed stage tries the next member. The bound variable is
+# defined once, by a Phi over the entries.
 
 fun emMultiEntryArm(st0: GEmit, resolver, resultType: Spec|None,
                     arm: PArm, entries: List<GEntry>, boundCtype): GEmit
@@ -130,7 +134,32 @@ fun entryLabel(idx: Int, k: Int) => "match_arm_" + String(idx) + "_m" + String(k
 
 fun [tail] emEntryGuards(st, es: Chain<GEntry>, idx: Int, k): GEmit => match(es)
   (nil: ChainEnd) => st
-  (l: ChainLink)  => emEntryGuards(emOp1(st, OpJumpIf(entryLabel(idx, k), l.value.geGuard, false, Dict())), l.next, idx, k + 1)
+  (l: ChainLink)  => emEntryGuards(emEntry(st, l.value, idx, k), l.next, idx, k + 1)
+
+# A single-stage entry jumps straight to its label; a longer one runs its
+# stages in turn and, on a miss, goes on to the next entry.
+fun emEntry(st, e: GEntry, idx: Int, k: Int): GEmit
+  let st1 = emEntryStages(st, chain(e.geStages), idx, k, 0)
+  ret atLeast(chain(e.geStages), 2)
+    ? emOp1(emOp1(st1, OpJump(missLabel(idx, k), Dict())), OpLabel(missLabel(idx, k), Dict()))
+    : st1
+
+fun [tail] emEntryStages(st, ss: Chain<List<RParam>>, idx: Int, k: Int, stageNo: Int): GEmit => match(ss)
+  (nil: ChainEnd) => st
+  (l: ChainLink)  => l.next is ChainEnd
+    ? emJumpsTo(st, l.value, entryLabel(idx, k))
+    : emEntryStages(emOp1(emOp1(emJumpsTo(st, l.value, entryStageLabel(idx, k, stageNo)),
+                                OpJump(missLabel(idx, k), Dict())),
+                          OpLabel(entryStageLabel(idx, k, stageNo), Dict())),
+                    l.next, idx, k, stageNo + 1)
+
+fun emJumpsTo(st, guards: List<RParam>, label: String): GEmit
+  ret fold(guards, st, (acc, guard) => emOp1(acc, OpJumpIf(label, guard, false, Dict())))
+
+fun missLabel(idx: Int, k: Int) => "match_miss_" + String(idx) + "_m" + String(k)
+
+fun entryStageLabel(idx: Int, k: Int, stageNo: Int)
+  ret "match_stage_" + String(idx) + "_m" + String(k) + "_" + String(stageNo)
 
 fun [tail] emEntryLabelJumps(st, es: Chain<GEntry>, idx: Int, k, bodyLabel): GEmit => match(es)
   (nil: ChainEnd) => st
@@ -488,13 +517,13 @@ fun [tail] positionStages(pats: Chain<Spec|None>, subs: Chain<PExpr>,
                           acc: List<List<RParam>>): List<List<RParam>> => match(pats)
   (nil: ChainEnd) => acc
   (l: ChainLink)  => positionStages(l.next, restExprs(subs), restBundles(gens), r,
-      appendStage(acc, stageFor(l.value, headExpr(subs), headBundle(gens), r)))
+      appendStages(acc, stagesFor(l.value, headExpr(subs), headBundle(gens), r)))
 
-fun stageFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
-             r): List<RParam>|None => match(sub)
+fun stagesFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
+              r): List<List<RParam>>|None => match(sub)
   (e2: PExpr) => match(g)
     (b: GBundle) => match(exprType(e2, r))
-      (st: Spec) => reprPositionGuards(classifyRepr(st, r), mustResult(b), pat, r)
+      (st: Spec) => reprPositionStages(classifyRepr(st, r), mustResult(b), pat, r)
       ()         => None
     ()           => None
   ()            => None
@@ -511,14 +540,13 @@ fun stageFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
 # closed. Codegen must not be the place that decides this — the port silently
 # emitting a never-matching arm where Python errors is exactly the kind of
 # divergence the contracts exist to catch.
-fun appendStage(acc,
-                st: List<RParam>|None): List<List<RParam>>
-  ret build(push(
-        builderFrom(acc), stageOrNever(st)))
+fun appendStages(acc,
+                 st: List<List<RParam>>|None): List<List<RParam>>
+  ret concat(acc, stagesOrNever(st))
 
-fun stageOrNever(st: List<RParam>|None) => match(st)
-  (g: List<RParam>) => g
-  ()                => list1(RpIntEqConst(RpInteger(0, 32), 1))
+fun stagesOrNever(st: List<List<RParam>>|None): List<List<RParam>> => match(st)
+  (g: List<List<RParam>>) => g
+  ()                      => list1(list1(RpIntEqConst(RpInteger(0, 32), 1)))
 
 fun restExprs(es): Chain<PExpr> => match(es)
   (l: ChainLink)  => l.next

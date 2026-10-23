@@ -115,8 +115,9 @@ fun readAll(io: IO): (io: IO, v: String|IOError)
 fun [tail] _readAllInto(io: IO, acc: String): (io: IO, v: String|IOError)
   let r = io.read(65536)
   ret match(r.v)
-    (s: String)  => _readAllInto(r.io, acc + s)
-    (e: IOError) => e is EOFError ? (r.io, acc) : (r.io, e)
+    (s: String)   => _readAllInto(r.io, acc + s)
+    (e: EOFError) => (r.io, acc)
+    (e: IOError)  => (r.io, e)
 
 
 # Read one line, returned VERBATIM — the trailing '\n' (and any '\r') are kept,

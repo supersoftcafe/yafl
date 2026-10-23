@@ -347,18 +347,30 @@ class _Emitter:
         self.__body(arm, (None, arm_resolver), prefix)
         self.ops(cg_o.Label(next_label))
 
-    def multi_entry_arm(self, arm: MatchArm, entries: list[tuple[cg_p.RParam, cg_p.RParam]],
+    def multi_entry_arm(self, arm: MatchArm,
+                        entries: list[tuple[list[list[cg_p.RParam]], cg_p.RParam]],
                         bound_ctype: cg_t.Type) -> None:
         """One arm with several entry edges, each binding a DIFFERENT value —
-        the tagged-union narrow arm: per member, a tag guard and the value
-        narrowed for that member. The bound variable is defined once, by a
-        Phi over the entry edges (SSA single-definition)."""
+        the tagged-union narrow arm: per member, its stages (as for `arm`; a
+        member named by some of its variants has two, the member then the
+        variant) and the value narrowed for that member. A failed stage tries
+        the next member. The bound variable is defined once, by a Phi over the
+        entry edges (SSA single-definition)."""
         idx = self.next_index()
         next_label, body_label = f"match_next_{idx}", f"match_armbody_{idx}"
         binds: list[tuple[str, cg_p.RParam]] = []
-        for k, (guard, value) in enumerate(entries):
+        for k, (stages, value) in enumerate(entries):
             entry_label = f"match_arm_{idx}_m{k}"
-            self.ops(cg_o.JumpIf(entry_label, guard))
+            miss_label = f"match_miss_{idx}_m{k}"
+            for stage_no, guards in enumerate(stages):
+                last = stage_no == len(stages) - 1
+                pass_label = entry_label if last else f"match_stage_{idx}_m{k}_{stage_no}"
+                for guard in guards:
+                    self.ops(cg_o.JumpIf(pass_label, guard))
+                if not last:
+                    self.ops(cg_o.Jump(miss_label), cg_o.Label(pass_label))
+            if len(stages) > 1:
+                self.ops(cg_o.Jump(miss_label), cg_o.Label(miss_label))
             binds.append((entry_label, value))
         self.ops(cg_o.Jump(next_label))
         for entry_label, _ in binds:
@@ -540,6 +552,44 @@ def _usable_lower(resolver: g.Resolver, spec: t.TypeSpec | None) -> bool | None:
     return not (getattr(found[0].statement, "type_params", ()) or ())
 
 
+def _union_variants(subj_type: t.CombinationSpec, resolver: g.Resolver):
+    """What a union subject's arms must cover: each member, except that an
+    ENUM member stands for its variants, one entry each — an arm may name
+    some of them (`EOFError` within `String|IOError`). Keyed by the member's
+    scoped id (and `/variant` for an enum's), in canonical member order; each
+    entry is (printable name, the type an arm must accept, the member's
+    printable name).
+    repr_members, not raw .types: the canonical member set folds nested unions
+    and variants subsumed by their own enum. None until every member resolves."""
+    out = {}
+    for member in subj_type.repr_members():
+        uid = t.scoped_unique_id(member, resolver)
+        if uid is None:
+            return None
+        name = getattr(member, "name", uid)
+        if isinstance(member, t.EnumSpec) and len(member.valid_leaf_names) > 1:
+            for leaf in sorted(member.valid_leaf_names):
+                out[f"{uid}/{leaf}"] = (leaf, dataclasses.replace(
+                    member, valid_leaf_names=frozenset({leaf})), name)
+        else:
+            out[uid] = (name, member, name)
+    return out
+
+
+def _missing_variants(variants: dict, keys) -> str:
+    """The uncovered `keys` for an error message: a member none of whose
+    variants is covered by its own name, otherwise each variant left."""
+    missing = set(keys)
+    names = []
+    for member in dict.fromkeys(m for _n, _s, m in variants.values()):
+        own = [k for k, (_n, _s, m) in variants.items() if m == member]
+        if all(k in missing for k in own):
+            names.append(member)
+        else:
+            names.extend(variants[k][0] for k in own if k in missing)
+    return " | ".join(names)
+
+
 @dataclass
 class MatchExpression(e.Expression):
     """match subject(, subject)*\n    arm*
@@ -664,7 +714,7 @@ class MatchExpression(e.Expression):
                     if pat is None:
                         continue
                     try:
-                        rep.position_guards(probe, pat, resolver)
+                        rep.position_stages(probe, pat, resolver)
                     except NotImplementedError as ex:
                         errors.append(Error(arm.line_ref, str(ex)))
                         break
@@ -807,13 +857,8 @@ class MatchExpression(e.Expression):
             return {n: n for n in subj_type.valid_leaf_names}
         if not isinstance(subj_type, t.CombinationSpec):
             return None
-        out = {}
-        for v in subj_type.repr_members():
-            uid = t.scoped_unique_id(v, resolver)
-            if uid is None:
-                return None
-            out[uid] = getattr(v, "name", uid)
-        return out
+        variants = _union_variants(subj_type, resolver)
+        return None if variants is None else {key: name for key, (name, _s, _m) in variants.items()}
 
     def __covered_keys(self, subj_type, arm_type, keys, resolver) -> set:
         """Which of `keys` an arm's pattern at one position matches."""
@@ -828,13 +873,10 @@ class MatchExpression(e.Expression):
             for member in arm_type.repr_members():
                 out |= self.__covered_keys(subj_type, member, keys, resolver)
             return out
-        out = set()
-        for uid in keys:
-            v = next((m for m in subj_type.repr_members()
-                      if t.scoped_unique_id(m, resolver) == uid), None)
-            if v is not None and arm_type.trivially_assignable_from(resolver, v) is True:
-                out.add(uid)
-        return out
+        variants = _union_variants(subj_type, resolver) or {}
+        return {key for key in keys
+                if key in variants
+                and arm_type.trivially_assignable_from(resolver, variants[key][1]) is True}
 
     def __check_exhaustiveness_multi(self, resolver: g.Resolver) -> list:
         """Coverage over the PRODUCT of the subjects' variants.
@@ -911,23 +953,11 @@ class MatchExpression(e.Expression):
             missing_name = lambda names: " | ".join(sorted(names))
         else:
             assert isinstance(subj_type, t.CombinationSpec)
-            remaining = {}  # id -> (printable name, TypeSpec)
-            # repr_members, not raw .types: the canonical member set folds
-            # nested unions and variants subsumed by their own enum — the raw
-            # spelling may still say `(E3|W) | EU`. An ENUM member decomposes
-            # into its leaves so per-variant arms can cover it piecewise.
-            for v in subj_type.repr_members():
-                uid = t.scoped_unique_id(v, resolver)
-                if uid is None:
-                    return []  # Subject not yet fully resolved
-                # NOTE: an enum member is deliberately NOT decomposed into
-                # leaves here — per-variant arms through a union subject need
-                # narrowing dispatch the union reprs cannot emit yet (a
-                # decomposed check unguards a codegen hole: segfault). Match
-                # the whole enum member, then narrow in a nested match.
-                remaining[uid] = (getattr(v, "name", uid), v)
-            remaining_for_err = {uid: name for uid, (name, _) in remaining.items()}
-            missing_name = lambda ids: " | ".join(remaining_for_err[i] for i in ids)
+            variants = _union_variants(subj_type, resolver)
+            if variants is None:
+                return []  # Subject not yet fully resolved
+            remaining = {key: (name, spec) for key, (name, spec, _member) in variants.items()}
+            missing_name = lambda keys: _missing_variants(variants, keys)
 
         else_seen = False
 
@@ -1002,7 +1032,7 @@ class MatchExpression(e.Expression):
         # printed them in hash order, which no port can reproduce.
         if not else_seen:
             uncovered = (remaining if isinstance(remaining, set) else
-                         [uid for uid, (_, v) in remaining.items()
+                         [key for key, (_, v) in remaining.items()
                           if not (isinstance(v, t.EnumSpec) and not v.valid_leaf_names)])
             if uncovered:
                 errors.append(Error(self.line_ref,
@@ -1040,8 +1070,8 @@ class MatchExpression(e.Expression):
             pats = [arm.type_spec] + [pos.type_spec for pos in arm.extra]
             if all(pt is None for pt in pats):
                 continue                                   # the else arm
-            stages = [reprs[i].position_guards(svs[i], pats[i], resolver)
-                      for i in range(len(subjects)) if pats[i] is not None]
+            stages = [stage for i in range(len(subjects)) if pats[i] is not None
+                      for stage in reprs[i].position_stages(svs[i], pats[i], resolver)]
             # Position 0 binds through the arm itself; the rest bind through
             # their own MatchPos, and all the binding bundles are concatenated
             # so every name is live in the body.
