@@ -745,20 +745,23 @@ fun [tail] fasStmts<T>(ss: Chain<PStmt>, f: (:T, :Spec): T, acc: T): T => match(
   (nil: ChainEnd) => acc
   (l: ChainLink)  => fasStmts(l.next, f, fasStmt(l.value, f, acc))
 
+# Every walk below visits a node's parts in the order Python's
+# search_and_replace does: collect_discriminator_ids numbers union members in
+# the order they are first met, so the order is observable in the C.
 fun fasStmt<T>(st, f: (:T, :Spec): T, acc: T): T => match(st)
   (f2: PsFun) => fasSpecs(chain(f2.fWheres), f,
                    fasSpecOpt(f2.fRet, f,
                      fasExprOpt(f2.fBody, f,
                        fasStmt(f2.fParams, f, acc))))
-  (l: PsLet)  => fasExprOpt(l.lDefault, f, fasSpecOpt(l.lType, f, acc))
-  (d: PsDestructure) => fasExprOpt(d.dDefault, f,
-                          fasStmts(chain(d.dTargets), f,
-                            fasSpecOpt(d.dType, f, acc)))
-  (c: PsClass) => fasStmts(chain(c.cMembers), f,
+  (l: PsLet)  => fasSpecOpt(l.lType, f, fasExprOpt(l.lDefault, f, acc))
+  (d: PsDestructure) => fasStmts(chain(d.dTargets), f,
+                          fasSpecOpt(d.dType, f,
+                            fasExprOpt(d.dDefault, f, acc)))
+  (c: PsClass) => fasSpecsOpt(c.cAllParents, f,
                     fasSpecs(chain(c.cWheres), f,
                       fasSpecs(chain(c.cImplements), f,
-                        fasStmt(c.cParams, f,
-                          fasSpecsOpt(c.cAllParents, f, acc)))))
+                        fasStmts(chain(c.cMembers), f,
+                          fasStmt(c.cParams, f, acc)))))
   (e2: PsEnum) => fasSpecOpt(e2.eSpec, f,
                     fasStmts(chain(e2.eVariants), f,
                       fasStmt(e2.eParams, f, acc)))
@@ -790,9 +793,9 @@ fun fasExpr<T>(x, f: (:T, :Spec): T, acc: T): T => match(x)
                        fasExpr(lm.lamBody, f,
                          fasStmt(lm.lamParams, f, acc)))
   (bk: PeBlock)   => fasExpr(bk.blockValue, f, fasStmts(chain(bk.blockStmts), f, acc))
-  (mt: PeMatch)   => fasArms(chain(mt.arms), f,
-                             fasExprs(chain(mt.matchExtra), f,
-                                      fasExpr(mt.subject, f, acc)))
+  (mt: PeMatch)   => fasExprs(chain(mt.matchExtra), f,
+                             fasArms(chain(mt.arms), f,
+                                     fasExpr(mt.subject, f, acc)))
   (op: PeBuiltinOp) => fasExpr(op.opParams, f, fasSpec(op.opType, f, acc))
   (nw: PeNew)     => fasExpr(nw.newParam, f, fasSpec(nw.newType, f, acc))
   (ne: PeNewEnum) => fasSpecs(chain(ne.neTypeParams), f,
@@ -819,8 +822,8 @@ fun [tail] fasArms<T>(as2: Chain<PArm>, f: (:T, :Spec): T, acc: T): T => match(a
       fasPositions(chain(l.value.armExtra), f,
         fasExprOpt(l.value.armGuard, f,
           fasLits(chain(l.value.armLiterals), f,
-            fasExpr(l.value.armBody, f,
-              fasSpecOpt(l.value.armType, f, acc))))))
+            fasSpecOpt(l.value.armType, f,
+              fasExpr(l.value.armBody, f, acc))))))
 
 fun [tail] fasPositions<T>(ps: Chain<PPos>, f: (:T, :Spec): T, acc: T): T => match(ps)
   (nil: ChainEnd) => acc
