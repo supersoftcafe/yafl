@@ -498,7 +498,7 @@ fun build<T>([terminal] b: ListBuilder<T>): List<T>
     (t2: ChainLink) => __builtin_op__<bool>("list_builder_seal", t2)
       ? ListFull<T>(b._head)
       : ListEmpty<T>()   # unreachable: seal always succeeds; keeps the call live
-    (nil: ChainEnd)  => ListEmpty<T>()
+    (nil: ChainEnd) => ListEmpty<T>()
 
 # Push every element of `l`, in order.
 fun pushAll<T>([terminal] b: ListBuilder<T>, l: List<T>): ListBuilder<T>

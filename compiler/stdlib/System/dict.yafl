@@ -230,10 +230,10 @@ fun _dictUnitMap<K,V>(d: Dict<K,V>): Dict<K,()>
     (n: DictNode)  => DictNode<K,()>(n.hash, unit_bucket(n.bucket, _BucketNil<K,()>()), n.height,
                                      _dictUnitMap<K,V>(n.left), _dictUnitMap<K,V>(n.right))
 
-# O(1): the chain becomes the bag's front as it lies. Nothing is ordered, so
-# nothing needs reordering.
+# O(n): each value is added to the bag. Nothing is ordered, so nothing needs
+# reordering.
 fun values<K,V>(d: Dict<K,V>): Bag<V>
-  ret Bag<V>(_dictValueChain<K,V>(d), ChainEnd<V>())
+  ret _chainFold<V, Bag<V>>(_dictValueChain<K,V>(d), Bag<V>(), (b, v) => add<V>(b, v))
 
 
 fun [tail] _chainToSet<K>(c: Chain<K>, acc: Set<K>): Set<K> where BasicEquality<K>

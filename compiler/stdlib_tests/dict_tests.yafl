@@ -80,5 +80,5 @@ fun [test("keys() returns each key once")] keysSet(): None|TestFailure
 
 fun [test("values() returns one entry per key, duplicates included")] valuesBag(): None|TestFailure
     let dup = put(put(Dict<Int,Int>(), 1, 7), 2, 7)
-    ret assertEqInt(size(values(_d3())), 3, "three values")
-     ?? assertEqInt(size(values(dup)), 2, "duplicate values BOTH kept")
+    ret assertEqInt(count(values(_d3())), 3, "three values")
+     ?? assertEqInt(count(values(dup)), 2, "duplicate values BOTH kept")
