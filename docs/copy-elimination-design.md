@@ -54,9 +54,11 @@
 > that §3.1 says the fragment shape depends on; it would have to go inside or
 > after that loop (`compiler.py`).
 >
-> **Two things it got right and that were reused.** The `gc_note_late_write`
-> announce (§6 Part B) is the correct duty for an in-place pointer store into a
-> possibly-aged page, and `yafllib/once.c` follows exactly that discipline. And
+> **Two things it got right and that were reused.** The announce (§6 Part B)
+> is the correct duty for an in-place pointer store into a possibly-aged page,
+> and `yafllib/once.c` follows exactly that discipline. (Since 2026-10-28 the
+> duty is no longer a standalone call: `gc_note_late_write` is gone, and the
+> announce is what `object_pin` does for a stamped object — see Part B.) And
 > the observation that a barrier can be dropped when the prior value is
 > provably dead generalises — that is `fast_stores`, though it proves the
 > stronger and simpler "no safe point in the window" instead, which needs no
@@ -318,8 +320,8 @@ Explicitly **not** safe points, and permitted in the window:
 
 - the redirected field stores themselves: plain memory writes with the barrier
   elided (§6) — no allocation, no poll, no shade;
-- the announce call (§6) — pure atomic flag stores, no allocation, no
-  suspension;
+- the announce (§6) — the late pin, `object_pin`/`object_unpin`: a CAS and
+  plain stores, no allocation, no suspension;
 - `GC_SAFE_POINT` polls we don't emit for these ops (generated straight-line
   field code contains none).
 
@@ -458,19 +460,31 @@ field, dangling it. This protects the **new** occupant, so it is orthogonal to
 the shading removed in Part A (nothing to do with the prior value's
 snapshot-retention).
 
-The runtime already has the right primitive: `gc_note_late_write`
-(`object.c:1034`) unconditionally sets the page's `redirty` flag (and the
-process-wide `gc_redirty_requested`), demoting the page back into the
-collection rotation at the next cycle open — the Dekker-handshake protection
-for the promotion race. The annotation is general and costs two atomic stores.
-Copy-on-write never needs it (the fresh object and its referents share one
-young birth window); in-place writes inherit the subject's age.
+> **Revised 2026-10-28.** This section originally named `gc_note_late_write`,
+> a standalone announce that set the page's `redirty` flag and then read `old`
+> (a Dekker handshake with promotion). That function no longer exists. A page's
+> objects are now STAMPED (`VTABLE_OLD_BIT`) by an atomic OR before promotion
+> admits the page, and the late pin's CAS is what orders a write against that
+> stamp (yafl.h, `object_pin`). A write that is not made under the pin is not
+> ordered against stamping at all, so an announce on its own is no longer
+> sound: the in-place stores must be bracketed by the pin.
 
-**Plan:** before the first surviving pointer store (only then, §5.4), emit a
-discard-anchored `RuntimeInvoke("gc_note_late_write", x)` as a
-`Move(…, keep=True)` — the same anchor pattern `ops.py` documents for
-`task_on_complete` (`Move.keep`, `ops.py:45-55`). It is not a safe point (no
-allocation, no suspension), so it does not disturb Proof 2.
+The runtime's primitive is the late pin. `object_pin(x)` CASes the pin bit
+into `x`'s vtable word; if the word carries the OLD stamp it also marks the
+page and the thread, so the thread's next root scan demotes the page before
+that cycle marks. If the word is unstamped it owes nothing: a promotion that
+stamps `x` later either finds the pin held or, after `object_unpin`, re-checks
+`x`'s references and sees the young referent. The fast path is inline — a
+load, a test and the CAS — and the subject is uniquely owned, so the CAS never
+contends. Copy-on-write never needs it (the fresh object and its referents
+share one young birth window); in-place writes inherit the subject's age.
+
+**Plan:** around the surviving stores (only when one writes a pointer, §5.4),
+emit `object_pin(x)` before the first and `object_unpin(x)` after the last,
+each a discard-anchored `RuntimeInvoke` as a `Move(…, keep=True)` — the same
+anchor pattern `ops.py` documents for `task_on_complete` (`Move.keep`). The
+stores go through the pinned pointer. Neither call is a safe point (no
+allocation, no suspension), so they do not disturb Proof 2.
 
 This announce is **required** for correctness in the general case — the 3
 preconditions do not remove it, because it protects the replacement value
@@ -478,7 +492,9 @@ preconditions do not remove it, because it protects the replacement value
 
 - a subject provably still on a young/unrotated page at modify time (defined
   by a `NewObject` in this function with no intervening safe point) needs no
-  announce — the young page is scanned in the next minor cycle regardless;
+  pin — its page is still this thread's bump page, which joins the collection
+  pool only at the thread's next root scan, so no promotion can be stamping it
+  while the stores land, and the page is scanned in the next minor cycle;
 - this is not worth a separate proving rule in v1, but it is the natural
   zero-overhead refinement.
 
@@ -574,7 +590,7 @@ Follow the suite's end-to-end convention (`compiler/tests/`, compile a small
 - **IR/C-emission assertions**: emit C with `-O2 -c` and assert (patterned on
   `test_mutable.py:26`) that the site contains no `object_new(obj_…)` for the
   copy, **no** `GC_WRITE_BARRIER` at the rerouted stores, and exactly one
-  `gc_note_late_write` preceding the first surviving pointer-typed store.
+  `object_pin`/`object_unpin` pair around the surviving pointer-typed stores.
 - **GC stress** (patterned on `test_array_class.py`'s GC-interaction fills):
   force a major cycle via `gc_debug_major_now` between the subject's birth and
   the `with`, with a pointer-typed replacement and a surrogate such that a
@@ -597,7 +613,7 @@ Follow the suite's end-to-end convention (`compiler/tests/`, compile a small
 
 - `with` on a uniquely-owned subject compiles, at -O2/-O3, to the direct
   in-place stores — zero allocations, **no barriers**, carried fields
-  untouched, at most one `gc_note_late_write` announce per pointer-replaced
+  untouched, at most one `object_pin`/`object_unpin` pair per pointer-replaced
   fragment, the guard's unchanged path indistinguishable.
 - No surviving use of the original after the mutation anywhere in any emitted
   function; the ternary Phi collapses to the identity.
@@ -611,7 +627,7 @@ Follow the suite's end-to-end convention (`compiler/tests/`, compile a small
   if we don't, or must the pass drop it explicitly? Check `deadstores.py`
   treatment of side-effectful ops; the explicit delete in §5.1 is the safe
   plan.
-- The announce's two atomic stores are on the else-arm hot path, and only for
+- The pin's CAS (and unpin store) is on the else-arm hot path, and only for
   pointer-replacing fragments; measure. The page-youngness proof (§6 Part B)
   removes it entirely in the common build-and-modify case — decide in a
   follow-up whether the rule is worth proving.

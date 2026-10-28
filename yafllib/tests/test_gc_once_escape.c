@@ -6,7 +6,7 @@
 //
 //   1. The nursery is active; O is born in it and escaped by rooting it.
 //   2. V, fresh and private, is installed in O's write-once field.
-//   3. V is late-pinned (object_pin_resolve): under the pin it must not test
+//   3. V is late-pinned (object_pin): under the pin it must not test
 //      private.
 //
 // The value's escape waits in the nursery's pending slot until a flush
@@ -64,7 +64,7 @@ static void _entrypoint(object_t* self, fun_t cont) {
     if (((struct node*)o)->once != v) fail("yafl_cas_once did not install V");
 
     // (3) Late-pin V, as a nested yafl_cas_once does.
-    object_t* pinned = object_pin_resolve(v);
+    object_t* pinned = object_pin(v);
     bool private_under_pin = gc_local_obj_private(pinned);
     object_unpin(pinned);
     if (private_under_pin) fail("a value other threads can read tests private under its late pin");

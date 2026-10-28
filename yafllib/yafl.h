@@ -402,10 +402,15 @@ EXTERN char*  _memory_heap_base;    // set once at heap init (mmap.c)
 EXTERN size_t _memory_heap_bytes;
 
 // Bit 0 is the PIN (see object pinning below); bit 1 marks "this word is a
-// vtable, not a forwarding address". Both are stripped by vtable_untag.
+// vtable, not a forwarding address"; bit 2 is the OLD STAMP, which promotion
+// sets on every object of a page it admits to the old generation (see
+// object_pin). All three are stripped by vtable_untag. Vtables are at least
+// 8-aligned (checked below), so the three bits are free in a vtable address.
 enum { VTABLE_PIN_BIT = 0x1,
        VTABLE_TAG_BIT = 0x2,
-       VTABLE_BITS    = VTABLE_PIN_BIT | VTABLE_TAG_BIT };
+       VTABLE_OLD_BIT = 0x4,
+       VTABLE_BITS    = VTABLE_PIN_BIT | VTABLE_TAG_BIT | VTABLE_OLD_BIT };
+_Static_assert(_Alignof(vtable_t) >= 8, "vtable words carry three tag bits");
 
 INLINE bool vtable_is_forward(vtable_t* vt) {
     return ((uintptr_t)vt & VTABLE_TAG_BIT) == 0;
@@ -471,16 +476,17 @@ INLINE bool vtable_is_pinned(vtable_t* vt) {
 // array-tabulation, array-builder and list-builder-cell case. Only a LATE pin,
 // on an object that may already be shared, needs the CAS below.
 
-// LATE pin: take the pin on an object that is already shared and may already
-// have aged, moved, or be moving. The bit doubles as a MUTEX — exactly one
-// owner at a time, mutator or collector — so a caller that wins it may write
-// the object's fields with plain stores, and the compactor that loses it
-// simply leaves the object where it is.
+// The pin bit as a bare MUTEX — exactly one owner at a time, mutator or
+// collector — so a caller that wins it may write the object's fields with
+// plain stores, and the compactor that loses it simply leaves the object where
+// it is. It owes the collector nothing, so it is only for callers that store
+// no references: the compactor's claim, and the string append's byte copies.
+// A late write of a REFERENCE takes object_pin (below) instead.
 //
 // Fails (returns false) when someone else holds the pin, or when the object
 // has been relocated: a forwarding word means this address is a stale copy
 // and the caller must re-resolve and retry on the target, or its write would
-// land somewhere nothing will read. object_pin_resolve does that loop.
+// land somewhere nothing will read.
 //
 // Acquire on success pairs with the release in object_unpin, so an owner sees
 // every field the previous owner wrote.
@@ -499,6 +505,11 @@ INLINE bool object_try_pin(object_t* o) {
 // point of the pin) is visible before the object becomes movable/publishable.
 // Returns `o` so generated code can emit it as a value (codegen has no void
 // call); C callers ignore it.
+//
+// A plain store, not a read-modify-write: the only other writer of a pinned
+// word is promotion's stamp (gc_page_stamp_old), which this store can erase —
+// but a stamp that finds the pin held abandons the promotion, and an unstamped
+// object on a young page is exactly what the word then says.
 INLINE object_t* object_unpin(object_t* o) {
     __atomic_store_n((uintptr_t*)&o->vtable,
                      (uintptr_t)o->vtable & ~(uintptr_t)VTABLE_PIN_BIT,
@@ -506,13 +517,9 @@ INLINE object_t* object_unpin(object_t* o) {
     return o;
 }
 
-// Take a late pin on the CURRENT copy of `o`, following relocation and
-// retrying against whoever else wants it. Returns the object actually pinned,
-// which may differ from `o` if the collector moved it. Callers must write
-// through the returned pointer, never through their original.
-//
-// It also tells the collector the object is about to be written, which an
-// object on an old page needs (gc_note_late_write, gc_internal.h).
+// object_pin's slow half, out of line: follows relocation and spins against
+// whoever else holds the pin, then owes what object_pin owes. Returns the
+// object actually pinned.
 //
 // The wait is bounded: the only other holders are a peer writer doing one
 // field store, or the compactor doing one memcpy — neither allocates or
@@ -603,13 +610,11 @@ typedef struct page_head {
     bool     mutable; // Contains mutable objects.
     bool   compacted; // Don't compact again.
     bool         old; // Promoted to the old generation: exempt from minor cycles.
-    _Atomic(bool) redirty; // A late pin wrote an object on this page while it
-                      // was `old`. Set by the MUTATOR (gc_note_late_write),
-                      // consumed at the next cycle's start, which demotes the
-                      // page back into the rotation — and at the end of
-                      // root scanning, so a write made before its writer's
-                      // scan is traced by the cycle in flight (see
-                      // gc_demote_redirtied in object.c).
+    _Atomic(bool) redirty; // A late pin wrote an OLD-stamped object on this
+                      // page. Set by the MUTATOR (object_pin); consumed at the
+                      // end of root scanning, which demotes an old page back
+                      // into the rotation (gc_demote_redirtied in object.c),
+                      // or by the promotion it raced.
     bool   dirty_old; // Aged page still holding young references: exempt from
                       // pruning, but force-marked as a root every cycle until
                       // its targets promote (then it graduates to `old`).
@@ -730,7 +735,19 @@ typedef struct {
     bump_pointers_t region_mutable;
     bump_pointers_t region_immutable;
     bool local_active;   // thread-local nursery collecting right now (prototype)
+    // A late pin wrote an OLD-stamped object since this thread's last root
+    // scan, which hands the news to the collector (see object_pin).
+    bool old_writes;
     uint32_t local_epoch; // its epoch (0 when none): the barrier's private test
+    // The slot of the last SHARED store, whose new value is escaped at the
+    // next barrier or nursery collection (gc_local_flush_pending, object.c).
+    // Cleared at root scan with the remembered set: the epoch turns there, so
+    // a value stored before it is no longer nursery — and after it the
+    // container may be compacted away or freed, leaving the raw slot address
+    // dangling. Here rather than in the private thread record so object_pin
+    // can see, inline, whether a flush is owed.
+    object_t **pend_slot;
+    ptr_mask_t pend_mask;
 } gc_alloc_tl_t;
 EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
 
@@ -989,6 +1006,67 @@ INLINE bool gc_store_is_private(object_t *obj) {
     return gc_alloc_tl.local_active && gc_local_obj_private(obj);
 }
 
+// ── the late pin ─────────────────────────────────────────────────────────────
+// LATE pin: take the pin on an object that is already shared and may already
+// have aged, moved, or be moving, in order to write a reference into it.
+// Returns the object actually pinned — the current copy if the collector moved
+// it — and callers write through that, never through their original.
+//
+// A reference written into an object on an OLD page must be reported, because
+// minor cycles skip old pages and would never trace the young referent. A
+// page's age is not in the object, but whether it MAY be old is: promotion
+// stamps every object of a page (VTABLE_OLD_BIT) before admitting it, one
+// atomic OR per object (gc_page_stamp_old, object.c), and refuses the page if
+// a stamp finds the pin held. So the pin's CAS and the stamp are ordered on the
+// one word:
+//   * the CAS wins on an UNSTAMPED word: the stamp comes later, finds the pin
+//     (refusal), or follows the unpin and reads the write when it re-checks
+//     the object's references (refusal again, the referent being young).
+//     Either way the page does not age with the write unseen: nothing owed.
+//   * the word is STAMPED: the page is old, about to be, or was once. Mark the
+//     page (`redirty`) and this thread (`old_writes`); the thread's next root
+//     scan raises the collector's flag, and the end of that SCAN_ROOTS demotes
+//     every marked old page before marking. That is soon enough: until the
+//     scan, the referent is live by this thread's own hold on it (or born
+//     marked), exactly as the ragged snapshot argues for any other store.
+// Statics and mutable objects are never stamped (their pages never promote),
+// so they owe nothing and need no test.
+//
+// The fast path — current copy, nobody holding the pin, the CAS won — is a
+// load, a test and the CAS, plus two plain stores for a stamped object.
+// Anything else (relocated, held, a lost race) takes object_pin_resolve.
+//
+// The pin must be taken on a thread the collector root-scans (every worker):
+// that scan is where `old_writes` is handed over.
+EXTERN void gc_local_flush_pending(void);
+
+// What a won late pin owes beyond the CAS, given the word it won.
+INLINE void object_pin_owed(object_t* o, uintptr_t won) {
+    if (UNLIKELY(won & VTABLE_OLD_BIT)) {
+        gc_page_t *page = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+        atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
+        gc_alloc_tl.old_writes = true;
+    }
+    // An object tests private until its escape is set, and a value stored
+    // into a shared slot escapes only when the pending slot is flushed. The
+    // owner may have stored `o` just now (a nested yafl_cas_once), so other
+    // threads may already read it while it still tests private, and the
+    // stores about to be made would skip their publication fence. Flush
+    // first: `o` then tests private only if nothing shared reaches it.
+    if (UNLIKELY(gc_alloc_tl.local_active && gc_alloc_tl.pend_slot != NULL))
+        gc_local_flush_pending();
+}
+
+INLINE object_t* object_pin(object_t* o) {
+    uintptr_t w = __atomic_load_n((uintptr_t*)&o->vtable, __ATOMIC_RELAXED);
+    if (UNLIKELY((w & (VTABLE_TAG_BIT | VTABLE_PIN_BIT)) != VTABLE_TAG_BIT
+                 || !__atomic_compare_exchange_n((uintptr_t*)&o->vtable, &w, w | VTABLE_PIN_BIT,
+                                                 false, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)))
+        return object_pin_resolve(o);
+    object_pin_owed(o, w);
+    return o;
+}
+
 // ── foreign forms of the pin, for System::Internal::pin / unpin ──────────────
 // A foreign call passes the caller's `self` first and answers a YAFL value; a
 // unit is NULL. The pin answers the object actually pinned, which is the
@@ -996,7 +1074,7 @@ INLINE bool gc_store_is_private(object_t *obj) {
 // code makes by name is inlined.
 INLINE object_t *yafl_pin(object_t *self, object_t *o) {
     (void)self;
-    return object_pin_resolve(o);
+    return object_pin(o);
 }
 INLINE object_t *yafl_unpin(object_t *self, object_t *o) {
     (void)self;

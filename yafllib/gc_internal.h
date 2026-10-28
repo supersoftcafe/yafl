@@ -94,13 +94,7 @@ struct gc_thread_info {
     // scan (gc_local_note_slot): nursery roots until the next root scan.
     struct { object_t **slot; ptr_mask_t mask; } *remembered;
     size_t remembered_n, remembered_cap;
-    // The slot of the last SHARED store, whose new value is escaped at the next
-    // barrier or nursery collection (gc_local_flush_pending). Cleared at root
-    // scan with the remembered set: the epoch turns there, so a value stored
-    // before it is no longer nursery — and after it the container may be
-    // compacted away or freed, leaving the raw slot address dangling.
-    object_t **pend_slot;
-    ptr_mask_t pend_mask;
+    // (The pending SHARED-store slot lives in gc_alloc_tl: yafl.h.)
     // The insertion half of the hybrid barrier (_gc_write_barrier_in2): the
     // field this thread stored into last while its root scan was pending,
     // shaded — read back — at its next barrier, its root scan, or its nursery
@@ -242,18 +236,6 @@ void gc_stats_report(void);  // [GC TIME] exit summary (atexit when stats enable
 
 void gc_dbg_dangle_check(object_t *object);  // poison-mode UAF edge verifier
 void gc_hunt_run(void);                      // YAFL_GC_HUNT exit-time heap census
-// Announce that a late pin is about to write `o` (object_pin_resolve calls it). The store may install a
-// reference to a YOUNG object, and minor cycles skip old pages, so a page
-// that has aged into the old generation must return to the collection
-// rotation — otherwise nothing would ever trace the new referent and prune
-// would free it while the writer still holds it. The page's flag is set
-// UNCONDITIONALLY (young pages included) and only then is `old` read: the
-// promotion decision writes `old` before re-reading the flag, so whichever
-// way the race falls, one side sees the other (a Dekker handshake — see
-// gc_note_late_write and the promotion site in object.c). Cost is paid per
-// WRITE, not per object per cycle, which is what makes a write-once
-// structure cheap to keep.
-void gc_note_late_write(object_t* o);
 void gc_oom_report(FILE *out);               // collector state, printed at an OOM abort
 // YAFL_GC_TRACE page history (see gc_debug.c). Record through GC_TRACE_PAGE.
 enum gc_trace_kind { GCT_ALLOC = 1, GCT_LOCAL_TAKE, GCT_LOCAL_SWEEP, GCT_LOCAL_PROMOTE,

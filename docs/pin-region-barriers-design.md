@@ -4,7 +4,7 @@ Status: proposal, 2026-10-16. Nothing here is built.
 
 ## The idea
 
-A pin is a lock, like Java's `synchronized`: between `object_pin_resolve` and `object_unpin` the
+A pin is a lock, like Java's `synchronized`: between `object_pin` and `object_unpin` the
 owner may make several stores into the object. Today each of those stores carries its own GC
 bookkeeping. The proposal is to make stores inside a pin **plain**, and do the bookkeeping once per
 pinned region, at the pin and at the unpin.
@@ -22,7 +22,9 @@ The word barrier means two different things here.
   2. **Ragged snapshot.** A thread whose root scan is still to come must shade what it stores into
      an object the cycle may not trace (the hybrid barrier).
   3. **Generations.** An object on an `old` page that gains a young pointer must return its page to
-     the rotation (`gc_note_late_write`), or minor cycles never trace the young object.
+     the rotation, or minor cycles never trace the young object. `object_pin` does this itself for
+     an object carrying the OLD stamp (it marks the page and the thread; the thread's next root scan
+     demotes the page).
   4. **Nursery.** A young value from this thread's nursery stored into an object other threads can
      reach must escape (`gc_local_note_slot`), or the next nursery collection frees it.
   5. **Publication order.** The markers read fields without the pin. They must not see a pointer
@@ -35,10 +37,10 @@ per store.
 
 | | Early pin | Late pin |
 |---|---|---|
-| Taken by | `object_new(..., pinned)`, `array_create` | `object_pin_resolve`, `object_try_pin` |
+| Taken by | `object_new(..., pinned)`, `array_create` | `object_pin`; `object_try_pin` for writers of no references |
 | Used for | array tabulation, array and list builders | `yafl_cas_once` (memoize, write-once fields), the growable-string append, the compactor's claim |
 | Object | fresh, not yet published | already shared |
-| Region | spans safe points and nursery collections | short: no safe point, no allocation (`object_pin_resolve`'s contract) |
+| Region | spans safe points and nursery collections | short: no safe point, no allocation (`object_pin`'s contract) |
 | Stores today | `GC_FILL_STORE_IN` per element; `GC_STORE_IN` in `list_builder_link` | one `GC_STORE_IN` (`yafl_cas_once`), byte copies (`str.c`) |
 
 **Early pins cannot move their bookkeeping to the unpin.** The region crosses nursery collections.
@@ -58,8 +60,9 @@ At the **pin**, after the CAS succeeds:
   before the pin (the initialisation of the values about to be stored) before every store inside
   the region. That covers publication order (5) for all of them at once, so the stores need no
   fence. Late pins allocate nothing inside, so no value is initialised inside the region.
-- `gc_note_late_write(o)` (3), once. `object_pin_resolve` already does this, for every late pin
-  of an immutable object.
+- Generations (3): already done, once, by `object_pin` — a stamped object marks its page and
+  thread, and an unstamped one owes nothing, its pin's CAS being ordered against promotion's stamp
+  on the same word.
 - While a cycle marks (`gc_write_barrier_requested`): shade every pointer field the object holds
   now (1). This is object-granular SATB. Every value the region can overwrite is in the object at
   the pin. A value the region stores and then overwrites again came from this thread, which holds
@@ -122,6 +125,6 @@ Build it when there is a user of it: generated code, or runtime code, that makes
 into a shared object under one pin. Until then, the per-store macros are no slower for the late
 pins that exist, and they are already tested.
 
-When it is built, do it for late pins only, behind the two calls (`object_pin_resolve` and
+When it is built, do it for late pins only, behind the two calls (`object_pin` and
 `object_unpin`), so the region rule ("plain stores inside") holds without exceptions. Early pins
 keep their fill barriers.

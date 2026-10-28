@@ -226,12 +226,12 @@ static object_t* new_mailbox(void) {
 // Cells are shared MUTABLE objects: both sides hold the pin. Mutable objects
 // are never relocated, so the pinned copy is the cell itself.
 static void publish(int cell, object_t* value) {
-    struct cell* c = (struct cell*)object_pin_resolve(_cells[cell]);
+    struct cell* c = (struct cell*)object_pin(_cells[cell]);
     GC_STORE_IN(c, c->val, 1, value);
     object_unpin((object_t*)c);
 }
 static object_t* take(int cell) {
-    struct cell* c = (struct cell*)object_pin_resolve(_cells[cell]);
+    struct cell* c = (struct cell*)object_pin(_cells[cell]);
     object_t* v = c->val;
     object_unpin((object_t*)c);
     return v;

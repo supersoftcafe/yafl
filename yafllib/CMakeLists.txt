@@ -243,14 +243,18 @@ add_yafl_test(test_mmap)
 add_yafl_test(test_large_objects)
 add_yafl_test(test_pin)
 add_yafl_test(test_vtable_lookup)
-# test_gc_late_pin_race: the Dekker handshake between gc_note_late_write and
-# the promotion decision. Builds its own object.c with YAFL_GC_RACE_PROBE,
-# which hooks the check-then-act window between the promotion refs walk and
-# the old-claim so the test can land a late write inside it deterministically.
-# Without the handshake the page promotes holding an untraced young edge and
-# the next minor reclaims the referent.
+# test_gc_late_pin_race: a late pin racing its object's page into the old
+# generation. Builds its own object.c with YAFL_GC_RACE_PROBE, which hooks the
+# two windows of the promotion — before the OLD stamps (the pin's fast path,
+# caught by the stamp's re-check) and after them (the pin reports the write) —
+# so the test can land a late write in either deterministically. Without the
+# protocol the page promotes holding an untraced young edge and the next minor
+# reclaims the referent.
 add_yafl_test(test_gc_late_pin_race)
 target_compile_definitions(test_gc_late_pin_race PRIVATE YAFL_GC_RACE_PROBE=1)
+set_tests_properties(test_gc_late_pin_race PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;RACE_WINDOW=1")
+add_test(NAME test_gc_late_pin_race_unstamped COMMAND test_gc_late_pin_race)
+set_tests_properties(test_gc_late_pin_race_unstamped PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;RACE_WINDOW=0")
 # test_lazy_runner: exactly one caller of lazy_acquire holds the gate, and
 # every waiter is completed, even when the holder releases between a waiter's
 # enqueue and its return. Builds its own lazy.c with YAFL_LAZY_RACE_PROBE,

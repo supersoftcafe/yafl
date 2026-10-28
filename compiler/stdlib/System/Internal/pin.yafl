@@ -19,7 +19,7 @@ import System
 #
 # `pin` waits for a peer's pin and follows a relocation, so it always succeeds,
 # and answers the object actually pinned: write through that, never through the
-# reference passed in. See yafl.h `object_pin_resolve`.
+# reference passed in. See yafl.h `object_pin`.
 fun [foreign("yafl_pin"), impure, sync] pin<T>(o: T): T
 
 # Release the pin taken by `pin`. Only on an object you pinned.

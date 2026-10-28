@@ -30,7 +30,7 @@ import System
 # indirection nodes a Ctrie needs for removal.
 #
 # The nodes are ORDINARY IMMUTABLE objects. Publication takes a LATE PIN on
-# the node for the duration of the store (yafl.h object_try_pin): the pin bit
+# the node for the duration of the store (yafl.h object_pin): the pin bit
 # is a mutex the compactor honours, so a relocation can no longer drop a
 # published entry into a copy that is then abandoned — the failure that used
 # to force [mutable] here, and with it a lifetime in the young rotation.

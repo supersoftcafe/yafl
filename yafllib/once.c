@@ -12,7 +12,7 @@ EXPORT object_t* yafl_cas_once(object_t* self, object_t* obj, int32_t slot,
     // object out from under the store — the failure that used to force the
     // whole class to be declared [mutable], and with it a lifetime in the
     // young rotation.
-    object_t* owner = object_pin_resolve(obj);
+    object_t* owner = object_pin(obj);
 
     // Highest set bit = the LAST pointer field = the last child slot. The
     // slots are declared consecutively, so slot i sits nslots-1-i words below
