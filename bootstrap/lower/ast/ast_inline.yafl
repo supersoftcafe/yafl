@@ -126,6 +126,7 @@ fun frStmt(st, exclude: List<String>, acc): Set<String> => match(st)
                                 frOpt(d.dDefault, exclude, acc))
   (rt: PsRet)  => frExpr(rt.retValue, exclude, acc)
   (a: PsAction) => frExpr(a.action, exclude, acc)
+  (fa: PsFieldAssign) => frExpr(fa.faValue, exclude, frExpr(fa.faTarget, exclude, acc))
   (i: PsIf)    => frStmts(chain(i.ifFalse), exclude,
                           frStmts(chain(i.ifTrue), exclude,
                                   frExpr(i.ifCond, exclude, acc)))
@@ -321,6 +322,7 @@ fun rcmStmt(st, m: ThisMap) => match(st)
                                       d.dTypeInferred)
   (rt: PsRet)  => PsRet(rcmExpr(rt.retValue, m), rt.psrLine)
   (a: PsAction) => PsAction(rcmExpr(a.action, m), a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(rcmExpr(fa.faTarget, m), rcmExpr(fa.faValue, m), fa.psfaLine)
   (i: PsIf)    => PsIf(rcmExpr(i.ifCond, m),
                        rcmStmts(chain(i.ifTrue), m, List()),
                        rcmStmts(chain(i.ifFalse), m, List()),
@@ -1152,6 +1154,7 @@ fun rnmStmt(st, m: ThisMap) => match(st)
                                       d.dTypeInferred)
   (rt: PsRet)  => PsRet(rnmExpr(rt.retValue, m), rt.psrLine)
   (a: PsAction) => PsAction(rnmExpr(a.action, m), a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(rnmExpr(fa.faTarget, m), rnmExpr(fa.faValue, m), fa.psfaLine)
   (i: PsIf)    => PsIf(rnmExpr(i.ifCond, m),
                        rnmStmts(chain(i.ifTrue), m, List()),
                        rnmStmts(chain(i.ifFalse), m, List()),

@@ -392,6 +392,7 @@ fun llFoldStmt(st, name, n, calls: Bool): Int => match(st)
                                     calls)
   (rt: PsRet)  => llCountOne(rt.retValue, name, n, calls)
   (a: PsAction) => llCountOne(a.action, name, n, calls)
+  (fa: PsFieldAssign) => llCountOne(fa.faValue, name, llCountOne(fa.faTarget, name, n, calls), calls)
   (i: PsIf)    => llFoldStmts(chain(i.ifFalse), name,
                               llFoldStmts(chain(i.ifTrue), name,
                                           llCountOne(i.ifCond, name, n,
@@ -425,6 +426,7 @@ fun llStmt(st, ctx: LiftCtx, paramLets: List<PStmt>) => match(st)
                                       d.psdLine, d.dTypeInferred)
   (rt: PsRet)  => PsRet(llExpr(rt.retValue, ctx, paramLets), rt.psrLine)
   (a: PsAction) => PsAction(llExpr(a.action, ctx, paramLets), a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(llExpr(fa.faTarget, ctx, paramLets), llExpr(fa.faValue, ctx, paramLets), fa.psfaLine)
   (i: PsIf)    => PsIf(llExpr(i.ifCond, ctx, paramLets),
                        llStmts(chain(i.ifTrue), ctx, paramLets,
                                List()),

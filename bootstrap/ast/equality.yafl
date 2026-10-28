@@ -348,6 +348,10 @@ fun eqStmt(a, b) => match(a)
   (x: PsAction) => match(b)
     (y: PsAction) => eqExpr(x.action, y.action) && eqLine(x.psaLine, y.psaLine)
     (o: PStmt)    => false
+  (x: PsFieldAssign) => match(b)
+    (y: PsFieldAssign) => eqExpr(x.faTarget, y.faTarget) && eqExpr(x.faValue, y.faValue)
+                          && eqLine(x.psfaLine, y.psfaLine)
+    (o: PStmt)         => false
 
 # ── lists ───────────────────────────────────────────────────────────────────
 # One walk per element type: a generic `eqList` would need a function

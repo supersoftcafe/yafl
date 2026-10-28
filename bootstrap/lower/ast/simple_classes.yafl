@@ -515,6 +515,7 @@ fun scCuStmt(st, acc) => match(st)
   (ta: PsTypealias) => scCuSpec(ta.taType, acc)
   (rt: PsRet)  => scCuExpr(rt.retValue, acc)
   (a: PsAction) => scCuExpr(a.action, acc)
+  (fa: PsFieldAssign) => scCuExpr(fa.faValue, scCuExpr(fa.faTarget, acc))
   (i: PsIf)    => scCuStmts(chain(i.ifFalse), scCuStmts(chain(i.ifTrue), scCuExpr(i.ifCond, acc)))
   (o: PStmt)   => acc
 
@@ -962,6 +963,7 @@ fun scTStmt(st, c: ScCtx, r): PStmt => match(st)
                                    ta.pstLine, ta.taImports)
   (rt: PsRet)  => PsRet(scTExpr(rt.retValue, c, r), rt.psrLine)
   (a: PsAction) => PsAction(scTExpr(a.action, c, r), a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(scTExpr(fa.faTarget, c, r), scTExpr(fa.faValue, c, r), fa.psfaLine)
   (i: PsIf)    => PsIf(scTExpr(i.ifCond, c, r),
                        scTStmts(i.ifTrue, c, localScope(i.ifTrue, r)),
                        scTStmts(i.ifFalse, c, localScope(i.ifFalse, r)),

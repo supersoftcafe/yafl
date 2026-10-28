@@ -506,6 +506,13 @@ INLINE object_t* object_unpin(object_t* o) {
     return o;
 }
 
+// object_unpin for a YAFL statement: `System::unpin` returns None (NULL), so a
+// bare `unpin(o)` is a unit statement and not a discarded value.
+INLINE object_t* object_unpin_none(object_t* o) {
+    object_unpin(o);
+    return NULL;
+}
+
 // Take a late pin on the CURRENT copy of `o`, following relocation and
 // retrying against whoever else wants it. Returns the object actually pinned,
 // which may differ from `o` if the collector moved it. Callers must write

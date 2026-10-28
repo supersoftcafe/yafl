@@ -738,6 +738,7 @@ fun refStmt(st, acc): List<String> => match(st)
                                           refOpt(d.dDefault, acc))
   (rt: PsRet)        => referencedNames(rt.retValue, acc)
   (a: PsAction)      => referencedNames(a.action, acc)
+  (fa: PsFieldAssign) => referencedNames(fa.faValue, referencedNames(fa.faTarget, acc))
   (i: PsIf)          => referencedInStmts(chain(i.ifFalse),
                           referencedInStmts(chain(i.ifTrue),
                             referencedNames(i.ifCond, acc)))

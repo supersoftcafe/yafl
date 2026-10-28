@@ -227,3 +227,6 @@ enum PStmt
   enum PsElseIf(eiCond: PExpr, eiStmts: List<PStmt>, pseiLine: PLine, eiKeyword: PLine)
   enum PsElse(elStmts: List<PStmt>, pselLine: PLine)
   enum PsAction(action: PExpr, psaLine: PLine)
+  # `subject.field := value`: a store into a field of a [pinnable] or [mutable]
+  # class. The target is a PeDot (checked); a statement, never an expression.
+  enum PsFieldAssign(faTarget: PExpr, faValue: PExpr, psfaLine: PLine)

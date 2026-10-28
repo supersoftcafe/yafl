@@ -148,7 +148,7 @@ fun symbolLen(ln, pos)
   let two = pos + 2 <= System::length(ln) ? System::slice(ln, pos, pos + 2) : ""
   ret match(two)
     ("&&" | "||" | "==" | "|>" | "?>" | "??" | "<<" | ">>"
-     | "!=" | "<=" | ">=" | "=>" | "::" | "..") => 2
+     | "!=" | "<=" | ">=" | "=>" | ":=" | "::" | "..") => 2
     () => System::containsByte("=%*+?-/&|^!~()[]<>.;:,", System::byteAt(ln, pos)) ? 1 : 0
 
 # Python's LineRef offsets are CHARACTER columns, and hash6 hashes them — so

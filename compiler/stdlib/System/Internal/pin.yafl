@@ -1,0 +1,31 @@
+namespace System::Internal
+
+import System
+
+
+# Object pinning, for a class whose fields are written after construction
+# (`[pinnable]`, or `[mutable]`) with `subject.field := value`. The pin is the
+# LOCK: a pinned object is neither moved by the compactor nor written by anyone
+# else, so the plain stores between `pinYoung` and `unpin` are the whole
+# critical section. The compiler checks that the class admits a write; it does
+# not check that the pin is held.
+#
+#     import System::Internal
+#
+#     if pinYoung(cell)
+#       match(cell.next)
+#         (n: Cell) => ()                      # someone got there first
+#         ()        => cell.next := Cell(2, None)
+#       unpin(cell)
+#
+# FAST-FAIL. `pinYoung` never waits and never follows a relocation: it says
+# False when the pin is held by another, when the object has been copied (this
+# reference is a stale copy), or when it sits in the old generation. The
+# caller's answer to any of them is to start again from the current copy.
+# See yafl.h `object_try_pin_young`.
+fun pinYoung<T>(o: T): Bool
+  ret __builtin_op__<bool>("object_try_pin_young", o)
+
+# Release the pin taken by a successful `pinYoung`. Only on an object you pinned.
+fun unpin<T>(o: T): System::None
+  ret __builtin_op__<System::None>("object_unpin_none", o)

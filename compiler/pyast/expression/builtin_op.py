@@ -86,6 +86,9 @@ class BuiltinOpExpression(Expression):
     # hash (the 0-is-reserved contract holds either way). This is what lets
     # derived/wrapped code contain the shortcut UNCONDITIONALLY while the
     # boxing decision stays the compiler's.
+    # Ops with an effect their result does not carry: see generate().
+    _EFFECTS = frozenset({"object_unpin_none"})
+
     _REPR_AWARE = frozenset({"yafl_hash_peek", "yafl_hash_store", "yafl_ref_eq"})
 
     def __repr_aware(self, resolver: g.Resolver) -> "g.OperationBundle | None":
@@ -189,6 +192,16 @@ class BuiltinOpExpression(Expression):
 
         xtype = self.type.generate(resolver)
         xexpr = cg_p.RuntimeInvoke(self.op.value, params_bundle.result_var, xtype)
+        if self.op.value in BuiltinOpExpression._EFFECTS:
+            # Called for what it DOES, not for its result: anchor the call in a
+            # Move that dead-store elimination must keep, or an unused result
+            # takes the call with it (a bare `unpin(o)` statement would vanish).
+            # The C function answers a pointer (NULL); the expression's own
+            # value is the unit.
+            sink = cg_p.StackVar(cg_t.DataPointer(), "effect")
+            call = cg_p.RuntimeInvoke(self.op.value, params_bundle.result_var, cg_t.DataPointer())
+            return params_bundle + g.OperationBundle(
+                (sink,), (cg_o.Move(sink, call, keep=True),), cg_p.NewStruct(())).with_prefix("fx")
         final_bundle = g.OperationBundle( (), (), xexpr )
 
         return params_bundle + final_bundle

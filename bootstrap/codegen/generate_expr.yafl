@@ -734,7 +734,22 @@ fun genPinned(e: PExpr, r): GBundle => match(e)
 
 fun genBuiltinOpGeneric(op: PeBuiltinOp, r)
   let paramsBundle = genExpr(op.opParams, r)
+  if isEffectOp(builtinOpName(op.opName))
+    ret bundleJoin(paramsBundle, genEffectOp(builtinOpName(op.opName), mustResult(paramsBundle)))
   ret bundleJoin(paramsBundle, bundleValue(RpRuntimeInvoke(builtinOpName(op.opName), mustResult(paramsBundle), specGenerate(op.opType, r))))
+
+# Ops with an effect their result does not carry (builtin_op.py _EFFECTS).
+fun isEffectOp(n) => n == "object_unpin_none"
+
+# Called for what it DOES, not for its result: anchor the call in a Move that
+# dead-store elimination must keep, or an unused result takes the call with it
+# (a bare `unpin(o)` statement would vanish). The C function answers a pointer
+# (NULL); the expression's own value is the unit.
+fun genEffectOp(nm, params: RParam)
+  let sink = RpStackVar(CgDataPointer(), "effect")
+  let call = RpRuntimeInvoke(nm, params, CgDataPointer())
+  ret withPrefix(GBundle(list1(sink), list1(OpMove(sink, call, true, Dict())),
+                         RpNewStruct(List()), List(), List()), "fx")
 
 # The hash/identity internals are REPRESENTATION-AWARE: on a boxed enum they
 # are the real runtime calls; on a value representation there is no object,

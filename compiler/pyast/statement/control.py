@@ -129,6 +129,92 @@ class ActionStatement(Statement):
 
 
 @dataclass
+class FieldAssignStatement(Statement):
+    """`subject.field := value` — store into a field of a `[pinnable]` or
+    `[mutable]` object. The only write the language has: every other object is
+    immutable once built, and these two classes are the ones whose fields are
+    written AFTER construction (a write-once slot published under a pin; a
+    mutable cell), so the check refuses anything else.
+
+    A STATEMENT, never an expression: the store is an effect, and effects are
+    statements. The compiler checks that the class admits the write, NOT that
+    a pin is held — holding it is the caller's lock, taken with
+    `System::pinYoung` and released with `System::unpin`. The field is named in
+    YAFL and resolved here, so the runtime never looks a field up by layout.
+
+    Emitted as an ordinary non-fresh field store: the GC barriers a heap store
+    owes are the same ones any other store makes, since the target object may
+    have left the storing thread's nursery long before.
+    """
+    target: e.Expression      # a DotExpression on a class-typed subject
+    value: e.Expression
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
+        return rw.rewrite(self, replace, resolver,
+            target=self.target.search_and_replace(resolver, replace),
+            value=self.value.search_and_replace(resolver, replace))
+
+    def __field(self, resolver: g.Resolver):
+        """(class statement, data statement) of the assigned field, or an error
+        message. Only a field of a class-typed subject can be assigned."""
+        if not isinstance(self.target, e.DotExpression):
+            return "the left of ':=' must be a field, as in 'subject.field := value'"
+        btype = self.target.base.get_type(resolver)
+        if not isinstance(btype, t.ClassSpec):
+            return "':=' assigns a field of a class instance"
+        from pyast.statement.classdef import ClassStatement
+        found = resolver.find_type(btype.name)
+        if not found or len(found) > 1 or not isinstance(found[0].statement, ClassStatement):
+            return "':=' assigns a field of a class instance"
+        cdecl = found[0].statement
+        datas = cdecl.find_data(resolver, self.target.name)
+        if not datas:
+            return f"Could not find a field named {self.target.name}"
+        if len(datas) > 1:
+            return f"Ambiguous reference to field named {self.target.name}"
+        if isinstance(datas[0].statement, FunctionStatement):
+            return f"'{self.target.name}' is a method, not a field"
+        return cdecl, datas[0].statement
+
+    def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
+        new_target, target_stmts, target_hints = self.target.compile(resolver, None)
+        # The value is received by the FIELD's type, so a narrower value
+        # converts into a wider slot (a Node into a `Node|None`).
+        field_type = new_target.get_type(resolver)
+        new_value, value_stmts, value_hints = self.value.compile(resolver, field_type)
+        return (dataclasses.replace(self, target=new_target, value=new_value),
+                list(target_stmts) + list(value_stmts), h.merge(target_hints, value_hints))
+
+    def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
+        errors = self.target.check(resolver, None) + self.value.check(resolver, None)
+        found = self.__field(resolver)
+        if isinstance(found, str):
+            return errors + [Error(self.line_ref, found)]
+        cdecl, _ = found
+        if "pinnable" not in cdecl.attributes and "mutable" not in cdecl.attributes:
+            errors.append(Error(self.line_ref,
+                f"':=' writes a field after construction, so it needs a [pinnable] or "
+                f"[mutable] class; '{g.bare_name(cdecl.name)}' is neither"))
+        field_type = self.target.get_type(resolver)
+        vtype = self.value.get_type(resolver)
+        if (field_type is not None and vtype is not None
+                and t.trivially_assignable_equals(resolver, field_type, vtype) is False):
+            errors.append(Error(self.line_ref, "Incorrect type assigned to the field"))
+        return errors
+
+    def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
+        cdecl, data = self.__field(resolver)
+        base_b = self.target.base.generate(resolver)
+        field_type = self.target.get_type(resolver)
+        val_b = self.value.generate_to(resolver, field_type).with_prefix("fas")
+        place = cg_p.ObjectField(data.get_type().generate(resolver), base_b.result_var,
+                                 cdecl.name, data.name, None)
+        # NOT fresh: the object was built long before this store, and may have
+        # left the storing thread's nursery.
+        return base_b + val_b + g.OperationBundle((), (cg_o.Move(place, val_b.result_var),), None)
+
+
+@dataclass
 class IfStatement(Statement):
     """A first-class conditional statement.
 
