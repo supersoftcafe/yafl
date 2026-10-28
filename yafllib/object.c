@@ -1237,6 +1237,13 @@ EXPORT object_t* object_pin_resolve(object_t* o) {
     }
 }
 
+// The out-of-line part of object_try_pin_young (yafl.h): a pin taken while
+// this thread's nursery is active must first escape the pending slot, exactly
+// as object_pin_resolve does after its own pin.
+EXPORT void object_pin_settle(void) {
+    gc_local_flush_pending();
+}
+
 EXPORT void gc_note_late_write(object_t* o) {
     o = gc_ref(o);
     if (!gc_object_is_on_heap_fast(o))
