@@ -433,8 +433,16 @@ fun drStmt(st, wheres: List<Spec>, r,
   (a: PsAction) => drExpr(a.action, wheres, r, insts)
     |> (o) => DrS(o.deChanged ? PsAction(o.deExpr, a.psaLine) : st,
                   o.deChanged)
+  (fa: PsFieldAssign) => drFieldAssign(fa, st, wheres, r, insts)
   (i: PsIf)    => drIf(i, wheres, r, insts)
   (o: PStmt)   => DrS(st, false)
+
+# A field assignment drops inside its target and its value alike.
+fun drFieldAssign(fa: PsFieldAssign, st, wheres: List<Spec>, r, insts: List<TraitInst>)
+  let t = drExpr(fa.faTarget, wheres, r, insts)
+  let v = drExpr(fa.faValue, wheres, r, insts)
+  ret DrS(t.deChanged || v.deChanged ? PsFieldAssign(t.deExpr, v.deExpr, fa.psfaLine) : st,
+          t.deChanged || v.deChanged)
 
 fun drIf(i, wheres: List<Spec>, r, insts: List<TraitInst>)
   let oc = drExpr(i.ifCond, wheres, r, insts)
@@ -977,10 +985,16 @@ fun drFixStmt(st, let2: PsLet)
       |> (o) => DrBi(PsRet(o.bxExpr, rt.psrLine), o.bxDid, o.bxOk)
     (a: PsAction) => drFixExpr(a.action, let2)
       |> (o) => DrBi(PsAction(o.bxExpr, a.psaLine), o.bxDid, o.bxOk)
+    (fa: PsFieldAssign) => drFixFieldAssign(fa, let2)
     (i: PsIf)    => drFixIf(i, let2)
     # A reference under a nested fn is a capture; keep the checker's error.
     (f: PsFun)   => DrBi(st, false, false)
     (o: PStmt)   => DrBi(st, false, true)
+
+fun drFixFieldAssign(fa: PsFieldAssign, let2: PsLet)
+  let t = drFixExpr(fa.faTarget, let2)
+  let v = drFixExpr(fa.faValue, let2)
+  ret DrBi(PsFieldAssign(t.bxExpr, v.bxExpr, fa.psfaLine), t.bxDid || v.bxDid, t.bxOk && v.bxOk)
 
 fun drFixIf(i, let2: PsLet)
   let oc = drFixExpr(i.ifCond, let2)

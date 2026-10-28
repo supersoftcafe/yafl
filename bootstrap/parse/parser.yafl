@@ -1202,7 +1202,18 @@ fun stmtExprStart(ps: Ps, x)
     ()           => startLine(x)
 
 fun parseAction(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps) => parseExpr(ps)
-  ?> (a: PExpr, rest: Ps) => (PsAction(a, stmtExprStart(ps, a)), rest)
+  ?> (a: PExpr, rest: Ps) => atSym(rest, ":=")
+    ? parseFieldAssign(a, ps, rest)
+    : (PsAction(a, stmtExprStart(ps, a)), rest)
+
+# `subject.field := value`. As parser.py tries the assignment before the plain
+# action, a `:=` not followed by an expression falls back to the action, leaving
+# the `:=` unconsumed.
+fun parseFieldAssign(a: PExpr, ps: Ps, rest: Ps): (v: PStmt|PFail, rest: Ps)
+  let val = parseExpr(bump(rest))
+  ret match(val.v)
+    (v: PExpr) => (PsFieldAssign(a, v, stmtExprStart(ps, a)), val.rest)
+    (f: PFail) => (PsAction(a, stmtExprStart(ps, a)), rest)
 
 fun parseRet(lr: PLine, ps: Ps): (v: PStmt|PFail, rest: Ps)
   ret hardened(parseExpr(ps), "missing return value")

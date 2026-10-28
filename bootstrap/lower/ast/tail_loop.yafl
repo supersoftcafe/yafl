@@ -197,6 +197,7 @@ fun tlCountStmt(st, fName, n): Int => match(st)
                                      tlCountOpt(d.dDefault, fName, n))
   (rt: PsRet)  => tlCountSelf(rt.retValue, fName, n)
   (a: PsAction) => tlCountSelf(a.action, fName, n)
+  (fa: PsFieldAssign) => tlCountSelf(fa.faValue, fName, tlCountSelf(fa.faTarget, fName, n))
   (i: PsIf)    => tlCountStmts(chain(i.ifFalse), fName,
                                tlCountStmts(chain(i.ifTrue), fName,
                                             tlCountSelf(i.ifCond, fName,

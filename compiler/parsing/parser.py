@@ -1057,6 +1057,13 @@ __parse_maybe_generic_statement = p.maybe(p.requires(
 __parse_action = p.block(
     __parse_expression >> __to_action_statement)
 
+# `subject.field := value`. Tried before the plain action: both start with an
+# expression, and only the `:=` after it tells them apart.
+__to_field_assign = __placed_at_its_expression(
+    lambda value, at: s.FieldAssignStatement(at, value[0], value[1]), lambda value: value[0])
+__parse_field_assign = p.block(
+    (__parse_expression & p.discard_sym(":=") & __parse_expression) >> __to_field_assign)
+
 __parse_ret = p.block(p.requires(
     p.discard_sym("ret"),
     __parse_expression >> __to_ret_statement,
@@ -1214,7 +1221,7 @@ def _create_enum_leaf_constructors(root: s.EnumStatement, ancestors: list[s.Enum
 __parse_statement_any = p.block(
     __parse_class | __parse_interface | __parse_instance | __parse_fun | __parse_let
     | __parse_type_alias | __parse_import | __parse_namespace | __parse_ret
-    | __parse_action | __parse_enum
+    | __parse_field_assign | __parse_action | __parse_enum
     | __parse_if | __parse_else_if | __parse_else)
 
 

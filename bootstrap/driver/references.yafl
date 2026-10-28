@@ -94,6 +94,7 @@ fun refsStmt(st, acc): Set<String> => match(st)
     |> (a) => refsStmts(chain(ei.eiStmts), a)
   (el: PsElse)  => refsStmts(chain(el.elStmts), acc)
   (ac: PsAction) => refsExpr(ac.action, acc)
+  (fa: PsFieldAssign) => refsExpr(fa.faValue, refsExpr(fa.faTarget, acc))
   (im: PsImport)    => acc
   (n2: PsNamespace) => acc
 

@@ -41,6 +41,7 @@ fun compileStmt(st, r, retType): StmtOut => match(st)
   (e: PsEnum)        => compileEnum(e, r)
   (rt: PsRet)        => compileRet(rt, r, retType)
   (a: PsAction)      => compileAction(a, r)
+  (fa: PsFieldAssign) => compileFieldAssign(fa, r)
   (i: PsIf)          => compileIf(i, r, retType)
   # An else-if / else reaching here is an ORPHAN (collapseElseIf folds the
   # proper ones into their if at both fold sites); it passes through
@@ -568,6 +569,15 @@ fun compileRet(rt: PsRet, r, retType)
 fun compileAction(a: PsAction, r)
   let v = compileExpr(a.action, r, None)
   ret StmtOut(PsAction(v.eoExpr, a.psaLine), v.eoGlobals, v.eoHints)
+
+# The value is received by the FIELD's type, so a narrower value converts into a
+# wider slot (a Node into a `Node|None`, a bare None into the union's empty case).
+fun compileFieldAssign(fa: PsFieldAssign, r)
+  let t1 = compileExpr(fa.faTarget, r, None)
+  let v = compileExpr(fa.faValue, r, exprType(t1.eoExpr, r))
+  ret StmtOut(PsFieldAssign(t1.eoExpr, v.eoExpr, fa.psfaLine),
+              concat(t1.eoGlobals, v.eoGlobals),
+              mergeHints(t1.eoHints, v.eoHints))
 
 # Each branch folds its OWN else-if chain before compiling (the second fold
 # site — a block's statement list is the first).

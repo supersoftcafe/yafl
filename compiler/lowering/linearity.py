@@ -510,6 +510,12 @@ class _Checker:
                     "linear value is discarded; bind it and consume it"))
             return c + rest()
 
+        if isinstance(stmt, s.FieldAssignStatement):
+            # The subject and the stored value are each evaluated once; storing
+            # a linear value into a field moves it, exactly as passing it on.
+            return (self._count(stmt.target.base, local_env, resolver)
+                    + self._count(stmt.value, local_env, resolver) + rest())
+
         if isinstance(stmt, s.IfStatement):
             # The condition runs unconditionally; the branches are alternative
             # paths. Statements after the `if` continue only the branches that

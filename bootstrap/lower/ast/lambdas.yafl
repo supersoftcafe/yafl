@@ -90,6 +90,7 @@ fun cpStmt(st, path, acc) => match(st)
   (ta: PsTypealias)  => cpSpec(ta.taType, cpExtend(path, ta.taName), acc)
   (rt: PsRet)        => cpExpr(rt.retValue, path, acc)
   (a: PsAction)      => cpExpr(a.action, path, acc)
+  (fa: PsFieldAssign) => cpExpr(fa.faValue, path, cpExpr(fa.faTarget, path, acc))
   (i: PsIf)          => cpIfStmt(i, path, acc)
   (o: PStmt)         => acc
 
@@ -447,6 +448,7 @@ fun clStmt(st, r, paths: ClPaths, exports) => match(st)
   (e2: PsEnum)       => clEnumStmt(e2, r, paths, exports)
   (rt: PsRet)        => clRetStmt(rt, r, paths, exports)
   (a: PsAction)      => clActionStmt(a, r, paths, exports)
+  (fa: PsFieldAssign) => clFieldAssignStmt(fa, r, paths, exports)
   (i: PsIf)          => clIfStmt(i, r, paths, exports)
   (o: PStmt)         => ClSt(st, exports)
 
@@ -503,6 +505,11 @@ fun clActionStmt(a: PsAction, r, paths: ClPaths,
                  exports)
   let v = clExpr(a.action, r, paths, exports)
   ret ClSt(PsAction(v.clExExpr, a.psaLine), v.clExExports)
+
+fun clFieldAssignStmt(fa: PsFieldAssign, r, paths: ClPaths, exports)
+  let t = clExpr(fa.faTarget, r, paths, exports)
+  let v = clExpr(fa.faValue, r, paths, t.clExExports)
+  ret ClSt(PsFieldAssign(t.clExExpr, v.clExExpr, fa.psfaLine), v.clExExports)
 
 fun clIfStmt(i: PsIf, r, paths: ClPaths, exports): ClSt
   let cond = clExpr(i.ifCond, r, paths, exports)

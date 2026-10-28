@@ -192,6 +192,7 @@ fun stmtLine(st) => match(st)
   (ei: PsElseIf) => ei.pseiLine
   (el: PsElse) => el.pselLine
   (ac: PsAction) => ac.psaLine
+  (fa: PsFieldAssign) => fa.psfaLine
   (inst: PsTraitInstance) => inst.pstiLine
 
 # ── array accessor (pyast/utils.create_array_accessor) ─────────────────────

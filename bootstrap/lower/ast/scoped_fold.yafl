@@ -42,6 +42,7 @@ fun sfStmt<T>(st: PStmt, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
   (e2: PsEnum)       => sfStmts(chain(e2.eVariants), r, fx, sfStmt(e2.eParams, r, fx, acc))
   (rt: PsRet)        => sfExpr(rt.retValue, r, fx, acc)
   (a: PsAction)      => sfExpr(a.action, r, fx, acc)
+  (fa: PsFieldAssign) => sfExpr(fa.faValue, r, fx, sfExpr(fa.faTarget, r, fx, acc))
   (i: PsIf)          => sfStmts(chain(i.ifFalse), localScope(i.ifFalse, r), fx,
                                 sfStmts(chain(i.ifTrue), localScope(i.ifTrue, r), fx,
                                         sfExpr(i.ifCond, r, fx, acc)))

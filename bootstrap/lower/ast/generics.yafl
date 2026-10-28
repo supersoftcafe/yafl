@@ -167,6 +167,7 @@ fun fciStmt(st, acc) => match(st)
   (ta: PsTypealias)  => fciSpecOpt(ta.taType, acc)
   (rt: PsRet)        => fciExpr(rt.retValue, acc)
   (a: PsAction)      => fciExpr(a.action, acc)
+  (fa: PsFieldAssign) => fciExpr(fa.faValue, fciExpr(fa.faTarget, acc))
   (i: PsIf)          => fciStmts(chain(i.ifFalse),
                           fciStmts(chain(i.ifTrue),
                                    fciExpr(i.ifCond, acc)))
@@ -495,6 +496,8 @@ fun gsubStmt(st, sub: GSub) => match(st)
                         rt.psrLine)
   (a: PsAction) => PsAction(gsubExpr(a.action, sub, List()),
                             a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(gsubExpr(fa.faTarget, sub, List()),
+                                       gsubExpr(fa.faValue, sub, List()), fa.psfaLine)
   (i: PsIf)    => PsIf(gsubExpr(i.ifCond, sub, List()),
                        gsubStmts(chain(i.ifTrue), sub, List()),
                        gsubStmts(chain(i.ifFalse), sub, List()),
@@ -1027,6 +1030,7 @@ fun rcrStmt(st, refs: GRefsIx) => match(st)
                                    ta.taImports)
   (rt: PsRet)  => PsRet(rcrExpr(rt.retValue, refs), rt.psrLine)
   (a: PsAction) => PsAction(rcrExpr(a.action, refs), a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(rcrExpr(fa.faTarget, refs), rcrExpr(fa.faValue, refs), fa.psfaLine)
   (i: PsIf)    => PsIf(rcrExpr(i.ifCond, refs),
                        rcrStmts(chain(i.ifTrue), refs, List()),
                        rcrStmts(chain(i.ifFalse), refs, List()),
@@ -1237,6 +1241,7 @@ fun cccStmt(st, acc) => match(st)
   (ta: PsTypealias) => cccWheres(chain(ta.taWheres), acc)
   (rt: PsRet)  => cccExpr(rt.retValue, acc)
   (a: PsAction) => cccExpr(a.action, acc)
+  (fa: PsFieldAssign) => cccExpr(fa.faValue, cccExpr(fa.faTarget, acc))
   (i: PsIf)    => cccStmts(chain(i.ifFalse),
                            cccStmts(chain(i.ifTrue),
                                     cccExpr(i.ifCond, acc)))
@@ -1732,6 +1737,7 @@ fun rtrStmt(st, r, traits: List<PStmt>) => match(st)
                          e2.eImports)
   (rt: PsRet)  => PsRet(rtrExpr(rt.retValue, r, traits), rt.psrLine)
   (a: PsAction) => PsAction(rtrExpr(a.action, r, traits), a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(rtrExpr(fa.faTarget, r, traits), rtrExpr(fa.faValue, r, traits), fa.psfaLine)
   (i: PsIf)    => PsIf(rtrExpr(i.ifCond, r, traits),
                        rtrStmts(chain(i.ifTrue), r, traits, List()),
                        rtrStmts(chain(i.ifFalse), r, traits, List()),
@@ -2065,6 +2071,7 @@ fun rfrStmt(st, c: Canon) => match(st)
                                    ta.pstLine, ta.taImports)
   (rt: PsRet)  => PsRet(rfrExpr(rt.retValue, c), rt.psrLine)
   (a: PsAction) => PsAction(rfrExpr(a.action, c), a.psaLine)
+  (fa: PsFieldAssign) => PsFieldAssign(rfrExpr(fa.faTarget, c), rfrExpr(fa.faValue, c), fa.psfaLine)
   (i: PsIf)    => PsIf(rfrExpr(i.ifCond, c),
                        rfrStmts(chain(i.ifTrue), c, List()),
                        rfrStmts(chain(i.ifFalse), c, List()),
@@ -2293,6 +2300,7 @@ fun rugStmt(st, r, acc): Set<PErr> => match(st)
                            rugStmt(e2.eParams, r, acc))
   (rt: PsRet)  => rugExpr(rt.retValue, r, acc)
   (a: PsAction) => rugExpr(a.action, r, acc)
+  (fa: PsFieldAssign) => rugExpr(fa.faValue, r, rugExpr(fa.faTarget, r, acc))
   (i: PsIf)    => rugStmts(chain(i.ifFalse), r,
                            rugStmts(chain(i.ifTrue), r,
                                     rugExpr(i.ifCond, r, acc)))

@@ -989,6 +989,21 @@ INLINE bool gc_store_is_private(object_t *obj) {
     return gc_alloc_tl.local_active && gc_local_obj_private(obj);
 }
 
+// ── foreign forms of the pin, for System::Internal::pin / unpin ──────────────
+// A foreign call passes the caller's `self` first and answers a YAFL value; a
+// unit is NULL. The pin answers the object actually pinned, which is the
+// current copy if the collector moved it. INLINE, so the call the generated
+// code makes by name is inlined.
+INLINE object_t *yafl_pin(object_t *self, object_t *o) {
+    (void)self;
+    return object_pin_resolve(o);
+}
+INLINE object_t *yafl_unpin(object_t *self, object_t *o) {
+    (void)self;
+    object_unpin(o);
+    return NULL;
+}
+
 // ── Publication order ────────────────────────────────────────────────────────
 // The writer's half: a store-store fence ("Target specifics"). Everything this thread
 // wrote before it is visible to other threads before anything it writes after

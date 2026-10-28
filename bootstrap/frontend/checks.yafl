@@ -194,6 +194,7 @@ fun nsStmt(st, acc): Set<PErr> => match(st)
   (ta: PsTypealias)  => nsSpecs(chain(ta.taWheres), nsSpec(ta.taType, acc))
   (rt: PsRet)        => nsExpr(rt.retValue, acc)
   (a: PsAction)      => nsExpr(a.action, acc)
+  (fa: PsFieldAssign) => nsExpr(fa.faValue, nsExpr(fa.faTarget, acc))
   (i: PsIf)          => nsStmts(chain(i.ifFalse),
                           nsStmts(chain(i.ifTrue), nsExpr(i.ifCond, acc)))
   (ei: PsElseIf)     => nsStmts(chain(ei.eiStmts), nsExpr(ei.eiCond, acc))

@@ -93,6 +93,7 @@ fun rwStmtKids(st, w: Rw): PStmt => match(st)
   (ta: PsTypealias) => with ta(taType = rwSpec(ta.taType, w))
   (rt: PsRet)  => with rt(retValue = rwExpr(rt.retValue, w))
   (a: PsAction) => with a(action = rwExpr(a.action, w))
+  (fa: PsFieldAssign) => with fa(faTarget = rwExpr(fa.faTarget, w), faValue = rwExpr(fa.faValue, w))
   (i: PsIf)    => with i(ifCond  = rwExpr(i.ifCond, w),
                          ifTrue  = rwStmts(i.ifTrue, w),
                          ifFalse = rwStmts(i.ifFalse, w))
@@ -313,6 +314,7 @@ fun foldStmt<T>(st, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
                                                   acc2)))
     (rt: PsRet)  => foldExpr(rt.retValue, f, fx, acc2)
     (a: PsAction) => foldExpr(a.action, f, fx, acc2)
+    (fa: PsFieldAssign) => foldExpr(fa.faValue, f, fx, foldExpr(fa.faTarget, f, fx, acc2))
     (i: PsIf)    => foldStmts(i.ifFalse, f, fx,
                               foldStmts(i.ifTrue, f, fx,
                                         foldExpr(i.ifCond, f, fx,
@@ -574,6 +576,8 @@ fun rwnStmtKids(st, w: RwN, sc, n) => match(st)
     |> (v) => RwNS(v.rneN, PsRet(v.rneExpr, rt.psrLine))
   (a: PsAction) => rwnExpr(a.action, w, sc, n)
     |> (v) => RwNS(v.rneN, PsAction(v.rneExpr, a.psaLine))
+  (fa: PsFieldAssign) => rwnExpr(fa.faTarget, w, sc, n)
+    |> (t1) => rwnFieldAssignValue(fa, t1, w, sc)
   (i: PsIf)    => rwnExpr(i.ifCond, w, sc, n)
     |> (cd) => (cd, rwnStmts(i.ifTrue, w, rwnLocalScope(i.ifTrue, sc),
                              cd.rneN))
@@ -768,6 +772,7 @@ fun fasStmt<T>(st, f: (:T, :Spec): T, acc: T): T => match(st)
   (ta: PsTypealias) => fasSpec(ta.taType, f, acc)
   (rt: PsRet)  => fasExpr(rt.retValue, f, acc)
   (a: PsAction) => fasExpr(a.action, f, acc)
+  (fa: PsFieldAssign) => fasExpr(fa.faValue, f, fasExpr(fa.faTarget, f, acc))
   (i: PsIf)    => fasStmts(chain(i.ifFalse), f,
                     fasStmts(chain(i.ifTrue), f,
                       fasExpr(i.ifCond, f, acc)))
@@ -869,3 +874,10 @@ fun [tail] fasEntries<T>(es: Chain<SEntry>, f: (:T, :Spec): T, acc: T): T => mat
   (l: ChainLink)  => fasEntries(l.next, f,
       fasExprOpt(l.value.seDefault, f,
         fasSpecOpt(l.value.seType, f, acc)))
+
+
+# A field assignment numbers its target, then its value from where the target
+# left off; both come back in the one node.
+fun rwnFieldAssignValue(fa: PsFieldAssign, t1: RwNE, w: RwN, sc)
+  ret rwnExpr(fa.faValue, w, sc, t1.rneN)
+    |> (v) => RwNS(v.rneN, PsFieldAssign(t1.rneExpr, v.rneExpr, fa.psfaLine))

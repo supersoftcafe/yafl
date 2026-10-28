@@ -644,6 +644,8 @@ fun suffixStmt(st, stmts: List<PStmt>, i, env,
     |> (o) => ScopeOut(o.loCnt, o.loErrs, bindings)
   (a: PsAction) => suffixAction(a, stmts, i, env, r, r0, trailing, bindings,
                                 acc)
+  (fa: PsFieldAssign) => suffixFieldAssign(fa, stmts, i, env, r, r0, trailing,
+                                           bindings, acc)
   (i2: PsIf) => suffixIf(i2, stmts, i, env, r, r0, trailing, bindings, acc)
   (c: PsClass) => countSuffix(stmts, i + 1, env, r, r0, trailing, bindings,
                               linToplevel(st, r0, acc))
@@ -743,6 +745,21 @@ fun suffixAction(a: PsAction, stmts: List<PStmt>, i, env,
   ret countSuffix(stmts, i + 1, env, r, r0, trailing, bindings, acc2)
     |> (rest) => ScopeOut(cntAdd(o.loCnt, rest.soCnt), rest.soErrs,
                           rest.soBindings)
+
+# The subject and the stored value are each evaluated once; storing a linear
+# value into a field moves it, exactly as passing it on. The SUBJECT (the base
+# of the dotted target), not the dotted path, is what is used.
+fun suffixFieldAssign(fa: PsFieldAssign, stmts: List<PStmt>, i, env,
+                      r, r0, trailing: PExpr|None, bindings, acc)
+  let t = linCount(faSubject(fa), env, r, acc)
+  let v = linCount(fa.faValue, env, r, t.loErrs)
+  ret countSuffix(stmts, i + 1, env, r, r0, trailing, bindings, v.loErrs)
+    |> (rest) => ScopeOut(cntAdd(cntAdd(t.loCnt, v.loCnt), rest.soCnt), rest.soErrs,
+                          rest.soBindings)
+
+fun faSubject(fa: PsFieldAssign) => match(fa.faTarget)
+  (d: PeDot) => d.base
+  (o: PExpr) => o
 
 fun exprIsLinear(x, r, r0) => carriesLinearity(exprType(x, r), r0)
 
@@ -866,6 +883,7 @@ fun instStmt(st, r, acc): Set<PErr> => match(st)
   (ta: PsTypealias)  => instSpecOpt(ta.taType, r, acc)
   (rt: PsRet)        => instExpr(rt.retValue, r, acc)
   (a: PsAction)      => instExpr(a.action, r, acc)
+  (fa: PsFieldAssign) => instExpr(fa.faValue, r, instExpr(fa.faTarget, r, acc))
   (i: PsIf)          => instStmts(chain(i.ifFalse), r,
                           instStmts(chain(i.ifTrue), r,
                                     instExpr(i.ifCond, r, acc)))

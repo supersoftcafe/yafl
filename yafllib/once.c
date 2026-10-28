@@ -20,8 +20,7 @@ EXPORT object_t* yafl_cas_once(object_t* self, object_t* obj, int32_t slot,
     // makes it immune to the struct's trailing alignment padding.
     vtable_t* vt = vtable_untag(owner->vtable);
     ptr_mask_t mask = vt->object_pointer_locations;
-    int hi = 63;
-    while (hi >= 0 && !((mask >> hi) & UINT64_C(1))) hi--;
+    int hi = mask ? 63 - __builtin_clzll(mask) : -1;
     if (hi < nslots - 1) {
         object_unpin(owner);
         return integer_from_int32_noalloc(0);   // malformed layout: refuse

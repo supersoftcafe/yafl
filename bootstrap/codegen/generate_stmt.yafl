@@ -31,10 +31,42 @@ import Bootstrap::StdlibCandidates
 fun gsStmt(st, r, expected: Spec|None) => match(st)
   (rt: PsRet)         => genRetStmt(rt, r)
   (a: PsAction)       => genExpr(a.action, r)
+  (fa: PsFieldAssign) => genFieldAssign(fa, r)
   (f2: PsIf)          => genIfStmt(f2, r, expected)
   (d: PsDestructure)  => genDestructureStmt(d, r)
   (l: PsLet)          => genLetStmt(l, r)
   (o: PStmt)          => bundleOp1(OpAbort("generate: statement kind cannot appear in a lowered block", Dict()))
+
+# ── FieldAssignStatement (control.py) ───────────────────────────────────────
+
+# `subject.field := value`: an ordinary NON-fresh field store. The object was
+# built long before this statement and may have left the storing thread's
+# nursery, so the store owes the barriers any heap store owes.
+fun genFieldAssign(fa: PsFieldAssign, r) => match(fa.faTarget)
+  (d: PeDot) => match(exprType(d.base, r))
+    (c: SClass) => genFieldAssignClass(fa, d, c, r)
+    (o: Spec)   => emptyBundle()   # unreachable: check() requires a class subject
+    ()          => emptyBundle()
+  (o: PExpr) => emptyBundle()      # unreachable: check() requires a field
+
+fun genFieldAssignClass(fa: PsFieldAssign, d: PeDot, c: SClass, r) => match(soleItem(findType(r, c.scName)))
+  (found: Found) => match(found.fStmt)
+    (cs: PsClass) => genFieldAssignField(fa, d, cs, r)
+    (o: PStmt)    => emptyBundle()   # unreachable
+  ()               => emptyBundle()   # unreachable
+
+fun genFieldAssignField(fa: PsFieldAssign, d: PeDot, cs: PsClass, r) => match(head(classFindData(cs, r, d.member)))
+  (found: Found) => match(found.fStmt)
+    (l: PsLet) => genFieldAssignStore(fa, d, cs, l, r)
+    (o: PStmt) => emptyBundle()      # unreachable: check() requires a field
+  ()              => emptyBundle()   # unreachable
+
+fun genFieldAssignStore(fa: PsFieldAssign, d: PeDot, cs: PsClass, l: PsLet, r)
+  let baseB = genExpr(d.base, r)
+  let valB = withPrefix(genExprTo(fa.faValue, r, exprType(fa.faTarget, r)), "fas")
+  let place = RpObjectField(specGenerateOpt(l.lType, r), mustResult(baseB), cs.cName, d.member, None, false, false)
+  ret bundleJoin(bundleJoin(baseB, valB),
+                 bundleOp1(OpMove(place, mustResult(valB), false, Dict())))
 
 # ── ReturnStatement (control.py) ────────────────────────────────────────────
 
