@@ -152,7 +152,9 @@ def _port_emit(binary: Path, optimization_level: int, lib_path: str) -> str:
 
 
 def _link_argv() -> tuple[list[str], list[str]]:
-    """(compile flags, link flags). clang -O2, not -O0: this binary is EXECUTED by ~25 test modules, once
+    """(compile flags, link flags) for clang.
+
+    -O2, not -O0: this binary is EXECUTED by ~25 test modules, once
     per corpus file per mode. The emitted C is identical either way — only
     the binary's own speed differs, and measured on the self-compile that is
     1.9x (2031s at -O0 vs 1062s at -O2). Paying it once here is free
@@ -214,7 +216,8 @@ def _sources_key() -> str:
 def _link_key() -> str:
     from tests.testutil import libyafl_for
     headers = list((_REPO / "yafllib").rglob("*.h"))
-    return _digest([*headers, Path(libyafl_for(1)).resolve()], *_link_argv()[0], *_link_argv()[1])
+    compile_args, link_args = _link_argv()
+    return _digest([*headers, Path(libyafl_for(1)).resolve()], *compile_args, *link_args)
 
 
 class _Cache:

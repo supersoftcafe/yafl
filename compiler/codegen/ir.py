@@ -360,7 +360,7 @@ class Global:
         return mangle_name(self.name)
 
     def __prototype(self, type_cache: dict[t.Type, tuple[str, str]], storage: str) -> str:
-        """The declarator. `storage` is "extern" in the shared header and ""
+        """The declarator. `storage` is "extern " in the shared header and ""
         at the definition: a global is defined once, in the data unit, and
         every unit of a split compile reads it through the header."""
         if self.object_name and self.init:
