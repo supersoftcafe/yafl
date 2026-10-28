@@ -39,10 +39,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install system deps (clang, cmake)
+      - name: Install system deps (clang, cmake, gdb, zstd)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang cmake
+          sudo apt-get install -y --no-install-recommends clang cmake gdb zstd
 
       - name: Install build and test tooling
         run: pip install pyinstaller unittest-parallel
@@ -61,5 +61,47 @@ jobs:
           key: bootstrap-${{ runner.arch }}-${{ hashFiles('compiler/**/*.py', '!compiler/tests/**', 'bootstrap/**/*.yafl', 'compiler/stdlib/**', 'yafllib/**') }}
           restore-keys: bootstrap-${{ runner.arch }}-
 
+      # A crash in the port or a test binary leaves a core. Ubuntu routes cores
+      # to apport unless told otherwise, so name a directory; the limit is
+      # raised in the protocol step's own shell, where it has to hold.
+      - name: Enable core dumps
+        run: |
+          mkdir -p /tmp/cores
+          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p
+
       - name: Run the protocol
-        run: python3 full_protocol.py ${{ (github.event_name != 'workflow_dispatch' || inputs.full) && '--full' || '' }}
+        run: |
+          ulimit -c unlimited
+          python3 full_protocol.py ${{ (github.event_name != 'workflow_dispatch' || inputs.full) && '--full' || '' }}
+
+      # The backtraces go in the log so they survive even when a core is too
+      # big to keep. Each core is read against the binary that made it; the
+      # port is linked with -g.
+      - name: Backtraces from any core
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for core in /tmp/cores/core.*; do
+            exe=$(file "$core" | grep -o "execfn: '[^']*'" | cut -d"'" -f2)
+            [ -x "$exe" ] || exe=build/ybootstrap
+            echo "::group::$core ($exe)"
+            gdb -batch -ex 'info threads' -ex 'thread apply all bt full' "$exe" "$core" 2>&1 | head -n 600
+            echo "::endgroup::"
+            zstd -q -T0 --rm "$core"
+            # a core over 3 GB compressed is not worth the upload
+            find /tmp/cores -name '*.zst' -size +3G -delete
+          done
+          ls -la /tmp/cores
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: protocol-failure-${{ matrix.runner }}
+          path: |
+            /tmp/cores/
+            build/ybootstrap
+            build/ybootstrap.c
+            build/protocol-runs/
+          if-no-files-found: ignore
+          retention-days: 14

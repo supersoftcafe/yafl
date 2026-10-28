@@ -172,6 +172,16 @@ set_tests_properties(test_gc_builder_idle PROPERTIES ENVIRONMENT "YAFL_GC_POISON
 # shared; the late pin flushes the nursery's pending slot to make it so.
 add_yafl_test(test_gc_once_escape)
 set_tests_properties(test_gc_once_escape PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_misaligned_root: stepped. An object referenced only by a pointer at
+# a misaligned stack address (an optimiser's aggregate slice can put one at
+# 4 mod 8) survives nursery collections and full cycles: the conservative
+# stack scans look at every byte offset, not only word-aligned ones. Run with
+# the nursery on and off, so each scan is covered on its own.
+add_yafl_test(test_gc_misaligned_root)
+set_tests_properties(test_gc_misaligned_root PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+add_test(NAME test_gc_misaligned_root_global COMMAND test_gc_misaligned_root)
+set_tests_properties(test_gc_misaligned_root_global PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_THREADS=1;YAFL_LOCAL_GC=0")
 # test_gc_pressure: a ratcheting live set plus churn whose objects live a few
 # cycles before dying, in a deliberately small heap. Guards the near-full
 # machinery: the pressure backstop in gc_page_alloc, the relocation reserve,

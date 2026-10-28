@@ -1662,8 +1662,23 @@ static void gc_local_mark_candidate(object_t *object) {
         gc_local_mark_base(page, (object_t*)&page->slots[containing]);
 }
 
-static void gc_local_mark_range(object_t **p, object_t **end) {
-    for (; p < end; p++) gc_local_mark_candidate(*p);
+// A word of a conservatively scanned range, read at ANY byte offset. An
+// optimising C compiler may keep a pointer at an address that is not a
+// multiple of the word size: clang's SROA gives an aggregate slice its own
+// stack slot aligned only as far as the slice's start offset allows, so a
+// slice that starts in padding and carries a pointer field holds it at, say,
+// 4 mod 8, with no aligned copy anywhere (test_gc_misaligned_root). Both
+// stack scans therefore try every byte offset. memcpy is the defined
+// unaligned load; it compiles to one move.
+static inline object_t *gc_stack_word_at(const char *p) {
+    object_t *w;
+    memcpy(&w, p, sizeof w);
+    return w;
+}
+
+static void gc_local_mark_range(object_t **lo, object_t **hi) {
+    for (const char *p = (const char*)lo; p + sizeof(object_t*) <= (const char*)hi; ++p)
+        gc_local_mark_candidate(gc_stack_word_at(p));
 }
 
 static void gc_local_mark_slot(object_t **slot) {
@@ -2480,8 +2495,9 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
 // START at or before the addressed slot.
 
 static NOINLINE_DEBUG void gc_fsa_scan_roots$scan_range(object_t **range_ptr, object_t **range_end) {
-    for (; range_ptr != range_end; range_ptr++) {
-        object_t *object = gc_ref(*range_ptr);
+    // Every byte offset, not only aligned words: see gc_stack_word_at.
+    for (const char *p = (const char*)range_ptr; p + sizeof(object_t*) <= (const char*)range_end; ++p) {
+        object_t *object = gc_ref(gc_stack_word_at(p));
         // Conservative candidate — INTERIOR POINTERS INCLUDED. An optimising
         // C compiler may keep only a derived pointer live (a rolling
         // &obj->items[i] in a register) while the base pointer is dead; the

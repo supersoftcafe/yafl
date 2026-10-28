@@ -169,6 +169,16 @@ fun _setDrain<T>(s: Set<T>): List<T>
 fun fold<T, [linear] U>(s: Set<T>, init: U, f: (:U, :T): U): U
   ret _chainFold<T,U>(_dictKeyChain<T,()>(s._d), init, f)
 
+fun [tail] _chainMapRev<T,U>(c: Chain<T>, f: (:T): U, acc: Chain<U>): Chain<U>
+  ret match(c)
+    (l: ChainLink)  => _chainMapRev<T,U>(l.next, f, ChainLink<U>(f(l.value), acc))
+    (e: ChainEnd)   => acc
+
+fun [tail] _chainAny<T>(c: Chain<T>, f: (:T): Bool): Bool
+  ret match(c)
+    (l: ChainLink)  => f(l.value) ? true : _chainAny<T>(l.next, f)
+    (e: ChainEnd)   => false
+
 fun [tail] _chainFold<T, [linear] U>(c: Chain<T>, acc: U, f: (:U, :T): U): U
   ret match(c)
     (l: ChainLink) => _chainFold<T,U>(l.next, f(acc, l.value), f)

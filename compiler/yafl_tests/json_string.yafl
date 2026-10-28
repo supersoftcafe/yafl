@@ -18,7 +18,7 @@ import System::Test
 
 fun show(v: System::String | JsonParseError | System::Never): System::Int
   ret match(v)
-    (out: System::String)  => System::print(out) |> (n) => 0
+    (out: System::String)  => System::print(out) |> (_) => 0
     (p: JsonParseError)    => 2
 
 fun program(): System::Int

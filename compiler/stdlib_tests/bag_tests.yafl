@@ -1,0 +1,104 @@
+namespace StdlibTests::BagTests
+
+import System
+import System::Test
+
+
+let _ints3 = add(add(add(Bag<Int>(), 1), 2), 3)
+
+
+fun _headInt(l: List<Int>): Int
+    ret match(head(l))
+        (v: Int) => v
+        () => 0
+
+
+fun _lastInt(l: List<Int>): Int
+    ret match(last(l))
+        (v: Int) => v
+        () => 0
+
+
+fun [test("a new bag is empty")] emptyBag(): None|TestFailure
+    ret assertTrue(isEmpty(Bag<Int>()), "empty")
+     ?? assertEqInt(count(Bag<Int>()), 0, "empty count")
+
+
+fun [test("add puts elements in and preserves duplicates")] addPreservesDuplicates(): None|TestFailure
+    let b = add(add(Bag<Int>(), 5), 5)
+    ret assertEqInt(count(b), 2, "two 5s")
+     ?? assertFalse(isEmpty(b), "not empty")
+
+
+fun [test("from List keeps duplicates")] fromListKeepsDuplicates(): None|TestFailure
+    let withDups = build(push(push(push(builder<Int>(), 1), 2), 1))
+    ret assertEqInt(count(Bag<Int>(withDups)), 3, "1,2,1 kept")
+
+
+fun [test("singleOrNone only on one element")] singleOrNoneBehavior(): None|TestFailure
+    let e = Bag<Int>()
+    let _ = add(Bag<Int>(), 7)
+    let d = add(add(Bag<Int>(), 1), 2)
+    ret assertTrue(singleOrNone(e) is None, "empty none")
+     ?? assertTrue(singleOrNone(d) is None, "two elements give none")
+
+
+fun [test("isMoreThanOne detects size > 1")] moreThanOne(): None|TestFailure
+    ret assertFalse(isMoreThanOne(Bag<Int>()), "empty")
+     ?? assertFalse(isMoreThanOne(add(Bag<Int>(), 1)), "one")
+     ?? assertTrue(isMoreThanOne(add(add(Bag<Int>(), 1), 2)), "two")
+
+
+fun [test("contains finds elements")] containsWorks(): None|TestFailure
+    let b = _ints3
+    ret assertTrue(contains(b, 2), "has 2")
+     ?? assertFalse(contains(b, 99), "missing 99")
+
+
+fun [test("map transforms every element")] mapWorks(): None|TestFailure
+    let doubled = map(_ints3, (x: Int) => x * 2)
+    ret assertEqInt(count(doubled), 3, "count unchanged")
+     ?? assertTrue(contains(doubled, 2), "1*2")
+     ?? assertTrue(contains(doubled, 6), "3*2")
+     ?? assertFalse(contains(doubled, 1), "original gone")
+
+
+fun [test("filter keeps matching elements")] filterWorks(): None|TestFailure
+    let odd = filter(_ints3, (x: Int) => x % 2 == 1)
+    ret assertEqInt(count(odd), 2, "two odd")
+     ?? assertTrue(contains(odd, 1), "keeps 1")
+     ?? assertFalse(contains(odd, 2), "drops 2")
+
+
+fun [test("filter none gives empty bag")] filterNone(): None|TestFailure
+    let none = filter(_ints3, (x: Int) => x > 100)
+    ret assertTrue(isEmpty(none), "empty")
+     ?? assertEqInt(count(none), 0, "count zero")
+
+
+fun [test("any and all work")] anyAll(): None|TestFailure
+    let b = _ints3
+    ret assertTrue(any(b, (x: Int) => x == 2), "any finds")
+     ?? assertFalse(any(b, (x: Int) => x == 99), "any misses")
+     ?? assertTrue(all(b, (x: Int) => x > 0), "all positive")
+     ?? assertFalse(all(b, (x: Int) => x > 1), "not all > 1")
+
+
+fun [test("sort gives ordered list")] sortWorks(): None|TestFailure
+    let l = sort(_ints3)
+    ret assertEqInt(chainLength(chain(l)), 3, "three elements")
+     ?? assertEqInt(_headInt(l), 1, "first is 1")
+     ?? assertEqInt(_lastInt(l), 3, "last is 3")
+
+
+fun [test("fold sums elements")] foldWorks(): None|TestFailure
+    let b = add(add(Bag<Int>(), 1), 2)
+    ret assertEqInt(fold<Int, Int>(b, 0, (acc: Int, x: Int) => acc + x), 3, "sum")
+
+
+fun [test("add is pure")] addIsPure(): None|TestFailure
+    let original = _ints3
+    let grown = add(original, 4)
+    ret assertEqInt(count(original), 3, "original unchanged")
+     ?? assertEqInt(count(grown), 4, "copy has extra")
+     ?? assertTrue(contains(original, 1), "original still has 1")

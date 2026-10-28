@@ -45,7 +45,7 @@ fun emit(io: IO): (io: IO, v: Int|IOError)
 
 fun program(): System::Int
   let r = emit(stdout())
-  let closed = r.io.close()
+  let _ = r.io.close()
   ret match(r.v)
     (n: System::Int) => 0
     (e: IOError)     => 1
