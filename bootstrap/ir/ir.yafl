@@ -79,7 +79,7 @@ fun cgDeclareVarsStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool
 fun cgFunctionPrototype(f: CgFunction, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let resultC = cgDeclare(f.fnResult, cache0)
   let paramsC = cgDeclareVars(resultC.cache, ", ", cgFieldsOfOrEmpty(f.fnParams), "")
-  ret ("static NOINLINE\n" + resultC.text + " " + mangleName(f.fnName) + "(" + paramsC.text + ")", paramsC.cache)
+  ret ("NOINLINE\n" + resultC.text + " " + mangleName(f.fnName) + "(" + paramsC.text + ")", paramsC.cache)
 
 fun cgFunctionCommentLine(f: CgFunction)
   ret length(f.fnComment) == 0 ? "" : "// " + f.fnComment + "\n"
@@ -506,21 +506,21 @@ fun cgObjectGetArrayLengthOffset(o: CgObject) => match(o.objLengthField)
 
 fun cgGlobalToCName(g: CgGlobal) => mangleName(g.globalName)
 
-fun cgGlobalPrototypePlain(g: CgGlobal, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgGlobalPrototypePlain(g: CgGlobal, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(g.globalType, cache0)
-  ret ("static " + declared.text + " " + cgGlobalToCName(g), declared.cache)
+  ret (storage + declared.text + " " + cgGlobalToCName(g), declared.cache)
 
 fun cgGlobalPrototypeInitArrayField(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(rpGetType(v.value), acc.cache)
   ret (acc.text + "    " + declared.text + " " + v.name + ";\n", declared.cache)
 
-fun cgGlobalPrototypeInitArrayForm(g: CgGlobal, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgGlobalPrototypeInitArrayForm(g: CgGlobal, values: List<RpNamedValue>, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   let result = fold(values, ("", cache0), (acc, v) => cgGlobalPrototypeInitArrayField(acc, v))
-  ret ("static struct {\n" + result.text + "}[1] " + cgGlobalToCName(g), result.cache)
+  ret (storage + "struct {\n" + result.text + "}[1] " + cgGlobalToCName(g), result.cache)
 
-fun cgGlobalPrototypeDataForm(g: CgGlobal, objName, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret ("static " + mangleName(objName) + "_t " + cgGlobalToCName(g) + "_data;\n"
-       + "static object_t* " + cgGlobalToCName(g), cache0)
+fun cgGlobalPrototypeDataForm(g: CgGlobal, objName, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
+  ret (storage + mangleName(objName) + "_t " + cgGlobalToCName(g) + "_data;\n"
+       + storage + "object_t* " + cgGlobalToCName(g), cache0)
 
 # Python: `isinstance(self.init.values[-1], p.InitArray)` — but `values[-1]`
 # is a (name, value) TUPLE, so the isinstance is ALWAYS False and the
@@ -531,33 +531,33 @@ fun cgGlobalPrototypeDataForm(g: CgGlobal, objName, cache0: List<CgCacheEntry>):
 # so the port stays line-mappable to the Python; flagged in the port report.
 fun cgGlobalPrototypeNewStructLastIsInitArray(lastVal: RpNamedValue) => false
 
-fun cgGlobalPrototypeNewStruct(g: CgGlobal, objName, ns: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgGlobalPrototypeNewStruct(g: CgGlobal, objName, ns: RpNewStruct, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   ret match(last(ns.values))
     (lastVal: RpNamedValue) if cgGlobalPrototypeNewStructLastIsInitArray(lastVal) =>
-        cgGlobalPrototypeInitArrayForm(g, ns.values, cache0)
-    ()                        => cgGlobalPrototypeDataForm(g, objName, cache0)
+        cgGlobalPrototypeInitArrayForm(g, ns.values, cache0, storage)
+    ()                        => cgGlobalPrototypeDataForm(g, objName, cache0, storage)
 
-fun cgGlobalPrototypeWithObject(g: CgGlobal, objName, init, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgGlobalPrototypeWithObject(g: CgGlobal, objName, init, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   ret match(init)
-    (ns: RpNewStruct) => cgGlobalPrototypeNewStruct(g, objName, ns, cache0)
+    (ns: RpNewStruct) => cgGlobalPrototypeNewStruct(g, objName, ns, cache0, storage)
     (o: RParam)         => ("", cache0)   # unreachable (Python raises ValueError)
 
-fun cgGlobalPrototype(g: CgGlobal, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgGlobalPrototype(g: CgGlobal, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   ret match(g.globalObjectName)
-    (objName: String) => cgGlobalPrototypeMaybeInit(g, objName, cache0)
-    ()                  => cgGlobalPrototypePlain(g, cache0)
+    (objName: String) => cgGlobalPrototypeMaybeInit(g, objName, cache0, storage)
+    ()                  => cgGlobalPrototypePlain(g, cache0, storage)
 
-fun cgGlobalPrototypeMaybeInit(g: CgGlobal, objName, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+fun cgGlobalPrototypeMaybeInit(g: CgGlobal, objName, cache0: List<CgCacheEntry>, storage: String): (text: String, cache: List<CgCacheEntry>)
   ret match(g.globalInit)
-    (init: RParam) => cgGlobalPrototypeWithObject(g, objName, init, cache0)
-    ()              => cgGlobalPrototypePlain(g, cache0)
+    (init: RParam) => cgGlobalPrototypeWithObject(g, objName, init, cache0, storage)
+    ()              => cgGlobalPrototypePlain(g, cache0, storage)
 
 fun cgGlobalToCPrototype(g: CgGlobal, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let proto = cgGlobalPrototype(g, cache0)
+  let proto = cgGlobalPrototype(g, cache0, "extern ")
   ret (proto.text + ";\n", proto.cache)
 
 fun cgGlobalToCImplementPlain(g: CgGlobal, init, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let proto = cgGlobalPrototype(g, cache0)
+  let proto = cgGlobalPrototype(g, cache0, "")
   let initC = rpToC(init, proto.cache)
   ret (proto.text + " = " + initC.text + ";", initC.cache)
 
@@ -566,15 +566,15 @@ fun cgGlobalImplementValueLine(acc: (text: String, cache: List<CgCacheEntry>), v
   ret (acc.text + "  , " + sub.text + "\n", sub.cache)
 
 fun cgGlobalToCImplementInitArrayForm(g: CgGlobal, objName, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let proto = cgGlobalPrototype(g, cache0)
+  let proto = cgGlobalPrototype(g, cache0, "")
   let result = fold(values, ("", proto.cache), (acc, v) => cgGlobalImplementValueLine(acc, v.value))
   ret (proto.text + " = {\n    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n" + result.text + "};\n", result.cache)
 
 fun cgGlobalToCImplementDataForm(g: CgGlobal, objName, values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let dataName = cgGlobalToCName(g) + "_data"
   let result = fold(values, ("    (object_t*)((char*)obj_" + mangleName(objName) + " + VTABLE_TAG_BIT)\n", cache0), (acc, v) => cgGlobalImplementValueLine(acc, v.value))
-  ret ("static " + mangleName(objName) + "_t " + dataName + " = {\n" + result.text + "};\n"
-       + "static object_t* " + cgGlobalToCName(g) + " = (object_t*)&" + dataName + ";\n", result.cache)
+  ret (mangleName(objName) + "_t " + dataName + " = {\n" + result.text + "};\n"
+       + "object_t* " + cgGlobalToCName(g) + " = (object_t*)&" + dataName + ";\n", result.cache)
 
 fun cgGlobalToCImplementNewStruct(g: CgGlobal, objName, ns: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(last(ns.values))
@@ -592,7 +592,12 @@ fun cgGlobalToCImplementSome(g: CgGlobal, init, cache0: List<CgCacheEntry>): (te
     (objName: String) => cgGlobalToCImplementObject(g, objName, init, cache0)
     ()                  => cgGlobalToCImplementPlain(g, init, cache0)
 
+# No initialiser: the data unit still has to DEFINE it (the header only declares).
+fun cgGlobalToCImplementUninit(g: CgGlobal, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  let proto = cgGlobalPrototype(g, cache0, "")
+  ret (proto.text + ";\n", proto.cache)
+
 fun cgGlobalToCImplement(g: CgGlobal, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   ret match(g.globalInit)
     (init: RParam) => cgGlobalToCImplementSome(g, init, cache0)
-    ()              => ("", cache0)
+    ()              => cgGlobalToCImplementUninit(g, cache0)

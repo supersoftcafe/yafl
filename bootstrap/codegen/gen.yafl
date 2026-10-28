@@ -174,7 +174,7 @@ fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
   let masks = genObjectMasks(o, commentLine, mangled)
   let variables1 = push(pushAll(acc.gaVariables,
                             masks.gmVarLines),
-        (commentLine + "static vtable_t* const obj_" + mangled
+        (commentLine + "vtable_t* const obj_" + mangled
               + " = VTABLE_DECLARE(" + String(vt.n) + "){\n"
               + "    .object_size = " + cgObjectGetObjectSize(o) + ",\n"
               + "    .array_el_size = " + arrElSize.text + ",\n"
@@ -191,7 +191,7 @@ fun genObject([terminal] acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
               + "    .lookup = { " + vt.text + " },\n"
               + "};\n"))
   ret GenAcc(arrPtrMask.cache, typedefs1,
-             push(acc.gaForwards, commentLine + "static vtable_t* const obj_" + mangled + ";\n"),
+             push(acc.gaForwards, commentLine + "extern vtable_t* const obj_" + mangled + ";\n"),
              variables1, acc.gaFunctions, acc.gaGcRoots)
 
 # n copies of the catch-all row. Prepended, not appended: every element is the
@@ -420,13 +420,39 @@ fun genApplication(a: CgApp, headers: List<String>, profile: Bool)
                         map(acc3.gaCache, (e2) => e2.entryTypedef)),
                     build(acc3.gaTypedefs)),
                     build(acc3.gaForwards)),
+                    list1(unitGuard0())),
                     List()),
                 build(acc3.gaVariables)),
-                build(acc3.gaFunctions)),
             prepend(genDeclareRoots(build(acc3.gaGcRoots)),
                     List())),
             prepend(genDeclareMain(profile, prof.n), List()))
-  ret genFlatten(build(sec))
+  ret build(genChunkParts(chain(genChunks(build(acc3.gaFunctions))), 0,
+                          pushAll(builder(), genFlatten(build(push(sec, list1("#endif")))))))
+
+# The text is one translation unit that also compiles as K (gen.py): the
+# data section is unit 0's, the function bodies come in chunks of about
+# unitChunkBytes dealt round robin across the units.
+fun unitGuard0() => "#if !defined(YAFL_UNITS) || YAFL_UNIT == 0"
+
+fun unitChunkBytes() => 256 * 1024
+
+# Consecutive runs of the bodies, each closed once it reaches the limit.
+fun genChunks(fs: List<String>): List<List<String>> => build(gcLoop(chain(fs), unitChunkBytes(), builder(), 0, builder()))
+
+fun [tail] gcLoop(fs: Chain<String>, limit: Int, [terminal] run: ListBuilder<String>, size: Int,
+                  [terminal] acc: ListBuilder<List<String>>): ListBuilder<List<String>> => match(fs)
+  (nil: ChainEnd) => size == 0 ? acc : push(acc, build(run))
+  (l: ChainLink)  => size + length(l.value) >= limit
+    ? gcLoop(l.next, limit, builder(), 0, push(acc, build(push(run, l.value))))
+    : gcLoop(l.next, limit, push(run, l.value), size + length(l.value), acc)
+
+fun [tail] genChunkParts(cs: Chain<List<String>>, ci: Int,
+                         [terminal] acc: ListBuilder<String>): ListBuilder<String> => match(cs)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => genChunkParts(l.next, ci + 1,
+      push(gfItems(chain(l.value), true,
+                   push(acc, "\n\n#if !defined(YAFL_UNITS) || " + String(ci) + " % YAFL_UNITS == YAFL_UNIT\n")),
+           "\n#endif"))
 
 fun profIdOf(profile, id2): Int|None => profile ? id2 : None
 
