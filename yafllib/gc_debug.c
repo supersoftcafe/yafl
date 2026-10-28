@@ -92,9 +92,14 @@ static void _hunt_scan_fields(object_t* o, void* arg) {
 static int _hunt_scan_pins(object_t* target) {
     int hits = 0;
     for (struct gc_thread_info* t = threads; t != NULL; t = t->next) {
-        for (object_t** p = t->stack_lower_ptr; p && p < t->stack_upper_ptr; p++) {
-            if (*p == target) {
-                fprintf(stderr, "[HUNT]     PIN stack thread=%p at %p\n", (void*)t, (void*)p);
+        // Every byte offset, as the root scans read the stack (gc_stack_word_at).
+        const char* lo = (const char*)t->stack_lower_ptr;
+        const char* hi = (const char*)t->stack_upper_ptr;
+        for (const char* p = lo; lo && p + sizeof(object_t*) <= hi; ++p) {
+            object_t* w;
+            memcpy(&w, p, sizeof w);
+            if (w == target) {
+                fprintf(stderr, "[HUNT]     PIN stack thread=%p at %p\n", (void*)t, (const void*)p);
                 hits++;
             }
         }
