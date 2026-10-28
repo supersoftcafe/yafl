@@ -13,9 +13,8 @@ import System
 #     import System::Internal
 #
 #     if pinYoung(cell)
-#       match(cell.next)
-#         (n: Cell) => ()                      # someone got there first
-#         ()        => cell.next := Cell(2, None)
+#       if cell.next is None
+#         cell.next := Cell(2, None)
 #       unpin(cell)
 #
 # FAST-FAIL. `pinYoung` never waits and never follows a relocation: it says
@@ -23,9 +22,10 @@ import System
 # reference is a stale copy), or when it sits in the old generation. The
 # caller's answer to any of them is to start again from the current copy.
 # See yafl.h `object_try_pin_young`.
-fun pinYoung<T>(o: T): Bool
-  ret __builtin_op__<bool>("object_try_pin_young", o)
+fun [foreign("yafl_pin_young"), impure, sync] _pinYoung<T>(o: T): T|None
+
+fun [inline] pinYoung<T>(o: T): Bool
+  ret !(_pinYoung(o) is None)
 
 # Release the pin taken by a successful `pinYoung`. Only on an object you pinned.
-fun unpin<T>(o: T): System::None
-  ret __builtin_op__<System::None>("object_unpin_none", o)
+fun [foreign("yafl_unpin"), impure, sync] unpin<T>(o: T): System::None

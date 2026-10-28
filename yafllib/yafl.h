@@ -506,13 +506,6 @@ INLINE object_t* object_unpin(object_t* o) {
     return o;
 }
 
-// object_unpin for a YAFL statement: `System::unpin` returns None (NULL), so a
-// bare `unpin(o)` is a unit statement and not a discarded value.
-INLINE object_t* object_unpin_none(object_t* o) {
-    object_unpin(o);
-    return NULL;
-}
-
 // Take a late pin on the CURRENT copy of `o`, following relocation and
 // retrying against whoever else wants it. Returns the object actually pinned,
 // which may differ from `o` if the collector moved it. Callers must write
@@ -1048,6 +1041,23 @@ INLINE bool object_try_pin_young(object_t *o) {
     if (UNLIKELY(gc_alloc_tl.local_active))
         object_pin_settle();
     return true;
+}
+
+// The foreign forms of the lock, for System::Internal::pinYoung / unpin. A
+// foreign call passes the caller's `self` first and answers a YAFL value, and a
+// pointer-shaped answer is returned as it is (a scalar would come back wrapped
+// in a result-and-task struct this header cannot name): so the pin answers the
+// object itself when it holds and NULL, `None`, when it does not, and a unit is
+// NULL. INLINE, so the call the generated code makes by name is inlined, not a
+// call into the runtime.
+INLINE object_t *yafl_pin_young(object_t *self, object_t *o) {
+    (void)self;
+    return object_try_pin_young(o) ? o : NULL;
+}
+INLINE object_t *yafl_unpin(object_t *self, object_t *o) {
+    (void)self;
+    object_unpin(o);
+    return NULL;
 }
 
 // ── Publication order ────────────────────────────────────────────────────────
