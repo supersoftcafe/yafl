@@ -50,6 +50,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import clang_units
+
 _HERE = Path(__file__).resolve().parent          # .../compiler
 _REPO = _HERE.parent
 _BOOT_DIR = _REPO / "bootstrap"
@@ -149,25 +151,24 @@ def _port_emit(binary: Path, optimization_level: int, lib_path: str) -> str:
     return c_code
 
 
-def _link_argv() -> list[str]:
-    """clang -O2, not -O0: this binary is EXECUTED by ~25 test modules, once
+def _link_argv() -> tuple[list[str], list[str]]:
+    """(compile flags, link flags). clang -O2, not -O0: this binary is EXECUTED by ~25 test modules, once
     per corpus file per mode. The emitted C is identical either way — only
     the binary's own speed differs, and measured on the self-compile that is
     1.9x (2031s at -O0 vs 1062s at -O2). Paying it once here is free
     everywhere else. The runtime archive is already the release one."""
     from tests.testutil import _CLANG_BUILD_FLAGS, static_link_for
-    return ["clang", "-g", "-x", "c", "-", "-O2", "-DNDEBUG",
-            *_CLANG_BUILD_FLAGS, *static_link_for(1)]
+    return ["-g", "-O2", "-DNDEBUG", *_CLANG_BUILD_FLAGS], static_link_for(1)
 
 
 def _link(c_code: str, out: Path) -> None:
     print("  linking ...")
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
-    r = subprocess.run([*_link_argv(), "-o", str(tmp)],
-                       input=c_code, text=True, capture_output=True, timeout=1800)
-    if r.returncode != 0:
-        raise SystemExit(f"clang failed:\n{r.stderr[:4000]}")
+    compile_args, link_args = _link_argv()
+    error = clang_units.build(c_code, compile_args, link_args, str(tmp), timeout=1800)
+    if error is not None:
+        raise SystemExit(f"clang failed:\n{error[:4000]}")
     tmp.replace(out)                 # atomic: readers see whole file or none
 
 
@@ -213,7 +214,7 @@ def _sources_key() -> str:
 def _link_key() -> str:
     from tests.testutil import libyafl_for
     headers = list((_REPO / "yafllib").rglob("*.h"))
-    return _digest([*headers, Path(libyafl_for(1)).resolve()], *_link_argv())
+    return _digest([*headers, Path(libyafl_for(1)).resolve()], *_link_argv()[0], *_link_argv()[1])
 
 
 class _Cache:

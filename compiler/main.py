@@ -7,6 +7,7 @@ import argparse
 import re
 
 import libraries
+import clang_units
 import warning_flags
 
 
@@ -138,8 +139,12 @@ def main():
         _run_clang(["clang", *common, "-x", "c", "-", f"-O{args.O}", *include_args, "-S", "-o", args.a], c_code)
 
     if args.o:
-        _run_clang(["clang", *common, "-x", "c", "-", f"-O{args.O}", *include_args, *link_inputs,
-                    *release_link, "-o", args.o], c_code)
+        error = clang_units.build(c_code, [*common, f"-O{args.O}", *include_args],
+                                  [*link_inputs, *release_link], args.o)
+        if error is not None:
+            print("Compilation failed:")
+            print(error)
+            sys.exit(1)
 
 
 class _Unreadable(Exception):

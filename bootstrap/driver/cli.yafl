@@ -346,20 +346,64 @@ fun cliClang(s: CliScan, outs: List<String>, spec: LinkSpec): Int
   ret match(tempDir())
     (tmp: String) => match(writeParts(tmp + "/out.c", outs))
       (why: String) => exitWithErr("error: " + why + "\n", 1)
-      ()            => cliClangRuns(s, tmp + "/out.c", spec)
+      ()            => cliClangRuns(s, tmp, tmp + "/out.c", spec, unitCount(outs))
     ()           => exitWithErr("error: the process temp folder cannot be created\n", 1)
 
-fun cliClangRuns(s: CliScan, cFile: String, spec: LinkSpec): Int
+fun cliClangRuns(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int): Int
   let asmCode = match(s.csAsm)
     (a: String) => runClang(concat(clangCompileArgs(s, cFile, spec), prepend("-S", prepend("-o", list1(a)))))
     ()          => 0
   if asmCode != 0
     ret asmCode
   ret match(s.csOut)
-    (o: String) => runClang(concat(concat(concat(clangCompileArgs(s, cFile, spec), linkInputs(spec)),
-                                          releaseLink(s.csOpt)),
-                                   prepend("-o", list1(o))))
+    (o: String) => units == 1
+      ? runClang(concat(concat(concat(clangCompileArgs(s, cFile, spec), linkInputs(spec)),
+                                      releaseLink(s.csOpt)),
+                               prepend("-o", list1(o))))
+      : cliClangUnits(s, tmp, cFile, spec, units, o)
     ()          => 0
+
+# The C is one text that clang also compiles as K units (codegen/gen.yafl):
+# K clangs at once, then one link. A fixed rule (clang_units.py), not a probe of
+# the machine: below unitBytes the shared header is not worth repeating.
+fun unitBytes() => 4 * 1024 * 1024
+fun maxUnits() => 4
+
+fun unitCount(outs: List<String>): Int
+  let bytes = fold(outs, 0, (n, p) => n + length(p))
+  let k = bytes / unitBytes()
+  ret k < 1 ? 1 : k > maxUnits() ? maxUnits() : k
+
+fun unitObject(tmp: String, i: Int) => tmp + "/unit" + String(i) + ".o"
+
+# `[*compile_args, -DYAFL_UNITS=K, -DYAFL_UNIT=i, -c, source, -o, obj]`
+fun unitArgs(s: CliScan, cFile: String, spec: LinkSpec, tmp: String, units: Int, i: Int): List<String>
+  ret concat(concat(commonFlags(s.csOpt), prepend("-O" + String(s.csOpt), map(spec.specIncludeDirs, (d) => "-I" + d))),
+             prepend("-DYAFL_UNITS=" + String(units), prepend("-DYAFL_UNIT=" + String(i),
+             prepend("-c", prepend(cFile, prepend("-o", list1(unitObject(tmp, i))))))))
+
+# powerMap calls the clangs on workers of their own and joins the results in
+# order, so the K compiles overlap; the first failure is reported.
+fun cliClangUnits(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int, o: String): Int
+  let runs = powerMap(unitIndices(units, 0, builder()),
+                      (i) => System::IO::run("clang", unitArgs(s, cFile, spec, tmp, units, i)))
+  ret match(unitFailure(chain(runs)))
+    (why: String) => exitWithOut("Compilation failed:\n" + why + "\n", 1)
+    ()            => runClang(concat(concat(concat(unitObjects(tmp, units, 0, builder()), linkInputs(spec)),
+                                            releaseLink(s.csOpt)),
+                                     prepend("-o", list1(o))))
+
+fun [tail] unitIndices(units: Int, i: Int, [terminal] acc: ListBuilder<Int>): List<Int>
+  ret i >= units ? build(acc) : unitIndices(units, i + 1, push(acc, i))
+
+fun [tail] unitObjects(tmp: String, units: Int, i: Int, [terminal] acc: ListBuilder<String>): List<String>
+  ret i >= units ? build(acc) : unitObjects(tmp, units, i + 1, push(acc, unitObject(tmp, i)))
+
+fun [tail] unitFailure(rs: Chain<ProcessResult|IOError>): String|None => match(rs)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => match(l.value)
+    (e: IOError)       => "clang could not be started"
+    (r: ProcessResult) => r.exitCode == 0 ? unitFailure(l.next) : r.err
 
 # `[*common, "-x", "c", "-", f"-O{O}", *include_args]` — `cFile` where Python
 # writes `-` for stdin.

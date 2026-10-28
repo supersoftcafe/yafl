@@ -40,7 +40,7 @@ class Function:
         return sep.join(f'{ptype.declare(type_cache)} {mangle_name(pname)}{end}' for pname, ptype in p.fields)
 
     def __prototype(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return (f"static NOINLINE\n"
+        return (f"NOINLINE\n"
                 f"{self.result.declare(type_cache)} {mangle_name(self.name)}("
                 f"{self.__declare_vars(type_cache, ', ', self.params, '')}"
                 f")")
@@ -359,12 +359,15 @@ class Global:
     def to_c_name(self) -> str:
         return mangle_name(self.name)
 
-    def __prototype(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+    def __prototype(self, type_cache: dict[t.Type, tuple[str, str]], storage: str) -> str:
+        """The declarator. `storage` is "extern" in the shared header and ""
+        at the definition: a global is defined once, in the data unit, and
+        every unit of a split compile reads it through the header."""
         if self.object_name and self.init:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
             if self.init.values and isinstance(self.init.values[-1], p.InitArray):
-                return (f"static struct {{\n"
+                return (f"{storage}struct {{\n"
                         + "".join(f"    {value.get_type().declare(type_cache)} {name};\n" for name, value in self.init.values) +
                         f"}}[1] {self.to_c_name()}")
             # Static object globals are declared as object_t* pointing to a named
@@ -372,16 +375,16 @@ class Global:
             # initialiser can take another's address regardless of emission
             # order (constant object graphs reference each other via
             # `&<name>_data`, and the alias global reads it the same way).
-            return (f"static {mangle_name(self.object_name)}_t {self.to_c_name()}_data;\n"
-                    f"static object_t* {self.to_c_name()}")
-        return f"static {self.type.declare(type_cache)} {self.to_c_name()}"
+            return (f"{storage}{mangle_name(self.object_name)}_t {self.to_c_name()}_data;\n"
+                    f"{storage}object_t* {self.to_c_name()}")
+        return f"{storage}{self.type.declare(type_cache)} {self.to_c_name()}"
 
     def to_c_prototype(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
-        return f"{self.__prototype(type_cache)};\n"
+        return f"{self.__prototype(type_cache, 'extern ')};\n"
 
     def to_c_implement(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
         if not self.init:
-            return ""
+            return f"{self.__prototype(type_cache, '')};\n"
         if self.object_name:
             if not isinstance(self.init, p.NewStruct):
                 raise ValueError("init must be NewStruct")
@@ -404,7 +407,7 @@ class Global:
             # not `| 2` because only pointer arithmetic on an address
             # constant is a C constant expression.
             if self.init.values and isinstance(self.init.values[-1], p.InitArray):
-                return (f"{self.__prototype(type_cache)} = {{\n"
+                return (f"{self.__prototype(type_cache, '')} = {{\n"
                  f"    (object_t*)((char*)obj_{mangle_name(self.object_name)} + VTABLE_TAG_BIT)\n"
                  + "".join(f"  , {value.to_c(type_cache)}\n" for name, value in self.init.values) +
                  f"}};\n")
@@ -412,10 +415,10 @@ class Global:
             data_name = f"{self.to_c_name()}_data"
             struct_body = ("    (object_t*)((char*)obj_{} + VTABLE_TAG_BIT)\n".format(mangle_name(self.object_name))
                            + "".join(f"  , {value.to_c(type_cache)}\n" for _, value in self.init.values))
-            return (f"static {mangle_name(self.object_name)}_t {data_name} = {{\n"
+            return (f"{mangle_name(self.object_name)}_t {data_name} = {{\n"
                     f"{struct_body}"
                     f"}};\n"
-                    f"static object_t* {self.to_c_name()} = (object_t*)&{data_name};\n")
+                    f"object_t* {self.to_c_name()} = (object_t*)&{data_name};\n")
         else:
-            return f"{self.__prototype(type_cache)} = {self.init.to_c(type_cache)};"
+            return f"{self.__prototype(type_cache, '')} = {self.init.to_c(type_cache)};"
 

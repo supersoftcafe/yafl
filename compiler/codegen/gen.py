@@ -20,6 +20,26 @@ def _gen_function_ids(global_ids: dict[str, int]) -> str:
     return "enum {" + entries + "\n};\n"
 
 
+# Bytes of function bodies per chunk of the split-compile text (see gen()).
+_UNIT_CHUNK_BYTES = 256 * 1024
+
+
+def _chunks(items: list[str], limit: int) -> list[list[str]]:
+    """Consecutive runs of `items`, each closed once it reaches `limit` bytes of UTF-8."""
+    out: list[list[str]] = []
+    run: list[str] = []
+    size = 0
+    for item in items:
+        run.append(item)
+        size += len(item.encode("utf-8"))
+        if size >= limit:
+            out.append(run)
+            run, size = [], 0
+    if run:
+        out.append(run)
+    return out
+
+
 # Aggregates all application data for code generation
 @dataclass
 class Application:
@@ -100,9 +120,9 @@ class Application:
             masks_init = (f"    .object_pointer_masks = {masks_name},\n"
                           f"    .object_pointer_mask_words = {nwindows},\n")
 
-        self.__forwards.append(f"{o.comment_line}static vtable_t* const obj_{mangled_name};\n")
+        self.__forwards.append(f"{o.comment_line}extern vtable_t* const obj_{mangled_name};\n")
         self.__variables.append(
-            f"{o.comment_line}static vtable_t* const obj_{mangle_name(name)} = VTABLE_DECLARE({len(vtable_array)}){{\n" +
+            f"{o.comment_line}vtable_t* const obj_{mangle_name(name)} = VTABLE_DECLARE({len(vtable_array)}){{\n" +
             f"    .object_size = {obj_size_str},\n"
             f"    .array_el_size = {arr_el_size_str},\n"
             f"    .functions_mask = rotate_function_id({vtable_size-1}),\n"
@@ -270,11 +290,19 @@ class Application:
             "-Wunused-variable", "-Wunused-but-set-variable",
             "-Wunused-parameter", "-Wunused-const-variable", "-Wmissing-braces"))
 
+        # The text is ONE translation unit that can also be compiled as K
+        # (clang -DYAFL_UNITS=K -DYAFL_UNIT=i, once per i): the header section
+        # is shared, the data (vtables, globals, roots, main) belongs to unit
+        # 0, and the function bodies come in fixed-size chunks dealt round
+        # robin across the units. Without the defines every guard is true and
+        # the file is the whole program. Chunk size is a property of the
+        # text, not of K, so the text is the same however it is compiled.
+        #
         # The output is a flat list of modest fragments, never one giant
         # string: the caller streams them to its sink in order. The join
         # shape ("\n" within a section, "\n\n" between sections) is encoded
         # as explicit separator elements so the concatenation of the parts is
-        # byte-identical to the old single join. This exists for the
+        # byte-identical to a single join. This exists for the
         # bootstrap port's benefit — assembling the whole text needed one
         # ~83MB contiguous allocation at the end of a compiler-sized run —
         # and the reference mirrors the shape per the parity rule.
@@ -285,11 +313,12 @@ class Application:
             [declaration for name, declaration in self.__type_cache.values()],
             list(self.__typedefs),
             list(self.__forwards),
+            ["#if !defined(YAFL_UNITS) || YAFL_UNIT == 0"],
             list(self.__vtables),
             list(self.__variables),
-            list(self.__functions),
             [self.__declare_roots()],
             [self.__declare_main()],
+            ["#endif"],
         ]
         parts: list[str] = []
         for si, items in enumerate(sections):
@@ -299,4 +328,8 @@ class Application:
                 if ii:
                     parts.append("\n")
                 parts.append(item)
+        for ci, chunk in enumerate(_chunks(self.__functions, _UNIT_CHUNK_BYTES)):
+            parts.append(f"\n\n#if !defined(YAFL_UNITS) || {ci} % YAFL_UNITS == YAFL_UNIT\n")
+            parts.append("\n".join(chunk))
+            parts.append("\n#endif")
         return parts
