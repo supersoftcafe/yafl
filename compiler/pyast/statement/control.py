@@ -139,7 +139,7 @@ class FieldAssignStatement(Statement):
     A STATEMENT, never an expression: the store is an effect, and effects are
     statements. The compiler checks that the class admits the write, NOT that
     a pin is held — holding it is the caller's lock, taken with
-    `System::pinYoung` and released with `System::unpin`. The field is named in
+    `System::Internal::pin` and released with `System::Internal::unpin`. The field is named in
     YAFL and resolved here, so the runtime never looks a field up by layout.
 
     Emitted as an ordinary non-fresh field store: the GC barriers a heap store

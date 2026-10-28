@@ -251,14 +251,6 @@ add_yafl_test(test_vtable_lookup)
 # the next minor reclaims the referent.
 add_yafl_test(test_gc_late_pin_race)
 target_compile_definitions(test_gc_late_pin_race PRIVATE YAFL_GC_RACE_PROBE=1)
-# test_gc_pin_young_race: the same window for the fast-fail pin
-# (object_try_pin_young), whose own compare-and-swap is the handshake's fence.
-add_yafl_test(test_gc_pin_young_race)
-target_compile_definitions(test_gc_pin_young_race PRIVATE YAFL_GC_RACE_PROBE=1)
-# test_pin_young_old: the fast-fail pin refuses an old page, a pinned object, a
-# forwarded word and a non-heap address, and holds on a young object.
-add_yafl_test(test_pin_young_old)
-set_tests_properties(test_pin_young_old PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_lazy_runner: exactly one caller of lazy_acquire holds the gate, and
 # every waiter is completed, even when the holder releases between a waiter's
 # enqueue and its return. Builds its own lazy.c with YAFL_LAZY_RACE_PROBE,

@@ -6,26 +6,21 @@ import System
 # Object pinning, for a class whose fields are written after construction
 # (`[pinnable]`, or `[mutable]`) with `subject.field := value`. The pin is the
 # LOCK: a pinned object is neither moved by the compactor nor written by anyone
-# else, so the plain stores between `pinYoung` and `unpin` are the whole
-# critical section. The compiler checks that the class admits a write; it does
-# not check that the pin is held.
+# else, so the plain stores between `pin` and `unpin` are the whole critical
+# section. The compiler checks that the class admits a write; it does not check
+# that the pin is held.
 #
 #     import System::Internal
 #
-#     if pinYoung(cell)
-#       if cell.next is None
-#         cell.next := Cell(2, None)
-#       unpin(cell)
+#     let held = pin(cell)
+#     if held.next is None
+#       held.next := Cell(2, None)
+#     unpin(held)
 #
-# FAST-FAIL. `pinYoung` never waits and never follows a relocation: it says
-# False when the pin is held by another, when the object has been copied (this
-# reference is a stale copy), or when it sits in the old generation. The
-# caller's answer to any of them is to start again from the current copy.
-# See yafl.h `object_try_pin_young`.
-fun [foreign("yafl_pin_young"), impure, sync] _pinYoung<T>(o: T): T|None
+# `pin` waits for a peer's pin and follows a relocation, so it always succeeds,
+# and answers the object actually pinned: write through that, never through the
+# reference passed in. See yafl.h `object_pin_resolve`.
+fun [foreign("yafl_pin"), impure, sync] pin<T>(o: T): T
 
-fun [inline] pinYoung<T>(o: T): Bool
-  ret !(_pinYoung(o) is None)
-
-# Release the pin taken by a successful `pinYoung`. Only on an object you pinned.
+# Release the pin taken by `pin`. Only on an object you pinned.
 fun [foreign("yafl_unpin"), impure, sync] unpin<T>(o: T): System::None

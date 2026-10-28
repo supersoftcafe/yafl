@@ -1,7 +1,7 @@
 # `subject.field := value`: the write a `[pinnable]` or `[mutable]` class admits
-# after construction. With `System::Internal`'s `pinYoung` / `unpin` it is the
-# whole critical section of a write-once publication: take the pin (and fail
-# fast), check the slot is still empty, store, release.
+# after construction. With `System::Internal`'s `pin` / `unpin` it is the whole
+# critical section of a write-once publication: take the pin, check the slot is
+# still empty, store, release.
 #
 # One namespace per test: each program as written, its `main` renamed
 # `program`, checked by the [test] beside it.
@@ -14,16 +14,14 @@ import System::Test
 
 class [pinnable] Cell(value: System::Int, next: Cell|None)
 
-# Pin; if the pin is refused, give up; if the slot is empty, fill it; release.
-# True when THIS call stored.
+# Pin; if the slot is empty, fill it; release. True when THIS call stored.
 fun publish(c: Cell, v: System::Int): System::Bool
-  if !pinYoung(c)
-    ret false
-  if c.next is None
-    c.next := Cell(v, None)
-    unpin(c)
+  let held = pin(c)
+  if held.next is None
+    held.next := Cell(v, None)
+    unpin(held)
     ret true
-  unpin(c)
+  unpin(held)
   ret false
 
 fun valueOfNext(c: Cell): System::Int
@@ -44,7 +42,7 @@ fun [test("pin, check null, store only if null, unpin")] check(): None|TestFailu
     ret assertEqInt(program(), 2, "program()")
 
 
-namespace CompilerTests::FieldAssign::PinIsALock
+namespace CompilerTests::FieldAssign::UnpinReleases
 
 import System
 import System::Internal
@@ -52,20 +50,18 @@ import System::Test
 
 class [pinnable] Cell(value: System::Int, next: Cell|None)
 
-# While one pin is held a second is refused, and once released it is granted
-# again. Statements, not lets: lets of effects may reorder among themselves.
+# A pin that was released can be taken again (a second `pin` on a held one
+# would wait for ever). Statements, not lets: lets of effects may reorder among
+# themselves.
 fun program(): System::Int
   let c = Cell(1, None)
-  if pinYoung(c)
-    if pinYoung(c)
-      ret 0
-    unpin(c)
-    if pinYoung(c)
-      unpin(c)
-      ret 1
-  ret 0
+  let first = pin(c)
+  unpin(first)
+  let second = pin(c)
+  unpin(second)
+  ret second.value
 
-fun [test("a held pin refuses a second; released, it is granted again")] check(): None|TestFailure
+fun [test("a released pin can be taken again")] check(): None|TestFailure
     ret assertEqInt(program(), 1, "program()")
 
 
@@ -97,11 +93,11 @@ class [pinnable] Cell(value: System::Int, next: Cell|None)
 # and a later `is None` sees it: the value is received at the FIELD's type.
 fun program(): System::Int
   let c = Cell(1, Cell(2, None))
-  if pinYoung(c)
-    c.next := None
-    unpin(c)
-    if c.next is None
-      ret 1
+  let held = pin(c)
+  held.next := None
+  unpin(held)
+  if c.next is None
+    ret 1
   ret 0
 
 fun [test("assigning None empties a union field")] check(): None|TestFailure

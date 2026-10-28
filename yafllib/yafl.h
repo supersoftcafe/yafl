@@ -989,70 +989,14 @@ INLINE bool gc_store_is_private(object_t *obj) {
     return gc_alloc_tl.local_active && gc_local_obj_private(obj);
 }
 
-// ── fast-fail late pin ───────────────────────────────────────────────────────
-// A LOCK for a caller that can give up: take the pin on a YOUNG object, or
-// say no. Pair it with object_unpin; the actions between are the caller's own
-// plain stores (with the usual store macros). It never waits, never follows a
-// forwarding chain and never asks the collector to demote anything, so it is
-// the inline path that object_pin_resolve (which always succeeds) is not.
-//
-// Returns false, with the pin NOT held and nothing changed, when
-//   - the pin is already held (a peer, or the compactor) — retry or give up;
-//   - the object has been relocated: this address is a stale copy;
-//   - the object is not on the managed heap, or sits on an `old` page.
-// The caller's answer to any of them is the same: start again from the
-// current copy. An old page is refused rather than demoted because a write to
-// it costs the whole generation a re-trace (gc_note_late_write); a caller that
-// would rather pay that uses object_pin_resolve.
-//
-// The Dekker handshake with page promotion (gc_fsa_prune_body) is
-// object_pin_resolve's, with its standalone fence folded into the pin's own
-// compare-and-swap: this side WRITES the page's redirty flag, then the
-// sequentially consistent CAS (a full barrier on x86; casal on aarch64), then
-// READS `old`; the promoter writes `old`, fences, then reads the flag. So
-// either this side sees `old` and backs out, or the promoter sees the flag and
-// defers the promotion. A mutable page never promotes and owes nothing.
-EXTERN void object_pin_settle(void);
-INLINE bool object_try_pin_young(object_t *o) {
-    if ((size_t)((char*)o - _memory_heap_base) >= _memory_heap_bytes)
-        return false;
-    gc_page_t *page = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-    bool promotes = !page->head.mutable;
-    // Old already: refuse before touching the page's flag line.
-    if (promotes && __atomic_load_n(&page->head.old, __ATOMIC_RELAXED))
-        return false;
-    if (promotes)
-        atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
-    vtable_t *vt = (vtable_t*)__atomic_load_n((uintptr_t*)&o->vtable, __ATOMIC_RELAXED);
-    if (vtable_is_pinned(vt) || vtable_is_forward(vt))
-        return false;
-    uintptr_t expected = (uintptr_t)vt;
-    if (!__atomic_compare_exchange_n((uintptr_t*)&o->vtable, &expected,
-                                     expected | VTABLE_PIN_BIT, false,
-                                     __ATOMIC_SEQ_CST, __ATOMIC_RELAXED))
-        return false;
-    if (promotes && __atomic_load_n(&page->head.old, __ATOMIC_ACQUIRE)) {
-        object_unpin(o);                 // promoted under us: the flag stands
-        return false;
-    }
-    // A value stored into a shared slot escapes only when this thread's
-    // pending slot is flushed; until then `o` tests private and the caller's
-    // stores would skip their publication fence (object_pin_resolve says why).
-    if (UNLIKELY(gc_alloc_tl.local_active))
-        object_pin_settle();
-    return true;
-}
-
-// The foreign forms of the lock, for System::Internal::pinYoung / unpin. A
-// foreign call passes the caller's `self` first and answers a YAFL value, and a
-// pointer-shaped answer is returned as it is (a scalar would come back wrapped
-// in a result-and-task struct this header cannot name): so the pin answers the
-// object itself when it holds and NULL, `None`, when it does not, and a unit is
-// NULL. INLINE, so the call the generated code makes by name is inlined, not a
-// call into the runtime.
-INLINE object_t *yafl_pin_young(object_t *self, object_t *o) {
+// ── foreign forms of the pin, for System::Internal::pin / unpin ──────────────
+// A foreign call passes the caller's `self` first and answers a YAFL value; a
+// unit is NULL. The pin answers the object actually pinned, which is the
+// current copy if the collector moved it. INLINE, so the call the generated
+// code makes by name is inlined.
+INLINE object_t *yafl_pin(object_t *self, object_t *o) {
     (void)self;
-    return object_try_pin_young(o) ? o : NULL;
+    return object_pin_resolve(o);
 }
 INLINE object_t *yafl_unpin(object_t *self, object_t *o) {
     (void)self;
