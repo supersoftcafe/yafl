@@ -161,6 +161,11 @@ add_yafl_test(test_gc_gen)
 # is reclaimed while the old object points at it.
 add_yafl_test(test_gc_old_late_write)
 set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_dirty_compact: stepped. A dirty-old page that an old page points
+# into is not compacted in a minor: the old referrer is not traced, so it
+# would keep a forwarder's address while the forwarder's slot is reclaimed.
+add_yafl_test(test_gc_dirty_compact)
+set_tests_properties(test_gc_dirty_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_write_once_step: stepped. While a cycle marks, a store that
 # overwrites nothing stays inline only once its thread's root scan is done;
 # before it, the store owes the insertion half and calls out.

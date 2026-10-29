@@ -1368,13 +1368,19 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // Don't compact these types of pages.
     if (page->head.mutable || page->head.pages > 1)
         return;
-    // (Dirty-old pages CAN be compacted, and old referrers stay sound — by a
-    // conspiracy worth recording: a dirty page's dead slots are frozen by its
-    // force-mark, so it only goes sparse in a MAJOR's honest trace, and that
-    // same major demoted every old referrer, which is then re-scanned — and
-    // fixed up through the forwarding — while still young. The old-generation
-    // purity validator (YAFL_GC_VALIDATE_OLD) guards this reasoning in test
-    // builds.)
+    // Nor a DIRTY-OLD page. Old pages may point into one (gc_object_refs_are_old
+    // accepts it), and a minor cycle does not trace them: their fields would
+    // keep the forwarders' addresses, nothing would record that those
+    // forwarders are still needed, and their slots would be reclaimed and
+    // reused under the old referrers. A dirty page's force-mark keeps every
+    // object it holds, but that does not stop it being SPARSE: a page that
+    // promoted sparse (a conservative reference pinned it against compaction
+    // while it aged) stays sparse (test_gc_dirty_compact). A MAJOR clears the
+    // flag before its prune and has demoted every old referrer, which its
+    // trace reaches while young and fixes up through the forwarding, so there
+    // the page is compacted like any other.
+    if (page->head.dirty_old)
+        return;
 
     // Don't compact pages with too many objects. This test is faster than counting up
     // the total size of all of the objects.
