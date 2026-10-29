@@ -80,6 +80,7 @@ ONLY_PROFILES = {
     "test_gc_writer_window": {"default", "global"},
     "test_gc_builder_idle":  {"default"},
     "test_gc_once_escape":   {"default"},
+    "test_gc_page_private":  {"default"},
     "test_gc_pressure":      {"default", "nursery1", "nursery4", "global", "nogen", "oversub"},
 }
 TESTS = {
@@ -104,6 +105,7 @@ TESTS = {
     "test_gc_writer_window": (60,  {}),
     "test_gc_builder_idle":  (60,  {}),
     "test_gc_once_escape":   (60,  {}),
+    "test_gc_page_private":  (60,  {}),
     "test_lazy_runner":      (60,  {}),
     # test_gc_mesh picks a 64 MB heap for itself (4 workers, collector always
     # busy). Under oversub (8 workers) and hot (every survivor page compacted)

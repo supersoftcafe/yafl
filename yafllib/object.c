@@ -1217,6 +1217,14 @@ EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
 // generation (12k+ pages on a self-compile) to discover nothing.
 static _Atomic(bool) gc_redirty_requested = false;
 
+// A won late pin on a STAMPED object (object_pin_owed, yafl.h): mark the page
+// and this thread for the next root scan.
+EXPORT void object_pin_note_old(object_t* o) {
+    gc_page_t *page = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
+    gc_alloc_tl.old_writes = true;
+}
+
 EXPORT object_t* object_pin_resolve(object_t* o) {
     for (;;) {
         // Resolve relocation FIRST and afresh on every attempt: the write must

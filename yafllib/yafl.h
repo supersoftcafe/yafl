@@ -1062,7 +1062,8 @@ EXTERN void gc_local_flush_pending(void);
 // so they owe nothing and need no test.
 //
 // The fast path — current copy, nobody holding the pin, the CAS won — is a
-// load, a test and the CAS, plus two plain stores for a stamped object.
+// load, a test and the CAS, plus a call for a stamped object (rare: almost
+// no late write lands on an old page).
 // Anything else (relocated, held, a lost race) takes object_pin_resolve. The
 // nursery is the store's business, not the pin's (GC_WRITE_BARRIER_IN).
 //
@@ -1070,12 +1071,10 @@ EXTERN void gc_local_flush_pending(void);
 // that scan is where `old_writes` is handed over.
 
 // What a won late pin owes beyond the CAS, given the word it won.
+EXTERN void object_pin_note_old(object_t* o);
 INLINE void object_pin_owed(object_t* o, uintptr_t won) {
-    if (UNLIKELY(won & VTABLE_OLD_BIT)) {
-        gc_page_t *page = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-        atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
-        gc_alloc_tl.old_writes = true;
-    }
+    if (UNLIKELY(won & VTABLE_OLD_BIT))
+        object_pin_note_old(o);
 }
 
 INLINE object_t* object_pin(object_t* o) {
