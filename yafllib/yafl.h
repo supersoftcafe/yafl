@@ -1005,6 +1005,17 @@ INLINE bool gc_local_obj_private(object_t *obj) {
 INLINE bool gc_store_is_private(object_t *obj) {
     return gc_alloc_tl.local_active && gc_local_obj_private(obj);
 }
+// Private, with no shared store's value still waiting to escape. A value
+// stored into a shared slot escapes only when the pending slot is flushed, so
+// until then an object it reaches still tests private although other threads
+// may read it — the owner may have just published `obj` itself (a nested
+// yafl_cas_once) — and a write into it must not skip its publication fence.
+// The late writes (GC_WRITE_BARRIER_IN) test this; their call flushes first.
+INLINE bool gc_store_is_settled_private(object_t *obj) {
+    return gc_alloc_tl.local_active && gc_alloc_tl.pend_slot == NULL
+        && gc_local_obj_private(obj);
+}
+EXTERN void gc_local_flush_pending(void);
 
 // ── the late pin ─────────────────────────────────────────────────────────────
 // LATE pin: take the pin on an object that is already shared and may already
@@ -1034,11 +1045,11 @@ INLINE bool gc_store_is_private(object_t *obj) {
 //
 // The fast path — current copy, nobody holding the pin, the CAS won — is a
 // load, a test and the CAS, plus two plain stores for a stamped object.
-// Anything else (relocated, held, a lost race) takes object_pin_resolve.
+// Anything else (relocated, held, a lost race) takes object_pin_resolve. The
+// nursery is the store's business, not the pin's (GC_WRITE_BARRIER_IN).
 //
 // The pin must be taken on a thread the collector root-scans (every worker):
 // that scan is where `old_writes` is handed over.
-EXTERN void gc_local_flush_pending(void);
 
 // What a won late pin owes beyond the CAS, given the word it won.
 INLINE void object_pin_owed(object_t* o, uintptr_t won) {
@@ -1047,14 +1058,6 @@ INLINE void object_pin_owed(object_t* o, uintptr_t won) {
         atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
         gc_alloc_tl.old_writes = true;
     }
-    // An object tests private until its escape is set, and a value stored
-    // into a shared slot escapes only when the pending slot is flushed. The
-    // owner may have stored `o` just now (a nested yafl_cas_once), so other
-    // threads may already read it while it still tests private, and the
-    // stores about to be made would skip their publication fence. Flush
-    // first: `o` then tests private only if nothing shared reaches it.
-    if (UNLIKELY(gc_alloc_tl.local_active && gc_alloc_tl.pend_slot != NULL))
-        gc_local_flush_pending();
 }
 
 INLINE object_t* object_pin(object_t* o) {
@@ -1117,6 +1120,7 @@ INLINE void gc_local_barrier_inactive(object_t **slot, ptr_mask_t mask) {
 // The nursery part and the publication fence of a store into `obj`, BEFORE it.
 INLINE void gc_local_barrier_in(object_t *obj, object_t **slot, ptr_mask_t mask) {
     if (gc_alloc_tl.local_active) {
+        gc_local_flush_pending();   // first: see gc_store_is_settled_private
         if (gc_local_obj_private(obj))
             return;
         gc_local_note_slot(obj, slot, mask);
@@ -1171,13 +1175,44 @@ EXTERN void gc_store_mutable_before(object_t **slot, ptr_mask_t mask);
 EXTERN void gc_store_static_after(object_t **slot, ptr_mask_t mask);
 
 // ── The parts ────────────────────────────────────────────────────────────────
+// The inline half of GC_WRITE_BARRIER_IN: true when the store owes nothing
+// more than this has done. Two cases stay inline.
+//   * No cycle marking, and `obj` settled private (construction, a builder
+//     still in its nursery): nothing at all.
+//   * WRITE-ONCE — every slot overwritten is NULL, the late write's usual
+//     shape (a memo slot, a list tail's `next`) — and this thread's root scan
+//     is not pending. The snapshot's deletion half shades the overwritten
+//     value, and there is none; its insertion half, and the grey slot, apply
+//     only while this thread's scan is pending (_gc_write_barrier_in2). A
+//     nursery standing down owes only for overwritten values (none), so the
+//     store owes just its publication fence; an active one owes nothing for a
+//     settled private `obj`, and must note the slot of a shared one (a call).
+// A cycle marks most of the time, so without the second case nearly every
+// late write would call out. Anything else does.
+INLINE bool gc_store_owes_nothing(object_t *obj, object_t **slot, ptr_mask_t mask) {
+    bool settled = gc_store_is_settled_private(obj);
+    if (LIKELY(!gc_write_barrier_requested) && settled)
+        return true;
+    for (ptr_mask_t m = mask; m; m &= m - 1)
+        if (slot[__builtin_ctzll(m)] != NULL)
+            return false;
+    if (atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
+            & GC_SAFE_POINT_SCAN_ROOTS)
+        return false;
+    if (settled)
+        return true;
+    if (gc_alloc_tl.local_active)
+        return false;
+    GC_PUBLISH_FENCE();
+    return true;
+}
+
 // BEFORE a store into a field of `obj` (a heap object, or a static one such as
-// a global lazy stub). Inline: with no cycle marking and `obj` private, the
-// store owes nothing, the common case (construction, a builder still in its
-// nursery). Anything else calls out.
+// a global lazy stub). Inline when gc_store_owes_nothing says so; anything
+// else calls out.
 #define GC_WRITE_BARRIER_IN(obj, field, mask)\
     do {assert(gc_is_container_of((object_t*)(obj), (object_t**)&(field)));\
-        if (UNLIKELY(gc_write_barrier_requested) || !gc_store_is_private((object_t*)(obj)))\
+        if (!gc_store_owes_nothing((object_t*)(obj), (object_t**)&(field), (mask)))\
             gc_store_before((object_t*)(obj), (object_t**)&(field), (mask));\
     } while (false)
 // The same for a container known to be mutable. Always a call: a mutable
@@ -1251,26 +1286,36 @@ INLINE void gc_root_publish(object_t **slot, ptr_mask_t mask) {
 }
 
 // ── The stores ───────────────────────────────────────────────────────────────
+// Each evaluates `obj`, and the address of `field`, ONCE, into the locals
+// gc_obj_ / gc_field_, and the parts take those. The generated code passes
+// expressions, not names — a [pinnable] class's store passes
+// `object_resolve(p)` as `obj` and again inside `field` — and every part
+// naming them would otherwise repeat the loop.
 #define GC_STORE_IN(obj, field, mask, ...)\
-    do { GC_WRITE_BARRIER_IN(obj, field, mask);\
-         (field) = (__VA_ARGS__);\
-         GC_PUBLISH_IF_STATIC_IN(obj, field, mask); } while (false)
+    do { object_t *gc_obj_ = (object_t*)(obj); __typeof__(field) *gc_field_ = &(field);\
+         GC_WRITE_BARRIER_IN(gc_obj_, *gc_field_, mask);\
+         *gc_field_ = (__VA_ARGS__);\
+         GC_PUBLISH_IF_STATIC_IN(gc_obj_, *gc_field_, mask); } while (false)
 #define GC_STORE_MUTABLE_IN(obj, field, mask, ...)\
-    do { GC_WRITE_BARRIER_MUTABLE_IN(obj, field, mask);\
-         (field) = (__VA_ARGS__);\
-         GC_PUBLISH_IF_STATIC_IN(obj, field, mask); } while (false)
+    do { object_t *gc_obj_ = (object_t*)(obj); __typeof__(field) *gc_field_ = &(field);\
+         GC_WRITE_BARRIER_MUTABLE_IN(gc_obj_, *gc_field_, mask);\
+         *gc_field_ = (__VA_ARGS__);\
+         GC_PUBLISH_IF_STATIC_IN(gc_obj_, *gc_field_, mask); } while (false)
 #define GC_STORE_PUBLISH_IN(obj, field, mask, ...)\
-    do { GC_WRITE_BARRIER_IN(obj, field, mask);\
-         (field) = (__VA_ARGS__);\
-         GC_PUBLISH_IN(obj, field, mask); } while (false)
+    do { object_t *gc_obj_ = (object_t*)(obj); __typeof__(field) *gc_field_ = &(field);\
+         GC_WRITE_BARRIER_IN(gc_obj_, *gc_field_, mask);\
+         *gc_field_ = (__VA_ARGS__);\
+         GC_PUBLISH_IN(gc_obj_, *gc_field_, mask); } while (false)
 #define GC_FILL_STORE_IN(obj, field, mask, ...)\
-    do { GC_PUBLISH_FENCE_IF_SHARED(obj);\
-         (field) = (__VA_ARGS__);\
-         GC_FILL_BARRIER(obj, field, mask); } while (false)
+    do { object_t *gc_obj_ = (object_t*)(obj); __typeof__(field) *gc_field_ = &(field);\
+         GC_PUBLISH_FENCE_IF_SHARED(gc_obj_);\
+         *gc_field_ = (__VA_ARGS__);\
+         GC_FILL_BARRIER(gc_obj_, *gc_field_, mask); } while (false)
 #define GC_ROOT_STORE(field, mask, ...)\
-    do { gc_root_overwrite((object_t**)&(field), (mask));\
-         (field) = (__VA_ARGS__);\
-         gc_root_publish((object_t**)&(field), (mask)); } while (false)
+    do { __typeof__(field) *gc_field_ = &(field);\
+         gc_root_overwrite((object_t**)gc_field_, (mask));\
+         *gc_field_ = (__VA_ARGS__);\
+         gc_root_publish((object_t**)gc_field_, (mask)); } while (false)
 
 // ── The atomic stores ────────────────────────────────────────────────────────
 // A compare-and-swap of one pointer slot, and an exchange built on it: the

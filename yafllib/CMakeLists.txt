@@ -161,6 +161,12 @@ add_yafl_test(test_gc_gen)
 # is reclaimed while the old object points at it.
 add_yafl_test(test_gc_old_late_write)
 set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_write_once_step: stepped. While a cycle marks, a store that
+# overwrites nothing stays inline only once its thread's root scan is done;
+# before it, the store owes the insertion half and calls out.
+add_yafl_test(test_gc_write_once_step)
+set_tests_properties(test_gc_write_once_step PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_THREADS=1;YAFL_LOCAL_GC=0")
 # test_gc_builder_idle: stepped. List-builder links around a nursery
 # stand-down: a link made stood down owes no escape, and a cell born in the
 # resumed nursery, linked into a cell born stood down, must escape or the
