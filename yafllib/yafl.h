@@ -652,6 +652,12 @@ typedef struct page_head {
                            // nursery (relocation targets, pre-start pages).
                            // A root scan retires every page by moving the
                            // thread's epoch on. See gc_local_collect.
+    uint32_t local_private; // local_epoch while EVERY object on the page is
+                           // private to its nursery — an immutable page that
+                           // none of whose objects has escaped — else 0. The
+                           // first escape clears it, and it is never set
+                           // again. The late store's inline test (see
+                           // gc_store_is_settled_private).
     bitmap_t local_mark;   // Nursery collection's mark bits (owner-only).
     bitmap_t local_escaped; // ESCAPED objects (any thread may set, atomically):
                            // reachable from somewhere the owner's nursery
@@ -748,7 +754,12 @@ typedef struct {
     // can see, inline, whether a flush is owed.
     object_t **pend_slot;
     ptr_mask_t pend_mask;
+    // local_epoch while the nursery is active with no pending slot, else
+    // GC_LOCAL_NO_KEY, which no page's local_private ever holds: a page whose
+    // local_private equals it holds only settled private objects.
+    uint32_t private_key;
 } gc_alloc_tl_t;
+enum { GC_LOCAL_NO_KEY = 0xffffffffu };
 EXTERN thread_local gc_alloc_tl_t gc_alloc_tl;
 
 // The slow half: multi-page objects, and region refill — which is also where
@@ -1011,9 +1022,16 @@ INLINE bool gc_store_is_private(object_t *obj) {
 // may read it — the owner may have just published `obj` itself (a nested
 // yafl_cas_once) — and a write into it must not skip its publication fence.
 // The late writes (GC_WRITE_BARRIER_IN) test this; their call flushes first.
+// By PAGE: one compare of the page's key with the thread's, which folds in the
+// nursery being active, the page being this nursery's, immutable, free of
+// escapees, and nothing pending. Coarser than gc_local_obj_private — one
+// escape takes its whole page off the inline path — and measured to lose
+// almost nothing: the objects a late write targets escape page by page.
 INLINE bool gc_store_is_settled_private(object_t *obj) {
-    return gc_alloc_tl.local_active && gc_alloc_tl.pend_slot == NULL
-        && gc_local_obj_private(obj);
+    if ((size_t)((char*)obj - _memory_heap_base) >= _memory_heap_bytes)
+        return false;   // a static: no page header to read
+    gc_page_t *page = (gc_page_t*)((uintptr_t)obj & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    return __atomic_load_n(&page->head.local_private, __ATOMIC_RELAXED) == gc_alloc_tl.private_key;
 }
 EXTERN void gc_local_flush_pending(void);
 
@@ -1176,30 +1194,26 @@ EXTERN void gc_store_static_after(object_t **slot, ptr_mask_t mask);
 
 // ── The parts ────────────────────────────────────────────────────────────────
 // The inline half of GC_WRITE_BARRIER_IN: true when the store owes nothing
-// more than this has done. Two cases stay inline.
-//   * No cycle marking, and `obj` settled private (construction, a builder
-//     still in its nursery): nothing at all.
-//   * WRITE-ONCE — every slot overwritten is NULL, the late write's usual
-//     shape (a memo slot, a list tail's `next`) — and this thread's root scan
-//     is not pending. The snapshot's deletion half shades the overwritten
-//     value, and there is none; its insertion half, and the grey slot, apply
-//     only while this thread's scan is pending (_gc_write_barrier_in2). A
-//     nursery standing down owes only for overwritten values (none), so the
-//     store owes just its publication fence; an active one owes nothing for a
-//     settled private `obj`, and must note the slot of a shared one (a call).
-// A cycle marks most of the time, so without the second case nearly every
-// late write would call out. Anything else does.
+// more than this has done. Only a WRITE-ONCE store stays inline — every slot
+// overwritten is NULL, the late write's shape (a memo slot, a list tail's
+// `next`; every store of every measured program) — while this thread's root
+// scan is not pending. The snapshot's deletion half shades the overwritten
+// value, and there is none; its insertion half, and the grey slot, apply only
+// while this thread's scan is pending (_gc_write_barrier_in2). Then:
+//   * `obj` settled private: nothing at all.
+//   * no active nursery (none started, or standing down — the common case
+//     for programs whose data survives): it owes only for overwritten values
+//     (none), so just the publication fence.
+//   * an active nursery and a shared `obj`: the slot must be noted (a call).
+// Anything else calls out.
 INLINE bool gc_store_owes_nothing(object_t *obj, object_t **slot, ptr_mask_t mask) {
-    bool settled = gc_store_is_settled_private(obj);
-    if (LIKELY(!gc_write_barrier_requested) && settled)
-        return true;
     for (ptr_mask_t m = mask; m; m &= m - 1)
         if (slot[__builtin_ctzll(m)] != NULL)
             return false;
     if (atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
             & GC_SAFE_POINT_SCAN_ROOTS)
         return false;
-    if (settled)
+    if (gc_store_is_settled_private(obj))
         return true;
     if (gc_alloc_tl.local_active)
         return false;

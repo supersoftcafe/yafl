@@ -175,9 +175,14 @@ add_yafl_test(test_gc_builder_idle)
 set_tests_properties(test_gc_builder_idle PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_once_escape: a value yafl_cas_once installs in a shared object is
 # readable by other threads at once, so under its own late pin it must test
-# shared; the late pin flushes the nursery's pending slot to make it so.
+# shared; the late store flushes the nursery's pending slot to make it so.
 add_yafl_test(test_gc_once_escape)
 set_tests_properties(test_gc_once_escape PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_page_private: stepped. The late store's inline privacy test is by
+# page: an escape takes its whole page off it, a pending shared store takes
+# the thread off it until the flush, and promotion takes the page off it.
+add_yafl_test(test_gc_page_private)
+set_tests_properties(test_gc_page_private PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_misaligned_root: stepped. An object referenced only by a pointer at
 # a misaligned stack address (an optimiser's aggregate slice can put one at
 # 4 mod 8) survives nursery collections and full cycles: the conservative

@@ -392,7 +392,7 @@ static bool gc_fsa();
 // stays private here; `alloc` points at the owning thread's gc_alloc_tl so
 // the collector's remote accesses (root-scan region reset, safe-point
 // requests) reach it through the `threads` chain.
-EXPORT thread_local gc_alloc_tl_t gc_alloc_tl = {0};
+EXPORT thread_local gc_alloc_tl_t gc_alloc_tl = { .private_key = GC_LOCAL_NO_KEY };
 
 thread_local struct gc_thread_info gc_thread_info;   // type: gc_internal.h
 
@@ -915,6 +915,18 @@ static inline bool gc_local_epoch_is_active(uint32_t epoch) {
                                 memory_order_acquire) != 0;
 }
 
+// The thread's half of the late store's privacy test (yafl.h,
+// gc_store_is_settled_private): its epoch while the nursery is active and no
+// shared store's value waits to escape. Recomputed wherever either changes.
+static inline void gc_local_refresh_key(gc_alloc_tl_t *a) {
+    a->private_key = a->local_active && a->pend_slot == NULL ? a->local_epoch : GC_LOCAL_NO_KEY;
+}
+// The page's half: set where the page joins its nursery, cleared at its
+// first escape and when it leaves (promotion).
+static inline uint32_t gc_local_page_key(bool is_mutable, uint32_t epoch) {
+    return is_mutable ? 0 : epoch;
+}
+
 static void gc_local_set_epoch(struct gc_thread_info *t, uint32_t epoch) {
     if (epoch != 0)
         atomic_fetch_add_explicit(&gc_local_epoch_active[epoch % GC_LOCAL_EPOCH_SLOTS], 1,
@@ -934,6 +946,7 @@ static void gc_local_set_epoch(struct gc_thread_info *t, uint32_t epoch) {
     t->local_epoch = epoch;
     t->alloc->local_active = now;
     t->alloc->local_epoch = epoch;
+    gc_local_refresh_key(t->alloc);
     if (was && !now)
         __atomic_fetch_sub(&gc_local_live, 1, __ATOMIC_SEQ_CST);
 }
@@ -950,6 +963,7 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         gc_page_t* page = gc_page_alloc(page_count);
         page->head.mutable = is_mutable;
         page->head.local_epoch = gc_thread_info.in_relocation ? 0 : gc_thread_info.local_epoch;
+        page->head.local_private = gc_local_page_key(is_mutable, page->head.local_epoch);
         page->head.objects.a[0] = 1;
         list_link(&gc_thread_info.new_pages, (list_element_t*)&page->head.list);
         // Snapshot-smear guard — see object_alloc_fast_raw for the rationale.
@@ -1012,6 +1026,7 @@ EXPORT void *object_alloc_slow_raw(size_t size, bool is_mutable) {
         new_page = gc_page_alloc(1);
     new_page->head.mutable = is_mutable;
     new_page->head.local_epoch = gc_thread_info.in_relocation ? 0 : gc_thread_info.local_epoch;
+    new_page->head.local_private = gc_local_page_key(is_mutable, new_page->head.local_epoch);
 
     bump_pointers_t *bp = is_mutable
         ? &gc_alloc_tl.region_mutable
@@ -1554,7 +1569,7 @@ static thread_local size_t     gc_local_pages_cap = 0;
 
 static uint32_t gc_local_new_epoch(void) {
     uint32_t e;
-    do { e = atomic_fetch_add(&gc_local_epoch_next, 1); } while (e == 0);
+    do { e = atomic_fetch_add(&gc_local_epoch_next, 1); } while (e == 0 || e == GC_LOCAL_NO_KEY);
     return e;
 }
 
@@ -1730,6 +1745,7 @@ EXPORT void gc_local_escape(object_t *v) {
     unsigned c = (unsigned)(((char*)v - (char*)page->slots) / GC_SLOT_SIZE);
     if (!bitmap_test(&page->head.local_escaped, c)) {
         atomic_bitmap_fetch_set(&page->head.local_escaped, c);
+        __atomic_store_n(&page->head.local_private, 0, __ATOMIC_RELAXED);
         if (UNLIKELY(gc_stats_enabled)) gc_local_escapes++;
     }
 }
@@ -1747,6 +1763,7 @@ EXPORT void gc_local_flush_pending(void) {
     if (s == NULL) return;
     ptr_mask_t m = t->pend_mask;
     t->pend_slot = NULL;
+    gc_local_refresh_key(t);
     while (m) {
         unsigned i = __builtin_ctzll(m); m &= m - 1;
         gc_local_escape(s[i]);
@@ -1764,6 +1781,7 @@ static void gc_local_note_shared(object_t **slot, ptr_mask_t mask) {
     }
     gc_alloc_tl.pend_slot = slot;         // the value about to be stored
     gc_alloc_tl.pend_mask = mask;
+    gc_alloc_tl.private_key = GC_LOCAL_NO_KEY;
 }
 
 // PRIVATE container: an immutable object in THIS thread's nursery that has
@@ -1987,6 +2005,7 @@ static NOINLINE void gc_local_collect(void) {
         if (!gc_local_is_staying(page)) {
             GC_TRACE_PAGE(page, GCT_LOCAL_PROMOTE, &page->head.local_mark, page->head.local_epoch);
             page->head.local_epoch = 0;
+            page->head.local_private = 0;
             promoted++;
         }
         for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i) {
@@ -2104,6 +2123,7 @@ static void gc_local_on_root_scan(struct gc_thread_info *t) {
         gc_local_set_epoch(t, gc_local_new_epoch());   // stood down: resume
     t->remembered_n = 0;
     t->alloc->pend_slot = NULL;
+    gc_local_refresh_key(t->alloc);
     t->local_pages_since = 0;
     t->reloc_bump = t->reloc_base = NULL;
 }
@@ -2115,6 +2135,7 @@ static void *gc_relocation_alloc(size_t size) {
     if (t->reloc_bump == NULL || (size_t)(t->reloc_bump - t->reloc_base) < actual) {
         gc_page_t *page = gc_page_alloc(1);
         page->head.local_epoch = 0;
+        page->head.local_private = 0;
         list_link(&t->new_pages, (list_element_t*)&page->head.list);
         t->reloc_base = (char*)page->slots;
         t->reloc_bump = (char*)(page->slots + SLOTS_PER_PAGE);
