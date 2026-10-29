@@ -32,8 +32,13 @@ static void write_file(const char* p, const char* body) {
     if (f) { fputs(body, f); fclose(f); }
 }
 
+// A path that does not fit is the test's own bug: stop rather than test a
+// truncated path.
 static void join(char* out, size_t n, const char* a, const char* b) {
-    snprintf(out, n, "%s/%s", a, b);
+    if ((size_t)snprintf(out, n, "%s/%s", a, b) >= n) {
+        printf("FAIL: path too long: %s/%s\n", a, b);
+        exit(1);
+    }
 }
 
 int main(void) {
