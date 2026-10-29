@@ -322,7 +322,9 @@ class LetStatement(DataStatement):
                                    cg_p.NullPointer, cg_p.ZeroOf, cg_p.StaticObjectRef))
 
         def instance(cls: "ClassStatement", args: list[e.Expression], hint: str) -> cg_p.StaticObjectRef | None:
-            if cls.is_interface or cls.array_field(resolver) is not None:
+            # A [pinnable] instance is never static: the runtime's late write
+            # assumes its target is a heap object. Such a let goes lazy.
+            if cls.is_interface or cls.array_field(resolver) is not None or "pinnable" in cls.attributes:
                 return None
             field_defs = list(cls.parameters.flatten())
             if len(args) != len(field_defs):

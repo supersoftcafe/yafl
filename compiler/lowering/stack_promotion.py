@@ -44,8 +44,10 @@ from lowering.escapes import op_publishes
 
 def __payload_fields(obj) -> tuple[tuple[str, t.Type], ...] | None:
     """The class's payload (fields minus the vtable header), or None when the
-    shape isn't promotable."""
-    if obj is None or obj.length_field is not None or obj.is_mutable or obj.is_foreign:
+    shape isn't promotable. A [pinnable] object is never promoted: the
+    runtime's late write assumes its target is a heap object."""
+    if (obj is None or obj.length_field is not None or obj.is_mutable or obj.is_foreign
+            or obj.is_pinnable):
         return None
     fields = tuple((n, ft) for n, ft in obj.fields.fields if n != "type")
     if any(isinstance(ft, t.Array) for _, ft in fields):
