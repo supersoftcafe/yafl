@@ -77,18 +77,10 @@ static void fail(const char* what, int got) {
     abort();
 }
 
-static void scrub(void);
-
-// A scrub after EVERY step: a step leaves addresses in the collector's own
-// frames (the card's trace reads A's slot, so B's address), and the next
-// step's frames — the root scan's among them — sit over those slots without
-// writing them, so the conservative scan would find B and pin the page this
-// test needs compacted.
 static void step_to(int target) {
     for (int guard = 0; gc_debug_stage() != target; ++guard) {
         if (guard > 1000000) fail("stuck before stage", gc_debug_stage());
         gc_debug_step();
-        scrub();
     }
 }
 
@@ -96,7 +88,6 @@ static void run_one_cycle(void) {
     for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
-        scrub();
     }
     step_to(ST_IDLE);
 }

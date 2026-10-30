@@ -80,6 +80,9 @@ struct gc_thread_info {
     // well (ARCH_SAVE_CALLEE_REGS, yafl.h "Target specifics"); caller-saved registers are already
     // spilled to the scanned stack by the C ABI before any call into the runtime.
     void      *saved_callee_regs[ARCH_CALLEE_REGS];
+    // The three above were captured at this thread's entry to the collector
+    // (gc_fsa), for the root scan the step it entered is about to make.
+    bool       entry_captured;
 
     // The insertion half of the hybrid barrier (_gc_write_barrier_in2): the
     // field this thread stored into last while its root scan was pending,

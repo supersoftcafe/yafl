@@ -166,6 +166,16 @@ set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POIS
 # major keeps old pages old.
 add_yafl_test(test_gc_cards)
 set_tests_properties(test_gc_cards PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_old_compact: stepped. A major compacts a sparse old page into a page
+# born old: the copy keeps its stamp and card, old referrers reach it through
+# the forwarder until the next major rewrites them.
+add_yafl_test(test_gc_old_compact)
+set_tests_properties(test_gc_old_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_old_stub_card: stepped. An old forwarding stub keeps its card, so a
+# minor rewrites its body when a young referent moves: a reader that reaches
+# the stub through an old referrer, before the next major, reads live data.
+add_yafl_test(test_gc_old_stub_card)
+set_tests_properties(test_gc_old_stub_card PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_card_compact: stepped. A young page that a carded old object points
 # into is compacted in a minor, and the card's trace rewrites the old object's
 # field to the copy before the forwarder's slot can be reclaimed.

@@ -20,9 +20,9 @@
 // disables compaction entirely) because the band it does NOT cover is where
 // the resident heap sits — a self-compile censuses ~44% of its in-use bytes as
 // live, i.e. most pages sit above this threshold and keep their dead slots
-// forever, and old-generation pages are never offered to the evacuator at
-// all (prune walks survivors; old pages are not in that list, and a major's
-// prune skips them: see gc_compact_page).
+// forever, and old-generation pages are offered to the evacuator only by a
+// major, whose prune takes them in (their copies land on pages born old: see
+// gc_old_copy_alloc).
 #define COMPACT_THRESHOLD_PERCENT   33
 #define REPROCESS_PAGE_COUNT        16
 
@@ -554,10 +554,12 @@ alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &page
 // Old garbage is reclaimed by MAJOR cycles, which take both lists into the
 // rotation for an ordinary full trace and return every surviving page to
 // old at its prune; a major is triggered when the old generation has doubled
-// since the last one (with a floor, so small programs never bother). An old
-// page is never compacted: its referrers are old, and a minor would never
-// rewrite them past the forwarders. Compacted pages never promote, for the
-// same reason.
+// since the last one (with a floor, so small programs never bother). A sparse
+// old page compacts there into a page BORN OLD (gc_old_copy_alloc): its
+// referrers are old, and no minor rewrites them past the forwarders, so the
+// copies must not be young and the vacated page stays old until the next
+// major has rewritten them. Compacted young pages never promote: their
+// forwarders point at young copies.
 //
 // A cycle-count criterion for promotion is meaningless across cycle-length
 // regimes: with short cycles it promoted mid-life churn wholesale (yspell
@@ -1221,6 +1223,38 @@ EXPORT void gc_declare_thread(thread_roots_declaration_func_t thread_roots_decla
     gc_thread_info.listed = true;
 }
 
+// Compaction's targets for an OLD page's objects, in a major (the only time an
+// old page is pruned): pages BORN OLD. The objects' referrers are old, and no
+// minor traces them until the next major rewrites them past the forwarders;
+// a young copy would be reclaimed under them in the meantime. Each executor
+// bumps through a page of its own, taken onto `old_pages` as it starts, and
+// starts a fresh one every cycle, so a later major never bumps into a page it
+// has in its rotation. The vacated page, all forwarders, stays old too: old
+// referrers reach the copies through it until that next major.
+static thread_local char    *gc_old_copy_bump, *gc_old_copy_base;
+static thread_local uint64_t gc_old_copy_cycle;
+static void *gc_old_copy_alloc(size_t size) {
+    size_t actual = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+    uint64_t cycle = atomic_load_explicit(&gc_cycle_count, memory_order_relaxed);
+    if (gc_old_copy_bump == NULL || gc_old_copy_cycle != cycle
+            || (size_t)(gc_old_copy_bump - gc_old_copy_base) < actual) {
+        gc_page_t *page = gc_page_alloc(1);
+        page->head.old = true;
+        gc_pool_lock();
+        list_link(&old_pages, (list_element_t*)&page->head.list);
+        gc_pool_unlock();
+        atomic_fetch_add_explicit(&gc_old_page_count, 1, memory_order_relaxed);
+        gc_old_copy_base  = (char*)page->slots;
+        gc_old_copy_bump  = (char*)(page->slots + SLOTS_PER_PAGE);
+        gc_old_copy_cycle = cycle;
+    }
+    gc_old_copy_bump -= actual;
+    void *object = gc_old_copy_bump;
+    gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    bitmap_fetch_set(&page->head.objects, (unsigned)((slot_t*)object - page->slots));
+    return object;
+}
+
 static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // Runtime threshold (YAFL_GC_COMPACT_PERCENT); 0 disables compaction.
     const unsigned pct = gc_compact_percent;
@@ -1241,16 +1275,6 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
 
     // Don't compact these types of pages.
     if (page->head.mutable || page->head.pages > 1)
-        return;
-    // Nor an OLD page, in a major's rotation (the only time one is pruned).
-    // Its referrers are old, and no minor traces them: their fields would
-    // keep the forwarders' addresses, nothing would record that those
-    // forwarders are still needed, and their slots would be reclaimed and
-    // reused under the old referrers. (A YOUNG page that old objects point
-    // into compacts like any other: those objects are carded, so every minor
-    // traces their fields, rewriting them past the forwarders —
-    // test_gc_card_compact.)
-    if (page->head.was_old)
         return;
 
     // Don't compact pages with too many objects. This test is faster than counting up
@@ -1311,7 +1335,8 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // it must contain no allocation. A target that goes unused because
         // the claim lost is ordinary garbage, collected next cycle; that only
         // happens under genuine contention, which is rare.
-        object_t *target = (object_t*)object_alloc_fast(size, false);
+        object_t *target = page->head.was_old ? (object_t*)gc_old_copy_alloc(size)
+                                              : (object_t*)object_alloc_fast(size, false);
 
         // Claim: CAS the vtable word to pinned. Fails if a mutator holds the
         // pin (mid-write — leave the object where it is, exactly as the
@@ -1329,16 +1354,33 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
             continue;
         }
 
-        // Drop the PIN and any OLD stamp: the vtable TAG must survive onto the
-        // copy, or the copy's own header would read as a forwarding pointer,
-        // but the copy lands on a young page, where a stamp would only cost
-        // its late pins a needless report.
-        vtable_t *vt = vtable_tag(cvt);
+        // Drop the PIN: the vtable TAG must survive onto the copy, or the
+        // copy's own header would read as a forwarding pointer. An old
+        // object's copy is old too (gc_old_copy_alloc), so it keeps the OLD
+        // stamp and its card; a young object's copy has none. (A stamp on a
+        // young object — a refused promotion's — would only cost its late
+        // pins a needless card.)
+        vtable_t *vt = page->head.was_old
+            ? (vtable_t*)((uintptr_t)vtable_tag(cvt) | VTABLE_OLD_BIT)
+            : vtable_tag(cvt);
         memcpy(target, object, size);
         // The memcpy copied the CLAIMED word, pin bit and all. Clear it on the
         // copy before anyone can reach it — the target is still private here,
         // so a plain store is enough.
         target->vtable = vt;
+        if (page->head.was_old && bitmap_test(&page->head.cards, objects[index].o)) {
+            // The copy takes the card, and the stub KEEPS it: old referrers
+            // reach the stub until the next major rewrites them, and a reader
+            // through one reads the stub's own body. A minor never scans an
+            // old page, so only the card's trace keeps that body's young
+            // referents alive and rewrites it when they move
+            // (test_gc_old_stub_card). The next minor's root scans find the
+            // copy's page flagged, as a late pin's would.
+            gc_page_t *tp = (gc_page_t*)((uintptr_t)target & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+            atomic_bitmap_fetch_set(&tp->head.cards, (unsigned)((slot_t*)target - tp->slots));
+            atomic_store_explicit(&tp->head.carded, true, memory_order_release);
+            gc_alloc_tl.old_writes = true;
+        }
         // An array built in place owned only `length` elements' worth of the
         // copy: its spare capacity stayed behind, so say so on the copy.
         if (UNLIKELY(cvt->array_cap_offset))
@@ -1576,6 +1618,10 @@ static void gc_validate_old_list(list_element_t *list) {
                 unsigned slot = __builtin_ctzll(bits) + offset;
                 bits &= bits-1;
                 object_t *object = (object_t*)&page->slots[slot];
+                // A forwarder (a compacted old page waits, old, for the next
+                // major to rewrite its referrers) is checked at its copy.
+                if (vtable_is_forward(object->vtable))
+                    continue;
                 // Every object on an old page carries the stamp: a late pin
                 // that finds none owes no report (object_pin, yafl.h).
                 if (!((uintptr_t)object->vtable & VTABLE_OLD_BIT)) {
@@ -1656,7 +1702,10 @@ static bool gc_card_object(gc_page_t *page, unsigned slot) {
         return false;                        // died (a major's prune left the bit)
     object_t *object = (object_t*)&page->slots[slot];
     uintptr_t word = __atomic_load_n((uintptr_t*)&object->vtable, __ATOMIC_ACQUIRE);
-    vtable_t *vt = vtable_untag((vtable_t*)word);
+    // A STUB (an old object a major moved) is traced like the object it was:
+    // its body, through its copy's vtable, as the scanner does a young stub's.
+    vtable_t *vt = vtable_is_forward((vtable_t*)word) ? object_get_vtable_inline(object)
+                                                      : vtable_untag((vtable_t*)word);
     gc_trace_carded_fields(object, vt);
     if (!vtable_is_pinned((vtable_t*)word) && gc_object_refs_are_old(page, object, vt))
         return false;
@@ -1869,7 +1918,8 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
     if (!gc_thread_info.roots_scanned) {
         old_state = THREAD_STATE_RUNNING;
         atomic_store(&gc_thread_info.thread_state, THREAD_STATE_SUSPENDED_SCAN);
-        gc_update_stack_address_and_registers();
+        if (!gc_thread_info.entry_captured)   // captured at the collector's entry (gc_fsa)
+            gc_update_stack_address_and_registers();
         thread = &gc_thread_info;
     } else {
         old_state = THREAD_STATE_SUSPENDED;
@@ -3287,12 +3337,42 @@ static NOINLINE_DEBUG bool gc_fsa_impl() {
 // sites of the impl. A nested call (compaction refill re-entering via
 // gc_page_alloc) pushes a second (GC) frame around the impl's immediate
 // re-entrancy bail-out — harmless and vanishingly rarely sampled.
+//
+// It is also where this thread's own ROOT SCAN starts. A step that will scan
+// this thread's roots captures the stack pointer and the callee-saved
+// registers HERE, in this frame, which stays live for the step: everything
+// above it — the mutator, and runtime frames such as a string builder holding
+// a heap pointer across an allocation — is scanned, and the callee-saved
+// registers are the callers' (their caller-saved ones are spilled already).
+// The collector's own frames below are not scanned: a step leaves addresses
+// in slots the next step's frames sit over without writing, and found there
+// they pinned pages against compaction and kept dead objects alive. The scan
+// falls back to capturing where it runs (gc_fsa_scan_roots) when no step
+// captured here; a nested call keeps the outer capture.
 static bool gc_fsa() {
-    if (LIKELY(!yafl_prof_enabled))
-        return gc_fsa_impl();
-    yafl_prof_runtime_push(YAFL_PROF_RES_GC);
-    bool result = gc_fsa_impl();
-    yafl_prof_runtime_pop();
+    // volatile: live across the setjmp below (nothing longjmps, but the
+    // compiler cannot know that).
+    volatile bool capture = !gc_thread_info.entry_captured
+        && atomic_load_explicit(&stage, memory_order_acquire) == GC_STAGE_SCAN_ROOTS
+        && !gc_thread_info.roots_scanned;
+    if (capture) {
+        void *sp;
+        ARCH_READ_SP(sp);
+        gc_thread_info.stack_lower_ptr = (object_t**)sp;
+        setjmp(gc_thread_info.saved_registers);
+        ARCH_SAVE_CALLEE_REGS(gc_thread_info.saved_callee_regs);
+        gc_thread_info.entry_captured = true;
+    }
+    bool result;
+    if (LIKELY(!yafl_prof_enabled)) {
+        result = gc_fsa_impl();
+    } else {
+        yafl_prof_runtime_push(YAFL_PROF_RES_GC);
+        result = gc_fsa_impl();
+        yafl_prof_runtime_pop();
+    }
+    if (capture)
+        gc_thread_info.entry_captured = false;
     return result;
 }
 
