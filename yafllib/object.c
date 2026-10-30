@@ -172,6 +172,7 @@ bool gc_stats_enabled  = false;
 // the skip paths, cards and major trigger are all inert.
 static bool gc_gen_enabled    = true;
 static size_t gc_promote_floor;   // defined with the generations (GC_PROMOTE_FLOOR_DEFAULT)
+static unsigned gc_major_growth;  // defined with the generations (GC_MAJOR_GROWTH_PERCENT)
 static void gc_read_config(void) {
     const char *e;
     if ((e = getenv("YAFL_GC_STEP_PAGES")) != NULL) {
@@ -184,6 +185,8 @@ static void gc_read_config(void) {
     }
     if ((e = getenv("YAFL_GC_IDLE_PAGES")) != NULL && atol(e) >= 0)
         gc_idle_pages = (uint64_t)atol(e);
+    if ((e = getenv("YAFL_GC_MAJOR_GROWTH")) != NULL && atoi(e) > 100)
+        gc_major_growth = (unsigned)atoi(e);
     // 0 disables compaction; values above 100 are clamped (the evacuation set
     // can never exceed a page's slots).
     if ((e = getenv("YAFL_GC_COMPACT_PERCENT")) != NULL) {
@@ -553,8 +556,9 @@ alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &page
 //
 // Old garbage is reclaimed by MAJOR cycles, which take both lists into the
 // rotation for an ordinary full trace and return every surviving page to
-// old at its prune; a major is triggered when the old generation has doubled
-// since the last one (with a floor, so small programs never bother). A sparse
+// old at its prune; a major is triggered when the old generation has grown
+// by a quarter since the last one (GC_MAJOR_GROWTH_PERCENT; with a floor, so
+// small programs never bother). A sparse
 // old page compacts there into a page BORN OLD (gc_old_copy_alloc): its
 // referrers are old, and no minor rewrites them past the forwarders, so the
 // copies must not be young and the vacated page stays old until the next
@@ -565,6 +569,15 @@ alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &page
 // regimes: with short cycles it promoted mid-life churn wholesale (yspell
 // accreted ~190 MiB of garbage on old pages), so promotion is by volume.
 #define GC_MAJOR_FLOOR   256   // pages: no majors until the old gen reaches this
+// A major runs once the old generation has grown to this percentage of its
+// size after the last major (YAFL_GC_MAJOR_GROWTH overrides). Old garbage is
+// freed only by a major, so this is the generation's whole trade of CPU for
+// memory. The -O3 self-compile on the pi (2 rounds each, user CPU / peak RSS):
+// 200% 584 s / 1.82-1.85 GB, 150% 590 s / 1.54-1.70 GB, 125% 609 s /
+// 1.39-1.51 GB, the last back at the peak the runtime had before cards (674
+// s / 1.35-1.63 GB). The benchmark set did not notice the setting.
+#define GC_MAJOR_GROWTH_PERCENT 125
+static unsigned gc_major_growth = GC_MAJOR_GROWTH_PERCENT;
 alignas(CACHE_LINE_SIZE) list_element_t old_pages    = {&old_pages, &old_pages};
 alignas(CACHE_LINE_SIZE) list_element_t carded_pages = {&carded_pages, &carded_pages};
 _Atomic(uint64_t) gc_alloc_clock = 0; // cumulative pages ever allocated
@@ -1785,14 +1798,15 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
     gc_validate_old_pages();
 #endif
 
-    // Major-cycle decision: collect the old generation when it has doubled
-    // since the last major (floored), under heap pressure, or on request.
+    // Major-cycle decision: collect the old generation when it has grown to
+    // gc_major_growth percent of its size after the last major (floored),
+    // under heap pressure, or on request.
     {
         size_t old_total = gc_old_page_count;
         size_t pressure  = memory_total_pages() / 2;
-        size_t doubled   = gc_old_baseline * 2;
+        size_t grown     = gc_old_baseline * gc_major_growth / 100;
         gc_major_cycle = gc_major_request
-            || (old_total >= GC_MAJOR_FLOOR && old_total >= doubled)
+            || (old_total >= GC_MAJOR_FLOOR && old_total >= grown)
             || (pressure != 0 && memory_count() > pressure);
         gc_major_request = false;
         if (gc_major_cycle) {
