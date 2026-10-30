@@ -46,20 +46,18 @@ fun esIsVarNamed(q, name) => match(q)
 # ── the per-op question ─────────────────────────────────────────────────────
 
 # True if `op` lets `name`'s pointer reach anywhere the function does not
-# exclusively own: a callee, a heap field, a struct pack, a return value, a
-# Phi merge, or the async state saved across a suspension.
-fun esOpPublishes(op: Op, name)
-  if contains(opSavedVars(op), name)
-    ret true
-  ret match(op)
-    (c: OpCall)          => esReadsName(op, name)
-    (r: OpReturn)        => esReadsName(op, name)
-    (ph: OpPhi)          => esReadsName(op, name)
-    (m: OpMove)          => esMoveEscapes(m, name)
-    (ji: OpJumpIf)       => esBareIn(ji.jumpIfCondition, name)
-    (sw: OpSwitchJump)   => esBareIn(sw.switchCondition, name)
-    (no: OpNewObject)    => false
-    (o: Op)              => esReadsName(op, name)
+# exclusively own: a callee, a heap field, a struct pack, a return value or a
+# Phi merge. (The async state saved across a suspension is a heap field: async
+# lowering emits the saves as stores.)
+fun esOpPublishes(op: Op, name) => match(op)
+  (c: OpCall)          => esReadsName(op, name)
+  (r: OpReturn)        => esReadsName(op, name)
+  (ph: OpPhi)          => esReadsName(op, name)
+  (m: OpMove)          => esMoveEscapes(m, name)
+  (ji: OpJumpIf)       => esBareIn(ji.jumpIfCondition, name)
+  (sw: OpSwitchJump)   => esBareIn(sw.switchCondition, name)
+  (no: OpNewObject)    => false
+  (o: Op)              => esReadsName(op, name)
 
 fun esReadsName(op: Op, name): Bool => any(opGetLiveVars(op).reads,
                                        (sv) => esIsVarNamed(sv, name))

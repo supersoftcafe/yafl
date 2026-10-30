@@ -181,6 +181,62 @@ class TestFastStores(TestCase):
         self.assertNotEqual([], saves, body)
 
 
+# A construction in a function that suspends: `with` rebuilds the Destr from
+# the awaited `map` result, so the allocation follows the await (a
+# construction is atomic, lowering/defer_awaits.py) and its stores follow the
+# allocation with nothing between them. The new object is live after each
+# store, and the liveness async lowering computes is no publication: those
+# stores lost their flag in every async function of the self-compile.
+_ASYNC_SRC = """\
+import System
+
+enum Stmt
+  enum Destr(name: System::String, attrs: System::String, ty: System::Int,
+             targets: System::List<Stmt>, dflt: System::Int, line: System::String)
+  enum Let(n: System::String, t: System::Int)
+
+fun [future] bump(p: Stmt): Stmt => match(p)
+  (l: Let)  => with l(t = l.t + 1)
+  (o: Stmt) => p
+
+fun bumped(params: Stmt): Stmt => match(params)
+  (d: Destr) => with d(targets = System::map(d.targets, (p) => bump(p)))
+  (o: Stmt)  => params
+
+fun main(): System::Int
+  let s = bumped(Destr("a", "b", 1, System::prepend(Let("x", 1), System::List()), 2, "l"))
+  ret match(s)
+    (d: Destr) => System::isEmpty(d.targets) ? 1 : 0
+    (o: Stmt)  => 1
+"""
+
+
+def _bodies(emitted: str, name_prefix: str) -> list[str]:
+    """The C body of every DEFINED function whose name starts with
+    `name_prefix` — an async function's launch and its state machine both."""
+    pattern = re.compile(r"^[\w \*]*\b" + re.escape(name_prefix) + r"\w*\([^;]*\)\s*$",
+                         re.MULTILINE)
+    bodies = []
+    for m in pattern.finditer(emitted):
+        if emitted[m.end():].lstrip().startswith("{"):
+            start = emitted.index("{", m.end())
+            bodies.append(emitted[start:emitted.index("\n}", start)])
+    return bodies
+
+
+class TestConstructionInAnAsyncFunction(TestCase):
+    def test_construction_stores_stay_barrier_free(self):
+        """An immutable object is written only while it is fresh, so no store
+        into one takes a barrier: no GC_STORE_IN in either body."""
+        for level in (0, 2):
+            with self.subTest(level=level):
+                emitted = compile_c(_ASYNC_SRC, "file.yafl", optimization_level=level)
+                bodies = _bodies(emitted, "Main__bumped")
+                self.assertTrue(bodies, "no definition of Main__bumped*")
+                for body in bodies:
+                    self.assertNotIn("GC_STORE_IN(", body)
+
+
 # An array-class construction tabulates its storage by calling the init
 # function once per element, between the allocation and each store. The init
 # call runs safe points, so the array can leave the thread-local nursery

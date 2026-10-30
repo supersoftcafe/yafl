@@ -2033,6 +2033,19 @@ fun alCtsInner(t2) => match(t2)
   (w: CgTaskWrapper) => w.inner
   (o: CgType)         => t2
 
+# ── saved_vars cleared on the way out ───────────────────────────────────────
+
+# `saved_vars` is this pass's liveness, a live-out on EVERY op, not a save.
+# Once lowered, what a suspension saves is an explicit store into the state
+# object, so the sets mean nothing further — and read as saves they made a
+# construction's first store publish its own object (fast_stores.yafl).
+fun alWithoutSavedVars(f: CgFunction): CgFunction
+  if !any(f.fnOps, (op) => !isEmpty(opSavedVars(op)))
+    ret f
+  ret cgFunctionWith(f, map(f.fnOps, (op) => alOpWithoutSavedVars(op)), f.fnStackVars)
+
+fun alOpWithoutSavedVars(op: Op): Op => isEmpty(opSavedVars(op)) ? op : opWithSavedVars(op, Dict())
+
 # ── zero-init repair for state-saves ─────────────────────────────────────────
 
 # Aggressive IR inlining (-O3) can place a suspension inside a loop whose body
@@ -2089,7 +2102,8 @@ fun alZiusSource(src, names: Set<String>, acc) => match(src)
 
 fun lowerAsync(a: CgApp)
   let converted = alAccBuild(alConvertAll(chain(appFunctions(a)), alAccEmpty()))
-  let repaired = map(converted.aloFunctions, alZeroInitUnwrittenSaves)
+  let repaired = map(converted.aloFunctions,
+                     (f) => alWithoutSavedVars(alZeroInitUnwrittenSaves(f)))
   let withObjs = fold(converted.aloObjects,
                       appOf(repaired, appObjects(a), appGlobals(a)),
                       appPutObject)

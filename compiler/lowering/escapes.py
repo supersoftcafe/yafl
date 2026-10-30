@@ -44,10 +44,9 @@ def bare_pointer_in(param: RParam | None, name: str) -> bool:
 
 def op_publishes(op: Op, name: str) -> bool:
     """True if `op` lets `name`'s pointer reach anywhere the function does not
-    exclusively own: a callee, a heap field, a struct pack, a return value, a
-    Phi merge, or the async state saved across a suspension."""
-    if any(sv.name == name for sv in op.saved_vars):
-        return True
+    exclusively own: a callee, a heap field, a struct pack, a return value or
+    a Phi merge. (The async state saved across a suspension is a heap field:
+    async lowering emits the saves as stores.)"""
     if isinstance(op, (Call, Return, Phi)):
         return any(sv.name == name for sv in op.get_live_vars()[0])
     if isinstance(op, Move):
