@@ -161,11 +161,16 @@ add_yafl_test(test_gc_gen)
 # is reclaimed while the old object points at it.
 add_yafl_test(test_gc_old_late_write)
 set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
-# test_gc_dirty_compact: stepped. A dirty-old page that an old page points
-# into is not compacted in a minor: the old referrer is not traced, so it
-# would keep a forwarder's address while the forwarder's slot is reclaimed.
-add_yafl_test(test_gc_dirty_compact)
-set_tests_properties(test_gc_dirty_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_cards: stepped. Old stays old: a page whose objects point at young
+# ones promotes with those objects carded, minors trace the cards, and a
+# major keeps old pages old.
+add_yafl_test(test_gc_cards)
+set_tests_properties(test_gc_cards PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_card_compact: stepped. A young page that a carded old object points
+# into is compacted in a minor, and the card's trace rewrites the old object's
+# field to the copy before the forwarder's slot can be reclaimed.
+add_yafl_test(test_gc_card_compact)
+set_tests_properties(test_gc_card_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_dwell: once a cycle ends, the next opens only after the dwell's
 # pages have been allocated (natural pacing, one worker).
 add_yafl_test(test_gc_dwell)

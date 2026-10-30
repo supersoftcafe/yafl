@@ -97,12 +97,13 @@ extern uint32_t epoch;
 extern list_element_t pages_to_scan;
 extern list_element_t pages_to_prune;
 extern list_element_t old_pages;
+extern list_element_t carded_pages;
 
 extern _Atomic(bool)     gc_pool_lock_word;
 extern _Atomic(uint64_t) gc_alloc_clock;
 extern _Atomic(uint64_t) gc_cycle_count;
 extern _Atomic(size_t)   gc_old_page_count;
-extern _Atomic(size_t)   gc_dirty_old_count;
+extern _Atomic(size_t)   gc_carded_page_count;
 extern thread_local size_t mark_worklist_count;
 
 extern bool gc_poison_enabled;
@@ -174,8 +175,8 @@ extern _Atomic(uint64_t) gc_prof_block_multipage, gc_prof_block_mutable, gc_prof
 #define GC_FWD_AGE_BUCKETS 16
 extern size_t gc_fwd_age[GC_FWD_AGE_BUCKETS], gc_fwd_freed;
 extern _Atomic(uint64_t) gc_prof_mut_fwd_hops, gc_prof_stack_held_husk;
-extern _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
-                         gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
+extern _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_carded, gc_prof_promote_pinned,
+                         gc_prof_block_unstable, gc_prof_block_volume, gc_prof_block_kind;
 extern _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
 extern _Atomic(uint64_t) gc_stat_stage_ns[8];
 extern _Atomic(uint64_t) gc_stat_lat[8][GC_LAT_BUCKETS];

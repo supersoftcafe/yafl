@@ -26,8 +26,8 @@ _Atomic(uint64_t) gc_stat_cons_seeds   = 0;  // objects seeded live by conservat
 _Atomic(uint64_t) gc_prof_objs, gc_prof_ptrs, gc_prof_passes, gc_prof_drained;
 _Atomic(uint64_t) gc_prof_drain_pages;
 size_t gc_occ_hist_pages[10], gc_occ_hist_dead[10], gc_occ_hist_promo[10];
-_Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
-                gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
+_Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_carded, gc_prof_promote_pinned,
+                gc_prof_block_unstable, gc_prof_block_volume, gc_prof_block_kind;
 _Atomic(uint64_t) gc_prof_block_multipage, gc_prof_block_mutable, gc_prof_block_compacted;
 size_t gc_fwd_age[GC_FWD_AGE_BUCKETS], gc_fwd_freed;
 _Atomic(uint64_t) gc_prof_mut_fwd_hops, gc_prof_stack_held_husk;
@@ -144,10 +144,11 @@ void gc_stats_report(void) {
                     gc_occ_hist_pages[b] ? 100.0 * (double)gc_occ_hist_promo[b] / (double)gc_occ_hist_pages[b] : 0.0);
         }
     }
-    fprintf(stderr, "[GC PROMO] ok=%llu dirty=%llu unstable=%llu volume=%llu kind=%llu defer=%llu\n",
-            (unsigned long long)gc_prof_promote_ok, (unsigned long long)gc_prof_promote_dirty,
+    fprintf(stderr, "[GC PROMO] ok=%llu carded=%llu pinned=%llu unstable=%llu volume=%llu kind=%llu\n",
+            (unsigned long long)gc_prof_promote_ok, (unsigned long long)gc_prof_promote_carded,
+            (unsigned long long)gc_prof_promote_pinned,
             (unsigned long long)gc_prof_block_unstable, (unsigned long long)gc_prof_block_volume,
-            (unsigned long long)gc_prof_block_kind, (unsigned long long)gc_prof_defer);
+            (unsigned long long)gc_prof_block_kind);
     {   // How long evacuated-from pages outlive their evacuation. A healthy
         // system frees them within a cycle or two; a long tail is a census of
         // pointers the collector could not rewrite, each pinning a whole page.
@@ -175,10 +176,10 @@ void gc_stats_report(void) {
             (unsigned long long)gc_prof_t_drain, (unsigned long long)gc_prof_t_merge,
             (unsigned long long)gc_prof_t_pages, (unsigned long long)gc_prof_t_live,
             (unsigned long long)gc_prof_t_prune_rest);
-    fprintf(stderr, "[GC PAGES] last cycle: %slarge=%zu pages | imm-sparse: fwd=%zu pin=%zu oth=%zu | old=%zu dirty=%zu pages majors=%llu\n",
+    fprintf(stderr, "[GC PAGES] last cycle: %slarge=%zu pages | imm-sparse: fwd=%zu pin=%zu oth=%zu | old=%zu carded=%zu pages majors=%llu\n",
             occ_line, gc_snap_large,
             gc_snap_sparse_fwd, gc_snap_sparse_pin, gc_snap_sparse_oth,
-            gc_old_page_count, gc_dirty_old_count,
+            gc_old_page_count, gc_carded_page_count,
             (unsigned long long)atomic_load(&gc_stat_majors));
     size_t scav_ret, scav_rec, scav_cold, scav_rec_runs;
     memory_scavenge_stats(&scav_ret, &scav_rec, &scav_cold, &scav_rec_runs);

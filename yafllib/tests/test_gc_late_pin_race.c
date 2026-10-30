@@ -13,16 +13,16 @@
 // rooted-until-now YOUNG child into the aging parent's slot, unpin, drop the
 // child's root — deterministically.
 //
-//   window 0, between the read-only refs walk and the stamps: the pin finds
+//   window 0, between the read-only pin walk and the stamps: the pin finds
 //     the parent UNSTAMPED and takes object_pin's fast path, reporting
 //     nothing. The stamp that follows re-checks the parent's references,
-//     sees the young child and refuses the page. Without that re-check the
-//     page promotes and the next minor reclaims the child (under
+//     sees the young child and cards the parent. Without that re-check the
+//     page promotes uncarded and the next minor reclaims the child (under
 //     YAFL_GC_POISON its bytes become 0x42). FAILS.
 //   window 1, between the stamps and the old-claim: the pin finds the parent
-//     STAMPED and reports the write (page mark + thread flag). The old-claim
-//     consumes the mark and parks the page as dirty_old, force-marked every
-//     cycle. Without the report, the page promotes unseen. FAILS.
+//     STAMPED and cards it itself (card + page flag + thread flag). The page
+//     promotes carded, and every minor traces the card. Without the card,
+//     the page promotes unseen. FAILS.
 //
 // Same manual-mode scaffolding as test_gc_gen.c: small heap so the promotion
 // volume is a couple of filler batches, 8 KB objects so pages are never
@@ -183,9 +183,9 @@ static void _entrypoint(object_t* self, fun_t cont) {
     printf("test_gc_late_pin_race: write landed in the window after %d cycles\n", cycles);
 
     // The next minor is the one that reclaims C if the protocol is broken:
-    // C's root is gone, C is young, and P's page just joined (or was demoted
-    // from joining) the old generation. Then a few more for good measure —
-    // C must stay traced until P's page legitimately promotes with C old.
+    // C's root is gone, C is young, and P's page just joined the old
+    // generation, P carded. Then a few more for good measure — C must stay
+    // traced through P's card until C is old too.
     for (int i = 0; i < 4; ++i) {
         churn_filler();
         scrub();

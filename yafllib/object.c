@@ -20,9 +20,9 @@
 // disables compaction entirely) because the band it does NOT cover is where
 // the resident heap sits — a self-compile censuses ~44% of its in-use bytes as
 // live, i.e. most pages sit above this threshold and keep their dead slots
-// forever, and old-generation pages are never even offered to the evacuator
-// (prune walks survivors, and old pages are not in that list) until a major
-// demotes them.
+// forever, and old-generation pages are never offered to the evacuator at
+// all (prune walks survivors; old pages are not in that list, and a major's
+// prune skips them: see gc_compact_page).
 #define COMPACT_THRESHOLD_PERCENT   33
 #define REPROCESS_PAGE_COUNT        16
 
@@ -145,11 +145,6 @@ static unsigned gc_compact_percent = COMPACT_THRESHOLD_PERCENT;
 #define GC_SCAVENGE_RETAIN_FLOOR  256   // pages (4 MiB) of warm slack always kept
 #define GC_SCAVENGE_BUDGET        1024  // max pages returned per cycle
 
-// Cap on the refs_are_old re-walk backoff (see page_head.refs_backoff): a
-// permanently blocked page costs one full page walk per cap+1 prunes instead
-// of one per prune; an honestly blocked page graduates at most this many
-// cycles late, during which it remains a force-marked dirty root (sound).
-#define GC_REFS_BACKOFF_CAP       64
 
 // --- Debug toggles (all off by default) --------------------------------------
 //
@@ -174,7 +169,7 @@ bool gc_poison_enabled = false;
 bool gc_stats_enabled  = false;
 // YAFL_GC_GEN=0 disables the generational machinery (default ON). Gated at a
 // single point — page promotion — so with it off no page ever becomes old and
-// the skip paths, dirty-old handling and major trigger are all inert.
+// the skip paths, cards and major trigger are all inert.
 static bool gc_gen_enabled    = true;
 static size_t gc_promote_floor;   // defined with the generations (GC_PROMOTE_FLOOR_DEFAULT)
 static void gc_read_config(void) {
@@ -539,32 +534,45 @@ alignas(CACHE_LINE_SIZE) list_element_t pages_to_prune = {&pages_to_prune, &page
 
 // --- Generations (immutability-based) ----------------------------------------
 //
-// In a pure language an immutable object's referents are allocated before it,
-// and pages promote by age, so an old immutable page can never reference a
-// young object — there is no remembered set to keep. Promotion is VOLUME
-// based: an immutable single page moves to `old_pages` once it has stayed
-// stable (no deaths at any prune) across at least two dwell windows' worth
-// of allocation — the young heap turning over twice. A cycle-count criterion
-// is meaningless across cycle-length regimes: with short cycles it promoted
-// mid-life churn wholesale (yspell accreted ~190 MiB of dirty pages whose
-// garbage the force-mark then froze). Promoted pages leave the scan/prune
-// rotation entirely, and every mark source skips them: minor cycles trace
-// only young pages plus the (small) mutable set. Old garbage is reclaimed by
-// MAJOR cycles, which pull `old_pages` back into the rotation and run an
-// ordinary full trace; a major is triggered when the old generation has
-// doubled since the last one (with a floor, so small programs never bother).
-// Compacted pages never promote — their forwarders point at YOUNG copies,
-// which the old-skip would lose.
+// OLD STAYS OLD. An immutable single page moves to the old generation once
+// it has stayed stable (no deaths at any prune) across the promotion VOLUME of
+// allocation, and never leaves it. Old pages leave the scan/prune rotation,
+// and every mark source skips them: a minor cycle traces only young pages,
+// the (small) mutable set, and the CARDED old objects.
+//
+// THE INVARIANT: an old object points only at old objects (or within its own
+// page), unless its CARD bit is set (page_head.cards). An immutable object's
+// referents are allocated before it, so most promote first; the exceptions
+// are referents that never promote (mutable objects, compacted copies) and
+// late writes (write-once slots filled under a late pin). Promotion cards
+// every object that still points at something young; a late pin into an old
+// object cards it (object_pin_note_old). A minor traces every carded object's
+// fields as roots, at the end of SCAN_ROOTS (gc_collect_cards), and clears a
+// card once everything its object holds is old. Old pages with cards sit on
+// `carded_pages`, the rest on `old_pages`, so a minor walks only the former.
+//
+// Old garbage is reclaimed by MAJOR cycles, which take both lists into the
+// rotation for an ordinary full trace and return every surviving page to
+// old at its prune; a major is triggered when the old generation has doubled
+// since the last one (with a floor, so small programs never bother). An old
+// page is never compacted: its referrers are old, and a minor would never
+// rewrite them past the forwarders. Compacted pages never promote, for the
+// same reason.
+//
+// A cycle-count criterion for promotion is meaningless across cycle-length
+// regimes: with short cycles it promoted mid-life churn wholesale (yspell
+// accreted ~190 MiB of garbage on old pages), so promotion is by volume.
 #define GC_MAJOR_FLOOR   256   // pages: no majors until the old gen reaches this
-alignas(CACHE_LINE_SIZE) list_element_t old_pages = {&old_pages, &old_pages};
+alignas(CACHE_LINE_SIZE) list_element_t old_pages    = {&old_pages, &old_pages};
+alignas(CACHE_LINE_SIZE) list_element_t carded_pages = {&carded_pages, &carded_pages};
 _Atomic(uint64_t) gc_alloc_clock = 0; // cumulative pages ever allocated
 // PROMOTION VOLUME: pages of allocation a page must stay stable across to
 // promote. Steered by MISTAKES, not guessed from the young generation's size
 // (8x young survivors fed back on itself when cycles were long: a big young
 // generation raised the volume, which kept pages young longer, which grew the
 // young generation — 110k pages on the self-compile). A mistake is an old page
-// forced back: a late write demoting it (redirty), or a major's re-trace
-// finding deaths on it (it was promoted while still churning). Too many
+// on which a major's trace finds deaths: it was promoted while still
+// churning. Too many
 // mistakes per promotion doubles the volume; almost none halves it, down to a
 // conservative constant floor (YAFL_GC_PROMOTE_FLOOR).
 #define GC_PROMOTE_FLOOR_DEFAULT 4096   // pages (64 MiB of allocation)
@@ -576,8 +584,8 @@ static inline void gc_promote_mistake(void) {
     atomic_fetch_add_explicit(&gc_promote_window_mistakes, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&gc_promote_mistakes_total, 1, memory_order_relaxed);
 }
-_Atomic(size_t) gc_old_page_count   = 0;
-_Atomic(size_t) gc_dirty_old_count  = 0;   // diagnostic: dirty-old pages this cycle
+_Atomic(size_t) gc_old_page_count    = 0;   // old pages, carded or not
+_Atomic(size_t) gc_carded_page_count = 0;   // diagnostic: old pages on carded_pages
 static size_t gc_old_baseline   = 0;     // old-gen size right after the last major
 static bool   gc_major_cycle    = false; // current cycle includes the old generation
 static bool   gc_major_request  = false; // debug: force the next cycle major
@@ -1077,16 +1085,19 @@ EXPORT bool array_builder_seal(object_t *arr, int32_t length) {
 // is its slow half.
 
 // Raised at a root scan that finds the thread's `old_writes` up, so the end of
-// SCAN_ROOTS knows whether the old-generation walk is worth doing at all.
-// Without it every cycle would pay a list traversal of the whole old
-// generation (12k+ pages on a self-compile) to discover nothing.
-static _Atomic(bool) gc_redirty_requested = false;
+// SCAN_ROOTS knows whether the walk of `old_pages` for newly flagged pages is
+// worth doing at all. Without it every cycle would pay a list traversal of
+// the whole old generation (12k+ pages on a self-compile) to discover nothing.
+static _Atomic(bool) gc_cards_requested = false;
 
-// A won late pin on a STAMPED object (object_pin_owed, yafl.h): mark the page
-// and this thread for the next root scan.
+// A won late pin on a STAMPED object (object_pin_owed, yafl.h): card it, and
+// flag its page and this thread for the next root scan. Under the pin and
+// before the store, so the collector's clear-and-recheck (gc_card_object)
+// either sees the pin or sees the store.
 EXPORT void object_pin_note_old(object_t* o) {
     gc_page_t *page = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-    atomic_store_explicit(&page->head.redirty, true, memory_order_relaxed);
+    atomic_bitmap_fetch_set(&page->head.cards, (unsigned)((slot_t*)o - page->slots));
+    atomic_store_explicit(&page->head.carded, true, memory_order_release);
     gc_alloc_tl.old_writes = true;
 }
 
@@ -1231,18 +1242,15 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // Don't compact these types of pages.
     if (page->head.mutable || page->head.pages > 1)
         return;
-    // Nor a DIRTY-OLD page. Old pages may point into one (gc_object_refs_are_old
-    // accepts it), and a minor cycle does not trace them: their fields would
+    // Nor an OLD page, in a major's rotation (the only time one is pruned).
+    // Its referrers are old, and no minor traces them: their fields would
     // keep the forwarders' addresses, nothing would record that those
     // forwarders are still needed, and their slots would be reclaimed and
-    // reused under the old referrers. A dirty page's force-mark keeps every
-    // object it holds, but that does not stop it being SPARSE: a page that
-    // promoted sparse (a conservative reference pinned it against compaction
-    // while it aged) stays sparse (test_gc_dirty_compact). A MAJOR clears the
-    // flag before its prune and has demoted every old referrer, which its
-    // trace reaches while young and fixes up through the forwarding, so there
-    // the page is compacted like any other.
-    if (page->head.dirty_old)
+    // reused under the old referrers. (A YOUNG page that old objects point
+    // into compacts like any other: those objects are carded, so every minor
+    // traces their fields, rewriting them past the forwarders —
+    // test_gc_card_compact.)
+    if (page->head.was_old)
         return;
 
     // Don't compact pages with too many objects. This test is faster than counting up
@@ -1544,26 +1552,22 @@ static void gc_validate_old_edge(gc_page_t *page, object_t *object,
     unsigned slot = (unsigned)(((uintptr_t)child - (uintptr_t)cp->slots) / GC_SLOT_SIZE);
     bool live = (uintptr_t)child >= (uintptr_t)cp->slots
              && bitmap_test(&cp->head.objects, slot);
-    if (live && (cp == page || cp->head.old || cp->head.dirty_old)) return;
+    if (live && (cp == page || cp->head.old)) return;
     if (live && vtable_is_forward(child->vtable)) return;
-    if (atomic_load_explicit(&page->head.redirty, memory_order_relaxed)) return;
     if (!live) fprintf(stderr, "[VALIDATE_OLD] DEAD TARGET (slot bit clear)\n");
     fprintf(stderr, "[VALIDATE_OLD] cycle=%llu old page %p obj %p -> child %p "
-            "on page %p (old=%d dirty=%d compacted=%d mutable=%d redirty=%d) "
+            "on page %p (old=%d compacted=%d mutable=%d) "
             "child vtable word=%p forward=%d\n",
             (unsigned long long)atomic_load(&gc_cycle_count),
             (void*)page, (void*)object, (void*)child, (void*)cp,
-            cp->head.old, cp->head.dirty_old, cp->head.compacted,
-            cp->head.mutable,
-            (int)atomic_load_explicit(&cp->head.redirty, memory_order_relaxed),
+            cp->head.old, cp->head.compacted, cp->head.mutable,
             (void*)child->vtable, (int)vtable_is_forward(child->vtable));
     fflush(stderr);
     abort();
 }
 
-static void gc_validate_old_pages(void) {
-    gc_pool_lock();
-    for (list_element_t *node = old_pages.next; node != &old_pages; node = node->next) {
+static void gc_validate_old_list(list_element_t *list) {
+    for (list_element_t *node = list->next; node != list; node = node->next) {
         gc_page_t *page = (gc_page_t*)node;
         for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
             mask_bits_t bits = page->head.objects.a[index];
@@ -1582,6 +1586,10 @@ static void gc_validate_old_pages(void) {
                     fflush(stderr);
                     abort();
                 }
+                // A carded object may point at young ones (that is what the
+                // card says); a pinned one is mid-write, its card set first.
+                if (bitmap_test(&page->head.cards, slot) || vtable_is_pinned(object->vtable))
+                    continue;
                 vtable_t *vt = vtable_untag(object->vtable);
                 GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
                 while (m) {
@@ -1602,43 +1610,114 @@ static void gc_validate_old_pages(void) {
             }
         }
     }
+}
+
+static void gc_validate_old_pages(void) {
+    gc_pool_lock();
+    gc_validate_old_list(&old_pages);
+    gc_validate_old_list(&carded_pages);
     gc_pool_unlock();
 }
 #endif
 
-// Pages a late write touched while they were `old` (object_pin, yafl.h):
-// return them to the rotation, so the young objects those writes installed
-// are traced. Marked dirty_old rather than merely young, because the referent
-// is young by definition and the page must be force-marked as a root until it
-// has caught up. Gated on the global, which a root scan raises only for a
-// thread that made such a write, so the common case costs one atomic read.
+// Mark what a carded object's fields hold, through the fields: a referent
+// that compaction moved is followed, and the field rewritten to its copy.
+static void gc_trace_carded_fields(object_t *object, vtable_t *vt) {
+    GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
+    while (m) {
+        unsigned i = __builtin_ctzll(m); m &= m - 1;
+        atomic_gc_object_seen_by_field(&slots[i]);
+    }
+    if (vt->array_el_pointer_locations) {
+        uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
+        char *array = ((char*)object) + vt->object_size;
+        for (; len-- > 0; array += vt->array_el_size) {
+            ptr_mask_t am = vt->array_el_pointer_locations;
+            while (am) {
+                unsigned i = __builtin_ctzll(am); am &= am - 1;
+                atomic_gc_object_seen_by_field(&((object_t**)array)[i]);
+            }
+        }
+    }
+}
+
+static bool gc_object_refs_are_old(gc_page_t *page, object_t *object, vtable_t *vt);
+
+// One card: trace the object's fields, then keep the card only while the
+// object still holds something young. CLEAR FIRST, then re-check: a late pin
+// sets the card under the pin and before its store (object_pin_note_old), so
+// either its card lands after the clear, or the re-check reads the pin or —
+// past the unpin's release — the store. Returns whether the card stays.
+static bool gc_card_object(gc_page_t *page, unsigned slot) {
+    mask_bits_t bit = (mask_bits_t)1 << (slot % GC_MASK_SIZE);
+    atomic_fetch_and_explicit((_Atomic(mask_bits_t)*)&page->head.cards.a[slot / GC_MASK_SIZE],
+                              ~bit, memory_order_seq_cst);
+    if (!bitmap_test(&page->head.objects, slot))
+        return false;                        // died (a major's prune left the bit)
+    object_t *object = (object_t*)&page->slots[slot];
+    uintptr_t word = __atomic_load_n((uintptr_t*)&object->vtable, __ATOMIC_ACQUIRE);
+    vtable_t *vt = vtable_untag((vtable_t*)word);
+    gc_trace_carded_fields(object, vt);
+    if (!vtable_is_pinned((vtable_t*)word) && gc_object_refs_are_old(page, object, vt))
+        return false;
+    atomic_fetch_or_explicit((_Atomic(mask_bits_t)*)&page->head.cards.a[slot / GC_MASK_SIZE],
+                             bit, memory_order_relaxed);
+    return true;
+}
+
+// The CARDS, at the end of SCAN_ROOTS (see the generations comment). First
+// the old pages a late pin flagged since the last scan join `carded_pages` —
+// a walk of `old_pages` only when some thread's root scan raised the request,
+// so the common case costs one atomic read. Then every carded object's fields
+// are traced, and a page left with no cards goes back to `old_pages`.
 //
-// Runs at the end of SCAN_ROOTS, before the dirty_old force-mark. Every
-// writer's root scan precedes it, so every late write made before its
-// writer's scan is seen here and traced by the cycle in flight — which is
-// what the ragged snapshot needs: an `old` page is not traced, and the writer
-// may have dropped the value since. A write after its writer's scan needs
-// nothing this cycle (the writer held the value at the scan, or it was born
-// marked); its thread's flag waits for the next cycle's scan.
-static void gc_demote_redirtied(void) {
-    if (UNLIKELY(atomic_exchange_explicit(&gc_redirty_requested, false,
+// Every writer's root scan precedes this, so every late write made before its
+// writer's scan is traced by the cycle in flight — which is what the ragged
+// snapshot needs: an old page is not traced, and the writer may have dropped
+// the value since. A write after its writer's scan needs nothing this cycle
+// (the writer held the value at the scan, or it was born marked); its
+// thread's flag waits for the next cycle's scan.
+//
+// A minor only: a major has taken both lists into its rotation, where every
+// object is traced anyway, and its prune returns each page to the right list.
+static void gc_collect_cards(void) {
+    if (UNLIKELY(atomic_exchange_explicit(&gc_cards_requested, false,
                                           memory_order_acquire))) {
         gc_pool_lock();
         for (list_element_t *node = old_pages.next; node != &old_pages; ) {
             gc_page_t *p = (gc_page_t*)node;
             node = node->next;               // saved: the unlink below clears it
-            if (!atomic_exchange_explicit(&p->head.redirty, false,
-                                          memory_order_relaxed))
+            if (!atomic_exchange_explicit(&p->head.carded, false, memory_order_acquire))
                 continue;
-            p->head.old       = false;
-            p->head.dirty_old = true;
-            p->head.refs_defer = p->head.refs_backoff = 0;
-            gc_promote_mistake();            // forced back by a late write
             list_unlink((list_element_t*)&p->head.list);
-            list_link(&pages_to_scan, (list_element_t*)&p->head.list);
-            atomic_fetch_sub_explicit(&gc_old_page_count, 1, memory_order_relaxed);
+            list_link(&carded_pages, (list_element_t*)&p->head.list);
+            gc_carded_page_count += 1;
         }
         gc_pool_unlock();
+    }
+    for (list_element_t *node = carded_pages.next; node != &carded_pages; ) {
+        gc_page_t *p = (gc_page_t*)node;
+        node = node->next;
+        // Cleared before the cards are read: a pin that sets one after this
+        // read flags the page again, and its thread's next scan finds it.
+        atomic_store_explicit(&p->head.carded, false, memory_order_seq_cst);
+        bool any = false;
+        for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
+            mask_bits_t bits = atomic_load_explicit((_Atomic(mask_bits_t)*)&p->head.cards.a[index],
+                                                    memory_order_acquire);
+            while (bits) {
+                unsigned slot = __builtin_ctzll(bits) + index * GC_MASK_SIZE;
+                bits &= bits - 1;
+                any |= gc_card_object(p, slot);
+            }
+        }
+        if (!any) {
+            gc_pool_lock();
+            list_unlink((list_element_t*)&p->head.list);
+            list_link(&old_pages, (list_element_t*)&p->head.list);
+            gc_carded_page_count -= 1;
+            gc_pool_unlock();
+        }
     }
 }
 
@@ -1647,12 +1726,11 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
         epoch = 1;
 
 #ifdef YAFL_GC_VALIDATE_OLD
-    // Diagnostic (test builds only): the old-generation purity invariant,
-    // checked at every cycle start. Every outgoing reference of every object
-    // on a fully-OLD page must land on an old, dirty-old, or non-heap target
-    // — except when the source page's redirty flag is up, which is a late
-    // write's pending demotion (at the end of the next SCAN_ROOTS). An
-    // old->young edge with no flag is the state that lets a minor reclaim a
+    // Diagnostic (test builds only): the old-generation invariant, checked
+    // at every cycle start. Every outgoing reference of every object on an
+    // old page must land on an old or non-heap target, unless the object is
+    // carded (or pinned: a late write sets its card under the pin). An
+    // old->young edge with no card is the state that lets a minor reclaim a
     // live object; catching it here names the breaking cycle instead of the
     // crash a hundred cycles later.
     gc_validate_old_pages();
@@ -1660,13 +1738,8 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
 
     // Major-cycle decision: collect the old generation when it has doubled
     // since the last major (floored), under heap pressure, or on request.
-    // The generation's size INCLUDES dirty-old pages: they are retained old
-    // data that merely hasn't graduated to fully-exempt yet. Counting only
-    // the clean set creates a feedback loop — a major demotes everything,
-    // re-promotion lands in dirty, the baseline records ~zero, and the next
-    // promotion wave immediately re-triggers a major, forever.
     {
-        size_t old_total = gc_old_page_count + gc_dirty_old_count;
+        size_t old_total = gc_old_page_count;
         size_t pressure  = memory_total_pages() / 2;
         size_t doubled   = gc_old_baseline * 2;
         gc_major_cycle = gc_major_request
@@ -1674,16 +1747,21 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_start() {
             || (pressure != 0 && memory_count() > pressure);
         gc_major_request = false;
         if (gc_major_cycle) {
-            // Demote the whole old generation into this cycle's rotation.
+            // Take the whole old generation into this cycle's rotation, to be
+            // traced like any page; its prune returns each survivor to old.
             // Flags are cleared BEFORE gc_write_barrier_requested goes up, so
             // no mark source can observe old=true on a page that is back in
             // the rotation and skip a mark it owes.
-            for (list_element_t *node = old_pages.next; node != &old_pages; node = node->next) {
-                ((gc_page_t*)node)->head.old = false;
-                ((gc_page_t*)node)->head.was_old = true;   // judged at its next prune
-            }
+            for (list_element_t *list = &old_pages; list != NULL;
+                 list = list == &old_pages ? &carded_pages : NULL)
+                for (list_element_t *node = list->next; node != list; node = node->next) {
+                    ((gc_page_t*)node)->head.old = false;
+                    ((gc_page_t*)node)->head.was_old = true;
+                }
             list_move(&pages_to_scan, &old_pages);
+            list_move(&pages_to_scan, &carded_pages);
             gc_old_page_count = 0;
+            gc_carded_page_count = 0;
         }
     }
 
@@ -1811,12 +1889,12 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
         gc_grey_flush(thread);   // the hybrid barrier's last pending store
         list_move(&pages_to_scan, &thread->new_pages);
         // Late writes into stamped objects since the last scan (object_pin):
-        // the end of SCAN_ROOTS demotes the old pages they marked. The thread
-        // is held at its safe point or suspended, so its flag and the page
-        // marks it made before are all visible here.
+        // the end of SCAN_ROOTS collects the pages they flagged. The thread is
+        // held at its safe point or suspended, so its flag and the cards it
+        // set before are all visible here.
         if (thread->alloc->old_writes) {
             thread->alloc->old_writes = false;
-            atomic_store_explicit(&gc_redirty_requested, true, memory_order_release);
+            atomic_store_explicit(&gc_cards_requested, true, memory_order_release);
         }
         thread->alloc->region_immutable.base = thread->alloc->region_mutable.base = NULL;
         thread->alloc->region_immutable.bump = thread->alloc->region_mutable.bump = NULL;
@@ -1849,36 +1927,10 @@ static NOINLINE_DEBUG enum gc_stage gc_fsa_scan_roots() {
     // pass present, the whole suite (and 20-run pressure soaks) is green
     // without it.
 
-    // Dirty-old pages (aged, but still referencing young pages) are roots: mark
-    // every live object on them so their young targets get traced this cycle.
-    // They are never pruned (fully seen), and prune graduates them to fully-
-    // exempt `old` once all their targets have promoted.
-    //
-    // In a MAJOR cycle, demote them instead: the force-mark retains every
-    // dead object on a dirty page, and a major that only demotes the clean
-    // old list leaves that garbage immortal — under churn whose objects live
-    // a few cycles (long enough to age, then die) dirty pages accumulate
-    // until they fill the heap (observed: yspell held 9k+ dead dirty pages;
-    // test_gc_pressure aborts a 64 MiB heap). Demoted pages are traced from
-    // real roots like any other page and re-promote through prune if still
-    // genuinely live. They are still COUNTED this cycle: the end-of-major
-    // baseline must reflect the set that existed before collection, else the
-    // doubling trigger re-arms at the floor and majors thrash.
-    gc_demote_redirtied();   // late writes made before their writer's scan
-    gc_dirty_old_count = 0;
-    for (list_element_t *node = pages_to_scan.next; node != &pages_to_scan; node = node->next) {
-        gc_page_t *page = (gc_page_t*)node;
-        if (page->head.dirty_old) {
-            gc_dirty_old_count += 1;
-            if (gc_major_cycle) {
-                page->head.dirty_old = false;
-                page->head.refs_defer = page->head.refs_backoff = 0;
-            } else {
-                for (unsigned i = 0; i < sizeof(bitmap_t)/sizeof(mask_bits_t); ++i)
-                    page->head.scanner.seen.a[i] |= page->head.objects.a[i];
-            }
-        }
-    }
+    // The carded old objects are roots of a minor (late writes made before
+    // their writer's scan among them).
+    if (!gc_major_cycle)
+        gc_collect_cards();
 
     if (list_empty(&pages_to_scan)) {   // instrumented assert (P1 debugging)
         fprintf(stderr, "[SCAN_ROOTS EMPTY] cycle=%llu epoch=%u in_flight=%d executors=%d prune_empty=%d in_use=%zu\n",
@@ -2610,17 +2662,11 @@ bool gc_test_page_done(void *page) {   // processed this epoch, and nothing left
 
 
 
-
-// May this object, on `page`, join the old generation? Only if every outgoing
-// reference lands on an OLD page (or this page itself). This CHECKS the purity
-// invariant rather than assuming it, because compaction breaks the
-// assumption: relocated objects' copies land on fresh YOUNG pages, so a
-// referrer that promoted on age alone could hold old->young edges — which
-// minors, skipping old pages, would never trace, and prune would free the
-// young side. References point down in age, so promotion converges bottom-up:
-// referents promote first, referrers follow a cycle later. An object
-// referencing anything MUTABLE (never old) is permanently blocked — correct,
-// since its targets must stay traced every cycle.
+// Does `object` hold anything young? A reference is old enough if it points
+// within this page (promoted together) or to an old page, or to one a major
+// has in its rotation (was_old): its prune returns it to old. Anything else —
+// a young page, a compacted page's forwarder, a mutable object, which never
+// promotes — means the object, if old, needs its card.
 static bool gc_object_refs_are_old(gc_page_t *page, object_t *object, vtable_t *vt) {
     GC_FOR_EACH_PTR_WINDOW(vt, object, m, slots)
     while (m) {
@@ -2628,16 +2674,7 @@ static bool gc_object_refs_are_old(gc_page_t *page, object_t *object, vtable_t *
         object_t *child = gc_ref(slots[i]);
         if (!gc_object_is_on_heap_fast(child)) continue;
         gc_page_t *cp = (gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1));
-        // A reference is acceptable if it points within this page, or to a
-        // page that is either fully old or dirty-old. Dirty-old counts: such a
-        // page is force-marked as a root on every minor collection, so
-        // everything it references is traced no matter who points at it. If
-        // we instead demanded the target be fully old, two aged pages that
-        // reference each other could never promote — neither can become old
-        // before the other already is. (That circular wait once left ~2,200
-        // pages permanently stuck as dirty: a settled dictionary whose tree
-        // pages all point at one another.)
-        if (cp != page && !cp->head.old && !cp->head.dirty_old) return false;
+        if (cp != page && !cp->head.old && !cp->head.was_old) return false;
     }
     if (vt->array_el_pointer_locations) {
         uint32_t len = *(uint32_t*)&((char*)object)[vt->array_len_offset];
@@ -2649,26 +2686,22 @@ static bool gc_object_refs_are_old(gc_page_t *page, object_t *object, vtable_t *
                 object_t *child = gc_ref(((object_t**)array)[i]);
                 if (!gc_object_is_on_heap_fast(child)) continue;
                 gc_page_t *cp = (gc_page_t*)((uintptr_t)child &~ (uintptr_t)(GC_PAGE_SIZE-1));
-                // Same acceptance rule as the object-field branch above.
-                if (cp != page && !cp->head.old && !cp->head.dirty_old) return false;
+                if (cp != page && !cp->head.old && !cp->head.was_old) return false;
             }
         }
     }
     return true;
 }
 
-// The same question for the whole page: read-only, so the common refusal
-// leaves no trace on the page's objects.
-//
-// A PINNED object is mid-mutation (a ListBuilder tail whose `next` is still to
-// be written, or a late pin publishing a write-once slot): its fields can
-// acquire YOUNG references after this walk — promoting the page would hide
-// those young targets from every minor cycle and prune would free them while
-// the structure is live (the -O3 self-compile ChainLink dangle). So block
-// promotion while any pin is present; a later prune re-walks and promotes
-// normally. This walk alone is check-then-act — a late pin can land on an
-// object it has already passed — which gc_page_stamp_old closes.
-static bool gc_page_refs_are_old(gc_page_t *page) {
+// Is any object on the page PINNED? Read-only, so the refusal leaves no trace
+// on the page's objects. A pinned object is mid-mutation (a builder's array or
+// tail, filled across safe points by stores that owe no card, or a late pin
+// publishing a write-once slot): its fields can acquire YOUNG references after
+// promotion has looked, and nothing would card them. So a page with a pin
+// waits; a later prune tries again. This walk alone is check-then-act — a late
+// pin can land on an object it has already passed — which gc_page_stamp_old
+// closes.
+static bool gc_page_has_pins(gc_page_t *page) {
     for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
         mask_bits_t bits = page->head.objects.a[index];
         unsigned  offset = index * GC_MASK_SIZE;
@@ -2676,26 +2709,24 @@ static bool gc_page_refs_are_old(gc_page_t *page) {
             unsigned slot = __builtin_ctzll(bits) + offset;
             bits &= bits-1;
             object_t *object = (object_t*)&page->slots[slot];
-            vtable_t *word = object->vtable;
-            if (vtable_is_pinned(word))
-                return false;
-            // Non-compacted page: the vtable word is a real vtable.
-            if (!gc_object_refs_are_old(page, object, vtable_untag(word)))
-                return false;
+            if (vtable_is_pinned(object->vtable))
+                return true;
         }
     }
-    return true;
+    return false;
 }
 
-// Stamp every object of a page that has just passed gc_page_refs_are_old
-// (VTABLE_OLD_BIT), re-checking each one's references after its stamp: the
-// promoter's half of the late pin's protocol (object_pin, yafl.h). The stamp
-// is an atomic OR on the very word a late pin CASes, so the two are ordered:
-// a pin that won before the stamp is either still held — refusal — or has
-// released, and the stamp's acquire then makes its write visible to the
-// re-check, which refuses a young referent. A pin after the stamp sees it and
-// reports its write. False refuses the page; stamps already made stay, which
-// costs a later pin on those objects its report, never correctness.
+// Stamp every object of a page that has just passed gc_page_has_pins
+// (VTABLE_OLD_BIT), and card each that, read after its stamp, holds anything
+// young: the promoter's half of the late pin's protocol (object_pin, yafl.h).
+// The stamp is an atomic OR on the very word a late pin CASes, so the two are
+// ordered: a pin that won before the stamp is either still held — refusal —
+// or has released, and the stamp's acquire then makes its write visible to
+// the check, which cards the object for a young referent. A pin after the
+// stamp sees it and cards the object itself. The cards start clear: what a
+// stale stamp's pin set before them is re-read. False refuses the page;
+// stamps already made stay, which costs a later pin on those objects a
+// needless card, never correctness.
 static bool gc_page_stamp_old(gc_page_t *page) {
 #ifdef YAFL_GC_RACE_PROBE
     // Test-only hook (tests/test_gc_late_pin_race.c): window 0, between the
@@ -2704,6 +2735,9 @@ static bool gc_page_stamp_old(gc_page_t *page) {
     { extern void gc_test_race_probe(gc_page_t*, int);
       gc_test_race_probe(page, 0); }
 #endif
+    for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index)
+        atomic_store_explicit((_Atomic(mask_bits_t)*)&page->head.cards.a[index], 0,
+                              memory_order_relaxed);
     for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
         mask_bits_t bits = page->head.objects.a[index];
         unsigned  offset = index * GC_MASK_SIZE;
@@ -2716,7 +2750,7 @@ static bool gc_page_stamp_old(gc_page_t *page) {
             if (prior & VTABLE_PIN_BIT)
                 return false;
             if (!gc_object_refs_are_old(page, object, vtable_untag((vtable_t*)prior)))
-                return false;
+                atomic_bitmap_fetch_set(&page->head.cards, slot);
         }
     }
     return true;
@@ -2764,7 +2798,9 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
         count += n;
         list_element_t survivors = {&survivors, &survivors};   // -> pages_to_scan
         list_element_t promoted  = {&promoted,  &promoted};    // -> old_pages
-        size_t batch_survivor_pages = 0, batch_survivor_slots = 0, batch_promoted = 0;
+        list_element_t promoted_carded = {&promoted_carded, &promoted_carded};   // -> carded_pages
+        size_t batch_survivor_pages = 0, batch_survivor_slots = 0, batch_promoted = 0,
+               batch_returned = 0, batch_carded = 0;
         for (unsigned bi = 0; bi < n; ++bi) {
         gc_page_t *page = batch[bi];
         assert(page->head.scanner.processed_by_epoch == epoch);
@@ -2838,10 +2874,9 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             // Byte-honest live count for the dwell threshold — sampled before
             // the bitmap overwrite (like the survey), but only ADDED below,
             // after the promotion decision: pages that leave the young
-            // rotation (old or dirty) must not count as young survivors, and
-            // that includes pages a major demoted and this same prune
-            // re-promoted — counting those once per major ballooned the
-            // threshold right back to the cap.
+            // rotation must not count as young survivors, and that includes
+            // the old pages a major's prune returns — counting those once
+            // per major ballooned the threshold right back to the cap.
             size_t page_live_slots = page->head.pages > 1
                 ? (size_t)page->head.pages * SLOTS_PER_PAGE
                 : gc_page_live_slots(page);
@@ -2857,58 +2892,55 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
             // reference still points into this page.
             page->head.scanner.pinned = false;
 
-            // Promotion: an immutable single page that keeps surviving leaves
-            // the rotation for the old generation. Compacted pages never
-            // promote — their forwarders point at YOUNG copies, which the
-            // old-skip would lose. Checked after gc_compact_page so a page
-            // compacted THIS cycle is excluded.
-            //
-            // Two-stage: if every outgoing reference already lands on an old
-            // page, the page becomes fully exempt (`old`). Otherwise it
-            // becomes DIRTY-old: still in the rotation, force-marked as a
-            // root each cycle (so its young targets stay traced — sound by
-            // construction), and re-checked here every prune until its
-            // targets have promoted too. Because the whole aged cohort
-            // promotes in one wave, the dirty set usually empties a cycle
-            // later — without this, full exemption would crawl one page-graph
-            // layer per cycle and never catch up on deep structures.
-            // Ageing requires STABILITY across allocation VOLUME, not cycle
-            // counts: a page promotes once it has stayed death-free across
-            // two dwell windows' worth of allocation (the young heap turning
-            // over twice). Any death resets the clock; the first prune only
-            // STARTS it (birth protection makes that prune force-stable, so
-            // it proves nothing). A cycle-count criterion promoted mid-life
-            // churn wholesale whenever cycles were short, and every
-            // allocation-frontier page when they were long — in both cases
-            // the dirty-old force-mark then froze the promoted pages' dead
-            // slots until a major (observed: ~190 MiB accreted on yspell).
-            // After a major's honest trace reveals deaths, the reset makes
-            // the demoted page re-earn the full volume before re-freezing.
+            // An OLD page back from a major's rotation returns to old: old
+            // stays old. Its dead objects are gone (they were struck above),
+            // and so are their cards. Deaths here mean it promoted while still
+            // churning: a promotion MISTAKE, which steers the volume.
             if (page->head.was_old) {
                 page->head.was_old = false;
-                if (!page_stable) gc_promote_mistake();   // promoted while churning
+                if (!page_stable) gc_promote_mistake();
+                for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
+                    atomic_fetch_and_explicit((_Atomic(mask_bits_t)*)&page->head.cards.a[i],
+                                              page->head.objects.a[i], memory_order_relaxed);
+                atomic_store_explicit(&page->head.carded, false, memory_order_relaxed);
+                page->head.old = true;
+                list_unlink((list_element_t*)&page->head.list);
+                if (bitmap_test_all(&page->head.cards)) {
+                    list_link(&promoted_carded, (list_element_t*)&page->head.list);
+                    batch_carded += 1;
+                } else {
+                    list_link(&promoted, (list_element_t*)&page->head.list);
+                }
+                batch_returned += 1;
             }
-            if (gc_gen_enabled
+            // Promotion: an immutable single page that keeps surviving leaves
+            // the rotation for the old generation, for good. Compacted pages
+            // never promote — their forwarders point at YOUNG copies, and an
+            // old page is never traced by a minor. Checked after
+            // gc_compact_page so a page compacted THIS cycle is excluded.
+            //
+            // Ageing requires STABILITY across allocation VOLUME, not cycle
+            // counts: a page promotes once it has stayed death-free across
+            // the promotion volume. Any death resets the clock; the first
+            // prune only STARTS it (birth protection makes that prune
+            // force-stable, so it proves nothing). A cycle-count criterion
+            // promoted mid-life churn wholesale whenever cycles were short,
+            // and every allocation-frontier page when they were long.
+            //
+            // An object still holding something young promotes CARDED (see
+            // gc_page_stamp_old), and a minor traces it until that referent
+            // is old too. Only a pin holds a page back.
+            else if (gc_gen_enabled
                     && !page->head.mutable && !page->head.compacted && page->head.pages == 1) {
                 uint64_t clock = atomic_load_explicit(&gc_alloc_clock, memory_order_relaxed);
                 if (!page_stable || page->head.stable_since == UINT64_MAX) {
                     if (UNLIKELY(gc_stats_enabled)) gc_prof_block_unstable++;
                     page->head.stable_since = clock;
-                    page->head.refs_defer = page->head.refs_backoff = 0;
                 }
                 if (gc_promote_volume != 0
                         && page->head.stable_since != clock
                         && clock - page->head.stable_since >= gc_promote_volume) {
-                    // The refs walk is a full object walk of the page; a page
-                    // that just failed it rarely passes the very next prune
-                    // (its targets graduate in waves, and a page referencing
-                    // anything mutable NEVER passes), so failures back off
-                    // exponentially. Deferred prunes are sound: the page
-                    // stays dirty-old, a force-marked root.
-                    if (page->head.refs_defer > 0) {
-                        page->head.refs_defer -= 1;
-                        if (UNLIKELY(gc_stats_enabled)) gc_prof_defer++;
-                    } else if (gc_page_refs_are_old(page) && gc_page_stamp_old(page)) {
+                    if (!gc_page_has_pins(page) && gc_page_stamp_old(page)) {
 #ifdef YAFL_GC_RACE_PROBE
                         // Test-only hook (tests/test_gc_late_pin_race.c),
                         // compiled into that target alone: window 1, between
@@ -2918,44 +2950,24 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                           gc_test_race_probe(page, 1); }
 #endif
                         // Every object is stamped, so a late write from here
-                        // on reports itself (object_pin): it marks the page
-                        // and its thread, and the thread's next root scan
-                        // demotes the page before that cycle marks. One that
-                        // has ALREADY marked the page is caught here instead,
-                        // and the page waits as dirty_old rather than
-                        // promoting and demoting at once. The exchange is an
-                        // RMW, so it reads the latest mark.
-                        if (atomic_exchange_explicit(&page->head.redirty, false,
-                                                     memory_order_relaxed)) {
-                            // A late write raced us (or landed on a stamp left
-                            // from an earlier life). Not a refusal, a
-                            // deferral: no backoff bump, the next prune
-                            // re-walks and promotes an untouched page normally.
-                            page->head.dirty_old = true;
-                            if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_dirty++;
+                        // on cards its object itself (object_pin).
+                        page->head.old = true;
+                        atomic_store_explicit(&page->head.carded, false, memory_order_relaxed);
+                        // No lock: the page sits on this batch's LOCAL
+                        // survivors chain — move it to a local promoted
+                        // chain; publication happens once, below.
+                        list_unlink((list_element_t*)&page->head.list);
+                        if (bitmap_test_all(&page->head.cards)) {
+                            if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_carded++;
+                            list_link(&promoted_carded, (list_element_t*)&page->head.list);
+                            batch_carded += 1;
                         } else {
                             if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_ok++;
-                            page->head.old = true;
-                            page->head.dirty_old = false;
-                            // Belt-and-braces: the only road back into the
-                            // rotation (major demotion) resets these anyway.
-                            page->head.refs_defer = page->head.refs_backoff = 0;
-                            // No lock: the page sits on this batch's LOCAL
-                            // survivors chain — move it to the local promoted
-                            // chain; publication happens once, below.
-                            list_unlink((list_element_t*)&page->head.list);
                             list_link(&promoted, (list_element_t*)&page->head.list);
-                            batch_promoted += 1;
                         }
-                    } else {
-                        if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_dirty++;
-                        page->head.dirty_old = true;
-                        uint8_t b = page->head.refs_backoff;
-                        b = b == 0 ? 1
-                            : b < GC_REFS_BACKOFF_CAP ? (uint8_t)(b * 2)
-                            : GC_REFS_BACKOFF_CAP;
-                        page->head.refs_backoff = b;
-                        page->head.refs_defer = b;
+                        batch_promoted += 1;
+                    } else if (UNLIKELY(gc_stats_enabled)) {
+                        gc_prof_promote_pinned++;
                     }
                 } else if (UNLIKELY(gc_stats_enabled) && page->head.stable_since != clock) {
                     gc_prof_block_volume++;
@@ -2975,7 +2987,7 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                 else if (page->head.compacted)  gc_prof_block_compacted++;
             }
             // Young survivor accounting (see comment above the sample site).
-            if (!page->head.old && !page->head.dirty_old)
+            if (!page->head.old)
                 batch_survivor_slots += page_live_slots;
             if (UNLIKELY(gc_stats_enabled)) gc_prof_t_prune_rest += gc_tsc() - _tp0;
         } else {
@@ -2987,10 +2999,12 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
         gc_pool_lock();
         list_move(&pages_to_scan, &survivors);
         list_move(&old_pages, &promoted);
+        list_move(&carded_pages, &promoted_carded);
         gc_pool_unlock();
         gc_cycle_survivors      += batch_survivor_pages;
         gc_cycle_survivor_slots += batch_survivor_slots;
-        gc_old_page_count       += batch_promoted;
+        gc_old_page_count       += batch_promoted + batch_returned;
+        gc_carded_page_count    += batch_carded;
         atomic_fetch_add_explicit(&gc_promote_window_promoted, batch_promoted, memory_order_relaxed);
         // Release in-flight only AFTER publication: a transition that sees
         // zero in-flight must also see every batch page on its final list.
@@ -3061,8 +3075,8 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
             yafl_heapprof_cycle_end(memory_count() * (size_t)GC_PAGE_SIZE,
                                     memory_total_pages() * (size_t)GC_PAGE_SIZE);
         if (UNLIKELY(gc_stats_enabled))
-            fprintf(stderr, "[GC CYCLE] survivors=%zu dirty=%zu old=%zu young=%zu promote_vol=%zu promote_mistakes=%llu in_use=%zu cons_seeds=%llu (pages)\n",
-                    gc_cycle_survivors, gc_dirty_old_count, gc_old_page_count,
+            fprintf(stderr, "[GC CYCLE] survivors=%zu old=%zu carded=%zu young=%zu promote_vol=%zu promote_mistakes=%llu in_use=%zu cons_seeds=%llu (pages)\n",
+                    gc_cycle_survivors, gc_old_page_count, gc_carded_page_count,
                     young, gc_promote_volume,
                     (unsigned long long)atomic_load(&gc_promote_mistakes_total),
                     memory_count(), (unsigned long long)atomic_load(&gc_stat_cons_seeds));
@@ -3083,7 +3097,7 @@ static NOINLINE_DEBUG void gc_fsa_prune_tail() {
         // rebuilt the old generation — record its size (clean AND dirty: the
         // bulk re-promotes through the dirty stage) as the doubling baseline.
         if (gc_major_cycle) {
-            gc_old_baseline = gc_old_page_count + gc_dirty_old_count;
+            gc_old_baseline = gc_old_page_count;
             gc_major_cycle  = false;
             GC_STAT_BUMP(gc_stat_majors);
         }
@@ -3309,7 +3323,17 @@ EXPORT int gc_debug_object_generation(object_t* o) {
     if (!o || (a & PTR_TAG_MASK) || (a & (GC_SLOT_SIZE - 1))) return -1;
     gc_page_t* pg = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE - 1));
     if (!memory_pages_is_alloc_head(pg) || pg->head.tag != PAGE_MAGIC_NUMBER) return -1;
-    return pg->head.old ? 1 : 0;
+    return pg->head.old || pg->head.was_old ? 1 : 0;   // was_old: old, in a major's rotation
+}
+
+// DEBUG: is this object CARDED? 1 yes, 0 no, -1 not a managed-heap object.
+EXPORT int gc_debug_object_carded(object_t* o) {
+    o = gc_ref(o);
+    uintptr_t a = (uintptr_t)o;
+    if (!o || (a & PTR_TAG_MASK) || (a & (GC_SLOT_SIZE - 1))) return -1;
+    gc_page_t* pg = (gc_page_t*)(a & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    if (!memory_pages_is_alloc_head(pg) || pg->head.tag != PAGE_MAGIC_NUMBER) return -1;
+    return bitmap_test(&pg->head.cards, (unsigned)((slot_t*)o - pg->slots)) ? 1 : 0;
 }
 
 // DEBUG: classify a heap pointer: 0 = not a managed-heap object slot,

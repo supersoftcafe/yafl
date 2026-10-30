@@ -609,22 +609,12 @@ typedef struct page_head {
     uint32_t   pages; // Number of pages, including this one, in the complete allocation
     bool     mutable; // Contains mutable objects.
     bool   compacted; // Don't compact again.
-    bool         old; // Promoted to the old generation: exempt from minor cycles.
-    _Atomic(bool) redirty; // A late pin wrote an OLD-stamped object on this
-                      // page. Set by the MUTATOR (object_pin); consumed at the
-                      // end of root scanning, which demotes an old page back
-                      // into the rotation (gc_demote_redirtied in object.c),
-                      // or by the promotion it raced.
-    bool   dirty_old; // Aged page still holding young references: exempt from
-                      // pruning, but force-marked as a root every cycle until
-                      // its targets promote (then it graduates to `old`).
-    uint8_t refs_defer;   // prunes left before re-walking gc_page_refs_are_old
-    uint8_t refs_backoff; // last defer length; doubles per failed walk up to
-                          // GC_REFS_BACKOFF_CAP, so permanently-blocked pages
-                          // stop costing a full object walk every prune.
-                          // Reset on instability and on major demotion. Sound
-                          // while deferred: the page stays dirty-old, i.e. a
-                          // force-marked root.
+    bool         old; // In the old generation, for good: exempt from minor
+                      // cycles, traced by a major and returned.
+    _Atomic(bool) carded; // A late pin set a card on this page (object_pin):
+                      // set by the MUTATOR, consumed at the end of root
+                      // scanning, which moves an old page onto the carded
+                      // list (gc_collect_cards in object.c).
     uint32_t compacted_cycle; // DIAGNOSTIC (stats builds read it): cycle at
                            // which this page was evacuated. A compacted page
                            // holds only forwarding stubs, so it should die
@@ -636,16 +626,21 @@ typedef struct page_head {
                            // mutator, or an old-generation referrer awaiting
                            // re-scan), and it is immortal until that reference
                            // dies. Age at death measures exactly that.
-    bool          was_old; // Demoted by a major cycle and not yet re-pruned:
-                           // deaths found at that prune mean its promotion was
-                           // premature (a promotion MISTAKE; see
-                           // gc_promote_volume). Sits in padding.
+    bool          was_old; // Old, and taken into a major's rotation: back to
+                           // old at its prune. Deaths found there mean its
+                           // promotion was premature (a promotion MISTAKE;
+                           // see gc_promote_volume). Sits in padding.
     uint64_t stable_since; // Allocation-clock reading (pages) at the last
                            // prune that found a death on this page — or
                            // UINT64_MAX before the first prune (a page's
                            // first prune is force-stable via birth
                            // protection, so it only STARTS the clock).
                            // Drives volume-based promotion.
+    bitmap_t cards;        // CARDS, by object start: an old object whose bit
+                           // is set may point at young objects, and every
+                           // minor traces its fields. Set by promotion and by
+                           // a late pin (any thread, atomically); cleared by
+                           // the collector once every referent is old.
 
 } __attribute__((aligned(GC_SLOT_SIZE))) page_head_t;
 
@@ -723,7 +718,7 @@ typedef struct {
     _Atomic(int_fast32_t) safe_point_request;   // GC_SAFE_POINT_* bits
     bump_pointers_t region_mutable;
     bump_pointers_t region_immutable;
-    // A late pin wrote an OLD-stamped object since this thread's last root
+    // A late pin carded an OLD-stamped object since this thread's last root
     // scan, which hands the news to the collector (see object_pin).
     bool old_writes;
 } gc_alloc_tl_t;
@@ -937,23 +932,26 @@ EXTERN void _gc_mark_as_seen2(object_t *object);
 // Returns the object actually pinned — the current copy if the collector moved
 // it — and callers write through that, never through their original.
 //
-// A reference written into an object on an OLD page must be reported, because
-// minor cycles skip old pages and would never trace the young referent. A
-// page's age is not in the object, but whether it MAY be old is: promotion
-// stamps every object of a page (VTABLE_OLD_BIT) before admitting it, one
-// atomic OR per object (gc_page_stamp_old, object.c), and refuses the page if
-// a stamp finds the pin held. So the pin's CAS and the stamp are ordered on the
-// one word:
+// A reference written into an OLD object must be reported, because minor
+// cycles skip old pages and would never trace the young referent. A page's
+// age is not in the object, but whether it MAY be old is: promotion stamps
+// every object of a page (VTABLE_OLD_BIT) before admitting it, one atomic OR
+// per object (gc_page_stamp_old, object.c), and refuses the page if a stamp
+// finds the pin held. So the pin's CAS and the stamp are ordered on the one
+// word:
 //   * the CAS wins on an UNSTAMPED word: the stamp comes later, finds the pin
 //     (refusal), or follows the unpin and reads the write when it re-checks
-//     the object's references (refusal again, the referent being young).
-//     Either way the page does not age with the write unseen: nothing owed.
-//   * the word is STAMPED: the page is old, about to be, or was once. Mark the
-//     page (`redirty`) and this thread (`old_writes`); the thread's next root
-//     scan raises the collector's flag, and the end of that SCAN_ROOTS demotes
-//     every marked old page before marking. That is soon enough: until the
-//     scan, the referent is live by this thread's own hold on it (or born
-//     marked), exactly as the ragged snapshot argues for any other store.
+//     the object's references (and cards the object if one is young). Either
+//     way the page does not age with the write unseen: nothing owed.
+//   * the word is STAMPED: the object is old, or about to be. Set its CARD,
+//     and flag its page (`carded`) and this thread (`old_writes`), all before
+//     the store: the collector clears a card only to re-check the object, and
+//     re-sets it while the object is pinned or holds a young referent. The
+//     thread's next root scan raises the collector's flag, and the end of that
+//     SCAN_ROOTS traces the carded objects before marking. That is soon
+//     enough: until the scan, the referent is live by this thread's own hold
+//     on it (or born marked), exactly as the ragged snapshot argues for any
+//     other store. The page stays old.
 // Statics and mutable objects are never stamped (their pages never promote),
 // so they owe nothing and need no test.
 //

@@ -361,12 +361,13 @@ EXPORT void gc_trace_explain(const char *label, const void *p) {
             label, p, (void*)page, slot,
             (unsigned long long)atomic_load(&gc_cycle_count), (unsigned)gc_trace_tid);
     fprintf(stderr, "          head: tag=%s pages=%u mutable=%d compacted=%d(cycle %u) old=%d "
-            "dirty_old=%d pinned=%d object-bit=%d word0=%p\n",
+            "carded=%d pinned=%d object-bit=%d card-bit=%d word0=%p\n",
             page->head.tag == PAGE_MAGIC_NUMBER ? "ok" : "BAD", page->head.pages,
             page->head.mutable, page->head.compacted, page->head.compacted_cycle,
-            page->head.old, page->head.dirty_old,
+            page->head.old, (int)atomic_load(&page->head.carded),
             page->head.scanner.pinned,
             in_slots ? (int)gc_trace_bit(&page->head.objects, (size_t)slot) : -1,
+            in_slots ? (int)gc_trace_bit(&page->head.cards, (size_t)slot) : -1,
             *(void**)p);
     if (!gc_trace_pages) return;
     size_t pi = (size_t)((char*)page - _memory_heap_base) / GC_PAGE_SIZE;
@@ -390,10 +391,10 @@ EXPORT void gc_trace_explain(const char *label, const void *p) {
 // (live data at the limit) can be told from a collector that stopped freeing.
 void gc_oom_report(FILE *out) {
     fprintf(out, "[GC OOM] heap pages used %zu of %zu; cycle %llu, stage %s; "
-            "old pages %zu, dirty-old %zu\n",
+            "old pages %zu (carded %zu)\n",
             memory_count(), memory_total_pages(),
             (unsigned long long)atomic_load(&gc_cycle_count),
             gc_stage_name(atomic_load(&stage)),
-            atomic_load(&gc_old_page_count), atomic_load(&gc_dirty_old_count));
+            atomic_load(&gc_old_page_count), atomic_load(&gc_carded_page_count));
     fflush(out);
 }
