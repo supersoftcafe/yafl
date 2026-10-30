@@ -280,7 +280,7 @@ fun createCCode(statements, mainName, optLevel,
     # biggest population of such stores, and because every RpObjectField must
     # already be in its final shape — including the pinnable wraps above,
     # which is what keeps [pinnable] objects out of the pass for free.
-    |> (a9pin) => timed("codegen", "fast_stores", () => (optLevel >= 1 ? markFastStores(a9pin) : a9pin))
+    |> (a9pin) => timed("codegen", "fast_stores", () => markFastStores(a9pin, optLevel >= 1))
     # Positional object field names, then the one per-function cleanup chain
     # (emission no longer runs it), so the merge below finds more equal code.
     |> (a9fast) => timed("codegen", "canonicalise", () => canonicaliseApp(a9fast, profile))

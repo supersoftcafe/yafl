@@ -143,6 +143,37 @@ class TestFastStores(TestCase):
         self.assertEqual([True, False], [op.target.fresh for op in marked
                                          if isinstance(op, Move) and isinstance(op.target, ObjectField)])
 
+    def test_a_construction_store_after_a_safe_point_loses_its_flag(self):
+        """Construction codegen marks its own stores fresh, but a later pass can
+        put a safe point between the allocation and a store — a deferred await
+        does exactly that, suspending mid-construction (the self-compile with
+        YAFL_LOCAL_GC=0: a PsDestructure built across an await, its list stored
+        barrier-free after the object had been marked, then reclaimed under
+        it). This pass is the authority: a fresh flag it cannot prove goes,
+        at every -O level, and at -O0 nothing is added."""
+        box = StackVar(DataPointer(), "$box")
+        def store(value: int, fresh: bool) -> Move:
+            return Move(ObjectField(Int(32), box, "Box", "v", None, fresh=fresh), Integer(value, 32))
+        ops = (NewObject("Box", box),
+               store(1, True),
+               store(2, False),
+               Move(StackVar(DataPointer(), "$discard"),
+                    RuntimeInvoke("task_init", NewStruct((("task", StackVar(DataPointer(), "$other")),)),
+                                  DataPointer())),
+               store(3, True),
+               ReturnVoid())
+        fn = Function(name="f", params=Struct((("this", DataPointer()),)), result=Void(),
+                      stack_vars=Struct((("$box", DataPointer()), ("$discard", DataPointer()),
+                                         ("$other", DataPointer()))),
+                      ops=ops)
+        def flags(app: Application) -> list[bool]:
+            return [op.target.fresh for op in app.functions["f"].ops
+                    if isinstance(op, Move) and isinstance(op.target, ObjectField)]
+        self.assertEqual([True, True, False],
+                         flags(mark_fast_stores(Application(functions={"f": fn}))))
+        self.assertEqual([True, False, False],
+                         flags(mark_fast_stores(Application(functions={"f": fn}), add=False)))
+
     def test_o0_is_unchanged(self):
         """The pass is gated at -O1; -O0 keeps today's codegen exactly."""
         body = _body(_emit(0), "Main__both")

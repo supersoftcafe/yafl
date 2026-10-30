@@ -13,6 +13,16 @@
 # immediately filled with that site's live set — paid a barrier on every
 # save. That was the bulk of the barriers in a self-compile.
 #
+# This pass is also the AUTHORITY on the flag. Construction emits its stores
+# straight-line after the allocation, but later passes can put a safe point
+# between them: a deferred await (defer_awaits) suspends mid-construction,
+# and the half-built object is then marked, or even promoted, before the rest
+# of its fields are stored. A store flagged fresh there skips the barrier its
+# value needed and the value is reclaimed under the object (the self-compile
+# with YAFL_LOCAL_GC=0: a PsDestructure's target list). So every flag this
+# pass cannot prove is CLEARED, at every -O level; -O0 only clears, -O1 and up
+# also set what it proves.
+#
 # THE DATAFLOW is a forward must-analysis run as a repeated LINEAR SWEEP
 # rather than over a built CFG: carry a fact set through the ops in order; a
 # jump to L intersects the carried fact into `arriving[L]`; a Label L starts
@@ -196,43 +206,58 @@ fun fsBottom(arr: Dict<String, Set<String>>): Dict<String, Set<String>>
 
 # ── the rewrite ─────────────────────────────────────────────────────────────
 
-fun markFastStores(a: CgApp)
-  ret appWithFunctions(a, powerMap(appFunctions(a), (f) => fsFunction(f)))
+# Decide `fresh` on every object store: a flag this pass cannot prove is
+# cleared, whoever set it; with `add`, every store it can prove is set.
+fun markFastStores(a: CgApp, add: Bool)
+  ret appWithFunctions(a, powerMap(appFunctions(a), (f) => fsFunction(f, add)))
 
-fun fsFunction(f: CgFunction)
+fun fsFunction(f: CgFunction, add: Bool)
   let universe = fsUniverse(f.fnOps)
-  if isEmpty(universe)
-    ret f                           # nothing this pass could ever prove
+  if isEmpty(universe) && !fsAnyFresh(f.fnOps)
+    ret f                           # nothing to prove, nothing to clear
   let arr = fsFixpoint(f.fnOps, universe, fsInitArriving(f.fnOps, universe), 1)
   ret cgFunctionWith(f,
-                     build(fsEmitLoop(seqStream(f.fnOps), universe, arr,
+                     build(fsEmitLoop(seqStream(f.fnOps), universe, arr, add,
                                       FsAcc(seqBuilder(), Set<String>()))),
                      f.fnStackVars)
 
+fun fsAnyFresh(ops: Segment<Op>|None): Bool
+  ret fold(ops, false, (any, op) => any || fsIsFreshStore(op))
+
+fun fsIsFreshStore(op: Op): Bool => match(op)
+  (m: OpMove) => match(m.moveTarget)
+    (of: RpObjectField) => of.fresh
+    (o: RParam)         => false
+  (o: Op)     => false
+
 fun [tail] fsEmitLoop(st: SeqStream<Op>, universe: Set<String>,
-                      arr: Dict<String, Set<String>>,
+                      arr: Dict<String, Set<String>>, add: Bool,
                       [terminal] acc: FsAcc): SeqBuilder<Op>
   let p = cgPullOp(st)
   ret match(p.op)
     (nil: None) => acc.faOps
-    (op: Op)    => fsEmitLoop(p.stream, universe, arr,
-                              fsEmitStep(acc, op, universe, arr))
+    (op: Op)    => fsEmitLoop(p.stream, universe, arr, add,
+                              fsEmitStep(acc, op, universe, arr, add))
 
 fun fsEmitStep([terminal] acc: FsAcc, op: Op, universe: Set<String>,
-               arr: Dict<String, Set<String>>): FsAcc
+               arr: Dict<String, Set<String>>, add: Bool): FsAcc
   let entered = fsEntered(op, acc.faFact, arr)
-  ret FsAcc(push(acc.faOps, fsMaybeFast(op, entered)),
+  ret FsAcc(push(acc.faOps, fsDecide(op, entered, add)),
             fsCarry(op, fsStep(op, entered), universe))
 
-fun fsMaybeFast(op: Op, fact: Set<String>): Op => match(op)
-  (m: OpMove) => fsMaybeFastMove(m, fact)
+fun fsDecide(op: Op, fact: Set<String>, add: Bool): Op => match(op)
+  (m: OpMove) => fsDecideMove(m, fact, add)
   (o: Op)     => op
 
-fun fsMaybeFastMove(m: OpMove, fact: Set<String>): Op => match(m.moveTarget)
-  (of: RpObjectField) => !of.fresh && fsBaseInFact(of.pointer, fact)
-    ? with m(moveTarget = with of(fresh = true))
-    : m
+fun fsDecideMove(m: OpMove, fact: Set<String>, add: Bool): Op => match(m.moveTarget)
+  (of: RpObjectField) => fsDecided(m, of, fsDecidedFresh(of, fsBaseInFact(of.pointer, fact), add))
   (o: RParam)         => m
+
+fun fsDecidedFresh(of: RpObjectField, proven: Bool, add: Bool): Bool
+  ret add ? proven : of.fresh && proven
+
+fun fsDecided(m: OpMove, of: RpObjectField, fresh: Bool): Op
+  ret fresh == of.fresh ? m : with m(moveTarget = with of(fresh = fresh))
 
 fun fsBaseInFact(ptr: RParam, fact: Set<String>) => match(ptr)
   (sv: RpStackVar) => contains(fact, sv.name)

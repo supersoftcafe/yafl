@@ -352,9 +352,10 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     # emits the biggest population of such stores (the state object's live-set
     # save), and because every ObjectField the pipeline can produce must
     # already be in its final shape — including the pinnable wraps above,
-    # which is what keeps [pinnable] objects out of the pass for free.
-    if optimization_level >= 1:
-        a = lowering.fast_stores.mark_fast_stores(a)
+    # which is what keeps [pinnable] objects out of the pass for free. At every
+    # -O level, because it is also the authority on construction's own flags:
+    # -O0 only clears what it cannot prove.
+    a = lowering.fast_stores.mark_fast_stores(a, add=optimization_level >= 1)
     # Positional object field names, then the one per-function cleanup chain
     # (emission no longer runs it), so the merge below finds more equal code.
     a = lowering.canonicalise.canonicalise(a)
