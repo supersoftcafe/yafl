@@ -11,8 +11,8 @@
 //
 // Aimed at weakly-ordered machines (aarch64): workers trade pointers through
 // shared memory rather than locked task queues, so the collector's own
-// ordering (escape barriers, forwarding, late-write handshakes, nursery
-// publication) is what keeps objects alive.
+// ordering (barriers, forwarding, late-write handshakes, publication) is what
+// keeps objects alive.
 //
 // Each of W workers loops, and at every step does one of:
 //   * BUILD   a fresh immutable chain (1..12 nodes, some ~0.5 KB, its tail
@@ -25,13 +25,13 @@
 //   * STASH   a carried value into the worker's private mutable stash, which
 //             ages into the old generation and keeps taking young pointers;
 //   * ADOPT   a stash entry into one of its own cells, re-publishing a value
-//             that was born in someone else's nursery.
+//             that another worker built.
 // Between steps it churns garbage and passes a safe point. Every node carries
 // a checksum over its id and its successor's checksum, so any reclaimed,
 // poisoned (0x42), torn or mis-forwarded node anywhere on a chain is caught.
 //
 // Knobs: MESH_STEPS (per worker; env overrides the default), YAFL_THREADS, plus
-// every YAFL_GC_* / YAFL_LOCAL_GC* setting. Run under YAFL_GC_POISON=1.
+// every YAFL_GC_* setting. Run under YAFL_GC_POISON=1.
 
 #include "../yafl.h"
 #include "../once.h"

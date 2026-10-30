@@ -61,9 +61,7 @@ enum RParam
   enum RpGlobalVar(fieldType: CgType, name: String)
   # fill: a NULL -> value store into a slot written once across safe points
   # (codegen/param.py ObjectField.fill): GC_FILL_STORE_IN.
-  # mutable: the container's class is mutable (ObjectField.mutable, set by
-  # lower/ir/mutable_stores.yafl): GC_STORE_MUTABLE_IN.
-  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool, fill: Bool, mutable: Bool = false)
+  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool, fill: Bool)
   enum RpArrayElement(elementType: CgType, pointer: RParam, objectName: String, field: String, lengthField: String, index: RParam, checked: Bool)
   # Union slotting of closures (param.py FunField/MakeFun — the enum-encoding
   # principle: a closure IS a struct). RpFunField projects one primitive out
@@ -716,15 +714,13 @@ fun rpToCStoreObjectFieldFinish(x: RpObjectField, pointerText, fieldRef, cache0:
     ? rpToCStoreObjectFieldBarrier(x, pointerText, fieldRef, cache0, value)
     : ("    " + fieldRef + " = " + value + ";\n", cache0)
 
-# The store macro does the store (yafl.h, "Pointer stores"); the container is
-# known, so the nursery's private test reads its escaped bit directly
-# (codegen/param.py).
+# The store macro does the store (yafl.h, "Pointer stores"; codegen/param.py).
 fun rpToCStoreObjectFieldBarrier(x: RpObjectField, pointerText, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.fieldType, cache0)
   let mask = toPointerMask(x.fieldType, declared.text)
   ret ("    " + storeMacro(x) + "(" + pointerText + ", " + fieldRef + ", " + mask + ", " + value + ");\n", declared.cache)
 
-fun storeMacro(x: RpObjectField) => x.fill ? "GC_FILL_STORE_IN" : x.mutable ? "GC_STORE_MUTABLE_IN" : "GC_STORE_IN"
+fun storeMacro(x: RpObjectField) => x.fill ? "GC_FILL_STORE_IN" : "GC_STORE_IN"
 
 # ── `NewStruct.__add__` (used by lowering passes, not within this file) ────
 

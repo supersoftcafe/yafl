@@ -176,11 +176,10 @@ class NewExpression(Expression):
             cg_o.Call(init_fn, cg_p.NewStruct((("_0", i_var),)), elem_var),
             # NOT fresh, although each element is written once over the
             # allocator's NULL: the init call runs safe points between the
-            # allocation and this store, so the array can leave its nursery
-            # (root scan, promotion) mid-fill, and an element allocated after
-            # that is a new object stored into an older one. Only the barrier
-            # tells the nursery about that edge; without it the element is
-            # freed while the array still holds it (stdlib_tests, RRBTree).
+            # allocation and this store, so the array may be visible to the
+            # collector mid-fill. A FILL store: nothing is overwritten, so it
+            # owes no snapshot barrier, only the publication fence. (The pin
+            # keeps the array's page from promoting mid-fill.)
             cg_o.Move(cg_p.ObjectField(elem_ctype, result_var, cname, "array", i_var, fill=True), elem_var),
             cg_o.Move(i_next, incr),
             cg_o.Label(back),

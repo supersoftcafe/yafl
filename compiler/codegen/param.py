@@ -800,15 +800,9 @@ class ObjectField(LParam):
     fresh: bool = dataclasses.field(default=False, compare=False)
     # True for a FILL store: NULL -> value into a slot written exactly once, but
     # across safe points (array tabulation, builder pushes), so not fresh. The
-    # snapshot barrier owes nothing (no old value) and neither does a thread
-    # with no active nursery; only the nursery's private-container test
+    # snapshot barrier owes nothing (no old value): only the publication fence
     # remains (GC_FILL_STORE_IN). Provenance: compare-excluded.
     fill: bool = dataclasses.field(default=False, compare=False)
-    # True when the container's class is MUTABLE (Object.is_mutable), set by
-    # lowering/mutable_stores.py: the store takes GC_STORE_MUTABLE_IN, which
-    # skips the nursery's private test (a mutable object is never private).
-    # Provenance: compare-excluded.
-    mutable: bool = dataclasses.field(default=False, compare=False)
 
     def flatten(self, is_reader:bool=True) -> list[RParam]:
         return ([self] if is_reader else []) + self.pointer.flatten() + (self.index.flatten() if self.index else [])
@@ -839,11 +833,8 @@ class ObjectField(LParam):
             field_ref = f"{field_ref}.a[{self.index.to_c(type_cache)}]"
         if self.type.has_pointers and not self.fresh:
             mask = to_pointer_mask(self.type, self.type.declare(type_cache))
-            # The store macro does the store (yafl.h, "Pointer stores"); the
-            # container is known, so the nursery's private test reads its
-            # escaped bit directly.
-            macro = ("GC_FILL_STORE_IN" if self.fill else
-                     "GC_STORE_MUTABLE_IN" if self.mutable else "GC_STORE_IN")
+            # The store macro does the store (yafl.h, "Pointer stores").
+            macro = "GC_FILL_STORE_IN" if self.fill else "GC_STORE_IN"
             return f"    {macro}({pointer}, {field_ref}, {mask}, {value});\n"
         else:
             return f"    {field_ref} = {value};\n"

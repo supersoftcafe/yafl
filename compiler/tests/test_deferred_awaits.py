@@ -131,7 +131,7 @@ fun main(): Int
 """
         code = compile_c(src)
         saves = [line for line in code.splitlines()
-                 if "GC_STORE_MUTABLE_IN" in line and ".task)" in line]
+                 if "GC_STORE_IN(" in line and ".task)" in line]
         self.assertTrue(saves, "no {value, task} result is saved across a park")
         for line in saves:
             self.assertIn(".value.", line, line)
@@ -144,10 +144,9 @@ class TestConstructionIsAtomic(TestCase):
         skip the write barrier. An await placed at the store that reads a
         pending value would split it: the half-built object would sit in the
         heap across the suspension, be marked or even promoted, and then take
-        a young value it never records (the self-compile with
-        YAFL_LOCAL_GC=0: a PsDestructure built by an inlined `with`, its
-        target list reclaimed under it). So the await goes before the
-        allocation."""
+        a young value it never records (the self-compile: a PsDestructure
+        built by an inlined `with`, its target list reclaimed under it). So
+        the await goes before the allocation."""
         from codegen.gen import Application
         from codegen.ir import Function
         from codegen.ops import Await, Call, Move, NewObject, Return

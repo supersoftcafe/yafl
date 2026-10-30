@@ -143,8 +143,8 @@ class FieldAssignStatement(Statement):
     YAFL and resolved here, so the runtime never looks a field up by layout.
 
     Emitted as an ordinary non-fresh field store: the GC barriers a heap store
-    owes are the same ones any other store makes, since the target object may
-    have left the storing thread's nursery long before.
+    owes are the same ones any other store makes, since the target object was
+    built long before, across safe points.
     """
     target: e.Expression      # a DotExpression on a class-typed subject
     value: e.Expression
@@ -209,8 +209,8 @@ class FieldAssignStatement(Statement):
         val_b = self.value.generate_to(resolver, field_type).with_prefix("fas")
         place = cg_p.ObjectField(data.get_type().generate(resolver), base_b.result_var,
                                  cdecl.name, data.name, None)
-        # NOT fresh: the object was built long before this store, and may have
-        # left the storing thread's nursery.
+        # NOT fresh: the object was built long before this store, across safe
+        # points.
         return base_b + val_b + g.OperationBundle((), (cg_o.Move(place, val_b.result_var),), None)
 
 

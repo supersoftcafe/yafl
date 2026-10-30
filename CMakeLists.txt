@@ -231,8 +231,8 @@ endforeach()
 # yafllib/tests/gc_stress.yafl: builders, futures forced from two workers, a
 # memoize cache every worker fills, a long-lived shared list — the collector
 # driven through what the compiler emits, which the C tests cannot reach.
-# A short run here, under poison, with the nursery on and off; the soak
-# (yafllib/tests/gc_soak.py) runs it long.
+# A short run here, under poison, with the dwell between cycles and without
+# it; the soak (yafllib/tests/gc_soak.py) runs it long.
 yafl_test_compiler(3 compiler)
 add_test(NAME gc_stress_build
     COMMAND ${compiler} -O3 -L ${YAFL_STAGE_DIR} -o ${CMAKE_BINARY_DIR}/gc_stress
@@ -243,12 +243,12 @@ set_tests_properties(gc_stress_build PROPERTIES
     FIXTURES_REQUIRED bootstrap_bin_o3
     FIXTURES_SETUP gc_stress_bin)
 add_test(NAME gc_stress COMMAND ${CMAKE_BINARY_DIR}/gc_stress 500)
-add_test(NAME gc_stress_global COMMAND ${CMAKE_BINARY_DIR}/gc_stress 500)
+add_test(NAME gc_stress_eager COMMAND ${CMAKE_BINARY_DIR}/gc_stress 500)
 set_tests_properties(gc_stress PROPERTIES
     TIMEOUT 600 ENVIRONMENT "YAFL_GC_POISON=1" FIXTURES_REQUIRED gc_stress_bin)
-set_tests_properties(gc_stress_global PROPERTIES
-    TIMEOUT 600 ENVIRONMENT "YAFL_GC_POISON=1;YAFL_LOCAL_GC=0" FIXTURES_REQUIRED gc_stress_bin)
-set(YAFL_GC_STRESS_TESTS gc_stress gc_stress_global)
+set_tests_properties(gc_stress_eager PROPERTIES
+    TIMEOUT 600 ENVIRONMENT "YAFL_GC_POISON=1;YAFL_GC_IDLE_PAGES=0" FIXTURES_REQUIRED gc_stress_bin)
+set(YAFL_GC_STRESS_TESTS gc_stress gc_stress_eager)
 
 # ── THE SELF-COMPILES, LAST ──────────────────────────────────────────────────
 # One self-compile per level, after everything else. The suite says the

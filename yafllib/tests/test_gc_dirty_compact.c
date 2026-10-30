@@ -8,8 +8,8 @@
 // forwarders behind. The old referrer is not traced, so its field is never
 // snapped to the copy and nothing records that it still needs the forwarder:
 // the forwarder's slot is reclaimed, reused, and the old object reads
-// whatever moved in (the -O3 self-compile with YAFL_LOCAL_GC=0: a
-// PsDestructure whose list pointed at a DictNode).
+// whatever moved in (the -O3 self-compile: a PsDestructure whose list
+// pointed at a DictNode).
 //
 // A dirty-old page goes sparse only if it was sparse when it promoted, which
 // a conservative reference allows: it pins the page against compaction while

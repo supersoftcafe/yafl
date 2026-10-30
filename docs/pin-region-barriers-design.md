@@ -1,6 +1,7 @@
 # GC bookkeeping at pin and unpin, not per store (design, not implemented)
 
-Status: proposal, 2026-10-16. Nothing here is built.
+Status: proposal, 2026-10-16. Nothing here is built. The thread-local nursery (rule 4 below,
+and the nursery passages after it) was removed on 2026-10-30, so those parts no longer apply.
 
 ## The idea
 

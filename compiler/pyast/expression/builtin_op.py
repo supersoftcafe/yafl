@@ -142,9 +142,8 @@ class BuiltinOpExpression(Expression):
         element's C type varies per instantiation — and the builder holds
         the pin from allocation to seal, so the address is stable. NOT fresh:
         a builder crosses safe points (even suspensions, resuming on another
-        worker), so the array may have left the storing thread's nursery and
-        the element be newer than it. The barrier reports that edge, as it
-        does for every other heap store."""
+        worker), so a cycle may open between the allocation and the store.
+        The barrier covers that, as it does for every other heap store."""
         arr_e = self.params.expressions[0].value
         idx_e = self.params.expressions[1].value
         val_e = self.params.expressions[2].value

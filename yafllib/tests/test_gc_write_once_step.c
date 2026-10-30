@@ -17,8 +17,7 @@
 // The hazard in (1) needs a second thread — a container born after ANOTHER
 // thread's scan — so on one thread a missing grey slot cannot be seen as a
 // reclaim; this test pins the decision itself instead. Run with
-// YAFL_THREADS=1 and the nursery off (YAFL_LOCAL_GC=0), so marking is the only
-// thing the decision turns on.
+// YAFL_THREADS=1.
 
 #include "../yafl.h"
 #include <stdio.h>
@@ -62,7 +61,7 @@ static void step_to(int target) {
 
 // The store family's mask is relative to the FIELD: bit 0 is its first word.
 static bool inline_store(object_t* obj) {
-    return gc_store_owes_nothing(obj, &((struct holder*)obj)->f, 1);
+    return gc_store_owes_nothing(&((struct holder*)obj)->f, 1);
 }
 
 static void _entrypoint(object_t* self, fun_t cont) {
@@ -70,7 +69,6 @@ static void _entrypoint(object_t* self, fun_t cont) {
     gc_debug_manual_mode = true;
     while (gc_debug_stage() == 0) usleep(1000);
     step_to(ST_IDLE);
-    if (gc_alloc_tl.local_active) fail("run with the nursery off (YAFL_LOCAL_GC=0)");
 
     object_t* p = object_create(&holder_vt);
     GC_ROOT_STORE(_slots[0], 1, p);

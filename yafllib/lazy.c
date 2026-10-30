@@ -22,8 +22,7 @@ EXPORT bool lazy_enqueue_waiter(object_t* flag_field, object_t* waiter_obj) {
         // the displaced head's only edge moves from the stub's flag — which
         // this cycle may already have scanned — onto `waiter->next`, and
         // `waiter` may already be marked without ever being SCANNED
-        // (allocated black, or just published). GC_CAS also escapes `waiter`
-        // from this thread's nursery before it is visible, and publishes a
+        // (allocated black, or just published). GC_CAS also publishes a
         // GLOBAL stub's flag, a declared root, once the CAS lands: the
         // caller keeps only the tagged task, which the collector does not
         // see, leaving the flag the waiter's only reference (test_gc_lazy_step).

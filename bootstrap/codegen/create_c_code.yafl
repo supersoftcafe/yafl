@@ -288,9 +288,6 @@ fun createCCode(statements, mainName, optLevel,
     # Merge entities with identical representation (one instantiation's code
     # under another's names). Last, so every function was optimised alone.
     |> (a9clean) => timed("codegen", "representation_dedup", () => mergeIdenticalRepresentations(a9clean, profile))
-    # Which stores land in a mutable object: a fact of its class, so the
-    # runtime need not read it from the page (lower/ir/mutable_stores.yafl).
-    |> (a9dedup) => timed("codegen", "mutable_stores", () => markMutableStores(a9dedup))
   let v2 = timed("codegen", "uninit_check", () => checkApplication(a9))
   if !isEmpty(v2)
     ret CreateCOut(List(), v2)

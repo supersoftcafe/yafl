@@ -40,8 +40,8 @@ fun gsStmt(st, r, expected: Spec|None) => match(st)
 # ── FieldAssignStatement (control.py) ───────────────────────────────────────
 
 # `subject.field := value`: an ordinary NON-fresh field store. The object was
-# built long before this statement and may have left the storing thread's
-# nursery, so the store owes the barriers any heap store owes.
+# built long before this statement, across safe points, so the store owes the
+# barriers any heap store owes.
 fun genFieldAssign(fa: PsFieldAssign, r) => match(fa.faTarget)
   (d: PeDot) => match(exprType(d.base, r))
     (c: SClass) => genFieldAssignClass(fa, d, c, r)

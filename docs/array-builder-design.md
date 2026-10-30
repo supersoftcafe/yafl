@@ -41,17 +41,13 @@ traceable the moment it lands. `build` writes the true count (`_at`) as the
 LAST act: readers never see a length larger than what was pushed, and the
 trim only discards never-written zeros.
 
-**Stores carry the fill barrier.** Each slot is written exactly once over
-the allocator's zero fill, so the snapshot barrier has no old edge to keep —
-but a build crosses safe points, so the run may have left the storing
-thread's nursery while the element is new. The store is a FILL store
-(`ObjectField.fill`, `GC_FILL_BARRIER`): after it, one test — is the run's
-PAGE in this thread's current nursery? — and if not, the element escapes
-(its nursery treats it as permanently seen). While the page is in the
-nursery, the nursery traces the run (an escaped run is a root), so the
-element is reachable through it. (The stores used to be `fresh` and
-barrier-free, with every in-flight builder registered as a root of every
-nursery collection — a global spinlock on every builder — instead.)
+**Stores are fill stores.** Each slot is written exactly once over the
+allocator's zero fill, so the snapshot barrier has no old edge to keep. But a
+build crosses safe points, so the store is not `fresh`: it is a FILL store
+(`ObjectField.fill`, `GC_FILL_STORE_IN`), which keeps the publication fence
+and owes nothing else. The pin keeps the run's page from promoting while it
+fills. (Under the thread-local nursery, since removed, the fill store also
+escaped the element once the run had left the nursery.)
 
 **Sealing shorter owes the snapshot barrier.** Shortening `length` deletes
 every reference past it. `build` trims only never-written zeros, but a grown

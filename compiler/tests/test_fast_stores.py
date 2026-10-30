@@ -82,7 +82,7 @@ def _body(emitted: str, name_prefix: str) -> str:
 
 # The barriered stores (yafl.h, "Pointer stores"); a store without a barrier is
 # a plain assignment.
-_STORE_MACROS = ("GC_STORE_IN(", "GC_STORE_MUTABLE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN(")
+_STORE_MACROS = ("GC_STORE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN(")
 
 
 def _barriers_on(body: str, pointer: str) -> list[str]:
@@ -146,10 +146,9 @@ class TestFastStores(TestCase):
     def test_a_construction_store_after_a_safe_point_loses_its_flag(self):
         """Construction codegen marks its own stores fresh, but a later pass can
         put a safe point between the allocation and a store — a deferred await
-        does exactly that, suspending mid-construction (the self-compile with
-        YAFL_LOCAL_GC=0: a PsDestructure built across an await, its list stored
-        barrier-free after the object had been marked, then reclaimed under
-        it). This pass is the authority: a fresh flag it cannot prove goes,
+        does exactly that, suspending mid-construction (the self-compile: a
+        PsDestructure built across an await, its list stored barrier-free
+        after the object had been marked, then reclaimed under it). This pass is the authority: a fresh flag it cannot prove goes,
         at every -O level, and at -O0 nothing is added."""
         box = StackVar(DataPointer(), "$box")
         def store(value: int, fresh: bool) -> Move:
@@ -227,23 +226,24 @@ def _bodies(emitted: str, name_prefix: str) -> list[str]:
 class TestConstructionInAnAsyncFunction(TestCase):
     def test_construction_stores_stay_barrier_free(self):
         """An immutable object is written only while it is fresh, so no store
-        into one takes a barrier: no GC_STORE_IN in either body."""
+        into the Destr takes a barrier, in either body. (The state object's
+        saves are another matter: it is mutable.)"""
         for level in (0, 2):
             with self.subTest(level=level):
                 emitted = compile_c(_ASYNC_SRC, "file.yafl", optimization_level=level)
                 bodies = _bodies(emitted, "Main__bumped")
                 self.assertTrue(bodies, "no definition of Main__bumped*")
                 for body in bodies:
-                    self.assertNotIn("GC_STORE_IN(", body)
+                    self.assertEqual([], [ln.strip() for ln in body.splitlines()
+                                          if ln.strip().startswith(_STORE_MACROS)
+                                          and "Main__Destr" in ln], body)
 
 
 # An array-class construction tabulates its storage by calling the init
 # function once per element, between the allocation and each store. The init
-# call runs safe points, so the array can leave the thread-local nursery
-# mid-fill (a root scan, a promotion) and the element just allocated is then a
-# new object stored into an older one: only the barrier reports that edge.
-# Elided, the nursery freed the element while the array held it (stdlib_tests,
-# RRBTree concat). `boxes` returns the array so the fill is not trimmed away.
+# call runs safe points, so the store is not fresh: it is a FILL, which owes
+# no snapshot barrier (nothing is overwritten) but keeps its publication
+# fence. `boxes` returns the array so the fill is not trimmed away.
 _TAB_SRC = """\
 import System
 
@@ -293,7 +293,7 @@ fun [impure] pick(n: System::Int): Box
 fun main(): System::Int
   ret boxes(4i32).length > 0i32 && pick(3).v > 0 ? 0 : 1
 """
-_BARRIER_PARTS = re.compile(r"\b(GC_WRITE_BARRIER_IN|GC_PUBLISH_IN|GC_FILL_BARRIER|GC_MARK_SEEN"
+_BARRIER_PARTS = re.compile(r"\b(GC_WRITE_BARRIER_IN|GC_PUBLISH_IN|GC_MARK_SEEN"
                             r"|GC_PUBLISH_FENCE\w*|gc_root_overwrite|gc_root_publish)\(")
 
 
@@ -305,11 +305,10 @@ class TestStoresGoThroughTheStoreMacros(TestCase):
                 self.assertEqual([], [m.group(0) for m in _BARRIER_PARTS.finditer(emitted)])
                 # The program reaches each kind generated code makes: a store
                 # into a mutable object (a closure's, a state machine's, a lazy
-                # stub's value) and an array tabulation (fill). Not GC_STORE_IN:
-                # an immutable object is written only while it is fresh, or by
-                # a fill. Not GC_STORE_PUBLISH_IN: that is the runtime's, for
-                # handing values between threads; a static container (a
-                # global's stub) is detected inside the object store macros.
-                for macro in ("GC_STORE_MUTABLE_IN(", "GC_FILL_STORE_IN("):
+                # stub's value) and an array tabulation (fill). Not
+                # GC_STORE_PUBLISH_IN: that is the runtime's, for handing
+                # values between threads; a static container (a global's stub)
+                # is detected inside the object store macros.
+                for macro in ("GC_STORE_IN(", "GC_FILL_STORE_IN("):
                     self.assertIn(macro, emitted)
                 self.assertNotIn("GC_STORE_PUBLISH_IN(", emitted)

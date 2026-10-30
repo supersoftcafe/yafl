@@ -25,9 +25,9 @@ between them: a deferred await (lowering/defer_awaits.py) suspends
 mid-construction, and the half-built object is then marked, or even promoted,
 before the rest of its fields are stored. A store flagged fresh there skips
 the barrier its value needed and the value is reclaimed under the object (the
-self-compile with YAFL_LOCAL_GC=0: a PsDestructure's target list). So every
-flag this pass cannot prove is CLEARED, at every -O level; -O0 only clears,
--O1 and up also set what it proves.
+self-compile: a PsDestructure's target list). So every flag this pass cannot
+prove is CLEARED, at every -O level; -O0 only clears, -O1 and up also set what
+it proves.
 
 THE PROOF, per store `Move(ObjectField(pointer=StackVar n, …), src)`: on every
 path reaching it, `n` holds an object created by a `NewObject` in this function,

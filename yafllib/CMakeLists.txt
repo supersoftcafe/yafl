@@ -166,80 +166,51 @@ set_tests_properties(test_gc_old_late_write PROPERTIES ENVIRONMENT "YAFL_GC_POIS
 # would keep a forwarder's address while the forwarder's slot is reclaimed.
 add_yafl_test(test_gc_dirty_compact)
 set_tests_properties(test_gc_dirty_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_dwell: once a cycle ends, the next opens only after the dwell's
+# pages have been allocated (natural pacing, one worker).
+add_yafl_test(test_gc_dwell)
+set_tests_properties(test_gc_dwell PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_write_once_step: stepped. While a cycle marks, a store that
 # overwrites nothing stays inline only once its thread's root scan is done;
 # before it, the store owes the insertion half and calls out.
 add_yafl_test(test_gc_write_once_step)
 set_tests_properties(test_gc_write_once_step PROPERTIES ENVIRONMENT
-    "YAFL_GC_POISON=1;YAFL_THREADS=1;YAFL_LOCAL_GC=0")
-# test_gc_builder_idle: stepped. List-builder links around a nursery
-# stand-down: a link made stood down owes no escape, and a cell born in the
-# resumed nursery, linked into a cell born stood down, must escape or the
-# nursery frees it while the older cell points at it.
-add_yafl_test(test_gc_builder_idle)
-set_tests_properties(test_gc_builder_idle PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
-# test_gc_once_escape: a value yafl_cas_once installs in a shared object is
-# readable by other threads at once, so under its own late pin it must test
-# shared; the late store flushes the nursery's pending slot to make it so.
-add_yafl_test(test_gc_once_escape)
-set_tests_properties(test_gc_once_escape PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
-# test_gc_page_private: stepped. The late store's inline privacy test is by
-# page: an escape takes its whole page off it, a pending shared store takes
-# the thread off it until the flush, and promotion takes the page off it.
-add_yafl_test(test_gc_page_private)
-set_tests_properties(test_gc_page_private PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+    "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_misaligned_root: stepped. An object referenced only by a pointer at
 # a misaligned stack address (an optimiser's aggregate slice can put one at
-# 4 mod 8) survives nursery collections and full cycles: the conservative
-# stack scans look at every byte offset, not only word-aligned ones. Run with
-# the nursery on and off, so each scan is covered on its own.
+# 4 mod 8) survives full cycles: the conservative stack scan looks at every
+# byte offset, not only word-aligned ones.
 add_yafl_test(test_gc_misaligned_root)
 set_tests_properties(test_gc_misaligned_root PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
-add_test(NAME test_gc_misaligned_root_global COMMAND test_gc_misaligned_root)
-set_tests_properties(test_gc_misaligned_root_global PROPERTIES ENVIRONMENT
-    "YAFL_GC_POISON=1;YAFL_THREADS=1;YAFL_LOCAL_GC=0")
 # test_gc_pressure: a ratcheting live set plus churn whose objects live a few
 # cycles before dying, in a deliberately small heap. Guards the near-full
 # machinery: the pressure backstop in gc_page_alloc, the relocation reserve,
 # and majors demoting DIRTY old pages (whose force-mark otherwise retains
 # their garbage forever — the bug that made yspell abort in any heap < 1 GiB).
 add_yafl_test(test_gc_pressure)
-# test_gc_stale_mark: a remote conservative mark landing on an object a
-# thread-local nursery has just struck as dead. The global collector must
-# ignore marks on slots that hold no object; scanning one read a dead object.
-# Under poison the unfixed runtime crashed in ~80% of runs.
+# test_gc_stale_mark: remote conservative marks from stale stack words, aimed
+# at objects that die and are pruned in between. A mark must never bring a
+# dead slot back, nor lead the marker into one.
 add_yafl_test(test_gc_stale_mark)
 add_test(NAME test_gc_stale_mark_poison COMMAND test_gc_stale_mark)
 set_tests_properties(test_gc_stale_mark_poison PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1")
-# The thread-local nursery is ON by default, so the tests above run with it.
-# Two variants of the GC tests on top:
-#  * _nursery: the nursery under stress, collecting every 2 pages on one
-#    worker with poisoning, so a freed object that is still reachable fails
-#    loudly;
-#  * _global: the nursery off (YAFL_LOCAL_GC=0), keeping the global collector
-#    on its own covered.
-foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_pressure test_pin test_large_objects test_str test_io_stress)
-    add_test(NAME ${t}_nursery COMMAND ${t})
-    set_tests_properties(${t}_nursery PROPERTIES ENVIRONMENT
-        "YAFL_GC_POISON=1;YAFL_LOCAL_GC_PAGES=2;YAFL_THREADS=1")
-endforeach()
-foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_min2 test_gc_pressure test_gc_gen test_gc_late_pin_race test_pin)
-    add_test(NAME ${t}_global COMMAND ${t})
-    set_tests_properties(${t}_global PROPERTIES ENVIRONMENT "YAFL_LOCAL_GC=0")
+# The collector dwells between cycles (YAFL_GC_IDLE_PAGES), so a small test
+# sees few cycles. The _eager variants run cycles back to back, poisoned, so
+# the GC tests keep crossing as many cycle boundaries as their work allows.
+foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_min2 test_gc_pressure test_gc_gen test_gc_late_pin_race test_pin test_large_objects test_str test_io_stress)
+    add_test(NAME ${t}_eager COMMAND ${t})
+    set_tests_properties(${t}_eager PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_GC_IDLE_PAGES=0")
 endforeach()
 # test_gc_mesh: every worker mutates and reads one shared graph within the
 # sharing contract — mutable cells under their pin, immutable mailboxes read
 # lock-free and filled write-once (yafl_cas_once) — trading young chains
-# between nurseries. Aimed at weakly-ordered machines; the soak script
+# between workers. Aimed at weakly-ordered machines; the soak script
 # (tests/gc_soak.py) runs it long.
 add_yafl_test(test_gc_mesh)
 set_tests_properties(test_gc_mesh PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;MESH_STEPS=50000")
-add_test(NAME test_gc_mesh_nursery COMMAND test_gc_mesh)
-set_tests_properties(test_gc_mesh_nursery PROPERTIES ENVIRONMENT
-    "YAFL_GC_POISON=1;YAFL_LOCAL_GC_PAGES=2;MESH_STEPS=50000")
-add_test(NAME test_gc_mesh_global COMMAND test_gc_mesh)
-set_tests_properties(test_gc_mesh_global PROPERTIES ENVIRONMENT
-    "YAFL_GC_POISON=1;YAFL_LOCAL_GC=0;MESH_STEPS=50000")
+add_test(NAME test_gc_mesh_eager COMMAND test_gc_mesh)
+set_tests_properties(test_gc_mesh_eager PROPERTIES ENVIRONMENT
+    "YAFL_GC_POISON=1;YAFL_GC_IDLE_PAGES=0;MESH_STEPS=50000")
 # test_gc_fwd_chain: compaction forwarding chains (A -> B -> C via a head stub
 # pinned by a conservative stack slot) must path-compress when scanned — the
 # head's forward word snaps to the tail and the bypassed middle stub's page

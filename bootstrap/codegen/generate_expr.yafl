@@ -806,8 +806,8 @@ fun genArrayBuilderAllocOn(cname, capE, r)
 # field. A runtime call cannot express this — the element's C type varies
 # per instantiation — and the builder holds the pin from allocation to
 # seal, so the address is stable. NOT fresh: a builder crosses safe points,
-# so the array may have left the storing thread's nursery and the element
-# be newer than it; the barrier reports that edge (builtin_op.py).
+# so a cycle may open between the allocation and the store; the barrier
+# covers that (builtin_op.py).
 fun genArrayBuilderStore(op: PeBuiltinOp, r) => match(threeBuiltinArgs(op.opParams))
   (a: (a0: PExpr, a1: PExpr, a2: PExpr)) => genArrayBuilderStoreOn(a.a0, a.a1, a.a2, r)
   ()                                      => emptyBundle()   # unreachable: stdlib-only op
