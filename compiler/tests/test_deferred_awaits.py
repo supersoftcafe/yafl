@@ -135,3 +135,39 @@ fun main(): Int
         self.assertTrue(saves, "no {value, task} result is saved across a park")
         for line in saves:
             self.assertIn(".value.", line, line)
+
+
+class TestConstructionIsAtomic(TestCase):
+    def test_a_pending_field_value_is_awaited_before_the_allocation(self):
+        """A construction is atomic: the allocation and its initialising stores
+        run with no safe point between them, which is what lets those stores
+        skip the write barrier. An await placed at the store that reads a
+        pending value would split it: the half-built object would sit in the
+        heap across the suspension, be marked or even promoted, and then take
+        a young value it never records (the self-compile with
+        YAFL_LOCAL_GC=0: a PsDestructure built by an inlined `with`, its
+        target list reclaimed under it). So the await goes before the
+        allocation."""
+        from codegen.gen import Application
+        from codegen.ir import Function
+        from codegen.ops import Await, Call, Move, NewObject, Return
+        from codegen.param import GlobalFunction, NewStruct, NullPointer, ObjectField, StackVar
+        from codegen.typedecl import DataPointer, Struct
+        from lowering.defer_awaits import defer_awaits
+
+        r, x, box = (StackVar(DataPointer(), n) for n in ("r", "x", "box"))
+        ops = (Call(GlobalFunction("g"), NewStruct((("this", NullPointer()),)), register=r),
+               NewObject("Box", box),
+               Move(ObjectField(DataPointer(), box, "Box", "a", None, fresh=True), x),
+               Move(ObjectField(DataPointer(), box, "Box", "b", None, fresh=True), r),
+               Return(box))
+        fn = Function(name="f", params=Struct((("this", DataPointer()), ("x", DataPointer()))),
+                      result=DataPointer(),
+                      stack_vars=Struct((("r", DataPointer()), ("box", DataPointer()))), ops=ops)
+        out = defer_awaits(Application(functions={"f": fn})).functions["f"].ops
+        kinds = [type(op).__name__ for op in out]
+        self.assertIn("Await", kinds, kinds)
+        self.assertLess(kinds.index("Await"), kinds.index("NewObject"), kinds)
+        stores = [op for op in out if isinstance(op, Move) and isinstance(op.target, ObjectField)]
+        self.assertEqual(kinds.index("NewObject") + 1, out.index(stores[0]), kinds)
+        self.assertEqual(out.index(stores[0]) + 1, out.index(stores[1]), kinds)

@@ -15,6 +15,10 @@
 # the function's own result type is not a use: its OpAwait is returned, and
 # async lowering's hot path hands the pending value to the caller as it stands.
 #
+# A CONSTRUCTION is the exception to "awaited where used": the values its
+# initialising stores read are awaited before its allocation, so no
+# suspension ever falls between an OpNewObject and those stores.
+#
 # Runs in SSA, after sroa and before phi_removal: every name has one
 # definition, so a virtual variable always stands for the one value its root
 # was given, and a join is a Phi. A call in literal tail position
@@ -50,7 +54,9 @@ fun dfDefer(f: CgFunction): CgFunction
                            fold(roots0, Dict(), (d, r: DfRoot) => put(d, stackVarName(r.drVar), r)),
                            false))
   let roots = build(st.dsRoots)
-  let ctx = DfCtx(st.dsMarked, st.dsRootIx, st.dsSkip, dfPhisAt(chain(ops), "", Dict()), f.fnResult)
+  let runs = dfRunsFrom(chain(ops), 0, DfRuns(Dict(), st.dsSkip))
+  let ctx = DfCtx(st.dsMarked, st.dsRootIx, runs.drsSkip, dfPhisAt(chain(ops), "", Dict()), f.fnResult,
+                  runs.drsRuns)
   let out = dfEmit(chain(ops), 0, ctx, DfAcc(seqBuilder(), builder(), Dict(), 0, "", None))
   let emitted = dfFillPhis(chain(cgOpsToList(build(out.daOps))), "", 0, out.daEdges, ctx, seqBuilder())
   let kept = filter(cgFieldsOfOrEmpty(f.fnStackVars), (fld: CgField) => get(ctx.dcMarked, fld.fieldName) is None)
@@ -180,7 +186,49 @@ fun dfPhisOf(at: Dict<String, List<Op>>, label: String): List<Op> => match(get(a
   ()              => List()
 
 class [final] DfCtx(dcMarked: Dict<String, DfMark>, dcRootIx: Dict<String, DfRoot>, dcSkip: Set<Int>,
-                    dcPhisAt: Dict<String, List<Op>>, dcResult: CgType)
+                    dcPhisAt: Dict<String, List<Op>>, dcResult: CgType,
+                    dcRuns: Dict<Int, List<Op>>)
+
+# A construction is ATOMIC: an OpNewObject and the run of stores into the new
+# object that follows it are emitted together, with every pending value the
+# run reads awaited BEFORE the allocation. An await between them would leave
+# the half-built object in the heap across a suspension, where it can be
+# marked or promoted before its last fields are stored — stores construction
+# emits barrier-free, and that no barrier would record against an old object
+# anyway. dcRuns: the OpNewObject's index -> its run; the run's own indices
+# join the skip set.
+class [final] DfRuns(drsRuns: Dict<Int, List<Op>>, drsSkip: Set<Int>)
+
+fun [tail] dfRunsFrom(os: Chain<Op>, k: Int, acc: DfRuns): DfRuns => match(os)
+  (nil: ChainEnd) => acc
+  (l: ChainLink)  => dfRunsFrom(l.next, k + 1, dfRunAt(l.value, l.next, k, acc))
+
+fun dfRunAt(op, rest: Chain<Op>, k: Int, acc: DfRuns): DfRuns => match(op)
+  (n: OpNewObject) => match(n.newObjRegister)
+    (sv: RpStackVar) => dfRecordRun(dfRunOps(rest, sv.name, builder()), k, acc)
+    (o: RParam)      => acc
+  (o: Op)          => acc
+
+fun [tail] dfRunOps(os: Chain<Op>, name: String, [terminal] b: ListBuilder<Op>): List<Op> => match(os)
+  (nil: ChainEnd) => build(b)
+  (l: ChainLink)  => dfInitialises(l.value, name) ? dfRunOps(l.next, name, push(b, l.value)) : build(b)
+
+# `op` stores into a field of the object `name` names.
+fun dfInitialises(op, name: String): Bool => match(op)
+  (m: OpMove) => match(m.moveTarget)
+    (of: RpObjectField) => match(of.pointer)
+      (sv: RpStackVar) => sv.name == name
+      (o: RParam)      => false
+    (o: RParam)         => false
+  (o: Op)     => false
+
+fun dfRecordRun(run: List<Op>, k: Int, acc: DfRuns): DfRuns
+  ret isEmpty(run) ? acc
+    : DfRuns(put(acc.drsRuns, k, run), dfSkipRun(acc.drsSkip, k + 1, chain(run)))
+
+fun [tail] dfSkipRun(s: Set<Int>, k: Int, os: Chain<Op>): Set<Int> => match(os)
+  (nil: ChainEnd) => s
+  (l: ChainLink)  => dfSkipRun(add(s, k), k + 1, l.next)
 
 # The ops emitted so far, the fresh variables declared, each realised Phi
 # source (by join, predecessor and position), the next fresh number, the open
@@ -194,7 +242,26 @@ fun dfEdgeKey(join: String, pred: String, i: Int) => join + "|" + pred + "|" + S
 fun [tail] dfEmit(os: Chain<Op>, k, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(os)
   (nil: ChainEnd) => acc
   (l: ChainLink)  => dfEmit(l.next, k + 1, ctx,
-      contains(ctx.dcSkip, k) ? acc : dfEmitOne(l.value, ctx, acc))
+      contains(ctx.dcSkip, k) ? acc : dfEmitAt(l.value, k, ctx, acc))
+
+fun dfEmitAt(op, k: Int, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(get(ctx.dcRuns, k))
+  (run: List<Op>) => dfEmitConstruction(op, run, ctx, acc)
+  ()              => dfEmitOne(op, ctx, acc)
+
+# The allocation and its run, with every pending value they read realised first.
+fun dfEmitConstruction(op, run: List<Op>, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+  let all = prepend(op, run)
+  let params = fold(all, List<RParam>(), (ps, o) => concat(ps, opGetLiveVars(o).reads))
+  let r = dfRealise(params, false, ctx, acc)
+  let renames = r.drRenames
+  let renamed = isEmpty(renames) ? all : map(all, (o) => opRenameVars(o, renames))
+  let a = r.drAcc
+  ret DfAcc(pushAll(a.daOps, renamed), a.daFresh, a.daEdges, a.daNext, a.daCurrent,
+            dfLastOp(chain(renamed), op))
+
+fun [tail] dfLastOp(os: Chain<Op>, fallback: Op): Op => match(os)
+  (nil: ChainEnd) => fallback
+  (l: ChainLink)  => dfLastOp(l.next, l.value)
 
 fun dfEmitOne(op, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(op)
   (p: OpPhi)   => DfAcc(push(acc.daOps, op), acc.daFresh, acc.daEdges, acc.daNext, acc.daCurrent, acc.daLast)

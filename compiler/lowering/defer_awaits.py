@@ -15,6 +15,10 @@ will place the edge's copy. A Return of a whole marked value of the function's
 own result type is not a use: its Await is `returned`, and async lowering's
 hot path hands the pending value to the caller as it stands.
 
+A CONSTRUCTION is the exception to "awaited where used": the values its
+initialising stores read are awaited before its allocation, so no suspension
+ever falls between a NewObject and those stores.
+
 Runs in SSA, after sroa and before phi_removal: every name has one definition,
 so a virtual variable always stands for the one value its root was given, and
 a join is a Phi. A call in literal tail position (`Call(R); Return(R)`) is left
@@ -27,8 +31,8 @@ import dataclasses
 
 from codegen.gen import Application
 from codegen.ir import Function
-from codegen.ops import Op, Call, Move, Phi, Return, Await, Label, Jump
-from codegen.param import RParam, StackVar, StructField
+from codegen.ops import Op, Call, Move, NewObject, Phi, Return, Await, Label, Jump
+from codegen.param import ObjectField, RParam, StackVar, StructField
 from codegen.typedecl import Struct
 from lowering.task_abi import wrap_return_type, wrap_value
 
@@ -48,6 +52,12 @@ def _tail_called(ops: tuple[Op, ...], k: int, fn: Function) -> bool:
     return (isinstance(op, Call) and isinstance(op.register, StackVar)
             and isinstance(nxt, Return) and isinstance(nxt.value, StackVar)
             and nxt.value.name == op.register.name and op.register.get_type() == fn.result)
+
+
+def _initialises(op: Op, obj: StackVar) -> bool:
+    """`op` stores into a field of the object `obj` names."""
+    return (isinstance(op, Move) and isinstance(op.target, ObjectField)
+            and isinstance(op.target.pointer, StackVar) and op.target.pointer.name == obj.name)
 
 
 def _projection(value: RParam) -> tuple[str, tuple[str, ...]] | None:
@@ -168,12 +178,39 @@ def _defer(fn: Function) -> Function:
         edge_sources[(join, pred)] = sources
         return out
 
+    # A construction is ATOMIC: a NewObject and the run of stores into the new
+    # object that follows it are emitted together, with every pending value
+    # the run reads awaited BEFORE the allocation. An await between them would
+    # leave the half-built object in the heap across a suspension, where it
+    # can be marked or promoted before its last fields are stored — stores
+    # construction emits barrier-free, and that no barrier would record
+    # against an old object anyway.
+    runs: dict[int, list[int]] = {}
+    for k, op in enumerate(ops):
+        if isinstance(op, NewObject) and isinstance(op.register, StackVar):
+            j = k + 1
+            while j < len(ops) and _initialises(ops[j], op.register):
+                j += 1
+            if j > k + 1:
+                runs[k] = list(range(k + 1, j))
+    in_run = {j for run in runs.values() for j in run}
+
     new_ops: list[Op | None] = []
     phi_slots: list[tuple[int, str, int]] = []   # (index in new_ops, join label, Phi index)
     current = None
     last: Op | None = None   # the last op emitted other than a Phi
     for k, op in enumerate(ops):
-        if k in virtual:
+        if k in virtual or k in in_run:
+            continue
+        if k in runs:
+            params = list(op.get_live_vars()[0])
+            for j in runs[k]:
+                params.extend(ops[j].get_live_vars()[0])
+            pre, renames = realise(params, False)
+            new_ops.extend(pre)
+            for o in (op, *(ops[j] for j in runs[k])):
+                new_ops.append(o.rename_vars(renames) if renames else o)
+            last = new_ops[-1]
             continue
         if isinstance(op, Phi):
             phi_slots.append((len(new_ops), current, phis_at[current].index(op)))
