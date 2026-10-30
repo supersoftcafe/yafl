@@ -15,8 +15,8 @@
 //      which cards A, and dropped everywhere else.
 //   3. Cycles: the spacer dies, B's page is sparse and is compacted. After
 //      every cycle A is still old and A's slot reaches a live B with its id;
-//      once the compaction has happened, the next cycle rewrites A's slot to
-//      the copy, and it never points at a forwarder again.
+//      a slot that held a forwarder when a cycle began has been rewritten by
+//      the time it ends.
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode, as test_gc_gen does.
 
 #include "../yafl.h"
@@ -65,8 +65,10 @@ static object_t*                _slots[1];   // A
 static roots_declaration_func_t _prev;
 static void _decl(void(*declare)(object_t**)) { _prev(declare); declare(&_slots[0]); }
 
-// The addresses, where the collector does not look.
-static volatile uintptr_t g_A, g_B;
+// The addresses, where the collector does not look: a local holding one
+// across a cycle would be a conservative root, and pin the page it names.
+static volatile uintptr_t g_A, g_B, g_before;
+static volatile bool      g_forwarded_before;
 static fun_t _exit_cont;
 
 static void fail(const char* what, int got) {
@@ -75,10 +77,18 @@ static void fail(const char* what, int got) {
     abort();
 }
 
+static void scrub(void);
+
+// A scrub after EVERY step: a step leaves addresses in the collector's own
+// frames (the card's trace reads A's slot, so B's address), and the next
+// step's frames — the root scan's among them — sit over those slots without
+// writing them, so the conservative scan would find B and pin the page this
+// test needs compacted.
 static void step_to(int target) {
     for (int guard = 0; gc_debug_stage() != target; ++guard) {
         if (guard > 1000000) fail("stuck before stage", gc_debug_stage());
         gc_debug_step();
+        scrub();
     }
 }
 
@@ -86,6 +96,7 @@ static void run_one_cycle(void) {
     for (int guard = 0; gc_debug_stage() == ST_IDLE; ++guard) {
         if (guard > 100000) fail("cycle did not start", gc_debug_stage());
         gc_debug_step();
+        scrub();
     }
     step_to(ST_IDLE);
 }
@@ -133,6 +144,16 @@ static void __attribute__((noinline)) scrub(void) {
     __asm__ volatile("" :: "r"(junk[0]), "r"(junk[511]) : ARCH_CALLEE_SAVED_CLOBBERS);
 }
 
+static void __attribute__((noinline)) note_slot(void) {
+    object_t* f = ((struct parent*)g_A)->f;
+    g_before = (uintptr_t)f;
+    g_forwarded_before = vtable_is_forward(f->vtable);
+}
+
+static bool __attribute__((noinline)) slot_unchanged(void) {
+    return (uintptr_t)((struct parent*)g_A)->f == g_before;
+}
+
 // A is old, and its slot reaches a live B: through the forwarder if B has
 // just been moved, never through a reclaimed object.
 static void __attribute__((noinline)) check_a(const char* when) {
@@ -174,14 +195,18 @@ static void _entrypoint(object_t* self, fun_t cont) {
     if (gc_debug_object_carded((object_t*)g_A) != 1) fail("the late write did not card A", 0);
 
     // (3) B's page compacts; A follows.
+    // A slot that holds a forwarder when a minor starts must hold something
+    // else after it: the card's trace rewrote it. (Possibly another
+    // forwarder: the copy can land on a page that is itself sparse, and be
+    // moved again by the same cycle's prune.)
     bool moved = false;
     for (int cycles = 0; cycles < 8; ++cycles) {
-        bool forwarded_before = vtable_is_forward(((object_t*)((struct parent*)g_A)->f)->vtable);
+        note_slot();
         churn_filler();
         scrub();
         run_one_cycle();
         check_a("after a cycle");
-        if (forwarded_before && vtable_is_forward(((object_t*)((struct parent*)g_A)->f)->vtable))
+        if (g_forwarded_before && slot_unchanged())
             fail("a minor did not rewrite a carded slot past its forwarder", cycles);
         moved |= page_of(g_B)->head.compacted;
     }
