@@ -487,6 +487,22 @@ class SyncWrap(RParam):
 
 
 @dataclass(frozen=True)
+class FieldOffset(RParam):
+    """The byte offset of a field within its object: a constant, for a runtime
+    call that must find the field in whichever copy of the object it ends up
+    holding (object_pin_set, for `__builtin_pin_set__`), so an address taken
+    from the caller's copy would not do."""
+    object_name: str
+    field: str
+
+    def get_type(self) -> t.Type:
+        return t.Int(64)
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        return f"offsetof({mangle_name(self.object_name)}_t, {mangle_name(self.field)})"
+
+
+@dataclass(frozen=True)
 class ZeroOf(RParam):
     """Zero value of a specific type. Emits (TypeName){0} for struct/compound types.
 

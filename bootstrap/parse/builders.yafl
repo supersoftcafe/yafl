@@ -342,6 +342,7 @@ fun exprLine(x) => match(x)
   (c: PeCall) => c.pecLine
   (tu: PeTuple) => tu.petLine
   (t3: PeTernary) => t3.pety
+  (ps: PePinSet) => ps.pepsLine
   (lm: PeLambda) => lm.pelLine
   (bk: PeBlock) => bk.pebkLine
   (m: PeMatch) => m.pemLine

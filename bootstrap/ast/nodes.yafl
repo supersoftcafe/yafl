@@ -79,6 +79,10 @@ enum PExpr
   enum PeMatch(subject: PExpr, arms: List<PArm>, pemLine: PLine,
                matchExtra: List<PExpr>)
   enum PeBuiltinOp(opType: Spec, opName: PExpr, opParams: PExpr, peboLine: PLine)
+  # `__builtin_pin_set__(subject, subject.field, value)`: pin, fill the field
+  # only if it is empty, release; the field's old value, None when it stored.
+  # For library use (check_expr.yafl checkPinSet; pyast PinSetExpression).
+  enum PePinSet(psSubject: PExpr, psTarget: PExpr, psValue: PExpr, pepsLine: PLine)
   # `with subject(name = value, …)` — copy-with-replacements. TRANSIENT: the
   # frontend expands it during compile once its subject type resolves
   # (compile_expr.yafl); post-converge trees never contain one.

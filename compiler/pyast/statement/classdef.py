@@ -143,6 +143,31 @@ class ClassStatement(TypeStatement):
         return any(1 for x in self._all_slots or [] if not x.provides)
 
 
+    # The most fields a class may have and still be flattened to a value struct
+    # (lowering/simple_classes.py). Arbitrary but reasonable: a complex number
+    # (2 fields) and even a quaternion (4) flatten, a matrix does not.
+    MAX_FLAT_STRUCT_FIELDS: ClassVar[int] = 4
+
+    def never_flattens(self) -> bool:
+        """This declaration alone keeps every instance a heap object, whatever
+        the rest of the program does: the half of the simple-class rule
+        (lowering/simple_classes.py) that needs no other declaration. The other
+        half — never a base, no method taken standalone — needs them all."""
+        # Classes that are published into after construction need a real
+        # object with a stable identity to write through; a flattened value
+        # struct would leave nothing to publish to. [mutable] says so by being
+        # writable at any time; [pinnable] says so for an object that is
+        # immutable except inside a late pin, which is a heap object for the
+        # same reason — the pin lives in its vtable word, and a value struct
+        # has none. A trailing variable-length array is heap storage.
+        fields = self.parameters.flatten()
+        return (self.is_interface
+                or any(a in self.attributes for a in ("foreign", "mutable", "pinnable"))
+                or bool(self.implements)
+                or len(fields) > ClassStatement.MAX_FLAT_STRUCT_FIELDS
+                or any(isinstance(f.declared_type, t.ArrayFieldSpec) for f in fields))
+
+
     def get_type(self) -> t.ClassSpec|None:
         return t.ClassSpec(self.line_ref, self.name,
                            type_params=tuple(tp.type for tp in self.type_params))

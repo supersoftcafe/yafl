@@ -44,6 +44,12 @@ before the store. The thread's next root scan raises the collector's request;
 the end of that SCAN_ROOTS moves the flagged pages onto `carded_pages`. Without
 the request, nothing walks `old_pages`.
 
+**A fill is a late pin.** `__builtin_pin_set__` (`object_pin_set`, yafl.h) pins,
+fills an empty pointer field and releases in one step. Its inline path runs only
+on a young, unpinned, unmoved object, with this thread's root scan not pending,
+and there the store owes nothing but the publication fence. Anything else goes
+out of line, through the resolving pin, which cards a stamped object as above.
+
 **Minors trace cards.** At the end of SCAN_ROOTS, after every thread's scan,
 every carded object's fields are marked through the fields
 (`atomic_gc_object_seen_by_field`): a referent that compaction moved is
@@ -145,6 +151,9 @@ card's trace rewrites the old field past the forwarder at the next minor
 - `test_gc_old_stub_card`: through an old referrer, a stub's body still
   reaches its young referent after that referent moved and its forwarder
   died.
+- `test_gc_pin_set`: `object_pin_set` before this thread's root scan, into a
+  taken slot, against a peer's pin, through a moved object's stale pointer,
+  and into an old object, which it cards.
 - `YAFL_GC_VALIDATE_OLD` builds check the invariant at every cycle start
   (forwarders are checked at their copies).
 

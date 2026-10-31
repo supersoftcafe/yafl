@@ -828,6 +828,29 @@ fun genArrayBuilderStoreAll(cname, elem, arrE, idxE, valE, r)
                  GBundle(List(), list1(store), RpInteger(1, 8),
                          List(), List()))
 
+# `__builtin_pin_set__(obj, obj.field, value)` (builtin_op.py
+# PinSetExpression.generate): one runtime call, kept when the answer goes
+# unread — the call is the store. The field is found by its offset in
+# whichever copy the pin takes.
+fun genPinSet(ps: PePinSet, r) => match(pinSetField(ps))
+  (d: PeDot) => match(writtenField(d, pinSetWhat(), r))
+    (cs: PsClass) => genPinSetOn(ps, d, cs, r)
+    (msg: String) => emptyBundle()   # unreachable: check()
+  ()         => emptyBundle()        # unreachable: check()
+
+fun genPinSetOn(ps: PePinSet, d: PeDot, cs: PsClass, r)
+  let fieldType = exprType(ps.psTarget, r)
+  let objB = withPrefix(genExpr(ps.psSubject, r), "psobj")
+  let valB = withPrefix(genExprTo(ps.psValue, r, fieldType), "psval")
+  let old = RpStackVar(specGenerateOpt(fieldType, r), "psold")
+  let call = OpMove(old, RpRuntimeInvoke("object_pin_set",
+                      RpNewStruct(prepend(RpNamedValue("o", mustResult(objB)),
+                                    prepend(RpNamedValue("offset", RpFieldOffset(cs.cName, d.member)),
+                                      prepend(RpNamedValue("v", mustResult(valB)), List())))),
+                      CgDataPointer()), true, Dict())
+  ret bundleJoin(bundleJoin(objB, valB),
+                 GBundle(list1(old), list1(call), old, List(), List()))
+
 fun firstBuiltinArg(params) => match(params)
   (tp: PeTuple) => match(head(tp.exprs))
     (e0: PTupEnt) => e0.tupValue
@@ -1448,6 +1471,7 @@ fun genExpr(x, r) => match(x)
   (c: PeCall)       => genCall(c, r)
   (tp: PeTuple)     => genTuple(tp, r)
   (te: PeTernary)   => genTernary(te, r, None)
+  (ps: PePinSet)    => genPinSet(ps, r)
   (lm: PeLambda)    => emptyBundle()   # unreachable: lambdas are lowered away before generate
   (bk: PeBlock)     => genBlockTo(bk, r, None)
   (mt: PeMatch)     => genMatch(mt, r, None)

@@ -1136,6 +1136,30 @@ static inline bool gc_page_any_card(gc_page_t *page) {
     return false;
 }
 
+// object_pin_set's slow half (yafl.h): a moved object, a held pin, or an OLD
+// stamp. The resolving pin waits, follows the move, and cards a stamped
+// object (object_pin_owed); the store into the object actually pinned then
+// owes what any store does.
+EXPORT object_t* object_pin_set_slow(object_t* o, size_t offset, object_t* v) {
+    object_t *held = object_pin_resolve(o);
+    object_t **slot = (object_t**)((char*)held + offset);
+    object_t *old = *slot;
+    if (old == NULL)
+        GC_STORE_IN(held, *slot, 1, v);
+    object_unpin(held);
+    return old;
+}
+
+// The empty slot of a won fast path, while this thread's root scan is pending:
+// the store owes the insertion half (_gc_write_barrier_in2), which the store
+// macro's call pays.
+EXPORT object_t* object_pin_set_pending(object_t* o, size_t offset, object_t* v, uintptr_t won) {
+    object_t **slot = (object_t**)((char*)o + offset);
+    GC_STORE_IN(o, *slot, 1, v);
+    __atomic_store_n((uintptr_t*)&o->vtable, won, __ATOMIC_RELEASE);
+    return NULL;
+}
+
 EXPORT object_t* object_pin_resolve(object_t* o) {
     for (;;) {
         // Resolve relocation FIRST and afresh on every attempt: the write must

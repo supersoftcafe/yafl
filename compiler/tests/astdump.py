@@ -141,6 +141,11 @@ def dump(statements) -> str:
             line(depth, "BuiltinOp", x, _ty(x.type))
             walk_expr(x.op, depth + 1)
             walk_expr(x.params, depth + 1)
+        elif isinstance(x, e.PinSetExpression):
+            line(depth, "PinSet", x, "")
+            walk_expr(x.subject, depth + 1)
+            walk_expr(x.target, depth + 1)
+            walk_expr(x.value, depth + 1)
         elif isinstance(x, e.NewEnumExpression):
             fields = ",".join(sorted(x.field_args))
             line(depth, "NewEnum", x, f"{x.root_spec_name}|{x.leaf_name}|{fields}")

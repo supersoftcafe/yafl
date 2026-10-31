@@ -331,6 +331,9 @@ fun llFold(x, name, n, calls: Bool): Int => match(x)
                                llCountOne(mt.subject, name, n, calls),
                                calls)
   (op: PeBuiltinOp) => llCountOne(op.opParams, name, n, calls)
+  (ps: PePinSet) => llCountOne(ps.psValue, name,
+                      llCountOne(ps.psTarget, name,
+                        llCountOne(ps.psSubject, name, n, calls), calls), calls)
   (nw: PeNew)    => llCountOne(nw.newParam, name, n, calls)
   (ar: PeArrayRead) => llCountOne(ar.arrIndex, name,
                                   llCountOne(ar.arrObj, name, n, calls),
@@ -512,6 +515,9 @@ fun llExpr(x, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
   (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                    llExpr(op.opParams, ctx, paramLets),
                                    op.peboLine)
+  (ps: PePinSet) => PePinSet(llExpr(ps.psSubject, ctx, paramLets),
+                             llExpr(ps.psTarget, ctx, paramLets),
+                             llExpr(ps.psValue, ctx, paramLets), ps.pepsLine)
   (nw: PeNew)    => PeNew(nw.newType, llExpr(nw.newParam, ctx, paramLets),
                           nw.penwLine)
   (qq: PeCoalesce) => PeCoalesce(llExpr(qq.qqSubject, ctx, paramLets),

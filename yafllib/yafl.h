@@ -1011,6 +1011,40 @@ INLINE object_t *yafl_unpin(object_t *self, object_t *o) {
 // (x86 may not).
 #define GC_ACQUIRE_FENCE() ARCH_LOAD_LOAD_FENCE()
 
+// ── pin and set: __builtin_pin_set__ ─────────────────────────────────────────
+// The write-once publication in one step: pin `o`, and if the pointer slot at
+// `offset` is empty, store `v`; release the pin. Answers NULL when it stored,
+// else what the slot holds (left as it is). The slot is one heap pointer, NULL
+// for None (the compilers check). `offset`, not an address: `o` may be a stale
+// copy, and the store must land in the object actually pinned.
+//
+// The fast path — current copy, nobody holding the pin, no OLD stamp, the CAS
+// won — then reads the slot. Taken: release and answer it. Empty: the store
+// owes the snapshot nothing (it overwrites NULL), only the publication fence,
+// unless this thread's own root scan is pending, when the insertion half is
+// owed (gc_store_owes_nothing): that goes out of line. A moved object, a held
+// pin or an OLD-stamped target (which must be carded) go out of line too.
+EXTERN object_t* object_pin_set_slow(object_t* o, size_t offset, object_t* v);
+EXTERN object_t* object_pin_set_pending(object_t* o, size_t offset, object_t* v, uintptr_t won);
+INLINE object_t* object_pin_set(object_t* o, size_t offset, object_t* v) {
+    uintptr_t w = __atomic_load_n((uintptr_t*)&o->vtable, __ATOMIC_RELAXED);
+    if (UNLIKELY((w & VTABLE_BITS) != VTABLE_TAG_BIT
+                 || !__atomic_compare_exchange_n((uintptr_t*)&o->vtable, &w, w | VTABLE_PIN_BIT,
+                                                 true, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)))
+        return object_pin_set_slow(o, offset, v);
+    object_t **slot = (object_t**)((char*)o + offset);
+    object_t *held = *slot;
+    if (LIKELY(held == NULL)) {
+        if (UNLIKELY(atomic_load_explicit(&gc_alloc_tl.safe_point_request, memory_order_relaxed)
+                     & GC_SAFE_POINT_SCAN_ROOTS))
+            return object_pin_set_pending(o, offset, v, w);
+        GC_PUBLISH_FENCE();
+        *slot = v;
+    }
+    __atomic_store_n((uintptr_t*)&o->vtable, w, __ATOMIC_RELEASE);   // unpin: the word we won
+    return held;
+}
+
 // ── Argument checks: plain asserts, stripped by NDEBUG ───────────────────────
 // A heap store names its CONTAINER, whose address decides whether it is
 // static (GC_PUBLISH_IF_STATIC_IN), so `obj` must truly be the BASE of an

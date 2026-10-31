@@ -176,6 +176,12 @@ set_tests_properties(test_gc_old_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=
 # the stub through an old referrer, before the next major, reads live data.
 add_yafl_test(test_gc_old_stub_card)
 set_tests_properties(test_gc_old_stub_card PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_pin_set: stepped. object_pin_set (the runtime half of
+# `__builtin_pin_set__`) on each path: a fill before this thread's root scan,
+# a taken slot, a peer's pin, a moved object (through the stale pointer) and
+# an old object (carded).
+add_yafl_test(test_gc_pin_set)
+set_tests_properties(test_gc_pin_set PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_card_compact: stepped. A young page that a carded old object points
 # into is compacted in a minor, and the card's trace rewrites the old object's
 # field to the copy before the forwarder's slot can be reclaimed.

@@ -294,6 +294,10 @@ class _Checker:
         if isinstance(expr, e.BuiltinOpExpression):
             return self._count(expr.params, env, resolver)
 
+        if isinstance(expr, e.PinSetExpression):
+            return (self._count(expr.subject, env, resolver) + self._count(expr.target, env, resolver)
+                    + self._count(expr.value, env, resolver))
+
         # ConvertExpression wraps a sub-expression to widen it into a union. It may
         # not be present this early in the pipeline, but recursing into `inner`
         # is correct whether or not it is.

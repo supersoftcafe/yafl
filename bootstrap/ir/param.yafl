@@ -52,6 +52,10 @@ enum RParam
                      among: List<String>|None)
   enum RpSyncWrap(value: RParam, wrapperType: CgType)
   enum RpZeroOf(valueType: CgType)
+  # The byte offset of a field within its object: a constant, for a runtime
+  # call that must find the field in whichever copy of the object it ends up
+  # holding (object_pin_set, for `__builtin_pin_set__`) (param.py FieldOffset).
+  enum RpFieldOffset(objectName: String, field: String)
   enum RpNewStructTyped(structType: CgType, values: List<RpNamedValue>)
   enum RpTagTask(task: RParam, targetType: CgType)
   enum RpGlobalFunction(name: String, object: RParam|None, external: Bool, cSymbol: String|None, impure: Bool, sync: Bool)
@@ -115,6 +119,7 @@ fun rpGetType(r) => match(r)
   (x: RpObjVtableEq) => CgInt(8)
   (x: RpSyncWrap) => x.wrapperType
   (x: RpZeroOf) => x.valueType
+  (x: RpFieldOffset) => CgInt(64)
   (x: RpNewStructTyped) => x.structType
   (x: RpTagTask) => x.targetType
   (x: RpGlobalFunction) => CgFuncPointer(x.sync)
@@ -407,6 +412,9 @@ fun eqRParam(a, b) => match(a)
   (x: RpZeroOf) => match(b)
     (y: RpZeroOf) => eqCgType(x.valueType, y.valueType)
     (o: RParam) => false
+  (x: RpFieldOffset) => match(b)
+    (y: RpFieldOffset) => x.objectName == y.objectName && x.field == y.field
+    (o: RParam) => false
   (x: RpNewStructTyped) => match(b)
     (y: RpNewStructTyped) => eqCgType(x.structType, y.structType) && eqRpNamedValues(x.values, y.values)
     (o: RParam) => false
@@ -481,6 +489,7 @@ fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry
   (x: RpObjVtableEq) => rpToCObjVtableEq(x, cache)
   (x: RpSyncWrap) => rpToCSyncWrap(x, cache)
   (x: RpZeroOf) => rpToCZeroOf(x, cache)
+  (x: RpFieldOffset) => ("offsetof(" + mangleName(x.objectName) + "_t, " + mangleName(x.field) + ")", cache)
   (x: RpNewStructTyped) => rpToCNewStructTyped(x, cache)
   (x: RpTagTask) => rpToCTagTask(x, cache)
   (x: RpGlobalFunction) => rpToCGlobalFunction(x, cache)

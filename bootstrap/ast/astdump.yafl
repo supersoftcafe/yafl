@@ -146,6 +146,10 @@ fun dumpExpr(x, depth, out) => match(x)
   (bo: PeBuiltinOp) => dLine(out, depth, "BuiltinOp", bo.peboLine, tyOf(bo.opType))
     |> (s1) => dumpExpr(bo.opName, depth + 1, s1)
     |> (s2) => dumpExpr(bo.opParams, depth + 1, s2)
+  (ps: PePinSet) => dLine(out, depth, "PinSet", ps.pepsLine, "")
+    |> (s1) => dumpExpr(ps.psSubject, depth + 1, s1)
+    |> (s2) => dumpExpr(ps.psTarget, depth + 1, s2)
+    |> (s3) => dumpExpr(ps.psValue, depth + 1, s3)
   (ng: PeNothing)   => dLine(out, depth, "Nothing", ng.pengLine, "")
   # Names only, SORTED — the value expressions are deliberately not dumped
   # (Python's astdump prints the dict keys; keep the bytes identical).

@@ -248,6 +248,19 @@ def __to_named_fully_qualified(value: tuple[e.NamedExpression, list[e.NamedExpre
     return expr
 
 
+def __to_pin_set(result, tokens: list[p.Token]) -> p.Result[e.Expression]:
+    # `__builtin_pin_set__(obj, obj.field, value)`: three positional arguments.
+    # What they must be is the checker's (PinSetExpression.check).
+    params_tuple = result.value
+    entries = params_tuple.expressions
+    if len(entries) != 3 or any(en.name is not None or en.spread for en in entries):
+        return p.Result.error("__builtin_pin_set__ takes three arguments: (obj, obj.field, value)",
+                              tokens, params_tuple.line_ref)
+    obj, target, value = (en.value for en in entries)
+    return p.Result(e.PinSetExpression(result.line_ref, obj, target, value),
+                    result.tokens, result.line_ref, result.errors)
+
+
 def __to_builtin_op(result, tokens: list[p.Token]) -> p.Result[e.Expression]:
     type_spec, params_tuple = result.value
     if not params_tuple.expressions:
@@ -951,6 +964,7 @@ __parse_expr_tuple_entry = (((p.discard_sym("*") & __parse_expression).map(__to_
 __parse_expr_tuple = p.requires(p.sym("("), p.delimited_list(__parse_expr_tuple_entry, ",") & p.discard_sym(")"), "invalid tuple").build(__to_expr_tuple)
 __parse_lambda = (__parse_destructure_parts & p.discard_sym("=>") & __parse_expression) >> __to_expr_lambda
 __parse_builtin_op = p.requires(p.sym("__builtin_op__"), p.discard_sym("<") & __parse_type & p.discard_sym(">") & __parse_expr_tuple, "invalid use of __builtin_op__") >> __to_builtin_op
+__parse_pin_set = p.requires(p.sym("__builtin_pin_set__"), __parse_expr_tuple, "invalid use of __builtin_pin_set__") >> __to_pin_set
 __parse_named_fully_qualified = (__named() & p.many(p.discard_sym("::") & __named()) & __parse_maybe_type_params).map(__to_named_fully_qualified)
 
 # match arm: "(" literal ("," literal)* ")" |  "(" name ":" type ")"  |  "()"
@@ -983,7 +997,7 @@ __parse_match_subject = p.requires(p.sym("("), p.delimited_list(__parse_expressi
 __parse_match = p.requires(p.discard_sym("match"), __parse_match_subject & p.many(__parse_match_arm), "invalid match expression").build(__to_match_expression)
 
 __parse_paren_expr = __parse_expr_tuple.map(__to_paren_expr)
-__parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
+__parse_terminal = __float() | __integer() | __char() | __string() | __regex() | __parse_builtin_op | __parse_pin_set | __parse_match | __parse_named_fully_qualified | __parse_lambda | __parse_paren_expr
 
 # Postfix operators form ONE left-associative chain so dot/call/index interleave
 # freely: `f().g()`, `a().b`, `m()[0].x`. `.` is only ever member access (floats

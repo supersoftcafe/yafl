@@ -20,6 +20,11 @@ import System
 # `pin` waits for a peer's pin and follows a relocation, so it always succeeds,
 # and answers the object actually pinned: write through that, never through the
 # reference passed in. See yafl.h `object_pin`.
+#
+# For the write-once case above — fill a heap-object field only if it is
+# empty — `__builtin_pin_set__(cell, cell.next, Cell(2, None))` does the pin,
+# the check, the store and the release in one step, answering None when it
+# stored and the value already there when it did not (yafl.h object_pin_set).
 fun [foreign("yafl_pin"), impure, sync] pin<T>(o: T): T
 
 # Release the pin taken by `pin`. Only on an object you pinned.

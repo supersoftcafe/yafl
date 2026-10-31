@@ -128,6 +128,37 @@ class ActionStatement(Statement):
         return self.action.generate(resolver)
 
 
+def written_field(resolver: g.Resolver, target: e.DotExpression, what: str):
+    """(class statement, data statement) of the field `target` names, for a
+    write after construction (`what` is the form, for the message), or an
+    error message. Only a field of a class-typed subject can be written."""
+    btype = target.base.get_type(resolver)
+    if not isinstance(btype, t.ClassSpec):
+        return f"{what} assigns a field of a class instance"
+    from pyast.statement.classdef import ClassStatement
+    found = resolver.find_type(btype.name)
+    if not found or len(found) > 1 or not isinstance(found[0].statement, ClassStatement):
+        return f"{what} assigns a field of a class instance"
+    cdecl = found[0].statement
+    datas = cdecl.find_data(resolver, target.name)
+    if not datas:
+        return f"Could not find a field named {target.name}"
+    if len(datas) > 1:
+        return f"Ambiguous reference to field named {target.name}"
+    if isinstance(datas[0].statement, FunctionStatement):
+        return f"'{target.name}' is a method, not a field"
+    return cdecl, datas[0].statement
+
+
+def late_write_errors(line_ref: LineRef, cdecl, what: str) -> list[Error]:
+    """A write after construction needs a class that admits one."""
+    if "pinnable" in cdecl.attributes or "mutable" in cdecl.attributes:
+        return []
+    return [Error(line_ref,
+        f"{what} writes a field after construction, so it needs a [pinnable] or "
+        f"[mutable] class; '{g.bare_name(cdecl.name)}' is neither")]
+
+
 @dataclass
 class FieldAssignStatement(Statement):
     """`subject.field := value` — store into a field of a `[pinnable]` or
@@ -155,26 +186,9 @@ class FieldAssignStatement(Statement):
             value=self.value.search_and_replace(resolver, replace))
 
     def __field(self, resolver: g.Resolver):
-        """(class statement, data statement) of the assigned field, or an error
-        message. Only a field of a class-typed subject can be assigned."""
         if not isinstance(self.target, e.DotExpression):
             return "the left of ':=' must be a field, as in 'subject.field := value'"
-        btype = self.target.base.get_type(resolver)
-        if not isinstance(btype, t.ClassSpec):
-            return "':=' assigns a field of a class instance"
-        from pyast.statement.classdef import ClassStatement
-        found = resolver.find_type(btype.name)
-        if not found or len(found) > 1 or not isinstance(found[0].statement, ClassStatement):
-            return "':=' assigns a field of a class instance"
-        cdecl = found[0].statement
-        datas = cdecl.find_data(resolver, self.target.name)
-        if not datas:
-            return f"Could not find a field named {self.target.name}"
-        if len(datas) > 1:
-            return f"Ambiguous reference to field named {self.target.name}"
-        if isinstance(datas[0].statement, FunctionStatement):
-            return f"'{self.target.name}' is a method, not a field"
-        return cdecl, datas[0].statement
+        return written_field(resolver, self.target, "':='")
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
         new_target, target_stmts, target_hints = self.target.compile(resolver, None)
@@ -191,10 +205,7 @@ class FieldAssignStatement(Statement):
         if isinstance(found, str):
             return errors + [Error(self.line_ref, found)]
         cdecl, _ = found
-        if "pinnable" not in cdecl.attributes and "mutable" not in cdecl.attributes:
-            errors.append(Error(self.line_ref,
-                f"':=' writes a field after construction, so it needs a [pinnable] or "
-                f"[mutable] class; '{g.bare_name(cdecl.name)}' is neither"))
+        errors.extend(late_write_errors(self.line_ref, cdecl, "':='"))
         field_type = self.target.get_type(resolver)
         vtype = self.value.get_type(resolver)
         if (field_type is not None and vtype is not None

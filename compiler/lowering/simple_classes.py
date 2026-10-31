@@ -33,39 +33,12 @@ from pyast.statement import ImportGroup
 
 __empty_imports = ImportGroup(tuple())
 
-# Maximum number of fields a class may have to qualify for flat-struct lowering.
-# Arbitrary but reasonable cut-off: a complex number (2 fields) and even a
-# quaternion (4 fields) are optimised, but a matrix is not.
-_MAX_FLAT_STRUCT_FIELDS = 4
-
-
 def __is_simple_class(
         cls: s.ClassStatement,
         base_class_names: set[str]) -> bool:
-    if cls.is_interface:
-        return False
-    if "foreign" in cls.attributes:
-        return False
-    # Classes that are published into after construction need a real object
-    # with a stable identity to write through; flattening one to an unboxed
-    # struct would leave nothing to publish to. [mutable] says so by being
-    # writable at any time; [pinnable] says so for an object that is immutable
-    # except inside a late pin, which is a heap object for the same reason —
-    # the pin lives in its vtable word, and a value struct has none.
-    if "mutable" in cls.attributes or "pinnable" in cls.attributes:
-        return False
-    if cls.implements:
-        return False
-    if cls.name in base_class_names:
-        return False
-    if len(cls.parameters.flatten()) > _MAX_FLAT_STRUCT_FIELDS:
-        return False
-    # A class with a trailing variable-length array field is always a heap
-    # object — its storage can't collapse to a flat value struct — so never
-    # flatten it.
-    if any(isinstance(f.declared_type, t.ArrayFieldSpec) for f in cls.parameters.flatten()):
-        return False
-    return True
+    # The declaration's own half first (ClassStatement.never_flattens), then
+    # the program's.
+    return not cls.never_flattens() and cls.name not in base_class_names
 
 
 def __lift_method(

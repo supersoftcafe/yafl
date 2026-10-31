@@ -74,7 +74,7 @@ class _FieldRenames:
         return gv if init == gv.init else dataclasses.replace(gv, init=init)
 
     def access(self, x: p.RParam) -> p.RParam:
-        if isinstance(x, (p.ObjectField, p.ArrayElement)):
+        if isinstance(x, (p.ObjectField, p.ArrayElement, p.FieldOffset)):
             r = self.renames.get(x.object_name)
             if r is not None:
                 if isinstance(x, p.ArrayElement):

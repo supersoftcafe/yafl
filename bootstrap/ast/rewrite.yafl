@@ -130,6 +130,9 @@ fun rwExprKids(x, w: Rw): PExpr => match(x)
   (te: PeTernary) => with te(condition   = rwExpr(te.condition, w),
                              trueResult  = rwExpr(te.trueResult, w),
                              falseResult = rwExpr(te.falseResult, w))
+  (ps: PePinSet) => with ps(psSubject = rwExpr(ps.psSubject, w),
+                            psTarget  = rwExpr(ps.psTarget, w),
+                            psValue   = rwExpr(ps.psValue, w))
   (lm: PeLambda) => with lm(lamParams = rwStmt(lm.lamParams, w),
                             lamBody   = rwExpr(lm.lamBody, w),
                             lamRet    = rwSpecOpt(lm.lamRet, w))
@@ -348,6 +351,9 @@ fun foldExpr<T>(x, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
     (te: PeTernary) => foldExpr(te.falseResult, f, fx,
                          foldExpr(te.trueResult, f, fx,
                            foldExpr(te.condition, f, fx, acc2)))
+    (ps: PePinSet) => foldExpr(ps.psValue, f, fx,
+                        foldExpr(ps.psTarget, f, fx,
+                          foldExpr(ps.psSubject, f, fx, acc2)))
     (lm: PeLambda) => foldSpecOpt(lm.lamRet, f, fx,
                         foldExpr(lm.lamBody, f, fx,
                           foldStmt(lm.lamParams, f, fx, acc2)))
@@ -628,6 +634,12 @@ fun rwnExprKids(x, w: RwN, sc, n) => match(x)
     |> (cd, tr, fr) => RwNE(fr.rneN,
                             PeTernary(cd.rneExpr, tr.rneExpr, fr.rneExpr,
                                       te.pety))
+  (ps: PePinSet) => rwnExpr(ps.psSubject, w, sc, n)
+    |> (sb) => (sb, rwnExpr(ps.psTarget, w, sc, sb.rneN))
+    |> (sb, tg) => (sb, tg, rwnExpr(ps.psValue, w, sc, tg.rneN))
+    |> (sb, tg, vl) => RwNE(vl.rneN,
+                            PePinSet(sb.rneExpr, tg.rneExpr, vl.rneExpr,
+                                     ps.pepsLine))
   (lm: PeLambda) => rwnStmt(lm.lamParams, w, sc, n)
     |> (p) => (p, rwnExpr(lm.lamBody, w,
                           rwnLocalScope(flattenParams(lm.lamParams), sc),
@@ -794,6 +806,9 @@ fun fasExpr<T>(x, f: (:T, :Spec): T, acc: T): T => match(x)
   (te: PeTernary) => fasExpr(te.falseResult, f,
                        fasExpr(te.trueResult, f,
                          fasExpr(te.condition, f, acc)))
+  (ps: PePinSet)  => fasExpr(ps.psValue, f,
+                       fasExpr(ps.psTarget, f,
+                         fasExpr(ps.psSubject, f, acc)))
   (lm: PeLambda)  => fasSpecOpt(lm.lamRet, f,
                        fasExpr(lm.lamBody, f,
                          fasStmt(lm.lamParams, f, acc)))

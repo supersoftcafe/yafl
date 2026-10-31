@@ -25,7 +25,7 @@ from pyast.expression.literal import (
     StringExpression, IntegerExpression, FloatExpression, BoolExpression, NothingExpression)
 from pyast.expression.tuple_expr import TupleExpression, TupleEntryExpression
 from pyast.expression.access import NamedExpression, DotExpression, LazyExpression, ArrayReadExpression
-from pyast.expression.builtin_op import BuiltinOpExpression
+from pyast.expression.builtin_op import BuiltinOpExpression, PinSetExpression
 from pyast.expression.call import CallExpression
 from pyast.expression.new import NewExpression, NewEnumExpression
 from pyast.expression.lambda_expr import LambdaExpression

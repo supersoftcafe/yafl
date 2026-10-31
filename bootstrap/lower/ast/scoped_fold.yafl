@@ -68,6 +68,7 @@ fun sfExpr<T>(x: PExpr, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
     (mt: PeMatch)     => fold(mt.arms, sfExprs(mt.matchExtra, r, fx, sfExpr(mt.subject, r, fx, acc2)),
                               (a2, arm) => sfArm(arm, r, fx, a2))
     (op: PeBuiltinOp) => sfExpr(op.opParams, r, fx, acc2)
+    (ps: PePinSet)    => sfExpr(ps.psValue, r, fx, sfExpr(ps.psTarget, r, fx, sfExpr(ps.psSubject, r, fx, acc2)))
     (nw: PeNew)       => sfExpr(nw.newParam, r, fx, acc2)
     (ar: PeArrayRead) => sfExpr(ar.arrIndex, r, fx, sfExpr(ar.arrObj, r, fx, acc2))
     (cv: PeConvert)   => sfExpr(cv.convInner, r, fx, acc2)

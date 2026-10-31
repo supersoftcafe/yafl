@@ -454,35 +454,42 @@ fun checkFieldAssign2(fa: PsFieldAssign, r) => union(
     fieldAssignErrors(fa, r))
 
 fun fieldAssignErrors(fa: PsFieldAssign, r) => match(fa.faTarget)
-  (d: PeDot) => match(exprType(d.base, r))
-    (c2: SClass) => faClassErrors(fa, d, c2, r)
-    (o: Spec)    => oneErr(fa.psfaLine, "':=' assigns a field of a class instance")
-    ()           => oneErr(fa.psfaLine, "':=' assigns a field of a class instance")
+  (d: PeDot) => match(writtenField(d, "':='", r))
+    (cs: PsClass) => union(lateWriteErrors(fa.psfaLine, cs, "':='"), faValueFits(fa, r))
+    (msg: String) => oneErr(fa.psfaLine, msg)
   (o: PExpr) => oneErr(fa.psfaLine,
                        "the left of ':=' must be a field, as in 'subject.field := value'")
 
-fun faClassErrors(fa: PsFieldAssign, d: PeDot, c2: SClass, r) => match(soleItem(findType(r, c2.scName)))
-  (f: Found) => match(f.fStmt)
-    (cs: PsClass) => faDataErrors(fa, d, cs, classFindData(cs, r, d.member), r)
-    (o: PStmt)    => oneErr(fa.psfaLine, "':=' assigns a field of a class instance")
-  ()         => oneErr(fa.psfaLine, "':=' assigns a field of a class instance")
+# The class of the field `d` names, for a write after construction (`what` is
+# the form, for the message), or the error (control.py written_field). Only a
+# field of a class-typed subject can be written.
+fun writtenField(d: PeDot, what: String, r): PsClass|String => match(exprType(d.base, r))
+  (c2: SClass) => match(soleItem(findType(r, c2.scName)))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => writtenData(d, cs, classFindData(cs, r, d.member))
+      (o: PStmt)    => what + " assigns a field of a class instance"
+    ()         => what + " assigns a field of a class instance"
+  (o: Spec)    => what + " assigns a field of a class instance"
+  ()           => what + " assigns a field of a class instance"
 
-fun faDataErrors(fa: PsFieldAssign, d: PeDot, cs: PsClass, datas: List<Found>, r)
+fun writtenData(d: PeDot, cs: PsClass, datas: List<Found>): PsClass|String
   if isEmpty(datas)
-    ret oneErr(fa.psfaLine, "Could not find a field named " + d.member)
+    ret "Could not find a field named " + d.member
   if atLeast(chain(datas), 2)
-    ret oneErr(fa.psfaLine, "Ambiguous reference to field named " + d.member)
+    ret "Ambiguous reference to field named " + d.member
   ret match(head(datas))
     (f: Found) => match(f.fStmt)
-      (fn: PsFun) => oneErr(fa.psfaLine, "'" + d.member + "' is a method, not a field")
-      (o: PStmt)  => union(faClassAdmits(fa, cs), faValueFits(fa, r))
-    ()         => noErrs()
+      (fn: PsFun) => "'" + d.member + "' is a method, not a field"
+      (o: PStmt)  => cs
+    ()         => cs
 
-fun faClassAdmits(fa: PsFieldAssign, cs: PsClass)
+# A write after construction needs a class that admits one (control.py
+# late_write_errors).
+fun lateWriteErrors(lr: PLine, cs: PsClass, what: String)
   ret hasAttr(cs.cAttrs, "pinnable") || hasAttr(cs.cAttrs, "mutable")
     ? noErrs()
-    : oneErr(fa.psfaLine,
-             "':=' writes a field after construction, so it needs a [pinnable] or "
+    : oneErr(lr,
+             what + " writes a field after construction, so it needs a [pinnable] or "
              + "[mutable] class; '" + bareName(cs.cName) + "' is neither")
 
 fun faValueFits(fa: PsFieldAssign, r) => match(exprType(fa.faTarget, r))

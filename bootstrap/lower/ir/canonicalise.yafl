@@ -84,4 +84,7 @@ fun cnAccess(rn: Dict<String, Dict<String, String>>, p: RParam): RParam => match
                                                 cnRename(r, x.field), cnRename(r, x.lengthField),
                                                 x.index, x.checked)
     ()                        => p
+  (x: RpFieldOffset)  => match(get(rn, x.objectName))
+    (r: Dict<String, String>) => with x(field = cnRename(r, x.field))
+    ()                        => p
   (o: RParam)         => p

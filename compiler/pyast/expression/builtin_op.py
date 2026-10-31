@@ -194,3 +194,105 @@ class BuiltinOpExpression(Expression):
 
 
 
+_PIN_SET = "'__builtin_pin_set__'"
+
+
+@dataclass
+class PinSetExpression(Expression):
+    """`__builtin_pin_set__(obj, obj.field, value)`: the write-once publication
+    in one step. Pins `obj`; if the field is empty, stores `value`; releases.
+    Answers None when it stored, else what the field already held, left as it
+    is: it only ever fills None, never replaces a value.
+
+    For library use: the field must hold a heap object or None (`C|None`, C a
+    class no lowering can flatten to a value), so an empty field is one NULL
+    word the runtime can test and fill, and the class must admit a late write
+    ([pinnable] or [mutable]). `obj` is a plain name and `obj.field` a field of
+    it, so the field is named in YAFL and found in whichever copy the pin
+    takes (yafl.h object_pin_set) — but only the store follows a move: a
+    caller still holding the stale copy afterwards holds the stale copy.
+    """
+    subject: Expression    # a NamedExpression
+    target: Expression     # a DotExpression on the same name
+    value: Expression
+
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
+        return rw.rewrite(self, replace, resolver,
+            subject=self.subject.search_and_replace(resolver, replace),
+            target=self.target.search_and_replace(resolver, replace),
+            value=self.value.search_and_replace(resolver, replace))
+
+    def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        return self.target.get_type(resolver)
+
+    def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
+        new_subject, subject_stmts, subject_hints = self.subject.compile(resolver, None)
+        new_target, target_stmts, target_hints = self.target.compile(resolver, None)
+        # Received by the FIELD's type, as `:=` receives it: a Node into a
+        # `Node|None`.
+        new_value, value_stmts, value_hints = self.value.compile(resolver, new_target.get_type(resolver))
+        expr = dataclasses.replace(self, subject=new_subject, target=new_target, value=new_value)
+        from pyast.expression.conversion import converted
+        return (converted(expr, expected_type, resolver),
+                list(subject_stmts) + list(target_stmts) + list(value_stmts),
+                h.merge(subject_hints, target_hints, value_hints))
+
+    def check(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> list[Error]:
+        from pyast.expression.access import DotExpression, NamedExpression
+        from pyast.statement.control import written_field, late_write_errors
+        from pyast.statement.classdef import ClassStatement
+        errors = (self.subject.check(resolver, None) + self.target.check(resolver, None)
+                  + self.value.check(resolver, None))
+        if not (isinstance(self.subject, NamedExpression) and isinstance(self.target, DotExpression)
+                and isinstance(self.target.base, NamedExpression)
+                and self.target.base.name == self.subject.name):
+            return errors + [Error(self.line_ref,
+                f"{_PIN_SET} takes (obj, obj.field, value): a name, then a field of it")]
+        found = written_field(resolver, self.target, _PIN_SET)
+        if isinstance(found, str):
+            return errors + [Error(self.line_ref, found)]
+        cdecl, _ = found
+        errors.extend(late_write_errors(self.line_ref, cdecl, _PIN_SET))
+        field_type = self.target.get_type(resolver)
+        if field_type is not None and not self.__heap_or_none(resolver, field_type):
+            errors.append(Error(self.line_ref,
+                f"{_PIN_SET} fills a field holding a heap object or None: "
+                f"'{self.target.name}' must be 'C|None', C a class always kept on the heap "
+                f"(an interface, or a class that is [pinnable], [mutable] or [foreign], "
+                f"implements an interface, or has more than "
+                f"{ClassStatement.MAX_FLAT_STRUCT_FIELDS} fields)"))
+        vtype = self.value.get_type(resolver)
+        if (field_type is not None and vtype is not None
+                and t.trivially_assignable_equals(resolver, field_type, vtype) is False):
+            errors.append(Error(self.line_ref, "Incorrect type assigned to the field"))
+        return errors
+
+    @staticmethod
+    def __heap_or_none(resolver: g.Resolver, field_type: t.TypeSpec) -> bool:
+        """`C|None`, C a class that stays a heap object whatever the rest of the
+        program does (ClassStatement.never_flattens): its None is NULL."""
+        from pyast.statement.classdef import ClassStatement
+        if not isinstance(field_type, t.CombinationSpec):
+            return False
+        members = field_type.repr_members()
+        units = [m for m in members if isinstance(m, t.TupleSpec) and not m.entries]
+        classes = [m for m in members if isinstance(m, t.ClassSpec)]
+        if len(members) != 2 or len(units) != 1 or len(classes) != 1:
+            return False
+        found = resolver.find_type(classes[0].name)
+        return (len(found) == 1 and isinstance(found[0].statement, ClassStatement)
+                and found[0].statement.never_flattens())
+
+    def generate(self, resolver: g.Resolver) -> g.OperationBundle:
+        from pyast.statement.control import written_field
+        cdecl, data = written_field(resolver, self.target, _PIN_SET)
+        field_type = self.target.get_type(resolver)
+        obj_b = self.subject.generate(resolver).with_prefix("psobj")
+        val_b = self.value.generate_to(resolver, field_type).with_prefix("psval")
+        old = cg_p.StackVar(field_type.generate(resolver), "psold")
+        # Kept when the answer goes unread: the call is the store.
+        call = cg_o.Move(old, cg_p.RuntimeInvoke("object_pin_set", cg_p.NewStruct((
+            ("o", obj_b.result_var),
+            ("offset", cg_p.FieldOffset(cdecl.name, data.name)),
+            ("v", val_b.result_var))), cg_t.DataPointer()), keep=True)
+        return obj_b + val_b + g.OperationBundle((old,), (call,), old)

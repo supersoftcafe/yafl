@@ -244,6 +244,7 @@ fun drExpr(x, wheres: List<Spec>, r,
                     ? PeBuiltinOp(op.opType, op.opName, o.deExpr, op.peboLine)
                     : x,
                   o.deChanged)
+  (ps: PePinSet) => drPinSet(ps, wheres, r, insts)
   (nw: PeNew)    => drExpr(nw.newParam, wheres, r, insts)
     |> (o) => DrE(o.deChanged ? PeNew(nw.newType, o.deExpr, nw.penwLine) : x,
                   o.deChanged)
@@ -298,6 +299,10 @@ fun drPair(a, b, wheres: List<Spec>, r,
                   exprLine(a)),
           oa.deChanged || ob.deChanged)
 
+fun entryOf(x, i) => match(x)
+  (tp: PeTuple) => entryAt(chain(tp.exprs), i, x)
+  (o: PExpr)    => x
+
 fun pairA(x) => match(x)
   (tp: PeTuple) => entryAt(chain(tp.exprs), 0, x)
   (o: PExpr)    => x
@@ -346,6 +351,17 @@ fun drTernary(te, wheres: List<Spec>, r,
   ret DrE(changed
             ? PeTernary(oc.deExpr, ot.deExpr, of2.deExpr, te.pety)
             : te,
+          changed)
+
+fun drPinSet(ps, wheres: List<Spec>, r,
+             insts: List<TraitInst>)
+  let os = drExpr(ps.psSubject, wheres, r, insts)
+  let ot = drExpr(ps.psTarget, wheres, r, insts)
+  let ov = drExpr(ps.psValue, wheres, r, insts)
+  let changed = os.deChanged || ot.deChanged || ov.deChanged
+  ret DrE(changed
+            ? PePinSet(os.deExpr, ot.deExpr, ov.deExpr, ps.pepsLine)
+            : ps,
           changed)
 
 fun drMatch(mt: PeMatch, wheres: List<Spec>, r,
@@ -773,6 +789,15 @@ fun drFixExpr(x, let2: PsLet)
     (op: PeBuiltinOp) => drFixExpr(op.opParams, let2)
       |> (o) => DrBx(PeBuiltinOp(op.opType, op.opName, o.bxExpr, op.peboLine),
                      o.bxDid, o.bxOk)
+    # Its three operands run in order, as a call's arguments do.
+    (ps: PePinSet)  => drFixEntries(PeTuple(prepend(PTupEnt("", false, ps.psSubject),
+                                              prepend(PTupEnt("", false, ps.psTarget),
+                                                prepend(PTupEnt("", false, ps.psValue),
+                                                        List()))),
+                                            ps.pepsLine), let2)
+      |> (p) => DrBx(PePinSet(entryOf(p.bxExpr, 0), entryOf(p.bxExpr, 1),
+                              entryOf(p.bxExpr, 2), ps.pepsLine),
+                     p.bxDid, p.bxOk)
     (nw: PeNew)     => drFixExpr(nw.newParam, let2)
       |> (o) => DrBx(PeNew(nw.newType, o.bxExpr, nw.penwLine), o.bxDid,
                      o.bxOk)
