@@ -1108,12 +1108,32 @@ static _Atomic(bool) gc_cards_requested = false;
 // A won late pin on a STAMPED object (object_pin_owed, yafl.h): card it, and
 // flag its page and this thread for the next root scan. Under the pin and
 // before the store, so the collector's clear-and-recheck (gc_card_object)
-// either sees the pin or sees the store.
+// either sees the pin or sees the store. Also compaction's, for the copy of a
+// carded old object. The card, then the flag, both seq_cst: against the
+// collector's clear of the flag and its fence (gc_page_take_carded_flag),
+// either the collector reads this card or this flag lands after its clear.
 EXPORT void object_pin_note_old(object_t* o) {
     gc_page_t *page = (gc_page_t*)((uintptr_t)o & ~(uintptr_t)(GC_PAGE_SIZE - 1));
     atomic_bitmap_fetch_set(&page->head.cards, (unsigned)((slot_t*)o - page->slots));
-    atomic_store_explicit(&page->head.carded, true, memory_order_release);
+    atomic_store_explicit(&page->head.carded, true, memory_order_seq_cst);
     gc_alloc_tl.old_writes = true;
+}
+
+// The collector's half: clear a page's `carded` flag BEFORE reading its
+// cards, with a full fence between. A store then a load of another location
+// may otherwise pass each other (x86 and aarch64 both allow it): the read
+// misses a card a late pin has just set, and the clear, landing late,
+// overwrites the flag that pin raised — the page goes to `old_pages` with a
+// card no walk will find.
+static inline void gc_page_take_carded_flag(gc_page_t *page) {
+    atomic_store_explicit(&page->head.carded, false, memory_order_relaxed);
+    atomic_thread_fence(memory_order_seq_cst);
+}
+static inline bool gc_page_any_card(gc_page_t *page) {
+    for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
+        if (atomic_load_explicit((_Atomic(mask_bits_t)*)&page->head.cards.a[i], memory_order_relaxed))
+            return true;
+    return false;
 }
 
 EXPORT object_t* object_pin_resolve(object_t* o) {
@@ -1268,6 +1288,19 @@ static void *gc_old_copy_alloc(size_t size) {
     return object;
 }
 
+// A target the claim did not use: an old page is not pruned until the next
+// major, so an orphan would sit there, uninitialised but counted an object,
+// for a conservative word or the validator to read. The target was this
+// executor's last allocation, so its bump simply moves back.
+static void gc_old_copy_unalloc(void *object, size_t size) {
+    size_t actual = (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+    gc_page_t *page = (gc_page_t*)((uintptr_t)object & ~(uintptr_t)(GC_PAGE_SIZE - 1));
+    unsigned slot = (unsigned)((slot_t*)object - page->slots);
+    page->head.objects.a[slot / GC_MASK_SIZE] &= ~((mask_bits_t)1 << (slot % GC_MASK_SIZE));
+    assert((char*)object == gc_old_copy_bump);
+    gc_old_copy_bump += actual;
+}
+
 static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
     // Runtime threshold (YAFL_GC_COMPACT_PERCENT); 0 disables compaction.
     const unsigned pct = gc_compact_percent;
@@ -1354,8 +1387,10 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         // Claim: CAS the vtable word to pinned. Fails if a mutator holds the
         // pin (mid-write — leave the object where it is, exactly as the
         // pre-scan's pinned check does) or if the word already forwards.
-        if (!object_try_pin(object))
+        if (!object_try_pin(object)) {
+            if (page->head.was_old) gc_old_copy_unalloc(target, size);
             continue;
+        }
         // An array built in place (array_cap_offset set) grows its `length`
         // under this same pin, so the size read before the claim may be
         // stale: copying it would drop the bytes appended since. Re-read under
@@ -1364,6 +1399,7 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
         vtable_t *cvt = vtable_untag(object->vtable);
         if (UNLIKELY(cvt->array_cap_offset) && object_get_size(object) != size) {
             object_unpin(object);
+            if (page->head.was_old) gc_old_copy_unalloc(target, size);
             continue;
         }
 
@@ -1387,12 +1423,9 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
             // through one reads the stub's own body. A minor never scans an
             // old page, so only the card's trace keeps that body's young
             // referents alive and rewrites it when they move
-            // (test_gc_old_stub_card). The next minor's root scans find the
-            // copy's page flagged, as a late pin's would.
-            gc_page_t *tp = (gc_page_t*)((uintptr_t)target & ~(uintptr_t)(GC_PAGE_SIZE - 1));
-            atomic_bitmap_fetch_set(&tp->head.cards, (unsigned)((slot_t*)target - tp->slots));
-            atomic_store_explicit(&tp->head.carded, true, memory_order_release);
-            gc_alloc_tl.old_writes = true;
+            // (test_gc_old_stub_card). The copy is carded as a late pin
+            // would card it, and the next minor's root scans find its page.
+            object_pin_note_old(target);
         }
         // An array built in place owned only `length` elements' worth of the
         // copy: its spare capacity stayed behind, so say so on the copy.
@@ -1757,12 +1790,18 @@ static void gc_collect_cards(void) {
         }
         gc_pool_unlock();
     }
+    // Pages left with no card go back to `old_pages` together, under one hold
+    // of the lock. Nothing else touches `carded_pages` in this exclusive stage
+    // (prune publishes into it, and a major's start takes it), so the walk
+    // gathers them on a local chain first.
+    list_element_t emptied = {&emptied, &emptied};
+    size_t emptied_n = 0;
     for (list_element_t *node = carded_pages.next; node != &carded_pages; ) {
         gc_page_t *p = (gc_page_t*)node;
         node = node->next;
         // Cleared before the cards are read: a pin that sets one after this
         // read flags the page again, and its thread's next scan finds it.
-        atomic_store_explicit(&p->head.carded, false, memory_order_seq_cst);
+        gc_page_take_carded_flag(p);
         bool any = false;
         for (unsigned index = 0; index < sizeof(bitmap_t) / sizeof(mask_bits_t); ++index) {
             mask_bits_t bits = atomic_load_explicit((_Atomic(mask_bits_t)*)&p->head.cards.a[index],
@@ -1774,12 +1813,16 @@ static void gc_collect_cards(void) {
             }
         }
         if (!any) {
-            gc_pool_lock();
             list_unlink((list_element_t*)&p->head.list);
-            list_link(&old_pages, (list_element_t*)&p->head.list);
-            gc_carded_page_count -= 1;
-            gc_pool_unlock();
+            list_link(&emptied, (list_element_t*)&p->head.list);
+            emptied_n += 1;
         }
+    }
+    if (emptied_n != 0) {
+        gc_pool_lock();
+        list_move(&old_pages, &emptied);
+        gc_carded_page_count -= emptied_n;
+        gc_pool_unlock();
     }
 }
 
@@ -2966,10 +3009,10 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                 for (unsigned i = 0; i < sizeof(bitmap_t) / sizeof(mask_bits_t); ++i)
                     atomic_fetch_and_explicit((_Atomic(mask_bits_t)*)&page->head.cards.a[i],
                                               page->head.objects.a[i], memory_order_relaxed);
-                atomic_store_explicit(&page->head.carded, false, memory_order_relaxed);
+                gc_page_take_carded_flag(page);
                 page->head.old = true;
                 list_unlink((list_element_t*)&page->head.list);
-                if (bitmap_test_all(&page->head.cards)) {
+                if (gc_page_any_card(page)) {
                     list_link(&promoted_carded, (list_element_t*)&page->head.list);
                     batch_carded += 1;
                 } else {
@@ -3016,12 +3059,12 @@ static NOINLINE_DEBUG bool gc_fsa_prune_body() {
                         // Every object is stamped, so a late write from here
                         // on cards its object itself (object_pin).
                         page->head.old = true;
-                        atomic_store_explicit(&page->head.carded, false, memory_order_relaxed);
+                        gc_page_take_carded_flag(page);
                         // No lock: the page sits on this batch's LOCAL
                         // survivors chain — move it to a local promoted
                         // chain; publication happens once, below.
                         list_unlink((list_element_t*)&page->head.list);
-                        if (bitmap_test_all(&page->head.cards)) {
+                        if (gc_page_any_card(page)) {
                             if (UNLIKELY(gc_stats_enabled)) gc_prof_promote_carded++;
                             list_link(&promoted_carded, (list_element_t*)&page->head.list);
                             batch_carded += 1;
