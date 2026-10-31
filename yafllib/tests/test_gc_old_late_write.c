@@ -4,9 +4,9 @@
 // The ragged snapshot finds whatever a thread moves from its stack into the
 // heap before its own root scan by tracing the heap afterwards. An `old` page
 // is not traced by a minor cycle, so a late write landing on one in that
-// window — the writer then dropping the value — is seen only because the end
-// of SCAN_ROOTS demotes the pages late writes touched (gc_demote_redirtied,
-// object.c), as START does.
+// window — the writer then dropping the value — is seen only because the
+// write carded its object and the end of SCAN_ROOTS traces the carded
+// objects (gc_collect_cards, object.c). The page stays old.
 //
 //   1. P (immutable, half a page) is rooted and cycled until its page is old.
 //   2. C (mutable, so it stays young) is allocated while the collector is
@@ -17,11 +17,12 @@
 //   4. C is late-written into P's slot under the pin, and dropped from the
 //      stack. The store is a raw one, not a store macro: the macro's hybrid
 //      barrier would shade C at this thread's root scan and hide whether the
-//      demotion works.
+//      card works.
 //   5. The cycle finishes. P's slot is C's only reference: C must be live.
 //
-// Without the demotion at the end of SCAN_ROOTS, P's page stays old for the
-// cycle, nothing traces its slot, and C is reclaimed while P points at it.
+// Without the card's trace at the end of SCAN_ROOTS, nothing traces P's slot,
+// and C is reclaimed while P points at it. After the cycle P's page must
+// still be old, and the minors that follow must keep C through P's card.
 // Run with YAFL_THREADS=1; uses gc_debug_manual_mode, as test_gc_gen does.
 
 #include "../yafl.h"
@@ -110,9 +111,9 @@ static void __attribute__((noinline)) allocate_child(void) {
     g_C = (uintptr_t)c;
 }
 
-// The late write, as once.c makes one.
+// The late write, as `pin`, `:=` and `unpin` make one.
 static void __attribute__((noinline)) late_write(void) {
-    object_t* owner = object_pin_resolve((object_t*)g_P);   // notes the late write
+    object_t* owner = object_pin((object_t*)g_P);   // reports the late write
     __atomic_store_n((uintptr_t*)&((struct parent*)owner)->slot, (uintptr_t)g_C, __ATOMIC_RELEASE);
     object_unpin(owner);
 }
@@ -166,6 +167,18 @@ static void _entrypoint(object_t* self, fun_t cont) {
     int st = C_state();
     printf("test_gc_old_late_write: after the cycle C_state=%d (1=live, 2=reclaimed)\n", st);
     if (st != 1) fail("a late write into an old page before its writer's scan lost its value", st);
+
+    // (6) Old stays old: the write carded P, it did not send P's page back to
+    // the young generation. C is mutable, so it never promotes and P's card
+    // stays: every minor traces C through it.
+    if (P_generation() != 1) fail("the late write demoted P's page", P_generation());
+    for (int cycles = 0; cycles < 3; ++cycles) {
+        churn_filler();
+        scrub();
+        run_one_cycle();
+        if (C_state() != 1) fail("a carded slot's value was reclaimed by a minor", C_state());
+        if (P_generation() != 1) fail("P's page left the old generation", P_generation());
+    }
     printf("test_gc_old_late_write: OK\n");
     fflush(stdout);
     ((void(*)(object_t*,object_t*))_exit_cont.f)(_exit_cont.o, integer_from_int32(0));

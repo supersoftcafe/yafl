@@ -159,6 +159,9 @@ fun tlCountSelf(x, fName, n): Int
     (mt: PeMatch)  => tlCountArms(chain(mt.arms), fName,
                                   tlCountSelf(mt.subject, fName, n2))
     (op: PeBuiltinOp) => tlCountSelf(op.opParams, fName, n2)
+    (ps: PePinSet) => tlCountSelf(ps.psValue, fName,
+                        tlCountSelf(ps.psTarget, fName,
+                          tlCountSelf(ps.psSubject, fName, n2)))
     (nw: PeNew)    => tlCountSelf(nw.newParam, fName, n2)
     (ar: PeArrayRead) => tlCountSelf(ar.arrIndex, fName,
                                      tlCountSelf(ar.arrObj, fName, n2))

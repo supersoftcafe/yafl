@@ -77,6 +77,7 @@ fun scanRParam(p): ScanSets => match(p)
                                     scanOptRParam(of.index))
   (ae: RpArrayElement)   => ssUnion(ssUnion(scanRParam(ae.pointer), scanRParam(ae.index)),
                                     ssObject1(ae.objectName))
+  (fo: RpFieldOffset)    => ssObject1(fo.objectName)
   (gf: RpGlobalFunction) => gf.external
     ? ssEmpty()
     : ssUnion(ssFunction1(gf.name), scanOptRParam(gf.object))

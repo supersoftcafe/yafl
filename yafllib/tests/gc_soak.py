@@ -63,24 +63,30 @@ DEFAULT_BUILDS = ["gcc-O0", "gcc-O2", "clang-O0", "clang-O2"]
 #
 # ONLY_PROFILES: tests that step the collector to an exact state depend on its
 # settings, and fail by design under other profiles. test_gc_gen and
-# test_gc_late_pin_race need generations at their default floor (the nursery
-# knobs change which cycle promotes); the other stepped tests are limited the
-# same way. test_gc_pressure under `hot` does 16x the collector work and
+# test_gc_late_pin_race need generations at their default floor (the other
+# profiles change which cycle promotes); the other stepped tests are limited
+# the same way. test_gc_pressure under `hot` does 16x the collector work and
 # outlasts any sane timeout on a small machine.
 ONLY_PROFILES = {
-    "test_gc_gen":           {"default", "global"},
-    "test_gc_late_pin_race": {"default", "global"},
-    "test_gc_publish_step":  {"default", "global"},
-    "test_gc_lazy_step":     {"default", "global"},
-    "test_gc_old_late_write": {"default", "global"},
-    "test_gc_late_requeue":  {"default", "global"},
-    "test_gc_static_store":  {"default", "global"},
-    "test_gc_pump_window":   {"default", "global"},
-    "test_gc_overflow_window": {"default", "global"},
-    "test_gc_writer_window": {"default", "global"},
-    "test_gc_builder_idle":  {"default"},
-    "test_gc_once_escape":   {"default"},
-    "test_gc_pressure":      {"default", "nursery1", "nursery4", "global", "nogen", "oversub"},
+    "test_gc_gen":           {"default", "eager"},
+    "test_gc_late_pin_race": {"default", "eager"},
+    "test_gc_publish_step":  {"default", "eager"},
+    "test_gc_lazy_step":     {"default", "eager"},
+    "test_gc_old_late_write": {"default", "eager"},
+    "test_gc_card_compact": {"default", "eager"},
+    "test_gc_cards":         {"default", "eager"},
+    "test_gc_old_compact":   {"default", "eager"},
+    "test_gc_old_stub_card": {"default", "eager"},
+    "test_gc_late_requeue":  {"default", "eager"},
+    "test_gc_static_store":  {"default", "eager"},
+    "test_gc_pump_window":   {"default", "eager"},
+    "test_gc_overflow_window": {"default", "eager"},
+    "test_gc_writer_window": {"default", "eager"},
+    "test_gc_write_once_step": {"default", "eager"},
+    "test_gc_misaligned_root": {"default", "eager"},
+    # The dwell itself: every other profile turns it off.
+    "test_gc_dwell":         {"default", "nogen"},
+    "test_gc_pressure":      {"default", "eager", "eager1", "nogen", "oversub"},
 }
 TESTS = {
     "test_gc":               (120, {}),
@@ -97,13 +103,18 @@ TESTS = {
     "test_gc_fwd_chain":     (60,  {}),
     "test_gc_late_pin_race": (60,  {}),
     "test_gc_old_late_write": (60, {}),
+    "test_gc_card_compact": (60, {}),
+    "test_gc_cards":         (60,  {}),
+    "test_gc_old_compact":   (60,  {}),
+    "test_gc_old_stub_card": (60,  {}),
     "test_gc_late_requeue":  (60,  {}),
     "test_gc_static_store":  (60,  {}),
     "test_gc_pump_window":   (60,  {}),
     "test_gc_overflow_window": (60, {}),
     "test_gc_writer_window": (60,  {}),
-    "test_gc_builder_idle":  (60,  {}),
-    "test_gc_once_escape":   (60,  {}),
+    "test_gc_write_once_step": (60, {}),
+    "test_gc_misaligned_root": (60, {}),
+    "test_gc_dwell":         (60,  {"YAFL_THREADS": "1"}),
     "test_lazy_runner":      (60,  {}),
     # test_gc_mesh picks a 64 MB heap for itself (4 workers, collector always
     # busy). Under oversub (8 workers) and hot (every survivor page compacted)
@@ -127,13 +138,12 @@ YAFL_TESTS = {"gc_stress": ("tests/gc_stress.yafl", ["500"])}
 # use-after-free aborts instead of reading stale data.
 P = {"YAFL_GC_POISON": "1"}
 PROFILES = {
-    # The defaults: nursery on, one worker per core.
+    # The defaults: a dwell between cycles, one worker per core.
     "default":   {**P},
-    # A nursery collection every 2 pages, on one worker and on four.
-    "nursery1":  {**P, "YAFL_LOCAL_GC_PAGES": "2", "YAFL_THREADS": "1"},
-    "nursery4":  {**P, "YAFL_LOCAL_GC_PAGES": "2", "YAFL_THREADS": "4"},
-    # Nursery off: the global collector alone.
-    "global":    {**P, "YAFL_LOCAL_GC": "0"},
+    # No dwell: cycles back to back, so every test crosses as many cycle
+    # boundaries as its work allows; on every core, and on one worker.
+    "eager":     {**P, "YAFL_GC_IDLE_PAGES": "0"},
+    "eager1":    {**P, "YAFL_GC_IDLE_PAGES": "0", "YAFL_THREADS": "1"},
     # Generations off.
     "nogen":     {**P, "YAFL_GC_GEN": "0"},
     # Everything turned up: 16x the scan/prune work per page, every survivor
@@ -141,10 +151,10 @@ PROFILES = {
     # forwarding and majors overlap the mutator as much as possible.
     "hot":       {**P, "YAFL_GC_STEP_PAGES": "64", "YAFL_GC_PRUNE_PAGES": "1024",
                   "YAFL_GC_COMPACT_PERCENT": "100", "YAFL_GC_PROMOTE_FLOOR": "16",
-                  "YAFL_LOCAL_GC_PAGES": "4"},
+                  "YAFL_GC_IDLE_PAGES": "0"},
     # Twice as many workers as cores: preemption lands inside the collector's
     # check-then-act windows.
-    "oversub":   {**P, "YAFL_THREADS": "8", "YAFL_LOCAL_GC_PAGES": "4"},
+    "oversub":   {**P, "YAFL_THREADS": "8", "YAFL_GC_IDLE_PAGES": "0"},
 }
 
 DEFAULT_PROFILES = list(PROFILES)

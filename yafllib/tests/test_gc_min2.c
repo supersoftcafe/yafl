@@ -127,7 +127,7 @@ static __attribute__((noinline)) void _work(int w) {
         if (o && ((uintptr_t)o & PTR_TAG_MASK) == 0) {
             GC_SAFE_POINT();
             object_t* c = str_from_bytes((uint8_t*)PAD, 24).head;   // a String's heap head
-            struct holder* hh = (struct holder*)object_pin_resolve(o);
+            struct holder* hh = (struct holder*)object_pin(o);
             GC_STORE_IN(hh, hh->child, 1, c);
             object_unpin((object_t*)hh);
         }

@@ -433,6 +433,7 @@ fun [tail] linCount(x, env, r, acc): LinOut => match(x)
   (ar: PeArrayRead) => linPair(ar.arrObj, ar.arrIndex, env, r, acc)
   (ne: PeNewEnum) => linFieldArgs(chain(ne.fieldArgs), env, r, acc)
   (op: PeBuiltinOp) => linCount(op.opParams, env, r, acc)
+  (ps: PePinSet) => linTriple(ps.psSubject, ps.psTarget, ps.psValue, env, r, acc)
   (cv: PeConvert) => linCount(cv.convInner, env, r, acc)
   (wx: PeWith)   => linPair(wx.withSubject, wx.withRepls, env, r, acc)
   (te: PeTernary) => countTernary(te, env, r, acc)
@@ -508,6 +509,12 @@ fun linPair(a, b, env, r,
   let o1 = linCount(a, env, r, acc)
   let o2 = linCount(b, env, r, o1.loErrs)
   ret LinOut(cntAdd(o1.loCnt, o2.loCnt), o2.loErrs)
+
+fun linTriple(a, b, c, env, r,
+              acc)
+  let o12 = linPair(a, b, env, r, acc)
+  let o3 = linCount(c, env, r, o12.loErrs)
+  ret LinOut(cntAdd(o12.loCnt, o3.loCnt), o3.loErrs)
 
 # Field-arg value expressions count like any other reads (Python counts the
 # NamedExpressions inside field_args). Not [tail]: the counts sum on the way
@@ -904,6 +911,7 @@ fun instExpr(x, r, acc): Set<PErr> => match(x)
                              instStmts(chain(bk.blockStmts), r, acc))
   (mt: PeMatch)  => instArms(chain(mt.arms), r, instExpr(mt.subject, r, acc))
   (op: PeBuiltinOp) => instExpr(op.opParams, r, acc)
+  (ps: PePinSet) => instExpr(ps.psValue, r, instExpr(ps.psTarget, r, instExpr(ps.psSubject, r, acc)))
   (nw: PeNew)    => instExpr(nw.newParam, r, instSpecOpt(nw.newType, r, acc))
   (qq: PeCoalesce) => instExpr(qq.qqFallback, r, instExpr(qq.qqSubject, r, acc))
   (ar: PeArrayRead) => instExpr(ar.arrIndex, r, instExpr(ar.arrObj, r, acc))

@@ -1649,6 +1649,18 @@ def __zero_init_unwritten_saves(fn: Function) -> Function:
     return dataclasses.replace(fn, ops=inits + tuple(fn.ops))
 
 
+def __without_saved_vars(fn: Function) -> Function:
+    """`saved_vars` is this pass's liveness, a live-out on EVERY op, not a save.
+    Once lowered, what a suspension saves is an explicit store into the state
+    object, so the sets mean nothing further — and read as saves they made a
+    construction's first store publish its own object (lowering/fast_stores.py)."""
+    if not any(op.saved_vars for op in fn.ops):
+        return fn
+    return dataclasses.replace(fn, ops=tuple(
+        dataclasses.replace(op, saved_vars=frozenset()) if op.saved_vars else op
+        for op in fn.ops))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1658,7 +1670,7 @@ def lower_async(app: Application) -> Application:
                for fn in app.functions.values()]
 
     new_functions = reduce(lambda acc, v: acc | v[0], results, {})
-    new_functions = {n: __zero_init_unwritten_saves(f)
+    new_functions = {n: __without_saved_vars(__zero_init_unwritten_saves(f))
                      for n, f in new_functions.items()}
     new_objects   = reduce(lambda acc, v: acc | v[1], results, {}) | app.objects
 

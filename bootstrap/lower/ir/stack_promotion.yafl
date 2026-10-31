@@ -24,10 +24,11 @@ import Bootstrap::Parse
 class [final] SpCand(spReg: String, spPayload: List<CgField>)
 
 # The class's payload (fields minus the vtable header), or None when the
-# shape isn't promotable.
+# shape isn't promotable. A [pinnable] object is never promoted: the runtime's
+# late write assumes its target is a heap object.
 fun spPayloadFields(obj: CgObject|None) => match(obj)
   (o: CgObject) => o.objLengthField is None && !o.objIsMutable
-                   && !o.objIsForeign
+                   && !o.objIsForeign && !o.objIsPinnable
     ? spFieldsOf(o)
     : None
   ()            => None

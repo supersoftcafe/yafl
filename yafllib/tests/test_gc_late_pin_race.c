@@ -1,25 +1,28 @@
-// Deterministic regression test for the promotion-vs-late-pin race: the
-// Dekker handshake between gc_note_late_write and the promotion decision.
+// Deterministic regression test for the promotion-vs-late-pin race.
 //
 // The hazard: promotion is check-then-act. Prune's refs walk can pass an
-// object BEFORE a mutator late-pins it, and set the page's `old` flag AFTER
-// the mutator's gc_note_late_write read it as false. The page then joins the
-// old generation holding a young edge that neither side flagged — minor
-// cycles skip old pages, so nothing traces the referent and prune reclaims
-// it while the structure is live.
+// object BEFORE a mutator late-pins it and writes a YOUNG reference into it,
+// and the page then joins the old generation holding a young edge nobody
+// reported — minor cycles skip old pages, so nothing traces the referent and
+// prune reclaims it while the structure is live.
 //
 // The window is a few instructions inside gc_fsa_prune_body, so this test
-// target compiles its own object.c with YAFL_GC_RACE_PROBE, which inserts a
-// hook exactly between the refs walk and the old-claim. The hook (below)
-// performs a late write — pin (which notes it), store a rooted-until-now YOUNG child
-// into the aging parent's slot, unpin — inside the window, deterministically.
+// target compiles its own object.c with YAFL_GC_RACE_PROBE, which calls a
+// hook (below) in either of the two windows the protocol closes. RACE_WINDOW
+// picks which; the hook performs a late write there — pin, store a
+// rooted-until-now YOUNG child into the aging parent's slot, unpin, drop the
+// child's root — deterministically.
 //
-//   Without the handshake: the note reads `old` == false and sets nothing,
-//   the page promotes, the child's root is dropped, and the next minor
-//   reclaims the child (under YAFL_GC_POISON its bytes become 0x42). FAILS.
-//   With it: the note set `redirty` before reading `old`, the promotion's
-//   re-check consumes the flag and demotes to dirty_old — force-marked every
-//   cycle — so the child stays traced and live. PASSES.
+//   window 0, between the read-only pin walk and the stamps: the pin finds
+//     the parent UNSTAMPED and takes object_pin's fast path, reporting
+//     nothing. The stamp that follows re-checks the parent's references,
+//     sees the young child and cards the parent. Without that re-check the
+//     page promotes uncarded and the next minor reclaims the child (under
+//     YAFL_GC_POISON its bytes become 0x42). FAILS.
+//   window 1, between the stamps and the old-claim: the pin finds the parent
+//     STAMPED and cards it itself (card + page flag + thread flag). The page
+//     promotes carded, and every minor traces the card. Without the card,
+//     the page promotes unseen. FAILS.
 //
 // Same manual-mode scaffolding as test_gc_gen.c: small heap so the promotion
 // volume is a couple of filler batches, 8 KB objects so pages are never
@@ -41,7 +44,7 @@ enum { ST_IDLE = 1 };
 
 // Parent: one late-written slot, padded to half a page. The slot starts NULL
 // and is filled exactly once, inside the probe window, mirroring a memoize
-// publication (once.c) without the trie around it.
+// publication (object_pin_set) without the trie around it.
 struct parent { object_t parent; object_t* slot; char pad[8192 - sizeof(object_t) - sizeof(object_t*)]; };
 static vtable_t parent_vt = {
     .object_size = sizeof(struct parent), .array_el_size = 0,
@@ -53,7 +56,7 @@ static vtable_t parent_vt = {
 // Child: no pointers, MUTABLE. Not because the scenario needs mutation —
 // because an immutable stable leaf promotes right alongside the parent, and
 // an OLD child is exempt from the minor cycles the assertions run, so the
-// test would pass vacuously with or without the handshake (the test_gc_step2
+// test would pass vacuously with or without the protocol (the test_gc_step2
 // lesson). A mutable page never promotes: C stays young — reclaimable by any
 // minor that fails to trace it — for as long as the test cares to check.
 // Mutable objects are also never relocated, so C's address is stable.
@@ -89,14 +92,18 @@ static void fail(const char* what, long got) {
     abort();
 }
 
-// The window hook: runs on the stepping thread inside gc_fsa_prune_body,
-// between the refs walk of `page` and its old-claim. When armed and handed
-// P's page, perform the late write exactly as once.c does.
-void gc_test_race_probe(gc_page_t* page) {
-    if (!g_armed) return;
+// The window hook: runs on the stepping thread inside gc_fsa_prune_body, in
+// window 0 or 1 of `page`'s promotion. When armed, handed P's page and in the
+// chosen window, perform the late write as `pin`, `:=` and `unpin` make one.
+static int g_window;
+void gc_test_race_probe(gc_page_t* page, int window) {
+    if (!g_armed || window != g_window) return;
     if (((uintptr_t)g_P & ~(uintptr_t)(GC_PAGE_SIZE-1)) != (uintptr_t)page) return;
     g_armed = 0;
-    object_t* owner = object_pin_resolve((object_t*)g_P);   // notes the late write
+    // Each window is what it says: stamped in 1, not in 0.
+    bool stamped = ((uintptr_t)((object_t*)g_P)->vtable & VTABLE_OLD_BIT) != 0;
+    if (stamped != (window == 1)) fail("parent's stamp does not match the window", stamped);
+    object_t* owner = object_pin((object_t*)g_P);
     __atomic_store_n((uintptr_t*)&((struct parent*)owner)->slot, (uintptr_t)g_C,
                      __ATOMIC_RELEASE);
     object_unpin(owner);
@@ -160,6 +167,8 @@ static void _entrypoint(object_t* self, fun_t cont) {
     scrub();
     printf("test_gc_late_pin_race: P=%p C=%p\n", (void*)g_P, (void*)g_C);
 
+    printf("test_gc_late_pin_race: window %d\n", g_window);
+
     // Arm, then cycle with filler churn until the probe has interleaved the
     // write into P's page's promotion window. Bounded: promotion volume is
     // ~2 MiB on this heap and each churn batch is ~2 MiB.
@@ -173,10 +182,10 @@ static void _entrypoint(object_t* self, fun_t cont) {
     }
     printf("test_gc_late_pin_race: write landed in the window after %d cycles\n", cycles);
 
-    // The next minor is the one that reclaims C if the handshake is absent:
-    // C's root is gone, C is young, and P's page just joined (or was demoted
-    // from joining) the old generation. Then a few more for good measure —
-    // C must stay traced until P's page legitimately promotes with C old.
+    // The next minor is the one that reclaims C if the protocol is broken:
+    // C's root is gone, C is young, and P's page just joined the old
+    // generation, P carded. Then a few more for good measure — C must stay
+    // traced through P's card until C is old too.
     for (int i = 0; i < 4; ++i) {
         churn_filler();
         scrub();
@@ -203,6 +212,8 @@ int main(void) {
     // clears the promotion volume quickly. Set before any allocation.
     setenv("YAFL_HEAP_SIZE", "64m", 0);
     setenv("YAFL_GC_PROMOTE_FLOOR", "64", 0);
+    const char* w = getenv("RACE_WINDOW");
+    g_window = w != NULL ? atoi(w) : 1;
     _prev = add_roots_declaration_func(_decl);
     thread_start(_entrypoint);
     return 0;

@@ -117,7 +117,7 @@ fun [tail] _anySeg<T>(s: Segment<T>|None, i: Int32, pred: (:T): Bool): Bool
 # PINNED from allocation until they are linked (non-tail) or sealed (the
 # final tail): pinned objects never move, so every store is a plain store
 # at a stable address and no reader anywhere pays a forwarding resolve (the
-# once.c locking bracket is Memoize's price, not construction's). The link
+# late-pin bracket, object_pin_set, is Memoize's price, not construction's). The link
 # needs no barrier: the old value of `next` is the allocator's zero-fill
 # None, and the pin blocks page promotion, so both sides stay young. A full
 # segment needs no length write either — filled == capacity == the length

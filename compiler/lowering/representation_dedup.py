@@ -92,6 +92,7 @@ _ROLES: dict[tuple[type, str], Any] = {
     (p.ObjVtableEq, "class_name"): OBJ,
     (p.ObjectField, "object_name"): OBJ,
     (p.ArrayElement, "object_name"): OBJ,
+    (p.FieldOffset, "object_name"): OBJ,
     (p.GlobalFunction, "name"): FUN,
     (p.GlobalVar, "name"): GLB,
     (p.StaticObjectRef, "name"): GLB,
@@ -106,6 +107,7 @@ _ROLES: dict[tuple[type, str], Any] = {
     (p.VirtualFunction, "name"): LIT,
     (p.ObjectField, "field"): LIT,
     (p.ArrayElement, "field"): LIT,
+    (p.FieldOffset, "field"): LIT,
     (p.ArrayElement, "length_field"): LIT,
     (p.FunField, "part"): LIT,
 }

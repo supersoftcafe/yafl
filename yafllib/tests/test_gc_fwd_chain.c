@@ -75,9 +75,13 @@ static void run_one_cycle(void) {
  * entrypoint's stack, or the conservative scan pins the page and the
  * compactor skips it. */
 static void __attribute__((noinline)) create_and_bury(void) {
-    object_t* k = object_create(&leaf_vt);
+    object_t* volatile k = object_create(&leaf_vt);
     GC_ROOT_STORE(_slots[0], 1, k);
     g_A = (uintptr_t)k;
+    // Clear this frame's copy: scrub() cannot reach every slot of it. At -O0
+    // on aarch64 the slot that held `k` fell in a gap scrub's register saves
+    // leave unwritten, under gc_fsa_impl's frame padding, and pinned A's page.
+    k = NULL;
     for (int i = 0; i < 460; ++i) {
         volatile object_t* f = object_create(&leaf_vt);
         (void)f;

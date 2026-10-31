@@ -73,6 +73,9 @@ fun frExpr(x, exclude: List<String>, acc): Set<String> => match(x)
   (mt: PeMatch)  => frArms(chain(mt.arms), exclude,
                            frExpr(mt.subject, exclude, acc))
   (op: PeBuiltinOp) => frExpr(op.opParams, exclude, acc)
+  (ps: PePinSet) => frExpr(ps.psValue, exclude,
+                      frExpr(ps.psTarget, exclude,
+                        frExpr(ps.psSubject, exclude, acc)))
   (nw: PeNew)    => frExpr(nw.newParam, exclude, acc)
   (qq: PeCoalesce) => frExpr(qq.qqFallback, exclude,
                               frExpr(qq.qqSubject, exclude, acc))
@@ -248,6 +251,8 @@ fun rcmExpr(x, m: ThisMap) => match(x)
                     arms    = rcmArms(chain(mt.arms), m, List()))
   (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                    rcmExpr(op.opParams, m), op.peboLine)
+  (ps: PePinSet) => PePinSet(rcmExpr(ps.psSubject, m), rcmExpr(ps.psTarget, m),
+                             rcmExpr(ps.psValue, m), ps.pepsLine)
   (nw: PeNew)    => PeNew(nw.newType, rcmExpr(nw.newParam, m), nw.penwLine)
   (qq: PeCoalesce) => PeCoalesce(rcmExpr(qq.qqSubject, m),
                                    rcmExpr(qq.qqFallback, m), qq.peqqLine)
@@ -1188,6 +1193,8 @@ fun rnmExpr(x, m: ThisMap) => match(x)
                     arms    = rnmArms(chain(mt.arms), m, List()))
   (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                    rnmExpr(op.opParams, m), op.peboLine)
+  (ps: PePinSet) => PePinSet(rnmExpr(ps.psSubject, m), rnmExpr(ps.psTarget, m),
+                             rnmExpr(ps.psValue, m), ps.pepsLine)
   (nw: PeNew)    => PeNew(nw.newType, rnmExpr(nw.newParam, m), nw.penwLine)
   (qq: PeCoalesce) => PeCoalesce(rnmExpr(qq.qqSubject, m),
                                    rnmExpr(qq.qqFallback, m), qq.peqqLine)

@@ -34,6 +34,7 @@ fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   (bk: PeBlock)   => checkBlock(bk, r, expected)
   (mt: PeMatch)   => checkMatch(mt, r, expected)
   (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
+  (ps: PePinSet)  => checkPinSet(ps, r)
   (nw: PeNew)     => checkNew(nw, r)
   (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2, fa) =>
                           union(a2, checkExpr(fa.faValue, r, None)))
@@ -699,6 +700,9 @@ fun referencedNames(x, acc): List<String> => match(x)
                             fold(mt.matchExtra, referencedNames(mt.subject, acc),
                                  (a2, sx) => referencedNames(sx, a2)))
   (op: PeBuiltinOp) => referencedNames(op.opParams, acc)
+  (ps: PePinSet) => referencedNames(ps.psValue,
+                      referencedNames(ps.psTarget,
+                        referencedNames(ps.psSubject, acc)))
   (nw: PeNew)    => referencedNames(nw.newParam, acc)
   (ar: PeArrayRead) => referencedNames(ar.arrIndex,
                                        referencedNames(ar.arrObj, acc))
@@ -832,3 +836,69 @@ fun withCoverBares(fs: Chain<SField>, acc: List<String>)
 fun [tail] withCoverBaresB(fs: Chain<SField>, [terminal] acc): ListBuilder<String> => match(fs)
   (nil: ChainEnd) => acc
   (l: ChainLink)  => withCoverBaresB(l.next, push(acc, bareName(l.value.sfName)))
+
+
+# ── __builtin_pin_set__ (pyast PinSetExpression.check) ──────────────────────
+# A name, then a field of it, in a class that admits a late write; the field
+# holds a heap object or None; the value fits the field.
+
+fun pinSetWhat() => "'__builtin_pin_set__'"
+
+fun checkPinSet(ps: PePinSet, r) => union(
+    union(checkExpr(ps.psSubject, r, None),
+          union(checkExpr(ps.psTarget, r, None), checkExpr(ps.psValue, r, None))),
+    pinSetErrors(ps, r))
+
+fun pinSetErrors(ps: PePinSet, r) => match(pinSetField(ps))
+  (d: PeDot) => match(writtenField(d, pinSetWhat(), r))
+    (cs: PsClass) => union(lateWriteErrors(ps.pepsLine, cs, pinSetWhat()),
+                           union(pinSetHeapErrors(ps, d, r), pinSetValueFits(ps, r)))
+    (msg: String) => oneErr(ps.pepsLine, msg)
+  ()         => oneErr(ps.pepsLine, pinSetWhat() + " takes (obj, obj.field, value): a name, then a field of it")
+
+# The field, when the subject is a name and the target a field of that name.
+fun pinSetField(ps: PePinSet): PeDot|None => match(ps.psSubject)
+  (n: PeName) => match(ps.psTarget)
+    (d: PeDot)  => match(d.base)
+      (b: PeName) => b.refName == n.refName ? d : None
+      (o: PExpr)  => None
+    (o: PExpr)  => None
+  (o: PExpr)  => None
+
+fun pinSetHeapErrors(ps: PePinSet, d: PeDot, r) => match(exprType(ps.psTarget, r))
+  (ft: Spec) => heapOrNone(ft, r)
+    ? noErrs()
+    : oneErr(ps.pepsLine, pinSetWhat() + " fills a field holding a heap object or None: '"
+             + d.member + "' must be 'C|None', C a class always kept on the heap "
+             + "(an interface, or a class that is [pinnable], [mutable] or [foreign], "
+             + "implements an interface, or has more than "
+             + String(maxFlatStructFields()) + " fields)")
+  ()         => noErrs()
+
+# `C|None`, C a class that stays a heap object whatever the rest of the program
+# does (classNeverFlattens): its None is NULL.
+fun heapOrNone(ft: Spec, r) => match(ft)
+  (cm: SCombination) => heapOrNonePair(reprMembers(cm), r)
+  (o: Spec)          => false
+
+fun heapOrNonePair(ms: List<Spec>, r) => !exactly(chain(ms), 2) ? false : match(head(ms))
+  (m0: Spec) => match(head(tail(ms)))
+    (m1: Spec) => isUnitType(m0) ? alwaysHeapClass(m1, r) : isUnitType(m1) && alwaysHeapClass(m0, r)
+    ()         => false
+  ()         => false
+
+fun alwaysHeapClass(m: Spec, r) => match(m)
+  (c2: SClass) => match(soleItem(findType(r, c2.scName)))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => classNeverFlattens(cs)
+      (o: PStmt)    => false
+    ()         => false
+  (o: Spec)    => false
+
+fun pinSetValueFits(ps: PePinSet, r) => match(exprType(ps.psTarget, r))
+  (ft: Spec) => match(exprType(ps.psValue, r))
+    (vt: Spec) => triFalse(assignableEq(r, ft, vt))
+      ? oneErr(ps.pepsLine, "Incorrect type assigned to the field")
+      : noErrs()
+    ()         => noErrs()
+  ()         => noErrs()

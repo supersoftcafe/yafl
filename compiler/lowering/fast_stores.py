@@ -19,6 +19,16 @@ did — so the async state object, allocated at every suspension and immediately
 filled with that site's live set, paid a barrier on every save. That was the
 bulk of the barriers in a self-compile.
 
+This pass is also the AUTHORITY on the flag. Construction emits its stores
+straight-line after the allocation, but later passes can put a safe point
+between them: a deferred await (lowering/defer_awaits.py) suspends
+mid-construction, and the half-built object is then marked, or even promoted,
+before the rest of its fields are stored. A store flagged fresh there skips
+the barrier its value needed and the value is reclaimed under the object (the
+self-compile: a PsDestructure's target list). So every flag this pass cannot
+prove is CLEARED, at every -O level; -O0 only clears, -O1 and up also set what
+it proves.
+
 THE PROOF, per store `Move(ObjectField(pointer=StackVar n, …), src)`: on every
 path reaching it, `n` holds an object created by a `NewObject` in this function,
 and since that allocation nothing has run a safe point (any `Call`,
@@ -141,12 +151,13 @@ def __arriving(ops: tuple[Op, ...], universe: frozenset[str]) -> dict[str, froze
     return {name: frozenset() for name in arriving}
 
 
-def __rewrite(fn: Function) -> Function:
+def __rewrite(fn: Function, add: bool) -> Function:
     ops = fn.ops
     universe = frozenset(op.register.name for op in ops
                          if isinstance(op, NewObject) and isinstance(op.register, StackVar))
-    if not universe:
-        return fn                               # nothing this pass could prove
+    if not universe and not any(isinstance(op, Move) and isinstance(op.target, ObjectField)
+                                and op.target.fresh for op in ops):
+        return fn                               # nothing to prove, nothing to clear
 
     arriving = __arriving(ops, universe)
     new_ops = list(ops)
@@ -155,20 +166,22 @@ def __rewrite(fn: Function) -> Function:
     for i, op in enumerate(ops):
         if isinstance(op, Label):
             fact = fact & arriving[op.name]
-        if (isinstance(op, Move) and isinstance(op.target, ObjectField)
-                and not op.target.fresh
-                and isinstance(op.target.pointer, StackVar)
-                and op.target.pointer.name in fact):
-            new_ops[i] = dataclasses.replace(
-                op, target=dataclasses.replace(op.target, fresh=True))
-            changed = True
+        if isinstance(op, Move) and isinstance(op.target, ObjectField):
+            proven = (isinstance(op.target.pointer, StackVar)
+                      and op.target.pointer.name in fact)
+            fresh = proven if add else (op.target.fresh and proven)
+            if fresh != op.target.fresh:
+                new_ops[i] = dataclasses.replace(
+                    op, target=dataclasses.replace(op.target, fresh=fresh))
+                changed = True
         fact = __step(op, fact)
         if not op.falls_through():
             fact = universe
     return dataclasses.replace(fn, ops=tuple(new_ops)) if changed else fn
 
 
-def mark_fast_stores(app: Application) -> Application:
-    """Set `fresh` on every store this pass can prove needs no barrier."""
+def mark_fast_stores(app: Application, add: bool = True) -> Application:
+    """Decide `fresh` on every object store: a flag this pass cannot prove is
+    cleared, whoever set it; with `add`, every store it can prove is set."""
     return dataclasses.replace(app, functions={
-        name: __rewrite(fn) for name, fn in app.functions.items()})
+        name: __rewrite(fn, add) for name, fn in app.functions.items()})

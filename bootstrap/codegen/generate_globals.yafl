@@ -482,8 +482,10 @@ fun sgpEmitCtor(name, args: PeTuple, r, chasing: List<String>, hint)
       (o: PStmt)     => sgpNo()
     ()          => sgpNo()
 
+# A [pinnable] instance is never static: the runtime's late write assumes its
+# target is a heap object. Such a let goes lazy.
 fun sgpEmitInstance(cls: PsClass, args: PeTuple, r, chasing: List<String>, hint)
-  if cls.cIsInterface || isSomeLet(classArrayParam(chain(flattenParams(cls.cParams))))
+  if cls.cIsInterface || hasAttr(cls.cAttrs, "pinnable") || isSomeLet(classArrayParam(chain(flattenParams(cls.cParams))))
     ret sgpNo()
   let fields = flattenParams(cls.cParams)
   if !sameLen(chain(args.exprs), chain(fields))

@@ -3,21 +3,20 @@
 ArrayBuilder, SeqBuilder and ListBuilder push elements into an object born
 pinned and filled across safe points. Two hazards, one test each:
 
-LONG BUILD (the nursery). A build outlives a root scan: its array leaves the
-thread's nursery while the elements pushed after are new nursery objects
-reachable only through it. The element stores are write-barriered like every
-other heap store, and the barrier is what tells the nursery about that edge —
-there is no list of builders in flight. With the store barrier-free, every
-run aborts (the nursery frees an element the array still holds); with the
-nursery off it passes, so it is exactly the nursery's edge.
+LONG BUILD (cycles). A build outlives root scans and whole cycles: the
+elements pushed after a scan are newer than the array and reachable only
+through it. The element stores are write-barriered like every other heap
+store; there is no list of builders in flight. (Written for the thread-local
+nursery, since removed, whose collections freed an element the array still
+held when the store was barrier-free.) Run with the dwell between cycles and
+without it, so builds straddle as many cycles as their work allows.
 
 SUSPENDING PRODUCER (the snapshot). The producer forks, so builds straddle
 global cycles. A grown ArrayBuilder run is sealed to length 0, which deletes
 every reference in it: an element reachable at the snapshot only through the
 old run, and since copied into a run allocated during the cycle (not traced
 this cycle), was freed under it. Seal now owes the snapshot barrier for the
-references it cuts off. Before that, this aborted on every run, nursery on or
-off.
+references it cuts off. Before that, this aborted on every run.
 
 Elements are large integers — real heap objects (small Ints are immediates
 and single-field classes flatten to values, so neither can be lost). Freed
@@ -129,10 +128,10 @@ class TestBuilderGc(TestCase):
         for level in (0, 2):
             binary = self._build(_LONG_SRC, level)
             try:
-                for pages in ("2", "16", "64"):
-                    with self.subTest(level=level, nursery_pages=pages):
+                for idle in ("0", "64", "1024"):
+                    with self.subTest(level=level, idle_pages=idle):
                         self.assertEqual(0, self._run(binary, YAFL_THREADS="1",
-                                                      YAFL_LOCAL_GC_PAGES=pages),
+                                                      YAFL_GC_IDLE_PAGES=idle),
                                          "elements lost (or a crash)")
             finally:
                 os.unlink(binary)
@@ -141,12 +140,11 @@ class TestBuilderGc(TestCase):
         for level in (0, 2):
             binary = self._build(_SUSPEND_SRC, level)
             try:
-                for threads, nursery in (("1", "1"), ("2", "1"), ("2", "0")):
-                    with self.subTest(level=level, threads=threads, nursery=nursery):
+                for threads, idle in (("1", "0"), ("2", "0"), ("2", "1024")):
+                    with self.subTest(level=level, threads=threads, idle_pages=idle):
                         self.assertEqual(0, self._run(binary, YAFL_THREADS=threads,
-                                                      YAFL_LOCAL_GC=nursery,
-                                                      YAFL_GC_COMPACT_PERCENT="100",
-                                                      YAFL_LOCAL_GC_PAGES="2"),
+                                                      YAFL_GC_IDLE_PAGES=idle,
+                                                      YAFL_GC_COMPACT_PERCENT="100"),
                                          "rounds that disagreed (or a crash)")
             finally:
                 os.unlink(binary)

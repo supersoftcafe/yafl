@@ -1,20 +1,18 @@
-// test_gc_stale_mark: a remote conservative mark landing on an object that a
-// thread-local nursery has just found dead.
+// test_gc_stale_mark: remote conservative marks from STALE stack words, aimed
+// at objects that die and are pruned in between.
 //
 // The CHURNER (thread 0) keeps a small ring of live strings ON ITS STACK (so
-// the conservative scan keeps them, and dropping one is a plain store that
-// does not escape it) and keeps replacing them, so its nursery pages hold live and dead objects side by
-// side and survive collection with dead slots struck out of `objects`. It
-// leaks the address of each string it drops into a plain integer (NOT a
-// root). The HOLDER (another worker) keeps copying that address into a stack
-// variable — exactly what a stale stack word is — and passes safe points, so
-// global root scans resolve it and mark the object in the churner's nursery.
+// the conservative scan keeps them) and keeps replacing them, so its pages
+// hold live and dead objects side by side and survive prunes with dead slots
+// struck out of `objects`. It leaks the address of each string it drops into
+// a plain integer (NOT a root). The HOLDER (another worker) keeps copying that
+// address into a stack variable — exactly what a stale stack word is — and
+// passes safe points, so root scans resolve it and mark whatever it lands on.
 //
-// When that mark lands after the churner's collection has read the page's
-// marks, the slot is struck while carrying a mark bit. The global collector
-// must treat such a bit as meaningless: scanning the slot (or letting the
-// prune turn it back into an object) reads a dead object — under
-// YAFL_GC_POISON, a 0x42-filled one, which the dangle check aborts on.
+// A mark must never bring a dead slot back or lead the marker into one:
+// under YAFL_GC_POISON a dead object is 0x42-filled, which the dangle check
+// aborts on. (Written for the thread-local nursery, since removed, whose
+// strikes could race a remote mark; kept as a stress of stale words.)
 
 #include "../yafl.h"
 #include <stdatomic.h>

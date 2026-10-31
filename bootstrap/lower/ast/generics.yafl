@@ -196,6 +196,7 @@ fun fciExpr(x, acc) => match(x)
                             fciStmts(chain(bk.blockStmts), acc))
   (mt: PeMatch)  => fciArms(chain(mt.arms), fciExpr(mt.subject, acc))
   (op: PeBuiltinOp) => fciExpr(op.opParams, fciSpecOpt(op.opType, acc))
+  (ps: PePinSet) => fciExpr(ps.psValue, fciExpr(ps.psTarget, fciExpr(ps.psSubject, acc)))
   (nw: PeNew)    => fciExpr(nw.newParam, fciSpecOpt(nw.newType, acc))
   (qq: PeCoalesce) => fciExpr(qq.qqFallback, fciExpr(qq.qqSubject, acc))
   (ar: PeArrayRead) => fciExpr(ar.arrIndex, fciExpr(ar.arrObj, acc))
@@ -547,6 +548,9 @@ fun gsubExpr(x, sub: GSub, visited: List<String>) => match(x)
                                    op.opName,
                                    gsubExpr(op.opParams, sub, visited),
                                    op.peboLine)
+  (ps: PePinSet) => PePinSet(gsubExpr(ps.psSubject, sub, visited),
+                             gsubExpr(ps.psTarget, sub, visited),
+                             gsubExpr(ps.psValue, sub, visited), ps.pepsLine)
   (nw: PeNew)    => PeNew(gsubSpec(nw.newType, sub, visited),
                           gsubExpr(nw.newParam, sub, visited), nw.penwLine)
   (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
@@ -1081,6 +1085,8 @@ fun rcrExpr(x, refs: GRefsIx) => match(x)
                     arms    = rcrArms(chain(mt.arms), refs, List()))
   (op: PeBuiltinOp) => PeBuiltinOp(rcrSpec(op.opType, refs), op.opName,
                                    rcrExpr(op.opParams, refs), op.peboLine)
+  (ps: PePinSet) => PePinSet(rcrExpr(ps.psSubject, refs), rcrExpr(ps.psTarget, refs),
+                             rcrExpr(ps.psValue, refs), ps.pepsLine)
   (nw: PeNew)    => PeNew(rcrSpec(nw.newType, refs),
                           rcrExpr(nw.newParam, refs), nw.penwLine)
   (qq: PeCoalesce) => PeCoalesce(rcrExpr(qq.qqSubject, refs),
@@ -1263,6 +1269,7 @@ fun cccExpr(x, acc) => match(x)
                             cccStmts(chain(bk.blockStmts), acc))
   (mt: PeMatch)  => cccArms(chain(mt.arms), cccExpr(mt.subject, acc))
   (op: PeBuiltinOp) => cccExpr(op.opParams, acc)
+  (ps: PePinSet) => cccExpr(ps.psValue, cccExpr(ps.psTarget, cccExpr(ps.psSubject, acc)))
   (nw: PeNew)    => cccExpr(nw.newParam, acc)
   (qq: PeCoalesce) => cccExpr(qq.qqFallback, cccExpr(qq.qqSubject, acc))
   (ar: PeArrayRead) => cccExpr(ar.arrIndex, cccExpr(ar.arrObj, acc))
@@ -1772,6 +1779,8 @@ fun rtrExpr(x, r, traits: List<PStmt>) => match(x)
   (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
                                    rtrExpr(op.opParams, r, traits),
                                    op.peboLine)
+  (ps: PePinSet) => PePinSet(rtrExpr(ps.psSubject, r, traits), rtrExpr(ps.psTarget, r, traits),
+                             rtrExpr(ps.psValue, r, traits), ps.pepsLine)
   (nw: PeNew)    => PeNew(nw.newType, rtrExpr(nw.newParam, r, traits),
                           nw.penwLine)
   (qq: PeCoalesce) => PeCoalesce(rtrExpr(qq.qqSubject, r, traits),
@@ -2105,6 +2114,8 @@ fun rfrExpr(x, c: Canon) => match(x)
                     arms    = rfrArms(chain(mt.arms), c, List()))
   (op: PeBuiltinOp) => PeBuiltinOp(rfrSpec(op.opType, c), op.opName,
                                    rfrExpr(op.opParams, c), op.peboLine)
+  (ps: PePinSet) => PePinSet(rfrExpr(ps.psSubject, c), rfrExpr(ps.psTarget, c),
+                             rfrExpr(ps.psValue, c), ps.pepsLine)
   (nw: PeNew)    => PeNew(rfrSpec(nw.newType, c), rfrExpr(nw.newParam, c),
                           nw.penwLine)
   (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
@@ -2323,6 +2334,7 @@ fun rugExpr(x, r, acc): Set<PErr> => match(x)
                             rugStmts(chain(bk.blockStmts), r, acc))
   (mt: PeMatch)  => rugArms(chain(mt.arms), r, rugExpr(mt.subject, r, acc))
   (op: PeBuiltinOp) => rugExpr(op.opParams, r, acc)
+  (ps: PePinSet) => rugExpr(ps.psValue, r, rugExpr(ps.psTarget, r, rugExpr(ps.psSubject, r, acc)))
   (nw: PeNew)    => rugExpr(nw.newParam, r, acc)
   (qq: PeCoalesce) => rugExpr(qq.qqFallback, r, rugExpr(qq.qqSubject, r, acc))
   (ar: PeArrayRead) => rugExpr(ar.arrIndex, r, rugExpr(ar.arrObj, r, acc))

@@ -82,7 +82,7 @@ def _body(emitted: str, name_prefix: str) -> str:
 
 # The barriered stores (yafl.h, "Pointer stores"); a store without a barrier is
 # a plain assignment.
-_STORE_MACROS = ("GC_STORE_IN(", "GC_STORE_MUTABLE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN(")
+_STORE_MACROS = ("GC_STORE_IN(", "GC_STORE_PUBLISH_IN(", "GC_FILL_STORE_IN(")
 
 
 def _barriers_on(body: str, pointer: str) -> list[str]:
@@ -143,20 +143,108 @@ class TestFastStores(TestCase):
         self.assertEqual([True, False], [op.target.fresh for op in marked
                                          if isinstance(op, Move) and isinstance(op.target, ObjectField)])
 
+    def test_a_construction_store_after_a_safe_point_loses_its_flag(self):
+        """Construction codegen marks its own stores fresh, but a later pass can
+        put a safe point between the allocation and a store — a deferred await
+        does exactly that, suspending mid-construction (the self-compile: a
+        PsDestructure built across an await, its list stored barrier-free
+        after the object had been marked, then reclaimed under it). This pass is the authority: a fresh flag it cannot prove goes,
+        at every -O level, and at -O0 nothing is added."""
+        box = StackVar(DataPointer(), "$box")
+        def store(value: int, fresh: bool) -> Move:
+            return Move(ObjectField(Int(32), box, "Box", "v", None, fresh=fresh), Integer(value, 32))
+        ops = (NewObject("Box", box),
+               store(1, True),
+               store(2, False),
+               Move(StackVar(DataPointer(), "$discard"),
+                    RuntimeInvoke("task_init", NewStruct((("task", StackVar(DataPointer(), "$other")),)),
+                                  DataPointer())),
+               store(3, True),
+               ReturnVoid())
+        fn = Function(name="f", params=Struct((("this", DataPointer()),)), result=Void(),
+                      stack_vars=Struct((("$box", DataPointer()), ("$discard", DataPointer()),
+                                         ("$other", DataPointer()))),
+                      ops=ops)
+        def flags(app: Application) -> list[bool]:
+            return [op.target.fresh for op in app.functions["f"].ops
+                    if isinstance(op, Move) and isinstance(op.target, ObjectField)]
+        self.assertEqual([True, True, False],
+                         flags(mark_fast_stores(Application(functions={"f": fn}))))
+        self.assertEqual([True, False, False],
+                         flags(mark_fast_stores(Application(functions={"f": fn}), add=False)))
+
     def test_o0_is_unchanged(self):
-        """The pass is gated at -O1; -O0 keeps today's codegen exactly."""
+        """At -O0 the pass only CLEARS flags it cannot prove: it sets none, so
+        the state object's saves keep their barriers."""
         body = _body(_emit(0), "Main__both")
         saves = [ln for ln in _barriers_on(body, "_sv_state") if "->array" in ln]
         self.assertNotEqual([], saves, body)
 
 
+# A construction in a function that suspends: `with` rebuilds the Destr from
+# the awaited `map` result, so the allocation follows the await (a
+# construction is atomic, lowering/defer_awaits.py) and its stores follow the
+# allocation with nothing between them. The new object is live after each
+# store, and the liveness async lowering computes is no publication: those
+# stores lost their flag in every async function of the self-compile.
+_ASYNC_SRC = """\
+import System
+
+enum Stmt
+  enum Destr(name: System::String, attrs: System::String, ty: System::Int,
+             targets: System::List<Stmt>, dflt: System::Int, line: System::String)
+  enum Let(n: System::String, t: System::Int)
+
+fun [future] bump(p: Stmt): Stmt => match(p)
+  (l: Let)  => with l(t = l.t + 1)
+  (o: Stmt) => p
+
+fun bumped(params: Stmt): Stmt => match(params)
+  (d: Destr) => with d(targets = System::map(d.targets, (p) => bump(p)))
+  (o: Stmt)  => params
+
+fun main(): System::Int
+  let s = bumped(Destr("a", "b", 1, System::prepend(Let("x", 1), System::List()), 2, "l"))
+  ret match(s)
+    (d: Destr) => System::isEmpty(d.targets) ? 1 : 0
+    (o: Stmt)  => 1
+"""
+
+
+def _bodies(emitted: str, name_prefix: str) -> list[str]:
+    """The C body of every DEFINED function whose name starts with
+    `name_prefix` — an async function's launch and its state machine both."""
+    pattern = re.compile(r"^[\w \*]*\b" + re.escape(name_prefix) + r"\w*\([^;]*\)\s*$",
+                         re.MULTILINE)
+    bodies = []
+    for m in pattern.finditer(emitted):
+        if emitted[m.end():].lstrip().startswith("{"):
+            start = emitted.index("{", m.end())
+            bodies.append(emitted[start:emitted.index("\n}", start)])
+    return bodies
+
+
+class TestConstructionInAnAsyncFunction(TestCase):
+    def test_construction_stores_stay_barrier_free(self):
+        """An immutable object is written only while it is fresh, so no store
+        into the Destr takes a barrier, in either body. (The state object's
+        saves are another matter: it is mutable.)"""
+        for level in (0, 2):
+            with self.subTest(level=level):
+                emitted = compile_c(_ASYNC_SRC, "file.yafl", optimization_level=level)
+                bodies = _bodies(emitted, "Main__bumped")
+                self.assertTrue(bodies, "no definition of Main__bumped*")
+                for body in bodies:
+                    self.assertEqual([], [ln.strip() for ln in body.splitlines()
+                                          if ln.strip().startswith(_STORE_MACROS)
+                                          and "Main__Destr" in ln], body)
+
+
 # An array-class construction tabulates its storage by calling the init
 # function once per element, between the allocation and each store. The init
-# call runs safe points, so the array can leave the thread-local nursery
-# mid-fill (a root scan, a promotion) and the element just allocated is then a
-# new object stored into an older one: only the barrier reports that edge.
-# Elided, the nursery freed the element while the array held it (stdlib_tests,
-# RRBTree concat). `boxes` returns the array so the fill is not trimmed away.
+# call runs safe points, so the store is not fresh: it is a FILL, which owes
+# no snapshot barrier (nothing is overwritten) but keeps its publication
+# fence. `boxes` returns the array so the fill is not trimmed away.
 _TAB_SRC = """\
 import System
 
@@ -206,7 +294,7 @@ fun [impure] pick(n: System::Int): Box
 fun main(): System::Int
   ret boxes(4i32).length > 0i32 && pick(3).v > 0 ? 0 : 1
 """
-_BARRIER_PARTS = re.compile(r"\b(GC_WRITE_BARRIER_IN|GC_PUBLISH_IN|GC_FILL_BARRIER|GC_MARK_SEEN"
+_BARRIER_PARTS = re.compile(r"\b(GC_WRITE_BARRIER_IN|GC_PUBLISH_IN|GC_MARK_SEEN"
                             r"|GC_PUBLISH_FENCE\w*|gc_root_overwrite|gc_root_publish)\(")
 
 
@@ -218,11 +306,10 @@ class TestStoresGoThroughTheStoreMacros(TestCase):
                 self.assertEqual([], [m.group(0) for m in _BARRIER_PARTS.finditer(emitted)])
                 # The program reaches each kind generated code makes: a store
                 # into a mutable object (a closure's, a state machine's, a lazy
-                # stub's value) and an array tabulation (fill). Not GC_STORE_IN:
-                # an immutable object is written only while it is fresh, or by
-                # a fill. Not GC_STORE_PUBLISH_IN: that is the runtime's, for
-                # handing values between threads; a static container (a
-                # global's stub) is detected inside the object store macros.
-                for macro in ("GC_STORE_MUTABLE_IN(", "GC_FILL_STORE_IN("):
+                # stub's value) and an array tabulation (fill). Not
+                # GC_STORE_PUBLISH_IN: that is the runtime's, for handing
+                # values between threads; a static container (a global's stub)
+                # is detected inside the object store macros.
+                for macro in ("GC_STORE_IN(", "GC_FILL_STORE_IN("):
                     self.assertIn(macro, emitted)
                 self.assertNotIn("GC_STORE_PUBLISH_IN(", emitted)

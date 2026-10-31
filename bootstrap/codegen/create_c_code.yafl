@@ -280,7 +280,7 @@ fun createCCode(statements, mainName, optLevel,
     # biggest population of such stores, and because every RpObjectField must
     # already be in its final shape — including the pinnable wraps above,
     # which is what keeps [pinnable] objects out of the pass for free.
-    |> (a9pin) => timed("codegen", "fast_stores", () => (optLevel >= 1 ? markFastStores(a9pin) : a9pin))
+    |> (a9pin) => timed("codegen", "fast_stores", () => markFastStores(a9pin, optLevel >= 1))
     # Positional object field names, then the one per-function cleanup chain
     # (emission no longer runs it), so the merge below finds more equal code.
     |> (a9fast) => timed("codegen", "canonicalise", () => canonicaliseApp(a9fast, profile))
@@ -288,9 +288,6 @@ fun createCCode(statements, mainName, optLevel,
     # Merge entities with identical representation (one instantiation's code
     # under another's names). Last, so every function was optimised alone.
     |> (a9clean) => timed("codegen", "representation_dedup", () => mergeIdenticalRepresentations(a9clean, profile))
-    # Which stores land in a mutable object: a fact of its class, so the
-    # runtime need not read it from the page (lower/ir/mutable_stores.yafl).
-    |> (a9dedup) => timed("codegen", "mutable_stores", () => markMutableStores(a9dedup))
   let v2 = timed("codegen", "uninit_check", () => checkApplication(a9))
   if !isEmpty(v2)
     ret CreateCOut(List(), v2)

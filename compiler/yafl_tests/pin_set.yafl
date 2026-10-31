@@ -1,0 +1,102 @@
+# `__builtin_pin_set__(obj, obj.field, value)`: the write-once publication in
+# one step, for library code. Pin, store only into an empty field, release;
+# answer None when it stored, else the value already there, left as it is.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::PinSet::FillsAnEmptyField
+
+import System
+import System::Test
+
+class [pinnable] Cell(value: System::Int, next: Cell|None)
+
+# The field is empty: the value goes in, and the answer is None.
+fun program(): System::Int
+  let c = Cell(1, None)
+  let old = __builtin_pin_set__(c, c.next, Cell(2, None))
+  ret match(old)
+    (o: Cell) => -1
+    ()        => match(c.next)
+      (n: Cell) => n.value
+      ()        => -2
+
+fun [test("an empty field is filled, and the answer is None")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")
+
+
+namespace CompilerTests::PinSet::KeepsATakenField
+
+import System
+import System::Test
+
+class [pinnable] Cell(value: System::Int, next: Cell|None)
+
+fun valueOfNext(c: Cell): System::Int
+  ret match(c.next)
+    (n: Cell) => n.value
+    ()        => 0
+
+# The second fill finds the first's value: that is its answer, and the 3 is
+# never stored. The second is inside the first's branch, so it runs after.
+fun program(): System::Int
+  let c = Cell(1, None)
+  let first = __builtin_pin_set__(c, c.next, Cell(2, None))
+  if first is None
+    let second = __builtin_pin_set__(c, c.next, Cell(3, None))
+    ret match(second)
+      (s: Cell) => s.value * 10 + valueOfNext(c)
+      ()        => -1
+  ret -2
+
+fun [test("a taken field is left alone, and the answer is its value")] check(): None|TestFailure
+    ret assertEqInt(program(), 22, "program()")
+
+
+namespace CompilerTests::PinSet::GenericSlot
+
+import System
+import System::Test
+
+class [pinnable] Slot<T>(v: T, next: Slot<T>|None)
+
+fun fill<T>(s: Slot<T>, v: T): Slot<T>|None
+  ret __builtin_pin_set__(s, s.next, Slot<T>(v, None))
+
+fun nextOr<T>(s: Slot<T>, d: T): T
+  ret match(s.next)
+    (n: Slot<T>) => n.v
+    ()           => d
+
+# One generic routine, instantiated at a bigint and at a String.
+fun program(): System::Int
+  let si = Slot<System::Int>(1, None)
+  let ss = Slot<System::String>("a", None)
+  if fill<System::Int>(si, 5) is None
+    if fill<System::String>(ss, "bc") is None
+      ret nextOr<System::Int>(si, 0) + (nextOr<System::String>(ss, "") == "bc" ? 2 : 0)
+  ret -1
+
+fun [test("a generic [pinnable] class, at two instantiations")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")
+
+
+namespace CompilerTests::PinSet::MutableClass
+
+import System
+import System::Test
+
+class [mutable] Holder(item: Holder|None, n: System::Int)
+
+# A [mutable] class admits the write too.
+fun program(): System::Int
+  let h = Holder(None, 4)
+  ret match(__builtin_pin_set__(h, h.item, Holder(None, 3)))
+    (o: Holder) => -1
+    ()          => match(h.item)
+      (i: Holder) => h.n + i.n
+      ()          => -2
+
+fun [test("a [mutable] class's empty field is filled")] check(): None|TestFailure
+    ret assertEqInt(program(), 7, "program()")

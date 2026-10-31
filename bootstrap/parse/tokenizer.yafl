@@ -44,7 +44,7 @@ fun kindName(k) => match(k)
 fun isKeyword(s: System::String) => match(s)
   ("ret" | "let" | "fun" | "typealias" | "where" | "class" | "interface"
    | "instance" | "import" | "namespace" | "__builtin_type__"
-   | "__builtin_op__" | "match" | "enum" | "if" | "else"
+   | "__builtin_op__" | "__builtin_pin_set__" | "match" | "enum" | "if" | "else"
    | "with") => true
   ()                                              => false
 

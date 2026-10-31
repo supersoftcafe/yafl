@@ -80,38 +80,16 @@ struct gc_thread_info {
     // well (ARCH_SAVE_CALLEE_REGS, yafl.h "Target specifics"); caller-saved registers are already
     // spilled to the scanned stack by the C ABI before any call into the runtime.
     void      *saved_callee_regs[ARCH_CALLEE_REGS];
+    // The three above were captured at this thread's entry to the collector
+    // (gc_fsa), for the root scan the step it entered is about to make.
+    bool       entry_captured;
 
-    // ── thread-local nursery (prototype, YAFL_LOCAL_GC; see gc_local_collect) ──
-    uint32_t local_epoch;          // stamp of this thread's nursery pages; 0 = off
-    uint32_t local_pages_since;    // nursery pages taken since the last collection
-    uint32_t local_unproductive;   // consecutive collections freeing < 5%
-    uint32_t local_suspended;      // root scans left before the nursery resumes
-    uint32_t local_backoff;        // consecutive stand-downs (exponential length)
-    uint64_t local_debt;           // charged pages whose gc_fsa steps are still owed,
-                                   // repaid one per page refill (see gc_local_collect)
-    bool     local_started;        // this worker has started its nursery
-    // Slots in OLDER containers that received a pointer since the last root
-    // scan (gc_local_note_slot): nursery roots until the next root scan.
-    struct { object_t **slot; ptr_mask_t mask; } *remembered;
-    size_t remembered_n, remembered_cap;
-    // The slot of the last SHARED store, whose new value is escaped at the next
-    // barrier or nursery collection (gc_local_flush_pending). Cleared at root
-    // scan with the remembered set: the epoch turns there, so a value stored
-    // before it is no longer nursery — and after it the container may be
-    // compacted away or freed, leaving the raw slot address dangling.
-    object_t **pend_slot;
-    ptr_mask_t pend_mask;
     // The insertion half of the hybrid barrier (_gc_write_barrier_in2): the
     // field this thread stored into last while its root scan was pending,
-    // shaded — read back — at its next barrier, its root scan, or its nursery
-    // collection, whichever comes first.
+    // shaded — read back — at its next barrier or its root scan, whichever
+    // comes first.
     object_t **grey_slot;
     ptr_mask_t grey_mask;
-    // Compaction's evacuation targets get their own bump region, so a copy of
-    // an older object never lands on a nursery page (where older referrers,
-    // snapped to the copy, would point at a page the nursery believes no
-    // older object can reach).
-    char *reloc_bump, *reloc_base;
 };
 
 extern thread_local struct gc_thread_info gc_thread_info;
@@ -122,12 +100,13 @@ extern uint32_t epoch;
 extern list_element_t pages_to_scan;
 extern list_element_t pages_to_prune;
 extern list_element_t old_pages;
+extern list_element_t carded_pages;
 
 extern _Atomic(bool)     gc_pool_lock_word;
 extern _Atomic(uint64_t) gc_alloc_clock;
 extern _Atomic(uint64_t) gc_cycle_count;
 extern _Atomic(size_t)   gc_old_page_count;
-extern _Atomic(size_t)   gc_dirty_old_count;
+extern _Atomic(size_t)   gc_carded_page_count;
 extern thread_local size_t mark_worklist_count;
 
 extern bool gc_poison_enabled;
@@ -199,8 +178,8 @@ extern _Atomic(uint64_t) gc_prof_block_multipage, gc_prof_block_mutable, gc_prof
 #define GC_FWD_AGE_BUCKETS 16
 extern size_t gc_fwd_age[GC_FWD_AGE_BUCKETS], gc_fwd_freed;
 extern _Atomic(uint64_t) gc_prof_mut_fwd_hops, gc_prof_stack_held_husk;
-extern _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_dirty, gc_prof_block_unstable,
-                         gc_prof_block_volume, gc_prof_block_kind, gc_prof_defer;
+extern _Atomic(uint64_t) gc_prof_promote_ok, gc_prof_promote_carded, gc_prof_promote_pinned,
+                         gc_prof_block_unstable, gc_prof_block_volume, gc_prof_block_kind;
 extern _Atomic(uint64_t) gc_prof_t_drain, gc_prof_t_pages, gc_prof_t_merge, gc_prof_t_live, gc_prof_t_prune_rest;
 extern _Atomic(uint64_t) gc_stat_stage_ns[8];
 extern _Atomic(uint64_t) gc_stat_lat[8][GC_LAT_BUCKETS];
@@ -235,32 +214,18 @@ extern size_t gc_occ_sparse_fwd, gc_occ_sparse_pin, gc_occ_sparse_oth;
 extern size_t gc_snap_sparse_fwd, gc_snap_sparse_pin, gc_snap_sparse_oth;
 
 void gc_stats_tick(void);    // sampled [GC] progress line (called per 512 page allocs)
-void gc_local_report(FILE *out);   // [GC LOCAL] line (object.c)
 void gc_stats_report(void);  // [GC TIME] exit summary (atexit when stats enabled)
 
 // ── Debug module (gc_debug.c) ────────────────────────────────────────────────
 
 void gc_dbg_dangle_check(object_t *object);  // poison-mode UAF edge verifier
 void gc_hunt_run(void);                      // YAFL_GC_HUNT exit-time heap census
-// Announce that a late pin is about to write `o` (object_pin_resolve calls it). The store may install a
-// reference to a YOUNG object, and minor cycles skip old pages, so a page
-// that has aged into the old generation must return to the collection
-// rotation — otherwise nothing would ever trace the new referent and prune
-// would free it while the writer still holds it. The page's flag is set
-// UNCONDITIONALLY (young pages included) and only then is `old` read: the
-// promotion decision writes `old` before re-reading the flag, so whichever
-// way the race falls, one side sees the other (a Dekker handshake — see
-// gc_note_late_write and the promotion site in object.c). Cost is paid per
-// WRITE, not per object per cycle, which is what makes a write-once
-// structure cheap to keep.
-void gc_note_late_write(object_t* o);
 void gc_oom_report(FILE *out);               // collector state, printed at an OOM abort
 // YAFL_GC_TRACE page history (see gc_debug.c). Record through GC_TRACE_PAGE.
-enum gc_trace_kind { GCT_ALLOC = 1, GCT_LOCAL_TAKE, GCT_LOCAL_SWEEP, GCT_LOCAL_PROMOTE,
-                     GCT_LOCAL_RELEASE, GCT_PRUNE, GCT_EVACUATE, GCT_FREE };
+enum gc_trace_kind { GCT_ALLOC = 1, GCT_PRUNE, GCT_EVACUATE, GCT_FREE };
 extern bool gc_trace_enabled;
 void gc_trace_init(void);
-// `aux`: the page's local_epoch (alloc: its page count).
+// `aux`: alloc: the page count; otherwise 0.
 void gc_trace_page_event(void *page, enum gc_trace_kind kind, const bitmap_t *slots,
                          uint32_t aux);
 #define GC_TRACE_PAGE(page, kind, slots, aux)\

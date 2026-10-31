@@ -125,27 +125,33 @@ class [final] SiNewObj(snIdx: Int, snClass: String, snReg: String)
 class [final] SiAssign(saReg: String, saField: String, saIdx: Int,
                        saSrc: RParam)
 
-fun siNewObjPositions(ops: Segment<Op>|None) => build(siNopLoop(ops, 0i32, 0, builder()))
+fun siNewObjPositions(ops: Segment<Op>|None, a: CgApp) => build(siNopLoop(ops, a, 0i32, 0, builder()))
 
-fun [tail] siNopLoop(s: Segment<Op>|None, iSeg, i,
+fun [tail] siNopLoop(s: Segment<Op>|None, a: CgApp, iSeg, i,
                      [terminal] acc): ListBuilder<SiNewObj> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg < seg.length
-    ? siNopLoop(s, iSeg + 1i32, i + 1, siNopOne(acc, seg.array(iSeg), i))
-    : siNopLoop(seg.next, 0i32, i, acc)
+    ? siNopLoop(s, a, iSeg + 1i32, i + 1, siNopOne(acc, a, seg.array(iSeg), i))
+    : siNopLoop(seg.next, a, 0i32, i, acc)
 
 # In op order: the promotion walk follows it, and the globals it yields are
 # emitted in that order.
-fun siNopOne([terminal] acc, op,
+fun siNopOne([terminal] acc, a: CgApp, op,
              i): ListBuilder<SiNewObj> => match(op)
-  # A pinned object is filled in after allocation: never a static.
-  (no: OpNewObject) => no.newObjSize is None && !no.newObjPinned
+  # A pinned object is filled in after allocation: never a static. Nor is a
+  # [pinnable] one, whose write-once slots every caller would then share, and
+  # the late write assumes a heap object (staticinit.py).
+  (no: OpNewObject) => no.newObjSize is None && !no.newObjPinned && !siPinnable(a, no.newObjName)
     ? match(no.newObjRegister)
       (sv: RpStackVar) => push(acc,
                               SiNewObj(i, no.newObjName, sv.name))
       (o: RParam)      => acc
     : acc
   (o: Op)           => acc
+
+fun siPinnable(a: CgApp, name: String) => match(appObject(a, name))
+  (o: CgObject) => o.objIsPinnable
+  ()            => false
 
 fun siFieldAssigns(ops: Segment<Op>|None, news: List<SiNewObj>)
   let regIx = fold(news, Dict(),
@@ -228,7 +234,7 @@ class [final] SiPromo(spNewIdx: Int, spMove: Op, spDrop: List<Int>,
 
 fun siPromoteOne(f: CgFunction, a: CgApp,
                  counter: Int): (fn: CgFunction, globals: List<CgGlobal>, counter: Int)
-  let news = siNewObjPositions(f.fnOps)
+  let news = siNewObjPositions(f.fnOps, a)
   if isEmpty(news)
     ret (f, List(), counter)
   let assigns = siFieldAssigns(f.fnOps, news)

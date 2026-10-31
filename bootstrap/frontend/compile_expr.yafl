@@ -168,6 +168,7 @@ fun compileExpr(x, r, expected): ExprOut => match(x)
   (bk: PeBlock)  => compileBlock(bk, r, expected)
   (mt: PeMatch)  => compileMatch(mt, r, expected)
   (op: PeBuiltinOp) => compileBuiltinOp(op, r, expected)
+  (ps: PePinSet) => compilePinSet(ps, r, expected)
   (nw: PeNew)    => compileNew(nw, r, expected)
   (ne: PeNewEnum) => compileNewEnum(ne, r, expected)
   (ar: PeArrayRead) => compileArrayRead(ar, r, expected)
@@ -1075,6 +1076,17 @@ fun compileBuiltinOp(op: PeBuiltinOp, r, expected: Spec|None)
     (b: PExpr) => ExprOut(b, concat(ps.eoGlobals, ty.soGlobals), ps.eoHints)
     ()         => ExprOut(converted(out, expected, r), concat(ps.eoGlobals, ty.soGlobals),
                           ps.eoHints)
+
+# The value is received by the FIELD's type, as `:=` receives it (a Node into a
+# `Node|None`); the answer converts to what the caller expects.
+fun compilePinSet(ps: PePinSet, r, expected: Spec|None)
+  let sb = compileExpr(ps.psSubject, r, None)
+  let tg = compileExpr(ps.psTarget, r, None)
+  let vl = compileExpr(ps.psValue, r, exprType(tg.eoExpr, r))
+  let out = PePinSet(sb.eoExpr, tg.eoExpr, vl.eoExpr, ps.pepsLine)
+  ret ExprOut(converted(out, expected, r),
+              concat(sb.eoGlobals, concat(tg.eoGlobals, vl.eoGlobals)),
+              mergeHints(sb.eoHints, mergeHints(tg.eoHints, vl.eoHints)))
 
 # Takes the ROOT type: an enum-variant constructor yields the root, so a caller
 # that has just built a PeBuiltinOp cannot pass it as one.

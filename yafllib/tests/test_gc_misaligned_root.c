@@ -1,6 +1,5 @@
 // Deterministic, single-stepped test: an object whose only reference is a
-// pointer stored at a MISALIGNED stack address survives nursery collections
-// and a full cycle.
+// pointer stored at a MISALIGNED stack address survives full cycles.
 //
 // An optimising C compiler may keep a pointer at an address that is not a
 // multiple of the word size. clang's SROA gives a slice of an aggregate its
@@ -10,15 +9,13 @@
 // of a result struct, holding a list's head at offset 4). The conservative
 // scan must find such a pointer: no other word on the stack holds it.
 //
-//   1. hide(): allocate T in the nursery and write its address, byte by byte,
-//      to offset 4 of a word-aligned stack buffer in the caller's frame. The
-//      aligned words around it hold only halves of the address.
-//   2. Unrooted churn runs nursery collections (the nursery collects every
-//      two pages); then a full cycle runs the global root scan.
+//   1. hide(): allocate T and write its address, byte by byte, to offset 4 of
+//      a word-aligned stack buffer in the caller's frame. The aligned words
+//      around it hold only halves of the address.
+//   2. Two full cycles run the root scan.
 //   3. T, read back from the buffer, must still be the object it was.
 //
-// Run with YAFL_THREADS=1 and YAFL_GC_POISON=1, with the nursery on and with
-// it off (YAFL_LOCAL_GC=0), so both stack scans are covered.
+// Run with YAFL_THREADS=1 and YAFL_GC_POISON=1.
 
 #include "../yafl.h"
 #include <stdio.h>
@@ -42,14 +39,6 @@ static vtable_t target_vt = {
     .object_pointer_locations = 0,
     .array_el_pointer_locations = 0, .functions_mask = 0, .array_len_offset = 0,
     .is_mutable = 0, .name = "misaligned_target", .implements_array = VTABLE_IMPLEMENTS(0),
-};
-// Churn: unrooted, it fills nursery pages so collections run.
-struct fill { object_t parent; char pad[4096 - sizeof(object_t)]; };
-static vtable_t fill_vt = {
-    .object_size = sizeof(struct fill), .array_el_size = 0,
-    .object_pointer_locations = 0,
-    .array_el_pointer_locations = 0, .functions_mask = 0, .array_len_offset = 0,
-    .is_mutable = 0, .name = "misaligned_fill", .implements_array = VTABLE_IMPLEMENTS(0),
 };
 
 static fun_t _exit_cont;
@@ -90,13 +79,6 @@ static object_t* __attribute__((noinline)) fetch(volatile unsigned char* buf) {
     return (object_t*)a;
 }
 
-static void __attribute__((noinline)) churn(void) {
-    for (int i = 0; i < 512; ++i) {
-        volatile object_t* f = object_create(&fill_vt);
-        (void)f;
-    }
-}
-
 static void __attribute__((noinline)) scrub(void) {
     volatile uintptr_t junk[512];
     for (int i = 0; i < 512; ++i) junk[i] = (uintptr_t)(i * 2 + 1);
@@ -118,10 +100,6 @@ static void __attribute__((noinline)) scenario(void) {
     for (size_t i = 0; i < sizeof buf; ++i) buf[i] = 0x11;
     hide(buf);
     scrub();
-    churn();
-    scrub();
-    check("lost to the nursery", fetch(buf));
-    scrub();
     run_one_cycle();
     run_one_cycle();
     check("lost to a full cycle", fetch(buf));
@@ -140,10 +118,8 @@ static void _entrypoint(object_t* self, fun_t cont) {
 }
 
 int main(void) {
-    // Nursery collections every two pages, so the churn runs several. Set
-    // before any allocation.
+    // Set before any allocation.
     setenv("YAFL_HEAP_SIZE", "64m", 0);
-    setenv("YAFL_LOCAL_GC_PAGES", "2", 0);
     thread_start(_entrypoint);
     return 0;
 }

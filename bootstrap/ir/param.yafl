@@ -52,6 +52,10 @@ enum RParam
                      among: List<String>|None)
   enum RpSyncWrap(value: RParam, wrapperType: CgType)
   enum RpZeroOf(valueType: CgType)
+  # The byte offset of a field within its object: a constant, for a runtime
+  # call that must find the field in whichever copy of the object it ends up
+  # holding (object_pin_set, for `__builtin_pin_set__`) (param.py FieldOffset).
+  enum RpFieldOffset(objectName: String, field: String)
   enum RpNewStructTyped(structType: CgType, values: List<RpNamedValue>)
   enum RpTagTask(task: RParam, targetType: CgType)
   enum RpGlobalFunction(name: String, object: RParam|None, external: Bool, cSymbol: String|None, impure: Bool, sync: Bool)
@@ -61,9 +65,7 @@ enum RParam
   enum RpGlobalVar(fieldType: CgType, name: String)
   # fill: a NULL -> value store into a slot written once across safe points
   # (codegen/param.py ObjectField.fill): GC_FILL_STORE_IN.
-  # mutable: the container's class is mutable (ObjectField.mutable, set by
-  # lower/ir/mutable_stores.yafl): GC_STORE_MUTABLE_IN.
-  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool, fill: Bool, mutable: Bool = false)
+  enum RpObjectField(fieldType: CgType, pointer: RParam, objectName: String, field: String, index: RParam|None, fresh: Bool, fill: Bool)
   enum RpArrayElement(elementType: CgType, pointer: RParam, objectName: String, field: String, lengthField: String, index: RParam, checked: Bool)
   # Union slotting of closures (param.py FunField/MakeFun — the enum-encoding
   # principle: a closure IS a struct). RpFunField projects one primitive out
@@ -117,6 +119,7 @@ fun rpGetType(r) => match(r)
   (x: RpObjVtableEq) => CgInt(8)
   (x: RpSyncWrap) => x.wrapperType
   (x: RpZeroOf) => x.valueType
+  (x: RpFieldOffset) => CgInt(64)
   (x: RpNewStructTyped) => x.structType
   (x: RpTagTask) => x.targetType
   (x: RpGlobalFunction) => CgFuncPointer(x.sync)
@@ -409,6 +412,9 @@ fun eqRParam(a, b) => match(a)
   (x: RpZeroOf) => match(b)
     (y: RpZeroOf) => eqCgType(x.valueType, y.valueType)
     (o: RParam) => false
+  (x: RpFieldOffset) => match(b)
+    (y: RpFieldOffset) => x.objectName == y.objectName && x.field == y.field
+    (o: RParam) => false
   (x: RpNewStructTyped) => match(b)
     (y: RpNewStructTyped) => eqCgType(x.structType, y.structType) && eqRpNamedValues(x.values, y.values)
     (o: RParam) => false
@@ -483,6 +489,7 @@ fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry
   (x: RpObjVtableEq) => rpToCObjVtableEq(x, cache)
   (x: RpSyncWrap) => rpToCSyncWrap(x, cache)
   (x: RpZeroOf) => rpToCZeroOf(x, cache)
+  (x: RpFieldOffset) => ("offsetof(" + mangleName(x.objectName) + "_t, " + mangleName(x.field) + ")", cache)
   (x: RpNewStructTyped) => rpToCNewStructTyped(x, cache)
   (x: RpTagTask) => rpToCTagTask(x, cache)
   (x: RpGlobalFunction) => rpToCGlobalFunction(x, cache)
@@ -716,15 +723,13 @@ fun rpToCStoreObjectFieldFinish(x: RpObjectField, pointerText, fieldRef, cache0:
     ? rpToCStoreObjectFieldBarrier(x, pointerText, fieldRef, cache0, value)
     : ("    " + fieldRef + " = " + value + ";\n", cache0)
 
-# The store macro does the store (yafl.h, "Pointer stores"); the container is
-# known, so the nursery's private test reads its escaped bit directly
-# (codegen/param.py).
+# The store macro does the store (yafl.h, "Pointer stores"; codegen/param.py).
 fun rpToCStoreObjectFieldBarrier(x: RpObjectField, pointerText, fieldRef, cache0: List<CgCacheEntry>, value): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.fieldType, cache0)
   let mask = toPointerMask(x.fieldType, declared.text)
   ret ("    " + storeMacro(x) + "(" + pointerText + ", " + fieldRef + ", " + mask + ", " + value + ");\n", declared.cache)
 
-fun storeMacro(x: RpObjectField) => x.fill ? "GC_FILL_STORE_IN" : x.mutable ? "GC_STORE_MUTABLE_IN" : "GC_STORE_IN"
+fun storeMacro(x: RpObjectField) => x.fill ? "GC_FILL_STORE_IN" : "GC_STORE_IN"
 
 # ── `NewStruct.__add__` (used by lowering passes, not within this file) ────
 

@@ -1,5 +1,17 @@
 # Thread-local nursery — minimal prototype and measurements
 
+> **STATUS 2026-10-30: REMOVED.** The collector's dwell between cycles
+> (`YAFL_GC_IDLE_PAGES`, 1024 pages, with the scan ratio raised to 6) took
+> most of what the nursery gave. On the -O3 self-compile (pi, 3 rounds, C
+> identical): today's runtime 775.5 s user, nursery kept with the dwell
+> 694.3 s, nursery removed with the dwell 699.1 s. On the benchmark set the
+> runtime without the nursery was within a few per cent either way, except a
+> long chain grown by small steps (3.5 s with the nursery, 5.9 s without).
+> Against that, the nursery cost about 560 lines of runtime, an escape
+> protocol on every store, and a late write of 67/80 instructions (x86 /
+> aarch64) against 57/65 without it. What follows is the record of the
+> design as it was.
+>
 > **STATUS 2026-10-05: on by default, any number of workers.**
 > The compiler is untouched. The rest of this document is the history of how
 > the design got here. The **current state** is:

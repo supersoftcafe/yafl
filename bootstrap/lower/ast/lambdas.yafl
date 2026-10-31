@@ -145,6 +145,9 @@ fun cpExpr(x, path, acc) => match(x)
   (bk: PeBlock)     => cpExpr(bk.blockValue, path, cpStmts(bk.blockStmts, path, acc))
   (mt: PeMatch)     => cpArms(chain(mt.arms), path, cpExpr(mt.subject, path, acc))
   (op: PeBuiltinOp) => cpExpr(op.opParams, path, cpSpec(op.opType, path, acc))
+  (ps: PePinSet)    => cpExpr(ps.psValue, path,
+                              cpExpr(ps.psTarget, path,
+                                     cpExpr(ps.psSubject, path, acc)))
   (nw: PeNew)       => cpExpr(nw.newParam, path, cpSpec(nw.newType, path, acc))
   (ne: PeNewEnum)   => cpSpecs(ne.neTypeParams, path,
                                fold(ne.fieldArgs, acc, (a2, fa) =>
@@ -562,6 +565,12 @@ fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
   (op: PeBuiltinOp) => clExpr(op.opParams, r, paths, exports)
     |> (p) => ClEx(PeBuiltinOp(op.opType, op.opName, p.clExExpr, op.peboLine),
                   p.clExExports)
+  (ps: PePinSet)    => clExpr(ps.psSubject, r, paths, exports)
+    |> (sb) => (sb, clExpr(ps.psTarget, r, paths, sb.clExExports))
+    |> (sb, tg) => (sb, tg, clExpr(ps.psValue, r, paths, tg.clExExports))
+    |> (sb, tg, vl) => ClEx(PePinSet(sb.clExExpr, tg.clExExpr, vl.clExExpr,
+                                     ps.pepsLine),
+                           vl.clExExports)
   (nw: PeNew)       => clExpr(nw.newParam, r, paths, exports)
     |> (p) => ClEx(PeNew(nw.newType, p.clExExpr, nw.penwLine), p.clExExports)
   (ar: PeArrayRead) => clExpr(ar.arrObj, r, paths, exports)
