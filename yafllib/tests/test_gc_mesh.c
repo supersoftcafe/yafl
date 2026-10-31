@@ -3,7 +3,7 @@
 //   * a MUTABLE object other threads can reach is read and written only under
 //     its pin (the lock) — here, the shared cells;
 //   * an IMMUTABLE object's field may be read with no lock, and changes only
-//     NULL -> value, once, under the pin (yafl_cas_once) — here, mailboxes.
+//     NULL -> value, once, under the pin (object_pin_set) — here, mailboxes.
 // Nothing a lock-free reader can see is ever overwritten, which is what the
 // collector's check-then-store deletion barrier relies on. (An earlier version
 // overwrote cells that others read lock-free; it broke that contract and the
@@ -34,7 +34,6 @@
 // every YAFL_GC_* setting. Run under YAFL_GC_POISON=1.
 
 #include "../yafl.h"
-#include "../once.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -67,7 +66,7 @@ struct fat_node {                // same prefix, ~0.5 KB: spans many slots
 struct mailbox {                 // immutable; slots go NULL -> chain once each
     object_t  parent;
     uint64_t  magic;
-    object_t* slot[MAILSLOTS];   // the LAST pointer fields (yafl_cas_once addressing)
+    object_t* slot[MAILSLOTS];
 };
 struct cell {                    // shared, mutable: accessed under its pin
     object_t  parent;
@@ -185,7 +184,7 @@ static void verify_chain(object_t* chain, int worker, object_t* root) {
 }
 
 // A value held in a cell, stash or carry slot: a chain or a mailbox. Mailbox
-// slots are read lock-free (acquire pairs with yafl_cas_once's release), on
+// slots are read lock-free (acquire pairs with object_pin_set's publication), on
 // the CURRENT copy: a mailbox's slots are write-once (pinnable) fields, and a
 // fill lands only on the live copy, so a reader holding a pre-relocation
 // address resolves first — as generated code does for [pinnable] reads
@@ -286,8 +285,11 @@ static object_t* _worker(object_t* self, object_t* task) {
                 if (!is_node(tail)) tail = NULL;
                 object_t* chain = build(&seed, tail);
                 int k = (int)(rnd(&seed) % MAILSLOTS);
-                object_t* ok = yafl_cas_once(NULL, v, k, MAILSLOTS, chain);
-                if (ok == integer_from_int32_noalloc(1))
+                // Through `v` as read, perhaps a stale copy: the fill lands
+                // on the live one.
+                object_t* held = object_pin_set(v, offsetof(struct mailbox, slot)
+                                                   + (size_t)k * sizeof(object_t*), chain);
+                if (held == NULL)
                     atomic_fetch_add_explicit(&_fills, 1, memory_order_relaxed);
                 verify(v, w);
                 carried[rnd(&seed) % CARRY] = v;

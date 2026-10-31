@@ -56,7 +56,7 @@
 >
 > **Two things it got right and that were reused.** The announce (§6 Part B)
 > is the correct duty for an in-place pointer store into a possibly-aged page,
-> and `yafllib/once.c` follows exactly that discipline. (Since 2026-10-28 the
+> and `yafllib/once.c` followed exactly that discipline (it is gone: `object_pin_set` does the job now). (Since 2026-10-28 the
 > duty is no longer a standalone call: `gc_note_late_write` is gone, and the
 > announce is what `object_pin` does for a stamped object — see Part B.) And
 > the observation that a barrier can be dropped when the prior value is

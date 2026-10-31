@@ -1012,7 +1012,7 @@ EXPORT size_t object_get_size(object_t* ptr) {
 // `next` — happens here, on a cell that is PINNED (born pinned through
 // `new_pinned`, so compaction never moves it) and not yet published
 // (linearity: only the builder can reach it).
-// Pinned-at-construction rather than the once.c locking bracket (ruling
+// Pinned-at-construction rather than a momentary late-pin bracket (ruling
 // 2026-08-25): the momentary bracket makes cells relocatable while
 // late-writable, which taxes EVERY reader with forwarding resolution —
 // a price Memoize pays happily and list construction must not.
@@ -1062,7 +1062,7 @@ EXPORT bool list_builder_seal(object_t *tail) {
 // array crosses safe points — pinned, every element store is an ordinary
 // generated store at a stable address, and no reader anywhere pays a
 // forwarding resolve (ruling 2026-08-25: construction must not tax readers;
-// the once.c locking bracket stays for Memoize-style late init only).
+// the late-pin bracket, object_pin_set, stays for Memoize-style late init only).
 // array_create has already zero-filled the payload and stamped length =
 // CAPACITY, so the scanner traces every slot from birth (NULLs where
 // nothing is written yet). The pin also blocks page promotion, so element

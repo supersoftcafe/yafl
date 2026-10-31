@@ -115,7 +115,7 @@ static void __attribute__((noinline)) create_child(void) {
     b = NULL;
 }
 
-// The late write, as once.c makes one: it cards A.
+// The late write, as `pin`, `:=` and `unpin` make one: it cards A.
 static void __attribute__((noinline)) late_write(void) {
     object_t* owner = object_pin((object_t*)g_A);
     __atomic_store_n((uintptr_t*)&((struct parent*)owner)->f, (uintptr_t)g_B, __ATOMIC_RELEASE);

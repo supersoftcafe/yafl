@@ -44,7 +44,7 @@ enum { ST_IDLE = 1 };
 
 // Parent: one late-written slot, padded to half a page. The slot starts NULL
 // and is filled exactly once, inside the probe window, mirroring a memoize
-// publication (once.c) without the trie around it.
+// publication (object_pin_set) without the trie around it.
 struct parent { object_t parent; object_t* slot; char pad[8192 - sizeof(object_t) - sizeof(object_t*)]; };
 static vtable_t parent_vt = {
     .object_size = sizeof(struct parent), .array_el_size = 0,
@@ -94,7 +94,7 @@ static void fail(const char* what, long got) {
 
 // The window hook: runs on the stepping thread inside gc_fsa_prune_body, in
 // window 0 or 1 of `page`'s promotion. When armed, handed P's page and in the
-// chosen window, perform the late write exactly as once.c does.
+// chosen window, perform the late write as `pin`, `:=` and `unpin` make one.
 static int g_window;
 void gc_test_race_probe(gc_page_t* page, int window) {
     if (!g_armed || window != g_window) return;

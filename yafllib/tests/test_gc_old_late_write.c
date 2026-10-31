@@ -111,7 +111,7 @@ static void __attribute__((noinline)) allocate_child(void) {
     g_C = (uintptr_t)c;
 }
 
-// The late write, as once.c makes one.
+// The late write, as `pin`, `:=` and `unpin` make one.
 static void __attribute__((noinline)) late_write(void) {
     object_t* owner = object_pin((object_t*)g_P);   // reports the late write
     __atomic_store_n((uintptr_t*)&((struct parent*)owner)->slot, (uintptr_t)g_C, __ATOMIC_RELEASE);

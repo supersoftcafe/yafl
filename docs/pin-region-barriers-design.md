@@ -39,10 +39,10 @@ per store.
 | | Early pin | Late pin |
 |---|---|---|
 | Taken by | `object_new(..., pinned)`, `array_create` | `object_pin`; `object_try_pin` for writers of no references |
-| Used for | array tabulation, array and list builders | `yafl_cas_once` (memoize, write-once fields), the growable-string append, the compactor's claim |
+| Used for | array tabulation, array and list builders | `object_pin_set` (`__builtin_pin_set__`: memoize, write-once fields), the growable-string append, the compactor's claim |
 | Object | fresh, not yet published | already shared |
 | Region | spans safe points and nursery collections | short: no safe point, no allocation (`object_pin`'s contract) |
-| Stores today | `GC_FILL_STORE_IN` per element; `GC_STORE_IN` in `list_builder_link` | one `GC_STORE_IN` (`yafl_cas_once`), byte copies (`str.c`) |
+| Stores today | `GC_FILL_STORE_IN` per element; `GC_STORE_IN` in `list_builder_link` | one store (`object_pin_set`), byte copies (`str.c`) |
 
 **Early pins cannot move their bookkeeping to the unpin.** The region crosses nursery collections.
 A nursery collection in the middle of a build can promote the array off the nursery. After that,
@@ -91,9 +91,10 @@ test or two at each end, and plain stores between.
 - **A simpler rule.** Inside a pin you write fields; the GC's obligations live in two calls. That
   matches how pins are meant to be used.
 - **It pays off only with several stores per region.** Today's late pins make one pointer store
-  (`yafl_cas_once`) or none (`str.c` copies bytes). For them the walk at each end is a little
+  (`object_pin_set`) or none (`str.c` copies bytes). For them the walk at each end is a little
   dearer than one store's barrier: two passes over the object's pointer mask, each done only when
-  its condition holds. Generated code emits no late pins at all. The benefit is for future code
+  its condition holds. Generated code's late pins make one store too (`__builtin_pin_set__`, or
+  `:=` between `pin` and `unpin`). The benefit is for future code
   that holds the pin across several updates of a shared mutable object, which is the sharing
   contract's model for shared mutable state.
 - **The walk is proportional to the object's pointer fields.** It is fine for small objects. A

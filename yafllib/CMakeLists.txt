@@ -10,7 +10,6 @@ set(SRC_FILES
     hash.c
     integer.c
     log.c
-    once.c
     float.c
     io.c
     io_thread.c
@@ -68,7 +67,6 @@ set(TEST_SRC_FILES
     hash.c
     integer.c
     log.c
-    once.c
     float.c
     io.c
     io_thread.c
@@ -103,7 +101,6 @@ endfunction()
 
 add_yafl_test(test_integer)
 add_yafl_test(test_str)
-add_yafl_test(test_once)
 add_yafl_test(test_gc)
 add_yafl_test(test_io)
 add_yafl_test(test_task)
@@ -224,7 +221,7 @@ foreach(t test_gc test_gc_stress test_gc_ring test_gc_min test_gc_min2 test_gc_p
 endforeach()
 # test_gc_mesh: every worker mutates and reads one shared graph within the
 # sharing contract — mutable cells under their pin, immutable mailboxes read
-# lock-free and filled write-once (yafl_cas_once) — trading young chains
+# lock-free and filled write-once (object_pin_set) — trading young chains
 # between workers. Aimed at weakly-ordered machines; the soak script
 # (tests/gc_soak.py) runs it long.
 add_yafl_test(test_gc_mesh)

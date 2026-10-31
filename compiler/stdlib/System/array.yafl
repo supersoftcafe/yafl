@@ -74,7 +74,7 @@ fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
 # fill may suspend — an async producer parks in a heap frame — so the
 # half-built array crosses safe points, and pinned it never moves: every
 # push is an ordinary store at a stable address, and no reader anywhere
-# pays a forwarding resolve (the once.c locking bracket is Memoize's price,
+# pays a forwarding resolve (the late-pin bracket, object_pin_set, is Memoize's price,
 # not construction's).
 #
 # The length field starts AT CAPACITY and never understates the traceable

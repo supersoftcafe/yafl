@@ -27,7 +27,7 @@ born pinned (`array_create(…, pinned=true)`: the pin bit rides the store that
 installs the vtable); until `build`/`discard` seals it, the array cannot be moved by compaction —
 so every push is a plain generated store at a stable address, and NO READER
 ANYWHERE pays a forwarding resolve. (The alternative — a momentary locking
-bracket per store, the `once.c` idiom — makes the cells relocatable while
+bracket per store, the late-pin idiom (`object_pin_set` today) — makes the cells relocatable while
 late-writable, which forces `[pinnable]`-style resolving reads onto the
 hottest walks in the language; measured at ~+23% on a self-compile. Memoize
 pays that price happily; construction must not. Ruling 2026-08-25.) The pin
