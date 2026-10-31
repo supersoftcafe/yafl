@@ -174,7 +174,8 @@ class TestFastStores(TestCase):
                          flags(mark_fast_stores(Application(functions={"f": fn}), add=False)))
 
     def test_o0_is_unchanged(self):
-        """The pass is gated at -O1; -O0 keeps today's codegen exactly."""
+        """At -O0 the pass only CLEARS flags it cannot prove: it sets none, so
+        the state object's saves keep their barriers."""
         body = _body(_emit(0), "Main__both")
         saves = [ln for ln in _barriers_on(body, "_sv_state") if "->array" in ln]
         self.assertNotEqual([], saves, body)
