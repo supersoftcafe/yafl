@@ -1,0 +1,158 @@
+
+namespace System::Containers
+
+import System
+
+
+class [final, pinnable] _ListNode<T>(_next: _ListNode<T>|None, _value: T)
+enum NewList<T>
+  enum NewListEmpty()
+  enum NewListFull(_head: _ListNode<T>, _tail: _ListNode<T>, _count: Int)
+fun NewList<T>(): NewList<T> => NewListEmpty<T>()
+fun NewList<T>(value: T): NewList<T>
+  let node = _ListNode<T>(None, value)
+  ret NewListFull(node, node, 1)
+
+
+instance<T> Stream<NewList<T>, T, Never>
+  fun next(self: NewList<T>): (stream: NewList<T>, value: Result<T|None, Never>)
+    let (value: T|None, next: NewList<T>) = splitFirst(self)
+    ret (next, Ok<T|None, Never>(value))
+
+
+fun _casTail<T>(obj: _ListNode<T>, newTail: _ListNode<T>): _ListNode<T>|None
+  ret __builtin_pin_set__(obj, obj._next, newTail)
+
+fun [tail] _deepCopy<T>(listFrom: NewList<T>, listTo: NewList<T>): NewList<T>
+  let (value, remainder) = splitFirst(listFrom)
+  ret match(value)
+    (_:None) => listTo
+    (v:T) => _deepCopy(remainder, append(listTo, v))
+
+fun _count<T>(list: NewList<T>) => match(list)
+  (_: NewListEmpty<T>) => 0
+  (head: NewListFull<T>) => head._count
+
+
+# If nothing else has mutated the end of the list we can safely do that 
+# unobserved, because every observer holds their own count for iteration,
+# so won't overflow into our new node. If some other mutation has happened
+# we fall back to a slower copy approach.
+fun append<T>(list: NewList<T>, value: T): NewList<T>
+  fun [inline(never)] appendDeepCopy(listFrom: NewList<T>, value: T): NewList<T>
+    ret append(_deepCopy<T>(listFrom, NewList<T>()), value)
+  let newTail = _ListNode<T>(None, value)
+  ret match(list)
+    (_: NewListEmpty<T>) => NewListFull<T>(newTail, newTail, 1)
+    (head: NewListFull<T>) => match(_casTail(head._tail, newTail))
+      (_: None) => NewListFull<T>(head._head, newTail, head._count+1)
+      (_: _ListNode<T>) => appendDeepCopy(list, value)
+
+
+# Simplest and fastest of all list operations, just construct a new head node and link to the list.
+fun prepend<T>(list: NewList<T>, value: T): NewList<T>
+  ret match(list)
+    (_: NewListEmpty<T>) => NewList<T>(value)
+    (head: NewListFull<T>) => NewListFull<T>(_ListNode<T>(head._head, value), head._tail, head._count+1)
+
+
+# Return a list of at most 'count' elements from the start of 'list'.
+fun [inline(never)] take<T>(list: NewList<T>, count: Int): NewList<T>
+  fun [tail] expand(list: NewListFull<T>, maxCount: Int): NewList<T>
+    ret match(list._count < maxCount ? list._tail._next : None)
+      (_:None) => list
+      (next:_ListNode<T>) => expand(NewListFull<T>(list._head, next, list._count+1), maxCount)
+  ret count <= 0 || _count(list) <= 0 ? NewListEmpty<T>() :
+      count >= _count(list) ? list :
+      expand(NewListFull<T>(list._head, list._head, 1), count)
+
+
+# Return a list that comes after the first 'count' elements from the start of 'list'.
+fun [inline(never), tail] drop<T>(list: NewList<T>, count: Int): NewList<T>
+  ret count <= 0 || _count(list) <= 0 ? list :
+      count >= _count(list) ? NewListEmpty<T>() :
+      drop(tail(list), count-1)
+
+
+# Fast path
+#   The target list hasn't had a concat or append operation applied previously,
+#   we can link the two lists safely. Original observers don't see this change.
+# Slow path
+#   The targe tlist has been modified. We take a full copy and try the fast path
+#   again.
+fun [inline(never), tail] concat<T>(listTo: NewList<T>, listFrom: NewList<T>): NewList<T>
+  ret match(listTo)
+    (_:NewListEmpty<T>) => listFrom
+    (headTo:NewListFull<T>) => match(listFrom)
+      (_:NewListEmpty<T>) => listTo
+      (headFrom:NewListFull<T>) => match(_casTail(headTo._tail, headFrom._head))
+        (_:None) => NewListFull<T>(headTo._head, headFrom._tail, headFrom._count+headTo._count)
+        (_:_ListNode<T>) => concat(_deepCopy(listTo, NewList<T>()), listFrom)
+
+
+fun splitFirst<T>(list: NewList<T>): (value: T|None, list: NewList<T>)
+  fun extractTail(head: NewListFull<T>): NewList<T>
+    ret match(head._count <= 1 ? None : head._head._next)
+       (next: _ListNode<T>) => NewListFull(next, head._tail, head._count-1)
+       (_: None) => NewListEmpty<T>()
+  ret match(list)
+    (_: NewListEmpty<T>) => (None, NewListEmpty<T>())
+    (head: NewListFull<T>) => (head._head._value, extractTail(head))
+
+
+fun head<T>(list: NewList<T>) => splitFirst(list).value
+fun tail<T>(list: NewList<T>) => splitFirst(list).list
+fun last<T>(list: NewList<T>): T|None
+  ret match(list)
+    (_: NewListEmpty<T>) => None
+    (head: NewListFull<T>) => head._tail._value
+
+
+fun isEmpty<T>(list: NewList<T>): Bool
+  ret list is NewListEmpty<T>
+
+
+fun [tail] any<T>(list: NewList<T>, predicate: (:T): Bool): Bool
+  let (value, remainder) = splitFirst(list)
+  ret match(value)
+    (_:None) => false
+    (v:T) => predicate(v) || any(remainder, predicate)
+
+fun all<T>(list: NewList<T>, predicate: (:T): Bool): Bool
+  ret fold<T, Bool>(list, true, (acc: Bool, x: T) => acc && predicate(x))
+
+fun contains<T>(list: NewList<T>, x: T): Bool where BasicEquality<T>
+  ret any<T>(list, (y: T) => y == x)
+
+
+fun flatMap<T,U>(list: NewList<T>, func: (:T): NewList<U>): NewList<U>
+  ret fold<T, NewList<U>>(list, NewList<U>(), (acc: NewList<U>, x: T) => append<U>(acc, func(x)))
+
+fun filter<T>(list: NewList<T>, predicate: (:T): Bool): NewList<T>
+  ret fold<T, NewList<T>>(list, NewList<T>(), (acc: NewList<T>, x: T) => predicate(x) ? append<T>(acc, x) : acc)
+
+fun map<T,U>(list: NewList<T>, func: (:T): U): NewList<U>
+  ret fold<T, NewList<U>>(list, NewList<U>(), (acc: NewList<U>, x: T) => append<U>(acc, func(x)))
+
+fun [tail] fold<T, [linear] U>(list: NewList<T>, init: U, accFunc: (:U, :T): U): U
+  let (value, remainder) = splitFirst(list)
+  ret match(value)
+    (_:None) => init
+    (v:T) => fold(remainder, accFunc(init, v), accFunc)
+
+
+# Split work ammongs sub-tasks using futures. First attempts just
+# aims for parallelism over four tasks to test the theory. Later
+# attempts will recurse.
+fun [inline(never)] powerMap<T,U>(list: NewList<T>, func: (:T): U): NewList<U>
+  fun [future] dropTakeAndMap(dropCount: Int, takeCount: Int, list: NewList<T>): NewList<U>
+    ret map(take(drop(list, dropCount), takeCount), func)
+  let size = _count(list) / 4
+  if size < 1
+    ret map(list, func)
+  let r1 = dropTakeAndMap(0, size, list)
+  let r2 = dropTakeAndMap(size, size, list)
+  let r3 = dropTakeAndMap(size*2, size, list)
+  let r4 = dropTakeAndMap(size*3, _count(list)-size*3, list)
+  ret concat(concat(concat(r1, r2), r3), r4)
+
