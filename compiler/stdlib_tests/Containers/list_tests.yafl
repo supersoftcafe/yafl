@@ -459,6 +459,49 @@ fun [test("NewList works with a non-Int element type")] stringElements(): None|T
     ?? assertEqStr(last(list) ?? "", "b", "last")
 
 
+# ── groupBy ─────────────────────────────────────────────────────────────────
+
+fun [test("groupBy separates even and odd ints")] groupByEvenOdd(): None|TestFailure
+  let grouped = groupBy(_upTo(6), (x: Int) => x % 2)
+  # Group 0 = evens, Group 1 = odds
+  let evens: NewList<Int> = get(grouped, 0) ?? NewList<Int>()
+  let odds: NewList<Int> = get(grouped, 1) ?? NewList<Int>()
+  ret assertEqStr(_render(evens), "2.4.6.", "evens in order")
+    ?? assertEqStr(_render(odds), "1.3.5.", "odds in order")
+
+fun [test("groupBy of an empty list gives an empty dict")] groupByEmpty(): None|TestFailure
+  let grouped = groupBy<Int, Int>(NewList<Int>(), (x: Int) => 0)
+  ret assertTrue(isEmpty(grouped), "empty dict")
+
+fun [test("groupBy with all same key gives one group")] groupBySingleGroup(): None|TestFailure
+  let grouped = groupBy(_upTo(4), (x: Int) => 0)
+  let all: NewList<Int> = get(grouped, 0) ?? NewList<Int>()
+  ret assertEqStr(_render(all), "1.2.3.4.", "all elements in one group")
+    ?? assertFalse(isEmpty(grouped), "dict not empty")
+
+fun [test("groupBy with string keys groups correctly")] groupByStringKeys(): None|TestFailure
+  let names: NewList<String> = append(append(append(NewList<String>(), "Alice"), "Bob"), "Ann")
+  let grouped = groupBy(names, (n: String) => n)
+  let alice: NewList<String> = get(grouped, "Alice") ?? NewList<String>()
+  ret assertEqStr(head(alice) ?? "", "Alice", "Alice group")
+    ?? assertEqStr(last(alice) ?? "", "Alice", "single element")
+
+fun [test("groupBy preserves insertion order within groups")] groupByPreservesOrder(): None|TestFailure
+  let grouped = groupBy(_upTo(5), (x: Int) => x % 2)
+  # Group 0 (evens): should be [2, 4]
+  let evens: NewList<Int> = get(grouped, 0) ?? NewList<Int>()
+  ret assertEqStr(_render(evens), "2.4.", "evens in order")
+    ?? assertEqStr(_render(get(grouped, 1) ?? NewList<Int>()), "1.3.5.", "odds in order")
+
+fun [test("groupBy produces exactly two groups for even/odd")] groupByTwoGroups(): None|TestFailure
+  let grouped = groupBy(_upTo(4), (x: Int) => x % 2)
+  let keySet = keys(grouped)
+  # More than one key, and neither 0 nor 1 is missing
+  ret assertFalse(isEmpty(keySet), "not empty")
+    ?? assertTrue(get(grouped, 0) !is None, "has 0 group")
+    ?? assertTrue(get(grouped, 1) !is None, "has 1 group")
+
+
 # ── flatMap (does not compile today) ────────────────────────────────────────
 #
 # Instantiating flatMap makes the monomorphizer emit a call to

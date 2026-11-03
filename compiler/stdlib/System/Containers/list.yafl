@@ -8,10 +8,17 @@ class [final, pinnable] _ListNode<T>(_next: _ListNode<T>|None, _value: T)
 enum NewList<T>
   enum NewListEmpty()
   enum NewListFull(_head: _ListNode<T>, _tail: _ListNode<T>, _count: Int)
+
 fun NewList<T>(): NewList<T> => NewListEmpty<T>()
+
 fun NewList<T>(value: T): NewList<T>
   let node = _ListNode<T>(None, value)
   ret NewListFull(node, node, 1)
+
+fun NewList<T>(v1: T, v2: T): NewList<T>
+  let n2 = _ListNode<T>(None, v2)
+  let n1 = _ListNode<T>(n2, v1)
+  ret NewListFull(n1, n2, 2)
 
 
 instance<T> Stream<NewList<T>, T, Never>
@@ -112,11 +119,17 @@ fun isEmpty<T>(list: NewList<T>): Bool
   ret list is NewListEmpty<T>
 
 
-fun [tail] any<T>(list: NewList<T>, predicate: (:T): Bool): Bool
-  let (value, remainder) = splitFirst(list)
-  ret match(value)
-    (_:None) => false
-    (v:T) => predicate(v) || any(remainder, predicate)
+fun findIndex<T>(list: NewList<T>, predicate: (:T): Bool): Int|None
+  fun [tail] findIndex2(node: _ListNode<T>|None, index: Int, maxIndex: Int): Int|None
+    ret match(index<maxIndex ? node : None)
+      (_:None) => None
+      (n:_ListNode<T>) => predicate(n._value) ? index : findIndex2(n._next, index+1, maxIndex)
+  ret match(list)
+    (_:NewListEmpty<T>) => None
+    (head:NewListFull<T>) => findIndex2(head._head, 0, _count(list)-1)
+
+fun any<T>(list: NewList<T>, predicate: (:T): Bool): Bool
+  ret findIndex<T>(list, predicate) !is None
 
 fun all<T>(list: NewList<T>, predicate: (:T): Bool): Bool
   ret fold<T, Bool>(list, true, (acc: Bool, x: T) => acc && predicate(x))
@@ -139,6 +152,17 @@ fun [tail] fold<T, [linear] U>(list: NewList<T>, init: U, accFunc: (:U, :T): U):
   ret match(value)
     (_:None) => init
     (v:T) => fold(remainder, accFunc(init, v), accFunc)
+
+
+fun groupBy<T,K>(list: NewList<T>, keyFunc: (:T): K): Dict<K,NewList<T>> where BasicEquality<K>
+  fun appendOrCreate(l: NewList<T>|None, v: T): NewList<T>
+    ret match(l)
+      (_:None) => NewList<T>(v)
+      (l:NewList<T>) => append(l, v)
+  fun groupByAppend(d: Dict<K,NewList<T>>, v: T): Dict<K,NewList<T>>
+    let k = keyFunc(v)
+    ret put(d, k, appendOrCreate(get(d, k), v))
+  ret fold(list, Dict<K,NewList<T>>(), groupByAppend)
 
 
 # Split work ammongs sub-tasks using futures. First attempts just
