@@ -356,6 +356,19 @@ enum NpFn
 enum NpMaybeFn
   enum NpNoMaybeFn()
   enum NpHasMaybeFn(f: ((:Int): Int)|None)
+enum NpWrapSame
+  enum NpWsHeld(e: NpSame)
+  enum NpWsNone()
+enum NpBlind
+  enum NpBlA(i: Int32, x: Node)
+  enum NpBlB(i: Int32)
+  enum NpBlC(i: Int32)
+enum NpWrapBlind
+  enum NpWbHeld(e: NpBlind)
+  enum NpWbNone()
+enum NpWrapList
+  enum NpWlHeld(l: NpList)
+  enum NpWlNone()
 fun [inline(never)] mkList(k: Int): NpList
   let n = Node(None, k)
   ret k == 0 ? NpEmpty() : NpFull(n, n, k)
@@ -381,6 +394,12 @@ fun [inline(never)] mkFn(k: Int): NpFn
   ret k == 0 ? NpNoFn() : NpHasFn((i: Int) => i + k)
 fun [inline(never)] mkMaybeFn(k: Int): NpMaybeFn
   ret k == 0 ? NpNoMaybeFn() : NpHasMaybeFn(None)
+fun [inline(never)] mkWrapSame(k: Int): NpWrapSame
+  ret k == 0 ? NpWsNone() : NpWsHeld(mkSame(k))
+fun [inline(never)] mkWrapBlind(k: Int): NpWrapBlind
+  ret k == 0 ? NpWbNone() : NpWbHeld(k == 1 ? NpBlB(1i32) : NpBlA(2i32, Node(None, k)))
+fun [inline(never)] mkWrapList(k: Int): NpWrapList
+  ret k == 0 ? NpWlNone() : NpWlHeld(mkList(k))
 fun main(): System::Int
   let a = match(mkList(1))
     (e: NpEmpty) => 0
@@ -419,7 +438,16 @@ fun main(): System::Int
   let l = match(mkMaybeFn(1))
     (x: NpNoMaybeFn)  => 0
     (y: NpHasMaybeFn) => 1
-  ret a + b + c + d + e + f + g + h + i + j + k + l
+  let m = match(mkWrapSame(1))
+    (x: NpWsHeld) => 1
+    (y: NpWsNone) => 0
+  let n = match(mkWrapBlind(1))
+    (x: NpWbHeld) => 1
+    (y: NpWbNone) => 0
+  let o = match(mkWrapList(1))
+    (x: NpWlHeld) => 1
+    (y: NpWlNone) => 0
+  ret a + b + c + d + e + f + g + h + i + j + k + l + m + n + o
 """
 
     @classmethod
@@ -483,3 +511,18 @@ fun main(): System::Int
     def test_scalar_payload_keeps_the_tag(self):
         self.assertIn("int8_t _tag;", self._fields("Main__mkScalar_"))
         self.assertIn("int8_t _tag;", self._fields("Main__mkOptI32_"))
+
+    def test_slot_every_variant_fills_never_null_names_an_outer_variant(self):
+        # NpSame's variants share one slot and both fill it with a class
+        # pointer, so it is never NULL: NULL there means NpWsNone.
+        self.assertNotIn("int8_t _tag;", self._fields("Main__mkWrapSame_"))
+
+    def test_slot_some_variant_leaves_unused_keeps_the_outer_tag(self):
+        # NpBlind keeps its tag (B and C look alike), and only A fills the
+        # Node slot: it is NULL in B and C, so it cannot name NpWbHeld.
+        self.assertIn("int8_t _tag;", self._fields("Main__mkWrapBlind_"))
+
+    def test_slot_naming_an_inner_variant_keeps_the_outer_tag(self):
+        # NpList's slots are NULL in NpEmpty — that is how it is told apart —
+        # so none of them can name NpWlHeld.
+        self.assertIn("int8_t _tag;", self._fields("Main__mkWrapList_"))

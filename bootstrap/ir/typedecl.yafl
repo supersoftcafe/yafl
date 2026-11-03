@@ -538,8 +538,9 @@ fun canMergeInto(small, large) => match(small)
     (o: CgType) => false
   (o: CgType) => false
 
-# A pointer slot is shared by variants that leave it NULL, so it never
-# carries a variant's never-NULL refinement.
+# Canonical slot type for union slot sharing: never-NULL and nullable words
+# of one kind share a slot. Whether the slot itself is never NULL is settled
+# once packing knows every variant's use of it (cgRefineSlot).
 fun cgSlotKey(t): CgType => match(t)
   (d: CgDataPointer) => CgDataPointer(false)
   (st: CgStr)        => CgStr(false)
@@ -747,7 +748,21 @@ fun cgPackSlots(variantTypes: List<CgType>): CgPackedSlots
   let merged = cgMergeSlotsLoop(built.slots, built.vmap)
   let active = cgSortIdxBySize(cgActiveWithIndices(merged.slots))
   let renumber = cgBuildRenumber(active)
-  ret CgPackedSlots(active, map(merged.vmap, (vm) => cgRenumberVmapOne(vm, renumber)), built.nVariants)
+  ret CgPackedSlots(map(active, (s) => cgRefineSlot(s, merged.vmap)),
+                    map(merged.vmap, (vm) => cgRenumberVmapOne(vm, renumber)), built.nVariants)
+
+# A slot every variant fills with a never-NULL word is never NULL; one a
+# variant leaves unused is NULL in that variant's values. Carried on the slot
+# type, so a union enclosing this one can name its own variants by it.
+fun cgRefineSlot(s: CgIdxSlot, vmap: List<List<CgSlotEntry>>): CgIdxSlot
+  let filled = all(vmap, (vm) => any(vm, (e) => e.slotIndex == s.isIndex && cgIsNeverNull(e.origType)))
+  ret filled ? with s(isSlot = with s.isSlot(slotType = cgNeverNullSlot(s.isSlot.slotType))) : s
+
+fun cgNeverNullSlot(t): CgType => match(t)
+  (d: CgDataPointer) => CgDataPointer(true)
+  (st: CgStr)        => CgStr(true)
+  (ip: CgIntPtr)     => CgIntPtr(true)
+  (o: CgType)        => t
 
 # The tag must hold the largest value actually STORED: a flat enum stores
 # positional indices (< nVariants), but a tagged combination stores GLOBAL

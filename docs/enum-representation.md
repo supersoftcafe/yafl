@@ -141,8 +141,14 @@ Mechanics (both compilers):
   A single-variant enum keeps its tag. Only the size-optimal slots are
   considered: adding a slot to spare the tag would cost the word the tag
   costs.
-- A union slot never carries the refinement (`_slot_key`): variants that
-  do not use it leave it NULL. A String slot is tested by its `head`.
+- Slots are shared regardless of the refinement (`_slot_key`), and a slot
+  carries it only when every variant fills it with a never-NULL word
+  (`_pack_slots`; `cgRefineSlot`): a variant that leaves it unused leaves
+  it NULL. So an enum held in another can name the outer variant by its own
+  slots — `Held(s: Same) | Empty()`, with `Same = A(x: Node) | B(y: Node)`,
+  needs no outer tag — while a slot some inner variant leaves unused,
+  whether it names that variant or the inner tag does, never can. A String
+  slot is tested by its `head`.
 - `TaggedRepr.null_tests` holds the tests; `leaf_guards` emits either
   `$tag == i` or a `NullPattern` — one guard node, a conjunction of NULL
   tests — for the subject itself and for an enum held inside a tagged

@@ -3,7 +3,7 @@ from __future__ import annotations
 from itertools import groupby
 from collections.abc import Mapping
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Any
 from codegen.tools import mangle_name
 
@@ -543,9 +543,9 @@ def _can_merge_into(small: Type, large: Type) -> bool:
 
 
 def _slot_key(t: Type) -> Type:
-    """Canonical slot type for union slot sharing. A pointer slot is shared by
-    variants that leave it NULL, so it never carries a variant's never-NULL
-    refinement."""
+    """Canonical slot type for union slot sharing: never-NULL and nullable
+    words of one kind share a slot. Whether the slot itself is never NULL is
+    settled once packing knows every variant's use of it (_pack_slots)."""
     return type(t)() if t.never_null else t
 
 
@@ -686,4 +686,11 @@ def _pack_slots(variant_types: list[Type]) -> tuple[list[Type], tuple[tuple[tupl
         tuple((renumber[si], orig) for si, orig in vm)
         for vm in vmap
     )
-    return [s[0] for _, s in active], variant_map
+
+    # A slot every variant fills with a never-NULL word is never NULL; one a
+    # variant leaves unused is NULL in that variant's values. Carried on the
+    # slot type, so a union enclosing this one can name its own variants by it.
+    def slot_type(old_si: int, st: Type) -> Type:
+        filled = all(any(si == old_si and orig.never_null for si, orig in vm) for vm in vmap)
+        return replace(st, nonnull=True) if filled else st
+    return [slot_type(si, s[0]) for si, s in active], variant_map

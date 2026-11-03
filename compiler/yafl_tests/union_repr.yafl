@@ -523,3 +523,65 @@ fun program(): System::Int
 
 fun [test("null code pointer tells variants apart", stdout = "100 20 15 200 300 2\n")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::NeverNullSlotNamesAnOuterVariant
+
+import System
+import System::Test
+
+# Both of Same's variants fill their shared slot with a class pointer, so it
+# is never NULL in a Same — and NULL there tells Wrap's Empty from Held.
+class Node(v: Int)
+enum Same
+  enum A(x: Node)
+  enum B(y: Node)
+enum Wrap
+  enum Held(s: Same)
+  enum Empty()
+fun mk(k: Int): Wrap
+  ret k < 0 ? Empty() : Held(k == 0 ? A(Node(10)) : B(Node(20)))
+fun probe(w: Wrap): Int
+  ret match(w)
+    (e: Empty) => 100
+    (h: Held)  => match(h.s)
+      (a: A) => a.x.v
+      (b: B) => b.y.v + 1
+fun program(): System::Int
+  println(String(probe(mk(-1))) + " " + String(probe(mk(0))) + " " + String(probe(mk(1))))
+  ret 0
+
+fun [test("never-null slot names an outer variant", stdout = "100 10 21\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::SlotLeftUnusedCannotNameAnOuterVariant
+
+import System
+import System::Test
+
+# Blind keeps its tag (B and C look alike) and only A fills the Node slot, so
+# that slot is NULL in a held B or C: Wrap must not read NULL as Empty.
+class Node(v: Int)
+enum Blind
+  enum A(i: Int32, x: Node)
+  enum B(i: Int32)
+  enum C(i: Int32)
+enum Wrap
+  enum Held(b: Blind)
+  enum Empty()
+fun mk(k: Int): Wrap
+  ret k < 0 ? Empty() : Held(k == 0 ? A(1i32, Node(10)) : (k == 1 ? B(2i32) : C(3i32)))
+fun probe(w: Wrap): Int
+  ret match(w)
+    (e: Empty) => 100
+    (h: Held)  => match(h.b)
+      (a: A) => a.x.v
+      (b: B) => 20
+      (c: C) => 30
+fun program(): System::Int
+  println(String(probe(mk(-1))) + " " + String(probe(mk(0))) + " " + String(probe(mk(1))) + " " + String(probe(mk(2))))
+  ret 0
+
+fun [test("slot left unused cannot name an outer variant", stdout = "100 10 20 30\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
