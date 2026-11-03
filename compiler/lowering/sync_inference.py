@@ -110,7 +110,7 @@ def _fun_paths(t: Type) -> tuple[Path, ...]:
 def _retype(t: Type, is_sync) -> Type:
     """`t` with each function-typed leaf flagged `is_sync(path)`."""
     if isinstance(t, FuncPointer):
-        return FuncPointer(sync=is_sync(()))
+        return dataclasses.replace(t, sync=is_sync(()))
     if isinstance(t, Struct) and _fun_paths(t):
         return dataclasses.replace(t, fields=tuple(
             (name, _retype(ft, lambda p, name=name: is_sync((name,) + p)))

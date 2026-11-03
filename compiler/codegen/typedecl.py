@@ -40,6 +40,13 @@ class Type(ABC):
         return False
 
     @property
+    def never_null(self) -> bool:
+        """Is this a word no value of the type leaves zero? Only a
+        primitive slot type can say yes (DataPointer, Str, IntPtr): a flat
+        enum tells its variants apart by such words (compute_enum_slots)."""
+        return False
+
+    @property
     def _dont_cache(self) -> bool:
         return False
 
@@ -196,6 +203,14 @@ class Float(Type):
 
 @dataclass(frozen=True)
 class IntPtr(Type):
+    # The word is never zero: a function's code pointer, flattened out of a
+    # never-NULL FuncPointer. A refinement, as DataPointer.nonnull is.
+    nonnull: bool = field(default=False, compare=False)
+
+    @property
+    def never_null(self) -> bool:
+        return self.nonnull
+
     @property
     def nominal_size(self) -> int:
         return 5   # pointer-sized, after the GC pointers
@@ -213,6 +228,19 @@ class IntPtr(Type):
 
 @dataclass(frozen=True)
 class DataPointer(Type):
+    # Every value of this type is a real word, never NULL: a heap object, a
+    # tagged immediate (an Int), a complex enum, a union with no unit member.
+    # Set where a type spec lowers; a flat enum tells its variants apart by
+    # which slots are NULL when the slots allow it (compute_enum_slots). A
+    # REFINEMENT of the same type, not a different representation — never-NULL
+    # ≤ maybe-NULL, merged by AND at Phi — so it takes no part in equality,
+    # and every type comparison is unchanged by it.
+    nonnull: bool = field(default=False, compare=False)
+
+    @property
+    def never_null(self) -> bool:
+        return self.nonnull
+
     @property
     def nominal_size(self) -> int:
         return 6   # between the 8-byte and 4-byte scalars
@@ -239,6 +267,15 @@ class Str(Type):
     when a union containing String shares this representation (yafl.h,
     "String values"). The rest of the layout is the runtime's business and
     differs by word size, so the compiler never names it."""
+    # `head` is never NULL: a String's is a tagged word ("" included) or its
+    # buffer. A union that shares this representation puts NULL there for
+    # None, so only a String — or a union with no unit member — says so. A
+    # refinement, as DataPointer.nonnull is.
+    nonnull: bool = field(default=False, compare=False)
+
+    @property
+    def never_null(self) -> bool:
+        return self.nonnull
 
     def words_upper_bound(self) -> int:
         return 2   # 16 bytes
@@ -266,6 +303,10 @@ class FuncPointer(Type):
     # representation: sync ≤ may-suspend, merged by AND at Phi — so it takes
     # no part in equality, and every type comparison is unchanged by it.
     sync: bool = field(default=False, compare=False)
+    # The code pointer `f` is never NULL: the value is a function (only a
+    # task in flight, never matched on, leaves it NULL). The environment may
+    # be NULL. A refinement, as DataPointer.nonnull is.
+    nonnull: bool = field(default=False, compare=False)
 
     def words_upper_bound(self) -> int:
         return 2  # fun_t = { void* f; void* o; }
@@ -490,7 +531,8 @@ def _flatten_primitives(t: Type) -> list[Type]:
     if isinstance(t, Struct):
         return [p for _, ft in t.fields for p in _flatten_primitives(ft)]  # unit → []
     if isinstance(t, FuncPointer):
-        return [IntPtr(), DataPointer()]  # f=code pointer (non-GC), o=data pointer (GC)
+        # f=code pointer (non-GC), o=data pointer (GC)
+        return [IntPtr(nonnull=t.nonnull), DataPointer()]
     return [t]  # Int, Float, DataPointer, IntPtr — already primitive
 
 
@@ -501,8 +543,10 @@ def _can_merge_into(small: Type, large: Type) -> bool:
 
 
 def _slot_key(t: Type) -> Type:
-    """Canonical slot type for union slot sharing."""
-    return t
+    """Canonical slot type for union slot sharing. A pointer slot is shared by
+    variants that leave it NULL, so it never carries a variant's never-NULL
+    refinement."""
+    return type(t)() if t.never_null else t
 
 
 def _tag_type(n_variants: int) -> Int:
@@ -522,6 +566,79 @@ def compute_union_slots(variant_types: list[Type], max_tag: int | None = None) -
     on read, zero-extend on write).  The last field of the returned Struct is always
     the $tag discriminant.
     """
+    slot_types, variant_map = _pack_slots(variant_types)
+    return _tagged_struct(slot_types, len(variant_types), max_tag), variant_map
+
+
+def compute_enum_slots(variant_types: list[Type], max_tag: int | None = None) -> tuple[Struct, tuple[tuple[tuple[int, Type], ...], ...], tuple[tuple[tuple[int, bool], ...], ...] | None]:
+    """The shared-slot layout of a flat enum: compute_union_slots' slots, and
+    no $tag when the slots alone tell every variant apart (#75).
+
+    A variant leaves every slot it does not use NULL, and a never-NULL word
+    (Type.never_null) in a slot it does use is never NULL. So where, for
+    every pair of variants, some slot is never-NULL in one and unused by the
+    other, the pattern of NULL slots names the variant. Returns (Struct,
+    variant_map, null_tests): null_tests[i] is the conjunction of
+    (slot_index, is_null) tests that holds for variant i and for no other —
+    or None, and the Struct ends in $tag as compute_union_slots' does.
+
+    Only the size-optimal slots are considered: a slot added to spare the tag
+    would cost the word the tag costs."""
+    slot_types, variant_map = _pack_slots(variant_types)
+    null_tests = _null_pattern_tests(variant_map, len(slot_types))
+    if null_tests is None:
+        return _tagged_struct(slot_types, len(variant_types), max_tag), variant_map, None
+    return Struct(fields=_slot_fields(slot_types)), variant_map, null_tests
+
+
+def _null_pattern_tests(variant_map, n_slots: int) -> tuple[tuple[tuple[int, bool], ...], ...] | None:
+    """Per variant, the fewest (slot_index, is_null) tests that rule out every
+    other variant — chosen greedily, each test the one ruling out most of the
+    variants still left (ties to a non-NULL test, then to the lowest slot)
+    — or None when some pair of variants cannot be told apart. A
+    single variant has nothing to tell apart from: it keeps its tag."""
+    if len(variant_map) < 2:
+        return None
+    used = [frozenset(si for si, _ in vm) for vm in variant_map]
+    never_null = [frozenset(si for si, orig in vm if orig.never_null) for vm in variant_map]
+
+    def ruled_out(test: tuple[int, bool], wi: int) -> bool:
+        si, is_null = test
+        return si in never_null[wi] if is_null else si not in used[wi]
+
+    result = []
+    for vi in range(len(variant_map)):
+        candidates = ([(si, False) for si in sorted(never_null[vi])]
+                      + [(si, True) for si in range(n_slots) if si not in used[vi]])
+        left = {wi for wi in range(len(variant_map)) if wi != vi}
+        chosen: list[tuple[int, bool]] = []
+        while left:
+            best = max(candidates, key=lambda c: sum(ruled_out(c, wi) for wi in left), default=None)
+            hits = {wi for wi in left if best is not None and ruled_out(best, wi)}
+            if not hits:
+                return None
+            chosen.append(best)
+            left -= hits
+        result.append(tuple(sorted(chosen)))
+    return tuple(result)
+
+
+def _slot_fields(slot_types: list[Type]) -> tuple[tuple[str, Type], ...]:
+    return tuple((f"$s{si}", st) for si, st in enumerate(slot_types))
+
+
+def _tagged_struct(slot_types: list[Type], n_variants: int, max_tag: int | None) -> Struct:
+    # The tag must hold the largest value actually STORED: a flat enum stores
+    # positional indices (< len), but a tagged combination stores GLOBAL
+    # discriminators — the caller passes their maximum via max_tag, and a
+    # 2-member union whose member is discriminator 135 needs more than int8.
+    tag_bound = max(n_variants, (max_tag or 0) + 1)
+    return Struct(fields=_slot_fields(slot_types) + (("$tag", _tag_type(tag_bound)),))
+
+
+def _pack_slots(variant_types: list[Type]) -> tuple[list[Type], tuple[tuple[tuple[int, Type], ...], ...]]:
+    """The union's shared slots, largest first, and each variant's primitive
+    -> slot assignment."""
     flat: list[list[Type]] = [_flatten_primitives(vt) for vt in variant_types]
 
     # slots_list: list of [slot_type, set_of_variant_indices]
@@ -565,15 +682,8 @@ def compute_union_slots(variant_types: list[Type], max_tag: int | None = None) -
     active = [(si, s) for si, s in enumerate(slots_list) if s is not None]
     active.sort(key=lambda x: -x[1][0].nominal_size)
     renumber = {old_si: new_si for new_si, (old_si, _) in enumerate(active)}
-
-    # The tag must hold the largest value actually STORED: a flat enum stores
-    # positional indices (< len), but a tagged combination stores GLOBAL
-    # discriminators — the caller passes their maximum via max_tag, and a
-    # 2-member union whose member is discriminator 135 needs more than int8.
-    tag_bound = max(len(variant_types), (max_tag or 0) + 1)
-    slot_fields = tuple((f"$s{new_si}", s[0]) for new_si, (_, s) in enumerate(active)) + (("$tag", _tag_type(tag_bound)),)
     variant_map = tuple(
         tuple((renumber[si], orig) for si, orig in vm)
         for vm in vmap
     )
-    return Struct(fields=slot_fields), variant_map
+    return [s[0] for _, s in active], variant_map

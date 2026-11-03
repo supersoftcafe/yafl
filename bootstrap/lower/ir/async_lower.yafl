@@ -25,19 +25,19 @@ import Bootstrap::Types
 
 # ── module scratch vars (the hot path shares ONE set) ────────────────────────
 
-fun alSvState() => RpStackVar(CgDataPointer(), "$sv_state")
+fun alSvState() => RpStackVar(CgDataPointer(false), "$sv_state")
 
-fun alSvTask(): RParam => RpStackVar(CgDataPointer(), "$sv_task")
+fun alSvTask(): RParam => RpStackVar(CgDataPointer(false), "$sv_task")
 
-fun alSvDiscard(): RParam => RpStackVar(CgDataPointer(), "$sv_discard")
+fun alSvDiscard(): RParam => RpStackVar(CgDataPointer(false), "$sv_discard")
 
 fun alSvCallId() => RpStackVar(CgInt(32), "$sv_call_id")
 
-fun alSvAsyncTask() => RpStackVar(CgDataPointer(), "$sv_async_task")
+fun alSvAsyncTask() => RpStackVar(CgDataPointer(false), "$sv_async_task")
 
-fun alStateParam(): RParam => RpStackVar(CgDataPointer(), "$state")
+fun alStateParam(): RParam => RpStackVar(CgDataPointer(false), "$state")
 
-fun alCompletedParam() => RpStackVar(CgDataPointer(), "$completed_task")
+fun alCompletedParam() => RpStackVar(CgDataPointer(false), "$completed_task")
 
 # ── return conversion ────────────────────────────────────────────────────────
 
@@ -96,7 +96,7 @@ fun alSmComplete(myTaskField): List<Op>
   ret list2(OpMove(alSvDiscard(),
                    RpRuntimeInvoke("task_complete",
                                    RpNewStruct(list1(RpNamedValue("self", myTaskField))),
-                                   CgDataPointer()),
+                                   CgDataPointer(false)),
                    true, Dict()),
             OpReturnVoid(Dict()))
 
@@ -137,7 +137,7 @@ fun alHotReturnOne(op, wrapped) => match(op)
 # ── per-pattern emit helpers ─────────────────────────────────────────────────
 
 fun alRuntimeDiscard(sv, name, args): Op
-  ret OpMove(sv, RpRuntimeInvoke(name, RpNewStruct(args), CgDataPointer()),
+  ret OpMove(sv, RpRuntimeInvoke(name, RpNewStruct(args), CgDataPointer(false)),
              true, Dict())
 
 # Task alloc: None → base task_t via task_create; a runtime subtype (task_obj,
@@ -147,14 +147,14 @@ fun alEmitTaskAlloc(svTask, subtype: String|None): List<Op> => match(subtype)
     ? list1(OpMove(svTask,
                    RpRuntimeInvoke(st + "_create",
                                    RpNewStruct(list1(RpNamedValue("self", RpNullPointer()))),
-                                   CgDataPointer()), false, Dict()))
+                                   CgDataPointer(false)), false, Dict()))
     : list2(OpNewObject(st, svTask, None, false, Dict()),
             alRuntimeDiscard(alSvDiscard(), "task_init",
                              list1(RpNamedValue("task", svTask))))
   ()            => list1(OpMove(svTask,
                    RpRuntimeInvoke("task_create",
                                    RpNewStruct(list1(RpNamedValue("self", RpNullPointer()))),
-                                   CgDataPointer()), false, Dict()))
+                                   CgDataPointer(false)), false, Dict()))
 
 # SM cold-block tail: write idx, register fn$async on the in-flight task
 # (already a clean task_t pointer), return.
@@ -812,7 +812,7 @@ fun [tail] alIoiLoop(ls: Chain<Int>, x: Int, i) => match(ls)
 # addresses its $state parameter. Hardcoding one base here read a never-
 # written $state in the hot path's save block (uninit_check caught it).
 fun alArrayElem(sp, stateName, index): RParam
-  ret RpObjectField(CgDataPointer(), sp, stateName, "array",
+  ret RpObjectField(CgDataPointer(false), sp, stateName, "array",
                     RpInteger(index, 32), false, false)
 
 # Frame local reference: trailing-array slot | shared inline slot | named field.
@@ -1079,7 +1079,7 @@ fun alSyncWrapNameOf(reg: RParam, index: Int) => match(reg)
 
 fun alForceResultType(t2: CgType|None) => match(t2)
   (x: CgType) => x
-  ()           => CgDataPointer()   # unreachable: valued musttails carry a type
+  ()           => CgDataPointer(false)   # unreachable: valued musttails carry a type
 
 # State object: type, my_task, <inline PTR-BEARING slots>, idx, $ptr_count,
 # <non-ptr slots>, array[0] — pointer slots kept LOW for the location mask.
@@ -1089,15 +1089,15 @@ fun alCreateStateObject(f: CgFunction, stateName, layout: AFrame)
   # The layout is fixed: header, pointer-bearing inline slots, index and
   # pointer count, non-pointer slots, and the GC array LAST — it is a trailing
   # flexible array, so nothing may follow it. One builder, in that order.
-  let fl0 = builderFrom(list2(CgField("type", CgDataPointer()),
-                              CgField("my_task", CgDataPointer())))
+  let fl0 = builderFrom(list2(CgField("type", CgDataPointer(false)),
+                              CgField("my_task", CgDataPointer(false))))
   let fl1 = pushAll(fl0, inlinePtr)
   let fl2 = pushAll(fl1,
                 list2(CgField("idx", CgInt(32)),
                       CgField("$ptr_count", CgInt(32))))
   let fl3 = pushAll(fl2, nonPtr)
   let fields = build(push(fl3,
-                   CgField("array", CgArray(CgDataPointer(), 0))))
+                   CgField("array", CgArray(CgDataPointer(false), 0))))
   ret CgObject(stateName, List(), List(),
                CgImmediateStruct(fields), "$ptr_count", f.fnComment,
                false, true, 0)   # is_mutable: idx + live vars rewritten at every suspension
@@ -1311,7 +1311,7 @@ fun alHotAssembleSync(f: CgFunction, wrappedResult, body: HotOut): CgFunction
   let commonOps = list2<Op>(OpLabel("$asynccommon", Dict()),
                         OpAbort("sync function reached $asynccommon", Dict()))
   let extra = concat(list2(CgField("$sv_call_id", CgInt(32)),
-                           CgField("$sv_async_task", CgDataPointer())),
+                           CgField("$sv_async_task", CgDataPointer(false))),
                      body.hoWrapFields)
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
@@ -1342,7 +1342,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
   let common3 = alSaveBlocks(chain(nonTerminal), stateName, layout, 0, common2)
   let common4 = push(common3, OpLabel("$save$done", Dict()))
   let common5 = pushAll(common4, list2(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
+      OpMove(RpObjectField(CgDataPointer(false), alSvState(), stateName, "my_task", None, false, false),
              RpNullPointer(), false, Dict()),
       OpMove(RpObjectField(CgInt(32), alSvState(), stateName, "idx", None, false, false),
              alSvCallId(), false, Dict())))
@@ -1350,17 +1350,17 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
                             alEmitTaskAlloc(alSvTask(), subtype))
   let callback = RpGlobalFunction(f.fnName + "$async", alSvState(), false, None, false, false)
   let common7 = pushAll(common6, list3(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
+      OpMove(RpObjectField(CgDataPointer(false), alSvState(), stateName, "my_task", None, false, false),
              alSvTask(), false, Dict()),
       alRuntimeDiscard(alSvDiscard(), "task_on_complete",
                        list2(RpNamedValue("task", alSvAsyncTask()),
                              RpNamedValue("cb", callback))),
       OpReturn(RpTagTask(alSvTask(), wrappedResult), Dict())))
-  let extra = concat(list5(CgField("$sv_state", CgDataPointer()),
-                           CgField("$sv_task", CgDataPointer()),
-                           CgField("$sv_discard", CgDataPointer()),
+  let extra = concat(list5(CgField("$sv_state", CgDataPointer(false)),
+                           CgField("$sv_task", CgDataPointer(false)),
+                           CgField("$sv_discard", CgDataPointer(false)),
                            CgField("$sv_call_id", CgInt(32)),
-                           CgField("$sv_async_task", CgDataPointer())),
+                           CgField("$sv_async_task", CgDataPointer(false))),
                      body.hoWrapFields)
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
@@ -1457,13 +1457,13 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
   let ops1 = fold(cgFieldsOfOrEmpty(f.fnParams), ops0, (acc, p) =>
                concat(acc, alStoreVar(RpStackVar(p.fieldType, p.fieldName), alSvState(), stateName, layout)))
   let ops2 = concat(ops1, list2(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
+      OpMove(RpObjectField(CgDataPointer(false), alSvState(), stateName, "my_task", None, false, false),
              RpNullPointer(), false, Dict()),
       OpMove(RpObjectField(CgInt(32), alSvState(), stateName, "idx", None, false, false),
              RpInteger(entryIdx, 32), false, Dict())))
   let ops3 = concat(ops2, alEmitTaskAlloc(alSvTask(), subtype))
   let ops4 = concat(ops3, list3(
-      OpMove(RpObjectField(CgDataPointer(), alSvState(), stateName, "my_task", None, false, false),
+      OpMove(RpObjectField(CgDataPointer(false), alSvState(), stateName, "my_task", None, false, false),
              alSvTask(), false, Dict()),
       # The machine's C signature is ($state, $completed_task); the state
       # rides the callee-object slot.
@@ -1474,9 +1474,9 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
   # Declare $sv_discard exactly when the ops write it (synthesised-subtype
   # task_init discards through it; the other alloc paths don't).
   let svFields = alOpsWriteDiscard(ops4)
-    ? list3(CgField("$sv_state", CgDataPointer()), CgField("$sv_task", CgDataPointer()),
-            CgField("$sv_discard", CgDataPointer()))
-    : list2(CgField("$sv_state", CgDataPointer()), CgField("$sv_task", CgDataPointer()))
+    ? list3(CgField("$sv_state", CgDataPointer(false)), CgField("$sv_task", CgDataPointer(false)),
+            CgField("$sv_discard", CgDataPointer(false)))
+    : list2(CgField("$sv_state", CgDataPointer(false)), CgField("$sv_task", CgDataPointer(false)))
   ret CgFunction(f.fnName, f.fnParams, wrappedResult, CgStruct(svFields), cgOpsOf(ops4),
                  f.fnComment, f.fnForeignSymbol, f.fnSync, f.fnTail,
                  f.fnBypassAsync, f.fnAlwaysInline,
@@ -1508,7 +1508,7 @@ fun alCreateStateMachineFunc(f: CgFunction, stateName: String, subtype: String|N
                      fold(alWritesOf(op), a, (a2, w) =>
                        add(a2, stackVarName(w)))))
   let idxField = RpObjectField(CgInt(32), alStateParam(), stateName, "idx", None, false, false)
-  let myTaskField = RpObjectField(CgDataPointer(), alStateParam(), stateName, "my_task", None, false, false)
+  let myTaskField = RpObjectField(CgDataPointer(false), alStateParam(), stateName, "my_task", None, false, false)
   let dispatch0 = alSmDispatchSwitch(n, withEntryCase, idxField)
   let body = alSmSites(chain(nonTerminal), f, stateName, subtype, layout, bodyDefs,
                        idxField, myTaskField, 0,
@@ -1675,7 +1675,7 @@ fun alSmChecked(c: OpCall, svCheck: RParam, checkType: CgType, unwrapOp: Op|None
   let ops3 = push(ops2, OpLabel("$resume$" + String(i), Dict()))
   let untagged = RpRuntimeInvoke("TASK_UNTAG",
                                  RpNewStruct(list1(RpNamedValue("p", taskPtrFrom(svCheck, checkType)))),
-                                 CgDataPointer())
+                                 CgDataPointer(false))
   let cold1 = pushAll(push(acc.saCold,
                            OpLabel(asyncLabel, Dict())),
                           saveStores)
@@ -1798,14 +1798,14 @@ fun alSmAssemble(f: CgFunction, allOps: List<Op>, bbs: List<ABlock>,
                                      DeclAcc(builder(), declared))
   let withResults = alSmDeclareResults(chain(bbs), withParams)
   ret CgFunction(f.fnName + "$async",
-                 CgStruct(list2(CgField("$state", CgDataPointer()),
-                                CgField("$completed_task", CgDataPointer()))),
+                 CgStruct(list2(CgField("$state", CgDataPointer(false)),
+                                CgField("$completed_task", CgDataPointer(false)))),
                  CgVoid(),
                  # extra_stack = ($sv_discard,) + sm_wrap_fields — discard FIRST
                  # (Python async_lower.py:1343; declaration order is C order).
                  CgStruct(concat(concat(cgFieldsOfOrEmpty(f.fnStackVars),
                                         build(withResults.daFields)),
-                                 prepend(CgField("$sv_discard", CgDataPointer()), wrapFields))),
+                                 prepend(CgField("$sv_discard", CgDataPointer(false)), wrapFields))),
                  cgOpsOf(allOps), f.fnComment, None, false, false, false, false)
 
 class [linear, final] DeclAcc(daFields: ListBuilder<CgField>,

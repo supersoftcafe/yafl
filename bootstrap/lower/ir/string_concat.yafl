@@ -157,7 +157,7 @@ fun scConcatBuild(operands: List<RParam>): RParam
   let numbered = scNumbered(chain(operands), 0, builder())
   let fields = prepend(RpNamedValue("count", RpInteger(numbered.n, 32)),
                        numbered.vals)
-  ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgStr())
+  ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgStr(false))
 
 # The operand count rides the numbering walk (no-length ruling).
 fun [tail] scNumbered(os: Chain<RParam>, i,

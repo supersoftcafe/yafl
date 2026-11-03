@@ -292,3 +292,234 @@ fun program(): System::Int
 
 fun [test("with reads a field from a merged slot")] check(): None|TestFailure
     ret assertEqInt(program(), 10, "program()")
+
+
+namespace CompilerTests::UnionRepr::NullFieldTellsUnitFromDataVariant
+
+import System
+import System::Test
+
+# A flat enum needs no tag when its fields already say which variant a value
+# holds: LFull's pointers are never NULL, and LEmpty leaves them NULL (#75).
+class Node(next: Node|None, v: Int)
+enum L
+  enum LEmpty()
+  enum LFull(head: Node, tail: Node, count: Int)
+fun mk(k: Int): L
+  let n = Node(None, k)
+  ret k == 0 ? LEmpty() : LFull(n, n, k)
+fun size(l: L): Int
+  ret match(l)
+    (e: LEmpty) => 100
+    (f: LFull)  => f.count + f.head.v
+fun program(): System::Int
+  println(String(size(mk(0))) + " " + String(size(mk(3))))
+  ret 0
+
+fun [test("null field tells unit from data variant", stdout = "100 6\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::NullPatternTellsDataVariantsApart
+
+import System
+import System::Test
+
+# TLeaf and TPair share their first slot; TPair's second slot is never NULL
+# and TLeaf leaves it NULL, so the pattern of NULL slots names each variant.
+class Node(v: Int)
+enum T
+  enum TNil()
+  enum TLeaf(a: Node)
+  enum TPair(l: Node, r: Node)
+fun mk(k: Int): T
+  ret k == 0 ? TNil() : (k == 1 ? TLeaf(Node(10)) : TPair(Node(20), Node(k)))
+fun probe(x: T): Int
+  ret match(x)
+    (p: TPair) => p.l.v + p.r.v
+    (n: TNil)  => 1
+    (f: TLeaf) => f.a.v
+fun program(): System::Int
+  println(String(probe(mk(0))) + " " + String(probe(mk(1))) + " " + String(probe(mk(2))))
+  ret 0
+
+fun [test("null pattern tells data variants apart", stdout = "1 10 22\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::UntaggedEnumInsideACombination
+
+import System
+import System::Test
+
+# An untagged flat enum as a member of a tagged combination: the combination
+# tells the members apart by its own tag, then a variant pattern tests the
+# enum's NULL slots where they sit inside the combination's slots.
+class Node(v: Int)
+enum L
+  enum LEmpty()
+  enum LFull(head: Node, count: Int)
+fun mk(k: Int): L|String
+  ret k < 0 ? "neg" : (k == 0 ? LEmpty() : LFull(Node(k), 2))
+fun probe(x: L|String): Int
+  ret match(x)
+    (s: String) => length(s)
+    (e: LEmpty) => 100
+    (f: LFull)  => f.head.v + f.count
+fun widen(l: L): L|String
+  ret l
+fun probeWhole(x: L|String): Int
+  ret match(x)
+    (s: String) => 0
+    (l: L)      => match(l)
+      (e: LEmpty) => 7
+      (f: LFull)  => f.count
+fun program(): System::Int
+  println(String(probe(mk(-1))) + " " + String(probe(mk(0))) + " " + String(probe(mk(5)))
+          + " " + String(probeWhole(widen(LEmpty()))) + " " + String(probeWhole(widen(LFull(Node(1), 9)))))
+  ret 0
+
+fun [test("untagged enum inside a combination", stdout = "3 100 7 7 9\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::UntaggedEnumAsAFieldAndInAList
+
+import System
+import System::Test
+
+# Untagged enum values stored in a class field and carried through a List:
+# the NULL slots survive every copy.
+class Node(v: Int)
+enum L
+  enum LEmpty()
+  enum LFull(head: Node, count: Int)
+class Box(l: L)
+fun size(l: L): Int
+  ret match(l)
+    (e: LEmpty) => 0
+    (f: LFull)  => f.head.v * f.count
+fun program(): System::Int
+  let boxes = List<Box>()
+    |> (b) => prepend(Box(LFull(Node(2), 3)), b)
+    |> (b) => prepend(Box(LEmpty()), b)
+    |> (b) => prepend(Box(LFull(Node(5), 1)), b)
+  println(String(fold(boxes, 0, (acc: Int, b: Box) => acc + size(b.l))))
+  ret 0
+
+fun [test("untagged enum as a field and in a list", stdout = "11\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::GenericEnumTagDependsOnInstantiation
+
+import System
+import System::Test
+
+# Opt<Node> needs no tag (a Node is never NULL); Opt<Int32> must keep one
+# (every Int32 bit pattern is a value). Both dispatch correctly.
+class Node(v: Int)
+enum Opt<T>
+  enum ONone()
+  enum OSome(value: T)
+fun nodeOr(o: Opt<Node>): Int
+  ret match(o)
+    (n: ONone) => 0
+    (s: OSome) => s.value.v
+fun i32Or(o: Opt<Int32>): Int
+  ret match(o)
+    (n: ONone) => 0
+    (s: OSome) => Int(s.value)
+fun program(): System::Int
+  let zero = 0i32
+  println(String(nodeOr(OSome<Node>(Node(4)))) + " " + String(nodeOr(ONone<Node>()))
+          + " " + String(i32Or(OSome<Int32>(zero))) + " " + String(i32Or(ONone<Int32>())))
+  ret 0
+
+fun [test("generic enum tag depends on instantiation", stdout = "4 0 0 0\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::NullIntTellsVariantsApart
+
+import System
+import System::Test
+
+# An Int is never NULL — 0 is a tagged word — so a lone Int field names its
+# variant, zero included.
+enum Count
+  enum NoCount()
+  enum HasCount(n: Int)
+fun mk(k: Int): Count
+  ret k < 0 ? NoCount() : HasCount(k)
+fun probe(c: Count): Int
+  ret match(c)
+    (x: NoCount)  => 100
+    (y: HasCount) => y.n
+fun program(): System::Int
+  println(String(probe(mk(-1))) + " " + String(probe(mk(0))) + " " + String(probe(mk(7))))
+  ret 0
+
+fun [test("null int tells variants apart", stdout = "100 0 7\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::NullStringTellsVariantsApart
+
+import System
+import System::Test
+
+# A String's first word is never NULL: inline strings, the empty one too,
+# are tagged words, and longer ones point at their buffer.
+enum Text
+  enum NoText()
+  enum HasText(s: String)
+fun mk(k: Int): Text
+  ret k < 0 ? NoText() : (k == 0 ? HasText("") : HasText("a string long enough to live on the heap"))
+fun probe(t: Text): Int
+  ret match(t)
+    (x: NoText)  => 100
+    (y: HasText) => length(y.s)
+fun program(): System::Int
+  println(String(probe(mk(-1))) + " " + String(probe(mk(0))) + " " + String(probe(mk(1))))
+  ret 0
+
+fun [test("null string tells variants apart", stdout = "100 0 40\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::UnionRepr::NullCodePointerTellsVariantsApart
+
+import System
+import System::Test
+
+# A function's code pointer is never NULL, whether or not it captures an
+# environment; a nullable function field keeps the tag and still works.
+enum Fn
+  enum NoFn()
+  enum HasFn(f: (:Int): Int)
+enum MaybeFn
+  enum NoMaybeFn()
+  enum HasMaybeFn(g: ((:Int): Int)|None)
+fun double(i: Int): Int
+  ret i * 2
+fun mk(k: Int): Fn
+  ret k < 0 ? NoFn() : (k == 0 ? HasFn(double) : HasFn((i: Int) => i + k))
+fun probe(x: Fn): Int
+  ret match(x)
+    (n: NoFn)  => 100
+    (h: HasFn) => h.f(10)
+fun probeMaybe(x: MaybeFn): Int
+  ret match(x)
+    (n: NoMaybeFn)  => 200
+    (h: HasMaybeFn) => match(h.g)
+      (f: (:Int): Int) => f(1)
+      (z: None)        => 300
+fun program(): System::Int
+  println(String(probe(mk(-1))) + " " + String(probe(mk(0))) + " " + String(probe(mk(5)))
+          + " " + String(probeMaybe(NoMaybeFn())) + " " + String(probeMaybe(HasMaybeFn(None)))
+          + " " + String(probeMaybe(HasMaybeFn(double))))
+  ret 0
+
+fun [test("null code pointer tells variants apart", stdout = "100 20 15 200 300 2\n")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

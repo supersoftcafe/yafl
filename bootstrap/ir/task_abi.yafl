@@ -21,11 +21,11 @@ fun taskFields() => build(
     push(
     push(
     push(builder(),
-      CgField("type", CgDataPointer())),        # object_t vtable
+      CgField("type", CgDataPointer(false))),        # object_t vtable
       CgField("state", CgInt(32))),             # _Atomic(int32_t)
       CgField("thread_id", CgInt(32))),         # originating worker thread index
-      CgField("callback", CgFuncPointer(false))),    # fun_t
-      CgField("next", CgDataPointer())))        # _Atomic(task_t*) — queue link
+      CgField("callback", CgFuncPointer(false, false))),    # fun_t
+      CgField("next", CgDataPointer(false))))        # _Atomic(task_t*) — queue link
 
 # The empty value — YAFL's None. It carries nothing.
 fun isUnit(t2) => match(cgFieldsOf(t2))
@@ -41,7 +41,7 @@ fun wrapReturnType(t2) => match(t2)
   (d: CgDataPointer)  => t2
   (fp: CgFuncPointer) => t2
   (st: CgStr)         => t2
-  (o: CgType)         => isUnit(t2) ? CgDataPointer() : wrapIfNoPointer(t2)
+  (o: CgType)         => isUnit(t2) ? CgDataPointer(false) : wrapIfNoPointer(t2)
 
 fun wrapIfNoPointer(t2) => match(cgFirstPointerField(t2))
   (name: String) => t2
@@ -148,7 +148,7 @@ fun pendingTaskOf(resultVar, wrappedType: CgType): RParam => match(wrappedType)
   (w: CgTaskWrapper) => RpStructField(resultVar, "task")   # carried untagged already
   (o: CgType)        => RpRuntimeInvoke("TASK_PENDING_OF",
                                         RpNewStruct(list1(RpNamedValue("p", taskPtrFrom(resultVar, wrappedType)))),
-                                        CgDataPointer())
+                                        CgDataPointer(false))
 
 fun taskPtrFrom(resultVar, wrappedType) => match(wrappedType)
   (d: CgDataPointer)  => resultVar

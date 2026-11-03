@@ -70,7 +70,7 @@ fun prRewriteElement(x, names: StrSet)
                      RpRuntimeInvoke("object_resolve",
                                      RpNewStruct(list1(
                                          RpNamedValue("o", x.pointer))),
-                                     CgDataPointer()),
+                                     CgDataPointer(false)),
                      x.objectName, x.field, x.lengthField, x.index,
                      x.checked)
 
@@ -82,7 +82,7 @@ fun prRewriteField(x: RpObjectField, names: StrSet)
     ? x
     : with x(pointer = RpRuntimeInvoke("object_resolve",
                                        RpNewStruct(list1(RpNamedValue("o", x.pointer))),
-                                       CgDataPointer()))
+                                       CgDataPointer(false)))
 
 fun prAlreadyResolved(p) => match(p)
   (x: RpRuntimeInvoke) => x.function == "object_resolve"

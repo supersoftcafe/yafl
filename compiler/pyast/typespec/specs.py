@@ -64,7 +64,7 @@ def enum_variant_types(stmt: s.EnumStatement, resolver: g.Resolver) -> list[cg_t
     leaf_names = (stmt._enum_spec.all_leaf_names if stmt._enum_spec is not None
                   else [None] * len(leaf_sets))
     return [
-        cg_t.DataPointer()
+        cg_t.DataPointer(nonnull=True)
         if name is not None and resolver.is_boxed_leaf(stmt.name, name)
         else cg_t.Struct(tuple(
             (let.name, let.declared_type.generate(resolver))
@@ -186,7 +186,7 @@ class CallableSpec(TypeSpec):
         return self.parameters.check(resolver) + (self.result.check(resolver) if self.result else [])
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
-        return cg_t.FuncPointer()
+        return cg_t.FuncPointer(nonnull=True)   # a function value always has code
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):
@@ -248,7 +248,7 @@ class BuiltinSpec(TypeSpec):
     def __translate(self) -> cg_t.Type|None:
         match self.type_name:
             case "str":
-                return cg_t.Str()
+                return cg_t.Str(nonnull=True)   # "" is a tagged word, never NULL
             case "int8":
                 return cg_t.Int(8)
             case "int16":
@@ -258,7 +258,7 @@ class BuiltinSpec(TypeSpec):
             case "int64":
                 return cg_t.Int(64)
             case "bigint":
-                return cg_t.DataPointer()
+                return cg_t.DataPointer(nonnull=True)   # 0 is a tagged word, never NULL
             case "bool":
                 return cg_t.Int(8)
             case "float32":
@@ -411,7 +411,9 @@ class ClassSpec(TypeSpec):
                 return [Error(self.line_ref, f"Found too many classes named {self.name}")] + tp_errors
 
     def generate(self, resolver: g.Resolver) -> cg_t.Type:
-        return cg_t.DataPointer()
+        # A class value is always an object: absence is spelt `|None`, and a
+        # foreign call that can fail says so in its result type (`_IO|Int`).
+        return cg_t.DataPointer(nonnull=True)
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         def find_class(xtype: TypeSpec) -> s.ClassStatement:

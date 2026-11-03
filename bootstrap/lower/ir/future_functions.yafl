@@ -25,7 +25,7 @@ fun fyNone() => CgStruct(List())
 fun fyRegister() => "$future_yield"
 
 fun fyYieldFunction() => CgFunction(futureYield(),
-                                    CgStruct(list1(CgField("this", CgDataPointer()))),
+                                    CgStruct(list1(CgField("this", CgDataPointer(false)))),
                                     fyNone(), CgStruct(List()), cgOpsOf(List()),
                                     futureYield(), futureYield(), false, false, false, false)
 

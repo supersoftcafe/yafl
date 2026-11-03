@@ -85,6 +85,7 @@ fun scanRParam(p): ScanSets => match(p)
   # Keeps the referenced static instance alive.
   (so: RpStaticObjectRef) => ssGlobal1(so.name)
   (ie: RpIntEqConst)     => scanRParam(ie.value)
+  (np: RpNullPattern)    => fold(np.tests, ssEmpty(), (a, t2) => ssUnion(a, scanRParam(t2.word)))
   (vd: RpVtableDiscriminator) => scanRParam(vd.value)
   # Keep the referenced class's vtable alive when dispatching on it.
   (ov: RpObjVtableEq)    => ssUnion(scanRParam(ov.value), scanOptObject(ov.className))

@@ -83,7 +83,7 @@ fun [tail] evtLoop(names: Chain<String>, sets: Chain<List<PStmt>>,
     (nil2: ChainEnd) => acc   # unreachable: leaf names and field sets zip 1:1
     (s2: ChainLink)  => evtLoop(l.next, s2.next, rootName, r,
         concat(acc, list1(isBoxedLeaf(r, rootName, l.value)
-                            ? CgDataPointer()
+                            ? CgDataPointer(true)
                             : CgStruct(letFieldsToCgFields(s2.value, r)))))
 
 fun letFieldsToCgFields(fields: List<PStmt>, r) => map(fields, (st) => letFieldToCgField(st, r))
@@ -326,7 +326,7 @@ fun wrapLeaf(ctype, leaf): RParam => match(cgFieldsOf(ctype))
 
 # A one-word member value (NULL / tagged Int / object pointer) as a two-word
 # union value: word 0 carries it, the String payload is zero.
-fun strWord(word): RParam => RpRuntimeInvoke("str_word", RpNewStruct(list1(RpNamedValue("word", word))), CgStr())
+fun strWord(word): RParam => RpRuntimeInvoke("str_word", RpNewStruct(list1(RpNamedValue("word", word))), CgStr(false))
 
 # The dispatch word of a value of this union.
 fun ptrWord(gp: GPointer, sv): RParam => gp.grpWide ? RpStructField(sv, "head") : sv
@@ -381,7 +381,7 @@ fun foundIsInterface(f: Found): Bool => match(f.fStmt)
   (cls: PsClass) => cls.cIsInterface
   (o: PStmt)     => false
 
-fun ptrToFun(value) => RpRuntimeInvoke("str_to_fun", RpNewStruct(list1(RpNamedValue("s", value))), CgFuncPointer(false))
+fun ptrToFun(value) => RpRuntimeInvoke("str_to_fun", RpNewStruct(list1(RpNamedValue("s", value))), CgFuncPointer(false, false))
 
 fun ptrUnpack(value, scalar) => RpRuntimeInvoke("str_unpack_" + scalarC(scalar),
                                                 RpNewStruct(list1(RpNamedValue("s", value))), scalarCtype(scalar))
@@ -402,7 +402,7 @@ fun ptrMemberLeaf(gp: GPointer, mctype, kind: PtrKind|None, value): RParam => ma
   ()           => ptrStrOrWord(gp, mctype, value)
 
 fun ptrStrOrWord(gp: GPointer, mctype, value): RParam
-  ret gp.grpWide && eqCgType(peeledCtype(mctype), CgStr()) ? value : ptrWord(gp, value)
+  ret gp.grpWide && eqCgType(peeledCtype(mctype), CgStr(false)) ? value : ptrWord(gp, value)
 
 # The subject seen at an arm's type, as a LEAF (bindSubject rebuilds any
 # newtype nesting): the whole value for a String, the unpacked payload for a
@@ -410,7 +410,7 @@ fun ptrStrOrWord(gp: GPointer, mctype, value): RParam
 fun ptrAs(gp: GPointer, sv, armType, r): RParam
   if !gp.grpWide
     ret sv
-  if eqCgType(peeledCtype(specGenerate(armType, r)), CgStr())
+  if eqCgType(peeledCtype(specGenerate(armType, r)), CgStr(false))
     ret sv
   ret match(armType)
     (cm: SCombination) => ptrWord(gp, sv)
@@ -471,11 +471,15 @@ fun collectVariantSlotsFieldsStep(l: ChainLink<CgField>, param, slotAssignments:
 # ══════════════════════════════════════════════════════════════════════════
 
 enum GRepr
-  enum GTagged(grtType: Spec, grtContainer: CgType, grtVariantMap: List<List<CgSlotEntry>>)
+  # grtNullTests: a flat enum whose NULL slots name its variant carries no
+  # $tag — per variant, the tests that hold for it alone (computeEnumSlots).
+  # None: the variant is the $tag.
+  enum GTagged(grtType: Spec, grtContainer: CgType, grtVariantMap: List<List<CgSlotEntry>>,
+               grtNullTests: List<List<CgNullTest>>|None)
   # grpWide: a String or function member — the value is a str_t whose head
   # is the dispatch word. grpPacks: scalar or function members ride as spare
-  # codes (wide only).
-  enum GPointer(grpType: Spec, grpWide: Bool, grpPacks: Bool)
+  # codes (wide only). grpNonNull: no unit member — the word is never NULL.
+  enum GPointer(grpType: Spec, grpWide: Bool, grpPacks: Bool, grpNonNull: Bool)
   enum GComplexEnum(grcType: Spec)
 
 # DERIVED is_complex: the resolver carries the breaker analysis (identity
@@ -485,7 +489,7 @@ fun isComplexEnum(sp: SEnum, r) => isComplexRoot(r, sp.seRoot)
 fun classifyRepr(sp, r): GRepr => match(sp)
   (e2: SEnum) => classifyEnum(e2, r)
   (cm: SCombination) => classifyCombination(cm, r)
-  (o: Spec)   => GPointer(sp, false, false)   # unreachable (Python raises TypeError): not a union type
+  (o: Spec)   => GPointer(sp, false, false, false)   # unreachable (Python raises TypeError): not a union type
 
 fun classifyEnum(e2, r): GRepr => isComplexEnum(e2, r) ? GComplexEnum(e2) : classifyFlatEnum(e2, r)
 
@@ -496,13 +500,13 @@ fun classifyFlatEnum(e2, r) => match(soleItem(findType(r, e2.seRoot)))
   ()               => classifyFlatEnumFallback(e2, r)
 
 fun classifyFlatEnumStmt(e2, stmt: PsEnum, r)
-  let layout = computeUnionSlots(enumVariantTypes(stmt, r), globalMaxTag(r))
-  ret GTagged(e2, layout.fieldsStruct, layout.variantMap)
+  let layout = computeEnumSlots(enumVariantTypes(stmt, r), globalMaxTag(r))
+  ret GTagged(e2, layout.fieldsStruct, layout.variantMap, layout.nullTests)
 
 fun classifyFlatEnumFallback(e2, r)
   ret GTagged(e2, CgStruct(map(enumFieldsVia(r, e2.seRoot),
                                (f) => CgField(f.sfName, specGenerate(f.sfType, r)))),
-              List())
+              List(), None)
 
 fun classifyCombination(cm, r): GRepr
   let members = reprMembersOf(cm.scTypes)
@@ -511,16 +515,17 @@ fun classifyCombination(cm, r): GRepr
 fun classifyPointer(cm, members: List<Spec>, r)
   let kinds = map(members, (m) => forceKindId(pointerWordKind(m, r)))
   ret GPointer(cm, any(kinds, (k) => isStrKind(k) || isFunKind(k)),
-               any(kinds, (k) => isScalarKind(k) || isFunKind(k)))
+               any(kinds, (k) => isScalarKind(k) || isFunKind(k)),
+               !any(kinds, isUnitKind))
 
 fun classifyCombinationTagged(cm, members: List<Spec>, r)
   let layout = computeUnionSlots(map(members, (v) => specGenerate(v, r)), globalMaxTag(r))
-  ret GTagged(cm, layout.fieldsStruct, layout.variantMap)
+  ret GTagged(cm, layout.fieldsStruct, layout.variantMap, layout.nullTests)
 
 fun reprCtype(rep): CgType => match(rep)
   (gt: GTagged) => gt.grtContainer
-  (gp: GPointer) => gp.grpWide ? CgStr() : CgDataPointer()
-  (gc: GComplexEnum) => CgDataPointer()
+  (gp: GPointer) => gp.grpWide ? CgStr(gp.grpNonNull) : CgDataPointer(gp.grpNonNull)
+  (gc: GComplexEnum) => CgDataPointer(true)   # every variant is an object
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 5: generate_match — TaggedRepr (flat enum + combination),
@@ -546,7 +551,7 @@ fun reprPositionStages(rep, sv, armType: Spec|None,
 fun reprPositionStagesOn(rep, sv, armType,
                          r): List<List<RParam>>|None => match(rep)
   (gt: GTagged) => match(gt.grtType)
-    (e2: SEnum) => oneStage(flatEnumPositionGuards(sv, armType, e2.seAllLeaves))
+    (e2: SEnum) => oneStage(flatLeafGuards(gt, ownSlot(gt, sv), armType))
     (o: Spec)   => combinationPositionStages(gt, sv, armType, r)
   (gp: GPointer)     => pointerPositionStages(gp, sv, armType, r)
   (gc: GComplexEnum) => oneStage(complexPositionGuards(gc, sv, armType, r))
@@ -555,17 +560,37 @@ fun oneStage(guards: List<RParam>|None): List<List<RParam>>|None => match(guards
   (g: List<RParam>) => list1(g)
   ()                => None
 
-fun flatEnumPositionGuards(sv, armType: Spec,
-                           allLeafNames: List<String>): List<RParam>|None
-  ret flatLeafGuards(RpStructField(sv, "$tag"), armType, allLeafNames)
-
-# OR-alternatives testing that a flat enum's `tag` (a leaf's position in its
-# leaf list) is one of `armType`'s leaves, in ascending tag order.
-fun flatLeafGuards(tag, armType: Spec, allLeafNames: List<String>): List<RParam>|None
+# OR-alternatives testing that a value of the flat enum `gt` holds one of
+# `armType`'s leaves, in leaf order. `readSlot(i)` reads the value's i-th
+# slot (its $tag is the last): the value is a subject of its own, or a member
+# held in a combination's slots. A leaf is its position in the leaf list: the
+# $tag's value, or the index of its null tests.
+fun flatLeafGuards(gt: GTagged, readSlot: (:Int): RParam, armType: Spec): List<RParam>|None
   ret match(asEnumVariant(armType))
-    (at: SEnum) => map(sortLeavesByGuardOrder(at.seValidLeaves, allLeafNames),
-                       (leaf) => RpIntEqConst(tag, leafId(allLeafNames, leaf)))
+    (at: SEnum) => map(sortLeavesByGuardOrder(at.seValidLeaves, enumAllLeaves(gt.grtType)),
+                       (leaf) => flatLeafGuard(gt, readSlot, leafId(enumAllLeaves(gt.grtType), leaf)))
     ()          => None
+
+fun flatLeafGuard(gt: GTagged, readSlot: (:Int): RParam, leafIdx: Int): RParam => match(gt.grtNullTests)
+  (tests: List<List<CgNullTest>>) => RpNullPattern(map(forceNthTests(tests, leafIdx),
+      (t2) => RpNullTest(readSlot(t2.ntSlot), t2.ntIsNull)))
+  ()                              => RpIntEqConst(readSlot(fieldIndexNamed(forceFields(gt.grtContainer), "$tag")),
+                                                  leafIdx)
+
+fun forceNthTests(l: List<List<CgNullTest>>, i) => match(listAt(l, i))
+  (v: List<CgNullTest>) => v
+  ()                    => List()   # unreachable: one test list per leaf
+
+fun fieldIndexNamed(fields: List<CgField>, name) => fieldIndexLoop(chain(fields), name, 0)
+
+fun [tail] fieldIndexLoop(fs: Chain<CgField>, name, i) => match(fs)
+  (nil: ChainEnd) => -1   # unreachable: the field is always present
+  (l: ChainLink)  => l.value.fieldName == name ? i : fieldIndexLoop(l.next, name, i + 1)
+
+# readSlot for a value of the union `gt` held as a subject of its own.
+fun ownSlot(gt: GTagged, sv): (:Int): RParam
+  let fields = forceFields(gt.grtContainer)
+  ret (si: Int) => RpStructField(sv, fieldNameAt(fields, si))
 
 # The enum member among `members` that `armType` names only SOME of the
 # variants of — `EOFError` within `String|IOError` — else `armType` itself.
@@ -663,23 +688,21 @@ fun combinationMemberStages(gt: GTagged, sv, member, vi: Int, armType, r): List<
 
 # OR-alternatives testing that the enum `member` held in a tagged union's
 # slots is one of `armType`'s variants: a complex enum by its variant's
-# vtable, a flat one by its own `$tag` — its last primitive, so its last slot.
+# vtable, a flat one by its own slots — each a primitive, so the member's
+# i-th slot is its i-th primitive here.
 fun taggedVariantGuards(member, slots: List<CgSlotEntry>, slotFields: List<CgField>, sv,
                         armType, r): List<RParam> => match(classifyRepr(member, r))
   (gc: GComplexEnum) => guardsOrNever(complexPositionGuards(gc, slotValue(firstSlot(slots), slotFields, sv),
                                                             armType, r))
-  (o: GRepr)         => guardsOrNever(flatLeafGuards(slotValue(lastSlot(chain(slots)), slotFields, sv),
-                                                     armType, enumAllLeaves(member)))
+  (gt: GTagged)      => guardsOrNever(flatLeafGuards(gt, (i: Int) => slotValue(listAt(slots, i), slotFields, sv),
+                                                     armType))
+  (o: GRepr)         => guardsOrNever(None)   # unreachable: a flat enum member is tagged
 
 fun slotValue(e2: CgSlotEntry|None, slotFields: List<CgField>, sv): RParam => match(e2)
   (s2: CgSlotEntry) => slotRead(sv, slotFields, s2.slotIndex, s2.origType)
   ()                 => RpNullPointer()   # unreachable: an enum member occupies a slot
 
 fun firstSlot(slots: List<CgSlotEntry>): CgSlotEntry|None => head(slots)
-
-fun [tail] lastSlot(c: Chain<CgSlotEntry>): CgSlotEntry|None => match(c)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.next is ChainEnd ? l.value : lastSlot(l.next)
 
 fun enumAllLeaves(sp): List<String> => match(sp)
   (e2: SEnum) => e2.seAllLeaves
@@ -724,7 +747,7 @@ fun combinationPositionBind(gt: GTagged, holder: PArm, sv, armType, r): GBind|No
 fun reprGenerateMatch(rep, em, resultType, subjBundle: GBundle,
                      arms: List<PArm>, elseArm, r): GEmit => match(rep)
   (gt: GTagged) => match(gt.grtType)
-    (e2: SEnum) => generateFlatEnumMatch(em, resultType, subjBundle, gt.grtType, e2.seAllLeaves, arms, elseArm, r)
+    (e2: SEnum) => generateFlatEnumMatch(em, resultType, subjBundle, gt, arms, elseArm, r)
     (o: Spec)   => generateCombinationMatch(em, resultType, subjBundle, gt.grtType, gt.grtContainer, gt.grtVariantMap, arms, elseArm, r)
   (gp: GPointer) => generatePointerMatch(em, resultType, subjBundle, gp, arms, elseArm, r)
   (gc: GComplexEnum) => generateComplexEnumMatch(em, resultType, subjBundle, gc.grcType, arms, elseArm, r)
@@ -749,34 +772,32 @@ fun insertByLeafId(sorted, lf, allLeafNames: List<String>) => match(head(sorted)
 
 # ── flat enum ────────────────────────────────────────────────────────────
 
-fun generateFlatEnumMatch(em0, resultType: Spec|None, subjBundle: GBundle, subjType,
-                          allLeafNames: List<String>, arms: List<PArm>, elseArm: PArm|None, r): GEmit
+fun generateFlatEnumMatch(em0, resultType: Spec|None, subjBundle: GBundle, gt: GTagged,
+                          arms: List<PArm>, elseArm: PArm|None, r): GEmit
   let sv = mustResult(subjBundle)
-  let tag = RpStructField(sv, "$tag")
-  let em1 = flatEnumArms(em0, chain(arms), sv, tag, subjType, allLeafNames, resultType, r)
+  let em1 = flatEnumArms(em0, chain(arms), sv, gt, resultType, r)
   let bind = match(elseArm)
-    (a: PArm) => bindSubject(r, a, subjType, sv)
+    (a: PArm) => bindSubject(r, a, gt.grtType, sv)
     ()         => None
   ret emFallback(em1, r, resultType, elseArm, bind, "enum match fell through all arms")
 
-fun [tail] flatEnumArms(em: GEmit, arms: Chain<PArm>, sv: RParam, tag: RParam, subjType: Spec,
-                        allLeafNames: List<String>, resultType: Spec|None, r: Resolver): GEmit
+fun [tail] flatEnumArms(em: GEmit, arms: Chain<PArm>, sv: RParam, gt: GTagged,
+                        resultType: Spec|None, r: Resolver): GEmit
   ret match(arms)
     (nil: ChainEnd) => em
     (l: ChainLink)  => flatEnumArms(
-        isNoneSpec(l.value.armType) ? em : flatEnumArm(em, l.value, sv, tag, subjType, allLeafNames, resultType, r),
-        l.next, sv, tag, subjType, allLeafNames, resultType, r)
+        isNoneSpec(l.value.armType) ? em : flatEnumArm(em, l.value, sv, gt, resultType, r),
+        l.next, sv, gt, resultType, r)
 
-fun flatEnumArm(em, arm: PArm, sv, tag, subjType, allLeafNames: List<String>,
-               resultType: Spec|None, r): GEmit => match(asEnumVariant(arm.armType))
-  (armType: SEnum) => flatEnumArmOn(em, arm, tag, subjType, allLeafNames, armType, sv, resultType, r)
-  ()                => em   # unreachable: check() requires an enum arm here
+fun flatEnumArm(em, arm: PArm, sv, gt: GTagged, resultType: Spec|None, r): GEmit
+  ret match(asEnumVariant(arm.armType))
+    (armType: SEnum) => flatEnumArmOn(em, arm, gt, armType, sv, resultType, r)
+    ()                => em   # unreachable: check() requires an enum arm here
 
-fun flatEnumArmOn(em: GEmit, arm: PArm, tag, subjType, allLeafNames: List<String>,
-                  armType: SEnum, sv, resultType: Spec|None, r): GEmit
-  let ordered = sortLeavesByGuardOrder(armType.seValidLeaves, allLeafNames)
-  let guards = map<String, RParam>(ordered, (leaf) => RpIntEqConst(tag, leafId(allLeafNames, leaf)))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List())
+fun flatEnumArmOn(em: GEmit, arm: PArm, gt: GTagged, armType: SEnum, sv,
+                  resultType: Spec|None, r): GEmit
+  let guards = guardsOrNever(flatLeafGuards(gt, ownSlot(gt, sv), armType))
+  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, gt.grtType, sv), List())
 
 # ── tagged combination ──────────────────────────────────────────────────
 
@@ -1379,14 +1400,14 @@ fun pointerBoxWord(gp: GPointer, kind: PtrKind|None, innerCtype, word): RParam =
     (sc: PkScalar) => RpRuntimeInvoke("str_pack_" + scalarC(sc.pkScalar),
                                       RpNewStruct(list2(RpNamedValue("code", RpInteger(scalarCode(sc.pkScalar), 32)),
                                                         RpNamedValue("v", word))),
-                                      CgStr())
-    (f: PkFun)     => RpRuntimeInvoke("str_from_fun", RpNewStruct(list1(RpNamedValue("f", word))), CgStr())
+                                      CgStr(false))
+    (f: PkFun)     => RpRuntimeInvoke("str_from_fun", RpNewStruct(list1(RpNamedValue("f", word))), CgStr(false))
     (o: PtrKind)   => wideWord(gp, innerCtype, word)
   ()           => wideWord(gp, innerCtype, word)
 
 # A wide union carries a one-word member in word 0 of a String value.
 fun wideWord(gp: GPointer, innerCtype, word): RParam
-  ret gp.grpWide && !eqCgType(peeledCtype(innerCtype), CgStr()) ? strWord(word) : word
+  ret gp.grpWide && !eqCgType(peeledCtype(innerCtype), CgStr(false)) ? strWord(word) : word
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 7: widen_from (CombinationSpec targets only).
@@ -1453,7 +1474,7 @@ fun taggedWidenFrom(gt: GTagged, srcRep, value, r)
 
 fun forceTagged(rep) => match(rep)
   (gt: GTagged) => gt
-  (o: GRepr)    => GTagged(SBuiltin("bool", noLine()), CgVoid(), List())   # unreachable
+  (o: GRepr)    => GTagged(SBuiltin("bool", noLine()), CgVoid(), List(), None)   # unreachable
 
 # Widen a pointer union (one dispatch word; wide ones carry a String payload or
 # a spare-coded scalar) to this tagged union: test each source member in turn
@@ -1768,9 +1789,12 @@ fun taggedConstructEnumValueRoot(gt: GTagged, e2: SEnum, root: PsEnum, leafName,
   let leafFields = forceNth(collectLeafFieldSets(root, List()), leafIdx)
   let container = gt.grtContainer
   let slotFields = forceFields(container)
-  let tagConst = RpInteger(leafIdx, tagPrecision(fieldTypeNamed(slotFields, "$tag")))
   let zeroSlots = map(slotFields, (f) => RpNamedValue(f.fieldName, RpZeroOf(f.fieldType)))
-  let taggedSlots = setNamedValueAt(zeroSlots, "$tag", tagConst)
+  # Every slot the variant does not fill stays zero — NULL, which is what
+  # names the variant when there is no $tag.
+  let taggedSlots = gt.grtNullTests is None
+    ? setNamedValueAt(zeroSlots, "$tag", RpInteger(leafIdx, tagPrecision(fieldTypeNamed(slotFields, "$tag"))))
+    : zeroSlots
   if isBoxedLeaf(r, e2.seRoot, leafName)
     ret taggedConstructBoxed(e2, leafFields, leafName, fieldArgs,
                              forceNth(gt.grtVariantMap, leafIdx),
@@ -1792,7 +1816,7 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName,
                          slotFields: List<CgField>, taggedSlots: List<RpNamedValue>,
                          container, r, pinned: Bool)
   let objName = enumLeafObjectName(e2.seRoot, leafName)
-  let objVar = RpStackVar(CgDataPointer(), "boxed")
+  let objVar = RpStackVar(CgDataPointer(false), "boxed")
   let step = bxConstructFields(chain(leafFields), objName, objVar, fieldArgs, r,
                                CcAcc(builder(), builder()))
   let ops = concat(list1(OpNewObject(objName, objVar, None, pinned, Dict())), step.ccOps)
@@ -1878,7 +1902,7 @@ fun complexConstructEnumValueRoot(e2: SEnum, root: PsEnum, leafName, fieldArgs: 
   let leafIdx = indexOfString(e2.seAllLeaves, leafName, 0)
   let leafFields = forceNth(collectLeafFieldSets(root, List()), leafIdx)
   let objName = enumLeafObjectName(e2.seRoot, leafName)
-  let resultVar = RpStackVar(CgDataPointer(), "result")
+  let resultVar = RpStackVar(CgDataPointer(false), "result")
   let step = complexConstructFields(chain(leafFields), objName, resultVar,
                                     fieldArgs, r,
                                     CcAcc(builder(), builder()))

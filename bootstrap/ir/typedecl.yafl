@@ -49,16 +49,30 @@ let maskInt = 4294967295
 enum CgType
   enum CgInt(precision: Int)                     # bit precision: 8 | 16 | 32 | 64 only
   enum CgFloat(precision: Int)                   # 32 | 64
-  enum CgIntPtr()
-  enum CgDataPointer()
+  # ipNonNull: the word is never zero — a function's code pointer, flattened
+  # out of a never-NULL CgFuncPointer. A refinement, as dpNonNull is.
+  enum CgIntPtr(ipNonNull: Bool)
+  # dpNonNull: every value is a real word, never NULL — a heap object, a
+  # tagged immediate (an Int), a complex enum, a union with no unit member.
+  # A flat enum tells its variants apart by which slots are NULL when the
+  # slots allow it (computeEnumSlots). A refinement, not a representation:
+  # eqCgType ignores it, as Python's compare=False does.
+  enum CgDataPointer(dpNonNull: Bool)
   # A String value: yafllib's 16-byte `str_t`. OPAQUE except word 0, `head`
   # — the only GC-visible word, and the dispatch word when a union containing
   # String shares this representation (yafl.h, "String values").
-  enum CgStr()
+  # strNonNull: `head` is never NULL — a String's is a tagged word ("" too)
+  # or its buffer. A union sharing the representation puts NULL there for
+  # None, so only a String, or a union with no unit member, says so. A
+  # refinement, as dpNonNull is.
+  enum CgStr(strNonNull: Bool)
   # fpSync: every function the value can hold provably never suspends
   # (sync_inference.yafl). A refinement, not a representation: eqCgType
   # ignores it, as Python's compare=False does.
-  enum CgFuncPointer(fpSync: Bool)
+  # fpNonNull: the code pointer `f` is never NULL — the value is a function
+  # (only a task in flight, never matched on, leaves it NULL); the
+  # environment may be. A refinement too.
+  enum CgFuncPointer(fpSync: Bool, fpNonNull: Bool)
   enum CgStruct(fields: List<CgField>)
   enum CgImmediateStruct(fields: List<CgField>)  # never dedupes into the shared anon-struct cache
   enum CgVoid()
@@ -504,7 +518,7 @@ fun cgFlattenPrimitivesN(t): (ps: List<CgType>, n: Int) => match(cgFieldsOf(t))
         cgFlattenPrimitivesN(fld.fieldType)
           |> (sub) => (concat(acc.ps, sub.ps), acc.n + sub.n))
   () => match(t)
-    (fp: CgFuncPointer) => (build(push(push(builder(), CgIntPtr()), CgDataPointer())), 2)
+    (fp: CgFuncPointer) => (build(push(push(builder(), CgIntPtr(fp.fpNonNull)), CgDataPointer(false))), 2)
     (o: CgType)         => (prepend(o, List()), 1)
 
 # Rank for laying out union slots, largest first. An IR fact, not a byte
@@ -524,7 +538,13 @@ fun canMergeInto(small, large) => match(small)
     (o: CgType) => false
   (o: CgType) => false
 
-fun cgSlotKey(t): CgType => t
+# A pointer slot is shared by variants that leave it NULL, so it never
+# carries a variant's never-NULL refinement.
+fun cgSlotKey(t): CgType => match(t)
+  (d: CgDataPointer) => CgDataPointer(false)
+  (st: CgStr)        => CgStr(false)
+  (ip: CgIntPtr)     => CgIntPtr(false)
+  (o: CgType)        => t
 
 fun cgTagType(n) => n <= 127 ? CgInt(8) : n <= 32767 ? CgInt(16) : CgInt(32)
 
@@ -567,14 +587,14 @@ fun cgAddPrimitive(slots, vi, prim, vmapVi): (slots: List<CgSlot>, vmapVi: List<
     : match(last(slots))
         (prev: CgSlot) => (build(push(
                                builderFrom(slots),
-                               CgSlot(prim, prepend(vi, List()), true,
+                               CgSlot(cgSlotKey(prim), prepend(vi, List()), true,
                                       prev.sIdx + 1))),
                            build(push(
                                builderFrom(vmapVi),
                                CgSlotEntry(prev.sIdx + 1, prim))))
         ()             => (build(push(
                                builderFrom(slots),
-                               CgSlot(prim, prepend(vi, List()), true, 0))),
+                               CgSlot(cgSlotKey(prim), prepend(vi, List()), true, 0))),
                            build(push(
                                builderFrom(vmapVi),
                                CgSlotEntry(0, prim))))
@@ -688,21 +708,142 @@ fun cgInsertIdxBySize(sorted: List<CgIdxSlot>, s: CgIdxSlot) => match(head(sorte
     : prepend(h, cgInsertIdxBySize(tail(sorted), s))
   () => prepend(s, List())
 
-class [final] CgUnionLayout(fieldsStruct: CgType, variantMap: List<List<CgSlotEntry>>)
+# nullTests: a flat enum whose NULL slots name its variant (computeEnumSlots)
+# — per variant, the tests that hold for it alone; None when the struct ends
+# in $tag.
+class [final] CgUnionLayout(fieldsStruct: CgType, variantMap: List<List<CgSlotEntry>>,
+                            nullTests: List<List<CgNullTest>>|None)
+
+# One test of a slot's word: NULL (ntIsNull) or not.
+class [final] CgNullTest(ntSlot: Int, ntIsNull: Bool)
+
+# The union's shared slots, largest first, and each variant's primitive ->
+# slot assignment.
+class [final] CgPackedSlots(psActive: List<CgIdxSlot>, psVariantMap: List<List<CgSlotEntry>>,
+                            psNVariants: Int)
 
 fun computeUnionSlots(variantTypes: List<CgType>, maxTag: Int|None): CgUnionLayout
+  let packed = cgPackSlots(variantTypes)
+  ret CgUnionLayout(cgTaggedStruct(packed, maxTag), packed.psVariantMap, None)
+
+# The shared-slot layout of a flat enum: computeUnionSlots' slots, and no
+# $tag when the slots alone tell every variant apart (#75). A variant leaves
+# every slot it does not use NULL, and a never-NULL pointer (dpNonNull) in a
+# slot it does use is never NULL. So where, for every pair of variants, some
+# slot is never-NULL in one and unused by the other, the pattern of NULL
+# slots names the variant. Only the size-optimal slots are considered: a slot
+# added to spare the tag would cost the word the tag costs.
+fun computeEnumSlots(variantTypes: List<CgType>, maxTag: Int|None): CgUnionLayout
+  let packed = cgPackSlots(variantTypes)
+  ret match(cgNullPatternTests(packed))
+    (tests: List<List<CgNullTest>>) => CgUnionLayout(CgStruct(cgSlotFieldsOf(packed.psActive, 0)),
+                                                     packed.psVariantMap, tests)
+    ()                              => CgUnionLayout(cgTaggedStruct(packed, maxTag),
+                                                     packed.psVariantMap, None)
+
+fun cgPackSlots(variantTypes: List<CgType>): CgPackedSlots
   let flat = map(variantTypes, (vt) => cgFlattenPrimitives(vt))
   let built = cgBuildInitialSlotsLoop(flat, 0, List(), List())
   let merged = cgMergeSlotsLoop(built.slots, built.vmap)
   let active = cgSortIdxBySize(cgActiveWithIndices(merged.slots))
   let renumber = cgBuildRenumber(active)
-  let tagBound = maxOf(built.nVariants, orZero(maxTag) + 1)
-  # The tag is the LAST field of the union struct.
-  let slotFields = build(push(
-      builderFrom(cgSlotFieldsOf(active, 0)),
-      CgField("$tag", cgTagType(tagBound))))
-  let variantMap = map(merged.vmap, (vm) => cgRenumberVmapOne(vm, renumber))
-  ret CgUnionLayout(CgStruct(slotFields), variantMap)
+  ret CgPackedSlots(active, map(merged.vmap, (vm) => cgRenumberVmapOne(vm, renumber)), built.nVariants)
+
+# The tag must hold the largest value actually STORED: a flat enum stores
+# positional indices (< nVariants), but a tagged combination stores GLOBAL
+# discriminators — the caller passes their maximum via maxTag. The tag is
+# the LAST field of the union struct.
+fun cgTaggedStruct(packed: CgPackedSlots, maxTag: Int|None): CgType
+  let tagBound = maxOf(packed.psNVariants, orZero(maxTag) + 1)
+  ret CgStruct(build(push(
+      builderFrom(cgSlotFieldsOf(packed.psActive, 0)),
+      CgField("$tag", cgTagType(tagBound)))))
+
+# ── flat-enum null patterns ─────────────────────────────────────────────────
+# Per variant, the fewest tests that rule out every other variant — chosen
+# greedily, each test the one ruling out most of the variants still left
+# (ties to a non-NULL test, then to the lowest slot) — or None when some pair
+# of variants cannot be told apart. A single variant has nothing to tell
+# apart from: it keeps its tag.
+
+class [final] CgNullSets(nsUsed: Dict<Int, Set<Int>>, nsNeverNull: Dict<Int, Set<Int>>)
+
+fun cgNullPatternTests(packed: CgPackedSlots): List<List<CgNullTest>>|None
+  let variants = cgIndicesOf(chain(packed.psVariantMap), 0, builder())
+  let sets = cgNullSetsLoop(chain(packed.psVariantMap), 0, Dict(), Dict())
+  ret packed.psNVariants < 2 ? None : cgNullTestsLoop(chain(variants), packed.psActive, variants, sets, builder())
+
+fun [tail] cgIndicesOf<T>(c: Chain<T>, i, [terminal] acc: ListBuilder<Int>): List<Int> => match(c)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => cgIndicesOf(l.next, i + 1, push(acc, i))
+
+fun [tail] cgNullSetsLoop(vms: Chain<List<CgSlotEntry>>, vi, used: Dict<Int, Set<Int>>,
+                          neverNull: Dict<Int, Set<Int>>): CgNullSets => match(vms)
+  (nil: ChainEnd) => CgNullSets(used, neverNull)
+  (l: ChainLink)  => cgNullSetsLoop(l.next, vi + 1,
+      put(used, vi, Set(map(l.value, (e) => e.slotIndex))),
+      put(neverNull, vi, Set(map(filter(l.value, (e) => cgIsNeverNull(e.origType)), (e) => e.slotIndex))))
+
+# Is this a word no value of the type leaves zero? Only a primitive slot
+# type can say yes.
+fun cgIsNeverNull(t) => match(t)
+  (d: CgDataPointer) => d.dpNonNull
+  (st: CgStr)        => st.strNonNull
+  (ip: CgIntPtr)     => ip.ipNonNull
+  (o: CgType)        => false
+
+fun cgSlotSet(d: Dict<Int, Set<Int>>, vi): Set<Int> => match(get(d, vi))
+  (s: Set<Int>) => s
+  ()            => Set()   # unreachable: every variant has its sets
+
+fun [tail] cgNullTestsLoop(vs: Chain<Int>, active: List<CgIdxSlot>, variants: List<Int>, sets: CgNullSets,
+                           [terminal] acc: ListBuilder<List<CgNullTest>>): List<List<CgNullTest>>|None => match(vs)
+  (nil: ChainEnd) => build(acc)
+  (l: ChainLink)  => match(cgChooseTests(cgNullCandidates(active, l.value, sets),
+                                         Set(filter(variants, (wi) => wi != l.value)), sets, List()))
+    (tests: List<CgNullTest>) => cgNullTestsLoop(l.next, active, variants, sets, push(acc, tests))
+    ()                        => None
+
+# Variant vi's candidate tests, in tie-break order: its never-NULL slots
+# (non-NULL tests), then the slots it leaves unused (NULL tests), each
+# ascending.
+fun cgNullCandidates(active: List<CgIdxSlot>, vi, sets: CgNullSets): List<CgNullTest>
+  let never = cgSlotSet(sets.nsNeverNull, vi)
+  let used = cgSlotSet(sets.nsUsed, vi)
+  let slots = cgIndicesOf(chain(active), 0, builder())
+  ret concat(map(filter(slots, (si) => contains(never, si)), (si) => CgNullTest(si, false)),
+             map(filter(slots, (si) => !contains(used, si)), (si) => CgNullTest(si, true)))
+
+fun cgRuledOut(test: CgNullTest, wi, sets: CgNullSets) => test.ntIsNull
+  ? contains(cgSlotSet(sets.nsNeverNull, wi), test.ntSlot)
+  : !contains(cgSlotSet(sets.nsUsed, wi), test.ntSlot)
+
+fun [tail] cgChooseTests(candidates: List<CgNullTest>, left: Set<Int>, sets: CgNullSets,
+                         chosen: List<CgNullTest>): List<CgNullTest>|None
+  ret isEmpty(left) ? cgSortTestsBySlot(chosen) : match(cgBestTest(candidates, left, sets))
+    (best: CgNullTest) => cgChooseTests(candidates, filter(left, (wi) => !cgRuledOut(best, wi, sets)),
+                                        sets, prepend(best, chosen))
+    ()                 => None
+
+# The first candidate ruling out the most of `left`, or None when none rules
+# out any.
+class [final] CgBestTest(btTest: CgNullTest|None, btHits: Int)
+
+fun cgBestTest(candidates: List<CgNullTest>, left: Set<Int>, sets: CgNullSets): CgNullTest|None
+  ret fold(candidates, CgBestTest(None, 0), (acc, c) => cgBetterTest(acc, c, left, sets)).btTest
+
+fun cgBetterTest(acc: CgBestTest, c: CgNullTest, left: Set<Int>, sets: CgNullSets): CgBestTest
+  ret size(filter(left, (wi) => cgRuledOut(c, wi, sets)))
+    |> (n) => n > acc.btHits ? CgBestTest(c, n) : acc
+
+fun cgSortTestsBySlot(tests: List<CgNullTest>): List<CgNullTest>
+  ret fold(tests, List(), (acc, t) => cgInsertTestBySlot(acc, t))
+
+fun cgInsertTestBySlot(sorted: List<CgNullTest>, t: CgNullTest): List<CgNullTest> => match(head(sorted))
+  (h: CgNullTest) => t.ntSlot < h.ntSlot
+    ? prepend(t, sorted)
+    : prepend(h, cgInsertTestBySlot(tail(sorted), t))
+  () => prepend(t, List())
 
 fun cgRenumberVmapOne(vm: List<CgSlotEntry>, renumber: List<CgRenumberEntry>)
   ret map(vm, (e) => CgSlotEntry(cgRenumberLookup(renumber, e.slotIndex), e.origType))
