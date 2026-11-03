@@ -452,6 +452,83 @@ INLINE object_t* object_resolve(object_t* o) {
     return o;
 }
 
+// object_resolve with every vtable-word load an ACQUIRE, so the loads are
+// ordered among themselves and after the caller's (see object_same).
+INLINE object_t* object_resolve_acquire(object_t* o) {
+    for (;;) {
+        vtable_t* vt = (vtable_t*)__atomic_load_n((uintptr_t*)&o->vtable, __ATOMIC_ACQUIRE);
+        if (LIKELY(!vtable_is_forward(vt)))
+            return o;
+        o = (object_t*)vt;
+    }
+}
+
+// REFERENCE IDENTITY, for library code only and only on [pinnable] objects —
+// the ones a late write gives an identity. It is reached from YAFL as
+// `__builtin_op__<bool>("object_same", a, b)`, and the compiler enforces
+// neither restriction: like library-only use of the other builtins, that is
+// on the honour system. Ordinary immutable objects have no identity, and
+// asking for one would let representation leak into program meaning.
+//
+// A raw `==` is not identity under concurrent compaction. While a stub
+// forwards to its copy, one holder may point at the stub and another at the
+// copy, and `==` says "different" for one object (it never says "same" for
+// two: equal addresses are one object). So on a mismatch both sides are
+// resolved to their current copies. Two orderings make that answer sound:
+//
+//   - A copy is reachable only AFTER its stub's forward word is published
+//     (gc_compact_page publishes with release; every later holder learnt the
+//     address by reading that word). So a caller holding the newer copy can
+//     see the older one forward — provided the loads that obtained `a` and
+//     `b` are ordered before the vtable loads here: the acquire fence, then
+//     acquire loads throughout.
+//   - The two sides are resolved one after the other, and either may move in
+//     between. Resolving `a` again AFTER `b` closes that: if `a` is still
+//     unforwarded then, and differs from the current `b`, they are distinct
+//     objects (a copy newer than `a` would already have forwarded it). If `a`
+//     moved, go round with its new copy.
+//
+// On x86-64 the fence and acquire loads are plain loads; on a weakly ordered
+// machine they cost only on the mismatch path.
+//
+// THE USE (issue #73): a list of shared nodes bounded by (head, tail) can
+// drop its element count — two words travel in registers, three in memory —
+// by stopping a walk at the node that IS its tail. That is sound only while
+// every list's head..tail run is a simple path: no node visited twice, so
+// the first meeting of the tail is the end. The count used to bound walks
+// even round loops; without it, concat must not create one. concat(to, from)
+// links to's tail to from's head by CAS (None -> from's head), and it may do
+// so only if, as well:
+//   - from's tail's `next` is None, and
+//   - object_same(from's tail, to's tail) is false.
+// Any node the two runs share leads, along write-once `next` links, to both
+// tails, so one tail lies on the way to the other. to's tail cannot lie
+// before from's (its `next` is None — the CAS checks that); if from's tail
+// lies before to's, its `next` was already set before either list was
+// built. So the two checks rule out every overlap, in O(1). Reading None
+// there is a fact about the two fixed runs, not about the future: an append
+// or concat onto from that lands after the read adds a fresh link past
+// from's tail, which neither run includes, so it cannot invalidate the
+// answer. If either check or the CAS fails, copy `to` (one copy, whichever
+// failed): fresh nodes share nothing with `from`, and their unshared tail's
+// CAS cannot fail — so link the copy DIRECTLY; re-entering concat would test
+// `from` again and, when `from` was the failure, loop forever.
+INLINE bool object_same(object_t* a, object_t* b) {
+    if (a == b)
+        return true;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    a = object_resolve_acquire(a);
+    for (;;) {
+        b = object_resolve_acquire(b);
+        if (a == b)
+            return true;
+        object_t* again = object_resolve_acquire(a);
+        if (again == a)
+            return false;
+        a = again;
+    }
+}
+
 // ── object pinning ───────────────────────────────────────────────────────────
 // A marker bit in the OBJECT's vtable word: compaction skips a pinned object
 // (it stays at its address), letting a runtime primitive hold a raw pointer
