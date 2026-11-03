@@ -37,7 +37,7 @@ fun cgNone() => CgStruct(List())
 
 fun makeGateFunction(symbol: String, sync: Bool): CgFunction
   ret CgFunction(symbol,
-                 CgStruct(list2(CgField("this", CgDataPointer()), CgField("flag", CgDataPointer()))),
+                 CgStruct(list2(CgField("this", CgDataPointer(false)), CgField("flag", CgDataPointer(false)))),
                  cgNone(), CgStruct(List()), cgOpsOf(List()), symbol, symbol,
                  sync, false, false, false)
 
@@ -50,9 +50,9 @@ fun gateCall(symbol: String, sync: Bool, flagAddr: RParam, register: RParam): Op
 
 fun makeStubObject(valueType)
   ret CgObject(stubClassName(valueType), List(), List(),
-               CgImmediateStruct(list4(CgField("type", CgDataPointer()),
-                                       CgField("flag", CgDataPointer()),
-                                       CgField("closure", CgFuncPointer(false)),
+               CgImmediateStruct(list4(CgField("type", CgDataPointer(false)),
+                                       CgField("flag", CgDataPointer(false)),
+                                       CgField("closure", CgFuncPointer(false, false)),
                                        CgField("value", valueType))),
                None, "lazy stub for " + irMangle(valueType),
                false, true, 0)   # is_mutable: flag/value memoised after construction
@@ -61,13 +61,13 @@ fun makeStubObject(valueType)
 
 fun makeFetchFunction(valueType): CgFunction
   let cls = stubClassName(valueType)
-  let this = RpStackVar(CgDataPointer(), "this")
-  let closure = RpStackVar(CgFuncPointer(false), "closure")
+  let this = RpStackVar(CgDataPointer(false), "this")
+  let closure = RpStackVar(CgFuncPointer(false, false), "closure")
   let value = RpStackVar(valueType, "value")
   let acquired = RpStackVar(cgNone(), "acquired")
   let released = RpStackVar(cgNone(), "released")
-  let flagF = RpObjectField(CgDataPointer(), this, cls, "flag", None, false, false)
-  let closureF = RpObjectField(CgFuncPointer(false), this, cls, "closure", None, false, false)
+  let flagF = RpObjectField(CgDataPointer(false), this, cls, "flag", None, false, false)
+  let closureF = RpObjectField(CgFuncPointer(false, false), this, cls, "closure", None, false, false)
   let valueF = RpObjectField(valueType, this, cls, "value", None, false, false)
   let isComplete = RpRuntimeInvoke("lazy_global_init_complete",
                                    RpNewStruct(list1(RpNamedValue("p", flagF))), CgInt(32))
@@ -80,13 +80,13 @@ fun makeFetchFunction(valueType): CgFunction
       OpMove(closure, closureF, false, Dict()),
       OpCall(closure, RpNewStruct(List()), value, false, false, None, Dict()),
       OpMove(valueF, value, false, Dict()),
-      OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, Dict()),
+      OpMove(closureF, RpZeroOf(CgFuncPointer(false, false)), false, Dict()),
       gateCall(lazyRelease(), true, RpPointerTo(flagF), released))
   let done = list2<Op>(OpLabel("$done", Dict()), OpReturn(valueF, Dict()))
   ret CgFunction(fetchFunctionName(valueType),
-                 CgStruct(list1(CgField("this", CgDataPointer()))),
+                 CgStruct(list1(CgField("this", CgDataPointer(false)))),
                  valueType,
-                 CgStruct(list4(CgField("closure", CgFuncPointer(false)),
+                 CgStruct(list4(CgField("closure", CgFuncPointer(false, false)),
                                 CgField("value", valueType),
                                 CgField("acquired", cgNone()),
                                 CgField("released", cgNone()))),
@@ -102,12 +102,12 @@ fun makeFetchFunction(valueType): CgFunction
 # discards the result; either gate outcome leaves the protocol consistent.
 fun makeFutureRunnerFunction(valueType)
   let wrapped = wrapReturnType(valueType)
-  let this = RpStackVar(CgDataPointer(), "this")
+  let this = RpStackVar(CgDataPointer(false), "this")
   let rwrapped = RpStackVar(wrapped, "result_wrapped")
   ret CgFunction(futureRunnerName(valueType),
-                 CgStruct(list2(CgField("this", CgDataPointer()),
-                                CgField("$task", CgDataPointer()))),
-                 CgDataPointer(),
+                 CgStruct(list2(CgField("this", CgDataPointer(false)),
+                                CgField("$task", CgDataPointer(false)))),
+                 CgDataPointer(false),
                  CgStruct(list1(CgField("result_wrapped", wrapped))),
                  cgOpsOf(list2(OpCall(RpGlobalFunction(fetchFunctionName(valueType), this, false, None, false, false),
                               RpNewStruct(List()), rwrapped, false, false, None, Dict()),

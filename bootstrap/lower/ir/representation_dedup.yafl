@@ -260,6 +260,10 @@ fun [tail] rddNamed(e: RddEnc, cx: RddCx, c: Chain<RpNamedValue>): RddEnc => mat
 fun rddNamedList(e: RddEnc, cx: RddCx, xs: List<RpNamedValue>): RddEnc
   ret rddNamed(rddS(e, "["), cx, chain(xs))
 
+fun [tail] rddNullTests(e: RddEnc, cx: RddCx, c: Chain<RpNullTest>): RddEnc => match(c)
+  (nil: ChainEnd) => rddS(e, "]")
+  (l: ChainLink)  => rddNullTests(rddBool(rddParam(e, cx, l.value.word), l.value.isNull), cx, l.next)
+
 fun rddParam(e: RddEnc, cx: RddCx, r: RParam): RddEnc => match(r)
   (x: RpInitArray)           => rddParamList(rddTy(rddS(e, "IA;"), x.memberType), cx, x.values)
   (x: RpNewStruct)           => rddNamedList(rddS(e, "NS;"), cx, x.values)
@@ -270,6 +274,7 @@ fun rddParam(e: RddEnc, cx: RddCx, r: RParam): RddEnc => match(r)
   (x: RpInteger)             => rddInt(rddInt(rddS(e, "IN;"), x.value), x.precision)
   (x: RpFloat)               => rddInt(rddLit(rddS(e, "FL;"), String(x.value)), x.precision)
   (x: RpIntEqConst)          => rddIntEqConst(e, cx, x)
+  (x: RpNullPattern)         => rddNullTests(rddS(e, "NU;["), cx, chain(x.tests))
   (x: RpNullPointer)         => rddS(e, "NP;")
   (x: RpStaticObjectRef)     => rddName(rddS(e, "SO;"), cx, 2, x.name)
   (x: RpVtableDiscriminator) => rddParam(rddS(rddStray(e), "VD;"), cx, x.value)

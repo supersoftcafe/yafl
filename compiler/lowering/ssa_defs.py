@@ -11,8 +11,8 @@ from __future__ import annotations
 from codegen.ir import Function
 from codegen.ops import Move
 from codegen.param import (
-    RParam, StackVar, StructField, NewStruct, Integer, IntEqConst, String,
-    Float, NullPointer, GlobalVar, GlobalFunction,
+    RParam, StackVar, StructField, NewStruct, Integer, IntEqConst, NullPattern, String,
+    Float, NullPointer, GlobalVar, GlobalFunction, ZeroOf,
 )
 
 # A value simple enough to duplicate into each read site: pure, no evaluation
@@ -82,7 +82,32 @@ def static_int(param: RParam, defs: dict[str, RParam | None]) -> int | None:
     if isinstance(param, IntEqConst):
         v = static_int(param.value, defs)
         return None if v is None else int(v == param.const_val)
+    if isinstance(param, NullPattern):
+        # A conjunction: false once any test is known to fail, true once
+        # every test is known to hold.
+        known = [static_null(word, defs) for word, _ in param.tests]
+        if any(n is not None and n != is_null for n, (_, is_null) in zip(known, param.tests)):
+            return 0
+        return 1 if all(n is not None for n in known) else None
     resolved = resolve_value(param, defs)
     if isinstance(resolved, Integer):
         return resolved.value
     return None
+
+
+def static_null(word: RParam, defs: dict[str, RParam | None],
+                depth: int = MAX_CHASE) -> bool | None:
+    """Is the word `word` statically NULL (True), never NULL (False), or not
+    known (None)? Never NULL is the word's type's refinement
+    (Type.never_null) — asked only after the zero forms, which a value typed
+    never-NULL is never built from."""
+    if isinstance(word, (NullPointer, ZeroOf)):
+        return True
+    if word.get_type().never_null:
+        return False
+    if depth <= 0:
+        return None
+    resolved = resolve_value(word, defs, depth)
+    if resolved is None or resolved is word:
+        return None
+    return static_null(resolved, defs, depth - 1)

@@ -238,10 +238,12 @@ fun [tail] getOptLevel(r): Int => match(r)
 
 fun [tail] specGenerate(sp, r): CgType => match(sp)
   (b: SBuiltin)      => builtinCType(b.sbName)
-  (cl: SCallable)    => CgFuncPointer(false)
-  (ls: SLazyStub)    => CgDataPointer()
+  (cl: SCallable)    => CgFuncPointer(false, true)   # a function value always has code
+  (ls: SLazyStub)    => CgDataPointer(false)
   (af: SArrayField)  => specGenerate(af.safElem, r)
-  (c: SClass)        => CgDataPointer()
+  # A class value is always an object: absence is spelt `|None`, and a
+  # foreign call that can fail says so in its result type (`_IO|Int`).
+  (c: SClass)        => CgDataPointer(true)
   (e2: SEnum)        => reprCtype(classifyRepr(e2, r))
   (cm: SCombination) => reprCtype(classifyRepr(cm, r))
   (t2: STuple)       => CgStruct(tupleFieldsOf(chain(t2.stEntries), 0, r, List()))
@@ -249,12 +251,12 @@ fun [tail] specGenerate(sp, r): CgType => match(sp)
   (n: SNamed)        => CgVoid()   # unreachable: Python raises RuntimeError (must resolve first)
 
 fun builtinCType(name: String): CgType => match(name)
-  ("str")     => CgStr()
+  ("str")     => CgStr(true)   # "" is a tagged word, never NULL
   ("int8")    => CgInt(8)
   ("int16")   => CgInt(16)
   ("int32")   => CgInt(32)
   ("int64")   => CgInt(64)
-  ("bigint")  => CgDataPointer()
+  ("bigint")  => CgDataPointer(true)   # 0 is a tagged word, never NULL
   ("bool")    => CgInt(8)
   ("float32") => CgFloat(32)
   ("float64") => CgFloat(64)
@@ -603,7 +605,7 @@ fun genNameLocal(nm: PeName, st, r) => match(st)
   (l: PsLet) => bundleValue(RpStackVar(letStorageType(l, r), nm.refName))
   (o: PStmt) => emptyBundle()   # unreachable
 
-fun letStorageType(l: PsLet, r) => isDeferredInit(l) ? CgDataPointer() : specGenerateOpt(l.lType, r)
+fun letStorageType(l: PsLet, r) => isDeferredInit(l) ? CgDataPointer(false) : specGenerateOpt(l.lType, r)
 
 # ── ArrayReadExpression ──────────────────────────────────────────────────────
 
@@ -649,7 +651,7 @@ fun genArrayRead(ar: PeArrayRead, r) => match(arrayInfo(ar.arrObj, r))
 fun genArrayReadOn(ar: PeArrayRead, info: (cname: String, elem: Spec, lenName: String), r)
   let objB = withPrefix(genExpr(ar.arrObj, r), "arr")
   let idxB = withPrefix(genExpr(ar.arrIndex, r), "idx")
-  let objVar = RpStackVar(CgDataPointer(), "aobj")
+  let objVar = RpStackVar(CgDataPointer(false), "aobj")
   let idxVar = RpStackVar(CgInt(32), "aidx")
   let elem = RpArrayElement(specGenerate(info.elem, r), objVar, info.cname, "array", info.lenName, idxVar, true)
   let moveOps = list2<Op>(OpMove(objVar, mustResult(objB), false, Dict()),
@@ -682,15 +684,15 @@ fun fetchFunctionName(t) => "lazy_fetch$" + irMangle(t)
 fun genLazy(lz: PeLazy, r)
   let irT = specGenerate(lz.lzTarget, r)
   let stubRef = match(lz.lzCaptured)
-    (cls: String) => RpObjectField(CgDataPointer(), RpStackVar(CgDataPointer(), "this"), cls, lz.stubName, None, false, false)
+    (cls: String) => RpObjectField(CgDataPointer(false), RpStackVar(CgDataPointer(false), "this"), cls, lz.stubName, None, false, false)
     ()             => lazyStubRef(lz, r)
   ret lz.lzStubOnly ? bundleValue(stubRef) : genLazyForce(irT, stubRef)
 
 fun lazyStubRef(lz: PeLazy, r)
   let found = findData(r, lz.stubName)
   ret (exactly(chain(found.bItems), 1) && foundIsGlobalScope(head(found.bItems)))
-    ? RpGlobalVar(CgDataPointer(), lz.stubName)
-    : RpStackVar(CgDataPointer(), lz.stubName)
+    ? RpGlobalVar(CgDataPointer(false), lz.stubName)
+    : RpStackVar(CgDataPointer(false), lz.stubName)
 
 # isGlobalScope(sc: RScope): Bool is reused as-is from lambdas.yafl.
 fun foundIsGlobalScope(f: Found|None) => match(f)
@@ -796,7 +798,7 @@ fun arrayAllocParts(op: PeBuiltinOp, r): (cname: String, capE: PExpr)|None => ma
 
 fun genArrayBuilderAllocOn(cname, capE, r)
   let capB = withPrefix(genExpr(capE, r), "abcap")
-  let rv = RpStackVar(CgDataPointer(), "abarr")
+  let rv = RpStackVar(CgDataPointer(false), "abarr")
   ret bundleJoin(capB,
                  GBundle(list1(rv),
                          list1(OpNewObject(cname, rv, mustResult(capB), true, Dict())),
@@ -847,7 +849,7 @@ fun genPinSetOn(ps: PePinSet, d: PeDot, cs: PsClass, r)
                       RpNewStruct(prepend(RpNamedValue("o", mustResult(objB)),
                                     prepend(RpNamedValue("offset", RpFieldOffset(cs.cName, d.member)),
                                       prepend(RpNamedValue("v", mustResult(valB)), List())))),
-                      CgDataPointer()), true, Dict())
+                      CgDataPointer(false)), true, Dict())
   ret bundleJoin(bundleJoin(objB, valB),
                  GBundle(list1(old), list1(call), old, List(), List()))
 
@@ -1052,8 +1054,8 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   # Born PINNED, held to the end of the loop: initFn may suspend and park the
   # half-built array in a heap state object, where compaction could move it
   # under the resumed loop (see pyast/expression/new.py).
-  let unpinVar = RpStackVar(CgDataPointer(), "fillunpin")
-  let unpinOp = OpMove(unpinVar, RpRuntimeInvoke("object_unpin", RpNewStruct(list1(RpNamedValue("o", resultVar))), CgDataPointer()), true, Dict())
+  let unpinVar = RpStackVar(CgDataPointer(false), "fillunpin")
+  let unpinOp = OpMove(unpinVar, RpRuntimeInvoke("object_unpin", RpNewStruct(list1(RpNamedValue("o", resultVar))), CgDataPointer(false)), true, Dict())
   let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, Dict()),
                              OpNewObject(cname, resultVar, length2, true, Dict())),
                        scalarOps)

@@ -293,15 +293,6 @@ def narrowed_member(union_type: t.TypeSpec, arm_type: t.TypeSpec) -> t.TypeSpec:
     return arm_type
 
 
-def _flat_leaf_guards(enum_type: t.EnumSpec, tag: cg_p.RParam, arm_type: t.EnumSpec) -> list:
-    """OR-alternatives testing that a flat enum's `tag` (a leaf's position in
-    its leaf list) is one of `arm_type`'s leaves, in ascending tag order — set
-    iteration is hash-seeded."""
-    leaf_index = {_leaf_base(n): i for i, n in enumerate(enum_type.all_leaf_names)}
-    return [cg_p.IntEqConst(tag, leaf_index[_leaf_base(leaf)])
-            for leaf in sorted(arm_type.valid_leaf_names, key=lambda l: leaf_index[_leaf_base(l)])]
-
-
 class UnionRepr(ABC):
     """Base for the three union representations. Obtain one via `classify`."""
 
@@ -393,11 +384,34 @@ class UnionRepr(ABC):
 @dataclasses.dataclass(frozen=True)
 class TaggedRepr(UnionRepr):
     union_type: t.TypeSpec
-    container: cg_t.Struct                      # {$s0.., $tag}
+    container: cg_t.Struct                      # {$s0.., $tag}, or {$s0..} (null_tests)
     variant_map: tuple                          # per-variant primitive -> slot (compute_union_slots)
+    # A flat enum whose NULL slots name its variant carries no $tag: per
+    # variant, the (slot, is_null) tests that hold for it alone
+    # (compute_enum_slots). None: the variant is the $tag.
+    null_tests: tuple | None = None
 
     def ctype(self) -> cg_t.Type:
         return self.container
+
+    def leaf_guards(self, read_slot, arm_type: t.EnumSpec) -> list:
+        """OR-alternatives testing that a value of this flat enum holds one of
+        `arm_type`'s leaves, in leaf order — set iteration is hash-seeded.
+        `read_slot(i)` reads the value's i-th slot (its $tag is the last): the
+        value is a subject of its own, or a member held in a combination's
+        slots. A leaf is its position in the leaf list: the $tag's value, or
+        the index of its null tests."""
+        leaf_index = {_leaf_base(n): i for i, n in enumerate(self.union_type.all_leaf_names)}
+        leaves = sorted(leaf_index[_leaf_base(leaf)] for leaf in arm_type.valid_leaf_names)
+        if self.null_tests is None:
+            tag = read_slot(len(self.container.fields) - 1)
+            return [cg_p.IntEqConst(tag, li) for li in leaves]
+        return [cg_p.NullPattern(tuple((read_slot(si), is_null) for si, is_null in self.null_tests[li]))
+                for li in leaves]
+
+    def _own_slot(self, sv):
+        """read_slot for a value of this union held as a subject of its own."""
+        return lambda si: cg_p.StructField(sv, self.container.fields[si][0])
 
     def generate_match(self, em, subj_bundle, arms, else_arm, resolver):
         # Two tag-numbering flavours over the same {$s0..,$tag} layout: a flat
@@ -412,8 +426,7 @@ class TaggedRepr(UnionRepr):
     def _generate_flat_enum_match(self, em, subj_bundle, arms, else_arm, resolver):
         subj_type = self.union_type
         sv = subj_bundle.result_var
-        tag = cg_p.StructField(sv, "$tag")
-        # A leaf's tag is its position in the subject's leaf list, matched by
+        # A leaf is its position in the subject's leaf list, matched by
         # BASE identity (_leaf_base): when a generic enum is matched at a
         # concrete instantiation, the subject's all_leaf_names and an arm's
         # valid_leaf_names can be specialised through different passes and
@@ -421,7 +434,7 @@ class TaggedRepr(UnionRepr):
         for arm in (a for a in arms if a.type_spec is not None):
             arm_type = arm.type_spec
             assert isinstance(arm_type, t.EnumSpec)
-            guards = _flat_leaf_guards(subj_type, tag, arm_type)
+            guards = self.leaf_guards(self._own_slot(sv), arm_type)
             # Bind at subj_type (always concrete): an EnumSpec arm_type may point
             # at a pruned generic spec with stale all_fields; only leaf identity
             # matters for the guards above.
@@ -474,20 +487,22 @@ class TaggedRepr(UnionRepr):
             return stages
         if not isinstance(arm_type, t.EnumSpec):
             return super().position_stages(sv, arm_type, resolver)
-        return [_flat_leaf_guards(subj_type, cg_p.StructField(sv, "$tag"), arm_type)]
+        return [self.leaf_guards(self._own_slot(sv), arm_type)]
 
     def _variant_guards(self, member, vi, arm_type, sv, resolver) -> list:
         """OR-alternatives testing that the enum `member` held in this union's
         slots is one of `arm_type`'s variants: a complex enum by its variant's
-        vtable, a flat one by its own `$tag` — its last primitive, so its last
-        slot."""
+        vtable, a flat one by its own slots — each a primitive, so the
+        member's i-th slot is its i-th primitive here."""
         member_repr = classify(member, resolver)
         slots = self.variant_map[vi]
-        si, orig = slots[0] if isinstance(member_repr, ComplexEnumRepr) else slots[-1]
-        value = slot_read(sv, self.container.fields, si, orig)
+
+        def read_slot(i):
+            si, orig = slots[i]
+            return slot_read(sv, self.container.fields, si, orig)
         if isinstance(member_repr, ComplexEnumRepr):
-            return member_repr.position_stages(value, arm_type, resolver)[0]
-        return _flat_leaf_guards(member, value, arm_type)
+            return member_repr.position_stages(read_slot(0), arm_type, resolver)[0]
+        return member_repr.leaf_guards(read_slot, arm_type)
 
     def _generate_combination_match(self, em, subj_bundle, arms, else_arm, resolver):
         subj_type = self.union_type
@@ -664,19 +679,20 @@ class TaggedRepr(UnionRepr):
 
     def construct_enum_value(self, leaf_name, field_args, resolver, pinned=False):
         """Construct a flat enum variant: fill its slots from the field-arg
-        expressions (generated here, in field-arg order) and set $tag to the
-        positional leaf index. `field_args` maps field name -> Expression."""
+        expressions (generated here, in field-arg order), leave every other
+        slot zero — NULL, which is what names the variant when there is no
+        $tag — and set any $tag to the positional leaf index. `field_args` maps
+        field name -> Expression."""
         root_stmt = resolver.find_type(self.union_type.root_name)[0].statement
         leaf_idx = self.union_type.all_leaf_names.index(leaf_name)
         leaf_fields = t._collect_leaf_field_sets(root_stmt, [])[leaf_idx]
         container = self.container
         variant_map = self.variant_map
-        _, tag_slot_type = container.fields[-1]   # $tag is always last
-        tag_const = cg_p.Integer(leaf_idx, tag_slot_type.precision)
 
         slot_values = [(sname, cg_p.ZeroOf(stype)) for sname, stype in container.fields]
-        tag_slot_idx = next(i for i, (n, _) in enumerate(container.fields) if n == "$tag")
-        slot_values[tag_slot_idx] = ("$tag", tag_const)
+        if self.null_tests is None:
+            _, tag_slot_type = container.fields[-1]   # $tag is always last
+            slot_values[-1] = ("$tag", cg_p.Integer(leaf_idx, tag_slot_type.precision))
 
         if resolver.is_boxed_leaf(self.union_type.root_name, leaf_name):
             # Boxed leaf (payload over the value-struct threshold): allocate
@@ -885,9 +901,10 @@ class PointerRepr(UnionRepr):
     union_type: t.TypeSpec
     wide: bool = False
     packs: bool = False     # scalar members ride as spare codes (wide only)
+    nonnull: bool = False   # no unit member: the word is never NULL
 
     def ctype(self) -> cg_t.Type:
-        return cg_t.Str() if self.wide else cg_t.DataPointer()
+        return cg_t.Str(nonnull=self.nonnull) if self.wide else cg_t.DataPointer(nonnull=self.nonnull)
 
     def _word(self, sv):
         """The dispatch word of a value of this union."""
@@ -1292,7 +1309,7 @@ class ComplexEnumRepr(UnionRepr):
     union_type: t.TypeSpec
 
     def ctype(self) -> cg_t.Type:
-        return cg_t.DataPointer()
+        return cg_t.DataPointer(nonnull=True)   # every variant is an object
 
     def generate_match(self, em, subj_bundle, arms, else_arm, resolver):
         # Each variant carries its own vtable; the guard compares
@@ -1406,9 +1423,9 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
         types = resolver.find_type(union_type.root_name)
         if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
             stmt = langtools.checked_cast(s.EnumStatement, types[0].statement)
-            container, vmap = cg_t.compute_union_slots(t.enum_variant_types(stmt, resolver),
-                                                       max_tag=_global_max_tag(resolver))
-            return TaggedRepr(union_type, container, vmap)
+            container, vmap, null_tests = cg_t.compute_enum_slots(
+                t.enum_variant_types(stmt, resolver), max_tag=_global_max_tag(resolver))
+            return TaggedRepr(union_type, container, vmap, null_tests)
         # Statement not found: a stale reference to a pruned root — only
         # ever a pointer; there are no fields to lay out.
         container = cg_t.Struct(())
@@ -1420,7 +1437,7 @@ def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
             kinds = [_pointer_word_kind(m, resolver) for m in members]
             wide = ('STR',) in kinds or ('FUN',) in kinds
             packs = any(k is not None and k[0] in ('SCALAR', 'FUN') for k in kinds)
-            return PointerRepr(union_type, wide, packs)
+            return PointerRepr(union_type, wide, packs, ('UNIT',) not in kinds)
         variant_types = [v.generate(resolver) for v in union_type.repr_members()]
         container, vmap = cg_t.compute_union_slots(variant_types,
                                                    max_tag=_global_max_tag(resolver))

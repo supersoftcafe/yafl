@@ -125,8 +125,36 @@ fun staticInt(param, defs: SsaDefs) => match(param)
   (eq: RpIntEqConst) => match(staticInt(eq.value, defs))
     (v: Int) => v == eq.constVal ? 1 : 0
     ()       => None
+  # A conjunction: false once any test is known to fail, true once every
+  # test is known to hold.
+  (np: RpNullPattern) => fold(np.tests, SdNullAcc(false, true), (acc, t2) => sdNullStep(acc, t2, defs))
+    |> (acc) => acc.snFails ? 0 : acc.snAllKnown ? 1 : None
   (o: RParam)        => match(resolveValue(param, defs, sdMaxChase()))
     (rv: RParam) => match(rv)
       (i: RpInteger) => i.value
       (o2: RParam)   => None
+    ()           => None
+
+
+class [final] SdNullAcc(snFails: Bool, snAllKnown: Bool)
+
+fun sdNullStep(acc: SdNullAcc, t2: RpNullTest, defs: SsaDefs): SdNullAcc
+  ret match(staticNull(t2.word, defs, sdMaxChase()))
+    (n: Bool) => SdNullAcc(acc.snFails || n != t2.isNull, acc.snAllKnown)
+    ()        => SdNullAcc(acc.snFails, false)
+
+# Is the pointer word `word` statically NULL (true), never NULL (false), or
+# not known (None)? Never NULL is the word's type's refinement (dpNonNull) —
+# asked only after the zero forms, which a value typed never-NULL is never
+# built from.
+fun staticNull(word, defs: SsaDefs, depth): Bool|None => match(word)
+  (np: RpNullPointer) => true
+  (z: RpZeroOf)       => true
+  (o: RParam)         => cgIsNeverNull(rpGetType(word)) ? false : sdStaticNullChased(word, defs, depth)
+
+fun sdStaticNullChased(word, defs: SsaDefs, depth): Bool|None
+  if depth <= 0
+    ret None
+  ret match(resolveValue(word, defs, depth))
+    (rv: RParam) => eqRParam(rv, word) ? None : staticNull(rv, defs, depth - 1)
     ()           => None

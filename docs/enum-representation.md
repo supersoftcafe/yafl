@@ -10,7 +10,8 @@ implemented in both compilers. This document is the design record.
    link, plus a heap pointer visible to GC.
 2. **An enum representation is a struct**: the minimal collection of fields —
    of any type — that can represent each of its variants, plus one
-   discriminator field (`$tag`).
+   discriminator field (`$tag`) — none when the fields already say which
+   variant a value holds (see "No tag when the slots name the variant").
 3. **Unless it exceeds a size threshold.** The threshold does not restrict
    field granularity: 8 bytes in sequence is 8 fields but only one word.
 4. **The threshold is a named constant**: `_MAX_VALUE_STRUCT_WORDS = 8` in
@@ -61,7 +62,9 @@ Mechanics (both compilers, kept in lockstep):
   word; complex enums a pointer; closures two words. The one documented
   approximation: tags are counted as one byte (the global discriminator
   maximum fits i8; outgrowing it lags the estimate a byte per nesting,
-  noise against a 64-byte threshold).
+  noise against a 64-byte threshold). A flat enum that needs no tag (below)
+  is still charged its byte: the estimate works on specs, before the
+  slots it would take to know.
 - Roots with interior-node (inherited) fields keep all leaves inline:
   inherited fields are read positionally across sibling carriers, which
   requires one shared representation.
@@ -94,6 +97,68 @@ greater-than), eight collapsed one-word unions (64B) stay inline, a
 straddling pair around the threshold under true arithmetic lands on both
 sides, and inline/boxed variants roundtrip standalone and nested in
 combinations.
+
+## No tag when the slots name the variant (#75)
+
+A flat enum carries no `$tag` when its slots alone tell every variant
+apart. Two facts make that possible: a variant leaves every slot it does
+not use zero (NULL), and some words are never NULL (`Type.never_null`; in
+the port `cgIsNeverNull`). Each is a refinement flag on the IR type, set
+where a spec lowers and ignored by type equality:
+
+- `DataPointer.nonnull` (`dpNonNull`): a class (absence is spelt `|None`;
+  a foreign call that can fail says so in its result type), an `Int` (0 is
+  a tagged word), a complex enum, a boxed variant, a pointer union with no
+  unit member.
+- `Str.nonnull` (`strNonNull`): a String's first word, `head` — a tagged
+  word for an inline string (`""` included) or its buffer. A wide union
+  that shares the representation puts NULL there for None, so it says
+  never-NULL only when it has no unit member.
+- `FuncPointer.nonnull` (`fpNonNull`): a function value's code pointer. A
+  closure flattens into its code word, `IntPtr(nonnull=…)`, and its
+  environment, which may be NULL. Only a task in flight — never matched
+  on — leaves the code word NULL.
+
+So where, for every pair of
+variants, some slot is never-NULL in one and unused by the other, the
+pattern of NULL slots names the variant:
+
+    enum NewList<T>                 { _s0, _s1, _s2 }      was { ..., _tag }
+      NewListEmpty()                _s0 == 0
+      NewListFull(head, tail, n)    _s0 != 0
+    enum Tree                       { _s0, _s1 }
+      Nil()                         _s0 == 0
+      Leaf(a: Node)                 _s0 != 0 && _s1 == 0
+      Pair(l: Node, r: Node)        _s1 != 0
+
+Mechanics (both compilers):
+
+- `compute_enum_slots` / `computeEnumSlots` packs the slots exactly as for a
+  tagged union, then chooses per variant the fewest `(slot, is_null)` tests
+  that rule out every other variant — greedily, each test the one ruling
+  out most of the variants still left, ties to a non-NULL test, then to the
+  lowest slot. If some pair cannot be told apart the struct keeps `$tag`.
+  A single-variant enum keeps its tag. Only the size-optimal slots are
+  considered: adding a slot to spare the tag would cost the word the tag
+  costs.
+- Slots are shared regardless of the refinement (`_slot_key`), and a slot
+  carries it only when every variant fills it with a never-NULL word
+  (`_pack_slots`; `cgRefineSlot`): a variant that leaves it unused leaves
+  it NULL. So an enum held in another can name the outer variant by its own
+  slots — `Held(s: Same) | Empty()`, with `Same = A(x: Node) | B(y: Node)`,
+  needs no outer tag — while a slot some inner variant leaves unused,
+  whether it names that variant or the inner tag does, never can. A String
+  slot is tested by its `head`.
+- `TaggedRepr.null_tests` holds the tests; `leaf_guards` emits either
+  `$tag == i` or a `NullPattern` — one guard node, a conjunction of NULL
+  tests — for the subject itself and for an enum held inside a tagged
+  combination's slots alike.
+- Construction needs no tag write: the variant's unused slots are already
+  zero.
+- `known_tags` folds a `NullPattern` on a value just built: `static_null`
+  answers NULL for the zero forms and never-NULL from the word's type.
+- Combinations keep their tag (they number members globally, and widening
+  between them copies it); dropping it there is a follow-up.
 
 ## Types narrow; the representation never does
 

@@ -60,19 +60,19 @@ fun discSpec(acc, sp) => match(sp)
 # ── the entry point (__create_entry_point) ───────────────────────────────────
 
 fun createEntryPoint(mainName): CgFunction
-  let svResult = RpStackVar(CgDataPointer(), "result")
-  let svDiscard = RpStackVar(CgDataPointer(), "$sv_discard")
-  let continuation = RpStackVar(CgFuncPointer(false), "$continuation")
+  let svResult = RpStackVar(CgDataPointer(false), "result")
+  let svDiscard = RpStackVar(CgDataPointer(false), "$sv_discard")
+  let continuation = RpStackVar(CgFuncPointer(false, false), "$continuation")
   let isTask = RpRuntimeInvoke("PTR_IS_TASK",
                                RpNewStruct(list1(RpNamedValue("p", svResult))), CgInt(32))
   let unlikelyChk = RpRuntimeInvoke("UNLIKELY",
                                     RpNewStruct(list1(RpNamedValue("x", isTask))), CgInt(32))
   let untag = RpRuntimeInvoke("TASK_UNTAG",
-                              RpNewStruct(list1(RpNamedValue("p", svResult))), CgDataPointer())
+                              RpNewStruct(list1(RpNamedValue("p", svResult))), CgDataPointer(false))
   let onComplete = RpRuntimeInvoke("task_on_complete",
                                    RpNewStruct(list2(RpNamedValue("task", untag),
                                                      RpNamedValue("cb", continuation))),
-                                   CgDataPointer())
+                                   CgDataPointer(false))
   let ops = concat<Op>(list5(
       OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
              RpNewStruct(List()), svResult, false, false, None, Dict()),
@@ -86,11 +86,11 @@ fun createEntryPoint(mainName): CgFunction
     list2(OpMove(svDiscard, onComplete, true, Dict()),
           OpReturnVoid(Dict())))
   ret CgFunction("__entrypoint__",
-                 CgStruct(list2(CgField("this", CgDataPointer()),
-                                CgField("$continuation", CgFuncPointer(false)))),
+                 CgStruct(list2(CgField("this", CgDataPointer(false)),
+                                CgField("$continuation", CgFuncPointer(false, false)))),
                  CgVoid(),
-                 CgStruct(list2(CgField("result", CgDataPointer()),
-                                CgField("$sv_discard", CgDataPointer()))),
+                 CgStruct(list2(CgField("result", CgDataPointer(false)),
+                                CgField("$sv_discard", CgDataPointer(false)))),
                  cgOpsOf(ops), "", None, false, false, true, false)
 
 # ── lazy machinery (ensure) ──────────────────────────────────────────────────
@@ -408,8 +408,8 @@ fun ccValidateEntrypoint(a: CgApp) => match(appFunction(a, "__entrypoint__"))
 
 fun ccEntryShape(f: CgFunction): List<String>
   let paramsOk = eqCgType(f.fnParams,
-                          CgStruct(list2(CgField("this", CgDataPointer()),
-                                         CgField("$continuation", CgFuncPointer(false)))))
+                          CgStruct(list2(CgField("this", CgDataPointer(false)),
+                                         CgField("$continuation", CgFuncPointer(false, false)))))
   let resultOk = alIsVoid(f.fnResult)
   ret paramsOk && resultOk
     ? List()

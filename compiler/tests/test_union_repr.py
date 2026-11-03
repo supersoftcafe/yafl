@@ -14,6 +14,8 @@ Runtime behaviour is checked by compiler/yafl_tests/union_repr.yafl.
 """
 from __future__ import annotations
 
+import re
+
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_and_run_stdlib_capture
 from tests.testutil import compile_c
@@ -304,3 +306,223 @@ class TestReprPartialOperationContract(TestCase):
             rep.widen_from(None, None, None)
 
 
+
+
+class TestNullPatternDiscrimination(TestCase):
+    """A flat enum carries no `$tag` when its slots already say which variant
+    a value holds (#75): a never-NULL word (a heap class, an Int, a complex
+    enum, a String's first word, a function's code pointer) in one variant
+    against the same slot left NULL — unused — by another. The tag stays
+    whenever two variants cannot be told apart that way: a nullable field, a
+    scalar payload, or two variants whose never-NULL words share a slot.
+
+    Runtime behaviour is checked by compiler/yafl_tests/union_repr.yafl."""
+
+    _SRC = """
+namespace Main
+import System
+class Node(next: Node|None, v: Int)
+enum NpList
+  enum NpEmpty()
+  enum NpFull(head: Node, tail: Node, count: Int)
+enum NpTree
+  enum NpNil()
+  enum NpLeaf(a: Node)
+  enum NpPair(l: Node, r: Node)
+enum NpSame
+  enum NpA(x: Node)
+  enum NpB(y: Node)
+enum NpMaybe
+  enum NpNothing()
+  enum NpHeld(m: Node|None)
+enum NpScalar
+  enum NpZero()
+  enum NpNum(n: Int32)
+enum NpOpt<T>
+  enum NpNone()
+  enum NpSome(value: T)
+enum NpCount
+  enum NpNoCount()
+  enum NpHasCount(n: Int)
+enum NpText
+  enum NpNoText()
+  enum NpHasText(s: String)
+enum NpMaybeText
+  enum NpNoMaybeText()
+  enum NpHasMaybeText(s: String|None)
+enum NpFn
+  enum NpNoFn()
+  enum NpHasFn(f: (:Int): Int)
+enum NpMaybeFn
+  enum NpNoMaybeFn()
+  enum NpHasMaybeFn(f: ((:Int): Int)|None)
+enum NpWrapSame
+  enum NpWsHeld(e: NpSame)
+  enum NpWsNone()
+enum NpBlind
+  enum NpBlA(i: Int32, x: Node)
+  enum NpBlB(i: Int32)
+  enum NpBlC(i: Int32)
+enum NpWrapBlind
+  enum NpWbHeld(e: NpBlind)
+  enum NpWbNone()
+enum NpWrapList
+  enum NpWlHeld(l: NpList)
+  enum NpWlNone()
+fun [inline(never)] mkList(k: Int): NpList
+  let n = Node(None, k)
+  ret k == 0 ? NpEmpty() : NpFull(n, n, k)
+fun [inline(never)] mkTree(k: Int): NpTree
+  ret k == 0 ? NpNil() : (k == 1 ? NpLeaf(Node(None, 1)) : NpPair(Node(None, 1), Node(None, 2)))
+fun [inline(never)] mkSame(k: Int): NpSame
+  ret k == 0 ? NpA(Node(None, 1)) : NpB(Node(None, 2))
+fun [inline(never)] mkMaybe(k: Int): NpMaybe
+  ret k == 0 ? NpNothing() : NpHeld(None)
+fun [inline(never)] mkScalar(k: Int): NpScalar
+  ret k == 0 ? NpZero() : NpNum(7i32)
+fun [inline(never)] mkOptNode(k: Int): NpOpt<Node>
+  ret k == 0 ? NpNone<Node>() : NpSome<Node>(Node(None, 1))
+fun [inline(never)] mkOptI32(k: Int): NpOpt<Int32>
+  ret k == 0 ? NpNone<Int32>() : NpSome<Int32>(1i32)
+fun [inline(never)] mkCount(k: Int): NpCount
+  ret k == 0 ? NpNoCount() : NpHasCount(k)
+fun [inline(never)] mkText(k: Int): NpText
+  ret k == 0 ? NpNoText() : NpHasText("")
+fun [inline(never)] mkMaybeText(k: Int): NpMaybeText
+  ret k == 0 ? NpNoMaybeText() : NpHasMaybeText("m")
+fun [inline(never)] mkFn(k: Int): NpFn
+  ret k == 0 ? NpNoFn() : NpHasFn((i: Int) => i + k)
+fun [inline(never)] mkMaybeFn(k: Int): NpMaybeFn
+  ret k == 0 ? NpNoMaybeFn() : NpHasMaybeFn(None)
+fun [inline(never)] mkWrapSame(k: Int): NpWrapSame
+  ret k == 0 ? NpWsNone() : NpWsHeld(mkSame(k))
+fun [inline(never)] mkWrapBlind(k: Int): NpWrapBlind
+  ret k == 0 ? NpWbNone() : NpWbHeld(k == 1 ? NpBlB(1i32) : NpBlA(2i32, Node(None, k)))
+fun [inline(never)] mkWrapList(k: Int): NpWrapList
+  ret k == 0 ? NpWlNone() : NpWlHeld(mkList(k))
+fun main(): System::Int
+  let a = match(mkList(1))
+    (e: NpEmpty) => 0
+    (f: NpFull)  => 1
+  let b = match(mkTree(1))
+    (e: NpNil)  => 0
+    (f: NpLeaf) => 1
+    (p: NpPair) => 2
+  let c = match(mkSame(1))
+    (x: NpA) => 0
+    (y: NpB) => 1
+  let d = match(mkMaybe(1))
+    (x: NpNothing) => 0
+    (y: NpHeld)    => 1
+  let e = match(mkScalar(1))
+    (x: NpZero) => 0
+    (y: NpNum)  => 1
+  let f = match(mkOptNode(1))
+    (x: NpNone) => 0
+    (y: NpSome) => 1
+  let g = match(mkOptI32(1))
+    (x: NpNone) => 0
+    (y: NpSome) => 1
+  let h = match(mkCount(1))
+    (x: NpNoCount)  => 0
+    (y: NpHasCount) => y.n
+  let i = match(mkText(1))
+    (x: NpNoText)  => 0
+    (y: NpHasText) => length(y.s)
+  let j = match(mkMaybeText(1))
+    (x: NpNoMaybeText)  => 0
+    (y: NpHasMaybeText) => 1
+  let k = match(mkFn(1))
+    (x: NpNoFn)  => 0
+    (y: NpHasFn) => y.f(1)
+  let l = match(mkMaybeFn(1))
+    (x: NpNoMaybeFn)  => 0
+    (y: NpHasMaybeFn) => 1
+  let m = match(mkWrapSame(1))
+    (x: NpWsHeld) => 1
+    (y: NpWsNone) => 0
+  let n = match(mkWrapBlind(1))
+    (x: NpWbHeld) => 1
+    (y: NpWbNone) => 0
+  let o = match(mkWrapList(1))
+    (x: NpWlHeld) => 1
+    (y: NpWlNone) => 0
+  ret a + b + c + d + e + f + g + h + i + j + k + l + m + n + o
+"""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.code = _c_for(cls._SRC)
+
+    def _fields(self, fn_substr: str) -> list[str]:
+        """The C field declarations of the enum struct returned by the
+        function whose mangled name contains fn_substr — looking through the
+        task wrapper a pointer-free result travels in."""
+        ret = next(line.split(" ")[0] for line in self.code.splitlines()
+                   if re.match(rf"\S+ {fn_substr}\w*\(object_t\* this", line)
+                   and line.rstrip().endswith(";"))
+        fields = self._typedef_fields(ret)
+        if len(fields) == 2 and fields[1] == "object_t* task;":
+            fields = self._typedef_fields(fields[0].split(" ")[0])
+        return fields
+
+    def _typedef_fields(self, name: str) -> list[str]:
+        lines = self.code.splitlines()
+        end = next(i for i, line in enumerate(lines)
+                   if line.startswith("}") and line.rstrip().endswith(f" {name};"))
+        start = max(i for i in range(end) if lines[i].startswith("typedef struct"))
+        return [line.strip() for line in lines[start + 1:end]]
+
+    def test_unit_and_data_variant_drop_the_tag(self):
+        self.assertEqual(["object_t* _s0;", "object_t* _s1;", "object_t* _s2;"],
+                         self._fields("Main__mkList_"))
+
+    def test_null_pattern_tells_data_variants_apart(self):
+        self.assertEqual(["object_t* _s0;", "object_t* _s1;"],
+                         self._fields("Main__mkTree_"))
+
+    def test_generic_instantiation_over_a_class_drops_the_tag(self):
+        self.assertEqual(["object_t* _s0;"], self._fields("Main__mkOptNode_"))
+
+    def test_int_field_drops_the_tag(self):
+        # 0 is the tagged word 0x2: an Int is never NULL.
+        self.assertEqual(["object_t* _s0;"], self._fields("Main__mkCount_"))
+
+    def test_string_field_drops_the_tag(self):
+        # A String's first word is never NULL — even "" is a tagged word.
+        self.assertEqual(["str_t _s0;"], self._fields("Main__mkText_"))
+
+    def test_function_field_drops_the_tag(self):
+        # A function's code pointer is never NULL; its environment may be.
+        self.assertEqual(["object_t* _s0;", "intptr_t _s1;"], self._fields("Main__mkFn_"))
+
+    def test_nullable_string_and_function_fields_keep_the_tag(self):
+        # `|None` puts NULL in the very word that would tell them apart.
+        self.assertIn("int8_t _tag;", self._fields("Main__mkMaybeText_"))
+        self.assertIn("int8_t _tag;", self._fields("Main__mkMaybeFn_"))
+
+    def test_variants_sharing_a_never_null_slot_keep_the_tag(self):
+        self.assertIn("int8_t _tag;", self._fields("Main__mkSame_"))
+
+    def test_nullable_field_keeps_the_tag(self):
+        self.assertIn("int8_t _tag;", self._fields("Main__mkMaybe_"))
+
+    def test_scalar_payload_keeps_the_tag(self):
+        self.assertIn("int8_t _tag;", self._fields("Main__mkScalar_"))
+        self.assertIn("int8_t _tag;", self._fields("Main__mkOptI32_"))
+
+    def test_slot_every_variant_fills_never_null_names_an_outer_variant(self):
+        # NpSame's variants share one slot and both fill it with a class
+        # pointer, so it is never NULL: NULL there means NpWsNone.
+        self.assertNotIn("int8_t _tag;", self._fields("Main__mkWrapSame_"))
+
+    def test_slot_some_variant_leaves_unused_keeps_the_outer_tag(self):
+        # NpBlind keeps its tag (B and C look alike), and only A fills the
+        # Node slot: it is NULL in B and C, so it cannot name NpWbHeld.
+        self.assertIn("int8_t _tag;", self._fields("Main__mkWrapBlind_"))
+
+    def test_slot_naming_an_inner_variant_keeps_the_outer_tag(self):
+        # NpList's slots are NULL in NpEmpty — that is how it is told apart —
+        # so none of them can name NpWlHeld.
+        self.assertIn("int8_t _tag;", self._fields("Main__mkWrapList_"))

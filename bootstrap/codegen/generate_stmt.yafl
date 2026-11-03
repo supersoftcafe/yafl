@@ -173,13 +173,13 @@ fun gsStmtLazyAlloc(st, r) => match(st)
 fun genLazyAlloc(l: PsLet, r)
   let irT = specGenerateOpt(l.lType, r)
   let cls = stubClassName(irT)
-  let svStub = RpStackVar(CgDataPointer(), l.lName)
-  let flagF = RpObjectField(CgDataPointer(), svStub, cls, "flag", None, true, false)
-  let closureF = RpObjectField(CgFuncPointer(false), svStub, cls, "closure", None, true, false)
+  let svStub = RpStackVar(CgDataPointer(false), l.lName)
+  let flagF = RpObjectField(CgDataPointer(false), svStub, cls, "flag", None, true, false)
+  let closureF = RpObjectField(CgFuncPointer(false, false), svStub, cls, "closure", None, true, false)
   ret GBundle(list1(svStub),
               list3(OpNewObject(cls, svStub, None, false, Dict()),
                     OpMove(flagF, RpNullPointer(), false, Dict()),
-                    OpMove(closureF, RpZeroOf(CgFuncPointer(false)), false, Dict())),
+                    OpMove(closureF, RpZeroOf(CgFuncPointer(false, false)), false, Dict())),
               None, List(), List())
 
 fun gsStmtLazyPopulate(st, r) => match(st)
@@ -193,8 +193,8 @@ fun genLazyPopulate(l: PsLet, r)
   let irT = specGenerateOpt(l.lType, r)
   let cls = stubClassName(irT)
   let closureBundle = withPrefix(genExprToOpt(l.lDefault, r, None), "closure")
-  let svStub = RpStackVar(CgDataPointer(), l.lName)
-  let closureF = RpObjectField(CgFuncPointer(false), svStub, cls, "closure", None, false, false)
+  let svStub = RpStackVar(CgDataPointer(false), l.lName)
+  let closureF = RpObjectField(CgFuncPointer(false, false), svStub, cls, "closure", None, false, false)
   let moveOp = OpMove(closureF, mustResult(closureBundle), false, Dict())
   ret hasAttr(l.lAttrs, "future")
     ? bundleJoin(closureBundle, genFuturePost(irT, svStub, moveOp))
@@ -204,10 +204,10 @@ fun genLazyPopulate(l: PsLet, r)
 # `[future]`: hand the populated stub to the worker pool. Must follow the
 # closure Move — a worker may fire immediately.
 fun genFuturePost(irT, svStub, moveOp)
-  let svDiscard = RpStackVar(CgDataPointer(), "$sv_future_discard")
+  let svDiscard = RpStackVar(CgDataPointer(false), "$sv_future_discard")
   let post = RpRuntimeInvoke("future_post",
                              RpNewStruct(list1(RpNamedValue("cb", RpGlobalFunction(futureRunnerName(irT), svStub, false, None, false, false)))),
-                             CgDataPointer())
+                             CgDataPointer(false))
   ret GBundle(list1(svDiscard),
               list2(moveOp, OpMove(svDiscard, post, true, Dict())),
               None, List(), List())

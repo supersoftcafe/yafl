@@ -187,7 +187,10 @@ class FunField(RParam):
         return predicate(self) or self.fun.test(predicate)
 
     def get_type(self) -> t.Type:
-        return t.IntPtr() if self.part == "f" else t.DataPointer()
+        if self.part == "f":
+            fun_type = self.fun.get_type()
+            return t.IntPtr(nonnull=isinstance(fun_type, t.FuncPointer) and fun_type.nonnull)
+        return t.DataPointer()
 
     def rename_vars(self, renames: dict[str, str]) -> FunField:
         return dataclasses.replace(self, fun=self.fun.rename_vars(renames))
@@ -333,6 +336,46 @@ class IntEqConst(RParam):
         # condition in `if (...)` / `!(...)`. Wrapping here too produces
         # `if ((x == 0))`, which clang flags as -Wparentheses-equality.
         return f"{self.value.to_c(type_cache)} == {self.const_val}"
+
+
+@dataclass(frozen=True)
+class NullPattern(RParam):
+    """Emits `(w0 == 0 && w1 != 0 ...)` — a flat enum's variant test where the
+    enum has no $tag and its NULL slots say which variant a value holds
+    (codegen.typedecl.compute_enum_slots). `tests` pairs each slot word with
+    whether it must be NULL."""
+    tests: tuple[tuple[RParam, bool], ...]
+
+    def get_type(self) -> t.Int:
+        return t.Int(32)
+
+    def flatten(self, is_reader: bool = True) -> list[RParam]:
+        return [self] + [x for word, _ in self.tests for x in word.flatten()]
+
+    def test(self, predicate: Callable[[RParam], bool]) -> bool:
+        return predicate(self) or any(word.test(predicate) for word, _ in self.tests)
+
+    def rename_vars(self, renames: dict[str, str]) -> RParam:
+        return dataclasses.replace(self, tests=tuple(
+            (word.rename_vars(renames), is_null) for word, is_null in self.tests))
+
+    def replace_params(self, replacer: Callable[[RParam], RParam]) -> RParam:
+        return replacer(dataclasses.replace(self, tests=tuple(
+            (word.replace_params(replacer), is_null) for word, is_null in self.tests)))
+
+    def get_live_vars(self) -> frozenset[StackVar]:
+        return frozenset(v for word, _ in self.tests for v in word.get_live_vars())
+
+    def to_c(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        # No outer parens, as for IntEqConst: the consumer is a JumpIf. A
+        # String slot is tested by its first word, `head`.
+        return " && ".join(f"{_null_test_word(word, type_cache)} {'==' if is_null else '!='} 0"
+                           for word, is_null in self.tests)
+
+
+def _null_test_word(word: RParam, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+    c = word.to_c(type_cache)
+    return f"({c}).head" if isinstance(word.get_type(), t.Str) else c
 
 
 @dataclass(frozen=True)

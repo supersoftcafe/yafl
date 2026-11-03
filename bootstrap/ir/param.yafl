@@ -42,6 +42,10 @@ enum RParam
   enum RpInteger(value: Int, precision: Int)
   enum RpFloat(value: Float, precision: Int)
   enum RpIntEqConst(value: RParam, constVal: Int)
+  # `(w0 == 0 && w1 != 0 ...)` — a flat enum's variant test where the enum
+  # has no $tag and its NULL slots say which variant a value holds
+  # (typedecl.yafl computeEnumSlots).
+  enum RpNullPattern(tests: List<RpNullTest>)
   enum RpNullPointer()
   enum RpStaticObjectRef(name: String)
   enum RpVtableDiscriminator(value: RParam)
@@ -81,6 +85,9 @@ enum RParam
 
 class [final] RpNamedValue(name: String, value: RParam)
 
+# One test of an RpNullPattern: a slot word, and whether it must be NULL.
+class [final] RpNullTest(word: RParam, isNull: Bool)
+
 class [final] RpRename(oldName: String, newName: String)
 
 # ── small helpers ────────────────────────────────────────────────────────────
@@ -109,12 +116,13 @@ fun rpGetType(r) => match(r)
   (x: RpNewStruct) => CgStruct(map(x.values, (v) => CgField(v.name, rpGetType(v.value))))
   (x: RpRuntimeInvoke) => x.resultType
   (x: RpStructField) => rpStructFieldType(x)
-  (x: RpString) => CgStr()
-  (x: RpInteger) => x.precision == 0 ? CgDataPointer() : CgInt(x.precision)
+  (x: RpString) => CgStr(false)
+  (x: RpInteger) => x.precision == 0 ? CgDataPointer(false) : CgInt(x.precision)
   (x: RpFloat) => CgFloat(x.precision)
   (x: RpIntEqConst) => CgInt(32)
-  (x: RpNullPointer) => CgDataPointer()
-  (x: RpStaticObjectRef) => CgDataPointer()
+  (x: RpNullPattern) => CgInt(32)
+  (x: RpNullPointer) => CgDataPointer(false)
+  (x: RpStaticObjectRef) => CgDataPointer(false)
   (x: RpVtableDiscriminator) => CgInt(32)
   (x: RpObjVtableEq) => CgInt(8)
   (x: RpSyncWrap) => x.wrapperType
@@ -122,26 +130,31 @@ fun rpGetType(r) => match(r)
   (x: RpFieldOffset) => CgInt(64)
   (x: RpNewStructTyped) => x.structType
   (x: RpTagTask) => x.targetType
-  (x: RpGlobalFunction) => CgFuncPointer(x.sync)
-  (x: RpVirtualFunction) => CgFuncPointer(x.sync)
-  (x: RpPointerTo) => CgDataPointer()
+  (x: RpGlobalFunction) => CgFuncPointer(x.sync, false)
+  (x: RpVirtualFunction) => CgFuncPointer(x.sync, false)
+  (x: RpPointerTo) => CgDataPointer(false)
   (x: RpStackVar) => x.fieldType
   (x: RpGlobalVar) => x.fieldType
   (x: RpObjectField) => x.fieldType
   (x: RpArrayElement) => x.elementType
   (x: RpInitArray) => CgVoid()   # unreachable: Python's InitArray never overrides get_type()
-  (x: RpFunField) => x.ffPart == "f" ? CgIntPtr() : CgDataPointer()
-  (x: RpMakeFun) => CgFuncPointer(false)
+  (x: RpFunField) => x.ffPart == "f" ? CgIntPtr(rpFunHasCode(rpGetType(x.ffFun))) : CgDataPointer(false)
+  (x: RpMakeFun) => CgFuncPointer(false, false)
   (x: RpNarrowInt) => x.niType
 
 fun rpStructFieldType(x: RpStructField) => match(cgFieldsOf(rpGetType(x.structVal)))
   (fields: List<CgField>) => rpStructFieldLookup(fields, x.field)
   () => rpStructFieldTypeSpecial(rpGetType(x.structVal), x.field)
 
+# The code word of a function value of this type is never NULL.
+fun rpFunHasCode(t) => match(t)
+  (fp: CgFuncPointer) => fp.fpNonNull
+  (o: CgType)         => false
+
 fun rpStructFieldTypeSpecial(xtype, field) => match(xtype)
-  (w: CgTaskWrapper) => field == "task" ? CgDataPointer() : w.inner
-  (fp: CgFuncPointer) => CgDataPointer()   # both "o" and "f" are DataPointer per Python
-  (st: CgStr) => CgDataPointer()           # "head": the only word the compiler names
+  (w: CgTaskWrapper) => field == "task" ? CgDataPointer(false) : w.inner
+  (fp: CgFuncPointer) => CgDataPointer(false)   # both "o" and "f" are DataPointer per Python
+  (st: CgStr) => CgDataPointer(false)           # "head": the only word the compiler names
   (o: CgType) => CgVoid()                  # unreachable (Python raises ValueError)
 
 fun [tail] rpStructFieldLookup(fields: List<CgField>, name) => match(head(fields))
@@ -156,6 +169,7 @@ fun rpFlatten(r, isReader) => match(r)
   (x: RpRuntimeInvoke) => prepend(r, rpFlatten(x.parameters, true))
   (x: RpStructField) => prepend(r, rpFlatten(x.structVal, true))
   (x: RpIntEqConst) => prepend(r, rpFlatten(x.value, true))
+  (x: RpNullPattern) => prepend(r, fold(x.tests, List(), (acc, t2) => concat(acc, rpFlatten(t2.word, true))))
   (x: RpVtableDiscriminator) => prepend(r, rpFlatten(x.value, true))
   (x: RpObjVtableEq) => prepend(r, rpFlatten(x.value, true))
   (x: RpSyncWrap) => prepend(r, rpFlatten(x.value, isReader))
@@ -200,6 +214,7 @@ fun rpTestChildren(r, pred) => match(r)
   (x: RpRuntimeInvoke) => rpTest(x.parameters, pred)
   (x: RpStructField) => rpTest(x.structVal, pred)
   (x: RpIntEqConst) => rpTest(x.value, pred)
+  (x: RpNullPattern) => any(x.tests, (t2) => rpTest(t2.word, pred))
   (x: RpVtableDiscriminator) => rpTest(x.value, pred)
   (x: RpObjVtableEq) => rpTest(x.value, pred)
   (x: RpSyncWrap) => rpTest(x.value, pred)
@@ -227,6 +242,7 @@ fun rpRenameVars(r, renames: List<RpRename>) => match(r)
   (x: RpRuntimeInvoke) => RpRuntimeInvoke(x.function, rpRenameVars(x.parameters, renames), x.resultType)
   (x: RpStructField) => RpStructField(rpRenameVars(x.structVal, renames), x.field)
   (x: RpIntEqConst) => RpIntEqConst(rpRenameVars(x.value, renames), x.constVal)
+  (x: RpNullPattern) => RpNullPattern(map(x.tests, (t2) => RpNullTest(rpRenameVars(t2.word, renames), t2.isNull)))
   (x: RpVtableDiscriminator) => RpVtableDiscriminator(rpRenameVars(x.value, renames))
   (x: RpObjVtableEq) => RpObjVtableEq(rpRenameVars(x.value, renames), x.className, x.externSymbol,
                                       x.among)
@@ -265,6 +281,7 @@ fun rpReplaceParams(r, replacer): RParam => match(r)
   (x: RpRuntimeInvoke) => replacer(with x(parameters = rpReplaceParams(x.parameters, replacer)))
   (x: RpStructField) => replacer(with x(structVal = rpReplaceParams(x.structVal, replacer)))
   (x: RpIntEqConst) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
+  (x: RpNullPattern) => replacer(with x(tests = map(x.tests, (t2) => with t2(word = rpReplaceParams(t2.word, replacer)))))
   (x: RpVtableDiscriminator) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
   (x: RpObjVtableEq) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
   (x: RpSyncWrap) => replacer(with x(value = rpReplaceParams(x.value, replacer)))
@@ -318,6 +335,7 @@ fun rpGetLiveVars(r) => match(r)
   (x: RpRuntimeInvoke) => rpGetLiveVars(x.parameters)
   (x: RpStructField) => rpGetLiveVars(x.structVal)
   (x: RpIntEqConst) => rpGetLiveVars(x.value)
+  (x: RpNullPattern) => fold(x.tests, List(), (acc, t2) => rpStackVarUnion(acc, rpGetLiveVars(t2.word)))
   (x: RpVtableDiscriminator) => rpGetLiveVars(x.value)
   (x: RpObjVtableEq) => rpGetLiveVars(x.value)
   (x: RpSyncWrap) => rpGetLiveVars(x.value)
@@ -351,6 +369,12 @@ fun [tail] eqRParamList(a: List<RParam>, b: List<RParam>) => match(head(a))
   (xa: RParam) => match(head(b))
     (xb: RParam) => eqRParam(xa, xb) && eqRParamList(tail(a), tail(b))
     ()           => false
+  () => isEmpty(b)
+
+fun [tail] eqNullTests(a: List<RpNullTest>, b: List<RpNullTest>) => match(head(a))
+  (xa: RpNullTest) => match(head(b))
+    (xb: RpNullTest) => xa.isNull == xb.isNull && eqRParam(xa.word, xb.word) && eqNullTests(tail(a), tail(b))
+    ()               => false
   () => isEmpty(b)
 
 fun eqRParamOpt(a: RParam|None, b: RParam|None) => match(a)
@@ -393,6 +417,9 @@ fun eqRParam(a, b) => match(a)
     (o: RParam) => false
   (x: RpIntEqConst) => match(b)
     (y: RpIntEqConst) => eqRParam(x.value, y.value) && x.constVal == y.constVal
+    (o: RParam) => false
+  (x: RpNullPattern) => match(b)
+    (y: RpNullPattern) => eqNullTests(x.tests, y.tests)
     (o: RParam) => false
   (x: RpNullPointer) => match(b)
     (y: RpNullPointer) => true
@@ -483,6 +510,7 @@ fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry
   (x: RpInteger) => rpToCInteger(x, cache)
   (x: RpFloat) => cgInitialise(CgFloat(x.precision), CgLitFloat(x.value), cache)
   (x: RpIntEqConst) => rpToCIntEqConst(x, cache)
+  (x: RpNullPattern) => rpToCNullPattern(x, cache)
   (x: RpNullPointer) => ("((object_t*)0)", cache)
   (x: RpStaticObjectRef) => ("((object_t*)&" + mangleName(x.name) + "_data)", cache)
   (x: RpVtableDiscriminator) => rpToCVtableDiscriminator(x, cache)
@@ -567,6 +595,24 @@ fun rpToCInteger(x: RpInteger, cache: List<CgCacheEntry>): (text: String, cache:
 fun rpToCIntEqConst(x: RpIntEqConst, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(x.value, cache0)
   ret (sub.text + " == " + String(x.constVal), sub.cache)
+
+# No outer parens, as for RpIntEqConst: the consumer is a JumpIf.
+fun rpToCNullPattern(x: RpNullPattern, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
+  ret rpToCNullTests(chain(x.tests), "", cache0)
+
+# A String slot is tested by its first word, `head`.
+fun rpNullTestWord(word, text) => match(rpGetType(word))
+  (st: CgStr) => "(" + text + ").head"
+  (o: CgType) => text
+
+fun [tail] rpToCNullTests(ts: Chain<RpNullTest>, text: String,
+                          cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>) => match(ts)
+  (nil: ChainEnd) => (text, cache0)
+  (l: ChainLink)  => rpToC(l.value.word, cache0)
+    |> (sub) => rpToCNullTests(l.next,
+                               text + (text == "" ? "" : " && ") + rpNullTestWord(l.value.word, sub.text)
+                                 + (l.value.isNull ? " == 0" : " != 0"),
+                               sub.cache)
 
 fun rpToCVtableDiscriminator(x: RpVtableDiscriminator, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(x.value, cache0)

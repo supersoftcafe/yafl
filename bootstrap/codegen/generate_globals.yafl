@@ -28,7 +28,7 @@ fun funGlobalCodegen(f: PsFun, r0): CgFunction
   let bundle = match(f.fBody)
     (b: PExpr) => bundleJoin(paramBundle, withPrefix(fgcBodyBundle(b, bodyR, f.fRet), "body"))
     ()          => paramBundle
-  let params = concat(list1(CgField("this", CgDataPointer())),
+  let params = concat(list1(CgField("this", CgDataPointer(false))),
                        map(paramTargets(f.fParams), (t2) => CgField(stmtName2(t2), specGenerateOpt(targetType(t2), bodyR))))
   let vars = map(bundle.gbStackVars, (sv) => CgField(stackVarName(sv), rpGetType(sv)))
   ret CgFunction(f.fName, CgStruct(params), specGenerateOpt(f.fRet, bodyR), CgStruct(vars),
@@ -155,11 +155,11 @@ fun createThunk(className, let2: PsLet, r)
   let resultType = thunkResultType(let2.lType, r)
   let paramVars = map(cgStructFields(paramStruct), (f2) => RpStackVar(f2.fieldType, f2.fieldName))
   let resultVar = RpStackVar(resultType, "result")
-  let opCall = OpCall(RpObjectField(CgFuncPointer(false), RpStackVar(CgDataPointer(), "this"), className, let2.lName, None, false, false),
+  let opCall = OpCall(RpObjectField(CgFuncPointer(false, false), RpStackVar(CgDataPointer(false), "this"), className, let2.lName, None, false, false),
                       RpNewStruct(map(paramVars, (sv) => RpNamedValue(stackVarName(sv), sv))),
                       resultVar, false, false, None, Dict())
   ret CgFunction(let2.lName,
-                 CgStruct(concat(list1(CgField("this", CgDataPointer())), cgStructFields(paramStruct))),
+                 CgStruct(concat(list1(CgField("this", CgDataPointer(false))), cgStructFields(paramStruct))),
                  resultType,
                  CgStruct(list1(CgField("result", resultType))),
                  cgOpsOf(list2(opCall, OpReturn(resultVar, Dict()))),
@@ -174,8 +174,8 @@ fun thunkParamStruct(sp: Spec|None, r) => match(sp)
 fun thunkResultType(sp: Spec|None, r) => match(sp)
   (s2: Spec) => match(s2)
     (cl: SCallable) => specGenerateOpt(cl.scResult, r)
-    (o: Spec)       => CgDataPointer()
-  ()          => CgDataPointer()
+    (o: Spec)       => CgDataPointer(false)
+  ()          => CgDataPointer(false)
 
 fun cgStructFields(t2) => match(t2)
   (s2: CgStruct) => s2.fields
@@ -191,13 +191,13 @@ fun classObjectFields(c: PsClass, r)
   ret match(classArrayParam(chain(params)))
     (ap: PsLet) => classObjectFieldsArray(params, ap, r)
     ()           => ClassObjFields(
-                      CgImmediateStruct(concat(list1(CgField("type", CgDataPointer())),
+                      CgImmediateStruct(concat(list1(CgField("type", CgDataPointer(false))),
                                                 map(params, (p) => letCgField(p, r)))),
                       None)
 
 fun letCgField(p, r) => match(p)
   (l: PsLet) => CgField(l.lName, specGenerateOpt(l.lType, r))
-  (o: PStmt) => CgField("", CgDataPointer())
+  (o: PStmt) => CgField("", CgDataPointer(false))
 
 fun [tail] classArrayParam(ps: Chain<PStmt>) => match(ps)
   (nil: ChainEnd) => None
@@ -217,7 +217,7 @@ fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r)
   let arrayField = CgField("array", CgArray(specGenerateOpt(arrayElem(ap.lType), r), 0))
   ret ClassObjFields(
         # Header, the scalar fields, then the trailing array LAST.
-        CgImmediateStruct(concat(list1(CgField("type", CgDataPointer())),
+        CgImmediateStruct(concat(list1(CgField("type", CgDataPointer(false))),
                                  build(push(builderFrom(scalarFields), arrayField)))),
         arrayLengthFieldName(scalars, ap))
 
@@ -283,7 +283,7 @@ fun enumComplexObjects(st: PsEnum, sp: SEnum, r, isComplex: Bool)
   # scalar: absent from pointer masks, no barrier, and deliberately NOT
   # [mutable] — a store lost to a compaction move is a benign recompute, as
   # string_t's lazy hash.
-  let prefix = list2(CgField("type", CgDataPointer()),
+  let prefix = list2(CgField("type", CgDataPointer(false)),
                      CgField("$hash", CgInt(32)))
   let marker = CgObject(st.eName, List(), List(),
                         CgImmediateStruct(prefix),
@@ -378,7 +378,7 @@ fun letLazyGlobal(l: PsLet, r)
   let stubInit = RpNewStruct(list3(RpNamedValue("flag", RpNullPointer()),
                                    RpNamedValue("closure", closureValue),
                                    RpNamedValue("value", RpZeroOf(xtype))))
-  ret list1(CgGlobal(l.lName, CgDataPointer(), stubInit, stubCls, None, None))
+  ret list1(CgGlobal(l.lName, CgDataPointer(false), stubInit, stubCls, None, None))
 
 # ── static_global_plan: predicate AND emitter ───────────────────────────────
 
@@ -520,7 +520,7 @@ fun sgpEmitField(as2: Chain<PTupEnt>, fs: Chain<PStmt>, l: ChainLink<PTupEnt>, l
 
 fun sgpInstanceDone(cls: PsClass, hint, pairs,
                     globals) => SgpOut(RpStaticObjectRef(hint),
-                                       build(push(builderFrom(globals), CgGlobal(hint, CgDataPointer(), RpNewStruct(pairs), cls.cName, None, None))))
+                                       build(push(builderFrom(globals), CgGlobal(hint, CgDataPointer(false), RpNewStruct(pairs), cls.cName, None, None))))
 
 # A reference to another global let: chase its own plan. An integer/float
 # constant inlines its constant; a static class instance is referenced by

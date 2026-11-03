@@ -112,7 +112,7 @@ fun siHasFun(t) => !isEmpty(siFunPaths(t))
 
 # `t` with each function-typed leaf flagged `isSync(path)`.
 fun siRetype(t, isSync: (:List<String>): Bool): CgType => match(t)
-  (fp: CgFuncPointer)      => CgFuncPointer(isSync(List()))
+  (fp: CgFuncPointer)      => CgFuncPointer(isSync(List()), fp.fpNonNull)
   (s: CgStruct)            => siHasFun(t) ? CgStruct(siRetypeFields(s.fields, isSync)) : t
   (m: CgImmediateStruct)   => siHasFun(t) ? CgImmediateStruct(siRetypeFields(m.fields, isSync)) : t
   (o: CgType)              => t

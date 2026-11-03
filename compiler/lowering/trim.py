@@ -14,7 +14,7 @@ from codegen.ops import Op, Call, Return, ReturnVoid, Move, Label, JumpIf, IfTas
 from codegen.ir import Function, Object, Global
 from codegen.typedecl import FuncPointer, Void, Struct, ImmediateStruct, DataPointer, Int, Type
 from codegen.param import ObjectField, StackVar, LParam, GlobalVar, NewStruct, GlobalFunction, Integer, Float, RParam, \
-    StructField, InitArray, RuntimeInvoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, TagTask, ZeroOf, SyncWrap, ObjVtableEq, ArrayElement, VtableDiscriminator, StaticObjectRef, FunField, NarrowInt, MakeFun, FieldOffset
+    StructField, InitArray, RuntimeInvoke, String, VirtualFunction, PointerTo, NullPointer, NewStructTyped, IntEqConst, NullPattern, TagTask, ZeroOf, SyncWrap, ObjVtableEq, ArrayElement, VtableDiscriminator, StaticObjectRef, FunField, NarrowInt, MakeFun, FieldOffset
 from functools import reduce
 
 
@@ -84,6 +84,8 @@ def __scan_rparam(p: RParam) -> _scan_sets:
             return _scan_sets(globals=frozenset([p.name]))
         case IntEqConst():
             return __scan_rparam(p.value)
+        case NullPattern():
+            return __reduce_scan_sets(__scan_rparam(word) for word, _ in p.tests)
         case VtableDiscriminator():
             return __scan_rparam(p.value)
         case ObjVtableEq():
