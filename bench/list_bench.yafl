@@ -117,7 +117,7 @@ fun newBuild(): System::Int
 fun [tail] newPrependLoop(l: System::Containers::NewList<System::Int>, i: System::Int,
                           upto: System::Int): System::Containers::NewList<System::Int>
   ret i >= upto ? l
-    : newPrependLoop(System::Containers::prepend<System::Int>(l, i), i + 1, upto)
+    : newPrependLoop(System::Containers::prepend<System::Int>(i, l), i + 1, upto)
 
 fun newPrepend(): System::Int
   ret newSum(newPrependLoop(System::Containers::NewList<System::Int>(), 0, n))

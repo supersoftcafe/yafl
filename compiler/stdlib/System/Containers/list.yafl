@@ -6,25 +6,31 @@ import System
 
 class [final, pinnable] _ListNode<T>(_next: _ListNode<T>|None, _value: T)
 enum NewList<T>
-  enum NewListEmpty()
-  enum NewListFull(_head: _ListNode<T>, _tail: _ListNode<T>)
+  enum _NewListEmpty()
+  enum _NewListFull(_head: _ListNode<T>, _tail: _ListNode<T>)
 
-fun NewList<T>(): NewList<T> => NewListEmpty<T>()
+fun NewList<T>(): NewList<T> => _NewListEmpty<T>()
 
 fun NewList<T>(value: T): NewList<T>
   let node = _ListNode<T>(None, value)
-  ret NewListFull<T>(node, node)
+  ret _NewListFull<T>(node, node)
 
 fun NewList<T>(v1: T, v2: T): NewList<T>
   let n2 = _ListNode<T>(None, v2)
   let n1 = _ListNode<T>(n2, v1)
-  ret NewListFull<T>(n1, n2)
+  ret _NewListFull<T>(n1, n2)
+
+fun NewList<T>(v1: T, v2: T, v3: T): NewList<T>
+  let n3 = _ListNode<T>(None, v3)
+  let n2 = _ListNode<T>(n3, v2)
+  let n1 = _ListNode<T>(n2, v1)
+  ret _NewListFull<T>(n1, n3)
 
 
 instance<T> Stream<NewList<T>, T, Never>
   fun next(self: NewList<T>): (stream: NewList<T>, value: Result<T|None, Never>)
-    let (value: T|None, next: NewList<T>) = splitFirst(self)
-    ret (next, Ok<T|None, Never>(value))
+    let first = takeOne(self)
+    ret (dropOne(self), Ok<T|None, Never>(head(first)))
 
 
 fun _casTail<T>(obj: _ListNode<T>, newTail: _ListNode<T>): _ListNode<T>|None
@@ -40,11 +46,11 @@ fun _getNextNode<T>(head: _ListNode<T>, tail: _ListNode<T>): _ListNode<T>|None
 # A private copy of `from` whose last node links to `onto`'s head, so it reads
 # as from followed by onto. Nobody else can see the copy until it is returned,
 # so plain stores are enough.
-fun _copyOnto<T>(from: NewListFull<T>, onto: NewListFull<T>): NewListFull<T>
-  fun link(head: _ListNode<T>, tail: _ListNode<T>): NewListFull<T>
+fun _copyOnto<T>(from: _NewListFull<T>, onto: _NewListFull<T>): _NewListFull<T>
+  fun link(head: _ListNode<T>, tail: _ListNode<T>): _NewListFull<T>
     tail._next := onto._head
-    ret NewListFull<T>(head, onto._tail)
-  fun [tail] copy(head: _ListNode<T>, tail: _ListNode<T>, next: _ListNode<T>|None): NewListFull<T>
+    ret _NewListFull<T>(head, onto._tail)
+  fun [tail] copy(head: _ListNode<T>, tail: _ListNode<T>, next: _ListNode<T>|None): _NewListFull<T>
     ret match(next)
       (_:None) => link(head, tail)
       (n:_ListNode<T>) => copy(head, _setTail<T>(tail, _ListNode<T>(None, n._value)), _getNextNode<T>(n, from._tail))
@@ -62,35 +68,35 @@ fun _count<T>(list: NewList<T>): Int
 fun [inline(never)] append<T>(list: NewList<T>, value: T): NewList<T>
   let newTail = _ListNode<T>(None, value)
   ret match(list)
-    (_: NewListEmpty<T>) => NewListFull<T>(newTail, newTail)
-    (head: NewListFull<T>) => match(_casTail(head._tail, newTail))
-      (_: None) => NewListFull<T>(head._head, newTail)
-      (_: _ListNode<T>) => _copyOnto<T>(head, NewListFull<T>(newTail, newTail))
+    (_: _NewListEmpty<T>) => _NewListFull<T>(newTail, newTail)
+    (head: _NewListFull<T>) => match(_casTail(head._tail, newTail))
+      (_: None) => _NewListFull<T>(head._head, newTail)
+      (_: _ListNode<T>) => _copyOnto<T>(head, _NewListFull<T>(newTail, newTail))
 
 
 # Simplest and fastest of all list operations, just construct a new head node and link to the list.
-fun prepend<T>(list: NewList<T>, value: T): NewList<T>
+fun prepend<T>(value: T, list: NewList<T>): NewList<T>
   ret match(list)
-    (_: NewListEmpty<T>) => NewList<T>(value)
-    (head: NewListFull<T>) => NewListFull<T>(_ListNode<T>(head._head, value), head._tail)
+    (_: _NewListEmpty<T>) => NewList<T>(value)
+    (head: _NewListFull<T>) => _NewListFull<T>(_ListNode<T>(head._head, value), head._tail)
 
 
 # Return a list of at most 'count' elements from the start of 'list'.
 fun [inline(never)] take<T>(list: NewList<T>, count: Int): NewList<T>
-  fun [tail] expand(l: NewListFull<T>, end: _ListNode<T>, count: Int): NewList<T>
+  fun [tail] expand(l: _NewListFull<T>, end: _ListNode<T>, count: Int): NewList<T>
     ret match(count > 1 ? _getNextNode<T>(l._tail, end) : None)
       (_:None) => l
-      (n:_ListNode<T>) => expand(NewListFull<T>(l._head, n), end, count - 1)
-  ret match(count <= 0 ? NewListEmpty<T>() : list)
-    (_:NewListEmpty<T>) => NewListEmpty<T>()
-    (l:NewListFull<T>) => expand(NewListFull<T>(l._head, l._head), l._tail, count)
+      (n:_ListNode<T>) => expand(_NewListFull<T>(l._head, n), end, count - 1)
+  ret match(count <= 0 ? _NewListEmpty<T>() : list)
+    (_:_NewListEmpty<T>) => _NewListEmpty<T>()
+    (l:_NewListFull<T>) => expand(_NewListFull<T>(l._head, l._head), l._tail, count)
 
 
 # Return a list that comes after the first 'count' elements from the start of 'list'.
 fun [inline(never), tail] drop<T>(list: NewList<T>, count: Int): NewList<T>
   ret match (list)
-    (_:NewListEmpty<T>) => NewListEmpty<T>()
-    (l:NewListFull<T>) => count > 0 ? drop(tail(l), count-1) : l
+    (_:_NewListEmpty<T>) => _NewListEmpty<T>()
+    (l:_NewListFull<T>) => count > 0 ? drop(dropOne(l), count-1) : l
 
 
 # Fast path
@@ -102,42 +108,60 @@ fun [inline(never), tail] drop<T>(list: NewList<T>, count: Int): NewList<T>
 #   (_copyOnto). The copy is private, so that link is always safe.
 fun [inline(never)] concat<T>(listTo: NewList<T>, listFrom: NewList<T>): NewList<T>
   ret match(listTo)
-    (_:NewListEmpty<T>) => listFrom
-    (to:NewListFull<T>) => match(listFrom)
-      (_:NewListEmpty<T>) => listTo
-      (from:NewListFull<T>) => __builtin_op__<bool>("object_same", to._tail, from._tail)
+    (_:_NewListEmpty<T>) => listFrom
+    (to:_NewListFull<T>) => match(listFrom)
+      (_:_NewListEmpty<T>) => listTo
+      (from:_NewListFull<T>) => __builtin_op__<bool>("object_same", to._tail, from._tail)
        || from._tail._next !is None || _casTail(to._tail, from._head) !is None
-        ? _copyOnto<T>(to, from) : NewListFull<T>(to._head, from._tail)
+        ? _copyOnto<T>(to, from) : _NewListFull<T>(to._head, from._tail)
       
 
-
-fun splitFirst<T>(list: NewList<T>): (value: T|None, list: NewList<T>)
-  fun extractTail(head: NewListFull<T>): NewList<T>
-    ret match(_getNextNode<T>(head._head, head._tail))
-      (_:None) => NewListEmpty<T>()
-      (n:_ListNode<T>) => NewListFull<T>(n, head._tail)
+fun head<T>(list: NewList<T>): T|None
   ret match(list)
-    (_: NewListEmpty<T>) => (None, NewListEmpty<T>())
-    (head: NewListFull<T>) => (head._head._value, extractTail(head))
+    (_: _NewListEmpty<T>) => None
+    (l: _NewListFull<T>) => l._head._value
 
-
-fun head<T>(list: NewList<T>) => splitFirst(list).value
-fun tail<T>(list: NewList<T>) => splitFirst(list).list
-fun last<T>(list: NewList<T>): T|None
+fun dropOne<T>(list: NewList<T>): NewList<T>
   ret match(list)
-    (_: NewListEmpty<T>) => None
-    (head: NewListFull<T>) => head._tail._value
+    (_: _NewListEmpty<T>) => _NewListEmpty<T>()
+    (l: _NewListFull<T>) => match(_getNextNode(l._head, l._tail))
+      (_: None) => _NewListEmpty<T>()
+      (n: _ListNode<T>) => _NewListFull<T>(n, l._tail)
+
+fun takeOne<T>(list: NewList<T>): NewList<T>
+  ret match(list)
+    (_: _NewListEmpty<T>) => _NewListEmpty<T>()
+    (l: _NewListFull<T>) => _NewListFull<T>(l._head, l._head)
+
+
+fun takeLastOne<T>(list: NewList<T>): NewList<T>
+  ret match(list)
+    (_: _NewListEmpty<T>) => _NewListEmpty<T>()
+    (l: _NewListFull<T>) => _NewListFull<T>(l._tail, l._tail)
+
+# All but the last element. The result shares the source's nodes: one walk to
+# find the node before the last, no copying.
+fun dropLastOne<T>(list: NewList<T>): NewList<T>
+  fun [tail] walk(l: _NewListFull<T>, node: _ListNode<T>): NewList<T>
+    ret match(_getNextNode<T>(node, l._tail))
+      (_: None) => _NewListEmpty<T>()
+      (n: _ListNode<T>) => __builtin_op__<bool>("object_same", n, l._tail)
+        ? _NewListFull<T>(l._head, node)
+        : walk(l, n)
+  ret match(list)
+    (_: _NewListEmpty<T>) => _NewListEmpty<T>()
+    (l: _NewListFull<T>) => walk(l, l._head)
 
 
 fun isEmpty<T>(list: NewList<T>): Bool
-  ret list is NewListEmpty<T>
+  ret list is _NewListEmpty<T>
 
 
 fun findIndex<T>(list: NewList<T>, predicate: (:T): Bool): Int|None
   fun [tail] findIndex2(list: NewList<T>, index: Int): Int|None
     ret match(list)
-      (_:NewListEmpty<T>) => None
-      (n:NewListFull<T>) => predicate(n._head._value) ? index : findIndex2(tail(n), index+1)
+      (_:_NewListEmpty<T>) => None
+      (n:_NewListFull<T>) => predicate(n._head._value) ? index : findIndex2(dropOne(n), index+1)
   ret findIndex2(list, 0)
 
 fun any<T>(list: NewList<T>, predicate: (:T): Bool): Bool
@@ -160,13 +184,115 @@ fun map<T,U>(list: NewList<T>, func: (:T): U): NewList<U>
   ret fold<T, NewList<U>>(list, NewList<U>(), (acc: NewList<U>, x: T) => append<U>(acc, func(x)))
 
 fun [tail] fold<T, [linear] U>(list: NewList<T>, init: U, accFunc: (:U, :T): U): U
-  let (value, remainder) = splitFirst(list)
-  ret match(value)
-    (_:None) => init
-    (v:T) => fold(remainder, accFunc(init, v), accFunc)
+  let first = takeOne(list)
+  ret match(first)
+    (_:_NewListEmpty<T>) => init
+    (l:_NewListFull<T>) => fold(dropOne(list), accFunc(init, l._head._value), accFunc)
+
+# fold that stops early: `predicate` sees the accumulator before each element,
+# and the first accumulator it rejects is the result. If it accepts them all,
+# this is fold.
+fun [tail] foldWhile<T, U>(list: NewList<T>, init: U, accFunc: (:U, :T): U, predicate: (:U): Bool): U
+  ret match(list)
+    (_:_NewListEmpty<T>) => init
+    (l:_NewListFull<T>) => predicate(init)
+      ? foldWhile(dropOne(list), accFunc(init, l._head._value), accFunc, predicate)
+      : init
+
+# fold over two lists in step, stopping at the end of the shorter one.
+fun [tail] zipFold<A, B, [linear] U>(a: NewList<A>, b: NewList<B>, init: U, accFunc: (:U, :A, :B): U): U
+  ret match(a)
+    (_:_NewListEmpty<A>) => init
+    (la:_NewListFull<A>) => match(b)
+      (_:_NewListEmpty<B>) => init
+      (lb:_NewListFull<B>) => zipFold(dropOne(a), dropOne(b), accFunc(init, la._head._value, lb._head._value), accFunc)
 
 fun [tail] sizeAtLeast<T>(list: NewList<T>, size: Int): Bool
-  ret size<=0 || (!isEmpty(list) && sizeAtLeast(tail(list), size-1))
+  ret size<=0 || (!isEmpty(list) && sizeAtLeast(dropOne(list), size-1))
+
+
+# Two lists are equal when they have the same length and `same` holds for each
+# pair. One list ending while the other still has an element IS the inequality.
+fun [tail] eqBy<T>(a: NewList<T>, b: NewList<T>, same: (:T, :T): Bool): Bool
+  ret match(a)
+    (_: _NewListEmpty<T>) => isEmpty(b)
+    (la: _NewListFull<T>) => match(b)
+      (_: _NewListEmpty<T>) => false
+      (lb: _NewListFull<T>) => same(la._head._value, lb._head._value) && eqBy(dropOne(a), dropOne(b), same)
+
+# Pairwise map, stopping at the shorter list.
+fun zipMap<A, B, C>(a: NewList<A>, b: NewList<B>, func: (:A, :B): C): NewList<C>
+  ret zipFold<A, B, NewList<C>>(a, b, NewList<C>(), (acc: NewList<C>, x: A, y: B) => append<C>(acc, func(x, y)))
+
+# Split into the elements that satisfy `predicate` and those that don't, each
+# in list order.
+fun partition<T>(list: NewList<T>, predicate: (:T): Bool): (yes: NewList<T>, no: NewList<T>)
+  fun step(acc: (yes: NewList<T>, no: NewList<T>), x: T): (yes: NewList<T>, no: NewList<T>)
+    ret predicate(x) ? (yes = append(acc.yes, x), no = acc.no) : (yes = acc.yes, no = append(acc.no, x))
+  ret fold(list, (yes = NewList<T>(), no = NewList<T>()), step)
+
+# The leading floor(n/2) elements and the rest; both halves share the source's
+# nodes. For n >= 2 both are non-empty, which is what dividing work needs.
+fun splitHalf<T>(list: NewList<T>): (left: NewList<T>, right: NewList<T>)
+  fun [tail] half(fast: NewList<T>, k: Int): Int
+    ret isEmpty(fast) || isEmpty(dropOne(fast)) ? k : half(dropOne(dropOne(fast)), k + 1)
+  let k = half(list, 0)
+  ret (left = take(list, k), right = drop(list, k))
+
+
+# Stable natural mergesort. The seed pass cuts the list into its maximal
+# ascending runs, each one a slice that shares the source's nodes, so sorted
+# input costs one walk and no allocation per element. Runs then merge in pairs
+# until one is left. Ties take from the earlier run, which is what makes it
+# stable.
+fun sort<T>(list: NewList<T>): NewList<T> where BasicCompare<T>
+  ret sortBy<T>(list, (a: T, b: T) => a < b)
+
+# `less` must be a STRICT ordering: true iff its first argument precedes its
+# second. Ties keep their original order.
+fun sortBy<T>(list: NewList<T>, less: (:T, :T): Bool): NewList<T>
+  ret match(list)
+    (_: _NewListEmpty<T>) => list
+    (l: _NewListFull<T>) => _mergeRuns<T>(_ascendingRuns<T>(l, less), less)
+
+fun _ascendingRuns<T>(l: _NewListFull<T>, less: (:T, :T): Bool): NewList<NewList<T>>
+  # A run continues while the next element is not strictly less than the one
+  # before it; a descent closes it.
+  fun [tail] walk(start: _ListNode<T>, node: _ListNode<T>, runs: NewList<NewList<T>>): NewList<NewList<T>>
+    ret match(_getNextNode<T>(node, l._tail))
+      (_: None) => append(runs, _NewListFull<T>(start, node))
+      (n: _ListNode<T>) => less(n._value, node._value)
+        ? walk(n, n, append(runs, _NewListFull<T>(start, node)))
+        : walk(start, n, runs)
+  ret walk(l._head, l._head, NewList<NewList<T>>())
+
+fun [tail] _mergeRuns<T>(runs: NewList<NewList<T>>, less: (:T, :T): Bool): NewList<T>
+  ret match(runs)
+    (_: _NewListEmpty<NewList<T>>) => NewList<T>()
+    (r: _NewListFull<NewList<T>>) => isEmpty(dropOne(runs))
+      ? r._head._value
+      : _mergeRuns<T>(_mergePairs<T>(runs, NewList<NewList<T>>(), less), less)
+
+# An odd trailing run passes through untouched.
+fun [tail] _mergePairs<T>(runs: NewList<NewList<T>>, acc: NewList<NewList<T>>, less: (:T, :T): Bool): NewList<NewList<T>>
+  ret match(runs)
+    (_: _NewListEmpty<NewList<T>>) => acc
+    (r: _NewListFull<NewList<T>>) => match(dropOne(runs))
+      (_: _NewListEmpty<NewList<T>>) => append(acc, r._head._value)
+      (r2: _NewListFull<NewList<T>>) => _mergePairs<T>(dropOne(r2), append(acc, _merge2<T>(r._head._value, r2._head._value, less)), less)
+
+# Takes from `a` unless `b` is STRICTLY less, so a tie takes the earlier run's
+# element first. When one side runs out the other is linked on with concat.
+fun _merge2<T>(a: NewList<T>, b: NewList<T>, less: (:T, :T): Bool): NewList<T>
+  fun [tail] walk(out: NewList<T>, x: NewList<T>, y: NewList<T>): NewList<T>
+    ret match(x)
+      (_: _NewListEmpty<T>) => concat(out, y)
+      (lx: _NewListFull<T>) => match(y)
+        (_: _NewListEmpty<T>) => concat(out, x)
+        (ly: _NewListFull<T>) => less(ly._head._value, lx._head._value)
+          ? walk(append(out, ly._head._value), x, dropOne(y))
+          : walk(append(out, lx._head._value), dropOne(x), y)
+  ret walk(NewList<T>(), a, b)
 
 
 fun groupBy<T,K>(list: NewList<T>, keyFunc: (:T): K): Dict<K,NewList<T>> where BasicEquality<K>
