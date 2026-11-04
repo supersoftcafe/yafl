@@ -452,54 +452,13 @@ INLINE object_t* object_resolve(object_t* o) {
     return o;
 }
 
-// REFERENCE IDENTITY, for library code only and only on [pinnable] objects —
-// the ones a late write gives an identity. It is reached from YAFL as
-// `__builtin_op__<bool>("object_same", a, b)`, and the compiler enforces
-// neither restriction: like library-only use of the other builtins, that is
-// on the honour system. Ordinary immutable objects have no identity, and
-// asking for one would let representation leak into program meaning.
-//
-// A raw `==` is not identity under concurrent compaction. While a stub
-// forwards to its copy, one holder may point at the stub and another at the
-// copy, and `==` says "different" for one object (it never says "same" for
-// two: equal addresses are one object).
-//
-// But `==` IS identity whenever neither header reads as a forward after the
-// fence. A copy is reachable only AFTER its stub's forward word is published
-// (gc_compact_page publishes with release; every later holder learnt the
-// address by reading that word). The caller obtained both `a` and `b` before
-// the fence, so if one were a newer copy of the other, the older one's
-// header — loaded after the fence — would read as a forward. Two unforwarded
-// headers are therefore two objects, or one object at one address.
-//
-// That is the common case — a walk asks "is this node my tail?" once per step
-// and the answer is almost always no — so it is the whole inline path: a
-// fence (no instruction on x86-64), two loads, two tag tests, one compare.
-// Only a forward seen on either side goes out of line, to
-// object_same_moved (object.c), which resolves both to their current copies.
-//
-// THE USE (issue #73): a list of shared nodes bounded by (head, tail) can
-// drop its element count — two words travel in registers, three in memory —
-// by stopping a walk at the node that IS its tail. That is sound only while
-// every list's head..tail run is a simple path: no node visited twice, so
-// the first meeting of the tail is the end. The count used to bound walks
-// even round loops; without it, concat must not create one. concat(to, from)
-// links to's tail to from's head by CAS (None -> from's head), and it may do
-// so only if, as well:
-//   - from's tail's `next` is None, and
-//   - object_same(from's tail, to's tail) is false.
-// Any node the two runs share leads, along write-once `next` links, to both
-// tails, so one tail lies on the way to the other. to's tail cannot lie
-// before from's (its `next` is None — the CAS checks that); if from's tail
-// lies before to's, its `next` was already set before either list was
-// built. So the two checks rule out every overlap, in O(1). Reading None
-// there is a fact about the two fixed runs, not about the future: an append
-// or concat onto from that lands after the read adds a fresh link past
-// from's tail, which neither run includes, so it cannot invalidate the
-// answer. If either check or the CAS fails, copy `to` (one copy, whichever
-// failed): fresh nodes share nothing with `from`, and their unshared tail's
-// CAS cannot fail — so link the copy DIRECTLY; re-entering concat would test
-// `from` again and, when `from` was the failure, loop forever.
+// Reference identity, for library code on [pinnable] objects only (honour
+// system; reached as `__builtin_op__<bool>("object_same", a, b)`). It exists
+// so a list can stop a walk at the node that IS its tail instead of carrying
+// a count (issue #73). A raw `==` cannot do that: compaction leaves a
+// forwarding stub, so one object can be seen at two addresses. If neither
+// header forwards after the fence, `==` is exact; otherwise
+// object_same_moved resolves both sides.
 EXTERN bool object_same_moved(object_t* a, object_t* b);
 INLINE bool object_same(object_t* a, object_t* b) {
     __atomic_thread_fence(__ATOMIC_ACQUIRE);   // the caller's loads of a and b first
