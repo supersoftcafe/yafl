@@ -37,29 +37,35 @@ fun _setTail<T>(obj: _ListNode<T>, newTail: _ListNode<T>): _ListNode<T>
 fun _getNextNode<T>(head: _ListNode<T>, tail: _ListNode<T>): _ListNode<T>|None
   ret __builtin_op__<bool>("object_same", head, tail) ? None : head._next
 
-fun _deepCopy<T>(from: NewListFull<T>): NewListFull<T>
-  fun [tail] copyFullList(head: _ListNode<T>, tail: _ListNode<T>, next: _ListNode<T>|None, endMark: _ListNode<T>): NewListFull<T>
+# A private copy of `from` whose last node links to `onto`'s head, so it reads
+# as from followed by onto. Nobody else can see the copy until it is returned,
+# so plain stores are enough.
+fun _copyOnto<T>(from: NewListFull<T>, onto: NewListFull<T>): NewListFull<T>
+  fun link(head: _ListNode<T>, tail: _ListNode<T>): NewListFull<T>
+    tail._next := onto._head
+    ret NewListFull<T>(head, onto._tail)
+  fun [tail] copy(head: _ListNode<T>, tail: _ListNode<T>, next: _ListNode<T>|None): NewListFull<T>
     ret match(next)
-      (_:None) => NewListFull(head, tail)
-      (n:_ListNode<T>) => copyFullList(head, _setTail<T>(tail, _ListNode<T>(None, n._value)), _getNextNode<T>(n, endMark), endMark)
+      (_:None) => link(head, tail)
+      (n:_ListNode<T>) => copy(head, _setTail<T>(tail, _ListNode<T>(None, n._value)), _getNextNode<T>(n, from._tail))
   let h = _ListNode<T>(None, from._head._value)
-  ret copyFullList(h, h, _getNextNode(from._head, from._tail), from._tail)
+  ret copy(h, h, _getNextNode<T>(from._head, from._tail))
 
 fun _count<T>(list: NewList<T>): Int
   ret fold(list, 0, (acc, n) => acc + 1)
 
 
-# If nothing else has mutated the end of the list we can safely do that 
-# unobserved, because every observer holds their own count for iteration,
-# so won't overflow into our new node. If some other mutation has happened
-# we fall back to a slower copy approach.
-fun [tail, inline(never)] append<T>(list: NewList<T>, value: T): NewList<T>
+# If nothing has linked past the list's tail node yet, we can link the new
+# node there unobserved: every other list sharing that node ends at its own
+# tail (walks stop by identity, see _getNextNode), so none of them can see
+# the new node. If the tail is already linked onward, we copy the list first.
+fun [inline(never)] append<T>(list: NewList<T>, value: T): NewList<T>
   let newTail = _ListNode<T>(None, value)
   ret match(list)
     (_: NewListEmpty<T>) => NewListFull<T>(newTail, newTail)
     (head: NewListFull<T>) => match(_casTail(head._tail, newTail))
       (_: None) => NewListFull<T>(head._head, newTail)
-      (_: _ListNode<T>) => append(_deepCopy<T>(head), value)
+      (_: _ListNode<T>) => _copyOnto<T>(head, NewListFull<T>(newTail, newTail))
 
 
 # Simplest and fastest of all list operations, just construct a new head node and link to the list.
@@ -71,20 +77,20 @@ fun prepend<T>(list: NewList<T>, value: T): NewList<T>
 
 # Return a list of at most 'count' elements from the start of 'list'.
 fun [inline(never)] take<T>(list: NewList<T>, count: Int): NewList<T>
-  fun [tail] expand(l: NewListFull<T>, count: Int): NewList<T>
-    ret match(count > 1 ? l._tail._next : None)
+  fun [tail] expand(l: NewListFull<T>, end: _ListNode<T>, count: Int): NewList<T>
+    ret match(count > 1 ? _getNextNode<T>(l._tail, end) : None)
       (_:None) => l
-      (n:_ListNode<T>) => expand(NewListFull<T>(l._head, n), count - 1)
+      (n:_ListNode<T>) => expand(NewListFull<T>(l._head, n), end, count - 1)
   ret match(count <= 0 ? NewListEmpty<T>() : list)
     (_:NewListEmpty<T>) => NewListEmpty<T>()
-    (l:NewListFull<T>) => expand(NewListFull<T>(l._head, l._head), count)
+    (l:NewListFull<T>) => expand(NewListFull<T>(l._head, l._head), l._tail, count)
 
 
 # Return a list that comes after the first 'count' elements from the start of 'list'.
 fun [inline(never), tail] drop<T>(list: NewList<T>, count: Int): NewList<T>
   ret match (list)
     (_:NewListEmpty<T>) => NewListEmpty<T>()
-    (l:NewListFull<T>) => count > 0 ? drop(tail(list), count-1) : list
+    (l:NewListFull<T>) => count > 0 ? drop(tail(l), count-1) : l
 
 
 # Fast path
@@ -92,20 +98,16 @@ fun [inline(never), tail] drop<T>(list: NewList<T>, count: Int): NewList<T>
 #   and there is no risk of duplicate nodes in the two lists. We can link the
 #   two lists safely. Original observers don't see this change.
 # Slow path
-#   We take a full copy of the to list and go straight to append since we now
-#   can guarentee that it's safe.
+#   We copy the to list and link the copy's last node to the from list's head
+#   (_copyOnto). The copy is private, so that link is always safe.
 fun [inline(never)] concat<T>(listTo: NewList<T>, listFrom: NewList<T>): NewList<T>
-  fun concatSlowPath(to: NewListFull<T>, from: NewListFull<T>): NewList<T>
-    let copy = _deepCopy(to)
-    let _ = _setTail(copy._tail, from._head)
-    ret NewListFull<T>(copy._head, from._tail)
   ret match(listTo)
     (_:NewListEmpty<T>) => listFrom
     (to:NewListFull<T>) => match(listFrom)
       (_:NewListEmpty<T>) => listTo
       (from:NewListFull<T>) => __builtin_op__<bool>("object_same", to._tail, from._tail)
        || from._tail._next !is None || _casTail(to._tail, from._head) !is None
-        ? concatSlowPath(to, from) : NewListFull<T>(to._head, from._tail)
+        ? _copyOnto<T>(to, from) : NewListFull<T>(to._head, from._tail)
       
 
 
@@ -149,7 +151,7 @@ fun contains<T>(list: NewList<T>, x: T): Bool where BasicEquality<T>
 
 
 fun flatMap<T,U>(list: NewList<T>, func: (:T): NewList<U>): NewList<U>
-  ret fold<T, NewList<U>>(list, NewList<U>(), (acc: NewList<U>, x: T) => append<U>(acc, func(x)))
+  ret fold<T, NewList<U>>(list, NewList<U>(), (acc: NewList<U>, x: T) => concat<U>(acc, func(x)))
 
 fun filter<T>(list: NewList<T>, predicate: (:T): Bool): NewList<T>
   ret fold<T, NewList<T>>(list, NewList<T>(), (acc: NewList<T>, x: T) => predicate(x) ? append<T>(acc, x) : acc)

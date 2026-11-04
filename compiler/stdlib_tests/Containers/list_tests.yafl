@@ -6,9 +6,6 @@
 # operation the module exports, checking CONTENT and ORDER by rendering the
 # list rather than trusting a count alone — a count can stay plausible while an
 # operation returns the wrong elements.
-#
-# `flatMap` is not exercised below because instantiating it does not compile
-# today (see the commented test near the end); every other export has a test.
 
 namespace StdlibTests::Containers::ListTests
 
@@ -502,14 +499,9 @@ fun [test("groupBy produces exactly two groups for even/odd")] groupByTwoGroups(
     ?? assertTrue(get(grouped, 1) !is None, "has 1 group")
 
 
-# ── flatMap (does not compile today) ────────────────────────────────────────
-#
-# Instantiating flatMap makes the monomorphizer emit a call to
-# `append<...generic_bigint>` whose function-pointer cast has the wrong
-# signature, so the C build fails with -Wcast-function-type-mismatch. This is
-# the intended test, kept commented so the rest of the suite still builds:
-#
-# fun [test("flatMap concatenates the lists its function returns")] flatMapConcatenates(): None|TestFailure
-#   let doubled = flatMap<Int, Int>(_upTo(3), (x: Int) => _two(x, x))
-#   ret assertEqInt(_count(doubled), 6, "two per input")
-#     ?? assertEqStr(_render(doubled), "1.1.2.2.3.3.", "values in order")
+# ── flatMap ─────────────────────────────────────────────────────────────────
+
+fun [test("flatMap concatenates the lists its function returns")] flatMapConcatenates(): None|TestFailure
+  let doubled = flatMap<Int, Int>(_upTo(3), (x: Int) => _two(x, x))
+  ret assertEqInt(_count(doubled), 6, "two per input")
+    ?? assertEqStr(_render(doubled), "1.1.2.2.3.3.", "values in order")
