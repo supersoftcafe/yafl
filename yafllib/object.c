@@ -1136,6 +1136,37 @@ static inline bool gc_page_any_card(gc_page_t *page) {
     return false;
 }
 
+// object_resolve with every vtable-word load an ACQUIRE, so each load is
+// ordered after the one before it (see object_same_moved).
+static object_t* object_resolve_acquire(object_t* o) {
+    for (;;) {
+        vtable_t* vt = (vtable_t*)__atomic_load_n((uintptr_t*)&o->vtable, __ATOMIC_ACQUIRE);
+        if (LIKELY(!vtable_is_forward(vt)))
+            return o;
+        o = (object_t*)vt;
+    }
+}
+
+// object_same's slow half (yafl.h): at least one side was seen forwarding.
+// Resolve both to their current copies. Either may move again while the other
+// is resolved, so `a` is resolved a second time AFTER `b`: if it is still
+// unforwarded then and differs from the current `b`, they are distinct (a copy
+// newer than `a` would already have forwarded it). If `a` moved, go round
+// with its new copy. The caller's fence orders the loads that obtained `a`
+// and `b` before these.
+EXPORT bool object_same_moved(object_t* a, object_t* b) {
+    a = object_resolve_acquire(a);
+    for (;;) {
+        b = object_resolve_acquire(b);
+        if (a == b)
+            return true;
+        object_t* again = object_resolve_acquire(a);
+        if (again == a)
+            return false;
+        a = again;
+    }
+}
+
 // object_pin_set's slow half (yafl.h): a moved object, a held pin, or an OLD
 // stamp. The resolving pin waits, follows the move, and cards a stamped
 // object (object_pin_owed); the store into the object actually pinned then

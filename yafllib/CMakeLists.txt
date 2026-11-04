@@ -179,6 +179,11 @@ set_tests_properties(test_gc_old_stub_card PROPERTIES ENVIRONMENT "YAFL_GC_POISO
 # an old object (carded).
 add_yafl_test(test_gc_pin_set)
 set_tests_properties(test_gc_pin_set PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_object_same: stepped. object_same (reference identity for library
+# code, issue #73) is true across forwarding stubs and chains — hand-built and
+# from a real compaction — and false for distinct objects.
+add_yafl_test(test_gc_object_same)
+set_tests_properties(test_gc_object_same PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_card_compact: stepped. A young page that a carded old object points
 # into is compacted in a minor, and the card's trace rewrites the old object's
 # field to the copy before the forwarder's slot can be reclaimed.

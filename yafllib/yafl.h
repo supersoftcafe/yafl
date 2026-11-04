@@ -452,6 +452,23 @@ INLINE object_t* object_resolve(object_t* o) {
     return o;
 }
 
+// Reference identity, for library code on [pinnable] objects only (honour
+// system; reached as `__builtin_op__<bool>("object_same", a, b)`). It exists
+// so a list can stop a walk at the node that IS its tail instead of carrying
+// a count (issue #73). A raw `==` cannot do that: compaction leaves a
+// forwarding stub, so one object can be seen at two addresses. If neither
+// header forwards after the fence, `==` is exact; otherwise
+// object_same_moved resolves both sides.
+EXTERN bool object_same_moved(object_t* a, object_t* b);
+INLINE bool object_same(object_t* a, object_t* b) {
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);   // the caller's loads of a and b first
+    vtable_t* va = (vtable_t*)__atomic_load_n((uintptr_t*)&a->vtable, __ATOMIC_RELAXED);
+    vtable_t* vb = (vtable_t*)__atomic_load_n((uintptr_t*)&b->vtable, __ATOMIC_RELAXED);
+    if (LIKELY(!vtable_is_forward(va) && !vtable_is_forward(vb)))
+        return a == b;
+    return object_same_moved(a, b);
+}
+
 // ── object pinning ───────────────────────────────────────────────────────────
 // A marker bit in the OBJECT's vtable word: compaction skips a pinned object
 // (it stays at its address), letting a runtime primitive hold a raw pointer

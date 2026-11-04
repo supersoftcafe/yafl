@@ -101,6 +101,7 @@ TESTS = {
     "test_gc_gen":           (60,  {}),
     "test_gc_stale_mark":    (120, {}),
     "test_gc_fwd_chain":     (60,  {}),
+    "test_gc_object_same":   (60,  {}),
     "test_gc_late_pin_race": (60,  {}),
     "test_gc_old_late_write": (60, {}),
     "test_gc_card_compact": (60, {}),
