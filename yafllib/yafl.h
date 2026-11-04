@@ -452,17 +452,6 @@ INLINE object_t* object_resolve(object_t* o) {
     return o;
 }
 
-// object_resolve with every vtable-word load an ACQUIRE, so the loads are
-// ordered among themselves and after the caller's (see object_same).
-INLINE object_t* object_resolve_acquire(object_t* o) {
-    for (;;) {
-        vtable_t* vt = (vtable_t*)__atomic_load_n((uintptr_t*)&o->vtable, __ATOMIC_ACQUIRE);
-        if (LIKELY(!vtable_is_forward(vt)))
-            return o;
-        o = (object_t*)vt;
-    }
-}
-
 // REFERENCE IDENTITY, for library code only and only on [pinnable] objects —
 // the ones a late write gives an identity. It is reached from YAFL as
 // `__builtin_op__<bool>("object_same", a, b)`, and the compiler enforces
@@ -473,23 +462,21 @@ INLINE object_t* object_resolve_acquire(object_t* o) {
 // A raw `==` is not identity under concurrent compaction. While a stub
 // forwards to its copy, one holder may point at the stub and another at the
 // copy, and `==` says "different" for one object (it never says "same" for
-// two: equal addresses are one object). So on a mismatch both sides are
-// resolved to their current copies. Two orderings make that answer sound:
+// two: equal addresses are one object).
 //
-//   - A copy is reachable only AFTER its stub's forward word is published
-//     (gc_compact_page publishes with release; every later holder learnt the
-//     address by reading that word). So a caller holding the newer copy can
-//     see the older one forward — provided the loads that obtained `a` and
-//     `b` are ordered before the vtable loads here: the acquire fence, then
-//     acquire loads throughout.
-//   - The two sides are resolved one after the other, and either may move in
-//     between. Resolving `a` again AFTER `b` closes that: if `a` is still
-//     unforwarded then, and differs from the current `b`, they are distinct
-//     objects (a copy newer than `a` would already have forwarded it). If `a`
-//     moved, go round with its new copy.
+// But `==` IS identity whenever neither header reads as a forward after the
+// fence. A copy is reachable only AFTER its stub's forward word is published
+// (gc_compact_page publishes with release; every later holder learnt the
+// address by reading that word). The caller obtained both `a` and `b` before
+// the fence, so if one were a newer copy of the other, the older one's
+// header — loaded after the fence — would read as a forward. Two unforwarded
+// headers are therefore two objects, or one object at one address.
 //
-// On x86-64 the fence and acquire loads are plain loads; on a weakly ordered
-// machine they cost only on the mismatch path.
+// That is the common case — a walk asks "is this node my tail?" once per step
+// and the answer is almost always no — so it is the whole inline path: a
+// fence (no instruction on x86-64), two loads, two tag tests, one compare.
+// Only a forward seen on either side goes out of line, to
+// object_same_moved (object.c), which resolves both to their current copies.
 //
 // THE USE (issue #73): a list of shared nodes bounded by (head, tail) can
 // drop its element count — two words travel in registers, three in memory —
@@ -513,20 +500,14 @@ INLINE object_t* object_resolve_acquire(object_t* o) {
 // failed): fresh nodes share nothing with `from`, and their unshared tail's
 // CAS cannot fail — so link the copy DIRECTLY; re-entering concat would test
 // `from` again and, when `from` was the failure, loop forever.
+EXTERN bool object_same_moved(object_t* a, object_t* b);
 INLINE bool object_same(object_t* a, object_t* b) {
-    if (a == b)
-        return true;
-    __atomic_thread_fence(__ATOMIC_ACQUIRE);
-    a = object_resolve_acquire(a);
-    for (;;) {
-        b = object_resolve_acquire(b);
-        if (a == b)
-            return true;
-        object_t* again = object_resolve_acquire(a);
-        if (again == a)
-            return false;
-        a = again;
-    }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);   // the caller's loads of a and b first
+    vtable_t* va = (vtable_t*)__atomic_load_n((uintptr_t*)&a->vtable, __ATOMIC_RELAXED);
+    vtable_t* vb = (vtable_t*)__atomic_load_n((uintptr_t*)&b->vtable, __ATOMIC_RELAXED);
+    if (LIKELY(!vtable_is_forward(va) && !vtable_is_forward(vb)))
+        return a == b;
+    return object_same_moved(a, b);
 }
 
 // ── object pinning ───────────────────────────────────────────────────────────
