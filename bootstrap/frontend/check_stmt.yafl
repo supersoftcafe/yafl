@@ -10,6 +10,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::Types
 import Bootstrap::StdlibCandidates
+import Bootstrap::Ir
 
 
 
@@ -102,11 +103,12 @@ fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
                              union(noArgAttr(f, "impure", "[impure] takes no arguments"),
                              union(noArgAttr(f, "sync", "[sync] takes no arguments"),
                              union(tailErrs(f),
+                             union(inlineErrs(f),
                              union(futureFunErrs(f),
                              union(linearParamErrs(f),
                              union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
                              union(testErrs(f),
-                                    innerWhereErrs(f)))))))))
+                                    innerWhereErrs(f))))))))))
 
 # ── unknown attributes ──────────────────────────────────────────────────────
 # Attributes parse as an OPEN `[name]` / `[name(expr)]` list, so without this
@@ -148,6 +150,33 @@ fun attrValueOf(attrs: List<PAttr>, name: String) => avLoop(attrs, name)
 fun avLoop(as2: List<PAttr>, name: String) => match(firstWhere(as2, (x) => x.attrName == name))
   (x: PAttr) => x.attrValue
   ()  => None
+
+# The `[inline]` attribute (Python FunctionStatement.inline_mode): InlineAuto
+# unmarked, InlineAlways for `[inline]` and `[inline(always)]`, InlineNever for
+# `[inline(never)]` — and None for any other argument, which inlineErrs reports.
+fun funInlineMode(f: PsFun): InlineMode|None
+  if !hasAttr(f.fAttrs, "inline")
+    ret InlineAuto()
+  ret match(attrValueOf(f.fAttrs, "inline"))
+    (v: PExpr) => inlineArgMode(v)
+    ()         => InlineAlways()
+
+fun inlineArgMode(v: PExpr): InlineMode|None => match(v)
+  (t2: PeTuple) => isEmpty(dropOne(t2.exprs)) ? inlineWordMode(head(t2.exprs)) : None
+  (o: PExpr)    => None
+
+fun inlineWordMode(en: PTupEnt|None): InlineMode|None => match(en)
+  (e2: PTupEnt) => e2.tupName != "" || e2.tupSpread ? None : match(e2.tupValue)
+    (n: PeName) => !isEmpty(n.refTypeParams) ? None
+      : n.refName == "always" ? InlineAlways()
+      : n.refName == "never"  ? InlineNever()
+      : None
+    (o: PExpr)  => None
+  ()            => None
+
+fun inlineErrs(f: PsFun) => match(funInlineMode(f))
+  (m: InlineMode) => noErrs()
+  ()              => oneErr(f.psfLine, "[inline] takes `always` or `never`")
 
 fun noArgAttr(f: PsFun, name: String, msg)
   if !hasAttr(f.fAttrs, name)

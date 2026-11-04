@@ -40,7 +40,7 @@ fun makeGateFunction(symbol: String, sync: Bool): CgFunction
   ret CgFunction(symbol,
                  CgStruct(list2(CgField("this", CgDataPointer(false)), CgField("flag", CgDataPointer(false)))),
                  cgNone(), CgStruct(List()), cgOpsOf(List()), symbol, symbol,
-                 sync, false, false, false)
+                 sync, false, false, InlineAuto())
 
 fun gateCall(symbol: String, sync: Bool, flagAddr: RParam, register: RParam): Op
   ret OpCall(RpGlobalFunction(symbol, None, false, symbol, true, sync),
@@ -93,7 +93,7 @@ fun makeFetchFunction(valueType): CgFunction
                                 CgField("released", cgNone()))),
                  cgOpsOf(concat(concat(gate, init), done)),
                  "lazy fetch for " + irMangle(valueType),
-                 None, false, false, false, false)
+                 None, false, false, false, InlineAuto())
 
 # ── [future] worker runner ───────────────────────────────────────────────────
 
@@ -114,7 +114,7 @@ fun makeFutureRunnerFunction(valueType)
                               RpNewStruct(List()), rwrapped, false, false, None, Dict()),
                        OpReturn(RpNullPointer(), Dict()))),
                  "[future] worker runner for " + irMangle(valueType),
-                 None, false, false, true, false)
+                 None, false, false, true, InlineAuto())
 
 # ── the full per-type machinery (pure ensure_lazy_machinery) ─────────────────
 

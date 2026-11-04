@@ -189,6 +189,24 @@ class FunctionStatement(DataStatement):
         placeholders = {tp.name for tp in self.type_params}
         return new_self, globals, h.without(body_hints, own, placeholders)
 
+    def inline_mode(self) -> cg_ir.InlineMode | None:
+        """The `[inline]` attribute: AUTO unmarked, ALWAYS for `[inline]` and
+        `[inline(always)]`, NEVER for `[inline(never)]` — and None for any other
+        argument, which check() reports."""
+        if "inline" not in self.attributes:
+            return cg_ir.InlineMode.AUTO
+        arg = self.attributes["inline"]
+        if arg is None:
+            return cg_ir.InlineMode.ALWAYS
+        if not (isinstance(arg, e.TupleExpression) and len(arg.expressions) == 1):
+            return None
+        entry = arg.expressions[0]
+        word = entry.value
+        if (entry.name is not None or entry.spread
+                or not isinstance(word, e.NamedExpression) or word.type_params):
+            return None
+        return {"always": cg_ir.InlineMode.ALWAYS, "never": cg_ir.InlineMode.NEVER}.get(word.name)
+
     def check(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> list[Error]:
         resolver = self._generic_scope(resolver)
         body_resolver = self.__body_resolver(resolver)
@@ -245,6 +263,10 @@ class FunctionStatement(DataStatement):
                 future_err.append(Error(self.line_ref, "[future] cannot be applied to a foreign function"))
             if "sync" in self.attributes:
                 future_err.append(Error(self.line_ref, "[future] and [sync] contradict: a [future] function answers with a task"))
+
+        inline_err: list[Error] = []
+        if self.inline_mode() is None:
+            inline_err.append(Error(self.line_ref, "[inline] takes `always` or `never`"))
 
         terminal_err: list[Error] = []
         if "terminal" in self.attributes and self.attributes.get("terminal") is not None:
@@ -303,7 +325,7 @@ class FunctionStatement(DataStatement):
         untyped_err = [] if self.is_global else h.untyped_param_errors(self, body_resolver)
 
         return (err1 + err2 + err3 + err4 + foreign_err + impure_err + sync_err
-                + tail_err + future_err + linear_param_err + terminal_err + inner_where_err + default_err
+                + tail_err + inline_err + future_err + linear_param_err + terminal_err + inner_where_err + default_err
                 + missing_ret_err + untyped_err + test_err
                 + self.unknown_attribute_errors("a function")
                 + self.__unused_param_warnings())
@@ -366,9 +388,7 @@ class FunctionStatement(DataStatement):
             sync = "sync" in self.attributes,
             tail = "tail" in self.attributes,
             future = "future" in self.attributes,
-            # `[inline(always)]` — the inline attribute carrying an argument (vs the
-            # bare `[inline]` hint). Forces inlining regardless of size.
-            always_inline = self.attributes.get("inline") is not None,
+            inline = self.inline_mode() or cg_ir.InlineMode.AUTO,
             source_file = self.line_ref.filename,
             source_line = self.line_ref.line,
         )

@@ -1257,7 +1257,7 @@ fun alHotAssembleSync(f: CgFunction, wrappedResult, body: HotOut): CgFunction
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  cgOpsOf(concat(body.hoOps, commonOps)), f.fnComment, f.fnForeignSymbol,
-                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnInline,
                  f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
@@ -1305,7 +1305,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
   ret CgFunction(f.fnName, f.fnParams, wrappedResult,
                  CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), extra)),
                  cgOpsOf(common7), f.fnComment, f.fnForeignSymbol,
-                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnInline,
                  f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alSaveCases(bs: List<ABlock>, i, acc): List<OpCase> =>
@@ -1410,7 +1410,7 @@ fun alCreateStubLaunchFunc(f: CgFunction, stateName, subtype: String|None,
     : list2(CgField("$sv_state", CgDataPointer(false)), CgField("$sv_task", CgDataPointer(false)))
   ret CgFunction(f.fnName, f.fnParams, wrappedResult, CgStruct(svFields), cgOpsOf(ops4),
                  f.fnComment, f.fnForeignSymbol, f.fnSync, f.fnTail,
-                 f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnBypassAsync, f.fnInline,
                  f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alOpsWriteDiscard(ops: List<Op>) => any(ops, alWritesDiscard)
@@ -1719,7 +1719,7 @@ fun alSmAssemble(f: CgFunction, allOps: List<Op>, bbs: List<ABlock>,
                  CgStruct(concat(concat(cgFieldsOfOrEmpty(f.fnStackVars),
                                         withResults.daFields),
                                  prepend(CgField("$sv_discard", CgDataPointer(false)), wrapFields))),
-                 cgOpsOf(allOps), f.fnComment, None, false, false, false, false)
+                 cgOpsOf(allOps), f.fnComment, None, false, false, false, InlineAuto())
 
 class [final] DeclAcc(daFields: List<CgField>,
                              daSeen: Set<String>)
@@ -1836,7 +1836,7 @@ fun alSimpleWrap(f: CgFunction)
   ret CgFunction(f.fnName, f.fnParams, wrapReturnType(f.fnResult), f.fnStackVars,
                  cgOpsOf(alConvertReturnsHot(cgOpsToList(f.fnOps), f.fnResult)),
                  f.fnComment, f.fnForeignSymbol, f.fnSync,
-                 f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnTail, f.fnBypassAsync, f.fnInline,
                  f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName,
