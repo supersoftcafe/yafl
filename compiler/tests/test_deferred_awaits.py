@@ -14,7 +14,7 @@ import re
 from tests.testutil import TimedTestCase as TestCase
 from tests.testutil import compile_c
 
-_HDR = "namespace Main\nimport System\n"
+_HDR = "namespace Main\nimport System\nimport System::Containers\n"
 
 
 def _body(c_code: str, function: str) -> str:

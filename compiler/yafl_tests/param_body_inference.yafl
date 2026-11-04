@@ -26,6 +26,7 @@
 namespace CompilerTests::ParamBodyInference::ALambdaArgumentTakesTheExpectedSignature
 
 import System
+import System::Containers
 import System::Test
 
 fun label(s: String|None): Int
@@ -43,6 +44,7 @@ fun [test("a lambda argument takes the expected signature")] check(): None|TestF
 namespace CompilerTests::ParamBodyInference::ALambdaBodyDoesNotBindItsCalleesTypeParameter
 
 import System
+import System::Containers
 import System::Test
 
 enum Shape
@@ -182,6 +184,7 @@ fun [test("a uniquely fitting call pins the parameter")] check(): None|TestFailu
 namespace CompilerTests::ParamBodyInference::AnUnresolvedOperatorDoesNotLatchAWiderType
 
 import System
+import System::Containers
 import System::Test
 
 fun [tail] idxLoop(es: List<String>, name: String, i): Int|None
@@ -427,16 +430,32 @@ namespace CompilerTests::ParamBodyInference::LeafPatternsAndADeclaredReturn
 import System
 import System::Test
 
+# Local stand-ins for the shape the test needs: a cons chain, and a two-leaf
+# wrapper around one (as the stdlib list once was).
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
+enum Wrapped<T>
+  enum WrappedEmpty()
+  enum WrappedFull(front: Chain<T>)
+
 fun rwChain(c: Chain<Int>): Chain<Int> => match(c)
   (nil: ChainEnd) => c
   (l: ChainLink)  => with l(value = l.value + 1, next = rwChain(l.next))
 
-fun rw(ss): List<Int> => match(ss)
-  (le: ListEmpty) => ss
-  (lf: ListFull)  => with lf(front = rwChain(lf.front))
+fun rw(ss): Wrapped<Int> => match(ss)
+  (le: WrappedEmpty) => ss
+  (lf: WrappedFull)  => with lf(front = rwChain(lf.front))
+
+fun firstOf(w: Wrapped<Int>): Int|None => match(w)
+  (le: WrappedEmpty) => None
+  (lf: WrappedFull)  => match(lf.front)
+    (nil: ChainEnd) => None
+    (l: ChainLink)  => l.value
 
 fun program(): System::Int
-  ret match(chainNext(chain(rw(prepend(6, List<Int>())))).head)
+  ret match(firstOf(rw(WrappedFull<Int>(ChainLink<Int>(6, ChainEnd<Int>())))))
     (i: Int) => i
     ()       => 3
 

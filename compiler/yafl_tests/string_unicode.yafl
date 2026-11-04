@@ -11,6 +11,7 @@
 namespace CompilerTests::StringUnicode::CodepointLayer
 
 import System
+import System::Containers
 import System::Test
 
 fun emit(label: System::String, value: System::Int): System::None

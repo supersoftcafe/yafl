@@ -38,6 +38,7 @@ def _errors(src: str) -> str:
 _SHAPES = """
 namespace Test
 import System
+import System::Containers
 
 enum Shape
   enum Circle(r: System::Int)
@@ -114,17 +115,20 @@ class TestParamBodyInference(TestCase):
         # which monomorphisation cannot specialise — codegen then looks up a
         # root that no longer exists and crashes with no source location.
         errs = _errors("namespace Test\nimport System\n"
+                       "enum Chain<T>\n"
+                       "  enum ChainEnd()\n"
+                       "  enum ChainLink(value: T, next: Chain<T>)\n"
                        "fun walk(c): System::Int\n"
                        "  ret match(c)\n"
-                       "    (nil: System::ChainEnd)  => 0\n"
-                       "    (l: System::ChainLink)   => 1\n"
+                       "    (nil: ChainEnd)  => 0\n"
+                       "    (l: ChainLink)   => 1\n"
                        "fun main(): System::Int\n"
-                       "  ret walk(chain(List<System::Int>()))\n")
+                       "  ret walk(ChainEnd<System::Int>())\n")
         self.assertIn("'c'", errs)
         self.assertIn("could not be inferred", errs)
 
     def test_no_use_determines_it_is_an_error(self):
-        errs = _errors("namespace Test\nimport System\n"
+        errs = _errors("namespace Test\nimport System\nimport System::Containers\n"
                        "fun unused(x): System::Int\n  ret 0\n"
                        "fun main(): System::Int\n  ret unused(1)\n")
         self.assertIn("'x'", errs)
@@ -151,7 +155,7 @@ class TestParamBodyInference(TestCase):
 
     def test_an_uninferable_return_type_is_an_error(self):
         # Recursion with no base case gives the body nothing to type.
-        errs = _errors("namespace Test\nimport System\n"
+        errs = _errors("namespace Test\nimport System\nimport System::Containers\n"
                        "fun spin(n: System::Int) => spin(n - 1)\n"
                        "fun outer(n: System::Int): System::Int\n"
                        "  fun inner(k: System::Int) => inner(k + 1)\n"
@@ -163,7 +167,7 @@ class TestParamBodyInference(TestCase):
         self.assertNotIn("'fine'", errs)
 
     def test_an_uninferable_nested_parameter_is_an_error(self):
-        errs = _errors("namespace Test\nimport System\n"
+        errs = _errors("namespace Test\nimport System\nimport System::Containers\n"
                        "fun outer(n: System::Int): System::Int\n"
                        "  fun inner(k): System::Int\n"
                        "    ret 0\n"
@@ -172,7 +176,7 @@ class TestParamBodyInference(TestCase):
         self.assertIn("Parameter 'k' of 'inner' has no type and could not be inferred", errs)
 
     def test_a_generic_slot_does_not_leak_its_placeholder(self):
-        errs = _errors("namespace Test\nimport System\n"
+        errs = _errors("namespace Test\nimport System\nimport System::Containers\n"
                        "fun ident<T>(v: T): T\n  ret v\n"
                        "fun viaGeneric(x)\n  ret ident(x)\n"
                        "fun main(): System::Int\n  ret 0\n")
@@ -182,7 +186,7 @@ class TestParamBodyInference(TestCase):
     def test_callable_parameter_needs_one_side_declared(self):
         # The body fixes the parameter tuple but nothing fixes the result:
         # `(:Int): ?` is not a type, so this must be an error.
-        errs = _errors("namespace Test\nimport System\n"
+        errs = _errors("namespace Test\nimport System\nimport System::Containers\n"
                        "fun doSomething(callable)\n  ret callable(3)\n"
                        "fun twice(n: System::Int): System::Int\n  ret n + n\n"
                        "fun main(): System::Int\n  ret doSomething(twice)\n")
@@ -192,7 +196,7 @@ class TestParamBodyInference(TestCase):
     def test_callers_do_not_supply_parameter_types(self):
         # Callers never supply a parameter's type: a parameter no use inside
         # the body determines is an error however unambiguous the call sites.
-        errs = _errors("namespace Test\nimport System\n"
+        errs = _errors("namespace Test\nimport System\nimport System::Containers\n"
                        "fun addSomeThings(a, b)\n  ret a + b\n"
                        "fun main(): System::Int\n  ret addSomeThings(1, 45)\n")
         self.assertIn("could not be inferred", errs)
@@ -207,7 +211,7 @@ class TestHintLocality(TimedTestCase):
         import pyast.statement as s
         import pyast.expression as e
         from tests.testutil import stdlib_files
-        src = ("namespace Test\nimport System\n"
+        src = ("namespace Test\nimport System\nimport System::Containers\n"
                "fun take(x: System::Int|None): System::Int\n  ret 0\n"
                "fun twice(n: System::Int): System::Int\n  ret n\n"
                "fun use(v): System::Int\n  ret take(v) + twice(v)\n")

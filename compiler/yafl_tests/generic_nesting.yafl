@@ -14,6 +14,7 @@
 namespace CompilerTests::GenericNesting::GenericEnumAsGenericArgument
 
 import System
+import System::Containers
 import System::Test
 
 enum _N<T>

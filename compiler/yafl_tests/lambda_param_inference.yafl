@@ -38,6 +38,7 @@ fun [test("an untyped lambda parameter takes its type from the callee")] check()
 namespace CompilerTests::LambdaParamInference::UntypedLambdaParamInGenericMap
 
 import System
+import System::Containers
 import System::Test
 
 # The everyday case: `map(l, (x) => x + 1)`. With map<Int,Int> fixed, the
@@ -54,6 +55,7 @@ fun [test("an untyped lambda parameter in a generic map")] check(): None|TestFai
 namespace CompilerTests::LambdaParamInference::UntypedMultiParamLambdaInFold
 
 import System
+import System::Containers
 import System::Test
 
 # Two untyped params: `fold(l, 0, (acc, x) => acc + x)`. Both `acc` and `x`

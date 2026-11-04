@@ -82,14 +82,15 @@ class TestDistinctInstantiationsStayDistinct(TestCase):
         c_code, errs = _errors("""
 namespace Test
 import System
+import System::Containers
 
 fun pick(n: Int) => n > 0 ? prepend(1, List()) : prepend("hello", List())
 
 fun main(): System::Int
-  let h = chainNext(chain(pick(0))).head
+  let h = head(takeOne(pick(0)))
   ret match(h)
     (i: Int)  => i
     (z: None) => 7
 """)
         self.assertEqual("", c_code)
-        self.assertIn("test.yafl[8:21] - cannot infer the type arguments of generic function `chain`", errs)
+        self.assertIn("test.yafl[9:16] - cannot infer the type arguments of generic function `takeOne`", errs)

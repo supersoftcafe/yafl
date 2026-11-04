@@ -2,6 +2,7 @@ namespace System::IO
 
 import System
 import System::IO
+import System::Containers
 
 
 # Run an external program and capture its result.  This dispatches through the
@@ -32,11 +33,7 @@ class ProcessResult(exitCode: Int, out: String, err: String)
 # Build "program\0arg0\0arg1\0…" — linear in the total size, the accumulator
 # extending its own buffer in place.
 fun _packArgs(program: String, args: List<String>): String
-  fun [tail] packRest(acc: String, rest: List<String>): String
-    ret match(head<String>(rest))
-      (a: String)       => packRest(acc + "\u{0}" + a, tail<String>(rest))
-      (n: System::None) => acc
-  ret packRest(program, args)
+  ret fold<String, String>(args, program, (acc: String, a: String) => acc + "\u{0}" + a)
 
 
 # Run `program` (resolved on PATH) with `args`. Returns a ProcessResult on a

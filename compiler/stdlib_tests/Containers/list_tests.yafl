@@ -1,7 +1,7 @@
 
-# Tests for System::Containers::NewList (stdlib/System/Containers/list.yafl).
+# Tests for System::Containers::List (stdlib/System/Containers/list.yafl).
 #
-# NewList is the append-friendly list over a chain of shared nodes. The final
+# List is the append-friendly list over a chain of shared nodes. The final
 # element is reached through takeLastOne (a list of at most one element, like
 # takeOne). These tests cover both constructors and every
 # operation the module exports, checking CONTENT and ORDER by rendering the
@@ -18,44 +18,44 @@ import System::Containers
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 # The whole list as "1.2.3." — order is what these tests mostly care about.
-fun _render(list: NewList<Int>): String
+fun _render(list: List<Int>): String
   ret fold(list, "", (acc: String, x: Int) => acc + String(x) + ".")
 
-fun _renderStr(list: NewList<String>): String
+fun _renderStr(list: List<String>): String
   ret fold(list, "", (acc: String, x: String) => acc + x + ".")
 
-fun _count(list: NewList<Int>): Int
+fun _count(list: List<Int>): Int
   ret fold(list, 0, (acc: Int, x: Int) => acc + 1)
 
-fun _sum(list: NewList<Int>): Int
+fun _sum(list: List<Int>): Int
   ret fold(list, 0, (acc: Int, x: Int) => acc + x)
 
-fun _headOr(list: NewList<Int>, fallback: Int): Int
+fun _headOr(list: List<Int>, fallback: Int): Int
   ret head(list) ?? fallback
 
 # The final element, through the public API (a fold), or `fallback`.
-fun _lastOr(list: NewList<Int>, fallback: Int): Int
+fun _lastOr(list: List<Int>, fallback: Int): Int
   ret fold(list, fallback, (acc: Int, x: Int) => x)
 
 # 1..n, appended one at a time.
-fun _upTo(n: Int): NewList<Int>
-  ret _fill(NewList<Int>(), 1, n)
+fun _upTo(n: Int): List<Int>
+  ret _fill(List<Int>(), 1, n)
 
-fun [tail] _fill(list: NewList<Int>, i: Int, n: Int): NewList<Int>
+fun [tail] _fill(list: List<Int>, i: Int, n: Int): List<Int>
   ret i > n ? list : _fill(append(list, i), i + 1, n)
 
 # A two-element list, for concat tests that need a distinct second list.
-fun _two(a: Int, b: Int): NewList<Int>
-  ret append(append(NewList<Int>(), a), b)
+fun _two(a: Int, b: Int): List<Int>
+  ret append(append(List<Int>(), a), b)
 
 # Drain the Stream instance into the same "1.2.3." rendering.
-fun _renderStream(list: NewList<Int>): String
+fun _renderStream(list: List<Int>): String
   ret _streamFrom(list, "")
 
-fun _streamFrom(list: NewList<Int>, acc: String): String
-  ret _streamStep(streamNext<NewList<Int>, Int, Never>(list), acc)
+fun _streamFrom(list: List<Int>, acc: String): String
+  ret _streamStep(streamNext<List<Int>, Int, Never>(list), acc)
 
-fun _streamStep(r: (stream: NewList<Int>,
+fun _streamStep(r: (stream: List<Int>,
                    value: Result<Int|None, Never>), acc: String): String
   ret match(r.value)
     (er: Error<Int|None, Never>) => acc
@@ -67,14 +67,14 @@ fun _streamStep(r: (stream: NewList<Int>,
 # ── construction ────────────────────────────────────────────────────────────
 
 fun [test("the zero-argument constructor makes an empty list")] emptyConstructor(): None|TestFailure
-  let list = NewList<Int>()
+  let list = List<Int>()
   ret assertTrue(isEmpty(list), "empty")
     ?? assertEqInt(_count(list), 0, "no elements")
     ?? assertEqStr(_render(list), "", "renders as nothing")
     ?? assertTrue(head(list) is None, "no head")
 
 fun [test("the one-argument constructor makes a one-element list")] singleConstructor(): None|TestFailure
-  let list = NewList<Int>(93)
+  let list = List<Int>(93)
   ret assertFalse(isEmpty(list), "not empty")
     ?? assertEqInt(_count(list), 1, "one element")
     ?? assertEqStr(_render(list), "93.", "renders the value")
@@ -85,7 +85,7 @@ fun [test("the one-argument constructor makes a one-element list")] singleConstr
 # ── append ──────────────────────────────────────────────────────────────────
 
 fun [test("append one to list of one gives correct head and last")] appendOneToOne(): None|TestFailure
-  let list: NewList<Int> = append(NewList<Int>(93), 27)
+  let list: List<Int> = append(List<Int>(93), 27)
   let value1: Int = head(list) ?? -1
   let value2: Int = _lastOr(list, -1)
   ret assertFalse(isEmpty(list), "not empty")
@@ -93,7 +93,7 @@ fun [test("append one to list of one gives correct head and last")] appendOneToO
     ?? assertTrue(value2 == 27, "tail is 27")
 
 fun [test("appending to a list doesn't affect the original")] appendDoesntAffectOriginal(): System::None|TestFailure
-  let list = NewList(93)
+  let list = List(93)
   let appended = append(list, 27)
   let value1: Int = head(list) ?? -1
   let value2: Int = _lastOr(list, -1)
@@ -104,7 +104,7 @@ fun [test("appending to a list doesn't affect the original")] appendDoesntAffect
     ?? assertEqInt(_count(appended), 2, "appended has two elements")
 
 fun [test("append to the empty list makes a singleton")] appendToEmpty(): None|TestFailure
-  let list = append(NewList<Int>(), 7)
+  let list = append(List<Int>(), 7)
   ret assertFalse(isEmpty(list), "not empty")
     ?? assertEqInt(_count(list), 1, "one element")
     ?? assertEqInt(_headOr(list, -1), 7, "head")
@@ -125,16 +125,18 @@ fun [test("repeated appends preserve insertion order")] appendPreservesOrder(): 
 fun [test("append after concat falls back to a copy")] appendAfterConcat(): None|TestFailure
   let left = _two(1, 2)
   let right = _two(3, 4)
-  let _ = concat(left, right)
+  let joined = concat(left, right)
   let appended = append(left, 9)
-  ret assertEqStr(_render(appended), "1.2.9.", "left list plus the new value")
+  ret assertEqStr(_render(joined), "1.2.3.4.", "the concatenation")
+    ?? assertEqStr(_render(appended), "1.2.9.", "left list plus the new value")
     ?? assertEqStr(_render(left), "1.2.", "left list still unchanged")
+    ?? assertEqStr(_render(joined), "1.2.3.4.", "the concatenation unchanged")
 
 
 # ── prepend ─────────────────────────────────────────────────────────────────
 
 fun [test("prepend to the empty list makes a singleton")] prependToEmpty(): None|TestFailure
-  let list = prepend(7, NewList<Int>())
+  let list = prepend(7, List<Int>())
   ret assertFalse(isEmpty(list), "not empty")
     ?? assertEqInt(_count(list), 1, "one element")
     ?? assertEqInt(_headOr(list, -1), 7, "head")
@@ -162,13 +164,13 @@ fun [test("prepend and append build a list from both ends")] prependAndAppend():
 # ── head, dropOne, takeOne, takeLastOne ─────────────────────────────────────
 
 fun [test("head of an empty list is None")] headEmpty(): None|TestFailure
-  ret assertTrue(head(NewList<Int>()) is None, "no head")
+  ret assertTrue(head(List<Int>()) is None, "no head")
 
 fun [test("dropOne of an empty list is empty")] dropOneEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(dropOne(NewList<Int>())), "dropOne of empty")
+  ret assertTrue(isEmpty(dropOne(List<Int>())), "dropOne of empty")
 
 fun [test("dropOne of a singleton is empty")] dropOneSingle(): None|TestFailure
-  ret assertTrue(isEmpty(dropOne(NewList<Int>(7))), "dropOne of one element")
+  ret assertTrue(isEmpty(dropOne(List<Int>(7))), "dropOne of one element")
 
 fun [test("dropOne removes only the first element")] dropOneRemovesFirst(): None|TestFailure
   let list = _upTo(4)
@@ -186,10 +188,10 @@ fun [test("dropOne doesn't affect the original list")] dropOneDoesntAffectOrigin
     ?? assertEqInt(_count(list), 4, "original count unchanged")
 
 fun [test("takeOne of an empty list is empty")] takeOneEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(takeOne(NewList<Int>())), "takeOne of empty")
+  ret assertTrue(isEmpty(takeOne(List<Int>())), "takeOne of empty")
 
 fun [test("takeOne of a singleton is that singleton")] takeOneSingle(): None|TestFailure
-  ret assertEqStr(_render(takeOne(NewList<Int>(7))), "7.", "the one element")
+  ret assertEqStr(_render(takeOne(List<Int>(7))), "7.", "the one element")
 
 fun [test("takeOne keeps exactly the first element")] takeOneMulti(): None|TestFailure
   let first = takeOne(_upTo(4))
@@ -205,10 +207,10 @@ fun [test("appending to takeOne doesn't affect the original list")] takeOneThenA
     ?? assertEqStr(_render(list), "1.2.3.", "original unchanged")
 
 fun [test("takeLastOne of an empty list is empty")] takeLastOneEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(takeLastOne(NewList<Int>())), "takeLastOne of empty")
+  ret assertTrue(isEmpty(takeLastOne(List<Int>())), "takeLastOne of empty")
 
 fun [test("takeLastOne of a singleton is that singleton")] takeLastOneSingle(): None|TestFailure
-  ret assertEqStr(_render(takeLastOne(NewList<Int>(7))), "7.", "the one element")
+  ret assertEqStr(_render(takeLastOne(List<Int>(7))), "7.", "the one element")
 
 fun [test("takeLastOne keeps exactly the last element")] takeLastOneMulti(): None|TestFailure
   let lastOne = takeLastOne(_upTo(4))
@@ -217,7 +219,7 @@ fun [test("takeLastOne keeps exactly the last element")] takeLastOneMulti(): Non
 
 fun [test("takeLastOne after a prepend and a concat")] takeLastOneAfterOps(): None|TestFailure
   ret assertEqStr(_render(takeLastOne(prepend(0, _upTo(2)))), "2.", "prepend keeps the last")
-    ?? assertEqStr(_render(takeLastOne(concat(_upTo(2), NewList<Int>(9)))), "9.", "concat moves the last")
+    ?? assertEqStr(_render(takeLastOne(concat(_upTo(2), List<Int>(9)))), "9.", "concat moves the last")
 
 # takeLastOne shares the source's last node, so appending to it links there.
 # The source must not see that, and a later append to the source must copy.
@@ -231,14 +233,14 @@ fun [test("appending to takeLastOne doesn't affect the original list")] takeLast
     ?? assertEqStr(_render(grown), "3.9.", "still unchanged")
 
 fun [test("takeLastOne tells a None last element from an empty list")] takeLastOneNone(): None|TestFailure
-  let list = append(append(NewList<Int|None>(), 5), None)
+  let list = append(append(List<Int|None>(), 5), None)
   ret assertFalse(isEmpty(takeLastOne(list)), "the None element is present")
     ?? assertTrue(head(takeLastOne(list)) is None, "and it is None")
 
 # isEmpty(takeOne(...)) is the end-of-list signal: a None ELEMENT is still an
 # element, which head alone (T|None) cannot tell apart from the end.
 fun [test("takeOne tells a None element from the end of the list")] takeOneNoneElement(): None|TestFailure
-  let list = append(append(NewList<Int|None>(), None), 5)
+  let list = append(append(List<Int|None>(), None), 5)
   ret assertFalse(isEmpty(takeOne(list)), "the None element is present")
     ?? assertTrue(head(list) is None, "and it is None")
     ?? assertEqInt(fold(list, 0, (acc: Int, x: Int|None) => acc + 1), 2, "fold walks past it")
@@ -285,11 +287,11 @@ fun [test("take doesn't affect the original list")] takeDoesntAffectOriginal(): 
   ret assertEqStr(_render(list), "1.2.3.4.5.", "original unchanged")
 
 fun [test("take from the empty list is empty")] takeEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(take(NewList<Int>(), 2)), "nothing to take")
+  ret assertTrue(isEmpty(take(List<Int>(), 2)), "nothing to take")
 
 fun [test("take and drop zero of the empty list are empty")] takeDropZeroOfEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(take(NewList<Int>(), 0)), "take 0")
-    ?? assertTrue(isEmpty(drop(NewList<Int>(), 0)), "drop 0")
+  ret assertTrue(isEmpty(take(List<Int>(), 0)), "take 0")
+    ?? assertTrue(isEmpty(drop(List<Int>(), 0)), "drop 0")
 
 
 # ── drop ────────────────────────────────────────────────────────────────────
@@ -328,7 +330,7 @@ fun [test("drop works on a prepended list")] dropOfPrepended(): None|TestFailure
   ret assertEqStr(_render(drop(list, 2)), "2.3.", "after 0 and 1")
 
 fun [test("drop from the empty list is empty")] dropEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(drop(NewList<Int>(), 2)), "nothing to drop")
+  ret assertTrue(isEmpty(drop(List<Int>(), 2)), "nothing to drop")
 
 fun [test("take and drop split a list into two halves")] takeAndDropSplit(): None|TestFailure
   let list = _upTo(5)
@@ -339,13 +341,13 @@ fun [test("take and drop split a list into two halves")] takeAndDropSplit(): Non
 # ── concat ──────────────────────────────────────────────────────────────────
 
 fun [test("concat with an empty left side returns the right list")] concatEmptyLeft(): None|TestFailure
-  ret assertEqStr(_render(concat(NewList<Int>(), _upTo(3))), "1.2.3.", "right side")
+  ret assertEqStr(_render(concat(List<Int>(), _upTo(3))), "1.2.3.", "right side")
 
 fun [test("concat with an empty right side returns the left list")] concatEmptyRight(): None|TestFailure
-  ret assertEqStr(_render(concat(_upTo(3), NewList<Int>())), "1.2.3.", "left side")
+  ret assertEqStr(_render(concat(_upTo(3), List<Int>())), "1.2.3.", "left side")
 
 fun [test("concat with both sides empty is empty")] concatBothEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(concat(NewList<Int>(), NewList<Int>())), "still empty")
+  ret assertTrue(isEmpty(concat(List<Int>(), List<Int>())), "still empty")
 
 fun [test("concat joins the left list then the right")] concatJoinsInOrder(): None|TestFailure
   let joined = concat(_two(1, 2), _two(3, 4))
@@ -379,7 +381,7 @@ fun [test("map can change the element type")] mapChangesType(): None|TestFailure
     ?? assertEqStr(_renderStr(mapped), "1.2.3.", "values")
 
 fun [test("map of an empty list is empty")] mapEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(map(NewList<Int>(), (x: Int) => x + 1)), "nothing to map")
+  ret assertTrue(isEmpty(map(List<Int>(), (x: Int) => x + 1)), "nothing to map")
 
 fun [test("map doesn't affect the original list")] mapDoesntAffectOriginal(): None|TestFailure
   let list = _upTo(3)
@@ -401,7 +403,7 @@ fun [test("filter matching everything keeps all elements")] filterAll(): None|Te
   ret assertEqStr(_render(filter(_upTo(3), (x: Int) => true)), "1.2.3.", "all kept")
 
 fun [test("filter of an empty list is empty")] filterEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(filter(NewList<Int>(), (x: Int) => true)), "still empty")
+  ret assertTrue(isEmpty(filter(List<Int>(), (x: Int) => true)), "still empty")
 
 fun [test("filter doesn't affect the original list")] filterDoesntAffectOriginal(): None|TestFailure
   let list = _upTo(5)
@@ -416,7 +418,7 @@ fun [test("fold accumulates over every element")] foldSums(): None|TestFailure
     ?? assertEqInt(_count(_upTo(5)), 5, "count")
 
 fun [test("fold of an empty list returns the seed")] foldEmptySeed(): None|TestFailure
-  ret assertEqInt(fold(NewList<Int>(), 99, (acc: Int, x: Int) => acc + x),
+  ret assertEqInt(fold(List<Int>(), 99, (acc: Int, x: Int) => acc + x),
                   99, "seed kept")
 
 # Order matters and a commutative operator cannot show it: subtraction can.
@@ -433,7 +435,7 @@ fun [test("any finds a present value and rejects an absent one")] anyFinds(): No
     ?? assertFalse(any(_upTo(5), (x: Int) => x == 9), "9 is absent")
 
 fun [test("any of an empty list is false")] anyEmpty(): None|TestFailure
-  ret assertFalse(any(NewList<Int>(), (x: Int) => true), "no elements")
+  ret assertFalse(any(List<Int>(), (x: Int) => true), "no elements")
 
 fun [test("all is true when every element matches")] allTrue(): None|TestFailure
   ret assertTrue(all(_upTo(5), (x: Int) => x > 0), "all positive")
@@ -442,14 +444,14 @@ fun [test("all is false when one element does not match")] allFalse(): None|Test
   ret assertFalse(all(_upTo(5), (x: Int) => x % 2 == 0), "not all even")
 
 fun [test("all of an empty list is vacuously true")] allEmpty(): None|TestFailure
-  ret assertTrue(all(NewList<Int>(), (x: Int) => false), "vacuous")
+  ret assertTrue(all(List<Int>(), (x: Int) => false), "vacuous")
 
 fun [test("contains finds present values and rejects absent ones")] containsFinds(): None|TestFailure
   ret assertTrue(contains(_upTo(5), 4), "4 is present")
     ?? assertFalse(contains(_upTo(5), 9), "9 is absent")
 
 fun [test("contains of an empty list is false")] containsEmpty(): None|TestFailure
-  ret assertFalse(contains(NewList<Int>(), 1), "nothing to contain")
+  ret assertFalse(contains(List<Int>(), 1), "nothing to contain")
 
 
 # ── Stream ──────────────────────────────────────────────────────────────────
@@ -458,7 +460,7 @@ fun [test("the stream yields every element in order")] streamInOrder(): None|Tes
   ret assertEqStr(_renderStream(_upTo(4)), "1.2.3.4.", "stream order")
 
 fun [test("the stream of an empty list ends immediately")] streamEmpty(): None|TestFailure
-  ret assertEqStr(_renderStream(NewList<Int>()), "", "no elements")
+  ret assertEqStr(_renderStream(List<Int>()), "", "no elements")
 
 fun [test("stepping the stream doesn't affect the original list")] streamDoesntAffectOriginal(): None|TestFailure
   let list = _upTo(3)
@@ -474,7 +476,7 @@ fun [test("powerMap maps every element in order")] powerMapInOrder(): None|TestF
     ?? assertEqStr(_render(mapped), "10.20.30.40.50.", "order and values")
 
 fun [test("powerMap of an empty list is empty")] powerMapEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(powerMap(NewList<Int>(), (x: Int) => x + 1)), "nothing to map")
+  ret assertTrue(isEmpty(powerMap(List<Int>(), (x: Int) => x + 1)), "nothing to map")
 
 fun [test("powerMap of a short list maps every element")] powerMapShort(): None|TestFailure
   ret assertEqStr(_render(powerMap(_upTo(3), (x: Int) => x + 100)),
@@ -483,8 +485,8 @@ fun [test("powerMap of a short list maps every element")] powerMapShort(): None|
 
 # ── other element types ─────────────────────────────────────────────────────
 
-fun [test("NewList works with a non-Int element type")] stringElements(): None|TestFailure
-  let list = append(append(NewList<String>(), "a"), "b")
+fun [test("List works with a non-Int element type")] stringElements(): None|TestFailure
+  let list = append(append(List<String>(), "a"), "b")
   ret assertEqInt(fold(list, 0, (acc: Int, x: String) => acc + 1), 2, "two elements")
     ?? assertEqStr(_renderStr(list), "a.b.", "values in order")
     ?? assertEqStr(head(list) ?? "", "a", "head")
@@ -496,34 +498,34 @@ fun [test("NewList works with a non-Int element type")] stringElements(): None|T
 fun [test("groupBy separates even and odd ints")] groupByEvenOdd(): None|TestFailure
   let grouped = groupBy(_upTo(6), (x: Int) => x % 2)
   # Group 0 = evens, Group 1 = odds
-  let evens: NewList<Int> = get(grouped, 0) ?? NewList<Int>()
-  let odds: NewList<Int> = get(grouped, 1) ?? NewList<Int>()
+  let evens: List<Int> = get(grouped, 0) ?? List<Int>()
+  let odds: List<Int> = get(grouped, 1) ?? List<Int>()
   ret assertEqStr(_render(evens), "2.4.6.", "evens in order")
     ?? assertEqStr(_render(odds), "1.3.5.", "odds in order")
 
 fun [test("groupBy of an empty list gives an empty dict")] groupByEmpty(): None|TestFailure
-  let grouped = groupBy<Int, Int>(NewList<Int>(), (x: Int) => 0)
+  let grouped = groupBy<Int, Int>(List<Int>(), (x: Int) => 0)
   ret assertTrue(isEmpty(grouped), "empty dict")
 
 fun [test("groupBy with all same key gives one group")] groupBySingleGroup(): None|TestFailure
   let grouped = groupBy(_upTo(4), (x: Int) => 0)
-  let all: NewList<Int> = get(grouped, 0) ?? NewList<Int>()
+  let all: List<Int> = get(grouped, 0) ?? List<Int>()
   ret assertEqStr(_render(all), "1.2.3.4.", "all elements in one group")
     ?? assertFalse(isEmpty(grouped), "dict not empty")
 
 fun [test("groupBy with string keys groups correctly")] groupByStringKeys(): None|TestFailure
-  let names: NewList<String> = append(append(append(NewList<String>(), "Alice"), "Bob"), "Ann")
+  let names: List<String> = append(append(append(List<String>(), "Alice"), "Bob"), "Ann")
   let grouped = groupBy(names, (n: String) => n)
-  let alice: NewList<String> = get(grouped, "Alice") ?? NewList<String>()
+  let alice: List<String> = get(grouped, "Alice") ?? List<String>()
   ret assertEqStr(head(alice) ?? "", "Alice", "Alice group")
     ?? assertEqInt(fold(alice, 0, (acc: Int, x: String) => acc + 1), 1, "single element")
 
 fun [test("groupBy preserves insertion order within groups")] groupByPreservesOrder(): None|TestFailure
   let grouped = groupBy(_upTo(5), (x: Int) => x % 2)
   # Group 0 (evens): should be [2, 4]
-  let evens: NewList<Int> = get(grouped, 0) ?? NewList<Int>()
+  let evens: List<Int> = get(grouped, 0) ?? List<Int>()
   ret assertEqStr(_render(evens), "2.4.", "evens in order")
-    ?? assertEqStr(_render(get(grouped, 1) ?? NewList<Int>()), "1.3.5.", "odds in order")
+    ?? assertEqStr(_render(get(grouped, 1) ?? List<Int>()), "1.3.5.", "odds in order")
 
 fun [test("groupBy produces exactly two groups for even/odd")] groupByTwoGroups(): None|TestFailure
   let grouped = groupBy(_upTo(4), (x: Int) => x % 2)
@@ -541,11 +543,14 @@ fun [test("flatMap concatenates the lists its function returns")] flatMapConcate
   ret assertEqInt(_count(doubled), 6, "two per input")
     ?? assertEqStr(_render(doubled), "1.1.2.2.3.3.", "values in order")
 
+fun [test("flatMap returning empty lists yields an empty list")] flatMapEmpties(): None|TestFailure
+  ret assertTrue(isEmpty(flatMap<Int, Int>(_upTo(3), (x: Int) => List<Int>())), "all empty")
+
 
 # ── foldWhile ───────────────────────────────────────────────────────────────
 
 fun [test("foldWhile of an empty list returns the seed")] foldWhileEmpty(): None|TestFailure
-  ret assertEqInt(foldWhile(NewList<Int>(), 7, (acc: Int, x: Int) => acc + x, (acc: Int) => true), 7, "seed")
+  ret assertEqInt(foldWhile(List<Int>(), 7, (acc: Int, x: Int) => acc + x, (acc: Int) => true), 7, "seed")
 
 fun [test("foldWhile stops at the first accumulator the predicate rejects")] foldWhileStops(): None|TestFailure
   # 0+1+2+3+4 = 10; 10 < 10 fails, so 5.. are never added.
@@ -558,39 +563,39 @@ fun [test("foldWhile checks the seed before the first element")] foldWhileReject
   ret assertEqInt(foldWhile(_upTo(5), 100, (acc: Int, x: Int) => acc + x, (acc: Int) => acc < 10), 100, "seed unchanged")
 
 fun [test("foldWhile as a search: the first even element")] foldWhileFind(): None|TestFailure
-  let found = foldWhile<Int, Int|None>(append(append(append(NewList<Int>(), 3), 8), 6), None,
+  let found = foldWhile<Int, Int|None>(append(append(append(List<Int>(), 3), 8), 6), None,
                         (acc: Int|None, x: Int) => x % 2 == 0 ? x : None,
                         (acc: Int|None) => acc is None)
   ret assertEqInt(found ?? -1, 8, "first even")
 
 fun [test("foldWhile walks past a None element")] foldWhileNoneElement(): None|TestFailure
-  let list = append(append(append(NewList<Int|None>(), None), 4), None)
+  let list = append(append(append(List<Int|None>(), None), 4), None)
   ret assertEqInt(foldWhile(list, 0, (acc: Int, x: Int|None) => acc + 1, (acc: Int) => true), 3, "three elements")
 
 
 # ── zipFold ─────────────────────────────────────────────────────────────────
 
-fun _zipRender(a: NewList<Int>, b: NewList<String>): String
+fun _zipRender(a: List<Int>, b: List<String>): String
   ret zipFold(a, b, "", (acc: String, x: Int, y: String) => acc + String(x) + y + ".")
 
 fun [test("zipFold walks two lists in step")] zipFoldPairs(): None|TestFailure
-  let b = append(append(append(NewList<String>(), "a"), "b"), "c")
+  let b = append(append(append(List<String>(), "a"), "b"), "c")
   ret assertEqStr(_zipRender(_upTo(3), b), "1a.2b.3c.", "pairs in order")
 
 fun [test("zipFold stops at the end of the shorter list")] zipFoldShorter(): None|TestFailure
-  let b = append(append(NewList<String>(), "a"), "b")
+  let b = append(append(List<String>(), "a"), "b")
   ret assertEqStr(_zipRender(_upTo(5), b), "1a.2b.", "second list shorter")
     ?? assertEqStr(_zipRender(_upTo(1), b), "1a.", "first list shorter")
 
 fun [test("zipFold with an empty list returns the seed")] zipFoldEmpty(): None|TestFailure
-  ret assertEqStr(_zipRender(NewList<Int>(), NewList<String>("a")), "", "first empty")
-    ?? assertEqStr(_zipRender(_upTo(2), NewList<String>()), "", "second empty")
+  ret assertEqStr(_zipRender(List<Int>(), List<String>("a")), "", "first empty")
+    ?? assertEqStr(_zipRender(_upTo(2), List<String>()), "", "second empty")
 
 
 # ── three-element constructor ───────────────────────────────────────────────
 
 fun [test("the three-argument constructor keeps its order")] threeConstructor(): None|TestFailure
-  let list = NewList<Int>(4, 5, 6)
+  let list = List<Int>(4, 5, 6)
   ret assertEqStr(_render(list), "4.5.6.", "in order")
     ?? assertEqStr(_render(append(list, 7)), "4.5.6.7.", "appendable")
     ?? assertEqStr(_render(takeLastOne(list)), "6.", "last")
@@ -599,20 +604,20 @@ fun [test("the three-argument constructor keeps its order")] threeConstructor():
 # ── dropLastOne ─────────────────────────────────────────────────────────────
 
 fun [test("dropLastOne of an empty list is empty")] dropLastOneEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(dropLastOne(NewList<Int>())), "empty")
+  ret assertTrue(isEmpty(dropLastOne(List<Int>())), "empty")
 
 fun [test("dropLastOne of a singleton is empty")] dropLastOneSingle(): None|TestFailure
-  ret assertTrue(isEmpty(dropLastOne(NewList<Int>(7))), "empty")
+  ret assertTrue(isEmpty(dropLastOne(List<Int>(7))), "empty")
 
 fun [test("dropLastOne removes only the last element")] dropLastOneMulti(): None|TestFailure
   let list = _upTo(4)
   ret assertEqStr(_render(dropLastOne(list)), "1.2.3.", "all but the last")
-    ?? assertEqStr(_render(dropLastOne(NewList<Int>(1, 2))), "1.", "two elements")
+    ?? assertEqStr(_render(dropLastOne(List<Int>(1, 2))), "1.", "two elements")
     ?? assertEqStr(_render(list), "1.2.3.4.", "original unchanged")
 
 fun [test("dropLastOne after a prepend and a concat")] dropLastOneAfterOps(): None|TestFailure
   ret assertEqStr(_render(dropLastOne(prepend(0, _upTo(2)))), "0.1.", "prepended")
-    ?? assertEqStr(_render(dropLastOne(concat(_upTo(2), NewList<Int>(8, 9)))), "1.2.8.", "concatenated")
+    ?? assertEqStr(_render(dropLastOne(concat(_upTo(2), List<Int>(8, 9)))), "1.2.8.", "concatenated")
 
 # dropLastOne's last node still links on to the source's last, so appending
 # to it must copy rather than link there.
@@ -635,19 +640,19 @@ fun _same(a: Int, b: Int): Bool
   ret a == b
 
 fun [test("eqBy: equal lists are equal")] eqByEqual(): None|TestFailure
-  ret assertTrue(eqBy(_upTo(3), NewList<Int>(1, 2, 3), _same), "equal")
-    ?? assertTrue(eqBy(NewList<Int>(), NewList<Int>(), _same), "both empty")
+  ret assertTrue(eqBy(_upTo(3), List<Int>(1, 2, 3), _same), "equal")
+    ?? assertTrue(eqBy(List<Int>(), List<Int>(), _same), "both empty")
 
 fun [test("eqBy: a differing element makes them unequal")] eqByDiffers(): None|TestFailure
-  ret assertFalse(eqBy(_upTo(3), NewList<Int>(1, 9, 3), _same), "middle differs")
+  ret assertFalse(eqBy(_upTo(3), List<Int>(1, 9, 3), _same), "middle differs")
 
 fun [test("eqBy: a prefix is not equal to the longer list, either way round")] eqByPrefix(): None|TestFailure
   ret assertFalse(eqBy(_upTo(2), _upTo(3), _same), "left shorter")
     ?? assertFalse(eqBy(_upTo(3), _upTo(2), _same), "right shorter")
-    ?? assertFalse(eqBy(NewList<Int>(), _upTo(1), _same), "left empty")
+    ?? assertFalse(eqBy(List<Int>(), _upTo(1), _same), "left empty")
 
 fun [test("eqBy uses the supplied comparison")] eqByComparison(): None|TestFailure
-  ret assertTrue(eqBy(_upTo(3), NewList<Int>(11, 12, 13), (a: Int, b: Int) => a % 10 == b % 10), "mod 10")
+  ret assertTrue(eqBy(_upTo(3), List<Int>(11, 12, 13), (a: Int, b: Int) => a % 10 == b % 10), "mod 10")
 
 
 # ── partition ───────────────────────────────────────────────────────────────
@@ -658,7 +663,7 @@ fun [test("partition splits by the predicate, keeping order on both sides")] par
     ?? assertEqStr(_render(parts.no), "1.2.4.5.7.", "no")
 
 fun [test("partition of an empty list gives two empty lists")] partitionEmpty(): None|TestFailure
-  let parts = partition(NewList<Int>(), (x: Int) => true)
+  let parts = partition(List<Int>(), (x: Int) => true)
   ret assertTrue(isEmpty(parts.yes), "yes empty")
     ?? assertTrue(isEmpty(parts.no), "no empty")
 
@@ -671,13 +676,13 @@ fun [test("partition where everything matches")] partitionAll(): None|TestFailur
 # ── zipMap ──────────────────────────────────────────────────────────────────
 
 fun [test("zipMap combines two lists element by element")] zipMapCombines(): None|TestFailure
-  ret assertEqStr(_render(zipMap(_upTo(3), NewList<Int>(10, 20, 30), (x: Int, y: Int) => x * y)),
+  ret assertEqStr(_render(zipMap(_upTo(3), List<Int>(10, 20, 30), (x: Int, y: Int) => x * y)),
                   "10.40.90.", "products")
 
 fun [test("zipMap stops at the shorter of the two lists")] zipMapStopsShort(): None|TestFailure
-  ret assertEqStr(_render(zipMap(_upTo(5), NewList<Int>(10, 20), (x: Int, y: Int) => x + y)), "11.22.", "right shorter")
-    ?? assertEqStr(_render(zipMap(_upTo(1), NewList<Int>(10, 20), (x: Int, y: Int) => x + y)), "11.", "left shorter")
-    ?? assertTrue(isEmpty(zipMap(NewList<Int>(), _upTo(2), (x: Int, y: Int) => x + y)), "left empty")
+  ret assertEqStr(_render(zipMap(_upTo(5), List<Int>(10, 20), (x: Int, y: Int) => x + y)), "11.22.", "right shorter")
+    ?? assertEqStr(_render(zipMap(_upTo(1), List<Int>(10, 20), (x: Int, y: Int) => x + y)), "11.", "left shorter")
+    ?? assertTrue(isEmpty(zipMap(List<Int>(), _upTo(2), (x: Int, y: Int) => x + y)), "left empty")
 
 
 # ── splitHalf ───────────────────────────────────────────────────────────────
@@ -693,12 +698,12 @@ fun [test("splitHalf of an even list splits it evenly")] splitHalfEven(): None|T
     ?? assertEqStr(_render(parts.right), "3.4.", "right")
 
 fun [test("splitHalf of one element leaves the left side empty")] splitHalfSingle(): None|TestFailure
-  let parts = splitHalf(NewList<Int>(7))
+  let parts = splitHalf(List<Int>(7))
   ret assertTrue(isEmpty(parts.left), "left empty")
     ?? assertEqStr(_render(parts.right), "7.", "right")
 
 fun [test("splitHalf of an empty list gives two empty lists")] splitHalfEmpty(): None|TestFailure
-  let parts = splitHalf(NewList<Int>())
+  let parts = splitHalf(List<Int>())
   ret assertTrue(isEmpty(parts.left), "left empty")
     ?? assertTrue(isEmpty(parts.right), "right empty")
 
@@ -712,39 +717,39 @@ fun [test("appending to splitHalf's left doesn't affect the original list")] spl
 # ── sort / sortBy ───────────────────────────────────────────────────────────
 
 fun [test("sorting an empty list yields an empty list")] sortEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(sort(NewList<Int>())), "empty")
+  ret assertTrue(isEmpty(sort(List<Int>())), "empty")
 
 fun [test("sorting a single element is the identity")] sortSingle(): None|TestFailure
-  ret assertEqStr(_render(sort(NewList<Int>(5))), "5.", "single")
+  ret assertEqStr(_render(sort(List<Int>(5))), "5.", "single")
 
 fun [test("the smallest real merge: two elements out of order")] sortTwo(): None|TestFailure
-  ret assertEqStr(_render(sort(NewList<Int>(2, 1))), "1.2.", "two")
+  ret assertEqStr(_render(sort(List<Int>(2, 1))), "1.2.", "two")
 
 fun [test("an all-ties list sorts to itself")] sortAllEqual(): None|TestFailure
-  ret assertEqStr(_render(sort(append(NewList<Int>(7, 7, 7), 7))), "7.7.7.7.", "all ties")
+  ret assertEqStr(_render(sort(append(List<Int>(7, 7, 7), 7))), "7.7.7.7.", "all ties")
 
 fun [test("an already-sorted list is unchanged")] sortAlreadySorted(): None|TestFailure
   ret assertEqStr(_render(sort(_upTo(4))), "1.2.3.4.", "sorted")
 
 fun [test("a fully reversed list is the worst case")] sortReversed(): None|TestFailure
-  ret assertEqStr(_render(sort(append(NewList<Int>(4, 3, 2), 1))), "1.2.3.4.", "reversed")
+  ret assertEqStr(_render(sort(append(List<Int>(4, 3, 2), 1))), "1.2.3.4.", "reversed")
 
 fun [test("duplicates are all kept, not collapsed")] sortKeepsDuplicates(): None|TestFailure
-  ret assertEqStr(_render(sort(append(NewList<Int>(3, 1, 3), 1))), "1.1.3.3.", "duplicates")
+  ret assertEqStr(_render(sort(append(List<Int>(3, 1, 3), 1))), "1.1.3.3.", "duplicates")
 
 fun [test("negative values order below positive ones")] sortNegatives(): None|TestFailure
-  ret assertEqStr(_render(sort(append(NewList<Int>(2, 0 - 5, 0), 0 - 1))), "-5.-1.0.2.", "negatives")
+  ret assertEqStr(_render(sort(append(List<Int>(2, 0 - 5, 0), 0 - 1))), "-5.-1.0.2.", "negatives")
 
 fun [test("strings sort lexicographically")] sortStrings(): None|TestFailure
-  ret assertEqStr(_renderStr(sort(append(NewList<String>("pear", "apple", "fig"), "banana"))),
+  ret assertEqStr(_renderStr(sort(append(List<String>("pear", "apple", "fig"), "banana"))),
                   "apple.banana.fig.pear.", "strings")
 
 fun [test("a longer list with several runs sorts")] sortManyRuns(): None|TestFailure
-  let list = append(append(append(NewList<Int>(5, 9, 1), 4), 8), 2)
-  ret assertEqStr(_render(sort(concat(list, NewList<Int>(7, 3, 6)))), "1.2.3.4.5.6.7.8.9.", "nine")
+  let list = append(append(append(List<Int>(5, 9, 1), 4), 8), 2)
+  ret assertEqStr(_render(sort(concat(list, List<Int>(7, 3, 6)))), "1.2.3.4.5.6.7.8.9.", "nine")
 
 fun [test("sort doesn't affect the original list")] sortDoesntAffectOriginal(): None|TestFailure
-  let list = NewList<Int>(3, 1, 2)
+  let list = List<Int>(3, 1, 2)
   let sorted = sort(list)
   ret assertEqStr(_render(sorted), "1.2.3.", "sorted")
     ?? assertEqStr(_render(list), "3.1.2.", "original unchanged")
@@ -752,22 +757,22 @@ fun [test("sort doesn't affect the original list")] sortDoesntAffectOriginal(): 
     ?? assertEqStr(_render(list), "3.1.2.", "still unchanged")
 
 fun [test("sort only sees the list's own elements, not an extension past its end")] sortExtendedPast(): None|TestFailure
-  let list = NewList<Int>(3, 1, 2)
+  let list = List<Int>(3, 1, 2)
   let longer = append(list, 0)
   ret assertEqStr(_render(sort(list)), "1.2.3.", "own elements only")
     ?? assertEqStr(_render(sort(longer)), "0.1.2.3.", "the extension")
 
 fun [test("sortBy orders by the supplied comparison, here descending")] sortByDescending(): None|TestFailure
-  ret assertEqStr(_render(sortBy(append(NewList<Int>(1, 3, 2), 4), (a: Int, b: Int) => a > b)), "4.3.2.1.", "descending")
+  ret assertEqStr(_render(sortBy(append(List<Int>(1, 3, 2), 4), (a: Int, b: Int) => a > b)), "4.3.2.1.", "descending")
 
 fun [test("sortBy on an empty list yields an empty list")] sortByEmpty(): None|TestFailure
-  ret assertTrue(isEmpty(sortBy(NewList<Int>(), (a: Int, b: Int) => a < b)), "empty")
+  ret assertTrue(isEmpty(sortBy(List<Int>(), (a: Int, b: Int) => a < b)), "empty")
 
 # Equal keys must keep their original order; plain integers can't show that.
 class [final] _Rec(key: Int, tag: String)
 
 fun [test("sortBy is STABLE: equal keys keep their original order")] sortByIsStable(): None|TestFailure
-  let recs = append(append(NewList<_Rec>(_Rec(2, "a"), _Rec(1, "b"), _Rec(2, "c")), _Rec(1, "d")), _Rec(2, "e"))
+  let recs = append(append(List<_Rec>(_Rec(2, "a"), _Rec(1, "b"), _Rec(2, "c")), _Rec(1, "d")), _Rec(2, "e"))
   let sorted = sortBy(recs, (a: _Rec, b: _Rec) => a.key < b.key)
   ret assertEqStr(fold(sorted, "", (acc: String, r: _Rec) => acc + String(r.key) + r.tag + "."),
                   "1b.1d.2a.2c.2e.", "stability")

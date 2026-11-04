@@ -13,6 +13,7 @@
 namespace CompilerTests::RecursiveGenerics::GenericEnumTreeWithListOfSelf
 
 import System
+import System::Containers
 import System::Test
 
 enum Tree<T>
@@ -89,11 +90,12 @@ fun [test("self recursive generic explicit args")] check(): None|TestFailure
 namespace CompilerTests::RecursiveGenerics::SelfRecursiveGenericFunction
 
 import System
+import System::Containers
 import System::Test
 
 fun count<T>(l: List<T>): System::Int
   ret match(head(l))
-    (x: T) => 1 + count(tail(l))
+    (x: T) => 1 + count(dropOne(l))
     ()     => 0
 
 fun program(): System::Int

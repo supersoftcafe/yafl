@@ -13,6 +13,7 @@ namespace Main
 
 import System
 import System::IO
+import System::Containers
 
 # ── Vec3: a flat value struct (3 fields → simple_classes flattens it) ────────
 class Vec3(x: Float, y: Float, z: Float)

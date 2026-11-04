@@ -97,6 +97,7 @@ fun [test("two variants of one enum bind T to both")] check(): None|TestFailure
 namespace CompilerTests::GenericArgInference::ALambdaParameterWaitsForTheList
 
 import System
+import System::Containers
 import System::Test
 
 # fold(drop(known, 1), head(known), (acc, x) => pick(acc, x)): while `known` is
@@ -108,7 +109,7 @@ fun pick(a: System::Int|System::None, b: System::Int|System::None): System::Int|
     (y: System::Int) => x > y ? x : y
     ()               => x
   () => b
-fun best(xs: System::List<System::Int>): System::Int|System::None
+fun best(xs: System::Containers::List<System::Int>): System::Int|System::None
   let known = map(xs, (x) => twice(x))
   ret fold(drop(known, 1), head(known), (acc, x) => pick(acc, x))
 fun program(): System::Int

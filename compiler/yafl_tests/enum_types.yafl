@@ -6,11 +6,12 @@
 namespace CompilerTests::EnumTypes::LinkedListSum
 
 import System
+import System::Containers
 import System::Test
 
 fun program(): System::Int
-  let l = System::prepend<System::Int>(1, System::prepend<System::Int>(2, System::prepend<System::Int>(3, System::prepend<System::Int>(4, System::prepend<System::Int>(5, System::List<System::Int>())))))
-  ret System::fold<System::Int, System::Int>(l, 0, (acc: System::Int, x: System::Int) => acc + x)
+  let l = System::Containers::prepend<System::Int>(1, System::Containers::prepend<System::Int>(2, System::Containers::prepend<System::Int>(3, System::Containers::prepend<System::Int>(4, System::Containers::prepend<System::Int>(5, System::Containers::List<System::Int>())))))
+  ret System::Containers::fold<System::Int, System::Int>(l, 0, (acc: System::Int, x: System::Int) => acc + x)
 
 fun [test("linked list sum")] check(): None|TestFailure
     ret assertEqInt(program(), 15, "program()")

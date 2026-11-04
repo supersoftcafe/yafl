@@ -15,6 +15,12 @@ namespace CompilerTests::GenericMatchBinder::ConcreteChainMatchBindsStringField
 import System
 import System::Test
 
+# A local cons chain: the stdlib's Chain is gone, and this test is about
+# matching a generic enum, not about lists.
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
 fun probe(c: Chain<String>): Int
   ret match(c)
     (link: ChainLink) => length(link.value)
@@ -32,6 +38,12 @@ namespace CompilerTests::GenericMatchBinder::ConcreteChainMatchIntField
 
 import System
 import System::Test
+
+# A local cons chain: the stdlib's Chain is gone, and this test is about
+# matching a generic enum, not about lists.
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
 
 fun sumFirst(c: Chain<Int>): Int
   ret match(c)

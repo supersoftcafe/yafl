@@ -30,6 +30,7 @@ _PROMOTE = """\
 namespace Promote
 
 import System
+import System::Containers
 
 fun payload(k: System::Int): System::Int
   let a = (k * 2654435761) % 1000000007
@@ -94,13 +95,19 @@ class TestLatePinning(TestCase):
         # — and one with no pinnable class must not mention it at all.
         with_memo = compile_c(_PROMOTE, "file.yafl", optimization_level=1)
         self.assertIn("object_resolve(", with_memo)
+        # (Not a List: its nodes are [pinnable].)
         plain = """\
 import System
 
-fun main(): System::Int
-  ret match(head<System::Int>(prepend<System::Int>(3, List<System::Int>())))
-    (v: System::Int)  => v - 3
+class Box(v: System::Int)
+
+fun pick(b: Box|System::None): System::Int
+  ret match(b)
+    (x: Box)          => x.v - 3
     (e: System::None) => 1
+
+fun main(): System::Int
+  ret pick(Box(3))
 """
         without = compile_c(plain, "file.yafl", optimization_level=1)
         self.assertNotIn("object_resolve(", without)

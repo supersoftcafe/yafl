@@ -1,7 +1,7 @@
 # Call-site binding for members of GENERIC ambient instances.
 #
 # A concrete call to a member of a generic `instance [ambient]` (e.g.
-# `drop(b)` where the instance is `instance [ambient]<T> Drop<ListBuilder<T>>`)
+# `drop(b)` where the instance is `instance [ambient]<T> Drop<SeqBuilder<T>>`)
 # binds the INSTANCE's type parameters from the argument shape — the
 # generic-function-candidate rule applied to instances. This was the original
 # gap the drops pass routed around with a `dropIndirect` trampoline, both
@@ -16,8 +16,8 @@ import System
 import System::Test
 
 fun program(): Int
-  let b = push(builder<Int>(), 7)
-  let _ = drop(b)
+  let b = push(seqBuilder<Int>(), 7)
+  drop(b)
   ret 0
 
 fun [test("explicit drop of builder")] check(): None|TestFailure
@@ -28,13 +28,14 @@ namespace CompilerTests::GenericTraitMember::OwnGenericInstanceMember
 
 import System
 import System::Test
+import System::Containers
 
 interface Sized<T>
   fun sizeOf(v: T): Int
 
 instance [ambient]<T> Sized<List<T>>
   fun sizeOf(v: List<T>): Int
-    ret chainLength(chain(v))
+    ret fold(v, 0, (n: Int, x: T) => n + 1)
 
 fun program(): Int
   let l = prepend(4, prepend(5, List<Int>()))

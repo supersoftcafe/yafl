@@ -17,6 +17,7 @@
 #
 import System
 import System::IO
+import System::Containers
 
 
 # A path the walk or the search couldn't read. The errors travel in the result
@@ -65,41 +66,41 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
       : line
 
   # Collect a matching line as `file:lineNo:line`; non-matches pass through.
-  fun step([terminal] found: ListBuilder<String|FileError>, path: String, lineNo: Int,
-           line: String): ListBuilder<String|FileError>
+  fun step(found: List<String|FileError>, path: String, lineNo: Int,
+           line: String): List<String|FileError>
     ret contains(line, needle)
-      ? push<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
+      ? append<String|FileError>(found, path + ":" + String(lineNo) + ":" + chomp(line))
       : found
 
   # End of file finishes a file cleanly; any other read error is collected
   # after the matches found before it.
-  fun readEnd([terminal] found: ListBuilder<String|FileError>, path: String,
-              e: IOError): ListBuilder<String|FileError>
+  fun readEnd(found: List<String|FileError>, path: String,
+              e: IOError): List<String|FileError>
     ret match(e)
       (eof: EOFError) => found
-      ()              => push<String|FileError>(found, FileError(path, e))
+      ()              => append<String|FileError>(found, FileError(path, e))
 
   # Stream the file a line at a time, collecting matches in order. `[tail]` so
   # the per-line loop is a loop, not C-stack recursion; `readLine` suspends on
   # buffer refills. The whole file is never held in memory, only its matches.
   fun [tail] scan(io: IO, path: String, lineNo: Int,
-                  [terminal] found: ListBuilder<String|FileError>):
-                  (io: IO, found: ListBuilder<String|FileError>)
+                  found: List<String|FileError>):
+                  (io: IO, found: List<String|FileError>)
     let r = readLine(io)
     ret match(r.v)
       (line: String) => scan(r.io, path, lineNo + 1, step(found, path, lineNo, line))
       (e: IOError)   => (r.io, readEnd(found, path, e))
 
   # The close's error, if any, is collected last: the matches before it stand.
-  fun closeInto([terminal] found: ListBuilder<String|FileError>, path: String,
-                closed: IOError|None): ListBuilder<String|FileError>
+  fun closeInto(found: List<String|FileError>, path: String,
+                closed: IOError|None): List<String|FileError>
     ret match(closed)
-      (e: IOError) => push<String|FileError>(found, FileError(path, e))
+      (e: IOError) => append<String|FileError>(found, FileError(path, e))
       (n: None)    => found
 
   fun searchOpen(path: String, io: IO): List<String|FileError>
-    let r = scan(io, path, 1, builder<String|FileError>())
-    ret build<String|FileError>(closeInto(r.found, path, r.io.close()))
+    let r = scan(io, path, 1, List<String|FileError>())
+    ret closeInto(r.found, path, r.io.close())
 
   fun searchOneFile(path: String): List<String|FileError>
     ret match(open_read(path))
@@ -120,25 +121,24 @@ fun searchFiles(needle: String, files: List<String|FileError>): List<String|File
 
 # ── output ────────────────────────────────────────────────────────────────────
 
-# Write the results in order: matches to stdout, errors to stderr. A `[tail]`
-# loop over the list's chain, so very many matches cost no C stack; `?>`
-# threads each handle through its writes and, once one fails, carries that
-# error to the end without writing to it again. 1 if any path couldn't be
-# read, or any write or close failed; otherwise 0.
+# Write the results in order: matches to stdout, errors to stderr. A fold
+# threads both handles through the list; `?>` passes each handle through its
+# writes and, once one fails, carries that error to the end without writing
+# to it again. 1 if any path couldn't be read, or any write or close failed;
+# otherwise 0.
 fun writeResults(results: List<String|FileError>): System::Int where Show<IOError>
-  fun [tail] loop(out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError),
-                  failed: Bool, c: Chain<String|FileError>):
-                  (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
-    ret match(c)
-      (nil: ChainEnd) => (out, err, failed)
-      (l: ChainLink)  => match(l.value)
-        (line: String) =>
-            loop(out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err, failed, l.next)
-        (fe: FileError) =>
-            loop(out, err ?> (io: IO, n: Int) =>
+  fun step(acc: (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool),
+           r: String|FileError): (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)
+    ret match(r)
+      (line: String) =>
+          (out = acc.out ?> (io: IO, n: Int) => writeAll(io, line + "\n"), err = acc.err, failed = acc.failed)
+      (fe: FileError) =>
+          (out = acc.out,
+           err = acc.err ?> (io: IO, n: Int) =>
                    writeAll(io, "findstr: " + fe.path + ": " + show(fe.error) + "\n"),
-                 true, l.next)
-  let r = loop((stdout(), 0), (stderr(), 0), false, chain<String|FileError>(results))
+           failed = true)
+  let r = fold<String|FileError, (out: (io: IO, v: Int|IOError), err: (io: IO, v: Int|IOError), failed: Bool)>(
+    results, (out = (stdout(), 0), err = (stderr(), 0), failed = false), step)
   let outClosed = r.out.io.close()
   let errClosed = r.err.io.close()
   ret r.failed || r.out.v is IOError || r.err.v is IOError
@@ -158,5 +158,5 @@ fun main(): System::Int
         (e: None)   => "."
     ret writeResults(searchFiles(needle, gatherFiles(pathArg())))
   ret match(head<String>(args()))
-    (needle: String) => run(needle, tail<String>(args()))
+    (needle: String) => run(needle, dropOne<String>(args()))
     (e: None)        => usage()

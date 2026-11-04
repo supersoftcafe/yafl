@@ -25,17 +25,18 @@
 namespace CompilerTests::UnionSemantics::ATernaryWithNoReceiverConvertsItsArms
 
 import System
+import System::Containers
 import System::Test
 
 class [final] Ent(name: System::String, kind: System::Int|None)
 
-fun pick(xs: System::List<Ent>, i: System::Int) => match(i < 0 ? None : System::head(System::drop(xs, i)))
+fun pick(xs: System::Containers::List<Ent>, i: System::Int) => match(i < 0 ? None : System::Containers::head(System::Containers::drop(xs, i)))
   (e: Ent) => 7
   ()       => 3
 
 fun program(): System::Int
-  ret pick(System::prepend(Ent("a", None), System::List<Ent>()), 0)
-      + pick(System::List<Ent>(), -1)
+  ret pick(System::Containers::prepend(Ent("a", None), System::Containers::List<Ent>()), 0)
+      + pick(System::Containers::List<Ent>(), -1)
 
 fun [test("a ternary with no receiver converts its arms")] check(): None|TestFailure
     ret assertEqInt(program(), 10, "program()")

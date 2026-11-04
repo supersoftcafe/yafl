@@ -12,6 +12,7 @@
 namespace CompilerTests::Process::CapturesStderr
 
 import System
+import System::Containers
 import System::IO
 import System::Test
 
@@ -31,6 +32,7 @@ fun [test("captures stderr")] check(): None|TestFailure
 namespace CompilerTests::Process::CapturesStdoutAndZeroExit
 
 import System
+import System::Containers
 import System::IO
 import System::Test
 
@@ -46,6 +48,7 @@ fun [test("captures stdout and zero exit")] check(): None|TestFailure
 namespace CompilerTests::Process::LargeOutputExceedsBuffer
 
 import System
+import System::Containers
 import System::IO
 import System::Test
 
@@ -61,6 +64,7 @@ fun [test("large output exceeds buffer")] check(): None|TestFailure
 namespace CompilerTests::Process::MissingProgramIsIoerror
 
 import System
+import System::Containers
 import System::IO
 import System::Test
 
@@ -76,6 +80,7 @@ fun [test("missing program is ioerror")] check(): None|TestFailure
 namespace CompilerTests::Process::NonzeroExitIsSuccessNotError
 
 import System
+import System::Containers
 import System::IO
 import System::Test
 

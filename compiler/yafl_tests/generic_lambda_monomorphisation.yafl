@@ -2,11 +2,11 @@
 #
 # The shape is a generic lambda inside a generic function:
 #
-#     fun addAll<T>(a: List<T>, b: List<T>): List<T>
-#       ret fold<T, List<T>>(b, a, (acc: List<T>, x: T) => prepend<T>(x, acc))
+#     fun addAll<T>(a: Chain<T>, b: Chain<T>): Chain<T>
+#       ret foldChain<T, Chain<T>>(b, a, (acc: Chain<T>, x: T) => ChainLink<T>(x, acc))
 #
-# This test DEFINES that function itself rather than borrowing one from the
-# stdlib. It used to ride on `concat<T>`, which had exactly this shape until
+# This test DEFINES that function — and the chain and fold it uses — itself
+# rather than borrowing them from the stdlib. It used to ride on `concat<T>`, which had exactly this shape until
 # `concat` was rewritten to build through a ListBuilder — at which point the
 # lambda disappeared and this test silently stopped guarding anything. A test
 # for a LANGUAGE guarantee must not depend on how a library happens to be
@@ -37,20 +37,29 @@ class [final] A2(aname: String)
 # back into one — and the wrong lambda would run without a visible failure.
 class [final] B2(bnum: Int32)
 
-# The vehicle: a generic function whose body holds a generic lambda.
-fun addAll<T>(a: List<T>, b: List<T>): List<T>
-  ret fold<T, List<T> >(b, a, (acc: List<T>, x: T) => prepend<T>(x, acc))
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
 
-fun countA(l: List<A2>): Int
-  ret walkA(chain(l), 0)
+fun [tail] foldChain<T, U>(c: Chain<T>, acc: U, f: (:U, :T): U): U
+  ret match(c)
+    (nil: ChainEnd) => acc
+    (l: ChainLink)  => foldChain(l.next, f(acc, l.value), f)
+
+# The vehicle: a generic function whose body holds a generic lambda.
+fun addAll<T>(a: Chain<T>, b: Chain<T>): Chain<T>
+  ret foldChain<T, Chain<T> >(b, a, (acc: Chain<T>, x: T) => ChainLink<T>(x, acc))
+
+fun countA(c: Chain<A2>): Int
+  ret walkA(c, 0)
 
 fun [tail] walkA(c: Chain<A2>, n: Int): Int
   ret match(c)
     (nil: ChainEnd) => n
     (x: ChainLink)  => walkA(x.next, n + 1)
 
-fun countB(l: List<B2>): Int
-  ret walkB(chain(l), 0)
+fun countB(c: Chain<B2>): Int
+  ret walkB(c, 0)
 
 fun [tail] walkB(c: Chain<B2>, n: Int): Int
   ret match(c)
@@ -58,8 +67,8 @@ fun [tail] walkB(c: Chain<B2>, n: Int): Int
     (x: ChainLink)  => walkB(x.next, n + 1)
 
 fun program(): Int
-  let a = addAll(prepend(A2("p"), List<A2>()), prepend(A2("q"), List<A2>()))
-  let b = addAll(prepend(B2(1i32), List<B2>()), prepend(B2(2i32), List<B2>()))
+  let a = addAll(ChainLink<A2>(A2("p"), ChainEnd<A2>()), ChainLink<A2>(A2("q"), ChainEnd<A2>()))
+  let b = addAll(ChainLink<B2>(B2(1i32), ChainEnd<B2>()), ChainLink<B2>(B2(2i32), ChainEnd<B2>()))
   print(String(countA(a)) + "|" + String(countB(b)) + "\n")
   ret 0
 

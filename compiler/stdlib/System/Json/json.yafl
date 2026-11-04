@@ -1,6 +1,7 @@
 namespace System::Json
 
 import System
+import System::Containers
 
 
 # ─── Data model ──────────────────────────────────────────────────────────
@@ -8,9 +9,8 @@ import System
 class [final] JsonPair(key: String, value: JsonValue)
 
 # JsonValue is the DOM node type. JsonArr and JsonObj hold stdlib List<T>
-# instead of hand-rolled cons enums. The cycle
-#   JsonValue → List<JsonValue> → Chain<JsonValue> → JsonValue
-# is detected by mark_complex_enums, so all three are heap-allocated.
+# instead of hand-rolled cons enums; the list's nodes are heap objects, so
+# JsonValue → List<JsonValue> → node → JsonValue recurses through the heap.
 #
 # Numbers split into JsonInt (no fractional part / exponent) and JsonNum
 # (everything else).
@@ -314,27 +314,19 @@ fun _itemLead(out: String, lay: Layout, depth: Int, hasPrev: Int): String
     : _appendBreak(out, lay, depth)
 
 fun _writeArray(out: String, l: List<JsonValue>, depth: Int, lay: Layout): String
-  fun [tail] _body(out: String, l: List<JsonValue>, depth: Int, lay: Layout, hasPrev: Int): String
-    ret match(head<JsonValue>(l))
-      (n: None)         => hasPrev > 0
-        ? _appendBreak(out, lay, depth) + "]"
-        : out + "]"
-      (elem: JsonValue) =>
-        _body(_writeValue(_itemLead(out, lay, depth + 1, hasPrev), elem, depth + 1, lay),
-              tail<JsonValue>(l), depth, lay, 1)
-  ret _body(out + "[", l, depth, lay, 0)
+  fun item(acc: (text: String, hasPrev: Int), elem: JsonValue): (text: String, hasPrev: Int)
+    ret (text = _writeValue(_itemLead(acc.text, lay, depth + 1, acc.hasPrev), elem, depth + 1, lay),
+         hasPrev = 1)
+  let body = fold<JsonValue, (text: String, hasPrev: Int)>(l, (text = out + "[", hasPrev = 0), item)
+  ret body.hasPrev > 0 ? _appendBreak(body.text, lay, depth) + "]" : body.text + "]"
 
 fun _writeObject(out: String, l: List<JsonPair>, depth: Int, lay: Layout): String
-  fun [tail] _body(out: String, l: List<JsonPair>, depth: Int, lay: Layout, hasPrev: Int): String
-    ret match(head<JsonPair>(l))
-      (n: None)     => hasPrev > 0
-        ? _appendBreak(out, lay, depth) + "}"
-        : out + "}"
-      (p: JsonPair) =>
-        _body(_writeValue(_printQuoted(_itemLead(out, lay, depth + 1, hasPrev), p.key) + ": ",
-                          p.value, depth + 1, lay),
-              tail<JsonPair>(l), depth, lay, 1)
-  ret _body(out + "{", l, depth, lay, 0)
+  fun item(acc: (text: String, hasPrev: Int), p: JsonPair): (text: String, hasPrev: Int)
+    ret (text = _writeValue(_printQuoted(_itemLead(acc.text, lay, depth + 1, acc.hasPrev), p.key) + ": ",
+                            p.value, depth + 1, lay),
+         hasPrev = 1)
+  let body = fold<JsonPair, (text: String, hasPrev: Int)>(l, (text = out + "{", hasPrev = 0), item)
+  ret body.hasPrev > 0 ? _appendBreak(body.text, lay, depth) + "}" : body.text + "}"
 
 fun _writeValue(out: String, v: JsonValue, depth: Int, lay: Layout): String
   ret match(v)

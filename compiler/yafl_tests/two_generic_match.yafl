@@ -21,6 +21,12 @@ namespace CompilerTests::TwoGenericMatch::NestedMatchOverTwoGenericEnums
 import System
 import System::Test
 
+# A local cons chain: the stdlib's Chain is gone, and this test is about
+# matching a generic enum, not about lists.
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
 fun [tail] sameLen2<T, U>(a: Chain<T>, b: Chain<U>): Bool
   ret match(a)
     (nil: ChainEnd) => b is ChainEnd
@@ -29,9 +35,9 @@ fun [tail] sameLen2<T, U>(a: Chain<T>, b: Chain<U>): Bool
       (lb: ChainLink)  => sameLen2(la.next, lb.next)
 
 fun program(): Int
-  let xs = prepend(1, prepend(2, List<Int>()))
-  let ys = prepend("a", prepend("b", List<String>()))
-  ret sameLen2(chain(xs), chain(ys)) ? 0 : 1
+  let xs = ChainLink<Int>(1, ChainLink<Int>(2, ChainEnd<Int>()))
+  let ys = ChainLink<String>("a", ChainLink<String>("b", ChainEnd<String>()))
+  ret sameLen2(xs, ys) ? 0 : 1
 
 fun [test("nested match over two generic enums")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")

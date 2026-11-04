@@ -2,6 +2,7 @@ namespace System::IO
 
 import System
 import System::IO
+import System::Containers
 
 
 # Internal foreign layer for filesystem metadata.  Both async ops dispatch
@@ -71,20 +72,18 @@ fun makeDir(path: String): IOError|None
 # and creating "" would fail, so the walk carries the prefix rather than
 # rebuilding it from the parts.
 fun makeDirs(path: String): IOError|None
-  ret path == "" ? None : _mkDirsLoop(chain(split(path, "/")), "", true)
-
-fun [tail] _mkDirsLoop(parts: Chain<String>, prefix: String,
-                       first: Bool): IOError|None
-  ret match(parts)
-    (nil: ChainEnd) => None
-    (l: ChainLink)  => (first ? l.value : prefix + "/" + l.value)
-      |> (here: String) => here == ""
-        # An empty component is either the root's leading "/" or a doubled
-        # slash; neither names a directory to create.
-        ? _mkDirsLoop(l.next, here, false)
-        : match(makeDir(here))
-          (e: IOError) => e
-          ()           => _mkDirsLoop(l.next, here, false)
+  # The prefix is None before the first component, so "a/b" starts "a" while
+  # "/a" (whose first component is empty) starts "" and then "/a".
+  fun step(acc: (prefix: String|None, err: IOError|None), part: String): (prefix: String|None, err: IOError|None)
+    let here = match(acc.prefix)
+      (p: String) => p + "/" + part
+      (n: None)   => part
+    # An empty component is either the root's leading "/" or a doubled
+    # slash; neither names a directory to create.
+    ret (prefix = here, err = here == "" ? None : makeDir(here))
+  ret path == "" ? None
+    : foldWhile<String, (prefix: String|None, err: IOError|None)>(split(path, "/"), (prefix = None, err = None),
+        step, (acc: (prefix: String|None, err: IOError|None)) => acc.err is None).err
 
 
 # Public Dir handle.  [linear,final] — every Dir must be threaded through

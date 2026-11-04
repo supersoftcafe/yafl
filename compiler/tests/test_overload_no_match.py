@@ -32,6 +32,7 @@ class TestOverloadNoMatch(unittest.TestCase):
         # this", naming the argument type and the real signatures.
         src = """namespace Main
 import System
+import System::Containers
 fun pick(l: List<System::String>): System::String|System::None
   ret singleOrNone(l)
 fun main(): System::Int

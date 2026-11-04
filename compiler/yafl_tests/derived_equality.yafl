@@ -23,12 +23,18 @@ enum Col
   enum Red()
   enum Green()
 
-fun [tail] idxLoop(es: System::Chain<System::String>, name: System::String, i) => match(es)
-  (nil: System::ChainEnd) => None
-  (l: System::ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
+# A local cons chain: the stdlib's Chain is gone, and this test is about
+# matching a generic enum, not about lists.
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
+fun [tail] idxLoop(es: Chain<System::String>, name: System::String, i) => match(es)
+  (nil: ChainEnd) => None
+  (l: ChainLink)  => l.value == name ? i : idxLoop(l.next, name, i + 1)
 
 fun program(): System::Int
-  ret match(idxLoop(System::chain(System::prepend("b", System::prepend("a", System::List<System::String>()))), "a", 0))
+  ret match(idxLoop(ChainLink<System::String>("b", ChainLink<System::String>("a", ChainEnd<System::String>())), "a", 0))
     (n: System::Int) => n + 7
     ()               => 3
 

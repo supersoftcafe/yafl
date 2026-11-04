@@ -1,39 +1,21 @@
-# list_bench — compare System::List (the cons-chain list) against
-# System::Containers::NewList (the append-friendly CAS-tail list).
+# list_bench — System::Containers::List workloads.
 #
 #   list_bench <build|prepend|map|filter|concat|takedrop>
 #
-# Both sides run the SAME workload at the SAME scale, so a checksum printed by
-# one binary must equal the checksum printed by the other. That equality is the
-# correctness check; the wall time is taken outside, like every other bench in
-# this folder (the language has no clock by design).
+# Each mode prints a checksum, which must not change between builds: it is
+# the correctness check. The wall time is taken outside, like every other
+# bench in this folder (the language has no clock by design).
 #
-# FAIR CONSTRUCTION. List has no O(1) append — `append` was removed because the
-# spine is stored in traversal order. Building a huge List therefore uses a
-# ListBuilder ([linear] in-order push, O(1) per element, one pin per builder),
-# not repeated `concat`/`append`. NewList builds with `append`, which is its
-# O(1) path. That is the honest comparison of the two designs' build paths.
+# (This bench used to compare the old cons-chain System::List against the
+# then-new list; the old one is gone. The modes, scales and checksums are
+# unchanged, so numbers stay comparable with those runs.)
 #
-# ONE SOURCE, TWO BINARIES. bench/run_bench.py interleaves A/B binaries so
-# machine drift lands on both sides equally, but it passes the same mode to
-# every binary. The only thing that differs between the two runs is argv[0], so
-# this program picks the implementation from its own name: build the source
-# twice and name one binary *newlist* (e.g. bench_list / bench_newlist).
-#
-#   env -u YAFL_PATH -u YAFL_LIBYAFL_A build/ybootstrap -O3 -o build/bench_list    bench/list_bench.yafl
-#   env -u YAFL_PATH -u YAFL_LIBYAFL_A build/ybootstrap -O3 -o build/bench_newlist bench/list_bench.yafl
-#   bench/run_bench.py --modes build,prepend,map,filter,concat,takedrop \
-#       list=build/bench_list newlist=build/bench_newlist
+#   env -u YAFL_PATH -u YAFL_LIBYAFL_A build/ybootstrap -O3 -o build/bench_list bench/list_bench.yafl
+#   bench/run_bench.py --modes build,prepend,map,filter,concat,takedrop list=build/bench_list
 namespace Bench::ListBench
 
 import System
 import System::Containers
-
-
-# ── which list are we? ───────────────────────────────────────────────────────
-
-fun useNewList(): System::Bool
-  ret System::contains(System::argv0(), "newlist")
 
 
 # ── scales ───────────────────────────────────────────────────────────────────
@@ -48,103 +30,43 @@ let chunkSize: System::Int = 50000
 let chunks:    System::Int = 40
 
 
-# ── System::List (System/list.yafl) ─────────────────────────────────────────
-# Build with a ListBuilder, walk with System::fold.
+# ── workloads ────────────────────────────────────────────────────────────────
 
-fun [tail] listBuildRange([terminal] b: System::ListBuilder<System::Int>,
-                          i: System::Int, upto: System::Int): System::ListBuilder<System::Int>
-  ret i >= upto ? b : listBuildRange(System::push<System::Int>(b, i), i + 1, upto)
+fun [tail] buildRange(l: List<System::Int>, i: System::Int, upto: System::Int): List<System::Int>
+  ret i >= upto ? l : buildRange(append<System::Int>(l, i), i + 1, upto)
 
-fun listRange(from: System::Int, upto: System::Int): System::List<System::Int>
-  ret System::build<System::Int>(listBuildRange(System::builder<System::Int>(), from, upto))
+fun range(from: System::Int, upto: System::Int): List<System::Int>
+  ret buildRange(List<System::Int>(), from, upto)
 
-fun listSum(l: System::List<System::Int>): System::Int
-  ret System::fold<System::Int, System::Int>(
-        l, 0, (acc: System::Int, x: System::Int) => (acc + x) % modulus)
+fun sum(l: List<System::Int>): System::Int
+  ret fold<System::Int, System::Int>(l, 0, (acc: System::Int, x: System::Int) => (acc + x) % modulus)
 
-fun listBuild(): System::Int
-  ret listSum(listRange(0, n))
+fun build(): System::Int
+  ret sum(range(0, n))
 
-fun [tail] listPrependLoop(l: System::List<System::Int>, i: System::Int,
-                           upto: System::Int): System::List<System::Int>
-  ret i >= upto ? l : listPrependLoop(System::prepend<System::Int>(i, l), i + 1, upto)
+fun [tail] prependLoop(l: List<System::Int>, i: System::Int, upto: System::Int): List<System::Int>
+  ret i >= upto ? l : prependLoop(prepend<System::Int>(i, l), i + 1, upto)
 
-fun listPrepend(): System::Int
-  ret listSum(listPrependLoop(System::List<System::Int>(), 0, n))
+fun prependAll(): System::Int
+  ret sum(prependLoop(List<System::Int>(), 0, n))
 
-fun listMap(): System::Int
-  let l = listRange(0, n)
-  ret listSum(System::map<System::Int, System::Int>(
-        l, (x: System::Int) => (x * 2 + 1) % modulus))
+fun mapAll(): System::Int
+  ret sum(map<System::Int, System::Int>(range(0, n), (x: System::Int) => (x * 2 + 1) % modulus))
 
-fun listFilter(): System::Int
-  let l = listRange(0, n)
-  ret listSum(System::filter<System::Int>(l, (x: System::Int) => x % 3 != 0))
+fun filterAll(): System::Int
+  ret sum(filter<System::Int>(range(0, n), (x: System::Int) => x % 3 != 0))
 
-fun [tail] listConcatLoop(acc: System::List<System::Int>, i: System::Int,
-                          end: System::Int): System::List<System::Int>
+fun [tail] concatLoop(acc: List<System::Int>, i: System::Int, end: System::Int): List<System::Int>
   ret i >= end ? acc
-    : listConcatLoop(System::concat<System::Int>(acc, listRange(i, i + chunkSize)),
-                     i + chunkSize, end)
+    : concatLoop(concat<System::Int>(acc, range(i, i + chunkSize)), i + chunkSize, end)
 
-fun listConcat(): System::Int
-  ret listSum(listConcatLoop(System::List<System::Int>(), 0, chunkSize * chunks))
+fun concatAll(): System::Int
+  ret sum(concatLoop(List<System::Int>(), 0, chunkSize * chunks))
 
-fun listTakeDrop(): System::Int
-  let l = listRange(0, n)
+fun takeDrop(): System::Int
+  let l = range(0, n)
   let half = n / 2
-  ret (listSum(System::take<System::Int>(l, half))
-       + listSum(System::drop<System::Int>(l, half))) % modulus
-
-
-# ── System::Containers::NewList (System/Containers/list.yafl) ───────────────
-# Build with append (its O(1) path), walk with Containers::fold.
-
-fun [tail] newBuildRange(l: System::Containers::NewList<System::Int>,
-                         i: System::Int, upto: System::Int): System::Containers::NewList<System::Int>
-  ret i >= upto ? l : newBuildRange(System::Containers::append<System::Int>(l, i), i + 1, upto)
-
-fun newRange(from: System::Int, upto: System::Int): System::Containers::NewList<System::Int>
-  ret newBuildRange(System::Containers::NewList<System::Int>(), from, upto)
-
-fun newSum(l: System::Containers::NewList<System::Int>): System::Int
-  ret System::Containers::fold<System::Int, System::Int>(
-        l, 0, (acc: System::Int, x: System::Int) => (acc + x) % modulus)
-
-fun newBuild(): System::Int
-  ret newSum(newRange(0, n))
-
-fun [tail] newPrependLoop(l: System::Containers::NewList<System::Int>, i: System::Int,
-                          upto: System::Int): System::Containers::NewList<System::Int>
-  ret i >= upto ? l
-    : newPrependLoop(System::Containers::prepend<System::Int>(i, l), i + 1, upto)
-
-fun newPrepend(): System::Int
-  ret newSum(newPrependLoop(System::Containers::NewList<System::Int>(), 0, n))
-
-fun newMap(): System::Int
-  let l = newRange(0, n)
-  ret newSum(System::Containers::map<System::Int, System::Int>(
-        l, (x: System::Int) => (x * 2 + 1) % modulus))
-
-fun newFilter(): System::Int
-  let l = newRange(0, n)
-  ret newSum(System::Containers::filter<System::Int>(l, (x: System::Int) => x % 3 != 0))
-
-fun [tail] newConcatLoop(acc: System::Containers::NewList<System::Int>, i: System::Int,
-                         end: System::Int): System::Containers::NewList<System::Int>
-  ret i >= end ? acc
-    : newConcatLoop(System::Containers::concat<System::Int>(acc, newRange(i, i + chunkSize)),
-                    i + chunkSize, end)
-
-fun newConcat(): System::Int
-  ret newSum(newConcatLoop(System::Containers::NewList<System::Int>(), 0, chunkSize * chunks))
-
-fun newTakeDrop(): System::Int
-  let l = newRange(0, n)
-  let half = n / 2
-  ret (newSum(System::Containers::take<System::Int>(l, half))
-       + newSum(System::Containers::drop<System::Int>(l, half))) % modulus
+  ret (sum(take<System::Int>(l, half)) + sum(drop<System::Int>(l, half))) % modulus
 
 
 # ── entry point ──────────────────────────────────────────────────────────────
@@ -153,22 +75,13 @@ fun report(mode: System::String, result: System::Int): System::Int
   println(mode + " checksum " + String(result))
   ret 0
 
-fun runList(mode: System::String): System::Int
-  ret mode == "build"    ? listBuild()
-    : mode == "prepend"  ? listPrepend()
-    : mode == "map"      ? listMap()
-    : mode == "filter"   ? listFilter()
-    : mode == "concat"   ? listConcat()
-    : mode == "takedrop" ? listTakeDrop()
-    : -1
-
-fun runNewList(mode: System::String): System::Int
-  ret mode == "build"    ? newBuild()
-    : mode == "prepend"  ? newPrepend()
-    : mode == "map"      ? newMap()
-    : mode == "filter"   ? newFilter()
-    : mode == "concat"   ? newConcat()
-    : mode == "takedrop" ? newTakeDrop()
+fun run(mode: System::String): System::Int
+  ret mode == "build"    ? build()
+    : mode == "prepend"  ? prependAll()
+    : mode == "map"      ? mapAll()
+    : mode == "filter"   ? filterAll()
+    : mode == "concat"   ? concatAll()
+    : mode == "takedrop" ? takeDrop()
     : -1
 
 fun main(): System::Int
@@ -177,9 +90,9 @@ fun main(): System::Int
     ret 2
 
   fun dispatch(mode: System::String): System::Int
-    let result = useNewList() ? runNewList(mode) : runList(mode)
+    let result = run(mode)
     ret result < 0 ? usage() : report(mode, result)
 
-  ret match(System::head<System::String>(System::args()))
+  ret match(head<System::String>(System::args()))
     (mode: System::String) => dispatch(mode)
     (e: System::None)      => usage()
