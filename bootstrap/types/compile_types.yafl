@@ -18,6 +18,7 @@
 namespace Bootstrap::Types
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Frontend
@@ -133,17 +134,14 @@ fun compileArray(af: SArrayField, r)
   ret SpecOut(SArrayField(el.soSpec, af.safLenField, af.safLine), el.soGlobals)
 
 fun compileTuple(t2: STuple, r)
-  let es = compileEntries(chain(t2.stEntries), r, builder(), List())
+  let es = compileEntries(t2.stEntries, r, List(), List())
   ret SpecOut(STuple(es.esEntries, t2.stLine), es.esGlobals)
 
 class [final] EntriesOut(esEntries: List<SEntry>, esGlobals: List<PStmt>)
 
-fun [tail] compileEntries(es: Chain<SEntry>, r, [terminal] acc,
-                          glb) => match(es)
-  (nil: ChainEnd) => EntriesOut(build(acc), glb)
-  (l: ChainLink)  => compileEntry(l.value, r)
-    |> (one) => compileEntries(l.next, r, push(acc, one.eoEntry),
-                               concat(glb, one.eoGlobals))
+fun compileEntries(es: List<SEntry>, r, acc, glb) =>
+  fold(es, EntriesOut(acc, glb), (o, e) => compileEntry(e, r)
+    |> (one) => EntriesOut(append(o.esEntries, one.eoEntry), concat(o.esGlobals, one.eoGlobals)))
 
 class [final] EntryOut(eoEntry: SEntry, eoGlobals: List<PStmt>)
 
@@ -165,11 +163,8 @@ fun compileEntry(en: SEntry, r)
 
 class [final] ParamsOut(psSpecs: List<Spec>, psGlobals: List<PStmt>)
 
-fun compileParams(ts: List<Spec>, r) => compileParamLoop(chain(ts), r, builder(), List())
+fun compileParams(ts: List<Spec>, r) => compileParamLoop(ts, r, List(), List())
 
-fun [tail] compileParamLoop(ts: Chain<Spec>, r, [terminal] acc,
-                            glb) => match(ts)
-  (nil: ChainEnd) => ParamsOut(build(acc), glb)
-  (l: ChainLink)  => compileSpec(l.value, r)
-    |> (one) => compileParamLoop(l.next, r, push(acc, one.soSpec),
-                                 concat(glb, one.soGlobals))
+fun compileParamLoop(ts: List<Spec>, r, acc, glb) =>
+  fold(ts, ParamsOut(acc, glb), (o, t) => compileSpec(t, r)
+    |> (one) => ParamsOut(append(o.psSpecs, one.soSpec), concat(o.psGlobals, one.soGlobals)))

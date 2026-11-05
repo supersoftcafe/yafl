@@ -39,6 +39,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
@@ -113,7 +114,7 @@ fun fsAliasSource(src: RParam, fresh: Set<String>, target: String): String|None 
 # inspects reads, so the kill has to be explicit.
 fun fsSurvivors(op: Op, fresh: Set<String>): Set<String>
   let kept = filter(fresh, (n) => !esOpPublishes(op, n))
-  ret fold(fsWritten(op), kept, (s, sv) => fsRemoveVar(s, sv))
+  ret fold(fsWritten(op), kept, fsRemoveVar)
 
 # OpIfTask assigns taskLhs and callIdLhs on the side and reports NO writes at
 # all from opGetLiveVars, so it needs naming here.
@@ -128,7 +129,7 @@ fun fsRemoveVar(s: Set<String>, sv: RParam): Set<String> => match(sv)
 # ── the sweep ───────────────────────────────────────────────────────────────
 
 fun fsUniverse(ops: Segment<Op>|None): Set<String>
-  ret fold(ops, Set<String>(), (s, op) => fsUniverseOp(s, op))
+  ret fold(ops, Set<String>(), fsUniverseOp)
 
 fun fsUniverseOp(s: Set<String>, op: Op): Set<String> => match(op)
   (no: OpNewObject) => union(s, fsRegisterName(no.newObjRegister))

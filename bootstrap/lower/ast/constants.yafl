@@ -14,6 +14,7 @@
 namespace Bootstrap::Lower::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Resolve
@@ -26,21 +27,18 @@ import Bootstrap::Resolve
 class [final] IcConsts(icMap: Dict<String, PExpr>)
 
 fun inlineConstants(statements: List<PStmt>): List<PStmt>
-  let consts = icCollect(chain(statements),
+  let consts = icCollect(statements,
                          IcConsts(Dict()))
   if isEmpty(consts.icMap)
     ret statements
-  ret rwStmts(icDropDecls(chain(statements), consts, List()),
+  ret rwStmts(icDropDecls(statements, consts, List()),
               Rw((x) => icReplace(x, consts), rwNoSpec, rwNoStmt))
 
-fun [tail] icCollect(ss: Chain<PStmt>, acc): IcConsts => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => hasAttr(let2.lAttrs, "const")
-      ? icCollectLet(let2, acc)
-        |> (acc2) => icCollect(l.next, acc2)
-      : icCollect(l.next, acc)
-    (o: PStmt)    => icCollect(l.next, acc)
+fun icCollect(ss: List<PStmt>, acc): IcConsts => fold(ss, acc, icCollectOne)
+
+fun icCollectOne(acc: IcConsts, st: PStmt): IcConsts => match(st)
+  (let2: PsLet) => hasAttr(let2.lAttrs, "const") ? icCollectLet(let2, acc) : acc
+  (o: PStmt)    => acc
 
 fun icCollectLet(let2: PsLet, acc) => match(let2.lDefault)
   (v: PExpr) => icIsLiteral(v)
@@ -68,16 +66,11 @@ fun icRestamp(v, line) => match(v)
 
 # Top level: const declarations are DROPPED — they live only as inlined uses.
 fun icDropDecls(ss, c: IcConsts,
-                       acc: List<PStmt>) => build(icDropDeclsB(ss, c, builderFrom(acc)))
+                acc: List<PStmt>) => concat(acc, filter(ss, (st) => icKeep(st, c)))
 
-fun [tail] icDropDeclsB(ss: Chain<PStmt>, c: IcConsts,
-                       [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => contains(c.icMap, let2.lName)
-      ? icDropDeclsB(l.next, c, acc)
-      : icDropDeclsB(l.next, c, push(acc, l.value))
-    (o: PStmt)    => icDropDeclsB(l.next, c, push(acc, l.value))
+fun icKeep(st: PStmt, c: IcConsts): Bool => match(st)
+  (let2: PsLet) => !contains(c.icMap, let2.lName)
+  (o: PStmt)    => true
 
 # The walker callback: a bare name that aliases a const becomes the literal.
 fun icReplace(x, c: IcConsts): PExpr|None => match(x)

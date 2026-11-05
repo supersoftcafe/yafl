@@ -8,6 +8,7 @@
 namespace Bootstrap::Resolve
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Frontend
@@ -34,7 +35,7 @@ fun unsettled() => put(noHints(), unsettledKey(), List())
 fun isUnsettled(hs: Dict<String, List<Hint>>) => contains(hs, unsettledKey())
 
 fun hintOf(name: String, spec, lower)
-  ret put(noHints(), name, build(push(builder(), Hint(spec, lower))))
+  ret put(noHints(), name, append(List(), Hint(spec, lower)))
 
 fun hintsFor(hs: Dict<String, List<Hint>>, name: String) => match(get(hs, name))
   (l: List<Hint>) => l
@@ -123,7 +124,7 @@ fun mergedBounds(lo, up, r): Spec|None => mergeSpecs(up, lo, List<MBind>(), r)
 fun upperOf(uppers: List<Spec>, r)
   if isEmpty(uppers)
     ret None
-  ret match(narrowest(chain(uppers), uppers, r))
+  ret match(narrowest(uppers, uppers, r))
     (n: Spec) => n
     ()        => convergeTypes(uppers, r)
 
@@ -134,22 +135,14 @@ fun openResult(sp) => match(sp)
   (o: Spec)       => false
 
 fun listed(specs: List<Spec>, sep: String)
-  ret join(sort(dedupeStrs(map(specs, (sp) => typeStr(sp)))), sep)
+  ret join(sort(dedupeStrs(map(specs, typeStr))), sep)
 
 # The one upper bound that satisfies all the others.
-fun [tail] narrowest(us: Chain<Spec>, all: List<Spec>, r) => match(us)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => allFit(chain(all), l.value, r, false)
-    ? l.value
-    : narrowest(l.next, all, r)
+fun narrowest(us: List<Spec>, all: List<Spec>, r) => firstWhere(us, (u) => allFit(all, u, r, false))
 
 # widest: `cand` accepts each; otherwise each accepts `cand`.
-fun [tail] allFit(us: Chain<Spec>, cand, r, widest) => match(us)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => eqSpec(l.value, cand)
-                     || (widest ? receives(cand, l.value, r) : receives(l.value, cand, r))
-    ? allFit(l.next, cand, r, widest)
-    : false
+fun allFit(us: List<Spec>, cand, r, widest) =>
+  all(us, (u) => eqSpec(u, cand) || (widest ? receives(cand, u, r) : receives(u, cand, r)))
 
 
 # ── converge ────────────────────────────────────────────────────────────────
@@ -157,39 +150,33 @@ fun [tail] allFit(us: Chain<Spec>, cand, r, widest) => match(us)
 # The one type all of `types` fit: the same type, the widest of them, their
 # enum's root, or the one interface their classes share.
 fun convergeTypes(types: List<Spec>, r) => match(head(types))
-  (first: Spec) => allSameSpec(chain(types), first)
+  (first: Spec) => allSameSpec(types, first)
     ? first
     : convergeMixed(types, first, r)
   ()            => None
 
-fun convergeMixed(types: List<Spec>, first, r) => match(widestOf(chain(types), types, r))
+fun convergeMixed(types: List<Spec>, first, r) => match(widestOf(types, types, r))
   (w: Spec) => w
-  ()        => allEnums(chain(types))
+  ()        => allEnums(types)
     ? rootEnumOf(types, first)
-    : allClasses(chain(types)) ? soleShared(sharedInterfaces(types, r)) : None
+    : allClasses(types) ? soleShared(sharedInterfaces(types, r)) : None
 
-fun [tail] widestOf(ws: Chain<Spec>, all: List<Spec>, r) => match(ws)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => allFit(chain(all), l.value, r, true)
-    ? l.value
-    : widestOf(l.next, all, r)
+fun widestOf(ws: List<Spec>, all: List<Spec>, r) => firstWhere(ws, (w) => allFit(all, w, r, true))
 
 fun rootEnumOf(types: List<Spec>, first) => match(first)
-  (e2: SEnum) => sameEnumFamily(chain(types), e2)
+  (e2: SEnum) => sameEnumFamily(types, e2)
     ? SEnum(e2.seRoot, e2.seAllLeaves, e2.seAllLeaves, e2.seParams, e2.seLine)
     : None
   (o: Spec)   => None
 
-fun [tail] sameEnumFamily(ss: Chain<Spec>, e2: SEnum) => match(ss)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(l.value)
-    (x: SEnum) => x.seRoot == e2.seRoot && eqSpecs(x.seParams, e2.seParams)
-      ? sameEnumFamily(l.next, e2)
-      : false
-    (o: Spec)  => false
+fun sameEnumFamily(ss: List<Spec>, e2: SEnum) => all(ss, (s) => inEnumFamily(s, e2))
+
+fun inEnumFamily(s: Spec, e2: SEnum): Bool => match(s)
+  (x: SEnum) => x.seRoot == e2.seRoot && eqSpecs(x.seParams, e2.seParams)
+  (o: Spec)  => false
 
 fun soleShared(shared: List<Spec>|None) => match(shared)
-  (l: List<Spec>) => exactly(chain(l), 1) ? head(l) : None
+  (l: List<Spec>) => exactly(l, 1) ? head(l) : None
   ()              => None
 
 # A ternary's or match's type: its branches converged, else their union.
@@ -202,22 +189,22 @@ fun soleShared(shared: List<Spec>|None) => match(shared)
 # branch's type is their set union, so a `List<Spec>` inside a sibling's
 # `List<Spec> | None` is as good a sibling as a bare one.
 fun branchType(types: List<Spec|None>, r): Spec|None
-  let arms = knownSpecs(chain(types), builder())
+  let arms = knownSpecs(types, List())
   let known = map(arms, (x) => filledShape(x, arms, r))
   ret isEmpty(known)
     ? None
     : match(convergeTypes(known, r))
       (c: Spec) => c
-      ()        => fold(drop(known, 1), head(known), (acc, x) => join(acc, x))
+      ()        => fold(drop(known, 1), head(known), join)
 
 fun filledShape(arm, siblings: List<Spec>, r)
   if !hasFreePlaceholders(arm, r)
     ret arm
   let members = fold(siblings, List<Spec>(), (acc, x) => concat(acc, branchMembers(x)))
   let fitting = filter(members, (x) => fitsShape(arm, x, r))
-  let ground = addSpecsOnce(List<Spec>(), chain(filter(fitting, (x) => !hasFreePlaceholders(x, r))))
+  let ground = addSpecsOnce(List<Spec>(), filter(fitting, (x) => !hasFreePlaceholders(x, r)))
   ret match(head(ground))
-    (g: Spec) => exactly(chain(ground), 1) ? g : arm
+    (g: Spec) => exactly(ground, 1) ? g : arm
     ()        => match(head(fitting))
       (f: Spec) => f
       ()        => arm
@@ -232,25 +219,19 @@ fun fitsShape(arm, sibling, r) => match(mergeSpecs(arm, sibling, List(), r).moSp
   (m: Spec) => eqSpec(m, sibling)
   ()        => false
 
-fun [tail] knownSpecs(ts: Chain<Spec|None>,
-                      [terminal] acc: ListBuilder<Spec>) => match(ts)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => match(l.value)
-    (x: Spec) => knownSpecs(l.next, push(acc, x))
-    ()        => knownSpecs(l.next, acc)
+fun knownSpecs(ts: List<Spec|None>, acc: List<Spec>) => fold(ts, acc, appendSome)
 
 # The interfaces every one of these classes implements, or None while an
 # inheritance graph is unbuilt.
-fun sharedInterfaces(specs: List<Spec>, r) => sharedLoop(chain(specs), r, None)
+fun sharedInterfaces(specs: List<Spec>, r) => sharedLoop(specs, r, None)
 
-fun [tail] sharedLoop(ss: Chain<Spec>, r,
-                      acc: List<Spec>|None) => match(ss)
-  (nil: ChainEnd) => match(acc)
-    (l2: List<Spec>) => l2
-    ()               => List()
-  (l: ChainLink)  => match(interfacesOf(l.value, r))
-    (ps2: List<Spec>) => sharedLoop(l.next, r, intersectSpecs(acc, ps2))
-    ()                => None
+# `shared` None means no member seen yet; a member with no interface list
+# stops the walk and the answer is None.
+fun sharedLoop(ss: List<Spec>, r, acc: List<Spec>|None) =>
+  foldWhile(ss, (ok = true, shared = acc),
+            (st, s) => sharedStep(st, s, r),
+            (st) => st.ok)
+    |> (st) => !st.ok ? None : st.shared ?? List<Spec>()
 
 fun interfacesOf(sp, r) => match(sp)
   (c: SClass) => classParents(c, r)
@@ -276,18 +257,12 @@ fun specNameOf(sp) => match(sp)
   (c: SClass) => c.scName
   (o: Spec)   => ""
 
-fun [tail] allSameSpec(ss: Chain<Spec>, first) => match(ss)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => eqSpec(l.value, first) ? allSameSpec(l.next, first) : false
+fun sharedStep(st: (ok: Bool, shared: List<Spec>|None), s: Spec, r) => match(interfacesOf(s, r))
+  (ps2: List<Spec>) => (ok = true, shared = intersectSpecs(st.shared, ps2))
+  ()                => (ok = false, shared = st.shared)
 
-fun [tail] allEnums(ss: Chain<Spec>) => match(ss)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(l.value)
-    (e2: SEnum) => allEnums(l.next)
-    (o: Spec)   => false
+fun allSameSpec(ss: List<Spec>, first) => all(ss, (s) => eqSpec(s, first))
 
-fun [tail] allClasses(ss: Chain<Spec>) => match(ss)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => match(l.value)
-    (c: SClass) => allClasses(l.next)
-    (o: Spec)   => false
+fun allEnums(ss: List<Spec>) => all(ss, (s) => s is SEnum)
+
+fun allClasses(ss: List<Spec>) => all(ss, (s) => s is SClass)

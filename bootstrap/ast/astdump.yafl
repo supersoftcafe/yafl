@@ -5,6 +5,7 @@
 namespace Bootstrap::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Codegen
 import Bootstrap::Frontend
@@ -79,11 +80,11 @@ fun tyOf(ty) => match(ty)
                        + ")"
   (ls: SLazyStub)   => "LazyStubSpec"
 
-fun tyList(ts: List<Spec>) => join(map(ts, (t2) => tyOf(t2)), ",")
+fun tyList(ts: List<Spec>) => join(map(ts, tyOf), ",")
 
-fun joinBar(ts: List<Spec>) => join(map(ts, (t2) => tyOf(t2)), "|")
+fun joinBar(ts: List<Spec>) => join(map(ts, tyOf), "|")
 
-fun tyEnts(es: List<SEntry>) => join(map(es, (en) => tyEnt(en)), ",")
+fun tyEnts(es: List<SEntry>) => join(map(es, tyEnt), ",")
 
 fun tyEnt(en: SEntry)
   let d = match(en.seDefault)
@@ -94,7 +95,7 @@ fun tyEnt(en: SEntry)
 fun attrsStr(attrs: List<PAttr>)
   if isEmpty(attrs)
     ret "-"
-  ret join(map(attrs, (a) => attrStr(a)), ",")
+  ret join(map(attrs, attrStr), ",")
 
 fun attrStr(a: PAttr) => match(a.attrValue)
   (x: PExpr) => a.attrName + "=<expr>"
@@ -102,7 +103,7 @@ fun attrStr(a: PAttr) => match(a.attrValue)
 
 fun gensStr(gs: List<PGen>) => join(map(gs, (g2) => g2.genName), ",")
 
-fun wheresStr(ws: List<Spec>) => join(map(ws, (w) => tyOf(w)), ",")
+fun wheresStr(ws: List<Spec>) => join(map(ws, tyOf), ",")
 
 # ── expression walk ──────────────────────────────────────────────────────────
 
@@ -174,7 +175,7 @@ fun dumpExpr(x, depth, out) => match(x)
     |> (s2) => dumpExpr(qq.qqFallback, depth + 1, s2)
   # tail_loop lowering only — exercised by the tail-stage contract.
   (lp: PeLoop)      => dLine(out, depth, "Loop", lp.pelpLine,
-                             join(loopParamNames(chain(lp.loopParams),
+                             join(loopParamNames(lp.loopParams,
                                                  List()),
                                   ","))
     |> (s1) => dumpExpr(lp.loopBody, depth + 1, s1)
@@ -192,30 +193,21 @@ fun lazyCapMark(c: String|None) => match(c)
   ()          => ""
 
 fun loopParamNames(ps, acc: List<String>): List<String>
-  ret build(loopParamNamesB(ps, builderFrom(acc)))
+  ret loopParamNamesB(ps, acc)
 
-fun [tail] loopParamNamesB(ps: Chain<PExpr>, [terminal] acc: ListBuilder<String>) => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (nm: PeName) => loopParamNamesB(l.next, push(acc, nm.refName))
-    (o: PExpr)   => loopParamNamesB(l.next, acc)
+fun loopParamNamesB(ps: List<PExpr>, acc: List<String>) => fold(ps, acc, loopParamName)
 
-fun [tail] dumpExprs(es: List<PExpr>, depth,
-                     out) => match(head(es))
-  (x: PExpr) => dumpExprs(tail(es), depth, dumpExpr(x, depth, out))
-  ()         => out
+fun loopParamName(acc: List<String>, p: PExpr): List<String> => match(p)
+  (nm: PeName) => append(acc, nm.refName)
+  (o: PExpr)   => acc
 
-fun [tail] dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth,
-                       out) => match(head(es))
-  (en: PTupEnt) => dumpTupEnts(tail(es), lr, depth,
-      dumpExpr(en.tupValue, depth + 1,
-        dLine(out, depth, "Entry", lr,
-              en.tupName + "|" + (en.tupSpread ? "*" : ""))))
-  ()            => out
+fun dumpExprs(es: List<PExpr>, depth, out) => fold(es, out, (o, x) => dumpExpr(x, depth, o))
 
-fun [tail] dumpArms(arms: List<PArm>, depth, out) => match(head(arms))
-  (a: PArm) => dumpArms(tail(arms), depth, dumpArm(a, depth, out))
-  ()        => out
+fun dumpTupEnts(es: List<PTupEnt>, lr: PLine, depth, out) => fold(es, out, (o, en) =>
+  dumpExpr(en.tupValue, depth + 1,
+    dLine(o, depth, "Entry", lr, en.tupName + "|" + (en.tupSpread ? "*" : ""))))
+
+fun dumpArms(arms: List<PArm>, depth, out) => fold(arms, out, (o, a) => dumpArm(a, depth, o))
 
 fun dumpArm(a: PArm, depth, out)
   let opened = dLine(out, depth, "Arm", a.parmLine, a.armName + "|" + tyStr(a.armType))
@@ -225,9 +217,7 @@ fun dumpArm(a: PArm, depth, out)
     ()          => lits
   ret dumpExpr(a.armBody, depth + 1, guarded)
 
-fun [tail] dumpLits(ls: List<PLit>, depth, out) => match(head(ls))
-  (l: PLit) => dumpLits(tail(ls), depth, dumpLit(l, depth, out))
-  ()        => out
+fun dumpLits(ls: List<PLit>, depth, out) => fold(ls, out, (o, l) => dumpLit(l, depth, o))
 
 fun dumpLit(l, depth, out) => match(l)
   (x: PlExpr)  => dumpExpr(x.litExpr, depth, out)
@@ -237,9 +227,7 @@ fun dumpLit(l, depth, out) => match(l)
 
 # ── statement walk ───────────────────────────────────────────────────────────
 
-fun [tail] dumpStmts(ss: List<PStmt>, depth, out) => match(head(ss))
-  (st: PStmt) => dumpStmts(tail(ss), depth, dumpStmt(st, depth, out))
-  ()          => out
+fun dumpStmts(ss: List<PStmt>, depth, out) => fold(ss, out, (o, st) => dumpStmt(st, depth, o))
 
 fun dumpStmt(st, depth, out) => match(st)
   (f: PsFun) => dLine(out, depth, "Fun", f.psfLine,

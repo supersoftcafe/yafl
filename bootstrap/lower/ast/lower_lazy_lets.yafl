@@ -5,6 +5,7 @@
 namespace Bootstrap::Lower::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Codegen
@@ -31,23 +32,19 @@ fun hasStaticGlobalPlan(l: PsLet, r, chasing: List<String>)
 
 fun specHasNamed(sp) => match(sp)
   (n: SNamed)        => true
-  (c: SClass)        => sgAnyNamed(chain(c.scParams))
-  (e2: SEnum)        => sgAnyNamed(chain(e2.seParams))
-  (cm: SCombination) => sgAnyNamed(chain(cm.scTypes))
-  (t2: STuple)       => sgEntsNamed(chain(t2.stEntries))
+  (c: SClass)        => sgAnyNamed(c.scParams)
+  (e2: SEnum)        => sgAnyNamed(e2.seParams)
+  (cm: SCombination) => sgAnyNamed(cm.scTypes)
+  (t2: STuple)       => sgEntsNamed(t2.stEntries)
   (cb: SCallable)    => specHasNamed(cb.scParams2)
                         || sgOptNamed(cb.scResult)
   (af: SArrayField)  => specHasNamed(af.safElem)
   (ls: SLazyStub)    => sgOptNamed(ls.slsTarget)
   (o: Spec)          => false
 
-fun [tail] sgAnyNamed(ts: Chain<Spec>) => match(ts)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => specHasNamed(l.value) ? true : sgAnyNamed(l.next)
+fun sgAnyNamed(ts: List<Spec>) => any(ts, specHasNamed)
 
-fun [tail] sgEntsNamed(es: Chain<SEntry>) => match(es)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => sgOptNamed(l.value.seType) ? true : sgEntsNamed(l.next)
+fun sgEntsNamed(es: List<SEntry>) => any(es, (e) => sgOptNamed(e.seType))
 
 fun sgOptNamed(sp: Spec|None) => match(sp)
   (s2: Spec) => specHasNamed(s2)
@@ -56,17 +53,17 @@ fun sgOptNamed(sp: Spec|None) => match(sp)
 # ── auto-promotion ───────────────────────────────────────────────────────────
 
 fun promoteNonTrivialGlobals(statements: List<PStmt>, r): List<PStmt>
-  ret pngLoop(chain(statements), r, List())
+  ret pngLoop(statements, r, List())
 
 fun pngLoop(ss, r,
-                   acc: List<PStmt>): List<PStmt> => build(pngLoopB(ss, r, builderFrom(acc)))
+                   acc: List<PStmt>): List<PStmt> => pngLoopB(ss, r, acc)
 
-fun [tail] pngLoopB(ss: Chain<PStmt>, r,
-                   [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => pngLoopB(l.next, r, push(acc, pngOne(let2, r)))
-    (o: PStmt)    => pngLoopB(l.next, r, push(acc, l.value))
+fun pngLoopB(ss: List<PStmt>, r, acc: List<PStmt>) =>
+  concat(acc, map(ss, (st) => pngStmt(st, r)))
+
+fun pngStmt(st: PStmt, r: Resolver): PStmt => match(st)
+  (let2: PsLet) => pngOne(let2, r)
+  (o: PStmt)    => st
 
 fun pngOne(let2, r)
   if isDeferredInit(let2)
@@ -104,34 +101,35 @@ class [final] ClfDecl(cdIdx: Int, cdLazy: Bool)
 class [final] ClfDecls(cdMap: Dict<String, ClfDecl>)
 
 fun clfBlock(stmts: List<PStmt>, acc): Set<PErr>
-  let decls = clfDecls(chain(stmts), 0,
+  let decls = clfDecls(stmts, 0,
                        ClfDecls(Dict()))
-  ret clfScan(chain(stmts), 0, decls, acc)
+  ret clfScan(stmts, 0, decls, acc)
 
-fun [tail] clfDecls(ss: Chain<PStmt>, i, acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => clfDecls(l.next, i + 1,
-        clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
-    (d: PsDestructure) => clfDecls(l.next, i + 1,
-        clfSubDecls(chain(d.dTargets), i, acc))
-    (o: PStmt)    => clfDecls(l.next, i + 1, acc)
+# The statement index travels in the accumulator beside the declarations.
+fun clfDecls(ss: List<PStmt>, i, acc) =>
+  fold(ss, (d = acc, i = i),
+       (st, s) => (d = clfDeclsOne(st.d, s, st.i), i = st.i + 1)).d
 
-fun [tail] clfSubDecls(ts: Chain<PStmt>, i, acc) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => clfSubDecls(l.next, i,
-        clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2)))
-    (o: PStmt)    => clfSubDecls(l.next, i, acc)
+fun clfDeclsOne(acc: ClfDecls, s: PStmt, i: Int): ClfDecls => match(s)
+  (let2: PsLet)      => clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2))
+  (d: PsDestructure) => clfSubDecls(d.dTargets, i, acc)
+  (o: PStmt)         => acc
 
-fun [tail] clfScan(ss: Chain<PStmt>, i, decls: ClfDecls,
-                   acc: Set<PErr>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => isDeferredInit(let2)
-      ? clfScan(l.next, i + 1, decls, clfLet(let2, i, decls, acc))
-      : clfScan(l.next, i + 1, decls, acc)
-    (o: PStmt)    => clfScan(l.next, i + 1, decls, acc)
+fun clfSubDecls(ts: List<PStmt>, i, acc) =>
+  fold(ts, acc, (a, t) => clfSubDecl(a, t, i))
+
+fun clfSubDecl(acc: ClfDecls, t: PStmt, i: Int): ClfDecls => match(t)
+  (let2: PsLet) => clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2))
+  (o: PStmt)    => acc
+
+# The statement index travels in the accumulator beside the errors.
+fun clfScan(ss: List<PStmt>, i, decls: ClfDecls, acc: Set<PErr>) =>
+  fold(ss, (errs = acc, i = i),
+       (st, s) => (errs = clfScanOne(st.errs, s, st.i, decls), i = st.i + 1)).errs
+
+fun clfScanOne(acc: Set<PErr>, s: PStmt, i: Int, decls: ClfDecls): Set<PErr> => match(s)
+  (let2: PsLet) => isDeferredInit(let2) ? clfLet(let2, i, decls, acc) : acc
+  (o: PStmt)    => acc
 
 fun clfLet(let2: PsLet, i, decls: ClfDecls,
            acc): Set<PErr> => match(let2.lDefault)

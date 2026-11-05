@@ -17,6 +17,7 @@
 namespace Bootstrap::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Codegen
 import Bootstrap::Frontend
@@ -379,23 +380,23 @@ fun eqFieldArgs(a: List<PFieldArg>, b: List<PFieldArg>)
 
 fun eqStrs(a: List<String>, b: List<String>) => eqBy(a, b, (x, y) => x == y)
 
-fun eqSpecs(a: List<Spec>, b: List<Spec>) => eqBy(a, b, (x, y) => eqSpec(x, y))
+fun eqSpecs(a: List<Spec>, b: List<Spec>) => eqBy(a, b, eqSpec)
 
-fun eqEntries(a: List<SEntry>, b: List<SEntry>) => eqBy(a, b, (x, y) => eqEntry(x, y))
+fun eqEntries(a: List<SEntry>, b: List<SEntry>) => eqBy(a, b, eqEntry)
 
-fun eqExprs(a: List<PExpr>, b: List<PExpr>) => eqBy(a, b, (x, y) => eqExpr(x, y))
+fun eqExprs(a: List<PExpr>, b: List<PExpr>) => eqBy(a, b, eqExpr)
 
-fun eqStmts(a: List<PStmt>, b: List<PStmt>) => eqBy(a, b, (x, y) => eqStmt(x, y))
+fun eqStmts(a: List<PStmt>, b: List<PStmt>) => eqBy(a, b, eqStmt)
 
-fun eqTupEnts(a: List<PTupEnt>, b: List<PTupEnt>) => eqBy(a, b, (x, y) => eqTupEnt(x, y))
+fun eqTupEnts(a: List<PTupEnt>, b: List<PTupEnt>) => eqBy(a, b, eqTupEnt)
 
-fun eqArms(a: List<PArm>, b: List<PArm>) => eqBy(a, b, (x, y) => eqArm(x, y))
+fun eqArms(a: List<PArm>, b: List<PArm>) => eqBy(a, b, eqArm)
 
-fun eqLits(a: List<PLit>, b: List<PLit>) => eqBy(a, b, (x, y) => eqLit(x, y))
+fun eqLits(a: List<PLit>, b: List<PLit>) => eqBy(a, b, eqLit)
 
-fun eqAttrs(a: List<PAttr>, b: List<PAttr>) => eqBy(a, b, (x, y) => eqAttr(x, y))
+fun eqAttrs(a: List<PAttr>, b: List<PAttr>) => eqBy(a, b, eqAttr)
 
-fun eqGens(a: List<PGen>, b: List<PGen>) => eqBy(a, b, (x, y) => eqGen(x, y))
+fun eqGens(a: List<PGen>, b: List<PGen>) => eqBy(a, b, eqGen)
 
 # ── set-wise comparisons ─────────────────────────────────────────────────────
 # Python holds _all_parents and a slot's provides as SETS: equality is mutual
@@ -410,19 +411,13 @@ fun eqSpecSetOpt(a: List<Spec>|None, b: List<Spec>|None) => match(a)
     (y: List<Spec>) => false
     ()              => true
 
-fun eqSpecSet(a: List<Spec>, b: List<Spec>) => specsSubset(chain(a), b) && specsSubset(chain(b), a)
+fun eqSpecSet(a: List<Spec>, b: List<Spec>) => specsSubset(a, b) && specsSubset(b, a)
 
-fun [tail] specsSubset(xs: Chain<Spec>, ys: List<Spec>) => match(xs)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => containsSpec(ys, l.value)
-    ? specsSubset(l.next, ys)
-    : false
+fun specsSubset(xs: List<Spec>, ys: List<Spec>) => all(xs, (x) => containsSpec(ys, x))
 
-fun eqStrSet(a: List<String>, b: List<String>) => strsSubset(chain(a), b) && strsSubset(chain(b), a)
+fun eqStrSet(a: List<String>, b: List<String>) => strsSubset(a, b) && strsSubset(b, a)
 
-fun [tail] strsSubset(xs: Chain<String>, ys: List<String>) => match(xs)
-  (nil: ChainEnd) => true
-  (l: ChainLink)  => contains2(ys, l.value) ? strsSubset(l.next, ys) : false
+fun strsSubset(xs: List<String>, ys: List<String>) => all(xs, (x) => contains2(ys, x))
 
 fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None) => match(a)
   (x: List<Slot>) => match(b)
@@ -434,7 +429,7 @@ fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None) => match(a)
 
 # The slot LIST is ordered (own slots first, surviving parent slots after);
 # each slot's provides is a set.
-fun eqSlots(a: List<Slot>, b: List<Slot>) => eqBy(a, b, (x, y) => eqSlot(x, y))
+fun eqSlots(a: List<Slot>, b: List<Slot>) => eqBy(a, b, eqSlot)
 
 fun eqSlot(a: Slot, b: Slot) => a.slotName == b.slotName
     && eqSpecOpt(a.slotType, b.slotType)

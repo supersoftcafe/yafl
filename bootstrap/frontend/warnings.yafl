@@ -5,6 +5,8 @@
 namespace Bootstrap::Frontend
 
 import System
+import System::Containers
+import Bootstrap::StdlibCandidates
 
 
 # Existence checks only, never iterated in a chosen order — Set, not List.
@@ -24,26 +26,25 @@ let defaultEnabledWarnings: Set<String> = filter(knownWarnings, defaultOnWarning
 # "unused-parameter", "no-fragile-base"), in argv order, applied left to
 # right starting from the default set. An unknown name resolves to `WrErr`.
 fun resolveEnabledWarnings(flags: List<String>): WarnResolve =>
-  resolveLoop(chain(flags), defaultEnabledWarnings)
+  foldWhile<String, WarnResolve>(flags, WrOk(defaultEnabledWarnings), resolveFlag, (r) => r is WrOk)
 
-fun [tail] resolveLoop(fs: Chain<String>, enabled: Set<String>): WarnResolve => match(fs)
-  (nil: ChainEnd) => WrOk(enabled)
-  (l: ChainLink)  => l.value == "all"
-    ? resolveLoop(l.next, knownWarnings)
-    : startsWith(l.value, "no-")
-      ? resolveDisable(l.next, enabled, dropPrefix(l.value, 3))
-      : resolveEnable(l.next, enabled, l.value)
+# One flag applied to the set so far; the first error stops the walk.
+fun resolveFlag(acc: WarnResolve, flag: String): WarnResolve => match(acc)
+  (ok: WrOk) => flag == "all"
+    ? WrOk(knownWarnings)
+    : startsWith(flag, "no-")
+      ? resolveDisable(ok.wrEnabled, dropPrefix(flag, 3))
+      : resolveEnable(ok.wrEnabled, flag)
+  (e: WrErr) => e
 
-# Mutually (not directly) recursive with resolveLoop, so not [tail] — fine:
-# a -W flag list is a handful of tokens, never deep enough to need it.
-fun resolveEnable(rest: Chain<String>, enabled: Set<String>, name: String): WarnResolve =>
+fun resolveEnable(enabled: Set<String>, name: String): WarnResolve =>
   isKnownWarning(name)
-    ? resolveLoop(rest, add(enabled, name))
+    ? WrOk(add(enabled, name))
     : WrErr("unknown warning '-W" + name + "'")
 
-fun resolveDisable(rest: Chain<String>, enabled: Set<String>, name: String): WarnResolve =>
+fun resolveDisable(enabled: Set<String>, name: String): WarnResolve =>
   isKnownWarning(name)
-    ? resolveLoop(rest, remove(enabled, name))
+    ? WrOk(remove(enabled, name))
     : WrErr("unknown warning '-Wno-" + name + "'")
 
 fun dropPrefix(s: String, n) => slice(s, n, length(s))
@@ -53,13 +54,9 @@ fun dropPrefix(s: String, n) => slice(s, n, length(s))
 # `-Wname` token — mirrors main.py's argparse `-W` short-option
 # attached-value parsing (`-Wall` -> W="all").
 fun resolveEnabledWarningsFromArgv(argvTail: List<String>): WarnResolve =>
-  stripLoop(chain(argvTail), builder<String>())
-
-fun [tail] stripLoop(ts: Chain<String>, acc: ListBuilder<String>): WarnResolve => match(ts)
-  (nil: ChainEnd) => resolveEnabledWarnings(build(acc))
-  (l: ChainLink)  => startsWith(l.value, "-W")
-    ? stripLoop(l.next, push(acc, dropPrefix(l.value, 2)))
-    : WrErr("unrecognised argument '" + l.value + "'")
+  match(firstWhere(argvTail, (t) => !startsWith(t, "-W")))
+    (bad: String) => WrErr("unrecognised argument '" + bad + "'")
+    ()            => resolveEnabledWarnings(map(argvTail, (t) => dropPrefix(t, 2)))
 
 enum WarnResolve
   enum WrOk(wrEnabled: Set<String>)

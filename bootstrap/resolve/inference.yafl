@@ -12,6 +12,7 @@
 namespace Bootstrap::Resolve
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Codegen
@@ -48,12 +49,10 @@ fun useSiteTypeParams(stmt, supplied, expected: Spec|None,
 # views, so re-inferring against the expected type widens the binding exactly
 # as far as the context demands and no further.
 fun suppliedComplete(supplied: List<Spec>, gens: List<PGen>,
-                     r) => sameLen(chain(supplied), chain(gens)) && !anyFree(chain(supplied), r)
-    && !any(supplied, (sp) => containsNarrowedView(sp))
+                     r) => sameLen(supplied, gens) && !anyFree(supplied, r)
+    && !any(supplied, containsNarrowedView)
 
-fun [tail] anyFree(ts: Chain<Spec>, r) => match(ts)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => hasFreePlaceholders(l.value, r) ? true : anyFree(l.next, r)
+fun anyFree(ts: List<Spec>, r) => any(ts, (x) => hasFreePlaceholders(x, r))
 
 fun reinferred(stmt, gens: List<PGen>, supplied,
                want: SCallable, r) => match(stmtType(stmt))
@@ -72,33 +71,28 @@ fun reinferred(stmt, gens: List<PGen>, supplied,
 # fresh binding.
 fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
                  mapping: List<Binding>, r)
-  let prior = sameLen(chain(supplied), chain(gens))
-    ? priorBindings(chain(gens), chain(supplied), List())
+  let prior = sameLen(supplied, gens)
+    ? priorBindings(gens, supplied, List())
     : List()
-  ret mergeLoop(chain(gens), prior, mapping, r, List())
+  ret mergeLoop(gens, prior, mapping, r, List())
 
 fun priorBindings(gs, ss,
                          acc: List<Binding>): List<Binding>
-  ret build(priorBindingsB(gs, ss, builderFrom(acc)))
+  ret priorBindingsB(gs, ss, acc)
 
-fun [tail] priorBindingsB(gs: Chain<PGen>, ss: Chain<Spec>,
-                         [terminal] acc: ListBuilder<Binding>) => match(gs)
-  (nil: ChainEnd) => acc
-  (g2: ChainLink) => match(ss)
-    (nil2: ChainEnd) => acc
-    (s2: ChainLink)  => priorBindingsB(g2.next, s2.next,
-                                      push(acc, Binding(g2.value.genName,
-                                                s2.value)))
+fun priorBindingsB(gs: List<PGen>, ss: List<Spec>, acc: List<Binding>) =>
+  concat(acc, zipMap(gs, ss, (g, s) => Binding(g.genName, s)))
 
 fun mergeLoop(gs, prior: List<Binding>,
                      mapping: List<Binding>, r, acc: List<Spec>)
-  ret build(mergeLoopB(gs, prior, mapping, r, builderFrom(acc)))
+  ret mergeLoopB(gs, prior, mapping, r, acc)
 
-fun [tail] mergeLoopB(gs: Chain<PGen>, prior: List<Binding>,
-                     mapping: List<Binding>, r, [terminal] acc: ListBuilder<Spec>) => match(gs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => mergeLoopB(l.next, prior, mapping, r,
-                               push(acc, boundParam(l.value, prior, mapping, r)))
+fun mergeLoopB(gs: List<PGen>,
+               prior: List<Binding>,
+               mapping: List<Binding>,
+               r,
+               acc: List<Spec>) =>
+  fold(gs, acc, (a, x) => append(a, boundParam(x, prior, mapping, r)))
 
 fun boundParam(g2: PGen, prior: List<Binding>, mapping: List<Binding>, r): Spec
   let fresh = match(bindingOf(mapping, g2.genName))
@@ -119,7 +113,7 @@ fun ownPlaceholder(g2: PGen) => SGeneric(g2.genName, isLinearGen(g2), g2.pgLine)
 
 fun inferTypeParams(stmt, gens: List<PGen>, declared: SCallable,
                     want: SCallable, r)
-  let names = genNames(chain(gens), List())
+  let names = genNames(gens, List())
   ret match(paramsMerged(declared, want, names, r))
     (m: List<Binding>) => viaWhere(stmt, gens, resultUnified(declared, want, names, r, m),
                                    r, declared.scParams2)
@@ -131,7 +125,7 @@ fun inferTypeParams(stmt, gens: List<PGen>, declared: SCallable,
 # (`map(xs: List<T>, f: (:T): U)` takes T from xs). An argument's view is
 # provisional, so there a binding widens across arguments (`pair(Circle(1),
 # Square(2))` binds T to Shape); a callable parameter only fills it, never
-# widens it (`map(circles, (v) => named(v))` keeps T = Circle though the lambda
+# widens it (`map(circles, named)` keeps T = Circle though the lambda
 # takes a Shape), and never binds a parameter whose argument is still unknown
 # — that waits for the argument (`fold(xs, init, (a, x) => …)` takes T from
 # xs, never from x, while xs is untyped). A known argument that cannot decide
@@ -144,20 +138,20 @@ fun inferTypeParams(stmt, gens: List<PGen>, declared: SCallable,
 # mismatches.
 fun paramsMerged(declared: SCallable, want: SCallable, names: List<String>, r): List<Binding>|None
   let covariant = withoutCallableParams(declared.scParams2)
-  let fuel = chain(prepend("", names))   # one pass per name, and one more
+  let fuel = prepend("", names)   # one pass per name, and one more
   let first = settledMerge(covariant, want.scParams2, map(names, (n) => MBind(n, None)), r, fuel)
   if !isEmpty(first.moErrs)
     ret None
   let waiting = unknownArgNames(covariant, want.scParams2, r)
   let open = filter(first.moBinds, (b) => isBound(b) || !contains2(waiting, b.mbName))
   let full = settledMerge(declared.scParams2, want.scParams2, open, r, fuel)
-  ret learnedBindings(chain(full.moBinds), List())
+  ret learnedBindings(full.moBinds, List())
 
-fun [tail] settledMerge(declared: Spec, want: Spec, binds: List<MBind>, r, fuel: Chain<String>): MergeOut
+fun [tail] settledMerge(declared: Spec, want: Spec, binds: List<MBind>, r, fuel: List<String>): MergeOut
   let m = mergeSpecsWidening(declared, want, binds, true, r)
-  ret match(fuel)
-    (nil: ChainEnd) => m
-    (l: ChainLink)  => sameBinds(m.moBinds, binds) ? m : settledMerge(declared, want, m.moBinds, r, l.next)
+  ret isEmpty(fuel) || sameBinds(m.moBinds, binds)
+    ? m
+    : settledMerge(declared, want, m.moBinds, r, dropOne(fuel))
 
 fun sameBinds(a: List<MBind>, b: List<MBind>) => eqBy(a, b, (x, y) => x.mbName == y.mbName && sameOpt(x.mbSpec, y.mbSpec))
 
@@ -176,18 +170,15 @@ fun isBound(b: MBind) => match(b.mbSpec)
 fun unknownArgNames(covariant, actual, r): List<String> => match(covariant)
   (dt: STuple) => match(actual)
     (at: STuple) => match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
-      (b: List<Int>) => unknownLoop(chain(dt.stEntries), chain(b), at.stEntries, r, List<String>())
+      (b: List<Int>) => unknownLoop(dt.stEntries, b, at.stEntries, r, List<String>())
       ()             => List<String>()
     (o: Spec)    => List<String>()
   (o: Spec)    => List<String>()
 
-fun [tail] unknownLoop(ds: Chain<SEntry>, bs: Chain<Int>, actual: List<SEntry>, r,
-                       acc: List<String>): List<String> => match(ds)
-  (nil: ChainEnd) => acc
-  (d: ChainLink)  => match(bs)
-    (nil2: ChainEnd) => acc
-    (b: ChainLink)   => unknownLoop(d.next, b.next, actual, r,
-                                    argKnown(b.value, actual, r) ? acc : concat(acc, entryNamesOf(d.value)))
+fun unknownLoop(ds: List<SEntry>, bs: List<Int>, actual: List<SEntry>, r,
+                acc: List<String>): List<String> =>
+  zipFold(ds, bs, acc, (a, d, b) =>
+    argKnown(b, actual, r) ? a : concat(a, entryNamesOf(d)))
 
 fun argKnown(ix: Int, actual: List<SEntry>, r): Bool
   if ix < 0
@@ -218,13 +209,7 @@ fun resultUnified(declared: SCallable, want: SCallable, names: List<String>,
 fun resultMerged(want, dr, names: List<String>, mapping: List<Binding>, r): List<Binding>
   let binds = map(names, (n) => MBind(n, bindingOf(mapping, n)))
   let m = mergeSpecsWidening(want, dr, binds, false, r)
-  ret isEmpty(m.moErrs) ? learnedBindings(chain(m.moBinds), List()) : mapping
-
-fun genNames(gs: Chain<PGen>, acc: List<String>) => build(genNamesB(gs, builderFrom(acc)))
-
-fun [tail] genNamesB(gs: Chain<PGen>, [terminal] acc): ListBuilder<String> => match(gs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => genNamesB(l.next, push(acc, l.value.genName))
+  ret isEmpty(m.moErrs) ? learnedBindings(m.moBinds, List()) : mapping
 
 # ── _infer_type_params_via_where ─────────────────────────────────────────────
 # Bind type params argument inference CANNOT determine — those appearing in no
@@ -236,45 +221,43 @@ fun [tail] genNamesB(gs: Chain<PGen>, [terminal] acc): ListBuilder<String> => ma
 fun viaWhere(stmt, gens: List<PGen>, mapping,
              r, declaredParams)
   let argInferrable = placeholderNames(declaredParams)
-  let targets = whereTargets(chain(gens), mapping, argInferrable,
+  let targets = whereTargets(gens, mapping, argInferrable,
                              List())
   if isEmpty(targets)
     ret mapping
-  ret whereLoop(chain(stmtWheres(stmt)), gens, mapping, argInferrable,
+  ret whereLoop(stmtWheres(stmt), gens, mapping, argInferrable,
                 traitInstances(r), r)
 
-fun whereTargets(gs: Chain<PGen>, mapping: List<Binding>,
+fun whereTargets(gs: List<PGen>, mapping: List<Binding>,
                         argInferrable: List<String>,
                         acc: List<String>)
-  ret build(whereTargetsB(gs, mapping, argInferrable, builderFrom(acc)))
+  ret whereTargetsB(gs, mapping, argInferrable, acc)
 
-fun [tail] whereTargetsB(gs: Chain<PGen>, mapping: List<Binding>,
-                        argInferrable: List<String>,
-                        [terminal] acc): ListBuilder<String> => match(gs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => isWhereTarget(l.value.genName, mapping, argInferrable)
-    ? whereTargetsB(l.next, mapping, argInferrable,
-                   push(acc, l.value.genName))
-    : whereTargetsB(l.next, mapping, argInferrable, acc)
+fun whereTargetsB(gs: List<PGen>,
+                  mapping: List<Binding>,
+                  argInferrable: List<String>,
+                  acc): List<String> =>
+  fold(gs, acc, (a, x) => isWhereTarget(x.genName, mapping, argInferrable)
+    ? append(a, x.genName)
+    : a)
 
 fun isWhereTarget(name: String, mapping: List<Binding>,
                   argInferrable: List<String>) => match(bindingOf(mapping, name))
   (b: Spec) => false
   ()        => !contains2(argInferrable, name)
 
-fun [tail] whereLoop(ws: Chain<Spec>, gens: List<PGen>,
+fun [tail] whereLoop(ws: List<Spec>, gens: List<PGen>,
                      mapping, argInferrable: List<String>,
                      instances: List<TraitInst>, r: Resolver)
-  let targets = whereTargets(chain(gens), mapping, argInferrable,
+  let targets = whereTargets(gens, mapping, argInferrable,
                              List())
   if isEmpty(targets)
     ret mapping
-  ret match(ws)
-    (nil: ChainEnd) => mapping
-    (l: ChainLink)  => whereLoop(l.next, gens,
-                                 dischargeOne(l.value, mapping, targets,
-                                              instances, r),
-                                 argInferrable, instances, r)
+  ret match(head(ws))
+    (w: Spec) => whereLoop(dropOne(ws), gens,
+                           dischargeOne(w, mapping, targets, instances, r),
+                           argInferrable, instances, r)
+    ()        => mapping
 
 fun dischargeOne(wc, mapping, targets: List<String>,
                  instances: List<TraitInst>, r: Resolver) => match(substitute(wc, mapping))
@@ -296,31 +279,31 @@ fun stmtWheres(stmt) => match(stmt)
 # witness class has not resolved its parents yet is skipped this pass.
 
 fun traitInstances(r) => sortByParamCount(
-                           tiStmtLoop(chain(traitInstanceStmts(r)),
-                                      instLoop(chain(traitLets(r)), r, List())))
+                           tiStmtLoop(traitInstanceStmts(r),
+                                      instLoop(traitLets(r), r, List())))
 
 # PRE-LOWERING first-class instances: the pattern IS the interface — no
 # witness lookup, no parent substitution (_trait_instances).
 fun tiStmtLoop(ts, acc: List<TraitInst>): List<TraitInst>
-  ret build(tiStmtLoopB(ts, builderFrom(acc)))
+  ret tiStmtLoopB(ts, acc)
 
-fun [tail] tiStmtLoopB(ts: Chain<PStmt>, [terminal] acc: ListBuilder<TraitInst>) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (ti: PsTraitInstance) => match(ti.tiPattern)
-      (c: SClass) => tiStmtLoopB(l.next,
-                                push(acc, TraitInst(genNames(chain(ti.tiGens),
-                                                   builder()),
-                                          c)))
-      (o: Spec)   => tiStmtLoopB(l.next, acc)
-    (o2: PStmt)           => tiStmtLoopB(l.next, acc)
+fun tiStmtLoopB(ts: List<PStmt>, acc: List<TraitInst>) =>
+  fold(ts, acc, tiStmtLoopBStep)
 
-fun [tail] instLoop(ts: Chain<PStmt>, r,
-                    acc) => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => instLoop(l.next, r, instancesOf(let2, r, acc))
-    (o: PStmt)    => instLoop(l.next, r, acc)
+fun tiStmtLoopBStep(a: List<TraitInst>, x: PStmt) => match(x)
+  (ti: PsTraitInstance) => match(ti.tiPattern)
+    (c: SClass) => append(a, TraitInst(genNames(ti.tiGens,
+               List()),
+      c))
+    (o: Spec) => a
+  (o2: PStmt) => a
+
+fun instLoop(ts: List<PStmt>, r, acc) =>
+  fold(ts, acc, (a, t) => instOne(a, t, r))
+
+fun instOne(acc: List<TraitInst>, t: PStmt, r: Resolver): List<TraitInst> => match(t)
+  (let2: PsLet) => instancesOf(let2, r, acc)
+  (o: PStmt)    => acc
 
 fun instancesOf(let2: PsLet, r, acc) => match(let2.lType)
   (dt: Spec) => match(dt)
@@ -334,33 +317,27 @@ fun instancesOf(let2: PsLet, r, acc) => match(let2.lType)
 
 fun witnessParents(let2: PsLet, dc: SClass, cls: PsClass,
                    acc) => match(cls.cAllParents)
-  (parents: List<Spec>) => parentIfaces(chain(parents),
+  (parents: List<Spec>) => parentIfaces(parents,
                                         witnessRemap(dc, cls),
-                                        genNames(chain(let2.lGens),
+                                        genNames(let2.lGens,
                                                  List()),
                                         acc)
   ()                    => acc     # parents not resolved yet this pass
 
 fun witnessRemap(dc: SClass, cls: PsClass) => !isEmpty(cls.cGens)
-    && sameLen(chain(cls.cGens), chain(dc.scParams))
+    && sameLen(cls.cGens, dc.scParams)
   ? paramMapping(cls.cGens, dc.scParams)
   : List()
 
-fun [tail] parentIfaces(ps: Chain<Spec>, remap: List<Binding>,
-                        paramNames,
-                        acc) => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (pc: SClass) => parentIfaces(l.next, remap, paramNames,
-                                 addIface(substitute(l.value, remap),
-                                          paramNames, acc))
-    (o: Spec)    => parentIfaces(l.next, remap, paramNames, acc)
+fun parentIfaces(ps: List<Spec>, remap: List<Binding>, paramNames,
+                 acc) =>
+  fold(ps, acc, (a, p) => p is SClass ? addIface(substitute(p, remap), paramNames, a) : a)
 
 fun addIface(iface, paramNames,
              acc) => match(iface)
   # Declaration order is kept: the sort is STABLE, so this order decides
   # ties between instances of equal param count.
-  (ic: SClass) => build(push(builderFrom(acc), TraitInst(paramNames, ic)))
+  (ic: SClass) => append(acc, TraitInst(paramNames, ic))
   (o: Spec)    => acc
 
 # Sorted by param count, STABLY — concrete (zero-param) instances win ties in
@@ -368,5 +345,5 @@ fun addIface(iface, paramNames,
 # insertion sort: every instance walked the sorted prefix, rebuilding it as it
 # went. The stdlib sort is a stable mergesort and takes the same comparator.
 fun sortByParamCount(is2: List<TraitInst>) => sortBy(is2,
-                                                  (a, b) => shorterThan(chain(a.tiParams),
-                                                                        chain(b.tiParams)))
+                                                  (a, b) => shorterThan(a.tiParams,
+                                                                        b.tiParams))

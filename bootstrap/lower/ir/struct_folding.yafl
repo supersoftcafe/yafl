@@ -10,8 +10,10 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
 
 
 
@@ -32,12 +34,10 @@ fun sfoReplace(p, defs: SsaDefs) => match(p)
 
 fun sfoFold(sf, sv, defs: SsaDefs): RParam => match(resolveValue(sv, defs, sdMaxChase()))
   (base: RParam) => match(base)
-    (ns: RpNewStruct) => sfoField(chain(ns.values), sf)
+    (ns: RpNewStruct) => sfoField(ns.values, sf)
     (o: RParam)       => sf
   ()             => sf
 
-fun [tail] sfoField(vs: Chain<RpNamedValue>, sf: RpStructField) => match(vs)
-  (nil: ChainEnd) => sf
-  (l: ChainLink)  => l.value.name == sf.field && sdIsDuplicable(l.value.value)
-    ? l.value.value
-    : sfoField(l.next, sf)
+fun sfoField(vs: List<RpNamedValue>, sf: RpStructField) => match(firstWhere(vs, (v) => v.name == sf.field && sdIsDuplicable(v.value)))
+  (v: RpNamedValue) => v.value
+  ()                => sf

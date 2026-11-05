@@ -25,6 +25,7 @@
 namespace Bootstrap::Driver
 
 import System
+import System::Containers
 import System::IO
 
 import Bootstrap::Ast
@@ -38,7 +39,7 @@ import Bootstrap::Types
 
 fun cliMain(argv: List<String>): Int
   let f = cliFormat(progName())
-  ret match(scanArgs(classifyAll(chain(argv), builder()), freshScan()))
+  ret match(scanArgs(classifyAll(argv, List()), freshScan()))
     (help: CliHelp)   => exitWithOut(helpText(f), 0)
     (err: CliError)   => usageError(f, err.ceWhy)
     (s: CliScan)      => match(resolveEnabledWarnings(s.csWarns))
@@ -91,17 +92,13 @@ enum CliWord
   enum CwOpt(cwRaw: String, cwReads: List<OptRead>)
 
 # Every word after the first `--` is an argument, whatever it looks like.
-fun [tail] classifyAll(ws: Chain<String>,
-                       [terminal] b: ListBuilder<CliWord>): Chain<CliWord> => match(ws)
-  (nil: ChainEnd) => chain(build(b))
-  (l: ChainLink)  => l.value == "--"
-    ? chain(build(argsAfter(l.next, push(b, CwSep(l.value)))))
-    : classifyAll(l.next, push(b, classifyWord(l.value)))
-
-fun [tail] argsAfter(ws: Chain<String>,
-                     [terminal] b: ListBuilder<CliWord>): ListBuilder<CliWord> => match(ws)
-  (nil: ChainEnd) => b
-  (l: ChainLink)  => argsAfter(l.next, push(b, CwArg(l.value)))
+# Every word after the first `--` is a plain argument.
+fun classifyAll(ws: List<String>, b: List<CliWord>): List<CliWord> =>
+  fold(ws, (words = b, raw = false),
+       (st, w) =>
+         st.raw ? (words = append(st.words, CwArg(w)), raw = true)
+         : w == "--" ? (words = append(st.words, CwSep(w)), raw = true)
+         : (words = append(st.words, classifyWord(w)), raw = false)).words
 
 # An option is a word with a leading `-` that names one (whole, before `=`, or
 # by prefix); failing that, a word that reads as a negative number or holds a
@@ -169,27 +166,27 @@ fun displayName(a: String) => a == "-L" ? "-L/--lib-path" : a == "-h" ? "-h/--he
 
 # ── pass 2: consume (`consume_optional`, `consume_positionals`) ──────────────
 
-class [final] CliStep(stRest: Chain<CliWord>, stScan: CliScan)
+class [final] CliStep(stRest: List<CliWord>, stScan: CliScan)
 # An action to take, with its argument (None for a flag).
 class [final] CliTaken(ctAction: String, ctValue: String|None)
 # A run of words up to the next option.
-class [final] CliRun(crWords: List<CliWord>, crRest: Chain<CliWord>)
+class [final] CliRun(crWords: List<CliWord>, crRest: List<CliWord>)
 
-fun scanArgs(ws: Chain<CliWord>, s: CliScan): CliScan|CliHelp|CliError => match(ws)
-  (nil: ChainEnd) => finished(s)
-  (l: ChainLink)  => match(l.value)
-    (o: CwOpt)    => match(consumeOption(o, l.next, s))
+# A cursor over the words: an option may consume the next word as its value.
+fun scanArgs(ws: List<CliWord>, s: CliScan): CliScan|CliHelp|CliError => match(head(ws))
+  (cw: CliWord) => match(cw)
+    (o: CwOpt)    => match(consumeOption(o, dropOne(ws), s))
       (st: CliStep)  => scanArgs(st.stRest, st.stScan)
       (h: CliHelp)   => h
       (e: CliError)  => e
-    (w: CliWord)  => runOf(ws, builder())
+    (w: CliWord)  => runOf(ws, List())
       |> (r: CliRun) => scanArgs(r.crRest, positionals(s, r.crWords))
+  ()            => finished(s)
 
-fun [tail] runOf(ws: Chain<CliWord>, [terminal] b: ListBuilder<CliWord>): CliRun => match(ws)
-  (nil: ChainEnd) => CliRun(build(b), ws)
-  (l: ChainLink)  => match(l.value)
-    (o: CwOpt)    => CliRun(build(b), ws)
-    (w: CliWord)  => runOf(l.next, push(b, w))
+# The words up to the next option, and the rest.
+fun runOf(ws: List<CliWord>, b: List<CliWord>): CliRun => match(findIndex(ws, (w) => w is CwOpt))
+  (k: Int) => CliRun(concat(b, take(ws, k)), drop(ws, k))
+  ()       => CliRun(concat(b, ws), List())
 
 # `files` (nargs '+') takes a whole run holding at least one argument, the
 # first `--` dropped from it. A run it cannot take, or any run once it has
@@ -212,8 +209,8 @@ fun wordText(w: CliWord): String => match(w)
 
 # One option word. An ambiguous prefix is an error; an unknown option is left
 # over.
-fun consumeOption(o: CwOpt, rest: Chain<CliWord>, s: CliScan): CliStep|CliHelp|CliError
-  if chainLength(chain(o.cwReads)) > 1
+fun consumeOption(o: CwOpt, rest: List<CliWord>, s: CliScan): CliStep|CliHelp|CliError
+  if sizeAtLeast(o.cwReads, 2)
     ret CliError("ambiguous option: " + o.cwRaw + " could match "
                  + join(map(o.cwReads, (r: OptRead) => r.orString), ", "))
   ret match(head(o.cwReads))
@@ -228,25 +225,24 @@ fun consumeOption(o: CwOpt, rest: Chain<CliWord>, s: CliScan): CliStep|CliHelp|C
 # The actions run only once the whole word is read, so an error anywhere in
 # the word wins over a `-h` earlier in it.
 fun readOption(a: String, opt: String, sep: String|None, explicit: String|None,
-               rest: Chain<CliWord>, taken: List<CliTaken>,
+               rest: List<CliWord>, taken: List<CliTaken>,
                s: CliScan): CliStep|CliHelp|CliError => match(explicit)
   (x: String) => takesValue(a)
-    ? takeAll(chain(concat(taken, list1(CliTaken(a, x)))), rest, s)
+    ? takeAll(concat(taken, list1(CliTaken(a, x))), rest, s)
     : byteAt(opt, 1) != '-' && x != ""
       ? clusterNext(a, sep, x, rest, concat(taken, list1(CliTaken(a, None))), s)
       : ignored(a, x)
   ()          => !takesValue(a)
-    ? takeAll(chain(concat(taken, list1(CliTaken(a, None)))), rest, s)
-    : match(rest)
-      (nil: ChainEnd) => expectedOne(a)
-      (l: ChainLink)  => match(l.value)
-        (v: CwArg)    => takeAll(chain(concat(taken, list1(CliTaken(a, v.cwText)))), l.next, s)
-        (w: CliWord)  => expectedOne(a)
+    ? takeAll(concat(taken, list1(CliTaken(a, None))), rest, s)
+    : match(head(rest))
+      (v: CwArg)   => takeAll(concat(taken, list1(CliTaken(a, v.cwText))), dropOne(rest), s)
+      (w: CliWord) => expectedOne(a)
+      ()           => expectedOne(a)
 
 # The next flag of a cluster: `-` and the first attached character. A cluster
 # written with `=` (`-h=x`), or whose next character is a `-`, is an error.
 # A character naming no option ends the cluster, the rest left over.
-fun clusterNext(a: String, sep: String|None, x: String, rest: Chain<CliWord>,
+fun clusterNext(a: String, sep: String|None, x: String, rest: List<CliWord>,
                 taken: List<CliTaken>, s: CliScan): CliStep|CliHelp|CliError
   if (sep ?? "") != "" || byteAt(x, 0) == '-'
     ret ignored(a, x)
@@ -258,7 +254,7 @@ fun clusterNext(a: String, sep: String|None, x: String, rest: Chain<CliWord>,
       : byteAt(tail, 0) == '='
         ? readOption(a2, next, "=", slice(tail, 1, length(tail)), rest, taken, s)
         : readOption(a2, next, "", tail, rest, taken, s)
-    ()           => takeAll(chain(taken), rest,
+    ()           => takeAll(taken, rest,
                             with s(csExtras = concat(s.csExtras, list1("-" + x))))
 
 fun ignored(a: String, x: String) => CliError("argument " + displayName(a)
@@ -267,14 +263,16 @@ fun ignored(a: String, x: String) => CliError("argument " + displayName(a)
 fun expectedOne(a: String) => CliError("argument " + displayName(a) + ": expected one argument")
 
 # Then the word's actions run, in order: `-h` prints the help and stops there.
-fun [tail] takeAll(ts: Chain<CliTaken>, rest: Chain<CliWord>,
-                   s: CliScan): CliStep|CliHelp|CliError => match(ts)
-  (nil: ChainEnd) => CliStep(rest, s)
-  (l: ChainLink)  => l.value.ctAction == "-h"
-    ? CliHelp(true)
-    : match(take(s, l.value))
-      (e: CliError) => e
-      (s2: CliScan) => takeAll(l.next, rest, s2)
+fun takeAll(ts: List<CliTaken>, rest: List<CliWord>,
+            s: CliScan): CliStep|CliHelp|CliError =>
+  match(foldWhile<CliTaken, CliScan|CliHelp|CliError>(ts, s, takeAction, (acc) => acc is CliScan))
+    (s2: CliScan) => CliStep(rest, s2)
+    (h: CliHelp)  => h
+    (e: CliError) => e
+
+fun takeAction(acc: CliScan|CliHelp|CliError, t: CliTaken): CliScan|CliHelp|CliError => match(acc)
+  (s: CliScan) => t.ctAction == "-h" ? CliHelp(true) : take(s, t)
+  (o)          => acc
 
 fun take(s: CliScan, t: CliTaken): CliScan|CliError
   let a = t.ctAction
@@ -385,25 +383,28 @@ fun unitArgs(s: CliScan, cFile: String, spec: LinkSpec, tmp: String, units: Int,
 # powerMap calls the clangs on workers of their own and joins the results in
 # order, so the K compiles overlap; the first failure is reported.
 fun cliClangUnits(s: CliScan, tmp: String, cFile: String, spec: LinkSpec, units: Int, o: String): Int
-  let runs = powerMap(unitIndices(units, 0, builder()),
+  let runs = powerMap(unitIndices(units, 0, List()),
                       (i) => System::IO::run("clang", unitArgs(s, cFile, spec, tmp, units, i)))
-  ret match(unitFailure(chain(runs)))
+  ret match(unitFailure(runs))
     (why: String) => exitWithOut("Compilation failed:\n" + why + "\n", 1)
-    ()            => runClang(concat(concat(concat(unitObjects(tmp, units, 0, builder()), linkInputs(spec)),
+    ()            => runClang(concat(concat(concat(unitObjects(tmp, units, 0, List()), linkInputs(spec)),
                                             releaseLink(s.csOpt)),
                                      prepend("-o", list1(o))))
 
-fun [tail] unitIndices(units: Int, i: Int, [terminal] acc: ListBuilder<Int>): List<Int>
-  ret i >= units ? build(acc) : unitIndices(units, i + 1, push(acc, i))
+fun [tail] unitIndices(units: Int, i: Int, acc: List<Int>): List<Int>
+  ret i >= units ? acc : unitIndices(units, i + 1, append(acc, i))
 
-fun [tail] unitObjects(tmp: String, units: Int, i: Int, [terminal] acc: ListBuilder<String>): List<String>
-  ret i >= units ? build(acc) : unitObjects(tmp, units, i + 1, push(acc, unitObject(tmp, i)))
+fun [tail] unitObjects(tmp: String, units: Int, i: Int, acc: List<String>): List<String>
+  ret i >= units ? acc : unitObjects(tmp, units, i + 1, append(acc, unitObject(tmp, i)))
 
-fun [tail] unitFailure(rs: Chain<ProcessResult|IOError>): String|None => match(rs)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(l.value)
-    (e: IOError)       => "clang could not be started"
-    (r: ProcessResult) => r.exitCode == 0 ? unitFailure(l.next) : r.err
+fun unitFailure(rs: List<ProcessResult|IOError>): String|None => match(firstWhere(rs, unitFailed))
+  (e: IOError)       => "clang could not be started"
+  (r: ProcessResult) => r.err
+  ()                 => None
+
+fun unitFailed(r: ProcessResult|IOError): Bool => match(r)
+  (e: IOError)       => true
+  (p: ProcessResult) => p.exitCode != 0
 
 # `[*common, "-x", "c", "-", f"-O{O}", *include_args]` — `cFile` where Python
 # writes `-` for stdin.
@@ -443,20 +444,23 @@ fun runClang(argv: List<String>): Int => match(System::IO::run("clang", argv))
 
 fun gatherInputs(given: List<String>): List<LibSource>|String
   let paths = map(given, (p: String) => pathStr(p))
-  ret chainLength(chain(paths)) == 1 && isDirectory(head(paths) ?? "")
+  ret !isEmpty(paths) && !sizeAtLeast(paths, 2) && isDirectory(head(paths) ?? "")
     ? projectInputs(head(paths) ?? "")
-    : fileInputs(chain(paths), builder())
+    : fileInputs(paths, List())
 
 fun projectInputs(root: String): List<LibSource>|String => match(yaflPaths(root, List()))
   (why: String)         => why
   (ps: List<String>)    => readSources(root, sortByUnitName(root, ps))
 
-fun [tail] fileInputs(ps: Chain<String>,
-                      [terminal] b: ListBuilder<LibSource>): List<LibSource>|String => match(ps)
-  (nil: ChainEnd) => build(b)
-  (l: ChainLink)  => match(readWholeFile(l.value))
-    (e: IOError)  => srcDiscard(b, l.value + ": cannot be read")
-    (t: String)   => fileInputs(l.next, push(b, LibSource(baseName(l.value), t)))
+# The first file that cannot be read stops the walk with its message.
+fun fileInputs(ps: List<String>, b: List<LibSource>): List<LibSource>|String =>
+  foldWhile<String, List<LibSource>|String>(ps, b, fileInput, (acc) => acc is List<LibSource>)
+
+fun fileInput(acc: List<LibSource>|String, p: String): List<LibSource>|String => match(acc)
+  (srcs: List<LibSource>) => match(readWholeFile(p))
+    (e: IOError) => p + ": cannot be read"
+    (t: String)  => append(srcs, LibSource(baseName(p), t))
+  (why: String)           => why
 
 # ── output ───────────────────────────────────────────────────────────────────
 
@@ -484,12 +488,12 @@ fun closedWith(io: IO, why: String): String => match(io.close())
 # `open(path, "w")`). None on success, else why it failed.
 fun writeParts(path: String, parts: List<String>): String|None => match(create(path))
   (e: IOError) => path + ": cannot be written"
-  (io: IO)     => writePartsChecked(io, chain(parts), path)
+  (io: IO)     => writePartsChecked(io, parts, path)
 
-fun [tail] writePartsChecked(io: IO, ps: Chain<String>, path: String): String|None => match(ps)
-  (nil: ChainEnd) => match(io.close())
+fun [tail] writePartsChecked(io: IO, ps: List<String>, path: String): String|None => match(head(ps))
+  (p: String) => writeAll(io, p) |> (w) => match(w.v)
+    (e2: IOError) => closedWith(w.io, path + ": cannot be written")
+    (n: Int)      => writePartsChecked(w.io, dropOne(ps), path)
+  ()          => match(io.close())
     (e: IOError) => path + ": cannot be written"
     ()           => None
-  (l: ChainLink)  => writeAll(io, l.value) |> (w) => match(w.v)
-    (e2: IOError) => closedWith(w.io, path + ": cannot be written")
-    (n: Int)      => writePartsChecked(w.io, l.next, path)

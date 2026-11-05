@@ -19,6 +19,7 @@
 namespace Bootstrap::Frontend
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Lower::Ast
@@ -80,24 +81,21 @@ fun limitClue() => "Compile loop failed to converge after "
 # the compiler's own bug, reported as such.
 
 fun flipErrs(before: List<PStmt>, after: List<PStmt>, otherwise: String): Set<PErr>
-  let found = flipStmts(chain(before), chain(after), noErrs())
+  let found = flipStmts(before, after, noErrs())
   ret isEmpty(found)
-    ? oneErr(movedLine(chain(before), chain(after)), otherwise)
+    ? oneErr(movedLine(before, after), otherwise)
     : found
 
-fun [tail] movedLine(as2: Chain<PStmt>, bs: Chain<PStmt>): PLine => match(as2)
-  (nil: ChainEnd) => PLine("none", 0, 0)
-  (la: ChainLink) => match(bs)
-    (nilb: ChainEnd) => PLine("none", 0, 0)
-    (lb: ChainLink)  => eqStmt(la.value, lb.value)
-      ? movedLine(la.next, lb.next)
-      : stmtLine(la.value)
+# The line of the first statement that differs, walking the two in step.
+fun movedLine(as2: List<PStmt>, bs: List<PStmt>): PLine =>
+  zipFold<PStmt, PStmt, PLine|None>(as2, bs, None, movedStep) ?? PLine("none", 0, 0)
 
-fun [tail] flipStmts(as2: Chain<PStmt>, bs: Chain<PStmt>, acc: Set<PErr>): Set<PErr> => match(as2)
-  (nil: ChainEnd) => acc
-  (la: ChainLink) => match(bs)
-    (nilb: ChainEnd) => acc
-    (lb: ChainLink)  => flipStmts(la.next, lb.next, flipStmt(la.value, lb.value, acc))
+fun movedStep(found: PLine|None, a: PStmt, b: PStmt) => match(found)
+  (l: PLine) => l
+  ()         => eqStmt(a, b) ? None : stmtLine(a)
+
+fun flipStmts(as2: List<PStmt>, bs: List<PStmt>, acc: Set<PErr>): Set<PErr> =>
+  zipFold(as2, bs, acc, (errs, a, b) => flipStmt(a, b, errs))
 
 fun flipStmt(a: PStmt, b: PStmt, acc: Set<PErr>): Set<PErr>
   ret eqStmt(a, b) ? acc : match(a)
@@ -105,10 +103,10 @@ fun flipStmt(a: PStmt, b: PStmt, acc: Set<PErr>): Set<PErr>
       (fb: PsFun) => flipFun(fa, fb, acc)
       (o: PStmt)  => acc
     (ca: PsClass) => match(b)
-      (cb: PsClass) => flipStmts(chain(ca.cMembers), chain(cb.cMembers), acc)
+      (cb: PsClass) => flipStmts(ca.cMembers, cb.cMembers, acc)
       (o: PStmt)    => acc
     (ia: PsTraitInstance) => match(b)
-      (ib: PsTraitInstance) => flipStmts(chain(ia.tiMembers), chain(ib.tiMembers), acc)
+      (ib: PsTraitInstance) => flipStmts(ia.tiMembers, ib.tiMembers, acc)
       (o: PStmt)            => acc
     (o: PStmt) => acc
 
@@ -117,17 +115,13 @@ fun flipFun(a: PsFun, b: PsFun, acc: Set<PErr>): Set<PErr>
     ? flipSpec(a.psfLine, "Return type of '" + simpleName(a.fName) + "'",
                a.fRet, b.fRet, acc)
     : acc
-  let prms = flipParams(chain(flattenParams(a.fParams)), chain(flattenParams(b.fParams)),
+  let prms = flipParams(flattenParams(a.fParams), flattenParams(b.fParams),
                         simpleName(a.fName), rets)
-  ret flipStmts(chain(bodyStmts(a)), chain(bodyStmts(b)), prms)
+  ret flipStmts(bodyStmts(a), bodyStmts(b), prms)
 
-fun [tail] flipParams(as2: Chain<PStmt>, bs: Chain<PStmt>, owner: String,
-                      acc: Set<PErr>): Set<PErr> => match(as2)
-  (nil: ChainEnd) => acc
-  (la: ChainLink) => match(bs)
-    (nilb: ChainEnd) => acc
-    (lb: ChainLink)  => flipParams(la.next, lb.next, owner,
-                                   flipParam(la.value, lb.value, owner, acc))
+fun flipParams(as2: List<PStmt>, bs: List<PStmt>, owner: String,
+               acc: Set<PErr>): Set<PErr> =>
+  zipFold(as2, bs, acc, (errs, a, b) => flipParam(a, b, owner, errs))
 
 fun flipParam(a: PStmt, b: PStmt, owner: String, acc: Set<PErr>): Set<PErr> => match(a)
   (pa: PsLet) => match(b)
@@ -157,7 +151,7 @@ fun flipErr(lr: PLine, what: String, a: String, b: String): Set<PErr>
 # flips — `typeStr` names both by the root, so name the leaves instead.
 fun typeView(sp: Spec): String => match(sp)
   (e2: SEnum) => isEnumView(e2)
-    ? joinLeaves(chain(e2.seAllLeaves), e2.seValidLeaves, "")
+    ? joinLeaves(e2.seAllLeaves, e2.seValidLeaves, "")
     : typeStr2(sp)
   (o: Spec)   => typeStr2(sp)
 
@@ -165,13 +159,10 @@ fun typeView(sp: Spec): String => match(sp)
 fun isEnumView(e2: SEnum) => any(e2.seAllLeaves,
                                  (l) => !any(e2.seValidLeaves, (v) => v == l))
 
-fun [tail] joinLeaves(ls: Chain<String>, valid: List<String>, acc: String): String => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => joinLeaves(l.next, valid,
-                                any(valid, (v) => v == l.value)
-                                  ? (acc == "" ? specName(l.value, List())
-                                               : acc + " | " + specName(l.value, List()))
-                                  : acc)
+fun joinLeaves(ls: List<String>, valid: List<String>, acc: String): String =>
+  fold(ls, acc, (out, l) => any(valid, (v) => v == l)
+    ? (out == "" ? specName(l, List()) : out + " | " + specName(l, List()))
+    : out)
 
 fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
   (b: PExpr) => match(b)
@@ -185,11 +176,9 @@ fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
 fun compilePass(statements): List<PStmt>
   let r = rootResolver(statements)
   ret powerMap(statements, (st: PStmt) => compileStmt(st, scopeResolver(st, r), None))
-    |> (outs) => build(passLoop(chain(outs), builder()))
+    |> (outs) => passLoop(outs, List())
 
 # Each statement's own output, then whatever it hoisted out beside itself:
 # this is the program's statement order, so a builder, not a set.
-fun [tail] passLoop(os: Chain<StmtOut>,
-                    [terminal] acc: ListBuilder<PStmt>): ListBuilder<PStmt> => match(os)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => passLoop(l.next, pushAll(addStmt(acc, l.value.soStmt), l.value.soExtra))
+fun passLoop(os: List<StmtOut>, acc: List<PStmt>): List<PStmt> =>
+  fold(os, acc, (out, o) => concat(addStmt(out, o.soStmt), o.soExtra))

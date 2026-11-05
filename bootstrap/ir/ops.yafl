@@ -1,6 +1,7 @@
 namespace Bootstrap::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Codegen
 import Bootstrap::StdlibCandidates
@@ -465,14 +466,14 @@ fun opToCCallPrefixJoin(list: List<String>) => fold(list, "", (acc, s) => acc + 
 # very much observed: these are C call arguments.
 
 fun opToCCallTypesFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret fold(values, ("", cache0), (acc, v) => opToCCallTypesStep(acc, v))
+  ret fold(values, ("", cache0), opToCCallTypesStep)
 
 fun opToCCallTypesStep(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
   let sub = cgDeclare(rpGetType(v.value), acc.cache)
   ret (acc.text + ", " + sub.text, sub.cache)
 
 fun opToCCallParamsFromValues(values: List<RpNamedValue>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret fold(values, ("", cache0), (acc, v) => opToCCallParamsStep(acc, v))
+  ret fold(values, ("", cache0), opToCCallParamsStep)
 
 fun opToCCallParamsStep(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(v.value, acc.cache)
@@ -484,7 +485,7 @@ fun opToCCallNewStruct(x: OpCall, returnType, tailreturn, prms: RpNewStruct, cac
   ret opToCCallFinish(x, returnType, tailreturn, typesR.text, paramsR.text, "", paramsR.cache)
 
 fun opToCCallTypesFromFields(fields: List<CgField>, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret fold(fields, ("", cache0), (acc, f) => opToCCallTypesFieldStep(acc, f))
+  ret fold(fields, ("", cache0), opToCCallTypesFieldStep)
 
 fun opToCCallTypesFieldStep(acc: (text: String, cache: List<CgCacheEntry>), f: CgField): (text: String, cache: List<CgCacheEntry>)
   let sub = cgDeclare(f.fieldType, acc.cache)

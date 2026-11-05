@@ -4,6 +4,7 @@
 namespace Bootstrap::Parse
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Codegen
@@ -19,7 +20,7 @@ fun hashName(name, lr: PLine) => name + "@" + hash6(lr.plFile, lr.plLine, lr.plC
 fun oneEntryTuple(x, lr) => PeTuple(prepend(PTupEnt("", false, x), List()), lr)
 
 fun twoEntryTuple(a, b, lr)
-  ret PeTuple(build(push(push(builder(), PTupEnt("", false, a)), PTupEnt("", false, b))), lr)
+  ret PeTuple(append(append(List(), PTupEnt("", false, a)), PTupEnt("", false, b)), lr)
 
 fun callNamed(name, args, lr) => PeCall(PeName(name, List(), lr), args, lr)
 
@@ -48,7 +49,7 @@ fun invertOperand(x: PExpr) => match(x)
 
 fun innerOfUnary(param: PExpr) => match(param)
   (t2: PeTuple) => match(head(t2.exprs))
-    (en: PTupEnt) => isEmpty(tail(t2.exprs)) ? en.tupValue : None
+    (en: PTupEnt) => isEmpty(dropOne(t2.exprs)) ? en.tupValue : None
     ()            => None
   ()            => None
 
@@ -72,13 +73,11 @@ fun pipeArgs(last) => match(last)
 
 fun placeholderCount(stage: PExpr) => match(stage)
   (c: PeCall) => match(c.parameter)
-    (t2: PeTuple) => countHoles(chain(t2.exprs), 0)
+    (t2: PeTuple) => countHoles(t2.exprs, 0)
     ()            => 0
   ()          => 0
 
-fun [tail] countHoles(es: Chain<PTupEnt>, acc) => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => countHoles(l.next, acc + (isHole(l.value.tupValue) ? 1 : 0))
+fun countHoles(es: List<PTupEnt>, acc) => fold(es, acc, (n, e) => n + (isHole(e.tupValue) ? 1 : 0))
 
 fun isHole(x: PExpr) => match(x)
   (n: PeName) => n.refName == "_"
@@ -120,7 +119,7 @@ fun pipeBeta(last, lm: PeLambda)
 
 fun betaBinder(params, ref, lr: PLine) => match(params)
   (d: PsDestructure) => match(head(d.dTargets))
-    (only: PStmt) => isEmpty(tail(d.dTargets))
+    (only: PStmt) => isEmpty(dropOne(d.dTargets))
       ? letWithValue(only, ref)
       : destructureWithValue(d, ref)
     ()            => destructureWithValue(d, ref)
@@ -149,10 +148,10 @@ fun classConstructor(c: PsClass): PStmt
   let tps = map<PGen, Spec>(c.cGens, (g2) => SGeneric(g2.genName, false, g2.pgLine))
   let clsTy = SClass(c.cName, tps, lr)
   let fields = paramsOf(c.cParams)
-  let entries = map(fields, (f) => ctorEntry(f))
+  let entries = map(fields, ctorEntry)
   let body = PeBlock(List(), PeNew(clsTy, PeTuple(entries, lr), lr), "", lr)
   let ctorParams = PsDestructure("_", List(), None,
-                                 map(fields, (f) => ctorParam(f)), None, lr)
+                                 map(fields, ctorParam), None, lr)
   # The constructor COPIES its class's ImportGroup (create_constructor).
   ret PsFun(c.cName, List(), c.cGens, ctorParams, body, clsTy, c.cWheres,
             lr, false, false, c.cImports)
@@ -199,23 +198,26 @@ fun stmtLine(st) => match(st)
 # A class with a trailing array field gains an accessor member `field@hash6r`
 # — a `(Int32): Elem` function reading the element via ArrayRead.
 
-fun withArrayAccessor(c) => match(accessorFor(chain(paramsOf(c.cParams))))
+fun withArrayAccessor(c) => match(accessorFor(paramsOf(c.cParams)))
   (acc: PStmt) => PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
                           c.cWheres,
-                          build(push(builderFrom(c.cMembers), acc)),
+                          append(c.cMembers, acc),
                           c.cIsInterface,
                           c.pscLine, c.cAllParents, c.cAllSlots, c.cImports)
   ()           => c
 
 # The accessor is built INSIDE the narrowed arm — a field read through a
 # PStmt-typed binder mis-generates (see the open representation bug).
-fun [tail] accessorFor(ps: Chain<PStmt>) => match(ps)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => match(arrayElem(let2.lType))
-      (el: Spec) => arrayAccessor(bareName(let2.lName), el, let2.pslLine)
-      ()        => accessorFor(l.next)
-    (o: PStmt)    => accessorFor(l.next)
+# The accessor for the first array-typed field, if there is one.
+fun accessorFor(ps: List<PStmt>) =>
+  foldWhile<PStmt, PStmt|None>(ps, None, (found, st) => accessorOf(st),
+                               (found) => found is None)
+
+fun accessorOf(st: PStmt): PStmt|None => match(st)
+  (let2: PsLet) => match(arrayElem(let2.lType))
+    (el: Spec) => arrayAccessor(bareName(let2.lName), el, let2.pslLine)
+    ()         => None
+  (o: PStmt)    => None
 
 fun arrayElem(ty: Spec|None) => match(ty)
   (t2: Spec) => arrayElemOf(t2)
@@ -246,27 +248,25 @@ fun bareName(name)
 # after the leaf, taking every field from the root down to it, returning the
 # ROOT enum type, its body a NewEnum expression.
 
-fun enumLeafConstructors(root: PsEnum, grp) => build(leafWalk(root, root, List(), grp,
-                                                              builder()))
+fun enumLeafConstructors(root: PsEnum, grp) => leafWalk(root, root, List(), grp,
+                                                              List())
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited,
-             grp, [terminal] acc): ListBuilder<PStmt>
+             grp, acc): List<PStmt>
   let params = concat(inherited, paramsOf(node.eParams))
   if isEmpty(node.eVariants)
     # Leaf constructors come out in variant declaration order.
     ret node.eHasParams
-      ? push(acc, leafConstructor(root, node, params, grp))
+      ? append(acc, leafConstructor(root, node, params, grp))
       : acc
-  ret variantsWalk(root, chain(node.eVariants), params, grp, acc)
+  ret variantsWalk(root, node.eVariants, params, grp, acc)
 
-fun [tail] variantsWalk(root: PsEnum, vs: Chain<PStmt>, params,
-                        grp, [terminal] acc: ListBuilder<PStmt>) => match(vs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => variantsWalk(root, l.next, params, grp,
-                                  leafWalkOf(root, l.value, params, grp, acc))
+fun variantsWalk(root: PsEnum, vs: List<PStmt>, params,
+                 grp, acc: List<PStmt>) =>
+  fold(vs, acc, (a, v) => leafWalkOf(root, v, params, grp, a))
 
 fun leafWalkOf(root: PsEnum, v, params,
-               grp, [terminal] acc): ListBuilder<PStmt> => match(v)
+               grp, acc): List<PStmt> => match(v)
   (e: PsEnum) => leafWalk(root, e, params, grp, acc)
   (o: PStmt)  => acc
 
@@ -363,10 +363,11 @@ fun exprLine(x) => match(x)
 # (enum variants included, recursively). Constructor/accessor/leaf-constructor
 # synthesis is ported separately (create_constructor et al.).
 
-fun fixupProgram(stmts: List<PStmt>) => match(chain(blockGroupsOf(chain(stmts))))
-  (g2: ChainLink) => fixupLoop(chain(stmts), "Main::", g2.next, g2.value,
-                               builder())
-  (nil: ChainEnd) => List()   # unreachable: the default block always exists
+fun fixupProgram(stmts: List<PStmt>)
+  let groups = blockGroupsOf(stmts)
+  ret match(head(groups))
+    (g2: List<PStmt>) => fixupLoop(stmts, Fixup("Main::", dropOne(groups), g2, List()))
+    ()                => List()   # unreachable: the default block always exists
 
 # Block-scoped ImportGroups (USER RULING 2026-08-23; parser.py mirror): one
 # group per namespace block — the block's self-import (members see their
@@ -375,41 +376,38 @@ fun fixupProgram(stmts: List<PStmt>) => match(chain(blockGroupsOf(chain(stmts)))
 # access to it, and imports do not pool across blocks. Statements before
 # the first namespace declaration form the default block (namespace Main,
 # no self-import).
-fun blockGroupsOf(ss): List<List<PStmt>> => bgLoop(ss, List(), builder())
+fun blockGroupsOf(ss): List<List<PStmt>> => bgLoop(ss, List(), List())
 
-fun [tail] bgLoop(ss: Chain<PStmt>, cur: List<PStmt>,
-                  [terminal] done: ListBuilder<List<PStmt>>) => match(ss)
-  (nil: ChainEnd) => build(push(done, cur))
-  (l: ChainLink)  => match(l.value)
-    (im: PsImport)    => bgLoop(l.next, concat(cur, list1(l.value)), done)
-    (n2: PsNamespace) => bgLoop(l.next,
-                                list1(PsImport(n2.nsPath, n2.psnLine)),
-                                push(done, cur))
-    (o: PStmt)        => bgLoop(l.next, cur, done)
+# Each namespace's import group: the imports seen since it (and its own path).
+fun bgLoop(ss: List<PStmt>, cur: List<PStmt>,
+           done: List<List<PStmt>>) =>
+  fold(ss, (cur = cur, done = done), bgStep)
+    |> (st) => append(st.done, st.cur)
 
-fun [tail] fixupLoop(ss: Chain<PStmt>, ns: String, grps: Chain<List<PStmt>>,
-                     grp: List<PStmt>, acc: ListBuilder<PStmt>): List<PStmt> => match(ss)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => match(l.value)
-    (im: PsImport)    => fixupLoop(l.next, ns, grps, grp, acc)
-    (n2: PsNamespace) => fixupNextBlock(l.next, n2, grps, acc)
-    (e: PsEnum)       => fixupLoop(l.next, ns, grps, grp,
-                           pushAll(push(acc,
-                                        withImports(addNamespace(e, ns), grp)),
-                                   enumLeafConstructors(namespacedEnum(e, ns),
-                                                        grp)))
-    (c: PsClass)      => fixupLoop(l.next, ns, grps, grp, classWithCtor(c, ns, grp, acc))
-    # A first-class TraitInstanceStatement rides the ordinary named
-    # handling (namespacing, import attachment); lower_instances.yafl
-    # lowers it AFTER checking.
-    (other)           => fixupLoop(l.next, ns, grps, grp,
-                                   withImports(addNamespace(l.value, ns), grp)
-                                     |> (st) => push(acc, st))
+fun bgStep(st: (cur: List<PStmt>, done: List<List<PStmt>>), s: PStmt) => match(s)
+  (im: PsImport)    => (cur = append(st.cur, s), done = st.done)
+  (n2: PsNamespace) => (cur = list1(PsImport(n2.nsPath, n2.psnLine)), done = append(st.done, st.cur))
+  (o: PStmt)        => st
 
-fun fixupNextBlock(rest: Chain<PStmt>, n2: PsNamespace, grps: Chain<List<PStmt>>,
-                   acc: ListBuilder<PStmt>) => match(grps)
-  (g2: ChainLink)  => fixupLoop(rest, n2.nsPath + "::", g2.next, g2.value, acc)
-  (nil2: ChainEnd) => fixupLoop(rest, n2.nsPath + "::", grps, List(), acc)   # unreachable: one group per namespace declaration
+# The walk's state: the current namespace prefix, the import groups of the
+# namespaces still to come, the current one's group, and the output so far.
+class [final] Fixup(fxNs: String, fxGrps: List<List<PStmt>>, fxGrp: List<PStmt>,
+                    fxOut: List<PStmt>)
+
+fun fixupLoop(ss: List<PStmt>, start: Fixup): List<PStmt> => fold(ss, start, fixupStep).fxOut
+
+fun fixupStep(fx: Fixup, s: PStmt) => match(s)
+  (im: PsImport)    => fx
+  # Entering a namespace: its group is the next one.
+  (n2: PsNamespace) => Fixup(n2.nsPath + "::", dropOne(fx.fxGrps),
+                             head(fx.fxGrps) ?? List<PStmt>(), fx.fxOut)
+  (e: PsEnum)       => with fx(fxOut = concat(append(fx.fxOut, withImports(addNamespace(e, fx.fxNs), fx.fxGrp)),
+                                              enumLeafConstructors(namespacedEnum(e, fx.fxNs), fx.fxGrp)))
+  (c: PsClass)      => with fx(fxOut = classWithCtor(c, fx.fxNs, fx.fxGrp, fx.fxOut))
+  # A first-class TraitInstanceStatement rides the ordinary named
+  # handling (namespacing, import attachment); lower_instances.yafl
+  # lowers it AFTER checking.
+  (other)           => with fx(fxOut = append(fx.fxOut, withImports(addNamespace(s, fx.fxNs), fx.fxGrp)))
 
 # Attach the ImportGroup to a NAMED statement (the kinds parse() attaches to).
 fun withImports(st, grp) => match(st)
@@ -434,12 +432,12 @@ fun withImports(st, grp) => match(st)
 
 # A class emits itself then its constructor (interfaces get neither).
 fun classWithCtor(c, ns, grp,
-                  acc: ListBuilder<PStmt>)
+                  acc: List<PStmt>)
   let named = importedClass(namespacedClass(c, ns), grp)
   ret c.cIsInterface
-    ? push(acc, named)
+    ? append(acc, named)
     : withArrayAccessor(named)
-      |> (full) => push(push(acc, full), classConstructorOf(full))
+      |> (full) => append(append(acc, full), classConstructorOf(full))
 
 fun importedClass(c, grp) => match(withImports(c, grp))
   (c2: PsClass) => c2

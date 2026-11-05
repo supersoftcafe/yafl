@@ -14,9 +14,11 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
 import Bootstrap::Parse
+import Bootstrap::StdlibCandidates
 
 
 
@@ -50,30 +52,29 @@ fun spZeroOf(ft) => match(ft)
 fun spCandidates(f: CgFunction, a: CgApp)
   # In op order: the candidates' order becomes the promoted locals' field
   # declaration order.
-  let news = build(spNewsLoop(f.fnOps, 0i32, a,
-                              builder()))
+  let news = spNewsLoop(f.fnOps, 0i32, a, List())
   ret filter(news,
              (c) => spDefCount(f.fnOps, c.spReg) == 1
                             && !any(f.fnOps,
                                     (op) => esOpPublishes(op, c.spReg)))
 
 fun [tail] spNewsLoop(s: Segment<Op>|None, i, a: CgApp,
-                      [terminal] acc): ListBuilder<SpCand> => match(s)
+                      acc): List<SpCand> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => i < seg.length
     ? spNewsLoop(s, i + 1i32, a, spNewsOp(acc, seg.array(i), a))
     : spNewsLoop(seg.next, 0i32, a, acc)
 
-fun spNewsOp([terminal] acc, op, a: CgApp): ListBuilder<SpCand> => match(op)
+fun spNewsOp(acc, op, a: CgApp): List<SpCand> => match(op)
   (no: OpNewObject) => no.newObjSize is None
     ? spNewsRegister(acc, no, a)
     : acc
   (o: Op)           => acc
 
-fun spNewsRegister([terminal] acc, no: OpNewObject,
-                   a: CgApp): ListBuilder<SpCand> => match(no.newObjRegister)
+fun spNewsRegister(acc, no: OpNewObject,
+                   a: CgApp): List<SpCand> => match(no.newObjRegister)
   (sv: RpStackVar) => match(spPayloadFields(appObject(a, no.newObjName)))
-    (payload: List<CgField>) => push(acc, SpCand(sv.name, payload))
+    (payload: List<CgField>) => append(acc, SpCand(sv.name, payload))
     ()                       => acc
   (o: RParam)      => acc
 
@@ -99,20 +100,15 @@ fun spFunction(f, a: CgApp)
                                    seqBuilder()))
   ret cgFunctionWith(f, newOps, spRestack(f, promoted))
 
-fun [tail] spCandFor(cs: Chain<SpCand>, name: String) => match(cs)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.spReg == name ? l.value : spCandFor(l.next,
-                                                                name)
+fun spCandFor(cs: List<SpCand>, name: String) => firstWhere(cs, (c) => c.spReg == name)
 
 fun spFieldLocal(cand: SpCand, field)
-  let ft = spFieldType(chain(cand.spPayload), field)
+  let ft = spFieldType(cand.spPayload, field)
   ret RpStackVar(ft, cand.spReg + "$" + field)
 
-fun [tail] spFieldType(fs: Chain<CgField>, field: String) => match(fs)
-  (nil: ChainEnd) => CgVoid()
-  (l: ChainLink)  => l.value.fieldName == field
-    ? l.value.fieldType
-    : spFieldType(l.next, field)
+fun spFieldType(fs: List<CgField>, field: String) => match(firstWhere(fs, (f) => f.fieldName == field))
+  (f: CgField) => f.fieldType
+  ()           => CgVoid()
 
 fun spRewrite(p, promoted: List<SpCand>): RParam => match(p)
   (of: RpObjectField) => of.index is None
@@ -121,7 +117,7 @@ fun spRewrite(p, promoted: List<SpCand>): RParam => match(p)
   (o: RParam)         => p
 
 fun spRewriteField(of: RpObjectField, promoted: List<SpCand>) => match(of.pointer)
-  (sv: RpStackVar) => match(spCandFor(chain(promoted), sv.name))
+  (sv: RpStackVar) => match(spCandFor(promoted, sv.name))
     (cand: SpCand) => spFieldLocal(cand, of.field)
     ()             => of
   (o: RParam)      => of
@@ -147,27 +143,23 @@ fun spRewriteOp([terminal] acc, op,
 fun spReplaced(op, promoted: List<SpCand>) => opReplaceParams(op, (p) => spRewrite(p, promoted))
 
 fun spPromotedRegister(no: OpNewObject, promoted: List<SpCand>) => match(no.newObjRegister)
-  (sv: RpStackVar) => spCandFor(chain(promoted), sv.name)
+  (sv: RpStackVar) => spCandFor(promoted, sv.name)
   (o: RParam)      => None
 
 # NewObject zero-fills; the field locals must match so a partially-
 # initialised read stays defined.
 fun spZeroFills([terminal] acc, cand: SpCand): SeqBuilder<Op>
-  ret spZeroFillsLoop(chain(cand.spPayload), cand, acc)
+  ret spZeroFillsLoop(cand.spPayload, cand, acc)
 
-fun [tail] spZeroFillsLoop(fs: Chain<CgField>, cand: SpCand,
-                           [terminal] acc): SeqBuilder<Op> => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => spZeroFillsLoop(l.next, cand,
-                         push(acc,
-                             OpMove(spFieldLocal(cand, l.value.fieldName),
-                                    spZeroOf(l.value.fieldType), false,
-                                    Dict())))
+fun spZeroFillsLoop(fs: List<CgField>, cand: SpCand,
+                    [terminal] acc): SeqBuilder<Op> =>
+  fold(fs, acc, (b, f) =>
+    push(b, OpMove(spFieldLocal(cand, f.fieldName), spZeroOf(f.fieldType), false, Dict())))
 
 fun spPromotedStore(m: OpMove, promoted: List<SpCand>) => match(m.moveTarget)
   (of: RpObjectField) => of.index is None
     ? match(of.pointer)
-      (sv: RpStackVar) => spCandFor(chain(promoted), sv.name)
+      (sv: RpStackVar) => spCandFor(promoted, sv.name)
       (o: RParam)      => None
     : None
   (o: RParam)         => None
@@ -184,26 +176,13 @@ fun spStoreMove(m: OpMove, cand: SpCand, promoted: List<SpCand>)
 # Declare the field locals; retire the promoted registers.
 fun spRestack(f: CgFunction, promoted: List<SpCand>)
   let kept = filter(cgFieldsOfOrEmpty(f.fnStackVars),
-                    (fld) => spCandFor(chain(promoted),
+                    (fld) => spCandFor(promoted,
                                        fld.fieldName) is None)
   # Declaration order: the locals that survive, then one field per promoted
   # object's payload.
-  ret CgStruct(build(spCandsFields(chain(promoted),
-                   builderFrom(kept))))
+  ret CgStruct(spCandsFields(promoted, kept))
 
-fun [tail] spCandsFields(cs: Chain<SpCand>,
-                         [terminal] acc: ListBuilder<CgField>) => match(cs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => spCandsFields(l.next, spCandFields(acc, l.value))
+fun spCandsFields(cs: List<SpCand>, acc: List<CgField>) => fold(cs, acc, spCandFields)
 
-fun spCandFields([terminal] acc,
-                 cand: SpCand): ListBuilder<CgField>
-  ret spCandFieldsLoop(chain(cand.spPayload), cand, acc)
-
-fun [tail] spCandFieldsLoop(fs: Chain<CgField>, cand: SpCand,
-                            [terminal] acc): ListBuilder<CgField> => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => spCandFieldsLoop(l.next, cand,
-                         push(acc,
-                             CgField(cand.spReg + "$" + l.value.fieldName,
-                                     l.value.fieldType)))
+fun spCandFields(acc, cand: SpCand): List<CgField> =>
+  concat(acc, map(cand.spPayload, (f) => CgField(cand.spReg + "$" + f.fieldName, f.fieldType)))

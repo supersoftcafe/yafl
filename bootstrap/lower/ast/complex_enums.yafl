@@ -11,6 +11,7 @@
 namespace Bootstrap::Lower::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 # Codegen: the per-leaf threshold analysis reuses collectLeafFieldSets /
@@ -39,14 +40,15 @@ fun erNames(r: ERoots) => sort(keys(r.erIndex))
 fun nmNames(m: NameMap) => sort(keys(m.nmIndex))
 
 fun ceCollectRoots(statements: List<PStmt>): ERoots
-  ret ceRootsLoop(chain(statements),
+  ret ceRootsLoop(statements,
                   ERoots(Dict()))
 
-fun [tail] ceRootsLoop(ss: Chain<PStmt>, acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (e2: PsEnum) => ceRootsLoop(l.next, ceRootAdd(acc, e2))
-    (o: PStmt)   => ceRootsLoop(l.next, acc)
+fun ceRootsLoop(ss: List<PStmt>, acc) =>
+  fold(ss, acc, ceRootsLoopStep)
+
+fun ceRootsLoopStep(a: ERoots, x: PStmt) => match(x)
+  (e2: PsEnum) => ceRootAdd(a, e2)
+  (o: PStmt) => a
 
 fun ceRootAdd(acc, e2: PsEnum) => match(e2.eSpec)
   (sp: Spec) => match(sp)
@@ -62,14 +64,12 @@ fun ceRootSpecOf(roots: ERoots, root: String) => get(roots.erIndex, root)
 # Every name form of an enum root maps to its canonical root_name: the
 # no-hash namespaced form and the bare name (Name@hash itself is NOT a key —
 # NamedSpec.name typically lacks the hash). First form wins (setdefault).
-fun ceNameMap(roots: ERoots): NameMap => ceMapLoop(chain(erNames(roots)), NameMap(Dict()))
+fun ceNameMap(roots: ERoots): NameMap => ceMapLoop(erNames(roots), NameMap(Dict()))
 
-fun [tail] ceMapLoop(ns: Chain<String>, acc) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ceMapLoop(l.next,
-                               ceMapAdd(ceMapAdd(acc, simpleName(l.value),
-                                                 l.value),
-                                        bareOfUnique(l.value), l.value))
+fun ceMapLoop(ns: List<String>, acc) =>
+  fold(ns, acc, (a, x) => ceMapAdd(ceMapAdd(a, simpleName(x),
+                                                 x),
+                                        bareOfUnique(x), x))
 
 fun ceMapAdd(acc, key, root) => get(acc.nmIndex, key) is None
   ? NameMap(put(acc.nmIndex, key, root))
@@ -81,7 +81,7 @@ fun ceMapAdd(acc, key, root) => get(acc.nmIndex, key) is None
 # keys are walked in cannot affect it.
 fun ceLookup2(map: NameMap, name) => match(get(map.nmIndex, name))
   (hit: String) => hit
-  ()            => singleOrNone(ceSuffixMatches(chain(nmNames(map)),
+  ()            => singleOrNone(ceSuffixMatches(nmNames(map),
                                                 map, name,
                                                 Set()))
 
@@ -93,13 +93,13 @@ fun ceLookup2(map: NameMap, name) => match(get(map.nmIndex, name))
 # deciding anything. A Set collects the distinct matches, so singleOrNone above
 # yields the answer only when it is UNAMBIGUOUS, and ceAmbiguous below reports
 # the rest (USER RULING).
-fun [tail] ceSuffixMatches(ks: Chain<String>, map: NameMap, name,
-                           acc: Set<String>) => match(ks)
-  (nil: ChainEnd) => acc
-  (k: ChainLink)  => ceSuffixMatches(k.next, map, name,
-      endsWith(k.value, "::" + name) || endsWith(name, "::" + k.value)
-        ? add(acc, ceRootFor(map, k.value))
-        : acc)
+fun ceSuffixMatches(ks: List<String>,
+                    map: NameMap,
+                    name,
+                    acc: Set<String>) =>
+  fold(ks, acc, (a, x) => endsWith(x, "::" + name) || endsWith(name, "::" + x)
+        ? add(a, ceRootFor(map, x))
+        : a)
 
 fun ceRootFor(map: NameMap, key) => match(get(map.nmIndex, key))
   (r: String) => r
@@ -121,8 +121,8 @@ fun ceReachOpt(sp: Spec|None, out,
 fun ceReach(sp, out, map: NameMap): Set<String> => match(sp)
   # `add` is idempotent, so the "already reached" test went with the Set.
   (e2: SEnum)        => add(out, e2.seRoot)
-  (t2: STuple)       => ceReachEntries(chain(t2.stEntries), out, map)
-  (cm: SCombination) => ceReachList(chain(cm.scTypes), out, map)
+  (t2: STuple)       => ceReachEntries(t2.stEntries, out, map)
+  (cm: SCombination) => ceReachList(cm.scTypes, out, map)
   (cl: SCallable)    => ceReachOpt(cl.scResult,
                                    ceReach(cl.scParams2, out, map), map)
   (n: SNamed)        => match(ceLookup2(map, n.snName))
@@ -130,17 +130,15 @@ fun ceReach(sp, out, map: NameMap): Set<String> => match(sp)
     ()             => out
   (o: Spec)          => out
 
-fun [tail] ceReachEntries(es: Chain<SEntry>, out,
-                          map: NameMap) => match(es)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => ceReachEntries(l.next,
-                                    ceReachOpt(l.value.seType, out, map),
-                                    map)
+fun ceReachEntries(es: List<SEntry>,
+                   out,
+                   map: NameMap) =>
+  fold(es, out, (a, x) => ceReachOpt(x.seType, a, map))
 
-fun [tail] ceReachList(ss: Chain<Spec>, out: Set<String>,
-                       map: NameMap) => match(ss)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => ceReachList(l.next, ceReach(l.value, out, map), map)
+fun ceReachList(ss: List<Spec>,
+                out: Set<String>,
+                map: NameMap) =>
+  fold(ss, out, (a, x) => ceReach(x, a, map))
 
 # The directed graph between root names: each name to the names it reaches.
 #
@@ -159,23 +157,22 @@ fun eeNodes(work: EEdges) => sort(keys(work.eeMap))
 
 fun ceEdges(roots: ERoots, map: NameMap,
             fieldsOf: (:String): List<SField>): EEdges
-  ret ceEdgeLoop(chain(erNames(roots)), roots, map, fieldsOf,
+  ret ceEdgeLoop(erNames(roots), roots, map, fieldsOf,
                  EEdges(Dict()))
 
-fun [tail] ceEdgeLoop(ns: Chain<String>, roots: ERoots, map: NameMap,
-                      fieldsOf: (:String): List<SField>,
-                      acc: EEdges) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => ceEdgeLoop(n.next, roots, map, fieldsOf,
-      EEdges(put(acc.eeMap, n.value,
-                 sort(ceFieldsReach(chain(fieldsOf(n.value)),
+fun ceEdgeLoop(ns: List<String>,
+               roots: ERoots,
+               map: NameMap,
+               fieldsOf: (:String): List<SField>,
+               acc: EEdges) =>
+  fold(ns, acc, (a, x) => EEdges(put(a.eeMap, x,
+                 sort(ceFieldsReach(fieldsOf(x),
                                     Set(), map)))))
 
-fun [tail] ceFieldsReach(fs: Chain<SField>, out,
-                         map: NameMap) => match(fs)
-  (nil: ChainEnd) => out
-  (l: ChainLink)  => ceFieldsReach(l.next,
-                                   ceReach(l.value.sfType, out, map), map)
+fun ceFieldsReach(fs: List<SField>,
+                  out,
+                  map: NameMap) =>
+  fold(fs, out, (a, x) => ceReach(x.sfType, a, map))
 
 fun ceChildrenOf(work: EEdges, v: String) => match(get(work.eeMap, v))
   (cs: List<String>) => cs
@@ -190,37 +187,37 @@ class [final] Tj(tjIndex: Dict<String, Int>, tjLow: Dict<String, Int>,
 
 fun ceSccs(work: EEdges)
   let order = eeNodes(work)
-  ret tjRoots(chain(order), work,
+  ret tjRoots(order, work,
               Tj(Dict(), Dict(), List(),
                  Set(), List(), 0)).tjSccs
 
-fun [tail] tjRoots(ns: Chain<String>, work: EEdges, st: Tj) => match(ns)
-  (nil: ChainEnd) => st
-  (l: ChainLink)  => match(get(st.tjIndex, l.value))
-    (i: Int) => tjRoots(l.next, work, st)
-    ()       => tjRoots(l.next, work, tjVisit(l.value, work, st))
+fun tjRoots(ns: List<String>, work: EEdges, st: Tj) =>
+  fold(ns, st, (a, x) => tjRootsStep(a, x, work))
+
+fun tjRootsStep(a: Tj, x: String, work: EEdges) => match(get(a.tjIndex, x))
+  (i: Int) => a
+  () => tjVisit(x, work, a)
 
 fun tjVisit(v, work: EEdges, st0: Tj)
   let st1 = Tj(put(st0.tjIndex, v, st0.tjN), put(st0.tjLow, v, st0.tjN),
                prepend(v, st0.tjStack), add(st0.tjOn, v),
                st0.tjSccs, st0.tjN + 1)
-  let st2 = tjNeighbours(chain(sort(ceChildrenOf(work, v))),
+  let st2 = tjNeighbours(sort(ceChildrenOf(work, v)),
                          v, work, st1)
   ret tjIndexOf(st2, v) == tjLowOf(st2, v) ? tjPop(st2, v) : st2
 
-fun [tail] tjNeighbours(ws: Chain<String>, v, work: EEdges,
-                        st: Tj) => match(ws)
-  (nil: ChainEnd) => st
-  (l: ChainLink)  => match(get(st.tjIndex, l.value))
-    (i: Int) => contains(st.tjOn, l.value)
-      ? tjNeighbours(l.next, v, work,
-                     tjSetLow(st, v, minInt(tjLowOf(st, v), i)))
-      : tjNeighbours(l.next, v, work, st)
-    ()       => tjVisit(l.value, work, st)
-      |> (st2) => tjNeighbours(l.next, v, work,
-                               tjSetLow(st2, v,
-                                        minInt(tjLowOf(st2, v),
-                                               tjLowOf(st2, l.value))))
+fun tjNeighbours(ws: List<String>, v, work: EEdges, st: Tj) =>
+  fold(ws, st,
+       (a, x) => tjNeighboursStep(a, x, v, work))
+
+fun tjNeighboursStep(a: Tj, x: String, v, work: EEdges) => match(get(a.tjIndex, x))
+  (i: Int) => contains(a.tjOn, x)
+    ? tjSetLow(a, v, minInt(tjLowOf(a, v), i))
+    : a
+  () => tjVisit(x, work, a)
+    |> (st2) => tjSetLow(st2, v,
+      minInt(tjLowOf(st2, v),
+             tjLowOf(st2, x)))
 
 fun tjIndexOf(st: Tj, v: String) => match(get(st.tjIndex, v))
   (i: Int) => i
@@ -246,12 +243,11 @@ fun minInt(a: Int, b: Int) => a < b ? a : b
 # list reversal in the port, deleted by choosing the representation that
 # matches how the value is consumed.
 # Remove an SCC's members from the on-stack set.
-fun [tail] tjOnDrop(ns: Chain<String>, acc: Set<String>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => tjOnDrop(l.next, remove(acc, l.value))
+fun tjOnDrop(ns: List<String>, acc: Set<String>) =>
+  fold(ns, acc, remove)
 
 fun tjPop(st: Tj, v: String)
-  let at = tjFirstIndex(chain(st.tjStack), v, 0)
+  let at = tjFirstIndex(st.tjStack, v, 0)
   let scc = take(st.tjStack, at + 1)
   # tjOn is a membership set, so the SCC's members are simply removed from it.
   # The SCC list keeps its order: Tarjan emits SCCs in a deterministic order
@@ -261,26 +257,26 @@ fun tjPop(st: Tj, v: String)
          # A named walk, not `fold`: fold is overloaded over List and Set with
          # the same shape (container, init, fn), so a fold whose container is
          # a List and whose accumulator is a Set can match either overload.
-         tjOnDrop(chain(scc), st.tjOn),
-         build(push(
-             builderFrom(st.tjSccs),
-             scc)),
+         tjOnDrop(scc, st.tjOn),
+         append(
+             st.tjSccs,
+             scc),
          st.tjN)
 
 # The stack is newest-first, so the MOST RECENT v is the FIRST match.
-fun [tail] tjFirstIndex(ss: Chain<String>, v: String, at) => match(ss)
-  (nil: ChainEnd) => at
-  (l: ChainLink)  => l.value == v ? at : tjFirstIndex(l.next, v, at + 1)
+fun [tail] tjFirstIndex(ss: List<String>, v: String, at) => match(head(ss))
+  (s: String) => s == v ? at : tjFirstIndex(dropOne(ss), v, at + 1)
+  ()          => at
 
 fun tjRemoveAll(ss, gone: List<String>,
-                       acc: List<String>) => build(tjRemoveAllB(ss, gone, builderFrom(acc)))
+                       acc: List<String>) => tjRemoveAllB(ss, gone, acc)
 
-fun [tail] tjRemoveAllB(ss: Chain<String>, gone: List<String>,
-                       [terminal] acc: ListBuilder<String>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => contains2(gone, l.value)
-    ? tjRemoveAllB(l.next, gone, acc)
-    : tjRemoveAllB(l.next, gone, push(acc, l.value))
+fun tjRemoveAllB(ss: List<String>,
+                 gone: List<String>,
+                 acc: List<String>) =>
+  fold(ss, acc, (a, x) => contains2(gone, x)
+    ? a
+    : append(a, x))
 
 # ── cycle breakers ───────────────────────────────────────────────────────────
 # Iterate until no cycles remain; per round, every cyclic SCC contributes its
@@ -295,52 +291,52 @@ fun cePickBreakers(edges, roots: ERoots,
 fun [tail] cePickLoop(work, roots: ERoots,
                       fieldsOf: (:String): List<SField>,
                       acc): List<String>
-  let cyclic = ceCyclicSccs(chain(ceSccs(work)), work, List())
+  let cyclic = ceCyclicSccs(ceSccs(work), work, List())
   if isEmpty(cyclic)
     ret acc
-  ret ceBreakSccs(chain(cyclic), work, roots, fieldsOf, acc)
+  ret ceBreakSccs(cyclic, work, roots, fieldsOf, acc)
     |> (out) => cePickLoop(out.pbWork, roots, fieldsOf, out.pbChosen)
 
 fun ceCyclicSccs(ss, work: EEdges,
-                        acc: List<List<String>>) => build(ceCyclicSccsB(ss, work, builderFrom(acc)))
+                        acc: List<List<String>>) => ceCyclicSccsB(ss, work, acc)
 
-fun [tail] ceCyclicSccsB(ss: Chain<List<String>>, work: EEdges,
-                        [terminal] acc: ListBuilder<List<String>>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ceIsCyclic(l.value, work)
-    ? ceCyclicSccsB(l.next, work, push(acc, l.value))
-    : ceCyclicSccsB(l.next, work, acc)
+fun ceCyclicSccsB(ss: List<List<String>>,
+                  work: EEdges,
+                  acc: List<List<String>>) =>
+  fold(ss, acc, (a, x) => ceIsCyclic(x, work)
+    ? append(a, x)
+    : a)
 
 fun ceIsCyclic(scc: List<String>, work: EEdges)
   if !isEmpty(drop(scc, 1))
     ret true
-  ret ceAnySelfLoop(chain(scc), work)
+  ret ceAnySelfLoop(scc, work)
 
-fun [tail] ceAnySelfLoop(ss: Chain<String>, work: EEdges) => match(ss)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => contains2(ceChildrenOf(work, l.value), l.value)
-    ? true
-    : ceAnySelfLoop(l.next, work)
+fun ceAnySelfLoop(ss: List<String>, work: EEdges) => any(ss, (x) => contains2(ceChildrenOf(work, x), x))
 
 class [final] PickOut(pbWork: EEdges, pbChosen: List<String>)
 
-fun [tail] ceBreakSccs(ss: Chain<List<String>>, work, roots: ERoots,
-                       fieldsOf: (:String): List<SField>,
-                       acc) => match(ss)
-  (nil: ChainEnd) => PickOut(work, acc)
-  (l: ChainLink)  => ceMinBy(chain(l.value), work, roots, fieldsOf, "")
-    # The chosen breakers are a set of names to mark — order not observed.
-    |> (chosen) => ceBreakSccs(l.next, ceRemoveNode(work, chosen), roots,
-                               fieldsOf, prepend(chosen, acc))
+fun ceBreakSccs(ss: List<List<String>>, work, roots: ERoots,
+                fieldsOf: (:String): List<SField>, acc) =>
+  fold(ss, (work = work, acc = acc),
+       (st, x) => ceBreakSccsStep(st, x, roots, fieldsOf))
+    |> (r) => PickOut(r.work, r.acc)
 
-fun [tail] ceMinBy(ss: Chain<String>, work: EEdges, roots: ERoots,
-                   fieldsOf: (:String): List<SField>,
-                   best) => match(ss)
-  (nil: ChainEnd) => best
-  (l: ChainLink)  => best == "" || ceKeyLess(l.value, best, work, roots,
+fun ceBreakSccsStep(st: (work: EEdges, acc: List<String>), x: List<String>, roots: ERoots,
+                    fieldsOf: (:String): List<SField>) =>
+  ceMinBy(x, st.work, roots, fieldsOf, "")
+  # The chosen breakers are a set of names to mark — order not observed.
+      |> (chosen) => (work = ceRemoveNode(st.work, chosen), acc = prepend(chosen, st.acc))
+
+fun ceMinBy(ss: List<String>,
+            work: EEdges,
+            roots: ERoots,
+            fieldsOf: (:String): List<SField>,
+            best) =>
+  fold(ss, best, (a, x) => a == "" || ceKeyLess(x, a, work, roots,
                                              fieldsOf)
-    ? ceMinBy(l.next, work, roots, fieldsOf, l.value)
-    : ceMinBy(l.next, work, roots, fieldsOf, best)
+    ? x
+    : a)
 
 # The sort key tuple (not System::, not self-loop, len(all_fields), name),
 # compared lexicographically.
@@ -356,8 +352,8 @@ fun ceKeyLess(a, b, work: EEdges, roots: ERoots,
     ret aSelf
   let aFields = fieldsOf(a)
   let bFields = fieldsOf(b)
-  if !sameLen(chain(aFields), chain(bFields))
-    ret shorterThan(chain(aFields), chain(bFields))
+  if !sameLen(aFields, bFields)
+    ret shorterThan(aFields, bFields)
   ret a < b
 
 fun ceIsSystem(name) => startsWith(simpleName(name), "System::")
@@ -366,16 +362,16 @@ fun ceIsSystem(name) => startsWith(simpleName(name), "System::")
 # incoming edges still have to be swept out of the remaining child lists, which
 # is a walk of the whole graph either way.
 fun ceRemoveNode(work: EEdges, v: String)
-  ret ceRemoveLoop(chain(eeNodes(work)), work, v, EEdges(Dict()))
+  ret ceRemoveLoop(eeNodes(work), work, v, EEdges(Dict()))
 
-fun [tail] ceRemoveLoop(ns: Chain<String>, work: EEdges, v: String,
-                        acc: EEdges) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => n.value == v
-    ? ceRemoveLoop(n.next, work, v, acc)
-    : ceRemoveLoop(n.next, work, v,
-                   EEdges(put(acc.eeMap, n.value,
-                              tjRemoveAll(chain(ceChildrenOf(work, n.value)),
+fun ceRemoveLoop(ns: List<String>,
+                 work: EEdges,
+                 v: String,
+                 acc: EEdges) =>
+  fold(ns, acc, (a, x) => x == v
+    ? a
+    : EEdges(put(a.eeMap, x,
+                              tjRemoveAll(ceChildrenOf(work, x),
                                           prepend(v, List()),
                                           List()))))
 
@@ -405,31 +401,29 @@ fun markComplexEnums(statements: List<PStmt>): (stmts: List<PStmt>, errs: Set<PE
   ret (stmts = statements,
        errs = isEmpty(roots.erIndex)
          ? Set()
-         : ceAmbiguities(chain(erNames(roots)), ceNameMap(roots),
+         : ceAmbiguities(erNames(roots), ceNameMap(roots),
                          enumFieldsProvider(statements), Set()))
 
-fun [tail] ceAmbiguities(ns: Chain<String>, map: NameMap,
-                         fieldsOf: (:String): List<SField>,
-                         acc: Set<PErr>) => match(ns)
-  (nil: ChainEnd) => acc
-  (n: ChainLink)  => ceAmbiguities(n.next, map, fieldsOf,
-                                   ceFieldAmbig(chain(fieldsOf(n.value)),
-                                                map, acc))
+fun ceAmbiguities(ns: List<String>,
+                  map: NameMap,
+                  fieldsOf: (:String): List<SField>,
+                  acc: Set<PErr>) =>
+  fold(ns, acc, (a, x) => ceFieldAmbig(fieldsOf(x),
+                                                map, a))
 
-fun [tail] ceFieldAmbig(fs: Chain<SField>, map: NameMap,
-                        acc): Set<PErr> => match(fs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ceFieldAmbig(l.next, map,
-                                  ceSpecAmbig(l.value.sfType, map, acc))
+fun ceFieldAmbig(fs: List<SField>,
+                 map: NameMap,
+                 acc): Set<PErr> =>
+  fold(fs, acc, (a, x) => ceSpecAmbig(x.sfType, map, a))
 
 # Only a NAMED spec can be ambiguous; the structural cases just descend.
 fun ceSpecAmbig(sp, map: NameMap, acc): Set<PErr> => match(sp)
   (n: SNamed)        => get(map.nmIndex, n.snName) is None
-    ? ceReportAmbig(n, ceSuffixMatches(chain(nmNames(map)), map, n.snName,
+    ? ceReportAmbig(n, ceSuffixMatches(nmNames(map), map, n.snName,
                                        Set()), acc)
     : acc
-  (t2: STuple)       => ceEntryAmbig(chain(t2.stEntries), map, acc)
-  (cm: SCombination) => ceListAmbig(chain(cm.scTypes), map, acc)
+  (t2: STuple)       => ceEntryAmbig(t2.stEntries, map, acc)
+  (cm: SCombination) => ceListAmbig(cm.scTypes, map, acc)
   (cl: SCallable)    => ceSpecAmbig(cl.scParams2, map, acc)
   (o: Spec)          => acc
 
@@ -439,11 +433,10 @@ fun ceReportAmbig(n: SNamed, ms: Set<String>, acc): Set<PErr> => isMoreThanOne(m
         + join(sort(ms), ", ") + "; qualify it"))
   : acc
 
-fun [tail] ceEntryAmbig(es: Chain<SEntry>, map: NameMap,
-                        acc): Set<PErr> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ceEntryAmbig(l.next, map,
-                                  ceSpecAmbigOpt(l.value.seType, map, acc))
+fun ceEntryAmbig(es: List<SEntry>,
+                 map: NameMap,
+                 acc): Set<PErr> =>
+  fold(es, acc, (a, x) => ceSpecAmbigOpt(x.seType, map, a))
 
 # Optional-spec variant, mirroring ceReachOpt: a match cannot be spelled
 # inline as a call argument.
@@ -451,10 +444,10 @@ fun ceSpecAmbigOpt(sp: Spec|None, map: NameMap, acc): Set<PErr> => match(sp)
   (s2: Spec) => ceSpecAmbig(s2, map, acc)
   ()         => acc
 
-fun [tail] ceListAmbig(ss: Chain<Spec>, map: NameMap,
-                       acc: Set<PErr>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ceListAmbig(l.next, map, ceSpecAmbig(l.value, map, acc))
+fun ceListAmbig(ss: List<Spec>,
+                map: NameMap,
+                acc: Set<PErr>) =>
+  fold(ss, acc, (a, x) => ceSpecAmbig(x, map, a))
 
 # The breaker set — WHICH enum roots must lower complex — as a pure function
 # of the statements (mirror of Python's compute_breakers): collect roots,
@@ -480,16 +473,17 @@ fun rootResolver(statements)
 
 # Every root enum's derived fields, once per pass (the stAmbient pattern —
 # resolver-path readers asked ~938k times per self-compile otherwise).
-fun enumFieldsTable(statements: List<PStmt>) => eftLoop(chain(statements), Dict())
+fun enumFieldsTable(statements: List<PStmt>) => eftLoop(statements, Dict())
 
-fun [tail] eftLoop(ss: Chain<PStmt>,
-                   acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (e: PsEnum) => efIsRoot(e)
-      ? eftLoop(l.next, put(acc, e.eName, deriveAllFields(e)))
-      : eftLoop(l.next, acc)
-    (o: PStmt)  => eftLoop(l.next, acc)
+fun eftLoop(ss: List<PStmt>,
+            acc) =>
+  fold(ss, acc, eftLoopStep)
+
+fun eftLoopStep(a: Dict<String, List<SField>>, x: PStmt) => match(x)
+  (e: PsEnum) => efIsRoot(e)
+    ? put(a, e.eName, deriveAllFields(e))
+    : a
+  (o: PStmt) => a
 
 fun computeBreakers(statements: List<PStmt>): List<String>
   let roots = ceCollectRoots(statements)
@@ -587,14 +581,15 @@ fun computeBoxedLeaves(statements: List<PStmt>,
 
 # Root STATEMENTS by root name (first declaration wins): collectLeafFieldSets
 # needs the PsEnum, not just its spec.
-fun bxRootStmts(statements: List<PStmt>) => bxRootStmtsLoop(chain(statements), Dict())
+fun bxRootStmts(statements: List<PStmt>) => bxRootStmtsLoop(statements, Dict())
 
-fun [tail] bxRootStmtsLoop(ss: Chain<PStmt>,
-                           acc: Dict<String, PsEnum>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (e2: PsEnum) => bxRootStmtsLoop(l.next, bxRootStmtAdd(acc, e2))
-    (o: PStmt)   => bxRootStmtsLoop(l.next, acc)
+fun bxRootStmtsLoop(ss: List<PStmt>,
+                    acc: Dict<String, PsEnum>) =>
+  fold(ss, acc, bxRootStmtsLoopStep)
+
+fun bxRootStmtsLoopStep(a: Dict<String, PsEnum>, x: PStmt) => match(x)
+  (e2: PsEnum) => bxRootStmtAdd(a, e2)
+  (o: PStmt) => a
 
 fun bxRootStmtAdd(acc: Dict<String, PsEnum>, e2: PsEnum) => match(asEnumVariant(e2.eSpec))
   (sp: SEnum) => enumIsRootStmt(e2) && !contains(acc, sp.seRoot)
@@ -603,28 +598,29 @@ fun bxRootStmtAdd(acc: Dict<String, PsEnum>, e2: PsEnum) => match(asEnumVariant(
   ()           => acc
 
 # The [foreign] classes by canonical name (ClassSpec.name matches).
-fun bxForeignClasses(statements: List<PStmt>) => bxForeignLoop(chain(statements), Dict())
+fun bxForeignClasses(statements: List<PStmt>) => bxForeignLoop(statements, Dict())
 
-fun [tail] bxForeignLoop(ss: Chain<PStmt>,
-                         acc) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(l.value)
-    (c: PsClass) => hasAttr(c.cAttrs, "foreign")
-      ? bxForeignLoop(l.next, put(acc, c.cName, true))
-      : bxForeignLoop(l.next, acc)
-    (o: PStmt)   => bxForeignLoop(l.next, acc)
+fun bxForeignLoop(ss: List<PStmt>,
+                  acc) =>
+  fold(ss, acc, bxForeignLoopStep)
+
+fun bxForeignLoopStep(a: Dict<String, Bool>, x: PStmt) => match(x)
+  (c: PsClass) => hasAttr(c.cAttrs, "foreign")
+    ? put(a, c.cName, true)
+    : a
+  (o: PStmt) => a
 
 # True when any non-leaf node of the variant tree declares fields.
 fun bxHasInteriorFields(e2: PsEnum) => isEmpty(e2.eVariants)
   ? false
-  : !isEmpty(filterDeclaredFields(chain(flattenParams(e2.eParams)), List()))
-    || bxAnyInteriorVariant(chain(e2.eVariants))
+  : !isEmpty(filterDeclaredFields(flattenParams(e2.eParams), List()))
+    || bxAnyInteriorVariant(e2.eVariants)
 
-fun [tail] bxAnyInteriorVariant(vs: Chain<PStmt>) => match(vs)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => match(l.value)
-    (v: PsEnum) => bxHasInteriorFields(v) ? true : bxAnyInteriorVariant(l.next)
-    (o: PStmt)  => bxAnyInteriorVariant(l.next)
+fun bxAnyInteriorVariant(vs: List<PStmt>) => any(vs, bxAnyInteriorVariantStep)
+
+fun bxAnyInteriorVariantStep(x: PStmt) => match(x)
+  (v: PsEnum) => bxHasInteriorFields(v)
+  (o: PStmt) => false
 
 # ── the pointer-word mirror (union_repr._pointer_word_kind at spec level) ──
 # "" when the member is not representable as one tagged pointer word.
@@ -653,7 +649,7 @@ fun bxIsScalarName(name) => name == "bool" || name == "int8" || name == "int16" 
   || name == "int64" || name == "float32" || name == "float64"
 
 # A single-field tuple is a newtype wrapper: peel to the inner kind.
-fun bxNewtypeKind(ctx: BoxCtx, entries: List<SEntry>) => isEmpty(tail(entries))
+fun bxNewtypeKind(ctx: BoxCtx, entries: List<SEntry>) => isEmpty(dropOne(entries))
   ? match(head(entries))
       (e2: SEntry) => bxPointerKind(ctx, e2.seType)
       ()            => ""
@@ -699,11 +695,11 @@ fun bxSpecPrimsOn(ctx: BoxCtx, sp, stack,
                   st) => match(sp)
   (b: SBuiltin)      => BxOut(bxBuiltinPrims(b.sbName), st)
   (cl: SCallable)    => BxOut(bxFunPrims(), st)
-  (t2: STuple)       => bxEntriesPrims(ctx, chain(t2.stEntries), stack, st, bxZero())
+  (t2: STuple)       => bxEntriesPrims(ctx, t2.stEntries, stack, st, bxZero())
   # A String or function member widens the one word to 16 bytes.
   (cm: SCombination) => bxCollapses(ctx, cm.scTypes)
     ? BxOut(bxCollapsedPrims(ctx, cm.scTypes), st)
-    : bxCombPrims(ctx, chain(cm.scTypes), stack, st, bxZero())
+    : bxCombPrims(ctx, cm.scTypes, stack, st, bxZero())
   (e2: SEnum)        => bxEnumValuePrims(ctx, e2.seRoot, stack, st)
   # Direct name-map hit only (no suffix fallback), as Python.
   (n: SNamed)        => match(get(ctx.bxMap.nmIndex, n.snName))
@@ -715,26 +711,22 @@ fun bxCollapsedPrims(ctx: BoxCtx, members: List<Spec>)
   let wide = any(members, (m) => bxPointerKindOn(ctx, m) |> (k) => k == "str" || k == "fun")
   ret wide ? bxStrPrims() : bxPtrOne()
 
-fun bxEntriesPrims(ctx: BoxCtx, es: Chain<SEntry>, stack,
-                   st, acc) => match(es)
-  (nil: ChainEnd) => BxOut(acc, st)
-  (l: ChainLink)  => bxEntriesStep(ctx, l, stack, st, acc)
+fun bxEntriesPrims(ctx: BoxCtx, es: List<SEntry>, stack, st, acc)
+  let out = fold(es, (st = st, acc = acc), (s, e) => bxEntriesStep(ctx, s, e, stack))
+  ret BxOut(out.acc, out.st)
 
-fun bxEntriesStep(ctx: BoxCtx, l: ChainLink<SEntry>, stack,
-                  st, acc: BxPrims)
-  let o = bxSpecPrims(ctx, l.value.seType, stack, st)
-  ret bxEntriesPrims(ctx, l.next, stack, o.bxSt, bxAdd(acc, o.bxP))
+fun bxEntriesStep(ctx: BoxCtx, s: (st: BoxState, acc: BxPrims), e: SEntry, stack: List<String>)
+  let o = bxSpecPrims(ctx, e.seType, stack, s.st)
+  ret (st = o.bxSt, acc = bxAdd(s.acc, o.bxP))
 
 # Tagged combination: per-class maxima over the members, plus a byte tag.
-fun bxCombPrims(ctx: BoxCtx, ss: Chain<Spec>, stack,
-                st, acc: BxPrims) => match(ss)
-  (nil: ChainEnd) => BxOut(bxAddTag(acc), st)
-  (l: ChainLink)  => bxCombStep(ctx, l, stack, st, acc)
+fun bxCombPrims(ctx: BoxCtx, ss: List<Spec>, stack, st, acc: BxPrims)
+  let out = fold(ss, (st = st, acc = acc), (s, sp) => bxCombStep(ctx, s, sp, stack))
+  ret BxOut(bxAddTag(out.acc), out.st)
 
-fun bxCombStep(ctx: BoxCtx, l: ChainLink<Spec>, stack,
-               st, acc: BxPrims)
-  let o = bxSpecPrimsOn(ctx, l.value, stack, st)
-  ret bxCombPrims(ctx, l.next, stack, o.bxSt, bxMax(acc, o.bxP))
+fun bxCombStep(ctx: BoxCtx, s: (st: BoxState, acc: BxPrims), sp: Spec, stack: List<String>)
+  let o = bxSpecPrimsOn(ctx, sp, stack, s.st)
+  ret (st = o.bxSt, acc = bxMax(s.acc, o.bxP))
 
 fun bxEnumValuePrims(ctx: BoxCtx, root, stack,
                      st)
@@ -753,39 +745,35 @@ fun bxComputeRoot(ctx: BoxCtx, root, stack,
 
 fun bxRootPool(ctx: BoxCtx, root, e2: PsEnum, sp: SEnum,
                stack, st)
-  let out = bxLeafLoop(ctx, root, chain(sp.seAllLeaves),
-                       chain(collectLeafFieldSets(e2, List())),
+  let out = bxLeafLoop(ctx, root, sp.seAllLeaves,
+                       collectLeafFieldSets(e2, List()),
                        !bxHasInteriorFields(e2), concat(stack, list1(root)),
                        st, bxZero())
   ret BxOut(out.bxP,
             BoxState(put(out.bxSt.bsMemo, root, out.bxP), out.bxSt.bsBoxed))
 
-fun bxLeafLoop(ctx: BoxCtx, root, names: Chain<String>,
-               sets: Chain<List<PStmt>>, boxable, stack,
-               st, pool: BxPrims) => match(names)
-  (nil: ChainEnd) => BxOut(bxAddTag(pool), st)   # widest variant + tag
-  (l: ChainLink)  => match(sets)
-    (nil2: ChainEnd) => BxOut(bxAddTag(pool), st)   # unreachable: zip 1:1
-    (s2: ChainLink)  => bxLeafStep(ctx, root, l, s2, boxable, stack, st, pool)
-
-fun bxLeafStep(ctx: BoxCtx, root, l: ChainLink<String>,
-               s2: ChainLink<List<PStmt>>, boxable, stack,
+# The widest variant + tag; leaf names and field sets zip 1:1.
+fun bxLeafLoop(ctx: BoxCtx, root, names: List<String>,
+               sets: List<List<PStmt>>, boxable, stack,
                st, pool: BxPrims)
-  let o = bxFieldsPrims(ctx, chain(s2.value), stack, st, bxZero())
-  if bxBytes(o.bxP) > maxValueStructBytes && boxable
-    ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack,
-                   BoxState(o.bxSt.bsMemo,
-                            put(o.bxSt.bsBoxed, boxedLeafKey(root, l.value), true)),
-                   bxMax(pool, bxPtrOne()))
-  ret bxLeafLoop(ctx, root, l.next, s2.next, boxable, stack, o.bxSt,
-                 bxMax(pool, o.bxP))
+  let out = zipFold(names, sets, (st = st, pool = pool),
+                    (s, name, set) => bxLeafStep(ctx, root, s, name, set, boxable, stack))
+  ret BxOut(bxAddTag(out.pool), out.st)
 
-fun bxFieldsPrims(ctx: BoxCtx, fs: Chain<PStmt>, stack,
-                  st, acc) => match(fs)
-  (nil: ChainEnd) => BxOut(acc, st)
-  (l: ChainLink)  => match(l.value)
-    (let2: PsLet) => bxFieldLet(ctx, let2, l.next, stack, st, acc)
-    (o: PStmt)    => bxFieldsPrims(ctx, l.next, stack, st, acc)
+fun bxLeafStep(ctx: BoxCtx, root, s: (st: BoxState, pool: BxPrims), name: String,
+               set: List<PStmt>, boxable, stack)
+  let o = bxFieldsPrims(ctx, set, stack, s.st, bxZero())
+  if bxBytes(o.bxP) > maxValueStructBytes && boxable
+    ret (st = BoxState(o.bxSt.bsMemo, put(o.bxSt.bsBoxed, boxedLeafKey(root, name), true)),
+         pool = bxMax(s.pool, bxPtrOne()))
+  ret (st = o.bxSt, pool = bxMax(s.pool, o.bxP))
+
+fun bxFieldsPrims(ctx: BoxCtx, fs: List<PStmt>, stack,
+                  st, acc) => match(head(fs))
+  (v: PStmt) => match(v)
+    (let2: PsLet) => bxFieldLet(ctx, let2, dropOne(fs), stack, st, acc)
+    (o: PStmt)    => bxFieldsPrims(ctx, dropOne(fs), stack, st, acc)
+  () => BxOut(acc, st)
 
 fun bxFieldLet(ctx: BoxCtx, let2: PsLet, rest,
                stack, st, acc: BxPrims)

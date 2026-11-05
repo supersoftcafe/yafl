@@ -16,6 +16,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 
@@ -41,7 +42,7 @@ fun cuCleaned(f: CgFunction): CgFunction
     ? cgFunctionWith(c, c.fnOps, CgStruct(filter(decls, (fd) => setHas(used, fd.fieldName))))
     : c
 
-fun cuNames(acc: StrSet, names: List<String>): StrSet => fold(names, acc, (s2, n) => setAdd(s2, n))
+fun cuNames(acc: StrSet, names: List<String>): StrSet => fold(names, acc, setAdd)
 
 # Every local an op mentions: what it reads (each flattened param re-flattened
 # as a read, as Python does), its saved set, and what it writes — a write is
@@ -128,10 +129,10 @@ fun [tail] cgSimplifyControlFlowFixpoint(ops: Segment<Op>|None): Segment<Op>|Non
   let pass2 = cgSimplifyLoop(p0.op, p1.op, p2.op, p2.stream, seqBuilder(), false)
   ret pass2.changed ? cgSimplifyControlFlowFixpoint(pass2.ops) : pass2.ops
 
-fun cgCollectReferencedLabelsStep(acc, op) => fold(opBranchTargets(op), acc, (acc2, target) => setAdd(acc2, target))
+fun cgCollectReferencedLabelsStep(acc, op) => fold(opBranchTargets(op), acc, setAdd)
 
 fun cgCollectReferencedLabels(ops: Segment<Op>|None)
-  ret fold(ops, setEmpty(), (acc, op) => cgCollectReferencedLabelsStep(acc, op))
+  ret fold(ops, setEmpty(), cgCollectReferencedLabelsStep)
 
 fun cgIsUnreferencedLabel(op, referenced: StrSet) => match(op)
   (l: OpLabel) => !setHas(referenced, l.labelName)
@@ -148,10 +149,10 @@ fun cgFunctionSimplifyControlFlow(f: CgFunction)
 
 # ── fold_struct_fields ───────────────────────────────────────────────────────
 
-fun [tail] rpFoldStructFieldLookup(values: List<RpNamedValue>, field, fallback)
-  ret match(head(values))
-    (v: RpNamedValue) => v.name == field ? v.value : rpFoldStructFieldLookup(tail(values), field, fallback)
-    ()                  => fallback
+fun rpFoldStructFieldLookup(values: List<RpNamedValue>, field, fallback)
+  ret match(firstWhere(values, (v) => v.name == field))
+    (v: RpNamedValue) => v.value
+    ()                => fallback
 
 fun rpFoldStructFieldStruct(sf: RpStructField, whole) => match(sf.structVal)
   (ns: RpNewStruct) => rpFoldStructFieldLookup(ns.values, sf.field, whole)
@@ -195,7 +196,7 @@ fun cgCPWriteCountsWritten(acc, w, op): (writes: Dict<String, Int>, zeroInit: Se
   (o: Op)     => cgCPWriteCountsReq(acc, w)
 
 fun cgCollectWrites(ops: Segment<Op>|None): (writes: Dict<String, Int>, zeroInit: Set<String>)
-  ret fold(ops, (Dict(), Set()), (acc, op) => cgCPWriteCountsStep(acc, op))
+  ret fold(ops, (Dict(), Set()), cgCPWriteCountsStep)
 
 fun cgWriteCount(writes: Dict<String, Int>, name: String): Int => get(writes, name) ?? 0
 
@@ -291,7 +292,7 @@ fun cgCSEWriteCountsTarget(acc, target): Dict<String, Int> => match(target)
 fun cgCSEWriteCountsStep(acc, op): Dict<String, Int> => fold(opGetLiveVars(op).writes, acc, cgCSEWriteCountsTarget)
 
 fun cgCSEWriteCounts(ops: Segment<Op>|None): Dict<String, Int>
-  ret fold(ops, Dict(), (acc, op) => cgCSEWriteCountsStep(acc, op))
+  ret fold(ops, Dict(), cgCSEWriteCountsStep)
 
 fun cseIsMultiWriteStackVar(x, multiWrite: Set<String>) => match(x)
   (sv: RpStackVar) => contains(multiWrite, sv.name)
@@ -305,9 +306,9 @@ fun cseIsEligible(rparam, multiWrite: Set<String>) => match(rparam)
 
 class [final] AvailEntry(cseExpr: RParam, cseTarget: RParam)
 
-fun [tail] availableGet(available: List<AvailEntry>, key) => match(head(available))
-  (e: AvailEntry) => eqRParam(e.cseExpr, key) ? e.cseTarget : availableGet(tail(available), key)
-  ()               => None
+fun availableGet(available: List<AvailEntry>, key) => match(firstWhere(available, (e) => eqRParam(e.cseExpr, key)))
+  (e: AvailEntry) => e.cseTarget
+  ()              => None
 
 fun cseIsHeapRead(x) => match(x)
   (sf: RpStructField) => true

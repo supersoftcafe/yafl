@@ -15,6 +15,7 @@
 namespace Bootstrap::Driver
 
 import System
+import System::Containers
 
 import Bootstrap::StdlibCandidates
 
@@ -191,7 +192,7 @@ fun wrappedUsage(width: Int, prog: Shown, opts: List<Shown>, poss: List<Shown>):
     ret concat(usageLines(width, prepend(prog, opts), 7 + progLen + 1, true),
                usageLines(width, poss, 7 + progLen + 1, false))
   let together = usageLines(width, concat(opts, poss), 7, false)
-  ret prepend(prog.swText, chainLength(chain(together)) > 1
+  ret prepend(prog.swText, sizeAtLeast(together, 2)
     ? concat(usageLines(width, opts, 7, false), usageLines(width, poss, 7, false))
     : together)
 
@@ -199,21 +200,24 @@ fun wrappedUsage(width: Int, prog: Shown, opts: List<Shown>, poss: List<Shown>):
 # would pass the width. With the `usage: ` prefix, the first line is measured
 # from it and carries no indent.
 fun usageLines(width: Int, parts: List<Shown>, indent: Int, prefixed: Bool): List<String>
-  let lines = usageLoop(chain(parts), width, indent, spaces(indent),
-                        prefixed ? 7 - 1 : indent - 1, List(), builder())
+  let lines = usageLoop(parts, width, indent, spaces(indent),
+                        prefixed ? 7 - 1 : indent - 1, List(), List())
   ret prefixed ? mapFirst(lines, (l: String) => slice(l, indent, length(l))) : lines
 
-fun [tail] usageLoop(ps: Chain<Shown>, width: Int, indent: Int, pad: String, lineLen: Int,
-                     line: List<String>, [terminal] out: ListBuilder<String>): List<String> => match(ps)
-  (nil: ChainEnd) => build(isEmpty(line) ? out : push(out, pad + join(line, " ")))
-  (l: ChainLink)  => lineLen + 1 + length(l.value.swPlain) > width && !isEmpty(line)
-    ? usageLoop(l.next, width, indent, pad, indent - 1 + length(l.value.swPlain) + 1,
-                list1(l.value.swText), push(out, pad + join(line, " ")))
-    : usageLoop(l.next, width, indent, pad, lineLen + length(l.value.swPlain) + 1,
-                concat(line, list1(l.value.swText)), out)
+# Words fill the current line until the next would overflow it; the open line
+# is flushed at the end.
+fun usageLoop(ps: List<Shown>, width: Int, indent: Int, pad: String, lineLen: Int,
+              line: List<String>, out: List<String>): List<String> =>
+  fold(ps, (len = lineLen, line = line, out = out),
+       (st, p) =>
+         st.len + 1 + length(p.swPlain) > width && !isEmpty(st.line)
+           ? (len = indent - 1 + length(p.swPlain) + 1, line = list1(p.swText),
+              out = append(st.out, pad + join(st.line, " ")))
+           : (len = st.len + length(p.swPlain) + 1, line = append(st.line, p.swText), out = st.out))
+    |> (st) => isEmpty(st.line) ? st.out : append(st.out, pad + join(st.line, " "))
 
 fun mapFirst(l: List<String>, f: (:String): String): List<String> => match(head(l))
-  (x: String) => prepend(f(x), tail(l))
+  (x: String) => prepend(f(x), dropOne(l))
   ()          => l
 
 
@@ -246,7 +250,7 @@ fun helpEntry(width: Int, maxLen: Int, e: HelpEntry): String
     : "  " + inv.swText + "\n"
   let lines = twWrap(e.heHelp, greater(width - helpPos, 11))
   ret header + spaces(fits ? 0 : helpPos) + (head(lines) ?? "") + "\n"
-    + join(map(tail(lines), (l: String) => spaces(helpPos) + l + "\n"), "")
+    + join(map(dropOne(lines), (l: String) => spaces(helpPos) + l + "\n"), "")
 
 # Runs of three or more newlines become two (`_long_break_matcher`).
 fun [tail] collapseNewlines(s: String, at: Int, acc: String): String
@@ -283,21 +287,21 @@ fun greater(a: Int, b: Int) => a > b ? a : b
 # Over text that is single-spaced already, as every help text here is.
 
 fun twWrap(text: String, width: Int): List<String> =>
-  twLines(chain(twChunks(text, 0, builder())), width, true, builder())
+  twLines(twChunks(text, 0, List()), width, true, List())
 
 # `wordsep_re`: runs of spaces; words, split after a hyphen that has two
 # letters (or letter-hyphen-letter) before it and a letter, an optional hyphen
 # and a letter after; and an em-dash (`--`) between words. Letters are `\w`
 # without the digits — ASCII here, and every byte of a non-ASCII character.
-fun [tail] twChunks(s: String, at: Int, [terminal] b: ListBuilder<String>): List<String>
+fun [tail] twChunks(s: String, at: Int, b: List<String>): List<String>
   if at >= length(s)
-    ret build(b)
+    ret b
   if byteAt(s, at) == ' '
-    ret twChunks(s, spaceEnd(s, at), push(b, slice(s, at, spaceEnd(s, at))))
+    ret twChunks(s, spaceEnd(s, at), append(b, slice(s, at, spaceEnd(s, at))))
   if isEmDash(s, at)
-    ret twChunks(s, dashEnd(s, at), push(b, slice(s, at, dashEnd(s, at))))
+    ret twChunks(s, dashEnd(s, at), append(b, slice(s, at, dashEnd(s, at))))
   let end = twWordEnd(s, at + 1)
-  ret twChunks(s, end, push(b, slice(s, at, end)))
+  ret twChunks(s, end, append(b, slice(s, at, end)))
 
 fun [tail] spaceEnd(s: String, at: Int): Int
   ret at < length(s) && byteAt(s, at) == ' ' ? spaceEnd(s, at + 1) : at
@@ -342,35 +346,35 @@ fun twWordPunct(c: Int32) => twWordChar(c) || c == '!' || c == '"' || c == '\'' 
 # `_wrap_chunks`: fill each line with whole chunks; a chunk wider than a whole
 # line is broken (after its last hyphen that fits, if any); spaces at a line's
 # end, and at the start of any line but the first, are dropped.
-fun twLines(cs: Chain<String>, width: Int, first: Bool,
-            [terminal] out: ListBuilder<String>): List<String> => match(cs)
-  (nil: ChainEnd) => build(out)
-  (l: ChainLink)  => twNext(twLongWord(twFill(skipLeading(cs, first), width, List(), 0), width),
-                            width, first, out)
+fun twLines(cs: List<String>, width: Int, first: Bool,
+            out: List<String>): List<String> => isEmpty(cs)
+  ? out
+  : twNext(twLongWord(twFill(skipLeading(cs, first), width, List(), 0), width),
+           width, first, out)
 
 # `first`: no line has been emitted yet.
-fun twNext(f: Filled, width: Int, first: Bool, [terminal] out: ListBuilder<String>): List<String>
+fun twNext(f: Filled, width: Int, first: Bool, out: List<String>): List<String>
   let line = dropBlankEnd(f.flLine)
   ret twLines(f.flRest, width, first && isEmpty(line),
-              isEmpty(line) ? out : push(out, join(line, "")))
+              isEmpty(line) ? out : append(out, join(line, "")))
 
-fun skipLeading(cs: Chain<String>, first: Bool): Chain<String> => match(cs)
-  (l: ChainLink)  => !first && isBlank(l.value) ? l.next : cs
-  (nil: ChainEnd) => cs
+fun skipLeading(cs: List<String>, first: Bool): List<String> => match(head(cs))
+  (w: String) => !first && isBlank(w) ? dropOne(cs) : cs
+  ()          => cs
 
-class [final] Filled(flLine: List<String>, flLen: Int, flRest: Chain<String>)
+class [final] Filled(flLine: List<String>, flLen: Int, flRest: List<String>)
 
-fun [tail] twFill(cs: Chain<String>, width: Int, line: List<String>, len: Int): Filled => match(cs)
-  (nil: ChainEnd) => Filled(line, len, cs)
-  (l: ChainLink)  => len + length(l.value) <= width
-    ? twFill(l.next, width, concat(line, list1(l.value)), len + length(l.value))
+fun [tail] twFill(cs: List<String>, width: Int, line: List<String>, len: Int): Filled => match(head(cs))
+  (w: String) => len + length(w) <= width
+    ? twFill(dropOne(cs), width, append(line, w), len + length(w))
     : Filled(line, len, cs)
+  ()          => Filled(line, len, cs)
 
-fun twLongWord(f: Filled, width: Int): Filled => match(f.flRest)
-  (nil: ChainEnd) => f
-  (l: ChainLink)  => length(l.value) <= width ? f : twBreak(f, l.value, l.next, width)
+fun twLongWord(f: Filled, width: Int): Filled => match(head(f.flRest))
+  (w: String) => length(w) <= width ? f : twBreak(f, w, dropOne(f.flRest), width)
+  ()          => f
 
-fun twBreak(f: Filled, chunk: String, rest: Chain<String>, width: Int): Filled
+fun twBreak(f: Filled, chunk: String, rest: List<String>, width: Int): Filled
   let spaceLeft = width < 1 ? 1 : width - f.flLen
   if spaceLeft <= 0
     ret isEmpty(f.flLine) ? Filled(list1(chunk), length(chunk), rest) : f
@@ -378,7 +382,7 @@ fun twBreak(f: Filled, chunk: String, rest: Chain<String>, width: Int): Filled
   let end = length(chunk) > spaceLeft && hyphen > 0 && hasNonHyphen(chunk, hyphen)
     ? hyphen + 1 : spaceLeft
   ret Filled(concat(f.flLine, list1(slice(chunk, 0, end))), f.flLen + end,
-             ChainLink(slice(chunk, end, length(chunk)), rest))
+             prepend(slice(chunk, end, length(chunk)), rest))
 
 fun [tail] lastHyphenBefore(s: String, end: Int): Int
   ret end <= 0 ? 0 - 1 : byteAt(s, end - 1) == '-' ? end - 1 : lastHyphenBefore(s, end - 1)
@@ -386,8 +390,8 @@ fun [tail] lastHyphenBefore(s: String, end: Int): Int
 fun [tail] hasNonHyphen(s: String, end: Int): Bool
   ret end <= 0 ? false : byteAt(s, end - 1) != '-' ? true : hasNonHyphen(s, end - 1)
 
-fun dropBlankEnd(line: List<String>): List<String> => match(last(line))
-  (x: String) => isBlank(x) ? take(line, chainLength(chain(line)) - 1) : line
+fun dropBlankEnd(line: List<String>): List<String> => match(head(takeLastOne(line)))
+  (x: String) => isBlank(x) ? dropLastOne(line) : line
   ()          => line
 
 # All spaces — or empty, as a broken word's remainder can be.

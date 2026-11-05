@@ -10,6 +10,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
@@ -128,7 +129,7 @@ fun cpPruneStackVars(f: CgFunction, newOps)
   let mentioned = fold(newOps, Set(),
                        (acc, op) =>
                          fold(concat(opReadVarNames(op), cpWriteNames(op)), acc,
-                              (s2, n) => add(s2, n)))
+                              add))
   ret cgFunctionWith(f, newOps,
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
                         (fld) => contains(mentioned, fld.fieldName))))

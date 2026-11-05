@@ -1,6 +1,7 @@
 namespace Bootstrap::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 
@@ -92,8 +93,8 @@ class [final] RpRename(oldName: String, newName: String)
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
-fun [tail] renameLookup(renames: List<RpRename>, name) => match(head(renames))
-  (r: RpRename) => r.oldName == name ? r.newName : renameLookup(tail(renames), name)
+fun renameLookup(renames: List<RpRename>, name) => match(firstWhere(renames, (r) => r.oldName == name))
+  (r: RpRename) => r.newName
   ()            => name
 
 fun orNullOpt(o: String|None) => match(o)
@@ -157,8 +158,8 @@ fun rpStructFieldTypeSpecial(xtype, field) => match(xtype)
   (st: CgStr) => CgDataPointer(false)           # "head": the only word the compiler names
   (o: CgType) => CgVoid()                  # unreachable (Python raises ValueError)
 
-fun [tail] rpStructFieldLookup(fields: List<CgField>, name) => match(head(fields))
-  (f: CgField) => f.fieldName == name ? f.fieldType : rpStructFieldLookup(tail(fields), name)
+fun rpStructFieldLookup(fields: List<CgField>, name) => match(firstWhere(fields, (f) => f.fieldName == name))
+  (f: CgField) => f.fieldType
   ()           => CgVoid()   # unreachable (Python raises ValueError)
 
 # ── flatten(is_reader) ───────────────────────────────────────────────────────
@@ -359,23 +360,13 @@ fun rpGetLiveVarsOpt(o: RParam|None) => match(o)
 
 # ── full structural equality (dict-key semantics for the CSE cache) ────────
 
-fun [tail] eqRpNamedValues(a: List<RpNamedValue>, b: List<RpNamedValue>) => match(head(a))
-  (fa: RpNamedValue) => match(head(b))
-    (fb: RpNamedValue) => fa.name == fb.name && eqRParam(fa.value, fb.value) && eqRpNamedValues(tail(a), tail(b))
-    ()                  => false
-  () => isEmpty(b)
+fun eqRpNamedValues(a: List<RpNamedValue>, b: List<RpNamedValue>) =>
+  eqBy(a, b, (x, y) => x.name == y.name && eqRParam(x.value, y.value))
 
-fun [tail] eqRParamList(a: List<RParam>, b: List<RParam>) => match(head(a))
-  (xa: RParam) => match(head(b))
-    (xb: RParam) => eqRParam(xa, xb) && eqRParamList(tail(a), tail(b))
-    ()           => false
-  () => isEmpty(b)
+fun eqRParamList(a: List<RParam>, b: List<RParam>) => eqBy(a, b, eqRParam)
 
-fun [tail] eqNullTests(a: List<RpNullTest>, b: List<RpNullTest>) => match(head(a))
-  (xa: RpNullTest) => match(head(b))
-    (xb: RpNullTest) => xa.isNull == xb.isNull && eqRParam(xa.word, xb.word) && eqNullTests(tail(a), tail(b))
-    ()               => false
-  () => isEmpty(b)
+fun eqNullTests(a: List<RpNullTest>, b: List<RpNullTest>) =>
+  eqBy(a, b, (x, y) => x.isNull == y.isNull && eqRParam(x.word, y.word))
 
 fun eqRParamOpt(a: RParam|None, b: RParam|None) => match(a)
   (xa: RParam) => match(b)
@@ -532,7 +523,7 @@ fun rpToC(r, cache: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry
   (x: RpArrayElement) => rpToCArrayElement(x, cache)
 
 fun rpToCInitArray(x: RpInitArray, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let result = fold(x.values, ("", cache0, true), (acc, v) => rpToCInitArrayStep(acc, v))
+  let result = fold(x.values, ("", cache0, true), rpToCInitArrayStep)
   ret ("{" + result.text + "}", result.cache)
 
 fun rpToCInitArrayStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), v): (text: String, cache: List<CgCacheEntry>, first: Bool)
@@ -542,12 +533,12 @@ fun rpToCInitArrayStep(acc: (text: String, cache: List<CgCacheEntry>, first: Boo
 fun rpToCNewStruct(x: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let xtype = rpGetType(RpNewStruct(x.values))
   let declared = cgDeclare(xtype, cache0)
-  ret atMost(chain(x.values), 2)
+  ret atMost(x.values, 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
 fun rpToCNewStructShort(values: List<RpNamedValue>, typeName, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let result = fold(values, ("", cache0, true), (acc, v) => rpToCNewStructShortStep(acc, v))
+  let result = fold(values, ("", cache0, true), rpToCNewStructShortStep)
   ret ("(" + typeName + "){" + result.text + "}", result.cache)
 
 fun rpToCNewStructShortStep(acc: (text: String, cache: List<CgCacheEntry>, first: Bool), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>, first: Bool)
@@ -556,7 +547,7 @@ fun rpToCNewStructShortStep(acc: (text: String, cache: List<CgCacheEntry>, first
   ret (acc.first ? piece : acc.text + ", " + piece, sub.cache, false)
 
 fun rpToCNewStructLong(values: List<RpNamedValue>, typeName, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  let result = fold(values, ("", cache0), (acc, v) => rpToCNewStructLongStep(acc, v))
+  let result = fold(values, ("", cache0), rpToCNewStructLongStep)
   ret ("(" + typeName + "){" + result.text + "\n    }", result.cache)
 
 fun rpToCNewStructLongStep(acc: (text: String, cache: List<CgCacheEntry>), v: RpNamedValue): (text: String, cache: List<CgCacheEntry>)
@@ -598,21 +589,20 @@ fun rpToCIntEqConst(x: RpIntEqConst, cache0: List<CgCacheEntry>): (text: String,
 
 # No outer parens, as for RpIntEqConst: the consumer is a JumpIf.
 fun rpToCNullPattern(x: RpNullPattern, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
-  ret rpToCNullTests(chain(x.tests), "", cache0)
+  ret rpToCNullTests(x.tests, "", cache0)
 
 # A String slot is tested by its first word, `head`.
 fun rpNullTestWord(word, text) => match(rpGetType(word))
   (st: CgStr) => "(" + text + ").head"
   (o: CgType) => text
 
-fun [tail] rpToCNullTests(ts: Chain<RpNullTest>, text: String,
-                          cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>) => match(ts)
-  (nil: ChainEnd) => (text, cache0)
-  (l: ChainLink)  => rpToC(l.value.word, cache0)
-    |> (sub) => rpToCNullTests(l.next,
-                               text + (text == "" ? "" : " && ") + rpNullTestWord(l.value.word, sub.text)
-                                 + (l.value.isNull ? " == 0" : " != 0"),
-                               sub.cache)
+fun rpToCNullTests(ts: List<RpNullTest>, text: String,
+                   cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>) =>
+  fold(ts, (text = text, cache = cache0),
+       (st, t) => rpToC(t.word, st.cache)
+         |> (sub) => (text = st.text + (st.text == "" ? "" : " && ") + rpNullTestWord(t.word, sub.text)
+                               + (t.isNull ? " == 0" : " != 0"),
+                      cache = sub.cache))
 
 fun rpToCVtableDiscriminator(x: RpVtableDiscriminator, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let sub = rpToC(x.value, cache0)
@@ -648,7 +638,7 @@ fun rpZeroOfInitText(vt) => match(vt)
 
 fun rpToCNewStructTyped(x: RpNewStructTyped, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.structType, cache0)
-  ret atMost(chain(x.values), 2)
+  ret atMost(x.values, 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
@@ -801,6 +791,6 @@ fun unionStructField(f: CgField, namedValues: List<RpNamedValue>)
     (v: RParam) => RpNamedValue(f.fieldName, v)
     ()          => RpNamedValue(f.fieldName, rpZeroFor(f.fieldType))
 
-fun [tail] rpNamedValuesGet(values: List<RpNamedValue>, name) => match(head(values))
-  (v: RpNamedValue) => v.name == name ? v.value : rpNamedValuesGet(tail(values), name)
+fun rpNamedValuesGet(values: List<RpNamedValue>, name) => match(firstWhere(values, (v) => v.name == name))
+  (v: RpNamedValue) => v.value
   ()                => None
