@@ -1188,10 +1188,14 @@ fun genBlockPinned(bk: PeBlock, r): GBundle
     ? bundleJoin(stmtsBundle, genPinned(bk.blockValue, nested))
     : emptyBundle()   # unreachable: Python asserts
 
+# With no expected type, the slot is the BLOCK's type — its value typed inside
+# the block's own scope (Python's `self.get_type`). Typing the value in the
+# outer scope loses the block's locals: an inlined body's parameters read as
+# unknown and the slot degrades to a union of half-typed arms.
 fun genBlockTo(bk: PeBlock, r, expected: Spec|None): GBundle
   let slotType = match(expected)
     (e2: Spec) => expected
-    ()          => exprType(bk.blockValue, r)
+    ()          => exprType(bk, r)
   let tag = length(bk.blockTag) == 0 ? "blk@" + hash6(bk.pebkLine.plFile, bk.pebkLine.plLine, bk.pebkLine.plCol) : bk.blockTag
   let frame = FrBlock(tag, slotType)
   let nested = localScope(bk.blockStmts, RGen(frame, r))
