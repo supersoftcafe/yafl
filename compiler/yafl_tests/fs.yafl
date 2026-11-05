@@ -26,6 +26,7 @@ namespace CompilerTests::Fs::ListdirOnMissingDirReturnsError
 import System
 import System::IO
 import System::Test
+import System::Containers
 
 fun program(): System::Int
   ret match(listDir("/nonexistent_yafl_fs_test_xyz_999"))

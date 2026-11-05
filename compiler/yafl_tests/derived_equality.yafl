@@ -94,16 +94,16 @@ enum Colour
   enum Green(shade: System::Int)
 
 fun program(): System::Int
-  let d0 = System::Dict<Colour, System::Int>()
-  let d1 = System::put(d0, Red(), 3)
-  let d2 = System::put(d1, Green(7), 4)
-  let a = match(System::get(d2, Red()))
+  let d0 = System::Containers::Dict<Colour, System::Int>()
+  let d1 = System::Containers::put(d0, Red(), 3)
+  let d2 = System::Containers::put(d1, Green(7), 4)
+  let a = match(System::Containers::get(d2, Red()))
     (v: System::Int) => v
     ()               => 0
-  let b = match(System::get(d2, Green(7)))
+  let b = match(System::Containers::get(d2, Green(7)))
     (v: System::Int) => v
     ()               => 0
-  let c = match(System::get(d2, Green(8)))
+  let c = match(System::Containers::get(d2, Green(8)))
     (v: System::Int) => v
     ()               => 0
   ret a + b * 10 + c * 100
@@ -122,9 +122,9 @@ enum Chain2
   enum Cons2(hd: System::Int, tl: Chain2)
 
 fun program(): System::Int
-  let d0 = System::Dict<Chain2, System::Int>()
-  let d1 = System::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
-  ret match(System::get(d1, Cons2(1, Cons2(2, Nil2()))))
+  let d0 = System::Containers::Dict<Chain2, System::Int>()
+  let d1 = System::Containers::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
+  ret match(System::Containers::get(d1, Cons2(1, Cons2(2, Nil2()))))
     (v: System::Int) => v
     ()               => 0
 
@@ -138,9 +138,9 @@ import System
 import System::Test
 
 fun program(): System::Int
-  let d = System::Dict<(:System::Int, :System::Int), System::Int>()
-  let d2 = System::put(d, (1, 2), 7)
-  ret match(System::get(d2, (1, 2)))
+  let d = System::Containers::Dict<(:System::Int, :System::Int), System::Int>()
+  let d2 = System::Containers::put(d, (1, 2), 7)
+  ret match(System::Containers::get(d2, (1, 2)))
     (v: System::Int) => v
     ()               => 0
 
@@ -154,13 +154,13 @@ import System
 import System::Test
 
 fun program(): System::Int
-  let d0 = System::Dict<(:System::Int, :System::Int), System::Int>()
-  let d1 = System::put(d0, (1, 2), 10)
-  let d2 = System::put(d1, (2, 1), 20)
-  let a = match(System::get(d2, (1, 2)))
+  let d0 = System::Containers::Dict<(:System::Int, :System::Int), System::Int>()
+  let d1 = System::Containers::put(d0, (1, 2), 10)
+  let d2 = System::Containers::put(d1, (2, 1), 20)
+  let a = match(System::Containers::get(d2, (1, 2)))
     (v: System::Int) => v
     ()               => 0
-  let b = match(System::get(d2, (2, 1)))
+  let b = match(System::Containers::get(d2, (2, 1)))
     (v: System::Int) => v
     ()               => 0
   println(a + b * 100)
@@ -208,9 +208,9 @@ instance [ambient] System::BasicEquality<Chain2>
       ()         => 17i32
 
 fun program(): System::Int
-  let d0 = System::Dict<Chain2, System::Int>()
-  let d1 = System::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
-  ret match(System::get(d1, Cons2(1, Cons2(2, Nil2()))))
+  let d0 = System::Containers::Dict<Chain2, System::Int>()
+  let d1 = System::Containers::put(d0, Cons2(1, Cons2(2, Nil2())), 5)
+  ret match(System::Containers::get(d1, Cons2(1, Cons2(2, Nil2()))))
     (v: System::Int) => v
     ()               => 0
 

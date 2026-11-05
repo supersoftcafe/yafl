@@ -17,6 +17,7 @@ class TestCoalesceWaitsForItsSubject(TimedTestCase):
         out = compile_errors("""
 namespace Main
 import System
+import System::Containers
 
 fun total(d: Dict<String, Int>): Int
   let e = d

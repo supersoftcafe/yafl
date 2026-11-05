@@ -89,8 +89,8 @@ instance<S, A, B, E> Stream<Map<S, A, B, E>, B, E> where Stream<S, A, E>
 # NB no free `map(source, f)` constructor: a type param appearing only in the
 # function value (`B`) can't be inferred from the arguments yet, so it would need
 # explicit `<S,A,B>` — no better than `Map<S,A,B>(source, f)` — and a free `map`
-# would also overload-clash with `System::map` over List. Construct `Map`
-# directly for now.
+# would also overload-clash with `System::Containers::map` over List. Construct
+# `Map` directly for now.
 
 
 # ── filter: keep only values satisfying `keep`; Ok(None)/Error pass through ───
@@ -115,7 +115,7 @@ fun [tail,inline(always)] _filterAdvance<S, T, E>(inner: S, keep: (T): System::B
     (er: Error<T | System::None, E>) => (Filter<S, T, E>(r.stream, keep), Error<T | System::None, E>(er.error))
 
 # No free `filter(source, keep)` for the same reasons as `map` above (it would
-# clash with `System::filter` over List). Construct `Filter` directly.
+# clash with `System::Containers::filter` over List). Construct `Filter` directly.
 
 
 # ── toLines: split a String stream into lines ────────────────────────────────

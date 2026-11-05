@@ -1,4 +1,4 @@
-# Tests for System::Set (stdlib/set.yafl).
+# Tests for System::Containers::Set (stdlib/System/Containers/set.yafl).
 # Ported from compiler/tests/test_set.py, which printed `label=value` lines and
 # compared the whole stdout block against a list of eleven strings. One
 # behaviour per test here.

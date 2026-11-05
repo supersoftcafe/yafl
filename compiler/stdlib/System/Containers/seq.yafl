@@ -1,6 +1,5 @@
-namespace System
+namespace System::Containers
 import System
-import System::Containers
 
 
 # An ordered sequence stored as a chain of SEGMENTS: each segment is ONE heap

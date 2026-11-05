@@ -1,4 +1,4 @@
-# Tests for System Dict (stdlib/dict.yafl) plus keys/values.
+# Tests for System::Containers::Dict (stdlib/System/Containers/dict.yafl) plus keys/values.
 # Ported from compiler/tests/test_dict_ops.py and test_stdlib_additions.py.
 # A Dict is an AVL tree of hash buckets; keys() returns a Set and values() a
 # Bag, since an unordered container exposes no iteration order.
@@ -9,6 +9,7 @@ namespace StdlibTests::DictTests
 
 import System
 import System::Test
+import System::Containers
 
 
 fun _d3(): Dict<Int,Int>

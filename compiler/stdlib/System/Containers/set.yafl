@@ -1,7 +1,6 @@
-namespace System
+namespace System::Containers
 
 import System
-import System::Containers
 
 
 # Set<T> — a collection of unique values of type T. Built on `Dict<T,()>`

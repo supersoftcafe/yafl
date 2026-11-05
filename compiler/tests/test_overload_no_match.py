@@ -74,6 +74,7 @@ fun main(): System::Int
         # argument type still works, and neither diagnostic fires.
         src = """namespace Main
 import System
+import System::Containers
 fun pick(s: Set<System::String >): System::String|System::None
   ret singleOrNone(s)
 fun main(): System::Int

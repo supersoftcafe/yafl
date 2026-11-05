@@ -1,4 +1,4 @@
-# Tests for System Seq (stdlib/seq.yafl).
+# Tests for System::Containers::Seq (stdlib/System/Containers/seq.yafl).
 # Ported from compiler/tests/test_seq.py.
 #
 # A sequence IS `Segment<T>|None` — None is empty, with no wrapper enum — built

@@ -1,7 +1,6 @@
-namespace System
+namespace System::Containers
 
 import System
-import System::Containers
 
 
 # Bag<T> — an UNORDERED collection that may hold duplicates.

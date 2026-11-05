@@ -41,9 +41,9 @@ class TestUndischargedIsADiagnostic(TestCase):
 import System
 
 fun main(): System::Int
-  let d = System::Dict<(:(:System::Int): System::Int, :System::Int), System::Int>()
+  let d = System::Containers::Dict<(:(:System::Int): System::Int, :System::Int), System::Int>()
   # the constraint is only DEMANDED by a keyed operation, not by construction
-  let d2 = System::put(d, ((x: System::Int) => x, 1), 5)
+  let d2 = System::Containers::put(d, ((x: System::Int) => x, 1), 5)
   ret 0
 """
         emitted, diagnostics = _errors(src)

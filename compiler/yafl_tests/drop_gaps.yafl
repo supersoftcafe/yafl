@@ -19,6 +19,7 @@ namespace CompilerTests::DropGaps::GenericDropInstanceDischarges
 
 import System
 import System::Test
+import System::Containers
 
 fun f(flag: Bool): Int
   let b = push(seqBuilder<Int>(), 7)
@@ -39,6 +40,7 @@ namespace CompilerTests::DropGaps::TernaryBranchGetsImplicitDrop
 
 import System
 import System::Test
+import System::Containers
 
 fun g(flag: Bool): Int
   let b = push(seqBuilder<Int>(), 9)

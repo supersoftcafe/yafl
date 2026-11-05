@@ -9,6 +9,7 @@
 namespace SeqPin
 
 import System
+import System::Containers
 
 fun [tail] fill(b: SeqBuilder<Int32>, n: Int32, stop: Int32): SeqBuilder<Int32>
   ret n > stop ? b : fill(push<Int32>(b, n), n + 1i32, stop)

@@ -128,6 +128,7 @@ class TestListDir(TestCase):
             src = f"""namespace Main
 import System
 import System::IO
+import System::Containers
 
 # Strip "." and ".." from a list — readdir includes them.
 fun keep(s: String): Bool
