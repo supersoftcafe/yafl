@@ -3,7 +3,7 @@
 #   gc_stress [rounds]
 #
 # test_gc_mesh drives the runtime from hand-written C; this drives it through
-# what the compiler emits: list and array builders, map/filter/fold, `[future]`
+# what the compiler emits: list appends and array builders, map/filter/fold, `[future]`
 # lets forced from two workers, a memoize cache that every worker fills at
 # once (write-once slots under the pin), and a long-lived list that every
 # worker walks while the heap turns over around it. Four workers (nested
@@ -20,6 +20,7 @@
 namespace GcStress
 
 import System
+import System::Containers
 
 
 let modulus:  System::Int = 1000000007
@@ -34,14 +35,14 @@ fun mix(k: System::Int): System::Int
   ret (a + k * 40503) % modulus
 
 
-# ── lists: builder, map, filter, fold ────────────────────────────────────────
+# ── lists: append, map, filter, fold ─────────────────────────────────────────
 
-fun [tail] _uptoInto([terminal] b: ListBuilder<System::Int>, i: System::Int,
-                     n: System::Int): ListBuilder<System::Int>
-  ret i >= n ? b : _uptoInto(push<System::Int>(b, i), i + 1, n)
+fun [tail] _uptoInto(l: List<System::Int>, i: System::Int,
+                     n: System::Int): List<System::Int>
+  ret i >= n ? l : _uptoInto(append<System::Int>(l, i), i + 1, n)
 
 fun upto(n: System::Int): List<System::Int>
-  ret build<System::Int>(_uptoInto(builder<System::Int>(), 0, n))
+  ret _uptoInto(List<System::Int>(), 0, n)
 
 fun listRound(seed: System::Int): System::Int
   let l = upto(listLen)

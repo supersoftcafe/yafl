@@ -228,9 +228,10 @@ foreach(folder stdlib_tests yafl_tests)
 endforeach()
 
 # ── the collector under compiled YAFL ────────────────────────────────────────
-# yafllib/tests/gc_stress.yafl: builders, futures forced from two workers, a
-# memoize cache every worker fills, a long-lived shared list — the collector
-# driven through what the compiler emits, which the C tests cannot reach.
+# yafllib/tests/gc_stress.yafl: list appends and array builders, futures forced
+# from two workers, a memoize cache every worker fills, a long-lived shared
+# list — the collector driven through what the compiler emits, which the C
+# tests cannot reach.
 # A short run here, under poison, with the dwell between cycles and without
 # it; the soak (yafllib/tests/gc_soak.py) runs it long.
 yafl_test_compiler(3 compiler)
