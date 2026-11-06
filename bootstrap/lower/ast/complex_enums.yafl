@@ -415,11 +415,11 @@ fun ceListAmbig(ss: List<Spec>, map: NameMap, acc: Set<PErr>) =>
 # ResolverRoot.is_complex_root. The breaker list is small; membership is a
 # linear scan.
 fun rootResolver(statements)
-  let [lazy] breakers: List<String> = computeBreakers(statements)
+  let breakers: List<String> = computeBreakers(statements)
   let st = buildStatements(statements)
   # The derived-equality analysis reads only type lookups, so a plain root
   # over the same index serves it (the full root cannot name itself here).
-  let [lazy] derivable: List<String> = derivableEnums(statements,
+  let derivable: List<String> = derivableEnums(statements,
       RRoot((root) => false, (name) => false, st))
   ret RRoot((root) => contains(breakers, root),
             (name) => contains(derivable, name),

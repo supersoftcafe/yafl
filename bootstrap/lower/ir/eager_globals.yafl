@@ -1,0 +1,267 @@
+# bootstrap/eager_globals.yafl — eager global initialisation, ported from
+# lowering/eager_globals.py (see its docstring for the whole argument).
+#
+# `lower_lazy_lets` promotes every global that cannot be a C static to
+# `[lazy]`; every read then goes through `lazy_fetch$T`, whose first call may
+# suspend in `lazy_acquire`, and sync inference must treat each reader and each
+# caller of a reader as possibly suspending. Lazy init exists for globals whose
+# initialisation ORDER cannot be determined, so this pass finds the rest:
+#
+#   * the dependencies of a global are the lazy globals its initialiser can
+#     reach (the reference model, ir/references.yafl);
+#   * a global on a dependency cycle (a self-dependency included) stays lazy,
+#     and so does one whose initialiser can reach a runtime-owned (foreign)
+#     object, where the model cannot see the function values stored;
+#   * every other global is EAGER: forced before `main`, in dependency order,
+#     by a synthesised `__start__` that the entry point calls in main's place.
+#     Reads of an eager global become a plain load of the stub's value.
+#
+# Runs once, after the first dead-code pass and before inlining, while every
+# read is still a visible `lazy_fetch` call on a named stub.
+namespace Bootstrap::Lower::Ir
+
+import System
+import System::Containers
+
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::StdlibCandidates
+
+
+
+fun egStartName() => "__start__"
+
+fun egFetchPrefix() => "lazy_fetch$"
+
+fun egStubPrefix() => "Lazy$"
+
+# The mark a foreign object leaves on everything that reaches it. Not a legal
+# global name, so it cannot collide with a stub.
+fun egOpaqueMark() => "<foreign>"
+
+fun makeGlobalsEager(a: CgApp): CgApp
+  let order = eagerOrder(a)
+  ret isEmpty(order) ? a : egApply(a, order)
+
+# ── which globals are eager ──────────────────────────────────────────────────
+
+fun egIsStub(g2: CgGlobal) => match(g2.globalObjectName)
+  (n: String) => startsWith(n, egStubPrefix())
+  ()          => false
+
+fun egLazyStubs(a: CgApp): List<String> => appGlobals(a)
+  |> (gs) => filter(gs, egIsStub)
+  |> (gs) => sort(map(gs, (g2) => g2.globalName))
+
+# The globals to initialise at startup, each after everything it depends on.
+fun eagerOrder(a: CgApp): List<String>
+  let stubs = egLazyStubs(a)
+  if isEmpty(stubs)
+    ret List()
+  let reach = egReach(a, stubs)
+  ret egOrderOf(ceSccs(EEdges(reach)), reach)
+
+# SCCs come out callees first, which is dependency order.
+fun egOrderOf(sccs: List<List<String>>, reach: Dict<String, List<String>>)
+  ret flatMap(sccs, (scc) => egEagerScc(scc, reach))
+
+# A component of one global that does not reach itself.
+fun egEagerScc(scc: List<String>, reach: Dict<String, List<String>>): List<String>
+  if sizeAtLeast(scc, 2)
+    ret List()
+  ret match(head(scc))
+    (v: String) => contains(egChildren(reach, v), v) ? List() : scc
+    ()          => List()
+
+# ── what each lazy global's initialiser can reach ────────────────────────────
+# One graph over functions ("f:"), globals ("g:") and objects ("o:"). A stub's
+# own closure is its dependency's business, so a stub has no out-edges; it
+# marks whatever reaches it. Every component's reach is the union of its
+# members' marks and its successors'.
+
+class [final] EgGraph(egEdges: Dict<String, List<String>>, egOwn: Dict<String, StrSet>)
+
+fun egChildren(edges: Dict<String, List<String>>, v: String) => match(get(edges, v))
+  (cs: List<String>) => cs
+  ()                 => List()
+
+fun egOwnOf(g: EgGraph, v: String) => match(get(g.egOwn, v))
+  (s2: StrSet) => s2
+  ()           => setEmpty()
+
+fun egMaskOf(masks: Dict<String, StrSet>, v: String) => match(get(masks, v))
+  (s2: StrSet) => s2
+  ()           => setEmpty()
+
+fun egTargets(a: CgApp, r: ScanSets): List<String>
+  let fns = setNames(r.ssFunctions)
+    |> (ns) => filter(ns, (n) => appHasFunction(a, n))
+    |> (ns) => map(ns, (n) => "f:" + n)
+  let globals = setNames(r.ssGlobals)
+    |> (ns) => filter(ns, (n) => !(appGlobal(a, n) is None))
+    |> (ns) => map(ns, (n) => "g:" + n)
+  let objects = setNames(r.ssObjects)
+    |> (ns) => filter(ns, (n) => appHasObject(a, n))
+    |> (ns) => map(ns, (n) => "o:" + n)
+  ret concat(concat(fns, globals), objects)
+
+fun egAddFunction(g: EgGraph, a: CgApp, f: CgFunction)
+  ret EgGraph(put(g.egEdges, "f:" + f.fnName, egTargets(a, scanFunction(f))), g.egOwn)
+
+fun egAddGlobal(g: EgGraph, a: CgApp, stubs: StrSet, gl: CgGlobal) => setHas(stubs, gl.globalName)
+  ? EgGraph(put(g.egEdges, "g:" + gl.globalName, List()),
+            put(g.egOwn, "g:" + gl.globalName, set1(gl.globalName)))
+  : EgGraph(put(g.egEdges, "g:" + gl.globalName, egTargets(a, scanGlobal(gl))), g.egOwn)
+
+fun egAddObject(g: EgGraph, a: CgApp, o: CgObject)
+  let edges = put(g.egEdges, "o:" + o.objName, egTargets(a, scanObject(o)))
+  ret EgGraph(edges, o.objIsForeign
+                       ? put(g.egOwn, "o:" + o.objName, set1(egOpaqueMark()))
+                       : g.egOwn)
+
+fun egGraph(a: CgApp, stubs: StrSet): EgGraph
+  let g0 = EgGraph(Dict(), Dict())
+  let g1 = fold(appFunctions(a), g0, (g, f) => egAddFunction(g, a, f))
+  let g2 = fold(appGlobals(a), g1, (g, gl) => egAddGlobal(g, a, stubs, gl))
+  ret fold(appObjects(a), g2, (g, o) => egAddObject(g, a, o))
+
+fun egNodeMask(s2: StrSet, v: String, members: StrSet, done: Dict<String, StrSet>, g: EgGraph)
+  let withOwn = setUnion(s2, egOwnOf(g, v))
+  ret fold(egChildren(g.egEdges, v), withOwn,
+           (x, w) => setHas(members, w) ? x : setUnion(x, egMaskOf(done, w)))
+
+fun egSccMask(acc: Dict<String, StrSet>, scc: List<String>, g: EgGraph)
+  let members = setOfList(scc)
+  let m = fold(scc, setEmpty(), (s2, v) => egNodeMask(s2, v, members, acc, g))
+  ret fold(scc, acc, (d, v) => put(d, v, m))
+
+fun egMasks(sccs: List<List<String>>, g: EgGraph): Dict<String, StrSet>
+  ret fold(sccs, Dict(), (acc, scc) => egSccMask(acc, scc, g))
+
+# The roots of a stub's initialiser: the functions its closure field names.
+fun egInitRoots(a: CgApp, stub: String): List<String> => match(appGlobal(a, stub))
+  (gl: CgGlobal) => setNames(scanGlobal(gl).ssFunctions)
+  ()             => List()
+
+# A global that reaches a foreign object cannot have its dependencies proven,
+# so it depends on every stub — itself included, which makes it a cycle.
+fun egStubReach(a: CgApp, stub: String, masks: Dict<String, StrSet>, stubs: List<String>): List<String>
+  let m = fold(egInitRoots(a, stub), setEmpty(), (x, fn) => setUnion(x, egMaskOf(masks, "f:" + fn)))
+  ret setHas(m, egOpaqueMark()) ? stubs : filter(stubs, (n) => setHas(m, n))
+
+fun egReach(a: CgApp, stubs: List<String>): Dict<String, List<String>>
+  let g = egGraph(a, setOfList(stubs))
+  let masks = egMasks(ceSccs(EEdges(g.egEdges)), g)
+  ret fold(stubs, Dict(), (acc, s2) => put(acc, s2, egStubReach(a, s2, masks, stubs)))
+
+# ── the rewrite ──────────────────────────────────────────────────────────────
+
+# A non-tail `lazy_fetch$T(stub)` of a named global stub.
+class [final] FetchSite(fsStub: String, fsObject: RParam, fsFetch: String, fsRegister: RParam)
+
+fun egFetchSite(op: Op): FetchSite|None => match(op)
+  (c: OpCall) => egSiteOfCall(c)
+  (o: Op)     => None
+
+fun egSiteOfCall(c: OpCall): FetchSite|None
+  if c.callMusttail
+    ret None
+  ret match(c.callFunction)
+    (gf: RpGlobalFunction) => startsWith(gf.name, egFetchPrefix()) ? egSiteOfFetch(c, gf) : None
+    (o: RParam)            => None
+
+fun egSiteOfFetch(c: OpCall, gf: RpGlobalFunction): FetchSite|None => match(gf.object)
+  (gv: RpGlobalVar) => egSiteWithRegister(gv, gf, c.callRegister)
+  (o: RParam)       => None
+  ()                => None
+
+fun egSiteWithRegister(gv: RpGlobalVar, gf: RpGlobalFunction, reg: RParam|None): FetchSite|None => match(reg)
+  (r: RParam) => FetchSite(gv.name, gv, gf.name, r)
+  ()          => None
+
+fun egResultOf(a: CgApp, fnName: String): CgType => match(appFunction(a, fnName))
+  (f: CgFunction) => f.fnResult
+  ()              => CgVoid()
+
+fun egStubClass(a: CgApp, stub: String): String => match(appGlobal(a, stub))
+  (gl: CgGlobal) => match(gl.globalObjectName)
+    (n: String) => n
+    ()          => ""
+  ()             => ""
+
+# The read of an eager global: a plain load of the stub's value.
+fun egLoad(a: CgApp, s2: FetchSite): Op
+  ret OpMove(s2.fsRegister,
+             RpObjectField(egResultOf(a, s2.fsFetch), s2.fsObject, egStubClass(a, s2.fsStub),
+                           "value", None, false, false),
+             false, Dict())
+
+fun egIsEagerFetch(op: Op, eager: StrSet): Bool => match(egFetchSite(op))
+  (s2: FetchSite) => setHas(eager, s2.fsStub)
+  ()              => false
+
+fun egRewriteOp(a: CgApp, eager: StrSet, op: Op): Op => match(egFetchSite(op))
+  (s2: FetchSite) => setHas(eager, s2.fsStub) ? egLoad(a, s2) : op
+  ()              => op
+
+fun egRewriteInto(acc: CgApp, a: CgApp, eager: StrSet, f: CgFunction): CgApp
+  if !fold(f.fnOps, false, (hit, op) => hit || egIsEagerFetch(op, eager))
+    ret acc
+  ret appPutFunction(acc, cgFunctionWith(f, map(f.fnOps, (op) => egRewriteOp(a, eager, op)),
+                                         f.fnStackVars))
+
+# ── __start__: force each eager global in order, then main ───────────────────
+
+class [final] EgForce(efVar: String, efType: CgType, efCall: Op)
+
+fun egForceOf(a: CgApp, stub: String, i: Int): EgForce
+  let cls = egStubClass(a, stub)
+  let fetchName = egFetchPrefix() + slice(cls, length(egStubPrefix()), length(cls))
+  let ty = egResultOf(a, fetchName)
+  let var = RpStackVar(ty, "$init" + String(i))
+  let fetch = RpGlobalFunction(fetchName, RpGlobalVar(CgDataPointer(false), stub), false, None, false, false)
+  ret EgForce(var.name, ty, OpCall(fetch, RpNewStruct(List()), var, false, true, None, Dict()))
+
+fun [tail] egForced(a: CgApp, order: List<String>, i: Int, acc: List<EgForce>): List<EgForce> => match(head(order))
+  (stub: String) => egForced(a, dropOne(order), i + 1, append(acc, egForceOf(a, stub, i)))
+  ()             => acc
+
+fun egStartFunction(a: CgApp, order: List<String>, mainName: String): CgFunction
+  let mainFn = forceFn(appFunction(a, mainName))
+  let forced = egForced(a, order, 0, List())
+  let result = RpStackVar(mainFn.fnResult, "$result")
+  let callMain = OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
+                        RpNewStruct(List()), result, false, false, None, Dict())
+  let ops = concat(map(forced, (x) => x.efCall), list2<Op>(callMain, OpReturn(result, Dict())))
+  let vars = concat(map(forced, (x) => CgField(x.efVar, x.efType)),
+                    list1(CgField("$result", mainFn.fnResult)))
+  ret CgFunction(egStartName(),
+                 CgStruct(list1(CgField("this", CgDataPointer(false)))),
+                 mainFn.fnResult, CgStruct(vars), cgOpsOf(ops),
+                 "initialise eager globals, then main",
+                 None, false, false, false, InlineAuto())
+
+fun egMainName(ops: List<Op>): String => match(head(ops))
+  (c: OpCall) => match(c.callFunction)
+    (gf: RpGlobalFunction) => gf.name
+    (o: RParam)            => ""
+  (o: Op)     => ""
+  ()          => ""
+
+# The entry point's first op calls main; it calls `__start__` instead.
+fun egRetarget(ops: List<Op>): List<Op> => match(head(ops))
+  (c: OpCall) => prepend(OpCall(RpGlobalFunction(egStartName(), None, false, None, false, false),
+                                c.callParameters, c.callRegister, c.callMusttail, c.callImpure,
+                                c.callResultType, c.callSavedVars),
+                         dropOne(ops))
+  (o: Op)     => ops
+  ()          => ops
+
+fun egApply(a: CgApp, order: List<String>): CgApp
+  let eager = setOfList(order)
+  let rewritten = fold(appFunctions(a), a, (acc, f) => egRewriteInto(acc, a, eager, f))
+  let entry = forceFn(appFunction(rewritten, "__entrypoint__"))
+  let entryOps = cgOpsToList(entry.fnOps)
+  let start = egStartFunction(a, order, egMainName(entryOps))
+  let entry2 = cgFunctionWith(entry, cgOpsOf(egRetarget(entryOps)), entry.fnStackVars)
+  ret appPutFunction(appPutFunction(rewritten, start), entry2)

@@ -1,7 +1,7 @@
 # bootstrap/trim.yafl — dead-code elimination over the IR, ported from
 # lowering/trim.py: drop functions/objects/globals not reachable from
-# __entrypoint__, via the _scan_sets reference model (worklist to a fixpoint;
-# the survivors rebuild in SORTED name order, exactly like Python's
+# __entrypoint__, via the reference model (ir/references.yafl), worklist to a
+# fixpoint; the survivors rebuild in SORTED name order, exactly like Python's
 # `sorted(to_app.*)` — C emission order depends on it).
 namespace Bootstrap::Lower::Ir
 
@@ -12,139 +12,6 @@ import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
 
 
-
-# Name SETS with hashed membership (user ruling 2026-07-22) — the ordered
-# lists feed trim's sorted rebuild; hashing makes union/difference linear
-# (the old list-membership algebra was quadratic in the reachable set).
-# Union and difference FOLD the Set — order-free, so no ordering is built
-# for them; only trim's rebuild sorts (setNames). Sorting to get a walk cost
-# a fresh key Set and a sort per union, and trim unions once per IR op.
-class [final] StrSet(setIx: Set<String>)
-
-fun setNames(s2: StrSet) => sort(s2.setIx)
-
-fun setEmpty() => StrSet(Set())
-
-fun set1(name) => StrSet(add(Set(), name))
-
-fun setHas(s2: StrSet, name: String) => contains(s2.setIx, name)
-
-fun setAdd(s2, name) => setHas(s2, name)
-  ? s2
-  : StrSet(add(s2.setIx, name))
-
-fun setOfList(names: List<String>) => fold(names, setEmpty(), setAdd)
-
-fun setUnion(a, b: StrSet) => fold(b.setIx, a, setAdd)
-
-fun setSub(a: StrSet, b: StrSet) => fold(a.setIx, setEmpty(),
-                                         (acc, x) => setHas(b, x) ? acc : setAdd(acc, x))
-
-fun setIsEmpty(s2: StrSet) => isEmpty(s2.setIx)
-
-class [final] ScanSets(ssGlobals: StrSet, ssObjects: StrSet,
-                       ssFunctions: StrSet)
-
-fun ssEmpty() => ScanSets(setEmpty(), setEmpty(), setEmpty())
-
-fun ssIsEmpty(s2: ScanSets) => setIsEmpty(s2.ssGlobals) && setIsEmpty(s2.ssObjects)
-    && setIsEmpty(s2.ssFunctions)
-
-fun ssGlobal1(name) => ScanSets(set1(name), setEmpty(), setEmpty())
-
-fun ssObject1(name) => ScanSets(setEmpty(), set1(name), setEmpty())
-
-fun ssFunction1(name) => ScanSets(setEmpty(), setEmpty(), set1(name))
-
-# Set-semantic union / difference over the name lists.
-fun ssUnion(a: ScanSets, b: ScanSets) => ScanSets(setUnion(a.ssGlobals, b.ssGlobals),
-                                                  setUnion(a.ssObjects, b.ssObjects),
-                                                  setUnion(a.ssFunctions, b.ssFunctions))
-
-fun ssSub(a: ScanSets, b: ScanSets) => ScanSets(setSub(a.ssGlobals, b.ssGlobals),
-                                                setSub(a.ssObjects, b.ssObjects),
-                                                setSub(a.ssFunctions, b.ssFunctions))
-
-# ── the reference scan (trim.py __scan_rparam / __scan_op) ───────────────────
-
-fun scanRParam(p): ScanSets => match(p)
-  (ia: RpInitArray)      => fold(ia.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x)))
-  (ns: RpNewStruct)      => fold(ns.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x.value)))
-  (ri: RpRuntimeInvoke)  => scanRParam(ri.parameters)
-  (pt: RpPointerTo)      => scanRParam(pt.value)
-  (sf: RpStructField)    => scanRParam(sf.structVal)
-  (vf: RpVirtualFunction) => scanRParam(vf.object)
-  (of: RpObjectField)    => ssUnion(ssUnion(scanRParam(of.pointer), ssObject1(of.objectName)),
-                                    scanOptRParam(of.index))
-  (ae: RpArrayElement)   => ssUnion(ssUnion(scanRParam(ae.pointer), scanRParam(ae.index)),
-                                    ssObject1(ae.objectName))
-  (fo: RpFieldOffset)    => ssObject1(fo.objectName)
-  (gf: RpGlobalFunction) => gf.external
-    ? ssEmpty()
-    : ssUnion(ssFunction1(gf.name), scanOptRParam(gf.object))
-  (gv: RpGlobalVar)      => ssGlobal1(gv.name)
-  # Keeps the referenced static instance alive.
-  (so: RpStaticObjectRef) => ssGlobal1(so.name)
-  (ie: RpIntEqConst)     => scanRParam(ie.value)
-  (np: RpNullPattern)    => fold(np.tests, ssEmpty(), (a, t2) => ssUnion(a, scanRParam(t2.word)))
-  (vd: RpVtableDiscriminator) => scanRParam(vd.value)
-  # Keep the referenced class's vtable alive when dispatching on it.
-  (ov: RpObjVtableEq)    => ssUnion(scanRParam(ov.value), scanOptObject(ov.className))
-  (nt: RpNewStructTyped) => fold(nt.values, ssEmpty(), (a, x) => ssUnion(a, scanRParam(x.value)))
-  (tt: RpTagTask)        => scanRParam(tt.task)
-  (sw: RpSyncWrap)       => scanRParam(sw.value)
-  (ff: RpFunField)       => scanRParam(ff.ffFun)
-  (mf: RpMakeFun)        => ssUnion(scanRParam(mf.mfCode), scanRParam(mf.mfEnv))
-  (ni: RpNarrowInt)      => scanRParam(ni.niValue)
-  (o: RParam)            => ssEmpty()   # String/Integer/Float/StackVar/NullPointer/ZeroOf/…
-
-fun scanOptRParam(p: RParam|None) => match(p)
-  (x: RParam) => scanRParam(x)
-  ()           => ssEmpty()
-
-fun scanOptObject(name: String|None) => match(name)
-  (n: String) => ssObject1(n)
-  ()           => ssEmpty()
-
-fun scanOp(op): ScanSets => match(op)
-  (m: OpMove)         => ssUnion(scanRParam(m.moveTarget), scanRParam(m.moveSource))
-  (ji: OpJumpIf)      => scanRParam(ji.jumpIfCondition)
-  (c: OpCall)         => ssUnion(ssUnion(scanRParam(c.callFunction), scanRParam(c.callParameters)),
-                                 scanOptRParam(c.callRegister))
-  (r: OpReturn)       => scanRParam(r.returnValue)
-  (n: OpNewObject)    => ssUnion(ssUnion(ssObject1(n.newObjName), scanRParam(n.newObjRegister)),
-                                 scanOptRParam(n.newObjSize))
-  (t2: OpIfTask)      => ssUnion(scanRParam(t2.taskCondition), scanRParam(t2.taskSource))
-  (an: OpAssertNotTask) => scanRParam(an.antCondition)
-  (sw: OpSwitchJump)  => scanRParam(sw.switchCondition)
-  (ph: OpPhi)         => fold(ph.phiSources, scanRParam(ph.phiTarget),
-                              (a, s2) => ssUnion(a, scanRParam(s2.sourceValue)))
-  (aw: OpAwait)       => ssUnion(scanRParam(aw.awaitRegister), scanRParam(aw.awaitSource))
-  (x: OpLabel)        => ssEmpty()
-  (x: OpJump)         => ssEmpty()
-  (x: OpReturnVoid)   => ssEmpty()
-  (x: OpAbort)        => ssEmpty()
-  (x: OpProfEnter)    => ssEmpty()
-  (x: OpProfLeave)    => ssEmpty()
-
-fun scanGlobal(g2: CgGlobal): ScanSets
-  ret ssUnion(ssUnion(scanOptRParam(g2.globalInit), scanOptFunction(g2.globalLazyInitFunction)),
-              ssUnion(scanOptGlobal(g2.globalLazyInitFlag), scanOptObject(g2.globalObjectName)))
-
-fun scanOptFunction(name: String|None) => match(name)
-  (n: String) => ssFunction1(n)
-  ()           => ssEmpty()
-
-fun scanOptGlobal(name: String|None) => match(name)
-  (n: String) => ssGlobal1(n)
-  ()           => ssEmpty()
-
-fun scanObject(o: CgObject) => ScanSets(setEmpty(), setOfList(o.objExtends),
-                                        setOfList(map(o.objFunctions,
-                                                      (s2) => s2.slotGlobalName)))
-
-fun scanFunction(f: CgFunction): ScanSets
-  ret fold(f.fnOps, ssEmpty(), (a, op) => ssUnion(a, scanOp(op)))
 
 # ── the worklist fixpoint ────────────────────────────────────────────────────
 

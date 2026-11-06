@@ -28,6 +28,7 @@ import lowering.lambda_globals
 import lowering.lambda_lift
 import lowering.lambdas
 import lowering.lazy_thunks
+import lowering.eager_globals
 import lowering.lower_lazy_lets
 import lowering.regexes
 import lowering.generics
@@ -220,6 +221,7 @@ def __create_c_code(statements: list[s.Statement], main: s.FunctionStatement, ju
     lowering.ssa_validate.validate(a)
 
     a = lowering.trim.removed_unused_stuff(a)
+    a = lowering.eager_globals.make_globals_eager(a)
     a = lowering.globalfuncs.discover_global_function_calls(a)
 
     # Inlining (skipped at -O0/-O1): -O2 inlines small functions only; -O3 also
