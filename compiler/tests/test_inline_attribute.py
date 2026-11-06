@@ -1,9 +1,14 @@
-"""The `[inline]` attribute: `[inline]` / `[inline(always)]` and `[inline(never)]`.
+"""The `[inline]` attribute: `[inline]`, `[inline(always)]` and `[inline(never)]`.
 
-`[inline]` and `[inline(always)]` are one thing: they bypass the inliner size
-cutoff, but only at -O3 — so a chain of marked functions (e.g. the stream
-`next` stages) fuses into its consumer only in a release build, never at
--O0/-O1/-O2. Below -O3 a marked function is treated like an unmarked one.
+Bare `[inline]` is a structural hint: the AST inliner inlines the function at
+every level regardless of size, so the lambdas handed to an operator such as
+`?>` are beta-reduced rather than lifted to closures. The codegen inliner treats
+it like an unmarked function.
+
+`[inline(always)]` bypasses the codegen inliner's size cutoff, but only at -O3 —
+so a chain of marked functions (e.g. the stream `next` stages) fuses into its
+consumer only in a release build, never at -O0/-O1/-O2. Below -O3 it is treated
+like an unmarked function.
 
 `[inline(never)]` keeps a function out of every inliner at every level, size
 rule included. Any other argument is a compile error.
@@ -54,13 +59,11 @@ class TestInlineAlwaysLevel(TestCase):
         self.assertNotIn("big", _big("[inline(always)]", 3))  # -O3: inlined despite size, then trimmed
 
 
-class TestBareInlineIsAlways(TestCase):
-    def test_not_inlined_below_O3(self):
-        self.assertIn("big", _big("[inline]", 1))
-        self.assertIn("big", _big("[inline]", 2))
-
-    def test_inlined_at_O3(self):
-        self.assertNotIn("big", _big("[inline]", 3))
+class TestBareInlineIsEarly(TestCase):
+    def test_inlined_at_every_level(self):
+        # The AST inliner takes it despite its size, at every level.
+        for level in (0, 1, 2, 3):
+            self.assertNotIn("Main::big", _big("[inline]", level), f"-O{level}")
 
 
 class TestInlineNever(TestCase):

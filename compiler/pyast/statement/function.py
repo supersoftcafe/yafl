@@ -190,14 +190,14 @@ class FunctionStatement(DataStatement):
         return new_self, globals, h.without(body_hints, own, placeholders)
 
     def inline_mode(self) -> cg_ir.InlineMode | None:
-        """The `[inline]` attribute: AUTO unmarked, ALWAYS for `[inline]` and
-        `[inline(always)]`, NEVER for `[inline(never)]` — and None for any other
-        argument, which check() reports."""
+        """The `[inline]` attribute: AUTO unmarked, EARLY for `[inline]`, ALWAYS
+        for `[inline(always)]`, NEVER for `[inline(never)]` — and None for any
+        other argument, which check() reports."""
         if "inline" not in self.attributes:
             return cg_ir.InlineMode.AUTO
         arg = self.attributes["inline"]
         if arg is None:
-            return cg_ir.InlineMode.ALWAYS
+            return cg_ir.InlineMode.EARLY
         if not (isinstance(arg, e.TupleExpression) and len(arg.expressions) == 1):
             return None
         entry = arg.expressions[0]

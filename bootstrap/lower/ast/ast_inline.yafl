@@ -1277,10 +1277,14 @@ fun aiIsInlinable(f: PsFun, classMembers: List<String>)
   if contains(classMembers, f.fName) || hasAttr(f.fAttrs, "foreign") || hasAttr(f.fAttrs, "future")
      || !hoHasBlockBody(f) || !isEmpty(f.fGens)
     ret false
-  # `[inline]` / `[inline(always)]` is the codegen inliner's, gated by -O3:
-  # here a marked function is treated like an unmarked one.
-  if funInlineMode(f) is InlineNever
+  let mode = funInlineMode(f)
+  if mode is InlineNever
     ret false
+  # Bare `[inline]`: a structural hint, taken at every level.
+  if mode is InlineEarly
+    ret true
+  # `[inline(always)]` is the codegen inliner's, gated by -O3: here it is
+  # treated like an unmarked function.
   ret aiBodyCount(f) < aiSizeThreshold
 
 fun aiBodyCount(f: PsFun) => match(f.fBody)

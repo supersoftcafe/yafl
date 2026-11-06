@@ -152,14 +152,15 @@ fun avLoop(as2: List<PAttr>, name: String) => match(firstWhere(as2, (x) => x.att
   ()  => None
 
 # The `[inline]` attribute (Python FunctionStatement.inline_mode): InlineAuto
-# unmarked, InlineAlways for `[inline]` and `[inline(always)]`, InlineNever for
-# `[inline(never)]` — and None for any other argument, which inlineErrs reports.
+# unmarked, InlineEarly for `[inline]`, InlineAlways for `[inline(always)]`,
+# InlineNever for `[inline(never)]` — and None for any other argument, which
+# inlineErrs reports.
 fun funInlineMode(f: PsFun): InlineMode|None
   if !hasAttr(f.fAttrs, "inline")
     ret InlineAuto()
   ret match(attrValueOf(f.fAttrs, "inline"))
     (v: PExpr) => inlineArgMode(v)
-    ()         => InlineAlways()
+    ()         => InlineEarly()
 
 fun inlineArgMode(v: PExpr): InlineMode|None => match(v)
   (t2: PeTuple) => isEmpty(dropOne(t2.exprs)) ? inlineWordMode(head(t2.exprs)) : None

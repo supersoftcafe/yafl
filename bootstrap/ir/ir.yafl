@@ -25,13 +25,17 @@ import Bootstrap::StdlibCandidates
 
 class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 
-# What the `[inline]` attribute asks of the codegen inliner (codegen/ir.py
-# InlineMode). InlineAlways (`[inline]` or `[inline(always)]`) inlines at every
-# call site regardless of size, at -O3 only, so a chain of marked functions
-# fuses into its consumer (pre-async). InlineNever (`[inline(never)]`) keeps
-# every call a call, size rule included.
+# What the `[inline]` attribute asks of the inliners (codegen/ir.py InlineMode).
+# InlineEarly (bare `[inline]`) is a structural hint: the AST inliner takes the
+# function at every level regardless of size, so lambdas handed to it (e.g. to
+# `?>`) are beta-reduced rather than lifted to closures; the codegen inliner
+# treats it as InlineAuto. InlineAlways (`[inline(always)]`) makes the codegen
+# inliner inline at every call site regardless of size, at -O3 only, so a chain
+# of marked functions fuses into its consumer (pre-async). InlineNever
+# (`[inline(never)]`) keeps every call a call, size rule included.
 enum InlineMode
   enum InlineAuto()
+  enum InlineEarly()
   enum InlineAlways()
   enum InlineNever()
 

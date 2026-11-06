@@ -46,6 +46,7 @@ fun inlPolicy(target: CgFunction, inlineAlways: Bool, cutoff: Int): Bool => matc
   (n: InlineNever)  => false
   (a: InlineAlways) => inlineAlways || !atLeast(target.fnOps, cutoff)
   (u: InlineAuto)   => !atLeast(target.fnOps, cutoff)
+  (e: InlineEarly)  => !atLeast(target.fnOps, cutoff)
 
 # ── the engine ───────────────────────────────────────────────────────────────
 

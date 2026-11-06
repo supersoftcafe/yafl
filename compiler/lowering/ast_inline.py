@@ -238,14 +238,16 @@ def _is_inlinable_function(fn: s.FunctionStatement, class_members: set[str], opt
         return False
     if fn.type_params:
         return False  # still generic — monomorphisation should have run first
-    if fn.inline_mode() is cg_ir.InlineMode.NEVER:
+    mode = fn.inline_mode()
+    if mode is cg_ir.InlineMode.NEVER:
         return False
+    if mode is cg_ir.InlineMode.EARLY:
+        return True  # bare `[inline]`: a structural hint, taken at every level
     # Size-heuristic inlining of ordinary small functions runs at all levels: it
-    # is structurally load-bearing (gating it regresses -O0). `[inline]` /
-    # `[inline(always)]` is the codegen inliner's, gated by the optimisation
-    # level (only -O3 inlines it regardless of size), so here a marked function
-    # is treated like an unmarked one. `optimization_level` is unused but kept
-    # for symmetry.
+    # is structurally load-bearing (gating it regresses -O0). `[inline(always)]`
+    # is the codegen inliner's, gated by the optimisation level (only -O3 inlines
+    # it regardless of size), so here it is treated like an unmarked function.
+    # `optimization_level` is unused but kept for symmetry.
     return _node_count(fn.body) < _SIZE_THRESHOLD
 
 

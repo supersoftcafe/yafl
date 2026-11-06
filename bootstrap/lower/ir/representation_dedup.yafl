@@ -131,6 +131,7 @@ fun rddInline(e: RddEnc, m: InlineMode): RddEnc => rddS(e, rddInlineCode(m))
 
 fun rddInlineCode(m: InlineMode): String => match(m)
   (a: InlineAuto)   => "Ia"
+  (e: InlineEarly)  => "IE"
   (a: InlineAlways) => "IA"
   (n: InlineNever)  => "IN"
 

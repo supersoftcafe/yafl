@@ -11,12 +11,17 @@ from codegen.ops import Op, Move, Call, Jump, JumpIf, Return, ReturnVoid, Label,
 import codegen.typedecl as t
 import codegen.param as p
 
-# What the `[inline]` attribute asks of the codegen inliner. ALWAYS (`[inline]`
-# or `[inline(always)]`) inlines at every call site regardless of size, at -O3
-# only, so a chain of marked functions fuses into its consumer (pre-async).
-# NEVER (`[inline(never)]`) keeps every call a call, size rule included.
+# What the `[inline]` attribute asks of the inliners. EARLY (bare `[inline]`) is
+# a structural hint: the AST inliner takes the function at every level regardless
+# of size, so lambdas handed to it (e.g. to `?>`) are beta-reduced rather than
+# lifted to closures; the codegen inliner treats it as AUTO. ALWAYS
+# (`[inline(always)]`) makes the codegen inliner inline at every call site
+# regardless of size, at -O3 only, so a chain of marked functions fuses into its
+# consumer (pre-async). NEVER (`[inline(never)]`) keeps every call a call, size
+# rule included.
 class InlineMode(Enum):
     AUTO = "auto"
+    EARLY = "early"
     ALWAYS = "always"
     NEVER = "never"
 
