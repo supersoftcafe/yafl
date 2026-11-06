@@ -953,8 +953,7 @@ fun [tail] parseSubjects(ps: Ps,
       ? parseSubjects(bump(e.rest), append(acc, x))
       : (append(acc, x), e.rest)
 
-fun subjectsFail(b: List<PExpr>, f: PFail,
-                 rest: Ps): (v: List<PExpr>|PFail, rest: Ps)
+fun subjectsFail(b: List<PExpr>, f: PFail, rest: Ps): (v: List<PExpr>|PFail, rest: Ps)
   ret (f, rest)
 
 fun matchWithSubjects(subs, lr, ps: Ps): (v: PExpr|PFail, rest: Ps) => match(head(subs))
@@ -1118,8 +1117,7 @@ fun blockExit(inner: Ps, outer: Ps) => Ps(inner.ts, outer.fline, outer.findent, 
 # function.
 fun parseStmts(ps: Ps, acc: List<PStmt>): (v: List<PStmt>|PFail, rest: Ps) => stmtsLoop(ps, acc, List())
 
-fun [tail] stmtsLoop(ps: Ps, acc: List<PStmt>,
-                     errs: List<PFail>): (v: List<PStmt>|PFail, rest: Ps)
+fun [tail] stmtsLoop(ps: Ps, acc: List<PStmt>, errs: List<PFail>): (v: List<PStmt>|PFail, rest: Ps)
   let t = peek(ps)
   if isEof(t)
     ret match(failureOf(errs))

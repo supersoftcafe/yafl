@@ -57,17 +57,13 @@ fun alConvertReturnsSmB(ops: List<Op>,
                         fnResult,
                         subtype: String|None,
                         acc: List<Op>) =>
-  fold(ops, acc, (a, x) => alConvertReturnSmOne(a, x, myTaskField,
-                                              fnResult, subtype))
+  fold(ops, acc, (a, x) => alConvertReturnSmOne(a, x, myTaskField, fnResult, subtype))
 
 fun alConvertReturnSmOne(acc: List<Op>, op,
                          myTaskField, fnResult,
                          subtype: String|None): List<Op> => match(op)
-  (r: OpReturn)        => concat(acc,
-                            alSmReturn(r, myTaskField, fnResult,
-                                       subtype))
-  (rv: OpReturnVoid)   => concat(acc,
-                            alSmComplete(myTaskField))
+  (r: OpReturn)        => concat(acc, alSmReturn(r, myTaskField, fnResult, subtype))
+  (rv: OpReturnVoid)   => concat(acc, alSmComplete(myTaskField))
   (x: OpLabel)         => append(acc, op)
   (x: OpMove)          => append(acc, op)
   (x: OpJump)          => append(acc, op)
@@ -268,8 +264,7 @@ fun alLiveState(ops: List<Op>, seg: Segment<Op>|None): AlLive
   ret alLiveIndex(ops, 0, AlLive(Dict(), ucLabelIndex(seg), bi.d, Dict(), bi.n))
 
 fun alLiveIndex(os: List<Op>, i, acc: AlLive): AlLive =>
-  fold(os, (acc = acc, i = i),
-       (st, x) => (acc = alLiveIndexOne(st.acc, st.i, x), i = st.i + 1)).acc
+  fold(os, (acc = acc, i = i), (st, x) => (acc = alLiveIndexOne(st.acc, st.i, x), i = st.i + 1)).acc
 
 fun alLiveIndexOne(acc: AlLive, i, op): AlLive
   ret AlLive(put(acc.lsOps, i, op), acc.lsLabels, acc.lsBlocks,
@@ -277,13 +272,10 @@ fun alLiveIndexOne(acc: AlLive, i, op): AlLive
              acc.lsN)
 
 fun alInitialSaved(os: List<Op>, i, acc: Dict<Int, Dict<String, RParam>>): Dict<Int, Dict<String, RParam>> =>
-  fold(os, (i = i, acc = acc),
-       alInitialSavedStep).acc
+  fold(os, (i = i, acc = acc), alInitialSavedStep).acc
 
 fun alInitialSavedStep(st: (i: Int, acc: Dict<Int, Dict<String, RParam>>), x: Op) =>
-  (i = st.i + 1,
-  acc = isEmpty(opSavedVars(x))
-      ? st.acc : put(st.acc, st.i, opSavedVars(x)))
+  (i = st.i + 1, acc = isEmpty(opSavedVars(x)) ? st.acc : put(st.acc, st.i, opSavedVars(x)))
 
 fun alSavedAt(saved: Dict<Int, Dict<String, RParam>>, i: Int): Dict<String, RParam> => match(get(saved, i))
   (s2: Dict<String, RParam>) => s2
@@ -667,20 +659,14 @@ fun alPtrLeavesFields(fields: List<CgField>): (ls: List<String>, n: Int)|None
   ret acc.plOk && acc.plN > 0 ? (acc.plPaths, acc.plN) : None
 
 fun alPlfOne(acc: PlfAcc, f2: CgField) => match(f2.fieldType)
-  (d: CgDataPointer) => PlfAcc(append(acc.plPaths, f2.fieldName),
-                               acc.plN + 1, true)
+  (d: CgDataPointer) => PlfAcc(append(acc.plPaths, f2.fieldName), acc.plN + 1, true)
   (s2: CgStruct)     => alPlfNested(acc, f2, alPtrLeavesFields(s2.fields))
-  (im: CgImmediateStruct) => alPlfNested(acc, f2,
-                                         alPtrLeavesFields(im.fields))
+  (im: CgImmediateStruct) => alPlfNested(acc, f2, alPtrLeavesFields(im.fields))
   (o: CgType)        => PlfAcc(acc.plPaths, acc.plN, false)
 
-fun alPlfNested(acc: PlfAcc, f2: CgField,
-                inner: (ls: List<String>, n: Int)|None) => match(inner)
+fun alPlfNested(acc: PlfAcc, f2: CgField, inner: (ls: List<String>, n: Int)|None) => match(inner)
   (ps: (ls: List<String>, n: Int)) =>
-      PlfAcc(concat(acc.plPaths,
-                 map(ps.ls,
-                     (p) => f2.fieldName + "/" + p)),
-             acc.plN + ps.n, true)
+      PlfAcc(concat(acc.plPaths, map(ps.ls, (p) => f2.fieldName + "/" + p)), acc.plN + ps.n, true)
   ()  => PlfAcc(acc.plPaths, acc.plN, false)
 
 # Frame layout: coalesce per exact-type class (by_type in FIRST-SEEN type
@@ -722,8 +708,7 @@ fun alGroupByType(fieldTypes: List<CgField>)
 # had this type before", so its own order is free; the builder carries the
 # order that matters.
 fun alDistinctTypes(fs: List<CgField>, seen: List<CgType>, out): List<CgType> =>
-  fold(fs, (seen = seen, out = out),
-       alDistinctTypesStep).out
+  fold(fs, (seen = seen, out = out), alDistinctTypesStep).out
 
 fun alDistinctTypesStep(st: (seen: List<CgType>, out: List<CgType>), x: CgField) =>
   any(st.seen, (t2) => eqCgType(t2, x.fieldType))
@@ -777,9 +762,7 @@ fun alSortedColours(colour: List<NameIdx>): (cs: List<Int>, n: Int)
                      (acc, e2) => add(acc, e2.niIdx))
   ret (sort(distinct), size(distinct))
 
-fun alIndexOfInt(l: List<Int>, x: Int) => match(findIndex(l, (y) => y == x))
-  (i: Int) => i
-  ()       => 0   # unreachable: x came from the list
+fun alIndexOfInt(l: List<Int>, x: Int) => findIndex(l, (y) => y == x) ?? 0   # unreachable: x came from the list
 
 # ── store/load between locals and the state object ───────────────────────────
 
@@ -810,15 +793,10 @@ fun alStoreDecomposed(v, sp, stateName, base) => match(alPtrLeaves(rpGetType(v))
   (paths: (ls: List<String>, n: Int)) => alSdLoop(paths.ls, v, sp, stateName, base, 0, List())
   ()                     => List()   # unreachable: decomposed entries are all-ptr structs
 
-fun alSdLoop(ps, v: RParam, sp, stateName,
-                    base, i, acc: List<Op>)
-  ret alSdLoopB(ps, v, sp, stateName, base, i, acc)
+fun alSdLoop(ps: List<String>, v: RParam, sp, stateName, base, i, acc: List<Op>) =>
+  fold(ps, (i = i, acc = acc), (st, x) => alSdLoopStep(st, x, v, sp, stateName, base)).acc
 
-fun alSdLoopB(ps: List<String>, v: RParam, sp, stateName, base, i, acc: List<Op>) =>
-  fold(ps, (i = i, acc = acc),
-       (st, x) => alSdLoopBStep(st, x, v, sp, stateName, base)).acc
-
-fun alSdLoopBStep(st: (i: Int, acc: List<Op>), x: String, v: RParam, sp, stateName, base) =>
+fun alSdLoopStep(st: (i: Int, acc: List<Op>), x: String, v: RParam, sp, stateName, base) =>
   (i = st.i + 1,
   acc = append(st.acc, OpMove(alArrayElem(sp, stateName, base + st.i),
       alPathField(v, x), false, Dict())))
@@ -946,8 +924,7 @@ fun alIsReturnedAwait(op) => match(op)
 fun alParksUnreturned(op) => alIsSplitter(op) && !alIsReturnedAwait(op)
 
 fun alRuLoop(os: List<Op>, skipping: Bool, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> =>
-  fold(os, (skipping = skipping, acc = acc),
-       alRuLoopStep).acc
+  fold(os, (skipping = skipping, acc = acc), alRuLoopStep).acc
 
 fun alRuLoopStep(st: (skipping: Bool, acc: SeqBuilder<Op>), x: Op) =>
   st.skipping
@@ -1112,8 +1089,7 @@ fun alAsvLive(vs: List<RParam>, acc) =>
 
 fun asvAdd(acc, v) => contains(acc.asSeen, stackVarName(v))
   ? acc
-  : AsvAcc(append(acc.asOrder, v),
-           add(acc.asSeen, stackVarName(v)))
+  : AsvAcc(append(acc.asOrder, v), add(acc.asSeen, stackVarName(v)))
 
 fun alZeroVal(t2) => match(t2)
   (d: CgDataPointer) => RpNullPointer()
@@ -1134,10 +1110,8 @@ fun hotBuild(acc: HotAcc) => HotOut(acc.haOps, acc.haWrapFields)
 
 # Zero-init every state-resident var that is not already a parameter, in the
 # order alAllStateVars settled on.
-fun alHotPrologue(vs: List<RParam>,
-                  paramNames: List<String>,
-                  acc: List<Op>) =>
-  fold(vs, acc, (a, x) => strListMember(paramNames, stackVarName(x))
+fun alHotPrologue(vs: List<RParam>, paramNames: List<String>, acc: List<Op>) =>
+  fold(vs, acc, (a, x) => contains(paramNames, stackVarName(x))
     ? a
     : append(a, OpMove(x,
                                      alZeroVal(rpGetType(x)),
@@ -1163,15 +1137,9 @@ fun alCreateHotPathFunc(f: CgFunction, stateName, subtype: String|None,
     ? alHotAssembleSync(f, wrappedResult, withTerminal)
     : alHotAssembleAsync(f, stateName, subtype, bbs, layout, wrappedResult, withTerminal)
 
-fun alLastBlock(bbs: List<ABlock>) => match(head(takeLastOne(bbs)))
-  (bb: ABlock) => bb
-  ()            => ABlock("", List(), Dict(), None)   # unreachable: >=1 block always
+fun alLastBlock(bbs: List<ABlock>) => head(takeLastOne(bbs)) ?? ABlock("", List(), Dict(), None)   # unreachable: >=1 block always
 
-fun alHotSites(bs: List<ABlock>,
-               f: CgFunction,
-               fnResult,
-               i,
-               acc: HotAcc) =>
+fun alHotSites(bs: List<ABlock>, f: CgFunction, fnResult, i, acc: HotAcc) =>
   fold(bs, (acc = acc, i = i),
        (st, x) => (acc = alHotSite(x, f, fnResult, st.i, st.acc), i = st.i + 1)).acc
 
@@ -1340,22 +1308,17 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
                  f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
-fun alSaveCases(bs: List<ABlock>, i, acc: List<OpCase>)
-  ret alSaveCasesB(bs, i, acc)
-
-fun alSaveCasesB(bs: List<ABlock>, i, acc): List<OpCase> =>
+fun alSaveCases(bs: List<ABlock>, i, acc): List<OpCase> =>
   fold(bs, (acc = acc, i = i),
        (st, x) => (acc = append(st.acc, OpCase(st.i + 1, "$save$" + String(st.i))), i = st.i + 1)).acc
 
 fun alSaveBlocks(bs: List<ABlock>, stateName, layout: AFrame, i, acc: List<Op>) =>
-  fold(bs, (i = i, acc = acc),
-       (st, x) => alSaveBlocksStep(st, x, stateName, layout)).acc
+  fold(bs, (i = i, acc = acc), (st, x) => alSaveBlocksStep(st, x, stateName, layout)).acc
 
 fun alSaveBlocksStep(st: (i: Int, acc: List<Op>), x: ABlock, stateName, layout: AFrame) =>
   (i = st.i + 1,
   acc = append(
-      alSaveStores(x, stateName, layout,
-          append(st.acc, OpLabel("$save$" + String(st.i), Dict()))),
+      alSaveStores(x, stateName, layout, append(st.acc, OpLabel("$save$" + String(st.i), Dict()))),
       OpJump("$save$done", Dict())))
 
 # Hot-path $asynccommon save: the base is the freshly-allocated $sv_state
@@ -1365,12 +1328,8 @@ fun alSaveStores(bb: ABlock, stateName, layout: AFrame,
   ret alSaveStoresLoop(vsSorted(bb.abLive), stateName, layout,
                        acc)
 
-fun alSaveStoresLoop(vs: List<RParam>,
-                     stateName,
-                     layout: AFrame,
-                     acc: List<Op>) =>
-  fold(vs, acc, (a, x) => concat(a, alStoreVar(x, alSvState(),
-                              stateName, layout)))
+fun alSaveStoresLoop(vs: List<RParam>, stateName, layout: AFrame, acc: List<Op>) =>
+  fold(vs, acc, (a, x) => concat(a, alStoreVar(x, alSvState(), stateName, layout)))
 
 # ── stub launch (oversized looping bodies) ───────────────────────────────────
 
@@ -1507,8 +1466,7 @@ class [final] SmOut(smOps: List<Op>, smCold: List<Op>, smWrapFields: List<CgFiel
 class [final] SmAcc(saOps: List<Op>, saCold: List<Op>,
                             saWrapFields: List<CgField>)
 
-fun smBuild(acc: SmAcc) => SmOut(acc.saOps, acc.saCold,
-                                 acc.saWrapFields)
+fun smBuild(acc: SmAcc) => SmOut(acc.saOps, acc.saCold, acc.saWrapFields)
 
 # Case 0 is unused; cases 1..n are the suspension sites in index order, and
 # the entry case — when there is one — comes after them.
@@ -1673,12 +1631,7 @@ fun alSmDispatchTail(nonTerminal: List<ABlock>, f: CgFunction, stateName,
           alSmEntryCase(f, stateName, layout, nonTerminal))
     : cases)
 
-fun alSmDtLoop(bs: List<ABlock>,
-               f: CgFunction,
-               stateName,
-               layout: AFrame,
-               i,
-               acc: List<Op>) =>
+fun alSmDtLoop(bs: List<ABlock>, f: CgFunction, stateName, layout: AFrame, i, acc: List<Op>) =>
   fold(bs, (acc = acc, i = i),
        (st, x) => (acc = alSmDtCase(x, f, stateName, layout, st.i, st.acc), i = st.i + 1)).acc
 
@@ -1692,12 +1645,8 @@ fun alSmDtCase(bb: ABlock, f: CgFunction, stateName, layout: AFrame,
   let ops2 = concat(ops1, alSmDtResult(bb))
   ret append(ops2, OpJump("$resume$" + String(i), Dict()))
 
-fun alSmDtLoads(vs: List<RParam>,
-                stateName: String,
-                layout: AFrame,
-                acc: List<Op>): List<Op> =>
-  fold(vs, acc, (a, x) => concat(a, alLoadVar(x, alStateParam(),
-                             stateName, layout)))
+fun alSmDtLoads(vs: List<RParam>, stateName: String, layout: AFrame, acc: List<Op>): List<Op> =>
+  fold(vs, acc, (a, x) => concat(a, alLoadVar(x, alStateParam(), stateName, layout)))
 
 fun alSmDtResult(bb: ABlock): List<Op> => match(bb.abResult)
   (reg: RParam) => isUnit(rpGetType(reg))
@@ -1731,27 +1680,17 @@ fun alSmEntryCase(f: CgFunction, stateName, layout: AFrame,
 # they go into a builder, and the two travel together.
 class [final] EntryAcc(eaOps: List<Op>, eaSeen: Set<String>)
 
-fun alSmEntryParams(ps: List<CgField>,
-                    stateName,
-                    layout: AFrame,
-                    acc): EntryAcc =>
+fun alSmEntryParams(ps: List<CgField>, stateName, layout: AFrame, acc): EntryAcc =>
   fold(ps, acc, (a, x) => EntryAcc(concat(a.eaOps,
                    alLoadVar(RpStackVar(x.fieldType,
                                         x.fieldName),
                              alStateParam(), stateName, layout)),
                add(a.eaSeen, x.fieldName)))
 
-fun alSmEntryBlocks(bs: List<ABlock>,
-                    stateName,
-                    layout: AFrame,
-                    acc): EntryAcc =>
-  fold(bs, acc, (a, x) => alSmEntryLive(vsSorted(x.abLive), stateName,
-                    layout, a))
+fun alSmEntryBlocks(bs: List<ABlock>, stateName, layout: AFrame, acc): EntryAcc =>
+  fold(bs, acc, (a, x) => alSmEntryLive(vsSorted(x.abLive), stateName, layout, a))
 
-fun alSmEntryLive(vs: List<RParam>,
-                  stateName: String,
-                  layout: AFrame,
-                  acc: EntryAcc): EntryAcc =>
+fun alSmEntryLive(vs: List<RParam>, stateName: String, layout: AFrame, acc: EntryAcc): EntryAcc =>
   fold(vs, acc, (a, x) => contains(a.eaSeen, stackVarName(x))
     ? a
     : EntryAcc(concat(a.eaOps,
@@ -1785,15 +1724,13 @@ fun alSmAssemble(f: CgFunction, allOps: List<Op>, bbs: List<ABlock>,
 class [final] DeclAcc(daFields: List<CgField>,
                              daSeen: Set<String>)
 
-fun alSmDeclareParams(ps: List<CgField>,
-                      acc: DeclAcc) =>
+fun alSmDeclareParams(ps: List<CgField>, acc: DeclAcc) =>
   fold(ps, acc, (a, x) => contains(a.daSeen, x.fieldName)
     ? a
     : DeclAcc(append(a.daFields, x),
                   add(a.daSeen, x.fieldName)))
 
-fun alSmDeclareResults(bs: List<ABlock>,
-                       acc) =>
+fun alSmDeclareResults(bs: List<ABlock>, acc) =>
   fold(bs, acc, alSmDeclareResult)
 
 fun alSmDeclareResult(acc, bb: ABlock) => match(bb.abResult)
@@ -1820,8 +1757,7 @@ fun ucPhiEdgesPreds(ops: List<Op>) => alBpLoop(ops, None, "", Dict())
 # The preceding op is CARRIED rather than re-indexed: alBpFall only ever needs
 # ops[i-1], and `prev` is None exactly where the index form tested i == 0.
 fun alBpLoop(os: List<Op>, prev: Op|None, cur, acc: Dict<String, Set<String>>) =>
-  fold(os, (prev = prev, cur = cur, acc = acc),
-       alBpLoopStep).acc
+  fold(os, (prev = prev, cur = cur, acc = acc), alBpLoopStep).acc
 
 fun alBpLoopStep(st: (prev: Op|None, cur: String, acc: Dict<String, Set<String>>),
                  x: Op): (prev: Op|None, cur: String, acc: Dict<String, Set<String>>) => match(x)
@@ -1851,27 +1787,21 @@ fun alBpOf(acc: Dict<String, Set<String>>, label: String) => match(get(acc, labe
   ()                 => Set()
 
 fun alPpsLoop(os: List<Op>, preds: Dict<String, Set<String>>, cur, acc: List<Op>) =>
-  fold(os, (cur = cur, acc = acc),
-       (st, x) => alPpsLoopStep(st, x, preds)).acc
+  fold(os, (cur = cur, acc = acc), (st, x) => alPpsLoopStep(st, x, preds)).acc
 
 fun alPpsLoopStep(st: (cur: String, acc: List<Op>), x: Op, preds: Dict<String, Set<String>>) => match(x)
   (lb: OpLabel) => (cur = lb.labelName, acc = append(st.acc, x))
   (ph: OpPhi) => (cur = st.cur, acc = alPpsPhi(st.acc, ph, preds, st.cur))
   (o: Op) => (cur = st.cur, acc = append(st.acc, o))
 
-fun alPpsPhi(acc, ph: OpPhi,
-             preds: Dict<String, Set<String>>, cur): List<Op>
+fun alPpsPhi(acc, ph: OpPhi, preds: Dict<String, Set<String>>, cur): List<Op>
   if length(cur) == 0
     ret append(acc, ph)
   let blockPreds = alBpOf(preds, cur)
-  let kept = filter(ph.phiSources,
-                    (s2) => contains(blockPreds,
-                                     s2.sourceLabel))
+  let kept = filter(ph.phiSources, (s2) => contains(blockPreds, s2.sourceLabel))
   ret sameLen(kept, ph.phiSources)
     ? append(acc, ph)
-    : (isEmpty(kept)
-        ? acc
-        : append(acc, OpPhi(ph.phiTarget, kept, ph.phiSavedVars)))
+    : (isEmpty(kept) ? acc : append(acc, OpPhi(ph.phiTarget, kept, ph.phiSavedVars)))
 
 # ── per-function orchestrator ────────────────────────────────────────────────
 
@@ -1886,14 +1816,10 @@ class [final] AlAcc(aaFunctions: List<CgFunction>,
 
 fun alAccEmpty() => AlAcc(List(), List())
 
-fun alAccBuild(acc: AlAcc) => AlOut(acc.aaFunctions,
-                                    acc.aaObjects)
+fun alAccBuild(acc: AlAcc) => AlOut(acc.aaFunctions, acc.aaObjects)
 
 fun alMergeOne(acc: AlAcc, out: AlOut)
-  ret AlAcc(concat(acc.aaFunctions,
-                        out.aloFunctions),
-            concat(acc.aaObjects,
-                        out.aloObjects))
+  ret AlAcc(concat(acc.aaFunctions, out.aloFunctions), concat(acc.aaObjects, out.aloObjects))
 
 fun alConvertFunction(f: CgFunction): AlOut
   if f.fnName == "__entrypoint__" || f.fnBypassAsync
@@ -1982,8 +1908,7 @@ fun collectTaskSubtypes(a: CgApp)
                        CtsAcc(List(), Set()))
   ret append(subs.ctObjs, makeTaskForeignObject())
 
-fun alCtsLoop(fs: List<CgFunction>,
-              acc) =>
+fun alCtsLoop(fs: List<CgFunction>, acc) =>
   fold(fs, acc, alCtsOne)
 
 fun alCtsOne(acc, f: CgFunction)
@@ -2078,8 +2003,7 @@ fun lowerAsync(a: CgApp)
   # Subtypes union: APP WINS on collisions (lazy_thunks pre-registrations).
   ret fold(collectTaskSubtypes(withObjs), withObjs, alPutIfAbsent)
 
-fun alConvertAll(fs: List<CgFunction>,
-                 acc: AlAcc) =>
+fun alConvertAll(fs: List<CgFunction>, acc: AlAcc) =>
   fold(fs, acc, (a, x) => alMergeOne(a, alConvertFunction(x)))
 
 fun alPutIfAbsent(a, o) => appHasObject(a, o.objName) ? a : appPutObject(a, o)

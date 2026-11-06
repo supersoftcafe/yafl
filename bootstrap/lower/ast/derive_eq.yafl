@@ -163,7 +163,7 @@ fun deHasEquality(sp, ok: List<String>, ps: List<DeProvider>, r): Bool
   ret u != "" && any(ps, (p) => deCovers(p, sp, u, ok, ps, r))
 
 fun deAssumed(sp, ok: List<String>) => match(sp)
-  (e2: SEnum) => contains2(ok, e2.seRoot)
+  (e2: SEnum) => contains(ok, e2.seRoot)
   (o: Spec)   => false
 
 fun deCovers(p: DeProvider, sp, u, ok: List<String>, ps: List<DeProvider>, r) => match(p.dpCovers)
@@ -253,10 +253,9 @@ fun [tail] deFixpoint2(ok: List<String>, names: List<String>,
 fun deSurvivors(ns: List<String>, ls: List<DeLeaves>, ok: List<String>, ps: List<DeProvider>, r,
                 acc: List<String>): List<String> =>
   zipFold(ns, ls, acc,
-          (a, x, l) => contains2(ok, x) && deAllFieldsHave(l.dlSets, ok, ps, r) ? append(a, x) : a)
+          (a, x, l) => contains(ok, x) && deAllFieldsHave(l.dlSets, ok, ps, r) ? append(a, x) : a)
 
-fun deAllFieldsHave(sets: List<List<PStmt>>, ok: List<String>,
-                           ps: List<DeProvider>, r) =>
+fun deAllFieldsHave(sets: List<List<PStmt>>, ok: List<String>, ps: List<DeProvider>, r) =>
   all(sets, (x) => deFieldsHave(x, ok, ps, r))
 
 fun deFieldsHave(fs: List<PStmt>, ok: List<String>,
@@ -345,19 +344,14 @@ fun deEqArm(leafName, fields: List<PStmt>, i: Int, many,
            List(), None, lr, List())
 
 fun deFieldsCmp(fs: List<PStmt>, xn, yn, acc: PExpr|None, lr) =>
-  fold(fs, acc,
-       (a2, x) => deFieldsCmpStep(a2, x, xn, yn, lr))
-    |> (v) => match(v)
-      (a: PExpr) => a
-      ()         => PeBool(true, lr)
+  fold(fs, acc, (a2, x) => deFieldsCmpStep(a2, x, xn, yn, lr))
+    |> (v) => v ?? PeBool(true, lr)
 
 fun deFieldsCmpStep(a2: PExpr|None, x: PStmt, xn, yn, lr) => match(x)
   (p: PsLet) => deAnd(a2,
     deCall2("`==`",
-            PeDot(deRef(xn, lr),
-                  bareName(p.lName), lr),
-            PeDot(deRef(yn, lr),
-                  bareName(p.lName), lr),
+            PeDot(deRef(xn, lr), bareName(p.lName), lr),
+            PeDot(deRef(yn, lr), bareName(p.lName), lr),
             lr),
     lr)
   (o: PStmt) => a2
@@ -401,19 +395,11 @@ fun deHashArm(leafName, fields: List<PStmt>, i,
            deHashFold(fields, xn, acc0, lr),
            List(), None, lr, List())
 
-fun deHashFold(fs: List<PStmt>,
-               xn,
-               acc,
-               lr) =>
+fun deHashFold(fs: List<PStmt>, xn, acc, lr) =>
   fold(fs, acc, (a, x) => deHashFoldStep(a, x, xn, lr))
 
 fun deHashFoldStep(a: PExpr, x: PStmt, xn, lr) => match(x)
-  (p: PsLet) => deMix(a,
-    deCall1("hashOf",
-            PeDot(deRef(xn, lr),
-                  bareName(p.lName), lr),
-            lr),
-    lr)
+  (p: PsLet) => deMix(a, deCall1("hashOf", PeDot(deRef(xn, lr), bareName(p.lName), lr), lr), lr)
   (o: PStmt) => a
 
 fun deMix(acc, h, lr) => deOp("int32", "int32_and",

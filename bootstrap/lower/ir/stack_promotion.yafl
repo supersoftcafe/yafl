@@ -71,8 +71,7 @@ fun spNewsOp(acc, op, a: CgApp): List<SpCand> => match(op)
     : acc
   (o: Op)           => acc
 
-fun spNewsRegister(acc, no: OpNewObject,
-                   a: CgApp): List<SpCand> => match(no.newObjRegister)
+fun spNewsRegister(acc, no: OpNewObject, a: CgApp): List<SpCand> => match(no.newObjRegister)
   (sv: RpStackVar) => match(spPayloadFields(appObject(a, no.newObjName)))
     (payload: List<CgField>) => append(acc, SpCand(sv.name, payload))
     ()                       => acc
@@ -151,8 +150,7 @@ fun spPromotedRegister(no: OpNewObject, promoted: List<SpCand>) => match(no.newO
 fun spZeroFills([terminal] acc, cand: SpCand): SeqBuilder<Op>
   ret spZeroFillsLoop(cand.spPayload, cand, acc)
 
-fun spZeroFillsLoop(fs: List<CgField>, cand: SpCand,
-                    [terminal] acc): SeqBuilder<Op> =>
+fun spZeroFillsLoop(fs: List<CgField>, cand: SpCand, [terminal] acc): SeqBuilder<Op> =>
   fold(fs, acc, (b, f) =>
     push(b, OpMove(spFieldLocal(cand, f.fieldName), spZeroOf(f.fieldType), false, Dict())))
 

@@ -349,8 +349,7 @@ fun twWordPunct(c: Int32) => twWordChar(c) || c == '!' || c == '"' || c == '\'' 
 fun twLines(cs: List<String>, width: Int, first: Bool,
             out: List<String>): List<String> => isEmpty(cs)
   ? out
-  : twNext(twLongWord(twFill(skipLeading(cs, first), width, List(), 0), width),
-           width, first, out)
+  : twNext(twLongWord(twFill(skipLeading(cs, first), width, List(), 0), width), width, first, out)
 
 # `first`: no line has been emitted yet.
 fun twNext(f: Filled, width: Int, first: Bool, out: List<String>): List<String>

@@ -55,10 +55,7 @@ fun sgOptNamed(sp: Spec|None) => match(sp)
 fun promoteNonTrivialGlobals(statements: List<PStmt>, r): List<PStmt>
   ret pngLoop(statements, r, List())
 
-fun pngLoop(ss, r,
-                   acc: List<PStmt>): List<PStmt> => pngLoopB(ss, r, acc)
-
-fun pngLoopB(ss: List<PStmt>, r, acc: List<PStmt>) =>
+fun pngLoop(ss: List<PStmt>, r, acc: List<PStmt>) =>
   concat(acc, map(ss, (st) => pngStmt(st, r)))
 
 fun pngStmt(st: PStmt, r: Resolver): PStmt => match(st)
@@ -107,8 +104,7 @@ fun clfBlock(stmts: List<PStmt>, acc): Set<PErr>
 
 # The statement index travels in the accumulator beside the declarations.
 fun clfDecls(ss: List<PStmt>, i, acc) =>
-  fold(ss, (d = acc, i = i),
-       (st, s) => (d = clfDeclsOne(st.d, s, st.i), i = st.i + 1)).d
+  fold(ss, (d = acc, i = i), (st, s) => (d = clfDeclsOne(st.d, s, st.i), i = st.i + 1)).d
 
 fun clfDeclsOne(acc: ClfDecls, s: PStmt, i: Int): ClfDecls => match(s)
   (let2: PsLet)      => clfDeclAdd(acc, let2.lName, i, isDeferredInit(let2))

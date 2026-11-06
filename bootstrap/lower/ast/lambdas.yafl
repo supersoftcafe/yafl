@@ -212,9 +212,7 @@ fun cpSpecs(ss: List<Spec>, path, acc): ClPaths => cpSpecLoop(ss, path, acc)
 fun cpSpecLoop(ss: List<Spec>, path, acc: ClPaths) =>
   fold(ss, acc, (a, x) => cpSpec(x, path, a))
 
-fun cpEntries(es: List<SEntry>,
-              path,
-              acc): ClPaths =>
+fun cpEntries(es: List<SEntry>, path, acc): ClPaths =>
   fold(es, acc, (a, x) => cpExprOpt(x.seDefault, path, cpSpecOpt(x.seType, path, a)))
 
 # ── 2b. discoverCaptures (lambdas.py:81-113) ─────────────────────────────────
@@ -289,7 +287,7 @@ fun ccDrop(cc: ClCaps, remove: List<String>)
   ret ClCaps(fold(ccNames(cc),
                  Dict(),
                  (d, n) =>
-                   contains2(remove, n)
+                   contains(remove, n)
                      ? d
                      : put(d, n, ccTypeOf(cc, n))))
 
@@ -322,17 +320,17 @@ fun redirectBody(body, cpt: ClCaps, selfNames: List<String>,
 fun redirectOne(x, captureNames: List<String>, selfNames: List<String>,
                 methodName, clsName, lr,
                 lamLine: PLine) => match(x)
-  (nm: PeName) => contains2(captureNames, nm.refName)
+  (nm: PeName) => contains(captureNames, nm.refName)
     ? PeDot(PeName("this", List(), lr, None),
             capturedFieldName(nm.refName, lamLine), lr)
     : redirectSelfRef(nm, selfNames, methodName, lr)
-  (lz: PeLazy) => contains2(captureNames, lz.stubName)
+  (lz: PeLazy) => contains(captureNames, lz.stubName)
     ? PeLazy(lz.stubName, lz.lzTarget, clsName, lz.lzStubOnly, lz.pelzLine)
     : None
   (o: PExpr)   => None
 
 fun redirectSelfRef(nm: PeName, selfNames: List<String>, methodName,
-                    lr) => contains2(selfNames, nm.refName)
+                    lr) => contains(selfNames, nm.refName)
   ? PeDot(PeName("this", List(), lr, None), methodName, lr)
   : None
 
@@ -362,24 +360,10 @@ fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
              List(), List(), prepend(fn, List()), false, lr,
              List<Spec>(), List<Slot>(), List<PStmt>())
 
-fun clEntries(ns, cpt: ClCaps, lr: PLine,
-                     acc: List<SEntry>) => clEntriesB(ns, cpt, lr, acc)
+fun clEntries(ns: List<String>, cpt: ClCaps, lr: PLine, acc: List<SEntry>) =>
+  fold(ns, acc, (a, x) => append(a, SEntry(capturedFieldName(x, lr), ccTypeOf(cpt, x), None)))
 
-fun clEntriesB(ns: List<String>,
-               cpt: ClCaps,
-               lr: PLine,
-               acc: List<SEntry>) =>
-  fold(ns, acc, (a, x) => append(a, SEntry(capturedFieldName(x, lr),
-                                         ccTypeOf(cpt, x),
-                                         None)))
-
-fun clParamLets(ns, cpt: ClCaps, lr,
-                       acc: List<PStmt>) => clParamLetsB(ns, cpt, lr, acc)
-
-fun clParamLetsB(ns: List<String>,
-                 cpt: ClCaps,
-                 lr,
-                 acc: List<PStmt>) =>
+fun clParamLets(ns: List<String>, cpt: ClCaps, lr, acc: List<PStmt>) =>
   fold(ns, acc, (a, x) => append(a, PsLet(capturedFieldName(x, lr), List(),
                 List(),
                 ccTypeOf(cpt, x), None, "", List(), lr,
@@ -398,12 +382,9 @@ fun clStubRead(name, ls: SLazyStub, lr) => match(ls.slsTarget)
   (t2: Spec) => PeLazy(name, t2, None, true, lr)
   ()         => PeName(name, List(), lr, None)
 
-fun captureArgs(ns, cpt: ClCaps, lr,
-                       acc: List<PTupEnt>) => captureArgsB(ns, cpt, lr, acc)
-
 # The entry NAME is the closure field; the value still reads the outer
 # binding under the name it has here.
-fun captureArgsB(ns: List<String>, cpt: ClCaps, lr, acc: List<PTupEnt>) =>
+fun captureArgs(ns: List<String>, cpt: ClCaps, lr, acc: List<PTupEnt>) =>
   concat(acc, map(ns, (n) => PTupEnt(capturedFieldName(n, lr), false,
                                      captureRead(n, ccTypeOf(cpt, n), lr))))
 
@@ -514,8 +495,7 @@ fun clStmts(ss: List<PStmt>, r, paths: ClPaths,
 
 # Program order out. `exports` stays a plain List: it is READ, by clDedupName,
 # to keep lifted names unique.
-fun clStmtLoop(ss: List<PStmt>, r, paths: ClPaths,
-               exports, acc) =>
+fun clStmtLoop(ss: List<PStmt>, r, paths: ClPaths, exports, acc) =>
   fold(ss, ClSts(acc, exports), (o, st) => clStmt(st, r, paths, o.clStsExports)
     |> (one) => ClSts(append(o.clStsStmts, one.clStStmt), one.clStExports))
 
@@ -641,8 +621,7 @@ fun clMatchExpr(mt: PeMatch, r, paths: ClPaths,
   ret ClEx(with mt(subject = subj.clExExpr, arms = arms.clArmsArms),
            arms.clArmsExports)
 
-fun clArms(as2: List<PArm>, r, paths: ClPaths,
-           exports, acc) =>
+fun clArms(as2: List<PArm>, r, paths: ClPaths, exports, acc) =>
   fold(as2, ClArmsOut(acc, exports), (o, a) => clArmOne(a, r, paths, o.clArmsExports)
     |> (one) => ClArmsOut(append(o.clArmsArms, one.claoArm), one.claoExports))
 
@@ -657,8 +636,7 @@ fun clArmOne(a: PArm, r, paths: ClPaths, exports): ClArmOne
   ret ClArmOne(with a(armBody = body.clExExpr, armLiterals = lits.clLitsLits, armGuard = guard.clExOExpr),
               guard.clExOExports)
 
-fun clLits(ls: List<PLit>, r, paths: ClPaths,
-           exports, acc) =>
+fun clLits(ls: List<PLit>, r, paths: ClPaths, exports, acc) =>
   fold(ls, ClLitsOut(acc, exports), (o, l) => clLit(o, l, r, paths))
 
 fun clLit(o: ClLitsOut, l: PLit, r: Resolver, paths: ClPaths): ClLitsOut => match(l)
@@ -675,13 +653,11 @@ fun clExprOpt(x, r, paths: ClPaths,
     |> (o) => ClExO(o.clExExpr, o.clExExports)
   ()          => ClExO(x, exports)
 
-fun clExprs(es: List<PExpr>, r, paths: ClPaths,
-            exports, acc) =>
+fun clExprs(es: List<PExpr>, r, paths: ClPaths, exports, acc) =>
   fold(es, ClExsOut(acc, exports), (o, x) => clExpr(x, r, paths, o.clExsExports)
     |> (one) => ClExsOut(append(o.clExsExprs, one.clExExpr), one.clExExports))
 
-fun clTupEnts(es: List<PTupEnt>, r, paths: ClPaths,
-              exports, acc) =>
+fun clTupEnts(es: List<PTupEnt>, r, paths: ClPaths, exports, acc) =>
   fold(es, ClEntsOut(acc, exports), (o, e) => clExpr(e.tupValue, r, paths, o.clEntsExports)
     |> (v) => ClEntsOut(append(o.clEntsEnts, PTupEnt(e.tupName, e.tupSpread, v.clExExpr)), v.clExExports))
 

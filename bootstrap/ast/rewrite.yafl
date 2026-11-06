@@ -251,10 +251,7 @@ fun rwEntry(se: SEntry, w: Rw) => with se(seType    = rwSpecOpt(se.seType, w),
 fun foldStmts<T>(ss: List<PStmt>, f: (:T, :PStmt): T,
                  fx: (:T, :PExpr): T, acc: T): T => foldStmtLoop(ss, f, fx, acc)
 
-fun foldStmtLoop<T>(ss: List<PStmt>,
-                    f: (:T, :PStmt): T,
-                    fx: (:T, :PExpr): T,
-                    acc: T): T =>
+fun foldStmtLoop<T>(ss: List<PStmt>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
   fold(ss, acc, (a, x) => foldStmt(x, f, fx, a))
 
 fun foldStmt<T>(st, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
@@ -340,23 +337,13 @@ fun foldExpr<T>(x, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
     (lz: PeLazy)   => foldSpec(lz.lzTarget, f, fx, acc2)
     (o: PeLiteral) => acc2
 
-fun foldExprs<T>(es: List<PExpr>,
-                 f: (:T, :PStmt): T,
-                 fx: (:T, :PExpr): T,
-                 acc: T): T =>
+fun foldExprs<T>(es: List<PExpr>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
   fold(es, acc, (a, x) => foldExpr(x, f, fx, a))
 
-fun foldTupEnts<T>(es: List<PTupEnt>,
-                   f: (:T, :PStmt): T,
-                   fx: (:T, :PExpr): T,
-                   acc: T): T =>
-  fold(es, acc, (a, x) => foldExpr(x.tupValue, f, fx,
-                                          a))
+fun foldTupEnts<T>(es: List<PTupEnt>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
+  fold(es, acc, (a, x) => foldExpr(x.tupValue, f, fx, a))
 
-fun foldArms<T>(as2: List<PArm>,
-                f: (:T, :PStmt): T,
-                fx: (:T, :PExpr): T,
-                acc: T): T =>
+fun foldArms<T>(as2: List<PArm>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
   fold(as2, acc, (a, x) => foldPositions(x.armExtra, f, fx,
         foldExprOpt(x.armGuard, f, fx,
                     foldLits(x.armLiterals, f, fx,
@@ -365,18 +352,11 @@ fun foldArms<T>(as2: List<PArm>,
                                            a))))))
 
 # Every extra position's SPEC — the same reach law as the rw walker.
-fun foldPositions<T>(ps: List<PPos>,
-                     f: (:T, :PStmt): T,
-                     fx: (:T, :PExpr): T,
-                     acc: T): T =>
+fun foldPositions<T>(ps: List<PPos>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
   fold(ps, acc, (a, x) => foldSpecOpt(x.posType, f, fx, a))
 
-fun foldLits<T>(ls: List<PLit>,
-                f: (:T, :PStmt): T,
-                fx: (:T, :PExpr): T,
-                acc: T): T =>
-  fold(ls, acc, (a, x) => foldLit(x, f, fx,
-                                                     a))
+fun foldLits<T>(ls: List<PLit>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
+  fold(ls, acc, (a, x) => foldLit(x, f, fx, a))
 
 fun foldLit<T>(lt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T => match(lt)
   (le: PlExpr)  => foldExpr(le.litExpr, f, fx, acc)
@@ -412,10 +392,7 @@ fun foldSpecOpt<T>(sp: Spec|None, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
   (s2: Spec) => foldSpec(s2, f, fx, acc)
   ()         => acc
 
-fun foldSpecs<T>(ts: List<Spec>,
-                 f: (:T, :PStmt): T,
-                 fx: (:T, :PExpr): T,
-                 acc: T): T =>
+fun foldSpecs<T>(ts: List<Spec>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
   fold(ts, acc, (a, x) => foldSpec(x, f, fx, a))
 
 fun foldSpecsOpt<T>(ss: List<Spec>|None, f: (:T, :PStmt): T,
@@ -423,12 +400,8 @@ fun foldSpecsOpt<T>(ss: List<Spec>|None, f: (:T, :PStmt): T,
   (l: List<Spec>) => foldSpecs(l, f, fx, acc)
   ()              => acc
 
-fun foldEntries<T>(es: List<SEntry>,
-                   f: (:T, :PStmt): T,
-                   fx: (:T, :PExpr): T,
-                   acc: T): T =>
-  fold(es, acc, (a, x) => foldExprOpt(x.seDefault, f, fx,
-                  foldSpecOpt(x.seType, f, fx, a)))
+fun foldEntries<T>(es: List<SEntry>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
+  fold(es, acc, (a, x) => foldExprOpt(x.seDefault, f, fx, foldSpecOpt(x.seType, f, fx, a)))
 
 # ── counter-threading rewrite twins ──────────────────────────────────────────
 # Same traversal, threading an Int through in visit order — for passes whose
@@ -484,8 +457,7 @@ fun rwnStmts(ss: List<PStmt>, w: RwN, sc, n) => rwnStmtLoop(ss, w, sc, n, List()
 
 # State fields named to match another fold over the same types — workaround for #88.
 fun rwnStmtLoop(ss: List<PStmt>, w: RwN, sc, n, acc) =>
-  fold(ss, (i = n, acc = acc),
-       (st, x) => rwnStmtLoopStep(st, x, w, sc))
+  fold(ss, (i = n, acc = acc), (st, x) => rwnStmtLoopStep(st, x, w, sc))
     |> (r) => RwNSs(r.i, r.acc)
 
 fun rwnStmtLoopStep(st: (i: Int, acc: List<PStmt>), x: PStmt, w: RwN, sc) =>
@@ -658,19 +630,15 @@ fun rwnExprKids(x, w: RwN, sc, n) => match(x)
 class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
 
 fun rwnFieldArgs(fas: List<PFieldArg>, w: RwN, sc, n, acc) =>
-  fold(fas, (n = n, acc = acc),
-       (st, x) => rwnFieldArgsStep(st, x, w, sc))
+  fold(fas, (n = n, acc = acc), (st, x) => rwnFieldArgsStep(st, x, w, sc))
     |> (r) => RwNFas(r.n, r.acc)
 
 fun rwnFieldArgsStep(st: (n: Int, acc: List<PFieldArg>), x: PFieldArg, w: RwN, sc) =>
   rwnExpr(x.faValue, w, sc, st.n)
-  |> (v) => (n = v.rneN,
-    acc = append(st.acc,
-        PFieldArg(x.faName, v.rneExpr)))
+  |> (v) => (n = v.rneN, acc = append(st.acc, PFieldArg(x.faName, v.rneExpr)))
 
 fun rwnExprs(es: List<PExpr>, w: RwN, sc, n, acc) =>
-  fold(es, (n = n, acc = acc),
-       (st, x) => rwnExprsStep(st, x, w, sc))
+  fold(es, (n = n, acc = acc), (st, x) => rwnExprsStep(st, x, w, sc))
     |> (r) => RwNEs(r.n, r.acc)
 
 fun rwnExprsStep(st: (n: Int, acc: List<PExpr>), x: PExpr, w: RwN, sc) =>
@@ -678,29 +646,22 @@ fun rwnExprsStep(st: (n: Int, acc: List<PExpr>), x: PExpr, w: RwN, sc) =>
   |> (o) => (n = o.rneN, acc = append(st.acc, o.rneExpr))
 
 fun rwnTupEnts(es: List<PTupEnt>, w: RwN, sc, n, acc) =>
-  fold(es, (n = n, acc = acc),
-       (st, x) => rwnTupEntsStep(st, x, w, sc))
+  fold(es, (n = n, acc = acc), (st, x) => rwnTupEntsStep(st, x, w, sc))
     |> (r) => RwNTs(r.n, r.acc)
 
 fun rwnTupEntsStep(st: (n: Int, acc: List<PTupEnt>), x: PTupEnt, w: RwN, sc) =>
   rwnExpr(x.tupValue, w, sc, st.n)
-  |> (o) => (n = o.rneN,
-    acc = append(st.acc,
-        PTupEnt(x.tupName, x.tupSpread,
-                o.rneExpr)))
+  |> (o) => (n = o.rneN, acc = append(st.acc, PTupEnt(x.tupName, x.tupSpread, o.rneExpr)))
 
 # An arm's body and guard see its binding; its literals see the match's scope.
 fun rwnArms(as2: List<PArm>, w: RwN, sc, n, acc) =>
-  fold(as2, (n = n, acc = acc),
-       (st, x) => rwnArmsStep(st, x, w, sc))
+  fold(as2, (n = n, acc = acc), (st, x) => rwnArmsStep(st, x, w, sc))
     |> (r) => RwNAs(r.n, r.acc)
 
 fun rwnArmsStep(st: (n: Int, acc: List<PArm>), x: PArm, w: RwN, sc) =>
   rwnExpr(x.armBody, w, rwnArmScope(x, sc), st.n)
-  |> (b) => (b, rwnLits(x.armLiterals, w, sc, b.rneN,
-                    List()))
-    |> (b, ls) => (b, ls, rwnExprOpt(x.armGuard, w,
-                               rwnArmScope(x, sc), ls.rnlsN))
+  |> (b) => (b, rwnLits(x.armLiterals, w, sc, b.rneN, List()))
+    |> (b, ls) => (b, ls, rwnExprOpt(x.armGuard, w, rwnArmScope(x, sc), ls.rnlsN))
       |> (b, ls, gd) => (n = gd.rneN2,
         acc = append(st.acc,
             with x(armBody = b.rneExpr, armLiterals = ls.rnlsLits, armGuard = gd.rneExpr2)))
@@ -708,8 +669,7 @@ fun rwnArmsStep(st: (n: Int, acc: List<PArm>), x: PArm, w: RwN, sc) =>
 class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
 
 fun rwnLits(ls: List<PLit>, w: RwN, sc, n, acc) =>
-  fold(ls, (n = n, acc = acc),
-       (st, x) => rwnLitsStep(st, x, w, sc))
+  fold(ls, (n = n, acc = acc), (st, x) => rwnLitsStep(st, x, w, sc))
     |> (r) => RwNLs(r.n, r.acc)
 
 fun rwnLitsStep(st: (n: Int, acc: List<PLit>), x: PLit, w: RwN, sc) => match(x)
@@ -850,8 +810,7 @@ fun fasSpecKids<T>(sp, f: (:T, :Spec): T, acc: T): T => match(sp)
   (o: Spec)          => acc
 
 fun fasEntries<T>(es: List<SEntry>, f: (:T, :Spec): T, acc: T): T =>
-  fold(es, acc, (a, x) => fasExprOpt(x.seDefault, f,
-        fasSpecOpt(x.seType, f, a)))
+  fold(es, acc, (a, x) => fasExprOpt(x.seDefault, f, fasSpecOpt(x.seType, f, a)))
 
 
 # A field assignment numbers its target, then its value from where the target

@@ -127,7 +127,7 @@ fun prIsNamed(sv, name) => match(sv)
   (s2: RpStackVar) => s2.name == name
   (o: RParam)       => false
 
-fun prTouches(op, name) => strListMember(opReadVarNames(op), name) || prWritesName(op, name)
+fun prTouches(op, name) => contains(opReadVarNames(op), name) || prWritesName(op, name)
 
 # ── rebuild: apply renames, drop removed ops and dead source stackvars ──────
 

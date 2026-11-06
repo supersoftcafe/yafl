@@ -215,8 +215,7 @@ fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
 fun inlEndBookkeeping(ops, endLabel) => match(inlFirstEndJumpIsLast(ops, endLabel))
   (isLast: Bool) => isLast
     ? dropLastOne(ops)
-    : append(ops,
-                 OpLabel(endLabel, Dict()))
+    : append(ops, OpLabel(endLabel, Dict()))
   ()             => ops
 
 # None: no end-jump. true: the FIRST end-jump is the very last op (pop it).

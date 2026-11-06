@@ -212,8 +212,7 @@ fun cgPhiToMove(phi, predLabel) => match(phi)
 class [linear, final] PhiAcc(paCur: String, paOut: SeqBuilder<Op>,
                              paFall: Bool)
 
-fun cgPhiMoves(ps: List<Op>, predLabel,
-               [terminal] acc: SeqBuilder<Op>) =>
+fun cgPhiMoves(ps: List<Op>, predLabel, [terminal] acc: SeqBuilder<Op>) =>
   fold(ps, acc, (b, p) => push(b, cgPhiToMove(p, predLabel)))
 
 fun cgLowerPhisJump([terminal] acc: PhiAcc, j: OpJump,
@@ -333,8 +332,7 @@ fun [tail] cgReachableLoop(ix: StripIx, worklist,
         cgAddOneSuccessor)
   ret cgReachableLoop(ix, added.worklist, added.seen)
 
-fun cgReachable(ix: StripIx) => cgReachableLoop(ix, List<Int>(0),
-                                                put(Dict(), 0, true))
+fun cgReachable(ix: StripIx) => cgReachableLoop(ix, List<Int>(0), put(Dict(), 0, true))
 
 fun [tail] cgKeepSeenIndices(s: Segment<Op>|None, iSeg, i, seen: Dict<Int, Bool>,
                              [terminal] acc): SeqBuilder<Op> => match(s)

@@ -117,7 +117,7 @@ fun scConcatOperands(inv): (ops: List<RParam>, taking: List<String>) => match(in
 fun scSpineVar(param, defs: SsaDefs, reads: Dict<String, Int>,
                anchored: List<String>): (ops: List<RParam>, taking: List<String>) => match(param)
   (sv: RpStackVar) => scReadOnce(reads, sv.name)
-                      && !strListMember(anchored, sv.name)
+                      && !contains(anchored, sv.name)
     ? scSpineChase(sv, defs, reads, anchored)
     : (list1(param), List())
   (o: RParam)      => (list1(param), List())
@@ -161,8 +161,7 @@ fun scConcatBuild(operands: List<RParam>): RParam
   ret RpRuntimeInvoke(scConcatName(), RpNewStruct(fields), CgStr(false))
 
 # The operand count rides the numbering walk (no-length ruling).
-fun scNumbered(os: List<RParam>, i,
-               acc: List<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
+fun scNumbered(os: List<RParam>, i, acc: List<RpNamedValue>): (vals: List<RpNamedValue>, n: Int)
   ret fold(os, (vals = acc, n = i),
            (st, o) =>
              (vals = append(st.vals, RpNamedValue("s" + String(st.n), o)), n = st.n + 1))

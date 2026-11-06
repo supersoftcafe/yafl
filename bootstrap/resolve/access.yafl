@@ -57,8 +57,7 @@ fun partitionByVerdict(cands: List<Found>, expected: Spec|None,
   let v = verdictLoop(cands, expected, r, Bag(), Bag())
   ret isEmpty(v.pvTrue) ? v.pvMaybe : v.pvTrue
 
-fun verdictLoop(cs: List<Found>, expected: Spec|None, r,
-                yes, maybe) =>
+fun verdictLoop(cs: List<Found>, expected: Spec|None, r, yes, maybe) =>
   fold(cs, Verdicts(yes, maybe), (v, c) => verdictOne(v, c, expected, r))
 
 fun verdictOne(v: Verdicts, c: Found, expected: Spec|None, r): Verdicts =>
@@ -98,11 +97,7 @@ fun instanceWildcarded(ty, x: Found) => match(x.fInstanceParams)
                                    List()))
   ()                 => ty
 
-fun nameWildcards(ns, lr,
-                         acc: List<Binding>): List<Binding>
-  ret nameWildcardsB(ns, lr, acc)
-
-fun nameWildcardsB(ns: List<String>, lr, acc: List<Binding>) =>
+fun nameWildcards(ns: List<String>, lr, acc: List<Binding>) =>
   concat(acc, map(ns, (n) => Binding(n, SNamed("$overload$wildcard", List(), lr))))
 
 # _solve_instance_scope: bind a generic ambient instance's own placeholders
@@ -157,11 +152,7 @@ fun wildcarded(ty, x: Found)
     : substitute(ty, wildcardBindings(gens, stmtLine(x.fStmt),
                                       List()))
 
-fun wildcardBindings(gs: List<PGen>, lr,
-                            acc: List<Binding>)
-  ret wildcardBindingsB(gs, lr, acc)
-
-fun wildcardBindingsB(gs: List<PGen>, lr, acc): List<Binding> =>
+fun wildcardBindings(gs: List<PGen>, lr, acc): List<Binding> =>
   concat(acc, map(gs, (g) => Binding(g.genName, SNamed("$overload$wildcard", List(), lr))))
 
 fun stmtGens(st) => match(st)

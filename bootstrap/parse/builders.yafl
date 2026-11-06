@@ -210,8 +210,7 @@ fun withArrayAccessor(c) => match(accessorFor(paramsOf(c.cParams)))
 # PStmt-typed binder mis-generates (see the open representation bug).
 # The accessor for the first array-typed field, if there is one.
 fun accessorFor(ps: List<PStmt>) =>
-  foldWhile<PStmt, PStmt|None>(ps, None, (found, st) => accessorOf(st),
-                               (found) => found is None)
+  foldWhile<PStmt, PStmt|None>(ps, None, (found, st) => accessorOf(st), (found) => found is None)
 
 fun accessorOf(st: PStmt): PStmt|None => match(st)
   (let2: PsLet) => match(arrayElem(let2.lType))
@@ -248,8 +247,7 @@ fun bareName(name)
 # after the leaf, taking every field from the root down to it, returning the
 # ROOT enum type, its body a NewEnum expression.
 
-fun enumLeafConstructors(root: PsEnum, grp) => leafWalk(root, root, List(), grp,
-                                                              List())
+fun enumLeafConstructors(root: PsEnum, grp) => leafWalk(root, root, List(), grp, List())
 
 fun leafWalk(root: PsEnum, node: PsEnum, inherited,
              grp, acc): List<PStmt>
@@ -261,8 +259,7 @@ fun leafWalk(root: PsEnum, node: PsEnum, inherited,
       : acc
   ret variantsWalk(root, node.eVariants, params, grp, acc)
 
-fun variantsWalk(root: PsEnum, vs: List<PStmt>, params,
-                 grp, acc: List<PStmt>) =>
+fun variantsWalk(root: PsEnum, vs: List<PStmt>, params, grp, acc: List<PStmt>) =>
   fold(vs, acc, (a, v) => leafWalkOf(root, v, params, grp, a))
 
 fun leafWalkOf(root: PsEnum, v, params,
@@ -379,8 +376,7 @@ fun fixupProgram(stmts: List<PStmt>)
 fun blockGroupsOf(ss): List<List<PStmt>> => bgLoop(ss, List(), List())
 
 # Each namespace's import group: the imports seen since it (and its own path).
-fun bgLoop(ss: List<PStmt>, cur: List<PStmt>,
-           done: List<List<PStmt>>) =>
+fun bgLoop(ss: List<PStmt>, cur: List<PStmt>, done: List<List<PStmt>>) =>
   fold(ss, (cur = cur, done = done), bgStep)
     |> (st) => append(st.done, st.cur)
 

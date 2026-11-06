@@ -85,8 +85,7 @@ fun rddLeaves(c: List<CgObject>, i: Int, d: Dict<Int, Int>): Dict<Int, Int> =>
        (st, x) => (d = x.objDiscriminator != 0 ? put(st.d, x.objDiscriminator, st.i) : st.d, i = st.i + 1)).d
 
 fun rddIndex(c: List<String>, next: Int, ix: Dict<String, Int>): (ix: Dict<String, Int>, next: Int) =>
-  fold(c, (next = next, ix = ix),
-       (st, x) => (next = st.next + 1, ix = put(st.ix, x, st.next)))
+  fold(c, (next = next, ix = ix), (st, x) => (next = st.next + 1, ix = put(st.ix, x, st.next)))
     |> (r) => (ix = r.ix, next = r.next)
 
 # The node a reference names, if it is one: role 0/1/2 = object/function/global.
@@ -242,8 +241,7 @@ fun rddSaved(e: RddEnc, vs: Dict<String, RParam>): RddEnc
 # ── values ───────────────────────────────────────────────────────────────────
 
 fun rddParams(e: RddEnc, cx: RddCx, c: List<RParam>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddParam(a, cx, x))
+  fold(c, e, (a, x) => rddParam(a, cx, x))
     |> (r) => rddS(r, "]")
 
 fun rddParamList(e: RddEnc, cx: RddCx, xs: List<RParam>): RddEnc
@@ -254,16 +252,14 @@ fun rddParamOpt(e: RddEnc, cx: RddCx, x: RParam|None): RddEnc => match(x)
   ()          => rddS(e, "N")
 
 fun rddNamed(e: RddEnc, cx: RddCx, c: List<RpNamedValue>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddParam(rddLit(a, x.name), cx, x.value))
+  fold(c, e, (a, x) => rddParam(rddLit(a, x.name), cx, x.value))
     |> (r) => rddS(r, "]")
 
 fun rddNamedList(e: RddEnc, cx: RddCx, xs: List<RpNamedValue>): RddEnc
   ret rddNamed(rddS(e, "["), cx, xs)
 
 fun rddNullTests(e: RddEnc, cx: RddCx, c: List<RpNullTest>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddBool(rddParam(a, cx, x.word), x.isNull))
+  fold(c, e, (a, x) => rddBool(rddParam(a, cx, x.word), x.isNull))
     |> (r) => rddS(r, "]")
 
 fun rddParam(e: RddEnc, cx: RddCx, r: RParam): RddEnc => match(r)
@@ -345,13 +341,11 @@ fun rddGlobalFunction(e: RddEnc, cx: RddCx, x: RpGlobalFunction): RddEnc
 # ── ops ──────────────────────────────────────────────────────────────────────
 
 fun rddCases(e: RddEnc, c: List<OpCase>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddLabel(rddInt(a, x.caseValue), x.caseLabel))
+  fold(c, e, (a, x) => rddLabel(rddInt(a, x.caseValue), x.caseLabel))
     |> (r) => rddS(r, "]")
 
 fun rddSources(e: RddEnc, cx: RddCx, c: List<OpPhiSource>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddParam(rddLabel(a, x.sourceLabel), cx, x.sourceValue))
+  fold(c, e, (a, x) => rddParam(rddLabel(a, x.sourceLabel), cx, x.sourceValue))
     |> (r) => rddS(r, "]")
 
 fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
@@ -414,18 +408,15 @@ fun rddObject(e: RddEnc, cx: RddCx, o: CgObject): RddEnc
   ret rddSlots(rddExtends(rddS(head, "["), cx, o.objExtends), cx, o.objFunctions)
 
 fun rddExtends(e: RddEnc, cx: RddCx, c: List<String>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddName(a, cx, 0, x))
+  fold(c, e, (a, x) => rddName(a, cx, 0, x))
     |> (r) => rddS(r, "][")
 
 fun rddSlots(e: RddEnc, cx: RddCx, c: List<CgFuncSlot>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddSlotsStep(a, x, cx))
+  fold(c, e, (a, x) => rddSlotsStep(a, x, cx))
     |> (r) => rddS(r, "]")
 
 fun rddSlotsStep(a: RddEnc, x: CgFuncSlot, cx: RddCx) =>
-  rddName(rddLit(a, x.slotVirtualName), cx, 1,
-  x.slotGlobalName)
+  rddName(rddLit(a, x.slotVirtualName), cx, 1, x.slotGlobalName)
 
 # Parameters are positional; locals are numbered by first use, then any
 # declared-but-unused in declaration order, then any seen only in a saved set
@@ -449,8 +440,7 @@ fun rddFields(t: CgType): List<CgField> => match(t)
   (o: CgType)            => List()
 
 fun rddDecls(e: RddEnc, c: List<CgField>): RddEnc =>
-  fold(c, e,
-       (a, x) => rddTy(rddVar(a, x.fieldName), x.fieldType))
+  fold(c, e, (a, x) => rddTy(rddVar(a, x.fieldName), x.fieldType))
     |> (r) => rddS(r, "]")
 
 # Assign numbers without encoding anything.

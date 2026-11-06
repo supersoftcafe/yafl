@@ -417,7 +417,7 @@ fun specsSubset(xs: List<Spec>, ys: List<Spec>) => all(xs, (x) => containsSpec(y
 
 fun eqStrSet(a: List<String>, b: List<String>) => strsSubset(a, b) && strsSubset(b, a)
 
-fun strsSubset(xs: List<String>, ys: List<String>) => all(xs, (x) => contains2(ys, x))
+fun strsSubset(xs: List<String>, ys: List<String>) => all(xs, (x) => contains(ys, x))
 
 fun eqSlotsOpt(a: List<Slot>|None, b: List<Slot>|None) => match(a)
   (x: List<Slot>) => match(b)

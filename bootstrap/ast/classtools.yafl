@@ -84,13 +84,7 @@ class [final] FoundClass(fcSpec: Spec, fcClass: PsClass|None)
 
 fun findClassesOrError(types: List<Spec>, r) => fceLoop(types, r, List())
 
-fun fceLoop(ts, r,
-                   acc: List<FoundClass>): List<FoundClass>
-  ret fceLoopB(ts, r, acc)
-
-fun fceLoopB(ts: List<Spec>,
-             r,
-             acc: List<FoundClass>) =>
+fun fceLoop(ts: List<Spec>, r, acc: List<FoundClass>) =>
   fold(ts, acc, (a, x) => append(a, findClassOrError(x, r)))
 
 fun findClassOrError(xtype, r) => match(xtype)
@@ -111,9 +105,7 @@ fun resolveClassSpec(xtype, name, params: List<Spec>,
 # discarded exactly as Python's `rp.compile(resolver)[0]` discards them.
 fun compileSpecsPlain(ps: List<Spec>, r) => cspLoop(ps, r, List())
 
-fun cspLoop(ps: List<Spec>, r, acc: List<Spec>) => cspLoopB(ps, r, acc)
-
-fun cspLoopB(ps: List<Spec>, r, acc): List<Spec> =>
+fun cspLoop(ps: List<Spec>, r, acc): List<Spec> =>
   fold(ps, acc, (a, x) => append(a, compileSpec(x, r).soSpec))
 
 # ── create_slots_from_members ────────────────────────────────────────────────
@@ -125,12 +117,8 @@ fun createSlotsFromMembers(cs: PsClass)
   ret slotLoop(concat(flattenParams(cs.cParams), cs.cMembers),
                List())
 
-fun slotLoop(ms, acc: List<Slot>): List<Slot> => slotLoopB(ms, acc)
-
-fun slotLoopB(ms: List<PStmt>, acc: List<Slot>) =>
-  fold(ms, acc, (a, x) => isCallableMember(x)
-    ? append(a, toSlot(x))
-    : a)
+fun slotLoop(ms: List<PStmt>, acc: List<Slot>) =>
+  fold(ms, acc, (a, x) => isCallableMember(x) ? append(a, toSlot(x)) : a)
 
 fun isCallableMember(st) => match(stmtType(st))
   (t2: Spec) => match(t2)
@@ -159,46 +147,24 @@ fun overrideInheritedSlots(r, base: List<Slot>,
   let exclusion = allProvides(enhanced, List())
   ret concat(enhanced, keepUnabsorbed(parents, exclusion, List()))
 
-fun enhanceLoop(bs, r, parents: List<Slot>,
-                       acc: List<Slot>) => enhanceLoopB(bs, r, parents, acc)
-
-fun enhanceLoopB(bs: List<Slot>,
-                 r,
-                 parents: List<Slot>,
-                 acc: List<Slot>) =>
-  fold(bs, acc, (a, x) => append(a, absorbMatches(x, r,
-                                                    parents)))
+fun enhanceLoop(bs: List<Slot>, r, parents: List<Slot>, acc: List<Slot>) =>
+  fold(bs, acc, (a, x) => append(a, absorbMatches(x, r, parents)))
 
 fun absorbMatches(slot: Slot, r, parents: List<Slot>)
   ret Slot(slot.slotName, slot.slotType,
            matchedNames(parents, slot, r, slot.slotProvides))
 
-fun matchedNames(ps: List<Slot>,
-                 slot: Slot,
-                 r,
-                 acc): List<String> =>
+fun matchedNames(ps: List<Slot>, slot: Slot, r, acc): List<String> =>
   fold(ps, acc, (a, x) => matchMemberName(slot.slotName, x.slotName)
-                     && triTrue(assignableEq(r, x.slotType,
-                                             slot.slotType))
-    ? addNameOnce(addNamesOnce(a,
-                                            x.slotProvides),
-                               x.slotName)
+                     && triTrue(assignableEq(r, x.slotType, slot.slotType))
+    ? addNameOnce(addNamesOnce(a, x.slotProvides), x.slotName)
     : a)
 
 fun allProvides(ss: List<Slot>, acc): List<String> =>
-  fold(ss, acc, (a, x) => addNamesOnce(a,
-                                              x.slotProvides))
+  fold(ss, acc, (a, x) => addNamesOnce(a, x.slotProvides))
 
-fun keepUnabsorbed(ps, exclusion: List<String>,
-                          acc: List<Slot>)
-  ret keepUnabsorbedB(ps, exclusion, acc)
-
-fun keepUnabsorbedB(ps: List<Slot>,
-                    exclusion: List<String>,
-                    acc: List<Slot>) =>
-  fold(ps, acc, (a, x) => contains2(exclusion, x.slotName)
-    ? a
-    : append(a, x))
+fun keepUnabsorbed(ps: List<Slot>, exclusion: List<String>, acc: List<Slot>) =>
+  fold(ps, acc, (a, x) => contains(exclusion, x.slotName) ? a : append(a, x))
 
 # ── set helpers (List with set semantics) ────────────────────────────────────
 
@@ -206,7 +172,7 @@ fun keepUnabsorbedB(ps: List<Slot>,
 # orders that reach generated code. `acc` is read by the dedup just above, so
 # it cannot be a builder — this is the copy the old append did, written out.
 fun addNameOnce(acc, n: String): List<String>
-  ret contains2(acc, n) ? acc : append(acc, n)
+  ret contains(acc, n) ? acc : append(acc, n)
 
 fun addNamesOnce(acc: List<String>, ns: List<String>) =>
   fold(ns, acc, addNameOnce)
@@ -266,13 +232,8 @@ fun classFindData(cs: PsClass, r, query)
 
 fun nonArrayFields(cs: PsClass) => dropArrayField(flattenParams(cs.cParams), List())
 
-fun dropArrayField(ls, acc: List<PStmt>): List<PStmt>
-  ret dropArrayFieldB(ls, acc)
-
-fun dropArrayFieldB(ls: List<PStmt>, acc: List<PStmt>) =>
-  fold(ls, acc, (a, x) => isArrayStorage(x)
-    ? a
-    : append(a, x))
+fun dropArrayField(ls: List<PStmt>, acc: List<PStmt>) =>
+  fold(ls, acc, (a, x) => isArrayStorage(x) ? a : append(a, x))
 
 fun isArrayStorage(st) => match(st)
   (l: PsLet) => match(arrayElem(l.lType))
@@ -280,21 +241,12 @@ fun isArrayStorage(st) => match(st)
     ()         => false
   (o: PStmt) => false
 
-fun memberFinds(ms, query: String,
-                       acc: List<Found>) => memberFindsB(ms, query, acc)
-
-fun memberFindsB(ms: List<PStmt>,
-                 query,
-                 acc: List<Found>) =>
+fun memberFinds(ms: List<PStmt>, query, acc: List<Found>) =>
   fold(ms, acc, (a, x) => nameMatches(stmtName(x), query)
-    ? append(a, Found(stmtName(x),
-                                                   x, ScMember()))
+    ? append(a, Found(stmtName(x), x, ScMember()))
     : a)
 
-fun parentFinds(fs: List<FoundClass>,
-                r,
-                query,
-                acc): List<Found> =>
+fun parentFinds(fs: List<FoundClass>, r, query, acc): List<Found> =>
   fold(fs, acc, (a, x) => parentFindsStep(a, x, r, query))
 
 fun parentFindsStep(a: List<Found>, x: FoundClass, r, query) => match(x.fcClass)
@@ -361,29 +313,11 @@ fun [tail] _segLenSum<T>(s: Segment<T>|None, acc) => match(s)
   (nil: None)        => acc
   (seg: Segment<T>)  => _segLenSum(seg.next, acc + Int(seg.length))
 
-# The two-list co-walks spell EVERY generic call with explicit type args.
-# The silent third-shape abort (a bare match arm inside a two-type-param host
-# latching the wrong enum instantiation) is FIXED — witness test:
-# tests/test_two_generic_match.py — so nested matches over Chain<T>/Chain<U>
-# are safe now. The explicit <T>/<U> on the CALLS remain load-bearing for a
-# different, LOUD reason: a cross-function inferred generic call inside a
-# generic host still fails "cannot infer the type arguments" (the ledgered
-# nested-generic inference gap, shapes 1-2); explicit args are the
-# sanctioned form until that inference lands.
-
-
-# The next link, or the (empty) chain itself at the end — callers guard with
-# isEnd, so the self-return arm never drives a loop.
-
 # Same length: co-walk, stops at the shorter.
-fun sameLen<T, U>(a: List<T>, b: List<U>): Bool
-  fun [tail] walk(x: List<T>, y: List<U>): Bool
-    ret isEmpty(x) || isEmpty(y) ? isEmpty(x) && isEmpty(y) : walk(dropOne(x), dropOne(y))
-  ret walk(a, b)
+fun [tail] sameLen<T, U>(a: List<T>, b: List<U>): Bool =>
+  isEmpty(a) || isEmpty(b) ? isEmpty(a) && isEmpty(b) : sameLen(dropOne(a), dropOne(b))
 
 # Strictly fewer elements than b: co-walk, stops at the shorter.
-fun shorterThan<T, U>(a: List<T>, b: List<U>)
-  fun [tail] walk(x: List<T>, y: List<U>): Bool
-    ret isEmpty(y) ? false : (isEmpty(x) ? true : walk(dropOne(x), dropOne(y)))
-  ret walk(a, b)
+fun [tail] shorterThan<T, U>(a: List<T>, b: List<U>): Bool =>
+  isEmpty(b) ? false : (isEmpty(a) ? true : shorterThan(dropOne(a), dropOne(b)))
 

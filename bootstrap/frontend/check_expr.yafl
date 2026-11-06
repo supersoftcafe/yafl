@@ -13,11 +13,8 @@ import Bootstrap::Types
 
 
 
-fun checkRecurArgs(as2: List<PExpr>,
-                   r,
-                   acc: Set<PErr>) =>
-  fold(as2, acc, (a, x) => union(a, checkExpr(x, r,
-                                                          None)))
+fun checkRecurArgs(as2: List<PExpr>, r, acc: Set<PErr>) =>
+  fold(as2, acc, (a, x) => union(a, checkExpr(x, r, None)))
 
 fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
   (i: PeInt)      => noErrs()
@@ -89,9 +86,7 @@ fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
     ()        => true
   ()                  => false
 
-fun foundNames(ds: List<Found>, acc: List<String>) => foundNamesB(ds, acc)
-
-fun foundNamesB(ds: List<Found>, acc): List<String> =>
+fun foundNames(ds: List<Found>, acc): List<String> =>
   fold(ds, acc, (a, x) => append(a, x.fName))
 
 fun dedupeStrs(ss: List<String>) => ddsLoop(ss, List())
@@ -104,7 +99,7 @@ fun distinctFinds(ds: List<Found>) => dfLoop(ds, List(), List())
 
 fun dfLoop(ds: List<Found>, acc: List<Found>, seen: List<String>) =>
   fold(ds, (acc = acc, seen = seen),
-       (st, d) => contains2(st.seen, d.fName)
+       (st, d) => contains(st.seen, d.fName)
          ? st
          : (acc = append(st.acc, d), seen = prepend(d.fName, st.seen))).acc
 
@@ -244,13 +239,10 @@ fun namedCallError(c: PeCall, nm: PeName, ptype, r)
 
 fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
 
-fun candidateSigs(cs: List<Found>, acc: List<String>)
-  ret candidateSigsB(cs, acc)
+fun candidateSigs(cs: List<Found>, acc): List<String> =>
+  fold(cs, acc, candidateSigsStep)
 
-fun candidateSigsB(cs: List<Found>, acc): List<String> =>
-  fold(cs, acc, candidateSigsBStep)
-
-fun candidateSigsBStep(a: List<String>, x: Found) => match(stmtType(x.fStmt))
+fun candidateSigsStep(a: List<String>, x: Found) => match(stmtType(x.fStmt))
   (ty: Spec) => match(ty)
     (cl: SCallable) => append(a, typeStr(ty))
     (o: Spec) => a
@@ -303,9 +295,7 @@ fun specName(name, params: List<Spec>)
 fun beforeHash(s2) => find(s2, "@") < 0 ? s2 : slice(s2, 0, find(s2, "@"))
 
 fun joinArgStrs(ps: List<Spec>, acc) =>
-  fold(ps, acc, (a, x) => a == ""
-                                   ? typeStrOf(x)
-                                   : a + ", " + typeStrOf(x))
+  fold(ps, acc, (a, x) => a == "" ? typeStrOf(x) : a + ", " + typeStrOf(x))
 
 fun joinMangledArgs(as2: List<String>, acc) =>
   fold(as2, acc, (a, x) => x == ""
@@ -326,14 +316,10 @@ fun builtinStr(name) => name == "bigint" ? "Int"
   : name
 
 fun joinTypeStrs(es: List<SEntry>, acc) =>
-  fold(es, acc, (a, x) => a == ""
-                                    ? typeStr(x.seType)
-                                    : a + ", " + typeStr(x.seType))
+  fold(es, acc, (a, x) => a == "" ? typeStr(x.seType) : a + ", " + typeStr(x.seType))
 
 fun joinMemberStrs(ms: List<Spec>, acc) =>
-  fold(ms, acc, (a, x) => a == ""
-                                      ? typeStrOf(x)
-                                      : a + " | " + typeStrOf(x))
+  fold(ms, acc, (a, x) => a == "" ? typeStrOf(x) : a + " | " + typeStrOf(x))
 
 # ── the rest ────────────────────────────────────────────────────────────────
 
@@ -382,11 +368,8 @@ fun unknownFieldErrs(tp: PeTuple, expected: Spec|None): Set<PErr> => match(expec
     (o: Spec)    => noErrs()
   ()         => noErrs()
 
-fun checkTupEnts2(es: List<PTupEnt>,
-                  r,
-                  acc): Set<PErr> =>
-  fold(es, acc, (a, x) => union(a, checkExpr(x.tupValue, r,
-                                                         None)))
+fun checkTupEnts2(es: List<PTupEnt>, r, acc): Set<PErr> =>
+  fold(es, acc, (a, x) => union(a, checkExpr(x.tupValue, r, None)))
 
 fun checkLambda(lm: PeLambda, r0, expected: Spec|None): Set<PErr>
   let r = localScope(paramLets(lm.lamParams), r0)
@@ -405,12 +388,8 @@ fun checkBlock(bk: PeBlock, r0, expected: Spec|None): Set<PErr>
   let typeErr = blockTypeErr(bk, r, expected, valErrs)
   ret union(stmtErrs, union(valErrs, union(typeErr, unusedBindings(bk, r))))
 
-fun blockStmtChecks(ss: List<PStmt>,
-                    r: Resolver,
-                    expected: Spec|None,
-                    acc: Set<PErr>): Set<PErr> =>
-  fold(ss, acc, (a, x) => union(a, checkStmt2(x, r,
-                                                            expected)))
+fun blockStmtChecks(ss: List<PStmt>, r: Resolver, expected: Spec|None, acc: Set<PErr>): Set<PErr> =>
+  fold(ss, acc, (a, x) => union(a, checkStmt2(x, r, expected)))
 
 fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
                  valErrs: Set<PErr>): Set<PErr>
@@ -437,25 +416,21 @@ fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
   ret unusedWarns(declared, referenced, noErrs())
 
 # Declaration order, which is the order the shadowing check reports in.
-fun bindingLets(ss: List<PStmt>,
-                acc: List<PStmt>) =>
+fun bindingLets(ss: List<PStmt>, acc: List<PStmt>) =>
   fold(ss, acc, bindingLetsStep)
 
 fun bindingLetsStep(a: List<PStmt>, x: PStmt) => match(x)
-  (d: PsDestructure) => concat(a,
-    flattenParams(x))
+  (d: PsDestructure) => concat(a, flattenParams(x))
   (let2: PsLet) => append(a, x)
   (o: PStmt) => a
 
 
-fun unusedWarns(ls: List<PStmt>,
-                referenced: List<String>,
-                acc: Set<PErr>) =>
+fun unusedWarns(ls: List<PStmt>, referenced: List<String>, acc: Set<PErr>) =>
   fold(ls, acc, (a, x) => unusedWarnsStep(a, x, referenced))
 
 fun unusedWarnsStep(a: Set<PErr>, x: PStmt, referenced: List<String>) => match(x)
   (let2: PsLet) => startsWith(bareOfUnique(let2.lName), "_")
-             || contains2(referenced, let2.lName)
+             || contains(referenced, let2.lName)
     ? a
     : add(a, PErr(let2.pslLine,
                              "'" + bareOfUnique(let2.lName)
@@ -552,11 +527,7 @@ fun isEnumOrUnion(st) => match(st)
   (cm: SCombination) => true
   (o: Spec)          => false
 
-fun matchArmChecks(as2: List<PArm>,
-                   st,
-                   r,
-                   expected: Spec|None,
-                   acc) =>
+fun matchArmChecks(as2: List<PArm>, st, r, expected: Spec|None, acc) =>
   fold(as2, acc, (a, x) => union(a, checkArm(x, st, r, expected)))
 
 # A bound else arm's binding is the whole subject, exactly as in compile;
@@ -699,8 +670,7 @@ fun refEntries(es: List<PTupEnt>, acc): List<String> =>
   fold(es, acc, (a, x) => referencedNames(x.tupValue, a))
 
 fun refArms(as2: List<PArm>, acc): List<String> =>
-  fold(as2, acc, (a, x) => refOpt(x.armGuard,
-                                    referencedNames(x.armBody, a)))
+  fold(as2, acc, (a, x) => refOpt(x.armGuard, referencedNames(x.armBody, a)))
 
 fun refOpt(x: PExpr|None, acc) => match(x)
   (e2: PExpr) => referencedNames(e2, acc)
@@ -758,7 +728,7 @@ fun withEntryStep(st: (err: String, seen: List<String>), e: PTupEnt) => e.tupSpr
   ? (err = "a `with` replacement cannot be a spread", seen = st.seen)
   : e.tupName == ""
     ? (err = "`with` replacements must be named — `with x(field = value)`", seen = st.seen)
-    : contains2(st.seen, e.tupName)
+    : contains(st.seen, e.tupName)
       ? (err = "a `with` expression replaces each field at most once", seen = st.seen)
       : (err = "", seen = prepend(e.tupName, st.seen))
 
@@ -769,7 +739,7 @@ fun checkWithFields(wx: PeWith, r): Set<PErr>
     (o: PExpr)    => Set()
 
 fun withNamesKnown(es: List<PTupEnt>, visible: List<String>,
-                   lr): Set<PErr> => match(firstWhere(es, (e) => !contains2(visible, e.tupName)))
+                   lr): Set<PErr> => match(firstWhere(es, (e) => !contains(visible, e.tupName)))
   (e: PTupEnt) => add(Set(), PErr(lr,
       "`" + e.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
   ()           => Set()
@@ -791,20 +761,14 @@ fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
     (o2: Spec)  => List()
   ()         => List()
 
-fun withBareNames(fs, acc: List<String>): List<String>
-  ret withBareNamesB(fs, acc)
+fun withBareNames(fs: List<PStmt>, acc: List<String>) =>
+  fold(fs, acc, withBareNamesStep)
 
-fun withBareNamesB(fs: List<PStmt>, acc: List<String>) =>
-  fold(fs, acc, withBareNamesBStep)
-
-fun withBareNamesBStep(a: List<String>, x: PStmt) => match(x)
+fun withBareNamesStep(a: List<String>, x: PStmt) => match(x)
   (p: PsLet) => append(a, bareName(p.lName))
   (o: PStmt) => a
 
-fun withCoverBares(fs: List<SField>, acc: List<String>)
-  ret withCoverBaresB(fs, acc)
-
-fun withCoverBaresB(fs: List<SField>, acc): List<String> =>
+fun withCoverBares(fs: List<SField>, acc): List<String> =>
   fold(fs, acc, (a, x) => append(a, bareName(x.sfName)))
 
 

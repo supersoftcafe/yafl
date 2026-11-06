@@ -79,8 +79,7 @@ fun assignableUnwrapped(r, left, right)
 fun allMembersAssignable(r, left: Spec, members: List<Spec>)
   ret memberLoop(members, r, left, false)
 
-fun [tail] memberLoop(ms: List<Spec>, r, left: Spec,
-                      sawUnknown) => match(head(ms))
+fun [tail] memberLoop(ms: List<Spec>, r, left: Spec, sawUnknown) => match(head(ms))
   (m: Spec) => assignableEq(r, left, m)
     |> (res) => triFalse(res)
       ? false
@@ -278,9 +277,7 @@ fun tupleFromTuple(r, left: STuple, right: STuple)
 
 fun entryNames(es: List<SEntry>) => nameLoop(es, List())
 
-fun nameLoop(es: List<SEntry>, acc: List<String>) => nameLoopB(es, acc)
-
-fun nameLoopB(es: List<SEntry>, acc): List<String> =>
+fun nameLoop(es: List<SEntry>, acc): List<String> =>
   fold(es, acc, (a, x) => append(a, x.seName))
 
 # The subtlety, transcribed rather than paraphrased: a false from a
@@ -306,10 +303,7 @@ fun zipBinding(es: List<SEntry>, binding: List<Int>)
 
 # Pairs an entry with the binding index it fills. Positional data — the pair
 # order mirrors the tuple's — so a threaded builder, O(1) per pair.
-fun pairLoop(ps: List<Pair>,
-             r,
-             rights: List<SEntry>,
-             acc: PairTally) =>
+fun pairLoop(ps: List<Pair>, r, rights: List<SEntry>, acc: PairTally) =>
   fold(ps, acc, (a, x) => tally(a, r, x, rights))
 
 fun tally(acc: PairTally, r, p: Pair, rights: List<SEntry>)
@@ -339,8 +333,7 @@ fun isGenericSpec(sp: Spec|None) => match(sp)
 fun unionFrom(r, cm: SCombination, right)
   ret outerLoop(unionMembers(right), r, cm.scTypes, true)
 
-fun [tail] outerLoop(rs: List<Spec>, r, lefts: List<Spec>,
-                     allTrue) => match(head(rs))
+fun [tail] outerLoop(rs: List<Spec>, r, lefts: List<Spec>, allTrue) => match(head(rs))
   (rv: Spec) => fitsAny(r, lefts, rv)
     |> (res) => triFalse(res)
       ? false
@@ -350,8 +343,7 @@ fun [tail] outerLoop(rs: List<Spec>, r, lefts: List<Spec>,
 # Fits SOME left member: one true wins; all false loses; otherwise undecided.
 fun fitsAny(r, lefts: List<Spec>, right: Spec) => innerLoop(lefts, r, right, true)
 
-fun [tail] innerLoop(ls: List<Spec>, r, right: Spec,
-                     allFalse) => match(head(ls))
+fun [tail] innerLoop(ls: List<Spec>, r, right: Spec, allFalse) => match(head(ls))
   (lv: Spec) => assignableEq(r, lv, right)
     |> (res) => triTrue(res)
       ? true

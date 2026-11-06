@@ -393,16 +393,8 @@ fun narrowedEnumField(r, e2: SEnum, bare)
     # Root not resolved yet: retry next pass.
     ()         => NfMiss()
 
-fun fieldsMatching(fs, bare,
-                          acc: List<SField>): List<SField>
-  ret fieldsMatchingB(fs, bare, acc)
-
-fun fieldsMatchingB(fs: List<SField>,
-                    bare,
-                    acc: List<SField>) =>
-  fold(fs, acc, (a, x) => matchName(x.sfName, bare)
-    ? append(a, x)
-    : a)
+fun fieldsMatching(fs: List<SField>, bare, acc: List<SField>) =>
+  fold(fs, acc, (a, x) => matchName(x.sfName, bare) ? append(a, x) : a)
 
 fun hitOf(cands: List<SField>) => match(head(cands))
   (f: SField) => NfHit(f.sfName, f.sfType)
@@ -412,15 +404,8 @@ fun ownedHit(cands: List<SField>, covering: List<SField>)
   let owned = fieldsCovered(cands, covering, List())
   ret exactly(owned, 1) ? hitOf(owned) : NfAmbiguous()
 
-fun fieldsCovered(cs, covering: List<SField>,
-                         acc: List<SField>) => fieldsCoveredB(cs, covering, acc)
-
-fun fieldsCoveredB(cs: List<SField>,
-                   covering: List<SField>,
-                   acc: List<SField>) =>
-  fold(cs, acc, (a, x) => hasFieldNamed(covering, x.sfName)
-    ? append(a, x)
-    : a)
+fun fieldsCovered(cs: List<SField>, covering: List<SField>, acc: List<SField>) =>
+  fold(cs, acc, (a, x) => hasFieldNamed(covering, x.sfName) ? append(a, x) : a)
 
 # covering_fields: the typed fields a value narrowed to `valid` is GUARANTEED
 # to carry — fields declared at nodes whose OWN leaf set covers every valid
@@ -433,22 +418,17 @@ fun coverNode(node: PsEnum, valid: List<String>, acc: List<SField>)
     : acc
   ret coverVariants(node.eVariants, valid, acc2)
 
-fun coverVariants(vs: List<PStmt>,
-                  valid: List<String>,
-                  acc: List<SField>) =>
+fun coverVariants(vs: List<PStmt>, valid: List<String>, acc: List<SField>) =>
   fold(vs, acc, (a, x) => coverVariantsStep(a, x, valid))
 
 fun coverVariantsStep(a: List<SField>, x: PStmt, valid: List<String>) => match(x)
   (v: PsEnum) => coverNode(v, valid, a)
   (o: PStmt) => a
 
-fun typedFieldsOf(ls, acc: List<SField>): List<SField>
-  ret typedFieldsOfB(ls, acc)
+fun typedFieldsOf(ls: List<PStmt>, acc: List<SField>) =>
+  fold(ls, acc, typedFieldsOfStep)
 
-fun typedFieldsOfB(ls: List<PStmt>, acc: List<SField>) =>
-  fold(ls, acc, typedFieldsOfBStep)
-
-fun typedFieldsOfBStep(a: List<SField>, x: PStmt) => match(x)
+fun typedFieldsOfStep(a: List<SField>, x: PStmt) => match(x)
   (let2: PsLet) => match(let2.lType)
     (ty: Spec) => append(a, SField(let2.lName, ty))
     () => a
@@ -497,7 +477,7 @@ fun cneLeafFields(ne: PeNewEnum, r): List<PStmt> => match(soleItem(findType(r, n
   ()          => List()
 
 fun cneLeafFieldsOf(ne: PeNewEnum, root: PsEnum): List<PStmt> => match(asEnumVariant(root.eSpec))
-  (sp: SEnum) if contains2(sp.seAllLeaves, ne.leafName) =>
+  (sp: SEnum) if contains(sp.seAllLeaves, ne.leafName) =>
       forceNth(collectLeafFieldSets(root, List()), indexOfString(sp.seAllLeaves, ne.leafName, 0))
   ()           => List()
 
@@ -512,9 +492,7 @@ fun cneArgs(fas: List<PFieldArg>, leafFields: List<PStmt>, r, acc: List<PFieldAr
 
 fun cneArgsStep(st: (acc: List<PFieldArg>, globals2: List<PStmt>, hints: Dict<String, List<Hint>>),
                 x: PFieldArg, leafFields: List<PStmt>, r) =>
-  compileExpr(x.faValue, r,
-                           letTypeOf(letNamed(leafFields,
-                                              x.faName)))
+  compileExpr(x.faValue, r, letTypeOf(letNamed(leafFields, x.faName)))
   |> (o) => (acc = append(st.acc,
         PFieldArg(x.faName, o.eoExpr)),
     globals2 = concat(st.globals2, o.eoGlobals),
@@ -606,8 +584,7 @@ fun tupleArity(t2: Spec|None): Int => match(t2)
 class [final] SpreadParts(spBinders: List<PStmt>, spEntries: List<PTupEnt>)
 
 fun spreadParts(es: List<PTupEnt>, r, idx: Int, binders: List<PStmt>, entries: List<PTupEnt>): SpreadParts =>
-  fold(es, (idx = idx, binders = binders, entries = entries),
-       (st, x) => spreadPartsStep(st, x, r))
+  fold(es, (idx = idx, binders = binders, entries = entries), (st, x) => spreadPartsStep(st, x, r))
     |> (r2) => SpreadParts(r2.binders, r2.entries)
 
 fun spreadPartsStep(st: (idx: Int, binders: List<PStmt>, entries: List<PTupEnt>), x: PTupEnt, r) =>
@@ -638,8 +615,7 @@ fun spreadOne(v: PExpr, names: List<String>): (binder: PStmt, refs: List<PTupEnt
 class [final] TupEntsOut(teEntries: List<PTupEnt>, teGlobals: List<PStmt>,
                          teHints: Dict<String, List<Hint>>)
 
-fun compileTupEnts(es: List<PTupEnt>, r, slots: List<SEntry>, i, acc,
-                   glb, hints) =>
+fun compileTupEnts(es: List<PTupEnt>, r, slots: List<SEntry>, i, acc, glb, hints) =>
   fold(es, (i = i, acc = acc, glb = glb, hints = hints),
        (st, x) => compileTupEntsStep(st, x, r, slots))
     |> (r2) => TupEntsOut(r2.acc, r2.glb, r2.hints)
@@ -648,9 +624,7 @@ fun compileTupEntsStep(st: (i: Int, acc: List<PTupEnt>, glb: List<PStmt>, hints:
                        x: PTupEnt, r, slots: List<SEntry>) =>
   compileExpr(x.tupValue, r, entryAt(slots, st.i))
   |> (v) => (i = st.i + 1,
-    acc = append(st.acc,
-        PTupEnt(x.tupName,
-                x.tupSpread, v.eoExpr)),
+    acc = append(st.acc, PTupEnt(x.tupName, x.tupSpread, v.eoExpr)),
     glb = concat(st.glb, v.eoGlobals),
     hints = mergeHints(st.hints, v.eoHints))
 
@@ -678,9 +652,7 @@ fun boundSlots(st: STuple, tp: PeTuple) => match(bindTupleEntries(st.stEntries, 
 
 fun tupNames(tp: PeTuple) => nameOfEnts(tp.exprs, List())
 
-fun nameOfEnts(es: List<PTupEnt>, acc: List<String>) => nameOfEntsB(es, acc)
-
-fun nameOfEntsB(es: List<PTupEnt>, acc): List<String> =>
+fun nameOfEnts(es: List<PTupEnt>, acc): List<String> =>
   fold(es, acc, (a, x) => append(a, x.tupName))
 
 # bindTupleEntries answers "which SUPPLIED entry fills declared slot i" — this
@@ -691,9 +663,7 @@ fun slotsFor(declared: List<SEntry>, binding: List<Int>,
                                         emptySlots(tp.exprs, List()))
 
 # One blank slot per supplied entry — sized by the walk, never by a count.
-fun emptySlots(es: List<PTupEnt>, acc: List<SEntry>) => emptySlotsB(es, acc)
-
-fun emptySlotsB(es: List<PTupEnt>, acc): List<SEntry> =>
+fun emptySlots(es: List<PTupEnt>, acc): List<SEntry> =>
   fold(es, acc, (a, x) => append(a, SEntry("", None, None)))
 
 # setAt walks structurally, so an out-of-range index rebuilds unchanged —
@@ -701,18 +671,10 @@ fun emptySlotsB(es: List<PTupEnt>, acc): List<SEntry> =>
 fun invertLoop(ds: List<SEntry>, bs: List<Int>, acc: List<SEntry>) =>
   zipFold(ds, bs, acc, (a, d, b) => b >= 0 ? setAt(a, b, d) : a)
 
-fun setAt(es: List<SEntry>, i: Int, v: SEntry) => setLoop(es, i, v, 0, List())
-
-fun setLoop(es, i: Int, v: SEntry, at: Int,
-                   acc: List<SEntry>) => setLoopB(es, i, v, at, acc)
-
-fun setLoopB(es: List<SEntry>,
-             i,
-             v: SEntry,
-             at,
-             acc: List<SEntry>) =>
-  fold(es, (acc = acc, at = at),
-       (st, x) => (acc = append(st.acc, st.at == i ? v : x), at = st.at + 1)).acc
+# `es` with the entry at `i` replaced by `v`.
+fun setAt(es: List<SEntry>, i: Int, v: SEntry) =>
+  fold(es, (acc = List<SEntry>(), at = 0),
+    (st, x) => (acc = append(st.acc, st.at == i ? v : x), at = st.at + 1)).acc
 
 # A branch threads the receiver's type into BOTH sides — each arm owns its own
 # conversion. A ternary is a two-arm match: the same rules apply.
@@ -778,11 +740,8 @@ fun armLowerTypes(arms: List<PArm>, r)
                          List())
   ret concat(typed, lits)
 
-fun flatMapLits(as2: List<PArm>,
-                r,
-                acc: List<Spec|None>) =>
-  fold(as2, acc, (a, x) => concat(a, map(x.armLiterals,
-                                                  (lit) => litType(lit, r))))
+fun flatMapLits(as2: List<PArm>, r, acc: List<Spec|None>) =>
+  fold(as2, acc, (a, x) => concat(a, map(x.armLiterals, (lit) => litType(lit, r))))
 
 fun litType(lit, r) => match(lit)
   (e2: PlExpr)  => exprType(e2.litExpr, r)
@@ -827,16 +786,13 @@ class [final] CompiledExprs(ceExprs: List<PExpr>, ceGlobals: List<PStmt>,
                             ceTypes: List<Spec|None>,
                             ceHints: Dict<String, List<Hint>>)
 
-fun compileExprs(es, r, acc: List<PExpr>,
-                 glb) => compileExprsB(es, r, acc, glb, List(), noHints())
+fun compileExprs(es, r, acc: List<PExpr>, glb) => compileExprsB(es, r, acc, glb, List(), noHints())
 
-fun compileExprsB(es: List<PExpr>, r, acc, glb, tys,
-                  hints) =>
-  fold(es, (acc = acc, glb = glb, tys = tys, hints = hints),
-       (st, x) => compileExprsBStep(st, x, r))
+fun compileExprsB(es: List<PExpr>, r, acc, glb, tys, hints) =>
+  fold(es, (acc = acc, glb = glb, tys = tys, hints = hints), (st, x) => compileExprsStep(st, x, r))
     |> (r2) => CompiledExprs(r2.acc, r2.glb, r2.tys, r2.hints)
 
-fun compileExprsBStep(st: (acc: List<PExpr>, glb: List<PStmt>, tys: List<Spec | ()>, hints: Dict<String, List<Hint>>),
+fun compileExprsStep(st: (acc: List<PExpr>, glb: List<PStmt>, tys: List<Spec | ()>, hints: Dict<String, List<Hint>>),
                       x: PExpr, r) =>
   compileExpr(x, r, None)
   |> (o) => (acc = append(st.acc, o.eoExpr), glb = concat(st.glb, o.eoGlobals), tys = appendSpecOpt(st.tys, exprType(o.eoExpr, r)), hints = mergeHints(st.hints, o.eoHints))
@@ -881,8 +837,7 @@ fun posScope(p: PPos, subjTy, r): Resolver => p.posName == "" || p.posName == "_
     ()         => r
 
 fun renamePositions(ps: List<PPos>, tys: List<Spec|None>, r, acc: List<PPos>) =>
-  fold(ps, (tys = tys, acc = acc),
-       (st, x) => renamePositionsStep(st, x, r)).acc
+  fold(ps, (tys = tys, acc = acc), (st, x) => renamePositionsStep(st, x, r)).acc
 
 fun renamePositionsStep(st: (tys: List<Spec|None>, acc: List<PPos>), x: PPos, r) =>
   (tys = dropOne(st.tys),
@@ -998,10 +953,8 @@ class [final] LitsOut(loLits: List<PLit>, loGlobals: List<PStmt>,
 class [final] LitOut(l1Lit: PLit, l1Globals: List<PStmt>,
                      l1Hints: Dict<String, List<Hint>>)
 
-fun compileLits(ls: List<PLit>, r, acc, glb,
-                hints) =>
-  fold(ls, (acc = acc, glb = glb, hints = hints),
-       (st, x) => compileLitsStep(st, x, r))
+fun compileLits(ls: List<PLit>, r, acc, glb, hints) =>
+  fold(ls, (acc = acc, glb = glb, hints = hints), (st, x) => compileLitsStep(st, x, r))
     |> (r2) => LitsOut(r2.acc, r2.glb, r2.hints)
 
 fun compileLitsStep(st: (acc: List<PLit>, glb: List<PStmt>, hints: Dict<String, List<Hint>>),
@@ -1207,8 +1160,7 @@ fun withLets(wx: PeWith, tag, uniques: List<String>, r): List<PStmt>
 # Each replacement is typed as its FIELD, so the SAME guard compares like with like.
 fun withReplLets(es: List<PTupEnt>, i, tag, lr, subjTy: Spec|None, uniques: List<String>, r,
                  acc): List<PStmt> =>
-  fold(es, (i = i, acc = acc),
-       (st, x) => withReplLetsStep(st, x, tag, lr, subjTy, uniques, r)).acc
+  fold(es, (i = i, acc = acc), (st, x) => withReplLetsStep(st, x, tag, lr, subjTy, uniques, r)).acc
 
 fun withReplLetsStep(st: (i: Int, acc: List<PStmt>), x: PTupEnt, tag, lr, subjTy: Spec|None,
                      uniques: List<String>, r) =>
@@ -1218,8 +1170,7 @@ fun withReplLetsStep(st: (i: Int, acc: List<PStmt>), x: PTupEnt, tag, lr, subjTy
             withFieldType(subjTy, x.tupName, uniques, r),
             x.tupValue, "", List(), lr)))
 
-fun withFieldType(subjTy: Spec|None, bare: String, uniques: List<String>,
-                  r) => match(subjTy)
+fun withFieldType(subjTy: Spec|None, bare: String, uniques: List<String>, r) => match(subjTy)
   (st: Spec) => match(head(filter(uniques, (u) => bareName(u) == bare)))
     (u: String) => memberType(st, u, r)
     ()          => None
@@ -1233,11 +1184,8 @@ fun withReplRef(name: String, es: List<PTupEnt>, lr) => match(findIndex(es, (e) 
 fun withGuard(wx: PeWith, lr) => withGuardLoop(withEntryList(wx), 0, None, lr)
 
 fun withGuardLoop(es: List<PTupEnt>, i, acc: PExpr|None, lr) =>
-  fold(es, (i = i, acc = acc),
-       (st, x) => withGuardLoopStep(st, x, lr))
-    |> (r) => match(r.acc)
-      (a: PExpr) => a
-      ()         => PeBool(true, lr)
+  fold(es, (i = i, acc = acc), (st, x) => withGuardLoopStep(st, x, lr))
+    |> (r) => r.acc ?? PeBool(true, lr)
 
 fun withGuardLoopStep(st: (i: Int, acc: PExpr|None), x: PTupEnt, lr) =>
   (i = st.i + 1,
@@ -1260,22 +1208,11 @@ fun withConstruct(ctorName, fields: List<PStmt>, repls: List<PTupEnt>,
                                          PeTuple(withCtorArgs(fields, repls, carrier, lr,
                                                               List()), lr), lr)
 
-fun withCtorArgs(fs, repls: List<PTupEnt>,
-                        carrier, lr,
-                        acc: List<PTupEnt>)
-  ret withCtorArgsB(fs, repls, carrier, lr, acc)
+fun withCtorArgs(fs: List<PStmt>, repls: List<PTupEnt>, carrier, lr, acc: List<PTupEnt>) =>
+  fold(fs, acc, (a, x) => withCtorArgsStep(a, x, repls, carrier, lr))
 
-fun withCtorArgsB(fs: List<PStmt>,
-                  repls: List<PTupEnt>,
-                  carrier,
-                  lr,
-                  acc: List<PTupEnt>) =>
-  fold(fs, acc, (a, x) => withCtorArgsBStep(a, x, repls, carrier, lr))
-
-fun withCtorArgsBStep(a: List<PTupEnt>, x: PStmt, repls: List<PTupEnt>, carrier, lr) => match(x)
-  (p: PsLet) => append(a, PTupEnt("", false,
-    withCtorArg(bareName(p.lName), repls, carrier,
-                lr)))
+fun withCtorArgsStep(a: List<PTupEnt>, x: PStmt, repls: List<PTupEnt>, carrier, lr) => match(x)
+  (p: PsLet) => append(a, PTupEnt("", false, withCtorArg(bareName(p.lName), repls, carrier, lr)))
   (o: PStmt) => a
 
 fun withCtorArg(bare, repls: List<PTupEnt>, carrier,
@@ -1303,7 +1240,7 @@ fun withLetName(p) => match(p)
 fun withNamesOk(wx: PeWith, visible: List<String>)
   ret withNamesOkLoop(withEntryList(wx), visible)
 
-fun withNamesOkLoop(es: List<PTupEnt>, visible: List<String>) => all(es, (x) => contains2(visible, x.tupName))
+fun withNamesOkLoop(es: List<PTupEnt>, visible: List<String>) => all(es, (x) => contains(visible, x.tupName))
 
 fun withExpandEnum(wx: PeWith, e2: SEnum, r) => match(soleItem(findType(r, e2.seRoot)))
   (f: Found) => match(f.fStmt)
@@ -1341,20 +1278,13 @@ fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum, uniques: List<String>,
 
 fun withValidLeaves(ns, valid: List<String>): List<String> => withValidLoop(ns, valid, List())
 
-fun withValidLoop(ns, valid: List<String>,
-                         acc: List<String>) => withValidLoopB(ns, valid, acc)
-
-fun withValidLoopB(ns: List<String>,
-                   valid: List<String>,
-                   acc: List<String>) =>
-  fold(ns, acc, (a, x) => contains2(valid, x)
-    ? append(a, x)
-    : a)
+fun withValidLoop(ns: List<String>, valid: List<String>, acc: List<String>) =>
+  fold(ns, acc, (a, x) => contains(valid, x) ? append(a, x) : a)
 
 fun [tail] withSingleLeaf(ns: List<String>, sets: List<List<PStmt>>,
                           wx: PeWith, e2: SEnum, lr) => match(head(ns))
   (n: String) => match(head(sets))
-    (s: List<PStmt>) => contains2(e2.seValidLeaves, n)
+    (s: List<PStmt>) => contains(e2.seValidLeaves, n)
       ? withConstruct(n, s, withEntryList(wx), "$ws", lr)
       : withSingleLeaf(dropOne(ns), dropOne(sets), wx, e2, lr)
     ()               => PeName("$ws", List(), lr)  # unreachable
@@ -1366,7 +1296,7 @@ fun withArms(ns: List<String>, sets: List<List<PStmt>>, i: Int,
 
 fun withArmsStep(st: (i: Int, acc: List<PArm>), x: String, set: List<PStmt>, tag, wx: PeWith, e2: SEnum) =>
   (i = st.i + 1,
-   acc = contains2(e2.seValidLeaves, x)
+   acc = contains(e2.seValidLeaves, x)
      ? append(st.acc, PArm("$wx" + String(st.i) + "@" + tag,
                            SNamed(x, List(), wx.pewLine),
                            withConstruct(x, set, withEntryList(wx), "$wx" + String(st.i), wx.pewLine),
@@ -1394,8 +1324,7 @@ fun withLeaves(st: PsEnum, inherited: List<PStmt>,
 
 fun withLeavesLoop(vs: List<PStmt>, own: List<PStmt>,
                    acc: (names: List<String>, sets: List<List<PStmt>>)): (names: List<String>, sets: List<List<PStmt>>) =>
-  fold(vs, acc,
-       (a, x) => withLeavesLoopStep(a, x, own))
+  fold(vs, acc, (a, x) => withLeavesLoopStep(a, x, own))
 
 fun withLeavesLoopStep(a: (names: List<String>, sets: List<List<PStmt>>), x: PStmt, own: List<PStmt>) => match(x)
   (v: PsEnum) => withLeaves(v, own, a)

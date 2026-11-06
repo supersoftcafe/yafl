@@ -200,21 +200,12 @@ fun addMember(acc, sp) => match(sp)
     ? acc
     : append(acc, sp)
 
-fun hasUidIn(ts: List<Spec>, u) => any(ts, (x) => uid(x) == u)
-
-fun hasUid(ts: List<Spec>, u) => hasUidIn(ts, u)
+fun hasUid(ts: List<Spec>, u) => any(ts, (x) => uid(x) == u)
 
 fun dropSubsumed(flat: List<Spec>): List<Spec> => keepUnsubsumed(flat, flat, List())
 
-fun keepUnsubsumed(ms, all2: List<Spec>,
-                          acc: List<Spec>) => keepUnsubsumedB(ms, all2, acc)
-
-fun keepUnsubsumedB(ms: List<Spec>,
-                    all2: List<Spec>,
-                    acc: List<Spec>) =>
-  fold(ms, acc, (a, x) => isSubsumed(x, all2)
-    ? a
-    : append(a, x))
+fun keepUnsubsumed(ms: List<Spec>, all2: List<Spec>, acc: List<Spec>) =>
+  fold(ms, acc, (a, x) => isSubsumed(x, all2) ? a : append(a, x))
 
 # An enum member whose valid leaves are a STRICT subset of another member of
 # the same enum carries no values the wider member lacks.
@@ -230,11 +221,7 @@ fun widerEnum(o: Spec, e: SEnum) => match(o)
                  && allIn(e.seValidLeaves, oe.seValidLeaves)
   (other)     => false
 
-fun allIn(ns: List<String>, wider: List<String>) => all(ns, (x) => contains2(wider, x))
-
-fun containsName(ns: List<String>, n: String) => any(ns, (x) => x == n)
-
-fun contains2(names: List<String>, n: String) => containsName(names, n)
+fun allIn(ns: List<String>, wider: List<String>) => all(ns, (x) => contains(wider, x))
 
 # ── tuple entry binding ─────────────────────────────────────────────────────
 # bind_tuple_entries: the ONE binding rule — positional first, then by NAME
@@ -264,28 +251,20 @@ fun bindTupleEntries(declared: List<SEntry>,
   ret bindLoop(supplied, 0, declared, bare,
                blankSlots(declared, List()), false)
 
-fun bareNames(ds: List<SEntry>, acc: List<String>) => bareNamesB(ds, acc)
-
-fun bareNamesB(ds: List<SEntry>, acc): List<String> =>
+fun bareNames(ds: List<SEntry>, acc): List<String> =>
   fold(ds, acc, (a, x) => append(a, bareOfName(x.seName)))
 
 fun bareOfName(name)
   let at = findByte(name, '@', 0)
   ret at < 0 ? name : slice(name, 0, at)
 
-fun anyOverlap(ss: List<String>, bare: List<String>) => any(ss, (x) => x != "" && contains2(bare, x))
+fun anyOverlap(ss: List<String>, bare: List<String>) => any(ss, (x) => x != "" && contains(bare, x))
 
 # One slot per declared entry, sized by the walk (no-length ruling).
-fun identityBinding(ds: List<SEntry>, i, acc: List<Int>)
-  ret identityBindingB(ds, i, acc)
+fun identityBinding(ds: List<SEntry>, i, acc: List<Int>): List<Int> =>
+  fold(ds, (acc = acc, i = i), (st, x) => (acc = append(st.acc, st.i), i = st.i + 1)).acc
 
-fun identityBindingB(ds: List<SEntry>, i, acc: List<Int>): List<Int> =>
-  fold(ds, (acc = acc, i = i),
-       (st, x) => (acc = append(st.acc, st.i), i = st.i + 1)).acc
-
-fun blankSlots(ds: List<SEntry>, acc: List<Int>) => blankSlotsB(ds, acc)
-
-fun blankSlotsB(ds: List<SEntry>, acc): List<Int> =>
+fun blankSlots(ds: List<SEntry>, acc): List<Int> =>
   fold(ds, acc, (a, x) => append(a, -1))
 
 # `slots` carries -1 for "unbound so far"; a field bound by name or position
@@ -327,27 +306,15 @@ fun hasDefault(e: SEntry) => match(e.seDefault)
 fun indexOfName(bare: List<String>, name)
   if name == ""
     ret -1
-  ret match(findIndex(bare, (n) => n == name))
-    (k: Int) => k
-    ()       => -1
+  ret findIndex(bare, (n) => n == name) ?? -1
 
 
-fun nth(xs: List<Int>, i) => match(head(drop(xs, i)))
-  (v: Int) => v
-  ()       => -1
+fun nth(xs: List<Int>, i) => head(drop(xs, i)) ?? -1
 
-fun setSlot(xs: List<Int>, at: Int, v: Int) => setLoop(xs, 0, at, v, List())
-
-fun setLoop(xs, i: Int, at: Int, v: Int,
-                   acc: List<Int>) => setLoopB(xs, i, at, v, acc)
-
-fun setLoopB(xs: List<Int>,
-             i,
-             at,
-             v: Int,
-             acc: List<Int>) =>
-  fold(xs, (acc = acc, i = i),
-       (st, x) => (acc = append(st.acc, st.i == at ? v : x), i = st.i + 1)).acc
+# `xs` with the element at `at` replaced by `v`.
+fun setSlot(xs: List<Int>, at: Int, v: Int) =>
+  fold(xs, (acc = List<Int>(), i = 0),
+    (st, x) => (acc = append(st.acc, st.i == at ? v : x), i = st.i + 1)).acc
 
 # ══ spec text format (test harness only) ═════════════════════════════════════
 # A compact spelling so the Python side can drive both implementations over
@@ -467,9 +434,7 @@ fun unionParts(ps: List<String>): Spec|None => match(mapAll(ps, parseSpecText))
 # default). Semicolons separate entries so commas stay free for unions.
 fun parseEntriesText(s) => entryParts(split(s, ";"), List())
 
-fun entryParts(ps, acc: List<SEntry>): List<SEntry> => entryPartsB(ps, acc)
-
-fun entryPartsB(ps: List<String>, acc: List<SEntry>) =>
+fun entryParts(ps: List<String>, acc: List<SEntry>) =>
   fold(ps, acc, (a, x) => append(a, oneEntry(trim(x))))
 
 fun oneEntry(part)

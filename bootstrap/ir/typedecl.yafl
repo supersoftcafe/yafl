@@ -557,7 +557,7 @@ class [final] CgSlotEntry(slotIndex: Int, origType: CgType)
 # existing slot of the same type that the current variant doesn't already
 # occupy (so two primitives of the same variant never alias one slot).
 fun [tail] cgFindSlotIndex(slots: List<CgSlot>, idx, prim, vi) => match(head(slots))
-  (s: CgSlot) => (s.active && eqCgType(s.slotType, prim) && !memberInt(s.users, vi)) ? idx : cgFindSlotIndex(dropOne(slots), idx + 1, prim, vi)
+  (s: CgSlot) => (s.active && eqCgType(s.slotType, prim) && !contains(s.users, vi)) ? idx : cgFindSlotIndex(dropOne(slots), idx + 1, prim, vi)
   ()          => -1
 
 fun cgUpdateSlotUsersLoop(slots: List<CgSlot>, idx, vi, i, acc: List<CgSlot>)
@@ -634,10 +634,7 @@ fun cgFindMergeInnerAt(slots: List<CgSlot>, si, s: CgSlot, li) => match(listAt(s
   (l: CgSlot) => (l.active && canMergeInto(s.slotType, l.slotType) && disjointInt(s.users, l.users)) ? li : cgFindMergeInner(slots, si, s, li + 1)
   ()          => None
 
-fun cgFindMergeOuter(slots: List<CgSlot>, si): (si: Int, li: Int)|None
-  ret cgFindMergeOuterAt(slots, si)
-
-fun cgFindMergeOuterAt(slots: List<CgSlot>, si): (si: Int, li: Int)|None => match(listAt(slots, si))
+fun cgFindMergeOuter(slots: List<CgSlot>, si): (si: Int, li: Int)|None => match(listAt(slots, si))
   (s: CgSlot) => s.active ? cgFindMergeOuterActive(slots, si, s) : cgFindMergeOuter(slots, si + 1)
   ()          => None
 
@@ -688,9 +685,7 @@ fun forceSlot(x: CgSlot|None) => match(x)
 # primitives of the same type produces exactly that).
 class [final] CgIdxSlot(isIndex: Int, isSlot: CgSlot)
 
-fun cgActiveWithIndicesLoop(slots: List<CgSlot>,
-                            i,
-                            acc: List<CgIdxSlot>) =>
+fun cgActiveWithIndicesLoop(slots: List<CgSlot>, i, acc: List<CgIdxSlot>) =>
   fold(slots, (acc = acc, i = i),
        (st, x) => (acc = x.active ? append(st.acc, CgIdxSlot(st.i, x)) : st.acc, i = st.i + 1)).acc
 
@@ -789,8 +784,7 @@ fun cgNullPatternTests(packed: CgPackedSlots): List<List<CgNullTest>>|None
   ret packed.psNVariants < 2 ? None : cgNullTests(variants, packed.psActive, sets)
 
 fun cgIndicesOf<T>(c: List<T>, i, acc: List<Int>): List<Int> =>
-  fold(c, (acc = acc, i = i),
-       (st, x) => (acc = append(st.acc, st.i), i = st.i + 1)).acc
+  fold(c, (acc = acc, i = i), (st, x) => (acc = append(st.acc, st.i), i = st.i + 1)).acc
 
 fun cgNullSets(vms: List<List<CgSlotEntry>>): CgNullSets
   let out = fold(vms, (vi = 0, used = Dict<Int, Set<Int>>(), neverNull = Dict<Int, Set<Int>>()),
@@ -874,9 +868,7 @@ fun cgSlotFieldsOf(active: List<CgIdxSlot>, i) => match(head(active))
 # index (position in `active`, post sort).
 class [final] CgRenumberEntry(oldIndex: Int, newIndex: Int)
 
-fun cgBuildRenumberLoop(active: List<CgIdxSlot>,
-                        newIdx,
-                        acc): List<CgRenumberEntry> =>
+fun cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx, acc): List<CgRenumberEntry> =>
   fold(active, (acc = acc, newIdx = newIdx),
        (st, x) => (acc = append(st.acc, CgRenumberEntry(x.isIndex, st.newIdx)), newIdx = st.newIdx + 1)).acc
 

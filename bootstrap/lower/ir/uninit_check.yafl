@@ -159,7 +159,7 @@ fun [tail] ucFixpoint(ix: UcIx, labels: Dict<String, Int>,
   let writes = ucWrites(op)
   let branchOnly = ucBranchOnlyWrites(op)
   let exitFall = fold(filter(writes,
-                             (w) => !strListMember(branchOnly, w)),
+                             (w) => !contains(branchOnly, w)),
                       e2, ucAddName)
   let exitBranch = fold(writes, e2, ucAddName)
   let out = fold(ucSuccessors(ix, labels, i), (entry, rest),

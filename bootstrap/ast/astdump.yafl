@@ -192,10 +192,7 @@ fun lazyCapMark(c: String|None) => match(c)
   (n: String) => "!cap=" + n
   ()          => ""
 
-fun loopParamNames(ps, acc: List<String>): List<String>
-  ret loopParamNamesB(ps, acc)
-
-fun loopParamNamesB(ps: List<PExpr>, acc: List<String>) => fold(ps, acc, loopParamName)
+fun loopParamNames(ps: List<PExpr>, acc: List<String>) => fold(ps, acc, loopParamName)
 
 fun loopParamName(acc: List<String>, p: PExpr): List<String> => match(p)
   (nm: PeName) => append(acc, nm.refName)

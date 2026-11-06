@@ -30,9 +30,7 @@ fun mangledName(base, args: List<Spec>)
   ret isEmpty(args) ? base : base + "$generic$" + joinUids(args, "")
 
 fun joinUids(as2: List<Spec>, acc) =>
-  fold(as2, acc, (a, x) => a == ""
-                                ? uidOrUnknown(x)
-                                : a + "_" + uidOrUnknown(x))
+  fold(as2, acc, (a, x) => a == "" ? uidOrUnknown(x) : a + "_" + uidOrUnknown(x))
 
 fun uidOrUnknown(sp) => uid(sp) == "" ? "unknown" : uid(sp)
 
@@ -51,8 +49,7 @@ fun refKey(g2: GRef) => mangledName(g2.grName, g2.grArgs)
 fun addRef(refs, g2: GRef): List<GRef> => hasRefStruct(refs, g2) ? refs : prepend(g2, refs)
 
 fun hasRefStruct(rs: List<GRef>, g2: GRef) =>
-  any(rs, (x) => (x.grName == g2.grName
-                      && eqTypeIds(x.grIds, g2.grIds)))
+  any(rs, (x) => (x.grName == g2.grName && eqTypeIds(x.grIds, g2.grIds)))
 
 fun addRefs(refs: List<GRef>, rs: List<GRef>) =>
   fold(rs, refs, addRef)
@@ -194,9 +191,7 @@ fun fciEntries(es: List<PTupEnt>, acc) =>
   fold(es, acc, (a, x) => fciExpr(x.tupValue, a))
 
 fun fciArms(as2: List<PArm>, acc) =>
-  fold(as2, acc, (a, x) => fciExprOpt(x.armGuard,
-                        fciExpr(x.armBody,
-                                fciSpecOpt(x.armType, a))))
+  fold(as2, acc, (a, x) => fciExprOpt(x.armGuard, fciExpr(x.armBody, fciSpecOpt(x.armType, a))))
 
 fun fciExprOpt(x: PExpr|None, acc) => match(x)
   (e2: PExpr) => fciExpr(e2, acc)
@@ -235,8 +230,7 @@ fun fciSpec(sp, acc) => match(sp)
 fun fciSpecs(ss: List<Spec>, acc) => fold(ss, acc, (a, x) => fciSpec(x, a))
 
 fun fciSpecEntries(es: List<SEntry>, acc) =>
-  fold(es, acc, (a, x) => fciSpecOpt(x.seType,
-                                      fciExprOpt(x.seDefault, a)))
+  fold(es, acc, (a, x) => fciSpecOpt(x.seType, fciExprOpt(x.seDefault, a)))
 
 fun fciSpecOpt(sp: Spec|None, acc) => match(sp)
   (s2: Spec) => fciSpec(s2, acc)
@@ -344,17 +338,12 @@ fun gsubCompleted(e2: SEnum, params2, sub: GSub): List<Spec>
 
 # POSITIONAL: these are the enum's type arguments, so the order they come out
 # in is the argument list.
-fun gsubFormalArgs(ns: List<String>,
-                   e2: SEnum,
-                   sub: GSub,
-                   acc: List<Spec>) =>
+fun gsubFormalArgs(ns: List<String>, e2: SEnum, sub: GSub, acc: List<Spec>) =>
   fold(ns, acc, (a, x) => gsubFormalArgsStep(a, x, e2, sub))
 
 fun gsubFormalArgsStep(a: List<Spec>, x: String, e2: SEnum, sub: GSub) => match(resolveGp(x, sub))
   (b: Spec) => append(a, b)
-  () => append(a,
-    SGeneric(x, false,
-             e2.seLine))
+  () => append(a, SGeneric(x, false, e2.seLine))
 
 fun gsubInField(ft, sub: GSub, visited: List<String>) => match(ft)
   (g2: SGeneric) => match(resolveGp(g2.sgName, sub))
@@ -380,41 +369,20 @@ fun gsubNamedInField(n, sub: GSub, visited: List<String>)
 fun gsubInFieldList(ts: List<Spec>, sub: GSub,
                     visited: List<String>) => gsubInFieldLoop(ts, sub, visited, List())
 
-fun gsubInFieldLoop(ts, sub: GSub, visited: List<String>,
-                           acc: List<Spec>)
-  ret gsubInFieldLoopB(ts, sub, visited, acc)
-
-fun gsubInFieldLoopB(ts: List<Spec>,
-                     sub: GSub,
-                     visited: List<String>,
-                     acc: List<Spec>) =>
-  fold(ts, acc, (a, x) => append(a, gsubInField(x, sub,
-                                                      visited)))
+fun gsubInFieldLoop(ts: List<Spec>, sub: GSub, visited: List<String>, acc: List<Spec>) =>
+  fold(ts, acc, (a, x) => append(a, gsubInField(x, sub, visited)))
 
 fun gsubList(ts: List<Spec>, sub: GSub, visited: List<String>)
   ret gsubListLoop(ts, sub, visited, List())
 
-fun gsubListLoop(ts, sub: GSub, visited: List<String>,
-                        acc: List<Spec>) => gsubListLoopB(ts, sub, visited, acc)
-
-fun gsubListLoopB(ts: List<Spec>,
-                  sub: GSub,
-                  visited: List<String>,
-                  acc: List<Spec>) =>
-  fold(ts, acc, (a, x) => append(a, gsubSpec(x, sub,
-                                                visited)))
+fun gsubListLoop(ts: List<Spec>, sub: GSub, visited: List<String>, acc: List<Spec>) =>
+  fold(ts, acc, (a, x) => append(a, gsubSpec(x, sub, visited)))
 
 fun gsubOpt(sp: Spec|None, sub: GSub, visited: List<String>) => match(sp)
   (s2: Spec) => gsubSpec(s2, sub, visited)
   ()         => None
 
-fun gsubEntries(es: List<SEntry>, sub: GSub, visited: List<String>,
-                       acc: List<SEntry>) => gsubEntriesB(es, sub, visited, acc)
-
-fun gsubEntriesB(es: List<SEntry>,
-                 sub: GSub,
-                 visited: List<String>,
-                 acc): List<SEntry> =>
+fun gsubEntries(es: List<SEntry>, sub: GSub, visited: List<String>, acc): List<SEntry> =>
   fold(es, acc, (a, x) => append(a, SEntry(x.seName,
                 gsubOpt(x.seType, sub, visited),
                 gsubExprOpt(x.seDefault, sub, visited))))
@@ -473,14 +441,8 @@ fun gsubStmt(st, sub: GSub) => match(st)
                        i.psifLine)
   (o: PStmt)   => st
 
-fun gsubStmts(ss, sub: GSub,
-                     acc: List<PStmt>) => gsubStmtsB(ss, sub, acc)
-
-fun gsubStmtsB(ss: List<PStmt>,
-               sub: GSub,
-               acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, gsubStmt(x,
-                                                         sub)))
+fun gsubStmts(ss: List<PStmt>, sub: GSub, acc: List<PStmt>) =>
+  fold(ss, acc, (a, x) => append(a, gsubStmt(x, sub)))
 
 fun gsubSpecsOpt(ss: List<Spec>|None, sub: GSub) => match(ss)
   (l: List<Spec>) => gsubList(l, sub, List())
@@ -545,34 +507,15 @@ fun gsubExprOpt(x: PExpr|None, sub: GSub, visited: List<String>) => match(x)
   (e2: PExpr) => gsubExpr(e2, sub, visited)
   ()          => None
 
-fun gsubTupEnts(es: List<PTupEnt>, sub: GSub, visited: List<String>,
-                       acc: List<PTupEnt>)
-  ret gsubTupEntsB(es, sub, visited, acc)
-
-fun gsubTupEntsB(es: List<PTupEnt>,
-                 sub: GSub,
-                 visited: List<String>,
-                 acc): List<PTupEnt> =>
+fun gsubTupEnts(es: List<PTupEnt>, sub: GSub, visited: List<String>, acc): List<PTupEnt> =>
   fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
                 gsubExpr(x.tupValue, sub, visited))))
 
-fun gsubArms(as2, sub: GSub, visited: List<String>,
-                    acc: List<PArm>) => gsubArmsB(as2, sub, visited, acc)
-
-fun gsubArmsB(as2: List<PArm>,
-              sub: GSub,
-              visited: List<String>,
-              acc: List<PArm>) =>
+fun gsubArms(as2: List<PArm>, sub: GSub, visited: List<String>, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, with x(armType = gsubOpt(x.armType, sub, visited), armBody = gsubExpr(x.armBody, sub, visited), armLiterals = gsubLits(x.armLiterals, sub, visited,
                          List()), armGuard = gsubExprOpt(x.armGuard, sub, visited))))
 
-fun gsubLits(ls, sub: GSub, visited: List<String>,
-                    acc: List<PLit>) => gsubLitsB(ls, sub, visited, acc)
-
-fun gsubLitsB(ls: List<PLit>,
-              sub: GSub,
-              visited: List<String>,
-              acc: List<PLit>) =>
+fun gsubLits(ls: List<PLit>, sub: GSub, visited: List<String>, acc: List<PLit>) =>
   fold(ls, acc, append)
 
 # ── specialisation ──────────────────────────────────────────────────────────
@@ -633,19 +576,12 @@ fun specializedClass(c: PsClass, newName, args: List<Spec>)
 
 class [final] Binding2(b2From: String, b2To: String)
 
-fun methodRenames(ms, sig,
-                         acc: List<Binding2>): List<Binding2>
-  ret methodRenamesB(ms, sig, acc)
+fun methodRenames(ms: List<PStmt>, sig, acc: List<Binding2>) =>
+  fold(ms, acc, (a, x) => methodRenamesStep(a, x, sig))
 
-fun methodRenamesB(ms: List<PStmt>,
-                   sig,
-                   acc: List<Binding2>) =>
-  fold(ms, acc, (a, x) => methodRenamesBStep(a, x, sig))
-
-fun methodRenamesBStep(a: List<Binding2>, x: PStmt, sig) => match(x)
+fun methodRenamesStep(a: List<Binding2>, x: PStmt, sig) => match(x)
   (f: PsFun) => match(f.fBody)
-    (b: PExpr) => append(a, Binding2(f.fName,
-      f.fName + "@" + sig))
+    (b: PExpr) => append(a, Binding2(f.fName, f.fName + "@" + sig))
     () => a
   (o: PStmt) => a
 
@@ -653,15 +589,10 @@ fun renamedTo(rn: List<Binding2>, name: String) => match(firstWhere(rn, (b) => b
   (b: Binding2) => b.b2To
   ()            => name
 
-fun renameMembers(ms, rn: List<Binding2>,
-                         acc: List<PStmt>) => renameMembersB(ms, rn, acc)
+fun renameMembers(ms: List<PStmt>, rn: List<Binding2>, acc: List<PStmt>) =>
+  fold(ms, acc, (a, x) => renameMembersStep(a, x, rn))
 
-fun renameMembersB(ms: List<PStmt>,
-                   rn: List<Binding2>,
-                   acc: List<PStmt>) =>
-  fold(ms, acc, (a, x) => renameMembersBStep(a, x, rn))
-
-fun renameMembersBStep(a: List<PStmt>, x: PStmt, rn: List<Binding2>) => match(x)
+fun renameMembersStep(a: List<PStmt>, x: PStmt, rn: List<Binding2>) => match(x)
   (f: PsFun) => append(a, renamedTo(rn, f.fName) == f.fName
     ? x
     : PsFun(renamedTo(rn, f.fName), f.fAttrs, f.fGens,
@@ -675,19 +606,12 @@ fun renameSlots(ss, rn: List<Binding2>) => match(ss)
                                                        List())
   ()              => None
 
-fun renameSlotList(ss: List<Slot>, rn: List<Binding2>,
-                          acc: List<Slot>) => renameSlotListB(ss, rn, acc)
-
-fun renameSlotListB(ss: List<Slot>,
-                    rn: List<Binding2>,
-                    acc): List<Slot> =>
+fun renameSlotList(ss: List<Slot>, rn: List<Binding2>, acc): List<Slot> =>
   fold(ss, acc, (a, x) => append(a, Slot(renamedTo(rn, x.slotName), x.slotType,
                 renameProvides(x.slotProvides, rn,
                                List()))))
 
-fun renameProvides(ps: List<String>,
-                   rn: List<Binding2>,
-                   acc: List<String>) =>
+fun renameProvides(ps: List<String>, rn: List<Binding2>, acc: List<String>) =>
   fold(ps, acc, (a, x) => addNameOnce(a, renamedTo(rn, x)))
 
 # ── creating specialized statements ─────────────────────────────────────────
@@ -706,16 +630,13 @@ fun createSpecializedStatements(statements: List<PStmt>,
 
 # Template formals for identity completion: root -> the declaration's formal
 # names, in order (mirror of Python's template_formals map).
-fun gsFormalsOf(ss: List<PStmt>,
-                acc) =>
+fun gsFormalsOf(ss: List<PStmt>, acc) =>
   fold(ss, acc, gsFormalsOfStep)
 
 fun gsFormalsOfStep(a: Dict<String, List<String>>, x: PStmt) => match(x)
   (e: PsEnum) => isEmpty(e.eGens)
     ? a
-    : put(a, e.eName,
-                        map(e.eGens,
-                            (g2) => g2.genName))
+    : put(a, e.eName, map(e.eGens, (g2) => g2.genName))
   (o: PStmt) => a
 
 fun stmtKind(st) => match(st)
@@ -730,8 +651,7 @@ fun stmtKind(st) => match(st)
 # The name+kind keys already present. A SET: its one consumer asks only
 # whether a key is taken, so the order it was collected in is not read.
 fun existingKeys(ss: List<PStmt>, acc: Set<String>) =>
-  fold(ss, acc, (a, x) => add(a, stmtName(x) + "\t"
-                                  + stmtKind(x)))
+  fold(ss, acc, (a, x) => add(a, stmtName(x) + "\t" + stmtKind(x)))
 
 # Sorted by refLess. This was an INSERTION SORT — each ref walked the sorted
 # prefix rebuilding it as it went, so ordering n refs cost O(n^2) copies. The
@@ -770,8 +690,7 @@ fun deepId(sp) => tiSerialise(spellingOf(sp))
 class [final] CssState(csOut: List<PStmt>, csKeys: Set<String>)
 
 fun cssLoop(ss: List<PStmt>, allRefs: List<GRef>, formals, keys, acc) =>
-  fold(ss, (keys = keys, acc = acc),
-       (st, x) => cssLoopStep(st, x, allRefs, formals)).acc
+  fold(ss, (keys = keys, acc = acc), (st, x) => cssLoopStep(st, x, allRefs, formals)).acc
 
 fun cssLoopStep(st: (keys: Set<String>, acc: List<PStmt>), x: PStmt, allRefs: List<GRef>, formals) =>
   isEmpty(stmtGens(x))
@@ -780,8 +699,7 @@ fun cssLoopStep(st: (keys: Set<String>, acc: List<PStmt>), x: PStmt, allRefs: Li
     |> (st2) => (keys = st2.csKeys, acc = st2.csOut)
 
 fun cssForStmt(rs: List<GRef>, st, formals, keys, acc) =>
-  fold(rs, (keys = keys, acc = acc),
-       (st3, x) => cssForStmtStep(st3, x, st, formals))
+  fold(rs, (keys = keys, acc = acc), (st3, x) => cssForStmtStep(st3, x, st, formals))
     |> (r) => CssState(r.acc, r.keys)
 
 fun cssForStmtStep(st3: (keys: Set<String>, acc: List<PStmt>), x: GRef, st, formals) =>
@@ -811,14 +729,8 @@ fun cssOne(ref: GRef, st,
 fun replaceConcreteReferences(statements: List<PStmt>,
                               refs: GRefsIx) => rcrStmts(statements, refs, List())
 
-fun rcrStmts(ss, refs: GRefsIx,
-                    acc: List<PStmt>) => rcrStmtsB(ss, refs, acc)
-
-fun rcrStmtsB(ss: List<PStmt>,
-              refs: GRefsIx,
-              acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, rcrStmt(x,
-                                                        refs)))
+fun rcrStmts(ss: List<PStmt>, refs: GRefsIx, acc: List<PStmt>) =>
+  fold(ss, acc, (a, x) => append(a, rcrStmt(x, refs)))
 
 # The redirect's ref test is DICT-backed (user ruling 2026-07-22: lookups
 # are dict-backed — Python's is an O(1) frozen-set hit, and the linear pair
@@ -920,36 +832,19 @@ fun rcrSpec(sp, refs: GRefsIx) => match(sp)
 
 fun mangleLeaves(leaves: List<String>, args: List<Spec>) => mlLoop(leaves, args, List())
 
-fun mlLoop(ls, args: List<Spec>,
-                  acc: List<String>) => mlLoopB(ls, args, acc)
-
-fun mlLoopB(ls: List<String>,
-            args: List<Spec>,
-            acc: List<String>) =>
+fun mlLoop(ls: List<String>, args: List<Spec>, acc: List<String>) =>
   fold(ls, acc, (a, x) => append(a, mangledName(x, args)))
 
 fun rcrSpecs(ss: List<Spec>, refs: GRefsIx) => rcrSpecLoop(ss, refs, List())
 
-fun rcrSpecLoop(ss, refs: GRefsIx,
-                       acc: List<Spec>) => rcrSpecLoopB(ss, refs, acc)
-
-fun rcrSpecLoopB(ss: List<Spec>,
-                 refs: GRefsIx,
-                 acc: List<Spec>) =>
-  fold(ss, acc, (a, x) => append(a,
-                                                      rcrSpec(x,
-                                                              refs)))
+fun rcrSpecLoop(ss: List<Spec>, refs: GRefsIx, acc: List<Spec>) =>
+  fold(ss, acc, (a, x) => append(a, rcrSpec(x, refs)))
 
 fun rcrSpecOpt(sp: Spec|None, refs: GRefsIx) => match(sp)
   (s2: Spec) => rcrSpec(s2, refs)
   ()         => None
 
-fun rcrEntries(es: List<SEntry>, refs: GRefsIx,
-                      acc: List<SEntry>) => rcrEntriesB(es, refs, acc)
-
-fun rcrEntriesB(es: List<SEntry>,
-                refs: GRefsIx,
-                acc): List<SEntry> =>
+fun rcrEntries(es: List<SEntry>, refs: GRefsIx, acc): List<SEntry> =>
   fold(es, acc, (a, x) => append(a, SEntry(x.seName, rcrSpecOpt(x.seType, refs),
                 rcrExprOpt(x.seDefault, refs))))
 
@@ -1064,51 +959,30 @@ fun rcrExprOpt(x: PExpr|None, refs: GRefsIx) => match(x)
   (e2: PExpr) => rcrExpr(e2, refs)
   ()          => None
 
-fun rcrTupEnts(es: List<PTupEnt>, refs: GRefsIx,
-                      acc: List<PTupEnt>) => rcrTupEntsB(es, refs, acc)
+fun rcrTupEnts(es: List<PTupEnt>, refs: GRefsIx, acc): List<PTupEnt> =>
+  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rcrExpr(x.tupValue, refs))))
 
-fun rcrTupEntsB(es: List<PTupEnt>,
-                refs: GRefsIx,
-                acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
-                rcrExpr(x.tupValue, refs))))
-
-fun rcrArms(as2, refs: GRefsIx,
-                   acc: List<PArm>) => rcrArmsB(as2, refs, acc)
-
-fun rcrArmsB(as2: List<PArm>,
-             refs: GRefsIx,
-             acc: List<PArm>) =>
+fun rcrArms(as2: List<PArm>, refs: GRefsIx, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, with x(armType = rcrSpecOpt(x.armType, refs), armBody = rcrExpr(x.armBody, refs), armGuard = rcrExprOpt(x.armGuard, refs))))
 
 # ── prune + finalize ────────────────────────────────────────────────────────
 
 fun pruneUnusedGenerics(statements: List<PStmt>) => pugLoop(statements, List())
 
-fun pugLoop(ss, acc: List<PStmt>): List<PStmt> => pugLoopB(ss, acc)
-
-fun pugLoopB(ss: List<PStmt>, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => isEmpty(stmtGens(x))
-    ? append(a, x)
-    : a)
+fun pugLoop(ss: List<PStmt>, acc: List<PStmt>) =>
+  fold(ss, acc, (a, x) => isEmpty(stmtGens(x)) ? append(a, x) : a)
 
 # Rebuild _enum_spec for specialized (or non-generic) ROOT enums every round.
 fun finalizeSpecializedEnumSpecs(statements: List<PStmt>,
                                  specialized: List<String>)
   ret fseLoop(statements, specialized, List())
 
-fun fseLoop(ss, specialized: List<String>,
-                   acc: List<PStmt>) => fseLoopB(ss, specialized, acc)
+fun fseLoop(ss: List<PStmt>, specialized: List<String>, acc: List<PStmt>) =>
+  fold(ss, acc, (a, x) => fseLoopStep(a, x, specialized))
 
-fun fseLoopB(ss: List<PStmt>,
-             specialized: List<String>,
-             acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => fseLoopBStep(a, x, specialized))
-
-fun fseLoopBStep(a: List<PStmt>, x: PStmt, specialized: List<String>) => match(x)
+fun fseLoopStep(a: List<PStmt>, x: PStmt, specialized: List<String>) => match(x)
   (e2: PsEnum) => isRootEnum(e2)
-            && (contains2(specialized, e2.eName)
-                || isEmpty(e2.eGens))
+            && (contains(specialized, e2.eName) || isEmpty(e2.eGens))
     ? append(a, layoutEnum(e2))
     : append(a, x)
   (o: PStmt) => append(a, x)
@@ -1126,9 +1000,7 @@ class [final] GProvider(gpLet: PsLet, gpPattern: SClass)
 fun genericInstanceProviders(statements: List<PStmt>,
                              r) => gipLoop(statements, r, List())
 
-fun gipLoop(ss: List<PStmt>,
-            r,
-            acc: List<GProvider>) =>
+fun gipLoop(ss: List<PStmt>, r, acc: List<GProvider>) =>
   fold(ss, acc, (a, x) => gipLoopStep(a, x, r))
 
 fun gipLoopStep(a: List<GProvider>, x: PStmt, r) => match(x)
@@ -1153,17 +1025,10 @@ fun providerPatterns(let2, r,
     (o2: Spec)   => acc
   ()         => acc
 
-fun patternLoop(ps, remap: List<Binding>, let2,
-                       acc: List<GProvider>)
-  ret patternLoopB(ps, remap, let2, acc)
+fun patternLoop(ps: List<Spec>, remap: List<Binding>, let2, acc: List<GProvider>) =>
+  fold(ps, acc, (a, x) => patternLoopStep(a, x, remap, let2))
 
-fun patternLoopB(ps: List<Spec>,
-                 remap: List<Binding>,
-                 let2,
-                 acc: List<GProvider>) =>
-  fold(ps, acc, (a, x) => patternLoopBStep(a, x, remap, let2))
-
-fun patternLoopBStep(a: List<GProvider>, x: Spec, remap: List<Binding>, let2) => match(x)
+fun patternLoopStep(a: List<GProvider>, x: Spec, remap: List<Binding>, let2) => match(x)
   (pc: SClass) => match(substitute(x, remap))
     (sub: SClass) => append(a, GProvider(let2, sub))
     (o: Spec) => a
@@ -1251,8 +1116,7 @@ fun cccTupEnts(es: List<PTupEnt>, acc) =>
   fold(es, acc, (a, x) => cccExpr(x.tupValue, a))
 
 fun cccArms(as2: List<PArm>, acc) =>
-  fold(as2, acc, (a, x) => cccExprOpt(x.armGuard,
-                                        cccExpr(x.armBody, a)))
+  fold(as2, acc, (a, x) => cccExprOpt(x.armGuard, cccExpr(x.armBody, a)))
 
 fun cccWheres(ws: List<Spec>, acc) =>
   fold(ws, acc, cccWheresStep)
@@ -1296,17 +1160,10 @@ fun sfmLeaf(name: String): String
   ret at < 0 ? name : slice(name, 0, at)
 
 fun sfmBare(c, mono: List<GRef>) => match(monoLookup(mono, c.scName))
-  (g2: GRef) => SClass(g2.grName,
-                       sfmList(g2.grArgs, mono, List()),
-                       c.scLine)
+  (g2: GRef) => SClass(g2.grName, sfmList(g2.grArgs, mono, List()), c.scLine)
   ()         => c
 
-fun sfmList(ss, mono: List<GRef>,
-                   acc: List<Spec>) => sfmListB(ss, mono, acc)
-
-fun sfmListB(ss: List<Spec>,
-             mono: List<GRef>,
-             acc: List<Spec>) =>
+fun sfmList(ss: List<Spec>, mono: List<GRef>, acc: List<Spec>) =>
   fold(ss, acc, (a, x) => append(a, specFromMangled(x, mono)))
 
 # Inverse: structural Wrap<Leaf,Int> → bare Wrap$generic$Leaf_Int.
@@ -1318,9 +1175,7 @@ fun mangledFromSpec(sp) => match(sp)
              List(), c.scLine)
   (o: Spec)   => sp
 
-fun mfsList(ss, acc: List<Spec>): List<Spec> => mfsListB(ss, acc)
-
-fun mfsListB(ss: List<Spec>, acc: List<Spec>) =>
+fun mfsList(ss: List<Spec>, acc: List<Spec>) =>
   fold(ss, acc, (a, x) => append(a, mangledFromSpec(x)))
 
 # The concrete interfaces implemented by NON-generic [trait] instances.
@@ -1330,9 +1185,7 @@ fun concreteInstanceInterfaces(statements: List<PStmt>,
 # One builder threaded through all three levels: the statement walk, the
 # per-instance step and the parent walk only ever WRITE to it, and the order
 # they write in is the declaration order Python's comprehension produces.
-fun ciiLoop(ss: List<PStmt>,
-            r,
-            acc: List<Spec>) =>
+fun ciiLoop(ss: List<PStmt>, r, acc: List<Spec>) =>
   fold(ss, acc, (a, x) => ciiLoopStep(a, x, r))
 
 fun ciiLoopStep(a: List<Spec>, x: PStmt, r) => match(x)
@@ -1357,9 +1210,7 @@ fun instanceIfaces(let2: PsLet, r,
     (o2: Spec)   => acc
   ()         => acc
 
-fun ifaceLoop(ps: List<Spec>,
-              remap: List<Binding>,
-              acc: List<Spec>) =>
+fun ifaceLoop(ps: List<Spec>, remap: List<Binding>, acc: List<Spec>) =>
   fold(ps, acc, (a, x) => ifaceLoopStep(a, x, remap))
 
 fun ifaceLoopStep(a: List<Spec>, x: Spec, remap: List<Binding>) => match(x)
@@ -1377,8 +1228,7 @@ fun bindWhereParams(let2: PsLet, mapping,
                     mono: List<GRef>)
   ret bwpWheres(let2.lWheres, let2, mapping, instanceIfaces2, mono)
 
-fun [tail] bwpWheres(ws: List<Spec>, let2: PsLet, mapping,
-                     ifaces: List<Spec>, mono: List<GRef>)
+fun [tail] bwpWheres(ws: List<Spec>, let2: PsLet, mapping, ifaces: List<Spec>, mono: List<GRef>)
   let targets = unboundGens(let2.lGens, mapping, List())
   if isEmpty(targets)
     ret mapping
@@ -1386,15 +1236,10 @@ fun [tail] bwpWheres(ws: List<Spec>, let2: PsLet, mapping,
     (w: Spec) => bwpWheres(dropOne(ws), let2, bwpOne(w, mapping, targets, ifaces, mono), ifaces, mono)
     ()        => mapping
 
-fun unboundGens(gs: List<PGen>, mapping: List<Binding>,
-                       acc: List<String>) => unboundGensB(gs, mapping, acc)
+fun unboundGens(gs: List<PGen>, mapping: List<Binding>, acc): List<String> =>
+  fold(gs, acc, (a, x) => unboundGensStep(a, x, mapping))
 
-fun unboundGensB(gs: List<PGen>,
-                 mapping: List<Binding>,
-                 acc): List<String> =>
-  fold(gs, acc, (a, x) => unboundGensBStep(a, x, mapping))
-
-fun unboundGensBStep(a: List<String>, x: PGen, mapping: List<Binding>) => match(bindingOf(mapping, x.genName))
+fun unboundGensStep(a: List<String>, x: PGen, mapping: List<Binding>) => match(bindingOf(mapping, x.genName))
   (b: Spec) => a
   () => append(a, x.genName)
 
@@ -1422,9 +1267,7 @@ fun girProviders(ps: List<GProvider>,
                  mono: List<GRef>,
                  ifaces: List<Spec>,
                  acc: List<GRef>) =>
-  fold(ps, acc, (a, x) => girConstraints(constraints,
-                                                 x, mono, ifaces,
-                                                 a))
+  fold(ps, acc, (a, x) => girConstraints(constraints, x, mono, ifaces, a))
 
 fun girConstraints(cs: List<Spec>,
                    p: GProvider,
@@ -1467,15 +1310,10 @@ fun girBound(p: GProvider, letGens: List<PGen>, names: List<String>,
 
 fun allUnionOnly(ns: List<String>, pattern) => all(ns, (x) => !(appearsOutsideUnion(pattern, x, false)))
 
-fun mangledArgs(gs: List<PGen>, mapping: List<Binding>,
-                       acc: List<Spec>) => mangledArgsB(gs, mapping, acc)
+fun mangledArgs(gs: List<PGen>, mapping: List<Binding>, acc): List<Spec> =>
+  fold(gs, acc, (a, x) => mangledArgsStep(a, x, mapping))
 
-fun mangledArgsB(gs: List<PGen>,
-                 mapping: List<Binding>,
-                 acc): List<Spec> =>
-  fold(gs, acc, (a, x) => mangledArgsBStep(a, x, mapping))
-
-fun mangledArgsBStep(a: List<Spec>, x: PGen, mapping: List<Binding>) => match(bindingOf(mapping, x.genName))
+fun mangledArgsStep(a: List<Spec>, x: PGen, mapping: List<Binding>) => match(bindingOf(mapping, x.genName))
   (b: Spec) => append(a, mangledFromSpec(b))
   () => a
 
@@ -1493,15 +1331,12 @@ fun addRefsAll(rs: List<GRef>, acc: List<GRef>) =>
 fun addSpecsAll(ss: List<Spec>, acc) =>
   fold(ss, acc, addConstraintOnce)
 
-fun addNamesAll(ns: List<String>, acc: List<String>) => addNamesAllB(ns,
-                                                                            acc,
-                                                                            Set(acc))
+fun addNamesAll(ns: List<String>, acc: List<String>) => addNamesAllB(ns, acc, Set(acc))
 
 fun addNamesAllB(ns: List<String>, out: List<String>, seen: Set<String>) =>
-  fold(ns, (out = out, seen = seen),
-       addNamesAllBStep).out
+  fold(ns, (out = out, seen = seen), addNamesAllStep).out
 
-fun addNamesAllBStep(st: (out: List<String>, seen: Set<String>), x: String) =>
+fun addNamesAllStep(st: (out: List<String>, seen: Set<String>), x: String) =>
   contains(st.seen, x)
   ? (out = st.out, seen = st.seen)
   : (out = append(st.out, x), seen = add(st.seen, x))
@@ -1567,30 +1402,18 @@ fun withExtraRefs(refs: GRefs, specialized: List<PStmt>,
                                           List()),
                        refs.gdTypes))
 
-fun existingOnly(rs, existing: List<String>,
-                        acc: List<GRef>) => existingOnlyB(rs, existing, acc)
+fun existingOnly(rs: List<GRef>, existing: List<String>, acc: List<GRef>) =>
+  fold(rs, acc, (a, x) => contains(existing, refKey(x)) ? append(a, x) : a)
 
-fun existingOnlyB(rs: List<GRef>,
-                  existing: List<String>,
-                  acc: List<GRef>) =>
-  fold(rs, acc, (a, x) => contains2(existing, refKey(x))
-    ? append(a, x)
-    : a)
-
-fun allStmtNames(ss, acc: List<String>): List<String> => allStmtNamesB(ss, acc)
-
-fun allStmtNamesB(ss: List<PStmt>, acc: List<String>) =>
+fun allStmtNames(ss: List<PStmt>, acc: List<String>) =>
   fold(ss, acc, (a, x) => append(a, stmtName(x)))
 
 fun enumNamesOf(ss): List<String> => enumNamesLoop(ss, List())
 
-fun enumNamesLoop(ss, acc: List<String>): List<String>
-  ret enumNamesLoopB(ss, acc)
+fun enumNamesLoop(ss: List<PStmt>, acc: List<String>) =>
+  fold(ss, acc, enumNamesLoopStep)
 
-fun enumNamesLoopB(ss: List<PStmt>, acc: List<String>) =>
-  fold(ss, acc, enumNamesLoopBStep)
-
-fun enumNamesLoopBStep(a: List<String>, x: PStmt) => match(x)
+fun enumNamesLoopStep(a: List<String>, x: PStmt) => match(x)
   (e2: PsEnum) => append(a, e2.eName)
   (o: PStmt) => a
 
@@ -1617,10 +1440,7 @@ fun offenderNames(seenMono: List<GRef>) =>
 fun countRefsFor(rs: List<GRef>, name: String, n) =>
   fold(rs, n, (a, x) => x.grName == name ? a + 1 : a)
 
-fun offenderErrs(ns: List<String>,
-                 statements: List<PStmt>,
-                 seenMono: List<GRef>,
-                 acc: Set<PErr>) =>
+fun offenderErrs(ns: List<String>, statements: List<PStmt>, seenMono: List<GRef>, acc: Set<PErr>) =>
   fold(ns, acc, (a, x) => add(a, PErr(offenderLine(statements, x),
                        offenderMsg(x,
                                    countRefsFor(seenMono, x,
@@ -1634,9 +1454,7 @@ fun offenderMsg(name, count: Int)
 fun offenderLine(ss, name): PLine => offLineLoop(ss, name, PLine("$generics", 1, 1))
 
 fun offLineLoop(ss: List<PStmt>, name, best: PLine) =>
-  fold(ss, best, (a, x) => stmtName(x) == name
-    ? stmtLine(x)
-    : a)
+  fold(ss, best, (a, x) => stmtName(x) == name ? stmtLine(x) : a)
 
 # ── trait-reference resolution ───────────────────────────────────────────────
 # Python: __resolve_trait_references. After monomorphisation, a TRAIT-scope
@@ -1648,13 +1466,7 @@ fun resolveTraitReferences(statements)
   let r = rootResolver(statements)
   ret rtrStmts(statements, r, traitLets(r), List())
 
-fun rtrStmts(ss, r, traits: List<PStmt>,
-                    acc: List<PStmt>) => rtrStmtsB(ss, r, traits, acc)
-
-fun rtrStmtsB(ss: List<PStmt>,
-              r,
-              traits: List<PStmt>,
-              acc: List<PStmt>) =>
+fun rtrStmts(ss: List<PStmt>, r, traits: List<PStmt>, acc: List<PStmt>) =>
   fold(ss, acc, (a, x) => append(a, rtrStmt(x, r, traits)))
 
 fun rtrStmt(st, r, traits: List<PStmt>) => match(st)
@@ -1738,23 +1550,11 @@ fun rtrExpr(x, r, traits: List<PStmt>) => match(x)
   (o: PeLowered) => x
   (o: PeNewEnum) => x
 
-fun rtrTupEnts(es: List<PTupEnt>, r, traits: List<PStmt>,
-                      acc: List<PTupEnt>) => rtrTupEntsB(es, r, traits, acc)
-
-fun rtrTupEntsB(es: List<PTupEnt>,
-                r,
-                traits: List<PStmt>,
-                acc): List<PTupEnt> =>
+fun rtrTupEnts(es: List<PTupEnt>, r, traits: List<PStmt>, acc): List<PTupEnt> =>
   fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
                 rtrExpr(x.tupValue, r, traits))))
 
-fun rtrArms(as2, r, traits: List<PStmt>,
-                   acc: List<PArm>) => rtrArmsB(as2, r, traits, acc)
-
-fun rtrArmsB(as2: List<PArm>,
-             r,
-             traits: List<PStmt>,
-             acc: List<PArm>) =>
+fun rtrArms(as2: List<PArm>, r, traits: List<PStmt>, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, with x(armBody = rtrExpr(x.armBody, r, traits), armGuard = rtrExprOpt(x.armGuard, r, traits))))
 
 # Redirect one name: use the trait_scope recorded during compilation if
@@ -1787,10 +1587,7 @@ fun redirectWith(nm, ts: SClass, r,
 
 # Provider count taken on the finding walk itself (no-length ruling) — the
 # ambiguity diagnostic needs the number; soleLetOf keeps the list variant.
-fun traitProviderCount(ls: List<PStmt>,
-                       ts: SClass,
-                       r,
-                       n) =>
+fun traitProviderCount(ls: List<PStmt>, ts: SClass, r, n) =>
   fold(ls, n, (a, x) => traitProviderCountStep(a, x, ts, r))
 
 fun traitProviderCountStep(a: Int, x: PStmt, ts: SClass, r) => match(x)
@@ -1799,16 +1596,10 @@ fun traitProviderCountStep(a: Int, x: PStmt, ts: SClass, r) => match(x)
     : a
   (o: PStmt) => a
 
-fun traitProviders(ls, ts: SClass, r,
-                          acc: List<PsLet>) => traitProvidersB(ls, ts, r, acc)
+fun traitProviders(ls: List<PStmt>, ts: SClass, r, acc: List<PsLet>) =>
+  fold(ls, acc, (a, x) => traitProvidersStep(a, x, ts, r))
 
-fun traitProvidersB(ls: List<PStmt>,
-                    ts: SClass,
-                    r,
-                    acc: List<PsLet>) =>
-  fold(ls, acc, (a, x) => traitProvidersBStep(a, x, ts, r))
-
-fun traitProvidersBStep(a: List<PsLet>, x: PStmt, ts: SClass, r) => match(x)
+fun traitProvidersStep(a: List<PsLet>, x: PStmt, ts: SClass, r) => match(x)
   (let2: PsLet) => implementsTrait(let2, ts, r)
     ? append(a, let2)
     : a
@@ -1831,10 +1622,7 @@ fun implementsTrait(tr: PsLet, ts: SClass, r) => match(tr.lType)
 # A monomorphised witness declares its parents with MANGLED inner names
 # (Sized<List$generic$Int>) while the demanded scope is structural
 # (Sized<List<Int>>): compare against both spellings.
-fun mangledSpecList(ss, acc: List<Spec>): List<Spec>
-  ret mangledSpecListB(ss, acc)
-
-fun mangledSpecListB(ss: List<Spec>, acc: List<Spec>) =>
+fun mangledSpecList(ss: List<Spec>, acc: List<Spec>) =>
   fold(ss, acc, (a, x) => append(a, mangledFromSpec(x)))
 
 fun anyParentMatches(ps: List<Spec>, ts: SClass,
@@ -1905,18 +1693,8 @@ fun disambiguateByType(mds, ts: SClass, icls: PsClass,
     ()           => false
   ret single ? matching : mds
 
-fun matchingByType(ms, ifaceType: Spec, r,
-                          acc: List<Found>)
-  ret matchingByTypeB(ms, ifaceType, r, acc)
-
-fun matchingByTypeB(ms: List<Found>,
-                    ifaceType: Spec,
-                    r,
-                    acc: List<Found>) =>
-  fold(ms, acc, (a, x) => triTrue(assignableEq(r, ifaceType,
-                                          stmtType(x.fStmt)))
-    ? append(a, x)
-    : a)
+fun matchingByType(ms: List<Found>, ifaceType: Spec, r, acc: List<Found>) =>
+  fold(ms, acc, (a, x) => triTrue(assignableEq(r, ifaceType, stmtType(x.fStmt))) ? append(a, x) : a)
 
 # ── refresh embedded EnumSpec.all_fields ─────────────────────────────────────
 # Python: __refresh_enum_spec_all_fields. Sync every embedded copy to the
@@ -1967,12 +1745,7 @@ fun refreshedEnum(fe: SEnum, spec: SEnum)
   ret SEnum(fe.seRoot, fe.seValidLeaves, spec.seAllLeaves, fe.seParams,
             fe.seLine)
 
-fun rfrStmts(ss, c: Canon,
-                    acc: List<PStmt>) => rfrStmtsB(ss, c, acc)
-
-fun rfrStmtsB(ss: List<PStmt>,
-              c: Canon,
-              acc: List<PStmt>) =>
+fun rfrStmts(ss: List<PStmt>, c: Canon, acc: List<PStmt>) =>
   fold(ss, acc, (a, x) => append(a, rfrStmt(x, c)))
 
 fun rfrStmt(st, c: Canon) => match(st)
@@ -2060,18 +1833,10 @@ fun rfrExpr(x, c: Canon) => match(x)
   (o: PeLiteral) => x
   (o: PeLowered) => x
 
-fun rfrTupEnts(es: List<PTupEnt>, c: Canon,
-                      acc: List<PTupEnt>) => rfrTupEntsB(es, c, acc)
+fun rfrTupEnts(es: List<PTupEnt>, c: Canon, acc): List<PTupEnt> =>
+  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rfrExpr(x.tupValue, c))))
 
-fun rfrTupEntsB(es: List<PTupEnt>,
-                c: Canon,
-                acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
-                rfrExpr(x.tupValue, c))))
-
-fun rfrArms(as2, c: Canon, acc: List<PArm>): List<PArm> => rfrArmsB(as2, c, acc)
-
-fun rfrArmsB(as2: List<PArm>, c: Canon, acc: List<PArm>) =>
+fun rfrArms(as2: List<PArm>, c: Canon, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, with x(armType = rfrSpecOpt(x.armType, c), armBody = rfrExpr(x.armBody, c), armGuard = rfrExprOpt(x.armGuard, c))))
 
 fun rfrSpecOpt(sp: Spec|None, c: Canon) => match(sp)
@@ -2084,14 +1849,8 @@ fun rfrSpecsOpt(ss: List<Spec>|None, c: Canon) => match(ss)
 
 fun rfrSpecList(ts: List<Spec>, c: Canon) => rfrSpecLoop(ts, c, List())
 
-fun rfrSpecLoop(ts, c: Canon,
-                       acc: List<Spec>) => rfrSpecLoopB(ts, c, acc)
-
-fun rfrSpecLoopB(ts: List<Spec>,
-                 c: Canon,
-                 acc: List<Spec>) =>
-  fold(ts, acc, (a, x) => append(a, rfrSpec(x,
-                                                         c)))
+fun rfrSpecLoop(ts: List<Spec>, c: Canon, acc: List<Spec>) =>
+  fold(ts, acc, (a, x) => append(a, rfrSpec(x, c)))
 
 # Children first, canonical refresh at the SEnum node itself. Never recurse
 # into seAllFields — EnumSpec.search_and_replace deliberately skips them.
@@ -2112,15 +1871,8 @@ fun rfrSpec(sp, c: Canon) => match(sp)
   (ls: SLazyStub)    => SLazyStub(rfrSpecOpt(ls.slsTarget, c), ls.slsLine)
   (o: Spec)          => sp
 
-fun rfrEntries(es: List<SEntry>, c: Canon,
-                      acc: List<SEntry>) => rfrEntriesB(es, c, acc)
-
-fun rfrEntriesB(es: List<SEntry>,
-                c: Canon,
-                acc): List<SEntry> =>
-  fold(es, acc, (a, x) => append(a, SEntry(x.seName,
-                rfrSpecOpt(x.seType, c),
-                x.seDefault)))
+fun rfrEntries(es: List<SEntry>, c: Canon, acc): List<SEntry> =>
+  fold(es, acc, (a, x) => append(a, SEntry(x.seName, rfrSpecOpt(x.seType, c), x.seDefault)))
 
 fun rfrEnum(e2: SEnum, c: Canon)
   let rebuilt = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
@@ -2204,9 +1956,7 @@ fun reportUnresolvedGenericCalls(statements)
   # A surviving generic template's body is legitimately generic.
   ret fold(statements, Set<PErr>(), (acc, st) => isEmpty(stmtGens(st)) ? rugStmt(st, r, acc) : acc)
 
-fun rugStmts(ss: List<PStmt>,
-             r,
-             acc: Set<PErr>) =>
+fun rugStmts(ss: List<PStmt>, r, acc: Set<PErr>) =>
   fold(ss, acc, (a, x) => rugStmt(x, r, a))
 
 fun rugStmt(st, r, acc): Set<PErr> => match(st)
@@ -2253,16 +2003,11 @@ fun rugExpr(x, r, acc): Set<PErr> => match(x)
   (o: PeLowered) => acc
   (o: PeNewEnum) => acc
 
-fun rugTupEnts(es: List<PTupEnt>,
-               r,
-               acc): Set<PErr> =>
+fun rugTupEnts(es: List<PTupEnt>, r, acc): Set<PErr> =>
   fold(es, acc, (a, x) => rugExpr(x.tupValue, r, a))
 
-fun rugArms(as2: List<PArm>,
-            r,
-            acc): Set<PErr> =>
-  fold(as2, acc, (a, x) => rugExprOpt(x.armGuard, r,
-                                        rugExpr(x.armBody, r, a)))
+fun rugArms(as2: List<PArm>, r, acc): Set<PErr> =>
+  fold(as2, acc, (a, x) => rugExprOpt(x.armGuard, r, rugExpr(x.armBody, r, a)))
 
 fun rugName(nm: PeName, r, acc): Set<PErr> => rugUnresolved(nm, r)
   ? add(acc, PErr(nm.penLine, rugMsg(bareOfUnique(nm.refName))))

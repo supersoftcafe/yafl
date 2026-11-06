@@ -108,14 +108,10 @@ fun classGlobalCodegen(c, r0): ClassCodegenOut
                  hasAttr(c.cAttrs, "pinnable")),
         concat(genFunctions, thunks))
 
-fun classMemberFunctions(ms, r, acc: List<CgFunction>): List<CgFunction>
-  ret classMemberFunctionsB(ms, r, acc)
+fun classMemberFunctions(ms: List<PStmt>, r, acc: List<CgFunction>) =>
+  fold(ms, acc, (a, x) => classMemberFunctionsStep(a, x, r))
 
-fun classMemberFunctionsB(ms: List<PStmt>, r, acc: List<CgFunction>) =>
-  fold(ms, acc,
-       (a, x) => classMemberFunctionsBStep(a, x, r))
-
-fun classMemberFunctionsBStep(a: List<CgFunction>, x: PStmt, r) => match(x)
+fun classMemberFunctionsStep(a: List<CgFunction>, x: PStmt, r) => match(x)
   (f2: PsFun) => append(a, funGlobalCodegen(f2, r))
   (o: PStmt) => a
 
@@ -131,24 +127,19 @@ fun classSlotEntries(c: PsClass) => match(c.cAllSlots)
   ()                   => List()
 
 fun cseLoop(ss: List<Slot>, acc) =>
-  fold(ss, acc, (a, x) => concat(a, map(sort(x.slotProvides),
-                                       (y) => CgFuncSlot(y, x.slotName))))
+  fold(ss, acc, (a, x) => concat(a, map(sort(x.slotProvides), (y) => CgFuncSlot(y, x.slotName))))
 
 # A fun-typed FIELD occupying a vtable slot needs a dispatch thunk: load the
 # field off `this`, call it with the packed params, return the result.
-fun classFieldThunks(ps, className, functionNames: List<String>,
-                            r, acc: List<CgFunction>)
-  ret classFieldThunksB(ps, className, functionNames, r, acc)
-
-fun classFieldThunksB(ps: List<PStmt>,
+fun classFieldThunks(ps: List<PStmt>,
                       className,
                       functionNames: List<String>,
                       r,
                       acc: List<CgFunction>) =>
-  fold(ps, acc, (a, x) => classFieldThunksBStep(a, x, className, functionNames, r))
+  fold(ps, acc, (a, x) => classFieldThunksStep(a, x, className, functionNames, r))
 
-fun classFieldThunksBStep(a: List<CgFunction>, x: PStmt, className, functionNames: List<String>, r) => match(x)
-  (let2: PsLet) => contains2(functionNames, let2.lName)
+fun classFieldThunksStep(a: List<CgFunction>, x: PStmt, className, functionNames: List<String>, r) => match(x)
+  (let2: PsLet) => contains(functionNames, let2.lName)
     ? append(a, createThunk(className, let2, r))
     : a
   (o: PStmt) => a
@@ -378,7 +369,7 @@ fun letLazyGlobal(l: PsLet, r)
 class [final] SgpOut(sgpRp: RParam|None, sgpGlobals: List<CgGlobal>)
 
 fun staticGlobalPlan(l: PsLet, r, chasing: List<String>)
-  if contains2(chasing, l.lName)
+  if contains(chasing, l.lName)
     ret None
   ret match(l.lDefault)
     (dv: PExpr) => match(l.lType)
@@ -514,7 +505,7 @@ fun sgpInstanceDone(cls: PsClass, hint, pairs,
 # address. Strings stay a GlobalVar read and fail leaf_ok at the use site.
 fun sgpEmitChase(name, r, chasing: List<String>) => match(soleItem(findData(r, name)))
   (f: Found) => match(f.fStmt)
-    (let2: PsLet) => !isDeferredInit(let2) && !contains2(chasing, let2.lName)
+    (let2: PsLet) => !isDeferredInit(let2) && !contains(chasing, let2.lName)
       ? sgpChasePlan(let2, r, chasing)
       : sgpNo()
     (o: PStmt)    => sgpNo()

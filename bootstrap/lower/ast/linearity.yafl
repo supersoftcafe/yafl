@@ -59,11 +59,8 @@ fun envHas(env: LinEnv, name: String) => contains(env.leTypes, name) || envIsFn(
 
 fun cntAdd(a, b: LinCnt) => addKeys2(lcKeys(b), b.lcCounts, a)
 
-fun addKeys2(ks: List<String>,
-             bc: Dict<String, Int>,
-             acc) =>
-  fold(ks, acc, (a, x) => cntBump(a, x,
-                                      countOf(bc, x)))
+fun addKeys2(ks: List<String>, bc: Dict<String, Int>, acc) =>
+  fold(ks, acc, (a, x) => cntBump(a, x, countOf(bc, x)))
 
 fun cntBump(c, key, by)
   let now = countOf(c.lcCounts, key) + by
@@ -79,11 +76,7 @@ fun cntMerge(c1, c2, lr, acc): LinOut
   ret LinOut(isEmpty(c1.lcCounts) ? c2 : c1, errs)
 
 
-fun mergeErrs(ks: List<String>,
-              c1: LinCnt,
-              c2: LinCnt,
-              lr,
-              acc: Set<PErr>) =>
+fun mergeErrs(ks: List<String>, c1: LinCnt, c2: LinCnt, lr, acc: Set<PErr>) =>
   fold(ks, acc, (a, x) => countOf(c1.lcCounts, x)
                      == countOf(c2.lcCounts, x)
     ? a
@@ -100,14 +93,10 @@ fun checkLinearity(statements: List<PStmt>, r): Set<PErr>
   ret checkInstantiations(statements, r,
                           linToplevels(statements, r, noErrs()))
 
-fun linToplevels(ss: List<PStmt>,
-                 r,
-                 acc: Set<PErr>) =>
+fun linToplevels(ss: List<PStmt>, r, acc: Set<PErr>) =>
   fold(ss, acc, (a, x) => linToplevel(x, r, a))
 
-fun linInstMembers(ms: List<PStmt>,
-                   r,
-                   acc: Set<PErr>) =>
+fun linInstMembers(ms: List<PStmt>, r, acc: Set<PErr>) =>
   fold(ms, acc, (a, x) => linInstMembersStep(a, x, r))
 
 fun linInstMembersStep(a: Set<PErr>, x: PStmt, r) => match(x)
@@ -148,7 +137,7 @@ fun leavesOf(sp, r, seen: List<String>) => match(sp)
 fun classLeaves(c: SClass, r, seen: List<String>)
   if !isLinearClassSpec(c, r)
     ret List()
-  if contains2(seen, c.scName)
+  if contains(seen, c.scName)
     ret prepend("", List())          # recursive linear type: one leaf
   ret match(soleItem(findType(r, c.scName)))
     (f: Found) => match(f.fStmt)
@@ -174,17 +163,11 @@ fun fieldLeaves(fs: List<PStmt>,
 
 fun fieldLeavesStep(a: List<String>, x: PStmt, mapping: List<Binding>, r, seen: List<String>) => match(x)
   (let2: PsLet) => match(let2.lType)
-    (ft: Spec) => prefixLeaves(let2.lName,
-      leavesOf(substitute(ft, mapping),
-               r, seen),
-      a)
+    (ft: Spec) => prefixLeaves(let2.lName, leavesOf(substitute(ft, mapping), r, seen), a)
     () => a
   (o: PStmt) => a
 
-fun tupleLeaves(es: List<SEntry>,
-                r,
-                seen: List<String>,
-                acc): List<String> =>
+fun tupleLeaves(es: List<SEntry>, r, seen: List<String>, acc): List<String> =>
   fold(es, acc, (a, x) => tupleLeavesStep(a, x, r, seen))
 
 fun tupleLeavesStep(a: List<String>, x: SEntry, r, seen: List<String>)
@@ -197,13 +180,8 @@ fun tupleLeavesStep(a: List<String>, x: SEntry, r, seen: List<String>)
 fun prefixLeaves(name, subs: List<String>,
                  acc): List<String> => leafPrefixLoop(subs, name, acc)
 
-fun leafPrefixLoop(ss: List<String>,
-                   name,
-                   acc: List<String>) =>
-  fold(ss, acc, (a, x) => addNameOnce(a,
-                                            x == ""
-                                              ? name
-                                              : name + "/" + x))
+fun leafPrefixLoop(ss: List<String>, name, acc: List<String>) =>
+  fold(ss, acc, (a, x) => addNameOnce(a, x == "" ? name : name + "/" + x))
 
 fun anyMemberLinear(ms: List<Spec>, r,
                            seen: List<String>) => any(ms, (x) => !isEmpty(leavesOf(x, r, seen)))
@@ -237,42 +215,27 @@ fun typePosition(sp, lr, r,
                                                        acc))
   (o: Spec)          => acc
 
-fun positionList(ms: List<Spec>,
-                 lr,
-                 r,
-                 acc: Set<PErr>) =>
+fun positionList(ms: List<Spec>, lr, r, acc: Set<PErr>) =>
   fold(ms, acc, (a, x) => typePosition(x, lr, r, a))
 
-fun classArgPositions(as2: List<Spec>,
-                      lr,
-                      r,
-                      acc: Set<PErr>) =>
+fun classArgPositions(as2: List<Spec>, lr, r, acc: Set<PErr>) =>
   fold(as2, acc, (a2, x) => typePosition(x, lr, r,
                    carriesLinearity(x, r)
-                     ? add(a2, PErr(lr,
-                         "linear type not allowed as a generic type argument"))
+                     ? add(a2, PErr(lr, "linear type not allowed as a generic type argument"))
                      : a2))
 
-fun entryPositions(es: List<SEntry>,
-                   lr,
-                   r,
-                   acc): Set<PErr> =>
-  fold(es, acc, (a, x) => checkTypePosition(x.seType, lr, r,
-                                                      a))
+fun entryPositions(es: List<SEntry>, lr, r, acc): Set<PErr> =>
+  fold(es, acc, (a, x) => checkTypePosition(x.seType, lr, r, a))
 
 # ── declarations ────────────────────────────────────────────────────────────
 
 fun linEnum(e2: PsEnum, r, acc): Set<PErr>
   ret enumFieldLin(collectDataFields(e2), e2.pseLine, r, acc)
 
-fun enumFieldLin(fs: List<SField>,
-                 lr,
-                 r,
-                 acc): Set<PErr> =>
+fun enumFieldLin(fs: List<SField>, lr, r, acc): Set<PErr> =>
   fold(fs, acc, (a2, x) => checkTypePosition(x.sfType, lr, r,
                         carriesLinearity(x.sfType, r)
-                          ? add(a2, PErr(lr,
-                              "a linear value may not be stored in an enum"))
+                          ? add(a2, PErr(lr, "a linear value may not be stored in an enum"))
                           : a2))
 
 fun linClass(c: PsClass, r, acc): Set<PErr>
@@ -283,25 +246,17 @@ fun linClass(c: PsClass, r, acc): Set<PErr>
 
 fun classThis(c: PsClass) => thisType(c)
 
-fun classFieldLin(fs: List<PStmt>,
-                  c: PsClass,
-                  isLin,
-                  r,
-                  acc: Set<PErr>) =>
+fun classFieldLin(fs: List<PStmt>, c: PsClass, isLin, r, acc: Set<PErr>) =>
   fold(fs, acc, (a2, x) => classFieldLinStep(a2, x, c, isLin, r))
 
 fun classFieldLinStep(a2: Set<PErr>, x: PStmt, c: PsClass, isLin, r) => match(x)
   (let2: PsLet) => checkTypePosition(let2.lType, let2.pslLine, r,
     !isLin && carriesLinearity(let2.lType, r)
-      ? add(a2, PErr(c.pscLine,
-          "a class with a linear field must be declared [linear]"))
+      ? add(a2, PErr(c.pscLine, "a class with a linear field must be declared [linear]"))
       : a2)
   (o: PStmt) => a2
 
-fun classMethodLin(ms: List<PStmt>,
-                   thisTy: Spec|None,
-                   r,
-                   acc: Set<PErr>) =>
+fun classMethodLin(ms: List<PStmt>, thisTy: Spec|None, r, acc: Set<PErr>) =>
   fold(ms, acc, (a, x) => classMethodLinStep(a, x, thisTy, r))
 
 fun classMethodLinStep(a: Set<PErr>, x: PStmt, thisTy: Spec|None, r) => match(x)
@@ -324,14 +279,11 @@ fun linFunction(f: PsFun, thisTy: Spec|None, r0,
     (b: PExpr) => linBody(f, b, params, thisTy, r0, acc2)
     ()         => acc2
 
-fun paramPositions(ps: List<PStmt>,
-                   r,
-                   acc: Set<PErr>) =>
+fun paramPositions(ps: List<PStmt>, r, acc: Set<PErr>) =>
   fold(ps, acc, (a, x) => paramPositionsStep(a, x, r))
 
 fun paramPositionsStep(a: Set<PErr>, x: PStmt, r) => match(x)
-  (let2: PsLet) => checkTypePosition(let2.lType,
-    let2.pslLine, r, a)
+  (let2: PsLet) => checkTypePosition(let2.lType, let2.pslLine, r, a)
   (o: PStmt) => a
 
 fun anyLinearSignature(ps: List<PStmt>, retTy: Spec|None, r) =>
@@ -387,8 +339,7 @@ fun dischargeEnv(ns: List<String>,
                  r,
                  isParam,
                  acc: Set<PErr>) =>
-  fold(ns, acc, (a, x) => discharge(x, envLeaves(env, x, r), counts, lr,
-                isParam, a))
+  fold(ns, acc, (a, x) => discharge(x, envLeaves(env, x, r), counts, lr, isParam, a))
 
 # Each obligation consumed exactly once. `isParam` adds the [terminal] hint.
 fun discharge(name, leaves: List<String>, counts: Dict<String, Int>,
@@ -401,9 +352,7 @@ fun dischargeLoop(ls: List<String>,
                   lr,
                   isParam,
                   acc: Set<PErr>): Set<PErr> =>
-  fold(ls, acc, (a, x) => dischargeOne2(oblKey(name, x),
-                                                 name, counts, lr, isParam,
-                                                 a))
+  fold(ls, acc, (a, x) => dischargeOne2(oblKey(name, x), name, counts, lr, isParam, a))
 
 fun dischargeOne2(key: String, name, counts: Dict<String, Int>,
                   lr, isParam, acc): Set<PErr>
@@ -493,12 +442,7 @@ fun linearPositionAt(p: PStmt, k: Int, acc: Set<Int>): Set<Int> => match(p)
   (let2: PsLet) => hasAttr(let2.lAttrs, "linear") ? add(acc, k) : acc
   (o: PStmt)    => acc
 
-fun argEntries(es: List<PTupEnt>,
-               k,
-               linearAt: Set<Int>,
-               env: LinEnv,
-               r,
-               acc: LinOut): LinOut =>
+fun argEntries(es: List<PTupEnt>, k, linearAt: Set<Int>, env: LinEnv, r, acc: LinOut): LinOut =>
   fold(es, (acc = acc, k = k),
        (st, x) => (acc = argEntry(x.tupValue, contains(linearAt, st.k), env, r, st.acc), k = st.k + 1)).acc
 
@@ -533,20 +477,17 @@ fun linTriple(a, b, c, env, r,
 # NamedExpressions inside field_args). Not [tail]: the counts sum on the way
 # back up; fieldArgs lists are tiny.
 # Right-nested on purpose: cntAdd folds the rest's counts into the head's.
-fun linFieldArgs(fas: List<PFieldArg>, env, r,
-                 acc): LinOut => match(head(fas))
+fun linFieldArgs(fas: List<PFieldArg>, env, r, acc): LinOut => match(head(fas))
   (fa: PFieldArg) => linFaStep(fa, dropOne(fas), env, r, acc)
   ()              => linZero(acc)
 
-fun linFaStep(fa: PFieldArg, rest: List<PFieldArg>, env, r,
-              acc)
+fun linFaStep(fa: PFieldArg, rest: List<PFieldArg>, env, r, acc)
   let o1 = linCount(fa.faValue, env, r, acc)
   let o2 = linFieldArgs(rest, env, r, o1.loErrs)
   ret LinOut(cntAdd(o1.loCnt, o2.loCnt), o2.loErrs)
 
 fun countEntries(es: List<PTupEnt>, env, r, acc): LinOut =>
-  fold(es, acc,
-       (a, x) => countEntriesStep(a, x, env, r))
+  fold(es, acc, (a, x) => countEntriesStep(a, x, env, r))
 
 fun countEntriesStep(a: LinOut, x: PTupEnt, env, r) =>
   linCount(x.tupValue, env, r, a.loErrs)
@@ -604,9 +545,7 @@ fun armTypeOf(a: PArm) => match(a.armType)
   (t2: Spec) => t2
   ()         => STuple(List(), a.parmLine)   # unreachable when bound
 
-fun popObligations(ls: List<String>,
-                   name,
-                   c: LinCnt) =>
+fun popObligations(ls: List<String>, name, c: LinCnt) =>
   fold(ls, c, (a, x) => cntDrop(a, oblKey(name, x)))
 
 # ── blocks and statement lists ──────────────────────────────────────────────
@@ -703,8 +642,7 @@ fun suffixDestructure(d: PsDestructure, stmts: List<PStmt>, i,
 class [final] GrownEnv(geEnv: LinEnv, geBindings: List<PStmt>)
 
 fun growEnv(ts: List<PStmt>, r, env, bindings) =>
-  fold(ts, (env = env, bindings = bindings),
-       (st, x) => growEnvStep(st, x, r))
+  fold(ts, (env = env, bindings = bindings), (st, x) => growEnvStep(st, x, r))
     |> (r2) => GrownEnv(r2.env, r2.bindings)
 
 fun growEnvStep(st: (env: LinEnv, bindings: List<PStmt>), x: PStmt, r) => match(x)
@@ -824,9 +762,7 @@ fun [tail] resolvePathRoot(x, fields) => match(x)
   (o: PExpr)   => None
 
 fun pathCounts(ls: List<String>, rp: RootPath, c) =>
-  fold(ls, c, (a, x) => isPathPrefix(rp.rpPath, x)
-    ? cntBump(a, oblKey(rp.rpRoot, x), 1)
-    : a)
+  fold(ls, c, (a, x) => isPathPrefix(rp.rpPath, x) ? cntBump(a, oblKey(rp.rpRoot, x), 1) : a)
 
 fun isPathPrefix(prefix, full) => prefix == "" || prefix == full || startsWith(full, prefix + "/")
 
@@ -861,17 +797,11 @@ fun checkCapture(b, env: LinEnv, lr, r: Resolver,
 fun capturedIn(b, env: LinEnv): List<String> => capturedLoop(referencedNames(b, List()), env,
                                                              List())
 
-fun capturedLoop(ns: List<String>,
-                 env: LinEnv,
-                 acc: List<String>) =>
-  fold(ns, acc, (a, x) => envHas(env, x)
-    ? addNameOnce(a, x)
-    : a)
+fun capturedLoop(ns: List<String>, env: LinEnv, acc: List<String>) =>
+  fold(ns, acc, (a, x) => envHas(env, x) ? addNameOnce(a, x) : a)
 
 
-fun captureErrs(ns: List<String>,
-                lr,
-                acc: Set<PErr>) =>
+fun captureErrs(ns: List<String>, lr, acc: Set<PErr>) =>
   fold(ns, acc, (a2, x) => add(a2, PErr(lr, "linear value '" + bareOfUnique(x)
                            + "' captured by a nested function or lambda")))
 
@@ -881,9 +811,7 @@ fun captureErrs(ns: List<String>,
 fun checkInstantiations(statements: List<PStmt>, r,
                         acc): Set<PErr> => instStmts(statements, r, acc)
 
-fun instStmts(ss: List<PStmt>,
-              r,
-              acc: Set<PErr>) =>
+fun instStmts(ss: List<PStmt>, r, acc: Set<PErr>) =>
   fold(ss, acc, (a, x) => instStmt(x, r, a))
 
 fun instStmt(st, r, acc): Set<PErr> => match(st)
@@ -937,14 +865,10 @@ fun instExpr(x, r, acc): Set<PErr> => match(x)
   (o: PeLowered) => acc
   (o: PeNewEnum) => acc
 
-fun instEntries(es: List<PTupEnt>,
-                r,
-                acc): Set<PErr> =>
+fun instEntries(es: List<PTupEnt>, r, acc): Set<PErr> =>
   fold(es, acc, (a, x) => instExpr(x.tupValue, r, a))
 
-fun instArms(as2: List<PArm>,
-             r,
-             acc): Set<PErr> =>
+fun instArms(as2: List<PArm>, r, acc): Set<PErr> =>
   fold(as2, acc, (a, x) => instExprOpt(x.armGuard, r,
                         instExpr(x.armBody, r,
                                  instSpecOpt(x.armType, r, a))))
@@ -974,14 +898,10 @@ fun instSpec(sp, r, acc): Set<PErr> => match(sp)
                                     instSpec(cl.scParams2, r, acc))
   (o: Spec)          => acc
 
-fun instSpecsIn(ss: List<Spec>,
-                r,
-                acc: Set<PErr>) =>
+fun instSpecsIn(ss: List<Spec>, r, acc: Set<PErr>) =>
   fold(ss, acc, (a, x) => instSpec(x, r, a))
 
-fun instSpecEntries(es: List<SEntry>,
-                    r,
-                    acc): Set<PErr> =>
+fun instSpecEntries(es: List<SEntry>, r, acc): Set<PErr> =>
   fold(es, acc, (a, x) => instSpecOpt(x.seType, r, a))
 
 fun instCheck(name, args: List<Spec>, lr, isType,

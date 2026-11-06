@@ -114,8 +114,7 @@ fun [tail] dfMarks(ops: List<Op>, phis: List<Op>, reads: Dict<String, Int>,
 
 # The op index travels in the accumulator beside the state.
 fun dfVirtualPass(os: List<Op>, k, st: DfState): DfState =>
-  fold(os, (st = st, k = k),
-       (s, op) => (st = dfVirtualOne(op, s.k, s.st), k = s.k + 1)).st
+  fold(os, (st = st, k = k), (s, op) => (st = dfVirtualOne(op, s.k, s.st), k = s.k + 1)).st
 
 fun dfVirtualOne(op, k: Int, st: DfState): DfState => match(op)
   (m: OpMove) => !contains(st.dsSkip, k) && !m.moveKeep && m.moveTarget is RpStackVar

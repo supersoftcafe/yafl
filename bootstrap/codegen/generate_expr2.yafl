@@ -135,8 +135,7 @@ fun emMultiEntryArm(st0: GEmit, resolver, resultType: Spec|None,
 fun entryLabel(idx: Int, k: Int) => "match_arm_" + String(idx) + "_m" + String(k)
 
 fun emEntryGuards(st, es: List<GEntry>, idx: Int, k): GEmit =>
-  fold(es, (st = st, k = k),
-       (st2, x) => (st = emEntry(st2.st, x, idx, st2.k), k = st2.k + 1)).st
+  fold(es, (st = st, k = k), (st2, x) => (st = emEntry(st2.st, x, idx, st2.k), k = st2.k + 1)).st
 
 # A single-stage entry jumps straight to its label; a longer one runs its
 # stages in turn and, on a miss, goes on to the next entry.
@@ -169,10 +168,7 @@ fun emEntryLabelJumps(st: GEmit, es: List<GEntry>, idx: Int, k, bodyLabel): GEmi
 
 fun phiSourcesOf(es: List<GEntry>, idx: Int) => phiSourcesLoop(es, idx, 0, List())
 
-fun phiSourcesLoop(es: List<GEntry>, idx: Int, k, acc: List<OpPhiSource>)
-  ret phiSourcesLoopB(es, idx, k, acc)
-
-fun phiSourcesLoopB(es: List<GEntry>, idx: Int, k, acc): List<OpPhiSource> =>
+fun phiSourcesLoop(es: List<GEntry>, idx: Int, k, acc): List<OpPhiSource> =>
   fold(es, (k = k, acc = acc),
        (st, x) => (k = st.k + 1, acc = append(st.acc, OpPhiSource(entryLabel(idx, st.k), x.geValue)))).acc
 
@@ -448,13 +444,10 @@ fun genMatchMulti(mt: PeMatch, r, expected)
   ret emFinish(multiFallback(em1, mt, resultType, r), resultVar)
 
 fun genSubjects(ss: List<PExpr>, r, i, acc: List<GBundle>) =>
-  fold(ss, (i = i, acc = acc),
-       (st, x) => genSubjectsStep(st, x, r)).acc
+  fold(ss, (i = i, acc = acc), (st, x) => genSubjectsStep(st, x, r)).acc
 
 fun genSubjectsStep(st: (i: Int, acc: List<GBundle>), x: PExpr, r) =>
-  (i = st.i + 1,
-  acc = appendBundle(st.acc, withPrefix(genExpr(x, r),
-      "subj" + String(st.i))))
+  (i = st.i + 1, acc = appendBundle(st.acc, withPrefix(genExpr(x, r), "subj" + String(st.i))))
 
 fun appendBundle(acc: List<GBundle>, b: GBundle) => append(acc, b)
 
@@ -464,14 +457,8 @@ fun multiFallback(em, mt: PeMatch, resultType,
                   r) => emFallback(em, r, resultType, elseArmOf(mt), None,
                                    "multi-subject match fell through all arms")
 
-fun multiArms(em: GEmit,
-              as2: List<PArm>,
-              subs: List<PExpr>,
-              gens: List<GBundle>,
-              resultType,
-              r) =>
-  fold(as2, em, (a, x) => isElseArm(x) ? a
-                         : multiArm(a, x, subs, gens, resultType, r))
+fun multiArms(em: GEmit, as2: List<PArm>, subs: List<PExpr>, gens: List<GBundle>, resultType, r) =>
+  fold(as2, em, (a, x) => isElseArm(x) ? a : multiArm(a, x, subs, gens, resultType, r))
 
 fun isElseArm(a: PArm) => isNoneSpec(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
 
@@ -538,8 +525,7 @@ fun posOfArm(a: PArm) => PPos(a.armName, a.armType, a.parmLine)
 # whose body reads only the second subject then fails to generate, and the
 # damage surfaces as a join Phi missing that arm's source.
 fun bindsLoop(ps: List<PPos>, subs: List<PExpr>, gens: List<GBundle>, r: Resolver, acc: GBind|None): GBind|None =>
-  fold(ps, (subs = subs, gens = gens, r = r, acc = acc),
-       bindsLoopStep).acc
+  fold(ps, (subs = subs, gens = gens, r = r, acc = acc), bindsLoopStep).acc
 
 fun bindsLoopStep(st: (subs: List<PExpr>, gens: List<GBundle>, r: Resolver, acc: GBind|None),
                   x: PPos) =>
@@ -630,12 +616,7 @@ fun genPrimitiveMatch(em0, mt: PeMatch, subjBundle: GBundle, typeName,
     ()         => None
   ret emFallback(em1, r, resultType, elseArm, bind, "primitive match fell through all arms")
 
-fun genPrimitiveArms(em: GEmit,
-                     arms: List<PArm>,
-                     sv,
-                     typeName,
-                     resultType,
-                     r) =>
+fun genPrimitiveArms(em: GEmit, arms: List<PArm>, sv, typeName, resultType, r) =>
   fold(arms, em, (a, x) => isEmpty(x.armLiterals) ? a : genPrimitiveArm(a, x, sv, typeName, resultType, r))
 
 fun genPrimitiveArm(em: GEmit, arm: PArm, sv, typeName, resultType, r)

@@ -236,8 +236,7 @@ fun tupleType(tp: PeTuple, r): Spec|None => match(tupEntriesB(tp.exprs, r, List(
   ()                 => None
 
 # A spread of something that is not a tuple ends the walk with None.
-fun tupEntriesB(es: List<PTupEnt>, r,
-                acc: List<SEntry>): List<SEntry>|None =>
+fun tupEntriesB(es: List<PTupEnt>, r, acc: List<SEntry>): List<SEntry>|None =>
   foldWhile<PTupEnt, List<SEntry>|None>(es, acc,
     (got, e) => tupEntryStep(got, e, r),
     (got) => got !is None)
@@ -269,7 +268,7 @@ fun newEnumType(ne: PeNewEnum, r) => match(soleItem(findType(r, ne.rootName)))
 
 fun restrictToLeaf(sp: Spec|None, leafName) => match(sp)
   (s2: Spec) => match(s2)
-    (e2: SEnum) => contains2(e2.seAllLeaves, leafName)
+    (e2: SEnum) => contains(e2.seAllLeaves, leafName)
       ? SEnum(e2.seRoot, prepend(leafName, List()), e2.seAllLeaves, e2.seParams, e2.seLine)
       : s2
     (o: Spec)   => s2
@@ -342,8 +341,7 @@ fun classArrayElem(sc: SClass, r) => match(soleItem(findType(r, sc.scName)))
   ()         => None
 
 fun firstArrayElem(fs: List<PStmt>) =>
-  foldWhile<PStmt, Spec|None>(fs, None, (found, st) => arrayElemOf(st),
-                              (found) => found is None)
+  foldWhile<PStmt, Spec|None>(fs, None, (found, st) => arrayElemOf(st), (found) => found is None)
 
 fun arrayElemOf(st: PStmt): Spec|None => match(st)
   (let2: PsLet) => match(let2.lType)

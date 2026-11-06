@@ -124,9 +124,7 @@ fun mergedBounds(lo, up, r): Spec|None => mergeSpecs(up, lo, List<MBind>(), r)
 fun upperOf(uppers: List<Spec>, r)
   if isEmpty(uppers)
     ret None
-  ret match(narrowest(uppers, uppers, r))
-    (n: Spec) => n
-    ()        => convergeTypes(uppers, r)
+  ret narrowest(uppers, uppers, r) ?? convergeTypes(uppers, r)
 
 fun completeHint(sp, r) => isConcrete(sp) && !openResult(sp) && !hasFreePlaceholders(sp, r)
 
@@ -155,11 +153,10 @@ fun convergeTypes(types: List<Spec>, r) => match(head(types))
     : convergeMixed(types, first, r)
   ()            => None
 
-fun convergeMixed(types: List<Spec>, first, r) => match(widestOf(types, types, r))
-  (w: Spec) => w
-  ()        => allEnums(types)
+fun convergeMixed(types: List<Spec>, first, r) =>
+  widestOf(types, types, r) ?? (allEnums(types)
     ? rootEnumOf(types, first)
-    : allClasses(types) ? soleShared(sharedInterfaces(types, r)) : None
+    : allClasses(types) ? soleShared(sharedInterfaces(types, r)) : None)
 
 fun widestOf(ws: List<Spec>, all: List<Spec>, r) => firstWhere(ws, (w) => allFit(all, w, r, true))
 
@@ -228,9 +225,7 @@ fun sharedInterfaces(specs: List<Spec>, r) => sharedLoop(specs, r, None)
 # `shared` None means no member seen yet; a member with no interface list
 # stops the walk and the answer is None.
 fun sharedLoop(ss: List<Spec>, r, acc: List<Spec>|None) =>
-  foldWhile(ss, (ok = true, shared = acc),
-            (st, s) => sharedStep(st, s, r),
-            (st) => st.ok)
+  foldWhile(ss, (ok = true, shared = acc), (st, s) => sharedStep(st, s, r), (st) => st.ok)
     |> (st) => !st.ok ? None : st.shared ?? List<Spec>()
 
 fun interfacesOf(sp, r) => match(sp)

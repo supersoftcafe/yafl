@@ -29,8 +29,7 @@ fun foldExprsScoped<T>(ss: List<PStmt>, r: Resolver,
 
 # ── statements ───────────────────────────────────────────────────────────────
 
-fun sfStmts<T>(ss: List<PStmt>, r: Resolver,
-               fx: (:T, :PExpr, :Resolver): T, acc: T): T
+fun sfStmts<T>(ss: List<PStmt>, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
   ret fold<PStmt, T>(ss, acc, (a, st) => sfStmt(st, r, fx, a))
 
 fun sfStmt<T>(st: PStmt, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T => match(st)

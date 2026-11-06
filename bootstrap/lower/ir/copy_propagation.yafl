@@ -100,7 +100,7 @@ fun cpTryMove(m, nxt, readCounts: Dict<String, Int>) => match(m.moveTarget)
 fun cpTryNext(m, mt: RpStackVar, ms, nxt,
               readCounts: Dict<String, Int>) => match(nxt)
   (lb: OpLabel) => None
-  (o: Op)       => strListMember(opReadVarNames(nxt), mt.name)
+  (o: Op)       => contains(opReadVarNames(nxt), mt.name)
     ? cpEmit(m, mt, ms, nxt, readCounts)
     : None
 

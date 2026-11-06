@@ -133,8 +133,7 @@ fun yaflPaths(dir, acc): List<String>|String => match(listDir(dir))
   (e: IOError)         => dir + ": cannot be listed"
   (names: Set<String>) => yaflEntries(sort(names), dir, acc)
 
-fun yaflEntries(ns: List<String>, dir,
-                acc: List<String>) => match(head(ns))
+fun yaflEntries(ns: List<String>, dir, acc: List<String>) => match(head(ns))
   (v: String) => isDotEntry(v)
     ? yaflEntries(dropOne(ns), dir, acc)
     : match(yaflEntry(dir + "/" + v, acc))
@@ -166,12 +165,10 @@ fun isRegularFile(path) => match(stat(path))
 # are distinct sources that must report DISTINCT filenames.
 fun readSources(root, paths: List<String>) => srcLoop(root, paths, List())
 
-fun [tail] srcLoop(root, ps: List<String>,
-                   b: List<LibSource>) => match(head(ps))
+fun [tail] srcLoop(root, ps: List<String>, b: List<LibSource>) => match(head(ps))
   (v: String) => match(readWholeFile(v))
     (e: IOError)   => v + ": cannot be read"
-    (t: String)    => srcLoop(root, dropOne(ps),
-                              append(b, LibSource(relativeTo(root, v), t)))
+    (t: String)    => srcLoop(root, dropOne(ps), append(b, LibSource(relativeTo(root, v), t)))
   () => b
 
 # A `.yl` archive: the same manifest and sources, read out of the zip.
@@ -189,8 +186,7 @@ fun zipLibraryFrom(entries: List<ZipEntry>, path) => match(zipFind(entries, "yaf
 
 fun zipSources(entries: List<ZipEntry>) => zipSrcLoop(sortEntries(entries), List())
 
-fun zipSrcLoop(es: List<ZipEntry>,
-               b): List<LibSource> =>
+fun zipSrcLoop(es: List<ZipEntry>, b): List<LibSource> =>
   fold(es, b, (a, x) => endsWith(x.zipName, ".yafl")
     ? append(a, LibSource(x.zipName, x.zipBody))
     : a)
@@ -299,8 +295,7 @@ fun withDevLibs(root: String, libs: List<Library>, owned: List<String>): LibResu
 fun [tail] devLibsLoop(ds: List<Library>, libs: List<Library>, owned: List<String>): List<Library> => match(head(ds))
   (v: Library) => any(v.libManifest.libNamespaces, (n: String) => contains(owned, n))
     ? devLibsLoop(dropOne(ds), libs, owned)
-    : devLibsLoop(dropOne(ds), concat(libs, list1(v)),
-                  concat(owned, v.libManifest.libNamespaces))
+    : devLibsLoop(dropOne(ds), concat(libs, list1(v)), concat(owned, v.libManifest.libNamespaces))
   () => libs
 
 # `dev_system_library`: every `.yafl` under `compiler/stdlib`, named relative to
@@ -388,14 +383,12 @@ fun [tail] spacesBefore(s: String, end: Int): Int
 
 fun discoverLibraries(paths: List<String>) => discoverLoop(paths, List(), List())
 
-fun [tail] discoverLoop(ps: List<String>, seen: List<String>,
-                        acc) => match(head(ps))
+fun [tail] discoverLoop(ps: List<String>, seen: List<String>, acc) => match(head(ps))
   (v: String) => !exists(v)
     ? discoverLoop(dropOne(ps), seen, acc)
     : match(listDir(v))
       (e: IOError)         => discoverLoop(dropOne(ps), seen, acc)
-      (names: Set<String>) => discoverInto(dropOne(ps), v,
-                                           sort(names), seen, acc)
+      (names: Set<String>) => discoverInto(dropOne(ps), v, sort(names), seen, acc)
   () => LibsOk(acc)
 
 # `seen` mirrors discover_libraries' seen_roots: the same directory reachable
@@ -454,15 +447,13 @@ fun nsIndexLoop(ls: List<Library>, acc: List<NsEntry>) => match(head(ls))
 
 # Compares libRoot, where namespace_index compares object identity: one library
 # is free to declare a namespace twice, two libraries are not.
-fun nsAddAll(lib, ns: List<String>,
-             acc: List<NsEntry>) => match(head(ns))
+fun nsAddAll(lib, ns: List<String>, acc: List<NsEntry>) => match(head(ns))
   (v: String) => match(nsLookup(acc, v))
     (other: Library) => other.libRoot == lib.libRoot
       ? nsAddAll(lib, dropOne(ns), acc)
       : "namespace '" + v + "' is declared by two libraries: '"
         + other.libManifest.libName + "' and '" + lib.libManifest.libName + "'"
-    ()               => nsAddAll(lib, dropOne(ns),
-                                 concat(acc, list1(NsEntry(v, lib))))
+    ()               => nsAddAll(lib, dropOne(ns), concat(acc, list1(NsEntry(v, lib))))
   () => acc
 
 fun nsLookup(index: List<NsEntry>, name: String) => nsSeek(index, name)
@@ -480,13 +471,11 @@ fun nsSeek(es: List<NsEntry>, name: String) => match(firstWhere(es, (x) => x.nsN
 # resolver applies imports to bare names only), so the two are never composed.
 # A prefix that is not a namespace simply matches nothing.
 
-fun prefixesOf(qualified) => prefixWalk(map(split(qualified, "::"), stripUnique), "",
-                                        List())
+fun prefixesOf(qualified) => prefixWalk(map(split(qualified, "::"), stripUnique), "", List())
 
 fun stripUnique(part) => findByte(part, '@', 0) |> (at) => at < 0 ? part : slice(part, 0, at)
 
-fun [tail] prefixWalk(ps: List<String>, acc,
-                      b: List<String>) => match(head(ps))
+fun [tail] prefixWalk(ps: List<String>, acc, b: List<String>) => match(head(ps))
   (v: String) => (acc == "" ? v : acc + "::" + v)
     |> (next) => prefixWalk(dropOne(ps), next, append(b, next))
   () => b
@@ -495,8 +484,7 @@ fun candidateNamespaces(imports: List<String>, quals: List<String>)
   let a = addAllPrefixes(imports, List())
   ret dedupe(addAllPrefixes(quals, a))
 
-fun addAllPrefixes(xs: List<String>,
-                   b: List<String>) =>
+fun addAllPrefixes(xs: List<String>, b: List<String>) =>
   fold(xs, b, (a, x) => concat(a, prefixesOf(x)))
 
 fun dedupe(xs: List<String>): List<String> => sort(Set(xs))
@@ -519,10 +507,7 @@ fun loadReferenced(index: List<NsEntry>, wanted: List<String>,
                    already) => loadLoop(wanted, index, already,
                                         List(), List())
 
-fun [tail] loadLoop(ns: List<String>, index: List<NsEntry>,
-                    already,
-                    srcs,
-                    libs) => match(head(ns))
+fun [tail] loadLoop(ns: List<String>, index: List<NsEntry>, already, srcs, libs) => match(head(ns))
   (v: String) => match(nsLookup(index, v))
     (lib: Library) => contains(already, lib.libRoot)
       ? loadLoop(dropOne(ns), index, already, srcs, libs)
@@ -634,15 +619,12 @@ fun linkSpecFor(libs: List<Library>) => match(gatherNative(libs, List(), List())
 
 class [final] NativePaths(npIncludes: List<String>, npStatics: List<String>)
 
-fun gatherHeaders(ls: List<Library>,
-                  b: List<String>) =>
-  fold(ls, b, (a, x) => concat(a, map(x.libManifest.libHeaders,
-                     baseName)))
+fun gatherHeaders(ls: List<Library>, b: List<String>) =>
+  fold(ls, b, (a, x) => concat(a, map(x.libManifest.libHeaders, baseName)))
 
 # Include dirs and archive paths both hang off the materialised directory, so
 # they are gathered together — one extraction per library, not two.
-fun [tail] gatherNative(ls: List<Library>, incs,
-                        statics) => match(head(ls))
+fun [tail] gatherNative(ls: List<Library>, incs, statics) => match(head(ls))
   (v: Library) => isEmpty(v.libManifest.libHeaders)
      && isEmpty(v.libManifest.libStaticLibs)
     ? gatherNative(dropOne(ls), incs, statics)

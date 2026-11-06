@@ -146,14 +146,10 @@ fun stackVarName(sv): String => match(sv)
   (s2: RpStackVar) => s2.name
   (o: RParam)      => ""   # unreachable: gbStackVars only ever holds RpStackVar
 
-fun opLabelRenames(ops, prefix, acc: List<RpRename>): List<RpRename>
-  ret opLabelRenamesB(ops, prefix, acc)
+fun opLabelRenames(ops: List<Op>, prefix, acc: List<RpRename>) =>
+  fold(ops, acc, (a, x) => opLabelRenamesStep(a, x, prefix))
 
-fun opLabelRenamesB(ops: List<Op>, prefix, acc: List<RpRename>) =>
-  fold(ops, acc,
-       (a, x) => opLabelRenamesBStep(a, x, prefix))
-
-fun opLabelRenamesBStep(a: List<RpRename>, x: Op, prefix) => match(x)
+fun opLabelRenamesStep(a: List<RpRename>, x: Op, prefix) => match(x)
   (lb: OpLabel) => append(a, RpRename(lb.labelName, attachPrefix(prefix, lb.labelName)))
   (o: Op) => a
 
@@ -261,10 +257,7 @@ fun builtinCType(name: String): CgType => match(name)
   ("float64") => CgFloat(64)
   ()          => CgVoid()   # unreachable: check() rejects an unknown builtin name earlier
 
-fun tupleFieldsOf(es: List<SEntry>, idx: Int, r, acc: List<CgField>): List<CgField>
-  ret tupleFieldsOfB(es, idx, r, acc)
-
-fun tupleFieldsOfB(es: List<SEntry>, idx, r, acc): List<CgField> =>
+fun tupleFieldsOf(es: List<SEntry>, idx, r, acc): List<CgField> =>
   fold(es, (idx = idx, acc = acc),
        (st, x) => (idx = st.idx + 1, acc = append(st.acc, CgField("_" + String(st.idx), specGenerateOpt(x.seType, r))))).acc
 
@@ -937,39 +930,24 @@ fun bundleSwap(xs, i: Int, j: Int): List<GBundle> => i == j
   : swapLoop(xs, 0, i, j, forceNth(xs, i),
              forceNth(xs, j), List())
 
-fun swapLoop(cs, at: Int, i: Int, j: Int, vi: GBundle,
-                    vj: GBundle, acc: List<GBundle>)
-  ret swapLoopB(cs, at, i, j, vi, vj, acc)
+fun swapLoop(cs: List<GBundle>, at, i, j, vi: GBundle, vj: GBundle, acc: List<GBundle>) =>
+  fold(cs, (at = at, acc = acc), (st, x) => swapLoopStep(st, x, i, j, vi, vj)).acc
 
-fun swapLoopB(cs: List<GBundle>, at, i, j, vi: GBundle, vj: GBundle, acc: List<GBundle>) =>
-  fold(cs, (at = at, acc = acc),
-       (st, x) => swapLoopBStep(st, x, i, j, vi, vj)).acc
-
-fun swapLoopBStep(st: (at: Int, acc: List<GBundle>), x: GBundle, i, j, vi: GBundle, vj: GBundle) =>
-  (at = st.at + 1,
-  acc = append(st.acc, st.at == i ? vj
-      : st.at == j ? vi
-      : x))
+fun swapLoopStep(st: (at: Int, acc: List<GBundle>), x: GBundle, i, j, vi: GBundle, vj: GBundle) =>
+  (at = st.at + 1, acc = append(st.acc, st.at == i ? vj : st.at == j ? vi : x))
 
 # Returns the bundles AND their count — idx already rides the walk, so the
 # count is free at the end (no-length ruling: counts are carried, not taken).
 fun genTupleEntryBundles(es: List<PTupEnt>, r, idx, acc: List<GBundle>): (bs: List<GBundle>, n: Int) =>
-  fold(es, (idx = idx, acc = acc),
-       (st, x) => genTupleEntryBundlesStep(st, x, r))
+  fold(es, (idx = idx, acc = acc), (st, x) => genTupleEntryBundlesStep(st, x, r))
     |> (r2) => (r2.acc, r2.idx)
 
 fun genTupleEntryBundlesStep(st: (idx: Int, acc: List<GBundle>), x: PTupEnt, r) =>
-  (idx = st.idx + 1,
-  acc = append(st.acc,
-      withPrefix(genExpr(x.tupValue, r),
-                 "e" + String(st.idx))))
+  (idx = st.idx + 1, acc = append(st.acc, withPrefix(genExpr(x.tupValue, r), "e" + String(st.idx))))
 
 fun namedValuesOf(bundles: List<GBundle>) => namedValuesLoop(bundles, 0, List())
 
-fun namedValuesLoop(bs, idx: Int, acc: List<RpNamedValue>): List<RpNamedValue>
-  ret namedValuesLoopB(bs, idx, acc)
-
-fun namedValuesLoopB(bs: List<GBundle>, idx, acc: List<RpNamedValue>) =>
+fun namedValuesLoop(bs: List<GBundle>, idx, acc: List<RpNamedValue>) =>
   fold(bs, (idx = idx, acc = acc),
        (st, x) => (idx = st.idx + 1, acc = append(st.acc, RpNamedValue("_" + String(st.idx), mustResult(x))))).acc
 
@@ -1011,17 +989,7 @@ fun genNewPlain(cs: PsClass, cname, paramsBundle: GBundle, paramsVar, resultVar,
   let ctorBundle = GBundle(list2(paramsVar, resultVar), ops, resultVar, List(), List())
   ret bundleJoin(paramsBundle, ctorBundle)
 
-fun fieldMoveOps(fs, cname, resultVar, paramsVar,
-                        index, r, acc: List<Op>): List<Op>
-  ret fieldMoveOpsB(fs, cname, resultVar, paramsVar, index, r, acc)
-
-fun fieldMoveOpsB(fs: List<PStmt>,
-                  cname,
-                  resultVar,
-                  paramsVar,
-                  index,
-                  r,
-                  acc: List<Op>) =>
+fun fieldMoveOps(fs: List<PStmt>, cname, resultVar, paramsVar, index, r, acc: List<Op>) =>
   fold(fs, (acc = acc, index = index),
        (st, x) => (acc = append(st.acc, fieldMoveOp(x, cname, resultVar, paramsVar, st.index, r)), index = st.index + 1)).acc
 
@@ -1041,8 +1009,8 @@ fun genNewArray(cs: PsClass, af: PsLet, cname, paramsVar, paramsValue,
 fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
                   paramsValue, resultVar, r): GBundle
   let elemCtype = specGenerate(afSpec.safElem, r)
-  let arrIdx = indexOrMinus1(findIndex(params, isArrayFieldParam))  # classArrayField already found one
-  let lenIdx = indexOrMinus1(findIndex(params, (p) => nameMatches(stmtName(p), afSpec.safLenField)))  # check() guarantees it
+  let arrIdx = findIndex(params, isArrayFieldParam) ?? -1  # classArrayField already found one
+  let lenIdx = findIndex(params, (p) => nameMatches(stmtName(p), afSpec.safLenField)) ?? -1  # check() guarantees it
   let length2 = RpStructField(paramsVar, "_" + String(lenIdx))
   let initFn = RpStructField(paramsVar, "_" + String(arrIdx))
   let scalarOps = scalarFieldMoveOps(params, cname,
@@ -1077,10 +1045,6 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))
   ret GBundle(prepend(paramsVar, prepend(resultVar, list4(unpinVar, iVar, iNext, elemVar))), ops, resultVar, List(), List())
 
-fun indexOrMinus1(k: Int|None) => match(k)
-  (i: Int) => i
-  ()       => -1
-
 fun isArrayFieldParam(st) => match(st)
   (l: PsLet) => match(asArrayFieldVariant(l.lType))
     (af: SArrayField) => true
@@ -1088,8 +1052,7 @@ fun isArrayFieldParam(st) => match(st)
   (o: PStmt) => false
 
 
-fun scalarFieldMoveOps(ps: List<PStmt>, cname, resultVar, paramsVar, arrIdx, i, r,
-                       acc: List<Op>) =>
+fun scalarFieldMoveOps(ps: List<PStmt>, cname, resultVar, paramsVar, arrIdx, i, r, acc: List<Op>) =>
   fold(ps, (i = i, acc = acc),
        (st, x) => scalarFieldMoveOpsStep(st, x, cname, resultVar, paramsVar, arrIdx, r)).acc
 
@@ -1212,8 +1175,7 @@ fun genBlockStmts(ss, r, i: Int): GBundle
   ret bundleJoin(allocBundle, genBlockWalk(ss, r, i, emptyBundle()))
 
 fun genBlockAllocs(ss: List<PStmt>, r, i, acc: GBundle) =>
-  fold(ss, (i = i, acc = acc),
-       (st, x) => genBlockAllocsStep(st, x, r)).acc
+  fold(ss, (i = i, acc = acc), (st, x) => genBlockAllocsStep(st, x, r)).acc
 
 fun genBlockAllocsStep(st: (i: Int, acc: GBundle), x: PStmt, r) =>
   (i = st.i + 1,
@@ -1222,8 +1184,7 @@ fun genBlockAllocsStep(st: (i: Int, acc: GBundle), x: PStmt, r) =>
       : st.acc)
 
 fun genBlockWalk(ss: List<PStmt>, r, i, acc: GBundle) =>
-  fold(ss, (i = i, acc = acc),
-       (st, x) => genBlockWalkStep(st, x, r)).acc
+  fold(ss, (i = i, acc = acc), (st, x) => genBlockWalkStep(st, x, r)).acc
 
 fun genBlockWalkStep(st: (i: Int, acc: GBundle), x: PStmt, r) =>
   (i = st.i + 1,
@@ -1277,8 +1238,7 @@ fun genBlockAssemble(slotType: Spec|None, r, tag, endLabel, ftExit,
 
 # The fall-through label, when the block can reach its end, then the end
 # label — both after everything the block emitted.
-fun genBlockFtLabel(b, ftExit,
-                    reachesEnd: Bool): List<Op>
+fun genBlockFtLabel(b, ftExit, reachesEnd: Bool): List<Op>
   ret reachesEnd ? append(b, OpLabel(ftExit, Dict())) : b
 
 fun genBlockAssembleUnit(ops0: List<Op>, stackVars0, recur0,

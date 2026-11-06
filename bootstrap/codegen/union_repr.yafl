@@ -50,21 +50,17 @@ fun collectLeafFieldSets(st: PsEnum, inherited: List<PStmt>)
     ? (st.eHasParams ? list1(combined) : List())
     : collectLeafFieldSetsVariants(st.eVariants, combined, List())
 
-fun filterDeclaredFields(ps, acc: List<PStmt>): List<PStmt>
-  ret filterDeclaredFieldsB(ps, acc)
+fun filterDeclaredFields(ps: List<PStmt>, acc: List<PStmt>) =>
+  fold(ps, acc, filterDeclaredFieldsStep)
 
-fun filterDeclaredFieldsB(ps: List<PStmt>, acc: List<PStmt>) =>
-  fold(ps, acc, filterDeclaredFieldsBStep)
-
-fun filterDeclaredFieldsBStep(a: List<PStmt>, x: PStmt) => match(x)
+fun filterDeclaredFieldsStep(a: List<PStmt>, x: PStmt) => match(x)
   (let2: PsLet) => isSome(let2.lType)
     ? append(a, x)
     : a
   (o: PStmt) => a
 
 fun collectLeafFieldSetsVariants(vs: List<PStmt>, combined: List<PStmt>, acc: List<List<PStmt>>) =>
-  fold(vs, acc,
-       (a, x) => collectLeafFieldSetsVariantsStep(a, x, combined))
+  fold(vs, acc, (a, x) => collectLeafFieldSetsVariantsStep(a, x, combined))
 
 fun collectLeafFieldSetsVariantsStep(a: List<List<PStmt>>, x: PStmt, combined: List<PStmt>) => match(x)
   (v: PsEnum) => concat(a, collectLeafFieldSets(v, combined))
@@ -577,7 +573,7 @@ fun forceNthTests(l: List<List<CgNullTest>>, i) => match(listAt(l, i))
   (v: List<CgNullTest>) => v
   ()                    => List()   # unreachable: one test list per leaf
 
-fun fieldIndexNamed(fields: List<CgField>, name) => indexOrMinus1(findIndex(fields, (f) => f.fieldName == name))  # always present
+fun fieldIndexNamed(fields: List<CgField>, name) => findIndex(fields, (f) => f.fieldName == name) ?? -1  # always present
 
 # readSlot for a value of the union `gt` held as a subject of its own.
 fun ownSlot(gt: GTagged, sv): (:Int): RParam
@@ -613,7 +609,7 @@ fun narrowsMember(m, ae: SEnum) => match(m)
   (o: Spec)   => false
 
 fun properSubset(small: List<String>, big: List<String>)
-  ret all(small, (x) => contains2(big, x)) && any(big, (x) => !contains2(small, x))
+  ret all(small, (x) => contains(big, x)) && any(big, (x) => !contains(small, x))
 
 fun complexPositionGuards(gc: GComplexEnum, sv, armType: Spec,
                           r): List<RParam>|None => match(asEnumVariant(gc.grcType))
@@ -744,7 +740,7 @@ fun reprGenerateMatch(rep, em, resultType, subjBundle: GBundle,
 # isNoneSpec is reused as-is from generate_expr2.yafl.
 
 fun leafId(allLeafNames: List<String>, leaf): Int
-  ret indexOrMinus1(findIndex(allLeafNames, (n) => baseName(n) == baseName(leaf)))  # always a member
+  ret findIndex(allLeafNames, (n) => baseName(n) == baseName(leaf)) ?? -1  # always a member
 
 fun sortLeavesByGuardOrder(leaves: List<String>, allLeafNames: List<String>): List<String>
   ret fold(leaves, List(), (acc, lf) => insertByLeafId(acc, lf, allLeafNames))
@@ -768,8 +764,7 @@ fun generateFlatEnumMatch(em0, resultType: Spec|None, subjBundle: GBundle, gt: G
 
 fun flatEnumArms(em: GEmit, arms: List<PArm>, sv: RParam, gt: GTagged, resultType: Spec|None,
                  r: Resolver): GEmit =>
-  fold(arms, em,
-       (a, x) => isNoneSpec(x.armType) ? a : flatEnumArm(a, x, sv, gt, resultType, r))
+  fold(arms, em, (a, x) => isNoneSpec(x.armType) ? a : flatEnumArm(a, x, sv, gt, resultType, r))
 
 fun flatEnumArm(em, arm: PArm, sv, gt: GTagged, resultType: Spec|None, r): GEmit
   ret match(asEnumVariant(arm.armType))
@@ -932,9 +927,7 @@ fun combinationUnionEntry(vi, member, u: String, discs: Dict<String, Int>, membe
 # The slot values with the discriminator LAST. Not a list utility: the tag's
 # position IS its position in the union struct, so this names the layout rule
 # rather than the list operation that implements it.
-fun withTagField(values, tag) => append(
-                                     values,
-                                     RpNamedValue("$tag", RpInteger(tag, 32)))
+fun withTagField(values, tag) => append(values, RpNamedValue("$tag", RpInteger(tag, 32)))
 
 fun combinationUnionValueTagged(narrowCtype, narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>,
                                 slotFields: List<CgField>, sv, memberTag)
@@ -1196,17 +1189,12 @@ fun guardOrNever(g2: RParam|None): RParam => match(g2)
 
 # One guard per union member, in member order — the tests are emitted in this
 # order, so it is the order of the generated condition chain.
-fun pointerUnionGuards(gp: GPointer,
-                       members: List<Spec>,
-                       sv,
-                       r,
-                       acc: List<RParam>) =>
+fun pointerUnionGuards(gp: GPointer, members: List<Spec>, sv, r, acc: List<RParam>) =>
   fold(members, acc, (a, x) => eqCgType(specGenerate(x, r), CgStruct(List()))
     ? append(a, RpIntEqConst(sv, 0))
     : pushMemberGuard(a, memberGuard(gp, x, sv, r)))
 
-fun pushMemberGuard(acc,
-                    g2: RParam|None): List<RParam> => match(g2)
+fun pushMemberGuard(acc, g2: RParam|None): List<RParam> => match(g2)
   (gg: RParam) => append(acc, gg)
   ()            => acc
 
@@ -1647,14 +1635,10 @@ fun tagPrecision(t) => match(t)
 
 class [final] PrimStart(psName: String, psOffset: Int)
 
-fun primStartsOf(fields, offset, r, acc: List<PrimStart>): List<PrimStart>
-  ret primStartsOfB(fields, offset, r, acc)
+fun primStartsOf(fields: List<PStmt>, offset: Int, r: Resolver, acc: List<PrimStart>) =>
+  fold(fields, (offset = offset, acc = acc), (st, x) => primStartsOfStep(st, x, r)).acc
 
-fun primStartsOfB(fields: List<PStmt>, offset: Int, r: Resolver, acc: List<PrimStart>) =>
-  fold(fields, (offset = offset, acc = acc),
-       (st, x) => primStartsOfBStep(st, x, r)).acc
-
-fun primStartsOfBStep(st: (offset: Int, acc: List<PrimStart>), x: PStmt, r: Resolver) => match(x)
+fun primStartsOfStep(st: (offset: Int, acc: List<PrimStart>), x: PStmt, r: Resolver) => match(x)
   (let2: PsLet) => (offset = st.offset + cgFlattenPrimitivesN(specGenerateOpt(let2.lType, r)).n, acc = append(st.acc, PrimStart(let2.lName, st.offset)))
   (o: PStmt) => (offset = st.offset, acc = st.acc)
 
@@ -1774,12 +1758,9 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName,
 fun [tail] bxConstructFields(fields: List<PStmt>, objName, resultVar,
                              fieldArgs: List<PunArg>, r, acc: CcAcc) => match(head(fields))
   (v: PStmt) => match(v)
-    (let2: PsLet) => bxConstructField(let2, dropOne(fields), objName, resultVar,
-                                      fieldArgs, r, acc)
-    (o: PStmt)    => bxConstructFields(dropOne(fields), objName, resultVar,
-                                       fieldArgs, r, acc)
-  () => ComplexConstructOut(acc.caOps,
-    acc.caBundles)
+    (let2: PsLet) => bxConstructField(let2, dropOne(fields), objName, resultVar, fieldArgs, r, acc)
+    (o: PStmt)    => bxConstructFields(dropOne(fields), objName, resultVar, fieldArgs, r, acc)
+  () => ComplexConstructOut(acc.caOps, acc.caBundles)
 
 fun bxConstructField(let2: PsLet, rest, objName, resultVar,
                      fieldArgs: List<PunArg>, r, acc: CcAcc)
@@ -1850,10 +1831,8 @@ fun [tail] complexConstructFields(fields: List<PStmt>, objName, resultVar, field
   (v: PStmt) => match(v)
     (let2: PsLet) => complexConstructField(let2, dropOne(fields), objName, resultVar,
                                           fieldArgs, r, acc)
-    (o: PStmt)    => complexConstructFields(dropOne(fields), objName, resultVar,
-                                            fieldArgs, r, acc)
-  () => ComplexConstructOut(acc.caOps,
-    acc.caBundles)
+    (o: PStmt)    => complexConstructFields(dropOne(fields), objName, resultVar, fieldArgs, r, acc)
+  () => ComplexConstructOut(acc.caOps, acc.caBundles)
 
 fun complexConstructField(let2: PsLet, rest, objName, resultVar, fieldArgs: List<PunArg>,
                           r, acc: CcAcc)

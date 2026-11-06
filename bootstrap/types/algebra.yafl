@@ -86,9 +86,7 @@ fun substGeneric(sp, mapping: List<Binding>, name: String) => match(bindingOf(ma
 
 fun substList(ts: List<Spec>, mapping: List<Binding>) => substLoop(ts, mapping, List())
 
-fun substLoop(ts: List<Spec>,
-              mapping: List<Binding>,
-              acc: List<Spec>) =>
+fun substLoop(ts: List<Spec>, mapping: List<Binding>, acc: List<Spec>) =>
   fold(ts, acc, (a, x) => append(a, substitute(x, mapping)))
 
 fun substOpt(sp: Spec|None, mapping: List<Binding>) => match(sp)
@@ -98,14 +96,8 @@ fun substOpt(sp: Spec|None, mapping: List<Binding>) => match(sp)
 fun substEntries(es: List<SEntry>, mapping: List<Binding>)
   ret substEntLoop(es, mapping, List())
 
-fun substEntLoop(es: List<SEntry>, mapping: List<Binding>,
-                        acc: List<SEntry>) => substEntLoopB(es, mapping, acc)
-
-fun substEntLoopB(es: List<SEntry>,
-                  mapping: List<Binding>,
-                  acc): List<SEntry> =>
-  fold(es, acc, (a, x) => append(a, SEntry(x.seName, substOpt(x.seType, mapping),
-                x.seDefault)))
+fun substEntLoop(es: List<SEntry>, mapping: List<Binding>, acc): List<SEntry> =>
+  fold(es, acc, (a, x) => append(a, SEntry(x.seName, substOpt(x.seType, mapping), x.seDefault)))
 
 fun bindingOf(ms: List<Binding>, name: String) => bindingLoop(ms, name)
 
@@ -375,7 +367,7 @@ fun mgEnums(l: SEnum, rr: SEnum, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bo
     ()               => MergeOut(None, a.maBinds, a.maErrs)
 
 fun unionLeaves(a: List<String>, b: List<String>) => fold(b, a, (acc, n) =>
-    contains2(acc, n) ? acc : prepend(n, acc))
+    contains(acc, n) ? acc : prepend(n, acc))
 
 fun mgClasses(l: SClass, rr: SClass, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
   if l.scName == rr.scName
@@ -550,8 +542,7 @@ fun mgAsType(ms: List<Spec>, l: Spec) => match(head(ms))
 
 fun mgRestIndexes(ms: List<Spec>, i: Int, matched: List<Int>, binds: List<MBind>, cl: Bool, r,
                   acc: List<Int>): List<Int> =>
-  fold(ms, (i = i, acc = acc),
-       (st, x2) => mgRestIndexesStep(st, x2, matched, binds, cl, r)).acc
+  fold(ms, (i = i, acc = acc), (st, x2) => mgRestIndexesStep(st, x2, matched, binds, cl, r)).acc
 
 fun mgRestIndexesStep(st: (i: Int, acc: List<Int>), x2: Spec, matched: List<Int>,
                       binds: List<MBind>, cl: Bool, r) =>
@@ -581,11 +572,7 @@ fun mgSetAt(ms: List<Spec>, i: Int, v: Spec|None): List<Spec> => match(v)
   (sp: Spec) => mgSetLoop(ms, 0, i, sp, List())
   ()         => ms
 
-fun mgSetLoop(ms: List<Spec>,
-              j: Int,
-              i: Int,
-              v: Spec,
-              acc: List<Spec>): List<Spec> =>
+fun mgSetLoop(ms: List<Spec>, j: Int, i: Int, v: Spec, acc: List<Spec>): List<Spec> =>
   fold(ms, (acc = acc, j = j),
        (st, x) => (acc = append(st.acc, st.j == i ? v : x), j = st.j + 1)).acc
 
@@ -868,7 +855,7 @@ fun [tail] bfcLoop(cs: List<Spec>, is2: List<Spec>, targets: List<String>,
 
 fun bfcOne(cArg: Spec, iArg: Spec, targets: List<String>,
            acc: List<Binding>) => match(cArg)
-  (g2: SGeneric) => contains2(targets, g2.sgName)
+  (g2: SGeneric) => contains(targets, g2.sgName)
     ? (isConcrete(iArg) ? append(acc, Binding(g2.sgName, iArg)) : None)
     : anchorsEqual(cArg, iArg, acc)
   (o: Spec)      => anchorsEqual(cArg, iArg, acc)

@@ -171,7 +171,7 @@ fun beStructValue(vs: List<RpNamedValue>, field: String,
 
 fun beResolveVar(name, defs: Dict<String, BeDefEntry>,
                  visiting)
-  if contains2(visiting, name)
+  if contains(visiting, name)
     ret BeCycle(name)
   ret match(beDefOf(defs, name))
     (d: BeDef) => match(d)

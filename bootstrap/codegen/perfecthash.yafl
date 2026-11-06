@@ -62,8 +62,7 @@ fun phAllMethodNames(vtables: List<VtableEntry>)
 class [final] IdAcc(iaIds: List<MethodId>, iaNext: Int)
 
 fun phAssignIds(names: List<String>): (ids: List<MethodId>, next: Int)
-  ret phAssignIdsFinish(phAssignIdsLoop(names,
-                                        IdAcc(List(), 0)))
+  ret phAssignIdsFinish(phAssignIdsLoop(names, IdAcc(List(), 0)))
 
 fun phAssignIdsFinish(acc: IdAcc): (ids: List<MethodId>, next: Int)
   ret (acc.iaIds, acc.iaNext)
@@ -155,9 +154,8 @@ fun cgAddEdge(acc: CgAcc, a, b) => cgAddDirected(cgAddDirected(acc, a, b), b, a)
 fun cgAddDirected(acc: CgAcc, from2, to) => match(get(acc.caEdges, from2))
   (ns: List<String>) => CgAcc(acc.caOrder,
       put(acc.caEdges, from2,
-        strListMember(ns, to) ? ns : prepend(to, ns)))
-  ()                 => CgAcc(append(acc.caOrder, from2),
-      put(acc.caEdges, from2, list1(to)))
+        contains(ns, to) ? ns : prepend(to, ns)))
+  ()                 => CgAcc(append(acc.caOrder, from2), put(acc.caEdges, from2, list1(to)))
 
 fun cgNeighbors(g: ConflictGraph, method: String) => match(get(g.cgEdges, method))
   (ns: List<String>) => ns
@@ -173,8 +171,7 @@ fun conflictGraphHasAnyEdges(g: ConflictGraph) => any(g.cgOrder, (m) => !isEmpty
 # old `degree > bestDegree` with the -1 seed (no-length ruling).
 fun pickMaxDegreeLoop(ms: List<String>, g: ConflictGraph,
                       bestMethod: String, bestNs: List<String>|None) =>
-  fold(ms, (best = bestMethod, ns = bestNs),
-       (st, m) => pickMaxDegreeOne(st.best, st.ns, m, g)).best
+  fold(ms, (best = bestMethod, ns = bestNs), (st, m) => pickMaxDegreeOne(st.best, st.ns, m, g)).best
 
 fun pickMaxDegreeOne(best: String, bestNs: List<String>|None, m: String,
                      g: ConflictGraph): (best: String, ns: List<String>|None) => match(bestNs)

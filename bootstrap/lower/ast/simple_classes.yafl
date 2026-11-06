@@ -51,9 +51,7 @@ fun scClassesOf(c: ScCands)
   ret scClassesLoop(scNames(c), c,
                           List())
 
-fun scClassesLoop(ns: List<String>,
-                  c: ScCands,
-                  acc: List<PsClass>) =>
+fun scClassesLoop(ns: List<String>, c: ScCands, acc: List<PsClass>) =>
   fold(ns, acc, (a, x) => scClassesLoopStep(a, x, c))
 
 fun scClassesLoopStep(a: List<PsClass>, x: String, c: ScCands) => match(get(c.scIndex, x))
@@ -83,9 +81,7 @@ class [final] ScFiltered(sfCands: ScCands, sfSpecs: ScSpecs)
 # ── generic name -> Int lookup/bump (shared by method-ref and uid counts) ───
 
 fun scCountLoop(ns: List<String>, vs: List<Int>, name: String) => match(findIndex(ns, (n) => n == name))
-  (i: Int) => match(head(drop(vs, i)))
-    (v: Int) => v
-    ()       => 0
+  (i: Int) => head(drop(vs, i)) ?? 0
   ()       => 0
 
 # ── generic candidate/spec filtering by predicate on name ───────────────────
@@ -93,13 +89,8 @@ fun scCountLoop(ns: List<String>, vs: List<Int>, name: String) => match(findInde
 fun scKeepCandsWhere(cands: ScCands, pred: (:String): Bool)
   ret scKcLoop(scNames(cands), cands, pred, scCandsEmpty())
 
-fun scKcLoop(ns: List<String>,
-             from2: ScCands,
-             pred: (:String): Bool,
-             acc) =>
-  fold(ns, acc, (a, x) => pred(x)
-    ? scCandsAddOpt(a, x, get(from2.scIndex, x))
-    : a)
+fun scKcLoop(ns: List<String>, from2: ScCands, pred: (:String): Bool, acc) =>
+  fold(ns, acc, (a, x) => pred(x) ? scCandsAddOpt(a, x, get(from2.scIndex, x)) : a)
 
 fun scCandsAddOpt(acc, name, cls: PsClass|None) => match(cls)
   (c: PsClass) => scCandsAdd(acc, name, c)
@@ -108,13 +99,8 @@ fun scCandsAddOpt(acc, name, cls: PsClass|None) => match(cls)
 fun scKeepSpecsWhere(specs: ScSpecs, pred: (:String): Bool)
   ret scKsLoop(ssNames(specs), specs, pred, scSpecsEmpty())
 
-fun scKsLoop(ns: List<String>,
-             from2: ScSpecs,
-             pred: (:String): Bool,
-             acc) =>
-  fold(ns, acc, (a, x) => pred(x)
-    ? scSpecsAddOpt(a, x, get(from2.ssIndex, x))
-    : a)
+fun scKsLoop(ns: List<String>, from2: ScSpecs, pred: (:String): Bool, acc) =>
+  fold(ns, acc, (a, x) => pred(x) ? scSpecsAddOpt(a, x, get(from2.ssIndex, x)) : a)
 
 fun scSpecsAddOpt(acc, name, sp: Spec|None) => match(sp)
   (s3: Spec) => scSpecsAdd(acc, name, s3)
@@ -141,25 +127,23 @@ fun scClassFor(cands: ScCands, name: String) => get(cands.scIndex, name)
 
 fun scMethodNames(cls: PsClass) => scMnLoop(cls.cMembers, List())
 
-fun scMnLoop(ms, acc: List<String>): List<String> => scMnLoopB(ms, acc)
+fun scMnLoop(ms: List<PStmt>, acc: List<String>) =>
+  fold(ms, acc, scMnLoopStep)
 
-fun scMnLoopB(ms: List<PStmt>, acc: List<String>) =>
-  fold(ms, acc, scMnLoopBStep)
-
-fun scMnLoopBStep(a: List<String>, x: PStmt) => match(x)
+fun scMnLoopStep(a: List<String>, x: PStmt) => match(x)
   (f: PsFun) => append(a, f.fName)
   (o: PStmt) => a
 
 fun scHasMethod(cands: ScCands, clsName: String, methodName: String)
   ret match(scClassFor(cands, clsName))
-    (cls: PsClass) => contains2(scMethodNames(cls), methodName)
+    (cls: PsClass) => contains(scMethodNames(cls), methodName)
     ()             => false
 
 # ── 1. isSimpleClass ─────────────────────────────────────────────────────────
 
 # The declaration's own half first (classNeverFlattens), then the program's.
 fun scIsSimple(cls: PsClass, baseNames: List<String>)
-  ret !classNeverFlattens(cls) && !contains2(baseNames, cls.cName)
+  ret !classNeverFlattens(cls) && !contains(baseNames, cls.cName)
 
 # ── 2. findSimpleClasses ─────────────────────────────────────────────────────
 
@@ -188,10 +172,7 @@ fun scBcnListStep(a: List<String>, x: Spec) => match(x)
   (c: SClass) => addNameOnce(a, c.scName)
   (o: Spec) => a
 
-fun scFilterSimple(ns: List<String>,
-                   from2: ScCands,
-                   baseNames: List<String>,
-                   acc: ScCands) =>
+fun scFilterSimple(ns: List<String>, from2: ScCands, baseNames: List<String>, acc: ScCands) =>
   fold(ns, acc, (a, x) => scFilterSimpleStep(a, x, from2, baseNames))
 
 fun scFilterSimpleStep(a: ScCands, x: String, from2: ScCands, baseNames: List<String>) => match(get(from2.scIndex, x))
@@ -232,7 +213,7 @@ fun scRefEntries(es: List<SEntry>, candNames: List<String>, acc): List<String> =
   fold(es, acc, (a, x) => scRefOpt(x.seType, candNames, a))
 
 fun scAddIfCand(name: String, candNames: List<String>, acc): List<String>
-  ret contains2(candNames, name) ? addNameOnce(acc, name) : acc
+  ret contains(candNames, name) ? addNameOnce(acc, name) : acc
 
 fun scReferencedNames(cls: PsClass, candNames: List<String>)
   ret scRefFields(flattenParams(cls.cParams), candNames, List())
@@ -246,13 +227,9 @@ fun scRefFieldsStep(a: List<String>, x: PStmt, candNames: List<String>) => match
     () => a
   (o: PStmt) => a
 
-fun scBuildEdges(cands: ScCands) => scBeLoop(scNames(cands), cands, scNames(cands),
-                                             EEdges(Dict()))
+fun scBuildEdges(cands: ScCands) => scBeLoop(scNames(cands), cands, scNames(cands), EEdges(Dict()))
 
-fun scBeLoop(ns: List<String>,
-             from2: ScCands,
-             candNames: List<String>,
-             acc) =>
+fun scBeLoop(ns: List<String>, from2: ScCands, candNames: List<String>, acc) =>
   fold(ns, acc, (a, x) => scBeEdge(a, from2, x, candNames))
 
 fun scPruneRecursive(cands: ScCands)
@@ -260,26 +237,18 @@ fun scPruneRecursive(cands: ScCands)
   ret scPruneLoop(scNames(cands), cands, edges,
                   scCandsEmpty())
 
-fun scPruneLoop(ns: List<String>,
-                from2: ScCands,
-                edges: EEdges,
-                acc) =>
-  fold(ns, acc, (a, x) => aiReachesSelf(x, edges)
-    ? a
-    : scCandsAddOpt(a, x,
-                                get(from2.scIndex, x)))
+fun scPruneLoop(ns: List<String>, from2: ScCands, edges: EEdges, acc) =>
+  fold(ns, acc, (a, x) => aiReachesSelf(x, edges) ? a : scCandsAddOpt(a, x, get(from2.scIndex, x)))
 
 # ── 4. buildTupleSpecs ───────────────────────────────────────────────────────
 
 fun scTupleSpecOf(cls: PsClass)
   ret STuple(scEntriesOf(flattenParams(cls.cParams), List()), cls.pscLine)
 
-fun scEntriesOf(fs, acc: List<SEntry>): List<SEntry> => scEntriesOfB(fs, acc)
+fun scEntriesOf(fs: List<PStmt>, acc: List<SEntry>) =>
+  fold(fs, acc, scEntriesOfStep)
 
-fun scEntriesOfB(fs: List<PStmt>, acc: List<SEntry>) =>
-  fold(fs, acc, scEntriesOfBStep)
-
-fun scEntriesOfBStep(a: List<SEntry>, x: PStmt) => match(x)
+fun scEntriesOfStep(a: List<SEntry>, x: PStmt) => match(x)
   (let2: PsLet) => append(a, SEntry(let2.lName, let2.lType, None))
   (o: PStmt) => a
 
@@ -296,7 +265,7 @@ fun scBtsLoop(ns: List<String>, from2: ScCands, acc) =>
 class [final] ScLnftOut(lrSpecs: ScSpecs, lrChanged: Bool)
 
 fun scLnftRule(sp, cands: List<String>, specsFixed: ScSpecs) => match(sp)
-  (c: SClass) => contains2(cands, c.scName) ? scLookupSpec(specsFixed, c.scName) : None
+  (c: SClass) => contains(cands, c.scName) ? scLookupSpec(specsFixed, c.scName) : None
   (o: Spec)   => None
 
 fun scLnftStep(nrest, from2: ScSpecs, cands: List<String>,
@@ -312,10 +281,8 @@ fun scLnftStep(nrest, from2: ScSpecs, cands: List<String>,
 fun scLnftRound(ns: List<String>, from2: ScSpecs, cands: List<String>,
                 specsFixed: ScSpecs, acc, changed) => match(head(ns))
   (v: String) => match(get(from2.ssIndex, v))
-    (sp: Spec) => scLnftStep(dropOne(ns), from2, cands, specsFixed, acc, changed,
-                             v, sp)
-    ()         => scLnftRound(dropOne(ns), from2, cands, specsFixed, acc,
-                              changed)
+    (sp: Spec) => scLnftStep(dropOne(ns), from2, cands, specsFixed, acc, changed, v, sp)
+    ()         => scLnftRound(dropOne(ns), from2, cands, specsFixed, acc, changed)
   () => ScLnftOut(acc, changed)
 
 fun [tail] scLnftFix(cands: List<String>, specsFixed: ScSpecs, specs: ScSpecs)
@@ -530,10 +497,7 @@ fun scMapOne(m, cands: ScCands, specs: ScSpecs,
   (o: Spec)   => ScMapped(append(acc.mnNames, ""),
                           append(acc.mnUids, uid(m)))
 
-fun scMapMembers(ms: List<Spec>,
-                 cands: ScCands,
-                 specs: ScSpecs,
-                 acc: ScMapped) =>
+fun scMapMembers(ms: List<Spec>, cands: ScCands, specs: ScSpecs, acc: ScMapped) =>
   fold(ms, acc, (a, x) => scMapOne(x, cands, specs, a))
 
 # How many members share each uid. Same shape as ScCounts, same reason.
@@ -544,9 +508,7 @@ fun scBumpUid(acc: ScUidCounts, u)
                       scCountOf(acc.ucCounts, u) + 1))
 
 fun scCountUids(us: List<String>, acc: ScUidCounts) =>
-  fold(us, acc, (a, x) => x == ""
-    ? a
-    : scBumpUid(a, x))
+  fold(us, acc, (a, x) => x == "" ? a : scBumpUid(a, x))
 
 fun scCollectColliding(ns: List<String>, us: List<String>, counts: ScUidCounts, acc: List<String>) =>
   zipFold(ns, us, acc,
@@ -564,17 +526,14 @@ fun scCollideOne(sp, cands: ScCands, specs: ScSpecs, acc): List<String> => match
   (cm: SCombination) => scCollideUnion(cm, cands, specs, acc)
   (o: Spec)           => acc
 
-fun scCollidingNames(us: List<Spec>,
-                     cands: ScCands,
-                     specs: ScSpecs,
-                     acc: List<String>) =>
+fun scCollidingNames(us: List<Spec>, cands: ScCands, specs: ScSpecs, acc: List<String>) =>
   fold(us, acc, (a, x) => scCollideOne(x, cands, specs, a))
 
 fun [tail] scExcludeUnions(unions: List<Spec>, cands, specs): ScFiltered
   let colliding = scCollidingNames(unions, cands, specs, List())
   if isEmpty(colliding)
     ret ScFiltered(cands, specs)
-  let newCands = scKeepCandsWhere(cands, (n) => !contains2(colliding, n))
+  let newCands = scKeepCandsWhere(cands, (n) => !contains(colliding, n))
   let newSpecs = scLowerNestedFieldTypes(scNames(newCands), scBuildTupleSpecs(newCands))
   ret scExcludeUnions(unions, newCands, newSpecs)
 
@@ -582,9 +541,7 @@ fun [tail] scExcludeUnions(unions: List<Spec>, cands, specs): ScFiltered
 
 fun scTupleIdToClass(specs: ScSpecs) => scT2cLoop(ssNames(specs), specs, Dict())
 
-fun scT2cLoop(ns: List<String>,
-              from2: ScSpecs,
-              acc: Dict<String, String>) =>
+fun scT2cLoop(ns: List<String>, from2: ScSpecs, acc: Dict<String, String>) =>
   fold(ns, acc, (a, x) => scT2cPut(a, x, get(from2.ssIndex, x)))
 
 fun scT2cPut(acc, name: String,
@@ -609,18 +566,14 @@ fun scMethodOwners(cands: ScCands)
 fun scOwnersDrop(o: ScOwners) => fold(o.soShared, o.soMap,
                                      remove)
 
-fun scOwnLoop(ns: List<String>,
-              cands: ScCands,
-              acc) =>
+fun scOwnLoop(ns: List<String>, cands: ScCands, acc) =>
   fold(ns, acc, (a, x) => scOwnLoopStep(a, x, cands))
 
 fun scOwnLoopStep(a: ScOwners, x: String, cands: ScCands) => match(scClassFor(cands, x))
   (cls: PsClass) => scOwnMembers(scMethodNames(cls), x, a)
   () => a
 
-fun scOwnMembers(ms: List<String>,
-                 clsName,
-                 acc) =>
+fun scOwnMembers(ms: List<String>, clsName, acc) =>
   fold(ms, acc, (a, x) => scOwnOne(x, clsName, a))
 
 fun scOwnOne(name, clsName, acc) => match(get(acc.soMap, name))
@@ -655,17 +608,10 @@ fun scLiftMethod(clsName, tupleSpec, method: PsFun)
             scRenameBody(method.fBody), method.fRet, method.fWheres, method.psfLine,
             method.fRetInferred, method.fNested, method.fImports, method.fGlobal)
 
-fun scLiftMembers(ms, clsName, tupleSpec,
-                         acc: List<PStmt>): List<PStmt>
-  ret scLiftMembersB(ms, clsName, tupleSpec, acc)
+fun scLiftMembers(ms: List<PStmt>, clsName, tupleSpec, acc: List<PStmt>) =>
+  fold(ms, acc, (a, x) => scLiftMembersStep(a, x, clsName, tupleSpec))
 
-fun scLiftMembersB(ms: List<PStmt>,
-                   clsName,
-                   tupleSpec,
-                   acc: List<PStmt>) =>
-  fold(ms, acc, (a, x) => scLiftMembersBStep(a, x, clsName, tupleSpec))
-
-fun scLiftMembersBStep(a: List<PStmt>, x: PStmt, clsName, tupleSpec) => match(x)
+fun scLiftMembersStep(a: List<PStmt>, x: PStmt, clsName, tupleSpec) => match(x)
   (f: PsFun) => append(a, scLiftMethod(clsName, tupleSpec, f))
   (o: PStmt) => a
 
@@ -674,10 +620,7 @@ fun scLiftClassMethods(clsName, cls: PsClass, specs: ScSpecs, acc): List<PStmt>
     (tupleSpec: Spec) => scLiftMembers(cls.cMembers, clsName, tupleSpec, acc)
     ()                => acc
 
-fun scLiftAllLoop(ns: List<String>,
-                  from2: ScCands,
-                  specs: ScSpecs,
-                  acc: List<PStmt>) =>
+fun scLiftAllLoop(ns: List<String>, from2: ScCands, specs: ScSpecs, acc: List<PStmt>) =>
   fold(ns, acc, (a, x) => scLiftOne(x, from2, specs, a))
 
 # The lifted methods are EMITTED in this order, so it must match Python's
@@ -694,12 +637,10 @@ fun scLiftAll(statements: List<PStmt>, cands: ScCands,
 fun scDeclOrder(statements: List<PStmt>, cands: ScCands)
   ret scDeclOrderB(statements, cands, List())
 
-fun scDeclOrderB(ss: List<PStmt>,
-                 cands: ScCands,
-                 acc: List<String>) =>
-  fold(ss, acc, (a, x) => scDeclOrderBStep(a, x, cands))
+fun scDeclOrderB(ss: List<PStmt>, cands: ScCands, acc: List<String>) =>
+  fold(ss, acc, (a, x) => scDeclOrderStep(a, x, cands))
 
-fun scDeclOrderBStep(a: List<String>, x: PStmt, cands: ScCands) => match(x)
+fun scDeclOrderStep(a: List<String>, x: PStmt, cands: ScCands) => match(x)
   (c: PsClass) => scHasCand(cands, c.cName)
     ? append(a, c.cName)
     : a
@@ -709,15 +650,10 @@ fun scDeclOrderBStep(a: List<String>, x: PStmt, cands: ScCands) => match(x)
 
 # Co-walk the spec entries alongside the supplied ones — the positional
 # pairing is the structure itself, never an index bound.
-fun scNteLoop(es, ses,
-                     acc: List<PTupEnt>): List<PTupEnt>
-  ret scNteLoopB(es, ses, acc)
+fun scNteLoop(es: List<PTupEnt>, ses: List<SEntry>, acc: List<PTupEnt>) =>
+  fold(es, (ses = ses, acc = acc), scNteLoopStep).acc
 
-fun scNteLoopB(es: List<PTupEnt>, ses: List<SEntry>, acc: List<PTupEnt>) =>
-  fold(es, (ses = ses, acc = acc),
-       scNteLoopBStep).acc
-
-fun scNteLoopBStep(st: (ses: List<SEntry>, acc: List<PTupEnt>), x: PTupEnt) => match(head(st.ses))
+fun scNteLoopStep(st: (ses: List<SEntry>, acc: List<PTupEnt>), x: PTupEnt) => match(head(st.ses))
   (se: SEntry) => (ses = dropOne(st.ses),
                    acc = append(st.acc, x.tupName == "" ? PTupEnt(se.seName, x.tupSpread, x.tupValue) : x))
   ()           => (ses = st.ses, acc = append(st.acc, x))
@@ -779,7 +715,7 @@ fun scMakeLiftedCall(c: PeCall, d: PeDot, clsName)
 
 fun scBuildMethodCall(c: PeCall, d: PeDot, clsName, cands: ScCands)
   ret match(scClassFor(cands, clsName))
-    (cls: PsClass) => contains2(scMethodNames(cls), d.member) ? scMakeLiftedCall(c, d, clsName) : None
+    (cls: PsClass) => contains(scMethodNames(cls), d.member) ? scMakeLiftedCall(c, d, clsName) : None
     ()             => None
 
 fun scReplaceMethodCall(c: PeCall, d: PeDot, cands: ScCands,
@@ -809,14 +745,10 @@ fun scReplaceFn(cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
 
 # ── 13. the driver ───────────────────────────────────────────────────────────
 
-fun scRewriteTop(ss, cands: ScCands, w: Rw, acc: List<PStmt>): List<PStmt>
-  ret scRewriteTopB(ss, cands, w, acc)
+fun scRewriteTop(ss: List<PStmt>, cands: ScCands, w: Rw, acc: List<PStmt>) =>
+  fold(ss, acc, (a, x) => scRewriteTopStep(a, x, cands, w))
 
-fun scRewriteTopB(ss: List<PStmt>, cands: ScCands, w: Rw, acc: List<PStmt>) =>
-  fold(ss, acc,
-       (a, x) => scRewriteTopBStep(a, x, cands, w))
-
-fun scRewriteTopBStep(a: List<PStmt>, x: PStmt, cands: ScCands, w: Rw) =>
+fun scRewriteTopStep(a: List<PStmt>, x: PStmt, cands: ScCands, w: Rw) =>
   scIsDroppedClass(x, cands)
   ? a
   : append(a, rwStmt(x, w))
@@ -825,12 +757,8 @@ fun scIsDroppedClass(st, cands: ScCands) => match(st)
   (c: PsClass) => scHasCand(cands, c.cName)
   (o: PStmt)   => false
 
-fun scRewriteLifted(ls, w: Rw, acc: List<PStmt>): List<PStmt>
-  ret scRewriteLiftedB(ls, w, acc)
-
-fun scRewriteLiftedB(ls: List<PStmt>, w: Rw, acc: List<PStmt>) =>
-  fold(ls, acc,
-       (a, x) => append(a, rwStmt(x, w)))
+fun scRewriteLifted(ls: List<PStmt>, w: Rw, acc: List<PStmt>) =>
+  fold(ls, acc, (a, x) => append(a, rwStmt(x, w)))
 
 fun lowerSimpleClasses(statements): List<PStmt>
   let r = rootResolver(statements)
@@ -883,12 +811,8 @@ fun scTSpecOpt(sp: Spec|None, c: ScCtx): Spec|None => match(sp)
 
 fun scTSpecs(ts: List<Spec>, c: ScCtx) => scTSpecLoop(ts, c, List())
 
-fun scTSpecLoop(ts, c: ScCtx, acc: List<Spec>): List<Spec>
-  ret scTSpecLoopB(ts, c, acc)
-
-fun scTSpecLoopB(ts: List<Spec>, c: ScCtx, acc: List<Spec>) =>
-  fold(ts, acc, (a, x) => append(a, scTSpec(x,
-                                                         c)))
+fun scTSpecLoop(ts: List<Spec>, c: ScCtx, acc: List<Spec>) =>
+  fold(ts, acc, (a, x) => append(a, scTSpec(x, c)))
 
 fun scTSpecsOpt(ss: List<Spec>|None, c: ScCtx) => match(ss)
   (l: List<Spec>) => scTSpecs(l, c)
@@ -896,13 +820,7 @@ fun scTSpecsOpt(ss: List<Spec>|None, c: ScCtx) => match(ss)
 
 fun scTStmts(ss: List<PStmt>, c: ScCtx, r): List<PStmt> => scTStmtLoop(ss, c, r, List())
 
-fun scTStmtLoop(ss, c: ScCtx, r,
-                       acc: List<PStmt>) => scTStmtLoopB(ss, c, r, acc)
-
-fun scTStmtLoopB(ss: List<PStmt>,
-                 c: ScCtx,
-                 r,
-                 acc: List<PStmt>) =>
+fun scTStmtLoop(ss: List<PStmt>, c: ScCtx, r, acc: List<PStmt>) =>
   fold(ss, acc, (a, x) => append(a, scTStmt(x, c, r)))
 
 fun scTStmt(st, c: ScCtx, r): PStmt => match(st)
@@ -1011,32 +929,13 @@ fun scTBlock(bk: PeBlock, c: ScCtx, blockR): PExpr
   ret PeBlock(scTStmts(bk.blockStmts, c, blockR),
               scTExpr(bk.blockValue, c, blockR), bk.blockTag, bk.pebkLine)
 
-fun scTExprs(es, c: ScCtx, r,
-                    acc: List<PExpr>) => scTExprsB(es, c, r, acc)
-
-fun scTExprsB(es: List<PExpr>,
-              c: ScCtx,
-              r,
-              acc: List<PExpr>) =>
+fun scTExprs(es: List<PExpr>, c: ScCtx, r, acc: List<PExpr>) =>
   fold(es, acc, (a, x) => append(a, scTExpr(x, c, r)))
 
-fun scTEnts(es: List<PTupEnt>, c: ScCtx, r,
-                   acc: List<PTupEnt>) => scTEntsB(es, c, r, acc)
+fun scTEnts(es: List<PTupEnt>, c: ScCtx, r, acc): List<PTupEnt> =>
+  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, scTExpr(x.tupValue, c, r))))
 
-fun scTEntsB(es: List<PTupEnt>,
-             c: ScCtx,
-             r,
-             acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
-                scTExpr(x.tupValue, c, r))))
-
-fun scTArms(as2, c: ScCtx, r,
-                   acc: List<PArm>) => scTArmsB(as2, c, r, acc)
-
-fun scTArmsB(as2: List<PArm>,
-             c: ScCtx,
-             r,
-             acc: List<PArm>) =>
+fun scTArms(as2: List<PArm>, c: ScCtx, r, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, scTArmOne(x, c, r)))
 
 # Every POSITION of a multi-subject arm is a pattern like position 0: its type
@@ -1046,30 +945,13 @@ fun scTArmOne(a: PArm, c: ScCtx, r): PArm
   ret with a(armType = scTSpecOpt(a.armType, c), armBody = scTExpr(a.armBody, c, bodyR), armLiterals = scTLits(a.armLiterals, c, r, List()), armGuard = scTExprOpt(a.armGuard, c, bodyR),
              armExtra = map(a.armExtra, (p) => with p(posType = scTSpecOpt(p.posType, c))))
 
-fun scTLits(ls, c: ScCtx, r,
-                   acc: List<PLit>): List<PLit> => scTLitsB(ls, c, r, acc)
+fun scTLits(ls: List<PLit>, c: ScCtx, r, acc: List<PLit>) =>
+  fold(ls, acc, (a, x) => scTLitsStep(a, x, c, r))
 
-fun scTLitsB(ls: List<PLit>,
-             c: ScCtx,
-             r,
-             acc: List<PLit>) =>
-  fold(ls, acc, (a, x) => scTLitsBStep(a, x, c, r))
-
-fun scTLitsBStep(a: List<PLit>, x: PLit, c: ScCtx, r) => match(x)
-  (le: PlExpr) => append(a, PlExpr(scTExpr(le.litExpr, c,
-    r)))
+fun scTLitsStep(a: List<PLit>, x: PLit, c: ScCtx, r) => match(x)
+  (le: PlExpr) => append(a, PlExpr(scTExpr(le.litExpr, c, r)))
   (lr2: PlRange) => append(a, PlRange(scTExpr(lr2.rangeLo, c, r),
     scTExpr(lr2.rangeHi, c, r), lr2.plrLine))
 
-fun scTTop(ss, cands: ScCands, c: ScCtx, r,
-                  acc: List<PStmt>): List<PStmt>
-  ret scTTopB(ss, cands, c, r, acc)
-
-fun scTTopB(ss: List<PStmt>,
-            cands: ScCands,
-            c: ScCtx,
-            r,
-            acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => scIsDroppedClass(x, cands)
-    ? a
-    : append(a, scTStmt(x, c, r)))
+fun scTTop(ss: List<PStmt>, cands: ScCands, c: ScCtx, r, acc: List<PStmt>) =>
+  fold(ss, acc, (a, x) => scIsDroppedClass(x, cands) ? a : append(a, scTStmt(x, c, r)))

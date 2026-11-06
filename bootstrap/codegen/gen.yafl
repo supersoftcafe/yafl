@@ -51,8 +51,7 @@ class [final] GenAcc(gaCache: List<CgCacheEntry>,
                              gaFunctions: List<String>,
                              gaGcRoots: List<String>)
 
-fun genAccEmpty() => GenAcc(List(), List(), List(),
-                            List(), List(), List())
+fun genAccEmpty() => GenAcc(List(), List(), List(), List(), List(), List())
 
 # ── per-function: prototype + implement ──────────────────────────────────────
 
@@ -102,8 +101,7 @@ fun objVisit(acc, name, a: CgApp)
     ()             => marked
 
 fun objVisitParents(acc, o, a: CgApp) => objVisitOne(o.objExtends, a, acc)
-  |> (afterParents) => ObjOrder(append(afterParents.ooOrder, o),
-                                afterParents.ooSeen)
+  |> (afterParents) => ObjOrder(append(afterParents.ooOrder, o), afterParents.ooSeen)
 
 fun objVisitOne(ps: List<String>, a: CgApp, acc) =>
   fold(ps, acc, (o, p) => objVisit(o, p, a))
@@ -140,14 +138,12 @@ fun genObject(acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
               sizes: Dict<String, Int>): GenAcc
   let vtableSize = vtableSizeGet(sizes, o.objName)
   let rows0 = vtRows(vtableSize, List())
-  let rows1 = fold(o.objFunctions, rows0, (rs, s2) =>
-                vtPlace(rs, s2, methodIds, vtableSize))
+  let rows1 = fold(o.objFunctions, rows0, (rs, s2) => vtPlace(rs, s2, methodIds, vtableSize))
   # Ensure the last entry is an empty catch-all.
   # The catch-all must be LAST, so when it is missing it is pushed on the end.
   let rows = vtLastIsDefault(rows1)
     ? rows1
-    : append(rows1,
-                 vtDefaultRow())
+    : append(rows1, vtDefaultRow())
   let mangled = mangleName(o.objName)
   # Counts ride the SAME walks that render the text (no-length ruling):
   # one pass produces both the joined C fragment and the number the macro
@@ -213,8 +209,7 @@ fun vtProbe(rows: List<VtRow>, index, row: VtRow)
 # the table is index-addressed, so this order IS the table.
 # A cursor: the row lands in the first default slot at or after `index`, and
 # the rows after it are kept as they are.
-fun [tail] vtProbeLoop(rest: List<VtRow>, index, row: VtRow,
-                       seen: List<VtRow>) => match(head(rest))
+fun [tail] vtProbeLoop(rest: List<VtRow>, index, row: VtRow, seen: List<VtRow>) => match(head(rest))
   (v: VtRow) => index > 0
     ? vtProbeLoop(dropOne(rest), index - 1, row, append(seen, v))
     : vtIsDefault(v)
@@ -356,11 +351,8 @@ fun genDiagnostics()
         (w) => "#pragma GCC diagnostic ignored \"" + w + "\""), "\n")
       + "\n#pragma GCC diagnostic ignored \"-Wmissing-braces\""
 
-fun vtEntries(os: List<CgObject>,
-              acc: List<VtableEntry>) =>
-  fold(os, acc, (a, x) => x.objIsForeign
-    ? a
-    : append(a, vtEntryOf(x)))
+fun vtEntries(os: List<CgObject>, acc: List<VtableEntry>) =>
+  fold(os, acc, (a, x) => x.objIsForeign ? a : append(a, vtEntryOf(x)))
 
 fun genApplication(a: CgApp, headers: List<String>, profile: Bool)
   let vtables = vtEntries(appObjects(a),
@@ -461,9 +453,7 @@ fun genObjectsLoop(os: List<CgObject>,
                    acc: GenAcc) =>
   fold(os, acc, (a, x) => x.objIsForeign ? a : genObject(a, x, methodIds, sizes))
 
-fun genGlobalsLoop(gs: List<CgGlobal>,
-                   a: CgApp,
-                   acc: GenAcc) =>
+fun genGlobalsLoop(gs: List<CgGlobal>, a: CgApp, acc: GenAcc) =>
   fold(gs, acc, (a2, x) => genGlobal(a2, x, a))
 
 # Flatten sections into the parts list with separator elements. Byte-exact

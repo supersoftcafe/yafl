@@ -76,22 +76,10 @@ fun mergedParams(gens: List<PGen>, supplied: List<Spec>,
     : List()
   ret mergeLoop(gens, prior, mapping, r, List())
 
-fun priorBindings(gs, ss,
-                         acc: List<Binding>): List<Binding>
-  ret priorBindingsB(gs, ss, acc)
-
-fun priorBindingsB(gs: List<PGen>, ss: List<Spec>, acc: List<Binding>) =>
+fun priorBindings(gs: List<PGen>, ss: List<Spec>, acc: List<Binding>) =>
   concat(acc, zipMap(gs, ss, (g, s) => Binding(g.genName, s)))
 
-fun mergeLoop(gs, prior: List<Binding>,
-                     mapping: List<Binding>, r, acc: List<Spec>)
-  ret mergeLoopB(gs, prior, mapping, r, acc)
-
-fun mergeLoopB(gs: List<PGen>,
-               prior: List<Binding>,
-               mapping: List<Binding>,
-               r,
-               acc: List<Spec>) =>
+fun mergeLoop(gs: List<PGen>, prior: List<Binding>, mapping: List<Binding>, r, acc: List<Spec>) =>
   fold(gs, acc, (a, x) => append(a, boundParam(x, prior, mapping, r)))
 
 fun boundParam(g2: PGen, prior: List<Binding>, mapping: List<Binding>, r): Spec
@@ -143,7 +131,7 @@ fun paramsMerged(declared: SCallable, want: SCallable, names: List<String>, r): 
   if !isEmpty(first.moErrs)
     ret None
   let waiting = unknownArgNames(covariant, want.scParams2, r)
-  let open = filter(first.moBinds, (b) => isBound(b) || !contains2(waiting, b.mbName))
+  let open = filter(first.moBinds, (b) => isBound(b) || !contains(waiting, b.mbName))
   let full = settledMerge(declared.scParams2, want.scParams2, open, r, fuel)
   ret learnedBindings(full.moBinds, List())
 
@@ -177,8 +165,7 @@ fun unknownArgNames(covariant, actual, r): List<String> => match(covariant)
 
 fun unknownLoop(ds: List<SEntry>, bs: List<Int>, actual: List<SEntry>, r,
                 acc: List<String>): List<String> =>
-  zipFold(ds, bs, acc, (a, d, b) =>
-    argKnown(b, actual, r) ? a : concat(a, entryNamesOf(d)))
+  zipFold(ds, bs, acc, (a, d, b) => argKnown(b, actual, r) ? a : concat(a, entryNamesOf(d)))
 
 fun argKnown(ix: Int, actual: List<SEntry>, r): Bool
   if ix < 0
@@ -228,12 +215,7 @@ fun viaWhere(stmt, gens: List<PGen>, mapping,
   ret whereLoop(stmtWheres(stmt), gens, mapping, argInferrable,
                 traitInstances(r), r)
 
-fun whereTargets(gs: List<PGen>, mapping: List<Binding>,
-                        argInferrable: List<String>,
-                        acc: List<String>)
-  ret whereTargetsB(gs, mapping, argInferrable, acc)
-
-fun whereTargetsB(gs: List<PGen>,
+fun whereTargets(gs: List<PGen>,
                   mapping: List<Binding>,
                   argInferrable: List<String>,
                   acc): List<String> =>
@@ -244,13 +226,12 @@ fun whereTargetsB(gs: List<PGen>,
 fun isWhereTarget(name: String, mapping: List<Binding>,
                   argInferrable: List<String>) => match(bindingOf(mapping, name))
   (b: Spec) => false
-  ()        => !contains2(argInferrable, name)
+  ()        => !contains(argInferrable, name)
 
 fun [tail] whereLoop(ws: List<Spec>, gens: List<PGen>,
                      mapping, argInferrable: List<String>,
                      instances: List<TraitInst>, r: Resolver)
-  let targets = whereTargets(gens, mapping, argInferrable,
-                             List())
+  let targets = whereTargets(gens, mapping, argInferrable, List())
   if isEmpty(targets)
     ret mapping
   ret match(head(ws))
@@ -284,17 +265,12 @@ fun traitInstances(r) => sortByParamCount(
 
 # PRE-LOWERING first-class instances: the pattern IS the interface — no
 # witness lookup, no parent substitution (_trait_instances).
-fun tiStmtLoop(ts, acc: List<TraitInst>): List<TraitInst>
-  ret tiStmtLoopB(ts, acc)
+fun tiStmtLoop(ts: List<PStmt>, acc: List<TraitInst>) =>
+  fold(ts, acc, tiStmtLoopStep)
 
-fun tiStmtLoopB(ts: List<PStmt>, acc: List<TraitInst>) =>
-  fold(ts, acc, tiStmtLoopBStep)
-
-fun tiStmtLoopBStep(a: List<TraitInst>, x: PStmt) => match(x)
+fun tiStmtLoopStep(a: List<TraitInst>, x: PStmt) => match(x)
   (ti: PsTraitInstance) => match(ti.tiPattern)
-    (c: SClass) => append(a, TraitInst(genNames(ti.tiGens,
-               List()),
-      c))
+    (c: SClass) => append(a, TraitInst(genNames(ti.tiGens, List()), c))
     (o: Spec) => a
   (o2: PStmt) => a
 
@@ -329,8 +305,7 @@ fun witnessRemap(dc: SClass, cls: PsClass) => !isEmpty(cls.cGens)
   ? paramMapping(cls.cGens, dc.scParams)
   : List()
 
-fun parentIfaces(ps: List<Spec>, remap: List<Binding>, paramNames,
-                 acc) =>
+fun parentIfaces(ps: List<Spec>, remap: List<Binding>, paramNames, acc) =>
   fold(ps, acc, (a, p) => p is SClass ? addIface(substitute(p, remap), paramNames, a) : a)
 
 fun addIface(iface, paramNames,

@@ -49,10 +49,7 @@ fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
     ret None
   ret match(param)
     (p: RParam) => match(p)
-      (sv: RpStackVar) => match(dfoLookup(newobjs, sv.name))
-        (cls: String) => cls
-        ()            => dfoClassOf(sdGet(defs, sv.name), newobjs,
-                                    defs, depth - 1)
+      (sv: RpStackVar) => dfoLookup(newobjs, sv.name) ?? dfoClassOf(sdGet(defs, sv.name), newobjs, defs, depth - 1)
       (o: RParam)      => None
     ()          => None
 

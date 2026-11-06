@@ -90,9 +90,7 @@ fun flipErrs(before: List<PStmt>, after: List<PStmt>, otherwise: String): Set<PE
 fun movedLine(as2: List<PStmt>, bs: List<PStmt>): PLine =>
   zipFold<PStmt, PStmt, PLine|None>(as2, bs, None, movedStep) ?? PLine("none", 0, 0)
 
-fun movedStep(found: PLine|None, a: PStmt, b: PStmt) => match(found)
-  (l: PLine) => l
-  ()         => eqStmt(a, b) ? None : stmtLine(a)
+fun movedStep(found: PLine|None, a: PStmt, b: PStmt) => found ?? (eqStmt(a, b) ? None : stmtLine(a))
 
 fun flipStmts(as2: List<PStmt>, bs: List<PStmt>, acc: Set<PErr>): Set<PErr> =>
   zipFold(as2, bs, acc, (errs, a, b) => flipStmt(a, b, errs))
@@ -119,8 +117,7 @@ fun flipFun(a: PsFun, b: PsFun, acc: Set<PErr>): Set<PErr>
                         simpleName(a.fName), rets)
   ret flipStmts(bodyStmts(a), bodyStmts(b), prms)
 
-fun flipParams(as2: List<PStmt>, bs: List<PStmt>, owner: String,
-               acc: Set<PErr>): Set<PErr> =>
+fun flipParams(as2: List<PStmt>, bs: List<PStmt>, owner: String, acc: Set<PErr>): Set<PErr> =>
   zipFold(as2, bs, acc, (errs, a, b) => flipParam(a, b, owner, errs))
 
 fun flipParam(a: PStmt, b: PStmt, owner: String, acc: Set<PErr>): Set<PErr> => match(a)

@@ -319,8 +319,7 @@ fun [tail] sha256Rounds(ws: List<Int>, i: Int, a: Int, b: Int, c: Int, d: Int,
   let bigS0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)
   let maj = (a & b) ^ (a & c) ^ (b & c)
   let temp2 = add32(bigS0, maj)
-  ret sha256Rounds(rest, i + 1, add32(temp1, temp2), a, b, c,
-                   add32(d, temp1), e, f, g)
+  ret sha256Rounds(rest, i + 1, add32(temp1, temp2), a, b, c, add32(d, temp1), e, f, g)
 
 fun [tail] sha256Chunks(msg, len: Int, base, total: Int,
                         st: Sha256State): Sha256State

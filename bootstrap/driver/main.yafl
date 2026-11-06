@@ -64,9 +64,7 @@ fun sha1Mode(text): (out: System::String, code: System::Int)
 # Empty segments are skipped: splitLines yields a trailing one after the
 # final newline, which must not hash.
 fun sha1Lines(lines: List<System::String>, out) =>
-  fold(lines, out, (a, x) => length(x) == 0
-                                 ? a
-                                 : a + sha1Hex(x) + "\n")
+  fold(lines, out, (a, x) => length(x) == 0 ? a : a + sha1Hex(x) + "\n")
 
 # toml mode: parse a manifest on stdin and print one normalised line per
 # entry — `key=v1,v2` — for diffing against Python's tomllib
@@ -225,8 +223,7 @@ fun bindCase(rest)
     ()              => "NONE"
 
 fun joinInts(is: List<Int>, acc) =>
-  fold(is, acc,
-       (a, x) => a + (a == "" ? "" : ",") + String(x))
+  fold(is, acc, (a, x) => a + (a == "" ? "" : ",") + String(x))
     |> (r) => r == "" ? "()" : r
 
 fun splitNames(s) => map(split(s, ","), (n) => n == "_" ? "" : n)
@@ -247,9 +244,7 @@ fun resolveMode(text): (out: String, code: Int)
 
 fun answerAll(idx, qs): String => answerLoop(idx, qs, "")
 
-fun answerLoop(idx,
-               qs: List<String>,
-               out) =>
+fun answerLoop(idx, qs: List<String>, out) =>
   fold(qs, out, (a, x) => answerOne(idx, x, a))
 
 fun answerOne(idx, q, out)
@@ -286,9 +281,7 @@ fun convertMode(text): (out: String, code: Int)
 
 fun convertAll(r, cs): String => convertLoop(r, cs, "")
 
-fun convertLoop(r,
-                cs: List<String>,
-                out) =>
+fun convertLoop(r, cs: List<String>, out) =>
   fold(cs, out, (a, x) => convertOne(r, x, a))
 
 # `SOURCE ;; TARGET` → Y when representing the source value as the target needs
@@ -316,9 +309,7 @@ fun assignMode(text): (out: String, code: Int)
 
 fun assignAll(r, cs): String => assignLoop(r, cs, "")
 
-fun assignLoop(r,
-               cs: List<String>,
-               out) =>
+fun assignLoop(r, cs: List<String>, out) =>
   fold(cs, out, (a, x) => assignOne(r, x, a))
 
 fun assignOne(r, c, out)
@@ -831,8 +822,7 @@ fun projectRounds(frontier: List<PStmt>, idx: List<NsEntry>,
 # ONE __tokenize_and_parse call PER LIBRARY, and that call SORTS ITS INPUTS BY
 # FILENAME. Sorting the round's sources as one flat list instead would
 # interleave two libraries' files, and statement order is emission order.
-fun parseLibraries(ls: List<Library>,
-                   acc: List<PStmt>): List<PStmt>|ParseErrors =>
+fun parseLibraries(ls: List<Library>, acc: List<PStmt>): List<PStmt>|ParseErrors =>
   foldWhile<Library, List<PStmt>|ParseErrors>(ls, acc, parseLibrary, (a) => a !is ParseErrors)
 
 fun parseLibrary(acc: List<PStmt>|ParseErrors, l: Library) => match(acc)
@@ -853,8 +843,7 @@ fun parseUnits(srcs: List<LibSource>): List<PStmt>|ParseErrors
   ret unitsLoop(sortBy(srcs, (a, b) => a.libFileName < b.libFileName), List(), Set())
 
 fun unitsLoop(ss: List<LibSource>, acc: List<PStmt>, errs: Set<PErr>): List<PStmt>|ParseErrors =>
-  fold(ss, (acc = acc, errs = errs),
-       unitsLoopStep)
+  fold(ss, (acc = acc, errs = errs), unitsLoopStep)
     |> (r) => isEmpty(r.errs) ? r.acc : ParseErrors(r.errs)
 
 fun unitsLoopStep(st: (acc: List<PStmt>, errs: Set<PErr>), x: LibSource) => match(parseProgram(x.libText, x.libFileName))
@@ -903,8 +892,7 @@ fun testRegistered(stmts: List<PStmt>, tests: List<PsFun>): List<PStmt>|String
     (f: PFail)         => printedDiagnostics(Set(list1(PErr(
         PLine("$test_main.yafl", f.line, f.col), f.msg))))
 
-fun testFunsOf(sts: List<PStmt>,
-               b: List<PsFun>) =>
+fun testFunsOf(sts: List<PStmt>, b: List<PsFun>) =>
   fold(sts, b, testFunsOfStep)
 
 fun testFunsOfStep(a: List<PsFun>, x: PStmt) => match(x)
@@ -915,11 +903,8 @@ fun testFunsOfStep(a: List<PsFun>, x: PStmt) => match(x)
 
 # The user's own main is IGNORED under --test, not an error: you want to test a
 # program that has one. Matched as WRITTEN, before types resolve.
-fun dropSourceMains(sts: List<PStmt>,
-                    b: List<PStmt>) =>
-  fold(sts, b, (a, x) => isSourceMain(x)
-    ? a
-    : append(a, x))
+fun dropSourceMains(sts: List<PStmt>, b: List<PStmt>) =>
+  fold(sts, b, (a, x) => isSourceMain(x) ? a : append(a, x))
 
 fun isSourceMain(st) => match(st)
   (f: PsFun) => bareOfUnique(f.fName) == "main"
@@ -959,8 +944,7 @@ fun emitOneChunk(chunk: List<PsFun>, k: Int)
 
 # The chunk's rows, and how many there are — the last binding is b<count>.
 fun chunkRows(ts: List<PsFun>) =>
-  fold(ts, (out = "", i = 0),
-       (st, x) => (out = st.out + testRegistryRow(x, st.i), i = st.i + 1))
+  fold(ts, (out = "", i = 0), (st, x) => (out = st.out + testRegistryRow(x, st.i), i = st.i + 1))
 
 # BALANCED, not right-nested: a linear nest would reintroduce the same
 # one-link-per-pass dependency at chunk granularity.
@@ -1120,14 +1104,10 @@ fun eqMode(text): (out: String, code: Int) => match(parseProgram(text, "x"))
 
 fun eqMatrix(stmts: List<PStmt>) => eqRows(stmts, stmts, "")
 
-fun eqRows(all: List<PStmt>,
-           rows: List<PStmt>,
-           out) =>
+fun eqRows(all: List<PStmt>, rows: List<PStmt>, out) =>
   fold(rows, out, (a, x) => eqRow(x, all, a) + "\n")
 
-fun eqRow(row,
-          cols: List<PStmt>,
-          out) =>
+fun eqRow(row, cols: List<PStmt>, out) =>
   fold(cols, out, (a, x) => a + (eqStmt(row, x) ? "1" : "0"))
 
 # -1 for "not this family", so one lookup answers both "is it?" and "which
@@ -1214,8 +1194,7 @@ fun runProjectTest(text, optLevel, enabledWarnings: Set<String>, i: IO): System:
   ret (wErr.io.close(), w.io3.close(), i.close(), code) |> (c1, c2, c3, result) => result
 
 fun writeParts(io2, ps: List<String>, failed): (io3: IO, failed2: Bool) =>
-  fold(ps, (io2 = io2, failed = failed),
-       writePartsStep)
+  fold(ps, (io2 = io2, failed = failed), writePartsStep)
     |> (r) => (r.io2, r.failed)
 
 fun writePartsStep(st: (io2: IO, failed: Bool), x: String) =>

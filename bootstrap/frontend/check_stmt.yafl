@@ -116,11 +116,7 @@ fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
 # so a declaration carrying two unknown attributes reports them in the same
 # order as the Python side (base.py `unknown_attribute_errors`).
 
-fun unknownAttrErrs(as2: List<PAttr>,
-                    known: (:String): Bool,
-                    lr,
-                    kind,
-                    acc): Set<PErr> =>
+fun unknownAttrErrs(as2: List<PAttr>, known: (:String): Bool, lr, kind, acc): Set<PErr> =>
   fold(as2, acc, (a, x) => known(x.attrName)
     ? a
     : add(a, PErr(lr, "unknown attribute [" + x.attrName
@@ -292,15 +288,11 @@ fun innerWhereErrs(f: PsFun) => union(!f.fGlobal && !isEmpty(f.fGens)
                                                  "`where` is not allowed on an inner function — move it to a top-level function")
                                         : noErrs())
 
-fun paramDefaultErrs(ls: List<PStmt>,
-                     r,
-                     acc: Set<PErr>) =>
+fun paramDefaultErrs(ls: List<PStmt>, r, acc: Set<PErr>) =>
   fold(ls, acc, (a, x) => paramDefaultErrsStep(a, x, r))
 
 fun paramDefaultErrsStep(a: Set<PErr>, x: PStmt, r) => match(x)
-  (let2: PsLet) => union(a, defaultValueErrors(let2.lDefault, r,
-    let2.pslLine,
-    "parameter"))
+  (let2: PsLet) => union(a, defaultValueErrors(let2.lDefault, r, let2.pslLine, "parameter"))
   (o: PStmt) => a
 
 # No value vanishes silently: a parameter the body never reads. `this` is
@@ -312,9 +304,7 @@ fun unusedParamWarns(f: PsFun): Set<PErr> => match(f.fBody)
   ()         => noErrs()
 
 
-fun unusedParamLoop(ls: List<PStmt>,
-                    referenced: List<String>,
-                    acc: Set<PErr>) =>
+fun unusedParamLoop(ls: List<PStmt>, referenced: List<String>, acc: Set<PErr>) =>
   fold(ls, acc, (a, x) => unusedParamLoopStep(a, x, referenced))
 
 fun unusedParamLoopStep(a: Set<PErr>, x: PStmt, referenced: List<String>) => match(x)
@@ -329,7 +319,7 @@ fun skipParamWarn(let2: PsLet, referenced: List<String>)
   ret startsWith(bareOfUnique(let2.lName), "_")
       || bareOfUnique(let2.lName) == "this"
       || hasAttr(let2.lAttrs, "terminal")
-      || contains2(referenced, let2.lName)
+      || contains(referenced, let2.lName)
 
 # ── LetStatement / DestructureStatement ─────────────────────────────────────
 
@@ -521,10 +511,7 @@ fun checkIf2(i: PsIf, r, retTy: Spec|None): Set<PErr>
              branchChecks(i.ifFalse, blockScope(i.ifFalse, r), retTy,
                           noErrs()))))
 
-fun branchChecks(ss: List<PStmt>,
-                 r: Resolver,
-                 retTy: Spec|None,
-                 acc: Set<PErr>): Set<PErr> =>
+fun branchChecks(ss: List<PStmt>, r: Resolver, retTy: Spec|None, acc: Set<PErr>): Set<PErr> =>
   fold(ss, acc, (a, x) => union(a, checkStmt2(x, r, retTy)))
 
 # ── classes / enums / typealiases ───────────────────────────────────────────
@@ -598,8 +585,7 @@ fun linearClassErrs(c: PsClass): Set<PErr>
 # linear value stored in a generic class field.
 fun linearClassGenErrs(c: PsClass, gs: List<PGen>, acc): Set<PErr> =>
   fold(gs, acc, (a, x) => !c.cIsInterface && hasAttr(x.genAttrs, "linear")
-    ? add(a, PErr(c.pscLine,
-        "[linear] type parameters are only supported on functions"))
+    ? add(a, PErr(c.pscLine, "[linear] type parameters are only supported on functions"))
     : a)
 
 # invert_and_merge_slots: a member name provided by more than one slot is
@@ -653,25 +639,17 @@ fun classFields(c: PsClass)
   ret concat(flattenParams(c.cParams), letMembers(c.cMembers,
                                                   List()))
 
-fun letMembers(ms, acc: List<PStmt>): List<PStmt> => letMembersB(ms, acc)
+fun letMembers(ms: List<PStmt>, acc: List<PStmt>) =>
+  fold(ms, acc, letMembersStep)
 
-fun letMembersB(ms: List<PStmt>, acc: List<PStmt>) =>
-  fold(ms, acc, letMembersBStep)
-
-fun letMembersBStep(a: List<PStmt>, x: PStmt) => match(x)
+fun letMembersStep(a: List<PStmt>, x: PStmt) => match(x)
   (let2: PsLet) => append(a, x)
   (o: PStmt) => a
 
-fun arrayFieldsOf(fs, acc: List<PStmt>): List<PStmt> => arrayFieldsOfB(fs, acc)
+fun arrayFieldsOf(fs: List<PStmt>, acc: List<PStmt>) =>
+  fold(fs, acc, (a, x) => isArrayStorage(x) ? append(a, x) : a)
 
-fun arrayFieldsOfB(fs: List<PStmt>, acc: List<PStmt>) =>
-  fold(fs, acc, (a, x) => isArrayStorage(x)
-    ? append(a, x)
-    : a)
-
-fun lenFieldErrs(as2: List<PStmt>,
-                 fields: List<PStmt>,
-                 acc: Set<PErr>) =>
+fun lenFieldErrs(as2: List<PStmt>, fields: List<PStmt>, acc: Set<PErr>) =>
   fold(as2, acc, (a, x) => lenFieldErrsStep(a, x, fields))
 
 fun lenFieldErrsStep(a: Set<PErr>, x: PStmt, fields: List<PStmt>) => match(x)
@@ -709,9 +687,7 @@ fun isInt32Field(m: PsLet) => match(m.lType)
   ()         => false
 
 # find_classes_or_error's ERROR half, reconstructed with the same messages.
-fun implErrors(ts: List<Spec>,
-               r,
-               acc) =>
+fun implErrors(ts: List<Spec>, r, acc) =>
   fold(ts, acc, (a, x) => union(a, implError(x, r)))
 
 fun implError(xtype, r) => match(xtype)
@@ -739,16 +715,12 @@ fun allPureInterfacesStep(x: FoundClass) => match(x.fcClass)
   () => true
 
 
-fun finalParentErrs(c: PsClass,
-                    fs: List<FoundClass>,
-                    acc): Set<PErr> =>
+fun finalParentErrs(c: PsClass, fs: List<FoundClass>, acc): Set<PErr> =>
   fold(fs, acc, (a, x) => finalParentErrsStep(a, x, c))
 
 fun finalParentErrsStep(a: Set<PErr>, x: FoundClass, c: PsClass) => match(x.fcClass)
   (cs: PsClass) => hasAttr(cs.cAttrs, "final")
-    ? add(a, PErr(c.pscLine,
-                   "Cannot inherit from final class '" + cs.cName
-                   + "'"))
+    ? add(a, PErr(c.pscLine, "Cannot inherit from final class '" + cs.cName + "'"))
     : a
   () => a
 
@@ -757,18 +729,10 @@ fun finalParentErrsStep(a: Set<PErr>, x: FoundClass, c: PsClass) => match(x.fcCl
 fun fragileWarns(c: PsClass, inh: List<FoundClass>, r)
   ret fbLoop(createSlotsFromMembers(c), c, inh, r, noErrs())
 
-fun fbLoop(bs: List<Slot>,
-           c: PsClass,
-           inh: List<FoundClass>,
-           r,
-           acc: Set<PErr>) =>
+fun fbLoop(bs: List<Slot>, c: PsClass, inh: List<FoundClass>, r, acc: Set<PErr>) =>
   fold(bs, acc, (a, x) => fbParents(x, inh, c, r, a))
 
-fun fbParents(slot: Slot,
-              fs: List<FoundClass>,
-              c: PsClass,
-              r,
-              acc): Set<PErr> =>
+fun fbParents(slot: Slot, fs: List<FoundClass>, c: PsClass, r, acc): Set<PErr> =>
   fold(fs, acc, (a, x) => fbParentsStep(a, x, slot, c, r))
 
 fun fbParentsStep(a: Set<PErr>, x: FoundClass, slot: Slot, c: PsClass, r) => match(x.fcClass)
@@ -792,14 +756,12 @@ fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
 # The deduped capture count, taken on the SAME walk that dedups — the names
 # exist only to dedup; the diagnostic needs the count (no-length ruling).
 fun capturedCount(ps: List<Slot>, slot: Slot, r, seen: List<String>, n) =>
-  fold(ps, (seen = seen, n = n),
-       (st, x) => capturedCountStep(st, x, slot, r)).n
+  fold(ps, (seen = seen, n = n), (st, x) => capturedCountStep(st, x, slot, r)).n
 
 fun capturedCountStep(st: (seen: List<String>, n: Int), x: Slot, slot: Slot, r) =>
   matchMemberName(slot.slotName, x.slotName)
-               && triTrue(assignableEq(r, x.slotType,
-                                       slot.slotType))
-               && !contains2(st.seen, x.slotName)
+               && triTrue(assignableEq(r, x.slotType, slot.slotType))
+               && !contains(st.seen, x.slotName)
   ? (seen = prepend(x.slotName, st.seen), n = st.n + 1)
   : (seen = st.seen, n = st.n)
 
@@ -812,12 +774,9 @@ fun checkEnum2(e2: PsEnum, r) => match(e2.eSpec)
   ()         => oneErr(e2.pseLine, "Missed compile step")
 
 
-fun linearGenErrs(e2: PsEnum,
-                  gs: List<PGen>,
-                  acc): Set<PErr> =>
+fun linearGenErrs(e2: PsEnum, gs: List<PGen>, acc): Set<PErr> =>
   fold(gs, acc, (a, x) => hasAttr(x.genAttrs, "linear")
-    ? add(a, PErr(e2.pseLine,
-                         "[linear] type parameters are only supported on functions"))
+    ? add(a, PErr(e2.pseLine, "[linear] type parameters are only supported on functions"))
     : a)
 
 fun checkTypealias2(ta: PsTypealias, r0): Set<PErr>

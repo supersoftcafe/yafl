@@ -186,11 +186,7 @@ fun callerTypeParamErrs(st, callerParams: List<Spec>, lr,
 fun instantiation(gs: List<PGen>, cs: List<Spec>, acc: List<Binding>): List<Binding> =>
   zipFold(gs, cs, acc, (a, g, c) => prepend(Binding(g.genName, c), a))
 
-fun callerGenFounds(gs, cs,
-                           acc: List<Found>): List<Found>
-  ret callerGenFoundsB(gs, cs, acc)
-
-fun callerGenFoundsB(gs: List<PGen>, cs: List<Spec>, acc: List<Found>) =>
+fun callerGenFounds(gs: List<PGen>, cs: List<Spec>, acc: List<Found>) =>
   concat(acc, zipMap(gs, cs, (g, c) =>
     Found(g.genName, PsTypealias(g.genName, List(), List(), c, List(), g.pgLine), ScLocal())))
 
@@ -199,8 +195,7 @@ fun callerGenFoundsB(gs: List<PGen>, cs: List<Spec>, acc: List<Found>) =>
 # error.
 # The first `where` that fails, with its errors; none fail: no errors.
 fun checkWheres(ws: List<Spec>, inst: List<Binding>, r, lr): Set<PErr> =>
-  foldWhile(ws, noErrs(), (errs, w) => checkOneWhere(w, inst, r, lr),
-            isEmpty)
+  foldWhile(ws, noErrs(), (errs, w) => checkOneWhere(w, inst, r, lr), isEmpty)
 
 fun checkOneWhere(w, inst: List<Binding>, r, lr)
   let compiled = compileSpec(w, r)

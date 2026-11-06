@@ -22,12 +22,10 @@ import Bootstrap::StdlibCandidates
 
 fun liftCapturedCalls(statements: List<PStmt>) => llTop(statements, List())
 
-fun llTop(ss, acc: List<PStmt>): List<PStmt> => llTopB(ss, acc)
+fun llTop(ss: List<PStmt>, acc: List<PStmt>) =>
+  fold(ss, acc, llTopStep)
 
-fun llTopB(ss: List<PStmt>, acc: List<PStmt>) =>
-  fold(ss, acc, llTopBStep)
-
-fun llTopBStep(a: List<PStmt>, x: PStmt) => match(x)
+fun llTopStep(a: List<PStmt>, x: PStmt) => match(x)
   (f: PsFun) => append(a, liftInFunction(f))
   (c: PsClass) => append(a, llInClass(c))
   (o: PStmt) => append(a, x)
@@ -40,12 +38,10 @@ fun llInClass(c): PStmt => hoClassDeclaresNested(c)
   ? with c(cMembers = llMembers(c.cMembers, List()))
   : c
 
-fun llMembers(ss, acc: List<PStmt>): List<PStmt> => llMembersB(ss, acc)
+fun llMembers(ss: List<PStmt>, acc: List<PStmt>) =>
+  fold(ss, acc, llMembersStep)
 
-fun llMembersB(ss: List<PStmt>, acc: List<PStmt>) =>
-  fold(ss, acc, llMembersBStep)
-
-fun llMembersBStep(a: List<PStmt>, x: PStmt) => match(x)
+fun llMembersStep(a: List<PStmt>, x: PStmt) => match(x)
   (f: PsFun) => append(a, liftInFunction(f))
   (o: PStmt) => append(a, x)
 
@@ -69,23 +65,19 @@ fun llInBlock(f0: PsFun, bk0: PeBlock)
     ret rebuilt
   ret llAnalyse(rebuilt, nested)
 
-fun llDeepFirst(ss, acc: List<PStmt>): List<PStmt> => llDeepFirstB(ss, acc)
+fun llDeepFirst(ss: List<PStmt>, acc: List<PStmt>) =>
+  fold(ss, acc, llDeepFirstStep)
 
-fun llDeepFirstB(ss: List<PStmt>, acc: List<PStmt>) =>
-  fold(ss, acc, llDeepFirstBStep)
-
-fun llDeepFirstBStep(a: List<PStmt>, x: PStmt) => match(x)
+fun llDeepFirstStep(a: List<PStmt>, x: PStmt) => match(x)
   (nf: PsFun) => append(a, liftInFunction(nf))
   (o: PStmt) => append(a, x)
 
 # ALL nested fns count here (Python gates on FunctionStatement only, not on
 # block-bodied ones like the hoist does).
-fun hoNestedFns2(ss, acc: List<PsFun>): List<PsFun> => hoNestedFns2B(ss, acc)
+fun hoNestedFns2(ss: List<PStmt>, acc: List<PsFun>) =>
+  fold(ss, acc, hoNestedFns2Step)
 
-fun hoNestedFns2B(ss: List<PStmt>, acc: List<PsFun>) =>
-  fold(ss, acc, hoNestedFns2BStep)
-
-fun hoNestedFns2BStep(a: List<PsFun>, x: PStmt) => match(x)
+fun hoNestedFns2Step(a: List<PsFun>, x: PStmt) => match(x)
   (nf: PsFun) => append(a, nf)
   (o: PStmt) => a
 
@@ -118,7 +110,7 @@ fun llAnalyse(f, nested: List<PsFun>)
 fun llCapturesOf(fs: List<PsFun>, siblingNames: List<String>,
                  paramNames: List<String>,
                  acc: List<List<String>>) =>
-  concat(acc, map(fs, (f) => sort(filter(freeRefs(f, siblingNames), (n) => contains2(paramNames, n)))))
+  concat(acc, map(fs, (f) => sort(filter(freeRefs(f, siblingNames), (n) => contains(paramNames, n)))))
 
 # Per-SCC solve, in reverse-topo order: the threaded set is the members'
 # captures plus whatever already-solved callee SCCs thread; liftability
@@ -135,8 +127,7 @@ fun llSolve(ss: List<List<String>>,
             edges: EEdges,
             paramLets: List<PStmt>,
             acc: LlSolved) =>
-  fold(ss, acc, (a, x) => llSolveOne(x, f, nested, siblingNames,
-                                        captures, edges, paramLets, a))
+  fold(ss, acc, (a, x) => llSolveOne(x, f, nested, siblingNames, captures, edges, paramLets, a))
 
 fun llSolveOne(scc, f: PsFun, nested: List<PsFun>,
                siblingNames: List<String>, captures: List<List<String>>,
@@ -163,18 +154,11 @@ fun llWant(ns: List<String>,
                                                              x),
                                           own, acc,
                                           addNamesAll(
-                                            llCapturesFor(
-                                              siblingNames, captures,
-                                              x),
+                                            llCapturesFor(siblingNames, captures, x),
                                             a)))
 
-fun llCalleeWants(cs: List<String>,
-                  own: List<String>,
-                  acc: LlSolved,
-                  out: List<String>) =>
-  fold(cs, out, (a, x) => contains2(own, x)
-    ? a
-    : addNamesAll(llThreadedFor(acc, x), a))
+fun llCalleeWants(cs: List<String>, own: List<String>, acc: LlSolved, out: List<String>) =>
+  fold(cs, out, (a, x) => contains(own, x) ? a : addNamesAll(llThreadedFor(acc, x), a))
 
 # The entry of `vs` paired with the first entry of `ks` satisfying `p`.
 fun llPairedWith<K, V>(ks: List<K>, vs: List<V>, p: (:K): Bool): V|None => match(findIndex(ks, p))
@@ -186,27 +170,18 @@ fun llCapturesFor(siblingNames: List<String>,
                   name: String) => llParallelGet(siblingNames, captures, name)
 
 fun llParallelGet(ns: List<String>, vs: List<List<String>>,
-                  name: String) => match(llPairedWith(ns, vs, (n) => n == name))
-  (v: List<String>) => v
-  ()                => List()
+                  name: String) => llPairedWith(ns, vs, (n) => n == name) ?? List()
 
-fun llThreadedFor(acc: LlSolved, name: String) => match(llPairedWith(acc.lsSccs, acc.lsThreaded, (s) => contains2(s, name)))
-  (t: List<String>) => t
-  ()                => List()
+fun llThreadedFor(acc: LlSolved, name: String) => llPairedWith(acc.lsSccs, acc.lsThreaded, (s) => contains(s, name)) ?? List()
 
-fun llCalleesOk(ns: List<String>, own: List<String>, edges: EEdges,
-                       acc: LlSolved) =>
-  all(ns, (x) => !(llCalleeBad(ceChildrenOf(edges, x), own,
-                                 acc)))
+fun llCalleesOk(ns: List<String>, own: List<String>, edges: EEdges, acc: LlSolved) =>
+  all(ns, (x) => !(llCalleeBad(ceChildrenOf(edges, x), own, acc)))
 
-fun llCalleeBad(cs: List<String>, own: List<String>,
-                       acc: LlSolved) =>
-  any(cs, (x) => !contains2(own, x)
-                     && llWasUnliftable(acc.lsSccs,
-                                        acc.lsLiftable, x))
+fun llCalleeBad(cs: List<String>, own: List<String>, acc: LlSolved) =>
+  any(cs, (x) => !contains(own, x) && llWasUnliftable(acc.lsSccs, acc.lsLiftable, x))
 
 fun llWasUnliftable(ss: List<List<String>>, ls: List<Bool>,
-                    name: String) => match(llPairedWith(ss, ls, (s) => contains2(s, name)))
+                    name: String) => match(llPairedWith(ss, ls, (s) => contains(s, name)))
   (liftable: Bool) => !liftable
   ()               => false
 
@@ -235,21 +210,16 @@ fun llLiftSets(ss: List<List<String>>,
                solved: LlSolved,
                siblingNames: List<String>,
                acc: LiftCtx) =>
-  fold(ss, acc, (a, x) => llLiftScc(x, x, solved,
-                                          a))
+  fold(ss, acc, (a, x) => llLiftScc(x, x, solved, a))
 
-fun llLiftScc(ns: List<String>, scc: List<String>, solved: LlSolved,
-                     acc: LiftCtx)
+fun llLiftScc(ns: List<String>, scc: List<String>, solved: LlSolved, acc: LiftCtx)
   let threaded = llThreadedFor(solved, llFirstOf(scc))
-  let liftable = !llWasUnliftable(solved.lsSccs,
-                                  solved.lsLiftable, llFirstOf(scc))
+  let liftable = !llWasUnliftable(solved.lsSccs, solved.lsLiftable, llFirstOf(scc))
   if !liftable || isEmpty(threaded)
     ret acc
   ret fold(ns, acc, (a, n) => LiftCtx(append(a.lcNames, n), append(a.lcExtras, sort(threaded))))
 
-fun llFirstOf(scc: List<String>) => match(head(scc))
-  (s: String) => s
-  ()          => ""
+fun llFirstOf(scc: List<String>) => head(scc) ?? ""
 
 # ── the reference counters (lambda subtrees ARE visited, like Python) ───────
 
@@ -317,34 +287,20 @@ fun llFold(x, name, n, calls: Bool): Int => match(x)
 
 fun llCountOne(x, name, n, calls) => calls ? llCountCalls(x, name, n) : llCountNames(x, name, n)
 
-fun llFoldExprs(es: List<PExpr>,
-                name: String,
-                n,
-                calls) =>
+fun llFoldExprs(es: List<PExpr>, name: String, n, calls) =>
   fold(es, n, (a, x) => llCountOne(x, name, a, calls))
 
-fun llFoldEnts(es: List<PTupEnt>,
-               name,
-               n,
-               calls: Bool): Int =>
-  fold(es, n, (a, x) => llCountOne(x.tupValue, name, a,
-                                           calls))
+fun llFoldEnts(es: List<PTupEnt>, name, n, calls: Bool): Int =>
+  fold(es, n, (a, x) => llCountOne(x.tupValue, name, a, calls))
 
-fun llFoldArms(as2: List<PArm>,
-               name,
-               n,
-               calls: Bool): Int =>
-  fold(as2, n, (a, x) => llFoldOpt(x.armGuard, name,
-                llCountOne(x.armBody, name, a, calls), calls))
+fun llFoldArms(as2: List<PArm>, name, n, calls: Bool): Int =>
+  fold(as2, n, (a, x) => llFoldOpt(x.armGuard, name, llCountOne(x.armBody, name, a, calls), calls))
 
 fun llFoldOpt(x: PExpr|None, name, n, calls) => match(x)
   (e2: PExpr) => llCountOne(e2, name, n, calls)
   ()          => n
 
-fun llFoldStmts(ss: List<PStmt>,
-                name: String,
-                n,
-                calls) =>
+fun llFoldStmts(ss: List<PStmt>, name: String, n, calls) =>
   fold(ss, n, (a, x) => llFoldStmt(x, name, a, calls))
 
 fun llFoldStmt(st, name, n, calls: Bool): Int => match(st)
@@ -423,27 +379,16 @@ fun llWithParams(st, extras: List<String>,
     (o: PStmt)         => f
   (o2: PStmt) => st
 
-fun llParamCopies(ns, paramLets: List<PStmt>,
-                         acc: List<PStmt>) => llParamCopiesB(ns, paramLets, acc)
+fun llParamCopies(ns: List<String>, paramLets: List<PStmt>, acc: List<PStmt>) =>
+  fold(ns, acc, (a, x) => llParamCopiesStep(a, x, paramLets))
 
-fun llParamCopiesB(ns: List<String>,
-                   paramLets: List<PStmt>,
-                   acc: List<PStmt>) =>
-  fold(ns, acc, (a, x) => llParamCopiesBStep(a, x, paramLets))
-
-fun llParamCopiesBStep(a: List<PStmt>, x: String, paramLets: List<PStmt>) => match(llParamByName(paramLets, x))
+fun llParamCopiesStep(a: List<PStmt>, x: String, paramLets: List<PStmt>) => match(llParamByName(paramLets, x))
   (p: PStmt) => append(a, p)
   () => a
 
 fun llParamByName(ps: List<PStmt>, name) => firstWhere(ps, (x) => stmtName(x) == name)
 
-fun llStmts(ss, ctx: LiftCtx, paramLets: List<PStmt>,
-                   acc: List<PStmt>) => llStmtsB(ss, ctx, paramLets, acc)
-
-fun llStmtsB(ss: List<PStmt>,
-             ctx: LiftCtx,
-             paramLets: List<PStmt>,
-             acc: List<PStmt>) =>
+fun llStmts(ss: List<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>, acc: List<PStmt>) =>
   fold(ss, acc, (a, x) => append(a, llStmt(x, ctx, paramLets)))
 
 fun llExprOpt(x: PExpr|None, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
@@ -518,40 +463,15 @@ fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>)
                rebuilt.pecLine)
     (o: PExpr)   => rebuilt
 
-fun llExtraEnts(ns, lr,
-                       acc: List<PTupEnt>): List<PTupEnt>
-  ret llExtraEntsB(ns, lr, acc)
+fun llExtraEnts(ns: List<String>, lr, acc: List<PTupEnt>) =>
+  fold(ns, acc, (a, x) => append(a, PTupEnt("", false, PeName(x, List(), lr, None))))
 
-fun llExtraEntsB(ns: List<String>,
-                 lr,
-                 acc: List<PTupEnt>) =>
-  fold(ns, acc, (a, x) => append(a, PTupEnt("", false,
-                PeName(x, List(), lr, None))))
-
-fun llExprs(es, ctx: LiftCtx, paramLets: List<PStmt>,
-                   acc: List<PExpr>) => llExprsB(es, ctx, paramLets, acc)
-
-fun llExprsB(es: List<PExpr>,
-             ctx: LiftCtx,
-             paramLets: List<PStmt>,
-             acc: List<PExpr>) =>
+fun llExprs(es: List<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>, acc: List<PExpr>) =>
   fold(es, acc, (a, x) => append(a, llExpr(x, ctx, paramLets)))
 
-fun llEnts(es: List<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>,
-                  acc: List<PTupEnt>) => llEntsB(es, ctx, paramLets, acc)
-
-fun llEntsB(es: List<PTupEnt>,
-            ctx: LiftCtx,
-            paramLets: List<PStmt>,
-            acc): List<PTupEnt> =>
+fun llEnts(es: List<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>, acc): List<PTupEnt> =>
   fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
                 llExpr(x.tupValue, ctx, paramLets))))
 
-fun llArms(as2, ctx: LiftCtx, paramLets: List<PStmt>,
-                  acc: List<PArm>) => llArmsB(as2, ctx, paramLets, acc)
-
-fun llArmsB(as2: List<PArm>,
-            ctx: LiftCtx,
-            paramLets: List<PStmt>,
-            acc: List<PArm>) =>
+fun llArms(as2: List<PArm>, ctx: LiftCtx, paramLets: List<PStmt>, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, with x(armBody = llExpr(x.armBody, ctx, paramLets), armGuard = llExprOpt(x.armGuard, ctx, paramLets))))

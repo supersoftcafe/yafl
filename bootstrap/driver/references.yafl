@@ -200,5 +200,4 @@ fun refsSpec(sp, acc): Set<String> => match(sp)
   (g: SGeneric) => acc
 
 fun refsEntries(es: List<SEntry>, acc): Set<String> =>
-  fold(es, acc, (a, x) => refsOptExpr(x.seDefault,
-                                             refsOptSpec(x.seType, a)))
+  fold(es, acc, (a, x) => refsOptExpr(x.seDefault, refsOptSpec(x.seType, a)))

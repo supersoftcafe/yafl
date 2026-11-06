@@ -54,13 +54,8 @@ fun collectDiagnostics(statements: List<PStmt>, r, enabledWarnings: Set<String>)
   let named = namedSpecErrors(statements)
   ret isEmpty(named) ? Diag(noErrs(), warnings) : Diag(named, warnings)
 
-fun stmtChecks(ss: List<PStmt>,
-               r: Resolver,
-               acc: Set<PErr>): Set<PErr> =>
-  fold(ss, acc, (a, x) => union(a, checkStmt2(x,
-                                                       scopeResolver(x,
-                                                                     r),
-                                                       None)))
+fun stmtChecks(ss: List<PStmt>, r: Resolver, acc: Set<PErr>): Set<PErr> =>
+  fold(ss, acc, (a, x) => union(a, checkStmt2(x, scopeResolver(x, r), None)))
 
 fun withMainCount(statements: List<PStmt>, acc): Set<PErr>
   let mains = countMains(statements, 0)
@@ -108,8 +103,7 @@ fun untypedLoop(ss: List<PStmt>, r: Resolver, acc: Set<PErr>): Set<PErr> =>
   fold(ss, acc, (a, x) => untypedLoopStep(a, x, r))
 
 fun untypedLoopStep(a: Set<PErr>, x: PStmt, r: Resolver) => match(x)
-  (f: PsFun) => funUntypedErrors(f, paramBodyScope(f, scopeResolver(f, r)),
-    a)
+  (f: PsFun) => funUntypedErrors(f, paramBodyScope(f, scopeResolver(f, r)), a)
   (o: PStmt) => a
 
 # The clue comes from the BODY's hints: the converged body compiles once more.
@@ -119,11 +113,7 @@ fun funUntypedErrors(f: PsFun, bodyR, acc: Set<PErr>)
   let hints = hintsOf(compileExprOpt(f.fBody, bodyR, f.fRet))
   ret funUntyped(f, paramLets(f.fParams), bodyR, hints, acc)
 
-fun funUntyped(f: PsFun,
-               ts: List<PStmt>,
-               bodyR,
-               hints: Dict<String, List<Hint>>,
-               acc: Set<PErr>) =>
+fun funUntyped(f: PsFun, ts: List<PStmt>, bodyR, hints: Dict<String, List<Hint>>, acc: Set<PErr>) =>
   fold(ts, acc, (a, x) => funUntypedStep(a, x, f, bodyR, hints))
 
 fun funUntypedStep(a: Set<PErr>, x: PStmt, f: PsFun, bodyR, hints: Dict<String, List<Hint>>) => match(x)
@@ -228,9 +218,7 @@ fun nsEntries(es: List<PTupEnt>, acc): Set<PErr> =>
   fold(es, acc, (a, x) => nsExpr(x.tupValue, a))
 
 fun nsArms(as2: List<PArm>, acc): Set<PErr> =>
-  fold(as2, acc, (a, x) => nsExprOpt(x.armGuard,
-                              nsExpr(x.armBody,
-                                nsSpecOpt(x.armType, a))))
+  fold(as2, acc, (a, x) => nsExprOpt(x.armGuard, nsExpr(x.armBody, nsSpecOpt(x.armType, a))))
 
 fun nsExprOpt(x: PExpr|None, acc): Set<PErr> => match(x)
   (e2: PExpr) => nsExpr(e2, acc)
@@ -253,8 +241,7 @@ fun nsSpecList(ss: List<Spec>, acc: Set<PErr>) =>
   fold(ss, acc, (a, x) => nsSpec(x, a))
 
 fun nsSpecEntries(es: List<SEntry>, acc): Set<PErr> =>
-  fold(es, acc, (a, x) => nsExprOpt(x.seDefault,
-                                             nsSpecOpt(x.seType, a)))
+  fold(es, acc, (a, x) => nsExprOpt(x.seDefault, nsSpecOpt(x.seType, a)))
 
 fun nsSpecOpt(sp: Spec|None, acc): Set<PErr> => match(sp)
   (s2: Spec) => nsSpec(s2, acc)

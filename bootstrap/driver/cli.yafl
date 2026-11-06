@@ -254,8 +254,7 @@ fun clusterNext(a: String, sep: String|None, x: String, rest: List<CliWord>,
       : byteAt(tail, 0) == '='
         ? readOption(a2, next, "=", slice(tail, 1, length(tail)), rest, taken, s)
         : readOption(a2, next, "", tail, rest, taken, s)
-    ()           => takeAll(taken, rest,
-                            with s(csExtras = concat(s.csExtras, list1("-" + x))))
+    ()           => takeAll(taken, rest, with s(csExtras = concat(s.csExtras, list1("-" + x))))
 
 fun ignored(a: String, x: String) => CliError("argument " + displayName(a)
   + ": ignored explicit argument " + pyRepr(x))
@@ -263,8 +262,7 @@ fun ignored(a: String, x: String) => CliError("argument " + displayName(a)
 fun expectedOne(a: String) => CliError("argument " + displayName(a) + ": expected one argument")
 
 # Then the word's actions run, in order: `-h` prints the help and stops there.
-fun takeAll(ts: List<CliTaken>, rest: List<CliWord>,
-            s: CliScan): CliStep|CliHelp|CliError =>
+fun takeAll(ts: List<CliTaken>, rest: List<CliWord>, s: CliScan): CliStep|CliHelp|CliError =>
   match(foldWhile<CliTaken, CliScan|CliHelp|CliError>(ts, s, takeAction, (acc) => acc is CliScan))
     (s2: CliScan) => CliStep(rest, s2)
     (h: CliHelp)  => h

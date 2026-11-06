@@ -137,15 +137,13 @@ fun [tail] siNopLoop(s: Segment<Op>|None, a: CgApp, iSeg, i,
 
 # In op order: the promotion walk follows it, and the globals it yields are
 # emitted in that order.
-fun siNopOne(acc, a: CgApp, op,
-             i): List<SiNewObj> => match(op)
+fun siNopOne(acc, a: CgApp, op, i): List<SiNewObj> => match(op)
   # A pinned object is filled in after allocation: never a static. Nor is a
   # [pinnable] one, whose write-once slots every caller would then share, and
   # the late write assumes a heap object (staticinit.py).
   (no: OpNewObject) => no.newObjSize is None && !no.newObjPinned && !siPinnable(a, no.newObjName)
     ? match(no.newObjRegister)
-      (sv: RpStackVar) => append(acc,
-                                SiNewObj(i, no.newObjName, sv.name))
+      (sv: RpStackVar) => append(acc, SiNewObj(i, no.newObjName, sv.name))
       (o: RParam)      => acc
     : acc
   (o: Op)           => acc

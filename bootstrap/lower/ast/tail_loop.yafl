@@ -98,9 +98,7 @@ fun tlParams(f: PsFun) => match(f.fParams)
 fun tlParamRefs(ts: List<PStmt>, lr, acc: List<PExpr>) =>
   concat(acc, map(ts, (t) => PeName(stmtName(t), List(), lr, None)))
 
-fun tlStripTail(as2, acc: List<PAttr>): List<PAttr> => tlStripTailB(as2, acc)
-
-fun tlStripTailB(as2: List<PAttr>, acc: List<PAttr>) => concat(acc, filter(as2, (a) => a.attrName != "tail"))
+fun tlStripTail(as2: List<PAttr>, acc: List<PAttr>) => concat(acc, filter(as2, (a) => a.attrName != "tail"))
 
 fun tlIsSelfCall(x, fName) => match(x)
   (c: PeCall) => tlIsSelfRef(c.function, fName)
@@ -223,9 +221,7 @@ fun tlToRecur(x, n) => match(x)
     (o: PExpr)    => TlRw(x, n)
   (o2: PExpr) => TlRw(x, n)
 
-fun tlEntValues(es: List<PTupEnt>, acc: List<PExpr>) => tlEntValuesB(es, acc)
-
-fun tlEntValuesB(es: List<PTupEnt>, acc): List<PExpr> => concat(acc, map(es, (e) => e.tupValue))
+fun tlEntValues(es: List<PTupEnt>, acc): List<PExpr> => concat(acc, map(es, (e) => e.tupValue))
 
 class [final] TlSo(soStmts: List<PStmt>, soN: Int)
 class [final] TlAo(aoArms: List<PArm>, aoN: Int)

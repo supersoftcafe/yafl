@@ -37,8 +37,7 @@ fun insertDrops(statements: List<PStmt>, r)
 # with drop calls spliced in. The `changed` flag rides alongside as a plain
 # value — only the statement list is accumulated.
 fun drTop(ss: List<PStmt>, r, insts: List<TraitInst>, acc, changed) =>
-  fold(ss, (acc = acc, changed = changed),
-       (st, x) => drTopStep(st, x, r, insts))
+  fold(ss, (acc = acc, changed = changed), (st, x) => drTopStep(st, x, r, insts))
     |> (r2) => DropsOut(r2.acc, r2.changed)
 
 fun drTopStep(st: (acc: List<PStmt>, changed: Bool), x: PStmt, r, insts: List<TraitInst>) =>
@@ -76,8 +75,7 @@ fun drClassMembers(c, r, insts: List<TraitInst>)
     : DrS(c, false)
 
 fun drMembers(ms: List<PStmt>, r, insts: List<TraitInst>, acc, changed) =>
-  fold(ms, (acc = acc, changed = changed),
-       (st, x) => drMembersStep(st, x, r, insts))
+  fold(ms, (acc = acc, changed = changed), (st, x) => drMembersStep(st, x, r, insts))
     |> (r2) => DrMembers(r2.acc, r2.changed)
 
 fun drMembersStep(st: (acc: List<PStmt>, changed: Bool), x: PStmt, r, insts: List<TraitInst>) => match(x)
@@ -128,9 +126,7 @@ fun dropInstances(r) => match(dropInterfaceName(r))
 fun isDropOf(c: SClass, dn) => c.scName == dn && exactly(c.scParams, 1)
 
 # PRE-LOWERING first-class instances: the pattern is the interface.
-fun tiDropsLoop(ts: List<PStmt>,
-                dn,
-                acc: List<TraitInst>) =>
+fun tiDropsLoop(ts: List<PStmt>, dn, acc: List<TraitInst>) =>
   fold(ts, acc, (a, x) => tiDropsLoopStep(a, x, dn))
 
 fun tiDropsLoopStep(a: List<TraitInst>, x: PStmt, dn) => match(x)
@@ -141,10 +137,7 @@ fun tiDropsLoopStep(a: List<TraitInst>, x: PStmt, dn) => match(x)
     (o: Spec) => a
   (o2: PStmt) => a
 
-fun dLetsLoop(ts: List<PStmt>,
-              dn,
-              r,
-              acc: List<TraitInst>) =>
+fun dLetsLoop(ts: List<PStmt>, dn, r, acc: List<TraitInst>) =>
   fold(ts, acc, (a, x) => dLetsLoopStep(a, x, dn, r))
 
 fun dLetsLoopStep(a: List<TraitInst>, x: PStmt, dn, r) => match(x)
@@ -165,10 +158,7 @@ fun witnessDrops(let2: PsLet, dn, r,
     (o2: Spec)   => acc
   ()         => acc
 
-fun parentDrops(ps: List<Spec>,
-                dn,
-                names: List<String>,
-                acc: List<TraitInst>) =>
+fun parentDrops(ps: List<Spec>, dn, names: List<String>, acc: List<TraitInst>) =>
   fold(ps, acc, (a, x) => parentDropsStep(a, x, dn, names))
 
 fun parentDropsStep(a: List<TraitInst>, x: Spec, dn, names: List<String>) => match(x)
@@ -283,10 +273,8 @@ fun drFieldArgs(ne, wheres: List<Spec>, r,
 
 class [final] DrFa(dfArgs: List<PFieldArg>, dfChanged: Bool)
 
-fun drFaLoop(fas: List<PFieldArg>, wheres: List<Spec>, r, insts: List<TraitInst>,
-             acc, changed) =>
-  fold(fas, (acc = acc, changed = changed),
-       (st, x) => drFaLoopStep(st, x, wheres, r, insts))
+fun drFaLoop(fas: List<PFieldArg>, wheres: List<Spec>, r, insts: List<TraitInst>, acc, changed) =>
+  fold(fas, (acc = acc, changed = changed), (st, x) => drFaLoopStep(st, x, wheres, r, insts))
     |> (r2) => DrFa(r2.acc, r2.changed)
 
 fun drFaLoopStep(st: (acc: List<PFieldArg>, changed: Bool), x: PFieldArg, wheres: List<Spec>, r,
@@ -337,10 +325,8 @@ fun entriesOf3(x, orig) => match(x)
   (tp: PeTuple) => tp.exprs
   (o: PExpr)    => orig
 
-fun drEntryLoop(es: List<PTupEnt>, wheres: List<Spec>, r, insts: List<TraitInst>,
-                acc, changed) =>
-  fold(es, (acc = acc, changed = changed),
-       (st, x) => drEntryLoopStep(st, x, wheres, r, insts))
+fun drEntryLoop(es: List<PTupEnt>, wheres: List<Spec>, r, insts: List<TraitInst>, acc, changed) =>
+  fold(es, (acc = acc, changed = changed), (st, x) => drEntryLoopStep(st, x, wheres, r, insts))
     |> (r2) => DrE(PeTuple(r2.acc, PLine("", 0, 0)), r2.changed)
 
 fun drEntryLoopStep(st: (acc: List<PTupEnt>, changed: Bool), x: PTupEnt, wheres: List<Spec>, r,
@@ -385,18 +371,14 @@ fun drMatch(mt: PeMatch, wheres: List<Spec>, r,
 
 class [final] DrArms(daArms: List<PArm>, daChanged: Bool)
 
-fun drArms(as2: List<PArm>, wheres: List<Spec>, r, insts: List<TraitInst>, acc,
-           changed) =>
-  fold(as2, (acc = acc, changed = changed),
-       (st, x) => drArmsStep(st, x, wheres, r, insts))
+fun drArms(as2: List<PArm>, wheres: List<Spec>, r, insts: List<TraitInst>, acc, changed) =>
+  fold(as2, (acc = acc, changed = changed), (st, x) => drArmsStep(st, x, wheres, r, insts))
     |> (r2) => DrArms(r2.acc, r2.changed)
 
 fun drArmsStep(st: (acc: List<PArm>, changed: Bool), x: PArm, wheres: List<Spec>, r,
                insts: List<TraitInst>) =>
   drExpr(x.armBody, wheres, r, insts)
-  |> (o) => (acc = append(st.acc,
-        with x(armBody = o.deExpr)),
-    changed = st.changed || o.deChanged)
+  |> (o) => (acc = append(st.acc, with x(armBody = o.deExpr)), changed = st.changed || o.deChanged)
 
 fun drBlock(bk: PeBlock, wheres: List<Spec>, r,
             insts: List<TraitInst>): DrE
@@ -424,10 +406,8 @@ fun blockStmtsOf(x) => match(x)
 
 fun blockReferenced(x) => referencedNames(x, List())
 
-fun drBlockStmts(ss: List<PStmt>, wheres: List<Spec>, r, insts: List<TraitInst>, acc,
-                 changed) =>
-  fold(ss, (acc = acc, changed = changed),
-       (st, x) => drBlockStmtsStep(st, x, wheres, r, insts))
+fun drBlockStmts(ss: List<PStmt>, wheres: List<Spec>, r, insts: List<TraitInst>, acc, changed) =>
+  fold(ss, (acc = acc, changed = changed), (st, x) => drBlockStmtsStep(st, x, wheres, r, insts))
     |> (r2) => DrMembers(r2.acc, r2.changed)
 
 fun drBlockStmtsStep(st: (acc: List<PStmt>, changed: Bool), x: PStmt, wheres: List<Spec>, r,
@@ -506,20 +486,15 @@ fun unusedDroppable(lets: List<PStmt>, referenced: List<String>,
                     wheres: List<Spec>, r,
                     insts: List<TraitInst>) => udLoop(lets, referenced, wheres, r, insts, List())
 
-fun udLoop(ls, referenced: List<String>,
-                  wheres: List<Spec>, r, insts: List<TraitInst>,
-                  acc: List<PStmt>)
-  ret udLoopB(ls, referenced, wheres, r, insts, acc)
-
-fun udLoopB(ls: List<PStmt>,
+fun udLoop(ls: List<PStmt>,
             referenced: List<String>,
             wheres: List<Spec>,
             r,
             insts: List<TraitInst>,
             acc: List<PStmt>) =>
-  fold(ls, acc, (a, x) => udLoopBStep(a, x, referenced, wheres, r, insts))
+  fold(ls, acc, (a, x) => udLoopStep(a, x, referenced, wheres, r, insts))
 
-fun udLoopBStep(a: List<PStmt>, x: PStmt, referenced: List<String>, wheres: List<Spec>, r, insts: List<TraitInst>) => match(x)
+fun udLoopStep(a: List<PStmt>, x: PStmt, referenced: List<String>, wheres: List<Spec>, r, insts: List<TraitInst>) => match(x)
   (let2: PsLet) => isUnusedDroppable(let2, referenced, wheres, r, insts)
     ? append(a, x)
     : a
@@ -527,7 +502,7 @@ fun udLoopBStep(a: List<PStmt>, x: PStmt, referenced: List<String>, wheres: List
 
 fun isUnusedDroppable(let2: PsLet, referenced: List<String>,
                       wheres: List<Spec>, r,
-                      insts: List<TraitInst>) => !contains2(referenced, let2.lName)
+                      insts: List<TraitInst>) => !contains(referenced, let2.lName)
     && eligibleDroppable(let2, wheres, r, insts)
 
 fun eligibleDroppable(let2: PsLet, wheres: List<Spec>, r,
@@ -543,21 +518,16 @@ fun partiallyUsedDroppable(lets: List<PStmt>, referenced: List<String>,
                            insts: List<TraitInst>)
   ret puLoop(lets, referenced, wheres, r, insts, List())
 
-fun puLoop(ls, referenced: List<String>,
-                  wheres: List<Spec>, r, insts: List<TraitInst>,
-                  acc: List<PStmt>)
-  ret puLoopB(ls, referenced, wheres, r, insts, acc)
-
-fun puLoopB(ls: List<PStmt>,
+fun puLoop(ls: List<PStmt>,
             referenced: List<String>,
             wheres: List<Spec>,
             r,
             insts: List<TraitInst>,
             acc: List<PStmt>) =>
-  fold(ls, acc, (a, x) => puLoopBStep(a, x, referenced, wheres, r, insts))
+  fold(ls, acc, (a, x) => puLoopStep(a, x, referenced, wheres, r, insts))
 
-fun puLoopBStep(a: List<PStmt>, x: PStmt, referenced: List<String>, wheres: List<Spec>, r, insts: List<TraitInst>) => match(x)
-  (let2: PsLet) => contains2(referenced, let2.lName)
+fun puLoopStep(a: List<PStmt>, x: PStmt, referenced: List<String>, wheres: List<Spec>, r, insts: List<TraitInst>) => match(x)
+  (let2: PsLet) => contains(referenced, let2.lName)
              && eligibleDroppable(let2, wheres, r, insts)
     ? append(a, x)
     : a
@@ -588,12 +558,10 @@ fun blockValueOf(body) => match(body)
   (bk: PeBlock) => bk.blockValue
   (o: PExpr)    => body
 
-fun dropCalls(ds, acc: List<PStmt>): List<PStmt> => dropCallsB(ds, acc)
+fun dropCalls(ds: List<PStmt>, acc: List<PStmt>) =>
+  fold(ds, acc, dropCallsStep)
 
-fun dropCallsB(ds: List<PStmt>, acc: List<PStmt>) =>
-  fold(ds, acc, dropCallsBStep)
-
-fun dropCallsBStep(a: List<PStmt>, x: PStmt) => match(x)
+fun dropCallsStep(a: List<PStmt>, x: PStmt) => match(x)
   (let2: PsLet) => append(a, dropCall(let2))
   (o: PStmt) => a
 
@@ -609,8 +577,7 @@ class [final] DrBs(bsStmts: List<PStmt>, bsValue: PExpr|None, bsDid: Bool,
                    bsOk: Bool)
 
 fun drBalLoop(ls: List<PStmt>, body, changed) =>
-  fold(ls, (body = body, changed = changed),
-       drBalLoopStep)
+  fold(ls, (body = body, changed = changed), drBalLoopStep)
     |> (r) => DrE(r.body, r.changed)
 
 fun drBalLoopStep(st: (body: PExpr, changed: Bool), x: PStmt) => match(x)
@@ -645,13 +612,13 @@ fun drLetName(st: PStmt) => match(st)
   (let2: PsLet) => let2.lName
   (o: PStmt)    => ""
 
-fun drRefs(x, name: String): Bool => contains2(referencedNames(x, List()), name)
+fun drRefs(x, name: String): Bool => contains(referencedNames(x, List()), name)
 
 fun drRefsOpt(x: PExpr|None, name: String) => match(x)
   (e2: PExpr) => drRefs(e2, name)
   ()          => false
 
-fun drRefsStmt(st, name: String): Bool => contains2(refStmt(st, List()), name)
+fun drRefsStmt(st, name: String): Bool => contains(refStmt(st, List()), name)
 
 fun drRefsAny(ss: List<PStmt>, name: String) => any(ss, (x) => drRefsStmt(x, name))
 
@@ -659,15 +626,11 @@ fun oneDrop(let2: PsLet): List<PStmt> => prepend(let2, List())
 
 # Path accounting through a statement list. `tail2` says the caller's
 # continuation consumes on fall-through; every path must total exactly one.
-fun drEnsureStmts(ss: List<PStmt>, value, tail2,
-                  consumed, let2: PsLet,
-                  acc, did) => match(head(ss))
+fun drEnsureStmts(ss: List<PStmt>, value, tail2, consumed, let2: PsLet, acc, did) => match(head(ss))
   (v: PStmt) => match(v)
     (rt: PsRet) => drEnsureRet(rt, dropOne(ss), value, consumed, let2, acc, did)
-    (i2: PsIf)  => drEnsureIfStep(i2, dropOne(ss), value, tail2, consumed, let2,
-                                  acc, did)
-    (o: PStmt)  => drEnsurePlain(v, dropOne(ss), value, tail2, consumed,
-                                 let2, acc, did)
+    (i2: PsIf)  => drEnsureIfStep(i2, dropOne(ss), value, tail2, consumed, let2, acc, did)
+    (o: PStmt)  => drEnsurePlain(v, dropOne(ss), value, tail2, consumed, let2, acc, did)
   () => drEnsureEnd(value, tail2, consumed, let2, acc, did)
 
 fun drEnsurePlain(st, rest, value,
@@ -851,9 +814,7 @@ fun drFixEntries(tp, let2: PsLet)
   ret DrBx(PeTuple(entriesOf3(out.bxExpr, tp.exprs), tp.petLine), out.bxDid,
            true)
 
-fun [tail] drFixEntryLoop(es: List<PTupEnt>, let2: PsLet,
-                          acc,
-                          did) => match(head(es))
+fun [tail] drFixEntryLoop(es: List<PTupEnt>, let2: PsLet, acc, did) => match(head(es))
   (e: PTupEnt) => drFixExpr(e.tupValue, let2)
     |> (o) => o.bxOk
       ? drFixEntryLoop(dropOne(es), let2,
@@ -872,9 +833,7 @@ fun drFixFieldArgs(ne, let2: PsLet)
 
 class [final] DrFaB(faArgs: List<PFieldArg>, faDid: Bool, faOk: Bool)
 
-fun [tail] drFixFaLoop(fas: List<PFieldArg>, let2: PsLet,
-                       acc,
-                       did) => match(head(fas))
+fun [tail] drFixFaLoop(fas: List<PFieldArg>, let2: PsLet, acc, did) => match(head(fas))
   (fa: PFieldArg) => drFixExpr(fa.faValue, let2)
     |> (o) => o.bxOk
       ? drFixFaLoop(dropOne(fas), let2, append(acc, PFieldArg(fa.faName, o.bxExpr)), did || o.bxDid)
@@ -947,22 +906,14 @@ fun drArmRefsAll(as2: List<PArm>, name: String) => all(as2, (x) => drRefs(x.armB
 
 class [final] DrArmB(abArms: List<PArm>, abDid: Bool, abOk: Bool)
 
-fun [tail] drFixArmLoop(as2: List<PArm>, let2: PsLet,
-                        acc,
-                        did) => match(head(as2))
+fun [tail] drFixArmLoop(as2: List<PArm>, let2: PsLet, acc, did) => match(head(as2))
   (a: PArm) => drFixExpr(a.armBody, let2)
     |> (o) => o.bxOk
       ? drFixArmLoop(dropOne(as2), let2, append(acc, with a(armBody = o.bxExpr)), did || o.bxDid)
       : DrArmB(acc, false, false)
   ()        => DrArmB(acc, did, true)
 
-fun drWrapArms(as2, name: String, let2: PsLet,
-                      acc: List<PArm>) => drWrapArmsB(as2, name, let2, acc)
-
-fun drWrapArmsB(as2: List<PArm>,
-                name: String,
-                let2: PsLet,
-                acc: List<PArm>): List<PArm> =>
+fun drWrapArms(as2: List<PArm>, name: String, let2: PsLet, acc: List<PArm>): List<PArm> =>
   fold(as2, acc, (a, x) => drRefs(x.armBody, name)
     ? append(a, x)
     : append(a, with x(armBody = withDrops(x.armBody,
@@ -978,9 +929,7 @@ fun drFixBlock(bk, let2: PsLet)
   ret DrBx(PeBlock(ss.bsStmts, ov.bxExpr, bk.blockTag, bk.pebkLine),
            ss.bsDid || ov.bxDid, true)
 
-fun [tail] drFixStmtLoop(ss: List<PStmt>, let2: PsLet,
-                         acc,
-                         did) => match(head(ss))
+fun [tail] drFixStmtLoop(ss: List<PStmt>, let2: PsLet, acc, did) => match(head(ss))
   (s: PStmt) => drFixStmt(s, let2)
     |> (o) => o.biOk
       ? drFixStmtLoop(dropOne(ss), let2, append(acc, o.biStmt), did || o.biDid)

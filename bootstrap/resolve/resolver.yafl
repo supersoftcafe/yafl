@@ -67,12 +67,8 @@ fun [tail] lastIndexLoop(s, at, best, c): Int => at >= length(s)
 # prefix-match lookup is a plain hit rather than a scan.
 fun namePrefixes(name): List<String> => prefixLoop(split(name, "@"), "", List())
 
-fun prefixLoop(ps, acc,
-                      out: List<String>): List<String>
-  ret prefixLoopB(ps, acc, out)
-
 # Every prefix of the path: the running prefix travels beside the output.
-fun prefixLoopB(ps: List<String>, acc, out: List<String>) =>
+fun prefixLoop(ps: List<String>, acc, out: List<String>) =>
   fold(ps, (p = acc, out = out),
        (st, s) => st.p == ""
          ? (p = s, out = append(st.out, s))
@@ -182,9 +178,7 @@ fun withKindIndexes(base: Statements)
 fun bareView(ks: List<String>,
              kind: Dict<String, Findings>,
              acc: Dict<String, Dict<String, Findings>>) =>
-  fold(ks, acc, (a, x) => contains(x, "@")
-    ? a
-    : bareViewAdd(a, kind, x))
+  fold(ks, acc, (a, x) => contains(x, "@") ? a : bareViewAdd(a, kind, x))
 
 fun bareViewAdd(acc,
                 kind: Dict<String, Findings>,
@@ -207,14 +201,10 @@ fun memberIndexOne(acc: Dict<String, MemberIdx>, st: PStmt): Dict<String, Member
   (o: PStmt)    => acc
 
 # member_index: ctor params (flattened to leaf lets) PLUS body statements, in
-# declaration order — the order memberMatchesB walked. addKeys is the same
+# declaration order — the order memberMatches walked. addKeys is the same
 # helper the global index uses, so bucket semantics match nameMatches.
-fun memberKeys(ms: List<PStmt>,
-               acc: Dict<String, List<PStmt>>) =>
-  fold(ms, acc, (a, x) => stmtName(x) == ""
-    ? a
-    : addKeys(a, namePrefixes(stmtName(x)),
-                                 x))
+fun memberKeys(ms: List<PStmt>, acc: Dict<String, List<PStmt>>) =>
+  fold(ms, acc, (a, x) => stmtName(x) == "" ? a : addKeys(a, namePrefixes(stmtName(x)), x))
 
 # The per-pass member index, when the root carries one; a miss (direct RRoot
 # builder, or a class spelling the canonical key does not cover) derives per
@@ -234,8 +224,7 @@ fun kindLoop(ks: List<String>,
              index: Dict<String, List<PStmt>>,
              wantType,
              acc: Dict<String, Findings>) =>
-  fold(ks, acc, (a, x) => kindPut(a, x, get(index, x),
-                                      wantType))
+  fold(ks, acc, (a, x) => kindPut(a, x, get(index, x), wantType))
 
 fun kindPut(acc, key: String,
             bucket: List<PStmt>|None, wantType)
@@ -258,8 +247,7 @@ fun withAmbient(base: Statements)
 # came from: the entry keeps the UNION of namespaces and is in scope when
 # any of them is imported.
 fun dedupeAmb(es: List<AmbEntry>, acc: List<AmbEntry>) =>
-  fold(es, acc, (a, x) => mergeAmb(a, x,
-                                               List(), false))
+  fold(es, acc, (a, x) => mergeAmb(a, x, List(), false))
 
 # Entries keep their order: it is the order the "Candidates:" message lists
 # them in. An unmerged entry goes on the end.
@@ -309,9 +297,7 @@ fun addPrefixes(acc: Statements, name, st)
                  acc.stAmbientBlocked, acc.stTypesIdx, acc.stDataIdx,
                  acc.stBareTypes, acc.stBareData, acc.stMembers)
 
-fun addKeys(d: Dict<String, List<PStmt>>,
-            ks: List<String>,
-            st) =>
+fun addKeys(d: Dict<String, List<PStmt>>, ks: List<String>, st) =>
   fold(ks, d, (a, x) => putUnder(a, x, st))
 
 fun putUnder(d: Dict<String, List<PStmt>>, key: String,
@@ -526,14 +512,12 @@ fun [tail] ambEntryWalk(r, scopes: List<String>) => match(r)
   (cb: RClassBody) => ambEntryWalk(cb.rcbParent, scopes)
   (rg: RGen)       => ambEntryWalk(rg.rgParent, scopes)
 
-fun ambFilter(es: List<AmbEntry>,
-              scopes: List<String>,
-              acc: List<TraitEntry>) =>
+fun ambFilter(es: List<AmbEntry>, scopes: List<String>, acc: List<TraitEntry>) =>
   fold(es, acc, (a, x) => anyInScopes(x.amNs, scopes)
     ? append(a, TraitEntry(x.amSpec, x.amOwn))
     : a)
 
-fun anyInScopes(ns: List<String>, scopes: List<String>) => any(ns, (x) => contains2(scopes, x))
+fun anyInScopes(ns: List<String>, scopes: List<String>) => any(ns, (x) => contains(scopes, x))
 
 # Everything before the LAST '::' (Python name.rpartition('::')[0]).
 fun namespacePart(name)
@@ -585,9 +569,7 @@ fun whereClauses(r): List<Spec> => match(r)
 # O(log n) where scanning the accumulator was O(n) per element, and the list
 # keeps the order the Set cannot.
 fun mergeNames(acc: List<String>, ns: List<String>)
-  ret mergeNamesB(acc,
-                        Set(acc),
-                        ns)
+  ret mergeNamesB(acc, Set(acc), ns)
 
 fun mergeNamesB(out: List<String>, seen: Set<String>, ns: List<String>) =>
   fold(ns, (out = out, seen = seen),
@@ -657,13 +639,7 @@ fun globalFindings(idx: Statements, query: String, wantType: Bool): Findings
     (f: Findings) => f
     ()            => emptyFindingsGlobal
 
-fun globalLoop(ss, wantType,
-                      acc: List<Found>): List<Found>
-  ret globalLoopB(ss, wantType, acc)
-
-fun globalLoopB(ss: List<PStmt>,
-                wantType,
-                acc: List<Found>) =>
+fun globalLoop(ss: List<PStmt>, wantType, acc: List<Found>) =>
   fold(ss, acc, (a, x) => !isNeitherStmt(x)
                      && wantsThis(isTypeStmt(x), wantType)
     ? append(a, Found(stmtName(x), x, ScGlobal()))
@@ -698,16 +674,8 @@ fun classBodyFindings(cb: RClassBody, query)
 fun matchingFound(names: List<Found>, query: String): Findings
   ret Findings(matchLoop(names, query, List()), true)
 
-fun matchLoop(fs, query: String,
-                     acc: List<Found>): List<Found>
-  ret matchLoopB(fs, query, acc)
-
-fun matchLoopB(fs: List<Found>,
-               query,
-               acc: List<Found>) =>
-  fold(fs, acc, (a, x) => nameMatches(x.fName, query)
-    ? append(a, x)
-    : a)
+fun matchLoop(fs: List<Found>, query, acc: List<Found>) =>
+  fold(fs, acc, (a, x) => nameMatches(x.fName, query) ? append(a, x) : a)
 
 fun stmtName(st) => match(st)
   (f: PsFun)        => f.fName
@@ -753,7 +721,7 @@ fun mmEnsure(name, st: Statements, visiting: List<String>,
 
 fun mmBuild(name, st: Statements, visiting: List<String>,
             acc)
-  if contains2(visiting, name)
+  if contains(visiting, name)
     ret put(acc, name, MMissing())   # defensive: cyclic implements
   ret match(get(st.stMembers, name))
     (mi: MemberIdx) => mmBuildClass(name, mi, st, visiting, acc)

@@ -28,7 +28,7 @@ fun gsIdNames(acc, st: PStmt): List<String> => acc
 fun gsCollect(acc, x) => match(x)
   # First-seen order: gsGlobals numbers these by index, so the order is
   # part of the generated global names. `acc` is read by the dedup.
-  (s2: PeStr) => contains2(acc, s2.strValue)
+  (s2: PeStr) => contains(acc, s2.strValue)
     ? acc
     : append(acc, s2.strValue)
   (o: PExpr)  => acc

@@ -58,8 +58,7 @@ enum LineOut
 
 # `seen` answers membership only: a Set, so a many-key manifest stays linear.
 # A cursor over the lines: one logical line may consume several (`loRest`).
-fun [tail] tomlLines(ls: List<String>, n, seen: Set<String>,
-                     acc) => match(head(ls))
+fun [tail] tomlLines(ls: List<String>, n, seen: Set<String>, acc) => match(head(ls))
   (line: String) => match(tomlLine(line, dropOne(ls), seen))
     (s: LineSkip)   => tomlLines(dropOne(ls), n + 1, seen, acc)
     (e: LineErr)    => TomlErr(e.loWhy, n)

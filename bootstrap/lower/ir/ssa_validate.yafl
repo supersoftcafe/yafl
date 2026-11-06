@@ -140,7 +140,7 @@ fun ssavPhiCheck(ph: OpPhi, preds: List<PredEntry>, fname,
     ret list1(fname + ": Phi appears outside the Phi region of any block")
   let expected = filter(predsOf(preds, current), (s2) => length(s2) > 0)
   let sources = map(ph.phiSources, (s2) => s2.sourceLabel)
-  let missing = filter(expected, (s2) => !strListMember(sources, s2))
+  let missing = filter(expected, (s2) => !contains(sources, s2))
   let extra = filter(sources, (s2) => !contains(expected, s2))
   ret isEmpty(missing) && isEmpty(extra)
     ? List()

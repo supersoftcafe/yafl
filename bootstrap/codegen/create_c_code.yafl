@@ -50,7 +50,7 @@ fun discEnumRoot(acc, e2: PsEnum,
   if !enumIsRootStmt(e2)
     ret acc
   ret match(asEnumVariant(e2.eSpec))
-    (sp: SEnum) if contains2(breakers, sp.seRoot) =>
+    (sp: SEnum) if contains(breakers, sp.seRoot) =>
         fold(sp.seAllLeaves, acc, (a, leaf) => discAssign(a, "enumleaf(" + enumLeafObjectName(e2.eName, leaf) + ")"))
     ()           => acc
 
@@ -208,7 +208,7 @@ fun createCCode(statements, mainName, optLevel,
   let boxedLeaves = computeBoxedLeaves(statements, breakers)
   let st = buildStatements(statements)
   # Codegen compiles no enum, so it never asks the derived-equality analysis.
-  let r = RRoot((root) => contains2(breakers, root), (name) => false,
+  let r = RRoot((root) => contains(breakers, root), (name) => false,
                 st, discs, optLevel,
                 None, boxedLeaves, mergedMembersTable(st))
   let a2 = timed("codegen", "ir_build", () => ccBuildIr(statements, mainName, r))

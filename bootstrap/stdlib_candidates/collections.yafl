@@ -40,8 +40,7 @@ fun appendSome<T>(acc: List<T>, found: T|None): List<T> => match(found)
 # lists whose elements may themselves be None (the result could not tell
 # "found None" from "not found").
 fun firstWhere<T>(l: List<T>, pred: (:T): Bool): T|None
-  ret foldWhile<T, T|None>(l, None, (found, x) => pred(x) ? x : None,
-                           (found) => found is None)
+  ret foldWhile<T, T|None>(l, None, (found, x) => pred(x) ? x : None, (found) => found is None)
 
 
 # The first non-None result of `f` over the elements, or None — a search that
@@ -70,21 +69,13 @@ fun mapAll<T, U>(l: List<T>, f: (:T): U|None): List<U>|None
   ret foldWhile<T, List<U>|None>(l, List<U>(), step, (acc) => acc !is None)
 
 
-# Membership in a genuine List — a name among an op's reads, a label among a
-# Phi's sources. The set-shaped accumulators that used to pair this with a
-# `strListAdd` are Set<String> now and use `contains`.
-fun strListMember(l: List<String>, x: String): Bool => any(l, (y) => y == x)
-
-
 fun dedent4(s) => length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
 
-fun memberInt(l: List<Int>, x) => any(l, (h) => h == x)
-
-fun disjointInt(a: List<Int>, b: List<Int>) => !any(a, (x) => memberInt(b, x))
+fun disjointInt(a: List<Int>, b: List<Int>) => !any(a, (x) => contains(b, x))
 
 fun unionInt(a: List<Int>, b: List<Int>)
   # A set union — every reader asks membership or disjointness.
-  ret fold(b, a, (acc, x) => memberInt(acc, x)
+  ret fold(b, a, (acc, x) => contains(acc, x)
                    ? acc
                    : prepend(x, acc))
 

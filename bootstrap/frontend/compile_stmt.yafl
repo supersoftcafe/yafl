@@ -336,12 +336,8 @@ fun strippedWhereFn(m) => match(m)
                       f.fNested, f.fImports, f.fGlobal)
   (o: PStmt) => m
 
-fun resolvedImplements(fs: List<FoundClass>, acc: List<Spec>)
-  ret resolvedImplementsB(fs, acc)
-
-fun resolvedImplementsB(fs: List<FoundClass>, acc): List<Spec> =>
-  fold(fs, acc,
-       (a, x) => append(a, x.fcSpec))
+fun resolvedImplements(fs: List<FoundClass>, acc): List<Spec> =>
+  fold(fs, acc, (a, x) => append(a, x.fcSpec))
 
 fun parentSlotsOf(fs: List<FoundClass>, acc) =>
   fold(fs, acc, parentSlotsOfStep)
@@ -357,15 +353,11 @@ fun slotsOr(slots: List<Slot>|None) => match(slots)
 # Each resolved parent joins the set, then its OWN transitive parents join —
 # substituted through this instantiation's type args when both sides carry
 # them, so monomorphisation and trait lookup see the concrete spelling.
-fun buildAllParents(fs: List<FoundClass>,
-                    r: Resolver,
-                    acc) =>
+fun buildAllParents(fs: List<FoundClass>, r: Resolver, acc) =>
   fold(fs, acc, (a, x) => buildAllParentsStep(a, x, r))
 
 fun buildAllParentsStep(a: List<Spec>, x: FoundClass, r: Resolver) => match(x.fcClass)
-  (cs: PsClass) => parentClosure(x.fcSpec, cs, r,
-    addSpecOnce(a,
-                x.fcSpec))
+  (cs: PsClass) => parentClosure(x.fcSpec, cs, r, addSpecOnce(a, x.fcSpec))
   () => a
 
 fun parentClosure(spec, cs: PsClass, r: Resolver,
@@ -381,11 +373,8 @@ fun specArgsOf(spec) => match(spec)
   (c: SClass) => c.scParams
   (o: Spec)   => List()
 
-fun addSubstituted(ps: List<Spec>,
-                   mapping: List<Binding>,
-                   acc) =>
-  fold(ps, acc, (a, x) => addSpecOnce(a, substitute(x,
-                                                                mapping)))
+fun addSubstituted(ps: List<Spec>, mapping: List<Binding>, acc) =>
+  fold(ps, acc, (a, x) => addSpecOnce(a, substitute(x, mapping)))
 
 # The enum's LAYOUT is assigned here (_assign_specs): the root's name threads
 # down to every variant, the leaf sets are collected, and the field list is
@@ -440,8 +429,7 @@ fun efDerive(reg: Dict<String, PsEnum>, root: String) => match(get(reg, root))
   (e: PsEnum) => deriveAllFields(e)
   ()          => List()
 
-fun efRegistry(ss: List<PStmt>,
-               acc) =>
+fun efRegistry(ss: List<PStmt>, acc) =>
   fold(ss, acc, efRegistryStep)
 
 fun efRegistryStep(a: Dict<String, PsEnum>, x: PStmt) => match(x)
@@ -531,20 +519,11 @@ fun assignSpecs(e: PsEnum, root, allLeaves)
                    e.pseLine),
              e.eImports)
 
-fun assignAllSpecs(vs, root,
-                          allLeaves,
-                          acc: List<PStmt>): List<PStmt>
-  ret assignAllSpecsB(vs, root, allLeaves, acc)
+fun assignAllSpecs(vs: List<PStmt>, root, allLeaves, acc: List<PStmt>) =>
+  fold(vs, acc, (a, x) => assignAllSpecsStep(a, x, root, allLeaves))
 
-fun assignAllSpecsB(vs: List<PStmt>,
-                    root,
-                    allLeaves,
-                    acc: List<PStmt>) =>
-  fold(vs, acc, (a, x) => assignAllSpecsBStep(a, x, root, allLeaves))
-
-fun assignAllSpecsBStep(a: List<PStmt>, x: PStmt, root, allLeaves) => match(x)
-  (v: PsEnum) => append(a, assignSpecs(v, root,
-    allLeaves))
+fun assignAllSpecsStep(a: List<PStmt>, x: PStmt, root, allLeaves) => match(x)
+  (v: PsEnum) => append(a, assignSpecs(v, root, allLeaves))
   (o: PStmt) => append(a, x)
 
 # ── control ─────────────────────────────────────────────────────────────────
@@ -649,13 +628,11 @@ fun compileStmts(ss: List<PStmt>, r: Resolver, retType: Spec|None,
                  acc: List<PStmt>,
                  glb: List<PStmt>): StmtsOut => compileStmtsB(ss, r, retType, acc, glb, noHints())
 
-fun compileStmtsB(ss: List<PStmt>, r, retType, acc, glb,
-                  hints) =>
-  fold(ss, (acc = acc, glb = glb, hints = hints),
-       (st, x) => compileStmtsBStep(st, x, r, retType))
+fun compileStmtsB(ss: List<PStmt>, r, retType, acc, glb, hints) =>
+  fold(ss, (acc = acc, glb = glb, hints = hints), (st, x) => compileStmtsStep(st, x, r, retType))
     |> (r2) => StmtsOut(r2.acc, r2.glb, r2.hints)
 
-fun compileStmtsBStep(st: (acc: List<PStmt>, glb: List<PStmt>, hints: Dict<String, List<Hint>>),
+fun compileStmtsStep(st: (acc: List<PStmt>, glb: List<PStmt>, hints: Dict<String, List<Hint>>),
                       x: PStmt, r, retType) =>
   compileStmt(x, r, retType)
   |> (one) => (acc = addStmt(st.acc, one.soStmt), glb = concat(st.glb, one.soExtra), hints = mergeHints(st.hints, one.soHints))
