@@ -201,7 +201,7 @@ class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 fun createCCode(statements, mainName, optLevel,
                 profile, headers: List<String>, inl: InlineOpts): CreateCOut
   let discs = collectDiscriminatorIds(statements)
-  let [lazy] breakers: List<String> = computeBreakers(statements)
+  let breakers: List<String> = computeBreakers(statements)
   # Per-leaf value-struct-threshold analysis (the enum-encoding principle):
   # computed once for the codegen root, the only resolver that answers
   # isBoxedLeaf (mirrors Python ResolverRoot's lazy is_boxed_leaf).
@@ -227,7 +227,7 @@ fun createCCode(statements, mainName, optLevel,
   let v1 = timed("codegen", "ssa_validate.1", () => ssaValidate(appFunctions(a2), true))
   if !isEmpty(v1)
     ret CreateCOut(List(), v1)
-  let a3 = timed("codegen", "trim+devirt", () => discoverGlobalFunctionCalls(removedUnusedStuff(a2)))
+  let a3 = timed("codegen", "trim+devirt", () => discoverGlobalFunctionCalls(makeGlobalsEager(removedUnusedStuff(a2))))
   # -O2: bounded small-function inline fixpoint; -O3 adds [inline(always)]
   # (compiler.py's optimization_level >= 2 block; the shape compare mirrors
   # Python's tuple exactly).

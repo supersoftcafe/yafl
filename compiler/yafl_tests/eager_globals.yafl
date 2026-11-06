@@ -1,0 +1,74 @@
+# Globals that cannot be C statics initialise before `main` in dependency
+# order (lowering/eager_globals.py), unless they sit on a dependency cycle, in
+# which case they stay [lazy] and initialise on first read. Either way the
+# program sees each global initialised exactly once, whatever order the source
+# declares them in.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::EagerGlobals::ReverseDeclarationOrder
+
+import System
+import System::Test
+
+let top: System::Int = middle() + 1
+fun middle(): System::Int
+  ret bottom * 2
+let bottom: System::Int = System::length("abc") + 1
+fun program(): System::Int
+  ret top
+
+fun [test("a global declared before the one it reads")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")
+
+
+namespace CompilerTests::EagerGlobals::ChainThroughFunctions
+
+import System
+import System::Test
+
+let a: System::Int = viaB() + 1
+fun viaB(): System::Int
+  ret viaC() + 10
+fun viaC(): System::Int
+  ret c + 100
+let c: System::Int = System::length("xy")
+fun program(): System::Int
+  ret a
+
+fun [test("a chain of globals joined by functions")] check(): None|TestFailure
+    ret assertEqInt(program(), 113, "program()")
+
+
+namespace CompilerTests::EagerGlobals::CycleStaysLazy
+
+import System
+import System::Test
+
+let p: System::Int = pick(true)
+fun pick(first: System::Bool): System::Int
+  ret first ? System::length("a") : q
+let q: System::Int = p + 10
+fun program(): System::Int
+  ret q + p
+
+fun [test("globals on a dependency cycle stay lazy")] check(): None|TestFailure
+    ret assertEqInt(program(), 12, "program()")
+
+
+namespace CompilerTests::EagerGlobals::ReadByLazyOnCycle
+
+import System
+import System::Test
+
+let p: System::Int = pick(true)
+fun pick(first: System::Bool): System::Int
+  ret first ? System::length("a") : q
+let q: System::Int = p + 10
+let after: System::Int = q * 2
+fun program(): System::Int
+  ret after
+
+fun [test("an eager global reading a lazy one on a cycle")] check(): None|TestFailure
+    ret assertEqInt(program(), 22, "program()")
