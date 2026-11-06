@@ -92,7 +92,7 @@ fun createEntryPoint(mainName): CgFunction
                  CgVoid(),
                  CgStruct(list2(CgField("result", CgDataPointer(false)),
                                 CgField("$sv_discard", CgDataPointer(false)))),
-                 cgOpsOf(ops), "", None, false, false, true, false)
+                 cgOpsOf(ops), "", None, false, false, true, InlineAuto())
 
 # ── lazy machinery (ensure) ──────────────────────────────────────────────────
 

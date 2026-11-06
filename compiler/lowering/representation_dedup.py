@@ -48,6 +48,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import re
+from enum import Enum
 from typing import Any, Callable
 
 import codegen.ops as o
@@ -228,7 +229,7 @@ class _Graph:
         c = _Canon(self)
         c.tokens.append(tuple((c.var(n), c.ty(ty)) for n, ty in fn.params.fields))
         c.emit(fn.foreign_symbol, LIT)
-        c.emit((fn.result, fn.sync, fn.tail, fn.bypass_async, fn.always_inline, fn.future))
+        c.emit((fn.result, fn.sync, fn.tail, fn.bypass_async, fn.inline, fn.future))
         c.emit(fn.ops)
         for n, _ in fn.stack_vars.fields:
             c.var(n)
@@ -299,7 +300,7 @@ class _Canon:
             self.sets.append(x)
         elif isinstance(x, t.Type):
             self.tokens.append(self.ty(x))
-        elif x is None or isinstance(x, (bool, int, float)):
+        elif x is None or isinstance(x, (bool, int, float, Enum)):
             self.tokens.append(x)
         elif isinstance(x, p.StackVar):
             self.tokens.append(("V", self.var(x.name), self.ty(x.type)))

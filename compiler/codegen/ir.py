@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+from enum import Enum
 from typing import Callable, Any
 from dataclasses import dataclass, field
 from codegen.tools import mangle_name, to_pointer_mask, to_pointer_mask_window
@@ -9,6 +10,21 @@ from codegen.ops import Op, Move, Call, Jump, JumpIf, Return, ReturnVoid, Label,
 
 import codegen.typedecl as t
 import codegen.param as p
+
+# What the `[inline]` attribute asks of the inliners. EARLY (bare `[inline]`) is
+# a structural hint: the AST inliner takes the function at every level regardless
+# of size, so lambdas handed to it (e.g. to `?>`) are beta-reduced rather than
+# lifted to closures; the codegen inliner treats it as AUTO. ALWAYS
+# (`[inline(always)]`) makes the codegen inliner inline at every call site
+# regardless of size, at -O3 only, so a chain of marked functions fuses into its
+# consumer (pre-async). NEVER (`[inline(never)]`) keeps every call a call, size
+# rule included.
+class InlineMode(Enum):
+    AUTO = "auto"
+    EARLY = "early"
+    ALWAYS = "always"
+    NEVER = "never"
+
 
 @dataclass(frozen=True)
 class Function:
@@ -22,8 +38,7 @@ class Function:
     sync: bool = False
     tail: bool = False          # `[tail]`: queue-dispatch trampoline lowering applies.
     bypass_async: bool = False  # Skip async_lower; ops are already in their final hand-crafted form.
-    always_inline: bool = False # `[inline(always)]`: inline at every call site regardless of size,
-                                # so a chain of marked functions fuses into its consumer (pre-async).
+    inline: InlineMode = InlineMode.AUTO  # the `[inline]` attribute (InlineMode above)
     future: bool = False        # `[future]`: the body runs on a worker; a call answers with a task
                                 # (lowering/future_functions.py). Never inlined: the body is the unit.
     source_file: str = ""       # --profile descriptors; "" / 0 for synthesised functions

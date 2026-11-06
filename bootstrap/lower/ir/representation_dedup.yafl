@@ -127,6 +127,14 @@ fun rddInt(e: RddEnc, n: Int): RddEnc => rddS(e, "#" + String(n) + ";")
 
 fun rddBool(e: RddEnc, b: Bool): RddEnc => rddS(e, b ? "T" : "F")
 
+fun rddInline(e: RddEnc, m: InlineMode): RddEnc => rddS(e, rddInlineCode(m))
+
+fun rddInlineCode(m: InlineMode): String => match(m)
+  (a: InlineAuto)   => "Ia"
+  (e: InlineEarly)  => "IE"
+  (a: InlineAlways) => "IA"
+  (n: InlineNever)  => "IN"
+
 fun rddTy(e: RddEnc, t: CgType): RddEnc => rddS(e, "Y" + rddType(t))
 
 fun rddTyOpt(e: RddEnc, t: CgType|None): RddEnc => match(t)
@@ -423,12 +431,12 @@ fun rddSlotsStep(a: RddEnc, x: CgFuncSlot, cx: RddCx) =>
 # by name; declarations compare as a set.
 fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
   let withParams = rddDecls(rddS(e, "Fn;["), rddFields(f.fnParams))
-  let head = rddBool(rddBool(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
+  let head = rddBool(rddInline(rddBool(rddBool(rddBool(rddTy(rddLitOpt(withParams, f.fnForeignSymbol),
                                                            f.fnResult),
                                                      f.fnSync),
                                              f.fnTail),
                                      f.fnBypassAsync),
-                             f.fnAlwaysInline),
+                             f.fnInline),
                      f.fnFuture)
   let body = rddOps(rddS(head, "["), cx, f.fnOps, 0i32)
   let declared = rddNumber(body, map(rddFields(f.fnStackVars), (fd) => fd.fieldName))

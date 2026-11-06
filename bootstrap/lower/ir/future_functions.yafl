@@ -28,7 +28,7 @@ fun fyRegister() => "$future_yield"
 fun fyYieldFunction() => CgFunction(futureYield(),
                                     CgStruct(list1(CgField("this", CgDataPointer(false)))),
                                     fyNone(), CgStruct(List()), cgOpsOf(List()),
-                                    futureYield(), futureYield(), false, false, false, false)
+                                    futureYield(), futureYield(), false, false, false, InlineAuto())
 
 fun fyWithEntryYield(f: CgFunction)
   let call = OpCall(RpGlobalFunction(futureYield(), None, false, futureYield(), true, false),

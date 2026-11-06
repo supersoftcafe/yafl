@@ -10,6 +10,7 @@ import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Frontend
+import Bootstrap::Ir
 import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
@@ -1276,19 +1277,15 @@ fun aiIsInlinable(f: PsFun, classMembers: List<String>)
   if contains(classMembers, f.fName) || hasAttr(f.fAttrs, "foreign") || hasAttr(f.fAttrs, "future")
      || !hoHasBlockBody(f) || !isEmpty(f.fGens)
     ret false
-  if hasAttr(f.fAttrs, "inline")
-    ret aiBareInline(f.fAttrs)
+  let mode = funInlineMode(f)
+  if mode is InlineNever
+    ret false
+  # Bare `[inline]`: a structural hint, taken at every level.
+  if mode is InlineEarly
+    ret true
+  # `[inline(always)]` is the codegen inliner's, gated by -O3: here it is
+  # treated like an unmarked function.
   ret aiBodyCount(f) < aiSizeThreshold
-
-# Bare `[inline]` (no argument) only — `[inline(always)]` is the codegen
-# inliner's, gated by -O3.
-fun aiBareInline(as2: List<PAttr>) => match(firstWhere(as2, (a) => a.attrName == "inline"))
-  (a: PAttr) => aiAttrHasNoValue(a)
-  ()         => false
-
-fun aiAttrHasNoValue(a: PAttr) => match(a.attrValue)
-  (v: PExpr) => false
-  ()         => true
 
 fun aiBodyCount(f: PsFun) => match(f.fBody)
   (b: PExpr) => aiNodeCount(b)

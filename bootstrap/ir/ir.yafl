@@ -25,6 +25,20 @@ import Bootstrap::StdlibCandidates
 
 class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 
+# What the `[inline]` attribute asks of the inliners (codegen/ir.py InlineMode).
+# InlineEarly (bare `[inline]`) is a structural hint: the AST inliner takes the
+# function at every level regardless of size, so lambdas handed to it (e.g. to
+# `?>`) are beta-reduced rather than lifted to closures; the codegen inliner
+# treats it as InlineAuto. InlineAlways (`[inline(always)]`) makes the codegen
+# inliner inline at every call site regardless of size, at -O3 only, so a chain
+# of marked functions fuses into its consumer (pre-async). InlineNever
+# (`[inline(never)]`) keeps every call a call, size rule included.
+enum InlineMode
+  enum InlineAuto()
+  enum InlineEarly()
+  enum InlineAlways()
+  enum InlineNever()
+
 # fnSourceFile/fnSourceLine: --profile descriptors ("" / 0 for synthesised
 # functions — their names self-describe). Declared LAST with defaults, the
 # objIsPinnable pattern: fresh-construction sites (entrypoint, $async, lazy
@@ -34,7 +48,7 @@ class [final] CgFuncSlot(slotVirtualName: String, slotGlobalName: String)
 # (lower/ir/future_functions.yafl); never inlined. Same pattern.
 class [final] CgFunction(fnName: String, fnParams: CgType, fnResult: CgType, fnStackVars: CgType,
                           fnOps: Segment<Op>|None, fnComment: String, fnForeignSymbol: String|None,
-                          fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnAlwaysInline: Bool,
+                          fnSync: Bool, fnTail: Bool, fnBypassAsync: Bool, fnInline: InlineMode,
                           fnSourceFile: String = "", fnSourceLine: Int = 0,
                           fnFuture: Bool = false)
 
@@ -126,7 +140,7 @@ fun [tail] cgOtlLoop(s: Segment<Op>|None, i,
 
 fun cgFunctionWith(f: CgFunction, ops, stackVars)
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, stackVars, ops, f.fnComment, f.fnForeignSymbol,
-                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnAlwaysInline,
+                 f.fnSync, f.fnTail, f.fnBypassAsync, f.fnInline,
                  f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
 # ── --profile instrumentation (ir.py instrument_profile) ─────────────────────

@@ -13,7 +13,7 @@ from codegen.typedecl import Type, Struct
 from codegen.ops import Call, Op, Move, Label, Return, Jump
 from codegen.gen import Application
 from codegen.param import GlobalFunction, NewStruct, StackVar
-from codegen.ir import Function
+from codegen.ir import Function, InlineMode
 
 from langtools import checked_cast
 from pyast.statement import ImportGroup
@@ -106,11 +106,14 @@ def inline_small_functions(app: Application, inline_always: bool = True, epoch: 
     # Inline a small function (under the cutoff) always; inline an
     # `[inline(always)]` target regardless of size only when `inline_always` is
     # set (-O3), so a chain of marked stream `next` stages fuses into its
-    # consumer. The recursion/musttail guards in the engine still apply
-    # (loops/tail back-edges preserved, not unrolled).
+    # consumer; never inline an `[inline(never)]` target. The recursion/musttail
+    # guards in the engine still apply (loops/tail back-edges preserved, not
+    # unrolled).
     def policy(target: Function) -> bool:
+        if target.inline is InlineMode.NEVER:
+            return False
         return (len(target.ops) < cutoff
-                or (inline_always and target.always_inline))
+                or (inline_always and target.inline is InlineMode.ALWAYS))
     recursive = trim.recursive_functions(app)
     functions: dict[str, Function] = {name: __do_inlining(func, app.functions, recursive, policy, f"s{epoch}") for name, func in app.functions.items()}
     return dataclasses.replace(app, functions=functions)

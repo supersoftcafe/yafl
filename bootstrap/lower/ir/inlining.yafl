@@ -37,8 +37,16 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int, cutoff: Int)
   let recursive = recursiveFunctions(a)
   ret appWithFunctions(a, powerMap(appFunctions(a), (f) =>
         doInlining(f, "s" + String(epoch), a, recursive, (target) =>
-          !atLeast(target.fnOps, cutoff)
-          || (inlineAlways && target.fnAlwaysInline))))
+          inlPolicy(target, inlineAlways, cutoff))))
+
+# Inline a small function (under the cutoff) always; inline an
+# `[inline(always)]` target regardless of size only when `inlineAlways` is set
+# (-O3); never inline an `[inline(never)]` target.
+fun inlPolicy(target: CgFunction, inlineAlways: Bool, cutoff: Int): Bool => match(target.fnInline)
+  (n: InlineNever)  => false
+  (a: InlineAlways) => inlineAlways || !atLeast(target.fnOps, cutoff)
+  (u: InlineAuto)   => !atLeast(target.fnOps, cutoff)
+  (e: InlineEarly)  => !atLeast(target.fnOps, cutoff)
 
 # ── the engine ───────────────────────────────────────────────────────────────
 

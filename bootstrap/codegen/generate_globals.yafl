@@ -35,7 +35,7 @@ fun funGlobalCodegen(f: PsFun, r0): CgFunction
   ret CgFunction(f.fName, CgStruct(params), specGenerateOpt(f.fRet, bodyR), CgStruct(vars),
                  cgOpsOf(bundle.gbOps), f.fName, foreignSymbolOf(f),
                  hasAttr(f.fAttrs, "sync"), hasAttr(f.fAttrs, "tail"), false,
-                 inlineAlways(f),
+                 inlineModeOf(f),
                  f.psfLine.plFile, f.psfLine.plLine, hasAttr(f.fAttrs, "future"))
 
 fun fgcBodyBundle(b, bodyR, fRet: Spec|None): GBundle
@@ -75,11 +75,11 @@ fun tupleFirstString(tp: PeTuple) => match(head(tp.exprs))
     (o: PExpr)  => None
   ()             => None
 
-# `[inline(always)]` — the inline attribute CARRYING an argument (vs bare
-# `[inline]`). Forces inlining regardless of size.
-fun inlineAlways(f: PsFun) => match(attrValueOf(f.fAttrs, "inline"))
-  (v: PExpr) => true
-  ()          => false
+# The `[inline]` attribute as the codegen inliner reads it. An invalid
+# argument is a check error, so it never reaches here; it reads as unmarked.
+fun inlineModeOf(f: PsFun): InlineMode => match(funInlineMode(f))
+  (m: InlineMode) => m
+  ()              => InlineAuto()
 
 # ── ClassStatement.global_codegen (+ classtools.create_thunk) ───────────────
 
@@ -157,7 +157,7 @@ fun createThunk(className, let2: PsLet, r)
                  resultType,
                  CgStruct(list1(CgField("result", resultType))),
                  cgOpsOf(list2(opCall, OpReturn(resultVar, Dict()))),
-                 "", None, false, false, false, false)
+                 "", None, false, false, false, InlineAuto())
 
 fun thunkParamStruct(sp: Spec|None, r) => match(sp)
   (s2: Spec) => match(s2)
