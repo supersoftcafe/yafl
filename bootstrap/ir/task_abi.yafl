@@ -6,6 +6,7 @@
 namespace Bootstrap::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
@@ -15,17 +16,17 @@ import Bootstrap::Types
 # Layout of every task subtype's prefix — must match `task_t` in yafl.h byte
 # for byte so a `(task_t*)` cast of any subtype hits each field at the right
 # offset.
-fun taskFields() => build(
-    push(
-    push(
-    push(
-    push(
-    push(builder(),
+fun taskFields() => 
+    append(
+    append(
+    append(
+    append(
+    append(List(),
       CgField("type", CgDataPointer(false))),        # object_t vtable
       CgField("state", CgInt(32))),             # _Atomic(int32_t)
       CgField("thread_id", CgInt(32))),         # originating worker thread index
       CgField("callback", CgFuncPointer(false, false))),    # fun_t
-      CgField("next", CgDataPointer(false))))        # _Atomic(task_t*) — queue link
+      CgField("next", CgDataPointer(false)))        # _Atomic(task_t*) — queue link
 
 # The empty value — YAFL's None. It carries nothing.
 fun isUnit(t2) => match(cgFieldsOf(t2))
@@ -120,7 +121,7 @@ fun isRuntimeTaskSubtype(name: String) => name == "task_obj" || name == "task_st
 fun makeTaskSubtypeObject(subtypeName, resultType)
   ret CgObject(subtypeName, list1("task"), List(),
                # The task_t prefix, then the result field LAST.
-               CgImmediateStruct(build(push(builderFrom(taskFields()), CgField("result", resultType)))),
+               CgImmediateStruct(append(taskFields(), CgField("result", resultType))),
                None, "task subtype for result type " + taskTypeSig(resultType),
                isRuntimeTaskSubtype(subtypeName), true, 0)
 

@@ -8,6 +8,7 @@
 namespace CompilerTests::SplitLines::EmptyStringOneEmptyLine
 
 import System
+import System::Containers
 import System::Test
 
 fun program(): System::Int
@@ -23,6 +24,7 @@ fun [test("empty string one empty line", stdout = "[]")] check(): None|TestFailu
 namespace CompilerTests::SplitLines::LfAndCrlf
 
 import System
+import System::Containers
 import System::Test
 
 fun program(): System::Int
@@ -38,6 +40,7 @@ fun [test("lf and crlf", stdout = "[a][bb][ccc]")] check(): None|TestFailure
 namespace CompilerTests::SplitLines::NoNewlineSingleElement
 
 import System
+import System::Containers
 import System::Test
 
 fun program(): System::Int
@@ -53,6 +56,7 @@ fun [test("no newline single element", stdout = "[x]")] check(): None|TestFailur
 namespace CompilerTests::SplitLines::TrailingNewlineGivesEmptyLast
 
 import System
+import System::Containers
 import System::Test
 
 fun program(): System::Int

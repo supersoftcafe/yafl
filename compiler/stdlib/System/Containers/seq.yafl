@@ -1,4 +1,4 @@
-namespace System
+namespace System::Containers
 import System
 
 
@@ -211,9 +211,9 @@ fun discard<T>([terminal] b: SeqBuilder<T>): None
                                                                     t2, 0i32))
     (nil: None)      => None
 
-# Push every element of `l`, in order (the ListBuilder helper's Seq overload).
+# Push every element of `l`, in order.
 fun pushAll<T>([terminal] b: SeqBuilder<T>, l: List<T>): SeqBuilder<T>
-  ret _pushChain<T>(b, chain<T>(l))
+  ret fold<T, SeqBuilder<T>>(l, b, (acc: SeqBuilder<T>, x: T) => push<T>(acc, x))
 
 # Push every element of an existing Seq, in order — the concatenation
 # primitive: seed a builder, pushAll the pieces, build.
@@ -226,11 +226,6 @@ fun [tail] _pushSeg<T>([terminal] b: SeqBuilder<T>, s: Segment<T>|None, i: Int32
     (seg: Segment<T>) => i < seg.length
       ? _pushSeg<T>(push<T>(b, seg.array(i)), s, i + 1i32)
       : _pushSeg<T>(b, seg.next, 0i32)
-
-fun [tail] _pushChain<T>([terminal] b: SeqBuilder<T>, c: Chain<T>): SeqBuilder<T>
-  ret match(c)
-    (nil: ChainEnd) => b
-    (l: ChainLink)  => _pushChain<T>(push<T>(b, l.value), l.next)
 
 # Drop: an abandoned builder — a failed alternative, an early exit — must
 # still release its pinned tail (a leaked pin is a permanently unmovable

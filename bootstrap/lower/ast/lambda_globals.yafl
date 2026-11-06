@@ -5,18 +5,13 @@
 namespace Bootstrap::Lower::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 
 
 
-fun lowerLambdaGlobals(statements: List<PStmt>) => llgLoop(chain(statements), List())
-
-fun llgLoop(ss, acc: List<PStmt>): List<PStmt> => build(llgLoopB(ss, builderFrom(acc)))
-
-fun [tail] llgLoopB(ss: Chain<PStmt>, [terminal] acc: ListBuilder<PStmt>) => match(ss)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => llgLoopB(l.next, push(acc, llgOne(l.value)))
+fun lowerLambdaGlobals(statements: List<PStmt>) => map(statements, llgOne)
 
 fun llgOne(st) => match(st)
   (l: PsLet) => match(l.lDefault)

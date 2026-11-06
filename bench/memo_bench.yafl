@@ -27,6 +27,7 @@
 namespace Bench
 
 import System
+import System::Containers
 
 
 # ── the memoized function ────────────────────────────────────────────────────

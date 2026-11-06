@@ -10,6 +10,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
@@ -99,7 +100,7 @@ fun cpTryMove(m, nxt, readCounts: Dict<String, Int>) => match(m.moveTarget)
 fun cpTryNext(m, mt: RpStackVar, ms, nxt,
               readCounts: Dict<String, Int>) => match(nxt)
   (lb: OpLabel) => None
-  (o: Op)       => strListMember(opReadVarNames(nxt), mt.name)
+  (o: Op)       => contains(opReadVarNames(nxt), mt.name)
     ? cpEmit(m, mt, ms, nxt, readCounts)
     : None
 
@@ -128,7 +129,7 @@ fun cpPruneStackVars(f: CgFunction, newOps)
   let mentioned = fold(newOps, Set(),
                        (acc, op) =>
                          fold(concat(opReadVarNames(op), cpWriteNames(op)), acc,
-                              (s2, n) => add(s2, n)))
+                              add))
   ret cgFunctionWith(f, newOps,
         CgStruct(filter(cgFieldsOfOrEmpty(f.fnStackVars),
                         (fld) => contains(mentioned, fld.fieldName))))

@@ -15,6 +15,7 @@
 namespace Bootstrap::Parse
 
 import System
+import System::Containers
 
 # ══ Tokens ═══════════════════════════════════════════════════════════════════
 
@@ -199,7 +200,7 @@ fun nextToken(ln, pos): (kind: TokKind, stop: System::Int)
   ret (KCrap(), pos + 1)
 
 fun [tail] scanLine(ln, lineNo, indent,
-                    pos, acc: ListBuilder<Token>): ListBuilder<Token>
+                    pos, acc: List<Token>): List<Token>
   let at = wsEnd(ln, pos)
   if at >= System::length(ln) || System::byteAt(ln, at) == '#'
     ret acc
@@ -209,15 +210,15 @@ fun [tail] scanLine(ln, lineNo, indent,
     (i: KIdent) => isKeyword(text) ? KSymbol() : t.kind
     (other)     => t.kind
   ret scanLine(ln, lineNo, indent, t.stop,
-               push(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
+               append(acc, Token(kind, text, indent, lineNo, charCol(ln, at))))
 
-fun [tail] scanLines(lines: Chain<System::String>, lineNo,
-                     acc: ListBuilder<Token>) => match(lines)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => scanLines(l.next, lineNo + 1,
-                               scanLine(l.value, lineNo, wsEnd(l.value, 0), 0, acc))
+# The line number travels in the accumulator beside the tokens.
+fun scanLines(lines: List<System::String>, lineNo, acc: List<Token>)
+  ret fold(lines, (toks = acc, n = lineNo),
+           (st, line) =>
+             (toks = scanLine(line, st.n, wsEnd(line, 0), 0, st.toks), n = st.n + 1)).toks
 
-fun eofToken(toks: List<Token>) => match(last(toks))
+fun eofToken(toks: List<Token>) => match(head(takeLastOne(toks)))
   (t: Token) => Token(KEof(), "", 0, t.line,
                       t.col + countChars(t.text, 0, System::length(t.text), 0))
   ()         => Token(KEof(), "", 0, 1, 1)
@@ -225,6 +226,6 @@ fun eofToken(toks: List<Token>) => match(last(toks))
 fun tokenize(src)
   # The EOF token is derived from the LAST real token, so the stream is built
   # first and the terminator pushed onto a builder seeded from it.
-  let toks = build(scanLines(chain(splitLines(src)), 1, builder()))
-  ret build(push(builderFrom(toks),
-                 eofToken(toks)))
+  let toks = scanLines(splitLines(src), 1, List())
+  ret append(toks,
+                 eofToken(toks))

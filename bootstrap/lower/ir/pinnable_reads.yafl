@@ -29,23 +29,22 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
 
 
 fun resolvePinnableReads(a): CgApp
-  let names = prNames(chain(appObjects(a)), setEmpty())
+  let names = prNames(appObjects(a), setEmpty())
   ret setIsEmpty(names)
     ? a
     : appWithFunctions(a, powerMap(appFunctions(a),
                               (f) => prFunction(f, names)))
 
-fun [tail] prNames(os: Chain<CgObject>, acc) => match(os)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => prNames(l.next, l.value.objIsPinnable
-                                       ? setAdd(acc, l.value.objName)
-                                       : acc)
+fun prNames(os: List<CgObject>, acc) => fold(os, acc, (a, o) => o.objIsPinnable
+                                                    ? setAdd(a, o.objName)
+                                                    : a)
 
 fun prFunction(f: CgFunction, names: StrSet)
   let ops = map(f.fnOps,

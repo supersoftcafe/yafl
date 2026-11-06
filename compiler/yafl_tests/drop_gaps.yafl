@@ -1,9 +1,11 @@
-# Two drops/linearity gaps found during ListBuilder adoption (07-29).
+# Two drops/linearity gaps found during ListBuilder adoption (07-29); they
+# are exercised here through SeqBuilder, the stdlib's linear builder with the
+# same generic Drop instance.
 #
-# 1. GENERIC Drop instances don't discharge: a `[trait]` instance
-#    `_DropListBuilder<T> : Drop<ListBuilder<T>>` exists in the stdlib, but an
-#    implicitly-dropped ListBuilder<Int> fails to compile — the drops pass
-#    only recognises CONCRETE instance targets.
+# 1. GENERIC Drop instances don't discharge: a generic `[ambient]` instance
+#    `Drop<SeqBuilder<T>>` exists in the stdlib, but an implicitly-dropped
+#    SeqBuilder<Int> failed to compile — the drops pass only recognised
+#    CONCRETE instance targets.
 #
 # 2. A ternary whose branches mix implicit drop with consumption is rejected
 #    ("linear value ... used inconsistently across branches") instead of the
@@ -17,9 +19,10 @@ namespace CompilerTests::DropGaps::GenericDropInstanceDischarges
 
 import System
 import System::Test
+import System::Containers
 
 fun f(flag: Bool): Int
-  let b = push(builder<Int>(), 7)
+  let b = push(seqBuilder<Int>(), 7)
   if flag
     ret 1
   ret match(head(build(b)))
@@ -37,10 +40,11 @@ namespace CompilerTests::DropGaps::TernaryBranchGetsImplicitDrop
 
 import System
 import System::Test
+import System::Containers
 
 fun g(flag: Bool): Int
-  let b = push(builder<Int>(), 9)
-  ret flag ? 1 : chainLength(chain(build(b)))
+  let b = push(seqBuilder<Int>(), 9)
+  ret flag ? 1 : fold(build(b), 0, (n: Int, x: Int) => n + 1)
 
 fun program(): Int
   ret g(true) == 1 && g(false) == 1 ? 0 : 1

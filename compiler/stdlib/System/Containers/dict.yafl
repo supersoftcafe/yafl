@@ -1,4 +1,4 @@
-namespace System
+namespace System::Containers
 import System
 
 
@@ -233,37 +233,31 @@ fun _dictUnitMap<K,V>(d: Dict<K,V>): Dict<K,()>
 # O(n): each value is added to the bag. Nothing is ordered, so nothing needs
 # reordering.
 fun values<K,V>(d: Dict<K,V>): Bag<V>
-  ret _chainFold<V, Bag<V>>(_dictValueChain<K,V>(d), Bag<V>(), (b, v) => add<V>(b, v))
+  ret Bag<V>(_dictValueList<K,V>(d))
 
 
-fun [tail] _chainToSet<K>(c: Chain<K>, acc: Set<K>): Set<K> where BasicEquality<K>
-  ret match(c)
-    (l: ChainLink) => _chainToSet<K>(l.next, add<K>(acc, l.value))
-    (e: ChainEnd)  => acc
-
-
-# Private walks. The chain order is whatever the tree yields — never exposed,
-# only fed to unordered containers.
-fun _dictKeyChain<K,V>(d: Dict<K,V>): Chain<K>
-  fun [tail] bucket_keys(b: _DictBucket<K,V>, acc: Chain<K>): Chain<K>
+# Private walks. The list order is whatever the tree yields — never exposed,
+# only fed to unordered containers. Each element is prepended, O(1).
+fun _dictKeyList<K,V>(d: Dict<K,V>): List<K>
+  fun [tail] bucket_keys(b: _DictBucket<K,V>, acc: List<K>): List<K>
     ret match(b)
       (n: _BucketNil)  => acc
-      (c: _BucketCons) => bucket_keys(c.tail, ChainLink<K>(c.key, acc))
+      (c: _BucketCons) => bucket_keys(c.tail, prepend<K>(c.key, acc))
   # NOT [tail]: the inner walk(n.left, acc) is an ARGUMENT, so this is tree
   # recursion (depth = tree height).
-  fun walk(d2: Dict<K,V>, acc: Chain<K>): Chain<K>
+  fun walk(d2: Dict<K,V>, acc: List<K>): List<K>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_keys(n.bucket, walk(n.left, acc)))
-  ret walk(d, ChainEnd<K>())
+  ret walk(d, List<K>())
 
-fun _dictValueChain<K,V>(d: Dict<K,V>): Chain<V>
-  fun [tail] bucket_values(b: _DictBucket<K,V>, acc: Chain<V>): Chain<V>
+fun _dictValueList<K,V>(d: Dict<K,V>): List<V>
+  fun [tail] bucket_values(b: _DictBucket<K,V>, acc: List<V>): List<V>
     ret match(b)
       (n: _BucketNil)  => acc
-      (c: _BucketCons) => bucket_values(c.tail, ChainLink<V>(c.value, acc))
-  fun walk(d2: Dict<K,V>, acc: Chain<V>): Chain<V>
+      (c: _BucketCons) => bucket_values(c.tail, prepend<V>(c.value, acc))
+  fun walk(d2: Dict<K,V>, acc: List<V>): List<V>
     ret match(d2)
       (e: DictEmpty) => acc
       (n: DictNode)  => walk(n.right, bucket_values(n.bucket, walk(n.left, acc)))
-  ret walk(d, ChainEnd<V>())
+  ret walk(d, List<V>())

@@ -6,6 +6,7 @@
 namespace Bootstrap::Lower::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 
@@ -16,7 +17,7 @@ fun fixGlobalIntegers(statements): List<PStmt>
                               Set()))
   if isEmpty(values)
     ret statements
-  let globals2 = giGlobals(chain(values), 0, List())
+  let globals2 = giGlobals(values, 0, List())
   ret concat(globals2,
              rwStmts(statements, rwOnExpr((x) => giReplace(x,
                                                            values))))
@@ -34,32 +35,29 @@ fun giCollect(acc, x): Set<Int> => match(x)
 fun giName(v) => v < 0 ? "$integers::integer@n" + String(0 - v)
           : "$integers::integer@p" + String(v)
 
-fun giGlobals(vs, index,
-                     acc: List<PStmt>): List<PStmt>
-  ret build(giGlobalsB(vs, index, builderFrom(acc)))
+# The index travels in the accumulator beside the statements.
+fun giGlobals(vs: List<Int>, index: Int, acc: List<PStmt>): List<PStmt>
+  ret fold(vs, (out = acc, i = index),
+           (st, v) =>
+             (out = append(st.out, giGlobal(v, st.i)), i = st.i + 1)).out
 
-fun [tail] giGlobalsB(vs: Chain<Int>, index,
-                     [terminal] acc: ListBuilder<PStmt>) => match(vs)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => giGlobalsB(l.next, index + 1,
-      push(acc, PsLet(giName(l.value), List(), List(),
-                SBuiltin("bigint",
-                         PLine("$integers", index + 1, 1)),
-                PeInt(l.value, 0,
-                      PLine("$integers", index + 1, 1)),
-                "", List(),
-                PLine("$integers", index + 1, 1), false,
-                List<PStmt>())))
+fun giGlobal(v: Int, index: Int): PStmt
+  ret PsLet(giName(v), List(), List(),
+            SBuiltin("bigint", PLine("$integers", index + 1, 1)),
+            PeInt(v, 0, PLine("$integers", index + 1, 1)),
+            "", List(),
+            PLine("$integers", index + 1, 1), false,
+            List<PStmt>())
 
 fun giReplace(x, values: List<Int>) => match(x)
   (i: PeInt) => i.precision == 0
     ? PeName(giName(i.value), List(),
-             PLine("$integers", giIndexOf(chain(values), i.value, 0) + 1,
+             PLine("$integers", giIndexOf(values, i.value, 0) + 1,
                    1),
              None)
     : None
   (o: PExpr) => None
 
-fun [tail] giIndexOf(vs: Chain<Int>, v: Int, i) => match(vs)
-  (nil: ChainEnd) => -1
-  (l: ChainLink)  => l.value == v ? i : giIndexOf(l.next, v, i + 1)
+fun giIndexOf(vs: List<Int>, v: Int, i) => match(findIndex(vs, (x) => x == v))
+  (k: Int) => i + k
+  ()       => -1

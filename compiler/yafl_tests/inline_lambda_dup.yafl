@@ -21,6 +21,7 @@
 namespace CompilerTests::InlineLambdaDup::InlinedLambdaCopiesGetDistinctClasses
 
 import System
+import System::Containers
 import System::Test
 
 fun [inline] withLam(l: List<Int>, s: Int): List<Int>

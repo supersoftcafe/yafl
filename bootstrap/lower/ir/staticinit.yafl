@@ -8,6 +8,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 
@@ -55,7 +56,7 @@ fun siResolveField(acc, nv: RpNamedValue, a: CgApp)
     ret acc
   ret match(siResolveConstants(nv.value, a))
     # Struct fields, in field order.
-    (r: RParam) => SiVals(build(push(builderFrom(acc.svVals), RpNamedValue(nv.name, r))), true)
+    (r: RParam) => SiVals(append(acc.svVals, RpNamedValue(nv.name, r)), true)
     ()           => SiVals(acc.svVals, false)
 
 # _trace_to_constant (the subset the -O0 path exercises: no function-local
@@ -85,7 +86,7 @@ fun siTraceStructField(acc, nv: RpNamedValue, vmap: FunValues, a: CgApp)
     ret acc
   ret match(siTraceToConstant(nv.value, vmap, a))
     # Struct fields, in field order.
-    (r: RParam) => SiVals(build(push(builderFrom(acc.svVals), RpNamedValue(nv.name, r))), true)
+    (r: RParam) => SiVals(append(acc.svVals, RpNamedValue(nv.name, r)), true)
     ()           => SiVals(acc.svVals, false)
 
 # Object-typed globals can't be C static initialiser values; lazy globals
@@ -125,10 +126,10 @@ class [final] SiNewObj(snIdx: Int, snClass: String, snReg: String)
 class [final] SiAssign(saReg: String, saField: String, saIdx: Int,
                        saSrc: RParam)
 
-fun siNewObjPositions(ops: Segment<Op>|None, a: CgApp) => build(siNopLoop(ops, a, 0i32, 0, builder()))
+fun siNewObjPositions(ops: Segment<Op>|None, a: CgApp) => siNopLoop(ops, a, 0i32, 0, List())
 
 fun [tail] siNopLoop(s: Segment<Op>|None, a: CgApp, iSeg, i,
-                     [terminal] acc): ListBuilder<SiNewObj> => match(s)
+                     acc): List<SiNewObj> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg < seg.length
     ? siNopLoop(s, a, iSeg + 1i32, i + 1, siNopOne(acc, a, seg.array(iSeg), i))
@@ -136,15 +137,13 @@ fun [tail] siNopLoop(s: Segment<Op>|None, a: CgApp, iSeg, i,
 
 # In op order: the promotion walk follows it, and the globals it yields are
 # emitted in that order.
-fun siNopOne([terminal] acc, a: CgApp, op,
-             i): ListBuilder<SiNewObj> => match(op)
+fun siNopOne(acc, a: CgApp, op, i): List<SiNewObj> => match(op)
   # A pinned object is filled in after allocation: never a static. Nor is a
   # [pinnable] one, whose write-once slots every caller would then share, and
   # the late write assumes a heap object (staticinit.py).
   (no: OpNewObject) => no.newObjSize is None && !no.newObjPinned && !siPinnable(a, no.newObjName)
     ? match(no.newObjRegister)
-      (sv: RpStackVar) => push(acc,
-                              SiNewObj(i, no.newObjName, sv.name))
+      (sv: RpStackVar) => append(acc, SiNewObj(i, no.newObjName, sv.name))
       (o: RParam)      => acc
     : acc
   (o: Op)           => acc
@@ -189,18 +188,12 @@ fun siFaPut(acc, reg, field, i,
   ? map(acc, (a2) => a2.saReg == reg && a2.saField == field
                ? SiAssign(reg, field, i, src)
                : a2)
-  # The list is READ just above (the same-slot search and rewrite), so it
-  # cannot be a builder; this is the copy the old append did, spelled out.
-  : build(push(builderFrom(acc), SiAssign(reg, field, i, src)))
+  : append(acc, SiAssign(reg, field, i, src))
 
 fun siAssignsFor(assigns: List<SiAssign>, reg): List<SiAssign>
   ret filter(assigns, (a2) => a2.saReg == reg)
 
-fun [tail] siAssignFor(as2: Chain<SiAssign>, field: String) => match(as2)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.saField == field
-    ? l.value
-    : siAssignFor(l.next, field)
+fun siAssignFor(as2: List<SiAssign>, field: String) => firstWhere(as2, (x) => x.saField == field)
 
 # `$hash` is the hidden Int32 cache every BOXED ENUM LEAF carries directly
 # after the vtable (types.py EnumStatement.global_codegen's prefix). Nothing
@@ -223,7 +216,7 @@ fun siPayload(a: CgApp, className: String) => match(appObject(a, className))
                             && fld.fieldName != "$hash")
   ()              => None
 
-fun siHasArray(fields: List<CgField>) => match(last(fields))
+fun siHasArray(fields: List<CgField>) => match(head(takeLastOne(fields)))
   (fld: CgField) => fld.fieldType is CgArray
   ()             => false
 
@@ -239,33 +232,29 @@ fun siPromoteOne(f: CgFunction, a: CgApp,
     ret (f, List(), counter)
   let assigns = siFieldAssigns(f.fnOps, news)
   let vmap = gfFunValueMap(f)
-  let out = siPromoLoop(chain(news), f, a, assigns, vmap, counter,
-                        builder())
+  let out = siPromoLoop(news, f, a, assigns, vmap, counter,
+                        List())
   if isEmpty(out.promos)
     ret (f, List(), counter)
   ret (cgFunctionWith(f, siRebuildOps(f.fnOps, out.promos), f.fnStackVars),
        map(out.promos, (p2) => p2.spGlobal),
        out.counter)
 
-fun [tail] siPromoLoop(ns: Chain<SiNewObj>, f: CgFunction, a: CgApp,
-                       assigns: List<SiAssign>, vmap: FunValues,
-                       counter,
-                       [terminal] acc: ListBuilder<SiPromo>): (promos: List<SiPromo>, counter: Int)
-  ret match(ns)
-    (nil: ChainEnd) => (build(acc), counter)
-    (l: ChainLink)  => siPromoTry(l.value, f, a, assigns, vmap, counter)
-      |> (t2) => match(t2.promo)
-        (p2: SiPromo) => siPromoLoop(l.next, f, a, assigns, vmap,
-                                     t2.counter, push(acc, p2))
-        ()            => siPromoLoop(l.next, f, a, assigns, vmap,
-                                     t2.counter, acc)
+# The global-name counter travels in the accumulator beside the promotions.
+fun siPromoLoop(ns: List<SiNewObj>, f: CgFunction, a: CgApp,
+                assigns: List<SiAssign>, vmap: FunValues,
+                counter,
+                acc: List<SiPromo>): (promos: List<SiPromo>, counter: Int) =>
+  fold(ns, (promos = acc, counter = counter),
+       (st, n) => siPromoTry(n, f, a, assigns, vmap, st.counter)
+         |> (t2) => (promos = appendSome(st.promos, t2.promo), counter = t2.counter))
 
 fun siPromoTry(cand: SiNewObj, f: CgFunction, a: CgApp,
                assigns: List<SiAssign>, vmap: FunValues,
                counter): (promo: SiPromo|None, counter: Int) => match(siPayload(a, cand.snClass))
   (dataFields: List<CgField>) =>
     siAssignsFor(assigns, cand.snReg)
-    |> (own) => !sameLen(chain(own), chain(dataFields))
+    |> (own) => !sameLen(own, dataFields)
       ? (None, counter)
       : siPromoCommit(cand, dataFields, own, vmap, a, counter)
   ()                          => (None, counter)
@@ -273,8 +262,8 @@ fun siPromoTry(cand: SiNewObj, f: CgFunction, a: CgApp,
 fun siPromoCommit(cand: SiNewObj, dataFields: List<CgField>,
                   own: List<SiAssign>, vmap: FunValues, a: CgApp,
                   counter): (promo: SiPromo|None, counter: Int)
-  ret match(siTracedFields(chain(dataFields), own, vmap, a,
-                           builder()))
+  ret match(siTracedFields(dataFields, own, vmap, a,
+                           List()))
     (values: List<RpNamedValue>) =>
       ("$si$" + String(counter))
       |> (gname) => (SiPromo(cand.snIdx,
@@ -300,29 +289,36 @@ fun siInitValues(a: CgApp, className: String,
          List(),
          # In the object's own FIELD order — this is the static initialiser.
          (acc, fld) =>
-           build(push(builderFrom(acc), fld.fieldName == "$hash"
+           append(acc, fld.fieldName == "$hash"
                  ? RpNamedValue(fld.fieldName, RpZeroOf(fld.fieldType))
                  : RpNamedValue(fld.fieldName,
-                                siTracedValue(chain(traced), fld.fieldName)))))
+                                siTracedValue(traced, fld.fieldName))))
   ()              => traced
 
-fun [tail] siTracedValue(vs: Chain<RpNamedValue>, field: String) => match(vs)
-  (l: ChainLink)  => l.value.name == field ? l.value.value
-                                           : siTracedValue(l.next, field)
-  (nil: ChainEnd) => RpZeroOf(CgInt(32))   # unreachable: siPayload order
+fun siTracedValue(vs: List<RpNamedValue>, field: String) => match(firstWhere(vs, (v) => v.name == field))
+  (v: RpNamedValue) => v.value
+  ()                => RpZeroOf(CgInt(32))   # unreachable: siPayload order
 
 # Trace each field IN dataFields ORDER to a compile-time constant.
-fun [tail] siTracedFields(fs: Chain<CgField>, own: List<SiAssign>,
-                          vmap: FunValues, a: CgApp,
-                          [terminal] acc: ListBuilder<RpNamedValue>) => match(fs)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => match(siAssignFor(chain(own), l.value.fieldName))
-    (as2: SiAssign) => match(siTraceToConstant(as2.saSrc, vmap, a))
-      (const: RParam) => siTracedFields(l.next, own, vmap, a,
-                             push(acc,
-                                 RpNamedValue(l.value.fieldName, const)))
-      ()              => None
+# A field with no constant store ends the walk with None.
+fun siTracedFields(fs: List<CgField>, own: List<SiAssign>,
+                   vmap: FunValues, a: CgApp,
+                   acc: List<RpNamedValue>) =>
+  foldWhile<CgField, List<RpNamedValue>|None>(fs, acc,
+    (got, fld) => siTracedField(got, fld, own, vmap, a),
+    (got) => got !is None)
+
+fun siTracedField(got: List<RpNamedValue>|None, fld: CgField, own: List<SiAssign>,
+                  vmap: FunValues, a: CgApp): List<RpNamedValue>|None => match(got)
+  (acc: List<RpNamedValue>) => siTracedFieldInto(acc, fld, own, vmap, a)
+  ()                        => None
+
+fun siTracedFieldInto(acc: List<RpNamedValue>, fld: CgField, own: List<SiAssign>,
+                      vmap: FunValues, a: CgApp): List<RpNamedValue>|None => match(siAssignFor(own, fld.fieldName))
+  (as2: SiAssign) => match(siTraceToConstant(as2.saSrc, vmap, a))
+    (const: RParam) => append(acc, RpNamedValue(fld.fieldName, const))
     ()              => None
+  ()              => None
 
 fun siRebuildOps(ops: Segment<Op>|None, promos: List<SiPromo>)
   let drops = fold(promos, List(),
@@ -350,26 +346,19 @@ fun contains3(l: List<Int>, x: Int) => any(l, (v) => v == x)
 # globals come FIRST in iteration order, then the old (order matters for
 # emission).
 fun siPromoteStaticObjects(a: CgApp, counter: Int): (app: CgApp, counter: Int)
-  let out = siPsLoop(chain(appFunctions(a)), a, counter,
-                     SiPsAcc(builder(), builder()))
+  let out = siPsLoop(appFunctions(a), a, counter)
   ret (appOf(out.fns, appObjects(a), concat(out.globals, appGlobals(a))),
        out.counter)
 
 # Functions in app order, and the globals each one promoted after it — both
 # orders are emission order.
-class [linear, final] SiPsAcc(psFns: ListBuilder<CgFunction>,
-                              psGlobals: ListBuilder<CgGlobal>)
-
-fun [tail] siPsLoop(fs: Chain<CgFunction>, a: CgApp, counter,
-                    [terminal] acc: SiPsAcc): (fns: List<CgFunction>, globals: List<CgGlobal>, counter: Int)
-  ret match(fs)
-    (nil: ChainEnd) => (build(acc.psFns),
-                        build(acc.psGlobals), counter)
-    (l: ChainLink)  => siPromoteOne(l.value, a, counter)
-      |> (out) => siPsLoop(l.next, a, out.counter,
-                      SiPsAcc(push(acc.psFns, out.fn),
-                              pushAll(acc.psGlobals,
-                                  out.globals)))
+fun siPsLoop(fs: List<CgFunction>, a: CgApp,
+             counter): (fns: List<CgFunction>, globals: List<CgGlobal>, counter: Int) =>
+  fold(fs, (fns = List<CgFunction>(), globals = List<CgGlobal>(), counter = counter),
+       (st, f) =>
+         siPromoteOne(f, a, st.counter)
+           |> (out) => (fns = append(st.fns, out.fn), globals = concat(st.globals, out.globals),
+                        counter = out.counter))
 
 # ── inline_single_use_globals ───────────────────────────────────────────────
 

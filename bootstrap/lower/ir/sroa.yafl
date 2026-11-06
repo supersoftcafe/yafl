@@ -11,6 +11,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Codegen
 import Bootstrap::Ir
@@ -39,19 +40,16 @@ fun sroaFindSplittable(f: CgFunction, done: Set<String>)
   let svReads = sroaSvReads(f.fnOps)
   let projReads = sroaProjReads(f.fnOps)
   let defs = sroaDefs(f.fnOps)
-  ret build(sroaConsiderAll(
-      chain(sort(keys(defs.sdEntries))),
-      done, svReads, projReads, defs, builder()))
+  ret sroaConsiderAll(
+      sort(keys(defs.sdEntries)),
+      done, svReads, projReads, defs, List())
 
 # Candidates come out in the sorted name order they are considered in.
-fun [tail] sroaConsiderAll(ns: Chain<String>, done: Set<String>,
-                           svReads: Dict<String, Int>,
-                           projReads: Dict<String, Dict<String, Int>>, defs: SroaDefs,
-                           [terminal] acc: ListBuilder<Sroa>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => sroaConsiderAll(l.next, done, svReads, projReads, defs,
-                         sroaConsider(acc, l.value, done, svReads,
-                                      projReads, defs))
+fun sroaConsiderAll(ns: List<String>, done: Set<String>,
+                    svReads: Dict<String, Int>,
+                    projReads: Dict<String, Dict<String, Int>>, defs: SroaDefs,
+                    acc: List<Sroa>) =>
+  fold(ns, acc, (a, n) => sroaConsider(a, n, done, svReads, projReads, defs))
 
 # Read occurrences: a projection StructField(StackVar v, f) flattens to BOTH
 # nodes, so a var whose every read is a projection has sv_reads == proj_total;
@@ -102,7 +100,7 @@ fun sroaDef1(acc, w, i, op) => match(w)
                                contains(acc.sdEntries, sv.name) ? add(acc.sdMulti, sv.name) : acc.sdMulti)
   (o: RParam)       => acc
 
-fun sroaConsider([terminal] acc, name: String,
+fun sroaConsider(acc, name: String,
                  done: Set<String>, svReads: Dict<String, Int>,
                  projReads: Dict<String, Dict<String, Int>>, defs: SroaDefs)
   if contains(defs.sdMulti, name) || contains(done, name)
@@ -111,7 +109,7 @@ fun sroaConsider([terminal] acc, name: String,
     (d: SroaDef) => sroaConsiderDef(acc, name, d, svReads, projReads)
     ()            => acc
 
-fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name,
+fun sroaConsiderDef(acc: List<Sroa>, name,
                     d: SroaDef, svReads: Dict<String, Int>,
                     projReads: Dict<String, Dict<String, Int>>)
   # Only plain non-empty structs — never the async TaskWrapper ABI.
@@ -126,7 +124,7 @@ fun sroaConsiderDef([terminal] acc: ListBuilder<Sroa>, name,
   if !sroaDefOpOk(d.sdOp)
     ret acc
   let used = sort(keys(projected))
-  ret push(acc, Sroa(name, d.sdVar, d.sdIndex,
+  ret append(acc, Sroa(name, d.sdVar, d.sdIndex,
                 map(used, (fld) => SroaField(fld,
                       RpStackVar(rpStructFieldLookup(fields, fld), name + "$" + fld)))))
 

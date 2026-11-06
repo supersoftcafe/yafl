@@ -24,7 +24,7 @@ class [final] A2(av: System::Int)
 class [final] B2(bv: System::Int)
 
 enum E2
-  enum L2(xs: System::List<A2>)
+  enum L2(xs: System::Containers::List<A2>)
 
 """
 
@@ -32,11 +32,11 @@ enum E2
 class TestGenericArgInvariance(TestCase):
     def test_wrong_type_argument_via_function_call(self):
         src = _PRELUDE + """\
-fun takesA(xs: System::List<A2>): System::Int
+fun takesA(xs: System::Containers::List<A2>): System::Int
   ret 0
 
 fun main(): System::Int
-  ret takesA(System::prepend(B2(1), System::List<B2>()))
+  ret takesA(System::Containers::prepend(B2(1), System::Containers::List<B2>()))
 """
         diag = _diagnostics(src)
         self.assertNotEqual("", diag, "COMPILED CLEAN — the invariance gap is back")
@@ -44,7 +44,7 @@ fun main(): System::Int
     def test_wrong_type_argument_via_enum_constructor(self):
         src = _PRELUDE + """\
 fun main(): System::Int
-  let e = L2(System::prepend(B2(1), System::List<B2>()))
+  let e = L2(System::Containers::prepend(B2(1), System::Containers::List<B2>()))
   ret 0
 """
         diag = _diagnostics(src)
@@ -53,7 +53,7 @@ fun main(): System::Int
     def test_right_type_argument_still_accepted(self):
         src = _PRELUDE + """\
 fun main(): System::Int
-  let e = L2(System::prepend(A2(1), System::List<A2>()))
+  let e = L2(System::Containers::prepend(A2(1), System::Containers::List<A2>()))
   ret 0
 """
         self.assertEqual("", _diagnostics(src))

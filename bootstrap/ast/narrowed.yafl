@@ -9,6 +9,7 @@
 namespace Bootstrap::Ast
 
 import System
+import System::Containers
 
 
 enum Narrowed

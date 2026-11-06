@@ -6,6 +6,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
@@ -183,36 +184,25 @@ fun trimRebuild(a: CgApp, toApp: ScanSets) => appOf(
 # The picked entities keep the (sorted) name order they were asked for — it
 # becomes their emission order.
 fun trimPick(names: List<String>, get: (:String): CgFunction|None)
-  ret build(trimPickLoop(chain(names), get,
-                         builder()))
+  ret trimPickLoop(names, get,
+                         List())
 
-fun [tail] trimPickLoop(ns: Chain<String>, get: (:String): CgFunction|None,
-                        [terminal] acc: ListBuilder<CgFunction>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(get(l.value))
-    (f2: CgFunction) => trimPickLoop(l.next, get,
-                                     push(acc, f2))
-    ()                => trimPickLoop(l.next, get, acc)
+fun trimPickLoop(ns: List<String>, get: (:String): CgFunction|None,
+                 acc: List<CgFunction>) => fold(ns, acc, (a, n) => appendSome(a, get(n)))
+
+
 
 fun trimPickObjects(names: List<String>, a: CgApp)
-  ret build(trimPickObjLoop(chain(names), a, builder()))
+  ret trimPickObjLoop(names, a, List())
 
-fun [tail] trimPickObjLoop(ns: Chain<String>, a: CgApp,
-                           [terminal] acc: ListBuilder<CgObject>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(appObject(a, l.value))
-    (o2: CgObject) => trimPickObjLoop(l.next, a, push(acc, o2))
-    ()              => trimPickObjLoop(l.next, a, acc)
+fun trimPickObjLoop(ns: List<String>, a: CgApp,
+                    acc: List<CgObject>) => fold(ns, acc, (out, n) => appendSome(out, appObject(a, n)))
 
 fun trimPickGlobals(names: List<String>, a: CgApp)
-  ret build(trimPickGlbLoop(chain(names), a, builder()))
+  ret trimPickGlbLoop(names, a, List())
 
-fun [tail] trimPickGlbLoop(ns: Chain<String>, a: CgApp,
-                           [terminal] acc: ListBuilder<CgGlobal>) => match(ns)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(appGlobal(a, l.value))
-    (g3: CgGlobal) => trimPickGlbLoop(l.next, a, push(acc, g3))
-    ()              => trimPickGlbLoop(l.next, a, acc)
+fun trimPickGlbLoop(ns: List<String>, a: CgApp,
+                    acc: List<CgGlobal>) => fold(ns, acc, (out, n) => appendSome(out, appGlobal(a, n)))
 
 # ── addressTakenFunctions (trim.py address_taken_functions) ─────────────────
 # Internal functions whose ADDRESS escapes as a value: every reference except

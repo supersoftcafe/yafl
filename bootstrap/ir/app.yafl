@@ -7,6 +7,7 @@
 namespace Bootstrap::Ir
 
 import System
+import System::Containers
 
 # Lists carry ITERATION ORDER (emission, trim's sorted rebuilds); the Dicts
 # carry LOOKUP (user ruling 2026-07-22 — appFunction over ~10^4 functions was
@@ -34,9 +35,9 @@ fun appOf(fns: List<CgFunction>, objs: List<CgObject>,
           globals: List<CgGlobal>) => fold(globals,
                                         fold(objs,
                                           fold(fns, emptyApp(),
-                                               (a, f) => appPutFunction(a, f)),
-                                          (a, o) => appPutObject(a, o)),
-                                        (a, g2) => appPutGlobal(a, g2))
+                                               appPutFunction),
+                                          appPutObject),
+                                        appPutGlobal)
 
 # ── ordered views: the sequence numbers, sorted ──────────────────────────────
 
@@ -126,14 +127,14 @@ fun appHasFunction(a: CgApp, name: String) => !(get(a.appFnIx, name) is None)
 fun appWithFunctions(a: CgApp, fns: List<CgFunction>)
   ret fold(fns, CgApp(Dict(), a.appObjIx, a.appGlbIx,
                       Dict(), a.appObjOrd, a.appGlbOrd, a.appNext),
-           (acc, f) => appPutFunction(acc, f))
+           appPutFunction)
 
 fun appWithObjects(a: CgApp, objs: List<CgObject>)
   ret fold(objs, CgApp(a.appFnIx, Dict(), a.appGlbIx,
                        a.appFnOrd, Dict(), a.appGlbOrd, a.appNext),
-           (acc, o) => appPutObject(acc, o))
+           appPutObject)
 
 fun appWithGlobals(a: CgApp, globals: List<CgGlobal>)
   ret fold(globals, CgApp(a.appFnIx, a.appObjIx, Dict(),
                           a.appFnOrd, a.appObjOrd, Dict(), a.appNext),
-           (acc, g2) => appPutGlobal(acc, g2))
+           appPutGlobal)

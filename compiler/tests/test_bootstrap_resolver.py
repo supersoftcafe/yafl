@@ -28,7 +28,7 @@ _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
 _CORPUS = [
     _REPO / "compiler" / "stdlib" / "System" / "args.yafl",
-    _REPO / "compiler" / "stdlib" / "System" / "list.yafl",
+    _REPO / "compiler" / "stdlib" / "System" / "Containers" / "list.yafl",
     _REPO / "compiler" / "stdlib" / "System" / "string.yafl",
     _REPO / "examples" / "ylisp.yafl",
     _BOOTSTRAP / "ast" / "nodes.yafl",

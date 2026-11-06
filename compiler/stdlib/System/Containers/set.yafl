@@ -1,4 +1,4 @@
-namespace System
+namespace System::Containers
 
 import System
 
@@ -49,7 +49,7 @@ fun size<T>(s: Set<T>): Int
 
 
 # ── questions whose answer does not depend on order ──────────────────────────
-# A Set is UNORDERED and exposes no walk: no chain(), no head, no fold. These
+# A Set is UNORDERED and exposes no walk: no head, no step-by-step walk. These
 # are the questions worth asking of one, answered without materialising an
 # order that would only be a lie.
 
@@ -60,19 +60,16 @@ fun isEmpty<T>(s: Set<T>): Bool
 # The member of a one-member set, else None — for the shape where a filter is
 # expected to narrow to exactly one answer.
 fun singleOrNone<T>(s: Set<T>): T|None
-  ret match(_dictKeyChain<T,()>(s._d))
-    (l: ChainLink) => l.next is ChainEnd ? l.value : None
-    (e: ChainEnd)  => None
+  let members = _dictKeyList<T,()>(s._d)
+  ret sizeAtLeast<T>(members, 2) ? None : head<T>(members)
 
 
 fun isMoreThanOne<T>(s: Set<T>): Bool
-  ret match(_dictKeyChain<T,()>(s._d))
-    (l: ChainLink) => l.next !is ChainEnd
-    (e: ChainEnd)  => false
+  ret sizeAtLeast<T>(_dictKeyList<T,()>(s._d), 2)
 
 
 fun any<T>(s: Set<T>, f: (:T): Bool): Bool
-  ret _chainAny<T>(_dictKeyChain<T,()>(s._d), f)
+  ret any<T>(_dictKeyList<T,()>(s._d), f)
 
 
 fun all<T>(s: Set<T>, f: (:T): Bool): Bool
@@ -84,54 +81,34 @@ fun all<T>(s: Set<T>, f: (:T): Bool): Bool
 # whatever survived, not a same-sized collection.
 
 fun map<T,U>(s: Set<T>, f: (:T): U): Set<U> where BasicEquality<U>
-  ret _chainToSet<U>(_chainMapRev<T,U>(_dictKeyChain<T,()>(s._d), f, ChainEnd<U>()),
-                     Set<U>())
+  ret fold<T, Set<U> >(_dictKeyList<T,()>(s._d), Set<U>(), (acc: Set<U>, x: T) => add<U>(acc, f(x)))
 
 
 # One walk splits the members. Nothing rejected: the set itself, shared. Fewer
 # rejected than kept: those few removed from it. Otherwise the kept ones,
 # inserted into an empty set. (It used to rebuild by insertion every time.)
 fun filter<T>(s: Set<T>, f: (:T): Bool): Set<T> where BasicEquality<T>
-  let parts = _chainPartition<T>(_dictKeyChain<T,()>(s._d), f, ChainEnd<T>(), ChainEnd<T>())
-  ret parts.rejected is ChainEnd
+  let parts = partition<T>(_dictKeyList<T,()>(s._d), f)
+  ret isEmpty<T>(parts.no)
     ? s
-    : _chainNoLonger<T>(parts.rejected, parts.kept)
-      ? Set<T>(_chainRemoveAll<T>(parts.rejected, s._d))
-      : _chainToSet<T>(parts.kept, Set<T>())
+    : _noLonger<T>(parts.no, parts.yes)
+      ? Set<T>(fold<T, Dict<T,()> >(parts.no, s._d, (d: Dict<T,()>, x: T) => remove<T,()>(d, x)))
+      : Set<T>(parts.yes)
 
-fun [tail] _chainPartition<T>(c: Chain<T>, f: (:T): Bool, kept: Chain<T>,
-                              rejected: Chain<T>): (kept: Chain<T>, rejected: Chain<T>)
-  ret match(c)
-    (l: ChainLink) => f(l.value)
-      ? _chainPartition<T>(l.next, f, ChainLink<T>(l.value, kept), rejected)
-      : _chainPartition<T>(l.next, f, kept, ChainLink<T>(l.value, rejected))
-    (e: ChainEnd)  => (kept, rejected)
-
-# `a` has no more members than `b` — walked in step, nothing counted.
-fun [tail] _chainNoLonger<T>(a: Chain<T>, b: Chain<T>): Bool
-  ret match(a)
-    (e: ChainEnd)  => true
-    (la: ChainLink) => match(b)
-      (e2: ChainEnd)  => false
-      (lb: ChainLink) => _chainNoLonger<T>(la.next, lb.next)
-
-fun [tail] _chainRemoveAll<T>(c: Chain<T>, d: Dict<T,()>): Dict<T,()> where BasicEquality<T>
-  ret match(c)
-    (l: ChainLink) => _chainRemoveAll<T>(l.next, remove<T,()>(d, l.value))
-    (e: ChainEnd)  => d
+# `a` has no more elements than `b` — walked in step, nothing counted.
+fun [tail] _noLonger<T>(a: List<T>, b: List<T>): Bool
+  ret isEmpty<T>(a) || (!isEmpty<T>(b) && _noLonger<T>(dropOne<T>(a), dropOne<T>(b)))
 
 
 # Every member of both: one insert per member of the SMALLER set, into the
 # larger, skipping a member already there so its structure is kept.
 fun union<T>(a: Set<T>, b: Set<T>): Set<T> where BasicEquality<T>
   ret size<T>(b) <= size<T>(a)
-    ? _setAddAbsent<T>(a, _dictKeyChain<T,()>(b._d))
-    : _setAddAbsent<T>(b, _dictKeyChain<T,()>(a._d))
+    ? _setAddAbsent<T>(a, _dictKeyList<T,()>(b._d))
+    : _setAddAbsent<T>(b, _dictKeyList<T,()>(a._d))
 
-fun [tail] _setAddAbsent<T>(acc: Set<T>, c: Chain<T>): Set<T> where BasicEquality<T>
-  ret match(c)
-    (l: ChainLink) => _setAddAbsent<T>(contains<T>(acc, l.value) ? acc : add<T>(acc, l.value), l.next)
-    (e: ChainEnd)  => acc
+fun _setAddAbsent<T>(into: Set<T>, members: List<T>): Set<T> where BasicEquality<T>
+  ret fold<T, Set<T> >(members, into, (acc: Set<T>, x: T) => contains<T>(acc, x) ? acc : add<T>(acc, x))
 
 
 # ── the one way out ──────────────────────────────────────────────────────────
@@ -150,7 +127,7 @@ fun sortBy<T>(s: Set<T>, less: (:T, :T): Bool): List<T>
 # Private: members as a List in unspecified order. NOT public — handing this
 # out would be iteration on an unordered container by another name.
 fun _setDrain<T>(s: Set<T>): List<T>
-  ret build<T>(_pushChain<T>(builder<T>(), _dictKeyChain<T,()>(s._d)))
+  ret _dictKeyList<T,()>(s._d)
 
 
 # fold — a REDUCTION, not a walk. `f` must be COMMUTATIVE and ASSOCIATIVE in
@@ -167,19 +144,4 @@ fun _setDrain<T>(s: Set<T>): List<T>
 # O(n log n) to do it. Nothing enforces commutativity — this comment is the
 # contract.
 fun fold<T, [linear] U>(s: Set<T>, init: U, f: (:U, :T): U): U
-  ret _chainFold<T,U>(_dictKeyChain<T,()>(s._d), init, f)
-
-fun [tail] _chainMapRev<T,U>(c: Chain<T>, f: (:T): U, acc: Chain<U>): Chain<U>
-  ret match(c)
-    (l: ChainLink)  => _chainMapRev<T,U>(l.next, f, ChainLink<U>(f(l.value), acc))
-    (e: ChainEnd)   => acc
-
-fun [tail] _chainAny<T>(c: Chain<T>, f: (:T): Bool): Bool
-  ret match(c)
-    (l: ChainLink)  => f(l.value) ? true : _chainAny<T>(l.next, f)
-    (e: ChainEnd)   => false
-
-fun [tail] _chainFold<T, [linear] U>(c: Chain<T>, acc: U, f: (:U, :T): U): U
-  ret match(c)
-    (l: ChainLink) => _chainFold<T,U>(l.next, f(acc, l.value), f)
-    (e: ChainEnd)  => acc
+  ret fold<T,U>(_dictKeyList<T,()>(s._d), init, f)

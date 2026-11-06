@@ -10,6 +10,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 
@@ -149,7 +150,7 @@ fun [tail] ucFixpoint(ix: UcIx, labels: Dict<String, Int>,
   if isEmpty(worklist)
     ret entry
   let i = headIntOr(worklist, 0)
-  let rest = tail(worklist)
+  let rest = dropOne(worklist)
   let cur = ucEntryAt(entry, i)
   if cur is IsUnreached
     ret ucFixpoint(ix, labels, entry, rest)
@@ -158,7 +159,7 @@ fun [tail] ucFixpoint(ix: UcIx, labels: Dict<String, Int>,
   let writes = ucWrites(op)
   let branchOnly = ucBranchOnlyWrites(op)
   let exitFall = fold(filter(writes,
-                             (w) => !strListMember(branchOnly, w)),
+                             (w) => !contains(branchOnly, w)),
                       e2, ucAddName)
   let exitBranch = fold(writes, e2, ucAddName)
   let out = fold(ucSuccessors(ix, labels, i), (entry, rest),
@@ -260,7 +261,7 @@ fun [tail] ucPhiBlocksLoop(s: Segment<Op>|None, i, current, acc) => match(s)
 # The phis WITHIN a block keep their order, because the errors they raise are
 # reported in that order.
 fun ucPhiBlockAdd(acc: Dict<String, List<Op>>, label: String, ph: Op) => match(get(acc, label))
-  (prev: List<Op>) => put(acc, label, build(push(builderFrom(prev), ph)))
+  (prev: List<Op>) => put(acc, label, append(prev, ph))
   ()               => put(acc, label, list1(ph))
 
 fun ucIsPhiBlock(phiBlocks: Dict<String, List<Op>>, name: String) => contains(phiBlocks, name)
@@ -268,12 +269,12 @@ fun ucIsPhiBlock(phiBlocks: Dict<String, List<Op>>, name: String) => contains(ph
 # Every edge from a labelled block into a Phi block, with the exit set at the
 # transfer point (fall-through edges use the PREVIOUS op's entry|writes).
 fun ucPhiEdges(ops: Segment<Op>|None, entry: Dict<Int, InitSet>, phiBlocks: Dict<String, List<Op>>): List<PhiEdge>
-  ret build(ucPhiEdgesLoop(ops, 0i32, entry, phiBlocks, 0, "", None, builder()))
+  ret ucPhiEdgesLoop(ops, 0i32, entry, phiBlocks, 0, "", None, List())
 
 fun [tail] ucPhiEdgesLoop(s: Segment<Op>|None, iSeg, entry: Dict<Int, InitSet>,
                           phiBlocks: Dict<String, List<Op>>,
                           i, current, prev: Op|None,
-                          [terminal] acc: ListBuilder<PhiEdge>): ListBuilder<PhiEdge> => match(s)
+                          acc: List<PhiEdge>): List<PhiEdge> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg >= seg.length
     ? ucPhiEdgesLoop(seg.next, 0i32, entry, phiBlocks, i, current, prev, acc)
@@ -289,7 +290,7 @@ fun [tail] ucPhiEdgesLoop(s: Segment<Op>|None, iSeg, entry: Dict<Int, InitSet>,
 
 fun ucFallEdge(entry: Dict<Int, InitSet>, phiBlocks: Dict<String, List<Op>>,
                i, current, prev0: Op|None, lb: OpLabel,
-               [terminal] acc: ListBuilder<PhiEdge>): ListBuilder<PhiEdge>
+               acc: List<PhiEdge>): List<PhiEdge>
   if !ucIsPhiBlock(phiBlocks, lb.labelName) || length(current) == 0 || i == 0
     ret acc
   ret match(prev0)
@@ -299,14 +300,14 @@ fun ucFallEdge(entry: Dict<Int, InitSet>, phiBlocks: Dict<String, List<Op>>,
     ()         => acc
 
 fun ucFallEdgeOn(entry: Dict<Int, InitSet>, i, current,
-                 prev, lb: OpLabel, [terminal] acc: ListBuilder<PhiEdge>): ListBuilder<PhiEdge> => match(ucEntryAt(entry, i - 1))
+                 prev, lb: OpLabel, acc: List<PhiEdge>): List<PhiEdge> => match(ucEntryAt(entry, i - 1))
   (u: IsUnreached) => acc
   # Edge order is message order.
-  (pe: IsSet)      => push(acc, PhiEdge(current, lb.labelName,
+  (pe: IsSet)      => append(acc, PhiEdge(current, lb.labelName,
                                         fold(ucWrites(prev), pe.isNames, ucAddName)))
 
 fun ucJumpEdges(op, entry: Dict<Int, InitSet>, phiBlocks: Dict<String, List<Op>>,
-                i: Int, current, [terminal] acc: ListBuilder<PhiEdge>): ListBuilder<PhiEdge>
+                i: Int, current, acc: List<PhiEdge>): List<PhiEdge>
   if length(current) == 0
     ret acc
   ret match(ucEntryAt(entry, i))
@@ -315,19 +316,17 @@ fun ucJumpEdges(op, entry: Dict<Int, InitSet>, phiBlocks: Dict<String, List<Op>>
                                       fold(ucWrites(op), e2.isNames, ucAddName), acc)
 
 fun ucJumpEdgesOn(op, phiBlocks: Dict<String, List<Op>>, current,
-                  exitHere, [terminal] acc: ListBuilder<PhiEdge>): ListBuilder<PhiEdge>
-  ret ucTargetEdges(chain(opBranchTargets(op)), acc, phiBlocks, current, exitHere)
+                  exitHere, acc: List<PhiEdge>): List<PhiEdge>
+  ret ucTargetEdges(opBranchTargets(op), acc, phiBlocks, current, exitHere)
 
-fun [tail] ucTargetEdges(ts: Chain<String>, [terminal] acc: ListBuilder<PhiEdge>,
-                         phiBlocks: Dict<String, List<Op>>, current,
-                         exitHere): ListBuilder<PhiEdge> => match(ts)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => ucTargetEdges(l.next, ucAddEdgeIf(acc, phiBlocks, current, l.value, exitHere),
-                                   phiBlocks, current, exitHere)
+fun ucTargetEdges(ts: List<String>, acc: List<PhiEdge>,
+                  phiBlocks: Dict<String, List<Op>>, current,
+                  exitHere): List<PhiEdge> =>
+  fold(ts, acc, (a, t) => ucAddEdgeIf(a, phiBlocks, current, t, exitHere))
 
-fun ucAddEdgeIf([terminal] acc: ListBuilder<PhiEdge>, phiBlocks: Dict<String, List<Op>>, current,
-                target, exitHere): ListBuilder<PhiEdge> => ucIsPhiBlock(phiBlocks, target)
-  ? push(acc, PhiEdge(current, target, exitHere))
+fun ucAddEdgeIf(acc: List<PhiEdge>, phiBlocks: Dict<String, List<Op>>, current,
+                target, exitHere): List<PhiEdge> => ucIsPhiBlock(phiBlocks, target)
+  ? append(acc, PhiEdge(current, target, exitHere))
   : acc
 
 fun ucCheckEdge(f: CgFunction, phiBlocks: Dict<String, List<Op>>, ed: PhiEdge): List<String>

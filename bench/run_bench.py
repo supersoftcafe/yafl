@@ -9,17 +9,18 @@ across sessions.
 
     ./run_bench.py --reps 3 base=./memo_bench_base pin=./memo_bench_pin
 
-Reports the MEDIAN of the repetitions per (binary, mode), plus peak RSS, and
+Reports the FASTEST of the repetitions per (binary, mode), plus peak RSS, and
 verifies that every binary produced the same checksum for a given mode — a
 differing checksum means the two builds are not doing the same work and the
-times are meaningless.
+times are meaningless. The minimum is the cleanest estimate on a shared box:
+noise only ever adds time, so the fastest run is the one least polluted by
+co-tenants.
 """
 from __future__ import annotations
 
 import argparse
 import re
 import resource
-import statistics
 import subprocess
 import sys
 import time
@@ -93,17 +94,17 @@ def main() -> int:
     print("-" * len(head))
     for mode in modes:
         row = f"{mode:<8} "
-        medians = []
+        bests = []
         for label, _ in binaries:
-            med = statistics.median(times[(label, mode)])
-            medians.append(med)
-            row += f" {med:9.2f}s"
-        if len(medians) > 1 and medians[0] > 0:
-            delta = (medians[-1] - medians[0]) / medians[0] * 100.0
+            best = min(times[(label, mode)])
+            bests.append(best)
+            row += f" {best:9.2f}s"
+        if len(bests) > 1 and bests[0] > 0:
+            delta = (bests[-1] - bests[0]) / bests[0] * 100.0
             row += f"   {delta:+6.1f}%"
         print(row)
     print()
-    print(f"median of {args.reps} interleaved repetitions; "
+    print(f"fastest of {args.reps} interleaved repetitions; "
           f"baseline = {base_label}; checksums agree across builds")
     return 0
 

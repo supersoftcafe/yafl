@@ -1,6 +1,7 @@
 namespace Bootstrap::Codegen
 
 import System
+import System::Containers
 
 import Bootstrap::Frontend
 import Bootstrap::Ir

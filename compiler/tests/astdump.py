@@ -255,6 +255,10 @@ def dump(statements) -> str:
         elif isinstance(st, s.ActionStatement):
             line(depth, "Action", st, "")
             walk_expr(st.action, depth + 1)
+        elif isinstance(st, s.FieldAssignStatement):
+            line(depth, "FieldAssign", st, "")
+            walk_expr(st.target, depth + 1)
+            walk_expr(st.value, depth + 1)
         else:
             line(depth, type(st).__name__, st, getattr(st, "name", ""))
 

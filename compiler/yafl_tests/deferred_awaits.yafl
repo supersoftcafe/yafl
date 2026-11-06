@@ -9,6 +9,7 @@
 namespace CompilerTests::DeferredAwaits::FifoOpensMeet
 
 import System
+import System::Containers
 import System::IO
 import System::Test
 

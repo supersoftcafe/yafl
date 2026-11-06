@@ -12,8 +12,10 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
+import Bootstrap::StdlibCandidates
 
 
 
@@ -47,18 +49,13 @@ fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
     ret None
   ret match(param)
     (p: RParam) => match(p)
-      (sv: RpStackVar) => match(dfoLookup(chain(newobjs), sv.name))
-        (cls: String) => cls
-        ()            => dfoClassOf(sdGet(defs, sv.name), newobjs,
-                                    defs, depth - 1)
+      (sv: RpStackVar) => dfoLookup(newobjs, sv.name) ?? dfoClassOf(sdGet(defs, sv.name), newobjs, defs, depth - 1)
       (o: RParam)      => None
     ()          => None
 
-fun [tail] dfoLookup(ns: Chain<DfoNewObj>, name: String) => match(ns)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => l.value.dfoVar == name
-    ? l.value.dfoClass
-    : dfoLookup(l.next, name)
+fun dfoLookup(ns: List<DfoNewObj>, name: String) => match(firstWhere(ns, (o) => o.dfoVar == name))
+  (o: DfoNewObj) => o.dfoClass
+  ()             => None
 
 fun dfoReplace(p, newobjs: List<DfoNewObj>, defs: SsaDefs,
                a: CgApp) => match(p)

@@ -192,7 +192,7 @@ import System
 
 enum Stmt
   enum Destr(name: System::String, attrs: System::String, ty: System::Int,
-             targets: System::List<Stmt>, dflt: System::Int, line: System::String)
+             targets: System::Containers::List<Stmt>, dflt: System::Int, line: System::String)
   enum Let(n: System::String, t: System::Int)
 
 fun [future] bump(p: Stmt): Stmt => match(p)
@@ -200,13 +200,13 @@ fun [future] bump(p: Stmt): Stmt => match(p)
   (o: Stmt) => p
 
 fun bumped(params: Stmt): Stmt => match(params)
-  (d: Destr) => with d(targets = System::map(d.targets, (p) => bump(p)))
+  (d: Destr) => with d(targets = System::Containers::map(d.targets, (p) => bump(p)))
   (o: Stmt)  => params
 
 fun main(): System::Int
-  let s = bumped(Destr("a", "b", 1, System::prepend(Let("x", 1), System::List()), 2, "l"))
+  let s = bumped(Destr("a", "b", 1, System::Containers::prepend(Let("x", 1), System::Containers::List()), 2, "l"))
   ret match(s)
-    (d: Destr) => System::isEmpty(d.targets) ? 1 : 0
+    (d: Destr) => System::Containers::isEmpty(d.targets) ? 1 : 0
     (o: Stmt)  => 1
 """
 

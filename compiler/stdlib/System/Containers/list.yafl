@@ -1,0 +1,340 @@
+
+namespace System::Containers
+
+import System
+
+
+# List<T>: a persistent list over a chain of shared nodes, O(1) at both ends.
+#
+# A list is its first and last node. prepend links a new node in front;
+# append links one after the last node with a CAS, which succeeds only if no
+# other list has linked there first (otherwise the list is copied). Every walk
+# stops at the list's OWN last node, compared by identity, so a list never
+# sees nodes another list linked on after its end.
+class [final, pinnable] _ListNode<T>(_next: _ListNode<T>|None, _value: T)
+enum List<T>
+  enum _ListEmpty()
+  enum _ListFull(_head: _ListNode<T>, _tail: _ListNode<T>)
+
+fun List<T>(): List<T> => _ListEmpty<T>()
+
+fun List<T>(value: T): List<T>
+  let node = _ListNode<T>(None, value)
+  ret _ListFull<T>(node, node)
+
+fun List<T>(v1: T, v2: T): List<T>
+  let n2 = _ListNode<T>(None, v2)
+  let n1 = _ListNode<T>(n2, v1)
+  ret _ListFull<T>(n1, n2)
+
+fun List<T>(v1: T, v2: T, v3: T): List<T>
+  let n3 = _ListNode<T>(None, v3)
+  let n2 = _ListNode<T>(n3, v2)
+  let n1 = _ListNode<T>(n2, v1)
+  ret _ListFull<T>(n1, n3)
+
+
+instance<T> Stream<List<T>, T, Never>
+  fun next(self: List<T>): (stream: List<T>, value: Result<T|None, Never>)
+    let first = takeOne(self)
+    ret (dropOne(self), Ok<T|None, Never>(head(first)))
+
+
+fun _casTail<T>(obj: _ListNode<T>, newTail: _ListNode<T>): _ListNode<T>|None
+  ret __builtin_pin_set__(obj, obj._next, newTail)
+
+fun _setTail<T>(obj: _ListNode<T>, newTail: _ListNode<T>): _ListNode<T>
+  obj._next := newTail
+  ret newTail
+
+fun _getNextNode<T>(head: _ListNode<T>, tail: _ListNode<T>): _ListNode<T>|None
+  ret __builtin_op__<bool>("object_same", head, tail) ? None : head._next
+
+# A private copy of `from` whose last node links to `onto`'s head, so it reads
+# as from followed by onto. Nobody else can see the copy until it is returned,
+# so plain stores are enough.
+fun _copyOnto<T>(from: _ListFull<T>, onto: _ListFull<T>): _ListFull<T>
+  fun link(head: _ListNode<T>, tail: _ListNode<T>): _ListFull<T>
+    tail._next := onto._head
+    ret _ListFull<T>(head, onto._tail)
+  fun [tail] copy(head: _ListNode<T>, tail: _ListNode<T>, next: _ListNode<T>|None): _ListFull<T>
+    ret match(next)
+      (_:None) => link(head, tail)
+      (n:_ListNode<T>) => copy(head, _setTail<T>(tail, _ListNode<T>(None, n._value)), _getNextNode<T>(n, from._tail))
+  let h = _ListNode<T>(None, from._head._value)
+  ret copy(h, h, _getNextNode<T>(from._head, from._tail))
+
+fun _count<T>(list: List<T>): Int
+  ret fold(list, 0, (acc, n) => acc + 1)
+
+
+# If nothing has linked past the list's tail node yet, we can link the new
+# node there unobserved: every other list sharing that node ends at its own
+# tail (walks stop by identity, see _getNextNode), so none of them can see
+# the new node. If the tail is already linked onward, we copy the list first.
+fun [inline(never)] append<T>(list: List<T>, value: T): List<T>
+  let newTail = _ListNode<T>(None, value)
+  ret match(list)
+    (_: _ListEmpty<T>) => _ListFull<T>(newTail, newTail)
+    (head: _ListFull<T>) => match(_casTail(head._tail, newTail))
+      (_: None) => _ListFull<T>(head._head, newTail)
+      (_: _ListNode<T>) => _copyOnto<T>(head, _ListFull<T>(newTail, newTail))
+
+
+# Simplest and fastest of all list operations, just construct a new head node and link to the list.
+fun prepend<T>(value: T, list: List<T>): List<T>
+  ret match(list)
+    (_: _ListEmpty<T>) => List<T>(value)
+    (head: _ListFull<T>) => _ListFull<T>(_ListNode<T>(head._head, value), head._tail)
+
+
+# Return a list of at most 'count' elements from the start of 'list'.
+fun [inline(never)] take<T>(list: List<T>, count: Int): List<T>
+  fun [tail] expand(l: _ListFull<T>, end: _ListNode<T>, count: Int): List<T>
+    ret match(count > 1 ? _getNextNode<T>(l._tail, end) : None)
+      (_:None) => l
+      (n:_ListNode<T>) => expand(_ListFull<T>(l._head, n), end, count - 1)
+  ret match(count <= 0 ? _ListEmpty<T>() : list)
+    (_:_ListEmpty<T>) => _ListEmpty<T>()
+    (l:_ListFull<T>) => expand(_ListFull<T>(l._head, l._head), l._tail, count)
+
+
+# The generic functions below recurse through a nested [tail] helper rather
+# than calling themselves: issue #86 — a generic [tail] function's self-call
+# goes unrecognised when a type argument is a tuple holding a List.
+
+# Return a list that comes after the first 'count' elements from the start of 'list'.
+fun [inline(never)] drop<T>(list: List<T>, count: Int): List<T>
+  fun [tail] walk(l: List<T>, n: Int): List<T>
+    ret n > 0 && !isEmpty(l) ? walk(dropOne(l), n - 1) : l
+  ret walk(list, count)
+
+
+# Fast path
+#   The target list hasn't had a concat or append operation applied previously
+#   and there is no risk of duplicate nodes in the two lists. We can link the
+#   two lists safely. Original observers don't see this change.
+# Slow path
+#   We copy the to list and link the copy's last node to the from list's head
+#   (_copyOnto). The copy is private, so that link is always safe.
+fun [inline(never)] concat<T>(listTo: List<T>, listFrom: List<T>): List<T>
+  ret match(listTo)
+    (_:_ListEmpty<T>) => listFrom
+    (to:_ListFull<T>) => match(listFrom)
+      (_:_ListEmpty<T>) => listTo
+      (from:_ListFull<T>) => __builtin_op__<bool>("object_same", to._tail, from._tail)
+       || from._tail._next !is None || _casTail(to._tail, from._head) !is None
+        ? _copyOnto<T>(to, from) : _ListFull<T>(to._head, from._tail)
+      
+
+fun head<T>(list: List<T>): T|None
+  ret match(list)
+    (_: _ListEmpty<T>) => None
+    (l: _ListFull<T>) => l._head._value
+
+fun dropOne<T>(list: List<T>): List<T>
+  ret match(list)
+    (_: _ListEmpty<T>) => _ListEmpty<T>()
+    (l: _ListFull<T>) => match(_getNextNode(l._head, l._tail))
+      (_: None) => _ListEmpty<T>()
+      (n: _ListNode<T>) => _ListFull<T>(n, l._tail)
+
+fun takeOne<T>(list: List<T>): List<T>
+  ret match(list)
+    (_: _ListEmpty<T>) => _ListEmpty<T>()
+    (l: _ListFull<T>) => _ListFull<T>(l._head, l._head)
+
+
+fun takeLastOne<T>(list: List<T>): List<T>
+  ret match(list)
+    (_: _ListEmpty<T>) => _ListEmpty<T>()
+    (l: _ListFull<T>) => _ListFull<T>(l._tail, l._tail)
+
+# All but the last element. The result shares the source's nodes: one walk to
+# find the node before the last, no copying.
+fun dropLastOne<T>(list: List<T>): List<T>
+  fun [tail] walk(l: _ListFull<T>, node: _ListNode<T>): List<T>
+    ret match(_getNextNode<T>(node, l._tail))
+      (_: None) => _ListEmpty<T>()
+      (n: _ListNode<T>) => __builtin_op__<bool>("object_same", n, l._tail)
+        ? _ListFull<T>(l._head, node)
+        : walk(l, n)
+  ret match(list)
+    (_: _ListEmpty<T>) => _ListEmpty<T>()
+    (l: _ListFull<T>) => walk(l, l._head)
+
+
+fun isEmpty<T>(list: List<T>): Bool
+  ret list is _ListEmpty<T>
+
+
+fun findIndex<T>(list: List<T>, predicate: (:T): Bool): Int|None
+  fun [tail] findIndex2(list: List<T>, index: Int): Int|None
+    ret match(list)
+      (_:_ListEmpty<T>) => None
+      (n:_ListFull<T>) => predicate(n._head._value) ? index : findIndex2(dropOne(n), index+1)
+  ret findIndex2(list, 0)
+
+fun any<T>(list: List<T>, predicate: (:T): Bool): Bool
+  ret findIndex<T>(list, predicate) !is None
+
+fun all<T>(list: List<T>, predicate: (:T): Bool): Bool
+  ret fold<T, Bool>(list, true, (acc: Bool, x: T) => acc && predicate(x))
+
+fun contains<T>(list: List<T>, x: T): Bool where BasicEquality<T>
+  ret any<T>(list, (y: T) => y == x)
+
+
+fun flatMap<T,U>(list: List<T>, func: (:T): List<U>): List<U>
+  ret fold<T, List<U>>(list, List<U>(), (acc: List<U>, x: T) => concat<U>(acc, func(x)))
+
+fun filter<T>(list: List<T>, predicate: (:T): Bool): List<T>
+  ret fold<T, List<T>>(list, List<T>(), (acc: List<T>, x: T) => predicate(x) ? append<T>(acc, x) : acc)
+
+fun map<T,U>(list: List<T>, func: (:T): U): List<U>
+  ret fold<T, List<U>>(list, List<U>(), (acc: List<U>, x: T) => append<U>(acc, func(x)))
+
+fun fold<T, [linear] U>(list: List<T>, init: U, accFunc: (:U, :T): U): U
+  fun [tail] walk(l: List<T>, acc: U): U
+    ret match(l)
+      (_:_ListEmpty<T>) => acc
+      (f:_ListFull<T>) => walk(dropOne(l), accFunc(acc, f._head._value))
+  ret walk(list, init)
+
+# fold that stops early: `predicate` sees the accumulator before each element,
+# and the first accumulator it rejects is the result. If it accepts them all,
+# this is fold.
+fun foldWhile<T, U>(list: List<T>, init: U, accFunc: (:U, :T): U, predicate: (:U): Bool): U
+  fun [tail] walk(l: List<T>, acc: U): U
+    ret match(l)
+      (_:_ListEmpty<T>) => acc
+      (f:_ListFull<T>) => predicate(acc) ? walk(dropOne(l), accFunc(acc, f._head._value)) : acc
+  ret walk(list, init)
+
+# fold over two lists in step, stopping at the end of the shorter one.
+fun zipFold<A, B, [linear] U>(a: List<A>, b: List<B>, init: U, accFunc: (:U, :A, :B): U): U
+  fun [tail] walk(x: List<A>, y: List<B>, acc: U): U
+    ret match(x)
+      (_:_ListEmpty<A>) => acc
+      (fx:_ListFull<A>) => match(y)
+        (_:_ListEmpty<B>) => acc
+        (fy:_ListFull<B>) => walk(dropOne(x), dropOne(y), accFunc(acc, fx._head._value, fy._head._value))
+  ret walk(a, b, init)
+
+fun sizeAtLeast<T>(list: List<T>, size: Int): Bool
+  fun [tail] walk(l: List<T>, n: Int): Bool
+    ret n <= 0 || (!isEmpty(l) && walk(dropOne(l), n - 1))
+  ret walk(list, size)
+
+
+# Two lists are equal when they have the same length and `same` holds for each
+# pair. One list ending while the other still has an element IS the inequality.
+fun eqBy<T>(a: List<T>, b: List<T>, same: (:T, :T): Bool): Bool
+  fun [tail] walk(x: List<T>, y: List<T>): Bool
+    ret match(x)
+      (_: _ListEmpty<T>) => isEmpty(y)
+      (fx: _ListFull<T>) => match(y)
+        (_: _ListEmpty<T>) => false
+        (fy: _ListFull<T>) => same(fx._head._value, fy._head._value) && walk(dropOne(x), dropOne(y))
+  ret walk(a, b)
+
+# Pairwise map, stopping at the shorter list.
+fun zipMap<A, B, C>(a: List<A>, b: List<B>, func: (:A, :B): C): List<C>
+  ret zipFold<A, B, List<C>>(a, b, List<C>(), (acc: List<C>, x: A, y: B) => append<C>(acc, func(x, y)))
+
+# Split into the elements that satisfy `predicate` and those that don't, each
+# in list order.
+fun partition<T>(list: List<T>, predicate: (:T): Bool): (yes: List<T>, no: List<T>)
+  fun step(acc: (yes: List<T>, no: List<T>), x: T): (yes: List<T>, no: List<T>)
+    ret predicate(x) ? (yes = append(acc.yes, x), no = acc.no) : (yes = acc.yes, no = append(acc.no, x))
+  ret fold(list, (yes = List<T>(), no = List<T>()), step)
+
+# The leading floor(n/2) elements and the rest; both halves share the source's
+# nodes. For n >= 2 both are non-empty, which is what dividing work needs.
+fun splitHalf<T>(list: List<T>): (left: List<T>, right: List<T>)
+  fun [tail] half(fast: List<T>, k: Int): Int
+    ret isEmpty(fast) || isEmpty(dropOne(fast)) ? k : half(dropOne(dropOne(fast)), k + 1)
+  let k = half(list, 0)
+  ret (left = take(list, k), right = drop(list, k))
+
+
+# Stable natural mergesort. The seed pass cuts the list into its maximal
+# ascending runs, each one a slice that shares the source's nodes, so sorted
+# input costs one walk and no allocation per element. Runs then merge in pairs
+# until one is left. Ties take from the earlier run, which is what makes it
+# stable.
+fun sort<T>(list: List<T>): List<T> where BasicCompare<T>
+  ret sortBy<T>(list, (a: T, b: T) => a < b)
+
+# `less` must be a STRICT ordering: true iff its first argument precedes its
+# second. Ties keep their original order.
+fun sortBy<T>(list: List<T>, less: (:T, :T): Bool): List<T>
+  ret match(list)
+    (_: _ListEmpty<T>) => list
+    (l: _ListFull<T>) => _mergeRuns<T>(_ascendingRuns<T>(l, less), less)
+
+fun _ascendingRuns<T>(l: _ListFull<T>, less: (:T, :T): Bool): List<List<T>>
+  # A run continues while the next element is not strictly less than the one
+  # before it; a descent closes it.
+  fun [tail] walk(start: _ListNode<T>, node: _ListNode<T>, runs: List<List<T>>): List<List<T>>
+    ret match(_getNextNode<T>(node, l._tail))
+      (_: None) => append(runs, _ListFull<T>(start, node))
+      (n: _ListNode<T>) => less(n._value, node._value)
+        ? walk(n, n, append(runs, _ListFull<T>(start, node)))
+        : walk(start, n, runs)
+  ret walk(l._head, l._head, List<List<T>>())
+
+fun _mergeRuns<T>(runs: List<List<T>>, less: (:T, :T): Bool): List<T>
+  fun [tail] walk(rs: List<List<T>>): List<T>
+    ret match(rs)
+      (_: _ListEmpty<List<T>>) => List<T>()
+      (r: _ListFull<List<T>>) => isEmpty(dropOne(rs))
+        ? r._head._value
+        : walk(_mergePairs<T>(rs, less))
+  ret walk(runs)
+
+# An odd trailing run passes through untouched.
+fun _mergePairs<T>(runs: List<List<T>>, less: (:T, :T): Bool): List<List<T>>
+  fun [tail] walk(rs: List<List<T>>, acc: List<List<T>>): List<List<T>>
+    ret match(rs)
+      (_: _ListEmpty<List<T>>) => acc
+      (r: _ListFull<List<T>>) => match(dropOne(rs))
+        (_: _ListEmpty<List<T>>) => append(acc, r._head._value)
+        (r2: _ListFull<List<T>>) => walk(dropOne(r2), append(acc, _merge2<T>(r._head._value, r2._head._value, less)))
+  ret walk(runs, List<List<T>>())
+
+# Takes from `a` unless `b` is STRICTLY less, so a tie takes the earlier run's
+# element first. When one side runs out the other is linked on with concat.
+fun _merge2<T>(a: List<T>, b: List<T>, less: (:T, :T): Bool): List<T>
+  fun [tail] walk(out: List<T>, x: List<T>, y: List<T>): List<T>
+    ret match(x)
+      (_: _ListEmpty<T>) => concat(out, y)
+      (lx: _ListFull<T>) => match(y)
+        (_: _ListEmpty<T>) => concat(out, x)
+        (ly: _ListFull<T>) => less(ly._head._value, lx._head._value)
+          ? walk(append(out, ly._head._value), x, dropOne(y))
+          : walk(append(out, lx._head._value), dropOne(x), y)
+  ret walk(List<T>(), a, b)
+
+
+fun groupBy<T,K>(list: List<T>, keyFunc: (:T): K): Dict<K,List<T>> where BasicEquality<K>
+  fun appendOrCreate(l: List<T>|None, v: T): List<T>
+    ret match(l)
+      (_:None) => List<T>(v)
+      (l:List<T>) => append(l, v)
+  fun groupByAppend(d: Dict<K,List<T>>, v: T): Dict<K,List<T>>
+    let k = keyFunc(v)
+    ret put(d, k, appendOrCreate(get(d, k), v))
+  ret fold(list, Dict<K,List<T>>(), groupByAppend)
+
+
+fun [future, inline(never)] powerMap<T,U>(list: List<T>, func: (:T): U): List<U>
+  let prefix = take(list, 16)
+  let suffix = drop(list, 16)
+  if isEmpty(suffix)
+    ret map(prefix, func)
+  fun [future] futureMap(list: List<T>) => map(list, func)
+  let prefixResult = futureMap(prefix)
+  let suffixResult =  powerMap(suffix, func)
+  ret concat(prefixResult, suffixResult)
+

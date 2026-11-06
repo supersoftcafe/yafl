@@ -1,0 +1,32 @@
+# List append under GC: each append links a new node after the list's last
+# node with a pinned compare-and-swap, a late write into a node that may
+# already have been promoted. Verifies order and scale while GC cycles,
+# compaction and a forced major run during construction.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::ListAppend::FillAcrossPromotionThenMinors
+
+import System
+import System::Test
+import System::Containers
+
+fun gcNudge(x: Int): Int
+  ret __builtin_op__<bool>("gc_debug_major_now", x) ? x : x
+fun [tail] waste(k: Int, acc: Int): Int
+  ret k == 0 ? acc : waste(k - 1, acc + length(String(k + 1000000)))
+fun [tail] fill(l: List<Int>, n: Int): List<Int>
+  ret n == 0 ? l
+    : n == 19900 ? fill(append(l, gcNudge(n)), n - 1)
+    : fill(append(l, n + waste(40, 0) - 280), n - 1)
+# Counts down from `expect`; a wrong element (or one past zero) sticks at -1.
+# 0: exactly expect..1 in order. 1: the list ended early. 2: a wrong element.
+fun check(xs: List<Int>, expect: Int): Int
+  let left = fold(xs, expect, (e: Int, x: Int) => e > 0 && x == e ? e - 1 : 0 - 1)
+  ret left == 0 ? 0 : left < 0 ? 2 : 1
+fun program(): System::Int
+  ret check(fill(List<Int>(), 20000), 20000)
+
+fun [test("fill across promotion then minors")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")

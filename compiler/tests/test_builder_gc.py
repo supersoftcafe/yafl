@@ -1,7 +1,8 @@
 """Builders and the collector: every element must survive.
 
-ArrayBuilder, SeqBuilder and ListBuilder push elements into an object born
-pinned and filled across safe points. Two hazards, one test each:
+ArrayBuilder and SeqBuilder push elements into an object born pinned and
+filled across safe points, and List.append links each new node onto the last
+with a pinned compare-and-swap. Two hazards, one test each:
 
 LONG BUILD (cycles). A build outlives root scans and whole cycles: the
 elements pushed after a scan are newer than the array and reachable only
@@ -60,6 +61,7 @@ _LONG_SRC = (
 
 _SUSPEND_SRC = (
     'import System\n'
+    'import System::Containers\n'
     'fun big(): Int\n'
     '  ret 100000000000000000000000\n'
     'fun [tail] churn(n: Int, acc: Int): Int\n'
@@ -87,14 +89,10 @@ _SUSPEND_SRC = (
     '    (seg: Segment<Int>) => i < seg.length ? sumS(x, i + 1i32, (acc * 31 + seg.array(i)) % 1000000007) : sumS(seg.next, 0i32, acc)\n'
     'fun seq(n: Int, s: Bool): Int\n'
     '  ret sumS(build<Int>(fillS(seqBuilder<Int>(), 0, n, s)), 0i32, 0)\n'
-    'fun [tail] fillL([terminal] b: ListBuilder<Int>, i: Int, n: Int, s: Bool): ListBuilder<Int>\n'
-    '  ret i >= n ? b : fillL(push<Int>(b, s ? piece(i) : plain(i)), i + 1, n, s)\n'
-    'fun [tail] sumL(x: Chain<Int>, acc: Int): Int\n'
-    '  ret match(x)\n'
-    '    (nil: ChainEnd) => acc\n'
-    '    (l: ChainLink)  => sumL(l.next, (acc * 31 + l.value) % 1000000007)\n'
+    'fun [tail] fillL(l: List<Int>, i: Int, n: Int, s: Bool): List<Int>\n'
+    '  ret i >= n ? l : fillL(append<Int>(l, s ? piece(i) : plain(i)), i + 1, n, s)\n'
     'fun lst(n: Int, s: Bool): Int\n'
-    '  ret sumL(chain<Int>(build<Int>(fillL(builder<Int>(), 0, n, s))), 0)\n'
+    '  ret fold<Int, Int>(fillL(List<Int>(), 0, n, s), 0, (acc: Int, x: Int) => (acc * 31 + x) % 1000000007)\n'
     'fun [tail] rounds(k: Int, bad: Int): Int\n'
     '  if k <= 0\n'
     '    ret bad\n'

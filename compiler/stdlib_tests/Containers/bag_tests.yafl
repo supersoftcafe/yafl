@@ -2,6 +2,7 @@ namespace StdlibTests::BagTests
 
 import System
 import System::Test
+import System::Containers
 
 
 let _ints3 = add(add(add(Bag<Int>(), 1), 2), 3)
@@ -14,7 +15,7 @@ fun _headInt(l: List<Int>): Int
 
 
 fun _lastInt(l: List<Int>): Int
-    ret match(last(l))
+    ret match(head(takeLastOne(l)))
         (v: Int) => v
         () => 0
 
@@ -31,7 +32,7 @@ fun [test("add puts elements in and preserves duplicates")] addPreservesDuplicat
 
 
 fun [test("from List keeps duplicates")] fromListKeepsDuplicates(): None|TestFailure
-    let withDups = build(push(push(push(builder<Int>(), 1), 2), 1))
+    let withDups = List<Int>(1, 2, 1)
     ret assertEqInt(count(Bag<Int>(withDups)), 3, "1,2,1 kept")
 
 
@@ -86,7 +87,7 @@ fun [test("any and all work")] anyAll(): None|TestFailure
 
 fun [test("sort gives ordered list")] sortWorks(): None|TestFailure
     let l = sort(_ints3)
-    ret assertEqInt(chainLength(chain(l)), 3, "three elements")
+    ret assertEqInt(fold(l, 0, (n: Int, x: Int) => n + 1), 3, "three elements")
      ?? assertEqInt(_headInt(l), 1, "first is 1")
      ?? assertEqInt(_lastInt(l), 3, "last is 3")
 

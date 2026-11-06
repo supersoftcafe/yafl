@@ -21,6 +21,7 @@ from tests.testutil import compile_c_result
 
 _BAD = """
 import System
+import System::Containers
 
 fun helper(): List<String>|None
   ret prepend("x", List<String>())
@@ -36,6 +37,7 @@ fun main(): Int
 
 _GOOD_WIDENING = """
 import System
+import System::Containers
 
 fun helper(): List<String>|None
   ret prepend("x", List<String>())

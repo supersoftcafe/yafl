@@ -16,34 +16,66 @@
 namespace Bootstrap::StdlibCandidates
 
 import System
+import System::Containers
 
 import Bootstrap::Lower::Ast
 
 
-fun list1<T>(a: T): List<T> => prepend(a, List())
+fun list1<T>(a: T): List<T> => List<T>(a)
 
-fun list2<T>(a: T, b: T): List<T> => build(push(push(builder(), a), b))
+fun list2<T>(a: T, b: T): List<T> => List<T>(a, b)
 
-fun list3<T>(a: T, b: T, c: T): List<T> => build(push(push(push(builder(), a), b), c))
+fun list3<T>(a: T, b: T, c: T): List<T> => List<T>(a, b, c)
 
 
-# Membership in a genuine List — a name among an op's reads, a label among a
-# Phi's sources. The set-shaped accumulators that used to pair this with a
-# `strListAdd` are Set<String> now and use `contains`.
-fun strListMember(l: List<String>, x: String): Bool => any(l, (y) => y == x)
+# `acc` with `found` appended when there is one — for collecting the hits of a
+# lookup that may miss.
+fun appendSome<T>(acc: List<T>, found: T|None): List<T> => match(found)
+  (x: T) => append(acc, x)
+  ()     => acc
+
+
+# The first element satisfying `pred`, or None. A search that stops at the
+# first hit — the common shape of a lookup by name in a small list. Not for
+# lists whose elements may themselves be None (the result could not tell
+# "found None" from "not found").
+fun firstWhere<T>(l: List<T>, pred: (:T): Bool): T|None
+  ret foldWhile<T, T|None>(l, None, (found, x) => pred(x) ? x : None, (found) => found is None)
+
+
+# The first non-None result of `f` over the elements, or None — a search that
+# stops at the first hit and keeps what the test found.
+fun firstSome<T, U>(l: List<T>, f: (:T): U|None): U|None
+  ret foldWhile<T, U|None>(l, None, (found, x) => f(x), (found) => found is None)
+
+
+# A fold whose step may fail (None): the walk stops at the first failure and
+# the result is None.
+fun foldSome<T, U>(l: List<T>, init: U, f: (:U, :T): U|None): U|None
+  fun step(acc: U|None, x: T): U|None => match(acc)
+    (a: U) => f(a, x)
+    ()     => None
+  ret foldWhile<T, U|None>(l, init, step, (acc) => acc !is None)
+
+
+# Every element mapped by `f`, or None when `f` fails (None) on any of them —
+# the walk stops at the first failure.
+fun mapAll<T, U>(l: List<T>, f: (:T): U|None): List<U>|None
+  fun step(acc: List<U>|None, x: T): List<U>|None => match(acc)
+    (a: List<U>) => match(f(x))
+      (y: U) => append(a, y)
+      ()     => None
+    ()           => None
+  ret foldWhile<T, List<U>|None>(l, List<U>(), step, (acc) => acc !is None)
 
 
 fun dedent4(s) => length(s) <= 4 ? "" : slice(s, 0, length(s) - 4)
 
-fun [tail] memberInt(l: List<Int>, x) => match(head(l))
-  (h: Int) => h == x ? true : memberInt(tail(l), x)
-  ()       => false
-
-fun disjointInt(a: List<Int>, b: List<Int>) => !any(a, (x) => memberInt(b, x))
+fun disjointInt(a: List<Int>, b: List<Int>) => !any(a, (x) => contains(b, x))
 
 fun unionInt(a: List<Int>, b: List<Int>)
   # A set union — every reader asks membership or disjointness.
-  ret fold(b, a, (acc, x) => memberInt(acc, x)
+  ret fold(b, a, (acc, x) => contains(acc, x)
                    ? acc
                    : prepend(x, acc))
 

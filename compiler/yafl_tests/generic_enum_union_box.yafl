@@ -15,6 +15,7 @@
 namespace CompilerTests::GenericEnumUnionBox::SpecialisedEnumValueBoxesIntoTupleUnion
 
 import System
+import System::Containers
 import System::Test
 
 class [final] Thing(tName: System::String)

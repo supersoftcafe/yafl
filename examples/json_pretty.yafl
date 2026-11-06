@@ -2,6 +2,7 @@ namespace Main
 
 import System
 import System::IO
+import System::Containers
 import System::Json
 
 
@@ -84,7 +85,7 @@ fun convertAll(files: List<String>): Int
     let b = convertAll(r)
     ret a + b
   ret match(head<String>(files))
-    (p: String) => isEmpty<String>(tail<String>(files)) ? convertOne(p) : splitAndGo()
+    (p: String) => isEmpty<String>(dropOne<String>(files)) ? convertOne(p) : splitAndGo()
     (e: None)   => 0
 
 fun runTree(dir: String): System::Int
@@ -92,7 +93,7 @@ fun runTree(dir: String): System::Int
     print("converted " + String(total - failed) + " ok, " + String(failed) + " failed\n")
     ret failed
   let files = gatherJson(dir)
-  let total = chainLength<String>(chain<String>(files))
+  let total = fold<String, Int>(files, 0, (n: Int, f: String) => n + 1)
   ret report(total, convertAll(files))
 
 fun runSingle(path: String): System::Int
@@ -117,7 +118,7 @@ fun runStdio(): System::Int
 
 fun main(): System::Int
   fun runFlagged(a: List<String>): System::Int
-    ret match(head<String>(tail<String>(a)))
+    ret match(head<String>(dropOne<String>(a)))
       (dir: String)     => runTree(dir)
       (e: System::None) => print("-r requires a directory\n") |> (u) => 2
   let a = args()

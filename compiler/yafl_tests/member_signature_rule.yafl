@@ -13,6 +13,7 @@
 namespace CompilerTests::MemberSignatureRule::OwnerWhereReachesMemberBody
 
 import System
+import System::Containers
 import System::Test
 
 interface Sized<T>

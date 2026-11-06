@@ -386,6 +386,7 @@ fun [test("untagged enum inside a combination", stdout = "3 100 7 7 9\n")] check
 namespace CompilerTests::UnionRepr::UntaggedEnumAsAFieldAndInAList
 
 import System
+import System::Containers
 import System::Test
 
 # Untagged enum values stored in a class field and carried through a List:

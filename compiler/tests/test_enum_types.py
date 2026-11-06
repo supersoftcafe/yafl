@@ -532,18 +532,21 @@ class TestRecursiveEnums(TestCase):
     runtime behaviour is checked by compiler/yafl_tests/enum_types.yafl."""
 
     def test_recursive_enum_object_typedef_emitted(self):
-        # System::Chain<T> is a recursive enum (its ChainLink variant
-        # references Chain<T> via `next`); its root must appear as a heap
-        # Object in the C output (typedef'd struct), not a flat anon struct.
-        # The empty constructor alone wouldn't materialise the chain (trim
-        # removes the unused typedef), so prepend an element to force a
-        # ChainLink allocation.
+        # Chain<T> is a recursive enum (its ChainLink variant references
+        # Chain<T> via `next`); its root must appear as a heap Object in the C
+        # output (typedef'd struct), not a flat anon struct. The empty
+        # constructor alone wouldn't materialise the chain (trim removes the
+        # unused typedef), so link an element to force a ChainLink allocation.
         src = """namespace Test
 import System
 
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
+
 fun main(): System::Int
-  let empty: System::List<System::Int> = System::List<System::Int>()
-  let l: System::List<System::Int> = System::prepend<System::Int>(1, empty)
+  let empty: Chain<System::Int> = ChainEnd<System::Int>()
+  let l: Chain<System::Int> = ChainLink<System::Int>(1, empty)
   ret 0
 """
         result = compile_c(src)

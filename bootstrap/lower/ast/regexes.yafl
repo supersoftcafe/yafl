@@ -18,6 +18,7 @@
 namespace Bootstrap::Lower::Ast
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::StdlibCandidates
@@ -33,10 +34,10 @@ fun fixGlobalRegexes(statements: List<PStmt>): RegexLowering
   # Sorted before numbering, like $strings: discovery order must never reach
   # the generated names.
   let patterns = sort(Set(map(found, (r) => r.pattern)))
-  let errs = rxErrors(chain(patterns), found, Set())
+  let errs = rxErrors(patterns, found, Set())
   if !isEmpty(errs)
     ret RegexLowering(statements, errs)
-  ret RegexLowering(concat(rxGlobals(chain(patterns), 0, builder()),
+  ret RegexLowering(concat(rxGlobals(patterns, 0, List()),
                            rwStmts(statements, rwOnExpr((x) => rxReplace(x, patterns)))),
                     Set())
 
@@ -48,39 +49,41 @@ fun rxCollect(acc: List<PeRegex>, x) => match(x)
   (r: PeRegex) => any(acc, (seen) => seen.pattern == r.pattern) ? acc : concat(acc, list1(r))
   (o: PExpr)   => acc
 
-fun [tail] rxErrors(ps: Chain<String>, found: List<PeRegex>, acc: Set<PErr>): Set<PErr> => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => match(validateRegex(l.value))
-    (msg: String) => rxErrors(l.next, found,
-        add(acc, PErr(firstLine(chain(found), l.value), "invalid regex: " + msg)))
-    ()            => rxErrors(l.next, found, acc)
+fun rxErrors(ps: List<String>, found: List<PeRegex>, acc: Set<PErr>): Set<PErr> =>
+  fold(ps, acc, (a, p) => rxErrorOf(a, p, found))
 
-fun [tail] firstLine(rs: Chain<PeRegex>, pattern: String): PLine => match(rs)
-  (nil: ChainEnd) => PLine("", 0, 0)   # unreachable: every pattern came from `found`
-  (l: ChainLink)  => l.value.pattern == pattern ? l.value.perLine : firstLine(l.next, pattern)
+fun rxErrorOf(acc: Set<PErr>, p: String, found: List<PeRegex>): Set<PErr> => match(validateRegex(p))
+  (msg: String) => add(acc, PErr(firstLine(found, p), "invalid regex: " + msg))
+  ()            => acc
+
+fun firstLine(rs: List<PeRegex>, pattern: String): PLine => match(firstWhere(rs, (x) => x.pattern == pattern))
+  (x: PeRegex) => x.perLine
+  ()           => PLine("", 0, 0)   # unreachable: every pattern came from `found`
 
 fun regexLine(index: Int) => PLine("$regexes", index + 1, 1)
 
-fun [tail] rxGlobals(ps: Chain<String>, index: Int,
-                     [terminal] acc: ListBuilder<PStmt>): List<PStmt> => match(ps)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => rxGlobals(l.next, index + 1, push(acc,
-      PsLet("$regexes::regex@" + String(index), List(), List(),
+# The index travels in the accumulator beside the statements.
+fun rxGlobals(ps: List<String>, index: Int, acc: List<PStmt>): List<PStmt>
+  ret fold(ps, (out = acc, i = index),
+           (st, p) =>
+             (out = append(st.out, rxGlobal(p, st.i)), i = st.i + 1)).out
+
+fun rxGlobal(p: String, index: Int): PStmt
+  ret PsLet("$regexes::regex@" + String(index), List(), List(),
             SNamed("System::Regex", List(), regexLine(index)),
             PeCall(PeName("System::Regex", List(), regexLine(index), None),
-                   PeTuple(list1(PTupEnt("", false, PeStr(l.value, regexLine(index)))),
-                           regexLine(index)),
+                   PeTuple(list1(PTupEnt("", false, PeStr(p, regexLine(index)))), regexLine(index)),
                    regexLine(index)),
-            "", List(), regexLine(index), false, List<PStmt>())))
+            "", List(), regexLine(index), false, List<PStmt>())
 
 fun rxReplace(x, patterns: List<String>) => match(x)
-  (r: PeRegex) => PeName("$regexes::regex@" + String(rxIndexOf(chain(patterns), r.pattern, 0)),
-                         List(), regexLine(rxIndexOf(chain(patterns), r.pattern, 0)), None)
+  (r: PeRegex) => PeName("$regexes::regex@" + String(rxIndexOf(patterns, r.pattern, 0)),
+                         List(), regexLine(rxIndexOf(patterns, r.pattern, 0)), None)
   (o: PExpr)   => None
 
-fun [tail] rxIndexOf(ps: Chain<String>, p: String, i: Int): Int => match(ps)
-  (nil: ChainEnd) => -1
-  (l: ChainLink)  => l.value == p ? i : rxIndexOf(l.next, p, i + 1)
+fun rxIndexOf(ps: List<String>, p: String, i: Int): Int => match(findIndex(ps, (x) => x == p))
+  (k: Int) => i + k
+  ()       => -1
 
 
 # ── the v1 grammar ───────────────────────────────────────────────────────────

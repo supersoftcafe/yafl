@@ -16,8 +16,9 @@ from tests.testutil import compile_and_run_stdlib
 
 _LEN_PROG = (
     "import System\n"
+    "import System::Containers\n"
     "fun main(): System::Int\n"
-    "    ret System::fold<System::String, System::Int>(System::args(), 0, (a: System::Int, x: System::String) => a + 1)\n"
+    "    ret System::Containers::fold<System::String, System::Int>(System::args(), 0, (a: System::Int, x: System::String) => a + 1)\n"
 )
 
 
@@ -44,8 +45,9 @@ class TestArgsContent(TestCase):
         is what we passed in."""
         src = (
             "import System\n"
+            "import System::Containers\n"
             "fun main(): System::Int\n"
-            "    ret match(System::head<System::String>(System::args()))\n"
+            "    ret match(System::Containers::head<System::String>(System::args()))\n"
             "        (s: System::String) => Int(System::byteAt(s, 0))\n"
             "        (n: System::None)   => 0\n"
         )
@@ -55,8 +57,9 @@ class TestArgsContent(TestCase):
         """A multi-byte arg's String length matches the C string length."""
         src = (
             "import System\n"
+            "import System::Containers\n"
             "fun main(): System::Int\n"
-            "    ret match(System::head<System::String>(System::args()))\n"
+            "    ret match(System::Containers::head<System::String>(System::args()))\n"
             "        (s: System::String) => System::length(s)\n"
             "        (n: System::None)   => 0\n"
         )
@@ -74,6 +77,7 @@ class TestEnv(TestCase):
 
     _PROG = (
         "import System\n"
+        "import System::Containers\n"
         "fun main(): System::Int\n"
         "    ret System::length(System::env(\"YAFL_TEST_ENV\") ?? \"dflt\")\n"
     )

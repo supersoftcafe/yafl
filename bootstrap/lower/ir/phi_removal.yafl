@@ -9,6 +9,7 @@
 namespace Bootstrap::Lower::Ir
 
 import System
+import System::Containers
 
 import Bootstrap::Ir
 import Bootstrap::StdlibCandidates
@@ -27,9 +28,9 @@ fun prCountVars(ops: Segment<Op>|None) => fold(ops, PrCounts(Dict(), Dict()), pr
 fun prCountOp(acc: PrCounts, op)
   let reads1 = fold(opReadVarNames(op), acc.prReads, sdBump)
   let reads2 = fold(values(opSavedVars(op)), reads1,
-                    (r, sv) => prIncrIfStackVar(r, sv))
+                    prIncrIfStackVar)
   let defs1 = fold(opGetLiveVars(op).writes, acc.prDefs,
-                   (d, sv) => prIncrIfStackVar(d, sv))
+                   prIncrIfStackVar)
   ret PrCounts(defs1, reads2)
 
 fun prCount(counts: Dict<String, Int>, name: String): Int => get(counts, name) ?? 0
@@ -97,7 +98,7 @@ fun prTryCoalesce(op: Op, nxt: Op|None, st: SeqStream<Op>, back: List<Op>,
   let onwards = prepend(op, back)
   if prCount(defs, c.pcS) != 1 || prCount(counts.prReads, c.pcS) != 1
     ret prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
-  ret match(prFindDef(chain(back), i - 1, c))
+  ret match(prFindDef(back, i - 1, c))
     (di: Int) => prScan(nxt, st, onwards, counts, i + 1, prepend(i, removed),
                         prepend(PrRename(di, c.pcS, c.pcTVar), renames),
                         sdBump(defs, c.pcT))
@@ -106,15 +107,17 @@ fun prTryCoalesce(op: Op, nxt: Op|None, st: SeqStream<Op>, back: List<Op>,
 # Walk back within the block to src's definition; bail on a block boundary
 # (labels/jumps/returns — value flow beyond the block is invisible here) or
 # when T or S is touched in between.
-fun [tail] prFindDef(back: Chain<Op>, j, c: PrCand) => match(back)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => prBlockBoundary(l.value)
-    ? None
-    : prWritesName(l.value, c.pcS)
-      ? j
-      : prTouches(l.value, c.pcT) || prTouches(l.value, c.pcS)
-        ? None
-        : prFindDef(l.next, j - 1, c)
+# The search stops at the first op that is a block boundary, writes `s`, or
+# touches either name; only a write that is not a boundary is a hit, at index
+# j counting down from the first op.
+fun prFindDef(back: List<Op>, j, c: PrCand) => match(findIndex(back, (op) => prStopsSearch(op, c)))
+  (k: Int) => match(head(drop(back, k)))
+    (op: Op) => !prBlockBoundary(op) && prWritesName(op, c.pcS) ? j - k : None
+    ()       => None
+  ()       => None
+
+fun prStopsSearch(op: Op, c: PrCand): Bool =>
+  prBlockBoundary(op) || prWritesName(op, c.pcS) || prTouches(op, c.pcT) || prTouches(op, c.pcS)
 
 fun prBlockBoundary(op) => op is OpLabel || !opFallsThrough(op) || !isEmpty(opBranchTargets(op))
 
@@ -124,12 +127,12 @@ fun prIsNamed(sv, name) => match(sv)
   (s2: RpStackVar) => s2.name == name
   (o: RParam)       => false
 
-fun prTouches(op, name) => strListMember(opReadVarNames(op), name) || prWritesName(op, name)
+fun prTouches(op, name) => contains(opReadVarNames(op), name) || prWritesName(op, name)
 
 # ── rebuild: apply renames, drop removed ops and dead source stackvars ──────
 
 fun prRebuild(f: CgFunction, out: PrOut)
-  let removedSet = prRemovedSet(chain(out.proRemoved), Dict())
+  let removedSet = prRemovedSet(out.proRemoved, Dict())
   let newOps = prRebuildOps(f.fnOps, out, removedSet)
   let dead = prDeadSources(f.fnOps, 0i32, 0, removedSet, Set())
   ret cgFunctionWith(f, newOps,
@@ -141,9 +144,7 @@ fun prRebuildOps(ops: Segment<Op>|None, out: PrOut, removedSet: Dict<Int, Bool>)
 
 # Removed indices are a SET (Python's `removed: set[int]`) — the membership
 # test runs once per op, so a list scan made the rebuild quadratic.
-fun [tail] prRemovedSet(is2: Chain<Int>, acc: Dict<Int, Bool>) => match(is2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => prRemovedSet(l.next, put(acc, l.value, true))
+fun prRemovedSet(is2: List<Int>, acc: Dict<Int, Bool>) => fold(is2, acc, (a, i) => put(a, i, true))
 
 fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int) => match(get(removedSet, i))
   (b: Bool) => b

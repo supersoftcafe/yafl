@@ -31,6 +31,7 @@ fun [test("sync and async arguments to one function")] check(): None|TestFailure
 namespace CompilerTests::MaybeAsync::TailLoopHigherOrder
 
 import System
+import System::Containers
 import System::Test
 
 fun [future] parAdd(acc: System::Int, x: System::Int): System::Int

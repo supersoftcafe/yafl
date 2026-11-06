@@ -9,6 +9,7 @@
 namespace Bootstrap::Frontend
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Resolve
@@ -36,15 +37,14 @@ fun matchCoverageErrs(mt: PeMatch, st, r)
 class [final] LitAcc(laErrs: Set<PErr>, laSeen: Set<String>, laElse: Bool)
 
 fun literalArmErrs(mt: PeMatch, kind)
-  let acc = litArms(chain(mt.arms), kind, LitAcc(noErrs(), Set(), false))
+  let acc = litArms(mt.arms, kind, LitAcc(noErrs(), Set(), false))
   ret acc.laElse
     ? acc.laErrs
     : add(acc.laErrs, PErr(mt.pemLine, "non-exhaustive match; a literal-pattern match on "
                                        + kind + " requires an else arm"))
 
-fun [tail] litArms(as2: Chain<PArm>, kind, acc) => match(as2)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => litArms(l.next, kind, litArm(l.value, kind, acc))
+fun litArms(as2: List<PArm>, kind, acc) =>
+  fold(as2, acc, (a, x) => litArm(x, kind, a))
 
 fun litArm(a: PArm, kind, acc)
   if acc.laElse
@@ -54,13 +54,12 @@ fun litArm(a: PArm, kind, acc)
                                                   + kind + ") subject; use literal patterns"))
     ()        => isEmpty(a.armLiterals)
       ? LitAcc(acc.laErrs, acc.laSeen, true)
-      : litLoop(chain(a.armLiterals), a, kind, acc)
+      : litLoop(a.armLiterals, a, kind, acc)
 
 fun withLitErr(acc: LitAcc, e) => LitAcc(add(acc.laErrs, e), acc.laSeen, acc.laElse)
 
-fun [tail] litLoop(ls: Chain<PLit>, a: PArm, kind, acc) => match(ls)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => litLoop(l.next, a, kind, oneLit(l.value, a, kind, acc))
+fun litLoop(ls: List<PLit>, a: PArm, kind, acc) =>
+  fold(ls, acc, (a2, x) => oneLit(x, a, kind, a2))
 
 # What one literal says about the match: a type error, a duplicate-tracking
 # key, or nothing to track (a NaN float equals nothing, so never repeats).
@@ -195,28 +194,26 @@ fun covPrelude(c, a: PArm)
 # Enum subject: coverage is over the valid leaves; the missing ones are named
 # in sorted order.
 fun enumCoverage(mt: PeMatch, e: SEnum)
-  let c = enumArms(chain(mt.arms), Cov(noErrs(), e.seValidLeaves, false))
+  let c = enumArms(mt.arms, Cov(noErrs(), e.seValidLeaves, false))
   ret c.cvElse || isEmpty(c.cvLeft)
     ? c.cvErrs
     : add(c.cvErrs, PErr(mt.pemLine, "non-exhaustive match; missing: "
                                      + join(sort(c.cvLeft), " | ")))
 
-fun [tail] enumArms(as2: Chain<PArm>, c) => match(as2)
-  (nil: ChainEnd) => c
-  (l: ChainLink)  => enumArms(l.next, enumArm(l.value, c))
+fun enumArms(as2: List<PArm>, c) => fold(as2, c, (a, x) => enumArm(x, a))
 
 fun enumArm(a: PArm, c) => match(covPrelude(c, a))
   (done: Cov) => done
   ()          => match(a.armType)
     (t: Spec) => match(t)
       (ae: SEnum) => enumCovers(c, a, filter(c.cvLeft,
-                                             (leaf) => contains2(ae.seValidLeaves, leaf)))
+                                             (leaf) => contains(ae.seValidLeaves, leaf)))
       (o: Spec)   => c                  # not an enum arm: other checks report it
     ()        => c
 
 fun enumCovers(c: Cov, a: PArm, covers: List<String>) => isEmpty(covers)
   ? covErr(c, PErr(a.parmLine, "unreachable arm: leaves already covered"))
-  : Cov(c.cvErrs, filter(c.cvLeft, (leaf) => !contains2(covers, leaf)), c.cvElse)
+  : Cov(c.cvErrs, filter(c.cvLeft, (leaf) => !contains(covers, leaf)), c.cvElse)
 
 # Union subject: coverage is over the canonical members, keyed by their uid
 # read in scope (scopedUid — a template's own `T` is a real type), except that
@@ -238,7 +235,7 @@ fun memberVariants(v, r): List<Member>
   let uid = scopedUid(v, r)
   let name = printableName(v, r)
   ret match(v)
-    (e: SEnum) => atLeast(chain(e.seValidLeaves), 2)
+    (e: SEnum) => atLeast(e.seValidLeaves, 2)
       ? map(sort(e.seValidLeaves),
             (leaf) => Member(uid + "/" + leaf, leaf, with e(seValidLeaves = list1(leaf)), name))
       : list1(Member(uid, name, v, name))
@@ -249,12 +246,12 @@ fun unionCoverage(mt: PeMatch, cm: SCombination, r) => match(unionVariants(cm, r
   ()                      => noErrs()
 
 fun unionCoverageOf(mt: PeMatch, members: List<Member>, r)
-  let c = unionArms(chain(mt.arms), members, r,
+  let c = unionArms(mt.arms, members, r,
                     Cov(noErrs(), map(members, (m) => m.mUid), false))
   # Exhaustiveness counts INHABITED members only: an uncovered uninhabited
   # member (`Never` in an error union) is covered by construction. Named in
   # canonical member order.
-  let uncovered = filter(members, (m) => contains2(c.cvLeft, m.mUid) && !isUninhabited(m.mSpec))
+  let uncovered = filter(members, (m) => contains(c.cvLeft, m.mUid) && !isUninhabited(m.mSpec))
   ret c.cvElse || isEmpty(uncovered)
     ? c.cvErrs
     : add(c.cvErrs, PErr(mt.pemLine, "non-exhaustive match; missing: "
@@ -263,29 +260,29 @@ fun unionCoverageOf(mt: PeMatch, members: List<Member>, r)
 # The uncovered entries for an error message: a member none of whose
 # variants is covered by its own name, otherwise each variant left.
 fun missingNames(members: List<Member>, missing: List<String>): List<String>
-  ret fold(memberNames(chain(members), "", builder()), List(),
+  ret fold(memberNames(members, "", List()), List(),
            (acc, of) => concat(acc, missingOf(filter(members, (m) => m.mOf == of), missing)))
 
 fun missingOf(own: List<Member>, missing: List<String>): List<String>
-  ret all(own, (m) => contains2(missing, m.mUid))
+  ret all(own, (m) => contains(missing, m.mUid))
     ? map(firstMember(own), (m) => m.mOf)
-    : map(filter(own, (m) => contains2(missing, m.mUid)), (m) => m.mName)
+    : map(filter(own, (m) => contains(missing, m.mUid)), (m) => m.mName)
 
 fun firstMember(own: List<Member>): List<Member> => match(head(own))
   (m: Member) => list1(m)
   ()          => List()
 
 # Each member's printable name once, in member order (its entries are adjacent).
-fun [tail] memberNames(ms: Chain<Member>, prev: String,
-                       [terminal] acc: ListBuilder<String>): List<String> => match(ms)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => l.value.mOf == prev
-    ? memberNames(l.next, prev, acc)
-    : memberNames(l.next, l.value.mOf, push(acc, l.value.mOf))
+fun memberNames(ms: List<Member>, prev: String, acc: List<String>): List<String> =>
+  fold(ms, (prev = prev, acc = acc), memberNamesStep).acc
 
-fun [tail] unionArms(as2: Chain<PArm>, members: List<Member>, r, c) => match(as2)
-  (nil: ChainEnd) => c
-  (l: ChainLink)  => unionArms(l.next, members, r, unionArm(l.value, members, r, c))
+fun memberNamesStep(st: (prev: String, acc: List<String>), x: Member) =>
+  x.mOf == st.prev
+  ? (prev = st.prev, acc = st.acc)
+  : (prev = x.mOf, acc = append(st.acc, x.mOf))
+
+fun unionArms(as2: List<PArm>, members: List<Member>, r, c) =>
+  fold(as2, c, (a, x) => unionArm(x, members, r, a))
 
 fun unionArm(a: PArm, members: List<Member>, r, c) => match(covPrelude(c, a))
   (done: Cov) => done
@@ -295,7 +292,7 @@ fun unionArm(a: PArm, members: List<Member>, r, c) => match(covPrelude(c, a))
 
 fun unionCovers(c: Cov, a: PArm, covers: List<String>) => isEmpty(covers)
   ? covErr(c, PErr(a.parmLine, "unreachable arm: variant not in match subject or already covered"))
-  : Cov(c.cvErrs, filter(c.cvLeft, (k) => !contains2(covers, k)), c.cvElse)
+  : Cov(c.cvErrs, filter(c.cvLeft, (k) => !contains(covers, k)), c.cvElse)
 
 # The uids of the still-uncovered members this arm's type covers; a union arm
 # covers what any of its members covers.
@@ -303,7 +300,7 @@ fun armCoveredIds(armType, members: List<Member>, left: List<String>,
                   r): List<String> => match(armType)
   (cm: SCombination) => fold(reprMembers(cm), List(),
                              (acc, m) => concat(acc, armCoveredIds(m, members, left, r)))
-  (o: Spec)          => map(filter(members, (m) => contains2(left, m.mUid)
+  (o: Spec)          => map(filter(members, (m) => contains(left, m.mUid)
                                                  && triTrue(assignableFrom(r, armType, m.mSpec))),
                             (m) => m.mUid)
 
@@ -335,16 +332,7 @@ fun multiCoverageErrs(mt: PeMatch, r)
     (tables: List<PosTable>) => multiCoverage(mt, tables, r)
     ()                       => noErrs()      # a subject not resolved yet
 
-fun positionTables(subjects: List<PExpr>, r) => tablesLoop(chain(subjects), r, builder())
-
-fun [tail] tablesLoop(ss: Chain<PExpr>, r,
-                      [terminal] acc: ListBuilder<PosTable>) => match(ss)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => match(positionTable(exprType(l.value, r), r))
-    (t: PosTable) => tablesLoop(l.next, r, push(acc, t))
-    ()            => discardTables(acc)
-
-fun discardTables([terminal] acc: ListBuilder<PosTable>) => discard(acc)
+fun positionTables(subjects: List<PExpr>, r) => mapAll(subjects, (e) => positionTable(exprType(e, r), r))
 
 # One subject's variants as (key -> printable name), or None when the subject
 # is not resolved enough to enumerate.
@@ -365,11 +353,10 @@ fun unionPositionTable(sp, members: List<Member>): PosTable
                fold(members, Dict(), (d, m) => put(d, m.mUid, m.mSpec)))
 
 fun multiCoverage(mt: PeMatch, tables: List<PosTable>, r)
-  let c = multiCovArms(chain(mt.arms), tables, r, MultiCov(noErrs(), productSpace(tables)))
+  let c = multiCovArms(mt.arms, tables, r, MultiCov(noErrs(), productSpace(tables)))
   if isEmpty(c.mcLeft)
     ret c.mcErrs
-  let shownTuples = firstN(chain(sortBy(c.mcLeft, (x, y) => tupleLess(chain(x), chain(y)))), 4,
-                           builder())
+  let shownTuples = take(sortBy(c.mcLeft, tupleLess), 4)
   let n = fold(c.mcLeft, 0, (k, t) => k + 1)
   let shown = join(map(shownTuples, (tup) => tupleNames(tup, tables)), " | ")
   let more = n <= 4 ? "" : " (+" + String(n - 4) + " more)"
@@ -382,10 +369,8 @@ fun productSpace(tables: List<PosTable>) => fold(tables, prepend(List(), List())
 fun flatMapKeys(space: List<List<String>>, keys: List<String>) => fold(space, List(),
                                                                        (acc, tup) => concat(acc, map(keys, (k) => concat(tup, prepend(k, List())))))
 
-fun [tail] multiCovArms(as2: Chain<PArm>, tables: List<PosTable>, r,
-                     c) => match(as2)
-  (nil: ChainEnd) => c
-  (l: ChainLink)  => multiCovArms(l.next, tables, r, multiCovArm(l.value, tables, r, c))
+fun multiCovArms(as2: List<PArm>, tables: List<PosTable>, r, c) =>
+  fold(as2, c, (a, x) => multiCovArm(x, tables, r, a))
 
 fun multiCovArm(a: PArm, tables: List<PosTable>, r, c)
   if !(a.armGuard is None) || !isEmpty(a.armLiterals)
@@ -398,28 +383,20 @@ fun multiCovArm(a: PArm, tables: List<PosTable>, r, c)
                  List())
       : MultiCov(c.mcErrs, List())
   # A mis-arity arm is reported by the arity check; it covers nothing.
-  if !sameLen(chain(pats), chain(tables))
+  if !sameLen(pats, tables)
     ret c
-  let perPos = zipCovered(chain(tables), chain(pats), r, builder())
-  let covered = filter(c.mcLeft, (tup) => tupleCovered(chain(tup), chain(perPos)))
+  let perPos = zipMap(tables, pats, (t, p) => coveredKeys(t, p, r))
+  let covered = filter(c.mcLeft, (tup) => tupleCovered(tup, perPos))
   ret isEmpty(covered)
     ? MultiCov(add(c.mcErrs, PErr(a.parmLine, "unreachable arm: this combination is already covered")),
                c.mcLeft)
-    : MultiCov(c.mcErrs, filter(c.mcLeft, (tup) => !tupleCovered(chain(tup), chain(perPos))))
-
-fun [tail] zipCovered(ts: Chain<PosTable>, ps: Chain<Spec|None>, r,
-                      [terminal] acc: ListBuilder<List<String>>) => match(ts)
-  (nil: ChainEnd) => build(acc)
-  (lt: ChainLink) => match(ps)
-    (nil2: ChainEnd) => build(acc)
-    (lp: ChainLink)  => zipCovered(lt.next, lp.next, r,
-                                   push(acc, coveredKeys(lt.value, lp.value, r)))
+    : MultiCov(c.mcErrs, filter(c.mcLeft, (tup) => !tupleCovered(tup, perPos)))
 
 # Which of a position's keys one arm pattern matches.
 fun coveredKeys(tab: PosTable, armType: Spec|None, r): List<String> => match(armType)
   (t: Spec) => match(tab.ptSpec)
     (se: SEnum) => match(t)
-      (ae: SEnum) => filter(tab.ptKeys, (k) => contains2(ae.seValidLeaves, k))
+      (ae: SEnum) => filter(tab.ptKeys, (k) => contains(ae.seValidLeaves, k))
       (o: Spec)   => List()
     (o: Spec)   => coveredKeysOther(tab, t, r)
   ()        => tab.ptKeys                  # no pattern here: anything
@@ -433,38 +410,19 @@ fun entryAssignable(tab: PosTable, key, t, r) => match(get(tab.ptSpecs, key))
   (v: Spec) => triTrue(assignableFrom(r, t, v))
   ()        => false
 
-fun [tail] tupleCovered(tup: Chain<String>, perPos: Chain<List<String>>) => match(tup)
-  (nil: ChainEnd) => true
-  (lk: ChainLink) => match(perPos)
-    (nil2: ChainEnd) => true
-    (lp: ChainLink)  => contains2(lp.value, lk.value) ? tupleCovered(lk.next, lp.next) : false
+fun tupleCovered(tup: List<String>, perPos: List<List<String>>) => zipFold(tup, perPos, true, (ok, k, p) => ok && contains(p, k))
 
 # Python sorts the uncovered tuples lexicographically, position by position.
-fun [tail] tupleLess(a: Chain<String>, b: Chain<String>) => match(a)
-  (nil: ChainEnd) => match(b)
-    (nil2: ChainEnd) => false
-    (lb: ChainLink)  => true
-  (la: ChainLink) => match(b)
-    (nil2: ChainEnd) => false
-    (lb: ChainLink)  => la.value == lb.value
-      ? tupleLess(la.next, lb.next)
-      : la.value < lb.value
+fun [tail] tupleLess(a: List<String>, b: List<String>) => match(head(a))
+  (x: String) => match(head(b))
+    (y: String) => x == y ? tupleLess(dropOne(a), dropOne(b)) : x < y
+    ()          => false
+  ()          => !isEmpty(b)
 
 fun tupleNames(tup: List<String>, tables: List<PosTable>)
-  ret join(namesLoop(chain(tup), chain(tables), builder()), ", ")
-
-fun [tail] namesLoop(ks: Chain<String>, ts: Chain<PosTable>,
-                     [terminal] acc: ListBuilder<String>) => match(ks)
-  (nil: ChainEnd) => build(acc)
-  (lk: ChainLink) => match(ts)
-    (nil2: ChainEnd) => build(acc)
-    (lt: ChainLink)  => namesLoop(lk.next, lt.next, push(acc, nameOf(lt.value, lk.value)))
+  ret join(zipMap(tup, tables, (k, t) => nameOf(t, k)), ", ")
 
 fun nameOf(t: PosTable, key) => match(get(t.ptNames, key))
   (s: String) => s
   ()          => key
 
-fun [tail] firstN(ts: Chain<List<String>>, n,
-                  [terminal] acc: ListBuilder<List<String>>) => match(ts)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => n <= 0 ? build(acc) : firstN(l.next, n - 1, push(acc, l.value))

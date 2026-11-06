@@ -7,10 +7,11 @@ import System
 import System::IO
 import System::Process
 import System::Test
+import System::Containers
 
 
 fun _sh(script: String): ProcessResult|IOError
-    ret run("sh", prepend("-c", prepend(script, List<String>())))
+    ret run("sh", List<String>("-c", script))
 
 fun _outOf(r: ProcessResult|IOError): String
     ret match(r)

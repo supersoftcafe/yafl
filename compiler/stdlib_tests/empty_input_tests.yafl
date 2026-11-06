@@ -16,6 +16,7 @@ namespace StdlibTests::EmptyInputTests
 
 import System
 import System::Test
+import System::Containers
 
 
 fun _empty(): List<Int>

@@ -501,6 +501,7 @@ class TestAsyncTailCall(TestCase):
         src = """\
 namespace Test
 import System
+import System::Containers
 import System::IO
 
 fun outer2(x: System::Int): System::Int
@@ -528,6 +529,7 @@ fun main(): System::Int
         src = """\
 namespace Test
 import System
+import System::Containers
 
 fun [tail] loop(n: System::Int, acc: System::Int): System::Int
   ret n == 0 ? acc : loop(n - 1, acc + 1)
@@ -697,6 +699,7 @@ class TestGenericMultiMono(TestCase):
         src = """\
 namespace System
 import System
+import System::Containers
 
 fun useFold1(l: List<Int>): Int
     let r = fold<Int, (idx: Int, found: Int|None)>(
@@ -727,6 +730,7 @@ class TestListOps(TestCase):
         src = """\
 namespace System
 import System
+import System::Containers
 
 fun unwrap(v: Int|None, fallback: Int): Int
     ret match(v)

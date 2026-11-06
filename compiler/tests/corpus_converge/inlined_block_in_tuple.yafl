@@ -1,0 +1,21 @@
+# Regression pin (2026-11-05): an [inline] function's body — here IO's `?>`, a
+# match over its own `pair` parameter — inlined into a TUPLE field, where no
+# expected type reaches it. The inlined block's slot type must be the BLOCK's
+# type, its value typed inside the block's own scope (Python's
+# BlockExpression.get_type). The port typed the value in the OUTER scope, where
+# the inlined `pair` local does not exist: one arm came out `(unknown, …)`, the
+# slot became a union of the arms, the deferred await never saw a whole pending
+# value, and the C held a `void` struct field (findstr/yspell, found by CI after
+# their writeResults became fold steps returning tuples).
+namespace InlinedBlockInTuple
+
+import System
+import System::IO
+
+fun step(acc: (out: (io: IO, v: Int|IOError), failed: Bool), line: String): (out: (io: IO, v: Int|IOError), failed: Bool)
+  ret (out = acc.out ?> (io: IO, n: Int) => writeAll(io, line), failed = acc.failed)
+
+fun main(): Int
+  let r = step((out = (stdout(), 0), failed = false), "inlined block in a tuple\n")
+  let closed = r.out.io.close()
+  ret r.failed || closed !is None ? 1 : 0

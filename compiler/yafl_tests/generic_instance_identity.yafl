@@ -24,6 +24,7 @@
 namespace CompilerTests::GenericInstanceIdentity::BothInstantiationsReachTheCaller
 
 import System
+import System::Containers
 import System::Test
 
 fun pick(n: Int) => n > 0 ? prepend(1, List()) : prepend("hello", List())
@@ -42,6 +43,7 @@ fun [test("both instantiations reach the caller")] check(): None|TestFailure
 namespace CompilerTests::GenericInstanceIdentity::ArmsThatAreAllShapesCollapse
 
 import System
+import System::Containers
 import System::Test
 
 enum Node
@@ -63,7 +65,13 @@ fun [test("arms that are all shapes collapse")] check(): None|TestFailure
 namespace CompilerTests::GenericInstanceIdentity::UnboundArmBesideRecursiveCallAndLocal
 
 import System
+import System::Containers
 import System::Test
+
+# A local cons chain: the walk is incidental, the List() arms are the test.
+enum Chain<T>
+  enum ChainEnd()
+  enum ChainLink(value: T, next: Chain<T>)
 
 fun [tail] pget(ns: Chain<String>, vs: Chain<List<String>>,
                 name: String) => match(ns)
@@ -75,11 +83,12 @@ fun [tail] pget(ns: Chain<String>, vs: Chain<List<String>>,
       : pget(n.next, v.next, name)
 
 fun program(): System::Int
-  let names = prepend("a", prepend("b", List<String>()))
-  let values = prepend(List<String>(), prepend(prepend("hit", List<String>()), List<List<String>>()))
-  ret !isEmpty(pget(chain(names), chain(values), "b"))
-      && isEmpty(pget(chain(names), chain(values), "a"))
-      && isEmpty(pget(chain(names), chain(values), "zz")) ? 7 : 3
+  let names = ChainLink<String>("a", ChainLink<String>("b", ChainEnd<String>()))
+  let values = ChainLink<List<String>>(List<String>(),
+                 ChainLink<List<String>>(List<String>("hit"), ChainEnd<List<String>>()))
+  ret !isEmpty(pget(names, values, "b"))
+      && isEmpty(pget(names, values, "a"))
+      && isEmpty(pget(names, values, "zz")) ? 7 : 3
 
 fun [test("unbound arm beside recursive call and local")] check(): None|TestFailure
     ret assertEqInt(program(), 7, "program()")
@@ -88,6 +97,7 @@ fun [test("unbound arm beside recursive call and local")] check(): None|TestFail
 namespace CompilerTests::GenericInstanceIdentity::UnboundArmBesideTemplateParameter
 
 import System
+import System::Containers
 import System::Test
 
 fun orEmpty<U>(xs: List<U>, n: Int): List<U>
@@ -105,6 +115,7 @@ fun [test("unbound arm beside template parameter")] check(): None|TestFailure
 namespace CompilerTests::GenericInstanceIdentity::UnboundArmFirst
 
 import System
+import System::Containers
 import System::Test
 
 fun pick(n: Int) => n > 0 ? List() : prepend("x", List())
@@ -119,6 +130,7 @@ fun [test("unbound arm first")] check(): None|TestFailure
 namespace CompilerTests::GenericInstanceIdentity::UnboundArmLast
 
 import System
+import System::Containers
 import System::Test
 
 fun pick(n: Int) => n > 0 ? prepend("x", List()) : List()
@@ -133,6 +145,7 @@ fun [test("unbound arm last")] check(): None|TestFailure
 namespace CompilerTests::GenericInstanceIdentity::UnboundCallAgainstAUnionExpectedType
 
 import System
+import System::Containers
 import System::Test
 
 fun pick(n: Int): List<Int>|None

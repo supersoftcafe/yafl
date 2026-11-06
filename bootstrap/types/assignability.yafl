@@ -17,6 +17,7 @@
 namespace Bootstrap::Types
 
 import System
+import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Parse
@@ -76,15 +77,14 @@ fun assignableUnwrapped(r, left, right)
     : assignableFrom(r, left, right)
 
 fun allMembersAssignable(r, left: Spec, members: List<Spec>)
-  ret memberLoop(chain(members), r, left, false)
+  ret memberLoop(members, r, left, false)
 
-fun [tail] memberLoop(ms: Chain<Spec>, r, left: Spec,
-                      sawUnknown) => match(ms)
-  (nil: ChainEnd) => sawUnknown ? None : true
-  (l: ChainLink)  => assignableEq(r, left, l.value)
+fun [tail] memberLoop(ms: List<Spec>, r, left: Spec, sawUnknown) => match(head(ms))
+  (m: Spec) => assignableEq(r, left, m)
     |> (res) => triFalse(res)
       ? false
-      : memberLoop(l.next, r, left, sawUnknown || !triTrue(res))
+      : memberLoop(dropOne(ms), r, left, sawUnknown || !triTrue(res))
+  ()        => sawUnknown ? None : true
 
 # ── the per-type rules ──────────────────────────────────────────────────────
 
@@ -123,7 +123,7 @@ fun classFrom(r, c: SClass, right)
     ret None                                      # left not resolved yet
   ret match(right)
     (rc: SClass) => c.scName == rc.scName
-      ? argsInvariant(r, chain(c.scParams), chain(rc.scParams))
+      ? argsInvariant(r, c.scParams, rc.scParams)
       : inheritsFrom(r, c, rc)
     (o: Spec)    => false
 
@@ -133,27 +133,25 @@ fun classFrom(r, c: SClass, right)
 # List<B> share root and leaves and differ ONLY here. Three-valued:
 # placeholders and unresolved arguments are Unknown, never a rejection —
 # template bodies are checked before monomorphisation grounds them.
-fun [tail] argsInvariant(r, ls: Chain<Spec>, rs: Chain<Spec>) => match(ls)
-  (nil: ChainEnd) => match(rs)
-    (nil2: ChainEnd) => true
-    (rl: ChainLink)  => None   # arity mismatch here is convergence noise
-  (ll: ChainLink) => match(rs)
-    (nil2: ChainEnd) => None
-    (rl: ChainLink)  => argPairSame(r, ll.value, rl.value) == 1
-      ? argsInvariant(r, ll.next, rl.next)
-      : argPairSame(r, ll.value, rl.value) == 0
-        ? argsRestUnknown(r, ll.next, rl.next)
+fun [tail] argsInvariant(r, ls: List<Spec>, rs: List<Spec>) => match(head(ls))
+  (lv: Spec) => match(head(rs))
+    (rv: Spec) => argPairSame(r, lv, rv) == 1
+      ? argsInvariant(r, dropOne(ls), dropOne(rs))
+      : argPairSame(r, lv, rv) == 0
+        ? argsRestUnknown(r, dropOne(ls), dropOne(rs))
         : false
+    ()         => None
+  ()         => isEmpty(rs) ? true : None   # arity mismatch here is convergence noise
 
 # Once one pair is Unknown the answer can never be `true` again — walk the
 # rest only to find a definite `false`.
-fun [tail] argsRestUnknown(r, ls: Chain<Spec>, rs: Chain<Spec>) => match(ls)
-  (nil: ChainEnd) => None
-  (ll: ChainLink) => match(rs)
-    (nil2: ChainEnd) => None
-    (rl: ChainLink)  => argPairSame(r, ll.value, rl.value) != -1
-      ? argsRestUnknown(r, ll.next, rl.next)
+fun [tail] argsRestUnknown(r, ls: List<Spec>, rs: List<Spec>) => match(head(ls))
+  (lv: Spec) => match(head(rs))
+    (rv: Spec) => argPairSame(r, lv, rv) != -1
+      ? argsRestUnknown(r, dropOne(ls), dropOne(rs))
       : false
+    ()         => None
+  ()         => None
 
 # 1 = equivalent, 0 = unknown, -1 = definitely different. Not spec-EQUAL is
 # not the end: invariance means type EQUIVALENCE, which the existing rules
@@ -186,26 +184,24 @@ fun argOneUnknown(a, b) => specUnresolved(a) || specUnresolved(b)
 fun specUnresolved(sp) => match(sp)
   (g2: SGeneric)     => true
   (n: SNamed)        => true
-  (c: SClass)        => anyUnresolved(chain(c.scParams))
-  (e2: SEnum)        => anyUnresolved(chain(e2.seParams))
-  (cm: SCombination) => anyUnresolved(chain(cm.scTypes))
-  (t2: STuple)       => anyEntryUnresolved(chain(t2.stEntries))
+  (c: SClass)        => anyUnresolved(c.scParams)
+  (e2: SEnum)        => anyUnresolved(e2.seParams)
+  (cm: SCombination) => anyUnresolved(cm.scTypes)
+  (t2: STuple)       => anyEntryUnresolved(t2.stEntries)
   (o: Spec)          => false
 
-fun [tail] anyUnresolved(ss: Chain<Spec>) => match(ss)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => specUnresolved(l.value) ? true : anyUnresolved(l.next)
+fun anyUnresolved(ss: List<Spec>) => any(ss, specUnresolved)
 
-fun [tail] anyEntryUnresolved(es: Chain<SEntry>) => match(es)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => match(l.value.seType)
-    (sp: Spec) => specUnresolved(sp) ? true : anyEntryUnresolved(l.next)
-    ()         => anyEntryUnresolved(l.next)
+fun anyEntryUnresolved(es: List<SEntry>) => any(es, anyEntryUnresolvedStep)
+
+fun anyEntryUnresolvedStep(x: SEntry) => match(x.seType)
+  (sp: Spec) => specUnresolved(sp)
+  () => false
 
 fun inheritsFrom(r, c: SClass, rc: SClass) => match(soleItem(findType(r, rc.scName)))
   (f: Found) => parentsOf(f.fStmt)
-    |> (ps) => match(ps)
-      (list: List<Spec>) => anyNamed(chain(list), c.scName)
+    |> (v) => match(v)
+      (list: List<Spec>) => anyNamed(list, c.scName)
       ()                 => None                # parents not resolved yet
   ()         => None
 
@@ -213,9 +209,7 @@ fun parentsOf(st) => match(st)
   (cs: PsClass) => cs.cAllParents
   (o: PStmt)    => None
 
-fun [tail] anyNamed(ps: Chain<Spec>, name) => match(ps)
-  (nil: ChainEnd) => false
-  (l: ChainLink)  => specName(l.value) == name ? true : anyNamed(l.next, name)
+fun anyNamed(ps: List<Spec>, name) => any(ps, (x) => specName(x) == name)
 
 fun specName(sp) => match(sp)
   (c: SClass) => c.scName
@@ -229,9 +223,9 @@ fun enumFrom(r, e: SEnum, right) => match(right)
     ? None
     : (re.seRoot != e.seRoot
         ? false
-        : !allIn(chain(re.seValidLeaves), e.seValidLeaves)
+        : !allIn(re.seValidLeaves, e.seValidLeaves)
           ? false
-          : argsInvariant(r, chain(e.seParams), chain(re.seParams)))
+          : argsInvariant(r, e.seParams, re.seParams))
   (o: Spec)   => false
 
 fun arrayFrom(r, af: SArrayField, right) => match(right)
@@ -281,13 +275,10 @@ fun tupleFromTuple(r, left: STuple, right: STuple)
     (b: List<Int>) => comparePairs(r, left, right, b)
     ()             => false                       # does not bind at all
 
-fun entryNames(es: List<SEntry>) => nameLoop(chain(es), List())
+fun entryNames(es: List<SEntry>) => nameLoop(es, List())
 
-fun nameLoop(es: Chain<SEntry>, acc: List<String>) => build(nameLoopB(es, builderFrom(acc)))
-
-fun [tail] nameLoopB(es: Chain<SEntry>, [terminal] acc): ListBuilder<String> => match(es)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => nameLoopB(l.next, push(acc, l.value.seName))
+fun nameLoop(es: List<SEntry>, acc): List<String> =>
+  fold(es, acc, (a, x) => append(a, x.seName))
 
 # The subtlety, transcribed rather than paraphrased: a false from a
 # PLACEHOLDER left is not structural — it may fit once bound — so it is
@@ -298,7 +289,7 @@ class [final] PairTally(ptStructFalse: Bool, ptAnyFalse: Bool,
 
 fun comparePairs(r, left: STuple, right: STuple,
                  binding: List<Int>)
-  let t2 = pairLoop(chain(zipBinding(left.stEntries, binding)), r,
+  let t2 = pairLoop(zipBinding(left.stEntries, binding), r,
                     right.stEntries,
                     PairTally(false, false, true, false, 0))
   ret t2.ptStructFalse ? false
@@ -308,24 +299,12 @@ fun comparePairs(r, left: STuple, right: STuple,
 class [final] Pair(prLeft: SEntry, prSlot: Int)
 
 fun zipBinding(es: List<SEntry>, binding: List<Int>)
-  ret zipLoop(chain(es), chain(binding), builder())
+  ret zipFold(es, binding, List<Pair>(), (acc, e, b) => b < 0 ? acc : append(acc, Pair(e, b)))   # < 0: filled by default
 
 # Pairs an entry with the binding index it fills. Positional data — the pair
 # order mirrors the tuple's — so a threaded builder, O(1) per pair.
-fun [tail] zipLoop(es: Chain<SEntry>, bs: Chain<Int>,
-                   [terminal] acc: ListBuilder<Pair>) => match(es)
-  (nil: ChainEnd) => build(acc)
-  (l: ChainLink)  => match(bs)
-    (nil2: ChainEnd) => build(acc)
-    (b: ChainLink)   => zipLoop(l.next, b.next,
-                                b.value < 0 ? acc          # filled by default
-                                            : push(acc, Pair(l.value, b.value)))
-
-fun [tail] pairLoop(ps: Chain<Pair>, r, rights: List<SEntry>,
-                    acc: PairTally) => match(ps)
-  (nil: ChainEnd) => acc
-  (l: ChainLink)  => pairLoop(l.next, r, rights,
-                              tally(acc, r, l.value, rights))
+fun pairLoop(ps: List<Pair>, r, rights: List<SEntry>, acc: PairTally) =>
+  fold(ps, acc, (a, x) => tally(a, r, x, rights))
 
 fun tally(acc: PairTally, r, p: Pair, rights: List<SEntry>)
   let res = assignableEq(r, p.prLeft.seType, entryAt(rights, p.prSlot))
@@ -338,11 +317,9 @@ fun tally(acc: PairTally, r, p: Pair, rights: List<SEntry>)
                 acc.ptUnknown || (!triTrue(res) && !(isFalse && !placeholder)),
                 acc.ptCount + 1)
 
-fun entryAt(es: List<SEntry>, i) => entryAtLoop(chain(es), i)
-
-fun [tail] entryAtLoop(es: Chain<SEntry>, i) => match(es)
-  (nil: ChainEnd) => None
-  (l: ChainLink)  => i <= 0 ? l.value.seType : entryAtLoop(l.next, i - 1)
+fun entryAt(es: List<SEntry>, i) => match(head(drop(es, i)))
+  (e: SEntry) => e.seType
+  ()          => None
 
 fun isGenericSpec(sp: Spec|None) => match(sp)
   (g: Spec) => match(g)
@@ -354,26 +331,24 @@ fun isGenericSpec(sp: Spec|None) => match(sp)
 # Every member of the right must be assignable to SOME member of the left.
 
 fun unionFrom(r, cm: SCombination, right)
-  ret outerLoop(chain(unionMembers(right)), r, cm.scTypes, true)
+  ret outerLoop(unionMembers(right), r, cm.scTypes, true)
 
-fun [tail] outerLoop(rs: Chain<Spec>, r, lefts: List<Spec>,
-                     allTrue) => match(rs)
-  (nil: ChainEnd) => allTrue ? true : None
-  (l: ChainLink)  => fitsAny(r, lefts, l.value)
+fun [tail] outerLoop(rs: List<Spec>, r, lefts: List<Spec>, allTrue) => match(head(rs))
+  (rv: Spec) => fitsAny(r, lefts, rv)
     |> (res) => triFalse(res)
       ? false
-      : outerLoop(l.next, r, lefts, allTrue && triTrue(res))
+      : outerLoop(dropOne(rs), r, lefts, allTrue && triTrue(res))
+  ()         => allTrue ? true : None
 
 # Fits SOME left member: one true wins; all false loses; otherwise undecided.
-fun fitsAny(r, lefts: List<Spec>, right: Spec) => innerLoop(chain(lefts), r, right, true)
+fun fitsAny(r, lefts: List<Spec>, right: Spec) => innerLoop(lefts, r, right, true)
 
-fun [tail] innerLoop(ls: Chain<Spec>, r, right: Spec,
-                     allFalse) => match(ls)
-  (nil: ChainEnd) => allFalse ? false : None
-  (l: ChainLink)  => assignableEq(r, l.value, right)
+fun [tail] innerLoop(ls: List<Spec>, r, right: Spec, allFalse) => match(head(ls))
+  (lv: Spec) => assignableEq(r, lv, right)
     |> (res) => triTrue(res)
       ? true
-      : innerLoop(l.next, r, right, allFalse && triFalse(res))
+      : innerLoop(dropOne(ls), r, right, allFalse && triFalse(res))
+  ()         => allFalse ? false : None
 
 # ── shape helpers ───────────────────────────────────────────────────────────
 
@@ -404,7 +379,7 @@ fun unionMembers(sp): List<Spec> => match(sp)
 # Unwrap a 1-tuple to its element, repeatedly. None = an entry type is unknown,
 # so the caller must treat the comparison as undecided.
 fun unwrapOne(sp) => match(sp)
-  (t2: STuple) => exactly(chain(t2.stEntries), 1)
+  (t2: STuple) => exactly(t2.stEntries, 1)
     ? unwrapEntry(head(t2.stEntries))
     : sp
   (o: Spec)    => sp

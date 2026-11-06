@@ -19,14 +19,15 @@
 namespace CompilerTests::RecursiveTypes::AllArmsRecurInNestedMatch
 
 import System
+import System::Containers
 import System::Test
 
 fun [tail] countDown(a: List<String>, b: List<String>, n: Int): Int
   ret match(head<String>(a))
     (x: String) =>
         match(head<String>(b))
-          (y: String) => countDown(tail<String>(a), b, n + 1)
-          (e: None)   => countDown(tail<String>(a), b, n + 1)
+          (y: String) => countDown(dropOne<String>(a), b, n + 1)
+          (e: None)   => countDown(dropOne<String>(a), b, n + 1)
     (e: None) => n
 
 fun program(): System::Int

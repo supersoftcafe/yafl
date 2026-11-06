@@ -57,22 +57,22 @@ class TestEnumViewInvariance(TestCase):
         self.assertIn("Parameters are not assignment compatible", errs)
 
     def test_view_values_widen_into_a_root_container(self):
-        # The builder's element type is inferred from Circle/Square VALUES, but
+        # The list's element type is inferred from Circle/Square VALUES, but
         # the declared result asks for List<Shape>: a view binding is
         # provisional, so it widens to the root instead of latching Circle.
-        errs = _errors(_PRELUDE + "fun shapes(): System::List<Shape>\n"
-                       "  ret System::build(System::push(System::push(System::builder(),"
-                       " Circle(1)), Square(2)))\n"
-                       "fun main(): System::Int\n  ret System::isEmpty(shapes()) ? 0 : 1\n")
+        errs = _errors(_PRELUDE + "fun shapes(): System::Containers::List<Shape>\n"
+                       "  ret System::Containers::append(System::Containers::append(System::Containers::List(),"
+                       " Circle(1)), Square(2))\n"
+                       "fun main(): System::Int\n  ret System::Containers::isEmpty(shapes()) ? 0 : 1\n")
         diagnostics = [l for l in errs.splitlines() if "] - " in l and "warning:" not in l]
         self.assertEqual([], diagnostics)
 
     def test_let_bound_view_container_is_still_rejected(self):
         # Widening follows the CONTEXT: a let has none, so this really is a
         # List<Circle>, and List<Circle> is not List<Shape>.
-        errs = _errors(_PRELUDE + "fun takesList(l: System::List<Shape>): System::Int\n  ret 0\n"
+        errs = _errors(_PRELUDE + "fun takesList(l: System::Containers::List<Shape>): System::Int\n  ret 0\n"
                        "fun main(): System::Int\n"
-                       "  let cs = System::prepend(Circle(1), System::List<Circle>())\n"
+                       "  let cs = System::Containers::prepend(Circle(1), System::Containers::List<Circle>())\n"
                        "  ret takesList(cs)\n")
         self.assertIn("Parameters are not assignment compatible", errs)
 

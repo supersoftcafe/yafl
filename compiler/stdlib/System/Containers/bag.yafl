@@ -1,4 +1,4 @@
-namespace System
+namespace System::Containers
 
 import System
 
@@ -13,8 +13,8 @@ import System
 # its rear the rear — and because a cheap merge has somewhere to land when we
 # come to it.
 #
-# NO ITERATION. A Bag has no order, so it exposes none: there is no chain(),
-# no head, no fold. Exposing the order the elements happen to lay in would be
+# NO ITERATION. A Bag has no order, so it exposes none: there is no head and
+# no step-by-step walk. Exposing the order the elements happen to lay in would be
 # a lie callers would come to depend on. What a Bag offers is bulk transforms
 # whose result is also unordered (map, filter), questions whose answer does
 # not depend on order (isEmpty, any, all, singleOrNone, isMoreThanOne), and
@@ -101,11 +101,12 @@ fun maxOr<T>(bag: Bag<T>, otherwise: T): T where BasicCompare<T>
 
 # The same, for element types with no natural order.
 fun sortBy<T>(bag: Bag<T>, less: (:T, :T): Bool): List<T>
-  fun [tail] nodeToList(node: _BagNode<T>|None, [terminal] acc: ListBuilder<T>): List<T>
+  # The bag's order is unspecified, so the cheap end of the list will do.
+  fun [tail] nodeToList(node: _BagNode<T>|None, acc: List<T>): List<T>
     ret match(node)
-      (n: _BagNode<T>) => nodeToList(n._next, push(acc, n._value))
-      () => build(acc)
-  ret sortBy<T>(nodeToList(bag._front, builder<T>()), less)
+      (n: _BagNode<T>) => nodeToList(n._next, prepend<T>(n._value, acc))
+      () => acc
+  ret sortBy<T>(nodeToList(bag._front, List<T>()), less)
 
 # Natural sort that returns a list
 fun sort<T>(bag: Bag<T>): List<T> where BasicCompare<T>

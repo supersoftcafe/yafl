@@ -34,6 +34,7 @@ fun [test("double nested generic call")] check(): None|TestFailure
 namespace CompilerTests::NestedGenericInference::GenericResultIntoGenericParam
 
 import System
+import System::Containers
 import System::Test
 
 fun single<T>(a: T): List<T>
@@ -51,6 +52,7 @@ fun [test("generic result into generic param")] check(): None|TestFailure
 namespace CompilerTests::NestedGenericInference::GenericResultIntoSameGeneric
 
 import System
+import System::Containers
 import System::Test
 
 fun list1<T>(a: T): List<T>
