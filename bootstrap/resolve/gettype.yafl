@@ -214,10 +214,12 @@ fun traitCaseMapping(f: Found) => match(traitMapping(f))
 # Every arm is a branch: the same rule as a ternary.
 fun matchType(mt: PeMatch, r) => branchType(map(mt.arms, (a) => armBodyType(a, r)), r)
 
-# Each body types under its arm's OWN binding (get_body_type: the bound name
-# is a local of the arm's type_spec — an else arm binds nothing here; only
-# compile, which knows the subject type, can bind it).
-fun armBodyType(a: PArm, r): Spec|None => exprType(a.armBody, bindingScope(a, a.armType, r))
+# Each body types under its arm's OWN bindings (get_body_type): position 0's
+# name, a local of the arm's type_spec, then each extra position's name at its
+# declared type. An else arm binds nothing here; only compile, which knows the
+# subject type, can bind it.
+fun armBodyType(a: PArm, r): Spec|None =>
+  exprType(a.armBody, extraScope(a.armExtra, chain2(List<Spec|None>()), bindingScope(a, a.armType, r)))
 
 fun twoTypes(a: Spec|None, b: Spec|None) => append(append(List(), a), b)
 
@@ -256,23 +258,16 @@ fun tupEntryAdd(acc: List<SEntry>, e: PTupEnt, r: Resolver): List<SEntry>|None =
 fun discardEntries(acc: List<SEntry>): List<SEntry>|None
   ret acc |> (_built) => None
 
-# A construction builds exactly one variant, so its type is the LEAF —
-# the declaration's spec restricted to that leaf (USER RULING 2026-08-24;
-# NewEnumExpression.get_type mirror). Read from the declaration, never
-# from a spec instance in hand (which may be a stale copy).
-fun newEnumType(ne: PeNewEnum, r) => match(soleItem(findType(r, ne.rootName)))
-  (f: Found) => match(f.fStmt)
-    (e: PsEnum) => restrictToLeaf(e.eSpec, ne.leafName)
-    (o: PStmt)  => None
-  ()         => None
-
-fun restrictToLeaf(sp: Spec|None, leafName) => match(sp)
-  (s2: Spec) => match(s2)
-    (e2: SEnum) => contains(e2.seAllLeaves, leafName)
-      ? SEnum(e2.seRoot, prepend(leafName, List()), e2.seAllLeaves, e2.seParams, e2.seLine)
-      : s2
-    (o: Spec)   => s2
-  ()          => None
+# A construction builds exactly one variant, so its type is the LEAF — the
+# leaf declaration's own spec (USER RULING 2026-08-24; NewEnumExpression.
+# get_type mirror). Read from the declaration, never from a spec instance in
+# hand (which may be a stale copy).
+# A construction builds exactly one variant, so its TYPE is the leaf's.
+fun newEnumType(ne: PeNewEnum, r) => match(findEnum(r, ne.rootName))
+  (root: PsEnum) => match(findVariant(root, ne.leafName))
+    (found: VariantAt) => found.vaNode.eSpec
+    ()                 => root.eSpec
+  ()             => None
 
 # A field read: through a tuple by entry NAME, through a class or enum by
 # looking the member up on the DECLARATION.
@@ -301,8 +296,8 @@ fun classMemberType(c: SClass, name, r) => match(soleItem(findType(r, c.scName))
     (o: PStmt)    => None
   ()         => None
 
-# An enum's fields live on the spec's all_fields — which compile_types refreshes
-# from the declaration every pass, so this never reads a stale copy.
+# An enum value's fields are its members: declared at its level or a parent
+# level, derived from the declaration (enumMembers), never a stale copy.
 fun fieldNamed(fs: List<SField>, name: String) => match(firstWhere(fs, (f) => f.sfName == name))
   (f: SField) => f.sfType
   ()          => None
@@ -310,8 +305,7 @@ fun fieldNamed(fs: List<SField>, name: String) => match(firstWhere(fs, (f) => f.
 # The field's declared type, mapped through the receiver's type arguments
 # when the enum is a concrete generic instantiation.
 fun enumFieldType(e: SEnum, name: String, r)
-  ret substituteEnumTypeParams(r, e, fieldNamed(enumFieldsVia(r, e.seRoot),
-                                                name))
+  ret substituteEnumTypeParams(r, e, fieldNamed(enumMembers(r, e), name))
 
 # An array read yields the ELEMENT type of the array field it indexes.
 # access.py's __array_info: the object's type is the array CLASS, so getting

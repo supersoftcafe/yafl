@@ -1,7 +1,7 @@
 # bootstrap/access.yafl — use-site resolution, ported from
 # pyast/expression/access.py: overload resolution by EXPECTED SHAPE, and the
 # receiver-side type-parameter substitutions. (The enum half —
-# narrowedEnumField and friends — currently lives with compileDot in
+# enumMember and friends — currently lives with compileDot in
 # compile_expr.yafl.)
 namespace Bootstrap::Resolve
 

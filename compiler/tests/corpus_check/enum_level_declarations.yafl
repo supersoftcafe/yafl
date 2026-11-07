@@ -1,0 +1,8 @@
+# check-contract corpus: enum level rules both compilers enforce (#74).
+typealias Int : __builtin_type__<bigint>
+
+# A variant may not redeclare a field of a parent level: `Car.id` would be a
+# second field named `id` on every Car.
+enum Thing(id: Int)
+  enum Car(id: Int, seats: Int)
+  enum Boat(hulls: Int)

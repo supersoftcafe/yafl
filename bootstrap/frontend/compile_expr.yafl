@@ -348,7 +348,7 @@ fun dotMemberName(d: PeDot, base, r,
   (bt: Spec) => match(bt)
     (e2: SEnum) => contains(d.member, "@")
       ? d.member
-      : narrowedName(narrowedEnumField(r, e2, d.member), d.member)
+      : narrowedName(enumMember(r, e2, d.member), d.member)
     # A CLASS member resolves on the DECLARATION — constructor params and
     # body statements, then implemented interfaces — disambiguated by the
     # expected shape.
@@ -371,27 +371,23 @@ fun narrowedName(n, fallback) => match(n)
   (h: NfHit)    => h.nfName
   (o: Narrowed) => fallback
 
-# ── the narrowed enum field ──────────────────────────────────────────────────
-# _narrowed_enum_field: resolve a bare field name against an enum subject,
-# honouring its narrowing. A single enum-wide match resolves directly; when
-# several variants declare the same bare name, only a field the narrowed value
-# is GUARANTEED to carry (declared at a node covering every possible leaf) may
-# win — reading any other would be reading a sibling variant's slot.
-
-
-fun narrowedEnumField(r, e2: SEnum, bare)
-  let cands = fieldsMatching(enumFieldsVia(r, e2.seRoot), bare,
-                             List())
-  if exactly(cands, 1)
-    ret hitOf(cands)
+# ── the enum member ─────────────────────────────────────────────────────────
+# _enum_member: resolve a bare field name against a value of enum type e2 —
+# only the fields declared at its level or a parent level are members; two
+# levels on the path declaring the same name is ambiguous.
+fun enumMember(r, e2: SEnum, bare)
+  let cands = fieldsMatching(enumMembers(r, e2), bare, List())
   if isEmpty(cands)
     ret NfMiss()
-  ret match(soleItem(findType(r, e2.seRoot)))
-    (f: Found) => match(f.fStmt)
-      (en: PsEnum) => ownedHit(cands, coveringFields(en, e2.seValidLeaves))
-      (o: PStmt)   => NfMiss()
-    # Root not resolved yet: retry next pass.
-    ()         => NfMiss()
+  ret exactly(cands, 1) ? hitOf(cands) : NfAmbiguous()
+
+# _enum_members: the fields a value of type e2 has, DERIVED from the
+# statement; none while the root does not resolve.
+fun enumMembers(r, e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
+  (f: Found) => match(f.fStmt)
+    (en: PsEnum) => visibleFields(en, e2.sePath)
+    (o: PStmt)   => List<SField>()
+  ()         => List<SField>()
 
 fun fieldsMatching(fs: List<SField>, bare, acc: List<SField>) =>
   fold(fs, acc, (a, x) => matchName(x.sfName, bare) ? append(a, x) : a)
@@ -399,40 +395,6 @@ fun fieldsMatching(fs: List<SField>, bare, acc: List<SField>) =>
 fun hitOf(cands: List<SField>) => match(head(cands))
   (f: SField) => NfHit(f.sfName, f.sfType)
   ()          => NfMiss()
-
-fun ownedHit(cands: List<SField>, covering: List<SField>)
-  let owned = fieldsCovered(cands, covering, List())
-  ret exactly(owned, 1) ? hitOf(owned) : NfAmbiguous()
-
-fun fieldsCovered(cs: List<SField>, covering: List<SField>, acc: List<SField>) =>
-  fold(cs, acc, (a, x) => hasFieldNamed(covering, x.sfName) ? append(a, x) : a)
-
-# covering_fields: the typed fields a value narrowed to `valid` is GUARANTEED
-# to carry — fields declared at nodes whose OWN leaf set covers every valid
-# leaf.
-fun coveringFields(root: PsEnum, valid: List<String>) => coverNode(root, valid, List())
-
-fun coverNode(node: PsEnum, valid: List<String>, acc: List<SField>)
-  let acc2 = strsSubset(valid, collectLeafNames(node))
-    ? typedFieldsOf(flattenParams(node.eParams), acc)
-    : acc
-  ret coverVariants(node.eVariants, valid, acc2)
-
-fun coverVariants(vs: List<PStmt>, valid: List<String>, acc: List<SField>) =>
-  fold(vs, acc, (a, x) => coverVariantsStep(a, x, valid))
-
-fun coverVariantsStep(a: List<SField>, x: PStmt, valid: List<String>) => match(x)
-  (v: PsEnum) => coverNode(v, valid, a)
-  (o: PStmt) => a
-
-fun typedFieldsOf(ls: List<PStmt>, acc: List<SField>) =>
-  fold(ls, acc, typedFieldsOfStep)
-
-fun typedFieldsOfStep(a: List<SField>, x: PStmt) => match(x)
-  (let2: PsLet) => match(let2.lType)
-    (ty: Spec) => append(a, SField(let2.lName, ty))
-    () => a
-  (o: PStmt) => a
 
 # _substitute_enum_type_params: a generic enum's fields are stored against the
 # declaration's placeholders (`value: T`); a read off a concrete instantiation
@@ -928,7 +890,7 @@ fun withArmSpecParams(a, t2, params): PArm => match(t2)
     : a
   (e2: SEnum) => isEmpty(e2.seParams)
     ? with a(armType = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                            params, e2.seLine))
+                            params, e2.seLine, e2.sePath))
     : a
   (o: Spec)   => a
 
@@ -1245,10 +1207,10 @@ fun withNamesOkLoop(es: List<PTupEnt>, visible: List<String>) => all(es, (x) => 
 fun withExpandEnum(wx: PeWith, e2: SEnum, r) => match(soleItem(findType(r, e2.seRoot)))
   (f: Found) => match(f.fStmt)
     (en: PsEnum) => withNamesOk(wx,
-                      withCoverBares(coveringFields(en, e2.seValidLeaves),
+                      withCoverBares(visibleFields(en, e2.sePath),
                                      List()))
       ? withEnumCopy(wx, en, e2,
-                     map(coveringFields(en, e2.seValidLeaves), (fd) => fd.sfName), r)
+                     map(visibleFields(en, e2.sePath), (fd) => fd.sfName), r)
       : None
     (o: PStmt)   => None
   ()         => None
@@ -1262,9 +1224,10 @@ fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum, uniques: List<String>,
   let valid = withValidLeaves(leaves.names, e2.seValidLeaves)
   if isEmpty(valid)
     ret None
-  if exactly(valid, 1)
-    # A single valid leaf needs no dispatch — carried fields read through the
-    # binder-free subject, exactly as Python's single-arm special case.
+  if exactly(valid, 1) && isLevelOf(e2, valid)
+    # The subject IS the one leaf: its fields are its members, so no dispatch
+    # — they read through the binder-free subject, exactly as Python's
+    # single-arm special case.
     ret withAssemble(wx,
           withSingleLeaf(leaves.names, leaves.sets,
                          wx, e2, lr),
@@ -1275,6 +1238,11 @@ fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum, uniques: List<String>,
                          wx, e2, List()),
                 lr, List()),
         uniques, r)
+
+# The subject's own level is the (sole) leaf in `valid`.
+fun isLevelOf(e2: SEnum, valid: List<String>) => match(head(takeLastOne(e2.sePath)))
+  (level: String) => eqStrs(list1(level), valid)
+  ()              => false
 
 fun withValidLeaves(ns, valid: List<String>): List<String> => withValidLoop(ns, valid, List())
 

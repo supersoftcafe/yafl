@@ -799,9 +799,38 @@ fun checkEnum2(e2: PsEnum, r) => match(e2.eSpec)
   (sp: Spec) => union(checkStmt2(e2.eParams, r, None),
                 union(branchChecks(e2.eVariants, r, None, noErrs()),
                 union(linearGenErrs(e2, e2.eGens, noErrs()),
+                union(isEnumRoot(sp) ? redeclaredFieldErrs(e2, Dict(), noErrs()) : noErrs(),
                        attrErrs(e2.eAttrs, isKnownEnumAttr, e2.pseLine,
-                                "an enum"))))
+                                "an enum")))))
   ()         => oneErr(e2.pseLine, "Missed compile step")
+
+fun isEnumRoot(sp: Spec) => match(sp)
+  (e: SEnum) => isEmpty(e.sePath)
+  (o: Spec)  => false
+
+# A field may not reuse the name of a field declared at a parent level: a
+# value would then carry two different fields of that name. `above` maps each
+# field name declared above this level to its level.
+fun redeclaredFieldErrs(node: PsEnum, above: Dict<String, String>, acc: Set<PErr>): Set<PErr>
+  let lets = flattenParams(node.eParams)
+  let errs = fold(lets, acc, (a, x) => redeclaredFieldErr(a, x, above))
+  let here = fold(lets, above, (d, x) => declareFieldAt(d, x, node.eName))
+  ret fold(node.eVariants, errs, (a, v) => redeclaredInVariant(a, v, here))
+
+fun redeclaredInVariant(acc: Set<PErr>, v: PStmt, above: Dict<String, String>): Set<PErr> => match(v)
+  (ve: PsEnum) => redeclaredFieldErrs(ve, above, acc)
+  (o: PStmt)   => acc
+
+fun redeclaredFieldErr(acc: Set<PErr>, x: PStmt, above: Dict<String, String>): Set<PErr> => match(x)
+  (l: PsLet) => match(get(above, simpleName(l.lName)))
+    (level: String) => add(acc, PErr(l.pslLine, "Field '" + bareOfUnique(l.lName)
+                                                + "' is already declared on " + bareOfUnique(level)))
+    ()              => acc
+  (o: PStmt) => acc
+
+fun declareFieldAt(d: Dict<String, String>, x: PStmt, level: String): Dict<String, String> => match(x)
+  (l: PsLet) => put(d, simpleName(l.lName), level)
+  (o: PStmt) => d
 
 
 fun linearGenErrs(e2: PsEnum, gs: List<PGen>, acc): Set<PErr> =>

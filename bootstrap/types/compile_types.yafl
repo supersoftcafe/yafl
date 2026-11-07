@@ -80,7 +80,7 @@ fun withTypeArgs(canon, n: SNamed, r)
   let ps = compileParams(n.snParams, r)
   ret match(canon)
     (ce: SEnum) => SpecOut(SEnum(ce.seRoot, ce.seValidLeaves, ce.seAllLeaves,
-                                 ps.psSpecs, ce.seLine),
+                                 ps.psSpecs, ce.seLine, ce.sePath),
                            ps.psGlobals)
     (o: Spec)   => SpecOut(canon, ps.psGlobals)
 
@@ -109,7 +109,7 @@ fun canonicalEnum(e, st) => match(st)
 
 fun refreshedEnum(e: SEnum, canon) => match(canon)
   (ce: SEnum) => SpecOut(SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
-                               e.seParams, e.seLine),
+                               e.seParams, e.seLine, e.sePath),
                          List())
   (o: Spec)   => SpecOut(e, List())
 

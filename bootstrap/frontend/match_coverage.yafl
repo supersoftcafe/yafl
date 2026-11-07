@@ -229,17 +229,36 @@ fun unionVariants(cm: SCombination, r): List<Member>|None
   let members = reprMembers(cm)
   if any(members, (v) => scopedUid(v, r) == "")
     ret None
-  ret fold(members, List(), (acc, v) => concat(acc, memberVariants(v, r)))
+  ret allVariants(members, r)
 
-fun memberVariants(v, r): List<Member>
+# Every member's entries, or None while some member's variants do not
+# resolve yet.
+fun allVariants(ms: List<Spec>, r): List<Member>|None => match(head(ms))
+  (v: Spec) => match(memberVariants(v, r))
+    (mine: List<Member>) => match(allVariants(dropOne(ms), r))
+      (rest: List<Member>) => concat(mine, rest)
+      ()                   => None
+    ()                   => None
+  ()        => List<Member>()
+
+fun memberVariants(v, r): List<Member>|None
   let uid = scopedUid(v, r)
   let name = printableName(v, r)
   ret match(v)
     (e: SEnum) => atLeast(e.seValidLeaves, 2)
-      ? map(sort(e.seValidLeaves),
-            (leaf) => Member(uid + "/" + leaf, leaf, with e(seValidLeaves = list1(leaf)), name))
+      ? leafMembers(sort(e.seValidLeaves), e, uid, name, r)
       : list1(Member(uid, name, v, name))
     (o: Spec)  => list1(Member(uid, name, v, name))
+
+# One entry per leaf, each at that leaf's own level of the enum.
+fun leafMembers(leaves: List<String>, e: SEnum, uid: String, name: String,
+                r): List<Member>|None => match(head(leaves))
+  (leaf: String) => match(enumVariant(e, leaf, r))
+    (ls: SEnum) => match(leafMembers(dropOne(leaves), e, uid, name, r))
+      (rest: List<Member>) => prepend(Member(uid + "/" + leaf, leaf, ls, name), rest)
+      ()                   => None
+    ()          => None
+  ()             => List<Member>()
 
 fun unionCoverage(mt: PeMatch, cm: SCombination, r) => match(unionVariants(cm, r))
   (members: List<Member>) => unionCoverageOf(mt, members, r)

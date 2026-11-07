@@ -50,7 +50,7 @@ fun useSiteTypeParams(stmt, supplied, expected: Spec|None,
 # as far as the context demands and no further.
 fun suppliedComplete(supplied: List<Spec>, gens: List<PGen>,
                      r) => sameLen(supplied, gens) && !anyFree(supplied, r)
-    && !any(supplied, containsNarrowedView)
+    && !any(supplied, containsBelowRoot)
 
 fun anyFree(ts: List<Spec>, r) => any(ts, (x) => hasFreePlaceholders(x, r))
 

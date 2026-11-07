@@ -9,6 +9,7 @@ from typing import Callable, ClassVar, Iterable, Any
 from dataclasses import dataclass, field
 import dataclasses
 import pyast.rewrite as rw
+import pyast.enum_tree as enum_tree
 
 from langtools import checked_cast
 from parsing.tokenizer import LineRef
@@ -86,28 +87,6 @@ class EnumStatement(TypeStatement):
         new_variants = [v.add_namespace(path) for v in self.variants]
         return dataclasses.replace(self, name=f"{path}{self.name}", variants=new_variants)
 
-    def _collect_leaf_names(self) -> list[str]:
-        if not self.variants:
-            return [self.name] if self.has_param_list else []  # uninhabited → no leaf
-        return [ln for v in self.variants for ln in v._collect_leaf_names()]
-
-    def covering_fields(self, valid: frozenset[str]) -> list[tuple[str, t.TypeSpec]]:
-        """The (unique-name, type) field pairs a value narrowed to the leaf set
-        `valid` is GUARANTEED to carry: fields declared at nodes whose own leaf
-        set covers every valid leaf. A field declared on one variant does not
-        cover a sibling, so a read through it would be reading another
-        variant's slot — the field-aliasing bug this method exists to close."""
-        out: list[tuple[str, t.TypeSpec]] = []
-        def walk(node: EnumStatement):
-            if valid <= frozenset(node._collect_leaf_names()):
-                for let in node.parameters.flatten():
-                    if let.declared_type is not None:
-                        out.append((let.name, let.declared_type))
-            for v in node.variants:
-                walk(v)
-        walk(self)
-        return out
-
     def _collect_data_fields(self) -> list[tuple[str, t.TypeSpec]]:
         seen: set[str] = set()
         result: list[tuple[str, t.TypeSpec]] = []
@@ -131,10 +110,12 @@ class EnumStatement(TypeStatement):
         tag_field: tuple[str, t.TypeSpec] = ("$tag", t.BuiltinSpec(self.line_ref, "int32"))
         return (tag_field,) + tuple(self._collect_data_fields())
 
-    def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...]) -> EnumStatement:
-        my_leaves = frozenset(self._collect_leaf_names())
-        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names)
-        new_variants = [v._assign_specs(root_name, all_leaf_names) for v in self.variants]
+    def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...],
+                      parent_path: tuple[str, ...]) -> EnumStatement:
+        my_path = parent_path + (self.name,)
+        my_leaves = frozenset(enum_tree.leaf_names(self))
+        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names, path=my_path)
+        new_variants = [v._assign_specs(root_name, all_leaf_names, my_path) for v in self.variants]
         return dataclasses.replace(self, variants=new_variants, _root_name=root_name, _enum_spec=my_spec)
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[EnumStatement, list[Statement], h.Hints]:
@@ -151,8 +132,8 @@ class EnumStatement(TypeStatement):
             var_stmts.extend(vg)
         root_name = self.name
         temp = dataclasses.replace(self, parameters=new_parameters, variants=new_variants)
-        all_leaf_names = tuple(temp._collect_leaf_names())
-        final_variants = [v._assign_specs(root_name, all_leaf_names) for v in new_variants]
+        all_leaf_names = tuple(enum_tree.leaf_names(temp))
+        final_variants = [v._assign_specs(root_name, all_leaf_names, ()) for v in new_variants]
         my_leaves = frozenset(all_leaf_names)
         my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names)
         new_self = dataclasses.replace(self,
@@ -172,11 +153,29 @@ class EnumStatement(TypeStatement):
         if self._enum_spec is None:
             return [Error(self.line_ref, "Missed compile step")]
         errors: list[Error] = list(self.parameters.check(resolver, None))
+        if not self._enum_spec.path:
+            errors += self._redeclared_field_errors({})
         for v in self.variants:
             errors += v.check(resolver, None)
         errors += [Error(self.line_ref, "[linear] type parameters are only supported on functions")
                    for tp in self.type_params if "linear" in tp.attributes]
         errors += self.unknown_attribute_errors("an enum")
+        return errors
+
+    def _redeclared_field_errors(self, above: dict[str, str]) -> list[Error]:
+        """A field may not reuse the name of a field declared at a parent
+        level: a value would then carry two different fields of that name.
+        `above` maps each field name declared above this level to its level."""
+        errors: list[Error] = []
+        here = dict(above)
+        for let in self.parameters.flatten():
+            name = g.simple_name(let.name)
+            if name in above:
+                errors.append(Error(let.line_ref, f"Field '{g.bare_name(let.name)}' is already "
+                                                  f"declared on {g.bare_name(above[name])}"))
+            here[name] = self.name
+        for v in self.variants:
+            errors += v._redeclared_field_errors(here)
         return errors
 
     def global_codegen(self, resolver: g.Resolver) -> list[cg_ir.Object]:
@@ -258,7 +257,7 @@ class EnumStatement(TypeStatement):
 
     def _leaf_attribute_map(self) -> dict:
         """{leaf name: attributes} over the variant tree — the same leaves,
-        in the same sense, as _collect_leaf_names (a variant with its own
+        in the same sense, as enum_tree.leaf_names (a variant with its own
         variants is a nested root, not a leaf)."""
         out: dict = {}
         def walk(v: "EnumStatement"):

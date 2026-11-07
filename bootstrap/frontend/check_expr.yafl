@@ -131,15 +131,10 @@ fun classDotErrs(d: PeDot, datas: List<Found>)
   ret noErrs()
 
 fun checkEnumDot(d: PeDot, e2: SEnum, r)
-  if hasFieldNamed(enumFieldsVia(r, e2.seRoot), d.member)
-    ret noErrs()                       # already resolved to a unique field name
-  ret match(narrowedEnumField(r, e2, d.member))
-    (h: NfHit)       => noErrs()
-    (a2: NfAmbiguous) => oneErr(d.pedLine,
-                                "field '" + d.member
-                                + "' is declared by more than one possible "
-                                + "variant here — match on the specific variant first")
-    (m: NfMiss)      => oneErr(d.pedLine, "Could not find field " + d.member)
+  ret match(enumMember(r, e2, d.member))
+    (h: NfHit)        => noErrs()
+    (a2: NfAmbiguous) => oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
+    (m: NfMiss)       => oneErr(d.pedLine, "Could not find field " + d.member)
 
 # ── CallExpression ──────────────────────────────────────────────────────────
 # The argument tuple checks against the RESOLVED parameter shape; sub-errors
@@ -460,18 +455,48 @@ fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
                       "match subject must be a union type, or use literal "
                       + "patterns on an Int/String subject"))
   # Coverage, duplicate literals and unreachable arms: match_coverage.yafl.
-  ret union(union(multiSubjectErrs(mt),
+  ret union(union(union(multiSubjectErrs(mt), positionErrs(mt, r)),
                   matchArmChecks(mt.arms, st, r, expected, subjectErr)),
             matchCoverageErrs(mt, st, r))
+
+# A position whose repr cannot test its pattern is REPORTED, not compiled into
+# an arm that never matches. Each subject's repr is asked, with a probe of its
+# own ctype; the first arm it refuses is reported.
+fun positionErrs(mt: PeMatch, r): Set<PErr> => isEmpty(mt.matchExtra)
+  ? noErrs()
+  : fold(prepend(mt.subject, mt.matchExtra), (i = 0, acc = noErrs()),
+         (st, sub) => (i = st.i + 1, acc = union(st.acc, subjectPositionErrs(mt.arms, st.i, sub, r)))).acc
+
+fun subjectPositionErrs(arms: List<PArm>, i: Int, sub: PExpr, r): Set<PErr> => match(exprType(sub, r))
+  (sty: Spec) => isEnumOrUnion(sty)
+    ? firstRefusedArm(arms, i, Bootstrap::Codegen::classifyRepr(sty, r), r)
+    : noErrs()
+  ()          => noErrs()
+
+fun firstRefusedArm(arms: List<PArm>, i: Int, rep, r): Set<PErr> => match(firstWhere(arms, (a) => armRefusedAt(a, i, rep, r)))
+  (a: PArm) => oneErr(a.parmLine, "this pattern cannot serve a position of a multi-subject match")
+  ()        => noErrs()
+
+fun armRefusedAt(a: PArm, i: Int, rep, r) => match(positionPattern(a, i))
+  (pat: Spec) => Bootstrap::Codegen::reprPositionStages(
+                   rep, Bootstrap::Ir::RpStackVar(Bootstrap::Codegen::reprCtype(rep), "$probe"), pat, r) is None
+  ()          => false
+
+# The pattern an arm puts at position `i` (0 is the arm's own type).
+fun positionPattern(a: PArm, i: Int): Spec|None => i == 0
+  ? a.armType
+  : match(head(drop(a.armExtra, i - 1)))
+    (p: PPos) => p.posType
+    ()        => None
 
 # ── multi-subject arity ─────────────────────────────────────────────────────
 # Arity is a pure AST property — one pattern per subject — so it is checked
 # here, where the subject count is known and the grammar's could not be.
 #
-# POSITION SUPPORT (can this repr test this pattern?) is deliberately NOT
-# here: it needs classifyRepr, and Bootstrap::Codegen imports this namespace,
-# so asking from here would be a cycle. It is a REPRESENTATION property and is
-# checked on the codegen side; see multiSubjectPositionErrs there.
+# POSITION SUPPORT (can this repr test this pattern?) is checked here too, as
+# MatchExpression.check does: it must run in the match's own scope, where the
+# subjects have types. (Asked at codegen, from the global scope, a subject
+# that is a parameter had no type and the check silently passed.)
 
 # Checked for EVERY match, not only multi-subject ones: the mismatch runs both
 # ways, and `match(a)` with a two-pattern arm is the commoner mistake. Gating
@@ -754,7 +779,7 @@ fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
       ()         => List()
     (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
       (f: Found) => match(f.fStmt)
-        (en: PsEnum) => withCoverBares(coveringFields(en, e2.seValidLeaves),
+        (en: PsEnum) => withCoverBares(visibleFields(en, e2.sePath),
                                        List())
         (o: PStmt)   => List()
       ()         => List()

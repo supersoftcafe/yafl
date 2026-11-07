@@ -1,0 +1,83 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# The enum declaration tree (pyast/enum_tree.py).
+#
+# An enum is a tree of declarations: the root PsEnum, its eVariants below it,
+# each with its own eParams — the fields declared at exactly that level. A
+# level is named by its PATH, the variant names from the root down to it
+# (empty is the root); SEnum.sePath is the path of a value's type. Path names
+# are the declarations' own names. Monomorphisation suffixes a specialised
+# enum's declarations and the types redirected to it alike, so a path walks
+# the tree of the enum its type names.
+#
+# Plain functions over the tree, shared by the statement layer and the type
+# layer, which reads declarations through findEnum (resolve/resolver.yafl).
+# ═══════════════════════════════════════════════════════════════════════════
+
+namespace Bootstrap::Ast
+
+import System
+import System::Containers
+
+# The declaration at `path` below `root`, or None if there is none.
+fun nodeAt(root: PsEnum, path: List<String>): PsEnum|None => match(head(path))
+  (name: String) => match(variantNamed(root.eVariants, name))
+    (v: PsEnum) => nodeAt(v, dropOne(path))
+    ()          => None
+  ()             => root
+
+fun variantNamed(vs: List<PStmt>, name: String): PsEnum|None => match(head(vs))
+  (x: PStmt) => match(x)
+    (v: PsEnum) => v.eName == name ? v : variantNamed(dropOne(vs), name)
+    (o: PStmt)  => variantNamed(dropOne(vs), name)
+  ()         => None
+
+# A variant found below a root: its path and its declaration.
+class [final] VariantAt(vaPath: List<String>, vaNode: PsEnum)
+
+# The variant named `name` at any depth below `root` — the empty path and
+# `root` itself when `name` is the root — or None.
+fun findVariant(root: PsEnum, name: String): VariantAt|None
+  if root.eName == name
+    ret VariantAt(List<String>(), root)
+  ret findVariantIn(root.eVariants, name)
+
+fun findVariantIn(vs: List<PStmt>, name: String): VariantAt|None => match(head(vs))
+  (x: PStmt) => match(x)
+    (v: PsEnum) => match(findVariant(v, name))
+      (below: VariantAt) => VariantAt(prepend(v.eName, below.vaPath), below.vaNode)
+      ()                 => findVariantIn(dropOne(vs), name)
+    (o: PStmt)  => findVariantIn(dropOne(vs), name)
+  ()         => None
+
+# The leaves at or below `node`. A declaration without variants is a leaf,
+# unless it has no parameter list at all (an uninhabited enum).
+fun collectLeafNames(node: PsEnum): List<String> => isEmpty(node.eVariants)
+  ? (node.eHasParams ? prepend(node.eName, List()) : List())
+  : fold(node.eVariants, List<String>(), leafNamesStep)
+
+fun leafNamesStep(acc: List<String>, x: PStmt) => match(x)
+  (v: PsEnum) => concat(acc, collectLeafNames(v))
+  (o: PStmt)  => acc
+
+# The typed fields of a value typed at `path`: those declared at that level
+# or a parent level. A field declared lower down belongs to a sub-type; a
+# same-named field on another variant is a different field.
+fun visibleFields(root: PsEnum, path: List<String>): List<SField> => visibleFrom(root, path, List())
+
+fun visibleFrom(node: PsEnum, path: List<String>, acc: List<SField>): List<SField>
+  let here = typedFieldsOf(flattenParams(node.eParams), acc)
+  ret match(head(path))
+    (name: String) => match(variantNamed(node.eVariants, name))
+      (v: PsEnum) => visibleFrom(v, dropOne(path), here)
+      ()          => List<SField>()
+    ()             => here
+
+# The typed lets among `ls`, as fields, appended to `acc`.
+fun typedFieldsOf(ls: List<PStmt>, acc: List<SField>) =>
+  fold(ls, acc, typedFieldsOfStep)
+
+fun typedFieldsOfStep(a: List<SField>, x: PStmt) => match(x)
+  (let2: PsLet) => match(let2.lType)
+    (ty: Spec) => append(a, SField(let2.lName, ty))
+    () => a
+  (o: PStmt) => a

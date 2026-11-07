@@ -216,14 +216,14 @@ fun specName(sp) => match(sp)
   (n: SNamed) => n.snName
   (o: Spec)   => ""
 
-# An enum accepts a NARROWING of itself: same root, and the right's valid
-# leaves a subset of ours.
+# An enum accepts its own level and every level below it: same root, and our
+# path a prefix of the right's.
 fun enumFrom(r, e: SEnum, right) => match(right)
   (re: SEnum) => !contains(e.seRoot, "@") || !contains(re.seRoot, "@")
     ? None
     : (re.seRoot != e.seRoot
         ? false
-        : !allIn(re.seValidLeaves, e.seValidLeaves)
+        : !descendsFrom(re, e)
           ? false
           : argsInvariant(r, e.seParams, re.seParams))
   (o: Spec)   => false

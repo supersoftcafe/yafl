@@ -30,7 +30,8 @@ from tests.testutil import _RUN_ENV, _CLANG_BUILD_FLAGS, _STATIC_LINK
 
 _REPO = Path(__file__).parent.parent.parent
 _BOOTSTRAP = _REPO / "bootstrap"
-_CORPUS = sorted((Path(__file__).parent / "corpus_check").glob("*.yafl"))
+_CORPUS_DIR = Path(__file__).parent / "corpus_check"
+_CORPUS = sorted(_CORPUS_DIR.glob("*.yafl"))
 
 _CONVERGE = c.__dict__["__converge"]
 _DIAGNOSE = c.__dict__["__collect_diagnostics"]
@@ -92,6 +93,33 @@ class TestBootstrapCheck(TestCase):
                                  f"{path.name}: diagnostics differ")
                 checked += 1
         self.assertGreater(checked, 3)
+
+    def test_enum_members_are_declared_at_the_level_or_above(self):
+        # #74: a field is a member of an enum type only when declared at that
+        # level or a parent level. Both compilers must reject every read of a
+        # sub-type's field (an only child included) and accept the parents'.
+        text = (_CORPUS_DIR / "enum_member_levels.yafl").read_text()
+        expected = ["x[11:12] - Could not find field _count",
+                    "x[18:9] - Could not find field f",
+                    "x[27:9] - Could not find field n",
+                    "x[46:9] - Could not find field seats"]
+        for output in (self._python_diagnostics_uncached(text),
+                       subprocess.run([self.binary, "--stage", "check"], input=text,
+                                      capture_output=True, timeout=120, text=True,
+                                      env=_RUN_ENV).stdout):
+            errors = [ln for ln in output.splitlines() if "Could not find field" in ln]
+            self.assertEqual(expected, errors, output)
+
+    def test_a_variant_cannot_redeclare_a_parents_field(self):
+        # #74: a value of Car would carry two different fields named `id`.
+        text = (_CORPUS_DIR / "enum_level_declarations.yafl").read_text()
+        expected = ["x[7:12] - Field 'id' is already declared on Thing"]
+        for output in (self._python_diagnostics_uncached(text),
+                       subprocess.run([self.binary, "--stage", "check"], input=text,
+                                      capture_output=True, timeout=120, text=True,
+                                      env=_RUN_ENV).stdout):
+            errors = [ln for ln in output.splitlines() if "already declared" in ln]
+            self.assertEqual(expected, errors, output)
 
     def test_clean_sources_stay_clean(self):
         # The converge corpus is all VALID code: both sides must agree it is

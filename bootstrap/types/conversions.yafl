@@ -116,10 +116,9 @@ fun intoUnion(r, source, target,
   # not us.
   if isUnion(source)
     ret triTrue(assignableEq(r, target, source))
-  # An ordinary value boxes in when it IS one of the members.
-  ret anyMemberIs(reprMembersOf(unionMembers(target)), su)
-
-fun anyMemberIs(ms: List<Spec>, su) => any(ms, (m) => uid(m) == su)
+  # An ordinary value boxes in when a member holds it: the member it IS, or
+  # the enum member its level descends from.
+  ret memberHolding(reprMembersOf(unionMembers(target)), source) is HeldMember
 
 # ── the union's matching tuple variant ──────────────────────────────────────
 # THE single home for this match: the decision (here), the emission (coerce)

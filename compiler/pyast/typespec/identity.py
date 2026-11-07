@@ -64,6 +64,7 @@ class ClassId(TypeId):
 class EnumId(TypeId):
     root: str
     args: tuple[TypeId, ...]
+    path: tuple[str, ...]       # the level below the root; () is the root
 
 
 @dataclass(frozen=True)
@@ -110,7 +111,7 @@ def spelling_of(spec) -> TypeId:
     if isinstance(spec, t.ClassSpec):
         return ClassId(spec.name, tuple(spelling_of(p) for p in spec.type_params))
     if isinstance(spec, t.EnumSpec):
-        return EnumId(spec.root_name, tuple(spelling_of(p) for p in spec.type_params))
+        return EnumId(spec.root_name, tuple(spelling_of(p) for p in spec.type_params), spec.path)
     if isinstance(spec, t.TupleSpec):
         return TupleId(tuple((en.name or "", spelling_of(en.type)) for en in spec.entries))
     if isinstance(spec, t.CallableSpec):
@@ -137,7 +138,7 @@ def serialise(tid: TypeId) -> str:
     if isinstance(tid, ClassId):
         return f"C({tid.name};{','.join(serialise(a) for a in tid.args)})"
     if isinstance(tid, EnumId):
-        return f"E({tid.root};{','.join(serialise(a) for a in tid.args)})"
+        return f"E({tid.root};{','.join(serialise(a) for a in tid.args)};{'/'.join(tid.path)})"
     if isinstance(tid, TupleId):
         return "T(" + ",".join(f"{n}:{serialise(a)}" for n, a in tid.entries) + ")"
     if isinstance(tid, CallableId):

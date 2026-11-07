@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable, Any
 import dataclasses
+import pyast.enum_tree as enum_tree
 import pyast.rewrite as rw
 from dataclasses import dataclass, field
 from functools import reduce
@@ -204,19 +205,14 @@ class NewEnumExpression(Expression):
     type_params: tuple[t.TypeSpec, ...] = field(default_factory=tuple)
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        types = resolver.find_type(self.root_spec_name)
-        if len(types) == 1 and isinstance(types[0].statement, s.EnumStatement):
-            spec = types[0].statement._enum_spec
-            if spec is None:
-                return None
-            # A construction builds exactly one variant, so its TYPE is the
-            # LEAF (USER RULING 2026-08-24). Representation is unchanged —
-            # the value carries the root's struct — this is type-system only.
-            if self.leaf_name in spec.all_leaf_names:
-                return dataclasses.replace(
-                    spec, valid_leaf_names=frozenset({self.leaf_name}))
-            return spec
-        return None
+        root = resolver.find_enum(self.root_spec_name)
+        if root is None:
+            return None
+        # A construction builds exactly one variant, so its TYPE is the LEAF
+        # (USER RULING 2026-08-24). Representation is unchanged — the value
+        # carries the root's struct — this is type-system only.
+        found = enum_tree.find_variant(root, self.leaf_name)
+        return (found[1] if found is not None else root)._enum_spec
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         # Thread each construction argument's declared FIELD type down — the

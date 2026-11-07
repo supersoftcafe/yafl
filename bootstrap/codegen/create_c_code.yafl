@@ -143,59 +143,6 @@ fun ensureLazyOne(a, t2)
 
 # ── the driver ───────────────────────────────────────────────────────────────
 
-# ── multi-subject position support ──────────────────────────────────────────
-# For every arm of every multi-subject match, ask each position's repr whether
-# it can test that pattern. A `None` answer means the arm could only be
-# compiled into something that never matches, so the program is refused
-# instead — mirroring MatchExpression.check on the Python side.
-
-fun multiSubjectPositionErrs(statements: List<PStmt>, r): List<String>
-  ret foldStmts(statements,
-        (acc, st) => acc,
-        (acc, x) => msPosExpr(acc, x, r),
-        List())
-
-fun msPosExpr(acc: List<String>, x, r) => match(x)
-  (mt: PeMatch) => isEmpty(mt.matchExtra)
-    ? acc
-    : msPosArms(acc, mt.arms, prepend(mt.subject, mt.matchExtra), r)
-  (o: PExpr)    => acc
-
-fun msPosArms(acc: List<String>, as2: List<PArm>, subs: List<PExpr>, r) =>
-  fold(as2, acc, (a, arm) => msPosOne(a, prepend(arm.armType, map(arm.armExtra, (p) => p.posType)),
-                                      subs, r))
-
-# Each position's pattern beside its subject expression; the subjects may run
-# out first, and the remaining patterns then check against None.
-fun msPosOne(acc: List<String>, pats: List<Spec|None>, subs: List<PExpr>, r) =>
-  fold(pats, (acc = acc, subs = subs),
-       (st, pat) => (acc = msPosCheck(st.acc, pat, head(st.subs), r), subs = dropOne(st.subs))).acc
-
-fun msPosCheck(acc, pat: Spec|None, sub: PExpr|None,
-               r) => match(pat)
-  (p2: Spec) => match(sub)
-    (e2: PExpr) => match(exprType(e2, r))
-      (st: Spec) => isEnumOrUnion2(st)
-        ? msSupported(acc, classifyRepr(st, r), p2, r)
-        : acc
-      ()         => acc
-    ()           => acc
-  ()           => acc
-
-fun msSupported(acc, rep, pat: Spec,
-                r): List<String>
-  ret match(reprPositionStages(rep, RpStackVar(reprCtype(rep), "$probe"), pat, r))
-    (g: List<List<RParam>>) => acc
-    ()                => append(acc,
-                           "this pattern cannot serve a position of a "
-                           + "multi-subject match")
-
-fun isEnumOrUnion2(sp) => match(sp)
-  (e2: SEnum)        => true
-  (cm: SCombination) => true
-  (o: Spec)          => false
-
-
 class [final] CreateCOut(ccParts: List<String>, ccErrors: List<String>)
 
 fun createCCode(statements, mainName, optLevel,
@@ -212,17 +159,6 @@ fun createCCode(statements, mainName, optLevel,
                 st, discs, optLevel,
                 None, boxedLeaves, mergedMembersTable(st))
   let a2 = timed("codegen", "ir_build", () => ccBuildIr(statements, mainName, r))
-  # Multi-subject POSITION support. This cannot live in the check phase: it
-  # needs classifyRepr, and Bootstrap::Codegen imports Bootstrap::Frontend, so
-  # asking from there would be a cycle. Python checks it in
-  # MatchExpression.check; the port checks it here. Both REFUSE the program —
-  # the difference is the phase, and therefore the message FORMAT (a check
-  # diagnostic carries file[line:col], a codegen error does not). Refusing in
-  # both is what matters; a port that silently emitted a never-matching arm
-  # where Python errors is the divergence the contracts exist to catch.
-  let posErrs = multiSubjectPositionErrs(statements, r)
-  if !isEmpty(posErrs)
-    ret CreateCOut(List(), posErrs)
   # SSA + control-flow + Phi validation right after AST lowering.
   let v1 = timed("codegen", "ssa_validate.1", () => ssaValidate(appFunctions(a2), true))
   if !isEmpty(v1)

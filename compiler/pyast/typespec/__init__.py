@@ -10,7 +10,7 @@ an external caller (enum codegen in statement.py).
 from __future__ import annotations
 
 from pyast.typespec.specs import (
-    TypeSpec, BuiltinSpec, Bool, CallableSpec, ClassSpec, CombinationSpec,
+    TypeSpec, BuiltinSpec, Bool, CallableSpec, ClassSpec, CombinationSpec, HeldMember,
     EnumSpec, GenericPlaceholderSpec, LazyStubSpec, ArrayFieldSpec, NamedSpec,
     TupleEntrySpec, TupleSpec,
     collect_enum_leaves, enum_variant_types, enum_leaf_object_name,
@@ -19,7 +19,8 @@ from pyast.typespec.specs import (
 )
 from pyast.typespec.algebra import (
     substitute_placeholders, placeholder_names_in, has_free_placeholders, has_missing_arguments,
-    resolves_in_scope, with_opaque_placeholders, scoped_unique_id, is_narrowed_view, contains_narrowed_view,
+    resolves_in_scope, with_opaque_placeholders, scoped_unique_id, is_below_root, contains_below_root,
+    enum_level, enum_variant, common_parent,
     merge, receives, pattern_binding, join, converge, branch_type, refine, refine_widening,
     without_callable_params,
     bind_from_constraint_match, TraitInstance, solve_trait_constraint,

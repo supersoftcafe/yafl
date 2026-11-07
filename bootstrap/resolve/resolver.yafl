@@ -41,6 +41,14 @@ fun [tail] lastSep(s, at, best: Int): Int
 
 fun matchName(left, right) => simpleName(left) == simpleName(right)
 
+# The enum declaration `root` names, or None when it does not name exactly
+# one enum.
+fun findEnum(r, root: String): PsEnum|None => match(soleItem(findType(r, root)))
+  (f: Found) => match(f.fStmt)
+    (e: PsEnum) => e
+    (o: PStmt)  => None
+  ()         => None
+
 # A class member's DECLARED name: everything before its FIRST '@'. A member
 # is `name@hash`, and a generic class's specialised member gains a second
 # `@type-signature` suffix (which may itself contain '@'), so simpleName's

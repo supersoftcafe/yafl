@@ -70,3 +70,23 @@ fun main(): System::Int
   ret p(Dt(), Dt())
 """)
         self.assertIn("non-exhaustive", errs)
+
+    def test_a_parent_pattern_over_sibling_members_is_refused_at_a_position(self):
+        # #74: `Thing` over `Car|Boat` matches both members, and each would
+        # bind a different value at that position — so it is refused there.
+        errs = _errors("""
+namespace Main
+import System
+
+enum Thing(id: System::Int)
+  enum Car(seats: System::Int)
+  enum Boat(hulls: System::Int)
+
+fun pair(x: Car|Boat, n: System::Int): System::Int
+  ret match(x, n)
+    (t: Thing, m: System::Int) => m
+
+fun main(): System::Int
+  ret pair(Car(1, 2), 3)
+""")
+        self.assertIn("this pattern cannot serve a position of a multi-subject match", errs)

@@ -481,11 +481,11 @@ fun tupleIntoUnionNonClass(value, source, variant, target, r)
   let tupleBundle = emitConversionOn(value, source, variant, r)
   ret bundleJoin(tupleBundle, packVariant(mustResult(tupleBundle), variant, target, r))
 
-fun packVariant(value, source, target, r)
-  let su = uid(source)
-  ret (su != "" && anyMemberIs(reprMembersOf(unionMembers(target)), su))
-    ? reprBoxValue(classifyRepr(target, r), value, source, r)
-    : bundleValue(value)
+# The value is packed as the member that holds it — a `Car` as the `Thing`
+# member of `Thing|Int`, which shares its representation.
+fun packVariant(value, source, target, r) => match(memberHolding(reprMembersOf(unionMembers(target)), source))
+  (held: HeldMember) => reprBoxValue(classifyRepr(target, r), value, held.hmMember, r)
+  ()                 => bundleValue(value)
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 4: literal expressions (pyast/expression/literal.py).

@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import langtools
 import pyast.utils
@@ -498,9 +498,32 @@ class EnumSpec(TypeSpec):
     # carries them; empty for a non-generic or monomorphised enum. Part of
     # identity (name + ALL type args): in equality, and in as_unique_id_str.
     type_params: tuple[TypeSpec, ...] = field(default=())
+    # The variant names from the root down to this type; `()` is the root.
+    # Part of identity. Members are the fields declared along this path; a
+    # value fits every prefix (a parent level). Monomorphisation suffixes
+    # these names as it does the leaves. `valid_leaf_names` must agree with
+    # it: the leaves at or below this level.
+    path: tuple[str, ...] = field(default=())
 
     def is_concrete(self) -> bool:
         return '@' in self.root_name
+
+    def descends_from(self, other: EnumSpec) -> bool:
+        """True when this level is `other` or below it in the same enum: a
+        value of this type is a value of `other` without a match."""
+        return (self.root_name == other.root_name
+                and self.path[:len(other.path)] == other.path)
+
+    def holds(self, other: EnumSpec) -> bool:
+        """True when a value of `other` can be stored, unchanged, as this
+        type: the same enum and type arguments, at this level or below."""
+        mine = _instantiation_id(self.root_name, self.type_params)
+        return (mine is not None and other.descends_from(self)
+                and mine == _instantiation_id(other.root_name, other.type_params))
+
+    def strictly_holds(self, other: EnumSpec) -> bool:
+        """`holds`, with `other` strictly below this level."""
+        return self.holds(other) and other.path != self.path
 
     def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
         # Snap all_fields to the latest canonical version stored on the
@@ -531,7 +554,13 @@ class EnumSpec(TypeSpec):
     def as_unique_id_str(self) -> str | None:
         if '@' not in self.root_name:
             return None
-        return _instantiation_id(f"enum({self.root_name})", self.type_params)
+        # Identity is the root, the root's type arguments (a generic enum's
+        # parameters belong to the whole tree), and the level: `Shape/Circle`
+        # and `Shape` are two types, so two instantiations and two members.
+        base = _instantiation_id(f"enum({self.root_name})", self.type_params)
+        if base is None:
+            return None
+        return base + "".join(f"/{name}" for name in self.path)
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):
@@ -542,7 +571,7 @@ class EnumSpec(TypeSpec):
             return None
         if right.root_name != self.root_name:
             return False
-        if right.valid_leaf_names > self.valid_leaf_names or not (right.valid_leaf_names <= self.valid_leaf_names):
+        if not right.descends_from(self):
             return False
         # Same root — but generic type arguments are INVARIANT, so
         # assignability must compare them too: pre-monomorphisation,
@@ -744,22 +773,22 @@ def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
                     continue
                 seen.add(uid)
             flat.append(m)
-    # An enum member SUBSUMED by another member of the same enum is the same
-    # set of values: `E3 | EU` where EU narrows E3 IS `E3` (a match arm
-    # returning a bare variant unioned with an arm returning the enum must
-    # not mint a third member — downstream exhaustiveness and codegen index
-    # the layout by member and would see a phantom). Only ground (resolved)
-    # enums fold; the wider-or-equal member is kept.
-    def subsumed(m: TypeSpec) -> bool:
+    # An enum member strictly held by another member adds no values: `Car |
+    # Thing` IS `Thing` (a match arm returning a variant unioned with an arm
+    # returning the enum must not mint a second member — exhaustiveness and
+    # codegen index the layout by member). Only ground enums fold; the
+    # parent member is kept.
+    def strictly_held(m: TypeSpec) -> bool:
         if not (isinstance(m, EnumSpec) and '@' in m.root_name):
             return False
-        # Strict subset only: equal leaf sets share a uid and were deduped above.
-        return any(o is not m
-                   and isinstance(o, EnumSpec) and o.root_name == m.root_name
-                   and m.valid_leaf_names < o.valid_leaf_names
-                   for o in flat)
-    folded = [m for m in flat if not subsumed(m)]
-    return tuple(folded)
+        return any(isinstance(o, EnumSpec) and o.strictly_holds(m) for o in flat)
+    return tuple(m for m in flat if not strictly_held(m))
+
+
+class HeldMember(NamedTuple):
+    """A union member, and its index in the union's `repr_members()`."""
+    index: int
+    member: TypeSpec
 
 
 @dataclass(frozen=True)
@@ -827,6 +856,24 @@ class CombinationSpec(TypeSpec):
         list. `as_unique_id_str` flattens the same way, so a laid-out union and
         the type's id always agree."""
         return _flatten_union_members(self.types)
+
+    def member_holding(self, spec: TypeSpec) -> "HeldMember | None":
+        """The union member a value of `spec` is stored in, with its index: the
+        member equal to `spec`, else the enum member `spec` descends from
+        (`Car` is stored in the `Thing` of `Thing|Int`). None if no member
+        holds it, or `spec` is not yet ground."""
+        uid = spec.as_unique_id_str()
+        if uid is None:
+            return None
+        members = self.repr_members()
+        for index, member in enumerate(members):
+            if member.as_unique_id_str() == uid:
+                return HeldMember(index, member)
+        if isinstance(spec, EnumSpec):
+            for index, member in enumerate(members):
+                if isinstance(member, EnumSpec) and member.holds(spec):
+                    return HeldMember(index, member)
+        return None
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):

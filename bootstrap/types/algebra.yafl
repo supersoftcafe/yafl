@@ -68,7 +68,7 @@ fun substitute(sp, mapping: List<Binding>)
     (g: SGeneric)      => substGeneric(sp, mapping, g.sgName)
     (c: SClass)        => SClass(c.scName, substList(c.scParams, mapping), c.scLine)
     (e: SEnum)         => SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
-                                substList(e.seParams, mapping), e.seLine)
+                                substList(e.seParams, mapping), e.seLine, e.sePath)
     (n: SNamed)        => SNamed(n.snName, substList(n.snParams, mapping), n.snLine)
     (cm: SCombination) => canonUnion(SCombination(substList(cm.scTypes, mapping),
                                                   cm.scmLine))
@@ -139,7 +139,7 @@ class [final] MergeArgs(maSpecs: List<Spec>|None, maBinds: List<MBind>, maErrs: 
 fun mergeSpecs(left: Spec|None, right: Spec|None, binds: List<MBind>, r): MergeOut
   ret mgGo(left, right, binds, false, false, true, r)
 
-# `widen`: for a STORED inference only (refine) — a narrowed enum view there is
+# `widen`: for a STORED inference only (refineWidening) — a narrowed enum view there is
 # provisional, so a receiver's view widens to the union of both views,
 # arguments included, instead of conflicting.
 #
@@ -356,18 +356,59 @@ fun mgEntriesDone(es: List<SEntry>, binds: List<MBind>, errs: Set<PErr>, l: STup
 fun mgEnums(l: SEnum, rr: SEnum, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
   if l.seRoot != rr.seRoot
     ret mgConflict(l, rr, binds, "different enums")
-  if !wv && inv && !(allIn(l.seValidLeaves, rr.seValidLeaves) && allIn(rr.seValidLeaves, l.seValidLeaves))
-    ret mgConflict(l, rr, binds, "different views of one enum are different types")
-  if !wv && !allIn(rr.seValidLeaves, l.seValidLeaves)
-    ret mgConflict(l, rr, binds, "the receiver cannot hold every variant of the value")
-  let leaves = wv ? unionLeaves(l.seValidLeaves, rr.seValidLeaves) : l.seValidLeaves
+  if wv
+    if descendsFrom(rr, l)
+      ret mgEnumArgs(l, rr, binds, wv, cl, r)
+    ret match(commonParent(List(l, rr), r))
+      (p: SEnum) => mgEnumArgs(p, rr, binds, wv, cl, r)
+      ()         => mgConflict(l, rr, binds, "the enum's declaration does not resolve")
+  if inv && !eqStrs(l.sePath, rr.sePath)
+    ret mgConflict(l, rr, binds, "different levels of one enum are different types")
+  if !descendsFrom(rr, l)
+    ret mgConflict(l, rr, binds, "the value is not the receiver's type or below it")
+  ret mgEnumArgs(l, rr, binds, wv, cl, r)
+
+fun mgEnumArgs(l: SEnum, rr: SEnum, binds: List<MBind>, wv: Bool, cl: Bool, r): MergeOut
   let a = mgArgs(l.seParams, rr.seParams, binds, wv, cl, r)
   ret match(a.maSpecs)
-    (ps: List<Spec>) => mgOk(SEnum(l.seRoot, leaves, l.seAllLeaves, ps, l.seLine), a.maBinds)
+    (ps: List<Spec>) => mgOk(SEnum(l.seRoot, l.seValidLeaves, l.seAllLeaves, ps, l.seLine,
+                                   l.sePath), a.maBinds)
     ()               => MergeOut(None, a.maBinds, a.maErrs)
 
-fun unionLeaves(a: List<String>, b: List<String>) => fold(b, a, (acc, n) =>
-    contains(acc, n) ? acc : prepend(n, acc))
+# enum_level: e's enum at the declaration `path` names, its leaves read from
+# that declaration; None while the root does not resolve.
+fun enumLevel(e: SEnum, path: List<String>, r): SEnum|None
+  if isEmpty(path)
+    ret SEnum(e.seRoot, e.seAllLeaves, e.seAllLeaves, e.seParams, e.seLine, List())
+  ret match(findEnum(r, e.seRoot))
+    (root: PsEnum) => match(nodeAt(root, path))
+      (node: PsEnum) => SEnum(e.seRoot, collectLeafNames(node), e.seAllLeaves,
+                              e.seParams, e.seLine, path)
+      ()             => None
+    ()             => None
+
+# enum_variant: e's enum at the declaration named `name` (a variant at any
+# depth); None while the root does not resolve or names no such variant.
+fun enumVariant(e: SEnum, name: String, r): SEnum|None => match(findEnum(r, e.seRoot))
+  (root: PsEnum) => match(findVariant(root, name))
+    (found: VariantAt) => enumLevel(e, found.vaPath, r)
+    ()                 => None
+  ()             => None
+
+# common_parent: the nearest level of one enum that every spec in `es` is or
+# descends from — the longest shared prefix of their paths.
+fun commonParent(es: List<SEnum>, r): SEnum|None => match(head(es))
+  (first: SEnum) => enumLevel(first,
+                              fold(dropOne(es), first.sePath,
+                                   (acc, x) => sharedPrefix(acc, x.sePath)),
+                              r)
+  ()             => None
+
+fun sharedPrefix(a: List<String>, b: List<String>): List<String> => match(head(a))
+  (x: String) => match(head(b))
+    (y: String) => x == y ? prepend(x, sharedPrefix(dropOne(a), dropOne(b))) : List<String>()
+    ()          => List<String>()
+  ()          => List<String>()
 
 fun mgClasses(l: SClass, rr: SClass, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MergeOut
   if l.scName == rr.scName
@@ -491,7 +532,7 @@ fun mgEachFinds(rs: List<Spec>, members: List<Spec>, matched: List<Int>, absorbe
        (st, x2) => mgEachFindsStep(st, x2, inv, wv, cl, r, l, rr, rHoles))
     |> (r2) => mgValueHole(r2.members, r2.matched, r2.absorbed, r2.binds, inv, wv, cl, r, r2.errs, l, rr, rHoles)
 
-fun mgEachFindsStep(st: (members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, binds: List<MBind>, errs: Set<PErr>), x2: Spec, inv: Bool, wv: Bool, cl: Bool, r, l: Spec, rr: Spec, rHoles: List<Spec>) => match(mgFindMember(st.members, 0, x2, st.binds, inv, wv, cl, r))
+fun mgEachFindsStep(st: (members: List<Spec>, matched: List<Int>, absorbed: List<Spec>, binds: List<MBind>, errs: Set<PErr>), x2: Spec, inv: Bool, wv: Bool, cl: Bool, r, l: Spec, rr: Spec, rHoles: List<Spec>) => match(mgPlace(st.members, x2, st.binds, inv, wv, cl, r))
   (fm: MgFound) => (members = mgSetAt(st.members, fm.mfIndex, fm.mfSpec), matched = prepend(fm.mfIndex, st.matched), absorbed = st.absorbed, binds = fm.mfBinds, errs = st.errs)
   () => any(st.members, (m) => mgLeftHole(m, st.binds, cl, r))
     ? (members = st.members, matched = st.matched, absorbed = append(st.absorbed, x2), binds = st.binds, errs = st.errs)
@@ -558,6 +599,14 @@ fun mgPushAt(acc: List<Spec>, ms: List<Spec>, i: Int): List<Spec> => match(head(
 
 class [final] MgFound(mfIndex: Int, mfSpec: Spec|None, mfBinds: List<MBind>)
 
+# A member that already takes the value as it is wins; only when none does
+# may a view widen (`Boat` into `Car|Boat` is the Boat member, never Car
+# widened to their common parent).
+fun mgPlace(ms: List<Spec>, v: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool, r): MgFound|None =>
+  match(mgFindMember(ms, 0, v, binds, inv, false, cl, r))
+    (fm: MgFound) => fm
+    ()            => wv ? mgFindMember(ms, 0, v, binds, inv, true, cl, r) : None
+
 fun [tail] mgFindMember(ms: List<Spec>, i: Int, v: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bool,
                         r): MgFound|None => match(head(ms))
   (m0: Spec) => mgLeftHole(m0, binds, cl, r)
@@ -612,26 +661,28 @@ fun [tail] mgAnyUnmatched(ms: List<Spec>, i: Int, matched: List<Int>, binds: Lis
 # Threshold — an inferred view is adopted only if CONCRETE (a placeholder may
 # travel across a statement boundary and fill later; an unresolved NAME may
 # not — a callee's raw T would land in a scope that cannot resolve it).
-# A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on an
-# early pass) stays refinable too: generic arguments are invariant, so it must
-# widen with its right-hand side rather than pin the view.
+# A declared enum view is the declaration: `fun f(): Car|Boat` stays
+# `Car|Boat` whatever its body infers (refineWidening owns the provisional
+# views of INFERRED types).
 #
 # A stored type that names a generic without its arguments (a leaf pattern
 # `ListFull`, or a type stored from one) is a shape — every argument a hole —
 # so it stays refinable too; filling holes is a merge (the stored type
 # RECEIVES the inference), and a contradiction leaves it unchanged.
 fun refine(current: Spec|None, r, inferred: Spec|None) => match(current)
-  (c: Spec) => hasFreePlaceholders(c, r) || hasMissingArguments(c, r) || containsNarrowedView(c)
-    ? refineMerging(current, inferred, r)
+  (c: Spec) => hasFreePlaceholders(c, r) || hasMissingArguments(c, r)
+    ? receive(current, inferred, false, r)
     : current
-  ()        => refineMerging(current, inferred, r)
+  ()        => receive(current, inferred, false, r)
 
-# The stored type RECEIVES the inference (docs/type-merge-design.md), its
-# narrowed views provisional; a contradiction leaves it unchanged.
-fun refineMerging(current: Spec|None, inferred: Spec|None, r) => match(inferred)
+# The stored type RECEIVES a concrete inference (docs/type-merge-design.md),
+# its narrowed views widened when `widenLevels`; a contradiction, or an
+# inference not yet concrete, leaves it unchanged.
+fun receive(current: Spec|None, inferred: Spec|None, widenLevels: Bool, r) => match(inferred)
   (i2: Spec) => !isConcrete(i2)
     ? current
-    : mergeSpecsWidening(current, i2, List<MBind>(), true, r)
+    : (widenLevels ? mergeSpecsWidening(current, i2, List<MBind>(), true, r)
+                  : mergeSpecs(current, i2, List<MBind>(), r))
       |> (m) => isEmpty(m.moErrs) ? mergedOr(m.moSpec, current) : current
   ()         => current
 
@@ -669,28 +720,27 @@ fun isGenericDecl(name, r) => !contains(name, "$generic$") && match(soleItem(fin
     (o: PStmt)   => false
   ()         => false
 
-# An enum VIEW narrower than its enum — `Circle` of `Shape`. A type inferred
-# from such a value is provisional: the context may ask for the root (or a
-# wider view), and a widening merge joins views. The valid leaves are always a subset of
-# all leaves, so "narrower" is "fewer".
-fun isNarrowedView(sp) => match(sp)
-  (e: SEnum) => !sameLen(e.seValidLeaves, e.seAllLeaves)
+# An enum type below its root — `Circle` of `Shape`. A type inferred from such
+# a value is provisional: the context may ask for the root (or a level in
+# between), and a widening merge moves up to the common parent.
+fun isBelowRoot(sp) => match(sp)
+  (e: SEnum) => !isEmpty(e.sePath)
   (o: Spec)  => false
 
-# A narrowed view anywhere in `sp` — `Circle` itself, or the `Op{Move}` inside
-# a stored `List<Op{Move}>`. Such an inferred type is provisional: a use-site
+# An enum type below its root anywhere in `sp` — `Circle` itself, or inside a
+# stored `List<Circle>`. Such an inferred type is provisional: a use-site
 # binding re-infers against its expected type, and a stored let/return type
 # keeps refining, so the merge widens it exactly as far as the context demands.
-fun containsNarrowedView(sp) => match(sp)
-  (e: SEnum)         => isNarrowedView(sp) || any(e.seParams, containsNarrowedView)
-  (c: SClass)        => any(c.scParams, containsNarrowedView)
-  (t2: STuple)       => any(t2.stEntries, (en) => optNarrowed(en.seType))
-  (cm: SCombination) => any(cm.scTypes, containsNarrowedView)
-  (cl: SCallable)    => containsNarrowedView(cl.scParams2) || optNarrowed(cl.scResult)
+fun containsBelowRoot(sp) => match(sp)
+  (e: SEnum)         => isBelowRoot(sp) || any(e.seParams, containsBelowRoot)
+  (c: SClass)        => any(c.scParams, containsBelowRoot)
+  (t2: STuple)       => any(t2.stEntries, (en) => optBelowRoot(en.seType))
+  (cm: SCombination) => any(cm.scTypes, containsBelowRoot)
+  (cl: SCallable)    => containsBelowRoot(cl.scParams2) || optBelowRoot(cl.scResult)
   (o: Spec)          => false
 
-fun optNarrowed(sp: Spec|None) => match(sp)
-  (s2: Spec) => containsNarrowedView(s2)
+fun optBelowRoot(sp: Spec|None) => match(sp)
+  (s2: Spec) => containsBelowRoot(s2)
   ()         => false
 
 # has_free_placeholders: `sp` contains a generic placeholder that does NOT
@@ -799,11 +849,21 @@ fun soleMember(members: List<Spec>, fallback) => match(head(members))
 # terminates. Deliberately NOT gated on whether the AST changed: a receiver's
 # type can widen while its own expression is value-equal, because the widening
 # happened inside a callee.
-fun refineWidening(current, fresh: Spec|None, r)
-  let refined = refine(current, r, fresh)
+#
+# A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on an
+# early pass) is provisional here too: generic arguments are invariant, so the
+# superset test can never adopt `List<Op>`; the stored type instead receives
+# the fresh view with its views widened. Only an INFERRED type is provisional
+# — a declared view is the declaration (refine).
+fun refineWidening(current: Spec|None, fresh: Spec|None, r)
+  let refined = refine(provisionalViews(current, fresh, r), r, fresh)
   ret match(refined)
     (rf: Spec) if isConcrete(rf) => widenTo(rf, fresh, r)
     ()         => refined
+
+fun provisionalViews(current: Spec|None, fresh: Spec|None, r) => match(current)
+  (c: Spec) => containsBelowRoot(c) ? receive(current, fresh, true, r) : current
+  ()        => current
 
 # A fresh type still holding a hole is not wider, only less finished:
 # adopted, the hole would outlive every later, complete answer.
