@@ -361,7 +361,7 @@ def __rebuild_enum_spec(stmt: s.EnumStatement) -> s.EnumStatement:
     """Rebuild _enum_spec for a specialized EnumStatement from its (now-concrete) variants."""
     root_name = stmt.name
     all_leaf_names = tuple(stmt._collect_leaf_names())
-    final_variants = [v._assign_specs(root_name, all_leaf_names) for v in stmt.variants]
+    final_variants = [v._assign_specs(root_name, all_leaf_names, ()) for v in stmt.variants]
     my_leaves = frozenset(all_leaf_names)
     my_spec = t.EnumSpec(stmt.line_ref, root_name, my_leaves, all_leaf_names)
     return dataclasses.replace(stmt, variants=final_variants, _root_name=root_name, _enum_spec=my_spec)
@@ -452,6 +452,7 @@ def __replace_concrete_references(
         (t.EnumSpec,           "root_name",      data_refs, (
             ("valid_leaf_names", lambda v, tp: frozenset(__create_unique_name(ln, tp) for ln in v)),
             ("all_leaf_names",   lambda v, tp: tuple(__create_unique_name(ln, tp) for ln in v)),
+            ("path",             lambda v, tp: tuple(__create_unique_name(ln, tp) for ln in v)),
         )),
         (t.NamedSpec,          "name",           data_refs, ()),
     )
@@ -624,6 +625,7 @@ def __spec_from_mangled(spec: t.TypeSpec, mono_map: dict[str, tuple[str, tuple[t
                 spec, root_name=base_name,
                 valid_leaf_names=frozenset(leaf(n) for n in spec.valid_leaf_names),
                 all_leaf_names=tuple(leaf(n) for n in spec.all_leaf_names),
+                path=tuple(leaf(n) for n in spec.path),
                 type_params=tuple(__spec_from_mangled(a, mono_map) for a in base_args))
         if spec.type_params:
             return dataclasses.replace(

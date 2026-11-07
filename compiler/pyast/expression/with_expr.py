@@ -83,8 +83,8 @@ class WithExpression(Expression):
             found = resolver.find_type(stype.root_name)
             if len(found) != 1 or not isinstance(found[0].statement, s.EnumStatement):
                 return None
-            covering = found[0].statement.covering_fields(stype.valid_leaf_names)
-            return [(_bare(n), n, ft) for n, ft in covering]
+            visible = found[0].statement.visible_fields(stype.path)
+            return [(_bare(n), n, ft) for n, ft in visible]
         return None
 
     # ── compile: expand once the types allow it ──────────────────────────────
@@ -169,12 +169,12 @@ class WithExpression(Expression):
                               lambda bare, b=binder: e.DotExpression(lr, ref(b), bare))))
             if not arms:
                 return None
-            if len(arms) == 1:
-                # A single valid leaf needs no dispatch — but the CARRIED
-                # fields must still read through the binder-free subject.
-                leaf_name, leaf_fields = next(
-                    (ln, lf) for ln, lf in leaves
-                    if _bare(ln) in {_bare(v) for v in stype.valid_leaf_names})
+            leaf_name, leaf_fields = next(
+                (ln, lf) for ln, lf in leaves
+                if _bare(ln) in {_bare(v) for v in stype.valid_leaf_names})
+            if len(arms) == 1 and stype.path and _bare(stype.path[-1]) == _bare(leaf_name):
+                # The subject IS the one leaf: its fields are its members, so
+                # no dispatch — they read through the binder-free subject.
                 copy = construct(leaf_name, leaf_fields,
                                  lambda bare: e.DotExpression(lr, ref("$ws"), bare))
             else:

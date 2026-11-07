@@ -498,9 +498,30 @@ class EnumSpec(TypeSpec):
     # carries them; empty for a non-generic or monomorphised enum. Part of
     # identity (name + ALL type args): in equality, and in as_unique_id_str.
     type_params: tuple[TypeSpec, ...] = field(default=())
+    # The declaration this type IS: the variant names from the root down to
+    # it — `()` for the root itself, `(Shape::Circle,)` for a variant. Part of
+    # identity. Members are the fields declared along this path and nowhere
+    # else; the value is assignable to every prefix (a parent) without a match.
+    # The leaf sets above are derived from it.
+    path: tuple[str, ...] = field(default=())
 
     def is_concrete(self) -> bool:
         return '@' in self.root_name
+
+    def descends_from(self, other: EnumSpec) -> bool:
+        """True when this level is `other` or below it in the same enum: a
+        value of this type is a value of `other` without a match."""
+        return (self.root_name == other.root_name
+                and self.path[:len(other.path)] == other.path)
+
+    def holds(self, other: EnumSpec) -> bool:
+        """True when a value of `other` is, as it stands, a value of this type:
+        the same ground instantiation (root and type arguments) at this level
+        or below. Every level of one instantiation shares one representation,
+        so a union member of this type is where such a value lives."""
+        mine = _instantiation_id(self.root_name, self.type_params)
+        return (mine is not None and other.descends_from(self)
+                and mine == _instantiation_id(other.root_name, other.type_params))
 
     def _compile(self, resolver: g.Resolver) -> tuple[TypeSpec, list[s.Statement]]:
         # Snap all_fields to the latest canonical version stored on the
@@ -531,7 +552,11 @@ class EnumSpec(TypeSpec):
     def as_unique_id_str(self) -> str | None:
         if '@' not in self.root_name:
             return None
-        return _instantiation_id(f"enum({self.root_name})", self.type_params)
+        # Identity is the root, the root's type arguments (a generic enum's
+        # parameters belong to the whole tree), and the level: `Shape/Circle`
+        # and `Shape` are two types, so two instantiations and two members.
+        base = _instantiation_id(f"enum({self.root_name})", self.type_params)
+        return base and base + "".join(f"/{name}" for name in self.path)
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):
@@ -542,7 +567,7 @@ class EnumSpec(TypeSpec):
             return None
         if right.root_name != self.root_name:
             return False
-        if right.valid_leaf_names > self.valid_leaf_names or not (right.valid_leaf_names <= self.valid_leaf_names):
+        if not right.descends_from(self):
             return False
         # Same root — but generic type arguments are INVARIANT, so
         # assignability must compare them too: pre-monomorphisation,
@@ -753,10 +778,10 @@ def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
     def subsumed(m: TypeSpec) -> bool:
         if not (isinstance(m, EnumSpec) and '@' in m.root_name):
             return False
-        # Strict subset only: equal leaf sets share a uid and were deduped above.
+        # Strictly below only: a member does not subsume itself.
         return any(o is not m
-                   and isinstance(o, EnumSpec) and o.root_name == m.root_name
-                   and m.valid_leaf_names < o.valid_leaf_names
+                   and isinstance(o, EnumSpec) and o.holds(m)
+                   and m.path != o.path
                    for o in flat)
     folded = [m for m in flat if not subsumed(m)]
     return tuple(folded)
@@ -827,6 +852,20 @@ class CombinationSpec(TypeSpec):
         list. `as_unique_id_str` flattens the same way, so a laid-out union and
         the type's id always agree."""
         return _flatten_union_members(self.types)
+
+    def member_holding(self, spec: TypeSpec) -> TypeSpec | None:
+        """The member of this union that holds a value of `spec`: the member
+        that IS `spec`, else the enum member that `spec`'s level descends from
+        (`Car` lives in the `Thing` member of `Thing|Int`). None when no member
+        holds it, or `spec` is not yet ground."""
+        uid = spec.as_unique_id_str()
+        if uid is None:
+            return None
+        members = self.repr_members()
+        exact = next((m for m in members if m.as_unique_id_str() == uid), None)
+        if exact is not None or not isinstance(spec, EnumSpec):
+            return exact
+        return next((m for m in members if isinstance(m, EnumSpec) and m.holds(spec)), None)
 
     def trivially_assignable_from(self, resolver: g.Resolver, right: TypeSpec) -> bool | None:
         if isinstance(right, NamedSpec):

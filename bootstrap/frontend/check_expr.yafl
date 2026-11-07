@@ -131,15 +131,10 @@ fun classDotErrs(d: PeDot, datas: List<Found>)
   ret noErrs()
 
 fun checkEnumDot(d: PeDot, e2: SEnum, r)
-  if hasFieldNamed(enumFieldsVia(r, e2.seRoot), d.member)
-    ret noErrs()                       # already resolved to a unique field name
-  ret match(narrowedEnumField(r, e2, d.member))
-    (h: NfHit)       => noErrs()
-    (a2: NfAmbiguous) => oneErr(d.pedLine,
-                                "field '" + d.member
-                                + "' is declared by more than one possible "
-                                + "variant here — match on the specific variant first")
-    (m: NfMiss)      => oneErr(d.pedLine, "Could not find field " + d.member)
+  ret match(enumMember(r, e2, d.member))
+    (h: NfHit)        => noErrs()
+    (a2: NfAmbiguous) => oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
+    (m: NfMiss)       => oneErr(d.pedLine, "Could not find field " + d.member)
 
 # ── CallExpression ──────────────────────────────────────────────────────────
 # The argument tuple checks against the RESOLVED parameter shape; sub-errors
@@ -323,7 +318,7 @@ fun joinMemberStrs(ms: List<Spec>, acc) =>
 
 # ── the rest ────────────────────────────────────────────────────────────────
 
-fun checkTernary(te, r, expected: Spec|None)
+fun checkTernary(te: PeTernary, r, expected: Spec|None)
   let condErr = checkExpr(te.condition, r, SBuiltin("bool", PLine("none", 0, 0)))
   let trueErr = checkExpr(te.trueResult, r, expected)
   let falseErr = checkExpr(te.falseResult, r, expected)
@@ -754,7 +749,7 @@ fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
       ()         => List()
     (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
       (f: Found) => match(f.fStmt)
-        (en: PsEnum) => withCoverBares(coveringFields(en, e2.seValidLeaves),
+        (en: PsEnum) => withCoverBares(visibleFields(en, e2.sePath),
                                        List())
         (o: PStmt)   => List()
       ()         => List()

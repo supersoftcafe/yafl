@@ -3,10 +3,9 @@
 # `DotExpression.compile` rewrites a bare field name to its @hash-unique form
 # by scanning the WHOLE enum's all_fields and taking the first bare-name match
 # — so `sv.nxt` inside a `(sv: Save)` arm resolved to Range's `nxt` and read
-# Range's slot. The narrowed subject type says exactly which variants are
-# possible; the lookup must prefer the field those variants actually declare,
-# and reading a name that several possible variants declare differently is a
-# compile error, not a silent garbage read. Found by the regex engine
+# Range's slot. A value's members are the fields declared at its own level of
+# the enum or a parent level (#74): two variants' same-named fields are two
+# different fields, and neither is a member of the root. Found by the regex engine
 # (worked around there with rNext/sNext/aNext); a compiler-sized AST would
 # hit it constantly.
 #

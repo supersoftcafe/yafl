@@ -1470,7 +1470,7 @@ fun aiTryInlineAtStmt(st, catalog: Catalog, selfName,
   (a: PsAction) => aiTis2(a.action, st, catalog, selfName, n, 2)
   (o: PStmt)    => None
 
-fun aiTisLet(let2, catalog: Catalog, selfName,
+fun aiTisLet(let2: PsLet, catalog: Catalog, selfName,
              n)
   if hasAttr(let2.lAttrs, "lazy") || hasAttr(let2.lAttrs, "future")
     ret None
@@ -1836,14 +1836,14 @@ fun [tail] aiFlattenLoop(bk: PeBlock, merged, value,
 
 class [final] RfOut(rfN: Int, rfStmt: PStmt, rfChanged: Bool)
 
-fun aiRewriteFunction(f, catalog: Catalog, r,
+fun aiRewriteFunction(f: PsFun, catalog: Catalog, r,
                       n) => match(f.fBody)
   (b: PExpr) => match(b)
     (bk: PeBlock) => aiRwf2(f, bk, catalog, r, n)
     (o: PExpr)    => RfOut(n, f, false)
   ()         => RfOut(n, f, false)
 
-fun aiRwf2(f, bk: PeBlock, catalog: Catalog, r,
+fun aiRwf2(f: PsFun, bk: PeBlock, catalog: Catalog, r,
            n)
   let stmts0 = aiBlockAsStmts(bk)
   # Pass 1: statement-level function inlining.

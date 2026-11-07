@@ -1207,9 +1207,12 @@ fun parseIf(kw: PLine, ps: Ps, kindSel): (v: PStmt|PFail, rest: Ps)
 
 fun parseIfBody(cond: PExpr, kindSel: Int, lr: PLine, kw: PLine,
                 ps: Ps): (v: PStmt|PFail, rest: Ps) => parseStmts(ps, List())
-  ?> (body: List<PStmt>, rest: Ps) => kindSel == 0
-       ? (PsIf(cond, body, List(), lr), rest)
-       : (PsElseIf(cond, body, lr, kw), rest)
+  ?> (body: List<PStmt>, rest: Ps) => ifStmtOf(cond, body, kindSel, lr, kw, rest)
+
+fun ifStmtOf(cond: PExpr, body: List<PStmt>, kindSel: Int, lr: PLine, kw: PLine,
+             rest: Ps): (v: PStmt|PFail, rest: Ps) => kindSel == 0
+  ? (PsIf(cond, body, List(), lr), rest)
+  : (PsElseIf(cond, body, lr, kw), rest)
 
 # An `else` sits at its keyword: it has no condition to place it, as an `if`
 # or `else if` has, so an orphan is reported where it is written.

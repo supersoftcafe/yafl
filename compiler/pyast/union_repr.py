@@ -279,17 +279,37 @@ def _leaf_base(name: str) -> str:
     return name.split("$generic$", 1)[0]
 
 
+def subject_at_arm(subj_type: t.TypeSpec, arm_type: t.TypeSpec | None,
+                   resolver: g.Resolver) -> t.TypeSpec:
+    """The enum subject seen at the ARM's level, named the subject's way. Every
+    level shares the root's representation, so the value binds unchanged; the
+    TYPE is the arm's, so the body sees exactly that level's members. The
+    arm's path is matched by base identity (_leaf_base): a monomorphised
+    subject and arm can be specialised through different passes."""
+    if not (isinstance(subj_type, t.EnumSpec) and isinstance(arm_type, t.EnumSpec)
+            and arm_type.path):
+        return subj_type
+    found = resolver.find_type(subj_type.root_name)
+    if len(found) != 1 or not isinstance(found[0].statement, s.EnumStatement):
+        return subj_type
+    node, path = found[0].statement, []
+    for name in arm_type.path:
+        node = next((v for v in node.variants if _leaf_base(v.name) == _leaf_base(name)), None)
+        if node is None:
+            return subj_type
+        path.append(node.name)
+    return t.enum_level(subj_type, tuple(path), resolver) or subj_type
+
+
 def narrowed_member(union_type: t.TypeSpec, arm_type: t.TypeSpec) -> t.TypeSpec:
     """The enum member of `union_type` that `arm_type` names only SOME of the
     variants of — `EOFError` within `String|IOError` — else `arm_type`
     itself. An arm whose pattern is narrower than the member it selects must
     test the variant as well as the member."""
     if isinstance(arm_type, t.EnumSpec) and isinstance(union_type, t.CombinationSpec):
-        wanted = {_leaf_base(n) for n in arm_type.valid_leaf_names}
-        for member in union_type.repr_members():
-            if (isinstance(member, t.EnumSpec) and member.root_name == arm_type.root_name
-                    and wanted < {_leaf_base(n) for n in member.valid_leaf_names}):
-                return member
+        member = union_type.member_holding(arm_type)
+        if member is not None and member.as_unique_id_str() != arm_type.as_unique_id_str():
+            return member
     return arm_type
 
 
@@ -352,8 +372,8 @@ class UnionRepr(ABC):
         matters for the guard); a pointer union binds at the ARM's type, since
         the value IS the narrowed pointer; and a tagged combination has to
         REASSEMBLE the variant out of the union's slots. Defaulting to the
-        subject type serves both enum reprs."""
-        return em.bind_subject(holder, subj_type, sv)
+        subject seen at the arm's level serves both enum reprs."""
+        return em.bind_subject(holder, subject_at_arm(subj_type, arm_type, resolver), sv)
 
     def box_value(self, value, source_type: t.TypeSpec,
                   resolver: g.Resolver) -> g.OperationBundle:
@@ -435,39 +455,38 @@ class TaggedRepr(UnionRepr):
             arm_type = arm.type_spec
             assert isinstance(arm_type, t.EnumSpec)
             guards = self.leaf_guards(self._own_slot(sv), arm_type)
-            # Bind at subj_type (always concrete): an EnumSpec arm_type may point
-            # at a pruned generic spec with stale all_fields; only leaf identity
-            # matters for the guards above.
-            em.arm(arm, [guards], bind=em.bind_subject(arm, subj_type, sv))
+            # Bind at the subject's own spec (always concrete) seen at the arm's
+            # level: an EnumSpec arm_type may point at a pruned generic spec
+            # with stale all_fields, but its level is what the body may read.
+            em.arm(arm, [guards], bind=em.bind_subject(
+                arm, subject_at_arm(subj_type, arm_type, resolver), sv))
         em.fallback(else_arm,
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
                     "enum match fell through all arms")
 
-    def __combination_variant(self, arm_type, resolver):
-        """(variant index, tag) for a single-member arm pattern, else None."""
-        subj_type = self.union_type
-        if isinstance(arm_type, t.CombinationSpec) and len(arm_type.repr_members()) != 1:
-            return None                      # several members: needs a Phi, not a stage
-        member = (arm_type.repr_members()[0]
-                  if isinstance(arm_type, t.CombinationSpec) else arm_type)
-        uid = member.as_unique_id_str()
-        if uid is None:
-            return None
-        # `.get(uid, 0)`, NOT a required lookup: a BUILTIN member such as the
-        # `int32` of `Int32|None` carries no registry discriminator and takes
-        # tag 0, exactly as _generate_combination_match reads it.
-        tag = resolver.get_discriminators().get(uid, 0)
-        vi = next((i for i, v in enumerate(subj_type.repr_members())
-                   if v.as_unique_id_str() == uid), None)
-        return None if vi is None else (vi, tag, member)
+    def _selections(self, pattern) -> list[tuple[int, t.TypeSpec, bool]]:
+        """The members of this tagged COMBINATION that `pattern` selects, as
+        (variant index, member, narrowed): the member holding the pattern —
+        narrowed when the pattern names only some of that member's variants —
+        else every enum member the pattern holds (`(t: Thing)` over `Car|Boat`
+        selects both). Several members in one arm are several entries."""
+        members = list(self.union_type.repr_members())
+        holder = self.union_type.member_holding(pattern)
+        if holder is not None:
+            vi = next(i for i, m in enumerate(members) if m is holder)
+            return [(vi, holder, holder.as_unique_id_str() != pattern.as_unique_id_str())]
+        if isinstance(pattern, t.EnumSpec):
+            return [(i, m, False) for i, m in enumerate(members)
+                    if isinstance(m, t.EnumSpec) and pattern.holds(m)]
+        return []
 
     def position_bind(self, em, holder, sv, arm_type, subj_type, resolver):
         if isinstance(self.union_type, t.EnumSpec):
-            return em.bind_subject(holder, subj_type, sv)
-        found = self.__combination_variant(narrowed_member(self.union_type, arm_type), resolver)
-        if found is None:
+            return em.bind_subject(holder, subject_at_arm(subj_type, arm_type, resolver), sv)
+        selected = self._selections(arm_type)
+        if len(selected) != 1:
             return None
-        vi, _tag, member = found
+        vi, member, _narrowed = selected[0]
         return em.bind_from_slots(holder, member.generate(resolver),
                                   self.variant_map[vi], self.container.fields, sv)
 
@@ -476,13 +495,16 @@ class TaggedRepr(UnionRepr):
         if not isinstance(subj_type, t.EnumSpec):
             # Tagged COMBINATION: the member's tag, then — for a pattern naming
             # only some of an enum member's variants — the variant.
-            member = narrowed_member(subj_type, arm_type)
-            found = self.__combination_variant(member, resolver)
-            if found is None:
+            # A pattern selecting several members (`(t: Thing)` over
+            # `Car|Boat`) would bind a different value per member, which one
+            # position cannot: refused, as a union pattern is.
+            selected = self._selections(arm_type)
+            if len(selected) != 1:
                 return super().position_stages(sv, arm_type, resolver)
-            vi, tag_value, _member = found
+            vi, member, narrowed = selected[0]
+            tag_value = resolver.get_discriminators().get(member.as_unique_id_str(), 0)
             stages = [[cg_p.IntEqConst(cg_p.StructField(sv, "$tag"), tag_value)]]
-            if member is not arm_type:
+            if narrowed:
                 stages.append(self._variant_guards(member, vi, arm_type, sv, resolver))
             return stages
         if not isinstance(arm_type, t.EnumSpec):
@@ -509,18 +531,8 @@ class TaggedRepr(UnionRepr):
         sv = subj_bundle.result_var
         tag = cg_p.StructField(sv, "$tag")
         discriminators = resolver.get_discriminators()
-        # The slot layout is the repr's own data; `variant_types` is still needed
-        # below to find a variant by its generated ctype (the `vt == arm_ctype`
-        # lookup), but the slot map itself comes from `self`, not a recompute.
-        variant_types = [v.generate(resolver) for v in subj_type.repr_members()]
         variant_map = self.variant_map
         slot_fields = self.container.fields
-
-        def variant_index(uid: str | None) -> int | None:
-            if uid is None:
-                return None
-            return next((i for i, v in enumerate(subj_type.repr_members())
-                         if v.as_unique_id_str() == uid), None)
 
         for arm in arms:
             if arm.type_spec is None and not arm.literals:
@@ -555,17 +567,18 @@ class TaggedRepr(UnionRepr):
                         [m.generate(resolver) for m in arm.type_spec.repr_members()])
 
                 entries: list[tuple[list, cg_p.RParam]] = []
-                for k, member in enumerate(arm.type_spec.repr_members()):
+                selections = [(k, member, sel)
+                              for k, member in enumerate(arm.type_spec.repr_members())
+                              for sel in self._selections(member)]
+                for k, member, (vi, whole, narrowed) in selections:
                     # A member named by some of its variants: its own tag,
                     # then the variant.
-                    whole = narrowed_member(subj_type, member)
                     uid = whole.as_unique_id_str()
-                    vi = variant_index(uid)
-                    if vi is None or uid not in discriminators:
+                    if uid not in discriminators:
                         continue  # check() validated coverage; skip defensively
                     member_tag = discriminators[uid]
                     stages = [[cg_p.IntEqConst(tag, member_tag)]]
-                    if whole is not member:
+                    if narrowed:
                         stages.append(self._variant_guards(whole, vi, member, sv, resolver))
                     if narrow_map is None:
                         # Pointer narrow union: the member's LEAF, read out of
@@ -586,17 +599,26 @@ class TaggedRepr(UnionRepr):
 
             else:
                 # A pattern naming only some of an enum member's variants tests
-                # the member, then the variant.
-                member = narrowed_member(subj_type, arm.type_spec)
-                arm_ctype = member.generate(resolver)
-                tag_value = discriminators.get(member.as_unique_id_str(), 0)
-                vi = next((i for i, vt in enumerate(variant_types) if vt == arm_ctype), None)
-                bind = (em.bind_from_slots(arm, arm_ctype, variant_map[vi], slot_fields, sv)
-                        if vi is not None else None)
-                stages = [[cg_p.IntEqConst(tag, tag_value)]]
-                if member is not arm.type_spec and vi is not None:
-                    stages.append(self._variant_guards(member, vi, arm.type_spec, sv, resolver))
-                em.arm(arm, stages, bind=bind)
+                # the member, then the variant; one holding several members
+                # enters once per member, each binding that member's value.
+                selected = self._selections(arm.type_spec)
+                arm_ctype = arm.type_spec.generate(resolver)
+                if not selected:
+                    continue  # check() validated coverage; skip defensively
+                if len(selected) == 1:
+                    vi, member, narrowed = selected[0]
+                    tag_value = discriminators.get(member.as_unique_id_str(), 0)
+                    bind = em.bind_from_slots(arm, member.generate(resolver),
+                                              variant_map[vi], slot_fields, sv)
+                    stages = [[cg_p.IntEqConst(tag, tag_value)]]
+                    if narrowed:
+                        stages.append(self._variant_guards(member, vi, arm.type_spec, sv, resolver))
+                    em.arm(arm, stages, bind=bind)
+                else:
+                    em.multi_entry_arm(arm, [
+                        ([[cg_p.IntEqConst(tag, discriminators.get(member.as_unique_id_str(), 0))]],
+                         value_from_slots(arm_ctype, variant_map[vi], slot_fields, sv))
+                        for vi, member, _narrowed in selected], arm_ctype)
 
         em.fallback(else_arm,
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
@@ -830,14 +852,14 @@ class TaggedRepr(UnionRepr):
             ops.append(cg_o.JumpIf(f"wide_p{k}", src_repr._guard(member, word, resolver)))
         ops.append(cg_o.Jump(f"wide_p{len(ordered) - 1}"))
         for k, member in enumerate(ordered):
-            uid = member.as_unique_id_str()
-            tgt_idx = next((i for i, v in enumerate(target_members)
-                            if v.as_unique_id_str() == uid), None)
+            holder = target.member_holding(member)
+            tgt_idx = next((i for i, v in enumerate(target_members) if v is holder), None)
             mv = src_repr._member_value(member, sv, resolver)
             slot_values = (_variant_slots(mv, member.generate(resolver),
                                           tgt_variant_map[tgt_idx], tgt_slot_fields)
                            if tgt_idx is not None else [])
-            slot_values.append(("$tag", cg_p.Integer(discriminators.get(uid, 0), 32)))
+            tgt_uid = holder.as_unique_id_str() if holder is not None else None
+            slot_values.append(("$tag", cg_p.Integer(discriminators.get(tgt_uid, 0), 32)))
             # The last exit falls through into the join (a jump to the very
             # next label would be folded away, merging the blocks under the Phi).
             ops.append(cg_o.Label(f"wide_p{k}"))
@@ -858,13 +880,16 @@ class TaggedRepr(UnionRepr):
 
         bundles = []
         for i, src_var in enumerate(source.repr_members()):
-            var_uid = src_var.as_unique_id_str()
-            var_tag = discriminators.get(var_uid, 0)
+            var_tag = discriminators.get(src_var.as_unique_id_str(), 0)
             arm_label, next_label = f"wide_arm_{i}", f"wide_next_{i}"
             exit_label = f"wide_exit_{i}"
 
+            # The target member holding this variant: the same type, or the
+            # enum level it descends from — its tag, not the source's.
+            holder = target.member_holding(src_var)
             tgt_var_idx = next(
-                (ti for ti, tv in enumerate(target.repr_members()) if tv.as_unique_id_str() == var_uid), None)
+                (ti for ti, tv in enumerate(target.repr_members()) if tv is holder), None)
+            tgt_tag = discriminators.get(holder.as_unique_id_str(), 0) if holder is not None else 0
             slot_values = []
             if tgt_var_idx is not None:
                 for pi in range(len(cg_t._flatten_primitives(src_var.generate(resolver)))):
@@ -872,7 +897,7 @@ class TaggedRepr(UnionRepr):
                     src_si, src_orig = src_variant_map[i][pi]
                     slot_values.append((tgt_slot_fields[tgt_si][0],
                                         slot_read(sv, src_ctype.fields, src_si, src_orig)))
-            slot_values.append(("$tag", cg_p.Integer(var_tag, 32)))
+            slot_values.append(("$tag", cg_p.Integer(tgt_tag, 32)))
 
             wide_results.append((exit_label, cg_p.union_struct(tgt_ctype, dict(slot_values))))
 
@@ -1288,6 +1313,30 @@ def slot_read(sv, slot_fields, si: int, orig: cg_t.Type) -> cg_p.RParam:
     return read if orig == slot_type else cg_p.NarrowInt(read, orig)
 
 
+def value_from_slots(ctype, slot_assignments, slot_fields, sv) -> cg_p.RParam:
+    """A variant value of `ctype` reassembled from a tagged union's slots.
+    `slot_assignments` is variant_map[var_idx]: one (slot_index, orig_type)
+    per primitive of the variant; a multi-primitive variant is rebuilt field
+    by field."""
+    def reconstruct(ctype, offset):
+        if isinstance(ctype, cg_t.FuncPointer):
+            # Reassemble the closure from its two slots — a closure IS a
+            # struct (the enum-encoding principle), deconstructed on write
+            # by _variant_slots.
+            si_f, of = slot_assignments[offset]
+            si_o, oo = slot_assignments[offset + 1]
+            return cg_p.MakeFun(slot_read(sv, slot_fields, si_f, of),
+                                slot_read(sv, slot_fields, si_o, oo)), offset + 2
+        if not isinstance(ctype, cg_t.Struct):
+            si, orig = slot_assignments[offset]
+            return slot_read(sv, slot_fields, si, orig), offset + 1
+        fvs = {}
+        for fname, ftype in ctype.fields:
+            fvs[fname], offset = reconstruct(ftype, offset)
+        return cg_p.union_struct(ctype, fvs), offset
+    return reconstruct(ctype, 0)[0]
+
+
 def _leaf_from_slots(member, slot_assignments, slot_fields, sv, resolver):
     """A pointer-union member's LEAF (newtype nesting peeled) read out of a
     tagged union's slots: a function from its two slots (code, environment),
@@ -1327,7 +1376,8 @@ class ComplexEnumRepr(UnionRepr):
             assert isinstance(arm_type, t.EnumSpec)
             guards = [cg_p.IntEqConst(tag, leaf_id(leaf))
                       for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
-            em.arm(arm, [guards], bind=em.bind_subject(arm, subj_type, sv))
+            em.arm(arm, [guards], bind=em.bind_subject(
+                arm, subject_at_arm(subj_type, arm_type, resolver), sv))
         em.fallback(else_arm,
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
                     "enum match fell through all arms")

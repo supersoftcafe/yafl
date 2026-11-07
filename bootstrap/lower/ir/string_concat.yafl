@@ -102,7 +102,7 @@ fun scSpinePair(l, r, defs: SsaDefs,
 
 # An already-flattened concat_n invoke (rpReplaceParams rewrites bottom-up,
 # so an inner chain may have been folded before its consumer is visited).
-fun scConcatOperands(inv): (ops: List<RParam>, taking: List<String>) => match(inv.parameters)
+fun scConcatOperands(inv: RpRuntimeInvoke): (ops: List<RParam>, taking: List<String>) => match(inv.parameters)
   (ns: RpNewStruct) => (map(filter(ns.values,
                                    (v) => v.name != "count"),
                             (v) => v.value),

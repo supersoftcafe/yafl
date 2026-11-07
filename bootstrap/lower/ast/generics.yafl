@@ -326,7 +326,7 @@ fun gsubEnumNode(e2: SEnum, params0: List<Spec>, sub: GSub,
                  visited: List<String>)
   let params2 = gsubInFieldList(params0, sub, visited)
   ret SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-            gsubCompleted(e2, params2, sub), e2.seLine)
+            gsubCompleted(e2, params2, sub), e2.seLine, e2.sePath)
 
 fun gsubCompleted(e2: SEnum, params2, sub: GSub): List<Spec>
   if !isEmpty(params2)
@@ -782,8 +782,8 @@ fun rcrEnum(e2: SEnum, refs: GRefsIx)
     ? SEnum(mangledName(e2.seRoot, ps),
             mangleLeaves(e2.seValidLeaves, ps),
             mangleLeaves(e2.seAllLeaves, ps),
-            List(), e2.seLine)
-    : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, ps, e2.seLine)
+            List(), e2.seLine, mangleLeaves(e2.sePath, ps))
+    : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, ps, e2.seLine, e2.sePath)
 
 fun rcrName(nm: PeName, refs: GRefsIx)
   let tps = rcrSpecs(nm.refTypeParams, refs)
@@ -1146,13 +1146,13 @@ fun specFromMangled(sp, mono: List<GRef>) => match(sp)
   (e2: SEnum) => isEmpty(e2.seParams)
     ? sfmEnumBare(e2, mono)
     : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-            sfmList(e2.seParams, mono, List()), e2.seLine)
+            sfmList(e2.seParams, mono, List()), e2.seLine, e2.sePath)
   (o: Spec)   => sp
 
 fun sfmEnumBare(e2, mono: List<GRef>) => match(monoLookup(mono, e2.seRoot))
   (g2: GRef) => SEnum(g2.grName, map(e2.seValidLeaves, sfmLeaf), map(e2.seAllLeaves, sfmLeaf),
                       sfmList(g2.grArgs, mono, List()),
-                      e2.seLine)
+                      e2.seLine, map(e2.sePath, sfmLeaf))
   ()         => e2
 
 fun sfmLeaf(name: String): String
@@ -1743,7 +1743,7 @@ fun fieldsStale(fe: SEnum, spec: SEnum) => !eqStrs(fe.seAllLeaves, spec.seAllLea
 
 fun refreshedEnum(fe: SEnum, spec: SEnum)
   ret SEnum(fe.seRoot, fe.seValidLeaves, spec.seAllLeaves, fe.seParams,
-            fe.seLine)
+            fe.seLine, fe.sePath)
 
 fun rfrStmts(ss: List<PStmt>, c: Canon, acc: List<PStmt>) =>
   fold(ss, acc, (a, x) => append(a, rfrStmt(x, c)))
@@ -1876,7 +1876,7 @@ fun rfrEntries(es: List<SEntry>, c: Canon, acc): List<SEntry> =>
 
 fun rfrEnum(e2: SEnum, c: Canon)
   let rebuilt = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                      rfrSpecList(e2.seParams, c), e2.seLine)
+                      rfrSpecList(e2.seParams, c), e2.seLine, e2.sePath)
   ret match(canonLookup(c, rebuilt.seRoot))
     (spec: SEnum) => fieldsStale(rebuilt, spec)
       ? refreshedEnum(rebuilt, spec)

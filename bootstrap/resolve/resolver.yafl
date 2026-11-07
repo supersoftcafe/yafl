@@ -766,7 +766,7 @@ fun mmParent(s2, parent, mi: MemberIdx, st: Statements,
     : mmParentClass(s2, c, mi, st, visiting)
   (o: Spec)   => s2   # unreachable: implements entries are class or named
 
-fun mmParentClass(s2: MMState, parent, mi: MemberIdx, st: Statements,
+fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: Statements,
                   visiting: List<String>)
   let acc2 = mmEnsure(parent.scName, st, visiting, s2.mmAcc)
   ret match(get(acc2, parent.scName))
@@ -778,7 +778,7 @@ fun mmParentClass(s2: MMState, parent, mi: MemberIdx, st: Statements,
       (mn: MMissing) => MMState(s2.mmRows, s2.mmAbsent, true, acc2)
     ()               => MMState(s2.mmRows, s2.mmAbsent, true, acc2)   # unreachable
 
-fun mmMergeParent(s2: MMState, parent, sub: MergedTable,
+fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
                   mi: MemberIdx)
   let mapping = paramMapping(sub.mtGens, parent.scParams)
   let rows = fold(sort(keys(sub.mtRows)), s2.mmRows,

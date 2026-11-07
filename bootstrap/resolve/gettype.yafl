@@ -256,23 +256,21 @@ fun tupEntryAdd(acc: List<SEntry>, e: PTupEnt, r: Resolver): List<SEntry>|None =
 fun discardEntries(acc: List<SEntry>): List<SEntry>|None
   ret acc |> (_built) => None
 
-# A construction builds exactly one variant, so its type is the LEAF —
-# the declaration's spec restricted to that leaf (USER RULING 2026-08-24;
-# NewEnumExpression.get_type mirror). Read from the declaration, never
-# from a spec instance in hand (which may be a stale copy).
+# A construction builds exactly one variant, so its type is the LEAF — the
+# leaf declaration's own spec (USER RULING 2026-08-24; NewEnumExpression.
+# get_type mirror). Read from the declaration, never from a spec instance in
+# hand (which may be a stale copy).
 fun newEnumType(ne: PeNewEnum, r) => match(soleItem(findType(r, ne.rootName)))
   (f: Found) => match(f.fStmt)
-    (e: PsEnum) => restrictToLeaf(e.eSpec, ne.leafName)
+    (e: PsEnum) => leafSpec(e, ne.leafName)
     (o: PStmt)  => None
   ()         => None
 
-fun restrictToLeaf(sp: Spec|None, leafName) => match(sp)
-  (s2: Spec) => match(s2)
-    (e2: SEnum) => contains(e2.seAllLeaves, leafName)
-      ? SEnum(e2.seRoot, prepend(leafName, List()), e2.seAllLeaves, e2.seParams, e2.seLine)
-      : s2
-    (o: Spec)   => s2
-  ()          => None
+fun leafSpec(root: PsEnum, leafName: String) => match(pathTo(root, leafName))
+  (p: List<String>) => match(nodeAt(root, p))
+    (leaf: PsEnum) => leaf.eSpec
+    ()             => root.eSpec
+  ()                => root.eSpec
 
 # A field read: through a tuple by entry NAME, through a class or enum by
 # looking the member up on the DECLARATION.
@@ -301,8 +299,8 @@ fun classMemberType(c: SClass, name, r) => match(soleItem(findType(r, c.scName))
     (o: PStmt)    => None
   ()         => None
 
-# An enum's fields live on the spec's all_fields — which compile_types refreshes
-# from the declaration every pass, so this never reads a stale copy.
+# An enum value's fields are its members: declared at its level or a parent
+# level, derived from the declaration (enumMembers), never a stale copy.
 fun fieldNamed(fs: List<SField>, name: String) => match(firstWhere(fs, (f) => f.sfName == name))
   (f: SField) => f.sfType
   ()          => None
@@ -310,8 +308,7 @@ fun fieldNamed(fs: List<SField>, name: String) => match(firstWhere(fs, (f) => f.
 # The field's declared type, mapped through the receiver's type arguments
 # when the enum is a concrete generic instantiation.
 fun enumFieldType(e: SEnum, name: String, r)
-  ret substituteEnumTypeParams(r, e, fieldNamed(enumFieldsVia(r, e.seRoot),
-                                                name))
+  ret substituteEnumTypeParams(r, e, fieldNamed(enumMembers(r, e), name))
 
 # An array read yields the ELEMENT type of the array field it indexes.
 # access.py's __array_info: the object's type is the array CLASS, so getting

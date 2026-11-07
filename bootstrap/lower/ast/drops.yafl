@@ -50,7 +50,7 @@ fun drToplevel(st, r, insts: List<TraitInst>) => match(st)
   (ti: PsTraitInstance) => drInstanceMembers(ti, r, insts)
   (o: PStmt)   => DrS(st, false)
 
-fun drInstanceMembers(ti, r,
+fun drInstanceMembers(ti: PsTraitInstance, r,
                       insts: List<TraitInst>)
   let out = drMembers(ti.tiMembers, r, insts, List(), false)
   ret out.dmChanged
@@ -65,7 +65,7 @@ fun drInstanceMembers(ti, r,
 # FunctionStatements, everything else passes through).
 class [final] DrMembers(dmStmts: List<PStmt>, dmChanged: Bool)
 
-fun drClassMembers(c, r, insts: List<TraitInst>)
+fun drClassMembers(c: PsClass, r, insts: List<TraitInst>)
   let out = drMembers(c.cMembers, r, insts, List(), false)
   ret out.dmChanged
     ? DrS(PsClass(c.cName, c.cAttrs, c.cGens, c.cParams, c.cImplements,
@@ -83,14 +83,14 @@ fun drMembersStep(st: (acc: List<PStmt>, changed: Bool), x: PStmt, r, insts: Lis
     |> (o) => (acc = append(st.acc, o.dsStmt), changed = st.changed || o.dsChanged2)
   (o2: PStmt) => (acc = append(st.acc, x), changed = st.changed)
 
-fun drFn(f, r, insts: List<TraitInst>)
+fun drFn(f: PsFun, r, insts: List<TraitInst>)
   if hasAttr(f.fAttrs, "foreign")
     ret DrS(f, false)
   ret match(f.fBody)
     (b: PExpr) => drFnBody(f, b, r, insts)
     ()         => DrS(f, false)
 
-fun drFnBody(f, b, r, insts: List<TraitInst>): DrS
+fun drFnBody(f: PsFun, b, r, insts: List<TraitInst>): DrS
   let rewritten = drExpr(b, f.fWheres, r, insts)
   let params = flattenParams(f.fParams)
   let referenced = referencedNames(rewritten.deExpr, List())
@@ -261,7 +261,7 @@ fun drExpr(x, wheres: List<Spec>, r,
   (o: PeLowered) => DrE(x, false)
   (o: PeName) => DrE(x, false)
 
-fun drFieldArgs(ne, wheres: List<Spec>, r,
+fun drFieldArgs(ne: PeNewEnum, wheres: List<Spec>, r,
                 insts: List<TraitInst>)
   let out = drFaLoop(ne.fieldArgs, wheres, r, insts, List(),
                      false)
@@ -312,7 +312,7 @@ fun entryAt(es: List<PTupEnt>, i, fallback): PExpr => match(head(drop(es, i)))
   (e: PTupEnt) => e.tupValue
   ()           => fallback
 
-fun drEntries(tp, wheres: List<Spec>, r,
+fun drEntries(tp: PeTuple, wheres: List<Spec>, r,
               insts: List<TraitInst>)
   let out = drEntryLoop(tp.exprs, wheres, r, insts, List(),
                         false)
@@ -337,7 +337,7 @@ fun drEntryLoopStep(st: (acc: List<PTupEnt>, changed: Bool), x: PTupEnt, wheres:
                 o.deExpr)),
     changed = st.changed || o.deChanged)
 
-fun drTernary(te, wheres: List<Spec>, r,
+fun drTernary(te: PeTernary, wheres: List<Spec>, r,
               insts: List<TraitInst>)
   let oc = drExpr(te.condition, wheres, r, insts)
   let ot = drExpr(te.trueResult, wheres, r, insts)
@@ -348,7 +348,7 @@ fun drTernary(te, wheres: List<Spec>, r,
             : te,
           changed)
 
-fun drPinSet(ps, wheres: List<Spec>, r,
+fun drPinSet(ps: PePinSet, wheres: List<Spec>, r,
              insts: List<TraitInst>)
   let os = drExpr(ps.psSubject, wheres, r, insts)
   let ot = drExpr(ps.psTarget, wheres, r, insts)
@@ -453,7 +453,7 @@ fun drFieldAssign(fa: PsFieldAssign, st, wheres: List<Spec>, r, insts: List<Trai
   ret DrS(t.deChanged || v.deChanged ? PsFieldAssign(t.deExpr, v.deExpr, fa.psfaLine) : st,
           t.deChanged || v.deChanged)
 
-fun drIf(i, wheres: List<Spec>, r, insts: List<TraitInst>)
+fun drIf(i: PsIf, wheres: List<Spec>, r, insts: List<TraitInst>)
   let oc = drExpr(i.ifCond, wheres, r, insts)
   let ot = drBlockStmts(i.ifTrue, wheres, r, insts, List(), false)
   let of2 = drBlockStmts(i.ifFalse, wheres, r, insts, List(),
@@ -667,7 +667,7 @@ fun drEnsureRet(rt: PsRet, rest, value,
 fun drCopyRestB(ss: List<PStmt>, acc: List<PStmt>) =>
   fold(ss, acc, append)
 
-fun drEnsureIfStep(i2, rest, value,
+fun drEnsureIfStep(i2: PsIf, rest, value,
                    tail2: Bool, consumed: Bool, let2: PsLet,
                    acc: List<PStmt>, did: Bool): DrBs
   let later = drRefsAny(rest, let2.lName) || drRefsOpt(value, let2.lName)
@@ -682,7 +682,7 @@ fun drEnsureIfStep(i2, rest, value,
   ret drEnsureStmts(rest, value, tail2, consumed2, let2,
                     append(acc, fi.biStmt), did || fi.biDid)
 
-fun drEnsureIf(i2, consumed, later, let2: PsLet)
+fun drEnsureIf(i2: PsIf, consumed, later, let2: PsLet)
   let name = let2.lName
   if drRefs(i2.ifCond, name)
     ret drEnsureIfCond(i2, consumed, later, let2)
@@ -696,7 +696,7 @@ fun drEnsureIf(i2, consumed, later, let2: PsLet)
            tb.bsDid || fb.bsDid, true)
 
 # The condition consumed it; any branch re-use is the checker's error.
-fun drEnsureIfCond(i2, consumed, later, let2: PsLet)
+fun drEnsureIfCond(i2: PsIf, consumed, later, let2: PsLet)
   let name = let2.lName
   if consumed || later || drRefsAny(i2.ifTrue, name)
      || drRefsAny(i2.ifFalse, name)
@@ -807,7 +807,7 @@ fun drFixPair(a, b, let2: PsLet)
                    exprLine(a)),
            oa.bxDid || ob.bxDid, true)
 
-fun drFixEntries(tp, let2: PsLet)
+fun drFixEntries(tp: PeTuple, let2: PsLet)
   let out = drFixEntryLoop(tp.exprs, let2, List(), false)
   if !out.bxOk
     ret DrBx(tp, false, false)
@@ -823,7 +823,7 @@ fun [tail] drFixEntryLoop(es: List<PTupEnt>, let2: PsLet, acc, did) => match(hea
       : DrBx(PeTuple(acc, PLine("", 0, 0)), false, false)
   ()           => DrBx(PeTuple(acc, PLine("", 0, 0)), did, true)
 
-fun drFixFieldArgs(ne, let2: PsLet)
+fun drFixFieldArgs(ne: PeNewEnum, let2: PsLet)
   let out = drFixFaLoop(ne.fieldArgs, let2, List(), false)
   if !out.faOk
     ret DrBx(ne, false, false)
@@ -840,7 +840,7 @@ fun [tail] drFixFaLoop(fas: List<PFieldArg>, let2: PsLet, acc, did) => match(hea
       : DrFaB(acc, false, false)
   ()              => DrFaB(acc, did, true)
 
-fun drFixTernary(te, let2: PsLet): DrBx
+fun drFixTernary(te: PeTernary, let2: PsLet): DrBx
   let name = let2.lName
   if drRefs(te.condition, name)
     ret drFixTernaryCond(te, let2)
@@ -860,7 +860,7 @@ fun drFixTernary(te, let2: PsLet): DrBx
   ret DrBx(PeTernary(te.condition, nt, nf, te.pety), true, true)
 
 # The condition consumed it; branch re-use is the checker's error.
-fun drFixTernaryCond(te, let2: PsLet)
+fun drFixTernaryCond(te: PeTernary, let2: PsLet)
   let name = let2.lName
   if drRefs(te.trueResult, name) || drRefs(te.falseResult, name)
     ret DrBx(te, false, false)
@@ -919,7 +919,7 @@ fun drWrapArms(as2: List<PArm>, name: String, let2: PsLet, acc: List<PArm>): Lis
     : append(a, with x(armBody = withDrops(x.armBody,
                                      oneDrop(let2)))))
 
-fun drFixBlock(bk, let2: PsLet)
+fun drFixBlock(bk: PeBlock, let2: PsLet)
   let ss = drFixStmtLoop(bk.blockStmts, let2, List(), false)
   if !ss.bsOk
     ret DrBx(bk, false, false)
@@ -968,7 +968,7 @@ fun drFixFieldAssign(fa: PsFieldAssign, let2: PsLet)
   let v = drFixExpr(fa.faValue, let2)
   ret DrBi(PsFieldAssign(t.bxExpr, v.bxExpr, fa.psfaLine), t.bxDid || v.bxDid, t.bxOk && v.bxOk)
 
-fun drFixIf(i, let2: PsLet)
+fun drFixIf(i: PsIf, let2: PsLet)
   let oc = drFixExpr(i.ifCond, let2)
   if !oc.bxOk
     ret DrBi(i, false, false)

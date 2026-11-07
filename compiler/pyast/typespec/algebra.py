@@ -79,11 +79,52 @@ def resolves_in_scope(name: str, resolver: "g.Resolver") -> bool:
 
 
 def is_narrowed_view(spec: "TypeSpec | None") -> bool:
-    """True for an enum VIEW narrower than its enum — `Circle` of `Shape`. A
-    type inferred from such a value is provisional: the context may ask for
-    the root (or a wider view), and a widening merge joins views."""
-    return (isinstance(spec, EnumSpec)
-            and spec.valid_leaf_names < frozenset(spec.all_leaf_names))
+    """True for an enum type below its root — `Circle` of `Shape`. A type
+    inferred from such a value is provisional: the context may ask for the
+    root (or a level in between), and a widening merge moves up to the
+    common parent."""
+    return isinstance(spec, EnumSpec) and bool(spec.path)
+
+
+def enum_level(spec: EnumSpec, path: tuple[str, ...],
+               resolver: "g.Resolver") -> EnumSpec | None:
+    """`spec`'s enum at the declaration `path` names, its leaves read from
+    that declaration; None while the root does not resolve."""
+    if not path:
+        return dataclasses.replace(spec, path=(), valid_leaf_names=frozenset(spec.all_leaf_names))
+    import pyast.statement as st
+    found = resolver.find_type(spec.root_name)
+    if len(found) != 1 or not isinstance(found[0].statement, st.EnumStatement):
+        return None
+    node = found[0].statement.node_at(path)
+    if node is None:
+        return None
+    return dataclasses.replace(spec, path=path,
+                               valid_leaf_names=frozenset(node._collect_leaf_names()))
+
+
+def enum_variant(spec: EnumSpec, name: str, resolver: "g.Resolver") -> EnumSpec | None:
+    """`spec`'s enum at the declaration named `name` (a variant at any
+    depth); None while the root does not resolve or names no such variant."""
+    import pyast.statement as st
+    found = resolver.find_type(spec.root_name)
+    if len(found) != 1 or not isinstance(found[0].statement, st.EnumStatement):
+        return None
+    path = found[0].statement.path_to(name)
+    return None if path is None else enum_level(spec, path, resolver)
+
+
+def common_parent(specs: "list[EnumSpec]", resolver: "g.Resolver") -> EnumSpec | None:
+    """The nearest level of one enum that every spec in `specs` is or
+    descends from: the longest shared prefix of their paths."""
+    paths = [s.path for s in specs]
+    shared = paths[0]
+    for p in paths[1:]:
+        n = 0
+        while n < min(len(shared), len(p)) and shared[n] == p[n]:
+            n += 1
+        shared = shared[:n]
+    return enum_level(specs[0], shared, resolver)
 
 
 def contains_narrowed_view(spec: "TypeSpec | None") -> bool:
@@ -323,12 +364,15 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
         if l.root_name != r.root_name:
             return conflict(l, r, binds, "different enums")
         if wv:
-            if not l.valid_leaf_names >= r.valid_leaf_names:
-                l = dataclasses.replace(l, valid_leaf_names=l.valid_leaf_names | r.valid_leaf_names)
-        elif invariant and l.valid_leaf_names != r.valid_leaf_names:
-            return conflict(l, r, binds, "different views of one enum are different types")
-        elif not l.valid_leaf_names >= r.valid_leaf_names:
-            return conflict(l, r, binds, "the receiver cannot hold every variant of the value")
+            if not r.descends_from(l):
+                parent = common_parent([l, r], resolver)
+                if parent is None:
+                    return conflict(l, r, binds, "the enum's declaration does not resolve")
+                l = parent
+        elif invariant and l.path != r.path:
+            return conflict(l, r, binds, "different levels of one enum are different types")
+        elif not r.descends_from(l):
+            return conflict(l, r, binds, "the value is not the receiver's type or below it")
         a, binds, errs = args(l.type_params, r.type_params, binds, cl, wv)
         return (None if errs else dataclasses.replace(l, type_params=a)), binds, errs
 
@@ -400,18 +444,25 @@ def merge(left: "TypeSpec | None", right: "TypeSpec | None",
         matched: set[int] = set()
         absorbed: list[TypeSpec] = []
         errs: list[Error] = []
-        for rm in r_members:
-            if any(rm is h for h in r_holes) or is_hole(rm, binds, not cl):
-                continue
+        def place(rm, widen) -> bool:
+            nonlocal binds
             for i, lm in enumerate(l_members):
                 if left_hole(lm):
                     continue
-                m, b2, e = go(lm, rm, binds, invariant, cl, wv)
+                m, b2, e = go(lm, rm, binds, invariant, cl, widen)
                 if not e:
                     l_members[i], binds = m, b2
                     matched.add(i)
-                    break
-            else:
+                    return True
+            return False
+
+        for rm in r_members:
+            if any(rm is h for h in r_holes) or is_hole(rm, binds, not cl):
+                continue
+            # A member that already takes the value as it is wins; only when
+            # none does may a view widen (`Boat` into `Car|Boat` is the Boat
+            # member, never Car widened to their common parent).
+            if not (place(rm, False) or (wv and place(rm, True))):
                 if any(left_hole(lm) for lm in l_members):
                     absorbed.append(rm)
                 else:
@@ -497,7 +548,8 @@ def join(a: "TypeSpec | None", b: "TypeSpec | None") -> "TypeSpec | None":
 
 def converge(types: "list[TypeSpec]", resolver: "g.Resolver") -> "TypeSpec | None":
     """The one type all of `types` fit: the same type, the widest of them,
-    their enum's root, or the one interface their classes share."""
+    the nearest parent level of their one enum, or the one interface their
+    classes share."""
     first = types[0]
     if all(x == first for x in types[1:]):
         return first
@@ -506,7 +558,7 @@ def converge(types: "list[TypeSpec]", resolver: "g.Resolver") -> "TypeSpec | Non
             return wide
     if all(isinstance(x, EnumSpec) for x in types):
         same_enum = len({(x.root_name, x.type_params) for x in types}) == 1
-        return dataclasses.replace(first, valid_leaf_names=frozenset(first.all_leaf_names)) if same_enum else None
+        return common_parent(types, resolver) if same_enum else None
     if all(isinstance(x, ClassSpec) for x in types):
         shared = _shared_interfaces(types, resolver)
         return shared[0] if len(shared) == 1 else None
@@ -592,7 +644,15 @@ def refine_widening(current: "TypeSpec | None", resolver: "g.Resolver",
     types, so the fixpoint terminates. Deliberately NOT keyed on whether the
     source AST changed: a receiver's type can widen while its own expression is
     value-equal (the widening happened in a callee's statement), so an AST gate
-    strands chained inference at the narrow view."""
+    strands chained inference at the narrow view.
+
+    A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on
+    an early pass) is provisional here too: generic arguments are invariant,
+    so the superset test below can never adopt `List<Op>`; the stored type
+    instead receives the fresh view with its views widened. Only an INFERRED
+    type is provisional — a declared view is the declaration (`refine`)."""
+    if current is not None and contains_narrowed_view(current):
+        current = _receive(current, infer(), resolver, widen_views=True)
     refined = refine(current, resolver, infer)
     if refined is not None and refined.is_concrete():
         fresh = infer()
@@ -629,19 +689,22 @@ def refine(current: "TypeSpec | None", resolver: "g.Resolver",
     cannot resolve it). Merge — holes fill by `merge` (the stored type
     receives the inference), so information only ever accumulates; a
     contradiction (check's job to report) leaves `current` unchanged.
-    A stored type holding a NARROWED enum view (`List<Op{Move}>`, latched on
-    an early pass) stays refinable too: generic arguments are invariant, so it
-    must widen with its right-hand side rather than pin the view."""
+    A declared enum view is the declaration: `fun f(): Car|Boat` stays
+    `Car|Boat` whatever its body infers (refine_widening owns the provisional
+    views of INFERRED types)."""
     if (current is not None and not has_free_placeholders(current, resolver)
-            and not has_missing_arguments(current, resolver)
-            and not contains_narrowed_view(current)):
+            and not has_missing_arguments(current, resolver)):
         return current
-    inferred = infer()
+    return _receive(current, infer(), resolver, widen_views=False)
+
+
+def _receive(current: "TypeSpec | None", inferred: "TypeSpec | None",
+             resolver: "g.Resolver", widen_views: bool) -> "TypeSpec | None":
+    """The stored type RECEIVES a concrete inference (docs/type-merge-design.md);
+    a contradiction, or an inference not yet concrete, leaves it unchanged."""
     if inferred is None or not inferred.is_concrete():
         return current
-    # The stored type RECEIVES the inference (docs/type-merge-design.md),
-    # its narrowed views provisional; a contradiction leaves it unchanged.
-    merged, _bindings, errors = merge(current, inferred, {}, resolver, widen_views=True)
+    merged, _bindings, errors = merge(current, inferred, {}, resolver, widen_views=widen_views)
     return merged if merged is not None and not errors else current
 
 

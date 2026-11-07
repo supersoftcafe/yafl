@@ -91,22 +91,39 @@ class EnumStatement(TypeStatement):
             return [self.name] if self.has_param_list else []  # uninhabited → no leaf
         return [ln for v in self.variants for ln in v._collect_leaf_names()]
 
-    def covering_fields(self, valid: frozenset[str]) -> list[tuple[str, t.TypeSpec]]:
-        """The (unique-name, type) field pairs a value narrowed to the leaf set
-        `valid` is GUARANTEED to carry: fields declared at nodes whose own leaf
-        set covers every valid leaf. A field declared on one variant does not
-        cover a sibling, so a read through it would be reading another
-        variant's slot — the field-aliasing bug this method exists to close."""
-        out: list[tuple[str, t.TypeSpec]] = []
-        def walk(node: EnumStatement):
-            if valid <= frozenset(node._collect_leaf_names()):
-                for let in node.parameters.flatten():
-                    if let.declared_type is not None:
-                        out.append((let.name, let.declared_type))
-            for v in node.variants:
-                walk(v)
-        walk(self)
-        return out
+    def node_at(self, path: tuple[str, ...]) -> EnumStatement | None:
+        """The declaration `path` names below this one (`()` is this node),
+        or None when the path does not exist in this tree."""
+        node = self
+        for name in path:
+            node = next((v for v in node.variants if v.name == name), None)
+            if node is None:
+                return None
+        return node
+
+    def path_to(self, name: str) -> tuple[str, ...] | None:
+        """The path from this node down to the declaration named `name`
+        (`()` when it is this node), or None when there is none."""
+        if self.name == name:
+            return ()
+        for v in self.variants:
+            below = v.path_to(name)
+            if below is not None:
+                return (v.name,) + below
+        return None
+
+    def visible_fields(self, path: tuple[str, ...]) -> list[tuple[str, t.TypeSpec]]:
+        """The (unique-name, type) field pairs visible through a value typed at
+        `path` below this root: those declared at that level or at a parent
+        level, and no others. A field declared lower down belongs to a sub-type
+        and is not a member here — a same-named field on another variant is a
+        different field."""
+        levels = [self.node_at(path[:depth]) for depth in range(len(path) + 1)]
+        if levels[-1] is None:
+            return []
+        return [(let.name, let.declared_type)
+                for level in levels for let in level.parameters.flatten()
+                if let.declared_type is not None]
 
     def _collect_data_fields(self) -> list[tuple[str, t.TypeSpec]]:
         seen: set[str] = set()
@@ -131,10 +148,12 @@ class EnumStatement(TypeStatement):
         tag_field: tuple[str, t.TypeSpec] = ("$tag", t.BuiltinSpec(self.line_ref, "int32"))
         return (tag_field,) + tuple(self._collect_data_fields())
 
-    def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...]) -> EnumStatement:
+    def _assign_specs(self, root_name: str, all_leaf_names: tuple[str, ...],
+                      parent_path: tuple[str, ...]) -> EnumStatement:
+        my_path = parent_path + (self.name,)
         my_leaves = frozenset(self._collect_leaf_names())
-        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names)
-        new_variants = [v._assign_specs(root_name, all_leaf_names) for v in self.variants]
+        my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names, path=my_path)
+        new_variants = [v._assign_specs(root_name, all_leaf_names, my_path) for v in self.variants]
         return dataclasses.replace(self, variants=new_variants, _root_name=root_name, _enum_spec=my_spec)
 
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[EnumStatement, list[Statement], h.Hints]:
@@ -152,7 +171,7 @@ class EnumStatement(TypeStatement):
         root_name = self.name
         temp = dataclasses.replace(self, parameters=new_parameters, variants=new_variants)
         all_leaf_names = tuple(temp._collect_leaf_names())
-        final_variants = [v._assign_specs(root_name, all_leaf_names) for v in new_variants]
+        final_variants = [v._assign_specs(root_name, all_leaf_names, ()) for v in new_variants]
         my_leaves = frozenset(all_leaf_names)
         my_spec = t.EnumSpec(self.line_ref, root_name, my_leaves, all_leaf_names)
         new_self = dataclasses.replace(self,
