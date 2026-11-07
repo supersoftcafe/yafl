@@ -966,14 +966,14 @@ fun genNewOn(nw: PeNew, xtypeSpec, r, pinned: Bool) => match(nw.newType)
   (ctype: SClass) => genNewFindClass(nw, xtypeSpec, ctype, r, pinned)
   (o: Spec)        => emptyBundle()   # unreachable: check() requires a ClassSpec
 
-fun genNewFindClass(nw: PeNew, xtypeSpec, ctype, r, pinned: Bool) => match(soleItem(findType(r, ctype.scName)))
+fun genNewFindClass(nw: PeNew, xtypeSpec, ctype: SClass, r, pinned: Bool) => match(soleItem(findType(r, ctype.scName)))
   (found: Found) => match(found.fStmt)
     (cs: PsClass) => genNewClass(nw, xtypeSpec, ctype, cs, r, pinned)
     (o: PStmt)    => emptyBundle()   # unreachable
   ()               => emptyBundle()   # unreachable
 
 # An array class pins itself for its fill (Python rejects new_pinned on one).
-fun genNewClass(nw: PeNew, xtypeSpec, ctype, cs: PsClass, r, pinned: Bool)
+fun genNewClass(nw: PeNew, xtypeSpec, ctype: SClass, cs: PsClass, r, pinned: Bool)
   let paramsBundle = withPrefix(genExpr(nw.newParam, r), "args")
   let paramsVar = RpStackVar(specGenerate(xtypeSpec, r), "params")
   let resultVar = RpStackVar(specGenerate(ctype, r), "result")
@@ -1095,7 +1095,7 @@ fun punFieldArgs(fas: List<PFieldArg>, lr: PLine) => map(fas, (fa) => PunArg(fa.
 
 fun genTernaryTo(te, r, expected) => genTernary(te, r, expected)
 
-fun genTernary(te, r, expected)
+fun genTernary(te: PeTernary, r, expected)
   let slotType = match(expected)
     (e2: Spec) => expected
     ()          => exprType(te, r)

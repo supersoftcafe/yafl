@@ -598,7 +598,7 @@ fun [tail] gatherArms(ss: List<PStmt>, arms: List<PStmt>, i) => match(head(ss))
     (o: PStmt)     => finishFold(i, arms, None, ss)
   ()         => finishFold(i, arms, None, ss)
 
-fun finishFold(i, arms: List<PStmt>, elseBody: List<PStmt>|None,
+fun finishFold(i: PsIf, arms: List<PStmt>, elseBody: List<PStmt>|None,
                rest) => isEmpty(arms) && elseBody is None
   ? FoldedChain(i, rest)
   : FoldedChain(PsIf(i.ifCond, i.ifTrue,

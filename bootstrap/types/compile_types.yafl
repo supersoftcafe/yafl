@@ -88,7 +88,7 @@ fun withTypeArgs(canon, n: SNamed, r)
 
 # A ClassSpec keeps resolving its own name: the parser writes the bare name,
 # and it must settle to the declaration's unique (hashed) one.
-fun compileClass(c, r)
+fun compileClass(c: SClass, r)
   let bag = findType(r, c.scName)
   ret match(soleItem(bag))
     (f: Found) => compileParams(c.scParams, r)
@@ -97,7 +97,7 @@ fun compileClass(c, r)
 
 # An enum re-reads its fields from the declaration each pass — the instance in
 # hand may predate the layout that filled them in.
-fun compileEnum(e, r) => match(soleItem(findType(r, e.seRoot)))
+fun compileEnum(e: SEnum, r) => match(soleItem(findType(r, e.seRoot)))
   (f: Found) => canonicalEnum(e, f.fStmt)
   ()         => SpecOut(e, List())
 
@@ -107,7 +107,7 @@ fun canonicalEnum(e, st) => match(st)
     ()            => SpecOut(e, List())
   (o: PStmt)   => SpecOut(e, List())
 
-fun refreshedEnum(e, canon) => match(canon)
+fun refreshedEnum(e: SEnum, canon) => match(canon)
   (ce: SEnum) => SpecOut(SEnum(e.seRoot, e.seValidLeaves, e.seAllLeaves,
                                e.seParams, e.seLine),
                          List())

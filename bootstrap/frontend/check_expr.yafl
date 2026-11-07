@@ -323,7 +323,7 @@ fun joinMemberStrs(ms: List<Spec>, acc) =>
 
 # ── the rest ────────────────────────────────────────────────────────────────
 
-fun checkTernary(te, r, expected: Spec|None)
+fun checkTernary(te: PeTernary, r, expected: Spec|None)
   let condErr = checkExpr(te.condition, r, SBuiltin("bool", PLine("none", 0, 0)))
   let trueErr = checkExpr(te.trueResult, r, expected)
   let falseErr = checkExpr(te.falseResult, r, expected)

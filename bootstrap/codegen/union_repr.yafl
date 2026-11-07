@@ -70,7 +70,7 @@ fun collectLeafFieldSetsVariantsStep(a: List<List<PStmt>>, x: PStmt, combined: L
 # leaf — or a bare DataPointer for a BOXED leaf (the enum-encoding
 # principle: a payload over the value-struct threshold is a heap object
 # everywhere it appears, so it occupies one pointer slot here).
-fun enumVariantTypes(st: PsEnum, r) => match(asEnumVariant(st.eSpec))
+fun enumVariantTypes(st: PsEnum, r): List<CgType> => match(asEnumVariant(st.eSpec))
   (sp: SEnum) => evtLoop(sp.seAllLeaves,
                          collectLeafFieldSets(st, List()),
                          st.eName, r, List())
@@ -234,7 +234,7 @@ fun pointerWordKindNonUnit(member, r) => match(member)
   (e2: SEnum)   => isComplexEnum(e2, r) ? PkEnum(e2.seRoot) : None
   (o: Spec)     => None
 
-fun pointerWordKindTuple(t2, r)
+fun pointerWordKindTuple(t2: STuple, r)
   ret exactly(t2.stEntries, 1) ? pointerWordKindTupleEntry(entryTypeAt(t2, 0), r) : None
 
 fun pointerWordKindTupleEntry(ety: Spec|None, r) => match(ety)
@@ -485,7 +485,7 @@ fun classifyRepr(sp, r): GRepr => match(sp)
 
 fun classifyEnum(e2, r): GRepr => isComplexEnum(e2, r) ? GComplexEnum(e2) : classifyFlatEnum(e2, r)
 
-fun classifyFlatEnum(e2, r) => match(soleItem(findType(r, e2.seRoot)))
+fun classifyFlatEnum(e2: SEnum, r) => match(soleItem(findType(r, e2.seRoot)))
   (found: Found) => match(found.fStmt)
     (stmt: PsEnum) => classifyFlatEnumStmt(e2, stmt, r)
     (o: PStmt)     => classifyFlatEnumFallback(e2, r)
@@ -495,12 +495,12 @@ fun classifyFlatEnumStmt(e2, stmt: PsEnum, r)
   let layout = computeEnumSlots(enumVariantTypes(stmt, r), globalMaxTag(r))
   ret GTagged(e2, layout.fieldsStruct, layout.variantMap, layout.nullTests)
 
-fun classifyFlatEnumFallback(e2, r)
+fun classifyFlatEnumFallback(e2: SEnum, r)
   ret GTagged(e2, CgStruct(map(enumFieldsVia(r, e2.seRoot),
                                (f) => CgField(f.sfName, specGenerate(f.sfType, r)))),
               List(), None)
 
-fun classifyCombination(cm, r): GRepr
+fun classifyCombination(cm: SCombination, r): GRepr
   let members = reprMembersOf(cm.scTypes)
   ret unionCollapsesToPointer(members, r) ? classifyPointer(cm, members, r) : classifyCombinationTagged(cm, members, r)
 
@@ -1442,7 +1442,7 @@ fun [tail] widenPLoop(gp: GPointer, gt: GTagged, ms: List<Spec>, k, sv, word, ta
                                      discs, endLabel, r, acc))
   ()        => acc
 
-fun widenPStep(gp: GPointer, gt: GTagged, member, last: Bool, k: Int, sv, word, targetMembers: List<Spec>,
+fun widenPStep(gp: GPointer, gt: GTagged, member: Spec, last: Bool, k: Int, sv, word, targetMembers: List<Spec>,
                discs: Dict<String, Int>, endLabel, r, acc: WidenPAcc): WidenPAcc
   let label = "wide_p" + String(k)
   let u = uid(member)
@@ -1487,7 +1487,7 @@ fun widenFromTaggedStep(st: (i: Int, acc: WidenAcc), m: Spec, sv, srcRep: GTagge
   ret (i = st.i + 1,
        acc = WidenAcc(concat(st.acc.waBundles, one.owBundles), append(st.acc.waSources, one.owSource)))
 
-fun widenFromTaggedOne(srcVar, i, sv, srcRep: GTagged, gt: GTagged, targetMembers: List<Spec>,
+fun widenFromTaggedOne(srcVar: Spec, i: Int, sv, srcRep: GTagged, gt: GTagged, targetMembers: List<Spec>,
                        srcTagField, discs: Dict<String, Int>, endLabel, r: Resolver)
   let varUid = uid(srcVar)
   let varTag = getOr0(discs, varUid)

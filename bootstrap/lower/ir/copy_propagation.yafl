@@ -91,7 +91,7 @@ fun cpTryPropagate(cur, nxt, readCounts: Dict<String, Int>) => match(cur)
   (m: OpMove) => cpTryMove(m, nxt, readCounts)
   (o: Op)     => None
 
-fun cpTryMove(m, nxt, readCounts: Dict<String, Int>) => match(m.moveTarget)
+fun cpTryMove(m: OpMove, nxt, readCounts: Dict<String, Int>) => match(m.moveTarget)
   (mt: RpStackVar) => match(m.moveSource)
     (ms: RpStackVar) => cpTryNext(m, mt, ms, nxt, readCounts)
     (o: RParam)       => None

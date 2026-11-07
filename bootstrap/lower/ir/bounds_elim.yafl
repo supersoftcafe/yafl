@@ -133,7 +133,7 @@ fun beDefOf(defs: Dict<String, BeDefEntry>, name: String): BeDef|None => match(g
 # ── the resolver ────────────────────────────────────────────────────────────
 
 fun beResolve(rp, defs: Dict<String, BeDefEntry>,
-              visiting) => match(rp)
+              visiting): BeVal => match(rp)
   (i: RpInteger)         => BeInt(i.value, i.precision)
   (of: RpObjectField)    => BeField(beResolve(of.pointer, defs, visiting),
                                     of.field)
@@ -196,13 +196,13 @@ fun beResolvePhi(name, phi: OpPhi, defs: Dict<String, BeDefEntry>,
       ()          => BeOpaque()
 
 fun bePhiSourceId(phi: OpPhi, ix, defs: Dict<String, BeDefEntry>,
-                  visiting) => match(nthOf(phi.phiSources, ix))
+                  visiting): BeVal => match(nthOf(phi.phiSources, ix))
   (s2: OpPhiSource) => beResolve(s2.sourceValue, defs, visiting)
   ()                => BeOpaque()
 
 # back == cycle → INVARIANT (entry passes through); back == int32_add(cycle,
 # 1) → INDUCTION.
-fun bePhiClass(name, back, entry)
+fun bePhiClass(name: String, back: BeVal, entry: BeVal): BeVal|None
   if beEq(back, BeCycle(name))
     ret entry
   ret beIsIncrement(back, name) ? BeInduction(name) : None

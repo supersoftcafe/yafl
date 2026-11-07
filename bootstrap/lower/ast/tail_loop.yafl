@@ -54,7 +54,7 @@ fun tlAfterNested(out) => match(out.tsStmt)
     : out
   (o: PStmt)  => out
 
-fun tlNested(f) => match(f.fBody)
+fun tlNested(f: PsFun) => match(f.fBody)
   (b: PExpr) => match(b)
     (bk: PeBlock) => tlMembers(bk.blockStmts, List(),
                                Set())

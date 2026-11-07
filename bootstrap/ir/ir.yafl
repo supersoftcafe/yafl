@@ -237,7 +237,7 @@ fun cgLowerPhisJump([terminal] acc: PhiAcc, j: OpJump,
                   OpJump(j.jumpName, j.jumpSavedVars)),
              false)
 
-fun cgLowerPhisLabel([terminal] acc: PhiAcc, l,
+fun cgLowerPhisLabel([terminal] acc: PhiAcc, l: OpLabel,
                      phis: List<PhiAtEntry>)
   let group = phisAtLabel(phis, l.labelName)
   ret PhiAcc(l.labelName,
