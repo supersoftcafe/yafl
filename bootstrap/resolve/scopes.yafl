@@ -263,7 +263,7 @@ fun membersOf(c, own, query, r): Findings => match(mergedHook(r, c.scName))
 # shadowing, per-name completeness and DFS parent order); substitution
 # grounds each HIT's pattern against the queried instantiation. Misses pay
 # a single dict get.
-fun membersViaMerged(mt: MergedTable, c, own,
+fun membersViaMerged(mt: MergedTable, c: SClass, own,
                      query: String, r: Resolver)
   if !sameLen(mt.mtGens, c.scParams)
     ret emptyFindings()

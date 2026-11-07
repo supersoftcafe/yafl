@@ -31,6 +31,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import pyast.enum_tree as enum_tree
 import pyast.resolver as g
 import pyast.rewrite as rw
 import pyast.typespec as t
@@ -80,11 +81,10 @@ class WithExpression(Expression):
             return [(_bare(let.name), let.name, let.declared_type)
                     for let in found[0].statement.parameters.flatten()]
         if isinstance(stype, t.EnumSpec):
-            found = resolver.find_type(stype.root_name)
-            if len(found) != 1 or not isinstance(found[0].statement, s.EnumStatement):
+            root = resolver.find_enum(stype.root_name)
+            if root is None:
                 return None
-            covering = found[0].statement.covering_fields(stype.valid_leaf_names)
-            return [(_bare(n), n, ft) for n, ft in covering]
+            return [(_bare(n), n, ft) for n, ft in enum_tree.visible_fields(root, stype.path)]
         return None
 
     # ── compile: expand once the types allow it ──────────────────────────────
@@ -159,25 +159,23 @@ class WithExpression(Expression):
         else:
             root = resolver.find_type(stype.root_name)[0].statement
             leaves = _leaves(root, [])
-            arms = []
-            for i, (leaf_name, leaf_fields) in enumerate(leaves):
-                if _bare(leaf_name) not in {_bare(v) for v in stype.valid_leaf_names}:
-                    continue
-                binder = f"$wx{i}"
-                arms.append(_arm(lr, f"{binder}@{tag}", leaf_name,
-                    construct(leaf_name, leaf_fields,
-                              lambda bare, b=binder: e.DotExpression(lr, ref(b), bare))))
-            if not arms:
+            valid = {_bare(v) for v in stype.valid_leaf_names}
+            possible = [(i, leaf_name, leaf_fields)
+                        for i, (leaf_name, leaf_fields) in enumerate(leaves)
+                        if _bare(leaf_name) in valid]
+            if not possible:
                 return None
-            if len(arms) == 1:
-                # A single valid leaf needs no dispatch — but the CARRIED
-                # fields must still read through the binder-free subject.
-                leaf_name, leaf_fields = next(
-                    (ln, lf) for ln, lf in leaves
-                    if _bare(ln) in {_bare(v) for v in stype.valid_leaf_names})
-                copy = construct(leaf_name, leaf_fields,
+            _i, sole_name, sole_fields = possible[0]
+            if len(possible) == 1 and stype.path and stype.path[-1] == sole_name:
+                # The subject IS the one leaf: its fields are its members, so
+                # no dispatch — they read through the binder-free subject.
+                copy = construct(sole_name, sole_fields,
                                  lambda bare: e.DotExpression(lr, ref("$ws"), bare))
             else:
+                arms = [_arm(lr, f"$wx{i}@{tag}", leaf_name,
+                             construct(leaf_name, leaf_fields,
+                                       lambda bare, b=f"$wx{i}": e.DotExpression(lr, ref(b), bare)))
+                        for i, leaf_name, leaf_fields in possible]
                 from pyast.match import MatchExpression
                 copy = MatchExpression(lr, ref("$ws"), arms=arms)
 

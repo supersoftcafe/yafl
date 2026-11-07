@@ -210,7 +210,7 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
             # `List<String>|None` this way. Not assignable — the receiver
             # reports that, not us (test_union_return_shape).
             return t.trivially_assignable_equals(resolver, target, source) is True
-        return any(v.as_unique_id_str() == su for v in target.repr_members())
+        return target.member_holding(source) is not None
     if (isinstance(source, t.TupleSpec) and len(source.entries) == 1
             and source.entries[0].type is not None
             and source.entries[0].type.as_unique_id_str() == tu):
@@ -346,16 +346,13 @@ def _tuple_into_union(value, source: t.TupleSpec, target: t.CombinationSpec,
 
 def _pack_variant(value, source: t.TypeSpec, target: t.CombinationSpec,
                  resolver: g.Resolver) -> g.OperationBundle:
-    """Box a non-union value into a union that holds it as a direct variant.
-
-    Pass-through if `source` is not a variant of `target` — matches the old
-    `__box_singleton_variant` guard (the function-body implicit return can reach
-    here with a unit value against a non-nullable union; that must be inert)."""
-    su = source.as_unique_id_str()
-    variant_idx = next((i for i, v in enumerate(target.repr_members())
-                        if v.as_unique_id_str() == su), None) if su is not None else None
-    if variant_idx is None:
+    """Box a non-union value into the member of `target` that holds it — a
+    `Car` into the `Thing` of `Thing|Int`, which shares its representation.
+    Unchanged when no member holds it (a unit implicit return against a
+    non-nullable union reaches here and must be inert)."""
+    held = target.member_holding(source)
+    if held is None:
         return _passthrough(value)
     # The union's repr owns the representation-specific packing (collapsed
     # pointer word vs tagged struct).
-    return union_repr.classify(target, resolver).box_value(value, source, resolver)
+    return union_repr.classify(target, resolver).box_value(value, held.member, resolver)

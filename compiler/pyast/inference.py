@@ -153,7 +153,7 @@ def _infer_type_params(stmt: s.Statement, declared: t.CallableSpec,
     def settled(spec: t.TypeSpec, bindings: dict[str, t.TypeSpec | None]):
         errors: list = []
         for _ in range(len(bindings) + 1):
-            _p, learned, errors = t.merge(spec, expected.parameters, bindings, resolver, widen_views=True)
+            _p, learned, errors = t.merge(spec, expected.parameters, bindings, resolver, widen_levels=True)
             if learned == bindings:
                 break
             bindings = learned
@@ -178,7 +178,7 @@ def _infer_type_params(stmt: s.Statement, declared: t.CallableSpec,
     if declared.result is not None and expected.result is not None:
         bindings = {name: mapping.get(name) for name in placeholder_names}
         _result, learned, errors = t.merge(expected.result, declared.result, bindings, resolver,
-                                           widen_views=True, callee_left=False)
+                                           widen_levels=True, callee_left=False)
         if not errors:
             mapping = {name: spec for name, spec in learned.items() if spec is not None}
     return _infer_type_params_via_where(stmt, mapping, resolver, declared.parameters)
@@ -218,7 +218,7 @@ def use_site_type_params(stmt: s.Statement,
     # binding exactly as far as the context demands and no further.
     complete = (len(supplied) == len(stmt_type_params)
                 and not any(t.has_free_placeholders(tp, resolver) for tp in supplied)
-                and not any(t.contains_narrowed_view(tp) for tp in supplied))
+                and not any(t.contains_below_root(tp) for tp in supplied))
     if complete:
         return supplied
     declared = stmt.get_type() if hasattr(stmt, "get_type") else None
@@ -236,6 +236,6 @@ def use_site_type_params(stmt: s.Statement,
              if len(supplied) == len(stmt_type_params) else {})
     def bound(p) -> t.TypeSpec:
         fresh = mapping.get(p.name, p.type)
-        merged, _b, errors = t.merge(prior.get(p.name), fresh, {}, resolver, widen_views=True)
+        merged, _b, errors = t.merge(prior.get(p.name), fresh, {}, resolver, widen_levels=True)
         return merged if merged is not None and not errors else fresh
     return tuple(bound(p) for p in stmt_type_params)

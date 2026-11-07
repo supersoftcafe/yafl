@@ -481,11 +481,11 @@ fun tupleIntoUnionNonClass(value, source, variant, target, r)
   let tupleBundle = emitConversionOn(value, source, variant, r)
   ret bundleJoin(tupleBundle, packVariant(mustResult(tupleBundle), variant, target, r))
 
-fun packVariant(value, source, target, r)
-  let su = uid(source)
-  ret (su != "" && anyMemberIs(reprMembersOf(unionMembers(target)), su))
-    ? reprBoxValue(classifyRepr(target, r), value, source, r)
-    : bundleValue(value)
+# The value is packed as the member that holds it — a `Car` as the `Thing`
+# member of `Thing|Int`, which shares its representation.
+fun packVariant(value, source, target, r) => match(memberHolding(reprMembersOf(unionMembers(target)), source))
+  (held: HeldMember) => reprBoxValue(classifyRepr(target, r), value, held.hmMember, r)
+  ()                 => bundleValue(value)
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 4: literal expressions (pyast/expression/literal.py).
@@ -966,14 +966,14 @@ fun genNewOn(nw: PeNew, xtypeSpec, r, pinned: Bool) => match(nw.newType)
   (ctype: SClass) => genNewFindClass(nw, xtypeSpec, ctype, r, pinned)
   (o: Spec)        => emptyBundle()   # unreachable: check() requires a ClassSpec
 
-fun genNewFindClass(nw: PeNew, xtypeSpec, ctype, r, pinned: Bool) => match(soleItem(findType(r, ctype.scName)))
+fun genNewFindClass(nw: PeNew, xtypeSpec, ctype: SClass, r, pinned: Bool) => match(soleItem(findType(r, ctype.scName)))
   (found: Found) => match(found.fStmt)
     (cs: PsClass) => genNewClass(nw, xtypeSpec, ctype, cs, r, pinned)
     (o: PStmt)    => emptyBundle()   # unreachable
   ()               => emptyBundle()   # unreachable
 
 # An array class pins itself for its fill (Python rejects new_pinned on one).
-fun genNewClass(nw: PeNew, xtypeSpec, ctype, cs: PsClass, r, pinned: Bool)
+fun genNewClass(nw: PeNew, xtypeSpec, ctype: SClass, cs: PsClass, r, pinned: Bool)
   let paramsBundle = withPrefix(genExpr(nw.newParam, r), "args")
   let paramsVar = RpStackVar(specGenerate(xtypeSpec, r), "params")
   let resultVar = RpStackVar(specGenerate(ctype, r), "result")
@@ -1095,7 +1095,7 @@ fun punFieldArgs(fas: List<PFieldArg>, lr: PLine) => map(fas, (fa) => PunArg(fa.
 
 fun genTernaryTo(te, r, expected) => genTernary(te, r, expected)
 
-fun genTernary(te, r, expected)
+fun genTernary(te: PeTernary, r, expected)
   let slotType = match(expected)
     (e2: Spec) => expected
     ()          => exprType(te, r)

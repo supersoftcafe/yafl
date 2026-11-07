@@ -1,0 +1,258 @@
+# An enum value's members are the fields declared at its own level of the
+# enum or at a parent level — never a sub-type's (#74). Reading a sub-type's
+# field through a parent-typed value is a compile error (compiler/tests/
+# corpus_check/enum_member_levels.yafl); these are the reads that must work,
+# at every depth.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::EnumMemberLevels::LeafReadsEveryParentLevel
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun describe(c: Car): Int
+  ret c.id * 100 + c.wheels * 10 + c.seats
+
+fun program(): Int
+  ret describe(Car(7, 4, 5))
+
+fun [test("a leaf reads its own and every parent level's fields")] check(): None|TestFailure
+    ret assertEqInt(program(), 745, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::MiddleLevelReadsItsOwnAndParents
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun wheelsOf(a: Automobile): Int
+  ret a.id + a.wheels
+
+fun program(): Int
+  ret wheelsOf(Car(1, 4, 5)) * 10 + wheelsOf(Lorry(2, 18, 3))
+
+fun [test("a middle level reads its own and its parents' fields")] check(): None|TestFailure
+    ret assertEqInt(program(), 70, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::MatchNarrowsToTheArmsLevel
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun score(t: Thing): Int
+  ret match(t)
+    (c: Car)   => c.id + c.wheels + c.seats
+    (l: Lorry) => l.id + l.wheels + l.axles
+    (b: Boat)  => b.id + b.hulls
+
+fun program(): Int
+  ret score(Car(1, 4, 5)) * 10000 + score(Lorry(2, 18, 3)) * 100 + score(Boat(3, 2))
+
+fun [test("a match arm reads the fields of its own level")] check(): None|TestFailure
+    ret assertEqInt(program(), 102305, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::OnlyChildReadsThroughItsOwnType
+
+import System
+import System::Test
+
+enum Wrapper(base: Int)
+  enum Only(extra: Int)
+
+fun total(w: Wrapper): Int
+  ret match(w)
+    (o: Only) => o.base + o.extra
+
+fun program(): Int
+  ret total(Only(40, 2))
+
+fun [test("an only child's field is read through the child's type")] check(): None|TestFailure
+    ret assertEqInt(program(), 42, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::GenericLeafReadsParentField
+
+import System
+import System::Test
+
+enum Tagged<T>(tag: Int)
+  enum Empty()
+  enum Holding(value: T)
+
+fun valueOr(t: Tagged<Int>, d: Int): Int
+  ret match(t)
+    (_: Empty<Int>)  => t.tag + d
+    (h: Holding<Int>) => h.tag + h.value
+
+fun program(): Int
+  ret valueOr(Holding<Int>(1, 41), 0) * 100 + valueOr(Empty<Int>(5), 3)
+
+fun [test("a generic variant reads its parent level's field")] check(): None|TestFailure
+    ret assertEqInt(program(), 4208, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::GenericInstantiatedPerLevel
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun [inline(never)] same<T>(x: T): T
+  ret x
+
+fun [inline(never)] apply<T, R>(x: T, f: (:T): R): R
+  ret f(x)
+
+fun program(): Int
+  let t: Thing = Boat(3, 2)
+  let c: Car = Car(1, 4, 5)
+  ret apply(same(t), (a) => a.id) * 100 + apply(same(c), (v) => v.seats)
+
+fun [test("one generic at two levels of an enum is two instantiations")] check(): None|TestFailure
+    ret assertEqInt(program(), 305, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::UnionHoldsALevelInItsParentMember
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun [inline(never)] wrap(c: Car): Thing|Int
+  ret c
+
+fun [inline(never)] wrapA(a: Automobile|String): Thing|String|Int
+  ret a
+
+fun program(): Int
+  let u = wrap(Car(7, 4, 5))
+  let w = wrapA(Lorry(2, 18, 3))
+  let a = match(u)
+    (t: Thing) => t.id
+    (i: Int) => i
+  ret a + match(w)
+    (t: Thing) => t.id * 10
+    (s: String) => 0
+    (i: Int) => i
+
+fun [test("a value lives in the union member of its own level or a parent level")] check(): None|TestFailure
+    ret assertEqInt(program(), 27, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::SiblingLevelsAreTwoMembers
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun [inline(never)] pick(b: Bool): Car|Boat
+  ret b ? Car(1, 4, 5) : Boat(2, 3)
+
+fun [inline(never)] wide(x: Car|Boat): Thing|Int
+  ret x
+
+fun [inline(never)] narrow(x: Thing|Int): Int
+  ret match(x)
+    (c: Car) => c.seats
+    (o: Thing) => o.id * 10
+    (i: Int) => i
+
+fun program(): Int
+  let a = match(pick(true))
+    (c: Car) => c.seats
+    (b: Boat) => b.hulls * 10
+  let b = match(pick(false))
+    (t: Thing) => t.id * 100
+  ret a + b + narrow(wide(pick(true))) * 1000 + narrow(wide(pick(false))) * 10000
+
+fun [test("sibling levels are two union members; a parent arm covers both")] check(): None|TestFailure
+    ret assertEqInt(program(), 205205, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::ParentArmCoversHeapSiblings
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int, tow: Thing|None)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int, tender: Thing|None)
+
+fun [inline(never)] pick(b: Bool): Car|Boat
+  ret b ? Car(1, 4, 5, None) : Boat(2, 3, None)
+
+fun program(): Int
+  let a = match(pick(false))
+    (t: Thing) => t.id * 100
+  let b = match(pick(true))
+    (t: Thing) => t.id
+  ret a + b
+
+fun [test("a parent arm covers sibling members of a heap enum")] check(): None|TestFailure
+    ret assertEqInt(program(), 201, "program()")
+
+
+namespace CompilerTests::EnumMemberLevels::DeclaredLevelUnionStaysDeclared
+
+import System
+import System::Test
+
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun [inline(never)] pick(b: Bool): Car|Boat
+  ret b ? Car(1, 4, 5) : Boat(2, 3)
+
+fun [inline(never)] count(x: Car|Boat): Int
+  ret match(x)
+    (c: Car) => c.seats
+    (b: Boat) => b.hulls
+
+fun program(): Int
+  let p = pick(false)
+  ret count(p)
+
+fun [test("a declared union of levels is not widened to their parent")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")

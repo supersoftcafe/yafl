@@ -31,7 +31,7 @@ enum TypeId
   enum TiBuiltin(tibName: String)
   enum TiNamed(tinName: String, tinArgs: List<TypeId>)    # raw spelling — incomplete
   enum TiClass(ticName: String, ticArgs: List<TypeId>)
-  enum TiEnum(tieRoot: String, tieArgs: List<TypeId>)
+  enum TiEnum(tieRoot: String, tieArgs: List<TypeId>, tiePath: List<String>)   # tiePath: the level; empty is the root
   enum TiTuple(titEntries: List<(tteName: String, tteId: TypeId)>)
   enum TiCallable(tcbParams: TypeId, tcbResult: TypeId)
   enum TiUnion(tiuMembers: List<TypeId>)                  # sorted by spelling at build
@@ -46,7 +46,7 @@ fun spellingOf(sp) => match(sp)
   (bi: SBuiltin)     => TiBuiltin(bi.sbName)
   (n: SNamed)        => TiNamed(n.snName, spellList(n.snParams))
   (c: SClass)        => TiClass(c.scName, spellList(c.scParams))
-  (e2: SEnum)        => TiEnum(e2.seRoot, spellList(e2.seParams))
+  (e2: SEnum)        => TiEnum(e2.seRoot, spellList(e2.seParams), e2.sePath)
   (t2: STuple)       => TiTuple(map(
                           t2.stEntries, (en) =>
                             (en.seName, spellingOfOpt(en.seType))))
@@ -80,7 +80,7 @@ fun tiSerialise(t2) => match(t2)
   (b: TiBuiltin)     => "B(" + b.tibName + ")"
   (n: TiNamed)       => "N(" + n.tinName + ";" + tiJoin(n.tinArgs) + ")"
   (c: TiClass)       => "C(" + c.ticName + ";" + tiJoin(c.ticArgs) + ")"
-  (e2: TiEnum)       => "E(" + e2.tieRoot + ";" + tiJoin(e2.tieArgs) + ")"
+  (e2: TiEnum)       => "E(" + e2.tieRoot + ";" + tiJoin(e2.tieArgs) + ";" + join(e2.tiePath, "/") + ")"
   (tp: TiTuple)      => "T(" + join(map(tp.titEntries,
                           (en) =>
                             en.tteName + ":" + tiSerialise(en.tteId)), ",") + ")"
@@ -109,6 +109,7 @@ fun eqTypeId(a, b) => match(a)
     (o: TypeId)    => false
   (x: TiEnum)        => match(b)
     (y: TiEnum)    => x.tieRoot == y.tieRoot && eqTypeIds(x.tieArgs, y.tieArgs)
+                      && eqStrs(x.tiePath, y.tiePath)
     (o: TypeId)    => false
   (x: TiTuple)       => match(b)
     (y: TiTuple)   => eqTiEntries(x.titEntries, y.titEntries)
@@ -146,7 +147,8 @@ fun [hashed] hashTypeId(v) => match(v)
   (b: TiBuiltin)     => _tiMix(13i32, hashOf(b.tibName))
   (n: TiNamed)       => hashTiList(n.tinArgs, _tiMix(17i32, hashOf(n.tinName)))
   (c: TiClass)       => hashTiList(c.ticArgs, _tiMix(19i32, hashOf(c.ticName)))
-  (e2: TiEnum)       => hashTiList(e2.tieArgs, _tiMix(23i32, hashOf(e2.tieRoot)))
+  (e2: TiEnum)       => hashTiList(e2.tieArgs, fold(e2.tiePath, _tiMix(23i32, hashOf(e2.tieRoot)),
+                          (a, n) => _tiMix(a, hashOf(n))))
   (tp: TiTuple)      => hashTiEntries(tp.titEntries, 29i32)
   (cb: TiCallable)   => _tiMix(_tiMix(31i32, hashTypeId(cb.tcbParams)),
                                hashTypeId(cb.tcbResult))

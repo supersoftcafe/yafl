@@ -41,6 +41,14 @@ fun [tail] lastSep(s, at, best: Int): Int
 
 fun matchName(left, right) => simpleName(left) == simpleName(right)
 
+# The enum declaration `root` names, or None when it does not name exactly
+# one enum.
+fun findEnum(r, root: String): PsEnum|None => match(soleItem(findType(r, root)))
+  (f: Found) => match(f.fStmt)
+    (e: PsEnum) => e
+    (o: PStmt)  => None
+  ()         => None
+
 # A class member's DECLARED name: everything before its FIRST '@'. A member
 # is `name@hash`, and a generic class's specialised member gains a second
 # `@type-signature` suffix (which may itself contain '@'), so simpleName's
@@ -766,7 +774,7 @@ fun mmParent(s2, parent, mi: MemberIdx, st: Statements,
     : mmParentClass(s2, c, mi, st, visiting)
   (o: Spec)   => s2   # unreachable: implements entries are class or named
 
-fun mmParentClass(s2: MMState, parent, mi: MemberIdx, st: Statements,
+fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: Statements,
                   visiting: List<String>)
   let acc2 = mmEnsure(parent.scName, st, visiting, s2.mmAcc)
   ret match(get(acc2, parent.scName))
@@ -778,7 +786,7 @@ fun mmParentClass(s2: MMState, parent, mi: MemberIdx, st: Statements,
       (mn: MMissing) => MMState(s2.mmRows, s2.mmAbsent, true, acc2)
     ()               => MMState(s2.mmRows, s2.mmAbsent, true, acc2)   # unreachable
 
-fun mmMergeParent(s2: MMState, parent, sub: MergedTable,
+fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
                   mi: MemberIdx)
   let mapping = paramMapping(sub.mtGens, parent.scParams)
   let rows = fold(sort(keys(sub.mtRows)), s2.mmRows,

@@ -31,8 +31,11 @@ enum Spec
   enum SBuiltin(sbName: String, sbLine: PLine)
   enum SNamed(snName: String, snParams: List<Spec>, snLine: PLine)
   enum SClass(scName: String, scParams: List<Spec>, scLine: PLine)
+  # sePath: the declaration this type IS — the variant names from the root
+  # down to it (empty for the root). Part of identity; members are the fields
+  # declared along it, and the value fits every prefix (a parent).
   enum SEnum(seRoot: String, seValidLeaves: List<String>, seAllLeaves: List<String>,
-             seParams: List<Spec>, seLine: PLine)
+             seParams: List<Spec>, seLine: PLine, sePath: List<String>)
   enum SGeneric(sgName: String, sgLinear: Bool, sgLine: PLine)
   enum SCallable(scParams2: Spec, scResult: Spec|None, sclLine: PLine)
   enum SCombination(scTypes: List<Spec>, scmLine: PLine)
@@ -64,14 +67,21 @@ fun uid(sp) => match(sp)
   (n: SNamed)        => ""                       # unresolved alias
   (g: SGeneric)      => ""                       # unbound placeholder
   (c: SClass)        => instantiationUid(c.scName, c.scParams)
-  (e: SEnum)         => contains(e.seRoot, "@")
-    ? instantiationUid("enum(" + e.seRoot + ")", e.seParams)
-    : ""
+  (e: SEnum)         => contains(e.seRoot, "@") ? uidEnum(e) : ""
   (cl: SCallable)    => uidCallable(cl)
   (cm: SCombination) => uidUnion(cm)
   (t2: STuple)       => uidTuple(t2)
   (af: SArrayField)  => uidArray(af)
   (ls: SLazyStub)    => uidLazy(ls)
+
+# An enum's identity is its root, the root's type arguments (a generic enum's
+# parameters belong to the whole tree), and its level: `Shape/Circle` and
+# `Shape` are two types, so two instantiations and two union members.
+fun uidEnum(e: SEnum) => uidAtLevel(instantiationUid("enum(" + e.seRoot + ")", e.seParams), e.sePath)
+
+fun uidAtLevel(base: String, path: List<String>) => base == ""
+  ? ""
+  : base + join(map(path, (n) => "/" + n), "")
 
 # A generic instantiation is its root's id plus EVERY type argument's
 # (identity = name + all type args): `List<Int>` and `List<String>` are two
@@ -187,7 +197,7 @@ fun withoutNoneOf(members: List<Spec>, lr)
 # enum type, so a caller that has just built an SCombination cannot pass it
 # where an SCombination is expected.
 fun reprMembersOf(types: List<Spec>): List<Spec> => flattenMembers(types, List())
-  |> dropSubsumed
+  |> dropStrictlyHeld
 
 fun flattenMembers(ts: List<Spec>, acc: List<Spec>): List<Spec> =>
   fold(ts, acc, addMember)
@@ -202,26 +212,65 @@ fun addMember(acc, sp) => match(sp)
 
 fun hasUid(ts: List<Spec>, u) => any(ts, (x) => uid(x) == u)
 
-fun dropSubsumed(flat: List<Spec>): List<Spec> => keepUnsubsumed(flat, flat, List())
+# An enum member strictly held by another member adds no values: `Car |
+# Thing` IS `Thing`. Only ground enums fold; the parent member is kept.
+fun dropStrictlyHeld(flat: List<Spec>): List<Spec> =>
+  fold(flat, List<Spec>(), (a, x) => isStrictlyHeld(x, flat) ? a : append(a, x))
 
-fun keepUnsubsumed(ms: List<Spec>, all2: List<Spec>, acc: List<Spec>) =>
-  fold(ms, acc, (a, x) => isSubsumed(x, all2) ? a : append(a, x))
-
-# An enum member whose valid leaves are a STRICT subset of another member of
-# the same enum carries no values the wider member lacks.
-fun isSubsumed(m: Spec, flat: List<Spec>) => match(m)
-  (e: SEnum) => contains(e.seRoot, "@") && anyWider(flat, e)
+fun isStrictlyHeld(m: Spec, flat: List<Spec>) => match(m)
+  (e: SEnum) => contains(e.seRoot, "@") && any(flat, (o) => strictlyHoldsMember(o, e))
   (o)        => false
 
-fun anyWider(os: List<Spec>, e: SEnum) => any(os, (x) => widerEnum(x, e))
+# holds: a value of `e` can be stored, unchanged, as `parent` — the same enum
+# and type arguments, at `parent`'s level or below.
+fun holds(parent: SEnum, e: SEnum) =>
+  descendsFrom(e, parent) && instantiationUid(parent.seRoot, parent.seParams) != ""
+    && instantiationUid(parent.seRoot, parent.seParams) == instantiationUid(e.seRoot, e.seParams)
 
-fun widerEnum(o: Spec, e: SEnum) => match(o)
-  (oe: SEnum) => oe.seRoot == e.seRoot
-                 && shorterThan(e.seValidLeaves, oe.seValidLeaves)
-                 && allIn(e.seValidLeaves, oe.seValidLeaves)
-  (other)     => false
+# strictly_holds: `holds`, with `e` strictly below `parent`'s level.
+fun strictlyHolds(parent: SEnum, e: SEnum) => holds(parent, e) && !eqStrs(e.sePath, parent.sePath)
 
-fun allIn(ns: List<String>, wider: List<String>) => all(ns, (x) => contains(wider, x))
+fun holdsMember(m: Spec, e: SEnum) => match(m)
+  (me: SEnum) => holds(me, e)
+  (o)         => false
+
+fun strictlyHoldsMember(m: Spec, e: SEnum) => match(m)
+  (me: SEnum) => strictlyHolds(me, e)
+  (o)         => false
+
+# A union member, and its index in the union's reprMembersOf.
+class [final] HeldMember(hmIndex: Int, hmMember: Spec)
+
+# member_holding: the union member a value of `sp` is stored in, with its
+# index — the member equal to `sp`, else the enum member `sp` descends from
+# (`Car` is stored in the `Thing` of `Thing|Int`). None if no member holds
+# it, or `sp` is not yet ground.
+fun memberHolding(members: List<Spec>, sp: Spec): HeldMember|None
+  let u = uid(sp)
+  if u == ""
+    ret None
+  ret match(findIndex(members, (m) => uid(m) == u))
+    (i: Int) => heldAt(members, i)
+    ()       => match(sp)
+      (e: SEnum) => match(findIndex(members, (m) => holdsMember(m, e)))
+        (j: Int) => heldAt(members, j)
+        ()       => None
+      (o)        => None
+
+fun heldAt(members: List<Spec>, i: Int): HeldMember|None => match(head(drop(members, i)))
+  (m: Spec) => HeldMember(i, m)
+  ()        => None
+
+# descends_from: `e` is `parent`'s level or below it in the same enum — a
+# value of `e` is a value of `parent` without a match.
+fun descendsFrom(e: SEnum, parent: SEnum) =>
+  e.seRoot == parent.seRoot && isPrefix(parent.sePath, e.sePath)
+
+fun isPrefix(pre: List<String>, xs: List<String>): Bool => match(head(pre))
+  (p: String) => match(head(xs))
+    (x: String) => p == x && isPrefix(dropOne(pre), dropOne(xs))
+    ()          => false
+  ()          => true
 
 # ── tuple entry binding ─────────────────────────────────────────────────────
 # bind_tuple_entries: the ONE binding rule — positional first, then by NAME
@@ -367,7 +416,7 @@ fun parseEnumText(text)
   let root = c < 0 ? body : slice(body, 0, c)
   let tail2 = c < 0 ? "" : slice(body, c + 1, length(body))
   let leaves = tail2 == "" ? List<String>() : split(tail2, "|")
-  ret SEnum(root, leaves, leaves, parts.args, noLine())
+  ret SEnum(root, leaves, leaves, parts.args, noLine(), List())
 
 fun parseClassText(text)
   let parts = withArgsText(text)

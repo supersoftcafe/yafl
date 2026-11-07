@@ -186,11 +186,11 @@ Four refinements the port's own sources forced, each with a test:
    receiver members nobody matched, on the receiver side the value members
    nobody placed (the stream combinators' `E | ParseError`). An anonymous
    receiver hole becomes what it absorbed. Several holes: no partition.
-4. **Provisional views** (`widen_views`). A narrowed enum view in a STORED
-   inference, or in a binding taken from an argument, is provisional — the
-   documented rule `meet` used to implement by joining views. Only there does
-   a receiver's view widen to the union of both views; everywhere else views
-   stay distinct types.
+4. **Provisional levels** (`widen_levels`). An enum type below its root in a
+   STORED inference, or in a binding taken from an argument, is provisional.
+   Only there does a receiver's level widen to the common parent of both
+   levels; everywhere else levels stay distinct types, and a declared type is
+   never widened.
 
 ## Progress
 

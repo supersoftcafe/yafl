@@ -496,12 +496,11 @@ def __collect_diagnostics(statements: list[s.Statement],
 
 
 def __type_view(spec: t.TypeSpec) -> str:
-    """`_type_str` names an enum by its ROOT, but a view is a distinct type —
-    the answer that flips is often root versus view, so name the leaves."""
+    """Names an enum type by its level (`Circle`) rather than its root, since
+    root versus variant is the usual source of a flip-flop."""
     from pyast.expression.call import _type_str, _spec_name
-    if isinstance(spec, t.EnumSpec) and set(spec.valid_leaf_names) != set(spec.all_leaf_names):
-        return " | ".join(_spec_name(leaf) for leaf in spec.all_leaf_names
-                          if leaf in spec.valid_leaf_names)
+    if isinstance(spec, t.EnumSpec) and spec.path:
+        return _spec_name(spec.path[-1])
     return _type_str(spec)
 
 

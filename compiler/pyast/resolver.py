@@ -163,6 +163,14 @@ class Resolver:
     def find_type(self, name: str) -> "Findings[Resolved[s.TypeStatement]]":
         return EMPTY
 
+    def find_enum(self, root_name: str) -> "s.EnumStatement | None":
+        """The enum declaration `root_name` names, or None when it does not
+        name exactly one enum."""
+        found = self.find_type(root_name)
+        if len(found) == 1 and isinstance(found[0].statement, s.EnumStatement):
+            return found[0].statement
+        return None
+
     def is_complex_root(self, root_name: str) -> bool:
         # DERIVED is_complex (identity vs state): overridden by ResolverRoot
         # with the lazily-computed breaker analysis; an empty resolver has no

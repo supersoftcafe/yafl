@@ -405,7 +405,7 @@ fun compileEnum(e: PsEnum, r0): StmtOut
 
 fun layoutEnum(t2: PsEnum)
   let allLeaves = collectLeafNames(t2)
-  ret assignSpecs(t2, t2.eName, allLeaves)
+  ret assignSpecs(t2, t2.eName, allLeaves, List())
 
 # The enum's all_fields, DERIVED from the statement as it currently stands —
 # the tag plus every variant's data fields, root-down. State is derived,
@@ -458,19 +458,6 @@ fun enumFieldsDerive(r, root) => match(soleItem(findType(r, root)))
     (o: PStmt)  => List()
   ()         => List()
 
-# _collect_leaf_names: a node with no variants IS a leaf — unless it also has
-# no parameter list, which is the uninhabited empty type (`enum Never`).
-fun collectLeafNames(e: PsEnum) => isEmpty(e.eVariants)
-  ? (e.eHasParams ? prepend(e.eName, List()) : List())
-  : leafLoop(e.eVariants, List())
-
-fun leafLoop(vs: List<PStmt>, acc: List<String>) =>
-  fold(vs, acc, leafLoopStep)
-
-fun leafLoopStep(a: List<String>, x: PStmt) => match(x)
-  (v: PsEnum) => concat(a, collectLeafNames(v))
-  (o: PStmt) => a
-
 # _collect_data_fields: every TYPED constructor field in the whole tree, first
 # declaration wins (deduplicated by name). Mirrors Python's seen-set + append
 # (types.py _collect_data_fields): the dedup reads the SET, so the fields ride
@@ -507,23 +494,26 @@ fun addFieldOnce(acc: FieldAcc, name, ty)
 
 fun hasFieldNamed(fs: List<SField>, name: String) => any(fs, (x) => x.sfName == name)
 
-# _assign_specs: root name, the SHARED all-leaves, and each node's OWN
-# valid-leaf subset, recursively onto every variant. Fields are DERIVED —
-# never assigned (identity vs state).
-fun assignSpecs(e: PsEnum, root, allLeaves)
+# _assign_specs: root name, the SHARED all-leaves, each node's OWN
+# valid-leaf subset and its path from the root (`path` is e's own),
+# recursively onto every variant. Fields are DERIVED — never assigned
+# (identity vs state).
+fun assignSpecs(e: PsEnum, root, allLeaves, path: List<String>)
   ret PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams,
-             assignAllSpecs(e.eVariants, root, allLeaves,
+             assignAllSpecs(e.eVariants, root, allLeaves, path,
                             List()),
              e.eHasParams, e.pseLine, root,
              SEnum(root, collectLeafNames(e), allLeaves, List(),
-                   e.pseLine),
+                   e.pseLine, path),
              e.eImports)
 
-fun assignAllSpecs(vs: List<PStmt>, root, allLeaves, acc: List<PStmt>) =>
-  fold(vs, acc, (a, x) => assignAllSpecsStep(a, x, root, allLeaves))
+fun assignAllSpecs(vs: List<PStmt>, root, allLeaves, parent: List<String>,
+                   acc: List<PStmt>) =>
+  fold(vs, acc, (a, x) => assignAllSpecsStep(a, x, root, allLeaves, parent))
 
-fun assignAllSpecsStep(a: List<PStmt>, x: PStmt, root, allLeaves) => match(x)
-  (v: PsEnum) => append(a, assignSpecs(v, root, allLeaves))
+fun assignAllSpecsStep(a: List<PStmt>, x: PStmt, root, allLeaves,
+                       parent: List<String>) => match(x)
+  (v: PsEnum) => append(a, assignSpecs(v, root, allLeaves, append(parent, v.eName)))
   (o: PStmt) => append(a, x)
 
 # ── control ─────────────────────────────────────────────────────────────────
@@ -598,7 +588,7 @@ fun [tail] gatherArms(ss: List<PStmt>, arms: List<PStmt>, i) => match(head(ss))
     (o: PStmt)     => finishFold(i, arms, None, ss)
   ()         => finishFold(i, arms, None, ss)
 
-fun finishFold(i, arms: List<PStmt>, elseBody: List<PStmt>|None,
+fun finishFold(i: PsIf, arms: List<PStmt>, elseBody: List<PStmt>|None,
                rest) => isEmpty(arms) && elseBody is None
   ? FoldedChain(i, rest)
   : FoldedChain(PsIf(i.ifCond, i.ifTrue,

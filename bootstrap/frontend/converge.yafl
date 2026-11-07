@@ -144,22 +144,13 @@ fun flipErr(lr: PLine, what: String, a: String, b: String): Set<PErr>
   ret oneErr(lr, what + " alternates between '" + one + "' and '" + other
                  + "' across compile passes — declare it")
 
-# A VIEW of an enum is a distinct type, and root-versus-view is what usually
-# flips — `typeStr` names both by the root, so name the leaves instead.
+# Each level of an enum is a distinct type, and root-versus-variant is what
+# usually flips — `typeStr` names both by the root, so name the level.
 fun typeView(sp: Spec): String => match(sp)
-  (e2: SEnum) => isEnumView(e2)
-    ? joinLeaves(e2.seAllLeaves, e2.seValidLeaves, "")
-    : typeStr2(sp)
+  (e2: SEnum) => match(head(takeLastOne(e2.sePath)))
+    (level: String) => specName(level, List())
+    ()              => typeStr2(sp)
   (o: Spec)   => typeStr2(sp)
-
-# A view excludes at least one of the root's leaves.
-fun isEnumView(e2: SEnum) => any(e2.seAllLeaves,
-                                 (l) => !any(e2.seValidLeaves, (v) => v == l))
-
-fun joinLeaves(ls: List<String>, valid: List<String>, acc: String): String =>
-  fold(ls, acc, (out, l) => any(valid, (v) => v == l)
-    ? (out == "" ? specName(l, List()) : out + " | " + specName(l, List()))
-    : out)
 
 fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
   (b: PExpr) => match(b)
