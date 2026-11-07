@@ -47,18 +47,15 @@ def _is_sync(stmt: s.FunctionStatement) -> bool:
     return "sync" in stmt.attributes
 
 
-def _enum_fields(resolver: g.Resolver, espec: "t.EnumSpec"):
-    """The enum's fields for member resolution — DERIVED from the statement
-    when it is reachable (identity vs state: the statement is the current
-    truth), falling back to the stored copy only until the stored field is
-    removed. Fields are template-shaped either way; the caller substitutes
-    type params on read."""
+def _enum_members(resolver: g.Resolver, espec: "t.EnumSpec"):
+    """The fields a value of type `espec` has: those declared at its level of
+    the enum or at a parent level — never a sub-type's. DERIVED from the
+    statement (identity vs state: the statement is the current truth). Fields
+    are template-shaped; the caller substitutes type params on read."""
     found = resolver.find_type(espec.root_name)
-    if len(found) == 1:
-        stmt = found[0].statement
-        if hasattr(stmt, "derive_all_fields"):
-            return resolver.get_enum_fields(stmt)
-    return ()   # unreachable root (pruned): no fields to resolve against
+    if len(found) == 1 and isinstance(found[0].statement, s.EnumStatement):
+        return found[0].statement.visible_fields(espec.path)
+    return []   # unreachable root (pruned): no fields to resolve against
 
 
 def _substitute_class_type_params(
@@ -174,33 +171,18 @@ def _resolve_overloads(resolver: g.Resolver, expected_type: t.TypeSpec | None, c
 
 
 
-# Sentinel: a bare enum-field name that SEVERAL possible variants declare (at
-# different layout positions) — reading it un-narrowed would be a silent read
-# of one arbitrary variant's slot. compile leaves the name unresolved and
-# check() reports it.
+# Sentinel: two levels on the value's path declare the same bare field name.
 _AMBIGUOUS_ENUM_FIELD = object()
 
 
-def _narrowed_enum_field(resolver: g.Resolver, espec: t.EnumSpec,
-                         bare: str):
-    """Resolve bare field name `bare` against enum subject `espec`, honouring
-    its narrowing: the (unique_name, type) pair, None when absent, or
-    _AMBIGUOUS_ENUM_FIELD. A single enum-wide match resolves directly; when
-    several variants declare the same bare name, only a field the narrowed
-    value is GUARANTEED to carry (declared at a node covering every possible
-    leaf) may win."""
-    cands = [(fn, ft) for fn, ft in _enum_fields(resolver, espec) if g.match_name(fn, bare)]
-    if len(cands) == 1:
-        return cands[0]
-    if not cands:
-        return None
-    types = resolver.find_type(espec.root_name)
-    if len(types) != 1 or not isinstance(types[0].statement, s.EnumStatement):
-        return None  # root not resolved yet: retry next pass
-    covering = {fn for fn, _ in types[0].statement.covering_fields(espec.valid_leaf_names)}
-    owned = [c for c in cands if c[0] in covering]
-    return owned[0] if len(owned) == 1 else _AMBIGUOUS_ENUM_FIELD
-
+def _enum_member(resolver: g.Resolver, espec: t.EnumSpec, bare: str):
+    """Resolve bare field name `bare` against a value of type `espec`: the
+    (unique_name, type) pair, None when its level and parents declare no such
+    field, or _AMBIGUOUS_ENUM_FIELD."""
+    cands = [(fn, ft) for fn, ft in _enum_members(resolver, espec) if g.match_name(fn, bare)]
+    if len(cands) > 1:
+        return _AMBIGUOUS_ENUM_FIELD
+    return cands[0] if cands else None
 
 
 @dataclass
@@ -230,7 +212,7 @@ class DotExpression(Expression):
                     return _substitute_class_type_params(
                         resolver, cspec, cdecl, datas[0].statement.get_type())
             case t.EnumSpec() as espec:
-                ft = next((ft for fn, ft in _enum_fields(resolver, espec) if fn == self.name), None)
+                ft = next((ft for fn, ft in _enum_members(resolver, espec) if fn == self.name), None)
                 return _substitute_enum_type_params(resolver, espec, ft)
         return None
 
@@ -255,8 +237,8 @@ class DotExpression(Expression):
                     name = datas[0].unique_name
             case t.EnumSpec() as espec:
                 if '@' not in self.name:
-                    match_field = _narrowed_enum_field(resolver, espec, self.name)
-                    if match_field is not None and match_field is not _AMBIGUOUS_ENUM_FIELD:
+                    match_field = _enum_member(resolver, espec, self.name)
+                    if match_field not in (None, _AMBIGUOUS_ENUM_FIELD):
                         name = match_field[0]
 
         expr = dataclasses.replace(self, base=base, name=name)
@@ -290,13 +272,9 @@ class DotExpression(Expression):
                 if len(datas) > 1:
                     return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
             case t.EnumSpec() as espec:
-                if any(fn == self.name for fn, _ in _enum_fields(resolver, espec)):
-                    return []  # already resolved to a unique field name
-                found = _narrowed_enum_field(resolver, espec, self.name)
+                found = _enum_member(resolver, espec, self.name)
                 if found is _AMBIGUOUS_ENUM_FIELD:
-                    return [Error(self.line_ref,
-                        f"field '{self.name}' is declared by more than one possible "
-                        f"variant here — match on the specific variant first")]
+                    return [Error(self.line_ref, f"Ambiguous reference to field named {self.name}")]
                 if found is None:
                     return [Error(self.line_ref, f"Could not find field {self.name}")]
                 return []

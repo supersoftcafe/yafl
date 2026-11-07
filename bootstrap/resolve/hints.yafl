@@ -145,8 +145,9 @@ fun allFit(us: List<Spec>, cand, r, widest) =>
 
 # ── converge ────────────────────────────────────────────────────────────────
 
-# The one type all of `types` fit: the same type, the widest of them, their
-# enum's root, or the one interface their classes share.
+# The one type all of `types` fit: the same type, the widest of them, the
+# nearest parent level of their one enum, or the one interface their classes
+# share.
 fun convergeTypes(types: List<Spec>, r) => match(head(types))
   (first: Spec) => allSameSpec(types, first)
     ? first
@@ -155,16 +156,20 @@ fun convergeTypes(types: List<Spec>, r) => match(head(types))
 
 fun convergeMixed(types: List<Spec>, first, r) =>
   widestOf(types, types, r) ?? (allEnums(types)
-    ? rootEnumOf(types, first)
+    ? commonParentOf(types, first, r)
     : allClasses(types) ? soleShared(sharedInterfaces(types, r)) : None)
 
 fun widestOf(ws: List<Spec>, all: List<Spec>, r) => firstWhere(ws, (w) => allFit(all, w, r, true))
 
-fun rootEnumOf(types: List<Spec>, first) => match(first)
-  (e2: SEnum) => sameEnumFamily(types, e2)
-    ? SEnum(e2.seRoot, e2.seAllLeaves, e2.seAllLeaves, e2.seParams, e2.seLine)
-    : None
+fun commonParentOf(types: List<Spec>, first, r) => match(first)
+  (e2: SEnum) => sameEnumFamily(types, e2) ? commonParent(enumsOf(types), r) : None
   (o: Spec)   => None
+
+fun enumsOf(ss: List<Spec>): List<SEnum> => fold(ss, List<SEnum>(), enumsOfStep)
+
+fun enumsOfStep(a: List<SEnum>, x: Spec): List<SEnum> => match(x)
+  (e: SEnum) => append(a, e)
+  (o: Spec)  => a
 
 fun sameEnumFamily(ss: List<Spec>, e2: SEnum) => all(ss, (s) => inEnumFamily(s, e2))
 

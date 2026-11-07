@@ -36,9 +36,13 @@ def hole(name="T@free"):
     return t.GenericPlaceholderSpec(lr, name)
 
 
-def enum(family, *args, leaves=None):
+def enum(family, *args, level=None):
+    """The root of `family`, or with `level` its direct variant of that name."""
     root, all_leaves = family
-    return t.EnumSpec(lr, root, frozenset(leaves or all_leaves), all_leaves, type_params=tuple(args))
+    if level is None:
+        return t.EnumSpec(lr, root, frozenset(all_leaves), all_leaves, type_params=tuple(args))
+    return t.EnumSpec(lr, root, frozenset({level}), all_leaves, type_params=tuple(args),
+                      path=(level,))
 
 
 def tup(*entries):
@@ -86,18 +90,18 @@ class TestTuples(TestCase):
 
 class TestEnumViews(TestCase):
     def test_the_root_receives_a_view(self):
-        circle = enum(_SHAPE, leaves=("Circle@1",))
+        circle = enum(_SHAPE, level="Circle@1")
         self.assertEqual((enum(_SHAPE), {}, []), t.merge(enum(_SHAPE), circle, {}, EMPTY))
 
     def test_a_narrower_receiver_is_a_contradiction(self):
-        circle = enum(_SHAPE, leaves=("Circle@1",))
+        circle = enum(_SHAPE, level="Circle@1")
         result, _b, errors = t.merge(circle, enum(_SHAPE), {}, EMPTY)
         self.assertIsNone(result)
         self.assertEqual(1, len(errors))
 
     def test_sibling_views_are_a_contradiction(self):
-        circle = enum(_SHAPE, leaves=("Circle@1",))
-        square = enum(_SHAPE, leaves=("Square@1",))
+        circle = enum(_SHAPE, level="Circle@1")
+        square = enum(_SHAPE, level="Square@1")
         result, _b, errors = t.merge(circle, square, {}, EMPTY)
         self.assertIsNone(result)
         self.assertEqual(1, len(errors))
@@ -109,7 +113,7 @@ class TestGenericArguments(TestCase):
 
     def test_arguments_are_invariant(self):
         # List<Circle> is not a List<Shape>, whichever way round.
-        circle = enum(_SHAPE, leaves=("Circle@1",))
+        circle = enum(_SHAPE, level="Circle@1")
         for left, right in ((enum(_LIST, enum(_SHAPE)), enum(_LIST, circle)),
                             (enum(_LIST, circle), enum(_LIST, enum(_SHAPE)))):
             with self.subTest(left=left):
@@ -126,9 +130,9 @@ class TestGenericArguments(TestCase):
     def test_a_generic_spelled_without_arguments_is_a_shape(self):
         # The `rw` case: a leaf pattern `ListFull` names List with no
         # arguments — every argument a hole.
-        full = enum(_LIST, leaves=("ListFull@1",))
+        full = enum(_LIST, level="ListFull@1")
         self.assertEqual((enum(_LIST, INT), {}, []),
-                         t.merge(enum(_LIST, INT), enum(_LIST, INT, leaves=("ListFull@1",)), {}, EMPTY))
+                         t.merge(enum(_LIST, INT), enum(_LIST, INT, level="ListFull@1"), {}, EMPTY))
         self.assertEqual((enum(_LIST, INT), {}, []), t.merge(enum(_LIST, INT), enum(_LIST), {}, EMPTY))
         result, _b, errors = t.merge(enum(_LIST, INT), full, {}, EMPTY)
         self.assertEqual(enum(_LIST, INT), result)
@@ -203,7 +207,7 @@ class TestCallables(TestCase):
     def test_parameters_reverse_direction(self):
         # A (Shape): Int receives a (Circle): Int? No — the value would be
         # handed Shapes it cannot take. The reverse is fine.
-        circle = enum(_SHAPE, leaves=("Circle@1",))
+        circle = enum(_SHAPE, level="Circle@1")
         ok = t.merge(fn([circle], INT), fn([enum(_SHAPE)], INT), {}, EMPTY)
         self.assertEqual([], ok[2])
         bad = t.merge(fn([enum(_SHAPE)], INT), fn([circle], INT), {}, EMPTY)
@@ -286,7 +290,7 @@ class TestWidenViews(TestCase):
     distinct types."""
 
     def test_a_provisional_view_widens_inside_an_argument(self):
-        missing = enum(_SHAPE, leaves=("Circle@1",))
+        missing = enum(_SHAPE, level="Circle@1")
         dct = ("Dict@1", ("Dict@1",))
         stored, fresh = enum(dct, hole(), missing), enum(dct, STR, enum(_SHAPE))
         result, _b, errors = t.merge(stored, fresh, {}, EMPTY, widen_views=True)
@@ -327,7 +331,7 @@ class TestArgumentsOutrankTheExpectedType(TestCase):
         T = hole("T@head")
         stmt = SimpleNamespace(type_params=[SimpleNamespace(name="T@head")], trait_params=())
         declared = t.CallableSpec(lr, tup((None, enum(_LIST, T))), union(T, UNIT))
-        circle = enum(_SHAPE, leaves=("Circle@1",))
+        circle = enum(_SHAPE, level="Circle@1")
         expected = t.CallableSpec(lr, tup((None, enum(_LIST, enum(_SHAPE)))), union(UNIT, circle))
         mapping = inf._infer_type_params(stmt, declared, expected, g.ResolverRoot([]))
         self.assertEqual({"T@head": enum(_SHAPE)}, mapping)
@@ -463,7 +467,7 @@ class TestReceives(TestCase):
     bounds)."""
 
     def test_a_view_fits_its_wider_view(self):
-        circle = enum(_SHAPE, leaves=("Circle@1",))
+        circle = enum(_SHAPE, level="Circle@1")
         self.assertTrue(t.receives(enum(_SHAPE), circle, EMPTY))
         self.assertFalse(t.receives(circle, enum(_SHAPE), EMPTY))
 
@@ -503,7 +507,7 @@ class TestAgreementTakesThePositionsVariance(TestCase):
     def test_a_callable_parameter_never_widens_the_binding(self):
         # map(circles, (v) => Named(v)): the lambda takes a Shape, T stays
         # Circle — a callable parameter never widens, even in a widening merge.
-        circle = enum(_SHAPE, leaves=("Circle@1",))
+        circle = enum(_SHAPE, level="Circle@1")
         declared = tup((None, enum(_LIST, hole("T@c"))), (None, fn([hole("T@c")], BOOL)))
         actual = tup((None, enum(_LIST, circle)), (None, fn([enum(_SHAPE)], BOOL)))
         _r, bindings, errors = t.merge(declared, actual, {"T@c": None}, EMPTY, widen_views=True)
@@ -521,7 +525,7 @@ class TestAHoleThatTookTheRestIsMatched(TestCase):
         # Stream<Grow<S>, Int, E | Bool> against Stream<…, Int, Never | Bool>:
         # inside generic arguments the union is invariant, and E, which took
         # the Never, is a matched member.
-        never = enum(("Never@1", ()), leaves=())
+        never = enum(("Never@1", ()))
         _r, bindings, errors = t.merge(enum(_LIST, union(hole("E@c"), BOOL)), enum(_LIST, union(never, BOOL)),
                                        {"E@c": None}, EMPTY)
         self.assertEqual([], errors)

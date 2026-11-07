@@ -380,7 +380,7 @@ fun bgLoop(ss: List<PStmt>, cur: List<PStmt>, done: List<List<PStmt>>) =>
   fold(ss, (cur = cur, done = done), bgStep)
     |> (st) => append(st.done, st.cur)
 
-fun bgStep(st: (cur: List<PStmt>, done: List<List<PStmt>>), s: PStmt) => match(s)
+fun bgStep(st: (cur: List<PStmt>, done: List<List<PStmt>>), s: PStmt): (cur: List<PStmt>, done: List<List<PStmt>>) => match(s)
   (im: PsImport)    => (cur = append(st.cur, s), done = st.done)
   (n2: PsNamespace) => (cur = list1(PsImport(n2.nsPath, n2.psnLine)), done = append(st.done, st.cur))
   (o: PStmt)        => st

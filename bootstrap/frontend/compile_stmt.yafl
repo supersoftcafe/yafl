@@ -405,7 +405,7 @@ fun compileEnum(e: PsEnum, r0): StmtOut
 
 fun layoutEnum(t2: PsEnum)
   let allLeaves = collectLeafNames(t2)
-  ret assignSpecs(t2, t2.eName, allLeaves)
+  ret assignSpecs(t2, t2.eName, allLeaves, List())
 
 # The enum's all_fields, DERIVED from the statement as it currently stands —
 # the tag plus every variant's data fields, root-down. State is derived,
@@ -460,6 +460,48 @@ fun enumFieldsDerive(r, root) => match(soleItem(findType(r, root)))
 
 # _collect_leaf_names: a node with no variants IS a leaf — unless it also has
 # no parameter list, which is the uninhabited empty type (`enum Never`).
+# node_at: the declaration `path` names below `e` (empty is e itself), or
+# None when the path does not exist in this tree.
+fun nodeAt(e: PsEnum, path: List<String>): PsEnum|None => match(head(path))
+  (name: String) => match(variantNamed(e.eVariants, name))
+    (v: PsEnum) => nodeAt(v, dropOne(path))
+    ()          => None
+  ()             => e
+
+fun variantNamed(vs: List<PStmt>, name: String): PsEnum|None => match(head(vs))
+  (x: PStmt) => match(x)
+    (v: PsEnum) => v.eName == name ? v : variantNamed(dropOne(vs), name)
+    (o: PStmt)  => variantNamed(dropOne(vs), name)
+  ()         => None
+
+# path_to: the path from `e` down to the declaration named `name` (empty when
+# it is e), or None when there is none.
+fun pathTo(e: PsEnum, name: String): List<String>|None
+  if e.eName == name
+    ret List<String>()
+  ret pathToVariants(e.eVariants, name)
+
+fun pathToVariants(vs: List<PStmt>, name: String): List<String>|None => match(head(vs))
+  (x: PStmt) => match(x)
+    (v: PsEnum) => match(pathTo(v, name))
+      (below: List<String>) => prepend(v.eName, below)
+      ()                    => pathToVariants(dropOne(vs), name)
+    (o: PStmt)  => pathToVariants(dropOne(vs), name)
+  ()         => None
+
+# visible_fields: the typed fields visible through a value typed at `path`
+# below root `e` — declared at that level or a parent level, and no others.
+# A field declared lower down belongs to a sub-type and is not a member here.
+fun visibleFields(e: PsEnum, path: List<String>) => visibleFrom(e, path, List())
+
+fun visibleFrom(node: PsEnum, path: List<String>, acc: List<SField>): List<SField>
+  let here = typedFieldsOf(flattenParams(node.eParams), acc)
+  ret match(head(path))
+    (name: String) => match(variantNamed(node.eVariants, name))
+      (v: PsEnum) => visibleFrom(v, dropOne(path), here)
+      ()          => List<SField>()
+    ()             => here
+
 fun collectLeafNames(e: PsEnum) => isEmpty(e.eVariants)
   ? (e.eHasParams ? prepend(e.eName, List()) : List())
   : leafLoop(e.eVariants, List())
@@ -507,23 +549,26 @@ fun addFieldOnce(acc: FieldAcc, name, ty)
 
 fun hasFieldNamed(fs: List<SField>, name: String) => any(fs, (x) => x.sfName == name)
 
-# _assign_specs: root name, the SHARED all-leaves, and each node's OWN
-# valid-leaf subset, recursively onto every variant. Fields are DERIVED —
-# never assigned (identity vs state).
-fun assignSpecs(e: PsEnum, root, allLeaves)
+# _assign_specs: root name, the SHARED all-leaves, each node's OWN
+# valid-leaf subset and its path from the root (`path` is e's own),
+# recursively onto every variant. Fields are DERIVED — never assigned
+# (identity vs state).
+fun assignSpecs(e: PsEnum, root, allLeaves, path: List<String>)
   ret PsEnum(e.eName, e.eAttrs, e.eGens, e.eParams,
-             assignAllSpecs(e.eVariants, root, allLeaves,
+             assignAllSpecs(e.eVariants, root, allLeaves, path,
                             List()),
              e.eHasParams, e.pseLine, root,
              SEnum(root, collectLeafNames(e), allLeaves, List(),
-                   e.pseLine),
+                   e.pseLine, path),
              e.eImports)
 
-fun assignAllSpecs(vs: List<PStmt>, root, allLeaves, acc: List<PStmt>) =>
-  fold(vs, acc, (a, x) => assignAllSpecsStep(a, x, root, allLeaves))
+fun assignAllSpecs(vs: List<PStmt>, root, allLeaves, parent: List<String>,
+                   acc: List<PStmt>) =>
+  fold(vs, acc, (a, x) => assignAllSpecsStep(a, x, root, allLeaves, parent))
 
-fun assignAllSpecsStep(a: List<PStmt>, x: PStmt, root, allLeaves) => match(x)
-  (v: PsEnum) => append(a, assignSpecs(v, root, allLeaves))
+fun assignAllSpecsStep(a: List<PStmt>, x: PStmt, root, allLeaves,
+                       parent: List<String>) => match(x)
+  (v: PsEnum) => append(a, assignSpecs(v, root, allLeaves, append(parent, v.eName)))
   (o: PStmt) => append(a, x)
 
 # ── control ─────────────────────────────────────────────────────────────────
@@ -598,7 +643,7 @@ fun [tail] gatherArms(ss: List<PStmt>, arms: List<PStmt>, i) => match(head(ss))
     (o: PStmt)     => finishFold(i, arms, None, ss)
   ()         => finishFold(i, arms, None, ss)
 
-fun finishFold(i, arms: List<PStmt>, elseBody: List<PStmt>|None,
+fun finishFold(i: PsIf, arms: List<PStmt>, elseBody: List<PStmt>|None,
                rest) => isEmpty(arms) && elseBody is None
   ? FoldedChain(i, rest)
   : FoldedChain(PsIf(i.ifCond, i.ifTrue,

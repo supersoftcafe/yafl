@@ -55,6 +55,7 @@ fun eqSpec(a, b) => match(a)
                   && eqStrs(x.seValidLeaves, y.seValidLeaves)
                   && eqStrs(x.seAllLeaves, y.seAllLeaves)
                   && eqSpecs(x.seParams, y.seParams)
+                  && eqStrs(x.sePath, y.sePath)
     (o: Spec)  => false
   (x: SGeneric) => match(b)
     (y: SGeneric) => x.sgName == y.sgName && eqBool(x.sgLinear, y.sgLinear)

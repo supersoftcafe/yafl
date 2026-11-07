@@ -261,13 +261,13 @@ fun main(): Int
 class TestEnumFieldAccess(TestCase):
 
     def test_access_own_field(self):
-        """Can read a field declared on the leaf level."""
+        """Can read a field declared on the leaf level, through the leaf type."""
         _clang_check(_PREAMBLE + """\
 enum IOError(code: Int)
   enum ReadError(amount: Int)
 
 fun main(): Int
-  let e: IOError = ReadError(0, 42)
+  let e: ReadError = ReadError(0, 42)
   let x: Int = e.amount
   ret 0
 """)

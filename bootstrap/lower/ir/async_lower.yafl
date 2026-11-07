@@ -783,7 +783,7 @@ fun alStateField(name, t2, sp, stateName, layout: AFrame)
       ()              => RpObjectField(t2, sp, stateName, name, None, false, false)
 
 # local → state; a decomposed struct stores one leaf per array element.
-fun alStoreVar(v, sp, stateName, layout: AFrame)
+fun alStoreVar(v: RParam, sp, stateName, layout: AFrame): List<Op>
   ret match(get(layout.afDecomposed, stackVarName(v)))
     (base: Int) => alStoreDecomposed(v, sp, stateName, base)
     ()           => list1(OpMove(alStateField(stackVarName(v), rpGetType(v), sp, stateName, layout),

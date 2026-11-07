@@ -1,0 +1,46 @@
+# check-contract corpus: an enum value's members are the fields declared at
+# its own level or a parent level — never a sub-type's (#74).
+typealias Int : __builtin_type__<bigint>
+
+enum NewList
+  enum NewListEmpty()
+  enum NewListFull(_head: Int, _count: Int)
+
+# The issue's program: `_count` is NewListFull's, not NewList's.
+fun size(list: NewList): Int
+  ret list._count
+
+# An only child is still a sub-type: `f` is Y's, not X's.
+enum X
+  enum Y(f: Int)
+
+fun onlyChild(x: X): Int
+  ret x.f
+
+# Same-named fields on two variants are two different fields; neither is
+# a member of the parent.
+enum Pair
+  enum PairA(n: Int)
+  enum PairB(n: Int)
+
+fun siblings(p: Pair): Int
+  ret p.n
+
+# Through a variant, its own and every parent level's fields are members.
+enum Thing(id: Int)
+  enum Automobile(wheels: Int)
+    enum Car(seats: Int)
+    enum Lorry(axles: Int)
+  enum Boat(hulls: Int)
+
+fun carId(c: Car): Int
+  ret c.id
+
+fun carWheels(c: Car): Int
+  ret c.wheels
+
+fun carSeats(c: Car): Int
+  ret c.seats
+
+fun autoSeats(a: Automobile): Int
+  ret a.seats

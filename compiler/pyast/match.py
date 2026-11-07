@@ -493,25 +493,7 @@ class _Emitter:
         if not arm.name or arm.name == "_":
             return None
 
-        def reconstruct(ctype, offset):
-            if isinstance(ctype, cg_t.FuncPointer):
-                # Reassemble the closure from its two slots — a closure IS a
-                # struct (the enum-encoding principle), deconstructed on write
-                # by union_repr._variant_slots.
-                si_f, of = slot_assignments[offset]
-                si_o, oo = slot_assignments[offset + 1]
-                return cg_p.MakeFun(
-                    union_repr.slot_read(sv, slot_fields, si_f, of),
-                    union_repr.slot_read(sv, slot_fields, si_o, oo)), offset + 2
-            if not isinstance(ctype, cg_t.Struct):
-                si, orig = slot_assignments[offset]
-                return union_repr.slot_read(sv, slot_fields, si, orig), offset + 1
-            fvs = {}
-            for fname, ftype in ctype.fields:
-                fvs[fname], offset = reconstruct(ftype, offset)
-            return cg_p.union_struct(ctype, fvs), offset
-
-        arm_value, _ = reconstruct(arm_ctype, 0)
+        arm_value = union_repr.value_from_slots(arm_ctype, slot_assignments, slot_fields, sv)
         arm_sv = cg_p.StackVar(arm_ctype, _arm_unique_name(arm))
         bundle = g.OperationBundle(stack_vars=(arm_sv,), operations=(cg_o.Move(arm_sv, arm_value),))
         return bundle, _binding_resolver(self.resolver, arm, arm.type_spec)
@@ -569,8 +551,10 @@ def _union_variants(subj_type: t.CombinationSpec, resolver: g.Resolver):
         name = getattr(member, "name", uid)
         if isinstance(member, t.EnumSpec) and len(member.valid_leaf_names) > 1:
             for leaf in sorted(member.valid_leaf_names):
-                out[f"{uid}/{leaf}"] = (leaf, dataclasses.replace(
-                    member, valid_leaf_names=frozenset({leaf})), name)
+                leaf_spec = t.enum_variant(member, leaf, resolver)
+                if leaf_spec is None:
+                    return None
+                out[f"{uid}/{leaf}"] = (leaf, leaf_spec, name)
         else:
             out[uid] = (name, member, name)
     return out

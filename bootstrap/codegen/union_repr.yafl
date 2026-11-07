@@ -70,7 +70,7 @@ fun collectLeafFieldSetsVariantsStep(a: List<List<PStmt>>, x: PStmt, combined: L
 # leaf — or a bare DataPointer for a BOXED leaf (the enum-encoding
 # principle: a payload over the value-struct threshold is a heap object
 # everywhere it appears, so it occupies one pointer slot here).
-fun enumVariantTypes(st: PsEnum, r) => match(asEnumVariant(st.eSpec))
+fun enumVariantTypes(st: PsEnum, r): List<CgType> => match(asEnumVariant(st.eSpec))
   (sp: SEnum) => evtLoop(sp.seAllLeaves,
                          collectLeafFieldSets(st, List()),
                          st.eName, r, List())
@@ -234,7 +234,7 @@ fun pointerWordKindNonUnit(member, r) => match(member)
   (e2: SEnum)   => isComplexEnum(e2, r) ? PkEnum(e2.seRoot) : None
   (o: Spec)     => None
 
-fun pointerWordKindTuple(t2, r)
+fun pointerWordKindTuple(t2: STuple, r)
   ret exactly(t2.stEntries, 1) ? pointerWordKindTupleEntry(entryTypeAt(t2, 0), r) : None
 
 fun pointerWordKindTupleEntry(ety: Spec|None, r) => match(ety)
@@ -485,7 +485,7 @@ fun classifyRepr(sp, r): GRepr => match(sp)
 
 fun classifyEnum(e2, r): GRepr => isComplexEnum(e2, r) ? GComplexEnum(e2) : classifyFlatEnum(e2, r)
 
-fun classifyFlatEnum(e2, r) => match(soleItem(findType(r, e2.seRoot)))
+fun classifyFlatEnum(e2: SEnum, r) => match(soleItem(findType(r, e2.seRoot)))
   (found: Found) => match(found.fStmt)
     (stmt: PsEnum) => classifyFlatEnumStmt(e2, stmt, r)
     (o: PStmt)     => classifyFlatEnumFallback(e2, r)
@@ -495,12 +495,12 @@ fun classifyFlatEnumStmt(e2, stmt: PsEnum, r)
   let layout = computeEnumSlots(enumVariantTypes(stmt, r), globalMaxTag(r))
   ret GTagged(e2, layout.fieldsStruct, layout.variantMap, layout.nullTests)
 
-fun classifyFlatEnumFallback(e2, r)
+fun classifyFlatEnumFallback(e2: SEnum, r)
   ret GTagged(e2, CgStruct(map(enumFieldsVia(r, e2.seRoot),
                                (f) => CgField(f.sfName, specGenerate(f.sfType, r)))),
               List(), None)
 
-fun classifyCombination(cm, r): GRepr
+fun classifyCombination(cm: SCombination, r): GRepr
   let members = reprMembersOf(cm.scTypes)
   ret unionCollapsesToPointer(members, r) ? classifyPointer(cm, members, r) : classifyCombinationTagged(cm, members, r)
 
@@ -603,13 +603,35 @@ fun narrowsUnionMember(unionType, armType) => match(unionType)
   (cm: SCombination) => narrowsAnyMember(reprMembersOf(unionMembers(unionType)), armType)
   (o: Spec)          => false
 
-fun narrowsMember(m, ae: SEnum) => match(m)
-  (me: SEnum) => me.seRoot == ae.seRoot
-                 && properSubset(map(ae.seValidLeaves, baseName), map(me.seValidLeaves, baseName))
+fun narrowsMember(m, ae: SEnum) => widerEnum(m, ae)
+
+# ── what a tagged-combination pattern selects ───────────────────────────────
+
+# One member a pattern selects: its variant index, the member, and whether
+# the pattern names only some of that member's variants (`narrowed`).
+class [final] TaggedSelection(tsVi: Int, tsMember: Spec, tsNarrowed: Bool)
+
+# The members of a tagged combination that `pattern` selects: the member
+# holding it — narrowed when the pattern names only some of its variants —
+# else every enum member the pattern holds (`(t: Thing)` over `Car|Boat`
+# selects both). Several members in one arm are several entries.
+fun taggedSelections(members: List<Spec>, pattern: Spec): List<TaggedSelection> => match(memberHolding(members, pattern))
+  (holder: Spec) => list1(TaggedSelection(variantIndexOf(members, uid(holder)) ?? 0, holder,
+                                          uid(holder) != uid(pattern)))   # always present
+  ()             => match(pattern)
+    (pe: SEnum) => heldSelections(members, pe)
+    (o: Spec)   => List()
+
+fun heldSelections(members: List<Spec>, pe: SEnum): List<TaggedSelection> =>
+  fold(members, (i = 0, acc = List<TaggedSelection>()),
+       (st, m) => (i = st.i + 1,
+                   acc = isHeldBy(m, pe) ? append(st.acc, TaggedSelection(st.i, m, false)) : st.acc)).acc
+
+fun isHeldBy(m: Spec, pe: SEnum) => match(m)
+  (me: SEnum) => holds(pe, me)
   (o: Spec)   => false
 
-fun properSubset(small: List<String>, big: List<String>)
-  ret all(small, (x) => contains(big, x)) && any(big, (x) => !contains(small, x))
+fun soleSelection(ss: List<TaggedSelection>): TaggedSelection|None => exactly(ss, 1) ? head(ss) : None
 
 fun complexPositionGuards(gc: GComplexEnum, sv, armType: Spec,
                           r): List<RParam>|None => match(asEnumVariant(gc.grcType))
@@ -653,21 +675,19 @@ fun pointerGuards(gp: GPointer, ms: List<Spec>, word, r) => match(mapAll(ms, (m)
 # discriminator and takes tag 0, exactly as the single-subject path reads it.
 fun combinationPositionStages(gt: GTagged, sv, armType,
                               r): List<List<RParam>>|None
-  let member = narrowedMember(gt.grtType, armType)
-  ret match(soleMemberOf(member))
-    # The member must actually BE a member of this subject union. Without the
-    # check a pattern naming something else emits a tag test against 0 and
-    # silently matches the wrong variant; Python refuses it (vi is None).
-    (m: Spec) => match(variantIndexOf(reprMembersOf(unionMembers(gt.grtType)), uid(m)))
-      (vi: Int) => combinationMemberStages(gt, sv, m, vi, armType, r)
-      ()        => None
-    ()        => None                # several members need a Phi, not a stage
+  # The pattern must select exactly one member of this subject union. A
+  # pattern selecting none would test tag 0 and silently match the wrong
+  # variant; one selecting several (`(t: Thing)` over `Car|Boat`) would bind a
+  # different value per member, which one position cannot. Both are refused.
+  ret match(soleSelection(taggedSelections(reprMembersOf(unionMembers(gt.grtType)), armType)))
+    (sel: TaggedSelection) => combinationMemberStages(gt, sv, sel, armType, r)
+    ()                     => None
 
-fun combinationMemberStages(gt: GTagged, sv, member, vi: Int, armType, r): List<List<RParam>>
+fun combinationMemberStages(gt: GTagged, sv, sel: TaggedSelection, armType, r): List<List<RParam>>
   let tagStage: List<RParam> = list1(RpIntEqConst(RpStructField(sv, "$tag"),
-                                    discOf(getDiscriminators(r), uid(member))))
-  ret narrowsUnionMember(gt.grtType, armType)
-    ? list2(tagStage, taggedVariantGuards(member, forceNth(gt.grtVariantMap, vi),
+                                    discOf(getDiscriminators(r), uid(sel.tsMember))))
+  ret sel.tsNarrowed
+    ? list2(tagStage, taggedVariantGuards(sel.tsMember, forceNth(gt.grtVariantMap, sel.tsVi),
                                           forceFields(gt.grtContainer), sv, armType, r))
     : list1(tagStage)
 
@@ -702,32 +722,64 @@ fun guardsOrNever(guards: List<RParam>|None): List<RParam> => match(guards)
 # a position cannot be. Returning the union itself here — as this did — hands
 # back a single tag for a pattern that matches several, silently accepting a
 # program Python refuses.
-fun soleMemberOf(sp) => exactly(unionMembers(sp), 1) ? head(unionMembers(sp)) : None
+# subject_at_arm: the enum subject seen at the ARM's level, named the
+# subject's way. Every level shares the root's representation, so the value
+# binds unchanged; the TYPE is the arm's, so the body sees exactly that
+# level's members. The arm's path is matched by base identity (baseName): a
+# monomorphised subject and arm can be specialised through different passes.
+fun subjectAtArm(subjType: Spec, armType: Spec, r): Spec => match(subjType)
+  (se: SEnum) => match(armType)
+    (ae: SEnum) => subjectLevel(se, ae, r) ?? subjType
+    (o: Spec)   => subjType
+  (o: Spec)   => subjType
+
+fun subjectLevel(se: SEnum, ae: SEnum, r): SEnum|None
+  if isEmpty(ae.sePath)
+    ret None
+  ret match(soleItem(findType(r, se.seRoot)))
+    (f: Found) => match(f.fStmt)
+      (en: PsEnum) => match(levelPathByBase(en, ae.sePath, List()))
+        (p: List<String>) => enumLevel(se, p, r)
+        ()                => None
+      (o: PStmt)   => None
+    ()         => None
+
+fun levelPathByBase(node: PsEnum, names: List<String>,
+                    acc: List<String>): List<String>|None => match(head(names))
+  (n: String) => match(variantByBase(node.eVariants, baseName(n)))
+    (v: PsEnum) => levelPathByBase(v, dropOne(names), append(acc, v.eName))
+    ()          => None
+  ()          => acc
+
+fun variantByBase(vs: List<PStmt>, base: String): PsEnum|None => match(head(vs))
+  (x: PStmt) => match(x)
+    (v: PsEnum) => baseName(v.eName) == base ? v : variantByBase(dropOne(vs), base)
+    (o: PStmt)  => variantByBase(dropOne(vs), base)
+  ()         => None
 
 fun discOf(discs: Dict<String, Int>, u: String) => match(get(discs, u))
   (i: Int) => i
   ()       => 0
 
 # Bind ONE position's name, or None when it binds nothing. The enum reprs
-# bind at the SUBJECT type on purpose (an SEnum arm type may be a pruned
-# generic spec with stale fields — only leaf identity matters for the guard);
+# bind at the SUBJECT type seen at the arm's level (an SEnum arm type may be a
+# pruned generic spec with stale fields, but its level is what the body reads);
 # a pointer union binds at the ARM's type, since the value IS the narrowed
 # pointer; and a tagged combination REASSEMBLES the variant out of the
 # union's slots.
 fun reprPositionBind(rep, holder: PArm, sv, armType, subjType, r): GBind|None => match(rep)
   (gt: GTagged) => match(gt.grtType)
-    (e2: SEnum) => bindSubject(r, holder, subjType, sv)
+    (e2: SEnum) => bindSubject(r, holder, subjectAtArm(subjType, armType, r), sv)
     (o: Spec)   => combinationPositionBind(gt, holder, sv, armType, r)
   (gp: GPointer)     => bindSubject(r, holder, armType, ptrAs(gp, sv, armType, r))
-  (gc: GComplexEnum) => bindSubject(r, holder, subjType, sv)
+  (gc: GComplexEnum) => bindSubject(r, holder, subjectAtArm(subjType, armType, r), sv)
 
 fun combinationPositionBind(gt: GTagged, holder: PArm, sv, armType, r): GBind|None
-  ret match(soleMemberOf(narrowedMember(gt.grtType, armType)))
-    (m: Spec) => match(variantIndexOf(reprMembersOf(unionMembers(gt.grtType)), uid(m)))
-      (vi: Int) => bindFromSlots(r, holder, specGenerate(m, r), forceNth(gt.grtVariantMap, vi),
-                                 forceFields(gt.grtContainer), sv)
-      ()        => None
-    ()        => None                # several members need a Phi, not a stage
+  ret match(soleSelection(taggedSelections(reprMembersOf(unionMembers(gt.grtType)), armType)))
+    (sel: TaggedSelection) => bindFromSlots(r, holder, specGenerate(sel.tsMember, r),
+                                            forceNth(gt.grtVariantMap, sel.tsVi),
+                                            forceFields(gt.grtContainer), sv)
+    ()                     => None   # several members need a Phi, not a stage
 
 fun reprGenerateMatch(rep, em, resultType, subjBundle: GBundle,
                      arms: List<PArm>, elseArm, r): GEmit => match(rep)
@@ -774,7 +826,8 @@ fun flatEnumArm(em, arm: PArm, sv, gt: GTagged, resultType: Spec|None, r): GEmit
 fun flatEnumArmOn(em: GEmit, arm: PArm, gt: GTagged, armType: SEnum, sv,
                   resultType: Spec|None, r): GEmit
   let guards = guardsOrNever(flatLeafGuards(gt, ownSlot(gt, sv), armType))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, gt.grtType, sv), List())
+  ret emArm(em, r, resultType, arm, list1(guards),
+            bindSubject(r, arm, subjectAtArm(gt.grtType, armType, r), sv), List())
 
 # ── tagged combination ──────────────────────────────────────────────────
 
@@ -784,10 +837,9 @@ fun generateCombinationMatch(em0, resultType: Spec|None, subjBundle: GBundle, su
   let sv = mustResult(subjBundle)
   let tag = RpStructField(sv, "$tag")
   let members = reprMembersOf(unionMembers(subjType))
-  let variantTypes = map(members, (v) => specGenerate(v, r))
   let slotFields = forceFields(container)
   let discs = getDiscriminators(r)
-  let em1 = combinationArms(em0, arms, sv, tag, members, variantTypes, variantMap, slotFields, discs, resultType, r)
+  let em1 = combinationArms(em0, arms, sv, tag, members, variantMap, slotFields, discs, resultType, r)
   let bind = match(elseArm)
     (a: PArm) => bindSubject(r, a, subjType, sv)
     ()         => None
@@ -798,26 +850,25 @@ fun combinationArms(em,
                     sv,
                     tag,
                     members,
-                    variantTypes: List<CgType>,
                     variantMap: List<List<CgSlotEntry>>,
                     slotFields: List<CgField>,
                     discs: Dict<String, Int>,
                     resultType,
                     r) =>
-  fold(arms, em, (a, x) => combinationArm(a, x, sv, tag, members, variantTypes, variantMap, slotFields, discs, resultType, r))
+  fold(arms, em, (a, x) => combinationArm(a, x, sv, tag, members, variantMap, slotFields, discs, resultType, r))
 
 fun combinationArm(em, arm: PArm, sv, tag, members,
-                   variantTypes: List<CgType>, variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
+                   variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                    discs, resultType: Spec|None, r): GEmit => !isEmpty(arm.armLiterals)
   ? combinationLiteralArm(em, arm, sv, tag, members, variantMap, slotFields, discs, resultType, r)
-  : combinationTypedArm(em, arm, sv, tag, members, variantTypes, variantMap, slotFields, discs, resultType, r)
+  : combinationTypedArm(em, arm, sv, tag, members, variantMap, slotFields, discs, resultType, r)
 
 fun combinationTypedArm(em, arm: PArm, sv, tag, members: List<Spec>,
-                        variantTypes: List<CgType>, variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
+                        variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                         discs, resultType: Spec|None, r): GEmit => match(arm.armType)
   (whole: Spec) => match(whole)
     (cm: SCombination) => combinationUnionArm(em, arm, cm, sv, tag, members, variantMap, slotFields, discs, resultType, r)
-    (t2: Spec)          => combinationPlainArm(em, arm, t2, sv, tag, members, variantTypes, variantMap, slotFields, discs, resultType, r)
+    (t2: Spec)          => combinationPlainArm(em, arm, t2, sv, tag, members, variantMap, slotFields, discs, resultType, r)
   ()             => em   # else arm: the fallback, handled at the end
 
 fun litExprOf(l2) => match(l2)
@@ -893,34 +944,27 @@ fun combinationUnionEntriesStep(m: Spec, k, members: List<Spec>,
                                discs: Dict<String, Int>, tag, sv, narrowCtype,
                                narrowMap: List<List<CgSlotEntry>>, narrowRep: GRepr, r,
                                acc): List<GEntry>
-  let u = uid(narrowedMemberIn(members, m))
-  ret combinationUnionEntryFor(variantIndexOf(members, u), m, u, discs, k, members, variantMap, slotFields, tag, sv, narrowCtype, narrowMap, narrowRep, r, acc)
+  ret fold(taggedSelections(members, m), acc,
+           (a, sel) => contains(discs, uid(sel.tsMember))
+             ? append(a, combinationUnionEntry(sel, m, discs, variantMap, slotFields, tag, sv, k,
+                                               narrowCtype, narrowMap, narrowRep, r))
+             : a)   # check() validated coverage; skip defensively
 
-fun combinationUnionEntryFor(vi: Int|None, member, u, discs: Dict<String, Int>, k, members: List<Spec>,
-                             variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>, tag, sv,
-                             narrowCtype, narrowMap: List<List<CgSlotEntry>>, narrowRep: GRepr, r,
-                             acc): List<GEntry> => match(vi)
-  (viv: Int) if contains(discs, u) =>
-      append(acc, combinationUnionEntry(viv, member, u, discs, members, variantMap,
-                                      slotFields, tag, sv, k, narrowCtype,
-                                      narrowMap, narrowRep, r))
-  ()          => acc
-
-fun combinationUnionEntry(vi, member, u: String, discs: Dict<String, Int>, members: List<Spec>,
+fun combinationUnionEntry(sel: TaggedSelection, member, discs: Dict<String, Int>,
                           variantMap: List<List<CgSlotEntry>>,
                           slotFields: List<CgField>, tag, sv, k,
                           narrowCtype, narrowMap: List<List<CgSlotEntry>>, narrowRep: GRepr, r)
-  let memberTag = getOr0(discs, u)
+  let vi = sel.tsVi
+  let memberTag = getOr0(discs, uid(sel.tsMember))
   # Pointer narrow union: the member's LEAF, read out of its wide slots and
   # boxed by the narrow union itself (NULL for the unit member, a spare code
   # for a scalar, environment + code for a function).
   let value = match(narrowRep)
     (np: GPointer) => pointerBoxLeaf(np, leafFromSlots(member, forceNth(variantMap, vi), slotFields, sv, r), member, r)
     (o: GRepr)     => combinationUnionValueTagged(narrowCtype, forceNth(narrowMap, k), forceNth(variantMap, vi), slotFields, sv, memberTag)
-  let whole = narrowedMemberIn(members, member)
   let tagStage: List<RParam> = list1(RpIntEqConst(tag, memberTag))
-  ret GEntry(narrowsAnyMember(members, member)
-               ? list2(tagStage, taggedVariantGuards(whole, forceNth(variantMap, vi), slotFields, sv, member, r))
+  ret GEntry(sel.tsNarrowed
+               ? list2(tagStage, taggedVariantGuards(sel.tsMember, forceNth(variantMap, vi), slotFields, sv, member, r))
                : list1(tagStage),
              value)
 
@@ -957,26 +1001,38 @@ fun zipSlotFieldsLoop(ns: List<CgSlotEntry>, ws: List<CgSlotEntry>, narrowFields
           (a, n, w) => append(a, RpNamedValue(fieldNameAt(narrowFields, n.slotIndex),
                                               slotRead(sv, wideSlotFields, w.slotIndex, w.origType))))
 
-fun [tail] indexWhereCgType(types2: List<CgType>, target, i) => match(head(types2))
-  (t2: CgType) => eqCgType(t2, target) ? i : indexWhereCgType(dropOne(types2), target, i + 1)
-  ()            => None
-
 # A pattern naming only some of an enum member's variants tests the member,
-# then the variant.
-fun combinationPlainArm(em: GEmit, arm: PArm, armType, sv, tag, members: List<Spec>,
-                        variantTypes: List<CgType>, variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
+# then the variant; one holding several members enters once per member, each
+# binding that member's value.
+fun combinationPlainArm(em: GEmit, arm: PArm, armType: Spec, sv, tag, members: List<Spec>,
+                        variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                         discs: Dict<String, Int>, resultType, r)
-  let member = narrowedMemberIn(members, armType)
-  let armCtype = specGenerate(member, r)
-  let tagStage: List<RParam> = list1(RpIntEqConst(tag, getOr0(discs, uid(member))))
-  ret match(indexWhereCgType(variantTypes, armCtype, 0))
-    (viv: Int) => emArm(em, r, resultType, arm,
-                        narrowsAnyMember(members, armType)
-                          ? list2(tagStage, taggedVariantGuards(member, forceNth(variantMap, viv),
-                                                                slotFields, sv, armType, r))
-                          : list1(tagStage),
-                        bindFromSlots(r, arm, armCtype, forceNth(variantMap, viv), slotFields, sv), List())
-    ()          => emArm(em, r, resultType, arm, list1(tagStage), None, List())
+  let selected = taggedSelections(members, armType)
+  ret match(soleSelection(selected))
+    (sel: TaggedSelection) => combinationSoleArm(em, arm, armType, sel, sv, tag, variantMap, slotFields, discs, resultType, r)
+    ()                     => isEmpty(selected)
+      ? em   # check() validated coverage; skip defensively
+      : emMultiEntryArm(em, r, resultType, arm,
+                        map(selected, (sel) => combinationHeldEntry(sel, armType, sv, tag, variantMap, slotFields, discs, r)),
+                        specGenerate(armType, r))
+
+fun combinationSoleArm(em: GEmit, arm: PArm, armType, sel: TaggedSelection, sv, tag,
+                       variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
+                       discs: Dict<String, Int>, resultType, r)
+  let slots = forceNth(variantMap, sel.tsVi)
+  let tagStage: List<RParam> = list1(RpIntEqConst(tag, getOr0(discs, uid(sel.tsMember))))
+  ret emArm(em, r, resultType, arm,
+            sel.tsNarrowed
+              ? list2(tagStage, taggedVariantGuards(sel.tsMember, slots, slotFields, sv, armType, r))
+              : list1(tagStage),
+            bindFromSlots(r, arm, specGenerate(sel.tsMember, r), slots, slotFields, sv), List())
+
+# One entry of an arm holding several members: that member's tag, and its
+# value reassembled at the arm's type (every level shares one representation).
+fun combinationHeldEntry(sel: TaggedSelection, armType, sv, tag, variantMap: List<List<CgSlotEntry>>,
+                         slotFields: List<CgField>, discs: Dict<String, Int>, r): GEntry =>
+  GEntry(list1(list1(RpIntEqConst(tag, getOr0(discs, uid(sel.tsMember))))),
+         reconstructFromSlots(specGenerate(armType, r), forceNth(variantMap, sel.tsVi), slotFields, sv, 0).rfValue)
 
 # ── pointer union ────────────────────────────────────────────────────────
 
@@ -1279,7 +1335,8 @@ fun complexEnumArmOn(em: GEmit, arm: PArm, tag, subjType, rootName, discs: Dict<
                      armType: SEnum, sv, resultType: Spec|None, r): GEmit
   let ordered = sortLeavesByComplexId(armType.seValidLeaves, rootName, discs)
   let guards = map<String, RParam>(ordered, (leaf) => RpIntEqConst(tag, complexLeafId(rootName, leaf, discs)))
-  ret emArm(em, r, resultType, arm, list1(guards), bindSubject(r, arm, subjType, sv), List())
+  ret emArm(em, r, resultType, arm, list1(guards),
+            bindSubject(r, arm, subjectAtArm(subjType, armType, r), sv), List())
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 6: box_value (CombinationSpec targets only).
@@ -1442,10 +1499,12 @@ fun [tail] widenPLoop(gp: GPointer, gt: GTagged, ms: List<Spec>, k, sv, word, ta
                                      discs, endLabel, r, acc))
   ()        => acc
 
-fun widenPStep(gp: GPointer, gt: GTagged, member, last: Bool, k: Int, sv, word, targetMembers: List<Spec>,
+fun widenPStep(gp: GPointer, gt: GTagged, member: Spec, last: Bool, k: Int, sv, word, targetMembers: List<Spec>,
                discs: Dict<String, Int>, endLabel, r, acc: WidenPAcc): WidenPAcc
   let label = "wide_p" + String(k)
-  let u = uid(member)
+  # The target member holding this one — the same type, or the enum level it
+  # descends from: its slots and its tag.
+  let u = holderUid(targetMembers, member)
   let mv = ptrMemberValue(gp, member, sv, r)
   let slotValues = match(variantIndexOf(targetMembers, u))
     (tvi: Int) => map(variantSlots(mv, specGenerate(member, r), forceNth(gt.grtVariantMap, tvi),
@@ -1462,6 +1521,12 @@ fun widenPStep(gp: GPointer, gt: GTagged, member, last: Bool, k: Int, sv, word, 
                                                           withTagField(slotValues, getOr0(discs, u))))))
 
 class [final] OneWidenOut(owBundles: List<GBundle>, owSource: OpPhiSource)
+
+# The uid of the member of `members` holding a value of `sp`, or "" (no
+# member, no slot, tag 0).
+fun holderUid(members: List<Spec>, sp: Spec) => match(memberHolding(members, sp))
+  (h: Spec) => uid(h)
+  ()        => ""
 
 fun widenFromTagged(sv, srcRep: GTagged, gt: GTagged, endLabel, r)
   let sourceMembers = reprMembersOf(unionMembers(srcRep.grtType))
@@ -1487,22 +1552,25 @@ fun widenFromTaggedStep(st: (i: Int, acc: WidenAcc), m: Spec, sv, srcRep: GTagge
   ret (i = st.i + 1,
        acc = WidenAcc(concat(st.acc.waBundles, one.owBundles), append(st.acc.waSources, one.owSource)))
 
-fun widenFromTaggedOne(srcVar, i, sv, srcRep: GTagged, gt: GTagged, targetMembers: List<Spec>,
+fun widenFromTaggedOne(srcVar: Spec, i: Int, sv, srcRep: GTagged, gt: GTagged, targetMembers: List<Spec>,
                        srcTagField, discs: Dict<String, Int>, endLabel, r: Resolver)
-  let varUid = uid(srcVar)
-  let varTag = getOr0(discs, varUid)
+  let varTag = getOr0(discs, uid(srcVar))
+  # The target member holding this variant — the same type, or the enum
+  # level it descends from: its slots and its tag, not the source's.
+  let tgtUid = holderUid(targetMembers, srcVar)
+  let tgtTag = getOr0(discs, tgtUid)
   let armLabel = "wide_arm_" + String(i)
   let nextLabel = "wide_next_" + String(i)
   let exitLabel = "wide_exit_" + String(i)
   let srcSlotFields = forceFields(srcRep.grtContainer)
   let tgtSlotFields = forceFields(gt.grtContainer)
-  let slotValues = match(variantIndexOf(targetMembers, varUid))
+  let slotValues = match(variantIndexOf(targetMembers, tgtUid))
     (tvi: Int) => withTagField(
         zipSlotFields(forceNth(gt.grtVariantMap, tvi),
                       forceNth(srcRep.grtVariantMap, i), tgtSlotFields,
                       srcSlotFields, sv),
-        varTag)
-    ()          => list1(RpNamedValue("$tag", RpInteger(varTag, 32)))
+        tgtTag)
+    ()          => list1(RpNamedValue("$tag", RpInteger(tgtTag, 32)))
   let bundles = list3(
     bundleOps(list3(OpJumpIf(armLabel, RpIntEqConst(srcTagField, varTag), false, Dict()), OpJump(nextLabel, Dict()), OpLabel(armLabel, Dict()))),
     bundleOps(list2(OpLabel(exitLabel, Dict()), OpJump(endLabel, Dict()))),
