@@ -103,6 +103,7 @@ class Application:
         obj_size_str = o.get_object_size(type_cache)
         arr_el_size_str = o.get_array_el_size(type_cache)
         arr_len_offset_str = o.get_array_length_offset(type_cache)
+        arr_cap_offset_str = o.get_array_capacity_offset(type_cache)
         ptr_mask_str = o.get_pointer_mask(type_cache)
         arr_el_ptr_mask_str = o.get_array_pointer_mask(type_cache)
 
@@ -129,6 +130,7 @@ class Application:
             f"    .object_pointer_locations = {ptr_mask_str},\n"
             f"    .array_el_pointer_locations = {arr_el_ptr_mask_str},\n" + masks_init +
             f"    .array_len_offset = {arr_len_offset_str},\n"
+            f"    .array_cap_offset = {arr_cap_offset_str},\n"
             f"    .is_mutable = {1 if o.is_mutable else 0},\n"
             f"    .discriminator = {o.discriminator},\n"
             f"    .name = \"{name}\",\n"

@@ -49,7 +49,7 @@ fun cnObject(rn: Dict<String, Dict<String, String>>, o: CgObject): CgObject => m
                                           (fd) => CgField(cnRename(r, fd.fieldName), fd.fieldType))),
                                         cnRenameOpt(r, o.objLengthField), o.objComment,
                                         o.objIsForeign, o.objIsMutable, o.objDiscriminator,
-                                        o.objIsPinnable)
+                                        o.objIsPinnable, cnRenameOpt(r, o.objCapacityField))
   ()                        => o
 
 fun cnRenameOpt(r: Dict<String, String>, name: String|None): String|None => match(name)

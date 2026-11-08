@@ -137,7 +137,7 @@ fun isKnownClassAttr(n) => n == "final" || n == "linear" || n == "foreign" || n 
 
 fun isKnownLetAttr(n) => n == "terminal" || n == "const" || n == "lazy" || n == "trait"
  || n == "future" || n == "linear" || n == "final" || n == "mutable"
- || n == "ambient" || n == "pinnable"
+ || n == "ambient" || n == "pinnable" || n == "capacity"
 
 fun isKnownEnumAttr(n) => n == "hashed" || n == "refeq" || n == "linear" || n == "final"
 
@@ -480,8 +480,73 @@ fun fieldAssignErrors(fa: PsFieldAssign, r) => match(fa.faTarget)
   (d: PeDot) => match(writtenField(d, "':='", r))
     (cs: PsClass) => union(lateWriteErrors(fa.psfaLine, cs, "':='"), faValueFits(fa, r))
     (msg: String) => oneErr(fa.psfaLine, msg)
-  (o: PExpr) => oneErr(fa.psfaLine,
-                       "the left of ':=' must be a field, as in 'subject.field := value'")
+  (ar: PeArrayRead) => match(arrayClassOf(ar.arrObj, r))
+    (cs: PsClass) => union(lateWriteErrors(fa.psfaLine, cs, "':='"), faValueFits(fa, r))
+    ()            => oneErr(fa.psfaLine, "':=' writes an element of an array field of a class instance")
+  (o: PExpr) => match(elementTarget(fa.faTarget))
+    (et: ElementTarget) => oneErr(fa.psfaLine, notAnArrayField(et, r))
+    ()                  => oneErr(fa.psfaLine,
+                                  "the left of ':=' must be a field, as in 'subject.field := value'")
+
+# `subject.items(i) := value`: the left side as written, a call on a field with
+# one unnamed argument (control.py _element_target). Compile turns it into a
+# PeArrayRead once the subject's class is known to have that array field.
+class [final] ElementTarget(etCall: PeCall, etDot: PeDot, etIndex: PExpr)
+
+fun elementTarget(target: PExpr): ElementTarget|None => match(target)
+  (c: PeCall) => match(c.function)
+    (d: PeDot) => match(soleIndexArg(c.parameter))
+      (ix: PExpr) => ElementTarget(c, d, ix)
+      ()          => None
+    (o: PExpr) => None
+  (o: PExpr)  => None
+
+fun soleIndexArg(p: PExpr): PExpr|None => match(p)
+  (t2: PeTuple) => match(exactly(t2.exprs, 1) ? head(t2.exprs) : None)
+    (e2: PTupEnt) => e2.tupName == "" && !e2.tupSpread ? e2.tupValue : None
+    ()            => None
+  (o: PExpr)    => None
+
+# The class of `subject`'s type when it is an array class (control.py
+# _array_class).
+fun arrayClassOf(subject: PExpr, r): PsClass|None => match(exprType(subject, r))
+  (c2: SClass) => match(soleItem(findType(r, c2.scName)))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => isEmpty(arrayFieldsOf(classFields(cs), List())) ? None : cs
+      (o: PStmt)    => None
+    ()         => None
+  (o: Spec)    => None
+  ()           => None
+
+# Whether the array field of `cs` is the one named `name`.
+fun isArrayFieldNamed(cs: PsClass, name: String) => match(head(arrayFieldsOf(classFields(cs), List())))
+  (af: PStmt) => nameMatches(stmtName(af), name)
+  ()          => false
+
+# An element target still in its call shape at check: the subject is not an
+# array class, or the field is not its array.
+fun notAnArrayField(et: ElementTarget, r): String => match(arrayClassOf(et.etDot.base, r))
+  (cs: PsClass) => "'" + et.etDot.member + "' is not an array field of '" + bareOfUnique(cs.cName) + "'"
+  ()            => match(exprType(et.etDot.base, r))
+    (c2: SClass) => "'" + et.etDot.member + "' is not an array field of '" + bareOfUnique(c2.scName) + "'"
+    (o: Spec)    => "':=' writes an element of an array field of a class instance"
+    ()           => "':=' writes an element of an array field of a class instance"
+
+# The field bounding an element write's index: the [capacity] field when the
+# class has one (the storage holds that many elements, past the length), else
+# the length field.
+fun arrayBoundField(cs: PsClass, afSpec: SArrayField): String|None
+  let fields = classFields(cs)
+  ret match(firstWhere(fields, isCapacityField))
+    (p: PStmt) => stmtName(p)
+    ()         => match(fieldNamed2(fields, afSpec.safLenField))
+      (l: PsLet) => l.lName
+      ()          => None
+
+# A [capacity] field (classdef capacity_field).
+fun isCapacityField(st: PStmt) => match(st)
+  (l: PsLet) => hasAttr(l.lAttrs, "capacity")
+  (o: PStmt) => false
 
 # The class of the field `d` names, for a write after construction (`what` is
 # the form, for the message), or the error (control.py written_field). Only a
@@ -513,12 +578,12 @@ fun lateWriteErrors(lr: PLine, cs: PsClass, what: String)
     ? noErrs()
     : oneErr(lr,
              what + " writes a field after construction, so it needs a [pinnable] or "
-             + "[mutable] class; '" + bareName(cs.cName) + "' is neither")
+             + "[mutable] class; '" + bareOfUnique(cs.cName) + "' is neither")
 
 fun faValueFits(fa: PsFieldAssign, r) => match(exprType(fa.faTarget, r))
   (ft: Spec) => match(exprType(fa.faValue, r))
     (vt: Spec) => triFalse(assignableEq(r, ft, vt))
-      ? oneErr(fa.psfaLine, "Incorrect type assigned to the field")
+      ? oneErr(fa.psfaLine, "Incorrect type assigned to the " + (fa.faTarget is PeArrayRead ? "element" : "field"))
       : noErrs()
     ()         => noErrs()
   ()         => noErrs()
@@ -570,7 +635,7 @@ fun classChecks(c, r0): Set<PErr>
       union(fragile,
       union(prmErr,
       union(stmErr,
-      union(arrayFieldErrs(c, r0),
+      union(union(arrayFieldErrs(c, r0), capacityFieldErrs(c)),
       union(foreignClassErrs(c),
       union(linearClassErrs(c),
       union(linearClassGenErrs(c, c.cGens, noErrs()),
@@ -664,6 +729,39 @@ fun arrayFieldErrs(c: PsClass, r: Resolver)
     : oneErr(c.pscLine, "a class with an array field must be [final]")
   ret union(countErr,
              union(finalErr2, lenFieldErrs(arrays, fields, noErrs())))
+
+# A [capacity] field sizes the array's storage past its length: one per
+# class, an Int32, in an array class, and not the length field itself.
+fun capacityFieldErrs(c: PsClass)
+  let fields = classFields(c)
+  let caps = fold(fields, List<PsLet>(), capacityStep)
+  ret match(head(caps))
+    (first: PsLet) => union(fold(dropOne(caps), noErrs(), extraCapacityStep),
+                            oneCapacityErrs(first, fields))
+    ()             => noErrs()
+
+fun capacityStep(a: List<PsLet>, x: PStmt): List<PsLet> => match(x)
+  (l: PsLet) => isCapacityField(l) ? append(a, l) : a
+  (o: PStmt) => a
+
+fun extraCapacityStep(a: Set<PErr>, l: PsLet): Set<PErr> =>
+  union(a, oneErr(l.pslLine, "a class may have at most one [capacity] field"))
+
+fun oneCapacityErrs(cf: PsLet, fields: List<PStmt>)
+  let arrays = arrayFieldsOf(fields, List())
+  let shapeErr = isEmpty(arrays)
+    ? oneErr(cf.pslLine, "a [capacity] field needs an array field to size")
+    : (any(arrays, (af) => isLengthFieldOf(cf, af))
+        ? oneErr(cf.pslLine, "the array's length field cannot be its [capacity] field")
+        : noErrs())
+  let typeErr = isInt32Field(cf)
+    ? noErrs()
+    : oneErr(cf.pslLine, "a [capacity] field must be of type Int32")
+  ret union(shapeErr, typeErr)
+
+fun isLengthFieldOf(cf: PsLet, af: PStmt) => match(af)
+  (l: PsLet) => nameMatches(cf.lName, arrayLenName(l.lType))
+  (o: PStmt) => false
 
 fun classFields(c: PsClass)
   ret concat(flattenParams(c.cParams), letMembers(c.cMembers,

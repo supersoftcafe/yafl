@@ -58,10 +58,13 @@ class [final] CgFunction(fnName: String, fnParams: CgType, fnResult: CgType, fnS
 # a pointer taken before a relocation would otherwise see the pre-write copy.
 # Declared LAST with a default so the eight other construction sites — all
 # compiler-emitted classes, none of them pinnable — stay untouched.
+# objCapacityField: the Int32 field sizing the storage past the length (a
+# [capacity] field), or None — the vtable's array_cap_offset. Defaulted for
+# the same reason; every pass that REBUILDS an object passes it on.
 class [final] CgObject(objName: String, objExtends: List<String>, objFunctions: List<CgFuncSlot>,
                         objFields: CgType, objLengthField: String|None, objComment: String,
                         objIsForeign: Bool, objIsMutable: Bool, objDiscriminator: Int,
-                        objIsPinnable: Bool = false)
+                        objIsPinnable: Bool = false, objCapacityField: String|None = None)
 
 class [final] CgGlobal(globalName: String, globalType: CgType, globalInit: RParam|None,
                         globalObjectName: String|None, globalLazyInitFunction: String|None,

@@ -244,14 +244,17 @@ class TestConstructionInAnAsyncFunction(TestCase):
 # function once per element, between the allocation and each store. The init
 # call runs safe points, so the store is not fresh: it is a FILL, which owes
 # no snapshot barrier (nothing is overwritten) but keeps its publication
-# fence. `boxes` returns the array so the fill is not trimmed away.
+# fence. `boxes` returns the array so the fill is not trimmed away. The array
+# class is the program's own: the mechanism under test, which System::Array is
+# built on rather than is.
 _TAB_SRC = """\
 import System
 
 class Box(v: System::Int)
+class [final] Boxes(length: System::Int32, items: Box[length])
 
-fun [impure] boxes(n: System::Int32): System::Array<Box>
-  ret System::Array<Box>(n, (i: System::Int32) => Box(System::Int(i)))
+fun [impure] boxes(n: System::Int32): Boxes
+  ret Boxes(n, (i: System::Int32) => Box(System::Int(i)))
 
 fun main(): System::Int
   ret boxes(4i32).length > 0i32 ? 0 : 1

@@ -57,15 +57,17 @@ what must not reappear. Order changes come from `sort`.
 
 ### Array
 
-Ordered with O(1) indexed reads (`a[i]`), stored as ONE heap object: a
-`length: Int32` plus the elements inline. Where a `List<T>` is a heap cell
+Ordered with O(1) indexed reads (`a[i]`). A value is its own `length:
+Int32` over a shared buffer holding the elements inline, as a String is
+its length over a shared byte buffer. Where a `List<T>` is a heap cell
 per element (~85B for a ~60B payload, one GC mark per element per cycle),
-an `Array<T>` is a header plus `n × sizeof(element)` — the container of
-choice for large, build-once-read-many sequences. Two ways in:
+an `Array<T>`'s buffer is a header plus `n × sizeof(element)` — the
+container of choice for large, build-once-read-many sequences. Two ways in:
 
 * `Array<T>(n, initFn)` — tabulate `initFn` over `0..n-1`
-* `arrayBuilder<T>(estimate)` … `push` … `build` — linear incremental
-  construction when the final count isn't known up front
+* `arrayBuilder<T>(estimate)` … `push` … `build` — incremental
+  construction when the final count isn't known up front: each push
+  appends in place while the builder's array owns the end of its buffer
   (see [ArrayBuilder design](array-builder-design.md))
 
 There is no update, no slice, no cursor: read by index, or walk `0..length`.

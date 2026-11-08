@@ -1,8 +1,55 @@
-# ArrayBuilder — linear incremental construction of `Array<T>`
+# ArrayBuilder — linear incremental construction
 
-`Array<T>` is one heap object: `class [final] Array<T>(length: Int32,
+## Array grows by appending (issue #95)
+
+`Array<T>` is a value over a shared buffer, as a String is:
+
+```yafl
+class [final, pinnable] _ArrayBuf<T>(_used: Int32, [capacity] _cap: Int32, _items: T[_used])
+class [final] Array<T>(length: Int32, _buf: _ArrayBuf<T>)
+```
+
+Two general class features carry it:
+
+* **`[capacity]`** on an Int32 field of an array class sizes the storage
+  past the length: the object is allocated for the larger of the two, the
+  constructor fills `[0, length)`, and the vtable's `array_cap_offset`
+  names the field. The collector traces and compaction copies only
+  `length` elements, and compaction resets the capacity to the length on
+  the copy, so a moved buffer never grows in place — the runtime has
+  handled this since String's growable buffers.
+* **`subject.items(i) := value`** writes an element of an array field of a
+  `[pinnable]` or `[mutable]` object, under the pin, as `subject.field :=`
+  writes a field. The index is checked against the capacity when the
+  class has one.
+
+`_append(a, x)` pins the buffer; if `a` owns its end (`a.length ==
+_used`) and there is room, it writes element `_used`, then `_used := _used
++ 1`, and unpins. Otherwise it copies into a buffer of twice the size. A
+value reads only its own `[0, length)`, which never changes, so every
+value keeps its own elements; one holding a stale copy of a moved buffer
+reads the same ones.
+
+`ArrayBuilder<T>` is now a linear wrapper over that: `arrayBuilder`
+reserves the estimate as the first buffer's capacity, `push` is
+`_append`, `build` hands the array over. The append is `_append`, not a
+public `append`, for now: an `append` overload beside List's leaves every
+untyped parameter used only through `append` ambiguous (19 in the
+bootstrap), so it waits until those are typed.
+
+An index past a value's length aborts, as before, by reading it from a
+buffer with no elements. That is TEMPORARY: the API will answer that the
+element is not there, as List's `head` does.
+
+The rest of this document describes the pinned construction primitives
+(`array_builder_alloc`, `array_builder_store`, `array_builder_seal`) that
+`ArrayBuilder` used before. `SeqBuilder`'s segments still use them.
+
+## The pinned construction primitives
+
+`Array<T>` was one heap object: `class [final] Array<T>(length: Int32,
 array: T[length])`. The ctor form `Array<T>(n, initFn)` tabulates when the
-count is known; `ArrayBuilder<T>` is the way in when it isn't:
+count is known; `ArrayBuilder<T>` was the way in when it wasn't:
 
 ```yafl
 let a = build<Int>(push(push(arrayBuilder<Int>(estimate), x), y))

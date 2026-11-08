@@ -1,12 +1,31 @@
 namespace System
 import System
+import System::Internal
 
 
-# Fixed-size array with O(1) indexed access — a sibling to the persistent
-# List<T>. Where a List is a chain of cons nodes, an Array<T> is a single heap
-# object storing its `length` elements inline. Build it once from an init
-# function — `Array<T>(n, (i) => ...)` — then read by index with `a[i]`.
-class [final] Array<T>(length: Int32, array: T[length])
+# An array with O(1) indexed access and append — a sibling to the persistent
+# List<T>. Build it from an init function — `Array<T>(n, (i) => ...)` — or with
+# an ArrayBuilder, then read by index with `a[i]`.
+#
+# A value is its own length over a shared buffer, as a String is (str.c). The
+# buffer holds elements past any one value's length: `_append` writes the next
+# element IN PLACE when the value owns the end of the buffer (its length is
+# the buffer's) and there is room, and copies into a buffer of twice the size
+# otherwise. A value reads only its own [0, length), which never changes, so
+# every value keeps its own elements, and one reached through a stale copy of
+# a moved buffer reads the same ones.
+class [final, pinnable] _ArrayBuf<T>(_used: Int32, [capacity] _cap: Int32, _items: T[_used])
+class [final] Array<T>(length: Int32, _buf: _ArrayBuf<T>)
+
+# The tabulating constructor: n elements, the i-th init(i), with no room spare.
+fun Array<T>(n: Int32, init: (i: Int32): T): Array<T>
+  ret Array<T>(n, _ArrayBuf<T>(n, n, init))
+
+# An empty array with room for `capacity` appends before its first copy. A
+# buffer fills only [0, used), so its init function is never called here; the
+# constructor takes one, and nothing can make a T from nothing.
+fun _emptyArray<T>(capacity: Int32): Array<T>
+  ret Array<T>(0i32, _ArrayBuf<T>(0i32, capacity, (i: Int32) => _noSuchIndex<T>(i)))
 
 
 # Indexed read: `a[i]` lowers to ``[]``(a, i). Aborts if `i` is out of range
@@ -15,11 +34,43 @@ class [final] Array<T>(length: Int32, array: T[length])
 # is truncated internally, where the runtime bounds check catches any value
 # an Int32 could not have addressed anyway.
 fun `[]`<T>(a: Array<T>, i: Int): T
-  ret a.array(truncateToInt32(i))
+  ret a[truncateToInt32(i)]
 
-# Int32 form for byte-scanning code that already holds a sized index.
+# Int32 form for byte-scanning code that already holds a sized index. The
+# buffer may hold elements past this value's length (another value appended
+# them), so the length is checked here; a negative index fails the buffer's
+# own check.
 fun `[]`<T>(a: Array<T>, i: Int32): T
-  ret a.array(i)
+  ret i < a.length ? a._buf._items(i) : _noSuchIndex<T>(i)
+
+# TEMPORARY (issue #95): an index past the length aborts, as the old Array
+# did, by reading it from a buffer with no elements — the runtime bounds
+# check. To be replaced by an answer in the API that says the element is not
+# there, as List's head does.
+fun _noSuchIndex<T>(i: Int32): T
+  ret _ArrayBuf<T>(0i32, 0i32, (j: Int32) => _noSuchIndex<T>(j))._items(i)
+
+# `a` followed by `x`. In place when `a` owns the end of its buffer and there
+# is room — the pin is the lock, against other appenders and the compactor —
+# and into a fresh buffer of twice the size otherwise.
+#
+# NOTE (issue #95): named `_append`, not `append`, for now. A public `append`
+# overload for Array beside List's makes every untyped parameter used only
+# through `append` ambiguous, so its type can no longer be inferred (19 such
+# parameters in the bootstrap alone). Appending goes through ArrayBuilder's
+# `push` until those parameters are typed and this can become `append`.
+fun _append<T>(a: Array<T>, x: T): Array<T>
+  let held = pin(a._buf)
+  let owns = held._used == a.length && held._used < held._cap
+  if owns
+    held._items(held._used) := x
+    held._used := held._used + 1i32
+  unpin(held)
+  ret owns ? Array<T>(a.length + 1i32, held) : _appendCopy<T>(a, x)
+
+fun _appendCopy<T>(a: Array<T>, x: T): Array<T>
+  let n = a.length + 1i32
+  ret Array<T>(n, _ArrayBuf<T>(n, n + n, (i: Int32) => i < a.length ? a[i] : x))
 
 
 # ── combinators ──────────────────────────────────────────────────────────────
@@ -59,80 +110,29 @@ fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
 
 
 # ── ArrayBuilder ─────────────────────────────────────────────────────────────
-# Linear incremental construction: allocate at an ESTIMATED capacity, push
-# elements, and build() publishes by SHORTENING length from capacity to the
-# filled count.
-#
-# The array is PINNED from allocation to seal (born pinned by
-# array_builder_alloc, released by array_builder_seal): a
-# fill may suspend — an async producer parks in a heap frame — so the
-# half-built array crosses safe points, and pinned it never moves: every
-# push is an ordinary store at a stable address, and no reader anywhere
-# pays a forwarding resolve (the late-pin bracket, object_pin_set, is Memoize's price,
-# not construction's).
-#
-# The length field starts AT CAPACITY and never understates the traceable
-# extent: the scanner walks every slot from birth (the payload is
-# zero-filled, so unwritten slots trace as NULLs), each pushed element is
-# traceable the moment it lands, and the sealing write trims only
-# never-written zeros while telling readers the true count.
-#
-# Linearity certifies the single-writer confinement (every operation consumes
-# the builder), and _ok threads the runtime results so no pass can discard
-# the calls — both exactly as ListBuilder.
-class [linear,final] ArrayBuilder<T>(_arr: Array<T>, _at: Int32, _cap: Int32,
-                                     _ok: Bool)
+# Incremental construction by `_append`: an array with room for the estimate,
+# pushed onto, and published by `build`. Linear, so every push extends the
+# array the builder owns, in place until the room runs out.
+class [linear,final] ArrayBuilder<T>(_arr: Array<T>)
 
 fun arrayBuilder<T>(estimate: Int): ArrayBuilder<T>
-  let cap = truncateToInt32(estimate < 1 ? 1 : estimate)
-  let arr = __builtin_op__<Array<T> >("array_builder_alloc", cap)
-  ret ArrayBuilder<T>(arr, 0i32, cap, true)
+  ret ArrayBuilder<T>(_emptyArray<T>(truncateToInt32(estimate < 1 ? 1 : estimate)))
 
 fun push<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
-  ret b._at < b._cap
-    ? ArrayBuilder<T>(b._arr, b._at + 1i32, b._cap,
-                      b._ok && __builtin_op__<bool>("array_builder_store",
-                                                    b._arr, b._at, x))
-    : _pushGrown<T>(b, x)
+  ret ArrayBuilder<T>(_append(b._arr, x))
 
-# Capacity exhausted: a fresh run at double, elements copied across, the old
-# run sealed empty — releasing its pin — and abandoned (it was never
-# published — builder-owned only — so it dies as ordinary garbage). The
-# estimate parameter exists to make this path rare.
-fun _pushGrown<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
-  let cap2 = b._cap + b._cap
-  let arr2 = __builtin_op__<Array<T> >("array_builder_alloc", cap2)
-  let ok3 = b._ok && _copyInto<T>(b._arr, arr2, 0i32, b._at)
-  let ok4 = ok3 && __builtin_op__<bool>("array_builder_seal", b._arr, 0i32)
-  ret push<T>(ArrayBuilder<T>(arr2, b._at, cap2, ok4), x)
-
-fun [tail] _copyInto<T>(src: Array<T>, dst: Array<T>, i: Int32, n: Int32): Bool
-  ret i < n
-    ? (__builtin_op__<bool>("array_builder_store", dst, i, src[i])
-        ? _copyInto<T>(src, dst, i + 1i32, n)
-        : false)
-    : true
-
-# Publish: shorten length to the filled count and unpin. The array is
-# immutable — and compactable — from here on.
 fun build<T>([terminal] b: ArrayBuilder<T>): Array<T>
-  ret b._ok && __builtin_op__<bool>("array_builder_seal", b._arr, b._at)
-    ? b._arr
-    : b._arr   # unreachable: seal always succeeds; keeps the call live
+  ret b._arr
 
-# The failure-path counterpart of build (ListBuilder's discard precedent):
-# seal empty — releasing the run's pin — so run and referents die as
-# ordinary garbage at the next cycle.
+# The failure-path counterpart of build: the array is ordinary garbage.
 fun discard<T>([terminal] b: ArrayBuilder<T>): None
-  ret _sealDiscarded(b._ok && __builtin_op__<bool>("array_builder_seal",
-                                                   b._arr, 0i32))
+  ret _discarded<T>(b._arr)
 
-fun _sealDiscarded(_ok: Bool): None
+fun _discarded<T>(_a: Array<T>): None
   ret None
 
-# Drop: an ABANDONED builder — a failed parse alternative, an early exit —
-# must still release its pinned run (a leaked pin is a permanently unmovable
-# object). [ambient]: the drops pass inserts plain `drop(x)` calls that must
+# Drop: an abandoned builder — a failed parse alternative, an early exit — is
+# discarded. [ambient]: the drops pass inserts plain `drop(x)` calls that must
 # resolve in concrete user code without a spelled `where`.
 instance [ambient]<T> Drop<ArrayBuilder<T>>
   fun drop(self: ArrayBuilder<T>): None

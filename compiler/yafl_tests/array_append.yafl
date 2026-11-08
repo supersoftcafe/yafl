@@ -1,0 +1,75 @@
+# Arrays that grow: a `[capacity]` field sizes an array class's storage past
+# its length, and `:=` writes an element inside that storage under the pin
+# (issue #95). `Array<T>` is built on both: a value holds its own length over a
+# shared buffer, and `_append` writes in place when the value owns the end of
+# the buffer, copying otherwise — so every value keeps its own contents.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::ArrayAppend::CapacityFieldHoldsRoom
+
+import System
+import System::Internal
+import System::Test
+
+class [final, pinnable] Buf(used: Int32, [capacity] cap: Int32, items: Int[used])
+
+fun program(): Int
+  let b = Buf(2i32, 4i32, (i: Int32) => Int(i) + 10)
+  let held = pin(b)
+  held.items(2i32) := 12
+  held.used := 3i32
+  unpin(held)
+  ret held.items(0i32) + held.items(1i32) + held.items(2i32) + Int(held.used) * 100 + Int(held.cap) * 1000
+
+fun [test("a [capacity] field leaves room past the length for := to fill")] check(): None|TestFailure
+    ret assertEqInt(program(), 4333, "program()")
+
+
+namespace CompilerTests::ArrayAppend::AppendGrows
+
+import System
+import System::Test
+
+fun [tail] fill(a: Array<Int>, i: Int, n: Int): Array<Int>
+  ret i < n ? fill(_append(a, i * i), i + 1, n) : a
+
+fun program(): Int
+  let a = fill(Array<Int>(0i32, (i: Int32) => 0), 0, 50)
+  ret Int(a.length) * 1000000 + a[7] * 100 + a[49] - 2401
+
+fun [test("append grows an array one element at a time")] check(): None|TestFailure
+    ret assertEqInt(program(), 50004900, "program()")
+
+
+namespace CompilerTests::ArrayAppend::EveryValueKeepsItsOwnElements
+
+import System
+import System::Test
+
+fun program(): Int
+  let a1 = _append(Array<Int>(1i32, (i: Int32) => 1), 2)
+  let a2 = _append(a1, 3)
+  let b2 = _append(a1, 4)
+  let c2 = _append(a1, 5)
+  ret Int(a1.length) * 10000 + a2[2] * 1000 + b2[2] * 100 + c2[2] * 10 + Int(a2.length)
+
+fun [test("appending to an older value copies; no value sees another's elements")] check(): None|TestFailure
+    ret assertEqInt(program(), 23453, "program()")
+
+
+namespace CompilerTests::ArrayAppend::BuilderAppends
+
+import System
+import System::Test
+
+fun [tail] pushAll([terminal] b: ArrayBuilder<String>, i: Int, n: Int): ArrayBuilder<String>
+  ret i < n ? pushAll(push(b, "s" + String(i)), i + 1, n) : b
+
+fun program(): Int
+  let a = build(pushAll(arrayBuilder<String>(2), 0, 9))
+  ret a[8] == "s8" && a[0] == "s0" ? Int(a.length) : 0
+
+fun [test("ArrayBuilder pushes past its estimate")] check(): None|TestFailure
+    ret assertEqInt(program(), 9, "program()")

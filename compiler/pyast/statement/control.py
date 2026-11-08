@@ -17,6 +17,7 @@ from parsing.parselib import Error
 
 import codegen.ops as cg_o
 import codegen.param as cg_p
+import codegen.typedecl as cg_t
 
 import pyast.resolver as g
 import pyast.expression as e
@@ -159,10 +160,40 @@ def late_write_errors(line_ref: LineRef, cdecl, what: str) -> list[Error]:
         f"[mutable] class; '{g.bare_name(cdecl.name)}' is neither")]
 
 
+def _element_target(target: e.Expression):
+    """(subject, array field name, index) when `target` is written as an
+    element of an array field — `subject.items(i)`, a call on a field with one
+    unnamed argument — else None."""
+    if (isinstance(target, e.CallExpression) and isinstance(target.function, e.DotExpression)
+            and isinstance(target.parameter, e.TupleExpression)
+            and len(target.parameter.expressions) == 1
+            and target.parameter.expressions[0].name is None
+            and not target.parameter.expressions[0].spread):
+        return target.function.base, target.function.name, target.parameter.expressions[0].value
+    return None
+
+
+def _array_class(resolver: g.Resolver, subject: e.Expression):
+    """The class statement of `subject`'s type when it is an array class, else None."""
+    stype = subject.get_type(resolver)
+    if not isinstance(stype, t.ClassSpec):
+        return None
+    from pyast.statement.classdef import ClassStatement
+    found = resolver.find_type(stype.name)
+    if len(found) != 1 or not isinstance(found[0].statement, ClassStatement):
+        return None
+    cdecl = found[0].statement
+    return cdecl if cdecl.array_field(resolver) is not None else None
+
+
 @dataclass
 class FieldAssignStatement(Statement):
     """`subject.field := value` — store into a field of a `[pinnable]` or
-    `[mutable]` object. The only write the language has: every other object is
+    `[mutable]` object. Also `subject.items(i) := value`, an element of the
+    array field `items`: compile turns that left side into an
+    ArrayReadExpression once the subject's class is known, and the index is
+    checked against the class's `[capacity]` field when it has one — the
+    storage holds that many elements, past the length — else the length. The only write the language has: every other object is
     immutable once built, and these two classes are the ones whose fields are
     written AFTER construction (a write-once slot published under a pin; a
     mutable cell), so the check refuses anything else.
@@ -186,12 +217,46 @@ class FieldAssignStatement(Statement):
             value=self.value.search_and_replace(resolver, replace))
 
     def __field(self, resolver: g.Resolver):
+        if isinstance(self.target, e.ArrayReadExpression):
+            cdecl = _array_class(resolver, self.target.object)
+            if cdecl is None:
+                return "':=' writes an element of an array field of a class instance"
+            return cdecl, None
+        element = _element_target(self.target)
+        if element is not None:
+            cdecl = _array_class(resolver, element[0])
+            stype = element[0].get_type(resolver)
+            if cdecl is None and not isinstance(stype, t.ClassSpec):
+                return "':=' writes an element of an array field of a class instance"
+            name = g.bare_name(cdecl.name if cdecl is not None else stype.name)
+            return f"'{element[1]}' is not an array field of '{name}'"
         if not isinstance(self.target, e.DotExpression):
             return "the left of ':=' must be a field, as in 'subject.field := value'"
         return written_field(resolver, self.target, "':='")
 
+    def __compile_target(self, resolver: g.Resolver):
+        """The left side compiled. An element target keeps its call shape —
+        subject and index compiled, never the call itself — until the
+        subject's class is known to have that array field; then it is the
+        element's ArrayReadExpression."""
+        element = _element_target(self.target)
+        if element is None:
+            return self.target.compile(resolver, None)
+        base, name, index = element
+        new_base, base_stmts, base_hints = base.compile(resolver, None)
+        new_index, index_stmts, index_hints = index.compile(resolver, t.BuiltinSpec(self.line_ref, "int32"))
+        stmts, hints = list(base_stmts) + list(index_stmts), h.merge(base_hints, index_hints)
+        cdecl = _array_class(resolver, new_base)
+        if cdecl is not None and g.name_matches(cdecl.array_field(resolver).name, name):
+            return e.ArrayReadExpression(self.target.line_ref, new_base, new_index), stmts, hints
+        call = dataclasses.replace(self.target,
+            function=dataclasses.replace(self.target.function, base=new_base),
+            parameter=dataclasses.replace(self.target.parameter, expressions=[
+                dataclasses.replace(self.target.parameter.expressions[0], value=new_index)]))
+        return call, stmts, hints
+
     def compile(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> tuple[Statement | None, list[Statement], h.Hints]:
-        new_target, target_stmts, target_hints = self.target.compile(resolver, None)
+        new_target, target_stmts, target_hints = self.__compile_target(resolver)
         # The value is received by the FIELD's type, so a narrower value
         # converts into a wider slot (a Node into a `Node|None`).
         field_type = new_target.get_type(resolver)
@@ -208,13 +273,16 @@ class FieldAssignStatement(Statement):
         errors.extend(late_write_errors(self.line_ref, cdecl, "':='"))
         field_type = self.target.get_type(resolver)
         vtype = self.value.get_type(resolver)
+        what = "element" if isinstance(self.target, e.ArrayReadExpression) else "field"
         if (field_type is not None and vtype is not None
                 and t.trivially_assignable_equals(resolver, field_type, vtype) is False):
-            errors.append(Error(self.line_ref, "Incorrect type assigned to the field"))
+            errors.append(Error(self.line_ref, f"Incorrect type assigned to the {what}"))
         return errors
 
     def generate(self, resolver: g.Resolver, func_ret_type: t.TypeSpec | None) -> g.OperationBundle:
         cdecl, data = self.__field(resolver)
+        if isinstance(self.target, e.ArrayReadExpression):
+            return self.__generate_element(resolver, cdecl)
         base_b = self.target.base.generate(resolver)
         field_type = self.target.get_type(resolver)
         val_b = self.value.generate_to(resolver, field_type).with_prefix("fas")
@@ -223,6 +291,31 @@ class FieldAssignStatement(Statement):
         # NOT fresh: the object was built long before this store, across safe
         # points.
         return base_b + val_b + g.OperationBundle((), (cg_o.Move(place, val_b.result_var),), None)
+
+    def __generate_element(self, resolver: g.Resolver, cdecl) -> g.OperationBundle:
+        """The element store: the index checked against the bound
+        (array_index_check), then an ordinary NON-fresh element store — the
+        barriers any late store owes."""
+        af_spec = checked_cast(t.ArrayFieldSpec, cdecl.array_field(resolver).declared_type)
+        capacity = cdecl.capacity_field(resolver)
+        bound = capacity.name if capacity is not None else next(
+            f.name for f in cdecl.get_fields(resolver) if g.name_matches(f.name, af_spec.length_field))
+        base_b = self.target.object.generate(resolver).with_prefix("eab")
+        idx_b = self.target.index.generate(resolver).with_prefix("eai")
+        val_b = self.value.generate_to(resolver, af_spec.element).with_prefix("eav")
+        base_var = cg_p.StackVar(cg_t.DataPointer(), "eabase")
+        idx_var = cg_p.StackVar(cg_t.Int(32), "eaindex")
+        checked = cg_p.RuntimeInvoke("array_index_check", cg_p.NewStruct((
+            ("index", idx_b.result_var),
+            ("bound", cg_p.ObjectField(cg_t.Int(32), base_var, cdecl.name, bound, None)))),
+            cg_t.Int(32))
+        place = cg_p.ObjectField(af_spec.element.generate(resolver), base_var, cdecl.name, "array", idx_var)
+        return base_b + idx_b + val_b + g.OperationBundle(
+            stack_vars=(base_var, idx_var),
+            operations=(cg_o.Move(base_var, base_b.result_var),
+                        cg_o.Move(idx_var, checked),
+                        cg_o.Move(place, val_b.result_var)),
+            result_var=None)
 
 
 @dataclass

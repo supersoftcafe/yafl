@@ -27,18 +27,23 @@ from tests.testutil import compile_c
 _DOT = """namespace Test
 import System
 
+# An array class of its own — the mechanism under test, which System::Array
+# is built on rather than is: tabulated by its constructor, read through its
+# array field's accessor.
+class [final] Vec(length: Int32, items: Float[length])
+
 # The proof needs the counter's entry value (0), which only the caller has:
 # inlined, the loop sits beside it.
-fun [tail, inline(always)] dotLoop(a: Array<Float>, b: Array<Float>, i: Int32, n: Int32, acc: Float): Float
-  ret i == n ? acc : dotLoop(a, b, i + 1i32, n, acc + a[i] * b[i])
+fun [tail, inline(always)] dotLoop(a: Vec, b: Vec, i: Int32, n: Int32, acc: Float): Float
+  ret i == n ? acc : dotLoop(a, b, i + 1i32, n, acc + a.items(i) * b.items(i))
 
-fun dot(a: Array<Float>, b: Array<Float>): Float
+fun dot(a: Vec, b: Vec): Float
   ret dotLoop(a, b, 0i32, a.length, 0.0)
 
 fun main(): Int
   let n = 64i32
-  let a = Array<Float>(n, (i: Int32) => Float(i))
-  let b = Array<Float>(n, (i: Int32) => 2.0)
+  let a = Vec(n, (i: Int32) => Float(i))
+  let b = Vec(n, (i: Int32) => 2.0)
   ret dot(a, b) == 4032.0 ? 0 : 1
 """
 

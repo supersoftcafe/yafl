@@ -1068,6 +1068,7 @@ INLINE object_t* object_pin_set(object_t* o, size_t offset, object_t* v) {
 // allocated object and `slot` must lie inside it. A ROOT slot, the other way
 // round, must not be in the heap at all.
 EXTERN size_t object_get_size(object_t* ptr);
+EXTERN size_t object_get_extent(object_t* ptr);
 INLINE bool gc_in_heap(const void *p) {
     return (size_t)((const char*)p - _memory_heap_base) < _memory_heap_bytes;
 }
@@ -1087,7 +1088,7 @@ INLINE bool gc_is_container_of(object_t *obj, object_t **slot) {
     if (gc_in_heap(obj) ? !gc_is_object_base(obj)
                         : ((uintptr_t)obj & (sizeof(void*) - 1)) != 0)   // static (.data): aligned
         return false;
-    return (char*)slot >= (char*)obj && (char*)slot < (char*)obj + object_get_size(obj);
+    return (char*)slot >= (char*)obj && (char*)slot < (char*)obj + object_get_extent(obj);
 }
 
 // The out-of-line halves of the object stores: everything a store owes
@@ -1338,6 +1339,14 @@ EXTERN void abort_on_array_bounds();
 INLINE void* array_bounds_check(int32_t index, int32_t length, void* array) {
     if (UNLIKELY((uint32_t)index >= (uint32_t)length)) abort_on_array_bounds();
     return array;
+}
+
+// The same check for a store: answers `index` when 0 <= index < bound and
+// aborts otherwise. An element write under `:=` indexes its place with the
+// answer, bounded by the capacity of a [capacity] array class.
+INLINE int32_t array_index_check(int32_t index, int32_t bound) {
+    if (UNLIKELY((uint32_t)index >= (uint32_t)bound)) abort_on_array_bounds();
+    return index;
 }
 
 EXTERN void* memory_pages_alloc(size_t page_count);
@@ -1803,6 +1812,7 @@ INLINE int32_t  int32_rem(int32_t self, int32_t data) { return data == -1 ? 0   
 INLINE bool int32_test_gt(int32_t self, int32_t data) { return self > data; }
 INLINE bool int32_test_eq(int32_t self, int32_t data) { return self ==data; }
 INLINE bool int32_test_lt(int32_t self, int32_t data) { return self < data; }
+INLINE int32_t int32_max(int32_t a, int32_t b)        { return a > b ? a : b; }
 
 INLINE int64_t  int64_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
 INLINE int64_t  int64_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }

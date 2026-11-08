@@ -517,7 +517,10 @@ class _Checker:
         if isinstance(stmt, s.FieldAssignStatement):
             # The subject and the stored value are each evaluated once; storing
             # a linear value into a field moves it, exactly as passing it on.
-            return (self._count(stmt.target.base, local_env, resolver)
+            # An element target (an ArrayReadExpression) counts whole: its
+            # subject and its index.
+            subject = stmt.target.base if isinstance(stmt.target, e.DotExpression) else stmt.target
+            return (self._count(subject, local_env, resolver)
                     + self._count(stmt.value, local_env, resolver) + rest())
 
         if isinstance(stmt, s.IfStatement):

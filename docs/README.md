@@ -14,7 +14,7 @@ This folder contains design and reference documentation for YAFL. These document
 | [Profiling](profiling-design.md) | `--profile`: exact call counters + sampled CPU time, callgrind/folded output, attribution semantics |
 | [Enum representation](enum-representation.md) | The enum-encoding principle: minimal shared fields + tag, deconstruction, the 8-word threshold, per-variant boxing |
 | [Heap profiling](heap-profiling-design.md) | Live census by type → massif; sampled inuse_space by allocation site → pprof; instrument the collection boundary, never allocation counts |
-| [ArrayBuilder](array-builder-design.md) | Linear incremental `Array<T>` construction: pinned from alloc to seal, length starts at capacity and seal shortens, element stores inlined at monomorphisation |
+| [ArrayBuilder](array-builder-design.md) | `Array<T>` as a value over a growable buffer (`[capacity]` fields, element `:=`, in-place append); the pinned construction primitives `SeqBuilder` uses |
 | [Containers](containers.md) | The container design law: no iteration on unordered containers; the six containers and what each is for; what was removed and why |
 | [Heap recycling (parked)](heap-recycling-design.md) | Reusing provably dead objects without the collector: stream representations, the String trick vs overwrite, safe reuse on a thread's unscanned pages, the caller-releases design with escape summaries, and what the prototype on `claude/recycling-prototype` measured |
 | [Generations](generations-design.md) | Old stays old: a card per object marks an old object that may point at young ones; minors trace the cards; majors keep old pages old and compact sparse ones into pages born old. Mechanism, the stamp and card protocols, measurements |
