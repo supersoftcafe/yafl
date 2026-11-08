@@ -211,6 +211,10 @@ fun discard<T>([terminal] b: SeqBuilder<T>): None
                                                                     t2, 0i32))
     (nil: None)      => None
 
+# Keeps the seal call live: its answer is threaded here and dropped.
+fun _sealDiscarded(_ok: Bool): None
+  ret None
+
 # Push every element of `l`, in order.
 fun pushAll<T>([terminal] b: SeqBuilder<T>, l: List<T>): SeqBuilder<T>
   ret fold<T, SeqBuilder<T>>(l, b, (acc: SeqBuilder<T>, x: T) => push<T>(acc, x))

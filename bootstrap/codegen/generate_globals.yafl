@@ -105,7 +105,7 @@ fun classGlobalCodegen(c, r0): ClassCodegenOut
         # its reads follow forwarding instead.
         CgObject(c.cName, extends, functions, fields.cofStruct, fields.cofLengthField,
                  c.cName, hasAttr(c.cAttrs, "foreign"), hasAttr(c.cAttrs, "mutable"), 0,
-                 hasAttr(c.cAttrs, "pinnable")),
+                 hasAttr(c.cAttrs, "pinnable"), classCapacityField(c)),
         concat(genFunctions, thunks))
 
 fun classMemberFunctions(ms: List<PStmt>, r, acc: List<CgFunction>) =>
@@ -188,6 +188,11 @@ fun classObjectFields(c: PsClass, r)
                       CgImmediateStruct(concat(list1(CgField("type", CgDataPointer(false))),
                                                 map(params, (p) => letCgField(p, r)))),
                       None)
+
+# The name of the class's [capacity] field, or None (classdef capacity_field).
+fun classCapacityField(c: PsClass): String|None => match(firstWhere(flattenParams(c.cParams), isCapacityField))
+  (p: PStmt) => stmtName(p)
+  ()         => None
 
 fun letCgField(p, r) => match(p)
   (l: PsLet) => CgField(l.lName, specGenerateOpt(l.lType, r))

@@ -530,7 +530,32 @@ fun compileAction(a: PsAction, r)
 
 # The value is received by the FIELD's type, so a narrower value converts into a
 # wider slot (a Node into a `Node|None`, a bare None into the union's empty case).
-fun compileFieldAssign(fa: PsFieldAssign, r)
+fun compileFieldAssign(fa: PsFieldAssign, r) => match(elementTarget(fa.faTarget))
+  (et: ElementTarget) => compileElementTarget(fa, et, r)
+  ()                  => compileFieldTarget(fa, r)
+
+# An element target keeps its call shape — subject and index compiled, never
+# the call itself — until the subject's class is known to have that array
+# field; then it is the element's PeArrayRead (control.py __compile_target).
+fun compileElementTarget(fa: PsFieldAssign, et: ElementTarget, r)
+  let b = compileExpr(et.etDot.base, r, None)
+  let ix = compileExpr(et.etIndex, r, SBuiltin("int32", fa.psfaLine))
+  let target = match(arrayClassOf(b.eoExpr, r))
+    (cs: PsClass) => isArrayFieldNamed(cs, et.etDot.member)
+      ? PeArrayRead(b.eoExpr, ix.eoExpr, et.etCall.pecLine)
+      : elementCall(et, b.eoExpr, ix.eoExpr)
+    ()            => elementCall(et, b.eoExpr, ix.eoExpr)
+  let v = compileExpr(fa.faValue, r, exprType(target, r))
+  ret StmtOut(PsFieldAssign(target, v.eoExpr, fa.psfaLine),
+              concat(concat(b.eoGlobals, ix.eoGlobals), v.eoGlobals),
+              mergeHints(mergeHints(b.eoHints, ix.eoHints), v.eoHints))
+
+fun elementCall(et: ElementTarget, base: PExpr, index: PExpr): PExpr => match(et.etCall.parameter)
+  (t2: PeTuple) => PeCall(PeDot(base, et.etDot.member, et.etDot.pedLine),
+                          PeTuple(append(List<PTupEnt>(), PTupEnt("", false, index)), t2.petLine), et.etCall.pecLine)
+  (o: PExpr)    => et.etCall   # unreachable: elementTarget matched a tuple
+
+fun compileFieldTarget(fa: PsFieldAssign, r)
   let t1 = compileExpr(fa.faTarget, r, None)
   let v = compileExpr(fa.faValue, r, exprType(t1.eoExpr, r))
   ret StmtOut(PsFieldAssign(t1.eoExpr, v.eoExpr, fa.psfaLine),

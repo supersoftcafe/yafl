@@ -218,6 +218,7 @@ class _Graph:
             self.pinned.add((OBJ, obj.name))
         c.emit(obj.fields)
         c.emit(obj.length_field, LIT)
+        c.emit(obj.capacity_field, LIT)
         c.emit((obj.is_foreign, obj.is_mutable, obj.is_pinnable, obj.discriminator != 0))
         c.emit(obj.extends, OBJ)
         c.emit(obj.functions, (LIT, FUN))

@@ -58,7 +58,8 @@ class _FieldRenames:
             return obj
         return dataclasses.replace(
             obj, fields=t.ImmediateStruct(tuple((r[f], ty) for f, ty in obj.fields.fields)),
-            length_field=obj.length_field and r[obj.length_field])
+            length_field=obj.length_field and r[obj.length_field],
+            capacity_field=obj.capacity_field and r[obj.capacity_field])
 
     def function(self, fn: Function) -> Function:
         ops = tuple(op.replace_params(self.access) for op in fn.ops)

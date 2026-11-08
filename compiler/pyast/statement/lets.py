@@ -33,7 +33,7 @@ from pyast.statement.base import Statement, NamedStatement, DataStatement, Impor
 class LetStatement(DataStatement):
     _KNOWN_ATTRIBUTES: ClassVar[frozenset[str]] = frozenset({
         "terminal", "const", "lazy", "trait", "future", "linear", "final",
-        "mutable", "ambient", "pinnable",
+        "mutable", "ambient", "pinnable", "capacity",
     })
 
     default_value: e.Expression|None

@@ -168,6 +168,7 @@ fun genObject(acc: GenAcc, o: CgObject, methodIds: Dict<String, Int>,
               + "    .array_el_pointer_locations = " + arrPtrMask.text + ",\n"
               + masks.gmMasksInit
               + "    .array_len_offset = " + genArrayLenOffset(o) + ",\n"
+              + "    .array_cap_offset = " + genArrayCapOffset(o) + ",\n"
               + "    .is_mutable = " + (o.objIsMutable ? "1" : "0") + ",\n"
               + "    .discriminator = " + String(o.objDiscriminator) + ",\n"
               + "    .name = \"" + o.objName + "\",\n"
@@ -219,6 +220,10 @@ fun [tail] vtProbeLoop(rest: List<VtRow>, index, row: VtRow, seen: List<VtRow>) 
 
 fun genArrayLenOffset(o: CgObject) => match(o.objLengthField)
   (l: String) => "offsetof(" + mangleName(o.objName) + "_t, " + mangleName(l) + ")"
+  ()           => "0"
+
+fun genArrayCapOffset(o: CgObject) => match(o.objCapacityField)
+  (c: String) => "offsetof(" + mangleName(o.objName) + "_t, " + mangleName(c) + ")"
   ()           => "0"
 
 class [final] GenMasks(gmVarLines: List<String>, gmMasksInit: String)

@@ -18,6 +18,7 @@ import System::Containers
 
 import Bootstrap::Ast
 import Bootstrap::Ir
+import Bootstrap::Frontend
 import Bootstrap::Lower::Ast
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
@@ -48,6 +49,9 @@ fun genFieldAssign(fa: PsFieldAssign, r) => match(fa.faTarget)
     (c: SClass) => genFieldAssignClass(fa, d, c, r)
     (o: Spec)   => emptyBundle()   # unreachable: check() requires a class subject
     ()          => emptyBundle()
+  (ar: PeArrayRead) => match(arrayClassOf(ar.arrObj, r))
+    (cs: PsClass) => genElementAssign(fa, ar, cs, r)
+    ()            => emptyBundle()   # unreachable: check() requires an array class
   (o: PExpr) => emptyBundle()      # unreachable: check() requires a field
 
 fun genFieldAssignClass(fa: PsFieldAssign, d: PeDot, c: SClass, r) => match(soleItem(findType(r, c.scName)))
@@ -68,6 +72,37 @@ fun genFieldAssignStore(fa: PsFieldAssign, d: PeDot, cs: PsClass, l: PsLet, r)
   let place = RpObjectField(specGenerateOpt(l.lType, r), mustResult(baseB), cs.cName, d.member, None, false, false)
   ret bundleJoin(bundleJoin(baseB, valB),
                  bundleOp1(OpMove(place, mustResult(valB), false, Dict())))
+
+# An element of the array field: the index checked against the bound
+# (array_index_check), then an ordinary NON-fresh element store — the barriers
+# any late store owes (control.py __generate_element).
+fun genElementAssign(fa: PsFieldAssign, ar: PeArrayRead, cs: PsClass, r) => match(head(arrayFieldsOf(classFields(cs), List())))
+  (af: PStmt) => match(af)
+    (l: PsLet) => match(asArrayFieldVariant(l.lType))
+      (afSpec: SArrayField) => match(arrayBoundField(cs, afSpec))
+        (bound: String) => genElementStore(fa, ar, cs, afSpec.safElem, bound, r)
+        ()              => emptyBundle()   # unreachable: check() requires the length field
+      ()                    => emptyBundle()   # unreachable
+    (o: PStmt) => emptyBundle()                # unreachable
+  ()          => emptyBundle()                 # unreachable
+
+fun genElementStore(fa: PsFieldAssign, ar: PeArrayRead, cs: PsClass, elem: Spec, bound: String, r)
+  let baseB = withPrefix(genExpr(ar.arrObj, r), "eab")
+  let idxB = withPrefix(genExpr(ar.arrIndex, r), "eai")
+  let valB = withPrefix(genExprTo(fa.faValue, r, elem), "eav")
+  let baseVar = RpStackVar(CgDataPointer(false), "eabase")
+  let idxVar = RpStackVar(CgInt(32), "eaindex")
+  let checked = RpRuntimeInvoke("array_index_check",
+                  RpNewStruct(list2(RpNamedValue("index", mustResult(idxB)),
+                                    RpNamedValue("bound", RpObjectField(CgInt(32), baseVar, cs.cName, bound,
+                                                                        None, false, false)))),
+                  CgInt(32))
+  let place = RpObjectField(specGenerate(elem, r), baseVar, cs.cName, "array", idxVar, false, false)
+  let ops = list3<Op>(OpMove(baseVar, mustResult(baseB), false, Dict()),
+                      OpMove(idxVar, checked, false, Dict()),
+                      OpMove(place, mustResult(valB), false, Dict()))
+  ret bundleJoin(bundleJoin(bundleJoin(baseB, idxB), valB),
+                 GBundle(list2(baseVar, idxVar), ops, None, List(), List()))
 
 # ── ReturnStatement (control.py) ────────────────────────────────────────────
 

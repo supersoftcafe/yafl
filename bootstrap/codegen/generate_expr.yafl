@@ -1013,6 +1013,15 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   let lenIdx = findIndex(params, (p) => nameMatches(stmtName(p), afSpec.safLenField)) ?? -1  # check() guarantees it
   let length2 = RpStructField(paramsVar, "_" + String(lenIdx))
   let initFn = RpStructField(paramsVar, "_" + String(arrIdx))
+  # A [capacity] field sizes the storage past the length; the fill still
+  # stops at the length. The larger of the two, so a capacity below the
+  # length cannot shrink the storage under the elements (new.py).
+  let sizeVar = RpStackVar(CgInt(32), "fillsize")
+  let size = match(findIndex(params, isCapacityField))
+    (capIdx: Int) => RpRuntimeInvoke("int32_max", RpNewStruct(list2(
+                        RpNamedValue("a", length2),
+                        RpNamedValue("b", RpStructField(paramsVar, "_" + String(capIdx))))), CgInt(32))
+    ()            => length2
   let scalarOps = scalarFieldMoveOps(params, cname,
                             resultVar, paramsVar, arrIdx, 0, r,
                             List())
@@ -1021,8 +1030,9 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
   # under the resumed loop (see pyast/expression/new.py).
   let unpinVar = RpStackVar(CgDataPointer(false), "fillunpin")
   let unpinOp = OpMove(unpinVar, RpRuntimeInvoke("object_unpin", RpNewStruct(list1(RpNamedValue("o", resultVar))), CgDataPointer(false)), true, Dict())
-  let headOps = concat(list2(OpMove(paramsVar, paramsValue, false, Dict()),
-                             OpNewObject(cname, resultVar, length2, true, Dict())),
+  let headOps = concat(list3(OpMove(paramsVar, paramsValue, false, Dict()),
+                             OpMove(sizeVar, size, false, Dict()),
+                             OpNewObject(cname, resultVar, sizeVar, true, Dict())),
                        scalarOps)
   let iVar = RpStackVar(CgInt(32), "filli")
   let iNext = RpStackVar(CgInt(32), "fillinext")
@@ -1043,7 +1053,8 @@ fun genNewArrayOn(params: List<PStmt>, afSpec: SArrayField, cname, paramsVar,
             OpMove(iNext, incr, false, Dict())),
       list4(OpLabel("fillback", Dict()), OpJump("fillhead", Dict()), OpLabel("fillend", Dict()), unpinOp)))
   let ops = concat(headOps, concat(loopOps, concat(list1(phiOp), restOps)))
-  ret GBundle(prepend(paramsVar, prepend(resultVar, list4(unpinVar, iVar, iNext, elemVar))), ops, resultVar, List(), List())
+  ret GBundle(prepend(paramsVar, prepend(resultVar, prepend(sizeVar, list4(unpinVar, iVar, iNext, elemVar)))),
+              ops, resultVar, List(), List())
 
 fun isArrayFieldParam(st) => match(st)
   (l: PsLet) => match(asArrayFieldVariant(l.lType))

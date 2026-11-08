@@ -128,6 +128,13 @@ class ClassStatement(TypeStatement):
         s2 = [s for s in self.statements if isinstance(s, LetStatement)]
         return s1 + s2
 
+    def capacity_field(self, resolver: g.Resolver) -> LetStatement | None:
+        """The `[capacity]` field of an array class, or None. It sizes the
+        trailing storage past the length: the object is allocated for
+        capacity elements, the constructor fills [0, length), and `:=` may
+        write any element below the capacity (check() enforces the shape)."""
+        return next((f for f in self.get_fields(resolver) if "capacity" in f.attributes), None)
+
     def array_field(self, resolver: g.Resolver) -> LetStatement | None:
         """The trailing variable-length array field (declared `name: Elem[lenField]`),
         or None for an ordinary class. An array class has exactly one — enforced,
@@ -377,6 +384,20 @@ class ClassStatement(TypeStatement):
                     array_err.append(Error(af.line_ref,
                         f"array length field '{len_name}' must be of type Int32"))
 
+        # A [capacity] field sizes the array's storage past its length: one per
+        # class, an Int32, in an array class, and not the length field itself.
+        capacity_fields = [f for f in fields if "capacity" in f.attributes]
+        for cf in capacity_fields[1:]:
+            array_err.append(Error(cf.line_ref, "a class may have at most one [capacity] field"))
+        for cf in capacity_fields[:1]:
+            if not array_fields:
+                array_err.append(Error(cf.line_ref, "a [capacity] field needs an array field to size"))
+            elif any(g.name_matches(cf.name, checked_cast(t.ArrayFieldSpec, af.declared_type).length_field)
+                     for af in array_fields):
+                array_err.append(Error(cf.line_ref, "the array's length field cannot be its [capacity] field"))
+            if not (isinstance(cf.declared_type, t.BuiltinSpec) and cf.declared_type.type_name == "int32"):
+                array_err.append(Error(cf.line_ref, "a [capacity] field must be of type Int32"))
+
         return prm_err + stm_err + impl_err + cls_type_err + final_err + class_foreign_err + class_linear_err + linear_tp_err + bad_slots_err + empty_slots_err + array_err + fragile_warns + self.unknown_attribute_errors("a class" if not self.is_interface else "an interface")
 
 
@@ -405,6 +426,8 @@ class ClassStatement(TypeStatement):
             scalar_fields = (tuple((p.name, p.get_type().generate(resolver)) for p in scalars)
                              + (("array", cg_t.Array(af_spec.element.generate(resolver), 0)),))
             length_field = next(p.name for p in scalars if g.name_matches(p.name, af_spec.length_field))
+        capacity_param = self.capacity_field(resolver)
+        capacity_field = capacity_param.name if capacity_param is not None else None
 
         xobject = cg_ir.Object(
             name=self.name,
@@ -412,6 +435,7 @@ class ClassStatement(TypeStatement):
             functions=functions,
             fields=cg_t.ImmediateStruct((("type", cg_t.DataPointer()),) + scalar_fields),
             length_field=length_field,
+            capacity_field=capacity_field,
             comment=self.name,
             is_foreign="foreign" in self.attributes,
             # [mutable]: fields are written after construction, so the collector

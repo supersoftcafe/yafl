@@ -275,6 +275,10 @@ class Object:
     # per TYPE — instead of a tag byte stored in every instance. 0 for
     # objects that never appear in a dispatch.
     discriminator: int = 0
+    # Name of the Int(32) field that sizes the storage past the length (a
+    # [capacity] field), or None. The vtable's array_cap_offset: compaction
+    # copies `length` elements and resets the capacity to the length.
+    capacity_field: str|None = None
 
     def __post_init__(self):
         if not isinstance(self.fields, t.ImmediateStruct):
@@ -359,6 +363,12 @@ class Object:
         l = self.length_field
         if l is not None:
             return f"offsetof({mangle_name(self.name)}_t, {mangle_name(l)})"
+        return "0"
+
+    def get_array_capacity_offset(self, type_cache: dict[t.Type, tuple[str, str]]) -> str:
+        c = self.capacity_field
+        if c is not None:
+            return f"offsetof({mangle_name(self.name)}_t, {mangle_name(c)})"
         return "0"
 
 

@@ -407,8 +407,9 @@ fun [tail] rddOps(e: RddEnc, cx: RddCx, s: Segment<Op>|None, i: Int32): RddEnc =
 
 fun rddObject(e: RddEnc, cx: RddCx, o: CgObject): RddEnc
   let pinned = o.objIsForeign ? rddPin(e, o.objName) : e
-  let head = rddBool(rddBool(rddBool(rddBool(rddLitOpt(rddTy(rddS(pinned, "O;"), o.objFields),
-                                                       o.objLengthField),
+  let head = rddBool(rddBool(rddBool(rddBool(rddLitOpt(rddLitOpt(rddTy(rddS(pinned, "O;"), o.objFields),
+                                                                 o.objLengthField),
+                                                       o.objCapacityField),
                                              o.objIsForeign),
                                      o.objIsMutable),
                              o.objIsPinnable),
@@ -726,7 +727,7 @@ fun rddRenameObject(rn: RddRenames, o: CgObject): CgObject
                map(o.objFunctions, (sl) => CgFuncSlot(sl.slotVirtualName,
                                                       rddTo(rn.rnFn, sl.slotGlobalName))),
                o.objFields, o.objLengthField, o.objComment, o.objIsForeign,
-               o.objIsMutable, o.objDiscriminator, o.objIsPinnable)
+               o.objIsMutable, o.objDiscriminator, o.objIsPinnable, o.objCapacityField)
 
 fun rddRenameFunction(rn: RddRenames, f: CgFunction): CgFunction
   ret cgFunctionWith(f, map(f.fnOps, (op) => rddRenameOp(rn, op)), f.fnStackVars)

@@ -59,8 +59,10 @@ class TestArrayFillCompaction(TestCase):
         c_code = compile_c(_SRC, optimization_level=level)
         # The suspending fill must really be a parked state machine, or the
         # run below proves nothing about a fill that outlives its stack frame.
+        # The fill loop is the tabulating constructor's, inside System::Array's
+        # factory function (monomorphised for Box), so that is what parks.
         self.assertIsNotNone(
-            re.search(r"^void Main__suspending_\w+_async\(", c_code, re.MULTILINE),
+            re.search(r"^void System__Array_\w+_Main__Box_\w+_async\(", c_code, re.MULTILINE),
             "the suspending fill did not become an $async state machine")
         with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
             binary = tmp.name

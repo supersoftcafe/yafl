@@ -1006,6 +1006,23 @@ EXPORT size_t object_get_size(object_t* ptr) {
     return actual_size;
 }
 
+// The bytes an object's storage spans: its size, or — for an array whose
+// capacity field (array_cap_offset) holds more than its length — the storage
+// up to that capacity, which a late element write may fill. object_get_size
+// stays the length's: the collector traces and copies only that much.
+EXPORT size_t object_get_extent(object_t* ptr) {
+    vtable_t* vt = object_get_vtable(ptr);
+    if (vt->array_cap_offset) {
+        uint32_t len = *(uint32_t*)&((char*)ptr)[vt->array_len_offset];
+        uint32_t cap = *(uint32_t*)&((char*)ptr)[vt->array_cap_offset];
+        if (cap > len) {
+            size_t size = vt->object_size + vt->array_el_size * cap;
+            return (size + sizeof(slot_t) - 1) / sizeof(slot_t) * sizeof(slot_t);
+        }
+    }
+    return object_get_size(ptr);
+}
+
 // ── ListBuilder support ──────────────────────────────────────────────────────
 // In-order list construction (stdlib ListBuilder): cells are ordinary
 // immutable ChainLinks; the ONE mutable step — writing the previous tail's

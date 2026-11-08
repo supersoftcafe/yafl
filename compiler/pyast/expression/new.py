@@ -136,6 +136,14 @@ class NewExpression(Expression):
         len_idx = next(i for i, p in enumerate(params) if g.name_matches(p.name, af_spec.length_field))
         length = cg_p.StructField(params_var, f"_{len_idx}")
         init_fn = cg_p.StructField(params_var, f"_{arr_idx}")
+        # A [capacity] field sizes the storage past the length; the fill
+        # still stops at the length. The larger of the two, so a capacity
+        # below the length cannot shrink the storage under the elements.
+        cap_idx = next((i for i, p in enumerate(params) if "capacity" in p.attributes), None)
+        size_var = cg_p.StackVar(cg_t.Int(32), "fillsize")
+        size = length if cap_idx is None else cg_p.RuntimeInvoke(
+            "int32_max", cg_p.NewStruct((("a", length), ("b", cg_p.StructField(params_var, f"_{cap_idx}")))),
+            cg_t.Int(32))
 
         ops: list[cg_o.Op] = [
             cg_o.Move(params_var, params_value),
@@ -145,7 +153,8 @@ class NewExpression(Expression):
             # loop then reloads that address and stores into it, so a
             # relocation would split the elements between the stale original
             # and the copy.
-            cg_o.NewObject(cname, result_var, size=length, pinned=True),
+            cg_o.Move(size_var, size),
+            cg_o.NewObject(cname, result_var, size=size_var, pinned=True),
         ]
         # Scalar fields (everything except the array field itself).
         for i, p in enumerate(params):
@@ -191,7 +200,7 @@ class NewExpression(Expression):
                 "object_unpin", cg_p.NewStruct((("o", result_var),)), cg_t.DataPointer()), keep=True),
         ]
         return g.OperationBundle(
-            stack_vars=(params_var, result_var, unpin_var, i_var, i_next, elem_var),
+            stack_vars=(params_var, result_var, size_var, unpin_var, i_var, i_next, elem_var),
             operations=tuple(ops),
             result_var=result_var)
 
