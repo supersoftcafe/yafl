@@ -42,12 +42,13 @@ fun [test("T infers from the second argument once the first is spelled 0i32")] c
 namespace CompilerTests::GenericArgInference::ArrayIndexWithBareLiteral
 
 import System
+import System::Containers
 import System::Test
 
 # `a[0]` works because the index API takes Int — 0 IS an Int under strict
 # literals (array.yafl converts internally; the Int32 overload remains for
 # byte-scanning code holding a sized index).
-fun get0(a: System::Array<System::Int>): System::Int
+fun get0(a: System::Containers::Array<System::Int>): System::Int
     ret a[0]
 
 fun program(): System::Int

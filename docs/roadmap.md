@@ -25,7 +25,8 @@ for item in collection
 
 Implemented. Generic type parameters work on functions, interfaces, **and
 classes** — the class itself can be parameterised and is monomorphised per
-instantiation. `Array<T>` (`stdlib/array.yafl`) is a worked example.
+instantiation. `Array<T>` (`stdlib/System/Containers/array.yafl`) is a worked
+example.
 
 ```
 class Pair<A, B>(first: A, second: B)
@@ -80,7 +81,7 @@ Implemented. An array is a trailing variable-length field of a `[final]` class,
 sized by a named `Int32` field; the field presents as a first-class accessor
 function and reads are bounds-checked. The stdlib wraps this as `Array<T>` with
 the `[]` index operator (`a[i]` → `` `[]` ``(a, i)). See
-[arrays in the reference](reference.md) and `stdlib/array.yafl`.
+[arrays in the reference](reference.md) and `stdlib/System/Containers/array.yafl`.
 
 ## Strong type inference
 

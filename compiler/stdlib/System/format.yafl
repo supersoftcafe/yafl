@@ -1,6 +1,7 @@
 namespace System
 
 import System
+import System::Containers
 
 
 # Format strings — per-arity overloads of `format(template, args...)`.

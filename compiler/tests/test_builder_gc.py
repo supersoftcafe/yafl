@@ -35,6 +35,7 @@ from tests.testutil import compile_c
 
 _LONG_SRC = (
     'import System\n'
+    'import System::Containers\n'
     'fun big(): Int\n'
     '  ret 100000000000000000000000\n'
     'fun [tail] churn(n: Int, acc: Int): Int\n'

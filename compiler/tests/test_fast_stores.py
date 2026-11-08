@@ -245,8 +245,8 @@ class TestConstructionInAnAsyncFunction(TestCase):
 # call runs safe points, so the store is not fresh: it is a FILL, which owes
 # no snapshot barrier (nothing is overwritten) but keeps its publication
 # fence. `boxes` returns the array so the fill is not trimmed away. The array
-# class is the program's own: the mechanism under test, which System::Array is
-# built on rather than is.
+# class is the program's own: the mechanism under test, which
+# System::Containers::Array is built on rather than is.
 _TAB_SRC = """\
 import System
 
@@ -284,11 +284,12 @@ class TestTabulateFillKeepsItsBarrier(TestCase):
 # both compilers.
 _SHAPE_SRC = """\
 import System
+import System::Containers
 
 class Box(v: System::Int)
 
-fun [impure] boxes(n: System::Int32): System::Array<Box>
-  ret System::Array<Box>(n, (i: System::Int32) => Box(System::Int(i)))
+fun [impure] boxes(n: System::Int32): System::Containers::Array<Box>
+  ret System::Containers::Array<Box>(n, (i: System::Int32) => Box(System::Int(i)))
 
 fun [impure] pick(n: System::Int): Box
   let [lazy] b: Box = Box(n + 1)

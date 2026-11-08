@@ -1,4 +1,4 @@
-namespace System
+namespace System::Containers
 import System
 import System::Internal
 

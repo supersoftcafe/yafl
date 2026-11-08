@@ -30,6 +30,7 @@ fun [test("a [capacity] field leaves room past the length for := to fill")] chec
 namespace CompilerTests::ArrayAppend::AppendGrows
 
 import System
+import System::Containers
 import System::Test
 
 fun [tail] fill(a: Array<Int>, i: Int, n: Int): Array<Int>
@@ -46,6 +47,7 @@ fun [test("append grows an array one element at a time")] check(): None|TestFail
 namespace CompilerTests::ArrayAppend::EveryValueKeepsItsOwnElements
 
 import System
+import System::Containers
 import System::Test
 
 fun program(): Int
@@ -62,6 +64,7 @@ fun [test("appending to an older value copies; no value sees another's elements"
 namespace CompilerTests::ArrayAppend::BuilderAppends
 
 import System
+import System::Containers
 import System::Test
 
 fun [tail] pushAll([terminal] b: ArrayBuilder<String>, i: Int, n: Int): ArrayBuilder<String>
