@@ -27,9 +27,9 @@ from tests.testutil import compile_c
 _DOT = """namespace Test
 import System
 
-# An array class of its own — the mechanism under test, which System::Array
-# is built on rather than is: tabulated by its constructor, read through its
-# array field's accessor.
+# An array class of its own — the mechanism under test, which
+# System::Containers::Array is built on rather than is: tabulated by its
+# constructor, read through its array field's accessor.
 class [final] Vec(length: Int32, items: Float[length])
 
 # The proof needs the counter's entry value (0), which only the caller has:
@@ -49,6 +49,7 @@ fun main(): Int
 
 _UNPROVABLE = """namespace Test
 import System
+import System::Containers
 
 # `i` arrives from outside — nothing relates it to a.length, so the read
 # keeps its bounds check (and aborts at runtime when out of range).

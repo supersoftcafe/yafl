@@ -527,7 +527,8 @@ once-mooted "move async AST→IR" is a non-task — it's done.
 
 From a parser review (2026-06). Bit shifts (`<<`/`>>`, all integer types), a
 `splitLines` helper, arrays (`Array<T>` + the `[]` index operator, built on
-the array-as-final-class mechanism — `stdlib/array.yafl`), short-circuit
+the array-as-final-class mechanism — `stdlib/System/Containers/array.yafl`),
+short-circuit
 `&&` / `||`, and `if` / `else if` / `else` are now done; remaining:
 
 - **`\u` / `\x` string escapes.** Strings are UTF-8 codepoints, but only

@@ -63,6 +63,7 @@ fun [test("generic implementors dispatch through the interface", stdout = "1 2 1
 namespace CompilerTests::GenericInterfaceDispatch::OverrideSignatureNamingAGenericClass
 
 import System
+import System::Containers
 import System::Test
 
 interface Sink

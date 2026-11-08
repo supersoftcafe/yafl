@@ -1,4 +1,4 @@
-# Tests for System Array<T> (stdlib/array.yafl).
+# Tests for System::Containers::Array<T> (stdlib/System/Containers/array.yafl).
 # Ported from compiler/tests/test_array_class.py.
 #
 # `Array<T>(n, initFn)` tabulates initFn over 0..n-1; `a[i]` reads element i.
@@ -8,11 +8,12 @@
 # literals below are spelled `5i32` and results are widened with Int(...)
 # before being compared.
 #
-# See list_tests.yafl for why these live outside stdlib/.
+# See Containers/list_tests.yafl for why these live outside stdlib/.
 
 namespace StdlibTests::ArrayTests
 
 import System
+import System::Containers
 import System::Test
 
 

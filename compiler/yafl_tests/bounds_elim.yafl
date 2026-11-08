@@ -18,6 +18,7 @@
 namespace CompilerTests::BoundsElim::CanonicalLoopStillComputesCorrectly
 
 import System
+import System::Containers
 import System::Test
 
 # The proof needs the counter's entry value (0), which only the caller has:
