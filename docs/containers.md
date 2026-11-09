@@ -25,7 +25,7 @@ Permitted on an unordered container:
 | `Set<T>` | no | `add` | membership; a `Dict<T,()>` behind a wrapper |
 | `Bag<T>` | no | `add` | accumulation when order does not matter |
 | `List<T>` | YES | `ListBuilder` / `prepend` | sequences whose order is meaningful |
-| `Array<T>` | YES | ctor init fn / `ArrayBuilder` | O(1) indexed reads; ONE heap object per sequence |
+| `Array<T>` | YES | ctor init fn / `push` | O(1) indexed reads; ONE heap object per sequence |
 | `Seq<T>` | YES | `SeqBuilder` | build-then-walk sequences; one SMALL heap object per ≤16 elements |
 
 Pick the SIMPLEST container that does the job. A loop that reads its own
@@ -65,10 +65,12 @@ an `Array<T>`'s buffer is a header plus `n × sizeof(element)` — the
 container of choice for large, build-once-read-many sequences. Two ways in:
 
 * `Array<T>(n, initFn)` — tabulate `initFn` over `0..n-1`
-* `arrayBuilder<T>(estimate)` … `push` … `build` — incremental
-  construction when the final count isn't known up front: each push
-  appends in place while the builder's array owns the end of its buffer
-  (see [ArrayBuilder design](array-builder-design.md))
+* `Array<T>()` … `push` — incremental construction when the final count
+  isn't known up front: each push appends in place while the array owns the
+  end of its buffer, copying into twice the room otherwise (see
+  [Array design](array-design.md))
+* `arrayOf<T>(v1)`, `arrayOf<T>(v1, v2)`, `arrayOf<T>(v1, v2, v3)` —
+  convenience constructors for a known few values
 
 There is no update, no slice, no cursor: read by index, or walk `0..length`.
 A sequence that grows or is consumed element-at-a-time is a `List`; a
@@ -94,8 +96,8 @@ along the Fibonacci sequence — 1, 1, 2, 3, 5, 8, 13 — then stay at the 16
 cap, so tiny sequences stay tiny and long ones settle at the largest
 allocation unit that is still GC-friendly. Segments are LINKED as they
 fill; elements are never copied. The open tail is pinned from allocation
-to link/seal — the same construction contract as `ArrayBuilder` (see
-[ArrayBuilder design](array-builder-design.md)).
+to link/seal — the same pinned construction contract `Array`'s growth uses
+(see [Array design](array-design.md)).
 
 Consume with `seqStream` (the `Stream` instance) or `fold`/`map`/`filter`/
 `any`. There is no indexed access and no prepend/uncons: a sequence read

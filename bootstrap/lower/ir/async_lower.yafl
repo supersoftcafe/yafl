@@ -1308,7 +1308,7 @@ fun alHotAssembleAsync(f: CgFunction, stateName, subtype: String|None,
                  f.fnSync, f.fnTail, f.fnBypassAsync, f.fnInline,
                  f.fnSourceFile, f.fnSourceLine, f.fnFuture)
 
-fun alSaveCases(bs: List<ABlock>, i, acc): List<OpCase> =>
+fun alSaveCases(bs: List<ABlock>, i: Int, acc: List<OpCase>): List<OpCase> =>
   fold(bs, (acc = acc, i = i),
        (st, x) => (acc = append(st.acc, OpCase(st.i + 1, "$save$" + String(st.i))), i = st.i + 1)).acc
 

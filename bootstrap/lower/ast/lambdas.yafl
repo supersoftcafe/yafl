@@ -74,7 +74,7 @@ fun cpPathFor(acc: ClPaths, lr: PLine) => match(get(acc.cpMap, lr))
   ()                => List()
 
 # One more step on the end of a structural path — the order IS the path.
-fun cpExtend(path, name) => name == ""
+fun cpExtend(path: List<String>, name: String): List<String> => name == ""
   ? path
   : append(path,
                name)

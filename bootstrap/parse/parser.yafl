@@ -1054,13 +1054,14 @@ fun armFromTargets(pl: List<PStmt>, lr, ps): (v: PArm|PFail, rest: Ps) => match(
                                  lr, ps)
   ()            => parseArmTail("", None, List(), lr, ps, List())
 
-fun posOf(bs: List<PStmt>, lr, acc) => fold(bs, acc, (a, b) => appendPos(a, b, lr))
+fun posOf(bs: List<PStmt>, lr: PLine, acc: List<PPos>): List<PPos> =>
+  fold(bs, acc, (a, b) => appendPos(a, b, lr))
 
 # Every position carries the ARM's line ref, not the binder's own: the unique
 # name is `name@arm<hash of that line>`, and Python keys all positions of one
 # arm off the arm. Using the binder's line would mint a different hash and the
 # two compilers would emit different C identifiers for the same program.
-fun appendPos(acc, binder: PStmt, lr) => match(binder)
+fun appendPos(acc: List<PPos>, binder: PStmt, lr: PLine): List<PPos> => match(binder)
   (l: PsLet) => append(acc,
                   PPos(bareOf(l.lName) == "_" ? "" : bareOf(l.lName),
                        l.lType, lr))

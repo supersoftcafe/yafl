@@ -944,7 +944,8 @@ fun combinationUnionEntry(sel: Selection, pattern: Spec, discs: Dict<String, Int
 # The slot values with the discriminator LAST. Not a list utility: the tag's
 # position IS its position in the union struct, so this names the layout rule
 # rather than the list operation that implements it.
-fun withTagField(values, tag) => append(values, RpNamedValue("$tag", RpInteger(tag, 32)))
+fun withTagField(values: List<RpNamedValue>, tag: Int): List<RpNamedValue> =>
+  append(values, RpNamedValue("$tag", RpInteger(tag, 32)))
 
 fun combinationUnionValueTagged(narrowCtype, narrowSlots: List<CgSlotEntry>, wideSlots: List<CgSlotEntry>,
                                 slotFields: List<CgField>, sv, memberTag)

@@ -23,8 +23,8 @@ import System
 # capacities ramp along the Fibonacci sequence — 1, 1, 2, 3, 5, 8, 13 —
 # then stay at the 16 cap: tiny sequences stay tiny, and long ones settle
 # at the largest allocation unit that is still GC-friendly. Segments are
-# LINKED as they fill — elements are never copied (unlike ArrayBuilder's
-# doubling growth).
+# LINKED as they fill — elements are never copied (unlike Array's doubling
+# growth).
 #
 # Consume with seqStream (the Stream instance) or fold/map/filter/any.
 # There is no indexed access (a sequence read by position wants an Array),
@@ -138,7 +138,7 @@ fun [tail] _anySeg<T>(s: Segment<T>|None, i: Int32, pred: (:T): Bool): Bool
 #
 # Linearity certifies the single-writer confinement (every operation
 # consumes the builder), and _ok threads the runtime results so no pass can
-# discard the calls — both exactly as ListBuilder and ArrayBuilder.
+# discard the calls — both exactly as ListBuilder.
 class [linear,final] SeqBuilder<T>(_head: Segment<T>|None, _tail: Segment<T>|None,
                                    _at: Int32, _ok: Bool)
 

@@ -868,7 +868,8 @@ fun cgSlotFieldsOf(active: List<CgIdxSlot>, i) => match(head(active))
 # index (position in `active`, post sort).
 class [final] CgRenumberEntry(oldIndex: Int, newIndex: Int)
 
-fun cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx, acc): List<CgRenumberEntry> =>
+fun cgBuildRenumberLoop(active: List<CgIdxSlot>, newIdx: Int,
+                        acc: List<CgRenumberEntry>): List<CgRenumberEntry> =>
   fold(active, (acc = acc, newIdx = newIdx),
        (st, x) => (acc = append(st.acc, CgRenumberEntry(x.isIndex, st.newIdx)), newIdx = st.newIdx + 1)).acc
 

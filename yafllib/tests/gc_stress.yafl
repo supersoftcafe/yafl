@@ -57,15 +57,15 @@ fun listExpected(seed: System::Int): System::Int
   ret loop(0, 0)
 
 
-# ── arrays: builder, fold ────────────────────────────────────────────────────
+# ── arrays: append/push, fold ────────────────────────────────────────────────
 
-fun [tail] _arrayInto([terminal] b: ArrayBuilder<System::Int>, i: System::Int,
-                      n: System::Int, seed: System::Int): ArrayBuilder<System::Int>
+fun [tail] _arrayInto(b: Array<System::Int>, i: System::Int,
+                      n: System::Int, seed: System::Int): Array<System::Int>
   ret i >= n ? b : _arrayInto(push<System::Int>(b, mix(i * 7 + seed)), i + 1, n, seed)
 
 fun arrayRound(seed: System::Int): System::Int
-  # A small estimate, so the builder grows (and copies) many times.
-  let a = build<System::Int>(_arrayInto(arrayBuilder<System::Int>(8), 0, arrayLen, seed))
+  # Start empty, so push grows (and copies) many times.
+  let a = _arrayInto(Array<System::Int>(), 0, arrayLen, seed)
   ret fold<System::Int, System::Int>(a, 0, (acc: System::Int, x: System::Int) => (acc + x) % modulus)
 
 fun arrayExpected(seed: System::Int): System::Int
