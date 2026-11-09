@@ -158,16 +158,17 @@ fun siFieldAssigns(ops: Segment<Op>|None, news: List<SiNewObj>)
                      put(ix, n.snReg, true))
   ret siFaLoop(ops, 0i32, 0, regIx, List())
 
-fun [tail] siFaLoop(s: Segment<Op>|None, iSeg, i, regIx: Dict<String, Bool>,
-                    acc) => match(s)
+fun [tail] siFaLoop(s: Segment<Op>|None, iSeg: Int32, i: Int,
+                    regIx: Dict<String, Bool>,
+                    acc: List<SiAssign>): List<SiAssign> => match(s)
   (nil: None)        => acc
   (seg: Segment<Op>) => iSeg < seg.length
     ? siFaLoop(s, iSeg + 1i32, i + 1, regIx,
                siFaOne(acc, seg.array(iSeg), i, regIx))
     : siFaLoop(seg.next, 0i32, i, regIx, acc)
 
-fun siFaOne(acc, op, i,
-            regIx: Dict<String, Bool>) => match(op)
+fun siFaOne(acc: List<SiAssign>, op: Op, i: Int,
+            regIx: Dict<String, Bool>): List<SiAssign> => match(op)
   (m: OpMove) => match(m.moveTarget)
     (of: RpObjectField) => of.index is None
       ? siFaStore(acc, of, m.moveSource, i, regIx)
@@ -175,16 +176,17 @@ fun siFaOne(acc, op, i,
     (o: RParam)         => acc
   (o: Op)     => acc
 
-fun siFaStore(acc, of: RpObjectField, src, i,
-              regIx: Dict<String, Bool>) => match(of.pointer)
+fun siFaStore(acc: List<SiAssign>, of: RpObjectField, src: RParam, i: Int,
+              regIx: Dict<String, Bool>): List<SiAssign> => match(of.pointer)
   (sv: RpStackVar) => !(get(regIx, sv.name) is None)
     ? siFaPut(acc, sv.name, of.field, i, src)
     : acc
   (o: RParam)      => acc
 
 # Last store wins (Python dict assignment).
-fun siFaPut(acc, reg, field, i,
-            src) => any(acc, (a2) => a2.saReg == reg && a2.saField == field)
+fun siFaPut(acc: List<SiAssign>, reg: String, field: String, i: Int,
+            src: RParam): List<SiAssign> =>
+  any(acc, (a2) => a2.saReg == reg && a2.saField == field)
   ? map(acc, (a2) => a2.saReg == reg && a2.saField == field
                ? SiAssign(reg, field, i, src)
                : a2)

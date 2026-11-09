@@ -281,7 +281,7 @@ fun instOne(acc: List<TraitInst>, t: PStmt, r: Resolver): List<TraitInst> => mat
   (let2: PsLet) => instancesOf(let2, r, acc)
   (o: PStmt)    => acc
 
-fun instancesOf(let2: PsLet, r, acc) => match(let2.lType)
+fun instancesOf(let2: PsLet, r: Resolver, acc: List<TraitInst>): List<TraitInst> => match(let2.lType)
   (dt: Spec) => match(dt)
     (dc: SClass) => match(soleItem(findType(r, dc.scName)))
       (f: Found) => match(f.fStmt)
@@ -292,7 +292,7 @@ fun instancesOf(let2: PsLet, r, acc) => match(let2.lType)
   ()         => acc
 
 fun witnessParents(let2: PsLet, dc: SClass, cls: PsClass,
-                   acc) => match(cls.cAllParents)
+                   acc: List<TraitInst>): List<TraitInst> => match(cls.cAllParents)
   (parents: List<Spec>) => parentIfaces(parents,
                                         witnessRemap(dc, cls),
                                         genNames(let2.lGens,
@@ -305,11 +305,12 @@ fun witnessRemap(dc: SClass, cls: PsClass) => !isEmpty(cls.cGens)
   ? paramMapping(cls.cGens, dc.scParams)
   : List()
 
-fun parentIfaces(ps: List<Spec>, remap: List<Binding>, paramNames, acc) =>
+fun parentIfaces(ps: List<Spec>, remap: List<Binding>, paramNames: List<String>,
+                 acc: List<TraitInst>): List<TraitInst> =>
   fold(ps, acc, (a, p) => p is SClass ? addIface(substitute(p, remap), paramNames, a) : a)
 
-fun addIface(iface, paramNames,
-             acc) => match(iface)
+fun addIface(iface: Spec, paramNames: List<String>,
+             acc: List<TraitInst>): List<TraitInst> => match(iface)
   # Declaration order is kept: the sort is STABLE, so this order decides
   # ties between instances of equal param count.
   (ic: SClass) => append(acc, TraitInst(paramNames, ic))

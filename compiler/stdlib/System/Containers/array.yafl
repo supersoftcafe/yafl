@@ -4,11 +4,12 @@ import System::Internal
 
 
 # An array with O(1) indexed access and append — a sibling to the persistent
-# List<T>. Build it from an init function — `Array<T>(n, (i) => ...)` — or with
-# an ArrayBuilder, then read by index with `a[i]`.
+# List<T>. Build it from an init function — `Array<T>(n, (i) => ...)` —
+# from one to three values — `arrayOf<T>(a, b, c)` — or empty, appending with
+# `push`, then read by index with `a[i]`.
 #
 # A value is its own length over a shared buffer, as a String is (str.c). The
-# buffer holds elements past any one value's length: `_append` writes the next
+# buffer holds elements past any one value's length: `append` writes the next
 # element IN PLACE when the value owns the end of the buffer (its length is
 # the buffer's) and there is room, and copies into a buffer of twice the size
 # otherwise. A value reads only its own [0, length), which never changes, so
@@ -20,6 +21,20 @@ class [final] Array<T>(length: Int32, _buf: _ArrayBuf<T>)
 # The tabulating constructor: n elements, the i-th init(i), with no room spare.
 fun Array<T>(n: Int32, init: (i: Int32): T): Array<T>
   ret Array<T>(n, _ArrayBuf<T>(n, n, init))
+
+# Convenience constructors: an empty array, or one holding one to three values.
+fun Array<T>(): Array<T>
+  ret _emptyArray<T>(0i32)
+
+fun arrayOf<T>(v1: T): Array<T>
+  ret Array<T>(1i32, _ArrayBuf<T>(1i32, 1i32, (i: Int32) => v1))
+
+fun arrayOf<T>(v1: T, v2: T): Array<T>
+  ret Array<T>(2i32, _ArrayBuf<T>(2i32, 2i32, (i: Int32) => i == 0i32 ? v1 : v2))
+
+fun arrayOf<T>(v1: T, v2: T, v3: T): Array<T>
+  ret Array<T>(3i32, _ArrayBuf<T>(3i32, 3i32,
+    (i: Int32) => i == 0i32 ? v1 : (i == 1i32 ? v2 : v3)))
 
 # An empty array with room for `capacity` appends before its first copy. A
 # buffer fills only [0, used), so its init function is never called here; the
@@ -53,13 +68,7 @@ fun _noSuchIndex<T>(i: Int32): T
 # `a` followed by `x`. In place when `a` owns the end of its buffer and there
 # is room — the pin is the lock, against other appenders and the compactor —
 # and into a fresh buffer of twice the size otherwise.
-#
-# NOTE (issue #95): named `_append`, not `append`, for now. A public `append`
-# overload for Array beside List's makes every untyped parameter used only
-# through `append` ambiguous, so its type can no longer be inferred (19 such
-# parameters in the bootstrap alone). Appending goes through ArrayBuilder's
-# `push` until those parameters are typed and this can become `append`.
-fun _append<T>(a: Array<T>, x: T): Array<T>
+fun append<T>(a: Array<T>, x: T): Array<T>
   let held = pin(a._buf)
   let owns = held._used == a.length && held._used < held._cap
   if owns
@@ -94,10 +103,10 @@ fun map<T, TOut>(a: Array<T>, f: (x: T): TOut): Array<TOut>
   ret Array<TOut>(a.length, (i: Int32) => f(a[i]))
 
 fun filter<T>(a: Array<T>, pred: (:T): Bool): Array<T>
-  ret build<T>(_filterFrom<T>(a, 0i32, pred, arrayBuilder<T>(Int(a.length))))
+  ret _filterFrom<T>(a, 0i32, pred, Array<T>())
 
 fun [tail] _filterFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool,
-                          [terminal] b: ArrayBuilder<T>): ArrayBuilder<T>
+                          b: Array<T>): Array<T>
   ret i < a.length
     ? _filterFrom<T>(a, i + 1i32, pred, pred(a[i]) ? push<T>(b, a[i]) : b)
     : b
@@ -109,31 +118,8 @@ fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
   ret i < a.length && (pred(a[i]) || _anyFrom<T>(a, i + 1i32, pred))
 
 
-# ── ArrayBuilder ─────────────────────────────────────────────────────────────
-# Incremental construction by `_append`: an array with room for the estimate,
-# pushed onto, and published by `build`. Linear, so every push extends the
-# array the builder owns, in place until the room runs out.
-class [linear,final] ArrayBuilder<T>(_arr: Array<T>)
-
-fun arrayBuilder<T>(estimate: Int): ArrayBuilder<T>
-  ret ArrayBuilder<T>(_emptyArray<T>(truncateToInt32(estimate < 1 ? 1 : estimate)))
-
-fun push<T>([terminal] b: ArrayBuilder<T>, x: T): ArrayBuilder<T>
-  ret ArrayBuilder<T>(_append(b._arr, x))
-
-fun build<T>([terminal] b: ArrayBuilder<T>): Array<T>
-  ret b._arr
-
-# The failure-path counterpart of build: the array is ordinary garbage.
-fun discard<T>([terminal] b: ArrayBuilder<T>): None
-  ret _discarded<T>(b._arr)
-
-fun _discarded<T>(_a: Array<T>): None
-  ret None
-
-# Drop: an abandoned builder — a failed parse alternative, an early exit — is
-# discarded. [ambient]: the drops pass inserts plain `drop(x)` calls that must
-# resolve in concrete user code without a spelled `where`.
-instance [ambient]<T> Drop<ArrayBuilder<T>>
-  fun drop(self: ArrayBuilder<T>): None
-    ret discard<T>(self)
+# ── incremental construction ─────────────────────────────────────────────────
+# Append one element. `append` is the value-returning operation; `push` is the
+# builder-shaped spelling, so a growing sequence reads the same over an Array.
+fun push<T>(a: Array<T>, x: T): Array<T>
+  ret append<T>(a, x)

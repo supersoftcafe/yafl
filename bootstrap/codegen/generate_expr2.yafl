@@ -168,7 +168,7 @@ fun emEntryLabelJumps(st: GEmit, es: List<GEntry>, idx: Int, k, bodyLabel): GEmi
 
 fun phiSourcesOf(es: List<GEntry>, idx: Int) => phiSourcesLoop(es, idx, 0, List())
 
-fun phiSourcesLoop(es: List<GEntry>, idx: Int, k, acc): List<OpPhiSource> =>
+fun phiSourcesLoop(es: List<GEntry>, idx: Int, k: Int, acc: List<OpPhiSource>): List<OpPhiSource> =>
   fold(es, (k = k, acc = acc),
        (st, x) => (k = st.k + 1, acc = append(st.acc, OpPhiSource(entryLabel(idx, st.k), x.geValue)))).acc
 

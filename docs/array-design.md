@@ -1,4 +1,4 @@
-# ArrayBuilder — linear incremental construction
+# Array — growable values and pinned construction
 
 ## Array grows by appending (issue #95)
 
@@ -23,19 +23,18 @@ Two general class features carry it:
   writes a field. The index is checked against the capacity when the
   class has one.
 
-`_append(a, x)` pins the buffer; if `a` owns its end (`a.length ==
-_used`) and there is room, it writes element `_used`, then `_used := _used
-+ 1`, and unpins. Otherwise it copies into a buffer of twice the size. A
-value reads only its own `[0, length)`, which never changes, so every
-value keeps its own elements; one holding a stale copy of a moved buffer
-reads the same ones.
+`append(a, x)` pins the buffer; if `a` owns its end (`a.length == _used`)
+and there is room, it writes element `_used`, then `_used := _used + 1`,
+and unpins. Otherwise it copies into a buffer of twice the size. A value
+reads only its own `[0, length)`, which never changes, so every value
+keeps its own elements; one holding a stale copy of a moved buffer reads
+the same ones.
 
-`ArrayBuilder<T>` is now a linear wrapper over that: `arrayBuilder`
-reserves the estimate as the first buffer's capacity, `push` is
-`_append`, `build` hands the array over. The append is `_append`, not a
-public `append`, for now: an `append` overload beside List's leaves every
-untyped parameter used only through `append` ambiguous (19 in the
-bootstrap), so it waits until those are typed.
+`push(a, x)` is the builder-shaped spelling of `append`. There is no
+`ArrayBuilder`: when the final count is not known up front, start from
+`Array<T>()` and push. `arrayOf<T>(v1)`, `arrayOf<T>(v1, v2)` and
+`arrayOf<T>(v1, v2, v3)` are convenience constructors for a known few values;
+`Array<T>(n, initFn)` tabulates when the count is known.
 
 An index past a value's length aborts, as before, by reading it from a
 buffer with no elements. That is TEMPORARY: the API will answer that the
@@ -43,22 +42,21 @@ element is not there, as List's `head` does.
 
 The rest of this document describes the pinned construction primitives
 (`array_builder_alloc`, `array_builder_store`, `array_builder_seal`) that
-`ArrayBuilder` used before. `SeqBuilder`'s segments still use them.
+`SeqBuilder`'s segments use.
 
 ## The pinned construction primitives
 
-`Array<T>` was one heap object: `class [final] Array<T>(length: Int32,
-array: T[length])`. The ctor form `Array<T>(n, initFn)` tabulates when the
-count is known; `ArrayBuilder<T>` was the way in when it wasn't:
+The tabulating form `Array<T>(n, initFn)` handles a known count; append/push
+is the way in when it isn't:
 
 ```yafl
-let a = build<Int>(push(push(arrayBuilder<Int>(estimate), x), y))
+let a = push(push(Array<Int>(), x), y)
 ```
 
-`class [linear,final] ArrayBuilder<T>(_arr, _at, _cap, _ok)` — every
-operation consumes the builder (`push`, `build`, `discard`), `_ok` threads
-the runtime results so no pass can discard the calls: both exactly as
-`ListBuilder`, which is this design's precedent throughout.
+`SeqBuilder<T>` is the remaining linear builder in the stdlib. Every
+operation consumes the builder (`push`, `build`, `discard`), and `_ok`
+threads the runtime results so no pass can discard the calls — exactly as
+`ListBuilder`, this design's precedent throughout.
 
 ## The construction window crosses safe points
 
@@ -105,9 +103,9 @@ snapshot only through the old run, and since copied into the new run
 (allocated during the cycle, so not traced in it), was freed under the new
 run (tests/test_builder_gc.py).
 
-Growth (`push` past `_cap`): fresh run at double capacity (pinned),
+Growth (`append`/`push` past `_cap`): fresh run at double capacity (pinned),
 `_copyInto`, the abandoned run sealed EMPTY — releasing its pin — then the
-push retries. The `estimate` parameter exists to make this path rare.
+push retries.
 
 ## Element representation: `T` never crosses the runtime boundary
 
@@ -134,8 +132,10 @@ monomorphisation where the width is a static fact
   is a clang error, not a silent smash. This is byte-for-byte the ctor
   fill's store (new.py:159) re-exposed at a builtin boundary.
 
-Bounds are by construction, not by check: `push` tests `_at < _cap` in YAFL
-and takes the growth path otherwise; linearity makes `_at` advance densely.
+Bounds are by construction, not by check: `SeqBuilder.push` tests
+`_at < _cap` in YAFL and takes the growth path otherwise; Array's `append`
+makes the same test on its buffer's `_used`. Linearity (for the builder) or
+the buffer's ownership test (for `append`) keeps the written count dense.
 (`__builtin_op__` remains the designated unsafe hatch — hand-written misuse
 is the same exposure class as `list_builder_link` with a bogus slot.)
 
@@ -156,22 +156,19 @@ constructed atomically with those contents.
 
 ## Drop
 
-`instance [ambient]<T> Drop<ArrayBuilder<T>>` — an abandoned builder (a
-failed parse alternative, an early exit) must still release its pinned run
-(a leaked pin is a permanently unmovable object): `discard` seals empty,
-unpinning, so run and referents die at the next cycle. (Adding this SECOND
+`SeqBuilder<T>` has the remaining ambient `Drop` instance — an abandoned
+builder (a failed parse alternative, an early exit) must still release its
+pinned run (a leaked pin is a permanently unmovable object): `discard` seals
+empty, unpinning, so run and referents die at the next cycle. (Adding this
 generic ambient Drop instance exposed a latent resolver bug — see
 `_scope_filtered` in `pyast/expression/access.py`: an instance lookup
 must demand every instance placeholder bound, not merely a non-None
-mapping.) `SeqBuilder<T>`'s ambient Drop is now the third generic instance
-riding the same resolution path.
+mapping.)
 
 ## Tests
 
-`tests/test_array_class.py` — exact-estimate, growth, clamp, empty,
-discard, implicit drop, pointer elements, linearity rejection, and two
-GC-interaction fills (sync and async producer) that force a major cycle
-before every push via `gc_debug_major_now`, plus a promote-then-minors
-fill, exercising the scanner tracing a half-built pointer array and the
-pinned run crossing cycles and promotions. Runtime pin/seal unit coverage rides the existing ctest
-suite (object.c debug exports).
+`tests/test_builder_gc.py` exercises push/link builds across GC cycles
+(sync and async producers), including the snapshot barrier for copied runs.
+`stdlib_tests/Containers/array_tests.yafl` covers tabulation, convenience
+constructors, append/push growth and the combinators. Runtime pin/seal unit
+coverage rides the existing ctest suite (object.c debug exports).

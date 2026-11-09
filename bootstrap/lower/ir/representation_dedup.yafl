@@ -72,12 +72,12 @@ fun rddContext(objs: List<CgObject>, fns: List<CgFunction>,
 
 # One value per node: objects', then functions', then globals'.
 fun rddTable<T>(os: List<T>, fs: List<T>, gs: List<T>, n: Int): Array<T>
-  ret build(rddPushAll(gs, rddPushAll(fs, rddPushAll(os, arrayBuilder(n)))))
+  ret rddPushAll(gs, rddPushAll(fs, rddPushAll(os, Array<T>())))
 
-fun rddPushAll<T>(c: List<T>, [terminal] b: ArrayBuilder<T>): ArrayBuilder<T> =>
+fun rddPushAll<T>(c: List<T>, b: Array<T>): Array<T> =>
   fold(c, b, push)
 
-fun rddArray<T>(c: List<T>, n: Int): Array<T> => build(rddPushAll(c, arrayBuilder(n)))
+fun rddArray<T>(c: List<T>, n: Int): Array<T> => rddPushAll(c, Array<T>())
 
 # A leaf's discriminator id → its node.
 fun rddLeaves(c: List<CgObject>, i: Int, d: Dict<Int, Int>): Dict<Int, Int> =>
@@ -539,7 +539,7 @@ fun rddGraph(cx: RddCx, objs: List<CgObject>, fns: List<CgFunction>,
   let pinnedNames = fold(b3.bPins.pnNames, setEmpty(), setAdd)
   ret RddGraph(rddArray(b3.bShapes, cx.cxCount),
                rddArray(b3.bRefs, cx.cxCount),
-               build(rddPinned(cx, pinnedNames, b3.bStray, 0, arrayBuilder(cx.cxCount))),
+               rddPinned(cx, pinnedNames, b3.bStray, 0, Array<Bool>()),
                rddConflicts(cx, b3.bPins.pnSeps))
 
 # Which nodes each node must never share a group with: the other leaves of its
@@ -583,7 +583,7 @@ fun rddConflictsOf(d: Dict<Int, List<Int>>, i: Int): List<Int> => match(get(d, i
 # Pinned: an instance-test target or foreign object (by name, objects only),
 # the entry point, and — after a stray discriminator read — every leaf.
 fun [tail] rddPinned(cx: RddCx, names: StrSet, stray: Bool, i: Int,
-                     [terminal] acc: ArrayBuilder<Bool>): ArrayBuilder<Bool>
+                     acc: Array<Bool>): Array<Bool>
   if i >= cx.cxCount
     ret acc
   let kind = cx.cxKinds[i]
@@ -615,13 +615,13 @@ fun [tail] rddStable(g: RddGraph, groups: RddGroups, n: Int): RddGroups
 
 # Number nodes 0..n-1 by key, in node order.
 fun rddNumbered(n: Int, key: (:Int): String): RddGroups
-  let out = rddNumberLoop(n, key, 0, Dict(), 0, arrayBuilder(n))
+  let out = rddNumberLoop(n, key, 0, Dict(), 0, Array<Int>())
   ret RddGroups(out.of, out.count)
 
 fun [tail] rddNumberLoop(n: Int, key: (:Int): String, i: Int, ids: Dict<String, Int>,
-                         next: Int, [terminal] acc: ArrayBuilder<Int>): (of: Array<Int>, count: Int)
+                         next: Int, acc: Array<Int>): (of: Array<Int>, count: Int)
   if i >= n
-    ret (of = build(acc), count = next)
+    ret (of = acc, count = next)
   let k = key(i)
   ret match(get(ids, k))
     (id: Int) => rddNumberLoop(n, key, i + 1, ids, next, push(acc, id))

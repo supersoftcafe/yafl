@@ -90,7 +90,7 @@ class [final] RRBTree<T>(rtCount: Int, rtHeight: Int32,
         # it trips the runtime bounds check. So this types as `T` and never
         # returns.
         fun outOfRange(): T
-            ret System::Containers::build(System::Containers::arrayBuilder<T>(0))[0]
+            ret System::Containers::Array<T>()[0]
         ret i < 0 || i >= rtCount
           ? outOfRange()
           : match(rtRoot)
@@ -320,14 +320,14 @@ fun _rrbConcatSub<T>(l: _RrbLeaf<T>|_RrbBranch<T>, hl: Int32,
                                    ): System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>
                 fun [tail] _rrbFlatKidsFrom(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                                                k: Int32,
-                                               [terminal] b: System::Containers::ArrayBuilder<
+                                               b: System::Containers::Array<
                                                  _RrbLeaf<T>|_RrbBranch<T>>
-                                               ): System::Containers::ArrayBuilder<_RrbLeaf<T>|_RrbBranch<T>>
-                    fun [tail] _rrbPushKids([terminal] b: System::Containers::ArrayBuilder<
+                                               ): System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>
+                    fun [tail] _rrbPushKids(b: System::Containers::Array<
                                                  _RrbLeaf<T>|_RrbBranch<T>>,
                                                ks: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                                                i: Int32
-                                               ): System::Containers::ArrayBuilder<_RrbLeaf<T>|_RrbBranch<T>>
+                                               ): System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>
                         ret i >= ks.length
                           ? b
                           : _rrbPushKids(
@@ -339,9 +339,8 @@ fun _rrbConcatSub<T>(l: _RrbLeaf<T>|_RrbBranch<T>, hl: Int32,
                       : _rrbFlatKidsFrom(kids, k + 1i32,
                           _rrbPushKids(b, _rrbKidsOf<T>(_rrbKidAt<T>(kids, k)), 0i32))
 
-                ret System::Containers::build(_rrbFlatKidsFrom(kids, 0i32,
-                      System::Containers::arrayBuilder<_RrbLeaf<T>|_RrbBranch<T>>(
-                        Int(_rrbSlotTotal<T>(kids, 0i32, 0i32)))))
+                ret _rrbFlatKidsFrom(kids, 0i32,
+                      System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>())
 
             # Fewest nodes the run's slots could occupy.
             fun _rrbOptimal(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>): Int32
@@ -426,8 +425,8 @@ fun _rrbBranch<T>(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                               kh: Int32): System::Containers::Array<Int32>
             fun [tail] _rrbCumFrom(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                                       kh: Int32, k: Int32, acc: Int32,
-                                      [terminal] b: System::Containers::ArrayBuilder<Int32>
-                                      ): System::Containers::ArrayBuilder<Int32>
+                                      b: System::Containers::Array<Int32>
+                                      ): System::Containers::Array<Int32>
                 let total = k >= kids.length
                   ? acc
                   : acc + _rrbSize<T>(_rrbKidAt<T>(kids, k), kh)
@@ -436,9 +435,8 @@ fun _rrbBranch<T>(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                   : _rrbCumFrom(kids, kh, k + 1i32, total,
                                    System::Containers::push<Int32>(b, total))
 
-            ret System::Containers::build(_rrbCumFrom(kids, kh, 0i32, 0i32,
-                                             System::Containers::arrayBuilder<Int32>(
-                                               Int(kids.length))))
+            ret _rrbCumFrom(kids, kh, 0i32, 0i32,
+                            System::Containers::Array<Int32>())
 
         fun _rrbAllFull(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                            kh: Int32, k: Int32, full: Int32): Bool
@@ -538,11 +536,11 @@ fun _rrbFlattenElems<T>(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T
                         ): System::Containers::Array<T>
     fun [tail] _rrbFlatElemsFrom(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                                     k: Int32,
-                                    [terminal] b: System::Containers::ArrayBuilder<T>
-                                    ): System::Containers::ArrayBuilder<T>
-        fun [tail] _rrbPushLeaf([terminal] b: System::Containers::ArrayBuilder<T>,
+                                    b: System::Containers::Array<T>
+                                    ): System::Containers::Array<T>
+        fun [tail] _rrbPushLeaf(b: System::Containers::Array<T>,
                                    node: _RrbLeaf<T>|_RrbBranch<T>, i: Int32
-                                   ): System::Containers::ArrayBuilder<T>
+                                   ): System::Containers::Array<T>
             ret match(node)
               (l: _RrbLeaf<T>) => i >= l.lfCount
                 ? b
@@ -554,8 +552,7 @@ fun _rrbFlattenElems<T>(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T
           : _rrbFlatElemsFrom(kids, k + 1i32,
               _rrbPushLeaf(b, _rrbKidAt<T>(kids, k), 0i32))
 
-    ret System::Containers::build(_rrbFlatElemsFrom(kids, 0i32,
-          System::Containers::arrayBuilder<T>(Int(_rrbSlotTotal<T>(kids, 0i32, 0i32)))))
+    ret _rrbFlatElemsFrom(kids, 0i32, System::Containers::Array<T>())
 
 # Cut a flat element run into full leaves.
 fun _rrbChunkLeaves<T>(xs: System::Containers::Array<T>

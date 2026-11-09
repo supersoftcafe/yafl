@@ -1,8 +1,8 @@
-"""Builders and the collector: every element must survive.
+"""Growable containers and the collector: every element must survive.
 
-ArrayBuilder and SeqBuilder push elements into an object born pinned and
-filled across safe points, and List.append links each new node onto the last
-with a pinned compare-and-swap. Two hazards, one test each:
+Array push and SeqBuilder push elements into storage filled across safe
+points, and List.append links each new node onto the last with a pinned
+compare-and-swap. Two hazards, one test each:
 
 LONG BUILD (cycles). A build outlives root scans and whole cycles: the
 elements pushed after a scan are newer than the array and reachable only
@@ -13,11 +13,11 @@ held when the store was barrier-free.) Run with the dwell between cycles and
 without it, so builds straddle as many cycles as their work allows.
 
 SUSPENDING PRODUCER (the snapshot). The producer forks, so builds straddle
-global cycles. A grown ArrayBuilder run is sealed to length 0, which deletes
-every reference in it: an element reachable at the snapshot only through the
-old run, and since copied into a run allocated during the cycle (not traced
-this cycle), was freed under it. Seal now owes the snapshot barrier for the
-references it cuts off. Before that, this aborted on every run.
+global cycles. A grown Array copies into a fresh run and abandons the old
+one; an element reachable at the snapshot only through the old run, and since
+copied into a run allocated during the cycle (not traced this cycle), was
+freed under it. The copy owes the snapshot barrier for the references it
+carries. Before that, this aborted on every run.
 
 Elements are large integers — real heap objects (small Ints are immediates
 and single-field classes flatten to values, so neither can be lost). Freed
@@ -43,7 +43,7 @@ _LONG_SRC = (
     'fun elem(i: Int): Int\n'
     '  let g = churn(20, 0)\n'
     '  ret big() + i + g - big() * 20\n'
-    'fun [tail] fillA([terminal] b: ArrayBuilder<Int>, i: Int, n: Int): ArrayBuilder<Int>\n'
+    'fun [tail] fillA(b: Array<Int>, i: Int, n: Int): Array<Int>\n'
     '  ret i >= n ? b : fillA(push<Int>(b, elem(i)), i + 1, n)\n'
     'fun [tail] sumA(a: Array<Int>, i: Int32, acc: Int): Int\n'
     '  ret i >= a.length ? acc : sumA(a, i + 1i32, (acc * 31 + a[i] - big()) % 1000000007)\n'
@@ -52,7 +52,7 @@ _LONG_SRC = (
     'fun [tail] rounds(k: Int, bad: Int): Int\n'
     '  if k <= 0\n'
     '    ret bad\n'
-    '  let a = build<Int>(fillA(arrayBuilder<Int>(16), 0, 50000))\n'
+    '  let a = fillA(Array<Int>(), 0, 50000)\n'
     '  ret rounds(k - 1, bad + check(a, 0i32, 0))\n'
     'fun main(): Int\n'
     '  let bad = rounds(10, 0)\n'
@@ -76,12 +76,12 @@ _SUSPEND_SRC = (
     '  ret a + b + g - big() * 200\n'
     'fun plain(i: Int): Int\n'
     '  ret big() * 2 + i + i * 3\n'
-    'fun [tail] fillA([terminal] b: ArrayBuilder<Int>, i: Int, n: Int, s: Bool): ArrayBuilder<Int>\n'
+    'fun [tail] fillA(b: Array<Int>, i: Int, n: Int, s: Bool): Array<Int>\n'
     '  ret i >= n ? b : fillA(push<Int>(b, s ? piece(i) : plain(i)), i + 1, n, s)\n'
     'fun [tail] sumA(a: Array<Int>, i: Int32, acc: Int): Int\n'
     '  ret i >= a.length ? acc : sumA(a, i + 1i32, (acc * 31 + a[i]) % 1000000007)\n'
     'fun arr(n: Int, s: Bool): Int\n'
-    '  ret sumA(build<Int>(fillA(arrayBuilder<Int>(4), 0, n, s)), 0i32, 0)\n'
+    '  ret sumA(fillA(Array<Int>(), 0, n, s), 0i32, 0)\n'
     'fun [tail] fillS([terminal] b: SeqBuilder<Int>, i: Int, n: Int, s: Bool): SeqBuilder<Int>\n'
     '  ret i >= n ? b : fillS(push<Int>(b, s ? piece(i) : plain(i)), i + 1, n, s)\n'
     'fun [tail] sumS(x: Segment<Int>|None, i: Int32, acc: Int): Int\n'

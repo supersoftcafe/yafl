@@ -35,7 +35,8 @@ fun [test("Array tabulates its initialiser over 0..n-1")] tabulates(): None|Test
      ?? assertEqInt(Int(a[3]), 9, "3*3")
 
 fun [test("an array of length 0 is empty")] emptyArray(): None|TestFailure
-    ret assertTrue(isEmpty(Array<Int32>(0i32, (i: Int32) => i)), "empty")
+    ret assertTrue(isEmpty(Array<Int32>()), "empty constructor")
+     ?? assertTrue(isEmpty(Array<Int32>(0i32, (i: Int32) => i)), "empty tabulation")
      ?? assertFalse(isEmpty(_squares(1i32)), "one element is not empty")
 
 fun [test("fold accumulates over every element in index order")] foldsInOrder(): None|TestFailure
@@ -68,16 +69,26 @@ fun [test("any finds a match and rejects when there is none")] anyFinds(): None|
      ?? assertFalse(any(Array<Int32>(0i32, (i: Int32) => i), (x: Int32) => true),
                     "any of empty")
 
-fun [test("arrayBuilder builds in push order")] builderKeepsOrder(): None|TestFailure
-    let a = build(push(push(push(arrayBuilder<Int32>(3), 7i32), 8i32), 9i32))
+fun [test("convenience constructors hold one to three values")] convenienceCtors(): None|TestFailure
+    let a = arrayOf<Int32>(7i32)
+    let b = arrayOf<Int32>(1i32, 2i32)
+    let c = arrayOf<Int32>(1i32, 2i32, 3i32)
+    ret assertEqInt(Int(a.length), 1, "one")
+     ?? assertEqInt(Int(a[0]), 7, "one value")
+     ?? assertEqInt(Int(b.length), 2, "two")
+     ?? assertEqInt(Int(b[1]), 2, "second value")
+     ?? assertEqInt(Int(c.length), 3, "three")
+     ?? assertEqInt(Int(c[2]), 3, "third value")
+
+fun [test("push builds in append order")] pushKeepsOrder(): None|TestFailure
+    let a = push(push(push(Array<Int32>(), 7i32), 8i32), 9i32)
     ret assertEqInt(Int(a[0]), 7, "first")
      ?? assertEqInt(Int(a[2]), 9, "last")
      ?? assertEqInt(_count(a), 3, "three")
 
-# The estimate is a hint, not a limit: pushing past it must grow rather than
-# truncate or abort.
-fun [test("arrayBuilder grows past its size estimate")] builderGrows(): None|TestFailure
-    let a = build(push(push(push(push(arrayBuilder<Int32>(1), 1i32), 2i32), 3i32), 4i32))
+# Pushing past the buffer's capacity must grow rather than truncate or abort.
+fun [test("push grows past the initial capacity")] pushGrows(): None|TestFailure
+    let a = push(push(push(push(Array<Int32>(), 1i32), 2i32), 3i32), 4i32)
     ret assertEqInt(_count(a), 4, "all four kept")
      ?? assertEqInt(Int(a[3]), 4, "last survived the grow")
 

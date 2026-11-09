@@ -128,7 +128,7 @@ boundary becomes `NewObject` + straight-line field writes in the caller, the
 exact shape a def-chain pass can see and rewrite. It is exactly the same
 economics the existing in-place passes exploit (`docs/compiler-internals.md`
 §6: `string_accumulation` deforests `acc + x` into in-place builder writes;
-`array-builder-design.md` shows the "construction window" discipline).
+`array-design.md` shows the "construction window" discipline).
 
 ---
 
@@ -313,7 +313,7 @@ Forbid **any safe-point-bearing op in the window**:
 
 Conservatively v1: **no `Call`, no `NewObject`, no address-taken `RuntimeInvoke`
 of unknown allocation behaviour** inside the window. This is deliberately the
-same discipline `array-builder-design.md` describes as "no GC boundary falls
+same discipline `array-design.md` describes as "no GC boundary falls
 inside" a construction window — here proved, not by inspection.
 
 Explicitly **not** safe points, and permitted in the window:
