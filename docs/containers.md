@@ -17,7 +17,7 @@ Permitted on an unordered container:
   `singleOrNone`, `isMoreThanOne`
 * an EXPLICIT ordering — `sort`, which is the only way out to a `List`
 
-## The five containers
+## The containers
 
 | type | ordered? | built by | for |
 |---|---|---|---|
@@ -66,14 +66,14 @@ container of choice for large, build-once-read-many sequences. Two ways in:
 * `Array<T>(n, initFn)` — tabulate `initFn` over `0..n-1`
 * `Array<T>()` … `push` — incremental construction when the final count
   isn't known up front: each push appends in place while the array owns the
-  end of its buffer, copying into twice the room otherwise (see
+  end of its buffer, copying into a larger one otherwise (see
   [Array design](array-design.md))
 * `arrayOf<T>(v1)`, `arrayOf<T>(v1, v2)`, `arrayOf<T>(v1, v2, v3)` —
   convenience constructors for a known few values
 * `pushAll(a, xs)` — append every element of a List or another Array
 
-There is no update, no slice, no cursor: read by index, walk `0..size(a)`, or
-drive `arrayStream(a)`.
+There is no update and no slice: read by index, or walk it with `fold` or
+`arrayStream(a)`.
 A sequence that grows or is consumed element-at-a-time is a `List`; a
 sequence built once and then indexed is an `Array`.
 

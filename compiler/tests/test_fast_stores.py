@@ -288,15 +288,15 @@ import System::Containers
 
 class Box(v: System::Int)
 
-fun [impure] boxes(n: System::Int32): System::Containers::Array<Box>
-  ret System::Containers::Array<Box>(n, (i: System::Int32) => Box(System::Int(i)))
+fun [impure] boxes(n: System::Int): System::Containers::Array<Box>
+  ret System::Containers::Array<Box>(n, (i: System::Int) => Box(i))
 
 fun [impure] pick(n: System::Int): Box
   let [lazy] b: Box = Box(n + 1)
   ret n > 0 ? b : Box(0)
 
 fun main(): System::Int
-  ret boxes(4i32).length > 0i32 && pick(3).v > 0 ? 0 : 1
+  ret System::Containers::size(boxes(4)) > 0 && pick(3).v > 0 ? 0 : 1
 """
 _BARRIER_PARTS = re.compile(r"\b(GC_WRITE_BARRIER_IN|GC_PUBLISH_IN|GC_MARK_SEEN"
                             r"|GC_PUBLISH_FENCE\w*|gc_root_overwrite|gc_root_publish)\(")

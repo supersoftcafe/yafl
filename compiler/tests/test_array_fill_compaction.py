@@ -34,22 +34,22 @@ _SRC = (
     "class Box(v: Int)\n"
     "fun [future] boxed(x: Int): Box\n"
     "  ret Box(x)\n"
-    "fun piece(i: Int32): Box\n"
-    "  let a = boxed(Int(i))\n"
-    "  let b = boxed(Int(i) * 3)\n"
+    "fun piece(i: Int): Box\n"
+    "  let a = boxed(i)\n"
+    "  let b = boxed(i * 3)\n"
     "  ret Box(a.v + b.v)\n"
-    "fun plain(i: Int32): Box\n"
-    "  ret Box(Int(i) + Int(i) * 3)\n"
-    "fun suspending(n: Int32): Array<Box>\n"
-    "  ret Array<Box>(n, (i: Int32) => piece(i))\n"
-    "fun straight(n: Int32): Array<Box>\n"
-    "  ret Array<Box>(n, (i: Int32) => plain(i))\n"
-    "fun [tail] same(a: Array<Box>, b: Array<Box>, i: Int32): Bool\n"
-    "  ret Int(i) >= size(a) ? true : (a[i].v == b[i].v ? same(a, b, i + 1i32) : false)\n"
+    "fun plain(i: Int): Box\n"
+    "  ret Box(i + i * 3)\n"
+    "fun suspending(n: Int): Array<Box>\n"
+    "  ret Array<Box>(n, (i: Int) => piece(i))\n"
+    "fun straight(n: Int): Array<Box>\n"
+    "  ret Array<Box>(n, (i: Int) => plain(i))\n"
+    "fun [tail] same(a: Array<Box>, b: Array<Box>, i: Int): Bool\n"
+    "  ret i >= size(a) ? true : (a[i].v == b[i].v ? same(a, b, i + 1) : false)\n"
     "fun [tail] rounds(k: Int, bad: Int): Int\n"
     "  if k <= 0\n"
     "    ret bad\n"
-    "  let ok = same(suspending(200i32), straight(200i32), 0i32)\n"
+    "  let ok = same(suspending(200), straight(200), 0)\n"
     "  ret rounds(k - 1, ok ? bad : bad + 1)\n"
     "fun main(): Int\n"
     "  ret rounds(200, 0)\n")
@@ -60,11 +60,11 @@ class TestArrayFillCompaction(TestCase):
         c_code = compile_c(_SRC, optimization_level=level)
         # The suspending fill must really be a parked state machine, or the
         # run below proves nothing about a fill that outlives its stack frame.
-        # The fill loop is the tabulating constructor's, inside
-        # System::Containers::Array's factory function (monomorphised for Box),
-        # so that is what parks.
+        # The fill loop is the tabulating constructor's, inside the internal
+        # System::Containers::_tabulate it delegates to (monomorphised for
+        # Box), so that is what parks.
         self.assertIsNotNone(
-            re.search(r"^void System__Containers__Array_\w+_Main__Box_\w+_async\(", c_code, re.MULTILINE),
+            re.search(r"^void System__Containers___tabulate_\w+_Main__Box_\w+_async\(", c_code, re.MULTILINE),
             "the suspending fill did not become an $async state machine")
         with tempfile.NamedTemporaryFile(suffix="", delete=False) as tmp:
             binary = tmp.name

@@ -27,16 +27,20 @@ Two general class features carry it:
   writes a field. The index is checked against the capacity when the
   class has one.
 
-Every field is internal. The public count is `size(a): Int`; only
-`array.yafl` and its `System::Containers` companions (`rrbtree.yafl`) read
-the Int32 `_length` directly. `arrayStream(a)` (the `Stream` instance) lives
+Every field is internal. The public API is Int throughout: `size(a)`, `a[i]`
+(aborting unless `0 <= i < size(a)`) and `Array<T>(n, (i: Int) => ...)`
+(aborting for a negative `n` or one beyond Int32). Only `array.yafl` and its
+`System::Containers` companions (`rrbtree.yafl`) use the Int32 internals:
+`_length`, `_tabulate` and `_at`. `arrayStream(a)` (the `Stream` instance) lives
 beside the container, as List's does.
 
 `append(a, x)` on a full array pins the buffer; if `a` owns its end
 (`a._length == _used`) and there is room, it writes element `_used`, then
-`_used := _used + 1`, and unpins. Otherwise it copies into a buffer of twice
-the size. On an empty array it allocates the first buffer, with room for
-two. The combinators match once and then walk the buffer. A value
+`_used := _used + 1`, and unpins. Otherwise it copies into a larger buffer:
+`n` elements get capacity `n + min(250, n)`. Doubling while small, where
+compaction trims the spare room anyway; a fixed 250 beyond, because a large
+buffer is never compacted and its spare room would be kept for good. On an
+empty array it allocates the first buffer, with room for two. The combinators match once and then walk the buffer. A value
 reads only its own `[0, length)`, which never changes, so every value
 keeps its own elements; one holding a stale copy of a moved buffer reads
 the same ones.

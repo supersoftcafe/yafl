@@ -53,12 +53,12 @@ import System::Containers
 
 # `i` arrives from outside — nothing relates it to a.length, so the read
 # keeps its bounds check (and aborts at runtime when out of range).
-fun peek(a: Array<Float>, i: Int32): Float
+fun peek(a: Array<Float>, i: Int): Float
   ret a[i]
 
 fun main(): Int
-  let a = Array<Float>(4i32, (i: Int32) => Float(i))
-  ret peek(a, 9i32) == 0.0 ? 0 : 1
+  let a = Array<Float>(4, (i: Int) => Float(i))
+  ret peek(a, 9) == 0.0 ? 0 : 1
 """
 
 

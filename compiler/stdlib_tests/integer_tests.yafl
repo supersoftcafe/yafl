@@ -1,0 +1,23 @@
+# Tests for System integer operations (stdlib/integer.yafl).
+# See Containers/list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::IntegerTests
+
+import System
+import System::Test
+
+
+fun [test("min and max over Int")] minMaxInt(): None|TestFailure
+    ret assertEqInt(min(3, 9), 3, "min, smaller first")
+     ?? assertEqInt(min(9, 3), 3, "min, smaller second")
+     ?? assertEqInt(max(3, 9), 9, "max, larger second")
+     ?? assertEqInt(max(9, 3), 9, "max, larger first")
+     ?? assertEqInt(min(-5, 2), -5, "min, negative")
+     ?? assertEqInt(max(4, 4), 4, "max, equal")
+     ?? assertEqInt(max(100000000000000000000, 1), 100000000000000000000, "max, beyond 64 bits")
+
+fun [test("min and max over Int32")] minMaxInt32(): None|TestFailure
+    ret assertEqInt(Int(min(3i32, 9i32)), 3, "min")
+     ?? assertEqInt(Int(max(3i32, 9i32)), 9, "max")
+     ?? assertEqInt(Int(min(-7i32, 7i32)), -7, "min, negative")
+     ?? assertEqInt(Int(max(2147483647i32, 0i32)), 2147483647, "max, Int32 max")

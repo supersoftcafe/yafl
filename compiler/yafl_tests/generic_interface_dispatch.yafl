@@ -77,7 +77,7 @@ fun takeVia(s: Sink, xs: Array<Int32>): Int
   ret s.take(xs)
 
 fun program(): Int
-  let xs = Array<Int32>(3i32, (i: Int32) => i)
+  let xs = Array<Int32>(3, (i: Int) => truncateToInt32(i))
   println(String(takeVia(Keep<Int>(1), xs)) + " "
           + String(takeVia(Keep<String>("s"), xs)))
   ret 0

@@ -11,8 +11,8 @@ import System::Internal
 # A value is its own length over a shared buffer, as a String is (str.c). The
 # buffer holds elements past any one value's length: `append` writes the next
 # element IN PLACE when the value owns the end of the buffer (its length is
-# the buffer's) and there is room, and copies into a buffer of twice the size
-# otherwise. A value reads only its own [0, length), which never changes, so
+# the buffer's) and there is room, and copies into a larger buffer otherwise
+# (_grown). A value reads only its own [0, length), which never changes, so
 # every value keeps its own elements, and one reached through a stale copy of
 # a moved buffer reads the same ones.
 class [final, pinnable] _ArrayBuf<T>(_used: Int32, [capacity] _cap: Int32, _items: T[_used])
@@ -31,8 +31,17 @@ fun size<T>(a: Array<T>): Int
   ret Int(a._length)
 
 # The tabulating constructor: n elements, the i-th init(i), with no room spare.
-fun Array<T>(n: Int32, init: (i: Int32): T): Array<T>
-  ret n > 0i32 ? _FullArray<T>(n, _ArrayBuf<T>(n, n, init)) : _EmptyArray<T>(0i32)
+# ABORTS when n is negative or beyond what an array can hold (Int32), rather
+# than quietly answering some other length.
+fun Array<T>(n: Int, init: (i: Int): T): Array<T>
+  ret n < 0 || n > 2147483647
+    ? _noSuchIndex<Array<T>>(-1i32)
+    : _tabulate<T>(truncateToInt32(n), (i: Int32) => init(Int(i)))
+
+# Internal Int32 tabulation, for this file and System::Containers companions
+# (rrbtree.yafl): n >= 0, the i-th element init(i), no room spare.
+fun _tabulate<T>(n: Int32, init: (i: Int32): T): Array<T>
+  ret n == 0i32 ? _EmptyArray<T>(0i32) : _FullArray<T>(n, _ArrayBuf<T>(n, n, init))
 
 # Convenience constructors: an empty array, or one holding one to three values.
 fun Array<T>(): Array<T>
@@ -49,19 +58,17 @@ fun arrayOf<T>(v1: T, v2: T, v3: T): Array<T>
     (i: Int32) => i == 0i32 ? v1 : (i == 1i32 ? v2 : v3)))
 
 
-# Indexed read: `a[i]` lowers to ``[]``(a, i). Aborts if `i` is out of range
-# (0 <= i < size). The index is Int at the API surface — `a[0]` works
-# because 0 IS an Int (literals are their spelling; nothing converts) — and
-# is truncated internally, where the runtime bounds check catches any value
-# an Int32 could not have addressed anyway.
+# Indexed read: `a[i]` lowers to ``[]``(a, i). ABORTS unless 0 <= i < size(a).
+# The range is checked in the Int domain, so narrowing to the buffer's Int32
+# index can never wrap.
 fun `[]`<T>(a: Array<T>, i: Int): T
-  ret a[truncateToInt32(i)]
+  ret i < 0 || i >= Int(a._length) ? _noSuchIndex<T>(-1i32) : _at<T>(a, truncateToInt32(i))
 
-# Int32 form for byte-scanning code that already holds a sized index. The
-# buffer may hold elements past this value's length (another value appended
-# them), so the length is checked here; a negative index fails the buffer's
-# own check.
-fun `[]`<T>(a: Array<T>, i: Int32): T
+# Internal Int32 read, for this file and System::Containers companions
+# (rrbtree.yafl). The buffer may hold elements past this value's length
+# (another value appended them), so the length is checked here; a negative
+# index fails the buffer's own check.
+fun _at<T>(a: Array<T>, i: Int32): T
   ret match(a)
     (f: _FullArray<T>)  => i < f._length ? f._buffer._items(i) : _noSuchIndex<T>(i)
     (e: _EmptyArray<T>) => _noSuchIndex<T>(i)
@@ -75,7 +82,7 @@ fun _noSuchIndex<T>(i: Int32): T
 
 # `a` followed by `x`. In place when `a` owns the end of its buffer and there
 # is room — the pin is the lock, against other appenders and the compactor —
-# and into a fresh buffer of twice the size otherwise. An empty array has no
+# and into a fresh, larger buffer otherwise (_grown). An empty array has no
 # buffer: its first element allocates one.
 fun append<T>(a: Array<T>, x: T): Array<T>
   ret match(a)
@@ -93,8 +100,14 @@ fun _appendFull<T>(f: _FullArray<T>, x: T): Array<T>
 
 fun _appendCopy<T>(f: _FullArray<T>, x: T): Array<T>
   let n = f._length + 1i32
-  ret _FullArray<T>(n, _ArrayBuf<T>(n, n + n,
+  ret _FullArray<T>(n, _ArrayBuf<T>(n, _grown(n),
     (i: Int32) => i < f._length ? f._buffer._items(i) : x))
+
+# The capacity a copy of `n` elements gets: n + min(250, n). Doubling while
+# small, where compaction trims the spare room anyway; a fixed 250 beyond, as
+# a large buffer is never compacted and its spare room would be kept for good.
+fun _grown(n: Int32): Int32
+  ret n + min(250i32, n)
 
 
 # ── combinators ──────────────────────────────────────────────────────────────
@@ -159,8 +172,8 @@ fun pushAll<T>(a: Array<T>, l: List<T>): Array<T>
 # either side empty the answer is the other value as it stands: values share
 # buffers by design, so there is nothing to copy. Otherwise `b` goes in place
 # when `a` owns the end of a buffer with room for all of it, and into ONE
-# buffer of twice the combined size when not, rather than growing by repeated
-# doubling copies.
+# buffer of the combined size grown (_grown) when not, rather than growing by
+# repeated copies.
 fun pushAll<T>(a: Array<T>, b: Array<T>): Array<T>
   ret match(b)
     (fb: _FullArray<T>)  => match(a)
@@ -181,7 +194,7 @@ fun [tail] _pushInPlace<T>(a: Array<T>, b: _FullArray<T>, i: Int32): Array<T>
 
 fun _concatCopy<T>(a: _FullArray<T>, b: _FullArray<T>): Array<T>
   let n = a._length + b._length
-  ret _FullArray<T>(n, _ArrayBuf<T>(n, n + n,
+  ret _FullArray<T>(n, _ArrayBuf<T>(n, _grown(n),
     (i: Int32) => i < a._length ? a._buffer._items(i) : b._buffer._items(i - a._length)))
 
 
@@ -199,5 +212,5 @@ instance<T> Stream<ArrayStream<T>, T, Never>
   fun [inline(always)] next(self: ArrayStream<T>): (stream: ArrayStream<T>, value: Result<T | None, Never>)
     ret self._asAt < self._asArr._length
       ? (ArrayStream<T>(self._asArr, self._asAt + 1i32),
-         Ok<T | None, Never>(self._asArr[self._asAt]))
+         Ok<T | None, Never>(_at<T>(self._asArr, self._asAt)))
       : (self, Ok<T | None, Never>(None))

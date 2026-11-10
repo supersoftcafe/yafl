@@ -67,8 +67,8 @@ class TestProjectFolderBuild(TestCase):
                 "import System\n"
                 "import System::Containers\n"
                 "fun main(): System::Int\n"
-                "  let a = System::Containers::Array<System::Int32>(5i32, (i: System::Int32) => i * 2i32)\n"
-                "  ret helper() + System::Int(a[3i32])\n", encoding="utf-8")
+                "  let a = System::Containers::Array<System::Int>(5, (i: System::Int) => i * 2)\n"
+                "  ret helper() + a[3]\n", encoding="utf-8")
             (proj / "sub").mkdir()
             (proj / "sub" / "helper.yafl").write_text(
                 "import System\nfun helper(): System::Int\n  ret 100\n", encoding="utf-8")

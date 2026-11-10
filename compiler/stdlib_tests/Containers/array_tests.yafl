@@ -1,12 +1,8 @@
 # Tests for System::Containers::Array<T> (stdlib/System/Containers/array.yafl).
 # Ported from compiler/tests/test_array_class.py.
 #
-# `Array<T>(n, initFn)` tabulates initFn over 0..n-1; `a[i]` reads element i.
-# Note the WIDTHS: the length and the init function's index are Int32, while
-# `[]` takes an Int at the API surface. Nothing converts between them — a
-# width mismatch is the language working, not an inconvenience — so the
-# literals below are spelled `5i32` and results are widened with Int(...)
-# before being compared.
+# `Array<T>(n, initFn)` tabulates initFn over 0..n-1; `a[i]` reads element i;
+# `size(a)` counts the elements. Lengths and indexes are Int throughout.
 #
 # See Containers/list_tests.yafl for why these live outside stdlib/.
 
@@ -17,153 +13,153 @@ import System::Containers
 import System::Test
 
 
-fun _squares(n: Int32): Array<Int32>
-    ret Array<Int32>(n, (i: Int32) => i * i)
+fun _squares(n: Int): Array<Int>
+    ret Array<Int>(n, (i: Int) => i * i)
 
-fun _sum(a: Array<Int32>): Int
-    ret fold(a, 0, (acc: Int, x: Int32) => acc + Int(x))
+fun _sum(a: Array<Int>): Int
+    ret fold(a, 0, (acc: Int, x: Int) => acc + x)
 
-fun _count(a: Array<Int32>): Int
-    ret fold(a, 0, (acc: Int, x: Int32) => acc + 1)
+fun _count(a: Array<Int>): Int
+    ret fold(a, 0, (acc: Int, x: Int) => acc + 1)
 
 
 fun [test("Array tabulates its initialiser over 0..n-1")] tabulates(): None|TestFailure
-    let a = _squares(4i32)
-    ret assertEqInt(Int(a[0]), 0, "0*0")
-     ?? assertEqInt(Int(a[1]), 1, "1*1")
-     ?? assertEqInt(Int(a[2]), 4, "2*2")
-     ?? assertEqInt(Int(a[3]), 9, "3*3")
+    let a = _squares(4)
+    ret assertEqInt(a[0], 0, "0*0")
+     ?? assertEqInt(a[1], 1, "1*1")
+     ?? assertEqInt(a[2], 4, "2*2")
+     ?? assertEqInt(a[3], 9, "3*3")
 
 fun [test("an array of length 0 is empty")] emptyArray(): None|TestFailure
-    ret assertTrue(isEmpty(Array<Int32>()), "empty constructor")
-     ?? assertTrue(isEmpty(Array<Int32>(0i32, (i: Int32) => i)), "empty tabulation")
-     ?? assertFalse(isEmpty(_squares(1i32)), "one element is not empty")
+    ret assertTrue(isEmpty(Array<Int>()), "empty constructor")
+     ?? assertTrue(isEmpty(Array<Int>(0, (i: Int) => i)), "empty tabulation")
+     ?? assertFalse(isEmpty(_squares(1)), "one element is not empty")
 
 fun [test("fold accumulates over every element in index order")] foldsInOrder(): None|TestFailure
-    ret assertEqInt(_sum(_squares(4i32)), 14, "0+1+4+9")
-     ?? assertEqStr(fold(_squares(3i32), "",
-            (acc: String, x: Int32) => acc + String(Int(x)) + "."), "0.1.4.",
+    ret assertEqInt(_sum(_squares(4)), 14, "0+1+4+9")
+     ?? assertEqStr(fold(_squares(3), "",
+            (acc: String, x: Int) => acc + String(x) + "."), "0.1.4.",
             "index order")
 
 fun [test("fold over an empty array returns the seed")] foldEmpty(): None|TestFailure
-    ret assertEqInt(fold(Array<Int32>(0i32, (i: Int32) => i), 99,
-            (acc: Int, x: Int32) => acc + Int(x)), 99, "seed kept")
+    ret assertEqInt(fold(Array<Int>(0, (i: Int) => i), 99,
+            (acc: Int, x: Int) => acc + x), 99, "seed kept")
 
 fun [test("map produces a new array of the same length")] mapsSameLength(): None|TestFailure
-    let m = map(_squares(4i32), (x: Int32) => x + 1i32)
-    ret assertEqInt(Int(m[0]), 1, "0+1")
-     ?? assertEqInt(Int(m[3]), 10, "9+1")
+    let m = map(_squares(4), (x: Int) => x + 1)
+    ret assertEqInt(m[0], 1, "0+1")
+     ?? assertEqInt(m[3], 10, "9+1")
      ?? assertEqInt(_count(m), 4, "length kept")
 
 fun [test("filter keeps only matching elements")] filters(): None|TestFailure
-    let f = filter(_squares(5i32), (x: Int32) => x % 2i32 == 0i32)
+    let f = filter(_squares(5), (x: Int) => x % 2 == 0)
     ret assertEqInt(_count(f), 3, "0,4,16")
      ?? assertEqInt(_sum(f), 20, "their sum")
 
 fun [test("filter matching nothing yields an empty array")] filterNone(): None|TestFailure
-    ret assertTrue(isEmpty(filter(_squares(4i32), (x: Int32) => x > 100i32)), "nothing")
+    ret assertTrue(isEmpty(filter(_squares(4), (x: Int) => x > 100)), "nothing")
 
 fun [test("any finds a match and rejects when there is none")] anyFinds(): None|TestFailure
-    ret assertTrue(any(_squares(4i32), (x: Int32) => x == 4i32), "4 is present")
-     ?? assertFalse(any(_squares(4i32), (x: Int32) => x > 100i32), "none over 100")
-     ?? assertFalse(any(Array<Int32>(0i32, (i: Int32) => i), (x: Int32) => true),
+    ret assertTrue(any(_squares(4), (x: Int) => x == 4), "4 is present")
+     ?? assertFalse(any(_squares(4), (x: Int) => x > 100), "none over 100")
+     ?? assertFalse(any(Array<Int>(0, (i: Int) => i), (x: Int) => true),
                     "any of empty")
 
 fun [test("convenience constructors hold one to three values")] convenienceCtors(): None|TestFailure
-    let a = arrayOf<Int32>(7i32)
-    let b = arrayOf<Int32>(1i32, 2i32)
-    let c = arrayOf<Int32>(1i32, 2i32, 3i32)
+    let a = arrayOf<Int>(7)
+    let b = arrayOf<Int>(1, 2)
+    let c = arrayOf<Int>(1, 2, 3)
     ret assertEqInt(size(a), 1, "one")
-     ?? assertEqInt(Int(a[0]), 7, "one value")
+     ?? assertEqInt(a[0], 7, "one value")
      ?? assertEqInt(size(b), 2, "two")
-     ?? assertEqInt(Int(b[1]), 2, "second value")
+     ?? assertEqInt(b[1], 2, "second value")
      ?? assertEqInt(size(c), 3, "three")
-     ?? assertEqInt(Int(c[2]), 3, "third value")
+     ?? assertEqInt(c[2], 3, "third value")
 
 fun [test("push builds in append order")] pushKeepsOrder(): None|TestFailure
-    let a = push(push(push(Array<Int32>(), 7i32), 8i32), 9i32)
-    ret assertEqInt(Int(a[0]), 7, "first")
-     ?? assertEqInt(Int(a[2]), 9, "last")
+    let a = push(push(push(Array<Int>(), 7), 8), 9)
+    ret assertEqInt(a[0], 7, "first")
+     ?? assertEqInt(a[2], 9, "last")
      ?? assertEqInt(_count(a), 3, "three")
 
 # Pushing past the buffer's capacity must grow rather than truncate or abort.
 fun [test("push grows past the initial capacity")] pushGrows(): None|TestFailure
-    let a = push(push(push(push(Array<Int32>(), 1i32), 2i32), 3i32), 4i32)
+    let a = push(push(push(push(Array<Int>(), 1), 2), 3), 4)
     ret assertEqInt(_count(a), 4, "all four kept")
-     ?? assertEqInt(Int(a[3]), 4, "last survived the grow")
+     ?? assertEqInt(a[3], 4, "last survived the grow")
 
 fun [test("an array of strings works the same way")] stringArray(): None|TestFailure
-    let a = Array<String>(3i32, (i: Int32) => String(Int(i)))
+    let a = Array<String>(3, (i: Int) => String(i))
     ret assertEqStr(a[0], "0", "first")
      ?? assertEqStr(a[2], "2", "last")
 
-fun _upTo(n: Int32): Array<Int32>
-    ret _fill(Array<Int32>(), 1i32, n)
+fun _upTo(n: Int): Array<Int>
+    ret _fill(Array<Int>(), 1, n)
 
-fun [tail] _fill(a: Array<Int32>, i: Int32, n: Int32): Array<Int32>
-    ret i > n ? a : _fill(push(a, i), i + 1i32, n)
+fun [tail] _fill(a: Array<Int>, i: Int, n: Int): Array<Int>
+    ret i > n ? a : _fill(push(a, i), i + 1, n)
 
-fun _render(a: Array<Int32>): String
-    ret fold(a, "", (acc: String, x: Int32) => acc + String(Int(x)) + ".")
+fun _render(a: Array<Int>): String
+    ret fold(a, "", (acc: String, x: Int) => acc + String(x) + ".")
 
 # A thousand pushes cross every doubling of the buffer from empty.
 fun [test("a long push chain keeps every element in order")] longPushChain(): None|TestFailure
-    let a = _upTo(1000i32)
+    let a = _upTo(1000)
     ret assertEqInt(_count(a), 1000, "all present")
      ?? assertEqInt(_sum(a), 500500, "sum 1..1000")
-     ?? assertEqInt(Int(a[999]), 1000, "last")
+     ?? assertEqInt(a[999], 1000, "last")
 
 fun [test("pushAll appends an entire List in order")] pushAllList(): None|TestFailure
-    ret assertEqStr(_render(pushAll(_upTo(2i32), List<Int32>(7i32, 8i32))), "1.2.7.8.", "appended")
-     ?? assertTrue(isEmpty(pushAll(Array<Int32>(), List<Int32>())), "empty onto empty")
+    ret assertEqStr(_render(pushAll(_upTo(2), List<Int>(7, 8))), "1.2.7.8.", "appended")
+     ?? assertTrue(isEmpty(pushAll(Array<Int>(), List<Int>())), "empty onto empty")
 
 fun [test("pushAll appends an entire Array in order")] pushAllArray(): None|TestFailure
-    ret assertEqStr(_render(pushAll(_upTo(3i32), _upTo(2i32))), "1.2.3.1.2.", "appended")
-     ?? assertEqStr(_render(pushAll(Array<Int32>(), _upTo(2i32))), "1.2.", "onto empty")
-     ?? assertEqStr(_render(pushAll(_upTo(2i32), Array<Int32>())), "1.2.", "nothing appended")
+    ret assertEqStr(_render(pushAll(_upTo(3), _upTo(2))), "1.2.3.1.2.", "appended")
+     ?? assertEqStr(_render(pushAll(Array<Int>(), _upTo(2))), "1.2.", "onto empty")
+     ?? assertEqStr(_render(pushAll(_upTo(2), Array<Int>())), "1.2.", "nothing appended")
 
 # Two values sharing one buffer: whichever appends second must copy, and the
 # first keeps its own elements.
 fun [test("appending to a shared prefix leaves the other value intact")] sharedPrefix(): None|TestFailure
-    let base = _upTo(3i32)
-    let x = push(base, 10i32)
-    let y = push(base, 20i32)
+    let base = _upTo(3)
+    let x = push(base, 10)
+    let y = push(base, 20)
     ret assertEqStr(_render(x), "1.2.3.10.", "first branch")
      ?? assertEqStr(_render(y), "1.2.3.20.", "second branch")
      ?? assertEqStr(_render(base), "1.2.3.", "prefix unchanged")
 
 fun [test("arrayStream drives every element in order")] streams(): None|TestFailure
-    ret assertEqInt(_drain(arrayStream(_upTo(20i32)), 0), 210, "sum 1..20 via stream")
-     ?? assertEqInt(_drain(arrayStream(Array<Int32>()), 0), 0, "empty stream")
+    ret assertEqInt(_drain(arrayStream(_upTo(20)), 0), 210, "sum 1..20 via stream")
+     ?? assertEqInt(_drain(arrayStream(Array<Int>()), 0), 0, "empty stream")
 
-fun [tail] _drain(st: ArrayStream<Int32>, acc: Int): Int
-    let r = streamNext<ArrayStream<Int32>, Int32, Never>(st)
+fun [tail] _drain(st: ArrayStream<Int>, acc: Int): Int
+    let r = streamNext<ArrayStream<Int>, Int, Never>(st)
     ret match(r.value)
-        (ok: Ok<Int32 | None, Never>) => match(ok.value)
-            (x: Int32) => _drain(r.stream, acc + Int(x))
+        (ok: Ok<Int | None, Never>) => match(ok.value)
+            (x: Int) => _drain(r.stream, acc + x)
             (n: None)  => acc
-        (er: Error<Int32 | None, Never>) => acc
+        (er: Error<Int | None, Never>) => acc
 
 fun [test("size counts the elements, as an Int")] sizeCounts(): None|TestFailure
-    ret assertEqInt(size(Array<Int32>()), 0, "empty")
-     ?? assertEqInt(size(_squares(4i32)), 4, "tabulated")
-     ?? assertEqInt(size(_upTo(1000i32)), 1000, "pushed")
-     ?? assertEqInt(size(pushAll(_upTo(3i32), _upTo(2i32))), 5, "pushAll")
+    ret assertEqInt(size(Array<Int>()), 0, "empty")
+     ?? assertEqInt(size(_squares(4)), 4, "tabulated")
+     ?? assertEqInt(size(_upTo(1000)), 1000, "pushed")
+     ?? assertEqInt(size(pushAll(_upTo(3), _upTo(2))), 5, "pushAll")
 
 # _upTo(5) grew 1 → 2 → 4 → 8: it owns its buffer's end with room for 3, so
 # a 2-element pushAll goes in place; _upTo(4) is full, so the same pushAll
 # makes one combined copy. The prefix value keeps its own elements either way.
 fun [test("pushAll in place and by one combined copy")] pushAllPaths(): None|TestFailure
-    let roomy = _upTo(5i32)
-    let full = _upTo(4i32)
-    let inPlace = pushAll(roomy, _upTo(2i32))
-    let copied = pushAll(full, _upTo(2i32))
+    let roomy = _upTo(5)
+    let full = _upTo(4)
+    let inPlace = pushAll(roomy, _upTo(2))
+    let copied = pushAll(full, _upTo(2))
     ret assertEqStr(_render(inPlace), "1.2.3.4.5.1.2.", "in place")
      ?? assertEqStr(_render(roomy), "1.2.3.4.5.", "prefix kept after in place")
      ?? assertEqStr(_render(copied), "1.2.3.4.1.2.", "combined copy")
      ?? assertEqStr(_render(full), "1.2.3.4.", "prefix kept after copy")
-     ?? assertEqStr(_render(pushAll(roomy, _upTo(1i32))), "1.2.3.4.5.1.", "second value off the shared prefix copies")
+     ?? assertEqStr(_render(pushAll(roomy, _upTo(1))), "1.2.3.4.5.1.", "second value off the shared prefix copies")
 
 fun [test("pushAll of a List: empty leaves the array as it is")] pushAllEmptyList(): None|TestFailure
-    ret assertEqStr(_render(pushAll(_upTo(3i32), List<Int32>())), "1.2.3.", "empty list")
-     ?? assertTrue(isEmpty(pushAll(Array<Int32>(), List<Int32>())), "empty onto empty")
+    ret assertEqStr(_render(pushAll(_upTo(3), List<Int>())), "1.2.3.", "empty list")
+     ?? assertTrue(isEmpty(pushAll(Array<Int>(), List<Int>())), "empty onto empty")

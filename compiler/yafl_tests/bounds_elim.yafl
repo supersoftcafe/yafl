@@ -30,9 +30,9 @@ fun dot(a: Array<Float>, b: Array<Float>): Float
   ret dotLoop(a, b, 0, size(a), 0.0)
 
 fun program(): Int
-  let n = 64i32
-  let a = Array<Float>(n, (i: Int32) => Float(i))
-  let b = Array<Float>(n, (i: Int32) => 2.0)
+  let n = 64
+  let a = Array<Float>(n, (i: Int) => Float(i))
+  let b = Array<Float>(n, (i: Int) => 2.0)
   ret dot(a, b) == 4032.0 ? 0 : 1
 
 fun [test("canonical loop still computes correctly")] check(): None|TestFailure

@@ -36,13 +36,13 @@ fun multi_statement_body(): System::Int
     ret b
   ret 99
 
-fun max(a: System::Int, b: System::Int): System::Int
+fun maxOf(a: System::Int, b: System::Int): System::Int
   if a < b
     ret b
   ret a
 
 fun early_return_inlined(): System::Int
-  ret max(7, 3) + max(2, 10)
+  ret maxOf(7, 3) + maxOf(2, 10)
 
 # ─── TestIfElseRuntime ──────────────────────────────────────────────────
 

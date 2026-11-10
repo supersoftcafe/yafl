@@ -217,7 +217,7 @@ fun singleton<T>(x: T): RRBTree<T>
 fun _rrbAt<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, i: Int32): T
     fun _rrbAtRelaxed(b: _RrbBranch<T>, s: System::Containers::Array<Int32>, h: Int32,
                          i: Int32, k: Int32): T
-        ret _rrbAt<T>(b.brKids(k), h - 1i32, k == 0i32 ? i : i - s[k - 1i32])
+        ret _rrbAt<T>(b.brKids(k), h - 1i32, k == 0i32 ? i : i - System::Containers::_at<Int32>(s, k - 1i32))
 
     ret match(node)
       (l: _RrbLeaf<T>)   => l.lfElems(i)
@@ -233,7 +233,7 @@ fun _rrbAt<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, i: Int32): T
 # Int32s, which beats a branch-predictor-hostile binary search at this width.
 fun _rrbChildFor(s: System::Containers::Array<Int32>, n: Int32, i: Int32): Int32
     fun [tail] _rrbScan(s: System::Containers::Array<Int32>, k: Int32, n: Int32, i: Int32): Int32
-        ret k >= n - 1i32 ? k : (s[k] > i ? k : _rrbScan(s, k + 1i32, n, i))
+        ret k >= n - 1i32 ? k : (System::Containers::_at<Int32>(s, k) > i ? k : _rrbScan(s, k + 1i32, n, i))
 
     ret _rrbScan(s, 0i32, n, i)
 
@@ -248,7 +248,7 @@ fun _rrbReplace<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, i: Int32,
                    x: T): _RrbLeaf<T>|_RrbBranch<T>
     fun _rrbReplaceRelaxed(b: _RrbBranch<T>, s: System::Containers::Array<Int32>, h: Int32,
                               i: Int32, x: T, k: Int32): _RrbLeaf<T>|_RrbBranch<T>
-        ret _rrbReplaceKid<T>(b, h, x, k, k == 0i32 ? i : i - s[k - 1i32])
+        ret _rrbReplaceKid<T>(b, h, x, k, k == 0i32 ? i : i - System::Containers::_at<Int32>(s, k - 1i32))
 
     ret match(node)
       (l: _RrbLeaf<T>)   =>
@@ -280,7 +280,7 @@ fun _rrbConcatSub<T>(l: _RrbLeaf<T>|_RrbBranch<T>, hl: Int32,
 
     fun _rrbPair(l: _RrbLeaf<T>|_RrbBranch<T>, r: _RrbLeaf<T>|_RrbBranch<T>
                     ): System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>
-        ret System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>(2i32,
+        ret System::Containers::_tabulate<_RrbLeaf<T>|_RrbBranch<T>>(2i32,
               (k: Int32) => k == 0i32 ? l : r)
 
     # The spine ends. Only ever asked of a branch — the descent stops at height
@@ -393,7 +393,7 @@ fun [tail] _rrbShrink<T>(n: Int, node: _RrbLeaf<T>|_RrbBranch<T>,
 # generic is not the element type — so it is spelt once, here.
 fun _rrbKidAt<T>(a: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
                  k: Int32): _RrbLeaf<T>|_RrbBranch<T>
-    ret System::Containers::`[]`<_RrbLeaf<T>|_RrbBranch<T>>(a, k)
+    ret System::Containers::_at<_RrbLeaf<T>|_RrbBranch<T>>(a, k)
 
 # Slots occupied: elements for a leaf, children for a branch.
 fun _rrbSlots<T>(node: _RrbLeaf<T>|_RrbBranch<T>): Int32
@@ -406,7 +406,7 @@ fun _rrbSize<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32): Int32
     ret match(node)
       (l: _RrbLeaf<T>)   => l.lfCount
       (b: _RrbBranch<T>) => match(b.brSizes)
-        (s: System::Containers::Array<Int32>) => s[b.brCount - 1i32]
+        (s: System::Containers::Array<Int32>) => System::Containers::_at<Int32>(s, b.brCount - 1i32)
         (nil: None) =>
           truncateToInt32(_rrbFullSize(h, 1)) * (b.brCount - 1i32)
             + _rrbSize<T>(b.brKids(b.brCount - 1i32), h - 1i32)
@@ -473,32 +473,32 @@ fun _rrbBranch<T>(kids: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>,
 # single expression.
 
 fun _rrbTake<X>(a: System::Containers::Array<X>, n: Int32): System::Containers::Array<X>
-    ret System::Containers::Array<X>(n, (i: Int32) => System::Containers::`[]`<X>(a, i))
+    ret System::Containers::_tabulate<X>(n, (i: Int32) => System::Containers::_at<X>(a, i))
 
 fun _rrbDrop<X>(a: System::Containers::Array<X>, n: Int32): System::Containers::Array<X>
-    ret System::Containers::Array<X>(a._length - n,
-                         (i: Int32) => System::Containers::`[]`<X>(a, i + n))
+    ret System::Containers::_tabulate<X>(a._length - n,
+                         (i: Int32) => System::Containers::_at<X>(a, i + n))
 
 fun _rrbCat3<X>(a: System::Containers::Array<X>, b: System::Containers::Array<X>,
                 c: System::Containers::Array<X>): System::Containers::Array<X>
     ret _rrbCat2<X>(a, _rrbCat2<X>(b, c))
 
 fun _rrbSlab<X>(a: System::Containers::Array<X>, at: Int32): System::Containers::Array<X>
-    ret System::Containers::Array<X>(_rrbChunkLen(a._length, at),
-                         (i: Int32) => System::Containers::`[]`<X>(a, at + i))
+    ret System::Containers::_tabulate<X>(_rrbChunkLen(a._length, at),
+                         (i: Int32) => System::Containers::_at<X>(a, at + i))
 
 fun _rrbCat2<X>(a: System::Containers::Array<X>, b: System::Containers::Array<X>): System::Containers::Array<X>
-    ret System::Containers::Array<X>(a._length + b._length,
+    ret System::Containers::_tabulate<X>(a._length + b._length,
                          (i: Int32) => i < a._length
-                           ? System::Containers::`[]`<X>(a, i)
-                           : System::Containers::`[]`<X>(b, i - a._length))
+                           ? System::Containers::_at<X>(a, i)
+                           : System::Containers::_at<X>(b, i - a._length))
 
 fun _rrbKidsOf<T>(node: _RrbLeaf<T>|_RrbBranch<T>
                   ): System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>
     ret match(node)
-      (l: _RrbLeaf<T>)   => System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>(0i32,
+      (l: _RrbLeaf<T>)   => System::Containers::_tabulate<_RrbLeaf<T>|_RrbBranch<T>>(0i32,
                               (k: Int32) => l)
-      (b: _RrbBranch<T>) => System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>(b.brCount,
+      (b: _RrbBranch<T>) => System::Containers::_tabulate<_RrbLeaf<T>|_RrbBranch<T>>(b.brCount,
                               (k: Int32) => b.brKids(k))
 
 
@@ -560,9 +560,9 @@ fun _rrbChunkLeaves<T>(xs: System::Containers::Array<T>
     fun _rrbLeafSlice(xs: System::Containers::Array<T>, at: Int32
                          ): _RrbLeaf<T>|_RrbBranch<T>
         ret _RrbLeaf<T>(_rrbChunkLen(xs._length, at),
-                        (i: Int32) => System::Containers::`[]`<T>(xs, at + i))
+                        (i: Int32) => System::Containers::_at<T>(xs, at + i))
 
-    ret System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>(
+    ret System::Containers::_tabulate<_RrbLeaf<T>|_RrbBranch<T>>(
           _rrbChunkCount(xs._length),
           (c: Int32) => _rrbLeafSlice(xs, c * _rrbWidth()))
 
@@ -570,7 +570,7 @@ fun _rrbChunkLeaves<T>(xs: System::Containers::Array<T>
 fun _rrbGroup<T>(ks: System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>, kh: Int32
                  ): System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>
 
-    ret System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>(
+    ret System::Containers::_tabulate<_RrbLeaf<T>|_RrbBranch<T>>(
           _rrbChunkCount(ks._length),
           (c: Int32) => _rrbBranch<T>(
             _rrbSlab<_RrbLeaf<T>|_RrbBranch<T>>(ks, c * _rrbWidth()), kh))
@@ -605,7 +605,7 @@ fun _rrbSliceNode<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, from: Int32,
             fun _rrbChildStart(b: _RrbBranch<T>, h: Int32, k: Int32): Int32
                 ret match(b.brSizes)
                   (nil: None) => k * truncateToInt32(_rrbFullSize(h, 1))
-                  (s: System::Containers::Array<Int32>) => k == 0i32 ? 0i32 : s[k - 1i32]
+                  (s: System::Containers::Array<Int32>) => k == 0i32 ? 0i32 : System::Containers::_at<Int32>(s, k - 1i32)
 
             fun _rrbSliceKidAt(b: _RrbBranch<T>, h: Int32, from: Int32, to: Int32,
                                   k: Int32, start: Int32): _RrbLeaf<T>|_RrbBranch<T>
@@ -624,7 +624,7 @@ fun _rrbSliceNode<T>(node: _RrbLeaf<T>|_RrbBranch<T>, h: Int32, from: Int32,
             ret _rrbSliceKidAt(b, h, from, to, k, _rrbChildStart(b, h, k))
 
         ret _rrbBranch<T>(
-              System::Containers::Array<_RrbLeaf<T>|_RrbBranch<T>>(k1 - k0 + 1i32,
+              System::Containers::_tabulate<_RrbLeaf<T>|_RrbBranch<T>>(k1 - k0 + 1i32,
                 (j: Int32) => _rrbSliceKid(b, h, from, to, k0 + j)),
               h - 1i32)
 
