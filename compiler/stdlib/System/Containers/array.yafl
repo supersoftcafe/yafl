@@ -151,13 +151,38 @@ fun [tail] _anyFrom<T>(a: _FullArray<T>, i: Int32, pred: (:T): Bool): Bool
 fun push<T>(a: Array<T>, x: T): Array<T>
   ret append<T>(a, x)
 
-# Append every element of `l`, in order.
+# Append every element of `l`, in order. An empty `l` is `a` itself.
 fun pushAll<T>(a: Array<T>, l: List<T>): Array<T>
-  ret fold<T, Array<T>>(l, a, (acc: Array<T>, x: T) => push<T>(acc, x))
+  ret isEmpty(l) ? a : fold<T, Array<T>>(l, a, (acc: Array<T>, x: T) => push<T>(acc, x))
 
-# Append every element of `b`, in order — the concatenation primitive.
+# Append every element of `b`, in order — the concatenation primitive. With
+# either side empty the answer is the other value as it stands: values share
+# buffers by design, so there is nothing to copy. Otherwise `b` goes in place
+# when `a` owns the end of a buffer with room for all of it, and into ONE
+# buffer of twice the combined size when not, rather than growing by repeated
+# doubling copies.
 fun pushAll<T>(a: Array<T>, b: Array<T>): Array<T>
-  ret fold<T, Array<T>>(b, a, (acc: Array<T>, x: T) => push<T>(acc, x))
+  ret match(b)
+    (fb: _FullArray<T>)  => match(a)
+      (fa: _FullArray<T>)  => _pushAllFull<T>(fa, fb)
+      (ea: _EmptyArray<T>) => b
+    (eb: _EmptyArray<T>) => a
+
+fun _pushAllFull<T>(a: _FullArray<T>, b: _FullArray<T>): Array<T>
+  let held = pin(a._buffer)
+  let room = held._used == a._length && held._cap - held._used >= b._length
+  unpin(held)
+  ret room ? _pushInPlace<T>(a, b, 0i32) : _concatCopy<T>(a, b)
+
+# Room was there when checked; each push re-checks under its own pin, so a
+# competing appender that took the end meanwhile only turns a push into a copy.
+fun [tail] _pushInPlace<T>(a: Array<T>, b: _FullArray<T>, i: Int32): Array<T>
+  ret i < b._length ? _pushInPlace<T>(append<T>(a, b._buffer._items(i)), b, i + 1i32) : a
+
+fun _concatCopy<T>(a: _FullArray<T>, b: _FullArray<T>): Array<T>
+  let n = a._length + b._length
+  ret _FullArray<T>(n, _ArrayBuf<T>(n, n + n,
+    (i: Int32) => i < a._length ? a._buffer._items(i) : b._buffer._items(i - a._length)))
 
 
 # ── an Array as a Stream ─────────────────────────────────────────────────────

@@ -149,3 +149,21 @@ fun [test("size counts the elements, as an Int")] sizeCounts(): None|TestFailure
      ?? assertEqInt(size(_squares(4i32)), 4, "tabulated")
      ?? assertEqInt(size(_upTo(1000i32)), 1000, "pushed")
      ?? assertEqInt(size(pushAll(_upTo(3i32), _upTo(2i32))), 5, "pushAll")
+
+# _upTo(5) grew 1 → 2 → 4 → 8: it owns its buffer's end with room for 3, so
+# a 2-element pushAll goes in place; _upTo(4) is full, so the same pushAll
+# makes one combined copy. The prefix value keeps its own elements either way.
+fun [test("pushAll in place and by one combined copy")] pushAllPaths(): None|TestFailure
+    let roomy = _upTo(5i32)
+    let full = _upTo(4i32)
+    let inPlace = pushAll(roomy, _upTo(2i32))
+    let copied = pushAll(full, _upTo(2i32))
+    ret assertEqStr(_render(inPlace), "1.2.3.4.5.1.2.", "in place")
+     ?? assertEqStr(_render(roomy), "1.2.3.4.5.", "prefix kept after in place")
+     ?? assertEqStr(_render(copied), "1.2.3.4.1.2.", "combined copy")
+     ?? assertEqStr(_render(full), "1.2.3.4.", "prefix kept after copy")
+     ?? assertEqStr(_render(pushAll(roomy, _upTo(1i32))), "1.2.3.4.5.1.", "second value off the shared prefix copies")
+
+fun [test("pushAll of a List: empty leaves the array as it is")] pushAllEmptyList(): None|TestFailure
+    ret assertEqStr(_render(pushAll(_upTo(3i32), List<Int32>())), "1.2.3.", "empty list")
+     ?? assertTrue(isEmpty(pushAll(Array<Int32>(), List<Int32>())), "empty onto empty")
