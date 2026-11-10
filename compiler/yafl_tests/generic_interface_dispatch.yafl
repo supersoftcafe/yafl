@@ -67,19 +67,19 @@ import System::Containers
 import System::Test
 
 interface Sink
-  fun take(xs: Array<Int32>): Int32
+  fun take(xs: Array<Int32>): Int
 
 class [final] Keep<T>(x: T) : Sink
-  fun take(xs: Array<Int32>): Int32
-    ret xs.length
+  fun take(xs: Array<Int32>): Int
+    ret size(xs)
 
-fun takeVia(s: Sink, xs: Array<Int32>): Int32
+fun takeVia(s: Sink, xs: Array<Int32>): Int
   ret s.take(xs)
 
 fun program(): Int
   let xs = Array<Int32>(3i32, (i: Int32) => i)
-  println(String(Int(takeVia(Keep<Int>(1), xs))) + " "
-          + String(Int(takeVia(Keep<String>("s"), xs))))
+  println(String(takeVia(Keep<Int>(1), xs)) + " "
+          + String(takeVia(Keep<String>("s"), xs)))
   ret 0
 
 fun [test("override signature naming a generic class", stdout = "3 3\n")] check(): None|TestFailure

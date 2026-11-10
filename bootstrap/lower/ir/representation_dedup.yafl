@@ -397,8 +397,8 @@ fun rddOp(e: RddEnc, cx: RddCx, op: Op): RddEnc => match(op)
                                             cx, x.awaitRegister),
                                    cx, x.awaitSource)
 
-fun [tail] rddOps(e: RddEnc, cx: RddCx, s: Array<Op>, i: Int32): RddEnc
-  ret i < s.length ? rddOps(rddOp(e, cx, s[i]), cx, s, i + 1i32) : rddS(e, "]")
+fun [tail] rddOps(e: RddEnc, cx: RddCx, s: Array<Op>, i: Int): RddEnc
+  ret i < size(s) ? rddOps(rddOp(e, cx, s[i]), cx, s, i + 1) : rddS(e, "]")
 
 # ── nodes ────────────────────────────────────────────────────────────────────
 
@@ -436,7 +436,7 @@ fun rddFunction(e: RddEnc, cx: RddCx, f: CgFunction): RddEnc
                                      f.fnBypassAsync),
                              f.fnInline),
                      f.fnFuture)
-  let body = rddOps(rddS(head, "["), cx, f.fnOps, 0i32)
+  let body = rddOps(rddS(head, "["), cx, f.fnOps, 0)
   let declared = rddNumber(body, map(rddFields(f.fnStackVars), (fd) => fd.fieldName))
   ret rddLocals(rddCloseSets(declared), rddFields(f.fnStackVars))
 

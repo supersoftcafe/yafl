@@ -153,7 +153,7 @@ fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int) => match(get(removedSet, i)
 fun [tail] prRebuildLoopB(s: Array<Op>, out: PrOut,
                           removedSet: Dict<Int, Bool>,
                           i: Int, acc: Array<Op>): Array<Op>
-  ret i < Int(s.length)
+  ret i < size(s)
     ? prRebuildLoopB(s, out, removedSet, i + 1,
         prIsRemoved(removedSet, i)
           ? acc

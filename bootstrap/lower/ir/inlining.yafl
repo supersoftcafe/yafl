@@ -79,7 +79,7 @@ fun doInlining(f, tag, a: CgApp, recursive: Set<String>,
 fun [tail] inlLoop(s: Array<Op>, index: Int, tag,
                    a: CgApp, shouldInline,
                    acc: InlAcc): InlAcc
-  ret index < Int(s.length)
+  ret index < size(s)
     ? inlLoop(s, index + 1, tag, a, shouldInline,
               inlStep(s[index], tag + "$" + String(index),
                       a, shouldInline, acc))

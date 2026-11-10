@@ -56,9 +56,9 @@ what must not reappear. Order changes come from `sort`.
 
 ### Array
 
-Ordered with O(1) indexed reads (`a[i]`). A value is its own `length:
-Int32` over a shared buffer holding the elements inline, as a String is
-its length over a shared byte buffer. Where a `List<T>` is a heap cell
+Ordered with O(1) indexed reads (`a[i]`) and an O(1) `size(a)`. A value is
+its own (internal) length over a shared buffer holding the elements inline,
+as a String is its length over a shared byte buffer. Where a `List<T>` is a heap cell
 per element (~85B for a ~60B payload, one GC mark per element per cycle),
 an `Array<T>`'s buffer is a header plus `n × sizeof(element)` — the
 container of choice for large, build-once-read-many sequences. Two ways in:
@@ -72,7 +72,8 @@ container of choice for large, build-once-read-many sequences. Two ways in:
   convenience constructors for a known few values
 * `pushAll(a, xs)` — append every element of a List or another Array
 
-There is no update, no slice, no cursor: read by index, or walk `0..length`.
+There is no update, no slice, no cursor: read by index, walk `0..size(a)`, or
+drive `arrayStream(a)`.
 A sequence that grows or is consumed element-at-a-time is a `List`; a
 sequence built once and then indexed is an `Array`.
 

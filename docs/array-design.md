@@ -2,11 +2,15 @@
 
 ## Array grows by appending (issue #95)
 
-`Array<T>` is a value over a shared buffer, as a String is:
+`Array<T>` is a value over a shared buffer, as a String is. Like List it is
+empty or full, and an empty array holds no buffer, so making one allocates
+nothing:
 
 ```yafl
 class [final, pinnable] _ArrayBuf<T>(_used: Int32, [capacity] _cap: Int32, _items: T[_used])
-class [final] Array<T>(length: Int32, _buf: _ArrayBuf<T>)
+enum Array<T>(_length: Int32)
+  enum _EmptyArray()
+  enum _FullArray(_buffer: _ArrayBuf<T>)
 ```
 
 Two general class features carry it:
@@ -23,9 +27,16 @@ Two general class features carry it:
   writes a field. The index is checked against the capacity when the
   class has one.
 
-`append(a, x)` pins the buffer; if `a` owns its end (`a.length == _used`)
-and there is room, it writes element `_used`, then `_used := _used + 1`,
-and unpins. Otherwise it copies into a buffer of twice the size. A value
+Every field is internal. The public count is `size(a): Int`; only
+`array.yafl` and its `System::Containers` companions (`rrbtree.yafl`) read
+the Int32 `_length` directly. `arrayStream(a)` (the `Stream` instance) lives
+beside the container, as List's does.
+
+`append(a, x)` on a full array pins the buffer; if `a` owns its end
+(`a._length == _used`) and there is room, it writes element `_used`, then
+`_used := _used + 1`, and unpins. Otherwise it copies into a buffer of twice
+the size. On an empty array it allocates the first buffer, with room for
+two. The combinators match once and then walk the buffer. A value
 reads only its own `[0, length)`, which never changes, so every value
 keeps its own elements; one holding a stale copy of a moved buffer reads
 the same ones.

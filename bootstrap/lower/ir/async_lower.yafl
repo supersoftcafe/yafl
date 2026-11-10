@@ -373,11 +373,11 @@ fun alWriteSaved(os: List<Op>,
 
 # Enclosing block label per op index (nearest preceding Label; "" before any).
 fun alBlockIndex(ops: Array<Op>): (d: Dict<Int, String>, n: Int)
-  ret (alBlockIndexLoop(ops, 0, "", Dict()), Int(ops.length))
+  ret (alBlockIndexLoop(ops, 0, "", Dict()), size(ops))
 
 fun [tail] alBlockIndexLoop(s: Array<Op>, i: Int, cur,
                             acc: Dict<Int, String>): Dict<Int, String>
-  ret i < Int(s.length)
+  ret i < size(s)
     ? (alLabelNameOr(s[i], cur)
         |> (nxt) => alBlockIndexLoop(s, i + 1, nxt, put(acc, i, nxt)))
     : acc
@@ -1854,7 +1854,7 @@ fun alHasParkingLoop(ops: Array<Op>) => alHplLoop(ops, 0, Dict(), 0)
 
 fun [tail] alHplLoop(s: Array<Op>, i: Int, labelParks,
                      parks): Bool
-  ret i >= Int(s.length)
+  ret i >= size(s)
     ? false
     : any(opBranchTargets(s[i]), (name) => alHplHit(labelParks, name, parks))
       ? true
@@ -1938,7 +1938,7 @@ fun alZeroInitUnwrittenSaves(f: CgFunction): CgFunction
   ret cgFunctionWith(f, pushAll(cgOpsOf(inits), f.fnOps), f.fnStackVars)
 
 fun [tail] alZiusLoop(s: Array<Op>, i: Int, entry: Dict<Int, InitSet>,
-                      acc) => i < Int(s.length)
+                      acc) => i < size(s)
   ? alZiusLoop(s, i + 1, entry, alZiusStep(s[i], ucEntryAt(entry, i), acc))
   : acc
 

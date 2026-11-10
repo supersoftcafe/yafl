@@ -277,7 +277,7 @@ fun beLabelIndex(ops: Array<Op>): Dict<String, Int> => beLabelLoopB(ops, 0, Dict
 
 fun [tail] beLabelLoopB(s: Array<Op>, i: Int,
                        acc: Dict<String, Int>): Dict<String, Int>
-  ret i < Int(s.length) ? beLabelLoopB(s, i + 1, beLabelPut(acc, s[i], i)) : acc
+  ret i < size(s) ? beLabelLoopB(s, i + 1, beLabelPut(acc, s[i], i)) : acc
 
 fun beLabelPut(acc: Dict<String, Int>, op, i: Int): Dict<String, Int> => match(op)
   (lb: OpLabel) => put(acc, lb.labelName, i)
@@ -288,7 +288,7 @@ fun beLoopRegions(ops: Array<Op>, labels: Dict<String, Int>)
 
 fun [tail] beRegionLoopB(s: Array<Op>, i: Int, labels: Dict<String, Int>,
                         acc: List<BeRegion>): List<BeRegion>
-  ret i >= Int(s.length)
+  ret i >= size(s)
     ? acc
     : beRegionLoopB(s, i + 1, labels, beRegionAt(s[i], i, labels, acc))
 
@@ -430,7 +430,7 @@ fun beRewriteOps(ops: Array<Op>, i, region: BeRegion,
 fun [tail] beRewriteOpsB(s: Array<Op>, i: Int, region: BeRegion,
                         proven: List<BeProof>, defs: Dict<String, BeDefEntry>,
                         stores: Dict<(:BeVal, :String), BeStore>, acc: Array<Op>): Array<Op>
-  ret i < Int(s.length)
+  ret i < size(s)
     ? beRewriteOpsB(s, i + 1, region, proven, defs, stores,
                     push(acc, i >= region.brLo && i <= region.brHi
                       ? beRewriteOp(s[i], proven, defs, stores)

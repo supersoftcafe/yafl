@@ -73,11 +73,11 @@ fun [test("convenience constructors hold one to three values")] convenienceCtors
     let a = arrayOf<Int32>(7i32)
     let b = arrayOf<Int32>(1i32, 2i32)
     let c = arrayOf<Int32>(1i32, 2i32, 3i32)
-    ret assertEqInt(Int(a.length), 1, "one")
+    ret assertEqInt(size(a), 1, "one")
      ?? assertEqInt(Int(a[0]), 7, "one value")
-     ?? assertEqInt(Int(b.length), 2, "two")
+     ?? assertEqInt(size(b), 2, "two")
      ?? assertEqInt(Int(b[1]), 2, "second value")
-     ?? assertEqInt(Int(c.length), 3, "three")
+     ?? assertEqInt(size(c), 3, "three")
      ?? assertEqInt(Int(c[2]), 3, "third value")
 
 fun [test("push builds in append order")] pushKeepsOrder(): None|TestFailure
@@ -143,3 +143,9 @@ fun [tail] _drain(st: ArrayStream<Int32>, acc: Int): Int
             (x: Int32) => _drain(r.stream, acc + Int(x))
             (n: None)  => acc
         (er: Error<Int32 | None, Never>) => acc
+
+fun [test("size counts the elements, as an Int")] sizeCounts(): None|TestFailure
+    ret assertEqInt(size(Array<Int32>()), 0, "empty")
+     ?? assertEqInt(size(_squares(4i32)), 4, "tabulated")
+     ?? assertEqInt(size(_upTo(1000i32)), 1000, "pushed")
+     ?? assertEqInt(size(pushAll(_upTo(3i32), _upTo(2i32))), 5, "pushAll")

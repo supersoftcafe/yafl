@@ -38,7 +38,7 @@ enum InitSet
 # a Dict<Int, Op> for O(log n) random access at jump targets.
 class [final] UcIx(uiOps: Array<Op>, uiN: Int)
 
-fun ucIndexOps(ops: Array<Op>): UcIx => UcIx(ops, Int(ops.length))
+fun ucIndexOps(ops: Array<Op>): UcIx => UcIx(ops, size(ops))
 
 # Callers keep 0 <= i < uiN.
 fun ucIxOp(ix: UcIx, i: Int): Op => ix.uiOps[i]
@@ -75,7 +75,7 @@ fun ucCheckFunction(f: CgFunction)
 fun ucLabelIndex(ops: Array<Op>) => ucLabelLoop(ops, 0, Dict())
 
 fun [tail] ucLabelLoop(s: Array<Op>, i: Int, acc: Dict<String, Int>): Dict<String, Int>
-  ret i < Int(s.length) ? ucLabelLoop(s, i + 1, ucLabelPut(acc, s[i], i)) : acc
+  ret i < size(s) ? ucLabelLoop(s, i + 1, ucLabelPut(acc, s[i], i)) : acc
 
 fun ucLabelPut(acc, op, i: Int): Dict<String, Int> => match(op)
   (lb: OpLabel) => put(acc, lb.labelName, i)
@@ -206,7 +206,7 @@ fun ucVerify(f: CgFunction, entry: Dict<Int, InitSet>)
 fun [tail] ucVerifyLoop(f: CgFunction, s: Array<Op>,
                         entry: Dict<Int, InitSet>,
                         i: Int, acc: List<String>): List<String>
-  ret i >= Int(s.length)
+  ret i >= size(s)
     ? acc
     : ucVerifyLoop(f, s, entry, i + 1, ucVerifyAt(f, s[i], i, ucEntryAt(entry, i), acc))
 
@@ -261,7 +261,7 @@ fun [tail] ucPhiEdgesLoop(s: Array<Op>, entry: Dict<Int, InitSet>,
                           phiBlocks: Dict<String, List<Op>>,
                           i: Int, current, prev: Op|None,
                           acc: List<PhiEdge>): List<PhiEdge>
-  ret i >= Int(s.length)
+  ret i >= size(s)
     ? acc
     : match(s[i])
         (lb: OpLabel) => ucPhiEdgesLoop(s, entry, phiBlocks, i + 1,

@@ -45,7 +45,7 @@ _SRC = (
     "fun straight(n: Int32): Array<Box>\n"
     "  ret Array<Box>(n, (i: Int32) => plain(i))\n"
     "fun [tail] same(a: Array<Box>, b: Array<Box>, i: Int32): Bool\n"
-    "  ret i >= a.length ? true : (a[i].v == b[i].v ? same(a, b, i + 1i32) : false)\n"
+    "  ret Int(i) >= size(a) ? true : (a[i].v == b[i].v ? same(a, b, i + 1i32) : false)\n"
     "fun [tail] rounds(k: Int, bad: Int): Int\n"
     "  if k <= 0\n"
     "    ret bad\n"

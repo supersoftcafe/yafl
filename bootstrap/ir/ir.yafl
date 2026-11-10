@@ -328,7 +328,7 @@ fun cgReachable(ix: StripIx) => cgReachableLoop(ix, List<Int>(0), put(Dict(), 0,
 
 fun [tail] cgKeepSeenIndices(s: Array<Op>, i: Int, seen: Dict<Int, Bool>,
                              acc: Array<Op>): Array<Op>
-  ret i < Int(s.length)
+  ret i < size(s)
     ? cgKeepSeenIndices(s, i + 1, seen, get(seen, i) is Bool ? push(acc, s[i]) : acc)
     : acc
 
@@ -350,7 +350,7 @@ fun cgWithoutStalePhiSources(f: CgFunction): CgFunction
 
 fun [tail] cgPrunePhisLoop(s: Array<Op>, i: Int, preds: List<PredEntry>, current: String,
                            acc: Array<Op>): Array<Op>
-  ret i < Int(s.length)
+  ret i < size(s)
     ? cgPrunePhisLoop(s, i + 1, preds, cgPredNextCurrent(s[i], current),
                       push(acc, cgPrunePhi(s[i], predsOf(preds, current))))
     : acc

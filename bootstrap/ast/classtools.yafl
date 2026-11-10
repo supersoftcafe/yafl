@@ -288,13 +288,13 @@ fun exactly<T>(c: List<T>, n): Bool => atLeast(c, n) && !atLeast(c, n + 1)
 # The same vocabulary over Arrays, which carry their length: every probe is
 # O(1), and nthOf is one indexed read.
 
-fun atLeast<T>(a: Array<T>, n): Bool => Int(a.length) >= n
+fun atLeast<T>(a: Array<T>, n): Bool => size(a) >= n
 
-fun exactly<T>(a: Array<T>, n): Bool => Int(a.length) == n
+fun exactly<T>(a: Array<T>, n): Bool => size(a) == n
 
-fun nthOf<T>(a: Array<T>, idx): T|None => idx >= 0 && idx < Int(a.length) ? a[idx] : None
+fun nthOf<T>(a: Array<T>, idx): T|None => idx >= 0 && idx < size(a) ? a[idx] : None
 
-fun sameLen<T, U>(a: Array<T>, b: Array<U>): Bool => a.length == b.length
+fun sameLen<T, U>(a: Array<T>, b: Array<U>): Bool => size(a) == size(b)
 
 # Same length: co-walk, stops at the shorter.
 fun [tail] sameLen<T, U>(a: List<T>, b: List<U>): Bool =>
