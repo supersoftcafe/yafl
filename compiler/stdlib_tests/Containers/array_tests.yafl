@@ -96,3 +96,50 @@ fun [test("an array of strings works the same way")] stringArray(): None|TestFai
     let a = Array<String>(3i32, (i: Int32) => String(Int(i)))
     ret assertEqStr(a[0], "0", "first")
      ?? assertEqStr(a[2], "2", "last")
+
+fun _upTo(n: Int32): Array<Int32>
+    ret _fill(Array<Int32>(), 1i32, n)
+
+fun [tail] _fill(a: Array<Int32>, i: Int32, n: Int32): Array<Int32>
+    ret i > n ? a : _fill(push(a, i), i + 1i32, n)
+
+fun _render(a: Array<Int32>): String
+    ret fold(a, "", (acc: String, x: Int32) => acc + String(Int(x)) + ".")
+
+# A thousand pushes cross every doubling of the buffer from empty.
+fun [test("a long push chain keeps every element in order")] longPushChain(): None|TestFailure
+    let a = _upTo(1000i32)
+    ret assertEqInt(_count(a), 1000, "all present")
+     ?? assertEqInt(_sum(a), 500500, "sum 1..1000")
+     ?? assertEqInt(Int(a[999]), 1000, "last")
+
+fun [test("pushAll appends an entire List in order")] pushAllList(): None|TestFailure
+    ret assertEqStr(_render(pushAll(_upTo(2i32), List<Int32>(7i32, 8i32))), "1.2.7.8.", "appended")
+     ?? assertTrue(isEmpty(pushAll(Array<Int32>(), List<Int32>())), "empty onto empty")
+
+fun [test("pushAll appends an entire Array in order")] pushAllArray(): None|TestFailure
+    ret assertEqStr(_render(pushAll(_upTo(3i32), _upTo(2i32))), "1.2.3.1.2.", "appended")
+     ?? assertEqStr(_render(pushAll(Array<Int32>(), _upTo(2i32))), "1.2.", "onto empty")
+     ?? assertEqStr(_render(pushAll(_upTo(2i32), Array<Int32>())), "1.2.", "nothing appended")
+
+# Two values sharing one buffer: whichever appends second must copy, and the
+# first keeps its own elements.
+fun [test("appending to a shared prefix leaves the other value intact")] sharedPrefix(): None|TestFailure
+    let base = _upTo(3i32)
+    let x = push(base, 10i32)
+    let y = push(base, 20i32)
+    ret assertEqStr(_render(x), "1.2.3.10.", "first branch")
+     ?? assertEqStr(_render(y), "1.2.3.20.", "second branch")
+     ?? assertEqStr(_render(base), "1.2.3.", "prefix unchanged")
+
+fun [test("arrayStream drives every element in order")] streams(): None|TestFailure
+    ret assertEqInt(_drain(arrayStream(_upTo(20i32)), 0), 210, "sum 1..20 via stream")
+     ?? assertEqInt(_drain(arrayStream(Array<Int32>()), 0), 0, "empty stream")
+
+fun [tail] _drain(st: ArrayStream<Int32>, acc: Int): Int
+    let r = streamNext<ArrayStream<Int32>, Int32, Never>(st)
+    ret match(r.value)
+        (ok: Ok<Int32 | None, Never>) => match(ok.value)
+            (x: Int32) => _drain(r.stream, acc + Int(x))
+            (n: None)  => acc
+        (er: Error<Int32 | None, Never>) => acc

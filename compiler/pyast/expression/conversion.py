@@ -180,7 +180,12 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
         if binding is None:
             return False    # not assignable — the receiver reports that, not us
         if binding != list(range(len(target.entries))):
-            return True     # reorder and/or default fill
+            # Reorder and/or default fill — but only of fields that FIT. A
+            # conversion's get_type reports its target, so wrapping a tuple
+            # holding a mis-typed field hid it from the receiver's check
+            # (`CgFunction(..., None, ...)` with defaults left to fill passed
+            # `None` for an `Array<Op>` field, and clang found it).
+            return target.trivially_assignable_from(resolver, source) is True
         return su != tu and any(needs_conversion(s_e.type, t_e.type, resolver)
                                 for s_e, t_e in zip(source.entries, target.entries))
     if su == tu:

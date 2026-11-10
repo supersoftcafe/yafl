@@ -41,3 +41,28 @@ fun program(): System::Int
 
 fun [test("generic enum as generic argument", stdout = "3,7\n")] check(): None|TestFailure
     ret assertEqInt(program(), 0, "program()")
+
+
+# A generic [tail] function instantiated at a TUPLE holding a nested generic
+# — `(String, Dict<String, List<Int>>)`. The monomorphiser named the
+# instantiation while `List<Int>` and `Dict<…>` inside the tuple were still
+# unspecialised, then again once each landed: two copies, each one's
+# self-call naming the other, and [tail] reported "requires direct
+# self-recursion". (Found when Array's [tail] fold met such an accumulator.)
+namespace CompilerTests::GenericNesting::TailOverTupleOfNestedGenerics
+
+import System
+import System::Test
+import System::Containers
+
+fun [tail] loop<A>(n: Int, acc: A, f: (:A): A): A
+  ret n <= 0 ? acc : loop<A>(n - 1, f(acc), f)
+
+fun step(st: (s: String, d: Dict<String, List<Int>>)) => (st.s + "k", put(st.d, st.s, List<Int>(1)))
+
+fun program(): System::Int
+  let r = loop(2, ("", Dict<String, List<Int>>()), step)
+  ret size(r.d)
+
+fun [test("a [tail] generic over a tuple of nested generics")] check(): None|TestFailure
+    ret assertEqInt(program(), 2, "program()")

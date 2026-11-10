@@ -72,6 +72,14 @@ def _type_str(ts: t.TypeSpec | None) -> str:
     return type(ts).__name__
 
 
+def _has_hole_member(spec: t.TypeSpec | None, resolver: g.Resolver) -> bool:
+    """`spec`, or a member of it when it is a union, is a placeholder that does
+    not resolve here — a callee's own unbound `T` standing where a type goes."""
+    members = spec.repr_members() if isinstance(spec, t.CombinationSpec) else (spec,)
+    return any(isinstance(m, t.GenericPlaceholderSpec) and not t.resolves_in_scope(m.name, resolver)
+               for m in members)
+
+
 def _parameters_of(ftype: t.TypeSpec | None) -> t.TypeSpec | None:
     return ftype.parameters if isinstance(ftype, t.CallableSpec) else None
 
@@ -88,7 +96,20 @@ class CallExpression(Expression):
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         func_type = self.function.get_type(resolver)
-        return func_type.result if isinstance(func_type, t.CallableSpec) else None
+        if not isinstance(func_type, t.CallableSpec):
+            return None
+        # A generic callee whose result IS one of its own placeholders — bare,
+        # or a member of the result union (`head`'s `T|None`) — has no result
+        # type until its arguments are typed and bind it: reported now, that
+        # hole reaches a receiver's inferred type as a union member no later
+        # answer can fill. A placeholder INSIDE a named type (`put`'s
+        # `Dict<K,V>`) is a shape, and inference fills it from siblings.
+        result = func_type.result
+        if _has_hole_member(result, resolver):
+            ptype = self.parameter.get_type(resolver)
+            if ptype is None or not ptype.is_concrete():
+                return None
+        return result
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         func_type = self.function.get_type(resolver)

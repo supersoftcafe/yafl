@@ -104,12 +104,8 @@ fun ssavAllPathsReturn(f: CgFunction): List<String> => match(lastOp(f.fnOps))
     : List()
   ()        => List()
 
-# Seq twin: hop to the last segment, read its final element.
-fun [tail] lastOp(s: Segment<Op>|None): Op|None => match(s)
-  (nil: None)        => None
-  (seg: Segment<Op>) => match(seg.next)
-    (n2: Segment<Op>) => lastOp(seg.next)
-    (nil2: None)      => seg.length > 0i32 ? seg.array(seg.length - 1i32) : None
+# Array twin: one indexed read.
+fun lastOp(s: Array<Op>): Op|None => s.length > 0i32 ? s[s.length - 1i32] : None
 
 fun lastOp(ops: List<Op>): Op|None => head(takeLastOne(ops))
 
@@ -119,10 +115,10 @@ fun lastOp(ops: List<Op>): Op|None => head(takeLastOne(ops))
 # region (Labels open one; any non-Phi op closes it).
 fun ssavPhiWellFormed(f: CgFunction): List<String>
   let preds = cgBlockPredecessors(f)
-  let p0 = cgPullOp(seqStream(f.fnOps))
+  let p0 = cgPullOp(arrayStream(f.fnOps))
   ret ssavPhiLoop(p0.op, p0.stream, preds, f.fnName, "", false, List())
 
-fun [tail] ssavPhiLoop(cur: Op|None, st: SeqStream<Op>, preds: List<PredEntry>, fname,
+fun [tail] ssavPhiLoop(cur: Op|None, st: ArrayStream<Op>, preds: List<PredEntry>, fname,
                        current, inRegion, acc: List<String>): List<String>
   if cur is None
     ret acc

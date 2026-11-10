@@ -123,3 +123,11 @@ fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
 # builder-shaped spelling, so a growing sequence reads the same over an Array.
 fun push<T>(a: Array<T>, x: T): Array<T>
   ret append<T>(a, x)
+
+# Append every element of `l`, in order.
+fun pushAll<T>(a: Array<T>, l: List<T>): Array<T>
+  ret fold<T, Array<T>>(l, a, (acc: Array<T>, x: T) => push<T>(acc, x))
+
+# Append every element of `b`, in order — the concatenation primitive.
+fun pushAll<T>(a: Array<T>, b: Array<T>): Array<T>
+  ret fold<T, Array<T>>(b, a, (acc: Array<T>, x: T) => push<T>(acc, x))

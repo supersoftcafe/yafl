@@ -21,26 +21,26 @@ fun [tail] btFunction(f): CgFunction
     ? btFunction(cgFunctionStripUnusedOperations(cgFunctionWith(f, out.btOps, f.fnStackVars)))
     : f
 
-class [final] BtOut(btOps: Segment<Op>|None, btChanged: Bool)
+class [final] BtOut(btOps: Array<Op>, btChanged: Bool)
 
 # Instruction order out; `changed` rides alongside as a plain value.
-class [linear, final] BtAcc(baOps: SeqBuilder<Op>, baChanged: Bool)
+class [final] BtAcc(baOps: Array<Op>, baChanged: Bool)
 
-fun btOnce(ops: Segment<Op>|None) => btLoop(seqStream(ops), ops,
-                                              BtAcc(seqBuilder(), false))
+fun btOnce(ops: Array<Op>) => btLoop(arrayStream(ops), ops,
+                                              BtAcc(Array<Op>(), false))
 
 # Stream-driven walk; `ops` rides alongside for the label-target search
 # (random access, not part of the sequential drive). Error arm: Never.
-fun [tail] btLoop<S>(s: S, ops: Segment<Op>|None,
-                     [terminal] acc: BtAcc) where Stream<S, Op, Never>
+fun [tail] btLoop<S>(s: S, ops: Array<Op>,
+                     acc: BtAcc) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
       (cur: Op) => btLoop(r.stream, ops, btStep(acc, cur, ops))
-      (n: None) => BtOut(build(acc.baOps), acc.baChanged)
-    (er: Error<Op | None, Never>) => BtOut(build(acc.baOps), acc.baChanged)
+      (n: None) => BtOut(acc.baOps, acc.baChanged)
+    (er: Error<Op | None, Never>) => BtOut(acc.baOps, acc.baChanged)
 
-fun btStep([terminal] acc: BtAcc, op, ops: Segment<Op>|None) => match(op)
+fun btStep(acc: BtAcc, op, ops: Array<Op>) => match(op)
   (j: OpJump) => match(btTerminatorAfter(ops, j.jumpName))
     (t2: Op) => btSameJump(t2, j)
       ? BtAcc(push(acc.baOps, op), acc.baChanged)
@@ -52,9 +52,9 @@ fun btSameJump(t2, j: OpJump) => match(t2)
   (j2: OpJump) => j2.jumpName == j.jumpName
   (o: Op)      => false
 
-fun btTerminatorAfter(ops: Segment<Op>|None, labelName) => btTaLoop(seqStream(ops), labelName)
+fun btTerminatorAfter(ops: Array<Op>, labelName) => btTaLoop(arrayStream(ops), labelName)
 
-fun [tail] btTaLoop(st: SeqStream<Op>, labelName): Op|None
+fun [tail] btTaLoop(st: ArrayStream<Op>, labelName): Op|None
   let p = cgPullOp(st)
   ret match(p.op)
     (nil: None) => None

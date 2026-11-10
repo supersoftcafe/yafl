@@ -13,7 +13,7 @@ import System
 # structures on — an ordered map's leaf array, a text rope, a builder's
 # published form — not one applications reach for directly, and it makes no
 # attempt to join the other containers' overload set (`fold`, `map`, `head`
-# and friends all belong to List/Seq/Array and are deliberately absent here).
+# and friends all belong to List/Array and are deliberately absent here).
 # What it does offer is the four primitives no other container has together:
 # indexed read, indexed replace, concatenation, and slicing — each O(log n)
 # or better, each persistent.
@@ -66,7 +66,7 @@ class [final] _RrbBranch<T>(brCount: Int32, brSizes: System::Containers::Array<I
 # leaves. `rtRoot` is None for the empty tree and ONLY for the empty tree.
 # That None is not decoration: there is no way to fabricate a `T`, so a
 # zero-count `_RrbLeaf<T>` cannot be tabulated at all, and an empty tree has
-# to be spelt some other way. `Segment<T>|None` sets the precedent.
+# to be spelt some other way.
 class [final] RRBTree<T>(rtCount: Int, rtHeight: Int32,
                          rtRoot: (_RrbLeaf<T>|_RrbBranch<T>)|None)
 

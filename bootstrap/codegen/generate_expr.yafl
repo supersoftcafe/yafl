@@ -698,10 +698,6 @@ fun genBuiltinOp(op: PeBuiltinOp, r)
     ret genBuiltinValueRepr(op, nm, r)
   if nm == "new_pinned"
     ret genNewPinned(op, r)
-  if nm == "array_builder_alloc"
-    ret genArrayBuilderAlloc(op, r)
-  if nm == "array_builder_store"
-    ret genArrayBuilderStore(op, r)
   ret genBuiltinOpGeneric(op, r)
 
 # `__builtin_op__<T>("new_pinned", C(...))`: the construction C, its heap
@@ -762,57 +758,6 @@ fun builtinOpName(nameExpr) => match(nameExpr)
   (s2: PeStr) => s2.strValue
   (o: PExpr)  => ""   # unreachable: op.opName is always a string literal
 
-# ── ArrayBuilder special forms (builtin_op.py __array_builder_alloc/store) ──
-# Sized, unfilled allocation for a builder, born PINNED (held until
-# array_builder_seal): array_create zero-fills pointer-bearing payloads and
-# stamps length = CAPACITY, so the scanner traces every slot from birth. The
-# element type rides the builtin's declared RESULT type; no init function runs.
-fun genArrayBuilderAlloc(op: PeBuiltinOp, r) => match(arrayAllocParts(op, r))
-  (p: (cname: String, capE: PExpr)) => genArrayBuilderAllocOn(p.cname, p.capE, r)
-  ()                                 => emptyBundle()   # unreachable: stdlib-only op
-
-fun arrayAllocParts(op: PeBuiltinOp, r): (cname: String, capE: PExpr)|None => match(op.opType)
-  (c: SClass) => match(arrayInfoOf(c, r))
-    (info: (cname: String, elem: Spec, lenName: String)) => match(firstBuiltinArg(op.opParams))
-      (capE: PExpr) => (info.cname, capE)
-      ()            => None
-    ()               => None
-  (o: Spec)   => None
-
-fun genArrayBuilderAllocOn(cname, capE, r)
-  let capB = withPrefix(genExpr(capE, r), "abcap")
-  let rv = RpStackVar(CgDataPointer(false), "abarr")
-  ret bundleJoin(capB,
-                 GBundle(list1(rv),
-                         list1(OpNewObject(cname, rv, mustResult(capB), true, Dict())),
-                         rv, List(), List()))
-
-# Inline pinned-array element store: a Move into the indexed trailing array
-# field. A runtime call cannot express this — the element's C type varies
-# per instantiation — and the builder holds the pin from allocation to
-# seal, so the address is stable. NOT fresh: a builder crosses safe points,
-# so a cycle may open between the allocation and the store; the barrier
-# covers that (builtin_op.py).
-fun genArrayBuilderStore(op: PeBuiltinOp, r) => match(threeBuiltinArgs(op.opParams))
-  (a: (a0: PExpr, a1: PExpr, a2: PExpr)) => genArrayBuilderStoreOn(a.a0, a.a1, a.a2, r)
-  ()                                      => emptyBundle()   # unreachable: stdlib-only op
-
-fun genArrayBuilderStoreOn(arrE, idxE, valE, r) => match(arrayInfo(arrE, r))
-  (info: (cname: String, elem: Spec, lenName: String)) => genArrayBuilderStoreAll(info.cname, info.elem, arrE, idxE, valE, r)
-  ()                                                     => emptyBundle()   # unreachable: check()
-                                                                            # typed the subject as Array
-
-fun genArrayBuilderStoreAll(cname, elem, arrE, idxE, valE, r)
-  let arrB = withPrefix(genExpr(arrE, r), "absarr")
-  let idxB = withPrefix(genExpr(idxE, r), "absidx")
-  let valB = withPrefix(genExpr(valE, r), "absval")
-  let store = OpMove(RpObjectField(specGenerate(elem, r), mustResult(arrB), cname, "array",
-                                   mustResult(idxB), false, true),
-                     mustResult(valB), false, Dict())
-  ret bundleJoin(bundleJoin(bundleJoin(arrB, idxB), valB),
-                 GBundle(List(), list1(store), RpInteger(1, 8),
-                         List(), List()))
-
 # `__builtin_pin_set__(obj, obj.field, value)` (builtin_op.py
 # PinSetExpression.generate): one runtime call, kept when the answer goes
 # unread — the call is the store. The field is found by its offset in
@@ -840,16 +785,6 @@ fun firstBuiltinArg(params) => match(params)
   (tp: PeTuple) => match(head(tp.exprs))
     (e0: PTupEnt) => e0.tupValue
     ()            => None
-  (o: PExpr)    => None
-
-fun threeBuiltinArgs(params): (a0: PExpr, a1: PExpr, a2: PExpr)|None => match(params)
-  (tp: PeTuple) => match(head(tp.exprs))
-    (e0: PTupEnt) => match(head(dropOne(tp.exprs)))
-      (e1: PTupEnt) => match(head(dropOne(dropOne(tp.exprs))))
-        (e2: PTupEnt) => (e0.tupValue, e1.tupValue, e2.tupValue)
-        ()            => None
-      ()              => None
-    ()              => None
   (o: PExpr)    => None
 
 # ══════════════════════════════════════════════════════════════════════════

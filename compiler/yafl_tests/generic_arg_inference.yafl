@@ -120,3 +120,42 @@ fun program(): System::Int
 
 fun [test("a lambda parameter waits for the list")] check(): None|TestFailure
     ret assertEqInt(program(), 8, "program()")
+
+
+# A single-candidate generic call whose argument is not typed yet (`kept`
+# waits on an overloaded `filter`) has no result type yet. Reported early as
+# the callee's raw `T|None`, the hole latched into `inner`'s inferred return
+# and `outer` froze at `None` ("Incorrect type"). Found when Seq's second
+# `head` overload was removed and List's became the only one.
+namespace CompilerTests::GenericArgInference::UntypedArgumentDefersGenericResult
+
+import System
+import System::Test
+import System::Containers
+
+enum Shape
+  enum Dot(size: Int)
+  enum Group(parts: List<Shape>)
+
+fun firstOf<T>(l: List<T>): T|None
+    ret head(l)
+
+fun outer(sp: Shape) => match(sp)
+  (g: Group) => inner(g.parts)
+  (o: Shape) => None
+
+fun inner(parts: List<Shape>)
+  let kept = filter(parts, (p: Shape) => true)
+  ret isEmpty(kept) ? None : (exactly1(kept) ? firstOf(kept) : Group(kept))
+
+fun exactly1(l: List<Shape>): Bool
+    ret !isEmpty(l) && isEmpty(dropOne(l))
+
+fun program(): System::Int
+  ret match(outer(Group(List<Shape>(Dot(3)))))
+    (d: Dot)   => d.size
+    (o: Shape) => 1
+    ()         => 2
+
+fun [test("an untyped argument defers a generic call's result type")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")

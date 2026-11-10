@@ -284,34 +284,17 @@ fun atMost<T>(c: List<T>, n) => !atLeast(c, n + 1)
 # Exactly n elements: two bounded probes.
 fun exactly<T>(c: List<T>, n): Bool => atLeast(c, n) && !atLeast(c, n + 1)
 
-# ── Seq twins ────────────────────────────────────────────────────────────────
-# The same vocabulary over Segment chains. Per-segment STORED lengths are
-# facts the container carries, so consuming them is not "calculating a
-# length" — atLeast hops whole segments (walks at most n elements' worth),
-# and sameLen balances the two stored-length sums, O(segments) each side.
+# ── Array twins ──────────────────────────────────────────────────────────────
+# The same vocabulary over Arrays, which carry their length: every probe is
+# O(1), and nthOf is one indexed read.
 
-fun [tail] atLeast<T>(s: Segment<T>|None, n): Bool => n <= 0 ? true : match(s)
-  (nil: None)        => false
-  (seg: Segment<T>)  => Int(seg.length) >= n
-    ? true
-    : atLeast(seg.next, n - Int(seg.length))
+fun atLeast<T>(a: Array<T>, n): Bool => Int(a.length) >= n
 
-fun exactly<T>(s: Segment<T>|None, n): Bool => atLeast(s, n) && !atLeast(s, n + 1)
+fun exactly<T>(a: Array<T>, n): Bool => Int(a.length) == n
 
-# Indexed read by segment hop — O(segments) to the target, then one inline
-# read; the List twin (frontend/checks.yafl nthOf) walks every cell.
-fun [tail] nthOf<T>(s: Segment<T>|None, idx): T|None => match(s)
-  (nil: None)        => None
-  (seg: Segment<T>)  => idx < Int(seg.length)
-    ? seg.array(truncateToInt32(idx))
-    : nthOf(seg.next, idx - Int(seg.length))
+fun nthOf<T>(a: Array<T>, idx): T|None => idx >= 0 && idx < Int(a.length) ? a[idx] : None
 
-fun sameLen<T, U>(a: Segment<T>|None, b: Segment<U>|None): Bool
-  ret _segLenSum(a, 0) == _segLenSum(b, 0)
-
-fun [tail] _segLenSum<T>(s: Segment<T>|None, acc) => match(s)
-  (nil: None)        => acc
-  (seg: Segment<T>)  => _segLenSum(seg.next, acc + Int(seg.length))
+fun sameLen<T, U>(a: Array<T>, b: Array<U>): Bool => a.length == b.length
 
 # Same length: co-walk, stops at the shorter.
 fun [tail] sameLen<T, U>(a: List<T>, b: List<U>): Bool =>

@@ -974,9 +974,9 @@ fun markOne(st) => match(st)
 # token, so this fold is what lets a constant Bool become a literal and inline.
 fun compileBuiltinOp(op: PeBuiltinOp, r, expected: Spec|None)
   let ps = compileExpr(op.opParams, r, None)
-  # The declared type may be a full spec (array_builder_alloc's Array<T>):
-  # compile it so the name resolves like any declared type. SBuiltins
-  # compile to themselves, so the historical ops are untouched.
+  # The declared type may be a full spec (new_pinned's T): compile it so
+  # the name resolves like any declared type. SBuiltins compile to
+  # themselves, so the historical ops are untouched.
   let ty = compileSpec(op.opType, r)
   let out = PeBuiltinOp(ty.soSpec, op.opName, ps.eoExpr, op.peboLine)
   ret match(foldConstCompare(out))

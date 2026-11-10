@@ -1,7 +1,7 @@
 # Call-site binding for members of GENERIC ambient instances.
 #
 # A concrete call to a member of a generic `instance [ambient]` (e.g.
-# `drop(b)` where the instance is `instance [ambient]<T> Drop<SeqBuilder<T>>`)
+# `drop(b)` where the instance is `instance [ambient]<T> Drop<Holder<T>>`)
 # binds the INSTANCE's type parameters from the argument shape — the
 # generic-function-candidate rule applied to instances. This was the original
 # gap the drops pass routed around with a `dropIndirect` trampoline, both
@@ -14,10 +14,23 @@ namespace CompilerTests::GenericTraitMember::ExplicitDropOfBuilder
 
 import System
 import System::Test
-import System::Containers
+
+# A generic linear class with a generic [ambient] Drop instance — the shape
+# the drops pass must discharge.
+class [linear, final] Holder<T>(value: T)
+
+fun release<T>([terminal] h: Holder<T>): T
+  ret h.value
+
+fun _released<T>(_v: T): None
+  ret None
+
+instance [ambient]<T> Drop<Holder<T>>
+  fun drop(self: Holder<T>): None
+    ret _released<T>(release<T>(self))
 
 fun program(): Int
-  let b = push(seqBuilder<Int>(), 7)
+  let b = Holder<Int>(7)
   drop(b)
   ret 0
 

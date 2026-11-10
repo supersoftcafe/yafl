@@ -26,7 +26,7 @@ fun [tail] dsFunction(f): CgFunction
 # All StackVar names ever READ across all ops — the get_live_vars reads half,
 # plus every op's saved_vars. Dict-backed SET (Python's is a set; user ruling
 # 2026-07-22: lookups are dict-backed).
-fun dsCollectReads(ops: Segment<Op>|None) => fold(ops, Dict(), dsOpReads)
+fun dsCollectReads(ops: Array<Op>) => fold(ops, Dict(), dsOpReads)
 
 fun dsOpReads(acc: Dict<String, Bool>, op): Dict<String, Bool>
   ret fold(values(opSavedVars(op)),
@@ -41,8 +41,8 @@ fun dsIsRead(reads: Dict<String, Bool>, name: String) => !(get(reads, name) is N
 
 fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
   let reads = dsCollectReads(f.fnOps)
-  let walked = dsWalk(seqStream(f.fnOps), reads,
-                        seqBuilder(), false)
+  let walked = dsWalk(arrayStream(f.fnOps), reads,
+                        Array<Op>(), false)
   ret walked.changed
     ? (cpPruneStackVars(f, walked.ops), true)
     : (f, false)
@@ -50,8 +50,8 @@ fun dsOnce(f: CgFunction): (fn: CgFunction, changed: Bool)
 # Stream-driven (storage-agnostic): swapping the container is one source
 # construction in dsOnce, not a walk rewrite. Error arm unreachable: Never.
 fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
-                     [terminal] acc: SeqBuilder<Op>,
-                     changed): (ops: Segment<Op>|None, changed: Bool) where Stream<S, Op, Never>
+                     acc: Array<Op>,
+                     changed): (ops: Array<Op>, changed: Bool) where Stream<S, Op, Never>
   let r = streamNext<S, Op, Never>(s)
   ret match(r.value)
     (ok: Ok<Op | None, Never>) => match(ok.value)
@@ -60,8 +60,8 @@ fun [tail] dsWalk<S>(s: S, reads: Dict<String, Bool>,
           (kept: Op) => dsWalk(r.stream, reads, push(acc, kept),
                                changed || step.changed)
           ()         => dsWalk(r.stream, reads, acc, true)
-      (n: None) => (build(acc), changed)
-    (er: Error<Op | None, Never>) => (build(acc), changed)
+      (n: None) => (acc, changed)
+    (er: Error<Op | None, Never>) => (acc, changed)
 
 # The per-op decision: the op to keep (possibly rewritten) or None to drop,
 # plus whether anything changed.

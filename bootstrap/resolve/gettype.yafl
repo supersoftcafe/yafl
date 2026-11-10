@@ -227,9 +227,31 @@ fun twoTypes(a: Spec|None, b: Spec|None) => append(append(List(), a), b)
 # not resolved to a callable yet simply has no result yet.
 fun callType(c: PeCall, r) => match(exprType(c.function, r))
   (ft: Spec) => match(ft)
-    (cl: SCallable) => cl.scResult
+    (cl: SCallable) => callResultType(c, cl.scResult, r)
     (o: Spec)       => None
   ()         => None
+
+# A generic callee whose result IS one of its own placeholders — bare, or a
+# member of the result union (`head`'s `T|None`) — has no result type until
+# its arguments are typed and bind it: reported now, that hole reaches a
+# receiver's inferred type as a union member no later answer can fill. A
+# placeholder INSIDE a named type (`put`'s `Dict<K,V>`) is a shape, and
+# inference fills it from siblings (call.py get_type).
+fun callResultType(c: PeCall, res: Spec|None, r): Spec|None => match(res)
+  (sp: Spec) => hasHoleMember(sp, r) && !callArgsConcrete(c, r) ? None : sp
+  ()         => None
+
+fun hasHoleMember(sp: Spec, r): Bool => match(sp)
+  (cm: SCombination) => any(reprMembers(cm), (m) => isFreeHole(m, r))
+  (o: Spec)          => isFreeHole(sp, r)
+
+fun isFreeHole(sp: Spec, r): Bool => match(sp)
+  (g: SGeneric) => !resolvesInScope(g.sgName, r)
+  (o: Spec)     => false
+
+fun callArgsConcrete(c: PeCall, r): Bool => match(exprType(c.parameter, r))
+  (pt: Spec) => isConcrete(pt)
+  ()         => false
 
 # A spread contributes its value's fields, unnamed; until that value is known
 # to be a tuple the whole type is unknown (TupleExpression.get_type).

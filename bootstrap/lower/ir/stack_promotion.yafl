@@ -52,18 +52,11 @@ fun spZeroOf(ft) => match(ft)
 fun spCandidates(f: CgFunction, a: CgApp)
   # In op order: the candidates' order becomes the promoted locals' field
   # declaration order.
-  let news = spNewsLoop(f.fnOps, 0i32, a, List())
+  let news = fold(f.fnOps, List<SpCand>(), (acc: List<SpCand>, op: Op) => spNewsOp(acc, op, a))
   ret filter(news,
              (c) => spDefCount(f.fnOps, c.spReg) == 1
                             && !any(f.fnOps,
                                     (op) => esOpPublishes(op, c.spReg)))
-
-fun [tail] spNewsLoop(s: Segment<Op>|None, i, a: CgApp,
-                      acc): List<SpCand> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => i < seg.length
-    ? spNewsLoop(s, i + 1i32, a, spNewsOp(acc, seg.array(i), a))
-    : spNewsLoop(seg.next, 0i32, a, acc)
 
 fun spNewsOp(acc, op, a: CgApp): List<SpCand> => match(op)
   (no: OpNewObject) => no.newObjSize is None
@@ -77,7 +70,7 @@ fun spNewsRegister(acc, no: OpNewObject, a: CgApp): List<SpCand> => match(no.new
     ()                       => acc
   (o: RParam)      => acc
 
-fun spDefCount(ops: Segment<Op>|None, name): Int
+fun spDefCount(ops: Array<Op>, name): Int
   ret fold(ops, 0,
            (n, op) => n + countIf(opGetLiveVars(op).writes,
                                   (sv) => esIsVarNamed(sv,
@@ -95,8 +88,8 @@ fun spFunction(f, a: CgApp)
   let promoted = spCandidates(f, a)
   if isEmpty(promoted)
     ret f
-  let newOps = build(spRewriteLoop(f.fnOps, 0i32, promoted,
-                                   seqBuilder()))
+  let newOps = fold(f.fnOps, Array<Op>(),
+                    (acc: Array<Op>, op: Op) => spRewriteOp(acc, op, promoted))
   ret cgFunctionWith(f, newOps, spRestack(f, promoted))
 
 fun spCandFor(cs: List<SpCand>, name: String) => firstWhere(cs, (c) => c.spReg == name)
@@ -121,16 +114,8 @@ fun spRewriteField(of: RpObjectField, promoted: List<SpCand>) => match(of.pointe
     ()             => of
   (o: RParam)      => of
 
-fun [tail] spRewriteLoop(s: Segment<Op>|None, i, promoted: List<SpCand>,
-                         [terminal] acc): SeqBuilder<Op> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => i < seg.length
-    ? spRewriteLoop(s, i + 1i32, promoted,
-                    spRewriteOp(acc, seg.array(i), promoted))
-    : spRewriteLoop(seg.next, 0i32, promoted, acc)
-
-fun spRewriteOp([terminal] acc, op,
-                promoted: List<SpCand>): SeqBuilder<Op> => match(op)
+fun spRewriteOp(acc: Array<Op>, op,
+                promoted: List<SpCand>): Array<Op> => match(op)
   (no: OpNewObject) => match(spPromotedRegister(no, promoted))
     (cand: SpCand) => spZeroFills(acc, cand)
     ()             => push(acc, spReplaced(op, promoted))
@@ -147,10 +132,10 @@ fun spPromotedRegister(no: OpNewObject, promoted: List<SpCand>) => match(no.newO
 
 # NewObject zero-fills; the field locals must match so a partially-
 # initialised read stays defined.
-fun spZeroFills([terminal] acc, cand: SpCand): SeqBuilder<Op>
+fun spZeroFills(acc: Array<Op>, cand: SpCand): Array<Op>
   ret spZeroFillsLoop(cand.spPayload, cand, acc)
 
-fun spZeroFillsLoop(fs: List<CgField>, cand: SpCand, [terminal] acc): SeqBuilder<Op> =>
+fun spZeroFillsLoop(fs: List<CgField>, cand: SpCand, acc: Array<Op>): Array<Op> =>
   fold(fs, acc, (b, f) =>
     push(b, OpMove(spFieldLocal(cand, f.fieldName), spZeroOf(f.fieldType), false, Dict())))
 

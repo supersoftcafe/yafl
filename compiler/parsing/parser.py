@@ -272,8 +272,8 @@ def __to_builtin_op(result, tokens: list[p.Token]) -> p.Result[e.Expression]:
                               tokens, op.value.line_ref)
     # A bare builtin name (`<bool>`, `<int64>`) stays a BuiltinSpec — those
     # identifiers are not YAFL-level names and must not resolve as such. Any
-    # other spelling is an ordinary type: an op like array_builder_alloc
-    # declares a full `Array<T>` result.
+    # other spelling is an ordinary type: an op like new_pinned declares a
+    # full `T` result.
     _BUILTINS = {"bigint", "str", "bool", "int8", "int16", "int32", "int64",
                  "float32", "float64"}
     if isinstance(type_spec, t.NamedSpec) and not type_spec.type_params \
