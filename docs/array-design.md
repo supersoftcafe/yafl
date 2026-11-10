@@ -15,8 +15,9 @@ Two general class features carry it:
   past the length: the object is allocated for the larger of the two, the
   constructor fills `[0, length)`, and the vtable's `array_cap_offset`
   names the field. The collector traces and compaction copies only
-  `length` elements, and compaction resets the capacity to the length on
-  the copy, so a moved buffer never grows in place — the runtime has
+  `length` elements, rounded up to whole 32-byte slots. The copy's capacity
+  is what that rounded size holds: a moved buffer grows in place into the
+  rounding, and the spare capacity past it stays behind. The runtime has
   handled this since String's growable buffers.
 * **`subject.items(i) := value`** writes an element of an array field of a
   `[pinnable]` or `[mutable]` object, under the pin, as `subject.field :=`

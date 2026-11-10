@@ -189,6 +189,10 @@ set_tests_properties(test_gc_object_same PROPERTIES ENVIRONMENT "YAFL_GC_POISON=
 # field to the copy before the forwarder's slot can be reclaimed.
 add_yafl_test(test_gc_card_compact)
 set_tests_properties(test_gc_card_compact PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
+# test_gc_array_capacity: stepped. Compaction gives an in-place array's copy
+# the capacity its slot-rounded size holds, with the rounding zeroed.
+add_yafl_test(test_gc_array_capacity)
+set_tests_properties(test_gc_array_capacity PROPERTIES ENVIRONMENT "YAFL_GC_POISON=1;YAFL_THREADS=1")
 # test_gc_dwell: once a cycle ends, the next opens only after the dwell's
 # pages have been allocated (natural pacing, one worker).
 add_yafl_test(test_gc_dwell)

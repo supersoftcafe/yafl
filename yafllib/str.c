@@ -37,9 +37,10 @@ EXPORT struct str_head_vtable STR_HEAD_VTABLE = {
 };
 
 // Growable head buffers: `length` = used + 1, `capacity` = capacity + 1, and
-// array_cap_offset makes compaction reset capacity to length on the copy (a
-// moved buffer never extends in place). Implements STR_HEAD_VTABLE, so a head
-// in word 0 dispatches as a String.
+// array_cap_offset makes compaction set the copy's capacity to what its
+// slot-rounded size holds (a moved buffer extends in place only into that
+// rounding). Implements STR_HEAD_VTABLE, so a head in word 0 dispatches as a
+// String.
 EXPORT struct str_head_vtable STR_BUF_VTABLE = {
     .object_size = offsetof(str_head_t, array[0]),
     .array_el_size = sizeof(uint8_t),

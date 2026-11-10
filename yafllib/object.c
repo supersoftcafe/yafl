@@ -1499,11 +1499,16 @@ static NOINLINE_DEBUG void gc_compact_page(gc_page_t *page) {
             // would card it, and the next minor's root scans find its page.
             object_pin_note_old(target);
         }
-        // An array built in place owned only `length` elements' worth of the
-        // copy: its spare capacity stayed behind, so say so on the copy.
+        // An array built in place keeps, on the copy, the capacity the copy's
+        // slots actually hold. `size` is its length rounded up to whole slots,
+        // and the elements in that rounding were never written (an append
+        // writes element `length`, then grows the length, both under the pin
+        // this copy holds), so they are the allocator's zeroes and later
+        // appends may fill them in place. Spare capacity past the rounding
+        // stayed behind with the original.
         if (UNLIKELY(cvt->array_cap_offset))
             *(uint32_t*)((char*)target + cvt->array_cap_offset) =
-                *(uint32_t*)((char*)target + cvt->array_len_offset);
+                (uint32_t)((size - cvt->object_size) / cvt->array_el_size);
         // Publish the forwarding pointer, releasing the copy's contents: a
         // reader that follows this word must see a fully written object. The
         // store also drops the pin (a heap address has bit 0 clear), handing

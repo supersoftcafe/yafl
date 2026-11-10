@@ -341,9 +341,10 @@ typedef struct vtable {
     const ptr_mask_t* object_pointer_masks;
     uint16_t object_pointer_mask_words;
     // Offset of a uint32_t CAPACITY field for arrays built in place (0 = none).
-    // Capacity is in the same units as the array_len_offset field; the heap
-    // owns only `length` elements, so any copy (compaction) trims the object
-    // and resets capacity to length on the copy.
+    // Capacity is in the same units as the array_len_offset field. A copy
+    // (compaction) is sized by `length`, rounded up to whole slots, and the
+    // copy's capacity is what that rounded size holds: the spare capacity
+    // past it stays behind.
     uint16_t array_cap_offset;
     const char *name;
     struct vtable** implements_array; // Array of all classes that this class extends
@@ -1966,8 +1967,9 @@ typedef struct str_head {
     vtable_t* vtable;
     uint32_t length;
     // Growable heads (STR_BUF_VTABLE): capacity + 1. It is the vtable's
-    // array_cap_offset, so compaction resets it to `length` on a copy (the
-    // copy owns no spare room). 0 on every read-only head.
+    // array_cap_offset, so on a compaction copy it is what the copy's
+    // slot-rounded size holds — the spare room past that stays behind.
+    // 0 on every read-only head.
     uint32_t capacity;
     // Hash cache: (covered length << 32) | hash of array[0, covered length);
     // 0 = none. The covered bytes never change (a head only grows past its
