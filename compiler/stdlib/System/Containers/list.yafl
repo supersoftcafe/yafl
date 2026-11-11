@@ -226,6 +226,12 @@ fun sizeAtLeast<T>(list: List<T>, size: Int): Bool
     ret n <= 0 || (!isEmpty(l) && walk(dropOne(l), n - 1))
   ret walk(list, size)
 
+# Walks at most size + 1 elements, however long the list.
+fun sizeAtMost<T>(list: List<T>, size: Int): Bool
+  fun [tail] walk(l: List<T>, n: Int): Bool
+    ret n >= 0 && (isEmpty(l) || walk(dropOne(l), n - 1))
+  ret walk(list, size)
+
 
 # Two lists are equal when they have the same length and `same` holds for each
 # pair. One list ending while the other still has an element IS the inequality.

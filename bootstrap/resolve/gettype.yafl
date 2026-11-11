@@ -140,7 +140,7 @@ fun nameType(nm: PeName, r)
 # scope, so it matches when the pattern unifies with the committed (solved)
 # scope through the instance's own placeholders (_scope_filtered).
 fun traitFiltered(datas, cache: Spec|None, r): List<Found> => match(cache)
-  (c: Spec) => atMost(datas, 1)
+  (c: Spec) => sizeAtMost(datas, 1)
     ? datas
     : preferScoped(scopeMatches(datas, c, r), datas)
   ()        => datas

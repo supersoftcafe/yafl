@@ -74,7 +74,7 @@ fun dfIsStackPhi(op) => match(op)
 # A cursor: op k of os, and the ops after it from k + 1.
 fun [tail] dfRoots(os: Array<Op>, k: Int, reads: Dict<String, Int>, fnResult: CgType,
                    acc: List<DfRoot>): List<DfRoot>
-  ret k < size(os)
+  ret !sizeAtMost(os, k)
     ? dfRoots(os, k + 1, reads, fnResult, appendSome(acc, dfRootOf(os[k], os, k + 1, reads, fnResult)))
     : acc
 
@@ -91,7 +91,7 @@ fun dfRootOf(op, os: Array<Op>, next: Int, reads: Dict<String, Int>, fnResult: C
 
 # Call(R); Return(R) — async_lower's alTailValued pattern.
 fun dfTailCalled(reg: RpStackVar, os: Array<Op>, next: Int, fnResult: CgType)
-  ret next < size(os) && match(os[next])
+  ret !sizeAtMost(os, next) && match(os[next])
     (r: OpReturn) => match(r.returnValue)
       (sv: RpStackVar) => sv.name == reg.name && eqCgType(reg.fieldType, fnResult)
       (o: RParam)      => false
@@ -202,7 +202,7 @@ class [final] DfRuns(drsRuns: Dict<Int, Array<Op>>, drsSkip: Set<Int>)
 
 # A cursor: each op's run is read from the ops after it.
 fun [tail] dfRunsFrom(os: Array<Op>, k: Int, acc: DfRuns): DfRuns
-  ret k < size(os) ? dfRunsFrom(os, k + 1, dfRunAt(os[k], os, k, acc)) : acc
+  ret !sizeAtMost(os, k) ? dfRunsFrom(os, k + 1, dfRunAt(os[k], os, k, acc)) : acc
 
 fun dfRunAt(op, os: Array<Op>, k: Int, acc: DfRuns): DfRuns => match(op)
   (n: OpNewObject) => match(n.newObjRegister)
@@ -215,7 +215,7 @@ fun dfRunOps(os: Array<Op>, lo: Int, hi: Int): Array<Op> => Array<Op>(hi - lo, (
 
 # The end of the leading ops from `i` that initialise `name`.
 fun [tail] dfRunEnd(os: Array<Op>, i: Int, name: String): Int
-  ret i < size(os) && dfInitialises(os[i], name) ? dfRunEnd(os, i + 1, name) : i
+  ret !sizeAtMost(os, i) && dfInitialises(os[i], name) ? dfRunEnd(os, i + 1, name) : i
 
 # `op` stores into a field of the object `name` names.
 fun dfInitialises(op, name: String): Bool => match(op)
@@ -244,7 +244,7 @@ class [final] DfAcc(daOps: Array<Op>, daFresh: List<RParam>,
 fun dfEdgeKey(join: String, pred: String, i: Int) => join + "|" + pred + "|" + String(i)
 
 fun [tail] dfEmit(os: Array<Op>, k: Int, ctx: DfCtx, acc: DfAcc): DfAcc
-  ret k < size(os)
+  ret !sizeAtMost(os, k)
     ? dfEmit(os, k + 1, ctx, contains(ctx.dcSkip, k) ? acc : dfEmitAt(os[k], k, ctx, acc))
     : acc
 
@@ -283,7 +283,7 @@ fun dfEdge(join: String, ctx: DfCtx, acc: DfAcc): DfAcc
 
 fun [tail] dfEdgeSources(ps: Array<Op>, join: String, i: Int, ctx: DfCtx,
                          acc: DfAcc): DfAcc
-  ret i < size(ps) ? dfEdgeSources(ps, join, i + 1, ctx, dfEdgeSource(ps[i], join, i, ctx, acc)) : acc
+  ret !sizeAtMost(ps, i) ? dfEdgeSources(ps, join, i + 1, ctx, dfEdgeSource(ps[i], join, i, ctx, acc)) : acc
 
 fun dfEdgeSource(op, join: String, i: Int, ctx: DfCtx, acc: DfAcc): DfAcc => match(op)
   (p: OpPhi) => dfEdgeValue(p, phiSourceFor(op, acc.daCurrent), join, i, ctx, acc)
@@ -392,7 +392,7 @@ fun dfProjectUse(rest: List<String>, m: DfMark, aw: DfAwaited, returned: Bool, c
 # its pending value.
 fun [tail] dfFillPhis(os: Array<Op>, k: Int, current: String, i: Int, edges: Dict<String, RParam>, ctx: DfCtx,
                       acc: Array<Op>): Array<Op>
-  ret k >= size(os) ? acc : match(os[k])
+  ret sizeAtMost(os, k) ? acc : match(os[k])
     (lb: OpLabel) => dfFillPhis(os, k + 1, lb.labelName, 0, edges, ctx, push(acc, lb))
     (p: OpPhi)    => dfFillPhis(os, k + 1, current, i + 1, edges, ctx, push(acc, dfFilledPhi(p, current, i, edges, ctx)))
     (o: Op)       => dfFillPhis(os, k + 1, current, i, edges, ctx, push(acc, o))

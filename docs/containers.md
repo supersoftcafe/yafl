@@ -72,6 +72,7 @@ container of choice for large, build-once-read-many sequences. Two ways in:
   convenience constructors for a known few values
 * `pushAll(a, xs)` — append every element of a List or another Array
 * `prepend(x, a)` — `x` in front of `a`: one copy
+* `sizeAtLeast(a, n)`, `sizeAtMost(a, n)` — bounds on the count, as on `List`
 
 There is no update and no slice: read by index, or walk it with `fold` or
 `arrayStream(a)`. List's `head`, `dropOne` and `dropLastOne` work on an Array

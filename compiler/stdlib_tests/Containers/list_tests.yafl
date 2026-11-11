@@ -206,6 +206,12 @@ fun [test("appending to takeOne doesn't affect the original list")] takeOneThenA
   ret assertEqStr(_render(grown), "1.9.", "first then the new value")
     ?? assertEqStr(_render(list), "1.2.3.", "original unchanged")
 
+fun [test("sizeAtLeast and sizeAtMost bound the count")] sizeBounds(): None|TestFailure
+  ret assertTrue(sizeAtLeast(_upTo(3), 3) && !sizeAtLeast(_upTo(3), 4), "at least")
+    ?? assertTrue(sizeAtMost(_upTo(3), 3) && !sizeAtMost(_upTo(3), 2), "at most")
+    ?? assertTrue(sizeAtLeast(List<Int>(), 0) && sizeAtMost(List<Int>(), 0), "empty, zero")
+    ?? assertTrue(!sizeAtMost(List<Int>(), -1), "empty, negative")
+
 fun [test("takeLastOne of an empty list is empty")] takeLastOneEmpty(): None|TestFailure
   ret assertTrue(isEmpty(takeLastOne(List<Int>())), "takeLastOne of empty")
 

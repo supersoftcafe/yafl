@@ -141,7 +141,7 @@ fun emEntryGuards(st, es: List<GEntry>, idx: Int, k): GEmit =>
 # stages in turn and, on a miss, goes on to the next entry.
 fun emEntry(st, e: GEntry, idx: Int, k: Int): GEmit
   let st1 = emEntryStages(st, e.geStages, idx, k, 0)
-  ret atLeast(e.geStages, 2)
+  ret sizeAtLeast(e.geStages, 2)
     ? emOp1(emOp1(st1, OpJump(missLabel(idx, k), Dict())), OpLabel(missLabel(idx, k), Dict()))
     : st1
 

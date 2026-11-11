@@ -88,7 +88,7 @@ class [final] SroaDefs(sdEntries: Dict<String, SroaDef>, sdMulti: Set<String>)
 fun sroaDefs(ops: Array<Op>) => sroaDefsLoop(ops, 0, SroaDefs(Dict(), Set()))
 
 fun [tail] sroaDefsLoop(s: Array<Op>, i: Int, acc: SroaDefs): SroaDefs
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? sroaDefsLoop(s, i + 1,
         fold(opGetLiveVars(s[i]).writes, acc, (a, w) => sroaDef1(a, w, i, s[i])))
     : acc
@@ -153,7 +153,7 @@ fun sroaApply(f: CgFunction, sp: List<Sroa>)
 # right after its definition — before any suspension can intervene.
 fun [tail] sroaApplyLoop(s: Array<Op>, i: Int, sp: List<Sroa>,
                          acc: Array<Op>): Array<Op>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? sroaApplyLoop(s, i + 1, sp,
         sroaSeedMoves(push(acc, opReplaceParams(s[i], (p) => sroaReplacer(p, sp))), sp, i))
     : acc

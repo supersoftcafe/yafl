@@ -59,7 +59,7 @@ class [final] PrOut(proRemoved: List<Int>, proRenames: List<PrRename>)
 fun [tail] prScan(ops: Array<Op>, i: Int, counts: PrCounts,
                   removed, renames,
                   defs: Dict<String, Int>): PrOut
-  if i >= size(ops)
+  if sizeAtMost(ops, i)
     ret PrOut(removed, renames)
   ret match(prCandidate(ops[i]))
     (c: PrCand) => c.pcSelf
@@ -144,7 +144,7 @@ fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int) => match(get(removedSet, i)
 fun [tail] prRebuildLoopB(s: Array<Op>, out: PrOut,
                           removedSet: Dict<Int, Bool>,
                           i: Int, acc: Array<Op>): Array<Op>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? prRebuildLoopB(s, out, removedSet, i + 1,
         prIsRemoved(removedSet, i)
           ? acc

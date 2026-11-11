@@ -148,7 +148,7 @@ fun scReadOnce(cs: Dict<String, Int>, name: String) => sdCountOf(cs, name) == 1
 fun scConcatOf(operands) => match(head(operands))
   (only: RParam) => isEmpty(dropOne(operands))
     ? only
-    : atLeast(operands, scRuntimeCap() + 1)
+    : sizeAtLeast(operands, scRuntimeCap() + 1)
       ? scConcatOf(prepend(scConcatOf(take(operands, scRuntimeCap())),
                            drop(operands, scRuntimeCap())))
       : scConcatBuild(operands)
@@ -170,7 +170,7 @@ fun scReplace(p, defs: SsaDefs, reads: Dict<String, Int>,
               anchored: List<String>): RParam => match(p)
   (inv: RpRuntimeInvoke) => scIsAppend(inv)
     ? scSpine(p, defs, reads, anchored)
-      |> (sp) => atLeast(sp.ops, 3) ? scConcatOf(sp.ops) : p
+      |> (sp) => sizeAtLeast(sp.ops, 3) ? scConcatOf(sp.ops) : p
     : p
   (o: RParam)            => p
 
@@ -185,7 +185,7 @@ fun scCollectRoot(acc, p, defs: SsaDefs,
                   reads: Dict<String, Int>, anchored: List<String>): Set<String> => match(p)
   (inv: RpRuntimeInvoke) => scIsAppend(inv)
     ? scSpine(p, defs, reads, anchored)
-      |> (sp) => atLeast(sp.ops, 3)
+      |> (sp) => sizeAtLeast(sp.ops, 3)
         ? fold(sp.taking, acc, add)
         : acc
     : acc

@@ -60,7 +60,7 @@ fun isKnownBuiltin(name) => name == "str" || name == "bigint" || name == "bool"
 
 fun checkNamed(n: SNamed, r)
   let found = findType(r, n.snName)
-  if atLeast(found.bItems, 2)
+  if sizeAtLeast(found.bItems, 2)
     ret oneErr(n.snLine, "Ambiguous reference to '" + n.snName + "'")
   if exactly(found.bItems, 1)
     ret noErrs()
@@ -71,7 +71,7 @@ fun checkClassSpec(c: SClass, r)
   let found = findType(r, c.scName)
   if isEmpty(found.bItems)
     ret union(oneErr(c.scLine, "Failed to resolve class " + c.scName), tpErrs)
-  if atLeast(found.bItems, 2)
+  if sizeAtLeast(found.bItems, 2)
     ret union(oneErr(c.scLine, "Found too many classes named " + c.scName),
                tpErrs)
   ret match(soleItem(found))

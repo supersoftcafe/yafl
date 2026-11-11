@@ -206,7 +206,7 @@ fun classNeverFlattens(cls: PsClass)
     || hasAttr(cls.cAttrs, "foreign") || hasAttr(cls.cAttrs, "mutable")
     || hasAttr(cls.cAttrs, "pinnable")
     || !isEmpty(cls.cImplements)
-    || atLeast(fields, maxFlatStructFields() + 1)
+    || sizeAtLeast(fields, maxFlatStructFields() + 1)
     || hasArrayField(fields)
 
 fun hasArrayField(fs: List<PStmt>) => any(fs, isArrayField)
@@ -273,26 +273,19 @@ fun thisType(cs: PsClass)
 # The no-length ruling (user, 08-11): a list's length is never CALCULATED.
 # Bounded questions are answered by bounded probes, length comparisons by
 # co-walks, and a count that genuinely must exist is carried from the walk
-# that built the list. These helpers are the whole vocabulary.
-
-# At least n elements: walks at most n cells.
-fun atLeast<T>(c: List<T>, n: Int): Bool => sizeAtLeast(c, n)
-
-# At most n elements: walks at most n+1 cells.
-fun atMost<T>(c: List<T>, n) => !atLeast(c, n + 1)
+# that built the list. The stdlib's sizeAtLeast / sizeAtMost are the bounded
+# probes (List and Array alike); these helpers complete the vocabulary.
 
 # Exactly n elements: two bounded probes.
-fun exactly<T>(c: List<T>, n): Bool => atLeast(c, n) && !atLeast(c, n + 1)
+fun exactly<T>(c: List<T>, n): Bool => sizeAtLeast(c, n) && sizeAtMost(c, n)
 
 # ── Array twins ──────────────────────────────────────────────────────────────
 # The same vocabulary over Arrays, which carry their length: every probe is
 # O(1), and nthOf is one indexed read.
 
-fun atLeast<T>(a: Array<T>, n): Bool => size(a) >= n
-
 fun exactly<T>(a: Array<T>, n): Bool => size(a) == n
 
-fun nthOf<T>(a: Array<T>, idx): T|None => idx >= 0 && idx < size(a) ? a[idx] : None
+fun nthOf<T>(a: Array<T>, idx): T|None => idx >= 0 && !sizeAtMost(a, idx) ? a[idx] : None
 
 fun sameLen<T, U>(a: Array<T>, b: Array<U>): Bool => size(a) == size(b)
 

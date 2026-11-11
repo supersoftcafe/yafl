@@ -245,7 +245,7 @@ fun memberVariants(v, r): List<Member>|None
   let uid = scopedUid(v, r)
   let name = printableName(v, r)
   ret match(v)
-    (e: SEnum) => atLeast(e.seValidLeaves, 2)
+    (e: SEnum) => sizeAtLeast(e.seValidLeaves, 2)
       ? leafMembers(sort(e.seValidLeaves), e, uid, name, r)
       : list1(Member(uid, name, v, name))
     (o: Spec)  => list1(Member(uid, name, v, name))

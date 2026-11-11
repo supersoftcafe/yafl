@@ -30,6 +30,14 @@ enum Array<T>(_length: Int32)
 fun size<T>(a: Array<T>): Int
   ret Int(a._length)
 
+# Bounds on the element count, under List's names: a check written with them
+# stays cheap if the container becomes one whose size must be walked.
+fun sizeAtLeast<T>(a: Array<T>, size: Int): Bool
+  ret Int(a._length) >= size
+
+fun sizeAtMost<T>(a: Array<T>, size: Int): Bool
+  ret Int(a._length) <= size
+
 # The tabulating constructor: n elements, the i-th init(i), with no room spare.
 # ABORTS when n is negative or beyond what an array can hold (Int32), rather
 # than quietly answering some other length.

@@ -177,7 +177,7 @@ fun alEmitSuspendToAsync(idxField, idx, untaggedTask,
 # cleared, result_type set); void Call; ReturnVoid → musttail. Codegen emits
 # `return foo(...)` which clang TCOs even at -O0.
 fun alDiscoverTailCalls(f)
-  if !atLeast(f.fnOps, 2)
+  if !sizeAtLeast(f.fnOps, 2)
     ret f
   ret cgFunctionWith(f, alTailScan(f.fnOps, f.fnResult), f.fnStackVars)
 
@@ -380,7 +380,7 @@ fun alBlockIndex(ops: Array<Op>): (d: Dict<Int, String>, n: Int)
 
 fun [tail] alBlockIndexLoop(s: Array<Op>, i: Int, cur,
                             acc: Dict<Int, String>): Dict<Int, String>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? (alLabelNameOr(s[i], cur)
         |> (nxt) => alBlockIndexLoop(s, i + 1, nxt, put(acc, i, nxt)))
     : acc
@@ -1006,7 +1006,7 @@ fun alEscOne(acc: EscAcc, op: Op): EscAcc => match(op)
 
 fun alEscPush(se: SyncExp, acc: EscAcc): EscAcc
   ret EscAcc(pushAll(acc.ecOps, se.seOps), concat(acc.ecVars, se.seVars),
-             acc.ecGrew || atLeast(se.seOps, 2), acc.ecIndex + 1)
+             acc.ecGrew || sizeAtLeast(se.seOps, 2), acc.ecIndex + 1)
 
 fun alSyncWrapName(reg: RParam|None, index: Int) => match(reg)
   (r: RParam) => alSyncWrapNameOf(r, index)
@@ -1778,7 +1778,7 @@ fun alConvertFunction(f: CgFunction): AlOut
   let afterTail = alReturnUnparked(alExpandSyncCalls(alDiscoverTailCalls(f)))
   let stateName = f.fnName + "$state"
   let built = alCreateBasicBlocksN(afterTail)
-  if !atLeast(built.bs, 2)
+  if !sizeAtLeast(built.bs, 2)
     ret AlOut(list1(alSimpleWrap(afterTail)), List())
   ret alConvertMulti(f, afterTail, stateName, built.bs, built.n)
 
@@ -1800,7 +1800,7 @@ fun alConvertMulti(f: CgFunction, afterTail: CgFunction, stateName,
     : (bbs, nBbs)
   let smBbs = smBuilt.bs
   let layout0 = alComputeFrameLayout(smBbs, bbs, alCalculateSavedVars(smFn).fnOps)
-  let useStub = !f.fnSync && atLeast(smFn.fnOps, alStubThresholdOps() + 1) && alHasParkingLoop(smFn.fnOps)
+  let useStub = !f.fnSync && sizeAtLeast(smFn.fnOps, alStubThresholdOps() + 1) && alHasParkingLoop(smFn.fnOps)
   let layout = useStub ? alAugmentLayoutWithParams(layout0, cgFieldsOfOrEmpty(f.fnParams)) : layout0
   let hotFn = useStub
     ? alCreateStubLaunchFunc(afterTail, stateName, subtype, layout, smBuilt.n)
@@ -1826,7 +1826,7 @@ fun alHasParkingLoop(ops: Array<Op>) => alHplLoop(ops, 0, Dict(), 0)
 
 fun [tail] alHplLoop(s: Array<Op>, i: Int, labelParks,
                      parks): Bool
-  ret i >= size(s)
+  ret sizeAtMost(s, i)
     ? false
     : any(opBranchTargets(s[i]), (name) => alHplHit(labelParks, name, parks))
       ? true
@@ -1910,7 +1910,7 @@ fun alZeroInitUnwrittenSaves(f: CgFunction): CgFunction
   ret cgFunctionWith(f, pushAll<Op>(inits, f.fnOps), f.fnStackVars)
 
 fun [tail] alZiusLoop(s: Array<Op>, i: Int, entry: Dict<Int, InitSet>,
-                      acc) => i < size(s)
+                      acc) => !sizeAtMost(s, i)
   ? alZiusLoop(s, i + 1, entry, alZiusStep(s[i], ucEntryAt(entry, i), acc))
   : acc
 

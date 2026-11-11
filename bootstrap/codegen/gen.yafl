@@ -292,7 +292,7 @@ fun genStaticInstanceRoots(g2: CgGlobal, a: CgApp) => match(g2.globalObjectName)
 
 fun genStaticRootsFields(cls: CgObject, g2: CgGlobal)
   let fields = cgFieldsOfOrEmpty(cls.objFields)
-  if atMost(fields, 1)
+  if sizeAtMost(fields, 1)
     ret List()
   ret cgStructPointerPaths(dropOne(fields), cgGlobalToCName(g2) + "_data")
 

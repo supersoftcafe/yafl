@@ -128,7 +128,7 @@ fun cgOpsToCStep(acc: (text: String, cache: List<CgCacheEntry>), op): (text: Str
 # ── op sequences ─────────────────────────────────────────────────────────────
 # A function's ops are an Array<Op>, built by appending.
 
-fun lastOp(s: Array<Op>): Op|None => size(s) > 0 ? s[size(s) - 1] : None
+fun lastOp(s: Array<Op>): Op|None => !isEmpty(s) ? s[size(s) - 1] : None
 
 # arrayOf's one to three values, extended to the four and five that op
 # sequences need.
@@ -330,7 +330,7 @@ fun cgReachable(ix: StripIx) => cgReachableLoop(ix, List<Int>(0), put(Dict(), 0,
 
 fun [tail] cgKeepSeenIndices(s: Array<Op>, i: Int, seen: Dict<Int, Bool>,
                              acc: Array<Op>): Array<Op>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? cgKeepSeenIndices(s, i + 1, seen, get(seen, i) is Bool ? push(acc, s[i]) : acc)
     : acc
 
@@ -352,7 +352,7 @@ fun cgWithoutStalePhiSources(f: CgFunction): CgFunction
 
 fun [tail] cgPrunePhisLoop(s: Array<Op>, i: Int, preds: List<PredEntry>, current: String,
                            acc: Array<Op>): Array<Op>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? cgPrunePhisLoop(s, i + 1, preds, cgPredNextCurrent(s[i], current),
                       push(acc, cgPrunePhi(s[i], predsOf(preds, current))))
     : acc

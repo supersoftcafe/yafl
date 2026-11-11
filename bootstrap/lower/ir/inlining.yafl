@@ -44,9 +44,9 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int, cutoff: Int)
 # (-O3); never inline an `[inline(never)]` target.
 fun inlPolicy(target: CgFunction, inlineAlways: Bool, cutoff: Int): Bool => match(target.fnInline)
   (n: InlineNever)  => false
-  (a: InlineAlways) => inlineAlways || !atLeast(target.fnOps, cutoff)
-  (u: InlineAuto)   => !atLeast(target.fnOps, cutoff)
-  (e: InlineEarly)  => !atLeast(target.fnOps, cutoff)
+  (a: InlineAlways) => inlineAlways || !sizeAtLeast(target.fnOps, cutoff)
+  (u: InlineAuto)   => !sizeAtLeast(target.fnOps, cutoff)
+  (e: InlineEarly)  => !sizeAtLeast(target.fnOps, cutoff)
 
 # ── the engine ───────────────────────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ fun doInlining(f, tag, a: CgApp, recursive: Set<String>,
 fun [tail] inlLoop(s: Array<Op>, index: Int, tag,
                    a: CgApp, shouldInline,
                    acc: InlAcc): InlAcc
-  ret index < size(s)
+  ret !sizeAtMost(s, index)
     ? inlLoop(s, index + 1, tag, a, shouldInline,
               inlStep(s[index], tag + "$" + String(index),
                       a, shouldInline, acc))
@@ -148,7 +148,7 @@ fun inlSplice(t2: InlTarget, uniqueId,
 
 # The index of the callee's first Return, if it has one.
 fun [tail] inlFirstReturn(ops: Array<Op>, i: Int): Int|None
-  ret i >= size(ops) ? None : (ops[i] is OpReturn ? i : inlFirstReturn(ops, i + 1))
+  ret sizeAtMost(ops, i) ? None : (ops[i] is OpReturn ? i : inlFirstReturn(ops, i + 1))
 
 fun inlLabelRenames(ops: Array<Op>, uniqueId)
   ret fold(ops, List<RpRename>(), (acc: List<RpRename>, op: Op) => inlLabelRename(acc, op, uniqueId))

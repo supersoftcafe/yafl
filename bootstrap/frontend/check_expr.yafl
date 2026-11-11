@@ -126,7 +126,7 @@ fun checkClassDot(d: PeDot, c2: SClass, r) => match(soleItem(findType(r, c2.scNa
 fun classDotErrs(d: PeDot, datas: List<Found>)
   if isEmpty(datas)
     ret oneErr(d.pedLine, "Could not find a field named " + d.member)
-  if atLeast(datas, 2)
+  if sizeAtLeast(datas, 2)
     ret oneErr(d.pedLine, "Ambiguous reference to field named " + d.member)
   ret noErrs()
 
@@ -623,10 +623,10 @@ fun armHasNoType(a: PArm) => match(a.armType)
 
 # One arm, one literal KIND (a range counts as its lo's kind).
 fun mixedKindErr(a: PArm)
-  if atMost(a.armLiterals, 1)
+  if sizeAtMost(a.armLiterals, 1)
     ret noErrs()
   let kinds = litKinds(a.armLiterals, List())
-  ret atLeast(kinds, 2)
+  ret sizeAtLeast(kinds, 2)
     ? oneErr(a.parmLine,
              "all literals in one arm must be the same kind (integers, floats or strings)")
     : noErrs()

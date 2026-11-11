@@ -832,7 +832,7 @@ fun genTuple(tp: PeTuple, r): GBundle
   # code accidentally relying on left-to-right tuple evaluation surfaces.
   # Seeded from the source location via FNV-1a + xorshift32 Fisher–Yates —
   # Python's _location_shuffle (tuple_expr.py) runs the identical arithmetic.
-  let evalBundles = getOptLevel(r) == 0 && atLeast(paramBundles, 2)
+  let evalBundles = getOptLevel(r) == 0 && sizeAtLeast(paramBundles, 2)
     ? locationShuffle(paramBundles, built.n,
                       tp.petLine.plFile + ":" + String(tp.petLine.plLine)
                       + ":" + String(tp.petLine.plCol))
