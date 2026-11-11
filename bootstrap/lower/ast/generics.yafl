@@ -76,10 +76,33 @@ fun allConcreteArgs(as2: List<Spec>) => all(as2, concreteArg)
 # tuple could not be a Dict key.
 fun concreteArg(sp) => match(sp)
   (g2: SGeneric)     => false
-  (e2: SEnum)        => isEmpty(e2.seParams) && !containsPlaceholder(sp)
-  (c: SClass)        => isEmpty(c.scParams) && !containsPlaceholder(sp)
-  (n: SNamed)        => isEmpty(n.snParams) && !containsPlaceholder(sp)
-  (o: Spec)          => !containsPlaceholder(o)
+  (o: Spec)          => !awaitsRedirect(sp) && !containsPlaceholder(sp)
+
+# A generic reference still carrying its type arguments, at ANY depth — one
+# whose own specialisation has not been redirected yet. Naming an
+# instantiation after it spells the argument as it is NOW; once the nested
+# reference is redirected the same argument spells differently, the
+# instantiation is made again under the new spelling, and each copy's
+# self-calls name the other (a [tail] function then finds no self-call at
+# all). Nested positions count exactly as the top one does:
+# `(String, Dict<String, List<Int>>)` waits for `List<Int>` and then `Dict<…>`
+# to land, as a bare `Dict<String, List<Int>>` always has.
+fun awaitsRedirect(sp: Spec): Bool => match(sp)
+  (e2: SEnum)        => !isEmpty(e2.seParams)
+  (c: SClass)        => !isEmpty(c.scParams)
+  (n: SNamed)        => !isEmpty(n.snParams)
+  (cm: SCombination) => any(cm.scTypes, awaitsRedirect)
+  (t2: STuple)       => any(t2.stEntries, entryAwaitsRedirect)
+  (cl: SCallable)    => awaitsRedirect(cl.scParams2) || resultAwaitsRedirect(cl.scResult)
+  (o: Spec)          => false
+
+fun entryAwaitsRedirect(x: SEntry): Bool => match(x.seType)
+  (ty: Spec) => awaitsRedirect(ty)
+  ()         => false
+
+fun resultAwaitsRedirect(r: Spec|None): Bool => match(r)
+  (ty: Spec) => awaitsRedirect(ty)
+  ()         => false
 
 fun containsPlaceholder(sp) => match(sp)
   (g2: SGeneric)     => true

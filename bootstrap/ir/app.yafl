@@ -67,7 +67,7 @@ fun appGlobals(a: CgApp) => map(
 # not a runtime condition.
 fun forceFn(x: CgFunction|None) => match(x)
   (f: CgFunction) => f
-  ()              => CgFunction("", CgVoid(), CgVoid(), CgVoid(), None,
+  ()              => CgFunction("", CgVoid(), CgVoid(), CgVoid(), Array<Op>(),
                                 "", None, false, false, false, InlineAuto())
 
 fun forceObj(x: CgObject|None) => match(x)

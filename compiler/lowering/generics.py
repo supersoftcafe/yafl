@@ -73,8 +73,7 @@ def __is_concrete_type_args(type_args: tuple[t.TypeSpec, ...]) -> bool:
     usable on a later iteration, once its own specialisation is redirected
     and its type_params are cleared."""
     return all(not isinstance(tp, t.GenericPlaceholderSpec)
-               and not (isinstance(tp, (t.EnumSpec, t.ClassSpec, t.NamedSpec))
-                        and tp.type_params)
+               and not __awaits_redirect(tp)
                # ANY COMPOSITE argument holding a placeholder is NOT concrete
                # — specialising it produces a `…_unknown` instantiation. The
                # bare-placeholder check above misses it (the arg is the
@@ -90,6 +89,28 @@ def __is_concrete_type_args(type_args: tuple[t.TypeSpec, ...]) -> bool:
                # selected — the whole reason a tuple could not be a Dict key.
                and not __contains_placeholder(tp)
                for tp in type_args)
+
+
+def __awaits_redirect(spec: t.TypeSpec) -> bool:
+    """True if `spec` holds, at ANY depth, a generic reference still carrying
+    its type arguments — one whose own specialisation has not been redirected
+    yet. Naming an instantiation after it spells the argument as it is NOW;
+    once the nested reference is redirected the same argument spells
+    differently, the instantiation is made again under the new spelling, and
+    each copy's self-calls name the other (a [tail] function then finds no
+    self-call at all). Nested positions count exactly as the top one does:
+    `(String, Dict<String, List<Int>>)` waits for `List<Int>` and then
+    `Dict<…>` to land, as a bare `Dict<String, List<Int>>` always has."""
+    if isinstance(spec, (t.EnumSpec, t.ClassSpec, t.NamedSpec)) and spec.type_params:
+        return True
+    if isinstance(spec, t.CombinationSpec):
+        return any(__awaits_redirect(m) for m in spec.types)
+    if isinstance(spec, t.TupleSpec):
+        return any(en.type is not None and __awaits_redirect(en.type) for en in spec.entries)
+    if isinstance(spec, t.CallableSpec):
+        return (__awaits_redirect(spec.parameters)
+                or (spec.result is not None and __awaits_redirect(spec.result)))
+    return False
 
 
 def __contains_placeholder(spec: t.TypeSpec) -> bool:

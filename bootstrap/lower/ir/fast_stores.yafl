@@ -50,7 +50,7 @@ import Bootstrap::StdlibCandidates
 class [final] FsWalk(fwFact: Set<String>, fwArr: Dict<String, Set<String>>)
 
 # Instruction order out; the carried fact rides alongside.
-class [linear, final] FsAcc(faOps: SeqBuilder<Op>, faFact: Set<String>)
+class [final] FsAcc(faOps: Array<Op>, faFact: Set<String>)
 
 # Bounded: the sets are finite and shrink monotonically.
 let [const] fsMaxSweeps: Int = 8
@@ -128,14 +128,14 @@ fun fsRemoveVar(s: Set<String>, sv: RParam): Set<String> => match(sv)
 
 # ── the sweep ───────────────────────────────────────────────────────────────
 
-fun fsUniverse(ops: Segment<Op>|None): Set<String>
+fun fsUniverse(ops: Array<Op>): Set<String>
   ret fold(ops, Set<String>(), fsUniverseOp)
 
 fun fsUniverseOp(s: Set<String>, op: Op): Set<String> => match(op)
   (no: OpNewObject) => union(s, fsRegisterName(no.newObjRegister))
   (o: Op)           => s
 
-fun fsInitArriving(ops: Segment<Op>|None, universe: Set<String>)
+fun fsInitArriving(ops: Array<Op>, universe: Set<String>)
   ret fold(ops, Dict<String, Set<String>>(),
            (d, op) => fsInitLabel(d, op, universe))
 
@@ -170,7 +170,7 @@ fun fsIntersectInto(d: Dict<String, Set<String>>, t2: String,
 
 fun fsTotal(d: Dict<String, Set<String>>): Int => fold(values(d), 0, (n, s) => n + size(s))
 
-fun [tail] fsSweepLoop(st: SeqStream<Op>, universe: Set<String>, w: FsWalk): FsWalk
+fun [tail] fsSweepLoop(st: ArrayStream<Op>, universe: Set<String>, w: FsWalk): FsWalk
   let p = cgPullOp(st)
   ret match(p.op)
     (nil: None) => w
@@ -192,9 +192,9 @@ fun fsSweepStep(w: FsWalk, op: Op, universe: Set<String>)
 # before the first label optimisable.
 # `round` counts sweeps ALREADY DONE, starting at 1, so the budget is exactly
 # fsMaxSweeps sweeps — the same count the Python side runs.
-fun [tail] fsFixpoint(ops: Segment<Op>|None, universe: Set<String>,
+fun [tail] fsFixpoint(ops: Array<Op>, universe: Set<String>,
                       arr: Dict<String, Set<String>>, round): Dict<String, Set<String>>
-  let swept = fsSweepLoop(seqStream(ops), universe, FsWalk(Set<String>(), arr)).fwArr
+  let swept = fsSweepLoop(arrayStream(ops), universe, FsWalk(Set<String>(), arr)).fwArr
   if fsTotal(swept) == fsTotal(arr)
     ret swept
   ret round >= fsMaxSweeps
@@ -218,11 +218,11 @@ fun fsFunction(f: CgFunction, add: Bool)
     ret f                           # nothing to prove, nothing to clear
   let arr = fsFixpoint(f.fnOps, universe, fsInitArriving(f.fnOps, universe), 1)
   ret cgFunctionWith(f,
-                     build(fsEmitLoop(seqStream(f.fnOps), universe, arr, add,
-                                      FsAcc(seqBuilder(), Set<String>()))),
+                     fsEmitLoop(arrayStream(f.fnOps), universe, arr, add,
+                                      FsAcc(Array<Op>(), Set<String>())),
                      f.fnStackVars)
 
-fun fsAnyFresh(ops: Segment<Op>|None): Bool
+fun fsAnyFresh(ops: Array<Op>): Bool
   ret fold(ops, false, (any, op) => any || fsIsFreshStore(op))
 
 fun fsIsFreshStore(op: Op): Bool => match(op)
@@ -231,16 +231,16 @@ fun fsIsFreshStore(op: Op): Bool => match(op)
     (o: RParam)         => false
   (o: Op)     => false
 
-fun [tail] fsEmitLoop(st: SeqStream<Op>, universe: Set<String>,
+fun [tail] fsEmitLoop(st: ArrayStream<Op>, universe: Set<String>,
                       arr: Dict<String, Set<String>>, add: Bool,
-                      [terminal] acc: FsAcc): SeqBuilder<Op>
+                      acc: FsAcc): Array<Op>
   let p = cgPullOp(st)
   ret match(p.op)
     (nil: None) => acc.faOps
     (op: Op)    => fsEmitLoop(p.stream, universe, arr, add,
                               fsEmitStep(acc, op, universe, arr, add))
 
-fun fsEmitStep([terminal] acc: FsAcc, op: Op, universe: Set<String>,
+fun fsEmitStep(acc: FsAcc, op: Op, universe: Set<String>,
                arr: Dict<String, Set<String>>, add: Bool): FsAcc
   let entered = fsEntered(op, acc.faFact, arr)
   ret FsAcc(push(acc.faOps, fsDecide(op, entered, add)),

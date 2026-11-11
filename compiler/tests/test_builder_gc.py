@@ -1,7 +1,6 @@
 """Growable containers and the collector: every element must survive.
 
-Array push and SeqBuilder push elements into storage filled across safe
-points, and List.append links each new node onto the last with a pinned
+Array push fills storage across safe points, and List.append links each new node onto the last with a pinned
 compare-and-swap. Two hazards, one test each:
 
 LONG BUILD (cycles). A build outlives root scans and whole cycles: the
@@ -45,15 +44,15 @@ _LONG_SRC = (
     '  ret big() + i + g - big() * 20\n'
     'fun [tail] fillA(b: Array<Int>, i: Int, n: Int): Array<Int>\n'
     '  ret i >= n ? b : fillA(push<Int>(b, elem(i)), i + 1, n)\n'
-    'fun [tail] sumA(a: Array<Int>, i: Int32, acc: Int): Int\n'
-    '  ret i >= a.length ? acc : sumA(a, i + 1i32, (acc * 31 + a[i] - big()) % 1000000007)\n'
-    'fun [tail] check(a: Array<Int>, i: Int32, bad: Int): Int\n'
-    '  ret i >= a.length ? bad : check(a, i + 1i32, a[i] - big() == Int(i) ? bad : bad + 1)\n'
+    'fun [tail] sumA(a: Array<Int>, i: Int, acc: Int): Int\n'
+    '  ret i >= size(a) ? acc : sumA(a, i + 1, (acc * 31 + a[i] - big()) % 1000000007)\n'
+    'fun [tail] check(a: Array<Int>, i: Int, bad: Int): Int\n'
+    '  ret i >= size(a) ? bad : check(a, i + 1, a[i] - big() == i ? bad : bad + 1)\n'
     'fun [tail] rounds(k: Int, bad: Int): Int\n'
     '  if k <= 0\n'
     '    ret bad\n'
     '  let a = fillA(Array<Int>(), 0, 50000)\n'
-    '  ret rounds(k - 1, bad + check(a, 0i32, 0))\n'
+    '  ret rounds(k - 1, bad + check(a, 0, 0))\n'
     'fun main(): Int\n'
     '  let bad = rounds(10, 0)\n'
     '  System::print(String(bad))\n'
@@ -78,18 +77,10 @@ _SUSPEND_SRC = (
     '  ret big() * 2 + i + i * 3\n'
     'fun [tail] fillA(b: Array<Int>, i: Int, n: Int, s: Bool): Array<Int>\n'
     '  ret i >= n ? b : fillA(push<Int>(b, s ? piece(i) : plain(i)), i + 1, n, s)\n'
-    'fun [tail] sumA(a: Array<Int>, i: Int32, acc: Int): Int\n'
-    '  ret i >= a.length ? acc : sumA(a, i + 1i32, (acc * 31 + a[i]) % 1000000007)\n'
+    'fun [tail] sumA(a: Array<Int>, i: Int, acc: Int): Int\n'
+    '  ret i >= size(a) ? acc : sumA(a, i + 1, (acc * 31 + a[i]) % 1000000007)\n'
     'fun arr(n: Int, s: Bool): Int\n'
-    '  ret sumA(fillA(Array<Int>(), 0, n, s), 0i32, 0)\n'
-    'fun [tail] fillS([terminal] b: SeqBuilder<Int>, i: Int, n: Int, s: Bool): SeqBuilder<Int>\n'
-    '  ret i >= n ? b : fillS(push<Int>(b, s ? piece(i) : plain(i)), i + 1, n, s)\n'
-    'fun [tail] sumS(x: Segment<Int>|None, i: Int32, acc: Int): Int\n'
-    '  ret match(x)\n'
-    '    (nil: None)         => acc\n'
-    '    (seg: Segment<Int>) => i < seg.length ? sumS(x, i + 1i32, (acc * 31 + seg.array(i)) % 1000000007) : sumS(seg.next, 0i32, acc)\n'
-    'fun seq(n: Int, s: Bool): Int\n'
-    '  ret sumS(build<Int>(fillS(seqBuilder<Int>(), 0, n, s)), 0i32, 0)\n'
+    '  ret sumA(fillA(Array<Int>(), 0, n, s), 0, 0)\n'
     'fun [tail] fillL(l: List<Int>, i: Int, n: Int, s: Bool): List<Int>\n'
     '  ret i >= n ? l : fillL(append<Int>(l, s ? piece(i) : plain(i)), i + 1, n, s)\n'
     'fun lst(n: Int, s: Bool): Int\n'
@@ -98,9 +89,8 @@ _SUSPEND_SRC = (
     '  if k <= 0\n'
     '    ret bad\n'
     '  let okA = arr(100, true) == arr(100, false)\n'
-    '  let okS = seq(100, true) == seq(100, false)\n'
     '  let okL = lst(100, true) == lst(100, false)\n'
-    '  ret rounds(k - 1, okA && okS && okL ? bad : bad + 1)\n'
+    '  ret rounds(k - 1, okA && okL ? bad : bad + 1)\n'
     'fun main(): Int\n'
     '  ret rounds(200, 0)\n'
 )

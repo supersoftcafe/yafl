@@ -55,6 +55,23 @@ class TestTupleDefaultsErrors(TestCase):
             + "fun main(): Int\n  ret f(y = 2)\n")
         self.assertTrue(errs.strip(), "expected an error for the missing x")
 
+    # A default fill is a conversion, and a conversion reports its TARGET
+    # type: wrapping a tuple whose bound field does not fit hid the misfit
+    # from the call's check, and the value reached clang (found removing
+    # Seq: `None` passed for an `Array<Op>` field of a class with defaults).
+    def test_misfit_field_with_defaults_left_to_fill_is_rejected(self):
+        errs = _errors(_PRELUDE
+            + "fun f(x: String, y: Int = 1): Int\n  ret y\n"
+            + "fun main(): Int\n  ret f(None)\n")
+        self.assertIn("not assignment compatible", errs)
+
+    def test_misfit_constructor_field_with_defaults_left_to_fill_is_rejected(self):
+        errs = _errors(_PRELUDE
+            + "class [final] Box(n: Int)\n"
+            + "class [final] Holder(name: String, b: Box, extra: Int = 0)\n"
+            + "fun main(): Int\n  ret Holder(\"\", None).extra\n")
+        self.assertIn("not assignment compatible", errs)
+
 
 class TestTupleDefaultsOverloads(TestCase):
     def test_ambiguous_after_defaults_is_an_error(self):

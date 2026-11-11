@@ -23,16 +23,16 @@ import System::Test
 
 # The proof needs the counter's entry value (0), which only the caller has:
 # inlined, the loop sits beside it.
-fun [tail, inline(always)] dotLoop(a: Array<Float>, b: Array<Float>, i: Int32, n: Int32, acc: Float): Float
-  ret i == n ? acc : dotLoop(a, b, i + 1i32, n, acc + a[i] * b[i])
+fun [tail, inline(always)] dotLoop(a: Array<Float>, b: Array<Float>, i: Int, n: Int, acc: Float): Float
+  ret i == n ? acc : dotLoop(a, b, i + 1, n, acc + a[i] * b[i])
 
 fun dot(a: Array<Float>, b: Array<Float>): Float
-  ret dotLoop(a, b, 0i32, a.length, 0.0)
+  ret dotLoop(a, b, 0, size(a), 0.0)
 
 fun program(): Int
-  let n = 64i32
-  let a = Array<Float>(n, (i: Int32) => Float(i))
-  let b = Array<Float>(n, (i: Int32) => 2.0)
+  let n = 64
+  let a = Array<Float>(n, (i: Int) => Float(i))
+  let b = Array<Float>(n, (i: Int) => 2.0)
   ret dot(a, b) == 4032.0 ? 0 : 1
 
 fun [test("canonical loop still computes correctly")] check(): None|TestFailure

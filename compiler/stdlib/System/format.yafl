@@ -56,10 +56,9 @@ fun [tail] _parseDigits(f: String, at: Int, end: Int, acc: Int): Int
 
 # Look up the pre-rendered string for slot `n` (1-indexed). Out-of-range
 # (n < 1 or beyond the parts array) renders as "?" so a typo in the
-# template degrades visibly rather than crashing. The range is checked in
-# the Int domain before indexing, so the narrowing to Int32 can't overflow.
+# template degrades visibly rather than crashing.
 fun _slotValue(parts: Array<String>, n: Int): String
-  ret n >= 1 ? (n <= Int(parts.length) ? parts[truncateToInt32(n - 1)] : "?") : "?"
+  ret n >= 1 ? (n <= size(parts) ? parts[n - 1] : "?") : "?"
 
 
 # Emit a valid `{N}` slot: literal prefix `f[pos..open)`, then the
@@ -108,14 +107,14 @@ fun _formatScan(out: String, f: String, pos: Int, parts: Array<String>): String
 
 fun format<T1>(f: String, p1: T1): String where Show<T1>
   let s1: String = show(p1)
-  let parts = Array<String>(1i32, (i: Int32) => s1)
+  let parts = Array<String>(1, (i: Int) => s1)
   ret _formatScan("", f, 0, parts)
 
 
 fun format<T1, T2>(f: String, p1: T1, p2: T2): String where Show<T1>|Show<T2>
   let s1: String = show(p1)
   let s2: String = show(p2)
-  let parts = Array<String>(2i32, (i: Int32) => i == 0i32 ? s1 : s2)
+  let parts = Array<String>(2, (i: Int) => i == 0 ? s1 : s2)
   ret _formatScan("", f, 0, parts)
 
 
@@ -123,7 +122,7 @@ fun format<T1, T2, T3>(f: String, p1: T1, p2: T2, p3: T3): String where Show<T1>
   let s1: String = show(p1)
   let s2: String = show(p2)
   let s3: String = show(p3)
-  let parts = Array<String>(3i32, (i: Int32) => i == 0i32 ? s1 : i == 1i32 ? s2 : s3)
+  let parts = Array<String>(3, (i: Int) => i == 0 ? s1 : i == 1 ? s2 : s3)
   ret _formatScan("", f, 0, parts)
 
 
@@ -132,5 +131,5 @@ fun format<T1, T2, T3, T4>(f: String, p1: T1, p2: T2, p3: T3, p4: T4): String wh
   let s2: String = show(p2)
   let s3: String = show(p3)
   let s4: String = show(p4)
-  let parts = Array<String>(4i32, (i: Int32) => i == 0i32 ? s1 : i == 1i32 ? s2 : i == 2i32 ? s3 : s4)
+  let parts = Array<String>(4, (i: Int) => i == 0 ? s1 : i == 1 ? s2 : i == 2 ? s3 : s4)
   ret _formatScan("", f, 0, parts)

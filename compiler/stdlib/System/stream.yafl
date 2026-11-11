@@ -1,5 +1,4 @@
 namespace System
-import System::Containers
 
 # Pure, lazy stream transducers built on generic trait instances.
 #
@@ -56,23 +55,9 @@ fun [inline(always)] streamNext<S, T, E>(s: S): (stream: S, value: Result<T | Sy
   ret next(s)
 
 
-# ── sources: an Array as a stream ───────────────────────────────────────────
-# The by-value state is a pool struct — (array, index) — stepped in registers;
-# with [inline(always)] a drive loop over one compiles to the indexed walk it
-# replaces. E = Never: in-memory sources cannot fail, and Never's emptiness
-# makes the Error arm unconstructable. (A List is a Stream of its own.)
-
-class [final] ArrayStream<T>(asArr: System::Containers::Array<T>, asAt: System::Int32)
-
-fun arrayStream<T>(a: System::Containers::Array<T>): ArrayStream<T>
-  ret ArrayStream<T>(a, 0i32)
-
-instance<T> Stream<ArrayStream<T>, T, Never>
-  fun [inline(always)] next(self: ArrayStream<T>): (stream: ArrayStream<T>, value: Result<T | System::None, Never>)
-    ret self.asAt < self.asArr.length
-      ? (ArrayStream<T>(self.asArr, self.asAt + 1i32),
-         Ok<T | System::None, Never>(self.asArr[self.asAt]))
-      : (self, Ok<T | System::None, Never>(None))
+# ── sources ──────────────────────────────────────────────────────────────────
+# A List and an Array are Streams of their own (Containers/list.yafl,
+# Containers/array.yafl).
 
 
 # ── map: apply `f` to every value; Ok(None) and Error pass through ───────────

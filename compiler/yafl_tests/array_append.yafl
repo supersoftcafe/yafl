@@ -37,8 +37,8 @@ fun [tail] fill(a: Array<Int>, i: Int, n: Int): Array<Int>
   ret i < n ? fill(append(a, i * i), i + 1, n) : a
 
 fun program(): Int
-  let a = fill(Array<Int>(0i32, (i: Int32) => 0), 0, 50)
-  ret Int(a.length) * 1000000 + a[7] * 100 + a[49] - 2401
+  let a = fill(Array<Int>(0, (i: Int) => 0), 0, 50)
+  ret size(a) * 1000000 + a[7] * 100 + a[49] - 2401
 
 fun [test("append grows an array one element at a time")] check(): None|TestFailure
     ret assertEqInt(program(), 50004900, "program()")
@@ -51,11 +51,11 @@ import System::Containers
 import System::Test
 
 fun program(): Int
-  let a1 = append(Array<Int>(1i32, (i: Int32) => 1), 2)
+  let a1 = append(Array<Int>(1, (i: Int) => 1), 2)
   let a2 = append(a1, 3)
   let b2 = append(a1, 4)
   let c2 = append(a1, 5)
-  ret Int(a1.length) * 10000 + a2[2] * 1000 + b2[2] * 100 + c2[2] * 10 + Int(a2.length)
+  ret size(a1) * 10000 + a2[2] * 1000 + b2[2] * 100 + c2[2] * 10 + size(a2)
 
 fun [test("appending to an older value copies; no value sees another's elements")] check(): None|TestFailure
     ret assertEqInt(program(), 23453, "program()")
@@ -72,7 +72,7 @@ fun [tail] pushAll(b: Array<String>, i: Int, n: Int): Array<String>
 
 fun program(): Int
   let a = pushAll(Array<String>(), 0, 9)
-  ret a[8] == "s8" && a[0] == "s0" ? Int(a.length) : 0
+  ret a[8] == "s8" && a[0] == "s0" ? size(a) : 0
 
 fun [test("push appends one element at a time")] check(): None|TestFailure
     ret assertEqInt(program(), 9, "program()")

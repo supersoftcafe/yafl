@@ -67,8 +67,13 @@ fun tupleIntoTuple(r, source, target,
   let sEntries = tupleEntries(source)
   let tEntries = tupleEntries(target)
   ret match(bindTupleEntries(tEntries, entryNames(sEntries)))
+    # Reorder and/or default fill — but only of fields that FIT. A
+    # conversion's type reports its target, so wrapping a tuple holding a
+    # mis-typed field hid it from the receiver's check (`CgFunction(...,
+    # None, ...)` with defaults left to fill passed `None` for an `Array<Op>`
+    # field, and clang found it).
     (b: List<Int>) => !isIdentityBinding(b)
-      ? true                                    # reorder and/or default fill
+      ? triTrue(assignableFrom(r, target, source))
       : (su != tu && anyEntryConverts(r, sEntries, tEntries))
     ()             => false                     # not assignable — not our call
 

@@ -126,14 +126,11 @@ class [final] SiNewObj(snIdx: Int, snClass: String, snReg: String)
 class [final] SiAssign(saReg: String, saField: String, saIdx: Int,
                        saSrc: RParam)
 
-fun siNewObjPositions(ops: Segment<Op>|None, a: CgApp) => siNopLoop(ops, a, 0i32, 0, List())
+fun siNewObjPositions(ops: Array<Op>, a: CgApp) => siNopLoop(ops, a, 0, List())
 
-fun [tail] siNopLoop(s: Segment<Op>|None, a: CgApp, iSeg, i,
-                     acc): List<SiNewObj> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg < seg.length
-    ? siNopLoop(s, a, iSeg + 1i32, i + 1, siNopOne(acc, a, seg.array(iSeg), i))
-    : siNopLoop(seg.next, a, 0i32, i, acc)
+fun [tail] siNopLoop(s: Array<Op>, a: CgApp, i: Int,
+                     acc: List<SiNewObj>): List<SiNewObj>
+  ret i < size(s) ? siNopLoop(s, a, i + 1, siNopOne(acc, a, s[i], i)) : acc
 
 # In op order: the promotion walk follows it, and the globals it yields are
 # emitted in that order.
@@ -152,20 +149,16 @@ fun siPinnable(a: CgApp, name: String) => match(appObject(a, name))
   (o: CgObject) => o.objIsPinnable
   ()            => false
 
-fun siFieldAssigns(ops: Segment<Op>|None, news: List<SiNewObj>)
+fun siFieldAssigns(ops: Array<Op>, news: List<SiNewObj>)
   let regIx = fold(news, Dict(),
                    (ix, n) =>
                      put(ix, n.snReg, true))
-  ret siFaLoop(ops, 0i32, 0, regIx, List())
+  ret siFaLoop(ops, 0, regIx, List())
 
-fun [tail] siFaLoop(s: Segment<Op>|None, iSeg: Int32, i: Int,
+fun [tail] siFaLoop(s: Array<Op>, i: Int,
                     regIx: Dict<String, Bool>,
-                    acc: List<SiAssign>): List<SiAssign> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg < seg.length
-    ? siFaLoop(s, iSeg + 1i32, i + 1, regIx,
-               siFaOne(acc, seg.array(iSeg), i, regIx))
-    : siFaLoop(seg.next, 0i32, i, regIx, acc)
+                    acc: List<SiAssign>): List<SiAssign>
+  ret i < size(s) ? siFaLoop(s, i + 1, regIx, siFaOne(acc, s[i], i, regIx)) : acc
 
 fun siFaOne(acc: List<SiAssign>, op: Op, i: Int,
             regIx: Dict<String, Bool>): List<SiAssign> => match(op)
@@ -322,20 +315,17 @@ fun siTracedFieldInto(acc: List<RpNamedValue>, fld: CgField, own: List<SiAssign>
     ()              => None
   ()              => None
 
-fun siRebuildOps(ops: Segment<Op>|None, promos: List<SiPromo>)
+fun siRebuildOps(ops: Array<Op>, promos: List<SiPromo>)
   let drops = fold(promos, List(),
                    (acc, p2) => concat(acc, p2.spDrop))
-  ret build(siRebuildLoopB(ops, 0i32, 0, promos, drops, seqBuilder()))
+  ret siRebuildLoopB(ops, 0, promos, drops, Array<Op>())
 
-fun [tail] siRebuildLoopB(s: Segment<Op>|None, iSeg, i, promos: List<SiPromo>,
-                         drops: List<Int>, [terminal] acc): SeqBuilder<Op> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg < seg.length
-    ? siRebuildLoopB(s, iSeg + 1i32, i + 1, promos, drops,
-        contains3(drops, i)
-          ? acc
-          : push(acc, siMaybeReplace(seg.array(iSeg), i, promos)))
-    : siRebuildLoopB(seg.next, 0i32, i, promos, drops, acc)
+fun [tail] siRebuildLoopB(s: Array<Op>, i: Int, promos: List<SiPromo>,
+                         drops: List<Int>, acc: Array<Op>): Array<Op>
+  ret i < size(s)
+    ? siRebuildLoopB(s, i + 1, promos, drops,
+        contains3(drops, i) ? acc : push(acc, siMaybeReplace(s[i], i, promos)))
+    : acc
 
 fun siMaybeReplace(op, i: Int, promos: List<SiPromo>)
   ret match(head(filter(promos, (p2) => p2.spNewIdx == i)))
@@ -441,7 +431,7 @@ fun siIsTrivialCopyFn(f: CgFunction, source, target)
   let writes = filter(f.fnOps, (op) => siWritesGlobal(op, target))
   if !exactly(writes, 1)
     ret false
-  ret match(head(writes))
+  ret match(nthOf(writes, 0))
     (w: Op) => match(w)
       (m: OpMove) => match(siTraceToGlobal(m.moveSource, gfFunValueMap(f)))
         (traced: String) => traced == source

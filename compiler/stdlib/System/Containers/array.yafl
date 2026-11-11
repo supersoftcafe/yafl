@@ -6,57 +6,72 @@ import System::Internal
 # An array with O(1) indexed access and append — a sibling to the persistent
 # List<T>. Build it from an init function — `Array<T>(n, (i) => ...)` —
 # from one to three values — `arrayOf<T>(a, b, c)` — or empty, appending with
-# `push`, then read by index with `a[i]`.
+# `push`, then read by index with `a[i]`; `size(a)` is its element count.
 #
 # A value is its own length over a shared buffer, as a String is (str.c). The
 # buffer holds elements past any one value's length: `append` writes the next
 # element IN PLACE when the value owns the end of the buffer (its length is
-# the buffer's) and there is room, and copies into a buffer of twice the size
-# otherwise. A value reads only its own [0, length), which never changes, so
+# the buffer's) and there is room, and copies into a larger buffer otherwise
+# (_grown). A value reads only its own [0, length), which never changes, so
 # every value keeps its own elements, and one reached through a stale copy of
 # a moved buffer reads the same ones.
 class [final, pinnable] _ArrayBuf<T>(_used: Int32, [capacity] _cap: Int32, _items: T[_used])
-class [final] Array<T>(length: Int32, _buf: _ArrayBuf<T>)
+
+# Empty or full, as List is: an empty array holds no buffer, so making one
+# allocates nothing. `_length` is shared by both (0 for an empty one); every
+# field is internal, and `size` is the public count. The Int32 `_length` is
+# read directly only by this file and by the stdlib's own companions in
+# System::Containers (rrbtree.yafl), whose node arithmetic is Int32.
+enum Array<T>(_length: Int32)
+  enum _EmptyArray()
+  enum _FullArray(_buffer: _ArrayBuf<T>)
+
+# The number of elements.
+fun size<T>(a: Array<T>): Int
+  ret Int(a._length)
 
 # The tabulating constructor: n elements, the i-th init(i), with no room spare.
-fun Array<T>(n: Int32, init: (i: Int32): T): Array<T>
-  ret Array<T>(n, _ArrayBuf<T>(n, n, init))
+# ABORTS when n is negative or beyond what an array can hold (Int32), rather
+# than quietly answering some other length.
+fun Array<T>(n: Int, init: (i: Int): T): Array<T>
+  ret n < 0 || n > 2147483647
+    ? _noSuchIndex<Array<T>>(-1i32)
+    : _tabulate<T>(truncateToInt32(n), (i: Int32) => init(Int(i)))
+
+# Internal Int32 tabulation, for this file and System::Containers companions
+# (rrbtree.yafl): n >= 0, the i-th element init(i), no room spare.
+fun _tabulate<T>(n: Int32, init: (i: Int32): T): Array<T>
+  ret n == 0i32 ? _EmptyArray<T>(0i32) : _FullArray<T>(n, _ArrayBuf<T>(n, n, init))
 
 # Convenience constructors: an empty array, or one holding one to three values.
 fun Array<T>(): Array<T>
-  ret _emptyArray<T>(0i32)
+  ret _EmptyArray<T>(0i32)
 
 fun arrayOf<T>(v1: T): Array<T>
-  ret Array<T>(1i32, _ArrayBuf<T>(1i32, 1i32, (i: Int32) => v1))
+  ret _FullArray<T>(1i32, _ArrayBuf<T>(1i32, 1i32, (i: Int32) => v1))
 
 fun arrayOf<T>(v1: T, v2: T): Array<T>
-  ret Array<T>(2i32, _ArrayBuf<T>(2i32, 2i32, (i: Int32) => i == 0i32 ? v1 : v2))
+  ret _FullArray<T>(2i32, _ArrayBuf<T>(2i32, 2i32, (i: Int32) => i == 0i32 ? v1 : v2))
 
 fun arrayOf<T>(v1: T, v2: T, v3: T): Array<T>
-  ret Array<T>(3i32, _ArrayBuf<T>(3i32, 3i32,
+  ret _FullArray<T>(3i32, _ArrayBuf<T>(3i32, 3i32,
     (i: Int32) => i == 0i32 ? v1 : (i == 1i32 ? v2 : v3)))
 
-# An empty array with room for `capacity` appends before its first copy. A
-# buffer fills only [0, used), so its init function is never called here; the
-# constructor takes one, and nothing can make a T from nothing.
-fun _emptyArray<T>(capacity: Int32): Array<T>
-  ret Array<T>(0i32, _ArrayBuf<T>(0i32, capacity, (i: Int32) => _noSuchIndex<T>(i)))
 
-
-# Indexed read: `a[i]` lowers to ``[]``(a, i). Aborts if `i` is out of range
-# (0 <= i < length). The index is Int at the API surface — `a[0]` works
-# because 0 IS an Int (literals are their spelling; nothing converts) — and
-# is truncated internally, where the runtime bounds check catches any value
-# an Int32 could not have addressed anyway.
+# Indexed read: `a[i]` lowers to ``[]``(a, i). ABORTS unless 0 <= i < size(a).
+# The range is checked in the Int domain, so narrowing to the buffer's Int32
+# index can never wrap.
 fun `[]`<T>(a: Array<T>, i: Int): T
-  ret a[truncateToInt32(i)]
+  ret i < 0 || i >= Int(a._length) ? _noSuchIndex<T>(-1i32) : _at<T>(a, truncateToInt32(i))
 
-# Int32 form for byte-scanning code that already holds a sized index. The
-# buffer may hold elements past this value's length (another value appended
-# them), so the length is checked here; a negative index fails the buffer's
-# own check.
-fun `[]`<T>(a: Array<T>, i: Int32): T
-  ret i < a.length ? a._buf._items(i) : _noSuchIndex<T>(i)
+# Internal Int32 read, for this file and System::Containers companions
+# (rrbtree.yafl). The buffer may hold elements past this value's length
+# (another value appended them), so the length is checked here; a negative
+# index fails the buffer's own check.
+fun _at<T>(a: Array<T>, i: Int32): T
+  ret match(a)
+    (f: _FullArray<T>)  => i < f._length ? f._buffer._items(i) : _noSuchIndex<T>(i)
+    (e: _EmptyArray<T>) => _noSuchIndex<T>(i)
 
 # TEMPORARY (issue #95): an index past the length aborts, as the old Array
 # did, by reading it from a buffer with no elements — the runtime bounds
@@ -67,19 +82,32 @@ fun _noSuchIndex<T>(i: Int32): T
 
 # `a` followed by `x`. In place when `a` owns the end of its buffer and there
 # is room — the pin is the lock, against other appenders and the compactor —
-# and into a fresh buffer of twice the size otherwise.
+# and into a fresh, larger buffer otherwise (_grown). An empty array has no
+# buffer: its first element allocates one.
 fun append<T>(a: Array<T>, x: T): Array<T>
-  let held = pin(a._buf)
-  let owns = held._used == a.length && held._used < held._cap
+  ret match(a)
+    (f: _FullArray<T>)  => _appendFull<T>(f, x)
+    (e: _EmptyArray<T>) => _FullArray<T>(1i32, _ArrayBuf<T>(1i32, 2i32, (i: Int32) => x))
+
+fun _appendFull<T>(f: _FullArray<T>, x: T): Array<T>
+  let held = pin(f._buffer)
+  let owns = held._used == f._length && held._used < held._cap
   if owns
     held._items(held._used) := x
     held._used := held._used + 1i32
   unpin(held)
-  ret owns ? Array<T>(a.length + 1i32, held) : _appendCopy<T>(a, x)
+  ret owns ? _FullArray<T>(f._length + 1i32, held) : _appendCopy<T>(f, x)
 
-fun _appendCopy<T>(a: Array<T>, x: T): Array<T>
-  let n = a.length + 1i32
-  ret Array<T>(n, _ArrayBuf<T>(n, n + n, (i: Int32) => i < a.length ? a[i] : x))
+fun _appendCopy<T>(f: _FullArray<T>, x: T): Array<T>
+  let n = f._length + 1i32
+  ret _FullArray<T>(n, _ArrayBuf<T>(n, _grown(n),
+    (i: Int32) => i < f._length ? f._buffer._items(i) : x))
+
+# The capacity a copy of `n` elements gets: n + min(250, n). Doubling while
+# small, where compaction trims the spare room anyway; a fixed 250 beyond, as
+# a large buffer is never compacted and its spare room would be kept for good.
+fun _grown(n: Int32): Int32
+  ret n + min(250i32, n)
 
 
 # ── combinators ──────────────────────────────────────────────────────────────
@@ -87,35 +115,47 @@ fun _appendCopy<T>(a: Array<T>, x: T): Array<T>
 # type, so a container migration is a type change at the call site.
 
 fun isEmpty<T>(a: Array<T>): Bool
-  ret a.length == 0i32
+  ret a._length == 0i32
 
-# In-order left fold over the elements.
+# In-order left fold over the elements. The combinators match once and then
+# walk the buffer, so a loop pays no per-element test of emptiness.
 fun fold<T, [linear] TAcc>(a: Array<T>, acc: TAcc, f: (acc: TAcc, x: T): TAcc): TAcc
-  ret _foldFrom<T, TAcc>(a, 0i32, acc, f)
+  ret match(a)
+    (full: _FullArray<T>) => _foldFrom<T, TAcc>(full, 0i32, acc, f)
+    (e: _EmptyArray<T>)   => acc
 
-fun [tail] _foldFrom<T, [linear] TAcc>(a: Array<T>, i: Int32, acc: TAcc,
+fun [tail] _foldFrom<T, [linear] TAcc>(a: _FullArray<T>, i: Int32, acc: TAcc,
                               f: (acc: TAcc, x: T): TAcc): TAcc
-  ret i < a.length ? _foldFrom<T, TAcc>(a, i + 1i32, f(acc, a[i]), f) : acc
+  ret i < a._length ? _foldFrom<T, TAcc>(a, i + 1i32, f(acc, a._buffer._items(i)), f) : acc
 
 # Element-wise transform; the result size is known exactly, so this is the
 # tabulating ctor, not a builder.
 fun map<T, TOut>(a: Array<T>, f: (x: T): TOut): Array<TOut>
-  ret Array<TOut>(a.length, (i: Int32) => f(a[i]))
+  ret match(a)
+    (full: _FullArray<T>) => _FullArray<TOut>(full._length,
+                               _ArrayBuf<TOut>(full._length, full._length,
+                                               (i: Int32) => f(full._buffer._items(i))))
+    (e: _EmptyArray<T>)   => _EmptyArray<TOut>(0i32)
 
 fun filter<T>(a: Array<T>, pred: (:T): Bool): Array<T>
-  ret _filterFrom<T>(a, 0i32, pred, Array<T>())
+  ret match(a)
+    (full: _FullArray<T>) => _filterFrom<T>(full, 0i32, pred, Array<T>())
+    (e: _EmptyArray<T>)   => a
 
-fun [tail] _filterFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool,
+fun [tail] _filterFrom<T>(a: _FullArray<T>, i: Int32, pred: (:T): Bool,
                           b: Array<T>): Array<T>
-  ret i < a.length
-    ? _filterFrom<T>(a, i + 1i32, pred, pred(a[i]) ? push<T>(b, a[i]) : b)
+  ret i < a._length
+    ? _filterFrom<T>(a, i + 1i32, pred,
+                     pred(a._buffer._items(i)) ? push<T>(b, a._buffer._items(i)) : b)
     : b
 
 fun any<T>(a: Array<T>, pred: (:T): Bool): Bool
-  ret _anyFrom<T>(a, 0i32, pred)
+  ret match(a)
+    (full: _FullArray<T>) => _anyFrom<T>(full, 0i32, pred)
+    (e: _EmptyArray<T>)   => false
 
-fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
-  ret i < a.length && (pred(a[i]) || _anyFrom<T>(a, i + 1i32, pred))
+fun [tail] _anyFrom<T>(a: _FullArray<T>, i: Int32, pred: (:T): Bool): Bool
+  ret i < a._length && (pred(a._buffer._items(i)) || _anyFrom<T>(a, i + 1i32, pred))
 
 
 # ── incremental construction ─────────────────────────────────────────────────
@@ -123,3 +163,54 @@ fun [tail] _anyFrom<T>(a: Array<T>, i: Int32, pred: (:T): Bool): Bool
 # builder-shaped spelling, so a growing sequence reads the same over an Array.
 fun push<T>(a: Array<T>, x: T): Array<T>
   ret append<T>(a, x)
+
+# Append every element of `l`, in order. An empty `l` is `a` itself.
+fun pushAll<T>(a: Array<T>, l: List<T>): Array<T>
+  ret isEmpty(l) ? a : fold<T, Array<T>>(l, a, (acc: Array<T>, x: T) => push<T>(acc, x))
+
+# Append every element of `b`, in order — the concatenation primitive. With
+# either side empty the answer is the other value as it stands: values share
+# buffers by design, so there is nothing to copy. Otherwise `b` goes in place
+# when `a` owns the end of a buffer with room for all of it, and into ONE
+# buffer of the combined size grown (_grown) when not, rather than growing by
+# repeated copies.
+fun pushAll<T>(a: Array<T>, b: Array<T>): Array<T>
+  ret match(b)
+    (fb: _FullArray<T>)  => match(a)
+      (fa: _FullArray<T>)  => _pushAllFull<T>(fa, fb)
+      (ea: _EmptyArray<T>) => b
+    (eb: _EmptyArray<T>) => a
+
+fun _pushAllFull<T>(a: _FullArray<T>, b: _FullArray<T>): Array<T>
+  let held = pin(a._buffer)
+  let room = held._used == a._length && held._cap - held._used >= b._length
+  unpin(held)
+  ret room ? _pushInPlace<T>(a, b, 0i32) : _concatCopy<T>(a, b)
+
+# Room was there when checked; each push re-checks under its own pin, so a
+# competing appender that took the end meanwhile only turns a push into a copy.
+fun [tail] _pushInPlace<T>(a: Array<T>, b: _FullArray<T>, i: Int32): Array<T>
+  ret i < b._length ? _pushInPlace<T>(append<T>(a, b._buffer._items(i)), b, i + 1i32) : a
+
+fun _concatCopy<T>(a: _FullArray<T>, b: _FullArray<T>): Array<T>
+  let n = a._length + b._length
+  ret _FullArray<T>(n, _ArrayBuf<T>(n, _grown(n),
+    (i: Int32) => i < a._length ? a._buffer._items(i) : b._buffer._items(i - a._length)))
+
+
+# ── an Array as a Stream ─────────────────────────────────────────────────────
+# The by-value state is a pool struct — (array, index) — stepped in registers;
+# with [inline(always)] a drive loop over one compiles to the indexed walk it
+# replaces. E = Never: in-memory sources cannot fail, and Never's emptiness
+# makes the Error arm unconstructable. (A List is a Stream of its own.)
+class [final] ArrayStream<T>(_asArr: Array<T>, _asAt: Int32)
+
+fun arrayStream<T>(a: Array<T>): ArrayStream<T>
+  ret ArrayStream<T>(a, 0i32)
+
+instance<T> Stream<ArrayStream<T>, T, Never>
+  fun [inline(always)] next(self: ArrayStream<T>): (stream: ArrayStream<T>, value: Result<T | None, Never>)
+    ret self._asAt < self._asArr._length
+      ? (ArrayStream<T>(self._asArr, self._asAt + 1i32),
+         Ok<T | None, Never>(_at<T>(self._asArr, self._asAt)))
+      : (self, Ok<T | None, Never>(None))

@@ -51,13 +51,11 @@ fun group(m: Match, s: String, i: Int): String|None
 # Compile a pattern. Program shape: Save(0); <body>; Save(1); Match — so
 # slots 0/1 always hold the whole match.
 fun Regex(pattern: String): Regex
-  fun nth(insts: List<RInst>, i: Int32): RInst
-    ret head<RInst>(drop<RInst>(insts, Int(i))) ?? IMatch()
   fun assemble(node: RNode, ngroups: Int32): Regex
     let size  = _rxSize(node)
     let tail  = List<RInst>(ISave(1i32, size + 2i32), IMatch())
     let insts = concat<RInst>(_one(ISave(0i32, 1i32)), concat<RInst>(_rxEmit(node, 1i32), tail))
-    ret Regex(Array<RInst>(size + 3i32, (i: Int32) => nth(insts, i)), ngroups * 2i32)
+    ret Regex(pushAll<RInst>(Array<RInst>(), insts), ngroups * 2i32)
   ret _rxAlt(pattern, 0, length(pattern), 1i32)
     |> (node, _end, ngroups) => assemble(node, ngroups)
 
@@ -309,9 +307,9 @@ fun _vmAdd(r: Regex, s: String, pos: Int, pc: Int32, caps: Array<Int>,
   fun seen(q: Int32): Bool
     ret any<RThread>(acc, (t: RThread) => t.pc == q)
   fun setSlot(cs: Array<Int>, slot: Int32, at: Int, n: Int32): Array<Int>
-    ret Array<Int>(n, (i: Int32) => i == slot ? at : cs[i])
+    ret Array<Int>(Int(n), (i: Int) => i == Int(slot) ? at : cs[i])
   ret seen(pc) ? (acc, None)
-    : match(r.prog[pc])
+    : match(r.prog[Int(pc)])
       (i: IRange)  => (append<RThread>(acc, RThread(pc, caps)), None)
       (sp: ISplit) =>
         _vmAdd(r, s, pos, sp.prefer, caps, acc)
@@ -339,7 +337,7 @@ fun [tail] _vmStep(r: Regex, s: String, pos: Int, b: Int32, threads: List<RThrea
       (n: None)       => _vmStep(r, s, pos, b, rest, acc2, best)
   ret match(head<RThread>(threads))
     (n: None)    => (acc, best)
-    (t: RThread) => match(r.prog[t.pc])
+    (t: RThread) => match(r.prog[Int(t.pc)])
       (i: IRange) =>
         b >= i.lo && b <= i.hi
           ? (_vmAdd(r, s, pos + 1, i.rNext, t.caps, acc)
@@ -355,7 +353,7 @@ fun [tail] _vmRun(r: Regex, s: String, pos: Int, len: Int,
       (n: None)       => best
   let (ts, won) = match(best)
     (w: Array<Int>) => (threads, best)
-    (n: None)       => _vmAdd(r, s, pos, 0i32, Array<Int>(r.nslots, (i: Int32) => -1), threads)
+    (n: None)       => _vmAdd(r, s, pos, 0i32, Array<Int>(Int(r.nslots), (i: Int) => -1), threads)
   let best1 = better(won)
   if isEmpty<RThread>(ts) || pos > len
     ret best1

@@ -109,7 +109,7 @@ enum BeDef
 
 class [final] BeDefEntry(bdDef: BeDef, bdCount: Int)
 
-fun beSingleDefs(ops: Segment<Op>|None): Dict<String, BeDefEntry> => fold(ops, Dict(), beDefOp)
+fun beSingleDefs(ops: Array<Op>): Dict<String, BeDefEntry> => fold(ops, Dict(), beDefOp)
 
 fun beDefOp(acc, op) => fold(opGetLiveVars(op).writes, acc, (a, w) => beDefWritten(a, w, op))
 
@@ -245,7 +245,7 @@ fun beEntryFromPhi(name, phi: OpPhi,
 # length LOAD resolve to the value it was created with.
 class [final] BeStore(bsValue: BeVal, bsCount: Int)
 
-fun beFieldStores(ops: Segment<Op>|None, defs: Dict<String, BeDefEntry>): Dict<(:BeVal, :String), BeStore>
+fun beFieldStores(ops: Array<Op>, defs: Dict<String, BeDefEntry>): Dict<(:BeVal, :String), BeStore>
   ret fold(ops, Dict(), (acc, op) => beStoreOp(acc, op, defs))
 
 fun beStoreOp(acc: Dict<(:BeVal, :String), BeStore>, op, defs: Dict<String, BeDefEntry>) => match(op)
@@ -273,35 +273,30 @@ fun beStoreLookup(stores: Dict<(:BeVal, :String), BeStore>, ptr: BeVal, field: S
 
 class [final] BeRegion(brLo: Int, brHi: Int)
 
-fun beLabelIndex(ops: Segment<Op>|None): Dict<String, Int> => beLabelLoopB(ops, 0i32, 0, Dict())
+fun beLabelIndex(ops: Array<Op>): Dict<String, Int> => beLabelLoopB(ops, 0, Dict())
 
-fun [tail] beLabelLoopB(s: Segment<Op>|None, iSeg, i,
-                       acc: Dict<String, Int>): Dict<String, Int> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg >= seg.length
-    ? beLabelLoopB(seg.next, 0i32, i, acc)
-    : beLabelLoopB(s, iSeg + 1i32, i + 1, beLabelPut(acc, seg.array(iSeg), i))
+fun [tail] beLabelLoopB(s: Array<Op>, i: Int,
+                       acc: Dict<String, Int>): Dict<String, Int>
+  ret i < size(s) ? beLabelLoopB(s, i + 1, beLabelPut(acc, s[i], i)) : acc
 
 fun beLabelPut(acc: Dict<String, Int>, op, i: Int): Dict<String, Int> => match(op)
   (lb: OpLabel) => put(acc, lb.labelName, i)
   (o: Op)       => acc
 
-fun beLoopRegions(ops: Segment<Op>|None, labels: Dict<String, Int>)
-  ret beRegionLoopB(ops, 0i32, 0, labels, List())
+fun beLoopRegions(ops: Array<Op>, labels: Dict<String, Int>)
+  ret beRegionLoopB(ops, 0, labels, List())
 
-fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg, i, labels: Dict<String, Int>,
-                        acc): List<BeRegion> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg >= seg.length
-    ? beRegionLoopB(seg.next, 0i32, i, labels, acc)
-    : match(seg.array(iSeg))
-        (j: OpJump) => match(get(labels, j.jumpName))
-          (at: Int) => at < i
-            ? beRegionLoopB(s, iSeg + 1i32, i + 1, labels,
-                           append(acc, BeRegion(at, i)))
-            : beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
-          ()        => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
-        (o: Op)     => beRegionLoopB(s, iSeg + 1i32, i + 1, labels, acc)
+fun [tail] beRegionLoopB(s: Array<Op>, i: Int, labels: Dict<String, Int>,
+                        acc: List<BeRegion>): List<BeRegion>
+  ret i >= size(s)
+    ? acc
+    : beRegionLoopB(s, i + 1, labels, beRegionAt(s[i], i, labels, acc))
+
+fun beRegionAt(op: Op, i: Int, labels: Dict<String, Int>, acc: List<BeRegion>): List<BeRegion> => match(op)
+  (j: OpJump) => match(get(labels, j.jumpName))
+    (at: Int) => at < i ? append(acc, BeRegion(at, i)) : acc
+    ()        => acc
+  (o: Op)     => acc
 
 # (induction_id, bound_id) pairs proven `induction < bound` inside the
 # region's body. The key question per guard is which truth value of its
@@ -311,12 +306,12 @@ fun [tail] beRegionLoopB(s: Segment<Op>|None, iSeg, i, labels: Dict<String, Int>
 #     from exactly 0 by +1 and n is a length (caller checks the load).
 class [final] BeProof(bpInd: BeVal, bpBound: BeVal)
 
-fun beGuardedBounds(ops: Segment<Op>|None, region: BeRegion,
+fun beGuardedBounds(ops: Array<Op>, region: BeRegion,
                     labels: Dict<String, Int>,
                     defs: Dict<String, BeDefEntry>)
   ret beGuardLoop(ops, region.brLo, region, labels, defs, List())
 
-fun [tail] beGuardLoop(ops: Segment<Op>|None, i, region: BeRegion,
+fun [tail] beGuardLoop(ops: Array<Op>, i, region: BeRegion,
                        labels: Dict<String, Int>, defs: Dict<String, BeDefEntry>,
                        acc)
   if i >= region.brHi
@@ -327,7 +322,7 @@ fun [tail] beGuardLoop(ops: Segment<Op>|None, i, region: BeRegion,
                                        acc))
     ()       => acc
 
-fun beGuardOne(op, i, ops: Segment<Op>|None, region: BeRegion,
+fun beGuardOne(op, i, ops: Array<Op>, region: BeRegion,
                labels: Dict<String, Int>, defs: Dict<String, BeDefEntry>,
                acc) => match(op)
   (ji: OpJumpIf) => match(beResolve(ji.jumpIfCondition, defs,
@@ -342,14 +337,14 @@ fun beGuardOne(op, i, ops: Segment<Op>|None, region: BeRegion,
   (o: Op)        => acc
 
 fun beGuardWithTruth(fnName, args: List<BeVal>, ji: OpJumpIf,
-                     i, ops: Segment<Op>|None, region: BeRegion,
+                     i, ops: Array<Op>, region: BeRegion,
                      labels: Dict<String, Int>, defs: Dict<String, BeDefEntry>,
                      acc) => match(beGuardTruth(ji, i, ops, region, labels))
   (bodyTruth: Bool) => beGuardCommit(fnName, args, bodyTruth, defs, acc)
   ()                => acc
 
 # Which truth value of the condition ENTERS the body; None = not a guard.
-fun beGuardTruth(ji: OpJumpIf, i, ops: Segment<Op>|None, region: BeRegion,
+fun beGuardTruth(ji: OpJumpIf, i, ops: Array<Op>, region: BeRegion,
                  labels: Dict<String, Int>)
   let target = get(labels, ji.jumpIfLabel)
   let inside = beInRegion(target, region)
@@ -427,24 +422,20 @@ fun beApplyRegion(f, region: BeRegion, defs: Dict<String, BeDefEntry>,
                                      defs, stores, List()),
                      f.fnStackVars)
 
-fun beRewriteOps(ops: Segment<Op>|None, i, region: BeRegion,
+fun beRewriteOps(ops: Array<Op>, i, region: BeRegion,
                         proven: List<BeProof>, defs: Dict<String, BeDefEntry>,
                         stores: Dict<(:BeVal, :String), BeStore>, acc: List<Op>)
-  ret build(beRewriteOpsB(ops, 0i32, i, region, proven, defs, stores, seqBuilder()))
+  ret beRewriteOpsB(ops, i, region, proven, defs, stores, Array<Op>())
 
-fun [tail] beRewriteOpsB(s: Segment<Op>|None, iSeg, i, region: BeRegion,
+fun [tail] beRewriteOpsB(s: Array<Op>, i: Int, region: BeRegion,
                         proven: List<BeProof>, defs: Dict<String, BeDefEntry>,
-                        stores: Dict<(:BeVal, :String), BeStore>, [terminal] acc): SeqBuilder<Op> => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg < seg.length
-    ? beRewriteOpsB(s, iSeg + 1i32, i + 1, region, proven, defs,
-                    stores,
-                    push(acc, i >= region.brLo
-                           && i <= region.brHi
-                      ? beRewriteOp(seg.array(iSeg), proven, defs,
-                                    stores)
-                      : seg.array(iSeg)))
-    : beRewriteOpsB(seg.next, 0i32, i, region, proven, defs, stores, acc)
+                        stores: Dict<(:BeVal, :String), BeStore>, acc: Array<Op>): Array<Op>
+  ret i < size(s)
+    ? beRewriteOpsB(s, i + 1, region, proven, defs, stores,
+                    push(acc, i >= region.brLo && i <= region.brHi
+                      ? beRewriteOp(s[i], proven, defs, stores)
+                      : s[i]))
+    : acc
 
 # Flip only at READ positions of the op kinds Python touches: Move.source,
 # Call.function+parameters, Return.value, JumpIf.condition, Phi sources.

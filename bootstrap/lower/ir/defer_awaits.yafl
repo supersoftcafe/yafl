@@ -58,12 +58,12 @@ fun dfDefer(f: CgFunction): CgFunction
   let runs = dfRunsFrom(ops, 0, DfRuns(Dict(), st.dsSkip))
   let ctx = DfCtx(st.dsMarked, st.dsRootIx, runs.drsSkip, dfPhisAt(ops, "", Dict()), f.fnResult,
                   runs.drsRuns)
-  let out = dfEmit(ops, 0, ctx, DfAcc(seqBuilder(), List(), Dict(), 0, "", None))
-  let emitted = dfFillPhis(cgOpsToList(build(out.daOps)), "", 0, out.daEdges, ctx, seqBuilder())
+  let out = dfEmit(ops, 0, ctx, DfAcc(Array<Op>(), List(), Dict(), 0, "", None))
+  let emitted = dfFillPhis(cgOpsToList(out.daOps), "", 0, out.daEdges, ctx, Array<Op>())
   let kept = filter(cgFieldsOfOrEmpty(f.fnStackVars), (fld: CgField) => get(ctx.dcMarked, fld.fieldName) is None)
   let pendings = map(roots, (r: DfRoot) => CgField(stackVarName(r.drSource), rpGetType(r.drSource)))
   let fresh = map(out.daFresh, (v) => CgField(stackVarName(v), rpGetType(v)))
-  ret cgFunctionWith(f, build(emitted), CgStruct(concat(concat(kept, pendings), fresh)))
+  ret cgFunctionWith(f, emitted, CgStruct(concat(concat(kept, pendings), fresh)))
 
 fun dfIsStackPhi(op) => match(op)
   (p: OpPhi) => p.phiTarget is RpStackVar
@@ -235,22 +235,22 @@ fun dfSkipRun(s: Set<Int>, k: Int, os: List<Op>): Set<Int> =>
 # The ops emitted so far, the fresh variables declared, each realised Phi
 # source (by join, predecessor and position), the next fresh number, the open
 # label, and the last op emitted other than a Phi.
-class [linear, final] DfAcc(daOps: SeqBuilder<Op>, daFresh: List<RParam>,
+class [final] DfAcc(daOps: Array<Op>, daFresh: List<RParam>,
                             daEdges: Dict<String, RParam>, daNext: Int, daCurrent: String,
                             daLast: Op|None)
 
 fun dfEdgeKey(join: String, pred: String, i: Int) => join + "|" + pred + "|" + String(i)
 
-fun [tail] dfEmit(os: List<Op>, k, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(head(os))
+fun [tail] dfEmit(os: List<Op>, k, ctx: DfCtx, acc: DfAcc): DfAcc => match(head(os))
   (op: Op) => dfEmit(dropOne(os), k + 1, ctx, contains(ctx.dcSkip, k) ? acc : dfEmitAt(op, k, ctx, acc))
   ()       => acc
 
-fun dfEmitAt(op, k: Int, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(get(ctx.dcRuns, k))
+fun dfEmitAt(op, k: Int, ctx: DfCtx, acc: DfAcc): DfAcc => match(get(ctx.dcRuns, k))
   (run: List<Op>) => dfEmitConstruction(op, run, ctx, acc)
   ()              => dfEmitOne(op, ctx, acc)
 
 # The allocation and its run, with every pending value they read realised first.
-fun dfEmitConstruction(op, run: List<Op>, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+fun dfEmitConstruction(op, run: List<Op>, ctx: DfCtx, acc: DfAcc): DfAcc
   let all = prepend(op, run)
   let params = fold(all, List<RParam>(), (ps, o) => concat(ps, opGetLiveVars(o).reads))
   let r = dfRealise(params, false, ctx, acc)
@@ -262,34 +262,34 @@ fun dfEmitConstruction(op, run: List<Op>, ctx: DfCtx, [terminal] acc: DfAcc): Df
 
 fun dfLastOp(os: List<Op>, fallback: Op): Op => fold(os, fallback, (a, x) => x)
 
-fun dfEmitOne(op, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(op)
+fun dfEmitOne(op, ctx: DfCtx, acc: DfAcc): DfAcc => match(op)
   (p: OpPhi)   => DfAcc(push(acc.daOps, op), acc.daFresh, acc.daEdges, acc.daNext, acc.daCurrent, acc.daLast)
   (lb: OpLabel) => dfEmitPlain(op, ctx, dfLabelEdge(lb, ctx, acc), lb.labelName)
   (j: OpJump)  => dfEmitPlain(op, ctx, dfJumpEdge(j, ctx, acc), "")
   (o: Op)      => dfEmitPlain(op, ctx, acc, "")
 
-fun dfLabelEdge(lb: OpLabel, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+fun dfLabelEdge(lb: OpLabel, ctx: DfCtx, acc: DfAcc): DfAcc
   let falls = match(acc.daLast)
     (last: Op) => opFallsThrough(last)
     ()          => false
   ret falls ? dfEdge(lb.labelName, ctx, acc) : acc
 
-fun dfJumpEdge(j: OpJump, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => dfEdge(j.jumpName, ctx, acc)
+fun dfJumpEdge(j: OpJump, ctx: DfCtx, acc: DfAcc): DfAcc => dfEdge(j.jumpName, ctx, acc)
 
 # Realise, on the edge current -> join, the Phi sources that need it.
-fun dfEdge(join: String, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+fun dfEdge(join: String, ctx: DfCtx, acc: DfAcc): DfAcc
   ret dfEdgeSources(dfPhisOf(ctx.dcPhisAt, join), join, 0, ctx, acc)
 
 fun [tail] dfEdgeSources(ps: List<Op>, join: String, i: Int, ctx: DfCtx,
-                         [terminal] acc: DfAcc): DfAcc => match(head(ps))
+                         acc: DfAcc): DfAcc => match(head(ps))
   (op: Op) => dfEdgeSources(dropOne(ps), join, i + 1, ctx, dfEdgeSource(op, join, i, ctx, acc))
   ()       => acc
 
-fun dfEdgeSource(op, join: String, i: Int, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc => match(op)
+fun dfEdgeSource(op, join: String, i: Int, ctx: DfCtx, acc: DfAcc): DfAcc => match(op)
   (p: OpPhi) => dfEdgeValue(p, phiSourceFor(op, acc.daCurrent), join, i, ctx, acc)
   (o: Op)    => acc   # unreachable: dcPhisAt holds Phis
 
-fun dfEdgeValue(p: OpPhi, value: RParam, join: String, i: Int, ctx: DfCtx, [terminal] acc: DfAcc): DfAcc
+fun dfEdgeValue(p: OpPhi, value: RParam, join: String, i: Int, ctx: DfCtx, acc: DfAcc): DfAcc
   let key = dfEdgeKey(join, acc.daCurrent, i)
   ret match(dfPendingTarget(p, ctx))
     (dr: DfRoot) => dfWhole(ctx.dcMarked, value, p.phiTarget)
@@ -299,7 +299,7 @@ fun dfEdgeValue(p: OpPhi, value: RParam, join: String, i: Int, ctx: DfCtx, [term
     ()            => dfEdgeRealised(value, key, rpGetType(value), false, ctx, acc)
 
 fun dfEdgeRealised(value: RParam, key: String, wrapped: CgType, pending: Bool, ctx: DfCtx,
-                   [terminal] acc: DfAcc): DfAcc
+                   acc: DfAcc): DfAcc
   let r = dfRealise(list1(value), false, ctx, acc)
   let renamed = rpRenameVars(value, r.drRenames)
   let source = pending ? wrapValue(renamed, wrapped) : renamed
@@ -317,7 +317,7 @@ fun dfPendingOf(ctx: DfCtx, value: RParam): RParam
       ()            => value   # unreachable: every mark's root is a root
     ()           => value      # unreachable: dfWhole held
 
-fun dfEmitPlain(op, ctx: DfCtx, [terminal] acc: DfAcc, label: String): DfAcc
+fun dfEmitPlain(op, ctx: DfCtx, acc: DfAcc, label: String): DfAcc
   let r = dfRealise(opGetLiveVars(op).reads, dfReturned(op, ctx), ctx, acc)
   let renamed = isEmpty(r.drRenames) ? op : opRenameVars(op, r.drRenames)
   let emitted = dfDeferCall(renamed, ctx)
@@ -341,31 +341,31 @@ fun dfReturned(op, ctx: DfCtx): Bool => match(op)
 
 # The awaits and projections for the marked variables `params` read, and the
 # renaming that points the reads at them.
-class [linear, final] DfRealised(drAcc: DfAcc, drRenames: List<RpRename>)
+class [final] DfRealised(drAcc: DfAcc, drRenames: List<RpRename>)
 
 class [final] DfAwaited(daVar: RParam, daNumber: Int)
 
-fun dfRealise(params: List<RParam>, returned: Bool, ctx: DfCtx, [terminal] acc: DfAcc): DfRealised
+fun dfRealise(params: List<RParam>, returned: Bool, ctx: DfCtx, acc: DfAcc): DfRealised
   let used = sort(fold(params, Set(), (st, p) => fold(rpGetLiveVars(p), st,
                        (st2, v) => get(ctx.dcMarked, stackVarName(v)) is None ? st2 : add(st2, stackVarName(v)))))
   ret dfUses(used, returned, ctx, Dict(), List(), acc)
 
 fun [tail] dfUses(ns: List<String>, returned: Bool, ctx: DfCtx, awaited: Dict<String, DfAwaited>,
-                  renames: List<RpRename>, [terminal] acc: DfAcc): DfRealised => match(head(ns))
+                  renames: List<RpRename>, acc: DfAcc): DfRealised => match(head(ns))
   (n: String) => match(get(ctx.dcMarked, n))
     (m: DfMark) => dfUse(dropOne(ns), m, returned, ctx, awaited, renames, acc)
     ()          => dfUses(dropOne(ns), returned, ctx, awaited, renames, acc)
   ()          => DfRealised(acc, renames)
 
 fun dfUse(rest: List<String>, m: DfMark, returned: Bool, ctx: DfCtx, awaited: Dict<String, DfAwaited>,
-          renames: List<RpRename>, [terminal] acc: DfAcc): DfRealised
+          renames: List<RpRename>, acc: DfAcc): DfRealised
   let rootName = stackVarName(m.dmRoot)
   ret match(get(awaited, rootName))
     (aw: DfAwaited) => dfProjectUse(rest, m, aw, returned, ctx, awaited, renames, acc)
     ()               => dfAwaitRoot(rest, m, returned, ctx, awaited, renames, acc)
 
 fun dfAwaitRoot(rest: List<String>, m: DfMark, returned: Bool, ctx: DfCtx, awaited: Dict<String, DfAwaited>,
-                renames: List<RpRename>, [terminal] acc: DfAcc): DfRealised
+                renames: List<RpRename>, acc: DfAcc): DfRealised
   let rootName = stackVarName(m.dmRoot)
   let fresh = RpStackVar(rpGetType(m.dmRoot), rootName + "$aw" + String(acc.daNext))
   let aw = DfAwaited(fresh, acc.daNext)
@@ -379,7 +379,7 @@ fun dfAwaitRoot(rest: List<String>, m: DfMark, returned: Bool, ctx: DfCtx, await
 
 fun dfProjectUse(rest: List<String>, m: DfMark, aw: DfAwaited, returned: Bool, ctx: DfCtx,
                  awaited: Dict<String, DfAwaited>,
-                 renames: List<RpRename>, [terminal] acc: DfAcc): DfRealised
+                 renames: List<RpRename>, acc: DfAcc): DfRealised
   if stackVarName(m.dmVar) == stackVarName(m.dmRoot)
     ret dfUses(rest, returned, ctx, awaited, renames, acc)
   let fresh = RpStackVar(rpGetType(m.dmVar), stackVarName(m.dmVar) + "$aw" + String(aw.daNumber))
@@ -391,7 +391,7 @@ fun dfProjectUse(rest: List<String>, m: DfMark, aw: DfAwaited, returned: Bool, c
 # Second walk: each Phi takes its realised sources, and a pending join writes
 # its pending value.
 fun [tail] dfFillPhis(os: List<Op>, current: String, i: Int, edges: Dict<String, RParam>, ctx: DfCtx,
-                      [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> => match(head(os))
+                      acc: Array<Op>): Array<Op> => match(head(os))
   (op: Op) => match(op)
     (lb: OpLabel) => dfFillPhis(dropOne(os), lb.labelName, 0, edges, ctx, push(acc, op))
     (p: OpPhi)    => dfFillPhis(dropOne(os), current, i + 1, edges, ctx, push(acc, dfFilledPhi(p, current, i, edges, ctx)))

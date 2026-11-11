@@ -65,6 +65,19 @@ instance [ambient] BasicMath<System::Int>
 fun abs(value: System::Int): System::Int
   ret value < 0 ? -value : value
 
+# The smaller and the larger of two values.
+fun min(a: System::Int, b: System::Int): System::Int
+  ret a < b ? a : b
+
+fun max(a: System::Int, b: System::Int): System::Int
+  ret a < b ? b : a
+
+fun min(a: System::Int32, b: System::Int32): System::Int32
+  ret a < b ? a : b
+
+fun max(a: System::Int32, b: System::Int32): System::Int32
+  ret a < b ? b : a
+
 # Clear the sign bit: the hashOf contract is a non-negative Int32.
 fun _maskHash(value: System::Int32): System::Int32
   ret __builtin_op__<int32>("int32_and", value, truncateToInt32(2147483647))

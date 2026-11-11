@@ -40,8 +40,8 @@ class BuiltinOpExpression(Expression):
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
         new_params, new_statements, hints = self.params.compile(resolver, None)
-        # The declared type may be a full TypeSpec (array_builder_alloc's
-        # Array<T>): compile it so the name resolves like any declared type.
+        # The declared type may be a full TypeSpec (new_pinned's T):
+        # compile it so the name resolves like any declared type.
         # BuiltinSpecs compile to themselves, so the historical ops are
         # untouched.
         new_type, type_stmts = self.type.compile(resolver)
@@ -63,8 +63,8 @@ class BuiltinOpExpression(Expression):
     }
 
     def _fold_const_compare(self) -> "BoolExpression | None":
-        # The declared type may be a full TypeSpec (array_builder_alloc's
-        # Array<T>) — only builtin-typed comparison ops fold.
+        # The declared type may be a full TypeSpec (new_pinned's T) — only
+        # builtin-typed comparison ops fold.
         if not isinstance(self.type, t.BuiltinSpec) or self.type.type_name != "bool":
             return None
         predicate = BuiltinOpExpression._INT_COMPARE.get(self.op.value)
@@ -110,54 +110,6 @@ class BuiltinOpExpression(Expression):
                                  cg_t.Int(32))
         return h + g.OperationBundle((), (), inv)
 
-    def __array_class_parts(self, resolver: g.Resolver, arr_type):
-        """(cname, elem_ctype) for an Array-class type — the pieces an inline
-        element store or sized allocation needs. The trailing storage member
-        is contractually named "array" in the Object IR (classdef.py's
-        global_codegen), regardless of the YAFL-level field name."""
-        from pyast.statement.classdef import ClassStatement
-        found = [rs.statement for rs in resolver.find_type(arr_type.name)]
-        cls = found[0]
-        assert isinstance(cls, ClassStatement), f"array builtin on non-class {arr_type.name}"
-        params = cls.parameters.flatten()
-        ap = next(p for p in params if isinstance(p.declared_type, t.ArrayFieldSpec))
-        elem_ctype = ap.declared_type.element.generate(resolver)
-        return arr_type.name, elem_ctype
-
-    def __array_builder_alloc(self, resolver: g.Resolver) -> "g.OperationBundle":
-        """Sized, unfilled allocation for a builder, born PINNED (held until
-        array_builder_seal): array_create zero-fills pointer-bearing payloads
-        and stamps length = CAPACITY, so the scanner traces every slot from
-        birth. The element type rides the builtin's declared RESULT type; no
-        init function runs."""
-        cname, _ = self.__array_class_parts(resolver, self.type)
-        cap_b = self.params.expressions[0].value.generate(resolver).with_prefix("abcap")
-        rv = cg_p.StackVar(cg_t.DataPointer(), "abarr")
-        alloc = g.OperationBundle((rv,), (cg_o.NewObject(cname, rv, size=cap_b.result_var, pinned=True),), rv)
-        return cap_b + alloc
-
-    def __array_builder_store(self, resolver: g.Resolver) -> "g.OperationBundle":
-        """Inline pinned-array element store: a Move into the indexed
-        trailing array field. A runtime call cannot express this — the
-        element's C type varies per instantiation — and the builder holds
-        the pin from allocation to seal, so the address is stable. NOT fresh:
-        a builder crosses safe points (even suspensions, resuming on another
-        worker), so a cycle may open between the allocation and the store.
-        The barrier covers that, as it does for every other heap store."""
-        arr_e = self.params.expressions[0].value
-        idx_e = self.params.expressions[1].value
-        val_e = self.params.expressions[2].value
-        cname, elem_ctype = self.__array_class_parts(resolver, arr_e.get_type(resolver))
-        arr_b = arr_e.generate(resolver).with_prefix("absarr")
-        idx_b = idx_e.generate(resolver).with_prefix("absidx")
-        val_b = val_e.generate(resolver).with_prefix("absval")
-        store = cg_o.Move(
-            cg_p.ObjectField(elem_ctype, arr_b.result_var, cname, "array",
-                             idx_b.result_var, fill=True),
-            val_b.result_var)
-        done = g.OperationBundle((), (store,), cg_p.Integer(1, 8))
-        return arr_b + idx_b + val_b + done
-
     def __new_pinned(self, resolver: g.Resolver) -> "g.OperationBundle":
         """`__builtin_op__<T>("new_pinned", C(...))`: the construction C, its
         heap object born PINNED — for an object written after allocation,
@@ -175,10 +127,6 @@ class BuiltinOpExpression(Expression):
             return special
         if self.op.value == "new_pinned":
             return self.__new_pinned(resolver)
-        if self.op.value == "array_builder_alloc":
-            return self.__array_builder_alloc(resolver)
-        if self.op.value == "array_builder_store":
-            return self.__array_builder_store(resolver)
         params_bundle = self.params.generate(resolver)
         if params_bundle.result_var is None:
             raise ValueError("BuiltinOpExpression has no parameters")

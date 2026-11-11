@@ -1244,10 +1244,6 @@ INLINE vtable_t *object_get_vtable_inline(object_t *object) {
 }
 #define object_get_vtable object_get_vtable_inline
 
-EXTERN int64_t list_builder_slot(object_t *cell);
-EXTERN bool list_builder_link(object_t *prev, object_t *cell, int64_t slot);
-EXTERN bool list_builder_seal(object_t *tail);
-EXTERN bool array_builder_seal(object_t *arr, int32_t length);
 EXTERN bool gc_debug_major_now(object_t *ignored);
 // YAFL_GC_TRACE: print what the collector last did to the page holding `p`.
 EXTERN void gc_trace_explain(const char *label, const void *p);

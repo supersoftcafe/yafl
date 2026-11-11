@@ -173,16 +173,16 @@ fun alDiscoverTailCalls(f)
     ret f
   ret cgFunctionWith(f, alTailScan(f.fnOps, f.fnResult), f.fnStackVars)
 
-fun alTailScan(s: Segment<Op>|None, fnResult): Segment<Op>|None
-  let p0 = cgPullOp(seqStream(s))
+fun alTailScan(s: Array<Op>, fnResult): Array<Op>
+  let p0 = cgPullOp(arrayStream(s))
   let p1 = cgPullOp(p0.stream)
-  ret build(alTailScanB(p0.op, p1.op, p1.stream, fnResult, seqBuilder()))
+  ret alTailScanB(p0.op, p1.op, p1.stream, fnResult, Array<Op>())
 
 # (cur, nxt) window over the op stream: the pattern match consumes a pair, so
 # the window shifts by one or two. Both refills are pulled up front to keep
 # every recursion direct ([tail]); the one-shift arm discards the second.
-fun [tail] alTailScanB(cur: Op|None, nxt: Op|None, st: SeqStream<Op>, fnResult,
-                       [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op>
+fun [tail] alTailScanB(cur: Op|None, nxt: Op|None, st: ArrayStream<Op>, fnResult,
+                       acc: Array<Op>): Array<Op>
   if cur is None
     ret acc
   let op = forceOp(cur)
@@ -256,18 +256,18 @@ fun alCalculateSavedVars(f: CgFunction)
 # those exact sets are what the ops carry.
 class [final] AlRw(rwReads: Dict<String, RParam>, rwWrites: List<String>)
 
-class [final] AlLive(lsOps: Dict<Int, Op>, lsLabels: Dict<String, Int>,
+class [final] AlLive(lsOps: Array<Op>, lsLabels: Dict<String, Int>,
                      lsBlocks: Dict<Int, String>, lsRw: Dict<Int, AlRw>, lsN: Int)
 
-fun alLiveState(ops: List<Op>, seg: Segment<Op>|None): AlLive
+fun alLiveState(ops: List<Op>, seg: Array<Op>): AlLive
   let bi = alBlockIndex(seg)
-  ret alLiveIndex(ops, 0, AlLive(Dict(), ucLabelIndex(seg), bi.d, Dict(), bi.n))
+  ret alLiveIndex(ops, 0, AlLive(seg, ucLabelIndex(seg), bi.d, Dict(), bi.n))
 
 fun alLiveIndex(os: List<Op>, i, acc: AlLive): AlLive =>
   fold(os, (acc = acc, i = i), (st, x) => (acc = alLiveIndexOne(st.acc, st.i, x), i = st.i + 1)).acc
 
 fun alLiveIndexOne(acc: AlLive, i, op): AlLive
-  ret AlLive(put(acc.lsOps, i, op), acc.lsLabels, acc.lsBlocks,
+  ret AlLive(acc.lsOps, acc.lsLabels, acc.lsBlocks,
              put(acc.lsRw, i, AlRw(vsOf(alReadsOf(op)), map(alWritesOf(op), stackVarName))),
              acc.lsN)
 
@@ -285,8 +285,8 @@ fun alRwAt(st: AlLive, i: Int): AlRw => match(get(st.lsRw, i))
   (rw: AlRw) => rw
   ()         => AlRw(Dict(), List())   # unreachable: 0 <= i < lsN
 
-# The default is unreachable: 0 <= i < lsN.
-fun alOpAt(st: AlLive, i: Int): Op => get(st.lsOps, i) ?? OpReturnVoid(Dict())
+# Callers keep 0 <= i < lsN.
+fun alOpAt(st: AlLive, i: Int): Op => st.lsOps[i]
 
 fun alBlockAt(st: AlLive, i: Int) => match(get(st.lsBlocks, i))
   (s2: String) => s2
@@ -372,16 +372,15 @@ fun alWriteSaved(os: List<Op>,
        (st, x) => (acc = append(st.acc, opWithSavedVars(x, alSavedAt(saved, st.i))), i = st.i + 1)).acc
 
 # Enclosing block label per op index (nearest preceding Label; "" before any).
-fun alBlockIndex(ops: Segment<Op>|None): (d: Dict<Int, String>, n: Int)
-  ret alBlockIndexLoop(ops, 0i32, 0, "", Dict())
+fun alBlockIndex(ops: Array<Op>): (d: Dict<Int, String>, n: Int)
+  ret (alBlockIndexLoop(ops, 0, "", Dict()), size(ops))
 
-fun [tail] alBlockIndexLoop(s: Segment<Op>|None, iSeg, i, cur,
-                            acc): (d: Dict<Int, String>, n: Int) => match(s)
-  (nil: None)        => (acc, i)
-  (seg: Segment<Op>) => iSeg < seg.length
-    ? (alLabelNameOr(seg.array(iSeg), cur)
-        |> (nxt) => alBlockIndexLoop(s, iSeg + 1i32, i + 1, nxt, put(acc, i, nxt)))
-    : alBlockIndexLoop(seg.next, 0i32, i, cur, acc)
+fun [tail] alBlockIndexLoop(s: Array<Op>, i: Int, cur,
+                            acc: Dict<Int, String>): Dict<Int, String>
+  ret i < size(s)
+    ? (alLabelNameOr(s[i], cur)
+        |> (nxt) => alBlockIndexLoop(s, i + 1, nxt, put(acc, i, nxt)))
+    : acc
 
 fun alLabelNameOr(op, cur) => match(op)
   (lb: OpLabel) => lb.labelName
@@ -400,7 +399,7 @@ fun alCreateBasicBlocks(f: CgFunction): List<ABlock> => alCreateBasicBlocksN(f).
 # The block count rides alPartition's existing carried counter.
 fun alCreateBasicBlocksN(f: CgFunction): (bs: List<ABlock>, n: Int)
   let annotated = alCalculateSavedVars(f)
-  ret alPartition(seqStream(annotated.fnOps), 0, List(), List())
+  ret alPartition(arrayStream(annotated.fnOps), 0, List(), List())
 
 # `n` is the count of blocks already in `acc` — carried, not re-measured;
 # the final tuple's n is the TOTAL block count (last block is n, so n+1).
@@ -412,13 +411,13 @@ fun alCreateBasicBlocksN(f: CgFunction): (bs: List<ABlock>, n: Int)
 class [final] PartAcc(paCur: List<Op>,
                               paBlocks: List<ABlock>)
 
-fun alPartition(st: SeqStream<Op>, n, cur,
+fun alPartition(st: ArrayStream<Op>, n, cur,
                 acc): (bs: List<ABlock>, n: Int)
   ret alPartitionB(st, n,
                    PartAcc(cur,
                            acc))
 
-fun [tail] alPartitionB(st: SeqStream<Op>, n,
+fun [tail] alPartitionB(st: ArrayStream<Op>, n,
                         acc: PartAcc): (bs: List<ABlock>, n: Int)
   let p = cgPullOp(st)
   ret match(p.op)
@@ -860,22 +859,15 @@ fun alRebuildNested(f2: CgField, rest: List<CgField>, sp, stateName, idx,
 # block, so no block result declares its temp — the unroll declares it (and
 # any wrap local) itself, as Python's does.
 fun alUnrollMusttail(f: CgFunction)
-  let um = alUmLoop(f.fnOps, 0i32, 0, UmAcc(seqBuilder(), List()))
-  ret cgFunctionWith(f, build(um.uaOps),
+  let um = fold(f.fnOps, UmAcc(Array<Op>(), List(), 0), alUmStep)
+  ret cgFunctionWith(f, um.uaOps,
                      cgStructAdd(f.fnStackVars, CgStruct(um.uaVars)))
 
-class [linear, final] UmAcc(uaOps: SeqBuilder<Op>, uaVars: List<CgField>)
+class [final] UmAcc(uaOps: Array<Op>, uaVars: List<CgField>, uaCounter: Int)
 
-fun [tail] alUmLoop(s: Segment<Op>|None, iSeg, counter,
-                    [terminal] acc: UmAcc): UmAcc => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg >= seg.length
-    ? alUmLoop(seg.next, 0i32, counter, acc)
-    : match(alUmOne(seg.array(iSeg), counter))
-        (u: UmOut) => alUmLoop(s, iSeg + 1i32, u.umCounter,
-                               UmAcc(pushAll(acc.uaOps, u.umOps), concat(acc.uaVars, u.umVars)))
-        ()          => alUmLoop(s, iSeg + 1i32, counter,
-                                UmAcc(push(acc.uaOps, seg.array(iSeg)), acc.uaVars))
+fun alUmStep(acc: UmAcc, op: Op): UmAcc => match(alUmOne(op, acc.uaCounter))
+  (u: UmOut) => UmAcc(pushAll(acc.uaOps, u.umOps), concat(acc.uaVars, u.umVars), u.umCounter)
+  ()          => UmAcc(push(acc.uaOps, op), acc.uaVars, acc.uaCounter)
 
 class [final] UmOut(umOps: List<Op>, umCounter: Int, umVars: List<CgField>)
 
@@ -914,7 +906,7 @@ fun alUmValued(c: OpCall, n)
 fun alReturnUnparked(f: CgFunction): CgFunction
   if !any(f.fnOps, alIsReturnedAwait) || any(f.fnOps, alParksUnreturned)
     ret f
-  ret cgFunctionWith(f, build(alRuLoop(cgOpsToList(f.fnOps), false, seqBuilder())),
+  ret cgFunctionWith(f, fold(f.fnOps, (skipping = false, acc = Array<Op>()), alRuLoopStep).acc,
                      f.fnStackVars)
 
 fun alIsReturnedAwait(op) => match(op)
@@ -923,10 +915,7 @@ fun alIsReturnedAwait(op) => match(op)
 
 fun alParksUnreturned(op) => alIsSplitter(op) && !alIsReturnedAwait(op)
 
-fun alRuLoop(os: List<Op>, skipping: Bool, [terminal] acc: SeqBuilder<Op>): SeqBuilder<Op> =>
-  fold(os, (skipping = skipping, acc = acc), alRuLoopStep).acc
-
-fun alRuLoopStep(st: (skipping: Bool, acc: SeqBuilder<Op>), x: Op) =>
+fun alRuLoopStep(st: (skipping: Bool, acc: Array<Op>), x: Op) =>
   st.skipping
   ? (skipping = !(x is OpReturn), acc = st.acc)
   : match(x)
@@ -997,34 +986,24 @@ fun alIsSyncNontailCall(op) => match(op)
   (c: OpCall) => !c.callMusttail && opCallIsSync(c)
   (o: Op)     => false
 
-class [linear, final] EscAcc(ecOps: SeqBuilder<Op>, ecVars: List<CgField>, ecGrew: Bool)
+class [final] EscAcc(ecOps: Array<Op>, ecVars: List<CgField>, ecGrew: Bool, ecIndex: Int)
 
 # Expand every non-tail sync call. Runs after tail discovery, so a sync call
 # in tail position stays a musttail passing its callee's result straight
 # through. Unchanged (Python returns fn itself) unless an expansion grew.
 fun alExpandSyncCalls(f: CgFunction)
-  let acc = alEscLoop(f.fnOps, 0i32, 0, EscAcc(seqBuilder(), List(), false))
-  let grew = acc.ecGrew
-  let vars = acc.ecVars
-  let ops = build(acc.ecOps)
-  ret grew ? cgFunctionWith(f, ops, cgStructAdd(f.fnStackVars, CgStruct(vars))) : f
+  let acc = fold(f.fnOps, EscAcc(Array<Op>(), List(), false, 0), alEscOne)
+  ret acc.ecGrew ? cgFunctionWith(f, acc.ecOps, cgStructAdd(f.fnStackVars, CgStruct(acc.ecVars))) : f
 
-fun [tail] alEscLoop(s: Segment<Op>|None, iSeg, index,
-                     [terminal] acc: EscAcc): EscAcc => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg >= seg.length
-    ? alEscLoop(seg.next, 0i32, index, acc)
-    : alEscLoop(s, iSeg + 1i32, index + 1, alEscOne(seg.array(iSeg), index, acc))
-
-fun alEscOne(op, index: Int, [terminal] acc: EscAcc): EscAcc => match(op)
+fun alEscOne(acc: EscAcc, op: Op): EscAcc => match(op)
   (c: OpCall) => alIsSyncNontailCall(op)
-    ? alEscPush(alExpandSyncCall(c, alSyncWrapName(c.callRegister, index)), acc)
-    : EscAcc(push(acc.ecOps, op), acc.ecVars, acc.ecGrew)
-  (o: Op)     => EscAcc(push(acc.ecOps, op), acc.ecVars, acc.ecGrew)
+    ? alEscPush(alExpandSyncCall(c, alSyncWrapName(c.callRegister, acc.ecIndex)), acc)
+    : EscAcc(push(acc.ecOps, op), acc.ecVars, acc.ecGrew, acc.ecIndex + 1)
+  (o: Op)     => EscAcc(push(acc.ecOps, op), acc.ecVars, acc.ecGrew, acc.ecIndex + 1)
 
-fun alEscPush(se: SyncExp, [terminal] acc: EscAcc): EscAcc
+fun alEscPush(se: SyncExp, acc: EscAcc): EscAcc
   ret EscAcc(pushAll(acc.ecOps, se.seOps), concat(acc.ecVars, se.seVars),
-             acc.ecGrew || atLeast(se.seOps, 2))
+             acc.ecGrew || atLeast(se.seOps, 2), acc.ecIndex + 1)
 
 fun alSyncWrapName(reg: RParam|None, index: Int) => match(reg)
   (r: RParam) => alSyncWrapNameOf(r, index)
@@ -1871,17 +1850,16 @@ fun alIsMusttailCall(op) => match(op)
 # per call. Walk once, recording the park count at each label; a jump back to
 # a seen label with parks accrued since is a parking loop. Park ops = exactly
 # what the basic-block builder splits on (a may-suspend Call, Await).
-fun alHasParkingLoop(ops: Segment<Op>|None) => alHplLoop(ops, 0i32, Dict(), 0)
+fun alHasParkingLoop(ops: Array<Op>) => alHplLoop(ops, 0, Dict(), 0)
 
-fun [tail] alHplLoop(s: Segment<Op>|None, i, labelParks,
-                     parks) => match(s)
-  (nil: None)        => false
-  (seg: Segment<Op>) => i >= seg.length
-    ? alHplLoop(seg.next, 0i32, labelParks, parks)
-    : any(opBranchTargets(seg.array(i)), (name) => alHplHit(labelParks, name, parks))
+fun [tail] alHplLoop(s: Array<Op>, i: Int, labelParks,
+                     parks): Bool
+  ret i >= size(s)
+    ? false
+    : any(opBranchTargets(s[i]), (name) => alHplHit(labelParks, name, parks))
       ? true
-      : alHplLoop(s, i + 1i32, alHplLabelParks(seg.array(i), labelParks, parks),
-                  alIsSplitter(seg.array(i)) ? parks + 1 : parks)
+      : alHplLoop(s, i + 1, alHplLabelParks(s[i], labelParks, parks),
+                  alIsSplitter(s[i]) ? parks + 1 : parks)
 
 fun alHplLabelParks(op, labelParks: Dict<String, Int>, parks) => match(op)
   (lb: OpLabel) => put(labelParks, lb.labelName, parks)
@@ -1952,23 +1930,17 @@ fun alOpWithoutSavedVars(op: Op): Op => isEmpty(opSavedVars(op)) ? op : opWithSa
 # exists for.
 fun alZeroInitUnwrittenSaves(f: CgFunction): CgFunction
   let entry = ucComputeEntrySets(f)
-  let offenders = alZiusLoop(f.fnOps, 0i32, 0, entry, Dict())
+  let offenders = alZiusLoop(f.fnOps, 0, entry, Dict())
   if isEmpty(offenders)
     ret f
   let inits = map<RParam, Op>(vsSorted(offenders), (v) =>
         OpMove(v, alZeroVal(rpGetType(v)), false, Dict()))
-  ret cgFunctionWith(f, build(pushAll(pushAll(seqBuilder(),
-                                                  inits),
-                                      f.fnOps)),
-                     f.fnStackVars)
+  ret cgFunctionWith(f, pushAll(cgOpsOf(inits), f.fnOps), f.fnStackVars)
 
-fun [tail] alZiusLoop(s: Segment<Op>|None, iSeg, i, entry: Dict<Int, InitSet>,
-                      acc) => match(s)
-  (nil: None)        => acc
-  (seg: Segment<Op>) => iSeg < seg.length
-    ? alZiusLoop(s, iSeg + 1i32, i + 1, entry,
-                 alZiusStep(seg.array(iSeg), ucEntryAt(entry, i), acc))
-    : alZiusLoop(seg.next, 0i32, i, entry, acc)
+fun [tail] alZiusLoop(s: Array<Op>, i: Int, entry: Dict<Int, InitSet>,
+                      acc) => i < size(s)
+  ? alZiusLoop(s, i + 1, entry, alZiusStep(s[i], ucEntryAt(entry, i), acc))
+  : acc
 
 fun alZiusStep(op, e, acc) => match(e)
   (u: IsUnreached) => acc
