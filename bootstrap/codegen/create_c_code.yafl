@@ -74,7 +74,7 @@ fun createEntryPoint(mainName): CgFunction
                                    RpNewStruct(list2(RpNamedValue("task", untag),
                                                      RpNamedValue("cb", continuation))),
                                    CgDataPointer(false))
-  let ops = concat<Op>(list5(
+  let ops = pushAll<Op>(arrayOf5<Op>(
       OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
              RpNewStruct(List()), svResult, false, false, None, Dict()),
       OpJumpIf("$async_entry", unlikelyChk, false, Dict()),
@@ -84,15 +84,15 @@ fun createEntryPoint(mainName): CgFunction
       OpReturnVoid(Dict()),
       # Async path: register the continuation as task callback.
       OpLabel("$async_entry", Dict())),
-    list2(OpMove(svDiscard, onComplete, true, Dict()),
-          OpReturnVoid(Dict())))
+    arrayOf<Op>(OpMove(svDiscard, onComplete, true, Dict()),
+                OpReturnVoid(Dict())))
   ret CgFunction("__entrypoint__",
                  CgStruct(list2(CgField("this", CgDataPointer(false)),
                                 CgField("$continuation", CgFuncPointer(false, false)))),
                  CgVoid(),
                  CgStruct(list2(CgField("result", CgDataPointer(false)),
                                 CgField("$sv_discard", CgDataPointer(false)))),
-                 cgOpsOf(ops), "", None, false, false, true, InlineAuto())
+                 ops, "", None, false, false, true, InlineAuto())
 
 # ── lazy machinery (ensure) ──────────────────────────────────────────────────
 

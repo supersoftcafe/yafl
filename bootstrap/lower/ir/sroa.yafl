@@ -155,9 +155,7 @@ fun [tail] sroaApplyLoop(s: Array<Op>, i: Int, sp: List<Sroa>,
                          acc: Array<Op>): Array<Op>
   ret i < size(s)
     ? sroaApplyLoop(s, i + 1, sp,
-        pushAll(
-            push(acc, opReplaceParams(s[i], (p) => sroaReplacer(p, sp))),
-            sroaSeedMoves(sp, i)))
+        sroaSeedMoves(push(acc, opReplaceParams(s[i], (p) => sroaReplacer(p, sp))), sp, i))
     : acc
 
 fun sroaReplacer(p, sp: List<Sroa>): RParam => match(p)
@@ -173,8 +171,8 @@ fun sroaFieldLocal(sp: List<Sroa>, v: String, f, orig): RParam
       ()               => orig
     ()          => orig
 
-fun sroaSeedMoves(sp: List<Sroa>, i: Int): List<Op>
-  ret fold(sp, List(), (acc, s2) => s2.srDefIndex == i
-             ? concat(acc, map(s2.srFields, (fl) =>
-                 OpMove(fl.sfLocal, RpStructField(s2.srVar, fl.sfField), false, Dict())))
-             : acc)
+fun sroaSeedMoves(acc: Array<Op>, sp: List<Sroa>, i: Int): Array<Op>
+  ret fold(sp, acc, (a: Array<Op>, s2: Sroa) => s2.srDefIndex == i
+             ? fold(s2.srFields, a, (a2: Array<Op>, fl: SroaField) =>
+                 push<Op>(a2, OpMove(fl.sfLocal, RpStructField(s2.srVar, fl.sfField), false, Dict())))
+             : a)

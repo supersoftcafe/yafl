@@ -58,11 +58,11 @@ fun matchEndLabel() => "match_end"
 fun emAdd(st: GEmit, b: GBundle)
   ret GEmit(bundleJoin(st.geBundle, b), st.geArmResults, st.geCounter, st.geFallbackLabel)
 
-fun emOps(st: GEmit, ops) => emAdd(st, bundleOps(ops))
+fun emOps(st: GEmit, ops: Array<Op>) => emAdd(st, bundleOps(ops))
 
-fun emOp1(st: GEmit, op) => emOps(st, list1(op))
+fun emOp1(st: GEmit, op: Op) => emOps(st, arrayOf<Op>(op))
 
-fun emStackVar(st: GEmit, sv) => emAdd(st, bundleFull(list1(sv), List(), None))
+fun emStackVar(st: GEmit, sv) => emAdd(st, bundleFull(list1(sv), Array<Op>(), None))
 
 class [final] NextIndexOut(niIdx: Int, niState: GEmit)
 
@@ -260,7 +260,7 @@ fun bindSubjectOn(resolver: Resolver, arm: PArm, boundType: Spec, value: RParam)
   let armCtype = specGenerate(boundType, resolver)
   let value2 = adjustBoundValue(armCtype, value)
   let armSv = RpStackVar(armCtype, armUniqueName(arm))
-  let bundle = GBundle(list1(armSv), list1(OpMove(armSv, value2, false, Dict())), None, List(), List())
+  let bundle = GBundle(list1(armSv), arrayOf<Op>(OpMove(armSv, value2, false, Dict())), None, List(), List())
   ret GBind(bundle, bindingScope(arm, boundType, resolver))
 
 # A unit-typed arm in a pointer union (the `None` of `Box|None`) carries no
@@ -290,7 +290,7 @@ fun bindFromSlotsOn(resolver, arm: PArm, armCtype,
                     slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, sv)
   let armValue = reconstructFromSlots(armCtype, slotAssignments, slotFields, sv, 0).rfValue
   let armSv = RpStackVar(armCtype, armUniqueName(arm))
-  let bundle = GBundle(list1(armSv), list1(OpMove(armSv, armValue, false, Dict())), None, List(), List())
+  let bundle = GBundle(list1(armSv), arrayOf<Op>(OpMove(armSv, armValue, false, Dict())), None, List(), List())
   ret match(arm.armType)
     (ty: Spec) => GBind(bundle, bindingScope(arm, ty, resolver))
     ()          => GBind(bundle, resolver)   # unreachable: a typed arm always carries armType
@@ -343,11 +343,11 @@ fun reconstructFieldsStep(st: (offset: Int, acc: List<RpNamedValue>), f: CgField
 
 fun emFinish(st: GEmit, resultVar: RParam|None) => match(resultVar)
   (rv: RParam) => isEmpty(st.geArmResults)
-    ? bundleJoin(st.geBundle, bundleOps(list2(OpLabel(matchEndLabel(), Dict()),
-                                              OpAbort("unreachable match join: every arm transferred control", Dict()))))
+    ? bundleJoin(st.geBundle, bundleOps(arrayOf<Op>(OpLabel(matchEndLabel(), Dict()),
+                                                    OpAbort("unreachable match join: every arm transferred control", Dict()))))
     : bundleJoin(st.geBundle, GBundle(list1(rv),
-                                     list2(OpLabel(matchEndLabel(), Dict()),
-                                          OpPhi(rv, armResultsToPhi(st.geArmResults), Dict())),
+                                     arrayOf<Op>(OpLabel(matchEndLabel(), Dict()),
+                                                 OpPhi(rv, armResultsToPhi(st.geArmResults), Dict())),
                                      rv, List(), List()))
   ()          => bundleJoin(st.geBundle, bundleOp1(OpLabel(matchEndLabel(), Dict())))
 

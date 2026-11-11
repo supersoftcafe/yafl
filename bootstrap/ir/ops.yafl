@@ -550,7 +550,7 @@ fun rpReadVarNames(r) => fold(rpFlatten(r, true), List(), rpTakeStackVarName)
 
 # The stack-var names a param reads. Every consumer treats these as a set —
 # liveness unions and membership tests — so the order is not observed.
-fun rpTakeStackVarName(acc, x) => match(x)
+fun rpTakeStackVarName(acc: List<String>, x) => match(x)
   (sv: RpStackVar) => prepend(sv.name, acc)
   (o: RParam)       => acc
 
@@ -628,7 +628,7 @@ fun opWithSavedVars(op, sv: Dict<String, RParam>) => match(op)
 # layout); the names-only twin is opReadVarNames above.
 fun rpReadStackVars(r) => fold(rpFlatten(r, true), List(), rpTakeStackVar)
 
-fun rpTakeStackVar(acc, x) => match(x)
+fun rpTakeStackVar(acc: List<RParam>, x) => match(x)
   (sv: RpStackVar) => prepend(x, acc)
   (o: RParam)       => acc
 

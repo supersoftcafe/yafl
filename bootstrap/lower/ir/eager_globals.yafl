@@ -232,16 +232,17 @@ fun egStartFunction(a: CgApp, order: List<String>, mainName: String): CgFunction
   let result = RpStackVar(mainFn.fnResult, "$result")
   let callMain = OpCall(RpGlobalFunction(mainName, None, false, None, false, false),
                         RpNewStruct(List()), result, false, false, None, Dict())
-  let ops = concat(map(forced, (x) => x.efCall), list2<Op>(callMain, OpReturn(result, Dict())))
+  let calls = fold(forced, Array<Op>(), (acc: Array<Op>, x: EgForce) => push<Op>(acc, x.efCall))
+  let ops = push<Op>(push<Op>(calls, callMain), OpReturn(result, Dict()))
   let vars = concat(map(forced, (x) => CgField(x.efVar, x.efType)),
                     list1(CgField("$result", mainFn.fnResult)))
   ret CgFunction(egStartName(),
                  CgStruct(list1(CgField("this", CgDataPointer(false)))),
-                 mainFn.fnResult, CgStruct(vars), cgOpsOf(ops),
+                 mainFn.fnResult, CgStruct(vars), ops,
                  "initialise eager globals, then main",
                  None, false, false, false, InlineAuto())
 
-fun egMainName(ops: List<Op>): String => match(head(ops))
+fun egMainName(ops: Array<Op>): String => match(head(ops))
   (c: OpCall) => match(c.callFunction)
     (gf: RpGlobalFunction) => gf.name
     (o: RParam)            => ""
@@ -249,19 +250,21 @@ fun egMainName(ops: List<Op>): String => match(head(ops))
   ()          => ""
 
 # The entry point's first op calls main; it calls `__start__` instead.
-fun egRetarget(ops: List<Op>): List<Op> => match(head(ops))
-  (c: OpCall) => prepend(OpCall(RpGlobalFunction(egStartName(), None, false, None, false, false),
-                                c.callParameters, c.callRegister, c.callMusttail, c.callImpure,
-                                c.callResultType, c.callSavedVars),
-                         dropOne(ops))
+fun egRetarget(ops: Array<Op>): Array<Op> => match(head(ops))
+  (c: OpCall) => egReplaceFirst(ops, OpCall(RpGlobalFunction(egStartName(), None, false, None, false, false),
+                                            c.callParameters, c.callRegister, c.callMusttail, c.callImpure,
+                                            c.callResultType, c.callSavedVars))
   (o: Op)     => ops
   ()          => ops
+
+# `ops` with its first op replaced: one copy.
+fun egReplaceFirst(ops: Array<Op>, first: Op): Array<Op> =>
+  Array<Op>(size(ops), (i: Int) => i == 0 ? first : ops[i])
 
 fun egApply(a: CgApp, order: List<String>): CgApp
   let eager = setOfList(order)
   let rewritten = fold(appFunctions(a), a, (acc, f) => egRewriteInto(acc, a, eager, f))
   let entry = forceFn(appFunction(rewritten, "__entrypoint__"))
-  let entryOps = cgOpsToList(entry.fnOps)
-  let start = egStartFunction(a, order, egMainName(entryOps))
-  let entry2 = cgFunctionWith(entry, cgOpsOf(egRetarget(entryOps)), entry.fnStackVars)
+  let start = egStartFunction(a, order, egMainName(entry.fnOps))
+  let entry2 = cgFunctionWith(entry, egRetarget(entry.fnOps), entry.fnStackVars)
   ret appPutFunction(appPutFunction(rewritten, start), entry2)

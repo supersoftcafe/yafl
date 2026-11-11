@@ -54,12 +54,12 @@ fun scFunction(f: CgFunction)
 # keep=True Moves anchor side effects — never absorb them (absorbing would
 # duplicate the computation at the read site while the anchor keeps the
 # original alive).
-fun scAnchoredNames(acc, op) => match(op)
+fun scAnchoredNames(acc: List<String>, op) => match(op)
   (m: OpMove) => m.moveKeep ? scAnchTarget(acc, m.moveTarget) : acc
   (o: Op)     => acc
 
 # An anchored-name SET, membership-tested by scReplace.
-fun scAnchTarget(acc, target) => match(target)
+fun scAnchTarget(acc: List<String>, target) => match(target)
   (sv: RpStackVar) => prepend(sv.name, acc)
   (o: RParam)      => acc
 

@@ -98,7 +98,7 @@ fun genElementStore(fa: PsFieldAssign, ar: PeArrayRead, cs: PsClass, elem: Spec,
                                                                         None, false, false)))),
                   CgInt(32))
   let place = RpObjectField(specGenerate(elem, r), baseVar, cs.cName, "array", idxVar, false, false)
-  let ops = list3<Op>(OpMove(baseVar, mustResult(baseB), false, Dict()),
+  let ops = arrayOf<Op>(OpMove(baseVar, mustResult(baseB), false, Dict()),
                       OpMove(idxVar, checked, false, Dict()),
                       OpMove(place, mustResult(valB), false, Dict()))
   ret bundleJoin(bundleJoin(bundleJoin(baseB, idxB), valB),
@@ -134,22 +134,19 @@ fun genRetInFrame(rt: PsRet, r, frame)
 
 fun genRetJump(rt: PsRet, frame, vb: GBundle): GBundle
   let exitLabel = "blockexit$" + frame.fbTag + "$" + String(rt.retIndex)
-  let tail = list2<Op>(OpLabel(exitLabel, Dict()), OpJump(blockEndLabel(frame), Dict()))
+  let tail = arrayOf<Op>(OpLabel(exitLabel, Dict()), OpJump(blockEndLabel(frame), Dict()))
   ret match(vb.gbResult)
     (rv: RParam) => genRetValued(rt, frame, vb, exitLabel, tail, rv)
     # This exit edge is the LAST phi source added so far, matching the label.
-    ()            => GBundle(vb.gbStackVars, concat(vb.gbOps, tail), None,
+    ()            => GBundle(vb.gbStackVars, pushAll<Op>(vb.gbOps, tail), None,
                              vb.gbRecurSources,
                              append(vb.gbExitSources, ExitSource(exitLabel, None)))
 
 fun genRetValued(rt: PsRet, frame: FrBlock, vb: GBundle, exitLabel,
-                 tail, rv)
+                 tail: Array<Op>, rv)
   let valvar = RpStackVar(rpGetType(rv), "blockval$" + frame.fbTag + "$" + String(rt.retIndex))
   ret GBundle(append(vb.gbStackVars, valvar),
-              concat(append(
-                  vb.gbOps,
-                  OpMove(valvar, rv, false, Dict())),
-                  tail),
+              pushAll<Op>(push<Op>(vb.gbOps, OpMove(valvar, rv, false, Dict())), tail),
               None, vb.gbRecurSources,
               append(vb.gbExitSources, ExitSource(exitLabel, valvar)))
 
@@ -163,11 +160,11 @@ fun genIfStmt(f2: PsIf, r, expected: Spec|None)
   let trueBundle = genIfBranch(f2.ifTrue, r, expected, "T")
   let falseBundle = genIfBranch(f2.ifFalse, r, expected, "F")
   ret bundleJoin(condBundle,
-      bundleJoin(bundleOps(list2(OpJumpIf("T_branch", mustResult(condBundle), false, Dict()),
-                                 OpLabel("F_branch", Dict()))),
+      bundleJoin(bundleOps(arrayOf<Op>(OpJumpIf("T_branch", mustResult(condBundle), false, Dict()),
+                                       OpLabel("F_branch", Dict()))),
       bundleJoin(falseBundle,
-      bundleJoin(bundleOps(list2(OpJump("if_end", Dict()),
-                                 OpLabel("T_branch", Dict()))),
+      bundleJoin(bundleOps(arrayOf<Op>(OpJump("if_end", Dict()),
+                                       OpLabel("T_branch", Dict()))),
       bundleJoin(trueBundle,
                  bundleOp1(OpLabel("if_end", Dict())))))))
 
@@ -193,7 +190,7 @@ fun genLetStmt(l: PsLet, r)
   let sv = RpStackVar(specGenerateOpt(l.lType, r), l.lName)
   # Leaf to_c_destructure(None) is empty in Python — expr + init only.
   ret bundleJoin(exprBundle,
-                 GBundle(list1(sv), list1(OpMove(sv, mustResult(exprBundle), false, Dict())),
+                 GBundle(list1(sv), arrayOf<Op>(OpMove(sv, mustResult(exprBundle), false, Dict())),
                          None, List(), List()))
 
 fun genExprToOpt(x: PExpr|None, r, expected) => match(x)
@@ -215,9 +212,9 @@ fun genLazyAlloc(l: PsLet, r)
   let flagF = RpObjectField(CgDataPointer(false), svStub, cls, "flag", None, true, false)
   let closureF = RpObjectField(CgFuncPointer(false, false), svStub, cls, "closure", None, true, false)
   ret GBundle(list1(svStub),
-              list3(OpNewObject(cls, svStub, None, false, Dict()),
-                    OpMove(flagF, RpNullPointer(), false, Dict()),
-                    OpMove(closureF, RpZeroOf(CgFuncPointer(false, false)), false, Dict())),
+              arrayOf<Op>(OpNewObject(cls, svStub, None, false, Dict()),
+                          OpMove(flagF, RpNullPointer(), false, Dict()),
+                          OpMove(closureF, RpZeroOf(CgFuncPointer(false, false)), false, Dict())),
               None, List(), List())
 
 fun gsStmtLazyPopulate(st, r) => match(st)
@@ -237,7 +234,7 @@ fun genLazyPopulate(l: PsLet, r)
   ret hasAttr(l.lAttrs, "future")
     ? bundleJoin(closureBundle, genFuturePost(irT, svStub, moveOp))
     : bundleJoin(closureBundle,
-                 GBundle(List(), list1(moveOp), None, List(), List()))
+                 GBundle(List(), arrayOf<Op>(moveOp), None, List(), List()))
 
 # `[future]`: hand the populated stub to the worker pool. Must follow the
 # closure Move — a worker may fire immediately.
@@ -247,7 +244,7 @@ fun genFuturePost(irT, svStub, moveOp)
                              RpNewStruct(list1(RpNamedValue("cb", RpGlobalFunction(futureRunnerName(irT), svStub, false, None, false, false)))),
                              CgDataPointer(false))
   ret GBundle(list1(svDiscard),
-              list2(moveOp, OpMove(svDiscard, post, true, Dict())),
+              arrayOf<Op>(moveOp, OpMove(svDiscard, post, true, Dict())),
               None, List(), List())
 
 fun stubClassName(t2) => "Lazy$" + irMangle(t2)
@@ -262,7 +259,7 @@ fun genDestructureStmt(d: PsDestructure, r)
   let slotType = destructureSlotType(d)
   let exprBundle = withPrefix(genExprToOpt(d.dDefault, r, slotType), "expr")
   let sv = RpStackVar(specGenerateOpt(slotType, r), d.dName)
-  let initBundle = GBundle(list1(sv), list1(OpMove(sv, mustResult(exprBundle), false, Dict())),
+  let initBundle = GBundle(list1(sv), arrayOf<Op>(OpMove(sv, mustResult(exprBundle), false, Dict())),
                            None, List(), List())
   # sv is at the un-prefixed root of initBundle; pass it directly as the
   # destructure root rather than predicting a renamed name.
@@ -304,5 +301,5 @@ fun tcdTarget(st, root, r) => match(st)
 
 fun tcdLeaf(l: PsLet, root, r)
   let sv = RpStackVar(specGenerateOpt(l.lType, r), l.lName)
-  ret GBundle(list1(sv), list1(OpMove(sv, root, false, Dict())),
+  ret GBundle(list1(sv), arrayOf<Op>(OpMove(sv, root, false, Dict())),
               None, List(), List())

@@ -82,7 +82,7 @@ fun [tail] cpCarry<S>(cur, s: S, readCounts: Dict<String, Int>,
       (n: None) => CpWalkOut(push(acc, cur), changed)
     (er: Error<Op | None, Never>) => CpWalkOut(push(acc, cur), changed)
 
-class [final] CpStep(cpsEmit: List<Op>)
+class [final] CpStep(cpsEmit: Array<Op>)
 
 # The candidate shape: Move(M:StackVar, S:StackVar); next op not a Label and
 # reads M. Emits the substituted next op (keeping the Move when M has other
@@ -117,8 +117,8 @@ fun cpEmit(m, mt: RpStackVar, ms, nxt,
   # M's only read was the one just substituted → drop the Move entirely;
   # other readers elsewhere keep it.
   ret sdCountOf(readCounts, mt.name) == 1
-    ? CpStep(list1(substituted))
-    : CpStep(list2(m, substituted))
+    ? CpStep(arrayOf<Op>(substituted))
+    : CpStep(arrayOf<Op>(m, substituted))
 
 fun cpSubstVar(p, m, s) => match(p)
   (sv: RpStackVar) => sv.name == m ? s : p

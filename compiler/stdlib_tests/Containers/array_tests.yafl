@@ -163,3 +163,28 @@ fun [test("pushAll in place and by one combined copy")] pushAllPaths(): None|Tes
 fun [test("pushAll of a List: empty leaves the array as it is")] pushAllEmptyList(): None|TestFailure
     ret assertEqStr(_render(pushAll(_upTo(3), List<Int>())), "1.2.3.", "empty list")
      ?? assertTrue(isEmpty(pushAll(Array<Int>(), List<Int>())), "empty onto empty")
+
+fun [test("head is the first element, or None when empty")] headFirst(): None|TestFailure
+    ret assertEqStr(String(head(_upTo(3)) ?? 0), "1", "first")
+     ?? assertTrue(head(Array<Int>()) is None, "empty")
+
+fun [test("dropOne leaves all but the first element")] dropsFirst(): None|TestFailure
+    ret assertEqStr(_render(dropOne(_upTo(3))), "2.3.", "rest")
+     ?? assertTrue(isEmpty(dropOne(_upTo(1))), "one element")
+     ?? assertTrue(isEmpty(dropOne(Array<Int>())), "empty")
+
+# dropLastOne shares the buffer, so appending to the result must copy rather
+# than overwrite the element the source still holds.
+fun [test("dropLastOne leaves all but the last element")] dropsLast(): None|TestFailure
+    let base = _upTo(3)
+    let shorter = dropLastOne(base)
+    let grown = push(shorter, 9)
+    ret assertEqStr(_render(shorter), "1.2.", "rest")
+     ?? assertEqStr(_render(grown), "1.2.9.", "appended to the rest")
+     ?? assertEqStr(_render(base), "1.2.3.", "source unchanged")
+     ?? assertTrue(isEmpty(dropLastOne(_upTo(1))), "one element")
+     ?? assertTrue(isEmpty(dropLastOne(Array<Int>())), "empty")
+
+fun [test("prepend puts a value in front")] prepends(): None|TestFailure
+    ret assertEqStr(_render(prepend(0, _upTo(2))), "0.1.2.", "in front")
+     ?? assertEqStr(_render(prepend(5, Array<Int>())), "5.", "onto empty")

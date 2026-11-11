@@ -360,13 +360,13 @@ fun scExcludeStandalone(cands: ScCands, specs: ScSpecs, statements: List<PStmt>,
 # small stmt/expr/spec fold — the SAME visit law as rwStmtKids/rwExprKids/
 # rwSpecKids (see rewrite.yafl's header comment), restricted to accumulation.
 
-fun scCuEntries(es: List<SEntry>, acc) =>
+fun scCuEntries(es: List<SEntry>, acc: List<Spec>) =>
   fold(es, acc, (a, x) => scCuSpecOpt(x.seType, a))
 
 # On the FRONT: the unions collected here are walked once, each checked for
 # name collisions independently of the others, and the names that come out are
 # only ever tested for membership — no step can see the order.
-fun scCuSpec(sp, acc)
+fun scCuSpec(sp, acc: List<Spec>)
   let acc2 = match(sp)
     (cm: SCombination) => prepend(sp, acc)
     (o: Spec)          => acc
@@ -381,15 +381,15 @@ fun scCuSpec(sp, acc)
     (ls: SLazyStub)     => scCuSpecOpt(ls.slsTarget, acc2)
     (o2: Spec)          => acc2
 
-fun scCuSpecOpt(sp: Spec|None, acc) => match(sp)
+fun scCuSpecOpt(sp: Spec|None, acc: List<Spec>) => match(sp)
   (s2: Spec) => scCuSpec(s2, acc)
   ()         => acc
 
-fun scCuSpecsOpt(ss: List<Spec>|None, acc) => match(ss)
+fun scCuSpecsOpt(ss: List<Spec>|None, acc: List<Spec>) => match(ss)
   (l: List<Spec>) => scCuSpecs(l, acc)
   ()              => acc
 
-fun scCuSpecs(ss: List<Spec>, acc) =>
+fun scCuSpecs(ss: List<Spec>, acc: List<Spec>) =>
   fold(ss, acc, (a, x) => scCuSpec(x, a))
 
 fun scCuTupEnts(es: List<PTupEnt>, acc: List<Spec>) =>

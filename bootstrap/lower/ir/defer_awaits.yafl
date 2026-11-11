@@ -42,10 +42,10 @@ class [final] DfRoot(drVar: RParam, drSource: RParam)
 class [final] DfMark(dmVar: RParam, dmRoot: RParam, dmPath: List<String>)
 
 fun dfDefer(f: CgFunction): CgFunction
-  let ops = cgOpsToList(f.fnOps)
+  let ops = f.fnOps
   let reads = fold(ops, Dict(), (d, op) => fold(opGetLiveVars(op).reads, d,
                                                (d2, v) => sdBump(d2, stackVarName(v))))
-  let roots0 = dfRoots(ops, reads, f.fnResult, List())
+  let roots0 = dfRoots(ops, 0, reads, f.fnResult, List())
   if isEmpty(roots0)
     ret f
   let phis = filter(ops, dfIsStackPhi)
@@ -59,7 +59,7 @@ fun dfDefer(f: CgFunction): CgFunction
   let ctx = DfCtx(st.dsMarked, st.dsRootIx, runs.drsSkip, dfPhisAt(ops, "", Dict()), f.fnResult,
                   runs.drsRuns)
   let out = dfEmit(ops, 0, ctx, DfAcc(Array<Op>(), List(), Dict(), 0, "", None))
-  let emitted = dfFillPhis(cgOpsToList(out.daOps), "", 0, out.daEdges, ctx, Array<Op>())
+  let emitted = dfFillPhis(out.daOps, 0, "", 0, out.daEdges, ctx, Array<Op>())
   let kept = filter(cgFieldsOfOrEmpty(f.fnStackVars), (fld: CgField) => get(ctx.dcMarked, fld.fieldName) is None)
   let pendings = map(roots, (r: DfRoot) => CgField(stackVarName(r.drSource), rpGetType(r.drSource)))
   let fresh = map(out.daFresh, (v) => CgField(stackVarName(v), rpGetType(v)))
@@ -71,16 +71,18 @@ fun dfIsStackPhi(op) => match(op)
 
 # ── roots: may-suspend calls whose result is read, not in tail position ──────
 
-fun [tail] dfRoots(os: List<Op>, reads: Dict<String, Int>, fnResult: CgType,
-                   acc: List<DfRoot>): List<DfRoot> => match(head(os))
-  (op: Op) => dfRoots(dropOne(os), reads, fnResult, appendSome(acc, dfRootOf(op, dropOne(os), reads, fnResult)))
-  ()       => acc
+# A cursor: op k of os, and the ops after it from k + 1.
+fun [tail] dfRoots(os: Array<Op>, k: Int, reads: Dict<String, Int>, fnResult: CgType,
+                   acc: List<DfRoot>): List<DfRoot>
+  ret k < size(os)
+    ? dfRoots(os, k + 1, reads, fnResult, appendSome(acc, dfRootOf(os[k], os, k + 1, reads, fnResult)))
+    : acc
 
-fun dfRootOf(op, rest: List<Op>, reads: Dict<String, Int>, fnResult: CgType): DfRoot|None => match(op)
+fun dfRootOf(op, os: Array<Op>, next: Int, reads: Dict<String, Int>, fnResult: CgType): DfRoot|None => match(op)
   (c: OpCall) => match(c.callRegister)
     (reg: RParam) => match(reg)
       (sv: RpStackVar) => opCallMaySuspend(c) && sdCountOf(reads, sv.name) > 0
-                          && !dfTailCalled(sv, rest, fnResult)
+                          && !dfTailCalled(sv, os, next, fnResult)
         ? dfRootFor(sv)
         : None
       (o: RParam)      => None
@@ -88,11 +90,12 @@ fun dfRootOf(op, rest: List<Op>, reads: Dict<String, Int>, fnResult: CgType): Df
   (o: Op)     => None
 
 # Call(R); Return(R) — async_lower's alTailValued pattern.
-fun dfTailCalled(reg: RpStackVar, rest: List<Op>, fnResult: CgType) => match(head(rest))
-  (r: OpReturn) => match(r.returnValue)
-    (sv: RpStackVar) => sv.name == reg.name && eqCgType(reg.fieldType, fnResult)
-    (o: RParam)      => false
-  ()            => false
+fun dfTailCalled(reg: RpStackVar, os: Array<Op>, next: Int, fnResult: CgType)
+  ret next < size(os) && match(os[next])
+    (r: OpReturn) => match(r.returnValue)
+      (sv: RpStackVar) => sv.name == reg.name && eqCgType(reg.fieldType, fnResult)
+      (o: RParam)      => false
+    (o: Op)       => false
 
 fun dfRootFor(r: RpStackVar) => DfRoot(r, RpStackVar(wrapReturnType(r.fieldType), r.name + "$pending"))
 
@@ -104,7 +107,7 @@ class [final] DfState(dsMarked: Dict<String, DfMark>, dsSkip: Set<Int>,
                               dsRoots: List<DfRoot>, dsRootIx: Dict<String, DfRoot>,
                               dsChanged: Bool)
 
-fun [tail] dfMarks(ops: List<Op>, phis: List<Op>, reads: Dict<String, Int>,
+fun [tail] dfMarks(ops: Array<Op>, phis: Array<Op>, reads: Dict<String, Int>,
                    st: DfState): DfState
   let v = dfVirtualPass(ops, 0, st)
   let h = dfPhiPass(phis, reads, v)
@@ -113,7 +116,7 @@ fun [tail] dfMarks(ops: List<Op>, phis: List<Op>, reads: Dict<String, Int>,
     : h
 
 # The op index travels in the accumulator beside the state.
-fun dfVirtualPass(os: List<Op>, k, st: DfState): DfState =>
+fun dfVirtualPass(os: Array<Op>, k, st: DfState): DfState =>
   fold(os, (st = st, k = k), (s, op) => (st = dfVirtualOne(op, s.k, s.st), k = s.k + 1)).st
 
 fun dfVirtualOne(op, k: Int, st: DfState): DfState => match(op)
@@ -132,7 +135,7 @@ fun dfVirtualMove(m: OpMove, k: Int, st: DfState): DfState
       ()             => st
     ()           => st
 
-fun dfPhiPass(ps: List<Op>, reads: Dict<String, Int>, st: DfState): DfState =>
+fun dfPhiPass(ps: Array<Op>, reads: Dict<String, Int>, st: DfState): DfState =>
   fold(ps, st, (a, x) => dfPhiOne(x, reads, a))
 
 fun dfPhiOne(op, reads: Dict<String, Int>, st: DfState): DfState => match(op)
@@ -171,21 +174,21 @@ fun dfWhole(marked: Dict<String, DfMark>, value: RParam, of: RParam): Bool => ma
 
 # label -> its Phis, in order (Function.lower_phis's phis_at).
 # The open label travels in the accumulator beside the map.
-fun dfPhisAt(os: List<Op>, current: String, acc: Dict<String, List<Op>>): Dict<String, List<Op>> =>
+fun dfPhisAt(os: Array<Op>, current: String, acc: Dict<String, Array<Op>>): Dict<String, Array<Op>> =>
   fold(os, (cur = current, at = acc), dfPhisAtStep).at
 
-fun dfPhisAtStep(st: (cur: String, at: Dict<String, List<Op>>), op: Op) => match(op)
+fun dfPhisAtStep(st: (cur: String, at: Dict<String, Array<Op>>), op: Op) => match(op)
   (lb: OpLabel) => (cur = lb.labelName, at = st.at)
-  (p: OpPhi)    => (cur = st.cur, at = put(st.at, st.cur, append(dfPhisOf(st.at, st.cur), op)))
+  (p: OpPhi)    => (cur = st.cur, at = put(st.at, st.cur, push<Op>(dfPhisOf(st.at, st.cur), op)))
   (o: Op)       => st
 
-fun dfPhisOf(at: Dict<String, List<Op>>, label: String): List<Op> => match(get(at, label))
-  (ps: List<Op>) => ps
-  ()              => List()
+fun dfPhisOf(at: Dict<String, Array<Op>>, label: String): Array<Op> => match(get(at, label))
+  (ps: Array<Op>) => ps
+  ()               => Array<Op>()
 
 class [final] DfCtx(dcMarked: Dict<String, DfMark>, dcRootIx: Dict<String, DfRoot>, dcSkip: Set<Int>,
-                    dcPhisAt: Dict<String, List<Op>>, dcResult: CgType,
-                    dcRuns: Dict<Int, List<Op>>)
+                    dcPhisAt: Dict<String, Array<Op>>, dcResult: CgType,
+                    dcRuns: Dict<Int, Array<Op>>)
 
 # A construction is ATOMIC: an OpNewObject and the run of stores into the new
 # object that follows it are emitted together, with every pending value the
@@ -195,25 +198,24 @@ class [final] DfCtx(dcMarked: Dict<String, DfMark>, dcRootIx: Dict<String, DfRoo
 # emits barrier-free, and that no barrier would record against an old object
 # anyway. dcRuns: the OpNewObject's index -> its run; the run's own indices
 # join the skip set.
-class [final] DfRuns(drsRuns: Dict<Int, List<Op>>, drsSkip: Set<Int>)
+class [final] DfRuns(drsRuns: Dict<Int, Array<Op>>, drsSkip: Set<Int>)
 
 # A cursor: each op's run is read from the ops after it.
-fun [tail] dfRunsFrom(os: List<Op>, k: Int, acc: DfRuns): DfRuns => match(head(os))
-  (op: Op) => dfRunsFrom(dropOne(os), k + 1, dfRunAt(op, dropOne(os), k, acc))
-  ()       => acc
+fun [tail] dfRunsFrom(os: Array<Op>, k: Int, acc: DfRuns): DfRuns
+  ret k < size(os) ? dfRunsFrom(os, k + 1, dfRunAt(os[k], os, k, acc)) : acc
 
-fun dfRunAt(op, rest: List<Op>, k: Int, acc: DfRuns): DfRuns => match(op)
+fun dfRunAt(op, os: Array<Op>, k: Int, acc: DfRuns): DfRuns => match(op)
   (n: OpNewObject) => match(n.newObjRegister)
-    (sv: RpStackVar) => dfRecordRun(dfRunOps(rest, sv.name, List()), k, acc)
+    (sv: RpStackVar) => dfRecordRun(dfRunOps(os, k + 1, dfRunEnd(os, k + 1, sv.name)), k, acc)
     (o: RParam)      => acc
   (o: Op)          => acc
 
-# The leading ops that initialise `name`.
-fun dfRunOps(os: List<Op>, name: String, b: List<Op>): List<Op> => concat(b, dfRunPrefix(os, name))
+# The ops [lo, hi).
+fun dfRunOps(os: Array<Op>, lo: Int, hi: Int): Array<Op> => Array<Op>(hi - lo, (i: Int) => os[lo + i])
 
-fun dfRunPrefix(os: List<Op>, name: String): List<Op> => match(findIndex(os, (o) => !dfInitialises(o, name)))
-  (k: Int) => take(os, k)
-  ()       => os
+# The end of the leading ops from `i` that initialise `name`.
+fun [tail] dfRunEnd(os: Array<Op>, i: Int, name: String): Int
+  ret i < size(os) && dfInitialises(os[i], name) ? dfRunEnd(os, i + 1, name) : i
 
 # `op` stores into a field of the object `name` names.
 fun dfInitialises(op, name: String): Bool => match(op)
@@ -224,12 +226,12 @@ fun dfInitialises(op, name: String): Bool => match(op)
     (o: RParam)         => false
   (o: Op)     => false
 
-fun dfRecordRun(run: List<Op>, k: Int, acc: DfRuns): DfRuns
+fun dfRecordRun(run: Array<Op>, k: Int, acc: DfRuns): DfRuns
   ret isEmpty(run) ? acc
     : DfRuns(put(acc.drsRuns, k, run), dfSkipRun(acc.drsSkip, k + 1, run))
 
 # Indices k, k+1, ... — one per op of the run.
-fun dfSkipRun(s: Set<Int>, k: Int, os: List<Op>): Set<Int> =>
+fun dfSkipRun(s: Set<Int>, k: Int, os: Array<Op>): Set<Int> =>
   fold(os, (s = s, k = k), (st, op) => (s = add(st.s, st.k), k = st.k + 1)).s
 
 # The ops emitted so far, the fresh variables declared, each realised Phi
@@ -241,26 +243,25 @@ class [final] DfAcc(daOps: Array<Op>, daFresh: List<RParam>,
 
 fun dfEdgeKey(join: String, pred: String, i: Int) => join + "|" + pred + "|" + String(i)
 
-fun [tail] dfEmit(os: List<Op>, k, ctx: DfCtx, acc: DfAcc): DfAcc => match(head(os))
-  (op: Op) => dfEmit(dropOne(os), k + 1, ctx, contains(ctx.dcSkip, k) ? acc : dfEmitAt(op, k, ctx, acc))
-  ()       => acc
+fun [tail] dfEmit(os: Array<Op>, k: Int, ctx: DfCtx, acc: DfAcc): DfAcc
+  ret k < size(os)
+    ? dfEmit(os, k + 1, ctx, contains(ctx.dcSkip, k) ? acc : dfEmitAt(os[k], k, ctx, acc))
+    : acc
 
 fun dfEmitAt(op, k: Int, ctx: DfCtx, acc: DfAcc): DfAcc => match(get(ctx.dcRuns, k))
-  (run: List<Op>) => dfEmitConstruction(op, run, ctx, acc)
-  ()              => dfEmitOne(op, ctx, acc)
+  (run: Array<Op>) => dfEmitConstruction(op, run, ctx, acc)
+  ()               => dfEmitOne(op, ctx, acc)
 
 # The allocation and its run, with every pending value they read realised first.
-fun dfEmitConstruction(op, run: List<Op>, ctx: DfCtx, acc: DfAcc): DfAcc
-  let all = prepend(op, run)
+fun dfEmitConstruction(op, run: Array<Op>, ctx: DfCtx, acc: DfAcc): DfAcc
+  let all = pushAll<Op>(arrayOf<Op>(op), run)
   let params = fold(all, List<RParam>(), (ps, o) => concat(ps, opGetLiveVars(o).reads))
   let r = dfRealise(params, false, ctx, acc)
   let renames = r.drRenames
   let renamed = isEmpty(renames) ? all : map(all, (o) => opRenameVars(o, renames))
   let a = r.drAcc
   ret DfAcc(pushAll(a.daOps, renamed), a.daFresh, a.daEdges, a.daNext, a.daCurrent,
-            dfLastOp(renamed, op))
-
-fun dfLastOp(os: List<Op>, fallback: Op): Op => fold(os, fallback, (a, x) => x)
+            lastOp(renamed) ?? op)
 
 fun dfEmitOne(op, ctx: DfCtx, acc: DfAcc): DfAcc => match(op)
   (p: OpPhi)   => DfAcc(push(acc.daOps, op), acc.daFresh, acc.daEdges, acc.daNext, acc.daCurrent, acc.daLast)
@@ -280,10 +281,9 @@ fun dfJumpEdge(j: OpJump, ctx: DfCtx, acc: DfAcc): DfAcc => dfEdge(j.jumpName, c
 fun dfEdge(join: String, ctx: DfCtx, acc: DfAcc): DfAcc
   ret dfEdgeSources(dfPhisOf(ctx.dcPhisAt, join), join, 0, ctx, acc)
 
-fun [tail] dfEdgeSources(ps: List<Op>, join: String, i: Int, ctx: DfCtx,
-                         acc: DfAcc): DfAcc => match(head(ps))
-  (op: Op) => dfEdgeSources(dropOne(ps), join, i + 1, ctx, dfEdgeSource(op, join, i, ctx, acc))
-  ()       => acc
+fun [tail] dfEdgeSources(ps: Array<Op>, join: String, i: Int, ctx: DfCtx,
+                         acc: DfAcc): DfAcc
+  ret i < size(ps) ? dfEdgeSources(ps, join, i + 1, ctx, dfEdgeSource(ps[i], join, i, ctx, acc)) : acc
 
 fun dfEdgeSource(op, join: String, i: Int, ctx: DfCtx, acc: DfAcc): DfAcc => match(op)
   (p: OpPhi) => dfEdgeValue(p, phiSourceFor(op, acc.daCurrent), join, i, ctx, acc)
@@ -390,13 +390,12 @@ fun dfProjectUse(rest: List<String>, m: DfMark, aw: DfAwaited, returned: Bool, c
 
 # Second walk: each Phi takes its realised sources, and a pending join writes
 # its pending value.
-fun [tail] dfFillPhis(os: List<Op>, current: String, i: Int, edges: Dict<String, RParam>, ctx: DfCtx,
-                      acc: Array<Op>): Array<Op> => match(head(os))
-  (op: Op) => match(op)
-    (lb: OpLabel) => dfFillPhis(dropOne(os), lb.labelName, 0, edges, ctx, push(acc, op))
-    (p: OpPhi)    => dfFillPhis(dropOne(os), current, i + 1, edges, ctx, push(acc, dfFilledPhi(p, current, i, edges, ctx)))
-    (o: Op)       => dfFillPhis(dropOne(os), current, i, edges, ctx, push(acc, op))
-  ()       => acc
+fun [tail] dfFillPhis(os: Array<Op>, k: Int, current: String, i: Int, edges: Dict<String, RParam>, ctx: DfCtx,
+                      acc: Array<Op>): Array<Op>
+  ret k >= size(os) ? acc : match(os[k])
+    (lb: OpLabel) => dfFillPhis(os, k + 1, lb.labelName, 0, edges, ctx, push(acc, lb))
+    (p: OpPhi)    => dfFillPhis(os, k + 1, current, i + 1, edges, ctx, push(acc, dfFilledPhi(p, current, i, edges, ctx)))
+    (o: Op)       => dfFillPhis(os, k + 1, current, i, edges, ctx, push(acc, o))
 
 fun dfFilledPhi(p: OpPhi, join: String, i: Int, edges: Dict<String, RParam>, ctx: DfCtx): Op
   let target = match(dfPendingTarget(p, ctx))

@@ -29,7 +29,7 @@ class [final] SlotFuncs(sfSlot: String, sfFuncs: List<String>)
 fun gfSlotFuncs(a: CgApp) => fold(appObjects(a), List(),
                                   (acc, o) => fold(o.objFunctions, acc, gfSlotAdd))
 
-fun gfSlotAdd(acc, s2: CgFuncSlot) => any(acc, (e2) => e2.sfSlot == s2.slotVirtualName)
+fun gfSlotAdd(acc: List<SlotFuncs>, s2: CgFuncSlot) => any(acc, (e2) => e2.sfSlot == s2.slotVirtualName)
   ? map(acc, (e2) => e2.sfSlot == s2.slotVirtualName
                ? SlotFuncs(e2.sfSlot,
                            append(e2.sfFuncs, s2.slotGlobalName))

@@ -497,7 +497,7 @@ fun siFolded(g2, folds: List<SiFold>)
 
 # A static global (objectName set, no lazy init) referenced EXACTLY once,
 # from a lazy-init function that is a trivial copy into its target.
-fun siTryFold(acc, g2: CgGlobal, a: CgApp,
+fun siTryFold(acc: List<SiFold>, g2: CgGlobal, a: CgApp,
               refs: SiRefs,
               lazyTargets: Dict<String, CgGlobal>)
   if g2.globalObjectName is None || !(g2.globalLazyInitFunction is None)
@@ -510,7 +510,7 @@ fun siTryFold(acc, g2: CgGlobal, a: CgApp,
     (fnName: String) => siFoldAgainst(acc, g2, a, fnName, lazyTargets)
     ()               => acc
 
-fun siFoldAgainst(acc, si: CgGlobal, a: CgApp,
+fun siFoldAgainst(acc: List<SiFold>, si: CgGlobal, a: CgApp,
                   fnName,
                   lazyTargets: Dict<String, CgGlobal>) => match(get(lazyTargets, fnName))
   (target: CgGlobal) => match(appFunction(a, fnName))
