@@ -36,7 +36,7 @@ fun dfoFunction(f, a: CgApp)
                               (p) => dfoReplace(p, newobjs, defs, a))),
                      f.fnStackVars)
 
-fun dfoCollect(acc, op) => match(op)
+fun dfoCollect(acc: List<DfoNewObj>, op) => match(op)
   (no: OpNewObject) => match(no.newObjRegister)
     # Looked up by register name — the table's own order is not observed.
     (sv: RpStackVar) => prepend(DfoNewObj(sv.name, no.newObjName), acc)

@@ -310,7 +310,7 @@ fun deParam(name, typeName, lr) => PsLet(hashName(name, lr), List(), List(),
 fun deEqMember(e2: PsEnum, dl: DeLeaves)
   let lr = e2.pseLine
   let arms = deEqArms(dl.dlNames, dl.dlSets, 0,
-                      atLeast(dl.dlNames, 2), e2, List())
+                      sizeAtLeast(dl.dlNames, 2), e2, List())
   let body = PeBlock(List(),
                      PeTernary(deOp("bool", "yafl_ref_eq",
                                     list2(deEnt(deRef("left", lr)), deEnt(deRef("right", lr))), lr),

@@ -104,11 +104,6 @@ fun ssavAllPathsReturn(f: CgFunction): List<String> => match(lastOp(f.fnOps))
     : List()
   ()        => List()
 
-# Array twin: one indexed read.
-fun lastOp(s: Array<Op>): Op|None => size(s) > 0 ? s[size(s) - 1] : None
-
-fun lastOp(ops: List<Op>): Op|None => head(takeLastOne(ops))
-
 # ── Phi well-formedness ──────────────────────────────────────────────────────
 
 # Walk ops tracking the current label and whether we are still in its Phi

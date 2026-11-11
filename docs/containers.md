@@ -71,9 +71,12 @@ container of choice for large, build-once-read-many sequences. Two ways in:
 * `arrayOf<T>(v1)`, `arrayOf<T>(v1, v2)`, `arrayOf<T>(v1, v2, v3)` —
   convenience constructors for a known few values
 * `pushAll(a, xs)` — append every element of a List or another Array
+* `prepend(x, a)` — `x` in front of `a`: one copy
+* `sizeAtLeast(a, n)`, `sizeAtMost(a, n)` — bounds on the count, as on `List`
 
 There is no update and no slice: read by index, or walk it with `fold` or
-`arrayStream(a)`.
+`arrayStream(a)`. List's `head`, `dropOne` and `dropLastOne` work on an Array
+too: `dropLastOne` shares the buffer, while `dropOne` copies the rest.
 A sequence that grows or is consumed element-at-a-time is a `List`; a
 sequence built once and then indexed is an `Array`.
 

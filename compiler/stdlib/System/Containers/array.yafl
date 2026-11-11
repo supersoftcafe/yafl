@@ -30,6 +30,14 @@ enum Array<T>(_length: Int32)
 fun size<T>(a: Array<T>): Int
   ret Int(a._length)
 
+# Bounds on the element count, under List's names: a check written with them
+# stays cheap if the container becomes one whose size must be walked.
+fun sizeAtLeast<T>(a: Array<T>, size: Int): Bool
+  ret Int(a._length) >= size
+
+fun sizeAtMost<T>(a: Array<T>, size: Int): Bool
+  ret Int(a._length) <= size
+
 # The tabulating constructor: n elements, the i-th init(i), with no room spare.
 # ABORTS when n is negative or beyond what an array can hold (Int32), rather
 # than quietly answering some other length.
@@ -157,12 +165,36 @@ fun any<T>(a: Array<T>, pred: (:T): Bool): Bool
 fun [tail] _anyFrom<T>(a: _FullArray<T>, i: Int32, pred: (:T): Bool): Bool
   ret i < a._length && (pred(a._buffer._items(i)) || _anyFrom<T>(a, i + 1i32, pred))
 
+# The first element, if there is one.
+fun head<T>(a: Array<T>): T|None
+  ret match(a)
+    (f: _FullArray<T>)  => f._buffer._items(0i32)
+    (e: _EmptyArray<T>) => None
+
+# All but the first element. A value always starts at its buffer's start, so
+# this copies the rest.
+fun dropOne<T>(a: Array<T>): Array<T>
+  ret match(a)
+    (f: _FullArray<T>)  => _tabulate<T>(f._length - 1i32, (i: Int32) => f._buffer._items(i + 1i32))
+    (e: _EmptyArray<T>) => a
+
+# All but the last element, sharing the buffer: a value reads only its own
+# length. It no longer owns the buffer's end, so appending to it copies.
+fun dropLastOne<T>(a: Array<T>): Array<T>
+  ret match(a)
+    (f: _FullArray<T>)  => f._length == 1i32 ? _EmptyArray<T>(0i32) : _FullArray<T>(f._length - 1i32, f._buffer)
+    (e: _EmptyArray<T>) => a
+
 
 # ── incremental construction ─────────────────────────────────────────────────
 # Append one element. `append` is the value-returning operation; `push` is the
 # builder-shaped spelling, so a growing sequence reads the same over an Array.
 fun push<T>(a: Array<T>, x: T): Array<T>
   ret append<T>(a, x)
+
+# `value` followed by `a`: one copy.
+fun prepend<T>(value: T, a: Array<T>): Array<T>
+  ret pushAll<T>(arrayOf<T>(value), a)
 
 # Append every element of `l`, in order. An empty `l` is `a` itself.
 fun pushAll<T>(a: Array<T>, l: List<T>): Array<T>

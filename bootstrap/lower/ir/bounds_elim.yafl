@@ -133,7 +133,7 @@ fun beDefOf(defs: Dict<String, BeDefEntry>, name: String): BeDef|None => match(g
 # ── the resolver ────────────────────────────────────────────────────────────
 
 fun beResolve(rp, defs: Dict<String, BeDefEntry>,
-              visiting): BeVal => match(rp)
+              visiting: List<String>): BeVal => match(rp)
   (i: RpInteger)         => BeInt(i.value, i.precision)
   (of: RpObjectField)    => BeField(beResolve(of.pointer, defs, visiting),
                                     of.field)
@@ -145,14 +145,14 @@ fun beResolve(rp, defs: Dict<String, BeDefEntry>,
   (o: RParam)            => BeOpaque()
 
 fun beInvokeArgs(params, defs: Dict<String, BeDefEntry>,
-                 visiting) => match(params)
+                 visiting: List<String>) => match(params)
   (ns: RpNewStruct) => map(ns.values,
                            (v) => beResolve(v.value, defs,
                                             visiting))
   (o: RParam)       => None
 
 fun beResolveStructField(sf: RpStructField, defs: Dict<String, BeDefEntry>,
-                         visiting) => match(sf.structVal)
+                         visiting: List<String>) => match(sf.structVal)
   (sv: RpStackVar) => match(beDefOf(defs, sv.name))
     (d: BeDef) => match(d)
       (src: BdSource) => match(src.bdSource)
@@ -165,12 +165,12 @@ fun beResolveStructField(sf: RpStructField, defs: Dict<String, BeDefEntry>,
 
 fun beStructValue(vs: List<RpNamedValue>, field: String,
                   defs: Dict<String, BeDefEntry>,
-                  visiting) => match(firstWhere(vs, (v) => v.name == field))
+                  visiting: List<String>) => match(firstWhere(vs, (v) => v.name == field))
   (v: RpNamedValue) => beResolve(v.value, defs, visiting)
   ()                => BeOpaque()
 
 fun beResolveVar(name, defs: Dict<String, BeDefEntry>,
-                 visiting)
+                 visiting: List<String>)
   if contains(visiting, name)
     ret BeCycle(name)
   ret match(beDefOf(defs, name))
@@ -184,7 +184,7 @@ fun beResolveVar(name, defs: Dict<String, BeDefEntry>,
     ()         => BeVar(name)          # parameter or multi-def: stable identity
 
 fun beResolvePhi(name, phi: OpPhi, defs: Dict<String, BeDefEntry>,
-                 visiting)
+                 visiting: List<String>)
   if !exactly(phi.phiSources, 2)
     ret BeOpaque()
   let id0 = bePhiSourceId(phi, 0, defs, visiting)
@@ -196,7 +196,7 @@ fun beResolvePhi(name, phi: OpPhi, defs: Dict<String, BeDefEntry>,
       ()          => BeOpaque()
 
 fun bePhiSourceId(phi: OpPhi, ix, defs: Dict<String, BeDefEntry>,
-                  visiting): BeVal => match(nthOf(phi.phiSources, ix))
+                  visiting: List<String>): BeVal => match(nthOf(phi.phiSources, ix))
   (s2: OpPhiSource) => beResolve(s2.sourceValue, defs, visiting)
   ()                => BeOpaque()
 
@@ -277,7 +277,7 @@ fun beLabelIndex(ops: Array<Op>): Dict<String, Int> => beLabelLoopB(ops, 0, Dict
 
 fun [tail] beLabelLoopB(s: Array<Op>, i: Int,
                        acc: Dict<String, Int>): Dict<String, Int>
-  ret i < size(s) ? beLabelLoopB(s, i + 1, beLabelPut(acc, s[i], i)) : acc
+  ret !sizeAtMost(s, i) ? beLabelLoopB(s, i + 1, beLabelPut(acc, s[i], i)) : acc
 
 fun beLabelPut(acc: Dict<String, Int>, op, i: Int): Dict<String, Int> => match(op)
   (lb: OpLabel) => put(acc, lb.labelName, i)
@@ -288,7 +288,7 @@ fun beLoopRegions(ops: Array<Op>, labels: Dict<String, Int>)
 
 fun [tail] beRegionLoopB(s: Array<Op>, i: Int, labels: Dict<String, Int>,
                         acc: List<BeRegion>): List<BeRegion>
-  ret i >= size(s)
+  ret sizeAtMost(s, i)
     ? acc
     : beRegionLoopB(s, i + 1, labels, beRegionAt(s[i], i, labels, acc))
 
@@ -313,7 +313,7 @@ fun beGuardedBounds(ops: Array<Op>, region: BeRegion,
 
 fun [tail] beGuardLoop(ops: Array<Op>, i, region: BeRegion,
                        labels: Dict<String, Int>, defs: Dict<String, BeDefEntry>,
-                       acc)
+                       acc: List<BeProof>)
   if i >= region.brHi
     ret acc
   ret match(nthOf(ops, i))
@@ -324,7 +324,7 @@ fun [tail] beGuardLoop(ops: Array<Op>, i, region: BeRegion,
 
 fun beGuardOne(op, i, ops: Array<Op>, region: BeRegion,
                labels: Dict<String, Int>, defs: Dict<String, BeDefEntry>,
-               acc) => match(op)
+               acc: List<BeProof>) => match(op)
   (ji: OpJumpIf) => match(beResolve(ji.jumpIfCondition, defs,
                                     List()))
     (inv: BeInvoke) => match(inv.beInvArgs)
@@ -339,7 +339,7 @@ fun beGuardOne(op, i, ops: Array<Op>, region: BeRegion,
 fun beGuardWithTruth(fnName, args: List<BeVal>, ji: OpJumpIf,
                      i, ops: Array<Op>, region: BeRegion,
                      labels: Dict<String, Int>, defs: Dict<String, BeDefEntry>,
-                     acc) => match(beGuardTruth(ji, i, ops, region, labels))
+                     acc: List<BeProof>) => match(beGuardTruth(ji, i, ops, region, labels))
   (bodyTruth: Bool) => beGuardCommit(fnName, args, bodyTruth, defs, acc)
   ()                => acc
 
@@ -365,7 +365,7 @@ fun beInRegion(at: Int|None, region: BeRegion) => match(at)
   ()       => false
 
 fun beGuardCommit(fnName, args: List<BeVal>, bodyTruth,
-                  defs: Dict<String, BeDefEntry>, acc)
+                  defs: Dict<String, BeDefEntry>, acc: List<BeProof>)
   let a = beArgAt(args, 0)
   let b = beArgAt(args, 1)
   let acc2 = beGuardPair(fnName, a, b, true, bodyTruth, defs, acc)
@@ -377,7 +377,7 @@ fun beArgAt(args: List<BeVal>, ix): BeVal => match(nthOf(args, ix))
 
 fun beGuardPair(fnName, x, y, asWritten,
                 bodyTruth, defs: Dict<String, BeDefEntry>,
-                acc) => match(x)
+                acc: List<BeProof>) => match(x)
   (ind: BeInduction) => beGuardKind(fnName, ind, asWritten, bodyTruth,
                                     defs)
     # A proof set, scanned for a match.
@@ -419,19 +419,14 @@ fun beApplyRegion(f, region: BeRegion, defs: Dict<String, BeDefEntry>,
   if isEmpty(proven)
     ret f
   ret cgFunctionWith(f, beRewriteOps(f.fnOps, 0, region, proven,
-                                     defs, stores, List()),
+                                     defs, stores, Array<Op>()),
                      f.fnStackVars)
 
-fun beRewriteOps(ops: Array<Op>, i, region: BeRegion,
-                        proven: List<BeProof>, defs: Dict<String, BeDefEntry>,
-                        stores: Dict<(:BeVal, :String), BeStore>, acc: List<Op>)
-  ret beRewriteOpsB(ops, i, region, proven, defs, stores, Array<Op>())
-
-fun [tail] beRewriteOpsB(s: Array<Op>, i: Int, region: BeRegion,
+fun [tail] beRewriteOps(s: Array<Op>, i: Int, region: BeRegion,
                         proven: List<BeProof>, defs: Dict<String, BeDefEntry>,
                         stores: Dict<(:BeVal, :String), BeStore>, acc: Array<Op>): Array<Op>
-  ret i < size(s)
-    ? beRewriteOpsB(s, i + 1, region, proven, defs, stores,
+  ret !sizeAtMost(s, i)
+    ? beRewriteOps(s, i + 1, region, proven, defs, stores,
                     push(acc, i >= region.brLo && i <= region.brHi
                       ? beRewriteOp(s[i], proven, defs, stores)
                       : s[i]))
@@ -483,7 +478,7 @@ fun beFlipElement(ae, proven: List<BeProof>,
                                stores, ptr, ae.lengthField)
   ret beProofLoop(proven, ae, idx, lengthIds, stores)
 
-fun beWithStored(acc, stores: Dict<(:BeVal, :String), BeStore>, ptr: BeVal,
+fun beWithStored(acc: List<BeVal>, stores: Dict<(:BeVal, :String), BeStore>, ptr: BeVal,
                  field: String) => match(beStoreLookup(stores, ptr, field))
   # Candidate values, scanned for a proof — order not observed.
   (v: BeVal) => prepend(v, acc)

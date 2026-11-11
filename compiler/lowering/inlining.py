@@ -74,6 +74,12 @@ def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozense
 
         end_label = f"inl{unique_id}end"
         end_jump = Jump(end_label)
+        # How the splice ends, decided from the callee rather than by
+        # re-reading what was emitted: when its first Return is its last op,
+        # that Return is its only one and control falls out of it — no Jump,
+        # and no Label. Otherwise every Return jumps to the Label after the body.
+        first_return = next((i for i, t in enumerate(target.ops) if isinstance(t, Return)), None)
+        falls_out = first_return == len(target.ops) - 1
 
         # Insert the target code, renaming every variable use
         for target_op in target.ops:
@@ -81,7 +87,8 @@ def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozense
                 # Replace every return with a Move and jump to an end label
                 if op.register:
                     new_ops.append(Move(op.register, target_op.value.rename_vars(renames)))
-                new_ops.append(end_jump)
+                if not falls_out:
+                    new_ops.append(end_jump)
             elif isinstance(target_op, Call) and target_op.musttail:
                 # Replace every musttail=True with musttail=False
                 new_ops.append(dataclasses.replace(target_op, musttail=False).rename_vars(renames))
@@ -89,11 +96,8 @@ def __do_inlining(fn: Function, others: dict[str, Function], recursive: frozense
                 # Just rename the variable references
                 new_ops.append(target_op.rename_vars(renames))
 
-        if end_jump in new_ops:
-            if new_ops.index(end_jump) < len(new_ops)-1:
-                new_ops.append(Label(end_label)) # Needs a jump target
-            else:
-                new_ops.pop() # The only jump is just prior to the label
+        if first_return is not None and not falls_out:
+            new_ops.append(Label(end_label))  # The Returns' jump target
 
     for index, old_op in enumerate(fn.ops):
         replace_op_with_func(old_op, f"{tag}${index}")

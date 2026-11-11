@@ -44,20 +44,17 @@ fun inlineSmallFunctions(a: CgApp, inlineAlways, epoch: Int, cutoff: Int)
 # (-O3); never inline an `[inline(never)]` target.
 fun inlPolicy(target: CgFunction, inlineAlways: Bool, cutoff: Int): Bool => match(target.fnInline)
   (n: InlineNever)  => false
-  (a: InlineAlways) => inlineAlways || !atLeast(target.fnOps, cutoff)
-  (u: InlineAuto)   => !atLeast(target.fnOps, cutoff)
-  (e: InlineEarly)  => !atLeast(target.fnOps, cutoff)
+  (a: InlineAlways) => inlineAlways || !sizeAtLeast(target.fnOps, cutoff)
+  (u: InlineAuto)   => !sizeAtLeast(target.fnOps, cutoff)
+  (e: InlineEarly)  => !sizeAtLeast(target.fnOps, cutoff)
 
 # ── the engine ───────────────────────────────────────────────────────────────
 
 # The rewritten op stream and the extra stack slots the inlined bodies need.
-# The ops are a builder: an op that is NOT a call site — the overwhelming
-# majority — now costs O(1) to keep, where it used to copy every op emitted so
-# far. A splice still materialises the stream, because the end-label
-# bookkeeping inspects it, but that is once per inlined call rather than once
-# per instruction.
-class [final] InlAcc(inlOps: List<Op>,
-                             inlVars: List<CgField>)
+# The ops are appended in place, and a splice never looks back at what was
+# emitted before it: how it ends is decided from the callee (inlSplice).
+class [final] InlAcc(inlOps: Array<Op>,
+                     inlVars: List<CgField>)
 
 # The inlined-name uniquifier is the fixpoint EPOCH, not the op count:
 # distinct per round by construction (the count merely happened to change
@@ -70,16 +67,14 @@ fun doInlining(f, tag, a: CgApp, recursive: Set<String>,
     ret f
   let shouldInline = (target: CgFunction) => !contains(recursive, target.fnName) && policy(target)
   let out = inlLoop(f.fnOps, 0, tag, a, shouldInline,
-                    InlAcc(List(), List()))
-  # The splice assembly stays a transient List (end-bookkeeping reads and
-  # pops it); the retained result crosses to Array storage here.
-  ret cgFunctionWith(f, cgOpsOf(out.inlOps),
+                    InlAcc(Array<Op>(), List()))
+  ret cgFunctionWith(f, out.inlOps,
         CgStruct(concat(cgFieldsOfOrEmpty(f.fnStackVars), out.inlVars)))
 
 fun [tail] inlLoop(s: Array<Op>, index: Int, tag,
                    a: CgApp, shouldInline,
                    acc: InlAcc): InlAcc
-  ret index < size(s)
+  ret !sizeAtMost(s, index)
     ? inlLoop(s, index + 1, tag, a, shouldInline,
               inlStep(s[index], tag + "$" + String(index),
                       a, shouldInline, acc))
@@ -90,7 +85,7 @@ fun inlStep(op, uniqueId, a: CgApp,
             shouldInline,
             acc: InlAcc) => match(inlCandidate(op, a, shouldInline))
   (t2: InlTarget) => inlSplice(t2, uniqueId, acc)
-  ()               => InlAcc(append(acc.inlOps, op), acc.inlVars)
+  ()               => InlAcc(push<Op>(acc.inlOps, op), acc.inlVars)
 
 class [final] InlTarget(itCall: OpCall, itGf: RpGlobalFunction,
                         itArgs: RpNewStruct, itTarget: CgFunction)
@@ -120,12 +115,12 @@ fun inlCandidateChecked(c, gf, ns, a: CgApp,
 
 # ── the splice ───────────────────────────────────────────────────────────────
 # Fresh inl<id>$-prefixed stack vars for the callee's params + locals, label
-# renames, `this` capture, param Moves, the body with every Return replaced by
-# Move(register)+Jump(end) and musttail flags cleared, then the end-label
-# bookkeeping: append the Label only when some end-jump is not simply the last
-# op emitted; pop a sole trailing end-jump (Python's `end_jump in new_ops` /
-# first-index semantics — the label is unique per splice, so the global test
-# reduces to this segment).
+# renames, `this` capture, param Moves, then the body with every Return
+# replaced by Move(register)+Jump(end) and musttail flags cleared, and the end
+# Label after it. Except: when the callee's first Return is its last op, that
+# Return is its only one and control simply falls out of it, so it emits no
+# Jump and the splice no Label. Decided from the callee, before emitting, so
+# the splice never re-reads what it emitted. Python does the same.
 
 fun inlSplice(t2: InlTarget, uniqueId,
               acc: InlAcc)
@@ -139,13 +134,21 @@ fun inlSplice(t2: InlTarget, uniqueId,
   let newVars = map(allFields, (f2) =>
         CgField("inl" + uniqueId + "$" + f2.fieldName, f2.fieldType))
   let endLabel = "inl" + uniqueId + "end"
+  let firstReturn = inlFirstReturn(target.fnOps, 0)
+  let fallsOut = match(firstReturn)
+    (k: Int) => k == size(target.fnOps) - 1
+    ()       => false
   let ops1 = inlThisCapture(t2, uniqueId, allFields, acc.inlOps)
   let ops2 = inlParamMovesB(t2.itArgs.values, dropOne(pFields),
                             uniqueId, allFields, ops1)
   let ops3 = fold(target.fnOps, ops2,
-                  (acc2: List<Op>, op: Op) => inlBodyOp(op, t2.itCall, renames, endLabel, acc2))
-  ret InlAcc(inlEndBookkeeping(ops3, endLabel),
-             concat(acc.inlVars, newVars))
+                  (acc2: Array<Op>, op: Op) => inlBodyOp(op, t2.itCall, renames, endLabel, fallsOut, acc2))
+  let ops4 = firstReturn is None || fallsOut ? ops3 : push<Op>(ops3, OpLabel(endLabel, Dict()))
+  ret InlAcc(ops4, concat(acc.inlVars, newVars))
+
+# The index of the callee's first Return, if it has one.
+fun [tail] inlFirstReturn(ops: Array<Op>, i: Int): Int|None
+  ret sizeAtMost(ops, i) ? None : (ops[i] is OpReturn ? i : inlFirstReturn(ops, i + 1))
 
 fun inlLabelRenames(ops: Array<Op>, uniqueId)
   ret fold(ops, List<RpRename>(), (acc: List<RpRename>, op: Op) => inlLabelRename(acc, op, uniqueId))
@@ -163,64 +166,39 @@ fun inlMappedVar(fields: List<CgField>, name,
                     # unreachable: every param name is a field
 
 fun inlThisCapture(t2: InlTarget, uniqueId, allFields: List<CgField>,
-                   ops): List<Op> => match(t2.itGf.object)
+                   ops: Array<Op>): Array<Op> => match(t2.itGf.object)
   (obj: RParam) => match(head(cgFieldsOfOrEmpty(t2.itTarget.fnParams)))
-    (f2: CgField) => append(ops,
+    (f2: CgField) => push<Op>(ops,
         OpMove(inlMappedVar(allFields, f2.fieldName, uniqueId), obj,
                false, Dict()))
     ()             => ops   # unreachable: object implies a this param
   ()             => ops
 
-fun inlParamMoves(args: List<RpNamedValue>, params: List<CgField>,
-                         uniqueId, allFields: List<CgField>,
-                         ops: List<Op>)
-  ret inlParamMovesB(args, params, uniqueId, allFields, ops)
-
 fun inlParamMovesB(args: List<RpNamedValue>, params: List<CgField>,
                   uniqueId, allFields: List<CgField>,
-                  ops): List<Op> =>
-  zipFold(args, params, ops, (out, av, pf) =>
-    append(out, OpMove(inlMappedVar(allFields, pf.fieldName, uniqueId), av.value, false, Dict())))
+                  ops: Array<Op>): Array<Op> =>
+  zipFold(args, params, ops, (out: Array<Op>, av, pf) =>
+    push<Op>(out, OpMove(inlMappedVar(allFields, pf.fieldName, uniqueId), av.value, false, Dict())))
 
-fun inlBodyOp(op, c: OpCall, renames: List<RpRename>, endLabel,
-              acc): List<Op> => match(op)
-  (r: OpReturn)  => append(inlReturnMove(r, c, renames, acc),
-                         OpJump(endLabel, Dict()))
+fun inlBodyOp(op, c: OpCall, renames: List<RpRename>, endLabel, fallsOut: Bool,
+              acc: Array<Op>): Array<Op> => match(op)
+  (r: OpReturn)  => fallsOut
+    ? inlReturnMove(r, c, renames, acc)
+    : push<Op>(inlReturnMove(r, c, renames, acc), OpJump(endLabel, Dict()))
   (cl: OpCall)   => cl.callMusttail
-    ? append(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
-                                    cl.callRegister, false, cl.callImpure,
-                                    cl.callResultType, cl.callSavedVars),
-                             renames))
-    : append(acc, opRenameVars(op, renames))
-  (o: Op)        => append(acc, opRenameVars(op, renames))
+    ? push<Op>(acc, opRenameVars(OpCall(cl.callFunction, cl.callParameters,
+                                      cl.callRegister, false, cl.callImpure,
+                                      cl.callResultType, cl.callSavedVars),
+                               renames))
+    : push<Op>(acc, opRenameVars(op, renames))
+  (o: Op)        => push<Op>(acc, opRenameVars(op, renames))
 
 fun inlReturnMove(r: OpReturn, c: OpCall, renames: List<RpRename>,
-                  acc): List<Op> => match(c.callRegister)
-  (reg: RParam) => append(acc, OpMove(reg,
-                                 rpRenameVars(r.returnValue, renames),
-                                 false, Dict()))
+                  acc: Array<Op>): Array<Op> => match(c.callRegister)
+  (reg: RParam) => push<Op>(acc, OpMove(reg,
+                                   rpRenameVars(r.returnValue, renames),
+                                   false, Dict()))
   ()             => acc
-
-# Python: `if end_jump in new_ops` (any Return was seen), then FIRST index —
-# if it is not the very last op, some jump needs a target: append the Label;
-# otherwise the sole jump sits just before where the label would go: pop it.
-fun inlEndBookkeeping(ops, endLabel) => match(inlFirstEndJumpIsLast(ops, endLabel))
-  (isLast: Bool) => isLast
-    ? dropLastOne(ops)
-    : append(ops, OpLabel(endLabel, Dict()))
-  ()             => ops
-
-# None: no end-jump. true: the FIRST end-jump is the very last op (pop it).
-# false: it has a successor (append the Label). Purely structural — the old
-# index-vs-length compare is gone (no-length ruling).
-fun inlFirstEndJumpIsLast(ops: List<Op>, endLabel) =>
-  match(findIndex(ops, (op) => inlIsJumpTo(op, endLabel)))
-    (k: Int) => !sizeAtLeast(ops, k + 2)
-    ()       => None
-
-fun inlIsJumpTo(op: Op, label: String): Bool => match(op)
-  (j: OpJump) => j.jumpName == label
-  (o: Op)     => false
 
 
 # ── recursiveFunctions (trim.py recursive_functions) ────────────────────────

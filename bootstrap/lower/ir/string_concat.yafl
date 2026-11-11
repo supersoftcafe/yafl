@@ -54,12 +54,12 @@ fun scFunction(f: CgFunction)
 # keep=True Moves anchor side effects — never absorb them (absorbing would
 # duplicate the computation at the read site while the anchor keeps the
 # original alive).
-fun scAnchoredNames(acc, op) => match(op)
+fun scAnchoredNames(acc: List<String>, op) => match(op)
   (m: OpMove) => m.moveKeep ? scAnchTarget(acc, m.moveTarget) : acc
   (o: Op)     => acc
 
 # An anchored-name SET, membership-tested by scReplace.
-fun scAnchTarget(acc, target) => match(target)
+fun scAnchTarget(acc: List<String>, target) => match(target)
   (sv: RpStackVar) => prepend(sv.name, acc)
   (o: RParam)      => acc
 
@@ -148,7 +148,7 @@ fun scReadOnce(cs: Dict<String, Int>, name: String) => sdCountOf(cs, name) == 1
 fun scConcatOf(operands) => match(head(operands))
   (only: RParam) => isEmpty(dropOne(operands))
     ? only
-    : atLeast(operands, scRuntimeCap() + 1)
+    : sizeAtLeast(operands, scRuntimeCap() + 1)
       ? scConcatOf(prepend(scConcatOf(take(operands, scRuntimeCap())),
                            drop(operands, scRuntimeCap())))
       : scConcatBuild(operands)
@@ -170,7 +170,7 @@ fun scReplace(p, defs: SsaDefs, reads: Dict<String, Int>,
               anchored: List<String>): RParam => match(p)
   (inv: RpRuntimeInvoke) => scIsAppend(inv)
     ? scSpine(p, defs, reads, anchored)
-      |> (sp) => atLeast(sp.ops, 3) ? scConcatOf(sp.ops) : p
+      |> (sp) => sizeAtLeast(sp.ops, 3) ? scConcatOf(sp.ops) : p
     : p
   (o: RParam)            => p
 
@@ -185,7 +185,7 @@ fun scCollectRoot(acc, p, defs: SsaDefs,
                   reads: Dict<String, Int>, anchored: List<String>): Set<String> => match(p)
   (inv: RpRuntimeInvoke) => scIsAppend(inv)
     ? scSpine(p, defs, reads, anchored)
-      |> (sp) => atLeast(sp.ops, 3)
+      |> (sp) => sizeAtLeast(sp.ops, 3)
         ? fold(sp.taking, acc, add)
         : acc
     : acc

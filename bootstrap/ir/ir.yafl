@@ -125,14 +125,16 @@ fun cgOpsToCStep(acc: (text: String, cache: List<CgCacheEntry>), op): (text: Str
   let sub = opToC(op, acc.cache)
   ret (acc.text + sub.text, sub.cache)
 
-# A finished List<Op> op stream as the retained Array storage: the
-# container boundary between transient assembly (GBundle) and the
-# per-function IR that lives until C emission — the census-dominant lists.
-fun cgOpsOf(ops: List<Op>): Array<Op> => pushAll(Array<Op>(), ops)
+# ── op sequences ─────────────────────────────────────────────────────────────
+# A function's ops are an Array<Op>, built by appending.
 
-# The inverse boundary, for the one pass (async liveness) whose tuned
-# Dict-indexed fixpoint keeps List internals: copy out, iterate, copy back.
-fun cgOpsToList(s: Array<Op>): List<Op> => fold(s, List<Op>(), (acc: List<Op>, op: Op) => append(acc, op))
+fun lastOp(s: Array<Op>): Op|None => !isEmpty(s) ? s[size(s) - 1] : None
+
+# arrayOf's one to three values, extended to the four and five that op
+# sequences need.
+fun arrayOf4<T>(a: T, b: T, c: T, d: T): Array<T> => push<T>(arrayOf<T>(a, b, c), d)
+
+fun arrayOf5<T>(a: T, b: T, c: T, d: T, e: T): Array<T> => pushAll<T>(arrayOf<T>(a, b, c), arrayOf<T>(d, e))
 
 fun cgFunctionWith(f: CgFunction, ops, stackVars)
   ret CgFunction(f.fnName, f.fnParams, f.fnResult, stackVars, ops, f.fnComment, f.fnForeignSymbol,
@@ -328,7 +330,7 @@ fun cgReachable(ix: StripIx) => cgReachableLoop(ix, List<Int>(0), put(Dict(), 0,
 
 fun [tail] cgKeepSeenIndices(s: Array<Op>, i: Int, seen: Dict<Int, Bool>,
                              acc: Array<Op>): Array<Op>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? cgKeepSeenIndices(s, i + 1, seen, get(seen, i) is Bool ? push(acc, s[i]) : acc)
     : acc
 
@@ -350,7 +352,7 @@ fun cgWithoutStalePhiSources(f: CgFunction): CgFunction
 
 fun [tail] cgPrunePhisLoop(s: Array<Op>, i: Int, preds: List<PredEntry>, current: String,
                            acc: Array<Op>): Array<Op>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? cgPrunePhisLoop(s, i + 1, preds, cgPredNextCurrent(s[i], current),
                       push(acc, cgPrunePhi(s[i], predsOf(preds, current))))
     : acc
@@ -381,27 +383,27 @@ fun cgPredNextCurrent(op, current) => match(op)
   (lb: OpLabel) => lb.labelName
   (o: Op)       => current
 
-fun cgPredStep(op, prev: Op|None, current, acc)
+fun cgPredStep(op, prev: Op|None, current, acc: List<PredEntry>)
   ret fold(opBranchTargets(op), cgPredLabelStep(op, prev, current, acc),
            (a, target) => predAdd(a, target, current))
 
-fun cgPredLabelStep(op, prev: Op|None, current, acc) => match(op)
+fun cgPredLabelStep(op, prev: Op|None, current, acc: List<PredEntry>) => match(op)
   (lb: OpLabel) => cgPredFallThroughEdge(lb, prev, current, predEnsure(acc, lb.labelName))
   (o: Op)       => acc
 
 # Fall-through edge from the previous block, if control falls out of it.
 fun cgPredFallThroughEdge(lb: OpLabel, prev: Op|None, current,
-                        acc) => match(prev)
+                        acc: List<PredEntry>) => match(prev)
   (p: Op) => opFallsThrough(p) ? predAdd(acc, lb.labelName, current) : acc
   ()       => acc
 
-fun predEnsure(acc, label) => any(acc, (e2) => e2.peLabel == label)
+fun predEnsure(acc: List<PredEntry>, label) => any(acc, (e2) => e2.peLabel == label)
   ? acc
   # A label -> predecessors map, looked up by label; its own order is not
   # observed, and the predecessor lists are membership sets.
   : prepend(PredEntry(label, Set()), acc)
 
-fun predAdd(acc, label, src) => any(acc, (e2) => e2.peLabel == label)
+fun predAdd(acc: List<PredEntry>, label, src) => any(acc, (e2) => e2.peLabel == label)
   ? map(acc, (e2) => e2.peLabel == label
                ? PredEntry(label, add(e2.pePreds, src))
                : e2)

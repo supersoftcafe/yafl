@@ -43,9 +43,7 @@ fun prIncrIfStackVar(acc: Dict<String, Int>, sv): Dict<String, Int> => match(sv)
 
 fun prCoalesceCopies(f): CgFunction
   let counts = prCountVars(f.fnOps)
-  let p0 = cgPullOp(arrayStream(f.fnOps))
-  let out = prScan(p0.op, p0.stream, List(), counts, 0, List(), List(),
-                   counts.prDefs)
+  let out = prScan(f.fnOps, 0, counts, List(), List(), counts.prDefs)
   ret isEmpty(out.proRemoved)
     ? f
     : prRebuild(f, out)
@@ -57,25 +55,19 @@ fun prCoalesceCopies(f): CgFunction
 class [final] PrRename(prrIdx: Int, prrOld: String, prrNewVar: RParam)
 class [final] PrOut(proRemoved: List<Int>, proRenames: List<PrRename>)
 
-# `back` is the ops already scanned, most-recent FIRST — prFindDef's backward
-# walk reads it directly instead of re-indexing `ops` (prepend keeps the list
-# front-normal, so chain() over it is free).
-fun [tail] prScan(cur: Op|None, st: ArrayStream<Op>, back: List<Op>, counts: PrCounts, i,
+# The ops are walked by index, so prFindDef can read back from any of them.
+fun [tail] prScan(ops: Array<Op>, i: Int, counts: PrCounts,
                   removed, renames,
                   defs: Dict<String, Int>): PrOut
-  if cur is None
+  if sizeAtMost(ops, i)
     ret PrOut(removed, renames)
-  let op = forceOp(cur)
-  let p = cgPullOp(st)
-  ret match(prCandidate(op))
+  ret match(prCandidate(ops[i]))
     (c: PrCand) => c.pcSelf
       # `removed` is turned into a Dict set by its consumer, and each rename
       # is applied by matching its op index — neither order is observed.
-      ? prScan(p.op, p.stream, prepend(op, back), counts, i + 1,
-               prepend(i, removed), renames, defs)
-      : prTryCoalesce(op, p.op, p.stream, back, counts, i, c, removed, renames, defs)
-    ()           => prScan(p.op, p.stream, prepend(op, back), counts, i + 1,
-                           removed, renames, defs)
+      ? prScan(ops, i + 1, counts, prepend(i, removed), renames, defs)
+      : prTryCoalesce(ops, i, counts, c, removed, renames, defs)
+    ()           => prScan(ops, i + 1, counts, removed, renames, defs)
 
 # A coalescible copy: Move without keep, StackVar := StackVar. pcSelf marks
 # the degenerate T := T (dropped outright).
@@ -91,30 +83,29 @@ fun prCandTargets(m: OpMove) => match(m.moveTarget)
     (o: RParam)       => None
   (o2: RParam)      => None
 
-fun prTryCoalesce(op: Op, nxt: Op|None, st: ArrayStream<Op>, back: List<Op>,
-                  counts: PrCounts, i,
+fun prTryCoalesce(ops: Array<Op>, i: Int, counts: PrCounts,
                   c: PrCand, removed, renames,
                   defs: Dict<String, Int>)
-  let onwards = prepend(op, back)
   if prCount(defs, c.pcS) != 1 || prCount(counts.prReads, c.pcS) != 1
-    ret prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
-  ret match(prFindDef(back, i - 1, c))
-    (di: Int) => prScan(nxt, st, onwards, counts, i + 1, prepend(i, removed),
+    ret prScan(ops, i + 1, counts, removed, renames, defs)
+  ret match(prFindDef(ops, i - 1, c))
+    (di: Int) => prScan(ops, i + 1, counts, prepend(i, removed),
                         prepend(PrRename(di, c.pcS, c.pcTVar), renames),
                         sdBump(defs, c.pcT))
-    ()         => prScan(nxt, st, onwards, counts, i + 1, removed, renames, defs)
+    ()         => prScan(ops, i + 1, counts, removed, renames, defs)
 
 # Walk back within the block to src's definition; bail on a block boundary
 # (labels/jumps/returns — value flow beyond the block is invisible here) or
 # when T or S is touched in between.
-# The search stops at the first op that is a block boundary, writes `s`, or
-# touches either name; only a write that is not a boundary is a hit, at index
-# j counting down from the first op.
-fun prFindDef(back: List<Op>, j, c: PrCand) => match(findIndex(back, (op) => prStopsSearch(op, c)))
-  (k: Int) => match(head(drop(back, k)))
-    (op: Op) => !prBlockBoundary(op) && prWritesName(op, c.pcS) ? j - k : None
-    ()       => None
-  ()       => None
+# The search stops at the first op, from j down, that is a block boundary,
+# writes `s`, or touches either name; only a write that is not a boundary is
+# a hit.
+fun [tail] prFindDef(ops: Array<Op>, j: Int, c: PrCand): Int|None
+  if j < 0
+    ret None
+  ret prStopsSearch(ops[j], c)
+    ? (!prBlockBoundary(ops[j]) && prWritesName(ops[j], c.pcS) ? j : None)
+    : prFindDef(ops, j - 1, c)
 
 fun prStopsSearch(op: Op, c: PrCand): Bool =>
   prBlockBoundary(op) || prWritesName(op, c.pcS) || prTouches(op, c.pcT) || prTouches(op, c.pcS)
@@ -153,7 +144,7 @@ fun prIsRemoved(removedSet: Dict<Int, Bool>, i: Int) => match(get(removedSet, i)
 fun [tail] prRebuildLoopB(s: Array<Op>, out: PrOut,
                           removedSet: Dict<Int, Bool>,
                           i: Int, acc: Array<Op>): Array<Op>
-  ret i < size(s)
+  ret !sizeAtMost(s, i)
     ? prRebuildLoopB(s, out, removedSet, i + 1,
         prIsRemoved(removedSet, i)
           ? acc

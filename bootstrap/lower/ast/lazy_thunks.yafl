@@ -39,7 +39,7 @@ fun cgNone() => CgStruct(List())
 fun makeGateFunction(symbol: String, sync: Bool): CgFunction
   ret CgFunction(symbol,
                  CgStruct(list2(CgField("this", CgDataPointer(false)), CgField("flag", CgDataPointer(false)))),
-                 cgNone(), CgStruct(List()), cgOpsOf(List()), symbol, symbol,
+                 cgNone(), CgStruct(List()), Array<Op>(), symbol, symbol,
                  sync, false, false, InlineAuto())
 
 fun gateCall(symbol: String, sync: Bool, flagAddr: RParam, register: RParam): Op
@@ -72,18 +72,18 @@ fun makeFetchFunction(valueType): CgFunction
   let valueF = RpObjectField(valueType, this, cls, "value", None, false, false)
   let isComplete = RpRuntimeInvoke("lazy_global_init_complete",
                                    RpNewStruct(list1(RpNamedValue("p", flagF))), CgInt(32))
-  let gate = list3<Op>(
+  let gate = arrayOf<Op>(
       OpJumpIf("$done", isComplete, false, Dict()),
       gateCall(lazyAcquire(), false, RpPointerTo(flagF), acquired),
       # Complete now: another caller held the gate, and this one waited.
       OpJumpIf("$done", isComplete, false, Dict()))
-  let init = list5<Op>(
+  let init = arrayOf5<Op>(
       OpMove(closure, closureF, false, Dict()),
       OpCall(closure, RpNewStruct(List()), value, false, false, None, Dict()),
       OpMove(valueF, value, false, Dict()),
       OpMove(closureF, RpZeroOf(CgFuncPointer(false, false)), false, Dict()),
       gateCall(lazyRelease(), true, RpPointerTo(flagF), released))
-  let done = list2<Op>(OpLabel("$done", Dict()), OpReturn(valueF, Dict()))
+  let done = arrayOf<Op>(OpLabel("$done", Dict()), OpReturn(valueF, Dict()))
   ret CgFunction(fetchFunctionName(valueType),
                  CgStruct(list1(CgField("this", CgDataPointer(false)))),
                  valueType,
@@ -91,7 +91,7 @@ fun makeFetchFunction(valueType): CgFunction
                                 CgField("value", valueType),
                                 CgField("acquired", cgNone()),
                                 CgField("released", cgNone()))),
-                 cgOpsOf(concat(concat(gate, init), done)),
+                 pushAll<Op>(pushAll<Op>(gate, init), done),
                  "lazy fetch for " + irMangle(valueType),
                  None, false, false, false, InlineAuto())
 
@@ -110,9 +110,9 @@ fun makeFutureRunnerFunction(valueType)
                                 CgField("$task", CgDataPointer(false)))),
                  CgDataPointer(false),
                  CgStruct(list1(CgField("result_wrapped", wrapped))),
-                 cgOpsOf(list2(OpCall(RpGlobalFunction(fetchFunctionName(valueType), this, false, None, false, false),
-                              RpNewStruct(List()), rwrapped, false, false, None, Dict()),
-                       OpReturn(RpNullPointer(), Dict()))),
+                 arrayOf<Op>(OpCall(RpGlobalFunction(fetchFunctionName(valueType), this, false, None, false, false),
+                                    RpNewStruct(List()), rwrapped, false, false, None, Dict()),
+                             OpReturn(RpNullPointer(), Dict())),
                  "[future] worker runner for " + irMangle(valueType),
                  None, false, false, true, InlineAuto())
 

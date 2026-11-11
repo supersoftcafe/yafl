@@ -504,10 +504,10 @@ class [final] LoadStep(stepSources: List<LibSource>, stepLibs: List<Library>)
 # them collided and the second library was never loaded. libRoot is the
 # discovered path, which is unique per library by construction.
 fun loadReferenced(index: List<NsEntry>, wanted: List<String>,
-                   already) => loadLoop(wanted, index, already,
+                   already: List<String>) => loadLoop(wanted, index, already,
                                         List(), List())
 
-fun [tail] loadLoop(ns: List<String>, index: List<NsEntry>, already, srcs, libs) => match(head(ns))
+fun [tail] loadLoop(ns: List<String>, index: List<NsEntry>, already: List<String>, srcs, libs) => match(head(ns))
   (v: String) => match(nsLookup(index, v))
     (lib: Library) => contains(already, lib.libRoot)
       ? loadLoop(dropOne(ns), index, already, srcs, libs)

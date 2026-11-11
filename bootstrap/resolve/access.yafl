@@ -30,7 +30,7 @@ fun soleOf(datas: Bag<Found>) => singleOrNone(datas)
 
 fun resolveOverloads(r, expected: Spec|None,
                      candidates)
-  if atMost(candidates, 1)
+  if sizeAtMost(candidates, 1)
     ret Bag(candidates)
   let survivors = partitionByVerdict(candidates, expected, r)
   if !isEmpty(survivors)

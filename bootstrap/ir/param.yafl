@@ -533,7 +533,7 @@ fun rpToCInitArrayStep(acc: (text: String, cache: List<CgCacheEntry>, first: Boo
 fun rpToCNewStruct(x: RpNewStruct, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let xtype = rpGetType(RpNewStruct(x.values))
   let declared = cgDeclare(xtype, cache0)
-  ret atMost(x.values, 2)
+  ret sizeAtMost(x.values, 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
@@ -638,7 +638,7 @@ fun rpZeroOfInitText(vt) => match(vt)
 
 fun rpToCNewStructTyped(x: RpNewStructTyped, cache0: List<CgCacheEntry>): (text: String, cache: List<CgCacheEntry>)
   let declared = cgDeclare(x.structType, cache0)
-  ret atMost(x.values, 2)
+  ret sizeAtMost(x.values, 2)
     ? rpToCNewStructShort(x.values, declared.text, declared.cache)
     : rpToCNewStructLong(x.values, declared.text, declared.cache)
 
