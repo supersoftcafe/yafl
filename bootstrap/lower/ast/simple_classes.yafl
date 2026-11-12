@@ -656,25 +656,21 @@ fun scDeclOrderStep(a: List<String>, x: PStmt, cands: ScCands) => match(x)
 fun scFieldsByPosition(statements: List<PStmt>, cands: ScCands, r): List<PStmt> =>
   rwnStmts(statements, RwN((n, sc, x) => (n, scPositioned(x, cands, sc)), rwnNoStmt), r, 0).rnssStmts
 
-fun scPositioned(x: PExpr, cands: ScCands, sc: Resolver|None): PExpr|None => match(sc)
-  (r: Resolver) => match(x)
-    (d: PeDot) => match(d.pedIndex)
-      (i: Int) => None
-      ()       => scPositionedRead(d, scFieldPosition(exprType(d.base, r), d.member, cands))
-    (o: PExpr) => None
-  ()            => None
+fun scPositioned(x: PExpr, cands: ScCands, sc: Resolver|None): PExpr|None => match(sc, x)
+  (r: Resolver, d: PeDot) if d.pedIndex is None =>
+    scPositionedRead(d, scFieldPosition(exprType(d.base, r), d.member, cands))
+  ()                      => None
 
 fun scPositionedRead(d: PeDot, at: Int|None): PExpr|None => match(at)
   (i: Int) => PeDot(d.base, d.member, d.pedLine, i)
   ()       => None
 
 fun scFieldPosition(bt: Spec|None, member: String, cands: ScCands): Int|None => match(bt)
-  (sp: Spec) => match(sp)
-    (c: SClass) => match(scClassFor(cands, c.scName))
-      (cls: PsClass) => findIndex(flattenParams(cls.cParams), (p) => scIsField(p, member))
-      ()             => None
-    (o: Spec)   => None
-  ()         => None
+  (c: SClass) => match(scClassFor(cands, c.scName))
+    (cls: PsClass) => findIndex(flattenParams(cls.cParams), (p) => scIsField(p, member))
+    ()             => None
+  (o: Spec)   => None
+  ()          => None
 
 fun scIsField(p: PStmt, member: String): Bool => match(p)
   (let2: PsLet) => let2.lName == member

@@ -39,20 +39,14 @@ fun eraseFieldNames(statements: List<PStmt>): List<PStmt> =>
 
 # ── 1 and 2: names become positions, while the names can still be read ───────
 
-fun fnByPosition(x: PExpr, sc: Resolver|None): PExpr|None => match(sc)
-  (r: Resolver) => match(x)
-    (d: PeDot)      => fnReadByPosition(d, r)
-    (cv: PeConvert) => fnConvertByPosition(cv, r)
-    (o: PExpr)      => None
-  ()            => None
+fun fnByPosition(x: PExpr, sc: Resolver|None): PExpr|None => match(sc, x)
+  (r: Resolver, d: PeDot)      => fnReadByPosition(d, r)
+  (r: Resolver, cv: PeConvert) => fnConvertByPosition(cv, r)
+  ()                           => None
 
-fun fnReadByPosition(d: PeDot, r): PExpr|None => match(d.pedIndex)
-  (i: Int) => None
-  ()       => match(exprType(d.base, r))
-    (bt: Spec) => match(bt)
-      (t2: STuple) => PeDot(d.base, d.member, d.pedLine, fnPositionOf(d, t2.stEntries))
-      (o: Spec)    => None
-    ()         => None
+fun fnReadByPosition(d: PeDot, r): PExpr|None => match(d.pedIndex, exprType(d.base, r))
+  (n: None, t2: STuple) => PeDot(d.base, d.member, d.pedLine, fnPositionOf(d, t2.stEntries))
+  ()                    => None
 
 fun fnPositionOf(d: PeDot, es: List<SEntry>): Int => match(findIndex(es, (e) => e.seName == d.member))
   (i: Int) => i
@@ -69,18 +63,15 @@ fun fnConvertByPosition(cv: PeConvert, r): PExpr|None => match(exprType(cv.convI
 # The tuple inside `target` that a `source` tuple's fields bind to, the way
 # the conversion engine finds it: the target itself, the tuple variant of a
 # union target, or either of those inside a one-field wrapper.
-fun fnBoundTuple(source: Spec, target: Spec, r): STuple|None => match(source)
-  (s2: STuple) => match(target)
-    (u: SCombination) => fnTupleOnly(matchingTupleVariant(r, source, target))
-    (t2: STuple)      => fnBoundInTuple(source, t2, fnWrappedType(t2), r)
-    (o: Spec)         => None
-  (o: Spec)    => None
+fun fnBoundTuple(source: Spec, target: Spec, r): STuple|None => match(source, target)
+  (s2: STuple, u: SCombination) => fnTupleOnly(matchingTupleVariant(r, source, target))
+  (s2: STuple, t2: STuple)      => fnBoundInTuple(source, t2, fnWrappedType(t2), r)
+  ()                            => None
 
 fun fnTupleOnly(v: Spec|None): STuple|None => match(v)
-  (sp: Spec) => match(sp)
-    (t2: STuple) => t2
-    (o: Spec)    => None
-  ()         => None
+  (t2: STuple) => t2
+  (o: Spec)    => None
+  ()           => None
 
 fun fnWrappedType(target: STuple): Spec|None =>
   tupleSingle(target) ? entryTypeAt(target, 0) : None
@@ -160,11 +151,9 @@ fun fnHeldRead(st: (i: Int, changed: Bool, fields: List<PTupEnt>), field: SEntry
     ()             => (i = st.i + 1, changed = st.changed,
                        fields = append(st.fields, PTupEnt("", false, read)))
 
-fun fnBoundField(read: PExpr, source: Spec|None, target: Spec|None, r, path: String): PExpr|None => match(source)
-  (s2: Spec) => match(target)
-    (t2: Spec) => fnBoundByPosition(read, s2, t2, r, path)
-    ()         => None
-  ()         => None
+fun fnBoundField(read: PExpr, source: Spec|None, target: Spec|None, r, path: String): PExpr|None => match(source, target)
+  (s2: Spec, t2: Spec) => fnBoundByPosition(read, s2, t2, r, path)
+  ()                   => None
 
 fun fnNameAt(ss: List<SEntry>, b: Int): String => match(head(drop(ss, b)))
   (en: SEntry) => en.seName

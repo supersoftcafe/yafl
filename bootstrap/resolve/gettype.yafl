@@ -302,10 +302,9 @@ fun newEnumType(ne: PeNewEnum, r) => match(findEnum(r, ne.rootName))
 # (pedIndex) and by entry NAME before, through a class or enum by looking the
 # member up on the DECLARATION.
 fun dotType(d: PeDot, r): Spec|None => match(exprType(d.base, r))
-  (bt: Spec) => match(bt)
-    (t2: STuple) => dotEntryType(d, t2.stEntries)
-    (o: Spec)    => memberType(bt, d.member, r)
-  ()         => None
+  (t2: STuple) => dotEntryType(d, t2.stEntries)
+  (bt: Spec)   => memberType(bt, d.member, r)
+  ()           => None
 
 fun dotEntryType(d: PeDot, es: List<SEntry>): Spec|None => match(d.pedIndex)
   (i: Int) => match(head(drop(es, i)))

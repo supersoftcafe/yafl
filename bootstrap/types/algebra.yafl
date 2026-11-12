@@ -818,28 +818,18 @@ fun blankParams(sp): Spec|None => match(sp)
 # the function's own. Nothing here is generic: a type parameter has already
 # been bound to the argument's named tuple by inference, so no unnamed tuple
 # is left for it (algebra.py named_at_call_site).
-fun namedAtCallSite(declared: Spec|None, argument: Spec|None): Spec|None => match(declared)
-  (d: Spec) => match(d)
-    (cb: SCallable) => nacSeenWith(cb, argument)
-    (o: Spec)       => declared
-  ()        => None
-
-fun nacSeenWith(cb: SCallable, argument: Spec|None): Spec => match(argument)
-  (a: Spec) => match(a)
-    (at: STuple) => nacPainted(cb, nacParams(cb.scParams2, a, Dict<String, List<String>>()))
-    (o: Spec)    => cb
-  ()        => cb
+fun namedAtCallSite(declared: Spec|None, argument: Spec|None): Spec|None => match(declared, argument)
+  (cb: SCallable, at: STuple) => nacPainted(cb, nacParams(cb.scParams2, at, Dict<String, List<String>>()))
+  ()                          => declared
 
 fun nacPainted(cb: SCallable, supplied: Dict<String, List<String>>): Spec =>
   isEmpty(supplied) ? cb : nacPaintCallable(cb, supplied)
 
 # What the arguments supply: per unnamed-tuple shape (its uid), one name per
 # field, "" where no argument has named it yet.
-fun nacParams(d: Spec, a: Spec, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d)
-  (dt: STuple) => match(a)
-    (at: STuple) => nacBound(dt, at, acc)
-    (o: Spec)    => acc
-  (o: Spec)    => acc
+fun nacParams(d: Spec, a: Spec, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d, a)
+  (dt: STuple, at: STuple) => nacBound(dt, at, acc)
+  ()                       => acc
 
 fun nacBound(dt: STuple, at: STuple, acc: Dict<String, List<String>>): Dict<String, List<String>> =>
   match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
@@ -851,29 +841,21 @@ fun nacEntryType(es: List<SEntry>, i: Int): Spec|None => match(i < 0 ? None : he
   (e: SEntry) => e.seType
   ()          => None
 
-fun nacCollectOpt(d: Spec|None, a: Spec|None, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d)
-  (ds: Spec) => match(a)
-    (as2: Spec) => nacCollect(ds, as2, acc)
-    ()          => acc
-  ()         => acc
+fun nacCollectOpt(d: Spec|None, a: Spec|None, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d, a)
+  (ds: Spec, as2: Spec) => nacCollect(ds, as2, acc)
+  ()                    => acc
 
-fun nacCollect(d: Spec, a: Spec, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d)
-  (dt: STuple)    => match(a)
-    (at: STuple)    => sameLen(dt.stEntries, at.stEntries)
-      ? zipFold(dt.stEntries, at.stEntries, nacOffer(dt, at, acc),
-                (st, de, ae) => nacCollectOpt(de.seType, ae.seType, st))
-      : acc
-    (o: Spec)       => acc
-  (dc: SClass)    => match(a)
-    (ac: SClass)    => dc.scName == ac.scName ? nacPairwise(dc.scParams, ac.scParams, acc) : acc
-    (o: Spec)       => acc
-  (de2: SEnum)    => match(a)
-    (ae2: SEnum)    => de2.seRoot == ae2.seRoot ? nacPairwise(de2.seParams, ae2.seParams, acc) : acc
-    (o: Spec)       => acc
-  (db: SCallable) => match(a)
-    (ab: SCallable) => nacCollectOpt(db.scResult, ab.scResult, nacParams(db.scParams2, ab.scParams2, acc))
-    (o: Spec)       => acc
-  (o: Spec)       => acc
+fun nacCollect(d: Spec, a: Spec, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d, a)
+  (dt: STuple, at: STuple) if sameLen(dt.stEntries, at.stEntries) =>
+    zipFold(dt.stEntries, at.stEntries, nacOffer(dt, at, acc),
+            (st, de, ae) => nacCollectOpt(de.seType, ae.seType, st))
+  (dc: SClass, ac: SClass) if dc.scName == ac.scName =>
+    nacPairwise(dc.scParams, ac.scParams, acc)
+  (de2: SEnum, ae2: SEnum) if de2.seRoot == ae2.seRoot =>
+    nacPairwise(de2.seParams, ae2.seParams, acc)
+  (db: SCallable, ab: SCallable) =>
+    nacCollectOpt(db.scResult, ab.scResult, nacParams(db.scParams2, ab.scParams2, acc))
+  () => acc
 
 fun nacPairwise(ds: List<Spec>, as2: List<Spec>, acc: Dict<String, List<String>>): Dict<String, List<String>> =>
   sameLen(ds, as2) ? zipFold(ds, as2, acc, (st, d, a) => nacCollect(d, a, st)) : acc

@@ -92,13 +92,10 @@ fun eqExprOpt(a: PExpr|None, b: PExpr|None) => match(a)
     (y: PExpr) => false
     ()         => true
 
-fun eqIndex(a: Int|None, b: Int|None): Bool => match(a)
-  (x: Int) => match(b)
-    (y: Int) => x == y
-    ()       => false
-  ()       => match(b)
-    (y: Int) => false
-    ()       => true
+fun eqIndex(a: Int|None, b: Int|None): Bool => match(a, b)
+  (x: Int,  y: Int)  => x == y
+  (x: None, y: None) => true
+  ()                 => false
 
 fun eqExpr(a, b) => match(a)
   (x: PeInt) => match(b)
