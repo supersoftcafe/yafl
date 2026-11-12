@@ -416,7 +416,7 @@ fun genericsDumpB(stmts0: List<PStmt>): (out: String, code: Int)
     (dv: CvDiverged) => (printedDiagnostics(dv.cvErrs), 2)
 
 fun genericsDump2(stmts): (out: String, code: Int)
-  let it = convertGenericToConcrete(stmts)
+  let it = convertGenericToConcrete(eraseFieldNames(stmts))
   if !isEmpty(it.giErrs)
     ret (printedDiagnostics(it.giErrs), 0)
   let unresolved = reportUnresolvedGenericCalls(it.giStmts)
@@ -518,7 +518,7 @@ fun postmonoRes3b(stmts0: List<PStmt>): PmRes
     (dv: CvDiverged) => PmText(printedDiagnostics(dv.cvErrs), 2)
 
 fun postmonoRes4(stmts): PmRes
-  let it = convertGenericToConcrete(stmts)
+  let it = convertGenericToConcrete(eraseFieldNames(stmts))
   if !isEmpty(it.giErrs)
     ret PmText(printedDiagnostics(it.giErrs), 0)
   let unresolved = reportUnresolvedGenericCalls(it.giStmts)
@@ -530,9 +530,7 @@ fun postmonoRes4(stmts): PmRes
   let undischarged = reportUndischargedTraits(it.giStmts)
   if !isEmpty(undischarged)
     ret PmText(printedDiagnostics(undischarged), 0)
-  # Tuple field names are no longer in view: an instance is shared by call
-  # sites that named its tuples differently, and carries none of their names.
-  ret match(converge(it.giStmts, false))
+  ret match(converge(it.giStmts))
     (ok: CvOk)       => markComplexEnums(ok.cvStatements)
       |> (stmts, errs) => isEmpty(errs)
         ? PmOk(inlineConstants(stmts))

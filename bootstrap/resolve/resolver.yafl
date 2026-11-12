@@ -375,16 +375,13 @@ enum Resolver
   # ResolverRoot.derives_equality's lazy set) — which top-level enums bring a
   # derived BasicEquality instance on this pass. Like rrComplex, a closure over
   # a lazy value, so a pass that never compiles an enum never computes it.
-  # rrNamesInView: the phase fieldNamesInView reports — set only by the
-  # compile fixpoint over the program as written.
   enum RRoot(rrComplex: (:String): Bool,
              rrDerivesEq: (:String): Bool,
              rrStmts: Statements,
              rrDiscriminators: Dict<String, Int>|None = None, rrOptLevel: Int = 0,
              rrEnumFields: Dict<String, List<SField>>|None = None,
              rrBoxedLeaves: Dict<String, Bool>|None = None,
-             rrMerged: Dict<String, MergedOut>|None = None,
-             rrNamesInView: Bool = false)
+             rrMerged: Dict<String, MergedOut>|None = None)
   enum RData(rdNames: List<Found>, rdParent: Resolver)     # locals in scope
   # A declaration's generic params, and the `where` constraints it states
   # over them: inside the declaration — its signature as much as its body —
@@ -431,20 +428,6 @@ fun findData(r, query): Findings => match(r)
   (tr: RTraits) => addFindings(traitFindings(tr, query, tr.rtrParent),
                            findData(tr.rtrParent, query))
   (cb: RClassBody) => classBodyFindings(cb, query)
-
-# Whether tuple field names can still be read off the types. They are sugar
-# for the call site that wrote them, and an instance shared between call sites
-# carries nobody's: true only while the program is compiled as written, before
-# monomorphisation. After it, a node that takes a type out of an instance
-# answers from what it recorded while they were (fieldNamesOf).
-fun [tail] fieldNamesInView(r): Bool => match(r)
-  (root: RRoot)    => root.rrNamesInView
-  (rg: RGen)       => fieldNamesInView(rg.rgParent)
-  (d: RData)       => fieldNamesInView(d.rdParent)
-  (t2: RTypes)     => fieldNamesInView(t2.rtParent)
-  (sc: RScopes)    => fieldNamesInView(sc.rsParent)
-  (tr: RTraits)    => fieldNamesInView(tr.rtrParent)
-  (cb: RClassBody) => fieldNamesInView(cb.rcbParent)
 
 # A root over no statements: Python's `ResolverRoot([])`, for a lowering
 # stage that has no scope to offer.

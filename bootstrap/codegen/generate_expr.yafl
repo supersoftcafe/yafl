@@ -537,16 +537,16 @@ fun genDot(d: PeDot, r)
     ()          => genDotBug(d, "its base has no type")
 
 fun genDotOn(d: PeDot, bt, baseBundle, r) => match(bt)
-  (tp: STuple) => genDotTuple(d, tp, baseBundle)
+  (tp: STuple) => genDotTuple(d, baseBundle)
   (c: SClass)  => genDotClass(d, c, baseBundle, r)
   (e2: SEnum)  => genDotEnum(d, e2, baseBundle, r)
   (o: Spec)    => genDotBug(d, "its base is not a tuple, a class or an enum")
 
-fun genDotTuple(d: PeDot, tp: STuple, baseBundle) => match(tupleIndexOf(tp.stEntries, d.member))
+# By position only: a read that still has just a name here was missed by
+# lower/ast/field_names.yafl.
+fun genDotTuple(d: PeDot, baseBundle) => match(d.pedIndex)
   (idx: Int) => bundleJoin(baseBundle, bundleValue(RpStructField(mustResult(baseBundle), "_" + String(idx))))
-  ()          => genDotBug(d, "the tuple has no field of that name")
-
-fun tupleIndexOf(entries: List<SEntry>, name: String) => findIndex(entries, (e) => e.seName == name)
+  ()         => genDotBug(d, "it reached code generation with no position")
 
 
 fun genDotClass(d: PeDot, c: SClass, baseBundle, r) => match(soleItem(findType(r, c.scName)))

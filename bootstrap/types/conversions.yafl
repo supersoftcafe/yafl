@@ -10,7 +10,9 @@
 #
 # Undecidable is FALSE, deliberately: while either side is not ground the
 # fixpoint simply asks again next pass, and a conversion inserted on a guess
-# would never be taken back.
+# would never be taken back. The one thing decided over types that are not
+# ground is a tuple whose fields bind out of place (bindsByName): field names
+# decide that, not types.
 namespace Bootstrap::Types
 
 import System
@@ -36,7 +38,7 @@ fun needsConv(r, source, target)
   let su = uid(source)
   let tu = uid(target)
   if su == "" || tu == ""
-    ret false                                   # not ground yet — ask again
+    ret bindsByName(r, source, target)          # not ground yet — ask again
   # Tuple-into-tuple is decided by the field BINDING, BEFORE the id shortcut: a
   # pure name-directed reorder has identical ids on both sides (an id is
   # positional types only) yet must rebuild the value.
@@ -53,6 +55,31 @@ fun needsConv(r, source, target)
     ret intoUnion(r, source, target, su, tu)
   # A genuine 1-tuple WRAPPER of the target: unwrap.
   ret isWrapperOf(source, tu)
+
+# A tuple whose fields bind into `target` OUT OF PLACE — by name, or with a
+# default filled in — is a conversion even inside a generic template, where
+# nothing else is decided: the binding is read off the field names, which are
+# the template's own and are gone once it is instantiated
+# (lower/ast/field_names.yafl), so it cannot wait for the types to be ground.
+# It still waits for them to be KNOWN to fit.
+fun bindsByName(r, source, target): Bool => isTuple(source)
+  ? bindsOutOfPlace(r, source, nameBoundTarget(r, source, target))
+  : false
+
+fun nameBoundTarget(r, source, target): Spec|None
+  if isTuple(target)
+    ret target
+  if !isUnion(target)
+    ret None
+  let fits = filter(reprMembersOf(unionMembers(target)),
+                    (v) => isTuple(v) && triTrue(assignableFrom(r, v, source)))
+  ret exactly(fits, 1) ? head(fits) : None
+
+fun bindsOutOfPlace(r, source, target: Spec|None): Bool => match(target)
+  (t2: Spec) => match(bindTupleEntries(tupleEntries(t2), entryNames(tupleEntries(source))))
+    (b: List<Int>) => !isIdentityBinding(b) && triTrue(assignableFrom(r, t2, source))
+    ()             => false
+  ()         => false
 
 # ── tuple into tuple ────────────────────────────────────────────────────────
 

@@ -40,10 +40,7 @@ enum Converged
   enum CvOk(cvStatements: List<PStmt>, cvPasses: Int)
   enum CvDiverged(cvLast: List<PStmt>, cvErrs: Set<PErr>)
 
-# `namesInView` is the phase (fieldNamesInView): true for the program as
-# written, false once it has been monomorphised.
-fun converge(statements, namesInView: Bool = true) =>
-  convergeLoop(statements, statements, statements, 1, 1, 0, namesInView)
+fun converge(statements) => convergeLoop(statements, statements, statements, 1, 1, 0)
 
 # Inference can CYCLE: two parameters each narrow to what the other's previous
 # answer allows, then both widen when those answers disagree, for ever.
@@ -51,23 +48,22 @@ fun converge(statements, namesInView: Bool = true) =>
 # tortoise, and once the hare has travelled `window` passes the tortoise jumps
 # to it and the window doubles — so a cycle of ANY period closes against it,
 # not merely the short ones. The two consecutive trees then name what flips.
-fun [tail] convergeLoop(statements, previous, snapshot, pass, window, distance,
-                        namesInView: Bool): Converged
+fun [tail] convergeLoop(statements, previous, snapshot, pass, window, distance): Converged
   if pass > MAX_COMPILE_ITERATIONS
     ret CvDiverged(statements, flipErrs(previous, statements, limitClue()))
-  let next = compilePass(statements, namesInView)
+  let next = compilePass(statements)
   if eqStmts(next, statements)
     ret CvOk(next, pass)
   # The watch costs a whole-tree comparison per pass, so it starts only once
   # settling has plainly failed: the tortoise trails the newest tree until
   # then, and a program that converges never pays for it at all.
   if pass < CYCLE_WATCH_FROM
-    ret convergeLoop(next, statements, next, pass + 1, 1, 0, namesInView)
+    ret convergeLoop(next, statements, next, pass + 1, 1, 0)
   ret eqStmts(next, snapshot)
     ? CvDiverged(next, flipErrs(statements, next, cycleClue()))
     : distance + 1 == window
-      ? convergeLoop(next, statements, next, pass + 1, window * 2, 0, namesInView)
-      : convergeLoop(next, statements, snapshot, pass + 1, window, distance + 1, namesInView)
+      ? convergeLoop(next, statements, next, pass + 1, window * 2, 0)
+      : convergeLoop(next, statements, snapshot, pass + 1, window, distance + 1)
 
 fun cycleClue() => "Compile loop cycles without settling. This is a compiler bug — "
                  + "a compile() pass is not idempotent."
@@ -165,8 +161,8 @@ fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
 # One pass: every statement compiles against a resolver over the CURRENT set,
 # and the extra statements it creates join the set for the next pass. No
 # statement sees another's output within a pass, so they compile in parallel.
-fun compilePass(statements, namesInView: Bool): List<PStmt>
-  let r = rootResolver(statements, namesInView)
+fun compilePass(statements): List<PStmt>
+  let r = rootResolver(statements)
   ret powerMap(statements, (st: PStmt) => compileStmt(st, scopeResolver(st, r), None))
     |> (outs) => passLoop(outs, List())
 

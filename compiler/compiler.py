@@ -32,6 +32,7 @@ import lowering.eager_globals
 import lowering.lower_lazy_lets
 import lowering.regexes
 import lowering.generics
+import lowering.field_names
 import lowering.inlining
 import lowering.known_tags
 import lowering.simple_classes
@@ -563,16 +564,12 @@ class ConvergenceError(RuntimeError):
         self.errors = errors
 
 
-def __converge(statements: list[s.Statement],
-               field_names_in_view: bool = True) -> tuple[list[s.Statement], g.Resolver, int]:
+def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Resolver, int]:
     """Run the compile fixpoint: rewrite every statement until a whole pass
     changes nothing. Returns the converged statements, the final resolver and
     the number of passes taken (the bootstrap contract pins the port to the
     same count — a port that reached the same answer in a different number of
     passes is doing more or less per pass than this compiler).
-
-    `field_names_in_view` is the phase (Resolver.field_names_in_view): true
-    for the program as written, false once it has been monomorphised.
 
     Inference can also CYCLE: two parameters each narrow to what the other's
     previous answer allows, then both widen when those answers disagree, for
@@ -583,7 +580,7 @@ def __converge(statements: list[s.Statement],
     snapshot, window, distance = statements, 1, 0
     previous = statements
     for passes in range(1, _MAX_COMPILE_ITERATIONS + 1):
-        resolver = g.ResolverRoot(statements, field_names_in_view)
+        resolver = g.ResolverRoot(statements)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
         if new_statements == statements:
             return new_statements, resolver, passes
@@ -674,6 +671,12 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     if lowered:
         new_statements, resolver, _passes = __converge(new_statements)
 
+    # Tuple field names are sugar for the program as written, which ends
+    # here: each becomes the position it meant, and from monomorphisation on —
+    # where instances are shared by call sites that named their tuples
+    # differently — a tuple has no field names to consult.
+    new_statements = lowering.field_names.erase_field_names(new_statements)
+
     # All ok so let's create some C code
     new_statements, poly_errors = lowering.generics.convert_generic_to_concrete(new_statements)
     if poly_errors:
@@ -696,10 +699,8 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # own ConvertExpression only now, when its types are concrete — the same
     # node-owns-its-conversion step every ground node already ran during the
     # main converge. Sits before tail-loop lowering so a recursive call's boxed
-    # arguments carry over to the loop back-edge. Tuple field names are no
-    # longer in view: an instance is shared by call sites that named its
-    # tuples differently, and carries none of their names.
-    new_statements, resolver, _passes = __converge(new_statements, field_names_in_view=False)
+    # arguments carry over to the loop back-edge.
+    new_statements, resolver, _passes = __converge(new_statements)
     # Validates the enum-name resolution the breaker analysis relies on: an
     # ambiguous suffix match is an error rather than first-insertion-wins.
     new_statements, enum_ref_errors = lowering.complex_enums.mark_complex_enums(new_statements)

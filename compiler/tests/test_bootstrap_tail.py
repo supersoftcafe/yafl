@@ -24,6 +24,7 @@ import lowering.constants
 import lowering.drops
 import lowering.instances
 import lowering.hashed
+import lowering.field_names
 import lowering.generics
 import lowering.hoist_nested
 import lowering.lambda_globals
@@ -85,7 +86,8 @@ class TestBootstrapTail(TestCase):
         statements, lowered = lowering.instances.lower_trait_instances(statements)
         if lowered:
             statements, _resolver, _p3b = _CONVERGE(statements)
-        statements, poly_errors = lowering.generics.convert_generic_to_concrete(statements)
+        statements, poly_errors = lowering.generics.convert_generic_to_concrete(
+            lowering.field_names.erase_field_names(statements))
         if poly_errors:
             return "".join(f"{e}\n" for e in sorted(set(poly_errors)))
         unresolved = lowering.generics.report_unresolved_generic_calls(statements)

@@ -555,10 +555,10 @@ fun rwnBlockIn(bk: PeBlock, w: RwN, bsc, n) => rwnStmts(bk.blockStmts, w, bsc, n
 
 fun rwnExprKids(x, w: RwN, sc, n) => match(x)
   (d: PeDot)     => rwnExpr(d.base, w, sc, n)
-    |> (b) => RwNE(b.rneN, PeDot(b.rneExpr, d.member, d.pedLine, d.pedNames))
+    |> (b) => RwNE(b.rneN, PeDot(b.rneExpr, d.member, d.pedLine, d.pedIndex))
   (c: PeCall)    => rwnExpr(c.function, w, sc, n)
     |> (f) => (f, rwnExpr(c.parameter, w, sc, f.rneN))
-    |> (f, p) => RwNE(p.rneN, PeCall(f.rneExpr, p.rneExpr, c.pecLine, c.pecNames))
+    |> (f, p) => RwNE(p.rneN, PeCall(f.rneExpr, p.rneExpr, c.pecLine))
   (tp: PeTuple)  => rwnTupEnts(tp.exprs, w, sc, n, List())
     |> (es) => RwNE(es.rntsN, PeTuple(es.rntsEnts, tp.petLine))
   (te: PeTernary) => rwnExpr(te.condition, w, sc, n)

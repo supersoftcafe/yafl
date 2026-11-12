@@ -88,9 +88,6 @@ def _parameters_of(ftype: t.TypeSpec | None) -> t.TypeSpec | None:
 class CallExpression(Expression):
     function: Expression
     parameter: Expression
-    # The field names in the callee's type as this call saw it (field_names_of),
-    # recorded by compile while names are in view; None before the first compile.
-    callee_names: tuple | None = None
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any],Any]) -> Expression:
         return rw.rewrite(self, replace, resolver,
@@ -99,20 +96,8 @@ class CallExpression(Expression):
 
     def __callee_type(self, resolver: g.Resolver, function: Expression, parameter: Expression) -> t.TypeSpec | None:
         """The callee's type as THIS call sees it: tuples its signature leaves
-        unnamed carry the field names the arguments supply. Once names are out
-        of view the callee may be an instance shared with other calls, and the
-        names are the ones this call recorded."""
-        callee = function.get_type(resolver)
-        if self.callee_names is not None and not resolver.field_names_in_view():
-            return t.with_field_names(callee, self.callee_names)
-        return t.named_at_call_site(callee, parameter.get_type(resolver))
-
-    def __seen(self, resolver: g.Resolver, function: Expression, parameter: Expression) -> CallExpression:
-        """This call over its compiled parts, with the callee's names recorded
-        while they are in view."""
-        names = (t.field_names_of(self.__callee_type(resolver, function, parameter))
-                 if resolver.field_names_in_view() else self.callee_names)
-        return dataclasses.replace(self, function=function, parameter=parameter, callee_names=names)
+        unnamed carry the field names the arguments supply."""
+        return t.named_at_call_site(function.get_type(resolver), parameter.get_type(resolver))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         func_type = self.__callee_type(resolver, self.function, self.parameter)
@@ -144,7 +129,7 @@ class CallExpression(Expression):
         prtr_type = parameter.get_type(resolver)
 
         if not isinstance(prtr_type, t.TupleSpec):
-            return self.__seen(resolver, self.function, parameter), pglb, phints
+            return dataclasses.replace(self, parameter=parameter), pglb, phints
 
         function, fglb, fhints = self.function.compile(resolver, t.CallableSpec(self.line_ref, prtr_type, expected_type))
 
@@ -154,11 +139,11 @@ class CallExpression(Expression):
             parameter, retry_glb, phints = parameter.compile(resolver, pinned)
             pglb = pglb + retry_glb
 
-        expr = self.__seen(resolver, function, parameter)
+        expr = dataclasses.replace(self, function=function, parameter=parameter)
         # This node owns the conversion between itself and its receiver: a call
         # whose settled result type cannot meet the receiver's expected type
         # wraps ITSELF (no-op until both types are ground — needs_conversion is
-        # conservative, so generic templates never wrap).
+        # conservative, so a generic template wraps only a by-name tuple binding).
         from pyast.expression.conversion import converted
         return converted(expr, expected_type, resolver), fglb+pglb, h.merge(fhints, phints)
 

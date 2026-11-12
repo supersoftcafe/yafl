@@ -213,9 +213,9 @@ fun rcmExpr(x, m: ThisMap) => match(x)
                                      None),
                               target, nm.penLine)
     ()               => x
-  (d: PeDot)     => PeDot(rcmExpr(d.base, m), d.member, d.pedLine, d.pedNames)
+  (d: PeDot)     => PeDot(rcmExpr(d.base, m), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rcmExpr(c.function, m), rcmExpr(c.parameter, m),
-                           c.pecLine, c.pecNames)
+                           c.pecLine)
   (tp: PeTuple)  => PeTuple(rcmEnts(tp.exprs, m, List()),
                             tp.petLine)
   (te: PeTernary) => PeTernary(rcmExpr(te.condition, m),
@@ -1028,9 +1028,9 @@ fun rnmExpr(x, m: ThisMap) => match(x)
     (target: String) => PeName(target, nm.refTypeParams, nm.penLine,
                                nm.penTrait)
     ()               => x
-  (d: PeDot)     => PeDot(rnmExpr(d.base, m), d.member, d.pedLine, d.pedNames)
+  (d: PeDot)     => PeDot(rnmExpr(d.base, m), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rnmExpr(c.function, m), rnmExpr(c.parameter, m),
-                           c.pecLine, c.pecNames)
+                           c.pecLine)
   (tp: PeTuple)  => PeTuple(rnmEnts(tp.exprs, m, List()),
                             tp.petLine)
   (te: PeTernary) => PeTernary(rnmExpr(te.condition, m),
@@ -1494,32 +1494,14 @@ fun aiTis3(c: PeCall, targetName: String, st, catalog: Catalog,
                                                 n))
     (io: InlOut) => TisOut(io.ioN,
                            prepend(aiWrap(st, kindSel,
-                                          aiAsSeenBy(c, target,
-                                                     isEmpty(io.ioStmts)
-                                                       ? io.ioValue
-                                                       : PeBlock(io.ioStmts,
-                                                                 io.ioValue, "",
-                                                                 stmtLine(st)))),
+                                          isEmpty(io.ioStmts)
+                                            ? io.ioValue
+                                            : PeBlock(io.ioStmts,
+                                                      io.ioValue, "",
+                                                      stmtLine(st))),
                                    List()))
     ()           => None
   ()              => None
-
-# `inlined` — `target`'s body standing where call `c` stood — typed as the
-# call was. Tuple field names are sugar the call site supplied (pecNames); the
-# body knows only the ones `target` declares, and what reads the call's value
-# reads it by the call's. So the body is first its declared result, as any
-# `ret` makes it, and that result is then shown with the call's names: two
-# conversions that move nothing.
-fun aiAsSeenBy(c: PeCall, target: PsFun, inlined: PExpr): PExpr => match(target.fRet)
-  (declared: Spec) => aiShownAs(inlined, declared,
-                                withFieldNames(declared, resultFieldNames(c.pecNames)))
-  ()               => inlined
-
-fun aiShownAs(inlined: PExpr, declared: Spec, seen: Spec|None): PExpr => match(seen)
-  (s2: Spec) => eqSpec(s2, declared)
-    ? inlined
-    : PeConvert(PeConvert(inlined, declared, exprLine(inlined)), s2, exprLine(inlined))
-  ()         => inlined
 
 fun aiWrap(st, kindSel: Int, x) => match(st)
   (rt: PsRet)   => PsRet(x, rt.psrLine)
@@ -1769,7 +1751,7 @@ fun aiBetaCall(c: PeCall, singles: Singles, catalog: Catalog,
                                  n)
     (o: PExpr)    => aiNoRep(n)
   (nm: PeName)    => match(c.parameter)
-    (tp: PeTuple) => aiBetaNamed(c, nm.refName,
+    (tp: PeTuple) => aiBetaNamed(nm.refName,
                                  tlEntValues(tp.exprs,
                                              List()),
                                  singles, catalog, r, n)
@@ -1785,7 +1767,7 @@ fun aiBetaApply(out: IlbOut|None, n: Int): (n2: Int, rep: PExpr|None) => match(o
     ()         => aiNoRep(io.ilN)
   ()           => aiNoRep(n)
 
-fun aiBetaNamed(c: PeCall, name: String, args: List<PExpr>, singles: Singles,
+fun aiBetaNamed(name: String, args: List<PExpr>, singles: Singles,
                 catalog: Catalog, r: Resolver|None,
                 n): (n2: Int, rep: PExpr|None)
   let viaLam = match(aiSingleLam(singles, name))
@@ -1797,12 +1779,7 @@ fun aiBetaNamed(c: PeCall, name: String, args: List<PExpr>, singles: Singles,
       (target: PsFun) => aiBetaApply(aiExprInlineFunction(target, args, r,
                                                           viaLam.n2),
                                      viaLam.n2)
-        |> (out) => aiSeenRep(c, target, out.n2, out.rep)
       ()              => viaLam
-
-fun aiSeenRep(c: PeCall, target: PsFun, n2: Int, rep: PExpr|None): (n2: Int, rep: PExpr|None) => match(rep)
-  (x: PExpr) => aiRep(n2, aiAsSeenBy(c, target, x))
-  ()         => aiNoRep(n2)
 
 # Drop lambda lets whose single use was inlined away (no remaining refs in
 # any OTHER statement of the sequence).

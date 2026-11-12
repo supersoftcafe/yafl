@@ -9,9 +9,10 @@
 #     tuple is nested in those types.
 #   * When two arguments name the same field differently, the first
 #     argument's names win; an unnamed field takes the other side's name.
-#   * Monomorphisation ignores call-site names: `(cur, at)` and
-#     `(current, acc)` share one instance, and neither site sees the other's
-#     names.
+#   * Every use of a name — a field read, a binding by name — is turned into
+#     the position it meant before monomorphisation, and the names are then
+#     removed. So `(cur, at)` and `(current, acc)` share one instance, neither
+#     site sees the other's names, and generated code reads fields by position.
 #
 # One namespace per test: each program as written, its `main` renamed
 # `program`, checked by the [test] beside it.
@@ -259,3 +260,78 @@ fun program(): Int
 
 fun [test("same names, other order, across type parameters")] check(): None|TestFailure
     ret assertEqInt(program(), 43, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::ReorderInsideGeneric
+
+import System
+import System::Containers
+import System::Test
+
+# A by-name binding inside a generic body is the template's to decide: once
+# `T` is `Int` the two fields have one type, and only the names tell them apart.
+fun counted<T>(xs: Array<T>, zero: T): (:Int, :T)
+  let r: (count: Int, last: T) = fold(xs, (last = zero, count = 0),
+                                      (st, x) => (last = x, count = st.count + 1))
+  ret (r.count, r.last)
+
+fun program(): Int
+  let (count, last) = counted(arrayOf<Int>(7, 8, 9), 100)
+  ret count * 10 + last
+
+fun [test("reorder inside a generic")] check(): None|TestFailure
+    ret assertEqInt(program(), 39, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::NamedArgumentsInsideGeneric
+
+import System
+import System::Test
+
+fun build<T>(first: T, count: Int = 7, second: T): (:T, :Int, :T)
+  ret (first, count, second)
+
+# Arguments named out of order, one left to its default, in a generic body.
+fun make<T>(a: T, b: T): (:T, :Int, :T)
+  ret build(second = b, first = a)
+
+fun program(): Int
+  let (first, count, second) = make(1, 2)
+  ret first * 100 + count * 10 + second
+
+fun [test("named arguments inside a generic")] check(): None|TestFailure
+    ret assertEqInt(program(), 172, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::ReorderOfAHeldValue
+
+import System
+import System::Test
+
+# Not a literal: the value is held, and its fields land where their names
+# say, at both levels.
+fun program(): Int
+  let p = (x = 1, y = (a = 2, b = 3))
+  let q: (y: (b: Int, a: Int), x: Int) = p
+  ret q.x * 100 + q.y.a * 10 + q.y.b
+
+fun [test("reorder of a held value")] check(): None|TestFailure
+    ret assertEqInt(program(), 123, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::ReorderIntoUnion
+
+import System
+import System::Test
+
+fun held(flag: Bool): (a: Int, b: Int)|None
+  let v = (b = 2, a = 1)
+  ret flag ? v : None
+
+fun program(): Int
+  ret match (held(true))
+    (t: (a: Int, b: Int)) => t.a * 10 + t.b
+    (n: None) => 0
+
+fun [test("reorder into a union")] check(): None|TestFailure
+    ret assertEqInt(program(), 12, "program()")

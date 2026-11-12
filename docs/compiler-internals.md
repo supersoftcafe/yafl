@@ -44,8 +44,9 @@ Representation changes (union boxing/widening, tuple rebuilds) exist in the
 tree as explicit `ConvertExpression` nodes that each value node inserts over
 ITSELF during its own `compile`, when its ground type cannot meet the
 receiver's expected type (`conversion.converted` — a no-op on non-ground
-types, so generic template bodies never wrap; monomorphisation re-enters the
-compile fixpoint so instance bodies place theirs). Every node owns its own
+types, so a generic template body wraps only a tuple whose fields bind out of
+place, which its field names decide and its types do not; monomorphisation
+re-enters the compile fixpoint so instance bodies place the rest). Every node owns its own
 convergence; there is no conversion-insertion pass. `ConvertExpression`'s
 `generate` is the only caller of the `pyast/expression/conversion.py`
 emission machinery.
@@ -280,6 +281,7 @@ this is the collected summary. **AST-level**, after the fixpoint and checks:
 |---|---|
 | `drops.insert_drops` | between convergence and the check phase (needs converged types to decide droppability; the checks then see the inserted `drop(x)` calls). Inserting triggers ONE re-convergence so the calls resolve. An unused `[linear]` binding with a `Drop` instance consumes by policy; without one, linearity errors as before. |
 | `linearity.check_linearity` | on converged templates, pre-monomorphisation (each `<[linear] T>` body checked once). |
+| `field_names.erase_field_names` | immediately before monomorphisation, after the last fixpoint that sees the program as written. Tuple field names are sugar: each field read takes its position (`DotExpression.index`), each conversion that binds a tuple's fields by name is rebuilt as the tuple it produces, and every tuple type and value loses its names. Instances are shared by call sites that named their tuples differently, so nothing after this point may consult a field name; a parameter list keeps its names, which are the declaration's own. |
 | `generics.convert_generic_to_concrete` | first transform; everything after assumes concrete types. Followed immediately by a re-entry into the compile fixpoint: conversions inside a generic template are undecidable (non-ground types), so each node of an instantiated body places its own `ConvertExpression` only now — before tail loops, so a recursive call's boxed args carry to the loop back-edge. There is no conversion-insertion pass. |
 | `lambda_lift.lift_captured_calls` | before `tail_loop` — self-calls must still be calls, since the threaded parameters have to reach the call sites before those become `recur`. A nested helper that captures only to be CALLED sheds the closure: its captures become parameters. `this` is never threaded (it is not a parameter); the hoist keeps it implicit instead. |
 | `hoist_nested.hoist_nested_functions` | before `tail_loop`, which wraps a body in a `LoopExpression` that no later body scan can see into. Each nested function goes to one of three places by what it reaches: nothing outside itself → global scope; the enclosing `this` (so, inside a class member) → a sibling MEMBER, which is what keeps the receiver in scope for it; a captured local, or a reference that travels as a value → a closure class, with `this` stored under a renamed field. A member added here has no vtable slot — the slot table was fixed during convergence — so calls to it dispatch directly (`ClassStatement.occupies_slot`). |
@@ -287,7 +289,7 @@ this is the collected summary. **AST-level**, after the fixpoint and checks:
 | `ast_inline.inline_ast` | after tail loops (so it copies loops, not recursive calls). |
 | `lower_lazy_lets` | before `lambdas` — the synthesised thunk closure must go through normal closure conversion. |
 | `lambdas.convert_lambdas_to_functions` | after everything that synthesises lambdas. |
-| `simple_classes.lower_simple_classes` | after lambdas (closure classes exist by now). |
+| `simple_classes.lower_simple_classes` | after lambdas (closure classes exist by now). The tuple a class becomes has no field names either: each field read takes its position here. |
 | `block_exits.assign_block_exits` | **last** — after every pass that can create or copy blocks, so each block instance gets unique exit tags. |
 
 **IR-level**, after `global_codegen`:

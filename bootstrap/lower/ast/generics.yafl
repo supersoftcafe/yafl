@@ -477,9 +477,9 @@ fun gsubExpr(x, sub: GSub, visited: List<String>) => match(x)
                            nm.penLine,
                            gsubOpt(nm.penTrait, sub, visited))
   (d: PeDot)     => PeDot(gsubExpr(d.base, sub, visited), d.member,
-                          d.pedLine, d.pedNames)
+                          d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(gsubExpr(c.function, sub, visited),
-                           gsubExpr(c.parameter, sub, visited), c.pecLine, c.pecNames)
+                           gsubExpr(c.parameter, sub, visited), c.pecLine)
   (tp: PeTuple)  => PeTuple(gsubTupEnts(tp.exprs, sub, visited,
                                         List()),
                             tp.petLine)
@@ -552,19 +552,9 @@ fun createSpecializedVersion(st, args: List<Spec>,
   let gens = stmtGens(st)
   if isEmpty(gens) || isEmpty(args)
     ret st
-  let sub = gsubOf(gens, map(args, withoutFieldNames), formals)
+  let sub = gsubOf(gens, args, formals)
   let newName = mangledName(stmtName(st), args)
   ret renameSpecialized(gsubStmt(st, sub), newName, args)
-
-# A type argument as an instance holds it. Tuple field names are sugar for the
-# call site that wrote them: every site whose arguments differ only in those
-# names shares ONE instance, so the instance carries nobody's. The names a
-# template DECLARES are not type arguments and are untouched.
-fun withoutFieldNames(arg: Spec): Spec => rwSpec(arg, rwOnSpec(unnamedTuple))
-
-fun unnamedTuple(sp): Spec|None => match(sp)
-  (t2: STuple) => with t2(stEntries = map(t2.stEntries, (en) => SEntry("", en.seType, en.seDefault)))
-  (o: Spec)    => None
 
 fun renameSpecialized(st, newName, args: List<Spec>) => match(st)
   (f: PsFun)  => PsFun(newName, f.fAttrs, List(), f.fParams, f.fBody,
@@ -953,9 +943,9 @@ fun rcrExpr(x, refs: GRefsIx) => match(x)
   # specialised enum's variant tree carries mangled names (2026-07-21 fix),
   # so the constructor's leaf reference must match.
   (ne: PeNewEnum) => rcrNewEnum(ne, refs)
-  (d: PeDot)     => PeDot(rcrExpr(d.base, refs), d.member, d.pedLine, d.pedNames)
+  (d: PeDot)     => PeDot(rcrExpr(d.base, refs), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rcrExpr(c.function, refs),
-                           rcrExpr(c.parameter, refs), c.pecLine, c.pecNames)
+                           rcrExpr(c.parameter, refs), c.pecLine)
   (tp: PeTuple)  => PeTuple(rcrTupEnts(tp.exprs, refs,
                                        List()),
                             tp.petLine)
@@ -1543,9 +1533,9 @@ fun rtrExprOpt(x: PExpr|None, r, traits: List<PStmt>) => match(x)
 
 fun rtrExpr(x, r, traits: List<PStmt>) => match(x)
   (nm: PeName)   => redirectName(nm, r, traits)
-  (d: PeDot)     => PeDot(rtrExpr(d.base, r, traits), d.member, d.pedLine, d.pedNames)
+  (d: PeDot)     => PeDot(rtrExpr(d.base, r, traits), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rtrExpr(c.function, r, traits),
-                           rtrExpr(c.parameter, r, traits), c.pecLine, c.pecNames)
+                           rtrExpr(c.parameter, r, traits), c.pecLine)
   (tp: PeTuple)  => PeTuple(rtrTupEnts(tp.exprs, r, traits,
                                        List()),
                             tp.petLine)
@@ -1826,9 +1816,9 @@ fun rfrExprOpt(x: PExpr|None, c: Canon) => match(x)
 fun rfrExpr(x, c: Canon) => match(x)
   (nm: PeName)   => PeName(nm.refName, rfrSpecList(nm.refTypeParams, c),
                            nm.penLine, rfrSpecOpt(nm.penTrait, c))
-  (d: PeDot)     => PeDot(rfrExpr(d.base, c), d.member, d.pedLine, d.pedNames)
+  (d: PeDot)     => PeDot(rfrExpr(d.base, c), d.member, d.pedLine, d.pedIndex)
   (cc: PeCall)   => PeCall(rfrExpr(cc.function, c),
-                           rfrExpr(cc.parameter, c), cc.pecLine, cc.pecNames)
+                           rfrExpr(cc.parameter, c), cc.pecLine)
   (tp: PeTuple)  => PeTuple(rfrTupEnts(tp.exprs, c,
                                        List()),
                             tp.petLine)
