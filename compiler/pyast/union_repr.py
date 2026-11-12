@@ -1389,10 +1389,13 @@ class ComplexEnumRepr(UnionRepr):
             return super().position_stages(sv, arm_type, resolver)
         subj_type = self.union_type
         tag = cg_p.VtableDiscriminator(sv)
+        # MatchExpression.check asks for these stages only to learn whether the
+        # position can be tested at all, before any discriminator is assigned:
+        # an id not yet assigned reads as 0, as a tagged combination's does.
         discriminators = resolver.get_discriminators()
         def leaf_id(leaf: str) -> int:
             key = f"enumleaf({t.enum_leaf_object_name(subj_type.root_name, leaf)})"
-            return discriminators[key]
+            return discriminators.get(key, 0)
         return [[cg_p.IntEqConst(tag, leaf_id(leaf))
                  for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]]
 

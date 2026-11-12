@@ -159,3 +159,30 @@ fun program(): Int
 
 fun [test("a variant pattern of an enum member matches that variant only")] check(): None|TestFailure
     ret assertEqInt(program(), 1173, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::SelfHoldingEnumPosition
+
+import System
+import System::Test
+
+enum Ex
+  enum Num(nv: Int)
+  enum Neg(inner: Ex)
+  enum Add(left: Ex, right: Ex)
+
+# An enum that holds itself is one object per variant, told apart by the
+# variant's own discriminator — in a position of several as much as alone.
+fun shape(a: Ex, b: Ex|None): Int
+  ret match(a, b)
+    (x: Num, y: Num)  => x.nv + y.nv
+    (x: Neg, y: None) => 100
+    (x: Add, y: Ex)   => 200
+    ()                => 300
+
+fun program(): Int
+  ret shape(Num(3), Num(4)) + shape(Neg(Num(1)), None) + shape(Add(Num(1), Num(2)), Neg(Num(1)))
+    + shape(Num(1), None)
+
+fun [test("a self-holding enum in a position of several")] check(): None|TestFailure
+    ret assertEqInt(program(), 607, "program()")
