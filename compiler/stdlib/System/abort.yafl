@@ -1,0 +1,14 @@
+namespace System
+
+fun [foreign("sys_abort"), impure, sync] _abortWith(message: System::String): System::None
+
+# End the program at once: `message` goes to stderr and the process exits
+# with code 1. For a state the program cannot continue from — a broken
+# invariant in the program itself. A failure the caller is expected to handle
+# is a value in the result, never this.
+#
+# It never returns, so it is typed as whatever the caller needs: an arm that
+# cannot happen says so, and what it would mean if it did.
+fun [impure] abort<T>(message: System::String): T
+  _abortWith(message)
+  ret abort<T>(message)

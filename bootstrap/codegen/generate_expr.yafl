@@ -522,21 +522,29 @@ fun isSyncFn(f: PsFun) => hasAttr(f.fAttrs, "sync")
 
 # ── DotExpression ────────────────────────────────────────────────────────────
 
+# A field read that reaches here without a field to read. The checks passed,
+# so the program is correct and an earlier stage of THIS compiler broke it:
+# say which read and stop. Emitting the read as anything else — its base, as
+# these arms once did — turns a compiler bug into a wrong program (#108).
+fun genDotBug(d: PeDot, what: String): GBundle =>
+  abort<GBundle>("compiler bug: field read `." + d.member + "` at " + d.pedLine.plFile
+                 + "[" + String(d.pedLine.plLine) + ":" + String(d.pedLine.plCol) + "]: " + what)
+
 fun genDot(d: PeDot, r)
   let baseBundle = genExpr(d.base, r)
   ret match(exprType(d.base, r))
     (bt: Spec) => genDotOn(d, bt, baseBundle, r)
-    ()          => baseBundle   # unreachable: compile requires the base type resolved
+    ()          => genDotBug(d, "its base has no type")
 
 fun genDotOn(d: PeDot, bt, baseBundle, r) => match(bt)
   (tp: STuple) => genDotTuple(d, tp, baseBundle)
   (c: SClass)  => genDotClass(d, c, baseBundle, r)
   (e2: SEnum)  => genDotEnum(d, e2, baseBundle, r)
-  (o: Spec)    => baseBundle   # unreachable: check() requires one of the above
+  (o: Spec)    => genDotBug(d, "its base is not a tuple, a class or an enum")
 
 fun genDotTuple(d: PeDot, tp: STuple, baseBundle) => match(tupleIndexOf(tp.stEntries, d.member))
   (idx: Int) => bundleJoin(baseBundle, bundleValue(RpStructField(mustResult(baseBundle), "_" + String(idx))))
-  ()          => baseBundle   # unreachable: check() requires the field to exist
+  ()          => genDotBug(d, "the tuple has no field of that name")
 
 fun tupleIndexOf(entries: List<SEntry>, name: String) => findIndex(entries, (e) => e.seName == name)
 
@@ -544,20 +552,20 @@ fun tupleIndexOf(entries: List<SEntry>, name: String) => findIndex(entries, (e) 
 fun genDotClass(d: PeDot, c: SClass, baseBundle, r) => match(soleItem(findType(r, c.scName)))
   (found: Found) => match(found.fStmt)
     (cs: PsClass) => genDotClassField(d, cs, baseBundle, r)
-    (o: PStmt)    => baseBundle   # unreachable
-  ()               => baseBundle   # unreachable
+    (o: PStmt)    => genDotBug(d, "its base's type " + c.scName + " is not a class")
+  ()               => genDotBug(d, "its base's class " + c.scName + " does not resolve to one declaration")
 
 fun genDotClassField(d: PeDot, cs: PsClass, baseBundle, r)
   ret match(head(classFindData(cs, r, d.member)))
     (found: Found) => genDotClassMember(cs, found.fStmt, d, baseBundle, r)
-    ()              => baseBundle   # unreachable
+    ()              => genDotBug(d, "class " + cs.cName + " has no member of that name")
 
 fun genDotClassMember(cs: PsClass, data, d: PeDot, baseBundle, r) => match(data)
   (fn: PsFun) => hasAttr(cs.cAttrs, "final") || !occupiesSlot(cs, d.member)
     ? bundleJoin(baseBundle, bundleValue(RpGlobalFunction(d.member, mustResult(baseBundle), false, foreignSymbol(fn), isImpureFn(fn), isSyncFn(fn))))
     : bundleJoin(baseBundle, bundleValue(RpVirtualFunction(d.member, mustResult(baseBundle), false, false)))
   (l: PsLet)  => genDotField(cs, l, d, baseBundle, r)
-  (o: PStmt)  => baseBundle   # unreachable: only funs/lets are callable class members
+  (o: PStmt)  => genDotBug(d, "the member of class " + cs.cName + " is neither a function nor a field")
 
 fun genDotField(cs: PsClass, l: PsLet, d: PeDot, baseBundle: GBundle, r)
   let xtype = specGenerateOpt(l.lType, r)
