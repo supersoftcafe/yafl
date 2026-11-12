@@ -311,6 +311,19 @@ def __substitute_type_params(
     return rw.resolved(node.search_and_replace(g.ResolverRoot([]), substitute), node)
 
 
+def __without_field_names(type_arg: t.TypeSpec) -> t.TypeSpec:
+    """A type argument as an instance holds it. Tuple field names are sugar
+    for the call site that wrote them: every site whose arguments differ only
+    in those names shares ONE instance, so the instance carries nobody's. The
+    names a template DECLARES are not type arguments and are untouched."""
+    def unnamed(_, thing):
+        if isinstance(thing, t.TupleSpec) and any(en.name is not None for en in thing.entries):
+            return dataclasses.replace(thing, entries=tuple(
+                dataclasses.replace(en, name=None) for en in thing.entries))
+        return rw.UNCHANGED
+    return rw.resolved(type_arg.search_and_replace(g.ResolverRoot([]), unnamed), type_arg)
+
+
 def __create_specialized_version(
     stmt: s.NamedStatement,
     type_args: tuple[t.TypeSpec, ...],
@@ -324,7 +337,7 @@ def __create_specialized_version(
     # Build mapping from type parameter names to concrete types
     type_param_map: dict[t.TypeSpec, t.TypeSpec] = {}
     for type_param, type_arg in zip(stmt.type_params, type_args):
-        type_param_map[type_param.get_type()] = type_arg
+        type_param_map[type_param.get_type()] = __without_field_names(type_arg)
 
     # Create new unique name
     new_name = __create_unique_name(stmt.name, type_args)

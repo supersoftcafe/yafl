@@ -190,12 +190,23 @@ def _enum_member(resolver: g.Resolver, espec: t.EnumSpec, bare: str):
 class DotExpression(Expression):
     base: Expression
     name: str
+    # The field names in this read's type as it was seen (field_names_of),
+    # recorded by compile while names are in view; None before the first
+    # compile. A field of a generic class holds its type argument, and the
+    # instance is shared by every use that named that argument's tuples.
+    field_names: tuple | None = None
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return rw.rewrite(self, replace, resolver,
             base=self.base.search_and_replace(resolver, replace))
 
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
+        declared = self.__declared_type(resolver)
+        if self.field_names is not None and not resolver.field_names_in_view():
+            return t.with_field_names(declared, self.field_names)
+        return declared
+
+    def __declared_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         btype = self.base.get_type(resolver)
         match btype:
             case t.TupleSpec(entries=entries):
@@ -243,6 +254,8 @@ class DotExpression(Expression):
                         name = match_field[0]
 
         expr = dataclasses.replace(self, base=base, name=name)
+        if resolver.field_names_in_view():
+            expr = dataclasses.replace(expr, field_names=t.field_names_of(expr.__declared_type(resolver)))
         # A field read owns its conversion to the receiver (an `A`-typed field
         # into an `A|None` slot). A method load (CallableSpec expected) never
         # converts.

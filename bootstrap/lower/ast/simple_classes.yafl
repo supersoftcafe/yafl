@@ -873,9 +873,9 @@ fun scTExpr(x, c: ScCtx, r): PExpr
 fun scTKids(x, c: ScCtx, r): PExpr => match(x)
   (nm: PeName)   => PeName(nm.refName, scTSpecs(nm.refTypeParams, c),
                            nm.penLine, scTTrait(nm.penTrait, c))
-  (d: PeDot)     => PeDot(scTExpr(d.base, c, r), d.member, d.pedLine)
+  (d: PeDot)     => PeDot(scTExpr(d.base, c, r), d.member, d.pedLine, d.pedNames)
   (cc: PeCall)   => PeCall(scTExpr(cc.function, c, r),
-                           scTExpr(cc.parameter, c, r), cc.pecLine)
+                           scTExpr(cc.parameter, c, r), cc.pecLine, cc.pecNames)
   (tp: PeTuple)  => PeTuple(scTEnts(tp.exprs, c, r,
                                     List()),
                             tp.petLine)

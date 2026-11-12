@@ -69,7 +69,10 @@ class EnumId(TypeId):
 
 @dataclass(frozen=True)
 class TupleId(TypeId):
-    entries: tuple[tuple[str, TypeId], ...]  # entry name, "" when unnamed
+    """A tuple is its field TYPES, in order. Field names are sugar for the
+    code that can see them and are no part of what the tuple is: `(a: Int)`
+    and `(b: Int)` are one identity."""
+    entries: tuple[TypeId, ...]
 
 
 @dataclass(frozen=True)
@@ -113,7 +116,7 @@ def spelling_of(spec) -> TypeId:
     if isinstance(spec, t.EnumSpec):
         return EnumId(spec.root_name, tuple(spelling_of(p) for p in spec.type_params), spec.path)
     if isinstance(spec, t.TupleSpec):
-        return TupleId(tuple((en.name or "", spelling_of(en.type)) for en in spec.entries))
+        return TupleId(tuple(spelling_of(en.type) for en in spec.entries))
     if isinstance(spec, t.CallableSpec):
         return CallableId(spelling_of(spec.parameters), spelling_of(spec.result))
     if isinstance(spec, t.CombinationSpec):
@@ -140,7 +143,7 @@ def serialise(tid: TypeId) -> str:
     if isinstance(tid, EnumId):
         return f"E({tid.root};{','.join(serialise(a) for a in tid.args)};{'/'.join(tid.path)})"
     if isinstance(tid, TupleId):
-        return "T(" + ",".join(f"{n}:{serialise(a)}" for n, a in tid.entries) + ")"
+        return "T(" + ",".join(serialise(a) for a in tid.entries) + ")"
     if isinstance(tid, CallableId):
         return f"F({serialise(tid.params)};{serialise(tid.result)})"
     if isinstance(tid, UnionId):
@@ -160,7 +163,7 @@ def __is_complete(tid: TypeId) -> bool:
     if isinstance(tid, (ClassId, EnumId)):
         return all(__is_complete(a) for a in tid.args)
     if isinstance(tid, TupleId):
-        return all(__is_complete(a) for _, a in tid.entries)
+        return all(__is_complete(a) for a in tid.entries)
     if isinstance(tid, CallableId):
         return __is_complete(tid.params) and __is_complete(tid.result)
     if isinstance(tid, UnionId):

@@ -119,11 +119,13 @@ fun eqExpr(a, b) => match(a)
   (x: PeDot) => match(b)
     (y: PeDot) => x.member == y.member && eqExpr(x.base, y.base)
                   && eqLine(x.pedLine, y.pedLine)
+                  && eqFieldNamesOpt(x.pedNames, y.pedNames)
     (o: PExpr) => false
   (x: PeCall) => match(b)
     (y: PeCall) => eqExpr(x.function, y.function)
                    && eqExpr(x.parameter, y.parameter)
                    && eqLine(x.pecLine, y.pecLine)
+                   && eqFieldNamesOpt(x.pecNames, y.pecNames)
     (o: PExpr)  => false
   (x: PeTuple) => match(b)
     (y: PeTuple) => eqTupEnts(x.exprs, y.exprs) && eqLine(x.petLine, y.petLine)

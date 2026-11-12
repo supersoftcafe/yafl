@@ -1,0 +1,261 @@
+# Tuple field names are sugar (#108). A tuple is positional; a name is a
+# convenience for the code that can see it, and means nothing to generics or
+# to generated code.
+#
+#   * Names written in a DECLARATION belong to that declaration.
+#   * A tuple a signature leaves unnamed takes its names from the CALL SITE:
+#     the names an argument supplies flow to every matching unnamed tuple in
+#     the signature — the result, a lambda's parameters — however deeply the
+#     tuple is nested in those types.
+#   * When two arguments name the same field differently, the first
+#     argument's names win; an unnamed field takes the other side's name.
+#   * Monomorphisation ignores call-site names: `(cur, at)` and
+#     `(current, acc)` share one instance, and neither site sees the other's
+#     names.
+#
+# One namespace per test: each program as written, its `main` renamed
+# `program`, checked by the [test] beside it.
+
+namespace CompilerTests::TupleFieldNames::SharedInstanceDifferentNames
+
+import System
+import System::Containers
+import System::Test
+
+# The #108 repro: two folds whose states have the same field types and
+# different field names share one instance of `fold`.
+fun first(xs: Array<Int>): Int
+  ret fold(xs, (cur = 0, at = 1), (st, x) => (cur = st.cur + x, at = st.at)).at
+
+fun second(xs: Array<Int>): Int
+  ret fold(xs, (current = 0, acc = 2), (st, x) => (current = st.current + x, acc = st.acc)).acc
+
+fun program(): Int
+  ret first(arrayOf<Int>(5)) + second(arrayOf<Int>(5)) == 3 ? 0 : 1
+
+fun [test("shared instance, different names")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::UnnamedAgainstNamed
+
+import System
+import System::Containers
+import System::Test
+
+# An unnamed state and a named one of the same shape share an instance too.
+fun first(xs: Array<Int>): Int
+  let (total, count) = fold(xs, (0, 0), (st, x) => st)
+  ret total + count
+
+fun second(xs: Array<Int>): Int
+  ret fold(xs, (current = 0, acc = 2), (st, x) => (current = st.current + x, acc = st.acc)).current
+
+fun program(): Int
+  ret first(arrayOf<Int>(5)) + second(arrayOf<Int>(5)) == 5 ? 0 : 1
+
+fun [test("unnamed against named")] check(): None|TestFailure
+    ret assertEqInt(program(), 0, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::SwappedNames
+
+import System
+import System::Containers
+import System::Test
+
+# The same two names in the opposite order: each site keeps its own.
+fun first(xs: Array<Int>): Int
+  ret fold(xs, (a = 0, b = 1), (st, x) => (a = st.a + x, b = st.b)).a
+
+fun second(xs: Array<Int>): Int
+  ret fold(xs, (b = 0, a = 2), (st, x) => (b = st.b + x, a = st.a)).a
+
+fun program(): Int
+  ret first(arrayOf<Int>(5)) * 10 + second(arrayOf<Int>(5))
+
+fun [test("swapped names")] check(): None|TestFailure
+    ret assertEqInt(program(), 52, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::FirstArgumentNamesWin
+
+import System
+import System::Test
+
+fun pick<T>(a: T, b: T): T
+  ret b
+
+fun program(): Int
+  # Both name the fields: the first argument's names, the second's values.
+  let r = pick((x = 1, y = 2), (p = 3, q = 4))
+  # Only the second names them: an unnamed field takes the other's name.
+  let s = pick((5, 6), (p = 7, q = 8))
+  ret r.x * 1000 + r.y * 100 + s.p * 10 + s.q
+
+fun [test("first argument's names win")] check(): None|TestFailure
+    ret assertEqInt(program(), 3478, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::ResultTakesArgumentNames
+
+import System
+import System::Test
+
+# No generics: the result's unnamed tuple matches the parameter's.
+fun same(a: (:Int, :String)): (:Int, :String)
+  ret a
+
+fun program(): Int
+  let r = same((n = 4, s = "xyz"))
+  ret r.n * 10 + length(r.s)
+
+fun [test("result takes the argument's names")] check(): None|TestFailure
+    ret assertEqInt(program(), 43, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::NestedResultTakesArgumentNames
+
+import System
+import System::Containers
+import System::Test
+
+# The matching tuples sit inside other types on both sides.
+fun same(xs: Array<(:Int, :String)>): Array<(:Int, :String)>
+  ret xs
+
+fun program(): Int
+  let pairs = same(arrayOf<(n: Int, s: String)>((n = 4, s = "xyz")))
+  ret fold(pairs, 0, (total, pair) => total + pair.n * 10 + length(pair.s))
+
+fun [test("nested result takes the argument's names")] check(): None|TestFailure
+    ret assertEqInt(program(), 43, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::DeclaredNamesStay
+
+import System
+import System::Test
+
+# Names the declaration writes are the declaration's: nothing flows in.
+fun getThing(a: (left: Int, right: String)): (blue: Int, red: String)
+  ret (blue = a.left + 1, red = a.right + "!")
+
+fun program(): Int
+  let r = getThing((left = 4, right = "xyz"))
+  ret r.blue * 10 + length(r.red)
+
+fun [test("declared names stay")] check(): None|TestFailure
+    ret assertEqInt(program(), 54, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::LambdaParameterTakesArgumentNames
+
+import System
+import System::Test
+
+# The names an argument supplies reach a lambda's parameter as well.
+fun apply(a: (:Int, :String), f: (:(:Int, :String)): Int): Int
+  ret f(a)
+
+fun program(): Int
+  ret apply((n = 4, s = "xyz"), (pair) => pair.n * 10 + length(pair.s))
+
+fun [test("lambda parameter takes the argument's names")] check(): None|TestFailure
+    ret assertEqInt(program(), 43, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::ResultReordersByName
+
+import System
+import System::Containers
+import System::Test
+
+# A generic call's result bound by NAME into a differently-ordered tuple: the
+# binding is the call site's, decided on the call site's names.
+fun program(): Int
+  let r: (acc: Int, current: Int) = fold(arrayOf<Int>(5), (current = 0, acc = 2),
+                                         (st, x) => (current = st.current + x, acc = st.acc))
+  ret r.acc * 10 + r.current
+
+fun [test("result reorders by name")] check(): None|TestFailure
+    ret assertEqInt(program(), 25, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::NamedStateInsideGeneric
+
+import System
+import System::Containers
+import System::Test
+
+# A named state inside a generic function, one of whose fields is the
+# function's own type parameter.
+fun lastAndCount<T>(xs: Array<T>, zero: T): (:T, :Int)
+  let end = fold(xs, (last = zero, count = 0), (st, x) => (last = x, count = st.count + 1))
+  ret (end.last, end.count)
+
+fun program(): Int
+  let (last, count) = lastAndCount(arrayOf<Int>(7, 8), 0)
+  let (word, words) = lastAndCount(arrayOf<String>("a", "bc", "def"), "")
+  ret last * 100 + count * 10 + length(word) + words
+
+fun [test("named state inside a generic")] check(): None|TestFailure
+    ret assertEqInt(program(), 826, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::SeparateTypeParameters
+
+import System
+import System::Test
+
+# Two type parameters bound to tuples of one shape share an instance in which
+# they are indistinguishable. The result is `B`, so it carries the SECOND
+# argument's names — decided here, at the call, not from the instance.
+fun second<A, B>(a: A, b: B): B
+  ret b
+
+class [final] Box<T>(value: T)
+
+fun program(): Int
+  let r = second((x = 1, y = 2), (p = 3, q = 4))
+  # A field of a generic class: the names come through the class's argument.
+  let boxed = Box((n = 5, m = 6))
+  ret r.p * 1000 + r.q * 100 + boxed.value.n * 10 + boxed.value.m
+
+fun [test("separate type parameters")] check(): None|TestFailure
+    ret assertEqInt(program(), 3456, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::ReorderAcrossTypeParameters
+
+import System
+import System::Test
+
+fun second<A, B>(a: A, b: B): B
+  ret b
+
+# The result is bound by NAME into `(q, p)` on the names the call gave `B`,
+# although the shared instance cannot tell `B` from `A`.
+fun program(): Int
+  let r: (q: Int, p: Int) = second((x = 1, y = 2), (p = 3, q = 4))
+  ret r.p * 10 + r.q
+
+fun [test("reorder across type parameters")] check(): None|TestFailure
+    ret assertEqInt(program(), 34, "program()")
+
+
+namespace CompilerTests::TupleFieldNames::SameNamesOtherOrderAcrossTypeParameters
+
+import System
+import System::Test
+
+fun second<A, B>(a: A, b: B): B
+  ret b
+
+# `.a` is the SECOND field of `B` here, whatever `A` calls its first.
+fun program(): Int
+  let r = second((a = 1, b = 2), (b = 3, a = 4))
+  ret r.a * 10 + r.b
+
+fun [test("same names, other order, across type parameters")] check(): None|TestFailure
+    ret assertEqInt(program(), 43, "program()")

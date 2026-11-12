@@ -231,6 +231,15 @@ class Resolver:
     def get_discriminators(self) -> dict[str, int]:
         return {}
 
+    def field_names_in_view(self) -> bool:
+        """Whether tuple field names can still be read off the types. They are
+        sugar for the call site that wrote them, and an instance shared between
+        call sites carries nobody's: true only while the program is compiled
+        as written, before monomorphisation. After it, a node that takes a
+        type out of an instance answers from what it recorded while they
+        were (`field_names_of`)."""
+        return False
+
     def get_optimization_level(self) -> int:
         return 0
 
@@ -309,6 +318,9 @@ class DelegatingResolver(Resolver):
 
     def get_discriminators(self) -> dict[str, int]:
         return self._parent.get_discriminators()
+
+    def field_names_in_view(self) -> bool:
+        return self._parent.field_names_in_view()
 
     def get_optimization_level(self) -> int:
         return self._parent.get_optimization_level()
@@ -492,7 +504,9 @@ def as_statements(statements: "Iterable[s.Statement] | Statements") -> Statement
 
 
 class ResolverRoot(Resolver):
-    def __init__(self, statements: "Iterable[s.Statement] | Statements") -> None:
+    def __init__(self, statements: "Iterable[s.Statement] | Statements",
+                 field_names_in_view: bool = False) -> None:
+        self.__field_names_in_view = field_names_in_view
         # The collection carries its own index; wrapping a `Statements` reuses
         # it, wrapping a list builds it once here.
         self.__statements = as_statements(statements)
@@ -517,6 +531,9 @@ class ResolverRoot(Resolver):
         # Lazy per-pass merged member tables: find_in_class's per-query
         # parent-chain walk, precomputed once per class. See merged_members.
         self.__merged_members: dict = {}
+
+    def field_names_in_view(self) -> bool:
+        return self.__field_names_in_view
 
     def is_complex_root(self, root_name: str) -> bool:
         if self.__breakers is None:

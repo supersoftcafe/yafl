@@ -414,7 +414,7 @@ fun ceListAmbig(ss: List<Spec>, map: NameMap, acc: Set<PErr>) =>
 # same lifetime as every per-pass cache. Mirror of Python
 # ResolverRoot.is_complex_root. The breaker list is small; membership is a
 # linear scan.
-fun rootResolver(statements)
+fun rootResolver(statements, namesInView: Bool = false)
   let breakers: List<String> = computeBreakers(statements)
   let st = buildStatements(statements)
   # The derived-equality analysis reads only type lookups, so a plain root
@@ -425,7 +425,7 @@ fun rootResolver(statements)
             (name) => contains(derivable, name),
             st, None, 0,
             enumFieldsTable(statements), None,
-            mergedMembersTable(st))
+            mergedMembersTable(st), namesInView)
 
 # Every root enum's derived fields, once per pass (the stAmbient pattern —
 # resolver-path readers asked ~938k times per self-compile otherwise).

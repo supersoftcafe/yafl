@@ -364,6 +364,22 @@ def _inline_function_call(
     return prologue, body_value
 
 
+def _as_seen_by(call: e.CallExpression, target: s.FunctionStatement,
+                inlined: e.Expression) -> e.Expression:
+    """`inlined` — `target`'s body standing where `call` stood — typed as the
+    call was. Tuple field names are sugar the call site supplied
+    (CallExpression.callee_names); the body knows only the ones `target`
+    declares, and what reads the call's value reads it by the call's. So the
+    body is first its declared result, as any `ret` makes it, and that result
+    is then shown with the call's names: two conversions that move nothing."""
+    declared = target.return_type
+    seen = t.with_field_names(declared, t.result_field_names(call.callee_names))
+    if declared is None or seen is declared:
+        return inlined
+    return e.ConvertExpression(inlined.line_ref,
+                               e.ConvertExpression(inlined.line_ref, inlined, declared), seen)
+
+
 def _try_inline_call_at_stmt(
         stmt: s.Statement,
         catalog: dict[str, s.FunctionStatement],
@@ -412,7 +428,7 @@ def _try_inline_call_at_stmt(
     # value (no prologue) needs no block.
     inlined: e.Expression = (e.BlockExpression(stmt.line_ref, prologue, final_expr)
                              if prologue else final_expr)
-    return [wrap(inlined)]
+    return [wrap(_as_seen_by(call, target, inlined))]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -635,7 +651,7 @@ def _beta_reduce_expressions(stmts: list[s.Statement],
                 args = [te.value for te in thing.parameter.expressions]
                 reduced = _expr_inline_function(target, args, _resolver)
                 if reduced is not None:
-                    return reduced
+                    return _as_seen_by(thing, target, reduced)
         return rw.UNCHANGED
 
     resolver = global_resolver if global_resolver is not None else g.ResolverRoot([])

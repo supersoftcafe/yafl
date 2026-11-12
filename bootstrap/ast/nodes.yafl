@@ -62,8 +62,13 @@ enum PExpr
     enum PeNothing(pengLine: PLine)
   enum PeName(refName: String, refTypeParams: List<Spec>, penLine: PLine,
              penTrait: Spec|None = None)
-  enum PeDot(base: PExpr, member: String, pedLine: PLine)
-  enum PeCall(function: PExpr, parameter: PExpr, pecLine: PLine)
+  # pedNames / pecNames: the tuple field names in the type this node takes out
+  # of a declaration — a field's type, the callee's type — as the node saw
+  # them, recorded by compile while names are in view (fieldNamesInView); None
+  # before the first compile. A generic instance is shared by every use that
+  # named its tuples, and carries none of their names.
+  enum PeDot(base: PExpr, member: String, pedLine: PLine, pedNames: FieldNames|None = None)
+  enum PeCall(function: PExpr, parameter: PExpr, pecLine: PLine, pecNames: FieldNames|None = None)
   enum PeTuple(exprs: List<PTupEnt>, petLine: PLine)
   enum PeTernary(condition: PExpr, trueResult: PExpr, falseResult: PExpr, pety: PLine)
   # lamRet: the lambda's own CallableSpec, computed by its compile each pass

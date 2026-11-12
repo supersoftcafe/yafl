@@ -530,7 +530,9 @@ fun postmonoRes4(stmts): PmRes
   let undischarged = reportUndischargedTraits(it.giStmts)
   if !isEmpty(undischarged)
     ret PmText(printedDiagnostics(undischarged), 0)
-  ret match(converge(it.giStmts))
+  # Tuple field names are no longer in view: an instance is shared by call
+  # sites that named its tuples differently, and carries none of their names.
+  ret match(converge(it.giStmts, false))
     (ok: CvOk)       => markComplexEnums(ok.cvStatements)
       |> (stmts, errs) => isEmpty(errs)
         ? PmOk(inlineConstants(stmts))

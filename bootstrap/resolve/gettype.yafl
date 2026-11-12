@@ -223,9 +223,21 @@ fun armBodyType(a: PArm, r): Spec|None =>
 
 fun twoTypes(a: Spec|None, b: Spec|None) => append(append(List(), a), b)
 
+# The callee's type as THIS call sees it: tuples its signature leaves unnamed
+# carry the field names the arguments supply. Once names are out of view the
+# callee may be an instance shared with other calls, and the names are the
+# ones this call recorded (call.py __callee_type). `function` and `parameter`
+# are the call's parts as they now stand — compile asks about the ones it has
+# just compiled.
+fun calleeType(c: PeCall, function: PExpr, parameter: PExpr, r): Spec|None => match(c.pecNames)
+  (n: FieldNames) => fieldNamesInView(r)
+    ? namedAtCallSite(exprType(function, r), exprType(parameter, r))
+    : withFieldNames(exprType(function, r), n)
+  ()              => namedAtCallSite(exprType(function, r), exprType(parameter, r))
+
 # A call's type is its callee's RESULT — and nothing else. A callee that has
 # not resolved to a callable yet simply has no result yet.
-fun callType(c: PeCall, r) => match(exprType(c.function, r))
+fun callType(c: PeCall, r) => match(calleeType(c, c.function, c.parameter, r))
   (ft: Spec) => match(ft)
     (cl: SCallable) => callResultType(c, cl.scResult, r)
     (o: Spec)       => None
@@ -293,7 +305,15 @@ fun newEnumType(ne: PeNewEnum, r) => match(findEnum(r, ne.rootName))
 
 # A field read: through a tuple by entry NAME, through a class or enum by
 # looking the member up on the DECLARATION.
-fun dotType(d: PeDot, r) => match(exprType(d.base, r))
+# Once names are out of view, a field of a generic class reads its type from
+# an instance shared by every use, and shows the names this read recorded.
+fun dotType(d: PeDot, r): Spec|None => match(d.pedNames)
+  (n: FieldNames) => fieldNamesInView(r)
+    ? dotDeclaredType(d, r)
+    : withFieldNames(dotDeclaredType(d, r), n)
+  ()              => dotDeclaredType(d, r)
+
+fun dotDeclaredType(d: PeDot, r) => match(exprType(d.base, r))
   (bt: Spec) => memberType(bt, d.member, r)
   ()         => None
 

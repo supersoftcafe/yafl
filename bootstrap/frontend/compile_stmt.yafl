@@ -551,8 +551,9 @@ fun compileElementTarget(fa: PsFieldAssign, et: ElementTarget, r)
               mergeHints(mergeHints(b.eoHints, ix.eoHints), v.eoHints))
 
 fun elementCall(et: ElementTarget, base: PExpr, index: PExpr): PExpr => match(et.etCall.parameter)
-  (t2: PeTuple) => PeCall(PeDot(base, et.etDot.member, et.etDot.pedLine),
-                          PeTuple(append(List<PTupEnt>(), PTupEnt("", false, index)), t2.petLine), et.etCall.pecLine)
+  (t2: PeTuple) => PeCall(PeDot(base, et.etDot.member, et.etDot.pedLine, et.etDot.pedNames),
+                          PeTuple(append(List<PTupEnt>(), PTupEnt("", false, index)), t2.petLine),
+                          et.etCall.pecLine, et.etCall.pecNames)
   (o: PExpr)    => et.etCall   # unreachable: elementTarget matched a tuple
 
 fun compileFieldTarget(fa: PsFieldAssign, r)

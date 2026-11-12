@@ -502,10 +502,10 @@ fun clStmtLoop(ss: List<PStmt>, r, paths: ClPaths, exports, acc) =>
 # ── expressions ──
 fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
   (d: PeDot)        => clExpr(d.base, r, paths, exports)
-    |> (b) => ClEx(PeDot(b.clExExpr, d.member, d.pedLine), b.clExExports)
+    |> (b) => ClEx(PeDot(b.clExExpr, d.member, d.pedLine, d.pedNames), b.clExExports)
   (c: PeCall)       => clExpr(c.function, r, paths, exports)
     |> (f2) => (f2, clExpr(c.parameter, r, paths, f2.clExExports))
-    |> (f2, p) => ClEx(PeCall(f2.clExExpr, p.clExExpr, c.pecLine), p.clExExports)
+    |> (f2, p) => ClEx(PeCall(f2.clExExpr, p.clExExpr, c.pecLine, c.pecNames), p.clExExports)
   (qq: PeCoalesce)      => clExpr(qq.qqSubject, r, paths, exports)
     |> (s2) => (s2, clExpr(qq.qqFallback, r, paths, s2.clExExports))
     |> (s2, p) => ClEx(PeCoalesce(s2.clExExpr, p.clExExpr, qq.peqqLine),

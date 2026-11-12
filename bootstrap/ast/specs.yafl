@@ -44,6 +44,46 @@ enum Spec
   enum SLazyStub(slsTarget: Spec|None, slsLine: PLine)
 
 class [final] SEntry(seName: String, seType: Spec|None, seDefault: PExpr|None)
+
+# The tuple field names a type shows, as a value that outlives the type
+# (fieldNamesOf): a tree shaped like the type and holding names only, so it
+# never goes stale as the types it was read from are lowered. FnArgs is a
+# class's or an enum's type arguments; a callable's parameter NAMES are the
+# function's own and are recorded blank.
+enum FieldNames
+  enum FnNone()                                    # nothing is named from here down
+  enum FnTuple(fntEntries: List<FnEntry>)
+  enum FnArgs(fnaParts: List<FieldNames>)
+  enum FnCallable(fncParams: FieldNames, fncResult: FieldNames)
+  enum FnUnion(fnuParts: List<FieldNames>)
+
+class [final] FnEntry(fneName: String, fneKids: FieldNames)
+
+fun eqFieldNames(a: FieldNames, b: FieldNames): Bool => match(a)
+  (x: FnNone)     => b is FnNone
+  (x: FnTuple)    => match(b)
+    (y: FnTuple)    => eqBy(x.fntEntries, y.fntEntries, eqFnEntry)
+    (o: FieldNames) => false
+  (x: FnArgs)     => match(b)
+    (y: FnArgs)     => eqBy(x.fnaParts, y.fnaParts, eqFieldNames)
+    (o: FieldNames) => false
+  (x: FnCallable) => match(b)
+    (y: FnCallable) => eqFieldNames(x.fncParams, y.fncParams)
+                       && eqFieldNames(x.fncResult, y.fncResult)
+    (o: FieldNames) => false
+  (x: FnUnion)    => match(b)
+    (y: FnUnion)    => eqBy(x.fnuParts, y.fnuParts, eqFieldNames)
+    (o: FieldNames) => false
+
+fun eqFnEntry(a: FnEntry, b: FnEntry): Bool =>
+  a.fneName == b.fneName && eqFieldNames(a.fneKids, b.fneKids)
+
+# A node's record: absent until its first compile.
+fun eqFieldNamesOpt(a: FieldNames|None, b: FieldNames|None): Bool => match(a)
+  (x: FieldNames) => match(b)
+    (y: FieldNames) => eqFieldNames(x, y)
+    ()              => false
+  ()              => b is None
 class [final] SField(sfName: String, sfType: Spec)
 
 fun specLine(sp) => match(sp)

@@ -563,12 +563,16 @@ class ConvergenceError(RuntimeError):
         self.errors = errors
 
 
-def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Resolver, int]:
+def __converge(statements: list[s.Statement],
+               field_names_in_view: bool = True) -> tuple[list[s.Statement], g.Resolver, int]:
     """Run the compile fixpoint: rewrite every statement until a whole pass
     changes nothing. Returns the converged statements, the final resolver and
     the number of passes taken (the bootstrap contract pins the port to the
     same count — a port that reached the same answer in a different number of
     passes is doing more or less per pass than this compiler).
+
+    `field_names_in_view` is the phase (Resolver.field_names_in_view): true
+    for the program as written, false once it has been monomorphised.
 
     Inference can also CYCLE: two parameters each narrow to what the other's
     previous answer allows, then both widen when those answers disagree, for
@@ -579,7 +583,7 @@ def __converge(statements: list[s.Statement]) -> tuple[list[s.Statement], g.Reso
     snapshot, window, distance = statements, 1, 0
     previous = statements
     for passes in range(1, _MAX_COMPILE_ITERATIONS + 1):
-        resolver = g.ResolverRoot(statements)
+        resolver = g.ResolverRoot(statements, field_names_in_view)
         new_statements = [x for stmt in statements for x in __compile(stmt, resolver, None)]
         if new_statements == statements:
             return new_statements, resolver, passes
@@ -692,8 +696,10 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     # own ConvertExpression only now, when its types are concrete — the same
     # node-owns-its-conversion step every ground node already ran during the
     # main converge. Sits before tail-loop lowering so a recursive call's boxed
-    # arguments carry over to the loop back-edge.
-    new_statements, resolver, _passes = __converge(new_statements)
+    # arguments carry over to the loop back-edge. Tuple field names are no
+    # longer in view: an instance is shared by call sites that named its
+    # tuples differently, and carries none of their names.
+    new_statements, resolver, _passes = __converge(new_statements, field_names_in_view=False)
     # Validates the enum-name resolution the breaker analysis relies on: an
     # ambiguous suffix match is an error rather than first-insertion-wins.
     new_statements, enum_ref_errors = lowering.complex_enums.mark_complex_enums(new_statements)

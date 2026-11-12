@@ -340,8 +340,12 @@ fun reportedParams(compiled, original)
 fun compileDot(d: PeDot, r, expected: Spec|None)
   let base = compileExpr(d.base, r, None)
   let out = PeDot(base.eoExpr, dotMemberName(d, base.eoExpr, r, expected),
-                  d.pedLine)
-  ret ExprOut(converted(out, expected, r), base.eoGlobals, base.eoHints)
+                  d.pedLine, d.pedNames)
+  ret ExprOut(converted(dotSeen(out, r), expected, r), base.eoGlobals, base.eoHints)
+
+# The read with its type's field names recorded while they are in view.
+fun dotSeen(d: PeDot, r): PeDot =>
+  fieldNamesInView(r) ? with d(pedNames = fieldNamesOf(dotDeclaredType(d, r))) : d
 
 fun dotMemberName(d: PeDot, base, r,
                   expected: Spec|None) => match(exprType(base, r))
@@ -461,24 +465,31 @@ fun cneArgsStep(st: (acc: List<PFieldArg>, globals2: List<PStmt>, hints: Dict<St
     hints = mergeHints(st.hints, o.eoHints))
 
 fun compileCall(c: PeCall, r, expected)
-  let before = paramShapeOf(exprType(c.function, r))
+  let before = paramShapeOf(calleeType(c, c.function, c.parameter, r))
   let arg = compileExpr(c.parameter, r, before)
   ret match(exprType(arg.eoExpr, r))
     (pt: Spec) => match(pt)
       (tp: STuple) => callWithShape(c, r, arg, tp, expected, before)
-      (o: Spec)    => partialCall(c, arg)
-    ()         => partialCall(c, arg)
+      (o: Spec)    => partialCall(c, arg, r)
+    ()         => partialCall(c, arg, r)
 
-fun partialCall(c: PeCall, arg: ExprOut)
-  ret ExprOut(PeCall(c.function, arg.eoExpr, c.pecLine), arg.eoGlobals,
+fun partialCall(c: PeCall, arg: ExprOut, r)
+  ret ExprOut(callSeen(c, c.function, arg.eoExpr, r), arg.eoGlobals,
               arg.eoHints)
+
+# The call over its compiled parts, with the callee's field names recorded
+# while they are in view.
+fun callSeen(c: PeCall, function: PExpr, parameter: PExpr, r): PeCall =>
+  PeCall(function, parameter, c.pecLine,
+         fieldNamesInView(r) ? fieldNamesOf(calleeType(c, function, parameter, r)) : c.pecNames)
 
 fun callWithShape(c: PeCall, r, arg, tp,
                   expected, before: Spec|None)
   let fn = compileExpr(c.function, r, SCallable(tp, expected, c.pecLine))
-  let args = retriedArgs(arg, before, paramShapeOf(exprType(fn.eoExpr, r)),
+  let args = retriedArgs(arg, before,
+                         paramShapeOf(calleeType(c, fn.eoExpr, arg.eoExpr, r)),
                          tp, r)
-  ret ExprOut(converted(PeCall(fn.eoExpr, args.eoExpr, c.pecLine), expected, r),
+  ret ExprOut(converted(callSeen(c, fn.eoExpr, args.eoExpr, r), expected, r),
               concat(fn.eoGlobals, args.eoGlobals),
               mergeHints(fn.eoHints, args.eoHints))
 

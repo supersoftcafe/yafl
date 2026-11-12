@@ -398,7 +398,7 @@ fun llExprOpt(x: PExpr|None, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
 fun llExpr(x, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
   (c: PeCall)    => llCallExpr(c, ctx, paramLets)
   (d: PeDot)     => PeDot(llExpr(d.base, ctx, paramLets), d.member,
-                          d.pedLine)
+                          d.pedLine, d.pedNames)
   (tp: PeTuple)  => PeTuple(llEnts(tp.exprs, ctx, paramLets,
                                    List()),
                             tp.petLine)
@@ -450,7 +450,7 @@ fun llExpr(x, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
 
 fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>)
   let rebuilt = PeCall(llExpr(c.function, ctx, paramLets),
-                       llExpr(c.parameter, ctx, paramLets), c.pecLine)
+                       llExpr(c.parameter, ctx, paramLets), c.pecLine, c.pecNames)
   ret match(rebuilt.function)
     (nm: PeName) => isEmpty(llExtrasFor(ctx, nm.refName))
       ? rebuilt
@@ -460,7 +460,7 @@ fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>)
                                                             nm.refName),
                                           rebuilt.pecLine, List())),
                        rebuilt.pecLine),
-               rebuilt.pecLine)
+               rebuilt.pecLine, rebuilt.pecNames)
     (o: PExpr)   => rebuilt
 
 fun llExtraEnts(ns: List<String>, lr, acc: List<PTupEnt>) =>
