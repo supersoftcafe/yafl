@@ -207,11 +207,10 @@ fun pushAll<T>(a: Array<T>, l: List<T>): Array<T>
 # buffer of the combined size grown (_grown) when not, rather than growing by
 # repeated copies.
 fun pushAll<T>(a: Array<T>, b: Array<T>): Array<T>
-  ret match(b)
-    (fb: _FullArray<T>)  => match(a)
-      (fa: _FullArray<T>)  => _pushAllFull<T>(fa, fb)
-      (ea: _EmptyArray<T>) => b
-    (eb: _EmptyArray<T>) => a
+  ret match(a, b)
+    (fa: _FullArray<T>, fb: _FullArray<T>) => _pushAllFull<T>(fa, fb)
+    (_: _EmptyArray<T>, _: _FullArray<T>)  => b
+    ()                                     => a
 
 fun _pushAllFull<T>(a: _FullArray<T>, b: _FullArray<T>): Array<T>
   let held = pin(a._buffer)

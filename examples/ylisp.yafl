@@ -198,15 +198,13 @@ fun apply(io: IO, genv: Env, f: Value, args: Value): (io: IO, v: Value | EvalErr
 # two of them together.
 fun _bindParams(params: Value, args: Value, env: Env): Env | EvalError
   fun [tail] bindLoop(params2: Value, args2: Value, env: Env): Env | EvalError
-    ret match(params2)
-      (pp: VPair) => match(args2)
-        (ap: VPair) => match(pp.head)
-          (s: VSym)   => bindLoop(pp.tail, ap.tail, EnvBind(s.name, ap.head, env))
-          (other)     => EvalError("bad parameter")
-        (other) => EvalError("too few arguments")
-      (other) => match(args2)
-        (ap: VPair) => EvalError("too many arguments")
-        (other)     => env
+    ret match(params2, args2)
+      (pp: VPair, ap: VPair) => match(pp.head)
+        (s: VSym)   => bindLoop(pp.tail, ap.tail, EnvBind(s.name, ap.head, env))
+        (other)     => EvalError("bad parameter")
+      (_: VPair, _: Value) => EvalError("too few arguments")
+      (_: Value, _: VPair) => EvalError("too many arguments")
+      ()                   => env
 
   ret bindLoop(params, args, env)
 
@@ -229,11 +227,9 @@ fun _builtin2(op: System::String, a: Value, b: Value): Value | EvalError
     : op == "car"   ? _car(b)
     : op == "cdr"   ? _cdr(b)
     : op == "null?" ? VBool(b is VNil)
-    : match(a)
-        (x: VInt) => match(b)
-          (y: VInt) => arith(op, x.num, y.num)
-          (other)   => EvalError("number expected")
-        (other) => EvalError("number expected")
+    : match(a, b)
+        (x: VInt, y: VInt) => arith(op, x.num, y.num)
+        ()                 => EvalError("number expected")
 
 fun _printValue(io: IO, v: Value): (io: IO, v: Value | EvalError)
   let r = writeAll(io, show(v) + "\n")
@@ -273,11 +269,10 @@ fun _isDefine(form: Value): System::Bool
 fun _runDefine(io: IO, genv: Env, src: System::String, pos: System::Int, form: Value): (io: IO, v: System::Int)
   let name = _car(_cdr(form))
   let r = eval(io, genv, EnvNil(), _car(_cdr(_cdr(form))))
-  ret match(r.v)
-    (e: EvalError) => _fail(r.io, e)
-    (v: Value)     => match(name)
-      (s: VSym)  => runAll(r.io, EnvBind(s.name, v, genv), src, pos)
-      (other)    => _fail(r.io, EvalError("define needs a symbol"))
+  ret match(r.v, name)
+    (e: EvalError, _: Value) => _fail(r.io, e)
+    (v: Value, s: VSym)      => runAll(r.io, EnvBind(s.name, v, genv), src, pos)
+    ()                       => _fail(r.io, EvalError("define needs a symbol"))
 
 fun _runExpr(io: IO, genv: Env, src: System::String, pos: System::Int, form: Value): (io: IO, v: System::Int)
   let r = eval(io, genv, EnvNil(), form)
