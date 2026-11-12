@@ -871,7 +871,9 @@ fun instEntries(es: List<PTupEnt>, r, acc): Set<PErr> =>
 fun instArms(as2: List<PArm>, r, acc): Set<PErr> =>
   fold(as2, acc, (a, x) => instExprOpt(x.armGuard, r,
                         instExpr(x.armBody, r,
-                                 instSpecOpt(x.armType, r, a))))
+                                 instPositions(x.armExtra, r, instSpecOpt(x.armType, r, a)))))
+
+fun instPositions(ps: List<PPos>, r, acc): Set<PErr> => fold(ps, acc, (a, p) => instSpecOpt(p.posType, r, a))
 
 fun instExprOpt(x: PExpr|None, r, acc): Set<PErr> => match(x)
   (e2: PExpr) => instExpr(e2, r, acc)

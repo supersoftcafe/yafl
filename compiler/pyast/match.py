@@ -129,6 +129,59 @@ def _extra_binding_resolver(resolver: g.Resolver, arm: "MatchArm") -> g.Resolver
     return out
 
 
+# A position whose repr cannot test its pattern is REPORTED, not left to raise
+# out of codegen. Each subject's repr is asked; the first arm it refuses is
+# reported. The guards themselves are built at code generation, where the
+# discriminators they read exist.
+#
+# A subject that is not concrete names something unresolved, reported where it
+# is named. One with a member held by value as a type parameter has no layout
+# until monomorphisation, so no repr can answer, and the position is refused
+# outright. (port: check_expr.yafl positionErrs and the helpers below it.)
+def _position_errors(mt: "MatchExpression", resolver: g.Resolver) -> list[Error]:
+    if not mt.extra_subjects:
+        return []
+    subs = [mt.subject] + list(mt.extra_subjects)
+    return [err for i, sub in enumerate(subs)
+            for err in _subject_position_errors(mt.arms, i, sub, resolver)]
+
+
+def _subject_position_errors(arms, i: int, sub: "e.Expression", resolver: g.Resolver) -> list[Error]:
+    sty = sub.get_type(resolver)
+    if not (isinstance(sty, (t.EnumSpec, t.CombinationSpec)) and sty.is_concrete()):
+        return []
+    return _position_refusals(arms, i, sty, resolver)
+
+
+def _position_refusals(arms, i: int, sty: t.TypeSpec, resolver: g.Resolver) -> list[Error]:
+    if union_repr.layout_decided(sty):
+        return _repr_refusals(arms, i, union_repr.classify(sty, resolver), resolver)
+    return _first_refused_arm(arms, lambda a: _position_pattern(a, i) is not None,
+                              "a position of a multi-subject match cannot test a union with a generic member")
+
+
+def _repr_refusals(arms, i: int, rep, resolver: g.Resolver) -> list[Error]:
+    return _first_refused_arm(arms, lambda a: _arm_refused_at(a, i, rep, resolver),
+                              "this pattern cannot serve a position of a multi-subject match")
+
+
+def _first_refused_arm(arms, refused: Callable[["MatchArm"], bool], message: str) -> list[Error]:
+    arm = next((a for a in arms if refused(a)), None)
+    return [] if arm is None else [Error(arm.line_ref, message)]
+
+
+def _arm_refused_at(arm: "MatchArm", i: int, rep, resolver: g.Resolver) -> bool:
+    pat = _position_pattern(arm, i)
+    return pat is not None and not rep.tests_position(pat, resolver)
+
+
+# The pattern an arm puts at position `i` (0 is the arm's own type).
+def _position_pattern(arm: "MatchArm", i: int) -> t.TypeSpec | None:
+    if i == 0:
+        return arm.type_spec
+    return arm.extra[i - 1].type_spec if len(arm.extra) >= i else None
+
+
 @dataclass
 class MatchRange:
     """An inclusive `lo .. hi` alternative in a literal arm — integers (and
@@ -678,27 +731,7 @@ class MatchExpression(e.Expression):
             return subject_err + [Error(self.line_ref, "match subject must be a union type"
                           + ", or use literal patterns on an Int/String subject")]
 
-        errors = list(subject_err)
-        # A position whose repr cannot test its pattern must be REPORTED, not
-        # left to raise out of codegen. Each position's repr is ASKED; the
-        # guards themselves are built at code generation, where the
-        # discriminators they read exist.
-        if self.extra_subjects:
-            subs = [self.subject] + list(self.extra_subjects)
-            for i, sub in enumerate(subs):
-                sty = sub.get_type(resolver)
-                if not isinstance(sty, (t.EnumSpec, t.CombinationSpec)):
-                    continue
-                rep = union_repr.classify(sty, resolver)
-                for arm in self.arms:
-                    pat = (arm.type_spec if i == 0
-                           else (arm.extra[i - 1].type_spec if len(arm.extra) >= i else None))
-                    if pat is None:
-                        continue
-                    if not rep.tests_position(pat, resolver):
-                        errors.append(Error(arm.line_ref,
-                            "this pattern cannot serve a position of a multi-subject match"))
-                        break
+        errors = list(subject_err) + _position_errors(self, resolver)
         # Arity: an arm has one pattern per subject. The grammar cannot check
         # this — it does not know the subject count — so it lands here, where
         # both are in hand. An else arm `()` carries no patterns and is total

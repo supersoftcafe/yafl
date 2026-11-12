@@ -448,9 +448,7 @@ fun rwnClassScope(c, sc: Resolver|None) => match(sc)
 # posScope's fallback type is the subject's, which search_and_replace does not
 # consult, so the fallback chain is empty.
 fun rwnArmScope(a: PArm, sc: Resolver|None) => match(sc)
-  (r2: Resolver) => extraScope(a.armExtra,
-                               chain2(List()),
-                               bindingScope(a, a.armType, r2))
+  (r2: Resolver) => armBodyScope(a, r2)
   ()             => None
 
 fun rwnStmts(ss: List<PStmt>, w: RwN, sc, n) => rwnStmtLoop(ss, w, sc, n, List())

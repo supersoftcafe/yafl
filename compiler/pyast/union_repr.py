@@ -1477,6 +1477,21 @@ def _global_max_tag(resolver: g.Resolver) -> int:
     return max(discs.values(), default=0)
 
 
+def layout_decided(union_type: t.TypeSpec) -> bool:
+    """Whether `classify` can answer for this union inside a generic body. A
+    member held BY VALUE as a type parameter — `T` itself, or a tuple holding
+    one — has no layout until monomorphisation binds it. A heap member (class,
+    enum) is a pointer whatever its type arguments, so `List<T>` is decided."""
+    def by_value_placeholder(spec: t.TypeSpec) -> bool:
+        if isinstance(spec, t.GenericPlaceholderSpec):
+            return True
+        if isinstance(spec, t.TupleSpec):
+            return any(e.type is not None and by_value_placeholder(e.type) for e in spec.entries)
+        return False
+    return not (isinstance(union_type, t.CombinationSpec)
+                and any(by_value_placeholder(m) for m in union_type.repr_members()))
+
+
 def classify(union_type: t.TypeSpec, resolver: g.Resolver) -> UnionRepr:
     """Decide a union's representation. The single source of truth that the
     `*.generate` decision and the per-site representation branches route through."""

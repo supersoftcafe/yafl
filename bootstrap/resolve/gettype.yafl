@@ -219,7 +219,7 @@ fun matchType(mt: PeMatch, r) => branchType(map(mt.arms, (a) => armBodyType(a, r
 # declared type. An else arm binds nothing here; only compile, which knows the
 # subject type, can bind it.
 fun armBodyType(a: PArm, r): Spec|None =>
-  exprType(a.armBody, extraScope(a.armExtra, chain2(List<Spec|None>()), bindingScope(a, a.armType, r)))
+  exprType(a.armBody, armBodyScope(a, r))
 
 fun twoTypes(a: Spec|None, b: Spec|None) => append(append(List(), a), b)
 

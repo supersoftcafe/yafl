@@ -789,6 +789,11 @@ fun extraScope(ps: List<PPos>, tys: List<Spec|None>, r) =>
   fold(ps, (tys = tys, r = r),
        (st, x) => (tys = dropOne(st.tys), r = posScope(x, head(st.tys), st.r))).r
 
+# What an arm's body and guard see: position 0's binding plus one for every
+# extra position, each at its declared type (match.py MatchArm.body_resolver).
+# Every pass that walks an arm body with a scope builds it here.
+fun armBodyScope(a: PArm, r) => extraScope(a.armExtra, chain2(List<Spec|None>()), bindingScope(a, a.armType, r))
+
 
 fun posScope(p: PPos, subjTy, r): Resolver => p.posName == "" || p.posName == "_"
   ? r

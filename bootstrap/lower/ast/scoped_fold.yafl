@@ -85,9 +85,10 @@ fun sfExprs<T>(es: List<PExpr>, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc
 fun sfBlock<T>(bk: PeBlock, blockR: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
   ret sfExpr(bk.blockValue, blockR, fx, sfStmts(bk.blockStmts, blockR, fx, acc))
 
-# An arm's binding is in scope for its body and guard; its literals are not.
+# An arm's bindings — every position's — are in scope for its body and guard;
+# its literals are not.
 fun sfArm<T>(a: PArm, r: Resolver, fx: (:T, :PExpr, :Resolver): T, acc: T): T
-  let bodyR = bindingScope(a, a.armType, r)
+  let bodyR = armBodyScope(a, r)
   let withLits = fold(a.armLiterals, acc, (a2, lt) => sfLit(lt, r, fx, a2))
   ret sfExprOpt(a.armGuard, bodyR, fx, sfExpr(a.armBody, bodyR, fx, withLits))
 

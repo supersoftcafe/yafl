@@ -463,19 +463,31 @@ fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
 # an arm that never matches. Each subject's repr is asked; the first arm it
 # refuses is reported. The guards themselves are built at code generation,
 # where the discriminators they read exist.
+#
+# A subject that is not concrete names something unresolved, reported where it
+# is named. One with a member held by value as a type parameter has no layout
+# until monomorphisation, so no repr can answer, and the position is refused
+# outright.
 fun positionErrs(mt: PeMatch, r): Set<PErr> => isEmpty(mt.matchExtra)
   ? noErrs()
   : fold(prepend(mt.subject, mt.matchExtra), (i = 0, acc = noErrs()),
          (st, sub) => (i = st.i + 1, acc = union(st.acc, subjectPositionErrs(mt.arms, st.i, sub, r)))).acc
 
 fun subjectPositionErrs(arms: List<PArm>, i: Int, sub: PExpr, r): Set<PErr> => match(exprType(sub, r))
-  (sty: Spec) => isEnumOrUnion(sty)
-    ? firstRefusedArm(arms, i, Bootstrap::Codegen::classifyRepr(sty, r), r)
-    : noErrs()
-  ()          => noErrs()
+  (sty: Spec) if isEnumOrUnion(sty) && isConcrete(sty) => positionRefusals(arms, i, sty, r)
+  ()                                                    => noErrs()
 
-fun firstRefusedArm(arms: List<PArm>, i: Int, rep, r): Set<PErr> => match(firstWhere(arms, (a) => armRefusedAt(a, i, rep, r)))
-  (a: PArm) => oneErr(a.parmLine, "this pattern cannot serve a position of a multi-subject match")
+fun positionRefusals(arms: List<PArm>, i: Int, sty: Spec, r): Set<PErr> => Bootstrap::Codegen::layoutDecided(sty)
+  ? reprRefusals(arms, i, Bootstrap::Codegen::classifyRepr(sty, r), r)
+  : firstRefusedArm(arms, (a) => positionPattern(a, i) !is None,
+                    "a position of a multi-subject match cannot test a union with a generic member")
+
+fun reprRefusals(arms: List<PArm>, i: Int, rep, r): Set<PErr> =>
+  firstRefusedArm(arms, (a) => armRefusedAt(a, i, rep, r),
+                  "this pattern cannot serve a position of a multi-subject match")
+
+fun firstRefusedArm(arms: List<PArm>, refused: (:PArm): Bool, message: String): Set<PErr> => match(firstWhere(arms, refused))
+  (a: PArm) => oneErr(a.parmLine, message)
   ()        => noErrs()
 
 fun armRefusedAt(a: PArm, i: Int, rep, r) => match(positionPattern(a, i))

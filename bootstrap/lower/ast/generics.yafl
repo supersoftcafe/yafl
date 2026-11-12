@@ -214,7 +214,9 @@ fun fciEntries(es: List<PTupEnt>, acc) =>
   fold(es, acc, (a, x) => fciExpr(x.tupValue, a))
 
 fun fciArms(as2: List<PArm>, acc) =>
-  fold(as2, acc, (a, x) => fciExprOpt(x.armGuard, fciExpr(x.armBody, fciSpecOpt(x.armType, a))))
+  fold(as2, acc, (a, x) => fciExprOpt(x.armGuard, fciExpr(x.armBody, fciPositions(x.armExtra, fciSpecOpt(x.armType, a)))))
+
+fun fciPositions(ps: List<PPos>, acc) => fold(ps, acc, (a, p) => fciSpecOpt(p.posType, a))
 
 fun fciExprOpt(x: PExpr|None, acc) => match(x)
   (e2: PExpr) => fciExpr(e2, acc)
@@ -536,7 +538,11 @@ fun gsubTupEnts(es: List<PTupEnt>, sub: GSub, visited: List<String>, acc): List<
 
 fun gsubArms(as2: List<PArm>, sub: GSub, visited: List<String>, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, with x(armType = gsubOpt(x.armType, sub, visited), armBody = gsubExpr(x.armBody, sub, visited), armLiterals = gsubLits(x.armLiterals, sub, visited,
-                         List()), armGuard = gsubExprOpt(x.armGuard, sub, visited))))
+                         List()), armGuard = gsubExprOpt(x.armGuard, sub, visited),
+                         armExtra = gsubPositions(x.armExtra, sub, visited))))
+
+fun gsubPositions(ps: List<PPos>, sub: GSub, visited: List<String>): List<PPos> =>
+  map(ps, (p) => with p(posType = gsubOpt(p.posType, sub, visited)))
 
 fun gsubLits(ls: List<PLit>, sub: GSub, visited: List<String>, acc: List<PLit>) =>
   fold(ls, acc, append)
@@ -986,7 +992,11 @@ fun rcrTupEnts(es: List<PTupEnt>, refs: GRefsIx, acc): List<PTupEnt> =>
   fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rcrExpr(x.tupValue, refs))))
 
 fun rcrArms(as2: List<PArm>, refs: GRefsIx, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armType = rcrSpecOpt(x.armType, refs), armBody = rcrExpr(x.armBody, refs), armGuard = rcrExprOpt(x.armGuard, refs))))
+  fold(as2, acc, (a, x) => append(a, with x(armType = rcrSpecOpt(x.armType, refs), armBody = rcrExpr(x.armBody, refs), armGuard = rcrExprOpt(x.armGuard, refs),
+                                            armExtra = rcrPositions(x.armExtra, refs))))
+
+fun rcrPositions(ps: List<PPos>, refs: GRefsIx): List<PPos> =>
+  map(ps, (p) => with p(posType = rcrSpecOpt(p.posType, refs)))
 
 # ── prune + finalize ────────────────────────────────────────────────────────
 
@@ -1860,7 +1870,11 @@ fun rfrTupEnts(es: List<PTupEnt>, c: Canon, acc): List<PTupEnt> =>
   fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rfrExpr(x.tupValue, c))))
 
 fun rfrArms(as2: List<PArm>, c: Canon, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armType = rfrSpecOpt(x.armType, c), armBody = rfrExpr(x.armBody, c), armGuard = rfrExprOpt(x.armGuard, c))))
+  fold(as2, acc, (a, x) => append(a, with x(armType = rfrSpecOpt(x.armType, c), armBody = rfrExpr(x.armBody, c), armGuard = rfrExprOpt(x.armGuard, c),
+                                            armExtra = rfrPositions(x.armExtra, c))))
+
+fun rfrPositions(ps: List<PPos>, c: Canon): List<PPos> =>
+  map(ps, (p) => with p(posType = rfrSpecOpt(p.posType, c)))
 
 fun rfrSpecOpt(sp: Spec|None, c: Canon) => match(sp)
   (s2: Spec) => rfrSpec(s2, c)

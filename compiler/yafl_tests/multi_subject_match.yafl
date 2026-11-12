@@ -186,3 +186,29 @@ fun program(): Int
 
 fun [test("a self-holding enum in a position of several")] check(): None|TestFailure
     ret assertEqInt(program(), 607, "program()")
+
+
+namespace CompilerTests::MultiSubjectMatch::GenericBodyPositionBindings
+
+import System
+import System::Test
+
+# #109: every pass that walks a match arm must reach the EXTRA positions' types
+# too. Monomorphisation substituted only the arm's own type, so the second
+# position's binding reached codegen untyped ("its base has no type"); a lambda
+# capturing it must see the substituted type as well.
+class Node(next: System::Int)
+class Box<T>(node: Node, v: T)
+class Nil<T>()
+
+fun both<T>(a: Box<T>|Nil<T>, b: Box<T>|Nil<T>): System::Int
+  ret match(a, b)
+    (x: Box<T>, y: Box<T>) => x.node.next + ((k: System::Int) => y.node.next * k)(10)
+    ()                     => 0
+
+fun program(): System::Int
+  ret both<System::Int>(Box<System::Int>(Node(2), 1), Box<System::Int>(Node(3), 1))
+    + both<System::String>(Box<System::String>(Node(4), "a"), Nil<System::String>())
+
+fun [test("a generic body's second position keeps its type")] check(): None|TestFailure
+    ret assertEqInt(program(), 32, "program()")

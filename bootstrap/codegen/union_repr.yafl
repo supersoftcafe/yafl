@@ -478,6 +478,24 @@ enum GRepr
 # vs state — no stamps to read, no canon lookup, no stale copies).
 fun isComplexEnum(sp: SEnum, r) => isComplexRoot(r, sp.seRoot)
 
+# Whether classifyRepr can answer for this union inside a generic body. A
+# member held BY VALUE as a type parameter — `T` itself, or a tuple holding one
+# — has no layout until monomorphisation binds it. A heap member (class, enum)
+# is a pointer whatever its type arguments, so `List<T>` is decided.
+# (union_repr.py layout_decided.)
+fun layoutDecided(sp: Spec): Bool => match(sp)
+  (cm: SCombination) => !any(reprMembers(cm), byValuePlaceholder)
+  (o: Spec)          => true
+
+fun byValuePlaceholder(sp: Spec): Bool => match(sp)
+  (g: SGeneric) => true
+  (t2: STuple)  => any(t2.stEntries, (e) => entryByValuePlaceholder(e.seType))
+  (o: Spec)     => false
+
+fun entryByValuePlaceholder(sp: Spec|None): Bool => match(sp)
+  (x: Spec) => byValuePlaceholder(x)
+  ()        => false
+
 fun classifyRepr(sp, r): GRepr => match(sp)
   (e2: SEnum) => classifyEnum(e2, r)
   (cm: SCombination) => classifyCombination(cm, r)
