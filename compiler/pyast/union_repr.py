@@ -365,11 +365,19 @@ class UnionRepr(ABC):
         decision tree. A position usually takes one stage; one that names some
         variants of an enum member takes two: the member, then the variant.
 
-        Only the enum reprs implement this so far. The others raise, and
-        MatchExpression.check reports it as a diagnostic rather than letting it
-        reach codegen."""
+        Built at code generation only, for a pattern `tests_position`
+        accepts: the guards read discriminators, which do not exist before
+        then. A pattern it refuses was reported by MatchExpression.check, so
+        reaching here with one is a compiler bug."""
         raise NotImplementedError(
             "this pattern cannot serve a position of a multi-subject match")
+
+    def tests_position(self, arm_type: t.TypeSpec, resolver: g.Resolver) -> bool:
+        """Whether this repr can test `arm_type` at ONE position of a
+        multi-subject match. MatchExpression.check asks, and reports a
+        refusal; it is a question about types alone, so it can be asked
+        before any discriminator is assigned."""
+        return False
 
     def position_bind(self, em, holder, sv, arm_type: t.TypeSpec,
                       subj_type: t.TypeSpec, resolver: g.Resolver):
@@ -498,25 +506,27 @@ class TaggedRepr(UnionRepr):
         return em.bind_from_slots(holder, sel.holder.generate(resolver),
                                   self.variant_map[sel.index], self.container.fields, sv)
 
+    def tests_position(self, arm_type, resolver):
+        if isinstance(self.union_type, t.EnumSpec):
+            return isinstance(arm_type, t.EnumSpec)
+        # A pattern selecting several members (`(t: Thing)` over `Car|Boat`)
+        # would bind a different value per member, which one position cannot:
+        # refused, as a union pattern is.
+        return len(self._selections(arm_type)) == 1
+
     def position_stages(self, sv, arm_type, resolver):
+        if not self.tests_position(arm_type, resolver):
+            return super().position_stages(sv, arm_type, resolver)
         subj_type = self.union_type
         if not isinstance(subj_type, t.EnumSpec):
             # Tagged COMBINATION: the member's tag, then — for a pattern naming
             # only some of an enum member's variants — the variant.
-            # A pattern selecting several members (`(t: Thing)` over
-            # `Car|Boat`) would bind a different value per member, which one
-            # position cannot: refused, as a union pattern is.
-            selected = self._selections(arm_type)
-            if len(selected) != 1:
-                return super().position_stages(sv, arm_type, resolver)
-            sel = selected[0]
+            sel = self._selections(arm_type)[0]
             tag_value = resolver.get_discriminators().get(sel.holder.as_unique_id_str(), 0)
             stages = [[cg_p.IntEqConst(cg_p.StructField(sv, "$tag"), tag_value)]]
             if sel.needs_variant_test:
                 stages.append(self._variant_guards(sel.holder, sel.index, arm_type, sv, resolver))
             return stages
-        if not isinstance(arm_type, t.EnumSpec):
-            return super().position_stages(sv, arm_type, resolver)
         return [self.leaf_guards(self._own_slot(sv), arm_type)]
 
     def _variant_guards(self, member, vi, arm_type, sv, resolver) -> list:
@@ -1020,27 +1030,35 @@ class PointerRepr(UnionRepr):
         bound = arm_type if arm_type is not None else subj_type
         return em.bind_subject(holder, bound, self._as(sv, bound, resolver))
 
+    def _position_members(self, arm_type) -> tuple[t.TypeSpec, list]:
+        """The member of this union `arm_type` selects, and the members it
+        stands for (a union pattern stands for several)."""
+        member = narrowed_member(self.union_type, arm_type)
+        return member, (member.repr_members()
+                        if isinstance(member, t.CombinationSpec) else [member])
+
+    def _testable(self, member: t.TypeSpec, resolver: g.Resolver) -> bool:
+        """Whether `_guard` has a test for `member`: all but a foreign class."""
+        return (member.generate(resolver) == cg_t.Struct(())
+                or _pointer_word_kind(member, resolver) not in (None, ('FOREIGN',)))
+
+    def tests_position(self, arm_type, resolver):
+        """A FOREIGN class is untestable from generated code — in a
+        single-subject match it can be the implicit fallback, but a POSITION
+        has no fallback to be. And "variant and member, or another member" is
+        not one stage per position."""
+        _, members = self._position_members(arm_type)
+        return (not any(narrowed_member(self.union_type, m) is not m for m in members)
+                and all(self._testable(m, resolver) for m in members))
+
     def position_stages(self, sv, arm_type, resolver):
         """NULL for the unit member, vtable identity for the rest — then, for a
-        pattern naming only some of an enum member's variants, the variant.
-
-        A FOREIGN class is untestable from generated code — in a single-subject
-        match it can be the implicit fallback, but a POSITION has no fallback
-        to be, so it is refused and MatchExpression.check reports it."""
-        member = narrowed_member(self.union_type, arm_type)
-        members = (member.repr_members()
-                   if isinstance(member, t.CombinationSpec) else [member])
-        if any(narrowed_member(self.union_type, m) is not m for m in members):
-            # "Variant and member, or another member" is not one stage per
-            # position; refused, and MatchExpression.check reports it.
+        pattern naming only some of an enum member's variants, the variant."""
+        if not self.tests_position(arm_type, resolver):
             return super().position_stages(sv, arm_type, resolver)
-        guards = []
+        member, members = self._position_members(arm_type)
         word = self._word(sv)
-        for m in members:
-            guard = self._guard(m, word, resolver)
-            if guard is None:
-                return super().position_stages(sv, arm_type, resolver)
-            guards.append(guard)
+        guards = [self._guard(m, word, resolver) for m in members]
         if member is not arm_type:
             return [guards, self._variant_guards(member, sv, arm_type, resolver)]
         return [guards]
@@ -1367,37 +1385,35 @@ class ComplexEnumRepr(UnionRepr):
         # vtable.discriminator against the leaf's global registry id.
         subj_type = self.union_type
         sv = subj_bundle.result_var
-        tag = cg_p.VtableDiscriminator(sv)
-        discriminators = resolver.get_discriminators()
-        def leaf_id(leaf: str) -> int:
-            key = f"enumleaf({t.enum_leaf_object_name(subj_type.root_name, leaf)})"
-            assert key in discriminators, f"no discriminator for {key!r}"
-            return discriminators[key]
         for arm in (a for a in arms if a.type_spec is not None):
             arm_type = arm.type_spec
             assert isinstance(arm_type, t.EnumSpec)
-            guards = [cg_p.IntEqConst(tag, leaf_id(leaf))
-                      for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
-            em.arm(arm, [guards], bind=em.bind_subject(
+            em.arm(arm, [self._leaf_guards(sv, arm_type, resolver)], bind=em.bind_subject(
                 arm, subject_at_arm(subj_type, arm_type, resolver), sv))
         em.fallback(else_arm,
                     em.bind_subject(else_arm, subj_type, sv) if else_arm else None,
                     "enum match fell through all arms")
 
-    def position_stages(self, sv, arm_type, resolver):
-        if not isinstance(arm_type, t.EnumSpec):
-            return super().position_stages(sv, arm_type, resolver)
-        subj_type = self.union_type
+    def _leaf_guards(self, sv, arm_type: t.EnumSpec, resolver: g.Resolver) -> list:
+        """OR-alternatives testing that `sv` is one of `arm_type`'s variants,
+        by the discriminator its vtable carries. Every variant has one by code
+        generation; a missing one is a compiler bug."""
         tag = cg_p.VtableDiscriminator(sv)
-        # MatchExpression.check asks for these stages only to learn whether the
-        # position can be tested at all, before any discriminator is assigned:
-        # an id not yet assigned reads as 0, as a tagged combination's does.
         discriminators = resolver.get_discriminators()
         def leaf_id(leaf: str) -> int:
-            key = f"enumleaf({t.enum_leaf_object_name(subj_type.root_name, leaf)})"
-            return discriminators.get(key, 0)
-        return [[cg_p.IntEqConst(tag, leaf_id(leaf))
-                 for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]]
+            key = f"enumleaf({t.enum_leaf_object_name(self.union_type.root_name, leaf)})"
+            assert key in discriminators, f"compiler bug: no discriminator for {key!r}"
+            return discriminators[key]
+        return [cg_p.IntEqConst(tag, leaf_id(leaf))
+                for leaf in sorted(arm_type.valid_leaf_names, key=leaf_id)]
+
+    def tests_position(self, arm_type, resolver):
+        return isinstance(arm_type, t.EnumSpec)
+
+    def position_stages(self, sv, arm_type, resolver):
+        if not self.tests_position(arm_type, resolver):
+            return super().position_stages(sv, arm_type, resolver)
+        return [self._leaf_guards(sv, arm_type, resolver)]
 
     def read_field(self, base_value, field_name, resolver):
         """Read a field off a complex-enum value. Field names are @hash-unique
