@@ -213,7 +213,7 @@ fun rcmExpr(x, m: ThisMap) => match(x)
                                      None),
                               target, nm.penLine)
     ()               => x
-  (d: PeDot)     => PeDot(rcmExpr(d.base, m), d.member, d.pedLine)
+  (d: PeDot)     => PeDot(rcmExpr(d.base, m), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rcmExpr(c.function, m), rcmExpr(c.parameter, m),
                            c.pecLine)
   (tp: PeTuple)  => PeTuple(rcmEnts(tp.exprs, m, List()),
@@ -1028,7 +1028,7 @@ fun rnmExpr(x, m: ThisMap) => match(x)
     (target: String) => PeName(target, nm.refTypeParams, nm.penLine,
                                nm.penTrait)
     ()               => x
-  (d: PeDot)     => PeDot(rnmExpr(d.base, m), d.member, d.pedLine)
+  (d: PeDot)     => PeDot(rnmExpr(d.base, m), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rnmExpr(c.function, m), rnmExpr(c.parameter, m),
                            c.pecLine)
   (tp: PeTuple)  => PeTuple(rnmEnts(tp.exprs, m, List()),

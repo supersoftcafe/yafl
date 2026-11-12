@@ -532,8 +532,44 @@ fun reprCtype(rep): CgType => match(rep)
 # position usually takes one stage; one that names some variants of an enum
 # member takes two: the member, then the variant.
 #
-# None means "this repr cannot serve a position with that pattern"; the check
-# phase reports it rather than letting codegen emit something wrong.
+# The stages are built at code generation only, for a pattern
+# `reprTestsPosition` accepts: the guards read discriminators, which do not
+# exist before then. None means "this repr cannot serve a position with that
+# pattern"; the check phase has already reported it.
+
+# Whether `rep` can test `armType` at ONE position. The check phase asks, and
+# reports a refusal; it is a question about types alone, so it can be asked
+# before any discriminator is assigned. (union_repr.py tests_position.)
+fun reprTestsPosition(rep, armType: Spec, r): Bool => match(rep)
+  (gt: GTagged)      => taggedTestsPosition(gt, armType)
+  (gp: GPointer)     => pointerTestsPosition(gp, armType, r)
+  (gc: GComplexEnum) => (asEnumVariant(gc.grcType) !is None) && (asEnumVariant(armType) !is None)
+
+# A flat enum tests an enum pattern. A tagged combination tests a pattern that
+# selects exactly one of its members: one selecting several (`(t: Thing)` over
+# `Car|Boat`) would bind a different value per member, which one position
+# cannot.
+fun taggedTestsPosition(gt: GTagged, armType: Spec): Bool => match(gt.grtType)
+  (e2: SEnum) => asEnumVariant(armType) !is None
+  (o: Spec)   => soleSelection(taggedSelections(reprMembersOf(unionMembers(gt.grtType)), armType)) !is None
+
+# A FOREIGN class is untestable from generated code — in a single-subject match
+# it can be the implicit fallback, but a POSITION has no fallback to be. And
+# "variant and member, or another member" is not one stage per position.
+fun pointerTestsPosition(gp: GPointer, armType: Spec, r): Bool
+  let members = unionMembers(narrowedMember(gp.grpType, armType))
+  ret !any(members, (m) => narrowsUnionMember(gp.grpType, m))
+    && all(members, (m) => ptrTestable(m, r))
+
+# Whether ptrGuard has a test for `member`: all but a foreign class.
+fun ptrTestable(member: Spec, r): Bool =>
+  eqCgType(specGenerate(member, r), CgStruct(List())) || ptrKindTestable(pointerWordKind(member, r))
+
+fun ptrKindTestable(k: PtrKind|None): Bool => match(k)
+  (u: PkUnit)     => false
+  (fo: PkForeign) => false
+  (o: PtrKind)    => true
+  ()              => false
 
 fun reprPositionStages(rep, sv, armType: Spec|None,
                        r): List<List<RParam>>|None => match(armType)
@@ -1270,8 +1306,13 @@ fun complexEnumRoot(subjType) => match(subjType)
   (e2: SEnum) => e2.seRoot
   (o: Spec)   => ""   # unreachable
 
+# Every variant has a discriminator by code generation; a missing one is a
+# compiler bug.
 fun complexLeafId(rootName, leaf, discs: Dict<String, Int>): Int
-  ret getOr0(discs, "enumleaf(" + enumLeafObjectName(rootName, leaf) + ")")
+  let key = "enumleaf(" + enumLeafObjectName(rootName, leaf) + ")"
+  ret match(get(discs, key))
+    (id: Int) => id
+    ()        => abort<Int>("compiler bug: no discriminator for " + key)
 
 fun sortLeavesByComplexId(leaves: List<String>, rootName, discs: Dict<String, Int>): List<String>
   ret fold(leaves, List(), (acc, lf) => insertByComplexId(acc, lf, rootName, discs))

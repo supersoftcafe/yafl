@@ -62,7 +62,11 @@ enum PExpr
     enum PeNothing(pengLine: PLine)
   enum PeName(refName: String, refTypeParams: List<Spec>, penLine: PLine,
              penTrait: Spec|None = None)
-  enum PeDot(base: PExpr, member: String, pedLine: PLine)
+  # pedIndex: a TUPLE field read by position. Field names are sugar for the
+  # program as written: lower/ast/field_names.yafl turns every name into the
+  # position it meant, once, before monomorphisation, and from there on the
+  # index is the field and `member` only what the author wrote.
+  enum PeDot(base: PExpr, member: String, pedLine: PLine, pedIndex: Int|None = None)
   enum PeCall(function: PExpr, parameter: PExpr, pecLine: PLine)
   enum PeTuple(exprs: List<PTupEnt>, petLine: PLine)
   enum PeTernary(condition: PExpr, trueResult: PExpr, falseResult: PExpr, pety: PLine)

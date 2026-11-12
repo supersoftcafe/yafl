@@ -1,0 +1,174 @@
+# bootstrap/field_names.yafl — ported from lowering/field_names.py.
+# Erase tuple field names: every name becomes the position it meant.
+#
+# A tuple is positional. A field name is sugar for the program as written — it
+# picks a field in a read (`st.acc`) and directs a binding (`(acc = 1, cur = 2)`
+# into `(cur: Int, acc: Int)`) — and means nothing to generics or to generated
+# code. Once the program has converged and been checked, every such use has an
+# answer, so this pass writes the answers into the tree and removes the names:
+#
+#   1. a tuple field read takes its POSITION (PeDot.pedIndex);
+#   2. a conversion that binds a tuple's fields by name — a reorder, a default
+#      filled in — is rebuilt as the tuple it produces, field by field, so what
+#      is left of the conversion is positional;
+#   3. every tuple type and tuple value in the program loses its field names.
+#
+# It runs once, immediately before monomorphisation. From there on a tuple has
+# no field names for anything to consult: the instances of a generic are shared
+# by call sites that named their tuples differently, and it no longer matters.
+# What stays named is a PARAMETER LIST — a function's or constructor's — whose
+# names are the declaration's own.
+namespace Bootstrap::Lower::Ast
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Frontend
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun eraseFieldNames(statements: List<PStmt>): List<PStmt> =>
+  rwnStmts(statements, RwN((n, sc, x) => (n, fnByPosition(x, sc)), rwnNoStmt),
+           rootResolver(statements), 0).rnssStmts
+  |> (positioned) => rwStmts(positioned, Rw(fnUnnamedValue, fnUnnamedType, rwNoStmt))
+
+# ── 1 and 2: names become positions, while the names can still be read ───────
+
+fun fnByPosition(x: PExpr, sc: Resolver|None): PExpr|None => match(sc, x)
+  (r: Resolver, d: PeDot)      => fnReadByPosition(d, r)
+  (r: Resolver, cv: PeConvert) => fnConvertByPosition(cv, r)
+  ()                           => None
+
+fun fnReadByPosition(d: PeDot, r): PExpr|None => match(d.pedIndex, exprType(d.base, r))
+  (n: None, t2: STuple) => PeDot(d.base, d.member, d.pedLine, fnPositionOf(d, t2.stEntries))
+  ()                    => None
+
+fun fnPositionOf(d: PeDot, es: List<SEntry>): Int => match(findIndex(es, (e) => e.seName == d.member))
+  (i: Int) => i
+  ()       => abort<Int>("compiler bug: tuple field read `." + d.member + "` at " + d.pedLine.plFile
+                         + "[" + String(d.pedLine.plLine) + ":" + String(d.pedLine.plCol)
+                         + "] names no field of its tuple")
+
+fun fnConvertByPosition(cv: PeConvert, r): PExpr|None => match(exprType(cv.convInner, r))
+  (source: Spec) => match(fnBoundByPosition(cv.convInner, source, cv.convTarget, r, ""))
+    (rebuilt: PExpr) => PeConvert(rebuilt, cv.convTarget, cv.pecvLine)
+    ()               => None
+  ()             => None
+
+# The tuple inside `target` that a `source` tuple's fields bind to, the way
+# the conversion engine finds it: the target itself, the tuple variant of a
+# union target, or either of those inside a one-field wrapper.
+fun fnBoundTuple(source: Spec, target: Spec, r): STuple|None => match(source, target)
+  (s2: STuple, u: SCombination) => fnTupleOnly(matchingTupleVariant(r, source, target))
+  (s2: STuple, t2: STuple)      => fnBoundInTuple(source, t2, fnWrappedType(t2), r)
+  ()                            => None
+
+fun fnTupleOnly(v: Spec|None): STuple|None => match(v)
+  (t2: STuple) => t2
+  (o: Spec)    => None
+  ()           => None
+
+fun fnWrappedType(target: STuple): Spec|None =>
+  tupleSingle(target) ? entryTypeAt(target, 0) : None
+
+fun fnBoundInTuple(source: Spec, target: STuple, wrapped: Spec|None, r): STuple|None => match(wrapped)
+  (w: Spec) => uid(source) != "" && uid(source) == uid(w)
+    ? None                                      # the whole source IS the one field
+    : fnInsideOr(isUnion(w) ? fnBoundTuple(source, w, r) : None, target)
+  ()        => target
+
+fun fnInsideOr(inside: STuple|None, target: STuple): STuple => match(inside)
+  (t2: STuple) => t2
+  ()           => target
+
+# `x` rebuilt as the tuple its fields bind to in `target`, each field in the
+# position it binds — or None when the fields already sit there, all the way
+# down. `path` names the temporaries of a rebuild inside a rebuild.
+fun fnBoundByPosition(x: PExpr, source: Spec, target: Spec, r, path: String): PExpr|None =>
+  match(fnBoundTuple(source, target, r))
+    (bound: STuple) => match(bindTupleEntries(bound.stEntries, entryNames(tupleEntries(source))))
+      (binding: List<Int>) => fnRebuilt(x, tupleEntries(source), bound.stEntries, binding, r, path)
+      ()                   => None
+    ()              => None
+
+fun fnRebuilt(x: PExpr, ss: List<SEntry>, ts: List<SEntry>, binding: List<Int>, r,
+              path: String): PExpr|None => match(x)
+  (tp: PeTuple) => any(tp.exprs, (en) => en.tupSpread)
+    ? fnHeld(x, ss, ts, binding, r, path)
+    : fnMoved(tp, ts, binding)
+  (o: PExpr)    => fnHeld(x, ss, ts, binding, r, path)
+
+# A tuple literal's entries already converged toward the fields they bind:
+# they only move.
+fun fnMoved(tp: PeTuple, ts: List<SEntry>, binding: List<Int>): PExpr|None => isIdentityBinding(binding)
+  ? None
+  : PeTuple(zipMap(ts, binding, (field, b) => PTupEnt("", false, fnMovedValue(tp.exprs, field, b))),
+            tp.petLine)
+
+fun fnMovedValue(es: List<PTupEnt>, field: SEntry, b: Int): PExpr => match(b >= 0 ? head(drop(es, b)) : None)
+  (en: PTupEnt) => en.tupValue
+  ()            => fnDefault(field)
+
+# bindTupleEntries leaves a field unbound only when it has a default.
+fun fnDefault(field: SEntry): PExpr => match(field.seDefault)
+  (def2: PExpr) => def2
+  ()            => abort<PExpr>("compiler bug: tuple field `" + field.seName
+                                + "` is bound to nothing and has no default")
+
+# Any other value is held once and read field by field.
+fun fnHeld(x: PExpr, ss: List<SEntry>, ts: List<SEntry>, binding: List<Int>, r,
+           path: String): PExpr|None
+  let lr = exprLine(x)
+  let held = "$fn" + path
+  let out = zipFold(ts, binding,
+                    (i = 0, changed = !isIdentityBinding(binding), fields = List<PTupEnt>()),
+                    (st, field, b) => fnHeldField(st, field, b, ss, held, lr, r, path))
+  ret out.changed
+    ? PeBlock(List<PStmt>(PsLet(held + "@" + hash6(lr.plFile, lr.plLine, lr.plCol), List(), List(),
+                                None, x, "", List(), lr)),
+              PeTuple(out.fields, lr), "", lr)
+    : None
+
+fun fnHeldField(st: (i: Int, changed: Bool, fields: List<PTupEnt>), field: SEntry, b: Int,
+                ss: List<SEntry>, held: String, lr: PLine, r,
+                path: String): (i: Int, changed: Bool, fields: List<PTupEnt>) => b < 0
+  ? (i = st.i + 1, changed = st.changed,
+     fields = append(st.fields, PTupEnt("", false, fnDefault(field))))
+  : fnHeldRead(st, field, PeDot(PeName(held, List(), lr), fnNameAt(ss, b), lr, b),
+               entryAt(ss, b), r, path + "_" + String(st.i))
+
+fun fnHeldRead(st: (i: Int, changed: Bool, fields: List<PTupEnt>), field: SEntry, read: PExpr,
+               source: Spec|None, r,
+               path: String): (i: Int, changed: Bool, fields: List<PTupEnt>) =>
+  match(fnBoundField(read, source, field.seType, r, path))
+    (inner: PExpr) => (i = st.i + 1, changed = true,
+                       fields = append(st.fields, PTupEnt("", false, inner)))
+    ()             => (i = st.i + 1, changed = st.changed,
+                       fields = append(st.fields, PTupEnt("", false, read)))
+
+fun fnBoundField(read: PExpr, source: Spec|None, target: Spec|None, r, path: String): PExpr|None => match(source, target)
+  (s2: Spec, t2: Spec) => fnBoundByPosition(read, s2, t2, r, path)
+  ()                   => None
+
+fun fnNameAt(ss: List<SEntry>, b: Int): String => match(head(drop(ss, b)))
+  (en: SEntry) => en.seName
+  ()           => ""
+
+# ── 3: the names go ──────────────────────────────────────────────────────────
+
+fun fnUnnamedType(sp: Spec): Spec|None => match(sp)
+  (t2: STuple) => any(t2.stEntries, (en) => en.seName != "")
+    ? with t2(stEntries = map(t2.stEntries, (en) => SEntry("", en.seType, en.seDefault)))
+    : None
+  (o: Spec)    => None
+
+fun fnUnnamedValue(x: PExpr): PExpr|None => match(x)
+  (tp: PeTuple) => any(tp.exprs, (en) => en.tupName != "")
+    ? PeTuple(map(tp.exprs, (en) => PTupEnt("", en.tupSpread, en.tupValue)), tp.petLine)
+    : None
+  (o: PExpr)    => None

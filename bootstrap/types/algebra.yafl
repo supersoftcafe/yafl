@@ -804,6 +804,114 @@ fun blankParams(sp): Spec|None => match(sp)
     (o: Spec)    => None
   (o: Spec)       => None
 
+# ── tuple field names ────────────────────────────────────────────────────────
+# Tuple field names are sugar: a tuple is positional, and a name is a
+# convenience for the code that can see it.
+
+# A callable's type as ONE CALL sees it: a tuple the signature leaves unnamed
+# takes its names from the call site. The names an argument supplies for an
+# unnamed tuple flow to every tuple of the same shape in the signature — the
+# result, a lambda's parameters — however deeply either sits inside other
+# types. Per field, the first argument to name it wins and an unnamed field
+# takes a later argument's name. A name the DECLARATION wrote is never
+# replaced, and a callable's parameter list is not such a tuple: its names are
+# the function's own. Nothing here is generic: a type parameter has already
+# been bound to the argument's named tuple by inference, so no unnamed tuple
+# is left for it (algebra.py named_at_call_site).
+fun namedAtCallSite(declared: Spec|None, argument: Spec|None): Spec|None => match(declared, argument)
+  (cb: SCallable, at: STuple) => nacPainted(cb, nacParams(cb.scParams2, at, Dict<String, List<String>>()))
+  ()                          => declared
+
+fun nacPainted(cb: SCallable, supplied: Dict<String, List<String>>): Spec =>
+  isEmpty(supplied) ? cb : nacPaintCallable(cb, supplied)
+
+# What the arguments supply: per unnamed-tuple shape (its uid), one name per
+# field, "" where no argument has named it yet.
+fun nacParams(d: Spec, a: Spec, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d, a)
+  (dt: STuple, at: STuple) => nacBound(dt, at, acc)
+  ()                       => acc
+
+fun nacBound(dt: STuple, at: STuple, acc: Dict<String, List<String>>): Dict<String, List<String>> =>
+  match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
+    (b: List<Int>) => zipFold(dt.stEntries, b, acc,
+                              (st, de, i) => nacCollectOpt(de.seType, nacEntryType(at.stEntries, i), st))
+    ()             => acc
+
+fun nacEntryType(es: List<SEntry>, i: Int): Spec|None => match(i < 0 ? None : head(drop(es, i)))
+  (e: SEntry) => e.seType
+  ()          => None
+
+fun nacCollectOpt(d: Spec|None, a: Spec|None, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d, a)
+  (ds: Spec, as2: Spec) => nacCollect(ds, as2, acc)
+  ()                    => acc
+
+fun nacCollect(d: Spec, a: Spec, acc: Dict<String, List<String>>): Dict<String, List<String>> => match(d, a)
+  (dt: STuple, at: STuple) if sameLen(dt.stEntries, at.stEntries) =>
+    zipFold(dt.stEntries, at.stEntries, nacOffer(dt, at, acc),
+            (st, de, ae) => nacCollectOpt(de.seType, ae.seType, st))
+  (dc: SClass, ac: SClass) if dc.scName == ac.scName =>
+    nacPairwise(dc.scParams, ac.scParams, acc)
+  (de2: SEnum, ae2: SEnum) if de2.seRoot == ae2.seRoot =>
+    nacPairwise(de2.seParams, ae2.seParams, acc)
+  (db: SCallable, ab: SCallable) =>
+    nacCollectOpt(db.scResult, ab.scResult, nacParams(db.scParams2, ab.scParams2, acc))
+  () => acc
+
+fun nacPairwise(ds: List<Spec>, as2: List<Spec>, acc: Dict<String, List<String>>): Dict<String, List<String>> =>
+  sameLen(ds, as2) ? zipFold(ds, as2, acc, (st, d, a) => nacCollect(d, a, st)) : acc
+
+fun nacOffer(dt: STuple, at: STuple, acc: Dict<String, List<String>>): Dict<String, List<String>>
+  let key = uid(dt)
+  if key == "" || all(dt.stEntries, (e) => e.seName != "")
+    ret acc
+  let offered = zipMap(dt.stEntries, at.stEntries, (de, ae) => de.seName == "" ? ae.seName : "")
+  let slot = match(get(acc, key))
+    (s: List<String>) => zipMap(s, offered, (had, now) => had != "" ? had : now)
+    ()                => offered
+  ret any(slot, (n) => n != "") ? put(acc, key, slot) : acc
+
+fun nacPaintOpt(d: Spec|None, supplied: Dict<String, List<String>>): Spec|None => match(d)
+  (s2: Spec) => nacPaint(s2, supplied)
+  ()         => None
+
+fun nacPaint(d: Spec, supplied: Dict<String, List<String>>): Spec => match(d)
+  (t2: STuple)       => nacNamed(nacPaintEntries(t2, supplied), supplied)
+  (c: SClass)        => with c(scParams = map(c.scParams, (p) => nacPaint(p, supplied)))
+  (e2: SEnum)        => with e2(seParams = map(e2.seParams, (p) => nacPaint(p, supplied)))
+  (cb: SCallable)    => nacPaintCallable(cb, supplied)
+  (cm: SCombination) => with cm(scTypes = map(cm.scTypes, (m) => nacPaint(m, supplied)))
+  (o: Spec)          => d
+
+fun nacPaintCallable(cb: SCallable, supplied: Dict<String, List<String>>): Spec =>
+  with cb(scParams2 = nacPaintParams(cb.scParams2, supplied),
+          scResult  = nacPaintOpt(cb.scResult, supplied))
+
+fun nacPaintParams(d: Spec, supplied: Dict<String, List<String>>): Spec => match(d)
+  (t2: STuple) => nacPaintEntries(t2, supplied)
+  (o: Spec)    => d
+
+fun nacPaintEntries(t2: STuple, supplied: Dict<String, List<String>>): STuple =>
+  with t2(stEntries = map(t2.stEntries,
+                          (en) => SEntry(en.seName, nacPaintOpt(en.seType, supplied), en.seDefault)))
+
+fun nacNamed(d: STuple, supplied: Dict<String, List<String>>): Spec => match(get(supplied, uid(d)))
+  (slot: List<String>) => nacWithNames(d, nacNames(d.stEntries, slot))
+  ()                   => d
+
+fun nacNames(es: List<SEntry>, slot: List<String>): List<String>
+  let taken = map(es, (e) => e.seName)
+  ret zipMap(es, slot, (en, n) => en.seName != "" ? en.seName : (contains(taken, n) ? "" : n))
+
+# Named fields follow positional ones, here as everywhere.
+fun nacWithNames(d: STuple, names: List<String>): Spec =>
+  nacNamedBeforePositional(names)
+    ? d
+    : with d(stEntries = zipMap(d.stEntries, names, (en, n) => SEntry(n, en.seType, en.seDefault)))
+
+fun nacNamedBeforePositional(names: List<String>): Bool =>
+  fold(names, (named = false, bad = false),
+       (st, n) => (named = st.named || n != "", bad = st.bad || (st.named && n == ""))).bad
+
 # ── join ────────────────────────────────────────────────────────────────────
 # The type of a BRANCH (a match, a ternary) whose sides yield `a` and `b`: the
 # same type when they agree, otherwise their flattened SET UNION. Total — a

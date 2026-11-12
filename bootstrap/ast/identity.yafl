@@ -32,7 +32,10 @@ enum TypeId
   enum TiNamed(tinName: String, tinArgs: List<TypeId>)    # raw spelling — incomplete
   enum TiClass(ticName: String, ticArgs: List<TypeId>)
   enum TiEnum(tieRoot: String, tieArgs: List<TypeId>, tiePath: List<String>)   # tiePath: the level; empty is the root
-  enum TiTuple(titEntries: List<(tteName: String, tteId: TypeId)>)
+  # A tuple is its field TYPES, in order. Field names are sugar for the code
+  # that can see them and are no part of what the tuple is: `(a: Int)` and
+  # `(b: Int)` are one identity.
+  enum TiTuple(titEntries: List<TypeId>)
   enum TiCallable(tcbParams: TypeId, tcbResult: TypeId)
   enum TiUnion(tiuMembers: List<TypeId>)                  # sorted by spelling at build
   enum TiPlaceholder(tipName: String)                     # unbound param — incomplete
@@ -47,9 +50,7 @@ fun spellingOf(sp) => match(sp)
   (n: SNamed)        => TiNamed(n.snName, spellList(n.snParams))
   (c: SClass)        => TiClass(c.scName, spellList(c.scParams))
   (e2: SEnum)        => TiEnum(e2.seRoot, spellList(e2.seParams), e2.sePath)
-  (t2: STuple)       => TiTuple(map(
-                          t2.stEntries, (en) =>
-                            (en.seName, spellingOfOpt(en.seType))))
+  (t2: STuple)       => TiTuple(map(t2.stEntries, (en) => spellingOfOpt(en.seType)))
   (cl: SCallable)    => TiCallable(spellingOf(cl.scParams2),
                                    spellingOfOpt(cl.scResult))
   (cm: SCombination) => TiUnion(tiSortBySpelling(map(cm.scTypes, spellingOf)))
@@ -81,9 +82,7 @@ fun tiSerialise(t2) => match(t2)
   (n: TiNamed)       => "N(" + n.tinName + ";" + tiJoin(n.tinArgs) + ")"
   (c: TiClass)       => "C(" + c.ticName + ";" + tiJoin(c.ticArgs) + ")"
   (e2: TiEnum)       => "E(" + e2.tieRoot + ";" + tiJoin(e2.tieArgs) + ";" + join(e2.tiePath, "/") + ")"
-  (tp: TiTuple)      => "T(" + join(map(tp.titEntries,
-                          (en) =>
-                            en.tteName + ":" + tiSerialise(en.tteId)), ",") + ")"
+  (tp: TiTuple)      => "T(" + tiJoin(tp.titEntries) + ")"
   (cb: TiCallable)   => "F(" + tiSerialise(cb.tcbParams) + ";"
                         + tiSerialise(cb.tcbResult) + ")"
   (u: TiUnion)       => "U(" + join(map(u.tiuMembers, tiSerialise), "|") + ")"
@@ -112,7 +111,7 @@ fun eqTypeId(a, b) => match(a)
                       && eqStrs(x.tiePath, y.tiePath)
     (o: TypeId)    => false
   (x: TiTuple)       => match(b)
-    (y: TiTuple)   => eqTiEntries(x.titEntries, y.titEntries)
+    (y: TiTuple)   => eqTypeIds(x.titEntries, y.titEntries)
     (o: TypeId)    => false
   (x: TiCallable)    => match(b)
     (y: TiCallable) => eqTypeId(x.tcbParams, y.tcbParams)
@@ -134,10 +133,6 @@ fun eqTypeId(a, b) => match(a)
 
 fun eqTypeIds(a: List<TypeId>, b: List<TypeId>) => eqBy(a, b, eqTypeId)
 
-fun eqTiEntries(a: List<(tteName: String, tteId: TypeId)>,
-                b: List<(tteName: String, tteId: TypeId)>) =>
-  eqBy(a, b, (x, y) => x.tteName == y.tteName && eqTypeId(x.tteId, y.tteId))
-
 fun _tiMix(acc, h) => (acc * 31i32 + h) & 2147483647i32
 
 # Structural hash, cached per node through the hidden $hash slot — self-calls
@@ -149,7 +144,7 @@ fun [hashed] hashTypeId(v) => match(v)
   (c: TiClass)       => hashTiList(c.ticArgs, _tiMix(19i32, hashOf(c.ticName)))
   (e2: TiEnum)       => hashTiList(e2.tieArgs, fold(e2.tiePath, _tiMix(23i32, hashOf(e2.tieRoot)),
                           (a, n) => _tiMix(a, hashOf(n))))
-  (tp: TiTuple)      => hashTiEntries(tp.titEntries, 29i32)
+  (tp: TiTuple)      => hashTiList(tp.titEntries, 29i32)
   (cb: TiCallable)   => _tiMix(_tiMix(31i32, hashTypeId(cb.tcbParams)),
                                hashTypeId(cb.tcbResult))
   (u: TiUnion)       => hashTiList(u.tiuMembers, 37i32)
@@ -159,9 +154,6 @@ fun [hashed] hashTypeId(v) => match(v)
                                hashOf(ar.tiaLenField))
 
 fun hashTiList(ids: List<TypeId>, acc) => fold(ids, acc, (a, id) => _tiMix(a, hashTypeId(id)))
-
-fun hashTiEntries(es: List<(tteName: String, tteId: TypeId)>, acc) =>
-  fold(es, acc, (a, e) => _tiMix(_tiMix(a, hashOf(e.tteName)), hashTypeId(e.tteId)))
 
 instance [ambient] BasicEquality<TypeId>
   fun `==`(left: TypeId, right: TypeId): Bool => eqTypeId(left, right)

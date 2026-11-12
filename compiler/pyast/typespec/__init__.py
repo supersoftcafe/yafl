@@ -22,6 +22,6 @@ from pyast.typespec.algebra import (
     resolves_in_scope, with_opaque_placeholders, scoped_unique_id, is_below_root, contains_below_root,
     enum_level, enum_variant, common_parent,
     merge, receives, pattern_binding, join, converge, branch_type, refine, refine_widening,
-    without_callable_params,
+    without_callable_params, named_at_call_site,
     bind_from_constraint_match, TraitInstance, solve_trait_constraint,
 )

@@ -94,8 +94,13 @@ class CallExpression(Expression):
             function=self.function.search_and_replace(resolver, replace),
             parameter=self.parameter.search_and_replace(resolver, replace))
 
+    def __callee_type(self, resolver: g.Resolver, function: Expression, parameter: Expression) -> t.TypeSpec | None:
+        """The callee's type as THIS call sees it: tuples its signature leaves
+        unnamed carry the field names the arguments supply."""
+        return t.named_at_call_site(function.get_type(resolver), parameter.get_type(resolver))
+
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
-        func_type = self.function.get_type(resolver)
+        func_type = self.__callee_type(resolver, self.function, self.parameter)
         if not isinstance(func_type, t.CallableSpec):
             return None
         # A generic callee whose result IS one of its own placeholders — bare,
@@ -112,7 +117,7 @@ class CallExpression(Expression):
         return result
 
     def compile(self, resolver: g.Resolver, expected_type: t.TypeSpec | None) -> tuple[Expression, list[s.Statement], h.Hints]:
-        func_type = self.function.get_type(resolver)
+        func_type = self.__callee_type(resolver, self.function, self.parameter)
 
         # Compile the ARGUMENT before inferring the function's generic type
         # params. The argument may itself be a generic call (e.g. `c(wrap(x))`);
@@ -129,7 +134,7 @@ class CallExpression(Expression):
         function, fglb, fhints = self.function.compile(resolver, t.CallableSpec(self.line_ref, prtr_type, expected_type))
 
         # The callee pinned just now: give the open arguments its parameter types.
-        pinned = _parameters_of(function.get_type(resolver))
+        pinned = _parameters_of(self.__callee_type(resolver, function, parameter))
         if _parameters_of(func_type) is None and pinned is not None and not prtr_type.is_concrete():
             parameter, retry_glb, phints = parameter.compile(resolver, pinned)
             pglb = pglb + retry_glb
@@ -138,7 +143,7 @@ class CallExpression(Expression):
         # This node owns the conversion between itself and its receiver: a call
         # whose settled result type cannot meet the receiver's expected type
         # wraps ITSELF (no-op until both types are ground — needs_conversion is
-        # conservative, so generic templates never wrap).
+        # conservative, so a generic template wraps only a by-name tuple binding).
         from pyast.expression.conversion import converted
         return converted(expr, expected_type, resolver), fglb+pglb, h.merge(fhints, phints)
 

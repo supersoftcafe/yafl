@@ -2196,6 +2196,7 @@ EXTERN object_t* print_string(object_t* self, str_t s);
 // The process arguments and environment (object.c).
 EXTERN str_t     sys_argv_at(object_t* self, object_t* o_index);
 EXTERN str_t     sys_getenv(object_t* self, str_t name);   // String|None
+EXTERN object_t* sys_abort(object_t* self, str_t message); // exits 1; never returns
 EXTERN object_t* sys_stdout_is_terminal(object_t* self);   // Int: 1 or 0
 EXTERN object_t* sys_terminal_columns(object_t* self);
 // This process's private temp folder, created on first call and deleted at

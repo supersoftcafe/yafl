@@ -477,7 +477,7 @@ fun gsubExpr(x, sub: GSub, visited: List<String>) => match(x)
                            nm.penLine,
                            gsubOpt(nm.penTrait, sub, visited))
   (d: PeDot)     => PeDot(gsubExpr(d.base, sub, visited), d.member,
-                          d.pedLine)
+                          d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(gsubExpr(c.function, sub, visited),
                            gsubExpr(c.parameter, sub, visited), c.pecLine)
   (tp: PeTuple)  => PeTuple(gsubTupEnts(tp.exprs, sub, visited,
@@ -943,7 +943,7 @@ fun rcrExpr(x, refs: GRefsIx) => match(x)
   # specialised enum's variant tree carries mangled names (2026-07-21 fix),
   # so the constructor's leaf reference must match.
   (ne: PeNewEnum) => rcrNewEnum(ne, refs)
-  (d: PeDot)     => PeDot(rcrExpr(d.base, refs), d.member, d.pedLine)
+  (d: PeDot)     => PeDot(rcrExpr(d.base, refs), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rcrExpr(c.function, refs),
                            rcrExpr(c.parameter, refs), c.pecLine)
   (tp: PeTuple)  => PeTuple(rcrTupEnts(tp.exprs, refs,
@@ -1533,7 +1533,7 @@ fun rtrExprOpt(x: PExpr|None, r, traits: List<PStmt>) => match(x)
 
 fun rtrExpr(x, r, traits: List<PStmt>) => match(x)
   (nm: PeName)   => redirectName(nm, r, traits)
-  (d: PeDot)     => PeDot(rtrExpr(d.base, r, traits), d.member, d.pedLine)
+  (d: PeDot)     => PeDot(rtrExpr(d.base, r, traits), d.member, d.pedLine, d.pedIndex)
   (c: PeCall)    => PeCall(rtrExpr(c.function, r, traits),
                            rtrExpr(c.parameter, r, traits), c.pecLine)
   (tp: PeTuple)  => PeTuple(rtrTupEnts(tp.exprs, r, traits,
@@ -1816,7 +1816,7 @@ fun rfrExprOpt(x: PExpr|None, c: Canon) => match(x)
 fun rfrExpr(x, c: Canon) => match(x)
   (nm: PeName)   => PeName(nm.refName, rfrSpecList(nm.refTypeParams, c),
                            nm.penLine, rfrSpecOpt(nm.penTrait, c))
-  (d: PeDot)     => PeDot(rfrExpr(d.base, c), d.member, d.pedLine)
+  (d: PeDot)     => PeDot(rfrExpr(d.base, c), d.member, d.pedLine, d.pedIndex)
   (cc: PeCall)   => PeCall(rfrExpr(cc.function, c),
                            rfrExpr(cc.parameter, c), cc.pecLine)
   (tp: PeTuple)  => PeTuple(rfrTupEnts(tp.exprs, c,

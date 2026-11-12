@@ -5,6 +5,7 @@
 #include "gc_internal.h"
 #include "prof.h"
 #include "heapprof.h"
+#include "tempdir.h"
 #include <malloc.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -3602,6 +3603,21 @@ EXPORT str_t sys_getenv(object_t* self, str_t name) {
     const char* v = getenv(str_cstr(name, buf, (int32_t)sizeof buf, &heap));
     free(heap);
     return v == NULL || *v == 0 ? str_word(NULL) : str_from_cstr(v);
+}
+
+// System::abort: the program has found itself in a state it cannot continue
+// from. The message goes to stderr and the process ends at once with exit
+// code 1 — no signal, no core. Nothing returns, so the None the signature
+// promises is never produced.
+EXPORT object_t* sys_abort(object_t* self, str_t message) {
+    (void)self;
+    char buf[1024], *heap;
+    fflush(stdout);   // what the program had already said comes first
+    fprintf(stderr, "%s\n", str_cstr(message, buf, (int32_t)sizeof buf, &heap));
+    fflush(stderr);
+    // _exit skips atexit, so the process temp folder is removed here.
+    yafl_tempdir_cleanup();
+    _exit(1);
 }
 
 // The terminal on stdout, for a command line that formats its help as

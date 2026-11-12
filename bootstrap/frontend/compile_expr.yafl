@@ -340,7 +340,7 @@ fun reportedParams(compiled, original)
 fun compileDot(d: PeDot, r, expected: Spec|None)
   let base = compileExpr(d.base, r, None)
   let out = PeDot(base.eoExpr, dotMemberName(d, base.eoExpr, r, expected),
-                  d.pedLine)
+                  d.pedLine, d.pedIndex)
   ret ExprOut(converted(out, expected, r), base.eoGlobals, base.eoHints)
 
 fun dotMemberName(d: PeDot, base, r,
@@ -461,7 +461,7 @@ fun cneArgsStep(st: (acc: List<PFieldArg>, globals2: List<PStmt>, hints: Dict<St
     hints = mergeHints(st.hints, o.eoHints))
 
 fun compileCall(c: PeCall, r, expected)
-  let before = paramShapeOf(exprType(c.function, r))
+  let before = paramShapeOf(calleeType(c.function, c.parameter, r))
   let arg = compileExpr(c.parameter, r, before)
   ret match(exprType(arg.eoExpr, r))
     (pt: Spec) => match(pt)
@@ -476,7 +476,8 @@ fun partialCall(c: PeCall, arg: ExprOut)
 fun callWithShape(c: PeCall, r, arg, tp,
                   expected, before: Spec|None)
   let fn = compileExpr(c.function, r, SCallable(tp, expected, c.pecLine))
-  let args = retriedArgs(arg, before, paramShapeOf(exprType(fn.eoExpr, r)),
+  let args = retriedArgs(arg, before,
+                         paramShapeOf(calleeType(fn.eoExpr, arg.eoExpr, r)),
                          tp, r)
   ret ExprOut(converted(PeCall(fn.eoExpr, args.eoExpr, c.pecLine), expected, r),
               concat(fn.eoGlobals, args.eoGlobals),

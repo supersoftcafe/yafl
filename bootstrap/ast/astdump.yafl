@@ -121,7 +121,7 @@ fun dumpExpr(x, depth, out) => match(x)
   (r: PeRegex)  => dLine(out, depth, "Regex", r.perLine, pyRepr(r.pattern))
   (n: PeName)   => dLine(out, depth, "Name", n.penLine,
                          n.refName + "|" + tyList(n.refTypeParams))
-  (d: PeDot)    => dLine(out, depth, "Dot", d.pedLine, d.member)
+  (d: PeDot)    => dLine(out, depth, "Dot", d.pedLine, dotLabel(d))
     |> (s1) => dumpExpr(d.base, depth + 1, s1)
   (c: PeCall)   => dLine(out, depth, "Call", c.pecLine, "")
     |> (s1) => dumpExpr(c.function, depth + 1, s1)
@@ -281,3 +281,8 @@ fun dumpStmt(st, depth, out) => match(st)
 # monomorphisation pruned to nothing) still prints one newline.
 fun dumpProgram(stmts: List<PStmt>)
   ret isEmpty(stmts) ? "\n" : dumpStmts(stmts, 0, "")
+
+# A field read's label: the member, and its position once names are erased.
+fun dotLabel(d: PeDot): String => match(d.pedIndex)
+  (i: Int) => d.member + "#" + String(i)
+  ()       => d.member

@@ -398,7 +398,7 @@ fun llExprOpt(x: PExpr|None, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
 fun llExpr(x, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
   (c: PeCall)    => llCallExpr(c, ctx, paramLets)
   (d: PeDot)     => PeDot(llExpr(d.base, ctx, paramLets), d.member,
-                          d.pedLine)
+                          d.pedLine, d.pedIndex)
   (tp: PeTuple)  => PeTuple(llEnts(tp.exprs, ctx, paramLets,
                                    List()),
                             tp.petLine)

@@ -190,17 +190,29 @@ def _enum_member(resolver: g.Resolver, espec: t.EnumSpec, bare: str):
 class DotExpression(Expression):
     base: Expression
     name: str
+    # A tuple field read by POSITION. Field names are sugar for the program
+    # as written: lowering/field_names.py turns every name into the position
+    # it meant, once, before monomorphisation, and from there on `index` is
+    # the field and `name` only what the author wrote.
+    index: int | None = None
 
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Expression:
         return rw.rewrite(self, replace, resolver,
             base=self.base.search_and_replace(resolver, replace))
 
+    def tuple_entry(self, entries: tuple) -> "tuple[int, t.TupleEntrySpec] | None":
+        """The entry of a tuple this read names: by position once names are
+        erased, by name before."""
+        if self.index is not None:
+            return (self.index, entries[self.index]) if self.index < len(entries) else None
+        return next(((i, en) for i, en in enumerate(entries) if en.name == self.name), None)
+
     def get_type(self, resolver: g.Resolver) -> t.TypeSpec | None:
         btype = self.base.get_type(resolver)
         match btype:
             case t.TupleSpec(entries=entries):
-                entry = next((en for en in entries if en.name == self.name), None)
-                return entry.type if entry else None
+                found = self.tuple_entry(entries)
+                return found[1].type if found else None
             case t.ClassSpec() as cspec:
                 cdecl = resolver.find_type(cspec.name)
                 if not cdecl or len(cdecl) > 1:
@@ -256,8 +268,7 @@ class DotExpression(Expression):
         btype = self.base.get_type(resolver)
         match btype:
             case t.TupleSpec(entries=entries):
-                entry = next((en for en in entries if en.name == self.name), None)
-                if not entry:
+                if not self.tuple_entry(entries):
                     return [Error(self.line_ref, f"Could not find field {self.name}")]
                 return []
             case t.ClassSpec(_, cname):
@@ -286,10 +297,12 @@ class DotExpression(Expression):
         btype = self.base.get_type(resolver)
         match btype:
             case t.TupleSpec(entries=entries):
-                idx = next((i for i, en in enumerate(entries) if en.name == self.name), None)
-                if idx is None:
-                    raise ValueError(f"Field {self.name} not found in TupleSpec")
-                result_var = cg_p.StructField(base_bundle.result_var, f"_{idx}")
+                # By position only: a read that still has just a name here
+                # was missed by lowering/field_names.py.
+                if self.index is None or self.index >= len(entries):
+                    raise ValueError(f"compiler bug: tuple field read `.{self.name}` at "
+                                     f"{self.line_ref} reached code generation with no position")
+                result_var = cg_p.StructField(base_bundle.result_var, f"_{self.index}")
                 return base_bundle + g.OperationBundle((), (), result_var)
 
             case t.ClassSpec(_, cname):

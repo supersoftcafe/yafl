@@ -88,7 +88,7 @@ def dump(statements) -> str:
             tps = ",".join(_ty(tp) for tp in x.type_params)
             line(depth, "Name", x, f"{x.name}|{tps}")
         elif isinstance(x, e.DotExpression):
-            line(depth, "Dot", x, x.name)
+            line(depth, "Dot", x, x.name if x.index is None else f"{x.name}#{x.index}")
             walk_expr(x.base, depth + 1)
         elif isinstance(x, e.CallExpression):
             line(depth, "Call", x, "")

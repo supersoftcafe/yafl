@@ -32,6 +32,7 @@ import lowering.eager_globals
 import lowering.lower_lazy_lets
 import lowering.regexes
 import lowering.generics
+import lowering.field_names
 import lowering.inlining
 import lowering.known_tags
 import lowering.simple_classes
@@ -669,6 +670,12 @@ def __iterate_and_compile(statements: list[s.Statement], just_testing = False, o
     new_statements, lowered = lowering.instances.lower_trait_instances(new_statements)
     if lowered:
         new_statements, resolver, _passes = __converge(new_statements)
+
+    # Tuple field names are sugar for the program as written, which ends
+    # here: each becomes the position it meant, and from monomorphisation on —
+    # where instances are shared by call sites that named their tuples
+    # differently — a tuple has no field names to consult.
+    new_statements = lowering.field_names.erase_field_names(new_statements)
 
     # All ok so let's create some C code
     new_statements, poly_errors = lowering.generics.convert_generic_to_concrete(new_statements)

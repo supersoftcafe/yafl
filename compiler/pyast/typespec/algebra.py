@@ -711,6 +711,108 @@ def without_callable_params(spec: "TypeSpec") -> "TypeSpec":
     return rw.resolved(spec.search_and_replace(None, blank), spec)
 
 
+def named_at_call_site(declared: "TypeSpec | None", argument: "TypeSpec | None") -> "TypeSpec | None":
+    """A callable's type as ONE CALL sees it: tuple field names are sugar, so a
+    tuple the signature leaves unnamed takes its names from the call site.
+
+    The names an argument supplies for an unnamed tuple flow to every tuple of
+    the same shape in the signature — the result, a lambda's parameters —
+    however deeply either sits inside other types. Per field, the first
+    argument to name it wins and an unnamed field takes a later argument's
+    name. A name the DECLARATION wrote is never replaced, and a callable's
+    parameter list is not such a tuple: its names are the function's own.
+    Nothing here is generic: a type parameter has already been bound to the
+    argument's named tuple by inference, so no unnamed tuple is left for it."""
+    if not isinstance(declared, CallableSpec) or not isinstance(argument, TupleSpec):
+        return declared
+    supplied: dict[str, list[str | None]] = {}
+
+    def offer(d: TupleSpec, a: TupleSpec) -> None:
+        key = d.as_unique_id_str()
+        if key is None or all(en.name is not None for en in d.entries):
+            return
+        slot = supplied.setdefault(key, [None] * len(d.entries))
+        for i, (de, ae) in enumerate(zip(d.entries, a.entries)):
+            if de.name is None and slot[i] is None:
+                slot[i] = ae.name
+
+    def pairwise(ds, as_) -> None:
+        if len(ds) == len(as_):
+            for d, a in zip(ds, as_):
+                collect(d, a)
+
+    def collect(d: "TypeSpec | None", a: "TypeSpec | None") -> None:
+        if isinstance(d, TupleSpec) and isinstance(a, TupleSpec):
+            if len(d.entries) == len(a.entries):
+                offer(d, a)
+                pairwise([en.type for en in d.entries], [en.type for en in a.entries])
+        elif isinstance(d, ClassSpec) and isinstance(a, ClassSpec):
+            if d.name == a.name:
+                pairwise(d.type_params, a.type_params)
+        elif isinstance(d, EnumSpec) and isinstance(a, EnumSpec):
+            if d.root_name == a.root_name:
+                pairwise(d.type_params, a.type_params)
+        elif isinstance(d, CallableSpec) and isinstance(a, CallableSpec):
+            collect_parameters(d.parameters, a.parameters)
+            collect(d.result, a.result)
+
+    def collect_parameters(d: "TypeSpec | None", a: "TypeSpec | None") -> None:
+        if not isinstance(d, TupleSpec) or not isinstance(a, TupleSpec):
+            return
+        binding = bind_tuple_entries(d.entries, [en.name for en in a.entries])
+        for de, b in zip(d.entries, binding or ()):
+            if b is not None:
+                collect(de.type, a.entries[b].type)
+
+    def named(d: TupleSpec) -> TupleSpec:
+        slot = supplied.get(d.as_unique_id_str() or "")
+        if slot is None:
+            return d
+        taken = {en.name for en in d.entries if en.name is not None}
+        names = [en.name or (None if n in taken else n) for en, n in zip(d.entries, slot)]
+        # Named fields follow positional ones, here as everywhere.
+        if names == [en.name for en in d.entries] or any(
+                earlier is not None and later is None for earlier, later in zip(names, names[1:])):
+            return d
+        return dataclasses.replace(d, entries=tuple(
+            dataclasses.replace(en, name=n) for en, n in zip(d.entries, names)))
+
+    def entries_painted(d: TupleSpec) -> TupleSpec:
+        types = [paint(en.type) for en in d.entries]
+        if all(n is o.type for n, o in zip(types, d.entries)):
+            return d
+        return dataclasses.replace(d, entries=tuple(
+            dataclasses.replace(en, type=ty) for en, ty in zip(d.entries, types)))
+
+    def args_painted(spec, params):
+        new = tuple(paint(p) for p in params)
+        return spec if all(n is o for n, o in zip(new, params)) else dataclasses.replace(spec, type_params=new)
+
+    def paint(d: "TypeSpec | None") -> "TypeSpec | None":
+        if isinstance(d, TupleSpec):
+            return named(entries_painted(d))
+        if isinstance(d, (ClassSpec, EnumSpec)):
+            return args_painted(d, d.type_params)
+        if isinstance(d, CallableSpec):
+            return paint_callable(d)
+        if isinstance(d, CombinationSpec):
+            new = [paint(m) for m in d.types]
+            return d if all(n is o for n, o in zip(new, d.types)) else dataclasses.replace(d, types=new)
+        return d
+
+    def paint_callable(d: CallableSpec) -> CallableSpec:
+        params = entries_painted(d.parameters) if isinstance(d.parameters, TupleSpec) else d.parameters
+        result = paint(d.result)
+        if params is d.parameters and result is d.result:
+            return d
+        return dataclasses.replace(d, parameters=params, result=result)
+
+    collect_parameters(declared.parameters, argument)
+    if not any(n is not None for slot in supplied.values() for n in slot):
+        return declared
+    return paint_callable(declared)
+
+
 def bind_from_constraint_match(constraint: "ClassSpec", iface: "ClassSpec",
                                target_names: set[str]) -> dict[str, "TypeSpec"] | None:
     """Positionally match an already-substituted `where` constraint against a

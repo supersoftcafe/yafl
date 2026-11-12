@@ -147,7 +147,7 @@ def __build_tuple_specs(
     result: dict[str, t.TupleSpec] = {}
     for name, cls in simple_classes.items():
         fields = cls.parameters.flatten()
-        entries = [t.TupleEntrySpec(f.name, f.declared_type, None) for f in fields]
+        entries = [t.TupleEntrySpec(None, f.declared_type, None) for f in fields]
         result[name] = t.TupleSpec(cls.line_ref, entries)
     return result
 
@@ -277,25 +277,6 @@ def __exclude_union_collisions(
     return classes, specs
 
 
-def __name_tuple_entries(param: e.Expression, tuple_spec: t.TupleSpec) -> e.Expression:
-    # A constructor call like `Set<Int>(d)` parses as a positional tuple whose
-    # entries have name=None. Downstream DotExpression on the lowered value
-    # (`Set<Int>(d)._d`) looks entries up by field name, so the positional
-    # entries must inherit the class's field names. Pre-named entries are
-    # left untouched.
-    if not isinstance(param, e.TupleExpression):
-        return param
-    new_entries = []
-    changed = False
-    for idx, entry in enumerate(param.expressions):
-        if entry.name is None and idx < len(tuple_spec.entries):
-            new_entries.append(dataclasses.replace(entry, name=tuple_spec.entries[idx].name))
-            changed = True
-        else:
-            new_entries.append(entry)
-    return dataclasses.replace(param, expressions=new_entries) if changed else param
-
-
 def __flatten_class_rule(
         simple_classes: dict[str, s.ClassStatement],
         simple_tuple_specs: dict[str, t.TupleSpec],
@@ -329,6 +310,30 @@ def __method_owners(simple_classes: dict[str, s.ClassStatement]) -> dict[str, st
     return {name: owner for name, owner in owners.items() if name not in shared}
 
 
+def __fields_by_position(
+        statements: list[s.Statement],
+        simple_classes: dict[str, s.ClassStatement],
+        resolver: g.Resolver) -> list[s.Statement]:
+    """Every read of a simple class's field takes the field's POSITION in the
+    struct the class becomes — the struct has no field names, and code
+    generation reads a field of it by position alone. A walk of its own,
+    BEFORE anything is flattened: the read's base still has its class type,
+    whatever expression it is."""
+    positions = {name: {f.name: i for i, f in enumerate(cls.parameters.flatten())}
+                 for name, cls in simple_classes.items()}
+
+    def positioned(resolver_: g.Resolver, thing):
+        if isinstance(thing, e.DotExpression) and thing.index is None:
+            base_type = thing.base.get_type(resolver_)
+            if isinstance(base_type, t.ClassSpec):
+                index = positions.get(base_type.name, {}).get(thing.name)
+                if index is not None:
+                    return dataclasses.replace(thing, index=index)
+        return rw.UNCHANGED
+
+    return [rw.resolved(stmt.search_and_replace(resolver, positioned), stmt) for stmt in statements]
+
+
 def __build_replace_fn(
         simple_classes: dict[str, s.ClassStatement],
         simple_tuple_specs: dict[str, t.TupleSpec],
@@ -354,13 +359,13 @@ def __build_replace_fn(
 
         # NewExpression whose type was already converted to TupleSpec → just the params
         if isinstance(thing, e.NewExpression) and isinstance(thing.type, t.TupleSpec):
-            return __name_tuple_entries(thing.parameter, thing.type)
+            return thing.parameter
 
         # Constructor calls: CallExpression(NamedExpression(cls_name), args) → flat tuple
         if isinstance(thing, e.CallExpression) and isinstance(thing.function, e.NamedExpression):
             cls_name = thing.function.name
             if cls_name in simple_classes:
-                return __name_tuple_entries(thing.parameter, simple_tuple_specs[cls_name])
+                return thing.parameter
 
         # Method calls: CallExpression(DotExpression(base, method), args)
         if isinstance(thing, e.CallExpression) and isinstance(thing.function, e.DotExpression):
@@ -426,6 +431,10 @@ def lower_simple_classes(statements: list[s.Statement]) -> list[s.Statement]:
         simple_classes, simple_tuple_specs, statements, resolver)
     if not simple_classes:
         return statements
+
+    statements = __fields_by_position(statements, simple_classes, resolver)
+    by_name = {stmt.name: stmt for stmt in statements if isinstance(stmt, s.ClassStatement)}
+    simple_classes = {name: by_name[name] for name in simple_classes}
 
     tuple_id_to_class: dict[str, str] = {
         v.as_unique_id_str(): k

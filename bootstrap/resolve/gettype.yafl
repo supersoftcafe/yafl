@@ -223,9 +223,16 @@ fun armBodyType(a: PArm, r): Spec|None =>
 
 fun twoTypes(a: Spec|None, b: Spec|None) => append(append(List(), a), b)
 
+# The callee's type as THIS call sees it: tuples its signature leaves unnamed
+# carry the field names the arguments supply (call.py __callee_type).
+# `function` and `parameter` are the call's parts as they now stand — compile
+# asks about the ones it has just compiled.
+fun calleeType(function: PExpr, parameter: PExpr, r): Spec|None =>
+  namedAtCallSite(exprType(function, r), exprType(parameter, r))
+
 # A call's type is its callee's RESULT — and nothing else. A callee that has
 # not resolved to a callable yet simply has no result yet.
-fun callType(c: PeCall, r) => match(exprType(c.function, r))
+fun callType(c: PeCall, r) => match(calleeType(c.function, c.parameter, r))
   (ft: Spec) => match(ft)
     (cl: SCallable) => callResultType(c, cl.scResult, r)
     (o: Spec)       => None
@@ -291,11 +298,19 @@ fun newEnumType(ne: PeNewEnum, r) => match(findEnum(r, ne.rootName))
     ()                 => root.eSpec
   ()             => None
 
-# A field read: through a tuple by entry NAME, through a class or enum by
-# looking the member up on the DECLARATION.
-fun dotType(d: PeDot, r) => match(exprType(d.base, r))
-  (bt: Spec) => memberType(bt, d.member, r)
-  ()         => None
+# A field read: through a tuple by POSITION once names are erased
+# (pedIndex) and by entry NAME before, through a class or enum by looking the
+# member up on the DECLARATION.
+fun dotType(d: PeDot, r): Spec|None => match(exprType(d.base, r))
+  (t2: STuple) => dotEntryType(d, t2.stEntries)
+  (bt: Spec)   => memberType(bt, d.member, r)
+  ()           => None
+
+fun dotEntryType(d: PeDot, es: List<SEntry>): Spec|None => match(d.pedIndex)
+  (i: Int) => match(head(drop(es, i)))
+    (e: SEntry) => e.seType
+    ()          => None
+  ()       => entryNamed(es, d.member)
 
 fun memberType(bt, name, r) => match(bt)
   (t2: STuple) => entryNamed(t2.stEntries, name)

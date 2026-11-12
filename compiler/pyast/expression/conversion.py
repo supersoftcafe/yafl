@@ -148,7 +148,9 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
     """Would representing a `source`-typed value as `target` require a
     representation change? Mirrors `coerce`'s non-passthrough cases exactly —
     the single home for the decision. Undecidable (either side not ground
-    enough) is False: the compile fixpoint asks again once types refine."""
+    enough) is False: the compile fixpoint asks again once types refine. The
+    one thing decided over types that are not ground is a tuple whose fields
+    bind out of place (_binds_by_name): field names decide that, not types."""
     if source is None or target is None:
         return False
     if isinstance(source, t.EnumSpec) and not source.valid_leaf_names:
@@ -157,7 +159,7 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
         return source.as_unique_id_str() != target.as_unique_id_str()
     su, tu = source.as_unique_id_str(), target.as_unique_id_str()
     if su is None or tu is None:
-        return False
+        return _binds_by_name(source, target, resolver)
     # Tuple-into-tuple is decided by the field BINDING, before the id shortcut
     # below: a pure name-directed reorder has identical ids on both sides
     # (`as_unique_id_str` is positional types only) yet must rebuild the value.
@@ -221,6 +223,29 @@ def needs_conversion(source: t.TypeSpec | None, target: t.TypeSpec | None,
             and source.entries[0].type.as_unique_id_str() == tu):
         return True         # a genuine 1-tuple WRAPPER of the target: UNWRAP
     return False
+
+
+def _binds_by_name(source: t.TypeSpec, target: t.TypeSpec, resolver: g.Resolver) -> bool:
+    """A tuple whose fields bind into `target` OUT OF PLACE — by name, or with
+    a default filled in — is a conversion even inside a generic template,
+    where nothing else is decided: the binding is read off the field names,
+    which are the template's own and are gone once it is instantiated
+    (lowering/field_names.py), so it cannot wait for the types to be ground.
+    It still waits for them to be KNOWN to fit."""
+    if not isinstance(source, t.TupleSpec):
+        return False
+    if isinstance(target, t.CombinationSpec):
+        fits = [v for v in target.repr_members()
+                if isinstance(v, t.TupleSpec) and v.trivially_assignable_from(resolver, source) is True]
+        if len(fits) != 1:
+            return False
+        target = fits[0]
+    if not isinstance(target, t.TupleSpec):
+        return False
+    binding = t.bind_tuple_entries(target.entries, [en.name for en in source.entries])
+    if binding is None or binding == list(range(len(target.entries))):
+        return False
+    return target.trivially_assignable_from(resolver, source) is True
 
 
 def emit_conversion(value, source: t.TypeSpec | None, target: t.TypeSpec | None,

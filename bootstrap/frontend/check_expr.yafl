@@ -460,8 +460,9 @@ fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
             matchCoverageErrs(mt, st, r))
 
 # A position whose repr cannot test its pattern is REPORTED, not compiled into
-# an arm that never matches. Each subject's repr is asked, with a probe of its
-# own ctype; the first arm it refuses is reported.
+# an arm that never matches. Each subject's repr is asked; the first arm it
+# refuses is reported. The guards themselves are built at code generation,
+# where the discriminators they read exist.
 fun positionErrs(mt: PeMatch, r): Set<PErr> => isEmpty(mt.matchExtra)
   ? noErrs()
   : fold(prepend(mt.subject, mt.matchExtra), (i = 0, acc = noErrs()),
@@ -478,8 +479,7 @@ fun firstRefusedArm(arms: List<PArm>, i: Int, rep, r): Set<PErr> => match(firstW
   ()        => noErrs()
 
 fun armRefusedAt(a: PArm, i: Int, rep, r) => match(positionPattern(a, i))
-  (pat: Spec) => Bootstrap::Codegen::reprPositionStages(
-                   rep, Bootstrap::Ir::RpStackVar(Bootstrap::Codegen::reprCtype(rep), "$probe"), pat, r) is None
+  (pat: Spec) => !Bootstrap::Codegen::reprTestsPosition(rep, pat, r)
   ()          => false
 
 # The pattern an arm puts at position `i` (0 is the arm's own type).

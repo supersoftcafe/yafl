@@ -249,7 +249,7 @@ fun scEntriesOf(fs: List<PStmt>, acc: List<SEntry>) =>
   fold(fs, acc, scEntriesOfStep)
 
 fun scEntriesOfStep(a: List<SEntry>, x: PStmt) => match(x)
-  (let2: PsLet) => append(a, SEntry(let2.lName, let2.lType, None))
+  (let2: PsLet) => append(a, SEntry("", let2.lType, None))
   (o: PStmt) => a
 
 fun scBuildTupleSpecs(cands: ScCands) => scBtsLoop(scNames(cands), cands, scSpecsEmpty())
@@ -646,23 +646,43 @@ fun scDeclOrderStep(a: List<String>, x: PStmt, cands: ScCands) => match(x)
     : a
   (o: PStmt) => a
 
-# ── 10. nameTupleEntries ─────────────────────────────────────────────────────
+# ── 10. field positions ──────────────────────────────────────────────────────
 
-# Co-walk the spec entries alongside the supplied ones — the positional
-# pairing is the structure itself, never an index bound.
-fun scNteLoop(es: List<PTupEnt>, ses: List<SEntry>, acc: List<PTupEnt>) =>
-  fold(es, (ses = ses, acc = acc), scNteLoopStep).acc
+# Every read of a candidate's field takes the field's POSITION in the struct
+# the class becomes — the struct has no field names, and code generation
+# reads a field of it by position alone. A walk of its own, BEFORE anything
+# is flattened: the read's base still has its class type, whatever expression
+# it is.
+fun scFieldsByPosition(statements: List<PStmt>, cands: ScCands, r): List<PStmt> =>
+  rwnStmts(statements, RwN((n, sc, x) => (n, scPositioned(x, cands, sc)), rwnNoStmt), r, 0).rnssStmts
 
-fun scNteLoopStep(st: (ses: List<SEntry>, acc: List<PTupEnt>), x: PTupEnt) => match(head(st.ses))
-  (se: SEntry) => (ses = dropOne(st.ses),
-                   acc = append(st.acc, x.tupName == "" ? PTupEnt(se.seName, x.tupSpread, x.tupValue) : x))
-  ()           => (ses = st.ses, acc = append(st.acc, x))
+fun scPositioned(x: PExpr, cands: ScCands, sc: Resolver|None): PExpr|None => match(sc, x)
+  (r: Resolver, d: PeDot) if d.pedIndex is None =>
+    scPositionedRead(d, scFieldPosition(exprType(d.base, r), d.member, cands))
+  ()                      => None
 
-fun scNameTupleEntries(param, spec) => match(param)
-  (tp: PeTuple) => match(spec)
-    (t2: STuple) => PeTuple(scNteLoop(tp.exprs, t2.stEntries, List()), tp.petLine)
-    (o: Spec)    => param
-  (o: PExpr)    => param
+fun scPositionedRead(d: PeDot, at: Int|None): PExpr|None => match(at)
+  (i: Int) => PeDot(d.base, d.member, d.pedLine, i)
+  ()       => None
+
+fun scFieldPosition(bt: Spec|None, member: String, cands: ScCands): Int|None => match(bt)
+  (c: SClass) => match(scClassFor(cands, c.scName))
+    (cls: PsClass) => findIndex(flattenParams(cls.cParams), (p) => scIsField(p, member))
+    ()             => None
+  (o: Spec)   => None
+  ()          => None
+
+fun scIsField(p: PStmt, member: String): Bool => match(p)
+  (let2: PsLet) => let2.lName == member
+  (o: PStmt)    => false
+
+# The candidates as the positioned statements now declare them.
+fun scCandsIn(statements: List<PStmt>, cands: ScCands): ScCands =>
+  ScCands(fold(statements, cands.scIndex, scCandsInStep))
+
+fun scCandsInStep(index: Dict<String, PsClass>, st: PStmt): Dict<String, PsClass> => match(st)
+  (c: PsClass) => get(index, c.cName) is None ? index : put(index, c.cName, c)
+  (o: PStmt)   => index
 
 # ── 11. the main replace callback ────────────────────────────────────────────
 
@@ -677,7 +697,7 @@ fun scMainSpecOne(sp, cands: ScCands, specs: ScSpecs): Spec|None => match(sp)
   (o: Spec)   => None
 
 fun scReplaceNew(nw: PeNew) => match(nw.newType)
-  (t2: STuple) => scNameTupleEntries(nw.newParam, nw.newType)
+  (t2: STuple) => nw.newParam
   (o: Spec)    => None
 
 fun scReplaceCtorCall(c: PeCall, nm: PeName, cands: ScCands, specs: ScSpecs)
@@ -685,7 +705,7 @@ fun scReplaceCtorCall(c: PeCall, nm: PeName, cands: ScCands, specs: ScSpecs)
 
 fun scCtorReplacement(c: PeCall, nm: PeName, specs: ScSpecs)
   ret match(scLookupSpec(specs, nm.refName))
-    (sp: Spec) => scNameTupleEntries(c.parameter, sp)
+    (sp: Spec) => c.parameter
     ()         => None
 
 fun scClassNameForDotBase(base, member: String, cands: ScCands,
@@ -737,12 +757,6 @@ fun scReplaceExpr(x, cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
   (c: PeCall) => scReplaceCall(c, cands, specs, t2c, owners, r)
   (o: PExpr)  => None
 
-fun scReplaceFn(cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
-                owners: Dict<String, String>, r): Rw
-  ret Rw((x) => scReplaceExpr(x, cands, specs, t2c, owners, r),
-         (sp) => scMainSpecOne(sp, cands, specs),
-         rwNoStmt)
-
 # ── 13. the driver ───────────────────────────────────────────────────────────
 
 fun scRewriteTop(ss: List<PStmt>, cands: ScCands, w: Rw, acc: List<PStmt>) =>
@@ -773,8 +787,10 @@ fun lowerSimpleClasses(statements): List<PStmt>
   let filtered2 = scExcludeUnions(unions, filtered1.sfCands, filtered1.sfSpecs)
   if isEmpty(filtered2.sfCands.scIndex)
     ret statements
-  let cands = filtered2.sfCands
-  let specs = filtered2.sfSpecs
+  let positioned = scFieldsByPosition(statements, filtered2.sfCands, r)
+  ret scFlatten(positioned, scCandsIn(positioned, filtered2.sfCands), filtered2.sfSpecs)
+
+fun scFlatten(statements: List<PStmt>, cands: ScCands, specs: ScSpecs): List<PStmt>
   let t2c = scTupleIdToClass(specs)
   let owners = scMethodOwners(cands)
   let liftedPre = scLiftAll(statements, cands, specs)
@@ -873,7 +889,7 @@ fun scTExpr(x, c: ScCtx, r): PExpr
 fun scTKids(x, c: ScCtx, r): PExpr => match(x)
   (nm: PeName)   => PeName(nm.refName, scTSpecs(nm.refTypeParams, c),
                            nm.penLine, scTTrait(nm.penTrait, c))
-  (d: PeDot)     => PeDot(scTExpr(d.base, c, r), d.member, d.pedLine)
+  (d: PeDot)     => PeDot(scTExpr(d.base, c, r), d.member, d.pedLine, d.pedIndex)
   (cc: PeCall)   => PeCall(scTExpr(cc.function, c, r),
                            scTExpr(cc.parameter, c, r), cc.pecLine)
   (tp: PeTuple)  => PeTuple(scTEnts(tp.exprs, c, r,

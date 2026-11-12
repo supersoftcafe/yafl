@@ -679,11 +679,10 @@ class MatchExpression(e.Expression):
                           + ", or use literal patterns on an Int/String subject")]
 
         errors = list(subject_err)
-        # A position whose repr cannot supply guards must be REPORTED, not
-        # left to raise out of codegen. Ask each position's repr, using THAT
-        # repr's own ctype for the probe value — an option is a DataPointer
-        # union sometimes and a TAGGED STRUCT other times (Int32|None), so a
-        # guessed pointer type builds a StructField on a pointer and dies.
+        # A position whose repr cannot test its pattern must be REPORTED, not
+        # left to raise out of codegen. Each position's repr is ASKED; the
+        # guards themselves are built at code generation, where the
+        # discriminators they read exist.
         if self.extra_subjects:
             subs = [self.subject] + list(self.extra_subjects)
             for i, sub in enumerate(subs):
@@ -691,16 +690,14 @@ class MatchExpression(e.Expression):
                 if not isinstance(sty, (t.EnumSpec, t.CombinationSpec)):
                     continue
                 rep = union_repr.classify(sty, resolver)
-                probe = cg_p.StackVar(rep.ctype(), "$probe")
                 for arm in self.arms:
                     pat = (arm.type_spec if i == 0
                            else (arm.extra[i - 1].type_spec if len(arm.extra) >= i else None))
                     if pat is None:
                         continue
-                    try:
-                        rep.position_stages(probe, pat, resolver)
-                    except NotImplementedError as ex:
-                        errors.append(Error(arm.line_ref, str(ex)))
+                    if not rep.tests_position(pat, resolver):
+                        errors.append(Error(arm.line_ref,
+                            "this pattern cannot serve a position of a multi-subject match"))
                         break
         # Arity: an arm has one pattern per subject. The grammar cannot check
         # this — it does not know the subject count — so it lands here, where
