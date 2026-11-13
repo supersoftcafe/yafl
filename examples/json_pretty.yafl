@@ -1,6 +1,7 @@
 namespace Main
 
 import System
+import System::Args
 import System::IO
 import System::Containers
 import System::Json
@@ -26,8 +27,8 @@ import System::Json
 #   2  parse error
 # ── file/tree modes ──────────────────────────────────────────────────────────
 #   json_pretty                 stdin -> stdout (as before)
-#   json_pretty <file.json>     convert ONE file to <file.json.pretty>
-#   json_pretty -r <dir>        RECURSIVELY convert every .json under <dir>,
+#   json_pretty file.json       convert ONE file to <file.json.pretty>
+#   json_pretty -r DIR          RECURSIVELY convert every .json under <dir>,
 #                               in parallel ([future] divide-and-conquer)
 # Recursion is deliberately opt-in behind -r: a bare directory argument is
 # refused rather than silently walking a tree. Exit code = failed-file count.
@@ -116,12 +117,30 @@ fun runStdio(): System::Int
       (text: String) => emit(text)
       (e: IOError)   => 1
 
+# What the command line asked for.
+class [final] Options(help: Bool, tree: String|None, file: String|None)
+
+fun commandLine() => Args("json_pretty", "Pretty-print JSON: stdin to stdout, one file, or a tree of files.",
+  List<Arg<Options>>(
+    Stop(List("-h", "--help"), "show this help message and exit",
+         (o: Options) => with o(help = true)),
+    Value(List("-r"), "DIR", "convert every .json file under DIR",
+          (o: Options, v: String) => with o(tree = v)),
+    Positional("file", AtMostOne(), "a file to convert (default: stdin to stdout)",
+               (o: Options, vs: List<String>) => with o(file = head(vs)))))
+
 fun main(): System::Int
-  fun runFlagged(a: List<String>): System::Int
-    ret match(head<String>(dropOne<String>(a)))
-      (dir: String)     => runTree(dir)
-      (e: System::None) => print("-r requires a directory\n") |> (u) => 2
-  let a = args()
-  ret match(head<String>(a))
-    (first: String)   => first == "-r" ? runFlagged(a) : runSingle(first)
-    (e: System::None) => runStdio()
+  fun run(o: Options): System::Int => match(o.tree)
+    (dir: String) => runTree(dir)
+    ()            => match(o.file)
+      (path: String) => runSingle(path)
+      ()             => runStdio()
+  fun wrong(e: ArgError): System::Int
+    print(message(commandLine(), e, 80, false))
+    ret 2
+  fun showHelp(): System::Int
+    print(help(commandLine(), 80, false))
+    ret 0
+  ret match(parse(commandLine(), args(), Options(false, None, None)))
+    (e: ArgError) => wrong(e)
+    (o: Options)  => o.help ? showHelp() : run(o)

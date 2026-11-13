@@ -532,7 +532,7 @@ fun commandLine() => Args("tool", "What the tool does", List<Arg<Options>>(
         (o: Options, v: String) => match(parseInt(v))
           (n: Int) => with o(level = n)
           ()       => "invalid int value: " + v),
-  Positional("files", true, "Input files",
+  Positional("files", AtLeastOne(), "Input files",
              (o: Options, vs: List<String>) => with o(files = vs))))
 
 fun main(): Int => match(parse(commandLine(), args(), Options(false, 0, List())))
@@ -549,7 +549,7 @@ puts its value into that record, so `parse` gives back the record, or an
 | `Flag(names, help, set)` | Given or not. |
 | `Stop(names, help, set)` | A flag that ends the parse there, successfully: `--help`, `--version`. |
 | `Value(names, metavar, help, set)` | Takes one value. `set` returns the record, or a `String` saying why the value will not do. |
-| `Positional(name, required, help, set)` | Takes the plain words. |
+| `Positional(name, count, help, set)` | Takes plain words: `ExactlyOne()`, `AtMostOne()`, `AtLeastOne()` or `AnyNumber()` of them. |
 
 Nothing in `System::Args` prints or exits. `message(spec, error, width, colour)`
 is a failed parse as text, usage line first; `help(spec, width, colour)` is the

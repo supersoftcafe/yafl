@@ -43,7 +43,7 @@ fun options(): List<Arg<Opts>> => List<Arg<Opts>>()
   |> (l) => append(l, Flag(List("--version-check"), "Check the version",
                            (o: Opts) => with o(check = true)))
 
-fun files(): Arg<Opts> => Positional("files", true, "Input files",
+fun files(): Arg<Opts> => Positional("files", AtLeastOne(), "Input files",
                                      (o: Opts, vs: List<String>) => with o(files = vs))
 
 fun tool() => Args("tool", "A tool that does a thing to its input files, slowly",
@@ -131,21 +131,56 @@ fun [test("a Stop ends the parse there, successfully")] stops(): None|TestFailur
                   "tool: error: argument -O: invalid choice: '9' (choose from '0', '1', '2', '3')",
                   "an error before it wins")
 
-# Two positionals: each run of plain words goes to the positionals still
-# waiting, the earliest taking all but what the later required ones need.
-class [final] Pair(first: List<String>, rest: List<String>)
+# Several positionals, each with its own count, and a flag to part the plain
+# words into runs. Each run goes to the positionals still waiting: every one
+# takes as many words as it may, leaving the later ones what they need, and
+# one left with none goes on waiting for a later run.
+class [final] Taken(q: Bool, took: List<String>)
 
-fun pairTool() => Args("tool", "", List<Arg<Pair>>(
-  Positional("first", true, "First", (p: Pair, vs: List<String>) => with p(first = vs)),
-  Positional("rest", false, "Rest", (p: Pair, vs: List<String>) => with p(rest = vs))))
+fun counted(name: String, c: Count): Arg<Taken> => Positional(name, c, "",
+  (t: Taken, vs: List<String>) => with t(took = append(t.took, name + "=" + join(vs, ","))))
 
-fun pairOutcome(line: String): String => match(parse(pairTool(), split(line, " "), Pair(List(), List())))
-  (e: ArgError) => lastLine(message(pairTool(), e, 80, false))
-  (p: Pair)     => join(p.first, ",") + "|" + join(p.rest, ",")
+fun countsTool(counts: List<Count>) => Args("tool", "",
+  fold(counts, (i = 0, out = List<Arg<Taken>>(Flag(List("-q"), "", (t: Taken) => with t(q = true)))),
+       (st, c) => (i = st.i + 1, out = append(st.out, counted("p" + String(st.i), c)))).out)
 
-fun [test("several positionals share the plain words in declaration order")] severalPositionals(): None|TestFailure
-  ret assertEqStr(pairOutcome("a b c"), "a,b,c|", "the first takes them all")
-   ?? assertEqStr(pairOutcome("a -- b"), "a,b|", "-- does not end a run")
+fun countsOutcome(counts: List<Count>, line: String): String
+  let argv = line == "" ? List<String>() : split(line, " ")
+  ret match(parse(countsTool(counts), argv, Taken(false, List())))
+    (e: ArgError) => lastLine(message(countsTool(counts), e, 200, false))
+    (t: Taken)    => join(t.took, " ")
+
+fun [test("a positional takes exactly one word, at most one, at least one, or any number")] counts(): None|TestFailure
+  ret assertEqStr(countsOutcome(List(ExactlyOne(), AtMostOne()), "a b"), "p0=a p1=b", "one, then at most one")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), AtMostOne()), "-q a"), "p0=a", "at most one may be none")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), AtMostOne()), "a b c"),
+                  "tool: error: unrecognized arguments: c", "a word more than they take")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), ExactlyOne()), "a"),
+                  "tool: error: the following arguments are required: p1", "exactly one is required")
+   ?? assertEqStr(countsOutcome(List(AtLeastOne(), ExactlyOne()), "a"),
+                  "tool: error: the following arguments are required: p1", "at least one is required")
+   ?? assertEqStr(countsOutcome(List(AtLeastOne(), AnyNumber()), "a b c"), "p0=a,b,c", "the first takes them all")
+   ?? assertEqStr(countsOutcome(List(AnyNumber()), "-q"), "", "any number may be none")
+
+fun [test("an earlier positional leaves the later ones the words they need")] sharing(): None|TestFailure
+  ret assertEqStr(countsOutcome(List(AnyNumber(), ExactlyOne()), "a b c"), "p0=a,b p1=c", "all but one")
+   ?? assertEqStr(countsOutcome(List(AtMostOne(), ExactlyOne()), "a"), "p1=a", "none, when one is needed")
+   ?? assertEqStr(countsOutcome(List(AtMostOne(), ExactlyOne()), "a b"), "p0=a p1=b", "one each")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), AnyNumber(), ExactlyOne()), "a b"), "p0=a p2=b",
+                  "the middle one goes without")
+
+fun [test("a positional left with no words waits for a later run")] laterRuns(): None|TestFailure
+  ret assertEqStr(countsOutcome(List(AtLeastOne(), AnyNumber()), "a -q b"), "p0=a p1=b", "any number")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), AtMostOne()), "a -q b"), "p0=a p1=b", "at most one")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), ExactlyOne()), "a -q b"), "p0=a p1=b", "exactly one")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), AnyNumber(), ExactlyOne()), "a -q b c"),
+                  "p0=a p1=b p2=c", "the first run fills only the first")
+   ?? assertEqStr(countsOutcome(List(AtMostOne(), AnyNumber()), "a -q b c"), "p0=a p1=b,c", "the rest")
+   ?? assertEqStr(countsOutcome(List(AnyNumber(), ExactlyOne()), "a -q b"),
+                  "tool: error: unrecognized arguments: b", "one passed over does not wait")
+   ?? assertEqStr(countsOutcome(List(AnyNumber()), "a -q b"),
+                  "tool: error: unrecognized arguments: b", "one that took words is done")
+   ?? assertEqStr(countsOutcome(List(AtLeastOne(), AnyNumber()), "a -- b"), "p0=a,b", "-- does not end a run")
 
 
 # ── text ─────────────────────────────────────────────────────────────────────
@@ -229,13 +264,18 @@ fun [test("empty sections are left out of the help")] bareHelp(): None|TestFailu
                   + "  -q      Say less\n"
                   + "  --help\n", "no description, no positionals")
 
-fun [test("optional positionals are bracketed in the usage")] pairUsage(): None|TestFailure
-  ret assertEqStr(help(pairTool(), 80, false),
-                  "usage: tool first [first ...] [rest ...]\n"
+fun [test("the usage shows how many words each positional takes")] countsUsage(): None|TestFailure
+  ret assertEqStr(help(countsTool(append(List<Count>(ExactlyOne(), AtMostOne(), AnyNumber()), AtLeastOne())), 200, false),
+                  "usage: tool [-q] p0 [p1] [p2 ...] p3 [p3 ...]\n"
                   + "\n"
                   + "positional arguments:\n"
-                  + "  first  First\n"
-                  + "  rest   Rest\n", "two positionals")
+                  + "  p0\n"
+                  + "  p1\n"
+                  + "  p2\n"
+                  + "  p3\n"
+                  + "\n"
+                  + "options:\n"
+                  + "  -q\n", "all four counts")
 
 fun [test("colour marks the usage, the option names and the error")] colouredText(): None|TestFailure
   let e = "\u{1B}["

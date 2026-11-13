@@ -69,17 +69,26 @@ fun usageOption(t: Theme, d: Decl): Shown
                              "[" + colour + o + " " + t.thSumLabel + label + t.thReset + "]")
     ()              => Shown("[" + o + "]", "[" + colour + o + t.thReset + "]")
 
-# A positional as the usage shows it: `files [files ...]`, or `[files ...]`
-# when it need not be given.
-fun usagePositional(t: Theme, d: Decl): Shown
-  let name = displayName(d)
-  ret shown(d.dRequired ? name + " [" + name + " ...]" : "[" + name + " ...]", t.thSumAction, t)
+# A positional as the usage shows it, by the words it takes: `file`, `[file]`,
+# `files [files ...]`, `[files ...]`.
+fun usagePositional(t: Theme, name: String, c: Count): Shown =>
+  shown(countedName(name, c), t.thSumAction, t)
+
+fun countedName(name: String, c: Count): String => match(c)
+  (o: ExactlyOne) => name
+  (o: AtMostOne)  => "[" + name + "]"
+  (o: AtLeastOne) => name + " [" + name + " ...]"
+  (o: AnyNumber)  => "[" + name + " ...]"
 
 fun usageOptionals(t: Theme, ds: List<Decl>): List<Shown> =>
-  map(filter(ds, (d: Decl) => !d.dPositional), (d: Decl) => usageOption(t, d))
+  map(filter(ds, (d: Decl) => !isPositional(d)), (d: Decl) => usageOption(t, d))
 
 fun usagePositionals(t: Theme, ds: List<Decl>): List<Shown> =>
-  map(filter(ds, (d: Decl) => d.dPositional), (d: Decl) => usagePositional(t, d))
+  flatMap(ds, (d: Decl) => usagePositionalOf(t, d))
+
+fun usagePositionalOf(t: Theme, d: Decl): List<Shown> => match(d.dCount)
+  (c: Count) => List(usagePositional(t, displayName(d), c))
+  ()         => List()
 
 # An argument as the help lists it: `-L, --lib-path DIR`, with its help text.
 class [final] HelpEntry(heInvocation: Shown, heHelp: String)
@@ -95,11 +104,11 @@ fun helpOption(t: Theme, d: Decl): HelpEntry
     ()              => HelpEntry(all, d.dHelp)
 
 fun helpPositionals(t: Theme, ds: List<Decl>): List<HelpEntry> =>
-  map(filter(ds, (d: Decl) => d.dPositional),
+  map(filter(ds, (d: Decl) => isPositional(d)),
       (d: Decl) => HelpEntry(shown(displayName(d), t.thAction, t), d.dHelp))
 
 fun helpOptionals(t: Theme, ds: List<Decl>): List<HelpEntry> =>
-  map(filter(ds, (d: Decl) => !d.dPositional), (d: Decl) => helpOption(t, d))
+  map(filter(ds, (d: Decl) => !isPositional(d)), (d: Decl) => helpOption(t, d))
 
 
 # ── a failed parse (ArgumentParser.error) ────────────────────────────────────

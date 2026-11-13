@@ -9,7 +9,7 @@
 #           (o: Options, v: String) => match(parseInt(v))
 #             (n: Int) => with o(level = n)
 #             ()       => "invalid int value: " + v),
-#     Positional("files", true, "Input files",
+#     Positional("files", AtLeastOne(), "Input files",
 #                (o: Options, vs: List<String>) => with o(files = vs))))
 #
 #   fun main(): Int => match(parse(commandLine(), args(), Options(false, 0, List())))
@@ -31,9 +31,10 @@
 #   --                every word after it is a plain word
 #   -5                a word that reads as a negative number is a plain word
 #
-# Plain words go to the positionals in declaration order: the first run of
-# them fills as many positionals as it can, a later run those still waiting,
-# and a run that nothing is waiting for is unrecognised.
+# Plain words go to the positionals in declaration order. A run of them fills
+# as many of the positionals still waiting as it can: each takes as many words
+# as it may, leaving the later ones what they need, and one left with none
+# waits for a later run. Words that nothing takes are unrecognised.
 
 namespace System::Args
 
@@ -53,15 +54,23 @@ import System::Containers
 #               `--help` and `--version` are.
 #   Value       takes one value. `set` returns the record with it, or says why
 #               the value will not do.
-#   Positional  takes plain words, at least one when `required`; `name` is how
-#               the usage and the help show it.
+#   Positional  takes plain words, as many as its `count` allows; `name` is
+#               how the usage and the help show it.
 enum Arg<S>
   enum Flag(names: List<String>, help: String, set: (:S): S)
   enum Stop(names: List<String>, help: String, set: (:S): S)
   enum Value(names: List<String>, metavar: String, help: String,
              set: (:S, :String): S|String)
-  enum Positional(name: String, required: Bool, help: String,
+  enum Positional(name: String, count: Count, help: String,
                   set: (:S, :List<String>): S|String)
+
+# How many plain words a positional takes. One that must have a word is
+# required: a command line that leaves it without is an error.
+enum Count
+  enum ExactlyOne()     # name
+  enum AtMostOne()      # [name]
+  enum AtLeastOne()     # name [name ...]
+  enum AnyNumber()      # [name ...]
 
 # A whole command line: the program's name and what it does, as the usage and
 # the help show them, and its arguments in the order they are to be listed.

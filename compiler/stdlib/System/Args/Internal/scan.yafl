@@ -23,16 +23,30 @@ import System::Containers
 # ── the declared arguments, without the caller's record ──────────────────────
 
 # `dMetavar`: the label of the value an option takes; None for a flag.
+# `dCount`: the words a positional takes; None for an option.
 class [final] Decl(dNames: List<String>, dMetavar: String|None, dHelp: String,
-                   dPositional: Bool, dRequired: Bool)
+                   dCount: Count|None)
 
 fun declared<S>(spec: Args<S>): List<Decl> => map(spec.args, (a: Arg<S>) => declaredArg(a))
 
 fun declaredArg<S>(a: Arg<S>): Decl => match(a)
-  (f: Flag<S>)       => Decl(f.names, None, f.help, false, false)
-  (p: Stop<S>)       => Decl(p.names, None, p.help, false, false)
-  (v: Value<S>)      => Decl(v.names, v.metavar, v.help, false, false)
-  (p: Positional<S>) => Decl(List(p.name), None, p.help, true, p.required)
+  (f: Flag<S>)       => Decl(f.names, None, f.help, None)
+  (p: Stop<S>)       => Decl(p.names, None, p.help, None)
+  (v: Value<S>)      => Decl(v.names, v.metavar, v.help, None)
+  (p: Positional<S>) => Decl(List(p.name), None, p.help, p.count)
+
+fun isPositional(d: Decl): Bool => !(d.dCount is None)
+
+# The fewest words a positional takes, and the most of `all` there are.
+fun least(c: Count): Int => match(c)
+  (o: ExactlyOne) => 1
+  (o: AtLeastOne) => 1
+  (o: Count)      => 0
+
+fun most(c: Count, all: Int): Int => match(c)
+  (o: ExactlyOne) => lesser(all, 1)
+  (o: AtMostOne)  => lesser(all, 1)
+  (o: Count)      => all
 
 # argparse names an argument by all its option strings.
 fun displayName(d: Decl): String => join(d.dNames, "/")
@@ -63,7 +77,7 @@ class [final] OptTable(otInOrder: List<Opt>, otByString: Dict<String, Opt>)
 fun optTable(ds: List<Decl>): OptTable
   let inOrder = fold(ds, (i = 0, out = List<Opt>()),
                      (st, d) => (i = st.i + 1,
-                                 out = d.dPositional ? st.out : concat(st.out, optsOf(d, st.i)))).out
+                                 out = isPositional(d) ? st.out : concat(st.out, optsOf(d, st.i)))).out
   ret OptTable(inOrder, fold(inOrder, Dict<String, Opt>(),
                              (m, o) => contains(m, o.opString) ? m : put(m, o.opString, o)))
 
@@ -71,14 +85,15 @@ fun optsOf(d: Decl, index: Int): List<Opt> =>
   map(d.dNames, (n: String) => Opt(n, index, !(d.dMetavar is None), displayName(d)))
 
 # A positional still to be filled.
-class [final] Waiting(wtIndex: Int, wtName: String, wtRequired: Bool)
+class [final] Waiting(wtIndex: Int, wtName: String, wtCount: Count)
 
 fun waitingPositionals(ds: List<Decl>): List<Waiting> =>
   fold(ds, (i = 0, out = List<Waiting>()),
-       (st, d) => (i = st.i + 1,
-                   out = d.dPositional
-                     ? append(st.out, Waiting(st.i, displayName(d), d.dRequired))
-                     : st.out)).out
+       (st, d) => (i = st.i + 1, out = concat(st.out, waitingOf(d, st.i)))).out
+
+fun waitingOf(d: Decl, index: Int): List<Waiting> => match(d.dCount)
+  (c: Count) => List(Waiting(index, displayName(d), c))
+  ()         => List()
 
 
 # ── pass 1: classify (`_parse_optional`) ─────────────────────────────────────
@@ -180,40 +195,55 @@ fun runOf(ws: List<Word>): Run => match(findIndex(ws, (w) => w is Option))
   (k: Int) => Run(take(ws, k), drop(ws, k))
   ()       => Run(ws, List())
 
-# A run holding at least one plain word goes to the positionals still waiting,
-# the first `--` dropped from it. A run they cannot take — none is waiting, or
-# it holds no plain word — is left over, `--` and all.
+# A run holding at least one plain word goes to the positionals still waiting
+# (`consume_positionals`), the first `--` dropped from it. Those that end up
+# with no words, after the last that got some, go on waiting. A run they
+# cannot take — none is waiting, or it holds no plain word — is left over,
+# `--` and all; so are the words of a run that they do not take.
 fun positionals(s: ScanState, words: List<Word>): ScanState
   let plain = flatMap(words, (w: Word) => plainText(w))
   let filled = fillable(s.ssWaiting, count(plain))
-  ret isEmpty(plain) || isEmpty(filled)
-    ? with s(ssExtras = concat(s.ssExtras, map(words, (w: Word) => wordText(w))))
-    : with s(ssEvents = concat(s.ssEvents, shared(filled, plain)),
-             ssWaiting = drop(s.ssWaiting, count(filled)))
+  if isEmpty(plain) || isEmpty(filled)
+    ret with s(ssExtras = concat(s.ssExtras, map(words, (w: Word) => wordText(w))))
+  let dealt = shared(filled, plain)
+  ret with s(ssEvents = concat(s.ssEvents, flatMap(dealt.shares, (sh: Share) => tookWords(sh))),
+             ssExtras = concat(s.ssExtras, dealt.over),
+             ssWaiting = drop(s.ssWaiting, served(dealt.shares)))
 
 # As many of the waiting positionals, from the first, as `n` words can fill:
-# a required one needs a word, any other needs none.
+# each needs the fewest words its count allows.
 fun fillable(waiting: List<Waiting>, n: Int): List<Waiting> =>
   foldWhile(waiting, (out = List<Waiting>(), left = n, going = true),
-            (st, p) => needs(p) <= st.left
-              ? (out = append(st.out, p), left = st.left - needs(p), going = true)
+            (st, p) => least(p.wtCount) <= st.left
+              ? (out = append(st.out, p), left = st.left - least(p.wtCount), going = true)
               : (out = st.out, left = st.left, going = false),
             (st) => st.going).out
 
-fun needs(p: Waiting): Int => p.wtRequired ? 1 : 0
+# What a positional gets of a run.
+class [final] Share(shFor: Waiting, shWords: List<String>)
 
-# The words shared among the positionals a run fills: the first takes every
-# word the later ones do not need, each later one what it needs.
-fun shared(filled: List<Waiting>, plain: List<String>): List<Event>
-  let later = fold(dropOne(filled), 0, (n, p) => n + needs(p))
-  ret fold(filled, (out = List<Event>(), words = plain, first = true),
-           (st, p) => (first = false,
-                       words = drop(st.words, st.first ? count(plain) - later : needs(p)),
-                       out = tookWords(st.out, p, take(st.words, st.first ? count(plain) - later : needs(p))))).out
+# The words of a run dealt among the positionals it fills: each in turn takes
+# as many as its count allows of those the later ones do not need. `over`:
+# the words none of them took.
+fun shared(filled: List<Waiting>, plain: List<String>): (shares: List<Share>, over: List<String>)
+  let dealt = fold(filled, (shares = List<Share>(), words = plain,
+                            later = fold(filled, 0, (n, p) => n + least(p.wtCount))),
+                   (st, p) => most(p.wtCount, count(st.words) - (st.later - least(p.wtCount)))
+                     |> (n: Int) => (shares = append(st.shares, Share(p, take(st.words, n))),
+                                     words = drop(st.words, n),
+                                     later = st.later - least(p.wtCount)))
+  ret (shares = dealt.shares, over = dealt.words)
 
-# A positional that was left no words is filled, and takes nothing.
-fun tookWords(out: List<Event>, p: Waiting, words: List<String>): List<Event> =>
-  isEmpty(words) ? out : append(out, Took(p.wtIndex, p.wtName, words))
+# How many of the positionals a run filled are done with: all up to the last
+# that got a word.
+fun served(shares: List<Share>): Int =>
+  fold(shares, (i = 0, done = 0),
+       (st, sh) => (i = st.i + 1, done = isEmpty(sh.shWords) ? st.done : st.i + 1)).done
+
+# A positional that got no words takes nothing.
+fun tookWords(sh: Share): List<Event> => isEmpty(sh.shWords)
+  ? List()
+  : List(Took(sh.shFor.wtIndex, sh.shFor.wtName, sh.shWords))
 
 fun plainText(w: Word): List<String> => match(w)
   (p: Plain)  => List(p.plText)
@@ -283,7 +313,7 @@ fun tookOption(t: Taken): Event => match(t.tnValue)
 
 # After the last word: the required positionals, then anything left over.
 fun finished(s: ScanState): List<Event>
-  let missing = filter(s.ssWaiting, (p: Waiting) => p.wtRequired)
+  let missing = filter(s.ssWaiting, (p: Waiting) => least(p.wtCount) > 0)
   if !isEmpty(missing)
     ret append(s.ssEvents, Failed(MissingRequired(map(missing, (p: Waiting) => p.wtName))))
   ret isEmpty(s.ssExtras) ? s.ssEvents : append(s.ssEvents, Failed(Unrecognised(s.ssExtras)))

@@ -334,7 +334,7 @@ fun commandLine() => Args("yspell", "Report the words in each file that the dict
     Value(List("-d", "--dictionary"), "FILE",
           "the word list to check against (default /usr/share/dict/words)",
           (o: Options, v: String) => with o(dictionary = v)),
-    Positional("file", true, "a text file to check",
+    Positional("file", AtLeastOne(), "a text file to check",
                (o: Options, vs: List<String>) => with o(files = vs))))
 
 

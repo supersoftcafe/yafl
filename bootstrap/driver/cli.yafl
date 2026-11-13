@@ -88,7 +88,7 @@ fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like too
   |> (l) => append(l, Value(List("--inline-threshold"), "OPS",
                             "Inline functions of fewer than OPS ops at -O2 and above (default 5)",
                             setThreshold))
-  |> (l) => append(l, Positional("files", true, "Input .yafl file(s), or a project directory",
+  |> (l) => append(l, Positional("files", AtLeastOne(), "Input .yafl file(s), or a project directory",
                                  (s: CliScan, vs: List<String>) => with s(csFiles = vs))))
 
 # `choices=["0", "1", "2", "3"]`
