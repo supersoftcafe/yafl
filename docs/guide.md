@@ -540,7 +540,8 @@ fun main(): Int => match(parse(commandLine(), args(), Options(false, 0, List()))
   (o: Options)  => o.help ? show(help(commandLine(), 80, false)) : work(o)
 ```
 
-`Options` is the program's own record. Each argument carries the function that
+`fail`, `show` and `work` stand for the program's own functions. `Options` is
+the program's own record. Each argument carries the function that
 puts its value into that record, so `parse` gives back the record, or an
 `ArgError` saying what is wrong with the command line.
 
@@ -555,10 +556,14 @@ Nothing in `System::Args` prints or exits. `message(spec, error, width, colour)`
 is a failed parse as text, usage line first; `help(spec, width, colour)` is the
 help. The program declares its own `-h` and prints the help when asked.
 
-The rules are those of Python's argparse: `-O2`, `-O 2`, `-O=2`, `--level 2`
-and `--level=2` all give a value; short flags may share a word (`-vq`); a long
-option may be cut short to any prefix only it has; and every word after `--`
-is a plain word.
+The rules are those of Python's argparse. A value may follow its option as the
+next word, attached to a short option, or after `=`: `-O 2`, `-O2`, `-O=2`,
+and for a long option `--lib-path DIR` or `--lib-path=DIR`. Short flags may
+share a word (`-vq`); a long option may be cut short to any prefix only it
+has; and every word after `--` is a plain word.
+
+A positional's `set` is called only when it is given words, so a default
+belongs in the record passed to `parse`.
 
 ## Function attributes
 

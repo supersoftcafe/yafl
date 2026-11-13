@@ -1,5 +1,5 @@
 # System::Args::Internal — reading the words of a command line against its
-# declared arguments, by the consumption rules of Python 3.14's argparse.
+# declared arguments, by the consumption rules of Python 3.15's argparse.
 #
 # A namespace of its own so that a program importing System::Args sees the
 # declaration types, `parse`, `message` and `help`, and none of this.
@@ -73,14 +73,18 @@ fun _scan(ds: List<_Decl>, argv: List<String>): List<_Event>
 class [final] _Opt(opString: String, opIndex: Int, opValued: Bool, opArgument: String)
 
 # In declaration order — ambiguity messages list matches in it — and by string.
-class [final] _OptTable(otInOrder: List<_Opt>, otByString: Dict<String, _Opt>)
+# `otNegative`: some option string itself reads as a negative number, so a
+# word that reads as one is an option too (`_has_negative_number_optionals`).
+class [final] _OptTable(otInOrder: List<_Opt>, otByString: Dict<String, _Opt>,
+                        otNegative: Bool)
 
 fun _optTable(ds: List<_Decl>): _OptTable
   let inOrder = fold(ds, (i = 0, out = List<_Opt>()),
                      (st, d) => (i = st.i + 1,
                                  out = _isPositional(d) ? st.out : concat(st.out, _optsOf(d, st.i)))).out
   ret _OptTable(inOrder, fold(inOrder, Dict<String, _Opt>(),
-                             (m, o) => contains(m, o.opString) ? m : put(m, o.opString, o)))
+                              (m, o) => contains(m, o.opString) ? m : put(m, o.opString, o)),
+                any(inOrder, (o: _Opt) => _looksNegative(o.opString)))
 
 fun _optsOf(d: _Decl, index: Int): List<_Opt> =>
   map(d.dNames, (n: String) => _Opt(n, index, !(d.dMetavar is None), _displayName(d)))
@@ -125,8 +129,9 @@ fun _classifyAll(t: _OptTable, ws: List<String>): List<_Word> =>
          : (words = append(st.words, _classifyWord(t, w)), raw = false)).words
 
 # An option is a word with a leading `-` that names one (whole, before `=`, or
-# by prefix); failing that, a word that reads as a negative number or holds a
-# space is a plain word, and anything else is an unknown option.
+# by prefix); failing that, a word that reads as a negative number (unless an
+# option does too) or holds a space is a plain word, and anything else is an
+# unknown option.
 fun _classifyWord(t: _OptTable, w: String): _Word
   if w == "" || byteAt(w, 0) != '-'
     ret _Plain(w)
@@ -141,7 +146,7 @@ fun _classifyWord(t: _OptTable, w: String): _Word
   let reads = _optionReads(t, w)
   if !isEmpty(reads)
     ret _Option(w, reads)
-  if _looksNegative(w) || findByte(w, ' ', 0) >= 0
+  if (_looksNegative(w) && !t.otNegative) || findByte(w, ' ', 0) >= 0
     ret _Plain(w)
   ret _Option(w, List(_Read(None, w, None, None)))
 
@@ -163,8 +168,8 @@ fun _optionReads(t: _OptTable, w: String): List<_Read>
             : _Read(o, o.opString, sep, explicit))
 
 # argparse's `-\.?\d`, at the start of the word.
-fun _looksNegative(w: String): Bool => _isAsciiDigit(byteAt(w, 1))
-  || (byteAt(w, 1) == '.' && length(w) > 2 && _isAsciiDigit(byteAt(w, 2)))
+fun _looksNegative(w: String): Bool => length(w) > 1 && (_isAsciiDigit(byteAt(w, 1))
+  || (byteAt(w, 1) == '.' && length(w) > 2 && _isAsciiDigit(byteAt(w, 2))))
 
 fun _isAsciiDigit(c: Int32): Bool => c >= '0' && c <= '9'
 
@@ -196,20 +201,29 @@ fun _runOf(ws: List<_Word>): _Run => match(findIndex(ws, (w) => w is _Option))
   (k: Int) => _Run(take(ws, k), drop(ws, k))
   ()       => _Run(ws, List())
 
-# A run holding at least one plain word goes to the positionals still waiting
-# (`consume_positionals`), the first `--` dropped from it. Those that end up
-# with no words, after the last that got some, go on waiting. A run they
-# cannot take — none is waiting, or it holds no plain word — is left over,
-# `--` and all; so are the words of a run that they do not take.
+# A run goes to the positionals still waiting (`consume_positionals`). They
+# take its plain words in order, and with them the `--`, which is dropped,
+# when it comes before a word they take or straight after the last one. Those
+# that end up with no words, after the last that got some, go on waiting.
+# What they do not take is left over, `--` and all: the whole run when none
+# is waiting or the first of them must have a word the run does not hold,
+# and otherwise every word from the first they leave.
 fun _positionals(s: _ScanState, words: List<_Word>): _ScanState
   let plain = flatMap(words, (w: _Word) => _plainText(w))
   let fit = _fillable(s.ssWaiting, plain)
-  if isEmpty(plain) || isEmpty(fit.filled)
+  if isEmpty(fit.filled)
     ret with s(ssExtras = concat(s.ssExtras, map(words, (w: _Word) => _wordText(w))))
   let dealt = _shared(fit.filled, plain, fit.spare)
-  ret with s(ssEvents = concat(s.ssEvents, flatMap(dealt.shares, (sh: _Share) => _tookWords(sh))),
-             ssExtras = concat(s.ssExtras, dealt.over),
-             ssWaiting = drop(s.ssWaiting, _served(dealt.shares)))
+  let taken = flatMap(dealt, (sh: _Share) => sh.shWords)
+  ret with s(ssEvents = concat(s.ssEvents, flatMap(dealt, (sh: _Share) => _tookWords(sh))),
+             ssExtras = concat(s.ssExtras, map(_leftOver(words, taken), (w: _Word) => _wordText(w))),
+             ssWaiting = drop(s.ssWaiting, _served(dealt)))
+
+# The words of a run from the first plain word that was not taken.
+fun [tail] _leftOver(words: List<_Word>, taken: List<String>): List<_Word> => match(head(words))
+  (p: _Plain) => isEmpty(taken) ? words : _leftOver(dropOne(words), dropOne(taken))
+  (w: _Word)  => _leftOver(dropOne(words), taken)
+  ()          => words
 
 # As many of the waiting positionals, from the first, as the words can fill —
 # one word set aside for each that must have one — and the words to `spare`
@@ -229,13 +243,12 @@ class [final] _Share(shFor: _Waiting, shWords: List<String>)
 
 # The words of a run dealt among the positionals it fills, in order: each
 # takes the word it must have, then as many of the spare ones as its count
-# allows. `over`: the words none of them took.
-fun _shared(filled: List<_Waiting>, plain: List<String>,
-            spare: List<String>): (shares: List<_Share>, over: List<String>) =>
+# allows.
+fun _shared(filled: List<_Waiting>, plain: List<String>, spare: List<String>): List<_Share> =>
   fold(filled, (shares = List<_Share>(), words = plain, spare = spare),
        (st, p) => _share(p.wtCount, st.words, st.spare)
          |> (d) => (shares = append(st.shares, _Share(p, d.got)), words = d.words, spare = d.spare))
-    |> (st) => (shares = st.shares, over = st.words)
+    |> (st) => st.shares
 
 fun _share(c: Count, words: List<String>,
            spare: List<String>): (got: List<String>, words: List<String>, spare: List<String>) =>

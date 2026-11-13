@@ -1,5 +1,5 @@
 # System::Args::Internal — the text of a command line: its usage, its help,
-# and a failed parse, as Python 3.14's argparse formats them — the same
+# and a failed parse, as Python 3.15's argparse formats them — the same
 # wrapping at the same width, the same colours.
 #
 # The caller says how wide the terminal is and whether to colour; nothing here
@@ -177,11 +177,14 @@ fun _usageSection(f: _Format, ds: List<_Decl>): String
     + slice(body, length(f.fmProg), length(body))
 
 # A short program name is followed by the optionals, the positionals on lines
-# of their own beneath; a long one sits on a line by itself.
+# of their own beneath — or by the positionals, when there are no optionals;
+# a long one sits on a line by itself.
 fun _wrappedUsage(width: Int, prog: _Shown, opts: List<_Shown>, poss: List<_Shown>): List<String>
   let progLen = length(prog.swPlain)
   if 4 * (7 + progLen) <= 3 * width
-    ret concat(_usageLines(width, prepend(prog, opts), 7 + progLen + 1, true),
+    ret isEmpty(opts)
+      ? _usageLines(width, prepend(prog, poss), 7 + progLen + 1, true)
+      : concat(_usageLines(width, prepend(prog, opts), 7 + progLen + 1, true),
                _usageLines(width, poss, 7 + progLen + 1, false))
   let together = _usageLines(width, concat(opts, poss), 7, false)
   ret prepend(prog.swText, sizeAtLeast(together, 2)
@@ -222,7 +225,7 @@ fun _helpText(prog: String, description: String, ds: List<_Decl>, width: Int, co
   let maxLen = 2 + fold<_HelpEntry, Int>(entries, 0,
     (m: Int, e: _HelpEntry) => _greater(m, length(e.heInvocation.swPlain)))
   let raw = _usageSection(f, ds) + "\n\n"
-    + join(_twWrap(description, _greater(f.fmWidth, 11)), "\n") + "\n\n"
+    + join(_twWrap(_singleSpaced(description), _greater(f.fmWidth, 11)), "\n") + "\n\n"
     + _helpSection(f, maxLen, "positional arguments", _helpPositionals(t, ds))
     + _helpSection(f, maxLen, "options", _helpOptionals(t, ds))
   ret _trimNewlines(_collapseNewlines(raw, 0, "")) + "\n"
@@ -245,7 +248,7 @@ fun _helpEntry(width: Int, maxLen: Int, e: _HelpEntry): String
   let header = fits
     ? "  " + inv.swText + _spaces(actionWidth - length(inv.swPlain)) + "  "
     : "  " + inv.swText + "\n"
-  let lines = _twWrap(e.heHelp, _greater(width - helpPos, 11))
+  let lines = _twWrap(_singleSpaced(e.heHelp), _greater(width - helpPos, 11))
   ret header + _spaces(fits ? 0 : helpPos) + (head(lines) ?? "") + "\n"
     + join(map(dropOne(lines), (l: String) => _spaces(helpPos) + l + "\n"), "")
 
@@ -281,7 +284,28 @@ fun _greater(a: Int, b: Int) => a > b ? a : b
 
 
 # ── textwrap.wrap (break_long_words, break_on_hyphens) ───────────────────────
-# Over text that is single-spaced already, as every help text here is.
+# Over text that is single-spaced already (`_singleSpaced`).
+
+# A help or a description as argparse reads it: every run of white space one
+# space, and none at either end (`_whitespace_matcher`).
+fun _singleSpaced(text: String): String => _singleSpacedFrom(text, 0, "")
+
+fun [tail] _singleSpacedFrom(s: String, at: Int, acc: String): String
+  let start = _skipSpace(s, at)
+  if start >= length(s)
+    ret acc
+  let end = _wordEnd(s, start)
+  ret _singleSpacedFrom(s, end, (acc == "" ? "" : acc + " ") + slice(s, start, end))
+
+fun [tail] _skipSpace(s: String, at: Int): Int
+  ret at < length(s) && _isSpace(byteAt(s, at)) ? _skipSpace(s, at + 1) : at
+
+fun [tail] _wordEnd(s: String, at: Int): Int
+  ret at < length(s) && !_isSpace(byteAt(s, at)) ? _wordEnd(s, at + 1) : at
+
+# Python's ASCII `\s`: space, tab, newline, carriage return, vertical tab, form feed.
+fun _isSpace(c: Int32): Bool => c == ' ' || c == '\t' || c == '\n' || c == '\r'
+  || c == 11i32 || c == 12i32
 
 fun _twWrap(text: String, width: Int): List<String> =>
   _twLines(_twChunks(text, 0, List()), width, true, List())

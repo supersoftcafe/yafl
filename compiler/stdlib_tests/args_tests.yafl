@@ -186,6 +186,68 @@ fun [test("a positional left with no words waits for a later run")] laterRuns():
    ?? assertEqStr(countsOutcome(List(AtLeastOne(), AnyNumber()), "a -- b"), "p0=a,b", "-- does not end a run")
 
 
+fun [test("the -- itself goes to a positional that can start at it, and is dropped")] separatorAlone(): None|TestFailure
+  ret assertEqStr(countsOutcome(List(AtMostOne()), "--"), "", "at most one, given none")
+   ?? assertEqStr(countsOutcome(List(AnyNumber()), "-q --"), "", "any number, given none")
+   ?? assertEqStr(countsOutcome(List(AtMostOne(), ExactlyOne()), "-- a"), "p1=a", "before the words")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne(), AtMostOne()), "a -- b"), "p0=a p1=b", "between them")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne()), "--"),
+                  "tool: error: the following arguments are required: p0", "a word is still needed")
+   ?? assertEqStr(countsOutcome(List(AtMostOne()), "-x --"),
+                  "tool: error: unrecognized arguments: -x", "it is not itself unrecognised")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne()), "a -q --"),
+                  "tool: error: unrecognized arguments: --", "unless no positional is waiting")
+
+fun [test("a -- after a word nothing takes is unrecognised with it")] separatorLeftOver(): None|TestFailure
+  ret assertEqStr(countsOutcome(List(AtMostOne()), "a b --"),
+                  "tool: error: unrecognized arguments: b --", "after the leftover word")
+   ?? assertEqStr(countsOutcome(List(ExactlyOne()), "a b -- c"),
+                  "tool: error: unrecognized arguments: b -- c", "among the leftover words")
+   ?? assertEqStr(countsOutcome(List(AtMostOne()), "-- a b"),
+                  "tool: error: unrecognized arguments: b", "before the words taken")
+
+# An option that itself reads as a negative number: a word that reads as one
+# is then an option too, not a plain word.
+fun negativeTool() => Args("tool", "", List<Arg<Taken>>(
+  Flag(List("-1"), "", (t: Taken) => with t(q = true)),
+  Value(List("-n"), "N", "", (t: Taken, v: String) => with t(took = append(t.took, "n=" + v))),
+  counted("p0", ExactlyOne())))
+
+fun negativeOutcome(line: String): String => match(parse(negativeTool(), split(line, " "), Taken(false, List())))
+  (e: ArgError) => lastLine(message(negativeTool(), e, 200, false))
+  (t: Taken)    => join(t.took, " ") + (t.q ? " -1" : "")
+
+fun [test("negative numbers are options once an option reads as one")] negativeOptions(): None|TestFailure
+  ret assertEqStr(negativeOutcome("x -1"), "p0=x -1", "the option itself")
+   ?? assertEqStr(negativeOutcome("-2"),
+                  "tool: error: the following arguments are required: p0", "not a plain word")
+   ?? assertEqStr(negativeOutcome("-n -5 x"),
+                  "tool: error: argument -n: expected one argument", "nor a value")
+
+fun [test("an empty value, a Stop inside a cluster, and several unknown options")] oddWords(): None|TestFailure
+  ret assertEqStr(outcome("-O= a"),
+                  "tool: error: argument -O: invalid choice: '' (choose from '0', '1', '2', '3')", "-O=")
+   ?? assertEqStr(outcome("--verbose= a"),
+                  "tool: error: argument -v/--verbose: ignored explicit argument ''", "a flag given nothing")
+   ?? assertEqStr(outcome("-v-q a"),
+                  "tool: error: argument -v/--verbose: ignored explicit argument '-q'", "a dash in a cluster")
+   ?? assertEqStr(outcome("-vO=2 a"), "O=2 o= L= v=True q=False vc=False h=False files=a", "= in a cluster")
+   ?? assertEqStr(outcome("-qh"), "O=0 o= L= v=False q=True vc=False h=True files=", "Stop last in a cluster")
+   ?? assertEqStr(outcome("a -x -y"), "tool: error: unrecognized arguments: -x -y", "in the order given")
+   ?? assertEqStr(outcome("-"), "O=0 o= L= v=False q=False vc=False h=False files=-", "a lone dash")
+   ?? assertEqStr(outcome("-.5"), "O=0 o= L= v=False q=False vc=False h=False files=-.5", "a negative fraction")
+
+fun evenTool() => Args("tool", "", List<Arg<Taken>>(
+  Positional("word", ExactlyOne(), "",
+             (t: Taken, vs: List<String>) => length(head(vs) ?? "") % 2 == 0 ? with t(took = vs) : "odd")))
+
+fun [test("a positional's words may be refused too")] badPositional(): None|TestFailure
+  ret match(parse(evenTool(), List("abc"), Taken(false, List())))
+    (e: ArgError) => assertEqStr(lastLine(message(evenTool(), e, 80, false)),
+                                 "tool: error: argument word: odd", "named by its name")
+    (t: Taken)    => assertTrue(false, "abc was accepted")
+
+
 # ── text ─────────────────────────────────────────────────────────────────────
 
 fun failure(line: String, width: Int, colour: Bool): String
@@ -294,3 +356,36 @@ fun [test("colour marks the usage, the option names and the error")] colouredTex
                   + "            " + e + "32mfiles [files ...]" + e + "0m\n"
                   + "tool: " + e + "1;35merror:" + e + "0m " + e
                   + "35mthe following arguments are required: files" + e + "0m\n", "error")
+
+fun wordsTool() => Args("tool", "", append(List<Arg<Taken>>(
+  counted("alpha", ExactlyOne()), counted("bravo", AtMostOne()), counted("charlie", AnyNumber())),
+  counted("delta", AtLeastOne())))
+
+fun [test("a usage with no options wraps after the program's name")] positionalUsage(): None|TestFailure
+  ret assertEqStr(message(wordsTool(), Invalid("x"), 30, false),
+                  "usage: tool alpha [bravo]\n"
+                  + "            [charlie ...]\n"
+                  + "            delta [delta ...]\n"
+                  + "tool: error: x\n", "30 columns")
+
+fun spaced() => Args("tool", "Two  spaces\nand a newline.  ", List<Arg<Bool>>(
+  Flag(List("-q"), "Say   less\n", (b: Bool) => true)))
+
+fun [test("runs of white space in a description or a help are one space")] whiteSpace(): None|TestFailure
+  ret assertEqStr(help(spaced(), 80, false),
+                  "usage: tool [-q]\n"
+                  + "\n"
+                  + "Two spaces and a newline.\n"
+                  + "\n"
+                  + "options:\n"
+                  + "  -q  Say less\n", "collapsed and trimmed")
+
+fun [test("colour marks the headings and the option names of the help")] colouredHelp(): None|TestFailure
+  let e = "\u{1B}["
+  ret assertEqStr(help(bare(), 80, true),
+                  e + "1;34musage: " + e + "0m" + e + "1;35mtool" + e + "0m"
+                  + " [" + e + "32m-q" + e + "0m] [" + e + "36m--help" + e + "0m]\n"
+                  + "\n"
+                  + e + "1;34moptions:" + e + "0m\n"
+                  + "  " + e + "1;32m-q" + e + "0m      Say less\n"
+                  + "  " + e + "1;36m--help" + e + "0m\n", "help")

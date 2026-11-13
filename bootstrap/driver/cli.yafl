@@ -11,7 +11,7 @@
 # the test harness diffs live behind `--stage` (main.yafl), never here.
 #
 # The command line is declared here and read by System::Args, whose rules and
-# text are Python 3.14's argparse's: a value is the next word only when that
+# text are Python 3.15's argparse's: a value is the next word only when that
 # word reads as an argument; `files` takes the FIRST run of arguments and any
 # later one is unrecognised; long options match by unique prefix; `-Ox`,
 # `-O=x`, `--lib-path=x` carry their value inline; `-hxyz` is a cluster.
@@ -41,13 +41,13 @@ fun cliMain(argv: List<String>): Int
   ret match(parse(line, argv, freshScan()))
     (e: ArgError) => usageError(line, e)
     (s: CliScan)  => s.csHelp
-      ? exitWithOut(help(line, terminalWidth(), wantColour()), 0)
+      ? exitWithOut(help(line, terminalWidth(), wantColour(false)), 0)
       : match(resolveEnabledWarnings(s.csWarns))
         (werr: WrErr) => usageError(line, Invalid(werr.wrMessage))
         (ok: WrOk)    => cliCompile(s, ok.wrEnabled)
 
 fun [impure] usageError(line: Args<CliScan>, e: ArgError): Int
-  ret exitWithErr(message(line, e, terminalWidth(), wantColour()), 2)
+  ret exitWithErr(message(line, e, terminalWidth(), wantColour(true)), 2)
 
 fun progName() => baseName(argv0())
 

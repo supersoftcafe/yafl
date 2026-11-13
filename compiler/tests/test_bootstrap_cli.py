@@ -346,6 +346,32 @@ class TestBootstrapCli(TimedTestCase):
                     self.assertEqual(0, rc, name)
                     self.assertNotIn("\x1b", out + err, f"{name}: no escape codes")
 
+    def test_no_colour_on_a_stream_that_is_not_a_terminal(self):
+        # Colour is decided by the stream the text goes to. An error goes to
+        # stderr: with stdout on a terminal and stderr piped, it is plain. The
+        # help goes to stdout: with only stderr on a terminal, it is plain.
+        for args, terminal in (([], "stdout"), (["-h"], "stderr")):
+            with self.subTest(args=args, terminal=terminal):
+                for name, argv in (("python", [sys.executable, str(_MAIN), *args]),
+                                   ("port", [self.binary, *args])):
+                    piped = self._run_beside_a_terminal(argv, terminal)
+                    self.assertTrue(piped.startswith("usage:"), f"{name}: {piped!r}")
+                    self.assertNotIn("\x1b", piped, f"{name}: no escape codes")
+
+    def _run_beside_a_terminal(self, argv: list[str], terminal: str) -> str:
+        """Run with `terminal` (stdout or stderr) on a pseudo-terminal and the
+        other stream piped; what was written to the piped one."""
+        import pty
+        master, slave = pty.openpty()
+        try:
+            streams = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, terminal: slave}
+            r = subprocess.run(argv, cwd=self.dir, env={**self._env(), "TERM": "xterm"},
+                               stdin=subprocess.DEVNULL, text=True, timeout=600, **streams)
+        finally:
+            os.close(slave)
+            os.close(master)
+        return r.stderr if terminal == "stdout" else r.stdout
+
     def test_builds_from_the_build_tree_without_a_search_path(self):
         # No -L, no YAFL_PATH, no YAFL_LIBYAFL_A: both compilers fall back to
         # the build tree's System library — its stdlib sources, yafl.h, and the

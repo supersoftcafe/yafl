@@ -16,6 +16,9 @@
 #     (e: ArgError) => fail(message(commandLine(), e, 80, false))   # print it; exit 2
 #     (o: Options)  => o.help ? show(help(commandLine(), 80, false)) : work(o)
 #
+# (`fail`, `show` and `work` are the program's own: print to stderr and give
+# 2, print and give 0, and whatever the program does.)
+#
 # `S` is the caller's own record of what the command line asked for. Each
 # argument carries the function that puts its value there, so a parse gives
 # back that record and nothing has to be looked up by name afterwards.
@@ -29,12 +32,18 @@
 #   -abc              short flags in one word; the last may take a value
 #   --lo              a long option by any prefix only it has
 #   --                every word after it is a plain word
-#   -5                a word that reads as a negative number is a plain word
+#   -5                a word that reads as a negative number is a plain word,
+#                     unless an option is declared that reads as one too
 #
 # Plain words go to the positionals in declaration order. A run of them fills
 # as many of the positionals still waiting as it can: each takes as many words
-# as it may, leaving the later ones what they need, and one left with none
-# waits for a later run. Words that nothing takes are unrecognised.
+# as it may, leaving the later ones what they need. Those left with none
+# after the last that got a word wait for a later run; one passed over, with
+# a later one given words, is done with. Words that nothing takes are
+# unrecognised.
+#
+# A positional's `set` is called only when it is given words, so what it
+# should be when it is given none belongs in the record `parse` starts from.
 
 namespace System::Args
 

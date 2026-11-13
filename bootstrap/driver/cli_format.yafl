@@ -1,13 +1,13 @@
 # bootstrap/driver/cli_format.yafl — what the command line's usage and help
-# are formatted FOR, read as Python 3.14's argparse reads it. The formatting
+# are formatted FOR, read as Python's argparse reads it. The formatting
 # itself is System::Args'.
 #
 #   width   COLUMNS when it is a positive integer, else the width of the
 #           terminal on stdout, else 80 (shutil.get_terminal_size).
 #   colour  PYTHON_COLORS=0 off, =1 on; then NO_COLOR off; FORCE_COLOR on;
-#           TERM=dumb off; else on exactly when stdout is a terminal
-#           (_colorize.can_colorize). Error usage, on stderr, is coloured by
-#           the same test — stdout's — as argparse's is.
+#           TERM=dumb off; else on exactly when the stream the text goes to
+#           is a terminal (_colorize.can_colorize): stdout for the help,
+#           stderr for an error.
 
 namespace Bootstrap::Driver
 
@@ -26,7 +26,8 @@ fun [impure] terminalWidth(): Int
   let fromTerminal = terminalColumns()
   ret fromTerminal > 0 ? fromTerminal : 80
 
-fun [impure] wantColour(): Bool
+# `toStderr`: the text is an error's, bound for stderr; else help, for stdout.
+fun [impure] wantColour(toStderr: Bool): Bool
   let pc = env("PYTHON_COLORS") ?? ""
   if pc == "0"
     ret false
@@ -38,7 +39,7 @@ fun [impure] wantColour(): Bool
     ret true
   if (env("TERM") ?? "") == "dumb"
     ret false
-  ret stdoutIsTerminal()
+  ret toStderr ? stderrIsTerminal() : stdoutIsTerminal()
 
 
 # ── Python's int() ─────────────────────────────────────────────────────────

@@ -36,9 +36,11 @@ fun argv0(): System::String
 fun [foreign("sys_getenv"), impure, sync] env(name: System::String): System::String|System::None
 
 # The terminal on stdout: whether there is one, and its width in columns (0
-# when stdout is not a terminal or reports no size).
+# when stdout is not a terminal or reports no size). And whether stderr is one.
 fun [impure] stdoutIsTerminal(): System::Bool => _stdoutIsTerminal() != 0
 fun [foreign("sys_stdout_is_terminal"), impure, sync] _stdoutIsTerminal(): System::Int
+fun [impure] stderrIsTerminal(): System::Bool => _stderrIsTerminal() != 0
+fun [foreign("sys_stderr_is_terminal"), impure, sync] _stderrIsTerminal(): System::Int
 fun [foreign("sys_terminal_columns"), impure, sync] terminalColumns(): System::Int
 
 

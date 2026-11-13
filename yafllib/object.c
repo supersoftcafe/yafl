@@ -3620,13 +3620,18 @@ EXPORT object_t* sys_abort(object_t* self, str_t message) {
     _exit(1);
 }
 
-// The terminal on stdout, for a command line that formats its help as
-// Python's argparse does: whether stdout is a terminal (argparse colours only
-// then), and its width in columns, 0 when stdout is not a terminal or reports
-// no size (argparse then falls back to 80).
+// The terminal, for a command line that formats its help as Python's argparse
+// does: whether stdout, or stderr, is one (argparse colours only what it
+// writes to a terminal), and stdout's width in columns, 0 when stdout is not
+// a terminal or reports no size (argparse then falls back to 80).
 EXPORT object_t* sys_stdout_is_terminal(object_t* self) {
     (void)self;
     return integer_from_int32(isatty(STDOUT_FILENO) ? 1 : 0);
+}
+
+EXPORT object_t* sys_stderr_is_terminal(object_t* self) {
+    (void)self;
+    return integer_from_int32(isatty(STDERR_FILENO) ? 1 : 0);
 }
 
 EXPORT object_t* sys_terminal_columns(object_t* self) {

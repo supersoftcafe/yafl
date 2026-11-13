@@ -135,9 +135,10 @@ fun main(): System::Int
     ()            => match(o.file)
       (path: String) => runSingle(path)
       ()             => runStdio()
+  # To stderr: in stdin mode stdout carries the JSON.
   fun wrong(e: ArgError): System::Int
-    print(message(commandLine(), e, 80, false))
-    ret 2
+    let w = writeAll(stderr(), message(commandLine(), e, 80, false))
+    ret w.io.close() !is None || w.v is IOError ? 1 : 2
   fun showHelp(): System::Int
     print(help(commandLine(), 80, false))
     ret 0
