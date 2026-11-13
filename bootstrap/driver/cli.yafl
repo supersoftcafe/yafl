@@ -64,32 +64,43 @@ fun freshScan() => CliScan(false, 0, None, None, None, List(), false, List(), fa
                            Bootstrap::Lower::Ir::inlCutoffComplexity(), List())
 
 # The arguments, in the order main.py declares them (argparse adds -h first).
-fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like tool", List<Arg<CliScan>>()
-  |> (l) => append(l, Stop(List("-h", "--help"), "show this help message and exit",
-                           (s: CliScan) => with s(csHelp = true)))
-  |> (l) => append(l, Value(List("-O"), "LEVEL", "Optimisation level", setLevel))
-  |> (l) => append(l, Value(List("-a"), "OUTFILE", "Assembly output",
-                            (s: CliScan, v: String) => with s(csAsm = v)))
-  |> (l) => append(l, Value(List("-c"), "OUTFILE", "C output",
-                            (s: CliScan, v: String) => with s(csC = v)))
-  |> (l) => append(l, Value(List("-o"), "OUTFILE", "Output file name",
-                            (s: CliScan, v: String) => with s(csOut = v)))
-  |> (l) => append(l, Value(List("-L", "--lib-path"), "DIR",
-                            "Additional library search path (repeatable)",
-                            (s: CliScan, v: String) => with s(csLibs = append(s.csLibs, v))))
-  |> (l) => append(l, Flag(List("--profile"),
-                           "Instrument for profiling; the binary writes callgrind.out.<pid> at exit",
-                           (s: CliScan) => with s(csProfile = true)))
-  |> (l) => append(l, Value(List("-W"), "WARNING",
-                            "Enable/disable a warning: -Wname, -Wall, -Wno-name",
-                            (s: CliScan, v: String) => with s(csWarns = append(s.csWarns, v))))
-  |> (l) => append(l, Flag(List("--test"), "Build a unit-test binary from the [test] functions",
-                           (s: CliScan) => with s(csTest = true)))
-  |> (l) => append(l, Value(List("--inline-threshold"), "OPS",
-                            "Inline functions of fewer than OPS ops at -O2 and above (default 5)",
-                            setThreshold))
-  |> (l) => append(l, Positional("files", AtLeastOne(), "Input .yafl file(s), or a project directory",
-                                 (s: CliScan, vs: List<String>) => with s(csFiles = vs))))
+# In short lists joined together, not one pipeline of appends: a pipeline this
+# long costs either compiler exponentially more per stage (#119).
+fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like tool",
+  concat(concat(outputArguments(), buildArguments()), inputArguments()))
+
+fun outputArguments(): List<Arg<CliScan>> => concat(
+  List<Arg<CliScan>>(
+    Stop(List("-h", "--help"), "show this help message and exit",
+         (s: CliScan) => with s(csHelp = true)),
+    Value(List("-O"), "LEVEL", "Optimisation level", setLevel),
+    Value(List("-a"), "OUTFILE", "Assembly output",
+          (s: CliScan, v: String) => with s(csAsm = v))),
+  List<Arg<CliScan>>(
+    Value(List("-c"), "OUTFILE", "C output",
+          (s: CliScan, v: String) => with s(csC = v)),
+    Value(List("-o"), "OUTFILE", "Output file name",
+          (s: CliScan, v: String) => with s(csOut = v))))
+
+fun buildArguments(): List<Arg<CliScan>> => concat(
+  List<Arg<CliScan>>(
+    Value(List("-L", "--lib-path"), "DIR", "Additional library search path (repeatable)",
+          (s: CliScan, v: String) => with s(csLibs = append(s.csLibs, v))),
+    Flag(List("--profile"),
+         "Instrument for profiling; the binary writes callgrind.out.<pid> at exit",
+         (s: CliScan) => with s(csProfile = true)),
+    Value(List("-W"), "WARNING", "Enable/disable a warning: -Wname, -Wall, -Wno-name",
+          (s: CliScan, v: String) => with s(csWarns = append(s.csWarns, v)))),
+  List<Arg<CliScan>>(
+    Flag(List("--test"), "Build a unit-test binary from the [test] functions",
+         (s: CliScan) => with s(csTest = true)),
+    Value(List("--inline-threshold"), "OPS",
+          "Inline functions of fewer than OPS ops at -O2 and above (default 5)",
+          setThreshold)))
+
+fun inputArguments(): List<Arg<CliScan>> => List<Arg<CliScan>>(
+  Positional("files", AtLeastOne(), "Input .yafl file(s), or a project directory",
+             (s: CliScan, vs: List<String>) => with s(csFiles = vs)))
 
 # `choices=["0", "1", "2", "3"]`
 fun setLevel(s: CliScan, v: String): CliScan|String

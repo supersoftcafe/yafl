@@ -27,21 +27,24 @@ fun level(o: Opts, v: String): Opts|String
     ? with o(level = v)
     : "invalid choice: '" + v + "' (choose from '0', '1', '2', '3')"
 
-fun options(): List<Arg<Opts>> => List<Arg<Opts>>()
-  |> (l) => append(l, Stop(List("-h", "--help"), "show this help message and exit",
-                           (o: Opts) => with o(help = true)))
-  |> (l) => append(l, Value(List("-O"), "LEVEL", "Optimisation level", level))
-  |> (l) => append(l, Value(List("-o"), "OUTFILE", "Output file name",
-                            (o: Opts, v: String) => with o(out = v)))
-  |> (l) => append(l, Value(List("-L", "--lib-path"), "DIR",
-                            "Additional library search path (repeatable)",
-                            (o: Opts, v: String) => with o(libs = append(o.libs, v))))
-  |> (l) => append(l, Flag(List("-v", "--verbose"),
-                           "Say more about what is being done, at some length, to anyone who is listening",
-                           (o: Opts) => with o(verbose = true)))
-  |> (l) => append(l, Flag(List("-q"), "Say less", (o: Opts) => with o(quiet = true)))
-  |> (l) => append(l, Flag(List("--version-check"), "Check the version",
-                           (o: Opts) => with o(check = true)))
+# In short lists joined together: a long pipeline of appends costs the
+# compiler exponentially more per stage (#119).
+fun options(): List<Arg<Opts>> => concat(concat(
+  List<Arg<Opts>>(
+    Stop(List("-h", "--help"), "show this help message and exit",
+         (o: Opts) => with o(help = true)),
+    Value(List("-O"), "LEVEL", "Optimisation level", level),
+    Value(List("-o"), "OUTFILE", "Output file name",
+          (o: Opts, v: String) => with o(out = v))),
+  List<Arg<Opts>>(
+    Value(List("-L", "--lib-path"), "DIR", "Additional library search path (repeatable)",
+          (o: Opts, v: String) => with o(libs = append(o.libs, v))),
+    Flag(List("-v", "--verbose"),
+         "Say more about what is being done, at some length, to anyone who is listening",
+         (o: Opts) => with o(verbose = true)),
+    Flag(List("-q"), "Say less", (o: Opts) => with o(quiet = true)))),
+  List<Arg<Opts>>(
+    Flag(List("--version-check"), "Check the version", (o: Opts) => with o(check = true))))
 
 fun files(): Arg<Opts> => Positional("files", AtLeastOne(), "Input files",
                                      (o: Opts, vs: List<String>) => with o(files = vs))
