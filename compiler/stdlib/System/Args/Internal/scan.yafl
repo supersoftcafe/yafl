@@ -27,7 +27,9 @@ import System::Containers
 class [final] _Decl(dNames: List<String>, dMetavar: String|None, dHelp: String,
                    dCount: Count|None)
 
-fun _declared<S>(spec: Args<S>): List<_Decl> => map(spec.args, (a: Arg<S>) => _declaredArg(a))
+# Every public function reads the declaration through here, so a declaration
+# that cannot be read ends the program before any of them uses it.
+fun _declared<S>(spec: Args<S>): List<_Decl> => _sound(map(spec.args, (a: Arg<S>) => _declaredArg(a)))
 
 fun _declaredArg<S>(a: Arg<S>): _Decl => match(a)
   (f: Flag<S>)       => _Decl(f.names, None, f.help, None)
@@ -48,6 +50,43 @@ fun _takesMore(c: Count, got: List<String>): Bool => match(c)
   (o: ExactlyOne) => isEmpty(got)
   (o: AtMostOne)  => isEmpty(got)
   (o: Count)      => true
+
+# ── a declaration that cannot be read ────────────────────────────────────────
+# A mistake in the PROGRAM, not in its command line: no user could cause it or
+# do anything about it, so it ends the process, naming it, and is never an
+# ArgError — whose message would tell the user they had typed something wrong.
+
+fun _sound(ds: List<_Decl>): List<_Decl> => match(_mistake(ds))
+  (why: String) => abort<List<_Decl>>("System::Args: " + why)
+  ()            => ds
+
+# The first mistake, in declaration order: in an argument's own names, then a
+# name that an earlier argument already has.
+fun _mistake(ds: List<_Decl>): String|None
+  let own = fold<_Decl, String|None>(ds, None, (found, d) => found ?? _ownMistake(d))
+  ret own ?? _repeatedName(flatMap(filter(ds, (d: _Decl) => !_isPositional(d)), (d: _Decl) => d.dNames))
+
+fun _ownMistake(d: _Decl): String|None => match(d.dCount)
+  (c: Count) => startsWith(_displayName(d), "-")
+    ? "positional '" + _displayName(d) + "' is named like an option"
+    : None
+  ()         => isEmpty(d.dNames)
+    ? "an option is declared with no names"
+    : fold<String, String|None>(d.dNames, None, (found, n) => found ?? _optionNameMistake(n))
+
+# argparse's rule: an option string starts with `-` and is not dashes alone.
+fun _optionNameMistake(n: String): String|None
+  if !startsWith(n, "-")
+    ret "option string '" + n + "' does not start with '-'"
+  ret skipAny(n, "-", 0) >= length(n) ? "option string '" + n + "' is dashes alone" : None
+
+fun _repeatedName(names: List<String>): String|None =>
+  fold<String, (seen: Set<String>, found: String|None)>(names, (seen = Set<String>(), found = None),
+       (st, n) => (seen = add(st.seen, n), found = st.found ?? _repeated(st.seen, n)))
+    |> (st) => st.found
+
+fun _repeated(seen: Set<String>, n: String): String|None =>
+  contains(seen, n) ? "option string '" + n + "' is declared twice" : None
 
 # argparse names an argument by all its option strings.
 fun _displayName(d: _Decl): String => join(d.dNames, "/")
