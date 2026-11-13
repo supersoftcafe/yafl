@@ -80,13 +80,58 @@ endif()
 set(YAFL_TEST_SPEED fast CACHE STRING "Test path: fast, or full (the regression)")
 set_property(CACHE YAFL_TEST_SPEED PROPERTY STRINGS fast full)
 if(YAFL_TEST_SPEED STREQUAL "full")
-    set(YAFL_TEST_LEVELS 0 1 2 3)
+    set(YAFL_PATH_LEVELS 0 1 2 3)
     set(YAFL_BOOTSTRAP_REUSE)
 elseif(YAFL_TEST_SPEED STREQUAL "fast")
-    set(YAFL_TEST_LEVELS 3)
+    set(YAFL_PATH_LEVELS 3)
     set(YAFL_BOOTSTRAP_REUSE --reuse -L ${YAFL_STAGE_DIR})
 else()
     message(FATAL_ERROR "YAFL_TEST_SPEED must be full or fast, not '${YAFL_TEST_SPEED}'")
+endif()
+
+# A SLICE of the path, so CI can spread the full regression over several
+# runners (.github/workflows/full-gate.yml). The slices of a CI run together
+# make up the whole path; the defaults are the whole path on one machine.
+#
+#   YAFL_TEST_LEVELS  the levels whose port build, [test] folders and
+#                     self-compile this slice runs: "default" (the path's),
+#                     "none", or a list such as "0;1;2". The -O3 level also
+#                     owns the collector stress test.
+#   YAFL_SUITE_SHARD  on the full path, the part of the Python suite this
+#                     slice runs: "1/1" (all of it), "I/N"
+#                     (compiler/tests/suite_shard.py), or "off". The suite
+#                     drives the -O3 port, so a slice running any of it builds
+#                     that port whatever its levels.
+#
+#   cmake -B build -DYAFL_TEST_SPEED=full -DYAFL_TEST_LEVELS="0;1;2" -DYAFL_SUITE_SHARD=off
+set(YAFL_TEST_LEVELS default CACHE STRING
+    "Levels this slice runs: default (the path's), none, or a list like 0;1;2")
+set(YAFL_SUITE_SHARD 1/1 CACHE STRING
+    "Full path: the Python suite shard this slice runs, I/N, or off")
+if(YAFL_TEST_LEVELS STREQUAL "default")
+    set(YAFL_SLICE_LEVELS ${YAFL_PATH_LEVELS})
+elseif(YAFL_TEST_LEVELS STREQUAL "none")
+    set(YAFL_SLICE_LEVELS)
+else()
+    set(YAFL_SLICE_LEVELS ${YAFL_TEST_LEVELS})
+    foreach(opt ${YAFL_SLICE_LEVELS})
+        if(NOT opt MATCHES "^[0-3]$")
+            message(FATAL_ERROR "YAFL_TEST_LEVELS: '${opt}' is not a level 0-3")
+        endif()
+    endforeach()
+endif()
+if(NOT YAFL_SUITE_SHARD MATCHES "^(off|[1-9][0-9]*/[1-9][0-9]*)$")
+    message(FATAL_ERROR "YAFL_SUITE_SHARD must be I/N or off, not '${YAFL_SUITE_SHARD}'")
+endif()
+set(YAFL_RUN_SUITE OFF)
+if(YAFL_TEST_SPEED STREQUAL "full" AND NOT YAFL_SUITE_SHARD STREQUAL "off")
+    set(YAFL_RUN_SUITE ON)
+endif()
+# The ports this slice builds: one per level it runs, and -O3 for the suite.
+set(YAFL_PORT_LEVELS ${YAFL_SLICE_LEVELS})
+if(YAFL_RUN_SUITE)
+    list(APPEND YAFL_PORT_LEVELS 3)
+    list(REMOVE_DUPLICATES YAFL_PORT_LEVELS)
 endif()
 
 # The port binary is an INPUT to the suite, not something the tests build: ~25
@@ -107,7 +152,7 @@ function(yafl_port_binary opt out)
     endif()
 endfunction()
 
-foreach(opt ${YAFL_TEST_LEVELS})
+foreach(opt ${YAFL_PORT_LEVELS})
     yafl_port_binary(${opt} bin)
     add_test(NAME bootstrap_binary_o${opt}
         COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
@@ -147,7 +192,7 @@ function(yafl_test_compiler opt out)
     endif()
 endfunction()
 
-if(YAFL_TEST_SPEED STREQUAL "full")
+if(YAFL_RUN_SUITE)
     # PYTHONHASHSEED=0 is REQUIRED, not a nicety: the seven test_bootstrap_c_*
     # modules assert it in setUpClass and error out without it. Because that is a
     # setUpClass failure rather than a test failure, the suite still reported a
@@ -158,7 +203,8 @@ if(YAFL_TEST_SPEED STREQUAL "full")
         COMMAND ${CMAKE_COMMAND} -E env YAFL_LIBYAFL_A=$<TARGET_FILE:yafl_static>
                 YAFL_BOOTSTRAP_BIN=${YAFL_BOOTSTRAP_BIN}
                 YAFL_COMPILER=${YAFL_TEST_COMPILER}
-                PYTHONHASHSEED=0 ${YAFL_SUITE_CMD}
+                PYTHONHASHSEED=0 ${Python3_EXECUTABLE} tests/suite_shard.py
+                ${YAFL_SUITE_SHARD} ${YAFL_SUITE_CMD}
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
     # `unittest-parallel` exits 0 even when it discovers *zero* tests (printing
     # "(0 total tests)" / "Ran 0 test"), which would silently report success if the
@@ -213,7 +259,7 @@ function(yafl_test_folder name folder opt)
         FIXTURES_REQUIRED ${name}_bin)
 endfunction()
 
-# Each folder runs at every level of the path's YAFL_TEST_LEVELS, built by the
+# Each folder runs at every level of the slice's YAFL_SLICE_LEVELS, built by the
 # port built at that level: each level switches passes on (inliner,
 # small-function inlining, [inline(always)] fusion). (Every level links the same
 # runtime archive, the one packaged into the stage's System library: the
@@ -221,7 +267,7 @@ endfunction()
 # fast path's one level is -O3, the level that transforms the most.
 set(YAFL_FOLDER_TESTS)
 foreach(folder stdlib_tests yafl_tests)
-    foreach(opt ${YAFL_TEST_LEVELS})
+    foreach(opt ${YAFL_SLICE_LEVELS})
         yafl_test_folder(${folder}_o${opt} ${folder} ${opt})
         list(APPEND YAFL_FOLDER_TESTS ${folder}_o${opt})
     endforeach()
@@ -234,22 +280,26 @@ endforeach()
 # tests cannot reach.
 # A short run here, under poison, with the dwell between cycles and without
 # it; the soak (yafllib/tests/gc_soak.py) runs it long.
-yafl_test_compiler(3 compiler)
-add_test(NAME gc_stress_build
-    COMMAND ${compiler} -O3 -L ${YAFL_STAGE_DIR} -o ${CMAKE_BINARY_DIR}/gc_stress
-            ${CMAKE_SOURCE_DIR}/yafllib/tests/gc_stress.yafl
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
-set_tests_properties(gc_stress_build PROPERTIES
-    TIMEOUT 3600
-    FIXTURES_REQUIRED bootstrap_bin_o3
-    FIXTURES_SETUP gc_stress_bin)
-add_test(NAME gc_stress COMMAND ${CMAKE_BINARY_DIR}/gc_stress 500)
-add_test(NAME gc_stress_eager COMMAND ${CMAKE_BINARY_DIR}/gc_stress 500)
-set_tests_properties(gc_stress PROPERTIES
-    TIMEOUT 600 ENVIRONMENT "YAFL_GC_POISON=1" FIXTURES_REQUIRED gc_stress_bin)
-set_tests_properties(gc_stress_eager PROPERTIES
-    TIMEOUT 600 ENVIRONMENT "YAFL_GC_POISON=1;YAFL_GC_IDLE_PAGES=0" FIXTURES_REQUIRED gc_stress_bin)
-set(YAFL_GC_STRESS_TESTS gc_stress gc_stress_eager)
+# The -O3 level's: a slice without it has no -O3 port to build it with.
+set(YAFL_GC_STRESS_TESTS)
+if(3 IN_LIST YAFL_SLICE_LEVELS)
+    yafl_test_compiler(3 compiler)
+    add_test(NAME gc_stress_build
+        COMMAND ${compiler} -O3 -L ${YAFL_STAGE_DIR} -o ${CMAKE_BINARY_DIR}/gc_stress
+                ${CMAKE_SOURCE_DIR}/yafllib/tests/gc_stress.yafl
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/compiler)
+    set_tests_properties(gc_stress_build PROPERTIES
+        TIMEOUT 3600
+        FIXTURES_REQUIRED bootstrap_bin_o3
+        FIXTURES_SETUP gc_stress_bin)
+    add_test(NAME gc_stress COMMAND ${CMAKE_BINARY_DIR}/gc_stress 500)
+    add_test(NAME gc_stress_eager COMMAND ${CMAKE_BINARY_DIR}/gc_stress 500)
+    set_tests_properties(gc_stress PROPERTIES
+        TIMEOUT 600 ENVIRONMENT "YAFL_GC_POISON=1" FIXTURES_REQUIRED gc_stress_bin)
+    set_tests_properties(gc_stress_eager PROPERTIES
+        TIMEOUT 600 ENVIRONMENT "YAFL_GC_POISON=1;YAFL_GC_IDLE_PAGES=0" FIXTURES_REQUIRED gc_stress_bin)
+    set(YAFL_GC_STRESS_TESTS gc_stress gc_stress_eager)
+endif()
 
 # ── THE SELF-COMPILES, LAST ──────────────────────────────────────────────────
 # One self-compile per level, after everything else. The suite says the
@@ -263,7 +313,7 @@ set(YAFL_GC_STRESS_TESTS gc_stress gc_stress_eager)
 # instead: the new port must agree with it. RUN_SERIAL because each wants the
 # machine (and a compiler-sized heap) to itself.
 set(YAFL_SELF_COMPILE_AFTER ${YAFL_SUITE_TEST} ${YAFL_FOLDER_TESTS} ${YAFL_GC_STRESS_TESTS})
-foreach(opt ${YAFL_TEST_LEVELS})
+foreach(opt ${YAFL_SLICE_LEVELS})
     yafl_port_binary(${opt} bin)
     add_test(NAME self_compile_o${opt}
         COMMAND ${Python3_EXECUTABLE} selfcompile.py --binary ${bin} -O ${opt}

@@ -197,6 +197,17 @@ runs the full one on pull requests and every commit to main, and the fast path
 on manual runs unless `full` is ticked. In CTest terms the speed is `-DYAFL_TEST_SPEED=fast|full`
 (default `fast`).
 
+A run can also be one slice of its path, which is how CI spreads the full
+regression over several runners: `--levels 0,1,2` (or `none`) picks the levels
+whose port build, `[test]` folders and self-compile run, and
+`--suite-shard 2/3` (or `off`) the part of the Python suite
+(`compiler/tests/suite_shard.py`). In CTest terms these are
+`-DYAFL_TEST_LEVELS` and `-DYAFL_SUITE_SHARD`.
+```
+python3 full_protocol.py --full --levels 0,1,2 --suite-shard off
+python3 full_protocol.py --full --levels none --suite-shard 2/3
+```
+
 ### Speed
 
 The speed figure is the self-compile's time, which every run reports on its
