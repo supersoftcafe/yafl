@@ -31,6 +31,12 @@ Speed: the ctest line reports each self-compile's time — the port compiling
 its own sources at its level, byte-identical to Python's C — and that is the
 figure to track.
 
+A run can be one SLICE of its path, so CI can spread the full regression over
+several runners: `--levels` names the levels whose port build, [test] folders
+and self-compile it runs, and `--suite-shard I/N` the part of the Python suite
+(compiler/tests/suite_shard.py), or `off`. The examples need the -O3 port, so
+only a slice with -O3 among its levels runs them.
+
 Stops at the first failing stage unless --keep-going is given. Every stage's
 output is streamed to the terminal AND tee'd to build/protocol-runs/<ts>/; a
 one-line-per-stage report is printed at the end (and written to report.txt).
@@ -40,6 +46,7 @@ one-line-per-stage report is printed at the end (and written to report.txt).
     python3 full_protocol.py --compiler python  # against the Python compiler
     python3 full_protocol.py --keep-going       # run every stage, fail at the end
     python3 full_protocol.py --full --only ctest,examples
+    python3 full_protocol.py --full --levels 0,1,2 --suite-shard off   # a slice
 """
 from __future__ import annotations
 
@@ -99,6 +106,19 @@ def stage_env(**extra) -> dict:
 
 # ── stages ───────────────────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class Run:
+    """What a run tests: the compiler under test, the path, and the slice of
+    it — `levels` None for the path's own, `shard` "1/1" for the whole suite."""
+    compiler: str
+    speed: str
+    levels: tuple[int, ...] | None = None
+    shard: str = "1/1"
+
+    def has_o3_port(self) -> bool:
+        return self.levels is None or 3 in self.levels
+
+
 @dataclass
 class Result:
     name: str
@@ -106,17 +126,20 @@ class Result:
     detail: str = ""
 
 
-def _configure(compiler: str, speed: str, log: Path) -> int:
-    """(Re)configure with the compiler under test and the test path — cheap
-    when nothing changed. Both are always given, so a run never inherits the
-    last one's choice from the CMake cache."""
-    return run_stream(["cmake", "-B", str(BUILD), f"-DYAFL_TEST_COMPILER={compiler}",
-                       f"-DYAFL_TEST_SPEED={speed}"],
+def _configure(run: Run, log: Path) -> int:
+    """(Re)configure with the compiler under test, the test path and the slice
+    — cheap when nothing changed. All are always given, so a run never
+    inherits the last one's choice from the CMake cache."""
+    levels = ("default" if run.levels is None else
+              ";".join(map(str, run.levels)) or "none")
+    return run_stream(["cmake", "-B", str(BUILD), f"-DYAFL_TEST_COMPILER={run.compiler}",
+                       f"-DYAFL_TEST_SPEED={run.speed}", f"-DYAFL_TEST_LEVELS={levels}",
+                       f"-DYAFL_SUITE_SHARD={run.shard}"],
                       HERE, log)
 
 
-def stage_build(run_dir: Path, compiler: str, speed: str) -> Result:
-    if _configure(compiler, speed, run_dir / "configure.log") != 0:
+def stage_build(run_dir: Path, run: Run) -> Result:
+    if _configure(run, run_dir / "configure.log") != 0:
         return Result("build", False, "cmake configure failed")
     jobs = os.cpu_count() or 4
     rc = run_stream(["cmake", "--build", str(BUILD), f"-j{jobs}"],
@@ -124,8 +147,9 @@ def stage_build(run_dir: Path, compiler: str, speed: str) -> Result:
     return Result("build", rc == 0, "cmake --build")
 
 
-def stage_ctest(run_dir: Path, compiler: str, speed: str) -> Result:
-    if _configure(compiler, speed, run_dir / "configure.log") != 0:
+def stage_ctest(run_dir: Path, run: Run) -> Result:
+    compiler, speed = run.compiler, run.speed
+    if _configure(run, run_dir / "configure.log") != 0:
         return Result("ctest gate", False, "cmake configure failed")
     # The Python suite caches Python's reference outputs keyed on their INPUT,
     # not on the compiler (tests/testutil.py), in a directory every checkout
@@ -141,9 +165,14 @@ def stage_ctest(run_dir: Path, compiler: str, speed: str) -> Result:
     failed, n = total
     timings = "".join(f"; {name} {secs:.0f}s"
                       for name, secs in parse_self_compiles(run_dir / "ctest.log"))
+    slice_ = ""
+    if run.levels is not None:
+        slice_ += f", levels {','.join(map(str, run.levels)) or 'none'}"
+    if speed == "full" and run.shard != "1/1":
+        slice_ += f", suite {run.shard}"
     return Result("ctest gate", rc == 0 and failed == 0 and n > 0,
-                  f"{n - failed}/{n} tests passed ({compiler} compiler, {speed} path)"
-                  f"{timings}")
+                  f"{n - failed}/{n} tests passed ({compiler} compiler, {speed} path"
+                  f"{slice_}){timings}")
 
 
 # ── examples ─────────────────────────────────────────────────────────────────
@@ -185,7 +214,8 @@ def _example_compiler(compiler: str) -> Path:
     return BUILD / "ybootstrap" if compiler == "port" else COMPILER / "dist" / "yafl"
 
 
-def stage_examples(run_dir: Path, compiler: str, speed: str) -> Result:
+def stage_examples(run_dir: Path, run: Run) -> Result:
+    compiler = run.compiler
     compiler_bin = _example_compiler(compiler)
     if not compiler_bin.is_file():
         return Result("examples", False,
@@ -252,6 +282,13 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--full", action="store_true",
                     help="the whole regression (default: the fast path — build "
                          "and ctest's fast path, no examples)")
+    ap.add_argument("--levels", default=None, metavar="L,L",
+                    help="run only these levels' port builds, [test] folders and "
+                         "self-compiles: a comma list such as 0,1,2, or 'none' "
+                         "(default: the path's levels)")
+    ap.add_argument("--suite-shard", default="1/1", metavar="I/N",
+                    help="full path: run shard I of N of the Python suite, or "
+                         "'off' (default: 1/1, all of it)")
     ap.add_argument("--cpu-scale", type=float, default=None, metavar="N",
                     help="multiply every Python test's CPU budget by N, for a "
                          "slower machine (sets YAFL_TEST_CPU_SCALE; a Raspberry Pi "
@@ -262,14 +299,28 @@ def main(argv: list[str]) -> int:
             ap.error("--cpu-scale must be positive")
         os.environ["YAFL_TEST_CPU_SCALE"] = f"{args.cpu_scale:g}"
     speed = "full" if args.full else "fast"
+    try:
+        levels = (None if args.levels is None else () if args.levels == "none" else
+                  tuple(sorted({int(x) for x in args.levels.split(",")})))
+    except ValueError:
+        ap.error(f"--levels {args.levels}: want a comma list of 0-3, or none")
+    if levels is not None and not set(levels) <= {0, 1, 2, 3}:
+        ap.error(f"--levels {args.levels}: levels are 0-3")
+    shard = re.fullmatch(r"([1-9]\d*)/([1-9]\d*)", args.suite_shard)
+    if args.suite_shard != "off" and not (shard and int(shard[1]) <= int(shard[2])):
+        ap.error(f"--suite-shard {args.suite_shard}: want I/N with I <= N, or off")
+    run = Run(args.compiler, speed, levels, args.suite_shard)
     stages = {k: v for k, v in STAGES.items() if args.full or k in FAST_STAGES}
     full_only = [s.strip() for s in args.only.split(",")
                  if s.strip() in STAGES and s.strip() not in stages]
     if full_only:
         print(f"{', '.join(full_only)}: on the full path only (add --full)", file=sys.stderr)
         return 2
+    if not run.has_o3_port():
+        # The examples are compiled by the -O3 port, which this slice lacks.
+        stages.pop("examples", None)
     return run_stages(f"{speed} protocol", stages, args.only, args.keep_going,
-                      lambda stage, run_dir: stage(run_dir, args.compiler, speed))
+                      lambda stage, run_dir: stage(run_dir, run))
 
 
 def run_stages(title: str, stages: dict, only: str, keep_going: bool, call) -> int:

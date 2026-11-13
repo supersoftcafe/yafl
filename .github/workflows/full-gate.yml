@@ -5,6 +5,14 @@ name: full-gate
 # branch is locally ready, which is when the full suite is due. Manual runs take
 # the fast path unless `full` is ticked. A newer commit cancels a run still in
 # progress for the same ref.
+#
+# The full regression is spread over several runners per architecture, each
+# running one SLICE of it (full_protocol.py --levels, --suite-shard); together
+# the slices are the whole regression. The compiler suite is sharded on both
+# architectures, since it runs the native port. -O0 to -O2 run once, on
+# aarch64: those levels test the compiler's passes, which do not depend on the
+# machine, and aarch64 is the faster runner. -O3, the [test] folders at it, the
+# collector stress test and the examples run on both, for the runtime.
 on:
   pull_request:
     branches: [main]
@@ -22,14 +30,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # x86-64 and aarch64 both: the runtime's GC is lock-free, and aarch64's
-  # weaker memory ordering exposes races x86 hides (docs/aarch64-gc/).
+  # The slices this run is made of. x86-64 and aarch64 both: the runtime's GC
+  # is lock-free, and aarch64's weaker memory ordering exposes races x86 hides
+  # (docs/aarch64-gc/). `cache` marks the slice that refreshes the cached -O3
+  # Python build of the port, the one the fast path reuses.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      slices: ${{ steps.plan.outputs.slices }}
+    steps:
+      - id: plan
+        env:
+          FULL: ${{ github.event_name != 'workflow_dispatch' || inputs.full }}
+        run: |
+          if [ "$FULL" = true ]; then
+            slices='[
+              {"id": "x64-o3-suite1of3", "runner": "ubuntu-latest",    "args": "--full --levels 3 --suite-shard 1/3",     "cache": true},
+              {"id": "x64-suite2of3",    "runner": "ubuntu-latest",    "args": "--full --levels none --suite-shard 2/3",  "cache": false},
+              {"id": "x64-suite3of3",    "runner": "ubuntu-latest",    "args": "--full --levels none --suite-shard 3/3",  "cache": false},
+              {"id": "arm64-o0-o2",      "runner": "ubuntu-24.04-arm", "args": "--full --levels 0,1,2 --suite-shard off", "cache": false},
+              {"id": "arm64-o3-suite1of2", "runner": "ubuntu-24.04-arm", "args": "--full --levels 3 --suite-shard 1/2",   "cache": true},
+              {"id": "arm64-suite2of2",  "runner": "ubuntu-24.04-arm", "args": "--full --levels none --suite-shard 2/2",  "cache": false}
+            ]'
+          else
+            slices='[
+              {"id": "x64-fast",   "runner": "ubuntu-latest",    "args": "", "cache": true},
+              {"id": "arm64-fast", "runner": "ubuntu-24.04-arm", "args": "", "cache": true}
+            ]'
+          fi
+          echo "slices=$(echo "$slices" | jq -c .)" >> "$GITHUB_OUTPUT"
+
   full-protocol:
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
-    name: full-protocol (${{ matrix.runner }})
+        include: ${{ fromJSON(needs.plan.outputs.slices) }}
+    name: full-protocol (${{ matrix.id }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
@@ -52,6 +89,7 @@ jobs:
       # earlier entry is a safe start; the full runs keep it fresh for manual
       # fast-path runs.
       - uses: actions/cache@v4
+        if: matrix.cache
         with:
           path: build/bootstrap-cache
           # Everything build_bootstrap.py keys an entry on — the Python compiler,
@@ -72,7 +110,7 @@ jobs:
       - name: Run the protocol
         run: |
           ulimit -c unlimited
-          python3 full_protocol.py ${{ (github.event_name != 'workflow_dispatch' || inputs.full) && '--full' || '' }}
+          python3 full_protocol.py ${{ matrix.args }}
 
       # The backtraces go in the log so they survive even when a core is too
       # big to keep. Each core is read against the binary that made it; the
@@ -97,7 +135,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: protocol-failure-${{ matrix.runner }}
+          name: protocol-failure-${{ matrix.id }}
           path: |
             /tmp/cores/
             build/ybootstrap
