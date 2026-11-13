@@ -70,7 +70,7 @@ fun tlLowerFun(f, errs0) => match(f.fBody)
   ()            => TlStmt(f, errs0)
 
 fun tlLowerBody(f, body, errs0): TlStmt
-  let total = tlCountSelf(body, f.fName, 0)
+  let total = tlCountSelf(body, f.fName)
   let rw2 = tlRewriteTail(body, f.fName, 0)
   if total == 0
     ret TlStmt(f, add(errs0, PErr(f.psfLine,
@@ -119,72 +119,21 @@ fun tlIsThis(x) => match(x)
   (o: PExpr)   => false
 
 # ── the self-call counter ────────────────────────────────────────────────────
-# Python blanks every lambda to a leaf, then counts self-calls with a full
-# search_and_replace walk; a fold that skips lambda subtrees counts the same.
+# Python blanks every lambda to a leaf — a self-call captured in a surviving
+# closure is a normal recursive call, not a tail call — then counts the
+# self-calls left, each with one callback over the body.
 
-fun tlCountSelf(x, fName, n): Int
-  let n2 = tlIsSelfCall(x, fName) ? n + 1 : n
-  ret match(x)
-    (d: PeDot)     => tlCountSelf(d.base, fName, n2)
-    (c: PeCall)    => tlCountSelf(c.parameter, fName,
-                                  tlCountSelf(c.function, fName, n2))
-    (qq: PeCoalesce)   => tlCountSelf(qq.qqFallback, fName,
-                                  tlCountSelf(qq.qqSubject, fName, n2))
-    (wx: PeWith)   => tlCountSelf(wx.withRepls, fName,
-                                  tlCountSelf(wx.withSubject, fName, n2))
-    (tp: PeTuple)  => tlCountEnts(tp.exprs, fName, n2)
-    (te: PeTernary) => tlCountSelf(te.falseResult, fName,
-                         tlCountSelf(te.trueResult, fName,
-                           tlCountSelf(te.condition, fName, n2)))
-    (lm: PeLambda) => n2                 # lambda subtree skipped (blanked)
-    (bk: PeBlock)  => tlCountSelf(bk.blockValue, fName,
-                                  tlCountStmts(bk.blockStmts, fName,
-                                               n2))
-    (mt: PeMatch)  => tlCountArms(mt.arms, fName,
-                                  tlCountSelf(mt.subject, fName, n2))
-    (op: PeBuiltinOp) => tlCountSelf(op.opParams, fName, n2)
-    (ps: PePinSet) => tlCountSelf(ps.psValue, fName,
-                        tlCountSelf(ps.psTarget, fName,
-                          tlCountSelf(ps.psSubject, fName, n2)))
-    (nw: PeNew)    => tlCountSelf(nw.newParam, fName, n2)
-    (ar: PeArrayRead) => tlCountSelf(ar.arrIndex, fName,
-                                     tlCountSelf(ar.arrObj, fName, n2))
-    (cv: PeConvert) => tlCountSelf(cv.convInner, fName, n2)
-    (ne: PeNewEnum) => fold(ne.fieldArgs, n2, (a2, fa) =>
-                            tlCountSelf(fa.faValue, fName, a2))
-    (o: PeLiteral) => n2
-    (o: PeLowered) => n2
-    (o: PeName) => n2
+fun tlCountSelf(body: PExpr, fName: String): Int
+  let own = walkExpr(body, emptyResolverGlobal, false,
+                     Walk<Bool>((s, _r, x) => (s = s, r = tlBlankLambda(x)),
+                                wkNoStmt<Bool>, wkNoSpec<Bool>)).x
+  ret walkExpr(own, emptyResolverGlobal, 0,
+               Walk<Int>((n, _r, x) => (s = tlIsSelfCall(x, fName) ? n + 1 : n, r = None),
+                         wkNoStmt<Int>, wkNoSpec<Int>)).s
 
-fun tlCountEnts(es: List<PTupEnt>, fName, n): Int =>
-  fold(es, n, (k, e) => tlCountSelf(e.tupValue, fName, k))
-
-fun tlCountArms(as2: List<PArm>, fName, n): Int =>
-  fold(as2, n, (k, a) => tlCountOpt(a.armGuard, fName, tlCountSelf(a.armBody, fName, k)))
-
-fun tlCountOpt(x: PExpr|None, fName, n) => match(x)
-  (e2: PExpr) => tlCountSelf(e2, fName, n)
-  ()          => n
-
-fun tlCountStmts(ss: List<PStmt>, fName: String, n) =>
-  fold(ss, n, (k, s) => tlCountStmt(s, fName, k))
-
-fun tlCountStmt(st, fName, n): Int => match(st)
-  (f: PsFun)   => tlCountOpt(f.fBody, fName,
-                             tlCountStmt(f.fParams, fName, n))
-  (l: PsLet)   => tlCountOpt(l.lDefault, fName, n)
-  (d: PsDestructure) => tlCountStmts(d.dTargets, fName,
-                                     tlCountOpt(d.dDefault, fName, n))
-  (rt: PsRet)  => tlCountSelf(rt.retValue, fName, n)
-  (a: PsAction) => tlCountSelf(a.action, fName, n)
-  (fa: PsFieldAssign) => tlCountSelf(fa.faValue, fName, tlCountSelf(fa.faTarget, fName, n))
-  (i: PsIf)    => tlCountStmts(i.ifFalse, fName,
-                               tlCountStmts(i.ifTrue, fName,
-                                            tlCountSelf(i.ifCond, fName,
-                                                        n)))
-  (o: PStmt)   => n
-
-fun tlCountStmt2(st, fName, n) => tlCountStmt(st, fName, n)
+fun tlBlankLambda(x: PExpr): PExpr|None => match(x)
+  (lm: PeLambda) => PeNothing(lm.pelLine)
+  (o: PExpr)     => None
 
 # ── the tail rewriter ────────────────────────────────────────────────────────
 # Ordinals are assigned in rewrite order (statements before the block value,

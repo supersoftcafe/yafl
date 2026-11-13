@@ -98,7 +98,7 @@ fun llAnalyse(f, nested: List<PsFun>)
                        LiftCtx(List(), List()))
   if isEmpty(ctx.lcNames)
     ret f
-  ret llStmt(f, ctx, paramLets)
+  ret llRewrite(f, ctx, paramLets)
 
 # The free references that name an enclosing parameter — a set intersection,
 # and the Python compiler holds it as one. Sorted on the way out only because
@@ -186,12 +186,16 @@ fun llWasUnliftable(ss: List<List<String>>, ls: List<Bool>,
 # Total name references must equal call-position references for every member.
 fun llRefsOk(ns: List<String>, f: PsFun): Bool => all(ns, (x) => !(llTotalRefs(f, x) != llCallRefs(f, x)))
 
-fun llTotalRefs(f: PsFun, name) => match(f.fBody)
-  (b: PExpr) => llCountNames(b, name, 0)
-  ()         => 0
+fun llTotalRefs(f: PsFun, name: String): Int => llCount(f, (x) => llIsName(x, name))
 
-fun llCallRefs(f: PsFun, name) => match(f.fBody)
-  (b: PExpr) => llCountCalls(b, name, 0)
+fun llCallRefs(f: PsFun, name: String): Int => llCount(f, (x) => llIsCallOf(x, name))
+
+# __reference_counts: the expressions under the body that `hit` holds for —
+# lambda subtrees included, like Python.
+fun llCount(f: PsFun, hit: (:PExpr): Bool): Int => match(f.fBody)
+  (b: PExpr) => walkExpr(b, emptyResolverGlobal, 0,
+                         Walk<Int>((n, _r, x) => (s = hit(x) ? n + 1 : n, r = None),
+                                   wkNoStmt<Int>, wkNoSpec<Int>)).s
   ()         => 0
 
 fun llAnyLinear(ns: List<String>, paramLets: List<PStmt>) => any(ns, (x) => llParamLinear(paramLets, x))
@@ -219,105 +223,13 @@ fun llLiftScc(ns: List<String>, scc: List<String>, solved: LlSolved, acc: LiftCt
 
 fun llFirstOf(scc: List<String>) => head(scc) ?? ""
 
-# ── the reference counters (lambda subtrees ARE visited, like Python) ───────
-
-fun llCountNames(x, name, n)
-  let n2 = llIsName(x, name) ? n + 1 : n
-  ret llFold(x, name, n2, false)
-
-fun llCountCalls(x, name, n)
-  let n2 = llIsCallOf(x, name) ? n + 1 : n
-  ret llFold(x, name, n2, true)
-
-fun llIsName(x, name) => match(x)
+fun llIsName(x: PExpr, name: String): Bool => match(x)
   (nm: PeName) => nm.refName == name
   (o: PExpr)   => false
 
-fun llIsCallOf(x, name) => match(x)
+fun llIsCallOf(x: PExpr, name: String): Bool => match(x)
   (c: PeCall) => llIsName(c.function, name)
   (o: PExpr)  => false
-
-fun llFold(x, name, n, calls: Bool): Int => match(x)
-  (d: PeDot)     => llCountOne(d.base, name, n, calls)
-  (c: PeCall)    => llCountOne(c.parameter, name,
-                               llCountOne(c.function, name, n, calls),
-                               calls)
-  (qq: PeCoalesce)   => llCountOne(qq.qqFallback, name,
-                               llCountOne(qq.qqSubject, name, n, calls),
-                               calls)
-  (wx: PeWith)   => llCountOne(wx.withRepls, name,
-                               llCountOne(wx.withSubject, name, n, calls),
-                               calls)
-  (tp: PeTuple)  => llFoldEnts(tp.exprs, name, n, calls)
-  (te: PeTernary) => llCountOne(te.falseResult, name,
-                       llCountOne(te.trueResult, name,
-                         llCountOne(te.condition, name, n, calls), calls),
-                       calls)
-  (lm: PeLambda) => llCountOne(lm.lamBody, name,
-                               llFoldStmt(lm.lamParams, name, n, calls),
-                               calls)
-  (bk: PeBlock)  => llCountOne(bk.blockValue, name,
-                               llFoldStmts(bk.blockStmts, name, n,
-                                           calls),
-                               calls)
-  (mt: PeMatch)  => llFoldArms(mt.arms, name,
-                               llCountOne(mt.subject, name, n, calls),
-                               calls)
-  (op: PeBuiltinOp) => llCountOne(op.opParams, name, n, calls)
-  (ps: PePinSet) => llCountOne(ps.psValue, name,
-                      llCountOne(ps.psTarget, name,
-                        llCountOne(ps.psSubject, name, n, calls), calls), calls)
-  (nw: PeNew)    => llCountOne(nw.newParam, name, n, calls)
-  (ar: PeArrayRead) => llCountOne(ar.arrIndex, name,
-                                  llCountOne(ar.arrObj, name, n, calls),
-                                  calls)
-  (cv: PeConvert) => llCountOne(cv.convInner, name, n, calls)
-  (lp: PeLoop)   => llCountOne(lp.loopBody, name,
-                               llFoldExprs(lp.loopParams, name, n,
-                                           calls),
-                               calls)
-  (rc: PeRecur)  => llFoldExprs(rc.recArgs, name, n, calls)
-  (ne: PeNewEnum) => fold(ne.fieldArgs, n, (a2, fa) =>
-                          llCountOne(fa.faValue, name, a2, calls))
-  (o: PeLiteral) => n
-  (o: PeLazy) => n
-  (o: PeName) => n
-
-fun llCountOne(x, name, n, calls) => calls ? llCountCalls(x, name, n) : llCountNames(x, name, n)
-
-fun llFoldExprs(es: List<PExpr>, name: String, n, calls) =>
-  fold(es, n, (a, x) => llCountOne(x, name, a, calls))
-
-fun llFoldEnts(es: List<PTupEnt>, name, n, calls: Bool): Int =>
-  fold(es, n, (a, x) => llCountOne(x.tupValue, name, a, calls))
-
-fun llFoldArms(as2: List<PArm>, name, n, calls: Bool): Int =>
-  fold(as2, n, (a, x) => llFoldOpt(x.armGuard, name, llCountOne(x.armBody, name, a, calls), calls))
-
-fun llFoldOpt(x: PExpr|None, name, n, calls) => match(x)
-  (e2: PExpr) => llCountOne(e2, name, n, calls)
-  ()          => n
-
-fun llFoldStmts(ss: List<PStmt>, name: String, n, calls) =>
-  fold(ss, n, (a, x) => llFoldStmt(x, name, a, calls))
-
-fun llFoldStmt(st, name, n, calls: Bool): Int => match(st)
-  (f: PsFun)   => llFoldOpt(f.fBody, name,
-                            llFoldStmt(f.fParams, name, n, calls), calls)
-  (l: PsLet)   => llFoldOpt(l.lDefault, name, n, calls)
-  (d: PsDestructure) => llFoldStmts(d.dTargets, name,
-                                    llFoldOpt(d.dDefault, name, n, calls),
-                                    calls)
-  (rt: PsRet)  => llCountOne(rt.retValue, name, n, calls)
-  (a: PsAction) => llCountOne(a.action, name, n, calls)
-  (fa: PsFieldAssign) => llCountOne(fa.faValue, name, llCountOne(fa.faTarget, name, n, calls), calls)
-  (i: PsIf)    => llFoldStmts(i.ifFalse, name,
-                              llFoldStmts(i.ifTrue, name,
-                                          llCountOne(i.ifCond, name, n,
-                                                     calls),
-                                          calls),
-                              calls)
-  (o: PStmt)   => n
 
 # ── the rewrite ──────────────────────────────────────────────────────────────
 # Calls to a lifted member gain the captured names as extra unnamed args (at
@@ -331,37 +243,19 @@ fun llCallArgs(p) => match(p)
   (ng: PeNothing) => List()
   (o: PExpr)      => prepend(PTupEnt("", false, p), List())
 
-fun llStmt(st, ctx: LiftCtx, paramLets: List<PStmt>) => match(st)
-  (f: PsFun)  => llFnStmt(f, ctx, paramLets)
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
-                       llExprOpt(l.lDefault, ctx, paramLets), l.lArrayLen,
-                       l.lWheres, l.pslLine, l.lTypeInferred, l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
-                                      llStmts(d.dTargets, ctx,
-                                              paramLets, List()),
-                                      llExprOpt(d.dDefault, ctx,
-                                                paramLets),
-                                      d.psdLine, d.dTypeInferred)
-  (rt: PsRet)  => PsRet(llExpr(rt.retValue, ctx, paramLets), rt.psrLine)
-  (a: PsAction) => PsAction(llExpr(a.action, ctx, paramLets), a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(llExpr(fa.faTarget, ctx, paramLets), llExpr(fa.faValue, ctx, paramLets), fa.psfaLine)
-  (i: PsIf)    => PsIf(llExpr(i.ifCond, ctx, paramLets),
-                       llStmts(i.ifTrue, ctx, paramLets,
-                               List()),
-                       llStmts(i.ifFalse, ctx, paramLets,
-                               List()),
-                       i.psifLine)
-  (o: PStmt)   => st
+# rewrite: one callback per kind over the whole function. A call to a lifted
+# member gains the captured names as extra args; the member gains the copies.
+fun llRewrite(f: PsFun, ctx: LiftCtx, paramLets: List<PStmt>): PStmt =>
+  walkStmt(f, emptyResolverGlobal, false,
+           Walk<Bool>((s, _r, x) => (s = s, r = llCallExpr(x, ctx)),
+                      (s, _r, st) => (s = s, r = llFnStmt(st, ctx, paramLets)),
+                      wkNoSpec<Bool>)).x
 
-fun llFnStmt(f: PsFun, ctx: LiftCtx, paramLets: List<PStmt>)
-  let rebuilt = PsFun(f.fName, f.fAttrs, f.fGens,
-                      llStmt(f.fParams, ctx, paramLets),
-                      llExprOpt(f.fBody, ctx, paramLets), f.fRet, f.fWheres,
-                      f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
-  let extras = llExtrasFor(ctx, f.fName)
-  if isEmpty(extras)
-    ret rebuilt
-  ret llWithParams(rebuilt, extras, paramLets)
+fun llFnStmt(st: PStmt, ctx: LiftCtx, paramLets: List<PStmt>): PStmt|None => match(st)
+  (f: PsFun) => isEmpty(llExtrasFor(ctx, f.fName))
+    ? None
+    : llWithParams(f, llExtrasFor(ctx, f.fName), paramLets)
+  (o: PStmt) => None
 
 fun llWithParams(st, extras: List<String>,
                  paramLets: List<PStmt>) => match(st)
@@ -386,90 +280,15 @@ fun llParamCopiesStep(a: List<PStmt>, x: String, paramLets: List<PStmt>) => matc
 
 fun llParamByName(ps: List<PStmt>, name) => firstWhere(ps, (x) => stmtName(x) == name)
 
-fun llStmts(ss: List<PStmt>, ctx: LiftCtx, paramLets: List<PStmt>, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, llStmt(x, ctx, paramLets)))
-
-fun llExprOpt(x: PExpr|None, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
-  (e2: PExpr) => llExpr(e2, ctx, paramLets)
-  ()          => None
-
-fun llExpr(x, ctx: LiftCtx, paramLets: List<PStmt>) => match(x)
-  (c: PeCall)    => llCallExpr(c, ctx, paramLets)
-  (d: PeDot)     => PeDot(llExpr(d.base, ctx, paramLets), d.member,
-                          d.pedLine, d.pedIndex)
-  (tp: PeTuple)  => PeTuple(llEnts(tp.exprs, ctx, paramLets,
-                                   List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(llExpr(te.condition, ctx, paramLets),
-                               llExpr(te.trueResult, ctx, paramLets),
-                               llExpr(te.falseResult, ctx, paramLets),
-                               te.pety)
-  (lm: PeLambda) => PeLambda(llStmt(lm.lamParams, ctx, paramLets),
-                             llExpr(lm.lamBody, ctx, paramLets),
-                             lm.pelLine, lm.lamRet)
-  (bk: PeBlock)  => PeBlock(llStmts(bk.blockStmts, ctx, paramLets,
-                                    List()),
-                            llExpr(bk.blockValue, ctx, paramLets),
-                            bk.blockTag, bk.pebkLine)
-  (mt: PeMatch) => with mt(subject = llExpr(mt.subject, ctx, paramLets),
-                    arms    = llArms(mt.arms, ctx, paramLets,
-                                   List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
-                                   llExpr(op.opParams, ctx, paramLets),
-                                   op.peboLine)
-  (ps: PePinSet) => PePinSet(llExpr(ps.psSubject, ctx, paramLets),
-                             llExpr(ps.psTarget, ctx, paramLets),
-                             llExpr(ps.psValue, ctx, paramLets), ps.pepsLine)
-  (nw: PeNew)    => PeNew(nw.newType, llExpr(nw.newParam, ctx, paramLets),
-                          nw.penwLine)
-  (qq: PeCoalesce) => PeCoalesce(llExpr(qq.qqSubject, ctx, paramLets),
-                                   llExpr(qq.qqFallback, ctx, paramLets),
-                                   qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(llExpr(ar.arrObj, ctx, paramLets),
-                                   llExpr(ar.arrIndex, ctx, paramLets),
-                                   ar.pearLine)
-  (cv: PeConvert) => PeConvert(llExpr(cv.convInner, ctx, paramLets),
-                               cv.convTarget, cv.pecvLine)
-  (wx: PeWith)   => PeWith(llExpr(wx.withSubject, ctx, paramLets),
-                           llExpr(wx.withRepls, ctx, paramLets),
-                           wx.pewLine)
-  (lp: PeLoop)   => PeLoop(llExpr(lp.loopBody, ctx, paramLets),
-                           lp.loopParams, lp.pelpLine)
-  (rc: PeRecur)  => PeRecur(llExprs(rc.recArgs, ctx, paramLets,
-                                    List()),
-                            rc.recIndex, rc.percLine)
-  (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                               map(ne.fieldArgs, (fa) =>
-                                 PFieldArg(fa.faName, llExpr(fa.faValue, ctx, paramLets))),
-                               ne.neTypeParams, ne.penewLine)
-  (o: PeLiteral) => x
-  (o: PeLazy) => x
-  (o: PeName) => x
-
-fun llCallExpr(c: PeCall, ctx: LiftCtx, paramLets: List<PStmt>)
-  let rebuilt = PeCall(llExpr(c.function, ctx, paramLets),
-                       llExpr(c.parameter, ctx, paramLets), c.pecLine)
-  ret match(rebuilt.function)
+fun llCallExpr(x: PExpr, ctx: LiftCtx): PExpr|None => match(x)
+  (c: PeCall) => match(c.function)
     (nm: PeName) => isEmpty(llExtrasFor(ctx, nm.refName))
-      ? rebuilt
-      : PeCall(rebuilt.function,
-               PeTuple(concat(llCallArgs(rebuilt.parameter),
-                              llExtraEnts(llExtrasFor(ctx,
-                                                            nm.refName),
-                                          rebuilt.pecLine, List())),
-                       rebuilt.pecLine),
-               rebuilt.pecLine)
-    (o: PExpr)   => rebuilt
+      ? None
+      : with c(parameter = PeTuple(concat(llCallArgs(c.parameter),
+                                          llExtraEnts(llExtrasFor(ctx, nm.refName), c.pecLine, List())),
+                                   c.pecLine))
+    (o: PExpr)   => None
+  (o: PExpr) => None
 
 fun llExtraEnts(ns: List<String>, lr, acc: List<PTupEnt>) =>
   fold(ns, acc, (a, x) => append(a, PTupEnt("", false, PeName(x, List(), lr, None))))
-
-fun llExprs(es: List<PExpr>, ctx: LiftCtx, paramLets: List<PStmt>, acc: List<PExpr>) =>
-  fold(es, acc, (a, x) => append(a, llExpr(x, ctx, paramLets)))
-
-fun llEnts(es: List<PTupEnt>, ctx: LiftCtx, paramLets: List<PStmt>, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
-                llExpr(x.tupValue, ctx, paramLets))))
-
-fun llArms(as2: List<PArm>, ctx: LiftCtx, paramLets: List<PStmt>, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armBody = llExpr(x.armBody, ctx, paramLets), armGuard = llExprOpt(x.armGuard, ctx, paramLets))))

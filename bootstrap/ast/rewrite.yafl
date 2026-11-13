@@ -1,28 +1,43 @@
-# bootstrap/rewrite.yafl — THE tree traversal, written once. This is
-# pyast/rewrite.py's role in the port: Python distributes the walk across
-# each node's search_and_replace method and derives the rebuild by
-# reflection; YAFL has no reflection (by design), so the same walk is a
-# single hand-written bottom-up rebuild, and every pass supplies only its
-# leaf rules as callbacks.
+# bootstrap/ast/rewrite.yafl — THE tree traversal, written once: pyast's
+# search_and_replace. Python distributes it across each node's own method and
+# rebuilds by `dataclasses.replace`; here every node's children are stated in
+# ONE place — the `walk` below — and every pass supplies only its callbacks.
+# No other walker restates what a node's children are.
 #
-# THE VISIT-SET LAW (verified against each node's search_and_replace):
-#   Fun        visits params, body, ret, wheres
-#   Let        visits ONLY default + declared type — NEVER wheres
-#   Destructure visits default, type, targets
-#   Typealias  visits ONLY its type — NEVER wheres
-#   Class      visits params, members, implements, wheres, cAllParents —
-#              NEVER cAllSlots
-#   Enum       visits params, variants, eSpec — its SEnum's all_fields are
-#              NEVER visited (recursive enums would loop); passes that need
-#              them use walk-all-fields style helpers with visited sets
-#   NamedSpec  is a traversal LEAF: the callback fires on the node, its
-#              params are never visited
-#   PeName     visits refTypeParams and penTrait — a penTrait replacement
-#              that is not an SClass becomes None (access.py:374-378)
+# The walk mirrors search_and_replace node for node:
+#   * the SAME visit set, in the SAME order (the kwargs order of each node's
+#     rw.rewrite call — e.g. a class's cAllParents before its params, an
+#     enum's eSpec before its params, a name's penTrait before its type args);
+#   * BOTTOM-UP: a node's children first, then the callback on the rebuilt
+#     node; a replacement is not re-visited;
+#   * the scope each node hands its children — block lets, lambda params, arm
+#     bindings, if-branch lets, a function's body scope, a class body, generic
+#     params — and the scope each callback receives (a function's and a
+#     class's own callback see their NESTED scope, as rw.rewrite is handed it);
+#   * the change signal of pyast/rewrite.py's UNCHANGED: a subtree nothing
+#     changed is returned as it was, so a walk that only collects rebuilds
+#     nothing;
+#   * a union re-flattens after its members are rewritten (CombinationSpec).
 #
-# Callback protocol: return the replacement, or None for "no change here".
-# Children are rebuilt FIRST, then the callback fires on the rebuilt node
-# (bottom-up, like rw.rewrite); a replacement is NOT re-visited.
+# THE VISIT-SET LAW (search_and_replace's):
+#   Fun        params, body, ret, wheres
+#   Let        default, declared type — NEVER wheres
+#   Destructure default, type, targets
+#   Typealias  ONLY its type — NEVER wheres
+#   Class      cAllParents, params, members, implements, wheres — NEVER cAllSlots
+#   Enum       eSpec, params, variants — an SEnum's all_fields are NEVER
+#              visited (recursive enums would loop)
+#   Instance   pattern, wheres, members
+#   NamedSpec  a LEAF: its params are never visited
+#   PeName     penTrait, refTypeParams — a penTrait replacement that is not an
+#              SClass becomes None (access.py), as an eSpec one that is not
+#              an SEnum does (types.py)
+#   BuiltinOp  type, params — never its name
+#
+# Callbacks receive the walk's state, the scope in effect at the node, and the
+# node; they return the new state and the replacement, or None for "no change
+# here". State threads through every callback in visit order — the YAFL
+# spelling of a Python callback closing over a counter or a collector.
 namespace Bootstrap::Ast
 
 import System
@@ -34,6 +49,38 @@ import Bootstrap::Resolve
 
 
 
+# ── API ──────────────────────────────────────────────────────────────────────
+
+class [final] Walk<S>(wkOnExpr: (:S, :Resolver, :PExpr): (s: S, r: PExpr|None),
+                      wkOnStmt: (:S, :Resolver, :PStmt): (s: S, r: PStmt|None),
+                      wkOnSpec: (:S, :Resolver, :Spec): (s: S, r: Spec|None))
+
+fun walkStmts<S>(ss: List<PStmt>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PStmt>)
+  let o = wkStmts(ss, r, s, w)
+  ret (s = o.s, x = o.x)
+
+fun walkStmt<S>(st: PStmt, r: Resolver, s: S, w: Walk<S>): (s: S, x: PStmt)
+  let o = wkStmt(st, r, s, w)
+  ret (s = o.s, x = o.x)
+
+fun walkExpr<S>(x: PExpr, r: Resolver, s: S, w: Walk<S>): (s: S, x: PExpr)
+  let o = wkExpr(x, r, s, w)
+  ret (s = o.s, x = o.x)
+
+fun walkSpec<S>(sp: Spec, r: Resolver, s: S, w: Walk<S>): (s: S, x: Spec)
+  let o = wkSpec(sp, r, s, w)
+  ret (s = o.s, x = o.x)
+
+# The callbacks that change nothing.
+fun wkNoExpr<S>(s: S, r: Resolver, x: PExpr): (s: S, r: PExpr|None) => (s = s, r = None)
+
+fun wkNoStmt<S>(s: S, r: Resolver, st: PStmt): (s: S, r: PStmt|None) => (s = s, r = None)
+
+fun wkNoSpec<S>(s: S, r: Resolver, sp: Spec): (s: S, r: Spec|None) => (s = s, r = None)
+
+# ── stateless rewrites ───────────────────────────────────────────────────────
+# A walk whose callbacks only replace: no state, no scope read.
+
 class [final] Rw(rwFnExpr: (:PExpr): PExpr|None,
                  rwFnSpec: (:Spec): Spec|None,
                  rwFnStmt: (:PStmt): PStmt|None)
@@ -44,775 +91,375 @@ fun rwNoSpec(sp: Spec): Spec|None => None
 
 fun rwNoStmt(st: PStmt): PStmt|None => None
 
-# The common shapes.
 fun rwOnExpr(f): Rw => Rw(f, rwNoSpec, rwNoStmt)
 
 fun rwOnSpec(f): Rw => Rw(rwNoExpr, f, rwNoStmt)
 
-fun rwOnStmt(f): Rw => Rw(rwNoExpr, rwNoSpec, f)
+fun rwWalk(w: Rw): Walk<Bool> =>
+  Walk<Bool>((s, _r, x) => (s = s, r = w.rwFnExpr(x)),
+             (s, _r, st) => (s = s, r = w.rwFnStmt(st)),
+             (s, _r, sp) => (s = s, r = w.rwFnSpec(sp)))
+
+fun rwStmts(ss: List<PStmt>, w: Rw): List<PStmt> => wkStmts(ss, emptyResolverGlobal, false, rwWalk(w)).x
+
+fun rwExpr(x: PExpr, w: Rw): PExpr => wkExpr(x, emptyResolverGlobal, false, rwWalk(w)).x
+
+fun rwSpec(sp: Spec, w: Rw): Spec => wkSpec(sp, emptyResolverGlobal, false, rwWalk(w)).x
+
+fun rwEntries(es: List<SEntry>, w: Rw): List<SEntry> =>
+  wkEntries(es, emptyResolverGlobal, false, rwWalk(w)).x
+
+# ── folds ────────────────────────────────────────────────────────────────────
+# A walk whose callbacks only accumulate, in visit order (bottom-up).
+
+fun foldWalk<T>(f: (:T, :PStmt): T, fx: (:T, :PExpr): T): Walk<T> =>
+  Walk<T>((a, _r, x) => (s = fx(a, x), r = None),
+          (a, _r, st) => (s = f(a, st), r = None),
+          wkNoSpec<T>)
+
+fun foldStmts<T>(ss: List<PStmt>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
+  wkStmts(ss, emptyResolverGlobal, acc, foldWalk(f, fx)).s
+
+fun foldStmt<T>(st: PStmt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
+  wkStmt(st, emptyResolverGlobal, acc, foldWalk(f, fx)).s
+
+fun foldExpr<T>(x: PExpr, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
+  wkExpr(x, emptyResolverGlobal, acc, foldWalk(f, fx)).s
+
+# Every spec in the tree, children before parents — the order
+# collect_discriminator_ids numbers union members in, observable in the C.
+fun foldAllSpecs<T>(ss: List<PStmt>, f: (:T, :Spec): T, acc: T): T =>
+  wkStmts(ss, emptyResolverGlobal, acc,
+          Walk<T>(wkNoExpr<T>, wkNoStmt<T>, (a, _r, sp) => (s = f(a, sp), r = None))).s
+
+# Every expression, with the scope it is in.
+fun foldExprsScoped<T>(ss: List<PStmt>, r: Resolver,
+                       fx: (:T, :PExpr, :Resolver): T, acc: T): T =>
+  wkStmts(ss, r, acc,
+          Walk<T>((a, r2, x) => (s = fx(a, x, r2), r = None), wkNoStmt<T>, wkNoSpec<T>)).s
+
+# ── the walk: one node ───────────────────────────────────────────────────────
+# Every wk* returns (state, node, changed): the node is the ORIGINAL when
+# nothing under it changed, and `changed` says so — pyast/rewrite.py's
+# UNCHANGED, so lists are rebuilt only where an element changed and `with`
+# keeps the original wherever its replacements are the fields it had.
+
+fun wkStmt<S>(st: PStmt, r: Resolver, s: S, w: Walk<S>): (s: S, x: PStmt, ch: Bool)
+  let own = wkOwnScope(st, r)
+  let kids = wkStmtKids(st, r, own, s, w)
+  let out = w.wkOnStmt(kids.s, own, kids.x)
+  ret match(out.r)
+    (rep: PStmt) => (s = out.s, x = rep, ch = true)
+    ()           => (s = out.s, x = kids.x, ch = kids.ch)
+
+fun wkExpr<S>(x: PExpr, r: Resolver, s: S, w: Walk<S>): (s: S, x: PExpr, ch: Bool)
+  let kids = wkExprKids(x, r, s, w)
+  let out = w.wkOnExpr(kids.s, r, kids.x)
+  ret match(out.r)
+    (rep: PExpr) => (s = out.s, x = rep, ch = true)
+    ()           => (s = out.s, x = kids.x, ch = kids.ch)
+
+fun wkSpec<S>(sp: Spec, r: Resolver, s: S, w: Walk<S>): (s: S, x: Spec, ch: Bool) => match(sp)
+  (cm: SCombination) => wkUnion(cm, r, s, w)
+  (o: Spec)          => wkSpecDone(wkSpecKids(sp, r, s, w), r, w)
+
+fun wkSpecDone<S>(kids: (s: S, x: Spec, ch: Bool), r: Resolver, w: Walk<S>): (s: S, x: Spec, ch: Bool)
+  let out = w.wkOnSpec(kids.s, r, kids.x)
+  ret match(out.r)
+    (rep: Spec) => (s = out.s, x = rep, ch = true)
+    ()          => (s = out.s, x = kids.x, ch = kids.ch)
+
+# CombinationSpec.search_and_replace: rewrite the members, then re-flatten —
+# a substitution can put a union where a member was. A union that flattens to
+# ONE member IS that member (no callback); one whose members neither changed
+# nor re-flattened is the original.
+fun wkUnion<S>(cm: SCombination, r: Resolver, s: S, w: Walk<S>): (s: S, x: Spec, ch: Bool)
+  let ms = wkSpecs(cm.scTypes, r, s, w)
+  let flat = reprMembersOf(ms.x)
+  ret exactly(flat, 1)
+    ? (s = ms.s, x = head(flat) ?? cm, ch = true)
+    : (!ms.ch && sameCount(flat, cm.scTypes)
+       ? wkSpecDone((s = ms.s, x = cm, ch = false), r, w)
+       : wkSpecDone((s = ms.s, x = with cm(scTypes = flat), ch = true), r, w))
+
+fun sameCount<T>(a: List<T>, b: List<T>): Bool => wkLen(a) == wkLen(b)
+
+fun wkLen<T>(xs: List<T>): Int => fold(xs, 0, (n, _x) => n + 1)
+
+# The scope a statement's OWN callback receives, and its nested children see.
+fun wkOwnScope(st: PStmt, r: Resolver): Resolver => match(st)
+  (f: PsFun)   => funBodyScope(f, r)
+  (c: PsClass) => genScope(c.cGens, c.cWheres, RClassBody(c, r))
+  (o: PStmt)   => r
 
 # ── statements ───────────────────────────────────────────────────────────────
 
-# List fields are rewritten with `map`, which always builds a new list: a
-# parent's `with` then sees a changed field and rebuilds too, so a walk that
-# changes nothing still allocates along every list (the old Chain spine was
-# rebuilt through `with` and kept identity). Correct either way — identity
-# never surfaces — but see docs/preserving-rewrites-design.md for the cost.
-fun rwStmts(ss, w: Rw): List<PStmt> => rwStmtChain(ss, w)
+fun wkStmtKids<S>(st: PStmt, r: Resolver, own: Resolver, s: S, w: Walk<S>): (s: S, x: PStmt, ch: Bool) => match(st)
+  (f: PsFun) => wkStmt(f.fParams, r, s, w)
+    |> (p) => (p, wkExprOpt(f.fBody, own, p.s, w))
+    |> (p, b) => (p, b, wkSpecOpt(f.fRet, r, b.s, w))
+    |> (p, b, rt) => (p, b, rt, wkSpecs(f.fWheres, r, rt.s, w))
+    |> (p, b, rt, wh) => (s = wh.s,
+                          x = with f(fParams = p.x, fBody = b.x, fRet = rt.x, fWheres = wh.x),
+                          ch = p.ch || b.ch || rt.ch || wh.ch)
+  (l: PsLet) => wkExprOpt(l.lDefault, r, s, w)
+    |> (d) => (d, wkSpecOpt(l.lType, r, d.s, w))
+    |> (d, t) => (s = t.s, x = with l(lDefault = d.x, lType = t.x), ch = d.ch || t.ch)
+  (d: PsDestructure) => wkExprOpt(d.dDefault, r, s, w)
+    |> (dv) => (dv, wkSpecOpt(d.dType, r, dv.s, w))
+    |> (dv, t) => (dv, t, wkStmts(d.dTargets, r, t.s, w))
+    |> (dv, t, ts) => (s = ts.s,
+                       x = with d(dDefault = dv.x, dType = t.x, dTargets = ts.x),
+                       ch = dv.ch || t.ch || ts.ch)
+  (ta: PsTypealias) => wkSpec(ta.taType, r, s, w)
+    |> (t) => (s = t.s, x = with ta(taType = t.x), ch = t.ch)
+  (c: PsClass) => wkSpecsOpt(c.cAllParents, r, s, w)
+    |> (ap) => (ap, wkStmt(c.cParams, r, ap.s, w))
+    |> (ap, p) => (ap, p, wkStmts(c.cMembers, own, p.s, w))
+    |> (ap, p, ms) => (ap, p, ms, wkSpecs(c.cImplements, r, ms.s, w))
+    |> (ap, p, ms, im) => (ap, p, ms, im, wkSpecs(c.cWheres, r, im.s, w))
+    |> (ap, p, ms, im, wh) => (s = wh.s,
+                               x = with c(cAllParents = ap.x, cParams = p.x, cMembers = ms.x,
+                                          cImplements = im.x, cWheres = wh.x),
+                               ch = ap.ch || p.ch || ms.ch || im.ch || wh.ch)
+  (e2: PsEnum) => wkEnum(e2, r, s, w)
+  (ti: PsTraitInstance) => wkInstance(ti, genScope(ti.tiGens, ti.tiWheres, r), s, w)
+  (rt: PsRet) => wkExpr(rt.retValue, r, s, w)
+    |> (v) => (s = v.s, x = with rt(retValue = v.x), ch = v.ch)
+  (a: PsAction) => wkExpr(a.action, r, s, w)
+    |> (v) => (s = v.s, x = with a(action = v.x), ch = v.ch)
+  (fa: PsFieldAssign) => wkExpr(fa.faTarget, r, s, w)
+    |> (t) => (t, wkExpr(fa.faValue, r, t.s, w))
+    |> (t, v) => (s = v.s, x = with fa(faTarget = t.x, faValue = v.x), ch = t.ch || v.ch)
+  (i: PsIf) => wkExpr(i.ifCond, r, s, w)
+    |> (cd) => (cd, wkStmts(i.ifTrue, localScope(i.ifTrue, r), cd.s, w))
+    |> (cd, tb) => (cd, tb, wkStmts(i.ifFalse, localScope(i.ifFalse, r), tb.s, w))
+    |> (cd, tb, fb) => (s = fb.s,
+                        x = with i(ifCond = cd.x, ifTrue = tb.x, ifFalse = fb.x),
+                        ch = cd.ch || tb.ch || fb.ch)
+  (ei: PsElseIf) => wkExpr(ei.eiCond, r, s, w)
+    |> (cd) => (cd, wkStmts(ei.eiStmts, r, cd.s, w))
+    |> (cd, b) => (s = b.s, x = with ei(eiCond = cd.x, eiStmts = b.x), ch = cd.ch || b.ch)
+  (el: PsElse) => wkStmts(el.elStmts, r, s, w)
+    |> (b) => (s = b.s, x = with el(elStmts = b.x), ch = b.ch)
+  (im: PsImport)    => (s = s, x = st, ch = false)
+  (ns: PsNamespace) => (s = s, x = st, ch = false)
 
-fun rwStmtChain(ss: List<PStmt>, w: Rw): List<PStmt> => map(ss, (x) => rwStmt(x, w))
+# EnumStatement.search_and_replace: its spec first (a replacement that is not
+# an enum spec becomes None), then params and variants in the generic scope.
+fun wkEnum<S>(e2: PsEnum, r: Resolver, s: S, w: Walk<S>): (s: S, x: PStmt, ch: Bool)
+  let vr = enumScope(e2, r)
+  ret wkSpecOpt(e2.eSpec, r, s, w)
+    |> (sp) => (sp, wkStmt(e2.eParams, vr, sp.s, w))
+    |> (sp, p) => (sp, p, wkStmts(e2.eVariants, vr, p.s, w))
+    |> (sp, p, vs) => (s = vs.s,
+                       x = with e2(eSpec = enumSpecOnly(sp.x), eParams = p.x, eVariants = vs.x),
+                       ch = sp.ch || p.ch || vs.ch)
 
-fun rwStmt(st, w: Rw)
-  let rebuilt = rwStmtKids(st, w)
-  ret match(w.rwFnStmt(rebuilt))
-    (r: PStmt) => r
-    ()         => rebuilt
+fun enumSpecOnly(sp: Spec|None): Spec|None => match(sp)
+  (se: SEnum) => se
+  ()          => None
 
-fun rwStmtKids(st, w: Rw): PStmt => match(st)
-  (f: PsFun)  => with f(fParams = rwStmt(f.fParams, w),
-                        fBody   = rwExprOpt(f.fBody, w),
-                        fRet    = rwSpecOpt(f.fRet, w),
-                        fWheres = rwSpecs(f.fWheres, w))
-  (l: PsLet)  => with l(lType    = rwSpecOpt(l.lType, w),
-                        lDefault = rwExprOpt(l.lDefault, w))
-  (d: PsDestructure) => with d(dType    = rwSpecOpt(d.dType, w),
-                               dTargets = rwStmts(d.dTargets, w),
-                               dDefault = rwExprOpt(d.dDefault, w))
-  (c: PsClass) => with c(cParams     = rwStmt(c.cParams, w),
-                         cImplements = rwSpecs(c.cImplements, w),
-                         cWheres     = rwSpecs(c.cWheres, w),
-                         cMembers    = rwStmts(c.cMembers, w),
-                         cAllParents = rwSpecsOpt(c.cAllParents, w))
-  (e2: PsEnum) => with e2(eParams   = rwStmt(e2.eParams, w),
-                          eVariants = rwStmts(e2.eVariants, w),
-                          eSpec     = rwSpecOpt(e2.eSpec, w))
-  (ta: PsTypealias) => with ta(taType = rwSpec(ta.taType, w))
-  (rt: PsRet)  => with rt(retValue = rwExpr(rt.retValue, w))
-  (a: PsAction) => with a(action = rwExpr(a.action, w))
-  (fa: PsFieldAssign) => with fa(faTarget = rwExpr(fa.faTarget, w), faValue = rwExpr(fa.faValue, w))
-  (i: PsIf)    => with i(ifCond  = rwExpr(i.ifCond, w),
-                         ifTrue  = rwStmts(i.ifTrue, w),
-                         ifFalse = rwStmts(i.ifFalse, w))
-  (o: PStmt)   => st
+fun wkInstance<S>(ti: PsTraitInstance, scoped: Resolver, s: S, w: Walk<S>): (s: S, x: PStmt, ch: Bool) =>
+  wkSpec(ti.tiPattern, scoped, s, w)
+    |> (pt) => (pt, wkSpecs(ti.tiWheres, scoped, pt.s, w))
+    |> (pt, wh) => (pt, wh, wkStmts(ti.tiMembers, scoped, wh.s, w))
+    |> (pt, wh, ms) => (s = ms.s,
+                        x = with ti(tiPattern = pt.x, tiWheres = wh.x, tiMembers = ms.x),
+                        ch = pt.ch || wh.ch || ms.ch)
 
 # ── expressions ──────────────────────────────────────────────────────────────
 
-fun rwExpr(x: PExpr, w: Rw): PExpr
-  let rebuilt = rwExprKids(x, w)
-  ret match(w.rwFnExpr(rebuilt))
-    (r: PExpr) => r
-    ()         => rebuilt
+fun wkExprKids<S>(x: PExpr, r: Resolver, s: S, w: Walk<S>): (s: S, x: PExpr, ch: Bool) => match(x)
+  (nm: PeName) => wkSpecOpt(nm.penTrait, r, s, w)
+    |> (t) => (t, wkSpecs(nm.refTypeParams, r, t.s, w))
+    |> (t, ps) => (s = ps.s,
+                   x = with nm(penTrait = traitOnly(t.x), refTypeParams = ps.x),
+                   ch = t.ch || ps.ch)
+  (d: PeDot) => wkExpr(d.base, r, s, w)
+    |> (b) => (s = b.s, x = with d(base = b.x), ch = b.ch)
+  (ar: PeArrayRead) => wkExpr(ar.arrObj, r, s, w)
+    |> (ob) => (ob, wkExpr(ar.arrIndex, r, ob.s, w))
+    |> (ob, ix) => (s = ix.s, x = with ar(arrObj = ob.x, arrIndex = ix.x), ch = ob.ch || ix.ch)
+  (lz: PeLazy) => wkSpec(lz.lzTarget, r, s, w)
+    |> (t) => (s = t.s, x = with lz(lzTarget = t.x), ch = t.ch)
+  (c: PeCall) => wkExpr(c.function, r, s, w)
+    |> (f) => (f, wkExpr(c.parameter, r, f.s, w))
+    |> (f, p) => (s = p.s, x = with c(function = f.x, parameter = p.x), ch = f.ch || p.ch)
+  (lm: PeLambda) => wkStmt(lm.lamParams, r, s, w)
+    |> (p) => (p, wkExpr(lm.lamBody, localScope(flattenParams(lm.lamParams), r), p.s, w))
+    |> (p, b) => (p, b, wkSpecOpt(lm.lamRet, r, b.s, w))
+    |> (p, b, rt) => (s = rt.s,
+                      x = with lm(lamParams = p.x, lamBody = b.x, lamRet = rt.x),
+                      ch = p.ch || b.ch || rt.ch)
+  (te: PeTernary) => wkExpr(te.condition, r, s, w)
+    |> (cd) => (cd, wkExpr(te.trueResult, r, cd.s, w))
+    |> (cd, tr) => (cd, tr, wkExpr(te.falseResult, r, tr.s, w))
+    |> (cd, tr, fr) => (s = fr.s,
+                        x = with te(condition = cd.x, trueResult = tr.x, falseResult = fr.x),
+                        ch = cd.ch || tr.ch || fr.ch)
+  (bk: PeBlock) => wkBlock(bk, blockScope(bk.blockStmts, r), s, w)
+  (op: PeBuiltinOp) => wkSpec(op.opType, r, s, w)
+    |> (t) => (t, wkExpr(op.opParams, r, t.s, w))
+    |> (t, p) => (s = p.s, x = with op(opType = t.x, opParams = p.x), ch = t.ch || p.ch)
+  (ps: PePinSet) => wkExpr(ps.psSubject, r, s, w)
+    |> (sb) => (sb, wkExpr(ps.psTarget, r, sb.s, w))
+    |> (sb, tg) => (sb, tg, wkExpr(ps.psValue, r, tg.s, w))
+    |> (sb, tg, vl) => (s = vl.s,
+                        x = with ps(psSubject = sb.x, psTarget = tg.x, psValue = vl.x),
+                        ch = sb.ch || tg.ch || vl.ch)
+  (qq: PeCoalesce) => wkExpr(qq.qqSubject, r, s, w)
+    |> (sb) => (sb, wkExpr(qq.qqFallback, r, sb.s, w))
+    |> (sb, fb) => (s = fb.s, x = with qq(qqSubject = sb.x, qqFallback = fb.x), ch = sb.ch || fb.ch)
+  (cv: PeConvert) => wkExpr(cv.convInner, r, s, w)
+    |> (iv) => (iv, wkSpec(cv.convTarget, r, iv.s, w))
+    |> (iv, t) => (s = t.s, x = with cv(convInner = iv.x, convTarget = t.x), ch = iv.ch || t.ch)
+  (rc: PeRecur) => wkExprs(rc.recArgs, r, s, w)
+    |> (as2) => (s = as2.s, x = with rc(recArgs = as2.x), ch = as2.ch)
+  (lp: PeLoop) => wkExpr(lp.loopBody, r, s, w)
+    |> (b) => (b, wkExprs(lp.loopParams, r, b.s, w))
+    |> (b, ps2) => (s = ps2.s, x = with lp(loopBody = b.x, loopParams = ps2.x), ch = b.ch || ps2.ch)
+  (nw: PeNew) => wkSpec(nw.newType, r, s, w)
+    |> (t) => (t, wkExpr(nw.newParam, r, t.s, w))
+    |> (t, p) => (s = p.s, x = with nw(newType = t.x, newParam = p.x), ch = t.ch || p.ch)
+  (ne: PeNewEnum) => wkFieldArgs(ne.fieldArgs, r, s, w)
+    |> (fas) => (fas, wkSpecs(ne.neTypeParams, r, fas.s, w))
+    |> (fas, ps2) => (s = ps2.s,
+                      x = with ne(fieldArgs = fas.x, neTypeParams = ps2.x),
+                      ch = fas.ch || ps2.ch)
+  (tp: PeTuple) => wkTupEnts(tp.exprs, r, s, w)
+    |> (es) => (s = es.s, x = with tp(exprs = es.x), ch = es.ch)
+  (wx: PeWith) => wkExpr(wx.withSubject, r, s, w)
+    |> (sb) => (sb, wkExpr(wx.withRepls, r, sb.s, w))
+    |> (sb, rp) => (s = rp.s, x = with wx(withSubject = sb.x, withRepls = rp.x), ch = sb.ch || rp.ch)
+  (mt: PeMatch) => wkExpr(mt.subject, r, s, w)
+    |> (sj) => (sj, wkArms(mt.arms, r, sj.s, w))
+    |> (sj, as2) => (sj, as2, wkExprs(mt.matchExtra, r, as2.s, w))
+    |> (sj, as2, ex) => (s = ex.s,
+                         x = with mt(subject = sj.x, arms = as2.x, matchExtra = ex.x),
+                         ch = sj.ch || as2.ch || ex.ch)
+  (o: PeLiteral) => (s = s, x = x, ch = false)
 
-fun rwExprOpt(x: PExpr|None, w: Rw) => match(x)
-  (e2: PExpr) => rwExpr(e2, w)
+# A trait-scope replacement that is not a class spec becomes None.
+fun traitOnly(sp: Spec|None): Spec|None => match(sp)
+  (c: SClass) => c
   ()          => None
 
-fun rwExprs(es, w: Rw): List<PExpr> => rwExprChain(es, w)
+# A block's statements and its value both see the block's own lets.
+fun wkBlock<S>(bk: PeBlock, bs: Resolver, s: S, w: Walk<S>): (s: S, x: PExpr, ch: Bool) =>
+  wkStmts(bk.blockStmts, bs, s, w)
+    |> (ss) => (ss, wkExpr(bk.blockValue, bs, ss.s, w))
+    |> (ss, v) => (s = v.s, x = with bk(blockStmts = ss.x, blockValue = v.x), ch = ss.ch || v.ch)
 
-fun rwExprChain(es: List<PExpr>, w: Rw): List<PExpr> => map(es, (x) => rwExpr(x, w))
+# MatchArm: its body and guard see its bindings; its type, literals and extra
+# positions see the match's scope.
+fun wkArm<S>(s: S, a: PArm, r: Resolver, w: Walk<S>): (s: S, x: PArm, ch: Bool)
+  let ar = armBodyScope(a, r)
+  ret wkExpr(a.armBody, ar, s, w)
+    |> (b) => (b, wkSpecOpt(a.armType, r, b.s, w))
+    |> (b, t) => (b, t, wkLits(a.armLiterals, r, t.s, w))
+    |> (b, t, ls) => (b, t, ls, wkExprOpt(a.armGuard, ar, ls.s, w))
+    |> (b, t, ls, g) => (b, t, ls, g, wkPositions(a.armExtra, r, g.s, w))
+    |> (b, t, ls, g, ex) => (s = ex.s,
+                             x = with a(armBody = b.x, armType = t.x, armLiterals = ls.x,
+                                        armGuard = g.x, armExtra = ex.x),
+                             ch = b.ch || t.ch || ls.ch || g.ch || ex.ch)
 
-fun rwExprKids(x, w: Rw): PExpr => match(x)
-  (nm: PeName)   => with nm(refTypeParams = rwSpecs(nm.refTypeParams, w),
-                            penTrait      = rwTrait(nm.penTrait, w))
-  (d: PeDot)     => with d(base = rwExpr(d.base, w))
-  (c: PeCall)    => with c(function  = rwExpr(c.function, w),
-                           parameter = rwExpr(c.parameter, w))
-  (tp: PeTuple)  => with tp(exprs = rwTupEnts(tp.exprs, w))
-  (te: PeTernary) => with te(condition   = rwExpr(te.condition, w),
-                             trueResult  = rwExpr(te.trueResult, w),
-                             falseResult = rwExpr(te.falseResult, w))
-  (ps: PePinSet) => with ps(psSubject = rwExpr(ps.psSubject, w),
-                            psTarget  = rwExpr(ps.psTarget, w),
-                            psValue   = rwExpr(ps.psValue, w))
-  (lm: PeLambda) => with lm(lamParams = rwStmt(lm.lamParams, w),
-                            lamBody   = rwExpr(lm.lamBody, w),
-                            lamRet    = rwSpecOpt(lm.lamRet, w))
-  (bk: PeBlock)  => with bk(blockStmts = rwStmts(bk.blockStmts, w),
-                            blockValue = rwExpr(bk.blockValue, w))
-  (mt: PeMatch)  => with mt(subject    = rwExpr(mt.subject, w),
-                            arms       = rwArms(mt.arms, w),
-                            matchExtra = rwExprs(mt.matchExtra, w))
-  (op: PeBuiltinOp) => with op(opType   = rwSpec(op.opType, w),
-                               opParams = rwExpr(op.opParams, w))
-  (nw: PeNew)    => with nw(newType  = rwSpec(nw.newType, w),
-                            newParam = rwExpr(nw.newParam, w))
-  # Python's s&r visits every field_args VALUE expression.
-  (ne: PeNewEnum) => with ne(fieldArgs    = rwFieldArgs(ne.fieldArgs, w),
-                             neTypeParams = rwSpecs(ne.neTypeParams, w))
-  (ar: PeArrayRead) => with ar(arrObj   = rwExpr(ar.arrObj, w),
-                               arrIndex = rwExpr(ar.arrIndex, w))
-  (cv: PeConvert) => with cv(convInner  = rwExpr(cv.convInner, w),
-                             convTarget = rwSpec(cv.convTarget, w))
-  (qq: PeCoalesce) => with qq(qqSubject  = rwExpr(qq.qqSubject, w),
-                              qqFallback = rwExpr(qq.qqFallback, w))
-  (wx: PeWith)   => with wx(withSubject = rwExpr(wx.withSubject, w),
-                            withRepls   = rwExpr(wx.withRepls, w))
-  (lp: PeLoop)   => with lp(loopBody   = rwExpr(lp.loopBody, w),
-                            loopParams = rwExprs(lp.loopParams, w))
-  (rc: PeRecur)  => with rc(recArgs = rwExprs(rc.recArgs, w))
-  # LazyExpression visits ONLY its target type (access.py:597-599).
-  (lz: PeLazy)   => with lz(lzTarget = rwSpec(lz.lzTarget, w))
-  (o: PeLiteral) => x
+fun wkLit<S>(s: S, lt: PLit, r: Resolver, w: Walk<S>): (s: S, x: PLit, ch: Bool) => match(lt)
+  (le: PlExpr) => wkExpr(le.litExpr, r, s, w)
+    |> (v) => (s = v.s, x = with le(litExpr = v.x), ch = v.ch)
+  (lr: PlRange) => wkExpr(lr.rangeLo, r, s, w)
+    |> (lo) => (lo, wkExpr(lr.rangeHi, r, lo.s, w))
+    |> (lo, hi) => (s = hi.s, x = with lr(rangeLo = lo.x, rangeHi = hi.x), ch = lo.ch || hi.ch)
 
-# A penTrait replacement that is not a class spec becomes None
-# (access.py:374-378).
-fun rwTrait(sp: Spec|None, w: Rw) => match(sp)
-  (s2: Spec) => match(rwSpec(s2, w))
-    (c: SClass) => c
-    (o: Spec)   => None
-  ()         => None
+fun wkPosition<S>(s: S, p: PPos, r: Resolver, w: Walk<S>): (s: S, x: PPos, ch: Bool) =>
+  wkSpecOpt(p.posType, r, s, w)
+    |> (t) => (s = t.s, x = with p(posType = t.x), ch = t.ch)
 
-fun rwTupEnts(es, w: Rw): List<PTupEnt> => rwTupEntChain(es, w)
+fun wkTupEnt<S>(s: S, te: PTupEnt, r: Resolver, w: Walk<S>): (s: S, x: PTupEnt, ch: Bool) =>
+  wkExpr(te.tupValue, r, s, w)
+    |> (v) => (s = v.s, x = with te(tupValue = v.x), ch = v.ch)
 
-fun rwTupEntChain(es: List<PTupEnt>, w: Rw): List<PTupEnt> => map(es, (x) => rwTupEnt(x, w))
-
-fun rwTupEnt(te2: PTupEnt, w: Rw) => with te2(tupValue = rwExpr(te2.tupValue, w))
-
-fun rwArms(as2, w: Rw): List<PArm> => rwArmChain(as2, w)
-
-fun rwArmChain(as2: List<PArm>, w: Rw): List<PArm> => map(as2, (x) => rwArm(x, w))
-
-fun rwArm(a: PArm, w: Rw): PArm => with a(armType     = rwSpecOpt(a.armType, w),
-                                          armBody     = rwExpr(a.armBody, w),
-                                          armLiterals = rwLits(a.armLiterals, w),
-                                          armGuard    = rwExprOpt(a.armGuard, w),
-                                          armExtra    = rwPositions(a.armExtra, w))
-
-# An extra position carries a SPEC, and a spec position a walker does not
-# reach is a spec that never resolves or substitutes.
-fun rwPositions(ps, w: Rw): List<PPos> => rwPosChain(ps, w)
-
-fun rwPosChain(ps: List<PPos>, w: Rw): List<PPos> => map(ps, (x) => with x(posType = rwSpecOpt(x.posType, w)))
-
-# Arm LITERALS are expressions and Python's MatchArm visits them
-# (match.py:181) — a fold or rewrite that skips them diverges (first seen as
-# _node_count undercounting literal-heavy functions below the inline
-# threshold).
-fun rwLits(ls, w: Rw): List<PLit> => rwLitChain(ls, w)
-
-fun rwLitChain(ls: List<PLit>, w: Rw): List<PLit> => map(ls, (x) => rwLit(x, w))
-
-fun rwLit(lt, w: Rw) => match(lt)
-  (le: PlExpr)  => with le(litExpr = rwExpr(le.litExpr, w))
-  (lr: PlRange) => with lr(rangeLo = rwExpr(lr.rangeLo, w),
-                           rangeHi = rwExpr(lr.rangeHi, w))
-
-fun rwFieldArgs(fas, w: Rw): List<PFieldArg> => rwFieldArgChain(fas, w)
-
-fun rwFieldArgChain(fas: List<PFieldArg>, w: Rw): List<PFieldArg> => map(fas, (x) => rwFieldArg(x, w))
-
-fun rwFieldArg(fa: PFieldArg, w: Rw) => with fa(faValue = rwExpr(fa.faValue, w))
+fun wkFieldArg<S>(s: S, fa: PFieldArg, r: Resolver, w: Walk<S>): (s: S, x: PFieldArg, ch: Bool) =>
+  wkExpr(fa.faValue, r, s, w)
+    |> (v) => (s = v.s, x = with fa(faValue = v.x), ch = v.ch)
 
 # ── specs ────────────────────────────────────────────────────────────────────
 
-fun rwSpec(sp, w: Rw): Spec
-  let rebuilt = rwSpecKids(sp, w)
-  ret match(w.rwFnSpec(rebuilt))
-    (r: Spec) => r
-    ()        => rebuilt
-
-fun rwSpecOpt(sp: Spec|None, w: Rw) => match(sp)
-  (s2: Spec) => rwSpec(s2, w)
-  ()         => None
-
-fun rwSpecs(ts, w: Rw): List<Spec> => rwSpecChain(ts, w)
-
-fun rwSpecChain(ts: List<Spec>, w: Rw): List<Spec> => map(ts, (x) => rwSpec(x, w))
-
-fun rwSpecsOpt(ss: List<Spec>|None, w: Rw): List<Spec>|None => match(ss)
-  (l: List<Spec>) => rwSpecs(l, w)
-  ()              => None
-
-fun rwSpecKids(sp, w: Rw): Spec => match(sp)
-  (e2: SEnum)        => with e2(seParams = rwSpecs(e2.seParams, w))
-  (cl: SClass)       => with cl(scParams = rwSpecs(cl.scParams, w))
-  (n: SNamed)        => sp   # traversal LEAF
-  (cm: SCombination) => with cm(scTypes = rwSpecs(cm.scTypes, w))
-  (t2: STuple)       => with t2(stEntries = rwEntries(t2.stEntries, w))
-  (cb: SCallable)    => with cb(scParams2 = rwSpec(cb.scParams2, w),
-                                scResult  = rwSpecOpt(cb.scResult, w))
-  (af: SArrayField)  => with af(safElem = rwSpec(af.safElem, w))
-  (ls: SLazyStub)    => with ls(slsTarget = rwSpecOpt(ls.slsTarget, w))
-  (o: Spec)          => sp
-
-fun rwEntries(es, w: Rw): List<SEntry> => rwEntryChain(es, w)
-
-fun rwEntryChain(es: List<SEntry>, w: Rw): List<SEntry> => map(es, (x) => rwEntry(x, w))
-
-fun rwEntry(se: SEntry, w: Rw) => with se(seType    = rwSpecOpt(se.seType, w),
-                                          seDefault = rwExprOpt(se.seDefault, w))
-
-# ── the fold twins ───────────────────────────────────────────────────────────
-# Same visit sets, no rebuild: the accumulator threads through every visited
-# node in traversal order (children after the node — a PRE-order fold, which
-# is what every scan in the compiler observes: counters and collectors are
-# order-insensitive or want first-encounter order).
-
-fun foldStmts<T>(ss: List<PStmt>, f: (:T, :PStmt): T,
-                 fx: (:T, :PExpr): T, acc: T): T => foldStmtLoop(ss, f, fx, acc)
-
-fun foldStmtLoop<T>(ss: List<PStmt>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(ss, acc, (a, x) => foldStmt(x, f, fx, a))
-
-fun foldStmt<T>(st, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
-                acc: T): T
-  let acc2 = f(acc, st)
-  ret match(st)
-    (fn: PsFun)  => foldSpecs(fn.fWheres, f, fx,
-                      foldSpecOpt(fn.fRet, f, fx,
-                        foldExprOpt(fn.fBody, f, fx,
-                          foldStmt(fn.fParams, f, fx, acc2))))
-    (l: PsLet)   => foldExprOpt(l.lDefault, f, fx,
-                                foldSpecOpt(l.lType, f, fx, acc2))
-    (d: PsDestructure) => foldStmts(d.dTargets, f, fx,
-                                    foldExprOpt(d.dDefault, f, fx,
-                                      foldSpecOpt(d.dType, f, fx,
-                                                  acc2)))
-    (rt: PsRet)  => foldExpr(rt.retValue, f, fx, acc2)
-    (a: PsAction) => foldExpr(a.action, f, fx, acc2)
-    (fa: PsFieldAssign) => foldExpr(fa.faValue, f, fx, foldExpr(fa.faTarget, f, fx, acc2))
-    (i: PsIf)    => foldStmts(i.ifFalse, f, fx,
-                              foldStmts(i.ifTrue, f, fx,
-                                        foldExpr(i.ifCond, f, fx,
-                                                 acc2)))
-    (c: PsClass) => foldStmts(c.cMembers, f, fx,
-                      foldSpecs(c.cWheres, f, fx,
-                        foldSpecs(c.cImplements, f, fx,
-                          foldStmt(c.cParams, f, fx,
-                            foldSpecsOpt(c.cAllParents, f, fx, acc2)))))
-    (e2: PsEnum) => foldSpecOpt(e2.eSpec, f, fx,
-                      foldStmts(e2.eVariants, f, fx,
-                        foldStmt(e2.eParams, f, fx, acc2)))
-    (ta: PsTypealias) => foldSpec(ta.taType, f, fx, acc2)
-    (o: PStmt)   => acc2
-
-fun foldExprOpt<T>(x: PExpr|None, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
-                   acc: T): T => match(x)
-  (e2: PExpr) => foldExpr(e2, f, fx, acc)
-  ()          => acc
-
-fun foldExpr<T>(x, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
-                acc: T): T
-  let acc2 = fx(acc, x)
-  ret match(x)
-    (nm: PeName)   => foldSpecOpt(nm.penTrait, f, fx,
-                        foldSpecs(nm.refTypeParams, f, fx, acc2))
-    (d: PeDot)     => foldExpr(d.base, f, fx, acc2)
-    (c: PeCall)    => foldExpr(c.parameter, f, fx,
-                               foldExpr(c.function, f, fx, acc2))
-    (tp: PeTuple)  => foldTupEnts(tp.exprs, f, fx, acc2)
-    (te: PeTernary) => foldExpr(te.falseResult, f, fx,
-                         foldExpr(te.trueResult, f, fx,
-                           foldExpr(te.condition, f, fx, acc2)))
-    (ps: PePinSet) => foldExpr(ps.psValue, f, fx,
-                        foldExpr(ps.psTarget, f, fx,
-                          foldExpr(ps.psSubject, f, fx, acc2)))
-    (lm: PeLambda) => foldSpecOpt(lm.lamRet, f, fx,
-                        foldExpr(lm.lamBody, f, fx,
-                          foldStmt(lm.lamParams, f, fx, acc2)))
-    (bk: PeBlock)  => foldExpr(bk.blockValue, f, fx,
-                               foldStmts(bk.blockStmts, f, fx, acc2))
-    (mt: PeMatch)  => foldArms(mt.arms, f, fx,
-                               foldExprs(mt.matchExtra, f, fx,
-                                 foldExpr(mt.subject, f, fx, acc2)))
-    (op: PeBuiltinOp) => foldExpr(op.opParams, f, fx,
-                                  foldSpec(op.opType, f, fx, acc2))
-    (nw: PeNew)    => foldExpr(nw.newParam, f, fx,
-                               foldSpec(nw.newType, f, fx, acc2))
-    (ar: PeArrayRead) => foldExpr(ar.arrIndex, f, fx,
-                                  foldExpr(ar.arrObj, f, fx, acc2))
-    (cv: PeConvert) => foldSpec(cv.convTarget, f, fx,
-                                foldExpr(cv.convInner, f, fx, acc2))
-    (qq: PeCoalesce) => foldExpr(qq.qqFallback, f, fx,
-                                 foldExpr(qq.qqSubject, f, fx, acc2))
-    (wx: PeWith)   => foldExpr(wx.withRepls, f, fx,
-                               foldExpr(wx.withSubject, f, fx, acc2))
-    (ne: PeNewEnum) => foldSpecs(ne.neTypeParams, f, fx,
-                         fold(ne.fieldArgs, acc2, (a3, fa) =>
-                            foldExpr(fa.faValue, f, fx, a3)))
-    (lp: PeLoop)   => foldExpr(lp.loopBody, f, fx,
-                               foldExprs(lp.loopParams, f, fx,
-                                         acc2))
-    (rc: PeRecur)  => foldExprs(rc.recArgs, f, fx, acc2)
-    (lz: PeLazy)   => foldSpec(lz.lzTarget, f, fx, acc2)
-    (o: PeLiteral) => acc2
-
-fun foldExprs<T>(es: List<PExpr>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(es, acc, (a, x) => foldExpr(x, f, fx, a))
-
-fun foldTupEnts<T>(es: List<PTupEnt>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(es, acc, (a, x) => foldExpr(x.tupValue, f, fx, a))
-
-fun foldArms<T>(as2: List<PArm>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(as2, acc, (a, x) => foldPositions(x.armExtra, f, fx,
-        foldExprOpt(x.armGuard, f, fx,
-                    foldLits(x.armLiterals, f, fx,
-                             foldExpr(x.armBody, f, fx,
-                               foldSpecOpt(x.armType, f, fx,
-                                           a))))))
-
-# Every extra position's SPEC — the same reach law as the rw walker.
-fun foldPositions<T>(ps: List<PPos>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(ps, acc, (a, x) => foldSpecOpt(x.posType, f, fx, a))
-
-fun foldLits<T>(ls: List<PLit>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(ls, acc, (a, x) => foldLit(x, f, fx, a))
-
-fun foldLit<T>(lt, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T => match(lt)
-  (le: PlExpr)  => foldExpr(le.litExpr, f, fx, acc)
-  (lr: PlRange) => foldExpr(lr.rangeHi, f, fx,
-                            foldExpr(lr.rangeLo, f, fx, acc))
-
-# Specs carry EXPRESSIONS: a tuple entry's default (Python's
-# TupleEntrySpec.search_and_replace descends `default`, so its callback
-# fires on those Expression instances). The fold twins must therefore
-# thread fx through every spec position the rewrite walker descends —
-# skipping them undercounts the _node_count mirror. That exact miss broke
-# whole-compiler c1 byte parity (found 08-12): aiNodeCount never saw the
-# default riding in a Convert TARGET, deRef fell under the inline
-# threshold in the port only, and Python kept calls the port inlined.
-# Specs themselves fire NO callback — Python counts only Expression/
-# Statement instances. Reach mirrors rwSpecKids/rwEntry exactly.
-
-fun foldSpec<T>(sp, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
-                acc: T): T => match(sp)
-  (e2: SEnum)        => foldSpecs(e2.seParams, f, fx, acc)
-  (cl: SClass)       => foldSpecs(cl.scParams, f, fx, acc)
-  (n: SNamed)        => acc   # traversal LEAF (rwSpecKids parity)
-  (cm: SCombination) => foldSpecs(cm.scTypes, f, fx, acc)
-  (t2: STuple)       => foldEntries(t2.stEntries, f, fx, acc)
-  (cb: SCallable)    => foldSpecOpt(cb.scResult, f, fx,
-                          foldSpec(cb.scParams2, f, fx, acc))
-  (af: SArrayField)  => foldSpec(af.safElem, f, fx, acc)
-  (ls: SLazyStub)    => foldSpecOpt(ls.slsTarget, f, fx, acc)
-  (o: Spec)          => acc
-
-fun foldSpecOpt<T>(sp: Spec|None, f: (:T, :PStmt): T, fx: (:T, :PExpr): T,
-                   acc: T): T => match(sp)
-  (s2: Spec) => foldSpec(s2, f, fx, acc)
-  ()         => acc
-
-fun foldSpecs<T>(ts: List<Spec>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(ts, acc, (a, x) => foldSpec(x, f, fx, a))
-
-fun foldSpecsOpt<T>(ss: List<Spec>|None, f: (:T, :PStmt): T,
-                    fx: (:T, :PExpr): T, acc: T): T => match(ss)
-  (l: List<Spec>) => foldSpecs(l, f, fx, acc)
-  ()              => acc
-
-fun foldEntries<T>(es: List<SEntry>, f: (:T, :PStmt): T, fx: (:T, :PExpr): T, acc: T): T =>
-  fold(es, acc, (a, x) => foldExprOpt(x.seDefault, f, fx, foldSpecOpt(x.seType, f, fx, a)))
-
-# ── counter-threading rewrite twins ──────────────────────────────────────────
-# Same traversal, threading an Int through in visit order — for passes whose
-# callbacks ALLOCATE (the inliner's fresh-suffix counter must increment in
-# exactly Python's order, including inside nested rewrites fired mid-walk).
-# The callback returns the updated counter plus the replacement (or None).
-
-class [final] RwN(rnFnExpr: (:Int, :Resolver|None, :PExpr): (n2: Int, r: PExpr|None),
-                  rnFnStmt: (:Int, :Resolver|None, :PStmt): (n2: Int, r: PStmt|None))
-class [final] RwNE(rneN: Int, rneExpr: PExpr)
-class [final] RwNS(rnsN: Int, rnsStmt: PStmt)
-class [final] RwNSs(rnssN: Int, rnssStmts: List<PStmt>)
-
-fun rwnNoExpr(n: Int, _sc: Resolver|None, x: PExpr): (n2: Int, r: PExpr|None) => (n, None)
-
-fun rwnNoStmt(n: Int, _sc: Resolver|None, st: PStmt): (n2: Int, r: PStmt|None) => (n, None)
-
-# ── the scope in effect at each node ─────────────────────────────────────────
-# Python's search_and_replace hands every node the resolver in effect THERE,
-# and a callback may read types through it: the inliner types an untyped
-# parameter's binding let from its argument, and an argument that names a
-# match-arm binder has a type only inside that arm. So the walk threads the
-# resolver and adds exactly the scopes Python's nodes add — block locals,
-# lambda params, match-arm bindings (with each extra position's), if-branch
-# lets, a function's params, a class body — while every other child sees its
-# parent's. Each callback receives its node's INCOMING resolver, as
-# rw.rewrite passes it. A walk that needs no scope (block_exits) threads None,
-# which stays None.
-
-fun rwnLocalScope(lets: List<PStmt>, sc: Resolver|None) => match(sc)
-  (r2: Resolver) => localScope(lets, r2)
-  ()             => None
-
-fun rwnFunScope(f: PsFun, sc: Resolver|None) => match(sc)
-  (r2: Resolver) => localScope(flattenParams(f.fParams),
-                               f.fNested ? r2 : traitScope(f.fWheres, r2))
-  ()             => None
-
-fun rwnClassScope(c, sc: Resolver|None) => match(sc)
-  (r2: Resolver) => genScope(c.cGens, c.cWheres, RClassBody(c, r2))
-  ()             => None
-
-# The arm's own binding, then one per extra position at its DECLARED type —
-# posScope's fallback type is the subject's, which search_and_replace does not
-# consult, so the fallback chain is empty.
-fun rwnArmScope(a: PArm, sc: Resolver|None) => match(sc)
-  (r2: Resolver) => armBodyScope(a, r2)
-  ()             => None
-
-fun rwnStmts(ss: List<PStmt>, w: RwN, sc, n) => rwnStmtLoop(ss, w, sc, n, List())
-
-# State fields named to match another fold over the same types — workaround for #88.
-fun rwnStmtLoop(ss: List<PStmt>, w: RwN, sc, n, acc) =>
-  fold(ss, (i = n, acc = acc), (st, x) => rwnStmtLoopStep(st, x, w, sc))
-    |> (r) => RwNSs(r.i, r.acc)
-
-fun rwnStmtLoopStep(st: (i: Int, acc: List<PStmt>), x: PStmt, w: RwN, sc) =>
-  rwnStmt(x, w, sc, st.i)
-  |> (o) => (i = o.rnsN, acc = append(st.acc, o.rnsStmt))
-
-fun rwnStmt(st, w: RwN, sc, n)
-  let kids = rwnStmtKids(st, w, sc, n)
-  let out = w.rnFnStmt(kids.rnsN, rwnOwnScope(st, sc), kids.rnsStmt)
-  ret match(out.r)
-    (rep: PStmt) => RwNS(out.n2, rep)
-    ()           => RwNS(out.n2, kids.rnsStmt)
-
-# The resolver a statement's OWN callback receives. Python's FunctionStatement
-# and ClassStatement hand rw.rewrite their nested scope (the body's, the
-# members'); every other statement hands on the scope it was entered with.
-fun rwnOwnScope(st, sc) => match(st)
-  (f: PsFun)   => rwnFunScope(f, sc)
-  (c: PsClass) => rwnClassScope(c, sc)
-  (o: PStmt)   => sc
-
-fun rwnStmtKids(st, w: RwN, sc, n) => match(st)
-  (f: PsFun)  => rwnStmt(f.fParams, w, sc, n)
-    |> (p) => (p, rwnExprOpt(f.fBody, w, rwnFunScope(f, sc), p.rnsN))
-    |> (p, b) => RwNS(b.rneN2,
-                      PsFun(f.fName, f.fAttrs, f.fGens, p.rnsStmt,
-                            b.rneExpr2, f.fRet, f.fWheres, f.psfLine,
-                            f.fRetInferred, f.fNested, f.fImports, f.fGlobal))
-  (l: PsLet)  => rwnExprOpt(l.lDefault, w, sc, n)
-    |> (d) => RwNS(d.rneN2,
-                   PsLet(l.lName, l.lAttrs, l.lGens, l.lType, d.rneExpr2,
-                         l.lArrayLen, l.lWheres, l.pslLine,
-                         l.lTypeInferred, l.lImports))
-  (d: PsDestructure) => rwnExprOpt(d.dDefault, w, sc, n)
-    |> (dv) => (dv, rwnStmts(d.dTargets, w, sc, dv.rneN2))
-    |> (dv, ts) => RwNS(ts.rnssN,
-                        PsDestructure(d.dName, d.dAttrs, d.dType,
-                                      ts.rnssStmts, dv.rneExpr2, d.psdLine,
-                                      d.dTypeInferred))
-  (c: PsClass) => rwnStmt(c.cParams, w, sc, n)
-    |> (p) => (p, rwnStmts(c.cMembers, w, rwnClassScope(c, sc), p.rnsN))
-    |> (p, ms) => RwNS(ms.rnssN,
-                       PsClass(c.cName, c.cAttrs, c.cGens, p.rnsStmt,
-                               c.cImplements, c.cWheres, ms.rnssStmts,
-                               c.cIsInterface, c.pscLine, c.cAllParents,
-                               c.cAllSlots, c.cImports))
-  (e2: PsEnum) => rwnStmt(e2.eParams, w, sc, n)
-    |> (p) => (p, rwnStmts(e2.eVariants, w, sc, p.rnsN))
-    |> (p, vs) => RwNS(vs.rnssN,
-                       PsEnum(e2.eName, e2.eAttrs, e2.eGens, p.rnsStmt,
-                              vs.rnssStmts,
-                              e2.eHasParams, e2.pseLine, e2.eRootName,
-                              e2.eSpec, e2.eImports))
-  (rt: PsRet)  => rwnExpr(rt.retValue, w, sc, n)
-    |> (v) => RwNS(v.rneN, PsRet(v.rneExpr, rt.psrLine))
-  (a: PsAction) => rwnExpr(a.action, w, sc, n)
-    |> (v) => RwNS(v.rneN, PsAction(v.rneExpr, a.psaLine))
-  (fa: PsFieldAssign) => rwnExpr(fa.faTarget, w, sc, n)
-    |> (t1) => rwnFieldAssignValue(fa, t1, w, sc)
-  (i: PsIf)    => rwnExpr(i.ifCond, w, sc, n)
-    |> (cd) => (cd, rwnStmts(i.ifTrue, w, rwnLocalScope(i.ifTrue, sc),
-                             cd.rneN))
-    |> (cd, tb) => (cd, tb, rwnStmts(i.ifFalse, w,
-                                     rwnLocalScope(i.ifFalse, sc),
-                                     tb.rnssN))
-    |> (cd, tb, fb) => RwNS(fb.rnssN,
-                            PsIf(cd.rneExpr, tb.rnssStmts, fb.rnssStmts,
-                                 i.psifLine))
-  (o: PStmt)   => RwNS(n, st)
-
-class [final] RwNEo(rneN2: Int, rneExpr2: PExpr|None)
-
-fun rwnExprOpt(x: PExpr|None, w: RwN, sc, n) => match(x)
-  (e2: PExpr) => rwnExpr(e2, w, sc, n)
-    |> (o) => RwNEo(o.rneN, o.rneExpr)
-  ()          => RwNEo(n, None)
-
-fun rwnExpr(x, w: RwN, sc, n)
-  let kids = rwnExprKids(x, w, sc, n)
-  let out = w.rnFnExpr(kids.rneN, sc, kids.rneExpr)
-  ret match(out.r)
-    (rep: PExpr) => RwNE(out.n2, rep)
-    ()           => RwNE(out.n2, kids.rneExpr)
-
-class [final] RwNEs(rnesN: Int, rnesExprs: List<PExpr>)
-class [final] RwNTs(rntsN: Int, rntsEnts: List<PTupEnt>)
-class [final] RwNAs(rnasN: Int, rnasArms: List<PArm>)
-
-# A block's statements and its value both see the block's own lets; the
-# block's callback (in rwnExpr) sees the scope it was entered with.
-fun rwnBlockIn(bk: PeBlock, w: RwN, bsc, n) => rwnStmts(bk.blockStmts, w, bsc, n)
-  |> (ss) => (ss, rwnExpr(bk.blockValue, w, bsc, ss.rnssN))
-  |> (ss, v) => RwNE(v.rneN, PeBlock(ss.rnssStmts, v.rneExpr,
-                                     bk.blockTag, bk.pebkLine))
-
-fun rwnExprKids(x, w: RwN, sc, n) => match(x)
-  (d: PeDot)     => rwnExpr(d.base, w, sc, n)
-    |> (b) => RwNE(b.rneN, PeDot(b.rneExpr, d.member, d.pedLine, d.pedIndex))
-  (c: PeCall)    => rwnExpr(c.function, w, sc, n)
-    |> (f) => (f, rwnExpr(c.parameter, w, sc, f.rneN))
-    |> (f, p) => RwNE(p.rneN, PeCall(f.rneExpr, p.rneExpr, c.pecLine))
-  (tp: PeTuple)  => rwnTupEnts(tp.exprs, w, sc, n, List())
-    |> (es) => RwNE(es.rntsN, PeTuple(es.rntsEnts, tp.petLine))
-  (te: PeTernary) => rwnExpr(te.condition, w, sc, n)
-    |> (cd) => (cd, rwnExpr(te.trueResult, w, sc, cd.rneN))
-    |> (cd, tr) => (cd, tr, rwnExpr(te.falseResult, w, sc, tr.rneN))
-    |> (cd, tr, fr) => RwNE(fr.rneN,
-                            PeTernary(cd.rneExpr, tr.rneExpr, fr.rneExpr,
-                                      te.pety))
-  (ps: PePinSet) => rwnExpr(ps.psSubject, w, sc, n)
-    |> (sb) => (sb, rwnExpr(ps.psTarget, w, sc, sb.rneN))
-    |> (sb, tg) => (sb, tg, rwnExpr(ps.psValue, w, sc, tg.rneN))
-    |> (sb, tg, vl) => RwNE(vl.rneN,
-                            PePinSet(sb.rneExpr, tg.rneExpr, vl.rneExpr,
-                                     ps.pepsLine))
-  (lm: PeLambda) => rwnStmt(lm.lamParams, w, sc, n)
-    |> (p) => (p, rwnExpr(lm.lamBody, w,
-                          rwnLocalScope(flattenParams(lm.lamParams), sc),
-                          p.rnsN))
-    |> (p, b) => RwNE(b.rneN, PeLambda(p.rnsStmt, b.rneExpr, lm.pelLine,
-                                       lm.lamRet))
-  (bk: PeBlock)  => rwnBlockIn(bk, w, rwnLocalScope(bk.blockStmts, sc), n)
-  # Python's order: subject, arms, extra subjects (match.py). The counter
-  # advances inside arms, so visiting the extras first would renumber any
-  # inline in an extra subject.
-  (mt: PeMatch)  => rwnExpr(mt.subject, w, sc, n)
-    |> (sj) => (sj, rwnArms(mt.arms, w, sc, sj.rneN, List()))
-    |> (sj, as3) => (sj, as3, rwnExprs(mt.matchExtra, w, sc,
-                                       as3.rnasN, List()))
-    |> (sj, as3, ex) => RwNE(ex.rnesN,
-                             with mt(subject    = sj.rneExpr,
-                                     arms       = as3.rnasArms,
-                                     matchExtra = ex.rnesExprs))
-  (op: PeBuiltinOp) => rwnExpr(op.opParams, w, sc, n)
-    |> (p) => RwNE(p.rneN, PeBuiltinOp(op.opType, op.opName, p.rneExpr,
-                                       op.peboLine))
-  (nw: PeNew)    => rwnExpr(nw.newParam, w, sc, n)
-    |> (p) => RwNE(p.rneN, PeNew(nw.newType, p.rneExpr, nw.penwLine))
-  (ar: PeArrayRead) => rwnExpr(ar.arrObj, w, sc, n)
-    |> (ob) => (ob, rwnExpr(ar.arrIndex, w, sc, ob.rneN))
-    |> (ob, ix) => RwNE(ix.rneN, PeArrayRead(ob.rneExpr, ix.rneExpr,
-                                             ar.pearLine))
-  (cv: PeConvert) => rwnExpr(cv.convInner, w, sc, n)
-    |> (iv) => RwNE(iv.rneN, PeConvert(iv.rneExpr, cv.convTarget,
-                                       cv.pecvLine))
-  (qq: PeCoalesce) => rwnExpr(qq.qqSubject, w, sc, n)
-    |> (sv) => (sv, rwnExpr(qq.qqFallback, w, sc, sv.rneN))
-    |> (sv, fv) => RwNE(fv.rneN, PeCoalesce(sv.rneExpr, fv.rneExpr,
-                                            qq.peqqLine))
-  (wx: PeWith)   => rwnExpr(wx.withSubject, w, sc, n)
-    |> (sv) => (sv, rwnExpr(wx.withRepls, w, sc, sv.rneN))
-    |> (sv, rv) => RwNE(rv.rneN, PeWith(sv.rneExpr, rv.rneExpr,
-                                        wx.pewLine))
-  (ne: PeNewEnum) => rwnFieldArgs(ne.fieldArgs, w, sc, n, List())
-    |> (fas) => RwNE(fas.rnfN, PeNewEnum(ne.rootName, ne.leafName,
-                                         fas.rnfArgs, ne.neTypeParams,
-                                         ne.penewLine))
-  # Python's order: body, then params (loop.py).
-  (lp: PeLoop)   => rwnExpr(lp.loopBody, w, sc, n)
-    |> (b) => (b, rwnExprs(lp.loopParams, w, sc, b.rneN, List()))
-    |> (b, ps) => RwNE(ps.rnesN, PeLoop(b.rneExpr, ps.rnesExprs,
-                                        lp.pelpLine))
-  (rc: PeRecur)  => rwnExprs(rc.recArgs, w, sc, n, List())
-    |> (as3) => RwNE(as3.rnesN, PeRecur(as3.rnesExprs, rc.recIndex,
-                                        rc.percLine))
-  (lz: PeLazy)   => RwNE(n, x)   # target type carries no counter work
-  (o: PeLiteral) => RwNE(n, x)
-  (o: PeName) => RwNE(n, x)
-
-class [final] RwNFas(rnfN: Int, rnfArgs: List<PFieldArg>)
-
-fun rwnFieldArgs(fas: List<PFieldArg>, w: RwN, sc, n, acc) =>
-  fold(fas, (n = n, acc = acc), (st, x) => rwnFieldArgsStep(st, x, w, sc))
-    |> (r) => RwNFas(r.n, r.acc)
-
-fun rwnFieldArgsStep(st: (n: Int, acc: List<PFieldArg>), x: PFieldArg, w: RwN, sc) =>
-  rwnExpr(x.faValue, w, sc, st.n)
-  |> (v) => (n = v.rneN, acc = append(st.acc, PFieldArg(x.faName, v.rneExpr)))
-
-fun rwnExprs(es: List<PExpr>, w: RwN, sc, n, acc) =>
-  fold(es, (n = n, acc = acc), (st, x) => rwnExprsStep(st, x, w, sc))
-    |> (r) => RwNEs(r.n, r.acc)
-
-fun rwnExprsStep(st: (n: Int, acc: List<PExpr>), x: PExpr, w: RwN, sc) =>
-  rwnExpr(x, w, sc, st.n)
-  |> (o) => (n = o.rneN, acc = append(st.acc, o.rneExpr))
-
-fun rwnTupEnts(es: List<PTupEnt>, w: RwN, sc, n, acc) =>
-  fold(es, (n = n, acc = acc), (st, x) => rwnTupEntsStep(st, x, w, sc))
-    |> (r) => RwNTs(r.n, r.acc)
-
-fun rwnTupEntsStep(st: (n: Int, acc: List<PTupEnt>), x: PTupEnt, w: RwN, sc) =>
-  rwnExpr(x.tupValue, w, sc, st.n)
-  |> (o) => (n = o.rneN, acc = append(st.acc, PTupEnt(x.tupName, x.tupSpread, o.rneExpr)))
-
-# An arm's body and guard see its binding; its literals see the match's scope.
-fun rwnArms(as2: List<PArm>, w: RwN, sc, n, acc) =>
-  fold(as2, (n = n, acc = acc), (st, x) => rwnArmsStep(st, x, w, sc))
-    |> (r) => RwNAs(r.n, r.acc)
-
-fun rwnArmsStep(st: (n: Int, acc: List<PArm>), x: PArm, w: RwN, sc) =>
-  rwnExpr(x.armBody, w, rwnArmScope(x, sc), st.n)
-  |> (b) => (b, rwnLits(x.armLiterals, w, sc, b.rneN, List()))
-    |> (b, ls) => (b, ls, rwnExprOpt(x.armGuard, w, rwnArmScope(x, sc), ls.rnlsN))
-      |> (b, ls, gd) => (n = gd.rneN2,
-        acc = append(st.acc,
-            with x(armBody = b.rneExpr, armLiterals = ls.rnlsLits, armGuard = gd.rneExpr2)))
-
-class [final] RwNLs(rnlsN: Int, rnlsLits: List<PLit>)
-
-fun rwnLits(ls: List<PLit>, w: RwN, sc, n, acc) =>
-  fold(ls, (n = n, acc = acc), (st, x) => rwnLitsStep(st, x, w, sc))
-    |> (r) => RwNLs(r.n, r.acc)
-
-fun rwnLitsStep(st: (n: Int, acc: List<PLit>), x: PLit, w: RwN, sc) => match(x)
-  (le: PlExpr) => rwnExpr(le.litExpr, w, sc, st.n)
-    |> (o) => (n = o.rneN, acc = append(st.acc, PlExpr(o.rneExpr)))
-  (lr: PlRange) => rwnExpr(lr.rangeLo, w, sc, st.n)
-    |> (lo) => (lo, rwnExpr(lr.rangeHi, w, sc, lo.rneN))
-      |> (lo, hi) => (n = hi.rneN,
-        acc = append(st.acc,
-            PlRange(lo.rneExpr, hi.rneExpr,
-                    lr.plrLine)))
-
-# ── foldAllSpecs: a BOTTOM-UP spec fold over the whole tree ──────────────────
-# Mirrors rwStmt/rwExprKids/rwSpecKids' traversal and visit sets EXACTLY, but
-# fires the callback on each SPEC in the same order Python's search_and_replace
-# `replace` fires (children before parents) — encounter-order consumers
-# (discriminator-id assignment) depend on that order, which the PRE-order fold
-# twins above deliberately do not provide.
-
-fun foldAllSpecs<T>(ss: List<PStmt>, f: (:T, :Spec): T, acc: T): T => fasStmts(ss, f, acc)
-
-fun fasStmts<T>(ss: List<PStmt>, f: (:T, :Spec): T, acc: T): T =>
-  fold(ss, acc, (a, x) => fasStmt(x, f, a))
-
-# Every walk below visits a node's parts in the order Python's
-# search_and_replace does: collect_discriminator_ids numbers union members in
-# the order they are first met, so the order is observable in the C.
-fun fasStmt<T>(st, f: (:T, :Spec): T, acc: T): T => match(st)
-  (f2: PsFun) => fasSpecs(f2.fWheres, f,
-                   fasSpecOpt(f2.fRet, f,
-                     fasExprOpt(f2.fBody, f,
-                       fasStmt(f2.fParams, f, acc))))
-  (l: PsLet)  => fasSpecOpt(l.lType, f, fasExprOpt(l.lDefault, f, acc))
-  (d: PsDestructure) => fasStmts(d.dTargets, f,
-                          fasSpecOpt(d.dType, f,
-                            fasExprOpt(d.dDefault, f, acc)))
-  (c: PsClass) => fasSpecsOpt(c.cAllParents, f,
-                    fasSpecs(c.cWheres, f,
-                      fasSpecs(c.cImplements, f,
-                        fasStmts(c.cMembers, f,
-                          fasStmt(c.cParams, f, acc)))))
-  (e2: PsEnum) => fasSpecOpt(e2.eSpec, f,
-                    fasStmts(e2.eVariants, f,
-                      fasStmt(e2.eParams, f, acc)))
-  (ta: PsTypealias) => fasSpec(ta.taType, f, acc)
-  (rt: PsRet)  => fasExpr(rt.retValue, f, acc)
-  (a: PsAction) => fasExpr(a.action, f, acc)
-  (fa: PsFieldAssign) => fasExpr(fa.faValue, f, fasExpr(fa.faTarget, f, acc))
-  (i: PsIf)    => fasStmts(i.ifFalse, f,
-                    fasStmts(i.ifTrue, f,
-                      fasExpr(i.ifCond, f, acc)))
-  (o: PStmt)   => acc
-
-fun fasExprOpt<T>(x: PExpr|None, f: (:T, :Spec): T, acc: T): T => match(x)
-  (e2: PExpr) => fasExpr(e2, f, acc)
-  ()           => acc
-
-fun fasExprs<T>(es: List<PExpr>, f: (:T, :Spec): T, acc: T): T =>
-  fold(es, acc, (a, x) => fasExpr(x, f, a))
-
-fun fasExpr<T>(x, f: (:T, :Spec): T, acc: T): T => match(x)
-  (nm: PeName)    => fasTrait(nm.penTrait, f, fasSpecs(nm.refTypeParams, f, acc))
-  (d: PeDot)      => fasExpr(d.base, f, acc)
-  (c: PeCall)     => fasExpr(c.parameter, f, fasExpr(c.function, f, acc))
-  (tp: PeTuple)   => fasTupEnts(tp.exprs, f, acc)
-  (te: PeTernary) => fasExpr(te.falseResult, f,
-                       fasExpr(te.trueResult, f,
-                         fasExpr(te.condition, f, acc)))
-  (ps: PePinSet)  => fasExpr(ps.psValue, f,
-                       fasExpr(ps.psTarget, f,
-                         fasExpr(ps.psSubject, f, acc)))
-  (lm: PeLambda)  => fasSpecOpt(lm.lamRet, f,
-                       fasExpr(lm.lamBody, f,
-                         fasStmt(lm.lamParams, f, acc)))
-  (bk: PeBlock)   => fasExpr(bk.blockValue, f, fasStmts(bk.blockStmts, f, acc))
-  (mt: PeMatch)   => fasExprs(mt.matchExtra, f,
-                             fasArms(mt.arms, f,
-                                     fasExpr(mt.subject, f, acc)))
-  (op: PeBuiltinOp) => fasExpr(op.opParams, f, fasSpec(op.opType, f, acc))
-  (nw: PeNew)     => fasExpr(nw.newParam, f, fasSpec(nw.newType, f, acc))
-  (ne: PeNewEnum) => fasSpecs(ne.neTypeParams, f,
-                              fold(ne.fieldArgs, acc, (a2, fa) =>
-                                fasExpr(fa.faValue, f, a2)))
-  (ar: PeArrayRead) => fasExpr(ar.arrIndex, f, fasExpr(ar.arrObj, f, acc))
-  (cv: PeConvert) => fasSpec(cv.convTarget, f, fasExpr(cv.convInner, f, acc))
-  (qq: PeCoalesce) => fasExpr(qq.qqFallback, f, fasExpr(qq.qqSubject, f, acc))
-  (wx: PeWith)   => fasExpr(wx.withRepls, f, fasExpr(wx.withSubject, f, acc))
-  (lp: PeLoop)    => fasExprs(lp.loopParams, f, fasExpr(lp.loopBody, f, acc))
-  (rc: PeRecur)   => fasExprs(rc.recArgs, f, acc)
-  (lz: PeLazy)    => fasSpec(lz.lzTarget, f, acc)
-  (o: PeLiteral) => acc
-
-fun fasTrait<T>(sp: Spec|None, f: (:T, :Spec): T, acc: T): T => fasSpecOpt(sp, f, acc)
-
-fun fasTupEnts<T>(es: List<PTupEnt>, f: (:T, :Spec): T, acc: T): T =>
-  fold(es, acc, (a, x) => fasExpr(x.tupValue, f, a))
-
-fun fasArms<T>(as2: List<PArm>, f: (:T, :Spec): T, acc: T): T =>
-  fold(as2, acc, (a, x) => fasPositions(x.armExtra, f,
-        fasExprOpt(x.armGuard, f,
-          fasLits(x.armLiterals, f,
-            fasSpecOpt(x.armType, f,
-              fasExpr(x.armBody, f, a))))))
-
-fun fasPositions<T>(ps: List<PPos>, f: (:T, :Spec): T, acc: T): T =>
-  fold(ps, acc, (a, x) => fasSpecOpt(x.posType, f, a))
-
-fun fasLits<T>(ls: List<PLit>, f: (:T, :Spec): T, acc: T): T =>
-  fold(ls, acc, (a, x) => fasLit(x, f, a))
-
-fun fasLit<T>(lt, f: (:T, :Spec): T, acc: T): T => match(lt)
-  (le: PlExpr)  => fasExpr(le.litExpr, f, acc)
-  (lr: PlRange) => fasExpr(lr.rangeHi, f, fasExpr(lr.rangeLo, f, acc))
-
-# Specs: kids first (bottom-up), then the node itself.
-fun fasSpec<T>(sp, f: (:T, :Spec): T, acc: T): T => f(fasSpecKids(sp, f, acc), sp)
-
-fun fasSpecOpt<T>(sp: Spec|None, f: (:T, :Spec): T, acc: T): T => match(sp)
-  (s2: Spec) => fasSpec(s2, f, acc)
-  ()          => acc
-
-fun fasSpecs<T>(ts: List<Spec>, f: (:T, :Spec): T, acc: T): T =>
-  fold(ts, acc, (a, x) => fasSpec(x, f, a))
-
-fun fasSpecsOpt<T>(ss: List<Spec>|None, f: (:T, :Spec): T, acc: T): T => match(ss)
-  (l: List<Spec>) => fasSpecs(l, f, acc)
-  ()               => acc
-
-fun fasSpecKids<T>(sp, f: (:T, :Spec): T, acc: T): T => match(sp)
-  (e2: SEnum)        => fasSpecs(e2.seParams, f, acc)
-  (cl: SClass)       => fasSpecs(cl.scParams, f, acc)
-  (n: SNamed)        => acc   # traversal LEAF
-  (cm: SCombination) => fasSpecs(cm.scTypes, f, acc)
-  (t2: STuple)       => fasEntries(t2.stEntries, f, acc)
-  (cb: SCallable)    => fasSpecOpt(cb.scResult, f, fasSpec(cb.scParams2, f, acc))
-  (af: SArrayField)  => fasSpec(af.safElem, f, acc)
-  (ls: SLazyStub)    => fasSpecOpt(ls.slsTarget, f, acc)
-  (o: Spec)          => acc
-
-fun fasEntries<T>(es: List<SEntry>, f: (:T, :Spec): T, acc: T): T =>
-  fold(es, acc, (a, x) => fasExprOpt(x.seDefault, f, fasSpecOpt(x.seType, f, a)))
-
-
-# A field assignment numbers its target, then its value from where the target
-# left off; both come back in the one node.
-fun rwnFieldAssignValue(fa: PsFieldAssign, t1: RwNE, w: RwN, sc)
-  ret rwnExpr(fa.faValue, w, sc, t1.rneN)
-    |> (v) => RwNS(v.rneN, PsFieldAssign(t1.rneExpr, v.rneExpr, fa.psfaLine))
+fun wkSpecKids<S>(sp: Spec, r: Resolver, s: S, w: Walk<S>): (s: S, x: Spec, ch: Bool) => match(sp)
+  (cb: SCallable) => wkSpec(cb.scParams2, r, s, w)
+    |> (p) => (p, wkSpecOpt(cb.scResult, r, p.s, w))
+    |> (p, rs) => (s = rs.s, x = with cb(scParams2 = p.x, scResult = rs.x), ch = p.ch || rs.ch)
+  (ls: SLazyStub) => wkSpecOpt(ls.slsTarget, r, s, w)
+    |> (t) => (s = t.s, x = with ls(slsTarget = t.x), ch = t.ch)
+  (af: SArrayField) => wkSpec(af.safElem, r, s, w)
+    |> (el) => (s = el.s, x = with af(safElem = el.x), ch = el.ch)
+  (cl: SClass) => wkSpecs(cl.scParams, r, s, w)
+    |> (ps) => (s = ps.s, x = with cl(scParams = ps.x), ch = ps.ch)
+  (e2: SEnum) => wkSpecs(e2.seParams, r, s, w)
+    |> (ps) => (s = ps.s, x = with e2(seParams = ps.x), ch = ps.ch)
+  (cm: SCombination) => wkSpecs(cm.scTypes, r, s, w)
+    |> (ms) => (s = ms.s, x = with cm(scTypes = ms.x), ch = ms.ch)
+  (t2: STuple) => wkEntries(t2.stEntries, r, s, w)
+    |> (es) => (s = es.s, x = with t2(stEntries = es.x), ch = es.ch)
+  (b: SBuiltin) => (s = s, x = sp, ch = false)
+  (n: SNamed)   => (s = s, x = sp, ch = false)   # a LEAF: params never visited
+  (g: SGeneric) => (s = s, x = sp, ch = false)
+
+fun wkEntry<S>(s: S, se: SEntry, r: Resolver, w: Walk<S>): (s: S, x: SEntry, ch: Bool) =>
+  wkSpecOpt(se.seType, r, s, w)
+    |> (t) => (t, wkExprOpt(se.seDefault, r, t.s, w))
+    |> (t, d) => (s = d.s, x = with se(seType = t.x, seDefault = d.x), ch = t.ch || d.ch)
+
+# ── optionals and lists ──────────────────────────────────────────────────────
+
+fun wkExprOpt<S>(x: PExpr|None, r: Resolver, s: S, w: Walk<S>): (s: S, x: PExpr|None, ch: Bool) => match(x)
+  (e2: PExpr) => wkExpr(e2, r, s, w) |> (o) => (s = o.s, x = o.x, ch = o.ch)
+  ()          => (s = s, x = None, ch = false)
+
+fun wkSpecOpt<S>(sp: Spec|None, r: Resolver, s: S, w: Walk<S>): (s: S, x: Spec|None, ch: Bool) => match(sp)
+  (s2: Spec) => wkSpec(s2, r, s, w) |> (o) => (s = o.s, x = o.x, ch = o.ch)
+  ()         => (s = s, x = None, ch = false)
+
+fun wkSpecsOpt<S>(ss: List<Spec>|None, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<Spec>|None, ch: Bool) => match(ss)
+  (l: List<Spec>) => wkSpecs(l, r, s, w) |> (o) => (s = o.s, x = o.x, ch = o.ch)
+  ()              => (s = s, x = None, ch = false)
+
+fun wkStmts<S>(ss: List<PStmt>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PStmt>, ch: Bool) =>
+  wkList(ss, s, (s2, x) => wkStmt(x, r, s2, w))
+
+fun wkExprs<S>(es: List<PExpr>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PExpr>, ch: Bool) =>
+  wkList(es, s, (s2, x) => wkExpr(x, r, s2, w))
+
+fun wkSpecs<S>(ts: List<Spec>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<Spec>, ch: Bool) =>
+  wkList(ts, s, (s2, x) => wkSpec(x, r, s2, w))
+
+fun wkArms<S>(as2: List<PArm>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PArm>, ch: Bool) =>
+  wkList(as2, s, (s2, x) => wkArm(s2, x, r, w))
+
+fun wkLits<S>(ls: List<PLit>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PLit>, ch: Bool) =>
+  wkList(ls, s, (s2, x) => wkLit(s2, x, r, w))
+
+fun wkPositions<S>(ps: List<PPos>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PPos>, ch: Bool) =>
+  wkList(ps, s, (s2, x) => wkPosition(s2, x, r, w))
+
+fun wkTupEnts<S>(es: List<PTupEnt>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PTupEnt>, ch: Bool) =>
+  wkList(es, s, (s2, x) => wkTupEnt(s2, x, r, w))
+
+fun wkFieldArgs<S>(fas: List<PFieldArg>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<PFieldArg>, ch: Bool) =>
+  wkList(fas, s, (s2, x) => wkFieldArg(s2, x, r, w))
+
+fun wkEntries<S>(es: List<SEntry>, r: Resolver, s: S, w: Walk<S>): (s: S, x: List<SEntry>, ch: Bool) =>
+  wkList(es, s, (s2, x) => wkEntry(s2, x, r, w))
+
+# rw.seq: each element in order; the ORIGINAL list when none changed. The new
+# list is started only at the first change, from the unchanged prefix.
+fun wkList<S, T>(xs: List<T>, s: S, f: (:S, :T): (s: S, x: T, ch: Bool)): (s: S, x: List<T>, ch: Bool)
+  let o = fold(xs, (s = s, i = 0, ch = false, acc = List<T>()), (st, x) => wkListStep(st, x, xs, f))
+  ret (s = o.s, x = o.ch ? o.acc : xs, ch = o.ch)
+
+fun wkListStep<S, T>(st: (s: S, i: Int, ch: Bool, acc: List<T>), x: T, xs: List<T>,
+                     f: (:S, :T): (s: S, x: T, ch: Bool)): (s: S, i: Int, ch: Bool, acc: List<T>)
+  let o = f(st.s, x)
+  ret (s = o.s, i = st.i + 1, ch = st.ch || o.ch,
+       acc = st.ch ? append(st.acc, o.x) : (o.ch ? append(take(xs, st.i), o.x) : st.acc))

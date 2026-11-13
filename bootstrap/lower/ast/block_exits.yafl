@@ -10,23 +10,21 @@ import System
 import System::Containers
 
 import Bootstrap::Ast
+import Bootstrap::Resolve
 
 
 
-# Numbering reads no types, so the walk threads no scope (None).
+# Numbering reads no types, so the walk starts from the empty root.
 fun assignBlockExits(statements: List<PStmt>): List<PStmt>
-  let blocks = rwnStmts(statements,
-                        RwN((n, _sc, x) => beBlockCb(n, x), rwnNoStmt),
-                        None, 0)
-  ret rwnStmts(blocks.rnssStmts,
-               RwN(rwnNoExpr, (n, _sc, st) => beRetCb(n, st)),
-               None, 0).rnssStmts
+  let blocks = walkStmts(statements, emptyResolverGlobal, 0,
+                         Walk<Int>((n, _sc, x) => beBlockCb(n, x), wkNoStmt<Int>, wkNoSpec<Int>)).x
+  ret walkStmts(blocks, emptyResolverGlobal, 0,
+                Walk<Int>(wkNoExpr<Int>, (n, _sc, st) => beRetCb(n, st), wkNoSpec<Int>)).x
 
-fun beBlockCb(n, x): (n2: Int, r: PExpr|None) => match(x)
-  (bk: PeBlock) => (n + 1, PeBlock(bk.blockStmts, bk.blockValue,
-                                   "blk@" + String(n), bk.pebkLine))
-  (o: PExpr)    => (n, None)
+fun beBlockCb(n: Int, x: PExpr): (s: Int, r: PExpr|None) => match(x)
+  (bk: PeBlock) => (s = n + 1, r = with bk(blockTag = "blk@" + String(n)))
+  (o: PExpr)    => (s = n, r = None)
 
-fun beRetCb(n, st): (n2: Int, r: PStmt|None) => match(st)
-  (rt: PsRet) => (n + 1, PsRet(rt.retValue, rt.psrLine, n))
-  (o: PStmt)  => (n, None)
+fun beRetCb(n: Int, st: PStmt): (s: Int, r: PStmt|None) => match(st)
+  (rt: PsRet) => (s = n + 1, r = with rt(retIndex = n))
+  (o: PStmt)  => (s = n, r = None)

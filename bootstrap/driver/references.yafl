@@ -9,16 +9,8 @@
 # the loaded statements ARE the program, a difference there is a difference in
 # the emitted C. This file is the second half.
 #
-# Python gets it from one reflective `search_and_replace` over the tree,
-# keeping names with `::` that sit on a NamedExpression or a NamedSpec. The
-# port has no reflective walk, so this is that walk written out: PeName's
-# refName and SNamed's snName, and nothing else — matching what the predicate
-# there admits, not merely "every string that looks qualified".
-#
-# The catch-all trap (nodes.yafl, PExpr): the arms below name the LEAF GROUPS
-# `PeLiteral` and `PeLowered` rather than trailing an open `(o: PExpr)`, so a
-# new node with children is a non-exhaustive-match error here instead of a
-# silent failure to descend.
+# Python gets it from one `search_and_replace` over the tree, keeping names
+# with `::` that sit on a NamedExpression or a NamedSpec; this is that walk.
 
 namespace Bootstrap::Driver
 
@@ -26,178 +18,26 @@ import System
 import System::Containers
 
 import Bootstrap::Ast
+import Bootstrap::Resolve
 
 
-fun qualifiedRefs(stmts: List<PStmt>) => sort(refsStmts(stmts, Set()))
+fun qualifiedRefs(stmts: List<PStmt>) =>
+  walkStmts(stmts, emptyResolverGlobal, Set<String>(),
+            Walk<Set<String>>((a, _r, x) => (s = refsExpr(x, a), r = None),
+                              wkNoStmt<Set<String>>,
+                              (a, _r, sp) => (s = refsSpec(sp, a), r = None))).s
+  |> (refs) => sort(refs)
 
 # A name is a candidate only when it is qualified; `prefixesOf` splits it and
 # strips the `@unique` tags later.
 fun noteName(name, acc): Set<String> => contains(name, "::") ? add(acc, name) : acc
 
-
-# ── statements ──────────────────────────────────────────────────────────────
-
-fun refsStmts(ss: List<PStmt>, acc: Set<String>) =>
-  fold(ss, acc, (a, x) => refsStmt(x, a))
-
-# fImports/cImports/... are deliberately NOT descended: the import group is
-# read directly by declaredImports, and descending it here would count each
-# block's imports once per statement of that block.
-fun refsStmt(st, acc): Set<String> => match(st)
-  (f: PsFun) => acc
-    |> (a) => refsAttrs(f.fAttrs, a)
-    |> (a) => refsGens(f.fGens, a)
-    |> (a) => refsStmt(f.fParams, a)
-    |> (a) => refsOptExpr(f.fBody, a)
-    |> (a) => refsOptSpec(f.fRet, a)
-    |> (a) => refsSpecs(f.fWheres, a)
-  (d: PsDestructure) => acc
-    |> (a) => refsAttrs(d.dAttrs, a)
-    |> (a) => refsOptSpec(d.dType, a)
-    |> (a) => refsStmts(d.dTargets, a)
-    |> (a) => refsOptExpr(d.dDefault, a)
-  (l2: PsLet) => acc
-    |> (a) => refsAttrs(l2.lAttrs, a)
-    |> (a) => refsGens(l2.lGens, a)
-    |> (a) => refsOptSpec(l2.lType, a)
-    |> (a) => refsOptExpr(l2.lDefault, a)
-    |> (a) => refsSpecs(l2.lWheres, a)
-  (c: PsClass) => acc
-    |> (a) => refsAttrs(c.cAttrs, a)
-    |> (a) => refsGens(c.cGens, a)
-    |> (a) => refsStmt(c.cParams, a)
-    |> (a) => refsSpecs(c.cImplements, a)
-    |> (a) => refsSpecs(c.cWheres, a)
-    |> (a) => refsStmts(c.cMembers, a)
-  (e: PsEnum) => acc
-    |> (a) => refsAttrs(e.eAttrs, a)
-    |> (a) => refsGens(e.eGens, a)
-    |> (a) => refsStmt(e.eParams, a)
-    |> (a) => refsStmts(e.eVariants, a)
-    |> (a) => refsOptSpec(e.eSpec, a)
-  (ta: PsTypealias) => acc
-    |> (a) => refsAttrs(ta.taAttrs, a)
-    |> (a) => refsGens(ta.taGens, a)
-    |> (a) => refsSpec(ta.taType, a)
-    |> (a) => refsSpecs(ta.taWheres, a)
-  (ti: PsTraitInstance) => acc
-    |> (a) => refsAttrs(ti.tiAttrs, a)
-    |> (a) => refsGens(ti.tiGens, a)
-    |> (a) => refsSpec(ti.tiPattern, a)
-    |> (a) => refsSpecs(ti.tiWheres, a)
-    |> (a) => refsStmts(ti.tiMembers, a)
-  (r: PsRet)    => refsExpr(r.retValue, acc)
-  (i2: PsIf)    => refsExpr(i2.ifCond, acc)
-    |> (a) => refsStmts(i2.ifTrue, a)
-    |> (a) => refsStmts(i2.ifFalse, a)
-  (ei: PsElseIf) => refsExpr(ei.eiCond, acc)
-    |> (a) => refsStmts(ei.eiStmts, a)
-  (el: PsElse)  => refsStmts(el.elStmts, acc)
-  (ac: PsAction) => refsExpr(ac.action, acc)
-  (fa: PsFieldAssign) => refsExpr(fa.faValue, refsExpr(fa.faTarget, acc))
-  (im: PsImport)    => acc
-  (n2: PsNamespace) => acc
-
-fun refsAttrs(as2: List<PAttr>, acc): Set<String> =>
-  fold(as2, acc, (a, x) => refsOptExpr(x.attrValue, a))
-
-fun refsGens(gs: List<PGen>, acc: Set<String>) =>
-  fold(gs, acc, (a, x) => refsAttrs(x.genAttrs, a))
-
-
-# ── expressions ─────────────────────────────────────────────────────────────
-
-fun refsExprs(es: List<PExpr>, acc: Set<String>) =>
-  fold(es, acc, (a, x) => refsExpr(x, a))
-
-fun refsOptExpr(ex: PExpr|None, acc): Set<String> => match(ex)
-  (e: PExpr) => refsExpr(e, acc)
-  ()         => acc
-
-fun refsExpr(ex, acc): Set<String> => match(ex)
+fun refsExpr(x: PExpr, acc: Set<String>): Set<String> => match(x)
   (n2: PeName) => noteName(n2.refName, acc)
-    |> (a) => refsSpecs(n2.refTypeParams, a)
-    |> (a) => refsOptSpec(n2.penTrait, a)
-  (d: PeDot)     => refsExpr(d.base, acc)
-  (c: PeCall)    => refsExpr(c.parameter, refsExpr(c.function, acc))
-  (t2: PeTuple)  => refsTupEnts(t2.exprs, acc)
-  (t3: PeTernary) => refsExpr(t3.condition, acc)
-    |> (a) => refsExpr(t3.trueResult, a)
-    |> (a) => refsExpr(t3.falseResult, a)
-  (lm: PeLambda) => refsStmt(lm.lamParams, acc)
-    |> (a) => refsExpr(lm.lamBody, a)
-    |> (a) => refsOptSpec(lm.lamRet, a)
-  (bk: PeBlock)  => refsStmts(bk.blockStmts, acc)
-    |> (a) => refsExpr(bk.blockValue, a)
-  (m: PeMatch)   => refsExpr(m.subject, acc)
-    |> (a) => refsExprs(m.matchExtra, a)
-    |> (a) => refsArms(m.arms, a)
-  (bo: PeBuiltinOp) => refsSpec(bo.opType, acc)
-    |> (a) => refsExpr(bo.opName, a)
-    |> (a) => refsExpr(bo.opParams, a)
-  (ps: PePinSet) => refsExpr(ps.psSubject, acc)
-    |> (a) => refsExpr(ps.psTarget, a)
-    |> (a) => refsExpr(ps.psValue, a)
-  (w: PeWith)    => refsExpr(w.withRepls, refsExpr(w.withSubject, acc))
-  (ne: PeNewEnum) => refsFieldArgs(ne.fieldArgs, acc)
-    |> (a) => refsSpecs(ne.neTypeParams, a)
-  (nw: PeNew)    => refsSpec(nw.newType, refsExpr(nw.newParam, acc))
-  (ar: PeArrayRead) => refsExpr(ar.arrIndex, refsExpr(ar.arrObj, acc))
-  (cv: PeConvert) => refsSpec(cv.convTarget, refsExpr(cv.convInner, acc))
-  (qq: PeCoalesce) => refsExpr(qq.qqFallback, refsExpr(qq.qqSubject, acc))
-  (li: PeLiteral) => acc
-  (lo: PeLowered) => acc
+  (o: PExpr)   => acc
 
-fun refsTupEnts(ts: List<PTupEnt>, acc): Set<String> =>
-  fold(ts, acc, (a, x) => refsExpr(x.tupValue, a))
-
-fun refsFieldArgs(fs: List<PFieldArg>, acc): Set<String> =>
-  fold(fs, acc, (a, x) => refsExpr(x.faValue, a))
-
-fun refsArms(as3: List<PArm>, acc: Set<String>) =>
-  fold(as3, acc, (a, x) => refsArm(x, a))
-
-fun refsArm(arm: PArm, acc): Set<String> => refsOptSpec(arm.armType, acc)
-  |> (a) => refsExpr(arm.armBody, a)
-  |> (a) => refsLits(arm.armLiterals, a)
-  |> (a) => refsOptExpr(arm.armGuard, a)
-  |> (a) => refsPositions(arm.armExtra, a)
-
-fun refsLits(ls: List<PLit>, acc: Set<String>) =>
-  fold(ls, acc, (a, x) => refsLit(x, a))
-
-fun refsLit(lit, acc): Set<String> => match(lit)
-  (x: PlExpr)  => refsExpr(x.litExpr, acc)
-  (r: PlRange) => refsExpr(r.rangeHi, refsExpr(r.rangeLo, acc))
-
-fun refsPositions(ps: List<PPos>, acc): Set<String> =>
-  fold(ps, acc, (a, x) => refsOptSpec(x.posType, a))
-
-
-# ── type specs ──────────────────────────────────────────────────────────────
-# Only SNamed carries a name here, mirroring the NamedSpec half of the Python
-# predicate. SClass and SEnum have names too, but the parser never builds one —
-# they are what compile() RESOLVES a SNamed into, and by then the libraries are
-# long loaded.
-
-fun refsSpecs(ss: List<Spec>, acc: Set<String>) =>
-  fold(ss, acc, (a, x) => refsSpec(x, a))
-
-fun refsOptSpec(sp: Spec|None, acc): Set<String> => match(sp)
-  (s2: Spec) => refsSpec(s2, acc)
-  ()         => acc
-
-fun refsSpec(sp, acc): Set<String> => match(sp)
-  (n2: SNamed) => refsSpecs(n2.snParams, noteName(n2.snName, acc))
-  (c: SClass)  => refsSpecs(c.scParams, acc)
-  (e: SEnum)   => refsSpecs(e.seParams, acc)
-  (cl: SCallable) => refsOptSpec(cl.scResult, refsSpec(cl.scParams2, acc))
-  (cm: SCombination) => refsSpecs(cm.scTypes, acc)
-  (t2: STuple) => refsEntries(t2.stEntries, acc)
-  (af: SArrayField) => refsSpec(af.safElem, acc)
-  (ls: SLazyStub)   => refsOptSpec(ls.slsTarget, acc)
-  (b: SBuiltin) => acc
-  (g: SGeneric) => acc
-
-fun refsEntries(es: List<SEntry>, acc): Set<String> =>
-  fold(es, acc, (a, x) => refsOptExpr(x.seDefault, refsOptSpec(x.seType, a)))
+# Only SNamed carries a name here: SClass and SEnum are what compile() RESOLVES
+# a SNamed into, and by then the libraries are long loaded.
+fun refsSpec(sp: Spec, acc: Set<String>): Set<String> => match(sp)
+  (n2: SNamed) => noteName(n2.snName, acc)
+  (o: Spec)    => acc

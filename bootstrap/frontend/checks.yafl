@@ -157,99 +157,18 @@ fun checkExprOpt(x: PExpr|None, r, expected: Spec|None) => match(x)
   ()          => noErrs()
 
 # ── phase 5: the unresolved-NamedSpec scan ──────────────────────────────────
-# Mirrors search_and_replace's reach: every compound spec recurses, a NamedSpec
-# is a LEAF (its own type args are not walked — the outer name IS the error).
+# _find_named_specs: every SNamed the walk reaches is a type the compile loop
+# failed to resolve. A NamedSpec is a LEAF (its own type args are not walked —
+# the outer name IS the error).
 
-fun namedSpecErrors(statements: List<PStmt>) => nsStmts(statements, noErrs())
+fun namedSpecErrors(statements: List<PStmt>): Set<PErr> =>
+  walkStmts(statements, emptyResolverGlobal, noErrs(),
+            Walk<Set<PErr>>(wkNoExpr<Set<PErr>>, wkNoStmt<Set<PErr>>,
+                            (a, _r, sp) => (s = nsSpec(sp, a), r = None))).s
 
-fun nsStmts(ss: List<PStmt>, acc: Set<PErr>) =>
-  fold(ss, acc, (a, x) => nsStmt(x, a))
-
-fun nsStmt(st, acc): Set<PErr> => match(st)
-  (f: PsFun)         => nsExprOpt(f.fBody,
-                          nsSpecs(f.fWheres,
-                            nsSpecOpt(f.fRet, nsStmt(f.fParams, acc))))
-  (l: PsLet)         => nsExprOpt(l.lDefault, nsSpecOpt(l.lType, acc))
-  (d: PsDestructure) => nsStmts(d.dTargets,
-                          nsExprOpt(d.dDefault, nsSpecOpt(d.dType, acc)))
-  (c: PsClass)       => nsSpecsOpt(c.cAllParents,
-                          nsStmts(c.cMembers,
-                            nsSpecs(c.cWheres,
-                              nsSpecs(c.cImplements,
-                                nsStmt(c.cParams, acc)))))
-  (e2: PsEnum)       => nsStmts(e2.eVariants, nsStmt(e2.eParams, acc))
-  (ta: PsTypealias)  => nsSpecs(ta.taWheres, nsSpec(ta.taType, acc))
-  (rt: PsRet)        => nsExpr(rt.retValue, acc)
-  (a: PsAction)      => nsExpr(a.action, acc)
-  (fa: PsFieldAssign) => nsExpr(fa.faValue, nsExpr(fa.faTarget, acc))
-  (i: PsIf)          => nsStmts(i.ifFalse,
-                          nsStmts(i.ifTrue, nsExpr(i.ifCond, acc)))
-  (ei: PsElseIf)     => nsStmts(ei.eiStmts, nsExpr(ei.eiCond, acc))
-  (el: PsElse)       => nsStmts(el.elStmts, acc)
-  (o: PStmt)         => acc
-
-fun nsExpr(x, acc): Set<PErr> => match(x)
-  (nm: PeName)   => nsSpecOpt(nm.penTrait, nsSpecs(nm.refTypeParams, acc))
-  (d: PeDot)     => nsExpr(d.base, acc)
-  (c: PeCall)    => nsExpr(c.parameter, nsExpr(c.function, acc))
-  (tp: PeTuple)  => nsEntries(tp.exprs, acc)
-  (te: PeTernary) => nsExpr(te.falseResult,
-                      nsExpr(te.trueResult, nsExpr(te.condition, acc)))
-  (lm: PeLambda) => nsSpecOpt(lm.lamRet,
-                      nsExpr(lm.lamBody, nsStmt(lm.lamParams, acc)))
-  (bk: PeBlock)  => nsExpr(bk.blockValue, nsStmts(bk.blockStmts, acc))
-  (mt: PeMatch)  => nsArms(mt.arms, nsExpr(mt.subject, acc))
-  (op: PeBuiltinOp) => nsExpr(op.opParams, nsSpec(op.opType, acc))
-  (ps: PePinSet) => nsExpr(ps.psValue, nsExpr(ps.psTarget, nsExpr(ps.psSubject, acc)))
-  (nw: PeNew)    => nsExpr(nw.newParam, nsSpec(nw.newType, acc))
-  (ar: PeArrayRead) => nsExpr(ar.arrIndex, nsExpr(ar.arrObj, acc))
-  (cv: PeConvert) => nsSpec(cv.convTarget, nsExpr(cv.convInner, acc))
-  (qq: PeCoalesce) => nsExpr(qq.qqFallback, nsExpr(qq.qqSubject, acc))
-  (wx: PeWith)   => nsExpr(wx.withRepls, nsExpr(wx.withSubject, acc))
-  (ne: PeNewEnum) => nsSpecs(ne.neTypeParams,
-                              fold(ne.fieldArgs, acc, (a2, fa) =>
-                                nsExpr(fa.faValue, a2)))
-  (o: PeLiteral) => acc
-  (o: PeLowered) => acc
-
-fun nsEntries(es: List<PTupEnt>, acc): Set<PErr> =>
-  fold(es, acc, (a, x) => nsExpr(x.tupValue, a))
-
-fun nsArms(as2: List<PArm>, acc): Set<PErr> =>
-  fold(as2, acc, (a, x) => nsExprOpt(x.armGuard, nsExpr(x.armBody, nsSpecOpt(x.armType, a))))
-
-fun nsExprOpt(x: PExpr|None, acc): Set<PErr> => match(x)
-  (e2: PExpr) => nsExpr(e2, acc)
-  ()          => acc
-
-fun nsSpec(sp, acc): Set<PErr> => match(sp)
-  (n: SNamed)        => add(acc, PErr(n.snLine,
-                                         "Failed to resolve type '"
-                                         + n.snName + "'"))
-  (c: SClass)        => nsSpecList(c.scParams, acc)
-  (e2: SEnum)        => nsSpecList(e2.seParams, acc)
-  (cl: SCallable)    => nsSpecOpt(cl.scResult, nsSpec(cl.scParams2, acc))
-  (cm: SCombination) => nsSpecList(cm.scTypes, acc)
-  (t2: STuple)       => nsSpecEntries(t2.stEntries, acc)
-  (af: SArrayField)  => nsSpec(af.safElem, acc)
-  (ls: SLazyStub)    => nsSpecOpt(ls.slsTarget, acc)
-  (o: Spec)          => acc
-
-fun nsSpecList(ss: List<Spec>, acc: Set<PErr>) =>
-  fold(ss, acc, (a, x) => nsSpec(x, a))
-
-fun nsSpecEntries(es: List<SEntry>, acc): Set<PErr> =>
-  fold(es, acc, (a, x) => nsExprOpt(x.seDefault, nsSpecOpt(x.seType, a)))
-
-fun nsSpecOpt(sp: Spec|None, acc): Set<PErr> => match(sp)
-  (s2: Spec) => nsSpec(s2, acc)
-  ()         => acc
-
-fun nsSpecs(ss, acc): Set<PErr> => nsSpecList(ss, acc)
-
-fun nsSpecsOpt(ss: List<Spec>|None, acc): Set<PErr> => match(ss)
-  (l: List<Spec>) => nsSpecList(l, acc)
-  ()              => acc
+fun nsSpec(sp: Spec, acc: Set<PErr>): Set<PErr> => match(sp)
+  (n: SNamed) => add(acc, PErr(n.snLine, "Failed to resolve type '" + n.snName + "'"))
+  (o: Spec)   => acc
 
 # ── printing: sorted(set(errors)) ───────────────────────────────────────────
 

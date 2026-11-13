@@ -806,103 +806,29 @@ fun captureErrs(ns: List<String>, lr, acc: Set<PErr>) =>
 # ── generic instantiation kind check ────────────────────────────────────────
 # A linear type argument may only bind a [linear] type parameter.
 
-fun checkInstantiations(statements: List<PStmt>, r,
-                        acc): Set<PErr> => instStmts(statements, r, acc)
+# check_instantiations: a linear type argument may only be bound to a
+# `[linear]` type parameter. One callback over the whole tree; the lookups go
+# through the pass's root resolver, as Python's self.resolver.
+fun checkInstantiations(statements: List<PStmt>, r: Resolver, acc: Set<PErr>): Set<PErr> =>
+  walkStmts(statements, r, acc,
+            Walk<Set<PErr>>((a, _sc, x) => (s = instExpr(x, r, a), r = None),
+                            wkNoStmt<Set<PErr>>,
+                            (a, _sc, sp) => (s = instSpec(sp, r, a), r = None))).s
 
-fun instStmts(ss: List<PStmt>, r, acc: Set<PErr>) =>
-  fold(ss, acc, (a, x) => instStmt(x, r, a))
-
-fun instStmt(st, r, acc): Set<PErr> => match(st)
-  (f: PsFun)         => instExprOpt(f.fBody, r,
-                          instSpecsIn(f.fWheres, r,
-                            instSpecOpt(f.fRet, r, instStmt(f.fParams, r,
-                                                            acc))))
-  (l: PsLet)         => instExprOpt(l.lDefault, r,
-                                    instSpecOpt(l.lType, r, acc))
-  (d: PsDestructure) => instStmts(d.dTargets, r,
-                          instExprOpt(d.dDefault, r,
-                                      instSpecOpt(d.dType, r, acc)))
-  (c: PsClass)       => instStmts(c.cMembers, r,
-                          instSpecsIn(c.cImplements, r,
-                                      instStmt(c.cParams, r, acc)))
-  (e2: PsEnum)       => instStmts(e2.eVariants, r,
-                                  instStmt(e2.eParams, r, acc))
-  (ta: PsTypealias)  => instSpecOpt(ta.taType, r, acc)
-  (rt: PsRet)        => instExpr(rt.retValue, r, acc)
-  (a: PsAction)      => instExpr(a.action, r, acc)
-  (fa: PsFieldAssign) => instExpr(fa.faValue, r, instExpr(fa.faTarget, r, acc))
-  (i: PsIf)          => instStmts(i.ifFalse, r,
-                          instStmts(i.ifTrue, r,
-                                    instExpr(i.ifCond, r, acc)))
-  (o: PStmt)         => acc
-
-fun instExpr(x, r, acc): Set<PErr> => match(x)
-  (nm: PeName)   => isEmpty(nm.refTypeParams)
+fun instExpr(x: PExpr, r: Resolver, acc: Set<PErr>): Set<PErr> => match(x)
+  (nm: PeName) => isEmpty(nm.refTypeParams)
     ? acc
     : instCheck(nm.refName, nm.refTypeParams, nm.penLine, false, r, acc)
-  (d: PeDot)     => instExpr(d.base, r, acc)
-  (c: PeCall)    => instExpr(c.parameter, r, instExpr(c.function, r, acc))
-  (tp: PeTuple)  => instEntries(tp.exprs, r, acc)
-  (te: PeTernary) => instExpr(te.falseResult, r,
-                      instExpr(te.trueResult, r,
-                               instExpr(te.condition, r, acc)))
-  (lm: PeLambda) => instExpr(lm.lamBody, r, instStmt(lm.lamParams, r, acc))
-  (bk: PeBlock)  => instExpr(bk.blockValue, r,
-                             instStmts(bk.blockStmts, r, acc))
-  (mt: PeMatch)  => instArms(mt.arms, r, instExpr(mt.subject, r, acc))
-  (op: PeBuiltinOp) => instExpr(op.opParams, r, acc)
-  (ps: PePinSet) => instExpr(ps.psValue, r, instExpr(ps.psTarget, r, instExpr(ps.psSubject, r, acc)))
-  (nw: PeNew)    => instExpr(nw.newParam, r, instSpecOpt(nw.newType, r, acc))
-  (qq: PeCoalesce) => instExpr(qq.qqFallback, r, instExpr(qq.qqSubject, r, acc))
-  (ar: PeArrayRead) => instExpr(ar.arrIndex, r, instExpr(ar.arrObj, r, acc))
-  (cv: PeConvert) => instExpr(cv.convInner, r,
-                              instSpecOpt(cv.convTarget, r, acc))
-  (wx: PeWith)   => instExpr(wx.withRepls, r,
-                             instExpr(wx.withSubject, r, acc))
-  (o: PeLiteral) => acc
-  (o: PeLowered) => acc
-  (o: PeNewEnum) => acc
+  (o: PExpr)   => acc
 
-fun instEntries(es: List<PTupEnt>, r, acc): Set<PErr> =>
-  fold(es, acc, (a, x) => instExpr(x.tupValue, r, a))
-
-fun instArms(as2: List<PArm>, r, acc): Set<PErr> =>
-  fold(as2, acc, (a, x) => instExprOpt(x.armGuard, r,
-                        instExpr(x.armBody, r,
-                                 instPositions(x.armExtra, r, instSpecOpt(x.armType, r, a)))))
-
-fun instPositions(ps: List<PPos>, r, acc): Set<PErr> => fold(ps, acc, (a, p) => instSpecOpt(p.posType, r, a))
-
-fun instExprOpt(x: PExpr|None, r, acc): Set<PErr> => match(x)
-  (e2: PExpr) => instExpr(e2, r, acc)
-  ()          => acc
-
-fun instSpecOpt(sp: Spec|None, r, acc): Set<PErr> => match(sp)
-  (s2: Spec) => instSpec(s2, r, acc)
-  ()         => acc
-
-fun instSpec(sp, r, acc): Set<PErr> => match(sp)
-  (c: SClass) => instSpecsIn(c.scParams, r,
-                             isEmpty(c.scParams)
-                               ? acc
-                               : instCheck(c.scName, c.scParams, c.scLine,
-                                           true, r, acc))
-  (e2: SEnum) => instSpecsIn(e2.seParams, r,
-                             isEmpty(e2.seParams)
-                               ? acc
-                               : instCheck(e2.seRoot, e2.seParams,
-                                           e2.seLine, true, r, acc))
-  (cm: SCombination) => instSpecsIn(cm.scTypes, r, acc)
-  (t2: STuple)       => instSpecEntries(t2.stEntries, r, acc)
-  (cl: SCallable)    => instSpecOpt(cl.scResult, r,
-                                    instSpec(cl.scParams2, r, acc))
-  (o: Spec)          => acc
-
-fun instSpecsIn(ss: List<Spec>, r, acc: Set<PErr>) =>
-  fold(ss, acc, (a, x) => instSpec(x, r, a))
-
-fun instSpecEntries(es: List<SEntry>, r, acc): Set<PErr> =>
-  fold(es, acc, (a, x) => instSpecOpt(x.seType, r, a))
+fun instSpec(sp: Spec, r: Resolver, acc: Set<PErr>): Set<PErr> => match(sp)
+  (c: SClass) => isEmpty(c.scParams)
+    ? acc
+    : instCheck(c.scName, c.scParams, c.scLine, true, r, acc)
+  (e2: SEnum) => isEmpty(e2.seParams)
+    ? acc
+    : instCheck(e2.seRoot, e2.seParams, e2.seLine, true, r, acc)
+  (o: Spec)   => acc
 
 fun instCheck(name, args: List<Spec>, lr, isType,
               r, acc): Set<PErr>

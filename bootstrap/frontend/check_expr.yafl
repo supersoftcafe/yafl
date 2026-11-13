@@ -657,69 +657,24 @@ fun guardBoolErr(a: PArm, g2, bodyR) => match(exprType(g2, bodyR))
   (o: Spec)     => oneErr(a.parmLine, "a match guard must be a Bool")
   ()            => noErrs()
 
-# Every name a NamedExpression references anywhere inside (referenced_names).
-fun referencedNames(x, acc): List<String> => match(x)
-  # A name set, membership-tested by its reader.
-  (nm: PeName)   => prepend(nm.refName, acc)
-  (d: PeDot)     => referencedNames(d.base, acc)
-  (c: PeCall)    => referencedNames(c.parameter, referencedNames(c.function, acc))
-  (tp: PeTuple)  => refEntries(tp.exprs, acc)
-  (te: PeTernary) => referencedNames(te.falseResult,
-                      referencedNames(te.trueResult,
-                        referencedNames(te.condition, acc)))
-  (lm: PeLambda) => referencedNames(lm.lamBody, refStmt(lm.lamParams, acc))
-  (bk: PeBlock)  => referencedNames(bk.blockValue,
-                                    referencedInStmts(bk.blockStmts, acc))
-  # Every subject is a use — the extra subjects of `match(a, b)` included.
-  (mt: PeMatch)  => refArms(mt.arms,
-                            fold(mt.matchExtra, referencedNames(mt.subject, acc),
-                                 (a2, sx) => referencedNames(sx, a2)))
-  (op: PeBuiltinOp) => referencedNames(op.opParams, acc)
-  (ps: PePinSet) => referencedNames(ps.psValue,
-                      referencedNames(ps.psTarget,
-                        referencedNames(ps.psSubject, acc)))
-  (nw: PeNew)    => referencedNames(nw.newParam, acc)
-  (ar: PeArrayRead) => referencedNames(ar.arrIndex,
-                                       referencedNames(ar.arrObj, acc))
-  (cv: PeConvert) => referencedNames(cv.convInner, acc)
-  (qq: PeCoalesce) => referencedNames(qq.qqFallback,
-                                      referencedNames(qq.qqSubject, acc))
-  # A NewEnum's references live in its field-arg VALUE expressions.
-  (wx: PeWith)   => referencedNames(wx.withRepls,
-                                    referencedNames(wx.withSubject, acc))
-  (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
-                          referencedNames(fa.faValue, a2))
-  (o: PeLiteral) => acc
-  (o: PeLowered) => acc
+# Every name a NamedExpression references anywhere inside (referenced_names):
+# a structural scan, one callback. A name set, membership-tested by its reader.
+fun referencedNames(x: PExpr, acc: List<String>): List<String> =>
+  walkExpr(x, emptyResolverGlobal, acc, referencedNamesWalk()).s
 
-fun refEntries(es: List<PTupEnt>, acc): List<String> =>
-  fold(es, acc, (a, x) => referencedNames(x.tupValue, a))
+fun referencedInStmts(ss: List<PStmt>, acc: List<String>): List<String> =>
+  walkStmts(ss, emptyResolverGlobal, acc, referencedNamesWalk()).s
 
-fun refArms(as2: List<PArm>, acc): List<String> =>
-  fold(as2, acc, (a, x) => refOpt(x.armGuard, referencedNames(x.armBody, a)))
+fun referencedInStmt(st: PStmt, acc: List<String>): List<String> =>
+  walkStmt(st, emptyResolverGlobal, acc, referencedNamesWalk()).s
 
-fun refOpt(x: PExpr|None, acc) => match(x)
-  (e2: PExpr) => referencedNames(e2, acc)
-  ()          => acc
+fun referencedNamesWalk(): Walk<List<String>> =>
+  Walk<List<String>>((a, _r, x) => (s = referencedName(x, a), r = None),
+                     wkNoStmt<List<String>>, wkNoSpec<List<String>>)
 
-fun referencedInStmts(ss: List<PStmt>, acc: List<String>) =>
-  fold(ss, acc, (a, x) => refStmt(x, a))
-
-fun refStmt(st, acc): List<String> => match(st)
-  (f: PsFun)         => refOpt(f.fBody, acc)
-  (l: PsLet)         => refOpt(l.lDefault, acc)
-  (d: PsDestructure) => referencedInStmts(d.dTargets,
-                                          refOpt(d.dDefault, acc))
-  (rt: PsRet)        => referencedNames(rt.retValue, acc)
-  (a: PsAction)      => referencedNames(a.action, acc)
-  (fa: PsFieldAssign) => referencedNames(fa.faValue, referencedNames(fa.faTarget, acc))
-  (i: PsIf)          => referencedInStmts(i.ifFalse,
-                          referencedInStmts(i.ifTrue,
-                            referencedNames(i.ifCond, acc)))
-  (ei: PsElseIf)     => referencedInStmts(ei.eiStmts,
-                                          referencedNames(ei.eiCond, acc))
-  (el: PsElse)       => referencedInStmts(el.elStmts, acc)
-  (o: PStmt)         => acc
+fun referencedName(x: PExpr, acc: List<String>): List<String> => match(x)
+  (nm: PeName) => prepend(nm.refName, acc)
+  (o: PExpr)   => acc
 
 
 # ── `with` — only reached when the frontend could not expand it ─────────────

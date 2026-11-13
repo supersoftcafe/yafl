@@ -11,19 +11,11 @@
 #      path of enclosing NAMED statement names (used to disambiguate a
 #      lambda that generics.py has duplicated, unchanged line_ref and all,
 #      across several monomorphisations of the same generic body).
-#   2. The bottom-up scan (clStmt/clExpr below) — mirrors pyast's generic
-#      search_and_replace walk field for field (see rewrite.yafl's visit-set
-#      law for the proof this shape matches Python), but threads a Resolver
-#      DOWN (recomputed at exactly the scope-introducing nodes Python's own
-#      search_and_replace methods extend: FunctionStatement's body,
-#      ClassStatement's members, BlockExpression, IfStatement's branches,
-#      LambdaExpression's body, MatchArm's body/guard) and an exports
-#      List<PStmt> ACROSS siblings (RwN's Int-counter shape, generalised to a
-#      list). It fires the export logic on every rebuilt PeLambda node, using
-#      the RESOLVER AS IT STOOD BEFORE that lambda's own scope was added —
-#      exactly what Python's `rw.rewrite(self, replace, resolver, ...)` passes
-#      to the callback for a LambdaExpression (the outer `resolver`, not the
-#      `nested_resolver` used only for the lambda's OWN children).
+#   2. The bottom-up scan (clScanTop) — Python's export_if_lambda: one
+#      callback over rewrite.yafl's walk, firing on every rebuilt PeLambda
+#      with the scope AS IT STOOD BEFORE that lambda's own scope was added
+#      (what rw.rewrite passes a LambdaExpression's callback), the exports
+#      threading across the walk as its state.
 #   3. discoverCaptures — walks the (already-scanned, so any nested lambdas
 #      are already replaced) lambda's parameters then body with the FIXED
 #      outer resolver from (2), recording every name/lazy-stub reference that
@@ -392,172 +384,19 @@ fun replacementExprFor(nme, cpt: ClCaps, lr)
             nme, lr)
 
 # ── 2c. the bottom-up scan (lambdas.py:181-223) ──────────────────────────────
-# RwN's shape generalised: every function threads a Resolver DOWN (recomputed
-# only at the scope-introducing spots) and a List<PStmt> exports ACROSS
-# siblings, mirroring rewrite.yafl's RwN Int-threading but for exports.
+# export_if_lambda: one callback over the statement. The walk is bottom-up, so
+# a lambda's own nested lambdas are exported before it is; the exports thread
+# across the walk as its state, and the scope at the lambda is the one its
+# captures are discovered in.
 
 class [final] ClSt(clStStmt: PStmt, clStExports: List<PStmt>)
-class [final] ClSts(clStsStmts: List<PStmt>, clStsExports: List<PStmt>)
 class [final] ClEx(clExExpr: PExpr, clExExports: List<PStmt>)
-class [final] ClExO(clExOExpr: PExpr|None, clExOExports: List<PStmt>)
-class [final] ClExsOut(clExsExprs: List<PExpr>, clExsExports: List<PStmt>)
-class [final] ClEntsOut(clEntsEnts: List<PTupEnt>, clEntsExports: List<PStmt>)
-class [final] ClArmsOut(clArmsArms: List<PArm>, clArmsExports: List<PStmt>)
-class [final] ClLitsOut(clLitsLits: List<PLit>, clLitsExports: List<PStmt>)
 
-# ── statements ──
-fun clStmt(st, r, paths: ClPaths, exports) => match(st)
-  (f: PsFun)         => clFunStmt(f, r, paths, exports)
-  (l: PsLet)         => clLetStmt(l, r, paths, exports)
-  (d: PsDestructure) => clDestructureStmt(d, r, paths, exports)
-  (c: PsClass)       => clClassStmt(c, r, paths, exports)
-  (e2: PsEnum)       => clEnumStmt(e2, r, paths, exports)
-  (rt: PsRet)        => clRetStmt(rt, r, paths, exports)
-  (a: PsAction)      => clActionStmt(a, r, paths, exports)
-  (fa: PsFieldAssign) => clFieldAssignStmt(fa, r, paths, exports)
-  (i: PsIf)          => clIfStmt(i, r, paths, exports)
-  (o: PStmt)         => ClSt(st, exports)
-
-fun clFunBodyResolver(f: PsFun, r): Resolver
-  ret localScope(flattenParams(f.fParams), f.fNested ? r : traitScope(f.fWheres, r))
-
-fun clFunStmt(f: PsFun, r, paths: ClPaths, exports): ClSt
-  let p = clStmt(f.fParams, r, paths, exports)
-  let bodyR = clFunBodyResolver(f, r)
-  let b = clExprOpt(f.fBody, bodyR, paths, p.clStExports)
-  ret ClSt(PsFun(f.fName, f.fAttrs, f.fGens, p.clStStmt, b.clExOExpr, f.fRet,
-                f.fWheres, f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
-           b.clExOExports)
-
-fun clLetStmt(l: PsLet, r, paths: ClPaths, exports)
-  let d = clExprOpt(l.lDefault, r, paths, exports)
-  ret ClSt(PsLet(l.lName, l.lAttrs, l.lGens, l.lType, d.clExOExpr, l.lArrayLen,
-                l.lWheres, l.pslLine, l.lTypeInferred, l.lImports),
-           d.clExOExports)
-
-fun clDestructureStmt(d: PsDestructure, r, paths: ClPaths,
-                      exports)
-  let dv = clExprOpt(d.dDefault, r, paths, exports)
-  let ts = clStmts(d.dTargets, r, paths, dv.clExOExports)
-  ret ClSt(PsDestructure(d.dName, d.dAttrs, d.dType, ts.clStsStmts, dv.clExOExpr,
-                        d.psdLine, d.dTypeInferred),
-           ts.clStsExports)
-
-fun clClassStmt(c, r, paths: ClPaths,
-                exports): ClSt
-  let p = clStmt(c.cParams, r, paths, exports)
-  let memberR = RClassBody(c, r)
-  let ms = clStmts(c.cMembers, memberR, paths, p.clStExports)
-  ret ClSt(PsClass(c.cName, c.cAttrs, c.cGens, p.clStStmt, c.cImplements,
-                   c.cWheres, ms.clStsStmts, c.cIsInterface, c.pscLine,
-                   c.cAllParents, c.cAllSlots, c.cImports),
-           ms.clStsExports)
-
-fun clEnumStmt(e2: PsEnum, r, paths: ClPaths,
-              exports)
-  let p = clStmt(e2.eParams, r, paths, exports)
-  let vs = clStmts(e2.eVariants, r, paths, p.clStExports)
-  ret ClSt(PsEnum(e2.eName, e2.eAttrs, e2.eGens, p.clStStmt, vs.clStsStmts,
-                  e2.eHasParams,
-                  e2.pseLine, e2.eRootName, e2.eSpec, e2.eImports),
-           vs.clStsExports)
-
-fun clRetStmt(rt: PsRet, r, paths: ClPaths,
-             exports)
-  let v = clExpr(rt.retValue, r, paths, exports)
-  ret ClSt(PsRet(v.clExExpr, rt.psrLine), v.clExExports)
-
-fun clActionStmt(a: PsAction, r, paths: ClPaths,
-                 exports)
-  let v = clExpr(a.action, r, paths, exports)
-  ret ClSt(PsAction(v.clExExpr, a.psaLine), v.clExExports)
-
-fun clFieldAssignStmt(fa: PsFieldAssign, r, paths: ClPaths, exports)
-  let t = clExpr(fa.faTarget, r, paths, exports)
-  let v = clExpr(fa.faValue, r, paths, t.clExExports)
-  ret ClSt(PsFieldAssign(t.clExExpr, v.clExExpr, fa.psfaLine), v.clExExports)
-
-fun clIfStmt(i: PsIf, r, paths: ClPaths, exports): ClSt
-  let cond = clExpr(i.ifCond, r, paths, exports)
-  let trueR = localScope(i.ifTrue, r)
-  let tb = clStmts(i.ifTrue, trueR, paths, cond.clExExports)
-  let falseR = localScope(i.ifFalse, r)
-  let fb = clStmts(i.ifFalse, falseR, paths, tb.clStsExports)
-  ret ClSt(PsIf(cond.clExExpr, tb.clStsStmts, fb.clStsStmts, i.psifLine),
-           fb.clStsExports)
-
-fun clStmts(ss: List<PStmt>, r, paths: ClPaths,
-           exports): ClSts => clStmtLoop(ss, r, paths, exports, List())
-
-# Program order out. `exports` stays a plain List: it is READ, by clDedupName,
-# to keep lifted names unique.
-fun clStmtLoop(ss: List<PStmt>, r, paths: ClPaths, exports, acc) =>
-  fold(ss, ClSts(acc, exports), (o, st) => clStmt(st, r, paths, o.clStsExports)
-    |> (one) => ClSts(append(o.clStsStmts, one.clStStmt), one.clStExports))
-
-# ── expressions ──
-fun clExpr(x, r, paths: ClPaths, exports): ClEx => match(x)
-  (d: PeDot)        => clExpr(d.base, r, paths, exports)
-    |> (b) => ClEx(PeDot(b.clExExpr, d.member, d.pedLine, d.pedIndex), b.clExExports)
-  (c: PeCall)       => clExpr(c.function, r, paths, exports)
-    |> (f2) => (f2, clExpr(c.parameter, r, paths, f2.clExExports))
-    |> (f2, p) => ClEx(PeCall(f2.clExExpr, p.clExExpr, c.pecLine), p.clExExports)
-  (qq: PeCoalesce)      => clExpr(qq.qqSubject, r, paths, exports)
-    |> (s2) => (s2, clExpr(qq.qqFallback, r, paths, s2.clExExports))
-    |> (s2, p) => ClEx(PeCoalesce(s2.clExExpr, p.clExExpr, qq.peqqLine),
-                       p.clExExports)
-  (wx: PeWith)      => clExpr(wx.withSubject, r, paths, exports)
-    |> (s2) => (s2, clExpr(wx.withRepls, r, paths, s2.clExExports))
-    |> (s2, p) => ClEx(PeWith(s2.clExExpr, p.clExExpr, wx.pewLine),
-                       p.clExExports)
-  (tp: PeTuple)     => clTupEnts(tp.exprs, r, paths, exports, List())
-    |> (es) => ClEx(PeTuple(es.clEntsEnts, tp.petLine), es.clEntsExports)
-  (te: PeTernary)   => clExpr(te.condition, r, paths, exports)
-    |> (cd) => (cd, clExpr(te.trueResult, r, paths, cd.clExExports))
-    |> (cd, tr) => (cd, tr, clExpr(te.falseResult, r, paths, tr.clExExports))
-    |> (cd, tr, fr) => ClEx(PeTernary(cd.clExExpr, tr.clExExpr, fr.clExExpr,
-                                     te.pety),
-                           fr.clExExports)
-  (lm: PeLambda)    => clLambdaExpr(lm, r, paths, exports)
-  (bk: PeBlock)     => clBlockExpr(bk, r, paths, exports)
-  (mt: PeMatch)     => clMatchExpr(mt, r, paths, exports)
-  (op: PeBuiltinOp) => clExpr(op.opParams, r, paths, exports)
-    |> (p) => ClEx(PeBuiltinOp(op.opType, op.opName, p.clExExpr, op.peboLine),
-                  p.clExExports)
-  (ps: PePinSet)    => clExpr(ps.psSubject, r, paths, exports)
-    |> (sb) => (sb, clExpr(ps.psTarget, r, paths, sb.clExExports))
-    |> (sb, tg) => (sb, tg, clExpr(ps.psValue, r, paths, tg.clExExports))
-    |> (sb, tg, vl) => ClEx(PePinSet(sb.clExExpr, tg.clExExpr, vl.clExExpr,
-                                     ps.pepsLine),
-                           vl.clExExports)
-  (nw: PeNew)       => clExpr(nw.newParam, r, paths, exports)
-    |> (p) => ClEx(PeNew(nw.newType, p.clExExpr, nw.penwLine), p.clExExports)
-  (ar: PeArrayRead) => clExpr(ar.arrObj, r, paths, exports)
-    |> (ob) => (ob, clExpr(ar.arrIndex, r, paths, ob.clExExports))
-    |> (ob, ix) => ClEx(PeArrayRead(ob.clExExpr, ix.clExExpr, ar.pearLine),
-                       ix.clExExports)
-  (cv: PeConvert)   => clExpr(cv.convInner, r, paths, exports)
-    |> (iv) => ClEx(PeConvert(iv.clExExpr, cv.convTarget, cv.pecvLine),
-                   iv.clExExports)
-  (lp: PeLoop)      => clExprs(lp.loopParams, r, paths, exports, List())
-    |> (ps) => (ps, clExpr(lp.loopBody, r, paths, ps.clExsExports))
-    |> (ps, b) => ClEx(PeLoop(b.clExExpr, ps.clExsExprs, lp.pelpLine),
-                      b.clExExports)
-  (rc: PeRecur)     => clExprs(rc.recArgs, r, paths, exports, List())
-    |> (as3) => ClEx(PeRecur(as3.clExsExprs, rc.recIndex, rc.percLine),
-                    as3.clExsExports)
-  (o: PeLiteral) => ClEx(x, exports)
-  (o: PeLazy) => ClEx(x, exports)
-  (o: PeName) => ClEx(x, exports)
-  (o: PeNewEnum) => ClEx(x, exports)
-
-fun clLambdaExpr(lm: PeLambda, r, paths: ClPaths,
-                 exports): ClEx
-  let p = clStmt(lm.lamParams, r, paths, exports)
-  let bodyR = localScope(flattenParams(lm.lamParams), r)
-  let b = clExpr(lm.lamBody, bodyR, paths, p.clStExports)
-  let rebuilt = PeLambda(p.clStStmt, b.clExExpr, lm.pelLine, lm.lamRet)
-  ret clExportLambda(rebuilt, r, paths, b.clExExports)
+fun clExportCb(x: PExpr, sc: Resolver, paths: ClPaths,
+               exports: List<PStmt>): (s: List<PStmt>, r: PExpr|None) => match(x)
+  (lm: PeLambda) => clExportLambda(lm, sc, paths, exports)
+    |> (o) => (s = o.clExExports, r = o.clExExpr)
+  (o: PExpr)     => (s = exports, r = None)
 
 # ast_inline can DUPLICATE a lambda within one host: the copies share a
 # line_ref (the path map's clone-stable key, first-occurrence-wins), so
@@ -601,62 +440,6 @@ fun clExport(exports: List<PStmt>, st: PStmt)
   ret append(exports,
                  st)
 
-fun clBlockExpr(bk: PeBlock, r, paths: ClPaths,
-               exports): ClEx
-  let blockR = blockScope(bk.blockStmts, r)
-  let ss = clStmts(bk.blockStmts, blockR, paths, exports)
-  let v = clExpr(bk.blockValue, blockR, paths, ss.clStsExports)
-  ret ClEx(PeBlock(ss.clStsStmts, v.clExExpr, bk.blockTag, bk.pebkLine),
-          v.clExExports)
-
-fun clMatchExpr(mt: PeMatch, r, paths: ClPaths,
-                exports)
-  let subj = clExpr(mt.subject, r, paths, exports)
-  let arms = clArms(mt.arms, r, paths, subj.clExExports,
-                    List())
-  ret ClEx(with mt(subject = subj.clExExpr, arms = arms.clArmsArms),
-           arms.clArmsExports)
-
-fun clArms(as2: List<PArm>, r, paths: ClPaths, exports, acc) =>
-  fold(as2, ClArmsOut(acc, exports), (o, a) => clArmOne(a, r, paths, o.clArmsExports)
-    |> (one) => ClArmsOut(append(o.clArmsArms, one.claoArm), one.claoExports))
-
-class [final] ClArmOne(claoArm: PArm, claoExports: List<PStmt>)
-
-fun clArmOne(a: PArm, r, paths: ClPaths, exports): ClArmOne
-  let bodyR = armBodyScope(a, r)
-  let body = clExpr(a.armBody, bodyR, paths, exports)
-  let lits = clLits(a.armLiterals, r, paths, body.clExExports,
-                    List())
-  let guard = clExprOpt(a.armGuard, bodyR, paths, lits.clLitsExports)
-  ret ClArmOne(with a(armBody = body.clExExpr, armLiterals = lits.clLitsLits, armGuard = guard.clExOExpr),
-              guard.clExOExports)
-
-fun clLits(ls: List<PLit>, r, paths: ClPaths, exports, acc) =>
-  fold(ls, ClLitsOut(acc, exports), (o, l) => clLit(o, l, r, paths))
-
-fun clLit(o: ClLitsOut, l: PLit, r: Resolver, paths: ClPaths): ClLitsOut => match(l)
-  (le: PlExpr)   => clExpr(le.litExpr, r, paths, o.clLitsExports)
-    |> (x) => ClLitsOut(append(o.clLitsLits, PlExpr(x.clExExpr)), x.clExExports)
-  (lr2: PlRange) => clExpr(lr2.rangeLo, r, paths, o.clLitsExports)
-    |> (lo) => (lo, clExpr(lr2.rangeHi, r, paths, lo.clExExports))
-    |> (lo, hi) => ClLitsOut(append(o.clLitsLits, PlRange(lo.clExExpr, hi.clExExpr, lr2.plrLine)),
-                             hi.clExExports)
-
-fun clExprOpt(x, r, paths: ClPaths,
-             exports): ClExO => match(x)
-  (e2: PExpr) => clExpr(e2, r, paths, exports)
-    |> (o) => ClExO(o.clExExpr, o.clExExports)
-  ()          => ClExO(x, exports)
-
-fun clExprs(es: List<PExpr>, r, paths: ClPaths, exports, acc) =>
-  fold(es, ClExsOut(acc, exports), (o, x) => clExpr(x, r, paths, o.clExsExports)
-    |> (one) => ClExsOut(append(o.clExsExprs, one.clExExpr), one.clExExports))
-
-fun clTupEnts(es: List<PTupEnt>, r, paths: ClPaths, exports, acc) =>
-  fold(es, ClEntsOut(acc, exports), (o, e) => clExpr(e.tupValue, r, paths, o.clEntsExports)
-    |> (v) => ClEntsOut(append(o.clEntsEnts, PTupEnt(e.tupName, e.tupSpread, v.clExExpr)), v.clExExports))
-
 # ── 3. the entry point (lambdas.py:226-240) ──────────────────────────────────
 # r = rootResolver(statements) built ONCE per recursion level; every
 # top-level statement's own path table is computed fresh from ITS (original)
@@ -664,9 +447,12 @@ fun clTupEnts(es: List<PTupEnt>, r, paths: ClPaths, exports, acc) =>
 
 class [final] ClScanAll(csaStmts: List<PStmt>, csaExports: List<PStmt>)
 
-fun clScanTop(st, r)
+fun clScanTop(st: PStmt, r: Resolver): ClSt
   let paths = collectLambdaPaths(st)
-  ret clStmt(st, r, paths, List())
+  let o = walkStmt(st, r, List<PStmt>(),
+                   Walk<List<PStmt>>((ex, sc, x) => clExportCb(x, sc, paths, ex),
+                                     wkNoStmt<List<PStmt>>, wkNoSpec<List<PStmt>>))
+  ret ClSt(o.x, o.s)
 
 # Both outputs are ordered: the rewritten top-level statements and the lifted
 # ones that follow them.
