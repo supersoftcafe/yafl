@@ -55,17 +55,15 @@ fun tlAfterNested(out) => match(out.tsStmt)
   (o: PStmt)  => out
 
 fun tlNested(f: PsFun) => match(f.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => tlMembers(bk.blockStmts, List(),
-                               Set())
-      |> (out) => TlStmt(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
-                               PeBlock(out.tlStmts, bk.blockValue,
-                                       bk.blockTag, bk.pebkLine),
-                               f.fRet, f.fWheres, f.psfLine,
-                               f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
-                         out.tlErrs)
-    (o: PExpr)    => TlStmt(f, Set())
-  ()         => TlStmt(f, Set())
+  (bk: PeBlock) => tlMembers(bk.blockStmts, List(),
+                             Set())
+    |> (out) => TlStmt(PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
+                             PeBlock(out.tlStmts, bk.blockValue,
+                                     bk.blockTag, bk.pebkLine),
+                             f.fRet, f.fWheres, f.psfLine,
+                             f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
+                       out.tlErrs)
+  ()            => TlStmt(f, Set())
 
 fun tlLowerFun(f, errs0) => match(f.fBody)
   (body: PExpr) => tlLowerBody(f, body, errs0)

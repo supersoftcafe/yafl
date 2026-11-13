@@ -146,17 +146,15 @@ fun dLetsLoopStep(a: List<TraitInst>, x: PStmt, dn, r) => match(x)
 
 fun witnessDrops(let2: PsLet, dn, r,
                  acc: List<TraitInst>): List<TraitInst> => match(let2.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => parentDrops(ps, dn,
-                                          genNames(cls.cGens, List()), acc)
-          ()               => acc
-        (o: PStmt)     => acc
-      ()         => acc
-    (o2: Spec)   => acc
-  ()         => acc
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => parentDrops(ps, dn,
+                                        genNames(cls.cGens, List()), acc)
+        ()               => acc
+      (o: PStmt)     => acc
+    ()         => acc
+  ()           => acc
 
 fun parentDrops(ps: List<Spec>, dn, names: List<String>, acc: List<TraitInst>) =>
   fold(ps, acc, (a, x) => parentDropsStep(a, x, dn, names))
@@ -202,10 +200,8 @@ fun whereDropsPlaceholderStep(x: Spec, dn, name) => match(x)
   (o: Spec) => false
 
 fun firstIsPlaceholder(as2: List<Spec>, name) => match(head(as2))
-  (sp: Spec) => match(sp)
-    (g2: SGeneric) => g2.sgName == name
-    (o: Spec)      => false
-  ()         => false
+  (g2: SGeneric) => g2.sgName == name
+  ()             => false
 
 # ── the bottom-up rewrite ───────────────────────────────────────────────────
 # Children first, then a BLOCK appends drops for its own unused droppable

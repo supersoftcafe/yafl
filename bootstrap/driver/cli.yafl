@@ -174,14 +174,13 @@ class [final] CliRun(crWords: List<CliWord>, crRest: List<CliWord>)
 
 # A cursor over the words: an option may consume the next word as its value.
 fun scanArgs(ws: List<CliWord>, s: CliScan): CliScan|CliHelp|CliError => match(head(ws))
-  (cw: CliWord) => match(cw)
-    (o: CwOpt)    => match(consumeOption(o, dropOne(ws), s))
-      (st: CliStep)  => scanArgs(st.stRest, st.stScan)
-      (h: CliHelp)   => h
-      (e: CliError)  => e
-    (w: CliWord)  => runOf(ws, List())
-      |> (r: CliRun) => scanArgs(r.crRest, positionals(s, r.crWords))
-  ()            => finished(s)
+  (o: CwOpt)   => match(consumeOption(o, dropOne(ws), s))
+    (st: CliStep)  => scanArgs(st.stRest, st.stScan)
+    (h: CliHelp)   => h
+    (e: CliError)  => e
+  (w: CliWord) => runOf(ws, List())
+    |> (r: CliRun) => scanArgs(r.crRest, positionals(s, r.crWords))
+  ()           => finished(s)
 
 # The words up to the next option, and the rest.
 fun runOf(ws: List<CliWord>, b: List<CliWord>): CliRun => match(findIndex(ws, (w) => w is CwOpt))

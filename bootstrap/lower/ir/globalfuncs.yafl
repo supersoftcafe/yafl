@@ -59,11 +59,10 @@ fun gfFunValueMap(f: CgFunction) => fold(f.fnOps, FunValues(Dict()), gfFvStep)
 fun gfFvStep(acc, op) => fold(opGetLiveVars(op).writes, acc, (a, w) => gfFvWritten(a, w, op))
 
 # A Move's source is known; any other definition is opaque.
-fun gfFvWritten(acc, w, op) => match(op)
-  (m: OpMove) => match(w)
-    (sv: RpStackVar) => gfFvAdd(acc, sv.name, m.moveSource, 1)
-    (o: RParam)      => acc   # unreachable: only locals are written
-  (o: Op)     => gfFvOpaque(acc, w)
+fun gfFvWritten(acc, w: RParam, op: Op) => match(op, w)
+  (m: OpMove, sv: RpStackVar) => gfFvAdd(acc, sv.name, m.moveSource, 1)
+  (_: OpMove, _: RParam)      => acc   # unreachable: only locals are written
+  ()                          => gfFvOpaque(acc, w)
 
 fun gfFvOpaque(acc, target) => match(target)
   (sv: RpStackVar) => gfFvAdd(acc, sv.name, RpNullPointer(), 2)
@@ -95,10 +94,8 @@ fun gfFieldValue(sf: RpStructField, vmap: FunValues)
     (sv: RpStackVar) => gfFvLookup(vmap, sv.name)
     (o: RParam)       => sf.structVal
   ret match(base)
-    (b: RParam) => match(b)
-      (ns: RpNewStruct) => gfNamedValue(ns.values, sf.field)
-      (o: RParam)        => None
-    ()           => None
+    (ns: RpNewStruct) => gfNamedValue(ns.values, sf.field)
+    ()                => None
 
 fun gfNamedValue(vs: List<RpNamedValue>, field: String)
   ret match(head(filter(vs, (nv) => nv.name == field)))

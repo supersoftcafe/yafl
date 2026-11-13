@@ -195,12 +195,11 @@ fun siFallAll(flow: SiFlow, acc: SiAcc, t, nodeOf: (:List<String>): String): SiA
   ret fold(siFunPaths(t), acc, (a, p) => siFall(flow, a, nodeOf(p)))
 
 # `dst` falls if any of `srcs` falls; unknown sources fall it now.
-fun siEdge(flow: SiFlow, acc: SiAcc, srcs: List<String>|None, dst: String|None): SiAcc => match(dst)
-  (d: String) => match(srcs)
-    (ss: List<String>) => SiAcc(fold(ss, acc.saDeps, (deps, s2) => siAddDep(deps, s2, d)),
-                                acc.saFallen)
-    ()                 => siFall(flow, acc, d)
-  ()          => acc
+fun siEdge(flow: SiFlow, acc: SiAcc, srcs: List<String>|None, dst: String|None): SiAcc => match(dst, srcs)
+  (d: String, ss: List<String>) => SiAcc(fold(ss, acc.saDeps, (deps, s2) => siAddDep(deps, s2, d)),
+                                         acc.saFallen)
+  (d: String, _: None)          => siFall(flow, acc, d)
+  ()                            => acc
 
 fun siAddDep(deps: Dict<String, List<String>>, src: String, dst: String) => match(get(deps, src))
   (prev: List<String>) => put(deps, src, prepend(dst, prev))
@@ -456,11 +455,9 @@ fun siGlobalEdges(flow: SiFlow, acc: SiAcc, g2: CgGlobal): SiAcc => match(g2.glo
 # A static object instance: an object global initialised by a NewStruct.
 class [final] SiStaticObject(soObject: String, soInit: RpNewStruct)
 
-fun siStaticObject(objectName: String|None, init): SiStaticObject|None => match(objectName)
-  (obj: String) => match(init)
-    (ns: RpNewStruct) => SiStaticObject(obj, ns)
-    (o: RParam)       => None
-  ()            => None
+fun siStaticObject(objectName: String|None, init: RParam): SiStaticObject|None => match(objectName, init)
+  (obj: String, ns: RpNewStruct) => SiStaticObject(obj, ns)
+  ()                             => None
 
 # Its initialiser stores each field.
 fun siStaticObjectEdges(flow: SiFlow, acc: SiAcc, so: SiStaticObject): SiAcc
@@ -517,11 +514,9 @@ fun siMaterialise(solved: SiSolved, f: CgFunction)
 # handed only sync functions returns a value.
 fun siMaterialiseOp(solved: SiSolved, fnName: String, op: Op): Op
   let replaced = opReplaceParams(op, (p) => siMaterialiseParam(solved, fnName, p))
-  ret match(op)
-    (c: OpCall) => match(replaced)
-      (nc: OpCall) => siSiteCallee(solved, fnName, c, nc)
-      (o: Op)      => replaced
-    (o: Op)     => replaced
+  ret match(op, replaced)
+    (c: OpCall, nc: OpCall) => siSiteCallee(solved, fnName, c, nc)
+    ()                      => replaced
 
 fun siSiteCallee(solved: SiSolved, fnName: String, c: OpCall, nc: OpCall): Op => match(nc.callFunction)
   (gf: RpGlobalFunction)  => with nc(callFunction = with gf(sync = siCallIsSync(solved, fnName, c)))

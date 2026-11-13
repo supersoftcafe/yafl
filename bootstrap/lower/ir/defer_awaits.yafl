@@ -80,13 +80,11 @@ fun [tail] dfRoots(os: Array<Op>, k: Int, reads: Dict<String, Int>, fnResult: Cg
 
 fun dfRootOf(op, os: Array<Op>, next: Int, reads: Dict<String, Int>, fnResult: CgType): DfRoot|None => match(op)
   (c: OpCall) => match(c.callRegister)
-    (reg: RParam) => match(reg)
-      (sv: RpStackVar) => opCallMaySuspend(c) && sdCountOf(reads, sv.name) > 0
-                          && !dfTailCalled(sv, os, next, fnResult)
-        ? dfRootFor(sv)
-        : None
-      (o: RParam)      => None
-    ()             => None
+    (sv: RpStackVar) => opCallMaySuspend(c) && sdCountOf(reads, sv.name) > 0
+                        && !dfTailCalled(sv, os, next, fnResult)
+      ? dfRootFor(sv)
+      : None
+    ()               => None
   (o: Op)     => None
 
 # Call(R); Return(R) — async_lower's alTailValued pattern.

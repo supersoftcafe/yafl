@@ -187,17 +187,14 @@ fun mgBoundSpec(binds: List<MBind>, name): Spec|None => match(head(filter(binds,
 fun mgRebind(binds: List<MBind>, name, sp: Spec|None) => map(binds, (b) => b.mbName == name ? MBind(name, sp) : b)
 
 fun mgBindableName(x: Spec|None, binds: List<MBind>, calleeSide: Bool): String => match(x)
-  (s2: Spec) => match(s2)
-    (g: SGeneric) => calleeSide && mgBindable(binds, g.sgName) ? g.sgName : ""
-    (o: Spec)     => ""
-  ()         => ""
+  (g: SGeneric) => calleeSide && mgBindable(binds, g.sgName) ? g.sgName : ""
+  ()            => ""
 
 fun mgIsHole(x: Spec|None, binds: List<MBind>, calleeSide: Bool, r): Bool => match(x)
-  (s2: Spec) => match(s2)
-    (n: SNamed)   => true
-    (g: SGeneric) => !(calleeSide && mgBindable(binds, g.sgName)) && !resolvesInScope(g.sgName, r)
-    (o: Spec)     => false
-  ()         => true
+  (n: SNamed)   => true
+  (g: SGeneric) => !(calleeSide && mgBindable(binds, g.sgName)) && !resolvesInScope(g.sgName, r)
+  (o: Spec)     => false
+  ()            => true
 
 fun mgLine(x: Spec|None) => match(x)
   (s2: Spec) => specLine(s2)
@@ -256,11 +253,10 @@ fun mgGo(l: Spec|None, rr: Spec|None, binds: List<MBind>, inv: Bool, wv: Bool, c
     ret mgOk(rr, binds)
   if mgIsHole(rr, binds, !cl, r)
     ret mgOk(l, binds)
-  ret match(l)
-    (ls: Spec) => match(rr)
-      (rs: Spec) => mgShapes(ls, rs, binds, inv, wv, cl, r)
-      ()         => mgOk(l, binds)
-    ()         => mgOk(rr, binds)
+  ret match(l, rr)
+    (ls: Spec, rs: Spec) => mgShapes(ls, rs, binds, inv, wv, cl, r)
+    (ls: Spec, _: None)  => mgOk(l, binds)
+    ()                   => mgOk(rr, binds)
 
 fun mgIsUnion(x) => match(x)
   (cm: SCombination) => true
@@ -297,20 +293,12 @@ fun mgShapes2(l: Spec, rr: Spec, binds: List<MBind>, inv: Bool, wv: Bool, cl: Bo
   # In scope on both sides: a real type, equal only to itself.
   if mgIsGeneric(l) || mgIsGeneric(rr)
     ret mgSameOrConflict(l, rr, binds)
-  ret match(l)
-    (lt: STuple)    => match(rr)
-      (rt: STuple) => mgTuples(lt, rt, binds, inv, wv, cl, r)
-      (o: Spec)    => mgSameOrConflict(l, rr, binds)
-    (le: SEnum)     => match(rr)
-      (re2: SEnum) => mgEnums(le, re2, binds, inv, wv, cl, r)
-      (o: Spec)    => mgSameOrConflict(l, rr, binds)
-    (lc: SClass)    => match(rr)
-      (rc: SClass) => mgClasses(lc, rc, binds, inv, wv, cl, r)
-      (o: Spec)    => mgSameOrConflict(l, rr, binds)
-    (lf: SCallable) => match(rr)
-      (rf: SCallable) => mgCallables(lf, rf, binds, inv, wv, cl, r)
-      (o: Spec)       => mgSameOrConflict(l, rr, binds)
-    (o: Spec)       => mgSameOrConflict(l, rr, binds)
+  ret match(l, rr)
+    (lt: STuple, rt: STuple)       => mgTuples(lt, rt, binds, inv, wv, cl, r)
+    (le: SEnum, re2: SEnum)        => mgEnums(le, re2, binds, inv, wv, cl, r)
+    (lc: SClass, rc: SClass)       => mgClasses(lc, rc, binds, inv, wv, cl, r)
+    (lf: SCallable, rf: SCallable) => mgCallables(lf, rf, binds, inv, wv, cl, r)
+    ()                             => mgSameOrConflict(l, rr, binds)
 
 fun mgSameOrConflict(l, rr, binds: List<MBind>) => eqSpec(l, rr)
   ? mgOk(l, binds)
@@ -923,11 +911,10 @@ fun nacNamedBeforePositional(names: List<String>): Bool =>
 # merge, no assignability absorption. The one collapse is the set's own —
 # flatten + dedupe via reprMembers — so `A ⊔ (A|None)` is `A|None`, and
 # `A ⊔ A` is `A`.
-fun join(a: Spec|None, b): Spec|None => match(a)
-  (x: Spec) => match(b)
-    (y: Spec) => joinBoth(x, y)
-    ()        => x
-  () => b
+fun join(a: Spec|None, b): Spec|None => match(a, b)
+  (x: Spec, y: Spec) => joinBoth(x, y)
+  (x: Spec, _: None) => x
+  ()                 => b
 
 fun joinBoth(x, y)
   if eqSpec(x, y)
@@ -1046,10 +1033,8 @@ fun solveTraitConstraint(constraint, targets: List<String>,
   ret firstSome(instances, (i) => tryInstance(i, constraint, targets, r))
 
 fun subjectIsPlaceholder(constraint: SClass) => match(head(constraint.scParams))
-  (s2: Spec) => match(s2)
-    (g2: SGeneric) => true
-    (o: Spec)      => false
-  ()         => false
+  (g2: SGeneric) => true
+  ()             => false
 
 fun tryInstance(inst: TraitInst, constraint, targets: List<String>,
                 r: Resolver)

@@ -577,10 +577,8 @@ fun dischargeLocalsStep(a: LinOut, x: PStmt, r) => match(x)
   (o2: PStmt) => a
 
 fun blockTerminates(stmts: List<PStmt>) => match(head(takeLastOne(stmts)))
-  (st: PStmt) => match(st)
-    (rt: PsRet) => true
-    (i: PsIf)   => blockTerminates(i.ifTrue) && blockTerminates(i.ifFalse)
-    (o: PStmt)  => false
+  (rt: PsRet) => true
+  (i: PsIf)   => blockTerminates(i.ifTrue) && blockTerminates(i.ifFalse)
   ()          => false
 
 fun countSuffix(stmts: List<PStmt>, i, env, r,

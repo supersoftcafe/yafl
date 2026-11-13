@@ -77,14 +77,12 @@ fun genFieldAssignStore(fa: PsFieldAssign, d: PeDot, cs: PsClass, l: PsLet, r)
 # (array_index_check), then an ordinary NON-fresh element store — the barriers
 # any late store owes (control.py __generate_element).
 fun genElementAssign(fa: PsFieldAssign, ar: PeArrayRead, cs: PsClass, r) => match(head(arrayFieldsOf(classFields(cs), List())))
-  (af: PStmt) => match(af)
-    (l: PsLet) => match(asArrayFieldVariant(l.lType))
-      (afSpec: SArrayField) => match(arrayBoundField(cs, afSpec))
-        (bound: String) => genElementStore(fa, ar, cs, afSpec.safElem, bound, r)
-        ()              => emptyBundle()   # unreachable: check() requires the length field
-      ()                    => emptyBundle()   # unreachable
-    (o: PStmt) => emptyBundle()                # unreachable
-  ()          => emptyBundle()                 # unreachable
+  (l: PsLet) => match(asArrayFieldVariant(l.lType))
+    (afSpec: SArrayField) => match(arrayBoundField(cs, afSpec))
+      (bound: String) => genElementStore(fa, ar, cs, afSpec.safElem, bound, r)
+      ()              => emptyBundle()   # unreachable: check() requires the length field
+    ()                    => emptyBundle()   # unreachable
+  ()         => emptyBundle()                 # unreachable
 
 fun genElementStore(fa: PsFieldAssign, ar: PeArrayRead, cs: PsClass, elem: Spec, bound: String, r)
   let baseB = withPrefix(genExpr(ar.arrObj, r), "eab")

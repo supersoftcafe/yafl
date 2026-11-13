@@ -24,11 +24,9 @@ import Bootstrap::Resolve
 
 
 
-fun needsConversion(r, source: Spec|None, target: Spec|None) => match(source)
-  (s2: Spec) => match(target)
-    (t2: Spec) => needsConv(r, s2, t2)
-    ()         => false
-  () => false
+fun needsConversion(r, source: Spec|None, target: Spec|None) => match(source, target)
+  (s2: Spec, t2: Spec) => needsConv(r, s2, t2)
+  ()                   => false
 
 fun needsConv(r, source, target)
   # An uninhabited source (Never) is dead code, but its SHAPE must still change

@@ -249,13 +249,12 @@ fun memberHolding(members: List<Spec>, sp: Spec): HeldMember|None
   let u = uid(sp)
   if u == ""
     ret None
-  ret match(findIndex(members, (m) => uid(m) == u))
-    (i: Int) => heldAt(members, i)
-    ()       => match(sp)
-      (e: SEnum) => match(findIndex(members, (m) => holdsMember(m, e)))
-        (j: Int) => heldAt(members, j)
-        ()       => None
-      (o)        => None
+  ret match(findIndex(members, (m) => uid(m) == u), sp)
+    (i: Int, _: Spec)   => heldAt(members, i)
+    (_: None, e: SEnum) => match(findIndex(members, (m) => holdsMember(m, e)))
+      (j: Int) => heldAt(members, j)
+      ()       => None
+    ()                  => None
 
 fun heldAt(members: List<Spec>, i: Int): HeldMember|None => match(head(drop(members, i)))
   (m: Spec) => HeldMember(i, m)

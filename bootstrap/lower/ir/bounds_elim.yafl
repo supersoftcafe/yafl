@@ -43,34 +43,22 @@ enum BeVal
   enum BeInduction(beIndName: String)
   enum BeOpaque()
 
-fun [tail] beEq(a, b: BeVal) => match(a)
-  (ia: BeInt)       => match(b)
-    (ib: BeInt) => ia.beIntVal == ib.beIntVal && ia.beIntPrec == ib.beIntPrec
-    (o)         => false
-  (fa: BeField)     => match(b)
-    (fb: BeField) => fa.beFieldName == fb.beFieldName
-                     && beEq(fa.beFieldPtr, fb.beFieldPtr)
-    (o)           => false
-  (va: BeInvoke)    => match(b)
-    (vb: BeInvoke) => va.beInvFn == vb.beInvFn
-                      && beArgsEq(va.beInvArgs, vb.beInvArgs)
-    (o)            => false
-  (ra: BeVar)       => match(b)
-    (rb: BeVar) => ra.beVarName == rb.beVarName
-    (o)         => false
-  (ca: BeCycle)     => match(b)
-    (cb: BeCycle) => ca.beCycleName == cb.beCycleName
-    (o)           => false
-  (na: BeInduction) => match(b)
-    (nb: BeInduction) => na.beIndName == nb.beIndName
-    (o)               => false
-  (oa: BeOpaque)    => b is BeOpaque
+fun [tail] beEq(a: BeVal, b: BeVal) => match(a, b)
+  (ia: BeInt, ib: BeInt)             => ia.beIntVal == ib.beIntVal && ia.beIntPrec == ib.beIntPrec
+  (fa: BeField, fb: BeField)         => fa.beFieldName == fb.beFieldName
+                                        && beEq(fa.beFieldPtr, fb.beFieldPtr)
+  (va: BeInvoke, vb: BeInvoke)       => va.beInvFn == vb.beInvFn
+                                        && beArgsEq(va.beInvArgs, vb.beInvArgs)
+  (ra: BeVar, rb: BeVar)             => ra.beVarName == rb.beVarName
+  (ca: BeCycle, cb: BeCycle)         => ca.beCycleName == cb.beCycleName
+  (na: BeInduction, nb: BeInduction) => na.beIndName == nb.beIndName
+  (oa: BeOpaque, ob: BeOpaque)       => true
+  ()                                 => false
 
-fun beArgsEq(a: List<BeVal>|None, b: List<BeVal>|None) => match(a)
-  (la: List<BeVal>) => match(b)
-    (lb: List<BeVal>) => eqBy(la, lb, beEq)
-    ()                => false
-  ()                => b is None
+fun beArgsEq(a: List<BeVal>|None, b: List<BeVal>|None) => match(a, b)
+  (la: List<BeVal>, lb: List<BeVal>) => eqBy(la, lb, beEq)
+  (_: None, _: None)                 => true
+  ()                                 => false
 
 
 # Value ids key the one-store table, as Python's tuples key its dict.
@@ -154,13 +142,11 @@ fun beInvokeArgs(params, defs: Dict<String, BeDefEntry>,
 fun beResolveStructField(sf: RpStructField, defs: Dict<String, BeDefEntry>,
                          visiting: List<String>) => match(sf.structVal)
   (sv: RpStackVar) => match(beDefOf(defs, sv.name))
-    (d: BeDef) => match(d)
-      (src: BdSource) => match(src.bdSource)
-        (ns: RpNewStruct) => beStructValue(ns.values, sf.field,
-                                           defs, visiting)
-        (o: RParam)       => BeOpaque()
-      (o: BeDef)      => BeOpaque()
-    ()         => BeOpaque()
+    (src: BdSource) => match(src.bdSource)
+      (ns: RpNewStruct) => beStructValue(ns.values, sf.field,
+                                         defs, visiting)
+      (o: RParam)       => BeOpaque()
+    ()              => BeOpaque()
   (o: RParam)      => BeOpaque()
 
 fun beStructValue(vs: List<RpNamedValue>, field: String,
@@ -220,10 +206,8 @@ fun beIncArgs(args0: List<BeVal>|None, name) => match(args0)
 
 # The entry value of an induction variable, re-derived from its Phi.
 fun beEntryOf(name, defs: Dict<String, BeDefEntry>) => match(beDefOf(defs, name))
-  (d: BeDef) => match(d)
-    (ph: BdPhi) => beEntryFromPhi(name, ph.bdPhi, defs)
-    (o: BeDef)  => None
-  ()         => None
+  (ph: BdPhi) => beEntryFromPhi(name, ph.bdPhi, defs)
+  ()          => None
 
 fun beEntryFromPhi(name, phi: OpPhi,
                    defs: Dict<String, BeDefEntry>): BeVal|None
@@ -353,12 +337,10 @@ fun beGuardTruth(ji: OpJumpIf, i, ops: Array<Op>, region: BeRegion,
   # Body entered by TAKING the branch — but only a guard if the fall-through
   # immediately leaves the region.
   ret match(nthOf(ops, i + 1))
-    (nxt: Op) => match(nxt)
-      (j: OpJump) => beInRegion(get(labels, j.jumpName), region)
-        ? None
-        : !ji.jumpIfInvert
-      (o: Op)     => None
-    ()        => None
+    (j: OpJump) => beInRegion(get(labels, j.jumpName), region)
+      ? None
+      : !ji.jumpIfInvert
+    ()          => None
 
 fun beInRegion(at: Int|None, region: BeRegion) => match(at)
   (i: Int) => i >= region.brLo && i <= region.brHi

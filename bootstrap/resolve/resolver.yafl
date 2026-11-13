@@ -778,13 +778,12 @@ fun mmParentClass(s2: MMState, parent: SClass, mi: MemberIdx, st: Statements,
                   visiting: List<String>)
   let acc2 = mmEnsure(parent.scName, st, visiting, s2.mmAcc)
   ret match(get(acc2, parent.scName))
-    (mo: MergedOut) => match(mo)
-      (ms: MTable) => sameLen(parent.scParams, ms.mtoTable.mtGens)
-        ? mmMergeParent(MMState(s2.mmRows, s2.mmAbsent, s2.mmBroken, acc2),
-                        parent, ms.mtoTable, mi)
-        : MMState(s2.mmRows, s2.mmAbsent, s2.mmBroken, acc2)   # arity: EMPTY, complete
-      (mn: MMissing) => MMState(s2.mmRows, s2.mmAbsent, true, acc2)
-    ()               => MMState(s2.mmRows, s2.mmAbsent, true, acc2)   # unreachable
+    (ms: MTable)   => sameLen(parent.scParams, ms.mtoTable.mtGens)
+      ? mmMergeParent(MMState(s2.mmRows, s2.mmAbsent, s2.mmBroken, acc2),
+                      parent, ms.mtoTable, mi)
+      : MMState(s2.mmRows, s2.mmAbsent, s2.mmBroken, acc2)   # arity: EMPTY, complete
+    (mn: MMissing) => MMState(s2.mmRows, s2.mmAbsent, true, acc2)
+    ()             => MMState(s2.mmRows, s2.mmAbsent, true, acc2)   # unreachable
 
 fun mmMergeParent(s2: MMState, parent: SClass, sub: MergedTable,
                   mi: MemberIdx)

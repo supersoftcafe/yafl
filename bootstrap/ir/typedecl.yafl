@@ -122,40 +122,19 @@ fun cgIsStructLike(t) => match(cgFieldsOf(t))
 
 # ── equality (dict-key semantics: Python's frozen-dataclass structural eq) ──
 
-fun [tail] eqCgType(a, b): Bool => match(a)
-  (x: CgInt) => match(b)
-    (y: CgInt) => x.precision == y.precision
-    (o: CgType) => false
-  (x: CgFloat) => match(b)
-    (y: CgFloat) => x.precision == y.precision
-    (o: CgType) => false
-  (x: CgIntPtr) => match(b)
-    (y: CgIntPtr) => true
-    (o: CgType)   => false
-  (x: CgDataPointer) => match(b)
-    (y: CgDataPointer) => true
-    (o: CgType)        => false
-  (x: CgStr) => match(b)
-    (y: CgStr)  => true
-    (o: CgType) => false
-  (x: CgFuncPointer) => match(b)
-    (y: CgFuncPointer) => true
-    (o: CgType)        => false
-  (x: CgVoid) => match(b)
-    (y: CgVoid) => true
-    (o: CgType) => false
-  (x: CgStruct) => match(b)
-    (y: CgStruct) => eqCgFields(x.fields, y.fields)
-    (o: CgType)   => false
-  (x: CgImmediateStruct) => match(b)
-    (y: CgImmediateStruct) => eqCgFields(x.fields, y.fields)
-    (o: CgType)            => false
-  (x: CgArray) => match(b)
-    (y: CgArray) => x.arrLength == y.arrLength && eqCgType(x.elemType, y.elemType)
-    (o: CgType)  => false
-  (x: CgTaskWrapper) => match(b)
-    (y: CgTaskWrapper) => eqCgType(x.inner, y.inner)
-    (o: CgType)        => false
+fun [tail] eqCgType(a: CgType, b: CgType): Bool => match(a, b)
+  (x: CgInt, y: CgInt)                         => x.precision == y.precision
+  (x: CgFloat, y: CgFloat)                     => x.precision == y.precision
+  (x: CgIntPtr, y: CgIntPtr)                   => true
+  (x: CgDataPointer, y: CgDataPointer)         => true
+  (x: CgStr, y: CgStr)                         => true
+  (x: CgFuncPointer, y: CgFuncPointer)         => true
+  (x: CgVoid, y: CgVoid)                       => true
+  (x: CgStruct, y: CgStruct)                   => eqCgFields(x.fields, y.fields)
+  (x: CgImmediateStruct, y: CgImmediateStruct) => eqCgFields(x.fields, y.fields)
+  (x: CgArray, y: CgArray)                     => x.arrLength == y.arrLength && eqCgType(x.elemType, y.elemType)
+  (x: CgTaskWrapper, y: CgTaskWrapper)         => eqCgType(x.inner, y.inner)
+  ()                                           => false
 
 fun [tail] eqCgFields(a: List<CgField>, b: List<CgField>): Bool => match(head(a))
   (fa: CgField) => match(head(b))
@@ -512,14 +491,13 @@ fun cgFlattenPrimitives(t): List<CgType> => cgFlattenPrimitivesN(t).ps
 
 # Primitive slots AND their count, the count carried through the recursion
 # (no-length ruling) — layout arithmetic consumes the number as data.
-fun cgFlattenPrimitivesN(t): (ps: List<CgType>, n: Int) => match(cgFieldsOf(t))
-  (fields: List<CgField>) => fold(fields, (List(), 0),
+fun cgFlattenPrimitivesN(t): (ps: List<CgType>, n: Int) => match(cgFieldsOf(t), t)
+  (fields: List<CgField>, _: CgType) => fold(fields, (List(), 0),
       (acc, fld) =>
         cgFlattenPrimitivesN(fld.fieldType)
           |> (sub) => (concat(acc.ps, sub.ps), acc.n + sub.n))
-  () => match(t)
-    (fp: CgFuncPointer) => (append(append(List(), CgIntPtr(fp.fpNonNull)), CgDataPointer(false)), 2)
-    (o: CgType)         => (prepend(o, List()), 1)
+  (_: None, fp: CgFuncPointer)       => (append(append(List(), CgIntPtr(fp.fpNonNull)), CgDataPointer(false)), 2)
+  (_: None, o: CgType)               => (prepend(o, List()), 1)
 
 # Rank for laying out union slots, largest first. An IR fact, not a byte
 # count: a pointer's 6 places pointers between the 8-byte and 4-byte scalars
@@ -532,11 +510,9 @@ fun cgNominalSize(t) => match(t)
   (p: CgIntPtr) => 5        # pointer-sized, after the GC pointers
   (o: CgType) => 0          # unreachable: not a primitive slot (Python raises)
 
-fun canMergeInto(small, large) => match(small)
-  (si: CgInt) => match(large)
-    (li: CgInt) => 0 < si.precision && si.precision < li.precision
-    (o: CgType) => false
-  (o: CgType) => false
+fun canMergeInto(small: CgType, large: CgType) => match(small, large)
+  (si: CgInt, li: CgInt) => 0 < si.precision && si.precision < li.precision
+  ()                     => false
 
 # Canonical slot type for union slot sharing: never-NULL and nullable words
 # of one kind share a slot. Whether the slot itself is never NULL is settled

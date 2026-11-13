@@ -343,10 +343,8 @@ fun buildFunctionFromLambda(lm: PeLambda, nme, body)
             List<PStmt>())
 
 fun lambdaResultType(lamRet: Spec|None) => match(lamRet)
-  (t2: Spec) => match(t2)
-    (cb: SCallable) => cb.scResult
-    (o: Spec)       => None
-  ()          => None
+  (cb: SCallable) => cb.scResult
+  ()              => None
 
 fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
   let lr = lm.pelLine
@@ -370,10 +368,8 @@ fun clParamLets(ns: List<String>, cpt: ClCaps, lr, acc: List<PStmt>) =>
                 false, List<PStmt>())))
 
 fun captureRead(name, xtype: Spec|None, lr) => match(xtype)
-  (t0: Spec) => match(t0)
-    (ls: SLazyStub) => clStubRead(name, ls, lr)
-    (o: Spec)       => PeName(name, List(), lr, None)
-  ()         => PeName(name, List(), lr, None)
+  (ls: SLazyStub) => clStubRead(name, ls, lr)
+  ()              => PeName(name, List(), lr, None)
 
 # Python reads xtype.target_type directly (Spec|None); PeLazy.lzTarget is a
 # plain Spec in the port, so an absent target keeps the plain name read —

@@ -321,10 +321,8 @@ fun scCountAll(cc: ScCounts, name: String) => scCountOf(cc.cnAll, name)
 fun scCountCalled(cc: ScCounts, name: String) => scCountOf(cc.cnCalled, name)
 
 fun scClassNameOf(base, cands: ScCands, r) => match(exprType(base, r))
-  (bt: Spec) => match(bt)
-    (cs2: SClass) => scHasCand(cands, cs2.scName) ? cs2.scName : None
-    (o: Spec)     => None
-  ()         => None
+  (cs2: SClass) => scHasCand(cands, cs2.scName) ? cs2.scName : None
+  ()            => None
 
 fun scDotHit(acc, d: PeDot, cands: ScCands, r) => match(scClassNameOf(d.base, cands, r))
   (clsName: String) => scHasMethod(cands, clsName, d.member) ? scBumpAll(acc, clsName) : acc

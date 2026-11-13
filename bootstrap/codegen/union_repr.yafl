@@ -151,21 +151,16 @@ enum PtrKind
   enum PkEnum(pkRoot: String)
   enum PkForeign()
 
-fun eqPtrKind(a, b) => match(a)
-  (x: PkUnit)    => isUnitKind(b)
-  (x: PkInt)     => isIntKind(b)
-  (x: PkStr)     => isStrKind(b)
-  (x: PkFun)     => isFunKind(b)
-  (x: PkForeign) => isForeignKind(b)
-  (x: PkScalar)  => match(b)
-    (y: PkScalar) => x.pkScalar == y.pkScalar
-    (o: PtrKind)  => false
-  (x: PkClass)   => match(b)
-    (y: PkClass) => x.pkName == y.pkName
-    (o: PtrKind) => false
-  (x: PkEnum)    => match(b)
-    (y: PkEnum)  => x.pkRoot == y.pkRoot
-    (o: PtrKind) => false
+fun eqPtrKind(a: PtrKind, b: PtrKind) => match(a, b)
+  (x: PkUnit, y: PkUnit)       => true
+  (x: PkInt, y: PkInt)         => true
+  (x: PkStr, y: PkStr)         => true
+  (x: PkFun, y: PkFun)         => true
+  (x: PkForeign, y: PkForeign) => true
+  (x: PkScalar, y: PkScalar)   => x.pkScalar == y.pkScalar
+  (x: PkClass, y: PkClass)     => x.pkName == y.pkName
+  (x: PkEnum, y: PkEnum)       => x.pkRoot == y.pkRoot
+  ()                           => false
 
 fun isUnitKind(k) => match(k)
   (u: PkUnit)  => true
@@ -354,12 +349,10 @@ fun ptrClassMembersLoop(ms: List<Spec>, r, acc: Set<String>): List<String>|None 
 
 fun ptrClassMemberStep(a: Set<String>|None, m: Spec, r) => match(a)
   (s: Set<String>) => match(pointerWordKind(m, r))
-    (k: PtrKind) => match(k)
-      (c: PkClass)    => specIsInterface(m, r) ? None : add(s, c.pkName)
-      (e2: PkEnum)    => None
-      (fo: PkForeign) => None
-      (o: PtrKind)    => s
-    ()           => s
+    (c: PkClass)    => specIsInterface(m, r) ? None : add(s, c.pkName)
+    (e2: PkEnum)    => None
+    (fo: PkForeign) => None
+    ()              => s
   ()               => None
 
 fun specIsInterface(m: Spec, r): Bool => match(m)
@@ -386,11 +379,9 @@ fun ptrMemberValue(gp: GPointer, member, value, r): RParam
     : wrapLeaf(mctype, ptrMemberLeaf(gp, mctype, pointerWordKind(member, r), value))
 
 fun ptrMemberLeaf(gp: GPointer, mctype, kind: PtrKind|None, value): RParam => match(kind)
-  (k: PtrKind) => match(k)
-    (sc: PkScalar) => ptrUnpack(value, sc.pkScalar)
-    (f: PkFun)     => ptrToFun(value)
-    (o: PtrKind)   => ptrStrOrWord(gp, mctype, value)
-  ()           => ptrStrOrWord(gp, mctype, value)
+  (sc: PkScalar) => ptrUnpack(value, sc.pkScalar)
+  (f: PkFun)     => ptrToFun(value)
+  ()             => ptrStrOrWord(gp, mctype, value)
 
 fun ptrStrOrWord(gp: GPointer, mctype, value): RParam
   ret gp.grpWide && eqCgType(peeledCtype(mctype), CgStr(false)) ? value : ptrWord(gp, value)
@@ -406,11 +397,9 @@ fun ptrAs(gp: GPointer, sv, armType, r): RParam
   ret match(armType)
     (cm: SCombination) => ptrWord(gp, sv)
     (o: Spec)          => match(pointerWordKind(armType, r))
-      (k: PtrKind) => match(k)
-        (sc: PkScalar) => ptrUnpack(sv, sc.pkScalar)
-        (f: PkFun)     => ptrToFun(sv)
-        (o2: PtrKind)  => ptrWord(gp, sv)
-      ()           => ptrWord(gp, sv)
+      (sc: PkScalar) => ptrUnpack(sv, sc.pkScalar)
+      (f: PkFun)     => ptrToFun(sv)
+      ()             => ptrWord(gp, sv)
 
 class [final] SlotValuePair(svpName: String, svpValue: RParam)
 
@@ -668,11 +657,10 @@ class [final] Selection(selIndex: Int, selHolder: Spec, selNeedsVariantTest: Boo
 # the member that holds a value of `pattern`, which needs a variant test as
 # well when `pattern` is below its level. A parent-level pattern over sibling
 # members (`Thing` over `Car|Boat`) matches each member it holds.
-fun taggedSelections(members: List<Spec>, pattern: Spec): List<Selection> => match(memberHolding(members, pattern))
-  (held: HeldMember) => list1(Selection(held.hmIndex, held.hmMember, belowHolder(held.hmMember, pattern)))
-  ()                 => match(pattern)
-    (pe: SEnum) => heldSelections(members, pe)
-    (o: Spec)   => List()
+fun taggedSelections(members: List<Spec>, pattern: Spec): List<Selection> => match(memberHolding(members, pattern), pattern)
+  (held: HeldMember, _: Spec) => list1(Selection(held.hmIndex, held.hmMember, belowHolder(held.hmMember, pattern)))
+  (_: None, pe: SEnum)        => heldSelections(members, pe)
+  ()                          => List()
 
 fun belowHolder(holder: Spec, pattern: Spec) => match(pattern)
   (pe: SEnum) => strictlyHoldsMember(holder, pe)
@@ -776,11 +764,9 @@ fun guardsOrNever(guards: List<RParam>|None): List<RParam> => match(guards)
 
 # subject_at_arm: the subject's type at the arm's level of the enum, so the
 # arm body sees that level's fields. The value itself is unchanged.
-fun subjectAtArm(subjType: Spec, armType: Spec, r): Spec => match(subjType)
-  (se: SEnum) => match(armType)
-    (ae: SEnum) => isEmpty(ae.sePath) ? subjType : (enumLevel(se, ae.sePath, r) ?? subjType)
-    (o: Spec)   => subjType
-  (o: Spec)   => subjType
+fun subjectAtArm(subjType: Spec, armType: Spec, r): Spec => match(subjType, armType)
+  (se: SEnum, ae: SEnum) => isEmpty(ae.sePath) ? subjType : (enumLevel(se, ae.sePath, r) ?? subjType)
+  ()                     => subjType
 
 fun discOf(discs: Dict<String, Int>, u: String) => match(get(discs, u))
   (i: Int) => i
@@ -891,10 +877,9 @@ fun combinationArm(em, arm: PArm, sv, tag, members,
 fun combinationTypedArm(em, arm: PArm, sv, tag, members: List<Spec>,
                         variantMap: List<List<CgSlotEntry>>, slotFields: List<CgField>,
                         discs, resultType: Spec|None, r): GEmit => match(arm.armType)
-  (whole: Spec) => match(whole)
-    (cm: SCombination) => combinationUnionArm(em, arm, cm, sv, tag, members, variantMap, slotFields, discs, resultType, r)
-    (t2: Spec)          => combinationPlainArm(em, arm, t2, sv, tag, members, variantMap, slotFields, discs, resultType, r)
-  ()             => em   # else arm: the fallback, handled at the end
+  (cm: SCombination) => combinationUnionArm(em, arm, cm, sv, tag, members, variantMap, slotFields, discs, resultType, r)
+  (t2: Spec)         => combinationPlainArm(em, arm, t2, sv, tag, members, variantMap, slotFields, discs, resultType, r)
+  ()                 => em   # else arm: the fallback, handled at the end
 
 fun litExprOf(l2) => match(l2)
   (le2: PlExpr) => le2.litExpr
@@ -1202,16 +1187,15 @@ fun ptrKindKeys(spec: Spec, r): Set<String>
   ret fold(members, Set<String>(), (acc, m) => add(acc, ptrKindKey(pointerWordKind(m, r))))
 
 fun ptrKindKey(k: PtrKind|None): String => match(k)
-  (kk: PtrKind) => match(kk)
-    (u: PkUnit)     => "UNIT"
-    (i: PkInt)      => "INT"
-    (s2: PkStr)     => "STR"
-    (sc: PkScalar)  => "SCALAR:" + sc.pkScalar
-    (f: PkFun)      => "FUN"
-    (c: PkClass)    => "CLASS:" + c.pkName
-    (e2: PkEnum)    => "ENUM:" + e2.pkRoot
-    (fo: PkForeign) => "FOREIGN"
-  ()             => "NONE"
+  (u: PkUnit)     => "UNIT"
+  (i: PkInt)      => "INT"
+  (s2: PkStr)     => "STR"
+  (sc: PkScalar)  => "SCALAR:" + sc.pkScalar
+  (f: PkFun)      => "FUN"
+  (c: PkClass)    => "CLASS:" + c.pkName
+  (e2: PkEnum)    => "ENUM:" + e2.pkRoot
+  (fo: PkForeign) => "FOREIGN"
+  ()              => "NONE"
 
 fun genPointerNullRouting(em, r, resultType: Spec|None, gp: GPointer, value, sv,
                           cls: MemberClassification, elseArm: PArm|None, subjHasNone: Bool): GEmit
@@ -1238,10 +1222,9 @@ fun genPointerGuardedArm(em, r, resultType: Spec|None, arm: PArm, gp: GPointer, 
 
 fun genPointerGuardedTypedArm(em, r, resultType: Spec|None, arm: PArm, gp: GPointer, value, sv): GEmit
   ret match(arm.armType)
-    (whole: Spec) => match(whole)
-      (cm: SCombination) => genPointerUnionArm(em, r, resultType, arm, cm, gp, value, sv)
-      (t2: Spec)          => genPointerPlainArm(em, r, resultType, arm, t2, gp, value, sv)
-    ()             => em   # unreachable: an else arm never ends up in `guarded`
+    (cm: SCombination) => genPointerUnionArm(em, r, resultType, arm, cm, gp, value, sv)
+    (t2: Spec)         => genPointerPlainArm(em, r, resultType, arm, t2, gp, value, sv)
+    ()                 => em   # unreachable: an else arm never ends up in `guarded`
 
 fun genPointerUnionArm(em: GEmit, r, resultType, arm: PArm, cm, gp: GPointer, value, sv): GEmit
   ret match(classifyRepr(cm, r))
@@ -1427,14 +1410,12 @@ fun leafFromSlots(member, slotAssignments: List<CgSlotEntry>, slotFields: List<C
         (o: CgType)         => reconstructLeaf(slotAssignments, slotFields, sv, 0).rfValue
 
 fun pointerBoxWord(gp: GPointer, kind: PtrKind|None, innerCtype, word): RParam => match(kind)
-  (k: PtrKind) => match(k)
-    (sc: PkScalar) => RpRuntimeInvoke("str_pack_" + scalarC(sc.pkScalar),
-                                      RpNewStruct(list2(RpNamedValue("code", RpInteger(scalarCode(sc.pkScalar), 32)),
-                                                        RpNamedValue("v", word))),
-                                      CgStr(false))
-    (f: PkFun)     => RpRuntimeInvoke("str_from_fun", RpNewStruct(list1(RpNamedValue("f", word))), CgStr(false))
-    (o: PtrKind)   => wideWord(gp, innerCtype, word)
-  ()           => wideWord(gp, innerCtype, word)
+  (sc: PkScalar) => RpRuntimeInvoke("str_pack_" + scalarC(sc.pkScalar),
+                                    RpNewStruct(list2(RpNamedValue("code", RpInteger(scalarCode(sc.pkScalar), 32)),
+                                                      RpNamedValue("v", word))),
+                                    CgStr(false))
+  (f: PkFun)     => RpRuntimeInvoke("str_from_fun", RpNewStruct(list1(RpNamedValue("f", word))), CgStr(false))
+  ()             => wideWord(gp, innerCtype, word)
 
 # A wide union carries a one-word member in word 0 of a String value.
 fun wideWord(gp: GPointer, innerCtype, word): RParam
@@ -1857,10 +1838,9 @@ fun taggedConstructBoxed(e2: SEnum, leafFields: List<PStmt>, leafName,
 # that behaviour (Python taggedConstruct's generate_to).
 fun [tail] bxConstructFields(fields: List<PStmt>, objName, resultVar,
                              fieldArgs: List<PunArg>, r, acc: CcAcc) => match(head(fields))
-  (v: PStmt) => match(v)
-    (let2: PsLet) => bxConstructField(let2, dropOne(fields), objName, resultVar, fieldArgs, r, acc)
-    (o: PStmt)    => bxConstructFields(dropOne(fields), objName, resultVar, fieldArgs, r, acc)
-  () => ComplexConstructOut(acc.caOps, acc.caBundles)
+  (let2: PsLet) => bxConstructField(let2, dropOne(fields), objName, resultVar, fieldArgs, r, acc)
+  (o: PStmt)    => bxConstructFields(dropOne(fields), objName, resultVar, fieldArgs, r, acc)
+  ()            => ComplexConstructOut(acc.caOps, acc.caBundles)
 
 fun bxConstructField(let2: PsLet, rest, objName, resultVar,
                      fieldArgs: List<PunArg>, r, acc: CcAcc)
@@ -1927,11 +1907,10 @@ class [final] CcAcc(caOps: Array<Op>,
 
 fun [tail] complexConstructFields(fields: List<PStmt>, objName, resultVar, fieldArgs: List<PunArg>,
                                   r, acc: CcAcc) => match(head(fields))
-  (v: PStmt) => match(v)
-    (let2: PsLet) => complexConstructField(let2, dropOne(fields), objName, resultVar,
-                                          fieldArgs, r, acc)
-    (o: PStmt)    => complexConstructFields(dropOne(fields), objName, resultVar, fieldArgs, r, acc)
-  () => ComplexConstructOut(acc.caOps, acc.caBundles)
+  (let2: PsLet) => complexConstructField(let2, dropOne(fields), objName, resultVar,
+                                        fieldArgs, r, acc)
+  (o: PStmt)    => complexConstructFields(dropOne(fields), objName, resultVar, fieldArgs, r, acc)
+  ()            => ComplexConstructOut(acc.caOps, acc.caBundles)
 
 fun complexConstructField(let2: PsLet, rest, objName, resultVar, fieldArgs: List<PunArg>,
                           r, acc: CcAcc)

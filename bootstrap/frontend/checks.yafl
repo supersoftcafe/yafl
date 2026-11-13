@@ -75,10 +75,8 @@ fun isMainFunction(st) => match(st)
   (o: PStmt) => false
 
 fun retIsBigint(sp: Spec|None) => match(sp)
-  (s2: Spec) => match(s2)
-    (b: SBuiltin) => b.sbName == "bigint"
-    (o: Spec)     => false
-  ()         => false
+  (b: SBuiltin) => b.sbName == "bigint"
+  ()            => false
 
 
 fun untypedParamErrors(statements: List<PStmt>, r) => hasAnyUntyped(statements)

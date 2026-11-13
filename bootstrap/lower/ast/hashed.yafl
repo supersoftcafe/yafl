@@ -47,10 +47,8 @@ fun lowerHashed(statements: List<PStmt>): (lhStmts: List<PStmt>, lhErrs: Set<PEr
 # simply never caches (peek is constant 0) and never identity-matches
 # (ref_eq is constant false). The parameter may name the root or any variant.
 fun lhIsHashedType(sp: Spec|None, roots: List<String>) => match(sp)
-  (s2: Spec) => match(s2)
-    (e2: SEnum) => true
-    (o: Spec)   => false
-  ()         => false
+  (e2: SEnum) => true
+  ()          => false
 
 fun lhStmtsLoop(ss: List<PStmt>, roots: List<String>, acc: LhAcc) =>
   fold(ss, acc, (a, st) => lhOne(st, roots, a))
@@ -85,22 +83,16 @@ fun lhFun(f: PsFun, roots: List<String>,
             acc.lhErrs, true)
 
 fun lhFirstParamHashed(params: List<PStmt>, roots: List<String>) => match(head(params))
-  (st: PStmt) => match(st)
-    (p: PsLet)  => lhIsHashedType(p.lType, roots)
-    (o: PStmt)  => false
-  ()          => false
+  (p: PsLet) => lhIsHashedType(p.lType, roots)
+  ()         => false
 
 fun lhFirstParamName(params: List<PStmt>) => match(head(params))
-  (st: PStmt) => match(st)
-    (p: PsLet) => p.lName
-    (o: PStmt) => ""
-  ()          => ""
+  (p: PsLet) => p.lName
+  ()         => ""
 
 fun lhReturnsInt32(sp: Spec|None) => match(sp)
-  (s2: Spec) => match(s2)
-    (b: SBuiltin) => b.sbName == "int32"
-    (o: Spec)     => false
-  ()         => false
+  (b: SBuiltin) => b.sbName == "int32"
+  ()            => false
 
 fun lhSplit(f: PsFun, paramName): (wrap: PStmt, raw: PStmt)
   let lr = f.psfLine
@@ -165,26 +157,16 @@ fun lhRefeqParamsOk(params: List<PStmt>, roots: List<String>) => lhFirstParamHas
                   lhFirstParamType(dropOne(params)))
 
 fun lhFirstParamType(params: List<PStmt>) => match(head(params))
-  (st: PStmt) => match(st)
-    (p: PsLet) => p.lType
-    (o: PStmt) => None
-  ()          => None
+  (p: PsLet) => p.lType
+  ()         => None
 
-fun lhSameRoot(x: Spec|None, y: Spec|None) => match(x)
-  (xs: Spec) => match(xs)
-    (xe: SEnum) => match(y)
-      (ys: Spec) => match(ys)
-        (ye: SEnum) => xe.seRoot == ye.seRoot
-        (o: Spec)   => false
-      ()         => false
-    (o2: Spec)  => false
-  ()         => false
+fun lhSameRoot(x: Spec|None, y: Spec|None) => match(x, y)
+  (xe: SEnum, ye: SEnum) => xe.seRoot == ye.seRoot
+  ()                     => false
 
 fun lhReturnsBool(sp: Spec|None) => match(sp)
-  (s2: Spec) => match(s2)
-    (b: SBuiltin) => b.sbName == "bool"
-    (o: Spec)     => false
-  ()         => false
+  (b: SBuiltin) => b.sbName == "bool"
+  ()            => false
 
 fun lhSplitRefeq(f: PsFun, lName, rName): (wrap: PStmt, raw: PStmt)
   let lr = f.psfLine

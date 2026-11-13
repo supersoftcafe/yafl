@@ -1044,19 +1044,17 @@ fun gipLoopStep(a: List<GProvider>, x: PStmt, r) => match(x)
 
 fun providerPatterns(let2, r,
                      acc): List<GProvider> => match(let2.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => patternLoop(ps,
-                                          paramMapping(cls.cGens,
-                                                       dc.scParams),
-                                          let2, acc)
-          ()               => acc
-        (o: PStmt)     => acc
-      ()         => acc
-    (o2: Spec)   => acc
-  ()         => acc
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => patternLoop(ps,
+                                        paramMapping(cls.cGens,
+                                                     dc.scParams),
+                                        let2, acc)
+        ()               => acc
+      (o: PStmt)     => acc
+    ()         => acc
+  ()           => acc
 
 fun patternLoop(ps: List<Spec>, remap: List<Binding>, let2, acc: List<GProvider>) =>
   fold(ps, acc, (a, x) => patternLoopStep(a, x, remap, let2))
@@ -1229,19 +1227,17 @@ fun ciiLoopStep(a: List<Spec>, x: PStmt, r) => match(x)
 
 fun instanceIfaces(let2: PsLet, r,
                    acc): List<Spec> => match(let2.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => ifaceLoop(ps,
-                                        paramMapping(cls.cGens,
-                                                     dc.scParams),
-                                        acc)
-          ()               => acc
-        (o: PStmt)     => acc
-      ()         => acc
-    (o2: Spec)   => acc
-  ()         => acc
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => ifaceLoop(ps,
+                                      paramMapping(cls.cGens,
+                                                   dc.scParams),
+                                      acc)
+        ()               => acc
+      (o: PStmt)     => acc
+    ()         => acc
+  ()           => acc
 
 fun ifaceLoop(ps: List<Spec>, remap: List<Binding>, acc: List<Spec>) =>
   fold(ps, acc, (a, x) => ifaceLoopStep(a, x, remap))
@@ -1597,18 +1593,15 @@ fun redirectName(nm, r, traits: List<PStmt>) => match(traitSpecFor(nm, r))
   ()           => nm
 
 fun traitSpecFor(nm: PeName, r) => match(nm.penTrait)
-  (sp: Spec) => match(sp)
-    (c: SClass) => c
-    (o: Spec)   => None
-  ()         => derivedTraitScope(nm, r)
+  (c: SClass) => c
+  (o: Spec)   => None
+  ()          => derivedTraitScope(nm, r)
 
 fun derivedTraitScope(nm: PeName, r) => match(soleItem(findData(r, nm.refName)))
   (f: Found) => match(f.fScope)
     (t2: ScTrait) => match(f.fTraitScope)
-      (sp: Spec) => match(sp)
-        (c: SClass) => c
-        (o: Spec)   => None
-      ()         => None
+      (c: SClass) => c
+      ()          => None
     (o2: RScope)  => None
   ()         => None
 
@@ -1639,18 +1632,16 @@ fun traitProvidersStep(a: List<PsLet>, x: PStmt, ts: SClass, r) => match(x)
   (o: PStmt) => a
 
 fun implementsTrait(tr: PsLet, ts: SClass, r) => match(tr.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => anyParentMatches(ps, ts,
-                                               mangledSpecList(ts.scParams,
-                                                               List()))
-          ()               => false
-        (o: PStmt)     => false
-      ()         => false
-    (o2: Spec)   => false
-  ()         => false
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => anyParentMatches(ps, ts,
+                                             mangledSpecList(ts.scParams,
+                                                             List()))
+        ()               => false
+      (o: PStmt)     => false
+    ()         => false
+  ()           => false
 
 # A monomorphised witness declares its parents with MANGLED inner names
 # (Sized<List$generic$Int>) while the demanded scope is structural
@@ -1674,14 +1665,12 @@ fun soleFoundOf(fs: List<Found>) => sizeAtLeast(fs, 2) ? None : head(fs)
 
 fun redirectVia(nm, ts: SClass, provider: PsLet,
                 r) => match(provider.lType)
-  (pt: Spec) => match(pt)
-    (pc: SClass) => match(soleItem(findType(r, pc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => redirectMethod(nm, ts, provider, cls, r)
-        (o: PStmt)     => nm
-      ()         => nm
-    (o2: Spec)   => nm
-  ()         => nm
+  (pc: SClass) => match(soleItem(findType(r, pc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => redirectMethod(nm, ts, provider, cls, r)
+      (o: PStmt)     => nm
+    ()         => nm
+  ()           => nm
 
 fun redirectMethod(nm, ts: SClass, provider: PsLet, cls: PsClass,
                    r)

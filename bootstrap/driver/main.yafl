@@ -50,11 +50,9 @@ fun hash6Line(line, out)
   let file = System::slice(line, 0, p1)
   let ln = System::parseInt(System::slice(line, p1 + 1, p2))
   let col = System::parseInt(System::slice(line, p2 + 1, System::length(line)))
-  ret match(ln)
-    (a: System::Int) => match(col)
-      (b: System::Int) => out + hash6(file, a, b) + "\n"
-      ()               => out
-    ()               => out
+  ret match(ln, col)
+    (a: System::Int, b: System::Int) => out + hash6(file, a, b) + "\n"
+    ()                               => out
 
 # sha1 mode: each stdin line prints its sha1 hexdigest — diffed against
 # hashlib.sha1 by tests/test_bootstrap_sha1.py (irMangle's struct hashing).
@@ -324,11 +322,9 @@ fun assignOne(r, c, out)
 
 # The three-valued answer, spelled T / F / ? — `?` is UNDECIDED, and the
 # contract cares about it as much as about T and F.
-fun assignAnswer(r, a: Spec|None, b: Spec|None) => match(a)
-  (sa: Spec) => match(b)
-    (sb2: Spec) => triStr(assignableEq(r, sa, sb2))
-    ()          => "!"
-  ()         => "!"
+fun assignAnswer(r, a: Spec|None, b: Spec|None) => match(a, b)
+  (sa: Spec, sb2: Spec) => triStr(assignableEq(r, sa, sb2))
+  ()                    => "!"
 
 fun triStr(x: Tri) => match(x)
   (b: Bool) => b ? "T" : "F"
@@ -1075,10 +1071,8 @@ fun cIsMainFunction(f: PsFun): Bool
     (o: Spec)    => false
 
 fun cIsBigintRet(ret2: Spec|None) => match(ret2)
-  (sp: Spec) => match(sp)
-    (b: SBuiltin) => b.sbName == "bigint"
-    (o: Spec)     => false
-  ()          => false
+  (b: SBuiltin) => b.sbName == "bigint"
+  ()            => false
 
 fun cEmit(stmts, mainName, optLevel,
           profile,

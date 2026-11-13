@@ -68,13 +68,11 @@ fun cnGlobal(rn: Dict<String, Dict<String, String>>, g2: CgGlobal): CgGlobal => 
 
 # A static instance's initialiser names its object's fields.
 fun cnStaticInit(rn: Dict<String, Dict<String, String>>, objName: String|None, init: RParam): RParam
-  ret match(objName)
-    (n: String) => match(get(rn, n))
-      (r: Dict<String, String>) => match(init)
-        (ns: RpNewStruct) => RpNewStruct(map(ns.values, (v) => RpNamedValue(cnRename(r, v.name), v.value)))
-        (o: RParam)       => init
+  ret match(objName, init)
+    (n: String, ns: RpNewStruct) => match(get(rn, n))
+      (r: Dict<String, String>) => RpNewStruct(map(ns.values, (v) => RpNamedValue(cnRename(r, v.name), v.value)))
       ()                        => init
-    ()          => init
+    ()                           => init
 
 fun cnAccess(rn: Dict<String, Dict<String, String>>, p: RParam): RParam => match(p)
   (x: RpObjectField)  => match(get(rn, x.objectName))

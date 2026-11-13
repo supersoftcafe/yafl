@@ -106,14 +106,12 @@ fun dfLoop(ds: List<Found>, acc: List<Found>, seen: List<String>) =>
 # ── DotExpression ───────────────────────────────────────────────────────────
 
 fun checkDot(d: PeDot, r) => match(exprType(d.base, r))
-  (bt: Spec) => match(bt)
-    (t2: STuple) => tupleFieldExists(t2.stEntries, d.member)
-      ? noErrs()
-      : oneErr(d.pedLine, "Could not find field " + d.member)
-    (c2: SClass) => checkClassDot(d, c2, r)
-    (e2: SEnum)  => checkEnumDot(d, e2, r)
-    (o: Spec)    => noErrs()
-  ()         => noErrs()
+  (t2: STuple) => tupleFieldExists(t2.stEntries, d.member)
+    ? noErrs()
+    : oneErr(d.pedLine, "Could not find field " + d.member)
+  (c2: SClass) => checkClassDot(d, c2, r)
+  (e2: SEnum)  => checkEnumDot(d, e2, r)
+  ()           => noErrs()
 
 fun tupleFieldExists(es: List<SEntry>, name: String) => any(es, (x) => x.seName == name)
 
@@ -156,20 +154,16 @@ fun checkCall(c: PeCall, r)
   if !isEmpty(fnErrs) && isEmpty(argErrs) && paramShapeMissing(calleeParams)
        && !isEmpty(calleeCandidates(c, r))
     ret match(exprType(c.parameter, r))
-      (pt: Spec) => match(pt)
-        (tp: STuple) => anyCandidateAccepts(c, tp, r)
-          ? union(fnErrs, argErrs)
-          : add(noErrs(), unresolvedCallError2(c, tp, r))
-        (o: Spec)    => union(fnErrs, argErrs)
-      ()         => union(fnErrs, argErrs)
+      (tp: STuple) => anyCandidateAccepts(c, tp, r)
+        ? union(fnErrs, argErrs)
+        : add(noErrs(), unresolvedCallError2(c, tp, r))
+      ()           => union(fnErrs, argErrs)
   let sub = union(fnErrs, argErrs)
   if !isEmpty(sub)
     ret sub
   ret match(exprType(c.parameter, r))
-    (pt: Spec) => match(pt)
-      (tp: STuple) => callShapeErrs(c, tp, r)
-      (o: Spec)    => oneErr(c.pecLine, "parameter expression must be of TupleType")
-    ()         => oneErr(c.pecLine, "parameter expression must be of TupleType")
+    (tp: STuple) => callShapeErrs(c, tp, r)
+    ()           => oneErr(c.pecLine, "parameter expression must be of TupleType")
 
 fun callShapeErrs(c: PeCall, ptype, r) => match(exprType(c.function, r))
   (ft: Spec) => match(ft)
@@ -332,12 +326,10 @@ fun checkNew(nw: PeNew, r)
   if !isEmpty(sub)
     ret sub
   ret match(exprType(nw.newParam, r))
-    (pt: Spec) => match(pt)
-      (tp: STuple) => match(nw.newType)
-        (c2: SClass) => noErrs()
-        (o: Spec)    => oneErr(nw.penwLine, "type must be ClassSpec")
-      (o2: Spec)   => oneErr(nw.penwLine, "parameter expression must be of TupleType")
-    ()         => oneErr(nw.penwLine, "parameter expression must be of TupleType")
+    (tp: STuple) => match(nw.newType)
+      (c2: SClass) => noErrs()
+      (o: Spec)    => oneErr(nw.penwLine, "type must be ClassSpec")
+    ()           => oneErr(nw.penwLine, "parameter expression must be of TupleType")
 
 fun checkTupleExpr(tp: PeTuple, r, expected: Spec|None)
   ret union(checkTupEnts2(tp.exprs, r, noErrs()),
@@ -354,14 +346,12 @@ fun spreadErrs(tp: PeTuple, r): Set<PErr>
 # A WRITTEN entry name is a binding request against THIS receiver: a name that
 # matches none of its fields is a mistake, not a coincidence.
 fun unknownFieldErrs(tp: PeTuple, expected: Spec|None): Set<PErr> => match(expected)
-  (sp: Spec) => match(sp)
-    (st: STuple) => Set(map(filter(tp.exprs, (en) => en.tupName != ""
-                                      && !any(st.stEntries, (se) => se.seName != ""
-                                                && bareOfUnique(se.seName) == en.tupName)),
-                            (en) => PErr(tp.petLine, "the target tuple has no field named '"
-                                                     + en.tupName + "'")))
-    (o: Spec)    => noErrs()
-  ()         => noErrs()
+  (st: STuple) => Set(map(filter(tp.exprs, (en) => en.tupName != ""
+                                    && !any(st.stEntries, (se) => se.seName != ""
+                                              && bareOfUnique(se.seName) == en.tupName)),
+                          (en) => PErr(tp.petLine, "the target tuple has no field named '"
+                                                   + en.tupName + "'")))
+  ()           => noErrs()
 
 fun checkTupEnts2(es: List<PTupEnt>, r, acc): Set<PErr> =>
   fold(es, acc, (a, x) => union(a, checkExpr(x.tupValue, r, None)))
@@ -661,12 +651,11 @@ fun armGuardErrs(a: PArm, bodyR, r: Resolver): Set<PErr> => match(a.armGuard)
   ()          => noErrs()
 
 fun guardBoolErr(a: PArm, g2, bodyR) => match(exprType(g2, bodyR))
-  (t2: Spec) => match(t2)
-    (b: SBuiltin) => b.sbName == "bool"
-      ? noErrs()
-      : oneErr(a.parmLine, "a match guard must be a Bool")
-    (o: Spec)     => oneErr(a.parmLine, "a match guard must be a Bool")
-  ()         => noErrs()
+  (b: SBuiltin) => b.sbName == "bool"
+    ? noErrs()
+    : oneErr(a.parmLine, "a match guard must be a Bool")
+  (o: Spec)     => oneErr(a.parmLine, "a match guard must be a Bool")
+  ()            => noErrs()
 
 # Every name a NamedExpression references anywhere inside (referenced_names).
 fun referencedNames(x, acc): List<String> => match(x)
@@ -747,12 +736,11 @@ fun checkWith(wx: PeWith, r)
   if shape != ""
     ret add(Set(),PErr(wx.pewLine, shape))
   ret match(exprType(wx.withSubject, r))
-    (sp: Spec) => match(sp)
-      (c: SClass) => checkWithFields(wx, r)
-      (e2: SEnum) => checkWithFields(wx, r)
-      (o: Spec)   => add(Set(),PErr(wx.pewLine,
-        "the subject of `with` must be a class- or enum-typed expression"))
-    ()         => add(Set(),PErr(wx.pewLine,
+    (c: SClass) => checkWithFields(wx, r)
+    (e2: SEnum) => checkWithFields(wx, r)
+    (o: Spec)   => add(Set(),PErr(wx.pewLine,
+      "the subject of `with` must be a class- or enum-typed expression"))
+    ()          => add(Set(),PErr(wx.pewLine,
       "the subject type of `with` did not resolve"))
 
 fun withShapeError(wx: PeWith) => match(wx.withRepls)
@@ -782,21 +770,19 @@ fun withNamesKnown(es: List<PTupEnt>, visible: List<String>,
   ()           => Set()
 
 fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
-  (sp: Spec) => match(sp)
-    (c: SClass) => match(soleItem(findType(r, c.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => withBareNames(flattenParams(cls.cParams),
-                                        List())
-        (o: PStmt)     => List()
-      ()         => List()
-    (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
-      (f: Found) => match(f.fStmt)
-        (en: PsEnum) => withCoverBares(visibleFields(en, e2.sePath),
-                                       List())
-        (o: PStmt)   => List()
-      ()         => List()
-    (o2: Spec)  => List()
-  ()         => List()
+  (c: SClass) => match(soleItem(findType(r, c.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => withBareNames(flattenParams(cls.cParams),
+                                      List())
+      (o: PStmt)     => List()
+    ()         => List()
+  (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
+    (f: Found) => match(f.fStmt)
+      (en: PsEnum) => withCoverBares(visibleFields(en, e2.sePath),
+                                     List())
+      (o: PStmt)   => List()
+    ()         => List()
+  ()          => List()
 
 fun withBareNames(fs: List<PStmt>, acc: List<String>) =>
   fold(fs, acc, withBareNamesStep)

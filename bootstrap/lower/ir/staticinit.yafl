@@ -106,12 +106,10 @@ fun siConstInit(init: RParam|None) => match(init)
 
 fun siTraceField(sf: RpStructField, vmap: FunValues, a: CgApp)
   ret match(siTraceToConstant(sf.structVal, vmap, a))
-    (r: RParam) => match(r)
-      (ns: RpNewStruct) => match(gfNamedValue(ns.values, sf.field))
-        (fv: RParam) => siTraceToConstant(fv, vmap, a)
-        ()            => None
-      (o: RParam)        => None
-    ()           => None
+    (ns: RpNewStruct) => match(gfNamedValue(ns.values, sf.field))
+      (fv: RParam) => siTraceToConstant(fv, vmap, a)
+      ()            => None
+    ()                => None
 # ── the -O1 half (promote_static_objects + inline_single_use_globals +
 # convert_static_objects_pass, staticinit.py:74-343) ─────────────────────────
 #
@@ -432,12 +430,10 @@ fun siIsTrivialCopyFn(f: CgFunction, source, target)
   if !exactly(writes, 1)
     ret false
   ret match(nthOf(writes, 0))
-    (w: Op) => match(w)
-      (m: OpMove) => match(siTraceToGlobal(m.moveSource, gfFunValueMap(f)))
-        (traced: String) => traced == source
-        ()               => false
-      (o: Op)     => false
-    ()      => false
+    (m: OpMove) => match(siTraceToGlobal(m.moveSource, gfFunValueMap(f)))
+      (traced: String) => traced == source
+      ()               => false
+    ()          => false
 
 # Rules out a trivial copy function: it calls, allocates or branches.
 fun siHardOp(op) => match(op)

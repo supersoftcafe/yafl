@@ -92,10 +92,8 @@ fun [tail] resolveValue(param, defs: SsaDefs, depth)
 
 fun sdResolveField(sf: RpStructField, defs: SsaDefs, depth)
   ret match(resolveValue(sf.structVal, defs, depth - 1))
-    (base: RParam) => match(base)
-      (ns: RpNewStruct) => sdFieldValue(ns.values, sf.field, defs, depth)
-      (o: RParam)       => None
-    ()             => None
+    (ns: RpNewStruct) => sdFieldValue(ns.values, sf.field, defs, depth)
+    ()                => None
 
 # `resolve_value(fval) or fval`: prefer the chased value, else the raw one.
 fun sdFieldValue(vs: List<RpNamedValue>, field: String,
@@ -130,10 +128,8 @@ fun staticInt(param, defs: SsaDefs) => match(param)
   (np: RpNullPattern) => fold(np.tests, SdNullAcc(false, true), (acc, t2) => sdNullStep(acc, t2, defs))
     |> (acc) => acc.snFails ? 0 : acc.snAllKnown ? 1 : None
   (o: RParam)        => match(resolveValue(param, defs, sdMaxChase()))
-    (rv: RParam) => match(rv)
-      (i: RpInteger) => i.value
-      (o2: RParam)   => None
-    ()           => None
+    (i: RpInteger) => i.value
+    ()             => None
 
 
 class [final] SdNullAcc(snFails: Bool, snAllKnown: Bool)
