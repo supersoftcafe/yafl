@@ -96,19 +96,19 @@ enum ArgError
 # `initial`: the record every argument given has been put into, in the order
 # given, or the first thing wrong with the command line.
 fun parse<S>(spec: Args<S>, argv: List<String>, initial: S): S|ArgError
-  fun run(events: List<Event>, s: S): S|ArgError => match(head(events))
-    (f: Failed) => f.fdWhy
-    (t: Took)   => match(head(drop(spec.args, t.tkIndex)))
+  fun run(events: List<_Event>, s: S): S|ArgError => match(head(events))
+    (f: _Failed) => f.fdWhy
+    (t: _Took)   => match(head(drop(spec.args, t.tkIndex)))
       (a: Flag<S>)       => run(dropOne(events), a.set(s))
       (a: Stop<S>)       => a.set(s)
       (a: Value<S>)      => checked(a.set(s, head(t.tkValues) ?? ""), t, dropOne(events))
       (a: Positional<S>) => checked(a.set(s, t.tkValues), t, dropOne(events))
       ()                 => s
     ()          => s
-  fun checked(r: S|String, t: Took, rest: List<Event>): S|ArgError => match(r)
+  fun checked(r: S|String, t: _Took, rest: List<_Event>): S|ArgError => match(r)
     (why: String) => BadValue(t.tkArgument, why)
     (s: S)        => run(rest, s)
-  ret run(scan(declared(spec), argv), initial)
+  ret run(_scan(_declared(spec), argv), initial)
 
 
 # ── text ─────────────────────────────────────────────────────────────────────
@@ -118,8 +118,8 @@ fun parse<S>(spec: Args<S>, argv: List<String>, initial: S): S|ArgError
 # A failed parse, ready to print: the usage, then the program's name and what
 # went wrong. By convention it goes to stderr and the program exits 2.
 fun message<S>(spec: Args<S>, e: ArgError, width: Int, colour: Bool): String =>
-  errorText(spec.prog, declared(spec), e, width, colour)
+  _errorText(spec.prog, _declared(spec), e, width, colour)
 
 # The help: the usage, the description, and every argument with its help.
 fun help<S>(spec: Args<S>, width: Int, colour: Bool): String =>
-  helpText(spec.prog, spec.description, declared(spec), width, colour)
+  _helpText(spec.prog, spec.description, _declared(spec), width, colour)

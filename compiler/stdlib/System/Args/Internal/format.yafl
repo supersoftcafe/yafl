@@ -16,21 +16,21 @@ import System::Containers
 
 # `fmWidth`: the columns to wrap within — argparse keeps two clear of the
 # terminal's edge.
-class [final] Format(fmProg: String, fmWidth: Int, fmTheme: Theme)
+class [final] _Format(fmProg: String, fmWidth: Int, fmTheme: _Theme)
 
-fun formatFor(prog: String, width: Int, colour: Bool): Format =>
-  Format(prog, width - 2, colour ? colourTheme() : plainTheme())
+fun _formatFor(prog: String, width: Int, colour: Bool): _Format =>
+  _Format(prog, width - 2, colour ? _colourTheme() : _plainTheme())
 
 # argparse's colour theme (_colorize.Argparse), or every field "" for none.
-class [final] Theme(thUsage: String, thProg: String, thHeading: String,
+class [final] _Theme(thUsage: String, thProg: String, thHeading: String,
                     thSumLong: String, thSumShort: String, thSumLabel: String,
                     thSumAction: String, thLong: String, thShort: String,
                     thLabel: String, thAction: String, thError: String,
                     thMessage: String, thReset: String)
 
-fun plainTheme(): Theme => Theme("", "", "", "", "", "", "", "", "", "", "", "", "", "")
+fun _plainTheme(): _Theme => _Theme("", "", "", "", "", "", "", "", "", "", "", "", "", "")
 
-fun colourTheme(): Theme => Theme(
+fun _colourTheme(): _Theme => _Theme(
   "\u{1B}[1;34m",   # usage:   bold blue
   "\u{1B}[1;35m",   # prog:    bold magenta
   "\u{1B}[1;34m",   # heading: bold blue
@@ -50,79 +50,79 @@ fun colourTheme(): Theme => Theme(
 # ── the arguments, as shown ──────────────────────────────────────────────────
 # A piece of text both bare (for measuring) and as shown (with colour).
 
-class [final] Shown(swPlain: String, swText: String)
+class [final] _Shown(swPlain: String, swText: String)
 
-fun shown(plain: String, colour: String, t: Theme): Shown => Shown(plain, colour + plain + t.thReset)
+fun _shown(plain: String, colour: String, t: _Theme): _Shown => _Shown(plain, colour + plain + t.thReset)
 
-fun joinShown(a: Shown, sep: String, b: Shown): Shown => Shown(a.swPlain + sep + b.swPlain,
+fun _joinShown(a: _Shown, sep: String, b: _Shown): _Shown => _Shown(a.swPlain + sep + b.swPlain,
                                                                a.swText + sep + b.swText)
 
 # An option string is long when it is more than a dash and a letter.
-fun isLong(o: String): Bool => length(o) > 2
+fun _isLong(o: String): Bool => length(o) > 2
 
 # An option as the usage shows it, by its first name: `[-O LEVEL]`, `[--profile]`.
-fun usageOption(t: Theme, d: Decl): Shown
+fun _usageOption(t: _Theme, d: _Decl): _Shown
   let o = head(d.dNames) ?? ""
-  let colour = isLong(o) ? t.thSumLong : t.thSumShort
+  let colour = _isLong(o) ? t.thSumLong : t.thSumShort
   ret match(d.dMetavar)
-    (label: String) => Shown("[" + o + " " + label + "]",
+    (label: String) => _Shown("[" + o + " " + label + "]",
                              "[" + colour + o + " " + t.thSumLabel + label + t.thReset + "]")
-    ()              => Shown("[" + o + "]", "[" + colour + o + t.thReset + "]")
+    ()              => _Shown("[" + o + "]", "[" + colour + o + t.thReset + "]")
 
 # A positional as the usage shows it, by the words it takes: `file`, `[file]`,
 # `files [files ...]`, `[files ...]`.
-fun usagePositional(t: Theme, name: String, c: Count): Shown =>
-  shown(countedName(name, c), t.thSumAction, t)
+fun _usagePositional(t: _Theme, name: String, c: Count): _Shown =>
+  _shown(_countedName(name, c), t.thSumAction, t)
 
-fun countedName(name: String, c: Count): String => match(c)
+fun _countedName(name: String, c: Count): String => match(c)
   (o: ExactlyOne) => name
   (o: AtMostOne)  => "[" + name + "]"
   (o: AtLeastOne) => name + " [" + name + " ...]"
   (o: AnyNumber)  => "[" + name + " ...]"
 
-fun usageOptionals(t: Theme, ds: List<Decl>): List<Shown> =>
-  map(filter(ds, (d: Decl) => !isPositional(d)), (d: Decl) => usageOption(t, d))
+fun _usageOptionals(t: _Theme, ds: List<_Decl>): List<_Shown> =>
+  map(filter(ds, (d: _Decl) => !_isPositional(d)), (d: _Decl) => _usageOption(t, d))
 
-fun usagePositionals(t: Theme, ds: List<Decl>): List<Shown> =>
-  flatMap(ds, (d: Decl) => usagePositionalOf(t, d))
+fun _usagePositionals(t: _Theme, ds: List<_Decl>): List<_Shown> =>
+  flatMap(ds, (d: _Decl) => _usagePositionalOf(t, d))
 
-fun usagePositionalOf(t: Theme, d: Decl): List<Shown> => match(d.dCount)
-  (c: Count) => List(usagePositional(t, displayName(d), c))
+fun _usagePositionalOf(t: _Theme, d: _Decl): List<_Shown> => match(d.dCount)
+  (c: Count) => List(_usagePositional(t, _displayName(d), c))
   ()         => List()
 
 # An argument as the help lists it: `-L, --lib-path DIR`, with its help text.
-class [final] HelpEntry(heInvocation: Shown, heHelp: String)
+class [final] _HelpEntry(heInvocation: _Shown, heHelp: String)
 
-fun optionString(t: Theme, o: String): Shown => shown(o, isLong(o) ? t.thLong : t.thShort, t)
+fun _optionString(t: _Theme, o: String): _Shown => _shown(o, _isLong(o) ? t.thLong : t.thShort, t)
 
-fun helpOption(t: Theme, d: Decl): HelpEntry
-  let names = map(d.dNames, (o: String) => optionString(t, o))
-  let all = fold(dropOne(names), head(names) ?? Shown("", ""),
-                 (acc, n) => joinShown(acc, ", ", n))
+fun _helpOption(t: _Theme, d: _Decl): _HelpEntry
+  let names = map(d.dNames, (o: String) => _optionString(t, o))
+  let all = fold(dropOne(names), head(names) ?? _Shown("", ""),
+                 (acc, n) => _joinShown(acc, ", ", n))
   ret match(d.dMetavar)
-    (label: String) => HelpEntry(joinShown(all, " ", shown(label, t.thLabel, t)), d.dHelp)
-    ()              => HelpEntry(all, d.dHelp)
+    (label: String) => _HelpEntry(_joinShown(all, " ", _shown(label, t.thLabel, t)), d.dHelp)
+    ()              => _HelpEntry(all, d.dHelp)
 
-fun helpPositionals(t: Theme, ds: List<Decl>): List<HelpEntry> =>
-  map(filter(ds, (d: Decl) => isPositional(d)),
-      (d: Decl) => HelpEntry(shown(displayName(d), t.thAction, t), d.dHelp))
+fun _helpPositionals(t: _Theme, ds: List<_Decl>): List<_HelpEntry> =>
+  map(filter(ds, (d: _Decl) => _isPositional(d)),
+      (d: _Decl) => _HelpEntry(_shown(_displayName(d), t.thAction, t), d.dHelp))
 
-fun helpOptionals(t: Theme, ds: List<Decl>): List<HelpEntry> =>
-  map(filter(ds, (d: Decl) => !isPositional(d)), (d: Decl) => helpOption(t, d))
+fun _helpOptionals(t: _Theme, ds: List<_Decl>): List<_HelpEntry> =>
+  map(filter(ds, (d: _Decl) => !_isPositional(d)), (d: _Decl) => _helpOption(t, d))
 
 
 # ── a failed parse (ArgumentParser.error) ────────────────────────────────────
 
-fun errorText(prog: String, ds: List<Decl>, e: ArgError, width: Int, colour: Bool): String
-  let f = formatFor(prog, width, colour)
+fun _errorText(prog: String, ds: List<_Decl>, e: ArgError, width: Int, colour: Bool): String
+  let f = _formatFor(prog, width, colour)
   let t = f.fmTheme
-  ret usageSection(f, ds) + "\n" + prog + ": " + t.thError + "error:" + t.thReset + " "
-    + t.thMessage + why(e) + t.thReset + "\n"
+  ret _usageSection(f, ds) + "\n" + prog + ": " + t.thError + "error:" + t.thReset + " "
+    + t.thMessage + _why(e) + t.thReset + "\n"
 
-fun why(e: ArgError): String => match(e)
+fun _why(e: ArgError): String => match(e)
   (a: AmbiguousOption) => "ambiguous option: " + a.word + " could match " + join(a.matches, ", ")
   (m: MissingValue)    => "argument " + m.argument + ": expected one argument"
-  (i: IgnoredValue)    => "argument " + i.argument + ": ignored explicit argument " + quoted(i.value)
+  (i: IgnoredValue)    => "argument " + i.argument + ": ignored explicit argument " + _quoted(i.value)
   (b: BadValue)        => "argument " + b.argument + ": " + b.why
   (r: MissingRequired) => "the following arguments are required: " + join(r.names, ", ")
   (u: Unrecognised)    => "unrecognized arguments: " + join(u.words, " ")
@@ -130,17 +130,17 @@ fun why(e: ArgError): String => match(e)
 
 # Python's `repr` of a string: single-quoted unless it holds a single quote
 # and no double one.
-fun quoted(s: String): String
+fun _quoted(s: String): String
   let useDouble = containsByte(s, '\'') && !containsByte(s, '"')
   let q = useDouble ? "\"" : "'"
-  ret q + quotedBody(s, 0, useDouble ? '"' : '\'', "") + q
+  ret q + _quotedBody(s, 0, useDouble ? '"' : '\'', "") + q
 
-fun [tail] quotedBody(s: String, at: Int, quote: Int32, acc: String): String
+fun [tail] _quotedBody(s: String, at: Int, quote: Int32, acc: String): String
   if at >= length(s)
     ret acc
-  ret quotedBody(s, at + 1, quote, acc + quotedByte(byteAt(s, at), quote))
+  ret _quotedBody(s, at + 1, quote, acc + _quotedByte(byteAt(s, at), quote))
 
-fun quotedByte(c: Int32, quote: Int32): String
+fun _quotedByte(c: Int32, quote: Int32): String
   if c == '\\'
     ret "\\\\"
   if c == quote
@@ -152,10 +152,10 @@ fun quotedByte(c: Int32, quote: Int32): String
   if c == '\t'
     ret "\\t"
   if c < 32i32 || c == 127i32
-    ret "\\x" + hexByte(Int(c))
+    ret "\\x" + _hexByte(Int(c))
   ret asciiToString(c)
 
-fun hexByte(v: Int): String
+fun _hexByte(v: Int): String
   let digits = "0123456789abcdef"
   ret slice(digits, v / 16, v / 16 + 1) + slice(digits, v % 16, v % 16 + 1)
 
@@ -163,42 +163,42 @@ fun hexByte(v: Int): String
 # ── usage (HelpFormatter._format_usage) ──────────────────────────────────────
 
 # `usage: PROG [-h] …`, wrapped to the width without its trailing newline.
-fun usageSection(f: Format, ds: List<Decl>): String
+fun _usageSection(f: _Format, ds: List<_Decl>): String
   let t = f.fmTheme
-  let prog = Shown(f.fmProg, f.fmProg)
-  let opts = usageOptionals(t, ds)
-  let poss = usagePositionals(t, ds)
+  let prog = _Shown(f.fmProg, f.fmProg)
+  let opts = _usageOptionals(t, ds)
+  let poss = _usagePositionals(t, ds)
   let all = concat(opts, poss)
-  let oneLine = join(prepend(f.fmProg, map(all, (p: Shown) => p.swPlain)), " ")
+  let oneLine = join(prepend(f.fmProg, map(all, (p: _Shown) => p.swPlain)), " ")
   let body = 7 + length(oneLine) > f.fmWidth
-    ? join(wrappedUsage(f.fmWidth, prog, opts, poss), "\n")
-    : join(prepend(f.fmProg, map(all, (p: Shown) => p.swText)), " ")
+    ? join(_wrappedUsage(f.fmWidth, prog, opts, poss), "\n")
+    : join(prepend(f.fmProg, map(all, (p: _Shown) => p.swText)), " ")
   ret t.thUsage + "usage: " + t.thReset + t.thProg + f.fmProg + t.thReset
     + slice(body, length(f.fmProg), length(body))
 
 # A short program name is followed by the optionals, the positionals on lines
 # of their own beneath; a long one sits on a line by itself.
-fun wrappedUsage(width: Int, prog: Shown, opts: List<Shown>, poss: List<Shown>): List<String>
+fun _wrappedUsage(width: Int, prog: _Shown, opts: List<_Shown>, poss: List<_Shown>): List<String>
   let progLen = length(prog.swPlain)
   if 4 * (7 + progLen) <= 3 * width
-    ret concat(usageLines(width, prepend(prog, opts), 7 + progLen + 1, true),
-               usageLines(width, poss, 7 + progLen + 1, false))
-  let together = usageLines(width, concat(opts, poss), 7, false)
+    ret concat(_usageLines(width, prepend(prog, opts), 7 + progLen + 1, true),
+               _usageLines(width, poss, 7 + progLen + 1, false))
+  let together = _usageLines(width, concat(opts, poss), 7, false)
   ret prepend(prog.swText, sizeAtLeast(together, 2)
-    ? concat(usageLines(width, opts, 7, false), usageLines(width, poss, 7, false))
+    ? concat(_usageLines(width, opts, 7, false), _usageLines(width, poss, 7, false))
     : together)
 
 # `get_lines`: parts joined by spaces, a new line (indented) when the next part
 # would pass the width. With the `usage: ` prefix, the first line is measured
 # from it and carries no indent.
-fun usageLines(width: Int, parts: List<Shown>, indent: Int, prefixed: Bool): List<String>
-  let lines = usageLoop(parts, width, indent, spaces(indent),
+fun _usageLines(width: Int, parts: List<_Shown>, indent: Int, prefixed: Bool): List<String>
+  let lines = _usageLoop(parts, width, indent, _spaces(indent),
                         prefixed ? 7 - 1 : indent - 1, List(), List())
-  ret prefixed ? mapFirst(lines, (l: String) => slice(l, indent, length(l))) : lines
+  ret prefixed ? _mapFirst(lines, (l: String) => slice(l, indent, length(l))) : lines
 
 # Words fill the current line until the next would overflow it; the open line
 # is flushed at the end.
-fun usageLoop(ps: List<Shown>, width: Int, indent: Int, pad: String, lineLen: Int,
+fun _usageLoop(ps: List<_Shown>, width: Int, indent: Int, pad: String, lineLen: Int,
               line: List<String>, out: List<String>): List<String> =>
   fold(ps, (len = lineLen, line = line, out = out),
        (st, p) =>
@@ -208,190 +208,190 @@ fun usageLoop(ps: List<Shown>, width: Int, indent: Int, pad: String, lineLen: In
            : (len = st.len + length(p.swPlain) + 1, line = append(st.line, p.swText), out = st.out))
     |> (st) => isEmpty(st.line) ? st.out : append(st.out, pad + join(st.line, " "))
 
-fun mapFirst(l: List<String>, f: (:String): String): List<String> => match(head(l))
+fun _mapFirst(l: List<String>, f: (:String): String): List<String> => match(head(l))
   (x: String) => prepend(f(x), dropOne(l))
   ()          => l
 
 
 # ── help (ArgumentParser.format_help) ────────────────────────────────────────
 
-fun helpText(prog: String, description: String, ds: List<Decl>, width: Int, colour: Bool): String
-  let f = formatFor(prog, width, colour)
+fun _helpText(prog: String, description: String, ds: List<_Decl>, width: Int, colour: Bool): String
+  let f = _formatFor(prog, width, colour)
   let t = f.fmTheme
-  let entries = concat(helpPositionals(t, ds), helpOptionals(t, ds))
-  let maxLen = 2 + fold<HelpEntry, Int>(entries, 0,
-    (m: Int, e: HelpEntry) => greater(m, length(e.heInvocation.swPlain)))
-  let raw = usageSection(f, ds) + "\n\n"
-    + join(twWrap(description, greater(f.fmWidth, 11)), "\n") + "\n\n"
-    + helpSection(f, maxLen, "positional arguments", helpPositionals(t, ds))
-    + helpSection(f, maxLen, "options", helpOptionals(t, ds))
-  ret trimNewlines(collapseNewlines(raw, 0, "")) + "\n"
+  let entries = concat(_helpPositionals(t, ds), _helpOptionals(t, ds))
+  let maxLen = 2 + fold<_HelpEntry, Int>(entries, 0,
+    (m: Int, e: _HelpEntry) => _greater(m, length(e.heInvocation.swPlain)))
+  let raw = _usageSection(f, ds) + "\n\n"
+    + join(_twWrap(description, _greater(f.fmWidth, 11)), "\n") + "\n\n"
+    + _helpSection(f, maxLen, "positional arguments", _helpPositionals(t, ds))
+    + _helpSection(f, maxLen, "options", _helpOptionals(t, ds))
+  ret _trimNewlines(_collapseNewlines(raw, 0, "")) + "\n"
 
 # A section with nothing to list is left out.
-fun helpSection(f: Format, maxLen: Int, heading: String, es: List<HelpEntry>): String
+fun _helpSection(f: _Format, maxLen: Int, heading: String, es: List<_HelpEntry>): String
   ret isEmpty(es) ? "" : "\n" + f.fmTheme.thHeading + heading + ":" + f.fmTheme.thReset + "\n"
-    + join(map(es, (e: HelpEntry) => helpEntry(f.fmWidth, maxLen, e)), "") + "\n"
+    + join(map(es, (e: _HelpEntry) => _helpEntry(f.fmWidth, maxLen, e)), "") + "\n"
 
 # `_format_action`, at indent 2: the invocation padded to the help column, or
 # on a line of its own when it does not fit; then the help, wrapped. An
 # argument with no help is its invocation alone.
-fun helpEntry(width: Int, maxLen: Int, e: HelpEntry): String
+fun _helpEntry(width: Int, maxLen: Int, e: _HelpEntry): String
   if e.heHelp == ""
     ret "  " + e.heInvocation.swText + "\n"
-  let helpPos = lesser(maxLen + 2, lesser(24, greater(width - 20, 4)))
+  let helpPos = _lesser(maxLen + 2, _lesser(24, _greater(width - 20, 4)))
   let actionWidth = helpPos - 4
   let inv = e.heInvocation
   let fits = length(inv.swPlain) <= actionWidth
   let header = fits
-    ? "  " + inv.swText + spaces(actionWidth - length(inv.swPlain)) + "  "
+    ? "  " + inv.swText + _spaces(actionWidth - length(inv.swPlain)) + "  "
     : "  " + inv.swText + "\n"
-  let lines = twWrap(e.heHelp, greater(width - helpPos, 11))
-  ret header + spaces(fits ? 0 : helpPos) + (head(lines) ?? "") + "\n"
-    + join(map(dropOne(lines), (l: String) => spaces(helpPos) + l + "\n"), "")
+  let lines = _twWrap(e.heHelp, _greater(width - helpPos, 11))
+  ret header + _spaces(fits ? 0 : helpPos) + (head(lines) ?? "") + "\n"
+    + join(map(dropOne(lines), (l: String) => _spaces(helpPos) + l + "\n"), "")
 
 # Runs of three or more newlines become two (`_long_break_matcher`).
-fun [tail] collapseNewlines(s: String, at: Int, acc: String): String
+fun [tail] _collapseNewlines(s: String, at: Int, acc: String): String
   if at >= length(s)
     ret acc
-  let run = newlineEnd(s, at) - at
+  let run = _newlineEnd(s, at) - at
   ret run > 0
-    ? collapseNewlines(s, at + run, acc + (run >= 3 ? "\n\n" : slice(s, at, at + run)))
-    : collapseNewlines(s, nextNewline(s, at), acc + slice(s, at, nextNewline(s, at)))
+    ? _collapseNewlines(s, at + run, acc + (run >= 3 ? "\n\n" : slice(s, at, at + run)))
+    : _collapseNewlines(s, _nextNewline(s, at), acc + slice(s, at, _nextNewline(s, at)))
 
-fun [tail] newlineEnd(s: String, at: Int): Int
-  ret at < length(s) && byteAt(s, at) == '\n' ? newlineEnd(s, at + 1) : at
+fun [tail] _newlineEnd(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == '\n' ? _newlineEnd(s, at + 1) : at
 
-fun nextNewline(s: String, at: Int) => findByte(s, '\n', at) < 0 ? length(s) : findByte(s, '\n', at)
+fun _nextNewline(s: String, at: Int) => findByte(s, '\n', at) < 0 ? length(s) : findByte(s, '\n', at)
 
-fun trimNewlines(s: String) => slice(s, leadingNewlines(s, 0), trailingEnd(s, length(s)))
+fun _trimNewlines(s: String) => slice(s, _leadingNewlines(s, 0), _trailingEnd(s, length(s)))
 
-fun [tail] leadingNewlines(s: String, at: Int): Int
-  ret at < length(s) && byteAt(s, at) == '\n' ? leadingNewlines(s, at + 1) : at
+fun [tail] _leadingNewlines(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == '\n' ? _leadingNewlines(s, at + 1) : at
 
-fun [tail] trailingEnd(s: String, end: Int): Int
-  ret end > 0 && byteAt(s, end - 1) == '\n' ? trailingEnd(s, end - 1) : end
+fun [tail] _trailingEnd(s: String, end: Int): Int
+  ret end > 0 && byteAt(s, end - 1) == '\n' ? _trailingEnd(s, end - 1) : end
 
-fun spaces(n: Int) => spacesLoop(n, "")
+fun _spaces(n: Int) => _spacesLoop(n, "")
 
-fun [tail] spacesLoop(n: Int, acc: String): String => n <= 0 ? acc : spacesLoop(n - 1, acc + " ")
+fun [tail] _spacesLoop(n: Int, acc: String): String => n <= 0 ? acc : _spacesLoop(n - 1, acc + " ")
 
-fun lesser(a: Int, b: Int) => a < b ? a : b
+fun _lesser(a: Int, b: Int) => a < b ? a : b
 
-fun greater(a: Int, b: Int) => a > b ? a : b
+fun _greater(a: Int, b: Int) => a > b ? a : b
 
 
 # ── textwrap.wrap (break_long_words, break_on_hyphens) ───────────────────────
 # Over text that is single-spaced already, as every help text here is.
 
-fun twWrap(text: String, width: Int): List<String> =>
-  twLines(twChunks(text, 0, List()), width, true, List())
+fun _twWrap(text: String, width: Int): List<String> =>
+  _twLines(_twChunks(text, 0, List()), width, true, List())
 
 # `wordsep_re`: runs of spaces; words, split after a hyphen that has two
 # letters (or letter-hyphen-letter) before it and a letter, an optional hyphen
 # and a letter after; and an em-dash (`--`) between words. Letters are `\w`
 # without the digits — ASCII here, and every byte of a non-ASCII character.
-fun [tail] twChunks(s: String, at: Int, b: List<String>): List<String>
+fun [tail] _twChunks(s: String, at: Int, b: List<String>): List<String>
   if at >= length(s)
     ret b
   if byteAt(s, at) == ' '
-    ret twChunks(s, spaceEnd(s, at), append(b, slice(s, at, spaceEnd(s, at))))
-  if isEmDash(s, at)
-    ret twChunks(s, dashEnd(s, at), append(b, slice(s, at, dashEnd(s, at))))
-  let end = twWordEnd(s, at + 1)
-  ret twChunks(s, end, append(b, slice(s, at, end)))
+    ret _twChunks(s, _spaceEnd(s, at), append(b, slice(s, at, _spaceEnd(s, at))))
+  if _isEmDash(s, at)
+    ret _twChunks(s, _dashEnd(s, at), append(b, slice(s, at, _dashEnd(s, at))))
+  let end = _twWordEnd(s, at + 1)
+  ret _twChunks(s, end, append(b, slice(s, at, end)))
 
-fun [tail] spaceEnd(s: String, at: Int): Int
-  ret at < length(s) && byteAt(s, at) == ' ' ? spaceEnd(s, at + 1) : at
+fun [tail] _spaceEnd(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == ' ' ? _spaceEnd(s, at + 1) : at
 
-fun [tail] dashEnd(s: String, at: Int): Int
-  ret at < length(s) && byteAt(s, at) == '-' ? dashEnd(s, at + 1) : at
+fun [tail] _dashEnd(s: String, at: Int): Int
+  ret at < length(s) && byteAt(s, at) == '-' ? _dashEnd(s, at + 1) : at
 
 # `(?<=wp) -{2,} (?=\w)`
-fun isEmDash(s: String, at: Int) => at > 0 && twWordPunct(byteAt(s, at - 1))
-  && dashEnd(s, at) - at >= 2 && dashEnd(s, at) < length(s) && twWordChar(byteAt(s, dashEnd(s, at)))
+fun _isEmDash(s: String, at: Int) => at > 0 && _twWordPunct(byteAt(s, at - 1))
+  && _dashEnd(s, at) - at >= 2 && _dashEnd(s, at) < length(s) && _twWordChar(byteAt(s, _dashEnd(s, at)))
 
 # The word's end, checked after each character it takes (`nws+?`): a breaking
 # hyphen (taken with the word), a space or the end, or an em-dash ahead.
-fun [tail] twWordEnd(s: String, at: Int): Int
+fun [tail] _twWordEnd(s: String, at: Int): Int
   if at >= length(s) || byteAt(s, at) == ' '
     ret at
-  if byteAt(s, at) == '-' && hyphenBreaks(s, at)
+  if byteAt(s, at) == '-' && _hyphenBreaks(s, at)
     ret at + 1
-  if twWordPunct(byteAt(s, at - 1)) && dashEnd(s, at) - at >= 2
-       && dashEnd(s, at) < length(s) && twWordChar(byteAt(s, dashEnd(s, at)))
+  if _twWordPunct(byteAt(s, at - 1)) && _dashEnd(s, at) - at >= 2
+       && _dashEnd(s, at) < length(s) && _twWordChar(byteAt(s, _dashEnd(s, at)))
     ret at
-  ret twWordEnd(s, at + 1)
+  ret _twWordEnd(s, at + 1)
 
-fun hyphenBreaks(s: String, at: Int) => (twoLettersBefore(s, at) || letterHyphenLetterBefore(s, at))
-  && twLetterAt(s, at + 1)
-  && (twLetterAt(s, at + 2) || (at + 2 < length(s) && byteAt(s, at + 2) == '-' && twLetterAt(s, at + 3)))
+fun _hyphenBreaks(s: String, at: Int) => (_twoLettersBefore(s, at) || _letterHyphenLetterBefore(s, at))
+  && _twLetterAt(s, at + 1)
+  && (_twLetterAt(s, at + 2) || (at + 2 < length(s) && byteAt(s, at + 2) == '-' && _twLetterAt(s, at + 3)))
 
-fun twoLettersBefore(s: String, at: Int) => at >= 2 && twLetterAt(s, at - 1) && twLetterAt(s, at - 2)
+fun _twoLettersBefore(s: String, at: Int) => at >= 2 && _twLetterAt(s, at - 1) && _twLetterAt(s, at - 2)
 
-fun letterHyphenLetterBefore(s: String, at: Int) => at >= 3 && twLetterAt(s, at - 1)
-  && byteAt(s, at - 2) == '-' && twLetterAt(s, at - 3)
+fun _letterHyphenLetterBefore(s: String, at: Int) => at >= 3 && _twLetterAt(s, at - 1)
+  && byteAt(s, at - 2) == '-' && _twLetterAt(s, at - 3)
 
-fun twLetterAt(s: String, at: Int) => at < length(s) && twLetter(byteAt(s, at))
+fun _twLetterAt(s: String, at: Int) => at < length(s) && _twLetter(byteAt(s, at))
 
-fun twLetter(c: Int32) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 128i32
+fun _twLetter(c: Int32) => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 128i32
 
-fun twWordChar(c: Int32) => twLetter(c) || (c >= '0' && c <= '9')
+fun _twWordChar(c: Int32) => _twLetter(c) || (c >= '0' && c <= '9')
 
-fun twWordPunct(c: Int32) => twWordChar(c) || c == '!' || c == '"' || c == '\'' || c == '&'
+fun _twWordPunct(c: Int32) => _twWordChar(c) || c == '!' || c == '"' || c == '\'' || c == '&'
   || c == '.' || c == ',' || c == '?'
 
 # `_wrap_chunks`: fill each line with whole chunks; a chunk wider than a whole
 # line is broken (after its last hyphen that fits, if any); spaces at a line's
 # end, and at the start of any line but the first, are dropped.
-fun twLines(cs: List<String>, width: Int, first: Bool,
+fun _twLines(cs: List<String>, width: Int, first: Bool,
             out: List<String>): List<String> => isEmpty(cs)
   ? out
-  : twNext(twLongWord(twFill(skipLeading(cs, first), width, List(), 0), width), width, first, out)
+  : _twNext(_twLongWord(_twFill(_skipLeading(cs, first), width, List(), 0), width), width, first, out)
 
 # `first`: no line has been emitted yet.
-fun twNext(f: Filled, width: Int, first: Bool, out: List<String>): List<String>
-  let line = dropBlankEnd(f.flLine)
-  ret twLines(f.flRest, width, first && isEmpty(line),
+fun _twNext(f: _Filled, width: Int, first: Bool, out: List<String>): List<String>
+  let line = _dropBlankEnd(f.flLine)
+  ret _twLines(f.flRest, width, first && isEmpty(line),
               isEmpty(line) ? out : append(out, join(line, "")))
 
-fun skipLeading(cs: List<String>, first: Bool): List<String> => match(head(cs))
-  (w: String) => !first && isBlank(w) ? dropOne(cs) : cs
+fun _skipLeading(cs: List<String>, first: Bool): List<String> => match(head(cs))
+  (w: String) => !first && _isBlank(w) ? dropOne(cs) : cs
   ()          => cs
 
-class [final] Filled(flLine: List<String>, flLen: Int, flRest: List<String>)
+class [final] _Filled(flLine: List<String>, flLen: Int, flRest: List<String>)
 
-fun [tail] twFill(cs: List<String>, width: Int, line: List<String>, len: Int): Filled => match(head(cs))
+fun [tail] _twFill(cs: List<String>, width: Int, line: List<String>, len: Int): _Filled => match(head(cs))
   (w: String) => len + length(w) <= width
-    ? twFill(dropOne(cs), width, append(line, w), len + length(w))
-    : Filled(line, len, cs)
-  ()          => Filled(line, len, cs)
+    ? _twFill(dropOne(cs), width, append(line, w), len + length(w))
+    : _Filled(line, len, cs)
+  ()          => _Filled(line, len, cs)
 
-fun twLongWord(f: Filled, width: Int): Filled => match(head(f.flRest))
-  (w: String) => length(w) <= width ? f : twBreak(f, w, dropOne(f.flRest), width)
+fun _twLongWord(f: _Filled, width: Int): _Filled => match(head(f.flRest))
+  (w: String) => length(w) <= width ? f : _twBreak(f, w, dropOne(f.flRest), width)
   ()          => f
 
-fun twBreak(f: Filled, chunk: String, rest: List<String>, width: Int): Filled
+fun _twBreak(f: _Filled, chunk: String, rest: List<String>, width: Int): _Filled
   let spaceLeft = width < 1 ? 1 : width - f.flLen
   if spaceLeft <= 0
-    ret isEmpty(f.flLine) ? Filled(List(chunk), length(chunk), rest) : f
-  let hyphen = lastHyphenBefore(chunk, spaceLeft)
-  let end = length(chunk) > spaceLeft && hyphen > 0 && hasNonHyphen(chunk, hyphen)
+    ret isEmpty(f.flLine) ? _Filled(List(chunk), length(chunk), rest) : f
+  let hyphen = _lastHyphenBefore(chunk, spaceLeft)
+  let end = length(chunk) > spaceLeft && hyphen > 0 && _hasNonHyphen(chunk, hyphen)
     ? hyphen + 1 : spaceLeft
-  ret Filled(concat(f.flLine, List(slice(chunk, 0, end))), f.flLen + end,
+  ret _Filled(concat(f.flLine, List(slice(chunk, 0, end))), f.flLen + end,
              prepend(slice(chunk, end, length(chunk)), rest))
 
-fun [tail] lastHyphenBefore(s: String, end: Int): Int
-  ret end <= 0 ? 0 - 1 : byteAt(s, end - 1) == '-' ? end - 1 : lastHyphenBefore(s, end - 1)
+fun [tail] _lastHyphenBefore(s: String, end: Int): Int
+  ret end <= 0 ? 0 - 1 : byteAt(s, end - 1) == '-' ? end - 1 : _lastHyphenBefore(s, end - 1)
 
-fun [tail] hasNonHyphen(s: String, end: Int): Bool
-  ret end <= 0 ? false : byteAt(s, end - 1) != '-' ? true : hasNonHyphen(s, end - 1)
+fun [tail] _hasNonHyphen(s: String, end: Int): Bool
+  ret end <= 0 ? false : byteAt(s, end - 1) != '-' ? true : _hasNonHyphen(s, end - 1)
 
-fun dropBlankEnd(line: List<String>): List<String> => match(head(takeLastOne(line)))
-  (x: String) => isBlank(x) ? dropLastOne(line) : line
+fun _dropBlankEnd(line: List<String>): List<String> => match(head(takeLastOne(line)))
+  (x: String) => _isBlank(x) ? dropLastOne(line) : line
   ()          => line
 
 # All spaces — or empty, as a broken word's remainder can be.
-fun isBlank(c: String) => blankFrom(c, 0)
+fun _isBlank(c: String) => _blankFrom(c, 0)
 
-fun [tail] blankFrom(c: String, at: Int): Bool
-  ret at >= length(c) ? true : byteAt(c, at) != ' ' ? false : blankFrom(c, at + 1)
+fun [tail] _blankFrom(c: String, at: Int): Bool
+  ret at >= length(c) ? true : byteAt(c, at) != ' ' ? false : _blankFrom(c, at + 1)
