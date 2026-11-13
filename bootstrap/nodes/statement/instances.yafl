@@ -1,0 +1,66 @@
+# bootstrap/nodes/statement/instances.yafl — PsTraitInstance: every question the
+# compiler asks of this node kind, in one place (Python's pyast/statement/instances.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# TraitInstanceStatement.compile: pattern + wheres under the instance's
+# generic scope; member bodies under a transient copy of the owner's clause
+# (stored statements keep none — a member is a vtable slot).
+fun compileTraitInstance(inst: PsTraitInstance, r0): StmtOut
+  let r = genScope(inst.tiGens, inst.tiWheres, r0)
+  let pat = compileSpecOpt(inst.tiPattern, r)
+  let wheres = compileParams(inst.tiWheres, r)
+  let members = compileStmts(withOwnerWheres(inst.tiMembers,
+                                                   inst.tiWheres),
+                             r, None, List(), List())
+  ret StmtOut(PsTraitInstance(inst.tiName, inst.tiAttrs, inst.tiAmbient,
+                              inst.tiGens,
+                              specOr(pat, inst.tiPattern), wheres.psSpecs,
+                              stripOwnerWheres(members.slStmts,
+                                               inst.tiWheres),
+                              inst.pstiLine, inst.tiImports),
+              concat(globalsOfSpec(pat),
+                     concat(wheres.psGlobals, members.slGlobals)),
+              noHints())
+
+fun specOr(out: SpecOut|None, orig) => match(specOf(out))
+  (s2: Spec) => s2
+  ()         => orig
+
+fun checkTraitInstance(inst: PsTraitInstance, r0): Set<PErr>
+  let r = genScope(inst.tiGens, inst.tiWheres, r0)
+  let e1 = checkSpecOpt(inst.tiPattern, r)
+  let e2 = checkSpecs(inst.tiWheres, r, noErrs())
+  let e3 = branchChecks(withOwnerWheres(inst.tiMembers, inst.tiWheres),
+                        r, None, noErrs())
+  ret union(e1, union(e2, union(e3,
+      union(instancePatternErrs(inst, r),
+             attrErrs(inst.tiAttrs, isKnownInstanceAttr, inst.pstiLine,
+                      "an instance")))))
+
+fun instancePatternErrs(inst: PsTraitInstance, r) => match(inst.tiPattern)
+  (c: SClass) => match(soleItem(findType(r, c.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => cls.cIsInterface
+        ? noErrs()
+        : oneErr(inst.pstiLine,
+                 "an instance implements an interface, not a class")
+      (o: PStmt)     => noErrs()
+    ()         => noErrs()
+  (o: Spec)   => noErrs()
+
+fun isKnownInstanceAttr(n) => n == "ambient" || n == "trait"

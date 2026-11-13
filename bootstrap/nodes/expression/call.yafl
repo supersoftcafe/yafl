@@ -1,0 +1,187 @@
+# bootstrap/nodes/expression/call.yafl — PeCall: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/call.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun compileCall(c: PeCall, r, expected)
+  let before = paramShapeOf(calleeType(c.function, c.parameter, r))
+  let arg = compileExpr(c.parameter, r, before)
+  ret match(exprType(arg.eoExpr, r))
+    (tp: STuple) => callWithShape(c, r, arg, tp, expected, before)
+    ()           => partialCall(c, arg)
+
+fun partialCall(c: PeCall, arg: ExprOut)
+  ret ExprOut(PeCall(c.function, arg.eoExpr, c.pecLine), arg.eoGlobals,
+              arg.eoHints)
+
+fun callWithShape(c: PeCall, r, arg, tp,
+                  expected, before: Spec|None)
+  let fn = compileExpr(c.function, r, SCallable(tp, expected, c.pecLine))
+  let args = retriedArgs(arg, before,
+                         paramShapeOf(calleeType(fn.eoExpr, arg.eoExpr, r)),
+                         tp, r)
+  ret ExprOut(converted(PeCall(fn.eoExpr, args.eoExpr, c.pecLine), expected, r),
+              concat(fn.eoGlobals, args.eoGlobals),
+              mergeHints(fn.eoHints, args.eoHints))
+
+# The callee pinned just now: give the open arguments its parameter types.
+fun retriedArgs(arg, before: Spec|None, pinned, tp,
+                r) => match(pinned)
+  (p: Spec) => before is None && !isConcrete(tp)
+    ? againOver(arg, compileExpr(arg.eoExpr, r, pinned))
+    : arg
+  ()        => arg
+
+fun againOver(first: ExprOut, again: ExprOut)
+  ret ExprOut(again.eoExpr, concat(first.eoGlobals, again.eoGlobals),
+              again.eoHints)
+
+fun paramShapeOf(ft: Spec|None) => match(ft)
+  (cl: SCallable) => cl.scParams2
+  ()              => None
+
+fun checkCall(c: PeCall, r)
+  let calleeParams = paramShapeOf(exprType(c.function, r))
+  let fnErrs = checkExpr(c.function, r, None)
+  let argErrs = checkExpr(c.parameter, r, calleeParams)
+  # Only when the name HAS candidates. A name that resolves to nothing at all
+  # is a different situation with its own correct message; rerouting it here
+  # would change an established diagnostic for no gain.
+  if !isEmpty(fnErrs) && isEmpty(argErrs) && paramShapeMissing(calleeParams)
+       && !isEmpty(calleeCandidates(c, r))
+    ret match(exprType(c.parameter, r))
+      (tp: STuple) => anyCandidateAccepts(c, tp, r)
+        ? union(fnErrs, argErrs)
+        : add(noErrs(), unresolvedCallError2(c, tp, r))
+      ()           => union(fnErrs, argErrs)
+  let sub = union(fnErrs, argErrs)
+  if !isEmpty(sub)
+    ret sub
+  ret match(exprType(c.parameter, r))
+    (tp: STuple) => callShapeErrs(c, tp, r)
+    ()           => oneErr(c.pecLine, "parameter expression must be of TupleType")
+
+fun callShapeErrs(c: PeCall, ptype, r) => match(exprType(c.function, r))
+  (ft: Spec) => match(ft)
+    (cl: SCallable) => triFalse(assignableFrom(r, cl.scParams2, ptype))
+      ? oneErr(c.pecLine, "Parameters are not assignment compatible")
+      : noErrs()
+    (o: Spec)       => add(noErrs(), unresolvedCallError(c, ptype, ft, r))
+  ()         => add(noErrs(), unresolvedCallError2(c, ptype, r))
+
+fun calleeCandidates(c: PeCall, r) => match(c.function)
+  (nm: PeName) => findData(r, nm.refName).bItems
+  (o: PExpr)   => List()
+
+fun paramShapeMissing(sp: Spec|None) => match(sp)
+  (s2: Spec) => false
+  ()         => true
+
+# Does at least one overload of the callee accept these arguments? True means
+# the call really IS ambiguous — several readings fit and the author must
+# qualify. False means none fit, a different error with a different fix.
+# Narrowing goes through the same resolveOverloads the compile path uses, so
+# both agree about what "fits" (in particular about a candidate's own generic
+# parameters, which are wildcards it may bind).
+fun anyCandidateAccepts(c: PeCall, ptype, r) => match(c.function)
+  (nm: PeName) => candidatesAccept(findData(r, nm.refName).bItems, ptype, c, r)
+  (o: PExpr)   => false
+
+fun candidatesAccept(cands, ptype, c: PeCall,
+                     r) => isEmpty(cands)
+  ? false
+  : !isEmpty(resolveOverloads(r, SCallable(ptype, None, c.pecLine), cands))
+
+# The callee didn't resolve to a single callable. Say WHY in the author's
+# terms: the called name, the argument types, the candidate signatures.
+fun unresolvedCallError2(c: PeCall, ptype, r) => match(c.function)
+  (nm: PeName) => namedCallError(c, nm, ptype, r)
+  (o: PExpr)   => PErr(c.pecLine,
+                       "the value being called is not a function (its type is unknown)")
+
+fun unresolvedCallError(c: PeCall, ptype, ft: Spec, r) => match(c.function)
+  (nm: PeName) => namedCallError(c, nm, ptype, r)
+  (o: PExpr)   => PErr(c.pecLine,
+                       "the value being called is not a function (its type is "
+                       + typeStr(ft) + ")")
+
+fun namedCallError(c: PeCall, nm: PeName, ptype, r)
+  let name = backTicked(bareOfUnique(nm.refName))
+  let cands = findData(r, nm.refName).bItems
+  if isEmpty(cands)
+    ret PErr(c.pecLine, "no function named " + name + " is in scope")
+  let sigs = candidateSigs(cands, List())
+  if isEmpty(sigs)
+    ret match(firstNonCallable(cands))
+      (t2: Spec) => PErr(c.pecLine, name + " is not a function — it is a "
+                                    + typeStr(t2))
+      ()         => PErr(c.pecLine,
+                         "no " + name + " accepts arguments "
+                         + typeStr2(ptype) + " — candidates: ")
+  ret PErr(c.pecLine,
+           "no " + name + " accepts arguments " + typeStr2(ptype)
+           + " — candidates: " + join(sort(dedupeStrs(sigs)), "; "))
+
+fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
+
+fun candidateSigs(cs: List<Found>, acc): List<String> =>
+  fold(cs, acc, candidateSigsStep)
+
+fun candidateSigsStep(a: List<String>, x: Found) => match(stmtType(x.fStmt))
+  (ty: Spec) => match(ty)
+    (cl: SCallable) => append(a, typeStr(ty))
+    (o: Spec) => a
+  () => a
+
+fun firstNonCallable(cs: List<Found>) => firstSome(cs, nonCallableType)
+
+fun nonCallableType(c: Found) => match(stmtType(c.fStmt))
+  (ty: Spec) => match(ty)
+    (cl: SCallable) => None
+    (o: Spec)       => ty
+  ()         => None
+
+# The callee's type as THIS call sees it: tuples its signature leaves unnamed
+# carry the field names the arguments supply (call.py __callee_type).
+# `function` and `parameter` are the call's parts as they now stand — compile
+# asks about the ones it has just compiled.
+fun calleeType(function: PExpr, parameter: PExpr, r): Spec|None =>
+  namedAtCallSite(exprType(function, r), exprType(parameter, r))
+
+# A call's type is its callee's RESULT — and nothing else. A callee that has
+# not resolved to a callable yet simply has no result yet.
+fun typeOfCall(c: PeCall, r) => match(calleeType(c.function, c.parameter, r))
+  (cl: SCallable) => callResultType(c, cl.scResult, r)
+  ()              => None
+
+fun genCall(c: PeCall, r) => match(exprType(c.function, r))
+  (cl: SCallable) => genCallOn(c, cl, r)
+  ()              => emptyBundle()          # unreachable
+
+fun genCallOn(c: PeCall, cl: SCallable, r)
+  let funBundle = withPrefix(genExpr(c.function, r), "fn")
+  let prmBundle = withPrefix(genExprTo(c.parameter, r, cl.scParams2), "args")
+  let funRef = mustResult(funBundle)
+  let resultType = specGenerateOpt(cl.scResult, r)
+  let resultVar = RpStackVar(resultType, "result")
+  let callOp = OpCall(funRef, mustResult(prmBundle), resultVar, false, isImpureCall(funRef), None, Dict())
+  let callBundle = GBundle(list1(resultVar), arrayOf<Op>(callOp), resultVar, List(), List())
+  ret bundleJoin(bundleJoin(funBundle, prmBundle), callBundle)
+
+fun isImpureCall(funRef) => match(funRef)
+  (gf: RpGlobalFunction) => gf.impure
+  (o: RParam)             => false

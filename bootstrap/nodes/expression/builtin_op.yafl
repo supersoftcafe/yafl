@@ -1,0 +1,243 @@
+# bootstrap/nodes/expression/builtin_op.yafl — PeBuiltinOp, PePinSet: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/builtin_op.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A primitive op owns its conversion — its result boxing into a union slot —
+# EXCEPT when it folds: an integer comparison of two bigint literals (the body
+# of Int's ==/</>) collapses to a Bool literal. The language has no true/false
+# token, so this fold is what lets a constant Bool become a literal and inline.
+fun compileBuiltinOp(op: PeBuiltinOp, r, expected: Spec|None)
+  let ps = compileExpr(op.opParams, r, None)
+  # The declared type may be a full spec (new_pinned's T): compile it so
+  # the name resolves like any declared type. SBuiltins compile to
+  # themselves, so the historical ops are untouched.
+  let ty = compileSpec(op.opType, r)
+  let out = PeBuiltinOp(ty.soSpec, op.opName, ps.eoExpr, op.peboLine)
+  ret match(foldConstCompare(out))
+    (b: PExpr) => ExprOut(b, concat(ps.eoGlobals, ty.soGlobals), ps.eoHints)
+    ()         => ExprOut(converted(out, expected, r), concat(ps.eoGlobals, ty.soGlobals),
+                          ps.eoHints)
+
+# The value is received by the FIELD's type, as `:=` receives it (a Node into a
+# `Node|None`); the answer converts to what the caller expects.
+fun compilePinSet(ps: PePinSet, r, expected: Spec|None)
+  let sb = compileExpr(ps.psSubject, r, None)
+  let tg = compileExpr(ps.psTarget, r, None)
+  let vl = compileExpr(ps.psValue, r, exprType(tg.eoExpr, r))
+  let out = PePinSet(sb.eoExpr, tg.eoExpr, vl.eoExpr, ps.pepsLine)
+  ret ExprOut(converted(out, expected, r),
+              concat(sb.eoGlobals, concat(tg.eoGlobals, vl.eoGlobals)),
+              mergeHints(sb.eoHints, mergeHints(tg.eoHints, vl.eoHints)))
+
+# Takes the ROOT type: an enum-variant constructor yields the root, so a caller
+# that has just built a PeBuiltinOp cannot pass it as one.
+fun foldConstCompare(x) => match(x)
+  (op: PeBuiltinOp) => foldOp(op)
+  (o: PExpr)        => None
+
+fun foldOp(op: PeBuiltinOp)
+  if !isBoolBuiltin(op.opType)
+    ret None
+  ret match(opName(op.opName))
+    (nm: String) => foldWith(nm, op)
+    ()           => None
+
+fun isBoolBuiltin(sp) => match(sp)
+  (b: SBuiltin) => b.sbName == "bool"
+  (o: Spec)     => false
+
+fun foldWith(nm, op: PeBuiltinOp)
+  if nm != "integer_test_eq" && nm != "integer_test_lt" && nm != "integer_test_gt"
+    ret None
+  ret match(twoBigints(op.opParams))
+    (p: IntPair) => PeBool(compareInts(nm, p.ipLeft, p.ipRight), op.peboLine)
+    ()           => None
+
+class [final] IntPair(ipLeft: Int, ipRight: Int)
+
+# Both operands must be UNSUFFIXED (precision 0) integer literals — a sized
+# literal is a different type and does not fold here.
+fun twoBigints(params) => match(params)
+  (tp: PeTuple) => exactly(tp.exprs, 2) ? pairOf(tp) : None
+  (o: PExpr)    => None
+
+fun pairOf(tp: PeTuple) => match(bigintAt(tp.exprs, 0))
+  (a: Int) => match(bigintAt(tp.exprs, 1))
+    (b: Int) => IntPair(a, b)
+    ()       => None
+  ()       => None
+
+fun bigintAt(es: List<PTupEnt>, i) => match(head(drop(es, i)))
+  (en: PTupEnt) => bigintOf(en.tupValue)
+  ()            => None
+
+fun bigintOf(x) => match(x)
+  (i: PeInt) => i.precision == 0 ? i.value : None
+  (o: PExpr) => None
+
+fun compareInts(nm, a: Int, b: Int) => nm == "integer_test_eq" ? a == b
+  : nm == "integer_test_lt" ? a < b
+  : a > b
+
+fun pinSetWhat() => "'__builtin_pin_set__'"
+
+fun checkPinSet(ps: PePinSet, r) => union(
+    union(checkExpr(ps.psSubject, r, None),
+          union(checkExpr(ps.psTarget, r, None), checkExpr(ps.psValue, r, None))),
+    pinSetErrors(ps, r))
+
+fun pinSetErrors(ps: PePinSet, r) => match(pinSetField(ps))
+  (d: PeDot) => match(writtenField(d, pinSetWhat(), r))
+    (cs: PsClass) => union(lateWriteErrors(ps.pepsLine, cs, pinSetWhat()),
+                           union(pinSetHeapErrors(ps, d, r), pinSetValueFits(ps, r)))
+    (msg: String) => oneErr(ps.pepsLine, msg)
+  ()         => oneErr(ps.pepsLine, pinSetWhat() + " takes (obj, obj.field, value): a name, then a field of it")
+
+# The field, when the subject is a name and the target a field of that name.
+fun pinSetField(ps: PePinSet): PeDot|None => match(ps.psSubject)
+  (n: PeName) => match(ps.psTarget)
+    (d: PeDot)  => match(d.base)
+      (b: PeName) => b.refName == n.refName ? d : None
+      (o: PExpr)  => None
+    (o: PExpr)  => None
+  (o: PExpr)  => None
+
+fun pinSetHeapErrors(ps: PePinSet, d: PeDot, r) => match(exprType(ps.psTarget, r))
+  (ft: Spec) => heapOrNone(ft, r)
+    ? noErrs()
+    : oneErr(ps.pepsLine, pinSetWhat() + " fills a field holding a heap object or None: '"
+             + d.member + "' must be 'C|None', C a class always kept on the heap "
+             + "(an interface, or a class that is [pinnable], [mutable] or [foreign], "
+             + "implements an interface, or has more than "
+             + String(maxFlatStructFields()) + " fields)")
+  ()         => noErrs()
+
+# `C|None`, C a class that stays a heap object whatever the rest of the program
+# does (classNeverFlattens): its None is NULL.
+fun heapOrNone(ft: Spec, r) => match(ft)
+  (cm: SCombination) => heapOrNonePair(reprMembers(cm), r)
+  (o: Spec)          => false
+
+fun heapOrNonePair(ms: List<Spec>, r) => !exactly(ms, 2) ? false : match(head(ms))
+  (m0: Spec) => match(head(dropOne(ms)))
+    (m1: Spec) => isUnitType(m0) ? alwaysHeapClass(m1, r) : isUnitType(m1) && alwaysHeapClass(m0, r)
+    ()         => false
+  ()         => false
+
+fun alwaysHeapClass(m: Spec, r) => match(m)
+  (c2: SClass) => match(soleItem(findType(r, c2.scName)))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => classNeverFlattens(cs)
+      (o: PStmt)    => false
+    ()         => false
+  (o: Spec)    => false
+
+fun pinSetValueFits(ps: PePinSet, r) => match(exprType(ps.psTarget, r))
+  (ft: Spec) => match(exprType(ps.psValue, r))
+    (vt: Spec) => triFalse(assignableEq(r, ft, vt))
+      ? oneErr(ps.pepsLine, "Incorrect type assigned to the field")
+      : noErrs()
+    ()         => noErrs()
+  ()         => noErrs()
+
+fun genBuiltinOp(op: PeBuiltinOp, r)
+  let nm = builtinOpName(op.opName)
+  if isReprAwareOp(nm) && !builtinSubjectBoxed(op, r)
+    ret genBuiltinValueRepr(op, nm, r)
+  if nm == "new_pinned"
+    ret genNewPinned(op, r)
+  ret genBuiltinOpGeneric(op, r)
+
+# `__builtin_op__<T>("new_pinned", C(...))`: the construction C, its heap
+# object born PINNED (builtin_op.py __new_pinned). The argument may arrive
+# wrapped in an inlined block (statements, then the construction).
+fun genNewPinned(op: PeBuiltinOp, r) => match(firstBuiltinArg(op.opParams))
+  (e: PExpr) => genPinned(e, r)
+  ()         => emptyBundle()   # unreachable: stdlib-only op
+
+fun genBuiltinOpGeneric(op: PeBuiltinOp, r)
+  let paramsBundle = genExpr(op.opParams, r)
+  ret bundleJoin(paramsBundle, bundleValue(RpRuntimeInvoke(builtinOpName(op.opName), mustResult(paramsBundle), specGenerate(op.opType, r))))
+
+# The hash/identity internals are REPRESENTATION-AWARE: on a boxed enum they
+# are the real runtime calls; on a value representation there is no object,
+# so peek is the constant 0 (never cached), ref_eq is the constant false (no
+# identity to compare), and store just normalises the computed hash (the
+# 0-is-reserved contract holds either way). This is what lets derived and
+# wrapped code contain the shortcut UNCONDITIONALLY while the boxing decision
+# stays the compiler's.
+fun isReprAwareOp(n) => n == "yafl_hash_peek" || n == "yafl_hash_store" || n == "yafl_ref_eq"
+
+fun builtinSubjectBoxed(op: PeBuiltinOp, r) => match(op.opParams)
+  (tp: PeTuple) => match(head(tp.exprs))
+    (e2: PTupEnt) => match(exprType(e2.tupValue, r))
+      (se: SEnum) => isComplexRoot(r, se.seRoot)
+      ()          => false
+    ()            => false
+  (o: PExpr)    => false
+
+fun genBuiltinValueRepr(op: PeBuiltinOp, name, r)
+  if name == "yafl_hash_peek"
+    ret bundleValue(RpInteger(0, 32))
+  if name == "yafl_ref_eq"
+    ret bundleValue(RpInteger(0, 8))
+  # store: the subject has no slot — evaluate ONLY the hash operand and
+  # normalise it. The subject is a plain reference in all emitted code, so
+  # skipping it drops no effects.
+  ret match(op.opParams)
+    (tp: PeTuple) => match(head(dropOne(tp.exprs)))
+      (e2: PTupEnt) => genExpr(e2.tupValue, r)
+        |> (h) => bundleJoin(h, bundleValue(
+                    RpRuntimeInvoke("yafl_hash_norm",
+                                    RpNewStruct(list1(RpNamedValue("h", mustResult(h)))),
+                                    CgInt(32))))
+      ()            => emptyBundle()   # unreachable: store always has two args
+    (o: PExpr)    => emptyBundle()     # unreachable
+
+fun builtinOpName(nameExpr) => match(nameExpr)
+  (s2: PeStr) => s2.strValue
+  (o: PExpr)  => ""   # unreachable: op.opName is always a string literal
+
+# `__builtin_pin_set__(obj, obj.field, value)` (builtin_op.py
+# PinSetExpression.generate): one runtime call, kept when the answer goes
+# unread — the call is the store. The field is found by its offset in
+# whichever copy the pin takes.
+fun genPinSet(ps: PePinSet, r) => match(pinSetField(ps))
+  (d: PeDot) => match(writtenField(d, pinSetWhat(), r))
+    (cs: PsClass) => genPinSetOn(ps, d, cs, r)
+    (msg: String) => emptyBundle()   # unreachable: check()
+  ()         => emptyBundle()        # unreachable: check()
+
+fun genPinSetOn(ps: PePinSet, d: PeDot, cs: PsClass, r)
+  let fieldType = exprType(ps.psTarget, r)
+  let objB = withPrefix(genExpr(ps.psSubject, r), "psobj")
+  let valB = withPrefix(genExprTo(ps.psValue, r, fieldType), "psval")
+  let old = RpStackVar(specGenerateOpt(fieldType, r), "psold")
+  let call = OpMove(old, RpRuntimeInvoke("object_pin_set",
+                      RpNewStruct(prepend(RpNamedValue("o", mustResult(objB)),
+                                    prepend(RpNamedValue("offset", RpFieldOffset(cs.cName, d.member)),
+                                      prepend(RpNamedValue("v", mustResult(valB)), List())))),
+                      CgDataPointer(false)), true, Dict())
+  ret bundleJoin(bundleJoin(objB, valB),
+                 GBundle(list1(old), arrayOf<Op>(call), old, List(), List()))
+
+fun firstBuiltinArg(params) => match(params)
+  (tp: PeTuple) => match(head(tp.exprs))
+    (e0: PTupEnt) => e0.tupValue
+    ()            => None
+  (o: PExpr)    => None

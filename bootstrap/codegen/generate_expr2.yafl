@@ -15,6 +15,10 @@
 # implementations drive `em` via `emArm`/`emMultiEntryArm`/`emFallback`/
 # `emGuardToFallback`/`bindSubject`/`bindFromSlots` — the same functions
 # MatchExpression.generate itself uses for the primitive-literal path below.
+#
+# LAYOUT: each node kind's own generate lives with the rest of that node in
+# bootstrap/nodes/ (one file per kind, as pyast/); this file keeps the
+# helpers several node kinds share.
 namespace Bootstrap::Codegen
 
 import System
@@ -27,7 +31,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -331,7 +335,6 @@ fun reconstructStruct(ctype, fields: List<CgField>, slotAssignments: List<CgSlot
                (st, f) => reconstructFieldsStep(st, f, slotAssignments, slotFields, sv))
   ret ReconstructOut(unionStruct(ctype, r.acc), r.offset)
 
-
 fun reconstructFieldsStep(st: (offset: Int, acc: List<RpNamedValue>), f: CgField,
                           slotAssignments: List<CgSlotEntry>, slotFields: List<CgField>, sv)
   let sub = reconstructFromSlots(f.fieldType, slotAssignments, slotFields, sv, st.offset)
@@ -422,8 +425,6 @@ fun litAltLit(st: (k: Int, bundles: List<GBundle>, tests: List<RParam>), le2: Pl
 # isPrimitiveMatchType(name: String): Bool (match.py's _is_primitive_match_type)
 # is reused as-is from check_expr.yafl.
 
-fun genMatchTo(mt: PeMatch, r, expected) => genMatch(mt, r, expected)
-
 fun genMatch(mt: PeMatch, r, expected) => isEmpty(mt.matchExtra) ? genMatchOne(mt, r, expected)
                            : genMatchMulti(mt, r, expected)
 
@@ -435,7 +436,7 @@ fun genMatchMulti(mt: PeMatch, r, expected)
   let gens = genSubjects(subs, r, 0, List())
   let resultType = match(expected)
     (e2: Spec) => expected
-    ()          => matchType(mt, r)
+    ()          => typeOfMatch(mt, r)
   let resultVar = match(resultType)
     (rt: Spec) => RpStackVar(specGenerate(rt, r), "result")
     ()          => None
@@ -506,7 +507,6 @@ fun stagesOrNever(st: List<List<RParam>>|None): List<List<RParam>> => match(st)
   (g: List<List<RParam>>) => g
   ()                      => list1(list1(RpIntEqConst(RpInteger(0, 32), 1)))
 
-
 # Position 0 binds through the arm; the rest through a PArm synthesised from
 # their PPos, which gives the SAME unique name (armUniqueName reads the name
 # and line, and posUniqueName built them the same way).
@@ -560,12 +560,12 @@ fun genMatchOne(mt: PeMatch, r, expected)
   let subjBundle = withPrefix(genExpr(mt.subject, r), "subj")
   let subjType = exprType(mt.subject, r)
   # `result_type`: the shared slot type. A sink supplies it (the union the
-  # arms widen into); otherwise the arms already agree and matchType is
+  # arms widen into); otherwise the arms already agree and typeOfMatch is
   # exact. Each arm body is generated *to* this type (emBody widens narrow
   # arms before the join Phi).
   let resultType = match(expected)
     (e2: Spec) => expected
-    ()          => matchType(mt, r)
+    ()          => typeOfMatch(mt, r)
   let resultVar = match(resultType)
     (rt: Spec) => RpStackVar(specGenerate(rt, r), "result")
     ()          => None

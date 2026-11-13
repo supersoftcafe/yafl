@@ -1,0 +1,196 @@
+# bootstrap/nodes/expression/block.yafl — PeBlock: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/block.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A block defers to its VALUE: the receiver's type threads through to it, and
+# the block's own type is the value's.
+# A block's own lets are in scope for its statements AND for its value.
+fun compileBlock(bk: PeBlock, r0, expected): ExprOut
+  # A block is never top level, so every function declared in it is an INNER
+  # function: mark it (idempotent), so it establishes no trait scope of its
+  # own. Then fold any else-if chains among the statements (the first of the
+  # two fold sites; each if's branches fold their own).
+  let stmts = collapseElseIf(markInner(bk.blockStmts))
+  let r = blockScope(stmts, r0)
+  # Every statement receives the block's EXPECTED type (Python threads
+  # expected_type to each) — that is how a `ret` inside an if branch sees the
+  # function's return type and its value converges toward it.
+  let ss = compileStmts(stmts, r, expected, List(),
+                        List())
+  let v = compileExpr(bk.blockValue, r, expected)
+  ret ExprOut(PeBlock(ss.slStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
+              concat(ss.slGlobals, v.eoGlobals),
+              withoutLocals(mergeHints(ss.slHints, v.eoHints), ss.slStmts))
+
+fun markInner(ss): List<PStmt> => markInnerB(ss, List())
+
+fun markInnerB(ss: List<PStmt>, acc: List<PStmt>) =>
+  fold(ss, acc, (a, x) => append(a, markOne(x)))
+
+fun markOne(st) => match(st)
+  (f: PsFun) => f.fNested
+    ? st
+    : PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody, f.fRet,
+            f.fWheres, f.psfLine, f.fRetInferred, true, f.fImports, false)
+  (o: PStmt) => st
+
+fun checkBlock(bk: PeBlock, r0, expected: Spec|None): Set<PErr>
+  let r = blockScope(bk.blockStmts, r0)
+  let stmtErrs = blockStmtChecks(bk.blockStmts, r, expected, noErrs())
+  let valErrs = checkExpr(bk.blockValue, r, expected)
+  let typeErr = blockTypeErr(bk, r, expected, valErrs)
+  ret union(stmtErrs, union(valErrs, union(typeErr, unusedBindings(bk, r))))
+
+fun blockStmtChecks(ss: List<PStmt>, r: Resolver, expected: Spec|None, acc: Set<PErr>): Set<PErr> =>
+  fold(ss, acc, (a, x) => union(a, checkStmt2(x, r, expected)))
+
+fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
+                 valErrs: Set<PErr>): Set<PErr>
+  if !isEmpty(valErrs)
+    ret noErrs()
+  ret match(expected)
+    (want: Spec) => match(exprType(bk.blockValue, r))
+      (xt: Spec) => triFalse(assignableEq(r, want, xt))
+        ? oneErr(exprLine(bk.blockValue), "Incorrect type")
+        : noErrs()
+      ()         => noErrs()
+    ()           => noErrs()
+
+# No value vanishes silently: a block-local binding never read discards its
+# value. A `_`-prefixed name is the explicit opt-out.
+fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
+  let declared = bindingLets(bk.blockStmts,
+                                   List())
+  if isEmpty(declared)
+    ret noErrs()
+  let referenced = referencedInStmts(bk.blockStmts,
+                                     referencedNames(bk.blockValue,
+                                                     List()))
+  ret unusedWarns(declared, referenced, noErrs())
+
+fun unusedWarns(ls: List<PStmt>, referenced: List<String>, acc: Set<PErr>) =>
+  fold(ls, acc, (a, x) => unusedWarnsStep(a, x, referenced))
+
+fun unusedWarnsStep(a: Set<PErr>, x: PStmt, referenced: List<String>) => match(x)
+  (let2: PsLet) => startsWith(bareOfUnique(let2.lName), "_")
+             || contains(referenced, let2.lName)
+    ? a
+    : add(a, PErr(let2.pslLine,
+                             "'" + bareOfUnique(let2.lName)
+                             + "' is never used", true, "unused-variable"))
+  (o: PStmt) => a
+
+fun referencedInStmts(ss: List<PStmt>, acc: List<String>): List<String> =>
+  walkStmts(ss, emptyResolverGlobal, acc, referencedNamesWalk()).s
+
+# With no expected type, the slot is the BLOCK's type — its value typed inside
+# the block's own scope (Python's `self.get_type`). Typing the value in the
+# outer scope loses the block's locals: an inlined body's parameters read as
+# unknown and the slot degrades to a union of half-typed arms.
+fun genBlockTo(bk: PeBlock, r, expected: Spec|None): GBundle
+  let slotType = match(expected)
+    (e2: Spec) => expected
+    ()          => exprType(bk, r)
+  let tag = length(bk.blockTag) == 0 ? "blk@" + hash6(bk.pebkLine.plFile, bk.pebkLine.plLine, bk.pebkLine.plCol) : bk.blockTag
+  let frame = FrBlock(tag, slotType)
+  let nested = localScope(bk.blockStmts, RGen(frame, r))
+  let stmtsBundle = genBlockStmts(bk.blockStmts, nested, 0)
+  ret isEmpty(stmtsBundle.gbExitSources)
+    ? bundleJoin(stmtsBundle, genExprTo(bk.blockValue, nested, slotType))
+    : genBlockReturns(bk, stmtsBundle, nested, slotType, tag)
+
+# The `return`-bearing path. Python builds ITS OWN OperationBundle here (not
+# via `+`): the returned exit_sources default empty — a block is where
+# `return` terminates, so none propagate further up; recur_sources DO still
+# flow through (a [tail] recur inside an if inside a block-with-returns is
+# legitimate). All bookkeeping (ops/stack_vars/recur/sources) is threaded as
+# plain lists to mirror Python's local mutation exactly, in the same order.
+fun genBlockReturns(bk: PeBlock, stmtsBundle: GBundle, r, slotType: Spec|None, tag): GBundle
+  let endLabel = "blockend$" + tag
+  let ftExit = "blockftexit$" + tag
+  ret stmtsFallThrough(bk.blockStmts)
+    ? genBlockReturnsFallThrough(bk, stmtsBundle, r, slotType, tag, endLabel, ftExit)
+    : genBlockReturnsDead(stmtsBundle, slotType, r, tag, endLabel, ftExit)
+
+fun genBlockReturnsFallThrough(bk: PeBlock, stmtsBundle: GBundle, r, slotType,
+                               tag, endLabel, ftExit)
+  let vbun = genExprTo(bk.blockValue, r, slotType)
+  let ops0 = pushAll<Op>(stmtsBundle.gbOps, vbun.gbOps)
+  let stackVars0 = concat(stmtsBundle.gbStackVars, vbun.gbStackVars)
+  let recur0 = concat(stmtsBundle.gbRecurSources, vbun.gbRecurSources)
+  let sources0 = concat(stmtsBundle.gbExitSources, vbun.gbExitSources)
+  ret bundleBottom(vbun)
+    ? genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stackVars0, recur0, sources0, None, false)
+    : genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stackVars0, recur0, sources0, vbun.gbResult, true)
+
+fun genBlockReturnsDead(stmtsBundle: GBundle, slotType, r, tag, endLabel, ftExit)
+  let ops0 = push<Op>(stmtsBundle.gbOps,
+                   OpAbort("unreachable: every path through the block returned", Dict()))
+  ret genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stmtsBundle.gbStackVars, stmtsBundle.gbRecurSources,
+                      stmtsBundle.gbExitSources, None, false)
+
+fun genBlockAssemble(slotType: Spec|None, r, tag, endLabel, ftExit,
+                     ops0: Array<Op>, stackVars0, recur0,
+                     sources0: List<ExitSource>, ftValue: RParam|None, reachesEnd) => match(slotType)
+  (st2: Spec) => genBlockAssembleValued(st2, r, tag, ops0, stackVars0, recur0, sources0, endLabel, ftExit, ftValue, reachesEnd)
+  ()          => genBlockAssembleUnit(ops0, stackVars0, recur0, endLabel, ftExit, reachesEnd)
+
+# The fall-through label, when the block can reach its end, then the end
+# label — both after everything the block emitted.
+fun genBlockFtLabel(b: Array<Op>, ftExit, reachesEnd: Bool): Array<Op>
+  ret reachesEnd ? push<Op>(b, OpLabel(ftExit, Dict())) : b
+
+fun genBlockAssembleUnit(ops0: Array<Op>, stackVars0, recur0,
+                         endLabel, ftExit, reachesEnd)
+  let ops1 = genBlockFtLabel(ops0,
+                             ftExit, reachesEnd)
+  ret GBundle(stackVars0,
+              push<Op>(ops1, OpLabel(endLabel, Dict())),
+              None, recur0, List())
+
+fun genBlockAssembleValued(slotType, r, tag, ops0: Array<Op>, stackVars0,
+                          recur0, sources0: List<ExitSource>, endLabel, ftExit,
+                          ftValue: RParam|None, reachesEnd)
+  let resultVar = RpStackVar(specGenerate(slotType, r), "blockresult$" + tag)
+  let fv = match(ftValue)
+    (v: RParam) => v
+    ()           => RpZeroOf(rpGetType(resultVar))
+  let ops1 = genBlockFtLabel(ops0,
+                             ftExit, reachesEnd)
+  # The fall-through edge is the LAST phi source, matching the label order.
+  let sources1 = reachesEnd
+    ? append(
+          sources0,
+          ExitSource(ftExit, fv))
+    : sources0
+  let ops2 = pushAll<Op>(ops1,
+                 arrayOf<Op>(OpLabel(endLabel, Dict()),
+                       OpPhi(resultVar, exitSourcesToPhi(sources1),
+                             Dict())))
+  ret GBundle(append(
+                  stackVars0,
+                  resultVar),
+              ops2, resultVar, recur0, List())
+
+fun exitSourcesToPhi(es: List<ExitSource>)
+  ret map(es, (e2) => OpPhiSource(e2.esLabel, exitValueOr(e2.esValue)))
+
+fun exitValueOr(v: RParam|None) => match(v)
+  (rv: RParam) => rv
+  ()            => RpNullPointer()   # unreachable in a value-slotted block: every source
+                                     # supplies a value once slot_type is not None

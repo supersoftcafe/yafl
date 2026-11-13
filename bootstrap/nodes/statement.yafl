@@ -1,0 +1,72 @@
+# bootstrap/nodes/statement.yafl — the statement interface (Python's pyast/statement/base.py):
+# one dispatcher per question the compiler asks of any statement — compile,
+# check, its type, generate. Each routes to the node kind's own function in
+# bootstrap/nodes/statement/, which holds everything about that kind.
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun compileStmt(st, r, retType): StmtOut => match(st)
+  (l: PsLet)         => compileLet(l, r)
+  (d: PsDestructure) => compileDestructure(d, r)
+  (f: PsFun)         => compileFun(f, r)
+  (ta: PsTypealias)  => compileTypealias(ta, r)
+  (c: PsClass)       => compileClass(c, r)
+  (e: PsEnum)        => compileEnum(e, r)
+  (rt: PsRet)        => compileRet(rt, r, retType)
+  (a: PsAction)      => compileAction(a, r)
+  (fa: PsFieldAssign) => compileFieldAssign(fa, r)
+  (i: PsIf)          => compileIf(i, r, retType)
+  # An else-if / else reaching here is an ORPHAN (collapseElseIf folds the
+  # proper ones into their if at both fold sites); it passes through
+  # unchanged and check reports it. Imports and namespaces carry no
+  # behaviour of their own.
+  (ei: PsElseIf)     => StmtOut(st, List(), noHints())
+  (el: PsElse)       => StmtOut(st, List(), noHints())
+  (im: PsImport)     => StmtOut(st, List(), noHints())
+  (ns: PsNamespace)  => StmtOut(st, List(), noHints())
+  (inst: PsTraitInstance) => compileTraitInstance(inst, r)
+
+fun checkStmtKind(st, r, retTy: Spec|None) => match(st)
+  (f: PsFun)         => checkFun(f, r)
+  (l: PsLet)         => checkLet(l, r)
+  (d: PsDestructure) => checkDestructure(d, r)
+  (c: PsClass)       => checkClass(c, r)
+  (e2: PsEnum)       => checkEnum(e2, r)
+  (ta: PsTypealias)  => checkTypealias(ta, r)
+  (rt: PsRet)        => checkRet(rt, r, retTy)
+  (a: PsAction)      => checkAction(a, r)
+  (fa: PsFieldAssign) => checkFieldAssign(fa, r)
+  (i: PsIf)          => checkIf(i, r, retTy)
+  (ei: PsElseIf)     => oneErr(ei.eiKeyword,
+                               "`else if` without a matching preceding `if`")
+  (el: PsElse)       => oneErr(el.pselLine,
+                               "`else` without a matching preceding `if`")
+  (im: PsImport)     => noErrs()
+  (ns: PsNamespace)  => noErrs()
+  (inst: PsTraitInstance) => checkTraitInstance(inst, r)
+
+# Python: each Statement subclass's generate(resolver, func_ret_type). A block
+# post-lowering holds only lets/destructures/actions/ifs/returns; anything
+# else reaching generate is a miswiring — loud, like Python's AttributeError.
+fun gsStmt(st, r, expected: Spec|None) => match(st)
+  (rt: PsRet)         => genRet(rt, r)
+  (a: PsAction)       => genExpr(a.action, r)
+  (fa: PsFieldAssign) => genFieldAssign(fa, r)
+  (f2: PsIf)          => genIf(f2, r, expected)
+  (d: PsDestructure)  => genDestructure(d, r)
+  (l: PsLet)          => genLet(l, r)
+  (o: PStmt)          => bundleOp1(OpAbort("generate: statement kind cannot appear in a lowered block", Dict()))

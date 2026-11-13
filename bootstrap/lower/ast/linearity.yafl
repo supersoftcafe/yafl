@@ -18,7 +18,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 # The counter carries its key list (Dict has no key enumeration): addition
@@ -29,7 +29,9 @@ import Bootstrap::Types
 class [final] LinCnt(lcCounts: Dict<String, Int>)
 
 fun lcKeys(c: LinCnt) => sort(keys(c.lcCounts))
+
 class [final] LinOut(loCnt: LinCnt, loErrs: Set<PErr>)
+
 # The env likewise: binding names (insertion order — discharge order matches
 # Python's dict iteration) plus their types.
 # leFns: the [linear] function parameters in scope — bindings whose ONE leaf
@@ -74,7 +76,6 @@ fun cntMerge(c1, c2, lr, acc): LinOut
   let errs = mergeErrs(addNamesOnce(lcKeys(c1), lcKeys(c2)),
                        c1, c2, lr, acc)
   ret LinOut(isEmpty(c1.lcCounts) ? c2 : c1, errs)
-
 
 fun mergeErrs(ks: List<String>, c1: LinCnt, c2: LinCnt, lr, acc: Set<PErr>) =>
   fold(ks, acc, (a, x) => countOf(c1.lcCounts, x)
@@ -373,8 +374,6 @@ fun oblKey(name, leaf) => leaf == "" ? name : name + "/" + leaf
 fun countOf(counts: Dict<String, Int>, key: String) => match(get(counts, key))
   (n: Int) => n
   ()       => 0
-
-
 
 # ── the count flow analysis ─────────────────────────────────────────────────
 # Per-execution-path consumption of the env's obligations by an expression.
@@ -797,7 +796,6 @@ fun capturedIn(b, env: LinEnv): List<String> => capturedLoop(referencedNames(b, 
 
 fun capturedLoop(ns: List<String>, env: LinEnv, acc: List<String>) =>
   fold(ns, acc, (a, x) => envHas(env, x) ? addNameOnce(a, x) : a)
-
 
 fun captureErrs(ns: List<String>, lr, acc: Set<PErr>) =>
   fold(ns, acc, (a2, x) => add(a2, PErr(lr, "linear value '" + bareOfUnique(x)

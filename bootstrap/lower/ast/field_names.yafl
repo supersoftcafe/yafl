@@ -29,7 +29,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 fun eraseFieldNames(statements: List<PStmt>): List<PStmt> =>

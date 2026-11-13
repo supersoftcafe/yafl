@@ -1,0 +1,142 @@
+# bootstrap/nodes/expression/tuple_expr.yafl — PeTuple: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/tuple_expr.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun checkTupleExpr(tp: PeTuple, r, expected: Spec|None)
+  ret union(checkTupEnts2(tp.exprs, r, noErrs()),
+      union(spreadErrs(tp, r), unknownFieldErrs(tp, expected)))
+
+# A spread surviving to check never resolved to a tuple: compile expands `*x`
+# only once x's tuple arity is known.
+fun spreadErrs(tp: PeTuple, r): Set<PErr>
+  ret any(tp.exprs, (en) => en.tupSpread && !isTupleSpec(exprType(en.tupValue, r)))
+    ? Set(map(filter(tp.exprs, (en) => en.tupSpread && !isTupleSpec(exprType(en.tupValue, r))),
+              (en) => PErr(tp.petLine, "can only spread a tuple value: `*x` needs x to be a tuple")))
+    : noErrs()
+
+# A WRITTEN entry name is a binding request against THIS receiver: a name that
+# matches none of its fields is a mistake, not a coincidence.
+fun unknownFieldErrs(tp: PeTuple, expected: Spec|None): Set<PErr> => match(expected)
+  (st: STuple) => Set(map(filter(tp.exprs, (en) => en.tupName != ""
+                                    && !any(st.stEntries, (se) => se.seName != ""
+                                              && bareOfUnique(se.seName) == en.tupName)),
+                          (en) => PErr(tp.petLine, "the target tuple has no field named '"
+                                                   + en.tupName + "'")))
+  ()           => noErrs()
+
+fun checkTupEnts2(es: List<PTupEnt>, r, acc): Set<PErr> =>
+  fold(es, acc, (a, x) => union(a, checkExpr(x.tupValue, r, None)))
+
+# A spread contributes its value's fields, unnamed; until that value is known
+# to be a tuple the whole type is unknown (TupleExpression.get_type).
+fun typeOfTuple(tp: PeTuple, r): Spec|None => match(tupEntriesB(tp.exprs, r, List()))
+  (es: List<SEntry>) => STuple(es, tp.petLine)
+  ()                 => None
+
+# A spread of something that is not a tuple ends the walk with None.
+fun tupEntriesB(es: List<PTupEnt>, r, acc: List<SEntry>): List<SEntry>|None =>
+  foldWhile<PTupEnt, List<SEntry>|None>(es, acc,
+    (got, e) => tupEntryStep(got, e, r),
+    (got) => got !is None)
+
+fun tupEntryStep(got: List<SEntry>|None, e: PTupEnt, r) => match(got)
+  (l: List<SEntry>) => tupEntryAdd(l, e, r)
+  ()                => None
+
+fun tupEntryAdd(acc: List<SEntry>, e: PTupEnt, r: Resolver): List<SEntry>|None => !e.tupSpread
+  ? append(acc, SEntry(e.tupName, exprType(e.tupValue, r), None))
+  : match(exprType(e.tupValue, r))
+    (st: STuple) => concat(acc, map(st.stEntries, (en) => SEntry("", en.seType, None)))
+    ()           => discardEntries(acc)
+
+fun discardEntries(acc: List<SEntry>): List<SEntry>|None
+  ret acc |> (_built) => None
+
+fun [tail] getOptLevel(r): Int => match(r)
+  (root: RRoot)    => root.rrOptLevel
+  (rg: RGen)       => getOptLevel(rg.rgParent)
+  (d: RData)       => getOptLevel(d.rdParent)
+  (t2: RTypes)     => getOptLevel(t2.rtParent)
+  (sc: RScopes)    => getOptLevel(sc.rsParent)
+  (tr: RTraits)    => getOptLevel(tr.rtrParent)
+  (cb: RClassBody) => getOptLevel(cb.rcbParent)
+
+fun genTuple(tp: PeTuple, r): GBundle
+  let built = genTupleEntryBundles(tp.exprs, r, 0,
+                                   List())
+  let paramBundles = built.bs
+  # NewStruct field-name → result mapping is pinned to DECLARED positions, so
+  # the tuple value is unaffected by any reordering of evaluation below.
+  let value = RpNewStruct(namedValuesOf(paramBundles))
+  # At -O0, randomise the order in which children's side-effects fire so that
+  # code accidentally relying on left-to-right tuple evaluation surfaces.
+  # Seeded from the source location via FNV-1a + xorshift32 Fisher–Yates —
+  # Python's _location_shuffle (tuple_expr.py) runs the identical arithmetic.
+  let evalBundles = getOptLevel(r) == 0 && sizeAtLeast(paramBundles, 2)
+    ? locationShuffle(paramBundles, built.n,
+                      tp.petLine.plFile + ":" + String(tp.petLine.plLine)
+                      + ":" + String(tp.petLine.plCol))
+    : paramBundles
+  ret bundleJoin(bundleJoinAll(evalBundles), bundleValue(value))
+
+# n is the item count, CARRIED from the walk that built the items — the
+# Fisher-Yates index sequence needs it as data (the RNG consumption order
+# is pinned by Python parity); it is never recalculated from the list.
+fun locationShuffle(items, n, key): List<GBundle>
+  let seed = fnv1a(key, 0, 2166136261)
+  ret fisherYates(items, n - 1, seed == 0 ? 1 : seed)
+
+fun [tail] fnv1a(key, at, h) => at >= length(key)
+  ? h
+  : fnv1a(key, at + 1, ((h ^ Int(byteAt(key, at))) * 16777619) & mask32)
+
+# One Fisher–Yates step per i from n-1 down to 1: advance the xorshift32
+# state, pick j = state % (i + 1), swap positions i and j.
+fun [tail] fisherYates(xs, i, h): List<GBundle>
+  if i < 1
+    ret xs
+  let h1 = h ^ ((h << 13) & mask32)
+  let h2 = h1 ^ (h1 >> 17)
+  let h3 = h2 ^ ((h2 << 5) & mask32)
+  ret fisherYates(bundleSwap(xs, i, h3 % (i + 1)), i - 1, h3)
+
+fun bundleSwap(xs, i: Int, j: Int): List<GBundle> => i == j
+  ? xs
+  : swapLoop(xs, 0, i, j, forceNth(xs, i),
+             forceNth(xs, j), List())
+
+fun swapLoop(cs: List<GBundle>, at, i, j, vi: GBundle, vj: GBundle, acc: List<GBundle>) =>
+  fold(cs, (at = at, acc = acc), (st, x) => swapLoopStep(st, x, i, j, vi, vj)).acc
+
+fun swapLoopStep(st: (at: Int, acc: List<GBundle>), x: GBundle, i, j, vi: GBundle, vj: GBundle) =>
+  (at = st.at + 1, acc = append(st.acc, st.at == i ? vj : st.at == j ? vi : x))
+
+# Returns the bundles AND their count — idx already rides the walk, so the
+# count is free at the end (no-length ruling: counts are carried, not taken).
+fun genTupleEntryBundles(es: List<PTupEnt>, r, idx, acc: List<GBundle>): (bs: List<GBundle>, n: Int) =>
+  fold(es, (idx = idx, acc = acc), (st, x) => genTupleEntryBundlesStep(st, x, r))
+    |> (r2) => (r2.acc, r2.idx)
+
+fun genTupleEntryBundlesStep(st: (idx: Int, acc: List<GBundle>), x: PTupEnt, r) =>
+  (idx = st.idx + 1, acc = append(st.acc, withPrefix(genExpr(x.tupValue, r), "e" + String(st.idx))))
+
+fun namedValuesOf(bundles: List<GBundle>) => namedValuesLoop(bundles, 0, List())
+
+fun namedValuesLoop(bs: List<GBundle>, idx, acc: List<RpNamedValue>) =>
+  fold(bs, (idx = idx, acc = acc),
+       (st, x) => (idx = st.idx + 1, acc = append(st.acc, RpNamedValue("_" + String(st.idx), mustResult(x))))).acc

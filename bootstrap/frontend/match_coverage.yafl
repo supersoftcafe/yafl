@@ -15,6 +15,7 @@ import Bootstrap::Ast
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
+import Bootstrap::Nodes
 
 # ── the entry point ─────────────────────────────────────────────────────────
 # Python check(): a primitive subject gets the literal-arm rules, any other
@@ -440,4 +441,3 @@ fun tupleNames(tup: List<String>, tables: List<PosTable>)
 fun nameOf(t: PosTable, key) => match(get(t.ptNames, key))
   (s: String) => s
   ()          => key
-

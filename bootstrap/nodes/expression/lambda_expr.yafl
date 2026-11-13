@@ -1,0 +1,90 @@
+# bootstrap/nodes/expression/lambda_expr.yafl — PeLambda: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/lambda_expr.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A lambda: its parameters join the scope. An un-annotated parameter must fit
+# its body's uses and accept what the expected signature passes it (hints).
+# The lambda's own type is rebuilt each pass: the parameters as actually
+# compiled (only when fully ground — a placeholder mid-resolution keeps the
+# original), and the result preferring the call site's expected type so a
+# narrower body widens via boxing.
+fun compileLambda(lm: PeLambda, r0, expected: Spec|None): ExprOut
+  let r = localScope(paramLets(lm.lamParams), r0)
+  let prm = compileStmt(lm.lamParams, r, None)
+  let subExpected = expectedResult(expected)
+  let body = compileExpr(lm.lamBody, r, subExpected)
+  let newParams = inferredParams(stmtOr(prm, lm.lamParams),
+                                 mergeHints(body.eoHints,
+                                            passedHints(lm.lamParams, expected)),
+                                 r)
+  # A lambda flowing into a union is converted there, like any expression.
+  ret convertedOut(ExprOut(PeLambda(newParams, body.eoExpr, lm.pelLine,
+                                    SCallable(reportedParams(newParams, lm.lamParams),
+                                              lambdaResult(subExpected,
+                                                           exprType(body.eoExpr, r), r),
+                                              lm.pelLine)),
+                           concat(prm.soExtra, body.eoGlobals),
+                           hintsWithout(body.eoHints, letNames(flattenParams(lm.lamParams)),
+                                        Set())),
+                   expected, r0)
+
+# What the expected signature passes each parameter: a LOWER hint.
+fun passedHints(params, expected: Spec|None) => match(expected)
+  (c: SCallable) => match(c.scParams2)
+    (tp: STuple) => sameLen(tp.stEntries, paramLets(params))
+      ? passedLoop(paramLets(params), tp.stEntries, noHints())
+      : noHints()
+    (o: Spec)    => noHints()
+  ()             => noHints()
+
+fun passedLoop(ps: List<PStmt>, es: List<SEntry>, acc: Dict<String, List<Hint>>) =>
+  zipFold(ps, es, acc, (a, p, e) => mergeHints(a, passedHint(p, e.seType)))
+
+fun passedHint(p: PStmt, ty: Spec|None) => match(ty, p)
+  (t2: Spec, l: PsLet) => hintOf(l.lName, t2, true)
+  ()                   => noHints()
+
+fun expectedResult(expected: Spec|None) => match(expected)
+  (c: SCallable) => c.scResult
+  ()             => None
+
+# Prefer the expected result when the body's type fits it — the lambda widens
+# via boxing and the call's parameter check sees matching types.
+fun lambdaResult(subExpected, bodyTy,
+                 r): Spec|None => match(subExpected, bodyTy)
+  (se: Spec, bt: Spec) => isConcrete(se) && triTrue(assignableFrom(r, se, bt))
+    ? subExpected
+    : bodyTy
+  ()                   => bodyTy
+
+# The parameter types the body was ACTUALLY compiled against — but only when
+# fully ground; otherwise the original spelling (avoids reporting an
+# unresolved generic mid-resolution).
+fun reportedParams(compiled, original)
+  let threaded = paramsTupleOf(compiled)
+  ret uid(threaded) != "" ? threaded : paramsTupleOf(original)
+
+fun checkLambda(lm: PeLambda, r0, expected: Spec|None): Set<PErr>
+  let r = localScope(paramLets(lm.lamParams), r0)
+  let sub = expectedResult(expected)
+  let prmErr = checkStmt2(lm.lamParams, r, None)
+  let bodyErr = checkExpr(lm.lamBody, r, sub)
+  let retErr = match(lm.lamRet)
+    (t2: Spec) => checkSpec(t2, r)
+    ()         => oneErr(lm.pelLine, "Lambda return type is unknown")
+  ret union(prmErr, union(bodyErr, retErr))

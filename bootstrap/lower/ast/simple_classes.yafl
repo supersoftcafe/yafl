@@ -25,7 +25,7 @@ import Bootstrap::Ast
 import Bootstrap::Frontend
 import Bootstrap::Parse
 import Bootstrap::Resolve
-
+import Bootstrap::Nodes
 
 
 # ── candidate / spec bookkeeping (parallel lists — Dict has no keys()) ──────
@@ -40,6 +40,7 @@ import Bootstrap::Resolve
 # meaningful (USER RULING: declaration order in YAFL is largely irrelevant).
 # The walks that do need an order take the names SORTED.
 class [final] ScCands(scIndex: Dict<String, PsClass>)
+
 class [final] ScSpecs(ssIndex: Dict<String, Spec>)
 
 fun scNames(c: ScCands) => sort(keys(c.scIndex))
@@ -76,6 +77,7 @@ fun scLiftOne(name, from2: ScCands, specs: ScSpecs,
 fun scHasCand(c: ScCands, name: String) => contains(c.scIndex, name)
 
 fun ssNames(s2: ScSpecs) => sort(keys(s2.ssIndex))
+
 class [final] ScFiltered(sfCands: ScCands, sfSpecs: ScSpecs)
 
 # ── generic name -> Int lookup/bump (shared by method-ref and uid counts) ───

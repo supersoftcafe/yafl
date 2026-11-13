@@ -1,0 +1,236 @@
+# bootstrap/nodes/statement/lets.yafl — PsLet, PsDestructure: every question the
+# compiler asks of this node kind, in one place (Python's pyast/statement/lets.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A let: compile the initialiser against the declared type (so the RHS knows
+# what it is converging toward), compile the type, then EITHER refine a declared
+# type (holes only) OR widen an inferred one. The gen/trait scope of a TOP-LEVEL
+# let is supplied by the caller (scopeResolver — Python's _initialiser_resolver);
+# a block-scoped let adds none, exactly as LetStatement.compile adds none.
+fun compileLet(l: PsLet, r)
+  let ty = compileSpecOpt(l.lType, r)
+  let declaredTy = specOf(ty)
+  let init = compileExprOpt(l.lDefault, r, declaredTy)
+  let wheres = compileParams(l.lWheres, r)
+  let declared = hasDeclaredType(l)
+  # A value that cannot say all it will yet (a name in it did not resolve
+  # this pass) must not be stored: its type is only the part that did, and
+  # refinement only ever widens, so it would latch.
+  let settled = !isUnsettled(hintsOf(init))
+  let inferredNow = settled ? (declared ? l.lTypeInferred : true) : l.lTypeInferred
+  let finalTy = settled ? inferType(declaredTy, initType(init, r), declared, r) : declaredTy
+  ret StmtOut(PsLet(l.lName, l.lAttrs, l.lGens, finalTy, exprOf(init),
+                    l.lArrayLen, wheres.psSpecs, l.pslLine, inferredNow,
+                    l.lImports),
+              concat(globalsOf(init), concat(globalsOfSpec(ty), wheres.psGlobals)),
+              hintsOf(init))
+
+fun initType(init: ExprOut|None, r) => match(init)
+  (i: ExprOut) => exprType(i.eoExpr, r)
+  ()           => None
+
+# A destructure propagates the parent tuple's entry types onto its targets: a
+# target with no annotation ADOPTS the entry's type and is thereafter inferred
+# (so it keeps tracking a late widening); one with its own annotation keeps it,
+# refined but never overwritten.
+fun compileDestructure(d: PsDestructure, r)
+  # The inherited LetStatement.compile half first: the RHS's sink is the
+  # TARGETS' tuple type (_rhs_expected override — lets.py:50), and an untyped
+  # destructure converges on the RHS like any let (refine when declared,
+  # refine-widening when inferred).
+  let init = compileExprOpt(d.dDefault, r, destructureType(d))
+  let ty = compileSpecOpt(d.dType, r)
+  let declaredTy = specOf(ty)
+  let dDeclared = destructureDeclared(d)
+  # An initialiser that cannot say all it will yet is not stored (compileLet).
+  let hasInit2 = match(init)
+    (i: ExprOut) => !isUnsettled(i.eoHints)
+    ()           => false
+  let finalTy = hasInit2 ? inferType(declaredTy, initType(init, r),
+                                     dDeclared, r)
+                         : declaredTy
+  let inferredNow = hasInit2 ? (dDeclared ? d.dTypeInferred : true)
+                             : d.dTypeInferred
+  # THEN propagate the parent tuple's entry types onto the RAW targets, and
+  # only then compile them — Python refines first (lets.py:518-534).
+  let refined = propagate(finalTy, d.dTargets, r)
+  let compiled = compileStmts(refined, r, None, List(),
+                              List())
+  ret StmtOut(PsDestructure(d.dName, d.dAttrs, finalTy, compiled.slStmts,
+                            exprOf(init), d.psdLine, inferredNow),
+              concat(globalsOf(init),
+                     concat(globalsOfSpec(ty), compiled.slGlobals)),
+              mergeHints(hintsOf(init), compiled.slHints))
+
+fun destructureDeclared(d: PsDestructure) => match(d.dType)
+  (t2: Spec) => !d.dTypeInferred
+  ()         => false
+
+fun propagate(parentTy: Spec|None, targets,
+              r) => match(parentTy)
+  (st: STuple) => sameLen(st.stEntries, targets)
+    ? propagateLoop(targets, st.stEntries, r, List())
+    : targets
+  ()           => targets
+
+fun propagateLoop(ts: List<PStmt>, es: List<SEntry>, r, acc: List<PStmt>): List<PStmt> =>
+  zipFold(ts, es, acc, (a, t, e) => append(a, adopt(t, e.seType, r)))
+
+fun adopt(target, entryTy: Spec|None, r) => match(target)
+  (l: PsLet) => adoptLet(l, entryTy, r)
+  (o: PStmt) => target
+
+fun adoptLet(l: PsLet, entryTy: Spec|None, r)
+  let declared = hasDeclaredType(l)
+  let ty = inferType(l.lType, entryTy, declared, r)
+  ret PsLet(l.lName, l.lAttrs, l.lGens, ty, l.lDefault, l.lArrayLen,
+            l.lWheres, l.pslLine, declared ? l.lTypeInferred : true)
+
+fun isKnownLetAttr(n) => n == "terminal" || n == "const" || n == "lazy" || n == "trait"
+ || n == "future" || n == "linear" || n == "final" || n == "mutable"
+ || n == "ambient" || n == "pinnable" || n == "capacity"
+
+fun checkLet(l: PsLet, r)
+  let bad = letTypeErr(l, r)
+  ret isEmpty(bad) ? letSubErrs(l, r) : bad
+
+fun letTypeErr(l: PsLet, r) => match(l.lDefault)
+  (d: PExpr) => match(l.lType)
+    (want: Spec) => match(exprType(d, r))
+      (xt: Spec) => triFalse(assignableEq(r, want, xt))
+        ? oneErr(l.pslLine, "Incorrect type")
+        : noErrs()
+      ()         => noErrs()
+    ()           => noErrs()
+  ()         => noErrs()
+
+fun letSubErrs(l: PsLet, r)
+  let err1 = match(l.lDefault)
+    (d: PExpr) => checkExpr(d, r, l.lType)
+    ()         => noErrs()
+  let err2 = checkSpecOpt(l.lType, r)
+  let whereErr = checkSpecs(l.lWheres, r, noErrs())
+  ret union(err1, union(err2, union(letAttrErrs(l, r), whereErr)))
+
+fun letAttrErrs(l: PsLet, r: Resolver) => bindingAttrErrs(l.lAttrs, l.pslLine, l.lDefault)
+
+# The attribute rules every binding shares — a let, and a destructure, which
+# Python's DestructureStatement inherits from LetStatement.check.
+fun bindingAttrErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  ret union(constErrs(attrs, lr, init),
+      union(lazyErrs(attrs, lr, init),
+      union(futureErrs(attrs, lr, init),
+             attrErrs(attrs, isKnownLetAttr, lr, "a let"))))
+
+fun constErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  if !hasAttr(attrs, "const")
+    ret noErrs()
+  let argErr = attrArgErr(attrs, lr, "const", "[const] takes no arguments")
+  ret isConstLiteral(init)
+    ? argErr
+    : union(argErr, oneErr(lr, "[const] requires a literal value"))
+
+fun attrArgErr(attrs: List<PAttr>, lr: PLine, name: String, msg) => match(attrValueOf(attrs, name))
+  (v: PExpr) => oneErr(lr, msg)
+  ()         => noErrs()
+
+fun hasInit(init: PExpr|None) => match(init)
+  (d: PExpr) => true
+  ()         => false
+
+fun isConstLiteral(d: PExpr|None) => match(d)
+  (x: PExpr) => isLiteralValue(x)
+  ()         => false
+
+fun lazyErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  if !hasAttr(attrs, "lazy")
+    ret noErrs()
+  let argErr = attrArgErr(attrs, lr, "lazy", "[lazy] takes no arguments")
+  ret hasInit(init)
+    ? argErr
+    : union(argErr, oneErr(lr, "[lazy] requires an initialiser"))
+
+fun futureErrs(attrs: List<PAttr>, lr: PLine, init: PExpr|None)
+  if !hasAttr(attrs, "future")
+    ret noErrs()
+  let argErr = attrArgErr(attrs, lr, "future", "[future] takes no arguments")
+  let initErr = hasInit(init)
+    ? noErrs()
+    : oneErr(lr, "[future] requires an initialiser")
+  let bothErr = hasAttr(attrs, "lazy")
+    ? oneErr(lr,
+             "[lazy] and [future] are mutually exclusive — a future IS "
+             + "lazy when the worker pool is busy; pick one")
+    : noErrs()
+  ret union(argErr, union(initErr, bothErr))
+
+# A destructure inherits the let rules (Python: DestructureStatement extends
+# LetStatement and does not override check).
+fun checkDestructure(d: PsDestructure, r)
+  let typeErr = match(d.dDefault)
+    (x: PExpr) => match(d.dType)
+      (want: Spec) => match(exprType(x, r))
+        (xt: Spec) => triFalse(assignableEq(r, want, xt))
+          ? oneErr(d.psdLine, "Incorrect type")
+          : noErrs()
+        ()         => noErrs()
+      ()           => noErrs()
+    ()         => noErrs()
+  if !isEmpty(typeErr)
+    ret typeErr
+  let err1 = match(d.dDefault)
+    (x: PExpr) => checkExpr(x, r, d.dType)
+    ()         => noErrs()
+  let futureShape = hasAttr(d.dAttrs, "future")
+    ? oneErr(d.psdLine, "[future] applies to a simple let, not a destructuring binding")
+    : noErrs()
+  ret union(err1, union(checkSpecOpt(d.dType, r),
+         union(bindingAttrErrs(d.dAttrs, d.psdLine, d.dDefault), futureShape)))
+
+# `[lazy]` lets are handled out-of-band by genBlockTo's two-phase emission;
+# any other call site is a bug (Python raises RuntimeError).
+fun genLet(l: PsLet, r)
+  if isDeferredInit(l)
+    ret bundleOp1(OpAbort("[lazy] let reached LetStatement.generate directly — only genBlockTo's two-phase emission may generate it", Dict()))
+  let exprBundle = withPrefix(genExprToOpt(l.lDefault, r, l.lType), "expr")
+  let sv = RpStackVar(specGenerateOpt(l.lType, r), l.lName)
+  # Leaf to_c_destructure(None) is empty in Python — expr + init only.
+  ret bundleJoin(exprBundle,
+                 GBundle(list1(sv), arrayOf<Op>(OpMove(sv, mustResult(exprBundle), false, Dict())),
+                         None, List(), List()))
+
+# The slot is the TARGETS' tuple type, not the RHS's own (an annotated target
+# may be wider than its entry); the widening itself was inserted at compile.
+fun genDestructure(d: PsDestructure, r)
+  let slotType = destructureSlotType(d)
+  let exprBundle = withPrefix(genExprToOpt(d.dDefault, r, slotType), "expr")
+  let sv = RpStackVar(specGenerateOpt(slotType, r), d.dName)
+  let initBundle = GBundle(list1(sv), arrayOf<Op>(OpMove(sv, mustResult(exprBundle), false, Dict())),
+                           None, List(), List())
+  # sv is at the un-prefixed root of initBundle; pass it directly as the
+  # destructure root rather than predicting a renamed name.
+  ret bundleJoin(exprBundle, bundleJoin(initBundle, withPrefix(toCDestructureTargets(d, sv, r), "unpack")))
+
+# Python: slot_type = self.get_type(); any entry with no type → fall back to
+# declared_type. get_type itself never falls back — a NESTED destructure entry
+# contributes its plain tuple type.
+fun destructureSlotType(d: PsDestructure)
+  let entries = map(d.dTargets, dTargetEntry)
+  ret any(entries, (e2) => isNoneSpec(e2.seType))
+    ? d.dType
+    : STuple(entries, noLine())

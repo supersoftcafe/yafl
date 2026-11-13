@@ -1,0 +1,100 @@
+# bootstrap/nodes/expression/new.yafl — PeNew, PeNewEnum: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/new.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A call compiles its ARGUMENT first: the argument may itself be a generic
+# call whose result type only grounds once compiled — inferring the callee's
+# type params from the un-compiled argument would bind them to a placeholder-
+# bearing type that never monomorphises. While the argument's type has not
+# settled to a tuple, the callee is NOT recompiled and the call does not wrap
+# itself: retry next pass. Once it has, the CALLEE compiles against the full
+# shape this call site needs — CallableSpec(argument tuple, expected result).
+# NewEnumExpression.compile (new.py:185-210): thread each construction
+# argument's declared FIELD type down — the argument node owns any boxing
+# toward it; the constructed value owns its conversion to the receiver.
+fun compileNewEnum(ne: PeNewEnum, r, expected: Spec|None): ExprOut
+  let leafFields = cneLeafFields(ne, r)
+  let out = cneArgs(ne.fieldArgs, leafFields, r, List(),
+                    List(), noHints())
+  let e2 = PeNewEnum(ne.rootName, ne.leafName, out.cneFas, ne.neTypeParams,
+                     ne.penewLine)
+  ret ExprOut(converted(e2, expected, r), out.cneGlobals, out.cneHints)
+
+fun cneLeafFields(ne: PeNewEnum, r): List<PStmt> => match(soleItem(findType(r, ne.rootName)))
+  (f: Found) => match(f.fStmt)
+    (root: PsEnum) => cneLeafFieldsOf(ne, root)
+    (o: PStmt)     => List()
+  ()          => List()
+
+fun cneLeafFieldsOf(ne: PeNewEnum, root: PsEnum): List<PStmt> => match(asEnumVariant(root.eSpec))
+  (sp: SEnum) if contains(sp.seAllLeaves, ne.leafName) =>
+      forceNth(collectLeafFieldSets(root, List()), indexOfString(sp.seAllLeaves, ne.leafName, 0))
+  ()           => List()
+
+class [final] CneOut(cneFas: List<PFieldArg>, cneGlobals: List<PStmt>,
+                     cneHints: Dict<String, List<Hint>>)
+
+fun cneArgs(fas: List<PFieldArg>, leafFields: List<PStmt>, r, acc: List<PFieldArg>,
+            globals2, hints: Dict<String, List<Hint>>): CneOut =>
+  fold(fas, (acc = acc, globals2 = globals2, hints = hints),
+       (st, x) => cneArgsStep(st, x, leafFields, r))
+    |> (r2) => CneOut(r2.acc, r2.globals2, r2.hints)
+
+fun cneArgsStep(st: (acc: List<PFieldArg>, globals2: List<PStmt>, hints: Dict<String, List<Hint>>),
+                x: PFieldArg, leafFields: List<PStmt>, r) =>
+  compileExpr(x.faValue, r, letTypeOf(letNamed(leafFields, x.faName)))
+  |> (o) => (acc = append(st.acc,
+        PFieldArg(x.faName, o.eoExpr)),
+    globals2 = concat(st.globals2, o.eoGlobals),
+    hints = mergeHints(st.hints, o.eoHints))
+
+fun compileNew(nw: PeNew, r, expected: Spec|None)
+  let ty = compileSpec(nw.newType, r)
+  let arg = compileExpr(nw.newParam, r, paramsTupleOfSpec(ty.soSpec))
+  let out = PeNew(ty.soSpec, arg.eoExpr, nw.penwLine)
+  ret ExprOut(converted(out, expected, r),
+              concat(ty.soGlobals, arg.eoGlobals), arg.eoHints)
+
+fun paramsTupleOfSpec(sp) => match(sp)
+  (t2: STuple) => t2
+  (o: Spec)    => None
+
+fun checkNew(nw: PeNew, r)
+  let sub = union(checkSpec(nw.newType, r), checkExpr(nw.newParam, r, None))
+  if !isEmpty(sub)
+    ret sub
+  ret match(exprType(nw.newParam, r))
+    (tp: STuple) => match(nw.newType)
+      (c2: SClass) => noErrs()
+      (o: Spec)    => oneErr(nw.penwLine, "type must be ClassSpec")
+    ()           => oneErr(nw.penwLine, "parameter expression must be of TupleType")
+
+# A construction builds exactly one variant, so its type is the LEAF — the
+# leaf declaration's own spec (USER RULING 2026-08-24; NewEnumExpression.
+# get_type mirror). Read from the declaration, never from a spec instance in
+# hand (which may be a stale copy).
+# A construction builds exactly one variant, so its TYPE is the leaf's.
+fun typeOfNewEnum(ne: PeNewEnum, r) => match(findEnum(r, ne.rootName))
+  (root: PsEnum) => match(findVariant(root, ne.leafName))
+    (found: VariantAt) => found.vaNode.eSpec
+    ()                 => root.eSpec
+  ()             => None
+
+fun genNew(nw: PeNew, r) => genNewP(nw, r, false)
+
+fun genNewEnum(ne: PeNewEnum, r) => genNewEnumP(ne, r, false)

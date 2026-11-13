@@ -15,7 +15,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 # ── free references ──────────────────────────────────────────────────────────
@@ -629,6 +629,7 @@ fun otAddMissing(acc: OuterTypes, name: String, ty: Spec|None) => match(ty)
   ()          => acc
 
 class [final] HoInside(hiFn: PsFun, hiAcc: HoAcc)
+
 class [final] HoInsideMany(hmFns: List<PsFun>, hmAcc: HoAcc)
 
 # Hoist inside one closure-bound helper; what it sends out joins this level's

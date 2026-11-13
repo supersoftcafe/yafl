@@ -22,7 +22,7 @@ import Bootstrap::Driver
 import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 class [final] Diag(dFails: Set<PErr>, dWarns: Set<PErr>)
@@ -77,7 +77,6 @@ fun isMainFunction(st) => match(st)
 fun retIsBigint(sp: Spec|None) => match(sp)
   (b: SBuiltin) => b.sbName == "bigint"
   ()            => false
-
 
 fun untypedParamErrors(statements: List<PStmt>, r) => hasAnyUntyped(statements)
   ? untypedLoop(statements, r, noErrs())
@@ -135,7 +134,6 @@ fun untypedError(f: PsFun, tgt: PsLet, bodyR,
 fun nthOf<T>(l: List<T>, idx): T|None => head(drop(l, idx))
 
 # ── phase 2: [future] on a global let ───────────────────────────────────────
-
 
 fun futureGlobalErrors(ss: List<PStmt>, acc: Set<PErr>) =>
   fold(ss, acc, futureGlobalErrorsStep)
