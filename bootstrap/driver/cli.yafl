@@ -10,13 +10,11 @@
 # stream on stdin and Python drove it, which is not a compiler. The stage modes
 # the test harness diffs live behind `--stage` (main.yafl), never here.
 #
-# Python 3.14's argparse is mirrored down to its consumption rules, because
-# they decide what a command MEANS: a value is the next word only when that
+# The command line is declared here and read by System::Args, whose rules and
+# text are Python 3.15's argparse's: a value is the next word only when that
 # word reads as an argument; `files` takes the FIRST run of arguments and any
 # later one is unrecognised; long options match by unique prefix; `-Ox`,
-# `-O=x`, `--lib-path=x` carry their value inline; `-hxyz` is a cluster. The
-# usage and help are argparse's too, wrapped and coloured as it would
-# (cli_format.yafl).
+# `-O=x`, `--lib-path=x` carry their value inline; `-hxyz` is a cluster.
 #
 # ONE deliberate difference: Python pipes the C to clang on stdin; the runtime's
 # spawn connects a child's stdin to /dev/null, so the port writes the C to a
@@ -25,6 +23,7 @@
 namespace Bootstrap::Driver
 
 import System
+import System::Args
 import System::Containers
 import System::IO
 
@@ -38,266 +37,81 @@ import Bootstrap::Types
 # ── entry ────────────────────────────────────────────────────────────────────
 
 fun cliMain(argv: List<String>): Int
-  let f = cliFormat(progName())
-  ret match(scanArgs(classifyAll(argv, List()), freshScan()))
-    (help: CliHelp)   => exitWithOut(helpText(f), 0)
-    (err: CliError)   => usageError(f, err.ceWhy)
-    (s: CliScan)      => match(resolveEnabledWarnings(s.csWarns))
-      (werr: WrErr) => usageError(f, werr.wrMessage)
-      (ok: WrOk)    => cliCompile(s, ok.wrEnabled)
+  let line = commandLine(progName())
+  ret match(parse(line, argv, freshScan()))
+    (e: ArgError) => usageError(line, e)
+    (s: CliScan)  => s.csHelp
+      ? exitWithOut(help(line, terminalWidth(), wantColour(false)), 0)
+      : match(resolveEnabledWarnings(s.csWarns))
+        (werr: WrErr) => usageError(line, Invalid(werr.wrMessage))
+        (ok: WrOk)    => cliCompile(s, ok.wrEnabled)
 
-fun usageError(f: CliFormat, why: String): Int
-  ret exitWithErr(usageText(f) + f.cfProg + ": error: " + why + "\n", 2)
+fun [impure] usageError(line: Args<CliScan>, e: ArgError): Int
+  ret exitWithErr(message(line, e, terminalWidth(), wantColour(true)), 2)
 
 fun progName() => baseName(argv0())
 
 
-# ── argument scanning (Python 3.14's argparse) ───────────────────────────────
-# Two passes, as argparse makes them. The first classifies every word — an
-# argument, an option, or the `--` that ends the options — without consuming
-# anything. The second consumes: an option takes its value only from a word
-# classified as an argument, and `files` takes a run of arguments.
-#
-# The scan state. Repeated -O/-a/-c/-o: the last one wins; -L and -W append.
-# `csFilesTaken`: `files` has taken its run.
+# ── the command line (main.py's ArgumentParser) ──────────────────────────────
+# What it asked for. Repeated -O/-a/-c/-o: the last one wins; -L and -W append.
 
-class [final] CliScan(csOpt: Int, csAsm: String|None, csC: String|None,
+class [final] CliScan(csHelp: Bool, csOpt: Int, csAsm: String|None, csC: String|None,
                       csOut: String|None, csLibs: List<String>,
                       csProfile: Bool, csWarns: List<String>, csTest: Bool,
-                      csThreshold: Int,
-                      csFiles: List<String>, csExtras: List<String>,
-                      csFilesTaken: Bool)
+                      csThreshold: Int, csFiles: List<String>)
 
-fun freshScan() => CliScan(0, None, None, None, List(), false, List(), false,
-                           Bootstrap::Lower::Ir::inlCutoffComplexity(),
-                           List(), List(), false)
+fun freshScan() => CliScan(false, 0, None, None, None, List(), false, List(), false,
+                           Bootstrap::Lower::Ir::inlCutoffComplexity(), List())
 
-# `-h` anywhere argparse reaches it: print the help, exit 0.
-class [final] CliHelp(chShown: Bool)
-class [final] CliError(ceWhy: String)
+# The arguments, in the order main.py declares them (argparse adds -h first).
+# In short lists joined together, not one pipeline of appends: a pipeline this
+# long costs either compiler exponentially more per stage (#119).
+fun commandLine(prog: String): Args<CliScan> => Args(prog, "My compiler-like tool",
+  concat(concat(outputArguments(), buildArguments()), inputArguments()))
 
-# ── pass 1: classify (`_parse_optional`) ─────────────────────────────────────
+fun outputArguments(): List<Arg<CliScan>> => concat(
+  List<Arg<CliScan>>(
+    Stop(List("-h", "--help"), "show this help message and exit",
+         (s: CliScan) => with s(csHelp = true)),
+    Value(List("-O"), "LEVEL", "Optimisation level", setLevel),
+    Value(List("-a"), "OUTFILE", "Assembly output",
+          (s: CliScan, v: String) => with s(csAsm = v))),
+  List<Arg<CliScan>>(
+    Value(List("-c"), "OUTFILE", "C output",
+          (s: CliScan, v: String) => with s(csC = v)),
+    Value(List("-o"), "OUTFILE", "Output file name",
+          (s: CliScan, v: String) => with s(csOut = v))))
 
-# One reading of an option word: the action it names (None: no such option),
-# the option string, and its explicit argument with the separator that
-# introduced it — `=`, or "" for the text attached to a short option.
-class [final] OptRead(orAction: String|None, orString: String,
-                      orSep: String|None, orExplicit: String|None)
+fun buildArguments(): List<Arg<CliScan>> => concat(
+  List<Arg<CliScan>>(
+    Value(List("-L", "--lib-path"), "DIR", "Additional library search path (repeatable)",
+          (s: CliScan, v: String) => with s(csLibs = append(s.csLibs, v))),
+    Flag(List("--profile"),
+         "Instrument for profiling; the binary writes callgrind.out.<pid> at exit",
+         (s: CliScan) => with s(csProfile = true)),
+    Value(List("-W"), "WARNING", "Enable/disable a warning: -Wname, -Wall, -Wno-name",
+          (s: CliScan, v: String) => with s(csWarns = append(s.csWarns, v)))),
+  List<Arg<CliScan>>(
+    Flag(List("--test"), "Build a unit-test binary from the [test] functions",
+         (s: CliScan) => with s(csTest = true)),
+    Value(List("--inline-threshold"), "OPS",
+          "Inline functions of fewer than OPS ops at -O2 and above (default 5)",
+          setThreshold)))
 
-# An argument, the first `--`, or an option word with every reading of it
-# (more than one is an ambiguous prefix).
-enum CliWord
-  enum CwArg(cwText: String)
-  enum CwSep(cwSepText: String)
-  enum CwOpt(cwRaw: String, cwReads: List<OptRead>)
+fun inputArguments(): List<Arg<CliScan>> => List<Arg<CliScan>>(
+  Positional("files", AtLeastOne(), "Input .yafl file(s), or a project directory",
+             (s: CliScan, vs: List<String>) => with s(csFiles = vs)))
 
-# Every word after the first `--` is an argument, whatever it looks like.
-# Every word after the first `--` is a plain argument.
-fun classifyAll(ws: List<String>, b: List<CliWord>): List<CliWord> =>
-  fold(ws, (words = b, raw = false),
-       (st, w) =>
-         st.raw ? (words = append(st.words, CwArg(w)), raw = true)
-         : w == "--" ? (words = append(st.words, CwSep(w)), raw = true)
-         : (words = append(st.words, classifyWord(w)), raw = false)).words
+# `choices=["0", "1", "2", "3"]`
+fun setLevel(s: CliScan, v: String): CliScan|String
+  ret v == "0" || v == "1" || v == "2" || v == "3"
+    ? with s(csOpt = parseInt(v) ?? 0)
+    : "invalid choice: " + pyRepr(v) + " (choose from '0', '1', '2', '3')"
 
-# An option is a word with a leading `-` that names one (whole, before `=`, or
-# by prefix); failing that, a word that reads as a negative number or holds a
-# space is an argument, and anything else is an unknown option.
-fun classifyWord(w: String): CliWord
-  if w == "" || byteAt(w, 0) != '-'
-    ret CwArg(w)
-  if isOptionString(w)
-    ret CwOpt(w, list1(OptRead(actionOf(w), w, None, None)))
-  if length(w) == 1
-    ret CwArg(w)
-  let eq = findByte(w, '=', 0)
-  if eq >= 0 && isOptionString(slice(w, 0, eq))
-    ret CwOpt(w, list1(OptRead(actionOf(slice(w, 0, eq)), slice(w, 0, eq), "=",
-                               slice(w, eq + 1, length(w)))))
-  let reads = optionReads(w)
-  if !isEmpty(reads)
-    ret CwOpt(w, reads)
-  if looksNegative(w) || findByte(w, ' ', 0) >= 0
-    ret CwArg(w)
-  ret CwOpt(w, list1(OptRead(None, w, None, None)))
-
-# `_get_option_tuples`. A `--` word reads as every long option its text (before
-# any `=`) is a prefix of. A `-x…` word reads as the option `-x` exactly, the
-# rest of the word attached, and as any option its text prefixes.
-fun optionReads(w: String): List<OptRead>
-  let eq = findByte(w, '=', 0)
-  let prefix = eq < 0 ? w : slice(w, 0, eq)
-  let sep: String|None = eq < 0 ? None : "="
-  let explicit: String|None = eq < 0 ? None : slice(w, eq + 1, length(w))
-  let short = slice(w, 0, 2)
-  ret byteAt(w, 1) == '-'
-    ? map(filter(optionStrings(), (o: String) => startsWith(o, prefix)),
-          (o: String) => OptRead(actionOf(o), o, sep, explicit))
-    : map(filter(optionStrings(), (o: String) => o == short || startsWith(o, prefix)),
-          (o: String) => o == short
-            ? OptRead(actionOf(o), o, "", slice(w, 2, length(w)))
-            : OptRead(actionOf(o), o, sep, explicit))
-
-# argparse's `-\.?\d`, at the start of the word.
-fun looksNegative(w: String) => isAsciiDigit(byteAt(w, 1))
-  || (byteAt(w, 1) == '.' && length(w) > 2 && isAsciiDigit(byteAt(w, 2)))
-
-fun isAsciiDigit(c: Int32) => c >= '0' && c <= '9'
-
-# The option strings, in the order main.py declares them (argparse adds -h
-# first). Ambiguity messages list matches in this order.
-fun optionStrings() => prepend("-h", prepend("--help", prepend("-O", prepend("-a",
-                       prepend("-c", prepend("-o", prepend("-L", prepend("--lib-path",
-                       prepend("--profile", prepend("-W", prepend("--test",
-                       list1("--inline-threshold"))))))))))))
-
-fun isOptionString(w: String) => contains(optionStrings(), w)
-
-# An option string's action, named by its first option string.
-fun actionOf(o: String) => o == "--help" ? "-h" : o == "--lib-path" ? "-L" : o
-
-fun optionAction(w: String): String|None => isOptionString(w) ? actionOf(w) : None
-
-fun takesValue(a: String) => a == "-O" || a == "-a" || a == "-c" || a == "-o"
-  || a == "-L" || a == "-W" || a == "--inline-threshold"
-
-# argparse names an action by all its option strings.
-fun displayName(a: String) => a == "-L" ? "-L/--lib-path" : a == "-h" ? "-h/--help" : a
-
-# ── pass 2: consume (`consume_optional`, `consume_positionals`) ──────────────
-
-class [final] CliStep(stRest: List<CliWord>, stScan: CliScan)
-# An action to take, with its argument (None for a flag).
-class [final] CliTaken(ctAction: String, ctValue: String|None)
-# A run of words up to the next option.
-class [final] CliRun(crWords: List<CliWord>, crRest: List<CliWord>)
-
-# A cursor over the words: an option may consume the next word as its value.
-fun scanArgs(ws: List<CliWord>, s: CliScan): CliScan|CliHelp|CliError => match(head(ws))
-  (o: CwOpt)   => match(consumeOption(o, dropOne(ws), s))
-    (st: CliStep)  => scanArgs(st.stRest, st.stScan)
-    (h: CliHelp)   => h
-    (e: CliError)  => e
-  (w: CliWord) => runOf(ws, List())
-    |> (r: CliRun) => scanArgs(r.crRest, positionals(s, r.crWords))
-  ()           => finished(s)
-
-# The words up to the next option, and the rest.
-fun runOf(ws: List<CliWord>, b: List<CliWord>): CliRun => match(findIndex(ws, (w) => w is CwOpt))
-  (k: Int) => CliRun(concat(b, take(ws, k)), drop(ws, k))
-  ()       => CliRun(concat(b, ws), List())
-
-# `files` (nargs '+') takes a whole run holding at least one argument, the
-# first `--` dropped from it. A run it cannot take, or any run once it has
-# taken one, is left over — `--` and all.
-fun positionals(s: CliScan, words: List<CliWord>): CliScan
-  ret !s.csFilesTaken && any(words, (w: CliWord) => isArgWord(w))
-    ? with s(csFiles = map(filter(words, (w: CliWord) => isArgWord(w)),
-                           (w: CliWord) => wordText(w)),
-             csFilesTaken = true)
-    : with s(csExtras = concat(s.csExtras, map(words, (w: CliWord) => wordText(w))))
-
-fun isArgWord(w: CliWord) => match(w)
-  (a: CwArg)    => true
-  (o: CliWord)  => false
-
-fun wordText(w: CliWord): String => match(w)
-  (a: CwArg)  => a.cwText
-  (p: CwSep)  => p.cwSepText
-  (o: CwOpt)  => o.cwRaw
-
-# One option word. An ambiguous prefix is an error; an unknown option is left
-# over.
-fun consumeOption(o: CwOpt, rest: List<CliWord>, s: CliScan): CliStep|CliHelp|CliError
-  if sizeAtLeast(o.cwReads, 2)
-    ret CliError("ambiguous option: " + o.cwRaw + " could match "
-                 + join(map(o.cwReads, (r: OptRead) => r.orString), ", "))
-  ret match(head(o.cwReads))
-    (r: OptRead) => match(r.orAction)
-      (a: String) => readOption(a, r.orString, r.orSep, r.orExplicit, rest, List(), s)
-      ()          => CliStep(rest, with s(csExtras = concat(s.csExtras, list1(o.cwRaw))))
-    ()           => CliStep(rest, s)   # unreachable: every option word has a reading
-
-# The loop of consume_optional. A value-taking option takes its explicit
-# argument, or else the next word if that is an argument. A single-dash flag
-# with text attached (`-hxyz`) is a cluster, read one character at a time.
-# The actions run only once the whole word is read, so an error anywhere in
-# the word wins over a `-h` earlier in it.
-fun readOption(a: String, opt: String, sep: String|None, explicit: String|None,
-               rest: List<CliWord>, taken: List<CliTaken>,
-               s: CliScan): CliStep|CliHelp|CliError => match(explicit)
-  (x: String) => takesValue(a)
-    ? takeAll(concat(taken, list1(CliTaken(a, x))), rest, s)
-    : byteAt(opt, 1) != '-' && x != ""
-      ? clusterNext(a, sep, x, rest, concat(taken, list1(CliTaken(a, None))), s)
-      : ignored(a, x)
-  ()          => !takesValue(a)
-    ? takeAll(concat(taken, list1(CliTaken(a, None))), rest, s)
-    : match(head(rest))
-      (v: CwArg)   => takeAll(concat(taken, list1(CliTaken(a, v.cwText))), dropOne(rest), s)
-      (w: CliWord) => expectedOne(a)
-      ()           => expectedOne(a)
-
-# The next flag of a cluster: `-` and the first attached character. A cluster
-# written with `=` (`-h=x`), or whose next character is a `-`, is an error.
-# A character naming no option ends the cluster, the rest left over.
-fun clusterNext(a: String, sep: String|None, x: String, rest: List<CliWord>,
-                taken: List<CliTaken>, s: CliScan): CliStep|CliHelp|CliError
-  if (sep ?? "") != "" || byteAt(x, 0) == '-'
-    ret ignored(a, x)
-  let next = "-" + slice(x, 0, 1)
-  let tail = slice(x, 1, length(x))
-  ret match(optionAction(next))
-    (a2: String) => tail == ""
-      ? readOption(a2, next, None, None, rest, taken, s)
-      : byteAt(tail, 0) == '='
-        ? readOption(a2, next, "=", slice(tail, 1, length(tail)), rest, taken, s)
-        : readOption(a2, next, "", tail, rest, taken, s)
-    ()           => takeAll(taken, rest, with s(csExtras = concat(s.csExtras, list1("-" + x))))
-
-fun ignored(a: String, x: String) => CliError("argument " + displayName(a)
-  + ": ignored explicit argument " + pyRepr(x))
-
-fun expectedOne(a: String) => CliError("argument " + displayName(a) + ": expected one argument")
-
-# Then the word's actions run, in order: `-h` prints the help and stops there.
-fun takeAll(ts: List<CliTaken>, rest: List<CliWord>, s: CliScan): CliStep|CliHelp|CliError =>
-  match(foldWhile<CliTaken, CliScan|CliHelp|CliError>(ts, s, takeAction, (acc) => acc is CliScan))
-    (s2: CliScan) => CliStep(rest, s2)
-    (h: CliHelp)  => h
-    (e: CliError) => e
-
-fun takeAction(acc: CliScan|CliHelp|CliError, t: CliTaken): CliScan|CliHelp|CliError => match(acc)
-  (s: CliScan) => t.ctAction == "-h" ? CliHelp(true) : take(s, t)
-  (o)          => acc
-
-fun take(s: CliScan, t: CliTaken): CliScan|CliError
-  let a = t.ctAction
-  let v = t.ctValue ?? ""
-  if a == "-O"
-    ret v == "0" || v == "1" || v == "2" || v == "3"
-      ? with s(csOpt = parseInt(v) ?? 0)
-      : CliError("argument -O: invalid choice: " + pyRepr(v)
-                 + " (choose from '0', '1', '2', '3')")
-  if a == "--inline-threshold"
-    ret match(pyInt(v))
-      (n: Int) => with s(csThreshold = n)
-      ()       => CliError("argument --inline-threshold: invalid int value: " + pyRepr(v))
-  ret a == "-a" ? with s(csAsm = v)
-    : a == "-c" ? with s(csC = v)
-    : a == "-o" ? with s(csOut = v)
-    : a == "-L" ? with s(csLibs = concat(s.csLibs, list1(v)))
-    : a == "-W" ? with s(csWarns = concat(s.csWarns, list1(v)))
-    : a == "--profile" ? with s(csProfile = true)
-    : with s(csTest = true)
-
-# After the last word: the required `files`, then anything left over.
-fun finished(s: CliScan): CliScan|CliError
-  if !s.csFilesTaken
-    ret CliError("the following arguments are required: files")
-  if !isEmpty(s.csExtras)
-    ret CliError("unrecognized arguments: " + join(s.csExtras, " "))
-  ret s
+# `type=int`
+fun setThreshold(s: CliScan, v: String): CliScan|String => match(pyInt(v))
+  (n: Int) => with s(csThreshold = n)
+  ()       => "invalid int value: " + pyRepr(v)
 
 
 # ── compile (main.py's body) ─────────────────────────────────────────────────

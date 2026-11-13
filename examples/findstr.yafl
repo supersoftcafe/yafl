@@ -1,6 +1,6 @@
 # findstr — parallel substring search over a directory tree.
 #
-#   findstr <substring> [path]      (path defaults to ".")
+#   findstr [-h] substring [path]      (path defaults to ".")
 #
 # Walks the tree under <path>, and prints every line of every file that
 # contains <substring> as `file:lineNo:line`. Plain substring match — no regex.
@@ -16,6 +16,7 @@
 # their results in walk order.
 #
 import System
+import System::Args
 import System::IO
 import System::Containers
 
@@ -145,18 +146,31 @@ fun writeResults(results: List<String|FileError>): System::Int where Show<IOErro
       || outClosed !is None || errClosed !is None ? 1 : 0
 
 
+# ── command line ──────────────────────────────────────────────────────────────
+
+# What the command line asked for.
+class [final] Options(help: Bool, needle: String, path: String)
+
+fun commandLine() => Args("findstr", "Print every line of every file under a path that holds a substring.",
+  List<Arg<Options>>(
+    Stop(List("-h", "--help"), "show this help message and exit",
+         (o: Options) => with o(help = true)),
+    Positional("substring", ExactlyOne(), "the text to look for",
+               (o: Options, vs: List<String>) => with o(needle = head(vs) ?? "")),
+    Positional("path", AtMostOne(), "the file or directory to search (default .)",
+               (o: Options, vs: List<String>) => with o(path = head(vs) ?? "."))))
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 fun main(): System::Int
-  fun usage(): System::Int
-    println("usage: findstr <substring> [path]")
-    ret 2
-  fun run(needle: String, rest: List<String>): System::Int
-    fun pathArg(): String
-      ret match(head<String>(rest))
-        (p: String) => p
-        (e: None)   => "."
-    ret writeResults(searchFiles(needle, gatherFiles(pathArg())))
-  ret match(head<String>(args()))
-    (needle: String) => run(needle, dropOne<String>(args()))
-    (e: None)        => usage()
+  # 2 for the usage error — or 1 if even that could not be written.
+  fun wrong(e: ArgError): System::Int
+    let w = writeAll(stderr(), message(commandLine(), e, 80, false))
+    ret w.io.close() !is None || w.v is IOError ? 1 : 2
+  fun showHelp(): System::Int
+    print(help(commandLine(), 80, false))
+    ret 0
+  ret match(parse(commandLine(), args(), Options(false, "", ".")))
+    (e: ArgError) => wrong(e)
+    (o: Options)  => o.help ? showHelp() : writeResults(searchFiles(o.needle, gatherFiles(o.path)))

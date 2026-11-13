@@ -1,0 +1,386 @@
+# System::Args::Internal — reading the words of a command line against its
+# declared arguments, by the consumption rules of Python 3.15's argparse.
+#
+# A namespace of its own so that a program importing System::Args sees the
+# declaration types, `parse`, `message` and `help`, and none of this.
+#
+# Nothing here knows the caller's record: the scan turns the words into the
+# EVENTS of the parse, in order — an argument took these values; the command
+# line is wrong here — and `System::Args::parse` applies them.
+#
+# The rules decide what a command MEANS: a value is the next word only when
+# that word reads as a plain word; positionals take runs of plain words; long
+# options match by unique prefix; `-Ox`, `-O=x`, `--lib-path=x` carry their
+# value inline; `-hxyz` is a cluster.
+
+namespace System::Args::Internal
+
+import System
+import System::Args
+import System::Containers
+
+
+# ── the declared arguments, without the caller's record ──────────────────────
+
+# `dMetavar`: the label of the value an option takes; None for a flag.
+# `dCount`: the words a positional takes; None for an option.
+class [final] _Decl(dNames: List<String>, dMetavar: String|None, dHelp: String,
+                   dCount: Count|None)
+
+# Every public function reads the declaration through here, so a declaration
+# that cannot be read ends the program before any of them uses it.
+fun _declared<S>(spec: Args<S>): List<_Decl> => _sound(map(spec.args, (a: Arg<S>) => _declaredArg(a)))
+
+fun _declaredArg<S>(a: Arg<S>): _Decl => match(a)
+  (f: Flag<S>)       => _Decl(f.names, None, f.help, None)
+  (p: Stop<S>)       => _Decl(p.names, None, p.help, None)
+  (v: Value<S>)      => _Decl(v.names, v.metavar, v.help, None)
+  (p: Positional<S>) => _Decl(List(p.name), None, p.help, p.count)
+
+fun _isPositional(d: _Decl): Bool => !(d.dCount is None)
+
+# Whether a positional must have a word.
+fun _needsWord(c: Count): Bool => match(c)
+  (o: ExactlyOne) => true
+  (o: AtLeastOne) => true
+  (o: Count)      => false
+
+# Whether a positional that has `got` these words would take another.
+fun _takesMore(c: Count, got: List<String>): Bool => match(c)
+  (o: ExactlyOne) => isEmpty(got)
+  (o: AtMostOne)  => isEmpty(got)
+  (o: Count)      => true
+
+# ── a declaration that cannot be read ────────────────────────────────────────
+# A mistake in the PROGRAM, not in its command line: no user could cause it or
+# do anything about it, so it ends the process, naming it, and is never an
+# ArgError — whose message would tell the user they had typed something wrong.
+
+fun _sound(ds: List<_Decl>): List<_Decl> => match(_mistake(ds))
+  (why: String) => abort<List<_Decl>>("System::Args: " + why)
+  ()            => ds
+
+# The first mistake, in declaration order: in an argument's own names, then a
+# name that an earlier argument already has.
+fun _mistake(ds: List<_Decl>): String|None
+  let own = fold<_Decl, String|None>(ds, None, (found, d) => found ?? _ownMistake(d))
+  ret own ?? _repeatedName(flatMap(filter(ds, (d: _Decl) => !_isPositional(d)), (d: _Decl) => d.dNames))
+
+fun _ownMistake(d: _Decl): String|None => match(d.dCount)
+  (c: Count) => startsWith(_displayName(d), "-")
+    ? "positional '" + _displayName(d) + "' is named like an option"
+    : None
+  ()         => isEmpty(d.dNames)
+    ? "an option is declared with no names"
+    : fold<String, String|None>(d.dNames, None, (found, n) => found ?? _optionNameMistake(n))
+
+# argparse's rule: an option string starts with `-` and is not dashes alone.
+fun _optionNameMistake(n: String): String|None
+  if !startsWith(n, "-")
+    ret "option string '" + n + "' does not start with '-'"
+  ret skipAny(n, "-", 0) >= length(n) ? "option string '" + n + "' is dashes alone" : None
+
+fun _repeatedName(names: List<String>): String|None =>
+  fold<String, (seen: Set<String>, found: String|None)>(names, (seen = Set<String>(), found = None),
+       (st, n) => (seen = add(st.seen, n), found = st.found ?? _repeated(st.seen, n)))
+    |> (st) => st.found
+
+fun _repeated(seen: Set<String>, n: String): String|None =>
+  contains(seen, n) ? "option string '" + n + "' is declared twice" : None
+
+# argparse names an argument by all its option strings.
+fun _displayName(d: _Decl): String => join(d.dNames, "/")
+
+
+# ── the events of a parse ────────────────────────────────────────────────────
+
+# `tkIndex`: which declared argument, by position. `tkValues`: none for a
+# flag, one for an option's value, a positional's words.
+enum _Event
+  enum _Took(tkIndex: Int, tkArgument: String, tkValues: List<String>)
+  enum _Failed(fdWhy: ArgError)
+
+# The events of `argv` against `ds`. A Failed is always the last.
+fun _scan(ds: List<_Decl>, argv: List<String>): List<_Event>
+  let t = _optTable(ds)
+  ret _scanWords(t, _classifyAll(t, argv), _ScanState(List(), List(), _waitingPositionals(ds)))
+
+
+# ── the option strings ───────────────────────────────────────────────────────
+
+# One option string and the argument it gives.
+class [final] _Opt(opString: String, opIndex: Int, opValued: Bool, opArgument: String)
+
+# In declaration order — ambiguity messages list matches in it — and by string.
+# `otNegative`: some option string itself reads as a negative number, so a
+# word that reads as one is an option too (`_has_negative_number_optionals`).
+class [final] _OptTable(otInOrder: List<_Opt>, otByString: Dict<String, _Opt>,
+                        otNegative: Bool)
+
+fun _optTable(ds: List<_Decl>): _OptTable
+  let inOrder = fold(ds, (i = 0, out = List<_Opt>()),
+                     (st, d) => (i = st.i + 1,
+                                 out = _isPositional(d) ? st.out : concat(st.out, _optsOf(d, st.i)))).out
+  ret _OptTable(inOrder, fold(inOrder, Dict<String, _Opt>(),
+                              (m, o) => contains(m, o.opString) ? m : put(m, o.opString, o)),
+                any(inOrder, (o: _Opt) => _looksNegative(o.opString)))
+
+fun _optsOf(d: _Decl, index: Int): List<_Opt> =>
+  map(d.dNames, (n: String) => _Opt(n, index, !(d.dMetavar is None), _displayName(d)))
+
+# A positional still to be filled.
+class [final] _Waiting(wtIndex: Int, wtName: String, wtCount: Count)
+
+fun _waitingPositionals(ds: List<_Decl>): List<_Waiting> =>
+  fold(ds, (i = 0, out = List<_Waiting>()),
+       (st, d) => (i = st.i + 1, out = concat(st.out, _waitingOf(d, st.i)))).out
+
+fun _waitingOf(d: _Decl, index: Int): List<_Waiting> => match(d.dCount)
+  (c: Count) => List(_Waiting(index, _displayName(d), c))
+  ()         => List()
+
+
+# ── pass 1: classify (`_parse_optional`) ─────────────────────────────────────
+# Two passes, as argparse makes them. The first classifies every word — a
+# plain word, an option, or the `--` that ends the options — without consuming
+# anything. The second consumes: an option takes its value only from a word
+# classified as plain, and the positionals take runs of plain words.
+
+# One reading of an option word: the option it names (None: no such option),
+# the option string, and its explicit value with the separator that introduced
+# it — `=`, or "" for the text attached to a short option.
+class [final] _Read(rdOpt: _Opt|None, rdString: String,
+                   rdSep: String|None, rdExplicit: String|None)
+
+# A plain word, the first `--`, or an option word with every reading of it
+# (more than one is an ambiguous prefix).
+enum _Word
+  enum _Plain(plText: String)
+  enum _Separator(spText: String)
+  enum _Option(opRaw: String, opReads: List<_Read>)
+
+# Every word after the first `--` is a plain word, whatever it looks like.
+fun _classifyAll(t: _OptTable, ws: List<String>): List<_Word> =>
+  fold(ws, (words = List<_Word>(), raw = false),
+       (st, w) =>
+         st.raw ? (words = append(st.words, _Plain(w)), raw = true)
+         : w == "--" ? (words = append(st.words, _Separator(w)), raw = true)
+         : (words = append(st.words, _classifyWord(t, w)), raw = false)).words
+
+# An option is a word with a leading `-` that names one (whole, before `=`, or
+# by prefix); failing that, a word that reads as a negative number (unless an
+# option does too) or holds a space is a plain word, and anything else is an
+# unknown option.
+fun _classifyWord(t: _OptTable, w: String): _Word
+  if w == "" || byteAt(w, 0) != '-'
+    ret _Plain(w)
+  if contains(t.otByString, w)
+    ret _Option(w, List(_Read(get(t.otByString, w), w, None, None)))
+  if length(w) == 1
+    ret _Plain(w)
+  let eq = findByte(w, '=', 0)
+  if eq >= 0 && contains(t.otByString, slice(w, 0, eq))
+    ret _Option(w, List(_Read(get(t.otByString, slice(w, 0, eq)), slice(w, 0, eq), "=",
+                            slice(w, eq + 1, length(w)))))
+  let reads = _optionReads(t, w)
+  if !isEmpty(reads)
+    ret _Option(w, reads)
+  if (_looksNegative(w) && !t.otNegative) || findByte(w, ' ', 0) >= 0
+    ret _Plain(w)
+  ret _Option(w, List(_Read(None, w, None, None)))
+
+# `_get_option_tuples`. A `--` word reads as every long option its text (before
+# any `=`) is a prefix of. A `-x…` word reads as the option `-x` exactly, the
+# rest of the word attached, and as any option its text prefixes.
+fun _optionReads(t: _OptTable, w: String): List<_Read>
+  let eq = findByte(w, '=', 0)
+  let prefix = eq < 0 ? w : slice(w, 0, eq)
+  let sep: String|None = eq < 0 ? None : "="
+  let explicit: String|None = eq < 0 ? None : slice(w, eq + 1, length(w))
+  let short = slice(w, 0, 2)
+  ret byteAt(w, 1) == '-'
+    ? map(filter(t.otInOrder, (o: _Opt) => startsWith(o.opString, prefix)),
+          (o: _Opt) => _Read(o, o.opString, sep, explicit))
+    : map(filter(t.otInOrder, (o: _Opt) => o.opString == short || startsWith(o.opString, prefix)),
+          (o: _Opt) => o.opString == short
+            ? _Read(o, o.opString, "", slice(w, 2, length(w)))
+            : _Read(o, o.opString, sep, explicit))
+
+# argparse's `-\.?\d`, at the start of the word.
+fun _looksNegative(w: String): Bool => length(w) > 1 && (_isAsciiDigit(byteAt(w, 1))
+  || (byteAt(w, 1) == '.' && length(w) > 2 && _isAsciiDigit(byteAt(w, 2))))
+
+fun _isAsciiDigit(c: Int32): Bool => c >= '0' && c <= '9'
+
+
+# ── pass 2: consume (`consume_optional`, `consume_positionals`) ──────────────
+
+# The scan so far: the events, the words nothing has taken, and the
+# positionals still waiting for a run of plain words.
+class [final] _ScanState(ssEvents: List<_Event>, ssExtras: List<String>,
+                        ssWaiting: List<_Waiting>)
+
+class [final] _Step(stRest: List<_Word>, stState: _ScanState)
+# An option to take, with its value (None for a flag).
+class [final] _Taken(tnOpt: _Opt, tnValue: String|None)
+# A run of words up to the next option.
+class [final] _Run(rnWords: List<_Word>, rnRest: List<_Word>)
+
+# A cursor over the words: an option may consume the next word as its value.
+fun _scanWords(t: _OptTable, ws: List<_Word>, s: _ScanState): List<_Event> => match(head(ws))
+  (o: _Option) => match(_consumeOption(t, o, dropOne(ws), s))
+    (st: _Step)   => _scanWords(t, st.stRest, st.stState)
+    (e: ArgError) => append(s.ssEvents, _Failed(e))
+  (w: _Word)   => _runOf(ws)
+    |> (r: _Run) => _scanWords(t, r.rnRest, _positionals(s, r.rnWords))
+  ()           => _finished(s)
+
+# The words up to the next option, and the rest.
+fun _runOf(ws: List<_Word>): _Run => match(findIndex(ws, (w) => w is _Option))
+  (k: Int) => _Run(take(ws, k), drop(ws, k))
+  ()       => _Run(ws, List())
+
+# A run goes to the positionals still waiting (`consume_positionals`). They
+# take its plain words in order, and with them the `--`, which is dropped,
+# when it comes before a word they take or straight after the last one. Those
+# that end up with no words, after the last that got some, go on waiting.
+# What they do not take is left over, `--` and all: the whole run when none
+# is waiting or the first of them must have a word the run does not hold,
+# and otherwise every word from the first they leave.
+fun _positionals(s: _ScanState, words: List<_Word>): _ScanState
+  let plain = flatMap(words, (w: _Word) => _plainText(w))
+  let fit = _fillable(s.ssWaiting, plain)
+  if isEmpty(fit.filled)
+    ret with s(ssExtras = concat(s.ssExtras, map(words, (w: _Word) => _wordText(w))))
+  let dealt = _shared(fit.filled, plain, fit.spare)
+  let taken = flatMap(dealt, (sh: _Share) => sh.shWords)
+  ret with s(ssEvents = concat(s.ssEvents, flatMap(dealt, (sh: _Share) => _tookWords(sh))),
+             ssExtras = concat(s.ssExtras, map(_leftOver(words, taken), (w: _Word) => _wordText(w))),
+             ssWaiting = drop(s.ssWaiting, _served(dealt)))
+
+# The words of a run from the first plain word that was not taken.
+fun [tail] _leftOver(words: List<_Word>, taken: List<String>): List<_Word> => match(head(words))
+  (p: _Plain) => isEmpty(taken) ? words : _leftOver(dropOne(words), dropOne(taken))
+  (w: _Word)  => _leftOver(dropOne(words), taken)
+  ()          => words
+
+# As many of the waiting positionals, from the first, as the words can fill —
+# one word set aside for each that must have one — and the words to `spare`
+# once those are set aside.
+fun _fillable(waiting: List<_Waiting>, plain: List<String>): (filled: List<_Waiting>, spare: List<String>) =>
+  foldWhile(waiting, (filled = List<_Waiting>(), spare = plain, going = true),
+            (st, p) => !_needsWord(p.wtCount)
+              ? (filled = append(st.filled, p), spare = st.spare, going = true)
+              : isEmpty(st.spare)
+                ? (filled = st.filled, spare = st.spare, going = false)
+                : (filled = append(st.filled, p), spare = dropOne(st.spare), going = true),
+            (st) => st.going)
+    |> (st) => (filled = st.filled, spare = st.spare)
+
+# What a positional gets of a run.
+class [final] _Share(shFor: _Waiting, shWords: List<String>)
+
+# The words of a run dealt among the positionals it fills, in order: each
+# takes the word it must have, then as many of the spare ones as its count
+# allows.
+fun _shared(filled: List<_Waiting>, plain: List<String>, spare: List<String>): List<_Share> =>
+  fold(filled, (shares = List<_Share>(), words = plain, spare = spare),
+       (st, p) => _share(p.wtCount, st.words, st.spare)
+         |> (d) => (shares = append(st.shares, _Share(p, d.got)), words = d.words, spare = d.spare))
+    |> (st) => st.shares
+
+fun _share(c: Count, words: List<String>,
+           spare: List<String>): (got: List<String>, words: List<String>, spare: List<String>) =>
+  _needsWord(c) ? _spared(c, takeOne(words), dropOne(words), spare)
+                : _spared(c, List(), words, spare)
+
+# One spare word at a time, for as long as there is one and it is wanted.
+fun [tail] _spared(c: Count, got: List<String>, words: List<String>,
+                   spare: List<String>): (got: List<String>, words: List<String>, spare: List<String>)
+  if isEmpty(spare) || !_takesMore(c, got)
+    ret (got = got, words = words, spare = spare)
+  ret match(head(words))
+    (w: String) => _spared(c, append(got, w), dropOne(words), dropOne(spare))
+    ()          => (got = got, words = words, spare = spare)
+
+# How many of the positionals a run filled are done with: all up to the last
+# that got a word.
+fun _served(shares: List<_Share>): Int =>
+  fold(shares, (i = 0, done = 0),
+       (st, sh) => (i = st.i + 1, done = isEmpty(sh.shWords) ? st.done : st.i + 1)).done
+
+# A positional that got no words takes nothing.
+fun _tookWords(sh: _Share): List<_Event> => isEmpty(sh.shWords)
+  ? List()
+  : List(_Took(sh.shFor.wtIndex, sh.shFor.wtName, sh.shWords))
+
+fun _plainText(w: _Word): List<String> => match(w)
+  (p: _Plain) => List(p.plText)
+  (o: _Word)  => List()
+
+fun _wordText(w: _Word): String => match(w)
+  (p: _Plain)     => p.plText
+  (s: _Separator) => s.spText
+  (o: _Option)    => o.opRaw
+
+# One option word. An ambiguous prefix is an error; an unknown option is left
+# over.
+fun _consumeOption(t: _OptTable, o: _Option, rest: List<_Word>, s: _ScanState): _Step|ArgError
+  if sizeAtLeast(o.opReads, 2)
+    ret AmbiguousOption(o.opRaw, map(o.opReads, (r: _Read) => r.rdString))
+  ret match(head(o.opReads))
+    (r: _Read) => match(r.rdOpt)
+      (a: _Opt) => _readOption(t, a, r.rdString, r.rdSep, r.rdExplicit, rest, List(), s)
+      ()        => _Step(rest, with s(ssExtras = append(s.ssExtras, o.opRaw)))
+    ()         => _Step(rest, s)   # unreachable: every option word has a reading
+
+# The loop of consume_optional. A value-taking option takes its explicit
+# value, or else the next word if that is a plain word. A single-dash flag
+# with text attached (`-hxyz`) is a cluster, read one character at a time.
+# The word's events are added only once the whole word is read, so an error
+# anywhere in the word wins over a Stop earlier in it.
+fun _readOption(t: _OptTable, a: _Opt, opt: String, sep: String|None, explicit: String|None,
+               rest: List<_Word>, taken: List<_Taken>, s: _ScanState): _Step|ArgError => match(explicit)
+  (x: String) => a.opValued
+    ? _takeAll(append(taken, _Taken(a, x)), rest, s)
+    : byteAt(opt, 1) != '-' && x != ""
+      ? _clusterNext(t, a, sep, x, rest, append(taken, _Taken(a, None)), s)
+      : IgnoredValue(a.opArgument, x)
+  ()          => !a.opValued
+    ? _takeAll(append(taken, _Taken(a, None)), rest, s)
+    : match(head(rest))
+      (v: _Plain) => _takeAll(append(taken, _Taken(a, v.plText)), dropOne(rest), s)
+      (w: _Word)  => MissingValue(a.opArgument)
+      ()          => MissingValue(a.opArgument)
+
+# The next flag of a cluster: `-` and the first attached character. A cluster
+# written with `=` (`-h=x`), or whose next character is a `-`, is an error.
+# A character naming no option ends the cluster, the rest left over.
+fun _clusterNext(t: _OptTable, a: _Opt, sep: String|None, x: String, rest: List<_Word>,
+                taken: List<_Taken>, s: _ScanState): _Step|ArgError
+  if (sep ?? "") != "" || byteAt(x, 0) == '-'
+    ret IgnoredValue(a.opArgument, x)
+  let next = "-" + slice(x, 0, 1)
+  let tail = slice(x, 1, length(x))
+  ret match(get(t.otByString, next))
+    (a2: _Opt) => tail == ""
+      ? _readOption(t, a2, next, None, None, rest, taken, s)
+      : byteAt(tail, 0) == '='
+        ? _readOption(t, a2, next, "=", slice(tail, 1, length(tail)), rest, taken, s)
+        : _readOption(t, a2, next, "", tail, rest, taken, s)
+    ()        => _takeAll(taken, rest, with s(ssExtras = append(s.ssExtras, "-" + x)))
+
+# The word is read: its options become events, in order.
+fun _takeAll(ts: List<_Taken>, rest: List<_Word>, s: _ScanState): _Step =>
+  _Step(rest, with s(ssEvents = concat(s.ssEvents, map(ts, (t: _Taken) => _tookOption(t)))))
+
+fun _tookOption(t: _Taken): _Event => match(t.tnValue)
+  (v: String) => _Took(t.tnOpt.opIndex, t.tnOpt.opArgument, List(v))
+  ()          => _Took(t.tnOpt.opIndex, t.tnOpt.opArgument, List())
+
+# After the last word: the required positionals, then anything left over.
+fun _finished(s: _ScanState): List<_Event>
+  let missing = filter(s.ssWaiting, (p: _Waiting) => _needsWord(p.wtCount))
+  if !isEmpty(missing)
+    ret append(s.ssEvents, _Failed(MissingRequired(map(missing, (p: _Waiting) => p.wtName))))
+  ret isEmpty(s.ssExtras) ? s.ssEvents : append(s.ssEvents, _Failed(Unrecognised(s.ssExtras)))

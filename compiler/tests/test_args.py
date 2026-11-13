@@ -10,8 +10,12 @@ Runtime behaviour is checked by compiler/yafl_tests/args.yafl.
 """
 from __future__ import annotations
 
+import os
+import subprocess
+import unittest
+
 from tests.testutil import TimedTestCase as TestCase
-from tests.testutil import compile_and_run_stdlib
+from tests.testutil import _RUN_ENV, compile_and_run_stdlib, compile_to_binary
 
 
 _LEN_PROG = (
@@ -88,3 +92,97 @@ class TestEnv(TestCase):
     def test_empty_value_is_none(self):
         self.assertEqual(4, compile_and_run_stdlib(self._PROG, env={"YAFL_TEST_ENV": ""}))
 
+
+# A declaration System::Args cannot read is a mistake in the PROGRAM, not in
+# its command line: `parse`, `help` and `message` end the process, naming it,
+# rather than tell the user something they could not have caused. A [test]
+# cannot expect its own process to end, so this one compiles one program
+# and runs it once per mistake, the first argument choosing which.
+_BAD_DECLARATIONS = """\
+namespace Main
+
+import System
+import System::Args
+import System::Containers
+
+fun twice() => Args("tool", "", List<Arg<Bool>>(
+  Flag(List("-v", "--verbose"), "", (b: Bool) => true),
+  Flag(List("-q", "-v"), "", (b: Bool) => true)))
+
+fun nameless() => Args("tool", "", List<Arg<Bool>>(
+  Flag(List<String>(), "Say less", (b: Bool) => true)))
+
+fun undashed() => Args("tool", "", List<Arg<Bool>>(
+  Flag(List("verbose"), "", (b: Bool) => true)))
+
+fun dashes() => Args("tool", "", List<Arg<Bool>>(
+  Flag(List("--"), "", (b: Bool) => true)))
+
+fun dashedPositional() => Args("tool", "", List<Arg<Bool>>(
+  Positional("-file", ExactlyOne(), "", (b: Bool, vs: List<String>) => true)))
+
+fun sound() => Args("tool", "", List<Arg<Bool>>(
+  Flag(List("-v", "--verbose"), "", (b: Bool) => true),
+  Positional("file", AtMostOne(), "", (b: Bool, vs: List<String>) => true)))
+
+fun outcome(spec: Args<Bool>): Int => match(parse(spec, List<String>(), false))
+  (e: ArgError) => 3
+  (b: Bool)     => 0
+
+fun main(): Int => match(head(args()))
+  (which: String) => which == "twice" ? outcome(twice())
+    : which == "nameless" ? outcome(nameless())
+    : which == "undashed" ? outcome(undashed())
+    : which == "dashes" ? outcome(dashes())
+    : which == "dashedPositional" ? outcome(dashedPositional())
+    : which == "help" ? length(help(twice(), 80, false))
+    : outcome(sound())
+  ()              => outcome(sound())
+"""
+
+
+class TestBadDeclarations(TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.binary = compile_to_binary(_BAD_DECLARATIONS)
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            os.unlink(cls.binary)
+        except OSError:
+            pass
+        super().tearDownClass()
+
+    def _run(self, which: str) -> tuple[int, str]:
+        r = subprocess.run([self.binary, which], capture_output=True, text=True,
+                           timeout=10, env=_RUN_ENV, stdin=subprocess.DEVNULL)
+        return r.returncode, r.stderr
+
+    def _assert_ends(self, which: str, why: str):
+        rc, err = self._run(which)
+        self.assertEqual(1, rc, err)
+        self.assertIn("System::Args: " + why, err)
+
+    def test_sound_declaration_parses(self):
+        self.assertEqual((0, ""), self._run("sound"))
+
+    def test_option_string_declared_twice(self):
+        self._assert_ends("twice", "option string '-v' is declared twice")
+
+    def test_option_with_no_names(self):
+        self._assert_ends("nameless", "an option is declared with no names")
+
+    def test_option_string_without_a_dash(self):
+        self._assert_ends("undashed", "option string 'verbose' does not start with '-'")
+
+    def test_option_string_of_dashes_alone(self):
+        self._assert_ends("dashes", "option string '--' is dashes alone")
+
+    def test_positional_named_like_an_option(self):
+        self._assert_ends("dashedPositional", "positional '-file' is named like an option")
+
+    def test_help_checks_too(self):
+        self._assert_ends("help", "option string '-v' is declared twice")

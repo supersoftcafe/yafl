@@ -1,6 +1,6 @@
 # yspell — spell-check text files against a system dictionary, with suggestions.
 #
-#   yspell [-d dictionary] <file> [file...]
+#   yspell [-h] [-d FILE] file [file ...]
 #
 # Loads the dictionary (default /usr/share/dict/words) into an immutable set,
 # then checks every word of every file. Unknown words are reported once per
@@ -18,6 +18,7 @@
 # collected and printed in file order, so output stays deterministic.
 #
 import System
+import System::Args
 import System::IO
 import System::Containers
 
@@ -321,27 +322,37 @@ fun dictError(path: String, e: IOError): Int where Show<IOError>
   ret complain("yspell: cannot read dictionary " + path + ": " + show(e))
 
 
+# ── command line ──────────────────────────────────────────────────────────────
+
+# What the command line asked for.
+class [final] Options(help: Bool, dictionary: String, files: List<String>)
+
+fun commandLine() => Args("yspell", "Report the words in each file that the dictionary does not hold.",
+  List<Arg<Options>>(
+    Stop(List("-h", "--help"), "show this help message and exit",
+         (o: Options) => with o(help = true)),
+    Value(List("-d", "--dictionary"), "FILE",
+          "the word list to check against (default /usr/share/dict/words)",
+          (o: Options, v: String) => with o(dictionary = v)),
+    Positional("file", AtLeastOne(), "a text file to check",
+               (o: Options, vs: List<String>) => with o(files = vs))))
+
+
 # ── entry point ───────────────────────────────────────────────────────────────
 
 fun main(): System::Int
-  fun usage(): System::Int
-    ret complain("usage: yspell [-d dictionary] <file> [file...]")
-
-  fun run(dictPath: String, files: List<String>): System::Int
+  fun run(o: Options): System::Int
     fun check(dict: WordTree): System::Int
-      let result = checkFiles(dict, files)
+      let result = checkFiles(dict, o.files)
       ret writeReports(result.reports, result.misspelt)
-    ret match(loadDictionary(dictPath))
-      (dict: WordTree) => isEmpty<String>(files) ? usage() : check(dict)
-      (e: IOError)     => dictError(dictPath, e)
+    ret match(loadDictionary(o.dictionary))
+      (dict: WordTree) => check(dict)
+      (e: IOError)     => dictError(o.dictionary, e)
 
-  fun dispatch(first: String, rest: List<String>): System::Int
-    fun withDict(): System::Int
-      ret match(head<String>(rest))
-        (d: String) => run(d, dropOne<String>(rest))
-        (e: None)   => usage()
-    ret compare(first, "-d") == 0 ? withDict() : run("/usr/share/dict/words", args())
+  fun showHelp(): System::Int
+    print(help(commandLine(), 80, false))
+    ret 0
 
-  ret match(head<String>(args()))
-    (first: String) => dispatch(first, dropOne<String>(args()))
-    (e: None)       => usage()
+  ret match(parse(commandLine(), args(), Options(false, "/usr/share/dict/words", List())))
+    (e: ArgError) => complain(trimEnd(message(commandLine(), e, 80, false)))
+    (o: Options)  => o.help ? showHelp() : run(o)

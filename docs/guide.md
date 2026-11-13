@@ -512,6 +512,59 @@ close(): System::Int|System::None
 
 `None` is returned at end of file. An `Int` return value indicates a negative error code.
 
+### Command-line arguments
+
+`System::args()` is the program's arguments as a `List<String>`, without the
+program's own name. `System::Args` reads them against a declaration of the
+command line. A program does two things: declare its arguments, and parse.
+
+```yafl
+import System
+import System::Args
+import System::Containers
+
+class [final] Options(help: Bool, level: Int, files: List<String>)
+
+fun commandLine() => Args("tool", "What the tool does", List<Arg<Options>>(
+  Stop(List("-h", "--help"), "show this help message and exit",
+       (o: Options) => with o(help = true)),
+  Value(List("-O"), "LEVEL", "Optimisation level",
+        (o: Options, v: String) => match(parseInt(v))
+          (n: Int) => with o(level = n)
+          ()       => "invalid int value: " + v),
+  Positional("files", AtLeastOne(), "Input files",
+             (o: Options, vs: List<String>) => with o(files = vs))))
+
+fun main(): Int => match(parse(commandLine(), args(), Options(false, 0, List())))
+  (e: ArgError) => fail(message(commandLine(), e, 80, false))
+  (o: Options)  => o.help ? show(help(commandLine(), 80, false)) : work(o)
+```
+
+`fail`, `show` and `work` stand for the program's own functions. `Options` is
+the program's own record. Each argument carries the function that
+puts its value into that record, so `parse` gives back the record, or an
+`ArgError` saying what is wrong with the command line.
+
+| Argument | Meaning |
+|---|---|
+| `Flag(names, help, set)` | Given or not. |
+| `Stop(names, help, set)` | A flag that ends the parse there, successfully: `--help`, `--version`. |
+| `Value(names, metavar, help, set)` | Takes one value. `set` returns the record, or a `String` saying why the value will not do. |
+| `Positional(name, count, help, set)` | Takes plain words: `ExactlyOne()`, `AtMostOne()`, `AtLeastOne()` or `AnyNumber()` of them. |
+
+Nothing in `System::Args` prints or exits. `message(spec, error, width, colour)`
+is a failed parse as text, usage line first; `help(spec, width, colour)` is the
+help. The program declares its own `-h` and prints the help when asked.
+
+The rules are those of Python's argparse. A value may follow its option as the
+next word, attached to a short option, or after `=`: `-O 2`, `-O2`, `-O=2`,
+and for a long option `--lib-path DIR` or `--lib-path=DIR`. Short flags may
+share a word (`-vq`); a long option may be cut short to any prefix only it
+has; and every word after `--` is a plain word.
+
+A positional's `set` is called only when it is given words, so a default
+belongs in the record passed to `parse`.
+
 ## Function attributes
 
 Attributes in square brackets annotate declarations with compiler directives:
