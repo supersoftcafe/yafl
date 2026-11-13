@@ -65,4 +65,4 @@ class TestFindstr(TestCase):
         r = subprocess.run([self.binary], capture_output=True, timeout=10,
                            text=True, env=_RUN_ENV)
         self.assertEqual(2, r.returncode)
-        self.assertIn("usage:", r.stdout)
+        self.assertIn("usage:", r.stderr)
