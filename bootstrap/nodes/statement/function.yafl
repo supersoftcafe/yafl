@@ -1,0 +1,271 @@
+# bootstrap/nodes/statement/function.yafl — PsFun: every question the
+# compiler asks of this node kind, in one place (Python's pyast/statement/function.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# The SIGNATURE (return type, parameters, wheres) resolves in the generic scope
+# WITHOUT the trait layer (Python compiles them against `resolver` before
+# __body_resolver runs); the BODY additionally sees the trait/operator scope —
+# for a TOP-LEVEL function only, an inner one inherits its owner's lexically —
+# and its parameters as locals.
+fun compileFun(f: PsFun, r0): StmtOut
+  let r = genScope(f.fGens, f.fWheres, r0)
+  let ret2 = compileSpecOpt(f.fRet, r)
+  let declaredRet = specOf(ret2)
+  let params = compileStmt(f.fParams, r, None)
+  let wheres = compileParams(f.fWheres, r)
+  # The body scope reads the PASS-INPUT parameters (Python's __body_resolver
+  # closes over self.parameters) — a type the params resolved THIS pass only
+  # becomes visible to the body on the NEXT pass, and the fixpoint's pass
+  # count depends on it.
+  let bodyR = localScope(paramLets(f.fParams),
+                         f.fNested ? r : traitScope(f.fWheres, r))
+  # The body converges on the PASS-INPUT return type (Python's self.return_type).
+  let body = compileExprOpt(f.fBody, bodyR, f.fRet)
+  # An un-annotated parameter takes its type from the body's hints.
+  let compiledParams = stmtOr(params, f.fParams)
+  let finalParams = hasBody(f)
+    ? inferredParams(compiledParams, hintsOf(body), bodyR)
+    : compiledParams
+  let declared = hasDeclaredRet(f)
+  # As for the parameters: a body that cannot say all it will yet (a name in
+  # it did not resolve this pass) leaves the return as it is — its type now
+  # is only the part that resolved, and refinement only ever widens.
+  let settled = !isUnsettled(hintsOf(body))
+  let inferredNow = declared || !settled ? f.fRetInferred : hasBody(f)
+  let finalRet = match(body)
+    # The body's own type is derived in the BODY's scope — its parameters must
+    # resolve there too, not just inside its compile.
+    (b: ExprOut) => settled
+      ? inferType(declaredRet, exprType(b.eoExpr, bodyR), declared, r)
+      : declaredRet
+    ()           => declaredRet
+  ret StmtOut(PsFun(f.fName, f.fAttrs, f.fGens, finalParams,
+                    exprOf(body), finalRet, wheres.psSpecs, f.psfLine,
+                    inferredNow, f.fNested, f.fImports, f.fGlobal),
+              concat(globalsOf(body),
+                     concat(globalsOfSpec(ret2),
+                            concat(params.soExtra, wheres.psGlobals))),
+              hintsWithout(hintsOf(body), letNames(flattenParams(f.fParams)),
+                           Set(map(f.fGens, (g) => g.genName))))
+
+fun hasDeclaredRet(f: PsFun) => match(f.fRet)
+  (t2: Spec) => !f.fRetInferred
+  ()         => false
+
+fun hasBody(f: PsFun) => match(f.fBody)
+  (b: PExpr) => true
+  ()         => false
+
+fun checkFun(f: PsFun, r0): Set<PErr>
+  let r = genScope(f.fGens, f.fWheres, r0)
+  let bodyR = localScope(paramLets(f.fParams),
+                         f.fNested ? r : traitScope(f.fWheres, r))
+  let err1 = checkSpecOpt(f.fRet, r)
+  let err2 = checkStmt2(f.fParams, r, None)
+  let err3 = match(f.fBody)
+    (b: PExpr) => checkExpr(b, bodyR, f.fRet)
+    ()         => noErrs()
+  let err4 = checkSpecs(f.fWheres, r, noErrs())
+  ret union(err1,
+      union(err2,
+      union(err3,
+      union(err4,
+      union(funAttrErrs(f),
+      union(paramDefaultErrs(flattenParams(f.fParams), r, noErrs()),
+      union(missingRetErrs(f, bodyR),
+      # A top-level function's are reported before the check phase.
+      union(f.fGlobal ? noErrs() : funUntypedErrors(f, bodyR, noErrs()),
+      union(attrErrs(f.fAttrs, isKnownFunAttr, f.psfLine, "a function"),
+             unusedParamWarns(f))))))))))
+
+# A declared result must actually be produced: a body that type-checks to no
+# value (no `ret` reaches the function block and no trailing value) would
+# generate `Return(None)` and crash codegen — a bare tail-call STATEMENT where
+# `ret f(...)` was meant.
+fun missingRetErrs(f: PsFun, bodyR): Set<PErr> => match(f.fBody)
+  (b: PExpr) => hasDeclaredRet(f)
+    ? (exprType(b, bodyR) is None
+        ? oneErr(f.psfLine, "function '" + bareOfUnique(f.fName)
+                            + "' declares a result but its body never returns a value — missing `ret`?")
+        : noErrs())
+    : (f.fRet is None || exprType(b, bodyR) is None
+        ? oneErr(f.psfLine, "Return type of '" + bareOfUnique(f.fName)
+                            + "' could not be inferred — declare it")
+        : noErrs())
+  ()         => noErrs()
+
+fun funAttrErrs(f: PsFun) => union(foreignErrs(f),
+                             union(noArgAttr(f, "impure", "[impure] takes no arguments"),
+                             union(noArgAttr(f, "sync", "[sync] takes no arguments"),
+                             union(tailErrs(f),
+                             union(inlineErrs(f),
+                             union(futureFunErrs(f),
+                             union(linearParamErrs(f),
+                             union(noArgAttr(f, "terminal", "[terminal] takes no arguments"),
+                             union(testErrs(f),
+                                    innerWhereErrs(f))))))))))
+
+fun isKnownFunAttr(n) => n == "foreign" || n == "impure" || n == "sync" || n == "tail"
+ || n == "terminal" || n == "inline" || n == "hashed" || n == "refeq"
+ || n == "linear" || n == "lazy" || n == "final" || n == "future"
+ || n == "pinnable" || n == "test"
+
+fun inlineErrs(f: PsFun) => match(funInlineMode(f))
+  (m: InlineMode) => noErrs()
+  ()              => oneErr(f.psfLine, "[inline] takes `always` or `never`")
+
+fun noArgAttr(f: PsFun, name: String, msg)
+  if !hasAttr(f.fAttrs, name)
+    ret noErrs()
+  ret match(attrValueOf(f.fAttrs, name))
+    (v: PExpr) => oneErr(f.psfLine, msg)
+    ()         => noErrs()
+
+fun foreignErrs(f: PsFun)
+  if !hasAttr(f.fAttrs, "foreign")
+    ret noErrs()
+  if !isOneStringArg(attrValueOf(f.fAttrs, "foreign"))
+    ret oneErr(f.psfLine,
+               "[foreign] requires exactly one string argument: [foreign(\"symbol\")]")
+  ret match(f.fBody)
+    (b: PExpr) => oneErr(f.psfLine, "[foreign] functions must have no body")
+    ()         => noErrs()
+
+# [test] — the unit-test annotation (docs/testing-proposal.md). The optional
+# argument is the description. The RETURN TYPE is deliberately not checked
+# here: `--test` puts the function in a TestCase whose `body` field is typed
+# `(): System::None|TestFailure`, so a wrong return type is caught there by
+# ordinary type checking rather than by a rule restated in two compilers.
+fun testErrs(f: PsFun)
+  if !hasAttr(f.fAttrs, "test")
+    ret noErrs()
+  let argErr = testArgErr(f)
+  let bodyErr = match(f.fBody)
+    (b: PExpr) => noErrs()
+    ()         => oneErr(f.psfLine,
+                         "[test] cannot be applied to a foreign function")
+  let paramErr = isEmpty(flattenParams(f.fParams))
+    ? noErrs()
+    : oneErr(f.psfLine, "[test] functions take no parameters")
+  ret union(argErr, union(bodyErr, paramErr))
+
+fun testArgErr(f: PsFun) => match(testAttrParts(attrValueOf(f.fAttrs, "test")))
+  (ok: TestAttr) => noErrs()
+  ()             => oneErr(f.psfLine, testAttributeShape())
+
+fun testAttributeShape() => "[test] takes an optional description and an optional expected stdout: "
+  + "[test(\"description\", stdout = \"expected output\")]"
+
+fun isOneStringArg(v: PExpr|None) => match(v)
+  (tp: PeTuple) => exactly(tp.exprs, 1) && firstIsString(head(tp.exprs))
+  ()            => false
+
+fun firstIsString(en: PTupEnt|None) => match(en)
+  (e2: PTupEnt) => match(e2.tupValue)
+    (s2: PeStr) => true
+    (o: PExpr)  => false
+  ()            => false
+
+fun tailErrs(f: PsFun)
+  if !hasAttr(f.fAttrs, "tail")
+    ret noErrs()
+  let argErr = noArgAttr(f, "tail", "[tail] takes no arguments")
+  ret match(f.fBody)
+    (b: PExpr) => argErr
+    ()         => union(argErr,
+                         oneErr(f.psfLine,
+                                "[tail] cannot be applied to a foreign function"))
+
+# [linear] on a parameter: a promise to call it exactly once (checked by
+# lower/ast/linearity.yafl) — meaningful only for a function.
+fun linearParamErrs(f: PsFun) => fold(flattenParams(f.fParams), noErrs(), linearParamErr)
+
+fun linearParamErr(acc: Set<PErr>, p: PStmt) => match(p)
+  (let2: PsLet) => hasAttr(let2.lAttrs, "linear") && !isCallableSpec(let2.lType)
+    ? union(acc, oneErr(let2.pslLine, "[linear] applies only to a function-typed parameter"))
+    : acc
+  (o: PStmt)    => acc
+
+fun isCallableSpec(sp: Spec|None) => match(sp)
+  (s2: Spec) => isCallableKind(s2)
+  ()         => false
+
+fun isCallableKind(s2: Spec) => match(s2)
+  (c: SCallable) => true
+  (o: Spec)      => false
+
+# [future]: a call hands the body to a worker and answers later, with a task —
+# so the function cannot also promise [sync], and a foreign one has no body to
+# hand over.
+fun futureFunErrs(f: PsFun)
+  if !hasAttr(f.fAttrs, "future")
+    ret noErrs()
+  let argErr = noArgAttr(f, "future", "[future] takes no arguments")
+  let foreignErr = match(f.fBody)
+    (b: PExpr) => noErrs()
+    ()         => oneErr(f.psfLine, "[future] cannot be applied to a foreign function")
+  let syncErr = hasAttr(f.fAttrs, "sync")
+    ? oneErr(f.psfLine, "[future] and [sync] contradict: a [future] function answers with a task")
+    : noErrs()
+  ret union(argErr, union(foreignErr, syncErr))
+
+# An inner function declares neither a `where` nor type parameters: it has no
+# scope of its own but inherits its owner's, so a `where` here would silently do
+# nothing and a type parameter would rebind a name that is already bound — a
+# restated `<T>` resolves ambiguously, a fresh `<X>` is not in scope inside its
+# own body.
+fun innerWhereErrs(f: PsFun) => union(!f.fGlobal && !isEmpty(f.fGens)
+                                        ? oneErr(f.psfLine,
+                                                 "only a global function declares type parameters — an inner function inherits the enclosing function's, a member function its class or instance's")
+                                        : noErrs(),
+                                      f.fNested && !isEmpty(f.fWheres)
+                                        ? oneErr(f.psfLine,
+                                                 "`where` is not allowed on an inner function — move it to a top-level function")
+                                        : noErrs())
+
+fun paramDefaultErrs(ls: List<PStmt>, r, acc: Set<PErr>) =>
+  fold(ls, acc, (a, x) => paramDefaultErrsStep(a, x, r))
+
+fun paramDefaultErrsStep(a: Set<PErr>, x: PStmt, r) => match(x)
+  (let2: PsLet) => union(a, defaultValueErrors(let2.lDefault, r, let2.pslLine, "parameter"))
+  (o: PStmt) => a
+
+# No value vanishes silently: a parameter the body never reads. `this` is
+# implicit; a `_` prefix is the opt-out; [terminal] params are consumed on
+# arrival.
+fun unusedParamWarns(f: PsFun): Set<PErr> => match(f.fBody)
+  (b: PExpr) => unusedParamLoop(flattenParams(f.fParams),
+                                referencedNames(b, List()), noErrs())
+  ()         => noErrs()
+
+fun unusedParamLoop(ls: List<PStmt>, referenced: List<String>, acc: Set<PErr>) =>
+  fold(ls, acc, (a, x) => unusedParamLoopStep(a, x, referenced))
+
+fun unusedParamLoopStep(a: Set<PErr>, x: PStmt, referenced: List<String>) => match(x)
+  (let2: PsLet) => skipParamWarn(let2, referenced)
+    ? a
+    : add(a, PErr(let2.pslLine,
+                   "parameter '" + bareOfUnique(let2.lName)
+                   + "' is never used", true, "unused-parameter"))
+  (o: PStmt) => a
+
+fun skipParamWarn(let2: PsLet, referenced: List<String>)
+  ret startsWith(bareOfUnique(let2.lName), "_")
+      || bareOfUnique(let2.lName) == "this"
+      || hasAttr(let2.lAttrs, "terminal")
+      || contains(referenced, let2.lName)

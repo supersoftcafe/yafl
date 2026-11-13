@@ -15,7 +15,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 # ── free references ──────────────────────────────────────────────────────────
@@ -31,7 +31,9 @@ fun freeRefs(f: PsFun, alsoExclude: List<String>)
   let own = frOwnNames(f, alsoExclude)
   ret match(f.fBody)
     (b: PExpr) => match(b)
-      (bk: PeBlock) => frExpr(b, own, Set())
+      (bk: PeBlock) => walkExpr(b, emptyResolverGlobal, Set<String>(),
+                                Walk<Set<String>>((a, _r, x) => (s = frExpr(x, own, a), r = None),
+                                                  wkNoStmt<Set<String>>, wkNoSpec<Set<String>>)).s
       (o: PExpr)    => Set()
     ()         => Set()
 
@@ -56,70 +58,9 @@ fun frBlockNamesStep(a: List<String>, x: PStmt) => match(x)
 fun frAdd(acc, exclude: List<String>, name: String): Set<String>
   ret contains(exclude, name) ? acc : add(acc, name)
 
-fun frExpr(x, exclude: List<String>, acc): Set<String> => match(x)
-  (nm: PeName)   => frAdd(acc, exclude, nm.refName)
-  (d: PeDot)     => frExpr(d.base, exclude, acc)
-  (c: PeCall)    => frExpr(c.parameter, exclude,
-                           frExpr(c.function, exclude, acc))
-  (tp: PeTuple)  => frEnts(tp.exprs, exclude, acc)
-  (te: PeTernary) => frExpr(te.falseResult, exclude,
-                      frExpr(te.trueResult, exclude,
-                        frExpr(te.condition, exclude, acc)))
-  (lm: PeLambda) => frExpr(lm.lamBody, exclude,
-                           frStmt(lm.lamParams, exclude, acc))
-  (bk: PeBlock)  => frExpr(bk.blockValue, exclude,
-                           frStmts(bk.blockStmts, exclude, acc))
-  (mt: PeMatch)  => frArms(mt.arms, exclude,
-                           frExpr(mt.subject, exclude, acc))
-  (op: PeBuiltinOp) => frExpr(op.opParams, exclude, acc)
-  (ps: PePinSet) => frExpr(ps.psValue, exclude,
-                      frExpr(ps.psTarget, exclude,
-                        frExpr(ps.psSubject, exclude, acc)))
-  (nw: PeNew)    => frExpr(nw.newParam, exclude, acc)
-  (qq: PeCoalesce) => frExpr(qq.qqFallback, exclude,
-                              frExpr(qq.qqSubject, exclude, acc))
-  (ar: PeArrayRead) => frExpr(ar.arrIndex, exclude,
-                              frExpr(ar.arrObj, exclude, acc))
-  (cv: PeConvert) => frExpr(cv.convInner, exclude, acc)
-  (wx: PeWith)   => frExpr(wx.withRepls, exclude,
-                           frExpr(wx.withSubject, exclude, acc))
-  (lp: PeLoop)   => frExpr(lp.loopBody, exclude,
-                           frExprs(lp.loopParams, exclude, acc))
-  (rc: PeRecur)  => frExprs(rc.recArgs, exclude, acc)
-  (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
-                          frExpr(fa.faValue, exclude, a2))
-  (o: PeLiteral) => acc
-  (o: PeLazy) => acc
-
-fun frExprs(es: List<PExpr>, exclude: List<String>, acc: Set<String>) =>
-  fold(es, acc, (a, x) => frExpr(x, exclude, a))
-
-fun frEnts(es: List<PTupEnt>, exclude: List<String>, acc): Set<String> =>
-  fold(es, acc, (a, x) => frExpr(x.tupValue, exclude, a))
-
-fun frArms(as2: List<PArm>, exclude: List<String>, acc): Set<String> =>
-  fold(as2, acc, (a, x) => frOpt(x.armGuard, exclude, frExpr(x.armBody, exclude, a)))
-
-fun frOpt(x: PExpr|None, exclude: List<String>,
-          acc): Set<String> => match(x)
-  (e2: PExpr) => frExpr(e2, exclude, acc)
-  ()          => acc
-
-fun frStmts(ss: List<PStmt>, exclude: List<String>, acc: Set<String>) =>
-  fold(ss, acc, (a, x) => frStmt(x, exclude, a))
-
-fun frStmt(st, exclude: List<String>, acc): Set<String> => match(st)
-  (f: PsFun)   => frOpt(f.fBody, exclude, frStmt(f.fParams, exclude, acc))
-  (l: PsLet)   => frOpt(l.lDefault, exclude, acc)
-  (d: PsDestructure) => frStmts(d.dTargets, exclude,
-                                frOpt(d.dDefault, exclude, acc))
-  (rt: PsRet)  => frExpr(rt.retValue, exclude, acc)
-  (a: PsAction) => frExpr(a.action, exclude, acc)
-  (fa: PsFieldAssign) => frExpr(fa.faValue, exclude, frExpr(fa.faTarget, exclude, acc))
-  (i: PsIf)    => frStmts(i.ifFalse, exclude,
-                          frStmts(i.ifTrue, exclude,
-                                  frExpr(i.ifCond, exclude, acc)))
-  (o: PStmt)   => acc
+fun frExpr(x: PExpr, exclude: List<String>, acc: Set<String>): Set<String> => match(x)
+  (nm: PeName) => frAdd(acc, exclude, nm.refName)
+  (o: PExpr)   => acc
 
 # ── Tarjan over the sibling-call graph ───────────────────────────────────────
 # Node INPUT order preserved (no sort — the input is declaration order);
@@ -203,90 +144,24 @@ class [final] ThisMap(tmMap: Dict<String, String>)
 
 fun tmLookup(m: ThisMap, name: String) => get(m.tmMap, name)
 
-fun rcmExpr(x, m: ThisMap) => match(x)
-  (nm: PeName)   => match(tmLookup(m, nm.refName))
-    (target: String) => PeDot(PeName("this", List(), nm.penLine,
-                                     None),
-                              target, nm.penLine)
-    ()               => x
-  (d: PeDot)     => PeDot(rcmExpr(d.base, m), d.member, d.pedLine, d.pedIndex)
-  (c: PeCall)    => PeCall(rcmExpr(c.function, m), rcmExpr(c.parameter, m),
-                           c.pecLine)
-  (tp: PeTuple)  => PeTuple(rcmEnts(tp.exprs, m, List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(rcmExpr(te.condition, m),
-                               rcmExpr(te.trueResult, m),
-                               rcmExpr(te.falseResult, m), te.pety)
-  (lm: PeLambda) => PeLambda(rcmStmt(lm.lamParams, m),
-                             rcmExpr(lm.lamBody, m), lm.pelLine, lm.lamRet)
-  (bk: PeBlock)  => PeBlock(rcmStmts(bk.blockStmts, m,
-                                     List()),
-                            rcmExpr(bk.blockValue, m), bk.blockTag,
-                            bk.pebkLine)
-  (mt: PeMatch) => with mt(subject = rcmExpr(mt.subject, m),
-                    arms    = rcmArms(mt.arms, m, List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
-                                   rcmExpr(op.opParams, m), op.peboLine)
-  (ps: PePinSet) => PePinSet(rcmExpr(ps.psSubject, m), rcmExpr(ps.psTarget, m),
-                             rcmExpr(ps.psValue, m), ps.pepsLine)
-  (nw: PeNew)    => PeNew(nw.newType, rcmExpr(nw.newParam, m), nw.penwLine)
-  (qq: PeCoalesce) => PeCoalesce(rcmExpr(qq.qqSubject, m),
-                                   rcmExpr(qq.qqFallback, m), qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(rcmExpr(ar.arrObj, m),
-                                   rcmExpr(ar.arrIndex, m), ar.pearLine)
-  (cv: PeConvert) => PeConvert(rcmExpr(cv.convInner, m), cv.convTarget,
-                               cv.pecvLine)
-  (wx: PeWith)   => PeWith(rcmExpr(wx.withSubject, m),
-                           rcmExpr(wx.withRepls, m), wx.pewLine)
-  (lp: PeLoop)   => PeLoop(rcmExpr(lp.loopBody, m),
-                           rcmExprs(lp.loopParams, m,
-                                    List()),
-                           lp.pelpLine)
-  (rc: PeRecur)  => PeRecur(rcmExprs(rc.recArgs, m, List()),
-                            rc.recIndex, rc.percLine)
-  (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                               map(ne.fieldArgs, (fa) =>
-                                 PFieldArg(fa.faName, rcmExpr(fa.faValue, m))),
-                               ne.neTypeParams, ne.penewLine)
-  (o: PeLiteral) => x
-  (o: PeLazy) => x
+# _rewrite_for_class_method: one callback over the body.
+fun rcmWalk(m: ThisMap): Walk<Bool> =>
+  Walk<Bool>((s, _r, x) => (s = s, r = rcmName(x, m)), wkNoStmt<Bool>, wkNoSpec<Bool>)
 
-fun rcmExprs(es: List<PExpr>, m: ThisMap, acc: List<PExpr>) =>
-  fold(es, acc, (a, x) => append(a, rcmExpr(x, m)))
+fun rcmName(x: PExpr, m: ThisMap): PExpr|None => match(x)
+  (nm: PeName) => match(tmLookup(m, nm.refName))
+    (target: String) => PeDot(PeName("this", List(), nm.penLine, None), target, nm.penLine)
+    ()               => None
+  (o: PExpr)   => None
 
-fun rcmEnts(es: List<PTupEnt>, m: ThisMap, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rcmExpr(x.tupValue, m))))
+fun rcmExpr(x: PExpr, m: ThisMap): PExpr => walkExpr(x, emptyResolverGlobal, false, rcmWalk(m)).x
 
-fun rcmArms(as2: List<PArm>, m: ThisMap, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armBody = rcmExpr(x.armBody, m), armGuard = rcmOpt(x.armGuard, m))))
-
-fun rcmOpt(x: PExpr|None, m: ThisMap) => match(x)
+fun rcmOpt(x: PExpr|None, m: ThisMap): PExpr|None => match(x)
   (e2: PExpr) => rcmExpr(e2, m)
   ()          => None
 
-fun rcmStmts(ss: List<PStmt>, m: ThisMap, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, rcmStmt(x, m)))
-
-fun rcmStmt(st, m: ThisMap) => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rcmStmt(f.fParams, m),
-                       rcmOpt(f.fBody, m), f.fRet, f.fWheres, f.psfLine,
-                       f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
-                       rcmOpt(l.lDefault, m), l.lArrayLen, l.lWheres,
-                       l.pslLine, l.lTypeInferred, l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
-                                      rcmStmts(d.dTargets, m,
-                                               List()),
-                                      rcmOpt(d.dDefault, m), d.psdLine,
-                                      d.dTypeInferred)
-  (rt: PsRet)  => PsRet(rcmExpr(rt.retValue, m), rt.psrLine)
-  (a: PsAction) => PsAction(rcmExpr(a.action, m), a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(rcmExpr(fa.faTarget, m), rcmExpr(fa.faValue, m), fa.psfaLine)
-  (i: PsIf)    => PsIf(rcmExpr(i.ifCond, m),
-                       rcmStmts(i.ifTrue, m, List()),
-                       rcmStmts(i.ifFalse, m, List()),
-                       i.psifLine)
-  (o: PStmt)   => st
+fun rcmStmts(ss: List<PStmt>, m: ThisMap): List<PStmt> =>
+  walkStmts(ss, emptyResolverGlobal, false, rcmWalk(m)).x
 
 # ── coalesce a mutually-recursive capturing SCC into one class ──────────────
 
@@ -526,7 +401,7 @@ fun hoistFromBlock(f: PsFun, bk: PeBlock, thisType: Spec|None,
                                ThisMap(Dict()))
   let stmts = isEmpty(toMember.tmMap)
     ? bk.blockStmts
-    : rcmStmts(bk.blockStmts, toMember, List())
+    : rcmStmts(bk.blockStmts, toMember)
   let nested2 = isEmpty(toMember.tmMap)
     ? nested
     : hoNestedFns(stmts, List())
@@ -754,6 +629,7 @@ fun otAddMissing(acc: OuterTypes, name: String, ty: Spec|None) => match(ty)
   ()          => acc
 
 class [final] HoInside(hiFn: PsFun, hiAcc: HoAcc)
+
 class [final] HoInsideMany(hmFns: List<PsFun>, hmAcc: HoAcc)
 
 # Hoist inside one closure-bound helper; what it sends out joins this level's
@@ -954,10 +830,10 @@ fun hoFnIn(f: PsFun, ths: Spec|None, enclosing: OuterTypes, suffix: String|None
   # Then one rename over all four, exactly as Python applies it.
   ret isEmpty(ho.hoRenames.tmMap)
     ? hoFnStep(f, ho.hoBody, value, ho.hoOut, ho.hoClass)
-    : hoFnStep(f, rnmStmts(ho.hoBody, ho.hoRenames, List()),
+    : hoFnStep(f, rnmStmts(ho.hoBody, ho.hoRenames),
                rnmExpr(value, ho.hoRenames),
-               rnmStmts(ho.hoOut, ho.hoRenames, List()),
-               rnmStmts(ho.hoClass, ho.hoRenames, List()))
+               rnmStmts(ho.hoOut, ho.hoRenames),
+               rnmStmts(ho.hoClass, ho.hoRenames))
 
 fun hoFnStep(f: PsFun, body, value, outs: List<PStmt>,
              sibs: List<PStmt>): (hfFn: PsFun, hfOuts: List<PStmt>,
@@ -984,95 +860,26 @@ fun hoWithBody(f: PsFun, body)
 
 # ── rename application ───────────────────────────────────────────────────────
 
-fun rnmStmts(ss: List<PStmt>, m: ThisMap, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, rnmStmt(x, m)))
+# A name in the map takes its new name — one callback over the tree.
+fun rnmWalk(m: ThisMap): Walk<Bool> =>
+  Walk<Bool>((s, _r, x) => (s = s, r = rnmName(x, m)), wkNoStmt<Bool>, wkNoSpec<Bool>)
 
-fun rnmStmt(st, m: ThisMap) => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rnmStmt(f.fParams, m),
-                       rnmOpt(f.fBody, m), f.fRet, f.fWheres, f.psfLine,
-                       f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
-                       rnmOpt(l.lDefault, m), l.lArrayLen, l.lWheres,
-                       l.pslLine, l.lTypeInferred, l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
-                                      rnmStmts(d.dTargets, m,
-                                               List()),
-                                      rnmOpt(d.dDefault, m), d.psdLine,
-                                      d.dTypeInferred)
-  (rt: PsRet)  => PsRet(rnmExpr(rt.retValue, m), rt.psrLine)
-  (a: PsAction) => PsAction(rnmExpr(a.action, m), a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(rnmExpr(fa.faTarget, m), rnmExpr(fa.faValue, m), fa.psfaLine)
-  (i: PsIf)    => PsIf(rnmExpr(i.ifCond, m),
-                       rnmStmts(i.ifTrue, m, List()),
-                       rnmStmts(i.ifFalse, m, List()),
-                       i.psifLine)
-  (o: PStmt)   => st
+fun rnmName(x: PExpr, m: ThisMap): PExpr|None => match(x)
+  (nm: PeName) => match(tmLookup(m, nm.refName))
+    (target: String) => with nm(refName = target)
+    ()               => None
+  (o: PExpr)   => None
 
-fun rnmOpt(x: PExpr|None, m: ThisMap) => match(x)
-  (e2: PExpr) => rnmExpr(e2, m)
-  ()          => None
+fun rnmExpr(x: PExpr, m: ThisMap): PExpr => walkExpr(x, emptyResolverGlobal, false, rnmWalk(m)).x
 
-fun rnmExpr(x, m: ThisMap) => match(x)
-  (nm: PeName)   => match(tmLookup(m, nm.refName))
-    (target: String) => PeName(target, nm.refTypeParams, nm.penLine,
-                               nm.penTrait)
-    ()               => x
-  (d: PeDot)     => PeDot(rnmExpr(d.base, m), d.member, d.pedLine, d.pedIndex)
-  (c: PeCall)    => PeCall(rnmExpr(c.function, m), rnmExpr(c.parameter, m),
-                           c.pecLine)
-  (tp: PeTuple)  => PeTuple(rnmEnts(tp.exprs, m, List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(rnmExpr(te.condition, m),
-                               rnmExpr(te.trueResult, m),
-                               rnmExpr(te.falseResult, m), te.pety)
-  (lm: PeLambda) => PeLambda(rnmStmt(lm.lamParams, m),
-                             rnmExpr(lm.lamBody, m), lm.pelLine, lm.lamRet)
-  (bk: PeBlock)  => PeBlock(rnmStmts(bk.blockStmts, m,
-                                     List()),
-                            rnmExpr(bk.blockValue, m), bk.blockTag,
-                            bk.pebkLine)
-  (mt: PeMatch) => with mt(subject = rnmExpr(mt.subject, m),
-                    arms    = rnmArms(mt.arms, m, List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
-                                   rnmExpr(op.opParams, m), op.peboLine)
-  (ps: PePinSet) => PePinSet(rnmExpr(ps.psSubject, m), rnmExpr(ps.psTarget, m),
-                             rnmExpr(ps.psValue, m), ps.pepsLine)
-  (nw: PeNew)    => PeNew(nw.newType, rnmExpr(nw.newParam, m), nw.penwLine)
-  (qq: PeCoalesce) => PeCoalesce(rnmExpr(qq.qqSubject, m),
-                                   rnmExpr(qq.qqFallback, m), qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(rnmExpr(ar.arrObj, m),
-                                   rnmExpr(ar.arrIndex, m), ar.pearLine)
-  (cv: PeConvert) => PeConvert(rnmExpr(cv.convInner, m), cv.convTarget,
-                               cv.pecvLine)
-  (wx: PeWith)   => PeWith(rnmExpr(wx.withSubject, m),
-                           rnmExpr(wx.withRepls, m), wx.pewLine)
-  (lp: PeLoop)   => PeLoop(rnmExpr(lp.loopBody, m),
-                           rnmExprs(lp.loopParams, m,
-                                    List()),
-                           lp.pelpLine)
-  (rc: PeRecur)  => PeRecur(rnmExprs(rc.recArgs, m, List()),
-                            rc.recIndex, rc.percLine)
-  (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                               map(ne.fieldArgs, (fa) =>
-                                 PFieldArg(fa.faName, rnmExpr(fa.faValue, m))),
-                               ne.neTypeParams, ne.penewLine)
-  (o: PeLiteral) => x
-  (o: PeLazy) => x
-
-fun rnmExprs(es: List<PExpr>, m: ThisMap, acc: List<PExpr>) =>
-  fold(es, acc, (a, x) => append(a, rnmExpr(x, m)))
-
-fun rnmEnts(es: List<PTupEnt>, m: ThisMap, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rnmExpr(x.tupValue, m))))
-
-fun rnmArms(as2: List<PArm>, m: ThisMap, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armBody = rnmExpr(x.armBody, m), armGuard = rnmOpt(x.armGuard, m))))
+fun rnmStmts(ss: List<PStmt>, m: ThisMap): List<PStmt> =>
+  walkStmts(ss, emptyResolverGlobal, false, rnmWalk(m)).x
 
 # ═════════════════════════════════════════════════════════════════════════════
 # The INLINER half (ast_inline.py:55-663): function inlining at statement
 # positions + lambda beta-reduction, run to fixpoint (≤10 rounds) before
 # lambda lifting. Uses rewrite.yafl: pure rewrites and folds for the
-# stateless pieces, the RwN counter-threading twins where fresh suffixes are
+# stateless pieces, a walk whose state is the suffix counter where fresh suffixes are
 # minted mid-traversal — the $inlN names must match Python's exactly.
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -1647,14 +1454,17 @@ fun aiExprInlineFunction(target: PsFun, args: List<PExpr>, r: Resolver|None,
 # read by anyone.
 class [final] Singles(sgMap: Dict<String, PExpr>)
 
+# A reduced statement sequence and the suffix counter after it.
+class [final] RwNSs(rnssN: Int, rnssStmts: List<PStmt>)
+
 fun aiBetaReduceExpressions(stmts: List<PStmt>, catalog: Catalog,
-                            r: Resolver|None, n): RwNSs
+                            r: Resolver, n): RwNSs
   let singles = aiSingles(stmts, stmts, 0, Singles(Dict()))
-  let out = rwnStmts(stmts, RwN((n2, sc, x) =>
-                                  aiBetaCb(n2, x, singles, catalog, r, sc),
-                                rwnNoStmt),
-                     r, n)
-  ret RwNSs(out.rnssN, aiDropDeadLams(out.rnssStmts, singles))
+  let out = walkStmts(stmts, r, n,
+                      Walk<Int>((n2, sc, x) => aiBetaCb(n2, x, singles, catalog, r, sc)
+                                               |> (o) => (s = o.n2, r = o.rep),
+                                wkNoStmt<Int>, wkNoSpec<Int>))
+  ret RwNSs(out.s, aiDropDeadLams(out.x, singles))
 
 # let f = <lambda> used EXACTLY once across the remaining statements.
 fun aiSingles(ss: List<PStmt>, all: List<PStmt>, i, acc: Singles) =>

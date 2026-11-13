@@ -1,0 +1,46 @@
+# bootstrap/nodes/expression/ternary.yafl — PeTernary: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/ternary.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A branch threads the receiver's type into BOTH sides — each arm owns its own
+# conversion. A ternary is a two-arm match: the same rules apply.
+# With no receiver (a match subject, say) the ternary is its own: its arms land
+# in its branch type, so it owns their conversion into it — the result slot
+# generate sizes from that type would otherwise meet an unconverted arm.
+# Conversion only: its own, still-settling type is no evidence about the arms.
+fun compileTernary(te: PeTernary, r, expected: Spec|None)
+  let cond = compileExpr(te.condition, r, SBuiltin("bool", te.pety))
+  let own = match(expected)
+    (e2: Spec) => None
+    ()         => exprType(te, r)
+  let t2 = convertedOut(compileExpr(te.trueResult, r, expected), own, r)
+  let f = convertedOut(compileExpr(te.falseResult, r, expected), own, r)
+  ret ExprOut(PeTernary(cond.eoExpr, t2.eoExpr, f.eoExpr, te.pety),
+              concat(cond.eoGlobals, concat(t2.eoGlobals, f.eoGlobals)),
+              mergeHints(cond.eoHints, mergeHints(t2.eoHints, f.eoHints)))
+
+fun checkTernary(te: PeTernary, r, expected: Spec|None)
+  let condErr = checkExpr(te.condition, r, SBuiltin("bool", PLine("none", 0, 0)))
+  let trueErr = checkExpr(te.trueResult, r, expected)
+  let falseErr = checkExpr(te.falseResult, r, expected)
+  let selfErr = match(exprType(te, r))
+    (t2: Spec) => noErrs()
+    ()         => oneErr(te.pety, "Failed to resolve type of ternery expression")
+  ret union(condErr, union(trueErr, union(falseErr, selfErr)))
+
+fun genTernaryTo(te, r, expected) => genTernary(te, r, expected)

@@ -29,20 +29,20 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 fun eraseFieldNames(statements: List<PStmt>): List<PStmt> =>
-  rwnStmts(statements, RwN((n, sc, x) => (n, fnByPosition(x, sc)), rwnNoStmt),
-           rootResolver(statements), 0).rnssStmts
+  walkStmts(statements, rootResolver(statements), false,
+            Walk<Bool>((s, sc, x) => (s = s, r = fnByPosition(x, sc)), wkNoStmt<Bool>, wkNoSpec<Bool>)).x
   |> (positioned) => rwStmts(positioned, Rw(fnUnnamedValue, fnUnnamedType, rwNoStmt))
 
 # ── 1 and 2: names become positions, while the names can still be read ───────
 
-fun fnByPosition(x: PExpr, sc: Resolver|None): PExpr|None => match(sc, x)
-  (r: Resolver, d: PeDot)      => fnReadByPosition(d, r)
-  (r: Resolver, cv: PeConvert) => fnConvertByPosition(cv, r)
-  ()                           => None
+fun fnByPosition(x: PExpr, sc: Resolver): PExpr|None => match(x)
+  (d: PeDot)      => fnReadByPosition(d, sc)
+  (cv: PeConvert) => fnConvertByPosition(cv, sc)
+  (o: PExpr)      => None
 
 fun fnReadByPosition(d: PeDot, r): PExpr|None => match(d.pedIndex, exprType(d.base, r))
   (n: None, t2: STuple) => PeDot(d.base, d.member, d.pedLine, fnPositionOf(d, t2.stEntries))

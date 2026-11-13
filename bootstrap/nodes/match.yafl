@@ -1,0 +1,235 @@
+# bootstrap/nodes/match.yafl — PeMatch: every question the
+# compiler asks of this node kind, in one place (Python's pyast/match.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# The subject is checked first; a subject whose TYPE is unknowable
+# short-circuits everything below (its own errors are all there is). Literal
+# arms need a primitive variant in the subject; type-arm matches need a
+# union-ish subject; the else arm stays guard-free (totality).
+fun checkMatch(mt: PeMatch, r, expected: Spec|None)
+  let subjectErr = checkExpr(mt.subject, r, None)
+  ret match(exprType(mt.subject, r))
+    (st: Spec) => checkMatchTyped(mt, st, r, expected, subjectErr)
+    ()         => subjectErr
+
+fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
+                    subjectErr)
+  let hasLit = anyArmLiterals(mt.arms)
+  if hasLit && !(isPrimitiveSubject(st) || unionHasPrimitive(st))
+    ret union(subjectErr,
+               oneErr(mt.pemLine,
+                      "literal match arms require a subject with a primitive (Int or String) variant"))
+  if !hasLit && !isEnumOrUnion(st)
+    ret union(subjectErr,
+               oneErr(mt.pemLine,
+                      "match subject must be a union type, or use literal "
+                      + "patterns on an Int/String subject"))
+  # Coverage, duplicate literals and unreachable arms: match_coverage.yafl.
+  ret union(union(union(multiSubjectErrs(mt), positionErrs(mt, r)),
+                  matchArmChecks(mt.arms, st, r, expected, subjectErr)),
+            matchCoverageErrs(mt, st, r))
+
+# A position whose repr cannot test its pattern is REPORTED, not compiled into
+# an arm that never matches. Each subject's repr is asked; the first arm it
+# refuses is reported. The guards themselves are built at code generation,
+# where the discriminators they read exist.
+#
+# A subject that is not concrete names something unresolved, reported where it
+# is named. One with a member held by value as a type parameter has no layout
+# until monomorphisation, so no repr can answer, and the position is refused
+# outright.
+fun positionErrs(mt: PeMatch, r): Set<PErr> => isEmpty(mt.matchExtra)
+  ? noErrs()
+  : fold(prepend(mt.subject, mt.matchExtra), (i = 0, acc = noErrs()),
+         (st, sub) => (i = st.i + 1, acc = union(st.acc, subjectPositionErrs(mt.arms, st.i, sub, r)))).acc
+
+fun subjectPositionErrs(arms: List<PArm>, i: Int, sub: PExpr, r): Set<PErr> => match(exprType(sub, r))
+  (sty: Spec) if isEnumOrUnion(sty) && isConcrete(sty) => positionRefusals(arms, i, sty, r)
+  ()                                                    => noErrs()
+
+fun positionRefusals(arms: List<PArm>, i: Int, sty: Spec, r): Set<PErr> => Bootstrap::Codegen::layoutDecided(sty)
+  ? reprRefusals(arms, i, Bootstrap::Codegen::classifyRepr(sty, r), r)
+  : firstRefusedArm(arms, (a) => positionPattern(a, i) !is None,
+                    "a position of a multi-subject match cannot test a union with a generic member")
+
+fun reprRefusals(arms: List<PArm>, i: Int, rep, r): Set<PErr> =>
+  firstRefusedArm(arms, (a) => armRefusedAt(a, i, rep, r),
+                  "this pattern cannot serve a position of a multi-subject match")
+
+fun firstRefusedArm(arms: List<PArm>, refused: (:PArm): Bool, message: String): Set<PErr> => match(firstWhere(arms, refused))
+  (a: PArm) => oneErr(a.parmLine, message)
+  ()        => noErrs()
+
+fun armRefusedAt(a: PArm, i: Int, rep, r) => match(positionPattern(a, i))
+  (pat: Spec) => !Bootstrap::Codegen::reprTestsPosition(rep, pat, r)
+  ()          => false
+
+# The pattern an arm puts at position `i` (0 is the arm's own type).
+fun positionPattern(a: PArm, i: Int): Spec|None => i == 0
+  ? a.armType
+  : match(head(drop(a.armExtra, i - 1)))
+    (p: PPos) => p.posType
+    ()        => None
+
+# Checked for EVERY match, not only multi-subject ones: the mismatch runs both
+# ways, and `match(a)` with a two-pattern arm is the commoner mistake. Gating
+# this on `matchExtra` being non-empty missed exactly that case.
+fun multiSubjectErrs(mt: PeMatch) => arityErrs(mt.arms, 1 + countOf(mt.matchExtra), noErrs())
+
+# Accumulator-threaded so the self-call stays in TAIL position — wrapping it
+# in `union(...)` would not be one.
+fun arityErrs(as2: List<PArm>, want, acc: Set<PErr>) =>
+  fold(as2, acc, (a, x) => union(a, armArityErr(x, want)))
+
+fun armArityErr(a: PArm, want)
+  let got = 1 + countPos(a.armExtra)
+  ret isElseArmC(a) || got == want
+    ? noErrs()
+    : oneErr(a.parmLine, "match arm has " + String(got) + " pattern"
+             + (got == 1 ? "" : "s") + " but the match has " + String(want)
+             + " subject" + (want == 1 ? "" : "s"))
+
+fun countPos(ps: List<PPos>) => fold(ps, 0, (n, p) => n + 1)
+
+fun isElseArmC(a: PArm) => isNoneSpec3(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
+
+fun isNoneSpec3(sp: Spec|None) => match(sp)
+  (s2: Spec) => false
+  ()         => true
+
+fun anyArmLiterals(as2: List<PArm>) => any(as2, (a) => !isEmpty(a.armLiterals))
+
+fun isPrimitiveSubject(st) => match(st)
+  (b: SBuiltin) => isPrimitiveMatchType(b.sbName)
+  (o: Spec)     => false
+
+fun unionHasPrimitive(st) => match(st)
+  (cm: SCombination) => anyPrimMember(cm.scTypes)
+  (o: Spec)          => false
+
+fun anyPrimMember(ms: List<Spec>) => any(ms, anyPrimMemberStep)
+
+fun anyPrimMemberStep(x: Spec) => match(x)
+  (b: SBuiltin) => b.sbName == "bigint" || b.sbName == "str"
+  (o: Spec) => false
+
+fun isEnumOrUnion(st) => match(st)
+  (e2: SEnum)        => true
+  (cm: SCombination) => true
+  (o: Spec)          => false
+
+fun matchArmChecks(as2: List<PArm>, st, r, expected: Spec|None, acc) =>
+  fold(as2, acc, (a, x) => union(a, checkArm(x, st, r, expected)))
+
+# A bound else arm's binding is the whole subject, exactly as in compile;
+# every later position binds its own name at its declared type
+# (_extra_binding_resolver).
+fun checkArm(a: PArm, st, r, expected: Spec|None): Set<PErr>
+  let bodyR = extraScope(a.armExtra, chain2(List<Spec|None>()),
+                         bindingScope(a, armHasNoType(a) ? st : a.armType, r))
+  let typeErr = checkSpecOpt(a.armType, r)
+  let bodyErr = checkExpr(a.armBody, bodyR, expected)
+  let guardErr = armGuardErrs(a, bodyR, r)
+  let litErr = fold(a.armLiterals, noErrs(), (acc, l) => union(acc, checkLiteral(l, r)))
+  ret union(typeErr,
+      union(bodyErr,
+      union(litErr,
+      union(guardErr, union(elseGuardErr(a), mixedKindErr(a))))))
+
+# Each literal of a literal arm checks as an expression; a RANGE also checks
+# its bounds (MatchRange.check): same width, not empty, and numeric.
+fun checkLiteral(l: PLit, r): Set<PErr> => match(l)
+  (e2: PlExpr)  => checkExpr(e2.litExpr, r, None)
+  (rg: PlRange) => union(checkExpr(rg.rangeLo, r, None),
+                   union(checkExpr(rg.rangeHi, r, None), rangeBoundErrs(rg)))
+
+fun rangeBoundErrs(rg: PlRange): Set<PErr> => match(rg.rangeLo)
+  (lo: PeInt)   => match(rg.rangeHi)
+    (hi: PeInt) => lo.precision != hi.precision
+      ? oneErr(rg.plrLine, "range bounds must be the same integer type")
+      : lo.value > hi.value
+        ? oneErr(rg.plrLine, emptyRange(String(lo.value), String(hi.value)))
+        : noErrs()
+    (o: PExpr)  => notNumericRange(rg)
+  (lo: PeFloat) => match(rg.rangeHi)
+    # Precision 0 is the unsuffixed literal — it narrows to context.
+    (hi: PeFloat) => lo.fPrecision != 0 && hi.fPrecision != 0 && lo.fPrecision != hi.fPrecision
+      ? oneErr(rg.plrLine, "range bounds must be the same float type")
+      : floatOf(lo.floatText) > floatOf(hi.floatText)
+        ? oneErr(rg.plrLine, emptyRange(Bootstrap::Ir::floatRepr(floatOf(lo.floatText)),
+                                        Bootstrap::Ir::floatRepr(floatOf(hi.floatText))))
+        : noErrs()
+    (o: PExpr)    => notNumericRange(rg)
+  (o: PExpr)    => notNumericRange(rg)
+
+fun emptyRange(lo: String, hi: String) => "empty range: " + lo + " .. " + hi + " matches nothing"
+
+fun notNumericRange(rg: PlRange) => oneErr(rg.plrLine,
+    "range bounds must both be integers (or chars) or both floats")
+
+# The literal's value as Python's `float(text)` reads it (`_` separators dropped).
+fun floatOf(text: String): Float => parseFloat(join(split(text, "_"), "")) ?? 0.0
+
+# The else arm must stay TOTAL — the match's coverage guarantee rests on it.
+fun elseGuardErr(a: PArm) => hasGuard(a) && armIsElse(a)
+  ? oneErr(a.parmLine,
+           "a guard is not allowed on the else arm — put the guarded case "
+           + "in its own arm before it")
+  : noErrs()
+
+fun armIsElse(a: PArm) => isEmpty(a.armLiterals) && armHasNoType(a)
+
+fun armHasNoType(a: PArm) => match(a.armType)
+  (t2: Spec) => false
+  ()         => true
+
+# One arm, one literal KIND (a range counts as its lo's kind).
+fun mixedKindErr(a: PArm)
+  if sizeAtMost(a.armLiterals, 1)
+    ret noErrs()
+  let kinds = litKinds(a.armLiterals, List())
+  ret sizeAtLeast(kinds, 2)
+    ? oneErr(a.parmLine,
+             "all literals in one arm must be the same kind (integers, floats or strings)")
+    : noErrs()
+
+fun litKinds(ls: List<PLit>, acc: List<String>) =>
+  fold(ls, acc, (a, x) => addNameOnce(a, litKind(x)))
+
+fun litKind(l) => match(l)
+  (e2: PlExpr)  => exprKind(e2.litExpr)
+  (rg: PlRange) => exprKind(rg.rangeLo)
+
+fun exprKind(x) => match(x)
+  (s2: PeStr)   => "str"
+  (f: PeFloat)  => "float"
+  (o: PExpr)    => "int"
+
+fun armGuardErrs(a: PArm, bodyR, r: Resolver): Set<PErr> => match(a.armGuard)
+  (g2: PExpr) => union(checkExpr(g2, bodyR, None),
+                        guardBoolErr(a, g2, bodyR))
+  ()          => noErrs()
+
+fun guardBoolErr(a: PArm, g2, bodyR) => match(exprType(g2, bodyR))
+  (b: SBuiltin) => b.sbName == "bool"
+    ? noErrs()
+    : oneErr(a.parmLine, "a match guard must be a Bool")
+  (o: Spec)     => oneErr(a.parmLine, "a match guard must be a Bool")
+  ()            => noErrs()
+
+fun genMatchTo(mt: PeMatch, r, expected) => genMatch(mt, r, expected)

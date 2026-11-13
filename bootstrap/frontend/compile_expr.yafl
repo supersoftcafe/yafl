@@ -17,6 +17,10 @@
 # A compile also yields any GLOBAL statements it created (a lambda becomes a
 # top-level function, a literal becomes an interned global): they flow up to
 # the driver, which adds them to the statement set for the next pass.
+#
+# LAYOUT: each node kind's own compile lives with the rest of that node in
+# bootstrap/nodes/ (one file per kind, as pyast/); this file keeps the
+# helpers several node kinds share.
 namespace Bootstrap::Frontend
 
 import System
@@ -28,7 +32,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 # The result of compiling an expression: the rewritten node, the globals its
@@ -49,317 +53,16 @@ fun converted(x, expected: Spec|None, r) => match(expected)
 fun convertedOut(out: ExprOut, expected: Spec|None, r)
   ret ExprOut(converted(out.eoExpr, expected, r), out.eoGlobals, out.eoHints)
 
-# A Convert node RE-COMPILES its inner every pass (Python conversion.py:56):
-# the inner compiles with NO expected type — this node is the adapter to the
-# receiver, and feeding the receiver's type back down would make the inner
-# wrap itself again. The wrap is inserted over ground TYPES, but a NAME inside
-# may still be waiting on its unique spelling — freezing the subtree here
-# would strand it bare forever (the whole-program corpus caught exactly that:
-# `Err("bad", st.pos)` in a union slot kept `pos` unresolved). The receiver's
-# view wins: a ground expected that differs from our target means the receiver
-# WIDENED since this wrap was inserted — retarget to it. The wrap dissolves
-# when no conversion remains.
-fun compileConvert(cv: PeConvert, r, expected: Spec|None)
-  let inner = compileExpr(cv.convInner, r, None)
-  let spec = compileSpec(cv.convTarget, r)
-  let target = retargeted(spec.soSpec, expected)
-  # The wrapped load still expects the receiver's type.
-  let hints = mergeHints(inner.eoHints, loadHint(r, inner.eoExpr, target))
-  ret needsConversion(r, exprType(inner.eoExpr, r), target)
-    ? ExprOut(PeConvert(inner.eoExpr, target, cv.pecvLine),
-              concat(inner.eoGlobals, spec.soGlobals), hints)
-    : ExprOut(inner.eoExpr, concat(inner.eoGlobals, spec.soGlobals), hints)
-
-# The hint a load of `x` leaves when its receiver expects `expected`.
-fun loadHint(r, x, expected: Spec) => match(x)
-  (nm: PeName) => match(soleItem(findData(r, nm.refName)))
-    (f: Found) => nameHint(f, f.fName, expected)
-    ()         => noHints()
-  (o: PExpr)   => noHints()
-
-fun retargeted(target, expected: Spec|None) => match(expected)
-  (e2: Spec) if isConcrete(e2) && uid(e2) != "" && uid(e2) != uid(target) => e2
-  ()         => target
-
 # ── `??`: ending an option ───────────────────────────────────────────────────
 # PeCoalesce lives only until the subject's type is ground, then becomes the
 # match it means. Mirrors pyast/expression/coalesce.py; see nodes.yafl for why
 # this cannot be parse-time sugar.
 
-fun compileCoalesce(qq: PeCoalesce, r, expected)
-  # The subject compiles with NO expected type: pushing the receiver's type
-  # down would land the fallback's type on the option and defeat the
-  # narrowing. This compile is also how the subject's type becomes known,
-  # which is what decides whether the node can dissolve yet.
-  let subj = compileExpr(qq.qqSubject, r, None)
-  ret match(exprType(subj.eoExpr, r))
-    # A placeholder from outside this scope is a hole, not a type: a partly
-    # bound generic call reads `V|None` until V is bound.
-    (st: Spec) => isConcrete(st) && !hasFreePlaceholders(st, r)
-      ? coalesceOn(qq, subj, st, r, expected)
-      : coalesceStay(qq, subj, r, expected)
-    ()         => coalesceStay(qq, subj, r, expected)
-
-fun coalesceOn(qq: PeCoalesce, subj: ExprOut, st, r,
-               expected) => match(withoutNone(st))
-  (nr: Spec) => coalesceDesugar(qq, nr, r, expected)
-  ()         => coalesceStay(qq, subj, r, expected)
-
-# Not ground yet: keep the node, with both children advanced one pass.
-fun coalesceStay(qq: PeCoalesce, subj: ExprOut, r,
-                 expected)
-  let fb = compileExpr(qq.qqFallback, r, expected)
-  ret ExprOut(PeCoalesce(subj.eoExpr, fb.eoExpr, qq.peqqLine),
-              concat(subj.eoGlobals, fb.eoGlobals),
-              mergeHints(subj.eoHints, fb.eoHints))
-
-# `match(subject) (v: narrowed) => v ; () => fallback`.
-#
-# The binder is keyed on the FALLBACK's position. `a ?? b ?? c` folds
-# left-associatively and every node in that fold carries the LEFT operand's
-# line, so armUniqueName — which appends the arm line's hash — would hand both
-# arms the same name and the two would define one SSA value. The fallbacks are
-# what differ.
-# Desugars from the ORIGINAL children, discarding the probe compile above.
-# compileMatch compiles its own subject and arms, so handing it already-
-# compiled ones compiles each TWICE — and a compile is not idempotent for
-# anything that LIFTS: a lambda in the subject became two
-# `$lambdas::lambda@...` globals and the two compilers disagreed about which
-# survived. Recompiling from the original is deterministic and yields one.
-fun coalesceDesugar(qq: PeCoalesce, narrowed, r,
-                    expected: Spec|None): ExprOut
-  let subject = qq.qqSubject
-  let fallback = qq.qqFallback
-  let lr = qq.peqqLine
-  let fl = exprLine(fallback)
-  let binder = "$qq" + hash6(fl.plFile, fl.plLine, fl.plCol)
-  let hit = PArm(binder, narrowed, PeName(binder, List(), lr),
-                 List(), None, lr, List())
-  let els = PArm("", None, fallback, List(), None, lr, List())
-  # The arms MUST be given a target. A match's arms converge on the RECEIVER's
-  # type, and that is what makes each arm wrap itself when they differ — which
-  # they do whenever the fallback is itself an option (`a ?? b ?? c`: hit arm
-  # `T`, fallback `T|None`). With no receiver the arms stay unconverted while
-  # the match's own type is their join, and codegen aborts on the mismatch.
-  let target = match(expected)
-    (e2: Spec) => e2
-    ()         => join(narrowed, exprType(fallback, r))
-  ret compileMatch(PeMatch(subject, list2(hit, els), lr, List()), r, target)
-
 # ── the pass ────────────────────────────────────────────────────────────────
-
-fun compileExpr(x, r, expected): ExprOut => match(x)
-  # A literal's ONLY conversion is boxing into a union slot.
-  (i: PeInt)     => noGlobals(converted(x, expected, r))
-  (f: PeFloat)   => noGlobals(converted(x, expected, r))
-  (b: PeBool)    => noGlobals(converted(x, expected, r))
-  (st: PeStr)    => noGlobals(converted(x, expected, r))
-  (rx: PeRegex)  => noGlobals(converted(x, expected, r))
-  (ng: PeNothing) => noGlobals(x)          # nothing has no type to convert
-  # tail_loop lowering only — never present during the fixpoint; Python's
-  # compile returns (self, []) for both.
-  (lp: PeLoop)    => noGlobals(x)
-  (rc: PeRecur)   => noGlobals(x)
-  (lz: PeLazy)    => noGlobals(x)
-  (nm: PeName)   => compileName(nm, r, expected)
-  (d: PeDot)     => compileDot(d, r, expected)
-  (c: PeCall)    => compileCall(c, r, expected)
-  (tp: PeTuple)  => compileTuple(tp, r, expected)
-  (te: PeTernary) => compileTernary(te, r, expected)
-  (bk: PeBlock)  => compileBlock(bk, r, expected)
-  (mt: PeMatch)  => compileMatch(mt, r, expected)
-  (op: PeBuiltinOp) => compileBuiltinOp(op, r, expected)
-  (ps: PePinSet) => compilePinSet(ps, r, expected)
-  (nw: PeNew)    => compileNew(nw, r, expected)
-  (ne: PeNewEnum) => compileNewEnum(ne, r, expected)
-  (ar: PeArrayRead) => compileArrayRead(ar, r, expected)
-  (lm: PeLambda) => compileLambda(lm, r, expected)
-  (wx: PeWith)   => compileWith(wx, r, expected)
-  (cv: PeConvert) => compileConvert(cv, r, expected)
-  (qq: PeCoalesce) => compileCoalesce(qq, r, expected)
-
-# A name RESOLVES: once its declaration is known the node carries the unique
-# (hashed) name. Never commit against an INCOMPLETE search — the candidate
-# that should win may not be visible yet; overloads disambiguate by the
-# EXPECTED SHAPE (resolveOverloads); a MEMBER-scoped hit rewrites to
-# `this.field`; a TRAIT hit records which interface instantiation won (the
-# disambiguation cache — excluded from identity). An unresolved name returns
-# UNTOUCHED: no type-param compile, no conversion.
-fun compileName(nm, r, expected: Spec|None)
-  let bag = findData(r, nm.refName)
-  ret contains(nm.refName, "@")
-    ? hashedName(nm, bag, r, expected)
-    : unhashedName(nm, bag, r, expected)
-
-# Already committed: the ambiguity check is skipped, but the type-param step
-# below still reruns (inference may only ground on a later pass). The search
-# can still be blocked for a pass (statements arriving mid-fixpoint), and a
-# use that says nothing YET must say so, as an uncommitted one does —
-# otherwise its owner's parameter inference reads the silence as complete.
-fun hashedName(nm, bag: Findings, r, expected: Spec|None)
-  if !bag.bComplete
-    ret ExprOut(nm, List(), unsettled())
-  ret match(soleItem(bag))
-    (f: Found) => finishName(nm, f, nm.refName, nm.penTrait, r, expected)
-    ()         => noGlobals(nm)
-
-fun unhashedName(nm, bag: Findings, r,
-                 expected: Spec|None)
-  if !bag.bComplete
-    ret ExprOut(nm, List(), unsettled())
-  ret match(soleOf(resolveOverloads(r, expected, bag.bItems)))
-    (f: Found) => match(f.fScope)
-      (m: ScMember) => memberRewrite(nm, f)
-      (o: RScope)   => traitCommit(nm, f, r, expected)
-    ()         => noGlobals(nm)
-
-# A generic ambient instance's member commits only once the use site binds
-# every instance placeholder (the SOLVED scope is what the node records);
-# until then leave the use unresolved and let a later pass retry.
-fun traitCommit(nm, f: Found, r,
-                expected: Spec|None): ExprOut => match(f.fInstanceParams)
-  (own: List<String>) => isEmpty(own)
-    ? finishName(nm, f, f.fName, wonTraitScope(f), r, expected)
-    : traitCommitSolved(nm, f, solveInstanceScope(f, own, expected, r), r,
-                        expected)
-  ()                  => finishName(nm, f, f.fName, wonTraitScope(f),
-                                    r, expected)
-
-fun traitCommitSolved(nm, f: Found, solved, r,
-                      expected: Spec|None): ExprOut => match(solved)
-  (sc: Spec) => finishName(nm, f, f.fName, classTraitScope(solved),
-                           r, expected)
-  ()         => noGlobals(nm)
-
-# A MEMBER hit becomes `this.field`, returned BARE — the dot compiles in full
-# on the next visit.
-fun memberRewrite(nm: PeName, f: Found)
-  ret noGlobals(PeDot(PeName("this", List(), nm.penLine),
-                      f.fName, nm.penLine))
-
-fun wonTraitScope(f: Found): Spec|None => match(f.fScope)
-  (t2: ScTrait) => classTraitScope(f.fTraitScope)
-  (o: RScope)   => None
-
-fun classTraitScope(ts): Spec|None => match(ts)
-  (c: SClass) => ts
-  ()          => None
-
-# Fill or refresh this use's type arguments from the enclosing call's expected
-# type (use_site_type_params) — runs while any supplied argument still carries
-# a hole, keeping a partial result's placeholders for a later pass — then
-# compile them like any spelled type params.
-fun finishName(nm: PeName, f: Found, newName,
-               traitScope, r,
-               expected: Spec|None)
-  let inferred = useSiteTypeParams(f.fStmt, nm.refTypeParams, expected, r)
-  let tps = compileParams(inferred, r)
-  let out = PeName(newName, tps.psSpecs, nm.penLine, traitScope)
-  ret ExprOut(converted(out, expected, r), tps.psGlobals,
-              nameHint(f, newName, expected))
 
 fun nameHint(f: Found, name: String, expected: Spec|None) => match(expected)
   (e2: Spec) => registersHint(f, expected) ? hintOf(name, e2, false) : noHints()
   ()         => noHints()
-
-# A lambda: its parameters join the scope. An un-annotated parameter must fit
-# its body's uses and accept what the expected signature passes it (hints).
-# The lambda's own type is rebuilt each pass: the parameters as actually
-# compiled (only when fully ground — a placeholder mid-resolution keeps the
-# original), and the result preferring the call site's expected type so a
-# narrower body widens via boxing.
-fun compileLambda(lm: PeLambda, r0, expected: Spec|None): ExprOut
-  let r = localScope(paramLets(lm.lamParams), r0)
-  let prm = compileStmt(lm.lamParams, r, None)
-  let subExpected = expectedResult(expected)
-  let body = compileExpr(lm.lamBody, r, subExpected)
-  let newParams = inferredParams(stmtOr(prm, lm.lamParams),
-                                 mergeHints(body.eoHints,
-                                            passedHints(lm.lamParams, expected)),
-                                 r)
-  # A lambda flowing into a union is converted there, like any expression.
-  ret convertedOut(ExprOut(PeLambda(newParams, body.eoExpr, lm.pelLine,
-                                    SCallable(reportedParams(newParams, lm.lamParams),
-                                              lambdaResult(subExpected,
-                                                           exprType(body.eoExpr, r), r),
-                                              lm.pelLine)),
-                           concat(prm.soExtra, body.eoGlobals),
-                           hintsWithout(body.eoHints, letNames(flattenParams(lm.lamParams)),
-                                        Set())),
-                   expected, r0)
-
-# What the expected signature passes each parameter: a LOWER hint.
-fun passedHints(params, expected: Spec|None) => match(expected)
-  (c: SCallable) => match(c.scParams2)
-    (tp: STuple) => sameLen(tp.stEntries, paramLets(params))
-      ? passedLoop(paramLets(params), tp.stEntries, noHints())
-      : noHints()
-    (o: Spec)    => noHints()
-  ()             => noHints()
-
-fun passedLoop(ps: List<PStmt>, es: List<SEntry>, acc: Dict<String, List<Hint>>) =>
-  zipFold(ps, es, acc, (a, p, e) => mergeHints(a, passedHint(p, e.seType)))
-
-fun passedHint(p: PStmt, ty: Spec|None) => match(ty, p)
-  (t2: Spec, l: PsLet) => hintOf(l.lName, t2, true)
-  ()                   => noHints()
-
-fun expectedResult(expected: Spec|None) => match(expected)
-  (c: SCallable) => c.scResult
-  ()             => None
-
-# Prefer the expected result when the body's type fits it — the lambda widens
-# via boxing and the call's parameter check sees matching types.
-fun lambdaResult(subExpected, bodyTy,
-                 r): Spec|None => match(subExpected, bodyTy)
-  (se: Spec, bt: Spec) => isConcrete(se) && triTrue(assignableFrom(r, se, bt))
-    ? subExpected
-    : bodyTy
-  ()                   => bodyTy
-
-# The parameter types the body was ACTUALLY compiled against — but only when
-# fully ground; otherwise the original spelling (avoids reporting an
-# unresolved generic mid-resolution).
-fun reportedParams(compiled, original)
-  let threaded = paramsTupleOf(compiled)
-  ret uid(threaded) != "" ? threaded : paramsTupleOf(original)
-
-# A field read: the base compiles with NO expectation (it is not the value the
-# receiver wants), then the read owns its own conversion. An ENUM-typed base
-# resolves a bare member through the enum's NARROWING (below).
-fun compileDot(d: PeDot, r, expected: Spec|None)
-  let base = compileExpr(d.base, r, None)
-  let out = PeDot(base.eoExpr, dotMemberName(d, base.eoExpr, r, expected),
-                  d.pedLine, d.pedIndex)
-  ret ExprOut(converted(out, expected, r), base.eoGlobals, base.eoHints)
-
-fun dotMemberName(d: PeDot, base, r,
-                  expected: Spec|None) => match(exprType(base, r))
-  (bt: Spec) => match(bt)
-    (e2: SEnum) => contains(d.member, "@")
-      ? d.member
-      : narrowedName(enumMember(r, e2, d.member), d.member)
-    # A CLASS member resolves on the DECLARATION — constructor params and
-    # body statements, then implemented interfaces — disambiguated by the
-    # expected shape.
-    (c2: SClass) => classDotName(d, c2, r, expected)
-    (o2: Spec)  => d.member
-  ()         => d.member
-
-fun classDotName(d: PeDot, c2: SClass, r,
-                 expected: Spec|None) => match(soleItem(findType(r, c2.scName)))
-  (f: Found) => match(f.fStmt)
-    (cs: PsClass) => match(soleOf(resolveOverloads(r, expected,
-                                                   classFindData(cs, r,
-                                                                 d.member))))
-      (m: Found) => m.fName
-      ()         => d.member
-    (o: PStmt)    => d.member
-  ()         => d.member
-
-fun narrowedName(n, fallback) => match(n)
-  (h: NfHit)    => h.nfName
-  (o: Narrowed) => fallback
 
 # ── the enum member ─────────────────────────────────────────────────────────
 # _enum_member: resolve a bare field name against a value of enum type e2 —
@@ -403,89 +106,6 @@ fun mapEnumField(r, receiver: SEnum, ft) => match(soleItem(findType(r, receiver.
       : ft
     (o: PStmt)   => ft
   ()         => ft
-
-# A call compiles its ARGUMENT first: the argument may itself be a generic
-# call whose result type only grounds once compiled — inferring the callee's
-# type params from the un-compiled argument would bind them to a placeholder-
-# bearing type that never monomorphises. While the argument's type has not
-# settled to a tuple, the callee is NOT recompiled and the call does not wrap
-# itself: retry next pass. Once it has, the CALLEE compiles against the full
-# shape this call site needs — CallableSpec(argument tuple, expected result).
-# NewEnumExpression.compile (new.py:185-210): thread each construction
-# argument's declared FIELD type down — the argument node owns any boxing
-# toward it; the constructed value owns its conversion to the receiver.
-fun compileNewEnum(ne: PeNewEnum, r, expected: Spec|None): ExprOut
-  let leafFields = cneLeafFields(ne, r)
-  let out = cneArgs(ne.fieldArgs, leafFields, r, List(),
-                    List(), noHints())
-  let e2 = PeNewEnum(ne.rootName, ne.leafName, out.cneFas, ne.neTypeParams,
-                     ne.penewLine)
-  ret ExprOut(converted(e2, expected, r), out.cneGlobals, out.cneHints)
-
-fun cneLeafFields(ne: PeNewEnum, r): List<PStmt> => match(soleItem(findType(r, ne.rootName)))
-  (f: Found) => match(f.fStmt)
-    (root: PsEnum) => cneLeafFieldsOf(ne, root)
-    (o: PStmt)     => List()
-  ()          => List()
-
-fun cneLeafFieldsOf(ne: PeNewEnum, root: PsEnum): List<PStmt> => match(asEnumVariant(root.eSpec))
-  (sp: SEnum) if contains(sp.seAllLeaves, ne.leafName) =>
-      forceNth(collectLeafFieldSets(root, List()), indexOfString(sp.seAllLeaves, ne.leafName, 0))
-  ()           => List()
-
-class [final] CneOut(cneFas: List<PFieldArg>, cneGlobals: List<PStmt>,
-                     cneHints: Dict<String, List<Hint>>)
-
-fun cneArgs(fas: List<PFieldArg>, leafFields: List<PStmt>, r, acc: List<PFieldArg>,
-            globals2, hints: Dict<String, List<Hint>>): CneOut =>
-  fold(fas, (acc = acc, globals2 = globals2, hints = hints),
-       (st, x) => cneArgsStep(st, x, leafFields, r))
-    |> (r2) => CneOut(r2.acc, r2.globals2, r2.hints)
-
-fun cneArgsStep(st: (acc: List<PFieldArg>, globals2: List<PStmt>, hints: Dict<String, List<Hint>>),
-                x: PFieldArg, leafFields: List<PStmt>, r) =>
-  compileExpr(x.faValue, r, letTypeOf(letNamed(leafFields, x.faName)))
-  |> (o) => (acc = append(st.acc,
-        PFieldArg(x.faName, o.eoExpr)),
-    globals2 = concat(st.globals2, o.eoGlobals),
-    hints = mergeHints(st.hints, o.eoHints))
-
-fun compileCall(c: PeCall, r, expected)
-  let before = paramShapeOf(calleeType(c.function, c.parameter, r))
-  let arg = compileExpr(c.parameter, r, before)
-  ret match(exprType(arg.eoExpr, r))
-    (tp: STuple) => callWithShape(c, r, arg, tp, expected, before)
-    ()           => partialCall(c, arg)
-
-fun partialCall(c: PeCall, arg: ExprOut)
-  ret ExprOut(PeCall(c.function, arg.eoExpr, c.pecLine), arg.eoGlobals,
-              arg.eoHints)
-
-fun callWithShape(c: PeCall, r, arg, tp,
-                  expected, before: Spec|None)
-  let fn = compileExpr(c.function, r, SCallable(tp, expected, c.pecLine))
-  let args = retriedArgs(arg, before,
-                         paramShapeOf(calleeType(fn.eoExpr, arg.eoExpr, r)),
-                         tp, r)
-  ret ExprOut(converted(PeCall(fn.eoExpr, args.eoExpr, c.pecLine), expected, r),
-              concat(fn.eoGlobals, args.eoGlobals),
-              mergeHints(fn.eoHints, args.eoHints))
-
-# The callee pinned just now: give the open arguments its parameter types.
-fun retriedArgs(arg, before: Spec|None, pinned, tp,
-                r) => match(pinned)
-  (p: Spec) => before is None && !isConcrete(tp)
-    ? againOver(arg, compileExpr(arg.eoExpr, r, pinned))
-    : arg
-  ()        => arg
-
-fun againOver(first: ExprOut, again: ExprOut)
-  ret ExprOut(again.eoExpr, concat(first.eoGlobals, again.eoGlobals),
-              again.eoHints)
-
-fun paramShapeOf(ft: Spec|None) => match(ft)
-  (cl: SCallable) => cl.scParams2
-  ()              => None
 
 # A tuple converges FIELD-WISE against a tuple receiver: each entry compiles
 # toward the field it BINDS (positionally, or by NAME — `f(5, bias = 7)`
@@ -618,23 +238,6 @@ fun invertLoop(ds: List<SEntry>, bs: List<Int>, acc: List<SEntry>) =>
 fun setAt(es: List<SEntry>, i: Int, v: SEntry) =>
   fold(es, (acc = List<SEntry>(), at = 0),
     (st, x) => (acc = append(st.acc, st.at == i ? v : x), at = st.at + 1)).acc
-
-# A branch threads the receiver's type into BOTH sides — each arm owns its own
-# conversion. A ternary is a two-arm match: the same rules apply.
-# With no receiver (a match subject, say) the ternary is its own: its arms land
-# in its branch type, so it owns their conversion into it — the result slot
-# generate sizes from that type would otherwise meet an unconverted arm.
-# Conversion only: its own, still-settling type is no evidence about the arms.
-fun compileTernary(te: PeTernary, r, expected: Spec|None)
-  let cond = compileExpr(te.condition, r, SBuiltin("bool", te.pety))
-  let own = match(expected)
-    (e2: Spec) => None
-    ()         => exprType(te, r)
-  let t2 = convertedOut(compileExpr(te.trueResult, r, expected), own, r)
-  let f = convertedOut(compileExpr(te.falseResult, r, expected), own, r)
-  ret ExprOut(PeTernary(cond.eoExpr, t2.eoExpr, f.eoExpr, te.pety),
-              concat(cond.eoGlobals, concat(t2.eoGlobals, f.eoGlobals)),
-              mergeHints(cond.eoHints, mergeHints(t2.eoHints, f.eoHints)))
 
 # The subject compiles first (no expectation). Its type is the bound ELSE
 # arm's binding type — only this level knows it — and, when its type arguments
@@ -773,7 +376,6 @@ fun extraScope(ps: List<PPos>, tys: List<Spec|None>, r) =>
 # Every pass that walks an arm body with a scope builds it here.
 fun armBodyScope(a: PArm, r) => extraScope(a.armExtra, chain2(List<Spec|None>()), bindingScope(a, a.armType, r))
 
-
 fun posScope(p: PPos, subjTy, r): Resolver => p.posName == "" || p.posName == "_"
   ? r
   : match(posBindType(p, subjTy))
@@ -897,6 +499,7 @@ fun isHoleParam(p: Spec, r) => match(p)
 
 class [final] LitsOut(loLits: List<PLit>, loGlobals: List<PStmt>,
                       loHints: Dict<String, List<Hint>>)
+
 class [final] LitOut(l1Lit: PLit, l1Globals: List<PStmt>,
                      l1Hints: Dict<String, List<Hint>>)
 
@@ -921,138 +524,9 @@ fun litRangeOut(rg: PlRange, lo: ExprOut, hi: ExprOut)
              concat(lo.eoGlobals, hi.eoGlobals),
              mergeHints(lo.eoHints, hi.eoHints))
 
-# A block defers to its VALUE: the receiver's type threads through to it, and
-# the block's own type is the value's.
-# A block's own lets are in scope for its statements AND for its value.
-fun compileBlock(bk: PeBlock, r0, expected): ExprOut
-  # A block is never top level, so every function declared in it is an INNER
-  # function: mark it (idempotent), so it establishes no trait scope of its
-  # own. Then fold any else-if chains among the statements (the first of the
-  # two fold sites; each if's branches fold their own).
-  let stmts = collapseElseIf(markInner(bk.blockStmts))
-  let r = blockScope(stmts, r0)
-  # Every statement receives the block's EXPECTED type (Python threads
-  # expected_type to each) — that is how a `ret` inside an if branch sees the
-  # function's return type and its value converges toward it.
-  let ss = compileStmts(stmts, r, expected, List(),
-                        List())
-  let v = compileExpr(bk.blockValue, r, expected)
-  ret ExprOut(PeBlock(ss.slStmts, v.eoExpr, bk.blockTag, bk.pebkLine),
-              concat(ss.slGlobals, v.eoGlobals),
-              withoutLocals(mergeHints(ss.slHints, v.eoHints), ss.slStmts))
-
-fun markInner(ss): List<PStmt> => markInnerB(ss, List())
-
-fun markInnerB(ss: List<PStmt>, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, markOne(x)))
-
-fun markOne(st) => match(st)
-  (f: PsFun) => f.fNested
-    ? st
-    : PsFun(f.fName, f.fAttrs, f.fGens, f.fParams, f.fBody, f.fRet,
-            f.fWheres, f.psfLine, f.fRetInferred, true, f.fImports, false)
-  (o: PStmt) => st
-
-# A primitive op owns its conversion — its result boxing into a union slot —
-# EXCEPT when it folds: an integer comparison of two bigint literals (the body
-# of Int's ==/</>) collapses to a Bool literal. The language has no true/false
-# token, so this fold is what lets a constant Bool become a literal and inline.
-fun compileBuiltinOp(op: PeBuiltinOp, r, expected: Spec|None)
-  let ps = compileExpr(op.opParams, r, None)
-  # The declared type may be a full spec (new_pinned's T): compile it so
-  # the name resolves like any declared type. SBuiltins compile to
-  # themselves, so the historical ops are untouched.
-  let ty = compileSpec(op.opType, r)
-  let out = PeBuiltinOp(ty.soSpec, op.opName, ps.eoExpr, op.peboLine)
-  ret match(foldConstCompare(out))
-    (b: PExpr) => ExprOut(b, concat(ps.eoGlobals, ty.soGlobals), ps.eoHints)
-    ()         => ExprOut(converted(out, expected, r), concat(ps.eoGlobals, ty.soGlobals),
-                          ps.eoHints)
-
-# The value is received by the FIELD's type, as `:=` receives it (a Node into a
-# `Node|None`); the answer converts to what the caller expects.
-fun compilePinSet(ps: PePinSet, r, expected: Spec|None)
-  let sb = compileExpr(ps.psSubject, r, None)
-  let tg = compileExpr(ps.psTarget, r, None)
-  let vl = compileExpr(ps.psValue, r, exprType(tg.eoExpr, r))
-  let out = PePinSet(sb.eoExpr, tg.eoExpr, vl.eoExpr, ps.pepsLine)
-  ret ExprOut(converted(out, expected, r),
-              concat(sb.eoGlobals, concat(tg.eoGlobals, vl.eoGlobals)),
-              mergeHints(sb.eoHints, mergeHints(tg.eoHints, vl.eoHints)))
-
-# Takes the ROOT type: an enum-variant constructor yields the root, so a caller
-# that has just built a PeBuiltinOp cannot pass it as one.
-fun foldConstCompare(x) => match(x)
-  (op: PeBuiltinOp) => foldOp(op)
-  (o: PExpr)        => None
-
-fun foldOp(op: PeBuiltinOp)
-  if !isBoolBuiltin(op.opType)
-    ret None
-  ret match(opName(op.opName))
-    (nm: String) => foldWith(nm, op)
-    ()           => None
-
-fun isBoolBuiltin(sp) => match(sp)
-  (b: SBuiltin) => b.sbName == "bool"
-  (o: Spec)     => false
-
 fun opName(x) => match(x)
   (s2: PeStr) => s2.strValue
   (o: PExpr)  => None
-
-fun foldWith(nm, op: PeBuiltinOp)
-  if nm != "integer_test_eq" && nm != "integer_test_lt" && nm != "integer_test_gt"
-    ret None
-  ret match(twoBigints(op.opParams))
-    (p: IntPair) => PeBool(compareInts(nm, p.ipLeft, p.ipRight), op.peboLine)
-    ()           => None
-
-class [final] IntPair(ipLeft: Int, ipRight: Int)
-
-# Both operands must be UNSUFFIXED (precision 0) integer literals — a sized
-# literal is a different type and does not fold here.
-fun twoBigints(params) => match(params)
-  (tp: PeTuple) => exactly(tp.exprs, 2) ? pairOf(tp) : None
-  (o: PExpr)    => None
-
-fun pairOf(tp: PeTuple) => match(bigintAt(tp.exprs, 0))
-  (a: Int) => match(bigintAt(tp.exprs, 1))
-    (b: Int) => IntPair(a, b)
-    ()       => None
-  ()       => None
-
-fun bigintAt(es: List<PTupEnt>, i) => match(head(drop(es, i)))
-  (en: PTupEnt) => bigintOf(en.tupValue)
-  ()            => None
-
-fun bigintOf(x) => match(x)
-  (i: PeInt) => i.precision == 0 ? i.value : None
-  (o: PExpr) => None
-
-fun compareInts(nm, a: Int, b: Int) => nm == "integer_test_eq" ? a == b
-  : nm == "integer_test_lt" ? a < b
-  : a > b
-
-fun compileNew(nw: PeNew, r, expected: Spec|None)
-  let ty = compileSpec(nw.newType, r)
-  let arg = compileExpr(nw.newParam, r, paramsTupleOfSpec(ty.soSpec))
-  let out = PeNew(ty.soSpec, arg.eoExpr, nw.penwLine)
-  ret ExprOut(converted(out, expected, r),
-              concat(ty.soGlobals, arg.eoGlobals), arg.eoHints)
-
-fun paramsTupleOfSpec(sp) => match(sp)
-  (t2: STuple) => t2
-  (o: Spec)    => None
-
-fun compileArrayRead(ar: PeArrayRead, r, expected: Spec|None)
-  let obj = compileExpr(ar.arrObj, r, None)
-  let idx = compileExpr(ar.arrIndex, r, SBuiltin("int32", ar.pearLine))
-  let out = PeArrayRead(obj.eoExpr, idx.eoExpr, ar.pearLine)
-  ret ExprOut(converted(out, expected, r),
-              concat(obj.eoGlobals, idx.eoGlobals),
-              mergeHints(obj.eoHints, idx.eoHints))
-
 
 # ── `with subject(name = value, …)` — EXPANDS here once types resolve ───────
 # Mirror of WithExpression.__expand, name for name (tags from the with's own
@@ -1064,202 +538,6 @@ fun compileArrayRead(ar: PeArrayRead, r, expected: Spec|None)
 #              match($ws) (x: Leaf) => Leaf(…) … )     [or a direct ctor]
 #
 # Shape/visibility problems leave the node UNEXPANDED; checkWith reports.
-
-fun compileWith(wx: PeWith, r, expected: Spec|None)
-  let subj = compileExpr(wx.withSubject, r, None)
-  let reps = compileExpr(wx.withRepls, r, None)
-  let node: PExpr = PeWith(subj.eoExpr, reps.eoExpr, wx.pewLine)
-  let glb = concat(subj.eoGlobals, reps.eoGlobals)
-  let hints = mergeHints(subj.eoHints, reps.eoHints)
-  ret match(node)
-    (nw: PeWith) => withShapeError(nw) != ""
-      ? ExprOut(node, glb, hints)
-      : match(withExpand(nw, r))
-        (x: PExpr) => ExprOut(converted(x, expected, r), glb, hints)
-        ()         => ExprOut(node, glb, hints)
-    (o: PExpr)   => ExprOut(node, glb, hints)   # unreachable: node is built above
-
-fun withExpand(wx: PeWith, r) => match(exprType(wx.withSubject, r))
-  (c: SClass) => withExpandClass(wx, c, r)
-  (e2: SEnum) => withExpandEnum(wx, e2, r)
-  ()          => None
-
-fun withTag(lr: PLine) => hash6(lr.plFile, lr.plLine, lr.plCol)
-
-fun withEntryList(wx: PeWith) => match(wx.withRepls)
-  (tp: PeTuple) => tp.exprs
-  (o: PExpr)    => List()
-
-# The subject and each replacement bind ONCE; replacements are referred to by
-# their $w{i} names thereafter.
-fun withLets(wx: PeWith, tag, uniques: List<String>, r): List<PStmt>
-  let lr = wx.pewLine
-  # The subject let comes first and the per-entry lets follow in tuple order:
-  # these are STATEMENTS, so the order is the program.
-  let base = append<PStmt>(List(),
-                         PsLet("$ws@" + tag, List(), List(),
-                               None, wx.withSubject, "", List(), lr))
-  ret withReplLets(withEntryList(wx), 0, tag, lr,
-                         exprType(wx.withSubject, r), uniques, r, base)
-
-# Each replacement is typed as its FIELD, so the SAME guard compares like with like.
-fun withReplLets(es: List<PTupEnt>, i, tag, lr, subjTy: Spec|None, uniques: List<String>, r,
-                 acc): List<PStmt> =>
-  fold(es, (i = i, acc = acc), (st, x) => withReplLetsStep(st, x, tag, lr, subjTy, uniques, r)).acc
-
-fun withReplLetsStep(st: (i: Int, acc: List<PStmt>), x: PTupEnt, tag, lr, subjTy: Spec|None,
-                     uniques: List<String>, r) =>
-  (i = st.i + 1,
-  acc = append(st.acc,
-      PsLet("$w" + String(st.i) + "@" + tag, List(), List(),
-            withFieldType(subjTy, x.tupName, uniques, r),
-            x.tupValue, "", List(), lr)))
-
-fun withFieldType(subjTy: Spec|None, bare: String, uniques: List<String>, r) => match(subjTy)
-  (st: Spec) => match(head(filter(uniques, (u) => bareName(u) == bare)))
-    (u: String) => memberType(st, u, r)
-    ()          => None
-  ()         => None
-
-fun withReplRef(name: String, es: List<PTupEnt>, lr) => match(findIndex(es, (e) => e.tupName == name))
-  (i: Int) => PeName("$w" + String(i), List(), lr)
-  ()       => None
-
-# SAME guard: every replacement bit-identical to the current field.
-fun withGuard(wx: PeWith, lr) => withGuardLoop(withEntryList(wx), 0, None, lr)
-
-fun withGuardLoop(es: List<PTupEnt>, i, acc: PExpr|None, lr) =>
-  fold(es, (i = i, acc = acc), (st, x) => withGuardLoopStep(st, x, lr))
-    |> (r) => r.acc ?? PeBool(true, lr)
-
-fun withGuardLoopStep(st: (i: Int, acc: PExpr|None), x: PTupEnt, lr) =>
-  (i = st.i + 1,
-  acc = withAnd(st.acc,
-      PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_same", lr),
-                  PeTuple(list2(PTupEnt("", false,
-                           PeName("$w" + String(st.i), List(), lr)),
-                          PTupEnt("", false,
-                           PeDot(PeName("$ws", List(), lr),
-                                 x.tupName, lr))), lr), lr),
-      lr))
-
-fun withAnd(acc: PExpr|None, one, lr) => match(acc)
-  (a: PExpr) => PeTernary(a, one, PeBool(false, lr), lr)
-  ()         => one
-
-# Constructor call mixing carried fields with replacements.
-fun withConstruct(ctorName, fields: List<PStmt>, repls: List<PTupEnt>,
-                  carrier, lr) => PeCall(PeName(ctorName, List(), lr),
-                                         PeTuple(withCtorArgs(fields, repls, carrier, lr,
-                                                              List()), lr), lr)
-
-fun withCtorArgs(fs: List<PStmt>, repls: List<PTupEnt>, carrier, lr, acc: List<PTupEnt>) =>
-  fold(fs, acc, (a, x) => withCtorArgsStep(a, x, repls, carrier, lr))
-
-fun withCtorArgsStep(a: List<PTupEnt>, x: PStmt, repls: List<PTupEnt>, carrier, lr) => match(x)
-  (p: PsLet) => append(a, PTupEnt("", false, withCtorArg(bareName(p.lName), repls, carrier, lr)))
-  (o: PStmt) => a
-
-fun withCtorArg(bare, repls: List<PTupEnt>, carrier,
-                lr) => match(withReplRef(bare, repls, lr))
-  (rr: PExpr) => rr
-  ()          => PeDot(PeName(carrier, List(), lr), bare, lr)
-
-fun withExpandClass(wx: PeWith, c: SClass, r) => match(soleItem(findType(r, c.scName)))
-  (f: Found) => match(f.fStmt)
-    (cls: PsClass) => withNamesOk(wx, withBareNames(flattenParams(cls.cParams), List()))
-      ? withAssemble(wx,
-          withConstruct(cls.cName, flattenParams(cls.cParams),
-                        withEntryList(wx), "$ws", wx.pewLine),
-          withLetNames(flattenParams(cls.cParams)), r)
-      : None
-    (o: PStmt)     => None
-  ()         => None
-
-fun withLetNames(ls: List<PStmt>) => map(ls, withLetName)
-
-fun withLetName(p) => match(p)
-  (l: PsLet) => l.lName
-  (o: PStmt) => ""
-
-fun withNamesOk(wx: PeWith, visible: List<String>)
-  ret withNamesOkLoop(withEntryList(wx), visible)
-
-fun withNamesOkLoop(es: List<PTupEnt>, visible: List<String>) => all(es, (x) => contains(visible, x.tupName))
-
-fun withExpandEnum(wx: PeWith, e2: SEnum, r) => match(soleItem(findType(r, e2.seRoot)))
-  (f: Found) => match(f.fStmt)
-    (en: PsEnum) => withNamesOk(wx,
-                      withCoverBares(visibleFields(en, e2.sePath),
-                                     List()))
-      ? withEnumCopy(wx, en, e2,
-                     map(visibleFields(en, e2.sePath), (fd) => fd.sfName), r)
-      : None
-    (o: PStmt)   => None
-  ()         => None
-
-fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum, uniques: List<String>,
-                 r): PExpr|None
-  let lr = wx.pewLine
-  let tag = withTag(lr)
-  let leaves = withLeaves(en, List(),
-                          (List(), List()))
-  let valid = withValidLeaves(leaves.names, e2.seValidLeaves)
-  if isEmpty(valid)
-    ret None
-  if exactly(valid, 1) && isLevelOf(e2, valid)
-    # The subject IS the one leaf: its fields are its members, so no dispatch
-    # — they read through the binder-free subject, exactly as Python's
-    # single-arm special case.
-    ret withAssemble(wx,
-          withSingleLeaf(leaves.names, leaves.sets,
-                         wx, e2, lr),
-          uniques, r)
-  ret withAssemble(wx,
-        PeMatch(PeName("$ws", List(), lr),
-                withArms(leaves.names, leaves.sets, 0, tag,
-                         wx, e2, List()),
-                lr, List()),
-        uniques, r)
-
-# The subject's own level is the (sole) leaf in `valid`.
-fun isLevelOf(e2: SEnum, valid: List<String>) => match(head(takeLastOne(e2.sePath)))
-  (level: String) => eqStrs(list1(level), valid)
-  ()              => false
-
-fun withValidLeaves(ns, valid: List<String>): List<String> => withValidLoop(ns, valid, List())
-
-fun withValidLoop(ns: List<String>, valid: List<String>, acc: List<String>) =>
-  fold(ns, acc, (a, x) => contains(valid, x) ? append(a, x) : a)
-
-fun [tail] withSingleLeaf(ns: List<String>, sets: List<List<PStmt>>,
-                          wx: PeWith, e2: SEnum, lr) => match(head(ns))
-  (n: String) => match(head(sets))
-    (s: List<PStmt>) => contains(e2.seValidLeaves, n)
-      ? withConstruct(n, s, withEntryList(wx), "$ws", lr)
-      : withSingleLeaf(dropOne(ns), dropOne(sets), wx, e2, lr)
-    ()               => PeName("$ws", List(), lr)  # unreachable
-  ()          => PeName("$ws", List(), lr)  # unreachable
-
-fun withArms(ns: List<String>, sets: List<List<PStmt>>, i: Int,
-             tag, wx: PeWith, e2: SEnum, acc: List<PArm>) =>
-  zipFold(ns, sets, (i = i, acc = acc), (st, x, set) => withArmsStep(st, x, set, tag, wx, e2)).acc
-
-fun withArmsStep(st: (i: Int, acc: List<PArm>), x: String, set: List<PStmt>, tag, wx: PeWith, e2: SEnum) =>
-  (i = st.i + 1,
-   acc = contains(e2.seValidLeaves, x)
-     ? append(st.acc, PArm("$wx" + String(st.i) + "@" + tag,
-                           SNamed(x, List(), wx.pewLine),
-                           withConstruct(x, set, withEntryList(wx), "$wx" + String(st.i), wx.pewLine),
-                           List(), None, wx.pewLine, List()))
-     : st.acc)
-
-fun withAssemble(wx: PeWith, copy, uniques: List<String>, r)
-  let lr = wx.pewLine
-  ret PeBlock(withLets(wx, withTag(lr), uniques, r),
-              PeTernary(withGuard(wx, lr),
-                        PeName("$ws", List(), lr), copy, lr),
-              "", lr)
 
 # (leaf unique name, fields root-down), declaration order.
 fun withLeaves(st: PsEnum, inherited: List<PStmt>,

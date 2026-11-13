@@ -1,5 +1,9 @@
 # bootstrap/check_expr.yafl — Expression.check per kind, ported from the
 # check() methods in compiler/pyast/expression/. Message strings VERBATIM.
+#
+# LAYOUT: each node kind's own check lives with the rest of that node in
+# bootstrap/nodes/ (one file per kind, as pyast/); this file keeps the
+# helpers several node kinds share.
 namespace Bootstrap::Frontend
 
 import System
@@ -10,98 +14,17 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
+import Bootstrap::Nodes
 
-
-
-fun checkRecurArgs(as2: List<PExpr>, r, acc: Set<PErr>) =>
-  fold(as2, acc, (a, x) => union(a, checkExpr(x, r, None)))
-
-fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
-  (i: PeInt)      => noErrs()
-  (f: PeFloat)    => noErrs()
-  (b: PeBool)     => noErrs()
-  (s2: PeStr)     => noErrs()
-  (rx: PeRegex)   => oneErr(rx.perLine, "internal: regex literal was not lowered (lowering/regexes.py)")
-  (ng: PeNothing) => noErrs()
-  (nm: PeName)    => checkName(nm, r)
-  (d: PeDot)      => union(checkExpr(d.base, r, None), checkDot(d, r))
-  (c: PeCall)     => checkCall(c, r)
-  (tp: PeTuple)   => checkTupleExpr(tp, r, expected)
-  (te: PeTernary) => checkTernary(te, r, expected)
-  (lm: PeLambda)  => checkLambda(lm, r, expected)
-  (bk: PeBlock)   => checkBlock(bk, r, expected)
-  (mt: PeMatch)   => checkMatch(mt, r, expected)
-  (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
-  (ps: PePinSet)  => checkPinSet(ps, r)
-  (nw: PeNew)     => checkNew(nw, r)
-  (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2, fa) =>
-                          union(a2, checkExpr(fa.faValue, r, None)))
-  (ar: PeArrayRead) => union(checkExpr(ar.arrObj, r, None),
-                              checkExpr(ar.arrIndex, r, None))
-  (wx: PeWith)   => checkWith(wx, r)
-  (cv: PeConvert) => checkExpr(cv.convInner, r, None)
-  (qq: PeCoalesce) => union(checkExpr(qq.qqSubject, r, None),
-                            checkExpr(qq.qqFallback, r, expected))
-  # tail_loop lowering only — never present at check time; mirrored from
-  # loop.py's check methods for completeness.
-  (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
-  (rc: PeRecur)   => checkRecurArgs(rc.recArgs, r, noErrs())
-  (lz: PeLazy)    => noErrs()
 
 # ── NamedExpression ─────────────────────────────────────────────────────────
 # Duplicate-route resolutions of one statement are ONE candidate here (only in
 # check — compile/get_type keep the raw multiplicity as an unresolved signal).
 
-fun checkName(nm: PeName, r)
-  let tpErrs = checkSpecs(nm.refTypeParams, r, noErrs())
-  let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
-                            nm.penTrait, r)
-  if isEmpty(datas)
-    ret union(oneErr(nm.penLine, "Failed to resolve " + nm.refName), tpErrs)
-  ret match(soleOf(Bag(datas)))
-    # A generic AMBIENT instance member that never committed a solved scope:
-    # the use site could not bind the instance's placeholders — ambience
-    # applies to concrete types only, so a name-match alone is NOT a
-    # resolution (without this the template dies later, deep in codegen).
-    (f: Found) => unresolvedAmbient(nm, f)
-      ? union(oneErr(nm.penLine,
-                      "Failed to resolve " + bareOfUnique(nm.refName)
-                      + ": the ambient instance applies to concrete types"
-                      + " only — generic code needs its own `where` clause"),
-               tpErrs)
-      : union(callerTypeParamErrs(f.fStmt, nm.refTypeParams,
-                                   nm.penLine, r),
-               tpErrs)
-    ()         => union(oneErr(nm.penLine,
-                    "Ambiguous reference '" + nm.refName
-                    + "' — qualify it. Candidates: "
-                    + join(sort(dedupeStrs(foundNames(datas,
-                                                      List()))),
-                           ", ")),
-             tpErrs)
-
-fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
-  (own: List<String>) => !isEmpty(own) && match(nm.penTrait)
-    (c: Spec) => false
-    ()        => true
-  ()                  => false
-
-fun foundNames(ds: List<Found>, acc): List<String> =>
-  fold(ds, acc, (a, x) => append(a, x.fName))
-
 fun dedupeStrs(ss: List<String>) => ddsLoop(ss, List())
 
 fun ddsLoop(ss: List<String>, acc: List<String>) =>
   fold(ss, acc, addNameOnce)
-
-# _distinct_resolutions: several ROUTES to one statement are one candidate.
-fun distinctFinds(ds: List<Found>) => dfLoop(ds, List(), List())
-
-fun dfLoop(ds: List<Found>, acc: List<Found>, seen: List<String>) =>
-  fold(ds, (acc = acc, seen = seen),
-       (st, d) => contains(st.seen, d.fName)
-         ? st
-         : (acc = append(st.acc, d), seen = prepend(d.fName, st.seen))).acc
 
 # ── DotExpression ───────────────────────────────────────────────────────────
 
@@ -143,107 +66,6 @@ fun checkEnumDot(d: PeDot, e2: SEnum, r)
 # message sends them the wrong way. This node knows the argument types, so it
 # reports which arguments failed and what the candidates take. Only when
 # nothing accepts them: two candidates that both fit ARE ambiguous.
-
-fun checkCall(c: PeCall, r)
-  let calleeParams = paramShapeOf(exprType(c.function, r))
-  let fnErrs = checkExpr(c.function, r, None)
-  let argErrs = checkExpr(c.parameter, r, calleeParams)
-  # Only when the name HAS candidates. A name that resolves to nothing at all
-  # is a different situation with its own correct message; rerouting it here
-  # would change an established diagnostic for no gain.
-  if !isEmpty(fnErrs) && isEmpty(argErrs) && paramShapeMissing(calleeParams)
-       && !isEmpty(calleeCandidates(c, r))
-    ret match(exprType(c.parameter, r))
-      (tp: STuple) => anyCandidateAccepts(c, tp, r)
-        ? union(fnErrs, argErrs)
-        : add(noErrs(), unresolvedCallError2(c, tp, r))
-      ()           => union(fnErrs, argErrs)
-  let sub = union(fnErrs, argErrs)
-  if !isEmpty(sub)
-    ret sub
-  ret match(exprType(c.parameter, r))
-    (tp: STuple) => callShapeErrs(c, tp, r)
-    ()           => oneErr(c.pecLine, "parameter expression must be of TupleType")
-
-fun callShapeErrs(c: PeCall, ptype, r) => match(exprType(c.function, r))
-  (ft: Spec) => match(ft)
-    (cl: SCallable) => triFalse(assignableFrom(r, cl.scParams2, ptype))
-      ? oneErr(c.pecLine, "Parameters are not assignment compatible")
-      : noErrs()
-    (o: Spec)       => add(noErrs(), unresolvedCallError(c, ptype, ft, r))
-  ()         => add(noErrs(), unresolvedCallError2(c, ptype, r))
-
-fun calleeCandidates(c: PeCall, r) => match(c.function)
-  (nm: PeName) => findData(r, nm.refName).bItems
-  (o: PExpr)   => List()
-
-fun paramShapeMissing(sp: Spec|None) => match(sp)
-  (s2: Spec) => false
-  ()         => true
-
-# Does at least one overload of the callee accept these arguments? True means
-# the call really IS ambiguous — several readings fit and the author must
-# qualify. False means none fit, a different error with a different fix.
-# Narrowing goes through the same resolveOverloads the compile path uses, so
-# both agree about what "fits" (in particular about a candidate's own generic
-# parameters, which are wildcards it may bind).
-fun anyCandidateAccepts(c: PeCall, ptype, r) => match(c.function)
-  (nm: PeName) => candidatesAccept(findData(r, nm.refName).bItems, ptype, c, r)
-  (o: PExpr)   => false
-
-fun candidatesAccept(cands, ptype, c: PeCall,
-                     r) => isEmpty(cands)
-  ? false
-  : !isEmpty(resolveOverloads(r, SCallable(ptype, None, c.pecLine), cands))
-
-# The callee didn't resolve to a single callable. Say WHY in the author's
-# terms: the called name, the argument types, the candidate signatures.
-fun unresolvedCallError2(c: PeCall, ptype, r) => match(c.function)
-  (nm: PeName) => namedCallError(c, nm, ptype, r)
-  (o: PExpr)   => PErr(c.pecLine,
-                       "the value being called is not a function (its type is unknown)")
-
-fun unresolvedCallError(c: PeCall, ptype, ft: Spec, r) => match(c.function)
-  (nm: PeName) => namedCallError(c, nm, ptype, r)
-  (o: PExpr)   => PErr(c.pecLine,
-                       "the value being called is not a function (its type is "
-                       + typeStr(ft) + ")")
-
-fun namedCallError(c: PeCall, nm: PeName, ptype, r)
-  let name = backTicked(bareOfUnique(nm.refName))
-  let cands = findData(r, nm.refName).bItems
-  if isEmpty(cands)
-    ret PErr(c.pecLine, "no function named " + name + " is in scope")
-  let sigs = candidateSigs(cands, List())
-  if isEmpty(sigs)
-    ret match(firstNonCallable(cands))
-      (t2: Spec) => PErr(c.pecLine, name + " is not a function — it is a "
-                                    + typeStr(t2))
-      ()         => PErr(c.pecLine,
-                         "no " + name + " accepts arguments "
-                         + typeStr2(ptype) + " — candidates: ")
-  ret PErr(c.pecLine,
-           "no " + name + " accepts arguments " + typeStr2(ptype)
-           + " — candidates: " + join(sort(dedupeStrs(sigs)), "; "))
-
-fun backTicked(raw) => startsWith(raw, "`") ? raw : "`" + raw + "`"
-
-fun candidateSigs(cs: List<Found>, acc): List<String> =>
-  fold(cs, acc, candidateSigsStep)
-
-fun candidateSigsStep(a: List<String>, x: Found) => match(stmtType(x.fStmt))
-  (ty: Spec) => match(ty)
-    (cl: SCallable) => append(a, typeStr(ty))
-    (o: Spec) => a
-  () => a
-
-fun firstNonCallable(cs: List<Found>) => firstSome(cs, nonCallableType)
-
-fun nonCallableType(c: Found) => match(stmtType(c.fStmt))
-  (ty: Spec) => match(ty)
-    (cl: SCallable) => None
-    (o: Spec)       => ty
-  ()         => None
 
 # _type_str: a source-shaped rendering for diagnostics — never the internal
 # spec name.
@@ -312,94 +134,6 @@ fun joinMemberStrs(ms: List<Spec>, acc) =>
 
 # ── the rest ────────────────────────────────────────────────────────────────
 
-fun checkTernary(te: PeTernary, r, expected: Spec|None)
-  let condErr = checkExpr(te.condition, r, SBuiltin("bool", PLine("none", 0, 0)))
-  let trueErr = checkExpr(te.trueResult, r, expected)
-  let falseErr = checkExpr(te.falseResult, r, expected)
-  let selfErr = match(exprType(te, r))
-    (t2: Spec) => noErrs()
-    ()         => oneErr(te.pety, "Failed to resolve type of ternery expression")
-  ret union(condErr, union(trueErr, union(falseErr, selfErr)))
-
-fun checkNew(nw: PeNew, r)
-  let sub = union(checkSpec(nw.newType, r), checkExpr(nw.newParam, r, None))
-  if !isEmpty(sub)
-    ret sub
-  ret match(exprType(nw.newParam, r))
-    (tp: STuple) => match(nw.newType)
-      (c2: SClass) => noErrs()
-      (o: Spec)    => oneErr(nw.penwLine, "type must be ClassSpec")
-    ()           => oneErr(nw.penwLine, "parameter expression must be of TupleType")
-
-fun checkTupleExpr(tp: PeTuple, r, expected: Spec|None)
-  ret union(checkTupEnts2(tp.exprs, r, noErrs()),
-      union(spreadErrs(tp, r), unknownFieldErrs(tp, expected)))
-
-# A spread surviving to check never resolved to a tuple: compile expands `*x`
-# only once x's tuple arity is known.
-fun spreadErrs(tp: PeTuple, r): Set<PErr>
-  ret any(tp.exprs, (en) => en.tupSpread && !isTupleSpec(exprType(en.tupValue, r)))
-    ? Set(map(filter(tp.exprs, (en) => en.tupSpread && !isTupleSpec(exprType(en.tupValue, r))),
-              (en) => PErr(tp.petLine, "can only spread a tuple value: `*x` needs x to be a tuple")))
-    : noErrs()
-
-# A WRITTEN entry name is a binding request against THIS receiver: a name that
-# matches none of its fields is a mistake, not a coincidence.
-fun unknownFieldErrs(tp: PeTuple, expected: Spec|None): Set<PErr> => match(expected)
-  (st: STuple) => Set(map(filter(tp.exprs, (en) => en.tupName != ""
-                                    && !any(st.stEntries, (se) => se.seName != ""
-                                              && bareOfUnique(se.seName) == en.tupName)),
-                          (en) => PErr(tp.petLine, "the target tuple has no field named '"
-                                                   + en.tupName + "'")))
-  ()           => noErrs()
-
-fun checkTupEnts2(es: List<PTupEnt>, r, acc): Set<PErr> =>
-  fold(es, acc, (a, x) => union(a, checkExpr(x.tupValue, r, None)))
-
-fun checkLambda(lm: PeLambda, r0, expected: Spec|None): Set<PErr>
-  let r = localScope(paramLets(lm.lamParams), r0)
-  let sub = expectedResult(expected)
-  let prmErr = checkStmt2(lm.lamParams, r, None)
-  let bodyErr = checkExpr(lm.lamBody, r, sub)
-  let retErr = match(lm.lamRet)
-    (t2: Spec) => checkSpec(t2, r)
-    ()         => oneErr(lm.pelLine, "Lambda return type is unknown")
-  ret union(prmErr, union(bodyErr, retErr))
-
-fun checkBlock(bk: PeBlock, r0, expected: Spec|None): Set<PErr>
-  let r = blockScope(bk.blockStmts, r0)
-  let stmtErrs = blockStmtChecks(bk.blockStmts, r, expected, noErrs())
-  let valErrs = checkExpr(bk.blockValue, r, expected)
-  let typeErr = blockTypeErr(bk, r, expected, valErrs)
-  ret union(stmtErrs, union(valErrs, union(typeErr, unusedBindings(bk, r))))
-
-fun blockStmtChecks(ss: List<PStmt>, r: Resolver, expected: Spec|None, acc: Set<PErr>): Set<PErr> =>
-  fold(ss, acc, (a, x) => union(a, checkStmt2(x, r, expected)))
-
-fun blockTypeErr(bk: PeBlock, r, expected: Spec|None,
-                 valErrs: Set<PErr>): Set<PErr>
-  if !isEmpty(valErrs)
-    ret noErrs()
-  ret match(expected)
-    (want: Spec) => match(exprType(bk.blockValue, r))
-      (xt: Spec) => triFalse(assignableEq(r, want, xt))
-        ? oneErr(exprLine(bk.blockValue), "Incorrect type")
-        : noErrs()
-      ()         => noErrs()
-    ()           => noErrs()
-
-# No value vanishes silently: a block-local binding never read discards its
-# value. A `_`-prefixed name is the explicit opt-out.
-fun unusedBindings(bk: PeBlock, r: Resolver): Set<PErr>
-  let declared = bindingLets(bk.blockStmts,
-                                   List())
-  if isEmpty(declared)
-    ret noErrs()
-  let referenced = referencedInStmts(bk.blockStmts,
-                                     referencedNames(bk.blockValue,
-                                                     List()))
-  ret unusedWarns(declared, referenced, noErrs())
-
 # Declaration order, which is the order the shadowing check reports in.
 fun bindingLets(ss: List<PStmt>, acc: List<PStmt>) =>
   fold(ss, acc, bindingLetsStep)
@@ -408,88 +142,6 @@ fun bindingLetsStep(a: List<PStmt>, x: PStmt) => match(x)
   (d: PsDestructure) => concat(a, flattenParams(x))
   (let2: PsLet) => append(a, x)
   (o: PStmt) => a
-
-
-fun unusedWarns(ls: List<PStmt>, referenced: List<String>, acc: Set<PErr>) =>
-  fold(ls, acc, (a, x) => unusedWarnsStep(a, x, referenced))
-
-fun unusedWarnsStep(a: Set<PErr>, x: PStmt, referenced: List<String>) => match(x)
-  (let2: PsLet) => startsWith(bareOfUnique(let2.lName), "_")
-             || contains(referenced, let2.lName)
-    ? a
-    : add(a, PErr(let2.pslLine,
-                             "'" + bareOfUnique(let2.lName)
-                             + "' is never used", true, "unused-variable"))
-  (o: PStmt) => a
-
-# The subject is checked first; a subject whose TYPE is unknowable
-# short-circuits everything below (its own errors are all there is). Literal
-# arms need a primitive variant in the subject; type-arm matches need a
-# union-ish subject; the else arm stays guard-free (totality).
-fun checkMatch(mt: PeMatch, r, expected: Spec|None)
-  let subjectErr = checkExpr(mt.subject, r, None)
-  ret match(exprType(mt.subject, r))
-    (st: Spec) => checkMatchTyped(mt, st, r, expected, subjectErr)
-    ()         => subjectErr
-
-fun checkMatchTyped(mt: PeMatch, st, r, expected: Spec|None,
-                    subjectErr)
-  let hasLit = anyArmLiterals(mt.arms)
-  if hasLit && !(isPrimitiveSubject(st) || unionHasPrimitive(st))
-    ret union(subjectErr,
-               oneErr(mt.pemLine,
-                      "literal match arms require a subject with a primitive (Int or String) variant"))
-  if !hasLit && !isEnumOrUnion(st)
-    ret union(subjectErr,
-               oneErr(mt.pemLine,
-                      "match subject must be a union type, or use literal "
-                      + "patterns on an Int/String subject"))
-  # Coverage, duplicate literals and unreachable arms: match_coverage.yafl.
-  ret union(union(union(multiSubjectErrs(mt), positionErrs(mt, r)),
-                  matchArmChecks(mt.arms, st, r, expected, subjectErr)),
-            matchCoverageErrs(mt, st, r))
-
-# A position whose repr cannot test its pattern is REPORTED, not compiled into
-# an arm that never matches. Each subject's repr is asked; the first arm it
-# refuses is reported. The guards themselves are built at code generation,
-# where the discriminators they read exist.
-#
-# A subject that is not concrete names something unresolved, reported where it
-# is named. One with a member held by value as a type parameter has no layout
-# until monomorphisation, so no repr can answer, and the position is refused
-# outright.
-fun positionErrs(mt: PeMatch, r): Set<PErr> => isEmpty(mt.matchExtra)
-  ? noErrs()
-  : fold(prepend(mt.subject, mt.matchExtra), (i = 0, acc = noErrs()),
-         (st, sub) => (i = st.i + 1, acc = union(st.acc, subjectPositionErrs(mt.arms, st.i, sub, r)))).acc
-
-fun subjectPositionErrs(arms: List<PArm>, i: Int, sub: PExpr, r): Set<PErr> => match(exprType(sub, r))
-  (sty: Spec) if isEnumOrUnion(sty) && isConcrete(sty) => positionRefusals(arms, i, sty, r)
-  ()                                                    => noErrs()
-
-fun positionRefusals(arms: List<PArm>, i: Int, sty: Spec, r): Set<PErr> => Bootstrap::Codegen::layoutDecided(sty)
-  ? reprRefusals(arms, i, Bootstrap::Codegen::classifyRepr(sty, r), r)
-  : firstRefusedArm(arms, (a) => positionPattern(a, i) !is None,
-                    "a position of a multi-subject match cannot test a union with a generic member")
-
-fun reprRefusals(arms: List<PArm>, i: Int, rep, r): Set<PErr> =>
-  firstRefusedArm(arms, (a) => armRefusedAt(a, i, rep, r),
-                  "this pattern cannot serve a position of a multi-subject match")
-
-fun firstRefusedArm(arms: List<PArm>, refused: (:PArm): Bool, message: String): Set<PErr> => match(firstWhere(arms, refused))
-  (a: PArm) => oneErr(a.parmLine, message)
-  ()        => noErrs()
-
-fun armRefusedAt(a: PArm, i: Int, rep, r) => match(positionPattern(a, i))
-  (pat: Spec) => !Bootstrap::Codegen::reprTestsPosition(rep, pat, r)
-  ()          => false
-
-# The pattern an arm puts at position `i` (0 is the arm's own type).
-fun positionPattern(a: PArm, i: Int): Spec|None => i == 0
-  ? a.armType
-  : match(head(drop(a.armExtra, i - 1)))
-    (p: PPos) => p.posType
-    ()        => None
 
 # ── multi-subject arity ─────────────────────────────────────────────────────
 # Arity is a pure AST property — one pattern per subject — so it is checked
@@ -500,362 +152,36 @@ fun positionPattern(a: PArm, i: Int): Spec|None => i == 0
 # subjects have types. (Asked at codegen, from the global scope, a subject
 # that is a parameter had no type and the check silently passed.)
 
-# Checked for EVERY match, not only multi-subject ones: the mismatch runs both
-# ways, and `match(a)` with a two-pattern arm is the commoner mistake. Gating
-# this on `matchExtra` being non-empty missed exactly that case.
-fun multiSubjectErrs(mt: PeMatch) => arityErrs(mt.arms, 1 + countOf(mt.matchExtra), noErrs())
-
 fun countOf(es: List<PExpr>) => fold(es, 0, (n, e2) => n + 1)
-
-# Accumulator-threaded so the self-call stays in TAIL position — wrapping it
-# in `union(...)` would not be one.
-fun arityErrs(as2: List<PArm>, want, acc: Set<PErr>) =>
-  fold(as2, acc, (a, x) => union(a, armArityErr(x, want)))
-
-fun armArityErr(a: PArm, want)
-  let got = 1 + countPos(a.armExtra)
-  ret isElseArmC(a) || got == want
-    ? noErrs()
-    : oneErr(a.parmLine, "match arm has " + String(got) + " pattern"
-             + (got == 1 ? "" : "s") + " but the match has " + String(want)
-             + " subject" + (want == 1 ? "" : "s"))
-
-fun countPos(ps: List<PPos>) => fold(ps, 0, (n, p) => n + 1)
-
-fun isElseArmC(a: PArm) => isNoneSpec3(a.armType) && isEmpty(a.armLiterals) && isEmpty(a.armExtra)
-
-fun isNoneSpec3(sp: Spec|None) => match(sp)
-  (s2: Spec) => false
-  ()         => true
-
-fun anyArmLiterals(as2: List<PArm>) => any(as2, (a) => !isEmpty(a.armLiterals))
-
-fun isPrimitiveSubject(st) => match(st)
-  (b: SBuiltin) => isPrimitiveMatchType(b.sbName)
-  (o: Spec)     => false
 
 fun isPrimitiveMatchType(name)
   ret name == "str" || name == "bigint" || name == "int8" || name == "int16"
       || name == "int32" || name == "int64" || name == "float32"
       || name == "float64"
 
-fun unionHasPrimitive(st) => match(st)
-  (cm: SCombination) => anyPrimMember(cm.scTypes)
-  (o: Spec)          => false
-
-fun anyPrimMember(ms: List<Spec>) => any(ms, anyPrimMemberStep)
-
-fun anyPrimMemberStep(x: Spec) => match(x)
-  (b: SBuiltin) => b.sbName == "bigint" || b.sbName == "str"
-  (o: Spec) => false
-
-fun isEnumOrUnion(st) => match(st)
-  (e2: SEnum)        => true
-  (cm: SCombination) => true
-  (o: Spec)          => false
-
-fun matchArmChecks(as2: List<PArm>, st, r, expected: Spec|None, acc) =>
-  fold(as2, acc, (a, x) => union(a, checkArm(x, st, r, expected)))
-
-# A bound else arm's binding is the whole subject, exactly as in compile;
-# every later position binds its own name at its declared type
-# (_extra_binding_resolver).
-fun checkArm(a: PArm, st, r, expected: Spec|None): Set<PErr>
-  let bodyR = extraScope(a.armExtra, chain2(List<Spec|None>()),
-                         bindingScope(a, armHasNoType(a) ? st : a.armType, r))
-  let typeErr = checkSpecOpt(a.armType, r)
-  let bodyErr = checkExpr(a.armBody, bodyR, expected)
-  let guardErr = armGuardErrs(a, bodyR, r)
-  let litErr = fold(a.armLiterals, noErrs(), (acc, l) => union(acc, checkLiteral(l, r)))
-  ret union(typeErr,
-      union(bodyErr,
-      union(litErr,
-      union(guardErr, union(elseGuardErr(a), mixedKindErr(a))))))
-
-# Each literal of a literal arm checks as an expression; a RANGE also checks
-# its bounds (MatchRange.check): same width, not empty, and numeric.
-fun checkLiteral(l: PLit, r): Set<PErr> => match(l)
-  (e2: PlExpr)  => checkExpr(e2.litExpr, r, None)
-  (rg: PlRange) => union(checkExpr(rg.rangeLo, r, None),
-                   union(checkExpr(rg.rangeHi, r, None), rangeBoundErrs(rg)))
-
-fun rangeBoundErrs(rg: PlRange): Set<PErr> => match(rg.rangeLo)
-  (lo: PeInt)   => match(rg.rangeHi)
-    (hi: PeInt) => lo.precision != hi.precision
-      ? oneErr(rg.plrLine, "range bounds must be the same integer type")
-      : lo.value > hi.value
-        ? oneErr(rg.plrLine, emptyRange(String(lo.value), String(hi.value)))
-        : noErrs()
-    (o: PExpr)  => notNumericRange(rg)
-  (lo: PeFloat) => match(rg.rangeHi)
-    # Precision 0 is the unsuffixed literal — it narrows to context.
-    (hi: PeFloat) => lo.fPrecision != 0 && hi.fPrecision != 0 && lo.fPrecision != hi.fPrecision
-      ? oneErr(rg.plrLine, "range bounds must be the same float type")
-      : floatOf(lo.floatText) > floatOf(hi.floatText)
-        ? oneErr(rg.plrLine, emptyRange(Bootstrap::Ir::floatRepr(floatOf(lo.floatText)),
-                                        Bootstrap::Ir::floatRepr(floatOf(hi.floatText))))
-        : noErrs()
-    (o: PExpr)    => notNumericRange(rg)
-  (o: PExpr)    => notNumericRange(rg)
-
-fun emptyRange(lo: String, hi: String) => "empty range: " + lo + " .. " + hi + " matches nothing"
-
-fun notNumericRange(rg: PlRange) => oneErr(rg.plrLine,
-    "range bounds must both be integers (or chars) or both floats")
-
-# The literal's value as Python's `float(text)` reads it (`_` separators dropped).
-fun floatOf(text: String): Float => parseFloat(join(split(text, "_"), "")) ?? 0.0
-
-# The else arm must stay TOTAL — the match's coverage guarantee rests on it.
-fun elseGuardErr(a: PArm) => hasGuard(a) && armIsElse(a)
-  ? oneErr(a.parmLine,
-           "a guard is not allowed on the else arm — put the guarded case "
-           + "in its own arm before it")
-  : noErrs()
-
 fun hasGuard(a: PArm) => match(a.armGuard)
   (g2: PExpr) => true
   ()          => false
 
-fun armIsElse(a: PArm) => isEmpty(a.armLiterals) && armHasNoType(a)
+# Every name a NamedExpression references anywhere inside (referenced_names):
+# a structural scan, one callback. A name set, membership-tested by its reader.
+fun referencedNames(x: PExpr, acc: List<String>): List<String> =>
+  walkExpr(x, emptyResolverGlobal, acc, referencedNamesWalk()).s
 
-fun armHasNoType(a: PArm) => match(a.armType)
-  (t2: Spec) => false
-  ()         => true
+fun referencedInStmt(st: PStmt, acc: List<String>): List<String> =>
+  walkStmt(st, emptyResolverGlobal, acc, referencedNamesWalk()).s
 
-# One arm, one literal KIND (a range counts as its lo's kind).
-fun mixedKindErr(a: PArm)
-  if sizeAtMost(a.armLiterals, 1)
-    ret noErrs()
-  let kinds = litKinds(a.armLiterals, List())
-  ret sizeAtLeast(kinds, 2)
-    ? oneErr(a.parmLine,
-             "all literals in one arm must be the same kind (integers, floats or strings)")
-    : noErrs()
+fun referencedNamesWalk(): Walk<List<String>> =>
+  Walk<List<String>>((a, _r, x) => (s = referencedName(x, a), r = None),
+                     wkNoStmt<List<String>>, wkNoSpec<List<String>>)
 
-fun litKinds(ls: List<PLit>, acc: List<String>) =>
-  fold(ls, acc, (a, x) => addNameOnce(a, litKind(x)))
-
-fun litKind(l) => match(l)
-  (e2: PlExpr)  => exprKind(e2.litExpr)
-  (rg: PlRange) => exprKind(rg.rangeLo)
-
-fun exprKind(x) => match(x)
-  (s2: PeStr)   => "str"
-  (f: PeFloat)  => "float"
-  (o: PExpr)    => "int"
-
-fun armGuardErrs(a: PArm, bodyR, r: Resolver): Set<PErr> => match(a.armGuard)
-  (g2: PExpr) => union(checkExpr(g2, bodyR, None),
-                        guardBoolErr(a, g2, bodyR))
-  ()          => noErrs()
-
-fun guardBoolErr(a: PArm, g2, bodyR) => match(exprType(g2, bodyR))
-  (b: SBuiltin) => b.sbName == "bool"
-    ? noErrs()
-    : oneErr(a.parmLine, "a match guard must be a Bool")
-  (o: Spec)     => oneErr(a.parmLine, "a match guard must be a Bool")
-  ()            => noErrs()
-
-# Every name a NamedExpression references anywhere inside (referenced_names).
-fun referencedNames(x, acc): List<String> => match(x)
-  # A name set, membership-tested by its reader.
-  (nm: PeName)   => prepend(nm.refName, acc)
-  (d: PeDot)     => referencedNames(d.base, acc)
-  (c: PeCall)    => referencedNames(c.parameter, referencedNames(c.function, acc))
-  (tp: PeTuple)  => refEntries(tp.exprs, acc)
-  (te: PeTernary) => referencedNames(te.falseResult,
-                      referencedNames(te.trueResult,
-                        referencedNames(te.condition, acc)))
-  (lm: PeLambda) => referencedNames(lm.lamBody, refStmt(lm.lamParams, acc))
-  (bk: PeBlock)  => referencedNames(bk.blockValue,
-                                    referencedInStmts(bk.blockStmts, acc))
-  # Every subject is a use — the extra subjects of `match(a, b)` included.
-  (mt: PeMatch)  => refArms(mt.arms,
-                            fold(mt.matchExtra, referencedNames(mt.subject, acc),
-                                 (a2, sx) => referencedNames(sx, a2)))
-  (op: PeBuiltinOp) => referencedNames(op.opParams, acc)
-  (ps: PePinSet) => referencedNames(ps.psValue,
-                      referencedNames(ps.psTarget,
-                        referencedNames(ps.psSubject, acc)))
-  (nw: PeNew)    => referencedNames(nw.newParam, acc)
-  (ar: PeArrayRead) => referencedNames(ar.arrIndex,
-                                       referencedNames(ar.arrObj, acc))
-  (cv: PeConvert) => referencedNames(cv.convInner, acc)
-  (qq: PeCoalesce) => referencedNames(qq.qqFallback,
-                                      referencedNames(qq.qqSubject, acc))
-  # A NewEnum's references live in its field-arg VALUE expressions.
-  (wx: PeWith)   => referencedNames(wx.withRepls,
-                                    referencedNames(wx.withSubject, acc))
-  (ne: PeNewEnum) => fold(ne.fieldArgs, acc, (a2, fa) =>
-                          referencedNames(fa.faValue, a2))
-  (o: PeLiteral) => acc
-  (o: PeLowered) => acc
-
-fun refEntries(es: List<PTupEnt>, acc): List<String> =>
-  fold(es, acc, (a, x) => referencedNames(x.tupValue, a))
-
-fun refArms(as2: List<PArm>, acc): List<String> =>
-  fold(as2, acc, (a, x) => refOpt(x.armGuard, referencedNames(x.armBody, a)))
-
-fun refOpt(x: PExpr|None, acc) => match(x)
-  (e2: PExpr) => referencedNames(e2, acc)
-  ()          => acc
-
-fun referencedInStmts(ss: List<PStmt>, acc: List<String>) =>
-  fold(ss, acc, (a, x) => refStmt(x, a))
-
-fun refStmt(st, acc): List<String> => match(st)
-  (f: PsFun)         => refOpt(f.fBody, acc)
-  (l: PsLet)         => refOpt(l.lDefault, acc)
-  (d: PsDestructure) => referencedInStmts(d.dTargets,
-                                          refOpt(d.dDefault, acc))
-  (rt: PsRet)        => referencedNames(rt.retValue, acc)
-  (a: PsAction)      => referencedNames(a.action, acc)
-  (fa: PsFieldAssign) => referencedNames(fa.faValue, referencedNames(fa.faTarget, acc))
-  (i: PsIf)          => referencedInStmts(i.ifFalse,
-                          referencedInStmts(i.ifTrue,
-                            referencedNames(i.ifCond, acc)))
-  (ei: PsElseIf)     => referencedInStmts(ei.eiStmts,
-                                          referencedNames(ei.eiCond, acc))
-  (el: PsElse)       => referencedInStmts(el.elStmts, acc)
-  (o: PStmt)         => acc
-
+fun referencedName(x: PExpr, acc: List<String>): List<String> => match(x)
+  (nm: PeName) => prepend(nm.refName, acc)
+  (o: PExpr)   => acc
 
 # ── `with` — only reached when the frontend could not expand it ─────────────
 # Mirrors WithExpression.check byte for byte (parity of diagnostics).
 
-fun checkWith(wx: PeWith, r)
-  let sub = checkExpr(wx.withSubject, r, None)
-  if !isEmpty(sub)
-    ret sub
-  let reps = checkExpr(wx.withRepls, r, None)
-  if !isEmpty(reps)
-    ret reps
-  let shape = withShapeError(wx)
-  if shape != ""
-    ret add(Set(),PErr(wx.pewLine, shape))
-  ret match(exprType(wx.withSubject, r))
-    (c: SClass) => checkWithFields(wx, r)
-    (e2: SEnum) => checkWithFields(wx, r)
-    (o: Spec)   => add(Set(),PErr(wx.pewLine,
-      "the subject of `with` must be a class- or enum-typed expression"))
-    ()          => add(Set(),PErr(wx.pewLine,
-      "the subject type of `with` did not resolve"))
-
-fun withShapeError(wx: PeWith) => match(wx.withRepls)
-  (tp: PeTuple) => isEmpty(tp.exprs)
-    ? "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
-    : foldWhile(tp.exprs, (err = "", seen = List<String>()), withEntryStep, (st) => st.err == "").err
-  (o: PExpr)    => "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
-
-fun withEntryStep(st: (err: String, seen: List<String>), e: PTupEnt) => e.tupSpread
-  ? (err = "a `with` replacement cannot be a spread", seen = st.seen)
-  : e.tupName == ""
-    ? (err = "`with` replacements must be named — `with x(field = value)`", seen = st.seen)
-    : contains(st.seen, e.tupName)
-      ? (err = "a `with` expression replaces each field at most once", seen = st.seen)
-      : (err = "", seen = prepend(e.tupName, st.seen))
-
-fun checkWithFields(wx: PeWith, r): Set<PErr>
-  let visible = withVisibleFields(wx, r)
-  ret match(wx.withRepls)
-    (tp: PeTuple) => withNamesKnown(tp.exprs, visible, wx.pewLine)
-    (o: PExpr)    => Set()
-
-fun withNamesKnown(es: List<PTupEnt>, visible: List<String>,
-                   lr): Set<PErr> => match(firstWhere(es, (e) => !contains(visible, e.tupName)))
-  (e: PTupEnt) => add(Set(), PErr(lr,
-      "`" + e.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
-  ()           => Set()
-
-fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
-  (c: SClass) => match(soleItem(findType(r, c.scName)))
-    (f: Found) => match(f.fStmt)
-      (cls: PsClass) => withBareNames(flattenParams(cls.cParams),
-                                      List())
-      (o: PStmt)     => List()
-    ()         => List()
-  (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
-    (f: Found) => match(f.fStmt)
-      (en: PsEnum) => withCoverBares(visibleFields(en, e2.sePath),
-                                     List())
-      (o: PStmt)   => List()
-    ()         => List()
-  ()          => List()
-
-fun withBareNames(fs: List<PStmt>, acc: List<String>) =>
-  fold(fs, acc, withBareNamesStep)
-
-fun withBareNamesStep(a: List<String>, x: PStmt) => match(x)
-  (p: PsLet) => append(a, bareName(p.lName))
-  (o: PStmt) => a
-
-fun withCoverBares(fs: List<SField>, acc): List<String> =>
-  fold(fs, acc, (a, x) => append(a, bareName(x.sfName)))
-
-
 # ── __builtin_pin_set__ (pyast PinSetExpression.check) ──────────────────────
 # A name, then a field of it, in a class that admits a late write; the field
 # holds a heap object or None; the value fits the field.
-
-fun pinSetWhat() => "'__builtin_pin_set__'"
-
-fun checkPinSet(ps: PePinSet, r) => union(
-    union(checkExpr(ps.psSubject, r, None),
-          union(checkExpr(ps.psTarget, r, None), checkExpr(ps.psValue, r, None))),
-    pinSetErrors(ps, r))
-
-fun pinSetErrors(ps: PePinSet, r) => match(pinSetField(ps))
-  (d: PeDot) => match(writtenField(d, pinSetWhat(), r))
-    (cs: PsClass) => union(lateWriteErrors(ps.pepsLine, cs, pinSetWhat()),
-                           union(pinSetHeapErrors(ps, d, r), pinSetValueFits(ps, r)))
-    (msg: String) => oneErr(ps.pepsLine, msg)
-  ()         => oneErr(ps.pepsLine, pinSetWhat() + " takes (obj, obj.field, value): a name, then a field of it")
-
-# The field, when the subject is a name and the target a field of that name.
-fun pinSetField(ps: PePinSet): PeDot|None => match(ps.psSubject)
-  (n: PeName) => match(ps.psTarget)
-    (d: PeDot)  => match(d.base)
-      (b: PeName) => b.refName == n.refName ? d : None
-      (o: PExpr)  => None
-    (o: PExpr)  => None
-  (o: PExpr)  => None
-
-fun pinSetHeapErrors(ps: PePinSet, d: PeDot, r) => match(exprType(ps.psTarget, r))
-  (ft: Spec) => heapOrNone(ft, r)
-    ? noErrs()
-    : oneErr(ps.pepsLine, pinSetWhat() + " fills a field holding a heap object or None: '"
-             + d.member + "' must be 'C|None', C a class always kept on the heap "
-             + "(an interface, or a class that is [pinnable], [mutable] or [foreign], "
-             + "implements an interface, or has more than "
-             + String(maxFlatStructFields()) + " fields)")
-  ()         => noErrs()
-
-# `C|None`, C a class that stays a heap object whatever the rest of the program
-# does (classNeverFlattens): its None is NULL.
-fun heapOrNone(ft: Spec, r) => match(ft)
-  (cm: SCombination) => heapOrNonePair(reprMembers(cm), r)
-  (o: Spec)          => false
-
-fun heapOrNonePair(ms: List<Spec>, r) => !exactly(ms, 2) ? false : match(head(ms))
-  (m0: Spec) => match(head(dropOne(ms)))
-    (m1: Spec) => isUnitType(m0) ? alwaysHeapClass(m1, r) : isUnitType(m1) && alwaysHeapClass(m0, r)
-    ()         => false
-  ()         => false
-
-fun alwaysHeapClass(m: Spec, r) => match(m)
-  (c2: SClass) => match(soleItem(findType(r, c2.scName)))
-    (f: Found) => match(f.fStmt)
-      (cs: PsClass) => classNeverFlattens(cs)
-      (o: PStmt)    => false
-    ()         => false
-  (o: Spec)    => false
-
-fun pinSetValueFits(ps: PePinSet, r) => match(exprType(ps.psTarget, r))
-  (ft: Spec) => match(exprType(ps.psValue, r))
-    (vt: Spec) => triFalse(assignableEq(r, ft, vt))
-      ? oneErr(ps.pepsLine, "Incorrect type assigned to the field")
-      : noErrs()
-    ()         => noErrs()
-  ()         => noErrs()

@@ -255,6 +255,25 @@ class TestBootstrapLibraries(TestCase):
             self.assertEqual(0, rc, out)
             self.assertEqual("alpha|Alpha||\n", out)
 
+    # A qualified name is a reference wherever it is written. The tree walk
+    # once treated a NamedSpec as a leaf and skipped `let`/`typealias` where
+    # clauses, so a namespace named only in a type ARGUMENT or a WHERE was
+    # never loaded, by either compiler. (A typealias has no where syntax.)
+    def _assert_alpha_loaded(self, src: str):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            _mklib(root, "alpha", ["Alpha"])
+            rc, out = self._run("libsfor", src, env_extra={"YAFL_PATH": str(root)})
+            self.assertEqual(0, rc, out)
+            self.assertEqual("alpha|Alpha||\n", out)
+        self.assertIn("Alpha", self._python_candidates(src))
+
+    def test_a_qualified_reference_in_a_TYPE_ARGUMENT_counts_too(self):
+        self._assert_alpha_loaded("namespace P\nfun f(x: List<Alpha::T>): Int\n  ret 0\n")
+
+    def test_a_qualified_reference_in_a_LET_WHERE_counts_too(self):
+        self._assert_alpha_loaded("namespace P\nlet [trait] w<T>: Int = 0 where Alpha::Tr<T>\n")
+
     def _python_candidates(self, src: str) -> set[str]:
         """What compiler.py would consider — the thing the port must match.
 

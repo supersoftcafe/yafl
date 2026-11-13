@@ -749,6 +749,12 @@ class NamedSpec(TypeSpec):
     def as_unique_id_str(self) -> str|None:
         return None # This is 'alias', not a concrete type.
 
+    def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver, Any], Any]) -> TypeSpec:
+        # Not a leaf: a type argument is a reference in its own right
+        # (`List<Geo::Point>` reaches namespace Geo).
+        return rw.rewrite(self, replace, resolver,
+            type_params=rw.seq(self.type_params, resolver, replace))
+
 
 def _flatten_union_members(types) -> tuple[TypeSpec, ...]:
     """Associativity AND set semantics of `|`, applied structurally: a member

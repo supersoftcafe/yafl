@@ -1,0 +1,54 @@
+# bootstrap/nodes/expression/conversion.yafl — PeConvert: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/conversion.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A Convert node RE-COMPILES its inner every pass (Python conversion.py:56):
+# the inner compiles with NO expected type — this node is the adapter to the
+# receiver, and feeding the receiver's type back down would make the inner
+# wrap itself again. The wrap is inserted over ground TYPES, but a NAME inside
+# may still be waiting on its unique spelling — freezing the subtree here
+# would strand it bare forever (the whole-program corpus caught exactly that:
+# `Err("bad", st.pos)` in a union slot kept `pos` unresolved). The receiver's
+# view wins: a ground expected that differs from our target means the receiver
+# WIDENED since this wrap was inserted — retarget to it. The wrap dissolves
+# when no conversion remains.
+fun compileConvert(cv: PeConvert, r, expected: Spec|None)
+  let inner = compileExpr(cv.convInner, r, None)
+  let spec = compileSpec(cv.convTarget, r)
+  let target = retargeted(spec.soSpec, expected)
+  # The wrapped load still expects the receiver's type.
+  let hints = mergeHints(inner.eoHints, loadHint(r, inner.eoExpr, target))
+  ret needsConversion(r, exprType(inner.eoExpr, r), target)
+    ? ExprOut(PeConvert(inner.eoExpr, target, cv.pecvLine),
+              concat(inner.eoGlobals, spec.soGlobals), hints)
+    : ExprOut(inner.eoExpr, concat(inner.eoGlobals, spec.soGlobals), hints)
+
+# The hint a load of `x` leaves when its receiver expects `expected`.
+fun loadHint(r, x, expected: Spec) => match(x)
+  (nm: PeName) => match(soleItem(findData(r, nm.refName)))
+    (f: Found) => nameHint(f, f.fName, expected)
+    ()         => noHints()
+  (o: PExpr)   => noHints()
+
+fun retargeted(target, expected: Spec|None) => match(expected)
+  (e2: Spec) if isConcrete(e2) && uid(e2) != "" && uid(e2) != uid(target) => e2
+  ()         => target
+
+fun genConvert(cv: PeConvert, r)
+  let bundle = genExpr(cv.convInner, r)
+  ret bundleJoin(bundle, emitConversion(bundle.gbResult, exprType(cv.convInner, r), cv.convTarget, r))

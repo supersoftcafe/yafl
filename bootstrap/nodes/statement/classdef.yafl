@@ -1,0 +1,276 @@
+# bootstrap/nodes/statement/classdef.yafl — PsClass: every question the
+# compiler asks of this node kind, in one place (Python's pyast/statement/classdef.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun isKnownClassAttr(n) => n == "final" || n == "linear" || n == "foreign" || n == "pinnable"
+ || n == "hashed" || n == "refeq" || n == "mutable"
+
+fun checkClass(c, r0) => match(c.cAllParents)
+  (ps: List<Spec>) => classChecks(c, r0)
+  ()               => oneErr(c.pscLine, "Missed compile step")
+
+fun classChecks(c, r0): Set<PErr>
+  let inh = findClassesOrError(c.cImplements, r0)
+  let implErr = implErrors(c.cImplements, r0, noErrs())
+  let pureErr = allPureInterfaces(inh)
+    ? noErrs()
+    : oneErr(c.pscLine, "Must only inherit from pure interfaces")
+  let finalErr = finalParentErrs(c, inh, noErrs())
+  let fragile = fragileWarns(c, inh, r0)
+  let prmErr = checkStmt2(c.cParams, genScope(c.cGens, c.cWheres, r0), None)
+  # Member fns CHECK under the same transient owner-wheres copy they
+  # compiled under (compile_stmt withOwnerWheres).
+  let stmErr = branchChecks(withOwnerWheres(c.cMembers, c.cWheres),
+                            genScope(c.cGens, c.cWheres, RClassBody(c, r0)), None,
+                            noErrs())
+  ret union(implErr,
+      union(pureErr,
+      union(finalErr,
+      union(fragile,
+      union(prmErr,
+      union(stmErr,
+      union(union(arrayFieldErrs(c, r0), capacityFieldErrs(c)),
+      union(foreignClassErrs(c),
+      union(linearClassErrs(c),
+      union(linearClassGenErrs(c, c.cGens, noErrs()),
+      union(slotOverrideErrs(c),
+             attrErrs(c.cAttrs, isKnownClassAttr, c.pscLine,
+                      c.cIsInterface ? "an interface" : "a class"))))))))))))
+
+# A [foreign] class is an opaque handle the runtime hands out: no argument, no
+# subclasses, no constructor parameters, and nothing but [foreign] methods.
+fun foreignClassErrs(c: PsClass): Set<PErr>
+  if !hasAttr(c.cAttrs, "foreign")
+    ret noErrs()
+  ret match(attrValueOf(c.cAttrs, "foreign"))
+    (v: PExpr) => oneErr(c.pscLine,
+        "[foreign] on a class takes no argument — instances are returned by foreign functions")
+    ()         => !hasAttr(c.cAttrs, "final")
+      ? oneErr(c.pscLine, "[foreign] classes must also be [final]")
+      : !isEmpty(flattenParams(c.cParams))
+        ? oneErr(c.pscLine, "[foreign] classes must have no parameters — instances are returned by foreign functions, not constructed directly")
+        : !all(c.cMembers, isForeignFun)
+          ? oneErr(c.pscLine, "[foreign] classes may only contain [foreign] methods")
+          : noErrs()
+
+fun isForeignFun(m: PStmt) => match(m)
+  (f: PsFun) => hasAttr(f.fAttrs, "foreign")
+  (o: PStmt) => false
+
+# Flow analysis follows a linear value through locals, not through an object
+# graph that may be subclassed: a [linear] class is [final], and takes no
+# argument.
+fun linearClassErrs(c: PsClass): Set<PErr>
+  if !hasAttr(c.cAttrs, "linear")
+    ret noErrs()
+  ret match(attrValueOf(c.cAttrs, "linear"))
+    (v: PExpr) => oneErr(c.pscLine, "[linear] takes no arguments")
+    ()         => hasAttr(c.cAttrs, "final")
+      ? noErrs()
+      : oneErr(c.pscLine, "[linear] classes must also be [final]")
+
+# `[linear] T` is allowed on an INTERFACE (Drop<[linear] T> may be instantiated
+# with a linear type) but not on a concrete class: flow analysis cannot trace a
+# linear value stored in a generic class field.
+fun linearClassGenErrs(c: PsClass, gs: List<PGen>, acc): Set<PErr> =>
+  fold(gs, acc, (a, x) => !c.cIsInterface && hasAttr(x.genAttrs, "linear")
+    ? add(a, PErr(c.pscLine, "[linear] type parameters are only supported on functions"))
+    : a)
+
+# invert_and_merge_slots: a member name provided by more than one slot is
+# overridden ambiguously. (Python also reports a slot with "no implementation",
+# but its inversion only ever builds non-empty sets, so that rule cannot fire.)
+fun slotOverrideErrs(c: PsClass): Set<PErr> => match(c.cAllSlots)
+  (slots: List<Slot>) => hasSharedProvide(slots, Dict())
+    ? oneErr(c.pscLine, "One or more slots have multiple overrides")
+    : noErrs()
+  ()                  => noErrs()
+
+fun hasSharedProvide(ss: List<Slot>, owner: Dict<String, String>): Bool =>
+  foldWhile<Slot, Dict<String, String>|Bool>(ss, owner, claimSlot, (o) => o !is Bool) is Bool
+
+fun claimSlot(o: Dict<String, String>|Bool, s: Slot) => match(o)
+  (d: Dict<String, String>) => claimProvides(s.slotProvides, s.slotName, d)
+  (b: Bool)                 => b
+
+# Record `slot` as the provider of each name; `true` the moment a name already
+# has a DIFFERENT provider. A slot listing a name twice is still one provider
+# (slotProvides has set semantics).
+# The owner map with every name claimed by `slot`, or true when one is already
+# owned by another slot.
+fun claimProvides(ns: List<String>, slot: String,
+                  owner: Dict<String, String>): Dict<String, String>|Bool =>
+  foldWhile<String, Dict<String, String>|Bool>(ns, owner, (o, n) => claimOne(o, n, slot), (o) => o !is Bool)
+
+fun claimOne(o: Dict<String, String>|Bool, n: String, slot: String) => match(o)
+  (d: Dict<String, String>) => match(get(d, n))
+    (prev: String) => prev != slot ? true : d
+    ()             => put(d, n, slot)
+  (b: Bool)                 => b
+
+# The trailing array field: at most one, the class [final], and its length
+# field an Int32 sibling.
+fun arrayFieldErrs(c: PsClass, r: Resolver)
+  let fields = classFields(c)
+  let arrays = arrayFieldsOf(fields, List())
+  if isEmpty(arrays)
+    ret noErrs()
+  let countErr = sizeAtLeast(arrays, 2)
+    ? oneErr(c.pscLine, "a class may have at most one array field")
+    : noErrs()
+  let finalErr2 = hasAttr(c.cAttrs, "final")
+    ? noErrs()
+    : oneErr(c.pscLine, "a class with an array field must be [final]")
+  ret union(countErr,
+             union(finalErr2, lenFieldErrs(arrays, fields, noErrs())))
+
+# A [capacity] field sizes the array's storage past its length: one per
+# class, an Int32, in an array class, and not the length field itself.
+fun capacityFieldErrs(c: PsClass)
+  let fields = classFields(c)
+  let caps = fold(fields, List<PsLet>(), capacityStep)
+  ret match(head(caps))
+    (first: PsLet) => union(fold(dropOne(caps), noErrs(), extraCapacityStep),
+                            oneCapacityErrs(first, fields))
+    ()             => noErrs()
+
+fun capacityStep(a: List<PsLet>, x: PStmt): List<PsLet> => match(x)
+  (l: PsLet) => isCapacityField(l) ? append(a, l) : a
+  (o: PStmt) => a
+
+fun extraCapacityStep(a: Set<PErr>, l: PsLet): Set<PErr> =>
+  union(a, oneErr(l.pslLine, "a class may have at most one [capacity] field"))
+
+fun oneCapacityErrs(cf: PsLet, fields: List<PStmt>)
+  let arrays = arrayFieldsOf(fields, List())
+  let shapeErr = isEmpty(arrays)
+    ? oneErr(cf.pslLine, "a [capacity] field needs an array field to size")
+    : (any(arrays, (af) => isLengthFieldOf(cf, af))
+        ? oneErr(cf.pslLine, "the array's length field cannot be its [capacity] field")
+        : noErrs())
+  let typeErr = isInt32Field(cf)
+    ? noErrs()
+    : oneErr(cf.pslLine, "a [capacity] field must be of type Int32")
+  ret union(shapeErr, typeErr)
+
+fun isLengthFieldOf(cf: PsLet, af: PStmt) => match(af)
+  (l: PsLet) => nameMatches(cf.lName, arrayLenName(l.lType))
+  (o: PStmt) => false
+
+fun lenFieldErrs(as2: List<PStmt>, fields: List<PStmt>, acc: Set<PErr>) =>
+  fold(as2, acc, (a, x) => lenFieldErrsStep(a, x, fields))
+
+fun lenFieldErrsStep(a: Set<PErr>, x: PStmt, fields: List<PStmt>) => match(x)
+  (af: PsLet) => union(a, oneLenErr(af, fields))
+  (o: PStmt) => a
+
+fun oneLenErr(af: PsLet, fields: List<PStmt>)
+  let lenName = arrayLenName(af.lType)
+  ret match(fieldNamed2(fields, lenName))
+    (m: PsLet) => isInt32Field(m)
+      ? noErrs()
+      : oneErr(af.pslLine, "array length field '" + lenName
+                           + "' must be of type Int32")
+    ()         => oneErr(af.pslLine, "array length field '" + lenName
+                                     + "' is not a field of this class")
+
+fun arrayLenName(ty: Spec|None) => match(ty)
+  (af: SArrayField) => af.safLenField
+  ()                => ""
+
+fun isInt32Field(m: PsLet) => match(m.lType)
+  (b: SBuiltin) => b.sbName == "int32"
+  ()            => false
+
+# find_classes_or_error's ERROR half, reconstructed with the same messages.
+fun implErrors(ts: List<Spec>, r, acc) =>
+  fold(ts, acc, (a, x) => union(a, implError(x, r)))
+
+fun implError(xtype, r) => match(xtype)
+  (n: SNamed) => implNameError(n.snName, ctSpecLine(xtype), r)
+  (c: SClass) => implNameError(c.scName, ctSpecLine(xtype), r)
+  (o: Spec)   => oneErr(ctSpecLine(xtype),
+                        "Class cannot inherit from this type \"<class 't'>\"")
+
+fun implNameError(name, lr, r)
+  let found = findType(r, name)
+  if isEmpty(found.bItems)
+    ret oneErr(lr, "Could not find class named \"" + name + "\"")
+  if sizeAtLeast(found.bItems, 2)
+    ret oneErr(lr, "Found too many classes named \"" + name + "\"")
+  ret match(soleItem(found))
+    (f: Found) => match(f.fStmt)
+      (cs: PsClass) => noErrs()
+      (o: PStmt)    => oneErr(lr, "Found non-class named \"" + name + "\"")
+    ()         => noErrs()
+
+fun allPureInterfaces(fs: List<FoundClass>) => all(fs, allPureInterfacesStep)
+
+fun allPureInterfacesStep(x: FoundClass) => match(x.fcClass)
+  (cs: PsClass) => cs.cIsInterface
+  () => true
+
+fun finalParentErrs(c: PsClass, fs: List<FoundClass>, acc): Set<PErr> =>
+  fold(fs, acc, (a, x) => finalParentErrsStep(a, x, c))
+
+fun finalParentErrsStep(a: Set<PErr>, x: FoundClass, c: PsClass) => match(x.fcClass)
+  (cs: PsClass) => hasAttr(cs.cAttrs, "final")
+    ? add(a, PErr(c.pscLine, "Cannot inherit from final class '" + cs.cName + "'"))
+    : a
+  () => a
+
+# Fragile-base warning: one method overriding several similar methods of a
+# SINGLE immediate parent.
+fun fragileWarns(c: PsClass, inh: List<FoundClass>, r)
+  ret fbLoop(createSlotsFromMembers(c), c, inh, r, noErrs())
+
+fun fbLoop(bs: List<Slot>, c: PsClass, inh: List<FoundClass>, r, acc: Set<PErr>) =>
+  fold(bs, acc, (a, x) => fbParents(x, inh, c, r, a))
+
+fun fbParents(slot: Slot, fs: List<FoundClass>, c: PsClass, r, acc): Set<PErr> =>
+  fold(fs, acc, (a, x) => fbParentsStep(a, x, slot, c, r))
+
+fun fbParentsStep(a: Set<PErr>, x: FoundClass, slot: Slot, c: PsClass, r) => match(x.fcClass)
+  (p: PsClass) => fbOne(slot, p, c, r, a)
+  () => a
+
+fun fbOne(slot: Slot, p: PsClass, c: PsClass, r,
+          acc): Set<PErr>
+  let nCaptured = capturedCount(createSlotsFromMembers(p), slot, r,
+                                List(), 0)
+  ret nCaptured > 1
+    ? add(acc, PErr(c.pscLine,
+                       "`" + bareOfUnique(slot.slotName) + "` overrides "
+                       + String(nCaptured) + " similar methods of `"
+                       + bareOfUnique(p.cName)
+                       + "` at once — a broad override silently captures "
+                       + "them; give it a narrower signature or override "
+                       + "each explicitly", true, "fragile-base"))
+    : acc
+
+# The deduped capture count, taken on the SAME walk that dedups — the names
+# exist only to dedup; the diagnostic needs the count (no-length ruling).
+fun capturedCount(ps: List<Slot>, slot: Slot, r, seen: List<String>, n) =>
+  fold(ps, (seen = seen, n = n), (st, x) => capturedCountStep(st, x, slot, r)).n
+
+fun capturedCountStep(st: (seen: List<String>, n: Int), x: Slot, slot: Slot, r) =>
+  matchMemberName(slot.slotName, x.slotName)
+               && triTrue(assignableEq(r, x.slotType, slot.slotType))
+               && !contains(st.seen, x.slotName)
+  ? (seen = prepend(x.slotName, st.seen), n = st.n + 1)
+  : (seen = st.seen, n = st.n)

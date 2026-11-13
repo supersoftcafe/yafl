@@ -38,6 +38,10 @@
 # are not ported anywhere yet. genBlock calls it structurally (so the block
 # port is complete and faithful) but it aborts if actually reached; wiring
 # real statement generate is the next PORT stage's job.
+#
+# LAYOUT: each node kind's own generate lives with the rest of that node in
+# bootstrap/nodes/ (one file per kind, as pyast/); this file keeps the
+# helpers several node kinds share.
 namespace Bootstrap::Codegen
 
 import System
@@ -51,7 +55,7 @@ import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 # ── small list-building helpers (used pervasively below to keep RParam/Op
@@ -74,6 +78,7 @@ fun list5<T>(a: T, b: T, c: T, d: T, e: T): List<T> => prepend(a, list4(b, c, d,
 # flowing up to the enclosing BlockExpression. Both label sets embed an
 # '@'-bearing tag, so they are path-immune (with_prefix leaves them alone).
 class [final] RecurSource(rsLabel: String, rsPhiIns: List<RParam>)
+
 class [final] ExitSource(esLabel: String, esValue: RParam|None)
 
 # LoopExpression's per-parameter old-name/new-name rename entry (Python: the
@@ -162,7 +167,6 @@ fun opsEndInTransfer(ops: Array<Op>) => match(lastOp(ops))
   (o: Op) => !opFallsThrough(o)
   ()      => false
 
-
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 1: generation-time Resolver frame carriers (ResolverLoop/
 # ResolverBlock + get_loop_frame/get_block_frame/get_discriminators/
@@ -179,32 +183,6 @@ fun loopHead(f) => match(f)
   (fl: FrLoop) => "loophead$" + fl.flTag
   (fb: FrBlock) => ""   # unreachable: only called on a FrLoop
 
-fun blockEndLabel(f) => match(f)
-  (fb: FrBlock) => "blockend$" + fb.fbTag
-  (fl: FrLoop)  => ""   # unreachable: only called on a FrBlock
-
-fun [tail] getLoopFrame(r): GenFrame|None => match(r)
-  (rg: RGen) => match(rg.rgFrame)
-    (fl: FrLoop)  => rg.rgFrame
-    (fb: FrBlock) => getLoopFrame(rg.rgParent)
-  (root: RRoot)    => None
-  (d: RData)       => getLoopFrame(d.rdParent)
-  (t2: RTypes)     => getLoopFrame(t2.rtParent)
-  (sc: RScopes)    => getLoopFrame(sc.rsParent)
-  (tr: RTraits)    => getLoopFrame(tr.rtrParent)
-  (cb: RClassBody) => getLoopFrame(cb.rcbParent)
-
-fun [tail] getBlockFrame(r): GenFrame|None => match(r)
-  (rg: RGen) => match(rg.rgFrame)
-    (fb: FrBlock) => rg.rgFrame
-    (fl: FrLoop)  => getBlockFrame(rg.rgParent)
-  (root: RRoot)    => None
-  (d: RData)       => getBlockFrame(d.rdParent)
-  (t2: RTypes)     => getBlockFrame(t2.rtParent)
-  (sc: RScopes)    => getBlockFrame(sc.rsParent)
-  (tr: RTraits)    => getBlockFrame(tr.rtrParent)
-  (cb: RClassBody) => getBlockFrame(cb.rcbParent)
-
 fun [tail] getDiscriminators(r): Dict<String, Int> => match(r)
   (root: RRoot) => match(root.rrDiscriminators)
     (d2: Dict<String, Int>) => d2
@@ -215,15 +193,6 @@ fun [tail] getDiscriminators(r): Dict<String, Int> => match(r)
   (sc: RScopes)    => getDiscriminators(sc.rsParent)
   (tr: RTraits)    => getDiscriminators(tr.rtrParent)
   (cb: RClassBody) => getDiscriminators(cb.rcbParent)
-
-fun [tail] getOptLevel(r): Int => match(r)
-  (root: RRoot)    => root.rrOptLevel
-  (rg: RGen)       => getOptLevel(rg.rgParent)
-  (d: RData)       => getOptLevel(d.rdParent)
-  (t2: RTypes)     => getOptLevel(t2.rtParent)
-  (sc: RScopes)    => getOptLevel(sc.rsParent)
-  (tr: RTraits)    => getOptLevel(tr.rtrParent)
-  (cb: RClassBody) => getOptLevel(cb.rcbParent)
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 2: Spec -> CgType (TypeSpec.generate, pyast/typespec/specs.py).
@@ -315,14 +284,6 @@ fun asPsLetVariant(st: PStmt|None) => match(st)
 fun asPsLetVariantOf(s2) => match(s2)
   (l: PsLet) => l
   (o: PStmt) => None
-
-fun asFrLoop(f: GenFrame|None) => match(f)
-  (f2: GenFrame) => asFrLoopOf(f2)
-  ()              => None
-
-fun asFrLoopOf(f2) => match(f2)
-  (fl: FrLoop)  => fl
-  (fb: FrBlock) => None
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 3: emit_conversion — the emission engine (compiler/pyast/expression/
@@ -516,58 +477,6 @@ fun isSyncFn(f: PsFun) => hasAttr(f.fAttrs, "sync")
 
 # ── DotExpression ────────────────────────────────────────────────────────────
 
-# A field read that reaches here without a field to read. The checks passed,
-# so the program is correct and an earlier stage of THIS compiler broke it:
-# say which read and stop. Emitting the read as anything else — its base, as
-# these arms once did — turns a compiler bug into a wrong program (#108).
-fun genDotBug(d: PeDot, what: String): GBundle =>
-  abort<GBundle>("compiler bug: field read `." + d.member + "` at " + d.pedLine.plFile
-                 + "[" + String(d.pedLine.plLine) + ":" + String(d.pedLine.plCol) + "]: " + what)
-
-fun genDot(d: PeDot, r)
-  let baseBundle = genExpr(d.base, r)
-  ret match(exprType(d.base, r))
-    (bt: Spec) => genDotOn(d, bt, baseBundle, r)
-    ()          => genDotBug(d, "its base has no type")
-
-fun genDotOn(d: PeDot, bt, baseBundle, r) => match(bt)
-  (tp: STuple) => genDotTuple(d, baseBundle)
-  (c: SClass)  => genDotClass(d, c, baseBundle, r)
-  (e2: SEnum)  => genDotEnum(d, e2, baseBundle, r)
-  (o: Spec)    => genDotBug(d, "its base is not a tuple, a class or an enum")
-
-# By position only: a read that still has just a name here was missed by
-# lower/ast/field_names.yafl.
-fun genDotTuple(d: PeDot, baseBundle) => match(d.pedIndex)
-  (idx: Int) => bundleJoin(baseBundle, bundleValue(RpStructField(mustResult(baseBundle), "_" + String(idx))))
-  ()         => genDotBug(d, "it reached code generation with no position")
-
-
-fun genDotClass(d: PeDot, c: SClass, baseBundle, r) => match(soleItem(findType(r, c.scName)))
-  (found: Found) => match(found.fStmt)
-    (cs: PsClass) => genDotClassField(d, cs, baseBundle, r)
-    (o: PStmt)    => genDotBug(d, "its base's type " + c.scName + " is not a class")
-  ()               => genDotBug(d, "its base's class " + c.scName + " does not resolve to one declaration")
-
-fun genDotClassField(d: PeDot, cs: PsClass, baseBundle, r)
-  ret match(head(classFindData(cs, r, d.member)))
-    (found: Found) => genDotClassMember(cs, found.fStmt, d, baseBundle, r)
-    ()              => genDotBug(d, "class " + cs.cName + " has no member of that name")
-
-fun genDotClassMember(cs: PsClass, data, d: PeDot, baseBundle, r) => match(data)
-  (fn: PsFun) => hasAttr(cs.cAttrs, "final") || !occupiesSlot(cs, d.member)
-    ? bundleJoin(baseBundle, bundleValue(RpGlobalFunction(d.member, mustResult(baseBundle), false, foreignSymbol(fn), isImpureFn(fn), isSyncFn(fn))))
-    : bundleJoin(baseBundle, bundleValue(RpVirtualFunction(d.member, mustResult(baseBundle), false, false)))
-  (l: PsLet)  => genDotField(cs, l, d, baseBundle, r)
-  (o: PStmt)  => genDotBug(d, "the member of class " + cs.cName + " is neither a function nor a field")
-
-fun genDotField(cs: PsClass, l: PsLet, d: PeDot, baseBundle: GBundle, r)
-  let xtype = specGenerateOpt(l.lType, r)
-  ret bundleJoin(baseBundle, bundleValue(RpObjectField(xtype, mustResult(baseBundle), cs.cName, d.member, None, false, false)))
-
-fun genDotEnum(d: PeDot, e2, baseBundle: GBundle, r)
-  ret bundleJoin(baseBundle, bundleValue(reprReadField(classifyRepr(e2, r), mustResult(baseBundle), d.member, r)))
-
 # ── NamedExpression ──────────────────────────────────────────────────────────
 
 fun genName(nm: PeName, r) => match(head(findData(r, nm.refName).bItems))
@@ -594,52 +503,11 @@ fun letStorageType(l: PsLet, r) => isDeferredInit(l) ? CgDataPointer(false) : sp
 
 # ── ArrayReadExpression ──────────────────────────────────────────────────────
 
-fun arrayInfo(obj, r): (cname: String, elem: Spec, lenName: String)|None => match(exprType(obj, r))
-  (c: SClass) => arrayInfoOf(c, r)
-  ()          => None
-
-fun arrayInfoOf(c: SClass, r): (cname: String, elem: Spec, lenName: String)|None
-  ret match(soleItem(findType(r, c.scName)))
-    (found: Found) => match(found.fStmt)
-      (cs: PsClass) => arrayInfoField(c, cs)
-      (o: PStmt)    => None
-    ()               => None
-
-fun arrayInfoField(c: SClass, cs: PsClass): (cname: String, elem: Spec, lenName: String)|None
-  ret match(asPsLetVariant(classArrayField(cs)))
-    (af: PsLet) => arrayInfoLetType(c, af, cs)
-    ()           => None
-
-fun arrayInfoLetType(c: SClass, af: PsLet, cs: PsClass): (cname: String, elem: Spec, lenName: String)|None
-  ret match(asArrayFieldVariant(af.lType))
-    (afSpec: SArrayField) => arrayInfoLenName(c, afSpec, cs)
-    ()                     => None
-
-fun arrayInfoLenName(c: SClass, afSpec: SArrayField, cs: PsClass): (cname: String, elem: Spec, lenName: String)|None
-  ret match(fieldNameMatching(classFields(cs), afSpec.safLenField))
-    (ln: String) => (c.scName, afSpec.safElem, ln)
-    ()            => None
-
 fun classArrayField(cs: PsClass) => head(arrayFieldsOf(classFields(cs), List()))
 
 fun fieldNameMatching(fs: List<PStmt>, target) => match(firstWhere(fs, (x) => nameMatches(stmtName(x), target)))
   (x: PStmt) => stmtName(x)
   ()  => None
-
-fun genArrayRead(ar: PeArrayRead, r) => match(arrayInfo(ar.arrObj, r))
-  (info: (cname: String, elem: Spec, lenName: String)) => genArrayReadOn(ar, info, r)
-  ()                                                     => emptyBundle()   # unreachable: check()
-                                                                            # guarantees an array-class object
-
-fun genArrayReadOn(ar: PeArrayRead, info: (cname: String, elem: Spec, lenName: String), r)
-  let objB = withPrefix(genExpr(ar.arrObj, r), "arr")
-  let idxB = withPrefix(genExpr(ar.arrIndex, r), "idx")
-  let objVar = RpStackVar(CgDataPointer(false), "aobj")
-  let idxVar = RpStackVar(CgInt(32), "aidx")
-  let elem = RpArrayElement(specGenerate(info.elem, r), objVar, info.cname, "array", info.lenName, idxVar, true)
-  let moveOps = arrayOf<Op>(OpMove(objVar, mustResult(objB), false, Dict()),
-                      OpMove(idxVar, mustResult(idxB), false, Dict()))
-  ret bundleJoin(bundleJoin(objB, idxB), GBundle(list2(objVar, idxVar), moveOps, elem, List(), List()))
 
 # ── LazyExpression ───────────────────────────────────────────────────────────
 # GAP (see report): `irMangle`'s struct case doesn't port lazy_thunks.py's
@@ -664,48 +532,9 @@ fun structFieldSig(fields: List<CgField>): String
 
 fun fetchFunctionName(t) => "lazy_fetch$" + irMangle(t)
 
-fun genLazy(lz: PeLazy, r)
-  let irT = specGenerate(lz.lzTarget, r)
-  let stubRef = match(lz.lzCaptured)
-    (cls: String) => RpObjectField(CgDataPointer(false), RpStackVar(CgDataPointer(false), "this"), cls, lz.stubName, None, false, false)
-    ()             => lazyStubRef(lz, r)
-  ret lz.lzStubOnly ? bundleValue(stubRef) : genLazyForce(irT, stubRef)
-
-fun lazyStubRef(lz: PeLazy, r)
-  let found = findData(r, lz.stubName)
-  ret (exactly(found.bItems, 1) && foundIsGlobalScope(head(found.bItems)))
-    ? RpGlobalVar(CgDataPointer(false), lz.stubName)
-    : RpStackVar(CgDataPointer(false), lz.stubName)
-
-# isGlobalScope(sc: RScope): Bool is reused as-is from lambdas.yafl.
-fun foundIsGlobalScope(f: Found|None) => match(f)
-  (f2: Found) => isGlobalScope(f2.fScope)
-  ()           => false
-
-fun genLazyForce(irT, stubRef)
-  let svResult = RpStackVar(irT, "$force_result")
-  let call = OpCall(RpGlobalFunction(fetchFunctionName(irT), stubRef, false, None, false, false),
-                    RpNewStruct(List()), svResult, false, false, None, Dict())
-  ret GBundle(list1(svResult), arrayOf<Op>(call), svResult, List(), List())
-
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 6: BuiltinOpExpression (pyast/expression/builtin_op.py).
 # ══════════════════════════════════════════════════════════════════════════
-
-fun genBuiltinOp(op: PeBuiltinOp, r)
-  let nm = builtinOpName(op.opName)
-  if isReprAwareOp(nm) && !builtinSubjectBoxed(op, r)
-    ret genBuiltinValueRepr(op, nm, r)
-  if nm == "new_pinned"
-    ret genNewPinned(op, r)
-  ret genBuiltinOpGeneric(op, r)
-
-# `__builtin_op__<T>("new_pinned", C(...))`: the construction C, its heap
-# object born PINNED (builtin_op.py __new_pinned). The argument may arrive
-# wrapped in an inlined block (statements, then the construction).
-fun genNewPinned(op: PeBuiltinOp, r) => match(firstBuiltinArg(op.opParams))
-  (e: PExpr) => genPinned(e, r)
-  ()         => emptyBundle()   # unreachable: stdlib-only op
 
 fun genPinned(e: PExpr, r): GBundle => match(e)
   (nw: PeNew)     => genNewP(nw, r, true)
@@ -713,99 +542,9 @@ fun genPinned(e: PExpr, r): GBundle => match(e)
   (bk: PeBlock)   => genBlockPinned(bk, r)
   (o: PExpr)      => emptyBundle()   # unreachable: Python asserts a construction
 
-fun genBuiltinOpGeneric(op: PeBuiltinOp, r)
-  let paramsBundle = genExpr(op.opParams, r)
-  ret bundleJoin(paramsBundle, bundleValue(RpRuntimeInvoke(builtinOpName(op.opName), mustResult(paramsBundle), specGenerate(op.opType, r))))
-
-# The hash/identity internals are REPRESENTATION-AWARE: on a boxed enum they
-# are the real runtime calls; on a value representation there is no object,
-# so peek is the constant 0 (never cached), ref_eq is the constant false (no
-# identity to compare), and store just normalises the computed hash (the
-# 0-is-reserved contract holds either way). This is what lets derived and
-# wrapped code contain the shortcut UNCONDITIONALLY while the boxing decision
-# stays the compiler's.
-fun isReprAwareOp(n) => n == "yafl_hash_peek" || n == "yafl_hash_store" || n == "yafl_ref_eq"
-
-fun builtinSubjectBoxed(op: PeBuiltinOp, r) => match(op.opParams)
-  (tp: PeTuple) => match(head(tp.exprs))
-    (e2: PTupEnt) => match(exprType(e2.tupValue, r))
-      (se: SEnum) => isComplexRoot(r, se.seRoot)
-      ()          => false
-    ()            => false
-  (o: PExpr)    => false
-
-fun genBuiltinValueRepr(op: PeBuiltinOp, name, r)
-  if name == "yafl_hash_peek"
-    ret bundleValue(RpInteger(0, 32))
-  if name == "yafl_ref_eq"
-    ret bundleValue(RpInteger(0, 8))
-  # store: the subject has no slot — evaluate ONLY the hash operand and
-  # normalise it. The subject is a plain reference in all emitted code, so
-  # skipping it drops no effects.
-  ret match(op.opParams)
-    (tp: PeTuple) => match(head(dropOne(tp.exprs)))
-      (e2: PTupEnt) => genExpr(e2.tupValue, r)
-        |> (h) => bundleJoin(h, bundleValue(
-                    RpRuntimeInvoke("yafl_hash_norm",
-                                    RpNewStruct(list1(RpNamedValue("h", mustResult(h)))),
-                                    CgInt(32))))
-      ()            => emptyBundle()   # unreachable: store always has two args
-    (o: PExpr)    => emptyBundle()     # unreachable
-
-fun builtinOpName(nameExpr) => match(nameExpr)
-  (s2: PeStr) => s2.strValue
-  (o: PExpr)  => ""   # unreachable: op.opName is always a string literal
-
-# `__builtin_pin_set__(obj, obj.field, value)` (builtin_op.py
-# PinSetExpression.generate): one runtime call, kept when the answer goes
-# unread — the call is the store. The field is found by its offset in
-# whichever copy the pin takes.
-fun genPinSet(ps: PePinSet, r) => match(pinSetField(ps))
-  (d: PeDot) => match(writtenField(d, pinSetWhat(), r))
-    (cs: PsClass) => genPinSetOn(ps, d, cs, r)
-    (msg: String) => emptyBundle()   # unreachable: check()
-  ()         => emptyBundle()        # unreachable: check()
-
-fun genPinSetOn(ps: PePinSet, d: PeDot, cs: PsClass, r)
-  let fieldType = exprType(ps.psTarget, r)
-  let objB = withPrefix(genExpr(ps.psSubject, r), "psobj")
-  let valB = withPrefix(genExprTo(ps.psValue, r, fieldType), "psval")
-  let old = RpStackVar(specGenerateOpt(fieldType, r), "psold")
-  let call = OpMove(old, RpRuntimeInvoke("object_pin_set",
-                      RpNewStruct(prepend(RpNamedValue("o", mustResult(objB)),
-                                    prepend(RpNamedValue("offset", RpFieldOffset(cs.cName, d.member)),
-                                      prepend(RpNamedValue("v", mustResult(valB)), List())))),
-                      CgDataPointer(false)), true, Dict())
-  ret bundleJoin(bundleJoin(objB, valB),
-                 GBundle(list1(old), arrayOf<Op>(call), old, List(), List()))
-
-fun firstBuiltinArg(params) => match(params)
-  (tp: PeTuple) => match(head(tp.exprs))
-    (e0: PTupEnt) => e0.tupValue
-    ()            => None
-  (o: PExpr)    => None
-
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 7: CallExpression (pyast/expression/call.py).
 # ══════════════════════════════════════════════════════════════════════════
-
-fun genCall(c: PeCall, r) => match(exprType(c.function, r))
-  (cl: SCallable) => genCallOn(c, cl, r)
-  ()              => emptyBundle()          # unreachable
-
-fun genCallOn(c: PeCall, cl: SCallable, r)
-  let funBundle = withPrefix(genExpr(c.function, r), "fn")
-  let prmBundle = withPrefix(genExprTo(c.parameter, r, cl.scParams2), "args")
-  let funRef = mustResult(funBundle)
-  let resultType = specGenerateOpt(cl.scResult, r)
-  let resultVar = RpStackVar(resultType, "result")
-  let callOp = OpCall(funRef, mustResult(prmBundle), resultVar, false, isImpureCall(funRef), None, Dict())
-  let callBundle = GBundle(list1(resultVar), arrayOf<Op>(callOp), resultVar, List(), List())
-  ret bundleJoin(bundleJoin(funBundle, prmBundle), callBundle)
-
-fun isImpureCall(funRef) => match(funRef)
-  (gf: RpGlobalFunction) => gf.impure
-  (o: RParam)             => false
 
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 8: TupleExpression (pyast/expression/tuple_expr.py).
@@ -817,76 +556,9 @@ fun isImpureCall(funRef) => match(funRef)
 # — every entry still generates exactly once); this port always evaluates in
 # natural (declaration) order.
 
-fun genTuple(tp: PeTuple, r): GBundle
-  let built = genTupleEntryBundles(tp.exprs, r, 0,
-                                   List())
-  let paramBundles = built.bs
-  # NewStruct field-name → result mapping is pinned to DECLARED positions, so
-  # the tuple value is unaffected by any reordering of evaluation below.
-  let value = RpNewStruct(namedValuesOf(paramBundles))
-  # At -O0, randomise the order in which children's side-effects fire so that
-  # code accidentally relying on left-to-right tuple evaluation surfaces.
-  # Seeded from the source location via FNV-1a + xorshift32 Fisher–Yates —
-  # Python's _location_shuffle (tuple_expr.py) runs the identical arithmetic.
-  let evalBundles = getOptLevel(r) == 0 && sizeAtLeast(paramBundles, 2)
-    ? locationShuffle(paramBundles, built.n,
-                      tp.petLine.plFile + ":" + String(tp.petLine.plLine)
-                      + ":" + String(tp.petLine.plCol))
-    : paramBundles
-  ret bundleJoin(bundleJoinAll(evalBundles), bundleValue(value))
-
-# n is the item count, CARRIED from the walk that built the items — the
-# Fisher-Yates index sequence needs it as data (the RNG consumption order
-# is pinned by Python parity); it is never recalculated from the list.
-fun locationShuffle(items, n, key): List<GBundle>
-  let seed = fnv1a(key, 0, 2166136261)
-  ret fisherYates(items, n - 1, seed == 0 ? 1 : seed)
-
-fun [tail] fnv1a(key, at, h) => at >= length(key)
-  ? h
-  : fnv1a(key, at + 1, ((h ^ Int(byteAt(key, at))) * 16777619) & mask32)
-
-# One Fisher–Yates step per i from n-1 down to 1: advance the xorshift32
-# state, pick j = state % (i + 1), swap positions i and j.
-fun [tail] fisherYates(xs, i, h): List<GBundle>
-  if i < 1
-    ret xs
-  let h1 = h ^ ((h << 13) & mask32)
-  let h2 = h1 ^ (h1 >> 17)
-  let h3 = h2 ^ ((h2 << 5) & mask32)
-  ret fisherYates(bundleSwap(xs, i, h3 % (i + 1)), i - 1, h3)
-
-fun bundleSwap(xs, i: Int, j: Int): List<GBundle> => i == j
-  ? xs
-  : swapLoop(xs, 0, i, j, forceNth(xs, i),
-             forceNth(xs, j), List())
-
-fun swapLoop(cs: List<GBundle>, at, i, j, vi: GBundle, vj: GBundle, acc: List<GBundle>) =>
-  fold(cs, (at = at, acc = acc), (st, x) => swapLoopStep(st, x, i, j, vi, vj)).acc
-
-fun swapLoopStep(st: (at: Int, acc: List<GBundle>), x: GBundle, i, j, vi: GBundle, vj: GBundle) =>
-  (at = st.at + 1, acc = append(st.acc, st.at == i ? vj : st.at == j ? vi : x))
-
-# Returns the bundles AND their count — idx already rides the walk, so the
-# count is free at the end (no-length ruling: counts are carried, not taken).
-fun genTupleEntryBundles(es: List<PTupEnt>, r, idx, acc: List<GBundle>): (bs: List<GBundle>, n: Int) =>
-  fold(es, (idx = idx, acc = acc), (st, x) => genTupleEntryBundlesStep(st, x, r))
-    |> (r2) => (r2.acc, r2.idx)
-
-fun genTupleEntryBundlesStep(st: (idx: Int, acc: List<GBundle>), x: PTupEnt, r) =>
-  (idx = st.idx + 1, acc = append(st.acc, withPrefix(genExpr(x.tupValue, r), "e" + String(st.idx))))
-
-fun namedValuesOf(bundles: List<GBundle>) => namedValuesLoop(bundles, 0, List())
-
-fun namedValuesLoop(bs: List<GBundle>, idx, acc: List<RpNamedValue>) =>
-  fold(bs, (idx = idx, acc = acc),
-       (st, x) => (idx = st.idx + 1, acc = append(st.acc, RpNamedValue("_" + String(st.idx), mustResult(x))))).acc
-
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 9: NewExpression / NewEnumExpression (pyast/expression/new.py).
 # ══════════════════════════════════════════════════════════════════════════
-
-fun genNew(nw: PeNew, r) => genNewP(nw, r, false)
 
 # pinned: the object is born pinned (`new_pinned`).
 fun genNewP(nw: PeNew, r, pinned: Bool) => match(exprType(nw.newParam, r))
@@ -989,7 +661,6 @@ fun isArrayFieldParam(st) => match(st)
     ()                 => false
   (o: PStmt) => false
 
-
 fun scalarFieldMoveOps(ps: List<PStmt>, cname, resultVar, paramsVar, arrIdx, i, r, acc: Array<Op>) =>
   fold(ps, (i = i, acc = acc),
        (st, x) => scalarFieldMoveOpsStep(st, x, cname, resultVar, paramsVar, arrIdx, r)).acc
@@ -1007,8 +678,6 @@ fun scalarFieldMoveOpsStep(st: (i: Int, acc: Array<Op>), x: PStmt, cname, result
 # the parser's synthesised leaf constructors always pun `{name: NamedExpression(name)}`,
 # so the names alone are lossless) — reconstruct the (name, PeName) pairs the
 # repr's construct_enum_value expects.
-
-fun genNewEnum(ne: PeNewEnum, r) => genNewEnumP(ne, r, false)
 
 fun genNewEnumP(ne: PeNewEnum, r, pinned: Bool) => match(soleItem(findType(r, ne.rootName)))
   (found: Found) => match(found.fStmt)
@@ -1030,8 +699,6 @@ fun punFieldArgs(fas: List<PFieldArg>, lr: PLine) => map(fas, (fa) => PunArg(fa.
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 10: TernaryExpression (pyast/expression/ternary.py).
 # ══════════════════════════════════════════════════════════════════════════
-
-fun genTernaryTo(te, r, expected) => genTernary(te, r, expected)
 
 fun genTernary(te: PeTernary, r, expected)
   let slotType = match(expected)
@@ -1089,22 +756,6 @@ fun genBlockPinned(bk: PeBlock, r): GBundle
     ? bundleJoin(stmtsBundle, genPinned(bk.blockValue, nested))
     : emptyBundle()   # unreachable: Python asserts
 
-# With no expected type, the slot is the BLOCK's type — its value typed inside
-# the block's own scope (Python's `self.get_type`). Typing the value in the
-# outer scope loses the block's locals: an inlined body's parameters read as
-# unknown and the slot degrades to a union of half-typed arms.
-fun genBlockTo(bk: PeBlock, r, expected: Spec|None): GBundle
-  let slotType = match(expected)
-    (e2: Spec) => expected
-    ()          => exprType(bk, r)
-  let tag = length(bk.blockTag) == 0 ? "blk@" + hash6(bk.pebkLine.plFile, bk.pebkLine.plLine, bk.pebkLine.plCol) : bk.blockTag
-  let frame = FrBlock(tag, slotType)
-  let nested = localScope(bk.blockStmts, RGen(frame, r))
-  let stmtsBundle = genBlockStmts(bk.blockStmts, nested, 0)
-  ret isEmpty(stmtsBundle.gbExitSources)
-    ? bundleJoin(stmtsBundle, genExprTo(bk.blockValue, nested, slotType))
-    : genBlockReturns(bk, stmtsBundle, nested, slotType, tag)
-
 fun genBlockStmts(ss, r, i: Int): GBundle
   # Phase 1: hoist deferred-init stub allocations to block entry.
   let allocBundle = genBlockAllocs(ss, r, i, emptyBundle())
@@ -1138,87 +789,6 @@ fun isSome(sp: Spec|None) => match(sp)
   (s2: Spec) => true
   ()          => false
 
-# The `return`-bearing path. Python builds ITS OWN OperationBundle here (not
-# via `+`): the returned exit_sources default empty — a block is where
-# `return` terminates, so none propagate further up; recur_sources DO still
-# flow through (a [tail] recur inside an if inside a block-with-returns is
-# legitimate). All bookkeeping (ops/stack_vars/recur/sources) is threaded as
-# plain lists to mirror Python's local mutation exactly, in the same order.
-fun genBlockReturns(bk: PeBlock, stmtsBundle: GBundle, r, slotType: Spec|None, tag): GBundle
-  let endLabel = "blockend$" + tag
-  let ftExit = "blockftexit$" + tag
-  ret stmtsFallThrough(bk.blockStmts)
-    ? genBlockReturnsFallThrough(bk, stmtsBundle, r, slotType, tag, endLabel, ftExit)
-    : genBlockReturnsDead(stmtsBundle, slotType, r, tag, endLabel, ftExit)
-
-fun genBlockReturnsFallThrough(bk: PeBlock, stmtsBundle: GBundle, r, slotType,
-                               tag, endLabel, ftExit)
-  let vbun = genExprTo(bk.blockValue, r, slotType)
-  let ops0 = pushAll<Op>(stmtsBundle.gbOps, vbun.gbOps)
-  let stackVars0 = concat(stmtsBundle.gbStackVars, vbun.gbStackVars)
-  let recur0 = concat(stmtsBundle.gbRecurSources, vbun.gbRecurSources)
-  let sources0 = concat(stmtsBundle.gbExitSources, vbun.gbExitSources)
-  ret bundleBottom(vbun)
-    ? genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stackVars0, recur0, sources0, None, false)
-    : genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stackVars0, recur0, sources0, vbun.gbResult, true)
-
-fun genBlockReturnsDead(stmtsBundle: GBundle, slotType, r, tag, endLabel, ftExit)
-  let ops0 = push<Op>(stmtsBundle.gbOps,
-                   OpAbort("unreachable: every path through the block returned", Dict()))
-  ret genBlockAssemble(slotType, r, tag, endLabel, ftExit, ops0, stmtsBundle.gbStackVars, stmtsBundle.gbRecurSources,
-                      stmtsBundle.gbExitSources, None, false)
-
-fun genBlockAssemble(slotType: Spec|None, r, tag, endLabel, ftExit,
-                     ops0: Array<Op>, stackVars0, recur0,
-                     sources0: List<ExitSource>, ftValue: RParam|None, reachesEnd) => match(slotType)
-  (st2: Spec) => genBlockAssembleValued(st2, r, tag, ops0, stackVars0, recur0, sources0, endLabel, ftExit, ftValue, reachesEnd)
-  ()          => genBlockAssembleUnit(ops0, stackVars0, recur0, endLabel, ftExit, reachesEnd)
-
-# The fall-through label, when the block can reach its end, then the end
-# label — both after everything the block emitted.
-fun genBlockFtLabel(b: Array<Op>, ftExit, reachesEnd: Bool): Array<Op>
-  ret reachesEnd ? push<Op>(b, OpLabel(ftExit, Dict())) : b
-
-fun genBlockAssembleUnit(ops0: Array<Op>, stackVars0, recur0,
-                         endLabel, ftExit, reachesEnd)
-  let ops1 = genBlockFtLabel(ops0,
-                             ftExit, reachesEnd)
-  ret GBundle(stackVars0,
-              push<Op>(ops1, OpLabel(endLabel, Dict())),
-              None, recur0, List())
-
-fun genBlockAssembleValued(slotType, r, tag, ops0: Array<Op>, stackVars0,
-                          recur0, sources0: List<ExitSource>, endLabel, ftExit,
-                          ftValue: RParam|None, reachesEnd)
-  let resultVar = RpStackVar(specGenerate(slotType, r), "blockresult$" + tag)
-  let fv = match(ftValue)
-    (v: RParam) => v
-    ()           => RpZeroOf(rpGetType(resultVar))
-  let ops1 = genBlockFtLabel(ops0,
-                             ftExit, reachesEnd)
-  # The fall-through edge is the LAST phi source, matching the label order.
-  let sources1 = reachesEnd
-    ? append(
-          sources0,
-          ExitSource(ftExit, fv))
-    : sources0
-  let ops2 = pushAll<Op>(ops1,
-                 arrayOf<Op>(OpLabel(endLabel, Dict()),
-                       OpPhi(resultVar, exitSourcesToPhi(sources1),
-                             Dict())))
-  ret GBundle(append(
-                  stackVars0,
-                  resultVar),
-              ops2, resultVar, recur0, List())
-
-fun exitSourcesToPhi(es: List<ExitSource>)
-  ret map(es, (e2) => OpPhiSource(e2.esLabel, exitValueOr(e2.esValue)))
-
-fun exitValueOr(v: RParam|None) => match(v)
-  (rv: RParam) => rv
-  ()            => RpNullPointer()   # unreachable in a value-slotted block: every source
-                                     # supplies a value once slot_type is not None
-
 # `_stmts_fall_through`/`_stmt_diverges`: can control reach the end of this
 # statement sequence, or does every path through it `return`/exhaustively
 # `if`-`else` diverge?
@@ -1233,8 +803,6 @@ fun stmtDiverges(st) => match(st)
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 12: LoopExpression / RecurExpression (pyast/expression/loop.py).
 # ══════════════════════════════════════════════════════════════════════════
-
-fun genLoopTo(lp: PeLoop, r, expected) => genLoop(lp, r, expected)
 
 fun genLoop(lp: PeLoop, r, expected: Spec|None): GBundle
   let paramRefs = map(lp.loopParams, (p) => mustResult(genExpr(p, r)))
@@ -1279,7 +847,6 @@ fun loopParamName(p) => match(p)
 fun map3<A, B, C, D>(as2: List<A>, bs: List<B>, cs: List<C>, f: (:A, :B, :C): D): List<D> =>
   zipMap(as2, zipMap(bs, cs, (b: B, c: C) => (b = b, c = c)), (a, bc) => f(a, bc.b, bc.c))
 
-
 fun buildLoopPhis(params: List<PExpr>, ctypes: List<CgType>, refs: List<RParam>,
                          lv: List<LoopRename>, entry,
                          recurSources: List<RecurSource>, i, acc: Array<Op>): Array<Op> =>
@@ -1308,99 +875,12 @@ fun forceNthRename(l: List<LoopRename>, i) => match(listAt(l, i))
 
 # ── RecurExpression ──────────────────────────────────────────────────────────
 
-fun genRecur(rc: PeRecur, r) => match(asFrLoop(getLoopFrame(r)))
-  (fl: FrLoop) => genRecurOn(rc, fl, r)
-  ()            => emptyBundle()   # unreachable: RecurExpression only ever appears inside its LoopExpression
-
-fun genRecurOn(rc: PeRecur, fl: FrLoop, r): GBundle
-  let k = rc.recIndex
-  # Read the frame's parameter lists ONCE here (a FrLoop lives in the GenFrame
-  # union; re-reading its List fields per recur-arg re-narrows through the
-  # union each time, which mis-reads the packed slot) and thread the plain
-  # lists + tag down.
-  let ctypes = fl.flParamCTypes
-  let specs = fl.flParamSpecs
-  let tag = fl.flTag
-  let step = genRecurArgs(rc.recArgs, r, ctypes, specs, tag, k)
-  let exitLabel = "recurexit" + String(k) + "$" + tag
-  # Python's return here omits exit_sources (OperationBundle default: empty),
-  # even though generating an arg could in principle carry one forward —
-  # ported exactly (flagged in the report as a candidate suspected bug,
-  # not fixed).
-  ret GBundle(step.grBundle.gbStackVars,
-             pushAll<Op>(step.grBundle.gbOps, arrayOf<Op>(OpLabel(exitLabel, Dict()), OpJump("loophead$" + tag, Dict()))),
-             None,
-             append(
-                 step.grBundle.gbRecurSources,
-                 RecurSource(exitLabel, step.grPhiIns)),
-             List())
-
-class [final] RecurArgsOut(grBundle: GBundle, grPhiIns: List<RParam>)
-
-# The phi inputs are POSITIONAL — one per recur argument, in argument order.
-fun genRecurArgs(args: List<PExpr>, r, ctypes: List<CgType>, specs: List<Spec>,
-                 tag, k: Int): RecurArgsOut
-  let out = fold(args, (i = 0, bundle = emptyBundle(), phiIns = List<RParam>()),
-                 (st, arg) => genRecurArgsStep(st, arg, r, ctypes, specs, tag, k))
-  ret RecurArgsOut(out.bundle, out.phiIns)
-
-fun genRecurArgsStep(st: (i: Int, bundle: GBundle, phiIns: List<RParam>), arg: PExpr,
-                     r, ctypes, specs, tag, k: Int)
-  let i = st.i
-  let ab = withPrefix(genExprTo(arg, r, forceNth<Spec>(specs, i)), "recur" + String(i))
-  let phiin = RpStackVar(forceNth(ctypes, i), "phiin$" + tag + "$" + String(k) + "$" + String(i))
-  let withMove = bundleJoin(st.bundle, bundleJoin(ab, bundleFull(list1(phiin), arrayOf<Op>(OpMove(phiin, mustResult(ab), false, Dict())), None)))
-  ret (i = i + 1, bundle = withMove, phiIns = append(st.phiIns, phiin))
-
 # ══════════════════════════════════════════════════════════════════════════
 # SECTION 13: top-level dispatch — genExpr/genExprTo (Expression.generate/
 # generate_to, pyast/expression/base.py). PeMatch routes to genMatch/
 # genMatchTo in generate_expr2.yafl (forward reference — same one-namespace
 # program, order-independent, exactly like every other bootstrap/*.yafl file).
 # ══════════════════════════════════════════════════════════════════════════
-
-fun genExpr(x, r) => match(x)
-  (i: PeInt)        => bundleValue(RpInteger(i.value, i.precision))
-  (f: PeFloat)      => bundleValue(RpFloat(genFloatValue(f.floatText), f.fPrecision == 0 ? 64 : f.fPrecision))
-  (bo: PeBool)      => bundleValue(RpInteger(bo.boolValue ? 1 : 0, 8))
-  (st: PeStr)       => bundleValue(RpString(st.strValue))
-  (rx: PeRegex)     => emptyBundle()   # unreachable: regex literals are interned away
-                                      # before generate (lowering/regexes.py)
-  (n: PeNothing)    => emptyBundle()
-  (nm: PeName)      => genName(nm, r)
-  (d: PeDot)        => genDot(d, r)
-  (c: PeCall)       => genCall(c, r)
-  (tp: PeTuple)     => genTuple(tp, r)
-  (te: PeTernary)   => genTernary(te, r, None)
-  (ps: PePinSet)    => genPinSet(ps, r)
-  (lm: PeLambda)    => emptyBundle()   # unreachable: lambdas are lowered away before generate
-  (bk: PeBlock)     => genBlockTo(bk, r, None)
-  (mt: PeMatch)     => genMatch(mt, r, None)
-  (op: PeBuiltinOp) => genBuiltinOp(op, r)
-  (wx: PeWith)      => emptyBundle()   # unreachable: withExpand runs during compile
-  (ne: PeNewEnum)   => genNewEnum(ne, r)
-  (nw: PeNew)       => genNew(nw, r)
-  (ar: PeArrayRead) => genArrayRead(ar, r)
-  (cv: PeConvert)   => genConvert(cv, r)
-  # PeCoalesce dissolves into a match during compile, once the subject's
-  # type is ground. Reaching codegen means it never did — a compile bug, not
-  # a shape to emit. Python raises here; the port has no exception, so it
-  # emits the empty bundle, which fails loudly downstream rather than
-  # silently generating a wrong value.
-  (qq: PeCoalesce)  => emptyBundle()
-  (lp: PeLoop)      => genLoop(lp, r, None)
-  (rc: PeRecur)     => genRecur(rc, r)
-  (lz: PeLazy)      => genLazy(lz, r)
-
-# Kinds that override generate_to (thread `expected` down instead of the
-# generic post-hoc assertion below) route here first; everything else goes
-# through `genExprToDefault`.
-fun genExprTo(x, r, expected: Spec|None): GBundle => match(x)
-  (bk: PeBlock)   => genBlockTo(bk, r, expected)
-  (te: PeTernary) => genTernaryTo(te, r, expected)
-  (mt: PeMatch)   => genMatchTo(mt, r, expected)
-  (lp: PeLoop)    => genLoopTo(lp, r, expected)
-  (o: PExpr)      => genExprToDefault(o, r, expected)
 
 # The base Expression.generate_to: "generate never coerces" — the ONLY
 # representation change this wrapper permits is the assertion that none is
@@ -1414,7 +894,3 @@ fun genExprTo(x, r, expected: Spec|None): GBundle => match(x)
 fun genExprToDefault(x, r, expected: Spec|None) => genExpr(x, r)
 
 # ── ConvertExpression (pyast/expression/conversion.py) ──────────────────────
-
-fun genConvert(cv: PeConvert, r)
-  let bundle = genExpr(cv.convInner, r)
-  ret bundleJoin(bundle, emitConversion(bundle.gbResult, exprType(cv.convInner, r), cv.convTarget, r))

@@ -433,6 +433,9 @@ fun findData(r, query): Findings => match(r)
 # stage that has no scope to offer.
 fun emptyResolver() => RRoot((root) => false, (name) => false, buildStatements(List<PStmt>()))
 
+# The one empty root, built once: the scope every scope-free walk starts from.
+let emptyResolverGlobal: Resolver = emptyResolver()
+
 fun findType(r, query): Findings => match(r)
   (root: RRoot) => globalFindings(root.rrStmts, query, true)
   (rg: RGen)    => findType(rg.rgParent, query)

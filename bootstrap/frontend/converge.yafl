@@ -26,7 +26,7 @@ import Bootstrap::Lower::Ast
 import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::Types
-
+import Bootstrap::Nodes
 
 
 let [const] MAX_COMPILE_ITERATIONS: Int = 100

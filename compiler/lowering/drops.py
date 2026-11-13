@@ -140,14 +140,18 @@ class _Inserter:
         if fn.body is None or "foreign" in fn.attributes:
             return fn
         body = self.__rewrite_expr(fn.body, fn.trait_params)
+        return self.__rewrite_fn_params(fn, body, fn.trait_params)
+
+    def __rewrite_fn_params(self, fn: s.FunctionStatement, body: e.Expression,
+                            fn_trait_params: tuple[t.TypeSpec, ...]) -> s.FunctionStatement:
         # Unused droppable parameters drop at the body's exit.
         params = fn.parameters.flatten()
         referenced = u.referenced_names(body)
-        drops = self.__unused_droppable(params, referenced, fn.trait_params)
+        drops = self.__unused_droppable(params, referenced, fn_trait_params)
         if drops:
             body = self.__with_drops(body, drops)
             self.changed = True
-        for let in self.__partially_used_droppable(params, referenced, fn.trait_params):
+        for let in self.__partially_used_droppable(params, referenced, fn_trait_params):
             body = self.__balance(body, let)
         return dataclasses.replace(fn, body=body) if body is not fn.body else fn
 
@@ -158,8 +162,20 @@ class _Inserter:
                 return self.__rewrite_block(thing, fn_trait_params)
             if isinstance(thing, e.LambdaExpression):
                 return self.__rewrite_lambda(thing, fn_trait_params)
+            if isinstance(thing, s.FunctionStatement):
+                return self.__rewrite_nested_fn(thing, fn_trait_params)
             return rw.UNCHANGED
         return rw.resolved(expr.search_and_replace(None, visit), expr)
+
+    def __rewrite_nested_fn(self, fn: s.FunctionStatement,
+                            fn_trait_params: tuple[t.TypeSpec, ...]) -> s.FunctionStatement:
+        # A nested function is a function, so its params drop as a top-level
+        # one's do (its body is already rewritten: search_and_replace is
+        # bottom-up). It has no `where` of its own; it inherits its owner's
+        # lexically, exactly as a lambda does.
+        if fn.body is None or "foreign" in fn.attributes:
+            return fn
+        return self.__rewrite_fn_params(fn, fn.body, fn_trait_params)
 
     def __rewrite_block(self, block: e.BlockExpression,
                         fn_trait_params: tuple[t.TypeSpec, ...]) -> e.BlockExpression:

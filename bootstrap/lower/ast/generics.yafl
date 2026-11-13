@@ -141,129 +141,31 @@ fun anyEntryOutsideStep(x: SEntry, name, inUnion) => match(x.seType)
   () => false
 
 # ── finding concrete instantiations ─────────────────────────────────────────
-# A full-tree walk: PeName/PeNewEnum/SEnum/SNamed feed dataRefs, SClass feeds
-# typeRefs — only with concrete args.
+# find_instantiations: one callback over the whole tree. PeName / PeNewEnum /
+# SEnum / SNamed feed dataRefs, SClass feeds typeRefs — only with concrete args.
 
-fun findConcreteInstantiations(statements: List<PStmt>)
-  ret fciStmts(statements, GRefs(List(), List()))
+fun findConcreteInstantiations(statements: List<PStmt>): GRefs =>
+  walkStmts(statements, emptyResolverGlobal, GRefs(List(), List()),
+            Walk<GRefs>((acc, _r, x) => (s = fciExpr(x, acc), r = None),
+                        wkNoStmt<GRefs>,
+                        (acc, _r, sp) => (s = fciSpec(sp, acc), r = None))).s
 
-fun fciStmts(ss: List<PStmt>, acc) => fold(ss, acc, (a, x) => fciStmt(x, a))
-
-fun fciStmt(st, acc) => match(st)
-  (f: PsFun)         => fciExprOpt(f.fBody,
-                          fciSpecs(f.fWheres,
-                            fciSpecOpt(f.fRet, fciStmt(f.fParams, acc))))
-  # A let's wheres are NOT scanned: Python's LetStatement.search_and_replace
-  # visits only default_value + declared_type (lets.py:42).
-  (l: PsLet)         => fciExprOpt(l.lDefault, fciSpecOpt(l.lType, acc))
-  (d: PsDestructure) => fciStmts(d.dTargets,
-                          fciExprOpt(d.dDefault, fciSpecOpt(d.dType, acc)))
-  (c: PsClass)       => fciStmts(c.cMembers,
-                          fciSpecsOpt(c.cAllParents,
-                            fciSpecs(c.cWheres,
-                              fciSpecs(c.cImplements,
-                                fciStmt(c.cParams, acc)))))
-  (e2: PsEnum)       => fciStmts(e2.eVariants,
-                          fciSpecOpt(e2.eSpec, fciStmt(e2.eParams, acc)))
-  (ta: PsTypealias)  => fciSpecOpt(ta.taType, acc)
-  (rt: PsRet)        => fciExpr(rt.retValue, acc)
-  (a: PsAction)      => fciExpr(a.action, acc)
-  (fa: PsFieldAssign) => fciExpr(fa.faValue, fciExpr(fa.faTarget, acc))
-  (i: PsIf)          => fciStmts(i.ifFalse,
-                          fciStmts(i.ifTrue,
-                                   fciExpr(i.ifCond, acc)))
-  (o: PStmt)         => acc
-
-fun fciExpr(x, acc) => match(x)
-  # penTrait is a SPEC field Python's search_and_replace walks: an AMBIENT
-  # member's SOLVED scope (Sized<Wrap<Box>>) mints its type refs here —
-  # round-0 parity depends on it (a where-clause scope's specs also appear
-  # in trait_params, so only ambient scopes need this).
-  (nm: PeName)   => fciSpecs(nm.refTypeParams,
-                             nameRef(nm.refName, nm.refTypeParams,
-                                     fciSpecOpt(nm.penTrait, acc)))
-  (ne: PeNewEnum) => fciSpecs(ne.neTypeParams,
-                              nameRef(ne.rootName, ne.neTypeParams,
-                                      fold(ne.fieldArgs, acc, (a2, fa) =>
-                                        fciExpr(fa.faValue, a2))))
-  (d: PeDot)     => fciExpr(d.base, acc)
-  (c: PeCall)    => fciExpr(c.parameter, fciExpr(c.function, acc))
-  (tp: PeTuple)  => fciEntries(tp.exprs, acc)
-  (te: PeTernary) => fciExpr(te.falseResult,
-                      fciExpr(te.trueResult, fciExpr(te.condition, acc)))
-  (lm: PeLambda) => fciSpecOpt(lm.lamRet,
-                      fciExpr(lm.lamBody, fciStmt(lm.lamParams, acc)))
-  (bk: PeBlock)  => fciExpr(bk.blockValue,
-                            fciStmts(bk.blockStmts, acc))
-  (mt: PeMatch)  => fciArms(mt.arms, fciExpr(mt.subject, acc))
-  (op: PeBuiltinOp) => fciExpr(op.opParams, fciSpecOpt(op.opType, acc))
-  (ps: PePinSet) => fciExpr(ps.psValue, fciExpr(ps.psTarget, fciExpr(ps.psSubject, acc)))
-  (nw: PeNew)    => fciExpr(nw.newParam, fciSpecOpt(nw.newType, acc))
-  (qq: PeCoalesce) => fciExpr(qq.qqFallback, fciExpr(qq.qqSubject, acc))
-  (ar: PeArrayRead) => fciExpr(ar.arrIndex, fciExpr(ar.arrObj, acc))
-  (cv: PeConvert) => fciSpecOpt(cv.convTarget, fciExpr(cv.convInner, acc))
-  (wx: PeWith)   => fciExpr(wx.withRepls, fciExpr(wx.withSubject, acc))
-  (o: PeLiteral) => acc
-  (o: PeLowered) => acc
+fun fciExpr(x: PExpr, acc: GRefs): GRefs => match(x)
+  (nm: PeName)    => nameRef(nm.refName, nm.refTypeParams, acc)
+  (ne: PeNewEnum) => nameRef(ne.rootName, ne.neTypeParams, acc)
+  (o: PExpr)      => acc
 
 fun nameRef(name, args, acc) => !isEmpty(args) && isConcreteTypeArgs(args)
   ? GRefs(addRef(acc.gdData, mkGRef(name, args)), acc.gdTypes)
   : acc
 
-fun fciEntries(es: List<PTupEnt>, acc) =>
-  fold(es, acc, (a, x) => fciExpr(x.tupValue, a))
-
-fun fciArms(as2: List<PArm>, acc) =>
-  fold(as2, acc, (a, x) => fciExprOpt(x.armGuard, fciExpr(x.armBody, fciPositions(x.armExtra, fciSpecOpt(x.armType, a)))))
-
-fun fciPositions(ps: List<PPos>, acc) => fold(ps, acc, (a, p) => fciSpecOpt(p.posType, a))
-
-fun fciExprOpt(x: PExpr|None, acc) => match(x)
-  (e2: PExpr) => fciExpr(e2, acc)
-  ()          => acc
-
-fun fciSpec(sp, acc) => match(sp)
-  (c: SClass)        => fciSpecs(c.scParams,
-                                 !isEmpty(c.scParams)
-                                   && isConcreteTypeArgs(c.scParams)
-                                   ? GRefs(acc.gdData,
-                                           addRef(acc.gdTypes,
-                                                  mkGRef(c.scName, c.scParams)))
-                                   : acc)
-  (e2: SEnum)        => fciSpecs(e2.seParams,
-                                 !isEmpty(e2.seParams)
-                                   && isConcreteTypeArgs(e2.seParams)
-                                   ? GRefs(addRef(acc.gdData,
-                                                  mkGRef(e2.seRoot,
-                                                         e2.seParams)),
-                                           acc.gdTypes)
-                                   : acc)
-  # NamedSpec is a traversal LEAF: its search_and_replace is the base
-  # class's (specs.py:636) — the rule fires on the node, but its params are
-  # never visited.
-  (n: SNamed)        => !isEmpty(n.snParams)
-                        && isConcreteTypeArgs(n.snParams)
-    ? GRefs(addRef(acc.gdData, mkGRef(n.snName, n.snParams)), acc.gdTypes)
+fun fciSpec(sp: Spec, acc: GRefs): GRefs => match(sp)
+  (c: SClass)  => !isEmpty(c.scParams) && isConcreteTypeArgs(c.scParams)
+    ? GRefs(acc.gdData, addRef(acc.gdTypes, mkGRef(c.scName, c.scParams)))
     : acc
-  (cm: SCombination) => fciSpecs(cm.scTypes, acc)
-  (t2: STuple)       => fciSpecEntries(t2.stEntries, acc)
-  (cl: SCallable)    => fciSpecOpt(cl.scResult, fciSpec(cl.scParams2, acc))
-  (af: SArrayField)  => fciSpec(af.safElem, acc)
-  (ls: SLazyStub)    => fciSpecOpt(ls.slsTarget, acc)
-  (o: Spec)          => acc
-
-fun fciSpecs(ss: List<Spec>, acc) => fold(ss, acc, (a, x) => fciSpec(x, a))
-
-fun fciSpecEntries(es: List<SEntry>, acc) =>
-  fold(es, acc, (a, x) => fciSpecOpt(x.seType, fciExprOpt(x.seDefault, a)))
-
-fun fciSpecOpt(sp: Spec|None, acc) => match(sp)
-  (s2: Spec) => fciSpec(s2, acc)
-  ()         => acc
-
-fun fciSpecsOpt(ss: List<Spec>|None, acc) => match(ss)
-  (l: List<Spec>) => fciSpecs(l, acc)
-  ()              => acc
+  (e2: SEnum)  => nameRef(e2.seRoot, e2.seParams, acc)
+  (n: SNamed)  => nameRef(n.snName, n.snParams, acc)
+  (o: Spec)    => acc
 
 # ── substitution ────────────────────────────────────────────────────────────
 # Placeholders substitute by SPEC-scope name first, then — for an enum
@@ -308,36 +210,19 @@ fun resolveGp(name, sub: GSub) => match(bindingOf(sub.gsExact, name))
     ? bindingOf(sub.gsBare, bareGenName(name))
     : None
 
-fun gsubSpec(sp, sub: GSub, visited: List<String>) => match(sp)
-  (g2: SGeneric)     => match(resolveGp(g2.sgName, sub))
-    (b: Spec) => b
-    ()        => sp
-  # EnumSpec: params visited generally (search_and_replace), THEN the
-  # callback runs _substitute_enum on the node — params again via the
-  # in-field rules plus the cycle-guarded all_fields walk.
-  (e2: SEnum)        => gsubEnumNode(e2, gsubList(e2.seParams, sub,
-                                                  visited),
-                                     sub, List())
-  (c: SClass)        => SClass(c.scName, gsubList(c.scParams, sub, visited),
-                               c.scLine)
-  # NamedSpec is a traversal LEAF (base-class search_and_replace), and the
-  # substitute callback has no NamedSpec rule — params stay untouched here.
-  # The in-field walk below is the ONLY place NamedSpec params substitute.
-  (n: SNamed)        => sp
-  (cm: SCombination) => canonUnion(SCombination(gsubList(cm.scTypes, sub,
-                                                         visited),
-                                                cm.scmLine))
-  (t2: STuple)       => STuple(gsubEntries(t2.stEntries, sub,
-                                           visited, List()),
-                               t2.stLine)
-  (cl: SCallable)    => SCallable(gsubSpec(cl.scParams2, sub, visited),
-                                  gsubOpt(cl.scResult, sub, visited),
-                                  cl.sclLine)
-  (af: SArrayField)  => SArrayField(gsubSpec(af.safElem, sub, visited),
-                                    af.safLenField, af.safLine)
-  (ls: SLazyStub)    => SLazyStub(gsubOpt(ls.slsTarget, sub, visited),
-                                  ls.slsLine)
-  (b: SBuiltin)      => sp
+# substitute: the walk's spec callback. A placeholder resolves; an EnumSpec —
+# its params already walked, bottom-up — runs _substitute_enum: the in-field
+# rules over those params, then identity completion. Every other node is the
+# walk's (a union re-flattens there, as CombinationSpec's does).
+fun gsubSpec(sp: Spec, sub: GSub): Spec|None => match(sp)
+  (g2: SGeneric) => resolveGp(g2.sgName, sub)
+  (e2: SEnum)    => gsubEnumNode(e2, e2.seParams, sub, List())
+  (o: Spec)      => None
+
+fun gsubStmt(st: PStmt, sub: GSub): PStmt =>
+  walkStmt(st, emptyResolverGlobal, false,
+           Walk<Bool>(wkNoExpr<Bool>, wkNoStmt<Bool>,
+                      (s, _r, sp) => (s = s, r = gsubSpec(sp, sub)))).x
 
 # _substitute_enum: substitute the given params; fields are DERIVED from the
 # instance statement, so there is no stored copy to walk. IDENTITY COMPLETION
@@ -396,156 +281,6 @@ fun gsubInFieldList(ts: List<Spec>, sub: GSub,
 
 fun gsubInFieldLoop(ts: List<Spec>, sub: GSub, visited: List<String>, acc: List<Spec>) =>
   fold(ts, acc, (a, x) => append(a, gsubInField(x, sub, visited)))
-
-fun gsubList(ts: List<Spec>, sub: GSub, visited: List<String>)
-  ret gsubListLoop(ts, sub, visited, List())
-
-fun gsubListLoop(ts: List<Spec>, sub: GSub, visited: List<String>, acc: List<Spec>) =>
-  fold(ts, acc, (a, x) => append(a, gsubSpec(x, sub, visited)))
-
-fun gsubOpt(sp: Spec|None, sub: GSub, visited: List<String>) => match(sp)
-  (s2: Spec) => gsubSpec(s2, sub, visited)
-  ()         => None
-
-fun gsubEntries(es: List<SEntry>, sub: GSub, visited: List<String>, acc): List<SEntry> =>
-  fold(es, acc, (a, x) => append(a, SEntry(x.seName,
-                gsubOpt(x.seType, sub, visited),
-                gsubExprOpt(x.seDefault, sub, visited))))
-
-# The tree substitution: every spec position rewritten; expressions recurse.
-fun gsubStmt(st, sub: GSub) => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens,
-                       gsubStmt(f.fParams, sub),
-                       gsubExprOpt(f.fBody, sub, List()),
-                       gsubOpt(f.fRet, sub, List()),
-                       gsubList(f.fWheres, sub, List()),
-                       f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
-  # Wheres untouched: LetStatement.search_and_replace visits only
-  # default_value + declared_type (lets.py:42).
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens,
-                       gsubOpt(l.lType, sub, List()),
-                       gsubExprOpt(l.lDefault, sub, List()),
-                       l.lArrayLen, l.lWheres,
-                       l.pslLine, l.lTypeInferred, l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs,
-                                      gsubOpt(d.dType, sub, List()),
-                                      gsubStmts(d.dTargets, sub,
-                                                List()),
-                                      gsubExprOpt(d.dDefault, sub,
-                                                  List()),
-                                      d.psdLine, d.dTypeInferred)
-  # Slot TYPES untouched: ClassStatement.search_and_replace never visits
-  # _all_slots (classdef.py:140-145) — only renameSpecialized touches slots
-  # (names + provides), as Python's __create_specialized_version does.
-  (c: PsClass) => PsClass(c.cName, c.cAttrs, c.cGens,
-                          gsubStmt(c.cParams, sub),
-                          gsubList(c.cImplements, sub, List()),
-                          gsubList(c.cWheres, sub, List()),
-                          gsubStmts(c.cMembers, sub, List()),
-                          c.cIsInterface, c.pscLine,
-                          gsubSpecsOpt(c.cAllParents, sub),
-                          c.cAllSlots, c.cImports)
-  (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, gsubStmt(e2.eParams, sub),
-                         gsubStmts(e2.eVariants, sub, List()),
-                         e2.eHasParams, e2.pseLine, e2.eRootName,
-                         gsubOpt(e2.eSpec, sub, List()), e2.eImports)
-  # Wheres untouched: TypeAliasStatement.search_and_replace visits only
-  # `type` (types.py:34).
-  (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
-                                   gsubSpec(ta.taType, sub, List()),
-                                   ta.taWheres, ta.pstLine, ta.taImports)
-  (rt: PsRet)  => PsRet(gsubExpr(rt.retValue, sub, List()),
-                        rt.psrLine)
-  (a: PsAction) => PsAction(gsubExpr(a.action, sub, List()),
-                            a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(gsubExpr(fa.faTarget, sub, List()),
-                                       gsubExpr(fa.faValue, sub, List()), fa.psfaLine)
-  (i: PsIf)    => PsIf(gsubExpr(i.ifCond, sub, List()),
-                       gsubStmts(i.ifTrue, sub, List()),
-                       gsubStmts(i.ifFalse, sub, List()),
-                       i.psifLine)
-  (o: PStmt)   => st
-
-fun gsubStmts(ss: List<PStmt>, sub: GSub, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, gsubStmt(x, sub)))
-
-fun gsubSpecsOpt(ss: List<Spec>|None, sub: GSub) => match(ss)
-  (l: List<Spec>) => gsubList(l, sub, List())
-  ()              => None
-
-fun gsubExpr(x, sub: GSub, visited: List<String>) => match(x)
-  (nm: PeName)   => PeName(nm.refName, gsubList(nm.refTypeParams, sub,
-                                                visited),
-                           nm.penLine,
-                           gsubOpt(nm.penTrait, sub, visited))
-  (d: PeDot)     => PeDot(gsubExpr(d.base, sub, visited), d.member,
-                          d.pedLine, d.pedIndex)
-  (c: PeCall)    => PeCall(gsubExpr(c.function, sub, visited),
-                           gsubExpr(c.parameter, sub, visited), c.pecLine)
-  (tp: PeTuple)  => PeTuple(gsubTupEnts(tp.exprs, sub, visited,
-                                        List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(gsubExpr(te.condition, sub, visited),
-                               gsubExpr(te.trueResult, sub, visited),
-                               gsubExpr(te.falseResult, sub, visited),
-                               te.pety)
-  (lm: PeLambda) => PeLambda(gsubStmt(lm.lamParams, sub),
-                             gsubExpr(lm.lamBody, sub, visited), lm.pelLine,
-                             gsubOpt(lm.lamRet, sub, visited))
-  (bk: PeBlock)  => PeBlock(gsubStmts(bk.blockStmts, sub,
-                                      List()),
-                            gsubExpr(bk.blockValue, sub, visited),
-                            bk.blockTag, bk.pebkLine)
-  (mt: PeMatch) => with mt(subject = gsubExpr(mt.subject, sub, visited),
-                    arms    = gsubArms(mt.arms, sub, visited,
-                                     List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(gsubSpec(op.opType, sub, visited),
-                                   op.opName,
-                                   gsubExpr(op.opParams, sub, visited),
-                                   op.peboLine)
-  (ps: PePinSet) => PePinSet(gsubExpr(ps.psSubject, sub, visited),
-                             gsubExpr(ps.psTarget, sub, visited),
-                             gsubExpr(ps.psValue, sub, visited), ps.pepsLine)
-  (nw: PeNew)    => PeNew(gsubSpec(nw.newType, sub, visited),
-                          gsubExpr(nw.newParam, sub, visited), nw.penwLine)
-  (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                               map(ne.fieldArgs, (fa) =>
-                                 PFieldArg(fa.faName, gsubExpr(fa.faValue, sub, visited))),
-                               gsubList(ne.neTypeParams, sub, visited),
-                               ne.penewLine)
-  (qq: PeCoalesce) => PeCoalesce(gsubExpr(qq.qqSubject, sub, visited),
-                                   gsubExpr(qq.qqFallback, sub, visited),
-                                   qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(gsubExpr(ar.arrObj, sub, visited),
-                                   gsubExpr(ar.arrIndex, sub, visited),
-                                   ar.pearLine)
-  (cv: PeConvert) => PeConvert(gsubExpr(cv.convInner, sub, visited),
-                               gsubSpec(cv.convTarget, sub, visited),
-                               cv.pecvLine)
-  (wx: PeWith)   => PeWith(gsubExpr(wx.withSubject, sub, visited),
-                           gsubExpr(wx.withRepls, sub, visited),
-                           wx.pewLine)
-  (o: PeLiteral) => x
-  (o: PeLowered) => x
-
-fun gsubExprOpt(x: PExpr|None, sub: GSub, visited: List<String>) => match(x)
-  (e2: PExpr) => gsubExpr(e2, sub, visited)
-  ()          => None
-
-fun gsubTupEnts(es: List<PTupEnt>, sub: GSub, visited: List<String>, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
-                gsubExpr(x.tupValue, sub, visited))))
-
-fun gsubArms(as2: List<PArm>, sub: GSub, visited: List<String>, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armType = gsubOpt(x.armType, sub, visited), armBody = gsubExpr(x.armBody, sub, visited), armLiterals = gsubLits(x.armLiterals, sub, visited,
-                         List()), armGuard = gsubExprOpt(x.armGuard, sub, visited),
-                         armExtra = gsubPositions(x.armExtra, sub, visited))))
-
-fun gsubPositions(ps: List<PPos>, sub: GSub, visited: List<String>): List<PPos> =>
-  map(ps, (p) => with p(posType = gsubOpt(p.posType, sub, visited)))
-
-fun gsubLits(ls: List<PLit>, sub: GSub, visited: List<String>, acc: List<PLit>) =>
-  fold(ls, acc, append)
 
 # ── specialisation ──────────────────────────────────────────────────────────
 # Substitute, rename to the mangled name, clear the gens. A CLASS also renames
@@ -755,11 +490,19 @@ fun cssOne(ref: GRef, st,
 # Five node kinds carry type params; each redirects to the mangled name and
 # clears them — the EnumSpec also mangles its LEAF names.
 
-fun replaceConcreteReferences(statements: List<PStmt>,
-                              refs: GRefsIx) => rcrStmts(statements, refs, List())
+fun replaceConcreteReferences(statements: List<PStmt>, refs: GRefsIx): List<PStmt>
+  let w = rcrWalk(refs)
+  ret map(statements, (st) => rcrSlots(walkStmt(st, emptyResolverGlobal, false, w).x, w))
 
-fun rcrStmts(ss: List<PStmt>, refs: GRefsIx, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, rcrStmt(x, refs)))
+# redirect_reference: the five node kinds that carry type params. The walk is
+# bottom-up, so the lookup sees params that already carry this round's inner
+# renames — looking up with the RAW params matched a stale bare-spelling
+# instantiation and froze it into the name (two fold<F,(List<str>,…)>-style
+# instantiations differing only INSIDE a param collapsed onto one symbol).
+fun rcrWalk(refs: GRefsIx): Walk<Bool> =>
+  Walk<Bool>((s, _r, x) => (s = s, r = rcrExpr(x, refs)),
+             wkNoStmt<Bool>,
+             (s, _r, sp) => (s = s, r = rcrSpec(sp, refs)))
 
 # The redirect's ref test is DICT-backed (user ruling 2026-07-22: lookups
 # are dict-backed — Python's is an O(1) frozen-set hit, and the linear pair
@@ -799,204 +542,53 @@ fun inRefsHit(ix: Dict<String, List<GRef>>, name: String, args: List<Spec>,
 fun inBucket(bs: List<GRef>, name: String, ids: List<TypeId>) =>
   any(bs, (x) => (x.grName == name && eqTypeIds(x.grIds, ids)))
 
-fun rcrClass(c: SClass, refs: GRefsIx)
-  let ps = rcrSpecs(c.scParams, refs)
-  ret inRefs(refs.giTypes, c.scName, ps)
-    ? SClass(mangledName(c.scName, ps), List(), c.scLine)
-    : SClass(c.scName, ps, c.scLine)
-
-fun rcrEnum(e2: SEnum, refs: GRefsIx)
-  let ps = rcrSpecs(e2.seParams, refs)
-  ret inRefs(refs.giData, e2.seRoot, ps)
-    ? SEnum(mangledName(e2.seRoot, ps),
-            mangleLeaves(e2.seValidLeaves, ps),
-            mangleLeaves(e2.seAllLeaves, ps),
-            List(), e2.seLine, mangleLeaves(e2.sePath, ps))
-    : SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves, ps, e2.seLine, e2.sePath)
-
-fun rcrName(nm: PeName, refs: GRefsIx)
-  let tps = rcrSpecs(nm.refTypeParams, refs)
-  let tr = rcrSpecOpt(nm.penTrait, refs)
-  ret inRefs(refs.giData, nm.refName, tps)
-    ? PeName(mangledName(nm.refName, tps), List(), nm.penLine, tr)
-    : PeName(nm.refName, tps, nm.penLine, tr)
-
-fun rcrNewEnum(ne: PeNewEnum, refs: GRefsIx)
-  let tps = rcrSpecs(ne.neTypeParams, refs)
-  let fas = rcrFieldArgs(ne.fieldArgs, refs)
-  ret inRefs(refs.giData, ne.rootName, tps)
-    ? PeNewEnum(mangledName(ne.rootName, tps), mangledName(ne.leafName, tps),
-                fas, List(), ne.penewLine)
-    : PeNewEnum(ne.rootName, ne.leafName, fas, tps, ne.penewLine)
-
-fun rcrSpec(sp, refs: GRefsIx) => match(sp)
-  # CHILDREN FIRST, exactly Python's rw.rewrite order: the redirect callback
-  # fires on the REBUILT node, so the table lookup sees params that already
-  # carry this round's inner renames. Looking up with the RAW params matched
-  # a stale bare-spelling instantiation and froze it into the name — two
-  # fold<F,(List<str>,List<bigint>)>-style instantiations differing only
-  # INSIDE a param collapsed onto one symbol.
-  (c: SClass)        => rcrClass(c, refs)
-  # all_fields is COPIED, not redirected — EnumSpec.search_and_replace never
-  # visits it; __refresh_enum_spec_all_fields syncs the copies later.
-  (e2: SEnum)        => rcrEnum(e2, refs)
-  # NamedSpec is a traversal LEAF (base-class search_and_replace): redirect
-  # applies to the node itself; its params are never visited.
-  (n: SNamed)        => inRefs(refs.giData, n.snName, n.snParams)
-    ? SNamed(mangledName(n.snName, n.snParams), List(), n.snLine)
-    : sp
-  (cm: SCombination) => canonUnion(SCombination(rcrSpecs(cm.scTypes, refs),
-                                                cm.scmLine))
-  (t2: STuple)       => STuple(rcrEntries(t2.stEntries, refs,
-                                          List()),
-                               t2.stLine)
-  (cl: SCallable)    => SCallable(rcrSpec(cl.scParams2, refs),
-                                  rcrSpecOpt(cl.scResult, refs),
-                                  cl.sclLine)
-  (af: SArrayField)  => SArrayField(rcrSpec(af.safElem, refs),
-                                    af.safLenField, af.safLine)
-  (ls: SLazyStub)    => SLazyStub(rcrSpecOpt(ls.slsTarget, refs),
-                                  ls.slsLine)
-  (o: Spec)          => sp
-
-fun mangleLeaves(leaves: List<String>, args: List<Spec>) => mlLoop(leaves, args, List())
-
-fun mlLoop(ls: List<String>, args: List<Spec>, acc: List<String>) =>
-  fold(ls, acc, (a, x) => append(a, mangledName(x, args)))
-
-fun rcrSpecs(ss: List<Spec>, refs: GRefsIx) => rcrSpecLoop(ss, refs, List())
-
-fun rcrSpecLoop(ss: List<Spec>, refs: GRefsIx, acc: List<Spec>) =>
-  fold(ss, acc, (a, x) => append(a, rcrSpec(x, refs)))
-
-fun rcrSpecOpt(sp: Spec|None, refs: GRefsIx) => match(sp)
-  (s2: Spec) => rcrSpec(s2, refs)
-  ()         => None
-
-fun rcrEntries(es: List<SEntry>, refs: GRefsIx, acc): List<SEntry> =>
-  fold(es, acc, (a, x) => append(a, SEntry(x.seName, rcrSpecOpt(x.seType, refs),
-                rcrExprOpt(x.seDefault, refs))))
-
-fun rcrStmt(st, refs: GRefsIx) => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rcrStmt(f.fParams, refs),
-                       rcrExprOpt(f.fBody, refs), rcrSpecOpt(f.fRet, refs),
-                       rcrSpecs(f.fWheres, refs), f.psfLine, f.fRetInferred,
-                       f.fNested, f.fImports, f.fGlobal)
-  # Wheres NOT redirected (LetStatement.search_and_replace skips them);
-  # __generic_instance_refs re-inflates mangled forms instead.
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, rcrSpecOpt(l.lType, refs),
-                       rcrExprOpt(l.lDefault, refs), l.lArrayLen,
-                       l.lWheres, l.pslLine, l.lTypeInferred,
-                       l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs,
-                                      rcrSpecOpt(d.dType, refs),
-                                      rcrStmts(d.dTargets, refs,
-                                               List()),
-                                      rcrExprOpt(d.dDefault, refs),
-                                      d.psdLine, d.dTypeInferred)
-  # The traversal never visits cAllSlots (derived data, rebuilt by every
-  # compile), but the first compile after this pass reads a PARENT's table
-  # before the parent rebuilds it — so the cached slot types are redirected
-  # here, by the same rules (generics.py redirect_slots).
-  (c: PsClass) => PsClass(c.cName, c.cAttrs, c.cGens,
-                          rcrStmt(c.cParams, refs),
-                          rcrSpecs(c.cImplements, refs),
-                          rcrSpecs(c.cWheres, refs),
-                          rcrStmts(c.cMembers, refs, List()),
-                          c.cIsInterface, c.pscLine,
-                          rcrSpecsOpt(c.cAllParents, refs),
-                          rcrSlotsOpt(c.cAllSlots, refs), c.cImports)
-  (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, rcrStmt(e2.eParams, refs),
-                         rcrStmts(e2.eVariants, refs, List()),
-                         e2.eHasParams, e2.pseLine, e2.eRootName,
-                         rcrSpecOpt(e2.eSpec, refs), e2.eImports)
-  # Wheres NOT redirected (TypeAliasStatement.search_and_replace visits
-  # only `type`).
-  (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
-                                   rcrSpec(ta.taType, refs),
-                                   ta.taWheres, ta.pstLine,
-                                   ta.taImports)
-  (rt: PsRet)  => PsRet(rcrExpr(rt.retValue, refs), rt.psrLine)
-  (a: PsAction) => PsAction(rcrExpr(a.action, refs), a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(rcrExpr(fa.faTarget, refs), rcrExpr(fa.faValue, refs), fa.psfaLine)
-  (i: PsIf)    => PsIf(rcrExpr(i.ifCond, refs),
-                       rcrStmts(i.ifTrue, refs, List()),
-                       rcrStmts(i.ifFalse, refs, List()),
-                       i.psifLine)
-  (o: PStmt)   => st
-
-fun rcrSpecsOpt(ss: List<Spec>|None, refs: GRefsIx) => match(ss)
-  (l: List<Spec>) => rcrSpecs(l, refs)
-  ()              => None
-
-fun rcrSlotsOpt(ss: List<Slot>|None, refs: GRefsIx) => match(ss)
-  (l: List<Slot>) => map(l, (sl) => Slot(sl.slotName, rcrSpecOpt(sl.slotType, refs),
-                                         sl.slotProvides))
-  ()              => None
-
-fun rcrFieldArgs(fas: List<PFieldArg>, refs: GRefsIx)
-  ret map(fas, (fa) => PFieldArg(fa.faName, rcrExpr(fa.faValue, refs)))
-
-fun rcrExpr(x, refs: GRefsIx) => match(x)
-  # penTrait is a SPEC field: Python's search_and_replace rewrites
-  # resolved_trait_scope with the same redirect (access.py:375), so a
-  # cached ClassSpec(BasicPlus,[bigint]) becomes BasicPlus$generic$bigint.
-  # Forgetting it strands the cache on the pre-mono spelling and every
-  # trait-scope disambiguation downstream fails.
-  # Children first (see rcrSpec): lookup with the REWRITTEN type params.
-  (nm: PeName)   => rcrName(nm, refs)
+fun rcrExpr(x: PExpr, refs: GRefsIx): PExpr|None => match(x)
+  (nm: PeName) => inRefs(refs.giData, nm.refName, nm.refTypeParams)
+    ? with nm(refName = mangledName(nm.refName, nm.refTypeParams), refTypeParams = List())
+    : None
   # Python's redirect table rewrites root_spec_name AND leaf_name — the
-  # specialised enum's variant tree carries mangled names (2026-07-21 fix),
-  # so the constructor's leaf reference must match.
-  (ne: PeNewEnum) => rcrNewEnum(ne, refs)
-  (d: PeDot)     => PeDot(rcrExpr(d.base, refs), d.member, d.pedLine, d.pedIndex)
-  (c: PeCall)    => PeCall(rcrExpr(c.function, refs),
-                           rcrExpr(c.parameter, refs), c.pecLine)
-  (tp: PeTuple)  => PeTuple(rcrTupEnts(tp.exprs, refs,
-                                       List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(rcrExpr(te.condition, refs),
-                               rcrExpr(te.trueResult, refs),
-                               rcrExpr(te.falseResult, refs), te.pety)
-  (lm: PeLambda) => PeLambda(rcrStmt(lm.lamParams, refs),
-                             rcrExpr(lm.lamBody, refs), lm.pelLine,
-                             rcrSpecOpt(lm.lamRet, refs))
-  (bk: PeBlock)  => PeBlock(rcrStmts(bk.blockStmts, refs,
-                                     List()),
-                            rcrExpr(bk.blockValue, refs), bk.blockTag,
-                            bk.pebkLine)
-  (mt: PeMatch) => with mt(subject = rcrExpr(mt.subject, refs),
-                    arms    = rcrArms(mt.arms, refs, List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(rcrSpec(op.opType, refs), op.opName,
-                                   rcrExpr(op.opParams, refs), op.peboLine)
-  (ps: PePinSet) => PePinSet(rcrExpr(ps.psSubject, refs), rcrExpr(ps.psTarget, refs),
-                             rcrExpr(ps.psValue, refs), ps.pepsLine)
-  (nw: PeNew)    => PeNew(rcrSpec(nw.newType, refs),
-                          rcrExpr(nw.newParam, refs), nw.penwLine)
-  (qq: PeCoalesce) => PeCoalesce(rcrExpr(qq.qqSubject, refs),
-                                   rcrExpr(qq.qqFallback, refs), qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(rcrExpr(ar.arrObj, refs),
-                                   rcrExpr(ar.arrIndex, refs), ar.pearLine)
-  (cv: PeConvert) => PeConvert(rcrExpr(cv.convInner, refs),
-                               rcrSpec(cv.convTarget, refs), cv.pecvLine)
-  (wx: PeWith)   => PeWith(rcrExpr(wx.withSubject, refs),
-                           rcrExpr(wx.withRepls, refs), wx.pewLine)
-  (o: PeLiteral) => x
-  (o: PeLowered) => x
+  # specialised enum's variant tree carries mangled names, so the
+  # constructor's leaf reference must match.
+  (ne: PeNewEnum) => inRefs(refs.giData, ne.rootName, ne.neTypeParams)
+    ? with ne(rootName = mangledName(ne.rootName, ne.neTypeParams),
+              leafName = mangledName(ne.leafName, ne.neTypeParams),
+              neTypeParams = List())
+    : None
+  (o: PExpr) => None
 
-fun rcrExprOpt(x: PExpr|None, refs: GRefsIx) => match(x)
-  (e2: PExpr) => rcrExpr(e2, refs)
-  ()          => None
+fun rcrSpec(sp: Spec, refs: GRefsIx): Spec|None => match(sp)
+  (c: SClass) => inRefs(refs.giTypes, c.scName, c.scParams)
+    ? SClass(mangledName(c.scName, c.scParams), List(), c.scLine)
+    : None
+  # all_fields is not redirected — EnumSpec.search_and_replace never visits
+  # it; __refresh_enum_spec_all_fields syncs the copies later.
+  (e2: SEnum) => inRefs(refs.giData, e2.seRoot, e2.seParams)
+    ? SEnum(mangledName(e2.seRoot, e2.seParams),
+            mangleLeaves(e2.seValidLeaves, e2.seParams),
+            mangleLeaves(e2.seAllLeaves, e2.seParams),
+            List(), e2.seLine, mangleLeaves(e2.sePath, e2.seParams))
+    : None
+  # NamedSpec is a traversal LEAF: the redirect applies to the node itself.
+  (n: SNamed) => inRefs(refs.giData, n.snName, n.snParams)
+    ? SNamed(mangledName(n.snName, n.snParams), List(), n.snLine)
+    : None
+  (o: Spec) => None
 
-fun rcrTupEnts(es: List<PTupEnt>, refs: GRefsIx, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rcrExpr(x.tupValue, refs))))
+fun mangleLeaves(leaves: List<String>, args: List<Spec>) => map(leaves, (x) => mangledName(x, args))
 
-fun rcrArms(as2: List<PArm>, refs: GRefsIx, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armType = rcrSpecOpt(x.armType, refs), armBody = rcrExpr(x.armBody, refs), armGuard = rcrExprOpt(x.armGuard, refs),
-                                            armExtra = rcrPositions(x.armExtra, refs))))
+# redirect_slots: the walk never visits cAllSlots (derived data, rebuilt by
+# every compile), but the first compile after this pass reads a PARENT's
+# table before the parent rebuilds it — so the cached slot types are
+# redirected here, by the same rules.
+fun rcrSlots(st: PStmt, w: Walk<Bool>): PStmt => match(st)
+  (c: PsClass) => match(c.cAllSlots)
+    (l: List<Slot>) => with c(cAllSlots = map(l, (sl) => with sl(slotType = rcrSlotType(sl.slotType, w))))
+    ()              => st
+  (o: PStmt) => st
 
-fun rcrPositions(ps: List<PPos>, refs: GRefsIx): List<PPos> =>
-  map(ps, (p) => with p(posType = rcrSpecOpt(p.posType, refs)))
+fun rcrSlotType(sp: Spec|None, w: Walk<Bool>): Spec|None => match(sp)
+  (s2: Spec) => walkSpec(s2, emptyResolverGlobal, false, w).x
+  ()         => None
 
 # ── prune + finalize ────────────────────────────────────────────────────────
 
@@ -1078,79 +670,32 @@ fun addConstraintOnce(acc, sp) => hasConstraint(acc, spellingOf(sp)) ? acc : pre
 fun hasConstraint(cs: List<Spec>, id2) => any(cs, (x) => eqTypeId(spellingOf(x), id2))
 
 # Every concrete trait constraint in any `where` clause anywhere in the tree
-# (top-level and nested method wheres alike) — Python walks with
-# search_and_replace, so this fold visits every statement and expression.
-fun collectConcreteConstraints(statements: List<PStmt>,
-                               acc) => cccStmts(statements, acc)
+# (top-level and nested method wheres alike), plus every AMBIENT instance
+# member call's solved scope — an ambient call records its demand on the use,
+# not in any `where` clause. Python's `collect` callback.
+fun collectConcreteConstraints(statements: List<PStmt>, acc: List<Spec>): List<Spec> =>
+  walkStmts(statements, emptyResolverGlobal, acc,
+            Walk<List<Spec>>((a, _r, x) => (s = cccExpr(x, a), r = None),
+                             (a, _r, st) => (s = cccWheres(traitParamsOf(st), a), r = None),
+                             wkNoSpec<List<Spec>>)).s
 
-fun cccStmts(ss: List<PStmt>, acc) =>
-  fold(ss, acc, (a, x) => cccStmt(x, a))
+# A named statement's `where` clauses: Python's NamedStatement.trait_params,
+# instances and type aliases included.
+fun traitParamsOf(st: PStmt): List<Spec> => match(st)
+  (f: PsFun)            => f.fWheres
+  (l: PsLet)            => l.lWheres
+  (c: PsClass)          => c.cWheres
+  (ta: PsTypealias)     => ta.taWheres
+  (ti: PsTraitInstance) => ti.tiWheres
+  (o: PStmt)            => List()
 
-fun cccStmt(st, acc) => match(st)
-  (f: PsFun)   => cccWheres(f.fWheres,
-                            cccExprOpt(f.fBody,
-                                       cccStmt(f.fParams, acc)))
-  (l: PsLet)   => cccWheres(l.lWheres,
-                            cccExprOpt(l.lDefault, acc))
-  (d: PsDestructure) => cccStmts(d.dTargets,
-                                 cccExprOpt(d.dDefault, acc))
-  (c: PsClass) => cccWheres(c.cWheres,
-                            cccStmts(c.cMembers,
-                                     cccStmt(c.cParams, acc)))
-  (e2: PsEnum) => cccStmts(e2.eVariants, cccStmt(e2.eParams, acc))
-  (ta: PsTypealias) => cccWheres(ta.taWheres, acc)
-  (rt: PsRet)  => cccExpr(rt.retValue, acc)
-  (a: PsAction) => cccExpr(a.action, acc)
-  (fa: PsFieldAssign) => cccExpr(fa.faValue, cccExpr(fa.faTarget, acc))
-  (i: PsIf)    => cccStmts(i.ifFalse,
-                           cccStmts(i.ifTrue,
-                                    cccExpr(i.ifCond, acc)))
-  (o: PStmt)   => acc
+fun cccExpr(x: PExpr, acc: List<Spec>): List<Spec> => match(x)
+  (nm: PeName) => match(nm.penTrait)
+    (c: SClass) => isConcrete(c) ? addConstraintOnce(acc, c) : acc
+    ()          => acc
+  (o: PExpr)   => acc
 
-fun cccExpr(x, acc) => match(x)
-  # An AMBIENT instance member call records its demand on the use, not in
-  # any `where` clause: the solved scope committed by compileName is a
-  # concrete constraint to discharge.
-  (nm: PeName)   => cccTraitScope(nm.penTrait, acc)
-  (d: PeDot)     => cccExpr(d.base, acc)
-  (c: PeCall)    => cccExpr(c.parameter, cccExpr(c.function, acc))
-  (tp: PeTuple)  => cccTupEnts(tp.exprs, acc)
-  (te: PeTernary) => cccExpr(te.falseResult,
-                             cccExpr(te.trueResult,
-                                     cccExpr(te.condition, acc)))
-  (lm: PeLambda) => cccExpr(lm.lamBody, cccStmt(lm.lamParams, acc))
-  (bk: PeBlock)  => cccExpr(bk.blockValue,
-                            cccStmts(bk.blockStmts, acc))
-  (mt: PeMatch)  => cccArms(mt.arms, cccExpr(mt.subject, acc))
-  (op: PeBuiltinOp) => cccExpr(op.opParams, acc)
-  (ps: PePinSet) => cccExpr(ps.psValue, cccExpr(ps.psTarget, cccExpr(ps.psSubject, acc)))
-  (nw: PeNew)    => cccExpr(nw.newParam, acc)
-  (qq: PeCoalesce) => cccExpr(qq.qqFallback, cccExpr(qq.qqSubject, acc))
-  (ar: PeArrayRead) => cccExpr(ar.arrIndex, cccExpr(ar.arrObj, acc))
-  (cv: PeConvert) => cccExpr(cv.convInner, acc)
-  (wx: PeWith)   => cccExpr(wx.withRepls, cccExpr(wx.withSubject, acc))
-  (o: PeLiteral) => acc
-  (o: PeLowered) => acc
-  (o: PeNewEnum) => acc
-
-fun cccExprOpt(x: PExpr|None, acc) => match(x)
-  (e2: PExpr) => cccExpr(e2, acc)
-  ()          => acc
-
-fun cccTraitScope(ts: Spec|None, acc) => match(ts)
-  (t2: Spec) => match(t2)
-    (c: SClass) => isConcrete(c) ? addConstraintOnce(acc, t2) : acc
-    (o: Spec)   => acc
-  ()         => acc
-
-fun cccTupEnts(es: List<PTupEnt>, acc) =>
-  fold(es, acc, (a, x) => cccExpr(x.tupValue, a))
-
-fun cccArms(as2: List<PArm>, acc) =>
-  fold(as2, acc, (a, x) => cccExprOpt(x.armGuard, cccExpr(x.armBody, a)))
-
-fun cccWheres(ws: List<Spec>, acc) =>
-  fold(ws, acc, cccWheresStep)
+fun cccWheres(ws: List<Spec>, acc: List<Spec>): List<Spec> => fold(ws, acc, cccWheresStep)
 
 fun cccWheresStep(a: List<Spec>, x: Spec) => match(x)
   (wc: SClass) => isConcrete(wc)
@@ -1491,106 +1036,24 @@ fun offLineLoop(ss: List<PStmt>, name, best: PLine) =>
 # concrete [trait] instance whose witness class implements the required trait,
 # so codegen sees a normal method call.
 
-fun resolveTraitReferences(statements)
-  let r = rootResolver(statements)
-  ret rtrStmts(statements, r, traitLets(r), List())
+fun resolveTraitReferences(statements: List<PStmt>): List<PStmt>
+  let root = rootResolver(statements)
+  let traits = traitLets(root)
+  ret walkStmts(statements, root, false,
+                Walk<Bool>((s, sc, x) => (s = s, r = rtrExpr(x, root, sc, traits)),
+                           wkNoStmt<Bool>, wkNoSpec<Bool>)).x
 
-fun rtrStmts(ss: List<PStmt>, r, traits: List<PStmt>, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, rtrStmt(x, r, traits)))
+# redirect: only a name is redirected. `sc` is the scope at the name — the
+# finds read through it, as Python's callback reads through its `r`; the
+# providers are judged against the ROOT, as Python's implements_trait is.
+fun rtrExpr(x: PExpr, root: Resolver, sc: Resolver, traits: List<PStmt>): PExpr|None => match(x)
+  (nm: PeName) => redirectName(nm, root, sc, traits)
+  (o: PExpr)   => None
 
-fun rtrStmt(st, r, traits: List<PStmt>) => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens,
-                       rtrStmt(f.fParams, r, traits),
-                       rtrExprOpt(f.fBody, r, traits), f.fRet, f.fWheres,
-                       f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, l.lType,
-                       rtrExprOpt(l.lDefault, r, traits), l.lArrayLen,
-                       l.lWheres, l.pslLine, l.lTypeInferred, l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs, d.dType,
-                                      rtrStmts(d.dTargets, r, traits,
-                                               List()),
-                                      rtrExprOpt(d.dDefault, r, traits),
-                                      d.psdLine, d.dTypeInferred)
-  (c: PsClass) => PsClass(c.cName, c.cAttrs, c.cGens,
-                          rtrStmt(c.cParams, r, traits), c.cImplements,
-                          c.cWheres,
-                          rtrStmts(c.cMembers, r, traits,
-                                   List()),
-                          c.cIsInterface, c.pscLine, c.cAllParents,
-                          c.cAllSlots, c.cImports)
-  (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens,
-                         rtrStmt(e2.eParams, r, traits),
-                         rtrStmts(e2.eVariants, r, traits,
-                                  List()),
-                         e2.eHasParams, e2.pseLine, e2.eRootName, e2.eSpec,
-                         e2.eImports)
-  (rt: PsRet)  => PsRet(rtrExpr(rt.retValue, r, traits), rt.psrLine)
-  (a: PsAction) => PsAction(rtrExpr(a.action, r, traits), a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(rtrExpr(fa.faTarget, r, traits), rtrExpr(fa.faValue, r, traits), fa.psfaLine)
-  (i: PsIf)    => PsIf(rtrExpr(i.ifCond, r, traits),
-                       rtrStmts(i.ifTrue, r, traits, List()),
-                       rtrStmts(i.ifFalse, r, traits, List()),
-                       i.psifLine)
-  (o: PStmt)   => st
-
-fun rtrExprOpt(x: PExpr|None, r, traits: List<PStmt>) => match(x)
-  (e2: PExpr) => rtrExpr(e2, r, traits)
-  ()          => None
-
-fun rtrExpr(x, r, traits: List<PStmt>) => match(x)
-  (nm: PeName)   => redirectName(nm, r, traits)
-  (d: PeDot)     => PeDot(rtrExpr(d.base, r, traits), d.member, d.pedLine, d.pedIndex)
-  (c: PeCall)    => PeCall(rtrExpr(c.function, r, traits),
-                           rtrExpr(c.parameter, r, traits), c.pecLine)
-  (tp: PeTuple)  => PeTuple(rtrTupEnts(tp.exprs, r, traits,
-                                       List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(rtrExpr(te.condition, r, traits),
-                               rtrExpr(te.trueResult, r, traits),
-                               rtrExpr(te.falseResult, r, traits), te.pety)
-  (lm: PeLambda) => PeLambda(rtrStmt(lm.lamParams, r, traits),
-                             rtrExpr(lm.lamBody, r, traits), lm.pelLine,
-                             lm.lamRet)
-  (bk: PeBlock)  => PeBlock(rtrStmts(bk.blockStmts, r, traits,
-                                     List()),
-                            rtrExpr(bk.blockValue, r, traits), bk.blockTag,
-                            bk.pebkLine)
-  (mt: PeMatch) => with mt(subject = rtrExpr(mt.subject, r, traits),
-                    arms    = rtrArms(mt.arms, r, traits,
-                                    List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(op.opType, op.opName,
-                                   rtrExpr(op.opParams, r, traits),
-                                   op.peboLine)
-  (ps: PePinSet) => PePinSet(rtrExpr(ps.psSubject, r, traits), rtrExpr(ps.psTarget, r, traits),
-                             rtrExpr(ps.psValue, r, traits), ps.pepsLine)
-  (nw: PeNew)    => PeNew(nw.newType, rtrExpr(nw.newParam, r, traits),
-                          nw.penwLine)
-  (qq: PeCoalesce) => PeCoalesce(rtrExpr(qq.qqSubject, r, traits),
-                                   rtrExpr(qq.qqFallback, r, traits),
-                                   qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(rtrExpr(ar.arrObj, r, traits),
-                                   rtrExpr(ar.arrIndex, r, traits),
-                                   ar.pearLine)
-  (cv: PeConvert) => PeConvert(rtrExpr(cv.convInner, r, traits),
-                               cv.convTarget, cv.pecvLine)
-  (wx: PeWith)   => PeWith(rtrExpr(wx.withSubject, r, traits),
-                           rtrExpr(wx.withRepls, r, traits), wx.pewLine)
-  (o: PeLiteral) => x
-  (o: PeLowered) => x
-  (o: PeNewEnum) => x
-
-fun rtrTupEnts(es: List<PTupEnt>, r, traits: List<PStmt>, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread,
-                rtrExpr(x.tupValue, r, traits))))
-
-fun rtrArms(as2: List<PArm>, r, traits: List<PStmt>, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armBody = rtrExpr(x.armBody, r, traits), armGuard = rtrExprOpt(x.armGuard, r, traits))))
-
-# Redirect one name: use the trait_scope recorded during compilation if
-# available, otherwise derive it from a TRAIT-scoped find.
-fun redirectName(nm, r, traits: List<PStmt>) => match(traitSpecFor(nm, r))
-  (ts: SClass) => redirectWith(nm, ts, r, traits)
-  ()           => nm
+fun redirectName(nm: PeName, root: Resolver, sc: Resolver, traits: List<PStmt>): PExpr|None =>
+  match(traitSpecFor(nm, sc))
+    (ts: SClass) => redirectWith(nm, ts, root, sc, traits)
+    ()           => None
 
 fun traitSpecFor(nm: PeName, r) => match(nm.penTrait)
   (c: SClass) => c
@@ -1605,11 +1068,11 @@ fun derivedTraitScope(nm: PeName, r) => match(soleItem(findData(r, nm.refName)))
     (o2: RScope)  => None
   ()         => None
 
-fun redirectWith(nm, ts: SClass, r,
-                 traits: List<PStmt>)
-  ret match(soleLetOf(traitProviders(traits, ts, r, List())))
-    (provider: PsLet) => redirectVia(nm, ts, provider, r)
-    ()                => nm
+fun redirectWith(nm: PeName, ts: SClass, root: Resolver, sc: Resolver,
+                 traits: List<PStmt>): PExpr|None
+  ret match(soleLetOf(traitProviders(traits, ts, root, List())))
+    (provider: PsLet) => redirectVia(nm, ts, provider, sc)
+    ()                => None
 
 # Provider count taken on the finding walk itself (no-length ruling) — the
 # ambiguity diagnostic needs the number; soleLetOf keeps the list variant.
@@ -1663,20 +1126,20 @@ fun soleLetOf(ls: List<PsLet>) => sizeAtLeast(ls, 2) ? None : head(ls)
 
 fun soleFoundOf(fs: List<Found>) => sizeAtLeast(fs, 2) ? None : head(fs)
 
-fun redirectVia(nm, ts: SClass, provider: PsLet,
-                r) => match(provider.lType)
+fun redirectVia(nm: PeName, ts: SClass, provider: PsLet,
+                r): PExpr|None => match(provider.lType)
   (pc: SClass) => match(soleItem(findType(r, pc.scName)))
     (f: Found) => match(f.fStmt)
       (cls: PsClass) => redirectMethod(nm, ts, provider, cls, r)
-      (o: PStmt)     => nm
-    ()         => nm
-  ()           => nm
+      (o: PStmt)     => None
+    ()         => None
+  ()           => None
 
-fun redirectMethod(nm, ts: SClass, provider: PsLet, cls: PsClass,
-                   r)
+fun redirectMethod(nm: PeName, ts: SClass, provider: PsLet, cls: PsClass,
+                   r): PExpr|None
   let mds0 = classFindData(cls, r, simpleName(nm.refName))
   if isEmpty(mds0)
-    ret nm
+    ret None
   let many = match(soleFoundOf(mds0))
     (one: Found) => false
     ()           => true
@@ -1685,7 +1148,7 @@ fun redirectMethod(nm, ts: SClass, provider: PsLet, cls: PsClass,
     (md: Found) => PeDot(PeName(provider.lName, List(), nm.penLine,
                                 None),
                          md.fName, nm.penLine)
-    ()          => nm
+    ()          => None
 
 # Multiple overloads — disambiguate by comparing the concrete type of the
 # interface method (looked up by exact hash) against the class methods.
@@ -1737,8 +1200,9 @@ fun refreshEnumSpecAllFields(statements: List<PStmt>)
                                 Canon(Dict()))
   if isEmpty(canon0.cnMap)
     ret statements
-  let canon = canon0   # fields-sync fixpoint deleted: no stored fields to sync
-  ret rfrStmts(statements, canon, List())
+  ret walkStmts(statements, emptyResolverGlobal, false,
+                Walk<Bool>(wkNoExpr<Bool>, wkNoStmt<Bool>,
+                           (s, _r, sp) => (s = s, r = rfrSpec(sp, canon0)))).x
 
 # Root enums only (skip nested variant stmts); first spec per root wins.
 fun collectCanonical(ss: List<PStmt>, acc) =>
@@ -1763,151 +1227,17 @@ fun canonLookup(c: Canon, root: String) => get(c.cnMap, root)
 
 fun fieldsStale(fe: SEnum, spec: SEnum) => !eqStrs(fe.seAllLeaves, spec.seAllLeaves)
 
-fun refreshedEnum(fe: SEnum, spec: SEnum)
+fun canonRefreshed(fe: SEnum, spec: SEnum)
   ret SEnum(fe.seRoot, fe.seValidLeaves, spec.seAllLeaves, fe.seParams,
             fe.seLine, fe.sePath)
 
-fun rfrStmts(ss: List<PStmt>, c: Canon, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, rfrStmt(x, c)))
-
-fun rfrStmt(st, c: Canon) => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, rfrStmt(f.fParams, c),
-                       rfrExprOpt(f.fBody, c), rfrSpecOpt(f.fRet, c),
-                       rfrSpecList(f.fWheres, c), f.psfLine,
-                       f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, rfrSpecOpt(l.lType, c),
-                       rfrExprOpt(l.lDefault, c), l.lArrayLen, l.lWheres,
-                       l.pslLine, l.lTypeInferred, l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs,
-                                      rfrSpecOpt(d.dType, c),
-                                      rfrStmts(d.dTargets, c,
-                                               List()),
-                                      rfrExprOpt(d.dDefault, c),
-                                      d.psdLine, d.dTypeInferred)
-  (cl: PsClass) => PsClass(cl.cName, cl.cAttrs, cl.cGens,
-                           rfrStmt(cl.cParams, c),
-                           rfrSpecList(cl.cImplements, c),
-                           rfrSpecList(cl.cWheres, c),
-                           rfrStmts(cl.cMembers, c, List()),
-                           cl.cIsInterface, cl.pscLine,
-                           rfrSpecsOpt(cl.cAllParents, c),
-                           cl.cAllSlots, cl.cImports)
-  (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, rfrStmt(e2.eParams, c),
-                         rfrStmts(e2.eVariants, c, List()),
-                         e2.eHasParams, e2.pseLine, e2.eRootName,
-                         rfrSpecOpt(e2.eSpec, c), e2.eImports)
-  (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
-                                   rfrSpec(ta.taType, c), ta.taWheres,
-                                   ta.pstLine, ta.taImports)
-  (rt: PsRet)  => PsRet(rfrExpr(rt.retValue, c), rt.psrLine)
-  (a: PsAction) => PsAction(rfrExpr(a.action, c), a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(rfrExpr(fa.faTarget, c), rfrExpr(fa.faValue, c), fa.psfaLine)
-  (i: PsIf)    => PsIf(rfrExpr(i.ifCond, c),
-                       rfrStmts(i.ifTrue, c, List()),
-                       rfrStmts(i.ifFalse, c, List()),
-                       i.psifLine)
-  (o: PStmt)   => st
-
-fun rfrExprOpt(x: PExpr|None, c: Canon) => match(x)
-  (e2: PExpr) => rfrExpr(e2, c)
-  ()          => None
-
-fun rfrExpr(x, c: Canon) => match(x)
-  (nm: PeName)   => PeName(nm.refName, rfrSpecList(nm.refTypeParams, c),
-                           nm.penLine, rfrSpecOpt(nm.penTrait, c))
-  (d: PeDot)     => PeDot(rfrExpr(d.base, c), d.member, d.pedLine, d.pedIndex)
-  (cc: PeCall)   => PeCall(rfrExpr(cc.function, c),
-                           rfrExpr(cc.parameter, c), cc.pecLine)
-  (tp: PeTuple)  => PeTuple(rfrTupEnts(tp.exprs, c,
-                                       List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(rfrExpr(te.condition, c),
-                               rfrExpr(te.trueResult, c),
-                               rfrExpr(te.falseResult, c), te.pety)
-  (lm: PeLambda) => PeLambda(rfrStmt(lm.lamParams, c),
-                             rfrExpr(lm.lamBody, c), lm.pelLine,
-                             rfrSpecOpt(lm.lamRet, c))
-  (bk: PeBlock)  => PeBlock(rfrStmts(bk.blockStmts, c,
-                                     List()),
-                            rfrExpr(bk.blockValue, c), bk.blockTag,
-                            bk.pebkLine)
-  (mt: PeMatch) => with mt(subject = rfrExpr(mt.subject, c),
-                    arms    = rfrArms(mt.arms, c, List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(rfrSpec(op.opType, c), op.opName,
-                                   rfrExpr(op.opParams, c), op.peboLine)
-  (ps: PePinSet) => PePinSet(rfrExpr(ps.psSubject, c), rfrExpr(ps.psTarget, c),
-                             rfrExpr(ps.psValue, c), ps.pepsLine)
-  (nw: PeNew)    => PeNew(rfrSpec(nw.newType, c), rfrExpr(nw.newParam, c),
-                          nw.penwLine)
-  (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                               map(ne.fieldArgs, (fa) =>
-                                 PFieldArg(fa.faName, rfrExpr(fa.faValue, c))),
-                               rfrSpecList(ne.neTypeParams, c),
-                               ne.penewLine)
-  (qq: PeCoalesce) => PeCoalesce(rfrExpr(qq.qqSubject, c),
-                                   rfrExpr(qq.qqFallback, c), qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(rfrExpr(ar.arrObj, c),
-                                   rfrExpr(ar.arrIndex, c), ar.pearLine)
-  (cv: PeConvert) => PeConvert(rfrExpr(cv.convInner, c),
-                               rfrSpec(cv.convTarget, c), cv.pecvLine)
-  (wx: PeWith)   => PeWith(rfrExpr(wx.withSubject, c),
-                           rfrExpr(wx.withRepls, c), wx.pewLine)
-  (o: PeLiteral) => x
-  (o: PeLowered) => x
-
-fun rfrTupEnts(es: List<PTupEnt>, c: Canon, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rfrExpr(x.tupValue, c))))
-
-fun rfrArms(as2: List<PArm>, c: Canon, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armType = rfrSpecOpt(x.armType, c), armBody = rfrExpr(x.armBody, c), armGuard = rfrExprOpt(x.armGuard, c),
-                                            armExtra = rfrPositions(x.armExtra, c))))
-
-fun rfrPositions(ps: List<PPos>, c: Canon): List<PPos> =>
-  map(ps, (p) => with p(posType = rfrSpecOpt(p.posType, c)))
-
-fun rfrSpecOpt(sp: Spec|None, c: Canon) => match(sp)
-  (s2: Spec) => rfrSpec(s2, c)
-  ()         => None
-
-fun rfrSpecsOpt(ss: List<Spec>|None, c: Canon) => match(ss)
-  (l: List<Spec>) => rfrSpecList(l, c)
-  ()              => None
-
-fun rfrSpecList(ts: List<Spec>, c: Canon) => rfrSpecLoop(ts, c, List())
-
-fun rfrSpecLoop(ts: List<Spec>, c: Canon, acc: List<Spec>) =>
-  fold(ts, acc, (a, x) => append(a, rfrSpec(x, c)))
-
-# Children first, canonical refresh at the SEnum node itself. Never recurse
-# into seAllFields — EnumSpec.search_and_replace deliberately skips them.
-fun rfrSpec(sp, c: Canon) => match(sp)
-  (e2: SEnum)        => rfrEnum(e2, c)
-  (cl: SClass)       => SClass(cl.scName, rfrSpecList(cl.scParams, c),
-                               cl.scLine)
-  (n: SNamed)        => sp   # traversal LEAF: params never visited
-  (cm: SCombination) => SCombination(rfrSpecList(cm.scTypes, c),
-                                     cm.scmLine)
-  (t2: STuple)       => STuple(rfrEntries(t2.stEntries, c,
-                                          List()),
-                               t2.stLine)
-  (cb: SCallable)    => SCallable(rfrSpec(cb.scParams2, c),
-                                  rfrSpecOpt(cb.scResult, c), cb.sclLine)
-  (af: SArrayField)  => SArrayField(rfrSpec(af.safElem, c),
-                                    af.safLenField, af.safLine)
-  (ls: SLazyStub)    => SLazyStub(rfrSpecOpt(ls.slsTarget, c), ls.slsLine)
-  (o: Spec)          => sp
-
-fun rfrEntries(es: List<SEntry>, c: Canon, acc): List<SEntry> =>
-  fold(es, acc, (a, x) => append(a, SEntry(x.seName, rfrSpecOpt(x.seType, c), x.seDefault)))
-
-fun rfrEnum(e2: SEnum, c: Canon)
-  let rebuilt = SEnum(e2.seRoot, e2.seValidLeaves, e2.seAllLeaves,
-                      rfrSpecList(e2.seParams, c), e2.seLine, e2.sePath)
-  ret match(canonLookup(c, rebuilt.seRoot))
-    (spec: SEnum) => fieldsStale(rebuilt, spec)
-      ? refreshedEnum(rebuilt, spec)
-      : rebuilt
-    ()            => rebuilt
+# An embedded enum spec whose leaf list is stale against its root's
+# canonical spec takes the canonical leaves.
+fun rfrSpec(sp: Spec, c: Canon): Spec|None => match(sp)
+  (e2: SEnum) => match(canonLookup(c, e2.seRoot))
+    (spec: SEnum) => fieldsStale(e2, spec) ? canonRefreshed(e2, spec) : None
+    ()            => None
+  (o: Spec) => None
 
 # ── unresolved-generic-call guard ────────────────────────────────────────────
 # Python: report_unresolved_generic_calls. A reference from NON-generic code
@@ -1927,20 +1257,20 @@ fun rfrEnum(e2: SEnum, c: Canon)
 
 class [final] UtAcc(utSeen: Set<String>, utErrs: Set<PErr>)
 
-fun reportUndischargedTraits(statements)
-  let r = rootResolver(statements)
-  let traits = traitLets(r)
+fun reportUndischargedTraits(statements: List<PStmt>): Set<PErr>
+  let root = rootResolver(statements)
+  let traits = traitLets(root)
+  let w = Walk<UtAcc>((a, sc, x) => (s = utExprCb(a, x, sc, root, traits), r = None),
+                      wkNoStmt<UtAcc>, wkNoSpec<UtAcc>)
   # A surviving generic template is skipped: its TRAIT refs are legitimately unbound.
   ret fold(statements, UtAcc(Set(), Set()),
-           (acc, st) => isEmpty(stmtGens(st))
-             ? foldStmt(st, utStmtCb, (a, x) => utExprCb(a, x, r, traits), acc)
-             : acc).utErrs
+           (acc, st) => isEmpty(stmtGens(st)) ? walkStmt(st, root, acc, w).s : acc).utErrs
 
-fun utStmtCb(a, st: PStmt): UtAcc => a
-
-fun utExprCb(a, x, r, traits: List<PStmt>) => match(x)
-  (nm: PeName) => match(traitSpecFor(nm, r))
-    (ts: SClass) => utCheck(a, nm, ts, r, traits)
+# The trait scope is read through the scope at the name; the providers are
+# judged against the root, as Python's scan does.
+fun utExprCb(a: UtAcc, x: PExpr, sc: Resolver, root: Resolver, traits: List<PStmt>): UtAcc => match(x)
+  (nm: PeName) => match(traitSpecFor(nm, sc))
+    (ts: SClass) => utCheck(a, nm, ts, root, traits)
     ()           => a
   (o: PExpr)   => a
 
@@ -1977,63 +1307,16 @@ fun traitDisplay(ts: SClass)
       + slice(ts.scName, gx + 9, length(ts.scName)) + ">"
 
 
-fun reportUnresolvedGenericCalls(statements)
-  let r = rootResolver(statements)
+fun reportUnresolvedGenericCalls(statements: List<PStmt>): Set<PErr>
+  let root = rootResolver(statements)
+  let w = Walk<Set<PErr>>((acc, sc, x) => (s = rugExpr(x, sc, acc), r = None),
+                          wkNoStmt<Set<PErr>>, wkNoSpec<Set<PErr>>)
   # A surviving generic template's body is legitimately generic.
-  ret fold(statements, Set<PErr>(), (acc, st) => isEmpty(stmtGens(st)) ? rugStmt(st, r, acc) : acc)
+  ret fold(statements, Set<PErr>(), (acc, st) => isEmpty(stmtGens(st)) ? walkStmt(st, root, acc, w).s : acc)
 
-fun rugStmts(ss: List<PStmt>, r, acc: Set<PErr>) =>
-  fold(ss, acc, (a, x) => rugStmt(x, r, a))
-
-fun rugStmt(st, r, acc): Set<PErr> => match(st)
-  (f: PsFun)   => rugExprOpt(f.fBody, r, rugStmt(f.fParams, r, acc))
-  (l: PsLet)   => rugExprOpt(l.lDefault, r, acc)
-  (d: PsDestructure) => rugStmts(d.dTargets, r,
-                                 rugExprOpt(d.dDefault, r, acc))
-  (c: PsClass) => rugStmts(c.cMembers, r, rugStmt(c.cParams, r, acc))
-  (e2: PsEnum) => rugStmts(e2.eVariants, r,
-                           rugStmt(e2.eParams, r, acc))
-  (rt: PsRet)  => rugExpr(rt.retValue, r, acc)
-  (a: PsAction) => rugExpr(a.action, r, acc)
-  (fa: PsFieldAssign) => rugExpr(fa.faValue, r, rugExpr(fa.faTarget, r, acc))
-  (i: PsIf)    => rugStmts(i.ifFalse, r,
-                           rugStmts(i.ifTrue, r,
-                                    rugExpr(i.ifCond, r, acc)))
-  (o: PStmt)   => acc
-
-fun rugExprOpt(x: PExpr|None, r, acc): Set<PErr> => match(x)
-  (e2: PExpr) => rugExpr(e2, r, acc)
-  ()          => acc
-
-fun rugExpr(x, r, acc): Set<PErr> => match(x)
-  (nm: PeName)   => rugName(nm, r, acc)
-  (d: PeDot)     => rugExpr(d.base, r, acc)
-  (cc: PeCall)   => rugExpr(cc.parameter, r, rugExpr(cc.function, r, acc))
-  (tp: PeTuple)  => rugTupEnts(tp.exprs, r, acc)
-  (te: PeTernary) => rugExpr(te.falseResult, r,
-                             rugExpr(te.trueResult, r,
-                                     rugExpr(te.condition, r, acc)))
-  (lm: PeLambda) => rugExpr(lm.lamBody, r, rugStmt(lm.lamParams, r, acc))
-  (bk: PeBlock)  => rugExpr(bk.blockValue, r,
-                            rugStmts(bk.blockStmts, r, acc))
-  (mt: PeMatch)  => rugArms(mt.arms, r, rugExpr(mt.subject, r, acc))
-  (op: PeBuiltinOp) => rugExpr(op.opParams, r, acc)
-  (ps: PePinSet) => rugExpr(ps.psValue, r, rugExpr(ps.psTarget, r, rugExpr(ps.psSubject, r, acc)))
-  (nw: PeNew)    => rugExpr(nw.newParam, r, acc)
-  (qq: PeCoalesce) => rugExpr(qq.qqFallback, r, rugExpr(qq.qqSubject, r, acc))
-  (ar: PeArrayRead) => rugExpr(ar.arrIndex, r, rugExpr(ar.arrObj, r, acc))
-  (cv: PeConvert) => rugExpr(cv.convInner, r, acc)
-  (wx: PeWith)   => rugExpr(wx.withRepls, r,
-                            rugExpr(wx.withSubject, r, acc))
-  (o: PeLiteral) => acc
-  (o: PeLowered) => acc
-  (o: PeNewEnum) => acc
-
-fun rugTupEnts(es: List<PTupEnt>, r, acc): Set<PErr> =>
-  fold(es, acc, (a, x) => rugExpr(x.tupValue, r, a))
-
-fun rugArms(as2: List<PArm>, r, acc): Set<PErr> =>
-  fold(as2, acc, (a, x) => rugExprOpt(x.armGuard, r, rugExpr(x.armBody, r, a)))
+fun rugExpr(x: PExpr, sc: Resolver, acc: Set<PErr>): Set<PErr> => match(x)
+  (nm: PeName) => rugName(nm, sc, acc)
+  (o: PExpr)   => acc
 
 fun rugName(nm: PeName, r, acc): Set<PErr> => rugUnresolved(nm, r)
   ? add(acc, PErr(nm.penLine, rugMsg(bareOfUnique(nm.refName))))

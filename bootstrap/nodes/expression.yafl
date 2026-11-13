@@ -1,0 +1,161 @@
+# bootstrap/nodes/expression.yafl — the expression interface (Python's pyast/expression/base.py):
+# one dispatcher per question the compiler asks of any expression — compile,
+# check, its type, generate. Each routes to the node kind's own function in
+# bootstrap/nodes/expression/, which holds everything about that kind.
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun compileExpr(x, r, expected): ExprOut => match(x)
+  # A literal's ONLY conversion is boxing into a union slot.
+  (i: PeInt)     => noGlobals(converted(x, expected, r))
+  (f: PeFloat)   => noGlobals(converted(x, expected, r))
+  (b: PeBool)    => noGlobals(converted(x, expected, r))
+  (st: PeStr)    => noGlobals(converted(x, expected, r))
+  (rx: PeRegex)  => noGlobals(converted(x, expected, r))
+  (ng: PeNothing) => noGlobals(x)          # nothing has no type to convert
+  # tail_loop lowering only — never present during the fixpoint; Python's
+  # compile returns (self, []) for both.
+  (lp: PeLoop)    => noGlobals(x)
+  (rc: PeRecur)   => noGlobals(x)
+  (lz: PeLazy)    => noGlobals(x)
+  (nm: PeName)   => compileName(nm, r, expected)
+  (d: PeDot)     => compileDot(d, r, expected)
+  (c: PeCall)    => compileCall(c, r, expected)
+  (tp: PeTuple)  => compileTuple(tp, r, expected)
+  (te: PeTernary) => compileTernary(te, r, expected)
+  (bk: PeBlock)  => compileBlock(bk, r, expected)
+  (mt: PeMatch)  => compileMatch(mt, r, expected)
+  (op: PeBuiltinOp) => compileBuiltinOp(op, r, expected)
+  (ps: PePinSet) => compilePinSet(ps, r, expected)
+  (nw: PeNew)    => compileNew(nw, r, expected)
+  (ne: PeNewEnum) => compileNewEnum(ne, r, expected)
+  (ar: PeArrayRead) => compileArrayRead(ar, r, expected)
+  (lm: PeLambda) => compileLambda(lm, r, expected)
+  (wx: PeWith)   => compileWith(wx, r, expected)
+  (cv: PeConvert) => compileConvert(cv, r, expected)
+  (qq: PeCoalesce) => compileCoalesce(qq, r, expected)
+
+fun checkExpr(x, r, expected: Spec|None): Set<PErr> => match(x)
+  (i: PeInt)      => noErrs()
+  (f: PeFloat)    => noErrs()
+  (b: PeBool)     => noErrs()
+  (s2: PeStr)     => noErrs()
+  (rx: PeRegex)   => oneErr(rx.perLine, "internal: regex literal was not lowered (lowering/regexes.py)")
+  (ng: PeNothing) => noErrs()
+  (nm: PeName)    => checkName(nm, r)
+  (d: PeDot)      => union(checkExpr(d.base, r, None), checkDot(d, r))
+  (c: PeCall)     => checkCall(c, r)
+  (tp: PeTuple)   => checkTupleExpr(tp, r, expected)
+  (te: PeTernary) => checkTernary(te, r, expected)
+  (lm: PeLambda)  => checkLambda(lm, r, expected)
+  (bk: PeBlock)   => checkBlock(bk, r, expected)
+  (mt: PeMatch)   => checkMatch(mt, r, expected)
+  (op: PeBuiltinOp) => checkExpr(op.opParams, r, None)
+  (ps: PePinSet)  => checkPinSet(ps, r)
+  (nw: PeNew)     => checkNew(nw, r)
+  (ne: PeNewEnum) => fold(ne.fieldArgs, noErrs(), (a2, fa) =>
+                          union(a2, checkExpr(fa.faValue, r, None)))
+  (ar: PeArrayRead) => union(checkExpr(ar.arrObj, r, None),
+                              checkExpr(ar.arrIndex, r, None))
+  (wx: PeWith)   => checkWith(wx, r)
+  (cv: PeConvert) => checkExpr(cv.convInner, r, None)
+  (qq: PeCoalesce) => union(checkExpr(qq.qqSubject, r, None),
+                            checkExpr(qq.qqFallback, r, expected))
+  # tail_loop lowering only — never present at check time; mirrored from
+  # loop.py's check methods for completeness.
+  (lp: PeLoop)    => checkExpr(lp.loopBody, r, expected)
+  (rc: PeRecur)   => checkRecur(rc.recArgs, r, noErrs())
+  (lz: PeLazy)    => noErrs()
+
+fun exprType(x, r): Spec|None => match(x)
+  (wx: PeWith)   => exprType(wx.withSubject, r)
+  (i: PeInt)       => SBuiltin(intBuiltin(i.precision), i.peiLine)
+  (f: PeFloat)     => SBuiltin(floatBuiltin(f.fPrecision), f.pefLine)
+  (bo: PeBool)     => SBuiltin("bool", bo.pebLine)
+  (st: PeStr)      => SBuiltin("str", st.pesLine)
+  (rx: PeRegex)    => SBuiltin("str", rx.perLine)
+  (n: PeNothing)   => None
+  # tail_loop lowering only: a loop types as its body; recur is bottom.
+  (lp: PeLoop)     => exprType(lp.loopBody, r)
+  (rc: PeRecur)    => None
+  # lower_lazy_lets only: the forced value's type; the raw stub when
+  # stubOnly.
+  (lz: PeLazy)     => lz.lzStubOnly
+    ? SLazyStub(lz.lzTarget, lz.pelzLine)
+    : lz.lzTarget
+  (nm: PeName)     => typeOfName(nm, r)
+  (d: PeDot)       => typeOfDot(d, r)
+  (c: PeCall)      => typeOfCall(c, r)
+  (tp: PeTuple)    => typeOfTuple(tp, r)
+  (te: PeTernary)  => branchType(twoTypes(exprType(te.trueResult, r),
+                                          exprType(te.falseResult, r)), r)
+  (lm: PeLambda)   => lm.lamRet       # its compile fills this each pass
+  # Python's BlockExpression.get_type wraps the resolver in the block's
+  # local scope before typing the value (a value reading a block-local let
+  # must see it — the drops pass inserts such bindings before check).
+  (bk: PeBlock)    => exprType(bk.blockValue, blockScope(bk.blockStmts, r))
+  (mt: PeMatch)    => typeOfMatch(mt, r)
+  (op: PeBuiltinOp) => op.opType
+  (ps: PePinSet)   => exprType(ps.psTarget, r)
+  (ne: PeNewEnum)  => typeOfNewEnum(ne, r)
+  (nw: PeNew)      => nw.newType
+  (ar: PeArrayRead) => typeOfArrayRead(ar, r)
+  (cv: PeConvert)   => cv.convTarget
+  (qq: PeCoalesce)  => typeOfCoalesce(qq, r)
+
+fun genExpr(x, r) => match(x)
+  (i: PeInt)        => bundleValue(RpInteger(i.value, i.precision))
+  (f: PeFloat)      => bundleValue(RpFloat(genFloatValue(f.floatText), f.fPrecision == 0 ? 64 : f.fPrecision))
+  (bo: PeBool)      => bundleValue(RpInteger(bo.boolValue ? 1 : 0, 8))
+  (st: PeStr)       => bundleValue(RpString(st.strValue))
+  (rx: PeRegex)     => emptyBundle()   # unreachable: regex literals are interned away
+                                      # before generate (lowering/regexes.py)
+  (n: PeNothing)    => emptyBundle()
+  (nm: PeName)      => genName(nm, r)
+  (d: PeDot)        => genDot(d, r)
+  (c: PeCall)       => genCall(c, r)
+  (tp: PeTuple)     => genTuple(tp, r)
+  (te: PeTernary)   => genTernary(te, r, None)
+  (ps: PePinSet)    => genPinSet(ps, r)
+  (lm: PeLambda)    => emptyBundle()   # unreachable: lambdas are lowered away before generate
+  (bk: PeBlock)     => genBlockTo(bk, r, None)
+  (mt: PeMatch)     => genMatch(mt, r, None)
+  (op: PeBuiltinOp) => genBuiltinOp(op, r)
+  (wx: PeWith)      => emptyBundle()   # unreachable: withExpand runs during compile
+  (ne: PeNewEnum)   => genNewEnum(ne, r)
+  (nw: PeNew)       => genNew(nw, r)
+  (ar: PeArrayRead) => genArrayRead(ar, r)
+  (cv: PeConvert)   => genConvert(cv, r)
+  # PeCoalesce dissolves into a match during compile, once the subject's
+  # type is ground. Reaching codegen means it never did — a compile bug, not
+  # a shape to emit. Python raises here; the port has no exception, so it
+  # emits the empty bundle, which fails loudly downstream rather than
+  # silently generating a wrong value.
+  (qq: PeCoalesce)  => emptyBundle()
+  (lp: PeLoop)      => genLoop(lp, r, None)
+  (rc: PeRecur)     => genRecur(rc, r)
+  (lz: PeLazy)      => genLazy(lz, r)
+
+# Kinds that override generate_to (thread `expected` down instead of the
+# generic post-hoc assertion below) route here first; everything else goes
+# through `genExprToDefault`.
+fun genExprTo(x, r, expected: Spec|None): GBundle => match(x)
+  (bk: PeBlock)   => genBlockTo(bk, r, expected)
+  (te: PeTernary) => genTernaryTo(te, r, expected)
+  (mt: PeMatch)   => genMatchTo(mt, r, expected)
+  (lp: PeLoop)    => genLoopTo(lp, r, expected)
+  (o: PExpr)      => genExprToDefault(o, r, expected)

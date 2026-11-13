@@ -1,0 +1,435 @@
+# bootstrap/nodes/expression/access.yafl — PeName, PeDot, PeArrayRead, PeLazy: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/access.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+# A name RESOLVES: once its declaration is known the node carries the unique
+# (hashed) name. Never commit against an INCOMPLETE search — the candidate
+# that should win may not be visible yet; overloads disambiguate by the
+# EXPECTED SHAPE (resolveOverloads); a MEMBER-scoped hit rewrites to
+# `this.field`; a TRAIT hit records which interface instantiation won (the
+# disambiguation cache — excluded from identity). An unresolved name returns
+# UNTOUCHED: no type-param compile, no conversion.
+fun compileName(nm, r, expected: Spec|None)
+  let bag = findData(r, nm.refName)
+  ret contains(nm.refName, "@")
+    ? hashedName(nm, bag, r, expected)
+    : unhashedName(nm, bag, r, expected)
+
+# Already committed: the ambiguity check is skipped, but the type-param step
+# below still reruns (inference may only ground on a later pass). The search
+# can still be blocked for a pass (statements arriving mid-fixpoint), and a
+# use that says nothing YET must say so, as an uncommitted one does —
+# otherwise its owner's parameter inference reads the silence as complete.
+fun hashedName(nm, bag: Findings, r, expected: Spec|None)
+  if !bag.bComplete
+    ret ExprOut(nm, List(), unsettled())
+  ret match(soleItem(bag))
+    (f: Found) => finishName(nm, f, nm.refName, nm.penTrait, r, expected)
+    ()         => noGlobals(nm)
+
+fun unhashedName(nm, bag: Findings, r,
+                 expected: Spec|None)
+  if !bag.bComplete
+    ret ExprOut(nm, List(), unsettled())
+  ret match(soleOf(resolveOverloads(r, expected, bag.bItems)))
+    (f: Found) => match(f.fScope)
+      (m: ScMember) => memberRewrite(nm, f)
+      (o: RScope)   => traitCommit(nm, f, r, expected)
+    ()         => noGlobals(nm)
+
+# A generic ambient instance's member commits only once the use site binds
+# every instance placeholder (the SOLVED scope is what the node records);
+# until then leave the use unresolved and let a later pass retry.
+fun traitCommit(nm, f: Found, r,
+                expected: Spec|None): ExprOut => match(f.fInstanceParams)
+  (own: List<String>) => isEmpty(own)
+    ? finishName(nm, f, f.fName, wonTraitScope(f), r, expected)
+    : traitCommitSolved(nm, f, solveInstanceScope(f, own, expected, r), r,
+                        expected)
+  ()                  => finishName(nm, f, f.fName, wonTraitScope(f),
+                                    r, expected)
+
+fun traitCommitSolved(nm, f: Found, solved, r,
+                      expected: Spec|None): ExprOut => match(solved)
+  (sc: Spec) => finishName(nm, f, f.fName, classTraitScope(solved),
+                           r, expected)
+  ()         => noGlobals(nm)
+
+# A MEMBER hit becomes `this.field`, returned BARE — the dot compiles in full
+# on the next visit.
+fun memberRewrite(nm: PeName, f: Found)
+  ret noGlobals(PeDot(PeName("this", List(), nm.penLine),
+                      f.fName, nm.penLine))
+
+fun wonTraitScope(f: Found): Spec|None => match(f.fScope)
+  (t2: ScTrait) => classTraitScope(f.fTraitScope)
+  (o: RScope)   => None
+
+fun classTraitScope(ts): Spec|None => match(ts)
+  (c: SClass) => ts
+  ()          => None
+
+# Fill or refresh this use's type arguments from the enclosing call's expected
+# type (use_site_type_params) — runs while any supplied argument still carries
+# a hole, keeping a partial result's placeholders for a later pass — then
+# compile them like any spelled type params.
+fun finishName(nm: PeName, f: Found, newName,
+               traitScope, r,
+               expected: Spec|None)
+  let inferred = useSiteTypeParams(f.fStmt, nm.refTypeParams, expected, r)
+  let tps = compileParams(inferred, r)
+  let out = PeName(newName, tps.psSpecs, nm.penLine, traitScope)
+  ret ExprOut(converted(out, expected, r), tps.psGlobals,
+              nameHint(f, newName, expected))
+
+# A field read: the base compiles with NO expectation (it is not the value the
+# receiver wants), then the read owns its own conversion. An ENUM-typed base
+# resolves a bare member through the enum's NARROWING (below).
+fun compileDot(d: PeDot, r, expected: Spec|None)
+  let base = compileExpr(d.base, r, None)
+  let out = PeDot(base.eoExpr, dotMemberName(d, base.eoExpr, r, expected),
+                  d.pedLine, d.pedIndex)
+  ret ExprOut(converted(out, expected, r), base.eoGlobals, base.eoHints)
+
+fun dotMemberName(d: PeDot, base, r,
+                  expected: Spec|None) => match(exprType(base, r))
+  (bt: Spec) => match(bt)
+    (e2: SEnum) => contains(d.member, "@")
+      ? d.member
+      : narrowedName(enumMember(r, e2, d.member), d.member)
+    # A CLASS member resolves on the DECLARATION — constructor params and
+    # body statements, then implemented interfaces — disambiguated by the
+    # expected shape.
+    (c2: SClass) => classDotName(d, c2, r, expected)
+    (o2: Spec)  => d.member
+  ()         => d.member
+
+fun classDotName(d: PeDot, c2: SClass, r,
+                 expected: Spec|None) => match(soleItem(findType(r, c2.scName)))
+  (f: Found) => match(f.fStmt)
+    (cs: PsClass) => match(soleOf(resolveOverloads(r, expected,
+                                                   classFindData(cs, r,
+                                                                 d.member))))
+      (m: Found) => m.fName
+      ()         => d.member
+    (o: PStmt)    => d.member
+  ()         => d.member
+
+fun narrowedName(n, fallback) => match(n)
+  (h: NfHit)    => h.nfName
+  (o: Narrowed) => fallback
+
+fun compileArrayRead(ar: PeArrayRead, r, expected: Spec|None)
+  let obj = compileExpr(ar.arrObj, r, None)
+  let idx = compileExpr(ar.arrIndex, r, SBuiltin("int32", ar.pearLine))
+  let out = PeArrayRead(obj.eoExpr, idx.eoExpr, ar.pearLine)
+  ret ExprOut(converted(out, expected, r),
+              concat(obj.eoGlobals, idx.eoGlobals),
+              mergeHints(obj.eoHints, idx.eoHints))
+
+fun checkName(nm: PeName, r)
+  let tpErrs = checkSpecs(nm.refTypeParams, r, noErrs())
+  let datas = traitFiltered(distinctFinds(findData(r, nm.refName).bItems),
+                            nm.penTrait, r)
+  if isEmpty(datas)
+    ret union(oneErr(nm.penLine, "Failed to resolve " + nm.refName), tpErrs)
+  ret match(soleOf(Bag(datas)))
+    # A generic AMBIENT instance member that never committed a solved scope:
+    # the use site could not bind the instance's placeholders — ambience
+    # applies to concrete types only, so a name-match alone is NOT a
+    # resolution (without this the template dies later, deep in codegen).
+    (f: Found) => unresolvedAmbient(nm, f)
+      ? union(oneErr(nm.penLine,
+                      "Failed to resolve " + bareOfUnique(nm.refName)
+                      + ": the ambient instance applies to concrete types"
+                      + " only — generic code needs its own `where` clause"),
+               tpErrs)
+      : union(callerTypeParamErrs(f.fStmt, nm.refTypeParams,
+                                   nm.penLine, r),
+               tpErrs)
+    ()         => union(oneErr(nm.penLine,
+                    "Ambiguous reference '" + nm.refName
+                    + "' — qualify it. Candidates: "
+                    + join(sort(dedupeStrs(foundNames(datas,
+                                                      List()))),
+                           ", ")),
+             tpErrs)
+
+fun unresolvedAmbient(nm: PeName, f: Found) => match(f.fInstanceParams)
+  (own: List<String>) => !isEmpty(own) && match(nm.penTrait)
+    (c: Spec) => false
+    ()        => true
+  ()                  => false
+
+fun foundNames(ds: List<Found>, acc): List<String> =>
+  fold(ds, acc, (a, x) => append(a, x.fName))
+
+# _distinct_resolutions: several ROUTES to one statement are one candidate.
+fun distinctFinds(ds: List<Found>) => dfLoop(ds, List(), List())
+
+fun dfLoop(ds: List<Found>, acc: List<Found>, seen: List<String>) =>
+  fold(ds, (acc = acc, seen = seen),
+       (st, d) => contains(st.seen, d.fName)
+         ? st
+         : (acc = append(st.acc, d), seen = prepend(d.fName, st.seen))).acc
+
+# A name's type is its DECLARATION's type — so a name that resolves to exactly
+# one statement has a type, and one that is ambiguous or unresolved does not
+# (yet). An INCOMPLETE search proves nothing: defer.
+fun typeOfName(nm: PeName, r)
+  let bag = findData(r, nm.refName)
+  if !bag.bComplete
+    ret None
+  ret match(soleOf(Bag(traitFiltered(bag.bItems, nm.penTrait, r))))
+    (f: Found) => nameTypeOf(nm, f, r)
+    ()         => None
+
+# compile() already disambiguated via the trait-scope cache: filter to it when
+# the raw bag is still plural. Exact match first (where-clause / concrete
+# candidates); a generic ambient instance's candidate carries the PATTERN
+# scope, so it matches when the pattern unifies with the committed (solved)
+# scope through the instance's own placeholders (_scope_filtered).
+fun traitFiltered(datas, cache: Spec|None, r): List<Found> => match(cache)
+  (c: Spec) => sizeAtMost(datas, 1)
+    ? datas
+    : preferScoped(scopeMatches(datas, c, r), datas)
+  ()        => datas
+
+fun scopeMatches(datas: List<Found>, c, r)
+  let exact = filterByScope(datas, c, List())
+  ret exactly(exact, 1)
+    ? exact
+    : filterByPattern(datas, c, r, List())
+
+fun filterByPattern(ds, cache, r,
+                    acc: List<Found>): List<Found> =>
+  concat(acc, filter(ds, (d) => patternMatches(d, cache, r)))
+
+# Every instance placeholder must bind: one left open says the scope never
+# named this instance. (access.py _scope_filtered)
+fun patternMatches(f: Found, cache, r) => match(f.fInstanceParams)
+  (own: List<String>) => !isEmpty(own) && match(f.fTraitScope)
+    (ts: Spec) => match(patternBinding(ts, cache, own, r))
+      (m: List<Binding>) => bindsAll(own, m)
+      ()                 => false
+    ()         => false
+  ()                  => false
+
+fun preferScoped(scoped, datas): List<Found> => exactly(scoped, 1) ? scoped : datas
+
+fun filterByScope(ds, cache,
+                  acc: List<Found>): List<Found> =>
+  concat(acc, filter(ds, (d) => sameTraitScope(d.fTraitScope, cache)))
+
+fun sameTraitScope(ts: Spec|None, cache) => match(ts)
+  (t2: Spec) => eqSpec(t2, cache)
+  ()         => false
+
+# The declaration's type, instantiated: explicit call-site type args (case 1)
+# and a trait-scoped find's interface instantiation (case 2) both map the
+# declaration's placeholders to concrete types.
+fun nameTypeOf(nm: PeName, f: Found, r: Resolver) => match(stmtType(f.fStmt))
+  (raw: Spec) => substitute(raw, nameMappings(nm, f))
+  ()          => None
+
+fun nameMappings(nm: PeName, f: Found) => concat(explicitMapping(nm, f), traitCaseMapping2(nm, f))
+
+# A generic ambient instance's candidate carries the pattern scope; the
+# SOLVED scope compile committed (instance placeholders bound from the use
+# site) takes precedence when present.
+fun traitCaseMapping2(nm: PeName, f: Found) => match(f.fInstanceParams)
+  (own: List<String>) => isEmpty(own)
+    ? traitCaseMapping(f)
+    : solvedCaseMapping(nm, f)
+  ()                  => traitCaseMapping(f)
+
+fun solvedCaseMapping(nm: PeName, f: Found) => match(nm.penTrait)
+  (sc2: SClass) => solvedOwnerMapping(f, sc2)
+  ()            => traitCaseMapping(f)
+
+fun solvedOwnerMapping(f: Found, solved: SClass) => match(ownerMapping(f.fOwner, solved))
+  (m: List<Binding>) => m
+  ()                 => List()
+
+fun explicitMapping(nm: PeName, f: Found): List<Binding> => isEmpty(nm.refTypeParams)
+  ? List()
+  : paramMapping(stmtGens(f.fStmt), nm.refTypeParams)
+
+fun traitCaseMapping(f: Found) => match(traitMapping(f))
+  (m: List<Binding>) => m
+  ()                 => List()
+
+# A field read: through a tuple by POSITION once names are erased
+# (pedIndex) and by entry NAME before, through a class or enum by looking the
+# member up on the DECLARATION.
+fun typeOfDot(d: PeDot, r): Spec|None => match(exprType(d.base, r))
+  (t2: STuple) => dotEntryType(d, t2.stEntries)
+  (bt: Spec)   => memberType(bt, d.member, r)
+  ()           => None
+
+fun dotEntryType(d: PeDot, es: List<SEntry>): Spec|None => match(d.pedIndex)
+  (i: Int) => match(head(drop(es, i)))
+    (e: SEntry) => e.seType
+    ()          => None
+  ()       => entryNamed(es, d.member)
+
+# An array read yields the ELEMENT type of the array field it indexes.
+# access.py's __array_info: the object's type is the array CLASS, so getting
+# the element type is a two-step lookup — resolve the class spec to its
+# statement, then take the element off that class's trailing array field.
+#
+# The port used to test the object's own type for SArrayField and give up
+# otherwise. A class spec is never an SArrayField, so the generated accessor
+# `(index: Int32): Elem { ret this[index] }` typed to NOTHING, and the check
+# phase then reported it as a function whose body never returns a value. It
+# stayed hidden because only the check phase asks — and the C path never ran
+# the check phase (see postmonoRes2's `gated`).
+fun typeOfArrayRead(ar: PeArrayRead, r) => match(exprType(ar.arrObj, r))
+  (ot: Spec) => elementOf(ot, r)
+  ()         => None
+
+fun elementOf(ot, r) => match(ot)
+  # Already the field itself — kept for callers that hold one directly.
+  (af: SArrayField) => af.safElem
+  (sc: SClass)      => classArrayElem(sc, r)
+  (o: Spec)         => None
+
+fun classArrayElem(sc: SClass, r) => match(soleItem(findType(r, sc.scName)))
+  (f: Found) => match(f.fStmt)
+    (cls: PsClass) => firstArrayElem(classFields(cls))
+    (o: PStmt)     => None
+  ()         => None
+
+fun firstArrayElem(fs: List<PStmt>) =>
+  foldWhile<PStmt, Spec|None>(fs, None, (found, st) => arrayElemOf(st), (found) => found is None)
+
+# A field read that reaches here without a field to read. The checks passed,
+# so the program is correct and an earlier stage of THIS compiler broke it:
+# say which read and stop. Emitting the read as anything else — its base, as
+# these arms once did — turns a compiler bug into a wrong program (#108).
+fun genDotBug(d: PeDot, what: String): GBundle =>
+  abort<GBundle>("compiler bug: field read `." + d.member + "` at " + d.pedLine.plFile
+                 + "[" + String(d.pedLine.plLine) + ":" + String(d.pedLine.plCol) + "]: " + what)
+
+fun genDot(d: PeDot, r)
+  let baseBundle = genExpr(d.base, r)
+  ret match(exprType(d.base, r))
+    (bt: Spec) => genDotOn(d, bt, baseBundle, r)
+    ()          => genDotBug(d, "its base has no type")
+
+fun genDotOn(d: PeDot, bt, baseBundle, r) => match(bt)
+  (tp: STuple) => genDotTuple(d, baseBundle)
+  (c: SClass)  => genDotClass(d, c, baseBundle, r)
+  (e2: SEnum)  => genDotEnum(d, e2, baseBundle, r)
+  (o: Spec)    => genDotBug(d, "its base is not a tuple, a class or an enum")
+
+# By position only: a read that still has just a name here was missed by
+# lower/ast/field_names.yafl.
+fun genDotTuple(d: PeDot, baseBundle) => match(d.pedIndex)
+  (idx: Int) => bundleJoin(baseBundle, bundleValue(RpStructField(mustResult(baseBundle), "_" + String(idx))))
+  ()         => genDotBug(d, "it reached code generation with no position")
+
+fun genDotClass(d: PeDot, c: SClass, baseBundle, r) => match(soleItem(findType(r, c.scName)))
+  (found: Found) => match(found.fStmt)
+    (cs: PsClass) => genDotClassField(d, cs, baseBundle, r)
+    (o: PStmt)    => genDotBug(d, "its base's type " + c.scName + " is not a class")
+  ()               => genDotBug(d, "its base's class " + c.scName + " does not resolve to one declaration")
+
+fun genDotClassField(d: PeDot, cs: PsClass, baseBundle, r)
+  ret match(head(classFindData(cs, r, d.member)))
+    (found: Found) => genDotClassMember(cs, found.fStmt, d, baseBundle, r)
+    ()              => genDotBug(d, "class " + cs.cName + " has no member of that name")
+
+fun genDotClassMember(cs: PsClass, data, d: PeDot, baseBundle, r) => match(data)
+  (fn: PsFun) => hasAttr(cs.cAttrs, "final") || !occupiesSlot(cs, d.member)
+    ? bundleJoin(baseBundle, bundleValue(RpGlobalFunction(d.member, mustResult(baseBundle), false, foreignSymbol(fn), isImpureFn(fn), isSyncFn(fn))))
+    : bundleJoin(baseBundle, bundleValue(RpVirtualFunction(d.member, mustResult(baseBundle), false, false)))
+  (l: PsLet)  => genDotField(cs, l, d, baseBundle, r)
+  (o: PStmt)  => genDotBug(d, "the member of class " + cs.cName + " is neither a function nor a field")
+
+fun genDotField(cs: PsClass, l: PsLet, d: PeDot, baseBundle: GBundle, r)
+  let xtype = specGenerateOpt(l.lType, r)
+  ret bundleJoin(baseBundle, bundleValue(RpObjectField(xtype, mustResult(baseBundle), cs.cName, d.member, None, false, false)))
+
+fun genDotEnum(d: PeDot, e2, baseBundle: GBundle, r)
+  ret bundleJoin(baseBundle, bundleValue(reprReadField(classifyRepr(e2, r), mustResult(baseBundle), d.member, r)))
+
+fun arrayInfo(obj, r): (cname: String, elem: Spec, lenName: String)|None => match(exprType(obj, r))
+  (c: SClass) => arrayInfoOf(c, r)
+  ()          => None
+
+fun arrayInfoOf(c: SClass, r): (cname: String, elem: Spec, lenName: String)|None
+  ret match(soleItem(findType(r, c.scName)))
+    (found: Found) => match(found.fStmt)
+      (cs: PsClass) => arrayInfoField(c, cs)
+      (o: PStmt)    => None
+    ()               => None
+
+fun arrayInfoField(c: SClass, cs: PsClass): (cname: String, elem: Spec, lenName: String)|None
+  ret match(asPsLetVariant(classArrayField(cs)))
+    (af: PsLet) => arrayInfoLetType(c, af, cs)
+    ()           => None
+
+fun arrayInfoLetType(c: SClass, af: PsLet, cs: PsClass): (cname: String, elem: Spec, lenName: String)|None
+  ret match(asArrayFieldVariant(af.lType))
+    (afSpec: SArrayField) => arrayInfoLenName(c, afSpec, cs)
+    ()                     => None
+
+fun arrayInfoLenName(c: SClass, afSpec: SArrayField, cs: PsClass): (cname: String, elem: Spec, lenName: String)|None
+  ret match(fieldNameMatching(classFields(cs), afSpec.safLenField))
+    (ln: String) => (c.scName, afSpec.safElem, ln)
+    ()            => None
+
+fun genArrayRead(ar: PeArrayRead, r) => match(arrayInfo(ar.arrObj, r))
+  (info: (cname: String, elem: Spec, lenName: String)) => genArrayReadOn(ar, info, r)
+  ()                                                     => emptyBundle()   # unreachable: check()
+                                                                            # guarantees an array-class object
+
+fun genArrayReadOn(ar: PeArrayRead, info: (cname: String, elem: Spec, lenName: String), r)
+  let objB = withPrefix(genExpr(ar.arrObj, r), "arr")
+  let idxB = withPrefix(genExpr(ar.arrIndex, r), "idx")
+  let objVar = RpStackVar(CgDataPointer(false), "aobj")
+  let idxVar = RpStackVar(CgInt(32), "aidx")
+  let elem = RpArrayElement(specGenerate(info.elem, r), objVar, info.cname, "array", info.lenName, idxVar, true)
+  let moveOps = arrayOf<Op>(OpMove(objVar, mustResult(objB), false, Dict()),
+                      OpMove(idxVar, mustResult(idxB), false, Dict()))
+  ret bundleJoin(bundleJoin(objB, idxB), GBundle(list2(objVar, idxVar), moveOps, elem, List(), List()))
+
+fun genLazy(lz: PeLazy, r)
+  let irT = specGenerate(lz.lzTarget, r)
+  let stubRef = match(lz.lzCaptured)
+    (cls: String) => RpObjectField(CgDataPointer(false), RpStackVar(CgDataPointer(false), "this"), cls, lz.stubName, None, false, false)
+    ()             => lazyStubRef(lz, r)
+  ret lz.lzStubOnly ? bundleValue(stubRef) : genLazyForce(irT, stubRef)
+
+fun lazyStubRef(lz: PeLazy, r)
+  let found = findData(r, lz.stubName)
+  ret (exactly(found.bItems, 1) && foundIsGlobalScope(head(found.bItems)))
+    ? RpGlobalVar(CgDataPointer(false), lz.stubName)
+    : RpStackVar(CgDataPointer(false), lz.stubName)
+
+# isGlobalScope(sc: RScope): Bool is reused as-is from lambdas.yafl.
+fun foundIsGlobalScope(f: Found|None) => match(f)
+  (f2: Found) => isGlobalScope(f2.fScope)
+  ()           => false
+
+fun genLazyForce(irT, stubRef)
+  let svResult = RpStackVar(irT, "$force_result")
+  let call = OpCall(RpGlobalFunction(fetchFunctionName(irT), stubRef, false, None, false, false),
+                    RpNewStruct(List()), svResult, false, false, None, Dict())
+  ret GBundle(list1(svResult), arrayOf<Op>(call), svResult, List(), List())

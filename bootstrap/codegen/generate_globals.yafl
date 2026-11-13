@@ -17,7 +17,7 @@ import Bootstrap::Lower::Ast
 import Bootstrap::Parse
 import Bootstrap::Resolve
 import Bootstrap::StdlibCandidates
-
+import Bootstrap::Nodes
 
 
 # ── FunctionStatement.global_codegen ────────────────────────────────────────
@@ -287,7 +287,6 @@ fun enumLeafObjects(names: List<String>, sets: List<List<PStmt>>, rootName,
                            prefix: List<CgField>, acc: List<CgObject>): List<CgObject>
   ret zipFold(names, sets, acc,
                (a, name, set) => append(a, enumLeafObject(name, set, rootName, discs, r, prefix)))
-
 
 fun enumLeafObject(leafName, leafFields: List<PStmt>, rootName,
                    discs: Dict<String, Int>, r, prefix)

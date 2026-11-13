@@ -1,0 +1,90 @@
+# bootstrap/nodes/expression/coalesce.yafl — PeCoalesce: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/coalesce.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun compileCoalesce(qq: PeCoalesce, r, expected)
+  # The subject compiles with NO expected type: pushing the receiver's type
+  # down would land the fallback's type on the option and defeat the
+  # narrowing. This compile is also how the subject's type becomes known,
+  # which is what decides whether the node can dissolve yet.
+  let subj = compileExpr(qq.qqSubject, r, None)
+  ret match(exprType(subj.eoExpr, r))
+    # A placeholder from outside this scope is a hole, not a type: a partly
+    # bound generic call reads `V|None` until V is bound.
+    (st: Spec) => isConcrete(st) && !hasFreePlaceholders(st, r)
+      ? coalesceOn(qq, subj, st, r, expected)
+      : coalesceStay(qq, subj, r, expected)
+    ()         => coalesceStay(qq, subj, r, expected)
+
+fun coalesceOn(qq: PeCoalesce, subj: ExprOut, st, r,
+               expected) => match(withoutNone(st))
+  (nr: Spec) => coalesceDesugar(qq, nr, r, expected)
+  ()         => coalesceStay(qq, subj, r, expected)
+
+# Not ground yet: keep the node, with both children advanced one pass.
+fun coalesceStay(qq: PeCoalesce, subj: ExprOut, r,
+                 expected)
+  let fb = compileExpr(qq.qqFallback, r, expected)
+  ret ExprOut(PeCoalesce(subj.eoExpr, fb.eoExpr, qq.peqqLine),
+              concat(subj.eoGlobals, fb.eoGlobals),
+              mergeHints(subj.eoHints, fb.eoHints))
+
+# `match(subject) (v: narrowed) => v ; () => fallback`.
+#
+# The binder is keyed on the FALLBACK's position. `a ?? b ?? c` folds
+# left-associatively and every node in that fold carries the LEFT operand's
+# line, so armUniqueName — which appends the arm line's hash — would hand both
+# arms the same name and the two would define one SSA value. The fallbacks are
+# what differ.
+# Desugars from the ORIGINAL children, discarding the probe compile above.
+# compileMatch compiles its own subject and arms, so handing it already-
+# compiled ones compiles each TWICE — and a compile is not idempotent for
+# anything that LIFTS: a lambda in the subject became two
+# `$lambdas::lambda@...` globals and the two compilers disagreed about which
+# survived. Recompiling from the original is deterministic and yields one.
+fun coalesceDesugar(qq: PeCoalesce, narrowed, r,
+                    expected: Spec|None): ExprOut
+  let subject = qq.qqSubject
+  let fallback = qq.qqFallback
+  let lr = qq.peqqLine
+  let fl = exprLine(fallback)
+  let binder = "$qq" + hash6(fl.plFile, fl.plLine, fl.plCol)
+  let hit = PArm(binder, narrowed, PeName(binder, List(), lr),
+                 List(), None, lr, List())
+  let els = PArm("", None, fallback, List(), None, lr, List())
+  # The arms MUST be given a target. A match's arms converge on the RECEIVER's
+  # type, and that is what makes each arm wrap itself when they differ — which
+  # they do whenever the fallback is itself an option (`a ?? b ?? c`: hit arm
+  # `T`, fallback `T|None`). With no receiver the arms stay unconverted while
+  # the match's own type is their join, and codegen aborts on the mismatch.
+  let target = match(expected)
+    (e2: Spec) => e2
+    ()         => join(narrowed, exprType(fallback, r))
+  ret compileMatch(PeMatch(subject, list2(hit, els), lr, List()), r, target)
+
+# `a ?? b` — the subject's non-None part and the fallback as the arms of a
+# branch, exactly the type of the match it becomes, so nothing shifts when the
+# node dissolves. Undecided (None) while the subject has no answerable non-None
+# part: the fixpoint asks again next pass.
+fun typeOfCoalesce(qq: PeCoalesce, r): Spec|None => match(exprType(qq.qqSubject, r))
+  (st: Spec) => match(withoutNone(st))
+    (nr: Spec) => branchType(coalesceArms(nr, exprType(qq.qqFallback, r)), r)
+    ()         => None
+  ()         => exprType(qq.qqFallback, r)
+
+fun coalesceArms(nr: Spec|None, fb: Spec|None): List<Spec|None> => prepend(nr, prepend(fb, List()))

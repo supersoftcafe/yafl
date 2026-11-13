@@ -1,0 +1,283 @@
+# bootstrap/nodes/expression/with_expr.yafl — PeWith: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/with_expr.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun compileWith(wx: PeWith, r, expected: Spec|None)
+  let subj = compileExpr(wx.withSubject, r, None)
+  let reps = compileExpr(wx.withRepls, r, None)
+  let node: PExpr = PeWith(subj.eoExpr, reps.eoExpr, wx.pewLine)
+  let glb = concat(subj.eoGlobals, reps.eoGlobals)
+  let hints = mergeHints(subj.eoHints, reps.eoHints)
+  ret match(node)
+    (nw: PeWith) => withShapeError(nw) != ""
+      ? ExprOut(node, glb, hints)
+      : match(withExpand(nw, r))
+        (x: PExpr) => ExprOut(converted(x, expected, r), glb, hints)
+        ()         => ExprOut(node, glb, hints)
+    (o: PExpr)   => ExprOut(node, glb, hints)   # unreachable: node is built above
+
+fun withExpand(wx: PeWith, r) => match(exprType(wx.withSubject, r))
+  (c: SClass) => withExpandClass(wx, c, r)
+  (e2: SEnum) => withExpandEnum(wx, e2, r)
+  ()          => None
+
+fun withTag(lr: PLine) => hash6(lr.plFile, lr.plLine, lr.plCol)
+
+fun withEntryList(wx: PeWith) => match(wx.withRepls)
+  (tp: PeTuple) => tp.exprs
+  (o: PExpr)    => List()
+
+# The subject and each replacement bind ONCE; replacements are referred to by
+# their $w{i} names thereafter.
+fun withLets(wx: PeWith, tag, uniques: List<String>, r): List<PStmt>
+  let lr = wx.pewLine
+  # The subject let comes first and the per-entry lets follow in tuple order:
+  # these are STATEMENTS, so the order is the program.
+  let base = append<PStmt>(List(),
+                         PsLet("$ws@" + tag, List(), List(),
+                               None, wx.withSubject, "", List(), lr))
+  ret withReplLets(withEntryList(wx), 0, tag, lr,
+                         exprType(wx.withSubject, r), uniques, r, base)
+
+# Each replacement is typed as its FIELD, so the SAME guard compares like with like.
+fun withReplLets(es: List<PTupEnt>, i, tag, lr, subjTy: Spec|None, uniques: List<String>, r,
+                 acc): List<PStmt> =>
+  fold(es, (i = i, acc = acc), (st, x) => withReplLetsStep(st, x, tag, lr, subjTy, uniques, r)).acc
+
+fun withReplLetsStep(st: (i: Int, acc: List<PStmt>), x: PTupEnt, tag, lr, subjTy: Spec|None,
+                     uniques: List<String>, r) =>
+  (i = st.i + 1,
+  acc = append(st.acc,
+      PsLet("$w" + String(st.i) + "@" + tag, List(), List(),
+            withFieldType(subjTy, x.tupName, uniques, r),
+            x.tupValue, "", List(), lr)))
+
+fun withFieldType(subjTy: Spec|None, bare: String, uniques: List<String>, r) => match(subjTy)
+  (st: Spec) => match(head(filter(uniques, (u) => bareName(u) == bare)))
+    (u: String) => memberType(st, u, r)
+    ()          => None
+  ()         => None
+
+fun withReplRef(name: String, es: List<PTupEnt>, lr) => match(findIndex(es, (e) => e.tupName == name))
+  (i: Int) => PeName("$w" + String(i), List(), lr)
+  ()       => None
+
+# SAME guard: every replacement bit-identical to the current field.
+fun withGuard(wx: PeWith, lr) => withGuardLoop(withEntryList(wx), 0, None, lr)
+
+fun withGuardLoop(es: List<PTupEnt>, i, acc: PExpr|None, lr) =>
+  fold(es, (i = i, acc = acc), (st, x) => withGuardLoopStep(st, x, lr))
+    |> (r) => r.acc ?? PeBool(true, lr)
+
+fun withGuardLoopStep(st: (i: Int, acc: PExpr|None), x: PTupEnt, lr) =>
+  (i = st.i + 1,
+  acc = withAnd(st.acc,
+      PeBuiltinOp(SBuiltin("bool", lr), PeStr("yafl_same", lr),
+                  PeTuple(list2(PTupEnt("", false,
+                           PeName("$w" + String(st.i), List(), lr)),
+                          PTupEnt("", false,
+                           PeDot(PeName("$ws", List(), lr),
+                                 x.tupName, lr))), lr), lr),
+      lr))
+
+fun withAnd(acc: PExpr|None, one, lr) => match(acc)
+  (a: PExpr) => PeTernary(a, one, PeBool(false, lr), lr)
+  ()         => one
+
+# Constructor call mixing carried fields with replacements.
+fun withConstruct(ctorName, fields: List<PStmt>, repls: List<PTupEnt>,
+                  carrier, lr) => PeCall(PeName(ctorName, List(), lr),
+                                         PeTuple(withCtorArgs(fields, repls, carrier, lr,
+                                                              List()), lr), lr)
+
+fun withCtorArgs(fs: List<PStmt>, repls: List<PTupEnt>, carrier, lr, acc: List<PTupEnt>) =>
+  fold(fs, acc, (a, x) => withCtorArgsStep(a, x, repls, carrier, lr))
+
+fun withCtorArgsStep(a: List<PTupEnt>, x: PStmt, repls: List<PTupEnt>, carrier, lr) => match(x)
+  (p: PsLet) => append(a, PTupEnt("", false, withCtorArg(bareName(p.lName), repls, carrier, lr)))
+  (o: PStmt) => a
+
+fun withCtorArg(bare, repls: List<PTupEnt>, carrier,
+                lr) => match(withReplRef(bare, repls, lr))
+  (rr: PExpr) => rr
+  ()          => PeDot(PeName(carrier, List(), lr), bare, lr)
+
+fun withExpandClass(wx: PeWith, c: SClass, r) => match(soleItem(findType(r, c.scName)))
+  (f: Found) => match(f.fStmt)
+    (cls: PsClass) => withNamesOk(wx, withBareNames(flattenParams(cls.cParams), List()))
+      ? withAssemble(wx,
+          withConstruct(cls.cName, flattenParams(cls.cParams),
+                        withEntryList(wx), "$ws", wx.pewLine),
+          withLetNames(flattenParams(cls.cParams)), r)
+      : None
+    (o: PStmt)     => None
+  ()         => None
+
+fun withLetNames(ls: List<PStmt>) => map(ls, withLetName)
+
+fun withLetName(p) => match(p)
+  (l: PsLet) => l.lName
+  (o: PStmt) => ""
+
+fun withNamesOk(wx: PeWith, visible: List<String>)
+  ret withNamesOkLoop(withEntryList(wx), visible)
+
+fun withNamesOkLoop(es: List<PTupEnt>, visible: List<String>) => all(es, (x) => contains(visible, x.tupName))
+
+fun withExpandEnum(wx: PeWith, e2: SEnum, r) => match(soleItem(findType(r, e2.seRoot)))
+  (f: Found) => match(f.fStmt)
+    (en: PsEnum) => withNamesOk(wx,
+                      withCoverBares(visibleFields(en, e2.sePath),
+                                     List()))
+      ? withEnumCopy(wx, en, e2,
+                     map(visibleFields(en, e2.sePath), (fd) => fd.sfName), r)
+      : None
+    (o: PStmt)   => None
+  ()         => None
+
+fun withEnumCopy(wx: PeWith, en: PsEnum, e2: SEnum, uniques: List<String>,
+                 r): PExpr|None
+  let lr = wx.pewLine
+  let tag = withTag(lr)
+  let leaves = withLeaves(en, List(),
+                          (List(), List()))
+  let valid = withValidLeaves(leaves.names, e2.seValidLeaves)
+  if isEmpty(valid)
+    ret None
+  if exactly(valid, 1) && isLevelOf(e2, valid)
+    # The subject IS the one leaf: its fields are its members, so no dispatch
+    # — they read through the binder-free subject, exactly as Python's
+    # single-arm special case.
+    ret withAssemble(wx,
+          withSingleLeaf(leaves.names, leaves.sets,
+                         wx, e2, lr),
+          uniques, r)
+  ret withAssemble(wx,
+        PeMatch(PeName("$ws", List(), lr),
+                withArms(leaves.names, leaves.sets, 0, tag,
+                         wx, e2, List()),
+                lr, List()),
+        uniques, r)
+
+# The subject's own level is the (sole) leaf in `valid`.
+fun isLevelOf(e2: SEnum, valid: List<String>) => match(head(takeLastOne(e2.sePath)))
+  (level: String) => eqStrs(list1(level), valid)
+  ()              => false
+
+fun withValidLeaves(ns, valid: List<String>): List<String> => withValidLoop(ns, valid, List())
+
+fun withValidLoop(ns: List<String>, valid: List<String>, acc: List<String>) =>
+  fold(ns, acc, (a, x) => contains(valid, x) ? append(a, x) : a)
+
+fun [tail] withSingleLeaf(ns: List<String>, sets: List<List<PStmt>>,
+                          wx: PeWith, e2: SEnum, lr) => match(head(ns))
+  (n: String) => match(head(sets))
+    (s: List<PStmt>) => contains(e2.seValidLeaves, n)
+      ? withConstruct(n, s, withEntryList(wx), "$ws", lr)
+      : withSingleLeaf(dropOne(ns), dropOne(sets), wx, e2, lr)
+    ()               => PeName("$ws", List(), lr)  # unreachable
+  ()          => PeName("$ws", List(), lr)  # unreachable
+
+fun withArms(ns: List<String>, sets: List<List<PStmt>>, i: Int,
+             tag, wx: PeWith, e2: SEnum, acc: List<PArm>) =>
+  zipFold(ns, sets, (i = i, acc = acc), (st, x, set) => withArmsStep(st, x, set, tag, wx, e2)).acc
+
+fun withArmsStep(st: (i: Int, acc: List<PArm>), x: String, set: List<PStmt>, tag, wx: PeWith, e2: SEnum) =>
+  (i = st.i + 1,
+   acc = contains(e2.seValidLeaves, x)
+     ? append(st.acc, PArm("$wx" + String(st.i) + "@" + tag,
+                           SNamed(x, List(), wx.pewLine),
+                           withConstruct(x, set, withEntryList(wx), "$wx" + String(st.i), wx.pewLine),
+                           List(), None, wx.pewLine, List()))
+     : st.acc)
+
+fun withAssemble(wx: PeWith, copy, uniques: List<String>, r)
+  let lr = wx.pewLine
+  ret PeBlock(withLets(wx, withTag(lr), uniques, r),
+              PeTernary(withGuard(wx, lr),
+                        PeName("$ws", List(), lr), copy, lr),
+              "", lr)
+
+fun checkWith(wx: PeWith, r)
+  let sub = checkExpr(wx.withSubject, r, None)
+  if !isEmpty(sub)
+    ret sub
+  let reps = checkExpr(wx.withRepls, r, None)
+  if !isEmpty(reps)
+    ret reps
+  let shape = withShapeError(wx)
+  if shape != ""
+    ret add(Set(),PErr(wx.pewLine, shape))
+  ret match(exprType(wx.withSubject, r))
+    (c: SClass) => checkWithFields(wx, r)
+    (e2: SEnum) => checkWithFields(wx, r)
+    (o: Spec)   => add(Set(),PErr(wx.pewLine,
+      "the subject of `with` must be a class- or enum-typed expression"))
+    ()          => add(Set(),PErr(wx.pewLine,
+      "the subject type of `with` did not resolve"))
+
+fun withShapeError(wx: PeWith) => match(wx.withRepls)
+  (tp: PeTuple) => isEmpty(tp.exprs)
+    ? "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
+    : foldWhile(tp.exprs, (err = "", seen = List<String>()), withEntryStep, (st) => st.err == "").err
+  (o: PExpr)    => "a `with` expression needs at least one replacement — `with x()` copies nothing and means nothing"
+
+fun withEntryStep(st: (err: String, seen: List<String>), e: PTupEnt) => e.tupSpread
+  ? (err = "a `with` replacement cannot be a spread", seen = st.seen)
+  : e.tupName == ""
+    ? (err = "`with` replacements must be named — `with x(field = value)`", seen = st.seen)
+    : contains(st.seen, e.tupName)
+      ? (err = "a `with` expression replaces each field at most once", seen = st.seen)
+      : (err = "", seen = prepend(e.tupName, st.seen))
+
+fun checkWithFields(wx: PeWith, r): Set<PErr>
+  let visible = withVisibleFields(wx, r)
+  ret match(wx.withRepls)
+    (tp: PeTuple) => withNamesKnown(tp.exprs, visible, wx.pewLine)
+    (o: PExpr)    => Set()
+
+fun withNamesKnown(es: List<PTupEnt>, visible: List<String>,
+                   lr): Set<PErr> => match(firstWhere(es, (e) => !contains(visible, e.tupName)))
+  (e: PTupEnt) => add(Set(), PErr(lr,
+      "`" + e.tupName + "`" + " is not a field visible on the subject's type — `with` can only replace fields the static type guarantees"))
+  ()           => Set()
+
+fun withVisibleFields(wx: PeWith, r) => match(exprType(wx.withSubject, r))
+  (c: SClass) => match(soleItem(findType(r, c.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => withBareNames(flattenParams(cls.cParams),
+                                      List())
+      (o: PStmt)     => List()
+    ()         => List()
+  (e2: SEnum) => match(soleItem(findType(r, e2.seRoot)))
+    (f: Found) => match(f.fStmt)
+      (en: PsEnum) => withCoverBares(visibleFields(en, e2.sePath),
+                                     List())
+      (o: PStmt)   => List()
+    ()         => List()
+  ()          => List()
+
+fun withBareNames(fs: List<PStmt>, acc: List<String>) =>
+  fold(fs, acc, withBareNamesStep)
+
+fun withBareNamesStep(a: List<String>, x: PStmt) => match(x)
+  (p: PsLet) => append(a, bareName(p.lName))
+  (o: PStmt) => a
+
+fun withCoverBares(fs: List<SField>, acc): List<String> =>
+  fold(fs, acc, (a, x) => append(a, bareName(x.sfName)))

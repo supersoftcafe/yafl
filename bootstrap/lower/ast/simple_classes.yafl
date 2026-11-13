@@ -25,7 +25,7 @@ import Bootstrap::Ast
 import Bootstrap::Frontend
 import Bootstrap::Parse
 import Bootstrap::Resolve
-
+import Bootstrap::Nodes
 
 
 # ── candidate / spec bookkeeping (parallel lists — Dict has no keys()) ──────
@@ -40,6 +40,7 @@ import Bootstrap::Resolve
 # meaningful (USER RULING: declaration order in YAFL is largely irrelevant).
 # The walks that do need an order take the names SORTED.
 class [final] ScCands(scIndex: Dict<String, PsClass>)
+
 class [final] ScSpecs(ssIndex: Dict<String, Spec>)
 
 fun scNames(c: ScCands) => sort(keys(c.scIndex))
@@ -76,6 +77,7 @@ fun scLiftOne(name, from2: ScCands, specs: ScSpecs,
 fun scHasCand(c: ScCands, name: String) => contains(c.scIndex, name)
 
 fun ssNames(s2: ScSpecs) => sort(keys(s2.ssIndex))
+
 class [final] ScFiltered(sfCands: ScCands, sfSpecs: ScSpecs)
 
 # ── generic name -> Int lookup/bump (shared by method-ref and uid counts) ───
@@ -191,26 +193,16 @@ fun scFindSimpleClasses(statements: List<PStmt>)
 # ── 3. pruneRecursive (reuses EEdges / aiReachesSelf from complex_enums.yafl
 #      and ast_inline.yafl) ──────────────────────────────────────────────────
 
-fun scCollectRefs(sp, candNames: List<String>, acc): List<String> => match(sp)
-  (c: SClass)        => scAddIfCand(c.scName, candNames, scRefList(c.scParams, candNames, acc))
-  (n: SNamed)        => scAddIfCand(n.snName, candNames, scRefList(n.snParams, candNames, acc))
-  (e2: SEnum)        => scRefList(e2.seParams, candNames, acc)
-  (cm: SCombination) => scRefList(cm.scTypes, candNames, acc)
-  (cl: SCallable)    => scRefOpt(cl.scResult, candNames, scCollectRefs(cl.scParams2, candNames, acc))
-  (t2: STuple)       => scRefEntries(t2.stEntries, candNames, acc)
-  (af: SArrayField)  => scCollectRefs(af.safElem, candNames, acc)
-  (ls: SLazyStub)    => scRefOpt(ls.slsTarget, candNames, acc)
-  (o: Spec)          => acc
+# referenced: the candidate classes a field type names, one callback over it.
+fun scCollectRefs(sp: Spec, candNames: List<String>, acc: List<String>): List<String> =>
+  walkSpec(sp, emptyResolverGlobal, acc,
+           Walk<List<String>>(wkNoExpr<List<String>>, wkNoStmt<List<String>>,
+                              (a, _r, s2) => (s = scRefOne(s2, candNames, a), r = None))).s
 
-fun scRefList(ts: List<Spec>, candNames: List<String>, acc: List<String>) =>
-  fold(ts, acc, (a, x) => scCollectRefs(x, candNames, a))
-
-fun scRefOpt(sp: Spec|None, candNames: List<String>, acc): List<String> => match(sp)
-  (s2: Spec) => scCollectRefs(s2, candNames, acc)
-  ()         => acc
-
-fun scRefEntries(es: List<SEntry>, candNames: List<String>, acc): List<String> =>
-  fold(es, acc, (a, x) => scRefOpt(x.seType, candNames, a))
+fun scRefOne(sp: Spec, candNames: List<String>, acc: List<String>): List<String> => match(sp)
+  (c: SClass) => scAddIfCand(c.scName, candNames, acc)
+  (n: SNamed) => scAddIfCand(n.snName, candNames, acc)
+  (o: Spec)   => acc
 
 fun scAddIfCand(name: String, candNames: List<String>, acc): List<String>
   ret contains(candNames, name) ? addNameOnce(acc, name) : acc
@@ -354,114 +346,19 @@ fun scExcludeStandalone(cands: ScCands, specs: ScSpecs, statements: List<PStmt>,
       scKeepSpecsWhere(specs, (n) => scCountAll(counts, n) <= scCountCalled(counts, n)))
 
 # ── 7. excludeUnionCollisions ────────────────────────────────────────────────
-# Collecting every SCombination anywhere in the statement tree needs its own
-# small stmt/expr/spec fold — the SAME visit law as rwStmtKids/rwExprKids/
-# rwSpecKids (see rewrite.yafl's header comment), restricted to accumulation.
-
-fun scCuEntries(es: List<SEntry>, acc: List<Spec>) =>
-  fold(es, acc, (a, x) => scCuSpecOpt(x.seType, a))
-
+# _collect: every union anywhere in the statement tree, one callback.
 # On the FRONT: the unions collected here are walked once, each checked for
 # name collisions independently of the others, and the names that come out are
 # only ever tested for membership — no step can see the order.
-fun scCuSpec(sp, acc: List<Spec>)
-  let acc2 = match(sp)
-    (cm: SCombination) => prepend(sp, acc)
-    (o: Spec)          => acc
-  ret match(sp)
-    (e2: SEnum)         => scCuSpecs(e2.seParams, acc2)
-    (cl: SClass)        => scCuSpecs(cl.scParams, acc2)
-    (n: SNamed)         => acc2
-    (cm2: SCombination) => scCuSpecs(cm2.scTypes, acc2)
-    (t2: STuple)        => scCuEntries(t2.stEntries, acc2)
-    (cb: SCallable)     => scCuSpecOpt(cb.scResult, scCuSpec(cb.scParams2, acc2))
-    (af: SArrayField)   => scCuSpec(af.safElem, acc2)
-    (ls: SLazyStub)     => scCuSpecOpt(ls.slsTarget, acc2)
-    (o2: Spec)          => acc2
 
-fun scCuSpecOpt(sp: Spec|None, acc: List<Spec>) => match(sp)
-  (s2: Spec) => scCuSpec(s2, acc)
-  ()         => acc
+fun scCollectUnions(statements: List<PStmt>): List<Spec> =>
+  walkStmts(statements, emptyResolverGlobal, List<Spec>(),
+            Walk<List<Spec>>(wkNoExpr<List<Spec>>, wkNoStmt<List<Spec>>,
+                             (a, _r, sp) => (s = scCuSpec(sp, a), r = None))).s
 
-fun scCuSpecsOpt(ss: List<Spec>|None, acc: List<Spec>) => match(ss)
-  (l: List<Spec>) => scCuSpecs(l, acc)
-  ()              => acc
-
-fun scCuSpecs(ss: List<Spec>, acc: List<Spec>) =>
-  fold(ss, acc, (a, x) => scCuSpec(x, a))
-
-fun scCuTupEnts(es: List<PTupEnt>, acc: List<Spec>) =>
-  fold(es, acc, (a, x) => scCuExpr(x.tupValue, a))
-
-fun scCuLits(ls: List<PLit>, acc: List<Spec>) =>
-  fold(ls, acc, scCuLitsStep)
-
-fun scCuLitsStep(a: List<Spec>, x: PLit) => match(x)
-  (le: PlExpr) => scCuExpr(le.litExpr, a)
-  (lr: PlRange) => scCuExpr(lr.rangeHi, scCuExpr(lr.rangeLo, a))
-
-fun scCuArms(as2: List<PArm>, acc: List<Spec>) =>
-  fold(as2, acc, (a, x) => scCuExprOpt(x.armGuard,
-        scCuLits(x.armLiterals,
-          scCuExpr(x.armBody,
-            fold(x.armExtra, scCuSpecOpt(x.armType, a),
-                 (a2, p) => scCuSpecOpt(p.posType, a2))))))
-
-fun scCuExprs(es: List<PExpr>, acc: List<Spec>) =>
-  fold(es, acc, (a, x) => scCuExpr(x, a))
-
-fun scCuExprOpt(x: PExpr|None, acc) => match(x)
-  (e2: PExpr) => scCuExpr(e2, acc)
-  ()          => acc
-
-fun scCuExpr(x, acc) => match(x)
-  (nm: PeName)      => scCuSpecOpt(nm.penTrait, scCuSpecs(nm.refTypeParams, acc))
-  (d: PeDot)        => scCuExpr(d.base, acc)
-  (c: PeCall)       => scCuExpr(c.parameter, scCuExpr(c.function, acc))
-  (tp: PeTuple)     => scCuTupEnts(tp.exprs, acc)
-  (te: PeTernary)   => scCuExpr(te.falseResult, scCuExpr(te.trueResult,
-                                scCuExpr(te.condition, acc)))
-  (lm: PeLambda)    => scCuSpecOpt(lm.lamRet, scCuExpr(lm.lamBody, scCuStmt(lm.lamParams, acc)))
-  (bk: PeBlock)     => scCuExpr(bk.blockValue, scCuStmts(bk.blockStmts, acc))
-  (mt: PeMatch)     => scCuArms(mt.arms, scCuExpr(mt.subject, acc))
-  (op: PeBuiltinOp) => scCuExpr(op.opParams, scCuSpec(op.opType, acc))
-  (ps: PePinSet)    => scCuExpr(ps.psValue, scCuExpr(ps.psTarget, scCuExpr(ps.psSubject, acc)))
-  (nw: PeNew)       => scCuExpr(nw.newParam, scCuSpec(nw.newType, acc))
-  (ne: PeNewEnum)   => scCuSpecs(ne.neTypeParams,
-                                 fold(ne.fieldArgs, acc, (a2, fa) =>
-                                   scCuExpr(fa.faValue, a2)))
-  (qq: PeCoalesce) => scCuExpr(qq.qqFallback, scCuExpr(qq.qqSubject, acc))
-  (ar: PeArrayRead) => scCuExpr(ar.arrIndex, scCuExpr(ar.arrObj, acc))
-  (cv: PeConvert)   => scCuSpec(cv.convTarget, scCuExpr(cv.convInner, acc))
-  (wx: PeWith)      => scCuExpr(wx.withRepls, scCuExpr(wx.withSubject, acc))
-  (lp: PeLoop)      => scCuExpr(lp.loopBody, scCuExprs(lp.loopParams, acc))
-  (rc: PeRecur)     => scCuExprs(rc.recArgs, acc)
-  (lz: PeLazy)      => scCuSpec(lz.lzTarget, acc)
-  (o: PeLiteral) => acc
-
-fun scCuStmt(st, acc) => match(st)
-  (f: PsFun)  => scCuSpecs(f.fWheres,
-                   scCuSpecOpt(f.fRet, scCuExprOpt(f.fBody, scCuStmt(f.fParams, acc))))
-  (l: PsLet)  => scCuExprOpt(l.lDefault, scCuSpecOpt(l.lType, acc))
-  (d: PsDestructure) => scCuExprOpt(d.dDefault,
-                          scCuStmts(d.dTargets, scCuSpecOpt(d.dType, acc)))
-  (c: PsClass) => scCuSpecsOpt(c.cAllParents,
-                    scCuStmts(c.cMembers,
-                      scCuSpecs(c.cWheres,
-                        scCuSpecs(c.cImplements, scCuStmt(c.cParams, acc)))))
-  (e2: PsEnum) => scCuSpecOpt(e2.eSpec,
-                    scCuStmts(e2.eVariants, scCuStmt(e2.eParams, acc)))
-  (ta: PsTypealias) => scCuSpec(ta.taType, acc)
-  (rt: PsRet)  => scCuExpr(rt.retValue, acc)
-  (a: PsAction) => scCuExpr(a.action, acc)
-  (fa: PsFieldAssign) => scCuExpr(fa.faValue, scCuExpr(fa.faTarget, acc))
-  (i: PsIf)    => scCuStmts(i.ifFalse, scCuStmts(i.ifTrue, scCuExpr(i.ifCond, acc)))
-  (o: PStmt)   => acc
-
-fun scCuStmts(ss: List<PStmt>, acc: List<Spec>) =>
-  fold(ss, acc, (a, x) => scCuStmt(x, a))
-
-fun scCollectUnions(statements: List<PStmt>) => scCuStmts(statements, List())
+fun scCuSpec(sp: Spec, acc: List<Spec>): List<Spec> => match(sp)
+  (cm: SCombination) => prepend(sp, acc)
+  (o: Spec)          => acc
 
 # Map each union's repr_members() to (name, uid) pairs — name is "" ("None")
 # for a non-candidate member; uid is "" for an ungrounded spec.
@@ -652,12 +549,13 @@ fun scDeclOrderStep(a: List<String>, x: PStmt, cands: ScCands) => match(x)
 # is flattened: the read's base still has its class type, whatever expression
 # it is.
 fun scFieldsByPosition(statements: List<PStmt>, cands: ScCands, r): List<PStmt> =>
-  rwnStmts(statements, RwN((n, sc, x) => (n, scPositioned(x, cands, sc)), rwnNoStmt), r, 0).rnssStmts
+  walkStmts(statements, r, false,
+            Walk<Bool>((s, sc, x) => (s = s, r = scPositioned(x, cands, sc)), wkNoStmt<Bool>, wkNoSpec<Bool>)).x
 
-fun scPositioned(x: PExpr, cands: ScCands, sc: Resolver|None): PExpr|None => match(sc, x)
-  (r: Resolver, d: PeDot) if d.pedIndex is None =>
-    scPositionedRead(d, scFieldPosition(exprType(d.base, r), d.member, cands))
-  ()                      => None
+fun scPositioned(x: PExpr, cands: ScCands, sc: Resolver): PExpr|None => match(x)
+  (d: PeDot) if d.pedIndex is None =>
+    scPositionedRead(d, scFieldPosition(exprType(d.base, sc), d.member, cands))
+  (o: PExpr) => None
 
 fun scPositionedRead(d: PeDot, at: Int|None): PExpr|None => match(at)
   (i: Int) => PeDot(d.base, d.member, d.pedLine, i)
@@ -757,20 +655,9 @@ fun scReplaceExpr(x, cands: ScCands, specs: ScSpecs, t2c: Dict<String, String>,
 
 # ── 13. the driver ───────────────────────────────────────────────────────────
 
-fun scRewriteTop(ss: List<PStmt>, cands: ScCands, w: Rw, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => scRewriteTopStep(a, x, cands, w))
-
-fun scRewriteTopStep(a: List<PStmt>, x: PStmt, cands: ScCands, w: Rw) =>
-  scIsDroppedClass(x, cands)
-  ? a
-  : append(a, rwStmt(x, w))
-
 fun scIsDroppedClass(st, cands: ScCands) => match(st)
   (c: PsClass) => scHasCand(cands, c.cName)
   (o: PStmt)   => false
-
-fun scRewriteLifted(ls: List<PStmt>, w: Rw, acc: List<PStmt>) =>
-  fold(ls, acc, (a, x) => append(a, rwStmt(x, w)))
 
 fun lowerSimpleClasses(statements): List<PStmt>
   let r = rootResolver(statements)
@@ -793,179 +680,11 @@ fun scFlatten(statements: List<PStmt>, cands: ScCands, specs: ScSpecs): List<PSt
   let owners = scMethodOwners(cands)
   let liftedPre = scLiftAll(statements, cands, specs)
   let rewriteResolver = rootResolver(concat(statements, liftedPre))
-  # Resolver-THREADED rewrite (scT*): Python's callback sees the resolver in
-  # effect at each node — a receiver that is a param or local must resolve.
-  let ctx = ScCtx(cands, specs, t2c, owners)
-  let newStatements0 = scTTop(statements, cands, ctx, rewriteResolver,
-                              List())
-  let liftedFinal = scTStmts(liftedPre, ctx, rewriteResolver)
-  let newStatements = newStatements0
-  ret concat(newStatements, liftedFinal)
-
-# ── resolver-threaded rewrite drive ──────────────────────────────────────────
-# Python's search_and_replace hands the callback the resolver in effect at
-# each node (params/lets in scope); the method-call rewrite reads the
-# receiver's type through it. Scope constructors mirror lambdas.yafl's scan:
-# fun body = localScope(params, nested ? r : RTraits(wheres, r)); class
-# members = RClassBody; block = blockScope; if-branches = localScope(branch);
-# lambda body = localScope(params); arm body/guard = bindingScope. The spec
-# rule is scope-free and applied per the visit-set law. (Third threaded
-# walker in the tree — consolidate into rewrite.yafl during the migration.)
-
-class [final] ScCtx(sxCands: ScCands, sxSpecs: ScSpecs,
-                    sxT2c: Dict<String, String>,
-                    sxOwners: Dict<String, String>)
-
-fun scTSpec(sp, c: ScCtx) => rwSpec(sp, rwOnSpec((s2) => scMainSpecOne(s2, c.sxCands,
-                                                                       c.sxSpecs)))
-
-fun scTSpecOpt(sp: Spec|None, c: ScCtx): Spec|None => match(sp)
-  (s2: Spec) => scTSpec(s2, c)
-  ()         => None
-
-fun scTSpecs(ts: List<Spec>, c: ScCtx) => scTSpecLoop(ts, c, List())
-
-fun scTSpecLoop(ts: List<Spec>, c: ScCtx, acc: List<Spec>) =>
-  fold(ts, acc, (a, x) => append(a, scTSpec(x, c)))
-
-fun scTSpecsOpt(ss: List<Spec>|None, c: ScCtx) => match(ss)
-  (l: List<Spec>) => scTSpecs(l, c)
-  ()              => None
-
-fun scTStmts(ss: List<PStmt>, c: ScCtx, r): List<PStmt> => scTStmtLoop(ss, c, r, List())
-
-fun scTStmtLoop(ss: List<PStmt>, c: ScCtx, r, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => append(a, scTStmt(x, c, r)))
-
-fun scTStmt(st, c: ScCtx, r): PStmt => match(st)
-  (f: PsFun)  => PsFun(f.fName, f.fAttrs, f.fGens, scTStmt(f.fParams, c, r),
-                       scTExprOpt(f.fBody, c, clFunBodyResolver(f, r)),
-                       scTSpecOpt(f.fRet, c), scTSpecs(f.fWheres, c),
-                       f.psfLine, f.fRetInferred, f.fNested, f.fImports, f.fGlobal)
-  (l: PsLet)  => PsLet(l.lName, l.lAttrs, l.lGens, scTSpecOpt(l.lType, c),
-                       scTExprOpt(l.lDefault, c, r), l.lArrayLen,
-                       l.lWheres, l.pslLine, l.lTypeInferred, l.lImports)
-  (d: PsDestructure) => PsDestructure(d.dName, d.dAttrs,
-                                      scTSpecOpt(d.dType, c),
-                                      scTStmts(d.dTargets, c, r),
-                                      scTExprOpt(d.dDefault, c, r),
-                                      d.psdLine, d.dTypeInferred)
-  (cl: PsClass) => PsClass(cl.cName, cl.cAttrs, cl.cGens,
-                           scTStmt(cl.cParams, c, r),
-                           scTSpecs(cl.cImplements, c),
-                           scTSpecs(cl.cWheres, c),
-                           scTStmts(cl.cMembers, c, RClassBody(cl, r)),
-                           cl.cIsInterface, cl.pscLine,
-                           scTSpecsOpt(cl.cAllParents, c), cl.cAllSlots,
-                           cl.cImports)
-  (e2: PsEnum) => PsEnum(e2.eName, e2.eAttrs, e2.eGens, scTStmt(e2.eParams, c, r),
-                         scTStmts(e2.eVariants, c, r), e2.eHasParams,
-                         e2.pseLine, e2.eRootName,
-                         scTSpecOpt(e2.eSpec, c), e2.eImports)
-  (ta: PsTypealias) => PsTypealias(ta.taName, ta.taAttrs, ta.taGens,
-                                   scTSpec(ta.taType, c), ta.taWheres,
-                                   ta.pstLine, ta.taImports)
-  (rt: PsRet)  => PsRet(scTExpr(rt.retValue, c, r), rt.psrLine)
-  (a: PsAction) => PsAction(scTExpr(a.action, c, r), a.psaLine)
-  (fa: PsFieldAssign) => PsFieldAssign(scTExpr(fa.faTarget, c, r), scTExpr(fa.faValue, c, r), fa.psfaLine)
-  (i: PsIf)    => PsIf(scTExpr(i.ifCond, c, r),
-                       scTStmts(i.ifTrue, c, localScope(i.ifTrue, r)),
-                       scTStmts(i.ifFalse, c, localScope(i.ifFalse, r)),
-                       i.psifLine)
-  (o: PStmt)   => st
-
-fun scTExprOpt(x: PExpr|None, c: ScCtx, r): PExpr|None => match(x)
-  (e2: PExpr) => scTExpr(e2, c, r)
-  ()          => None
-
-fun scTExpr(x, c: ScCtx, r): PExpr
-  let rebuilt = scTKids(x, c, r)
-  ret match(scReplaceExpr(rebuilt, c.sxCands, c.sxSpecs, c.sxT2c, c.sxOwners, r))
-    (rep: PExpr) => rep
-    ()           => rebuilt
-
-fun scTKids(x, c: ScCtx, r): PExpr => match(x)
-  (nm: PeName)   => PeName(nm.refName, scTSpecs(nm.refTypeParams, c),
-                           nm.penLine, scTTrait(nm.penTrait, c))
-  (d: PeDot)     => PeDot(scTExpr(d.base, c, r), d.member, d.pedLine, d.pedIndex)
-  (cc: PeCall)   => PeCall(scTExpr(cc.function, c, r),
-                           scTExpr(cc.parameter, c, r), cc.pecLine)
-  (tp: PeTuple)  => PeTuple(scTEnts(tp.exprs, c, r,
-                                    List()),
-                            tp.petLine)
-  (te: PeTernary) => PeTernary(scTExpr(te.condition, c, r),
-                               scTExpr(te.trueResult, c, r),
-                               scTExpr(te.falseResult, c, r), te.pety)
-  (lm: PeLambda) => PeLambda(scTStmt(lm.lamParams, c, r),
-                             scTExpr(lm.lamBody, c,
-                                     localScope(flattenParams(lm.lamParams),
-                                                r)),
-                             lm.pelLine, scTSpecOpt(lm.lamRet, c))
-  (bk: PeBlock)  => scTBlock(bk, c, blockScope(bk.blockStmts, r))
-  (mt: PeMatch) => with mt(subject = scTExpr(mt.subject, c, r),
-                    arms    = scTArms(mt.arms, c, r, List()))
-  (op: PeBuiltinOp) => PeBuiltinOp(scTSpec(op.opType, c), op.opName,
-                                   scTExpr(op.opParams, c, r), op.peboLine)
-  (ps: PePinSet) => PePinSet(scTExpr(ps.psSubject, c, r), scTExpr(ps.psTarget, c, r),
-                             scTExpr(ps.psValue, c, r), ps.pepsLine)
-  (nw: PeNew)    => PeNew(scTSpec(nw.newType, c),
-                          scTExpr(nw.newParam, c, r), nw.penwLine)
-  (ne: PeNewEnum) => PeNewEnum(ne.rootName, ne.leafName,
-                               map(ne.fieldArgs, (fa) =>
-                                 PFieldArg(fa.faName, scTExpr(fa.faValue, c, r))),
-                               scTSpecs(ne.neTypeParams, c), ne.penewLine)
-  (qq: PeCoalesce) => PeCoalesce(scTExpr(qq.qqSubject, c, r),
-                                   scTExpr(qq.qqFallback, c, r), qq.peqqLine)
-  (ar: PeArrayRead) => PeArrayRead(scTExpr(ar.arrObj, c, r),
-                                   scTExpr(ar.arrIndex, c, r), ar.pearLine)
-  (cv: PeConvert) => PeConvert(scTExpr(cv.convInner, c, r),
-                               scTSpec(cv.convTarget, c), cv.pecvLine)
-  (wx: PeWith)   => PeWith(scTExpr(wx.withSubject, c, r),
-                           scTExpr(wx.withRepls, c, r), wx.pewLine)
-  (lp: PeLoop)   => PeLoop(scTExpr(lp.loopBody, c, r),
-                           scTExprs(lp.loopParams, c, r,
-                                    List()),
-                           lp.pelpLine)
-  (rc: PeRecur)  => PeRecur(scTExprs(rc.recArgs, c, r,
-                                     List()),
-                            rc.recIndex, rc.percLine)
-  (lz: PeLazy)   => PeLazy(lz.stubName, scTSpec(lz.lzTarget, c),
-                           lz.lzCaptured, lz.lzStubOnly, lz.pelzLine)
-  (o: PeLiteral) => x
-
-fun scTTrait(sp: Spec|None, c: ScCtx) => match(sp)
-  (s2: Spec) => match(scTSpec(s2, c))
-    (cs2: SClass) => cs2
-    (o: Spec)     => None
-  ()         => None
-
-fun scTBlock(bk: PeBlock, c: ScCtx, blockR): PExpr
-  ret PeBlock(scTStmts(bk.blockStmts, c, blockR),
-              scTExpr(bk.blockValue, c, blockR), bk.blockTag, bk.pebkLine)
-
-fun scTExprs(es: List<PExpr>, c: ScCtx, r, acc: List<PExpr>) =>
-  fold(es, acc, (a, x) => append(a, scTExpr(x, c, r)))
-
-fun scTEnts(es: List<PTupEnt>, c: ScCtx, r, acc): List<PTupEnt> =>
-  fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, scTExpr(x.tupValue, c, r))))
-
-fun scTArms(as2: List<PArm>, c: ScCtx, r, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, scTArmOne(x, c, r)))
-
-# Every POSITION of a multi-subject arm is a pattern like position 0: its type
-# is rewritten too, and the body sees every position's binding.
-fun scTArmOne(a: PArm, c: ScCtx, r): PArm
-  let bodyR = armBodyScope(a, r)
-  ret with a(armType = scTSpecOpt(a.armType, c), armBody = scTExpr(a.armBody, c, bodyR), armLiterals = scTLits(a.armLiterals, c, r, List()), armGuard = scTExprOpt(a.armGuard, c, bodyR),
-             armExtra = map(a.armExtra, (p) => with p(posType = scTSpecOpt(p.posType, c))))
-
-fun scTLits(ls: List<PLit>, c: ScCtx, r, acc: List<PLit>) =>
-  fold(ls, acc, (a, x) => scTLitsStep(a, x, c, r))
-
-fun scTLitsStep(a: List<PLit>, x: PLit, c: ScCtx, r) => match(x)
-  (le: PlExpr) => append(a, PlExpr(scTExpr(le.litExpr, c, r)))
-  (lr2: PlRange) => append(a, PlRange(scTExpr(lr2.rangeLo, c, r),
-    scTExpr(lr2.rangeHi, c, r), lr2.plrLine))
-
-fun scTTop(ss: List<PStmt>, cands: ScCands, c: ScCtx, r, acc: List<PStmt>) =>
-  fold(ss, acc, (a, x) => scIsDroppedClass(x, cands) ? a : append(a, scTStmt(x, c, r)))
+  # replace_fn: Python's callback sees the scope in effect at each node — a
+  # receiver that is a param or local must resolve.
+  let w = Walk<Bool>((s, sc, x) => (s = s, r = scReplaceExpr(x, cands, specs, t2c, owners, sc)),
+                     wkNoStmt<Bool>,
+                     (s, _sc, sp) => (s = s, r = scMainSpecOne(sp, cands, specs)))
+  let kept = filter(statements, (st) => !scIsDroppedClass(st, cands))
+  ret concat(walkStmts(kept, rewriteResolver, false, w).x,
+             walkStmts(liftedPre, rewriteResolver, false, w).x)

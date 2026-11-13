@@ -1,0 +1,57 @@
+# bootstrap/nodes/statement/types.yafl — PsTypealias, PsEnum: every question the
+# compiler asks of this node kind, in one place (Python's pyast/statement/types.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun compileTypealias(ta: PsTypealias, r0)
+  let r = typealiasScope(ta, r0)
+  let ty = compileSpec(ta.taType, r)
+  let wheres = compileParams(ta.taWheres, r)
+  ret StmtOut(PsTypealias(ta.taName, ta.taAttrs, ta.taGens, ty.soSpec,
+                          wheres.psSpecs, ta.pstLine, ta.taImports),
+              concat(ty.soGlobals, wheres.psGlobals), noHints())
+
+fun isKnownEnumAttr(n) => n == "hashed" || n == "refeq" || n == "linear" || n == "final"
+
+fun isKnownTypealiasAttr(n) => n == "linear"
+
+fun checkEnum(e2: PsEnum, r) => match(e2.eSpec)
+  (sp: Spec) => union(checkStmt2(e2.eParams, r, None),
+                union(branchChecks(e2.eVariants, r, None, noErrs()),
+                union(linearGenErrs(e2, e2.eGens, noErrs()),
+                union(isEnumRoot(sp) ? redeclaredFieldErrs(e2, Dict(), noErrs()) : noErrs(),
+                       attrErrs(e2.eAttrs, isKnownEnumAttr, e2.pseLine,
+                                "an enum")))))
+  ()         => oneErr(e2.pseLine, "Missed compile step")
+
+fun isEnumRoot(sp: Spec) => match(sp)
+  (e: SEnum) => isEmpty(e.sePath)
+  (o: Spec)  => false
+
+fun linearGenErrs(e2: PsEnum, gs: List<PGen>, acc): Set<PErr> =>
+  fold(gs, acc, (a, x) => hasAttr(x.genAttrs, "linear")
+    ? add(a, PErr(e2.pseLine, "[linear] type parameters are only supported on functions"))
+    : a)
+
+fun checkTypealias(ta: PsTypealias, r0): Set<PErr>
+  let r = isEmpty(ta.taGens) && isEmpty(ta.taWheres)
+    ? r0
+    : genScope(ta.taGens, ta.taWheres, r0)
+  ret union(checkSpec(ta.taType, r),
+      union(checkSpecs(ta.taWheres, r, noErrs()),
+             attrErrs(ta.taAttrs, isKnownTypealiasAttr, ta.pstLine,
+                      "a typealias")))

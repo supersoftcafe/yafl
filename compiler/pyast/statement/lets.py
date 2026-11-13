@@ -48,7 +48,8 @@ class LetStatement(DataStatement):
     def search_and_replace(self, resolver: g.Resolver, replace: Callable[[g.Resolver,Any],Any]) -> Statement:
         return rw.rewrite(self, replace, resolver,
             default_value=rw.opt(self.default_value, resolver, replace),
-            declared_type=rw.opt(self.declared_type, resolver, replace))
+            declared_type=rw.opt(self.declared_type, resolver, replace),
+            trait_params=rw.seq(self.trait_params, resolver, replace))
 
     def get_type(self) -> t.TypeSpec|None:
         return self.declared_type

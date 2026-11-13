@@ -1,0 +1,86 @@
+# bootstrap/nodes/expression/loop.yafl — PeLoop, PeRecur: every question the
+# compiler asks of this node kind, in one place (Python's pyast/expression/loop.py).
+namespace Bootstrap::Nodes
+
+import System
+import System::Containers
+
+import Bootstrap::Ast
+import Bootstrap::Codegen
+import Bootstrap::Frontend
+import Bootstrap::Ir
+import Bootstrap::Lower::Ast
+import Bootstrap::Parse
+import Bootstrap::Resolve
+import Bootstrap::StdlibCandidates
+import Bootstrap::Types
+
+
+
+fun checkRecur(as2: List<PExpr>, r, acc: Set<PErr>) =>
+  fold(as2, acc, (a, x) => union(a, checkExpr(x, r, None)))
+
+fun [tail] getLoopFrame(r): GenFrame|None => match(r)
+  (rg: RGen) => match(rg.rgFrame)
+    (fl: FrLoop)  => rg.rgFrame
+    (fb: FrBlock) => getLoopFrame(rg.rgParent)
+  (root: RRoot)    => None
+  (d: RData)       => getLoopFrame(d.rdParent)
+  (t2: RTypes)     => getLoopFrame(t2.rtParent)
+  (sc: RScopes)    => getLoopFrame(sc.rsParent)
+  (tr: RTraits)    => getLoopFrame(tr.rtrParent)
+  (cb: RClassBody) => getLoopFrame(cb.rcbParent)
+
+fun asFrLoop(f: GenFrame|None) => match(f)
+  (f2: GenFrame) => asFrLoopOf(f2)
+  ()              => None
+
+fun asFrLoopOf(f2) => match(f2)
+  (fl: FrLoop)  => fl
+  (fb: FrBlock) => None
+
+fun genLoopTo(lp: PeLoop, r, expected) => genLoop(lp, r, expected)
+
+fun genRecur(rc: PeRecur, r) => match(asFrLoop(getLoopFrame(r)))
+  (fl: FrLoop) => genRecurOn(rc, fl, r)
+  ()            => emptyBundle()   # unreachable: RecurExpression only ever appears inside its LoopExpression
+
+fun genRecurOn(rc: PeRecur, fl: FrLoop, r): GBundle
+  let k = rc.recIndex
+  # Read the frame's parameter lists ONCE here (a FrLoop lives in the GenFrame
+  # union; re-reading its List fields per recur-arg re-narrows through the
+  # union each time, which mis-reads the packed slot) and thread the plain
+  # lists + tag down.
+  let ctypes = fl.flParamCTypes
+  let specs = fl.flParamSpecs
+  let tag = fl.flTag
+  let step = genRecurArgs(rc.recArgs, r, ctypes, specs, tag, k)
+  let exitLabel = "recurexit" + String(k) + "$" + tag
+  # Python's return here omits exit_sources (OperationBundle default: empty),
+  # even though generating an arg could in principle carry one forward —
+  # ported exactly (flagged in the report as a candidate suspected bug,
+  # not fixed).
+  ret GBundle(step.grBundle.gbStackVars,
+             pushAll<Op>(step.grBundle.gbOps, arrayOf<Op>(OpLabel(exitLabel, Dict()), OpJump("loophead$" + tag, Dict()))),
+             None,
+             append(
+                 step.grBundle.gbRecurSources,
+                 RecurSource(exitLabel, step.grPhiIns)),
+             List())
+
+class [final] RecurArgsOut(grBundle: GBundle, grPhiIns: List<RParam>)
+
+# The phi inputs are POSITIONAL — one per recur argument, in argument order.
+fun genRecurArgs(args: List<PExpr>, r, ctypes: List<CgType>, specs: List<Spec>,
+                 tag, k: Int): RecurArgsOut
+  let out = fold(args, (i = 0, bundle = emptyBundle(), phiIns = List<RParam>()),
+                 (st, arg) => genRecurArgsStep(st, arg, r, ctypes, specs, tag, k))
+  ret RecurArgsOut(out.bundle, out.phiIns)
+
+fun genRecurArgsStep(st: (i: Int, bundle: GBundle, phiIns: List<RParam>), arg: PExpr,
+                     r, ctypes, specs, tag, k: Int)
+  let i = st.i
+  let ab = withPrefix(genExprTo(arg, r, forceNth<Spec>(specs, i)), "recur" + String(i))
+  let phiin = RpStackVar(forceNth(ctypes, i), "phiin$" + tag + "$" + String(k) + "$" + String(i))
+  let withMove = bundleJoin(st.bundle, bundleJoin(ab, bundleFull(list1(phiin), arrayOf<Op>(OpMove(phiin, mustResult(ab), false, Dict())), None)))
+  ret (i = i + 1, bundle = withMove, phiIns = append(st.phiIns, phiin))
