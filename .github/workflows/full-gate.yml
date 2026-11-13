@@ -74,9 +74,9 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -92,7 +92,7 @@ jobs:
       # compiler is unchanged. build_bootstrap.py checks its own keys, so any
       # earlier entry is a safe start; the full runs keep it fresh for manual
       # fast-path runs.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         if: matrix.cache
         with:
           path: build/bootstrap-cache
@@ -137,7 +137,7 @@ jobs:
 
       - name: Upload failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: protocol-failure-${{ matrix.id }}
           path: |
