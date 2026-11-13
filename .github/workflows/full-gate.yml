@@ -11,7 +11,9 @@ name: full-gate
 # the slices are the whole regression. The compiler suite is sharded on both
 # architectures, since it runs the native port. -O0 to -O2 run once, on
 # aarch64: those levels test the compiler's passes, which do not depend on the
-# machine, and aarch64 is the faster runner. -O3, the [test] folders at it, the
+# machine, and aarch64 is the faster runner. Each of those levels is its own
+# slice: a Python build of the port is the longest single step, and three in
+# series made that the slowest job. -O3, the [test] folders at it, the
 # collector stress test and the examples run on both, for the runtime.
 on:
   pull_request:
@@ -48,7 +50,9 @@ jobs:
               {"id": "x64-o3-suite1of3", "runner": "ubuntu-latest",    "args": "--full --levels 3 --suite-shard 1/3",     "cache": true},
               {"id": "x64-suite2of3",    "runner": "ubuntu-latest",    "args": "--full --levels none --suite-shard 2/3",  "cache": false},
               {"id": "x64-suite3of3",    "runner": "ubuntu-latest",    "args": "--full --levels none --suite-shard 3/3",  "cache": false},
-              {"id": "arm64-o0-o2",      "runner": "ubuntu-24.04-arm", "args": "--full --levels 0,1,2 --suite-shard off", "cache": false},
+              {"id": "arm64-o0",         "runner": "ubuntu-24.04-arm", "args": "--full --levels 0 --suite-shard off",    "cache": false},
+              {"id": "arm64-o1",         "runner": "ubuntu-24.04-arm", "args": "--full --levels 1 --suite-shard off",    "cache": false},
+              {"id": "arm64-o2",         "runner": "ubuntu-24.04-arm", "args": "--full --levels 2 --suite-shard off",    "cache": false},
               {"id": "arm64-o3-suite1of2", "runner": "ubuntu-24.04-arm", "args": "--full --levels 3 --suite-shard 1/2",   "cache": true},
               {"id": "arm64-suite2of2",  "runner": "ubuntu-24.04-arm", "args": "--full --levels none --suite-shard 2/2",  "cache": false}
             ]'
