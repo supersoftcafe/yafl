@@ -48,10 +48,8 @@ fun llMembersStep(a: List<PStmt>, x: PStmt) => match(x)
 # Lift what qualifies inside f's own body (deepest nesting first: a nested
 # function's own helpers lift before it is itself considered).
 fun liftInFunction(f) => match(f.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => llInBlock(f, bk)
-    (o: PExpr)    => f
-  ()         => f
+  (bk: PeBlock) => llInBlock(f, bk)
+  ()            => f
 
 fun llInBlock(f0: PsFun, bk0: PeBlock)
   let bodyStmts = llDeepFirst(bk0.blockStmts, List())

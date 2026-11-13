@@ -15,10 +15,8 @@ fun lowerLambdaGlobals(statements: List<PStmt>) => map(statements, llgOne)
 
 fun llgOne(st) => match(st)
   (l: PsLet) => match(l.lDefault)
-    (d: PExpr) => match(d)
-      (lm: PeLambda) => globalFunOf(l, lm)
-      (o: PExpr)     => st
-    ()         => st
+    (lm: PeLambda) => globalFunOf(l, lm)
+    ()             => st
   (o: PStmt) => st
 
 # The lambda's return_type is the whole (params): result CallableSpec; the
@@ -29,7 +27,5 @@ fun globalFunOf(l: PsLet, lm: PeLambda)
             l.lImports)
 
 fun lambdaRetResult(lm: PeLambda) => match(lm.lamRet)
-  (rt: Spec) => match(rt)
-    (cl: SCallable) => cl.scResult
-    (o: Spec)       => None
-  ()         => None
+  (cl: SCallable) => cl.scResult
+  ()              => None

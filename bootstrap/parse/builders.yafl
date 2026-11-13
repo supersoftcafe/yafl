@@ -318,10 +318,8 @@ fun [tail] startLine(x) => match(x)
 # expression's PARSE start is still the piped value's, not the lambda's, so
 # see through the block the pipeline built.
 fun blockStart(bk: PeBlock) => match(head(bk.blockStmts))
-  (st: PStmt) => match(st)
-    (l: PsLet) => startsWith(l.lName, pipeTempPrefix()) ? letStart(l, bk) : bk.pebkLine
-    (o: PStmt) => bk.pebkLine
-  ()          => bk.pebkLine
+  (l: PsLet) => startsWith(l.lName, pipeTempPrefix()) ? letStart(l, bk) : bk.pebkLine
+  ()         => bk.pebkLine
 
 fun letStart(l: PsLet, bk: PeBlock) => match(l.lDefault)
   (v: PExpr) => startLine(v)

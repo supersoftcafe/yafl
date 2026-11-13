@@ -306,9 +306,8 @@ fun _readEnded(v: System::String|IOError): System::Bool
 fun _readEndValue(v: System::String|IOError, total: System::Int): System::Int|IOError
   ret match(v)
     (s: System::String) => total
-    (e: IOError) => match(e)
-      (eof: EOFError) => total
-      ()              => e
+    (eof: EOFError)     => total
+    (e: IOError)        => e
 
 # The data chunk — meaningful only when `_readEnded` is false.
 fun _readChunk(v: System::String|IOError): System::String

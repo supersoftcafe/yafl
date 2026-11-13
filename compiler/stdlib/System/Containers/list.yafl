@@ -118,14 +118,13 @@ fun [inline(never)] drop<T>(list: List<T>, count: Int): List<T>
 #   We copy the to list and link the copy's last node to the from list's head
 #   (_copyOnto). The copy is private, so that link is always safe.
 fun [inline(never)] concat<T>(listTo: List<T>, listFrom: List<T>): List<T>
-  ret match(listTo)
-    (_:_ListEmpty<T>) => listFrom
-    (to:_ListFull<T>) => match(listFrom)
-      (_:_ListEmpty<T>) => listTo
-      (from:_ListFull<T>) => __builtin_op__<bool>("object_same", to._tail, from._tail)
-       || from._tail._next !is None || _casTail(to._tail, from._head) !is None
-        ? _copyOnto<T>(to, from) : _ListFull<T>(to._head, from._tail)
-      
+  ret match(listTo, listFrom)
+    (to:_ListFull<T>, from:_ListFull<T>) => __builtin_op__<bool>("object_same", to._tail, from._tail)
+     || from._tail._next !is None || _casTail(to._tail, from._head) !is None
+      ? _copyOnto<T>(to, from) : _ListFull<T>(to._head, from._tail)
+    (_:_ListFull<T>, _:_ListEmpty<T>) => listTo
+    () => listFrom
+
 
 fun head<T>(list: List<T>): T|None
   ret match(list)
@@ -214,11 +213,9 @@ fun foldWhile<T, U>(list: List<T>, init: U, accFunc: (:U, :T): U, predicate: (:U
 # fold over two lists in step, stopping at the end of the shorter one.
 fun zipFold<A, B, [linear] U>(a: List<A>, b: List<B>, init: U, accFunc: (:U, :A, :B): U): U
   fun [tail] walk(x: List<A>, y: List<B>, acc: U): U
-    ret match(x)
-      (_:_ListEmpty<A>) => acc
-      (fx:_ListFull<A>) => match(y)
-        (_:_ListEmpty<B>) => acc
-        (fy:_ListFull<B>) => walk(dropOne(x), dropOne(y), accFunc(acc, fx._head._value, fy._head._value))
+    ret match(x, y)
+      (fx:_ListFull<A>, fy:_ListFull<B>) => walk(dropOne(x), dropOne(y), accFunc(acc, fx._head._value, fy._head._value))
+      () => acc
   ret walk(a, b, init)
 
 fun sizeAtLeast<T>(list: List<T>, size: Int): Bool
@@ -237,11 +234,10 @@ fun sizeAtMost<T>(list: List<T>, size: Int): Bool
 # pair. One list ending while the other still has an element IS the inequality.
 fun eqBy<T>(a: List<T>, b: List<T>, same: (:T, :T): Bool): Bool
   fun [tail] walk(x: List<T>, y: List<T>): Bool
-    ret match(x)
-      (_: _ListEmpty<T>) => isEmpty(y)
-      (fx: _ListFull<T>) => match(y)
-        (_: _ListEmpty<T>) => false
-        (fy: _ListFull<T>) => same(fx._head._value, fy._head._value) && walk(dropOne(x), dropOne(y))
+    ret match(x, y)
+      (fx: _ListFull<T>, fy: _ListFull<T>)   => same(fx._head._value, fy._head._value) && walk(dropOne(x), dropOne(y))
+      (_: _ListEmpty<T>, _: _ListEmpty<T>) => true
+      ()                                   => false
   ret walk(a, b)
 
 # Pairwise map, stopping at the shorter list.
@@ -313,13 +309,12 @@ fun _mergePairs<T>(runs: List<List<T>>, less: (:T, :T): Bool): List<List<T>>
 # element first. When one side runs out the other is linked on with concat.
 fun _merge2<T>(a: List<T>, b: List<T>, less: (:T, :T): Bool): List<T>
   fun [tail] walk(out: List<T>, x: List<T>, y: List<T>): List<T>
-    ret match(x)
-      (_: _ListEmpty<T>) => concat(out, y)
-      (lx: _ListFull<T>) => match(y)
-        (_: _ListEmpty<T>) => concat(out, x)
-        (ly: _ListFull<T>) => less(ly._head._value, lx._head._value)
-          ? walk(append(out, ly._head._value), x, dropOne(y))
-          : walk(append(out, lx._head._value), dropOne(x), y)
+    ret match(x, y)
+      (lx: _ListFull<T>, ly: _ListFull<T>) => less(ly._head._value, lx._head._value)
+        ? walk(append(out, ly._head._value), x, dropOne(y))
+        : walk(append(out, lx._head._value), dropOne(x), y)
+      (_: _ListFull<T>, _: _ListEmpty<T>) => concat(out, x)
+      () => concat(out, y)
   ret walk(List<T>(), a, b)
 
 

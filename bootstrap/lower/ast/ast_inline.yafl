@@ -38,10 +38,8 @@ fun freeRefs(f: PsFun, alsoExclude: List<String>)
 fun frOwnNames(f: PsFun, alsoExclude: List<String>)
   let params = allStmtNames(flattenParams(f.fParams), alsoExclude)
   ret match(f.fBody)
-    (b: PExpr) => match(b)
-      (bk: PeBlock) => frBlockNames(bk.blockStmts, params)
-      (o: PExpr)    => params
-    ()         => params
+    (bk: PeBlock) => frBlockNames(bk.blockStmts, params)
+    ()            => params
 
 fun frBlockNames(ss: List<PStmt>, acc: List<String>) =>
   fold(ss, acc, frBlockNamesStep)
@@ -178,10 +176,8 @@ fun gatherOuterVarTypes(f: PsFun, thisType: Spec|None)
     ()         => OuterTypes(Dict())
   let fromParams = otAdd(flattenParams(f.fParams), seed)
   ret match(f.fBody)
-    (b: PExpr) => match(b)
-      (bk: PeBlock) => otAdd(bk.blockStmts, fromParams)
-      (o: PExpr)    => fromParams
-    ()         => fromParams
+    (bk: PeBlock) => otAdd(bk.blockStmts, fromParams)
+    ()            => fromParams
 
 fun otAdd(ss: List<PStmt>, acc: OuterTypes) => fold(ss, acc, otAddOne)
 
@@ -472,10 +468,8 @@ fun hoistFromBody(f: PsFun, thisType: Spec|None)
 # _hoist_from_body.)
 fun hoistFromBodyIn(f: PsFun, thisType: Spec|None, enclosing: OuterTypes,
                     suffix: String|None) => match(f.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => hoistFromBlock(f, bk, thisType, enclosing, suffix)
-    (o: PExpr)    => emptyHoisted()
-  ()         => emptyHoisted()
+  (bk: PeBlock) => hoistFromBlock(f, bk, thisType, enclosing, suffix)
+  ()            => emptyHoisted()
 
 fun hoistFromBlock(f: PsFun, bk: PeBlock, thisType: Spec|None,
                    enclosing: OuterTypes, suffix: String|None)
@@ -575,10 +569,8 @@ fun hoNestedFnsStep(a: List<PsFun>, x: PStmt) => match(x)
   (o: PStmt) => a
 
 fun hoHasBlockBody(f: PsFun) => match(f.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => true
-    (o: PExpr)    => false
-  ()         => false
+  (bk: PeBlock) => true
+  ()            => false
 
 fun hoFnNames(fs: List<PsFun>, acc): List<String> =>
   fold(fs, acc, (a, x) => append(a, x.fName))
@@ -897,10 +889,8 @@ fun hoClassDeclaresNested(c: PsClass) => any(c.cMembers, hoMemberDeclaresNested)
 
 fun hoMemberDeclaresNested(m) => match(m)
   (f: PsFun) => match(f.fBody)
-    (b: PExpr) => match(b)
-      (bk: PeBlock) => any(bk.blockStmts, hoStmtIsFun)
-      (o: PExpr)    => false
-    ()         => false
+    (bk: PeBlock) => any(bk.blockStmts, hoStmtIsFun)
+    ()            => false
   (o: PStmt) => false
 
 fun hoStmtIsFun(st) => match(st)
@@ -978,10 +968,9 @@ fun hoFnStep(f: PsFun, body, value, outs: List<PStmt>,
 # missing one as PeNothing; hoistFromBody declines both, so neither rewrite has
 # anything to say about them.
 fun hoBlockValue(f: PsFun) => match(f.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => bk.blockValue
-    (o: PExpr)    => o
-  ()         => PeNothing(f.psfLine)
+  (bk: PeBlock) => bk.blockValue
+  (o: PExpr)    => o
+  ()            => PeNothing(f.psfLine)
 
 fun hoRebuiltBody(f: PsFun, body, value) => match(f.fBody)
   (b: PExpr) => match(b)
@@ -1394,12 +1383,10 @@ class [final] InlOut(ioN: Int, ioStmts: List<PStmt>, ioValue: PExpr)
 
 fun aiInlineFunctionCall(c: PeCall, target: PsFun, lineRef,
                          n) => match(target.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => match(c.parameter)
-      (tp: PeTuple) => aiInlineCall2(tp, target, bk, lineRef, n)
-      (o: PExpr)    => None
-    (o2: PExpr)   => None
-  ()         => None
+  (bk: PeBlock) => match(c.parameter)
+    (tp: PeTuple) => aiInlineCall2(tp, target, bk, lineRef, n)
+    (o: PExpr)    => None
+  ()            => None
 
 fun aiInlineCall2(tp: PeTuple, target: PsFun, bk: PeBlock, lineRef,
                   n): InlOut|None
@@ -1584,12 +1571,10 @@ fun aiIlb3(renamed, prologue, returnType: Spec|None,
                                    bk.blockValue, bk.pebkLine)
     (o: PExpr)    => aiIlbAssemble(prologue, renamed, exprLine(renamed))
   ret match(returnType)
-    (rt: Spec) => match(rt)
-      (cm: SCombination) => IlbOut(fresh.frN,
-                                   PeConvert(assembled, cm,
-                                             exprLine(assembled)))
-      (o2: Spec)         => IlbOut(fresh.frN, assembled)
-    ()         => IlbOut(fresh.frN, assembled)
+    (cm: SCombination) => IlbOut(fresh.frN,
+                                 PeConvert(assembled, cm,
+                                           exprLine(assembled)))
+    ()                 => IlbOut(fresh.frN, assembled)
 
 fun aiIlbAssemble(stmts, value, lr) => isEmpty(stmts) ? value : PeBlock(stmts, value, "", lr)
 
@@ -1633,20 +1618,16 @@ fun aiBetaReduceLambda(lam: PeLambda, args: List<PExpr>, n): IlbOut|None
 fun aiAnyHigherOrder(ps: List<PStmt>) => any(ps, (x) => aiIsHigherOrder(aiLetTypeOf(x)))
 
 fun aiIsHigherOrder(t2: Spec|None) => match(t2)
-  (sp: Spec) => match(sp)
-    (cm: SCombination) => true
-    (tp: STuple)       => true
-    (cl: SCallable)    => true
-    (o: Spec)          => false
-  ()         => false
+  (cm: SCombination) => true
+  (tp: STuple)       => true
+  (cl: SCallable)    => true
+  ()                 => false
 
 fun aiAnyExpensive(as2: List<PExpr>) => any(as2, (a) => !aiIsCheap(a))
 
 fun aiLamResult(lam: PeLambda) => match(lam.lamRet)
-  (rt: Spec) => match(rt)
-    (cl: SCallable) => cl.scResult
-    (o: Spec)       => None
-  ()         => None
+  (cl: SCallable) => cl.scResult
+  ()              => None
 
 fun aiExprInlineFunction(target: PsFun, args: List<PExpr>, r: Resolver|None,
                          n) => match(target.fBody)
@@ -1695,10 +1676,8 @@ fun aiUsesAfter(ss: List<PStmt>, name, n) =>
   fold(ss, n, (a, x) => a + aiRefCountStmt(x, name))
 
 fun aiSingleLam(singles: Singles, name: String) => match(get(singles.sgMap, name))
-  (x: PExpr) => match(x)
-    (lam: PeLambda) => lam
-    (o: PExpr)      => None
-  ()         => None
+  (lam: PeLambda) => lam
+  ()              => None
 
 # The bottom-up callback: nested block re-reduction, IIFE, let-bound
 # single-use lambda, catalog function at expression position — first hit
@@ -1734,12 +1713,10 @@ fun aiBetaBlock(bk: PeBlock, catalog: Catalog, r,
   let inner = aiBlockAsStmts(bk)
   let out = aiBetaReduceExpressions(inner, catalog, r, n)
   ret match(head(takeLastOne(out.rnssStmts)))
-    (lastStmt: PStmt) => match(lastStmt)
-      (rt: PsRet) => aiRep(out.rnssN,
-                           PeBlock(dropLastOne(out.rnssStmts),
-                                   rt.retValue, bk.blockTag, bk.pebkLine))
-      (o: PStmt)  => aiNoRep(out.rnssN)
-    ()                => aiNoRep(out.rnssN)
+    (rt: PsRet) => aiRep(out.rnssN,
+                         PeBlock(dropLastOne(out.rnssStmts),
+                                 rt.retValue, bk.blockTag, bk.pebkLine))
+    ()          => aiNoRep(out.rnssN)
 
 fun aiBetaCall(c: PeCall, singles: Singles, catalog: Catalog,
                r: Resolver|None, n): (n2: Int, rep: PExpr|None) => match(c.function)
@@ -1838,10 +1815,8 @@ class [final] RfOut(rfN: Int, rfStmt: PStmt, rfChanged: Bool)
 
 fun aiRewriteFunction(f: PsFun, catalog: Catalog, r,
                       n) => match(f.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => aiRwf2(f, bk, catalog, r, n)
-    (o: PExpr)    => RfOut(n, f, false)
-  ()         => RfOut(n, f, false)
+  (bk: PeBlock) => aiRwf2(f, bk, catalog, r, n)
+  ()            => RfOut(n, f, false)
 
 fun aiRwf2(f: PsFun, bk: PeBlock, catalog: Catalog, r,
            n)
@@ -1854,17 +1829,15 @@ fun aiRwf2(f: PsFun, bk: PeBlock, catalog: Catalog, r,
   if !changed
     ret RfOut(p2.rnssN, f, false)
   ret match(head(takeLastOne(p2.rnssStmts)))
-    (lastStmt: PStmt) => match(lastStmt)
-      (rt: PsRet) => RfOut(p2.rnssN,
-                           PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
-                                 PeBlock(dropLastOne(p2.rnssStmts),
-                                         rt.retValue, bk.blockTag,
-                                         bk.pebkLine),
-                                 f.fRet, f.fWheres, f.psfLine,
-                                 f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
-                           true)
-      (o: PStmt)  => RfOut(p2.rnssN, f, false)
-    ()                => RfOut(p2.rnssN, f, false)
+    (rt: PsRet) => RfOut(p2.rnssN,
+                         PsFun(f.fName, f.fAttrs, f.fGens, f.fParams,
+                               PeBlock(dropLastOne(p2.rnssStmts),
+                                       rt.retValue, bk.blockTag,
+                                       bk.pebkLine),
+                               f.fRet, f.fWheres, f.psfLine,
+                               f.fRetInferred, f.fNested, f.fImports, f.fGlobal),
+                         true)
+    ()          => RfOut(p2.rnssN, f, false)
 
 # Pass-1 threads (stmts, n, changed) — tiStmts reuses TisOut's list plus a
 # changed marker carried via the count of replacements.

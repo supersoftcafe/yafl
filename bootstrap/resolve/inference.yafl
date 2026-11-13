@@ -35,12 +35,10 @@ fun useSiteTypeParams(stmt, supplied, expected: Spec|None,
   if isEmpty(gens)
     ret supplied
   ret match(expected)
-    (e2: Spec) => match(e2)
-      (want: SCallable) => suppliedComplete(supplied, gens, r)
-        ? supplied
-        : reinferred(stmt, gens, supplied, want, r)
-      (o: Spec)         => supplied
-    ()         => supplied
+    (want: SCallable) => suppliedComplete(supplied, gens, r)
+      ? supplied
+      : reinferred(stmt, gens, supplied, want, r)
+    ()                => supplied
 
 # A binding to a NARROWED enum view (`T = Circle`, from a Circle-valued
 # argument) is provisional too: the context may expect the root — a list of
@@ -56,13 +54,11 @@ fun anyFree(ts: List<Spec>, r) => any(ts, (x) => hasFreePlaceholders(x, r))
 
 fun reinferred(stmt, gens: List<PGen>, supplied,
                want: SCallable, r) => match(stmtType(stmt))
-  (dt: Spec) => match(dt)
-    (declared: SCallable) => match(inferTypeParams(stmt, gens, declared,
-                                                   want, r))
-      (mapping: List<Binding>) => mergedParams(gens, supplied, mapping, r)
-      ()                       => supplied
-    (o: Spec)             => supplied
-  ()         => supplied
+  (declared: SCallable) => match(inferTypeParams(stmt, gens, declared,
+                                                 want, r))
+    (mapping: List<Binding>) => mergedParams(gens, supplied, mapping, r)
+    ()                       => supplied
+  ()                    => supplied
 
 # MONOTONE re-inference: the stored binding RECEIVES this pass's — a merge
 # that widens a provisional view — so a fresh hole never overwrites a ground
@@ -143,11 +139,10 @@ fun [tail] settledMerge(declared: Spec, want: Spec, binds: List<MBind>, r, fuel:
 
 fun sameBinds(a: List<MBind>, b: List<MBind>) => eqBy(a, b, (x, y) => x.mbName == y.mbName && sameOpt(x.mbSpec, y.mbSpec))
 
-fun sameOpt(a: Spec|None, b: Spec|None) => match(a)
-  (x: Spec) => match(b)
-    (y: Spec) => eqSpec(x, y)
-    ()        => false
-  ()        => b is None
+fun sameOpt(a: Spec|None, b: Spec|None) => match(a, b)
+  (x: Spec, y: Spec) => eqSpec(x, y)
+  (_: None, _: None) => true
+  ()                 => false
 
 fun isBound(b: MBind) => match(b.mbSpec)
   (sp: Spec) => true
@@ -155,13 +150,11 @@ fun isBound(b: MBind) => match(b.mbSpec)
 
 # _unknown_argument_names: the placeholders of every declared parameter whose
 # argument's type is not known yet (absent, unresolved, or holding a hole).
-fun unknownArgNames(covariant, actual, r): List<String> => match(covariant)
-  (dt: STuple) => match(actual)
-    (at: STuple) => match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
-      (b: List<Int>) => unknownLoop(dt.stEntries, b, at.stEntries, r, List<String>())
-      ()             => List<String>()
-    (o: Spec)    => List<String>()
-  (o: Spec)    => List<String>()
+fun unknownArgNames(covariant: Spec, actual: Spec, r): List<String> => match(covariant, actual)
+  (dt: STuple, at: STuple) => match(bindTupleEntries(dt.stEntries, map(at.stEntries, (e) => e.seName)))
+    (b: List<Int>) => unknownLoop(dt.stEntries, b, at.stEntries, r, List<String>())
+    ()             => List<String>()
+  ()                       => List<String>()
 
 fun unknownLoop(ds: List<SEntry>, bs: List<Int>, actual: List<SEntry>, r,
                 acc: List<String>): List<String> =>
@@ -282,14 +275,12 @@ fun instOne(acc: List<TraitInst>, t: PStmt, r: Resolver): List<TraitInst> => mat
   (o: PStmt)    => acc
 
 fun instancesOf(let2: PsLet, r: Resolver, acc: List<TraitInst>): List<TraitInst> => match(let2.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => witnessParents(let2, dc, cls, acc)
-        (o: PStmt)     => acc
-      ()         => acc
-    (o2: Spec)   => acc
-  ()         => acc
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => witnessParents(let2, dc, cls, acc)
+      (o: PStmt)     => acc
+    ()         => acc
+  ()           => acc
 
 fun witnessParents(let2: PsLet, dc: SClass, cls: PsClass,
                    acc: List<TraitInst>): List<TraitInst> => match(cls.cAllParents)

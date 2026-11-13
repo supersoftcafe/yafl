@@ -48,10 +48,8 @@ fun [tail] dfoClassOf(param: RParam|None, newobjs: List<DfoNewObj>,
   if depth <= 0
     ret None
   ret match(param)
-    (p: RParam) => match(p)
-      (sv: RpStackVar) => dfoLookup(newobjs, sv.name) ?? dfoClassOf(sdGet(defs, sv.name), newobjs, defs, depth - 1)
-      (o: RParam)      => None
-    ()          => None
+    (sv: RpStackVar) => dfoLookup(newobjs, sv.name) ?? dfoClassOf(sdGet(defs, sv.name), newobjs, defs, depth - 1)
+    ()               => None
 
 fun dfoLookup(ns: List<DfoNewObj>, name: String) => match(firstWhere(ns, (o) => o.dfoVar == name))
   (o: DfoNewObj) => o.dfoClass

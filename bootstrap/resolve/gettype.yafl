@@ -194,10 +194,8 @@ fun traitCaseMapping2(nm: PeName, f: Found) => match(f.fInstanceParams)
   ()                  => traitCaseMapping(f)
 
 fun solvedCaseMapping(nm: PeName, f: Found) => match(nm.penTrait)
-  (c: Spec) => match(c)
-    (sc2: SClass) => solvedOwnerMapping(f, sc2)
-    (o: Spec)     => traitCaseMapping(f)
-  ()        => traitCaseMapping(f)
+  (sc2: SClass) => solvedOwnerMapping(f, sc2)
+  ()            => traitCaseMapping(f)
 
 fun solvedOwnerMapping(f: Found, solved: SClass) => match(ownerMapping(f.fOwner, solved))
   (m: List<Binding>) => m
@@ -219,7 +217,7 @@ fun matchType(mt: PeMatch, r) => branchType(map(mt.arms, (a) => armBodyType(a, r
 # declared type. An else arm binds nothing here; only compile, which knows the
 # subject type, can bind it.
 fun armBodyType(a: PArm, r): Spec|None =>
-  exprType(a.armBody, extraScope(a.armExtra, chain2(List<Spec|None>()), bindingScope(a, a.armType, r)))
+  exprType(a.armBody, armBodyScope(a, r))
 
 fun twoTypes(a: Spec|None, b: Spec|None) => append(append(List(), a), b)
 
@@ -233,10 +231,8 @@ fun calleeType(function: PExpr, parameter: PExpr, r): Spec|None =>
 # A call's type is its callee's RESULT — and nothing else. A callee that has
 # not resolved to a callable yet simply has no result yet.
 fun callType(c: PeCall, r) => match(calleeType(c.function, c.parameter, r))
-  (ft: Spec) => match(ft)
-    (cl: SCallable) => callResultType(c, cl.scResult, r)
-    (o: Spec)       => None
-  ()         => None
+  (cl: SCallable) => callResultType(c, cl.scResult, r)
+  ()              => None
 
 # A generic callee whose result IS one of its own placeholders — bare, or a
 # member of the result union (`head`'s `T|None`) — has no result type until
@@ -279,10 +275,8 @@ fun tupEntryStep(got: List<SEntry>|None, e: PTupEnt, r) => match(got)
 fun tupEntryAdd(acc: List<SEntry>, e: PTupEnt, r: Resolver): List<SEntry>|None => !e.tupSpread
   ? append(acc, SEntry(e.tupName, exprType(e.tupValue, r), None))
   : match(exprType(e.tupValue, r))
-    (sp: Spec) => match(sp)
-      (st: STuple) => concat(acc, map(st.stEntries, (en) => SEntry("", en.seType, None)))
-      (o: Spec)    => discardEntries(acc)
-    ()         => discardEntries(acc)
+    (st: STuple) => concat(acc, map(st.stEntries, (en) => SEntry("", en.seType, None)))
+    ()           => discardEntries(acc)
 
 fun discardEntries(acc: List<SEntry>): List<SEntry>|None
   ret acc |> (_built) => None
@@ -376,8 +370,6 @@ fun firstArrayElem(fs: List<PStmt>) =>
 
 fun arrayElemOf(st: PStmt): Spec|None => match(st)
   (let2: PsLet) => match(let2.lType)
-    (t2: Spec) => match(t2)
-      (af: SArrayField) => af.safElem
-      (o: Spec)         => None
-    ()         => None
+    (af: SArrayField) => af.safElem
+    ()                => None
   (o: PStmt)    => None

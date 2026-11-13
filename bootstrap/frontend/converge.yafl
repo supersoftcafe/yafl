@@ -96,17 +96,11 @@ fun flipStmts(as2: List<PStmt>, bs: List<PStmt>, acc: Set<PErr>): Set<PErr> =>
   zipFold(as2, bs, acc, (errs, a, b) => flipStmt(a, b, errs))
 
 fun flipStmt(a: PStmt, b: PStmt, acc: Set<PErr>): Set<PErr>
-  ret eqStmt(a, b) ? acc : match(a)
-    (fa: PsFun) => match(b)
-      (fb: PsFun) => flipFun(fa, fb, acc)
-      (o: PStmt)  => acc
-    (ca: PsClass) => match(b)
-      (cb: PsClass) => flipStmts(ca.cMembers, cb.cMembers, acc)
-      (o: PStmt)    => acc
-    (ia: PsTraitInstance) => match(b)
-      (ib: PsTraitInstance) => flipStmts(ia.tiMembers, ib.tiMembers, acc)
-      (o: PStmt)            => acc
-    (o: PStmt) => acc
+  ret eqStmt(a, b) ? acc : match(a, b)
+    (fa: PsFun, fb: PsFun)                     => flipFun(fa, fb, acc)
+    (ca: PsClass, cb: PsClass)                 => flipStmts(ca.cMembers, cb.cMembers, acc)
+    (ia: PsTraitInstance, ib: PsTraitInstance) => flipStmts(ia.tiMembers, ib.tiMembers, acc)
+    ()                                         => acc
 
 fun flipFun(a: PsFun, b: PsFun, acc: Set<PErr>): Set<PErr>
   let rets = a.fRetInferred && b.fRetInferred
@@ -120,21 +114,17 @@ fun flipFun(a: PsFun, b: PsFun, acc: Set<PErr>): Set<PErr>
 fun flipParams(as2: List<PStmt>, bs: List<PStmt>, owner: String, acc: Set<PErr>): Set<PErr> =>
   zipFold(as2, bs, acc, (errs, a, b) => flipParam(a, b, owner, errs))
 
-fun flipParam(a: PStmt, b: PStmt, owner: String, acc: Set<PErr>): Set<PErr> => match(a)
-  (pa: PsLet) => match(b)
-    (pb: PsLet) => pa.lTypeInferred && pb.lTypeInferred
-      ? flipSpec(pa.pslLine, "Parameter '" + simpleName(pa.lName) + "' of '" + owner + "'",
-                 pa.lType, pb.lType, acc)
-      : acc
-    (o: PStmt)  => acc
-  (o: PStmt) => acc
+fun flipParam(a: PStmt, b: PStmt, owner: String, acc: Set<PErr>): Set<PErr> => match(a, b)
+  (pa: PsLet, pb: PsLet) => pa.lTypeInferred && pb.lTypeInferred
+               ? flipSpec(pa.pslLine, "Parameter '" + simpleName(pa.lName) + "' of '" + owner + "'",
+                          pa.lType, pb.lType, acc)
+               : acc
+  ()                     => acc
 
 fun flipSpec(lr: PLine, what: String, was: Spec|None, now: Spec|None,
-             acc: Set<PErr>): Set<PErr> => match(was)
-  (w: Spec) => match(now)
-    (n: Spec) => eqSpec(w, n) ? acc : union(acc, flipErr(lr, what, typeView(w), typeView(n)))
-    ()        => acc
-  ()        => acc
+             acc: Set<PErr>): Set<PErr> => match(was, now)
+  (w: Spec, n: Spec) => eqSpec(w, n) ? acc : union(acc, flipErr(lr, what, typeView(w), typeView(n)))
+  ()                 => acc
 
 # Sorted: which of the two the cycle happens to be caught on is an accident of
 # the detecting pass, and the message must not say so.
@@ -153,10 +143,8 @@ fun typeView(sp: Spec): String => match(sp)
   (o: Spec)   => typeStr2(sp)
 
 fun bodyStmts(f: PsFun): List<PStmt> => match(f.fBody)
-  (b: PExpr) => match(b)
-    (bk: PeBlock) => bk.blockStmts
-    (o: PExpr)    => List()
-  ()         => List()
+  (bk: PeBlock) => bk.blockStmts
+  ()            => List()
 
 # One pass: every statement compiles against a resolver over the CURRENT set,
 # and the extra statements it creates join the set for the next pass. No

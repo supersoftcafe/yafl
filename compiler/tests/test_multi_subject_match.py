@@ -90,3 +90,42 @@ fun main(): System::Int
   ret pair(Car(1, 2), 3)
 """)
         self.assertIn("this pattern cannot serve a position of a multi-subject match", errs)
+
+    def test_a_generic_subject_is_refused_at_a_position(self):
+        # #109: a union with a member held by value as a type parameter has
+        # no layout until monomorphisation, so no repr can say whether its
+        # position is testable. Refused, never classified (Python crashed on
+        # it). A `List<T>` subject is a pointer whatever T is, and stays
+        # testable: the stdlib flattens over those.
+        errs = _errors("""
+namespace Main
+import System
+
+fun pick<T>(a: System::Int|System::None, v: T|System::None): T|System::None
+  ret match(a, v)
+    (i: System::Int, x: T) => x
+    ()                     => System::None
+
+fun main(): System::Int
+  ret match(pick<System::Int>(1, 7))
+    (i: System::Int) => i - 7
+    ()               => 1
+""")
+        self.assertIn("a position of a multi-subject match cannot test a union with a generic member", errs)
+
+    def test_an_unresolved_subject_type_is_reported_not_crashed_on(self):
+        # #109: a subject whose type names something that does not exist has
+        # no repr either; the failed name is the error, not a crash.
+        errs = _errors("""
+namespace Main
+import System
+
+fun f(a: Missing|System::None, b: System::Int|System::None): System::Int
+  ret match(a, b)
+    (x: System::None, y: System::Int) => y
+    ()                                => 0
+
+fun main(): System::Int
+  ret f(System::None, 2)
+""")
+        self.assertIn("Missing", errs)

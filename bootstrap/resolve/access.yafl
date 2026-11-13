@@ -36,15 +36,13 @@ fun resolveOverloads(r, expected: Spec|None,
   if !isEmpty(survivors)
     ret survivors
   ret match(expected)
-    (e2: Spec) => match(e2)
-      (c: SCallable) => match(c.scResult)
-        (res: Spec) => partitionByVerdict(candidates,
-                                          SCallable(c.scParams2, None,
-                                                    c.sclLine),
-                                          r)
-        ()          => survivors
-      (o: Spec)      => survivors
-    ()         => survivors
+    (c: SCallable) => match(c.scResult)
+      (res: Spec) => partitionByVerdict(candidates,
+                                        SCallable(c.scParams2, None,
+                                                  c.sclLine),
+                                        r)
+      ()          => survivors
+    ()             => survivors
 
 # Bags, not Lists: the survivors are either narrowed to a sole candidate or
 # rendered by check_expr's ambiguity message, which does
@@ -134,16 +132,12 @@ fun traitSubstituted(ty, x: Found) => match(traitMapping(x))
   ()                 => ty
 
 fun traitMapping(x: Found) => match(x.fTraitScope)
-  (ts: Spec) => match(ts)
-    (tsc: SClass) => ownerMapping(x.fOwner, tsc)
-    (o: Spec)     => None
-  ()         => None
+  (tsc: SClass) => ownerMapping(x.fOwner, tsc)
+  ()            => None
 
 fun ownerMapping(owner: PStmt|None, tsc: SClass) => match(owner)
-  (ow: PStmt) => match(ow)
-    (cls: PsClass) => paramMapping(cls.cGens, tsc.scParams)
-    (o: PStmt)     => None
-  ()          => None
+  (cls: PsClass) => paramMapping(cls.cGens, tsc.scParams)
+  ()             => None
 
 fun wildcarded(ty, x: Found)
   let gens = stmtGens(x.fStmt)

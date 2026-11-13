@@ -95,41 +95,22 @@ fun tiJoin(ids: List<TypeId>) => join(map(ids, tiSerialise), ",")
 
 # ── equality and hashing ─────────────────────────────────────────────────────
 
-fun eqTypeId(a, b) => match(a)
-  (x: TiNone)        => b is TiNone
-  (x: TiBuiltin)     => match(b)
-    (y: TiBuiltin) => x.tibName == y.tibName
-    (o: TypeId)    => false
-  (x: TiNamed)       => match(b)
-    (y: TiNamed)   => x.tinName == y.tinName && eqTypeIds(x.tinArgs, y.tinArgs)
-    (o: TypeId)    => false
-  (x: TiClass)       => match(b)
-    (y: TiClass)   => x.ticName == y.ticName && eqTypeIds(x.ticArgs, y.ticArgs)
-    (o: TypeId)    => false
-  (x: TiEnum)        => match(b)
-    (y: TiEnum)    => x.tieRoot == y.tieRoot && eqTypeIds(x.tieArgs, y.tieArgs)
-                      && eqStrs(x.tiePath, y.tiePath)
-    (o: TypeId)    => false
-  (x: TiTuple)       => match(b)
-    (y: TiTuple)   => eqTypeIds(x.titEntries, y.titEntries)
-    (o: TypeId)    => false
-  (x: TiCallable)    => match(b)
-    (y: TiCallable) => eqTypeId(x.tcbParams, y.tcbParams)
-                       && eqTypeId(x.tcbResult, y.tcbResult)
-    (o: TypeId)    => false
-  (x: TiUnion)       => match(b)
-    (y: TiUnion)   => eqTypeIds(x.tiuMembers, y.tiuMembers)
-    (o: TypeId)    => false
-  (x: TiPlaceholder) => match(b)
-    (y: TiPlaceholder) => x.tipName == y.tipName
-    (o: TypeId)    => false
-  (x: TiLazy)        => match(b)
-    (y: TiLazy)    => eqTypeId(x.tilTarget, y.tilTarget)
-    (o: TypeId)    => false
-  (x: TiArray)       => match(b)
-    (y: TiArray)   => x.tiaLenField == y.tiaLenField
-                      && eqTypeId(x.tiaElem, y.tiaElem)
-    (o: TypeId)    => false
+fun eqTypeId(a: TypeId, b: TypeId) => match(a, b)
+  (x: TiNone, y: TiNone)               => true
+  (x: TiBuiltin, y: TiBuiltin)         => x.tibName == y.tibName
+  (x: TiNamed, y: TiNamed)             => x.tinName == y.tinName && eqTypeIds(x.tinArgs, y.tinArgs)
+  (x: TiClass, y: TiClass)             => x.ticName == y.ticName && eqTypeIds(x.ticArgs, y.ticArgs)
+  (x: TiEnum, y: TiEnum)               => x.tieRoot == y.tieRoot && eqTypeIds(x.tieArgs, y.tieArgs)
+                                          && eqStrs(x.tiePath, y.tiePath)
+  (x: TiTuple, y: TiTuple)             => eqTypeIds(x.titEntries, y.titEntries)
+  (x: TiCallable, y: TiCallable)       => eqTypeId(x.tcbParams, y.tcbParams)
+                                          && eqTypeId(x.tcbResult, y.tcbResult)
+  (x: TiUnion, y: TiUnion)             => eqTypeIds(x.tiuMembers, y.tiuMembers)
+  (x: TiPlaceholder, y: TiPlaceholder) => x.tipName == y.tipName
+  (x: TiLazy, y: TiLazy)               => eqTypeId(x.tilTarget, y.tilTarget)
+  (x: TiArray, y: TiArray)             => x.tiaLenField == y.tiaLenField
+                                          && eqTypeId(x.tiaElem, y.tiaElem)
+  ()                                   => false
 
 fun eqTypeIds(a: List<TypeId>, b: List<TypeId>) => eqBy(a, b, eqTypeId)
 

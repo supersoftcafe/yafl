@@ -136,12 +136,10 @@ fun destructureDeclared(d: PsDestructure) => match(d.dType)
 
 fun propagate(parentTy: Spec|None, targets,
               r) => match(parentTy)
-  (p: Spec) => match(p)
-    (st: STuple) => sameLen(st.stEntries, targets)
-      ? propagateLoop(targets, st.stEntries, r, List())
-      : targets
-    (o: Spec)    => targets
-  ()        => targets
+  (st: STuple) => sameLen(st.stEntries, targets)
+    ? propagateLoop(targets, st.stEntries, r, List())
+    : targets
+  ()           => targets
 
 fun propagateLoop(ts: List<PStmt>, es: List<SEntry>, r, acc: List<PStmt>): List<PStmt> =>
   zipFold(ts, es, acc, (a, t, e) => append(a, adopt(t, e.seType, r)))

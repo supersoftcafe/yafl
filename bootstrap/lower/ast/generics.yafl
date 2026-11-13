@@ -214,7 +214,9 @@ fun fciEntries(es: List<PTupEnt>, acc) =>
   fold(es, acc, (a, x) => fciExpr(x.tupValue, a))
 
 fun fciArms(as2: List<PArm>, acc) =>
-  fold(as2, acc, (a, x) => fciExprOpt(x.armGuard, fciExpr(x.armBody, fciSpecOpt(x.armType, a))))
+  fold(as2, acc, (a, x) => fciExprOpt(x.armGuard, fciExpr(x.armBody, fciPositions(x.armExtra, fciSpecOpt(x.armType, a)))))
+
+fun fciPositions(ps: List<PPos>, acc) => fold(ps, acc, (a, p) => fciSpecOpt(p.posType, a))
 
 fun fciExprOpt(x: PExpr|None, acc) => match(x)
   (e2: PExpr) => fciExpr(e2, acc)
@@ -536,7 +538,11 @@ fun gsubTupEnts(es: List<PTupEnt>, sub: GSub, visited: List<String>, acc): List<
 
 fun gsubArms(as2: List<PArm>, sub: GSub, visited: List<String>, acc: List<PArm>) =>
   fold(as2, acc, (a, x) => append(a, with x(armType = gsubOpt(x.armType, sub, visited), armBody = gsubExpr(x.armBody, sub, visited), armLiterals = gsubLits(x.armLiterals, sub, visited,
-                         List()), armGuard = gsubExprOpt(x.armGuard, sub, visited))))
+                         List()), armGuard = gsubExprOpt(x.armGuard, sub, visited),
+                         armExtra = gsubPositions(x.armExtra, sub, visited))))
+
+fun gsubPositions(ps: List<PPos>, sub: GSub, visited: List<String>): List<PPos> =>
+  map(ps, (p) => with p(posType = gsubOpt(p.posType, sub, visited)))
 
 fun gsubLits(ls: List<PLit>, sub: GSub, visited: List<String>, acc: List<PLit>) =>
   fold(ls, acc, append)
@@ -986,7 +992,11 @@ fun rcrTupEnts(es: List<PTupEnt>, refs: GRefsIx, acc): List<PTupEnt> =>
   fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rcrExpr(x.tupValue, refs))))
 
 fun rcrArms(as2: List<PArm>, refs: GRefsIx, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armType = rcrSpecOpt(x.armType, refs), armBody = rcrExpr(x.armBody, refs), armGuard = rcrExprOpt(x.armGuard, refs))))
+  fold(as2, acc, (a, x) => append(a, with x(armType = rcrSpecOpt(x.armType, refs), armBody = rcrExpr(x.armBody, refs), armGuard = rcrExprOpt(x.armGuard, refs),
+                                            armExtra = rcrPositions(x.armExtra, refs))))
+
+fun rcrPositions(ps: List<PPos>, refs: GRefsIx): List<PPos> =>
+  map(ps, (p) => with p(posType = rcrSpecOpt(p.posType, refs)))
 
 # ── prune + finalize ────────────────────────────────────────────────────────
 
@@ -1034,19 +1044,17 @@ fun gipLoopStep(a: List<GProvider>, x: PStmt, r) => match(x)
 
 fun providerPatterns(let2, r,
                      acc): List<GProvider> => match(let2.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => patternLoop(ps,
-                                          paramMapping(cls.cGens,
-                                                       dc.scParams),
-                                          let2, acc)
-          ()               => acc
-        (o: PStmt)     => acc
-      ()         => acc
-    (o2: Spec)   => acc
-  ()         => acc
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => patternLoop(ps,
+                                        paramMapping(cls.cGens,
+                                                     dc.scParams),
+                                        let2, acc)
+        ()               => acc
+      (o: PStmt)     => acc
+    ()         => acc
+  ()           => acc
 
 fun patternLoop(ps: List<Spec>, remap: List<Binding>, let2, acc: List<GProvider>) =>
   fold(ps, acc, (a, x) => patternLoopStep(a, x, remap, let2))
@@ -1219,19 +1227,17 @@ fun ciiLoopStep(a: List<Spec>, x: PStmt, r) => match(x)
 
 fun instanceIfaces(let2: PsLet, r,
                    acc): List<Spec> => match(let2.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => ifaceLoop(ps,
-                                        paramMapping(cls.cGens,
-                                                     dc.scParams),
-                                        acc)
-          ()               => acc
-        (o: PStmt)     => acc
-      ()         => acc
-    (o2: Spec)   => acc
-  ()         => acc
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => ifaceLoop(ps,
+                                      paramMapping(cls.cGens,
+                                                   dc.scParams),
+                                      acc)
+        ()               => acc
+      (o: PStmt)     => acc
+    ()         => acc
+  ()           => acc
 
 fun ifaceLoop(ps: List<Spec>, remap: List<Binding>, acc: List<Spec>) =>
   fold(ps, acc, (a, x) => ifaceLoopStep(a, x, remap))
@@ -1587,18 +1593,15 @@ fun redirectName(nm, r, traits: List<PStmt>) => match(traitSpecFor(nm, r))
   ()           => nm
 
 fun traitSpecFor(nm: PeName, r) => match(nm.penTrait)
-  (sp: Spec) => match(sp)
-    (c: SClass) => c
-    (o: Spec)   => None
-  ()         => derivedTraitScope(nm, r)
+  (c: SClass) => c
+  (o: Spec)   => None
+  ()          => derivedTraitScope(nm, r)
 
 fun derivedTraitScope(nm: PeName, r) => match(soleItem(findData(r, nm.refName)))
   (f: Found) => match(f.fScope)
     (t2: ScTrait) => match(f.fTraitScope)
-      (sp: Spec) => match(sp)
-        (c: SClass) => c
-        (o: Spec)   => None
-      ()         => None
+      (c: SClass) => c
+      ()          => None
     (o2: RScope)  => None
   ()         => None
 
@@ -1629,18 +1632,16 @@ fun traitProvidersStep(a: List<PsLet>, x: PStmt, ts: SClass, r) => match(x)
   (o: PStmt) => a
 
 fun implementsTrait(tr: PsLet, ts: SClass, r) => match(tr.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => anyParentMatches(ps, ts,
-                                               mangledSpecList(ts.scParams,
-                                                               List()))
-          ()               => false
-        (o: PStmt)     => false
-      ()         => false
-    (o2: Spec)   => false
-  ()         => false
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => anyParentMatches(ps, ts,
+                                             mangledSpecList(ts.scParams,
+                                                             List()))
+        ()               => false
+      (o: PStmt)     => false
+    ()         => false
+  ()           => false
 
 # A monomorphised witness declares its parents with MANGLED inner names
 # (Sized<List$generic$Int>) while the demanded scope is structural
@@ -1664,14 +1665,12 @@ fun soleFoundOf(fs: List<Found>) => sizeAtLeast(fs, 2) ? None : head(fs)
 
 fun redirectVia(nm, ts: SClass, provider: PsLet,
                 r) => match(provider.lType)
-  (pt: Spec) => match(pt)
-    (pc: SClass) => match(soleItem(findType(r, pc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => redirectMethod(nm, ts, provider, cls, r)
-        (o: PStmt)     => nm
-      ()         => nm
-    (o2: Spec)   => nm
-  ()         => nm
+  (pc: SClass) => match(soleItem(findType(r, pc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => redirectMethod(nm, ts, provider, cls, r)
+      (o: PStmt)     => nm
+    ()         => nm
+  ()           => nm
 
 fun redirectMethod(nm, ts: SClass, provider: PsLet, cls: PsClass,
                    r)
@@ -1860,7 +1859,11 @@ fun rfrTupEnts(es: List<PTupEnt>, c: Canon, acc): List<PTupEnt> =>
   fold(es, acc, (a, x) => append(a, PTupEnt(x.tupName, x.tupSpread, rfrExpr(x.tupValue, c))))
 
 fun rfrArms(as2: List<PArm>, c: Canon, acc: List<PArm>) =>
-  fold(as2, acc, (a, x) => append(a, with x(armType = rfrSpecOpt(x.armType, c), armBody = rfrExpr(x.armBody, c), armGuard = rfrExprOpt(x.armGuard, c))))
+  fold(as2, acc, (a, x) => append(a, with x(armType = rfrSpecOpt(x.armType, c), armBody = rfrExpr(x.armBody, c), armGuard = rfrExprOpt(x.armGuard, c),
+                                            armExtra = rfrPositions(x.armExtra, c))))
+
+fun rfrPositions(ps: List<PPos>, c: Canon): List<PPos> =>
+  map(ps, (p) => with p(posType = rfrSpecOpt(p.posType, c)))
 
 fun rfrSpecOpt(sp: Spec|None, c: Canon) => match(sp)
   (s2: Spec) => rfrSpec(s2, c)

@@ -336,11 +336,9 @@ fun emitConversion(value: RParam|None, source: Spec|None, target: Spec|None, r) 
   (v: RParam) => emitConversionValue(v, source, target, r)
   ()           => emptyBundle()
 
-fun emitConversionValue(v, source: Spec|None, target: Spec|None, r) => match(source)
-  (s2: Spec) => match(target)
-    (t2: Spec) => emitConversionOn(v, s2, t2, r)
-    ()          => bundleValue(v)
-  ()          => bundleValue(v)
+fun emitConversionValue(v, source: Spec|None, target: Spec|None, r) => match(source, target)
+  (s2: Spec, t2: Spec) => emitConversionOn(v, s2, t2, r)
+  ()                   => bundleValue(v)
 
 fun emitConversionOn(value, source, target, r) => isNeverUninhabited(source)
   ? bundleValue(RpZeroOf(specGenerate(target, r)))
@@ -419,11 +417,9 @@ fun convertTupleField(value, source, tEntry: SEntry, b, r) => b >= 0
   : convertTupleFieldDefault(tEntry, r)
 
 fun emitConversionForField(value, sourceType: Spec|None, targetType: Spec|None, r)
-  ret match(sourceType)
-    (s2: Spec) => match(targetType)
-      (t2: Spec) => emitConversionOn(value, s2, t2, r)
-      ()          => bundleValue(value)
-    ()          => bundleValue(value)
+  ret match(sourceType, targetType)
+    (s2: Spec, t2: Spec) => emitConversionOn(value, s2, t2, r)
+    ()                   => bundleValue(value)
 
 # A default is a literal or [const] reference (enforced at declaration), so
 # generating it here is pure and order-free.
@@ -503,10 +499,8 @@ fun genFloatValue(text) => match(parseFloat(text))
 # ── [foreign("sym")] / [impure] / [sync] on a PsFun member ─────────────────
 
 fun foreignSymbol(f: PsFun) => match(attrValueOf(f.fAttrs, "foreign"))
-  (v: PExpr) => match(v)
-    (tp: PeTuple) => exactly(tp.exprs, 1) ? firstStringValue(head(tp.exprs)) : None
-    (o: PExpr)    => None
-  ()          => None
+  (tp: PeTuple) => exactly(tp.exprs, 1) ? firstStringValue(head(tp.exprs)) : None
+  ()            => None
 
 fun firstStringValue(en: PTupEnt|None) => match(en)
   (e2: PTupEnt) => match(e2.tupValue)
@@ -601,10 +595,8 @@ fun letStorageType(l: PsLet, r) => isDeferredInit(l) ? CgDataPointer(false) : sp
 # ── ArrayReadExpression ──────────────────────────────────────────────────────
 
 fun arrayInfo(obj, r): (cname: String, elem: Spec, lenName: String)|None => match(exprType(obj, r))
-  (ot: Spec) => match(ot)
-    (c: SClass) => arrayInfoOf(c, r)
-    (o: Spec)   => None
-  ()           => None
+  (c: SClass) => arrayInfoOf(c, r)
+  ()          => None
 
 fun arrayInfoOf(c: SClass, r): (cname: String, elem: Spec, lenName: String)|None
   ret match(soleItem(findType(r, c.scName)))
@@ -737,10 +729,8 @@ fun isReprAwareOp(n) => n == "yafl_hash_peek" || n == "yafl_hash_store" || n == 
 fun builtinSubjectBoxed(op: PeBuiltinOp, r) => match(op.opParams)
   (tp: PeTuple) => match(head(tp.exprs))
     (e2: PTupEnt) => match(exprType(e2.tupValue, r))
-      (sp: Spec) => match(sp)
-        (se: SEnum) => isComplexRoot(r, se.seRoot)
-        (o: Spec)   => false
-      ()         => false
+      (se: SEnum) => isComplexRoot(r, se.seRoot)
+      ()          => false
     ()            => false
   (o: PExpr)    => false
 
@@ -800,10 +790,8 @@ fun firstBuiltinArg(params) => match(params)
 # ══════════════════════════════════════════════════════════════════════════
 
 fun genCall(c: PeCall, r) => match(exprType(c.function, r))
-  (ft: Spec) => match(ft)
-    (cl: SCallable) => genCallOn(c, cl, r)
-    (o: Spec)       => emptyBundle()   # unreachable: check() requires a CallableSpec
-  ()          => emptyBundle()          # unreachable
+  (cl: SCallable) => genCallOn(c, cl, r)
+  ()              => emptyBundle()          # unreachable
 
 fun genCallOn(c: PeCall, cl: SCallable, r)
   let funBundle = withPrefix(genExpr(c.function, r), "fn")

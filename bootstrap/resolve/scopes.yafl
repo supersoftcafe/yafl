@@ -252,9 +252,8 @@ fun specSeen(ss: List<Spec>, sp) => any(ss, (x) => eqSpec(x, sp))
 # — Python's ClassStatement.member_index() is the mirror); a hook miss
 # derives per query exactly as before.
 fun membersOf(c, own, query, r): Findings => match(mergedHook(r, c.scName))
-  (mo: MergedOut) => match(mo)
-    (ms: MTable) => membersViaMerged(ms.mtoTable, c, own, query, r)
-    (mn: MMissing) => incompleteFindings()   # class unresolved at build
+  (ms: MTable)   => membersViaMerged(ms.mtoTable, c, own, query, r)
+  (mn: MMissing) => incompleteFindings()   # class unresolved at build
   ()               => match(memberIdxHook(r, c.scName))
     (mi: MemberIdx) => membersViaIdx(mi, c, own, query, r)
     ()               => membersDerive(c, own, query, r)

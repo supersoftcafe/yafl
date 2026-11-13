@@ -121,10 +121,8 @@ fun slotLoop(ms: List<PStmt>, acc: List<Slot>) =>
   fold(ms, acc, (a, x) => isCallableMember(x) ? append(a, toSlot(x)) : a)
 
 fun isCallableMember(st) => match(stmtType(st))
-  (t2: Spec) => match(t2)
-    (c: SCallable) => true
-    (o: Spec)      => false
-  () => false
+  (c: SCallable) => true
+  ()             => false
 
 fun toSlot(st) => Slot(stmtName(st), stmtType(st), providesOwn(st))
 

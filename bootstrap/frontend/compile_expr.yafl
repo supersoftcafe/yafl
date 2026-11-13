@@ -242,10 +242,8 @@ fun wonTraitScope(f: Found): Spec|None => match(f.fScope)
   (o: RScope)   => None
 
 fun classTraitScope(ts): Spec|None => match(ts)
-  (t2: Spec) => match(t2)
-    (c: SClass) => ts
-    (o: Spec)   => None
-  ()         => None
+  (c: SClass) => ts
+  ()          => None
 
 # Fill or refresh this use's type arguments from the enclosing call's expected
 # type (use_site_type_params) — runs while any supplied argument still carries
@@ -292,40 +290,32 @@ fun compileLambda(lm: PeLambda, r0, expected: Spec|None): ExprOut
 
 # What the expected signature passes each parameter: a LOWER hint.
 fun passedHints(params, expected: Spec|None) => match(expected)
-  (e2: Spec) => match(e2)
-    (c: SCallable) => match(c.scParams2)
-      (tp: STuple) => sameLen(tp.stEntries, paramLets(params))
-        ? passedLoop(paramLets(params), tp.stEntries, noHints())
-        : noHints()
-      (o: Spec)    => noHints()
-    (o2: Spec)     => noHints()
-  ()         => noHints()
+  (c: SCallable) => match(c.scParams2)
+    (tp: STuple) => sameLen(tp.stEntries, paramLets(params))
+      ? passedLoop(paramLets(params), tp.stEntries, noHints())
+      : noHints()
+    (o: Spec)    => noHints()
+  ()             => noHints()
 
 fun passedLoop(ps: List<PStmt>, es: List<SEntry>, acc: Dict<String, List<Hint>>) =>
   zipFold(ps, es, acc, (a, p, e) => mergeHints(a, passedHint(p, e.seType)))
 
-fun passedHint(p, ty: Spec|None) => match(ty)
-  (t2: Spec) => match(p)
-    (l: PsLet) => hintOf(l.lName, t2, true)
-    (o: PStmt) => noHints()
-  ()         => noHints()
+fun passedHint(p: PStmt, ty: Spec|None) => match(ty, p)
+  (t2: Spec, l: PsLet) => hintOf(l.lName, t2, true)
+  ()                   => noHints()
 
 fun expectedResult(expected: Spec|None) => match(expected)
-  (e2: Spec) => match(e2)
-    (c: SCallable) => c.scResult
-    (o: Spec)      => None
-  ()         => None
+  (c: SCallable) => c.scResult
+  ()             => None
 
 # Prefer the expected result when the body's type fits it — the lambda widens
 # via boxing and the call's parameter check sees matching types.
 fun lambdaResult(subExpected, bodyTy,
-                 r): Spec|None => match(subExpected)
-  (se: Spec) => match(bodyTy)
-    (bt: Spec) => isConcrete(se) && triTrue(assignableFrom(r, se, bt))
-      ? subExpected
-      : bodyTy
-    ()         => bodyTy
-  ()         => bodyTy
+                 r): Spec|None => match(subExpected, bodyTy)
+  (se: Spec, bt: Spec) => isConcrete(se) && triTrue(assignableFrom(r, se, bt))
+    ? subExpected
+    : bodyTy
+  ()                   => bodyTy
 
 # The parameter types the body was ACTUALLY compiled against — but only when
 # fully ground; otherwise the original spelling (avoids reporting an
@@ -464,10 +454,8 @@ fun compileCall(c: PeCall, r, expected)
   let before = paramShapeOf(calleeType(c.function, c.parameter, r))
   let arg = compileExpr(c.parameter, r, before)
   ret match(exprType(arg.eoExpr, r))
-    (pt: Spec) => match(pt)
-      (tp: STuple) => callWithShape(c, r, arg, tp, expected, before)
-      (o: Spec)    => partialCall(c, arg)
-    ()         => partialCall(c, arg)
+    (tp: STuple) => callWithShape(c, r, arg, tp, expected, before)
+    ()           => partialCall(c, arg)
 
 fun partialCall(c: PeCall, arg: ExprOut)
   ret ExprOut(PeCall(c.function, arg.eoExpr, c.pecLine), arg.eoGlobals,
@@ -496,10 +484,8 @@ fun againOver(first: ExprOut, again: ExprOut)
               again.eoHints)
 
 fun paramShapeOf(ft: Spec|None) => match(ft)
-  (f: Spec) => match(f)
-    (cl: SCallable) => cl.scParams2
-    (o: Spec)       => None
-  ()        => None
+  (cl: SCallable) => cl.scParams2
+  ()              => None
 
 # A tuple converges FIELD-WISE against a tuple receiver: each entry compiles
 # toward the field it BINDS (positionally, or by NAME — `f(5, bias = 7)`
@@ -533,16 +519,12 @@ fun expandSpreads(tp: PeTuple, r, expected: Spec|None): ExprOut
 
 # Two levels: a Spec VARIANT cannot be an arm of `Spec|None` directly.
 fun isTupleSpec(t2: Spec|None) => match(t2)
-  (sp: Spec) => match(sp)
-    (st: STuple) => true
-    (o: Spec)    => false
-  ()         => false
+  (st: STuple) => true
+  ()           => false
 
 fun tupleArity(t2: Spec|None): Int => match(t2)
-  (sp: Spec) => match(sp)
-    (st: STuple) => fold(st.stEntries, 0, (n, e) => n + 1)
-    (o: Spec)    => 0
-  ()         => 0
+  (st: STuple) => fold(st.stEntries, 0, (n, e) => n + 1)
+  ()           => 0
 
 class [final] SpreadParts(spBinders: List<PStmt>, spEntries: List<PTupEnt>)
 
@@ -594,10 +576,8 @@ fun compileTupEntsStep(st: (i: Int, acc: List<PTupEnt>, glb: List<PStmt>, hints:
 # The receiver's entries, ORDERED to match this tuple's entries via the shared
 # binding. A union receiver first narrows to the tuple variant this value fits.
 fun entrySlots(tp, r, expected: Spec|None) => match(effectiveTarget(tp, r, expected))
-  (t2: Spec) => match(t2)
-    (st: STuple) => boundSlots(st, tp)
-    (o: Spec)    => List()
-  ()         => List()
+  (st: STuple) => boundSlots(st, tp)
+  ()           => List()
 
 fun effectiveTarget(tp, r, expected: Spec|None) => match(expected)
   (want: Spec) => isUnion(want)
@@ -729,11 +709,10 @@ fun isYes(u: Bool|None) => match(u)
 # A resolved arm type that carries its type arguments; None while it has not
 # resolved.
 fun usableLower(r, ty: Spec|None) => match(ty)
-  (t2: Spec) => match(t2)
-    (n: SNamed) => None
-    (e2: SEnum) => isEmpty(e2.seParams) ? nonGenericRoot(r, e2.seRoot) : true
-    (o: Spec)   => true
-  ()         => None
+  (n: SNamed) => None
+  (e2: SEnum) => isEmpty(e2.seParams) ? nonGenericRoot(r, e2.seRoot) : true
+  (o: Spec)   => true
+  ()          => None
 
 fun nonGenericRoot(r, root)
   let found = findType(r, root)
@@ -788,6 +767,11 @@ fun chain2(l: List<Spec|None>) => l
 fun extraScope(ps: List<PPos>, tys: List<Spec|None>, r) =>
   fold(ps, (tys = tys, r = r),
        (st, x) => (tys = dropOne(st.tys), r = posScope(x, head(st.tys), st.r))).r
+
+# What an arm's body and guard see: position 0's binding plus one for every
+# extra position, each at its declared type (match.py MatchArm.body_resolver).
+# Every pass that walks an arm body with a scope builds it here.
+fun armBodyScope(a: PArm, r) => extraScope(a.armExtra, chain2(List<Spec|None>()), bindingScope(a, a.armType, r))
 
 
 fun posScope(p: PPos, subjTy, r): Resolver => p.posName == "" || p.posName == "_"
@@ -1096,11 +1080,9 @@ fun compileWith(wx: PeWith, r, expected: Spec|None)
     (o: PExpr)   => ExprOut(node, glb, hints)   # unreachable: node is built above
 
 fun withExpand(wx: PeWith, r) => match(exprType(wx.withSubject, r))
-  (sp: Spec) => match(sp)
-    (c: SClass) => withExpandClass(wx, c, r)
-    (e2: SEnum) => withExpandEnum(wx, e2, r)
-    (o: Spec)   => None
-  ()         => None
+  (c: SClass) => withExpandClass(wx, c, r)
+  (e2: SEnum) => withExpandEnum(wx, e2, r)
+  ()          => None
 
 fun withTag(lr: PLine) => hash6(lr.plFile, lr.plLine, lr.plCol)
 

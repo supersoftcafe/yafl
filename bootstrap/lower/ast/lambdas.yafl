@@ -179,7 +179,7 @@ fun cpArms(as2: List<PArm>, path, acc: ClPaths) =>
   fold(as2, acc, (a, x) => cpArmOne(x, path, a))
 
 fun cpArmOne(a: PArm, path, acc): ClPaths
-  let a1 = cpSpecOpt(a.armType, path, acc)
+  let a1 = fold(a.armExtra, cpSpecOpt(a.armType, path, acc), (st, p) => cpSpecOpt(p.posType, path, st))
   let a2 = cpExpr(a.armBody, path, a1)
   let a3 = cpLits(a.armLiterals, path, a2)
   ret cpExprOpt(a.armGuard, path, a3)
@@ -343,10 +343,8 @@ fun buildFunctionFromLambda(lm: PeLambda, nme, body)
             List<PStmt>())
 
 fun lambdaResultType(lamRet: Spec|None) => match(lamRet)
-  (t2: Spec) => match(t2)
-    (cb: SCallable) => cb.scResult
-    (o: Spec)       => None
-  ()          => None
+  (cb: SCallable) => cb.scResult
+  ()              => None
 
 fun classOf(lm: PeLambda, nme, cpt: ClCaps, fn)
   let lr = lm.pelLine
@@ -370,10 +368,8 @@ fun clParamLets(ns: List<String>, cpt: ClCaps, lr, acc: List<PStmt>) =>
                 false, List<PStmt>())))
 
 fun captureRead(name, xtype: Spec|None, lr) => match(xtype)
-  (t0: Spec) => match(t0)
-    (ls: SLazyStub) => clStubRead(name, ls, lr)
-    (o: Spec)       => PeName(name, List(), lr, None)
-  ()         => PeName(name, List(), lr, None)
+  (ls: SLazyStub) => clStubRead(name, ls, lr)
+  ()              => PeName(name, List(), lr, None)
 
 # Python reads xtype.target_type directly (Spec|None); PeLazy.lzTarget is a
 # plain Spec in the port, so an absent target keeps the plain name read —
@@ -628,7 +624,7 @@ fun clArms(as2: List<PArm>, r, paths: ClPaths, exports, acc) =>
 class [final] ClArmOne(claoArm: PArm, claoExports: List<PStmt>)
 
 fun clArmOne(a: PArm, r, paths: ClPaths, exports): ClArmOne
-  let bodyR = bindingScope(a, a.armType, r)
+  let bodyR = armBodyScope(a, r)
   let body = clExpr(a.armBody, bodyR, paths, exports)
   let lits = clLits(a.armLiterals, r, paths, body.clExExports,
                     List())

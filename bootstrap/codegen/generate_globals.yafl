@@ -64,10 +64,8 @@ fun targetType(st) => match(st)
   (o: PStmt)         => None
 
 fun foreignSymbolOf(f: PsFun) => match(attrValueOf(f.fAttrs, "foreign"))
-  (v: PExpr) => match(v)
-    (tp: PeTuple) => exactly(tp.exprs, 1) ? tupleFirstString(tp) : None
-    (o: PExpr)    => None
-  ()          => None
+  (tp: PeTuple) => exactly(tp.exprs, 1) ? tupleFirstString(tp) : None
+  ()            => None
 
 fun tupleFirstString(tp: PeTuple) => match(head(tp.exprs))
   (en: PTupEnt) => match(en.tupValue)
@@ -160,16 +158,12 @@ fun createThunk(className, let2: PsLet, r)
                  "", None, false, false, false, InlineAuto())
 
 fun thunkParamStruct(sp: Spec|None, r) => match(sp)
-  (s2: Spec) => match(s2)
-    (cl: SCallable) => specGenerate(cl.scParams2, r)
-    (o: Spec)       => CgStruct(List())
-  ()          => CgStruct(List())
+  (cl: SCallable) => specGenerate(cl.scParams2, r)
+  ()              => CgStruct(List())
 
 fun thunkResultType(sp: Spec|None, r) => match(sp)
-  (s2: Spec) => match(s2)
-    (cl: SCallable) => specGenerateOpt(cl.scResult, r)
-    (o: Spec)       => CgDataPointer(false)
-  ()          => CgDataPointer(false)
+  (cl: SCallable) => specGenerateOpt(cl.scResult, r)
+  ()              => CgDataPointer(false)
 
 fun cgStructFields(t2) => match(t2)
   (s2: CgStruct) => s2.fields
@@ -207,10 +201,8 @@ fun isArrayFieldLet(st: PStmt) => match(st)
   (o: PStmt)    => false
 
 fun isArrayField(sp: Spec|None) => match(sp)
-  (s2: Spec) => match(s2)
-    (af: SArrayField) => true
-    (o: Spec)         => false
-  ()          => false
+  (af: SArrayField) => true
+  ()                => false
 
 fun classObjectFieldsArray(params: List<PStmt>, ap: PsLet, r)
   let scalars = filter(params, (p) => !isSameLet(p, ap))

@@ -35,10 +35,7 @@ fun main(): System::Int
 # without running the compare, and a recursive deep compare short-circuits at
 # shared substructure.
 fun [refeq] treeEq(a: Tree, b: Tree): System::Bool
-  ret match(a)
-    (x: Leaf2) => match(b)
-      (y: Leaf2) => x.val == y.val
-      (o: Tree)  => false
-    (n: Node2) => match(b)
-      (m: Node2) => treeEq(n.left, m.left) && treeEq(n.right, m.right)
-      (o: Tree)  => false
+  ret match(a, b)
+    (x: Leaf2, y: Leaf2) => x.val == y.val
+    (n: Node2, m: Node2) => treeEq(n.left, m.left) && treeEq(n.right, m.right)
+    ()                   => false

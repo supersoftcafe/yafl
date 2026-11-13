@@ -480,13 +480,11 @@ fun positionStages(pats: List<Spec|None>, subs: List<PExpr>, gens: List<GBundle>
        (st, x) => (subs = dropOne(st.subs), gens = dropOne(st.gens), acc = appendStages(st.acc, stagesFor(x, head(st.subs), head(st.gens), r)))).acc
 
 fun stagesFor(pat: Spec|None, sub: PExpr|None, g: GBundle|None,
-              r): List<List<RParam>>|None => match(sub)
-  (e2: PExpr) => match(g)
-    (b: GBundle) => match(exprType(e2, r))
-      (st: Spec) => reprPositionStages(classifyRepr(st, r), mustResult(b), pat, r)
-      ()         => None
-    ()           => None
-  ()            => None
+              r): List<List<RParam>>|None => match(sub, g)
+  (e2: PExpr, b: GBundle) => match(exprType(e2, r))
+    (st: Spec) => reprPositionStages(classifyRepr(st, r), mustResult(b), pat, r)
+    ()         => None
+  ()                      => None
 
 # A position whose repr cannot supply guards must NOT be dropped: dropping it
 # leaves the arm with fewer stages than positions, so it matches on a partial
@@ -541,28 +539,22 @@ fun scopeOf(acc: GBind|None, r) => match(acc)
 
 # Concatenate the binding BUNDLES and keep the LATEST scope, which is the one
 # holding every name bound so far.
-fun mergeInto(acc, b: GBind|None): GBind|None => match(b)
-  (nb: GBind) => match(acc)
-    (ab: GBind) => GBind(bundleJoin(ab.gbdBundle, nb.gbdBundle),
-                         nb.gbdResolver)
-    ()          => nb
-  ()          => acc
+fun mergeInto(acc, b: GBind|None): GBind|None => match(b, acc)
+  (nb: GBind, ab: GBind) => GBind(bundleJoin(ab.gbdBundle, nb.gbdBundle), nb.gbdResolver)
+  (nb: GBind, _: None)   => nb
+  ()                     => acc
 
 # A position with a pattern binds through its subject's repr (Python's
 # `position_bind`); a position without one binds nothing.
 fun bindPosition(p: PPos, sub: PExpr|None, g: GBundle|None,
-                 r): GBind|None => match(sub)
-  (e2: PExpr) => match(g)
-    (b: GBundle) => match(p.posType)
-      (pt: Spec) => match(exprType(e2, r))
-        (st: Spec) => reprPositionBind(classifyRepr(st, r),
-                                       PArm(p.posName, p.posType, PeNothing(p.pposLine),
-                                            List(), None, p.pposLine, List()),
-                                       mustResult(b), pt, st, r)
-        ()         => None
-      ()         => None
-    ()           => None
-  ()            => None
+                 r): GBind|None => match(sub, g, p.posType)
+  (e2: PExpr, b: GBundle, pt: Spec) => match(exprType(e2, r))
+    (st: Spec) => reprPositionBind(classifyRepr(st, r),
+                                   PArm(p.posName, p.posType, PeNothing(p.pposLine),
+                                        List(), None, p.pposLine, List()),
+                                   mustResult(b), pt, st, r)
+    ()         => None
+  ()                                => None
 
 fun genMatchOne(mt: PeMatch, r, expected)
   let subjBundle = withPrefix(genExpr(mt.subject, r), "subj")

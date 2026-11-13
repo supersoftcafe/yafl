@@ -205,11 +205,9 @@ fun enumArms(as2: List<PArm>, c) => fold(as2, c, (a, x) => enumArm(x, a))
 fun enumArm(a: PArm, c) => match(covPrelude(c, a))
   (done: Cov) => done
   ()          => match(a.armType)
-    (t: Spec) => match(t)
-      (ae: SEnum) => enumCovers(c, a, filter(c.cvLeft,
-                                             (leaf) => contains(ae.seValidLeaves, leaf)))
-      (o: Spec)   => c                  # not an enum arm: other checks report it
-    ()        => c
+    (ae: SEnum) => enumCovers(c, a, filter(c.cvLeft,
+                                           (leaf) => contains(ae.seValidLeaves, leaf)))
+    ()          => c
 
 fun enumCovers(c: Cov, a: PArm, covers: List<String>) => isEmpty(covers)
   ? covErr(c, PErr(a.parmLine, "unreachable arm: leaves already covered"))
@@ -412,13 +410,11 @@ fun multiCovArm(a: PArm, tables: List<PosTable>, r, c)
     : MultiCov(c.mcErrs, filter(c.mcLeft, (tup) => !tupleCovered(tup, perPos)))
 
 # Which of a position's keys one arm pattern matches.
-fun coveredKeys(tab: PosTable, armType: Spec|None, r): List<String> => match(armType)
-  (t: Spec) => match(tab.ptSpec)
-    (se: SEnum) => match(t)
-      (ae: SEnum) => filter(tab.ptKeys, (k) => contains(ae.seValidLeaves, k))
-      (o: Spec)   => List()
-    (o: Spec)   => coveredKeysOther(tab, t, r)
-  ()        => tab.ptKeys                  # no pattern here: anything
+fun coveredKeys(tab: PosTable, armType: Spec|None, r): List<String> => match(armType, tab.ptSpec)
+  (ae: SEnum, _: SEnum) => filter(tab.ptKeys, (k) => contains(ae.seValidLeaves, k))
+  (_: Spec, _: SEnum)   => List()
+  (t: Spec, _: Spec)    => coveredKeysOther(tab, t, r)
+  ()                    => tab.ptKeys      # no pattern here: anything
 
 fun coveredKeysOther(tab: PosTable, t, r): List<String> => match(t)
   (cm: SCombination) => fold(reprMembers(cm), List(),

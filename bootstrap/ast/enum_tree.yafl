@@ -26,10 +26,9 @@ fun nodeAt(root: PsEnum, path: List<String>): PsEnum|None => match(head(path))
   ()             => root
 
 fun variantNamed(vs: List<PStmt>, name: String): PsEnum|None => match(head(vs))
-  (x: PStmt) => match(x)
-    (v: PsEnum) => v.eName == name ? v : variantNamed(dropOne(vs), name)
-    (o: PStmt)  => variantNamed(dropOne(vs), name)
-  ()         => None
+  (v: PsEnum) => v.eName == name ? v : variantNamed(dropOne(vs), name)
+  (o: PStmt)  => variantNamed(dropOne(vs), name)
+  ()          => None
 
 # A variant found below a root: its path and its declaration.
 class [final] VariantAt(vaPath: List<String>, vaNode: PsEnum)
@@ -42,12 +41,11 @@ fun findVariant(root: PsEnum, name: String): VariantAt|None
   ret findVariantIn(root.eVariants, name)
 
 fun findVariantIn(vs: List<PStmt>, name: String): VariantAt|None => match(head(vs))
-  (x: PStmt) => match(x)
-    (v: PsEnum) => match(findVariant(v, name))
-      (below: VariantAt) => VariantAt(prepend(v.eName, below.vaPath), below.vaNode)
-      ()                 => findVariantIn(dropOne(vs), name)
-    (o: PStmt)  => findVariantIn(dropOne(vs), name)
-  ()         => None
+  (v: PsEnum) => match(findVariant(v, name))
+    (below: VariantAt) => VariantAt(prepend(v.eName, below.vaPath), below.vaNode)
+    ()                 => findVariantIn(dropOne(vs), name)
+  (o: PStmt)  => findVariantIn(dropOne(vs), name)
+  ()          => None
 
 # The leaves at or below `node`. A declaration without variants is a leaf,
 # unless it has no parameter list at all (an uninhabited enum).

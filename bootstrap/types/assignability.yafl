@@ -40,11 +40,9 @@ fun triFalse(x: Tri) => match(x)
 # trivially_assignable_equals: the 1-tuple unwrap and the union-on-the-right
 # decomposition happen HERE, before the left type's own rule sees anything.
 
-fun assignableEq(r, left: Spec|None, right: Spec|None) => match(left)
-  (l: Spec) => match(right)
-    (rt: Spec) => assignableEqBoth(r, l, rt)
-    ()         => None
-  () => None
+fun assignableEq(r, left: Spec|None, right: Spec|None) => match(left, right)
+  (l: Spec, rt: Spec) => assignableEqBoth(r, l, rt)
+  ()                  => None
 
 fun assignableEqBoth(r, left, right)
   # The empty type (a leafless enum — Never) is the BOTTOM type: it has no
@@ -62,11 +60,9 @@ fun assignableEqBoth(r, left, right)
   # undecided — unwrapping only the known side yields a spurious mismatch.
   let lu = unwrapOne(left)
   let ru = unwrapOne(right)
-  ret match(lu)
-    (l: Spec) => match(ru)
-      (rt: Spec) => assignableUnwrapped(r, l, rt)
-      ()         => None
-    () => None
+  ret match(lu, ru)
+    (l: Spec, rt: Spec) => assignableUnwrapped(r, l, rt)
+    ()                  => None
 
 fun assignableUnwrapped(r, left, right)
   # Set semantics of a union VALUE: it is ONE of its members, so a union on the
@@ -322,10 +318,8 @@ fun entryAt(es: List<SEntry>, i) => match(head(drop(es, i)))
   ()          => None
 
 fun isGenericSpec(sp: Spec|None) => match(sp)
-  (g: Spec) => match(g)
-    (x: SGeneric) => true
-    (o: Spec)     => false
-  () => false
+  (x: SGeneric) => true
+  ()            => false
 
 # ── the union rule (union on the LEFT) ──────────────────────────────────────
 # Every member of the right must be assignable to SOME member of the left.

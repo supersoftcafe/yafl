@@ -125,14 +125,13 @@ class [final] RRBTree<T>(rtCount: Int, rtHeight: Int32,
               ? RRBTree<T>(n, h, _rrbKidAt<T>(kids, 0i32))
               : RRBTree<T>(n, h + 1i32, _rrbBranch<T>(kids, h))
         fun joined(): RRBTree<T>
-            ret match(rtRoot)
-              (nil: None) => b
-              (an: _RrbLeaf<T>|_RrbBranch<T>) => match(b.rtRoot)
-                (nil2: None) => this
-                (bn: _RrbLeaf<T>|_RrbBranch<T>) =>
-                  rootOver(rtCount + b.rtCount,
-                           _rrbConcatSub<T>(an, rtHeight, bn, b.rtHeight),
-                           rtHeight > b.rtHeight ? rtHeight : b.rtHeight)
+            ret match(rtRoot, b.rtRoot)
+              (an: _RrbLeaf<T>|_RrbBranch<T>, bn: _RrbLeaf<T>|_RrbBranch<T>) =>
+                rootOver(rtCount + b.rtCount,
+                         _rrbConcatSub<T>(an, rtHeight, bn, b.rtHeight),
+                         rtHeight > b.rtHeight ? rtHeight : b.rtHeight)
+              (_: _RrbLeaf<T>|_RrbBranch<T>, _: None) => this
+              () => b
         ret rtCount == 0 ? b : (b.rtCount == 0 ? this : joined())
 
     # `this[from .. to)`. Indices are clamped, so an over-wide range is the

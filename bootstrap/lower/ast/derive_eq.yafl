@@ -95,16 +95,14 @@ fun deProvidersOf(st, r, acc: List<DeProvider>): List<DeProvider>|None => match(
   (o: PStmt) => acc
 
 fun deAddWitness(let2: PsLet, r, acc: List<DeProvider>): List<DeProvider>|None => match(let2.lType)
-  (dt: Spec) => match(dt)
-    (dc: SClass) => match(soleItem(findType(r, dc.scName)))
-      (f: Found) => match(f.fStmt)
-        (cls: PsClass) => match(cls.cAllParents)
-          (ps: List<Spec>) => deAddAll(ps, r, acc)
-          ()               => None
-        (o: PStmt)     => acc
-      ()         => acc
-    (o2: Spec)   => None
-  ()         => None
+  (dc: SClass) => match(soleItem(findType(r, dc.scName)))
+    (f: Found) => match(f.fStmt)
+      (cls: PsClass) => match(cls.cAllParents)
+        (ps: List<Spec>) => deAddAll(ps, r, acc)
+        ()               => None
+      (o: PStmt)     => acc
+    ()         => acc
+  ()           => None
 
 fun deAddAll(ps: List<Spec>, r, acc: List<DeProvider>): List<DeProvider>|None =>
   foldSome(ps, acc, (a, p) => deAdd(p, List(), List(), r, a))

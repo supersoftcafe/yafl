@@ -722,10 +722,9 @@ fun bxLeafStep(ctx: BoxCtx, root, s: (st: BoxState, pool: BxPrims), name: String
   ret (st = o.bxSt, pool = bxMax(s.pool, o.bxP))
 
 fun bxFieldsPrims(ctx: BoxCtx, fs: List<PStmt>, stack, st, acc) => match(head(fs))
-  (v: PStmt) => match(v)
-    (let2: PsLet) => bxFieldLet(ctx, let2, dropOne(fs), stack, st, acc)
-    (o: PStmt)    => bxFieldsPrims(ctx, dropOne(fs), stack, st, acc)
-  () => BxOut(acc, st)
+  (let2: PsLet) => bxFieldLet(ctx, let2, dropOne(fs), stack, st, acc)
+  (o: PStmt)    => bxFieldsPrims(ctx, dropOne(fs), stack, st, acc)
+  ()            => BxOut(acc, st)
 
 fun bxFieldLet(ctx: BoxCtx, let2: PsLet, rest,
                stack, st, acc: BxPrims)

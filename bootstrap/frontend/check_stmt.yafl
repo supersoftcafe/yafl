@@ -228,10 +228,9 @@ fun testAttributeShape() => "[test] takes an optional description and an optiona
 class [final] TestAttr(taDescription: String, taStdout: String|None)
 
 fun testAttrParts(v: PExpr|None): TestAttr|None => match(v)
-  (x: PExpr) => match(x)
-    (tp: PeTuple) => testAttrEntries(tp.exprs)
-    (o: PExpr)    => None
-  ()         => TestAttr("", None)
+  (tp: PeTuple) => testAttrEntries(tp.exprs)
+  (o: PExpr)    => None
+  ()            => TestAttr("", None)
 
 fun testAttrEntries(es: List<PTupEnt>): TestAttr|None => match(head(es))
   (first: PTupEnt) => first.tupName == ""
@@ -250,10 +249,8 @@ fun testAttrStdout(description: String, rest: List<PTupEnt>): TestAttr|None => m
   ()            => TestAttr(description, None)
 
 fun isOneStringArg(v: PExpr|None) => match(v)
-  (x: PExpr) => match(x)
-    (tp: PeTuple) => exactly(tp.exprs, 1) && firstIsString(head(tp.exprs))
-    (o: PExpr)    => false
-  ()         => false
+  (tp: PeTuple) => exactly(tp.exprs, 1) && firstIsString(head(tp.exprs))
+  ()            => false
 
 fun firstIsString(en: PTupEnt|None) => match(en)
   (e2: PTupEnt) => match(e2.tupValue)
@@ -795,10 +792,8 @@ fun oneLenErr(af: PsLet, fields: List<PStmt>)
                                      + "' is not a field of this class")
 
 fun arrayLenName(ty: Spec|None) => match(ty)
-  (t2: Spec) => match(t2)
-    (af: SArrayField) => af.safLenField
-    (o: Spec)         => ""
-  ()         => ""
+  (af: SArrayField) => af.safLenField
+  ()                => ""
 
 fun fieldNamed2(fs: List<PStmt>, name) => match(firstWhere(fs, (f) => letMatchesName(f, name)))
   (let2: PsLet) => let2
@@ -809,10 +804,8 @@ fun letMatchesName(st: PStmt, name) => match(st)
   (o: PStmt)    => false
 
 fun isInt32Field(m: PsLet) => match(m.lType)
-  (t2: Spec) => match(t2)
-    (b: SBuiltin) => b.sbName == "int32"
-    (o: Spec)     => false
-  ()         => false
+  (b: SBuiltin) => b.sbName == "int32"
+  ()            => false
 
 # find_classes_or_error's ERROR half, reconstructed with the same messages.
 fun implErrors(ts: List<Spec>, r, acc) =>

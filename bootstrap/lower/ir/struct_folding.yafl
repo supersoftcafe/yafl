@@ -33,10 +33,8 @@ fun sfoReplace(p, defs: SsaDefs) => match(p)
   (o: RParam)         => p
 
 fun sfoFold(sf, sv, defs: SsaDefs): RParam => match(resolveValue(sv, defs, sdMaxChase()))
-  (base: RParam) => match(base)
-    (ns: RpNewStruct) => sfoField(ns.values, sf)
-    (o: RParam)       => sf
-  ()             => sf
+  (ns: RpNewStruct) => sfoField(ns.values, sf)
+  ()                => sf
 
 fun sfoField(vs: List<RpNamedValue>, sf: RpStructField) => match(firstWhere(vs, (v) => v.name == sf.field && sdIsDuplicable(v.value)))
   (v: RpNamedValue) => v.value

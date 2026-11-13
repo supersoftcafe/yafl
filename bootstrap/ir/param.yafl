@@ -309,11 +309,9 @@ fun rpReplaceParamsOpt(o: RParam|None, replacer): RParam|None => match(o)
 
 # ── get_live_vars() — set of StackVar-shaped RParam values ──────────────────
 
-fun eqRpStackVar(a, b) => match(a)
-  (x: RpStackVar) => match(b)
-    (y: RpStackVar) => x.name == y.name && eqCgType(x.fieldType, y.fieldType)
-    (o: RParam)     => false
-  (o: RParam) => false
+fun eqRpStackVar(a: RParam, b: RParam) => match(a, b)
+  (x: RpStackVar, y: RpStackVar) => x.name == y.name && eqCgType(x.fieldType, y.fieldType)
+  ()                             => false
 
 fun rpStackVarMember(l: List<RParam>, x) => any(l, (y) => eqRpStackVar(x, y))
 
@@ -368,111 +366,50 @@ fun eqRParamList(a: List<RParam>, b: List<RParam>) => eqBy(a, b, eqRParam)
 fun eqNullTests(a: List<RpNullTest>, b: List<RpNullTest>) =>
   eqBy(a, b, (x, y) => x.isNull == y.isNull && eqRParam(x.word, y.word))
 
-fun eqRParamOpt(a: RParam|None, b: RParam|None) => match(a)
-  (xa: RParam) => match(b)
-    (xb: RParam) => eqRParam(xa, xb)
-    ()           => false
-  () => match(b)
-    (xb: RParam) => false
-    ()           => true
+fun eqRParamOpt(a: RParam|None, b: RParam|None) => match(a, b)
+  (xa: RParam, xb: RParam) => eqRParam(xa, xb)
+  (_: None, _: None)       => true
+  ()                       => false
 
-fun eqStringOpt(a: String|None, b: String|None) => match(a)
-  (xa: String) => match(b)
-    (xb: String) => xa == xb
-    ()           => false
-  () => match(b)
-    (xb: String) => false
-    ()           => true
+fun eqStringOpt(a: String|None, b: String|None) => match(a, b)
+  (xa: String, xb: String) => xa == xb
+  (_: None, _: None)       => true
+  ()                       => false
 
-fun eqRParam(a, b) => match(a)
-  (x: RpInitArray) => match(b)
-    (y: RpInitArray) => eqCgType(x.memberType, y.memberType) && eqRParamList(x.values, y.values)
-    (o: RParam) => false
-  (x: RpNewStruct) => match(b)
-    (y: RpNewStruct) => eqRpNamedValues(x.values, y.values)
-    (o: RParam) => false
-  (x: RpRuntimeInvoke) => match(b)
-    (y: RpRuntimeInvoke) => x.function == y.function && eqRParam(x.parameters, y.parameters) && eqCgType(x.resultType, y.resultType)
-    (o: RParam) => false
-  (x: RpStructField) => match(b)
-    (y: RpStructField) => eqRParam(x.structVal, y.structVal) && x.field == y.field
-    (o: RParam) => false
-  (x: RpString) => match(b)
-    (y: RpString) => x.value == y.value
-    (o: RParam) => false
-  (x: RpInteger) => match(b)
-    (y: RpInteger) => x.value == y.value && x.precision == y.precision
-    (o: RParam) => false
-  (x: RpFloat) => match(b)
-    (y: RpFloat) => x.value == y.value && x.precision == y.precision
-    (o: RParam) => false
-  (x: RpIntEqConst) => match(b)
-    (y: RpIntEqConst) => eqRParam(x.value, y.value) && x.constVal == y.constVal
-    (o: RParam) => false
-  (x: RpNullPattern) => match(b)
-    (y: RpNullPattern) => eqNullTests(x.tests, y.tests)
-    (o: RParam) => false
-  (x: RpNullPointer) => match(b)
-    (y: RpNullPointer) => true
-    (o: RParam) => false
-  (x: RpStaticObjectRef) => match(b)
-    (y: RpStaticObjectRef) => x.name == y.name
-    (o: RParam) => false
-  (x: RpVtableDiscriminator) => match(b)
-    (y: RpVtableDiscriminator) => eqRParam(x.value, y.value)
-    (o: RParam) => false
-  (x: RpObjVtableEq) => match(b)
-    (y: RpObjVtableEq) => eqRParam(x.value, y.value) && eqStringOpt(x.className, y.className) && eqStringOpt(x.externSymbol, y.externSymbol)
-    (o: RParam) => false
-  (x: RpSyncWrap) => match(b)
-    (y: RpSyncWrap) => eqRParam(x.value, y.value) && eqCgType(x.wrapperType, y.wrapperType)
-    (o: RParam) => false
-  (x: RpZeroOf) => match(b)
-    (y: RpZeroOf) => eqCgType(x.valueType, y.valueType)
-    (o: RParam) => false
-  (x: RpFieldOffset) => match(b)
-    (y: RpFieldOffset) => x.objectName == y.objectName && x.field == y.field
-    (o: RParam) => false
-  (x: RpNewStructTyped) => match(b)
-    (y: RpNewStructTyped) => eqCgType(x.structType, y.structType) && eqRpNamedValues(x.values, y.values)
-    (o: RParam) => false
-  (x: RpTagTask) => match(b)
-    (y: RpTagTask) => eqRParam(x.task, y.task) && eqCgType(x.targetType, y.targetType)
-    (o: RParam) => false
-  (x: RpGlobalFunction) => match(b)
-    (y: RpGlobalFunction) => x.name == y.name && eqRParamOpt(x.object, y.object) && x.external == y.external
-                             && eqStringOpt(x.cSymbol, y.cSymbol) && x.impure == y.impure && x.sync == y.sync
-    (o: RParam) => false
-  (x: RpVirtualFunction) => match(b)
-    (y: RpVirtualFunction) => x.name == y.name && eqRParam(x.object, y.object) && x.fastLookup == y.fastLookup
-    (o: RParam) => false
-  (x: RpPointerTo) => match(b)
-    (y: RpPointerTo) => eqRParam(x.value, y.value)
-    (o: RParam) => false
-  (x: RpStackVar) => match(b)
-    (y: RpStackVar) => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
-    (o: RParam) => false
-  (x: RpGlobalVar) => match(b)
-    (y: RpGlobalVar) => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
-    (o: RParam) => false
-  (x: RpObjectField) => match(b)
-    (y: RpObjectField) => eqCgType(x.fieldType, y.fieldType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
-                          && x.field == y.field && eqRParamOpt(x.index, y.index)
-                          # `fresh` is compare=False in Python (provenance, not identity)
-    (o: RParam) => false
-  (x: RpArrayElement) => match(b)
-    (y: RpArrayElement) => eqCgType(x.elementType, y.elementType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
-                           && x.field == y.field && x.lengthField == y.lengthField && eqRParam(x.index, y.index) && x.checked == y.checked
-    (o: RParam) => false
-  (x: RpFunField) => match(b)
-    (y: RpFunField) => eqRParam(x.ffFun, y.ffFun) && x.ffPart == y.ffPart
-    (o: RParam) => false
-  (x: RpMakeFun) => match(b)
-    (y: RpMakeFun) => eqRParam(x.mfCode, y.mfCode) && eqRParam(x.mfEnv, y.mfEnv)
-    (o: RParam) => false
-  (x: RpNarrowInt) => match(b)
-    (y: RpNarrowInt) => eqRParam(x.niValue, y.niValue) && eqCgType(x.niType, y.niType)
-    (o: RParam) => false
+fun eqRParam(a: RParam, b: RParam) => match(a, b)
+  (x: RpInitArray, y: RpInitArray)                     => eqCgType(x.memberType, y.memberType) && eqRParamList(x.values, y.values)
+  (x: RpNewStruct, y: RpNewStruct)                     => eqRpNamedValues(x.values, y.values)
+  (x: RpRuntimeInvoke, y: RpRuntimeInvoke)             => x.function == y.function && eqRParam(x.parameters, y.parameters) && eqCgType(x.resultType, y.resultType)
+  (x: RpStructField, y: RpStructField)                 => eqRParam(x.structVal, y.structVal) && x.field == y.field
+  (x: RpString, y: RpString)                           => x.value == y.value
+  (x: RpInteger, y: RpInteger)                         => x.value == y.value && x.precision == y.precision
+  (x: RpFloat, y: RpFloat)                             => x.value == y.value && x.precision == y.precision
+  (x: RpIntEqConst, y: RpIntEqConst)                   => eqRParam(x.value, y.value) && x.constVal == y.constVal
+  (x: RpNullPattern, y: RpNullPattern)                 => eqNullTests(x.tests, y.tests)
+  (x: RpNullPointer, y: RpNullPointer)                 => true
+  (x: RpStaticObjectRef, y: RpStaticObjectRef)         => x.name == y.name
+  (x: RpVtableDiscriminator, y: RpVtableDiscriminator) => eqRParam(x.value, y.value)
+  (x: RpObjVtableEq, y: RpObjVtableEq)                 => eqRParam(x.value, y.value) && eqStringOpt(x.className, y.className) && eqStringOpt(x.externSymbol, y.externSymbol)
+  (x: RpSyncWrap, y: RpSyncWrap)                       => eqRParam(x.value, y.value) && eqCgType(x.wrapperType, y.wrapperType)
+  (x: RpZeroOf, y: RpZeroOf)                           => eqCgType(x.valueType, y.valueType)
+  (x: RpFieldOffset, y: RpFieldOffset)                 => x.objectName == y.objectName && x.field == y.field
+  (x: RpNewStructTyped, y: RpNewStructTyped)           => eqCgType(x.structType, y.structType) && eqRpNamedValues(x.values, y.values)
+  (x: RpTagTask, y: RpTagTask)                         => eqRParam(x.task, y.task) && eqCgType(x.targetType, y.targetType)
+  (x: RpGlobalFunction, y: RpGlobalFunction)           => x.name == y.name && eqRParamOpt(x.object, y.object) && x.external == y.external
+                                                          && eqStringOpt(x.cSymbol, y.cSymbol) && x.impure == y.impure && x.sync == y.sync
+  (x: RpVirtualFunction, y: RpVirtualFunction)         => x.name == y.name && eqRParam(x.object, y.object) && x.fastLookup == y.fastLookup
+  (x: RpPointerTo, y: RpPointerTo)                     => eqRParam(x.value, y.value)
+  (x: RpStackVar, y: RpStackVar)                       => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
+  (x: RpGlobalVar, y: RpGlobalVar)                     => eqCgType(x.fieldType, y.fieldType) && x.name == y.name
+  (x: RpObjectField, y: RpObjectField)                 => eqCgType(x.fieldType, y.fieldType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
+                                                          && x.field == y.field && eqRParamOpt(x.index, y.index)
+                                                          # `fresh` is compare=False in Python (provenance, not identity)
+  (x: RpArrayElement, y: RpArrayElement)               => eqCgType(x.elementType, y.elementType) && eqRParam(x.pointer, y.pointer) && x.objectName == y.objectName
+                                                          && x.field == y.field && x.lengthField == y.lengthField && eqRParam(x.index, y.index) && x.checked == y.checked
+  (x: RpFunField, y: RpFunField)                       => eqRParam(x.ffFun, y.ffFun) && x.ffPart == y.ffPart
+  (x: RpMakeFun, y: RpMakeFun)                         => eqRParam(x.mfCode, y.mfCode) && eqRParam(x.mfEnv, y.mfEnv)
+  (x: RpNarrowInt, y: RpNarrowInt)                     => eqRParam(x.niValue, y.niValue) && eqCgType(x.niType, y.niType)
+  ()                                                   => false
 
 # ── to_c ─────────────────────────────────────────────────────────────────────
 

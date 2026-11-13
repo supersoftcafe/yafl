@@ -1914,11 +1914,9 @@ fun [tail] alZiusLoop(s: Array<Op>, i: Int, entry: Dict<Int, InitSet>,
   ? alZiusLoop(s, i + 1, entry, alZiusStep(s[i], ucEntryAt(entry, i), acc))
   : acc
 
-fun alZiusStep(op, e, acc) => match(e)
-  (u: IsUnreached) => acc
-  (s2: IsSet)      => match(op)
-    (m: OpMove) => alZiusMove(m, s2.isNames, acc)
-    (o: Op)     => acc
+fun alZiusStep(op: Op, e: InitSet, acc) => match(e, op)
+  (s2: IsSet, m: OpMove) => alZiusMove(m, s2.isNames, acc)
+  ()                     => acc
 
 # The Python guard chain: Move target is ObjectField on the `$state` StackVar,
 # source is a StackVar missing from the entry set.
