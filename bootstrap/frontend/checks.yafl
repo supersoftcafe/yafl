@@ -156,8 +156,7 @@ fun checkExprOpt(x: PExpr|None, r, expected: Spec|None) => match(x)
 
 # ── phase 5: the unresolved-NamedSpec scan ──────────────────────────────────
 # _find_named_specs: every SNamed the walk reaches is a type the compile loop
-# failed to resolve. A NamedSpec is a LEAF (its own type args are not walked —
-# the outer name IS the error).
+# failed to resolve, its type arguments included.
 
 fun namedSpecErrors(statements: List<PStmt>): Set<PErr> =>
   walkStmts(statements, emptyResolverGlobal, noErrs(),

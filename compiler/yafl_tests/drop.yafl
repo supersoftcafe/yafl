@@ -156,3 +156,51 @@ fun program(): System::Int
 
 fun [test("unused param drops", stdout = "dropped")] check(): None|TestFailure
     ret assertEqInt(program(), 3, "program()")
+
+
+namespace CompilerTests::Drop::NestedFunctionParamDrops
+
+import System
+import System::Test
+
+class [linear,final] Res(x: System::Int)
+  fun [terminal] fin(): System::None
+    ret None
+
+instance [ambient] System::Drop<Res>
+  fun drop(self: Res): System::None
+    System::print("dropped")
+    ret self.fin()
+
+fun program(): System::Int
+  fun eat(r: Res): System::Int
+    ret 3
+  ret eat(Res(1))
+
+fun [test("nested function param drops", stdout = "dropped")] check(): None|TestFailure
+    ret assertEqInt(program(), 3, "program()")
+
+
+namespace CompilerTests::Drop::NestedFunctionParamDropsThroughOuterWhere
+
+import System
+import System::Test
+
+class [linear,final] Res(x: System::Int)
+  fun [terminal] fin(): System::None
+    ret None
+
+instance [ambient] System::Drop<Res>
+  fun drop(self: Res): System::None
+    System::print("dropped")
+    ret self.fin()
+
+fun discard<[linear] T>(v: T, n: System::Int): System::Int where System::Drop<T>
+  fun skip(y: T): System::Int
+    ret n
+  ret skip(v)
+fun program(): System::Int
+  ret discard(Res(2), 6)
+
+fun [test("nested function param drops through the outer where", stdout = "dropped")] check(): None|TestFailure
+    ret assertEqInt(program(), 6, "program()")

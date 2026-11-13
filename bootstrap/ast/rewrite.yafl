@@ -21,14 +21,14 @@
 #
 # THE VISIT-SET LAW (search_and_replace's):
 #   Fun        params, body, ret, wheres
-#   Let        default, declared type — NEVER wheres
+#   Let        default, declared type, wheres
 #   Destructure default, type, targets
-#   Typealias  ONLY its type — NEVER wheres
+#   Typealias  ONLY its type (a typealias has no where syntax)
 #   Class      cAllParents, params, members, implements, wheres — NEVER cAllSlots
 #   Enum       eSpec, params, variants — an SEnum's all_fields are NEVER
 #              visited (recursive enums would loop)
 #   Instance   pattern, wheres, members
-#   NamedSpec  a LEAF: its params are never visited
+#   NamedSpec  params (a type argument is a reference in its own right)
 #   PeName     penTrait, refTypeParams — a penTrait replacement that is not an
 #              SClass becomes None (access.py), as an eSpec one that is not
 #              an SEnum does (types.py)
@@ -204,7 +204,10 @@ fun wkStmtKids<S>(st: PStmt, r: Resolver, own: Resolver, s: S, w: Walk<S>): (s: 
                           ch = p.ch || b.ch || rt.ch || wh.ch)
   (l: PsLet) => wkExprOpt(l.lDefault, r, s, w)
     |> (d) => (d, wkSpecOpt(l.lType, r, d.s, w))
-    |> (d, t) => (s = t.s, x = with l(lDefault = d.x, lType = t.x), ch = d.ch || t.ch)
+    |> (d, t) => (d, t, wkSpecs(l.lWheres, r, t.s, w))
+    |> (d, t, wh) => (s = wh.s,
+                      x = with l(lDefault = d.x, lType = t.x, lWheres = wh.x),
+                      ch = d.ch || t.ch || wh.ch)
   (d: PsDestructure) => wkExprOpt(d.dDefault, r, s, w)
     |> (dv) => (dv, wkSpecOpt(d.dType, r, dv.s, w))
     |> (dv, t) => (dv, t, wkStmts(d.dTargets, r, t.s, w))
@@ -253,7 +256,7 @@ fun wkEnum<S>(e2: PsEnum, r: Resolver, s: S, w: Walk<S>): (s: S, x: PStmt, ch: B
     |> (sp) => (sp, wkStmt(e2.eParams, vr, sp.s, w))
     |> (sp, p) => (sp, p, wkStmts(e2.eVariants, vr, p.s, w))
     |> (sp, p, vs) => (s = vs.s,
-                       x = with e2(eSpec = enumSpecOnly(sp.x), eParams = p.x, eVariants = vs.x),
+                       x = with e2(eSpec = sp.ch ? enumSpecOnly(sp.x) : e2.eSpec, eParams = p.x, eVariants = vs.x),
                        ch = sp.ch || p.ch || vs.ch)
 
 fun enumSpecOnly(sp: Spec|None): Spec|None => match(sp)
@@ -274,7 +277,7 @@ fun wkExprKids<S>(x: PExpr, r: Resolver, s: S, w: Walk<S>): (s: S, x: PExpr, ch:
   (nm: PeName) => wkSpecOpt(nm.penTrait, r, s, w)
     |> (t) => (t, wkSpecs(nm.refTypeParams, r, t.s, w))
     |> (t, ps) => (s = ps.s,
-                   x = with nm(penTrait = traitOnly(t.x), refTypeParams = ps.x),
+                   x = with nm(penTrait = t.ch ? traitOnly(t.x) : nm.penTrait, refTypeParams = ps.x),
                    ch = t.ch || ps.ch)
   (d: PeDot) => wkExpr(d.base, r, s, w)
     |> (b) => (s = b.s, x = with d(base = b.x), ch = b.ch)
@@ -403,7 +406,8 @@ fun wkSpecKids<S>(sp: Spec, r: Resolver, s: S, w: Walk<S>): (s: S, x: Spec, ch: 
   (t2: STuple) => wkEntries(t2.stEntries, r, s, w)
     |> (es) => (s = es.s, x = with t2(stEntries = es.x), ch = es.ch)
   (b: SBuiltin) => (s = s, x = sp, ch = false)
-  (n: SNamed)   => (s = s, x = sp, ch = false)   # a LEAF: params never visited
+  (n: SNamed) => wkSpecs(n.snParams, r, s, w)
+    |> (ps) => (s = ps.s, x = with n(snParams = ps.x), ch = ps.ch)
   (g: SGeneric) => (s = s, x = sp, ch = false)
 
 fun wkEntry<S>(s: S, se: SEntry, r: Resolver, w: Walk<S>): (s: S, x: SEntry, ch: Bool) =>

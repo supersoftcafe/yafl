@@ -49,3 +49,29 @@ class TestAffineDrop(TestCase):
         self.assertFalse(r.c, "an undroppable linear leak must still fail")
         self.assertIn("never used; it must be consumed once", r.stdout)
 
+
+    def test_a_NESTED_function_param_drops_like_a_lambda_param(self):
+        # A nested function is a function: its unused droppable params drop at
+        # its exit, as a top-level function's and a lambda's do. The drops
+        # pass once skipped nested functions, so this was a linearity error.
+        # The runtime check is NestedFunctionParamDrops in yafl_tests/drop.yafl.
+        src = (_PRELUDE
+               + "fun main(): System::Int\n"
+               + "  fun eat(r: Res): System::Int\n"
+               + "    ret 3\n"
+               + "  ret eat(Res(1))\n")
+        r = compile_c_result(src)
+        self.assertTrue(r.c, r.stdout)
+
+    def test_a_NESTED_function_param_drops_through_the_OUTER_where(self):
+        # An inner function has no where of its own; it inherits its owner's
+        # lexically, so `Drop<T>` from the owner makes its `T` param droppable.
+        src = (_PRELUDE
+               + "fun discard<[linear] T>(v: T, n: System::Int): System::Int where System::Drop<T>\n"
+               + "  fun skip(y: T): System::Int\n"
+               + "    ret n\n"
+               + "  ret skip(v)\n"
+               + "fun main(): System::Int\n"
+               + "  ret discard(Res(2), 6)\n")
+        r = compile_c_result(src)
+        self.assertTrue(r.c, r.stdout)
