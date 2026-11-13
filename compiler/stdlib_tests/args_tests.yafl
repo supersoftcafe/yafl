@@ -1,0 +1,253 @@
+# Tests for System::Args (stdlib/System/Args): declaring a command line,
+# parsing it, and the text for a failed parse and for the help.
+#
+# The rules and the text are Python argparse's. Every expectation here is what
+# an argparse parser with the same arguments does and prints for the same
+# command line.
+#
+# See list_tests.yafl for why these live outside stdlib/.
+
+namespace StdlibTests::ArgsTests
+
+import System
+import System::Args
+import System::Containers
+import System::Test
+
+
+# ── the command line under test ──────────────────────────────────────────────
+
+class [final] Opts(help: Bool, level: String, out: String, libs: List<String>,
+                   verbose: Bool, quiet: Bool, check: Bool, files: List<String>)
+
+fun fresh() => Opts(false, "0", "", List(), false, false, false, List())
+
+fun level(o: Opts, v: String): Opts|String
+  ret v == "0" || v == "1" || v == "2" || v == "3"
+    ? with o(level = v)
+    : "invalid choice: '" + v + "' (choose from '0', '1', '2', '3')"
+
+fun options(): List<Arg<Opts>> => List<Arg<Opts>>()
+  |> (l) => append(l, Stop(List("-h", "--help"), "show this help message and exit",
+                           (o: Opts) => with o(help = true)))
+  |> (l) => append(l, Value(List("-O"), "LEVEL", "Optimisation level", level))
+  |> (l) => append(l, Value(List("-o"), "OUTFILE", "Output file name",
+                            (o: Opts, v: String) => with o(out = v)))
+  |> (l) => append(l, Value(List("-L", "--lib-path"), "DIR",
+                            "Additional library search path (repeatable)",
+                            (o: Opts, v: String) => with o(libs = append(o.libs, v))))
+  |> (l) => append(l, Flag(List("-v", "--verbose"),
+                           "Say more about what is being done, at some length, to anyone who is listening",
+                           (o: Opts) => with o(verbose = true)))
+  |> (l) => append(l, Flag(List("-q"), "Say less", (o: Opts) => with o(quiet = true)))
+  |> (l) => append(l, Flag(List("--version-check"), "Check the version",
+                           (o: Opts) => with o(check = true)))
+
+fun files(): Arg<Opts> => Positional("files", true, "Input files",
+                                     (o: Opts, vs: List<String>) => with o(files = vs))
+
+fun tool() => Args("tool", "A tool that does a thing to its input files, slowly",
+                   append(options(), files()))
+
+fun flag(b: Bool) => b ? "True" : "False"
+
+fun shown(o: Opts) => "O=" + o.level + " o=" + o.out + " L=" + join(o.libs, ",")
+  + " v=" + flag(o.verbose) + " q=" + flag(o.quiet) + " vc=" + flag(o.check)
+  + " h=" + flag(o.help) + " files=" + join(o.files, ",")
+
+# What a command line comes to: the options it sets, or the one-line error.
+fun outcome(line: String): String
+  let argv = line == "" ? List<String>() : split(line, " ")
+  ret match(parse(tool(), argv, fresh()))
+    (e: ArgError) => lastLine(message(tool(), e, 80, false))
+    (o: Opts)     => shown(o)
+
+fun lastLine(text: String): String =>
+  head(takeLastOne(filter(splitLines(text), (l: String) => l != ""))) ?? ""
+
+fun usage80() => "usage: tool [-h] [-O LEVEL] [-o OUTFILE] [-L DIR] [-v] [-q] [--version-check]\n"
+  + "            files [files ...]\n"
+
+
+# ── parsing ──────────────────────────────────────────────────────────────────
+
+fun [test("an option takes its value from the next word, or attached, or after =")] values(): None|TestFailure
+  ret assertEqStr(outcome("-O 2 a b"), "O=2 o= L= v=False q=False vc=False h=False files=a,b", "next word")
+   ?? assertEqStr(outcome("-O2 a"), "O=2 o= L= v=False q=False vc=False h=False files=a", "attached")
+   ?? assertEqStr(outcome("-O=2 a"), "O=2 o= L= v=False q=False vc=False h=False files=a", "short =")
+   ?? assertEqStr(outcome("--lib-path=x a"), "O=0 o= L=x v=False q=False vc=False h=False files=a", "long =")
+   ?? assertEqStr(outcome("-L x -L y a"), "O=0 o= L=x,y v=False q=False vc=False h=False files=a", "repeated")
+
+fun [test("a long option is matched by a unique prefix; an ambiguous one is an error")] prefixes(): None|TestFailure
+  ret assertEqStr(outcome("--lib x a"), "O=0 o= L=x v=False q=False vc=False h=False files=a", "unique prefix")
+   ?? assertEqStr(outcome("--ver a"),
+                  "tool: error: ambiguous option: --ver could match --verbose, --version-check", "ambiguous")
+
+fun [test("short flags cluster, and the last of a cluster may take a value")] clusters(): None|TestFailure
+  ret assertEqStr(outcome("-vq a"), "O=0 o= L= v=True q=True vc=False h=False files=a", "two flags")
+   ?? assertEqStr(outcome("-vO2 a"), "O=2 o= L= v=True q=False vc=False h=False files=a", "flag then value")
+   ?? assertEqStr(outcome("-qO a"),
+                  "tool: error: argument -O: invalid choice: 'a' (choose from '0', '1', '2', '3')",
+                  "the value is the next word")
+   ?? assertEqStr(outcome("-vx a"), "tool: error: unrecognized arguments: -x", "unknown letter")
+
+fun [test("a value-taking option with no value to take is an error")] missingValues(): None|TestFailure
+  ret assertEqStr(outcome("-O"), "tool: error: argument -O: expected one argument", "at the end")
+   ?? assertEqStr(outcome("-O -o x a"), "tool: error: argument -O: expected one argument", "before an option")
+   ?? assertEqStr(outcome("-o -- a"), "tool: error: argument -o: expected one argument", "before --")
+   ?? assertEqStr(outcome("--verbose a --lib"),
+                  "tool: error: argument -L/--lib-path: expected one argument", "named by every name")
+
+fun [test("a flag given a value is an error")] ignoredValues(): None|TestFailure
+  ret assertEqStr(outcome("--verbose=x a"),
+                  "tool: error: argument -v/--verbose: ignored explicit argument 'x'", "long")
+   ?? assertEqStr(outcome("-v=x a"),
+                  "tool: error: argument -v/--verbose: ignored explicit argument 'x'", "short")
+   ?? assertEqStr(outcome("-hq=1"), "tool: error: argument -q: ignored explicit argument '1'",
+                  "an error later in a word wins over a Stop earlier in it")
+
+fun [test("a value its argument refuses is an error naming the argument")] badValues(): None|TestFailure
+  ret assertEqStr(outcome("-O 9 a"),
+                  "tool: error: argument -O: invalid choice: '9' (choose from '0', '1', '2', '3')", "choice")
+
+fun [test("positionals take the first run of plain words; the rest are unrecognised")] positionals(): None|TestFailure
+  ret assertEqStr(outcome("a -O 1 b"), "tool: error: unrecognized arguments: b", "a second run")
+   ?? assertEqStr(outcome(""), "tool: error: the following arguments are required: files", "none given")
+   ?? assertEqStr(outcome("-x a"), "tool: error: unrecognized arguments: -x", "unknown option")
+   ?? assertEqStr(outcome("a -5"), "O=0 o= L= v=False q=False vc=False h=False files=a,-5",
+                  "a negative number is a plain word")
+
+fun [test("every word after -- is a plain word")] separator(): None|TestFailure
+  ret assertEqStr(outcome("-- -x"), "O=0 o= L= v=False q=False vc=False h=False files=-x", "leading")
+   ?? assertEqStr(outcome("a -- b"), "O=0 o= L= v=False q=False vc=False h=False files=a,b", "mid-run")
+
+fun [test("a Stop ends the parse there, successfully")] stops(): None|TestFailure
+  ret assertEqStr(outcome("-h"), "O=0 o= L= v=False q=False vc=False h=True files=", "no files needed")
+   ?? assertEqStr(outcome("--bogus -h"), "O=0 o= L= v=False q=False vc=False h=True files=",
+                  "wins over an unrecognised word")
+   ?? assertEqStr(outcome("-q -h -O 9"), "O=0 o= L= v=False q=True vc=False h=True files=",
+                  "nothing after it is read")
+   ?? assertEqStr(outcome("-O 9 -h"),
+                  "tool: error: argument -O: invalid choice: '9' (choose from '0', '1', '2', '3')",
+                  "an error before it wins")
+
+# Two positionals: each run of plain words goes to the positionals still
+# waiting, the earliest taking all but what the later required ones need.
+class [final] Pair(first: List<String>, rest: List<String>)
+
+fun pairTool() => Args("tool", "", List<Arg<Pair>>(
+  Positional("first", true, "First", (p: Pair, vs: List<String>) => with p(first = vs)),
+  Positional("rest", false, "Rest", (p: Pair, vs: List<String>) => with p(rest = vs))))
+
+fun pairOutcome(line: String): String => match(parse(pairTool(), split(line, " "), Pair(List(), List())))
+  (e: ArgError) => lastLine(message(pairTool(), e, 80, false))
+  (p: Pair)     => join(p.first, ",") + "|" + join(p.rest, ",")
+
+fun [test("several positionals share the plain words in declaration order")] severalPositionals(): None|TestFailure
+  ret assertEqStr(pairOutcome("a b c"), "a,b,c|", "the first takes them all")
+   ?? assertEqStr(pairOutcome("a -- b"), "a,b|", "-- does not end a run")
+
+
+# ── text ─────────────────────────────────────────────────────────────────────
+
+fun failure(line: String, width: Int, colour: Bool): String
+  let argv = line == "" ? List<String>() : split(line, " ")
+  ret match(parse(tool(), argv, fresh()))
+    (e: ArgError) => message(tool(), e, width, colour)
+    (o: Opts)     => "parsed"
+
+fun [test("an error is the usage, then the program and what went wrong")] errorText(): None|TestFailure
+  ret assertEqStr(failure("", 80, false),
+                  usage80() + "tool: error: the following arguments are required: files\n", "80 columns")
+   ?? assertEqStr(failure("", 40, false),
+                  "usage: tool [-h] [-O LEVEL]\n"
+                  + "            [-o OUTFILE] [-L DIR] [-v]\n"
+                  + "            [-q] [--version-check]\n"
+                  + "            files [files ...]\n"
+                  + "tool: error: the following arguments are required: files\n", "40 columns")
+
+fun [test("the help lists every argument, wrapped to the width")] helpText(): None|TestFailure
+  ret assertEqStr(help(tool(), 80, false),
+                  usage80() + "\n"
+                  + "A tool that does a thing to its input files, slowly\n"
+                  + "\n"
+                  + "positional arguments:\n"
+                  + "  files               Input files\n"
+                  + "\n"
+                  + "options:\n"
+                  + "  -h, --help          show this help message and exit\n"
+                  + "  -O LEVEL            Optimisation level\n"
+                  + "  -o OUTFILE          Output file name\n"
+                  + "  -L, --lib-path DIR  Additional library search path (repeatable)\n"
+                  + "  -v, --verbose       Say more about what is being done, at some length, to\n"
+                  + "                      anyone who is listening\n"
+                  + "  -q                  Say less\n"
+                  + "  --version-check     Check the version\n", "80 columns")
+
+fun [test("a narrow help puts a long invocation on a line of its own")] narrowHelp(): None|TestFailure
+  ret assertEqStr(help(tool(), 40, false),
+                  "usage: tool [-h] [-O LEVEL]\n"
+                  + "            [-o OUTFILE] [-L DIR] [-v]\n"
+                  + "            [-q] [--version-check]\n"
+                  + "            files [files ...]\n"
+                  + "\n"
+                  + "A tool that does a thing to its input\n"
+                  + "files, slowly\n"
+                  + "\n"
+                  + "positional arguments:\n"
+                  + "  files           Input files\n"
+                  + "\n"
+                  + "options:\n"
+                  + "  -h, --help      show this help\n"
+                  + "                  message and exit\n"
+                  + "  -O LEVEL        Optimisation level\n"
+                  + "  -o OUTFILE      Output file name\n"
+                  + "  -L, --lib-path DIR\n"
+                  + "                  Additional library\n"
+                  + "                  search path\n"
+                  + "                  (repeatable)\n"
+                  + "  -v, --verbose   Say more about what\n"
+                  + "                  is being done, at\n"
+                  + "                  some length, to\n"
+                  + "                  anyone who is\n"
+                  + "                  listening\n"
+                  + "  -q              Say less\n"
+                  + "  --version-check\n"
+                  + "                  Check the version\n", "40 columns")
+
+# No description, no positionals, and an argument with no help of its own:
+# the sections that would be empty are left out.
+fun bare() => Args("tool", "", List<Arg<Bool>>(
+  Flag(List("-q"), "Say less", (b: Bool) => true),
+  Stop(List("--help"), "", (b: Bool) => b)))
+
+fun [test("empty sections are left out of the help")] bareHelp(): None|TestFailure
+  ret assertEqStr(help(bare(), 80, false),
+                  "usage: tool [-q] [--help]\n"
+                  + "\n"
+                  + "options:\n"
+                  + "  -q      Say less\n"
+                  + "  --help\n", "no description, no positionals")
+
+fun [test("optional positionals are bracketed in the usage")] pairUsage(): None|TestFailure
+  ret assertEqStr(help(pairTool(), 80, false),
+                  "usage: tool first [first ...] [rest ...]\n"
+                  + "\n"
+                  + "positional arguments:\n"
+                  + "  first  First\n"
+                  + "  rest   Rest\n", "two positionals")
+
+fun [test("colour marks the usage, the option names and the error")] colouredText(): None|TestFailure
+  let e = "\u{1B}["
+  ret assertEqStr(failure("", 80, true),
+                  e + "1;34musage: " + e + "0m" + e + "1;35mtool" + e + "0m"
+                  + " [" + e + "32m-h" + e + "0m]"
+                  + " [" + e + "32m-O " + e + "33mLEVEL" + e + "0m]"
+                  + " [" + e + "32m-o " + e + "33mOUTFILE" + e + "0m]"
+                  + " [" + e + "32m-L " + e + "33mDIR" + e + "0m]"
+                  + " [" + e + "32m-v" + e + "0m]"
+                  + " [" + e + "32m-q" + e + "0m]"
+                  + " [" + e + "36m--version-check" + e + "0m]\n"
+                  + "            " + e + "32mfiles [files ...]" + e + "0m\n"
+                  + "tool: " + e + "1;35merror:" + e + "0m " + e
+                  + "35mthe following arguments are required: files" + e + "0m\n", "error")

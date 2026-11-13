@@ -1,0 +1,116 @@
+# System::Args — a program's command line: declare it, parse it.
+#
+#   class [final] Options(help: Bool, level: Int, files: List<String>)
+#
+#   fun commandLine() => Args("tool", "What the tool does", List<Arg<Options>>(
+#     Stop(List("-h", "--help"), "show this help message and exit",
+#          (o: Options) => with o(help = true)),
+#     Value(List("-O"), "LEVEL", "Optimisation level",
+#           (o: Options, v: String) => match(parseInt(v))
+#             (n: Int) => with o(level = n)
+#             ()       => "invalid int value: " + v),
+#     Positional("files", true, "Input files",
+#                (o: Options, vs: List<String>) => with o(files = vs))))
+#
+#   fun main(): Int => match(parse(commandLine(), args(), Options(false, 0, List())))
+#     (e: ArgError) => fail(message(commandLine(), e, 80, false))   # print it; exit 2
+#     (o: Options)  => o.help ? show(help(commandLine(), 80, false)) : work(o)
+#
+# `S` is the caller's own record of what the command line asked for. Each
+# argument carries the function that puts its value there, so a parse gives
+# back that record and nothing has to be looked up by name afterwards.
+#
+# Nothing here prints, exits, or reads the terminal: `parse` returns what the
+# words came to, and `message` and `help` return text for the caller to print.
+# The rules and the text are those of Python's argparse, which a great many
+# command lines already follow:
+#
+#   -x VALUE, -xVALUE, -x=VALUE, --long VALUE, --long=VALUE
+#   -abc              short flags in one word; the last may take a value
+#   --lo              a long option by any prefix only it has
+#   --                every word after it is a plain word
+#   -5                a word that reads as a negative number is a plain word
+#
+# Plain words go to the positionals in declaration order: the first run of
+# them fills as many positionals as it can, a later run those still waiting,
+# and a run that nothing is waiting for is unrecognised.
+
+namespace System::Args
+
+import System
+import System::Args::Internal
+import System::Containers
+
+
+# ── declaring ────────────────────────────────────────────────────────────────
+
+# One argument of the command line. `names` are its option strings (`-L`,
+# `--lib-path`), any of which gives it; `help` is its line in the help.
+#
+#   Flag        given or not: `set` records that it was.
+#   Stop        a flag that ends the parse where it stands, successfully, with
+#               the words after it unread and nothing further required — what
+#               `--help` and `--version` are.
+#   Value       takes one value. `set` returns the record with it, or says why
+#               the value will not do.
+#   Positional  takes plain words, at least one when `required`; `name` is how
+#               the usage and the help show it.
+enum Arg<S>
+  enum Flag(names: List<String>, help: String, set: (:S): S)
+  enum Stop(names: List<String>, help: String, set: (:S): S)
+  enum Value(names: List<String>, metavar: String, help: String,
+             set: (:S, :String): S|String)
+  enum Positional(name: String, required: Bool, help: String,
+                  set: (:S, :List<String>): S|String)
+
+# A whole command line: the program's name and what it does, as the usage and
+# the help show them, and its arguments in the order they are to be listed.
+class [final] Args<S>(prog: String, description: String, args: List<Arg<S>>)
+
+
+# ── parsing ──────────────────────────────────────────────────────────────────
+
+# Why a command line could not be parsed. `argument` names the argument by
+# every name it has (`-L/--lib-path`). `parse` never returns an Invalid: it is
+# for a caller that finds fault with a command line that parsed — options that
+# cannot go together, say — to report through `message` like any other.
+enum ArgError
+  enum AmbiguousOption(word: String, matches: List<String>)   # a prefix of several
+  enum MissingValue(argument: String)                         # a Value with no value
+  enum IgnoredValue(argument: String, value: String)          # a flag given one
+  enum BadValue(argument: String, why: String)                # its `set` refused
+  enum MissingRequired(names: List<String>)                   # positionals left empty
+  enum Unrecognised(words: List<String>)                      # words nothing takes
+  enum Invalid(why: String)                                   # the caller's own objection
+
+# `argv` (as `System::args()` gives it) read against `spec`, starting from
+# `initial`: the record every argument given has been put into, in the order
+# given, or the first thing wrong with the command line.
+fun parse<S>(spec: Args<S>, argv: List<String>, initial: S): S|ArgError
+  fun run(events: List<Event>, s: S): S|ArgError => match(head(events))
+    (f: Failed) => f.fdWhy
+    (t: Took)   => match(head(drop(spec.args, t.tkIndex)))
+      (a: Flag<S>)       => run(dropOne(events), a.set(s))
+      (a: Stop<S>)       => a.set(s)
+      (a: Value<S>)      => checked(a.set(s, head(t.tkValues) ?? ""), t, dropOne(events))
+      (a: Positional<S>) => checked(a.set(s, t.tkValues), t, dropOne(events))
+      ()                 => s
+    ()          => s
+  fun checked(r: S|String, t: Took, rest: List<Event>): S|ArgError => match(r)
+    (why: String) => BadValue(t.tkArgument, why)
+    (s: S)        => run(rest, s)
+  ret run(scan(declared(spec), argv), initial)
+
+
+# ── text ─────────────────────────────────────────────────────────────────────
+# `width` is the width in columns of the terminal the text is for; `colour`,
+# whether to mark it up with ANSI colour.
+
+# A failed parse, ready to print: the usage, then the program's name and what
+# went wrong. By convention it goes to stderr and the program exits 2.
+fun message<S>(spec: Args<S>, e: ArgError, width: Int, colour: Bool): String =>
+  errorText(spec.prog, declared(spec), e, width, colour)
+
+# The help: the usage, the description, and every argument with its help.
+fun help<S>(spec: Args<S>, width: Int, colour: Bool): String =>
+  helpText(spec.prog, spec.description, declared(spec), width, colour)

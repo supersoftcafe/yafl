@@ -1,0 +1,289 @@
+# System::Args::Internal — reading the words of a command line against its
+# declared arguments, by the consumption rules of Python 3.14's argparse.
+#
+# A namespace of its own so that a program importing System::Args sees the
+# declaration types, `parse`, `message` and `help`, and none of this.
+#
+# Nothing here knows the caller's record: the scan turns the words into the
+# EVENTS of the parse, in order — an argument took these values; the command
+# line is wrong here — and `System::Args::parse` applies them.
+#
+# The rules decide what a command MEANS: a value is the next word only when
+# that word reads as a plain word; positionals take runs of plain words; long
+# options match by unique prefix; `-Ox`, `-O=x`, `--lib-path=x` carry their
+# value inline; `-hxyz` is a cluster.
+
+namespace System::Args::Internal
+
+import System
+import System::Args
+import System::Containers
+
+
+# ── the declared arguments, without the caller's record ──────────────────────
+
+# `dMetavar`: the label of the value an option takes; None for a flag.
+class [final] Decl(dNames: List<String>, dMetavar: String|None, dHelp: String,
+                   dPositional: Bool, dRequired: Bool)
+
+fun declared<S>(spec: Args<S>): List<Decl> => map(spec.args, (a: Arg<S>) => declaredArg(a))
+
+fun declaredArg<S>(a: Arg<S>): Decl => match(a)
+  (f: Flag<S>)       => Decl(f.names, None, f.help, false, false)
+  (p: Stop<S>)       => Decl(p.names, None, p.help, false, false)
+  (v: Value<S>)      => Decl(v.names, v.metavar, v.help, false, false)
+  (p: Positional<S>) => Decl(List(p.name), None, p.help, true, p.required)
+
+# argparse names an argument by all its option strings.
+fun displayName(d: Decl): String => join(d.dNames, "/")
+
+
+# ── the events of a parse ────────────────────────────────────────────────────
+
+# `tkIndex`: which declared argument, by position. `tkValues`: none for a
+# flag, one for an option's value, a positional's words.
+enum Event
+  enum Took(tkIndex: Int, tkArgument: String, tkValues: List<String>)
+  enum Failed(fdWhy: ArgError)
+
+# The events of `argv` against `ds`. A Failed is always the last.
+fun scan(ds: List<Decl>, argv: List<String>): List<Event>
+  let t = optTable(ds)
+  ret scanWords(t, classifyAll(t, argv), ScanState(List(), List(), waitingPositionals(ds)))
+
+
+# ── the option strings ───────────────────────────────────────────────────────
+
+# One option string and the argument it gives.
+class [final] Opt(opString: String, opIndex: Int, opValued: Bool, opArgument: String)
+
+# In declaration order — ambiguity messages list matches in it — and by string.
+class [final] OptTable(otInOrder: List<Opt>, otByString: Dict<String, Opt>)
+
+fun optTable(ds: List<Decl>): OptTable
+  let inOrder = fold(ds, (i = 0, out = List<Opt>()),
+                     (st, d) => (i = st.i + 1,
+                                 out = d.dPositional ? st.out : concat(st.out, optsOf(d, st.i)))).out
+  ret OptTable(inOrder, fold(inOrder, Dict<String, Opt>(),
+                             (m, o) => contains(m, o.opString) ? m : put(m, o.opString, o)))
+
+fun optsOf(d: Decl, index: Int): List<Opt> =>
+  map(d.dNames, (n: String) => Opt(n, index, !(d.dMetavar is None), displayName(d)))
+
+# A positional still to be filled.
+class [final] Waiting(wtIndex: Int, wtName: String, wtRequired: Bool)
+
+fun waitingPositionals(ds: List<Decl>): List<Waiting> =>
+  fold(ds, (i = 0, out = List<Waiting>()),
+       (st, d) => (i = st.i + 1,
+                   out = d.dPositional
+                     ? append(st.out, Waiting(st.i, displayName(d), d.dRequired))
+                     : st.out)).out
+
+
+# ── pass 1: classify (`_parse_optional`) ─────────────────────────────────────
+# Two passes, as argparse makes them. The first classifies every word — a
+# plain word, an option, or the `--` that ends the options — without consuming
+# anything. The second consumes: an option takes its value only from a word
+# classified as plain, and the positionals take runs of plain words.
+
+# One reading of an option word: the option it names (None: no such option),
+# the option string, and its explicit value with the separator that introduced
+# it — `=`, or "" for the text attached to a short option.
+class [final] Read(rdOpt: Opt|None, rdString: String,
+                   rdSep: String|None, rdExplicit: String|None)
+
+# A plain word, the first `--`, or an option word with every reading of it
+# (more than one is an ambiguous prefix).
+enum Word
+  enum Plain(plText: String)
+  enum Separator(spText: String)
+  enum Option(opRaw: String, opReads: List<Read>)
+
+# Every word after the first `--` is a plain word, whatever it looks like.
+fun classifyAll(t: OptTable, ws: List<String>): List<Word> =>
+  fold(ws, (words = List<Word>(), raw = false),
+       (st, w) =>
+         st.raw ? (words = append(st.words, Plain(w)), raw = true)
+         : w == "--" ? (words = append(st.words, Separator(w)), raw = true)
+         : (words = append(st.words, classifyWord(t, w)), raw = false)).words
+
+# An option is a word with a leading `-` that names one (whole, before `=`, or
+# by prefix); failing that, a word that reads as a negative number or holds a
+# space is a plain word, and anything else is an unknown option.
+fun classifyWord(t: OptTable, w: String): Word
+  if w == "" || byteAt(w, 0) != '-'
+    ret Plain(w)
+  if contains(t.otByString, w)
+    ret Option(w, List(Read(get(t.otByString, w), w, None, None)))
+  if length(w) == 1
+    ret Plain(w)
+  let eq = findByte(w, '=', 0)
+  if eq >= 0 && contains(t.otByString, slice(w, 0, eq))
+    ret Option(w, List(Read(get(t.otByString, slice(w, 0, eq)), slice(w, 0, eq), "=",
+                            slice(w, eq + 1, length(w)))))
+  let reads = optionReads(t, w)
+  if !isEmpty(reads)
+    ret Option(w, reads)
+  if looksNegative(w) || findByte(w, ' ', 0) >= 0
+    ret Plain(w)
+  ret Option(w, List(Read(None, w, None, None)))
+
+# `_get_option_tuples`. A `--` word reads as every long option its text (before
+# any `=`) is a prefix of. A `-x…` word reads as the option `-x` exactly, the
+# rest of the word attached, and as any option its text prefixes.
+fun optionReads(t: OptTable, w: String): List<Read>
+  let eq = findByte(w, '=', 0)
+  let prefix = eq < 0 ? w : slice(w, 0, eq)
+  let sep: String|None = eq < 0 ? None : "="
+  let explicit: String|None = eq < 0 ? None : slice(w, eq + 1, length(w))
+  let short = slice(w, 0, 2)
+  ret byteAt(w, 1) == '-'
+    ? map(filter(t.otInOrder, (o: Opt) => startsWith(o.opString, prefix)),
+          (o: Opt) => Read(o, o.opString, sep, explicit))
+    : map(filter(t.otInOrder, (o: Opt) => o.opString == short || startsWith(o.opString, prefix)),
+          (o: Opt) => o.opString == short
+            ? Read(o, o.opString, "", slice(w, 2, length(w)))
+            : Read(o, o.opString, sep, explicit))
+
+# argparse's `-\.?\d`, at the start of the word.
+fun looksNegative(w: String): Bool => isAsciiDigit(byteAt(w, 1))
+  || (byteAt(w, 1) == '.' && length(w) > 2 && isAsciiDigit(byteAt(w, 2)))
+
+fun isAsciiDigit(c: Int32): Bool => c >= '0' && c <= '9'
+
+
+# ── pass 2: consume (`consume_optional`, `consume_positionals`) ──────────────
+
+# The scan so far: the events, the words nothing has taken, and the
+# positionals still waiting for a run of plain words.
+class [final] ScanState(ssEvents: List<Event>, ssExtras: List<String>,
+                        ssWaiting: List<Waiting>)
+
+class [final] Step(stRest: List<Word>, stState: ScanState)
+# An option to take, with its value (None for a flag).
+class [final] Taken(tnOpt: Opt, tnValue: String|None)
+# A run of words up to the next option.
+class [final] Run(rnWords: List<Word>, rnRest: List<Word>)
+
+# A cursor over the words: an option may consume the next word as its value.
+fun scanWords(t: OptTable, ws: List<Word>, s: ScanState): List<Event> => match(head(ws))
+  (o: Option) => match(consumeOption(t, o, dropOne(ws), s))
+    (st: Step)     => scanWords(t, st.stRest, st.stState)
+    (e: ArgError)  => append(s.ssEvents, Failed(e))
+  (w: Word)   => runOf(ws)
+    |> (r: Run) => scanWords(t, r.rnRest, positionals(s, r.rnWords))
+  ()          => finished(s)
+
+# The words up to the next option, and the rest.
+fun runOf(ws: List<Word>): Run => match(findIndex(ws, (w) => w is Option))
+  (k: Int) => Run(take(ws, k), drop(ws, k))
+  ()       => Run(ws, List())
+
+# A run holding at least one plain word goes to the positionals still waiting,
+# the first `--` dropped from it. A run they cannot take — none is waiting, or
+# it holds no plain word — is left over, `--` and all.
+fun positionals(s: ScanState, words: List<Word>): ScanState
+  let plain = flatMap(words, (w: Word) => plainText(w))
+  let filled = fillable(s.ssWaiting, count(plain))
+  ret isEmpty(plain) || isEmpty(filled)
+    ? with s(ssExtras = concat(s.ssExtras, map(words, (w: Word) => wordText(w))))
+    : with s(ssEvents = concat(s.ssEvents, shared(filled, plain)),
+             ssWaiting = drop(s.ssWaiting, count(filled)))
+
+# As many of the waiting positionals, from the first, as `n` words can fill:
+# a required one needs a word, any other needs none.
+fun fillable(waiting: List<Waiting>, n: Int): List<Waiting> =>
+  foldWhile(waiting, (out = List<Waiting>(), left = n, going = true),
+            (st, p) => needs(p) <= st.left
+              ? (out = append(st.out, p), left = st.left - needs(p), going = true)
+              : (out = st.out, left = st.left, going = false),
+            (st) => st.going).out
+
+fun needs(p: Waiting): Int => p.wtRequired ? 1 : 0
+
+# The words shared among the positionals a run fills: the first takes every
+# word the later ones do not need, each later one what it needs.
+fun shared(filled: List<Waiting>, plain: List<String>): List<Event>
+  let later = fold(dropOne(filled), 0, (n, p) => n + needs(p))
+  ret fold(filled, (out = List<Event>(), words = plain, first = true),
+           (st, p) => (first = false,
+                       words = drop(st.words, st.first ? count(plain) - later : needs(p)),
+                       out = tookWords(st.out, p, take(st.words, st.first ? count(plain) - later : needs(p))))).out
+
+# A positional that was left no words is filled, and takes nothing.
+fun tookWords(out: List<Event>, p: Waiting, words: List<String>): List<Event> =>
+  isEmpty(words) ? out : append(out, Took(p.wtIndex, p.wtName, words))
+
+fun plainText(w: Word): List<String> => match(w)
+  (p: Plain)  => List(p.plText)
+  (o: Word)   => List()
+
+fun wordText(w: Word): String => match(w)
+  (p: Plain)      => p.plText
+  (s: Separator)  => s.spText
+  (o: Option)     => o.opRaw
+
+fun count<T>(l: List<T>): Int => fold(l, 0, (n, x) => n + 1)
+
+# One option word. An ambiguous prefix is an error; an unknown option is left
+# over.
+fun consumeOption(t: OptTable, o: Option, rest: List<Word>, s: ScanState): Step|ArgError
+  if sizeAtLeast(o.opReads, 2)
+    ret AmbiguousOption(o.opRaw, map(o.opReads, (r: Read) => r.rdString))
+  ret match(head(o.opReads))
+    (r: Read) => match(r.rdOpt)
+      (a: Opt) => readOption(t, a, r.rdString, r.rdSep, r.rdExplicit, rest, List(), s)
+      ()       => Step(rest, with s(ssExtras = append(s.ssExtras, o.opRaw)))
+    ()        => Step(rest, s)   # unreachable: every option word has a reading
+
+# The loop of consume_optional. A value-taking option takes its explicit
+# value, or else the next word if that is a plain word. A single-dash flag
+# with text attached (`-hxyz`) is a cluster, read one character at a time.
+# The word's events are added only once the whole word is read, so an error
+# anywhere in the word wins over a Stop earlier in it.
+fun readOption(t: OptTable, a: Opt, opt: String, sep: String|None, explicit: String|None,
+               rest: List<Word>, taken: List<Taken>, s: ScanState): Step|ArgError => match(explicit)
+  (x: String) => a.opValued
+    ? takeAll(append(taken, Taken(a, x)), rest, s)
+    : byteAt(opt, 1) != '-' && x != ""
+      ? clusterNext(t, a, sep, x, rest, append(taken, Taken(a, None)), s)
+      : IgnoredValue(a.opArgument, x)
+  ()          => !a.opValued
+    ? takeAll(append(taken, Taken(a, None)), rest, s)
+    : match(head(rest))
+      (v: Plain)  => takeAll(append(taken, Taken(a, v.plText)), dropOne(rest), s)
+      (w: Word)   => MissingValue(a.opArgument)
+      ()          => MissingValue(a.opArgument)
+
+# The next flag of a cluster: `-` and the first attached character. A cluster
+# written with `=` (`-h=x`), or whose next character is a `-`, is an error.
+# A character naming no option ends the cluster, the rest left over.
+fun clusterNext(t: OptTable, a: Opt, sep: String|None, x: String, rest: List<Word>,
+                taken: List<Taken>, s: ScanState): Step|ArgError
+  if (sep ?? "") != "" || byteAt(x, 0) == '-'
+    ret IgnoredValue(a.opArgument, x)
+  let next = "-" + slice(x, 0, 1)
+  let tail = slice(x, 1, length(x))
+  ret match(get(t.otByString, next))
+    (a2: Opt) => tail == ""
+      ? readOption(t, a2, next, None, None, rest, taken, s)
+      : byteAt(tail, 0) == '='
+        ? readOption(t, a2, next, "=", slice(tail, 1, length(tail)), rest, taken, s)
+        : readOption(t, a2, next, "", tail, rest, taken, s)
+    ()        => takeAll(taken, rest, with s(ssExtras = append(s.ssExtras, "-" + x)))
+
+# The word is read: its options become events, in order.
+fun takeAll(ts: List<Taken>, rest: List<Word>, s: ScanState): Step =>
+  Step(rest, with s(ssEvents = concat(s.ssEvents, map(ts, (t: Taken) => tookOption(t)))))
+
+fun tookOption(t: Taken): Event => match(t.tnValue)
+  (v: String) => Took(t.tnOpt.opIndex, t.tnOpt.opArgument, List(v))
+  ()          => Took(t.tnOpt.opIndex, t.tnOpt.opArgument, List())
+
+# After the last word: the required positionals, then anything left over.
+fun finished(s: ScanState): List<Event>
+  let missing = filter(s.ssWaiting, (p: Waiting) => p.wtRequired)
+  if !isEmpty(missing)
+    ret append(s.ssEvents, Failed(MissingRequired(map(missing, (p: Waiting) => p.wtName))))
+  ret isEmpty(s.ssExtras) ? s.ssEvents : append(s.ssEvents, Failed(Unrecognised(s.ssExtras)))
